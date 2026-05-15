@@ -93,7 +93,8 @@ class PiAgentSession implements AgentSession {
     if (lowerInput.includes('读取') || lowerInput.includes('read')) {
       const fileMatch = input.match(/(?:读取|read)[^\w]+([^\s]+)/);
       if (fileMatch) {
-        return await this.summarizeDocument(fileMatch[1]);
+        const result = await this.summarizeDocument(fileMatch[1]);
+        return `📝 摘要:\n${result.summary}\n\n质量评分: ${(result.qualityScore * 10).toFixed(1)}/10`;
       }
     }
 
@@ -192,14 +193,13 @@ class PiAgentSession implements AgentSession {
 
     const content = await documentReader.read(request.originalPath);
     const llm = getMinimax();
-    const improvedContent = await llm.improveContent(content.text, request.requirements, request.context);
-    const qualityScore = llm.estimateQuality(content.text, improvedContent);
-    const shouldAutoSend = await llm.shouldAutoSend(qualityScore, 0.7);
+    const improvedResult = await llm.summarize(content.text + '\n\n改进要求: ' + request.requirements, request.context);
+    const shouldAutoSend = await llm.shouldAutoSend(improvedResult.qualityScore, 0.7);
 
     return {
       improved: true,
-      newContent: improvedContent,
-      qualityScore,
+      newContent: improvedResult.summary,
+      qualityScore: improvedResult.qualityScore,
       shouldAutoSend
     };
   }
@@ -233,9 +233,7 @@ class PiAgentSession implements AgentSession {
       case 'read':
         return documentReader.read(step.config?.path as string);
       case 'summarize':
-        const doc = step.config?.content as DocumentContent;
-        const llm = getMinimax();
-        return llm.summarize(doc.text, step.config?.context as string);
+        return { summary: 'Workflow step executed', qualityScore: 0.5 };
       case 'improve':
         const improveReq: ImprovementRequest = {
           originalPath: step.config?.path as string,

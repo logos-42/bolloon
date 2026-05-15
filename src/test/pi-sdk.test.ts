@@ -1,5 +1,5 @@
-import { createAgentSession } from './agents/pi-sdk.js';
-import { initMinimax } from './llm/minimax.js';
+import { createAgentSession } from '../agents/pi-sdk.js';
+import { initMinimax } from '../llm/minimax.js';
 import * as path from 'path';
 
 async function testBasicSession() {

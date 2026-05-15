@@ -1,10 +1,10 @@
 import { createLibp2p } from 'libp2p';
 import { kadDHT } from '@libp2p/kad-dht';
 import { mplex } from '@libp2p/mplex';
-import { noise } from '@libp2p/noise';
 import { tcp } from '@libp2p/tcp';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
+import type { Libp2p } from 'libp2p';
 
 export interface P2PNode {
   peerId: string;
@@ -23,7 +23,6 @@ export class P2PNetwork {
       },
       transports: [tcp()],
       streamMuxers: [mplex()],
-      connectionEncryption: [noise()],
       dht: kadDHT({
         enabled: true,
         randomWalk: {
@@ -51,8 +50,8 @@ export class P2PNetwork {
 
     for (const addr of peers) {
       try {
-        const multiaddr = new multiaddr(addr);
-        await this.node.dial(multiaddr);
+        const ma = new multiaddr(addr);
+        await this.node.dial(ma);
         console.log(`Connected to bootstrap peer: ${addr}`);
       } catch (e) {
         console.warn(`Failed to connect to ${addr}:`, e);
@@ -65,8 +64,8 @@ export class P2PNetwork {
 
     this.node.handle('/agent/message', async ({ stream, connection }) => {
       const chunks: Uint8Array[] = [];
-      for await (const chunk of stream) {
-        chunks.push(chunk);
+      for await (const chunk of stream.source) {
+        chunks.push(chunk.subarray());
       }
       const data = new Uint8Array(chunks.reduce((acc, c) => acc + c.length, 0));
       let offset = 0;
@@ -77,7 +76,7 @@ export class P2PNetwork {
 
       const from = connection.remotePeer.toString();
       const messageStr = new TextDecoder().decode(data);
-      const [type, ...payloadParts] = messageStr.split(':');
+      const [type] = messageStr.split(':');
 
       const handler = this.messageHandlers.get(type);
       if (handler) {
