@@ -3,7 +3,7 @@ import { kadDHT } from '@libp2p/kad-dht';
 import { mplex } from '@libp2p/mplex';
 import { tcp } from '@libp2p/tcp';
 import { peerIdFromString } from '@libp2p/peer-id';
-import { multiaddr } from '@multiformats/multiaddr';
+import { multiaddr as createMultiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from 'libp2p';
 
 export interface P2PNode {
@@ -23,12 +23,9 @@ export class P2PNetwork {
       },
       transports: [tcp()],
       streamMuxers: [mplex()],
-      dht: kadDHT({
-        enabled: true,
-        randomWalk: {
-          enabled: true
-        }
-      })
+      services: {
+        dht: kadDHT()
+      }
     });
 
     await this.node.start();
@@ -50,7 +47,7 @@ export class P2PNetwork {
 
     for (const addr of peers) {
       try {
-        const ma = new multiaddr(addr);
+        const ma = createMultiaddr(addr);
         await this.node.dial(ma);
         console.log(`Connected to bootstrap peer: ${addr}`);
       } catch (e) {
@@ -106,11 +103,11 @@ export class P2PNetwork {
   async sendMessage(peerId: string, type: string, payload: string): Promise<void> {
     if (!this.node) throw new Error('Node not initialized');
 
-    const targetPeer = peerIdFromString(peerId);
     const data = new TextEncoder().encode(`${type}:${payload}`);
 
     try {
-      const stream = await this.node.dialProtocol(targetPeer, '/agent/message');
+      const ma = createMultiaddr(`/p2p/${peerId}`);
+      const stream = await this.node.dialProtocol(ma, '/agent/message');
       await stream.sink([data]);
     } catch (e) {
       console.warn(`Failed to send to ${peerId}, storing offline`);
@@ -126,7 +123,8 @@ export class P2PNetwork {
 
     for (const peer of peers) {
       try {
-        const stream = await this.node.dialProtocol(peer, '/agent/message');
+        const ma = createMultiaddr(`/p2p/${peer.toString()}`);
+        const stream = await this.node.dialProtocol(ma, '/agent/message');
         await stream.sink([data]);
       } catch (e) {
         console.warn(`Failed to broadcast to ${peer}:`, e);
