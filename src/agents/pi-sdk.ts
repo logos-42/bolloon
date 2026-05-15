@@ -1,6 +1,8 @@
 import { documentReader, DocumentContent } from '../documents/reader.js';
 import { getMinimax } from '../llm/minimax.js';
 import { p2pNetwork } from '../network/p2p.js';
+import { ConstraintLayer, WorkflowContext, SYSTEM_PROMPT } from './constraint-layer.js';
+import { WorkflowEngine, WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
 
 export interface AgentSessionConfig {
   cwd: string;
@@ -103,12 +105,16 @@ class PiAgentSession implements AgentSession {
   private identity: IdentityDoc;
   private minimaxAvailable = false;
   private workflows: Map<string, Workflow> = new Map();
+  private constraintLayer: ConstraintLayer;
+  private workflowEngine: WorkflowEngine;
 
   constructor(config: AgentSessionConfig) {
     this.cwd = config.cwd;
     this.peerId = config.peerId || 'local';
     this.identity = config.identityDoc || this.createDefaultIdentity();
     this.minimaxAvailable = this.checkMinimax();
+    this.constraintLayer = new ConstraintLayer();
+    this.workflowEngine = new WorkflowEngine(this.constraintLayer);
   }
 
   private createDefaultIdentity(): IdentityDoc {
@@ -248,27 +254,92 @@ class PiAgentSession implements AgentSession {
   }
 
   async runWorkflow(steps: WorkflowStep[]): Promise<Workflow> {
-    const workflow: Workflow = {
-      id: `wf-${Date.now()}`,
-      steps,
-      status: 'running',
-      results: new Map()
+    const context: WorkflowContext = {
+      peers: this.getPeers(),
+      logs: []
     };
 
-    this.workflows.set(workflow.id, workflow);
-
-    for (const step of steps) {
-      try {
-        const result = await this.executeWorkflowStep(step);
-        workflow.results.set(step.id, result);
-      } catch (error) {
-        workflow.status = 'failed';
-        return workflow;
-      }
+    // Pre-check with constraint layer
+    const checkResult = await this.constraintLayer.checkGuardrails(context);
+    if (!checkResult.passed && checkResult.blocked) {
+      console.warn(`Guardrail blocked: ${checkResult.blocked.name}`);
     }
 
-    workflow.status = 'completed';
-    return workflow;
+    // Use workflow engine for execution
+    return this.workflowEngine.executeWorkflow(steps, context);
+  }
+
+  /**
+   * Convenience method for summarizing a document and optionally sending to peer
+   */
+  async summarizeDocumentWorkflow(filePath: string, targetPeer?: string): Promise<Workflow> {
+    const steps: WorkflowStep[] = [
+      {
+        id: 'read',
+        type: 'read',
+        config: { path: filePath },
+        retry: { max: 3, current: 0, backoffMs: 1000 },
+        onFail: 'abort'
+      },
+      {
+        id: 'summarize',
+        type: 'summarize',
+        config: { context: `File: ${filePath}` },
+        retry: { max: 3, current: 0, backoffMs: 1000 },
+        onFail: 'skip',
+        guardrail: (ctx) => Promise.resolve(ctx.qualityScore !== undefined && ctx.qualityScore >= 0.5)
+      }
+    ];
+
+    if (targetPeer) {
+      steps.push({
+        id: 'send',
+        type: 'send',
+        config: { peerId: targetPeer },
+        retry: { max: 2, current: 0, backoffMs: 2000 },
+        onFail: 'skip'
+      });
+    }
+
+    return this.runWorkflow(steps);
+  }
+
+  /**
+   * Convenience method for improving a document and sending to peer
+   */
+  async improveAndSendWorkflow(filePath: string, requirements: string, targetPeer: string): Promise<Workflow> {
+    const steps: WorkflowStep[] = [
+      {
+        id: 'read',
+        type: 'read',
+        config: { path: filePath },
+        retry: { max: 3, current: 0, backoffMs: 1000 },
+        onFail: 'abort'
+      },
+      {
+        id: 'improve',
+        type: 'improve',
+        config: { requirements, context: `File: ${filePath}` },
+        retry: { max: 2, current: 0, backoffMs: 1500 },
+        onFail: 'skip'
+      },
+      {
+        id: 'send',
+        type: 'send',
+        config: { peerId: targetPeer, message: '改进后的文档' },
+        retry: { max: 2, current: 0, backoffMs: 2000 },
+        onFail: 'skip'
+      }
+    ];
+
+    return this.runWorkflow(steps);
+  }
+
+  /**
+   * Get operation logs from constraint layer
+   */
+  getOperationLogs(): { timestamp: number; action: string; details: Record<string, unknown>; status: string }[] {
+    return this.constraintLayer.getLogs();
   }
 
   private async executeWorkflowStep(step: WorkflowStep): Promise<unknown> {
