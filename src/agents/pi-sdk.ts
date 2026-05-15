@@ -1,7 +1,12 @@
+/**
+ * Pi-SDK - Agent Session for Document Processing
+ * Part of OpenClaw dual-layer architecture
+ */
+
 import { documentReader, DocumentContent } from '../documents/reader.js';
 import { getMinimax } from '../llm/minimax.js';
 import { p2pNetwork } from '../network/p2p.js';
-import { ConstraintLayer, WorkflowContext, SYSTEM_PROMPT } from './constraint-layer.js';
+import { ConstraintLayer, WorkflowContext } from './constraint-layer.js';
 import { WorkflowEngine, WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
 
 export interface AgentSessionConfig {
@@ -17,66 +22,14 @@ export interface IdentityDoc {
   createdAt: number;
 }
 
-export interface WorkflowStepConfig {
-  path?: string;
-  requirements?: string;
-  context?: string;
-  peerId?: string;
-  message?: string;
-  content?: string;
-  maxChunkSize?: number;
-}
-
-export interface WorkflowStep {
-  id: string;
-  type: 'read' | 'chunk' | 'summarize' | 'improve' | 'review' | 'send' | 'report';
-  config?: WorkflowStepConfig;
-  retry: {
-    max: number;
-    current: number;
-    backoffMs: number;
-  };
-  onFail: 'skip' | 'abort' | 'retry';
-  guardrail?: (context: WorkflowContext) => Promise<boolean>;
-  guardrailOnRetry?: boolean;
-}
-
-export interface WorkflowContext {
-  document?: {
-    text: string;
-    metadata: {
-      filename: string;
-      size: number;
-      type: string;
-    };
-  };
-  summary?: string;
-  improved?: string;
-  qualityScore?: number;
-  peers: string[];
-  logs: { timestamp: number; action: string; details: Record<string, unknown>; status: string }[];
-  metadata?: Record<string, unknown>;
-}
-
-export interface StepResult {
-  status: 'success' | 'failed' | 'skipped' | 'blocked';
-  result?: unknown;
-  error?: string;
-  guardrailFailed?: string;
-}
-
-export interface Workflow {
-  id: string;
-  steps: WorkflowStep[];
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  results: Map<string, StepResult>;
-}
-
 export interface ImprovementRequest {
   originalPath: string;
   requirements: string;
   context?: string;
 }
+
+// Re-export types from constraint-layer and workflow-engine for convenience
+export type { WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
 
 export interface AgentSession {
   prompt(input: string): Promise<string>;
@@ -340,33 +293,6 @@ class PiAgentSession implements AgentSession {
    */
   getOperationLogs(): { timestamp: number; action: string; details: Record<string, unknown>; status: string }[] {
     return this.constraintLayer.getLogs();
-  }
-
-  private async executeWorkflowStep(step: WorkflowStep): Promise<unknown> {
-    switch (step.type) {
-      case 'read':
-        return documentReader.read(step.config?.path as string);
-      case 'summarize':
-        return { summary: 'Workflow step executed', qualityScore: 0.5 };
-      case 'improve':
-        const improveReq: ImprovementRequest = {
-          originalPath: step.config?.path as string,
-          requirements: step.config?.requirements as string,
-          context: step.config?.context as string
-        };
-        return this.improveDocument(improveReq);
-      case 'send':
-        const peerId = step.config?.peerId as string;
-        const message = step.config?.message as string;
-        await this.sendMessage(peerId, message);
-        return { sent: true, peerId };
-      case 'report':
-        const reportContent = step.config?.content as string;
-        await this.broadcast(reportContent);
-        return { broadcasted: true };
-      default:
-        throw new Error(`Unknown step type: ${step.type}`);
-    }
   }
 
   private listPeers(): string {
