@@ -1,8 +1,5 @@
 import { createLibp2p } from 'libp2p';
-import { kadDHT } from '@libp2p/kad-dht';
-import { mplex } from '@libp2p/mplex';
 import { tcp } from '@libp2p/tcp';
-import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr as createMultiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from 'libp2p';
 
@@ -21,11 +18,7 @@ export class P2PNetwork {
       addresses: {
         listen: ['/ip4/0.0.0.0/tcp/0']
       },
-      transports: [tcp()],
-      streamMuxers: [mplex()],
-      services: {
-        dht: kadDHT()
-      }
+      transports: [tcp()]
     });
 
     await this.node.start();

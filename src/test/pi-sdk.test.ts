@@ -1,6 +1,9 @@
+import { config } from 'dotenv';
 import { createAgentSession } from '../agents/pi-sdk.js';
 import { initMinimax } from '../llm/minimax.js';
 import * as path from 'path';
+
+config();
 
 async function testBasicSession() {
   console.log('=== 测试1: 基本Agent会话 ===\n');
@@ -46,8 +49,7 @@ async function testMinimaxIntegration() {
     cwd: process.cwd(),
   });
 
-  const testText = '这是一个测试文档，用于验证LLM摘要功能。人工智能技术正在快速发展，文档智能处理是一个重要的应用场景。';
-  const result = await session.prompt(`总结: ${testText}`);
+  const result = await session.prompt('总结: 这是一个测试文档，用于验证LLM摘要功能。人工智能技术正在快速发展，文档智能处理是一个重要的应用场景。');
   console.log('摘要结果:', result);
   console.log('✅ Minimax集成测试完成\n');
 }

@@ -88,6 +88,7 @@ class PiAgentSession implements AgentSession {
   }
 
   async prompt(input: string): Promise<string> {
+    this.minimaxAvailable = this.checkMinimax();
     const lowerInput = input.toLowerCase();
 
     if (lowerInput.includes('读取') || lowerInput.includes('read')) {
