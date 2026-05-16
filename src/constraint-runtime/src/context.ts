@@ -1,4 +1,8 @@
 import * as path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export interface PortContext {
   sourceRoot: string;
@@ -17,7 +21,7 @@ export function buildPortContext(base?: string): PortContext {
   const testsRoot = path.join(root, 'tests');
   const assetsRoot = path.join(root, 'assets');
   const archiveRoot = path.join(root, 'archive');
-  
+
   return {
     sourceRoot: srcRoot,
     testsRoot: testsRoot,

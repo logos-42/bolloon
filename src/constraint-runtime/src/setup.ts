@@ -22,7 +22,7 @@ export interface SetupReport {
 export function buildWorkspaceSetup(): WorkspaceSetup {
   return {
     pythonVersion: `${platform.version}`,
-    implementation: platform.name,
+    implementation: platform.name || 'unknown',
     platformName: platform.os?.toString() || 'unknown',
     testCommand: 'npm test',
     startupSteps: [
@@ -46,3 +46,5 @@ export function runSetup(cwd?: string, trusted: boolean = true): SetupReport {
     cwd: root,
   };
 }
+
+export { buildWorkspaceSetup as buildSetup };

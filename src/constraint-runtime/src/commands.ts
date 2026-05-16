@@ -1,7 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { PortingModule } from './models.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const SNAPSHOT_PATH = path.join(__dirname, 'reference_data', 'commands_snapshot.json');
 
 export interface CommandExecution {
@@ -23,6 +26,8 @@ function loadCommandSnapshot(): PortingModule[] {
 }
 
 export const PORTED_COMMANDS = loadCommandSnapshot();
+
+export { PortingModule };
 
 export function builtInCommandNames(): Set<string> {
   return new Set(PORTED_COMMANDS.map(m => m.name));
