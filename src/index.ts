@@ -283,8 +283,9 @@ function startCLI(comm: HyperswarmCommunicator): void {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  const mode = process.argv.includes('--web') ? 'web' : 'cli';
+
   console.log('\n🤖 Bolloon Agent\n');
-  console.log('━'.repeat(30) + '\n');
 
   // ① LLM
   const mk = process.env.MINIMAX_API_KEY;
@@ -294,26 +295,36 @@ async function main() {
     console.log('⚠️  未设置 MINIMAX_API_KEY，功能受限\n');
   }
 
-  // ② DIAP 身份 (静默)
-  const { keypair, did, name } = await bootstrapIdentity();
+  // ② DIAP 身份
+  const { keypair, name } = await bootstrapIdentity();
 
   // ③ 发布 DID → IPFS (后台)
   publishDID(name, keypair);
 
-  // ④ P2P 节点 (静默)
+  // ④ P2P 节点
   const verifier = createVerificationManager();
   const comm = await bootstrapP2P(verifier);
 
-  // ⑤ 直接进入对话
-  console.log('💬 对话模式已启动\n');
-  console.log('━'.repeat(30));
-  console.log('\n你可以这样说：');
-  console.log('  "读取 想法.md"');
-  console.log('  "总结 这段文字的内容"');
-  console.log('  "改进 src/index.ts，让代码更清晰"');
-  console.log('\n输入 "退出" 结束对话\n');
+  if (mode === 'web') {
+    const port = parseInt(process.env.PORT || '54188');
+    const { createWebServer, openBrowser } = await import('./web/server.js');
 
-  startCLI(comm);
+    console.log('\n🌐 启动Web服务...');
+    await createWebServer(port);
+
+    console.log(`\n✅ 浏览器已打开 → http://localhost:${port}\n`);
+    openBrowser(`http://localhost:${port}`);
+  } else {
+    console.log('\n💬 对话模式已启动\n');
+    console.log('━'.repeat(30));
+    console.log('\n你可以这样说：');
+    console.log('  "读取 想法.md"');
+    console.log('  "总结 这段文字的内容"');
+    console.log('  "改进 src/index.ts，让代码更清晰"');
+    console.log('\n输入 "退出" 结束对话\n');
+
+    startCLI(comm);
+  }
 }
 
 main().catch(e => { console.error('Fatal:', e); process.exit(1); });
