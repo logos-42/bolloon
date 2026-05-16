@@ -5,14 +5,19 @@
   "description": "P2P AI Document Agent with libp2p",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "npm run build --workspaces --if-present",
+    "build:main": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx -r dotenv/config src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:pi-sdk": "tsx src/test/pi-sdk.test.ts"
   },
+  "workspaces": [
+    "src/constraint-runtime"
+  ],
   "dependencies": {
+    "@bolloon/constraint-runtime": "0.1.0",
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
     "@diap/sdk": "^0.1.9",
