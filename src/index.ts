@@ -63,9 +63,21 @@ async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPa
 
 async function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<void> {
   console.log('[2/4] 📝 发布 DID → IPFS CID...');
-  const auth = await AgentAuthManager.new();
-  await auth.registerAgent({ name, services: [] }, kp, '');
-  console.log('     ✅ DID 文档已上链');
+  try {
+    const auth = await AgentAuthManager.new();
+    await auth.registerAgent({ name, services: [] }, kp, '');
+    console.log('     ✅ DID 文档已上链');
+  } catch (e: any) {
+    const isIpfsError = e.code === 'IPFS_ERROR' ||
+      e.code === 'DID_ERROR' ||
+      e.details?.originalError?.code === 'IPFS_ERROR' ||
+      e.message?.includes('IPFS');
+    if (isIpfsError) {
+      console.log('     ⚠️  IPFS未配置，跳过DID上链（本地模式）');
+    } else {
+      throw e;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +88,9 @@ async function bootstrapP2P(
   verifier: AgentVerificationManager,
 ): Promise<HyperswarmCommunicator> {
   console.log('[3/4] 🌐 启动 P2P harness...');
-  const comm = createHyperswarmCommunicator({ server: true, client: true, autoConnect: true, maxConnections: 50 });
+  const rawSeed = crypto.getRandomValues(new Uint8Array(32));
+  const seed: any = rawSeed;
+  const comm = createHyperswarmCommunicator({ server: true, client: true, autoConnect: true, maxConnections: 50, seed });
 
   // 当 Hyperswarm 有新连接 → 将原始 stream 存入 rawStreams，供 sendRawMsg 用
   comm.on('connection', (conn: P2PConnection) => {
