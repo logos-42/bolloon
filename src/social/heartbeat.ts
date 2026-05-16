@@ -10,14 +10,6 @@ export interface PersonaDoc {
   interests: string[];
 }
 
-export interface GlobalSession {
-  id: string;
-  agentId: string;
-  channels: Record<string, SessionChannel>;
-  lastUpdated: string;
-  lastActiveAgent?: string;
-}
-
 export interface SessionChannel {
   id: string;
   name: string;
@@ -51,48 +43,34 @@ export interface DiscoveredAgent {
 
 const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'sessions');
 const PERSONA_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'persona.json');
-const GLOBAL_SESSION_PATH = path.join(SHARED_SESSION_PATH, 'global-session.json');
 const DISCOVERED_AGENTS_PATH = path.join(SHARED_SESSION_PATH, 'discovered-agents.json');
 
-export class GlobalSessionManager {
-  private session: GlobalSession | null = null;
-  private persona: PersonaDoc | null = null;
-  private agentId: string;
+export interface SocialSessionProvider {
+  getPersona(): PersonaDoc | null;
+  addMessage(channelId: string, message: SessionMessage): Promise<void>;
+  getChannelMessages(channelId: string): Promise<SessionMessage[]>;
+  createChannel(name: string, peerInfo?: { peerId?: string; peerDid?: string; peerName?: string }): Promise<SessionChannel>;
+  getOrCreatePeerChannel(peerDid: string, peerName: string): Promise<SessionChannel>;
+  setChannelInfo(channelId: string, info: Partial<SessionChannel>): Promise<void>;
+  getAllChannels(): SessionChannel[];
+}
 
-  constructor(agentId: string) {
-    this.agentId = agentId;
+class LocalSessionManager implements SocialSessionProvider {
+  private channels: Map<string, SessionChannel> = new Map();
+  private channelsPath: string;
+  private persona: PersonaDoc | null = null;
+  private initialized: boolean = false;
+
+  constructor() {
+    this.channelsPath = path.join(SHARED_SESSION_PATH, 'local-channels.json');
   }
 
   async initialize(): Promise<void> {
+    if (this.initialized) return;
     await fs.mkdir(SHARED_SESSION_PATH, { recursive: true });
-    this.session = await this.loadGlobalSession();
     this.persona = await this.loadPersona();
-  }
-
-  private async loadGlobalSession(): Promise<GlobalSession> {
-    try {
-      const data = await fs.readFile(GLOBAL_SESSION_PATH, 'utf-8');
-      const session = JSON.parse(data) as GlobalSession;
-      if (session.agentId !== this.agentId) {
-        session.agentId = this.agentId;
-        session.lastUpdated = new Date().toISOString();
-      }
-      return session;
-    } catch {
-      return {
-        id: `global-${Date.now()}`,
-        agentId: this.agentId,
-        channels: {},
-        lastUpdated: new Date().toISOString()
-      };
-    }
-  }
-
-  async saveGlobalSession(): Promise<void> {
-    if (this.session) {
-      this.session.lastUpdated = new Date().toISOString();
-      await fs.writeFile(GLOBAL_SESSION_PATH, JSON.stringify(this.session, null, 2));
-    }
+    await this.loadChannels();
+    this.initialized = true;
   }
 
   private async loadPersona(): Promise<PersonaDoc | null> {
@@ -104,48 +82,54 @@ export class GlobalSessionManager {
     }
   }
 
-  async savePersona(persona: PersonaDoc): Promise<void> {
-    await fs.writeFile(PERSONA_PATH, JSON.stringify(persona, null, 2));
-    this.persona = persona;
+  private async loadChannels(): Promise<void> {
+    try {
+      const data = await fs.readFile(this.channelsPath, 'utf-8');
+      const channelsArray: SessionChannel[] = JSON.parse(data);
+      this.channels.clear();
+      for (const channel of channelsArray) {
+        this.channels.set(channel.id, channel);
+      }
+    } catch {
+      this.channels.clear();
+    }
+  }
+
+  private async saveChannels(): Promise<void> {
+    const channelsArray = Array.from(this.channels.values());
+    await fs.writeFile(this.channelsPath, JSON.stringify(channelsArray, null, 2));
   }
 
   getPersona(): PersonaDoc | null {
     return this.persona;
   }
 
-  getSession(): GlobalSession | null {
-    return this.session;
-  }
-
   async addMessage(channelId: string, message: SessionMessage): Promise<void> {
-    if (!this.session) await this.initialize();
-    if (!this.session) return;
+    await this.initialize();
 
-    if (!this.session.channels[channelId]) {
-      this.session.channels[channelId] = {
+    if (!this.channels.has(channelId)) {
+      this.channels.set(channelId, {
         id: channelId,
         name: channelId,
         messages: [],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
-      };
+      });
     }
 
-    this.session.channels[channelId].messages.push(message);
-    this.session.channels[channelId].updatedAt = new Date().toISOString();
-    this.session.lastActiveAgent = this.agentId;
-    await this.saveGlobalSession();
+    const channel = this.channels.get(channelId)!;
+    channel.messages.push(message);
+    channel.updatedAt = new Date().toISOString();
+    await this.saveChannels();
   }
 
   async getChannelMessages(channelId: string): Promise<SessionMessage[]> {
-    if (!this.session) await this.initialize();
-    if (!this.session) return [];
-    return this.session.channels[channelId]?.messages || [];
+    await this.initialize();
+    return this.channels.get(channelId)?.messages || [];
   }
 
   async createChannel(name: string, peerInfo?: { peerId?: string; peerDid?: string; peerName?: string }): Promise<SessionChannel> {
-    if (!this.session) await this.initialize();
-    if (!this.session) throw new Error('Session not initialized');
+    await this.initialize();
 
     const channelId = `ch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const channel: SessionChannel = {
@@ -157,21 +141,18 @@ export class GlobalSessionManager {
       ...peerInfo
     };
 
-    this.session.channels[channelId] = channel;
-    await this.saveGlobalSession();
+    this.channels.set(channelId, channel);
+    await this.saveChannels();
     return channel;
   }
 
   async getOrCreatePeerChannel(peerDid: string, peerName: string): Promise<SessionChannel> {
-    if (!this.session) await this.initialize();
-    if (!this.session) throw new Error('Session not initialized');
+    await this.initialize();
 
-    const existingChannel = Object.values(this.session.channels).find(
-      c => c.peerDid === peerDid
-    );
-
-    if (existingChannel) {
-      return existingChannel;
+    for (const channel of this.channels.values()) {
+      if (channel.peerDid === peerDid) {
+        return channel;
+      }
     }
 
     return this.createChannel(`与 ${peerName} 的对话`, {
@@ -181,20 +162,16 @@ export class GlobalSessionManager {
   }
 
   async setChannelInfo(channelId: string, info: Partial<SessionChannel>): Promise<void> {
-    if (!this.session) return;
-    if (this.session.channels[channelId]) {
-      this.session.channels[channelId] = {
-        ...this.session.channels[channelId],
-        ...info,
-        updatedAt: new Date().toISOString()
-      };
-      await this.saveGlobalSession();
+    await this.initialize();
+    const channel = this.channels.get(channelId);
+    if (channel) {
+      Object.assign(channel, info, { updatedAt: new Date().toISOString() });
+      await this.saveChannels();
     }
   }
 
   getAllChannels(): SessionChannel[] {
-    if (!this.session) return [];
-    return Object.values(this.session.channels);
+    return Array.from(this.channels.values());
   }
 }
 
@@ -275,7 +252,7 @@ export interface HeartbeatConfig {
 export class SocialHeartbeat {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private config: HeartbeatConfig;
-  private sessionManager: GlobalSessionManager;
+  private sessionProvider: SocialSessionProvider;
   private agentsManager: DiscoveredAgentsManager;
   private onAgentDiscovered?: (agent: DiscoveredAgent) => void;
   private onSocialMessage?: (fromDid: string, message: string, channelId: string) => void;
@@ -284,7 +261,8 @@ export class SocialHeartbeat {
   private greetingMessage: string;
 
   constructor(
-    agentId: string,
+    sessionProvider: SocialSessionProvider,
+    agentsManager: DiscoveredAgentsManager,
     config: Partial<HeartbeatConfig> = {}
   ) {
     this.config = {
@@ -294,13 +272,12 @@ export class SocialHeartbeat {
       autoSocialEnabled: config.autoSocialEnabled ?? false,
       greetingMessage: config.greetingMessage
     };
-    this.sessionManager = new GlobalSessionManager(agentId);
-    this.agentsManager = new DiscoveredAgentsManager();
+    this.sessionProvider = sessionProvider;
+    this.agentsManager = agentsManager;
     this.greetingMessage = this.config.greetingMessage || '你好！我是 Bolloon Agent，很高兴认识你！';
   }
 
   async start(): Promise<void> {
-    await this.sessionManager.initialize();
     await this.agentsManager.initialize();
 
     if (this.intervalId) return;
@@ -410,8 +387,8 @@ export class SocialHeartbeat {
     const onlineAgents = this.agentsManager.getOnlineAgents();
 
     for (const agent of onlineAgents) {
-      const channel = await this.sessionManager.getOrCreatePeerChannel(agent.did, agent.name);
-      const messages = await this.sessionManager.getChannelMessages(channel.id);
+      const channel = await this.sessionProvider.getOrCreatePeerChannel(agent.did, agent.name);
+      const messages = await this.sessionProvider.getChannelMessages(channel.id);
 
       if (messages.length === 0 && !agent.lastMessage) {
         await this.sendGreeting(agent);
@@ -421,8 +398,8 @@ export class SocialHeartbeat {
 
   private async sendGreeting(agent: DiscoveredAgent): Promise<void> {
     try {
-      const channel = await this.sessionManager.getOrCreatePeerChannel(agent.did, agent.name);
-      const persona = this.sessionManager.getPersona();
+      const channel = await this.sessionProvider.getOrCreatePeerChannel(agent.did, agent.name);
+      const persona = this.sessionProvider.getPersona();
 
       const greeting = persona
         ? `${persona.greeting || this.greetingMessage}\n\n我是 ${persona.name}，${persona.description}`
@@ -438,7 +415,7 @@ export class SocialHeartbeat {
         timestamp: new Date().toISOString()
       };
 
-      await this.sessionManager.addMessage(channel.id, message);
+      await this.sessionProvider.addMessage(channel.id, message);
       agent.lastMessage = greeting;
       this.agentsManager.updateAgent(agent.did, { lastMessage: greeting });
 
@@ -489,10 +466,6 @@ export class SocialHeartbeat {
     this.greetingMessage = message;
   }
 
-  getSessionManager(): GlobalSessionManager {
-    return this.sessionManager;
-  }
-
   getAgentsManager(): DiscoveredAgentsManager {
     return this.agentsManager;
   }
@@ -505,13 +478,14 @@ export class SocialHeartbeat {
 let heartbeatInstance: SocialHeartbeat | null = null;
 
 export async function createSocialHeartbeat(
-  agentId: string,
+  sessionProvider: SocialSessionProvider,
+  agentsManager: DiscoveredAgentsManager,
   config?: Partial<HeartbeatConfig>
 ): Promise<SocialHeartbeat> {
   if (heartbeatInstance) {
     return heartbeatInstance;
   }
-  heartbeatInstance = new SocialHeartbeat(agentId, config);
+  heartbeatInstance = new SocialHeartbeat(sessionProvider, agentsManager, config);
   await heartbeatInstance.start();
   return heartbeatInstance;
 }

@@ -16,7 +16,7 @@ import {
 } from '@diap/sdk';
 import { documentReader } from '../documents/reader.js';
 import { initMinimax, getMinimax } from '../runtime/context/sys-prompt.js';
-import { createAgentSession, type AgentSession } from '../agents/pi-sdk.js';
+import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -165,13 +165,26 @@ export async function createWebServer(port: number = 3000) {
 
     try {
       const agent = await getAgentForChannel(channelId);
-      const response = await agent.prompt(text);
-      broadcast({ type: 'ai', content: response }, channelId);
+      let fullResponse = '';
+
+      const streamCallback: StreamCallback = (event: StreamEvent) => {
+        if (event.type === 'token' || event.type === 'thinking') {
+          broadcast({ type: 'stream', streamType: event.type, content: event.content }, channelId);
+        } else if (event.type === 'status' || event.type === 'tool') {
+          broadcast({ type: 'status', tool: event.tool, content: event.content }, channelId);
+        } else if (event.type === 'error') {
+          broadcast({ type: 'error', content: event.content }, channelId);
+        }
+      };
+
+      fullResponse = await agent.promptStream(text, streamCallback);
+
+      broadcast({ type: 'ai', content: fullResponse }, channelId);
 
       const existingSession = await loadSession(channelId);
       const session: Session = existingSession || { channelId, messages: [], lastUpdated: new Date().toISOString() };
       session.messages.push({ id: crypto.randomUUID(), type: 'user' as const, content: text, timestamp: new Date().toISOString() });
-      session.messages.push({ id: crypto.randomUUID(), type: 'ai' as const, content: response, timestamp: new Date().toISOString() });
+      session.messages.push({ id: crypto.randomUUID(), type: 'ai' as const, content: fullResponse, timestamp: new Date().toISOString() });
       session.lastUpdated = new Date().toISOString();
       await saveSession(session);
 

@@ -651,6 +651,28 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* Streaming Indicator */
+.streaming-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.streaming-content::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  border-radius: 50%;
+  animation: streamPulse 1s ease-in-out infinite;
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+@keyframes streamPulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
 /* Loading Dots */
 .loading-dots {
   font-family: 'JetBrains Mono', monospace;

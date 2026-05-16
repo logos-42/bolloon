@@ -235,6 +235,55 @@ function showTyping() {
 function hideTyping() {
   const typing = document.getElementById('typing');
   if (typing) typing.remove();
+  hideStreaming();
+}
+
+let streamingMessageEl = null;
+
+function showStreaming() {
+  hideStreaming();
+  streamingMessageEl = document.createElement('div');
+  streamingMessageEl.className = 'message message-ai';
+  streamingMessageEl.id = 'streaming';
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble bubble-ai streaming-content';
+  streamingMessageEl.appendChild(bubble);
+  messagesEl.appendChild(streamingMessageEl);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function hideStreaming() {
+  if (streamingMessageEl) {
+    streamingMessageEl.remove();
+    streamingMessageEl = null;
+  }
+}
+
+function updateStreamingContent(content) {
+  if (streamingMessageEl) {
+    const bubble = streamingMessageEl.querySelector('.streaming-content');
+    if (bubble) {
+      bubble.textContent = content;
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+  }
+}
+
+function handleStreamEvent(data) {
+  if (data.streamType === 'thinking') {
+    showStreaming();
+    updateStreamingContent(data.content || '思考中...');
+  } else if (data.streamType === 'token') {
+    showStreaming();
+    const current = streamingMessageEl?.querySelector('.streaming-content')?.textContent || '';
+    updateStreamingContent(current + data.content);
+  }
+}
+
+function handleStatusEvent(data) {
+  showStreaming();
+  const icon = data.tool ? `🔧 ${data.tool}: ` : '';
+  updateStreamingContent(icon + data.content);
 }
 
 function connect() {
@@ -271,6 +320,10 @@ function connect() {
           addMessage(data.content, 'user');
         } else if (data.type === 'ai') {
           addMessage(data.content, 'ai');
+        } else if (data.type === 'stream') {
+          handleStreamEvent(data);
+        } else if (data.type === 'status') {
+          handleStatusEvent(data);
         } else if (data.type === 'done') {
           hideTyping();
         } else if (data.type === 'renamed') {
