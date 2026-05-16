@@ -2,7 +2,8 @@ import express from 'express';
 import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import * as readline from 'readline';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import {
   HyperswarmCommunicator,
   createHyperswarmCommunicator,
@@ -20,6 +21,77 @@ import { createAgentSession, type AgentSession } from '../agents/pi-sdk.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'sessions');
+const SESSION_CACHE_PATH = path.join(SHARED_SESSION_PATH, 'cache');
+const CHANNELS_PATH = path.join(SHARED_SESSION_PATH, 'channels.json');
+const THEME_PATH = path.join(SHARED_SESSION_PATH, 'theme.json');
+
+interface Channel {
+  id: string;
+  name: string;
+  agentId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SessionMessage {
+  id: string;
+  type: 'user' | 'ai';
+  content: string;
+  timestamp: string;
+}
+
+interface Session {
+  channelId: string;
+  messages: SessionMessage[];
+  lastUpdated: string;
+}
+
+async function ensureSessionDirs() {
+  await fs.mkdir(SESSION_CACHE_PATH, { recursive: true });
+}
+
+async function loadChannels(): Promise<Channel[]> {
+  try {
+    const data = await fs.readFile(CHANNELS_PATH, 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
+}
+
+async function saveChannels(channels: Channel[]): Promise<void> {
+  await fs.writeFile(CHANNELS_PATH, JSON.stringify(channels, null, 2));
+}
+
+async function loadSession(channelId: string): Promise<Session | null> {
+  const sessionPath = path.join(SESSION_CACHE_PATH, `${channelId}.json`);
+  try {
+    const data = await fs.readFile(sessionPath, 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+async function saveSession(session: Session): Promise<void> {
+  const sessionPath = path.join(SESSION_CACHE_PATH, `${session.channelId}.json`);
+  await fs.writeFile(sessionPath, JSON.stringify(session, null, 2));
+}
+
+async function loadTheme(): Promise<{ theme: 'light' | 'dark'; agentId: string }> {
+  try {
+    const data = await fs.readFile(THEME_PATH, 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return { theme: 'light', agentId: '' };
+  }
+}
+
+async function saveTheme(theme: 'light' | 'dark', agentId: string): Promise<void> {
+  await fs.writeFile(THEME_PATH, JSON.stringify({ theme, agentId }, null, 2));
+}
+
 let agentSession: AgentSession | null = null;
 let sseClients: Set<express.Response> = new Set();
 
@@ -34,11 +106,13 @@ export async function createWebServer(port: number = 3000) {
   const app = express();
   const server = createServer(app);
 
+  await ensureSessionDirs();
+
   app.use(express.json());
 
   app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') {
       return res.status(200).end();
@@ -67,7 +141,7 @@ export async function createWebServer(port: number = 3000) {
   });
 
   app.post('/message', async (req, res) => {
-    const { text } = req.body;
+    const { text, channelId } = req.body;
     if (!text) {
       return res.status(400).json({ error: 'No text provided' });
     }
@@ -79,10 +153,110 @@ export async function createWebServer(port: number = 3000) {
       const response = await a.prompt(text);
       broadcast({ type: 'ai', content: response });
       broadcast({ type: 'done' });
+
+      if (channelId) {
+        const existingSession = await loadSession(channelId);
+        const session: Session = existingSession || { channelId, messages: [], lastUpdated: new Date().toISOString() };
+        session.messages.push({ id: crypto.randomUUID(), type: 'user' as const, content: text, timestamp: new Date().toISOString() });
+        session.messages.push({ id: crypto.randomUUID(), type: 'ai' as const, content: response, timestamp: new Date().toISOString() });
+        session.lastUpdated = new Date().toISOString();
+        await saveSession(session);
+
+        const channels = await loadChannels();
+        const channel = channels.find(c => c.id === channelId);
+        if (channel) {
+          channel.updatedAt = new Date().toISOString();
+          await saveChannels(channels);
+        }
+      }
+
       res.json({ ok: true });
     } catch (err: any) {
       broadcast({ type: 'error', content: err.message });
       broadcast({ type: 'done' });
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/channels', async (req, res) => {
+    try {
+      const channels = await loadChannels();
+      res.json(channels);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/channels', async (req, res) => {
+    try {
+      const { name, agentId } = req.body;
+      if (!name || !agentId) {
+        return res.status(400).json({ error: 'name and agentId required' });
+      }
+      const channels = await loadChannels();
+      const id = `ch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const channel: Channel = {
+        id,
+        name,
+        agentId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      channels.push(channel);
+      await saveChannels(channels);
+      await saveSession({ channelId: id, messages: [], lastUpdated: new Date().toISOString() });
+      res.json(channel);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/channels/:channelId', async (req, res) => {
+    try {
+      const { channelId } = req.params;
+      const channels = await loadChannels();
+      const index = channels.findIndex(c => c.id === channelId);
+      if (index === -1) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+      channels.splice(index, 1);
+      await saveChannels(channels);
+      try {
+        await fs.unlink(path.join(SESSION_CACHE_PATH, `${channelId}.json`));
+      } catch {}
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/sessions/:channelId', async (req, res) => {
+    try {
+      const session = await loadSession(req.params.channelId);
+      res.json(session || { channelId: req.params.channelId, messages: [], lastUpdated: null });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/theme', async (req, res) => {
+    try {
+      const themeData = await loadTheme();
+      res.json(themeData);
+    } catch (err: any) {
+      res.json({ theme: 'light', agentId: '' });
+    }
+  });
+
+  app.post('/theme', async (req, res) => {
+    try {
+      const { theme, agentId } = req.body;
+      if (theme !== 'light' && theme !== 'dark') {
+        return res.status(400).json({ error: 'Invalid theme' });
+      }
+      await saveTheme(theme, agentId || '');
+      res.json({ ok: true });
+    } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });

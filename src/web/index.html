@@ -7,22 +7,38 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div class="container">
-    <header class="header">
-      <div class="header-icon">🤖</div>
-      <h1>Bolloon Agent</h1>
-    </header>
-
-    <div class="messages" id="messages">
-      <div class="message-ai">
-        <div class="bubble bubble-ai">你好！我是 Bolloon Agent。有什么我可以帮你的吗？</div>
+  <div class="app-container">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-header-icon">🤖</span>
+        <h2>Agent Channels</h2>
       </div>
-    </div>
+      <div class="new-channel-form">
+        <input type="text" id="new-channel-input" placeholder="新频道..." autocomplete="off">
+        <button id="new-channel-btn">+</button>
+      </div>
+      <ul class="channel-list" id="channel-list"></ul>
+    </aside>
 
-    <div class="input-area">
-      <input type="text" id="input" placeholder="输入消息..." autocomplete="off">
-      <button id="send">发送</button>
-    </div>
+    <main class="main">
+      <header class="header">
+        <div class="header-icon">🤖</div>
+        <h1>Bolloon Agent</h1>
+        <span id="channel-name">加载中...</span>
+        <button id="theme-toggle" title="切换主题">🌙</button>
+      </header>
+
+      <div class="messages" id="messages">
+        <div class="message message-ai">
+          <div class="bubble bubble-ai">加载中...</div>
+        </div>
+      </div>
+
+      <div class="input-area">
+        <input type="text" id="input" placeholder="输入消息..." autocomplete="off">
+        <button id="send">发送</button>
+      </div>
+    </main>
   </div>
 
   <script src="/client.js"></script>

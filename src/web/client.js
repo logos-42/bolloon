@@ -1,10 +1,160 @@
-const messages = document.getElementById('messages');
+const messagesEl = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
+const sidebar = document.getElementById('sidebar');
+const themeToggle = document.getElementById('theme-toggle');
+const channelList = document.getElementById('channel-list');
+const newChannelBtn = document.getElementById('new-channel-btn');
+const newChannelInput = document.getElementById('new-channel-input');
+const channelNameEl = document.getElementById('channel-name');
 
 let eventSource = null;
+let currentChannelId = null;
+let currentAgentId = '';
+let channels = [];
 
-function addMessage(content, type) {
+function generateId() {
+  return crypto.randomUUID();
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  if (themeToggle) {
+    themeToggle.textContent = theme === 'dark' ? '☀️' : '🌙';
+  }
+}
+
+async function loadTheme() {
+  try {
+    const res = await fetch('/theme');
+    const data = await res.json();
+    applyTheme(data.theme);
+    if (data.agentId) {
+      currentAgentId = data.agentId;
+    }
+    return data;
+  } catch {
+    applyTheme('light');
+    return { theme: 'light', agentId: '' };
+  }
+}
+
+async function saveTheme(theme, agentId) {
+  try {
+    await fetch('/theme', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme, agentId })
+    });
+  } catch (err) {
+    console.error('Failed to save theme:', err);
+  }
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'light';
+  const next = current === 'dark' ? 'light' : 'dark';
+  applyTheme(next);
+  saveTheme(next, currentAgentId);
+}
+
+async function loadChannels() {
+  try {
+    const res = await fetch('/channels');
+    channels = await res.json();
+    renderChannels();
+  } catch (err) {
+    console.error('Failed to load channels:', err);
+  }
+}
+
+async function createChannel(name) {
+  if (!name.trim()) return;
+  try {
+    const res = await fetch('/channels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim(), agentId: currentAgentId })
+    });
+    const channel = await res.json();
+    channels.push(channel);
+    renderChannels();
+    selectChannel(channel.id);
+    newChannelInput.value = '';
+  } catch (err) {
+    console.error('Failed to create channel:', err);
+  }
+}
+
+async function deleteChannel(channelId, e) {
+  e.stopPropagation();
+  try {
+    await fetch(`/channels/${channelId}`, { method: 'DELETE' });
+    channels = channels.filter(c => c.id !== channelId);
+    if (currentChannelId === channelId) {
+      currentChannelId = channels[0]?.id || null;
+      if (currentChannelId) {
+        await loadSession(currentChannelId);
+      } else {
+        messagesEl.innerHTML = '';
+      }
+    }
+    renderChannels();
+  } catch (err) {
+    console.error('Failed to delete channel:', err);
+  }
+}
+
+function renderChannels() {
+  if (!channelList) return;
+  channelList.innerHTML = '';
+  channels.forEach(ch => {
+    const li = document.createElement('li');
+    li.className = `channel-item ${ch.id === currentChannelId ? 'active' : ''}`;
+    li.onclick = () => selectChannel(ch.id);
+    li.innerHTML = `
+      <span class="channel-name">${ch.name}</span>
+      <button class="channel-delete" data-id="${ch.id}">×</button>
+    `;
+    channelList.appendChild(li);
+  });
+
+  channelList.querySelectorAll('.channel-delete').forEach(btn => {
+    btn.onclick = (e) => deleteChannel(btn.dataset.id, e);
+  });
+}
+
+async function selectChannel(channelId) {
+  currentChannelId = channelId;
+  renderChannels();
+  await loadSession(channelId);
+
+  const channel = channels.find(c => c.id === channelId);
+  if (channel && channelNameEl) {
+    channelNameEl.textContent = channel.name;
+  }
+}
+
+async function loadSession(channelId) {
+  try {
+    const res = await fetch(`/sessions/${channelId}`);
+    const session = await res.json();
+    messagesEl.innerHTML = '';
+    if (session.messages && session.messages.length > 0) {
+      session.messages.forEach(msg => {
+        addMessage(msg.content, msg.type, false);
+      });
+    } else {
+      addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false);
+    }
+  } catch (err) {
+    console.error('Failed to load session:', err);
+    messagesEl.innerHTML = '';
+    addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false);
+  }
+}
+
+function addMessage(content, type, save = true) {
   const div = document.createElement('div');
   div.className = `message message-${type}`;
 
@@ -18,9 +168,9 @@ function addMessage(content, type) {
 
   div.appendChild(bubble);
   div.appendChild(time);
-  messages.appendChild(div);
+  messagesEl.appendChild(div);
 
-  messages.scrollTop = messages.scrollHeight;
+  messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function showTyping() {
@@ -29,8 +179,8 @@ function showTyping() {
   div.className = 'message message-ai';
   div.id = 'typing';
   div.innerHTML = '<div class="typing"><div class="typing-spinner"></div><span class="typing-text">思考中...</span></div>';
-  messages.appendChild(div);
-  messages.scrollTop = messages.scrollHeight;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function hideTyping() {
@@ -91,7 +241,7 @@ async function sendMessage() {
     const res = await fetch('/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text, channelId: currentChannelId })
     });
 
     if (!res.ok) {
@@ -113,4 +263,34 @@ input.addEventListener('keydown', (e) => {
   }
 });
 
-connect();
+if (themeToggle) {
+  themeToggle.addEventListener('click', toggleTheme);
+}
+
+if (newChannelBtn && newChannelInput) {
+  newChannelBtn.addEventListener('click', () => createChannel(newChannelInput.value));
+  newChannelInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      createChannel(newChannelInput.value);
+    }
+  });
+}
+
+async function init() {
+  const themeData = await loadTheme();
+  currentAgentId = themeData.agentId || `agent_${generateId().substring(0, 8)}`;
+  await saveTheme(themeData.theme, currentAgentId);
+
+  await loadChannels();
+
+  if (channels.length > 0) {
+    selectChannel(channels[0].id);
+  } else {
+    await createChannel('默认会话');
+  }
+
+  connect();
+}
+
+init();
