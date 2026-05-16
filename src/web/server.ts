@@ -167,7 +167,6 @@ export async function createWebServer(port: number = 3000) {
       const agent = await getAgentForChannel(channelId);
       const response = await agent.prompt(text);
       broadcast({ type: 'ai', content: response }, channelId);
-      broadcast({ type: 'done' }, channelId);
 
       const existingSession = await loadSession(channelId);
       const session: Session = existingSession || { channelId, messages: [], lastUpdated: new Date().toISOString() };
@@ -178,11 +177,20 @@ export async function createWebServer(port: number = 3000) {
 
       const channels = await loadChannels();
       const channel = channels.find(c => c.id === channelId);
+      if (channel && channel.name === '智能体') {
+        const renameSuggestion = await agent.suggestRename(session.messages);
+        if (renameSuggestion) {
+          channel.name = renameSuggestion;
+          await saveChannels(channels);
+          broadcast({ type: 'renamed', channelId, newName: renameSuggestion }, channelId);
+        }
+      }
       if (channel) {
         channel.updatedAt = new Date().toISOString();
         await saveChannels(channels);
       }
 
+      broadcast({ type: 'done' }, channelId);
       res.json({ ok: true });
     } catch (err: any) {
       broadcast({ type: 'error', content: err.message }, channelId);
@@ -238,6 +246,27 @@ export async function createWebServer(port: number = 3000) {
         await fs.unlink(path.join(SESSION_CACHE_PATH, `${channelId}.json`));
       } catch {}
       res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.patch('/channels/:channelId', async (req, res) => {
+    try {
+      const { channelId } = req.params;
+      const { name } = req.body;
+      if (!name) {
+        return res.status(400).json({ error: 'Name required' });
+      }
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+      channel.name = name;
+      channel.updatedAt = new Date().toISOString();
+      await saveChannels(channels);
+      res.json(channel);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

@@ -45,6 +45,7 @@ export type { WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
 
 export interface AgentSession {
   prompt(input: string): Promise<string>;
+  suggestRename(messages: { type: string; content: string }[]): Promise<string | null>;
   readDocument(filePath: string): Promise<string>;
   summarizeDocument(filePath: string, context?: string): Promise<{
     summary: string;
@@ -173,6 +174,30 @@ class PiAgentSession implements AgentSession {
     const llm = getMinimax();
     const result = await llm.chat(input, `Current working directory: ${this.cwd}`);
     return result.reply;
+  }
+
+  async suggestRename(messages: { type: string; content: string }[]): Promise<string | null> {
+    if (!this.minimaxAvailable || messages.length < 2) {
+      return null;
+    }
+
+    const conversation = messages.map(m => `${m.type === 'user' ? '用户' : '助手'}: ${m.content}`).join('\n');
+    const llm = getMinimax();
+
+    try {
+      const response = await llm.chat(
+        `根据以下对话内容，为这个对话生成一个简短的名称（不超过20个字）：\n\n${conversation}\n\n直接输出名称，不要其他解释。`,
+        '命名建议'
+      );
+
+      const name = response.reply.trim();
+      if (name && name.length <= 20 && name !== '智能体') {
+        return `Agent | ${name}`;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
   }
 
   private async summarizeText(text: string): Promise<string> {

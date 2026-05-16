@@ -110,6 +110,34 @@ async function createChannel(name) {
   }
 }
 
+async function renameChannel(channelId, newName) {
+  try {
+    await fetch(`/channels/${channelId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName })
+    });
+    const channel = channels.find(c => c.id === channelId);
+    if (channel) {
+      channel.name = newName;
+    }
+    renderChannels();
+    if (currentChannelId === channelId && channelNameEl) {
+      channelNameEl.textContent = newName;
+    }
+  } catch (err) {
+    console.error('Failed to rename channel:', err);
+  }
+}
+
+function extractTopicFromConversation(messages) {
+  if (!messages || messages.length === 0) return null;
+  const userMessages = messages.filter(m => m.type === 'user').map(m => m.content);
+  if (userMessages.length === 0) return null;
+  const firstTopic = userMessages[0].substring(0, 20);
+  return firstTopic.length < userMessages[0].length ? firstTopic + '...' : firstTopic;
+}
+
 async function deleteChannel(channelId, e) {
   e.stopPropagation();
   try {
@@ -273,6 +301,15 @@ function connect() {
           addMessage(data.content, 'ai');
         } else if (data.type === 'done') {
           hideTyping();
+        } else if (data.type === 'renamed') {
+          const channel = channels.find(c => c.id === data.channelId);
+          if (channel) {
+            channel.name = data.newName;
+            renderChannels();
+            if (currentChannelId === data.channelId && channelNameEl) {
+              channelNameEl.textContent = data.newName;
+            }
+          }
         } else if (data.type === 'error') {
           hideTyping();
           addMessage('错误: ' + data.content, 'ai');
@@ -369,11 +406,13 @@ if (loadSessionBtn && sessionFileInput) {
   });
 }
 
-if (newChannelBtn && newChannelInput) {
+if (newChannelBtn) {
   newChannelBtn.addEventListener('click', () => {
-    createChannel(newChannelInput.value);
+    createChannel('智能体');
   });
+}
 
+if (newChannelInput) {
   newChannelInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
