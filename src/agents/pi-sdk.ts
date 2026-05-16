@@ -91,34 +91,35 @@ class PiAgentSession implements AgentSession {
   async prompt(input: string): Promise<string> {
     this.minimaxAvailable = this.checkMinimax();
     const lowerInput = input.toLowerCase();
+    const parts = input.trim().split(/\s+/);
+    const cmd = parts[0].toLowerCase();
+    const args = parts.slice(1).join(' ');
 
-    if (lowerInput.includes('读取') || lowerInput.includes('read')) {
-      const fileMatch = input.match(/(?:读取|read)[^\w]+([^\s]+)/);
-      if (fileMatch) {
-        const result = await this.summarizeDocument(fileMatch[1]);
+    if (cmd.includes('读取') || cmd === 'read') {
+      if (args) {
+        const result = await this.summarizeDocument(args);
         return `📝 摘要:\n${result.summary}\n\n质量评分: ${(result.qualityScore * 10).toFixed(1)}/10`;
       }
     }
 
-    if (lowerInput.includes('改进') || lowerInput.includes('improve')) {
-      const reqMatch = input.match(/(?:改进|improve)[^\w]+(.+)/);
-      if (reqMatch) {
+    if (cmd.includes('改进') || cmd === 'improve') {
+      const match = input.match(/改进[^\w]+(.+)/i) || input.match(/improve\s+(.+)/i);
+      if (match) {
         const result = await this.improveDocument({
-          originalPath: reqMatch[1],
+          originalPath: match[1],
           requirements: '根据人类要求改进文档'
         });
         return `改进结果: ${result.improved ? '成功' : '失败'}\n质量评分: ${(result.qualityScore * 10).toFixed(1)}/10`;
       }
     }
 
-    if (lowerInput.includes('总结') || lowerInput.includes('summary')) {
-      const textMatch = input.match(/(?:总结|summary)[^\w]+(.+)/);
-      if (textMatch) {
-        return await this.summarizeText(textMatch[1]);
+    if (cmd.includes('总结') || cmd === 'summary') {
+      if (args) {
+        return await this.summarizeText(args);
       }
     }
 
-    if (lowerInput.includes('节点') || lowerInput.includes('peers')) {
+    if (cmd.includes('节点') || cmd === 'peers') {
       return this.listPeers();
     }
 

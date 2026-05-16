@@ -206,35 +206,36 @@ function startCLI(comm: HyperswarmCommunicator): void {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   async function prompt(q: string): Promise<string> { return new Promise(res => rl.question(q, res)); }
 
-  console.log('\n💬 自然语言交互模式 (输入 exit 退出)');
-  console.log('   示例: "帮我总结这个文档" / "读取 src/index.ts" / "改进 README.md让它更清晰"\n');
-
   async function loop() {
-    const raw = await prompt('\n💭 > ');
-    if (!raw) { loop(); return; }
-
-    const input = raw.trim();
-    if (input.toLowerCase() === 'exit') {
-      await comm.stop();
-      rl.close();
-      console.log('👋');
-      return;
-    }
-
-    if (input.toLowerCase() === 'peers') {
-      console.log(`已连接 (${comm.getConnections().length}):`);
-      for (const c of comm.getConnections()) console.log(`  - ${c.publicKey.substring(0, 16)}...  inbound=${c.isInbound}`);
-      loop();
-      return;
-    }
-
     try {
+      const raw = await prompt('\n> ');
+      if (!raw) { loop(); return; }
+
+      const input = raw.trim();
+      if (input === '退出' || input === 'exit' || input === 'quit') {
+        await comm.stop();
+        rl.close();
+        console.log('\n👋 再见！\n');
+        return;
+      }
+
+      if (input.toLowerCase() === 'peers') {
+        console.log(`\n已连接节点: ${comm.getConnections().length}`);
+        for (const c of comm.getConnections()) {
+          console.log(`  · ${c.publicKey.substring(0, 16)}...`);
+        }
+        loop();
+        return;
+      }
+
+      if (!input) { loop(); return; }
+
       const a = await getAgent();
-      console.log('🤔 处理中...\n');
       const response = await a.prompt(input);
       console.log(`\n${response}\n`);
     } catch (e: any) {
-      console.error('错误:', e.message);
+      if (e.message?.includes('ERR_USE_AFTER_CLOSE')) return;
+      console.error(`\n❌ ${e.message}\n`);
     }
     loop();
   }
@@ -273,28 +274,36 @@ function startCLI(comm: HyperswarmCommunicator): void {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  console.log('\n🤖 Bolloon — DIAP Harness Agent');
-  console.log('='.repeat(44) + '\n');
+  console.log('\n🤖 Bolloon Agent\n');
+  console.log('━'.repeat(30) + '\n');
 
   // ① LLM
   const mk = process.env.MINIMAX_API_KEY;
-  if (mk) { initMinimax({ apiKey: mk }); console.log('✅ Minimax 就绪\n'); }
-  else      { console.log('⚠️  MINIMAX_API_KEY 未设，摘要以截断预览运行\n'); }
+  if (mk) {
+    initMinimax({ apiKey: mk });
+  } else {
+    console.log('⚠️  未设置 MINIMAX_API_KEY，功能受限\n');
+  }
 
-  // ② DIAP 身份
+  // ② DIAP 身份 (静默)
   const { keypair, did, name } = await bootstrapIdentity();
 
-  // ③ 发布 DID → IPFS
-  await publishDID(name, keypair);
+  // ③ 发布 DID → IPFS (后台)
+  publishDID(name, keypair);
 
-  // ④ 验证器
+  // ④ P2P 节点 (静默)
   const verifier = createVerificationManager();
-
-  // ⑤ P2P 节点 + 事件监听
   const comm = await bootstrapP2P(verifier);
-  console.log(`   本机 DID: did:key:${did.substring(0, 30)}...\n`);
 
-  // ⑥ CLI
+  // ⑤ 直接进入对话
+  console.log('💬 对话模式已启动\n');
+  console.log('━'.repeat(30));
+  console.log('\n你可以这样说：');
+  console.log('  "读取 想法.md"');
+  console.log('  "总结 这段文字的内容"');
+  console.log('  "改进 src/index.ts，让代码更清晰"');
+  console.log('\n输入 "退出" 结束对话\n');
+
   startCLI(comm);
 }
 
