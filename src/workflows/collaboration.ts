@@ -12,7 +12,7 @@
 import { AgentProtocol, AgentMessage, Task, TaskResult, ImproveResult } from '../agents/protocol.js';
 import { p2pNetwork } from '../network/p2p.js';
 import { documentReader } from '../documents/reader.js';
-import { getMinimax } from '../llm/minimax.js';
+import { getMinimax } from '../runtime/context/sys-prompt.js';
 import { IpfsClient } from '@diap/sdk';
 
 export interface AgentInfo {

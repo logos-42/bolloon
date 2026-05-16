@@ -1,6 +1,6 @@
 import { p2pNetwork } from '../network/p2p.js';
 import { documentReader, DocumentContent } from '../documents/reader.js';
-import { getMinimax } from '../llm/minimax.js';
+import { getMinimax } from '../runtime/context/sys-prompt.js';
 
 export type MessageType = 'task' | 'result' | 'report' | 'feedback' | 'improve' | 'improved';
 

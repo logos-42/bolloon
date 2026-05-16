@@ -1,6 +1,6 @@
-import { getMinimaxProvider, initMinimaxProvider, type MiniMaxProvider } from './minimax-provider.js';
+import { getMinimaxProvider, initMinimaxProvider, type MiniMaxProvider } from '../../llm/minimax-provider.js';
 
-interface MinimaxConfig {
+export interface MinimaxConfig {
   apiKey: string;
   model?: string;
 }
@@ -20,11 +20,50 @@ export class MinimaxLLM {
 
   constructor(config: MinimaxConfig, provider: MiniMaxProvider) {
     this.provider = provider;
-    this.model = config.model || 'MiniMax-M2.6';
+    this.model = config.model || 'MiniMax-M2.7';
+  }
+
+  private buildSystemPrompt(context?: string): string {
+    const envDetails = this.getEnvironmentDetails();
+    return `你是一个友好的AI助手，正在与用户对话。
+
+## 用户工作目录
+${context || process.cwd()}
+
+## 环境信息
+${envDetails}`;
+  }
+
+  private getEnvironmentDetails(): string {
+    const workflows = [
+      'read - 读取文档',
+      'summarize - 总结文档',
+      'improve - 改进文档',
+      'collaborate - 多智能体协作',
+      'query - 查询状态',
+      'report - 生成报告'
+    ];
+
+    const capabilities = [
+      '文档处理 (Markdown, Text, PDF, DOCX)',
+      '多智能体协作 (P2P 网络)',
+      '工作流引擎 (约束层检查)',
+      '质量评估与自动发送'
+    ];
+
+    return `
+## 可用工作流
+${workflows.map(w => `- ${w}`).join('\n')}
+
+## 系统能力
+${capabilities.map(c => `- ${c}`).join('\n')}
+
+## 当前时间
+${new Date().toISOString()}`;
   }
 
   async chat(message: string, context?: string): Promise<ChatResult> {
-    const systemPrompt = '你是一个友好的AI助手，正在与用户对话。用户的工作目录是: ' + (context || process.cwd());
+    const systemPrompt = this.buildSystemPrompt(context);
 
     try {
       const data = await this.provider.chat({
@@ -167,7 +206,6 @@ ${prompt}`;
 let minimaxInstance: MinimaxLLM | null = null;
 
 export function initMinimax(config: MinimaxConfig): MinimaxLLM {
-  const { initMinimaxProvider } = require('./minimax-provider.js');
   const provider = initMinimaxProvider(config.apiKey);
   minimaxInstance = new MinimaxLLM(config, provider);
   return minimaxInstance;

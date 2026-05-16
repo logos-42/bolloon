@@ -14,7 +14,7 @@ import {
   type P2PConnection,
 } from '@diap/sdk';
 import { documentReader } from '../documents/reader.js';
-import { initMinimax, getMinimax } from '../llm/minimax.js';
+import { initMinimax, getMinimax } from '../runtime/context/sys-prompt.js';
 import { createAgentSession, type AgentSession } from '../agents/pi-sdk.js';
 
 const __filename = fileURLToPath(import.meta.url);

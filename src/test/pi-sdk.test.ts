@@ -1,6 +1,6 @@
 import { config } from 'dotenv';
 import { createAgentSession } from '../agents/pi-sdk.js';
-import { initMinimax } from '../llm/minimax.js';
+import { initMinimax } from '../runtime/context/sys-prompt.js';
 import * as path from 'path';
 
 config();

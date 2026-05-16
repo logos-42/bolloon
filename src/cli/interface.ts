@@ -1,6 +1,6 @@
 import * as readline from 'readline';
 import { documentReader } from '../documents/reader.js';
-import { getMinimax } from '../llm/minimax.js';
+import { getMinimax } from '../runtime/context/sys-prompt.js';
 import { AgentProtocol } from '../agents/protocol.js';
 import { p2pNetwork, P2PNode } from '../network/p2p.js';
 

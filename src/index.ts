@@ -12,7 +12,7 @@ import {
 import * as ed25519 from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { documentReader } from './documents/reader.js';
-import { initMinimax } from './llm/minimax.js';
+import { initMinimax } from './runtime/context/sys-prompt.js';
 import { createAgentSession } from './agents/pi-sdk.js';
 import * as readline from 'readline';
 
