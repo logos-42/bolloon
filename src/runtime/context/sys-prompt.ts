@@ -1,1 +1,1 @@
-export { MinimaxLLM, initMinimax, getMinimax, initPiAI, getModel, isModelAvailable, type MinimaxConfig, type SummarizeResult, type ChatResult } from '../../llm/minimax.js';
+export { PiAIModel as MinimaxLLM, initPiAI, getModel, isModelAvailable, getMinimax, initMinimax, type PiAIConfig as MinimaxConfig, type ModelProvider, type SummarizeResult, type ChatResult } from '../../llm/pi-ai.js';

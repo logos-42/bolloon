@@ -471,4 +471,12 @@ export function isModelAvailable(): boolean {
   return modelInstance !== null;
 }
 
+export function getMinimax(): PiAIModel {
+  return getModel();
+}
+
+export function initMinimax(config: PiAIConfig = {}): PiAIModel {
+  return initPiAI(config);
+}
+
 export { PiAIModel as MinimaxLLM };
