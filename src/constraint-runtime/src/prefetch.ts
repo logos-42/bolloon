@@ -1,5 +1,3 @@
-import * as path from 'path';
-
 export interface PrefetchResult {
   name: string;
   started: boolean;
@@ -14,6 +12,6 @@ export function startKeychainPrefetch(): PrefetchResult {
   return { name: 'keychain_prefetch', started: true, detail: 'Simulated keychain prefetch for trusted startup path' };
 }
 
-export function startProjectScan(root: path.PathLike): PrefetchResult {
+export function startProjectScan(root: string): PrefetchResult {
   return { name: 'project_scan', started: true, detail: `Scanned project root ${root}` };
 }
