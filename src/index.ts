@@ -279,11 +279,124 @@ function startCLI(comm: HyperswarmCommunicator): void {
 }
 
 // ---------------------------------------------------------------------------
+// Non-Interactive Mode (for AI consumption)
+// ---------------------------------------------------------------------------
+
+interface NonInteractiveResult {
+  success: boolean;
+  response?: string;
+  error?: string;
+  metadata?: {
+    duration?: number;
+    qualityScore?: number;
+    peers?: number;
+  };
+}
+
+async function runNonInteractive(
+  promptText: string,
+  outputJson: boolean,
+  comm: HyperswarmCommunicator
+): Promise<void> {
+  const startTime = Date.now();
+  const a = await getAgent();
+
+  let response: string;
+  try {
+    response = await a.prompt(promptText);
+  } catch (e: any) {
+    response = `错误: ${e.message}`;
+  }
+
+  const duration = Date.now() - startTime;
+  const peers = comm?.getConnections().length || 0;
+
+  if (outputJson) {
+    const result: NonInteractiveResult = {
+      success: !response.startsWith('错误:'),
+      response: response,
+      error: response.startsWith('错误:') ? response : undefined,
+      metadata: { duration, peers }
+    };
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(response);
+  }
+}
+
+function parseArgs(): { prompt?: string; json?: boolean; web?: boolean; help?: boolean } {
+  const args = process.argv.slice(2);
+  const result: { prompt?: string; json?: boolean; web?: boolean; help?: boolean } = {};
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--prompt' || arg === '-p') {
+      result.prompt = args[++i];
+    } else if (arg === '--json' || arg === '-j') {
+      result.json = true;
+    } else if (arg === '--web') {
+      result.web = true;
+    } else if (arg === '--help' || arg === '-h') {
+      result.help = true;
+    } else if (!arg.startsWith('-') && !result.prompt) {
+      result.prompt = arg;
+    }
+  }
+
+  return result;
+}
+
+function printHelp(): void {
+  console.log(`
+🤖 Bolloon Agent - AI 可调用文档处理智能体
+
+用法:
+  npx tsx src/index.ts [选项]
+
+选项:
+  --prompt, -p <文本>    单次执行 prompt 后退出（AI 消费模式）
+  --json, -j            输出 JSON 格式结果
+  --web                 启动 Web UI 模式
+  --help, -h            显示帮助信息
+
+示例:
+  # 交互模式
+  npx tsx src/index.ts
+
+  # AI 调用模式
+  npx tsx src/index.ts --prompt "总结 README.md"
+  npx tsx src/index.ts --prompt "读取 src/index.ts" --json
+  npx tsx src/index.ts -p "改进 docs/README.md，让它更清晰" -j
+
+  # Web 模式
+  npx tsx src/index.ts --web
+
+环境变量:
+  MINIMAX_API_KEY      MiniMax API 密钥
+  OPENAI_API_KEY       OpenAI API 密钥（Pi SDK）
+  ANTHROPIC_API_KEY    Anthropic API 密钥（Pi SDK）
+  PORT                 Web 服务端口（默认 54188）
+`);
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const mode = process.argv.includes('--web') ? 'web' : 'cli';
+  const args = parseArgs();
+
+  if (args.help) {
+    printHelp();
+    process.exit(0);
+  }
+
+  const mode = args.web ? 'web' : 'cli';
+  const isNonInteractive = !!args.prompt;
+
+  if (isNonInteractive) {
+    console.error = () => {}; // Suppress console.error in non-interactive mode
+  }
 
   console.log('\n🤖 Bolloon Agent\n');
 
@@ -291,6 +404,8 @@ async function main() {
   const mk = process.env.MINIMAX_API_KEY;
   if (mk) {
     initMinimax({ apiKey: mk });
+  } else if (isNonInteractive) {
+    console.log('⚠️  未设置 MINIMAX_API_KEY，功能受限');
   } else {
     console.log('⚠️  未设置 MINIMAX_API_KEY，功能受限\n');
   }
@@ -322,6 +437,10 @@ async function main() {
 
     console.log(`\n✅ 浏览器已打开 → http://localhost:${port}\n`);
     openBrowser(`http://localhost:${port}`);
+  } else if (isNonInteractive) {
+    await runNonInteractive(args.prompt!, !!args.json, comm!);
+    comm?.stop();
+    process.exit(0);
   } else {
     console.log('\n💬 对话模式已启动\n');
     console.log('━'.repeat(30));
