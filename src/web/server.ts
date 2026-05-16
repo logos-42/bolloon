@@ -46,7 +46,7 @@ export async function createWebServer(port: number = 3000) {
     next();
   });
 
-  const staticPath = join(__dirname, '..', 'web');
+  const staticPath = join(__dirname, '..', '..', 'src', 'web');
   app.use(express.static(staticPath));
 
   app.get('/', (req, res) => {

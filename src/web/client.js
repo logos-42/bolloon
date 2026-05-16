@@ -28,7 +28,7 @@ function showTyping() {
   const div = document.createElement('div');
   div.className = 'message message-ai';
   div.id = 'typing';
-  div.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+  div.innerHTML = '<div class="typing"><div class="typing-spinner"></div><span class="typing-text">思考中...</span></div>';
   messages.appendChild(div);
   messages.scrollTop = messages.scrollHeight;
 }
@@ -61,7 +61,6 @@ function connect() {
         const data = JSON.parse(e.data);
 
         if (data.type === 'user') {
-          hideTyping();
           addMessage(data.content, 'user');
         } else if (data.type === 'ai') {
           addMessage(data.content, 'ai');
