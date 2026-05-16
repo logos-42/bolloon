@@ -53,11 +53,21 @@ function sendRawMsg(conn: P2PConnection, text: string): void {
 // DIAP 身份初始化  ─  KeyManager → DID → DID Builder → IPFS publish
 // ---------------------------------------------------------------------------
 
+function getUserName(): string {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const match = home.match(/\/Users\/(\w+)/);
+  if (match) return match[1];
+  const user = process.env.USERNAME || process.env.USER || 'user';
+  return user.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPair; did: string; name: string }> {
   console.log('[1/4] 🔐 生成 DIAP 身份...');
   const kp = KeyManager.generate();
   const did = kp.did;
-  const name = `blln-${did.split(':').pop()?.substring(0, 6)}`;
+  const username = getUserName();
+  const suffix = did.split(':').pop()?.substring(0, 4);
+  const name = `blln-${username}-${suffix}`;
   console.log(`   DID  : ${did}`);
   console.log(`   name : ${name}`);
   return { keypair: kp, did, name };
@@ -736,14 +746,23 @@ async function main() {
 
   console.log('\n🤖 Bolloon Agent\n');
 
-  // ① LLM
-  const mk = process.env.MINIMAX_API_KEY;
-  if (mk) {
-    initMinimax({ apiKey: mk });
+  // ① LLM - 支持多种 provider
+  const hasOpenAI = !!process.env.OPENAI_API_KEY;
+  const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
+  const hasMinimax = !!process.env.MINIMAX_API_KEY;
+  const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
+  const hasGemini = !!process.env.GEMINI_API_KEY;
+  const hasOllama = !!process.env.OLLAMA_BASE_URL;
+
+  if (hasOpenAI || hasAnthropic || hasOpenRouter || hasGemini || hasOllama) {
+    const provider = hasOpenAI ? 'openai' : hasAnthropic ? 'anthropic' : hasOpenRouter ? 'openrouter' : hasGemini ? 'gemini' : 'ollama';
+    initMinimax({ provider: provider as any });
+  } else if (hasMinimax) {
+    initMinimax({ apiKey: process.env.MINIMAX_API_KEY });
   } else if (isNonInteractive) {
-    console.log('⚠️  未设置 MINIMAX_API_KEY，功能受限');
+    console.log('⚠️  未设置任何 LLM API Key，功能受限（支持 OPENAI_API_KEY, ANTHROPIC_API_KEY, MINIMAX_API_KEY 等）');
   } else {
-    console.log('⚠️  未设置 MINIMAX_API_KEY，功能受限\n');
+    console.log('⚠️  未设置任何 LLM API Key，功能受限（支持 OPENAI_API_KEY, ANTHROPIC_API_KEY, MINIMAX_API_KEY 等）\n');
   }
 
   // ② DIAP 身份

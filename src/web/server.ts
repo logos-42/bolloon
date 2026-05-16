@@ -338,11 +338,21 @@ function broadcast(data: object, channelId?: string) {
   }
 }
 
+function getUserName(): string {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const match = home.match(/\/Users\/(\w+)/);
+  if (match) return match[1];
+  const user = process.env.USERNAME || process.env.USER || 'user';
+  return user.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 export async function bootstrapIdentity() {
   console.log('🔐 身份生成...');
   const kp = KeyManager.generate();
   const did = kp.did;
-  const name = `blln-${did.split(':').pop()?.substring(0, 6)}`;
+  const username = getUserName();
+  const suffix = did.split(':').pop()?.substring(0, 4);
+  const name = `blln-${username}-${suffix}`;
   console.log(`   DID: ${did.substring(0, 30)}...`);
   return { keypair: kp, did, name };
 }
