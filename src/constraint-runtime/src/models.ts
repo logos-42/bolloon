@@ -1,35 +1,49 @@
-export type PortingStatus = 'mirrored' | 'ported' | 'pending';
-
 export interface PortingModule {
   name: string;
   responsibility: string;
   sourceHint: string;
   status: PortingStatus;
+  readonly _jsonName?: string;
+}
+
+export interface Subsystem {
+  name: string;
+  path: string;
+  fileCount: number;
+  notes: string;
 }
 
 export interface PermissionDenial {
-  tool_name: string;
+  toolName: string;
   reason: string;
 }
 
 export interface UsageSummary {
-  input_tokens: number;
-  output_tokens: number;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 export interface TurnResult {
   prompt: string;
   output: string;
-  matched_commands: string[];
-  matched_tools: string[];
-  permission_denials: PermissionDenial[];
+  matchedCommands: string[];
+  matchedTools: string[];
+  permissionDenials: PermissionDenial[];
   usage: UsageSummary;
-  stop_reason: string;
+  stopReason: string;
 }
 
 export interface RoutedMatch {
   kind: 'command' | 'tool';
   name: string;
-  source_hint: string;
+  sourceHint: string;
   score: number;
+}
+
+export type PortingStatus = 'mirrored' | 'ported' | 'pending';
+
+export interface PortingBacklog {
+  title: string;
+  modules: PortingModule[];
+  summaryLines(): string[];
 }

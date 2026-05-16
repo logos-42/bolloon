@@ -23,6 +23,6 @@ export class ToolPermissionContext {
   }
 
   createDenial(toolName: string, reason: string): PermissionDenial {
-    return { tool_name: toolName, reason };
+    return { toolName, reason };
   }
 }
