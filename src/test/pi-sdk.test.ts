@@ -14,6 +14,11 @@ describe('Pi SDK', () => {
   });
 
   it('document analysis', async () => {
+    const apiKey = process.env.MINIMAX_API_KEY;
+    if (!apiKey) {
+      return;
+    }
+    initMinimax({ apiKey });
     const testFile = path.join(process.cwd(), 'README.md');
     const session = await createAgentSession({ cwd: process.cwd() });
     const result = await session.summarizeDocument(testFile, '测试文档分析');
