@@ -3,7 +3,7 @@ export type PortingStatus = 'mirrored' | 'ported' | 'pending';
 export interface PortingModule {
   name: string;
   responsibility: string;
-  source_hint: string;
+  sourceHint: string;
   status: PortingStatus;
 }
 
