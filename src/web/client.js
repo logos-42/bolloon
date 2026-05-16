@@ -358,6 +358,10 @@ if (loadSessionBtn && sessionFileInput) {
 }
 
 if (newChannelBtn && newChannelInput) {
+  newChannelBtn.addEventListener('click', () => {
+    createChannel(newChannelInput.value);
+  });
+
   newChannelInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
