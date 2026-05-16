@@ -68,12 +68,16 @@ async function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promis
     await auth.registerAgent({ name, services: [] }, kp, '');
     console.log('     ✅ DID 文档已上链');
   } catch (e: any) {
-    const isIpfsError = e.code === 'IPFS_ERROR' ||
+    const isRecoverable = e.code === 'IPFS_ERROR' ||
       e.code === 'DID_ERROR' ||
+      e.code === 'TIMEOUT' ||
       e.details?.originalError?.code === 'IPFS_ERROR' ||
+      e.message?.includes('timeout') ||
+      e.message?.includes('Timeout') ||
+      e.message?.includes('fetch failed') ||
       e.message?.includes('IPFS');
-    if (isIpfsError) {
-      console.log('     ⚠️  IPFS未配置，跳过DID上链（本地模式）');
+    if (isRecoverable) {
+      console.log('     ⚠️  IPNS发布超时，跳过（本地模式）');
     } else {
       throw e;
     }
