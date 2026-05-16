@@ -64,7 +64,7 @@ async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPa
 async function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<void> {
   console.log('[2/4] 📝 发布 DID → IPFS CID...');
   try {
-    const auth = await AgentAuthManager.new();
+    const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
     await auth.registerAgent({ name, services: [] }, kp, '');
     console.log('     ✅ DID 文档已上链');
   } catch (e: any) {

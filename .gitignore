@@ -7,3 +7,5 @@ coverage/
 *.tgz
 peer-store/
 datastore/
+bin/
+.ipfs
