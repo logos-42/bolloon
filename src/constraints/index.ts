@@ -4,3 +4,4 @@ export { PORTED_TOOLS, getTool, getTools, findTools, executeTool, filterToolsByP
 export { buildSystemInitMessage, type AgentContext, type SystemInitReport, type StartupStep } from './system-init';
 export { saveSession, loadSession, listSessions, deleteSession, type StoredSession, type SessionEntry } from './session';
 export { ConstraintRuntime, defaultRuntime, type RoutedMatch, type RuntimeSession, type TurnResult } from './runtime';
+export { initMinimax, getMinimax, isModelAvailable, getModel, type SummarizeResult, type ChatResult } from '../llm/pi-ai.js';
