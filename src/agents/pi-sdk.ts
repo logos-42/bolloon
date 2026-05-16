@@ -132,8 +132,8 @@ class PiAgentSession implements AgentSession {
 
   private async handleAIRequest(input: string): Promise<string> {
     const llm = getMinimax();
-    const result = await llm.summarize(input, `Current working directory: ${this.cwd}`);
-    return `📝 摘要:\n${result.summary}\n\n质量评分: ${(result.qualityScore * 10).toFixed(1)}/10`;
+    const result = await llm.chat(input, `Current working directory: ${this.cwd}`);
+    return result.reply;
   }
 
   private async summarizeText(text: string): Promise<string> {

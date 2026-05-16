@@ -8,6 +8,10 @@ interface SummarizeResult {
   qualityScore: number;
 }
 
+interface ChatResult {
+  reply: string;
+}
+
 export class MinimaxLLM {
   private apiKey: string;
   private model: string;
@@ -15,6 +19,40 @@ export class MinimaxLLM {
   constructor(config: MinimaxConfig) {
     this.apiKey = config.apiKey;
     this.model = config.model || 'abab6-chat';
+  }
+
+  async chat(message: string, context?: string): Promise<ChatResult> {
+    const systemPrompt = '你是一个友好的AI助手，正在与用户对话。用户的工作目录是: ' + (context || process.cwd());
+
+    try {
+      const response = await fetch('https://api.minimax.chat/v1/text/chatcompletion_pro', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: message }
+          ],
+          temperature: 0.8
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Minimax API error: ${response.status}`);
+      }
+
+      const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+      const reply = data.choices?.[0]?.message?.content || '抱歉，我没有收到回复。';
+
+      return { reply };
+    } catch (error) {
+      console.error('Minimax chat error:', error);
+      return { reply: '抱歉，AI服务暂时不可用。' };
+    }
   }
 
   async summarize(text: string, context?: string): Promise<SummarizeResult> {
