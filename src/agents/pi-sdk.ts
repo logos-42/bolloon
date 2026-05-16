@@ -8,6 +8,18 @@ import { getMinimax } from '../runtime/context/sys-prompt.js';
 import { p2pNetwork } from '../network/p2p.js';
 import { ConstraintLayer, WorkflowContext } from './constraint-layer.js';
 import { WorkflowEngine, WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
+import {
+  GlobalSessionManager,
+  DiscoveredAgentsManager,
+  SocialHeartbeat,
+  createSocialHeartbeat,
+  getSocialHeartbeat,
+  type PersonaDoc,
+  type GlobalSession,
+  type DiscoveredAgent,
+  type SessionChannel,
+  type SessionMessage
+} from '../social/heartbeat.js';
 
 export interface AgentSessionConfig {
   cwd: string;
@@ -50,6 +62,22 @@ export interface AgentSession {
   broadcast(message: string): Promise<void>;
   getIdentity(): IdentityDoc;
   updateIdentity(updates: Partial<IdentityDoc>): void;
+  getGlobalSession(): GlobalSession | null;
+  getPersona(): PersonaDoc | null;
+  setPersona(persona: PersonaDoc): Promise<void>;
+  getDiscoveredAgents(): DiscoveredAgent[];
+  getSocialChannels(): SessionChannel[];
+  sendSocialMessage(channelId: string, content: string): Promise<void>;
+  startSocialHeartbeat(config?: Partial<HeartbeatConfig>): Promise<void>;
+  stopSocialHeartbeat(): void;
+}
+
+export interface HeartbeatConfig {
+  intervalMs: number;
+  peerDiscoveryEnabled: boolean;
+  ipnsResolveEnabled: boolean;
+  autoSocialEnabled: boolean;
+  greetingMessage?: string;
 }
 
 class PiAgentSession implements AgentSession {
@@ -60,6 +88,9 @@ class PiAgentSession implements AgentSession {
   private workflows: Map<string, Workflow> = new Map();
   private constraintLayer: ConstraintLayer;
   private workflowEngine: WorkflowEngine;
+  private globalSessionManager: GlobalSessionManager;
+  private agentsManager: DiscoveredAgentsManager;
+  private socialHeartbeat: SocialHeartbeat | null = null;
 
   constructor(config: AgentSessionConfig) {
     this.cwd = config.cwd;
@@ -68,6 +99,14 @@ class PiAgentSession implements AgentSession {
     this.minimaxAvailable = this.checkMinimax();
     this.constraintLayer = new ConstraintLayer();
     this.workflowEngine = new WorkflowEngine(this.constraintLayer);
+    this.globalSessionManager = new GlobalSessionManager(this.identity.did);
+    this.agentsManager = new DiscoveredAgentsManager();
+    this.initSession();
+  }
+
+  private async initSession(): Promise<void> {
+    await this.globalSessionManager.initialize();
+    await this.agentsManager.initialize();
   }
 
   private createDefaultIdentity(): IdentityDoc {
@@ -334,6 +373,79 @@ class PiAgentSession implements AgentSession {
   - 工作流 <步骤> - 执行工作流
   - 节点 - 查看已连接的对等节点
   - 帮助 - 显示所有可用命令`;
+  }
+
+  getGlobalSession(): GlobalSession | null {
+    return this.globalSessionManager.getSession();
+  }
+
+  getPersona(): PersonaDoc | null {
+    return this.globalSessionManager.getPersona();
+  }
+
+  async setPersona(persona: PersonaDoc): Promise<void> {
+    await this.globalSessionManager.savePersona(persona);
+  }
+
+  getDiscoveredAgents(): DiscoveredAgent[] {
+    return this.agentsManager.getAllAgents();
+  }
+
+  getSocialChannels(): SessionChannel[] {
+    return this.globalSessionManager.getAllChannels();
+  }
+
+  async sendSocialMessage(channelId: string, content: string): Promise<void> {
+    const channel = await this.globalSessionManager.getChannelMessages(channelId);
+    const session = this.globalSessionManager.getSession();
+
+    const message: SessionMessage = {
+      id: crypto.randomUUID(),
+      type: 'ai',
+      content,
+      sender: 'self',
+      timestamp: new Date().toISOString(),
+      agentId: this.identity.did
+    };
+
+    await this.globalSessionManager.addMessage(channelId, message);
+
+    if (session?.channels[channelId]?.peerDid) {
+      const agent = this.agentsManager.getAgent(session.channels[channelId].peerDid!);
+      if (agent) {
+        const comm = (global as any).hyperswarmComm;
+        if (comm) {
+          const connections = comm.getConnections?.() || [];
+          for (const conn of connections) {
+            if (conn.publicKey === agent.peerId) {
+              const data = new TextEncoder().encode(`social|${JSON.stringify({ from: this.identity.did, message: content })}`);
+              comm.sendToConnection?.(conn, data);
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  async startSocialHeartbeat(config?: Partial<HeartbeatConfig>): Promise<void> {
+    if (this.socialHeartbeat) {
+      return;
+    }
+    this.socialHeartbeat = await createSocialHeartbeat(this.identity.did, config);
+    this.socialHeartbeat.setOnAgentDiscovered((agent) => {
+      console.log(`[Agent] 发现新智能体: ${agent.name}`);
+    });
+    this.socialHeartbeat.setOnSocialMessage((fromDid, message, channelId) => {
+      console.log(`[Agent] 收到来自 ${fromDid} 的社交消息: ${message.substring(0, 50)}...`);
+    });
+  }
+
+  stopSocialHeartbeat(): void {
+    if (this.socialHeartbeat) {
+      this.socialHeartbeat.stop();
+      this.socialHeartbeat = null;
+    }
   }
 }
 
