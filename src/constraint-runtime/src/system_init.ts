@@ -3,7 +3,7 @@ import { getTools } from './tools.js';
 import { runSetup } from './setup.js';
 
 export function buildSystemInitMessage(trusted: boolean = true): string {
-  const setup = runSetup(trusted);
+  const setup = runSetup(undefined, trusted);
   const commands = getCommands();
   const tools = getTools();
   const lines = [

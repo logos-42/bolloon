@@ -8,11 +8,11 @@ export class BudgetTracker {
   ) {}
 
   addTurn(inputTokens: number, outputTokens: number): UsageSummary {
-    return { input_tokens: inputTokens, output_tokens: outputTokens };
+    return { inputTokens, outputTokens };
   }
 
   isBudgetExceeded(usage: UsageSummary): boolean {
-    return usage.input_tokens + usage.output_tokens > this.maxBudgetTokens;
+    return usage.inputTokens + usage.outputTokens > this.maxBudgetTokens;
   }
 
   isTurnLimitExceeded(currentTurns: number): boolean {

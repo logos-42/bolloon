@@ -1,7 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { PortingModule } from './models.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const SNAPSHOT_PATH = path.join(__dirname, 'reference_data', 'tools_snapshot.json');
 
 export interface ToolExecution {
@@ -23,6 +26,8 @@ function loadToolSnapshot(): PortingModule[] {
 }
 
 export const PORTED_TOOLS = loadToolSnapshot();
+
+export { PortingModule };
 
 export function getTool(name: string): PortingModule | undefined {
   const needle = name.toLowerCase();
