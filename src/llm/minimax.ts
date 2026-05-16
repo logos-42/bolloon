@@ -25,7 +25,7 @@ export class MinimaxLLM {
     const systemPrompt = '你是一个友好的AI助手，正在与用户对话。用户的工作目录是: ' + (context || process.cwd());
 
     try {
-      const response = await fetch('https://api.minimax.chat/v1/text/chatcompletion_pro', {
+      const response = await fetch('https://api.minimax.chat/v1/text/chatcompletion_v2', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -33,14 +33,9 @@ export class MinimaxLLM {
         },
         body: JSON.stringify({
           model: this.model,
-          bot_setting: [
-            {
-              bot_name: 'Bolloon',
-              content: systemPrompt
-            }
-          ],
           messages: [
-            { role: 'user', content: message }
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: message, sender_name: 'user', sender_type: 'USER' }
           ],
           temperature: 0.8
         })
@@ -50,7 +45,13 @@ export class MinimaxLLM {
         throw new Error(`Minimax API error: ${response.status}`);
       }
 
-      const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+      const data = await response.json() as { choices?: { message?: { content?: string } }[]; base_resp?: { status_msg?: string } };
+      
+      if (data.base_resp?.status_msg) {
+        console.error('Minimax API error:', data.base_resp.status_msg);
+        return { reply: `AI服务暂时不可用: ${data.base_resp.status_msg}` };
+      }
+      
       const reply = data.choices?.[0]?.message?.content || '抱歉，我没有收到回复。';
 
       return { reply };
@@ -64,7 +65,7 @@ export class MinimaxLLM {
     const prompt = this.buildSummarizePrompt(text, context);
 
     try {
-      const response = await fetch('https://api.minimax.chat/v1/text/chatcompletion_pro', {
+      const response = await fetch('https://api.minimax.chat/v1/text/chatcompletion_v2', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -72,14 +73,9 @@ export class MinimaxLLM {
         },
         body: JSON.stringify({
           model: this.model,
-          bot_setting: [
-            {
-              bot_name: 'Bolloon',
-              content: 'You are a professional document summarizer.'
-            }
-          ],
           messages: [
-            { role: 'user', content: prompt }
+            { role: 'system', content: 'You are a professional document summarizer.' },
+            { role: 'user', content: prompt, sender_name: 'user', sender_type: 'USER' }
           ],
           temperature: 0.7
         })
@@ -89,7 +85,13 @@ export class MinimaxLLM {
         throw new Error(`Minimax API error: ${response.status}`);
       }
 
-      const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+      const data = await response.json() as { choices?: { message?: { content?: string } }[]; base_resp?: { status_msg?: string } };
+      
+      if (data.base_resp?.status_msg) {
+        console.error('Minimax API error:', data.base_resp.status_msg);
+        return { summary: `API错误: ${data.base_resp.status_msg}`, qualityScore: 0 };
+      }
+      
       const content = data.choices?.[0]?.message?.content || '';
 
       const qualityScore = this.estimateQuality(text, content);
