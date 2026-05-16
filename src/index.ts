@@ -11,6 +11,8 @@ import {
 } from '@diap/sdk';
 import * as ed25519 from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import { documentReader } from './documents/reader.js';
 import { initMinimax } from './runtime/context/sys-prompt.js';
 import { createAgentSession } from './agents/pi-sdk.js';
@@ -290,33 +292,178 @@ interface NonInteractiveResult {
     duration?: number;
     qualityScore?: number;
     peers?: number;
+    file?: string;
   };
 }
 
-async function runNonInteractive(
-  promptText: string,
+const AVAILABLE_TOOLS = [
+  { name: 'read_document', description: '读取文档 (txt, md, pdf, docx)', example: '--read <file>' },
+  { name: 'summarize_document', description: '总结文档内容', example: '--summarize <file>' },
+  { name: 'improve_document', description: '改进文档内容', example: '--improve <file> <requirements>' },
+  { name: 'list_peers', description: '列出已连接的对等节点', example: '--peers' },
+  { name: 'send_message', description: '向对等节点发送消息', example: '--send <peerId> <message>' },
+  { name: 'broadcast_message', description: '广播消息到所有节点', example: '--broadcast <message>' },
+  { name: 'get_identity', description: '获取当前智能体身份', example: '--identity' },
+  { name: 'get_operation_logs', description: '获取操作日志', example: '--logs' },
+  { name: 'search_files', description: '搜索文件', example: '--search <keyword>' },
+  { name: 'prompt', description: '通用 AI 对话', example: '--prompt <text>' },
+];
+
+async function runToolCommand(
+  tool: string,
+  args: string[],
   outputJson: boolean,
   comm: HyperswarmCommunicator
 ): Promise<void> {
-  const startTime = Date.now();
   const a = await getAgent();
-
+  const startTime = Date.now();
   let response: string;
+  let error: string | undefined;
+  let metadata: NonInteractiveResult['metadata'] = {
+    peers: comm?.getConnections().length || 0
+  };
+
   try {
-    response = await a.prompt(promptText);
+    switch (tool) {
+      case 'read': {
+        const [filePath] = args;
+        if (!filePath) {
+          response = '错误: 缺少文件路径参数';
+          error = response;
+          break;
+        }
+        const content = await documentReader.read(filePath);
+        response = `📄 ${content.metadata.filename}\n大小: ${content.metadata.size} 字节\n\n${content.text}`;
+        break;
+      }
+
+      case 'summarize': {
+        const [filePath, ...ctx] = args;
+        if (!filePath) {
+          response = '错误: 缺少文件路径参数';
+          error = response;
+          break;
+        }
+        const result = await a.summarizeDocument(filePath, ctx.join(' '));
+        response = `📝 摘要:\n${result.summary}\n\n质量评分: ${(result.qualityScore * 10).toFixed(1)}/10`;
+        metadata.qualityScore = result.qualityScore;
+        break;
+      }
+
+      case 'improve': {
+        const [filePath, ...req] = args;
+        if (!filePath || req.length === 0) {
+          response = '错误: 缺少文件路径或需求参数';
+          error = response;
+          break;
+        }
+        const result = await a.improveDocument({
+          originalPath: filePath,
+          requirements: req.join(' ')
+        });
+        response = result.newContent || '';
+        if (!result.improved) {
+          response = '错误: 改进失败';
+          error = response;
+        }
+        metadata.qualityScore = result.qualityScore;
+        break;
+      }
+
+      case 'peers': {
+        const peers = comm?.getConnections() || [];
+        if (peers.length === 0) {
+          response = '当前无连接的对等节点';
+        } else {
+          response = `已连接节点 (${peers.length}):\n${peers.map((c: P2PConnection) => `  · ${c.publicKey.substring(0, 16)}...`).join('\n')}`;
+        }
+        break;
+      }
+
+      case 'identity': {
+        const identity = a.getIdentity();
+        response = JSON.stringify(identity, null, 2);
+        break;
+      }
+
+      case 'logs': {
+        const logs = (a as any).getOperationLogs?.() || [];
+        response = logs.length === 0
+          ? '暂无操作日志'
+          : logs.map((l: { timestamp: number; status: string; action: string }) => `[${new Date(l.timestamp).toISOString()}] ${l.status}: ${l.action}`).join('\n');
+        break;
+      }
+
+      case 'search': {
+        const [keyword] = args;
+        if (!keyword) {
+          response = '错误: 缺少搜索关键词';
+          error = response;
+          break;
+        }
+        response = `搜索功能开发中，关键字: ${keyword}`;
+        break;
+      }
+
+      case 'broadcast': {
+        const [message] = args;
+        if (!message) {
+          response = '错误: 缺少广播消息内容';
+          error = response;
+          break;
+        }
+        await a.broadcast(message);
+        response = `广播已发送: ${message.substring(0, 50)}...`;
+        break;
+      }
+
+      case 'send': {
+        const [peerId, ...messageParts] = args;
+        if (!peerId || messageParts.length === 0) {
+          response = '错误: 缺少节点ID或消息内容';
+          error = response;
+          break;
+        }
+        await a.sendMessage(peerId, messageParts.join(' '));
+        response = `消息已发送到 ${peerId.substring(0, 16)}...`;
+        break;
+      }
+
+      case 'prompt': {
+        const [text] = args;
+        if (!text) {
+          response = '错误: 缺少 prompt 文本';
+          error = response;
+          break;
+        }
+        response = await a.prompt(text);
+        break;
+      }
+
+      case 'tools': {
+        response = '🛠️ 可用工具:\n\n' + AVAILABLE_TOOLS.map(t =>
+          `  ${t.name}\n    ${t.description}\n    示例: ${t.example}`
+        ).join('\n\n');
+        break;
+      }
+
+      default:
+        response = `错误: 未知工具 "${tool}"`;
+        error = response;
+    }
   } catch (e: any) {
     response = `错误: ${e.message}`;
+    error = response;
   }
 
-  const duration = Date.now() - startTime;
-  const peers = comm?.getConnections().length || 0;
+  metadata.duration = Date.now() - startTime;
 
   if (outputJson) {
     const result: NonInteractiveResult = {
-      success: !response.startsWith('错误:'),
-      response: response,
-      error: response.startsWith('错误:') ? response : undefined,
-      metadata: { duration, peers }
+      success: !error,
+      response,
+      error,
+      metadata
     };
     console.log(JSON.stringify(result, null, 2));
   } else {
@@ -324,22 +471,180 @@ async function runNonInteractive(
   }
 }
 
-function parseArgs(): { prompt?: string; json?: boolean; web?: boolean; help?: boolean } {
+async function runNonInteractive(
+  args: ParsedArgs,
+  comm: HyperswarmCommunicator
+): Promise<void> {
+  const { prompt, json, output, tool, toolArgs } = args;
+
+  if (output) {
+    const originalLog = console.log;
+    let outputBuffer = '';
+    console.log = (...params: any[]) => {
+      outputBuffer += params.join(' ') + '\n';
+    };
+
+    if (tool) {
+      await runToolCommand(tool, toolArgs, false, comm);
+    } else if (prompt) {
+      const a = await getAgent();
+      console.log(await a.prompt(prompt));
+    }
+
+    console.log = originalLog;
+    await fs.writeFile(output, outputBuffer.trim(), 'utf-8');
+    console.log(`✅ 结果已保存到: ${output}`);
+    return;
+  }
+
+  if (tool) {
+    await runToolCommand(tool, toolArgs, !!json, comm);
+  } else if (prompt) {
+    const startTime = Date.now();
+    const a = await getAgent();
+    let response: string;
+    try {
+      response = await a.prompt(prompt);
+    } catch (e: any) {
+      response = `错误: ${e.message}`;
+    }
+
+    const duration = Date.now() - startTime;
+    const peers = comm?.getConnections().length || 0;
+
+    if (json) {
+      const result: NonInteractiveResult = {
+        success: !response.startsWith('错误:'),
+        response,
+        error: response.startsWith('错误:') ? response : undefined,
+        metadata: { duration, peers }
+      };
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(response);
+    }
+  }
+}
+
+interface ParsedArgs {
+  prompt?: string;
+  json?: boolean;
+  web?: boolean;
+  help?: boolean;
+  tools?: boolean;
+  read?: boolean;
+  summarize?: boolean;
+  improve?: boolean;
+  peers?: boolean;
+  identity?: boolean;
+  logs?: boolean;
+  broadcast?: boolean;
+  send?: boolean;
+  search?: boolean;
+  model?: string;
+  output?: string;
+  tool?: string;
+  toolArgs: string[];
+}
+
+function parseArgs(): ParsedArgs {
   const args = process.argv.slice(2);
-  const result: { prompt?: string; json?: boolean; web?: boolean; help?: boolean } = {};
+  const result: ParsedArgs = { toolArgs: [] };
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--prompt' || arg === '-p') {
-      result.prompt = args[++i];
-    } else if (arg === '--json' || arg === '-j') {
-      result.json = true;
-    } else if (arg === '--web') {
-      result.web = true;
-    } else if (arg === '--help' || arg === '-h') {
-      result.help = true;
-    } else if (!arg.startsWith('-') && !result.prompt) {
-      result.prompt = arg;
+
+    switch (arg) {
+      case '--prompt':
+      case '-p':
+        result.prompt = args[++i];
+        result.tool = 'prompt';
+        break;
+      case '--json':
+      case '-j':
+        result.json = true;
+        break;
+      case '--web':
+        result.web = true;
+        break;
+      case '--help':
+      case '-h':
+        result.help = true;
+        break;
+      case '--tools':
+        result.tools = true;
+        result.tool = 'tools';
+        break;
+      case '--read':
+        result.read = true;
+        result.tool = 'read';
+        result.toolArgs = [args[++i]].filter(Boolean);
+        break;
+      case '--summarize':
+        result.summarize = true;
+        result.tool = 'summarize';
+        const summarizeArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          summarizeArgs.push(args[++i]);
+        }
+        result.toolArgs = summarizeArgs;
+        break;
+      case '--improve':
+        result.improve = true;
+        result.tool = 'improve';
+        const improveArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          improveArgs.push(args[++i]);
+        }
+        result.toolArgs = improveArgs;
+        break;
+      case '--peers':
+        result.peers = true;
+        result.tool = 'peers';
+        break;
+      case '--identity':
+        result.identity = true;
+        result.tool = 'identity';
+        break;
+      case '--logs':
+        result.logs = true;
+        result.tool = 'logs';
+        break;
+      case '--broadcast':
+        result.broadcast = true;
+        result.tool = 'broadcast';
+        result.toolArgs = [args[++i]].filter(Boolean);
+        break;
+      case '--send':
+        result.send = true;
+        result.tool = 'send';
+        const sendArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          sendArgs.push(args[++i]);
+        }
+        result.toolArgs = sendArgs;
+        break;
+      case '--search':
+        result.search = true;
+        result.tool = 'search';
+        result.toolArgs = [args[++i]].filter(Boolean);
+        break;
+      case '--model':
+        result.model = args[++i];
+        break;
+      case '--output':
+      case '-o':
+        result.output = args[++i];
+        break;
+      case '--':
+        result.toolArgs = args.slice(i + 1);
+        i = args.length;
+        break;
+      default:
+        if (!arg.startsWith('-') && !result.prompt && !result.tool) {
+          result.prompt = arg;
+          result.tool = 'prompt';
+        }
     }
   }
 
@@ -351,31 +656,62 @@ function printHelp(): void {
 🤖 Bolloon Agent - AI 可调用文档处理智能体
 
 用法:
-  npx tsx src/index.ts [选项]
+  npx tsx src/index.ts [选项] [参数]
 
 选项:
-  --prompt, -p <文本>    单次执行 prompt 后退出（AI 消费模式）
-  --json, -j            输出 JSON 格式结果
-  --web                 启动 Web UI 模式
-  --help, -h            显示帮助信息
+  # 文档处理
+  --read <file>              读取文档 (txt, md, pdf, docx)
+  --summarize <file> [ctx]  总结文档，可选上下文
+  --improve <file> <req>     改进文档，req 为改进要求
+
+  # P2P 网络
+  --peers                    列出已连接的对等节点
+  --broadcast <msg>          广播消息到所有节点
+  --send <peerId> <msg>      向指定节点发送消息
+
+  # 智能体
+  --identity                 显示当前智能体身份
+  --logs                     显示操作日志
+  --search <keyword>         搜索文件
+  --tools                    显示所有可用工具
+
+  # AI 对话
+  --prompt, -p <text>        通用 AI 对话（默认）
+  --model <name>             指定使用的模型
+
+  # 输出控制
+  --json, -j                 输出 JSON 格式
+  --output, -o <file>        结果保存到文件
+  --web                      启动 Web UI 模式
+  --help, -h                 显示帮助信息
 
 示例:
+  # 文档处理
+  npx tsx src/index.ts --read 想法.md
+  npx tsx src/index.ts --summarize docs/想法.md
+  npx tsx src/index.ts --improve docs/README.md "让内容更简洁"
+  npx tsx src/index.ts --read 想法.md -o summary.txt
+
+  # P2P 网络
+  npx tsx src/index.ts --peers
+  npx tsx src/index.ts --broadcast "Hello everyone"
+  npx tsx src/index.ts --send QmABC... "私信内容"
+
+  # AI 对话
+  npx tsx src/index.ts --prompt "总结 README.md"
+  npx tsx src/index.ts -p "分析这个项目" -j
+
   # 交互模式
   npx tsx src/index.ts
-
-  # AI 调用模式
-  npx tsx src/index.ts --prompt "总结 README.md"
-  npx tsx src/index.ts --prompt "读取 src/index.ts" --json
-  npx tsx src/index.ts -p "改进 docs/README.md，让它更清晰" -j
 
   # Web 模式
   npx tsx src/index.ts --web
 
 环境变量:
-  MINIMAX_API_KEY      MiniMax API 密钥
-  OPENAI_API_KEY       OpenAI API 密钥（Pi SDK）
-  ANTHROPIC_API_KEY    Anthropic API 密钥（Pi SDK）
-  PORT                 Web 服务端口（默认 54188）
+  MINIMAX_API_KEY       MiniMax API 密钥
+  OPENAI_API_KEY        OpenAI API 密钥（Pi SDK）
+  ANTHROPIC_API_KEY     Anthropic API 密钥（Pi SDK）
+  PORT                  Web 服务端口（默认 54188）
 `);
 }
 
@@ -392,7 +728,7 @@ async function main() {
   }
 
   const mode = args.web ? 'web' : 'cli';
-  const isNonInteractive = !!args.prompt;
+  const isNonInteractive = !!(args.tool || args.prompt);
 
   if (isNonInteractive) {
     console.error = () => {}; // Suppress console.error in non-interactive mode
@@ -438,7 +774,7 @@ async function main() {
     console.log(`\n✅ 浏览器已打开 → http://localhost:${port}\n`);
     openBrowser(`http://localhost:${port}`);
   } else if (isNonInteractive) {
-    await runNonInteractive(args.prompt!, !!args.json, comm!);
+    await runNonInteractive(args, comm!);
     comm?.stop();
     process.exit(0);
   } else {
