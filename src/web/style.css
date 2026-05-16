@@ -273,28 +273,50 @@ body {
   color: var(--text-muted);
 }
 
+.section-header {
+  margin-bottom: 8px;
+}
+
 .section-action {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: transparent;
+  width: 100%;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--accent);
   border: none;
-  color: var(--text-muted);
+  color: var(--bg);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  letter-spacing: 0.5px;
   transition: var(--transition);
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+
+.section-action svg {
+  width: 16px;
+  height: 16px;
 }
 
 .section-action:hover {
-  background: var(--bg-hover);
-  color: var(--accent);
+  background: var(--accent-hover);
+  box-shadow: 0 4px 16px var(--accent-glow);
+  transform: translateY(-1px);
+}
+
+.section-action:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 4px var(--accent-glow);
 }
 
 /* New Channel Form */
 .new-channel-form {
   margin-bottom: 12px;
+  margin-top: 12px;
 }
 
 .new-channel-form input {
