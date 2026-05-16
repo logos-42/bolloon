@@ -11,3 +11,5 @@ bin/
 .ipfs
 
 py-bolloon/
+
+.kilo/

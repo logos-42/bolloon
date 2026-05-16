@@ -20,7 +20,7 @@ describe('ToolPermissionContext', () => {
   it('creates permission denial', () => {
     const ctx = ToolPermissionContext.fromIterables(['BashTool'], []);
     const denial = ctx.createDenial('BashTool', 'destructive shell execution');
-    expect(denial.tool_name).toBe('BashTool');
+    expect(denial.toolName).toBe('BashTool');
     expect(denial.reason).toBe('destructive shell execution');
   });
 });
@@ -29,14 +29,14 @@ describe('BudgetTracker', () => {
   it('tracks token usage', () => {
     const tracker = new BudgetTracker(1000, 8, 12);
     const usage = tracker.addTurn(100, 50);
-    expect(usage.input_tokens).toBe(100);
-    expect(usage.output_tokens).toBe(50);
+    expect(usage.inputTokens).toBe(100);
+    expect(usage.outputTokens).toBe(50);
   });
 
   it('detects budget exceeded', () => {
     const tracker = new BudgetTracker(100, 8, 12);
-    expect(tracker.isBudgetExceeded({ input_tokens: 60, output_tokens: 50 })).toBe(true);
-    expect(tracker.isBudgetExceeded({ input_tokens: 30, output_tokens: 30 })).toBe(false);
+    expect(tracker.isBudgetExceeded({ inputTokens: 60, outputTokens: 50 })).toBe(true);
+    expect(tracker.isBudgetExceeded({ inputTokens: 30, outputTokens: 30 })).toBe(false);
   });
 
   it('detects turn limit', () => {
