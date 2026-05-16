@@ -18,7 +18,7 @@ export class MinimaxLLM {
 
   constructor(config: MinimaxConfig) {
     this.apiKey = config.apiKey;
-    this.model = config.model || 'abab6-chat';
+    this.model = config.model || 'MiniMax-M2.7';
   }
 
   async chat(message: string, context?: string): Promise<ChatResult> {
@@ -33,8 +33,13 @@ export class MinimaxLLM {
         },
         body: JSON.stringify({
           model: this.model,
+          bot_setting: [
+            {
+              bot_name: 'Bolloon',
+              content: systemPrompt
+            }
+          ],
           messages: [
-            { role: 'system', content: systemPrompt },
             { role: 'user', content: message }
           ],
           temperature: 0.8
@@ -67,8 +72,13 @@ export class MinimaxLLM {
         },
         body: JSON.stringify({
           model: this.model,
+          bot_setting: [
+            {
+              bot_name: 'Bolloon',
+              content: 'You are a professional document summarizer.'
+            }
+          ],
           messages: [
-            { role: 'system', content: 'You are a professional document summarizer.' },
             { role: 'user', content: prompt }
           ],
           temperature: 0.7

@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
+    "dev": "tsx -r dotenv/config src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:pi-sdk": "tsx src/test/pi-sdk.test.ts"
