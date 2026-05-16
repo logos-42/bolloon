@@ -14,7 +14,7 @@ import { sha512 } from '@noble/hashes/sha2.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { documentReader } from './documents/reader.js';
-import { initMinimax } from './runtime/context/sys-prompt.js';
+import { initMinimax } from './constraints/index.js';
 import { createAgentSession } from './agents/pi-sdk.js';
 import * as readline from 'readline';
 

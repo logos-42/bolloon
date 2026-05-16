@@ -6,7 +6,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { documentReader, DocumentContent } from '../documents/reader.js';
-import { getMinimax } from '../runtime/context/sys-prompt.js';
+import { getMinimax } from '../constraints/index.js';
 import { p2pNetwork } from '../network/p2p.js';
 import { ConstraintLayer, WorkflowContext } from './constraint-layer.js';
 import { WorkflowEngine, WorkflowStep, StepResult, Workflow } from './workflow-engine.js';

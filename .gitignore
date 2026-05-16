@@ -9,3 +9,5 @@ peer-store/
 datastore/
 bin/
 .ipfs
+
+py-bolloon/

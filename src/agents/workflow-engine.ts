@@ -4,7 +4,7 @@
  */
 
 import { documentReader, DocumentContent } from '../documents/reader.js';
-import { getMinimax } from '../runtime/context/sys-prompt.js';
+import { getMinimax } from '../constraints/index.js';
 import { p2pNetwork } from '../network/p2p.js';
 import { ConstraintLayer, WorkflowContext } from './constraint-layer.js';
 
