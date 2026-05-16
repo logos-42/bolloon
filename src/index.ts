@@ -9,10 +9,14 @@ import {
   type P2PMessage,
   type P2PConnection,
 } from '@diap/sdk';
+import { sha512 } from '@noble/hashes/sha512';
+import { setHashes } from '@noble/hashes';
 import { documentReader } from './documents/reader.js';
 import { initMinimax } from './llm/minimax.js';
 import { createAgentSession } from './agents/pi-sdk.js';
 import * as readline from 'readline';
+
+setHashes({ sha512 });
 
 // ---------------------------------------------------------------------------
 // Message envelope

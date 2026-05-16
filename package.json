@@ -20,6 +20,7 @@
     "@libp2p/kad-dht": "^12.0.0",
     "@libp2p/tcp": "^9.0.0",
     "@multiformats/multiaddr": "^12.0.0",
+    "@noble/hashes": "1.8.0",
     "dotenv": "^17.4.2",
     "libp2p": "^1.4.0",
     "mammoth": "^1.6.0",
