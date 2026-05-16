@@ -203,18 +203,23 @@ function rpcErr(code: string, msg: string): string {
 // ---------------------------------------------------------------------------
 
 function startCLI(comm: HyperswarmCommunicator): void {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  async function prompt(q: string): Promise<string> { return new Promise(res => rl.question(q, res)); }
+  let rl: readline.Interface | null = null;
+  let isRunning = true;
+
+  rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  async function prompt(q: string): Promise<string> { return new Promise(res => rl!.question(q, res)); }
 
   async function loop() {
+    if (!isRunning || !rl) return;
     try {
       const raw = await prompt('\n> ');
-      if (!raw) { loop(); return; }
+      if (!raw || !isRunning) { loop(); return; }
 
       const input = raw.trim();
       if (input === '退出' || input === 'exit' || input === 'quit') {
-        await comm.stop();
+        isRunning = false;
         rl.close();
+        comm.stop();
         console.log('\n👋 再见！\n');
         return;
       }
@@ -233,11 +238,15 @@ function startCLI(comm: HyperswarmCommunicator): void {
       const a = await getAgent();
       const response = await a.prompt(input);
       console.log(`\n${response}\n`);
+      loop();
     } catch (e: any) {
-      if (e.message?.includes('ERR_USE_AFTER_CLOSE')) return;
+      if (!isRunning) return;
+      if (e.message?.includes('ERR_USE_AFTER_CLOSE') || e.message?.includes('readline was closed')) {
+        return;
+      }
       console.error(`\n❌ ${e.message}\n`);
+      loop();
     }
-    loop();
   }
 
   async function handleRead(p: string) {
