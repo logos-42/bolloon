@@ -61,27 +61,28 @@ async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPa
   return { keypair: kp, did, name };
 }
 
-async function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<void> {
-  console.log('[2/4] 📝 发布 DID → IPFS CID...');
-  try {
-    const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
-    await auth.registerAgent({ name, services: [] }, kp, '');
-    console.log('     ✅ DID 文档已上链');
-  } catch (e: any) {
-    const isRecoverable = e.code === 'IPFS_ERROR' ||
-      e.code === 'DID_ERROR' ||
-      e.code === 'TIMEOUT' ||
-      e.details?.originalError?.code === 'IPFS_ERROR' ||
-      e.message?.includes('timeout') ||
-      e.message?.includes('Timeout') ||
-      e.message?.includes('fetch failed') ||
-      e.message?.includes('IPFS');
-    if (isRecoverable) {
-      console.log('     ⚠️  IPNS发布超时，跳过（本地模式）');
-    } else {
-      throw e;
+function publishDID(name: string, kp: import('@diap/sdk').KeyPair): void {
+  console.log('[2/4] 📝 发布 DID → IPFS CID (后台进行)...');
+  let retries = 0;
+  const maxRetries = 10;
+
+  const attempt = async () => {
+    try {
+      const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+      await auth.registerAgent({ name, services: [] }, kp, '');
+      console.log('     ✅ DID/IPNS 发布成功 (后台)');
+    } catch (e: any) {
+      retries++;
+      if (retries < maxRetries) {
+        console.log(`     ⏳ IPNS发布失败(${retries}/${maxRetries}), 60秒后重试...`);
+        setTimeout(attempt, 60000);
+      } else {
+        console.log('     ⚠️  IPNS发布重试结束，DID生成成功（本地模式）');
+      }
     }
-  }
+  };
+
+  setTimeout(attempt, 100);
 }
 
 // ---------------------------------------------------------------------------
@@ -205,31 +206,33 @@ function startCLI(comm: HyperswarmCommunicator): void {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   async function prompt(q: string): Promise<string> { return new Promise(res => rl.question(q, res)); }
 
+  console.log('\n💬 自然语言交互模式 (输入 exit 退出)');
+  console.log('   示例: "帮我总结这个文档" / "读取 src/index.ts" / "改进 README.md让它更清晰"\n');
+
   async function loop() {
-    const raw = await prompt('\n> ');
+    const raw = await prompt('\n💭 > ');
     if (!raw) { loop(); return; }
 
-    const [cmd, ...args] = raw.trim().split(/\s+/);
+    const input = raw.trim();
+    if (input.toLowerCase() === 'exit') {
+      await comm.stop();
+      rl.close();
+      console.log('👋');
+      return;
+    }
+
+    if (input.toLowerCase() === 'peers') {
+      console.log(`已连接 (${comm.getConnections().length}):`);
+      for (const c of comm.getConnections()) console.log(`  - ${c.publicKey.substring(0, 16)}...  inbound=${c.isInbound}`);
+      loop();
+      return;
+    }
+
     try {
-      switch (cmd.toLowerCase()) {
-        case 'read':            await handleRead(args.join(' '));              break;
-        case 'summarize':       await handleCLISummarize(args);               break;
-        case 'improve':         await handleCLIImprove(args);                  break;
-        case 'peers':
-          console.log(`已连接 (${comm.getConnections().length}):`);
-          for (const c of comm.getConnections()) console.log(`  - ${c.publicKey.substring(0, 16)}...  inbound=${c.isInbound}`);
-          break;
-        case 'tasks':
-          console.log('Harness 后台监听中，同行节点发 task/summarize/improve 消息自动触发响应。');
-          break;
-        case 'exit':
-          await comm.stop();
-          rl.close();
-          console.log('👋');
-          return;
-        default:
-          console.log('命令: read | summarize | improve | peers | tasks | exit');
-      }
+      const a = await getAgent();
+      console.log('🤔 处理中...\n');
+      const response = await a.prompt(input);
+      console.log(`\n${response}\n`);
     } catch (e: any) {
       console.error('错误:', e.message);
     }
