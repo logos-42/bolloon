@@ -303,7 +303,15 @@ async function main() {
 
   // ④ P2P 节点
   const verifier = createVerificationManager();
-  const comm = await bootstrapP2P(verifier);
+  let comm: HyperswarmCommunicator | null = null;
+
+  if (mode === 'web') {
+    bootstrapP2P(verifier).then(c => { comm = c; }).catch(err => {
+      console.log('⚠️  P2P 连接失败，Web 模式继续运行:', err.message);
+    });
+  } else {
+    comm = await bootstrapP2P(verifier);
+  }
 
   if (mode === 'web') {
     const port = parseInt(process.env.PORT || '54188');
@@ -323,7 +331,7 @@ async function main() {
     console.log('  "改进 src/index.ts，让代码更清晰"');
     console.log('\n输入 "退出" 结束对话\n');
 
-    startCLI(comm);
+    startCLI(comm!);
   }
 }
 

@@ -267,6 +267,46 @@ if (themeToggle) {
   themeToggle.addEventListener('click', toggleTheme);
 }
 
+const loadSessionBtn = document.getElementById('load-session-btn');
+const sessionFileInput = document.getElementById('session-file-input');
+
+if (loadSessionBtn && sessionFileInput) {
+  loadSessionBtn.addEventListener('click', () => {
+    sessionFileInput.click();
+  });
+
+  sessionFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const session = JSON.parse(text);
+
+      if (session.messages && Array.isArray(session.messages)) {
+        messagesEl.innerHTML = '';
+        session.messages.forEach(msg => {
+          addMessage(msg.content, msg.type, false);
+        });
+
+        const channelName = session.channelId || file.name.replace('.json', '');
+        if (channelNameEl) {
+          channelNameEl.textContent = channelName;
+        }
+
+        addMessage(`已加载 session: ${file.name}`, 'ai', false);
+      } else {
+        addMessage('无效的 session 文件格式', 'ai', false);
+      }
+    } catch (err) {
+      console.error('Failed to load session:', err);
+      addMessage('加载 session 失败: ' + err.message, 'ai', false);
+    }
+
+    sessionFileInput.value = '';
+  });
+}
+
 if (newChannelBtn && newChannelInput) {
   newChannelBtn.addEventListener('click', () => createChannel(newChannelInput.value));
   newChannelInput.addEventListener('keydown', (e) => {
@@ -285,7 +325,7 @@ async function init() {
   await loadChannels();
 
   if (channels.length > 0) {
-    selectChannel(channels[0].id);
+    await selectChannel(channels[0].id);
   } else {
     await createChannel('默认会话');
   }
