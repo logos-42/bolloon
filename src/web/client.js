@@ -19,6 +19,7 @@ let currentChannelId = null;
 let currentAgentId = '';
 let channels = [];
 let isSidebarCollapsed = false;
+let reconnectAttempts = 0;
 
 function generateId() {
   return crypto.randomUUID();
@@ -170,6 +171,7 @@ function renderCollapsedChannels() {
 
 async function selectChannel(channelId) {
   currentChannelId = channelId;
+  reconnectAttempts = 0;
   renderChannels();
   renderCollapsedChannels();
   await loadSession(channelId);
@@ -178,6 +180,8 @@ async function selectChannel(channelId) {
   if (channel && channelNameEl) {
     channelNameEl.textContent = channel.name;
   }
+
+  connect();
 }
 
 async function loadSession(channelId) {
@@ -238,22 +242,30 @@ function connect() {
     eventSource.close();
   }
 
+  const sseUrl = currentChannelId ? `/events?channelId=${encodeURIComponent(currentChannelId)}` : '/events';
+
   try {
-    eventSource = new EventSource('/events');
+    eventSource = new EventSource(sseUrl);
 
     eventSource.onopen = () => {
       console.log('SSE connected');
+      reconnectAttempts = 0;
     };
 
     eventSource.onerror = (err) => {
       console.error('SSE error', err);
       eventSource.close();
-      setTimeout(connect, 5000);
+      reconnectAttempts++;
+      setTimeout(connect, Math.min(5000 * reconnectAttempts, 30000));
     };
 
     eventSource.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
+
+        if (data.channelId && data.channelId !== currentChannelId) {
+          return;
+        }
 
         if (data.type === 'user') {
           addMessage(data.content, 'user');
@@ -382,8 +394,6 @@ async function init() {
   } else {
     await createChannel('默认会话');
   }
-
-  connect();
 }
 
 init();

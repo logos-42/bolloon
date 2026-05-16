@@ -92,14 +92,23 @@ async function saveTheme(theme: 'light' | 'dark', agentId: string): Promise<void
   await fs.writeFile(THEME_PATH, JSON.stringify({ theme, agentId }, null, 2));
 }
 
-let agentSession: AgentSession | null = null;
-let sseClients: Set<express.Response> = new Set();
+interface SSEClient {
+  res: express.Response;
+  channelId?: string;
+}
 
-async function getAgent(): Promise<AgentSession> {
-  if (!agentSession) {
-    agentSession = await createAgentSession({ cwd: process.cwd(), peerId: 'harness' });
+let sseClients: Set<SSEClient> = new Set();
+let channelSessions: Map<string, AgentSession> = new Map();
+
+async function getAgentForChannel(channelId: string): Promise<AgentSession> {
+  if (!channelSessions.has(channelId)) {
+    const session = await createAgentSession({
+      cwd: process.cwd(),
+      peerId: `channel-${channelId}`
+    });
+    channelSessions.set(channelId, session);
   }
-  return agentSession;
+  return channelSessions.get(channelId)!;
 }
 
 export async function createWebServer(port: number = 3000) {
@@ -128,15 +137,17 @@ export async function createWebServer(port: number = 3000) {
   });
 
   app.get('/events', (req, res) => {
+    const channelId = req.query.channelId as string;
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    sseClients.add(res);
+    const clientInfo = { res, channelId };
+    sseClients.add(clientInfo as any);
 
     req.on('close', () => {
-      sseClients.delete(res);
+      sseClients.delete(clientInfo as any);
     });
   });
 
@@ -146,34 +157,36 @@ export async function createWebServer(port: number = 3000) {
       return res.status(400).json({ error: 'No text provided' });
     }
 
-    broadcast({ type: 'user', content: text });
+    if (!channelId) {
+      return res.status(400).json({ error: 'No channelId provided' });
+    }
+
+    broadcast({ type: 'user', content: text }, channelId);
 
     try {
-      const a = await getAgent();
-      const response = await a.prompt(text);
-      broadcast({ type: 'ai', content: response });
-      broadcast({ type: 'done' });
+      const agent = await getAgentForChannel(channelId);
+      const response = await agent.prompt(text);
+      broadcast({ type: 'ai', content: response }, channelId);
+      broadcast({ type: 'done' }, channelId);
 
-      if (channelId) {
-        const existingSession = await loadSession(channelId);
-        const session: Session = existingSession || { channelId, messages: [], lastUpdated: new Date().toISOString() };
-        session.messages.push({ id: crypto.randomUUID(), type: 'user' as const, content: text, timestamp: new Date().toISOString() });
-        session.messages.push({ id: crypto.randomUUID(), type: 'ai' as const, content: response, timestamp: new Date().toISOString() });
-        session.lastUpdated = new Date().toISOString();
-        await saveSession(session);
+      const existingSession = await loadSession(channelId);
+      const session: Session = existingSession || { channelId, messages: [], lastUpdated: new Date().toISOString() };
+      session.messages.push({ id: crypto.randomUUID(), type: 'user' as const, content: text, timestamp: new Date().toISOString() });
+      session.messages.push({ id: crypto.randomUUID(), type: 'ai' as const, content: response, timestamp: new Date().toISOString() });
+      session.lastUpdated = new Date().toISOString();
+      await saveSession(session);
 
-        const channels = await loadChannels();
-        const channel = channels.find(c => c.id === channelId);
-        if (channel) {
-          channel.updatedAt = new Date().toISOString();
-          await saveChannels(channels);
-        }
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+      if (channel) {
+        channel.updatedAt = new Date().toISOString();
+        await saveChannels(channels);
       }
 
       res.json({ ok: true });
     } catch (err: any) {
-      broadcast({ type: 'error', content: err.message });
-      broadcast({ type: 'done' });
+      broadcast({ type: 'error', content: err.message }, channelId);
+      broadcast({ type: 'done' }, channelId);
       res.status(500).json({ error: err.message });
     }
   });
@@ -265,7 +278,7 @@ export async function createWebServer(port: number = 3000) {
     server.listen(port, () => {
       setInterval(() => {
         for (const client of sseClients) {
-          client.write(': ping\n\n');
+          client.res.write(': ping\n\n');
         }
       }, 30000);
       resolve({ app, server });
@@ -273,10 +286,13 @@ export async function createWebServer(port: number = 3000) {
   });
 }
 
-function broadcast(data: object) {
-  const message = `data: ${JSON.stringify(data)}\n\n`;
+function broadcast(data: object, channelId?: string) {
+  const envelope = { ...data, channelId };
+  const message = `data: ${JSON.stringify(envelope)}\n\n`;
   for (const client of sseClients) {
-    client.write(message);
+    if (!channelId || client.channelId === channelId) {
+      client.res.write(message);
+    }
   }
 }
 
