@@ -10,13 +10,14 @@ import {
   type P2PConnection,
 } from '@diap/sdk';
 import * as ed25519 from '@noble/ed25519';
-import { sha512 } from '@noble/hashes/sha512';
+import { sha512 } from '@noble/hashes/sha2.js';
 import { documentReader } from './documents/reader.js';
 import { initMinimax } from './llm/minimax.js';
 import { createAgentSession } from './agents/pi-sdk.js';
 import * as readline from 'readline';
 
-ed25519.etc.sha512Sync = sha512;
+// @ts-ignore - noble/ed25519 v3 requires sha512 to be set
+(ed25519.hashes as any).sha512 = sha512;
 
 // ---------------------------------------------------------------------------
 // Message envelope

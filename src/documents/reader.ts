@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import pdf from 'pdf-parse';
+import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 
 export interface DocumentContent {
@@ -47,7 +47,8 @@ export class DocumentReader {
 
   private async readPdf(filePath: string): Promise<string> {
     const dataBuffer = await fs.readFile(filePath);
-    const data = await pdf(dataBuffer);
+    // @ts-ignore - pdf-parse v2 API differs
+    const data = await pdfParse(dataBuffer);
     return data.text;
   }
 

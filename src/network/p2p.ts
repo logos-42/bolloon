@@ -52,9 +52,9 @@ export class P2PNetwork {
   private setupMessageHandler(): void {
     if (!this.node) return;
 
-    this.node.handle('/agent/message', async ({ stream, connection }) => {
+    this.node.handle('/agent/message', async (stream, connection) => {
       const chunks: Uint8Array[] = [];
-      for await (const chunk of stream.source) {
+      for await (const chunk of stream) {
         chunks.push(chunk.subarray());
       }
       const data = new Uint8Array(chunks.reduce((acc, c) => acc + c.length, 0));
@@ -101,7 +101,8 @@ export class P2PNetwork {
     try {
       const ma = createMultiaddr(`/p2p/${peerId}`);
       const stream = await this.node.dialProtocol(ma, '/agent/message');
-      await stream.sink([data]);
+      stream.send(data);
+      await stream.close();
     } catch (e) {
       console.warn(`Failed to send to ${peerId}, storing offline`);
       this.storeOfflineMessage(peerId, data);
@@ -118,7 +119,8 @@ export class P2PNetwork {
       try {
         const ma = createMultiaddr(`/p2p/${peer.toString()}`);
         const stream = await this.node.dialProtocol(ma, '/agent/message');
-        await stream.sink([data]);
+        stream.send(data);
+        await stream.close();
       } catch (e) {
         console.warn(`Failed to broadcast to ${peer}:`, e);
       }
