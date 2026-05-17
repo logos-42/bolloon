@@ -20,6 +20,76 @@ import { getSubAgentManager, createSubAgentManager } from './agents/subagent-man
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import * as readline from 'readline';
 
+const RESET = '\x1b[0m';
+const BOLD = '\x1b[1m';
+const DIM = '\x1b[2m';
+const CYAN = '\x1b[36m';
+const GREEN = '\x1b[32m';
+const YELLOW = '\x1b[33m';
+const BLUE = '\x1b[34m';
+const MAGENTA = '\x1b[35m';
+const WHITE = '\x1b[37m';
+const GRAY = '\x1b[90m';
+
+const s = {
+  banner: () => console.log(`\n${CYAN}${BOLD}
+   ╔═══════════════════════════════════════════╗
+   ║      ${WHITE}🤖 Bolloon ${CYAN}                       ║
+   ║      ${WHITE}P2P AI Document Processor${CYAN}                ║
+   ╚═══════════════════════════════════════════╝${RESET}\n`),
+
+  step: (num: number, total: number, text: string, status?: 'ok' | 'loading' | 'warn' | 'error') => {
+    const check = status === 'ok' ? `${GREEN}✓` :
+                  status === 'loading' ? `${YELLOW}⟳` :
+                  status === 'warn' ? `${YELLOW}⚠` :
+                  status === 'error' ? `${MAGENTA}✗` :
+                  `${CYAN}●`;
+    console.log(`  ${check} ${WHITE}[${num}/${total}]${GRAY} ${text}${RESET}`);
+  },
+
+  success: (text: string) => console.log(`  ${GREEN}✓${RESET} ${text}`),
+  warn: (text: string) => console.log(`  ${YELLOW}⚠${RESET} ${text}`),
+  error: (text: string) => console.log(`  ${MAGENTA}✗${RESET} ${text}`),
+  info: (text: string) => console.log(`  ${CYAN}●${RESET} ${text}`),
+
+  section: (title: string) => {
+    console.log(`\n${BLUE}━━━ ${WHITE}${BOLD}${title}${RESET} ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}`);
+  },
+
+  divider: () => console.log(`\n${GRAY}${'─'.repeat(50)}${RESET}\n`),
+
+  prompt: (text: string) => console.log(`\n${CYAN}❯ ${WHITE}${text}${RESET}`),
+
+  response: (label: string, content: string) => {
+    console.log(`\n${GREEN}${label}${RESET}\n${content}\n`);
+  },
+
+  agentCard: (agent: { name: string; id: string; status: string; capabilities: string[]; did?: string }) => {
+    const statusColor = agent.status === 'active' ? GREEN :
+                        agent.status === 'idle' ? YELLOW :
+                        agent.status === 'busy' ? MAGENTA : GRAY;
+    console.log(`  ${WHITE}${BOLD}${agent.name}${RESET}`);
+    console.log(`    ${GRAY}ID:${RESET} ${agent.id}`);
+    console.log(`    ${GRAY}状态:${RESET} ${statusColor}${agent.status}${RESET}`);
+    console.log(`    ${GRAY}能力:${RESET} ${agent.capabilities.join(', ')}`);
+    if (agent.did) console.log(`    ${GRAY}DID:${RESET} ${agent.did}`);
+    console.log();
+  },
+
+  Thinking: () => {
+    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let i = 0;
+    return setInterval(() => {
+      process.stdout.write(`\r  ${YELLOW}${frames[i++ % frames.length]} 思考中...${RESET}    `);
+    }, 80);
+  },
+
+  clearThinking: (interval: ReturnType<typeof setInterval>) => {
+    clearInterval(interval);
+    process.stdout.write('\r' + ' '.repeat(30) + '\r');
+  }
+};
+
 // @ts-ignore - noble/ed25519 v3 requires sha512 to be set
 (ed25519.hashes as any).sha512 = sha512;
 
@@ -64,19 +134,20 @@ function getUserName(): string {
 }
 
 async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPair; did: string; name: string }> {
-  console.log('[1/4] 🔐 生成 DIAP 身份...');
+  s.step(1, 4, '生成 DIAP 身份', 'loading');
   const kp = KeyManager.generate();
   const did = kp.did;
   const username = getUserName();
   const suffix = did.split(':').pop()?.substring(0, 4);
   const name = `blln-${username}-${suffix}`;
-  console.log(`   DID  : ${did}`);
-  console.log(`   name : ${name}`);
+  console.log(`     ${GRAY}DID:${RESET} ${did}`);
+  console.log(`     ${GRAY}名称:${RESET} ${name}`);
+  s.step(1, 4, '生成 DIAP 身份', 'ok');
   return { keypair: kp, did, name };
 }
 
 function publishDID(name: string, kp: import('@diap/sdk').KeyPair): void {
-  console.log('[2/4] 📝 发布 DID → IPFS CID (后台进行)...');
+  s.step(2, 4, '发布 DID → IPFS (后台)', 'loading');
   let retries = 0;
   const maxRetries = 10;
 
@@ -84,14 +155,13 @@ function publishDID(name: string, kp: import('@diap/sdk').KeyPair): void {
     try {
       const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
       await auth.registerAgent({ name, services: [] }, kp, '');
-      console.log('     ✅ DID/IPNS 发布成功 (后台)');
+      s.step(2, 4, '发布 DID → IPFS', 'ok');
     } catch (e: any) {
       retries++;
       if (retries < maxRetries) {
-        console.log(`     ⏳ IPNS发布失败(${retries}/${maxRetries}), 60秒后重试...`);
-        setTimeout(attempt, 60000);
+        process.stdout.write(`     ${YELLOW}⏳ IPNS发布失败(${retries}/${maxRetries}), 60秒后重试...${RESET}\r`);
       } else {
-        console.log('     ⚠️  IPNS发布重试结束，DID生成成功（本地模式）');
+        process.stdout.write(`     ${YELLOW}⚠ IPNS发布重试结束，本地模式运行${RESET}\n`);
       }
     }
   };
@@ -106,17 +176,12 @@ function publishDID(name: string, kp: import('@diap/sdk').KeyPair): void {
 async function bootstrapP2P(
   verifier: AgentVerificationManager,
 ): Promise<HyperswarmCommunicator> {
-  console.log('[3/4] 🌐 启动 P2P harness...');
+  s.step(3, 4, '启动 P2P 网络', 'loading');
   const rawSeed = crypto.getRandomValues(new Uint8Array(32));
   const seed: any = rawSeed;
   const comm = createHyperswarmCommunicator({ server: true, client: true, autoConnect: true, maxConnections: 50, seed });
 
-  // 当 Hyperswarm 有新连接 → 将原始 stream 存入 rawStreams，供 sendRawMsg 用
   comm.on('connection', (conn: P2PConnection) => {
-    // P2PConnection.id === comm.connections 的 map key（即 conn.publicKey 的 hex）
-    // 但 setupConnectionHandlers 用 p2pConn.id (uuid) 做 key、p2pConn.publicKey 做 value key
-    // 两者不同——我们同时在 connections 里以 id 做 keyucket
-    // 策略：用 conn.publicKey 定位 map entry → 读 entry.id → 以此作为 rawStreams key
     const all: Map<string, P2PConnection> = (comm as any).connections as Map<string, P2PConnection>;
     for (const [k, v] of all) {
       if (v.publicKey === conn.publicKey) {
@@ -126,7 +191,6 @@ async function bootstrapP2P(
     }
   });
 
-  // 消息事件：dispatch → 同连接写回
   comm.on('message', async (msg: P2PMessage, conn: P2PConnection) => {
     const reply = await dispatchTask(new TextDecoder().decode(msg.content));
     sendRawMsg(conn, reply);
@@ -135,7 +199,8 @@ async function bootstrapP2P(
   await comm.start();
   const topic = createTopic('bolloon-agent-harness') as Buffer;
   await comm.joinTopic(topic);
-  console.log(`     ✅ 已加入主题  hex=${topic.slice(0, 8).toString('hex')}...`);
+  console.log(`     ${GRAY}主题:${RESET} ${topic.slice(0, 8).toString('hex')}...`);
+  s.step(3, 4, '启动 P2P 网络', 'ok');
   return comm;
 }
 
@@ -226,7 +291,7 @@ function startCLI(comm: HyperswarmCommunicator): void {
   async function loop() {
     if (!isRunning || !rl) return;
     try {
-      const raw = await prompt('\n> ');
+      const raw = await prompt(`\n${CYAN}❯${RESET} `);
       if (!raw || !isRunning) { loop(); return; }
 
       const input = raw.trim();
@@ -234,14 +299,15 @@ function startCLI(comm: HyperswarmCommunicator): void {
         isRunning = false;
         rl.close();
         comm.stop();
-        console.log('\n👋 再见！\n');
+        console.log(`\n${CYAN}👋 再见！${RESET}\n`);
         return;
       }
 
       if (input.toLowerCase() === 'peers') {
-        console.log(`\n已连接节点: ${comm.getConnections().length}`);
-        for (const c of comm.getConnections()) {
-          console.log(`  · ${c.publicKey.substring(0, 16)}...`);
+        const peers = comm.getConnections();
+        console.log(`\n${GRAY}已连接节点: ${peers.length}${RESET}`);
+        for (const c of peers) {
+          console.log(`  ${GRAY}·${RESET} ${c.publicKey.substring(0, 16)}...`);
         }
         loop();
         return;
@@ -250,23 +316,27 @@ function startCLI(comm: HyperswarmCommunicator): void {
       if (!input) { loop(); return; }
 
       const a = await getAgent();
+      const thinking = s.Thinking();
       const response = await a.prompt(input);
-      console.log(`\n${response}\n`);
+      s.clearThinking(thinking);
+      s.divider();
+      console.log(`${response}\n`);
       loop();
     } catch (e: any) {
       if (!isRunning) return;
       if (e.message?.includes('ERR_USE_AFTER_CLOSE') || e.message?.includes('readline was closed')) {
         return;
       }
-      console.error(`\n❌ ${e.message}\n`);
+      s.divider();
+      console.log(`${MAGENTA}❌ ${e.message}${RESET}\n`);
       loop();
     }
   }
 
   async function handleRead(p: string) {
-    if (!p) { console.log('用法: read <file>'); return; }
+    if (!p) { s.warn('用法: read <file>'); return; }
     const c = await documentReader.read(p);
-    console.log(`📄 ${c.metadata.filename} (${c.metadata.size} bytes)`);
+    console.log(`${GREEN}📄 ${c.metadata.filename}${RESET} (${c.metadata.size} bytes)`);
     console.log(c.text.substring(0, 300) + '...');
   }
 
@@ -341,6 +411,27 @@ async function runToolCommand(
     peers: comm?.getConnections().length || 0
   };
 
+  const toolLabels: Record<string, string> = {
+    'read': '读取文档',
+    'summarize': '总结文档',
+    'improve': '改进文档',
+    'prompt': 'AI 对话',
+    'agents': '列出 Agent',
+    'register-agent': '注册 Agent',
+    'delegate': '委派任务',
+    'context': '全局上下文',
+    'global-agents': 'Agent 注册表',
+    'add-action': '添加行动',
+    'peers': '列出节点',
+    'broadcast': '广播消息',
+    'identity': '显示身份',
+    'logs': '操作日志',
+    'tools': '可用工具'
+  };
+
+  const label = toolLabels[tool] || tool;
+  const thinking = s.Thinking();
+
   try {
     switch (tool) {
       case 'read': {
@@ -351,7 +442,7 @@ async function runToolCommand(
           break;
         }
         const content = await documentReader.read(filePath);
-        response = `📄 ${content.metadata.filename}\n大小: ${content.metadata.size} 字节\n\n${content.text}`;
+        response = `${GREEN}📄 ${content.metadata.filename}${RESET}\n${GRAY}大小: ${content.metadata.size} 字节${RESET}\n\n${content.text}`;
         break;
       }
 
@@ -567,6 +658,8 @@ async function runToolCommand(
 
   metadata.duration = Date.now() - startTime;
 
+  s.clearThinking(thinking);
+
   if (outputJson) {
     const result: NonInteractiveResult = {
       success: !error,
@@ -576,7 +669,14 @@ async function runToolCommand(
     };
     console.log(JSON.stringify(result, null, 2));
   } else {
-    console.log(response);
+    if (error) {
+      s.divider();
+      console.log(`${MAGENTA}${error}${RESET}\n`);
+    } else {
+      s.divider();
+      console.log(`${response}\n`);
+    }
+    console.log(`${GRAY}耗时: ${metadata.duration}ms${RESET}`);
   }
 }
 
@@ -895,12 +995,13 @@ async function main() {
   const isNonInteractive = !!(args.tool || args.prompt);
 
   if (isNonInteractive) {
-    console.error = () => {}; // Suppress console.error in non-interactive mode
+    console.error = () => {};
   }
 
-  console.log('\n🤖 Bolloon Agent\n');
+  s.banner();
 
-  // ① LLM - 支持多种 provider
+  s.section('系统初始化');
+
   const hasOpenAI = !!process.env.OPENAI_API_KEY;
   const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
   const hasMinimax = !!process.env.MINIMAX_API_KEY;
@@ -908,54 +1009,63 @@ async function main() {
   const hasGemini = !!process.env.GEMINI_API_KEY;
   const hasOllama = !!process.env.OLLAMA_BASE_URL;
 
-  if (hasOpenAI || hasAnthropic || hasOpenRouter || hasGemini || hasOllama || hasMinimax) {
-    const provider = hasOpenAI ? 'openai' : hasAnthropic ? 'anthropic' : hasOpenRouter ? 'openrouter' : hasGemini ? 'gemini' : hasOllama ? 'ollama' : 'minimax';
-    initMinimax({ provider: provider as any });
-  } else if (isNonInteractive) {
-    console.log('⚠️  未设置任何 LLM API Key，功能受限（支持 OPENAI_API_KEY, ANTHROPIC_API_KEY, MINIMAX_API_KEY 等）');
+  const llmProvider = hasOpenAI ? 'OpenAI' :
+                      hasAnthropic ? 'Anthropic' :
+                      hasOpenRouter ? 'OpenRouter' :
+                      hasGemini ? 'Gemini' :
+                      hasOllama ? 'Ollama' :
+                      hasMinimax ? 'MiniMax' : null;
+
+  if (llmProvider) {
+    s.step(0, 4, `LLM: ${llmProvider}`, 'ok');
+    initMinimax({ provider: llmProvider.toLowerCase() as any });
   } else {
-    console.log('⚠️  未设置任何 LLM API Key，功能受限（支持 OPENAI_API_KEY, ANTHROPIC_API_KEY, MINIMAX_API_KEY 等）\n');
+    s.step(0, 4, 'LLM: 未配置', 'warn');
+    if (isNonInteractive) {
+      s.warn('未设置任何 LLM API Key，功能受限');
+    }
   }
 
-  // ② DIAP 身份
   const { keypair, name } = await bootstrapIdentity();
-
-  // ③ 发布 DID → IPFS (后台)
   publishDID(name, keypair);
 
-  // ④ P2P 节点
   const verifier = createVerificationManager();
   let comm: HyperswarmCommunicator | null = null;
 
   if (mode === 'web') {
     bootstrapP2P(verifier).then(c => { comm = c; }).catch(err => {
-      console.log('⚠️  P2P 连接失败，Web 模式继续运行:', err.message);
+      s.warn(`P2P 连接失败: ${err.message}`);
     });
   } else {
     comm = await bootstrapP2P(verifier);
   }
 
+  s.divider();
+
   if (mode === 'web') {
     const port = parseInt(process.env.PORT || '54188');
     const { createWebServer, openBrowser } = await import('./web/server.js');
 
-    console.log('\n🌐 启动Web服务...');
+    s.info(`启动 Web 服务端口 ${port}...`);
     await createWebServer(port);
 
-    console.log(`\n✅ 浏览器已打开 → http://localhost:${port}\n`);
+    s.success(`浏览器已打开 → http://localhost:${port}`);
     openBrowser(`http://localhost:${port}`);
   } else if (isNonInteractive) {
+    s.info('执行命令...');
+    console.log();
     await runNonInteractive(args, comm!);
     comm?.stop();
     process.exit(0);
   } else {
-    console.log('\n💬 对话模式已启动\n');
-    console.log('━'.repeat(30));
-    console.log('\n你可以这样说：');
-    console.log('  "读取 想法.md"');
-    console.log('  "总结 这段文字的内容"');
-    console.log('  "改进 src/index.ts，让代码更清晰"');
-    console.log('\n输入 "退出" 结束对话\n');
+    s.section('对话模式');
+    console.log(`${GRAY}输入命令即可开始对话，示例:${RESET}\n`);
+    console.log(`  ${CYAN}读取 想法.md${RESET}          ${GRAY}- 读取文档${RESET}`);
+    console.log(`  ${CYAN}总结 文档.md${RESET}           ${GRAY}- 总结文档${RESET}`);
+    console.log(`  ${CYAN}--agents${RESET}               ${GRAY}- 查看 SubAgent${RESET}`);
+    console.log(`  ${CYAN}--context${RESET}              ${GRAY}- 查看全局上下文${RESET}`);
+    console.log(`  ${CYAN}--delegate 任务 coding${RESET}  ${GRAY}- 委派任务${RESET}`);
+    console.log(`  ${CYAN}退出${RESET}                   ${GRAY}- 结束对话${RESET}\n`);
 
     startCLI(comm!);
   }
