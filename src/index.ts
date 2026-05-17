@@ -98,66 +98,15 @@ const s = {
 
   dialog: async (title: string, promptText: string): Promise<string> => {
     return new Promise((resolve) => {
-      const width = 50;
-      const innerWidth = width - 6;
+      s.section(title);
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
 
-      process.stdout.write(HIDE_CURSOR);
-
-      const lines = [
-        `  ${BG_BLUE}${WHITE} ${title.padEnd(width - 1)} ${RESET}`,
-        `  ${BG_WHITE}${BLACK} ╔${'═'.repeat(innerWidth)}╗${RESET}`,
-        `  ${BG_WHITE}${BLACK} ║  ${CYAN}${promptText}:${RESET}${' '.repeat(innerWidth - promptText.length - 1)}${BG_WHITE}${BLACK}║${RESET}`,
-        `  ${BG_WHITE}${BLACK} ╠${'═'.repeat(innerWidth)}╣${RESET}`,
-        `  ${BG_WHITE}${BLACK} ║  > ${' '.repeat(innerWidth - 4)}${BG_WHITE}${BLACK}║${RESET}`,
-        `  ${BG_WHITE}${BLACK} ╚${'═'.repeat(innerWidth)}╝${RESET}`,
-      ];
-
-      const restore = () => {
-        process.stdout.write(SHOW_CURSOR);
-        for (let i = 0; i < lines.length; i++) {
-          process.stdout.write(MOVE_UP + CLEAR_LINE);
-        }
-        process.stdout.write(CLEAR_LINE + '\r');
-      };
-
-      for (const line of lines) {
-        console.log(line);
-      }
-
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      let input = '';
-      const inputLine = () => {
-        process.stdout.write(CLEAR_LINE + `\r  ${BG_WHITE}${BLACK} ║  > ${RESET}${WHITE}${input}${RESET}${BG_WHITE}${BLACK}${' '.repeat(innerWidth - input.length - 4)}${BG_WHITE}${BLACK}║${RESET}\r`);
-        process.stdout.write(`\r  ${BG_WHITE}${BLACK} ║  > ${RESET}${WHITE}${input}`);
-      };
-
-      inputLine();
-
-      const cleanup = () => {
-        process.stdin.removeAllListeners('data');
+      rl.question(`  ${CYAN}❯${RESET} `, (input) => {
         rl.close();
-      };
-
-      process.stdin.on('data', (chunk: Buffer) => {
-        const key = chunk.toString();
-
-        if (key === '\r' || key === '\n') {
-          cleanup();
-          restore();
-          resolve(input);
-        } else if (key === '\x03') {
-          cleanup();
-          restore();
-          resolve('');
-        } else if (key === '\x7f' || key === '\x08') {
-          if (input.length > 0) {
-            input = input.slice(0, -1);
-            inputLine();
-          }
-        } else if (key >= ' ' && input.length < innerWidth - 4) {
-          input += key;
-          inputLine();
-        }
+        resolve(input.trim());
       });
     });
   }
