@@ -1401,13 +1401,21 @@ Workspace root folder: ${this.cwd}
 }
 
 let sessionInstance: AgentSession | null = null;
+let lastIdentityDid: string | null = null;
 
 export async function createAgentSession(config: AgentSessionConfig): Promise<AgentSession> {
+  const incomingDid = config.identityDoc?.did;
+
+  if (sessionInstance && lastIdentityDid && incomingDid && lastIdentityDid !== incomingDid) {
+    sessionInstance = null;
+  }
+
   if (sessionInstance) {
     return sessionInstance;
   }
 
   sessionInstance = new PiAgentSession(config);
+  lastIdentityDid = config.identityDoc?.did || null;
   return sessionInstance;
 }
 
@@ -1417,4 +1425,5 @@ export function getAgentSession(): AgentSession | null {
 
 export function resetAgentSession(): void {
   sessionInstance = null;
+  lastIdentityDid = null;
 }
