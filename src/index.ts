@@ -1065,7 +1065,10 @@ async function main() {
   const { keypair, did, name } = await bootstrapIdentity();
   agentIdentity = { did, name, publicKey: keypair.publicKeyHex };
 
-  const publishPromise = publishDID(name, keypair);
+  publishDID(name, keypair).then(({ cid, ipnsName }) => {
+    if (cid) agentIdentity.cid = cid;
+    if (ipnsName) agentIdentity.ipnsName = ipnsName;
+  }).catch(() => {});
 
   const verifier = createVerificationManager();
   let comm: HyperswarmCommunicator | null = null;
@@ -1089,10 +1092,6 @@ async function main() {
       agentIdentity.p2pChannel = 'bolloon-agent-harness';
     }
   }
-
-  const { cid, ipnsName } = await publishPromise;
-  if (cid) agentIdentity.cid = cid;
-  if (ipnsName) agentIdentity.ipnsName = ipnsName;
 
   s.divider();
 
