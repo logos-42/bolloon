@@ -10,8 +10,7 @@ import { getMinimax } from '../constraints/index.js';
 import { p2pNetwork } from '../network/p2p.js';
 import { ConstraintLayer, WorkflowContext } from './constraint-layer.js';
 import { WorkflowEngine, WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
-import { DeepThinkingEngine, AgentCoordinator } from '../constraint-runtime/src/index.js';
-import type { ThinkResult, AgentResult } from '../constraint-runtime/src/index.js';
+import { DeepThinkingEngine, AgentCoordinator, type ThinkResult, type AgentResult } from '@bolloon/constraint-runtime';
 import {
   DiscoveredAgentsManager,
   SocialHeartbeat,

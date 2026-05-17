@@ -4,7 +4,8 @@
  */
 
 import { ToolPermissionContext } from '../constraint-runtime/src/constraint/permission.js';
-import { BudgetTracker, UsageSummary } from '../constraint-runtime/src/constraint/budget.js';
+import { BudgetTracker } from '../constraint-runtime/src/constraint/budget.js';
+import type { UsageSummary } from '../constraint-runtime/src/models.js';
 
 export interface Guardrail {
   name: string;

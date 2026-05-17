@@ -12,7 +12,7 @@ async function isMinimaxAvailable(): Promise<boolean> {
   try {
     initMinimax({ apiKey });
     const model = getMinimax();
-    await model.chat({ messages: [{ role: 'user', content: 'test' }] });
+    await model.chat('test');
     return true;
   } catch {
     return false;
