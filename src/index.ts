@@ -98,13 +98,12 @@ const s = {
 
   dialog: async (title: string, promptText: string): Promise<string> => {
     return new Promise((resolve) => {
-      s.section(title);
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
       });
 
-      rl.question(`  ${CYAN}❯${RESET} `, (input) => {
+      rl.question(`${CYAN}❯ ${RESET}`, (input) => {
         rl.close();
         resolve(input.trim());
       });
@@ -325,20 +324,23 @@ function startCLI(comm: HyperswarmCommunicator): void {
 
   async function loop() {
     if (!isRunning) return;
+
     try {
-      const input = await s.dialog('Bolloon Agent', '输入命令');
+      const input = await s.dialog('Bolloon Agent', '');
 
-      if (!input || !isRunning) { loop(); return; }
+      if (!input) {
+        loop();
+        return;
+      }
 
-      const trimmed = input.trim();
-      if (trimmed === '退出' || trimmed === 'exit' || trimmed === 'quit') {
+      if (input === '退出' || input === 'exit' || input === 'quit') {
         isRunning = false;
         comm.stop();
         console.log(`\n${CYAN}👋 再见！${RESET}\n`);
         return;
       }
 
-      if (trimmed.toLowerCase() === 'peers') {
+      if (input.toLowerCase() === 'peers') {
         const peers = comm.getConnections();
         s.divider();
         console.log(`${GRAY}已连接节点: ${peers.length}${RESET}`);
@@ -350,12 +352,10 @@ function startCLI(comm: HyperswarmCommunicator): void {
         return;
       }
 
-      if (!trimmed) { loop(); return; }
-
       const a = await getAgent();
       s.divider();
       const thinking = s.Thinking();
-      const response = await a.prompt(trimmed);
+      const response = await a.prompt(input);
       s.clearThinking(thinking);
       s.divider();
       console.log(`${response}\n`);
