@@ -30,6 +30,13 @@ const BLUE = '\x1b[34m';
 const MAGENTA = '\x1b[35m';
 const WHITE = '\x1b[37m';
 const GRAY = '\x1b[90m';
+const BG_WHITE = '\x1b[47m';
+const BG_BLUE = '\x1b[44m';
+const BLACK = '\x1b[30m';
+const MOVE_UP = '\x1b[A';
+const CLEAR_LINE = '\x1b[2K';
+const HIDE_CURSOR = '\x1b[?25l';
+const SHOW_CURSOR = '\x1b[?25h';
 
 const s = {
   banner: () => console.log(`\n${CYAN}${BOLD}
@@ -87,6 +94,72 @@ const s = {
   clearThinking: (interval: ReturnType<typeof setInterval>) => {
     clearInterval(interval);
     process.stdout.write('\r' + ' '.repeat(30) + '\r');
+  },
+
+  dialog: async (title: string, promptText: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const width = 50;
+      const innerWidth = width - 6;
+
+      process.stdout.write(HIDE_CURSOR);
+
+      const lines = [
+        `  ${BG_BLUE}${WHITE} ${title.padEnd(width - 1)} ${RESET}`,
+        `  ${BG_WHITE}${BLACK} ╔${'═'.repeat(innerWidth)}╗${RESET}`,
+        `  ${BG_WHITE}${BLACK} ║  ${CYAN}${promptText}:${RESET}${' '.repeat(innerWidth - promptText.length - 1)}${BG_WHITE}${BLACK}║${RESET}`,
+        `  ${BG_WHITE}${BLACK} ╠${'═'.repeat(innerWidth)}╣${RESET}`,
+        `  ${BG_WHITE}${BLACK} ║  > ${' '.repeat(innerWidth - 4)}${BG_WHITE}${BLACK}║${RESET}`,
+        `  ${BG_WHITE}${BLACK} ╚${'═'.repeat(innerWidth)}╝${RESET}`,
+      ];
+
+      const restore = () => {
+        process.stdout.write(SHOW_CURSOR);
+        for (let i = 0; i < lines.length; i++) {
+          process.stdout.write(MOVE_UP + CLEAR_LINE);
+        }
+        process.stdout.write(CLEAR_LINE + '\r');
+      };
+
+      for (const line of lines) {
+        console.log(line);
+      }
+
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      let input = '';
+      const inputLine = () => {
+        process.stdout.write(CLEAR_LINE + `\r  ${BG_WHITE}${BLACK} ║  > ${RESET}${WHITE}${input}${RESET}${BG_WHITE}${BLACK}${' '.repeat(innerWidth - input.length - 4)}${BG_WHITE}${BLACK}║${RESET}\r`);
+        process.stdout.write(`\r  ${BG_WHITE}${BLACK} ║  > ${RESET}${WHITE}${input}`);
+      };
+
+      inputLine();
+
+      const cleanup = () => {
+        process.stdin.removeAllListeners('data');
+        rl.close();
+      };
+
+      process.stdin.on('data', (chunk: Buffer) => {
+        const key = chunk.toString();
+
+        if (key === '\r' || key === '\n') {
+          cleanup();
+          restore();
+          resolve(input);
+        } else if (key === '\x03') {
+          cleanup();
+          restore();
+          resolve('');
+        } else if (key === '\x7f' || key === '\x08') {
+          if (input.length > 0) {
+            input = input.slice(0, -1);
+            inputLine();
+          }
+        } else if (key >= ' ' && input.length < innerWidth - 4) {
+          input += key;
+          inputLine();
+        }
+      });
+    });
   }
 };
 
@@ -299,81 +372,54 @@ function rpcErr(code: string, msg: string): string {
 // ---------------------------------------------------------------------------
 
 function startCLI(comm: HyperswarmCommunicator): void {
-  let rl: readline.Interface | null = null;
   let isRunning = true;
 
-  rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  async function prompt(q: string): Promise<string> { return new Promise(res => rl!.question(q, res)); }
-
   async function loop() {
-    if (!isRunning || !rl) return;
+    if (!isRunning) return;
     try {
-      const raw = await prompt(`\n${CYAN}❯${RESET} `);
-      if (!raw || !isRunning) { loop(); return; }
+      const input = await s.dialog('Bolloon Agent', '输入命令');
 
-      const input = raw.trim();
-      if (input === '退出' || input === 'exit' || input === 'quit') {
+      if (!input || !isRunning) { loop(); return; }
+
+      const trimmed = input.trim();
+      if (trimmed === '退出' || trimmed === 'exit' || trimmed === 'quit') {
         isRunning = false;
-        rl.close();
         comm.stop();
         console.log(`\n${CYAN}👋 再见！${RESET}\n`);
         return;
       }
 
-      if (input.toLowerCase() === 'peers') {
+      if (trimmed.toLowerCase() === 'peers') {
         const peers = comm.getConnections();
-        console.log(`\n${GRAY}已连接节点: ${peers.length}${RESET}`);
+        s.divider();
+        console.log(`${GRAY}已连接节点: ${peers.length}${RESET}`);
         for (const c of peers) {
           console.log(`  ${GRAY}·${RESET} ${c.publicKey.substring(0, 16)}...`);
         }
+        console.log();
         loop();
         return;
       }
 
-      if (!input) { loop(); return; }
+      if (!trimmed) { loop(); return; }
 
       const a = await getAgent();
+      s.divider();
       const thinking = s.Thinking();
-      const response = await a.prompt(input);
+      const response = await a.prompt(trimmed);
       s.clearThinking(thinking);
       s.divider();
       console.log(`${response}\n`);
       loop();
     } catch (e: any) {
       if (!isRunning) return;
-      if (e.message?.includes('ERR_USE_AFTER_CLOSE') || e.message?.includes('readline was closed')) {
+      if (e.message?.includes('ERR_USE_AFTER_CLOSE')) {
         return;
       }
       s.divider();
       console.log(`${MAGENTA}❌ ${e.message}${RESET}\n`);
       loop();
     }
-  }
-
-  async function handleRead(p: string) {
-    if (!p) { s.warn('用法: read <file>'); return; }
-    const c = await documentReader.read(p);
-    console.log(`${GREEN}📄 ${c.metadata.filename}${RESET} (${c.metadata.size} bytes)`);
-    console.log(c.text.substring(0, 300) + '...');
-  }
-
-  async function handleCLISummarize(args: string[]) {
-    const [doc, ...ctx] = args;
-    if (!doc) { console.log('用法: summarize <doc> [context]'); return; }
-    const a = await getAgent();
-    const r = await a.summarizeDocument(doc, ctx.join(' '));
-    console.log(`\n📝 摘要:\n${r.summary}`);
-    console.log(`   质量: ${(r.qualityScore * 10).toFixed(1)}/10\n`);
-  }
-
-  async function handleCLIImprove(args: string[]) {
-    const doc = args[0], req = args.slice(1).join(' ');
-    if (!doc || !req) { console.log('用法: improve <doc> <requirements>'); return; }
-    const a = await getAgent();
-    const r = await a.improveDocument({ originalPath: doc, requirements: req });
-    console.log(`\n✅ 改进${r.improved ? '成功' : '失败'}`);
-    console.log(`   质量: ${(r.qualityScore * 10).toFixed(1)}/10  自动发送: ${r.shouldAutoSend}`);
-    if (r.newContent) console.log(`\n${r.newContent.substring(0, 300)}...`);
   }
 
   loop();
