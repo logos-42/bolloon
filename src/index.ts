@@ -320,58 +320,52 @@ function rpcErr(code: string, msg: string): string {
 // ---------------------------------------------------------------------------
 
 function startCLI(comm: HyperswarmCommunicator): void {
-  let isRunning = true;
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-  async function loop() {
-    if (!isRunning) return;
+  const ask = () => {
+    rl.question(`${CYAN}❯ ${RESET}`, async (input) => {
+      const trimmed = input.trim();
 
-    try {
-      const input = await s.dialog('Bolloon Agent', '');
-
-      if (!input) {
-        loop();
+      if (!trimmed) {
+        ask();
         return;
       }
 
-      if (input === '退出' || input === 'exit' || input === 'quit') {
-        isRunning = false;
-        comm.stop();
+      if (trimmed === '退出' || trimmed === 'exit' || trimmed === 'quit') {
         console.log(`\n${CYAN}👋 再见！${RESET}\n`);
+        rl.close();
+        comm.stop();
         return;
       }
 
-      if (input.toLowerCase() === 'peers') {
+      if (trimmed.toLowerCase() === 'peers') {
         const peers = comm.getConnections();
-        s.divider();
-        console.log(`${GRAY}已连接节点: ${peers.length}${RESET}`);
+        console.log(`\n${GRAY}已连接节点: ${peers.length}${RESET}`);
         for (const c of peers) {
           console.log(`  ${GRAY}·${RESET} ${c.publicKey.substring(0, 16)}...`);
         }
-        console.log();
-        loop();
+        ask();
         return;
       }
 
-      const a = await getAgent();
-      s.divider();
-      const thinking = s.Thinking();
-      const response = await a.prompt(input);
-      s.clearThinking(thinking);
-      s.divider();
-      console.log(`${response}\n`);
-      loop();
-    } catch (e: any) {
-      if (!isRunning) return;
-      if (e.message?.includes('ERR_USE_AFTER_CLOSE')) {
-        return;
+      try {
+        const a = await getAgent();
+        process.stdout.write('\n');
+        const thinking = s.Thinking();
+        const response = await a.prompt(trimmed);
+        s.clearThinking(thinking);
+        console.log(`\n${response}\n`);
+      } catch (e: any) {
+        if (!e.message?.includes('ERR_USE_AFTER_CLOSE')) {
+          console.log(`\n${MAGENTA}❌ ${e.message}${RESET}\n`);
+        }
       }
-      s.divider();
-      console.log(`${MAGENTA}❌ ${e.message}${RESET}\n`);
-      loop();
-    }
-  }
 
-  loop();
+      ask();
+    });
+  };
+
+  ask();
 }
 
 // ---------------------------------------------------------------------------
