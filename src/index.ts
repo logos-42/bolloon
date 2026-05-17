@@ -346,56 +346,157 @@ function rpcErr(code: string, msg: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// CLI
+// CLI with persistent bottom prompt
 // ---------------------------------------------------------------------------
 
+const SAVE_CURSOR = '\x1b[s';
+const RESTORE_CURSOR = '\x1b[u';
+const MOVE_TO_BOTTOM = '\x1b[999A';
+const HIDE_CURSOR_SEQ = '\x1b[?25l';
+const SHOW_CURSOR_SEQ = '\x1b[?25h';
+const MOVE_UP_1 = '\x1b[1A';
+
+let isRunning = false;
+let currentInput = '';
+let promptVisible = false;
+
+function getTermHeight(): number {
+  return process.stdout.rows || 24;
+}
+
+function moveCursorToBottom(): void {
+  const height = getTermHeight();
+  process.stdout.write(`\x1b[${height};1H`);
+}
+
+function showBottomPrompt(): void {
+  if (!isRunning) return;
+  promptVisible = true;
+  process.stdout.write(SAVE_CURSOR);
+  moveCursorToBottom();
+  process.stdout.write(`${CYAN}❯ ${RESET}${currentInput}${HIDE_CURSOR_SEQ}`);
+  process.stdout.write(RESTORE_CURSOR);
+}
+
+function clearPromptLine(): void {
+  if (!promptVisible) return;
+  process.stdout.write(SAVE_CURSOR);
+  moveCursorToBottom();
+  process.stdout.write(CLEAR_LINE);
+  process.stdout.write(RESTORE_CURSOR);
+  promptVisible = false;
+}
+
 function startCLI(comm: HyperswarmCommunicator): void {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  isRunning = true;
+  currentInput = '';
+  promptVisible = false;
 
-  const ask = () => {
-    rl.question(`${CYAN}❯ ${RESET}`, async (input) => {
-      const trimmed = input.trim();
+  try {
+    (process.stdin as any).setRawMode(true);
+  } catch {
+    console.log('Warning: Raw mode not available, using fallback input');
+  }
+  readline.emitKeypressEvents(process.stdin);
 
-      if (!trimmed) {
-        ask();
-        return;
-      }
+  process.stdout.write(CLEAR_LINE);
+  showBottomPrompt();
 
-      if (trimmed === '退出' || trimmed === 'exit' || trimmed === 'quit') {
-        console.log(`\n${CYAN}👋 再见！${RESET}\n`);
-        rl.close();
-        comm.stop();
-        return;
-      }
+  const handleInput = (chunk: Buffer, key: { name: string; ctrl: boolean }) => {
+    if (!isRunning) return;
 
-      if (trimmed.toLowerCase() === 'peers') {
-        const peers = comm.getConnections();
-        console.log(`\n${GRAY}已连接节点: ${peers.length}${RESET}`);
-        for (const c of peers) {
-          console.log(`  ${GRAY}·${RESET} ${c.publicKey.substring(0, 16)}...`);
-        }
-        ask();
-        return;
-      }
+    if (key.ctrl && key.name === 'c') {
+      clearPromptLine();
+      process.stdout.write(`\n${CYAN}👋 再见！${RESET}\n`);
+      try { (process.stdin as any).setRawMode(false); } catch {}
+      process.exit(0);
+      return;
+    }
 
-      try {
-        const a = await getAgent();
+    if (key.name === 'return') {
+      const trimmed = currentInput.trim();
+      currentInput = '';
+      clearPromptLine();
+
+      if (trimmed) {
         process.stdout.write('\n');
-        const thinking = s.Thinking();
-        const response = await a.prompt(trimmed);
-        s.clearThinking(thinking);
-        console.log(`\n${response}\n`);
-      } catch (e: any) {
-        if (!e.message?.includes('ERR_USE_AFTER_CLOSE')) {
-          console.log(`\n${MAGENTA}❌ ${e.message}${RESET}\n`);
-        }
+        processInput(trimmed, comm).then(() => {
+          if (isRunning) showBottomPrompt();
+        });
+      } else {
+        showBottomPrompt();
       }
+      return;
+    }
 
-      ask();
-    });
+    if (key.name === 'backspace') {
+      if (currentInput.length > 0) {
+        currentInput = currentInput.slice(0, -1);
+        showBottomPrompt();
+      }
+      return;
+    }
+
+    if (key.name === 'escape' || (key.ctrl && key.name === 'u')) {
+      currentInput = '';
+      showBottomPrompt();
+      return;
+    }
+
+    if (key.name === 'tab') {
+      return;
+    }
+
+    if (key.name && key.name.length === 1) {
+      currentInput += chunk.toString();
+      showBottomPrompt();
+    }
   };
 
-  ask();
+  process.stdin.on('data', handleInput);
+
+  process.on('exit', () => {
+    isRunning = false;
+    process.stdout.write(SHOW_CURSOR_SEQ);
+  });
+}
+
+async function processInput(input: string, comm: HyperswarmCommunicator): Promise<void> {
+  const trimmed = input.trim();
+
+  if (trimmed === '退出' || trimmed === 'exit' || trimmed === 'quit') {
+    clearPromptLine();
+    process.stdout.write(`${CYAN}👋 再见！${RESET}\n`);
+    isRunning = false;
+    process.stdin.destroy();
+    comm.stop();
+    return;
+  }
+
+  if (trimmed.toLowerCase() === 'peers') {
+    const peers = comm.getConnections();
+    process.stdout.write(`${GRAY}已连接节点: ${peers.length}${RESET}\n`);
+    for (const c of peers) {
+      process.stdout.write(`  ${GRAY}·${RESET} ${c.publicKey.substring(0, 16)}...\n`);
+    }
+    return;
+  }
+
+  try {
+    const a = await getAgent();
+    const thinking = setInterval(() => {
+      if (!isRunning) return;
+      process.stdout.write('\r  \x1b[33m⟳\x1b[0m 思考中...    \x1b[?25l');
+    }, 80);
+    const response = await a.prompt(trimmed);
+    clearInterval(thinking);
+    process.stdout.write('\r' + ' '.repeat(30) + '\r');
+    process.stdout.write(`${response}\n`);
+  } catch (e: any) {
+    if (!e.message?.includes('ERR_USE_AFTER_CLOSE') && !e.message?.includes('write after end')) {
+      process.stdout.write(`${MAGENTA}❌ ${e.message}${RESET}\n`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
