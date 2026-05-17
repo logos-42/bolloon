@@ -146,7 +146,7 @@ export class PiAIModel {
       ollama: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
       openrouter: 'https://openrouter.ai/api/v1',
       gemini: 'https://generativelanguage.googleapis.com/v1beta',
-      minimax: 'https://api.minimax.chat/v1',
+      minimax: 'https://api.minimaxi.com/v1',
       local: 'http://localhost:11434'
     };
 
