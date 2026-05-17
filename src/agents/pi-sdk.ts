@@ -21,7 +21,7 @@ import {
   type SessionChannel,
   type SessionMessage
 } from '../social/heartbeat.js';
-import { Session, SkillRegistry, type Skill } from '@bolloon/constraint-runtime';
+import { Session, SkillRegistry, saveSession, loadSession, type Skill, type StoredSession } from '@bolloon/constraint-runtime';
 
 export interface AgentSessionConfig {
   cwd: string;
@@ -74,8 +74,13 @@ export class PiSessionManager {
   private channels: Map<string, SessionChannel> = new Map();
   private channelsPath: string;
   private initialized: boolean = false;
+  private sessionDir: string;
+  private cwd: string;
 
   constructor(agentId: string, cwd: string) {
+    this.cwd = cwd;
+    this.sessionDir = path.join(cwd, '.port_sessions');
+
     const sessionId = `pi-session-${Date.now()}`;
     this.session = new Session(sessionId);
 
@@ -104,6 +109,7 @@ export class PiSessionManager {
 
   addSessionMessage(msg: string): void {
     this.session.addMessage(msg);
+    this.persistSession();
   }
 
   getSessionHistory(): string[] {
@@ -112,17 +118,46 @@ export class PiSessionManager {
 
   setSessionContext(key: string, value: unknown): void {
     this.session.setContext(key, value);
+    this.persistSession();
   }
 
   getSessionContext(key: string): unknown {
     return this.session.getContext(key);
   }
 
+  private persistSession(): void {
+    try {
+      const stored: StoredSession = {
+        sessionId: this.session.sessionId,
+        messages: this.session.history,
+        inputTokens: 0,
+        outputTokens: 0
+      };
+      saveSession(stored);
+    } catch (e) {
+      console.warn('Failed to persist session:', e);
+    }
+  }
+
+  private loadPersistedSession(): void {
+    try {
+      const sessionId = this.state.id;
+      const stored = loadSession(sessionId);
+      for (const msg of stored.messages) {
+        this.session.addMessage(msg);
+      }
+    } catch {
+      // No persisted session found, start fresh
+    }
+  }
+
   async initialize(): Promise<void> {
     if (this.initialized) return;
     await fs.mkdir(SHARED_SESSION_PATH, { recursive: true });
+    await fs.mkdir(this.sessionDir, { recursive: true });
     this.persona = await this.loadPersona();
     await this.loadChannels();
+    this.loadPersistedSession();
     this.initialized = true;
   }
 
