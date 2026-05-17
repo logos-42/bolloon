@@ -22,6 +22,16 @@ import {
   type SessionMessage,
   type SocialSessionProvider
 } from '../social/heartbeat.js';
+import {
+  GlobalSharedContextManager,
+  createGlobalSharedContext,
+  getGlobalSharedContext,
+  type ActionSummary,
+  type AgentInfo,
+  type CooperationTask,
+  type CooperationType,
+  type GlobalSharedContext
+} from '../social/global-shared-context.js';
 import { Session, SkillRegistry, saveSession, loadSession, type Skill, type StoredSession } from '@bolloon/constraint-runtime';
 
 export interface AgentSessionConfig {
@@ -44,6 +54,7 @@ export interface ImprovementRequest {
 }
 
 export type { WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
+export type { ActionSummary, AgentInfo, CooperationTask, CooperationType } from '../social/global-shared-context.js';
 
 export interface PiSessionState {
   id: string;
@@ -77,10 +88,13 @@ export class PiSessionManager implements SocialSessionProvider {
   private initialized: boolean = false;
   private sessionDir: string;
   private cwd: string;
+  private sharedContext: GlobalSharedContextManager;
+  private agentId: string;
 
   constructor(agentId: string, cwd: string) {
     this.cwd = cwd;
     this.sessionDir = path.join(cwd, '.port_sessions');
+    this.agentId = agentId;
 
     const sessionId = `pi-session-${Date.now()}`;
     this.session = new Session(sessionId);
@@ -98,6 +112,7 @@ export class PiSessionManager implements SocialSessionProvider {
       fileContext: new Map()
     };
     this.channelsPath = path.join(SHARED_SESSION_PATH, 'pi-channels.json');
+    this.sharedContext = getGlobalSharedContext();
   }
 
   get sessionId(): string {
@@ -159,6 +174,22 @@ export class PiSessionManager implements SocialSessionProvider {
     this.persona = await this.loadPersona();
     await this.loadChannels();
     this.loadPersistedSession();
+    await this.sharedContext.initialize();
+
+    await this.sharedContext.registerAgent({
+      agentId: this.agentId,
+      sessionId: this.sessionId,
+      channelId: 'system',
+      capabilities: this.persona?.capabilities || [],
+      status: 'active',
+      name: this.persona?.name,
+      persona: this.persona ? {
+        name: this.persona.name,
+        description: this.persona.description,
+        capabilities: this.persona.capabilities
+      } : undefined
+    });
+
     this.initialized = true;
   }
 
@@ -321,6 +352,71 @@ export class PiSessionManager implements SocialSessionProvider {
       await this.saveChannels();
     }
   }
+
+  async addUserActionToSharedContext(content: string, importance?: number): Promise<void> {
+    await this.initialize();
+    await this.sharedContext.addUserAction(content, this.agentId, undefined, importance);
+    await this.sharedContext.updateAgentStatus(this.agentId, 'active');
+  }
+
+  async addSharedKnowledge(knowledge: string): Promise<void> {
+    await this.initialize();
+    await this.sharedContext.addSharedKnowledge(knowledge);
+  }
+
+  async getRecentActionsSummary(count?: number): Promise<string> {
+    return this.sharedContext.getRecentActionsSummary(count);
+  }
+
+  async getSharedKnowledge(): Promise<string[]> {
+    return this.sharedContext.getSharedKnowledge();
+  }
+
+  async getGlobalContext(): Promise<GlobalSharedContext> {
+    return this.sharedContext.getFullContext();
+  }
+
+  async getGlobalContextSummary(): Promise<string> {
+    return this.sharedContext.getContextSummary();
+  }
+
+  async createCooperation(
+    type: CooperationType,
+    task: string,
+    toAgentId?: string,
+    context?: string
+  ): Promise<CooperationTask> {
+    await this.initialize();
+    return this.sharedContext.createCooperation(type, this.agentId, task, toAgentId, context);
+  }
+
+  async getPendingCooperations(): Promise<CooperationTask[]> {
+    return this.sharedContext.getPendingCooperations(this.agentId);
+  }
+
+  async updateCooperationStatus(
+    cooperationId: string,
+    status: 'pending' | 'in_progress' | 'done' | 'failed',
+    result?: string
+  ): Promise<void> {
+    await this.sharedContext.updateCooperationStatus(cooperationId, status, result);
+  }
+
+  async getAllRegisteredAgents(): Promise<AgentInfo[]> {
+    return this.sharedContext.getAllAgents();
+  }
+
+  async findAgentByCapability(capability: string): Promise<AgentInfo[]> {
+    return this.sharedContext.findAgentByCapability(capability);
+  }
+
+  async getCooperation(cooperationId: string): Promise<CooperationTask | undefined> {
+    return this.sharedContext.getCooperation(cooperationId);
+  }
+
+  async updateAgentStatusInRegistry(status: 'active' | 'idle' | 'busy'): Promise<void> {
+    await this.sharedContext.updateAgentStatus(this.agentId, status);
+  }
 }
 
 export interface Tool {
@@ -408,6 +504,16 @@ export interface AgentSession {
   sendSocialMessage(channelId: string, content: string): Promise<void>;
   startSocialHeartbeat(config?: Partial<HeartbeatConfig>): Promise<void>;
   stopSocialHeartbeat(): void;
+  addUserAction(content: string, importance?: number): Promise<void>;
+  addSharedKnowledge(knowledge: string): Promise<void>;
+  getRecentActionsSummary(count?: number): Promise<string>;
+  getSharedKnowledge(): Promise<string[]>;
+  getGlobalContextSummary(): Promise<string>;
+  createCooperation(type: CooperationType, task: string, toAgentId?: string, context?: string): Promise<CooperationTask>;
+  getPendingCooperations(): Promise<CooperationTask[]>;
+  updateCooperationStatus(cooperationId: string, status: 'pending' | 'in_progress' | 'done' | 'failed', result?: string): Promise<void>;
+  getAllRegisteredAgents(): Promise<AgentInfo[]>;
+  findAgentByCapability(capability: string): Promise<AgentInfo[]>;
 }
 
 class PiAgentSession implements AgentSession {
@@ -1181,6 +1287,55 @@ ${toolDefs}
 
   async executeSkill(name: string, params: Record<string, unknown>): Promise<string> {
     return this.skillRegistry.execute(name, params);
+  }
+
+  async addUserAction(content: string, importance?: number): Promise<void> {
+    await this.sessionManager.addUserActionToSharedContext(content, importance);
+  }
+
+  async addSharedKnowledge(knowledge: string): Promise<void> {
+    await this.sessionManager.addSharedKnowledge(knowledge);
+  }
+
+  async getRecentActionsSummary(count?: number): Promise<string> {
+    return this.sessionManager.getRecentActionsSummary(count);
+  }
+
+  async getSharedKnowledge(): Promise<string[]> {
+    return this.sessionManager.getSharedKnowledge();
+  }
+
+  async getGlobalContextSummary(): Promise<string> {
+    return this.sessionManager.getGlobalContextSummary();
+  }
+
+  async createCooperation(
+    type: CooperationType,
+    task: string,
+    toAgentId?: string,
+    context?: string
+  ): Promise<CooperationTask> {
+    return this.sessionManager.createCooperation(type, task, toAgentId, context);
+  }
+
+  async getPendingCooperations(): Promise<CooperationTask[]> {
+    return this.sessionManager.getPendingCooperations();
+  }
+
+  async updateCooperationStatus(
+    cooperationId: string,
+    status: 'pending' | 'in_progress' | 'done' | 'failed',
+    result?: string
+  ): Promise<void> {
+    return this.sessionManager.updateCooperationStatus(cooperationId, status, result);
+  }
+
+  async getAllRegisteredAgents(): Promise<AgentInfo[]> {
+    return this.sessionManager.getAllRegisteredAgents();
+  }
+
+  async findAgentByCapability(capability: string): Promise<AgentInfo[]> {
+    return this.sessionManager.findAgentByCapability(capability);
   }
 }
 
