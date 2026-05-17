@@ -918,5 +918,80 @@
     "name": "utils",
     "source_hint": "tools/utils.ts",
     "responsibility": "Tool module mirrored from archived TypeScript path tools/utils.ts"
+  },
+  {
+    "name": "PolymarketListMarkets",
+    "source_hint": "tools/PolymarketSDK/listMarkets.ts",
+    "responsibility": "Fetch prediction markets from Polymarket with filters like volume, limit, and sorting"
+  },
+  {
+    "name": "PolymarketGetMarket",
+    "source_hint": "tools/PolymarketSDK/getMarket.ts",
+    "responsibility": "Get detailed information about a specific Polymarket market by ID"
+  },
+  {
+    "name": "PolymarketCreateOrder",
+    "source_hint": "tools/PolymarketSDK/createOrder.ts",
+    "responsibility": "Create and post an order (buy/sell) on Polymarket prediction market"
+  },
+  {
+    "name": "PolymarketCancelOrder",
+    "source_hint": "tools/PolymarketSDK/cancelOrder.ts",
+    "responsibility": "Cancel a pending order on Polymarket"
+  },
+  {
+    "name": "PolymarketGetOrders",
+    "source_hint": "tools/PolymarketSDK/getOrders.ts",
+    "responsibility": "Get user's orders from Polymarket"
+  },
+  {
+    "name": "SafeCreateTransaction",
+    "source_hint": "tools/SafeSDK/createTransaction.ts",
+    "responsibility": "Create a multi-signature Safe transaction with recipient, value, and data"
+  },
+  {
+    "name": "SafeProposeTransaction",
+    "source_hint": "tools/SafeSDK/proposeTransaction.ts",
+    "responsibility": "Propose a Safe transaction to the Safe Transaction Service for sharing with signers"
+  },
+  {
+    "name": "SafeConfirmTransaction",
+    "source_hint": "tools/SafeSDK/confirmTransaction.ts",
+    "responsibility": "Confirm/sign a pending Safe transaction with cryptographic signature"
+  },
+  {
+    "name": "SafeExecuteTransaction",
+    "source_hint": "tools/SafeSDK/executeTransaction.ts",
+    "responsibility": "Execute a fully signed Safe transaction on the blockchain"
+  },
+  {
+    "name": "SafeGetPendingTransactions",
+    "source_hint": "tools/SafeSDK/getPendingTransactions.ts",
+    "responsibility": "Retrieve pending transactions awaiting confirmation from a Safe"
+  },
+  {
+    "name": "SafeGetBalance",
+    "source_hint": "tools/SafeSDK/getBalance.ts",
+    "responsibility": "Get the native token balance of a Safe wallet"
+  },
+  {
+    "name": "SafeDeploy",
+    "source_hint": "tools/SafeSDK/deploySafe.ts",
+    "responsibility": "Deploy a new Safe multisig wallet with specified owners and threshold"
+  },
+  {
+    "name": "OpenCLICommand",
+    "source_hint": "tools/OpenCLI/runCommand.ts",
+    "responsibility": "Execute an OpenCLI command to interact with websites and web apps (e.g., Twitter, Reddit,bilibili)"
+  },
+  {
+    "name": "OpenCLIListAdapters",
+    "source_hint": "tools/OpenCLI/listAdapters.ts",
+    "responsibility": "List all available OpenCLI adapters for different websites and platforms"
+  },
+  {
+    "name": "OpenCLIExecAdapter",
+    "source_hint": "tools/OpenCLI/execAdapter.ts",
+    "responsibility": "Execute a specific OpenCLI adapter with parameters to automate web interactions"
   }
 ]

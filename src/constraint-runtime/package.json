@@ -12,5 +12,12 @@
     "@types/node": "^25.8.0",
     "@types/platform": "^1.3.6",
     "platform": "^1.3.6"
+  },
+  "dependencies": {
+    "@jackwener/opencli": "^1.7.22",
+    "@safe-global/api-kit": "^4.1.0",
+    "@safe-global/protocol-kit": "^7.1.0",
+    "@safe-global/relay-kit": "^5.0.0",
+    "polymarket-sdk": "^1.0.2"
   }
 }

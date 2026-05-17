@@ -19,7 +19,8 @@ import {
   type PersonaDoc,
   type DiscoveredAgent,
   type SessionChannel,
-  type SessionMessage
+  type SessionMessage,
+  type SocialSessionProvider
 } from '../social/heartbeat.js';
 import { Session, SkillRegistry, saveSession, loadSession, type Skill, type StoredSession } from '@bolloon/constraint-runtime';
 
@@ -66,7 +67,7 @@ export interface PiMemory {
 const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'sessions');
 const PERSONA_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'persona.json');
 
-export class PiSessionManager {
+export class PiSessionManager implements SocialSessionProvider {
   private session: Session;
   private state: PiSessionState;
   private memory: PiMemory;
@@ -260,7 +261,7 @@ export class PiSessionManager {
     return this.channels.get(channelId)?.messages || [];
   }
 
-  async createChannel(name: string, peerInfo?: { peerId?: string; peerDid?: string; peerName?: string }): Promise<SessionChannel> {
+  async createChannel(name: string, peerInfo?: { peerId?: string; peerDid?: string; peerName?: string }, persona?: PersonaDoc): Promise<SessionChannel> {
     await this.initialize();
 
     const channelId = `ch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -270,7 +271,8 @@ export class PiSessionManager {
       messages: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      ...peerInfo
+      ...peerInfo,
+      persona: persona || undefined
     };
 
     this.channels.set(channelId, channel);
@@ -278,7 +280,7 @@ export class PiSessionManager {
     return channel;
   }
 
-  async getOrCreatePeerChannel(peerDid: string, peerName: string): Promise<SessionChannel> {
+  async getOrCreatePeerChannel(peerDid: string, peerName: string, persona?: PersonaDoc): Promise<SessionChannel> {
     await this.initialize();
 
     for (const channel of this.channels.values()) {
@@ -290,7 +292,7 @@ export class PiSessionManager {
     return this.createChannel(`与 ${peerName} 的对话`, {
       peerDid,
       peerName
-    });
+    }, persona);
   }
 
   async setChannelInfo(channelId: string, info: Partial<SessionChannel>): Promise<void> {
@@ -304,6 +306,20 @@ export class PiSessionManager {
 
   getAllChannels(): SessionChannel[] {
     return Array.from(this.channels.values());
+  }
+
+  getChannelPersona(channelId: string): PersonaDoc | undefined {
+    return this.channels.get(channelId)?.persona;
+  }
+
+  async setChannelPersona(channelId: string, persona: PersonaDoc): Promise<void> {
+    await this.initialize();
+    const channel = this.channels.get(channelId);
+    if (channel) {
+      channel.persona = persona;
+      channel.updatedAt = new Date().toISOString();
+      await this.saveChannels();
+    }
   }
 }
 
