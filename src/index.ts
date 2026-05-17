@@ -247,8 +247,22 @@ async function bootstrapP2P(
 // ---------------------------------------------------------------------------
 
 let agent: Awaited<ReturnType<typeof createAgentSession>> | null = null;
+let agentIdentity: { did: string; name: string; publicKey: string } | null = null;
+
 async function getAgent() {
-  if (!agent) agent = await createAgentSession({ cwd: process.cwd(), peerId: 'harness' });
+  if (!agent) {
+    const identityDoc = agentIdentity ? {
+      did: agentIdentity.did,
+      name: agentIdentity.name,
+      publicKey: agentIdentity.publicKey,
+      createdAt: Date.now()
+    } : undefined;
+    agent = await createAgentSession({
+      cwd: process.cwd(),
+      peerId: 'harness',
+      identityDoc
+    });
+  }
   return agent;
 }
 
@@ -1032,7 +1046,8 @@ async function main() {
     }
   }
 
-  const { keypair, name } = await bootstrapIdentity();
+  const { keypair, did, name } = await bootstrapIdentity();
+  agentIdentity = { did, name, publicKey: keypair.publicKeyHex };
   publishDID(name, keypair);
 
   const verifier = createVerificationManager();

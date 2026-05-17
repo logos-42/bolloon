@@ -45,6 +45,11 @@ export interface IdentityDoc {
   name: string;
   publicKey: string;
   createdAt: number;
+  peerId?: string;
+  p2pChannel?: string;
+  cid?: string;
+  ipnsName?: string;
+  walletAddress?: string;
 }
 
 export interface ImprovementRequest {
