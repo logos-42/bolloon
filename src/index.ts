@@ -754,11 +754,9 @@ async function main() {
   const hasGemini = !!process.env.GEMINI_API_KEY;
   const hasOllama = !!process.env.OLLAMA_BASE_URL;
 
-  if (hasOpenAI || hasAnthropic || hasOpenRouter || hasGemini || hasOllama) {
-    const provider = hasOpenAI ? 'openai' : hasAnthropic ? 'anthropic' : hasOpenRouter ? 'openrouter' : hasGemini ? 'gemini' : 'ollama';
+  if (hasOpenAI || hasAnthropic || hasOpenRouter || hasGemini || hasOllama || hasMinimax) {
+    const provider = hasOpenAI ? 'openai' : hasAnthropic ? 'anthropic' : hasOpenRouter ? 'openrouter' : hasGemini ? 'gemini' : hasOllama ? 'ollama' : 'minimax';
     initMinimax({ provider: provider as any });
-  } else if (hasMinimax) {
-    initMinimax({ apiKey: process.env.MINIMAX_API_KEY });
   } else if (isNonInteractive) {
     console.log('⚠️  未设置任何 LLM API Key，功能受限（支持 OPENAI_API_KEY, ANTHROPIC_API_KEY, MINIMAX_API_KEY 等）');
   } else {

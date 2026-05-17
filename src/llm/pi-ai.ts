@@ -1,4 +1,4 @@
-export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'local';
+export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'local';
 
 export interface ModelConfig {
   provider: ModelProvider;
@@ -101,6 +101,7 @@ export class PiAIModel {
 
     switch (this.provider) {
       case 'openai':
+      case 'minimax':
         return this.callOpenAI(messages, temperature, maxTokens);
       case 'anthropic':
         return this.callAnthropic(messages, temperature, maxTokens);
@@ -128,6 +129,7 @@ export class PiAIModel {
       ollama: '',
       openrouter: process.env.OPENROUTER_API_KEY || '',
       gemini: process.env.GEMINI_API_KEY || '',
+      minimax: process.env.MINIMAX_API_KEY || '',
       local: ''
     };
     return envVars[this.provider] || '';
@@ -144,6 +146,7 @@ export class PiAIModel {
       ollama: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
       openrouter: 'https://openrouter.ai/api/v1',
       gemini: 'https://generativelanguage.googleapis.com/v1beta',
+      minimax: 'https://api.minimax.chat/v1',
       local: 'http://localhost:11434'
     };
 
@@ -157,6 +160,7 @@ export class PiAIModel {
       ollama: this.config.model || 'llama3.2',
       openrouter: this.config.model || 'anthropic/claude-3.5-sonnet',
       gemini: this.config.model || 'gemini-2.0-flash',
+      minimax: this.config.model || 'MiniMax-M2.7',
       local: this.config.model || 'llama3.2'
     };
     return modelMap[this.provider];
@@ -431,6 +435,7 @@ function detectProvider(): ModelProvider {
   if (process.env.OPENROUTER_API_KEY) return 'openrouter';
   if (process.env.GEMINI_API_KEY) return 'gemini';
   if (process.env.OLLAMA_BASE_URL) return 'ollama';
+  if (process.env.MINIMAX_API_KEY) return 'minimax';
   return 'openai';
 }
 
@@ -441,6 +446,7 @@ function detectModel(provider: ModelProvider): string {
     ollama: 'llama3.2',
     openrouter: 'anthropic/claude-3.5-sonnet',
     gemini: 'gemini-2.0-flash',
+    minimax: 'MiniMax-M2.7',
     local: 'llama3.2'
   };
   return defaults[provider];
