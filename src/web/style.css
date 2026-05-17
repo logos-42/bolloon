@@ -613,6 +613,27 @@ body {
   border-bottom-left-radius: 4px;
 }
 
+.message-header {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+.environment-details {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+}
+
 .time {
   font-size: 11px;
   color: var(--text-muted);

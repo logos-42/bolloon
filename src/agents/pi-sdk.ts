@@ -863,6 +863,16 @@ ${toolDefs}
       finalResponse = '任务处理超时，请尝试更具体的请求。';
     }
 
+    const now = new Date().toISOString();
+    const identityPrefix = `${this.identity.name} ｜ bolloon 智能体
+<environment_details>
+Current time: ${now}
+Working directory: ${this.cwd}
+Workspace root folder: ${this.cwd}
+</environment_details>
+`;
+    finalResponse = identityPrefix + finalResponse;
+
     this.messageHistory.push({ role: 'assistant', content: finalResponse });
     return finalResponse;
   }

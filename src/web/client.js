@@ -207,15 +207,40 @@ function addMessage(content, type, save = true) {
   const div = document.createElement('div');
   div.className = `message message-${type}`;
 
-  const bubble = document.createElement('div');
-  bubble.className = `bubble bubble-${type}`;
-  bubble.textContent = content;
+  const envMatch = content.match(/^(.+?)\n<environment_details>([\s\S]*?)<\/environment_details>\n([\s\S]*)$/);
+
+  if (envMatch) {
+    const identity = envMatch[1].trim();
+    const envDetails = envMatch[2].trim();
+    const messageBody = envMatch[3].trim();
+
+    const header = document.createElement('div');
+    header.className = 'message-header';
+    header.textContent = identity;
+    div.appendChild(header);
+
+    const envDiv = document.createElement('div');
+    envDiv.className = 'environment-details';
+    envDiv.textContent = `<environment_details>${envDetails}</environment_details>`;
+    div.appendChild(envDiv);
+
+    if (messageBody) {
+      const bubble = document.createElement('div');
+      bubble.className = `bubble bubble-${type}`;
+      bubble.textContent = messageBody;
+      div.appendChild(bubble);
+    }
+  } else {
+    const bubble = document.createElement('div');
+    bubble.className = `bubble bubble-${type}`;
+    bubble.textContent = content;
+    div.appendChild(bubble);
+  }
 
   const time = document.createElement('div');
   time.className = 'time';
   time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
-  div.appendChild(bubble);
   div.appendChild(time);
   messagesEl.appendChild(div);
 
