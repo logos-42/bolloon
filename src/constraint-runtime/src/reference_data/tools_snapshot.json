@@ -993,5 +993,50 @@
     "name": "OpenCLIExecAdapter",
     "source_hint": "tools/OpenCLI/execAdapter.ts",
     "responsibility": "Execute a specific OpenCLI adapter with parameters to automate web interactions"
+  },
+  {
+    "name": "WalletCreate",
+    "source_hint": "tools/WalletTools/createWallet.ts",
+    "responsibility": "Generate a new crypto wallet with random private key and mnemonic phrase"
+  },
+  {
+    "name": "WalletImport",
+    "source_hint": "tools/WalletTools/importWallet.ts",
+    "responsibility": "Import an existing wallet from mnemonic phrase or private key"
+  },
+  {
+    "name": "WalletGetBalance",
+    "source_hint": "tools/WalletTools/getBalance.ts",
+    "responsibility": "Get the native token balance of a wallet address on any EVM chain"
+  },
+  {
+    "name": "WalletSendTransaction",
+    "source_hint": "tools/WalletTools/sendTransaction.ts",
+    "responsibility": "Send ETH or native tokens from a wallet using private key signing"
+  },
+  {
+    "name": "WalletSignMessage",
+    "source_hint": "tools/WalletTools/signMessage.ts",
+    "responsibility": "Sign a message with the wallet's private key for authentication or verification"
+  },
+  {
+    "name": "WalletTransferToken",
+    "source_hint": "tools/WalletTools/transferToken.ts",
+    "responsibility": "Transfer ERC-20 tokens from a wallet to another address"
+  },
+  {
+    "name": "WalletSetAutoPay",
+    "source_hint": "tools/WalletTools/autoPay.ts",
+    "responsibility": "Configure automatic gas payment for agent transactions using a funded wallet"
+  },
+  {
+    "name": "WalletGetAutoPayConfig",
+    "source_hint": "tools/WalletTools/autoPay.ts",
+    "responsibility": "Get the current auto-pay configuration for an agent"
+  },
+  {
+    "name": "WalletDisableAutoPay",
+    "source_hint": "tools/WalletTools/autoPay.ts",
+    "responsibility": "Disable automatic gas payment for an agent"
   }
 ]

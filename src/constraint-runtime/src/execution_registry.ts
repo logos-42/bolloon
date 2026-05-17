@@ -10,8 +10,9 @@ export class MirroredCommand {
 
 export class MirroredTool {
   constructor(public name: string, public sourceHint: string) {}
-  execute(payload: string): string {
-    return executeTool(this.name, payload).message;
+  async execute(payload: string): Promise<string> {
+    const result = await executeTool(this.name, payload);
+    return result.message;
   }
 }
 
