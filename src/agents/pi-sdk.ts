@@ -462,8 +462,9 @@ const TOOL_DEFINITIONS = `
 5. send_message(peer_id, message) - 向指定对等节点发送消息
 6. broadcast_message(message) - 向所有对等节点广播消息
 7. get_identity() - 获取当前智能体身份信息
-8. run_workflow(steps) - 执行预定义工作流
-9. get_operation_logs() - 获取操作日志
+8. set_persona(persona_json) - 更新智能体 persona，包含 name、description、personality、greeting 等
+9. run_workflow(steps) - 执行预定义工作流
+10. get_operation_logs() - 获取操作日志
 `;
 
 export interface HeartbeatConfig {
@@ -520,6 +521,7 @@ class PiAgentSession implements AgentSession {
   private cwd: string;
   private peerId: string;
   private identity: IdentityDoc;
+  private persona: PersonaDoc | null = null;
   private minimaxAvailable = false;
   private workflows: Map<string, Workflow> = new Map();
   private constraintLayer: ConstraintLayer;
@@ -662,6 +664,36 @@ class PiAgentSession implements AgentSession {
       }
     });
 
+    this.tools.set('set_persona', {
+      name: 'set_persona',
+      description: '更新智能体的 persona 信息，包括名字、描述、性格等',
+      parameters: { persona_json: 'Persona JSON 对象，包含 name、description、personality、greeting 等字段' },
+      execute: async (args) => {
+        try {
+          const personaData = typeof args.persona_json === 'string' ? JSON.parse(args.persona_json) : args.persona_json;
+          const now = new Date().toISOString();
+          const newPersona: PersonaDoc = {
+            name: personaData.name || this.identity.name,
+            description: personaData.description || '',
+            capabilities: personaData.capabilities || [],
+            personality: personaData.personality || '',
+            greeting: personaData.greeting || '',
+            interests: personaData.interests || [],
+            createdAt: this.persona?.createdAt || now,
+            updatedAt: now
+          };
+          await this.setPersona(newPersona);
+          this.persona = newPersona;
+          if (newPersona.name) {
+            this.identity.name = newPersona.name;
+          }
+          return { success: true, output: `Persona 已更新:\n名称: ${newPersona.name}\n描述: ${newPersona.description}\n性格: ${newPersona.personality}` };
+        } catch (e) {
+          return { success: false, error: `更新 persona 失败: ${String(e)}` };
+        }
+      }
+    });
+
     this.tools.set('get_operation_logs', {
       name: 'get_operation_logs',
       description: '获取约束层的操作日志',
@@ -691,6 +723,11 @@ class PiAgentSession implements AgentSession {
   private async initSession(): Promise<void> {
     await this.sessionManager.initialize();
     await this.agentsManager.initialize();
+
+    this.persona = this.sessionManager.getPersona();
+    if (this.persona?.name) {
+      this.identity.name = this.persona.name;
+    }
   }
 
   private createDefaultIdentity(): IdentityDoc {
@@ -761,8 +798,13 @@ class PiAgentSession implements AgentSession {
       const context = this.buildContext();
       const toolDefs = this.getToolDefinitions();
 
-      const systemPrompt = `你是OpenClaw文档智能体，基于ReAct (Reasoning + Acting)模式工作。
+      const personaSection = this.persona ? `
+角色描述: ${this.persona.description || '无'}
+性格特点: ${this.persona.personality || '无'}
+问候语: ${this.persona.greeting || '无'}
+` : '';
 
+      const systemPrompt = `你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
 当前工作目录: ${this.cwd}
 当前身份: ${this.identity.name} (${this.identity.did})
 
@@ -1215,6 +1257,10 @@ ${toolDefs}
 
   async setPersona(persona: PersonaDoc): Promise<void> {
     await this.sessionManager.savePersona(persona);
+    this.persona = persona;
+    if (persona.name) {
+      this.identity.name = persona.name;
+    }
   }
 
   getDiscoveredAgents(): DiscoveredAgent[] {
