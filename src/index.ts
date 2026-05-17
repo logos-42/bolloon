@@ -1140,6 +1140,33 @@ async function main() {
 
   const mode = args.web ? 'web' : 'cli';
   const isNonInteractive = !!(args.tool || args.prompt);
+  const isTuiMode = mode === 'cli' && !isNonInteractive && args.tui;
+
+  const originalLog = console.log;
+  const originalInfo = console.info;
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+
+  const isSdkLog = (msg: string): boolean => {
+    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(msg);
+  };
+
+  if (isTuiMode) {
+    console.log = (...args: any[]) => {
+      const msg = args.join(' ');
+      if (isSdkLog(msg)) return;
+      originalLog.apply(console, args);
+    };
+    console.info = (...args: any[]) => {
+      const msg = args.join(' ');
+      if (isSdkLog(msg)) return;
+      originalInfo.apply(console, args);
+    };
+    process.stdout.write = (chunk: any, ...args: any[]) => {
+      const msg = String(chunk);
+      if (isSdkLog(msg)) return true;
+      return originalStdoutWrite(chunk, ...args);
+    };
+  }
 
   if (isNonInteractive) {
     console.error = () => {};
@@ -1216,6 +1243,9 @@ async function main() {
     s.success(`浏览器已打开 → http://localhost:${port}`);
     openBrowser(`http://localhost:${port}`);
   } else if (isNonInteractive) {
+    console.log = originalLog;
+    console.info = originalInfo;
+    process.stdout.write = originalStdoutWrite;
     s.info('执行命令...');
     console.log();
     await runNonInteractive(args, comm!);
@@ -1230,6 +1260,12 @@ async function main() {
     console.log(`  ${CYAN}--context${RESET}              ${GRAY}- 查看全局上下文${RESET}`);
     console.log(`  ${CYAN}--delegate 任务 coding${RESET}  ${GRAY}- 委派任务${RESET}`);
     console.log(`  ${CYAN}退出${RESET}                   ${GRAY}- 结束对话${RESET}\n`);
+
+    if (!isTuiMode) {
+      console.log = originalLog;
+      console.info = originalInfo;
+      process.stdout.write = originalStdoutWrite;
+    }
 
     startCLI(comm!);
   }
