@@ -395,12 +395,17 @@ function startCLI(comm: HyperswarmCommunicator): void {
   try {
     (process.stdin as any).setRawMode(true);
   } catch {
-    console.log('Warning: Raw mode not available, using fallback input');
   }
   readline.emitKeypressEvents(process.stdin);
 
   process.stdout.write(CLEAR_LINE);
   showBottomPrompt();
+
+  const promptTimer = setInterval(() => {
+    if (isRunning && promptVisible) {
+      showBottomPrompt();
+    }
+  }, 500);
 
   const handleInput = (chunk: Buffer, key: { name: string; ctrl: boolean }) => {
     if (!isRunning) return;
@@ -409,6 +414,7 @@ function startCLI(comm: HyperswarmCommunicator): void {
       clearPromptLine();
       process.stdout.write(`\n${CYAN}👋 再见！${RESET}\n`);
       try { (process.stdin as any).setRawMode(false); } catch {}
+      clearInterval(promptTimer);
       process.exit(0);
       return;
     }
@@ -897,6 +903,7 @@ interface ParsedArgs {
   context?: boolean;
   globalAgents?: boolean;
   addAction?: boolean;
+  tui?: boolean;
 }
 
 function parseArgs(): ParsedArgs {
@@ -1019,6 +1026,9 @@ function parseArgs(): ParsedArgs {
           actionArgs.push(args[++i]);
         }
         result.toolArgs = actionArgs;
+        break;
+      case '--tui':
+        result.tui = true;
         break;
       case '--model':
         result.model = args[++i];
