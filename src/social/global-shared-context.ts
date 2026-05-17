@@ -395,6 +395,90 @@ export class GlobalSharedContextManager {
     this.cooperationQueue = [];
     await this.save();
   }
+
+  async syncFromSubAgent(subAgent: {
+    id: string;
+    name?: string;
+    did?: string;
+    sessionId?: string;
+    channelId?: string;
+    peerId?: string;
+    p2pChannel?: string;
+    cid?: string;
+    ipnsName?: string;
+    walletAddress?: string;
+    capabilities: string[];
+    status: 'creating' | 'active' | 'idle' | 'busy' | 'terminated';
+    persona?: { name: string; description: string; capabilities: string[] };
+  }): Promise<void> {
+    await this.initialize();
+
+    const status = subAgent.status === 'creating' ? 'active' :
+                   subAgent.status === 'terminated' ? 'idle' :
+                   subAgent.status;
+
+    this.agentRegistry[subAgent.id] = {
+      agentId: subAgent.id,
+      did: subAgent.did,
+      sessionId: subAgent.sessionId || '',
+      channelId: subAgent.channelId || '',
+      capabilities: subAgent.capabilities,
+      status: status as AgentInfo['status'],
+      lastActive: new Date().toISOString(),
+      name: subAgent.name,
+      peerId: subAgent.peerId,
+      p2pChannel: subAgent.p2pChannel,
+      cid: subAgent.cid,
+      ipnsName: subAgent.ipnsName,
+      walletAddress: subAgent.walletAddress,
+      persona: subAgent.persona
+    };
+
+    await this.save();
+  }
+
+  async syncToSubAgents(subAgents: Map<string, {
+    id: string;
+    name?: string;
+    did?: string;
+    sessionId?: string;
+    channelId?: string;
+    peerId?: string;
+    p2pChannel?: string;
+    cid?: string;
+    ipnsName?: string;
+    walletAddress?: string;
+    capabilities: string[];
+    status: 'creating' | 'active' | 'idle' | 'busy' | 'terminated';
+    persona?: { name: string; description: string; capabilities: string[] };
+  }>): Promise<void> {
+    await this.initialize();
+
+    for (const [agentId, subAgent] of subAgents) {
+      const status = subAgent.status === 'creating' ? 'active' :
+                     subAgent.status === 'terminated' ? 'idle' :
+                     subAgent.status;
+
+      this.agentRegistry[agentId] = {
+        agentId: subAgent.id,
+        did: subAgent.did,
+        sessionId: subAgent.sessionId || '',
+        channelId: subAgent.channelId || '',
+        capabilities: subAgent.capabilities,
+        status: status as AgentInfo['status'],
+        lastActive: new Date().toISOString(),
+        name: subAgent.name,
+        peerId: subAgent.peerId,
+        p2pChannel: subAgent.p2pChannel,
+        cid: subAgent.cid,
+        ipnsName: subAgent.ipnsName,
+        walletAddress: subAgent.walletAddress,
+        persona: subAgent.persona
+      };
+    }
+
+    await this.save();
+  }
 }
 
 let globalContextInstance: GlobalSharedContextManager | null = null;
