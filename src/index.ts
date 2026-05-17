@@ -167,34 +167,38 @@ async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPa
   return { keypair: kp, did, name };
 }
 
-function publishDID(name: string, kp: import('@diap/sdk').KeyPair): void {
+function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<{ cid?: string; ipnsName?: string }> {
   s.step(2, 4, '发布 DID → IPFS (后台)', 'loading');
 
-  const attempt = async () => {
-    let lastLogTime = 0;
-    const retryWithBackoff = async (retries: number): Promise<void> => {
-      try {
-        const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
-        await auth.registerAgent({ name, services: [] }, kp, '');
-        s.step(2, 4, '发布 DID → IPFS', 'ok');
-      } catch (e: any) {
-        const now = Date.now();
-        if (now - lastLogTime > 30000) {
-          process.stdout.write(`     ${YELLOW}⏳ IPNS发布中 (失败${retries}次), 后台重试...${RESET}\r`);
-          lastLogTime = now;
+  return new Promise((resolve) => {
+    const attempt = async () => {
+      let lastLogTime = 0;
+      const retryWithBackoff = async (retries: number): Promise<void> => {
+        try {
+          const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+          const result = await auth.registerAgent({ name, services: [] }, kp, '');
+          s.step(2, 4, '发布 DID → IPFS', 'ok');
+          resolve({ cid: result.cid, ipnsName: result.ipnsName });
+        } catch (e: any) {
+          const now = Date.now();
+          if (now - lastLogTime > 30000) {
+            process.stdout.write(`     ${YELLOW}⏳ IPNS发布中 (失败${retries}次), 后台重试...${RESET}\r`);
+            lastLogTime = now;
+          }
+          if (retries < 10) {
+            setTimeout(() => retryWithBackoff(retries + 1), 60000);
+          } else {
+            process.stdout.write(`     ${YELLOW}⚠ IPNS发布重试结束，本地模式运行${RESET}\n`);
+            resolve({});
+          }
         }
-        if (retries < 10) {
-          setTimeout(() => retryWithBackoff(retries + 1), 60000);
-        } else {
-          process.stdout.write(`     ${YELLOW}⚠ IPNS发布重试结束，本地模式运行${RESET}\n`);
-        }
-      }
+      };
+
+      setTimeout(() => retryWithBackoff(1), 100);
     };
 
-    setTimeout(() => retryWithBackoff(1), 100);
-  };
-
-  attempt();
+    attempt();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +251,15 @@ async function bootstrapP2P(
 // ---------------------------------------------------------------------------
 
 let agent: Awaited<ReturnType<typeof createAgentSession>> | null = null;
-let agentIdentity: { did: string; name: string; publicKey: string } | null = null;
+let agentIdentity: {
+  did: string;
+  name: string;
+  publicKey: string;
+  peerId?: string;
+  p2pChannel?: string;
+  cid?: string;
+  ipnsName?: string;
+} | null = null;
 
 async function getAgent() {
   if (!agent) {
@@ -255,7 +267,11 @@ async function getAgent() {
       did: agentIdentity.did,
       name: agentIdentity.name,
       publicKey: agentIdentity.publicKey,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      peerId: agentIdentity.peerId,
+      p2pChannel: agentIdentity.p2pChannel,
+      cid: agentIdentity.cid,
+      ipnsName: agentIdentity.ipnsName
     } : undefined;
     agent = await createAgentSession({
       cwd: process.cwd(),
@@ -1048,18 +1064,35 @@ async function main() {
 
   const { keypair, did, name } = await bootstrapIdentity();
   agentIdentity = { did, name, publicKey: keypair.publicKeyHex };
-  publishDID(name, keypair);
+
+  const publishPromise = publishDID(name, keypair);
 
   const verifier = createVerificationManager();
   let comm: HyperswarmCommunicator | null = null;
 
   if (mode === 'web') {
-    bootstrapP2P(verifier).then(c => { comm = c; }).catch(err => {
+    bootstrapP2P(verifier).then(c => {
+      comm = c;
+      const connections = c.getConnections();
+      if (connections.length > 0) {
+        agentIdentity.peerId = connections[0].publicKey;
+        agentIdentity.p2pChannel = 'bolloon-agent-harness';
+      }
+    }).catch(err => {
       s.warn(`P2P 连接失败: ${err.message}`);
     });
   } else {
     comm = await bootstrapP2P(verifier);
+    const connections = comm.getConnections();
+    if (connections.length > 0) {
+      agentIdentity.peerId = connections[0].publicKey;
+      agentIdentity.p2pChannel = 'bolloon-agent-harness';
+    }
   }
+
+  const { cid, ipnsName } = await publishPromise;
+  if (cid) agentIdentity.cid = cid;
+  if (ipnsName) agentIdentity.ipnsName = ipnsName;
 
   s.divider();
 
