@@ -148,25 +148,32 @@ async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPa
 
 function publishDID(name: string, kp: import('@diap/sdk').KeyPair): void {
   s.step(2, 4, '发布 DID → IPFS (后台)', 'loading');
-  let retries = 0;
-  const maxRetries = 10;
 
   const attempt = async () => {
-    try {
-      const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
-      await auth.registerAgent({ name, services: [] }, kp, '');
-      s.step(2, 4, '发布 DID → IPFS', 'ok');
-    } catch (e: any) {
-      retries++;
-      if (retries < maxRetries) {
-        process.stdout.write(`     ${YELLOW}⏳ IPNS发布失败(${retries}/${maxRetries}), 60秒后重试...${RESET}\r`);
-      } else {
-        process.stdout.write(`     ${YELLOW}⚠ IPNS发布重试结束，本地模式运行${RESET}\n`);
+    let lastLogTime = 0;
+    const retryWithBackoff = async (retries: number): Promise<void> => {
+      try {
+        const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+        await auth.registerAgent({ name, services: [] }, kp, '');
+        s.step(2, 4, '发布 DID → IPFS', 'ok');
+      } catch (e: any) {
+        const now = Date.now();
+        if (now - lastLogTime > 30000) {
+          process.stdout.write(`     ${YELLOW}⏳ IPNS发布中 (失败${retries}次), 后台重试...${RESET}\r`);
+          lastLogTime = now;
+        }
+        if (retries < 10) {
+          setTimeout(() => retryWithBackoff(retries + 1), 60000);
+        } else {
+          process.stdout.write(`     ${YELLOW}⚠ IPNS发布重试结束，本地模式运行${RESET}\n`);
+        }
       }
-    }
+    };
+
+    setTimeout(() => retryWithBackoff(1), 100);
   };
 
-  setTimeout(attempt, 100);
+  attempt();
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +189,8 @@ async function bootstrapP2P(
   const comm = createHyperswarmCommunicator({ server: true, client: true, autoConnect: true, maxConnections: 50, seed });
 
   comm.on('connection', (conn: P2PConnection) => {
+    const shortId = conn.publicKey.substring(0, 8);
+    s.info(`🔌 连接: ${shortId}...`);
     const all: Map<string, P2PConnection> = (comm as any).connections as Map<string, P2PConnection>;
     for (const [k, v] of all) {
       if (v.publicKey === conn.publicKey) {
@@ -191,8 +200,16 @@ async function bootstrapP2P(
     }
   });
 
+  comm.on('disconnection', (conn: P2PConnection) => {
+    const shortId = conn.publicKey.substring(0, 8);
+    s.warn(`🔌 断开: ${shortId}...`);
+  });
+
   comm.on('message', async (msg: P2PMessage, conn: P2PConnection) => {
-    const reply = await dispatchTask(new TextDecoder().decode(msg.content));
+    const content = new TextDecoder().decode(msg.content);
+    const shortId = conn.publicKey.substring(0, 8);
+    s.prompt(`📩 收到 ${shortId}: ${content.substring(0, 50)}...`);
+    const reply = await dispatchTask(content);
     sendRawMsg(conn, reply);
   });
 
