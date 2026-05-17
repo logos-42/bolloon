@@ -8,6 +8,22 @@ export interface PersonaDoc {
   personality: string;
   greeting: string;
   interests: string[];
+  soul?: string;
+  traits?: string[];
+  backstory?: string;
+  memoryHistory?: MemoryEntry[];
+  ipfsCid?: string;
+  ipnsName?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemoryEntry {
+  id: string;
+  content: string;
+  timestamp: string;
+  importance: number;
+  tags?: string[];
 }
 
 export interface SessionChannel {
@@ -19,6 +35,7 @@ export interface SessionChannel {
   peerId?: string;
   peerDid?: string;
   peerName?: string;
+  persona?: PersonaDoc;
 }
 
 export interface SessionMessage {
@@ -49,9 +66,11 @@ export interface SocialSessionProvider {
   getPersona(): PersonaDoc | null;
   addMessage(channelId: string, message: SessionMessage): Promise<void>;
   getChannelMessages(channelId: string): Promise<SessionMessage[]>;
-  createChannel(name: string, peerInfo?: { peerId?: string; peerDid?: string; peerName?: string }): Promise<SessionChannel>;
-  getOrCreatePeerChannel(peerDid: string, peerName: string): Promise<SessionChannel>;
+  createChannel(name: string, peerInfo?: { peerId?: string; peerDid?: string; peerName?: string }, persona?: PersonaDoc): Promise<SessionChannel>;
+  getOrCreatePeerChannel(peerDid: string, peerName: string, persona?: PersonaDoc): Promise<SessionChannel>;
   setChannelInfo(channelId: string, info: Partial<SessionChannel>): Promise<void>;
+  getChannelPersona(channelId: string): PersonaDoc | undefined;
+  setChannelPersona(channelId: string, persona: PersonaDoc): Promise<void>;
   getAllChannels(): SessionChannel[];
 }
 
@@ -128,7 +147,7 @@ class LocalSessionManager implements SocialSessionProvider {
     return this.channels.get(channelId)?.messages || [];
   }
 
-  async createChannel(name: string, peerInfo?: { peerId?: string; peerDid?: string; peerName?: string }): Promise<SessionChannel> {
+  async createChannel(name: string, peerInfo?: { peerId?: string; peerDid?: string; peerName?: string }, persona?: PersonaDoc): Promise<SessionChannel> {
     await this.initialize();
 
     const channelId = `ch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -138,7 +157,8 @@ class LocalSessionManager implements SocialSessionProvider {
       messages: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      ...peerInfo
+      ...peerInfo,
+      persona: persona || undefined
     };
 
     this.channels.set(channelId, channel);
@@ -146,7 +166,7 @@ class LocalSessionManager implements SocialSessionProvider {
     return channel;
   }
 
-  async getOrCreatePeerChannel(peerDid: string, peerName: string): Promise<SessionChannel> {
+  async getOrCreatePeerChannel(peerDid: string, peerName: string, persona?: PersonaDoc): Promise<SessionChannel> {
     await this.initialize();
 
     for (const channel of this.channels.values()) {
@@ -158,7 +178,7 @@ class LocalSessionManager implements SocialSessionProvider {
     return this.createChannel(`与 ${peerName} 的对话`, {
       peerDid,
       peerName
-    });
+    }, persona);
   }
 
   async setChannelInfo(channelId: string, info: Partial<SessionChannel>): Promise<void> {
@@ -166,6 +186,20 @@ class LocalSessionManager implements SocialSessionProvider {
     const channel = this.channels.get(channelId);
     if (channel) {
       Object.assign(channel, info, { updatedAt: new Date().toISOString() });
+      await this.saveChannels();
+    }
+  }
+
+  getChannelPersona(channelId: string): PersonaDoc | undefined {
+    return this.channels.get(channelId)?.persona;
+  }
+
+  async setChannelPersona(channelId: string, persona: PersonaDoc): Promise<void> {
+    await this.initialize();
+    const channel = this.channels.get(channelId);
+    if (channel) {
+      channel.persona = persona;
+      channel.updatedAt = new Date().toISOString();
       await this.saveChannels();
     }
   }
@@ -245,8 +279,10 @@ export interface HeartbeatConfig {
   intervalMs: number;
   peerDiscoveryEnabled: boolean;
   ipnsResolveEnabled: boolean;
+  ipfsPublishEnabled: boolean;
   autoSocialEnabled: boolean;
   greetingMessage?: string;
+  ownIpnsName?: string;
 }
 
 export class SocialHeartbeat {
@@ -259,6 +295,7 @@ export class SocialHeartbeat {
   private onGreetingSent?: (toDid: string, channelId: string) => void;
   private currentPeerDids: Set<string> = new Set();
   private greetingMessage: string;
+  private ownIpfsCid?: string;
 
   constructor(
     sessionProvider: SocialSessionProvider,
@@ -269,8 +306,10 @@ export class SocialHeartbeat {
       intervalMs: config.intervalMs || 30000,
       peerDiscoveryEnabled: config.peerDiscoveryEnabled ?? true,
       ipnsResolveEnabled: config.ipnsResolveEnabled ?? true,
+      ipfsPublishEnabled: config.ipfsPublishEnabled ?? true,
       autoSocialEnabled: config.autoSocialEnabled ?? false,
-      greetingMessage: config.greetingMessage
+      greetingMessage: config.greetingMessage,
+      ownIpnsName: config.ownIpnsName
     };
     this.sessionProvider = sessionProvider;
     this.agentsManager = agentsManager;
@@ -279,6 +318,10 @@ export class SocialHeartbeat {
 
   async start(): Promise<void> {
     await this.agentsManager.initialize();
+
+    if (this.config.ipfsPublishEnabled) {
+      await this.loadPersonaFromIPFS();
+    }
 
     if (this.intervalId) return;
 
@@ -291,6 +334,45 @@ export class SocialHeartbeat {
     await this.beat();
   }
 
+  private async loadPersonaFromIPFS(): Promise<void> {
+    if (!this.config.ownIpnsName) return;
+
+    try {
+      const { IpfsClient } = await import('@diap/sdk');
+      const ipfs = new IpfsClient('http://127.0.0.1:5001', null);
+
+      console.log(`[Heartbeat] 从 IPNS 加载 persona: ${this.config.ownIpnsName}`);
+      const cid = await ipfs.resolveIpns(this.config.ownIpnsName);
+
+      if (cid) {
+        const content = await ipfs.get(cid);
+        const doc = JSON.parse(content);
+
+        const existingPersona = this.sessionProvider.getPersona();
+        const loadedPersona: PersonaDoc = {
+          name: doc.name || existingPersona?.name || 'Agent',
+          description: doc.description || '',
+          capabilities: doc.capabilities || [],
+          personality: doc.personality || '',
+          greeting: doc.greeting || '',
+          interests: doc.interests || [],
+          soul: doc.soul || '',
+          traits: doc.traits || [],
+          backstory: doc.backstory || '',
+          memoryHistory: doc.memoryHistory || [],
+          ipfsCid: cid,
+          ipnsName: this.config.ownIpnsName,
+          createdAt: doc.createdAt || new Date().toISOString(),
+          updatedAt: doc.updatedAt || new Date().toISOString()
+        };
+
+        console.log(`[Heartbeat] 从 IPFS 加载 persona 成功: ${loadedPersona.name}`);
+      }
+    } catch (err) {
+      console.warn(`[Heartbeat] 从 IPNS 加载 persona 失败:`, err);
+    }
+  }
+
   stop(): void {
     if (this.intervalId) {
       clearInterval(this.intervalId);
@@ -301,6 +383,9 @@ export class SocialHeartbeat {
 
   private async beat(): Promise<void> {
     try {
+      if (this.config.ipfsPublishEnabled) {
+        await this.publishPersonaToIPFS();
+      }
       await this.discoverPeers();
       await this.cleanupStaleAgents();
       if (this.config.autoSocialEnabled) {
@@ -308,6 +393,50 @@ export class SocialHeartbeat {
       }
     } catch (err) {
       console.error('[Heartbeat] Beat error:', err);
+    }
+  }
+
+  private async publishPersonaToIPFS(): Promise<void> {
+    const persona = this.sessionProvider.getPersona();
+    if (!persona) return;
+
+    try {
+      const { IpfsClient } = await import('@diap/sdk');
+      const ipfs = new IpfsClient('http://127.0.0.1:5001', null);
+
+      const doc = {
+        name: persona.name,
+        description: persona.description,
+        capabilities: persona.capabilities,
+        personality: persona.personality,
+        greeting: persona.greeting,
+        interests: persona.interests,
+        soul: persona.soul || '',
+        traits: persona.traits || [],
+        backstory: persona.backstory || '',
+        memoryHistory: persona.memoryHistory || [],
+        updatedAt: new Date().toISOString()
+      };
+
+      const content = JSON.stringify(doc);
+      const result = await ipfs.upload(content);
+      const cid = typeof result === 'string' ? result : result?.cid || result?.IpfsHash;
+
+      if (cid && cid !== this.ownIpfsCid) {
+        this.ownIpfsCid = cid;
+        console.log(`[Heartbeat] Persona 发布到 IPFS: ${cid}`);
+
+        if (this.config.ownIpnsName) {
+          try {
+            await ipfs.publishIpns(this.config.ownIpnsName, cid);
+            console.log(`[Heartbeat] Persona 发布到 IPNS: ${this.config.ownIpnsName}`);
+          } catch (err) {
+            console.warn(`[Heartbeat] IPNS 发布失败:`, err);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[Heartbeat] IPFS 发布失败:', err);
     }
   }
 
@@ -492,4 +621,83 @@ export async function createSocialHeartbeat(
 
 export function getSocialHeartbeat(): SocialHeartbeat | null {
   return heartbeatInstance;
+}
+
+export async function generatePersona(
+  name: string,
+  llm?: { chat: (message: string, context?: string) => Promise<{ reply: string }> }
+): Promise<PersonaDoc> {
+  if (llm) {
+    try {
+      const prompt = `你是一个 persona 设计专家。请为 "${name}" 创建一个独特的 AI agent persona。
+
+请以 JSON 格式返回，包含以下字段：
+- name: 名字
+- description: 一句话描述这个角色
+- capabilities: 能力列表（数组）
+- personality: 性格特点描述
+- greeting: 开场白问候语
+- interests: 兴趣爱好列表（数组）
+- soul: 灵魂描述（这个角色的核心价值观和信念）
+- traits: 性格特征列表（数组，如"好奇"、"幽默"等）
+- backstory: 背景故事（这个角色的来历和经历）
+
+请确保返回的是有效的 JSON，不要包含其他文字。`;
+
+      const response = await llm.chat(prompt);
+      const jsonMatch = response.reply.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          name: parsed.name || name,
+          description: parsed.description || '',
+          capabilities: parsed.capabilities || [],
+          personality: parsed.personality || '',
+          greeting: parsed.greeting || '',
+          interests: parsed.interests || [],
+          soul: parsed.soul || '',
+          traits: parsed.traits || [],
+          backstory: parsed.backstory || '',
+          memoryHistory: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+      }
+    } catch (err) {
+      console.warn('[PersonaGenerator] LLM 生成失败，使用默认 persona:', err);
+    }
+  }
+
+  return generateDefaultPersona(name);
+}
+
+export function generateDefaultPersona(name: string): PersonaDoc {
+  const defaultPersonas: Record<string, Partial<PersonaDoc>> = {
+    default: {
+      description: '一个友善的 AI 助手',
+      capabilities: ['对话', '写作', '分析'],
+      personality: '友善、好奇、乐于助人',
+      greeting: '你好！我是 {name}，很高兴认识你！',
+      interests: ['聊天', '学习新知识', '帮助他人'],
+      soul: '相信每个人都有自己的价值，致力于帮助他人实现潜能',
+      traits: ['友善', '好奇', '耐心', '乐观'],
+      backstory: '作为一个 AI 助手，我在不断的对话中学习和成长，希望能帮助更多的人'
+    }
+  };
+
+  const template = defaultPersonas.default!;
+  return {
+    name,
+    description: template.description!,
+    capabilities: template.capabilities!,
+    personality: template.personality!,
+    greeting: template.greeting!.replace('{name}', name),
+    interests: template.interests!,
+    soul: template.soul!,
+    traits: template.traits!,
+    backstory: template.backstory!,
+    memoryHistory: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
 }
