@@ -1,0 +1,12 @@
+{
+  "archive_name": "polymarket-sdk",
+  "package_name": "PolymarketSDK",
+  "module_count": 5,
+  "sample_files": [
+    "tools/PolymarketSDK/listMarkets.ts",
+    "tools/PolymarketSDK/getMarket.ts",
+    "tools/PolymarketSDK/createOrder.ts",
+    "tools/PolymarketSDK/cancelOrder.ts",
+    "tools/PolymarketSDK/getOrders.ts"
+  ]
+}

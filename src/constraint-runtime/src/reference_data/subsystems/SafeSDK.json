@@ -1,0 +1,14 @@
+{
+  "archive_name": "safe-sdk",
+  "package_name": "SafeSDK",
+  "module_count": 7,
+  "sample_files": [
+    "tools/SafeSDK/createTransaction.ts",
+    "tools/SafeSDK/proposeTransaction.ts",
+    "tools/SafeSDK/confirmTransaction.ts",
+    "tools/SafeSDK/executeTransaction.ts",
+    "tools/SafeSDK/getPendingTransactions.ts",
+    "tools/SafeSDK/getBalance.ts",
+    "tools/SafeSDK/deploySafe.ts"
+  ]
+}

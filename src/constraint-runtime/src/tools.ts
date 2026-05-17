@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { PortingModule } from './models.js';
+import { executeToolFromSnapshot } from './dynamic-tool-loader.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,16 +50,42 @@ export function findTools(query: string, limit: number = 20): PortingModule[] {
   ).slice(0, limit);
 }
 
-export function executeTool(name: string, payload: string = ''): ToolExecution {
+export async function executeTool(name: string, payload: string = ''): Promise<ToolExecution> {
   const module = getTool(name);
   if (!module) {
     return { name, sourceHint: '', payload, handled: false, message: `Unknown mirrored tool: ${name}` };
   }
-  return {
-    name: module.name,
-    sourceHint: module.sourceHint,
-    payload,
-    handled: true,
-    message: `Mirrored tool '${module.name}' from ${module.sourceHint} would handle payload.`,
-  };
+
+  let params = {};
+  try {
+    params = payload ? JSON.parse(payload) : {};
+  } catch {
+    return {
+      name: module.name,
+      sourceHint: module.sourceHint,
+      payload,
+      handled: false,
+      message: `Invalid JSON payload for tool '${module.name}'`,
+    };
+  }
+
+  const result = await executeToolFromSnapshot(module.sourceHint, params);
+
+  if (result.success) {
+    return {
+      name: module.name,
+      sourceHint: module.sourceHint,
+      payload: JSON.stringify(result.data),
+      handled: true,
+      message: `Tool '${module.name}' executed successfully`,
+    };
+  } else {
+    return {
+      name: module.name,
+      sourceHint: module.sourceHint,
+      payload,
+      handled: false,
+      message: `Tool '${module.name}' failed: ${result.error}`,
+    };
+  }
 }

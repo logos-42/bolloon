@@ -1,0 +1,10 @@
+{
+  "archive_name": "opencli",
+  "package_name": "OpenCLI",
+  "module_count": 3,
+  "sample_files": [
+    "tools/OpenCLI/runCommand.ts",
+    "tools/OpenCLI/listAdapters.ts",
+    "tools/OpenCLI/execAdapter.ts"
+  ]
+}
