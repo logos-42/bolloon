@@ -16,6 +16,8 @@ import * as path from 'path';
 import { documentReader } from './documents/reader.js';
 import { initMinimax } from './constraints/index.js';
 import { createAgentSession } from './agents/pi-sdk.js';
+import { getSubAgentManager, createSubAgentManager } from './agents/subagent-manager.js';
+import { getGlobalSharedContext } from './social/global-shared-context.js';
 import * as readline from 'readline';
 
 // @ts-ignore - noble/ed25519 v3 requires sha512 to be set
@@ -317,6 +319,12 @@ const AVAILABLE_TOOLS = [
   { name: 'get_operation_logs', description: '获取操作日志', example: '--logs' },
   { name: 'search_files', description: '搜索文件', example: '--search <keyword>' },
   { name: 'prompt', description: '通用 AI 对话', example: '--prompt <text>' },
+  { name: 'list_agents', description: '列出所有 SubAgent', example: '--agents' },
+  { name: 'register_agent', description: '注册新 SubAgent', example: '--register-agent <name> [capabilities...]' },
+  { name: 'delegate_task', description: '委派任务给最佳 Agent', example: '--delegate <task> [capabilities...]' },
+  { name: 'global_context', description: '显示全局共享上下文', example: '--context' },
+  { name: 'global_agents', description: '显示全局 Agent 注册表', example: '--global-agents' },
+  { name: 'add_action', description: '添加用户行动到共享上下文', example: '--add-action <content> [importance]' },
 ];
 
 async function runToolCommand(
@@ -457,6 +465,97 @@ async function runToolCommand(
         break;
       }
 
+      case 'agents': {
+        const manager = await createSubAgentManager();
+        const agents = await manager.getAllAgents();
+        if (agents.length === 0) {
+          response = '暂无注册的 SubAgent';
+        } else {
+          response = `📋 已注册 SubAgent (${agents.length}):\n\n`;
+          for (const agent of agents) {
+            response += `  [${agent.status}] ${agent.name} (${agent.id})\n`;
+            response += `    能力: ${agent.capabilities.join(', ')}\n`;
+            response += `    DID: ${agent.did || 'N/A'}\n\n`;
+          }
+        }
+        break;
+      }
+
+      case 'register-agent': {
+        const [name, ...capabilities] = args;
+        if (!name) {
+          response = '用法: --register-agent <name> [capability1] [capability2] ...';
+          error = response;
+          break;
+        }
+        const manager = await createSubAgentManager();
+        const agent = await manager.registerAgent({
+          name,
+          capabilities: capabilities.length > 0 ? capabilities : ['general'],
+          did: `did:local:${Date.now()}`
+        });
+        response = `✅ SubAgent 注册成功:\n  ID: ${agent.id}\n  名称: ${agent.name}\n  能力: ${agent.capabilities.join(', ')}`;
+        break;
+      }
+
+      case 'delegate': {
+        const [taskDesc, ...requiredCaps] = args;
+        if (!taskDesc) {
+          response = '用法: --delegate <任务描述> [能力要求1] [能力要求2] ...';
+          error = response;
+          break;
+        }
+        const manager = await createSubAgentManager();
+        const a = await getAgent();
+        const { task, agent } = await manager.delegateTask(
+          'cli-user',
+          taskDesc,
+          requiredCaps.length > 0 ? requiredCaps : ['general']
+        );
+        if (agent) {
+          response = `✅ 任务已委派:\n  任务ID: ${task.id}\n  执行Agent: ${agent.name} (${agent.id})\n  状态: ${task.status}`;
+        } else {
+          response = `⚠️ 未找到合适的Agent，任务已创建:\n  任务ID: ${task.id}\n  状态: ${task.status}`;
+        }
+        break;
+      }
+
+      case 'context': {
+        const ctx = await getGlobalSharedContext();
+        response = await ctx.getContextSummary();
+        break;
+      }
+
+      case 'global-agents': {
+        const ctx = await getGlobalSharedContext();
+        const agents = await ctx.getAllAgents();
+        if (agents.length === 0) {
+          response = '全局注册表暂无 Agent';
+        } else {
+          response = `🌐 全局 Agent 注册表 (${agents.length}):\n\n`;
+          for (const agent of agents) {
+            response += `  [${agent.status}] ${agent.name || agent.agentId}\n`;
+            response += `    ID: ${agent.agentId}\n`;
+            response += `    DID: ${agent.did || 'N/A'}\n`;
+            response += `    能力: ${agent.capabilities.join(', ')}\n\n`;
+          }
+        }
+        break;
+      }
+
+      case 'add-action': {
+        const [content, importance] = args;
+        if (!content) {
+          response = '用法: --add-action <内容> [重要性(1-10)]';
+          error = response;
+          break;
+        }
+        const ctx = await getGlobalSharedContext();
+        await ctx.addUserAction(content, parseInt(importance || '5', 10));
+        response = `✅ 已添加用户行动: ${content.substring(0, 50)}...`;
+        break;
+      }
+
       default:
         response = `错误: 未知工具 "${tool}"`;
         error = response;
@@ -555,6 +654,12 @@ interface ParsedArgs {
   output?: string;
   tool?: string;
   toolArgs: string[];
+  agents?: boolean;
+  registerAgent?: boolean;
+  delegate?: boolean;
+  context?: boolean;
+  globalAgents?: boolean;
+  addAction?: boolean;
 }
 
 function parseArgs(): ParsedArgs {
@@ -639,6 +744,45 @@ function parseArgs(): ParsedArgs {
         result.tool = 'search';
         result.toolArgs = [args[++i]].filter(Boolean);
         break;
+      case '--agents':
+        result.agents = true;
+        result.tool = 'agents';
+        break;
+      case '--register-agent':
+        result.registerAgent = true;
+        result.tool = 'register-agent';
+        const regArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          regArgs.push(args[++i]);
+        }
+        result.toolArgs = regArgs;
+        break;
+      case '--delegate':
+        result.delegate = true;
+        result.tool = 'delegate';
+        const delArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          delArgs.push(args[++i]);
+        }
+        result.toolArgs = delArgs;
+        break;
+      case '--context':
+        result.context = true;
+        result.tool = 'context';
+        break;
+      case '--global-agents':
+        result.globalAgents = true;
+        result.tool = 'global-agents';
+        break;
+      case '--add-action':
+        result.addAction = true;
+        result.tool = 'add-action';
+        const actionArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          actionArgs.push(args[++i]);
+        }
+        result.toolArgs = actionArgs;
+        break;
       case '--model':
         result.model = args[++i];
         break;
@@ -684,6 +828,16 @@ function printHelp(): void {
   --logs                     显示操作日志
   --search <keyword>         搜索文件
   --tools                    显示所有可用工具
+
+  # SubAgent 管理
+  --agents                   列出所有 SubAgent
+  --register-agent <name> [cap1] [cap2]...  注册新 SubAgent
+  --delegate <任务描述> [能力要求...]  委派任务给最佳 Agent
+
+  # 全局共享上下文
+  --context                  显示全局共享上下文摘要
+  --global-agents            显示全局 Agent 注册表
+  --add-action <内容> [重要性]  添加用户行动到共享上下文
 
   # AI 对话
   --prompt, -p <text>        通用 AI 对话（默认）
