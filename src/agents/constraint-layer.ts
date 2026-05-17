@@ -3,6 +3,9 @@
  * Part of OpenClaw dual-layer architecture (Constraint Layer + Execution Layer)
  */
 
+import { ToolPermissionContext } from '../constraint-runtime/src/constraint/permission.js';
+import { BudgetTracker, UsageSummary } from '../constraint-runtime/src/constraint/budget.js';
+
 export interface Guardrail {
   name: string;
   check: (context: WorkflowContext, step?: WorkflowStep) => Promise<boolean>;
@@ -107,8 +110,17 @@ export const CONFIRM_REQUIRED_ACTIONS = ['send', 'delete'];
 export class ConstraintLayer {
   private rules: Map<string, ConstraintRule> = new Map();
   private logs: OperationLog[] = [];
+  private permission: ToolPermissionContext;
+  private budget: BudgetTracker;
 
-  constructor() {
+  constructor(
+    denyTools: string[] = [],
+    denyPrefixes: string[] = [],
+    maxBudgetTokens: number = 2000,
+    maxTurns: number = 8
+  ) {
+    this.permission = ToolPermissionContext.fromIterables(denyTools, denyPrefixes);
+    this.budget = new BudgetTracker(maxBudgetTokens, maxTurns);
     this.registerDefaultRules();
   }
 
@@ -189,12 +201,44 @@ export class ConstraintLayer {
   }
 
   /**
+   * Check if a tool is permitted to run
+   */
+  checkToolPermission(toolName: string): boolean {
+    return !this.permission.blocks(toolName);
+  }
+
+  /**
+   * Check if budget or turn limits are exceeded
+   */
+  checkBudget(usage: UsageSummary, turnCount: number): boolean {
+    const budgetExceeded = this.budget.isBudgetExceeded(usage);
+    const turnLimitExceeded = this.budget.isTurnLimitExceeded(turnCount);
+    return !budgetExceeded && !turnLimitExceeded;
+  }
+
+  /**
    * Check all guardrails against the current context
    */
-  async checkGuardrails(context: WorkflowContext, step?: WorkflowStep): Promise<{
+  async checkGuardrails(
+    context: WorkflowContext,
+    step?: WorkflowStep,
+    toolName?: string,
+    usage?: UsageSummary,
+    turnCount?: number
+  ): Promise<{
     passed: boolean;
     blocked?: Guardrail;
   }> {
+    if (toolName !== undefined && !this.checkToolPermission(toolName)) {
+      this.log('BLOCKED: Tool permission denied', { toolName }, 'blocked');
+      return { passed: false };
+    }
+
+    if (usage !== undefined && turnCount !== undefined && !this.checkBudget(usage, turnCount)) {
+      this.log('BLOCKED: Budget or turn limit exceeded', { usage, turnCount }, 'blocked');
+      return { passed: false };
+    }
+
     for (const rule of this.rules.values()) {
       for (const guardrail of rule.guardrails) {
         try {

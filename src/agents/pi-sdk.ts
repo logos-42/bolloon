@@ -10,6 +10,8 @@ import { getMinimax } from '../constraints/index.js';
 import { p2pNetwork } from '../network/p2p.js';
 import { ConstraintLayer, WorkflowContext } from './constraint-layer.js';
 import { WorkflowEngine, WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
+import { DeepThinkingEngine, AgentCoordinator } from '../constraint-runtime/src/index.js';
+import type { ThinkResult, AgentResult } from '../constraint-runtime/src/index.js';
 import {
   DiscoveredAgentsManager,
   SocialHeartbeat,
@@ -20,6 +22,7 @@ import {
   type SessionChannel,
   type SessionMessage
 } from '../social/heartbeat.js';
+import { Session, SkillRegistry, type Skill } from '@bolloon/constraint-runtime';
 
 export interface AgentSessionConfig {
   cwd: string;
@@ -65,6 +68,7 @@ const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 's
 const PERSONA_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'persona.json');
 
 export class PiSessionManager {
+  private session: Session;
   private state: PiSessionState;
   private memory: PiMemory;
   private persona: PersonaDoc | null = null;
@@ -73,8 +77,11 @@ export class PiSessionManager {
   private initialized: boolean = false;
 
   constructor(agentId: string, cwd: string) {
+    const sessionId = `pi-session-${Date.now()}`;
+    this.session = new Session(sessionId);
+
     this.state = {
-      id: `pi-session-${Date.now()}`,
+      id: sessionId,
       agentId,
       cwd,
       startedAt: new Date().toISOString(),
@@ -86,6 +93,30 @@ export class PiSessionManager {
       fileContext: new Map()
     };
     this.channelsPath = path.join(SHARED_SESSION_PATH, 'pi-channels.json');
+  }
+
+  get sessionId(): string {
+    return this.session.sessionId;
+  }
+
+  get turnCount(): number {
+    return this.session.turnCount;
+  }
+
+  addSessionMessage(msg: string): void {
+    this.session.addMessage(msg);
+  }
+
+  getSessionHistory(): string[] {
+    return this.session.history;
+  }
+
+  setSessionContext(key: string, value: unknown): void {
+    this.session.setContext(key, value);
+  }
+
+  getSessionContext(key: string): unknown {
+    return this.session.getContext(key);
   }
 
   async initialize(): Promise<void> {
@@ -342,7 +373,10 @@ class PiAgentSession implements AgentSession {
   private socialHeartbeat: SocialHeartbeat | null = null;
   private messageHistory: Message[] = [];
   private tools: Map<string, Tool> = new Map();
+  private skillRegistry: SkillRegistry = new SkillRegistry();
   private readonly MAX_REACT_ITERATIONS = 10;
+  private thinkingEngine = new DeepThinkingEngine(3);
+  private coordinator = new AgentCoordinator(3);
 
   constructor(config: AgentSessionConfig) {
     this.cwd = config.cwd;
@@ -633,6 +667,58 @@ ${toolDefs}
 
     this.messageHistory.push({ role: 'assistant', content: finalResponse });
     return finalResponse;
+  }
+
+  async deepThink(prompt: string): Promise<{ result: ThinkResult; response: string }> {
+    const result = await this.thinkingEngine.think(prompt);
+    let response = `深度思考完成（${result.depth}层）:\n\n`;
+    for (const step of result.steps) {
+      response += `第${step.step}步: ${step.thought}\n`;
+      if (step.reflection) {
+        response += `  反思: ${step.reflection}\n`;
+      }
+      if (step.improvement) {
+        response += `  改进: ${step.improvement}\n`;
+      }
+      response += '\n';
+    }
+    response += `最终输出: ${result.finalOutput}`;
+    return { result, response };
+  }
+
+  async processDocumentsInParallel(
+    paths: string[],
+    operation: 'summarize' | 'improve',
+    requirements?: string
+  ): Promise<{ outputs: string[]; success: boolean }> {
+    if (paths.length === 0) {
+      return { outputs: [], success: true };
+    }
+
+    const subtasks = paths.map((filePath, index) => ({
+      id: `doc-${index}`,
+      description: `${operation}:${filePath}${requirements ? `:${requirements}` : ''}`,
+      priority: index
+    }));
+
+    const dispatchPrompts = subtasks.map(t => t.description);
+    const results = await this.coordinator.dispatch(dispatchPrompts.join(' ||| '), paths.length);
+
+    const outputs: string[] = [];
+    let allSuccess = true;
+
+    for (let i = 0; i < paths.length; i++) {
+      const result = results.find((r: AgentResult) => r.taskId === `task-${i}`);
+      if (result) {
+        outputs.push(result.output);
+        if (!result.success) allSuccess = false;
+      } else {
+        outputs.push(`No result for ${paths[i]}`);
+        allSuccess = false;
+      }
+    }
+
+    return { outputs, success: allSuccess };
   }
 
   private buildContext(): string {
@@ -1033,6 +1119,18 @@ ${toolDefs}
       this.socialHeartbeat.stop();
       this.socialHeartbeat = null;
     }
+  }
+
+  getSkillRegistry(): SkillRegistry {
+    return this.skillRegistry;
+  }
+
+  registerSkill(skill: Skill): void {
+    this.skillRegistry.register(skill);
+  }
+
+  async executeSkill(name: string, params: Record<string, unknown>): Promise<string> {
+    return this.skillRegistry.execute(name, params);
   }
 }
 
