@@ -537,6 +537,15 @@ export class SocialHeartbeat {
       }
     } catch (err) {
     }
+
+    try {
+      const { broadcastOwnAddress, agentRegistry } = await import('../network/agent-network.js');
+      const ownEndpoint = agentRegistry.getOwnEndpoint();
+      if (ownEndpoint) {
+        await broadcastOwnAddress();
+      }
+    } catch (err) {
+    }
   }
 
   private async handleNewPeer(did: string, peerId: string): Promise<void> {
