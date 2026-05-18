@@ -258,6 +258,15 @@ export class DiscoveredAgentsManager {
     return this.agents.get(did);
   }
 
+  getAgentByPeerId(peerId: string): DiscoveredAgent | undefined {
+    for (const agent of this.agents.values()) {
+      if (agent.peerId === peerId) {
+        return agent;
+      }
+    }
+    return undefined;
+  }
+
   getAllAgents(): DiscoveredAgent[] {
     return Array.from(this.agents.values());
   }
@@ -272,6 +281,50 @@ export class DiscoveredAgentsManager {
   removeAgent(did: string): void {
     this.agents.delete(did);
     this.saveAgents();
+  }
+
+  syncFromP2PNetwork(peers: { peerId: string; did?: string; name?: string }[]): void {
+    for (const peer of peers) {
+      const existingByDid = peer.did ? this.agents.get(peer.did) : undefined;
+      const existingByPeerId = this.getAgentByPeerId(peer.peerId);
+
+      if (existingByDid) {
+        existingByDid.peerId = peer.peerId;
+        existingByDid.lastSeen = Date.now();
+        if (peer.name && !existingByDid.name) {
+          existingByDid.name = peer.name;
+        }
+      } else if (existingByPeerId) {
+        if (peer.did && !existingByPeerId.did) {
+          existingByPeerId.did = peer.did;
+        }
+        existingByPeerId.lastSeen = Date.now();
+      } else {
+        const newAgent: DiscoveredAgent = {
+          did: peer.did || `did:local:${peer.peerId.substring(0, 16)}`,
+          name: peer.name || `Agent-${peer.peerId.substring(0, 8)}`,
+          peerId: peer.peerId,
+          lastSeen: Date.now()
+        };
+        this.agents.set(newAgent.did, newAgent);
+      }
+    }
+    this.saveAgents();
+  }
+
+  getPersistentPeerInfo(): { peerId: string; multiaddrs: string[]; did?: string; name?: string }[] {
+    const result: { peerId: string; multiaddrs: string[]; did?: string; name?: string }[] = [];
+    for (const agent of this.agents.values()) {
+      if (agent.peerId) {
+        result.push({
+          peerId: agent.peerId,
+          multiaddrs: [],
+          did: agent.did,
+          name: agent.name
+        });
+      }
+    }
+    return result;
   }
 }
 
@@ -443,22 +496,44 @@ export class SocialHeartbeat {
   private async discoverPeers(): Promise<void> {
     if (!this.config.peerDiscoveryEnabled) return;
 
+    const discoveredPeerIds = new Set<string>();
+
     try {
       const comm = (global as any).hyperswarmComm;
-      if (!comm) {
-        return;
-      }
-
-      const connections = comm.getConnections?.() || [];
-      const peerIds = connections.map((c: any) => c.publicKey).filter(Boolean);
-
-      for (const peerId of peerIds) {
-        const did = `did:key:${peerId.substring(0, 16)}`;
-
-        if (!this.currentPeerDids.has(did)) {
-          this.currentPeerDids.add(did);
-          await this.handleNewPeer(did, peerId);
+      if (comm) {
+        const connections = comm.getConnections?.() || [];
+        for (const c of connections) {
+          if (c.publicKey) {
+            discoveredPeerIds.add(c.publicKey);
+          }
         }
+      }
+    } catch (err) {
+    }
+
+    try {
+      const { p2pNetwork } = await import('../network/p2p.js');
+      const libp2pPeers = p2pNetwork.getConnectedPeers();
+      for (const peer of libp2pPeers) {
+        discoveredPeerIds.add(peer.peerId);
+      }
+    } catch (err) {
+    }
+
+    for (const peerId of discoveredPeerIds) {
+      const did = `did:key:${peerId.substring(0, 16)}`;
+
+      if (!this.currentPeerDids.has(did)) {
+        this.currentPeerDids.add(did);
+        await this.handleNewPeer(did, peerId);
+      }
+    }
+
+    try {
+      const { p2pNetwork } = await import('../network/p2p.js');
+      const connectedPeers = p2pNetwork.getConnectedPeers();
+      if (connectedPeers.length > 0) {
+        this.agentsManager.syncFromP2PNetwork(connectedPeers);
       }
     } catch (err) {
     }
