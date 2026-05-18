@@ -151,7 +151,7 @@ export class SubAgentManager {
 
     const newAgent: SubAgent = {
       ...agent,
-      id: agent.id || `agent_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+      id: `agent_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
       status: 'creating',
       createdAt: new Date().toISOString(),
       lastActive: new Date().toISOString()
@@ -323,7 +323,7 @@ export class SubAgentManager {
     fromAgentId: string,
     toAgentId: string,
     content: string,
-    type: InterAgentMessage['type'] = 'message',
+    type: InterAgentMessage['type'] = 'notification',
     taskId?: string,
     metadata?: Record<string, unknown>
   ): Promise<InterAgentMessage> {

@@ -178,7 +178,7 @@ function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<{ ci
           const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
           const result = await auth.registerAgent({ name, services: [] }, kp, '');
           s.step(2, 4, '发布 DID → IPFS', 'ok');
-          resolve({ cid: result.cid, ipnsName: result.ipnsName });
+          resolve({ cid: result.cid });
         } catch (e: any) {
           const now = Date.now();
           if (now - lastLogTime > 30000) {
@@ -223,11 +223,6 @@ async function bootstrapP2P(
         break;
       }
     }
-  });
-
-  comm.on('disconnection', (conn: P2PConnection) => {
-    const shortId = conn.publicKey.substring(0, 8);
-    s.warn(`🔌 断开: ${shortId}...`);
   });
 
   comm.on('message', async (msg: P2PMessage, conn: P2PConnection) => {
