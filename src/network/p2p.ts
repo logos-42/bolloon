@@ -1,6 +1,9 @@
 import { createLibp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { multiaddr as createMultiaddr } from '@multiformats/multiaddr';
+import { circuitRelayServer, circuitRelayTransport } from '@libp2p/circuit-relay-v2';
+import { autoNAT } from '@libp2p/autonat';
+import { uPnP } from '@libp2p/upnp-nat';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -15,11 +18,20 @@ export interface PersistentPeerInfo {
   lastConnected?: number;
   lastAttempt?: number;
   name?: string;
+  relayAddr?: string;
+  canRelay?: boolean;
 }
 
 export interface P2PNode {
   peerId: string;
   multiaddrs: string[];
+  relayAddr?: string;
+}
+
+export interface NatStatus {
+  reachable: boolean;
+  type?: 'public' | 'cone' | 'symmetric' | 'unknown';
+  externalAddr?: string;
 }
 
 export class P2PNetwork {
@@ -30,25 +42,84 @@ export class P2PNetwork {
   private reconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private ownDid: string | null = null;
   private peerStorePath: string;
+  private natStatus: NatStatus = { reachable: false };
+  private relayServerAddr: string | null = null;
 
   constructor() {
     this.peerStorePath = PEER_STORE_PATH;
   }
 
-  async createNode(config?: { bootstrapPeers?: string[]; ownDid?: string }): Promise<P2PNode> {
+  async createNode(config?: {
+    bootstrapPeers?: string[];
+    ownDid?: string;
+    enableRelay?: boolean;
+    enableAutoNat?: boolean;
+    enableUPnP?: boolean;
+    relayPeers?: string[];
+  }): Promise<P2PNode> {
     this.ownDid = config?.ownDid || null;
+    const enableRelay = config?.enableRelay ?? true;
+    const enableAutoNat = config?.enableAutoNat ?? true;
+    const enableUPnP = config?.enableUPnP ?? true;
+
+    const transports = [tcp()];
+    const services: any = {};
+
+    if (enableRelay) {
+      transports.push(circuitRelayTransport());
+      if (config?.relayPeers && config.relayPeers.length > 0) {
+        for (const relayAddr of config.relayPeers) {
+          try {
+            const ma = createMultiaddr(relayAddr);
+            await this.node?.dial(ma);
+            console.log(`[P2P] Connected to relay peer: ${relayAddr}`);
+          } catch (e) {
+            console.warn(`[P2P] Failed to connect to relay peer ${relayAddr}:`, e);
+          }
+        }
+      }
+    }
+
+    if (enableAutoNat) {
+      services.autonat = autoNAT();
+    }
 
     this.node = await createLibp2p({
       addresses: {
         listen: ['/ip4/0.0.0.0/tcp/0']
       },
-      transports: [tcp()]
+      transports,
+      services,
+      nat: enableUPnP ? {
+        enabled: true,
+        externalAddress: undefined,
+      } : undefined
+    });
+
+    this.node.addEventListener('peer-relay-registry', (evt: any) => {
+      if (evt.detail?.relayAddr) {
+        this.relayServerAddr = evt.detail.relayAddr;
+        console.log(`[P2P] Relay address available: ${this.relayServerAddr}`);
+      }
     });
 
     await this.node.start();
 
     const peerId = this.node.peerId.toString();
     const multiaddrs = this.node.getMultiaddrs().map((addr: any) => addr.toString());
+
+    if (enableRelay) {
+      try {
+        const relayService = this.node.services.get('circuit-relay');
+        if (relayService) {
+          this.node.handle('/libp2p/circuit-relay/0.0.1', (ctx: any) => {
+            console.log(`[P2P] Circuit relay request from ${ctx.connection.remotePeer}`);
+          });
+        }
+      } catch (e) {
+        console.warn(`[P2P] Failed to setup circuit relay handler:`, e);
+      }
+    }
 
     await this.loadPersistentPeers();
 
@@ -58,9 +129,82 @@ export class P2PNetwork {
 
     await this.reconnectPersistentPeers();
 
+    this.checkNatStatus();
+
     this.setupMessageHandler();
 
-    return { peerId, multiaddrs };
+    return {
+      peerId,
+      multiaddrs,
+      relayAddr: this.relayServerAddr || undefined
+    };
+  }
+
+  private async checkNatStatus(): Promise<void> {
+    if (!this.node) return;
+
+    try {
+      const connections = this.node.getConnections();
+      if (connections.length > 0) {
+        for (const conn of connections) {
+          const addr = conn.remoteAddr?.toString();
+          if (addr && addr.includes('127.0.0.1')) continue;
+          this.natStatus = {
+            reachable: true,
+            type: 'unknown',
+            externalAddr: addr
+          };
+          console.log(`[P2P] NAT status: reachable, external address: ${addr}`);
+          break;
+        }
+      }
+    } catch (e) {
+      console.warn(`[P2P] NAT status check failed:`, e);
+    }
+  }
+
+  getNatStatus(): NatStatus {
+    return this.natStatus;
+  }
+
+  getRelayAddress(): string | null {
+    return this.relayServerAddr;
+  }
+
+  async createRelayReservation(): Promise<string | null> {
+    if (!this.node) return null;
+
+    try {
+      const relayService = this.node.services.get('circuit-relay');
+      if (!relayService) {
+        console.log(`[P2P] Circuit relay service not available`);
+        return null;
+      }
+
+      const reservation = await relayService.reserve();
+      if (reservation) {
+        this.relayServerAddr = `/p2p/${this.node.peerId.toString()}/p2p-circuit`;
+        console.log(`[P2P] Created relay reservation: ${this.relayServerAddr}`);
+        return this.relayServerAddr;
+      }
+    } catch (e) {
+      console.warn(`[P2P] Failed to create relay reservation:`, e);
+    }
+    return null;
+  }
+
+  async dialViaRelay(relayAddr: string, targetPeerId: string): Promise<boolean> {
+    if (!this.node) return false;
+
+    try {
+      const ma = createMultiaddr(`${relayAddr}/p2p/${targetPeerId}`);
+      await this.node.dial(ma);
+      console.log(`[P2P] Dialed ${targetPeerId} via relay ${relayAddr}`);
+      return true;
+    } catch (e) {
+      console.warn(`[P2P] Failed to dial via relay:`, e);
+      return false;
+    }
   }
 
   private async loadPersistentPeers(): Promise<void> {

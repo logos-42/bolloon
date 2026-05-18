@@ -32,6 +32,8 @@ export interface AgentRegistryEntry {
   lastSeen: number;
   lastBroadcast: number;
   publicKey: string;
+  relayAddr?: string;
+  canRelay?: boolean;
 }
 
 export interface SignedMessage {
@@ -49,6 +51,8 @@ export interface AddressBroadcast {
   name: string;
   peerId: string;
   multiaddrs: string[];
+  relayAddr?: string;
+  canRelay?: boolean;
   timestamp: number;
   signature: string;
 }
@@ -270,12 +274,17 @@ export class AgentRegistry {
       return null;
     }
 
+    const { getRelayAddress } = await import('./p2p.js');
+    const relayAddr = getRelayAddress();
+
     const broadcastData = JSON.stringify({
       type: 'address_broadcast',
       from: this.keyPair.did,
       name: this.ownEndpoint.name,
       peerId: this.ownEndpoint.peerId,
       multiaddrs: this.ownEndpoint.multiaddrs,
+      relayAddr: relayAddr || undefined,
+      canRelay: relayAddr ? true : false,
       timestamp: now
     });
 
@@ -288,6 +297,8 @@ export class AgentRegistry {
       name: this.ownEndpoint.name,
       peerId: this.ownEndpoint.peerId,
       multiaddrs: this.ownEndpoint.multiaddrs,
+      relayAddr: relayAddr || undefined,
+      canRelay: relayAddr ? true : false,
       timestamp: now,
       signature: Buffer.from(signature).toString('hex')
     };
@@ -315,6 +326,8 @@ export class AgentRegistry {
       name: broadcast.name,
       peerId: broadcast.peerId,
       multiaddrs: broadcast.multiaddrs,
+      relayAddr: broadcast.relayAddr,
+      canRelay: broadcast.canRelay,
       timestamp: broadcast.timestamp
     });
 
@@ -333,7 +346,9 @@ export class AgentRegistry {
       registeredAt: Date.now(),
       lastSeen: broadcast.timestamp,
       lastBroadcast: 0,
-      publicKey: Buffer.from(this.keyPair.publicKey).toString('hex')
+      publicKey: Buffer.from(this.keyPair.publicKey).toString('hex'),
+      relayAddr: broadcast.relayAddr,
+      canRelay: broadcast.canRelay
     };
 
     const existing = this.agents.get(broadcast.from);
@@ -348,7 +363,103 @@ export class AgentRegistry {
     this.agents.set(broadcast.from, entry);
     this.saveRegistry();
 
-    console.log(`[Registry] Verified broadcast from: ${broadcast.name} (${broadcast.from.substring(0, 20)}...)`);
+    console.log(`[Registry] Verified broadcast from: ${broadcast.name} (${broadcast.from.substring(0, 20)}...) ${broadcast.canRelay ? '[Relay Capable]' : ''}`);
+    return true;
+  }
+
+    const relayAddr = (p2pNetwork as any).getRelayAddress?.() || null;
+
+    const broadcastData = JSON.stringify({
+      type: 'address_broadcast',
+      from: this.keyPair.did,
+      name: this.ownEndpoint.name,
+      peerId: this.ownEndpoint.peerId,
+      multiaddrs: this.ownEndpoint.multiaddrs,
+      relayAddr,
+      canRelay: !!relayAddr,
+      timestamp: now
+    });
+
+    const signature = await this.signMessage(broadcastData);
+    if (!signature) return null;
+
+    const broadcast: AddressBroadcast = {
+      type: 'address_broadcast',
+      from: this.keyPair.did,
+      name: this.ownEndpoint.name,
+      peerId: this.ownEndpoint.peerId,
+      multiaddrs: this.ownEndpoint.multiaddrs,
+      relayAddr: relayAddr || undefined,
+      canRelay: !!relayAddr,
+      timestamp: now,
+      signature: Buffer.from(signature).toString('hex')
+    };
+
+    if (entry) {
+      entry.lastBroadcast = now;
+    }
+
+    return broadcast;
+  }
+
+  async handleAddressBroadcast(broadcast: AddressBroadcast): Promise<boolean> {
+    if (!this.keyPair || broadcast.from === this.keyPair.did) {
+      return false;
+    }
+
+    if (Math.abs(broadcast.timestamp - Date.now()) > MESSAGE_TIMESTAMP_TOLERANCE) {
+      console.log(`[Registry] Stale broadcast from ${broadcast.from.substring(0, 20)}`);
+      return false;
+    }
+
+    const broadcastData = JSON.stringify({
+      type: 'address_broadcast',
+      from: broadcast.from,
+      name: broadcast.name,
+      peerId: broadcast.peerId,
+      multiaddrs: broadcast.multiaddrs,
+      relayAddr: broadcast.relayAddr,
+      canRelay: broadcast.canRelay,
+      timestamp: broadcast.timestamp
+    });
+
+    const signature = Buffer.from(broadcast.signature, 'hex');
+    const isValid = await this.verifySignature(broadcast.from, broadcastData, signature);
+    if (!isValid) {
+      console.warn(`[Registry] Invalid broadcast signature from ${broadcast.from.substring(0, 20)}`);
+      return false;
+    }
+
+    const entry: AgentRegistryEntry = {
+      did: broadcast.from,
+      name: broadcast.name,
+      peerId: broadcast.peerId,
+      multiaddrs: broadcast.multiaddrs,
+      registeredAt: Date.now(),
+      lastSeen: broadcast.timestamp,
+      lastBroadcast: 0,
+      publicKey: Buffer.from(this.keyPair.publicKey).toString('hex'),
+      relayAddr: broadcast.relayAddr,
+      canRelay: broadcast.canRelay
+    };
+
+    const existing = this.agents.get(broadcast.from);
+    if (existing) {
+      entry.registeredAt = existing.registeredAt;
+      entry.lastBroadcast = existing.lastBroadcast;
+      if (!existing.publicKey) {
+        existing.publicKey = entry.publicKey;
+      }
+    }
+
+    this.agents.set(broadcast.from, entry);
+    this.saveRegistry();
+
+    if (broadcast.canRelay) {
+      console.log(`[Registry] Verified broadcast from: ${broadcast.name} (${broadcast.from.substring(0, 20)}...) - can relay`);
+    } else {
+      console.log(`[Registry] Verified broadcast from: ${broadcast.name} (${broadcast.from.substring(0, 20)}...)`);
+    }
     return true;
   }
 
