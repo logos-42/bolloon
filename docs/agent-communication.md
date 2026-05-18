@@ -8,21 +8,23 @@
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │
 │  │  Agent A     │◄──►│  Relay/Boot  │◄──►│  Agent B     │      │
 │  │  did:xxx     │    │  bootstrap   │    │  did:yyy     │      │
-│  │  (签名验证)  │    │              │    │  (签名验证)  │      │
-│  └──────────────┘    └──────────────┘    └──────────────┘      │
+│  │  (签名验证)  │    │   (NAT穿透)  │    │  (签名验证)  │      │
+│  │  canRelay ✓  │    │              │    │  canRelay ✓  │      │
+│  └──────────────┘    └──────────────┘    └──────────────┘        │
 │         │                                           │            │
 │         ▼                                           ▼            │
-│  ┌──────────────┐                        ┌──────────────┐        │
-│  │  agent-      │                        │  agent-      │        │
-│  │  registry    │                        │  registry    │        │
-│  │  (持久化)    │                        │  (持久化)    │        │
-│  └──────────────┘                        └──────────────┘        │
+│  ┌──────────────┐                        ┌──────────────┐      │
+│  │  agent-      │                        │  agent-      │      │
+│  │  registry    │                        │  registry    │      │
+│  │  (持久化)   │                        │  (持久化)   │      │
+│  │  + relayAddr│                        │  + relayAddr │      │
+│  └──────────────┘                        └──────────────┘      │
 │         │                                           │            │
 │         ▼                                           ▼            │
-│  ┌──────────────┐                        ┌──────────────┐        │
-│  │  keypair.json│                        │  keypair.json│        │
-│  │  (DID密钥)   │                        │  (DID密钥)   │        │
-│  └──────────────┘                        └──────────────┘        │
+│  ┌──────────────┐                        ┌──────────────┐      │
+│  │  keypair.json│                        │  keypair.json│      │
+│  │  (DID密钥)   │                        │  (DID密钥)   │      │
+│  └──────────────┘                        └──────────────┘      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -85,6 +87,8 @@ interface AddressBroadcast {
   name: string;        // 智能体名称
   peerId: string;      // libp2p peerId
   multiaddrs: string[];// 监听地址列表
+  relayAddr?: string;  // 中继地址 (如果有)
+  canRelay?: boolean;  // 是否可作为中继
   timestamp: number;
   signature: string;    // 对上述字段的签名
 }
@@ -96,10 +100,16 @@ interface AddressBroadcast {
 import { initializeAgentNetwork, agentRegistry, agentMessaging } from './network/agent-network.js';
 import { p2pNetwork } from './network/p2p.js';
 
-// 1. 创建P2P节点
+// 1. 创建P2P节点（带NAT穿透配置）
 const node = await p2pNetwork.createNode({
-  bootstrapPeers: ['/ip4/x.x.x.x/tcp/4001/p2p/Qmxxx...']
+  bootstrapPeers: ['/ip4/x.x.x.x/tcp/4001/p2p/Qmxxx...'],
+  enableRelay: true,      // 启用中继
+  enableAutoNat: true,    // 启用自动NAT检测
+  enableUPnP: true,       // 启用UPnP端口映射
+  relayPeers: ['/ip4/x.x.x.x/tcp/4001/p2p/QmRelay1...']
 });
+
+console.log(`Relay地址: ${node.relayAddr}`);
 
 // 2. 初始化智能体网络（自动生成/加载DID密钥）
 await initializeAgentNetwork(
@@ -109,7 +119,10 @@ await initializeAgentNetwork(
   node.multiaddrs       // 监听地址
 );
 
-// 3. 注册签名消息处理器
+// 3. 创建中继预约
+await p2pNetwork.createRelayReservation();
+
+// 4. 注册签名消息处理器
 agentMessaging.registerHandler('task', async (data, from, did) => {
   // did 是验证过的签名发送者DID
   console.log(`收到来自 ${did} 的签名任务消息`);
@@ -282,10 +295,39 @@ const node = await p2pNetwork.createNode({
 });
 ```
 
-## 注意事项
+## NAT穿透机制
+
+### 支持的功能
+
+| 功能 | 描述 |
+|------|------|
+| Circuit Relay v2 | 通过中继节点转发流量 |
+| AutoNAT | 自动检测NAT类型 |
+| UPnP | 自动端口映射 |
+| DCUtR | 直连穿透（测试中） |
+
+### 中继连接流程
+
+```
+Agent A (NAT后)                              Agent B (公网)
+    │                                              │
+    │  1. 连接引导节点                            │
+    │  2. 创建中继预约                            │
+    │  3. 广播: canRelay=true, relayAddr=... ───►│
+    │                                              │
+    │                                              │  收到A的广播
+    │                                              │  尝试直连A（失败）
+    │                                              │  通过中继地址连接A
+    │  ◄─────────────────────────────────────────│  /p2p/A-peerId/p2p-circuit
+    │                                              │
+    │  4. 中继连接建立                            │
+    └──────────────────────────────────────────────┘
+```
+
+### 注意事项
 
 1. **私钥安全**: `keypair.json` 包含明文私钥，请妥善保管
 2. **DID共享**: 建立连接前需要某种方式共享彼此的DID（如通过引导节点）
-3. **NAT穿透**: 当前版本依赖引导节点帮助建立连接
+3. **中继依赖**: 两个NAT后的节点无法直连，需要至少一个公网中继节点
 4. **离线消息**: 签名消息在重新连接后会自动投递（如果连接恢复）
 5. **时间戳验证**: 消息时间戳超过24小时会被拒绝

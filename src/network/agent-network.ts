@@ -518,22 +518,66 @@ export class AgentRegistry {
 
     if (!agent.multiaddrs || agent.multiaddrs.length === 0) {
       console.log(`[Registry] No addresses for agent: ${agent.name}`);
-      return false;
+      if (!agent.relayAddr) {
+        return false;
+      }
+      console.log(`[Registry] Agent has relay address, will try relay connection`);
     }
 
     let connected = false;
-    for (const addr of agent.multiaddrs) {
+
+    if (agent.multiaddrs && agent.multiaddrs.length > 0) {
+      for (const addr of agent.multiaddrs) {
+        try {
+          const ma = createMultiaddr(addr);
+          const node = (p2pNetwork as any).node;
+          if (node) {
+            await node.dial(ma);
+            connected = true;
+            console.log(`[Registry] Direct connection to ${agent.name} at ${addr}`);
+            break;
+          }
+        } catch (e) {
+          console.warn(`[Registry] Failed to connect directly to ${addr}:`, e);
+        }
+      }
+    }
+
+    if (!connected && agent.relayAddr) {
+      console.log(`[Registry] Trying relay connection to ${agent.name} via ${agent.relayAddr}`);
       try {
-        const ma = createMultiaddr(addr);
         const node = (p2pNetwork as any).node;
         if (node) {
+          const ma = createMultiaddr(`${agent.relayAddr}/p2p/${agent.peerId}`);
           await node.dial(ma);
           connected = true;
-          console.log(`[Registry] Connected to ${agent.name} at ${addr}`);
-          break;
+          console.log(`[Registry] Relay connection to ${agent.name} established`);
         }
       } catch (e) {
-        console.warn(`[Registry] Failed to connect to ${addr}:`, e);
+        console.warn(`[Registry] Failed to connect via relay:`, e);
+      }
+    }
+
+    if (!connected && agent.canRelay) {
+      const relayPeers = this.findRelayPeers();
+      for (const relay of relayPeers) {
+        if (relay.peerId === agent.peerId) continue;
+        try {
+          console.log(`[Registry] Trying to relay via ${relay.name} (${relay.peerId.substring(0, 12)}...)`);
+          const relayAddr = relay.relayAddr || relay.multiaddrs?.[0];
+          if (relayAddr) {
+            const node = (p2pNetwork as any).node;
+            if (node) {
+              const ma = createMultiaddr(`${relayAddr}/p2p/${agent.peerId}`);
+              await node.dial(ma);
+              connected = true;
+              console.log(`[Registry] Connection to ${agent.name} via relay ${relay.name}`);
+              break;
+            }
+          }
+        } catch (e) {
+          console.warn(`[Registry] Failed to relay via ${relay.name}:`, e);
+        }
       }
     }
 
@@ -543,11 +587,20 @@ export class AgentRegistry {
         peerId: agent.peerId,
         multiaddrs: agent.multiaddrs,
         did: agent.did,
-        name: agent.name
+        name: agent.name,
+        relayAddr: agent.relayAddr,
+        canRelay: agent.canRelay
       });
     }
 
     return connected;
+  }
+
+  private findRelayPeers(): AgentRegistryEntry[] {
+    const now = Date.now();
+    return Array.from(this.agents.values()).filter(
+      a => a.canRelay && a.relayAddr && now - a.lastSeen < 30 * 60 * 1000
+    );
   }
 
   async relayMessage(toDid: string, data: Uint8Array, fromDid: string, hops = 0): Promise<boolean> {
