@@ -812,21 +812,32 @@ async function runToolCommand(
       }
 
       case 'harness-archive': {
-        if (!harness) {
-          harness = createBollharnessIntegration();
-        }
         const a = await getAgent();
-        const logs = (a as any).getOperationLogs?.() || [];
-        const archive = harness.archiveSession(logs);
-        response = `📦 Session 已归档:\n` +
-          `ID: ${archive.id}\n` +
-          `Gate: ${archive.gate}\n` +
-          `动作数: ${archive.actionCount}\n` +
-          `摘要: ${archive.summary}`;
+        const sessionHarness = (a as any).getHarness?.();
+        if (sessionHarness) {
+          (a as any).archiveToHarness?.();
+          response = `📦 Session 已归档到 Pi SDK Harness`;
+        } else {
+          if (!harness) {
+            harness = createBollharnessIntegration();
+          }
+          const logs = (a as any).getOperationLogs?.() || [];
+          const archive = harness.archiveSession(logs);
+          response = `📦 Session 已归档:\n` +
+            `ID: ${archive.id}\n` +
+            `Gate: ${archive.gate}\n` +
+            `动作数: ${archive.actionCount}\n` +
+            `摘要: ${archive.summary}`;
+        }
         break;
       }
 
       case 'harness-sessions': {
+        const a = await getAgent();
+        const sessionHarness = (a as any).getHarness?.();
+        if (sessionHarness) {
+          harness = sessionHarness;
+        }
         if (!harness) {
           harness = createBollharnessIntegration();
         }
@@ -845,12 +856,20 @@ async function runToolCommand(
       }
 
       case 'harness-session-context': {
-        if (!harness) {
-          harness = createBollharnessIntegration();
+        const a = await getAgent();
+        const sessionHarness = (a as any).getHarness?.();
+        if (sessionHarness) {
+          const [sessionId] = args;
+          const context = sessionHarness.getSessionContext(sessionId || undefined);
+          response = `📄 Pi SDK Session 上下文:\n\n${context}`;
+        } else {
+          if (!harness) {
+            harness = createBollharnessIntegration();
+          }
+          const [sessionId] = args;
+          const context = harness.getSessionContext(sessionId || undefined);
+          response = `📄 Session 上下文:\n\n${context}`;
         }
-        const [sessionId] = args;
-        const context = harness.getSessionContext(sessionId || undefined);
-        response = `📄 Session 上下文:\n\n${context}`;
         break;
       }
 

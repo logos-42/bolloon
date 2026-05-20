@@ -520,6 +520,11 @@ export interface AgentSession {
   updateCooperationStatus(cooperationId: string, status: 'pending' | 'in_progress' | 'done' | 'failed', result?: string): Promise<void>;
   getAllRegisteredAgents(): Promise<AgentInfo[]>;
   findAgentByCapability(capability: string): Promise<AgentInfo[]>;
+  archiveToHarness(): void;
+  getHarnessContext(): string;
+  isHarnessEnabled(): boolean;
+  getHarness(): any;
+  getOperationLog(): Array<{ timestamp: number; action: string; args: any; result: any; status: string }>;
 }
 
 class PiAgentSession implements AgentSession {
@@ -540,6 +545,8 @@ class PiAgentSession implements AgentSession {
   private readonly MAX_REACT_ITERATIONS = 10;
   private thinkingEngine = new DeepThinkingEngine(3);
   private coordinator = new AgentCoordinator(3);
+  private harness: any = null;
+  private harnessEnabled = false;
 
   constructor(config: AgentSessionConfig) {
     this.cwd = config.cwd;
@@ -552,6 +559,18 @@ class PiAgentSession implements AgentSession {
     this.agentsManager = new DiscoveredAgentsManager();
     this.initSession();
     this.registerTools();
+    this.initHarness();
+  }
+
+  private async initHarness(): Promise<void> {
+    try {
+      const { createBollharnessIntegration } = await import('../bollharness-integration/index.js');
+      this.harness = createBollharnessIntegration();
+      this.harnessEnabled = true;
+    } catch (e) {
+      console.warn('[PiAgentSession] Harness initialization failed:', e);
+      this.harnessEnabled = false;
+    }
   }
 
   private registerTools(): void {
@@ -848,11 +867,13 @@ ${toolDefs}
         if (!tool) {
           const errorResult: ToolResult = { success: false, error: `未知工具: ${toolCall.name}` };
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
+          this.logToHarness(toolCall.name, toolCall.args, errorResult);
           continue;
         }
 
         const result = await tool.execute(toolCall.args);
         this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result });
+        this.logToHarness(toolCall.name, toolCall.args, result);
 
         if (!result.success && result.error) {
           console.warn(`Tool ${toolCall.name} error: ${result.error}`);
@@ -1397,6 +1418,52 @@ Workspace root folder: ${this.cwd}
 
   async findAgentByCapability(capability: string): Promise<AgentInfo[]> {
     return this.sessionManager.findAgentByCapability(capability);
+  }
+
+  // ==================== Harness Integration ====================
+
+  private operationLog: Array<{ timestamp: number; action: string; args: any; result: any; status: string }> = [];
+
+  private logToHarness(action: string, args: any, result: any): void {
+    if (!this.harnessEnabled || !this.harness) return;
+
+    this.operationLog.push({
+      timestamp: Date.now(),
+      action,
+      args,
+      result,
+      status: result.success ? 'ok' : 'error'
+    });
+
+    if (this.operationLog.length >= 10) {
+      this.archiveToHarness();
+    }
+  }
+
+  archiveToHarness(): void {
+    if (!this.harnessEnabled || !this.harness || this.operationLog.length === 0) return;
+
+    this.harness.archiveSession(this.operationLog);
+    this.operationLog = [];
+  }
+
+  getHarnessContext(): string {
+    if (!this.harnessEnabled || !this.harness) {
+      return 'Harness not available';
+    }
+    return this.harness.getSessionContext();
+  }
+
+  isHarnessEnabled(): boolean {
+    return this.harnessEnabled;
+  }
+
+  getHarness(): any {
+    return this.harness;
+  }
+
+  getOperationLog(): Array<{ timestamp: number; action: string; args: any; result: any; status: string }> {
+    return [...this.operationLog];
   }
 }
 
