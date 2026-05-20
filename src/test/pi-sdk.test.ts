@@ -11,15 +11,11 @@ async function isMinimaxAvailable(): Promise<boolean> {
   if (!apiKey) return false;
   try {
     initMinimax({ apiKey });
-    const model = getMinimax();
-    await model.chat('test');
     return true;
   } catch {
     return false;
   }
 }
-
-const skipIfNoLLM = it.skip;
 
 describe('Pi SDK', () => {
   it('basic agent session', async () => {
@@ -39,7 +35,7 @@ describe('Pi SDK', () => {
     expect(result.summary).toBeDefined();
   });
 
-  it('minimax LLM integration', async () => {
+  it('minimax LLM integration', { timeout: 30000 }, async () => {
     const available = await isMinimaxAvailable();
     if (!available) {
       return;

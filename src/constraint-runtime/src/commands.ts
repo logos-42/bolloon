@@ -16,13 +16,22 @@ export interface CommandExecution {
 }
 
 function loadCommandSnapshot(): PortingModule[] {
-  const raw = JSON.parse(fs.readFileSync(SNAPSHOT_PATH, 'utf-8'));
-  return raw.map((e: any) => ({
-    name: e.name,
-    responsibility: e.responsibility,
-    sourceHint: e.source_hint,
-    status: 'mirrored' as const,
-  }));
+  try {
+    if (!fs.existsSync(SNAPSHOT_PATH)) {
+      console.warn(`[commands] Snapshot not found: ${SNAPSHOT_PATH}, using empty list`);
+      return [];
+    }
+    const raw = JSON.parse(fs.readFileSync(SNAPSHOT_PATH, 'utf-8'));
+    return raw.map((e: any) => ({
+      name: e.name,
+      responsibility: e.responsibility,
+      sourceHint: e.source_hint,
+      status: 'mirrored' as const,
+    }));
+  } catch (error) {
+    console.warn(`[commands] Failed to load snapshot: ${error}, using empty list`);
+    return [];
+  }
 }
 
 export const PORTED_COMMANDS = loadCommandSnapshot();
