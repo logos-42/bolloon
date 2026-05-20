@@ -11,7 +11,7 @@
  * - Context routing (path-based automatic context injection)
  */
 
-export { BollharnessIntegration } from './integration.js';
+export { BollharnessIntegration, createBollharnessIntegration } from './integration.js';
 export { GateStateMachine, type Gate } from './gate-state-machine.js';
 export { GuardChecker, type GuardFinding, type GuardResult } from './guard-checker.js';
 export { ContextRouter } from './context-router.js';

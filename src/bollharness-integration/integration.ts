@@ -223,6 +223,17 @@ export class BollharnessIntegration {
     return this.skillAdapter;
   }
 
+  /**
+   * List harness-native skills (metadata from SKILL.md files)
+   */
+  listHarnessSkills(): Array<{ name: string; description: string; tier: string }> {
+    return this.skillAdapter.listHarnessSkills().map(s => ({
+      name: s.name,
+      description: s.description,
+      tier: s.tier,
+    }));
+  }
+
   // ==================== Configuration Methods ====================
 
   /**

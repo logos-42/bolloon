@@ -16,8 +16,9 @@ import * as path from 'path';
 import { documentReader } from './documents/reader.js';
 import { initMinimax } from './constraints/index.js';
 import { createAgentSession } from './agents/pi-sdk.js';
-import { getSubAgentManager, createSubAgentManager } from './agents/subagent-manager.js';
+import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
+import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
 
 const RESET = '\x1b[0m';
@@ -246,6 +247,7 @@ async function bootstrapP2P(
 // ---------------------------------------------------------------------------
 
 let agent: Awaited<ReturnType<typeof createAgentSession>> | null = null;
+let harness: BollharnessIntegration | null = null;
 let agentIdentity: {
   did: string;
   name: string;
@@ -533,6 +535,13 @@ const AVAILABLE_TOOLS = [
   { name: 'global_context', description: '显示全局共享上下文', example: '--context' },
   { name: 'global_agents', description: '显示全局 Agent 注册表', example: '--global-agents' },
   { name: 'add_action', description: '添加用户行动到共享上下文', example: '--add-action <content> [importance]' },
+  { name: 'harness_init', description: '初始化 Bollharness 治理框架', example: '--harness-init' },
+  { name: 'harness_gate', description: '显示当前 Gate 状态', example: '--harness-gate' },
+  { name: 'harness_transition', description: '执行 Gate 转移', example: '--harness-transition [PASS|BLOCK]' },
+  { name: 'harness_skill', description: '执行 Harness Skill', example: '--harness-skill <name> [action]' },
+  { name: 'harness_classify', description: '分类变更类型', example: '--harness-classify <description>' },
+  { name: 'harness_context', description: '获取文件上下文', example: '--harness-context <file>' },
+  { name: 'harness_check', description: '执行 Guard 检查', example: '--harness-check <file>' },
 ];
 
 async function runToolCommand(
@@ -691,6 +700,114 @@ async function runToolCommand(
         response = '🛠️ 可用工具:\n\n' + AVAILABLE_TOOLS.map(t =>
           `  ${t.name}\n    ${t.description}\n    示例: ${t.example}`
         ).join('\n\n');
+        break;
+      }
+
+      // ==================== Bollharness Commands ====================
+
+      case 'harness-init': {
+        harness = createBollharnessIntegration();
+        const skills = harness!.listSkills();
+        const harnessSkills = harness!.listHarnessSkills();
+        response = `✅ Bollharness 初始化成功\n\n` +
+          `已加载 Skills: ${skills.length}\n` +
+          `已加载 Harness Skills: ${harnessSkills.length}\n\n` +
+          `Skills:\n${skills.map(s => `  - ${s.name}: ${s.description}`).join('\n')}\n\n` +
+          `Gates: 0-8 (8-Gate 工作流)`;
+        break;
+      }
+
+      case 'harness-gate': {
+        if (!harness) {
+          harness = createBollharnessIntegration();
+        }
+        const gate = harness!.getCurrentGate();
+        const gatePack = harness!.getGatePack();
+        const blockers = (gatePack.blockers as string[]) || [];
+        response = `🚪 当前 Gate: ${gate}\n\n` +
+          `Entry: ${gatePack.entry_satisfied ? '✅ 满足' : '❌ 未满足'}\n` +
+          `要求产物: ${gatePack.required_artifact}\n` +
+          `下一步 Skill: ${gatePack.required_next_skill}\n` +
+          `Blockers: ${blockers.length > 0 ? blockers.join(', ') : '无'}`;
+        break;
+      }
+
+      case 'harness-transition': {
+        if (!harness) {
+          harness = createBollharnessIntegration();
+        }
+        const [verdict] = args;
+        const result = await harness!.transitionGate(
+          verdict ? { verdict: verdict as 'PASS' | 'BLOCK', details: '' } : undefined
+        );
+        const transitionBlockers = (result.transition as { blockers?: string[] })?.blockers || [];
+        response = `🔄 Gate 转移: ${result.success ? '✅ 成功' : '❌ 失败'}\n` +
+          `Blockers: ${transitionBlockers.length > 0 ? transitionBlockers.join(', ') : '无'}`;
+        break;
+      }
+
+      case 'harness-skill': {
+        if (!harness) {
+          harness = createBollharnessIntegration();
+        }
+        const [skillName, action] = args;
+        if (!skillName) {
+          const skills = harness!.listSkills();
+          response = `📋 可用 Skills (${skills.length}):\n\n` +
+            skills.map(s => `  ${s.name}: ${s.description}`).join('\n');
+          break;
+        }
+        const result = await harness!.executeSkill(skillName, { action: action || 'get_gate' });
+        response = `🎯 Skill '${skillName}' 执行结果:\n\n${result.result || result.error}`;
+        break;
+      }
+
+      case 'harness-classify': {
+        if (!harness) {
+          harness = createBollharnessIntegration();
+        }
+        const [description] = args;
+        if (!description) {
+          response = '用法: --harness-classify <变更描述>';
+          error = response;
+          break;
+        }
+        const result = harness!.classifyChange(description);
+        response = `📊 变更分类: ${result.classification}\n` +
+          `最小路径: ${result.minimum_gates}\n` +
+          `快速通道: ${result.fast_track ? '✅ 可用' : '❌ 不可用'}`;
+        break;
+      }
+
+      case 'harness-context': {
+        if (!harness) {
+          harness = createBollharnessIntegration();
+        }
+        const [filePath] = args;
+        if (!filePath) {
+          response = '用法: --harness-context <文件路径>';
+          error = response;
+          break;
+        }
+        const context = harness!.getContext(filePath);
+        response = `📄 文件: ${filePath}\n\n上下文:\n${context || '无匹配上下文'}`;
+        break;
+      }
+
+      case 'harness-check': {
+        if (!harness) {
+          harness = createBollharnessIntegration();
+        }
+        const [filePath] = args;
+        if (!filePath) {
+          response = '用法: --harness-check <文件路径>';
+          error = response;
+          break;
+        }
+        const result = await harness!.processFileEdit(filePath);
+        response = `🔍 Guard 检查: ${filePath}\n\n` +
+          `通过: ${result.success ? '✅' : '❌'}\n` +
+          `错误: ${result.errors.length > 0 ? result.errors.join('\n') : '无'}`;
         break;
       }
 
