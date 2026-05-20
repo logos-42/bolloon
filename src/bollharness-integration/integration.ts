@@ -31,6 +31,19 @@ export interface IntegrationResult {
 }
 
 /**
+ * Session Archive Entry
+ */
+export interface SessionArchive {
+  id: string;
+  timestamp: number;
+  gate: number;
+  summary: string;
+  actionCount: number;
+  compressed: string;
+  keyDecisions: string[];
+}
+
+/**
  * Main integration class
  */
 export class BollharnessIntegration {
@@ -39,6 +52,8 @@ export class BollharnessIntegration {
   private guardChecker: GuardChecker;
   private contextRouter: ContextRouter;
   private skillAdapter: SkillAdapter;
+  private sessionArchives: SessionArchive[] = [];
+  private currentSessionId: string = '';
 
   constructor(config: Partial<BollharnessConfig> = {}) {
     this.config = {
@@ -272,7 +287,148 @@ export class BollharnessIntegration {
       currentGate: this.gateMachine.getCurrentGate(),
       enabledChecks: 'multiple',
       availableSkills: this.skillAdapter.listSkills().length,
+      sessionArchives: this.sessionArchives.length,
     };
+  }
+
+  // ==================== Session Archive Methods ====================
+
+  /**
+   * Archive current session operations with compression
+   */
+  archiveSession(
+    logs: Array<{ timestamp: number; action: string; details?: Record<string, unknown>; status: string }>,
+    options?: { summary?: string; keyDecisions?: string[] }
+  ): SessionArchive {
+    const id = `session_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const gate = this.gateMachine.getCurrentGate();
+
+    const compressed = this.compressLogs(logs);
+    const summary = options?.summary || this.generateSessionSummary(logs);
+    const keyDecisions = options?.keyDecisions || this.extractKeyDecisions(logs);
+
+    const archive: SessionArchive = {
+      id,
+      timestamp: Date.now(),
+      gate,
+      summary,
+      actionCount: logs.length,
+      compressed,
+      keyDecisions,
+    };
+
+    this.sessionArchives.push(archive);
+    this.currentSessionId = id;
+
+    return archive;
+  }
+
+  /**
+   * Compress logs by removing redundancy
+   */
+  private compressLogs(logs: Array<{ timestamp: number; action: string; details?: Record<string, unknown>; status: string }>): string {
+    if (logs.length === 0) return '';
+
+    const lines: string[] = [];
+    const seenActions = new Set<string>();
+    const recentTime = logs.length > 10 ? logs[logs.length - 10].timestamp : logs[0].timestamp;
+
+    lines.push(`## Session Archive (${logs.length} actions)`);
+    lines.push(`Gate: ${this.gateMachine.getCurrentGate()}`);
+    lines.push('');
+
+    for (const log of logs.slice(-50)) {
+      const time = new Date(log.timestamp).toISOString();
+      const action = log.action.padEnd(30);
+
+      if (seenActions.has(log.action) && log.status === 'ok') {
+        lines.push(`  ${time} [RPT] ${action}`);
+      } else {
+        lines.push(`  ${time} [${log.status.padEnd(4)}] ${action}`);
+        seenActions.add(log.action);
+      }
+
+      if (log.timestamp < recentTime) {
+        lines.push(`    ^ ${log.details ? JSON.stringify(log.details).substring(0, 100) : ''}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Generate a brief summary of the session
+   */
+  private generateSessionSummary(logs: Array<{ action: string; status: string }>): string {
+    const actions = logs.map(l => l.action);
+    const unique = [...new Set(actions)];
+    const okCount = logs.filter(l => l.status === 'ok').length;
+    return `${this.gateMachine.getCurrentGate()}G: ${unique.slice(0, 3).join(', ')}${unique.length > 3 ? '...' : ''} (${okCount}/${logs.length} OK)`;
+  }
+
+  /**
+   * Extract key decisions from logs
+   */
+  private extractKeyDecisions(logs: Array<{ action: string; details?: Record<string, unknown> }>): string[] {
+    const decisions: string[] = [];
+    for (const log of logs) {
+      if (log.action.includes('decision') || log.action.includes('approve') || log.action.includes('commit')) {
+        decisions.push(log.action);
+      }
+    }
+    return decisions.slice(0, 10);
+  }
+
+  /**
+   * Get session context for skills
+   */
+  getSessionContext(sessionId?: string): string {
+    if (sessionId) {
+      const archive = this.sessionArchives.find(a => a.id === sessionId);
+      if (archive) {
+        return `## Session ${archive.id}\nGate: ${archive.gate}\n${archive.compressed}`;
+      }
+    }
+
+    if (this.sessionArchives.length === 0) {
+      return 'No session archives available.';
+    }
+
+    const recent = this.sessionArchives.slice(-3);
+    const lines = ['## Recent Sessions'];
+
+    for (const archive of recent) {
+      lines.push(`\n### ${archive.id}`);
+      lines.push(`Gate: ${archive.gate} | Actions: ${archive.actionCount}`);
+      lines.push(`Summary: ${archive.summary}`);
+      if (archive.keyDecisions.length > 0) {
+        lines.push(`Decisions: ${archive.keyDecisions.join(', ')}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Get all session archives
+   */
+  getSessionArchives(): SessionArchive[] {
+    return [...this.sessionArchives];
+  }
+
+  /**
+   * Start a new session
+   */
+  startNewSession(): string {
+    this.currentSessionId = `session_${Date.now()}`;
+    return this.currentSessionId;
+  }
+
+  /**
+   * Link current harness session to Pi SDK session
+   */
+  linkSession(sessionId: string): void {
+    this.currentSessionId = sessionId;
   }
 }
 

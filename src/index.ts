@@ -811,6 +811,49 @@ async function runToolCommand(
         break;
       }
 
+      case 'harness-archive': {
+        if (!harness) {
+          harness = createBollharnessIntegration();
+        }
+        const a = await getAgent();
+        const logs = (a as any).getOperationLogs?.() || [];
+        const archive = harness.archiveSession(logs);
+        response = `📦 Session 已归档:\n` +
+          `ID: ${archive.id}\n` +
+          `Gate: ${archive.gate}\n` +
+          `动作数: ${archive.actionCount}\n` +
+          `摘要: ${archive.summary}`;
+        break;
+      }
+
+      case 'harness-sessions': {
+        if (!harness) {
+          harness = createBollharnessIntegration();
+        }
+        const archives = harness.getSessionArchives();
+        if (archives.length === 0) {
+          response = '暂无 Session 归档记录';
+          break;
+        }
+        response = `📜 Session 归档记录 (${archives.length}):\n\n`;
+        for (const archive of archives.slice(-10)) {
+          response += `### ${archive.id}\n`;
+          response += `Gate: ${archive.gate} | 动作: ${archive.actionCount}\n`;
+          response += `摘要: ${archive.summary}\n\n`;
+        }
+        break;
+      }
+
+      case 'harness-session-context': {
+        if (!harness) {
+          harness = createBollharnessIntegration();
+        }
+        const [sessionId] = args;
+        const context = harness.getSessionContext(sessionId || undefined);
+        response = `📄 Session 上下文:\n\n${context}`;
+        break;
+      }
+
       case 'agents': {
         const manager = await createSubAgentManager();
         const agents = await manager.getAllAgents();
@@ -1185,6 +1228,20 @@ function parseArgs(): ParsedArgs {
         }
         result.toolArgs = checkArgs;
         break;
+      case '--harness-archive':
+        result.tool = 'harness-archive';
+        break;
+      case '--harness-sessions':
+        result.tool = 'harness-sessions';
+        break;
+      case '--harness-session-context':
+        result.tool = 'harness-session-context';
+        const sessionArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          sessionArgs.push(args[++i]);
+        }
+        result.toolArgs = sessionArgs;
+        break;
       case '--tui':
         result.tui = true;
         break;
@@ -1252,6 +1309,9 @@ function printHelp(): void {
   --harness-classify <描述>  分类变更类型
   --harness-context <file>   获取文件上下文
   --harness-check <file>     执行 Guard 检查
+  --harness-archive          归档当前 Session 到 Harness
+  --harness-sessions         列出 Session 归档记录
+  --harness-session-context [id]  获取 Session 上下文
 
   # AI 对话
   --prompt, -p <text>        通用 AI 对话（默认）
