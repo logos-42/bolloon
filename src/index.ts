@@ -780,9 +780,9 @@ async function runToolCommand(
           break;
         }
         const ctx = await getGlobalSharedContext();
-        await ctx.addUserAction(content, parseInt(importance || '5', 10));
+        await ctx.addUserAction(content, undefined, undefined, parseInt(importance || '5', 10));
         response = `✅ 已添加用户行动: ${content.substring(0, 50)}...`;
-        break;
+break;
       }
 
       default:
@@ -1196,11 +1196,11 @@ async function main() {
   }
 
   const { keypair, did, name } = await bootstrapIdentity();
-  agentIdentity = { did, name, publicKey: keypair.publicKeyHex };
+  agentIdentity = { did, name, publicKey: Buffer.from(keypair.publicKey).toString('hex') };
 
   publishDID(name, keypair).then(({ cid, ipnsName }) => {
-    if (cid) agentIdentity.cid = cid;
-    if (ipnsName) agentIdentity.ipnsName = ipnsName;
+    if (cid) agentIdentity!.cid = cid;
+    if (ipnsName) agentIdentity!.ipnsName = ipnsName;
   }).catch(() => {});
 
   const verifier = createVerificationManager();
@@ -1211,8 +1211,8 @@ async function main() {
       comm = c;
       const connections = c.getConnections();
       if (connections.length > 0) {
-        agentIdentity.peerId = connections[0].publicKey;
-        agentIdentity.p2pChannel = 'bolloon-agent-harness';
+        agentIdentity!.peerId = connections[0].publicKey;
+        agentIdentity!.p2pChannel = 'bolloon-agent-harness';
       }
     }).catch(err => {
       s.warn(`P2P 连接失败: ${err.message}`);

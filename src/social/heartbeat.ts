@@ -473,7 +473,7 @@ export class SocialHeartbeat {
 
       const content = JSON.stringify(doc);
       const result = await ipfs.upload(content);
-      const cid = typeof result === 'string' ? result : result?.cid || result?.IpfsHash;
+      const cid = typeof result === 'string' ? result : result?.cid;
 
       if (cid && cid !== this.ownIpfsCid) {
         this.ownIpfsCid = cid;

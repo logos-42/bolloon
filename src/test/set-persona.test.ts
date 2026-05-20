@@ -22,7 +22,9 @@ async function testSetPersona() {
     personality: '活泼好动',
     greeting: '你好！我是 TestBolloon！',
     capabilities: ['文档处理', '测试'],
-    interests: ['测试', '开发']
+    interests: ['测试', '开发'],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   };
 
   await session.setPersona(newPersona);

@@ -325,7 +325,7 @@ describe('SubAgentManager', () => {
       await manager.initialize();
       const task = await manager.createTask('delegate', 'Task', 'Desc', 'parent-001');
 
-      let updatedTask: SubAgentTask | null = null;
+      let updatedTask: SubAgentTask | undefined;
       manager.onTask((t) => {
         updatedTask = t;
       });
@@ -333,7 +333,7 @@ describe('SubAgentManager', () => {
       await manager.updateTaskStatus(task.id, 'completed', 'Done');
 
       expect(updatedTask).toBeDefined();
-      expect(updatedTask?.status).toBe('completed');
+      expect((updatedTask as SubAgentTask | undefined)?.status).toBe('completed');
     });
   });
 
