@@ -1139,6 +1139,52 @@ function parseArgs(): ParsedArgs {
         }
         result.toolArgs = actionArgs;
         break;
+      case '--harness-init':
+        result.tool = 'harness-init';
+        break;
+      case '--harness-gate':
+        result.tool = 'harness-gate';
+        break;
+      case '--harness-transition':
+        result.tool = 'harness-transition';
+        const transitionArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          transitionArgs.push(args[++i]);
+        }
+        result.toolArgs = transitionArgs;
+        break;
+      case '--harness-skill':
+        result.tool = 'harness-skill';
+        const skillArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          skillArgs.push(args[++i]);
+        }
+        result.toolArgs = skillArgs;
+        break;
+      case '--harness-classify':
+        result.tool = 'harness-classify';
+        const classifyArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          classifyArgs.push(args[++i]);
+        }
+        result.toolArgs = classifyArgs;
+        break;
+      case '--harness-context':
+        result.tool = 'harness-context';
+        const contextArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          contextArgs.push(args[++i]);
+        }
+        result.toolArgs = contextArgs;
+        break;
+      case '--harness-check':
+        result.tool = 'harness-check';
+        const checkArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          checkArgs.push(args[++i]);
+        }
+        result.toolArgs = checkArgs;
+        break;
       case '--tui':
         result.tui = true;
         break;
@@ -1197,6 +1243,15 @@ function printHelp(): void {
   --context                  显示全局共享上下文摘要
   --global-agents            显示全局 Agent 注册表
   --add-action <内容> [重要性]  添加用户行动到共享上下文
+
+  # Bollharness 治理框架
+  --harness-init             初始化 Bollharness 治理框架
+  --harness-gate             显示当前 Gate 状态
+  --harness-transition [PASS|BLOCK]  执行 Gate 转移
+  --harness-skill <name> [action]  执行 Harness Skill
+  --harness-classify <描述>  分类变更类型
+  --harness-context <file>   获取文件上下文
+  --harness-check <file>     执行 Guard 检查
 
   # AI 对话
   --prompt, -p <text>        通用 AI 对话（默认）
@@ -1323,24 +1378,29 @@ async function main() {
   const verifier = createVerificationManager();
   let comm: HyperswarmCommunicator | null = null;
 
-  if (mode === 'web') {
-    bootstrapP2P(verifier).then(c => {
-      comm = c;
-      const connections = c.getConnections();
+  try {
+    if (mode === 'web') {
+      bootstrapP2P(verifier).then(c => {
+        comm = c;
+        const connections = c.getConnections();
+        if (connections.length > 0) {
+          agentIdentity!.peerId = connections[0].publicKey;
+          agentIdentity!.p2pChannel = 'bolloon-agent-harness';
+        }
+      }).catch(err => {
+        s.warn(`P2P Web 模式启动失败: ${err.message}`);
+      });
+    } else {
+      comm = await bootstrapP2P(verifier);
+      const connections = comm.getConnections();
       if (connections.length > 0) {
-        agentIdentity!.peerId = connections[0].publicKey;
-        agentIdentity!.p2pChannel = 'bolloon-agent-harness';
+        agentIdentity.peerId = connections[0].publicKey;
+        agentIdentity.p2pChannel = 'bolloon-agent-harness';
       }
-    }).catch(err => {
-      s.warn(`P2P 连接失败: ${err.message}`);
-    });
-  } else {
-    comm = await bootstrapP2P(verifier);
-    const connections = comm.getConnections();
-    if (connections.length > 0) {
-      agentIdentity.peerId = connections[0].publicKey;
-      agentIdentity.p2pChannel = 'bolloon-agent-harness';
     }
+  } catch (err: any) {
+    s.warn(`P2P 初始化失败: ${err.message}`);
+    s.warn('将使用无 P2P 模式运行');
   }
 
   s.divider();

@@ -15,21 +15,21 @@ export const FRAGMENTS_DIR = BOLLHARNESS_CONTEXT_DIR;
 
 /**
  * Context Map - Maps file paths to relevant context fragments
- * Adapted from bollharness's context_router.ts
+ * Uses actual fragment filenames from src/bollharness/scripts/context-fragments/
  */
 export const CONTEXT_MAP: Record<string, string[]> = {
-  'src/agents/': ['agent-architecture', 'multi-agent-patterns'],
-  'src/documents/': ['document-processing', 'parser-patterns'],
-  'src/network/': ['p2p-protocols', 'connection-patterns'],
-  'src/constraints/': ['constraint-design', 'validation-patterns'],
-  'src/social/': ['social-protocols', 'agent-discovery'],
-  'src/test/': ['testing-patterns', 'quality-standards'],
-  'src/workflows/': ['workflow-patterns', 'orchestration-patterns'],
-  'src/bollharness-integration/': ['harness-integration', 'skill-adapter-patterns'],
-  'docs/': ['documentation-standards'],
-  'docs/decisions/': ['decision-tracking', 'adr-patterns'],
-  'CLAUDE.md': ['project-governance', 'truth-source-hierarchy'],
-  'README.md': ['project-intro', 'getting-started'],
+  'src/agents/': ['truth-source-hierarchy', 'protocol-consumers'],
+  'src/documents/': ['truth-source-hierarchy', 'db-shared-structures'],
+  'src/network/': ['truth-source-hierarchy', 'protocol-consumers'],
+  'src/constraints/': ['truth-source-hierarchy', 'fixed-three-layers'],
+  'src/social/': ['truth-source-hierarchy', 'bridge-constitution'],
+  'src/test/': ['truth-source-hierarchy', 'general-dev-principles'],
+  'src/workflows/': ['truth-source-hierarchy', 'catalyst-distributed'],
+  'src/bollharness-integration/': ['truth-source-hierarchy', 'artifact-linkage'],
+  'docs/': ['truth-source-hierarchy', 'two-language'],
+  'docs/decisions/': ['truth-source-hierarchy', 'artifact-linkage'],
+  'CLAUDE.md': ['truth-source-hierarchy', 'bridge-constitution'],
+  'README.md': ['truth-source-hierarchy', 'general-dev-principles'],
 };
 
 /**
@@ -144,7 +144,7 @@ export class ContextRouter {
     const contentParts: string[] = [];
 
     for (const name of fragments) {
-      const text = loadFragment(name);
+      const text = this.loadFragment(name);
       if (text) contentParts.push(text);
     }
 
