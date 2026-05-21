@@ -9,6 +9,8 @@ import {
   type P2PMessage,
   type P2PConnection,
 } from '@diap/sdk';
+import { irohTransport } from './network/iroh-transport.js';
+import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 import * as fs from 'fs/promises';
@@ -156,7 +158,7 @@ function getUserName(): string {
 }
 
 async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPair; did: string; name: string }> {
-  s.step(1, 4, '生成 DIAP 身份', 'loading');
+  s.step(1, 5, '生成 DIAP 身份', 'loading');
   const kp = KeyManager.generate();
   const did = kp.did;
   const username = getUserName();
@@ -164,12 +166,12 @@ async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPa
   const name = `blln-${username}-${suffix}`;
   console.log(`     ${GRAY}DID:${RESET} ${did}`);
   console.log(`     ${GRAY}名称:${RESET} ${name}`);
-  s.step(1, 4, '生成 DIAP 身份', 'ok');
+  s.step(1, 5, '生成 DIAP 身份', 'ok');
   return { keypair: kp, did, name };
 }
 
 function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<{ cid?: string; ipnsName?: string }> {
-  s.step(2, 4, '发布 DID → IPFS (后台)', 'loading');
+  s.step(2, 5, '发布 DID → IPFS (后台)', 'loading');
 
   return new Promise((resolve) => {
     const attempt = async () => {
@@ -178,7 +180,7 @@ function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<{ ci
         try {
           const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
           const result = await auth.registerAgent({ name, services: [] }, kp, '');
-          s.step(2, 4, '发布 DID → IPFS', 'ok');
+          s.step(2, 5, '发布 DID → IPFS', 'ok');
           resolve({ cid: result.cid });
         } catch (e: any) {
           const now = Date.now();
@@ -209,7 +211,7 @@ function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<{ ci
 async function bootstrapP2P(
   verifier: AgentVerificationManager,
 ): Promise<HyperswarmCommunicator> {
-  s.step(3, 4, '启动 P2P 网络', 'loading');
+  s.step(3, 5, '启动 P2P 网络', 'loading');
   const rawSeed = crypto.getRandomValues(new Uint8Array(32));
   const seed: any = rawSeed;
   const comm = createHyperswarmCommunicator({ server: true, client: true, autoConnect: true, maxConnections: 50, seed });
@@ -238,8 +240,49 @@ async function bootstrapP2P(
   const topic = createTopic('bolloon-agent-harness') as Buffer;
   await comm.joinTopic(topic);
   console.log(`     ${GRAY}主题:${RESET} ${topic.slice(0, 8).toString('hex')}...`);
-  s.step(3, 4, '启动 P2P 网络', 'ok');
+  s.step(3, 5, '启动 P2P 网络', 'ok');
   return comm;
+}
+
+// ---------------------------------------------------------------------------
+// iroh/Hybrid P2P 初始化
+// ---------------------------------------------------------------------------
+
+async function bootstrapIroh(keypair: any, name: string): Promise<void> {
+  s.step(4, 5, '启动 iroh P2P', 'loading');
+
+  try {
+    const node = await irohTransport.start();
+    console.log(`     ${GRAY}iroh:${RESET} ${node.nodeId.substring(0, 16)}...`);
+
+    hybridMessenger = new HybridMessenger({
+      preferIrohForLarge: true,
+      largeThresholdBytes: 64 * 1024,
+      enableRelay: true,
+    });
+
+    hybridMessenger.onMessage('task', async (msg) => {
+      console.log(`[iroh] Task from ${msg.from.substring(0, 12)}...: ${new TextDecoder().decode(msg.payload).substring(0, 50)}...`);
+    });
+
+    hybridMessenger.onMessage('blob', async (msg) => {
+      console.log(`[iroh] Blob from ${msg.from.substring(0, 12)}...: ${msg.payload.length} bytes`);
+    });
+
+    hybridMessenger.onMessage('response', async (msg) => {
+      console.log(`[iroh] Response from ${msg.from.substring(0, 12)}...`);
+    });
+
+    if (agentIdentity) {
+      agentIdentity.irohNodeId = node.nodeId;
+    }
+
+    s.step(4, 5, '启动 iroh P2P', 'ok');
+  } catch (e: any) {
+    s.step(4, 5, '启动 iroh P2P', 'warn');
+    console.log(`     ${YELLOW}iroh 启动失败: ${e.message}${RESET}`);
+    console.log(`     ${GRAY}继续使用 Hyperswarm P2P${RESET}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +291,7 @@ async function bootstrapP2P(
 
 let agent: Awaited<ReturnType<typeof createAgentSession>> | null = null;
 let harness: BollharnessIntegration | null = null;
+let hybridMessenger: HybridMessenger | null = null;
 let agentIdentity: {
   did: string;
   name: string;
@@ -256,6 +300,7 @@ let agentIdentity: {
   p2pChannel?: string;
   cid?: string;
   ipnsName?: string;
+  irohNodeId?: string;
 } | null = null;
 
 async function getAgent() {
@@ -481,6 +526,20 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     process.stdout.write(`${GRAY}已连接节点: ${peers.length}${RESET}\n`);
     for (const c of peers) {
       process.stdout.write(`  ${GRAY}·${RESET} ${c.publicKey.substring(0, 16)}...\n`);
+    }
+    return;
+  }
+
+  if (trimmed.toLowerCase() === 'iroh') {
+    const nodeId = irohTransport.getNodeId();
+    const running = irohTransport.isRunning();
+    const peers = irohTransport.getPeers();
+    process.stdout.write(`${GRAY}iroh 状态:${RESET}\n`);
+    process.stdout.write(`  ${GRAY}运行中:${RESET} ${running ? '是' : '否'}\n`);
+    process.stdout.write(`  ${GRAY}Node ID:${RESET} ${nodeId ? nodeId.substring(0, 24) + '...' : 'N/A'}\n`);
+    process.stdout.write(`  ${GRAY}已知节点:${RESET} ${peers.length}\n`);
+    if (hybridMessenger) {
+      process.stdout.write(`  ${GRAY}HybridMessenger:${RESET} 就绪\n`);
     }
     return;
   }
@@ -1482,6 +1541,8 @@ async function main() {
     s.warn('将使用无 P2P 模式运行');
   }
 
+  await bootstrapIroh(keypair, name);
+
   s.divider();
 
   if (mode === 'web') {
@@ -1510,6 +1571,8 @@ async function main() {
     console.log(`  ${CYAN}--agents${RESET}               ${GRAY}- 查看 SubAgent${RESET}`);
     console.log(`  ${CYAN}--context${RESET}              ${GRAY}- 查看全局上下文${RESET}`);
     console.log(`  ${CYAN}--delegate 任务 coding${RESET}  ${GRAY}- 委派任务${RESET}`);
+    console.log(`  ${CYAN}peers${RESET}                  ${GRAY}- 查看 P2P 节点${RESET}`);
+    console.log(`  ${CYAN}iroh${RESET}                   ${GRAY}- 查看 iroh 状态${RESET}`);
     console.log(`  ${CYAN}退出${RESET}                   ${GRAY}- 结束对话${RESET}\n`);
 
     if (!isTuiMode) {

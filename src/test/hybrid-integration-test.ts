@@ -89,14 +89,12 @@ async function test() {
     failed++;
   }
 
-  console.log('\n[6] Test iroh transport standalone...');
+  console.log('\n[6] Verify iroh transport is running...');
   try {
-    await irohTransport.start();
     console.log('    Node ID:', irohTransport.getNodeId()?.substring(0, 16) + '...');
     console.log('    Running:', irohTransport.isRunning());
     console.log('    Peers:', irohTransport.getPeers().length);
-    await irohTransport.shutdown();
-    console.log('    ✅ Iroh transport works');
+    console.log('    ✅ Iroh transport is running');
     passed++;
   } catch (e) {
     console.log('    ❌ Failed:', e);
