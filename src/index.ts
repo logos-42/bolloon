@@ -1121,6 +1121,7 @@ interface ParsedArgs {
   summarize?: boolean;
   improve?: boolean;
   peers?: boolean;
+  iroh?: boolean;
   identity?: boolean;
   logs?: boolean;
   broadcast?: boolean;
@@ -1193,6 +1194,10 @@ function parseArgs(): ParsedArgs {
       case '--peers':
         result.peers = true;
         result.tool = 'peers';
+        break;
+      case '--iroh':
+        result.iroh = true;
+        result.tool = 'iroh';
         break;
       case '--identity':
         result.identity = true;
