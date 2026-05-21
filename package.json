@@ -18,6 +18,7 @@
   ],
   "dependencies": {
     "@bolloon/constraint-runtime": "0.1.0",
+    "@rayhanadev/iroh": "^0.1.0",
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
     "@diap/sdk": "^0.1.9",
