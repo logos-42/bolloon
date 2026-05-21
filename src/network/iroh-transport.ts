@@ -10,13 +10,20 @@ export type IrohMessageHandler = (msg: IrohMessage) => void;
 
 const IROH_ALPN = 'bolloon/iroh/1';
 
+export interface IrohPeer {
+  nodeId: string;
+  lastSeen: number;
+  connected: boolean;
+}
+
 export class IrohTransport {
   private endpoint: Endpoint | null = null;
   private messageHandlers: Map<string, IrohMessageHandler> = new Map();
   private running: boolean = false;
-  private acceptLoop: ReturnType<typeof setInterval> | null = null;
   private ownNodeId: string | null = null;
+  private peers: Map<string, IrohPeer> = new Map();
   private connectTimeoutMs: number = 10000;
+  private acceptLoop: ReturnType<typeof setInterval> | null = null;
 
   async start(secretKey?: string): Promise<{ nodeId: string; addr: string }> {
     if (this.endpoint) {
@@ -32,9 +39,10 @@ export class IrohTransport {
     this.ownNodeId = this.endpoint.nodeId();
     await this.endpoint.online();
     this.running = true;
-    this.startAcceptLoop();
 
     console.log('[IrohTransport] Started, node:', this.ownNodeId.substring(0, 16) + '...');
+
+    this.startAcceptLoop();
 
     return {
       nodeId: this.endpoint.nodeId(),
@@ -54,13 +62,14 @@ export class IrohTransport {
           this.handleConnection(conn);
         }
       } catch {
-        // Silently ignore accept errors during shutdown
+        // Silently ignore during shutdown
       }
     }, 100);
   }
 
   private async handleConnection(conn: Connection): Promise<void> {
     const remoteNodeId = conn.remoteNodeId();
+    this.updatePeer(remoteNodeId, true);
 
     try {
       const { recv } = await conn.acceptBi();
@@ -78,13 +87,22 @@ export class IrohTransport {
         }
       }
     } catch {
-      // Connection closed or error
+      // Connection closed
     } finally {
       try { conn.close(); } catch {}
     }
   }
 
-  async sendMessage(targetNodeId: string, type: string, payload: Uint8Array): Promise<boolean> {
+  private updatePeer(nodeId: string, connected: boolean): void {
+    const existing = this.peers.get(nodeId);
+    this.peers.set(nodeId, {
+      nodeId,
+      lastSeen: Date.now(),
+      connected: existing?.connected || connected,
+    });
+  }
+
+  async connect(targetNodeId: string): Promise<boolean> {
     if (!this.endpoint) {
       throw new Error('IrohTransport not started');
     }
@@ -92,18 +110,15 @@ export class IrohTransport {
     try {
       const conn = await this.connectWithTimeout(targetNodeId);
       if (!conn) {
-        console.warn('[IrohTransport] Connection failed');
+        console.warn('[IrohTransport] Connection timeout to', targetNodeId.substring(0, 12) + '...');
         return false;
       }
 
-      const { send } = await conn.openBi();
-      const message = type + ':' + new TextDecoder().decode(payload);
-      await send.writeAll(Buffer.from(message));
-      await send.finish();
+      this.updatePeer(targetNodeId, true);
       conn.close();
       return true;
     } catch (e) {
-      console.warn('[IrohTransport] Send error:', e);
+      console.warn('[IrohTransport] Connect failed:', e);
       return false;
     }
   }
@@ -119,6 +134,31 @@ export class IrohTransport {
     return Promise.race([connectPromise, timeout]);
   }
 
+  async sendMessage(targetNodeId: string, type: string, payload: Uint8Array): Promise<boolean> {
+    if (!this.endpoint) {
+      throw new Error('IrohTransport not started');
+    }
+
+    try {
+      const conn = await this.connectWithTimeout(targetNodeId);
+      if (!conn) {
+        return false;
+      }
+
+      const { send } = await conn.openBi();
+      const message = type + ':' + new TextDecoder().decode(payload);
+      await send.writeAll(Buffer.from(message));
+      await send.finish();
+      conn.close();
+
+      this.updatePeer(targetNodeId, true);
+      return true;
+    } catch (e) {
+      console.warn('[IrohTransport] Send failed:', e);
+      return false;
+    }
+  }
+
   async requestResponse(targetNodeId: string, type: string, payload: Uint8Array): Promise<Uint8Array | null> {
     if (!this.endpoint) {
       throw new Error('IrohTransport not started');
@@ -127,7 +167,6 @@ export class IrohTransport {
     try {
       const conn = await this.connectWithTimeout(targetNodeId);
       if (!conn) {
-        console.warn('[IrohTransport] Connection timeout');
         return null;
       }
 
@@ -138,11 +177,21 @@ export class IrohTransport {
 
       const response = await recv.readToEnd(64 * 1024);
       conn.close();
+
+      this.updatePeer(targetNodeId, true);
       return response;
     } catch (e) {
-      console.warn('[IrohTransport] Request-response error:', e);
+      console.warn('[IrohTransport] Request-response failed:', e);
       return null;
     }
+  }
+
+  async broadcast(type: string, payload: Uint8Array): Promise<void> {
+    const peers = Array.from(this.peers.keys());
+    const promises = peers.map((peerId) =>
+      this.sendMessage(peerId, type, payload).catch(() => false)
+    );
+    await Promise.all(promises);
   }
 
   onMessage(type: string, handler: IrohMessageHandler): void {
@@ -151,6 +200,16 @@ export class IrohTransport {
 
   getNodeId(): string | null {
     return this.ownNodeId;
+  }
+
+  getPeers(): IrohPeer[] {
+    return Array.from(this.peers.values());
+  }
+
+  getConnectedPeers(): string[] {
+    return Array.from(this.peers.values())
+      .filter((p) => p.connected)
+      .map((p) => p.nodeId);
   }
 
   isRunning(): boolean {
@@ -176,7 +235,9 @@ export class IrohTransport {
       this.endpoint = null;
     }
 
+    this.peers.clear();
     this.ownNodeId = null;
+    console.log('[IrohTransport] Shut down');
   }
 }
 

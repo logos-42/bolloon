@@ -521,6 +521,10 @@ export class P2PNetwork {
     this.ownDid = did;
   }
 
+  getNode(): any {
+    return this.node;
+  }
+
   async shutdown(): Promise<void> {
     for (const timer of this.reconnectTimers.values()) {
       clearTimeout(timer);
