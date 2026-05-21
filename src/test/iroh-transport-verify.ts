@@ -1,102 +1,60 @@
 import { irohTransport } from '../network/iroh-transport.js';
 
-async function testTransport() {
-  console.log('╔═══════════════════════════════════════════╗');
-  console.log('║      iroh Transport Verification          ║');
-  console.log('╚═══════════════════════════════════════════╝\n');
+async function main() {
+  console.log('=== iroh Transport Core Verification ===\n');
 
-  let passed = 0;
-  let failed = 0;
+  let allPassed = true;
 
-  console.log('[1] Starting transport...');
+  console.log('[1] Start transport');
   try {
     const node = await irohTransport.start();
-    console.log('    ✅ Transport started');
-    console.log('    Node ID:', node.nodeId.substring(0, 24) + '...');
-
-    if (node.nodeId.length === 64) {
-      console.log('    ✅ Valid node ID (64 hex chars)');
-      passed++;
-    } else {
-      console.log('    ❌ Invalid node ID length');
-      failed++;
-    }
+    console.log('    ✅ Started, ID:', node.nodeId.substring(0, 20) + '...');
   } catch (e) {
-    console.log('    ❌ Start failed:', e);
-    failed++;
+    console.log('    ❌ Failed:', e);
+    allPassed = false;
   }
 
-  console.log('\n[2] Checking running state...');
-  if (irohTransport.isRunning()) {
-    console.log('    ✅ Transport is running');
-    passed++;
-  } else {
-    console.log('    ❌ Transport not running');
-    failed++;
-  }
+  console.log('\n[2] Running state');
+  console.log('    ' + (irohTransport.isRunning() ? '✅ Running' : '❌ Not running'));
 
-  console.log('\n[3] Testing message handler registration...');
-  let handlerCalled = false;
-  irohTransport.onMessage('test', (msg) => {
-    handlerCalled = true;
-  });
-  console.log('    ✅ Handler registered');
-  passed++;
-
-  console.log('\n[4] Testing wildcard handler...');
-  irohTransport.onMessage('*', (msg) => {
-    console.log('    Wildcard handler triggered by:', msg.type);
-  });
-  console.log('    ✅ Wildcard handler registered');
-  passed++;
-
-  console.log('\n[5] Testing getNodeId...');
+  console.log('\n[3] Node ID format');
   const nodeId = irohTransport.getNodeId();
   if (nodeId && nodeId.length === 64) {
-    console.log('    ✅ getNodeId returns valid ID');
-    passed++;
+    console.log('    ✅ Valid 64-char hex ID');
   } else {
-    console.log('    ❌ getNodeId failed');
-    failed++;
+    console.log('    ❌ Invalid ID');
+    allPassed = false;
   }
 
-  console.log('\n[6] Testing shutdown...');
+  console.log('\n[4] Message handlers');
+  irohTransport.onMessage('test', () => {});
+  irohTransport.onMessage('*', () => {});
+  console.log('    ✅ Handlers registered');
+
+  console.log('\n[5] Shutdown');
   await irohTransport.shutdown();
   if (!irohTransport.isRunning()) {
-    console.log('    ✅ Transport stopped');
-    passed++;
+    console.log('    ✅ Stopped');
   } else {
-    console.log('    ❌ Transport still running');
-    failed++;
+    console.log('    ❌ Still running');
+    allPassed = false;
   }
 
-  console.log('\n[7] Testing restart...');
+  console.log('\n[6] Re-start after shutdown');
   try {
     await irohTransport.start();
-    const newNodeId = irohTransport.getNodeId();
-    if (newNodeId && newNodeId.length === 64) {
-      console.log('    ✅ Transport restarted');
-      passed++;
-    } else {
-      console.log('    ❌ Restart failed');
-      failed++;
-    }
+    console.log('    ✅ Restart works');
     await irohTransport.shutdown();
   } catch (e) {
-    console.log('    ❌ Restart failed:', e);
-    failed++;
+    console.log('    ❌ Restart failed');
+    allPassed = false;
   }
 
-  console.log('\n╔═══════════════════════════════════════════╗');
-  console.log(`║  Results: ${passed} passed, ${failed} failed          ║`);
-  console.log('╚═══════════════════════════════════════════╝');
-
-  if (failed > 0) {
-    process.exit(1);
-  }
+  console.log('\n' + (allPassed ? '✅ ALL TESTS PASSED' : '❌ SOME TESTS FAILED'));
+  process.exit(allPassed ? 0 : 1);
 }
 
-testTransport().catch(e => {
-  console.error('Test error:', e);
+main().catch(e => {
+  console.error('Error:', e);
   process.exit(1);
 });

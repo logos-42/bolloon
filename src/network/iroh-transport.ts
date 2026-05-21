@@ -16,6 +16,7 @@ export class IrohTransport {
   private running: boolean = false;
   private acceptLoop: ReturnType<typeof setInterval> | null = null;
   private ownNodeId: string | null = null;
+  private connectTimeoutMs: number = 10000;
 
   async start(secretKey?: string): Promise<{ nodeId: string; addr: string }> {
     if (this.endpoint) {
@@ -33,8 +34,7 @@ export class IrohTransport {
     this.running = true;
     this.startAcceptLoop();
 
-    console.log('[IrohTransport] Started');
-    console.log('[IrohTransport]   Node ID:', this.ownNodeId);
+    console.log('[IrohTransport] Started, node:', this.ownNodeId.substring(0, 16) + '...');
 
     return {
       nodeId: this.endpoint.nodeId(),
@@ -53,8 +53,8 @@ export class IrohTransport {
         if (conn) {
           this.handleConnection(conn);
         }
-      } catch (e) {
-        console.warn('[IrohTransport] Accept error:', e);
+      } catch {
+        // Silently ignore accept errors during shutdown
       }
     }, 100);
   }
@@ -72,15 +72,13 @@ export class IrohTransport {
         const type = colonIdx > 0 ? text.substring(0, colonIdx) : 'raw';
         const payload = new TextEncoder().encode(text.substring(colonIdx + 1));
 
-        console.log('[IrohTransport] Message from', remoteNodeId.substring(0, 12) + '...', 'type:', type);
-
         const handler = this.messageHandlers.get(type);
         if (handler) {
           handler({ type, payload, from: remoteNodeId });
         }
       }
-    } catch (e) {
-      console.warn('[IrohTransport] Error handling connection:', e);
+    } catch {
+      // Connection closed or error
     } finally {
       try { conn.close(); } catch {}
     }
@@ -92,19 +90,33 @@ export class IrohTransport {
     }
 
     try {
-      const conn = await this.endpoint.connect(targetNodeId, IROH_ALPN);
-      const { send } = await conn.openBi();
+      const conn = await this.connectWithTimeout(targetNodeId);
+      if (!conn) {
+        console.warn('[IrohTransport] Connection failed');
+        return false;
+      }
 
+      const { send } = await conn.openBi();
       const message = type + ':' + new TextDecoder().decode(payload);
       await send.writeAll(Buffer.from(message));
       await send.finish();
-
       conn.close();
       return true;
     } catch (e) {
-      console.warn('[IrohTransport] Send failed:', e);
+      console.warn('[IrohTransport] Send error:', e);
       return false;
     }
+  }
+
+  private async connectWithTimeout(nodeId: string): Promise<any> {
+    if (!this.endpoint) return null;
+
+    const connectPromise = this.endpoint.connect(nodeId, IROH_ALPN);
+    const timeout = new Promise<null>((resolve) =>
+      setTimeout(() => resolve(null), this.connectTimeoutMs)
+    );
+
+    return Promise.race([connectPromise, timeout]);
   }
 
   async requestResponse(targetNodeId: string, type: string, payload: Uint8Array): Promise<Uint8Array | null> {
@@ -113,19 +125,22 @@ export class IrohTransport {
     }
 
     try {
-      const conn = await this.endpoint.connect(targetNodeId, IROH_ALPN);
-      const { send, recv } = await conn.openBi();
+      const conn = await this.connectWithTimeout(targetNodeId);
+      if (!conn) {
+        console.warn('[IrohTransport] Connection timeout');
+        return null;
+      }
 
+      const { send, recv } = await conn.openBi();
       const requestMsg = type + ':' + new TextDecoder().decode(payload);
       await send.writeAll(Buffer.from(requestMsg));
       await send.finish();
 
       const response = await recv.readToEnd(64 * 1024);
       conn.close();
-
       return response;
     } catch (e) {
-      console.warn('[IrohTransport] Request-response failed:', e);
+      console.warn('[IrohTransport] Request-response error:', e);
       return null;
     }
   }
@@ -142,6 +157,10 @@ export class IrohTransport {
     return this.running;
   }
 
+  setConnectTimeout(ms: number): void {
+    this.connectTimeoutMs = ms;
+  }
+
   async shutdown(): Promise<void> {
     this.running = false;
 
@@ -151,12 +170,13 @@ export class IrohTransport {
     }
 
     if (this.endpoint) {
-      await this.endpoint.close();
+      try {
+        await this.endpoint.close();
+      } catch {}
       this.endpoint = null;
     }
 
     this.ownNodeId = null;
-    console.log('[IrohTransport] Shut down');
   }
 }
 
