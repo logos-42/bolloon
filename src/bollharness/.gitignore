@@ -1,0 +1,50 @@
+# Runtime state (written by hooks/installer, never committed)
+# Use negation so .gitkeep sentinels remain tracked for WP-01b skeleton.
+.boll/install-staging/*
+!.boll/install-staging/.gitkeep
+.boll/metrics/*
+!.boll/metrics/.gitkeep
+.boll/proposals/*
+!.boll/proposals/.gitkeep
+.boll/guard/*
+!.boll/guard/.gitkeep
+.boll/active-review-agents/*
+!.boll/active-review-agents/.gitkeep
+.boll/tasks/*
+!.boll/tasks/.gitkeep
+.boll/install-log.jsonl
+.boll/install-trust-token.json
+.boll/trust-status.json
+.boll/state/
+
+# .boll/ runtime state — created when hooks fire after install. Schema
+# files like .boll/inbox/schema/*.json are tracked above; everything
+# else under .boll/ is hook output and never committed.
+.boll/guard/
+.boll/logs/
+.boll/metrics/
+.boll/proposals/
+.boll/inbox/main/
+.boll/inbox/window-*/
+.boll/log/
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# Node.js
+node_modules/
+*.log
+npm-debug.log*
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test / coverage
+coverage/
+.nyc_output/
+dist/

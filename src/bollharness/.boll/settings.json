@@ -1,0 +1,157 @@
+{
+  "attribution": {
+    "co_authored_by": false
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/guard-feedback.ts",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/loop-detection.ts",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/risk-tracker.ts 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/deploy-guard.ts",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "if": "Bash(npx ts-node *)",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/auto-ts-node.ts",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/tool-call-counter.ts 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/review-agent-gatekeeper.ts",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/sanitize-on-read.ts",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && bash scripts/hooks/precompact.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/session-start-reset-risk.ts",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/session-start-magic-docs.ts",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/session-start-toolkit-reminder.ts",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/stop-evaluator.ts",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/session-reflection.ts",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/trace-analyzer.ts analyze --days 1 --min-samples 3 2>/dev/null || true",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/deploy-progress-on-session-end.ts",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/failure-analyzer.ts",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+﻿# Append these entries to your project's .gitignore when using wow-harness
+# This file is part of the wow-harness scaffolding system
+
+# Runtime state directories (created by hooks)
+.boll/
+!.boll/toolkit-index.yaml
+!.boll/inbox/
+
+# Metrics and logs
+*.jsonl
+
+# Claude Code session artifacts
+.claude/
+!.claude/settings.json
+!.claude/settings.json.template
+!.claude/CLAUDE.md.template

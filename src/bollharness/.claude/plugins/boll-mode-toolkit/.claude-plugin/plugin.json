@@ -1,0 +1,44 @@
+﻿{
+  "name": "boll-mode-toolkit",
+  "version": "0.1.0",
+  "description": "Runtime mode + capability-routing + evidence-emit substrate for boll runs. Ships the PreToolUse capability-router (mode-enforced tool allowlist/denylist + shadow logging), the PostToolUse evidence-emit hook (auto-captures step-level evidence packets), the /mode skill family (plan/build/verify/release transitions gated against .boll/state/mode + review-contract bindings), and the mode-contract.md runtime-state-variable specification. Sibling to boll-review-toolkit (WP-037). Second asset-unit export per 03-design.md §11.1 — the mode-first control plane becomes importable.",
+  "author": {
+    "name": "boll",
+    "url": "https://github.com/natureblueee/boll"
+  },
+  "license": "MIT",
+  "keywords": [
+    "boll",
+    "mode",
+    "capability-router",
+    "evidence-emit",
+    "pretooluse",
+    "posttooluse"
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "SHADOW=1 npx ts-node \"${CLAUDE_PLUGIN_ROOT}/hooks/capability-router.ts\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx ts-node \"${CLAUDE_PLUGIN_ROOT}/hooks/evidence-emit.ts\" 2>/dev/null || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,88 @@
+name: bollharness CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  safety-scans:
+    name: safety-scans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for claim git-log checks)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: npm install
+
+      # ------------------------------------------------------------------
+      # Core sanitize + L1/L2 integrity
+      # ------------------------------------------------------------------
+      - name: count-components + meta-self-check
+        # AC 2/3: meta-self-check fires if ci.yml no longer references
+        # count-components.sh. This line IS the anchor — don't rename it.
+        run: bash scripts/ci/count-components.sh
+
+      - name: scan yaml schema (ban cmd_template/exec in settings.json + yaml)
+        run: |
+          npx ts-node scripts/ci/scan_yaml_schema.ts .boll/settings.json
+          npx ts-node scripts/ci/scan_yaml_schema.ts .boll/MANIFEST.yaml
+          npx ts-node scripts/ci/scan_yaml_schema.ts .boll/issue-adapter.yaml
+          npx ts-node scripts/ci/scan_yaml_schema.ts .boll/deploy-allowlist.yaml
+
+      - name: scan subprocess cfg (ts hooks + root scripts)
+        run: |
+          find scripts -name '*.ts' -not -path 'scripts/fragments/*' -print0 \
+            | xargs -0 -r npx ts-node scripts/ci/scan_subprocess_cfg.ts
+
+      - name: scan verify artifacts — positive claim cross-source
+        run: npx ts-node scripts/ci/scan_verify_artifacts.ts --claims
+
+      - name: detect rebaseline triggers (MANIFEST vs live)
+        run: npx ts-node scripts/ci/detect_rebaseline_triggers.ts
+
+      # ------------------------------------------------------------------
+      # WP-SEC-1 seam verifiers
+      # ------------------------------------------------------------------
+      - name: lead INDEX install-bollharness slot preserved (patch_d)
+        run: grep -q 'install-bollharness' .boll/skills/lead/INDEX.md
+
+      - name: settings.json command count (15 pre-WP-11, 16 post-WP-11)
+        run: |
+          N=$(npx ts-node -e "import fs from 'fs'; const s=JSON.parse(fs.readFileSync('.boll/settings.json','utf8')); console.log(Object.values(s.hooks||{}).flat().reduce((a,e)=>a+(e.hooks||[]).length,0))")
+          echo "settings.json command count: $N"
+          case "$N" in
+            15|16) echo "ok";;
+            *) echo "UNEXPECTED command count: $N (expected 15 pre-WP-11 or 16 post-WP-11)"; exit 2;;
+          esac
+
+      - name: MANIFEST L-registry schema (8 required top-level keys)
+        run: |
+          npx ts-node - <<'TS'
+          import fs from 'fs';
+          const yaml = require('js-yaml');
+          const d = yaml.load(fs.readFileSync('.boll/MANIFEST.yaml', 'utf8'));
+          const required = [
+              'L1_registry', 'L2_registry', 'L3_registry', 'L4_registry',
+              'L5_registry', 'settings_command_registry', 'rebaseline_triggers',
+              'physical_files',
+          ];
+          const missing = required.filter(k => !(k in d));
+          if (missing.length > 0) {
+              console.log('missing MANIFEST keys:', missing);
+              process.exit(2);
+          }
+          assert(d['L1_registry'].length > 0, 'L1_registry must be non-empty');
+          assert([15, 16].includes(d['settings_command_registry'].length),
+              `settings_command_registry length ${d['settings_command_registry'].length} not in (15, 16)`);
+          console.log('MANIFEST schema ok');
+          TS

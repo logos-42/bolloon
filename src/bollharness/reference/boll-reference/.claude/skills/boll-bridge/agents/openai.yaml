@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "boll Bridge"
+  short_description: "boll bridge design, repair, and runtime engineering"
+  default_prompt: "Use $boll-bridge to diagnose, design, implement, or repair a boll bridge issue end to end."

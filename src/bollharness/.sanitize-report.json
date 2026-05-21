@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "last_scan": "2026-04-19T00:00:00+08:00",
+  "total_files_scanned": 0,
+  "findings": [],
+  "statistics": {
+    "secrets": 0,
+    "trade_secrets": 0,
+    "pii": 0,
+    "network_internal": 0,
+    "protocol_internal": 0
+  }
+}
