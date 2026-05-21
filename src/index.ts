@@ -695,6 +695,19 @@ async function runToolCommand(
         break;
       }
 
+      case 'iroh': {
+        const nodeId = irohTransport.getNodeId();
+        const running = irohTransport.isRunning();
+        const irohPeers = irohTransport.getPeers();
+        const messenger = hybridMessenger ? 'HybridMessenger 就绪' : 'HybridMessenger 未初始化';
+        response = `iroh P2P 状态:
+  运行中: ${running ? '是' : '否'}
+  Node ID: ${nodeId ? nodeId.substring(0, 32) + '...' : 'N/A'}
+  已知节点: ${irohPeers.length}
+  ${messenger}`;
+        break;
+      }
+
       case 'identity': {
         const identity = a.getIdentity();
         response = JSON.stringify(identity, null, 2);
