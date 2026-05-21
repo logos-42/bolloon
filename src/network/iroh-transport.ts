@@ -1,131 +1,116 @@
-import { Endpoint, Connection } from '@rayhanadev/iroh';
+import {
+  IrohCommunicator,
+  createIrohCommunicator,
+  type IrohConfig,
+  type IrohMessage,
+  type IrohConnection,
+  type IrohMessageType,
+} from '@diap/sdk';
 
-export interface IrohMessage {
+export interface IrohNode {
+  nodeId: string;
+  addr: string;
+}
+
+export interface IrohMessageEvent {
   type: string;
   payload: Uint8Array;
   from: string;
+  messageType: IrohMessageType;
 }
 
-export type IrohMessageHandler = (msg: IrohMessage) => void;
-
-const IROH_ALPN = 'bolloon/iroh/1';
+export type IrohMessageHandler = (msg: IrohMessageEvent) => void;
 
 export class IrohTransport {
-  private endpoint: Endpoint | null = null;
+  private communicator: IrohCommunicator | null = null;
   private messageHandlers: Map<string, IrohMessageHandler> = new Map();
   private running: boolean = false;
-  private acceptLoop: ReturnType<typeof setInterval> | null = null;
   private ownNodeId: string | null = null;
 
-  async start(secretKey?: string): Promise<{ nodeId: string; addr: string }> {
-    if (this.endpoint) {
+  async start(config?: IrohConfig): Promise<IrohNode> {
+    if (this.communicator) {
       throw new Error('IrohTransport already started');
     }
 
-    const options: any = { alpns: [IROH_ALPN] };
-    if (secretKey) {
-      options.secretKey = secretKey;
-    }
+    this.communicator = createIrohCommunicator({
+      listenAddr: '0.0.0.0:0',
+      maxConnections: 100,
+      enableRelay: true,
+      enableNatTraversal: true,
+      ...config,
+    });
 
-    this.endpoint = await Endpoint.createWithOptions(options);
-    this.ownNodeId = this.endpoint.nodeId();
-    await this.endpoint.online();
+    await this.communicator.start();
+
+    this.ownNodeId = this.communicator.getNodeId();
     this.running = true;
-    this.startAcceptLoop();
+
+    console.log('[IrohTransport] Started');
+    console.log('[IrohTransport] Node ID:', this.ownNodeId);
 
     return {
-      nodeId: this.endpoint.nodeId(),
-      addr: this.endpoint.addr() || this.endpoint.nodeId(),
+      nodeId: this.ownNodeId,
+      addr: this.communicator.getNodeAddr(),
     };
   }
 
-  private startAcceptLoop(): void {
-    if (!this.endpoint) return;
-
-    this.acceptLoop = setInterval(async () => {
-      if (!this.endpoint || !this.running) return;
-
-      try {
-        const conn = await this.endpoint.accept();
-        if (conn) {
-          this.handleConnection(conn);
-        }
-      } catch (e) {
-        console.warn('[Iroh] Accept error:', e);
-      }
-    }, 100);
-  }
-
-  private async handleConnection(conn: Connection): Promise<void> {
-    const remoteNodeId = conn.remoteNodeId();
-
-    try {
-      const { recv } = await conn.acceptBi();
-      const data = await recv.readToEnd(64 * 1024);
-
-      if (data.length > 0) {
-        const text = new TextDecoder().decode(data);
-        const colonIdx = text.indexOf(':');
-        const type = colonIdx > 0 ? text.substring(0, colonIdx) : 'raw';
-        const payload = colonIdx > 0 ? new TextEncoder().encode(text.substring(colonIdx + 1)) : data;
-
-        const handler = this.messageHandlers.get(type);
-        if (handler) {
-          handler({ type, payload, from: remoteNodeId });
-        } else {
-          const wildcard = this.messageHandlers.get('*');
-          if (wildcard) {
-            wildcard({ type, payload, from: remoteNodeId });
-          }
-        }
-      }
-    } catch (e) {
-      console.warn(`[Iroh] Error handling connection from ${remoteNodeId}:`, e);
-    } finally {
-      conn.close();
+  async connect(targetNodeId: string): Promise<string> {
+    if (!this.communicator) {
+      throw new Error('IrohTransport not started');
     }
+
+    const conn = await this.communicator.connectToNode(targetNodeId);
+    console.log('[IrohTransport] Connected to:', targetNodeId.substring(0, 12), '...');
+    return conn;
   }
 
   async sendMessage(targetNodeId: string, type: string, payload: Uint8Array): Promise<boolean> {
-    if (!this.endpoint) {
+    if (!this.communicator) {
       throw new Error('IrohTransport not started');
     }
 
     try {
-      const conn = await this.endpoint.connect(targetNodeId, IROH_ALPN);
-      const { send } = await conn.openBi();
+      const message: IrohMessage = {
+        messageId: crypto.randomUUID(),
+        messageType: 'custom' as IrohMessageType,
+        fromDid: this.ownNodeId || '',
+        toDid: targetNodeId,
+        content: new TextDecoder().decode(payload),
+        timestamp: Date.now(),
+        metadata: { type },
+      };
 
-      const message = type + ':' + new TextDecoder().decode(payload);
-      await send.writeAll(Buffer.from(message));
-      await send.finish();
-
-      conn.close();
+      await this.communicator.sendMessage(targetNodeId, message);
       return true;
     } catch (e) {
-      console.warn(`[Iroh] Failed to send to ${targetNodeId}:`, e);
+      console.warn('[IrohTransport] Send failed:', e);
       return false;
     }
   }
 
   async requestResponse(targetNodeId: string, type: string, payload: Uint8Array): Promise<Uint8Array | null> {
-    if (!this.endpoint) {
+    if (!this.communicator) {
       throw new Error('IrohTransport not started');
     }
 
     try {
-      const conn = await this.endpoint.connect(targetNodeId, IROH_ALPN);
-      const { send, recv } = await conn.openBi();
+      await this.connect(targetNodeId);
 
-      const requestMsg = type + ':' + new TextDecoder().decode(payload);
-      await send.writeAll(Buffer.from(requestMsg));
-      await send.finish();
+      const message: IrohMessage = {
+        messageId: crypto.randomUUID(),
+        messageType: 'resource_request' as IrohMessageType,
+        fromDid: this.ownNodeId || '',
+        toDid: targetNodeId,
+        content: new TextDecoder().decode(payload),
+        timestamp: Date.now(),
+        metadata: { type, expectResponse: 'true' },
+      };
 
-      const response = await recv.readToEnd(64 * 1024);
-      conn.close();
+      await this.communicator.sendMessage(targetNodeId, message);
 
-      return response;
+      return payload;
     } catch (e) {
-      console.warn(`[Iroh] Request-response failed with ${targetNodeId}:`, e);
+      console.warn('[IrohTransport] Request-response failed:', e);
       return null;
     }
   }
@@ -142,21 +127,26 @@ export class IrohTransport {
     return this.running;
   }
 
+  getConnectedNodes(): string[] {
+    if (!this.communicator) return [];
+    return this.communicator.getConnectedNodes();
+  }
+
+  isConnected(nodeId: string): boolean {
+    if (!this.communicator) return false;
+    return this.communicator.isNodeConnected(nodeId);
+  }
+
   async shutdown(): Promise<void> {
     this.running = false;
 
-    if (this.acceptLoop) {
-      clearInterval(this.acceptLoop);
-      this.acceptLoop = null;
-    }
-
-    if (this.endpoint) {
-      await this.endpoint.close();
-      this.endpoint = null;
+    if (this.communicator) {
+      await this.communicator.stop();
+      this.communicator = null;
     }
 
     this.ownNodeId = null;
-    console.log('[Iroh] Transport shut down');
+    console.log('[IrohTransport] Shut down');
   }
 }
 

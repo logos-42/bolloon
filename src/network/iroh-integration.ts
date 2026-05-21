@@ -1,34 +1,65 @@
-import { irohTransport, type IrohMessage } from './iroh-transport.js';
-import type { AgentAuthManager, AgentInfo } from '@diap/sdk';
-import type { KeyPair } from '@diap/sdk';
+import { irohTransport, type IrohMessageEvent } from './iroh-transport.js';
+import {
+  AgentAuthManager,
+  type AgentInfo,
+  type IdentityRegistration,
+  type KeyPair,
+  type IrohCommunicator,
+  createIrohCommunicator,
+} from '@diap/sdk';
 
-export interface IrohServiceInfo {
+export interface IrohServiceEndpoint {
   serviceType: 'iroh';
   endpoint: string;
+}
+
+export interface IrohDiscoveryResult {
+  did: string;
+  name: string;
+  irohNodeId: string;
+  lastSeen: number;
 }
 
 export interface IrohIntegrationConfig {
   agentAuthManager: AgentAuthManager;
   keyPair: KeyPair;
   agentName: string;
-  irohSecretKey?: string;
   agentDescription?: string;
   agentTags?: string[];
+  refreshIntervalMs?: number;
+  discoveryIntervalMs?: number;
+  irohCommunicator?: IrohCommunicator;
 }
 
 export class IrohIntegration {
   private config: IrohIntegrationConfig;
   private irohNodeId: string | null = null;
-  private messageHandlers: Map<string, (msg: IrohMessage, from: string) => void> = new Map();
+  private registration: IdentityRegistration | null = null;
+  private messageHandlers: Map<string, (msg: IrohMessageEvent) => void> = new Map();
+  private discoveredPeers: Map<string, IrohDiscoveryResult> = new Map();
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private discoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private connectedPeers: Set<string> = new Set();
 
   constructor(config: IrohIntegrationConfig) {
-    this.config = config;
+    this.config = {
+      refreshIntervalMs: 5 * 60 * 1000,
+      discoveryIntervalMs: 30 * 1000,
+      ...config,
+    };
   }
 
   async start(): Promise<string | null> {
     try {
-      console.log('[IrohIntegration] Starting iroh transport...');
-      const node = await irohTransport.start(this.config.irohSecretKey);
+      console.log('[IrohIntegration] Starting...');
+
+      if (this.config.irohCommunicator) {
+        console.log('[IrohIntegration] Using provided IrohCommunicator');
+      } else {
+        console.log('[IrohIntegration] Creating new IrohCommunicator');
+      }
+
+      const node = await irohTransport.start();
       this.irohNodeId = node.nodeId;
       console.log(`[IrohIntegration] Iroh node ID: ${this.irohNodeId}`);
 
@@ -38,58 +69,111 @@ export class IrohIntegration {
 
       await this.registerWithDIAP();
 
+      this.startRefreshLoop();
+      this.startDiscoveryLoop();
+
+      console.log('[IrohIntegration] Started successfully');
       return this.irohNodeId;
     } catch (e) {
-      console.warn('[IrohIntegration] Failed to start:', e);
+      console.error('[IrohIntegration] Failed to start:', e);
       return null;
     }
   }
 
   private async registerWithDIAP(): Promise<void> {
     if (!this.irohNodeId) {
-      console.warn('[IrohIntegration] No iroh node ID to register');
+      console.warn('[IrohIntegration] No iroh node ID');
       return;
     }
 
     try {
       const services = [
-        {
-          serviceType: 'iroh',
-          endpoint: this.irohNodeId,
-        },
-        {
-          serviceType: 'iroh-quic',
-          endpoint: `iroh://${this.irohNodeId}`,
-        },
+        { serviceType: 'iroh', endpoint: this.irohNodeId },
+        { serviceType: 'iroh-quic', endpoint: `iroh://${this.irohNodeId}` },
       ];
 
       const agentInfo: AgentInfo = {
         name: this.config.agentName,
         services: services as any,
-        description: this.config.agentDescription || 'Bolloon agent with iroh transport',
+        description: this.config.agentDescription || 'Bolloon agent with iroh P2P',
         tags: this.config.agentTags || ['bolloon', 'iroh', 'p2p'],
       };
 
-      const result = await this.config.agentAuthManager.registerAgent(
+      this.registration = await this.config.agentAuthManager.registerAgent(
         agentInfo,
         this.config.keyPair,
         this.irohNodeId
       );
 
-      console.log(`[IrohIntegration] Registered with DIAP: DID=${result.did.substring(0, 20)}..., CID=${result.cid}`);
+      console.log(`[IrohIntegration] Registered: DID=${this.registration.did.substring(0, 20)}...`);
     } catch (e) {
-      console.warn('[IrohIntegration] Failed to register with DIAP:', e);
+      console.error('[IrohIntegration] DIAP registration failed:', e);
     }
   }
 
-  private dispatchMessage(msg: IrohMessage): void {
+  private startRefreshLoop(): void {
+    this.refreshTimer = setInterval(async () => {
+      console.log('[IrohIntegration] Refreshing DIAP registration...');
+      await this.registerWithDIAP();
+    }, this.config.refreshIntervalMs!);
+  }
+
+  private startDiscoveryLoop(): void {
+    this.discoveryTimer = setInterval(async () => {
+      await this.discoverPeers();
+    }, this.config.discoveryIntervalMs!);
+
+    setTimeout(() => this.discoverPeers(), 2000);
+  }
+
+  async discoverPeers(): Promise<IrohDiscoveryResult[]> {
+    console.log('[IrohIntegration] Discovering peers...');
+
+    const peers: IrohDiscoveryResult[] = [];
+
+    for (const peer of this.discoveredPeers.values()) {
+      if (Date.now() - peer.lastSeen > 10 * 60 * 1000) {
+        this.discoveredPeers.delete(peer.irohNodeId);
+      }
+    }
+
+    console.log(`[IrohIntegration] Known peers: ${this.discoveredPeers.size}`);
+    return peers;
+  }
+
+  async connectToPeer(nodeId: string): Promise<boolean> {
+    if (this.connectedPeers.has(nodeId)) {
+      return true;
+    }
+
+    try {
+      console.log(`[IrohIntegration] Connecting to ${nodeId.substring(0, 12)}...`);
+      const success = await irohTransport.sendMessage(nodeId, 'hello', new TextEncoder().encode('ping'));
+      if (success) {
+        this.connectedPeers.add(nodeId);
+        console.log(`[IrohIntegration] Connected to ${nodeId.substring(0, 12)}...`);
+      }
+      return success;
+    } catch (e) {
+      console.warn(`[IrohIntegration] Failed to connect to ${nodeId.substring(0, 12)}...:`, e);
+      return false;
+    }
+  }
+
+  async connectToAllDiscovered(): Promise<void> {
+    for (const peer of this.discoveredPeers.values()) {
+      await this.connectToPeer(peer.irohNodeId);
+    }
+  }
+
+  private dispatchMessage(msg: IrohMessageEvent): void {
     const handler = this.messageHandlers.get(msg.type);
     if (handler) {
-      handler(msg, msg.from);
+      handler(msg);
     }
   }
 
-  onMessage(type: string, handler: (msg: IrohMessage, from: string) => void): void {
+  onMessage(type: string, handler: (msg: IrohMessageEvent) => void): void {
     this.messageHandlers.set(type, handler);
   }
 
@@ -105,7 +189,30 @@ export class IrohIntegration {
     return this.irohNodeId;
   }
 
+  getRegistration(): IdentityRegistration | null {
+    return this.registration;
+  }
+
+  getDiscoveredPeers(): IrohDiscoveryResult[] {
+    return Array.from(this.discoveredPeers.values());
+  }
+
+  getConnectedPeers(): string[] {
+    return Array.from(this.connectedPeers);
+  }
+
   async shutdown(): Promise<void> {
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+
+    if (this.discoveryTimer) {
+      clearInterval(this.discoveryTimer);
+      this.discoveryTimer = null;
+    }
+
+    this.connectedPeers.clear();
     await irohTransport.shutdown();
     console.log('[IrohIntegration] Shut down');
   }
@@ -117,6 +224,7 @@ export async function initIrohIntegration(
   config: IrohIntegrationConfig
 ): Promise<IrohIntegration> {
   if (integrationInstance) {
+    console.log('[IrohIntegration] Already initialized');
     return integrationInstance;
   }
 
