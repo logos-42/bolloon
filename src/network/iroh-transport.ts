@@ -33,7 +33,8 @@ export class IrohTransport {
     this.running = true;
     this.startAcceptLoop();
 
-    console.log('[IrohTransport] Started, node ID:', this.ownNodeId.substring(0, 16) + '...');
+    console.log('[IrohTransport] Started');
+    console.log('[IrohTransport]   Node ID:', this.ownNodeId);
 
     return {
       nodeId: this.endpoint.nodeId(),
@@ -60,7 +61,6 @@ export class IrohTransport {
 
   private async handleConnection(conn: Connection): Promise<void> {
     const remoteNodeId = conn.remoteNodeId();
-    console.log('[IrohTransport] Connection from:', remoteNodeId.substring(0, 16) + '...');
 
     try {
       const { recv } = await conn.acceptBi();
@@ -70,16 +70,13 @@ export class IrohTransport {
         const text = new TextDecoder().decode(data);
         const colonIdx = text.indexOf(':');
         const type = colonIdx > 0 ? text.substring(0, colonIdx) : 'raw';
-        const payload = colonIdx > 0 ? new TextEncoder().encode(text.substring(colonIdx + 1)) : data;
+        const payload = new TextEncoder().encode(text.substring(colonIdx + 1));
+
+        console.log('[IrohTransport] Message from', remoteNodeId.substring(0, 12) + '...', 'type:', type);
 
         const handler = this.messageHandlers.get(type);
         if (handler) {
           handler({ type, payload, from: remoteNodeId });
-        } else {
-          const wildcard = this.messageHandlers.get('*');
-          if (wildcard) {
-            wildcard({ type, payload, from: remoteNodeId });
-          }
         }
       }
     } catch (e) {
@@ -105,7 +102,7 @@ export class IrohTransport {
       conn.close();
       return true;
     } catch (e) {
-      console.warn('[IrohTransport] Send failed to', targetNodeId.substring(0, 12) + ':', e);
+      console.warn('[IrohTransport] Send failed:', e);
       return false;
     }
   }
