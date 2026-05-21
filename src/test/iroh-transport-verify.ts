@@ -3,7 +3,7 @@ import { irohTransport } from '../network/iroh-transport.js';
 async function testTransport() {
   console.log('╔═══════════════════════════════════════════╗');
   console.log('║      iroh Transport Verification          ║');
-  console('╚═══════════════════════════════════════════╝\n');
+  console.log('╚═══════════════════════════════════════════╝\n');
 
   let passed = 0;
   let failed = 0;
