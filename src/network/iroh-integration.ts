@@ -1,17 +1,5 @@
-import { irohTransport, type IrohMessageEvent } from './iroh-transport.js';
-import {
-  AgentAuthManager,
-  type AgentInfo,
-  type IdentityRegistration,
-  type KeyPair,
-  type IrohCommunicator,
-  createIrohCommunicator,
-} from '@diap/sdk';
-
-export interface IrohServiceEndpoint {
-  serviceType: 'iroh';
-  endpoint: string;
-}
+import { irohTransport, type IrohMessage } from './iroh-transport.js';
+import { AgentAuthManager, KeyManager, type AgentInfo, type IdentityRegistration, type KeyPair } from '@diap/sdk';
 
 export interface IrohDiscoveryResult {
   did: string;
@@ -28,17 +16,15 @@ export interface IrohIntegrationConfig {
   agentTags?: string[];
   refreshIntervalMs?: number;
   discoveryIntervalMs?: number;
-  irohCommunicator?: IrohCommunicator;
 }
 
 export class IrohIntegration {
   private config: IrohIntegrationConfig;
   private irohNodeId: string | null = null;
   private registration: IdentityRegistration | null = null;
-  private messageHandlers: Map<string, (msg: IrohMessageEvent) => void> = new Map();
+  private messageHandlers: Map<string, (msg: IrohMessage, from: string) => void> = new Map();
   private discoveredPeers: Map<string, IrohDiscoveryResult> = new Map();
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
-  private discoveryTimer: ReturnType<typeof setInterval> | null = null;
   private connectedPeers: Set<string> = new Set();
 
   constructor(config: IrohIntegrationConfig) {
@@ -51,26 +37,18 @@ export class IrohIntegration {
 
   async start(): Promise<string | null> {
     try {
-      console.log('[IrohIntegration] Starting...');
-
-      if (this.config.irohCommunicator) {
-        console.log('[IrohIntegration] Using provided IrohCommunicator');
-      } else {
-        console.log('[IrohIntegration] Creating new IrohCommunicator');
-      }
+      console.log('[IrohIntegration] Starting iroh transport...');
 
       const node = await irohTransport.start();
       this.irohNodeId = node.nodeId;
-      console.log(`[IrohIntegration] Iroh node ID: ${this.irohNodeId}`);
+      console.log(`[IrohIntegration] Node ID: ${this.irohNodeId}`);
 
       irohTransport.onMessage('*', (msg) => {
         this.dispatchMessage(msg);
       });
 
       await this.registerWithDIAP();
-
       this.startRefreshLoop();
-      this.startDiscoveryLoop();
 
       console.log('[IrohIntegration] Started successfully');
       return this.irohNodeId;
@@ -105,7 +83,7 @@ export class IrohIntegration {
         this.irohNodeId
       );
 
-      console.log(`[IrohIntegration] Registered: DID=${this.registration.did.substring(0, 20)}...`);
+      console.log(`[IrohIntegration] DIAP registered: DID=${this.registration.did.substring(0, 20)}...`);
     } catch (e) {
       console.error('[IrohIntegration] DIAP registration failed:', e);
     }
@@ -118,62 +96,14 @@ export class IrohIntegration {
     }, this.config.refreshIntervalMs!);
   }
 
-  private startDiscoveryLoop(): void {
-    this.discoveryTimer = setInterval(async () => {
-      await this.discoverPeers();
-    }, this.config.discoveryIntervalMs!);
-
-    setTimeout(() => this.discoverPeers(), 2000);
-  }
-
-  async discoverPeers(): Promise<IrohDiscoveryResult[]> {
-    console.log('[IrohIntegration] Discovering peers...');
-
-    const peers: IrohDiscoveryResult[] = [];
-
-    for (const peer of this.discoveredPeers.values()) {
-      if (Date.now() - peer.lastSeen > 10 * 60 * 1000) {
-        this.discoveredPeers.delete(peer.irohNodeId);
-      }
-    }
-
-    console.log(`[IrohIntegration] Known peers: ${this.discoveredPeers.size}`);
-    return peers;
-  }
-
-  async connectToPeer(nodeId: string): Promise<boolean> {
-    if (this.connectedPeers.has(nodeId)) {
-      return true;
-    }
-
-    try {
-      console.log(`[IrohIntegration] Connecting to ${nodeId.substring(0, 12)}...`);
-      const success = await irohTransport.sendMessage(nodeId, 'hello', new TextEncoder().encode('ping'));
-      if (success) {
-        this.connectedPeers.add(nodeId);
-        console.log(`[IrohIntegration] Connected to ${nodeId.substring(0, 12)}...`);
-      }
-      return success;
-    } catch (e) {
-      console.warn(`[IrohIntegration] Failed to connect to ${nodeId.substring(0, 12)}...:`, e);
-      return false;
-    }
-  }
-
-  async connectToAllDiscovered(): Promise<void> {
-    for (const peer of this.discoveredPeers.values()) {
-      await this.connectToPeer(peer.irohNodeId);
-    }
-  }
-
-  private dispatchMessage(msg: IrohMessageEvent): void {
+  private dispatchMessage(msg: IrohMessage): void {
     const handler = this.messageHandlers.get(msg.type);
     if (handler) {
-      handler(msg);
+      handler(msg, msg.from);
     }
   }
 
-  onMessage(type: string, handler: (msg: IrohMessageEvent) => void): void {
+  onMessage(type: string, handler: (msg: IrohMessage, from: string) => void): void {
     this.messageHandlers.set(type, handler);
   }
 
@@ -193,10 +123,6 @@ export class IrohIntegration {
     return this.registration;
   }
 
-  getDiscoveredPeers(): IrohDiscoveryResult[] {
-    return Array.from(this.discoveredPeers.values());
-  }
-
   getConnectedPeers(): string[] {
     return Array.from(this.connectedPeers);
   }
@@ -207,12 +133,6 @@ export class IrohIntegration {
       this.refreshTimer = null;
     }
 
-    if (this.discoveryTimer) {
-      clearInterval(this.discoveryTimer);
-      this.discoveryTimer = null;
-    }
-
-    this.connectedPeers.clear();
     await irohTransport.shutdown();
     console.log('[IrohIntegration] Shut down');
   }
