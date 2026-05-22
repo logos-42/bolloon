@@ -159,7 +159,7 @@ export interface PiEcosystemStatus {
  * Default Pi ecosystem configuration (mirrors oh-pi)
  */
 const DEFAULT_CONFIG: PiEcosystemConfig = {
-  model: 'kimi-k2.6',
+  model: process.env.MINIMAX_MODEL || 'MiniMax-M2.7',
   extensions: [
     'safe-guard',
     'git-guard',
