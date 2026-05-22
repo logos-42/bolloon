@@ -34,6 +34,9 @@ import {
 } from '../social/global-shared-context.js';
 import { Session, SkillRegistry, saveSession, loadSession, type Skill, type StoredSession } from '@bolloon/constraint-runtime';
 
+// Pi Ecosystem Integration (lazy imports - initialized on demand)
+// Functions from: createGoal, getCurrentGoal, completeCurrentGoal, failCurrentGoal, getGoalStats, getQueueSummary
+
 export interface AgentSessionConfig {
   cwd: string;
   peerId?: string;

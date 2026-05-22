@@ -4,6 +4,35 @@
 
 > **两个有判断力的人的决策，被 Bolloon 记录后，异步进行合作，由 Harness 驱动自动化执行。**
 
+### Pi 生态集成
+
+Bolloon 基于 [Pi](https://github.com/earendil-works/pi) 构建，使用以下官方包：
+
+```bash
+# 必装
+npx oh-pi
+
+# MCP 桥接
+pi tools add --mcp tavily
+
+# 增强工具
+pi tools add --git https://github.com/obra/superpowers
+
+# 可选
+npm install -g pi-subagents pi-goals
+```
+
+| 包名 | 用途 |
+|------|------|
+| `oh-pi` | Pi 的配置管理（类 oh-my-zsh） |
+| `pi-mcp-adapter` | MCP 协议桥接，按需加载工具 |
+| `pi-goals` | 持久化目标追踪和工作流编排 |
+| `pi-subagents` | 轻量级子 Agent（基于 tmux） |
+
+**设计哲学**：Pi 提倡最小化原语（read/write/edit/bash），没有 Plan Mode、没有权限弹窗、没有内置待办。系统开销极小，上下文空间最大化。
+
+---
+
 ```
 人类 A 的判断力                         人类 B 的判断力
       │                                       │
