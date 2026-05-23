@@ -18,6 +18,21 @@ async function getGateJudgments(gate: number, filePath = "."): Promise<string> {
   }
 }
 
+async function getContextChainInjection(gate: number): Promise<string> {
+  try {
+    const chainPath = path.join(REPO_ROOT, "src", "bollharness-integration", "context-chain-router.js");
+    if (!fs.existsSync(chainPath)) {
+      return "";
+    }
+
+    const { generateContextChainInjection } = await import(chainPath);
+    return await generateContextChainInjection(gate);
+  } catch (e) {
+    console.error("[Gate Transition Judgment] Failed to load context chains:", e);
+    return "";
+  }
+}
+
 export async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
@@ -35,9 +50,17 @@ export async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const injection = await getGateJudgments(gate, filePath);
-  if (injection) {
-    process.stdout.write("\n" + injection + "\n");
+  const judgments = await getGateJudgments(gate, filePath);
+  const chains = await getContextChainInjection(gate);
+
+  if (judgments || chains) {
+    process.stdout.write("\n");
+    if (judgments) {
+      process.stdout.write(judgments + "\n\n");
+    }
+    if (chains) {
+      process.stdout.write(chains + "\n");
+    }
   }
 
   process.exit(0);

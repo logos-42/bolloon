@@ -60,6 +60,21 @@ async function getGateJudgments(gate: number): Promise<string> {
   }
 }
 
+async function getContextChainInjection(gate: number): Promise<string> {
+  try {
+    const chainPath = path.join(REPO_ROOT, "src", "bollharness-integration", "context-chain-router.js");
+    if (!fs.existsSync(chainPath)) {
+      return "";
+    }
+
+    const { generateContextChainInjection } = await import(chainPath);
+    return await generateContextChainInjection(gate);
+  } catch (e) {
+    console.error("[Gate Judgment] Failed to load context chains:", e);
+    return "";
+  }
+}
+
 export async function main(): Promise<void> {
   const gate = getCurrentGate();
 
@@ -69,17 +84,19 @@ export async function main(): Promise<void> {
     process.exit(0);
   }
 
-  let injection = "";
+  const judgments = gate === 0
+    ? await getCoreJudgments()
+    : await getGateJudgments(gate);
 
-  if (gate === 0) {
-    injection = await getCoreJudgments();
-    if (injection) {
-      process.stdout.write("\n" + injection + "\n");
+  const chains = await getContextChainInjection(gate);
+
+  if (judgments || chains) {
+    process.stdout.write("\n");
+    if (judgments) {
+      process.stdout.write(judgments + "\n\n");
     }
-  } else if (gate === 3) {
-    injection = await getGateJudgments(gate);
-    if (injection) {
-      process.stdout.write("\n" + injection + "\n");
+    if (chains) {
+      process.stdout.write(chains + "\n");
     }
   }
 
