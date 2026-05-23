@@ -374,47 +374,65 @@ function parseYaml(content: string): unknown {
   try {
     if (!content.trim()) return [];
 
-    const data: unknown = {};
-
+    const data: Record<string, unknown> = {};
     const lines = content.split('\n');
+    const arrayItems: Record<string, unknown>[] = [];
     let inArray = false;
-    let arrayKey = '';
-    const arrayItems: unknown[] = [];
+    let currentItem: Record<string, unknown> | null = null;
+    let currentItemIndent = 0;
 
     for (const line of lines) {
-      if (line.trim().startsWith('judgments:')) {
+      const trimmed = line.trim();
+      const indent = line.search(/\S/);
+      const isArrayItem = trimmed.startsWith('-');
+      const isComment = trimmed.startsWith('#');
+
+      if (isComment) continue;
+
+      if (trimmed.startsWith('judgments:')) {
         inArray = true;
         continue;
       }
 
-      if (inArray && line.trim().startsWith('-')) {
-        const item: Record<string, unknown> = {};
-        let currentKey = '';
-        let currentValue = '';
+      if (!inArray) continue;
 
-        const itemContent = line.trim().substring(1);
+      if (isArrayItem) {
+        if (currentItem) {
+          arrayItems.push(currentItem);
+        }
+        currentItem = {};
+        currentItemIndent = indent + 1;
+
+        const itemContent = trimmed.substring(1).trim();
         const kvMatch = itemContent.match(/^(\w+):\s*(.*)/);
         if (kvMatch) {
-          currentKey = kvMatch[1];
-          currentValue = kvMatch[2];
-          item[currentKey] = parseValue(currentValue);
+          currentItem[kvMatch[1]] = parseValue(kvMatch[2]);
         }
-        arrayItems.push(item);
         continue;
       }
 
-      if (inArray) {
-        const kvMatch = line.match(/^(\w+):\s*(.*)/);
+      if (currentItem && indent > currentItemIndent) {
+        const kvMatch = trimmed.match(/^(\w+):\s*(.*)/);
         if (kvMatch) {
-          const key = kvMatch[1];
-          const value = parseValue(kvMatch[2]);
-          (data as Record<string, unknown>)[key] = value;
+          currentItem[kvMatch[1]] = parseValue(kvMatch[2]);
+        }
+        continue;
+      }
+
+      if (trimmed.includes(':')) {
+        const kvMatch = trimmed.match(/^(\w+):\s*(.*)/);
+        if (kvMatch && !isArrayItem) {
+          data[kvMatch[1]] = parseValue(kvMatch[2]);
         }
       }
     }
 
+    if (currentItem) {
+      arrayItems.push(currentItem);
+    }
+
     if (arrayItems.length > 0) {
-      (data as Record<string, unknown>)['judgments'] = arrayItems;
+      data['judgments'] = arrayItems;
     }
 
     return data;
