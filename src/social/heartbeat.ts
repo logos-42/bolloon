@@ -3,6 +3,14 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { PheromoneEngine, PheromoneType } from './ant-colony/PheromoneEngine.js';
 import { AdaptiveHeartbeat } from './ant-colony/AdaptiveHeartbeat.js';
+import { ChannelManager } from './channels/ChannelManager.js';
+import { ChannelType } from './channels/types.js';
+import { DiapChannelBridge } from './channels/DiapChannelBridge.js';
+import { InterestMatcher } from './channels/InterestMatcher.js';
+import type { DiscoveredAgent } from './channels/types.js';
+
+// Re-export types for backward compatibility
+export type { DiscoveredAgent };
 
 export interface PersonaDoc {
   name: string;
@@ -48,17 +56,6 @@ export interface SessionMessage {
   sender: 'self' | 'peer';
   timestamp: string;
   agentId?: string;
-}
-
-export interface DiscoveredAgent {
-  did: string;
-  name: string;
-  cid?: string;
-  ipnsName?: string;
-  peerId?: string;
-  lastSeen: number;
-  lastMessage?: string;
-  persona?: PersonaDoc;
 }
 
 const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'sessions');
@@ -358,6 +355,12 @@ export class SocialHeartbeat {
   private adaptiveHeartbeat: AdaptiveHeartbeat | null = null;
   private antColonyEnabled: boolean = false;
 
+  // 频道组件
+  private channelManager: ChannelManager | null = null;
+  private diapBridge: DiapChannelBridge | null = null;
+  private interestMatcher: InterestMatcher | null = null;
+  private channelEnabled: boolean = false;
+
   constructor(
     sessionProvider: SocialSessionProvider,
     agentsManager: DiscoveredAgentsManager,
@@ -387,13 +390,16 @@ export class SocialHeartbeat {
     // 初始化蚁群系统 (可选功能)
     await this.initializeAntColony();
 
+    // 初始化频道系统 (可选功能)
+    await this.initializeChannelSystem();
+
     if (this.intervalId) return;
 
     const baseInterval = this.antColonyEnabled && this.adaptiveHeartbeat
       ? this.adaptiveHeartbeat.decide().interval
       : this.config.intervalMs;
 
-    console.log(`[Heartbeat] 启动社交心跳机制，间隔 ${baseInterval}ms (antColony: ${this.antColonyEnabled})`);
+    console.log(`[Heartbeat] 启动社交心跳机制，间隔 ${baseInterval}ms (antColony: ${this.antColonyEnabled}, Channel: ${this.channelEnabled}) `);
 
     this.intervalId = setInterval(async () => {
       await this.beat();
@@ -420,6 +426,92 @@ export class SocialHeartbeat {
       console.warn('[Heartbeat] Failed to initialize Ant Colony:', err);
       this.antColonyEnabled = false;
     }
+  }
+
+  private async initializeChannelSystem(): Promise<void> {
+    // 检查是否启用频道功能 (通过环境变量控制)
+    const channelEnv = process.env.BOLLOON_CHANNEL;
+    if (channelEnv === '0' || channelEnv === 'false') {
+      console.log('[Heartbeat] Channel system disabled by env');
+      return;
+    }
+
+    try {
+      // 初始化频道管理器
+      this.channelManager = new ChannelManager(this.sessionProvider);
+      await this.channelManager.initialize();
+
+      // 初始化兴趣匹配器
+      this.interestMatcher = new InterestMatcher();
+
+      // 初始化 Diap 桥接 (如果可用)
+      await this.initializeDiapBridge();
+
+      // 创建默认频道
+      await this.createDefaultChannel();
+
+      this.channelEnabled = true;
+      console.log('[Heartbeat] Channel system initialized (Diap: ' + !!this.diapBridge + ')');
+    } catch (err) {
+      console.warn('[Heartbeat] Failed to initialize Channel system:', err);
+      this.channelEnabled = false;
+    }
+  }
+
+  private async initializeDiapBridge(): Promise<void> {
+    try {
+      // 尝试获取 IrohIntegration 实例
+      const { getIrohIntegration } = await import('../network/iroh-integration.js');
+      const irohIntegration = getIrohIntegration();
+
+      if (irohIntegration) {
+        const registration = irohIntegration.getRegistration();
+        if (registration) {
+          // 获取 KeyPair (需要从某处获取，这里简化处理)
+          const keyPair = (registration as any).keyPair;
+          if (keyPair) {
+            this.diapBridge = new DiapChannelBridge(
+              (registration as any).agentAuthManager || registration,
+              keyPair,
+              this.sessionProvider
+            );
+            await this.diapBridge.initialize();
+          }
+        }
+      }
+
+      if (!this.diapBridge) {
+        console.log('[Heartbeat] No IrohIntegration found, Diap bridge not available');
+      }
+    } catch (err) {
+      console.warn('[Heartbeat] Failed to initialize Diap bridge:', err);
+    }
+  }
+
+  private async createDefaultChannel(): Promise<void> {
+    if (!this.channelManager) return;
+
+    const persona = this.sessionProvider.getPersona();
+    const topic = persona?.interests?.join(', ') || 'general';
+    const capabilities = persona?.capabilities || [];
+
+    const channel = await this.channelManager.createChannel(
+      persona?.name || 'My Channel',
+      topic,
+      ChannelType.CAPABILITY,
+      {
+        description: `${persona?.name || 'Agent'} 的个人频道`,
+        requiredCapabilities: capabilities,
+        isPublic: true
+      }
+    );
+
+    // 注册到 Diap
+    if (this.diapBridge) {
+      await this.diapBridge.registerChannelToDiap(channel);
+    }
+
+    console.log(`[Heartbeat] Created default channel: ${channel.name}`);
   }
 
   private async loadPersonaFromIPFS(): Promise<void> {
@@ -477,6 +569,16 @@ export class SocialHeartbeat {
       this.adaptiveHeartbeat = null;
     }
 
+    // 关闭频道系统
+    if (this.channelManager) {
+      this.channelManager.shutdown();
+      this.channelManager = null;
+    }
+    if (this.diapBridge) {
+      this.diapBridge.shutdown();
+      this.diapBridge = null;
+    }
+
     console.log('[Heartbeat] 已停止');
   }
 
@@ -498,6 +600,11 @@ export class SocialHeartbeat {
         await this.processAutoSocial();
       }
 
+      // 频道系统处理
+      if (this.channelEnabled) {
+        await this.processChannelSystem();
+      }
+
       // 蚁群系统记录活跃
       this.adaptiveHeartbeat?.recordActivity('message');
 
@@ -505,6 +612,46 @@ export class SocialHeartbeat {
       this.scheduleNextBeat();
     } catch (err) {
       console.error('[Heartbeat] Beat error:', err);
+    }
+  }
+
+  private async processChannelSystem(): Promise<void> {
+    if (!this.channelManager || !this.diapBridge) return;
+
+    const persona = this.sessionProvider.getPersona();
+
+    // 发现外部智能体
+    const capabilities = persona?.capabilities || [];
+    if (capabilities.length > 0) {
+      const discoveredAgents = await this.diapBridge.discoverAgentsByCapability(capabilities);
+
+      for (const agent of discoveredAgents) {
+        // 触发发现回调
+        this.onAgentDiscovered?.(agent);
+      }
+    }
+
+    // 检查并处理自动加入
+    await this.checkAndJoinChannels();
+  }
+
+  private async checkAndJoinChannels(): Promise<void> {
+    if (!this.channelManager || !this.interestMatcher) return;
+
+    const persona = this.sessionProvider.getPersona();
+    const discoveredChannels = this.channelManager.getDiscoveredChannels();
+
+    for (const discovery of discoveredChannels) {
+      const shouldJoin = this.interestMatcher.shouldAutoJoin(
+        persona,
+        discovery.channel,
+        this.channelManager.getAllChannels().map(c => c.id),
+        0.6
+      );
+
+      if (shouldJoin) {
+        await this.channelManager.joinChannel(discovery.channel);
+      }
     }
   }
 
