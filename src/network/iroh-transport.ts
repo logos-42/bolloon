@@ -1,9 +1,11 @@
 import { Endpoint, Connection } from '@rayhanadev/iroh';
+import * as crypto from 'crypto';
 
 export interface IrohMessage {
   type: string;
   payload: Uint8Array;
   from: string;
+  requestId?: string;
 }
 
 export type IrohMessageHandler = (msg: IrohMessage) => void;
@@ -16,6 +18,51 @@ export interface IrohPeer {
   connected: boolean;
 }
 
+// 导入存储层类型
+interface OfflineMessage {
+  id: string;
+  targetNodeId: string;
+  type: string;
+  payload: string;  // Base64
+  createdAt: number;
+  transport: 'iroh' | 'libp2p';
+  retryCount: number;
+}
+
+interface PendingResponse {
+  id: string;
+  requestId: string;
+  type: string;
+  payload: string;
+  fromNodeId: string;
+  timestamp: number;
+  timeout: number;
+}
+
+interface LocalPendingRequest {
+  requestId: string;
+  type: string;
+  payload: Uint8Array;
+  timestamp: number;
+  resolve: (response: Uint8Array) => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
+interface MessageStore {
+  saveMessage(msg: any): Promise<any>;
+  enqueueOfflineMessage(msg: Omit<OfflineMessage, 'id'>): Promise<OfflineMessage>;
+  getOfflineMessages(targetNodeId: string): Promise<OfflineMessage[]>;
+  dequeueOfflineMessage(id: string): Promise<void>;
+  incrementOfflineRetry(id: string): Promise<void>;
+  getPendingOfflineCount(): Promise<number>;
+  savePendingResponse(req: Omit<PendingResponse, 'id'>): Promise<PendingResponse>;
+  getPendingResponse(requestId: string): Promise<PendingResponse | null>;
+  removePendingResponse(requestId: string): Promise<void>;
+  initialize(): Promise<void>;
+  shutdown(): Promise<void>;
+}
+
 export class IrohTransport {
   private endpoint: Endpoint | null = null;
   private messageHandlers: Map<string, IrohMessageHandler> = new Map();
@@ -25,7 +72,16 @@ export class IrohTransport {
   private connectTimeoutMs: number = 10000;
   private acceptLoop: ReturnType<typeof setInterval> | null = null;
 
-  async start(secretKey?: string): Promise<{ nodeId: string; addr: string }> {
+  // 新增: 存储层
+  private messageStore: MessageStore | null = null;
+  private offlineDeliveryInterval: ReturnType<typeof setInterval> | null = null;
+  private requestTimeoutMs: number = 30000;
+
+  // 新增: 待响应请求 (内存缓存)
+  private pendingRequests: Map<string, LocalPendingRequest> = new Map();
+  private requestIdToNodeId: Map<string, string> = new Map();
+
+  async start(secretKey?: string, enablePersistence = false): Promise<{ nodeId: string; addr: string }> {
     if (this.endpoint) {
       throw new Error('IrohTransport already started');
     }
@@ -42,12 +98,127 @@ export class IrohTransport {
 
     console.log('[IrohTransport] Started, node:', this.ownNodeId.substring(0, 16) + '...');
 
+    // 初始化存储层 (如果启用)
+    if (enablePersistence) {
+      this.messageStore = await this.createMessageStore();
+      await this.messageStore.initialize();
+      this.startOfflineDeliveryLoop();
+      console.log('[IrohTransport] Persistence enabled');
+    }
+
     this.startAcceptLoop();
 
     return {
       nodeId: this.endpoint.nodeId(),
       addr: this.endpoint.addr() || this.endpoint.nodeId(),
     };
+  }
+
+  private async createMessageStore(): Promise<MessageStore> {
+    // 动态导入 JSON 存储适配器
+    try {
+      const { JsonMessageStore } = await import('./storage/adapters/json-adapter.js');
+      const path = await import('path');
+      const baseDir = path.join(process.env.HOME || '/tmp', '.bolloon', 'messages-iroh');
+      return new JsonMessageStore({ baseDir });
+    } catch (e) {
+      console.warn('[IrohTransport] Failed to load JSON adapter, using in-memory store');
+      return this.createInMemoryStore();
+    }
+  }
+
+  private createInMemoryStore(): MessageStore {
+    const offlineQueues: Map<string, OfflineMessage[]> = new Map();
+    const pendingResponses: Map<string, PendingResponse> = new Map();
+
+    return {
+      async saveMessage() {},
+      async enqueueOfflineMessage(msg) {
+        const id = crypto.randomUUID();
+        const offline = { ...msg, id };
+        const queue = offlineQueues.get(msg.targetNodeId) || [];
+        queue.push(offline);
+        offlineQueues.set(msg.targetNodeId, queue);
+        return offline;
+      },
+      async getOfflineMessages(targetNodeId) {
+        return offlineQueues.get(targetNodeId) || [];
+      },
+      async dequeueOfflineMessage(id) {
+        for (const [nodeId, queue] of offlineQueues.entries()) {
+          const idx = queue.findIndex(m => m.id === id);
+          if (idx >= 0) {
+            queue.splice(idx, 1);
+            offlineQueues.set(nodeId, queue);
+            return;
+          }
+        }
+      },
+      async incrementOfflineRetry(id) {
+        for (const queue of offlineQueues.values()) {
+          const msg = queue.find(m => m.id === id);
+          if (msg) {
+            msg.retryCount++;
+            return;
+          }
+        }
+      },
+      async getPendingOfflineCount() {
+        let count = 0;
+        for (const queue of offlineQueues.values()) count += queue.length;
+        return count;
+      },
+      async savePendingResponse(req) {
+        const id = crypto.randomUUID();
+        const pending = { ...req, id };
+        pendingResponses.set(req.requestId, pending);
+        return pending;
+      },
+      async getPendingResponse(requestId) {
+        return pendingResponses.get(requestId) || null;
+      },
+      async removePendingResponse(requestId) {
+        pendingResponses.delete(requestId);
+      },
+      async initialize() {},
+      async shutdown() {
+        offlineQueues.clear();
+        pendingResponses.clear();
+      },
+    };
+  }
+
+  private startOfflineDeliveryLoop(): void {
+    if (!this.messageStore) return;
+
+    this.offlineDeliveryInterval = setInterval(async () => {
+      const connectedPeers = this.getConnectedPeers();
+
+      for (const peerId of connectedPeers) {
+        const offlineMsgs = await this.messageStore!.getOfflineMessages(peerId);
+
+        for (const msg of offlineMsgs) {
+          if (msg.retryCount >= 10) {
+            // 超过最大重试次数，丢弃
+            await this.messageStore!.dequeueOfflineMessage(msg.id);
+            console.log(`[IrohTransport] Dropped offline message after ${msg.retryCount} retries`);
+            continue;
+          }
+
+          try {
+            const payload = Uint8Array.from(atob(msg.payload), c => c.charCodeAt(0));
+            const success = await this.sendMessageDirect(peerId, msg.type, payload);
+
+            if (success) {
+              await this.messageStore!.dequeueOfflineMessage(msg.id);
+              console.log(`[IrohTransport] Delivered offline message to ${peerId.substring(0, 12)}...`);
+            }
+          } catch {
+            await this.messageStore!.incrementOfflineRetry(msg.id);
+          }
+        }
+      }
+    }, 5000);
   }
 
   private startAcceptLoop(): void {
@@ -78,18 +249,64 @@ export class IrohTransport {
       if (data.length > 0) {
         const text = new TextDecoder().decode(data);
         const colonIdx = text.indexOf(':');
-        const type = colonIdx > 0 ? text.substring(0, colonIdx) : 'raw';
-        const payload = new TextEncoder().encode(text.substring(colonIdx + 1));
+
+        let type: string;
+        let payload: Uint8Array;
+        let requestId: string | undefined;
+
+        // 检查是否是请求/响应消息
+        if (text.startsWith('REQ:')) {
+          // Request: REQ:<requestId>:<type>:<payload>
+          const parts = text.substring(4).split(':');
+          requestId = parts[0];
+          type = parts[1] || 'request';
+          const payloadStr = parts.slice(2).join(':');
+          payload = new TextEncoder().encode(payloadStr);
+
+          // 保存请求信息，以便稍后响应
+          if (requestId) {
+            this.requestIdToNodeId.set(requestId, remoteNodeId);
+          }
+        } else if (text.startsWith('RESP:')) {
+          // Response: RESP:<requestId>:<payload>
+          const parts = text.substring(5).split(':');
+          requestId = parts[0];
+          type = 'RESPONSE';
+          payload = new TextEncoder().encode(parts.slice(1).join(':'));
+
+          // 处理响应 - 解决 pending request
+          this.handleResponse(requestId!, payload);
+        } else {
+          type = colonIdx > 0 ? text.substring(0, colonIdx) : 'raw';
+          payload = new TextEncoder().encode(text.substring(colonIdx + 1));
+        }
 
         const handler = this.messageHandlers.get(type);
         if (handler) {
-          handler({ type, payload, from: remoteNodeId });
+          handler({ type, payload, from: remoteNodeId, requestId });
+        } else if (this.messageHandlers.has('*')) {
+          this.messageHandlers.get('*')!({ type, payload, from: remoteNodeId, requestId });
         }
       }
     } catch {
       // Connection closed
     } finally {
       try { conn.close(); } catch {}
+    }
+  }
+
+  private handleResponse(requestId: string, responseData: Uint8Array): void {
+    const pending = this.pendingRequests.get(requestId);
+    if (pending) {
+      clearTimeout(pending.timeout);
+      pending.resolve(responseData);
+      this.pendingRequests.delete(requestId);
+      console.log(`[IrohTransport] Response received for request ${requestId}`);
+    }
+
+    // 如果有持久化存储，也从那里删除
+    if (this.messageStore) {
+      this.messageStore.removePendingResponse(requestId);
     }
   }
 
@@ -135,6 +352,27 @@ export class IrohTransport {
   }
 
   async sendMessage(targetNodeId: string, type: string, payload: Uint8Array): Promise<boolean> {
+    const success = await this.sendMessageDirect(targetNodeId, type, payload);
+
+    // 如果发送失败且启用了持久化，存入离线队列
+    if (!success && this.messageStore) {
+      console.log(`[IrohTransport] Message send failed, enqueuing for offline delivery`);
+      const payloadBase64 = btoa(String.fromCharCode(...payload));
+
+      await this.messageStore.enqueueOfflineMessage({
+        targetNodeId,
+        type,
+        payload: payloadBase64,
+        createdAt: Date.now(),
+        transport: 'iroh',
+        retryCount: 0,
+      });
+    }
+
+    return success;
+  }
+
+  private async sendMessageDirect(targetNodeId: string, type: string, payload: Uint8Array): Promise<boolean> {
     if (!this.endpoint) {
       throw new Error('IrohTransport not started');
     }
@@ -159,30 +397,117 @@ export class IrohTransport {
     }
   }
 
-  async requestResponse(targetNodeId: string, type: string, payload: Uint8Array): Promise<Uint8Array | null> {
+  async requestResponse(
+    targetNodeId: string,
+    type: string,
+    payload: Uint8Array,
+    timeoutMs?: number
+  ): Promise<Uint8Array | null> {
     if (!this.endpoint) {
       throw new Error('IrohTransport not started');
     }
 
-    try {
-      const conn = await this.connectWithTimeout(targetNodeId);
-      if (!conn) {
-        return null;
+    const timeout = timeoutMs || this.requestTimeoutMs;
+    const requestId = crypto.randomUUID();
+
+    return new Promise(async (resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        if (this.messageStore) {
+          this.messageStore.removePendingResponse(requestId);
+        }
+        reject(new Error(`Request ${requestId} timed out after ${timeout}ms`));
+      }, timeout);
+
+      this.pendingRequests.set(requestId, {
+        requestId,
+        type,
+        payload,
+        timestamp: Date.now(),
+        resolve,
+        reject,
+        timeout: timer,
+      });
+
+      // 保存到持久化存储
+      if (this.messageStore) {
+        await this.messageStore.savePendingResponse({
+          requestId,
+          type,
+          payload: new TextDecoder().decode(payload),
+          fromNodeId: this.ownNodeId!,
+          timestamp: Date.now(),
+          timeout,
+        });
       }
 
-      const { send, recv } = await conn.openBi();
-      const requestMsg = type + ':' + new TextDecoder().decode(payload);
-      await send.writeAll(Buffer.from(requestMsg));
-      await send.finish();
+      // 尝试发送请求
+      try {
+        const conn = await this.connectWithTimeout(targetNodeId);
+        if (!conn) {
+          clearTimeout(timer);
+          this.pendingRequests.delete(requestId);
+          resolve(null);
+          return;
+        }
 
-      const response = await recv.readToEnd(64 * 1024);
+        const { send, recv } = await conn.openBi();
+        const requestMsg = `REQ:${requestId}:${type}:${new TextDecoder().decode(payload)}`;
+        await send.writeAll(Buffer.from(requestMsg));
+        await send.finish();
+
+        // 等待响应，带超时
+        const response = await Promise.race([
+          recv.readToEnd(64 * 1024),
+          new Promise<null>((_, rejectTimeout) =>
+            setTimeout(() => rejectTimeout(new Error('timeout')), timeout)
+          ),
+        ]);
+
+        conn.close();
+        clearTimeout(timer);
+        this.pendingRequests.delete(requestId);
+
+        if (this.messageStore) {
+          this.messageStore.removePendingResponse(requestId);
+        }
+
+        if (response) {
+          resolve(response);
+        } else {
+          resolve(null);
+        }
+      } catch (e) {
+        clearTimeout(timer);
+        this.pendingRequests.delete(requestId);
+        reject(e);
+      }
+    });
+  }
+
+  async sendResponse(requestId: string, type: string, responsePayload: string): Promise<boolean> {
+    const targetNodeId = this.requestIdToNodeId.get(requestId);
+    if (!targetNodeId) {
+      console.warn(`[IrohTransport] No target node for request ${requestId}`);
+      return false;
+    }
+
+    try {
+      const conn = await this.connectWithTimeout(targetNodeId);
+      if (!conn) return false;
+
+      const { send } = await conn.openBi();
+      const responseMsg = `RESP:${requestId}:${responsePayload}`;
+      await send.writeAll(Buffer.from(responseMsg));
+      await send.finish();
       conn.close();
 
-      this.updatePeer(targetNodeId, true);
-      return response;
+      this.requestIdToNodeId.delete(requestId);
+      console.log(`[IrohTransport] Sent response for request ${requestId}`);
+      return true;
     } catch (e) {
-      console.warn('[IrohTransport] Request-response failed:', e);
-      return null;
+      console.warn(`[IrohTransport] Failed to send response:`, e);
+      return false;
     }
   }
 
@@ -220,12 +545,33 @@ export class IrohTransport {
     this.connectTimeoutMs = ms;
   }
 
+  getPendingOfflineCount(): number {
+    if (!this.messageStore) return 0;
+    return this.messageStore.getPendingOfflineCount() as unknown as number;
+  }
+
   async shutdown(): Promise<void> {
     this.running = false;
+
+    if (this.offlineDeliveryInterval) {
+      clearInterval(this.offlineDeliveryInterval);
+    }
 
     if (this.acceptLoop) {
       clearInterval(this.acceptLoop);
       this.acceptLoop = null;
+    }
+
+    // 清理 pending requests
+    for (const [id, pending] of this.pendingRequests) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error('Shutting down'));
+    }
+    this.pendingRequests.clear();
+
+    if (this.messageStore) {
+      await this.messageStore.shutdown();
+      this.messageStore = null;
     }
 
     if (this.endpoint) {

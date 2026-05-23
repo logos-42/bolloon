@@ -168,8 +168,71 @@ export class P2PNetwork {
   private pendingRequests: Map<string, PendingRequestInfo> = new Map();
   private requestTimeoutMs: number = 30000;
 
+  // 新增: 消息存储层
+  private messageStore: any = null;
+  private offlineDeliveryInterval: ReturnType<typeof setInterval> | null = null;
+
   constructor() {
     this.peerStorePath = PEER_STORE_PATH;
+  }
+
+  async enablePersistence(): Promise<void> {
+    try {
+      const { JsonMessageStore } = await import('./storage/adapters/json-adapter.js');
+      const baseDir = path.join(process.env.HOME || '/tmp', '.bolloon', 'messages-libp2p');
+      this.messageStore = new JsonMessageStore({ baseDir });
+      await this.messageStore.initialize();
+      this.startOfflineDeliveryLoop();
+      console.log('[P2P] Persistence enabled');
+    } catch (e) {
+      console.warn('[P2P] Failed to enable persistence:', e);
+    }
+  }
+
+  private startOfflineDeliveryLoop(): void {
+    if (!this.messageStore) return;
+
+    this.offlineDeliveryInterval = setInterval(async () => {
+      for (const peerId of this.getPeers()) {
+        const offlineMsgs = await this.messageStore.getOfflineMessages(peerId);
+
+        for (const msg of offlineMsgs) {
+          if (msg.retryCount >= 10) {
+            await this.messageStore.dequeueOfflineMessage(msg.id);
+            continue;
+          }
+
+          try {
+            const payload = Uint8Array.from(atob(msg.payload), c => c.charCodeAt(0));
+            const success = await this.sendMessageDirect(peerId, msg.type, payload);
+
+            if (success) {
+              await this.messageStore.dequeueOfflineMessage(msg.id);
+              console.log(`[P2P] Delivered offline message to ${peerId.substring(0, 12)}...`);
+            }
+          } catch {
+            await this.messageStore.incrementOfflineRetry(msg.id);
+          }
+        }
+      }
+    }, 5000);
+  }
+
+  private async sendMessageDirect(peerId: string, type: string, payload: string | Uint8Array): Promise<boolean> {
+    if (!this.node) return false;
+
+    try {
+      const data = typeof payload === 'string'
+        ? new TextEncoder().encode(`${type}:${payload}`)
+        : payload;
+
+      const ma = createMultiaddr(`/p2p/${peerId}`);
+      const { stream } = await this.node.dialProtocol(ma, '/agent/message');
+      stream.send(data);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async createNode(config?: {
@@ -771,6 +834,19 @@ export class P2PNetwork {
       console.warn(`[P2P] Failed to send to ${peerId}, storing offline`);
       this.storeOfflineMessage(peerId, data);
       this.scheduleReconnect(peerId);
+
+      // 如果有持久化存储，也存入离线队列
+      if (this.messageStore) {
+        const payloadBase64 = btoa(String.fromCharCode(...data));
+        this.messageStore.enqueueOfflineMessage({
+          targetNodeId: peerId,
+          type,
+          payload: payloadBase64,
+          createdAt: Date.now(),
+          transport: 'libp2p',
+          retryCount: 0,
+        });
+      }
     }
   }
 
@@ -849,9 +925,38 @@ export class P2PNetwork {
     }
     this.reconnectTimers.clear();
 
+    if (this.offlineDeliveryInterval) {
+      clearInterval(this.offlineDeliveryInterval);
+    }
+
+    if (this.messageStore) {
+      await this.messageStore.shutdown();
+      this.messageStore = null;
+    }
+
     if (this.node) {
       await this.node.stop();
     }
+  }
+
+  /**
+   * 获取消息历史
+   */
+  async getMessageHistory(options?: {
+    direction?: 'sent' | 'received';
+    type?: string;
+    limit?: number;
+  }): Promise<any[]> {
+    if (!this.messageStore) return [];
+    return this.messageStore.getMessages(options);
+  }
+
+  /**
+   * 获取待投递消息数量
+   */
+  async getPendingOfflineCount(): Promise<number> {
+    if (!this.messageStore) return 0;
+    return this.messageStore.getPendingOfflineCount();
   }
 }
 
