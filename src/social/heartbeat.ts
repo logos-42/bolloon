@@ -1,5 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as crypto from 'crypto';
+import { PheromoneEngine, PheromoneType } from './ant-colony/PheromoneEngine.js';
+import { AdaptiveHeartbeat } from './ant-colony/AdaptiveHeartbeat.js';
 
 export interface PersonaDoc {
   name: string;
@@ -350,6 +353,11 @@ export class SocialHeartbeat {
   private greetingMessage: string;
   private ownIpfsCid?: string;
 
+  // 蚁群组件
+  private pheromoneEngine: PheromoneEngine | null = null;
+  private adaptiveHeartbeat: AdaptiveHeartbeat | null = null;
+  private antColonyEnabled: boolean = false;
+
   constructor(
     sessionProvider: SocialSessionProvider,
     agentsManager: DiscoveredAgentsManager,
@@ -376,15 +384,42 @@ export class SocialHeartbeat {
       await this.loadPersonaFromIPFS();
     }
 
+    // 初始化蚁群系统 (可选功能)
+    await this.initializeAntColony();
+
     if (this.intervalId) return;
 
-    console.log(`[Heartbeat] 启动社交心跳机制，间隔 ${this.config.intervalMs}ms`);
+    const baseInterval = this.antColonyEnabled && this.adaptiveHeartbeat
+      ? this.adaptiveHeartbeat.decide().interval
+      : this.config.intervalMs;
+
+    console.log(`[Heartbeat] 启动社交心跳机制，间隔 ${baseInterval}ms (antColony: ${this.antColonyEnabled})`);
 
     this.intervalId = setInterval(async () => {
       await this.beat();
-    }, this.config.intervalMs);
+    }, baseInterval);
 
     await this.beat();
+  }
+
+  private async initializeAntColony(): Promise<void> {
+    // 检查是否启用蚁群功能 (通过环境变量控制)
+    const antColonyEnv = process.env.BOLLOON_ANT_COLONY;
+    if (antColonyEnv === '0' || antColonyEnv === 'false') {
+      console.log('[Heartbeat] Ant Colony system disabled by env');
+      return;
+    }
+
+    try {
+      this.pheromoneEngine = new PheromoneEngine();
+      await this.pheromoneEngine.initialize();
+      this.adaptiveHeartbeat = new AdaptiveHeartbeat({ baseInterval: this.config.intervalMs });
+      this.antColonyEnabled = true;
+      console.log('[Heartbeat] Ant Colony system initialized');
+    } catch (err) {
+      console.warn('[Heartbeat] Failed to initialize Ant Colony:', err);
+      this.antColonyEnabled = false;
+    }
   }
 
   private async loadPersonaFromIPFS(): Promise<void> {
@@ -430,12 +465,30 @@ export class SocialHeartbeat {
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
-      console.log('[Heartbeat] 已停止');
     }
+
+    // 关闭蚁群系统
+    if (this.pheromoneEngine) {
+      this.pheromoneEngine.shutdown();
+      this.pheromoneEngine = null;
+    }
+    if (this.adaptiveHeartbeat) {
+      this.adaptiveHeartbeat.shutdown();
+      this.adaptiveHeartbeat = null;
+    }
+
+    console.log('[Heartbeat] 已停止');
   }
 
   private async beat(): Promise<void> {
     try {
+      // 更新信息素密度
+      if (this.antColonyEnabled && this.pheromoneEngine) {
+        const stats = this.pheromoneEngine.getStats();
+        const density = Math.min(1, stats.totalTrails / 20);
+        this.adaptiveHeartbeat?.setPheromoneDensity(density);
+      }
+
       if (this.config.ipfsPublishEnabled) {
         await this.publishPersonaToIPFS();
       }
@@ -444,9 +497,33 @@ export class SocialHeartbeat {
       if (this.config.autoSocialEnabled) {
         await this.processAutoSocial();
       }
+
+      // 蚁群系统记录活跃
+      this.adaptiveHeartbeat?.recordActivity('message');
+
+      // 动态调整下次心跳间隔
+      this.scheduleNextBeat();
     } catch (err) {
       console.error('[Heartbeat] Beat error:', err);
     }
+  }
+
+  private scheduleNextBeat(): void {
+    if (!this.antColonyEnabled || !this.adaptiveHeartbeat) {
+      return;
+    }
+
+    const decision = this.adaptiveHeartbeat.decide();
+
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+    }
+
+    this.intervalId = setInterval(async () => {
+      await this.beat();
+    }, decision.interval);
+
+    console.log(`[Heartbeat] 下次心跳间隔: ${decision.interval}ms (优先级: ${decision.priorityLevel})`);
   }
 
   private async publishPersonaToIPFS(): Promise<void> {
@@ -567,6 +644,23 @@ export class SocialHeartbeat {
       this.agentsManager.addAgent(newAgent);
       console.log(`[Heartbeat] 发现新智能体: ${newAgent.name} (${did.substring(0, 20)}...)`);
 
+      // 蚁群系统：记录发现事件，放置信息素
+      if (this.antColonyEnabled && this.pheromoneEngine) {
+        const ownEndpoint = (global as any).agentRegistry?.getOwnEndpoint?.();
+        if (ownEndpoint) {
+          // 从新节点方向放置发现信息素
+          await this.pheromoneEngine.deposit(
+            PheromoneType.DISCOVERY,
+            newAgent.did,  // 源：新发现的节点
+            ownEndpoint.did, // 目标：自己
+            0.6,  // 初始强度
+            { qualityScore: 0.5 }
+          );
+          console.log(`[Heartbeat] [AntColony] Placed discovery pheromone: ${newAgent.name} -> self`);
+        }
+        this.adaptiveHeartbeat?.recordActivity('discovery');
+      }
+
       this.onAgentDiscovered?.(newAgent);
 
       if (this.config.autoSocialEnabled) {
@@ -685,6 +779,19 @@ export class SocialHeartbeat {
 
   getDiscoveredAgents(): DiscoveredAgent[] {
     return this.agentsManager.getAllAgents();
+  }
+
+  // 蚁群系统访问方法
+  isAntColonyEnabled(): boolean {
+    return this.antColonyEnabled;
+  }
+
+  getPheromoneStats(): { totalTrails: number; avgStrength: number; capabilityCount: number } | null {
+    return this.pheromoneEngine?.getStats() || null;
+  }
+
+  getHeartbeatDecision(): { interval: number; priorityLevel: string } | null {
+    return this.adaptiveHeartbeat?.decide() || null;
   }
 }
 
