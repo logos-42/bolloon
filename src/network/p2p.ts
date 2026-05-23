@@ -34,6 +34,125 @@ export interface NatStatus {
   externalAddr?: string;
 }
 
+export interface PendingRequest {
+  id: string;
+  type: string;
+  payload: string;
+  timestamp: number;
+  resolve: (response: Uint8Array) => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
+export interface PendingRequestInfo {
+  requestId: string;
+  type: string;
+  payload: string;
+  fromPeerId: string;
+  did?: string;
+  timestamp: number;
+}
+
+export interface ResponseHandler {
+  (payload: string, from: string, did?: string): void;
+}
+
+export class RequestResponseManager {
+  private pendingRequests: Map<string, PendingRequest> = new Map();
+  private responseHandlers: Map<string, ResponseHandler> = new Map();
+  private requestTimeoutMs: number = 30000;
+  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    this.startCleanup();
+  }
+
+  private startCleanup(): void {
+    this.cleanupInterval = setInterval(() => {
+      const now = Date.now();
+      for (const [id, request] of this.pendingRequests) {
+        if (now - request.timestamp > this.requestTimeoutMs) {
+          clearTimeout(request.timeout);
+          request.reject(new Error(`Request ${id} timed out`));
+          this.pendingRequests.delete(id);
+        }
+      }
+    }, 10000);
+  }
+
+  async sendRequest(
+    peerId: string,
+    type: string,
+    payload: string,
+    sendFn: (peerId: string, data: Uint8Array) => Promise<void>,
+    onResponse?: (peerId: string) => Promise<Uint8Array | null>
+  ): Promise<Uint8Array | null> {
+    const requestId = crypto.randomUUID();
+    const data = new TextEncoder().encode(
+      `REQ:${requestId}|${type}:${payload}`
+    );
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        reject(new Error(`Request ${requestId} timed out after ${this.requestTimeoutMs}ms`));
+      }, this.requestTimeoutMs);
+
+      this.pendingRequests.set(requestId, {
+        id: requestId,
+        type,
+        payload,
+        timestamp: Date.now(),
+        resolve,
+        reject,
+        timeout
+      });
+
+      sendFn(peerId, data).catch(err => {
+        clearTimeout(timeout);
+        this.pendingRequests.delete(requestId);
+        reject(err);
+      });
+    });
+  }
+
+  handleResponse(requestId: string, responseData: Uint8Array): void {
+    const request = this.pendingRequests.get(requestId);
+    if (request) {
+      clearTimeout(request.timeout);
+      request.resolve(responseData);
+      this.pendingRequests.delete(requestId);
+    }
+  }
+
+  registerResponseHandler(type: string, handler: ResponseHandler): void {
+    this.responseHandlers.set(type, handler);
+  }
+
+  getResponseHandler(type: string): ResponseHandler | undefined {
+    return this.responseHandlers.get(type);
+  }
+
+  setRequestTimeout(ms: number): void {
+    this.requestTimeoutMs = ms;
+  }
+
+  getPendingCount(): number {
+    return this.pendingRequests.size;
+  }
+
+  shutdown(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+    }
+    for (const request of this.pendingRequests.values()) {
+      clearTimeout(request.timeout);
+      request.reject(new Error('Shutting down'));
+    }
+    this.pendingRequests.clear();
+  }
+}
+
 export class P2PNetwork {
   private node: any = null;
   private messageHandlers: Map<string, (msg: Uint8Array, from: string, did?: string) => void> = new Map();
@@ -44,6 +163,10 @@ export class P2PNetwork {
   private peerStorePath: string;
   private natStatus: NatStatus = { reachable: false };
   private relayServerAddr: string | null = null;
+  private requestResponseManager: RequestResponseManager = new RequestResponseManager();
+  private pendingResponseHandlers: Map<string, (response: string, from: string) => void> = new Map();
+  private pendingRequests: Map<string, PendingRequestInfo> = new Map();
+  private requestTimeoutMs: number = 30000;
 
   constructor() {
     this.peerStorePath = PEER_STORE_PATH;
@@ -362,6 +485,7 @@ export class P2PNetwork {
         let did: string | undefined;
         let type: string;
         let payload: string;
+        let requestId: string | undefined = undefined;
 
         if (messageStr.startsWith(didMarker)) {
           const didEndIdx = messageStr.indexOf('|');
@@ -379,6 +503,59 @@ export class P2PNetwork {
           } else {
             type = 'message';
             payload = messageStr.substring(didMarker.length);
+          }
+        } else if (messageStr.startsWith('REQ:')) {
+          // Request message format: REQ:<requestId>|<optional DID>|type:payload
+          const reqMatch = messageStr.match(/^REQ:([^|]+)\|(.*)$/);
+          if (reqMatch) {
+            requestId = reqMatch[1];
+            const afterReq = reqMatch[2];
+            // Check if it has DID prefix
+            if (afterReq.startsWith('DID:')) {
+              const didEndIdx = afterReq.indexOf('|');
+              if (didEndIdx > 0) {
+                did = afterReq.substring(4, didEndIdx);
+                const afterDid = afterReq.substring(didEndIdx + 1);
+                const payloadColonIdx = afterDid.indexOf(':');
+                if (payloadColonIdx > 0) {
+                  type = afterDid.substring(0, payloadColonIdx);
+                  payload = afterDid.substring(payloadColonIdx + 1);
+                } else {
+                  type = afterDid;
+                  payload = '';
+                }
+              }
+            } else {
+              const payloadColonIdx = afterReq.indexOf(':');
+              if (payloadColonIdx > 0) {
+                type = afterReq.substring(0, payloadColonIdx);
+                payload = afterReq.substring(payloadColonIdx + 1);
+              } else {
+                type = afterReq;
+                payload = '';
+              }
+            }
+          } else {
+            type = 'message';
+            payload = messageStr.substring(4);
+          }
+        } else if (messageStr.startsWith('RESP:')) {
+          // Response message format: RESP:<requestId>|type:payload
+          const respMatch = messageStr.match(/^RESP:([^|]+)\|(.*)$/);
+          if (respMatch) {
+            requestId = respMatch[1];
+            const afterResp = respMatch[2];
+            const payloadColonIdx = afterResp.indexOf(':');
+            if (payloadColonIdx > 0) {
+              type = afterResp.substring(0, payloadColonIdx);
+              payload = afterResp.substring(payloadColonIdx + 1);
+            } else {
+              type = afterResp;
+              payload = '';
+            }
+          } else {
+            type = 'response';
+            payload = messageStr.substring(5);
           }
         } else {
           type = colonIdx > 0 ? messageStr.substring(0, colonIdx) : messageStr;
@@ -403,6 +580,19 @@ export class P2PNetwork {
         const handler = network.messageHandlers.get(type);
         if (handler) {
           handler(data, fromPeerId, did);
+        } else if (type === 'RESP' && requestId) {
+          // Handle response message - resolve the pending request
+          const pending = network.pendingResponses.get(requestId);
+          if (pending) {
+            clearTimeout(pending.timeout);
+            pending.resolve(payload);
+            network.pendingResponses.delete(requestId);
+          } else {
+            console.log(`[P2P] Response for unknown request ${requestId}`);
+          }
+        } else if (type === 'REQ' && requestId) {
+          // Handle request message - store for later response
+          network.storePendingRequest(requestId, { type: payload.split(':')[0] || 'request', payload, fromPeerId, did });
         } else {
           network.storeOfflineMessage(fromPeerId, data);
         }
@@ -433,8 +623,136 @@ export class P2PNetwork {
     return messages;
   }
 
+  private storePendingRequest(requestId: string, info: Omit<PendingRequestInfo, 'requestId' | 'timestamp'>): void {
+    this.pendingRequests.set(requestId, {
+      ...info,
+      requestId,
+      timestamp: Date.now()
+    });
+    console.log(`[P2P] Stored pending request ${requestId} from ${info.fromPeerId}`);
+  }
+
+  getPendingRequest(requestId: string): PendingRequestInfo | undefined {
+    return this.pendingRequests.get(requestId);
+  }
+
+  removePendingRequest(requestId: string): void {
+    this.pendingRequests.delete(requestId);
+  }
+
+  getPendingRequests(): PendingRequestInfo[] {
+    return Array.from(this.pendingRequests.values());
+  }
+
   onMessage(type: string, handler: (msg: Uint8Array, from: string, did?: string) => void): void {
     this.messageHandlers.set(type, handler);
+  }
+
+  /**
+   * Send a message and wait for a response (request-response pattern)
+   */
+  async sendRequest(
+    peerId: string,
+    type: string,
+    payload: string,
+    timeoutMs: number = 30000
+  ): Promise<string | null> {
+    if (!this.node) {
+      throw new Error('Node not initialized');
+    }
+
+    const requestId = crypto.randomUUID();
+
+    let data: Uint8Array;
+    if (this.ownDid) {
+      data = new TextEncoder().encode(`REQ:${requestId}|DID:${this.ownDid}|${type}:${payload}`);
+    } else {
+      data = new TextEncoder().encode(`REQ:${requestId}|${type}:${payload}`);
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingResponses.delete(requestId);
+        reject(new Error(`Request to ${peerId} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      // Store the pending response handler
+      this.pendingResponses.set(requestId, {
+        resolve: (response: string) => {
+          clearTimeout(timeout);
+          resolve(response);
+        },
+        reject: (err: Error) => {
+          clearTimeout(timeout);
+          reject(err);
+        },
+        timeout
+      });
+
+      this.sendRawMessage(peerId, data).catch(err => {
+        clearTimeout(timeout);
+        this.pendingResponses.delete(requestId);
+        reject(err);
+      });
+    });
+  }
+
+  private pendingResponses: Map<string, {
+    resolve: (response: string) => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+  }> = new Map();
+
+  /**
+   * Register a handler for responses (used by the receiving side)
+   */
+  onResponse(type: string, handler: (payload: string, from: string, did?: string, requestId?: string) => void): void {
+    this.messageHandlers.set(type, handler);
+  }
+
+  /**
+   * Send a response back to a peer
+   */
+  async sendResponse(peerId: string, requestId: string, type: string, responsePayload: string): Promise<void> {
+    if (!this.node) {
+      throw new Error('Node not initialized');
+    }
+
+    const data = new TextEncoder().encode(`RESP:${requestId}|${type}:${responsePayload}`);
+
+    try {
+      await this.sendRawMessage(peerId, data);
+    } catch (e) {
+      console.warn(`[P2P] Failed to send response to ${peerId}:`, e);
+      throw e;
+    }
+  }
+
+  /**
+   * Handle incoming request messages and route to appropriate handlers
+   */
+  private handleRequest(type: string, payload: string, requestId: string, fromPeerId: string, did?: string): void {
+    const handler = this.messageHandlers.get(type);
+    if (handler) {
+      // Create a wrapper that sends the response
+      const originalHandler = handler;
+      handler = (msg: Uint8Array, from: string, didParam?: string) => {
+        originalHandler(msg, from, didParam);
+      };
+    }
+
+    // Check if there's a response handler registered
+    const responseHandler = this.pendingResponseHandlers.get(type);
+    if (responseHandler) {
+      responseHandler(payload, fromPeerId);
+    }
+  }
+
+  /**
+   * Register a pending response handler for a specific message type
+   */
+  registerResponseHandler(type: string, handler: (response: string, from: string) => void): void {
+    this.pendingResponseHandlers.set(type, handler);
   }
 
   async sendMessage(peerId: string, type: string, payload: string): Promise<void> {
