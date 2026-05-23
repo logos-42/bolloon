@@ -17,6 +17,7 @@ import {
 import { documentReader } from '../documents/reader.js';
 import { initMinimax, getMinimax } from '../constraints/index.js';
 import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
+import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -134,6 +135,10 @@ export async function createWebServer(port: number = 3000) {
 
   app.get('/', (req, res) => {
     res.sendFile(join(staticPath, 'index.html'));
+  });
+
+  app.get('/api-config', (req, res) => {
+    res.sendFile(join(staticPath, 'api-config.html'));
   });
 
   app.get('/events', (req, res) => {
@@ -311,6 +316,107 @@ export async function createWebServer(port: number = 3000) {
       }
       await saveTheme(theme, agentId || '');
       res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==================== LLM 配置 API ====================
+
+  // 获取所有 LLM 配置
+  app.get('/api/llm-config', async (req, res) => {
+    try {
+      const config = await llmConfigStore.getConfig();
+      const providerInfo = llmConfigStore.getAllProviderInfo();
+
+      // 隐藏 API Key
+      const safeConfig = {
+        ...config,
+        providers: Object.fromEntries(
+          Object.entries(config.providers).map(([key, val]) => [
+            key,
+            { ...val, apiKey: val.apiKey ? '***' + val.apiKey.slice(-4) : '' }
+          ])
+        ),
+        providerInfo
+      };
+
+      res.json(safeConfig);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 更新 LLM 配置
+  app.post('/api/llm-config', async (req, res) => {
+    try {
+      const { provider, config } = req.body;
+
+      if (!provider || !config) {
+        return res.status(400).json({ error: 'provider and config required' });
+      }
+
+      await llmConfigStore.updateProvider(provider, config);
+
+      // 如果是活跃供应商，重新初始化 Pi SDK
+      const currentActive = await llmConfigStore.getActiveProvider();
+      if (provider === currentActive) {
+        const newConfig = await llmConfigStore.getActiveProviderConfig();
+        if (newConfig) {
+          initMinimax({
+            provider,
+            apiKey: newConfig.apiKey || undefined,
+            baseUrl: newConfig.baseUrl || undefined,
+            model: newConfig.model || undefined
+          });
+        }
+      }
+
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 设置活跃供应商
+  app.post('/api/llm-provider', async (req, res) => {
+    try {
+      const { provider } = req.body;
+
+      if (!provider) {
+        return res.status(400).json({ error: 'provider required' });
+      }
+
+      await llmConfigStore.setActiveProvider(provider as ModelProvider);
+
+      // 重新初始化 Pi SDK
+      const config = await llmConfigStore.getActiveProviderConfig();
+      if (config) {
+        initMinimax({
+          provider: provider as ModelProvider,
+          apiKey: config.apiKey || undefined,
+          baseUrl: config.baseUrl || undefined,
+          model: config.model || undefined
+        });
+      }
+
+      res.json({ ok: true, provider });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 测试供应商连接
+  app.post('/api/llm-test', async (req, res) => {
+    try {
+      const { provider } = req.body;
+
+      if (!provider) {
+        return res.status(400).json({ error: 'provider required' });
+      }
+
+      const result = await llmConfigStore.testProvider(provider as ModelProvider);
+      res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
