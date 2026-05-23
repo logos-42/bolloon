@@ -243,16 +243,16 @@ export async function getJudgmentsForContext(context: string): Promise<Judgment[
 export function calculateConfidence(judgments: Judgment[]): number {
   if (judgments.length === 0) return 0.5;
 
-  let totalWeight = 0;
-  let weightedSum = 0;
+  let totalSourceWeight = 0;
+  let weightedConfidenceSum = 0;
 
   for (const j of judgments) {
-    const weight = j.confidence * (j.source === 'human' ? 1.5 : 1.0);
-    weightedSum += weight;
-    totalWeight += weight;
+    const sourceWeight = j.source === 'human' ? 1.5 : 1.0;
+    weightedConfidenceSum += j.confidence * sourceWeight;
+    totalSourceWeight += sourceWeight;
   }
 
-  return totalWeight > 0 ? weightedSum / totalWeight : 0.5;
+  return totalSourceWeight > 0 ? weightedConfidenceSum / totalSourceWeight : 0.5;
 }
 
 /**
