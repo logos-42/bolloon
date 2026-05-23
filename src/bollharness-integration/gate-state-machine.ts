@@ -10,6 +10,7 @@
  */
 
 import { AgentCoordinator, type SubTask, type AgentResult } from '@bolloon/constraint-runtime';
+import { executeGateTransitionHooks, initializeGateHooks } from './gate-transition-hooks.js';
 
 export type Gate = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
@@ -107,6 +108,7 @@ export class GateStateMachine {
   constructor() {
     this.state = this.initState();
     this.coordinator = new AgentCoordinator(3);
+    initializeGateHooks();
   }
 
   private initState(): GateState {
@@ -202,6 +204,9 @@ export class GateStateMachine {
     const nextGate = (currentGate + 1) as Gate;
     this.state.currentGate = nextGate;
     this.updateStateForGate(nextGate);
+
+    // Execute gate transition hooks
+    await executeGateTransitionHooks(currentGate, nextGate, true, []);
 
     return {
       from: currentGate,

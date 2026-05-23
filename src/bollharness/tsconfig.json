@@ -14,6 +14,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "moduleResolution": "node",
+    "types": ["node"],
     "allowSyntheticDefaultImports": true,
     "noImplicitAny": true,
     "strictNullChecks": true,

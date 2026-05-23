@@ -17,6 +17,30 @@ export { GuardChecker, type GuardFinding, type GuardResult } from './guard-check
 export { ContextRouter } from './context-router.js';
 export { SkillAdapter, type AdaptedSkill, type SkillTriggers, type HarnessSkillMetadata } from './skill-adapter.js';
 
+// Gate transition hooks
+export {
+  initializeGateHooks,
+  onGateTransition,
+  offGateTransition,
+  executeGateTransitionHooks,
+  addGateHook,
+  clearGateHooks,
+  listGateHooks,
+  type GateHookConfig,
+  type GateTransitionEvent,
+} from './gate-transition-hooks.js';
+
+// Judgment-aware context router exports
+export {
+  getJudgmentsForPath,
+  getJudgmentsForFragment,
+  getJudgmentsForContextRequest,
+  getCoreJudgmentsForSession,
+  generateJudgmentInjection,
+  type JudgmentInjectOptions,
+  type JudgmentContextResult,
+} from './context-router-judgment.js';
+
 // Pi Ecosystem re-exports for convenience
 export {
   initializeMcpAdapter,

@@ -110,7 +110,7 @@ export function loadFragments(filePath: string): string[] {
 }
 
 /**
- * ContextRouter class for integration with Bolloon
+ * Context Router class for integration with Bolloon
  */
 export class ContextRouter {
   private fragmentsDir: string;
@@ -149,6 +149,56 @@ export class ContextRouter {
     }
 
     return contentParts.join('\n\n---\n\n');
+  }
+
+  /**
+   * Get judgments for a file path (judgment-aware extension)
+   */
+  async getJudgmentsForPath(filePath: string, minConfidence = 0.7): Promise<string> {
+    try {
+      const { getJudgmentsForPath } = await import('./context-router-judgment.js');
+      const result = await getJudgmentsForPath(filePath, { minConfidence });
+      return result.contextYaml;
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Get core judgments for session start
+   */
+  async getCoreJudgments(minConfidence = 0.9): Promise<string> {
+    try {
+      const { getCoreJudgmentsForSession } = await import('./context-router-judgment.js');
+      return await getCoreJudgmentsForSession(minConfidence);
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Get judgments for a specific context
+   */
+  async getJudgmentsForContext(context: string, minConfidence = 0.7): Promise<string> {
+    try {
+      const { getJudgmentsForContextRequest } = await import('./context-router-judgment.js');
+      const result = await getJudgmentsForContextRequest(context, { minConfidence });
+      return result.contextYaml;
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Generate judgment injection for a gate
+   */
+  async generateJudgmentInjection(filePath: string, gate: number): Promise<string> {
+    try {
+      const { generateJudgmentInjection } = await import('./context-router-judgment.js');
+      return await generateJudgmentInjection(filePath, gate);
+    } catch {
+      return '';
+    }
   }
 
   /**

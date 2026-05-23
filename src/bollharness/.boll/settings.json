@@ -103,6 +103,11 @@
             "type": "command",
             "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/session-start-toolkit-reminder.ts",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/gate-judgment-inject.ts",
+            "timeout": 5
           }
         ]
       }
@@ -149,6 +154,24 @@
             "type": "command",
             "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/failure-analyzer.ts",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreGateTransition": [
+      {
+        "matcher": "*",
+        "hooks": []
+      }
+    ],
+    "PostGateTransition": [
+      {
+        "matcher": "0|3",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(scripts/hooks/find-project-root.sh)\" && npx ts-node scripts/hooks/gate-transition-judgment.ts ${BOLL_GATE_TO} .",
+            "timeout": 10
           }
         ]
       }
