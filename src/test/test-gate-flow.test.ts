@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { GateStateMachine } from './src/bollharness-integration/gate-state-machine.js';
-import { initializeGateHooks, listGateHooks, clearGateHooks } from './src/bollharness-integration/gate-transition-hooks.js';
-import { generateJudgmentInjection, getCoreJudgmentsForSession, getJudgmentsForPath } from './src/bollharness-integration/context-router-judgment.js';
-import { getCombinedJudgments } from './src/pi-ecosystem-judgment/index.js';
+import { GateStateMachine } from '../bollharness-integration/gate-state-machine.js';
+import { initializeGateHooks, listGateHooks, clearGateHooks } from '../bollharness-integration/gate-transition-hooks.js';
+import { generateJudgmentInjection, getCoreJudgmentsForSession, getJudgmentsForPath } from '../bollharness-integration/context-router-judgment.js';
+import { getCombinedJudgments } from '../pi-ecosystem-judgment/index.js';
 
 describe('Gate State Machine', () => {
   it('should initialize at gate 0', () => {
