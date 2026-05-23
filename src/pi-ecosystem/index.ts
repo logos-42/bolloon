@@ -117,6 +117,77 @@ export {
 
 export type { Ant, ColonyTask, ColonySignalEvent, ColonySignal, AntRole } from '../pi-ecosystem-colony/index.js';
 
+// Judgment exports
+export {
+  createJudgment,
+  updateJudgmentConfidence,
+  getAllJudgments,
+  getJudgmentsByType,
+  getJudgmentsForContext,
+  getCombinedJudgments,
+  calculateConfidence,
+  buildValueFunction,
+  getValueFunction,
+  getJudgmentStats,
+  loadFragmentJudgments,
+  clearCache,
+} from '../pi-ecosystem-judgment/index.js';
+
+export type {
+  Judgment,
+  JudgmentEvidence,
+  TrajectoryPoint,
+  PreferencePair,
+  Correction,
+  JudgmentFile,
+  DistillationRequest,
+  ValueFunction,
+} from '../pi-ecosystem-judgment/index.js';
+
+// Distillation exports
+export {
+  initializeDistillation,
+  detectTrigger,
+  detectCorrection,
+  isJudgmentSignal,
+  addToTrajectory,
+  detectTrajectoryPattern,
+  distillInput,
+  processFeedback,
+  getTrajectoryStats,
+  clearTrajectory,
+} from '../pi-ecosystem-judgment/distillation.js';
+
+export type { FeedbackSignal, DistillationResult, TrajectoryEntry } from '../pi-ecosystem-judgment/distillation.js';
+
+// Decision exports
+export {
+  setConfidenceThreshold,
+  getConfidenceThreshold,
+  setDefaultDecisionLevel,
+  getDefaultDecisionLevel,
+  evaluateDecision,
+  submitDecisionResponse,
+  isDecisionResponse,
+  parseDecisionResponse,
+  queryInternalAgents,
+  processHumanFeedback,
+  getPendingDecisions,
+  getDecisionRequest,
+  getDecisionStats,
+  onDecisionEvent,
+  offDecisionEvent,
+} from '../pi-ecosystem-judgment/decision.js';
+
+export type {
+  DecisionLevel,
+  ConsultationTarget,
+  DecisionStatus,
+  DecisionRequest,
+  DecisionResponse,
+  AgentConsultationResult,
+} from '../pi-ecosystem-judgment/decision.js';
+
 const PI_ECOSYSTEM_DIR = path.join(process.env.HOME || '/tmp', '.bolloon', 'pi-ecosystem');
 const CONFIG_FILE = path.join(PI_ECOSYSTEM_DIR, 'config.json');
 

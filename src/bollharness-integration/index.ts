@@ -105,6 +105,55 @@ export {
   type AntRole,
 } from '../pi-ecosystem-colony/index.js';
 
+// Judgment exports
+export {
+  createJudgment,
+  getAllJudgments,
+  getJudgmentsByType,
+  getJudgmentsForContext,
+  getCombinedJudgments,
+  calculateConfidence,
+  buildValueFunction,
+  getValueFunction,
+  getJudgmentStats,
+  loadFragmentJudgments,
+} from '../pi-ecosystem-judgment/index.js';
+
+export type {
+  Judgment,
+  JudgmentEvidence,
+  DistillationRequest,
+  ValueFunction,
+} from '../pi-ecosystem-judgment/index.js';
+
+// Distillation exports
+export {
+  initializeDistillation,
+  detectTrigger,
+  isJudgmentSignal,
+  distillInput,
+  processFeedback,
+} from '../pi-ecosystem-judgment/distillation.js';
+
+// Decision exports
+export {
+  setConfidenceThreshold,
+  evaluateDecision,
+  submitDecisionResponse,
+  parseDecisionResponse,
+  queryInternalAgents,
+  processHumanFeedback,
+  getPendingDecisions,
+  getDecisionRequest,
+} from '../pi-ecosystem-judgment/decision.js';
+
+export type {
+  DecisionLevel,
+  DecisionRequest,
+  DecisionResponse,
+  AgentConsultationResult,
+} from '../pi-ecosystem-judgment/decision.js';
+
 /**
  * Pi Ecosystem Configuration
  */
