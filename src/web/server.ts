@@ -301,11 +301,20 @@ interface SSEClient {
 let sseClients: Set<SSEClient> = new Set();
 let channelSessions: Map<string, AgentSession> = new Map();
 
-async function getAgentForChannel(channelId: string): Promise<AgentSession> {
+async function getAgentForChannel(channelId: string, channelDid?: string, channelName?: string): Promise<AgentSession> {
   if (!channelSessions.has(channelId)) {
+    // 构建频道的身份文档
+    const identityDoc = channelDid ? {
+      did: channelDid,
+      name: channelName || `Channel-${channelId.slice(-6)}`,
+      publicKey: '',
+      createdAt: Date.now()
+    } : undefined;
+
     const session = await createAgentSession({
       cwd: process.cwd(),
-      peerId: `channel-${channelId}`
+      peerId: `channel-${channelId}`,
+      identityDoc
     });
     channelSessions.set(channelId, session);
   }
@@ -439,7 +448,7 @@ export async function createWebServer(port: number = 3000) {
   });
 
   app.post('/message', async (req, res) => {
-    const { text, channelId } = req.body;
+    const { text, channelId, channelDid } = req.body;
     if (!text) {
       return res.status(400).json({ error: 'No text provided' });
     }
@@ -448,10 +457,16 @@ export async function createWebServer(port: number = 3000) {
       return res.status(400).json({ error: 'No channelId provided' });
     }
 
+    // 获取频道信息，包括真实 DID
+    const channels = await loadChannels();
+    const channel = channels.find(c => c.id === channelId);
+    const realChannelDid = channelDid || channel?.did || '';
+    const realChannelName = channel?.name || '';
+
     broadcast({ type: 'user', content: text }, channelId);
 
     try {
-      const agent = await getAgentForChannel(channelId);
+      const agent = await getAgentForChannel(channelId, realChannelDid, realChannelName);
       let fullResponse = '';
 
       const streamCallback: StreamCallback = (event: StreamEvent) => {
@@ -470,7 +485,9 @@ export async function createWebServer(port: number = 3000) {
         }
       };
 
-      fullResponse = await agent.promptStream(text, streamCallback);
+      // 将真实 DID 作为上下文前缀，让 AI 使用真实的 DID 而不是自己编造的
+      const contextHint = realChannelDid ? `[系统上下文] 当前频道名称: ${realChannelName}, 你的真实 DID: ${realChannelDid}\n\n` : '';
+      fullResponse = await agent.promptStream(contextHint + text, streamCallback);
 
       broadcast({ type: 'ai', content: fullResponse }, channelId);
 

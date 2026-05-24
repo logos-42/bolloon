@@ -17,6 +17,8 @@ let currentAgentId = '';
 let channels = [];
 let isSidebarCollapsed = false;
 let reconnectAttempts = 0;
+let lastUserCommand = ''; // 防止用户消息重复显示
+let lastAiContent = ''; // 防止 AI 消息重复显示
 
 function generateId() {
   return crypto.randomUUID();
@@ -240,6 +242,20 @@ async function loadSession(channelId) {
 }
 
 function addMessage(content, type, save = true) {
+  // 去重：只有 save=true 时（来自 SSE）才去重，save=false 时（来自 session 加载）直接显示
+  if (save) {
+    const lastContent = type === 'user' ? lastUserCommand : lastAiContent;
+    if (lastContent && content === lastContent) {
+      console.log(`[addMessage] 跳过重复的 ${type} 消息`);
+      return;
+    }
+    if (type === 'user') {
+      lastUserCommand = content;
+    } else {
+      lastAiContent = content;
+    }
+  }
+
   const div = document.createElement('div');
   div.className = `message message-${type}`;
 
@@ -643,18 +659,24 @@ function handleWorkflowLoopEvent(data) {
 let userCommandDisplayEl = null;
 
 function showUserCommand(command) {
+  // 先移除之前的消息中的 user bubble（如果有重复的话）
+  const existingUserBubbles = messagesEl.querySelectorAll('.message-user');
+  existingUserBubbles.forEach(el => el.remove());
+
   // 移除之前的命令显示
   if (userCommandDisplayEl) {
     userCommandDisplayEl.remove();
   }
 
-  // 创建命令显示
+  // 创建美化版本的命令显示
   userCommandDisplayEl = document.createElement('div');
-  userCommandDisplayEl.className = 'user-command-display';
+  userCommandDisplayEl.className = 'message message-user';
   userCommandDisplayEl.innerHTML = `
-    <div class="command-prompt">
-      <span class="prompt-icon">›</span>
-      <span class="prompt-text">${command}</span>
+    <div class="user-command-display">
+      <div class="command-prompt">
+        <span class="prompt-icon">›</span>
+        <span class="prompt-text">${command}</span>
+      </div>
     </div>
   `;
 
@@ -705,9 +727,9 @@ function connect() {
       }
 
       if (data.type === 'user') {
-          showUserCommand(data.content); // 显示用户命令
-          addMessage(data.content, 'user');
-        } else if (data.type === 'ai') {
+        showUserCommand(data.content); // 用户命令可视化（已包含 message-user）
+        // 不再调用 addMessage，避免重复
+      } else if (data.type === 'ai') {
           addMessage(data.content, 'ai');
         } else if (data.type === 'stream') {
           handleStreamEvent(data);
@@ -747,11 +769,20 @@ async function sendMessage() {
   input.value = '';
   showTyping();
 
+  // 获取当前频道的 DID
+  const channel = channels.find(c => c.id === currentChannelId);
+  const channelDid = channel?.did || '';
+  console.log('[发送消息] 频道 DID:', channelDid);
+
   try {
     const res = await fetch('/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, channelId: currentChannelId })
+      body: JSON.stringify({
+        text,
+        channelId: currentChannelId,
+        channelDid
+      })
     });
 
     if (!res.ok) {
