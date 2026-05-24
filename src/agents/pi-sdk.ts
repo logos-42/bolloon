@@ -1476,16 +1476,30 @@ let lastIdentityDid: string | null = null;
 export async function createAgentSession(config: AgentSessionConfig): Promise<AgentSession> {
   const incomingDid = config.identityDoc?.did;
 
+  // 如果有新的 DID，强制重建 session
   if (sessionInstance && lastIdentityDid && incomingDid && lastIdentityDid !== incomingDid) {
+    console.log(`[createAgentSession] DID 变化 ${lastIdentityDid} -> ${incomingDid}，重建 session`);
     sessionInstance = null;
   }
 
   if (sessionInstance) {
+    // 检查是否需要更新 identity
+    const currentDid = sessionInstance.getIdentity().did;
+    if (incomingDid && currentDid !== incomingDid) {
+      console.log(`[createAgentSession] 更新 identity: ${currentDid} -> ${incomingDid}`);
+      sessionInstance.updateIdentity({
+        did: incomingDid,
+        name: config.identityDoc?.name || sessionInstance.getIdentity().name,
+        publicKey: config.identityDoc?.publicKey || '',
+        createdAt: Date.now()
+      });
+    }
     return sessionInstance;
   }
 
   sessionInstance = new PiAgentSession(config);
   lastIdentityDid = config.identityDoc?.did || null;
+  console.log(`[createAgentSession] 新建 session, DID=${lastIdentityDid}`);
   return sessionInstance;
 }
 

@@ -302,23 +302,55 @@ let sseClients: Set<SSEClient> = new Set();
 let channelSessions: Map<string, AgentSession> = new Map();
 
 async function getAgentForChannel(channelId: string, channelDid?: string, channelName?: string): Promise<AgentSession> {
-  if (!channelSessions.has(channelId)) {
-    // 构建频道的身份文档
-    const identityDoc = channelDid ? {
-      did: channelDid,
-      name: channelName || `Channel-${channelId.slice(-6)}`,
-      publicKey: '',
-      createdAt: Date.now()
-    } : undefined;
+  const existingSession = channelSessions.get(channelId);
 
-    const session = await createAgentSession({
-      cwd: process.cwd(),
-      peerId: `channel-${channelId}`,
-      identityDoc
-    });
-    channelSessions.set(channelId, session);
+  // 如果已有 session，检查是否需要更新 identity
+  if (existingSession) {
+    const currentIdentity = existingSession.getIdentity();
+
+    // 如果当前 identity 没有真实 DID，或者 DID 与频道的 DID 不匹配，需要重建
+    const needsUpdate = !currentIdentity.did.startsWith('did:pi:') ||
+                        (channelDid && !currentIdentity.did.includes(channelId));
+
+    if (!needsUpdate && channelDid && currentIdentity.did !== channelDid) {
+      needsUpdate = true;
+    }
+
+    if (needsUpdate && channelDid) {
+      // 更新现有 session 的 identity
+      existingSession.updateIdentity({
+        did: channelDid,
+        name: channelName || `Channel-${channelId.slice(-6)}`,
+        publicKey: '',
+        createdAt: Date.now()
+      });
+      console.log(`[Agent] 频道 ${channelId} 身份更新: DID = ${channelDid}`);
+    }
+    return existingSession;
   }
-  return channelSessions.get(channelId)!;
+
+  // 构建频道的身份文档
+  const identityDoc = channelDid ? {
+    did: channelDid,
+    name: channelName || `Channel-${channelId.slice(-6)}`,
+    publicKey: '',
+    createdAt: Date.now()
+  } : undefined;
+
+  const session = await createAgentSession({
+    cwd: process.cwd(),
+    peerId: `channel-${channelId}`,
+    identityDoc
+  });
+  channelSessions.set(channelId, session);
+
+  if (channelDid) {
+    console.log(`[Agent] 新建频道 ${channelId} session, DID = ${channelDid}`);
+  } else {
+    console.log(`[Agent] 新建频道 ${channelId} session, 使用默认身份`);
+  }
+
+  return session;
 }
 
 export async function createWebServer(port: number = 3000) {
