@@ -64,7 +64,18 @@ async function loadChannels(): Promise<Channel[]> {
 }
 
 async function saveChannels(channels: Channel[]): Promise<void> {
-  await fs.writeFile(CHANNELS_PATH, JSON.stringify(channels, null, 2));
+  const jsonStr = JSON.stringify(channels, null, 2);
+  console.log('[saveChannels] 保存频道数据, 数量:', channels.length);
+  console.log('[saveChannels] JSON 长度:', jsonStr.length);
+  await fs.writeFile(CHANNELS_PATH, jsonStr);
+
+  // 验证保存的内容
+  const verifyData = await fs.readFile(CHANNELS_PATH, 'utf-8');
+  const verifyChannels = JSON.parse(verifyData);
+  console.log('[saveChannels] 验证 - 保存了', verifyChannels.length, '个频道');
+  verifyChannels.forEach((ch: Channel, i: number) => {
+    console.log(`  [${i}] ${ch.name}: did=${ch.did || '无'}`);
+  });
 }
 
 async function loadSession(channelId: string): Promise<Session | null> {
@@ -217,20 +228,32 @@ async function executeTask(task: Task, channelId: string): Promise<void> {
 
       case 'workflow':
         // 执行多步骤工作流
-        if (task.steps && task.currentStep !== undefined) {
-          for (let i = task.currentStep; i < task.steps.length; i++) {
+        if (task.steps && task.steps.length > 0) {
+          let loopCount = 0;
+          for (let i = 0; i < task.steps.length; i++) {
+            // 广播循环开始
+            loopCount++;
+            broadcast({ type: 'workflow_loop', loopCount, content: `开始步骤 ${i + 1}/${task.steps.length}: ${task.steps[i].name}` }, channelId);
+
             task.steps[i].status = 'running';
             broadcast({ type: 'task_status', taskId: task.id, status: 'running', currentStep: i, totalSteps: task.steps.length }, channelId);
+            broadcast({ type: 'workflow_step', step: `步骤 ${i + 1}`, content: `执行中: ${task.steps[i].name}` }, channelId);
 
-            broadcast({ type: 'status', content: `执行步骤 ${i + 1}/${task.steps.length}: ${task.steps[i].name}` }, channelId);
+            // 执行步骤 - 模拟流式输出
+            for (let j = 0; j < 3; j++) {
+              await new Promise(resolve => setTimeout(resolve, 300));
+              broadcast({ type: 'workflow_step', step: `步骤 ${i + 1}`, content: `执行中... (${(j + 1) * 33}%)` }, channelId);
+            }
 
-            // 执行步骤（这里简化处理，实际可能需要更复杂的逻辑）
-            await new Promise(resolve => setTimeout(resolve, 500));
             task.steps[i].status = 'completed';
             task.progress = Math.round(((i + 1) / task.steps.length) * 100);
+
+            broadcast({ type: 'workflow_step', step: `步骤 ${i + 1}`, content: `✅ 完成: ${task.steps[i].name}` }, channelId);
+            broadcast({ type: 'workflow_loop', loopCount, status: 'completed', content: `步骤 ${i + 1} 完成` }, channelId);
             broadcast({ type: 'task_status', taskId: task.id, progress: task.progress }, channelId);
           }
           result = '✅ 工作流执行完成';
+          broadcast({ type: 'workflow_loop', loopCount, status: 'finished', content: result }, channelId);
         }
         break;
 
@@ -432,10 +455,16 @@ export async function createWebServer(port: number = 3000) {
       let fullResponse = '';
 
       const streamCallback: StreamCallback = (event: StreamEvent) => {
+        // 同时发送给流式显示和工作流显示
         if (event.type === 'token' || event.type === 'thinking') {
           broadcast({ type: 'stream', streamType: event.type, content: event.content }, channelId);
+          // 同时作为 workflow_step 显示（用于动态 loop 循环）
+          if (event.content) {
+            broadcast({ type: 'workflow_step', step: 'AI 思考', content: event.content.substring(0, 100) }, channelId);
+          }
         } else if (event.type === 'status' || event.type === 'tool') {
           broadcast({ type: 'status', tool: event.tool, content: event.content }, channelId);
+          broadcast({ type: 'workflow_step', step: event.tool || '状态', content: event.content }, channelId);
         } else if (event.type === 'error') {
           broadcast({ type: 'error', content: event.content }, channelId);
         }
@@ -476,18 +505,72 @@ export async function createWebServer(port: number = 3000) {
     }
   });
 
-  app.get('/channels', async (req, res) => {
-    try {
-      const channels = await loadChannels();
-      console.log('[获取频道] 共', channels.length, '个');
-      channels.forEach((ch, i) => {
-        console.log(`  [${i}] ${ch.name} - did: ${ch.did || '无'}`);
-      });
-      res.json(channels);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
+  // 获取频道并确保每个频道都有 DID
+async function getChannelsWithDID(): Promise<Channel[]> {
+  const channels = await loadChannels();
+  console.log(`[getChannelsWithDID] 加载了 ${channels.length} 个频道`);
+  let changed = false;
+
+  for (const channel of channels) {
+    // 检查 DID 是否有效
+    const didMissing = channel.did === undefined || channel.did === null || channel.did === 'undefined' || channel.did === 'null' || channel.did === '';
+    console.log(`[getChannelsWithDID] 频道 ${channel.name}: did=${JSON.stringify(channel.did)}, 缺失=${didMissing}`);
+
+    if (didMissing) {
+      console.log(`[修复频道] ${channel.name} (${channel.id}) 缺少 DID，正在生成...`);
+      try {
+        const kp = KeyManager.generate();
+        const generatedDid = kp.did;
+        console.log(`[修复频道] KeyManager.generate() 结果: kp=${!!kp}, did=${generatedDid}`);
+
+        if (generatedDid && typeof generatedDid === 'string' && generatedDid.length > 0) {
+          channel.did = generatedDid;
+          channel.publicKey = Buffer.from(kp.publicKey).toString('hex');
+          console.log(`[修复频道] ${channel.name} 生成了 DID: ${channel.did}`);
+
+          // 发布到 IPFS
+          try {
+            const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+            const result = await auth.registerAgent({ name: channel.name, services: [] }, kp, '');
+            channel.cid = result.cid || '';
+            console.log(`[修复频道] ${channel.name} CID: ${channel.cid}`);
+          } catch (ipfsErr) {
+            console.log(`[修复频道] ${channel.name} IPFS 失败`);
+          }
+        } else {
+          console.log(`[修复频道] ${channel.name} KeyManager 返回无效 DID`);
+          channel.did = `did:web:${channel.id}`;
+          channel.publicKey = `pk_${channel.id}`;
+        }
+        changed = true;
+      } catch (e) {
+        console.log(`[修复频道] ${channel.name} 失败: ${e}`);
+      }
     }
-  });
+  }
+
+  if (changed) {
+    console.log('[getChannelsWithDID] 保存修改后的频道');
+    await saveChannels(channels);
+  }
+
+  return channels;
+}
+
+app.get('/channels', async (_req, res) => {
+  try {
+    console.log('[API] /channels 被调用');
+    const channels = await getChannelsWithDID();
+    console.log('[获取频道] 返回', channels.length, '个');
+    channels.forEach((ch, i) => {
+      console.log(`  [${i}] ${ch.name} - did: ${ch.did || '无'} - cid: ${ch.cid || '无'}`);
+    });
+    res.json(channels);
+  } catch (err: any) {
+    console.error('[API] /channels 错误:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
   app.post('/channels', async (req, res) => {
     try {
@@ -499,44 +582,51 @@ export async function createWebServer(port: number = 3000) {
       const channels = await loadChannels();
       const id = `ch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
-      // 为每个频道生成独立的 DIAP 身份
-      let channelDid = 'did:web:' + id;
-      let channelPublicKey = 'pk_' + id;
-      let channelCid = '';
-      try {
-        const kp = KeyManager.generate();
-        channelDid = kp.did || channelDid;
-        channelPublicKey = Buffer.from(kp.publicKey).toString('hex');
-        console.log(`[创建频道] ${name} - ID: ${id} - DID: ${channelDid}`);
-
-        // 发布 DID 到 IPFS 并获取 CID
-        try {
-          const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
-          const result = await auth.registerAgent({ name, services: [] }, kp, '');
-          channelCid = result.cid || '';
-          console.log(`[创建频道] ${name} - CID: ${channelCid}`);
-        } catch (ipfsErr) {
-          console.log(`[创建频道] ${name} - IPFS 发布失败: ${ipfsErr}`);
-        }
-      } catch (e: any) {
-        console.log(`[创建频道] ${name} - KeyManager 失败: ${e?.message}`);
-      }
-
+      // 先创建频道（不阻塞等待 DID 生成）
       const channel: Channel = {
         id,
         name,
         agentId,
-        did: channelDid,
-        publicKey: channelPublicKey,
-        cid: channelCid,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
+
+      console.log(`[创建频道] 先保存频道 ID: ${id}`);
       channels.push(channel);
       await saveChannels(channels);
       await saveSession({ channelId: id, messages: [], lastUpdated: new Date().toISOString() });
       res.json(channel);
+
+      // 后台生成 DID
+      console.log(`[创建频道] 后台生成 DID...`);
+      setTimeout(async () => {
+        try {
+          const kp = KeyManager.generate();
+          if (kp.did) {
+            const allChannels = await loadChannels();
+            const ch = allChannels.find(c => c.id === id);
+            if (ch) {
+              ch.did = kp.did;
+              ch.publicKey = Buffer.from(kp.publicKey).toString('hex');
+              console.log(`[创建频道] DID 生成完成: ${ch.did}`);
+
+              // 发布到 IPFS
+              try {
+                const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+                const result = await auth.registerAgent({ name, services: [] }, kp, '');
+                ch.cid = result.cid || '';
+                console.log(`[创建频道] CID: ${ch.cid}`);
+              } catch {}
+
+              await saveChannels(allChannels);
+            }
+          }
+        } catch (e) {
+          console.log(`[创建频道] ${name} 后台生成 DID 失败`);
+        }
+      }, 100);
     } catch (err: any) {
+      console.error('[创建频道] 错误:', err);
       res.status(500).json({ error: err.message });
     }
   });

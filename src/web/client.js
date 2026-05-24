@@ -100,10 +100,27 @@ async function createChannel(name) {
     const channel = await res.json();
     console.log('[创建频道] 服务器返回:', channel);
     console.log('[创建频道] DID:', channel.did, 'CID:', channel.cid);
+
+    // 立即添加频道并切换（不等待 DID）
     channels.push(channel);
     renderChannels();
     selectChannel(channel.id);
     newChannelInput.value = '';
+
+    // 后台更新 DID（如果还没有的话）
+    if (!channel.did || channel.did === 'undefined') {
+      console.log('[创建频道] 后台生成 DID...');
+      // 触发后台刷新，DID 会在下次请求时更新
+      setTimeout(() => {
+        fetch('/channels').then(res => res.json()).then(allChannels => {
+          channels = allChannels;
+          const updated = channels.find(c => c.id === channel.id);
+          if (updated && updated.did && updated.did !== 'undefined') {
+            console.log('[创建频道] DID 生成完成:', updated.did);
+          }
+        });
+      }, 2000);
+    }
   } catch (err) {
     console.error('Failed to create channel:', err);
   }
@@ -157,29 +174,49 @@ function renderCollapsedChannels() {
 }
 
 async function selectChannel(channelId) {
+  console.log('[selectChannel] 开始切换到:', channelId);
+
+  // 立即更新当前频道 ID
   currentChannelId = channelId;
   reconnectAttempts = 0;
 
-  // 重新加载频道数据以获取最新的 DID
-  try {
-    const res = await fetch('/channels');
-    if (res.ok) {
-      channels = await res.json();
-    }
-  } catch (err) {
-    console.error('Failed to reload channels:', err);
-  }
-
-  renderChannels();
-  renderCollapsedChannels();
-  await loadSession(channelId);
-
+  // 找到当前频道
   const channel = channels.find(c => c.id === channelId);
   if (channel && channelNameEl) {
     channelNameEl.textContent = channel.name;
-    console.log('已选择频道:', channel.name, 'DID:', channel.did || '无');
+    console.log('[selectChannel] 频道:', channel.name, 'DID:', channel.did || '无');
   }
 
+  renderChannels();
+
+  // 关闭旧 SSE 连接
+  if (eventSource) {
+    console.log('[selectChannel] 关闭旧 SSE 连接');
+    eventSource.close();
+    eventSource = null;
+  }
+
+  // 清空消息区域
+  messagesEl.innerHTML = '';
+
+  // 加载 session
+  try {
+    const res = await fetch(`/sessions/${channelId}`);
+    const session = await res.json();
+    if (session.messages && session.messages.length > 0) {
+      session.messages.forEach(msg => {
+        addMessage(msg.content, msg.type, false);
+      });
+    } else {
+      addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false);
+    }
+  } catch (err) {
+    console.error('[selectChannel] 加载 session 失败:', err);
+    addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false);
+  }
+
+  // 建立新 SSE 连接
+  console.log('[selectChannel] 建立 SSE 连接');
   connect();
 }
 
@@ -218,18 +255,19 @@ function addMessage(content, type, save = true) {
   // 处理思维链内容（</think> 标签）- 折叠显示
   const thinkMatch = cleanContent.match(/<think>([\s\S]*?)<\/think>/);
   let mainContent = cleanContent;
+  let thinkContainer = null;
 
   if (thinkMatch) {
     const thinkContent = thinkMatch[1].trim();
     mainContent = cleanContent.replace(/<think>[\s\S]*?<\/think>/, '').trim();
 
     // 创建思维链折叠区域
-    const thinkContainer = document.createElement('div');
+    thinkContainer = document.createElement('div');
     thinkContainer.className = 'think-container';
 
     const thinkToggle = document.createElement('div');
     thinkToggle.className = 'think-toggle';
-    thinkToggle.innerHTML = '💭 思考过程 <span class="think-arrow">▾</span>';
+    thinkToggle.innerHTML = '💭 思考过程 <span class="think-arrow">▸</span>';
     thinkToggle.onclick = function() {
       const details = thinkContainer.querySelector('.think-content');
       const arrow = thinkToggle.querySelector('.think-arrow');
@@ -244,11 +282,11 @@ function addMessage(content, type, save = true) {
 
     const thinkDiv = document.createElement('div');
     thinkDiv.className = 'think-content';
+    thinkDiv.style.display = 'none'; // 默认折叠
     thinkDiv.innerHTML = `<pre>${thinkContent.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`;
 
     thinkContainer.appendChild(thinkToggle);
     thinkContainer.appendChild(thinkDiv);
-    div.appendChild(thinkContainer);
   }
 
   const envMatch = mainContent.match(/^(.+?)\n<environment_details>([\s\S]*?)<\/environment_details>\n([\s\S]*)$/);
@@ -263,13 +301,13 @@ function addMessage(content, type, save = true) {
     header.textContent = identity;
     div.appendChild(header);
 
-    // 环境信息区域（可折叠）
+    // 环境信息区域（可折叠，默认折叠）
     const envContainer = document.createElement('div');
     envContainer.className = 'env-container';
 
     const envToggle = document.createElement('div');
     envToggle.className = 'env-toggle';
-    envToggle.innerHTML = '⚙️ 环境信息 <span class="env-arrow">▾</span>';
+    envToggle.innerHTML = '⚙️ 环境信息 <span class="env-arrow">▸</span>';
     envToggle.onclick = function() {
       const details = envContainer.querySelector('.environment-details');
       const arrow = envToggle.querySelector('.env-arrow');
@@ -284,11 +322,17 @@ function addMessage(content, type, save = true) {
 
     const envDiv = document.createElement('div');
     envDiv.className = 'environment-details';
+    envDiv.style.display = 'none'; // 默认折叠
     envDiv.innerHTML = `<pre>${envDetails}</pre>`;
 
     envContainer.appendChild(envToggle);
     envContainer.appendChild(envDiv);
     div.appendChild(envContainer);
+
+    // 思考在环境信息下面
+    if (thinkContainer) {
+      div.appendChild(thinkContainer);
+    }
 
     if (messageBody) {
       const bubble = document.createElement('div');
@@ -297,6 +341,10 @@ function addMessage(content, type, save = true) {
       div.appendChild(bubble);
     }
   } else if (cleanContent) {
+    // 没有环境信息时，思考放在消息之前
+    if (thinkContainer) {
+      div.appendChild(thinkContainer);
+    }
     const bubble = document.createElement('div');
     bubble.className = `bubble bubble-${type}`;
     bubble.textContent = cleanContent;
@@ -379,37 +427,199 @@ function handleStatusEvent(data) {
   updateStreamingContent(icon + data.content);
 }
 
+// 工作流状态显示
+let workflowDisplayEl = null;
+
+function createWorkflowDisplay() {
+  const container = document.createElement('div');
+  container.id = 'workflow-display';
+  container.className = 'workflow-display';
+  container.innerHTML = `
+    <div class="workflow-header">
+      <span class="workflow-icon">🔄</span>
+      <span class="workflow-title">工作流执行中</span>
+      <span class="workflow-loop-count"></span>
+    </div>
+    <div class="workflow-steps-list"></div>
+    <div class="workflow-streams"></div>
+  `;
+  return container;
+}
+
+function handleTaskStatusEvent(data) {
+  console.log('[工作流] 任务状态:', data);
+
+  // 获取或创建工作流显示区域
+  if (!workflowDisplayEl) {
+    workflowDisplayEl = createWorkflowDisplay();
+    messagesEl.appendChild(workflowDisplayEl);
+  }
+
+  const stepsList = workflowDisplayEl.querySelector('.workflow-steps-list');
+  const header = workflowDisplayEl.querySelector('.workflow-header');
+
+  // 更新标题
+  if (data.taskId) {
+    header.querySelector('.workflow-title').textContent = `任务: ${data.taskId.substring(0, 12)}...`;
+  }
+
+  // 更新状态
+  if (data.status) {
+    const statusText = header.querySelector('.workflow-title');
+    statusText.textContent = `任务 ${data.status === 'running' ? '执行中' : data.status}`;
+  }
+
+  // 更新进度
+  if (data.progress !== undefined) {
+    header.querySelector('.workflow-title').textContent = `进度: ${data.progress}%`;
+  }
+
+  // 更新步骤
+  if (data.currentStep !== undefined && data.totalSteps) {
+    const stepEl = document.createElement('div');
+    stepEl.className = 'workflow-step-item';
+    stepEl.innerHTML = `
+      <span class="step-running">⟳</span>
+      <span>步骤 ${data.currentStep + 1}/${data.totalSteps}</span>
+    `;
+    stepsList.appendChild(stepEl);
+  }
+
+  // 完成时移除显示
+  if (data.status === 'completed' || data.status === 'failed') {
+    setTimeout(() => {
+      if (workflowDisplayEl) {
+        workflowDisplayEl.remove();
+        workflowDisplayEl = null;
+      }
+    }, 3000);
+  }
+}
+
+function handleWorkflowStepEvent(data) {
+  console.log('[工作流] 步骤:', data);
+
+  if (!workflowDisplayEl) {
+    workflowDisplayEl = createWorkflowDisplay();
+    messagesEl.appendChild(workflowDisplayEl);
+  }
+
+  const streamsDiv = workflowDisplayEl.querySelector('.workflow-streams');
+
+  // 如果有步骤标签，显示步骤信息
+  if (data.step) {
+    const stepEl = document.createElement('div');
+    stepEl.className = 'workflow-step-stream';
+    stepEl.innerHTML = `
+      <div class="step-label">🔧 ${data.step}</div>
+      <div class="step-content">${data.content || ''}</div>
+    `;
+    streamsDiv.appendChild(stepEl);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+}
+
+function handleWorkflowLoopEvent(data) {
+  console.log('[工作流] 循环:', data);
+
+  if (!workflowDisplayEl) {
+    workflowDisplayEl = createWorkflowDisplay();
+    messagesEl.appendChild(workflowDisplayEl);
+  }
+
+  const loopCount = workflowDisplayEl.querySelector('.workflow-loop-count');
+  const streamsDiv = workflowDisplayEl.querySelector('.workflow-streams');
+
+  // 更新循环次数
+  if (data.loopCount !== undefined) {
+    loopCount.textContent = `循环 #${data.loopCount}`;
+    loopCount.style.display = 'inline';
+  }
+
+  // 显示循环信息
+  if (data.content) {
+    const loopEl = document.createElement('div');
+    loopEl.className = 'workflow-loop-item';
+    loopEl.innerHTML = `
+      <div class="loop-header">
+        <span class="loop-icon">🔁</span>
+        <span>循环 ${data.loopCount || '?'}</span>
+        <span class="loop-status">${data.status || ''}</span>
+      </div>
+      <div class="loop-content">${data.content}</div>
+    `;
+    streamsDiv.appendChild(loopEl);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+}
+
+// 用户命令可视化 - 当用户发送命令时调用
+let userCommandDisplayEl = null;
+
+function showUserCommand(command) {
+  // 移除之前的命令显示
+  if (userCommandDisplayEl) {
+    userCommandDisplayEl.remove();
+  }
+
+  // 创建命令显示
+  userCommandDisplayEl = document.createElement('div');
+  userCommandDisplayEl.className = 'user-command-display';
+  userCommandDisplayEl.innerHTML = `
+    <div class="command-prompt">
+      <span class="prompt-icon">›</span>
+      <span class="prompt-text">${command}</span>
+    </div>
+  `;
+
+  // 在工作流显示之前插入
+  if (workflowDisplayEl) {
+    messagesEl.insertBefore(userCommandDisplayEl, workflowDisplayEl);
+  } else {
+    messagesEl.appendChild(userCommandDisplayEl);
+  }
+
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
 function connect() {
+  // 关闭已有连接
   if (eventSource) {
     eventSource.close();
+    eventSource = null;
   }
 
   const sseUrl = currentChannelId ? `/events?channelId=${encodeURIComponent(currentChannelId)}` : '/events';
+  console.log('[connect] 创建 SSE 连接:', sseUrl);
 
-  try {
-    eventSource = new EventSource(sseUrl);
+  eventSource = new EventSource(sseUrl);
 
-    eventSource.onopen = () => {
-      console.log('SSE connected');
-      reconnectAttempts = 0;
-    };
+  eventSource.onopen = () => {
+    console.log('[SSE] 已连接');
+    reconnectAttempts = 0;
+  };
 
-    eventSource.onerror = (err) => {
-      console.error('SSE error', err);
-      eventSource.close();
-      reconnectAttempts++;
-      setTimeout(connect, Math.min(5000 * reconnectAttempts, 30000));
-    };
+  eventSource.onerror = (err) => {
+    console.error('[SSE] 连接错误', err);
+    eventSource.close();
+    eventSource = null;
+    reconnectAttempts++;
+    setTimeout(connect, Math.min(5000 * reconnectAttempts, 30000));
+  };
 
-    eventSource.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
+  eventSource.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      console.log('[SSE] 收到消息:', data.type, 'channelId:', data.channelId);
 
-        if (data.channelId && data.channelId !== currentChannelId) {
-          return;
-        }
+      // 只处理当前频道的消息
+      if (data.channelId && data.channelId !== currentChannelId) {
+        console.log('[SSE] 忽略非当前频道消息');
+        return;
+      }
 
-        if (data.type === 'user') {
+      if (data.type === 'user') {
+          showUserCommand(data.content); // 显示用户命令
           addMessage(data.content, 'user');
         } else if (data.type === 'ai') {
           addMessage(data.content, 'ai');
@@ -431,15 +641,17 @@ function connect() {
         } else if (data.type === 'error') {
           hideTyping();
           addMessage('错误: ' + data.content, 'ai');
+        } else if (data.type === 'task_status') {
+          handleTaskStatusEvent(data);
+        } else if (data.type === 'workflow_step') {
+          handleWorkflowStepEvent(data);
+        } else if (data.type === 'workflow_loop') {
+          handleWorkflowLoopEvent(data);
         }
       } catch (parseErr) {
-        console.error('Parse error', parseErr);
+        console.error('[SSE] 解析错误', parseErr);
       }
     };
-  } catch (err) {
-    console.error('SSE connect error', err);
-    setTimeout(connect, 5000);
-  }
 }
 
 async function sendMessage() {
@@ -591,11 +803,11 @@ async function loadP2PIdentity() {
     const channel = channels.find(c => c.id === currentChannelId);
     console.log('[P2P] 找到频道:', channel ? channel.name : '未找到');
 
-    if (channel && channel.did) {
+    if (channel && channel.did && channel.did !== 'undefined' && channel.did !== '') {
       myDID = channel.did;
       console.log('[P2P] 设置 DID:', myDID);
       if (p2pMyDid) p2pMyDid.textContent = myDID;
-      if (p2pMyCid) p2pMyCid.textContent = channel.cid || '-';
+      if (p2pMyCid) p2pMyCid.textContent = channel.cid && channel.cid !== 'undefined' ? channel.cid : '-';
     } else {
       console.log('[P2P] 频道没有 DID，显示未配置');
       if (p2pMyDid) p2pMyDid.textContent = '未配置';
