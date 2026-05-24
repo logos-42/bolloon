@@ -81,8 +81,132 @@
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
             </svg>
           </button>
+          <button id="p2p-network-btn" class="header-action" title="P2P 网络">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="5" r="3"></circle>
+              <circle cx="5" cy="19" r="3"></circle>
+              <circle cx="19" cy="19" r="3"></circle>
+              <line x1="12" y1="8" x2="5" y2="16"></line>
+              <line x1="12" y1="8" x2="19" y2="16"></line>
+            </svg>
+          </button>
+          <button id="task-queue-btn" class="header-action" title="任务队列">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"></path>
+              <rect x="9" y="3" width="6" height="4" rx="1"></rect>
+              <line x1="9" y1="12" x2="15" y2="12"></line>
+              <line x1="9" y1="16" x2="13" y2="16"></line>
+            </svg>
+            <span id="task-badge" class="task-badge" style="display:none;">0</span>
+          </button>
         </div>
       </header>
+
+      <!-- P2P Network Modal -->
+      <div id="p2p-modal" class="modal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>P2P 网络</h2>
+            <button id="p2p-modal-close" class="modal-close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="p2p-section">
+              <h3>我的身份</h3>
+              <div class="p2p-identity">
+                <div class="p2p-identity-info">
+                  <span class="p2p-label">DID:</span>
+                  <span id="p2p-my-did" class="p2p-value mono">加载中...</span>
+                </div>
+                <button id="p2p-copy-did" class="btn-small" title="复制">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </div>
+              <button id="p2p-copy-link" class="btn-secondary">复制连接链接</button>
+            </div>
+
+            <div class="p2p-section">
+              <h3>连接其他节点</h3>
+              <div class="p2p-connect">
+                <input type="text" id="p2p-connect-input" placeholder="粘贴对方的连接链接或 DID...">
+                <button id="p2p-connect-btn" class="btn-primary">连接</button>
+              </div>
+            </div>
+
+            <div class="p2p-section">
+              <h3>已连接节点 (<span id="p2p-peers-count">0</span>)</h3>
+              <div id="p2p-peers-list" class="p2p-peers-list">
+                <div class="p2p-empty">暂无连接的节点</div>
+              </div>
+            </div>
+
+            <div class="p2p-section">
+              <h3>本地频道智能体</h3>
+              <div id="p2p-channels-list" class="p2p-channels-list">
+                <div class="p2p-empty">暂无频道</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Task Queue Modal -->
+      <div id="task-modal" class="modal">
+        <div class="modal-content modal-wide">
+          <div class="modal-header">
+            <h2>任务队列</h2>
+            <button id="task-modal-close" class="modal-close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="task-toolbar">
+              <button id="task-add-btn" class="btn-primary btn-sm">+ 新建任务</button>
+              <button id="task-execute-next-btn" class="btn-secondary btn-sm">▶ 执行下一个</button>
+            </div>
+            <div id="task-list" class="task-list">
+              <div class="task-empty">暂无任务，点击上方按钮创建</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Create Task Modal -->
+      <div id="create-task-modal" class="modal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>新建任务</h2>
+            <button id="create-task-modal-close" class="modal-close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>任务类型</label>
+              <select id="task-type">
+                <option value="chat">对话</option>
+                <option value="read">读取文档</option>
+                <option value="summarize">总结文档</option>
+                <option value="workflow">工作流</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>任务标题</label>
+              <input type="text" id="task-title" placeholder="输入任务标题">
+            </div>
+            <div class="form-group">
+              <label>任务描述</label>
+              <textarea id="task-desc" placeholder="输入任务描述或内容" rows="3"></textarea>
+            </div>
+            <div class="form-group workflow-steps" style="display:none;">
+              <label>工作流步骤（每行一个）</label>
+              <textarea id="task-steps" placeholder="步骤1&#10;步骤2&#10;步骤3" rows="4"></textarea>
+            </div>
+            <div class="btn-group">
+              <button id="task-cancel-btn" class="btn-secondary">取消</button>
+              <button id="task-create-btn" class="btn-primary">创建并执行</button>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div class="messages" id="messages">
         <div class="message message-ai">

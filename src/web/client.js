@@ -493,13 +493,21 @@ let peers = [];
 
 async function loadP2PIdentity() {
   try {
-    const res = await fetch('/api/identity');
-    if (res.ok) {
-      const data = await res.json();
-      myDID = data.did || '';
-      if (p2pMyDid) p2pMyDid.textContent = myDID || '未配置';
+    // 获取当前频道的身份
+    const channel = channels.find(c => c.id === currentChannelId);
+    if (channel && channel.did) {
+      myDID = channel.did;
+      if (p2pMyDid) p2pMyDid.textContent = myDID;
     } else {
-      if (p2pMyDid) p2pMyDid.textContent = '未配置';
+      // 如果当前频道没有 DID，生成一个
+      const res = await fetch('/api/identity');
+      if (res.ok) {
+        const data = await res.json();
+        myDID = data.did || '';
+        if (p2pMyDid) p2pMyDid.textContent = myDID || '未配置';
+      } else {
+        if (p2pMyDid) p2pMyDid.textContent = '未配置';
+      }
     }
   } catch {
     if (p2pMyDid) p2pMyDid.textContent = '加载失败';
@@ -553,10 +561,13 @@ function renderP2PChannels() {
   }
 
   p2pChannelsList.innerHTML = channels.map(ch => `
-    <div class="p2p-channel-item" onclick="selectChannel('${ch.id}')">
+    <div class="p2p-channel-item ${ch.id === currentChannelId ? 'active' : ''}" onclick="selectChannel('${ch.id}')">
       <span class="p2p-channel-icon">💬</span>
-      <span class="p2p-channel-name">${ch.name}</span>
-      <span class="p2p-channel-action">选择</span>
+      <div class="p2p-channel-info">
+        <span class="p2p-channel-name">${ch.name}</span>
+        <span class="p2p-channel-did">${ch.did ? ch.did.substring(0, 40) + '...' : '未生成 DID'}</span>
+      </div>
+      <span class="p2p-channel-action">${ch.id === currentChannelId ? '当前' : '选择'}</span>
     </div>
   `).join('');
 }
@@ -662,3 +673,331 @@ async function sendToPeer(peerId, message) {
     addMessage('发送失败', 'ai');
   }
 }
+
+// Task Queue
+const taskModal = document.getElementById('task-modal');
+const taskQueueBtn = document.getElementById('task-queue-btn');
+const taskModalClose = document.getElementById('task-modal-close');
+const createTaskModal = document.getElementById('create-task-modal');
+const createTaskModalClose = document.getElementById('create-task-modal-close');
+const taskList = document.getElementById('task-list');
+const taskAddBtn = document.getElementById('task-add-btn');
+const taskExecuteNextBtn = document.getElementById('task-execute-next-btn');
+const taskTypeSelect = document.getElementById('task-type');
+const taskTitleInput = document.getElementById('task-title');
+const taskDescInput = document.getElementById('task-desc');
+const taskStepsInput = document.getElementById('task-steps');
+const taskCreateBtn = document.getElementById('task-create-btn');
+const taskCancelBtn = document.getElementById('task-cancel-btn');
+const taskBadge = document.getElementById('task-badge');
+
+let tasks = [];
+
+async function loadTasks() {
+  try {
+    const res = await fetch('/api/tasks');
+    if (res.ok) {
+      tasks = await res.json();
+      renderTasks();
+      updateTaskBadge();
+    }
+  } catch {
+    tasks = [];
+    renderTasks();
+  }
+}
+
+function renderTasks() {
+  if (!taskList) return;
+
+  if (tasks.length === 0) {
+    taskList.innerHTML = '<div class="task-empty">暂无任务，点击上方按钮创建</div>';
+    return;
+  }
+
+  taskList.innerHTML = tasks.map(task => `
+    <div class="task-item ${task.status}" data-id="${task.id}">
+      <div class="task-item-header">
+        <div class="task-item-title">
+          <span>${getTaskIcon(task.type)}</span>
+          <span>${task.title}</span>
+        </div>
+        <span class="task-item-status ${task.status}">${getTaskStatusText(task.status)}</span>
+      </div>
+      ${task.description ? `<div class="task-item-desc">${task.description.substring(0, 100)}${task.description.length > 100 ? '...' : ''}</div>` : ''}
+      <div class="task-item-progress">
+        <div class="task-item-progress-bar" style="width: ${task.progress}%"></div>
+      </div>
+      ${task.steps && task.steps.length > 0 ? `
+        <div class="task-item-steps">
+          ${task.steps.map((step, i) => `
+            <div class="task-item-step ${step.status}">
+              ${step.status === 'completed' ? '✓' : step.status === 'running' ? '⟳' : step.status === 'failed' ? '✗' : '○'} ${i + 1}. ${step.name}
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+      <div class="task-item-actions">
+        ${task.status === 'pending' ? `<button class="btn-sm btn-primary" onclick="executeTask('${task.id}')">▶ 执行</button>` : ''}
+        ${task.status === 'running' ? `<button class="btn-sm" disabled>执行中...</button>` : ''}
+        ${task.status === 'completed' ? `<button class="btn-sm" onclick="deleteTask('${task.id}')">删除</button>` : ''}
+        ${task.status === 'failed' ? `<button class="btn-sm btn-primary" onclick="retryTask('${task.id}')">重试</button>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+function getTaskIcon(type) {
+  switch (type) {
+    case 'chat': return '💬';
+    case 'read': return '📄';
+    case 'summarize': return '📝';
+    case 'improve': return '✏️';
+    case 'workflow': return '🔄';
+    default: return '📋';
+  }
+}
+
+function getTaskStatusText(status) {
+  switch (status) {
+    case 'pending': return '待执行';
+    case 'running': return '执行中';
+    case 'completed': return '已完成';
+    case 'failed': return '失败';
+    case 'paused': return '已暂停';
+    default: return status;
+  }
+}
+
+function updateTaskBadge() {
+  if (!taskBadge) return;
+  const pending = tasks.filter(t => t.status === 'pending').length;
+  if (pending > 0) {
+    taskBadge.textContent = pending.toString();
+    taskBadge.style.display = 'block';
+  } else {
+    taskBadge.style.display = 'none';
+  }
+}
+
+function showTaskModal() {
+  if (taskModal) {
+    taskModal.classList.add('active');
+    loadTasks();
+  }
+}
+
+function hideTaskModal() {
+  if (taskModal) {
+    taskModal.classList.remove('active');
+  }
+}
+
+function showCreateTaskModal() {
+  if (createTaskModal) {
+    createTaskModal.classList.add('active');
+    if (taskTitleInput) taskTitleInput.value = '';
+    if (taskDescInput) taskDescInput.value = '';
+    if (taskStepsInput) taskStepsInput.value = '';
+  }
+}
+
+function hideCreateTaskModal() {
+  if (createTaskModal) {
+    createTaskModal.classList.remove('active');
+  }
+}
+
+async function createTask() {
+  const type = taskTypeSelect?.value || 'chat';
+  const title = taskTitleInput?.value?.trim();
+  const description = taskDescInput?.value?.trim();
+
+  if (!title) {
+    alert('请输入任务标题');
+    return;
+  }
+
+  const taskData = {
+    type,
+    title,
+    description
+  };
+
+  if (type === 'workflow' && taskStepsInput?.value) {
+    taskData.steps = taskStepsInput.value.split('\n').filter(s => s.trim());
+  }
+
+  try {
+    const res = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(taskData)
+    });
+
+    if (res.ok) {
+      const task = await res.json();
+
+      // 自动执行任务
+      if (currentChannelId) {
+        await fetch(`/api/tasks/${task.id}/execute`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channelId: currentChannelId })
+        });
+      }
+
+      hideCreateTaskModal();
+      await loadTasks();
+    }
+  } catch (err) {
+    console.error('Failed to create task:', err);
+  }
+}
+
+async function executeTask(taskId) {
+  if (!currentChannelId) {
+    alert('请先选择一个频道');
+    return;
+  }
+
+  try {
+    await fetch(`/api/tasks/${taskId}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId: currentChannelId })
+    });
+    await loadTasks();
+  } catch (err) {
+    console.error('Failed to execute task:', err);
+  }
+}
+
+async function retryTask(taskId) {
+  const tasks = await (await fetch('/api/tasks')).json();
+  const task = tasks.find(t => t.id === taskId);
+  if (task) {
+    task.status = 'pending';
+    task.error = undefined;
+    await fetch(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'pending' })
+    });
+    await executeTask(taskId);
+  }
+}
+
+async function deleteTask(taskId) {
+  try {
+    await fetch(`/api/tasks/${taskId}`, { method: 'DELETE' });
+    await loadTasks();
+  } catch (err) {
+    console.error('Failed to delete task:', err);
+  }
+}
+
+async function executeNextTask() {
+  if (!currentChannelId) {
+    alert('请先选择一个频道');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/tasks/execute-next', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId: currentChannelId })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (!data.ok) {
+        addMessage(data.message || '没有待执行的任务', 'ai');
+      }
+      await loadTasks();
+    }
+  } catch (err) {
+    console.error('Failed to execute next task:', err);
+  }
+}
+
+// Task modal events
+if (taskQueueBtn) {
+  taskQueueBtn.addEventListener('click', showTaskModal);
+}
+
+if (taskModalClose) {
+  taskModalClose.addEventListener('click', hideTaskModal);
+}
+
+if (taskModal) {
+  taskModal.addEventListener('click', (e) => {
+    if (e.target === taskModal) {
+      hideTaskModal();
+    }
+  });
+}
+
+if (taskAddBtn) {
+  taskAddBtn.addEventListener('click', showCreateTaskModal);
+}
+
+if (taskExecuteNextBtn) {
+  taskExecuteNextBtn.addEventListener('click', executeNextTask);
+}
+
+if (taskCancelBtn) {
+  taskCancelBtn.addEventListener('click', hideCreateTaskModal);
+}
+
+if (createTaskModalClose) {
+  createTaskModalClose.addEventListener('click', hideCreateTaskModal);
+}
+
+if (createTaskModal) {
+  createTaskModal.addEventListener('click', (e) => {
+    if (e.target === createTaskModal) {
+      hideCreateTaskModal();
+    }
+  });
+}
+
+if (taskCreateBtn) {
+  taskCreateBtn.addEventListener('click', createTask);
+}
+
+if (taskTypeSelect) {
+  taskTypeSelect.addEventListener('change', () => {
+    const workflowSteps = document.querySelector('.workflow-steps');
+    if (workflowSteps) {
+      workflowSteps.style.display = taskTypeSelect.value === 'workflow' ? 'block' : 'none';
+    }
+  });
+}
+
+// Handle SSE task status updates
+const originalOnMessage = window.addEventListener ? null : null;
+
+// Extend SSE handler for task updates
+const originalConnect = connect;
+connect = async function() {
+  // Call original connect
+  await originalConnect();
+
+  // Reconnect SSE for task updates
+  const taskEventSource = new EventSource('/events');
+
+  taskEventSource.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'task_status') {
+        loadTasks();
+      }
+    } catch {}
+  };
+
+  taskEventSource.onerror = () => {
+    taskEventSource.close();
+  };
+};
