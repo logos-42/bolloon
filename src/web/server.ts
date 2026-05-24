@@ -113,6 +113,10 @@ async function getAgentForChannel(channelId: string): Promise<AgentSession> {
 }
 
 export async function createWebServer(port: number = 3000) {
+  // 重置旧的 agent session，确保使用新的 LLM 配置
+  const { resetAgentSession } = await import('../agents/pi-sdk.js');
+  resetAgentSession();
+
   // 初始化 LLM（从配置文件读取 MiniMax 配置）
   initMinimax();
 
