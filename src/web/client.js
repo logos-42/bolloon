@@ -359,14 +359,6 @@ function addMessage(content, type, save = true) {
     if (messageBody) {
       const bubble = document.createElement('div');
       bubble.className = `bubble bubble-${type}`;
-
-      // 配置 marked 选项
-      marked.setOptions({
-        breaks: true,
-        gfm: true
-      });
-
-      // 使用 marked 解析 Markdown
       bubble.innerHTML = marked.parse(messageBody);
       div.appendChild(bubble);
     }
@@ -377,19 +369,19 @@ function addMessage(content, type, save = true) {
     }
     const bubble = document.createElement('div');
     bubble.className = `bubble bubble-${type}`;
-
-    // 配置 marked 选项
-    marked.setOptions({
-      breaks: true,
-      gfm: true
-    });
-
-    // 使用 marked 解析 Markdown
     bubble.innerHTML = marked.parse(cleanContent);
     div.appendChild(bubble);
   } else {
     return; // 没有有效内容，不显示空消息
   }
+
+  // 提取纯文本内容用于复制（去除 HTML 标签）
+  const rawContent = cleanContent
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&nbsp;/g, ' ');
 
   const time = document.createElement('div');
   time.className = 'time';
@@ -405,8 +397,7 @@ function addMessage(content, type, save = true) {
     copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> 复制`;
     copyBtn.title = '复制消息';
     copyBtn.onclick = function() {
-      const textContent = (messageBody || cleanContent || '').replace(/<[^>]+>/g, '');
-      navigator.clipboard.writeText(textContent).then(() => {
+      navigator.clipboard.writeText(rawContent).then(() => {
         copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> 已复制`;
         setTimeout(() => {
           copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> 复制`;
@@ -812,6 +803,14 @@ function connect() {
           addMessage(data.content, 'ai');
         } else if (data.type === 'stream') {
           handleStreamEvent(data);
+        } else if (data.type === 'regenerating') {
+          // 开始重新生成，清除最后一个 AI 消息
+          const messages = messagesEl.querySelectorAll('.message-ai');
+          if (messages.length > 0) {
+            const lastAiMsg = messages[messages.length - 1];
+            lastAiMsg.remove();
+          }
+          showTyping();
         } else if (data.type === 'status') {
           handleStatusEvent(data);
         } else if (data.type === 'done') {

@@ -756,7 +756,150 @@ body {
   text-align: right;
 }
 
-/* Workflow Display */
+/* Message Actions (消息操作按钮) */
+.message-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 0 4px;
+}
+
+.message-user .message-actions {
+  justify-content: flex-end;
+}
+
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.action-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--bg-secondary);
+}
+
+.action-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.copy-btn:hover {
+  color: #4caf50;
+  border-color: #4caf50;
+}
+
+.regenerate-btn:hover {
+  color: #2196f3;
+  border-color: #2196f3;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Markdown Styles */
+.bubble {
+  line-height: 1.7;
+}
+
+.bubble h1, .bubble h2, .bubble h3, .bubble h4, .bubble h5, .bubble h6 {
+  margin-top: 16px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.bubble h1 { font-size: 1.5em; }
+.bubble h2 { font-size: 1.3em; }
+.bubble h3 { font-size: 1.15em; }
+
+.bubble p {
+  margin: 8px 0;
+}
+
+.bubble ul, .bubble ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.bubble li {
+  margin: 4px 0;
+}
+
+.bubble code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9em;
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.bubble pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  margin: 10px 0;
+  overflow-x: auto;
+}
+
+.bubble pre code {
+  background: none;
+  padding: 0;
+}
+
+.bubble blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 10px 0;
+  padding-left: 12px;
+  color: var(--text-secondary);
+}
+
+.bubble table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  width: 100%;
+}
+
+.bubble th, .bubble td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.bubble th {
+  background: var(--bg);
+  font-weight: 600;
+}
+
+.bubble a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.bubble a:hover {
+  text-decoration: underline;
+}
+
+.bubble img {
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+}
 .workflow-display {
   background: var(--bg-secondary);
   border: 1px solid var(--accent);

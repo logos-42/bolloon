@@ -315,7 +315,7 @@ async function getAgentForChannel(
     const currentIdentity = existingSession.getIdentity();
 
     // 如果当前 identity 没有真实 DID，或者 DID 与频道的 DID 不匹配，需要重建
-    const needsUpdate = !currentIdentity.did.startsWith('did:pi:') ||
+    let needsUpdate = !currentIdentity.did.startsWith('did:pi:') ||
                         (channelDid && !currentIdentity.did.includes(channelId));
 
     if (!needsUpdate && channelDid && currentIdentity.did !== channelDid) {
@@ -762,6 +762,71 @@ app.get('/channels', async (_req, res) => {
       await saveTheme(theme, agentId || '');
       res.json({ ok: true });
     } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 重新生成回复
+  app.post('/regenerate', async (req, res) => {
+    const { channelId, userMessage } = req.body;
+    if (!channelId) {
+      return res.status(400).json({ error: 'No channelId provided' });
+    }
+    if (!userMessage) {
+      return res.status(400).json({ error: 'No userMessage provided' });
+    }
+
+    try {
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+      const realChannelDid = channel?.did || '';
+      const realChannelName = channel?.name || '';
+      const realChannelDidDoc = channel?.didDocument;
+
+      // 通知前端开始重新生成
+      broadcast({ type: 'regenerating', channelId }, channelId);
+
+      const agent = await getAgentForChannel(channelId, realChannelDid, realChannelName, realChannelDidDoc);
+      let fullResponse = '';
+
+      const streamCallback: StreamCallback = (event: StreamEvent) => {
+        if (event.type === 'token' || event.type === 'thinking') {
+          broadcast({ type: 'stream', streamType: event.type, content: event.content }, channelId);
+        } else if (event.type === 'status' || event.type === 'tool') {
+          broadcast({ type: 'status', tool: event.tool, content: event.content }, channelId);
+        } else if (event.type === 'error') {
+          broadcast({ type: 'error', content: event.content }, channelId);
+        }
+      };
+
+      // 重新生成时只发送用户消息
+      fullResponse = await agent.promptStream(userMessage, streamCallback);
+
+      broadcast({ type: 'ai', content: fullResponse }, channelId);
+
+      // 更新 session
+      const existingSession = await loadSession(channelId);
+      if (existingSession && existingSession.messages.length > 0) {
+        // 移除最后一个 AI 消息，替换为新的
+        const lastAiIndex = existingSession.messages.map((m: any) => m.type).lastIndexOf('ai');
+        if (lastAiIndex !== -1) {
+          existingSession.messages = existingSession.messages.slice(0, lastAiIndex);
+        }
+        existingSession.messages.push({
+          id: crypto.randomUUID(),
+          type: 'ai' as const,
+          content: fullResponse,
+          timestamp: new Date().toISOString()
+        });
+        existingSession.lastUpdated = new Date().toISOString();
+        await saveSession(existingSession);
+      }
+
+      broadcast({ type: 'done' }, channelId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      broadcast({ type: 'error', content: err.message }, channelId);
+      broadcast({ type: 'done' }, channelId);
       res.status(500).json({ error: err.message });
     }
   });
