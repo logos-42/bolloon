@@ -113,6 +113,9 @@ async function getAgentForChannel(channelId: string): Promise<AgentSession> {
 }
 
 export async function createWebServer(port: number = 3000) {
+  // 初始化 LLM（从配置文件读取 MiniMax 配置）
+  initMinimax();
+
   const app = express();
   const server = createServer(app);
 

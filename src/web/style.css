@@ -530,6 +530,26 @@ body {
   transition: var(--transition);
 }
 
+.header-action {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition);
+}
+
+.header-action:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .theme-toggle:hover {
   background: var(--bg-hover);
   color: var(--accent);

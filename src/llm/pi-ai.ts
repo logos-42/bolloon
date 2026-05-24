@@ -1,3 +1,6 @@
+import * as path from 'path';
+import * as fs from 'fs';
+
 export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'local';
 
 export interface ModelConfig {
@@ -430,12 +433,24 @@ export interface PiAIConfig {
 }
 
 function detectProvider(): ModelProvider {
+  // 首先检查配置文件（优先级最高）
+  try {
+    const configPath = path.join(process.env.HOME || '/tmp', '.bolloon', 'llm-config.json');
+    const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    if (configData.activeProvider && configData.providers[configData.activeProvider]) {
+      console.log('[PiAIModel] Detected provider from config:', configData.activeProvider);
+      return configData.activeProvider;
+    }
+  } catch {}
+
+  // 然后检查环境变量
   if (process.env.OPENAI_API_KEY) return 'openai';
   if (process.env.ANTHROPIC_API_KEY) return 'anthropic';
   if (process.env.OPENROUTER_API_KEY) return 'openrouter';
   if (process.env.GEMINI_API_KEY) return 'gemini';
   if (process.env.OLLAMA_BASE_URL) return 'ollama';
   if (process.env.MINIMAX_API_KEY) return 'minimax';
+
   return 'openai';
 }
 
@@ -456,13 +471,32 @@ export function initPiAI(config: PiAIConfig = {}): PiAIModel {
   const provider = config.provider || detectProvider();
   const model = config.model || detectModel(provider);
 
+  console.log('[PiAIModel] Initializing with provider:', provider, 'model:', model);
+
+  // 如果没有提供 apiKey，从配置文件读取
+  let apiKey = config.apiKey;
+  if (!apiKey) {
+    try {
+      const configPath = path.join(process.env.HOME || '/tmp', '.bolloon', 'llm-config.json');
+      const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const providerConfig = configData.providers[provider];
+      if (providerConfig?.apiKey) {
+        apiKey = providerConfig.apiKey;
+        console.log('[PiAIModel] Loaded apiKey from config for', provider);
+      }
+    } catch (e) {
+      console.log('[PiAIModel] Error reading apiKey from config:', e);
+    }
+  }
+
   modelInstance = new PiAIModel({
     provider,
-    apiKey: config.apiKey,
+    apiKey,
     baseUrl: config.baseUrl,
     model
   });
 
+  console.log('[PiAIModel] Model instance created, provider:', provider);
   return modelInstance;
 }
 

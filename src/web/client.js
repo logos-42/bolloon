@@ -2,9 +2,7 @@ const messagesEl = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const sidebar = document.getElementById('sidebar');
-const sidebarCollapsed = document.getElementById('sidebar-collapsed');
 const sidebarToggle = document.getElementById('sidebar-toggle');
-const sidebarExpand = document.getElementById('sidebar-expand');
 const themeToggle = document.getElementById('theme-toggle');
 const channelList = document.getElementById('channel-list');
 const newChannelBtn = document.getElementById('new-channel-btn');
@@ -12,7 +10,6 @@ const newChannelInput = document.getElementById('new-channel-input');
 const channelNameEl = document.getElementById('channel-name');
 const loadSessionBtn = document.getElementById('load-session-btn');
 const sessionFileInput = document.getElementById('session-file-input');
-const collapsedChannels = document.getElementById('collapsed-channels');
 
 let eventSource = null;
 let currentChannelId = null;
@@ -68,18 +65,14 @@ function toggleSidebar() {
 
   if (isSidebarCollapsed) {
     sidebar.classList.add('collapsed');
-    sidebarCollapsed.classList.remove('hidden');
-    renderCollapsedChannels();
   } else {
     sidebar.classList.remove('collapsed');
-    sidebarCollapsed.classList.add('hidden');
   }
 }
 
 function expandSidebar() {
   isSidebarCollapsed = false;
   sidebar.classList.remove('collapsed');
-  sidebarCollapsed.classList.add('hidden');
 }
 
 async function loadChannels() {
@@ -154,19 +147,7 @@ function renderChannels() {
 }
 
 function renderCollapsedChannels() {
-  if (!collapsedChannels) return;
-  collapsedChannels.innerHTML = '';
-  channels.forEach(ch => {
-    const btn = document.createElement('button');
-    btn.className = `collapsed-channel ${ch.id === currentChannelId ? 'active' : ''}`;
-    btn.setAttribute('data-name', ch.name);
-    btn.textContent = '💬';
-    btn.onclick = () => {
-      expandSidebar();
-      selectChannel(ch.id);
-    };
-    collapsedChannels.appendChild(btn);
-  });
+  return;
 }
 
 async function selectChannel(channelId) {
@@ -413,10 +394,6 @@ if (themeToggle) {
 
 if (sidebarToggle) {
   sidebarToggle.addEventListener('click', toggleSidebar);
-}
-
-if (sidebarExpand) {
-  sidebarExpand.addEventListener('click', expandSidebar);
 }
 
 if (loadSessionBtn && sessionFileInput) {
