@@ -79,9 +79,13 @@ async function loadChannels() {
   try {
     const res = await fetch('/channels');
     channels = await res.json();
+    console.log('[加载频道] 从服务器获取到', channels.length, '个频道');
+    channels.forEach((ch, i) => {
+      console.log(`  [${i}] ${ch.name} - did: "${ch.did}"`);
+    });
     renderChannels();
   } catch (err) {
-    console.error('Failed to load channels:', err);
+    console.error('[加载频道] 失败:', err);
   }
 }
 
@@ -153,6 +157,17 @@ function renderCollapsedChannels() {
 async function selectChannel(channelId) {
   currentChannelId = channelId;
   reconnectAttempts = 0;
+
+  // 重新加载频道数据以获取最新的 DID
+  try {
+    const res = await fetch('/channels');
+    if (res.ok) {
+      channels = await res.json();
+    }
+  } catch (err) {
+    console.error('Failed to reload channels:', err);
+  }
+
   renderChannels();
   renderCollapsedChannels();
   await loadSession(channelId);
@@ -160,6 +175,7 @@ async function selectChannel(channelId) {
   const channel = channels.find(c => c.id === channelId);
   if (channel && channelNameEl) {
     channelNameEl.textContent = channel.name;
+    console.log('已选择频道:', channel.name, 'DID:', channel.did || '无');
   }
 
   connect();
@@ -197,7 +213,43 @@ function addMessage(content, type, save = true) {
     .replace(/\[Function[^\]]*\]\s*/g, '')
     .trim();
 
-  const envMatch = cleanContent.match(/^(.+?)\n<environment_details>([\s\S]*?)<\/environment_details>\n([\s\S]*)$/);
+  // 处理思维链内容（</think> 标签）- 折叠显示
+  const thinkMatch = cleanContent.match(/<think>([\s\S]*?)<\/think>/);
+  let mainContent = cleanContent;
+
+  if (thinkMatch) {
+    const thinkContent = thinkMatch[1].trim();
+    mainContent = cleanContent.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+
+    // 创建思维链折叠区域
+    const thinkContainer = document.createElement('div');
+    thinkContainer.className = 'think-container';
+
+    const thinkToggle = document.createElement('div');
+    thinkToggle.className = 'think-toggle';
+    thinkToggle.innerHTML = '💭 思考过程 <span class="think-arrow">▾</span>';
+    thinkToggle.onclick = function() {
+      const details = thinkContainer.querySelector('.think-content');
+      const arrow = thinkToggle.querySelector('.think-arrow');
+      if (details.style.display === 'none') {
+        details.style.display = 'block';
+        arrow.textContent = '▾';
+      } else {
+        details.style.display = 'none';
+        arrow.textContent = '▸';
+      }
+    };
+
+    const thinkDiv = document.createElement('div');
+    thinkDiv.className = 'think-content';
+    thinkDiv.innerHTML = `<pre>${thinkContent.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`;
+
+    thinkContainer.appendChild(thinkToggle);
+    thinkContainer.appendChild(thinkDiv);
+    div.appendChild(thinkContainer);
+  }
+
+  const envMatch = mainContent.match(/^(.+?)\n<environment_details>([\s\S]*?)<\/environment_details>\n([\s\S]*)$/);
 
   if (envMatch) {
     const identity = envMatch[1].trim();
@@ -209,10 +261,32 @@ function addMessage(content, type, save = true) {
     header.textContent = identity;
     div.appendChild(header);
 
+    // 环境信息区域（可折叠）
+    const envContainer = document.createElement('div');
+    envContainer.className = 'env-container';
+
+    const envToggle = document.createElement('div');
+    envToggle.className = 'env-toggle';
+    envToggle.innerHTML = '⚙️ 环境信息 <span class="env-arrow">▾</span>';
+    envToggle.onclick = function() {
+      const details = envContainer.querySelector('.environment-details');
+      const arrow = envToggle.querySelector('.env-arrow');
+      if (details.style.display === 'none') {
+        details.style.display = 'block';
+        arrow.textContent = '▾';
+      } else {
+        details.style.display = 'none';
+        arrow.textContent = '▸';
+      }
+    };
+
     const envDiv = document.createElement('div');
     envDiv.className = 'environment-details';
-    envDiv.textContent = `<environment_details>${envDetails}</environment_details>`;
-    div.appendChild(envDiv);
+    envDiv.innerHTML = `<pre>${envDetails}</pre>`;
+
+    envContainer.appendChild(envToggle);
+    envContainer.appendChild(envDiv);
+    div.appendChild(envContainer);
 
     if (messageBody) {
       const bubble = document.createElement('div');
@@ -493,23 +567,29 @@ let peers = [];
 
 async function loadP2PIdentity() {
   try {
+    console.log('[P2P] loadP2PIdentity 开始, currentChannelId:', currentChannelId);
+
+    // 先确保 channels 数据是最新的
+    const res = await fetch('/channels');
+    if (res.ok) {
+      channels = await res.json();
+      console.log('[P2P] 加载频道:', channels.length, '个');
+    }
+
     // 获取当前频道的身份
     const channel = channels.find(c => c.id === currentChannelId);
+    console.log('[P2P] 找到频道:', channel?.name, 'DID:', channel?.did);
+
     if (channel && channel.did) {
       myDID = channel.did;
+      console.log('[P2P] 设置 DID:', myDID);
       if (p2pMyDid) p2pMyDid.textContent = myDID;
     } else {
-      // 如果当前频道没有 DID，生成一个
-      const res = await fetch('/api/identity');
-      if (res.ok) {
-        const data = await res.json();
-        myDID = data.did || '';
-        if (p2pMyDid) p2pMyDid.textContent = myDID || '未配置';
-      } else {
-        if (p2pMyDid) p2pMyDid.textContent = '未配置';
-      }
+      console.log('[P2P] 频道没有 DID，显示未配置');
+      if (p2pMyDid) p2pMyDid.textContent = '未配置';
     }
-  } catch {
+  } catch (err) {
+    console.error('[P2P] 加载失败:', err);
     if (p2pMyDid) p2pMyDid.textContent = '加载失败';
   }
 }

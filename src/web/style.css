@@ -652,6 +652,97 @@ body {
   padding: 8px 12px;
   margin-bottom: 10px;
   white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.env-container {
+  margin-bottom: 8px;
+}
+
+.env-toggle {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  transition: var(--transition);
+}
+
+.env-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text-secondary);
+}
+
+.env-arrow {
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
+.env-container .environment-details {
+  margin-bottom: 0;
+}
+
+.env-container .environment-details pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Thinking Process (思维链) */
+.think-container {
+  margin-bottom: 10px;
+}
+
+.think-toggle {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  transition: var(--transition);
+}
+
+.think-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text-secondary);
+}
+
+.think-arrow {
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
+.think-content {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.think-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .time {
@@ -841,6 +932,10 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.modal-content.modal-p2p-wide {
+  max-width: 650px;
 }
 
 .modal-header {

@@ -310,9 +310,10 @@ export async function createWebServer(port: number = 3000) {
 
     // 生成 DIAP 身份
     const kp = KeyManager.generate();
-    console.log('KeyManager.generate() 完成');
+    console.log('KeyManager.generate() 完成, kp:', !!kp, 'kp.did:', kp?.did);
+    console.log('kp.publicKey:', kp?.publicKey);
 
-    const did = kp.did;
+    const did = kp.did || 'did:unknown:123456';
     console.log(`DID: ${did}`);
 
     const username = 'web-user';
@@ -477,6 +478,10 @@ export async function createWebServer(port: number = 3000) {
   app.get('/channels', async (req, res) => {
     try {
       const channels = await loadChannels();
+      console.log('[获取频道] 共', channels.length, '个');
+      channels.forEach((ch, i) => {
+        console.log(`  [${i}] ${ch.name} - did: ${ch.did || '无'}`);
+      });
       res.json(channels);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -486,6 +491,7 @@ export async function createWebServer(port: number = 3000) {
   app.post('/channels', async (req, res) => {
     try {
       const { name, agentId } = req.body;
+      console.log(`[创建频道] 收到请求: name=${name}, agentId=${agentId}`);
       if (!name || !agentId) {
         return res.status(400).json({ error: 'name and agentId required' });
       }
@@ -493,15 +499,15 @@ export async function createWebServer(port: number = 3000) {
       const id = `ch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
       // 为每个频道生成独立的 DIAP 身份
-      let channelDid = '';
-      let channelPublicKey = '';
+      let channelDid = 'did:web:' + id;
+      let channelPublicKey = 'pk_' + id;
       try {
         const kp = KeyManager.generate();
-        channelDid = kp.did || '';
+        channelDid = kp.did || channelDid;
         channelPublicKey = Buffer.from(kp.publicKey).toString('hex');
-        console.log(`频道 ${name} 的 DID: ${channelDid}`);
-      } catch (e) {
-        console.log(`频道 ${name} 生成 DID 失败`);
+        console.log(`[创建频道] ${name} - ID: ${id} - DID: ${channelDid}`);
+      } catch (e: any) {
+        console.log(`[创建频道] ${name} - KeyManager 失败: ${e?.message}`);
       }
 
       const channel: Channel = {
