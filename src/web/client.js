@@ -243,6 +243,12 @@ function addMessage(content, type, save = true) {
   const div = document.createElement('div');
   div.className = `message message-${type}`;
 
+  // 清理工具结果容器（当新的 AI 消息到达时）
+  if (type === 'ai' && toolResultContainer) {
+    toolResultContainer.remove();
+    toolResultContainer = null;
+  }
+
   // 清理内容：移除 tool call 标记和其他不应该显示的内容
   let cleanContent = content
     .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/g, '')
@@ -422,9 +428,89 @@ function handleStreamEvent(data) {
 }
 
 function handleStatusEvent(data) {
-  showStreaming();
-  const icon = data.tool ? `🔧 ${data.tool}: ` : '';
-  updateStreamingContent(icon + data.content);
+  // 检查是否是工具调用结果
+  const content = data.content || '';
+  const isJsonResult = content.startsWith('{') && content.includes('"success"');
+
+  if (isJsonResult) {
+    // 工具结果：折叠显示
+    showToolResult(data.tool, content);
+  } else {
+    // 普通状态：流式显示
+    showStreaming();
+    const icon = data.tool ? `🔧 ${data.tool}: ` : '';
+    updateStreamingContent(icon + data.content);
+  }
+}
+
+// 显示工具调用结果（折叠）
+let toolResultContainer = null;
+
+function showToolResult(toolName, resultJson) {
+  // 清理之前的流式显示
+  hideStreaming();
+
+  // 获取或创建工具结果容器
+  if (!toolResultContainer) {
+    toolResultContainer = document.createElement('div');
+    toolResultContainer.className = 'tool-results-container';
+    messagesEl.appendChild(toolResultContainer);
+  }
+
+  // 尝试解析并格式化 JSON
+  let formattedResult = resultJson;
+  try {
+    const parsed = JSON.parse(resultJson);
+    formattedResult = formatToolResult(parsed);
+  } catch {}
+
+  // 创建折叠项
+  const resultEl = document.createElement('div');
+  resultEl.className = 'tool-result-item collapsed';
+
+  const toolDisplayName = toolName || '工具结果';
+  resultEl.innerHTML = `
+    <div class="tool-result-header" onclick="this.parentElement.classList.toggle('collapsed'); this.parentElement.classList.toggle('expanded');">
+      <span class="tool-result-icon">🔧</span>
+      <span class="tool-result-name">${toolDisplayName}</span>
+      <span class="tool-result-toggle">▸</span>
+    </div>
+    <div class="tool-result-content">
+      <pre>${formattedResult}</pre>
+    </div>
+  `;
+
+  toolResultContainer.appendChild(resultEl);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+// 格式化工具结果为易读格式
+function formatToolResult(obj, indent = 0) {
+  const spaces = '  '.repeat(indent);
+
+  if (obj === null || obj === undefined) {
+    return 'null';
+  }
+
+  if (typeof obj === 'object') {
+    if (Array.isArray(obj)) {
+      if (obj.length === 0) return '[]';
+      return obj.map(item => spaces + '- ' + formatToolResult(item, indent + 1)).join('\n');
+    }
+
+    const keys = Object.keys(obj);
+    if (keys.length === 0) return '{}';
+
+    return keys.map(key => {
+      const value = obj[key];
+      if (typeof value === 'object') {
+        return `${spaces}${key}:\n${formatToolResult(value, indent + 1)}`;
+      }
+      return `${spaces}${key}: ${value}`;
+    }).join('\n');
+  }
+
+  return String(obj);
 }
 
 // 工作流状态显示

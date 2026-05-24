@@ -888,6 +888,75 @@ body {
   50% { opacity: 0.3; }
 }
 
+/* Tool Results Container */
+.tool-results-container {
+  margin: 8px 0;
+}
+
+.tool-result-item {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+
+.tool-result-item.collapsed .tool-result-content {
+  display: none;
+}
+
+.tool-result-item.expanded {
+  border-color: var(--accent);
+}
+
+.tool-result-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  background: var(--bg-tertiary);
+  transition: background 0.2s;
+}
+
+.tool-result-header:hover {
+  background: var(--bg);
+}
+
+.tool-result-icon {
+  font-size: 14px;
+}
+
+.tool-result-name {
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.tool-result-toggle {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+}
+
+.tool-result-item.expanded .tool-result-toggle {
+  transform: rotate(90deg);
+}
+
+.tool-result-content {
+  padding: 10px 12px;
+  background: var(--bg);
+}
+
+.tool-result-content pre {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .loop-header {
   display: flex;
   align-items: center;
