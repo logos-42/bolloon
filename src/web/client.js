@@ -359,7 +359,15 @@ function addMessage(content, type, save = true) {
     if (messageBody) {
       const bubble = document.createElement('div');
       bubble.className = `bubble bubble-${type}`;
-      bubble.textContent = messageBody;
+
+      // 配置 marked 选项
+      marked.setOptions({
+        breaks: true,
+        gfm: true
+      });
+
+      // 使用 marked 解析 Markdown
+      bubble.innerHTML = marked.parse(messageBody);
       div.appendChild(bubble);
     }
   } else if (cleanContent) {
@@ -369,7 +377,15 @@ function addMessage(content, type, save = true) {
     }
     const bubble = document.createElement('div');
     bubble.className = `bubble bubble-${type}`;
-    bubble.textContent = cleanContent;
+
+    // 配置 marked 选项
+    marked.setOptions({
+      breaks: true,
+      gfm: true
+    });
+
+    // 使用 marked 解析 Markdown
+    bubble.innerHTML = marked.parse(cleanContent);
     div.appendChild(bubble);
   } else {
     return; // 没有有效内容，不显示空消息
@@ -378,6 +394,69 @@ function addMessage(content, type, save = true) {
   const time = document.createElement('div');
   time.className = 'time';
   time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+  // AI 消息添加操作按钮
+  if (type === 'ai') {
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'message-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'action-btn copy-btn';
+    copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> 复制`;
+    copyBtn.title = '复制消息';
+    copyBtn.onclick = function() {
+      const textContent = (messageBody || cleanContent || '').replace(/<[^>]+>/g, '');
+      navigator.clipboard.writeText(textContent).then(() => {
+        copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> 已复制`;
+        setTimeout(() => {
+          copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> 复制`;
+        }, 2000);
+      });
+    };
+
+    const regenerateBtn = document.createElement('button');
+    regenerateBtn.className = 'action-btn regenerate-btn';
+    regenerateBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg> 重新回答`;
+    regenerateBtn.title = '重新生成回复';
+    regenerateBtn.onclick = function() {
+      regenerateBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg> 生成中...`;
+      regenerateBtn.disabled = true;
+      // 获取当前频道对应的用户消息
+      const messages = div.parentElement.querySelectorAll('.message');
+      let lastUserMsg = '';
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg.classList.contains('message-user')) {
+          const bubble = msg.querySelector('.bubble');
+          if (bubble) {
+            lastUserMsg = bubble.textContent || bubble.innerText || '';
+            break;
+          }
+        }
+      }
+      // 调用重新生成 API
+      fetch('/regenerate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channelId: currentChannelId, userMessage: lastUserMsg })
+      }).then(res => {
+        if (!res.ok) {
+          throw new Error('regenerate failed');
+        }
+      }).catch(err => {
+        console.error('重新生成失败:', err);
+        regenerateBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg> 失败`;
+        setTimeout(() => {
+          regenerateBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg> 重新回答`;
+          regenerateBtn.disabled = false;
+        }, 2000);
+      });
+    };
+
+    actionsDiv.appendChild(copyBtn);
+    actionsDiv.appendChild(regenerateBtn);
+    div.appendChild(actionsDiv);
+  }
 
   div.appendChild(time);
   messagesEl.appendChild(div);
@@ -864,12 +943,40 @@ if (newChannelInput) {
   });
 }
 
+async function checkApiConfig() {
+  try {
+    const res = await fetch('/api/llm-config');
+    const config = await res.json();
+
+    // 检查是否有供应商已配置
+    const hasConfigured = Object.values(config.providers).some(p => p.enabled && p.apiKey);
+
+    if (!hasConfigured) {
+      // 显示 API 配置提示
+      const hint = document.createElement('div');
+      hint.className = 'api-config-hint';
+      hint.innerHTML = `
+        <div class="hint-icon">⚠️</div>
+        <div class="hint-text">
+          <strong>API 未配置</strong><br>
+          请先配置 AI 模型才能开始对话
+        </div>
+        <button class="hint-btn" onclick="window.location.href='/api-config'">前往配置</button>
+      `;
+      document.body.appendChild(hint);
+    }
+  } catch (err) {
+    console.error('Failed to check API config:', err);
+  }
+}
+
 async function init() {
   const themeData = await loadTheme();
   currentAgentId = themeData.agentId || `agent_${generateId().substring(0, 8)}`;
   await saveTheme(themeData.theme, currentAgentId);
 
   await loadChannels();
+  await checkApiConfig();
 
   if (channels.length > 0) {
     await selectChannel(channels[0].id);

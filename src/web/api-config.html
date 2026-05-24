@@ -9,12 +9,6 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <style>
-    .api-config-page {
-      max-width: 900px;
-      margin: 0 auto;
-      padding: 24px;
-    }
-
     .page-header {
       display: flex;
       align-items: center;
@@ -319,7 +313,16 @@
     </div>
 
     <div class="provider-grid" id="provider-grid">
-      <!-- 动态填充 -->
+      <div class="loading-state">
+        <div class="loading-spinner"></div>
+        <span>加载中...</span>
+      </div>
+    </div>
+
+    <div class="error-state" id="error-state" style="display:none;">
+      <div class="error-icon">⚠️</div>
+      <div class="error-message">加载配置失败</div>
+      <button class="btn btn-secondary" onclick="loadConfig()">重试</button>
     </div>
   </div>
 
@@ -385,21 +388,34 @@
     async function loadConfig() {
       try {
         const resp = await fetch(`${API_BASE}/api/llm-config`);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
         config = await resp.json();
         providerInfo = config.providerInfo;
+
+        document.getElementById('provider-grid').style.display = 'grid';
+        document.getElementById('error-state').style.display = 'none';
         renderProviders();
       } catch (err) {
         console.error('Failed to load config:', err);
+        document.getElementById('provider-grid').style.display = 'none';
+        document.getElementById('error-state').style.display = 'flex';
       }
     }
 
     // 渲染供应商列表
     function renderProviders() {
       const grid = document.getElementById('provider-grid');
-      const providers = config.providers;
+      const providers = config?.providers;
+      const infoMap = providerInfo || {};
+
+      if (!providers) {
+        grid.innerHTML = '<div class="error-message">配置数据无效</div>';
+        return;
+      }
 
       grid.innerHTML = Object.entries(providers).map(([key, p]) => {
-        const info = providerInfo[key];
+        const info = infoMap[key] || { name: key, description: '供应商' };
         const isActive = config.activeProvider === key;
         return `
           <div class="provider-card ${isActive ? 'active' : ''}" data-provider="${key}">
@@ -412,6 +428,8 @@
               <span class="status-dot ${p.enabled ? 'enabled' : 'disabled'}"></span>
               <span>${p.enabled ? '已启用' : '未启用'}</span>
               ${p.enabled && p.apiKey ? ' · 已配置' : ''}
+              ${p.enabled && !p.apiKey ? ' · 未配置' : ''}
+              ${!p.enabled ? ' · 点击配置' : ''}
             </div>
           </div>
         `;
@@ -430,10 +448,10 @@
     function openConfigModal(provider) {
       currentProvider = provider;
       const p = config.providers[provider];
-      const info = providerInfo[provider];
+      const info = providerInfo?.[provider] || { name: provider };
 
       document.getElementById('modal-title').textContent = `配置 ${info.name}`;
-      document.getElementById('api-key').value = p.apiKey?.replace(/\*\*\*/g, '') || '';
+      document.getElementById('api-key').value = (p.apiKey || '').replace(/\*\*\*/g, '');
       document.getElementById('base-url').value = p.baseUrl || '';
       document.getElementById('model').value = p.model || '';
       document.getElementById('temperature').value = p.temperature || 0.7;
