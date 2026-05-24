@@ -40,6 +40,7 @@ export class ChannelManager {
   private initialized: boolean = false;
   private broadcastTimer: ReturnType<typeof setInterval> | null = null;
   private messageHandlers: Map<string, (msg: ChannelMessage) => void> = new Map();
+  private agentDid: string | null = null;
 
   constructor(sessionProvider: SocialSessionProvider) {
     this.sessionProvider = sessionProvider;
@@ -420,5 +421,65 @@ export class ChannelManager {
     }
     this.messageHandlers.clear();
     console.log('[ChannelManager] Shutdown');
+  }
+
+  /**
+   * 设置智能体的 DID
+   * 将 DID 与频道 leaderDid 关联
+   */
+  setAgentDid(did: string): void {
+    this.agentDid = did;
+
+    // 更新自己频道的 leaderDid
+    const ownChannel = this.getOwnChannel();
+    if (ownChannel) {
+      const oldLeaderDid = ownChannel.leaderDid;
+      const oldMember = ownChannel.members.get(oldLeaderDid);
+
+      if (oldMember) {
+        // 删除旧的 leader 记录
+        ownChannel.members.delete(oldLeaderDid);
+        // 更新为新的 DID
+        oldMember.did = did;
+        oldMember.name = this.sessionProvider.getPersona()?.name || did;
+        ownChannel.members.set(did, oldMember);
+        ownChannel.leaderDid = did;
+      }
+    }
+  }
+
+  /**
+   * 获取当前智能体的 DID
+   */
+  getAgentDid(): string | null {
+    return this.agentDid;
+  }
+
+  /**
+   * 获取频道 leader 的 DID
+   */
+  getLeaderDid(): string | null {
+    return this.getOwnChannel()?.leaderDid || null;
+  }
+
+  /**
+   * 根据 DID 获取智能体名称
+   */
+  getAgentNameByDid(did: string): string {
+    const ownChannel = this.getOwnChannel();
+    if (ownChannel) {
+      const member = ownChannel.members.get(did);
+      if (member) {
+        return member.name;
+      }
+    }
+    // 搜索所有频道
+    for (const channel of this.channels.values()) {
+      const member = channel.members.get(did);
+      if (member) {
+        return member.name;
+      }
+    }
+    return did;
   }
 }

@@ -33,6 +33,7 @@ interface Channel {
   did?: string;
   publicKey?: string;
   cid?: string;
+  didDocument?: any;
   createdAt: string;
   updatedAt: string;
 }
@@ -301,7 +302,12 @@ interface SSEClient {
 let sseClients: Set<SSEClient> = new Set();
 let channelSessions: Map<string, AgentSession> = new Map();
 
-async function getAgentForChannel(channelId: string, channelDid?: string, channelName?: string): Promise<AgentSession> {
+async function getAgentForChannel(
+  channelId: string,
+  channelDid?: string,
+  channelName?: string,
+  channelDidDoc?: any
+): Promise<AgentSession> {
   const existingSession = channelSessions.get(channelId);
 
   // 如果已有 session，检查是否需要更新 identity
@@ -322,7 +328,9 @@ async function getAgentForChannel(channelId: string, channelDid?: string, channe
         did: channelDid,
         name: channelName || `Channel-${channelId.slice(-6)}`,
         publicKey: '',
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        cid: channelDidDoc?.cid,
+        ipnsName: channelDidDoc?.ipnsName
       });
       console.log(`[Agent] 频道 ${channelId} 身份更新: DID = ${channelDid}`);
     }
@@ -334,7 +342,9 @@ async function getAgentForChannel(channelId: string, channelDid?: string, channe
     did: channelDid,
     name: channelName || `Channel-${channelId.slice(-6)}`,
     publicKey: '',
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    cid: channelDidDoc?.cid,
+    ipnsName: channelDidDoc?.ipnsName
   } : undefined;
 
   const session = await createAgentSession({
@@ -345,7 +355,7 @@ async function getAgentForChannel(channelId: string, channelDid?: string, channe
   channelSessions.set(channelId, session);
 
   if (channelDid) {
-    console.log(`[Agent] 新建频道 ${channelId} session, DID = ${channelDid}`);
+    console.log(`[Agent] 新建频道 ${channelId} session, DID = ${channelDid}, CID = ${channelDidDoc?.cid || '无'}`);
   } else {
     console.log(`[Agent] 新建频道 ${channelId} session, 使用默认身份`);
   }
@@ -489,16 +499,17 @@ export async function createWebServer(port: number = 3000) {
       return res.status(400).json({ error: 'No channelId provided' });
     }
 
-    // 获取频道信息，包括真实 DID
+    // 获取频道信息，包括真实 DID 和完整 DID 文档
     const channels = await loadChannels();
     const channel = channels.find(c => c.id === channelId);
     const realChannelDid = channelDid || channel?.did || '';
     const realChannelName = channel?.name || '';
+    const realChannelDidDoc = channel?.didDocument;
 
     broadcast({ type: 'user', content: text }, channelId);
 
     try {
-      const agent = await getAgentForChannel(channelId, realChannelDid, realChannelName);
+      const agent = await getAgentForChannel(channelId, realChannelDid, realChannelName, realChannelDidDoc);
       let fullResponse = '';
 
       const streamCallback: StreamCallback = (event: StreamEvent) => {
@@ -577,11 +588,15 @@ async function getChannelsWithDID(): Promise<Channel[]> {
           channel.publicKey = Buffer.from(kp.publicKey).toString('hex');
           console.log(`[修复频道] ${channel.name} 生成了 DID: ${channel.did}`);
 
-          // 发布到 IPFS
+          // 发布到 IPFS 并保存完整 DID 文档
           try {
             const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
             const result = await auth.registerAgent({ name: channel.name, services: [] }, kp, '');
             channel.cid = result.cid || '';
+            // 保存完整 DID 文档（用于传递给 session）
+            if (result.didDocument) {
+              channel.didDocument = result.didDocument;
+            }
             console.log(`[修复频道] ${channel.name} CID: ${channel.cid}`);
           } catch (ipfsErr) {
             console.log(`[修复频道] ${channel.name} IPFS 失败`);

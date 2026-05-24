@@ -375,6 +375,95 @@ export class DiapChannelBridge {
     return Array.from(this.registeredServices.values());
   }
 
+  /**
+   * 向指定 DID 的智能体发送消息（跨频道通信）
+   */
+  async sendToAgentByDid(targetDid: string, type: string, payload: string): Promise<boolean> {
+    const agent = this.discoveredAgents.get(targetDid);
+    if (!agent?.peerId) {
+      console.warn(`[DiapBridge] Unknown agent or no peerId: ${targetDid}`);
+      return false;
+    }
+
+    try {
+      const { p2pNetwork } = await import('../../network/p2p.js');
+      await p2pNetwork.sendMessage(agent.peerId, type, payload);
+      return true;
+    } catch (e) {
+      console.warn(`[DiapBridge] Failed to send to agent ${targetDid}:`, e);
+      return false;
+    }
+  }
+
+  /**
+   * 广播消息到所有已发现的智能体
+   */
+  async broadcastToAllAgents(type: string, payload: string): Promise<number> {
+    let successCount = 0;
+
+    for (const agent of this.discoveredAgents.values()) {
+      if (agent.peerId) {
+        try {
+          const { p2pNetwork } = await import('../../network/p2p.js');
+          await p2pNetwork.sendMessage(agent.peerId, type, payload);
+          successCount++;
+        } catch (e) {
+          console.warn(`[DiapBridge] Failed to broadcast to ${agent.name}:`, e);
+        }
+      }
+    }
+
+    return successCount;
+  }
+
+  /**
+   * 根据能力筛选智能体并发送消息
+   */
+  async sendToAgentsByCapability(
+    capabilities: string[],
+    type: string,
+    payload: string
+  ): Promise<number> {
+    let successCount = 0;
+
+    for (const agent of this.discoveredAgents.values()) {
+      const agentCaps = agent.capabilities || [];
+      const hasMatch = capabilities.some(reqCap =>
+        agentCaps.some(myCap =>
+          reqCap.toLowerCase().includes(myCap.toLowerCase()) ||
+          myCap.toLowerCase().includes(reqCap.toLowerCase())
+        )
+      );
+
+      if (hasMatch && agent.peerId) {
+        try {
+          const { p2pNetwork } = await import('../../network/p2p.js');
+          await p2pNetwork.sendMessage(agent.peerId, type, payload);
+          successCount++;
+        } catch (e) {
+          console.warn(`[DiapBridge] Failed to send to ${agent.name}:`, e);
+        }
+      }
+    }
+
+    return successCount;
+  }
+
+  /**
+   * 设置自己的频道（用于跨频道消息发送）
+   */
+  setOwnChannel(channel: SocialChannel): void {
+    this.ownChannel = channel;
+  }
+
+  /**
+   * 获取自己的 DID
+   */
+  getOwnDid(): string {
+    const persona = this.sessionProvider.getPersona();
+    return persona?.name || `did:local:${Date.now()}`;
+  }
+
   private startDiscoveryLoop(): void {
     this.discoveryTimer = setInterval(async () => {
       if (!this.initialized) return;

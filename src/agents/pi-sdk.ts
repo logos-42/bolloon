@@ -684,9 +684,11 @@ class PiAgentSession implements AgentSession {
       parameters: {},
       execute: async () => {
         const id = this.getIdentity();
+        const extraInfo = id.cid ? `\nCID: ${id.cid}` : '';
+        const ipnsInfo = id.ipnsName ? `\nIPNS: ${id.ipnsName}` : '';
         return {
           success: true,
-          output: `DID: ${id.did}\n名称: ${id.name}\n公钥: ${id.publicKey}\n创建时间: ${new Date(id.createdAt).toISOString()}`
+          output: `DID: ${id.did}\n名称: ${id.name}\n公钥: ${id.publicKey}${extraInfo}${ipnsInfo}\n创建时间: ${new Date(id.createdAt).toISOString()}`
         };
       }
     });
