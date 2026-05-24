@@ -98,6 +98,8 @@ async function createChannel(name) {
       body: JSON.stringify({ name: name.trim(), agentId: currentAgentId })
     });
     const channel = await res.json();
+    console.log('[创建频道] 服务器返回:', channel);
+    console.log('[创建频道] DID:', channel.did, 'CID:', channel.cid);
     channels.push(channel);
     renderChannels();
     selectChannel(channel.id);
@@ -555,6 +557,8 @@ const p2pNetworkBtn = document.getElementById('p2p-network-btn');
 const p2pModalClose = document.getElementById('p2p-modal-close');
 const p2pMyDid = document.getElementById('p2p-my-did');
 const p2pCopyDid = document.getElementById('p2p-copy-did');
+const p2pMyCid = document.getElementById('p2p-my-cid');
+const p2pCopyCid = document.getElementById('p2p-copy-cid');
 const p2pCopyLink = document.getElementById('p2p-copy-link');
 const p2pConnectInput = document.getElementById('p2p-connect-input');
 const p2pConnectBtn = document.getElementById('p2p-connect-btn');
@@ -567,30 +571,40 @@ let peers = [];
 
 async function loadP2PIdentity() {
   try {
-    console.log('[P2P] loadP2PIdentity 开始, currentChannelId:', currentChannelId);
+    console.log('[P2P] loadP2PIdentity 开始');
+    console.log('[P2P] currentChannelId:', currentChannelId);
 
     // 先确保 channels 数据是最新的
     const res = await fetch('/channels');
     if (res.ok) {
       channels = await res.json();
       console.log('[P2P] 加载频道:', channels.length, '个');
+      channels.forEach((ch, i) => {
+        console.log(`  [${i}] ${ch.name} - id: ${ch.id} - did: "${ch.did}" - cid: "${ch.cid}"`);
+      });
+    } else {
+      console.log('[P2P] 获取频道失败:', res.status);
     }
 
     // 获取当前频道的身份
+    console.log('[P2P] 查找频道, currentChannelId:', currentChannelId);
     const channel = channels.find(c => c.id === currentChannelId);
-    console.log('[P2P] 找到频道:', channel?.name, 'DID:', channel?.did);
+    console.log('[P2P] 找到频道:', channel ? channel.name : '未找到');
 
     if (channel && channel.did) {
       myDID = channel.did;
       console.log('[P2P] 设置 DID:', myDID);
       if (p2pMyDid) p2pMyDid.textContent = myDID;
+      if (p2pMyCid) p2pMyCid.textContent = channel.cid || '-';
     } else {
       console.log('[P2P] 频道没有 DID，显示未配置');
       if (p2pMyDid) p2pMyDid.textContent = '未配置';
+      if (p2pMyCid) p2pMyCid.textContent = '-';
     }
   } catch (err) {
     console.error('[P2P] 加载失败:', err);
     if (p2pMyDid) p2pMyDid.textContent = '加载失败';
+    if (p2pMyCid) p2pMyCid.textContent = '-';
   }
 }
 
@@ -646,6 +660,7 @@ function renderP2PChannels() {
       <div class="p2p-channel-info">
         <span class="p2p-channel-name">${ch.name}</span>
         <span class="p2p-channel-did">${ch.did ? ch.did.substring(0, 40) + '...' : '未生成 DID'}</span>
+        ${ch.cid ? `<span class="p2p-channel-cid">CID: ${ch.cid.substring(0, 20)}...</span>` : ''}
       </div>
       <span class="p2p-channel-action">${ch.id === currentChannelId ? '当前' : '选择'}</span>
     </div>
@@ -696,10 +711,29 @@ if (p2pCopyDid) {
   });
 }
 
+if (p2pCopyCid) {
+  p2pCopyCid.addEventListener('click', async () => {
+    const channel = channels.find(c => c.id === currentChannelId);
+    if (channel && channel.cid) {
+      try {
+        await navigator.clipboard.writeText(channel.cid);
+        const original = p2pCopyCid.title;
+        p2pCopyCid.title = '已复制!';
+        setTimeout(() => { p2pCopyCid.title = original; }, 1500);
+      } catch {}
+    }
+  });
+}
+
 if (p2pCopyLink) {
   p2pCopyLink.addEventListener('click', async () => {
     if (myDID) {
-      const link = `bolloon://connect?did=${encodeURIComponent(myDID)}`;
+      const channel = channels.find(c => c.id === currentChannelId);
+      const cid = channel?.cid || '';
+      let link = `bolloon://connect?did=${encodeURIComponent(myDID)}`;
+      if (cid) {
+        link += `&cid=${encodeURIComponent(cid)}`;
+      }
       try {
         await navigator.clipboard.writeText(link);
         const original = p2pCopyLink.textContent;
@@ -716,18 +750,33 @@ if (p2pConnectBtn) {
     if (!input) return;
 
     try {
+      // 解析输入中的 did 和 cid
       let didToConnect = input;
-      const match = input.match(/did=([^&]+)/);
-      if (match) didToConnect = decodeURIComponent(match[1]);
+      let cidToConnect = '';
+
+      const didMatch = input.match(/did=([^&]+)/);
+      const cidMatch = input.match(/cid=([^&]+)/);
+
+      if (didMatch) didToConnect = decodeURIComponent(didMatch[1]);
+      if (cidMatch) cidToConnect = decodeURIComponent(cidMatch[1]);
+
+      // 如果输入不是 URL 格式，直接作为 DID 使用
+      if (!input.includes('did=') && !input.includes('cid=')) {
+        didToConnect = input;
+      }
+
+      console.log('[连接] 尝试连接:', { did: didToConnect, cid: cidToConnect });
 
       const res = await fetch('/api/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ did: didToConnect })
+        body: JSON.stringify({ did: didToConnect, cid: cidToConnect })
       });
 
       if (res.ok) {
+        const data = await res.json();
         if (p2pConnectInput) p2pConnectInput.value = '';
+        addMessage(`连接请求已发送: ${data.message || '成功'}`, 'ai');
         await loadP2PPeers();
       } else {
         const data = await res.json();

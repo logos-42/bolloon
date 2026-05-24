@@ -1340,6 +1340,15 @@ body {
   white-space: nowrap;
 }
 
+.p2p-channel-cid {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .p2p-channel-icon {
   width: 24px;
   height: 24px;

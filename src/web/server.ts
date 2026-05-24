@@ -32,6 +32,7 @@ interface Channel {
   agentId: string;
   did?: string;
   publicKey?: string;
+  cid?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -501,11 +502,22 @@ export async function createWebServer(port: number = 3000) {
       // 为每个频道生成独立的 DIAP 身份
       let channelDid = 'did:web:' + id;
       let channelPublicKey = 'pk_' + id;
+      let channelCid = '';
       try {
         const kp = KeyManager.generate();
         channelDid = kp.did || channelDid;
         channelPublicKey = Buffer.from(kp.publicKey).toString('hex');
         console.log(`[创建频道] ${name} - ID: ${id} - DID: ${channelDid}`);
+
+        // 发布 DID 到 IPFS 并获取 CID
+        try {
+          const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+          const result = await auth.registerAgent({ name, services: [] }, kp, '');
+          channelCid = result.cid || '';
+          console.log(`[创建频道] ${name} - CID: ${channelCid}`);
+        } catch (ipfsErr) {
+          console.log(`[创建频道] ${name} - IPFS 发布失败: ${ipfsErr}`);
+        }
       } catch (e: any) {
         console.log(`[创建频道] ${name} - KeyManager 失败: ${e?.message}`);
       }
@@ -516,6 +528,7 @@ export async function createWebServer(port: number = 3000) {
         agentId,
         did: channelDid,
         publicKey: channelPublicKey,
+        cid: channelCid,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -932,15 +945,43 @@ export async function createWebServer(port: number = 3000) {
     }
   });
 
-  // 连接新节点
+  // 获取当前频道的身份信息
+  app.get('/api/channel-identity/:channelId', async (req, res) => {
+    try {
+      const { channelId } = req.params;
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+      res.json({
+        did: channel.did || '',
+        cid: channel.cid || '',
+        publicKey: channel.publicKey || '',
+        name: channel.name
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 通过 DID/CID 连接远程智能体
   app.post('/api/connect', async (req, res) => {
     try {
-      const { did } = req.body;
-      if (!did) {
-        return res.status(400).json({ error: 'DID required' });
+      const { did, cid } = req.body;
+      if (!did && !cid) {
+        return res.status(400).json({ error: 'DID or CID required' });
       }
-      // TODO: 实现 DID 解析和连接逻辑
-      res.json({ ok: true, did, message: '连接请求已发送' });
+
+      console.log(`[连接] 尝试连接 DID: ${did}, CID: ${cid}`);
+
+      // TODO: 实现通过 CID 解析 DID 文档并建立连接
+      // 1. 通过 CID 获取 IPFS 上的 DID 文档
+      // 2. 验证 DID 身份
+      // 3. 建立 P2P 连接
+      // 4. 触发 skills 进行身份验证和交流
+
+      res.json({ ok: true, did, cid, message: '连接请求已发送' });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
