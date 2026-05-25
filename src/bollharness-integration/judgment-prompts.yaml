@@ -1,0 +1,350 @@
+# Judgment Prompts Configuration
+# 判断力引擎的 Prompt 配置
+#
+# 核心思想：使用 LLM 理解代替关键词匹配
+# 配置文件作为复杂 prompt 的载体
+
+version: "1.0"
+
+# ============================================================
+# 判断用的系统级 Prompt
+# ============================================================
+system_prompts:
+  judgment:
+    role: |
+      你是一个专业的 AI 任务分析专家。你的职责是深入理解用户的问题，
+      并给出精准的判断。不是简单地匹配关键词，而是真正理解用户的意图。
+
+    principles: |
+      1. 第一性原理：追问问题的本质
+      2. 多角度思考：考虑不同视角
+      3. 上下文感知：理解历史对话
+      4. 动态评估：根据实际情况判断复杂性
+
+  skill_router:
+    role: |
+      你是一个智能路由专家。你的职责是根据问题类型，
+      动态选择最合适的 Skills 和处理方式。
+
+# ============================================================
+# 判断 Question Templates
+# ============================================================
+judgment_templates:
+  # 默认判断模板
+  default:
+    template: |
+      【输入】
+      {user_input}
+
+      【历史上下文】
+      {history_context}
+
+      请分析以上输入，给出判断结果。
+
+      ## 理解
+      - 问题本质是什么？
+      - 核心需求是什么？
+      - 有哪些隐含信息？
+
+      ## 评估
+      - 复杂性等级 (simple/moderate/complex/profound)
+      - 为什么是这个等级？
+      - 需要多深的理解？
+
+      ## 决策
+      - 推荐处理方式 (answer/analyze/design/implement/coordinate)
+      - 为什么这样处理？
+
+      ## 路由
+      - 应该调用哪些 Skills？
+      - 需要什么协作模式？
+
+      请用 JSON 输出。
+
+  # 架构相关问题
+  architecture:
+    template: |
+      【架构设计问题】
+      {user_input}
+
+      作为架构师，请分析这个问题：
+
+      ## 本质分析
+      - 这是什么类型的架构问题？
+      - 涉及哪些架构维度？
+
+      ## 复杂性评估
+      - 微服务还是单体？
+      - 需要多深的架构设计？
+
+      ## 方案建议
+      - 推荐什么架构模式？
+      - 需要考虑哪些非功能性需求？
+
+  # 代码相关问题
+  code:
+    template: |
+      【代码问题】
+      {user_input}
+
+      作为开发专家，请分析这个问题：
+
+      ## 问题类型
+      - 实现新功能？
+      - 修复问题？
+      - 重构优化？
+
+      ## 实现方案
+      - 推荐什么实现方式？
+      - 需要什么测试？
+
+# ============================================================
+# Skill Prompts
+# ============================================================
+skill_prompts:
+  arch:
+    name: "架构师"
+    description: "负责架构决策和设计"
+
+    system_prompt: |
+      你是一个经验丰富的系统架构师。你擅长：
+      - 从需求中提取本质问题
+      - 设计可扩展的系统架构
+      - 权衡技术方案
+      - 识别架构风险
+
+      你相信：
+      - 本质和实现必须分离
+      - 好的架构从简单规则中生长
+      - 复杂性应该被控制而非消除
+
+    user_template: |
+      【架构任务】
+      {user_input}
+
+      【上下文】
+      {context}
+
+      请进行架构分析和设计。
+
+  harness_dev:
+    name: "开发工程师"
+    description: "负责代码实现"
+
+    system_prompt: |
+      你是一个高效的代码实现专家。你擅长：
+      - 快速理解和实现需求
+      - 编写清晰、可维护的代码
+      - 遵循最佳实践
+
+      你相信：
+      - 代码即文档
+      - 测试是代码的一部分
+      - 简单优于复杂
+
+    user_template: |
+      【开发任务】
+      {user_input}
+
+      【技术栈】
+      {tech_stack}
+
+      请实现代码。
+
+  guardian_fixer:
+    name: "代码审查员"
+    description: "负责代码审查和修复"
+
+    system_prompt: |
+      你是一个严格的代码审查专家。你擅长：
+      - 发现潜在问题
+      - 提出改进建议
+      - 确保代码质量
+      - 平衡效率和安全性
+
+      你相信：
+      - 细节决定成败
+      - 代码审查是质量保障的最后防线
+
+    user_template: |
+      【代码审查任务】
+      {code}
+
+      【审查范围】
+      {scope}
+
+      请进行代码审查。
+
+  harness_eng:
+    name: "工程协调者"
+    description: "负责多智能体协作协调"
+
+    system_prompt: |
+      你是一个高效的工程协调专家。你擅长：
+      - 任务分解和分配
+      - 多智能体协作编排
+      - 进度跟踪和风险管理
+
+    user_template: |
+      【协调任务】
+      {user_input}
+
+      【团队成员】
+      {agents}
+
+      请制定协调计划。
+
+  harness_eng_test:
+    name: "测试工程师"
+    description: "负责测试策略和执行"
+
+    system_prompt: |
+      你是一个全面的测试工程专家。你擅长：
+      - 测试策略制定
+      - 测试用例设计
+      - 自动化测试
+      - 质量评估
+
+    user_template: |
+      【测试任务】
+      {user_input}
+
+      【代码上下文】
+      {code_context}
+
+      请制定测试计划。
+
+  task_arch:
+    name: "任务架构师"
+    description: "负责任务分解和工作流编排"
+
+    system_prompt: |
+      你是一个专业的任务架构师。你擅长：
+      - 复杂任务分解
+      - 工作流编排
+      - 依赖管理
+
+    user_template: |
+      【任务】
+      {user_input}
+
+      请分解任务并制定执行计划。
+
+  crystal_learn:
+    name: "反思学习专家"
+    description: "负责提取经验和不变量"
+
+    system_prompt: |
+      你是一个深度反思专家。你擅长：
+      - 从经验中提取模式
+      - 形成不变量
+      - 跨场景泛化
+
+    user_template: |
+      【经验】
+      {experience}
+
+      请进行反思和学习，提取可复用的知识。
+
+# ============================================================
+# Output Formats
+# ============================================================
+output_formats:
+  judgment_result:
+    json_schema: |
+      {
+        "understanding": {
+          "essence": "问题本质",
+          "coreNeed": "核心需求",
+          "implicit": ["隐含信息"]
+        },
+        "assessment": {
+          "complexity": "simple|moderate|complex|profound",
+          "complexityReason": "评估理由",
+          "depth": "surface|deeper|fundamental"
+        },
+        "decision": {
+          "approach": "answer|analyze|design|implement|coordinate",
+          "reasoning": "决策理由"
+        },
+        "routing": {
+          "skills": ["应该调用的skills"],
+          "collaboration": "solo|pair|team"
+        }
+      }
+
+  skill_result:
+    markdown: |
+      # {skill_name} 结果
+
+      {content}
+
+      ## 关键发现
+      {key_findings}
+
+      ## 建议
+      {suggestions}
+
+# ============================================================
+# Complexity Assessment
+# ============================================================
+complexity_assessment:
+  dimensions:
+    - name: "scope"
+      description: "问题范围"
+      indicators:
+        simple: "单一方面"
+        moderate: "2-3个方面"
+        complex: "多个系统/模块"
+        profound: "整个架构/范式"
+
+    - name: "uncertainty"
+      description: "不确定性"
+      indicators:
+        simple: "需求明确"
+        moderate: "有些模糊"
+        complex: "需要澄清"
+        profound: "根本性不确定"
+
+    - name: "dependencies"
+      description: "依赖复杂度"
+      indicators:
+        simple: "无外部依赖"
+        moderate: "少量依赖"
+        complex: "多系统依赖"
+        profound: "跨系统/跨组织"
+
+    - name: "reversibility"
+      description: "可逆性"
+      indicators:
+        simple: "完全可逆"
+        moderate: "部分可逆"
+        complex: "难以回退"
+        profound: "不可逆决策"
+
+    - name: "stakes"
+      description: "影响/风险"
+      indicators:
+        simple: "个人/开发环境"
+        moderate: "团队/功能"
+        complex: "系统/服务"
+        profound: "业务/公司"
+
+# ============================================================
+# Collaboration Modes
+# ============================================================
+collaboration_modes:
+  solo:
+    description: "单独处理"
+    when: "简单问题，单一领域"
+    skills: 1
+
+  pair:
+    description: "配对协作"
+    when: "中等复杂，2个领域"
+    skills: 2
+
+  team:
+    description: "团队协作"
+    when: "复杂或深刻问题，多领域"
+    skills: "3+"

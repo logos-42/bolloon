@@ -223,7 +223,7 @@ export class ChannelAgent implements ChannelAgentSession {
     };
 
     // Decide whether to call Harness
-    const decision = this.judgmentEngine.decide(context);
+    const decision = await this.judgmentEngine.decide(context);
 
     let response: string;
 
