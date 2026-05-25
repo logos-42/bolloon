@@ -42,6 +42,7 @@ export interface GateState {
   requiredReviewSubstrate?: string;
   valueInjection: string;
   artifacts: Map<string, unknown>;
+  conversationHistory: string[];
 }
 
 const GATE_CONFIGS: Record<Gate, GateConfig> = {
@@ -134,11 +135,12 @@ export class GateStateMachine {
       requiredNextSkill: GATE_CONFIGS[0].requiredNextSkill,
       valueInjection: '',
       artifacts: new Map(),
+      conversationHistory: [],
     };
   }
 
   getState(): GateState {
-    return { ...this.state, artifacts: new Map(this.state.artifacts) };
+    return { ...this.state, artifacts: new Map(this.state.artifacts), conversationHistory: [...this.state.conversationHistory] };
   }
 
   getCurrentGate(): Gate {
@@ -165,6 +167,19 @@ export class GateStateMachine {
   }
 
   /**
+   * 提交用户输入到对话历史
+   * 用于情境化价值观注入的上下文扩展
+   */
+  submitUserInput(input: string): void {
+    if (input.trim()) {
+      this.state.conversationHistory.push(input.trim());
+      if (this.state.conversationHistory.length > 10) {
+        this.state.conversationHistory = this.state.conversationHistory.slice(-10);
+      }
+    }
+  }
+
+  /**
    * 获取Gate包 - 用于skill输出
    */
   getGatePack(): {
@@ -175,7 +190,9 @@ export class GateStateMachine {
     required_next_skill: string;
     required_review_substrate?: string;
     value_injection: string;
+    situation: string;
   } {
+    const config = GATE_CONFIGS[this.state.currentGate];
     return {
       current_gate: this.state.currentGate,
       entry_satisfied: this.state.entrySatisfied,
@@ -184,6 +201,7 @@ export class GateStateMachine {
       required_next_skill: this.state.requiredNextSkill,
       required_review_substrate: this.state.requiredReviewSubstrate,
       value_injection: this.state.valueInjection,
+      situation: config.situation,
     };
   }
 
@@ -254,22 +272,56 @@ export class GateStateMachine {
   /**
    * 检查快速通道条件
    */
-  checkFastTrack(changeClassification: 'policy' | 'contract' | 'implementation'): boolean {
+  checkFastTrack(
+    changeClassification: 'policy' | 'contract' | 'implementation',
+    criteria?: {
+      fileCount?: number;
+      hasContractChange?: boolean;
+      hasCrossModuleSeams?: boolean;
+      affectsUserMentalModel?: boolean;
+      introducesArchitectureDecision?: boolean;
+    }
+  ): boolean {
     if (changeClassification !== 'implementation') return false;
 
-    // 5条全部满足才允许快速通道
-    // 1. 改动不超过3个文件
-    // 2. 无契约变更
-    // 3. 无跨模块接缝
-    // 4. 不影响用户心智或产品语义
-    // 5. 不引入新的架构决策
-    return true; // 需要实际检查实现
+    const c = criteria ?? {};
+
+    if (c.fileCount !== undefined && c.fileCount > 3) return false;
+    if (c.hasContractChange) return false;
+    if (c.hasCrossModuleSeams) return false;
+    if (c.affectsUserMentalModel) return false;
+    if (c.introducesArchitectureDecision) return false;
+
+    return true;
   }
 
   private checkEntryCondition(): void {
     const config = GATE_CONFIGS[this.state.currentGate];
-    // 这里应该检查具体的entry condition
-    // 简化实现
+    const entry = config.entryCondition;
+
+    if (this.state.currentGate === 0) {
+      this.state.entrySatisfied = true;
+      return;
+    }
+
+    if (entry.includes('PASS')) {
+      const passArtifact = this.state.artifacts.get('review-verdict');
+      if (!passArtifact) {
+        this.state.entrySatisfied = false;
+        return;
+      }
+      const verdict = (passArtifact as { verdict?: string }).verdict;
+      this.state.entrySatisfied = verdict === 'PASS';
+      return;
+    }
+
+    if (entry.includes('产物存在') || entry.includes('完成')) {
+      const artifactKeys = Array.from(this.state.artifacts.keys());
+      const hasArtifacts = artifactKeys.length > 0;
+      this.state.entrySatisfied = hasArtifacts;
+      return;
+    }
+
     this.state.entrySatisfied = true;
   }
 
@@ -291,6 +343,13 @@ export class GateStateMachine {
     const config = GATE_CONFIGS[this.state.currentGate];
     const baseSituation = config.situation;
 
+    if (userInput) {
+      this.state.conversationHistory.push(userInput);
+      if (this.state.conversationHistory.length > 10) {
+        this.state.conversationHistory = this.state.conversationHistory.slice(-10);
+      }
+    }
+
     let situation = baseSituation;
 
     if (userInput && isModelAvailable()) {
@@ -310,7 +369,7 @@ export class GateStateMachine {
       if (hasEnoughData) {
         const result = await generateSituationalValueInjection(
           situation,
-          [],
+          this.state.conversationHistory,
           { mode: 'standard', maxJudgments: 5, includeExamples: true }
         );
         injection = result.injection;
