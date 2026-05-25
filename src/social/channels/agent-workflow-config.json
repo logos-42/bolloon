@@ -1,0 +1,214 @@
+{
+  "version": "1.0",
+  "workflows": {
+    "default": {
+      "name": "默认协作工作流",
+      "description": "基于 Harness Gate 的多智能体协作工作流",
+      "initial_gate": 0,
+      "gates": {
+        "0": {
+          "name": "问题锁定",
+          "entry_condition": "用户提出需求",
+          "required_artifact": "问题陈述 + Change Classification",
+          "required_skills": ["arch"],
+          "next_gate": 1
+        },
+        "1": {
+          "name": "架构设计",
+          "entry_condition": "Gate 0 产物存在",
+          "required_artifact": "ADR草稿 + 消费方清单",
+          "required_skills": ["arch", "lead"],
+          "next_gate": 2
+        },
+        "2": {
+          "name": "架构审查",
+          "entry_condition": "ADR草稿完成",
+          "required_artifact": "审查报告 (PASS/BLOCK)",
+          "required_skills": ["arch", "guardian-fixer"],
+          "is_review_gate": true,
+          "reviewer_type": "independent",
+          "next_gate": 3
+        },
+        "3": {
+          "name": "计划制定",
+          "entry_condition": "Gate 2 PASS",
+          "required_artifact": "PLAN文档 + 架构覆盖矩阵",
+          "required_skills": ["harness-eng", "plan-lock"],
+          "next_gate": 4
+        },
+        "4": {
+          "name": "计划审查",
+          "entry_condition": "PLAN vN-final 冻结",
+          "required_artifact": "审查报告 + plan-lock确认",
+          "required_skills": ["arch", "guardian-fixer"],
+          "is_review_gate": true,
+          "reviewer_type": "independent",
+          "next_gate": 5
+        },
+        "5": {
+          "name": "任务分解",
+          "entry_condition": "Gate 4 PASS + plan-lock",
+          "required_artifact": "WP拆分 + TASK.md",
+          "required_skills": ["task-arch", "crystal-learn"],
+          "next_gate": 6
+        },
+        "6": {
+          "name": "任务审查",
+          "entry_condition": "全部TASK.md完成",
+          "required_artifact": "审查报告 (PASS/BLOCK)",
+          "required_skills": ["task-arch", "guardian-fixer"],
+          "is_review_gate": true,
+          "reviewer_type": "independent",
+          "next_gate": 7
+        },
+        "7": {
+          "name": "代码实现",
+          "entry_condition": "Gate 6 PASS",
+          "required_artifact": "代码 + LOG.md",
+          "required_skills": ["harness-eng", "harness-dev"],
+          "next_gate": 8
+        },
+        "8": {
+          "name": "测试验证",
+          "entry_condition": "全部WP代码 + LOG.md存在",
+          "required_artifact": "审查报告 + 验收确认",
+          "required_skills": ["harness-eng", "harness-eng-test"],
+          "is_review_gate": true,
+          "reviewer_type": "independent",
+          "next_gate": null
+        }
+      }
+    }
+  },
+  "agent_roles": {
+    "architect": {
+      "name": "架构师",
+      "description": "负责架构决策、方案比较",
+      "capabilities": ["架构设计", "方案比较", "边界冻结", "本质判断"],
+      "default_skills": ["arch", "lead"],
+      "triggers": ["架构设计", "方案比较", "边界冻结"]
+    },
+    "reviewer": {
+      "name": "代码审查员",
+      "description": "独立审查代码质量和架构",
+      "capabilities": ["代码审查", "质量评估", "问题发现", "改进建议"],
+      "default_skills": ["guardian-fixer", "arch"],
+      "triggers": ["代码审查", "review", "审核"]
+    },
+    "developer": {
+      "name": "开发工程师",
+      "description": "负责代码实现和优化",
+      "capabilities": ["代码编写", "调试", "重构", "性能优化"],
+      "default_skills": ["harness-dev", "harness-eng"],
+      "triggers": ["实现", "写代码", "开发"]
+    },
+    "task_architect": {
+      "name": "任务架构师",
+      "description": "负责任务分解和工作流编排",
+      "capabilities": ["任务分解", "工作流编排", "进度跟踪", "资源分配"],
+      "default_skills": ["task-arch", "harness-eng"],
+      "triggers": ["任务分解", "计划", "分配"]
+    },
+    "tester": {
+      "name": "测试工程师",
+      "description": "负责测试策略和验证",
+      "capabilities": ["测试设计", "自动化测试", "性能测试", "质量评估"],
+      "default_skills": ["harness-eng-test", "guardian-fixer"],
+      "triggers": ["测试", "验证", "检查"]
+    },
+    "coordinator": {
+      "name": "协调者",
+      "description": "负责多智能体协作协调",
+      "capabilities": ["团队协调", "任务分发", "进度监控", "冲突解决"],
+      "default_skills": ["harness-eng", "lead"],
+      "triggers": ["协调", "协作", "分发"]
+    }
+  },
+  "skill_routing": {
+    "keyword_to_skill": {
+      "架构": ["arch", "lead"],
+      "设计": ["arch"],
+      "方案": ["arch"],
+      "review": ["guardian-fixer", "arch"],
+      "检查": ["guardian-fixer"],
+      "审核": ["guardian-fixer"],
+      "代码": ["guardian-fixer", "harness-dev"],
+      "安全": ["guardian-fixer", "arch"],
+      "权限": ["guardian-fixer"],
+      "认证": ["guardian-fixer"],
+      "任务": ["task-arch", "harness-eng"],
+      "分解": ["task-arch"],
+      "计划": ["task-arch", "plan-lock"],
+      "实现": ["harness-dev", "harness-eng"],
+      "写代码": ["harness-dev"],
+      "开发": ["harness-dev", "harness-eng"],
+      "测试": ["harness-eng-test", "guardian-fixer"],
+      "验证": ["harness-eng-test"],
+      "部署": ["harness-ops", "harness-eng"]
+    },
+    "gate_to_skills": {
+      "0": ["arch", "lead"],
+      "1": ["arch", "lead"],
+      "2": ["guardian-fixer", "arch"],
+      "3": ["harness-eng", "plan-lock"],
+      "4": ["guardian-fixer", "arch"],
+      "5": ["task-arch", "crystal-learn"],
+      "6": ["task-arch", "guardian-fixer"],
+      "7": ["harness-eng", "harness-dev"],
+      "8": ["harness-eng", "harness-eng-test"]
+    }
+  },
+  "fast_track": {
+    "enabled": true,
+    "conditions": [
+      "改动不超过 3 个文件",
+      "Change Classification = implementation",
+      "无跨模块接缝",
+      "不影响用户心智或产品语义",
+      "不引入新的架构决策"
+    ],
+    "required_steps": ["执行 skill", "单人审查"]
+  },
+  "parallel_execution": {
+    "enabled": true,
+    "contract": {
+      "required_fields": [
+        "write_set",
+        "parallel_tracks",
+        "depends_on",
+        "integration_owner",
+        "seam_owner",
+        "golden_journeys"
+      ],
+      "seam_validation": {
+        "enabled": true,
+        "blocking": true,
+        "message": "任何跨 WP 共享接口必须有 seam_owner"
+      }
+    }
+  },
+  "collaboration_protocol": {
+    "message_format": {
+      "type": "structured",
+      "fields": [
+        "type",
+        "from",
+        "to",
+        "content",
+        "gate",
+        "skill",
+        "timestamp",
+        "artifact"
+      ]
+    },
+    "state_sync": {
+      "enabled": true,
+      "interval_ms": 5000,
+      "sync_on_gate_change": true
+    },
+    "conflict_resolution": {
+      "strategy": "gate_based",
+      "escalation_gates": [2, 4, 6, 8]
+    }
+  }
+}
