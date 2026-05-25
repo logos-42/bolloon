@@ -1,6 +1,6 @@
 import type { LLMConfig } from './types.js';
-import { ProviderCard, type ProviderCardData } from './provider-card.js';
-import { ConfigModal, type ConfigModalData } from './config-modal.js';
+import { ProviderCard } from './provider-card.js';
+import { ConfigModal } from './config-modal.js';
 
 export class ProviderGrid extends HTMLElement {
   private config: LLMConfig | null = null;
@@ -13,115 +13,22 @@ export class ProviderGrid extends HTMLElement {
     this.loadConfig();
   }
 
-  private getCSS(): string {
-    return `
-      :host {
-        display: block;
-        max-width: 900px;
-        margin: 0 auto;
-        padding: 24px;
-      }
-
-      .page-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 32px;
-      }
-
-      .page-header h1 {
-        font-size: 24px;
-        font-weight: 600;
-        color: var(--text);
-        margin: 0;
-      }
-
-      .back-link {
-        color: var(--text-secondary);
-        text-decoration: none;
-        font-size: 14px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-
-      .back-link:hover {
-        color: var(--text);
-      }
-
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: 16px;
-      }
-
-      .loading-state {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        padding: 48px;
-        color: var(--text-secondary);
-        gap: 16px;
-      }
-
-      .loading-spinner {
-        width: 32px;
-        height: 32px;
-        border: 3px solid var(--border);
-        border-top-color: var(--accent);
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-      }
-
-      @keyframes spin {
-        to { transform: rotate(360deg); }
-      }
-
-      .error-state {
-        display: none;
-        flex-direction: column;
-        align-items: center;
-        padding: 48px;
-        color: var(--text-secondary);
-        gap: 16px;
-      }
-
-      .error-state.show {
-        display: flex;
-      }
-
-      .error-icon {
-        font-size: 48px;
-      }
-
-      .error-message {
-        font-size: 16px;
-        color: var(--text-secondary);
-      }
-
-      .btn-retry {
-        padding: 12px 24px;
-        background: var(--bg-active);
-        color: var(--text);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        cursor: pointer;
-        transition: var(--transition);
-      }
-
-      .btn-retry:hover {
-        border-color: var(--accent);
-      }
-    `;
-  }
-
   private render(): void {
+    const pageHeaderClasses = 'flex items-center justify-between mb-8';
+    const pageTitleClasses = 'text-2xl font-semibold text-text';
+    const backLinkClasses = 'flex items-center gap-1.5 text-sm text-text-secondary no-underline hover:text-text';
+    const gridClasses = 'grid gap-4';
+    const loadingClasses = 'flex flex-col items-center justify-center py-12 text-text-secondary gap-4';
+    const spinnerClasses = 'w-8 h-8 border-2 border-border border-t-accent rounded-full animate-spin';
+    const errorClasses = 'hidden flex flex-col items-center py-12 text-text-secondary gap-4';
+    const errorIconClasses = 'text-5xl';
+    const errorMsgClasses = 'text-base';
+    const retryBtnClasses = 'px-6 py-3 bg-bg-active text-text border border-border rounded cursor-pointer hover:border-accent';
+
     this.shadow.innerHTML = `
-      <style>${this.getCSS()}</style>
-      <div class="page-header">
-        <h1>API 配置</h1>
-        <a href="/" class="back-link">
+      <div class="${pageHeaderClasses}">
+        <h1 class="${pageTitleClasses}">API 配置</h1>
+        <a href="/" class="${backLinkClasses}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="15 18 9 12 15 6"></polyline>
           </svg>
@@ -129,17 +36,17 @@ export class ProviderGrid extends HTMLElement {
         </a>
       </div>
 
-      <div class="grid" id="provider-grid">
-        <div class="loading-state">
-          <div class="loading-spinner"></div>
+      <div class="${gridClasses}" id="provider-grid">
+        <div class="${loadingClasses}">
+          <div class="${spinnerClasses}"></div>
           <span>加载中...</span>
         </div>
       </div>
 
-      <div class="error-state" id="error-state">
-        <div class="error-icon">⚠️</div>
-        <div class="error-message">加载配置失败</div>
-        <button class="btn-retry" id="retry-btn">重试</button>
+      <div class="${errorClasses}" id="error-state">
+        <div class="${errorIconClasses}">⚠️</div>
+        <div class="${errorMsgClasses}">加载配置失败</div>
+        <button class="${retryBtnClasses}" id="retry-btn">重试</button>
       </div>
     `;
 
@@ -153,7 +60,7 @@ export class ProviderGrid extends HTMLElement {
       this.openConfig(key);
     }) as EventListener);
 
-    this.addEventListener('config-saved', ((e: CustomEvent) => {
+    this.addEventListener('config-saved', (() => {
       this.loadConfig();
     }) as EventListener);
 
@@ -165,10 +72,13 @@ export class ProviderGrid extends HTMLElement {
     const grid = this.shadow.getElementById('provider-grid');
     const errorEl = this.shadow.getElementById('error-state');
 
+    const loadingClasses = 'flex flex-col items-center justify-center py-12 text-text-secondary gap-4';
+    const spinnerClasses = 'w-8 h-8 border-2 border-border border-t-accent rounded-full animate-spin';
+
     if (grid) {
       grid.innerHTML = `
-        <div class="loading-state">
-          <div class="loading-spinner"></div>
+        <div class="${loadingClasses}">
+          <div class="${spinnerClasses}"></div>
           <span>加载中...</span>
         </div>
       `;

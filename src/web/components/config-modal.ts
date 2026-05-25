@@ -1,5 +1,6 @@
 import type { Provider, ProviderInfo } from './types.js';
 import { testProviderConnection, saveProviderConfig } from './types.js';
+import { cn } from '../utils/cn.js';
 
 export interface ConfigModalData {
   key: string;
@@ -10,7 +11,7 @@ export interface ConfigModalData {
 export class ConfigModal extends HTMLElement {
   private currentProvider: string | null = null;
   private config: ConfigModalData | null = null;
-  private hasExistingApiKey: boolean = false; // 改进: 使用布尔标志跟踪是否有现有 Key
+  private hasExistingApiKey: boolean = false;
   private shadow = this.attachShadow({ mode: 'open' });
 
   connectedCallback(): void {
@@ -21,7 +22,6 @@ export class ConfigModal extends HTMLElement {
   show(data: ConfigModalData): void {
     this.currentProvider = data.key;
     this.config = data;
-    // 记录是否有现有 API Key
     this.hasExistingApiKey = Boolean(data.provider.apiKey);
 
     const titleEl = this.shadow.getElementById('modal-title');
@@ -32,7 +32,6 @@ export class ConfigModal extends HTMLElement {
     const testResultEl = this.shadow.getElementById('test-result');
 
     if (titleEl) titleEl.textContent = `配置 ${data.info.name}`;
-    // 改进: 不再显示掩码，改为空字段让用户决定是否更新
     if (apiKeyEl) {
       apiKeyEl.value = '';
       apiKeyEl.placeholder = this.hasExistingApiKey ? '已有 Key（输入新值以更新）' : '输入 API Key';
@@ -54,247 +53,76 @@ export class ConfigModal extends HTMLElement {
     this.config = null;
   }
 
-  private getCSS(): string {
-    return `
-      :host {
-        display: none;
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(0, 0, 0, 0.7);
-        z-index: 1000;
-        align-items: center;
-        justify-content: center;
-      }
-
-      :host(.show) {
-        display: flex;
-      }
-
-      .modal {
-        background: var(--bg-sidebar);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        padding: 24px;
-        width: 90%;
-        max-width: 480px;
-        max-height: 90vh;
-        overflow-y: auto;
-      }
-
-      .modal-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 24px;
-      }
-
-      .modal-header h2 {
-        font-size: 18px;
-        font-weight: 600;
-        color: var(--text);
-        margin: 0;
-      }
-
-      .modal-close {
-        background: none;
-        border: none;
-        color: var(--text-secondary);
-        cursor: pointer;
-        padding: 4px;
-        font-size: 20px;
-      }
-
-      .modal-close:hover {
-        color: var(--text);
-      }
-
-      .form-group {
-        margin-bottom: 16px;
-      }
-
-      .form-group label {
-        display: block;
-        font-size: 13px;
-        font-weight: 500;
-        margin-bottom: 6px;
-        color: var(--text-secondary);
-      }
-
-      .form-group input,
-      .form-group select {
-        width: 100%;
-        padding: 10px 12px;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        color: var(--text);
-        font-size: 14px;
-        font-family: inherit;
-        box-sizing: border-box;
-      }
-
-      .form-group input:focus,
-      .form-group select:focus {
-        outline: none;
-        border-color: var(--accent);
-      }
-
-      .form-group input[type="password"] {
-        font-family: var(--font-mono, monospace);
-      }
-
-      .form-hint {
-        font-size: 11px;
-        color: var(--text-muted);
-        margin-top: 4px;
-      }
-
-      .form-row {
-        display: flex;
-        gap: 12px;
-      }
-
-      .form-row .form-group {
-        flex: 1;
-      }
-
-      .btn-group {
-        display: flex;
-        gap: 12px;
-        margin-top: 24px;
-      }
-
-      .btn {
-        flex: 1;
-        padding: 12px;
-        border: none;
-        border-radius: 6px;
-        font-size: 14px;
-        font-weight: 500;
-        cursor: pointer;
-        transition: var(--transition);
-      }
-
-      .btn-primary {
-        background: var(--accent);
-        color: var(--bg);
-      }
-
-      .btn-primary:hover {
-        opacity: 0.9;
-      }
-
-      .btn-secondary {
-        background: var(--bg-active);
-        color: var(--text);
-        border: 1px solid var(--border);
-      }
-
-      .btn-secondary:hover {
-        border-color: var(--accent);
-      }
-
-      .btn-test {
-        background: transparent;
-        color: var(--accent);
-        border: 1px solid var(--accent);
-        padding: 8px 16px;
-        font-size: 12px;
-        margin-top: 16px;
-      }
-
-      .btn-test:hover {
-        background: var(--accent);
-        color: var(--bg);
-      }
-
-      .test-result {
-        margin-top: 12px;
-        padding: 12px;
-        border-radius: 6px;
-        font-size: 13px;
-        display: none;
-      }
-
-      .test-result.show {
-        display: block;
-      }
-
-      .test-result.success {
-        background: var(--success-bg);
-        border: 1px solid var(--success);
-        color: var(--success);
-      }
-
-      .test-result.error {
-        background: var(--error-bg);
-        border: 1px solid var(--error);
-        color: var(--error);
-      }
-
-      .save-indicator {
-        display: none;
-        align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        color: var(--success);
-      }
-
-      .save-indicator.show {
-        display: flex;
-      }
-    `;
-  }
-
   private render(): void {
+    // Tailwind 类名定义
+    const hostClasses = 'hidden fixed inset-0 bg-black/70 z-50 items-center justify-center';
+    const hostShowClasses = 'flex';
+    const modalClasses = 'w-[90%] max-w-[480px] max-h-[90vh] overflow-y-auto bg-bg-sidebar border border-border rounded p-6';
+    const headerClasses = 'flex items-center justify-between mb-6';
+    const titleClasses = 'text-lg font-semibold text-text';
+    const closeBtnClasses = 'bg-transparent border-none text-text-secondary cursor-pointer p-1 text-xl hover:text-text';
+    const formGroupClasses = 'mb-4';
+    const labelClasses = 'block text-sm font-medium text-text-secondary mb-1.5';
+    const inputClasses = 'w-full px-3 py-2.5 bg-bg border border-border rounded text-text text-sm focus:outline-none focus:border-accent';
+    const hintClasses = 'text-xs text-text-muted mt-1';
+    const formRowClasses = 'flex gap-3';
+    const btnGroupClasses = 'flex gap-3 mt-6';
+    const btnBaseClasses = 'flex-1 px-4 py-3 rounded text-sm font-medium cursor-pointer transition-all duration-200';
+    const btnPrimaryClasses = 'bg-accent text-bg hover:opacity-90';
+    const btnSecondaryClasses = 'bg-bg-active text-text border border-border hover:border-accent';
+    const btnTestClasses = 'bg-transparent text-accent border border-accent px-4 py-2 text-xs mt-4 cursor-pointer hover:bg-accent hover:text-bg';
+    const testResultClasses = 'mt-3 p-3 text-sm rounded hidden';
+    const testSuccessClasses = 'bg-success-bg border border-success text-success';
+    const testErrorClasses = 'bg-error-bg border border-error text-error';
+    const saveIndicatorClasses = 'hidden items-center gap-1.5 text-sm text-success';
+    const saveIndicatorShowClasses = 'flex';
+
     this.shadow.innerHTML = `
-      <style>${this.getCSS()}</style>
-      <div class="modal">
-        <div class="modal-header">
-          <h2 id="modal-title">配置供应商</h2>
-          <button class="modal-close" id="modal-close">&times;</button>
+      <div class="${hostClasses} ${hostShowClasses}">
+        <div class="${modalClasses}">
+          <div class="${headerClasses}">
+            <h2 id="modal-title" class="${titleClasses}">配置供应商</h2>
+            <button class="${closeBtnClasses}" id="modal-close">&times;</button>
+          </div>
+
+          <form id="config-form">
+            <div class="${formGroupClasses}">
+              <label class="${labelClasses}">API Key</label>
+              <input type="password" id="api-key" class="${inputClasses}" placeholder="输入 API Key" autocomplete="off">
+              <div class="${hintClasses}">留空则保留当前配置的 Key</div>
+            </div>
+
+            <div class="${formGroupClasses}">
+              <label class="${labelClasses}">Base URL</label>
+              <input type="text" id="base-url" class="${inputClasses}" placeholder="https://api.example.com/v1">
+              <div class="${hintClasses}">留空使用默认地址</div>
+            </div>
+
+            <div class="${formRowClasses}">
+              <div class="${formGroupClasses} flex-1">
+                <label class="${labelClasses}">模型</label>
+                <input type="text" id="model" class="${inputClasses}" placeholder="如 gpt-4">
+              </div>
+              <div class="${formGroupClasses}">
+                <label class="${labelClasses}">温度</label>
+                <input type="number" id="temperature" class="${inputClasses}" min="0" max="2" step="0.1" value="0.7">
+              </div>
+            </div>
+
+            <button type="button" class="${btnTestClasses}" id="test-btn">测试连接</button>
+            <div id="test-result" class="${testResultClasses}"></div>
+
+            <div class="${btnGroupClasses}">
+              <button type="button" class="${btnBaseClasses} ${btnSecondaryClasses}" id="cancel-btn">取消</button>
+              <button type="submit" class="${btnBaseClasses} ${btnPrimaryClasses}">
+                <span class="${saveIndicatorClasses}" id="save-indicator">
+                  ✓ 已保存
+                </span>
+                <span id="save-text">保存</span>
+              </button>
+            </div>
+          </form>
         </div>
-
-        <form id="config-form">
-          <div class="form-group">
-            <label>API Key</label>
-            <input type="password" id="api-key" placeholder="输入 API Key" autocomplete="off">
-            <div class="form-hint">留空则保留当前配置的 Key</div>
-          </div>
-
-          <div class="form-group">
-            <label>Base URL</label>
-            <input type="text" id="base-url" placeholder="https://api.example.com/v1">
-            <div class="form-hint">留空使用默认地址</div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label>模型</label>
-              <input type="text" id="model" placeholder="如 gpt-4">
-            </div>
-            <div class="form-group">
-              <label>温度</label>
-              <input type="number" id="temperature" min="0" max="2" step="0.1" value="0.7">
-            </div>
-          </div>
-
-          <button type="button" class="btn btn-test" id="test-btn">测试连接</button>
-          <div class="test-result" id="test-result"></div>
-
-          <div class="btn-group">
-            <button type="button" class="btn btn-secondary" id="cancel-btn">取消</button>
-            <button type="submit" class="btn btn-primary">
-              <span class="save-indicator" id="save-indicator">
-                ✓ 已保存
-              </span>
-              <span id="save-text">保存</span>
-            </button>
-          </div>
-        </form>
       </div>
     `;
   }
@@ -370,7 +198,6 @@ export class ConfigModal extends HTMLElement {
     const saveTextEl = this.shadow.getElementById('save-text');
 
     const currentConfig = this.config.provider;
-    // 改进: 只有用户输入新值时才更新 API Key，否则保留现有值
     const newApiKey = apiKeyEl?.value?.trim();
     const updateData: Partial<Provider> = {
       enabled: true,

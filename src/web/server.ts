@@ -21,6 +21,12 @@ import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// 前端资源路径：优先使用 dist（生产），回退到 src（开发）
+const isProduction = process.env.NODE_ENV === 'production';
+const webRoot = isProduction
+  ? path.join(__dirname, '..', '..', 'dist', 'web')
+  : path.join(__dirname, '..', '..', 'src', 'web');
+
 const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'sessions');
 const SESSION_CACHE_PATH = path.join(SHARED_SESSION_PATH, 'cache');
 const CHANNELS_PATH = path.join(SHARED_SESSION_PATH, 'channels.json');
@@ -463,15 +469,14 @@ export async function createWebServer(port: number = 3000) {
     next();
   });
 
-  const staticPath = join(__dirname, '..', '..', 'src', 'web');
-  app.use(express.static(staticPath));
+  app.use(express.static(webRoot));
 
   app.get('/', (req, res) => {
-    res.sendFile(join(staticPath, 'index.html'));
+    res.sendFile(join(webRoot, 'index.html'));
   });
 
   app.get('/api-config', (req, res) => {
-    res.sendFile(join(staticPath, 'api-config.html'));
+    res.sendFile(join(webRoot, 'api-config.html'));
   });
 
   app.get('/events', (req, res) => {

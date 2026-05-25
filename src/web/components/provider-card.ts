@@ -1,4 +1,5 @@
 import type { Provider, ProviderInfo } from './types.js';
+import { cn } from '../utils/cn.js';
 
 export interface ProviderCardData {
   key: string;
@@ -22,86 +23,6 @@ export class ProviderCard extends HTMLElement {
     this.attachEvents();
   }
 
-  private getCSS(): string {
-    return `
-      :host {
-        display: block;
-      }
-
-      .card {
-        background: var(--bg-sidebar);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        padding: 16px;
-        cursor: pointer;
-        transition: var(--transition);
-      }
-
-      .card:hover {
-        border-color: var(--accent);
-      }
-
-      .card.active {
-        border-color: var(--accent);
-        background: var(--bg-active);
-      }
-
-      .card-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 8px;
-      }
-
-      .card-name {
-        font-size: 16px;
-        font-weight: 600;
-        color: var(--text);
-      }
-
-      .badge {
-        font-size: 10px;
-        padding: 2px 6px;
-        border-radius: 4px;
-        background: var(--accent);
-        color: var(--bg);
-      }
-
-      .badge.active {
-        background: var(--success);
-      }
-
-      .card-desc {
-        font-size: 12px;
-        color: var(--text-secondary);
-        margin-bottom: 12px;
-      }
-
-      .card-status {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        color: var(--text-secondary);
-      }
-
-      .status-dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--text-muted);
-      }
-
-      .status-dot.enabled {
-        background: var(--success);
-      }
-
-      .status-dot.disabled {
-        background: var(--text-muted);
-      }
-    `;
-  }
-
   private render(): void {
     const key = this.getAttribute('provider-key') || '';
     const enabled = this.getAttribute('provider-enabled') === 'true';
@@ -117,16 +38,35 @@ export class ProviderCard extends HTMLElement {
       isActive,
     };
 
+    // 使用 Tailwind 类名 + cn 工具函数
+    const cardClasses = cn(
+      'block border rounded-sm p-4 cursor-pointer transition-all duration-200',
+      'bg-bg-sidebar border-border hover:border-accent',
+      isActive && 'border-accent bg-bg-active'
+    );
+
+    const cardHeaderClasses = 'flex items-center justify-between mb-2';
+    const cardNameClasses = 'text-base font-semibold text-text';
+    const badgeClasses = cn(
+      'text-xs px-1.5 py-0.5 rounded',
+      'bg-accent text-bg'
+    );
+    const cardDescClasses = 'text-xs text-text-secondary mb-3';
+    const cardStatusClasses = 'flex items-center gap-1.5 text-xs text-text-secondary';
+    const statusDotClasses = cn(
+      'w-1.5 h-1.5 rounded-full',
+      enabled ? 'bg-success' : 'bg-text-muted'
+    );
+
     this.shadow.innerHTML = `
-      <style>${this.getCSS()}</style>
-      <div class="card ${isActive ? 'active' : ''}">
-        <div class="card-header">
-          <span class="card-name">${name}</span>
-          ${isActive ? '<span class="badge active">使用中</span>' : ''}
+      <div class="${cardClasses}">
+        <div class="${cardHeaderClasses}">
+          <span class="${cardNameClasses}">${name}</span>
+          ${isActive ? `<span class="${badgeClasses}">使用中</span>` : ''}
         </div>
-        <div class="card-desc">${description}</div>
-        <div class="card-status">
-          <span class="status-dot ${enabled ? 'enabled' : 'disabled'}"></span>
+        <div class="${cardDescClasses}">${description}</div>
+        <div class="${cardStatusClasses}">
+          <span class="${statusDotClasses}"></span>
           <span>${enabled ? '已启用' : '未启用'}</span>
           ${enabled && apiKey ? ' · 已配置' : ''}
           ${enabled && !apiKey ? ' · 未配置' : ''}
@@ -137,7 +77,7 @@ export class ProviderCard extends HTMLElement {
   }
 
   private attachEvents(): void {
-    const card = this.shadow.querySelector('.card');
+    const card = this.shadow.querySelector('[class*="cursor-pointer"]');
     card?.addEventListener('click', () => {
       this.dispatchEvent(new CustomEvent('provider-click', {
         detail: { key: this.data?.key },
