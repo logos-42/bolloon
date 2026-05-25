@@ -10,7 +10,7 @@
  */
 
 import { AgentCoordinator, type SubTask, type AgentResult } from '@bolloon/constraint-runtime';
-import { executeGateTransitionHooks, initializeGateHooks, onGateTransition } from './gate-transition-hooks.js';
+import { executeGateTransitionHooks, initializeGateHooks } from './gate-transition-hooks.js';
 import { generateSituationalValueInjection, generateValueInjection } from '../pi-ecosystem-judgment/value-injection.js';
 import { loadAllJudgments } from '../pi-ecosystem-judgment/human-value-store.js';
 import { getModel, isModelAvailable } from '../llm/pi-ai.js';
@@ -43,7 +43,6 @@ export interface GateState {
   valueInjection: string;
   artifacts: Map<string, unknown>;
   conversationHistory: string[];
-  pendingUserInput?: string;
 }
 
 const GATE_CONFIGS: Record<Gate, GateConfig> = {
@@ -125,12 +124,6 @@ export class GateStateMachine {
     this.state = this.initState();
     this.coordinator = new AgentCoordinator(3);
     initializeGateHooks();
-
-    onGateTransition('PreGateTransition', async (event) => {
-      if (event.success) {
-        await this.generateValueInjectionForCurrentGate();
-      }
-    });
   }
 
   private initState(): GateState {
@@ -171,19 +164,6 @@ export class GateStateMachine {
   submitArtifact(name: string, artifact: unknown): void {
     this.state.artifacts.set(name, artifact);
     this.checkEntryCondition();
-  }
-
-  /**
-   * 提交用户输入到对话历史
-   * 用于情境化价值观注入的上下文扩展
-   */
-  submitUserInput(input: string): void {
-    if (input.trim()) {
-      this.state.conversationHistory.push(input.trim());
-      if (this.state.conversationHistory.length > 10) {
-        this.state.conversationHistory = this.state.conversationHistory.slice(-10);
-      }
-    }
   }
 
   /**
@@ -250,10 +230,12 @@ export class GateStateMachine {
     // 执行转移
     const nextGate = (currentGate + 1) as Gate;
     this.state.currentGate = nextGate;
-    this.state.pendingUserInput = userInput;
     this.updateStateForGate(nextGate);
 
-    // Execute gate transition hooks (PreGateTransition hook will generate value injection)
+    // 生成进入新 Gate 时的价值观注入
+    await this.generateValueInjectionForCurrentGate(userInput);
+
+    // Execute gate transition hooks
     await executeGateTransitionHooks(currentGate, nextGate, true, []);
 
     return {
@@ -343,14 +325,10 @@ export class GateStateMachine {
   /**
    * 为当前 Gate 生成情境化价值观注入
    * 基于 Gate 的 situation 描述，从历史判断中匹配相关价值观
-   *
-   * 作为 PreGateTransition hook 使用，从 state.pendingUserInput 读取用户输入
    */
-  async generateValueInjectionForCurrentGate(): Promise<void> {
+  private async generateValueInjectionForCurrentGate(userInput?: string): Promise<void> {
     const config = GATE_CONFIGS[this.state.currentGate];
     const baseSituation = config.situation;
-    const userInput = this.state.pendingUserInput;
-    this.state.pendingUserInput = undefined;
 
     if (userInput) {
       this.state.conversationHistory.push(userInput);
