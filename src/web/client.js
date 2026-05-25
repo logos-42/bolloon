@@ -17,6 +17,7 @@ let currentAgentId = '';
 let channels = [];
 let isSidebarCollapsed = false;
 let reconnectAttempts = 0;
+let reconnectTimer = null; // 改进: 跟踪重连定时器
 let lastUserCommand = ''; // 防止用户消息重复显示
 let lastAiContent = ''; // 防止 AI 消息重复显示
 
@@ -151,6 +152,10 @@ async function deleteChannel(channelId, e) {
 function renderChannels() {
   if (!channelList) return;
   channelList.innerHTML = '';
+
+  // 使用 DocumentFragment 减少 DOM 操作
+  const fragment = document.createDocumentFragment();
+
   channels.forEach(ch => {
     const li = document.createElement('li');
     li.className = `channel-item ${ch.id === currentChannelId ? 'active' : ''}`;
@@ -163,12 +168,16 @@ function renderChannels() {
       <span class="channel-name">${ch.name}</span>
       <button class="channel-delete" data-id="${ch.id}">×</button>
     `;
-    channelList.appendChild(li);
+
+    const deleteBtn = li.querySelector('.channel-delete');
+    if (deleteBtn) {
+      deleteBtn.onclick = (e) => deleteChannel(ch.id, e);
+    }
+
+    fragment.appendChild(li);
   });
 
-  channelList.querySelectorAll('.channel-delete').forEach(btn => {
-    btn.onclick = (e) => deleteChannel(btn.dataset.id, e);
-  });
+  channelList.appendChild(fragment);
 }
 
 function renderCollapsedChannels() {
@@ -555,17 +564,25 @@ function showToolResult(toolName, resultJson) {
   resultEl.className = 'tool-result-item collapsed';
 
   const toolDisplayName = toolName || '工具结果';
-  resultEl.innerHTML = `
-    <div class="tool-result-header" onclick="this.parentElement.classList.toggle('collapsed'); this.parentElement.classList.toggle('expanded');">
-      <span class="tool-result-icon">🔧</span>
-      <span class="tool-result-name">${toolDisplayName}</span>
-      <span class="tool-result-toggle">▸</span>
-    </div>
-    <div class="tool-result-content">
-      <pre>${formattedResult}</pre>
-    </div>
+  const headerEl = document.createElement('div');
+  headerEl.className = 'tool-result-header';
+  headerEl.innerHTML = `
+    <span class="tool-result-icon">🔧</span>
+    <span class="tool-result-name">${toolDisplayName}</span>
+    <span class="tool-result-toggle">▸</span>
   `;
+  // 绑定事件处理器（避免内联 onclick）
+  headerEl.addEventListener('click', () => {
+    resultEl.classList.toggle('collapsed');
+    resultEl.classList.toggle('expanded');
+  });
 
+  const contentEl = document.createElement('div');
+  contentEl.className = 'tool-result-content';
+  contentEl.innerHTML = `<pre>${formattedResult}</pre>`;
+
+  resultEl.appendChild(headerEl);
+  resultEl.appendChild(contentEl);
   toolResultContainer.appendChild(resultEl);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
@@ -761,6 +778,12 @@ function showUserCommand(command) {
 }
 
 function connect() {
+  // 清除旧的重连定时器
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
   // 关闭已有连接
   if (eventSource) {
     eventSource.close();
@@ -777,12 +800,14 @@ function connect() {
     reconnectAttempts = 0;
   };
 
-  eventSource.onerror = (err) => {
-    console.error('[SSE] 连接错误', err);
+  eventSource.onerror = () => {
+    console.error('[SSE] 连接错误');
     eventSource.close();
     eventSource = null;
     reconnectAttempts++;
-    setTimeout(connect, Math.min(5000 * reconnectAttempts, 30000));
+    // 清除旧的重连定时器
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, Math.min(5000 * reconnectAttempts, 30000));
   };
 
   eventSource.onmessage = (e) => {
@@ -886,6 +911,13 @@ if (themeToggle) {
   themeToggle.addEventListener('click', toggleTheme);
 }
 
+const apiConfigBtn = document.getElementById('api-config-btn');
+if (apiConfigBtn) {
+  apiConfigBtn.addEventListener('click', () => {
+    window.location.href = '/api-config';
+  });
+}
+
 if (sidebarToggle) {
   sidebarToggle.addEventListener('click', toggleSidebar);
 }
@@ -960,9 +992,17 @@ async function checkApiConfig() {
           <strong>API 未配置</strong><br>
           请先配置 AI 模型才能开始对话
         </div>
-        <button class="hint-btn" onclick="window.location.href='/api-config'">前往配置</button>
+        <button class="hint-btn" id="api-config-hint-btn">前往配置</button>
       `;
       document.body.appendChild(hint);
+
+      // 绑定事件处理器（避免内联 onclick）
+      const hintBtn = document.getElementById('api-config-hint-btn');
+      if (hintBtn) {
+        hintBtn.addEventListener('click', () => {
+          window.location.href = '/api-config';
+        });
+      }
     }
   } catch (err) {
     console.error('Failed to check API config:', err);
@@ -1070,15 +1110,32 @@ function renderP2PPeers() {
     return;
   }
 
-  p2pPeersList.innerHTML = peers.map(peer => `
-    <div class="p2p-peer-item">
+  // 使用 DocumentFragment 优化性能
+  const fragment = document.createDocumentFragment();
+
+  peers.forEach(peer => {
+    const div = document.createElement('div');
+    div.className = 'p2p-peer-item';
+    div.innerHTML = `
       <div class="p2p-peer-info">
         <span class="p2p-peer-id">${peer.publicKey || peer.id || 'unknown'}</span>
         <span class="p2p-peer-status online">已连接</span>
       </div>
-      <button class="btn-small" onclick="sendToPeer('${peer.publicKey || peer.id}', 'Hello!')">发送消息</button>
-    </div>
-  `).join('');
+      <button class="btn-small" data-peer-id="${peer.publicKey || peer.id}">发送消息</button>
+    `;
+    fragment.appendChild(div);
+  });
+
+  p2pPeersList.innerHTML = '';
+  p2pPeersList.appendChild(fragment);
+
+  // 绑定事件处理器（避免内联 onclick）
+  p2pPeersList.querySelectorAll('[data-peer-id]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const peerId = (e.currentTarget as HTMLElement).dataset.peerId;
+      if (peerId) sendToPeer(peerId, 'Hello!');
+    });
+  });
 }
 
 function renderP2PChannels() {
@@ -1089,8 +1146,14 @@ function renderP2PChannels() {
     return;
   }
 
-  p2pChannelsList.innerHTML = channels.map(ch => `
-    <div class="p2p-channel-item ${ch.id === currentChannelId ? 'active' : ''}" onclick="selectChannel('${ch.id}')">
+  // 使用 DocumentFragment 优化性能
+  const fragment = document.createDocumentFragment();
+
+  channels.forEach(ch => {
+    const div = document.createElement('div');
+    div.className = `p2p-channel-item ${ch.id === currentChannelId ? 'active' : ''}`;
+    div.dataset.channelId = ch.id;
+    div.innerHTML = `
       <span class="p2p-channel-icon">💬</span>
       <div class="p2p-channel-info">
         <span class="p2p-channel-name">${ch.name}</span>
@@ -1098,8 +1161,20 @@ function renderP2PChannels() {
         ${ch.cid ? `<span class="p2p-channel-cid">CID: ${ch.cid.substring(0, 20)}...</span>` : ''}
       </div>
       <span class="p2p-channel-action">${ch.id === currentChannelId ? '当前' : '选择'}</span>
-    </div>
-  `).join('');
+    `;
+    fragment.appendChild(div);
+  });
+
+  p2pChannelsList.innerHTML = '';
+  p2pChannelsList.appendChild(fragment);
+
+  // 绑定事件处理器（避免内联 onclick）
+  p2pChannelsList.querySelectorAll('[data-channel-id]').forEach(item => {
+    item.addEventListener('click', () => {
+      const channelId = (item as HTMLElement).dataset.channelId;
+      if (channelId) selectChannel(channelId);
+    });
+  });
 }
 
 function showP2PModal() {
@@ -1279,8 +1354,15 @@ function renderTasks() {
     return;
   }
 
-  taskList.innerHTML = tasks.map(task => `
-    <div class="task-item ${task.status}" data-id="${task.id}">
+  // 使用 DocumentFragment 优化性能
+  const fragment = document.createDocumentFragment();
+
+  tasks.forEach(task => {
+    const div = document.createElement('div');
+    div.className = `task-item ${task.status}`;
+    div.dataset.id = task.id;
+
+    div.innerHTML = `
       <div class="task-item-header">
         <div class="task-item-title">
           <span>${getTaskIcon(task.type)}</span>
@@ -1302,13 +1384,35 @@ function renderTasks() {
         </div>
       ` : ''}
       <div class="task-item-actions">
-        ${task.status === 'pending' ? `<button class="btn-sm btn-primary" onclick="executeTask('${task.id}')">▶ 执行</button>` : ''}
+        ${task.status === 'pending' ? `<button class="btn-sm btn-primary" data-action="execute">▶ 执行</button>` : ''}
         ${task.status === 'running' ? `<button class="btn-sm" disabled>执行中...</button>` : ''}
-        ${task.status === 'completed' ? `<button class="btn-sm" onclick="deleteTask('${task.id}')">删除</button>` : ''}
-        ${task.status === 'failed' ? `<button class="btn-sm btn-primary" onclick="retryTask('${task.id}')">重试</button>` : ''}
+        ${task.status === 'completed' ? `<button class="btn-sm" data-action="delete">删除</button>` : ''}
+        ${task.status === 'failed' ? `<button class="btn-sm btn-primary" data-action="retry">重试</button>` : ''}
       </div>
-    </div>
-  `).join('');
+    `;
+
+    fragment.appendChild(div);
+  });
+
+  taskList.innerHTML = '';
+  taskList.appendChild(fragment);
+
+  // 绑定事件处理器（避免内联 onclick）
+  taskList.querySelectorAll('[data-action]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const item = (e.currentTarget as HTMLElement).closest('.task-item');
+      const taskId = item?.dataset.id;
+      if (!taskId) return;
+
+      const action = (e.currentTarget as HTMLElement).dataset.action;
+      switch (action) {
+        case 'execute': executeTask(taskId); break;
+        case 'delete': deleteTask(taskId); break;
+        case 'retry': retryTask(taskId); break;
+      }
+    });
+  });
 }
 
 function getTaskIcon(type) {

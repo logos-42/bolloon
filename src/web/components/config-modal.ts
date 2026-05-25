@@ -10,6 +10,7 @@ export interface ConfigModalData {
 export class ConfigModal extends HTMLElement {
   private currentProvider: string | null = null;
   private config: ConfigModalData | null = null;
+  private hasExistingApiKey: boolean = false; // 改进: 使用布尔标志跟踪是否有现有 Key
   private shadow = this.attachShadow({ mode: 'open' });
 
   connectedCallback(): void {
@@ -20,6 +21,8 @@ export class ConfigModal extends HTMLElement {
   show(data: ConfigModalData): void {
     this.currentProvider = data.key;
     this.config = data;
+    // 记录是否有现有 API Key
+    this.hasExistingApiKey = Boolean(data.provider.apiKey);
 
     const titleEl = this.shadow.getElementById('modal-title');
     const apiKeyEl = this.shadow.getElementById('api-key') as HTMLInputElement;
@@ -29,7 +32,11 @@ export class ConfigModal extends HTMLElement {
     const testResultEl = this.shadow.getElementById('test-result');
 
     if (titleEl) titleEl.textContent = `配置 ${data.info.name}`;
-    if (apiKeyEl) apiKeyEl.value = (data.provider.apiKey || '').replace(/\*\*\*/g, '');
+    // 改进: 不再显示掩码，改为空字段让用户决定是否更新
+    if (apiKeyEl) {
+      apiKeyEl.value = '';
+      apiKeyEl.placeholder = this.hasExistingApiKey ? '已有 Key（输入新值以更新）' : '输入 API Key';
+    }
     if (baseUrlEl) baseUrlEl.value = data.provider.baseUrl || '';
     if (modelEl) modelEl.value = data.provider.model || '';
     if (tempEl) tempEl.value = String(data.provider.temperature || 0.7);
@@ -341,10 +348,11 @@ export class ConfigModal extends HTMLElement {
           resultEl.textContent = `连接失败: ${result.error}`;
         }
       }
-    } catch (err: any) {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误';
       if (resultEl) {
         resultEl.classList.add('show', 'error');
-        resultEl.textContent = `测试失败: ${err.message}`;
+        resultEl.textContent = `测试失败: ${message}`;
       }
     } finally {
       if (testBtn) testBtn.disabled = false;
@@ -362,9 +370,11 @@ export class ConfigModal extends HTMLElement {
     const saveTextEl = this.shadow.getElementById('save-text');
 
     const currentConfig = this.config.provider;
+    // 改进: 只有用户输入新值时才更新 API Key，否则保留现有值
+    const newApiKey = apiKeyEl?.value?.trim();
     const updateData: Partial<Provider> = {
       enabled: true,
-      apiKey: apiKeyEl?.value || currentConfig.apiKey || '',
+      apiKey: newApiKey || currentConfig.apiKey || '',
       baseUrl: baseUrlEl?.value || currentConfig.baseUrl || '',
       model: modelEl?.value || currentConfig.model || '',
       temperature: parseFloat(tempEl?.value || '0.7'),
