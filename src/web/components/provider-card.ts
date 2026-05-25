@@ -29,21 +29,21 @@ export class ProviderCard extends HTMLElement {
       }
 
       .card {
-        background: var(--bg-secondary, #222220);
-        border: 1px solid var(--border, #3a3a36);
-        border-radius: 8px;
+        background: var(--bg-sidebar);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
         padding: 16px;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: var(--transition);
       }
 
       .card:hover {
-        border-color: var(--accent, #c4d640);
+        border-color: var(--accent);
       }
 
       .card.active {
-        border-color: var(--accent, #c4d640);
-        background: var(--bg-tertiary, #333330);
+        border-color: var(--accent);
+        background: var(--bg-active);
       }
 
       .card-header {
@@ -56,24 +56,24 @@ export class ProviderCard extends HTMLElement {
       .card-name {
         font-size: 16px;
         font-weight: 600;
-        color: var(--text-primary, #d8d8c8);
+        color: var(--text);
       }
 
       .badge {
         font-size: 10px;
         padding: 2px 6px;
         border-radius: 4px;
-        background: var(--accent, #c4d640);
-        color: var(--bg-primary, #1a1a18);
+        background: var(--accent);
+        color: var(--bg);
       }
 
       .badge.active {
-        background: #22c55e;
+        background: var(--success);
       }
 
       .card-desc {
         font-size: 12px;
-        color: var(--text-secondary, #909088);
+        color: var(--text-secondary);
         margin-bottom: 12px;
       }
 
@@ -82,22 +82,22 @@ export class ProviderCard extends HTMLElement {
         align-items: center;
         gap: 6px;
         font-size: 12px;
-        color: var(--text-secondary, #909088);
+        color: var(--text-secondary);
       }
 
       .status-dot {
         width: 6px;
         height: 6px;
         border-radius: 50%;
-        background: #888;
+        background: var(--text-muted);
       }
 
       .status-dot.enabled {
-        background: #22c55e;
+        background: var(--success);
       }
 
       .status-dot.disabled {
-        background: #888;
+        background: var(--text-muted);
       }
     `;
   }

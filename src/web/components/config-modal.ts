@@ -74,9 +74,9 @@ export class ConfigModal extends HTMLElement {
       }
 
       .modal {
-        background: var(--bg-secondary, #222220);
-        border: 1px solid var(--border, #3a3a36);
-        border-radius: 12px;
+        background: var(--bg-sidebar);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
         padding: 24px;
         width: 90%;
         max-width: 480px;
@@ -94,21 +94,21 @@ export class ConfigModal extends HTMLElement {
       .modal-header h2 {
         font-size: 18px;
         font-weight: 600;
-        color: var(--text-primary, #d8d8c8);
+        color: var(--text);
         margin: 0;
       }
 
       .modal-close {
         background: none;
         border: none;
-        color: var(--text-secondary, #909088);
+        color: var(--text-secondary);
         cursor: pointer;
         padding: 4px;
         font-size: 20px;
       }
 
       .modal-close:hover {
-        color: var(--text-primary, #d8d8c8);
+        color: var(--text);
       }
 
       .form-group {
@@ -120,17 +120,17 @@ export class ConfigModal extends HTMLElement {
         font-size: 13px;
         font-weight: 500;
         margin-bottom: 6px;
-        color: var(--text-secondary, #909088);
+        color: var(--text-secondary);
       }
 
       .form-group input,
       .form-group select {
         width: 100%;
         padding: 10px 12px;
-        background: var(--bg-primary, #1a1a18);
-        border: 1px solid var(--border, #3a3a36);
+        background: var(--bg);
+        border: 1px solid var(--border);
         border-radius: 6px;
-        color: var(--text-primary, #d8d8c8);
+        color: var(--text);
         font-size: 14px;
         font-family: inherit;
         box-sizing: border-box;
@@ -139,16 +139,16 @@ export class ConfigModal extends HTMLElement {
       .form-group input:focus,
       .form-group select:focus {
         outline: none;
-        border-color: var(--accent, #c4d640);
+        border-color: var(--accent);
       }
 
       .form-group input[type="password"] {
-        font-family: monospace;
+        font-family: var(--font-mono, monospace);
       }
 
       .form-hint {
         font-size: 11px;
-        color: var(--text-muted, #606058);
+        color: var(--text-muted);
         margin-top: 4px;
       }
 
@@ -175,12 +175,12 @@ export class ConfigModal extends HTMLElement {
         font-size: 14px;
         font-weight: 500;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: var(--transition);
       }
 
       .btn-primary {
-        background: var(--accent, #c4d640);
-        color: var(--bg-primary, #1a1a18);
+        background: var(--accent);
+        color: var(--bg);
       }
 
       .btn-primary:hover {
@@ -188,27 +188,27 @@ export class ConfigModal extends HTMLElement {
       }
 
       .btn-secondary {
-        background: var(--bg-tertiary, #333330);
-        color: var(--text-primary, #d8d8c8);
-        border: 1px solid var(--border, #3a3a36);
+        background: var(--bg-active);
+        color: var(--text);
+        border: 1px solid var(--border);
       }
 
       .btn-secondary:hover {
-        border-color: var(--accent, #c4d640);
+        border-color: var(--accent);
       }
 
       .btn-test {
         background: transparent;
-        color: var(--accent, #c4d640);
-        border: 1px solid var(--accent, #c4d640);
+        color: var(--accent);
+        border: 1px solid var(--accent);
         padding: 8px 16px;
         font-size: 12px;
         margin-top: 16px;
       }
 
       .btn-test:hover {
-        background: var(--accent, #c4d640);
-        color: var(--bg-primary, #1a1a18);
+        background: var(--accent);
+        color: var(--bg);
       }
 
       .test-result {
@@ -224,15 +224,15 @@ export class ConfigModal extends HTMLElement {
       }
 
       .test-result.success {
-        background: rgba(34, 197, 94, 0.1);
-        border: 1px solid #22c55e;
-        color: #22c55e;
+        background: var(--success-bg);
+        border: 1px solid var(--success);
+        color: var(--success);
       }
 
       .test-result.error {
-        background: rgba(239, 68, 68, 0.1);
-        border: 1px solid #ef4444;
-        color: #ef4444;
+        background: var(--error-bg);
+        border: 1px solid var(--error);
+        color: var(--error);
       }
 
       .save-indicator {
@@ -240,7 +240,7 @@ export class ConfigModal extends HTMLElement {
         align-items: center;
         gap: 6px;
         font-size: 12px;
-        color: #22c55e;
+        color: var(--success);
       }
 
       .save-indicator.show {

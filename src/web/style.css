@@ -29,6 +29,16 @@
   --sidebar-collapsed: 56px;
   --header-height: 64px;
   --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 语义化状态颜色 */
+  --success: #22c55e;
+  --success-bg: rgba(34, 197, 94, 0.1);
+  --error: #ef4444;
+  --error-bg: rgba(239, 68, 68, 0.1);
+  --warning: #f59e0b;
+  --warning-bg: rgba(245, 158, 11, 0.1);
+  --info: #2196f3;
+  --info-bg: rgba(33, 150, 243, 0.1);
 }
 
 [data-theme="light"] {
@@ -435,8 +445,8 @@ body {
 }
 
 .channel-delete:hover {
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
+  background: var(--error-bg);
+  color: var(--error);
 }
 
 /* Sidebar Footer */
@@ -795,13 +805,13 @@ body {
 }
 
 .copy-btn:hover {
-  color: #4caf50;
-  border-color: #4caf50;
+  color: var(--success);
+  border-color: var(--success);
 }
 
 .regenerate-btn:hover {
-  color: #2196f3;
-  border-color: #2196f3;
+  color: var(--info);
+  border-color: var(--info);
 }
 
 @keyframes spin {
@@ -1474,11 +1484,11 @@ body {
   color: var(--text-secondary);
 }
 
-.task-item-status.pending { background: var(--bg-tertiary); color: var(--text-secondary); }
+.task-item-status.pending { background: var(--bg-active); color: var(--text-secondary); }
 .task-item-status.running { background: var(--accent); color: var(--bg); }
-.task-item-status.completed { background: #22c55e; color: white; }
-.task-item-status.failed { background: #ef4444; color: white; }
-.task-item-status.paused { background: #f59e0b; color: white; }
+.task-item-status.completed { background: var(--success); color: var(--bg); }
+.task-item-status.failed { background: var(--error); color: white; }
+.task-item-status.paused { background: var(--warning); color: var(--bg); }
 
 .task-item-progress {
   height: 4px;
@@ -1509,9 +1519,9 @@ body {
   color: var(--text-secondary);
 }
 
-.task-item-step.completed { color: #22c55e; }
+.task-item-step.completed { color: var(--success); }
 .task-item-step.running { color: var(--accent); }
-.task-item-step.failed { color: #ef4444; }
+.task-item-step.failed { color: var(--error); }
 
 .task-item-actions {
   display: flex;
@@ -1676,7 +1686,7 @@ body {
 }
 
 .p2p-peer-status.online {
-  color: #22c55e;
+  color: var(--success);
 }
 
 .p2p-channel-item {
