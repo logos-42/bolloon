@@ -456,14 +456,6 @@ export class DiapChannelBridge {
     this.ownChannel = channel;
   }
 
-  /**
-   * 获取自己的 DID
-   */
-  getOwnDid(): string {
-    const persona = this.sessionProvider.getPersona();
-    return persona?.name || `did:local:${Date.now()}`;
-  }
-
   private startDiscoveryLoop(): void {
     this.discoveryTimer = setInterval(async () => {
       if (!this.initialized) return;

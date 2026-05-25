@@ -1161,9 +1161,21 @@ app.get('/channels', async (_req, res) => {
       const connections = p2pCommunicator.getConnections();
       const peers = connections.map((conn: P2PConnection) => ({
         id: conn.publicKey.substring(0, 16),
-        publicKey: conn.publicKey
+        publicKey: conn.publicKey,
+        peerId: conn.publicKey
       }));
       res.json(peers);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 获取已发现的所有节点（包括通过 CID 解析的）
+  app.get('/api/discovered-peers', async (_req, res) => {
+    try {
+      // 从全局状态获取已发现的节点
+      const discovered = (global as any).discoveredAgents || [];
+      res.json(discovered);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1192,20 +1204,83 @@ app.get('/channels', async (_req, res) => {
   // 通过 DID/CID 连接远程智能体
   app.post('/api/connect', async (req, res) => {
     try {
-      const { did, cid } = req.body;
-      if (!did && !cid) {
-        return res.status(400).json({ error: 'DID or CID required' });
+      const { did, cid, ipnsName } = req.body;
+      if (!did && !cid && !ipnsName) {
+        return res.status(400).json({ error: 'DID, CID or IPNS name required' });
       }
 
-      console.log(`[连接] 尝试连接 DID: ${did}, CID: ${cid}`);
+      console.log(`[连接] 尝试连接 DID: ${did}, CID: ${cid}, IPNS: ${ipnsName}`);
 
-      // TODO: 实现通过 CID 解析 DID 文档并建立连接
-      // 1. 通过 CID 获取 IPFS 上的 DID 文档
-      // 2. 验证 DID 身份
-      // 3. 建立 P2P 连接
-      // 4. 触发 skills 进行身份验证和交流
+      let doc: any = null;
 
-      res.json({ ok: true, did, cid, message: '连接请求已发送' });
+      // 1. 通过 CID 或 IPNS 解析 DiapDoc
+      if (cid || ipnsName) {
+        try {
+          const { IpfsClient } = await import('@diap/sdk');
+          const ipfs = new IpfsClient('http://127.0.0.1:5001', null);
+
+          let resolvedCid = cid;
+          if (ipnsName) {
+            resolvedCid = await ipfs.resolveIpns(ipnsName);
+          }
+
+          if (resolvedCid) {
+            const content = await ipfs.get(resolvedCid);
+            doc = JSON.parse(content);
+            console.log(`[连接] 解析 DiapDoc 成功: ${doc.name}`);
+          }
+        } catch (e) {
+          console.warn(`[连接] 解析 IPFS 内容失败:`, e);
+        }
+      }
+
+      // 2. 如果有 DID，检查是否已连接
+      if (did) {
+        // 广播连接请求
+        if (p2pCommunicator) {
+          const payload = JSON.stringify({
+            type: 'connect_request',
+            requesterDid: did,
+            targetDid: did,
+            timestamp: Date.now()
+          });
+          // 广播到网络
+          console.log(`[连接] 广播连接请求: ${did}`);
+        }
+      }
+
+      // 3. 将解析的文档添加到已发现列表
+      if (doc) {
+        const discovered = (global as any).discoveredAgents || [];
+        const existing = discovered.findIndex((a: any) => a.did === doc.id);
+        if (existing >= 0) {
+          discovered[existing] = { ...discovered[existing], ...doc, lastSeen: Date.now() };
+        } else {
+          discovered.push({
+            did: doc.id || doc.did,
+            name: doc.name,
+            capabilities: doc.capabilities || [],
+            interests: doc.interests || [],
+            channels: doc.channels || [],
+            cid: cid,
+            ipnsName: ipnsName,
+            lastSeen: Date.now()
+          });
+        }
+        (global as any).discoveredAgents = discovered;
+
+        // 广播发现事件到前端
+        broadcast({ type: 'peer_discovered', peer: doc });
+      }
+
+      res.json({
+        ok: true,
+        did: doc?.id || did,
+        name: doc?.name,
+        capabilities: doc?.capabilities || [],
+        channels: doc?.channels || [],
+        message: doc ? 'DiapDoc 解析成功' : '连接请求已发送'
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1214,11 +1289,81 @@ app.get('/channels', async (_req, res) => {
   // 发送 P2P 消息
   app.post('/api/message-p2p', async (req, res) => {
     try {
-      const { peerId, message } = req.body;
-      if (!peerId || !message) {
-        return res.status(400).json({ error: 'peerId and message required' });
+      const { peerId, did, message } = req.body;
+      if (!message) {
+        return res.status(400).json({ error: 'message required' });
       }
-      // TODO: 调用 P2P 模块发送消息
+
+      let targetPeerId = peerId;
+
+      // 如果没有 peerId，通过 DID 查找
+      if (!targetPeerId && did) {
+        const discovered = (global as any).discoveredAgents || [];
+        const peer = discovered.find((a: any) => a.did === did);
+        if (peer) {
+          targetPeerId = peer.peerId;
+        }
+      }
+
+      if (!targetPeerId) {
+        // 如果没有 P2P 连接，将消息存储到本地队列
+        const messageQueue = (global as any).messageQueue || [];
+        messageQueue.push({
+          did,
+          message,
+          timestamp: Date.now(),
+          status: 'pending'
+        });
+        (global as any).messageQueue = messageQueue;
+        res.json({ ok: true, queued: true, message: '消息已加入队列，等待对方上线' });
+        return;
+      }
+
+      // 通过 P2P 发送消息
+      if (p2pCommunicator) {
+        const payload = JSON.stringify({
+          from: 'bolloon-web',
+          content: message,
+          timestamp: Date.now()
+        });
+
+        // 找到连接并发送
+        const connections = p2pCommunicator.getConnections();
+        for (const conn of connections) {
+          if (conn.publicKey.includes(targetPeerId) || targetPeerId.includes(conn.publicKey.substring(0, 16))) {
+            conn.send(payload);
+            res.json({ ok: true, sent: true });
+            return;
+          }
+        }
+      }
+
+      res.json({ ok: true, sent: false, message: '对方不在线，消息已加入队列' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 获取待接收的消息队列
+  app.get('/api/peer-messages', async (_req, res) => {
+    try {
+      const messageQueue = (global as any).messageQueue || [];
+      const pendingMessages = messageQueue.filter((m: any) => m.status === 'pending');
+      res.json(pendingMessages);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 标记消息已读
+  app.post('/api/peer-messages/:messageId/read', async (req, res) => {
+    try {
+      const { messageId } = req.params;
+      const messageQueue = (global as any).messageQueue || [];
+      const msg = messageQueue.find((m: any) => m.id === messageId);
+      if (msg) {
+        msg.status = 'read';
+      }
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

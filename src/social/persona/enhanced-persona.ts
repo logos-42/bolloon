@@ -23,7 +23,7 @@ export interface PersonaDesignRequest {
 export interface PersonaDesignTemplate {
   personality: string;
   traits: string[];
-  communicationStyle: 'formal' | 'casual' | 'technical';
+  communicationStyle: 'formal' | 'casual' | 'technical' | 'friendly' | 'professional';
   capabilities: string[];
   interests: string[];
   backstory: string;
@@ -129,7 +129,7 @@ export class PersonaDesignEngine {
   /**
    * Get template for a type
    */
-  getTemplate(type: string): PersonaDesignTemplate | null {
+  getTemplate(type: string): PersonaDesignTemplate {
     return PERSONA_TEMPLATES[type] || PERSONA_TEMPLATES['custom'];
   }
 
