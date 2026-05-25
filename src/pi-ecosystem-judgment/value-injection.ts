@@ -22,6 +22,7 @@ import {
   type PriorityRule,
   type HumanJudgment
 } from './human-value-store.js';
+import { getModel, isModelAvailable } from '../llm/pi-ai.js';
 
 export interface ValueInjectionConfig {
   // 注入模式
@@ -99,6 +100,361 @@ export async function generateValueInjection(
   }
 
   return injection;
+}
+
+// ============================================================
+// 情境感知价值观注入（LLM 语义匹配）
+// ============================================================
+
+export interface SituationMatch {
+  judgment: HumanJudgment;
+  situationalScore: number;    // LLM 判断的当前情境相关度 0-1
+  dynamicConfidence: number;   // situationalScore × historicalConfidence
+  relevanceReason: string;    // LLM 给出的相关原因
+}
+
+export interface SituationalInjectionResult {
+  matches: SituationMatch[];
+  injection: string;
+  situation: string;
+  matchedCount: number;
+}
+
+/**
+ * 使用 LLM 判断一条 judgment 在当前情境下的相关性
+ * 返回 situationalScore (0-1) 和 reason
+ */
+async function scoreJudgmentRelevance(
+  judgment: HumanJudgment,
+  situation: string
+): Promise<{ score: number; reason: string }> {
+  if (!isModelAvailable()) {
+    return { score: 0.5, reason: 'LLM 不可用，使用默认分数' };
+  }
+
+  const model = getModel();
+
+  const prompt = `判断以下人类判断在当前情境下的相关性。
+
+情境：${situation}
+
+历史判断：
+- 决策：${judgment.decision}
+- 理由：${judgment.reasons.join('; ')}
+- 价值观：${judgment.values_derived.map(v => `${v.value}(${v.category})`).join(', ')}
+- 领域：${judgment.context?.domain || '未指定'}
+- 决定类型：${judgment.decision_type}
+
+请判断这个历史判断对理解当前情境有多大帮助。考虑：
+1. 情境是否相似？（相似 = 相关）
+2. 价值观是否适用于当前情境？
+3. 这个判断能帮助理解用户的决策倾向吗？
+
+请用 JSON 格式输出：
+{
+  "score": 0.0-1.0 的相关性分数（0 = 完全不相关，1 = 高度相关）,
+  "reason": 一句话说明为什么相关或不相关
+}
+
+直接输出 JSON，不需要解释。`;
+
+  try {
+    const result = await model.chat(prompt, '');
+    const reply = result.reply.trim();
+
+    const jsonMatch = reply.match(/\{[\s\S]*?\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const score = Math.max(0, Math.min(1, parseFloat(parsed.score) || 0));
+      return { score, reason: parsed.reason || '' };
+    }
+  } catch {
+    // fall through
+  }
+
+  return { score: 0.5, reason: '解析失败，使用默认分数' };
+}
+
+/**
+ * 使用 LLM 对所有 judgment 做情境语义匹配
+ * 这是情境感知注入的核心
+ */
+export async function getSituationallyRelevantJudgments(
+  situation: string,
+  history: string[] = [],
+  options: {
+    maxJudgments?: number;
+    minScore?: number;
+  } = {}
+): Promise<SituationMatch[]> {
+  const { loadAllJudgments } = await import('./human-value-store.js');
+  const judgments = await loadAllJudgments();
+
+  if (judgments.length === 0) {
+    return [];
+  }
+
+  const { maxJudgments = 10, minScore = 0.3 } = options;
+
+  const historyText = history.length > 0
+    ? `对话历史：\n${history.slice(-3).map((h, i) => `[${i + 1}] ${h}`).join('\n')}`
+    : '无对话历史';
+
+  const batchSize = 5;
+  const results: SituationMatch[] = [];
+
+  for (let i = 0; i < judgments.length; i += batchSize) {
+    const batch = judgments.slice(i, i + batchSize);
+    const batchPromises = batch.map(async (j): Promise<SituationMatch> => {
+      const { score, reason } = await scoreJudgmentRelevance(j, situation);
+      const dynamicConfidence = score * j.metadata.confidence;
+
+      return {
+        judgment: j,
+        situationalScore: score,
+        dynamicConfidence,
+        relevanceReason: reason,
+      };
+    });
+
+    const batchResults = await Promise.all(batchPromises);
+    results.push(...batchResults);
+
+    if (i + batchSize < judgments.length) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+
+  return results
+    .filter(m => m.situationalScore >= minScore)
+    .sort((a, b) => b.dynamicConfidence - a.dynamicConfidence)
+    .slice(0, maxJudgments);
+}
+
+/**
+ * 生成情境感知的价值观注入
+ * 使用 LLM 语义匹配而非关键词匹配
+ */
+export async function generateSituationalValueInjection(
+  situation: string,
+  history: string[] = [],
+  options: {
+    mode?: ValueInjectionConfig['mode'];
+    maxJudgments?: number;
+    includeExamples?: boolean;
+    includeReasoning?: boolean;
+    minJudgmentCountForLLM?: number;
+  } = {}
+): Promise<SituationalInjectionResult> {
+  const {
+    mode = 'standard',
+    maxJudgments = 5,
+    includeExamples = true,
+    includeReasoning = true,
+    minJudgmentCountForLLM = 3,
+  } = options;
+
+  const { loadAllJudgments } = await import('./human-value-store.js');
+  const totalJudgments = (await loadAllJudgments()).length;
+
+  if (totalJudgments < minJudgmentCountForLLM) {
+    const fallbackInjection = await generateValueInjection(situation, {
+      mode,
+      maxTokens: 600,
+      includeExamples: true,
+      includeRules: true,
+    });
+
+    return {
+      matches: [],
+      injection: fallbackInjection,
+      situation,
+      matchedCount: 0,
+    };
+  }
+
+  const matches = await getSituationallyRelevantJudgments(situation, history, {
+    maxJudgments,
+    minScore: 0.3,
+  });
+
+  if (matches.length === 0) {
+    return {
+      matches: [],
+      injection: '',
+      situation,
+      matchedCount: 0,
+    };
+  }
+
+  const parts: string[] = [];
+
+  const situationHeader = mode === 'concise'
+    ? `## 当前情境\n${situation}`
+    : `## 当前决策情境\n\n${situation}`;
+
+  parts.push(situationHeader);
+
+  if (mode !== 'concise') {
+    const matchSummary = matches.map(m =>
+      `  - "${m.judgment.decision}"（相关度 ${(m.situationalScore * 100).toFixed(0)}%）`
+    ).join('\n');
+    parts.push(`\n匹配的判断（共 ${matches.length} 条）：\n${matchSummary}`);
+  }
+
+  const topMatches = matches.slice(0, 3);
+
+  if (includeReasoning && mode !== 'concise') {
+    const reasoningLines = ['\n## 判断相关性说明\n'];
+    for (const m of topMatches) {
+      reasoningLines.push(`**"${m.judgment.decision.substring(0, 30)}..."**`);
+      reasoningLines.push(`  相关度: ${(m.situationalScore * 100).toFixed(0)}%（${m.relevanceReason}）`);
+      reasoningLines.push('');
+    }
+    parts.push(reasoningLines.join('\n'));
+  }
+
+  const valuesSection = generateSituationBasedValues(topMatches, mode);
+  if (valuesSection) {
+    parts.push(valuesSection);
+  }
+
+  if (includeExamples) {
+    const examplesSection = generateSituationBasedExamples(topMatches, mode);
+    if (examplesSection) {
+      parts.push(examplesSection);
+    }
+  }
+
+  let injection = parts.join('\n');
+
+  const maxChars = 800 * 4;
+  if (injection.length > maxChars) {
+    injection = injection.substring(0, maxChars) + '\n...（价值观注入已截断）';
+  }
+
+  return {
+    matches,
+    injection,
+    situation,
+    matchedCount: matches.length,
+  };
+}
+
+function generateSituationBasedValues(matches: SituationMatch[], mode: ValueInjectionConfig['mode']): string {
+  if (mode === 'concise') {
+    const top = matches.slice(0, 3);
+    return `\n## 适用的价值观\n${top.map(m =>
+      `- ${m.judgment.values_derived[0]?.value || '一般偏好'} (${(m.dynamicConfidence * 100).toFixed(0)}% 置信度)`
+    ).join('\n')}`;
+  }
+
+  const lines = ['\n## 当前情境下适用的价值观\n'];
+  lines.push('基于历史判断，这些价值观在当前决策中最重要：\n');
+
+  const aggregatedValues = new Map<string, { weight: number; count: number; category: string }>();
+  for (const m of matches) {
+    for (const v of m.judgment.values_derived) {
+      const key = v.value;
+      const existing = aggregatedValues.get(key);
+      if (existing) {
+        existing.weight = Math.min(1, existing.weight + v.weight * m.situationalScore);
+        existing.count++;
+      } else {
+        aggregatedValues.set(key, {
+          weight: v.weight * m.situationalScore,
+          count: 1,
+          category: v.category,
+        });
+      }
+    }
+  }
+
+  const sorted = Array.from(aggregatedValues.entries())
+    .sort((a, b) => b[1].weight - a[1].weight);
+
+  for (let i = 0; i < Math.min(sorted.length, 5); i++) {
+    const [value, { weight, count }] = sorted[i];
+    const stars = '★'.repeat(Math.ceil(weight * 5));
+    lines.push(`${i + 1}. **${value}** ${stars} (${(weight * 100).toFixed(0)}% 相关度)`);
+  }
+
+  return lines.join('\n');
+}
+
+function generateSituationBasedExamples(matches: SituationMatch[], mode: ValueInjectionConfig['mode']): string {
+  const examples = matches
+    .filter(m => m.judgment.decision_type !== 'modify')
+    .slice(0, 3);
+
+  if (examples.length === 0) return '';
+
+  if (mode === 'concise') {
+    return `\n## 类似决策参考\n${examples.map(e =>
+      `- ${e.judgment.decision_type === 'approve' ? '✅' : '❌'} "${e.judgment.decision.substring(0, 30)}..."`
+    ).join('\n')}`;
+  }
+
+  const lines = ['\n## 类似的历史决策参考\n'];
+  lines.push('以下是你过去在类似情境下做出的决策，可作为参考：\n');
+
+  for (const e of examples) {
+    const emoji = e.judgment.decision_type === 'approve' ? '✅' :
+                  e.judgment.decision_type === 'reject' ? '❌' : '📝';
+    lines.push(`### ${emoji} ${e.judgment.decision.substring(0, 50)}`);
+    if (e.relevanceReason) {
+      lines.push(`   相关原因: ${e.relevanceReason}`);
+    }
+    if (e.judgment.reasons.length > 0) {
+      lines.push(`   理由: ${e.judgment.reasons[0]}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * 生成完整的基于情境的判断 Prompt
+ * 这是 generateJudgmentPromptWithValues 的情境感知版本
+ */
+export async function generateSituationAwarePrompt(
+  userInput: string,
+  situation: string,
+  history: string[] = [],
+  options: {
+    mode?: ValueInjectionConfig['mode'];
+    includeExamples?: boolean;
+    maxJudgments?: number;
+  } = {}
+): Promise<string> {
+  const injection = await generateSituationalValueInjection(
+    situation,
+    history,
+    options
+  );
+
+  const historyStr = history.length > 0
+    ? history.slice(-5).map((m, i) => `[${i + 1}] ${m}`).join('\n')
+    : '无';
+
+  const matchInfo = injection.matchedCount > 0
+    ? `\n已从 ${injection.matchedCount} 条历史判断中匹配到相关价值观。`
+    : '\n未找到相关历史判断。';
+
+  return `${injection.injection}${matchInfo}
+
+---
+
+【当前输入】
+${userInput}
+
+【对话历史】
+${historyStr}
+
+---
+
+请基于以上情境相关的价值观和历史判断，分析当前输入并给出决策建议。`;
 }
 
 /**

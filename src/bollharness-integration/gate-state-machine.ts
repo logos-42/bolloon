@@ -11,6 +11,9 @@
 
 import { AgentCoordinator, type SubTask, type AgentResult } from '@bolloon/constraint-runtime';
 import { executeGateTransitionHooks, initializeGateHooks } from './gate-transition-hooks.js';
+import { generateSituationalValueInjection, generateValueInjection } from '../pi-ecosystem-judgment/value-injection.js';
+import { loadAllJudgments } from '../pi-ecosystem-judgment/human-value-store.js';
+import { getModel, isModelAvailable } from '../llm/pi-ai.js';
 
 export type Gate = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
@@ -20,6 +23,7 @@ export interface GateConfig {
   requiredNextSkill: string;
   requiredReviewSubstrate?: string;
   isReviewGate: boolean;
+  situation: string;
 }
 
 export interface GateTransition {
@@ -36,6 +40,7 @@ export interface GateState {
   requiredArtifact: string;
   requiredNextSkill: string;
   requiredReviewSubstrate?: string;
+  valueInjection: string;
   artifacts: Map<string, unknown>;
 }
 
@@ -45,12 +50,14 @@ const GATE_CONFIGS: Record<Gate, GateConfig> = {
     requiredArtifact: '问题陈述 + Change Classification',
     requiredNextSkill: 'arch',
     isReviewGate: false,
+    situation: '理解用户提出的需求或问题，确定问题的本质和边界',
   },
   1: {
     entryCondition: 'Gate 0 产物存在',
     requiredArtifact: 'ADR 草稿 + 消费方清单',
     requiredNextSkill: 'arch',
     isReviewGate: false,
+    situation: '在多个技术方案中做取舍，权衡复杂度、可维护性、性能和团队实际情况',
   },
   2: {
     entryCondition: 'ADR 草稿完成',
@@ -58,12 +65,14 @@ const GATE_CONFIGS: Record<Gate, GateConfig> = {
     requiredNextSkill: 'review',
     requiredReviewSubstrate: 'ref-review-sop.md 阶段②维度',
     isReviewGate: true,
+    situation: '审查架构方案有没有根本性缺陷，安全底线在哪里，什么是不可妥协的',
   },
   3: {
     entryCondition: 'Gate 2 PASS',
     requiredArtifact: 'PLAN 文档 + 架构覆盖矩阵',
     requiredNextSkill: 'harness-eng',
     isReviewGate: false,
+    situation: '制定具体的执行计划，判断时间线和风险覆盖是否充分',
   },
   4: {
     entryCondition: 'PLAN vN-final 冻结',
@@ -71,12 +80,14 @@ const GATE_CONFIGS: Record<Gate, GateConfig> = {
     requiredNextSkill: 'review',
     requiredReviewSubstrate: 'ref-review-sop.md 阶段④维度 + C/D/E/F',
     isReviewGate: true,
+    situation: '审查计划是否可行，是否遗漏了关键风险或依赖',
   },
   5: {
     entryCondition: 'Gate 4 PASS + plan-lock',
     requiredArtifact: 'WP 拆分 + TASK.md',
     requiredNextSkill: 'task-arch',
     isReviewGate: false,
+    situation: '将计划拆分为具体的可执行任务，判断任务粒度是否合理',
   },
   6: {
     entryCondition: '全部 TASK.md 完成',
@@ -84,12 +95,14 @@ const GATE_CONFIGS: Record<Gate, GateConfig> = {
     requiredNextSkill: 'review',
     requiredReviewSubstrate: 'ref-review-sop.md WP 拆分专项',
     isReviewGate: true,
+    situation: '审查任务拆分是否完整，依赖关系是否清晰，有没有遗漏',
   },
   7: {
     entryCondition: 'Gate 6 PASS',
     requiredArtifact: '代码 + LOG.md',
     requiredNextSkill: 'harness-eng',
     isReviewGate: false,
+    situation: '实现代码，判断实现方案是否符合决策标准，代码质量要求是什么',
   },
   8: {
     entryCondition: '全部 WP 代码 + LOG.md 存在',
@@ -97,6 +110,7 @@ const GATE_CONFIGS: Record<Gate, GateConfig> = {
     requiredNextSkill: 'harness-eng-test',
     requiredReviewSubstrate: 'ref-review-sop.md 阶段⑤⑥维度',
     isReviewGate: true,
+    situation: '最终验收，判断交付物是否解决了原始问题，是否满足质量标准',
   },
 };
 
@@ -118,6 +132,7 @@ export class GateStateMachine {
       blockers: [],
       requiredArtifact: GATE_CONFIGS[0].requiredArtifact,
       requiredNextSkill: GATE_CONFIGS[0].requiredNextSkill,
+      valueInjection: '',
       artifacts: new Map(),
     };
   }
@@ -159,6 +174,7 @@ export class GateStateMachine {
     required_artifact: string;
     required_next_skill: string;
     required_review_substrate?: string;
+    value_injection: string;
   } {
     return {
       current_gate: this.state.currentGate,
@@ -167,13 +183,19 @@ export class GateStateMachine {
       required_artifact: this.state.requiredArtifact,
       required_next_skill: this.state.requiredNextSkill,
       required_review_substrate: this.state.requiredReviewSubstrate,
+      value_injection: this.state.valueInjection,
     };
   }
 
   /**
    * 尝试转移到下一个Gate
+   * @param reviewResult 审查结果（审查门需要）
+   * @param userInput 用户当前输入或 artifact 内容，用于 LLM 动态扩展情境描述
    */
-  async transition(reviewResult?: { verdict: 'PASS' | 'BLOCK'; details?: string }): Promise<GateTransition> {
+  async transition(
+    reviewResult?: { verdict: 'PASS' | 'BLOCK'; details?: string },
+    userInput?: string
+  ): Promise<GateTransition> {
     const currentGate = this.state.currentGate;
     const blockers: string[] = [];
 
@@ -204,6 +226,9 @@ export class GateStateMachine {
     const nextGate = (currentGate + 1) as Gate;
     this.state.currentGate = nextGate;
     this.updateStateForGate(nextGate);
+
+    // 生成进入新 Gate 时的价值观注入（传入用户输入以动态扩展情境）
+    await this.generateValueInjectionForCurrentGate(userInput);
 
     // Execute gate transition hooks
     await executeGateTransitionHooks(currentGate, nextGate, true, []);
@@ -255,6 +280,84 @@ export class GateStateMachine {
     this.state.requiredArtifact = config.requiredArtifact;
     this.state.requiredNextSkill = config.requiredNextSkill;
     this.state.requiredReviewSubstrate = config.requiredReviewSubstrate;
+    this.state.valueInjection = '';
+  }
+
+  /**
+   * 为当前 Gate 生成情境化价值观注入
+   * 基于 Gate 的 situation 描述，从历史判断中匹配相关价值观
+   */
+  private async generateValueInjectionForCurrentGate(userInput?: string): Promise<void> {
+    const config = GATE_CONFIGS[this.state.currentGate];
+    const baseSituation = config.situation;
+
+    let situation = baseSituation;
+
+    if (userInput && isModelAvailable()) {
+      try {
+        situation = await this.expandSituationWithUserInput(baseSituation, userInput);
+      } catch (e) {
+        console.warn('[GateStateMachine] Situation expansion failed, using base:', e);
+      }
+    }
+
+    try {
+      const judgments = await loadAllJudgments();
+      const hasEnoughData = judgments.length >= 3;
+
+      let injection = '';
+
+      if (hasEnoughData) {
+        const result = await generateSituationalValueInjection(
+          situation,
+          [],
+          { mode: 'standard', maxJudgments: 5, includeExamples: true }
+        );
+        injection = result.injection;
+      }
+
+      if (!injection) {
+        injection = await generateValueInjection(situation, {
+          mode: 'standard',
+          maxTokens: 600,
+          includeExamples: true,
+          includeRules: true,
+        });
+      }
+
+      this.state.valueInjection = injection;
+    } catch (error) {
+      console.warn(`[GateStateMachine] Value injection generation failed for gate ${this.state.currentGate}:`, error);
+      this.state.valueInjection = '';
+    }
+  }
+
+  /**
+   * 用 LLM 将硬编码的 Gate situation 和用户输入结合，生成更具体的情境描述
+   */
+  private async expandSituationWithUserInput(
+    baseSituation: string,
+    userInput: string
+  ): Promise<string> {
+    const model = getModel();
+
+    const prompt = `基于以下 Gate 情境模板和用户当前输入，生成一个更具体的情境描述。
+
+Gate 情境模板：${baseSituation}
+
+用户当前输入/artifact 内容：
+${userInput.substring(0, 1000)}
+
+要求：
+1. 结合用户输入，把情境描述具体化
+2. 保留原始 Gate 情境的重点（用词可以调整）
+3. 提取用户输入中与该 Gate 决策相关的关键信息
+4. 输出一个 50-150 字的自然语言情境描述
+
+直接输出情境描述，不要解释。`;
+
+    const result = await model.chat(prompt, '');
+    return result.reply.trim();
   }
 
   /**
