@@ -32,12 +32,12 @@ export class ProviderGrid extends HTMLElement {
       .page-header h1 {
         font-size: 24px;
         font-weight: 600;
-        color: var(--text-primary, #d8d8c8);
+        color: var(--text);
         margin: 0;
       }
 
       .back-link {
-        color: var(--text-secondary, #909088);
+        color: var(--text-secondary);
         text-decoration: none;
         font-size: 14px;
         display: flex;
@@ -46,7 +46,7 @@ export class ProviderGrid extends HTMLElement {
       }
 
       .back-link:hover {
-        color: var(--text-primary, #d8d8c8);
+        color: var(--text);
       }
 
       .grid {
@@ -61,15 +61,15 @@ export class ProviderGrid extends HTMLElement {
         align-items: center;
         justify-content: center;
         padding: 48px;
-        color: var(--text-secondary, #909088);
+        color: var(--text-secondary);
         gap: 16px;
       }
 
       .loading-spinner {
         width: 32px;
         height: 32px;
-        border: 3px solid var(--border, #3a3a36);
-        border-top-color: var(--accent, #c4d640);
+        border: 3px solid var(--border);
+        border-top-color: var(--accent);
         border-radius: 50%;
         animation: spin 1s linear infinite;
       }
@@ -83,7 +83,7 @@ export class ProviderGrid extends HTMLElement {
         flex-direction: column;
         align-items: center;
         padding: 48px;
-        color: var(--text-secondary, #909088);
+        color: var(--text-secondary);
         gap: 16px;
       }
 
@@ -97,20 +97,21 @@ export class ProviderGrid extends HTMLElement {
 
       .error-message {
         font-size: 16px;
-        color: var(--text-secondary, #909088);
+        color: var(--text-secondary);
       }
 
       .btn-retry {
         padding: 12px 24px;
-        background: var(--bg-tertiary, #333330);
-        color: var(--text-primary, #d8d8c8);
-        border: 1px solid var(--border, #3a3a36);
+        background: var(--bg-active);
+        color: var(--text);
+        border: 1px solid var(--border);
         border-radius: 6px;
         cursor: pointer;
+        transition: var(--transition);
       }
 
       .btn-retry:hover {
-        border-color: var(--accent, #c4d640);
+        border-color: var(--accent);
       }
     `;
   }
