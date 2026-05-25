@@ -21,6 +21,8 @@ import {
   learnFromFeedback,
   learnFromCorrection
 } from '../pi-ecosystem-judgment/human-value-store.js';
+import { initPiAI, getModel, isModelAvailable } from '../llm/pi-ai.js';
+import { getPiSDKConfig } from '../llm/config-store.js';
 
 export interface LLMJudgmentResult {
   // 理解结果
@@ -322,13 +324,16 @@ export class LLMJudgmentEngine {
 
   /**
    * 调用 LLM
-   * TODO: 集成 LLMConfigStore
    */
   private async callLLM(prompt: string): Promise<string> {
-    // 这里需要调用实际的 LLM
-    // 暂时返回 JSON 格式的模拟结果
-    // 实际实现需要使用 llmConfigStore
-    throw new Error('LLM integration not implemented');
+    if (!isModelAvailable()) {
+      const config = getPiSDKConfig();
+      initPiAI(config);
+    }
+
+    const model = getModel();
+    const result = await model.chat(prompt, process.cwd());
+    return result.reply;
   }
 
   /**

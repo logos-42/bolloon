@@ -102,10 +102,12 @@ export interface ValuePreference {
 }
 
 const VALUE_STORE_DIR = path.join(process.env.HOME || '/tmp', '.bolloon', 'human-values');
+const JUDGMENTS_FILE = path.join(VALUE_STORE_DIR, 'judgments.json');
 
 // In-memory cache
 let judgmentCache: HumanJudgment[] = [];
 let valueProfileCache: Map<string, ValueProfile> = new Map();
+let initialized = false;
 
 function generateId(): string {
   return `hv-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
@@ -114,6 +116,29 @@ function generateId(): string {
 // ============================================================
 // 存储操作
 // ============================================================
+
+/**
+ * 初始化存储（创建目录和空文件）
+ */
+export async function initializeValueStore(): Promise<void> {
+  if (initialized) return;
+
+  try {
+    await fs.mkdir(VALUE_STORE_DIR, { recursive: true });
+
+    try {
+      await fs.access(JUDGMENTS_FILE);
+    } catch {
+      await fs.writeFile(JUDGMENTS_FILE, JSON.stringify([], null, 2), 'utf-8');
+    }
+
+    initialized = true;
+    console.log('[HumanValueStore] Initialized at', VALUE_STORE_DIR);
+  } catch (error) {
+    console.error('[HumanValueStore] Initialization failed:', error);
+    throw error;
+  }
+}
 
 /**
  * 存储人类判断
@@ -225,16 +250,20 @@ export async function learnFromCorrection(
  * 加载所有人类判断
  */
 export async function loadAllJudgments(): Promise<HumanJudgment[]> {
+  if (!initialized) {
+    await initializeValueStore();
+  }
+
   if (judgmentCache.length > 0) {
     return judgmentCache;
   }
 
   try {
-    const filePath = path.join(VALUE_STORE_DIR, 'judgments.json');
-    const content = await fs.readFile(filePath, 'utf-8');
+    const content = await fs.readFile(JUDGMENTS_FILE, 'utf-8');
     judgmentCache = JSON.parse(content);
     return judgmentCache;
   } catch {
+    judgmentCache = [];
     return [];
   }
 }
@@ -321,8 +350,7 @@ export async function getPriorityRules(): Promise<PriorityRule[]> {
 
 async function saveJudgments(judgments: HumanJudgment[]): Promise<void> {
   await fs.mkdir(VALUE_STORE_DIR, { recursive: true });
-  const filePath = path.join(VALUE_STORE_DIR, 'judgments.json');
-  await fs.writeFile(filePath, JSON.stringify(judgments, null, 2), 'utf-8');
+  await fs.writeFile(JUDGMENTS_FILE, JSON.stringify(judgments, null, 2), 'utf-8');
 }
 
 function buildValueProfile(agentId: string, judgments: HumanJudgment[]): ValueProfile {
