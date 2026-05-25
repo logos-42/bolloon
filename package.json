@@ -7,7 +7,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "build:main": "tsc",
-    "build:web": "tsc --ignoreConfig --outDir dist/web --declaration false --emitDeclarationOnly false --target ES2022 --module ESNext --moduleResolution bundler src/web/**/*.ts",
+    "build:web": "tsc --ignoreConfig --outDir dist/web --declaration false --emitDeclarationOnly false --target ES2022 --module ESNext --moduleResolution bundler src/web/components/types.ts src/web/components/provider-card.ts src/web/components/provider-grid.ts src/web/components/config-modal.ts src/web/utils/cn.ts && cp src/web/index.html src/web/api-config.html src/web/style.css dist/web/",
     "start": "node dist/index.js",
     "dev": "tsx -r dotenv/config src/index.ts",
     "dev:web": "npm run build:web && npm run dev",
