@@ -10,7 +10,7 @@
  */
 
 import { AgentCoordinator, type SubTask, type AgentResult } from '@bolloon/constraint-runtime';
-import { executeGateTransitionHooks, initializeGateHooks } from './gate-transition-hooks.js';
+import { executeGateTransitionHooks, initializeGateHooks, onGateTransition } from './gate-transition-hooks.js';
 import { generateSituationalValueInjection, generateValueInjection } from '../pi-ecosystem-judgment/value-injection.js';
 import { loadAllJudgments } from '../pi-ecosystem-judgment/human-value-store.js';
 import { getModel, isModelAvailable } from '../llm/pi-ai.js';
@@ -43,6 +43,7 @@ export interface GateState {
   valueInjection: string;
   artifacts: Map<string, unknown>;
   conversationHistory: string[];
+  pendingUserInput?: string;
 }
 
 const GATE_CONFIGS: Record<Gate, GateConfig> = {
@@ -124,6 +125,12 @@ export class GateStateMachine {
     this.state = this.initState();
     this.coordinator = new AgentCoordinator(3);
     initializeGateHooks();
+
+    onGateTransition('PreGateTransition', async (event) => {
+      if (event.success) {
+        await this.generateValueInjectionForCurrentGate();
+      }
+    });
   }
 
   private initState(): GateState {
@@ -243,12 +250,10 @@ export class GateStateMachine {
     // 执行转移
     const nextGate = (currentGate + 1) as Gate;
     this.state.currentGate = nextGate;
+    this.state.pendingUserInput = userInput;
     this.updateStateForGate(nextGate);
 
-    // 生成进入新 Gate 时的价值观注入（传入用户输入以动态扩展情境）
-    await this.generateValueInjectionForCurrentGate(userInput);
-
-    // Execute gate transition hooks
+    // Execute gate transition hooks (PreGateTransition hook will generate value injection)
     await executeGateTransitionHooks(currentGate, nextGate, true, []);
 
     return {
@@ -338,10 +343,14 @@ export class GateStateMachine {
   /**
    * 为当前 Gate 生成情境化价值观注入
    * 基于 Gate 的 situation 描述，从历史判断中匹配相关价值观
+   *
+   * 作为 PreGateTransition hook 使用，从 state.pendingUserInput 读取用户输入
    */
-  private async generateValueInjectionForCurrentGate(userInput?: string): Promise<void> {
+  async generateValueInjectionForCurrentGate(): Promise<void> {
     const config = GATE_CONFIGS[this.state.currentGate];
     const baseSituation = config.situation;
+    const userInput = this.state.pendingUserInput;
+    this.state.pendingUserInput = undefined;
 
     if (userInput) {
       this.state.conversationHistory.push(userInput);
