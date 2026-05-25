@@ -3,16 +3,24 @@
  *
  * 核心理念：
  * - 不使用关键词匹配，而是让 LLM 理解用户意图
- * - YAML/JSON 配置作为复杂 prompt 的载体
+ * - 价值观注入：学习人类判断价值观，注入到 Prompt 中
  * - Skills 可以被动态调用
  *
  * 架构：
  * 1. LLM-as-Judge: 使用 LLM 执行真正的理解
- * 2. Config-as-Prompt: 配置文件中存储判断用的 prompt 模板
- * 3. Dynamic-Skill-Routing: 根据 LLM 判断结果动态调用 Skills
+ * 2. Value Injection: 从 human-value-store 获取价值观注入
+ * 3. Dynamic-Skill-Routing: 根据判断结果动态调用 Skills
  */
 
 import { createBollharnessIntegration } from './integration.js';
+import {
+  generateJudgmentPromptWithValues,
+  type ValueInjectionConfig
+} from '../pi-ecosystem-judgment/value-injection.js';
+import {
+  learnFromFeedback,
+  learnFromCorrection
+} from '../pi-ecosystem-judgment/human-value-store.js';
 
 export interface LLMJudgmentResult {
   // 理解结果
@@ -170,14 +178,22 @@ export class LLMJudgmentEngine {
   private harness: ReturnType<typeof createBollharnessIntegration>;
   private promptTemplate: string;
   private useLLM: boolean;
+  private valueInjectionConfig: Partial<ValueInjectionConfig>;
+  private recentJudgments: Array<{
+    input: string;
+    result: LLMJudgmentResult;
+    timestamp: number;
+  }> = [];
 
   constructor(options?: {
     useLLM?: boolean;
     promptTemplate?: string;
+    valueInjectionConfig?: Partial<ValueInjectionConfig>;
   }) {
     this.harness = createBollharnessIntegration();
     this.promptTemplate = options?.promptTemplate || JUDGMENT_PROMPT_TEMPLATE;
-    this.useLLM = options?.useLLM ?? true; // 默认使用 LLM
+    this.useLLM = options?.useLLM ?? true;
+    this.valueInjectionConfig = options?.valueInjectionConfig || {};
   }
 
   /**
@@ -185,6 +201,13 @@ export class LLMJudgmentEngine {
    */
   setPromptTemplate(template: string): void {
     this.promptTemplate = template;
+  }
+
+  /**
+   * 设置价值观注入配置
+   */
+  setValueInjectionConfig(config: Partial<ValueInjectionConfig>): void {
+    this.valueInjectionConfig = config;
   }
 
   /**
@@ -196,13 +219,14 @@ export class LLMJudgmentEngine {
   }
 
   /**
-   * 执行 LLM 判断
+   * 执行 LLM 判断（集成价值观注入）
    */
   async judge(
     userInput: string,
     options?: {
       history?: string[];
       forceLLM?: boolean;
+      context?: string;
     }
   ): Promise<LLMJudgmentResult> {
     // 如果强制不使用 LLM 或未配置，使用简化判断
@@ -210,25 +234,90 @@ export class LLMJudgmentEngine {
       return this.quickJudge(userInput);
     }
 
-    // 构建 prompt
+    // 构建 prompt（带价值观注入）
     const historyContext = options?.history
       ? options.history.slice(-5).join('\n')
       : '无历史上下文';
 
-    const prompt = this.promptTemplate
-      .replace('{user_input}', userInput)
-      .replace('{history_context}', historyContext);
+    const context = options?.context || userInput;
+
+    // 生成带价值观的 prompt
+    let prompt: string;
+    try {
+      prompt = await generateJudgmentPromptWithValues(
+        userInput,
+        context,
+        options?.history || [],
+        this.valueInjectionConfig
+      );
+    } catch (error) {
+      // 价值观注入失败，使用基础 prompt
+      console.warn('[LLMJudgment] Value injection failed, using base prompt:', error);
+      prompt = this.promptTemplate
+        .replace('{user_input}', userInput)
+        .replace('{history_context}', historyContext);
+    }
 
     try {
       // 调用 LLM（这里需要集成 LLMConfigStore）
       const result = await this.callLLM(prompt);
 
       // 解析 LLM 输出
-      return this.parseLLMOutput(result, userInput);
+      const judgmentResult = this.parseLLMOutput(result, userInput);
+
+      // 记录判断结果（用于学习）
+      this.recordJudgment(userInput, judgmentResult);
+
+      return judgmentResult;
     } catch (error) {
       console.warn('[LLMJudgment] LLM call failed, falling back to quick judgment:', error);
       return this.quickJudge(userInput);
     }
+  }
+
+  /**
+   * 记录判断结果（支持后续学习）
+   */
+  private recordJudgment(input: string, result: LLMJudgmentResult): void {
+    this.recentJudgments.push({
+      input,
+      result,
+      timestamp: Date.now()
+    });
+
+    // 保留最近 50 条判断
+    if (this.recentJudgments.length > 50) {
+      this.recentJudgments.shift();
+    }
+  }
+
+  /**
+   * 学习人类反馈（集成到判断引擎）
+   */
+  async learnFromHumanFeedback(
+    originalInput: string,
+    approved: boolean,
+    reason?: string
+  ): Promise<void> {
+    // 从反馈中学习
+    await learnFromFeedback(originalInput, approved, reason);
+
+    // 重新评估相关判断的置信度
+    const relatedJudgment = this.recentJudgments.find(
+      j => j.input.includes(originalInput.substring(0, 20))
+    );
+
+    if (relatedJudgment && !approved) {
+      // 如果被拒绝，降低置信度
+      console.log('[LLMJudgment] Learning from rejection, will adjust future judgments');
+    }
+  }
+
+  /**
+   * 学习修正（从错误中学习）
+   */
+  async learnFromCorrection(original: string, corrected: string, reason: string): Promise<void> {
+    await learnFromCorrection(original, corrected, reason);
   }
 
   /**
