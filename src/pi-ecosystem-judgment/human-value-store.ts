@@ -156,7 +156,6 @@ export async function storeHumanJudgment(judgment: Omit<HumanJudgment, 'id' | 't
 
   // 保存
   await saveJudgments(judgments);
-  judgmentCache.push(fullJudgment);
 
   // 更新价值画像
   await updateValueProfile(fullJudgment);
@@ -255,7 +254,7 @@ export async function loadAllJudgments(): Promise<HumanJudgment[]> {
   }
 
   if (judgmentCache.length > 0) {
-    return judgmentCache;
+    return [...judgmentCache];
   }
 
   try {
@@ -270,19 +269,32 @@ export async function loadAllJudgments(): Promise<HumanJudgment[]> {
 
 /**
  * 获取相关价值观
+ * 将 context 拆分为关键词，任意一个匹配即可
  */
 export async function getRelevantValues(context: string, domain?: string): Promise<ValueTag[]> {
   const judgments = await loadAllJudgments();
 
+  const keywords = context.split(/[\s,，、]+/).filter(k => k.length >= 2);
+  const contextLower = context.toLowerCase();
+
   const relevant = judgments.filter(j => {
-    // 匹配领域
     if (domain && j.context.domain !== domain) return false;
-    // 匹配上下文关键词
-    return j.decision.toLowerCase().includes(context.toLowerCase()) ||
-           j.reasons.some(r => r.toLowerCase().includes(context.toLowerCase()));
+
+    if (keywords.length === 0) {
+      return j.decision.toLowerCase().includes(contextLower) ||
+             j.reasons.some(r => r.toLowerCase().includes(contextLower));
+    }
+
+    const decisionLower = j.decision.toLowerCase();
+    const reasonsLower = j.reasons.map(r => r.toLowerCase());
+
+    return keywords.some(kw => {
+      const kwLower = kw.toLowerCase();
+      return decisionLower.includes(kwLower) ||
+             reasonsLower.some(r => r.includes(kwLower));
+    });
   });
 
-  // 聚合价值观
   const valueMap: Map<string, { tag: ValueTag; count: number }> = new Map();
 
   for (const j of relevant) {
@@ -298,7 +310,6 @@ export async function getRelevantValues(context: string, domain?: string): Promi
     }
   }
 
-  // 转换为数组，按权重排序
   return Array.from(valueMap.values())
     .map(({ tag, count }) => ({
       ...tag,
@@ -332,9 +343,15 @@ export async function getValueProfile(agentId: string): Promise<ValueProfile> {
 export async function getPriorityRules(): Promise<PriorityRule[]> {
   const judgments = await loadAllJudgments();
 
-  // 从高置信度判断中提取优先级规则
+  const seen = new Set<string>();
   return judgments
-    .filter(j => j.metadata.confidence > 0.7)
+    .filter(j => {
+      if (j.metadata.confidence <= 0.7) return false;
+      const key = `${j.context.domain}:${j.decision}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .map(j => ({
       when: j.context.domain,
       prefer: j.decision,

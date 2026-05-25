@@ -204,16 +204,23 @@ async function getDecisionExamples(context: string, limit: number): Promise<Huma
   const { loadAllJudgments } = await import('./human-value-store.js');
   const judgments = await loadAllJudgments();
 
-  // 匹配最相关的判断
+  const keywords = context.split(/[\s,，、]+/).filter(k => k.length >= 2);
+  const contextLower = context.toLowerCase();
+
   const scored = judgments.map(j => {
     let score = 0;
-    // 匹配决策内容
-    if (j.decision.toLowerCase().includes(context.toLowerCase())) score += 2;
-    // 匹配理由
-    if (j.reasons.some(r => r.toLowerCase().includes(context.toLowerCase()))) score += 1;
-    // 匹配价值观
-    if (j.values_derived.some(v => context.toLowerCase().includes(v.value))) score += 1;
-    // 加权置信度
+    const decisionLower = j.decision.toLowerCase();
+    const reasonsLower = j.reasons.map(r => r.toLowerCase());
+
+    if (keywords.length === 0) {
+      if (decisionLower.includes(contextLower)) score += 2;
+      if (reasonsLower.some(r => r.includes(contextLower))) score += 1;
+    } else {
+      if (keywords.some(kw => decisionLower.includes(kw.toLowerCase()))) score += 2;
+      if (keywords.some(kw => reasonsLower.some(r => r.includes(kw.toLowerCase())))) score += 1;
+    }
+
+    if (j.values_derived.some(v => contextLower.includes(v.value.toLowerCase()))) score += 1;
     score *= j.metadata.confidence;
 
     return { judgment: j, score };
