@@ -1012,7 +1012,10 @@ async function checkApiConfig() {
 async function init() {
   const themeData = await loadTheme();
   currentAgentId = themeData.agentId || `agent_${generateId().substring(0, 8)}`;
-  await saveTheme(themeData.theme, currentAgentId);
+
+  if (!themeData.agentId) {
+    await saveTheme(themeData.theme, currentAgentId);
+  }
 
   await loadChannels();
   await checkApiConfig();

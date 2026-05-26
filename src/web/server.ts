@@ -22,11 +22,8 @@ import { irohTransport } from '../network/iroh-transport.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// 前端资源路径：优先使用 dist（生产），回退到 src（开发）
-const isProduction = process.env.NODE_ENV === 'production';
-const webRoot = isProduction
-  ? path.join(__dirname, '..', '..', 'dist', 'web')
-  : path.join(__dirname, '..', '..', 'src', 'web');
+// 前端资源路径：始终使用 dist（包含编译后的组件）
+const webRoot = path.join(__dirname, '..', '..', 'dist', 'web');
 
 const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'sessions');
 const SESSION_CACHE_PATH = path.join(SHARED_SESSION_PATH, 'cache');

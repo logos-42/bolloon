@@ -61,6 +61,15 @@ async function main() {
   await fs.copyFile(path.join(ROOT, 'src/web/style.css'), path.join(DIST_WEB, 'style.css'));
   await fs.copyFile(path.join(ROOT, 'src/web/client.js'), path.join(DIST_WEB, 'client.js'));
 
+  // 复制 utils 目录到 dist/web/utils
+  await fs.mkdir(path.join(DIST_WEB, 'utils'), { recursive: true });
+  if (await dirExists(path.join(DIST_COMPONENTS, 'utils'))) {
+    const utilsFiles = await fs.readdir(path.join(DIST_COMPONENTS, 'utils'));
+    for (const file of utilsFiles) {
+      await fs.copyFile(path.join(DIST_COMPONENTS, 'utils', file), path.join(DIST_WEB, 'utils', file));
+    }
+  }
+
   // 复制 P2P 源文件（保留 .ts 供调试）
   await fs.cp(path.join(ROOT, 'src/web/components/p2p'), DIST_P2P, { recursive: true });
 
