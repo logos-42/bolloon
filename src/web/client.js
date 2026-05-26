@@ -1193,7 +1193,7 @@ function hideP2PModal() {
 }
 
 if (p2pNetworkBtn) {
-  p2pNetworkBtn.addEventListener('click', showP2PModal);
+  p2pNetworkBtn.addEventListener('click', openP2PModal);
 }
 
 if (p2pModalClose) {
@@ -1206,6 +1206,13 @@ if (p2pModal) {
       hideP2PModal();
     }
   });
+}
+
+// 初始化 iroh（当 Modal 打开时）
+function checkAndInitIroh() {
+  if (!irohInitialized) {
+    initIroh();
+  }
 }
 
 if (p2pCopyDid) {
@@ -1915,15 +1922,15 @@ if (p2pTargetCid) {
 }
 
 // 打开 P2P 模态框时自动检查状态
-function showP2PModal() {
+function openP2PModal() {
   if (p2pModal) {
     p2pModal.classList.add('active');
     loadP2PIdentity();
     loadP2PPeers();
     renderP2PChannels();
-    // 如果 iroh 未初始化，自动初始化
+    // 如果 iroh 未初始化，调用新 P2P 系统的初始化
     if (!irohInitialized) {
-      checkIrohStatus();
+      initP2P();
     }
   }
 }
@@ -2372,17 +2379,6 @@ if (p2pConnectInput) {
 if (p2pInitBtn) {
   p2pInitBtn.addEventListener('click', initP2P);
 }
-
-// 打开 Modal 时检查状态
-const originalShowP2PModal = showP2PModal;
-showP2PModal = function() {
-  originalShowP2PModal();
-  if (irohInitialized) {
-    checkIrohStatus();
-    loadConnectionHistory();
-    loadMessages();
-  }
-};
 
 // Toast 提示
 function showToast(message) {
