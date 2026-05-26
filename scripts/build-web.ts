@@ -49,20 +49,41 @@ async function main() {
   });
 
   // 编译 P2P 组件（跳过类型错误）
-  console.log('[build-web] 编译 P2P 组件...');
-  const p2pFiles = [
+  // 注意：p2p-store-memory, p2p-identity, p2p-connection, p2p-messages, p2p-manager 是 TypeScript 模块
+  // p2p-modal.ts 是旧的 Web Component，不再编译
+  // P2PModal.tsx 是新的 React 组件，通过 esbuild 编译
+  console.log('[build-web] 编译 P2P TypeScript 模块...');
+  const p2pModuleFiles = [
     'src/web/components/p2p/types.ts',
     'src/web/components/p2p/p2p-store-memory.ts',
     'src/web/components/p2p/p2p-identity.ts',
     'src/web/components/p2p/p2p-connection.ts',
     'src/web/components/p2p/p2p-messages.ts',
     'src/web/components/p2p/p2p-manager.ts',
-    'src/web/components/p2p/p2p-modal.ts',
-    'src/web/components/p2p/index.ts'
   ];
-  execSync(`npx tsc --ignoreConfig --outDir dist/web/components/p2p --declaration false --skipLibCheck --target ES2022 --module ESNext --moduleResolution bundler ${p2pFiles.join(' ')}`, {
+  execSync(`npx tsc --ignoreConfig --outDir dist/web/components/p2p --declaration false --skipLibCheck --target ES2022 --module ESNext --moduleResolution bundler ${p2pModuleFiles.join(' ')}`, {
     cwd: ROOT,
     stdio: 'inherit'
+  });
+
+  // 构建 P2P React 组件（新的 React 版本）
+  console.log('[build-web] 构建 P2P React 组件...');
+  await esbuild.build({
+    entryPoints: [path.join(ROOT, 'src/web/components/p2p/index.tsx')],
+    bundle: true,
+    outfile: path.join(DIST_P2P, 'index.js'),
+    format: 'esm',
+    target: 'es2022',
+    jsx: 'automatic',
+    jsxImportSource: 'react',
+    loader: {
+      '.tsx': 'tsx',
+      '.ts': 'ts',
+    },
+    define: {
+      'process.env.NODE_ENV': '"production"',
+    },
+    minify: true,
   });
 
   // 修复目录结构（tsc 会在 dist/web/components 下创建 components 子目录）

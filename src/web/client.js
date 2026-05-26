@@ -1027,15 +1027,14 @@ async function init() {
   }
 }
 
-// P2P Network Modal - 使用 Web Component
+// P2P Network Modal - React Version
 const p2pNetworkBtn = document.getElementById('p2p-network-btn');
 
-// 打开 P2P Modal (使用新的 Web Component)
+// 打开 P2P Modal (使用 React)
 if (p2pNetworkBtn) {
   p2pNetworkBtn.addEventListener('click', () => {
-    const modal = document.querySelector('p2p-modal');
-    if (modal && typeof modal.show === 'function') {
-      modal.show();
+    if (typeof window.showP2PModal === 'function') {
+      window.showP2PModal();
     }
   });
 }
