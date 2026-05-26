@@ -9,6 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
   <div class="app-container">
@@ -111,54 +112,127 @@
             <button id="p2p-modal-close" class="modal-close">&times;</button>
           </div>
           <div class="modal-body">
-            <div class="p2p-section">
-              <h3>我的身份</h3>
-              <div class="p2p-identity">
-                <div class="p2p-identity-info">
-                  <span class="p2p-label">DID:</span>
-                  <span id="p2p-my-did" class="p2p-value mono">加载中...</span>
+            <!-- 标签页切换 -->
+            <div class="p2p-tabs">
+              <button class="p2p-tab active" data-tab="identity">我的身份</button>
+              <button class="p2p-tab" data-tab="connect">连接</button>
+              <button class="p2p-tab" data-tab="history">历史记录</button>
+              <button class="p2p-tab" data-tab="messages">消息 <span id="p2p-unread-badge" class="unread-badge" style="display:none">0</span></button>
+            </div>
+
+            <!-- 我的身份标签页 -->
+            <div class="p2p-tab-content active" id="p2p-tab-identity">
+              <div class="p2p-identity-card">
+                <div class="identity-status">
+                  <span class="status-indicator" id="p2p-status-indicator"></span>
+                  <span id="p2p-status-text">未初始化</span>
                 </div>
-                <button id="p2p-copy-did" class="btn-small" title="复制">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                  </svg>
-                </button>
-              </div>
-              <div class="p2p-identity">
-                <div class="p2p-identity-info">
-                  <span class="p2p-label">CID:</span>
-                  <span id="p2p-my-cid" class="p2p-value mono">-</span>
+                <div class="identity-info">
+                  <div class="info-row">
+                    <span class="info-label">DID:</span>
+                    <code id="p2p-did" class="info-value mono">-</code>
+                    <button class="copy-btn" onclick="copyToClipboard('p2p-did')" title="复制">📋</button>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">CID:</span>
+                    <code id="p2p-cid" class="info-value mono">-</code>
+                    <button class="copy-btn" onclick="copyToClipboard('p2p-cid')" title="复制">📋</button>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">Node ID:</span>
+                    <code id="p2p-node-id" class="info-value mono">-</code>
+                    <button class="copy-btn" onclick="copyToClipboard('p2p-node-id')" title="复制">📋</button>
+                  </div>
                 </div>
-                <button id="p2p-copy-cid" class="btn-small" title="复制">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                  </svg>
-                </button>
+                <button id="p2p-init-btn" class="btn-primary">初始化 P2P</button>
               </div>
-              <button id="p2p-copy-link" class="btn-secondary">复制连接链接</button>
+
+              <!-- 分享面板 -->
+              <div class="p2p-share-panel" id="p2p-share-panel" style="display:none">
+                <h4>分享给好友</h4>
+                <div class="share-actions">
+                  <button id="p2p-copy-link" class="btn-secondary">📋 复制链接</button>
+                  <button id="p2p-show-qr" class="btn-secondary">📱 二维码</button>
+                  <button id="p2p-export-file" class="btn-secondary">📁 导出文件</button>
+                </div>
+                <div id="p2p-share-link" class="share-link-box" style="display:none">
+                  <input type="text" id="p2p-invite-link" readonly>
+                  <button class="copy-btn" onclick="copyToClipboard('p2p-invite-link')">📋</button>
+                </div>
+              </div>
+
+              <!-- QR码弹窗 -->
+              <div id="p2p-qr-modal" class="modal" style="display:none">
+                <div class="modal-content modal-sm">
+                  <div class="modal-header">
+                    <h3>扫描连接</h3>
+                    <button class="modal-close" onclick="document.getElementById('p2p-qr-modal').style.display='none'">&times;</button>
+                  </div>
+                  <div class="modal-body" style="text-align:center">
+                    <canvas id="p2p-qr-canvas"></canvas>
+                    <p class="qr-hint">让对方扫描此二维码</p>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <div class="p2p-section">
-              <h3>连接其他节点</h3>
-              <div class="p2p-connect">
-                <input type="text" id="p2p-connect-input" placeholder="粘贴对方的连接链接或 DID...">
-                <button id="p2p-connect-btn" class="btn-primary">连接</button>
+            <!-- 连接标签页 -->
+            <div class="p2p-tab-content" id="p2p-tab-connect" style="display:none">
+              <div class="p2p-connect-section">
+                <h4>连接到其他节点</h4>
+                <div class="p2p-connect-form">
+                  <input type="text" id="p2p-connect-input" placeholder="粘贴 CID、链接或扫描二维码...">
+                  <button id="p2p-connect-btn" class="btn-primary">连接 ▶</button>
+                </div>
+                <div id="p2p-connect-progress" class="connect-progress" style="display:none">
+                  <div class="progress-bar">
+                    <div class="progress-fill" id="p2p-progress-fill"></div>
+                  </div>
+                  <span id="p2p-progress-text" class="progress-text">验证输入格式...</span>
+                </div>
+                <div id="p2p-connect-result" class="connect-result"></div>
+              </div>
+
+              <!-- 快速连接：历史记录 -->
+              <div class="p2p-quick-connect">
+                <h4>快速连接</h4>
+                <div id="p2p-quick-list" class="quick-list">
+                  <div class="quick-empty">暂无历史记录</div>
+                </div>
               </div>
             </div>
 
-            <div class="p2p-section">
-              <h3>已连接节点 (<span id="p2p-peers-count">0</span>)</h3>
-              <div id="p2p-peers-list" class="p2p-peers-list">
-                <div class="p2p-empty">暂无连接的节点</div>
+            <!-- 历史记录标签页 -->
+            <div class="p2p-tab-content" id="p2p-tab-history" style="display:none">
+              <div class="p2p-history-toolbar">
+                <button id="p2p-history-refresh" class="btn-secondary btn-sm">🔄 刷新</button>
+              </div>
+              <div id="p2p-history-list" class="history-list">
+                <div class="history-empty">暂无连接历史</div>
               </div>
             </div>
 
-            <div class="p2p-section">
-              <h3>本地频道智能体</h3>
-              <div id="p2p-channels-list" class="p2p-channels-list">
-                <div class="p2p-empty">暂无频道</div>
+            <!-- 消息标签页 -->
+            <div class="p2p-tab-content" id="p2p-tab-messages" style="display:none">
+              <div class="p2p-messages-toolbar">
+                <button id="p2p-mark-all-read" class="btn-secondary btn-sm">全部标记已读</button>
+              </div>
+              <div id="p2p-messages-list" class="messages-list">
+                <div class="messages-empty">暂无消息</div>
+              </div>
+
+              <!-- 离线队列 -->
+              <div id="p2p-offline-queue" class="offline-queue" style="display:none">
+                <h4>📤 离线消息 (<span id="p2p-queue-count">0</span>)</h4>
+                <div id="p2p-queue-list" class="queue-list"></div>
+              </div>
+            </div>
+
+            <!-- 已连接节点（所有标签页共享底部） -->
+            <div class="p2p-peers-section">
+              <h4>已连接节点 (<span id="p2p-peer-count">0</span>)</h4>
+              <div id="p2p-peers-list" class="peers-list">
+                <div class="peer-empty">暂无连接</div>
               </div>
             </div>
           </div>
@@ -183,6 +257,7 @@
           </div>
         </div>
       </div>
+
 
       <!-- Create Task Modal -->
       <div id="create-task-modal" class="modal">
@@ -243,6 +318,8 @@
     </main>
   </div>
 
+  <script src="/p2p-store.js"></script>
+  <script src="/p2p-client.js"></script>
   <script src="/client.js"></script>
 </body>
 </html>

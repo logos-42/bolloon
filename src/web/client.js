@@ -1669,3 +1669,739 @@ connect = async function() {
     taskEventSource.close();
   };
 };
+
+// ============================================================
+// iroh P2P 集成
+// ============================================================
+
+// iroh 元素
+const irohInitBtn = document.getElementById('iroh-init-btn');
+const irohInitStatus = document.getElementById('iroh-init-status');
+const irohDidEl = document.getElementById('iroh-did');
+const irohCidEl = document.getElementById('iroh-cid');
+const irohNodeIdEl = document.getElementById('iroh-node-id');
+const irohShareCidEl = document.getElementById('iroh-share-cid');
+const irohShareNodeEl = document.getElementById('iroh-share-node');
+const p2pTargetCid = document.getElementById('p2p-target-cid');
+const p2pConnectBtn = document.getElementById('p2p-connect-btn');
+const p2pConnectResult = document.getElementById('p2p-connect-result');
+const p2pPeersList = document.getElementById('p2p-peers-list');
+const p2pMessages = document.getElementById('p2p-messages');
+
+let irohInitialized = false;
+let p2pPeers = [];
+let p2pMessagesList = [];
+
+// 初始化 iroh
+async function initIroh() {
+  if (irohInitialized) return;
+
+  console.log('[iP2P] 初始化 iroh...');
+  setIrohStatus('loading', '初始化中...');
+
+  try {
+    const res = await fetch('/api/iroh/init', { method: 'POST' });
+    const data = await res.json();
+
+    if (res.ok) {
+      console.log('[iP2P] iroh 初始化成功');
+      updateIrohInfo(data);
+      setIrohStatus('success', '已连接');
+      irohInitialized = true;
+      loadP2PPeers();
+      startP2PMessageListener();
+    } else {
+      console.log('[iP2P] iroh 初始化失败:', data.error);
+      setIrohStatus('error', data.error || '初始化失败');
+    }
+  } catch (err) {
+    console.error('[iP2P] iroh 初始化错误:', err);
+    setIrohStatus('error', err.message);
+  }
+}
+
+// 设置 iroh 状态显示
+function setIrohStatus(type, text) {
+  if (!irohInitStatus) return;
+  irohInitStatus.textContent = text;
+  irohInitStatus.className = 'value';
+  if (type === 'loading') irohInitStatus.classList.add('status-loading');
+  else if (type === 'success') irohInitStatus.classList.add('status-success');
+  else if (type === 'error') irohInitStatus.classList.add('status-error');
+}
+
+// 更新 iroh 信息显示
+function updateIrohInfo(info) {
+  if (irohDidEl && info.did) {
+    irohDidEl.textContent = info.did.length > 40 ? info.did.substring(0, 40) + '...' : info.did;
+  }
+  if (irohCidEl && info.cid) {
+    irohCidEl.textContent = info.cid.length > 40 ? info.cid.substring(0, 40) + '...' : info.cid;
+  }
+  if (irohNodeIdEl && info.irohNodeId) {
+    irohNodeIdEl.textContent = info.irohNodeId.length > 20 ? info.irohNodeId.substring(0, 20) + '...' : info.irohNodeId;
+  }
+  if (irohShareCidEl && info.cid) {
+    irohShareCidEl.textContent = info.cid;
+  }
+  if (irohShareNodeEl && info.irohNodeId) {
+    irohShareNodeEl.textContent = info.irohNodeId;
+  }
+}
+
+// 加载已有节点
+async function loadP2PPeers() {
+  try {
+    const res = await fetch('/api/iroh/peers');
+    if (res.ok) {
+      const data = await res.json();
+      p2pPeers = data.peers || [];
+      renderP2PPeers();
+    }
+  } catch (err) {
+    console.error('[iP2P] 加载节点失败:', err);
+  }
+}
+
+// 渲染节点列表
+function renderP2PPeers() {
+  if (!p2pPeersList) return;
+
+  if (p2pPeers.length === 0) {
+    p2pPeersList.innerHTML = '<div class="peer-empty">暂无连接</div>';
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  p2pPeers.forEach(peer => {
+    const div = document.createElement('div');
+    div.className = 'p2p-peer-item';
+    div.innerHTML = `
+      <div class="p2p-peer-info">
+        <span class="p2p-peer-id">${(peer.nodeId || 'unknown').substring(0, 16)}...</span>
+        <span class="p2p-peer-status online">已连接</span>
+      </div>
+    `;
+    fragment.appendChild(div);
+  });
+
+  p2pPeersList.innerHTML = '';
+  p2pPeersList.appendChild(fragment);
+}
+
+// 连接到其他节点
+async function connectToPeer() {
+  const cid = p2pTargetCid?.value?.trim();
+  if (!cid) {
+    showConnectResult('error', '请输入对方 CID');
+    return;
+  }
+
+  console.log('[iP2P] 连接到:', cid.substring(0, 20), '...');
+  showConnectResult('', '正在连接...');
+
+  try {
+    const res = await fetch('/api/iroh/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cid })
+    });
+
+    const data = await res.json();
+
+    if (res.ok) {
+      showConnectResult('success', '连接成功!');
+      p2pTargetCid.value = '';
+      loadP2PPeers();
+    } else {
+      showConnectResult('error', data.error || '连接失败');
+    }
+  } catch (err) {
+    console.error('[iP2P] 连接错误:', err);
+    showConnectResult('error', err.message);
+  }
+}
+
+// 显示连接结果
+function showConnectResult(type, text) {
+  if (!p2pConnectResult) return;
+  p2pConnectResult.textContent = text;
+  p2pConnectResult.className = 'connect-result';
+  if (type) p2pConnectResult.classList.add(type);
+}
+
+// 添加 P2P 消息到列表
+function addP2PMessage(msg) {
+  p2pMessagesList.push(msg);
+  if (p2pMessagesList.length > 50) p2pMessagesList.shift();
+  renderP2PMessages();
+}
+
+// 渲染 P2P 消息
+function renderP2PMessages() {
+  if (!p2pMessages) return;
+
+  if (p2pMessagesList.length === 0) {
+    p2pMessages.innerHTML = '<div class="msg-empty">暂无消息</div>';
+    return;
+  }
+
+  const fragment = document.documentFragment || document.createDocumentFragment();
+  p2pMessagesList.slice(-20).forEach(msg => {
+    const div = document.createElement('div');
+    div.className = 'p2p-msg-item';
+    const time = new Date(msg.timestamp || Date.now()).toLocaleTimeString();
+    const from = (msg.from || 'unknown').substring(0, 12);
+    const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+    div.innerHTML = `
+      <div class="p2p-msg-header">
+        <span class="p2p-msg-from">from ${from}...</span>
+        <span class="p2p-msg-time">${time}</span>
+      </div>
+      <div class="p2p-msg-content">${escapeHtml(content.substring(0, 200))}${content.length > 200 ? '...' : ''}</div>
+    `;
+    fragment.appendChild(div);
+  });
+
+  p2pMessages.innerHTML = '';
+  p2pMessages.appendChild(fragment);
+}
+
+// HTML 转义
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// 监听 P2P 消息 (SSE)
+function startP2PMessageListener() {
+  const eventSource = new EventSource('/events?channelId=p2p-global');
+
+  eventSource.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'p2p_message') {
+        console.log('[iP2P] 收到消息:', data);
+        addP2PMessage(data);
+      }
+    } catch (err) {
+      console.error('[iP2P] 解析消息错误:', err);
+    }
+  };
+
+  eventSource.onerror = () => {
+    console.log('[iP2P] SSE 断开，尝试重连...');
+    eventSource.close();
+    setTimeout(startP2PMessageListener, 5000);
+  };
+}
+
+// iroh 初始化按钮
+if (irohInitBtn) {
+  irohInitBtn.addEventListener('click', initIroh);
+}
+
+// 连接到其他节点按钮
+if (p2pConnectBtn) {
+  p2pConnectBtn.addEventListener('click', connectToPeer);
+}
+
+// 回车键连接
+if (p2pTargetCid) {
+  p2pTargetCid.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') connectToPeer();
+  });
+}
+
+// 打开 P2P 模态框时自动检查状态
+function showP2PModal() {
+  if (p2pModal) {
+    p2pModal.classList.add('active');
+    loadP2PIdentity();
+    loadP2PPeers();
+    renderP2PChannels();
+    // 如果 iroh 未初始化，自动初始化
+    if (!irohInitialized) {
+      checkIrohStatus();
+    }
+  }
+}
+
+// 检查 iroh 状态
+async function checkIrohStatus() {
+  try {
+    const res = await fetch('/api/iroh/info');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.initialized) {
+        updateIrohInfo(data);
+        setIrohStatus('success', '已连接');
+        irohInitialized = true;
+        loadP2PPeers();
+        startP2PMessageListener();
+      } else {
+        setIrohStatus('', '未初始化');
+      }
+    }
+  } catch {
+    setIrohStatus('', '未初始化');
+  }
+}
+
+// ============================================
+// 新 P2P Modal 标签页系统
+// ============================================
+
+const p2pTabBtns = document.querySelectorAll('.p2p-tab');
+const p2pTabContents = document.querySelectorAll('.p2p-tab-content');
+const p2pInitBtn = document.getElementById('p2p-init-btn');
+const p2pStatusIndicator = document.getElementById('p2p-status-indicator');
+const p2pStatusText = document.getElementById('p2p-status-text');
+const p2pSharePanel = document.getElementById('p2p-share-panel');
+const p2pConnectInput = document.getElementById('p2p-connect-input');
+const p2pProgressDiv = document.getElementById('p2p-connect-progress');
+const p2pProgressFill = document.getElementById('p2p-progress-fill');
+const p2pProgressText = document.getElementById('p2p-progress-text');
+const p2pConnectResult = document.getElementById('p2p-connect-result');
+const p2pQuickList = document.getElementById('p2p-quick-list');
+const p2pHistoryList = document.getElementById('p2p-history-list');
+const p2pPeerCount = document.getElementById('p2p-peer-count');
+const p2pUnreadBadge = document.getElementById('p2p-unread-badge');
+
+// 切换标签页
+p2pTabBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    p2pTabBtns.forEach(b => b.classList.remove('active'));
+    p2pTabContents.forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    const content = document.getElementById(`p2p-tab-${tab}`);
+    if (content) content.classList.add('active');
+    // 加载标签页数据
+    if (tab === 'history') loadConnectionHistory();
+    if (tab === 'messages') loadMessages();
+  });
+});
+
+// 初始化 P2P
+async function initP2P() {
+  if (irohInitialized) return;
+
+  console.log('[P2P UI] 初始化 iroh...');
+  setP2PStatus('connecting', '初始化中...');
+
+  try {
+    const res = await fetch('/api/iroh/init', { method: 'POST' });
+    const data = await res.json();
+
+    if (res.ok) {
+      console.log('[P2P UI] iroh 初始化成功');
+      setP2PStatus('online', '已连接');
+      updateP2PIdentity(data);
+      showSharePanel();
+      irohInitialized = true;
+      startP2PMessageListener();
+      loadP2PPeers();
+      loadConnectionHistory();
+    } else {
+      setP2PStatus('offline', data.error || '初始化失败');
+    }
+  } catch (err) {
+    console.error('[P2P UI] 初始化错误:', err);
+    setP2PStatus('offline', err.message);
+  }
+}
+
+// 设置 P2P 状态
+function setP2PStatus(status, text) {
+  if (!p2pStatusIndicator || !p2pStatusText) return;
+  p2pStatusIndicator.className = 'status-indicator';
+  if (status === 'online') p2pStatusIndicator.classList.add('online');
+  else if (status === 'connecting') p2pStatusIndicator.classList.add('connecting');
+  p2pStatusText.textContent = text;
+}
+
+// 更新身份信息
+function updateP2PIdentity(info) {
+  const didEl = document.getElementById('p2p-did');
+  const cidEl = document.getElementById('p2p-cid');
+  const nodeIdEl = document.getElementById('p2p-node-id');
+
+  if (didEl && info.did) didEl.textContent = info.did;
+  if (cidEl && info.cid) cidEl.textContent = info.cid;
+  if (nodeIdEl && info.irohNodeId) nodeIdEl.textContent = info.irohNodeId;
+}
+
+// 显示分享面板
+function showSharePanel() {
+  if (!p2pSharePanel) return;
+  p2pSharePanel.style.display = 'block';
+
+  const shareLink = document.getElementById('p2p-invite-link');
+  const didEl = document.getElementById('p2p-did');
+  const cidEl = document.getElementById('p2p-cid');
+
+  if (shareLink && didEl && cidEl && didEl.textContent && cidEl.textContent) {
+    shareLink.value = `bolloon://connect?did=${encodeURIComponent(didEl.textContent)}&cid=${encodeURIComponent(cidEl.textContent)}`;
+  }
+}
+
+// 复制分享链接
+document.getElementById('p2p-copy-link')?.addEventListener('click', async () => {
+  const shareLink = document.getElementById('p2p-invite-link');
+  if (shareLink && shareLink.value) {
+    await navigator.clipboard.writeText(shareLink.value);
+    showToast('链接已复制!');
+  }
+});
+
+// 显示二维码
+document.getElementById('p2p-show-qr')?.addEventListener('click', () => {
+  const qrModal = document.getElementById('p2p-qr-modal');
+  const qrCanvas = document.getElementById('p2p-qr-canvas');
+  const shareLink = document.getElementById('p2p-invite-link');
+
+  if (qrModal && qrCanvas && shareLink && shareLink.value) {
+    qrModal.style.display = 'flex';
+    // 使用 qrcode.js 生成二维码
+    if (typeof QRCode !== 'undefined') {
+      const ctx = qrCanvas.getContext('2d');
+      qrCanvas.width = 200;
+      qrCanvas.height = 200;
+      QRCode.toCanvas(qrCanvas, shareLink.value, { width: 200 }, () => {});
+    }
+  }
+});
+
+// 导出文件
+document.getElementById('p2p-export-file')?.addEventListener('click', async () => {
+  const didEl = document.getElementById('p2p-did');
+  const cidEl = document.getElementById('p2p-cid');
+  const nodeIdEl = document.getElementById('p2p-node-id');
+
+  if (didEl && cidEl && nodeIdEl && didEl.textContent && cidEl.textContent) {
+    const data = JSON.stringify({
+      did: didEl.textContent,
+      cid: cidEl.textContent,
+      nodeId: nodeIdEl.textContent
+    }, null, 2);
+
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'bolloon-identity.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+});
+
+// 连接到节点（带进度）
+async function connectWithProgress() {
+  const input = p2pConnectInput?.value?.trim();
+  if (!input) {
+    showP2PConnectResult('error', '请输入 CID 或链接');
+    return;
+  }
+
+  // 显示进度条
+  if (p2pProgressDiv) p2pProgressDiv.style.display = 'block';
+  if (p2pConnectResult) p2pConnectResult.style.display = 'none';
+
+  const updateProgress = (percent, message) => {
+    if (p2pProgressFill) p2pProgressFill.style.width = `${percent}%`;
+    if (p2pProgressText) p2pProgressText.textContent = message;
+  };
+
+  try {
+    updateProgress(10, '验证输入格式...');
+    const result = await window.P2PClient.connect(input, updateProgress);
+
+    if (result.success) {
+      updateProgress(100, '连接成功!');
+      showP2PConnectResult('success', `已连接到 ${result.name || result.targetNodeId?.substring(0, 12) || '节点'}`);
+      if (p2pConnectInput) p2pConnectInput.value = '';
+      loadConnectionHistory();
+      loadP2PPeers();
+    } else {
+      showP2PConnectResult('error', result.error || '连接失败');
+    }
+  } catch (err) {
+    console.error('[P2P UI] 连接错误:', err);
+    showP2PConnectResult('error', err.message);
+  } finally {
+    setTimeout(() => {
+      if (p2pProgressDiv) p2pProgressDiv.style.display = 'none';
+    }, 2000);
+  }
+}
+
+// 显示连接结果
+function showP2PConnectResult(type, text) {
+  if (!p2pConnectResult) return;
+  p2pConnectResult.style.display = 'block';
+  p2pConnectResult.className = `connect-result ${type}`;
+  p2pConnectResult.textContent = text;
+}
+
+// 加载连接历史
+async function loadConnectionHistory() {
+  if (!p2pHistoryList) return;
+
+  try {
+    const res = await fetch('/api/p2p/history');
+    if (res.ok) {
+      const history = await res.json();
+      renderConnectionHistory(history);
+    }
+  } catch (err) {
+    console.error('[P2P UI] 加载历史失败:', err);
+  }
+}
+
+// 渲染连接历史
+function renderConnectionHistory(history) {
+  if (!p2pHistoryList) return;
+
+  if (history.length === 0) {
+    p2pHistoryList.innerHTML = '<div class="history-empty">暂无连接历史</div>';
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  history.forEach(item => {
+    const div = document.createElement('div');
+    div.className = `history-item ${item.isPinned ? 'pinned' : ''}`;
+    const lastConnected = item.lastConnectedAt
+      ? new Date(item.lastConnectedAt).toLocaleString()
+      : '从未';
+    const lastMsg = item.lastMessageAt
+      ? new Date(item.lastMessageAt).toLocaleString()
+      : '无消息';
+
+    div.innerHTML = `
+      <div class="history-item-icon">💬</div>
+      <div class="history-item-info">
+        <div class="history-item-name">
+          ${item.name || 'Unknown'}
+          ${item.isPinned ? '<span class="pin-icon">📌</span>' : ''}
+        </div>
+        <div class="history-item-meta">
+          <span>上次连接: ${lastConnected}</span>
+          <span>消息: ${item.totalMessages || 0}</span>
+        </div>
+      </div>
+      <div class="history-item-actions">
+        <button class="btn-secondary btn-sm" onclick="quickConnect('${item.cid}')">连接</button>
+        <button class="btn-secondary btn-sm" onclick="togglePin('${item.id}', ${!item.isPinned})">${item.isPinned ? '取消置顶' : '置顶'}</button>
+        <button class="btn-secondary btn-sm" onclick="deleteHistory('${item.id}')">删除</button>
+      </div>
+    `;
+    fragment.appendChild(div);
+  });
+
+  p2pHistoryList.innerHTML = '';
+  p2pHistoryList.appendChild(fragment);
+}
+
+// 快速连接
+async function quickConnect(cid) {
+  if (p2pConnectInput) p2pConnectInput.value = cid;
+  await connectWithProgress();
+}
+
+// 切换置顶
+async function togglePin(id, pinned) {
+  try {
+    await fetch(`/api/p2p/history/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isPinned: pinned })
+    });
+    loadConnectionHistory();
+  } catch (err) {
+    console.error('[P2P UI] 置顶失败:', err);
+  }
+}
+
+// 删除历史记录
+async function deleteHistory(id) {
+  try {
+    await fetch(`/api/p2p/history/${id}`, { method: 'DELETE' });
+    loadConnectionHistory();
+  } catch (err) {
+    console.error('[P2P UI] 删除失败:', err);
+  }
+}
+
+// 加载消息
+async function loadMessages() {
+  const messagesList = document.getElementById('p2p-messages-list');
+  const offlineQueueDiv = document.getElementById('p2p-offline-queue');
+  const queueCount = document.getElementById('p2p-queue-count');
+
+  if (!messagesList) return;
+
+  try {
+    // 获取收到的消息
+    const res = await fetch('/api/peer-messages');
+    if (res.ok) {
+      const messages = await res.json();
+      renderMessages(messages);
+    }
+
+    // 获取未读数
+    if (window.P2PClient) {
+      const unread = await window.P2PClient.getUnreadCount();
+      if (unread > 0) {
+        if (p2pUnreadBadge) {
+          p2pUnreadBadge.textContent = unread;
+          p2pUnreadBadge.style.display = 'inline-flex';
+        }
+      } else {
+        if (p2pUnreadBadge) p2pUnreadBadge.style.display = 'none';
+      }
+    }
+
+    // 获取离线队列
+    if (window.P2PClient) {
+      const queue = await window.P2PClient.getOfflineQueue();
+      if (queue.length > 0) {
+        if (offlineQueueDiv) offlineQueueDiv.style.display = 'block';
+        if (queueCount) queueCount.textContent = queue.length;
+        renderOfflineQueue(queue);
+      } else {
+        if (offlineQueueDiv) offlineQueueDiv.style.display = 'none';
+      }
+    }
+  } catch (err) {
+    console.error('[P2P UI] 加载消息失败:', err);
+  }
+}
+
+// 渲染消息
+function renderMessages(messages) {
+  const messagesList = document.getElementById('p2p-messages-list');
+  if (!messagesList) return;
+
+  if (messages.length === 0) {
+    messagesList.innerHTML = '<div class="messages-empty">暂无消息</div>';
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  messages.slice(-20).forEach(msg => {
+    const div = document.createElement('div');
+    div.className = `message-item ${msg.status === 'pending' ? 'message-unread' : ''}`;
+    const time = msg.timestamp ? new Date(msg.timestamp).toLocaleString() : '';
+    const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+
+    div.innerHTML = `
+      <div class="message-header">
+        <span class="message-sender">${msg.from || 'unknown'}</span>
+        <span class="message-time">${time}</span>
+      </div>
+      <div class="message-content">${escapeHtml(content.substring(0, 200))}${content.length > 200 ? '...' : ''}</div>
+    `;
+    fragment.appendChild(div);
+  });
+
+  messagesList.innerHTML = '';
+  messagesList.appendChild(fragment);
+}
+
+// 渲染离线队列
+function renderOfflineQueue(queue) {
+  const queueList = document.getElementById('p2p-queue-list');
+  if (!queueList) return;
+
+  const fragment = document.createDocumentFragment();
+  queue.forEach(msg => {
+    const div = document.createElement('div');
+    div.className = 'queue-item';
+    div.innerHTML = `
+      <span class="queue-item-content">${escapeHtml(msg.content.substring(0, 50))}...</span>
+      <div class="queue-item-status">
+        ${msg.retryCount ? `<span class="retry-count">重试 ${msg.retryCount}</span>` : ''}
+        <span class="status-${msg.status}">${msg.status}</span>
+      </div>
+      <button class="queue-retry-btn" onclick="retryMessage('${msg.id}')">重试</button>
+    `;
+    fragment.appendChild(div);
+  });
+
+  queueList.innerHTML = '';
+  queueList.appendChild(fragment);
+}
+
+// 重试消息
+async function retryMessage(messageId) {
+  if (window.P2PClient) {
+    await window.P2PClient.retryFailedMessage(messageId);
+    loadMessages();
+  }
+}
+
+// 标记全部已读
+document.getElementById('p2p-mark-all-read')?.addEventListener('click', async () => {
+  try {
+    await fetch('/api/peer-messages/read-all', { method: 'POST' });
+    loadMessages();
+  } catch (err) {
+    console.error('[P2P UI] 标记已读失败:', err);
+  }
+});
+
+// 刷新历史
+document.getElementById('p2p-history-refresh')?.addEventListener('click', loadConnectionHistory);
+
+// 绑定连接按钮
+if (p2pConnectBtn) {
+  p2pConnectBtn.addEventListener('click', connectWithProgress);
+}
+
+// 回车连接
+if (p2pConnectInput) {
+  p2pConnectInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') connectWithProgress();
+  });
+}
+
+// 初始化按钮
+if (p2pInitBtn) {
+  p2pInitBtn.addEventListener('click', initP2P);
+}
+
+// 打开 Modal 时检查状态
+const originalShowP2PModal = showP2PModal;
+showP2PModal = function() {
+  originalShowP2PModal();
+  if (irohInitialized) {
+    checkIrohStatus();
+    loadConnectionHistory();
+    loadMessages();
+  }
+};
+
+// Toast 提示
+function showToast(message) {
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 2000);
+}
+
+// 初始化 p2pStore
+async function initP2PStore() {
+  if (window.p2pStore) {
+    await window.p2pStore.init();
+    console.log('[P2P UI] 本地存储已就绪');
+  }
+}
+
+// 页面加载时初始化
+document.addEventListener('DOMContentLoaded', () => {
+  initP2PStore();
+});

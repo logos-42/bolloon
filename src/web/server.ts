@@ -17,6 +17,7 @@ import { documentReader } from '../documents/reader.js';
 import { initMinimax, getMinimax } from '../constraints/index.js';
 import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
 import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
+import { irohTransport } from '../network/iroh-transport.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -31,6 +32,18 @@ const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 's
 const SESSION_CACHE_PATH = path.join(SHARED_SESSION_PATH, 'cache');
 const CHANNELS_PATH = path.join(SHARED_SESSION_PATH, 'channels.json');
 const THEME_PATH = path.join(SHARED_SESSION_PATH, 'theme.json');
+const IPFS_ENDPOINT = 'http://127.0.0.1:5001';
+
+// iroh P2P 状态
+interface IrohNodeInfo {
+  did: string;
+  cid: string;
+  irohNodeId: string;
+  name: string;
+  initialized: boolean;
+}
+let irohNodeInfo: IrohNodeInfo | null = null;
+let irohInitialized = false;
 
 interface Channel {
   id: string;
@@ -1181,6 +1194,235 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // ==================== iroh P2P API ====================
+
+  // 初始化 iroh P2P（带持久化）
+  app.post('/api/iroh/init', async (_req, res) => {
+    try {
+      if (irohInitialized && irohNodeInfo) {
+        res.json({ ok: true, ...irohNodeInfo });
+        return;
+      }
+
+      console.log('[iroh API] 初始化 iroh...');
+
+      // 启动 iroh（启用持久化）
+      await irohTransport.start(undefined, true);
+      const nodeId = irohTransport.getNodeId() || '';
+
+      console.log(`[iroh API] iroh 节点 ID: ${nodeId.substring(0, 20)}...`);
+
+      // 生成 DID
+      const keyPair = KeyManager.generate();
+      const did = keyPair.did;
+
+      // 构建节点信息文档
+      const nodeDoc = {
+        id: did,
+        name: `bolloon-web-${Date.now()}`,
+        version: '1.0',
+        capabilities: ['chat', 'ai', 'judgment-injection', 'web-interface'],
+        interests: ['ai', 'p2p', 'judgment-system'],
+        irohNodeId: nodeId,
+        channels: [{ id: 'main', name: '主对话' }],
+        createdAt: new Date().toISOString()
+      };
+
+      // 发布到 IPFS
+      const formData = new FormData();
+      const blob = new Blob([JSON.stringify(nodeDoc)], { type: 'application/json' });
+      formData.append('file', blob, 'node-info.json');
+
+      const ipfsRes = await fetch(`${IPFS_ENDPOINT}/api/v0/add`, {
+        method: 'POST',
+        body: formData
+      });
+      const ipfsResult = await ipfsRes.text();
+      const cidMatch = ipfsResult.match(/"Hash":"([^"]+)"/);
+      const cid = cidMatch ? cidMatch[1] : '';
+
+      irohNodeInfo = {
+        did,
+        cid,
+        irohNodeId: nodeId,
+        name: nodeDoc.name,
+        initialized: true
+      };
+      irohInitialized = true;
+
+      // 设置消息处理
+      irohTransport.onMessage('chat', (msg) => {
+        const content = new TextDecoder().decode(msg.payload);
+        console.log(`[iroh] 收到消息 from ${msg.from.substring(0, 12)}...`);
+
+        // 通过 SSE 广播给所有客户端
+        broadcast({
+          type: 'p2p_message',
+          from: msg.from,
+          content,
+          timestamp: Date.now()
+        }, 'p2p-global');
+      });
+
+      irohTransport.onMessage('ai-dialogue', (msg) => {
+        const content = new TextDecoder().decode(msg.payload);
+        console.log(`[iroh] 收到 AI 对话 from ${msg.from.substring(0, 12)}...`);
+
+        broadcast({
+          type: 'p2p_message',
+          content,
+          timestamp: Date.now()
+        }, 'p2p-global');
+      });
+
+      console.log(`[iroh API] 初始化完成: DID=${did}, CID=${cid}`);
+
+      res.json({ ok: true, ...irohNodeInfo });
+    } catch (err: any) {
+      console.error('[iroh API] 初始化失败:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 获取 iroh 节点信息
+  app.get('/api/iroh/info', async (_req, res) => {
+    if (!irohInitialized || !irohNodeInfo) {
+      res.json({ initialized: false });
+      return;
+    }
+    res.json({
+      initialized: true,
+      did: irohNodeInfo.did,
+      cid: irohNodeInfo.cid,
+      irohNodeId: irohNodeInfo.irohNodeId,
+      name: irohNodeInfo.name
+    });
+  });
+
+  // 通过 CID 连接到其他节点
+  app.post('/api/iroh/connect', async (req, res) => {
+    try {
+      const { cid } = req.body;
+
+      if (!cid) {
+        return res.status(400).json({ error: 'CID required' });
+      }
+
+      if (!irohInitialized) {
+        return res.status(500).json({ error: 'iroh not initialized' });
+      }
+
+      console.log(`[iroh API] 连接到 CID: ${cid}`);
+
+      // 从 IPFS 获取节点信息
+      const ipfsRes = await fetch(`${IPFS_ENDPOINT}/api/v0/cat?arg=${cid}`, {
+        method: 'POST'
+      });
+      const content = await ipfsRes.text();
+      const doc = JSON.parse(content);
+
+      if (!doc.irohNodeId) {
+        return res.status(400).json({ error: '节点信息中不包含 irohNodeId' });
+      }
+
+      const targetNodeId = doc.irohNodeId;
+      console.log(`[iroh API] 目标节点: ${targetNodeId.substring(0, 20)}...`);
+
+      // 发送连接消息
+      const message = JSON.stringify({
+        type: 'hello',
+        from: irohNodeInfo?.irohNodeId,
+        name: irohNodeInfo?.name,
+        timestamp: Date.now()
+      });
+
+      const success = await irohTransport.sendMessage(
+        targetNodeId,
+        'chat',
+        new TextEncoder().encode(message)
+      );
+
+      if (success) {
+        console.log(`[iroh API] 连接成功!`);
+        res.json({
+          ok: true,
+          targetNodeId,
+          nodeName: doc.name || 'Unknown'
+        });
+      } else {
+        console.log(`[iroh API] 连接失败（对方可能离线）`);
+        res.json({
+          ok: false,
+          error: '连接失败，对方可能离线',
+          targetNodeId
+        });
+      }
+    } catch (err: any) {
+      console.error('[iroh API] 连接错误:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 发送消息给指定节点
+  app.post('/api/iroh/send', async (req, res) => {
+    try {
+      const { targetNodeId, type, content } = req.body;
+
+      if (!targetNodeId || !content) {
+        return res.status(400).json({ error: 'targetNodeId and content required' });
+      }
+
+      if (!irohInitialized) {
+        return res.status(500).json({ error: 'iroh not initialized' });
+      }
+
+      const messageType = type || 'chat';
+      const success = await irohTransport.sendMessage(
+        targetNodeId,
+        messageType,
+        new TextEncoder().encode(content)
+      );
+
+      res.json({ ok: success });
+    } catch (err: any) {
+      console.error('[iroh API] 发送消息错误:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 获取已连接的 iroh 节点列表
+  app.get('/api/iroh/peers', async (_req, res) => {
+    try {
+      if (!irohInitialized) {
+        res.json([]);
+        return;
+      }
+
+      const peers = irohTransport.getConnectedPeers();
+      res.json(peers.map((nodeId: string) => ({
+        nodeId,
+        shortId: nodeId.substring(0, 16)
+      })));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 获取离线消息数量
+  app.get('/api/iroh/offline-count', async (_req, res) => {
+    try {
+      if (!irohInitialized) {
+        res.json({ count: 0 });
+        return;
+      }
+
+      const count = irohTransport.getPendingOfflineCount();
+      res.json({ count });
+    } catch (err: any) {
+      res.json({ count: 0 });
+    }
+  });
+
   // 获取当前频道的身份信息
   app.get('/api/channel-identity/:channelId', async (req, res) => {
     try {
@@ -1364,6 +1606,173 @@ app.get('/channels', async (_req, res) => {
       if (msg) {
         msg.status = 'read';
       }
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==================== P2P 连接进度 SSE ====================
+
+  // 连接进度流（用于实时显示解析进度）
+  const connectProgressClients = new Map<string, any>();
+
+  app.get('/api/p2p/connect/progress', async (req, res) => {
+    const sessionId = crypto.randomUUID();
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.write(`data: ${JSON.stringify({ type: 'start', sessionId })}\n\n`);
+
+    connectProgressClients.set(sessionId, res);
+
+    req.on('close', () => {
+      connectProgressClients.delete(sessionId);
+    });
+  });
+
+  function emitConnectProgress(sessionId: string, data: any) {
+    const client = connectProgressClients.get(sessionId);
+    if (client) {
+      client.write(`data: ${JSON.stringify(data)}\n\n`);
+    }
+  }
+
+  // 取消连接
+  app.post('/api/p2p/connect/cancel', async (req, res) => {
+    const { sessionId } = req.body;
+    if (sessionId && connectProgressClients.has(sessionId)) {
+      connectProgressClients.get(sessionId).end();
+      connectProgressClients.delete(sessionId);
+    }
+    res.json({ ok: true });
+  });
+
+  // ==================== P2P 连接历史 API ====================
+
+  const P2P_HISTORY_PATH = path.join(SHARED_SESSION_PATH, 'p2p-history.json');
+
+  async function loadP2PHistory() {
+    try {
+      const data = await fs.readFile(P2P_HISTORY_PATH, 'utf-8');
+      return JSON.parse(data);
+    } catch {
+      return [];
+    }
+  }
+
+  async function saveP2PHistory(history: any[]) {
+    await fs.writeFile(P2P_HISTORY_PATH, JSON.stringify(history, null, 2));
+  }
+
+  // 获取连接历史
+  app.get('/api/p2p/history', async (_req, res) => {
+    try {
+      const history = await loadP2PHistory();
+      res.json(history);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 添加到连接历史
+  app.post('/api/p2p/history', async (req, res) => {
+    try {
+      const history = await loadP2PHistory();
+      const entry = req.body;
+
+      // 检查是否已存在
+      const existingIndex = history.findIndex((h: any) => h.did === entry.did);
+      if (existingIndex >= 0) {
+        history[existingIndex] = { ...history[existingIndex], ...entry, lastConnectedAt: Date.now() };
+      } else {
+        history.unshift({ ...entry, id: crypto.randomUUID(), lastConnectedAt: Date.now(), lastMessageAt: 0, totalMessages: 0 });
+      }
+
+      await saveP2PHistory(history);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 更新连接历史
+  app.patch('/api/p2p/history/:id', async (req, res) => {
+    try {
+      const history = await loadP2PHistory();
+      const { id } = req.params;
+      const updates = req.body;
+
+      const index = history.findIndex((h: any) => h.id === id);
+      if (index >= 0) {
+        history[index] = { ...history[index], ...updates };
+        await saveP2PHistory(history);
+      }
+
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 删除连接历史
+  app.delete('/api/p2p/history/:id', async (req, res) => {
+    try {
+      const history = await loadP2PHistory();
+      const { id } = req.params;
+
+      const filtered = history.filter((h: any) => h.id !== id);
+      await saveP2PHistory(filtered);
+
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==================== P2P 偏好设置 API ====================
+
+  const P2P_PREFS_PATH = path.join(SHARED_SESSION_PATH, 'p2p-preferences.json');
+
+  async function loadP2PPreferences() {
+    try {
+      const data = await fs.readFile(P2P_PREFS_PATH, 'utf-8');
+      return JSON.parse(data);
+    } catch {
+      return {
+        autoReconnect: true,
+        autoConnectOnStartup: true,
+        preferredNodes: [],
+        maxOfflineQueue: 100,
+        notifications: {
+          newMessage: true,
+          connectionEstablished: true,
+          peerWentOnline: true,
+          peerWentOffline: true
+        }
+      };
+    }
+  }
+
+  async function saveP2PPreferences(prefs: any) {
+    await fs.writeFile(P2P_PREFS_PATH, JSON.stringify(prefs, null, 2));
+  }
+
+  app.get('/api/p2p/preferences', async (_req, res) => {
+    try {
+      const prefs = await loadP2PPreferences();
+      res.json(prefs);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.patch('/api/p2p/preferences', async (req, res) => {
+    try {
+      const current = await loadP2PPreferences();
+      const updates = req.body;
+      await saveP2PPreferences({ ...current, ...updates });
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
