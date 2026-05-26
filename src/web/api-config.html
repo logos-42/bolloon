@@ -21,6 +21,7 @@
             'bg-active': 'var(--bg-active)',
             text: 'var(--text)',
             'text-secondary': 'var(--text-secondary)',
+            'text-muted': 'var(--text-muted)',
             accent: 'var(--accent)',
             border: 'var(--border)',
           },
@@ -28,12 +29,9 @@
       },
     });
   </script>
-  <script type="module" src="/components/types.js"></script>
-  <script type="module" src="/components/provider-card.js"></script>
-  <script type="module" src="/components/config-modal.js"></script>
-  <script type="module" src="/components/provider-grid.js"></script>
 </head>
 <body>
-  <provider-grid></provider-grid>
+  <div id="root"></div>
+  <script type="module" src="/main.js"></script>
 </body>
 </html>

@@ -4,6 +4,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import * as esbuild from 'esbuild';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const DIST_WEB = path.join(ROOT, 'dist', 'web');
@@ -20,9 +21,29 @@ async function main() {
   await fs.mkdir(DIST_P2P, { recursive: true });
   await fs.mkdir(DIST_UTILS, { recursive: true });
 
-  // 编译主要组件
+  // 构建 React 应用（API 配置页面）
+  console.log('[build-web] 构建 React 应用...');
+  await esbuild.build({
+    entryPoints: [path.join(ROOT, 'src/web/main.tsx')],
+    bundle: true,
+    outfile: path.join(DIST_WEB, 'main.js'),
+    format: 'esm',
+    target: 'es2022',
+    jsx: 'automatic',
+    jsxImportSource: 'react',
+    loader: {
+      '.tsx': 'tsx',
+      '.ts': 'ts',
+    },
+    define: {
+      'process.env.NODE_ENV': '"production"',
+    },
+    minify: true,
+  });
+
+  // 编译主要组件（仅 utils，其他已迁移到 React）
   console.log('[build-web] 编译主要组件...');
-  execSync('npx tsc --ignoreConfig --outDir dist/web/components --declaration false --target ES2022 --module ESNext --moduleResolution bundler src/web/components/types.ts src/web/components/provider-card.ts src/web/components/provider-grid.ts src/web/components/config-modal.ts src/web/utils/cn.ts', {
+  execSync('npx tsc --ignoreConfig --outDir dist/web/components --declaration false --target ES2022 --module ESNext --moduleResolution bundler src/web/utils/cn.ts', {
     cwd: ROOT,
     stdio: 'inherit'
   });
