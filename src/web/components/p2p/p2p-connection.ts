@@ -25,8 +25,8 @@ export class P2PConnectionManager {
         return {
           type: 'link',
           value: {
-            did: url.searchParams.get('did'),
-            cid: url.searchParams.get('cid')
+            did: url.searchParams.get('did') ?? undefined,
+            cid: url.searchParams.get('cid') ?? undefined
           }
         };
       } catch {
@@ -63,12 +63,13 @@ export class P2PConnectionManager {
     onProgress?.({ stage: 'validating', percent: 10, message: '验证输入格式...' });
 
     let cid = '';
-    if (parsed.type === 'link') {
-      cid = parsed.value.cid;
-    } else if (parsed.type === 'cid') {
-      cid = parsed.value;
-    } else if (parsed.type === 'diapDoc') {
-      cid = parsed.value.cid || '';
+    const value = parsed.value;
+    if (parsed.type === 'link' && typeof value !== 'string') {
+      cid = (value as { did?: string; cid?: string }).cid || '';
+    } else if (parsed.type === 'cid' && typeof value === 'string') {
+      cid = value;
+    } else if (parsed.type === 'diapDoc' && typeof value !== 'string') {
+      cid = (value as { id?: string; did?: string; cid?: string }).cid || '';
     }
 
     if (!cid) {
@@ -141,12 +142,21 @@ export class P2PConnectionManager {
   // 获取所有已连接节点
   getConnectedPeers(): ConnectedPeer[] {
     const connected: ConnectedPeer[] = [];
-    this.peers.forEach((peer, nodeId) => {
+    this.peers.forEach((peer, peerNodeId) => {
       if (peer.status === ConnectionStatus.CONNECTED) {
-        connected.push({ nodeId, ...peer });
+        connected.push({ nodeId: peerNodeId, status: peer.status, info: peer.info, lastSeen: peer.lastSeen });
       }
     });
     return connected;
+  }
+
+  // 清除重连定时器
+  private clearReconnectTimer(nodeId: string): void {
+    const timerId = this.reconnectTimers.get(nodeId);
+    if (timerId !== undefined) {
+      clearTimeout(timerId);
+      this.reconnectTimers.delete(nodeId);
+    }
   }
 
   // 获取节点数量

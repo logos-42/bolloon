@@ -73,7 +73,7 @@ export class P2PStoreMemory {
       id: crypto.randomUUID(),
       isRead: false
     });
-    if (!msg.isRead) this.unreadCount++;
+    this.unreadCount++;
   }
 
   async getMessages(): Promise<P2PMessage[]> {
