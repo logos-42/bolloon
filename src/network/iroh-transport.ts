@@ -83,7 +83,11 @@ export class IrohTransport {
 
   async start(secretKey?: string, enablePersistence = false): Promise<{ nodeId: string; addr: string }> {
     if (this.endpoint) {
-      throw new Error('IrohTransport already started');
+      // 已启动，返回当前信息
+      return {
+        nodeId: this.ownNodeId,
+        addr: this.endpoint.listenAddresses()[0]?.toString() || ''
+      };
     }
 
     const options: any = { alpns: [IROH_ALPN] };
