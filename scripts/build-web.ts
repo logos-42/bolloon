@@ -60,6 +60,16 @@ async function main() {
   await fs.copyFile(path.join(ROOT, 'src/web/api-config.html'), path.join(DIST_WEB, 'api-config.html'));
   await fs.copyFile(path.join(ROOT, 'src/web/style.css'), path.join(DIST_WEB, 'style.css'));
   await fs.copyFile(path.join(ROOT, 'src/web/client.js'), path.join(DIST_WEB, 'client.js'));
+  await fs.copyFile(path.join(ROOT, 'src/web/twind.config.js'), path.join(DIST_WEB, 'twind.config.js'));
+
+  // 复制 p2p-bundle.js（如果存在）
+  const p2pBundleSrc = path.join(ROOT, 'src/web/p2p-bundle.js');
+  try {
+    await fs.access(p2pBundleSrc);
+    await fs.copyFile(p2pBundleSrc, path.join(DIST_WEB, 'p2p-bundle.js'));
+  } catch {
+    // p2p-bundle.js 不存在，跳过
+  }
 
   // 复制 utils 目录到 dist/web/utils
   await fs.mkdir(path.join(DIST_WEB, 'utils'), { recursive: true });
