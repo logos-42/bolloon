@@ -1396,3 +1396,6 @@ connect = async function() {
   };
 };
 
+// 启动应用
+init();
+
