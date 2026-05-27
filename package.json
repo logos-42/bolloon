@@ -8,9 +8,15 @@
     "build": "npm run build --workspaces --if-present",
     "build:main": "tsc",
     "build:web": "npx tsx scripts/build-web.ts",
+    "build:electron": "tsc -p tsconfig.electron.json",
     "start": "node dist/index.js",
     "dev": "tsx -r dotenv/config src/index.ts",
     "dev:web": "npm run build:web && npm run dev",
+    "dev:electron": "npm run build:electron && npm run electron:start",
+    "electron:start": "NODE_ENV=development electron dist/electron.js",
+    "electron:dev": "concurrently \"npm run dev:web\" \"npm run electron:start\"",
+    "electron:build": "npm run build:electron && electron-builder",
+    "electron:pack": "electron-builder --dir",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:pi-sdk": "tsx src/test/pi-sdk.test.ts"
@@ -22,7 +28,7 @@
     "@bolloon/constraint-runtime": "0.1.0",
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
-    "@diap/sdk": "^0.1.9",
+    "@diap/sdk": "^0.1.10",
     "@libp2p/autonat": "^3.0.20",
     "@libp2p/circuit-relay-v2": "^4.2.5",
     "@libp2p/dcutr": "^3.0.20",
@@ -49,9 +55,64 @@
     "@types/pdf-parse": "^1.1.5",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
+    "concurrently": "^9.2.1",
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1",
     "playwright": "^1.60.0",
     "tsx": "^4.0.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
+  },
+  "build": {
+    "appId": "com.bolloon.agent",
+    "productName": "Bolloon Agent",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "dist/electron.js"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "build/icon.icns"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/@diap/**/*",
+      "node_modules/@rayhanadev/**/*",
+      "node_modules/libp2p/**/*",
+      "node_modules/@libp2p/**/*"
+    ]
   }
 }
