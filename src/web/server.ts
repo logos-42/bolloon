@@ -1857,6 +1857,21 @@ export async function bootstrapP2P(verifier: AgentVerificationManager): Promise<
 
 export async function openBrowser(url: string) {
   const { exec } = await import('child_process');
-  const cmd = process.platform === 'darwin' ? `open ${url}` : `xdg-open ${url}`;
-  exec(cmd);
+  const { platform } = await import('os');
+  const p = platform();
+
+  let cmd;
+  if (p === 'darwin') {
+    cmd = `open ${url}`;
+  } else if (p === 'win32') {
+    cmd = `start ${url}`;
+  } else {
+    cmd = `xdg-open ${url}`;
+  }
+
+  exec(cmd, (err) => {
+    if (err) {
+      console.error('打开浏览器失败:', err.message);
+    }
+  });
 }
