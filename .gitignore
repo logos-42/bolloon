@@ -9,6 +9,7 @@ peer-store/
 datastore/
 bin/
 .ipfs
+release/
 
 py-bolloon/
 
