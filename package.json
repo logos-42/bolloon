@@ -49,6 +49,7 @@
     "@types/pdf-parse": "^1.1.5",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
+    "playwright": "^1.60.0",
     "tsx": "^4.0.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
