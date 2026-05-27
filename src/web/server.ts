@@ -380,6 +380,11 @@ async function getAgentForChannel(
 }
 
 export async function createWebServer(port: number = 3000) {
+  // 防止 P2P DHT 超时等错误导致进程崩溃
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('[警告] 未处理的 Promise 拒绝:', reason);
+  });
+
   // 重置旧的 agent session，确保使用新的 LLM 配置
   const { resetAgentSession } = await import('../agents/pi-sdk.js');
   resetAgentSession();
