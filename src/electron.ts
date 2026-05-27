@@ -61,11 +61,9 @@ function createWindow() {
   });
 
   // 加载应用
-  const distPath = isDev
-    ? path.join(__dirname, '..', 'dist', 'web')
-    : path.join(__dirname, '..', 'app', 'dist', 'web');
-
-  const indexPath = path.join(distPath, 'index.html');
+  const indexPath = isDev
+    ? path.join(__dirname, '..', 'web', 'index.html')
+    : path.join(__dirname, 'web', 'index.html');
 
   if (isDev) {
     // 开发模式：从本地服务器加载
