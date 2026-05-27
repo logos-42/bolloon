@@ -10,30 +10,256 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div id="root"></div>
-  <script type="module">
-    import { setup } from 'https://esm.sh/@twind/core@1.1.3';
+  <div class="api-config-page">
+    <!-- 页面标题 -->
+    <div class="page-header">
+      <div class="page-title-group">
+        <h1>API 配置</h1>
+        <span class="config-count-badge" id="configCount">加载中...</span>
+      </div>
+      <a href="/" class="back-link">← 返回主页</a>
+    </div>
 
-    setup({
-      mode: 'inject',
-      theme: {
-        extend: {
-          colors: {
-            bg: 'var(--bg)',
-            'bg-sidebar': 'var(--bg-sidebar)',
-            'bg-hover': 'var(--bg-hover)',
-            'bg-active': 'var(--bg-active)',
-            text: 'var(--text)',
-            'text-secondary': 'var(--text-secondary)',
-            'text-muted': 'var(--text-muted)',
-            accent: 'var(--accent)',
-            border: 'var(--border)',
-          },
-        },
-      },
-    });
+    <!-- 提供商列表 -->
+    <div class="provider-list" id="providerList">
+      <div class="loading-state">加载中...</div>
+    </div>
 
-    import('/main.js');
+    <!-- 配置弹窗 -->
+    <div class="modal-overlay" id="configModal" style="display: none;">
+      <div class="modal-box">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="modal-icon" id="modalIcon">A</div>
+            <div>
+              <h2 id="modalTitle">配置</h2>
+              <p class="modal-subtitle" id="modalSubtitle">描述</p>
+            </div>
+          </div>
+          <button class="modal-close" onclick="closeModal()">×</button>
+        </div>
+
+        <form class="modal-form" id="configForm">
+          <div class="form-group">
+            <label>API Key</label>
+            <input type="password" id="apiKeyInput" placeholder="输入 API Key">
+            <p class="form-hint">已有 Key 会保留，输入新值以更新</p>
+          </div>
+
+          <div class="form-group">
+            <label>Base URL</label>
+            <input type="text" id="baseUrlInput" placeholder="https://api.example.com/v1">
+            <p class="form-hint">留空使用默认地址</p>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>模型</label>
+              <input type="text" id="modelInput" placeholder="如 gpt-4">
+            </div>
+            <div class="form-group form-group-small">
+              <label>温度</label>
+              <input type="number" id="temperatureInput" value="0.7" min="0" max="2" step="0.1">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <button type="button" class="test-btn" id="testBtn" onclick="testConnection()">
+              ⚡ 测试连接
+            </button>
+            <div class="test-result" id="testResult" style="display: none;"></div>
+          </div>
+
+          <div class="form-actions">
+            <button type="button" class="btn-cancel" onclick="closeModal()">取消</button>
+            <button type="submit" class="btn-save">保存</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 当前配置数据
+    let configData = null;
+    let currentProvider = null;
+
+    // 加载配置
+    async function loadConfig() {
+      try {
+        const resp = await fetch('/api/llm-config');
+        configData = await resp.json();
+        renderProviders();
+      } catch (err) {
+        document.getElementById('providerList').innerHTML =
+          '<div class="error-state">加载失败: ' + err.message + '</div>';
+      }
+    }
+
+    // 渲染提供商列表
+    function renderProviders() {
+      const list = document.getElementById('providerList');
+      const providers = configData.providers;
+      const info = configData.providerInfo;
+
+      // 计算已配置数量
+      let configured = 0;
+      let total = 0;
+      for (const key in providers) {
+        total++;
+        if (providers[key].enabled && providers[key].apiKey) {
+          configured++;
+        }
+      }
+      document.getElementById('configCount').textContent = configured + '/' + total + ' 已配置';
+
+      // 生成卡片
+      let html = '';
+      for (const key in providers) {
+        const p = providers[key];
+        const i = info[key] || { name: key, description: '供应商', requiresApiKey: true };
+        const isActive = configData.activeProvider === key;
+
+        // 状态判断
+        let statusText, statusClass;
+        if (isActive) {
+          statusText = '使用中';
+          statusClass = 'status-accent';
+        } else if (p.enabled && p.apiKey) {
+          statusText = '已启用';
+          statusClass = 'status-green';
+        } else if (p.enabled) {
+          statusText = '已启用';
+          statusClass = 'status-yellow';
+        } else {
+          statusText = '未启用';
+          statusClass = 'status-muted';
+        }
+
+        // 配置状态
+        const isConfigured = p.enabled && p.apiKey;
+
+        html += `
+          <div class="provider-card ${isActive ? 'active' : ''}" onclick="openModal('${key}')">
+            <div class="provider-header">
+              <div class="provider-icon">${i.name.charAt(0).toUpperCase()}</div>
+              <div class="provider-info">
+                <h3 class="provider-name">${i.name}</h3>
+                <p class="provider-desc">${i.description}</p>
+              </div>
+              <div class="status-badge ${statusClass}">
+                <span class="status-dot"></span>
+                ${statusText}
+              </div>
+            </div>
+            <div class="provider-footer">
+              <div class="config-status">
+                <span class="status-icon ${isConfigured ? 'configured' : ''}">${isConfigured ? '✓' : '○'}</span>
+                ${isConfigured ? '已配置 API Key' : '未配置 API Key'}
+              </div>
+              ${p.model ? '<div class="model-info">模型: ' + p.model + '</div>' : ''}
+              <div class="arrow-indicator">›</div>
+            </div>
+          </div>
+        `;
+      }
+      list.innerHTML = html;
+    }
+
+    // 打开弹窗
+    function openModal(providerKey) {
+      currentProvider = providerKey;
+      const p = configData.providers[providerKey];
+      const i = configData.providerInfo[providerKey] || { name: providerKey, description: '供应商' };
+
+      document.getElementById('modalIcon').textContent = i.name.charAt(0).toUpperCase();
+      document.getElementById('modalTitle').textContent = '配置 ' + i.name;
+      document.getElementById('modalSubtitle').textContent = i.description;
+
+      document.getElementById('apiKeyInput').value = '';
+      document.getElementById('baseUrlInput').value = p.baseUrl || '';
+      document.getElementById('modelInput').value = p.model || '';
+      document.getElementById('temperatureInput').value = p.temperature || 0.7;
+
+      document.getElementById('testResult').style.display = 'none';
+      document.getElementById('configModal').style.display = 'flex';
+    }
+
+    // 关闭弹窗
+    function closeModal() {
+      document.getElementById('configModal').style.display = 'none';
+      currentProvider = null;
+    }
+
+    // 测试连接
+    async function testConnection() {
+      const btn = document.getElementById('testBtn');
+      const result = document.getElementById('testResult');
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> 测试中...';
+      result.style.display = 'none';
+
+      try {
+        const resp = await fetch('/api/llm-test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: currentProvider })
+        });
+        const data = await resp.json();
+
+        result.className = 'test-result ' + (data.success ? 'test-success' : 'test-error');
+        result.innerHTML = '<span>' + (data.success ? '✓' : '✗') + '</span> ' +
+          (data.success ? '连接成功！延迟: ' + data.latency + 'ms' : (data.error || '连接失败'));
+        result.style.display = 'flex';
+      } catch (err) {
+        result.className = 'test-result test-error';
+        result.innerHTML = '<span>✗</span> ' + err.message;
+        result.style.display = 'flex';
+      }
+
+      btn.disabled = false;
+      btn.innerHTML = '⚡ 测试连接';
+    }
+
+    // 保存配置
+    document.getElementById('configForm').onsubmit = async function(e) {
+      e.preventDefault();
+
+      const updateData = {
+        enabled: true,
+        apiKey: document.getElementById('apiKeyInput').value || configData.providers[currentProvider].apiKey || '',
+        baseUrl: document.getElementById('baseUrlInput').value || configData.providers[currentProvider].baseUrl || '',
+        model: document.getElementById('modelInput').value || configData.providers[currentProvider].model || '',
+        temperature: parseFloat(document.getElementById('temperatureInput').value) || 0.7
+      };
+
+      try {
+        await fetch('/api/llm-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: currentProvider, config: updateData })
+        });
+
+        // 显示保存成功
+        const saveBtn = this.querySelector('.btn-save');
+        saveBtn.textContent = '✓ 已保存';
+        setTimeout(() => {
+          closeModal();
+          loadConfig();
+        }, 500);
+      } catch (err) {
+        alert('保存失败: ' + err.message);
+      }
+    };
+
+    // 点击遮罩关闭弹窗
+    document.getElementById('configModal').onclick = function(e) {
+      if (e.target === this) closeModal();
+    };
+
+    // 启动
+    loadConfig();
   </script>
 </body>
 </html>
