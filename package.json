@@ -35,13 +35,13 @@
     "@rayhanadev/iroh": "^0.1.1",
     "@twind/core": "^1.1.3",
     "dotenv": "^17.4.2",
+    "esbuild": "^0.24.0",
     "express": "^5.2.1",
     "libp2p": "^3.3.0",
     "mammoth": "^1.6.0",
     "pdf-parse": "^1.1.4",
     "react": "^18.3.0",
-    "react-dom": "^18.3.0",
-    "esbuild": "^0.24.0"
+    "react-dom": "^18.3.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
