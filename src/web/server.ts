@@ -1780,6 +1780,8 @@ app.get('/channels', async (_req, res) => {
 
   return new Promise<{ app: express.Express; server: typeof server }>((resolve) => {
     server.listen(port, () => {
+      console.log(`Web 服务器启动完成: http://localhost:${port}`);
+      console.log('服务器已监听');
       setInterval(() => {
         for (const client of sseClients) {
           client.res.write(': ping\n\n');
