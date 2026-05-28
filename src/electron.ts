@@ -22,6 +22,7 @@ log('Bolloon Electron 启动');
 
 // 全局窗口引用
 let mainWindow: BrowserWindow | null = null;
+let httpServer: any = null;
 
 // 防止多个实例
 const gotTheLock = app.requestSingleInstanceLock();
@@ -37,10 +38,9 @@ app.on('second-instance', () => {
   }
 });
 
-function createWindow() {
+async function createWindow() {
   log('创建主窗口...');
 
-  // 计算窗口大小
   const width = 1200;
   const height = 800;
   const minWidth = 800;
@@ -55,33 +55,38 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false, // 允许加载本地模块
+      sandbox: false,
     },
-    show: false, // 等内容加载完成再显示
+    show: false,
   });
 
-  // 加载应用
-  const indexPath = isDev
-    ? path.join(__dirname, '..', 'web', 'index.html')
-    : path.join(__dirname, 'web', 'index.html');
+  const port = parseInt(process.env.ELECTRON_PORT || '54188');
 
   if (isDev) {
-    // 开发模式：从本地服务器加载
-    const port = process.env.PORT || '54188';
     mainWindow.loadURL(`http://localhost:${port}`);
     mainWindow.webContents.openDevTools();
   } else {
-    // 生产模式：从文件系统加载
-    mainWindow.loadFile(indexPath);
+    log(`启动内置 Web 服务器...`);
+    const { createWebServer } = await import('./web/server.js');
+    const { server } = await createWebServer(port);
+    httpServer = server;
+    log(`Web 服务器启动完成: http://localhost:${port}`);
+
+    await new Promise<void>((resolve) => {
+      server.once('listening', () => {
+        log('服务器已监听');
+        resolve();
+      });
+    });
+
+    mainWindow.loadURL(`http://localhost:${port}`);
   }
 
-  // 显示窗口
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
     log('窗口已显示');
   });
 
-  // 外部链接用浏览器打开
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http://') || url.startsWith('https://')) {
       shell.openExternal(url);
@@ -93,23 +98,26 @@ function createWindow() {
     mainWindow = null;
   });
 
-  log(`窗口创建完成，加载: ${indexPath}`);
+  log('窗口创建完成');
 }
 
-// Electron 准备好后创建窗口
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   log('Electron 准备好');
-  createWindow();
+  await createWindow();
 
-  app.on('activate', () => {
+  app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      await createWindow();
     }
   });
 });
 
 app.on('window-all-closed', () => {
   log('所有窗口已关闭');
+  if (httpServer) {
+    httpServer.close();
+    log('HTTP 服务器已关闭');
+  }
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -119,7 +127,6 @@ app.on('before-quit', () => {
   log('应用即将退出');
 });
 
-// IPC 处理器
 ipcMain.handle('get-version', () => {
   return app.getVersion();
 });
