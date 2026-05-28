@@ -185,12 +185,41 @@ function renderCollapsedChannels() {
   return;
 }
 
+function ensureMessageContainer(channelId) {
+  if (!messagesContainers.has(channelId)) {
+    const container = document.createElement('div');
+    container.className = 'channel-messages';
+    container.id = `channel-messages-${channelId}`;
+    container.style.display = 'none';
+    messagesEl.appendChild(container);
+    messagesContainers.set(channelId, container);
+  }
+  return messagesContainers.get(channelId);
+}
+
+function showChannelView(channelId) {
+  // Hide all channel message containers
+  messagesContainers.forEach((container, cid) => {
+    container.style.display = 'none';
+  });
+  // Show the selected channel's container
+  const container = messagesContainers.get(channelId);
+  if (container) {
+    container.style.display = 'block';
+  }
+  // Update messagesEl reference for functions that use it directly
+  messagesEl.innerHTML = '';
+  if (container) {
+    messagesEl.appendChild(container);
+  }
+}
+
 async function selectChannel(channelId) {
   console.log('[selectChannel] 开始切换到:', channelId);
 
   // 立即更新当前频道 ID
   currentChannelId = channelId;
-  reconnectAttempts = 0;
+  reconnectAttempts.set(channelId, 0);
 
   // 找到当前频道
   const channel = channels.find(c => c.id === channelId);
@@ -201,35 +230,35 @@ async function selectChannel(channelId) {
 
   renderChannels();
 
-  // 关闭旧 SSE 连接
-  if (eventSource) {
-    console.log('[selectChannel] 关闭旧 SSE 连接');
-    eventSource.close();
-    eventSource = null;
+  // 确保该频道有消息容器
+  const container = ensureMessageContainer(channelId);
+
+  // 切换到该频道的视图
+  showChannelView(channelId);
+
+  // 如果还没有 SSE 连接，建立连接
+  if (!eventSources.has(channelId)) {
+    console.log('[selectChannel] 建立 SSE 连接');
+    connect(channelId);
   }
 
-  // 清空消息区域
-  messagesEl.innerHTML = '';
-
-  // 加载 session
-  try {
-    const res = await fetch(`/sessions/${channelId}`);
-    const session = await res.json();
-    if (session.messages && session.messages.length > 0) {
-      session.messages.forEach(msg => {
-        addMessage(msg.content, msg.type, false);
-      });
-    } else {
-      addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false);
+  // 如果容器是空的，加载 session
+  if (container.innerHTML.trim() === '') {
+    try {
+      const res = await fetch(`/sessions/${channelId}`);
+      const session = await res.json();
+      if (session.messages && session.messages.length > 0) {
+        session.messages.forEach(msg => {
+          addMessage(msg.content, msg.type, false, container);
+        });
+      } else {
+        addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
+      }
+    } catch (err) {
+      console.error('[selectChannel] 加载 session 失败:', err);
+      addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
     }
-  } catch (err) {
-    console.error('[selectChannel] 加载 session 失败:', err);
-    addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false);
   }
-
-  // 建立新 SSE 连接
-  console.log('[selectChannel] 建立 SSE 连接');
-  connect();
 }
 
 async function loadSession(channelId) {
@@ -251,7 +280,8 @@ async function loadSession(channelId) {
   }
 }
 
-function addMessage(content, type, save = true) {
+function addMessage(content, type, save = true, container) {
+  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   // 去重：只有 save=true 时（来自 SSE）才去重，save=false 时（来自 session 加载）直接显示
   if (save) {
     const lastContent = type === 'user' ? lastUserCommand : lastAiContent;
@@ -460,19 +490,20 @@ function addMessage(content, type, save = true) {
   }
 
   div.appendChild(time);
-  messagesEl.appendChild(div);
+  msgContainer.appendChild(div);
 
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  msgContainer.scrollTop = msgContainer.scrollHeight;
 }
 
-function showTyping() {
+function showTyping(container) {
+  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   hideTyping();
   const div = document.createElement('div');
   div.className = 'message message-ai';
   div.id = 'typing';
   div.innerHTML = '<div class="typing"><div class="typing-spinner"></div><span class="typing-text">思考中...</span></div>';
-  messagesEl.appendChild(div);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  msgContainer.appendChild(div);
+  msgContainer.scrollTop = msgContainer.scrollHeight;
 }
 
 function hideTyping() {
@@ -483,7 +514,8 @@ function hideTyping() {
 
 let streamingMessageEl = null;
 
-function showStreaming() {
+function showStreaming(container) {
+  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   hideStreaming();
   streamingMessageEl = document.createElement('div');
   streamingMessageEl.className = 'message message-ai';
@@ -491,8 +523,8 @@ function showStreaming() {
   const bubble = document.createElement('div');
   bubble.className = 'bubble bubble-ai streaming-content';
   streamingMessageEl.appendChild(bubble);
-  messagesEl.appendChild(streamingMessageEl);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  msgContainer.appendChild(streamingMessageEl);
+  msgContainer.scrollTop = msgContainer.scrollHeight;
 }
 
 function hideStreaming() {
@@ -502,53 +534,57 @@ function hideStreaming() {
   }
 }
 
-function updateStreamingContent(content) {
+function updateStreamingContent(content, container) {
+  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   if (streamingMessageEl) {
     const bubble = streamingMessageEl.querySelector('.streaming-content');
     if (bubble) {
       bubble.textContent = content;
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      msgContainer.scrollTop = msgContainer.scrollHeight;
     }
   }
 }
 
-function handleStreamEvent(data) {
+function handleStreamEvent(data, container) {
+  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   // 始终确保有工作流显示区域
   if (!workflowDisplayEl) {
     workflowDisplayEl = createWorkflowDisplay();
-    messagesEl.appendChild(workflowDisplayEl);
+    msgContainer.appendChild(workflowDisplayEl);
   }
 
   if (data.streamType === 'thinking') {
-    showStreaming();
-    updateStreamingContent(data.content || '思考中...');
+    showStreaming(msgContainer);
+    updateStreamingContent(data.content || '思考中...', msgContainer);
   } else if (data.streamType === 'token') {
-    showStreaming();
+    showStreaming(msgContainer);
     const current = streamingMessageEl?.querySelector('.streaming-content')?.textContent || '';
-    updateStreamingContent(current + data.content);
+    updateStreamingContent(current + data.content, msgContainer);
   }
 }
 
-function handleStatusEvent(data) {
+function handleStatusEvent(data, container) {
+  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   // 检查是否是工具调用结果
   const content = data.content || '';
   const isJsonResult = content.startsWith('{') && content.includes('"success"');
 
   if (isJsonResult) {
     // 工具结果：折叠显示
-    showToolResult(data.tool, content);
+    showToolResult(data.tool, content, msgContainer);
   } else {
     // 普通状态：流式显示
-    showStreaming();
+    showStreaming(msgContainer);
     const icon = data.tool ? `🔧 ${data.tool}: ` : '';
-    updateStreamingContent(icon + data.content);
+    updateStreamingContent(icon + data.content, msgContainer);
   }
 }
 
 // 显示工具调用结果（折叠）
 let toolResultContainer = null;
 
-function showToolResult(toolName, resultJson) {
+function showToolResult(toolName, resultJson, container) {
+  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   // 清理之前的流式显示
   hideStreaming();
 
@@ -556,7 +592,7 @@ function showToolResult(toolName, resultJson) {
   if (!toolResultContainer) {
     toolResultContainer = document.createElement('div');
     toolResultContainer.className = 'tool-results-container';
-    messagesEl.appendChild(toolResultContainer);
+    msgContainer.appendChild(toolResultContainer);
   }
 
   // 尝试解析并格式化 JSON
@@ -591,7 +627,7 @@ function showToolResult(toolName, resultJson) {
   resultEl.appendChild(headerEl);
   resultEl.appendChild(contentEl);
   toolResultContainer.appendChild(resultEl);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  msgContainer.scrollTop = msgContainer.scrollHeight;
 }
 
 // 格式化工具结果为易读格式
@@ -642,13 +678,14 @@ function createWorkflowDisplay() {
   return container;
 }
 
-function handleTaskStatusEvent(data) {
+function handleTaskStatusEvent(data, container) {
+  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   console.log('[工作流] 任务状态:', data);
 
   // 获取或创建工作流显示区域
   if (!workflowDisplayEl) {
     workflowDisplayEl = createWorkflowDisplay();
-    messagesEl.appendChild(workflowDisplayEl);
+    msgContainer.appendChild(workflowDisplayEl);
   }
 
   const stepsList = workflowDisplayEl.querySelector('.workflow-steps-list');
@@ -692,14 +729,15 @@ function handleTaskStatusEvent(data) {
   }
 }
 
-function handleWorkflowStepEvent(data) {
+function handleWorkflowStepEvent(data, container) {
+  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   console.log('[工作流] 步骤:', data);
   console.log('[工作流] 步骤标签:', data.step, '内容:', data.content?.substring(0, 80));
 
   // 获取或创建工作流显示区域
   if (!workflowDisplayEl) {
     workflowDisplayEl = createWorkflowDisplay();
-    messagesEl.appendChild(workflowDisplayEl);
+    msgContainer.appendChild(workflowDisplayEl);
   }
 
   const streamsDiv = workflowDisplayEl.querySelector('.workflow-streams');
@@ -732,16 +770,17 @@ function handleWorkflowStepEvent(data) {
     streamsDiv.appendChild(stepEl);
 
     // 自动滚动
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    msgContainer.scrollTop = msgContainer.scrollHeight;
   }
 }
 
-function handleWorkflowLoopEvent(data) {
+function handleWorkflowLoopEvent(data, container) {
+  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   console.log('[工作流] 循环:', data);
 
   if (!workflowDisplayEl) {
     workflowDisplayEl = createWorkflowDisplay();
-    messagesEl.appendChild(workflowDisplayEl);
+    msgContainer.appendChild(workflowDisplayEl);
   }
 
   const loopCount = workflowDisplayEl.querySelector('.workflow-loop-count');
@@ -766,7 +805,7 @@ function handleWorkflowLoopEvent(data) {
       <div class="loop-content">${data.content}</div>
     `;
     streamsDiv.appendChild(loopEl);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    msgContainer.scrollTop = msgContainer.scrollHeight;
   }
 }
 
