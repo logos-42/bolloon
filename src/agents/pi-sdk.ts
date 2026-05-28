@@ -805,7 +805,7 @@ class PiAgentSession implements AgentSession {
       content: input
     });
 
-    onStream({ type: 'thinking', content: '🤔 思考中...' });
+    onStream({ type: 'thinking', content: '🤔 开始思考...' });
 
     if (!this.minimaxAvailable) {
       const response = await this.handleFallback(input);
@@ -814,12 +814,12 @@ class PiAgentSession implements AgentSession {
       return response;
     }
 
-    const result = await this.runReActLoop();
+    const result = await this.runReActLoop(onStream);
     onStream({ type: 'done', content: '' });
     return result;
   }
 
-  private async runReActLoop(): Promise<string> {
+  private async runReActLoop(onStream?: StreamCallback): Promise<string> {
     const llm = getMinimax();
     let iteration = 0;
     let finalResponse = '';
@@ -828,11 +828,19 @@ class PiAgentSession implements AgentSession {
     let consecutiveErrors = 0;
     const MAX_CONSECUTIVE_ERRORS = 3;
 
+    // 发送循环开始的事件
+    if (onStream) {
+      onStream({ type: 'status', content: '🔄 开始 ReAct 循环...', tool: 'system' });
+    }
+
     while (iteration < this.MAX_REACT_ITERATIONS) {
       iteration++;
 
       // 调试日志：显示每次循环开始
       console.log(`[PiAgent] 循环 ${iteration}/${this.MAX_REACT_ITERATIONS} 开始`);
+      if (onStream) {
+        onStream({ type: 'status', content: `🔄 循环 ${iteration}/${this.MAX_REACT_ITERATIONS}`, tool: 'loop' });
+      }
 
       const context = this.buildContext();
       const toolDefs = this.getToolDefinitions();
@@ -879,6 +887,11 @@ ${toolDefs}
 
       console.log(`[PiAgent] LLM 回复长度: ${reply.length}, 内容预览: "${reply.substring(0, 80)}..."`);
 
+      // 通知前端：收到 LLM 回复
+      if (onStream) {
+        onStream({ type: 'token', content: reply.substring(0, 100) });
+      }
+
       if (this.isFinalResponse(reply)) {
         // 检查质量分数
         lastQualityScore = this.estimateResponseQuality(reply);
@@ -902,6 +915,14 @@ ${toolDefs}
           toolCall
         });
 
+        // 通知前端：检测到工具调用
+        if (onStream) {
+          onStream({ type: 'tool', content: `🔧 调用工具: ${toolCall.name}`, tool: toolCall.name });
+          if (toolCall.args && Object.keys(toolCall.args).length > 0) {
+            onStream({ type: 'status', content: `📋 参数: ${JSON.stringify(toolCall.args)}`, tool: toolCall.name });
+          }
+        }
+
         const tool = this.tools.get(toolCall.name);
         if (!tool) {
           consecutiveErrors++;
@@ -918,6 +939,19 @@ ${toolDefs}
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result });
           this.logToHarness(toolCall.name, toolCall.args, result);
 
+          // 通知前端工具执行结果
+          if (onStream) {
+            if (result.success) {
+              onStream({ type: 'status', content: `✅ ${toolCall.name} 执行成功`, tool: toolCall.name });
+              if (result.output) {
+                const outputPreview = result.output.substring(0, 200);
+                onStream({ type: 'tool', content: `📤 结果: ${outputPreview}${result.output.length > 200 ? '...' : ''}`, tool: toolCall.name });
+              }
+            } else {
+              onStream({ type: 'error', content: `❌ ${toolCall.name} 执行失败: ${result.error}`, tool: toolCall.name });
+            }
+          }
+
           if (result.success) {
             consecutiveErrors = 0; // 重置连续错误计数
 
@@ -929,6 +963,12 @@ ${toolDefs}
             } else {
               console.log(`[PiAgent] 工具执行成功，质量评分: ${(lastQualityScore * 10).toFixed(1)}/10`);
             }
+
+            // 工具执行成功后，继续循环获取下一个 LLM 响应
+            if (onStream) {
+              onStream({ type: 'status', content: `🔄 工具执行完成，继续循环...`, tool: 'loop' });
+            }
+            // 不 break，继续下一次循环
           } else {
             consecutiveErrors++;
             console.warn(`[PiAgent] 工具执行失败 (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${result.error}`);
@@ -958,32 +998,49 @@ ${toolDefs}
           content: reply
         });
 
+        // 通知前端收到非工具调用回复
+        if (onStream) {
+          onStream({ type: 'token', content: reply.substring(0, 150) });
+        }
+
         // 检查是否需要继续循环处理
-        const needsMoreWork = (
-          // 包含错误/失败信息
-          ['不存在', '找不到', '无法找到', 'not found', 'does not exist',
-           '错误', 'error', '失败', 'failed'].some(k => reply.includes(k)) ||
-          // 回复太短，可能是中间回复或 prompt
-          (reply.length < 100 && reply.length > 0 && !reply.includes('\n')) ||
-          // 包含问号，可能是需要更多信息
-          reply.includes('?') ||
-          // 不包含明确结论
-          (!reply.includes('完成') && !reply.includes('结果') && !reply.includes('答案'))
-        );
+        // 更严格的判断：只有当回复明确表示需要更多信息时才继续
+        const containsToolCallIntent = reply.includes('调用工具') || reply.includes('tool(') ||
+          reply.includes('使用工具') || reply.includes('需要获取') || reply.includes('需要查看');
+        const hasError = ['不存在', '找不到', '无法找到', 'not found', 'does not exist',
+          '错误', 'error', '失败', 'failed'].some(k => reply.includes(k));
+        const isTooShort = reply.length < 50 && reply.length > 0;
+        const hasQuestion = reply.includes('?') && (reply.includes('怎么') || reply.includes('如何') || reply.includes('什么'));
+
+        const needsMoreWork = hasError || containsToolCallIntent || isTooShort || hasQuestion;
 
         if (needsMoreWork && iteration < this.MAX_REACT_ITERATIONS) {
-          console.log(`[PiAgent] 继续循环处理 (${iteration}/${this.MAX_REACT_ITERATIONS}): "${reply.substring(0, 50)}..."`);
+          console.log(`[PiAgent] 继续循环处理 (${iteration}/${this.MAX_REACT_ITERATIONS}): needsMoreWork=${needsMoreWork}, hasError=${hasError}, containsToolCallIntent=${containsToolCallIntent}`);
+          if (onStream) {
+            onStream({ type: 'status', content: `🔄 继续处理，循环 ${iteration}...`, tool: 'loop' });
+          }
           continue;
         }
 
         // 否则把这个当作可能的最终回答
         finalResponse = reply;
+        if (onStream) {
+          onStream({ type: 'status', content: `📝 提取最终回答，长度 ${reply.length}`, tool: 'system' });
+        }
         break;
       }
     }
 
     if (!finalResponse) {
       finalResponse = '任务处理超时，请尝试更具体的请求。';
+      if (onStream) {
+        onStream({ type: 'error', content: '⚠️ 任务处理超时', tool: 'system' });
+      }
+    }
+
+    // 通知前端循环完成
+    if (onStream) {
+      onStream({ type: 'status', content: `✅ 处理完成，共 ${iteration - 1} 次循环`, tool: 'system' });
     }
 
     const now = new Date().toISOString();
