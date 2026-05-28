@@ -1,0 +1,49 @@
+# Development
+.git
+.gitignore
+.github
+*.md
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+
+# Duplicate source from monorepo sub-packages (compiled into dist/ already)
+src/constraint-runtime/
+src/pi-ecosystem*/
+
+# Local configs
+.tsconfig*.json
+vitest.config.ts
+.eslint*
+.prettier*
+jest*
+
+# CI/CD
+.github/
+workflows/
+.circleci/
+.gitlab-ci*
+
+# Documentation
+docs/
+findings.md
+progress.md
+task_plan.md
+想法.md
+
+# IPFS and temporary files
+.ipfs/
+.boll/
+.port_sessions/
+.DS_Store
+*.tgz
+*.log
+
+# Exclude packages that should be built separately
+py-bolloon/
+.kilo/
+
+# Electron specific
+release/
