@@ -268,11 +268,105 @@ export class AgentProtocol {
     };
 
     const peers = p2pNetwork.getPeers();
+    const failedPeers: string[] = [];
+
     for (const peer of peers) {
       if (peer !== fromPeer) {
-        await p2pNetwork.sendMessage(peer, 'report', JSON.stringify(reportMsg));
+        try {
+          await p2pNetwork.sendMessage(peer, 'report', JSON.stringify(reportMsg));
+          console.log(`[${this.identityName}] 汇报已发送至 ${peer}`);
+        } catch (sendError) {
+          console.warn(`[${this.identityName}] 发送汇报至 ${peer} 失败: ${sendError}`);
+          failedPeers.push(peer);
+        }
       }
     }
+
+    // 重试失败的发送
+    if (failedPeers.length > 0) {
+      console.log(`[${this.identityName}] 尝试重新发送汇报至 ${failedPeers.length} 个失败节点`);
+      await this.retryFailedReports(reportMsg, failedPeers, 2);
+    }
+  }
+
+  private async retryFailedReports(
+    reportMsg: AgentMessage,
+    failedPeers: string[],
+    maxRetries: number
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      if (failedPeers.length === 0) break;
+
+      console.log(`[${this.identityName}] 重试第 ${attempt}/${maxRetries} 次`);
+      await this.sleep(1000 * attempt); // 指数退避
+
+      const stillFailed: string[] = [];
+      for (const peer of failedPeers) {
+        try {
+          await p2pNetwork.sendMessage(peer, 'report', JSON.stringify(reportMsg));
+          console.log(`[${this.identityName}] 重试成功: ${peer}`);
+        } catch {
+          stillFailed.push(peer);
+        }
+      }
+      failedPeers = stillFailed;
+    }
+
+    if (failedPeers.length > 0) {
+      console.log(`[${this.identityName}] 最终仍有 ${failedPeers.length} 个节点发送失败，将加入待重试队列`);
+      this.queueFailedReports(reportMsg, failedPeers);
+    }
+  }
+
+  private failedReportsQueue: Array<{ msg: AgentMessage; peers: string[]; timestamp: number }> = [];
+
+  private queueFailedReports(msg: AgentMessage, peers: string[]): void {
+    this.failedReportsQueue.push({
+      msg,
+      peers,
+      timestamp: Date.now()
+    });
+    // 限制队列大小
+    if (this.failedReportsQueue.length > 50) {
+      this.failedReportsQueue = this.failedReportsQueue.slice(-50);
+    }
+  }
+
+  async processFailedReportsQueue(): Promise<void> {
+    if (this.failedReportsQueue.length === 0) return;
+
+    console.log(`[${this.identityName}] 处理待重试汇报队列 (${this.failedReportsQueue.length} 条)`);
+    const processed: number[] = [];
+
+    for (let i = 0; i < this.failedReportsQueue.length; i++) {
+      const item = this.failedReportsQueue[i];
+      const stillFailed: string[] = [];
+
+      for (const peer of item.peers) {
+        try {
+          await p2pNetwork.sendMessage(peer, 'report', JSON.stringify(item.msg));
+          console.log(`[${this.identityName}] 队列重试成功: ${peer}`);
+        } catch {
+          stillFailed.push(peer);
+        }
+      }
+
+      if (stillFailed.length === 0) {
+        processed.push(i);
+      } else {
+        item.peers = stillFailed;
+        item.timestamp = Date.now();
+      }
+    }
+
+    // 移除已成功的
+    for (let i = processed.length - 1; i >= 0; i--) {
+      this.failedReportsQueue.splice(processed[i], 1);
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async submitImprovements(taskId: string, improvements: string): Promise<void> {

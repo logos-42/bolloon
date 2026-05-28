@@ -546,7 +546,9 @@ class PiAgentSession implements AgentSession {
   private messageHistory: Message[] = [];
   private tools: Map<string, Tool> = new Map();
   private skillRegistry: SkillRegistry = new SkillRegistry();
-  private readonly MAX_REACT_ITERATIONS = 10;
+  private readonly MAX_REACT_ITERATIONS = 100;
+  private readonly MAX_REFINE_ATTEMPTS = 3;
+  private readonly QUALITY_THRESHOLD = 0.6;
   private thinkingEngine = new DeepThinkingEngine(3);
   private coordinator = new AgentCoordinator(3);
   private harness: any = null;
@@ -821,12 +823,30 @@ class PiAgentSession implements AgentSession {
     const llm = getMinimax();
     let iteration = 0;
     let finalResponse = '';
+    let lastQualityScore = 0;
+    let refineAttempts = 0;
+    let consecutiveErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 3;
 
     while (iteration < this.MAX_REACT_ITERATIONS) {
       iteration++;
 
+      // 调试日志：显示每次循环开始
+      console.log(`[PiAgent] 循环 ${iteration}/${this.MAX_REACT_ITERATIONS} 开始`);
+
       const context = this.buildContext();
       const toolDefs = this.getToolDefinitions();
+
+      // 动态构建 refine 上下文
+      let refineContext = '';
+      if (refineAttempts > 0 && lastQualityScore < this.QUALITY_THRESHOLD) {
+        refineContext = `\n【改进提示】上轮结果质量分 ${(lastQualityScore * 10).toFixed(1)}/10，请改进回答。`;
+      }
+
+      // 连续错误时的额外提示
+      if (consecutiveErrors > 0) {
+        refineContext += `\n【错误提示】上轮发生 ${consecutiveErrors} 次错误，请重新分析问题或换一种方式处理。`;
+      }
 
       const personaSection = this.persona ? `
 角色描述: ${this.persona.description || '无'}
@@ -837,6 +857,7 @@ class PiAgentSession implements AgentSession {
       const systemPrompt = `你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
 当前工作目录: ${this.cwd}
 当前身份: ${this.identity.name} (${this.identity.did})
+${refineContext}
 
 ${toolDefs}
 
@@ -856,7 +877,19 @@ ${toolDefs}
       const response = await llm.chat(context, systemPrompt);
       const reply = response.reply.trim();
 
+      console.log(`[PiAgent] LLM 回复长度: ${reply.length}, 内容预览: "${reply.substring(0, 80)}..."`);
+
       if (this.isFinalResponse(reply)) {
+        // 检查质量分数
+        lastQualityScore = this.estimateResponseQuality(reply);
+
+        // 如果质量太低且还有改进机会，进入改进循环
+        if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) {
+          refineAttempts++;
+          console.log(`[PiAgent] 质量评分 ${(lastQualityScore * 10).toFixed(1)}/10 < ${(this.QUALITY_THRESHOLD * 10).toFixed(1)}/10，自动改进中 (${refineAttempts}/${this.MAX_REFINE_ATTEMPTS})`);
+          continue;
+        }
+
         finalResponse = this.extractFinalAnswer(reply);
         break;
       }
@@ -871,21 +904,76 @@ ${toolDefs}
 
         const tool = this.tools.get(toolCall.name);
         if (!tool) {
+          consecutiveErrors++;
           const errorResult: ToolResult = { success: false, error: `未知工具: ${toolCall.name}` };
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
           this.logToHarness(toolCall.name, toolCall.args, errorResult);
+          console.warn(`[PiAgent] 未知工具: ${toolCall.name}，跳过并继续`);
           continue;
         }
 
-        const result = await tool.execute(toolCall.args);
-        this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result });
-        this.logToHarness(toolCall.name, toolCall.args, result);
+        try {
+          const result = await tool.execute(toolCall.args);
+          this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result });
+          this.logToHarness(toolCall.name, toolCall.args, result);
 
-        if (!result.success && result.error) {
-          console.warn(`Tool ${toolCall.name} error: ${result.error}`);
+          if (result.success) {
+            consecutiveErrors = 0; // 重置连续错误计数
+
+            // 检查工具执行质量
+            lastQualityScore = this.estimateToolResultQuality(result);
+            if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) {
+              refineAttempts++;
+              console.log(`[PiAgent] 工具结果质量低，自动重试 (${refineAttempts}/${this.MAX_REFINE_ATTEMPTS})`);
+            }
+          } else {
+            consecutiveErrors++;
+            console.warn(`[PiAgent] 工具执行失败 (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${result.error}`);
+
+            // 连续错误达到上限，尝试换一种方式
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              console.log(`[PiAgent] 连续 ${MAX_CONSECUTIVE_ERRORS} 次错误，尝试换一种方式处理`);
+              // 添加错误上下文，让 LLM 换一种方式
+              this.messageHistory.push({
+                role: 'system',
+                content: `[注意] 前面的工具调用连续失败。请尝试其他工具或换一种方式完成用户请求。`
+              });
+              consecutiveErrors = 0; // 重置以继续尝试
+            }
+          }
+        } catch (execError) {
+          consecutiveErrors++;
+          const errorResult: ToolResult = { success: false, error: String(execError) };
+          this.messageHistory.push({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
+          this.logToHarness(toolCall.name, toolCall.args, errorResult);
+          console.error(`[PiAgent] 工具执行异常: ${execError}`);
         }
       } else {
-        this.messageHistory.push({ role: 'assistant', content: reply });
+        // LLM 返回的不是 tool call 格式
+        this.messageHistory.push({
+          role: 'assistant',
+          content: reply
+        });
+
+        // 检查是否需要继续循环处理
+        const needsMoreWork = (
+          // 包含错误/失败信息
+          ['不存在', '找不到', '无法找到', 'not found', 'does not exist',
+           '错误', 'error', '失败', 'failed'].some(k => reply.includes(k)) ||
+          // 回复太短，可能是中间回复或 prompt
+          (reply.length < 100 && reply.length > 0 && !reply.includes('\n')) ||
+          // 包含问号，可能是需要更多信息
+          reply.includes('?') ||
+          // 不包含明确结论
+          (!reply.includes('完成') && !reply.includes('结果') && !reply.includes('答案'))
+        );
+
+        if (needsMoreWork && iteration < this.MAX_REACT_ITERATIONS) {
+          console.log(`[PiAgent] 继续循环处理 (${iteration}/${this.MAX_REACT_ITERATIONS}): "${reply.substring(0, 50)}..."`);
+          continue;
+        }
+
+        // 否则把这个当作可能的最终回答
         finalResponse = reply;
         break;
       }
@@ -1031,6 +1119,34 @@ Workspace root folder: ${this.cwd}
       }
     }
     return null;
+  }
+
+  private estimateResponseQuality(response: string): number {
+    let score = 0.5;
+    if (response.length > 50) score += 0.1;
+    if (response.length > 200) score += 0.1;
+    if (response.length < 20) score -= 0.3;
+    if (response.includes('\n')) score += 0.1;
+    if (response.includes('-') || response.includes('•')) score += 0.05;
+    if (response.includes('```')) score += 0.1;
+    const conclusionWords = ['完成', '结果', '总结', '所以', '因此', '答案', '推荐'];
+    if (conclusionWords.some(w => response.includes(w))) score += 0.1;
+    if (response.includes('调用工具') || response.includes('tool(')) score -= 0.2;
+    return Math.max(0, Math.min(1, score));
+  }
+
+  private estimateToolResultQuality(result: ToolResult): number {
+    let score = 0.5;
+    if (!result.success) return 0.2;
+    if (result.output) {
+      score += 0.2;
+      if (result.output.length > 50) score += 0.1;
+      if (result.output.length < 10) score -= 0.1;
+      if (result.output.includes('❌') || result.output.includes('error')) score -= 0.2;
+      if (result.output.includes('✅') || result.output.includes('success')) score += 0.1;
+    }
+    if (result.error) score -= 0.3;
+    return Math.max(0, Math.min(1, score));
   }
 
   private async handleFallback(input: string): Promise<string> {
