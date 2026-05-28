@@ -9,9 +9,14 @@ coverage/
 .env.*
 !.env.example
 
-# Duplicate source from monorepo sub-packages (compiled into dist/ already)
-src/constraint-runtime/
-src/pi-ecosystem*/
+# Build artifacts that shouldn't be published
+bin/ipfs
+dist/test/
+dist/electron*.js
+dist/electron*.js.map
+dist/*/tests/
+dist/*/*.test.js
+dist/*/*.test.js.map
 
 # Local configs
 .tsconfig*.json
@@ -19,6 +24,14 @@ vitest.config.ts
 .eslint*
 .prettier*
 jest*
+
+# Source code artifacts (keep compiled dist only)
+src/*/package-lock.json
+src/*/tsconfig.json
+src/*/node_modules/
+src/*/tests/
+**/.claude/
+**/.githooks/
 
 # CI/CD
 .github/
@@ -47,3 +60,7 @@ py-bolloon/
 
 # Electron specific
 release/
+
+# Duplicate source from monorepo sub-packages (compiled into dist/ already)
+src/constraint-runtime/
+src/pi-ecosystem*/
