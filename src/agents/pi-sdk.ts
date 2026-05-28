@@ -12,6 +12,7 @@ import { p2pNetwork } from '../network/p2p.js';
 import { ConstraintLayer, WorkflowContext } from './constraint-layer.js';
 import { WorkflowEngine, WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
 import { DeepThinkingEngine, AgentCoordinator, type ThinkResult, type AgentResult } from '@bolloon/constraint-runtime';
+import { WorkflowPivotLoop, createDefaultPivotConfig, type PivotLoopConfig, type LoopResult } from './workflow-pivot-loop.js';
 import {
   DiscoveredAgentsManager,
   SocialHeartbeat,
@@ -42,6 +43,8 @@ export interface AgentSessionConfig {
   cwd: string;
   peerId?: string;
   identityDoc?: IdentityDoc;
+  usePivotLoop?: boolean;
+  pivotLoopConfig?: PivotLoopConfig;
 }
 
 export interface IdentityDoc {
@@ -487,6 +490,7 @@ export interface HeartbeatConfig {
 export interface AgentSession {
   prompt(input: string): Promise<string>;
   promptStream(input: string, onStream: StreamCallback): Promise<string>;
+  promptWithPivotLoop(input: string, config?: PivotLoopConfig): Promise<LoopResult>;
   suggestRename(messages: { type: string; content: string }[]): Promise<string | null>;
   readDocument(filePath: string): Promise<string>;
   summarizeDocument(filePath: string, context?: string): Promise<{
@@ -553,6 +557,8 @@ class PiAgentSession implements AgentSession {
   private coordinator = new AgentCoordinator(3);
   private harness: any = null;
   private harnessEnabled = false;
+  private usePivotLoop: boolean = false;
+  private pivotLoopConfig?: PivotLoopConfig;
 
   constructor(config: AgentSessionConfig) {
     this.cwd = config.cwd;
@@ -563,6 +569,8 @@ class PiAgentSession implements AgentSession {
     this.workflowEngine = new WorkflowEngine(this.constraintLayer);
     this.sessionManager = new PiSessionManager(this.identity.did, this.cwd);
     this.agentsManager = new DiscoveredAgentsManager();
+    this.usePivotLoop = config.usePivotLoop ?? false;
+    this.pivotLoopConfig = config.pivotLoopConfig;
     this.initSession();
     this.registerTools();
     this.initHarness();
@@ -868,6 +876,71 @@ class PiAgentSession implements AgentSession {
 
     const result = await this.runReActLoop(onStream);
     onStream({ type: 'done', content: '' });
+    return result;
+  }
+
+  async promptWithPivotLoop(input: string, config?: PivotLoopConfig): Promise<LoopResult> {
+    if (!this.minimaxAvailable) {
+      const response = await this.handleFallback(input);
+      return {
+        success: false,
+        response,
+        iterations: 0,
+        toolCalls: 0,
+        qualityScore: 0,
+        exitReason: 'error',
+        state: {
+          iteration: 0,
+          totalTokens: 0,
+          toolCallsCount: 0,
+          consecutiveNoProgress: 0,
+          qualityScores: [],
+          pendingToolUses: [],
+          lastMeaningfulWork: 0
+        }
+      };
+    }
+
+    const llm = getMinimax();
+    const loopConfig = config || this.pivotLoopConfig || createDefaultPivotConfig();
+    const loop = new WorkflowPivotLoop(loopConfig);
+
+    for (const tool of this.tools.values()) {
+      loop.registerTool(tool);
+    }
+
+    const personaSection = this.persona ? `
+角色描述: ${this.persona.description || '无'}
+性格特点: ${this.persona.personality || '无'}
+问候语: ${this.persona.greeting || '无'}
+` : '';
+
+    const systemPrompt = `你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
+当前工作目录: ${this.cwd}
+当前身份: ${this.identity.name} (${this.identity.did})
+
+${this.getToolDefinitions()}
+
+工作模式:
+1. 理解用户自然语言请求
+2. 分析需要哪些工具来完成
+3. 按顺序调用工具并观察结果
+4. 根据观察结果决定下一步
+5. 最终给出完整回答
+
+重要:
+- 每次只调用一个工具
+- 仔细分析工具返回结果
+- 当任务完成时，必须在回答末尾添加 <final gen> 标记表示结束
+- 如果需要更多信息，继续调用工具`;
+
+    const result = await loop.execute(input, llm, systemPrompt);
+
+    this.messageHistory.push({ role: 'user', content: input });
+    if (result.response) {
+      this.messageHistory.push({ role: 'assistant', content: result.response });
+    }
+
     return result;
   }
 

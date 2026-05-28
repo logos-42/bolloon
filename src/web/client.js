@@ -262,21 +262,23 @@ async function selectChannel(channelId) {
 }
 
 async function loadSession(channelId) {
+  const container = messagesContainers.get(channelId);
+  if (!container) return;
   try {
     const res = await fetch(`/sessions/${channelId}`);
     const session = await res.json();
-    messagesEl.innerHTML = '';
+    container.innerHTML = '';
     if (session.messages && session.messages.length > 0) {
       session.messages.forEach(msg => {
-        addMessage(msg.content, msg.type, false);
+        addMessage(msg.content, msg.type, false, container);
       });
     } else {
-      addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false);
+      addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
     }
   } catch (err) {
     console.error('Failed to load session:', err);
-    messagesEl.innerHTML = '';
-    addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false);
+    container.innerHTML = '';
+    addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
   }
 }
 
@@ -812,9 +814,10 @@ function handleWorkflowLoopEvent(data, container) {
 // 用户命令可视化 - 当用户发送命令时调用
 let userCommandDisplayEl = null;
 
-function showUserCommand(command) {
+function showUserCommand(command, container) {
+  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   // 先移除之前的消息中的 user bubble（如果有重复的话）
-  const existingUserBubbles = messagesEl.querySelectorAll('.message-user');
+  const existingUserBubbles = msgContainer.querySelectorAll('.message-user');
   existingUserBubbles.forEach(el => el.remove());
 
   // 移除之前的命令显示
@@ -836,12 +839,12 @@ function showUserCommand(command) {
 
   // 在工作流显示之前插入
   if (workflowDisplayEl) {
-    messagesEl.insertBefore(userCommandDisplayEl, workflowDisplayEl);
+    msgContainer.insertBefore(userCommandDisplayEl, workflowDisplayEl);
   } else {
-    messagesEl.appendChild(userCommandDisplayEl);
+    msgContainer.appendChild(userCommandDisplayEl);
   }
 
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  msgContainer.scrollTop = msgContainer.scrollHeight;
 }
 
 function connect(channelId) {
