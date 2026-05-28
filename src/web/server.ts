@@ -542,6 +542,7 @@ export async function createWebServer(port: number = 3000) {
         } else if (event.type === 'status' || event.type === 'tool') {
           broadcast({ type: 'status', tool: event.tool, content: event.content }, channelId);
           broadcast({ type: 'workflow_step', step: event.tool || '系统', content: event.content }, channelId);
+          console.log(`[SSE 广播] workflow_step: step=${event.tool}, content="${event.content?.substring(0, 80)}..."`);
         } else if (event.type === 'error') {
           broadcast({ type: 'error', content: event.content }, channelId);
         }

@@ -512,6 +512,12 @@ function updateStreamingContent(content) {
 }
 
 function handleStreamEvent(data) {
+  // 始终确保有工作流显示区域
+  if (!workflowDisplayEl) {
+    workflowDisplayEl = createWorkflowDisplay();
+    messagesEl.appendChild(workflowDisplayEl);
+  }
+
   if (data.streamType === 'thinking') {
     showStreaming();
     updateStreamingContent(data.content || '思考中...');
@@ -687,6 +693,7 @@ function handleTaskStatusEvent(data) {
 
 function handleWorkflowStepEvent(data) {
   console.log('[工作流] 步骤:', data);
+  console.log('[工作流] 步骤标签:', data.step, '内容:', data.content?.substring(0, 80));
 
   // 获取或创建工作流显示区域
   if (!workflowDisplayEl) {
