@@ -4,6 +4,7 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import { spawn, ChildProcess } from 'child_process';
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
@@ -22,7 +23,7 @@ log('Bolloon Electron 启动');
 
 // 全局窗口引用
 let mainWindow: BrowserWindow | null = null;
-let httpServer: any = null;
+let webServerProcess: ChildProcess | null = null;
 
 // 防止多个实例
 const gotTheLock = app.requestSingleInstanceLock();
@@ -37,6 +38,66 @@ app.on('second-instance', () => {
     mainWindow.focus();
   }
 });
+
+function startWebServer(port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const serverScript = path.join(__dirname, 'web', 'server.js');
+    log(`启动 Web 服务器进程: ${serverScript}`);
+
+    webServerProcess = spawn(process.execPath, [serverScript], {
+      env: {
+        ...process.env,
+        NODE_ENV: 'production',
+        PORT: String(port),
+        ELECTRON_PORT: String(port),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdoutData = '';
+    let stderrData = '';
+
+    webServerProcess.stdout?.on('data', (data: Buffer) => {
+      stdoutData += data.toString();
+      process.stdout.write(`[WebServer] ${data}`);
+    });
+
+    webServerProcess.stderr?.on('data', (data: Buffer) => {
+      stderrData += data.toString();
+      process.stderr.write(`[WebServer ERR] ${data}`);
+    });
+
+    webServerProcess.on('error', (err) => {
+      log(`Web 服务器进程启动失败: ${err}`);
+      reject(err);
+    });
+
+    webServerProcess.on('exit', (code, signal) => {
+      log(`Web 服务器进程退出: code=${code} signal=${signal}`);
+      if (code !== 0 && code !== null) {
+        log(`Web 服务器 stderr: ${stderrData}`);
+      }
+    });
+
+    // 等待服务器就绪 - 检查 stdout 中的标记
+    const checkReady = setInterval(() => {
+      if (stdoutData.includes('服务器已监听') || stdoutData.includes('Web 服务器启动完成')) {
+        clearInterval(checkReady);
+        log('Web 服务器进程已就绪');
+        resolve();
+      }
+    }, 200);
+
+    // 超时
+    setTimeout(() => {
+      clearInterval(checkReady);
+      if (webServerProcess?.killed === false) {
+        log('Web 服务器启动超时');
+        reject(new Error('Web server startup timeout'));
+      }
+    }, 15000);
+  });
+}
 
 async function createWindow() {
   log('创建主窗口...');
@@ -66,20 +127,14 @@ async function createWindow() {
     mainWindow.loadURL(`http://localhost:${port}`);
     mainWindow.webContents.openDevTools();
   } else {
-    log(`启动内置 Web 服务器...`);
-    const { createWebServer } = await import('./web/server.js');
-    const { server } = await createWebServer(port);
-    httpServer = server;
-    log(`Web 服务器启动完成: http://localhost:${port}`);
-
-    await new Promise<void>((resolve) => {
-      server.once('listening', () => {
-        log('服务器已监听');
-        resolve();
-      });
-    });
-
-    mainWindow.loadURL(`http://localhost:${port}`);
+    try {
+      log(`启动内置 Web 服务器...`);
+      await startWebServer(port);
+      mainWindow.loadURL(`http://localhost:${port}`);
+    } catch (err) {
+      log(`启动服务器失败: ${err}`);
+      console.error('启动服务器失败:', err);
+    }
   }
 
   mainWindow.once('ready-to-show', () => {
@@ -114,9 +169,9 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   log('所有窗口已关闭');
-  if (httpServer) {
-    httpServer.close();
-    log('HTTP 服务器已关闭');
+  if (webServerProcess) {
+    webServerProcess.kill();
+    log('Web 服务器进程已终止');
   }
   if (process.platform !== 'darwin') {
     app.quit();
@@ -125,6 +180,9 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   log('应用即将退出');
+  if (webServerProcess) {
+    webServerProcess.kill();
+  }
 });
 
 ipcMain.handle('get-version', () => {
