@@ -2,8 +2,18 @@
   "name": "@bolloon/constraint-runtime",
   "version": "0.1.0",
   "type": "module",
+  "description": "Constraint-based AI agent runtime with workflow orchestration",
+  "author": "Bolloon Team",
+  "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist/**/*"],
   "scripts": {
     "build": "tsc",
     "test": "vitest run"

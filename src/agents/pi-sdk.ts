@@ -4,6 +4,7 @@
  */
 
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as path from 'path';
 import { documentReader, DocumentContent } from '../documents/reader.js';
 import { getMinimax } from '../constraints/index.js';
@@ -1070,10 +1071,41 @@ Workspace root folder: ${this.cwd}
     return this.getDefaultResponse(input);
   }
 
+  private static OPERATIONS_REFERENCE: string | null = null;
+
+  private static getOperationsReference(): string {
+    if (this.OPERATIONS_REFERENCE === null) {
+      try {
+        const refPath = path.join(process.cwd(), 'src', 'bollharness', 'scripts', 'context-fragments', 'pi-agent-operations.md');
+        this.OPERATIONS_REFERENCE = fsSync.readFileSync(refPath, 'utf-8');
+      } catch {
+        this.OPERATIONS_REFERENCE = '';
+      }
+    }
+    return this.OPERATIONS_REFERENCE;
+  }
+
   private getDefaultResponse(input: string): string {
+    const operationsRef = PiAgentSession.getOperationsReference();
+
+    if (operationsRef) {
+      return `收到了: "${input}"
+
+我是一个判断力处理智能体，支持自然语言交互。
+
+可用操作（直接说出即可）:
+${this.extractOperationsFromRef(operationsRef)}
+
+示例请求:
+  - "读取 src/index.ts 文件"
+  - "总结一下 README.md"
+  - "查看当前连接了哪些节点"
+  - "向 QmABC... 发送测试消息"`;
+    }
+
     return `收到了: "${input}"
 
-我是一个文档处理智能体，支持自然语言交互。
+我是一个判断力处理智能体，支持自然语言交互。
 
 可用操作（直接说出即可）:
   - "读取 README.md" - 读取并分析文档
@@ -1090,6 +1122,39 @@ Workspace root folder: ${this.cwd}
   - "总结一下 README.md"
   - "查看当前连接了哪些节点"
   - "向 QmABC... 发送测试消息"`;
+  }
+
+  private extractOperationsFromRef(ref: string): string {
+    const lines = ref.split('\n');
+    const inOperationsSection = false;
+    const operationLines: string[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.startsWith('## 可用操作')) {
+        for (let j = i + 1; j < lines.length; j++) {
+          const opLine = lines[j];
+          if (opLine.startsWith('## ') || opLine.startsWith('#')) break;
+          if (opLine.includes('|') && !opLine.startsWith('|')) {
+            const parts = opLine.split('|').map(p => p.trim());
+            if (parts.length >= 3 && parts[1] && parts[2]) {
+              operationLines.push(`  - "${parts[1]}" - ${parts[2]}`);
+            }
+          }
+        }
+        break;
+      }
+    }
+
+    return operationLines.length > 0 ? operationLines.join('\n') :
+        `  - "读取 README.md" - 读取并分析文档
+  - "总结文档" - 总结文档内容
+  - "改进文档，按照X要求" - 改进文档
+  - "查看节点" - 查看已连接的对等节点
+  - "向X发送消息Y" - 向对等节点发送消息
+  - "广播消息X" - 广播消息到所有节点
+  - "查看身份" - 查看当前智能体身份
+  - "查看日志" - 查看最近操作日志`;
   }
 
   async suggestRename(messages: { type: string; content: string }[]): Promise<string | null> {
