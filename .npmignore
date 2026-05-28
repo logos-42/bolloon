@@ -33,6 +33,9 @@ src/*/tests/
 **/.claude/
 **/.githooks/
 
+# Source test files
+src/test/
+
 # CI/CD
 .github/
 workflows/
