@@ -27,7 +27,7 @@ export class P2PStoreMemory {
   // ==================== 连接历史 ====================
 
   async addToHistory(entry: Omit<ConnectionHistoryEntry, 'id'>): Promise<string> {
-    const existingIndex = this.history.findIndex(h => h.did === entry.did);
+    const existingIndex = this.history.findIndex(h => h.cid === entry.cid);
 
     if (existingIndex >= 0) {
       this.history[existingIndex] = {

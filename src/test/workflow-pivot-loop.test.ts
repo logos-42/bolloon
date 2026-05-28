@@ -1,0 +1,318 @@
+import { config } from 'dotenv';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { WorkflowPivotLoop, createDefaultPivotConfig, runPivotLoop } from '../agents/workflow-pivot-loop.js';
+import type { Tool } from '../agents/pi-sdk.js';
+
+config();
+
+const mockTools: Tool[] = [
+  {
+    name: 'read_document',
+    description: '读取文档内容',
+    parameters: { path: '文件路径' },
+    execute: async (args) => {
+      if (args.path === 'nonexistent.txt') {
+        return { success: false, error: '文件不存在' };
+      }
+      return { success: true, output: `文件内容: ${args.path}` };
+    }
+  },
+  {
+    name: 'list_files',
+    description: '列出文件',
+    parameters: {},
+    execute: async () => {
+      return { success: true, output: 'file1.txt\nfile2.txt' };
+    }
+  },
+  {
+    name: 'get_time',
+    description: '获取当前时间',
+    parameters: {},
+    execute: async () => {
+      return { success: true, output: new Date().toISOString() };
+    }
+  }
+];
+
+interface MockLLM {
+  callCount: number;
+  shouldReturnFinal: boolean;
+  finalResponse: string;
+}
+
+function createMockLLM(mock: MockLLM) {
+  return {
+    chat: async (context: string, systemPrompt: string) => {
+      mock.callCount++;
+      console.log(`[MockLLM] 调用 #${mock.callCount}, context长度: ${context.length}`);
+
+      if (mock.shouldReturnFinal || mock.callCount >= 2) {
+        return { reply: `${mock.finalResponse}\n\n<final gen>` };
+      }
+
+      if (context.includes('list_files') || context.includes('列出文件')) {
+        return { reply: '调用工具: list_files()' };
+      }
+
+      if (context.includes('read_document') || context.includes('读取文档')) {
+        const hasNonexistent = context.includes('nonexistent');
+        if (hasNonexistent) {
+          return {
+            reply: '调用工具: read_document(path: nonexistent.txt)'
+          };
+        }
+        return { reply: '调用工具: read_document(path: test.txt)' };
+      }
+
+      if (context.includes('get_time') || context.includes('时间')) {
+        return { reply: '调用工具: get_time()' };
+      }
+
+      return { reply: '调用工具: list_files()' };
+    }
+  };
+}
+
+describe('WorkflowPivotLoop', () => {
+  describe('基础功能', () => {
+    it('应该正确初始化', () => {
+      const loop = new WorkflowPivotLoop({ maxIterations: 10 });
+      expect(loop).toBeDefined();
+      expect(loop.getState().iteration).toBe(0);
+    });
+
+    it('应该注册工具', () => {
+      const loop = new WorkflowPivotLoop({ maxIterations: 10 });
+      loop.registerTool(mockTools[0]);
+      loop.registerTools(mockTools.slice(1));
+      const state = loop.getState();
+      expect(state.pendingToolUses).toBeDefined();
+    });
+  });
+
+  describe('工具调用', () => {
+    it('应该正确解析工具调用', async () => {
+      const loop = new WorkflowPivotLoop({ maxIterations: 10 });
+      loop.registerTools(mockTools);
+
+      const mock: MockLLM = {
+        callCount: 0,
+        shouldReturnFinal: false,
+        finalResponse: '初始响应'
+      };
+
+      const llm = createMockLLM(mock);
+      const systemPrompt = '测试系统提示';
+
+      const result = await loop.execute('读取文件', llm as any, systemPrompt);
+
+      console.log('[Test] 结果:', {
+        iterations: result.iterations,
+        toolCalls: result.toolCalls,
+        exitReason: result.exitReason
+      });
+
+      expect(result.iterations).toBeGreaterThan(0);
+      expect(result.toolCalls).toBeGreaterThan(0);
+    });
+
+    it('应该正确处理 final gen 标记', async () => {
+      const loop = new WorkflowPivotLoop({
+        maxIterations: 10,
+        minIterations: 1,
+        qualityThreshold: 0.5
+      });
+      loop.registerTools(mockTools);
+
+      const mock: MockLLM = {
+        callCount: 0,
+        shouldReturnFinal: true,
+        finalResponse: '这是最终答案'
+      };
+
+      const llm = createMockLLM(mock);
+      const result = await loop.execute('简单任务', llm as any, '系统提示');
+
+      console.log('[Test] 最终响应测试结果:', result);
+      expect(result.exitReason).toMatch(/final|pending|quality/);
+    });
+
+    it('应该处理工具执行失败', async () => {
+      const loop = new WorkflowPivotLoop({
+        maxIterations: 10,
+        maxConsecutiveNoProgress: 3
+      });
+      loop.registerTools(mockTools);
+
+      const mock: MockLLM = {
+        callCount: 0,
+        shouldReturnFinal: false,
+        finalResponse: '尝试读取'
+      };
+
+      const llm = createMockLLM(mock);
+      const result = await loop.execute('读取不存在的文件', llm as any, '系统提示');
+
+      console.log('[Test] 失败处理结果:', result);
+      expect(result.iterations).toBeGreaterThan(0);
+    });
+  });
+
+  describe('中断条件', () => {
+    it('应该达到最大迭代次数时中断', async () => {
+      const loop = new WorkflowPivotLoop({ maxIterations: 3 });
+      loop.registerTools(mockTools);
+
+      const mock: MockLLM = {
+        callCount: 0,
+        shouldReturnFinal: false,
+        finalResponse: '继续'
+      };
+
+      const llm = createMockLLM(mock);
+      const result = await loop.execute('需要多次迭代的任务', llm as any, '系统提示');
+
+      console.log('[Test] 最大迭代结果:', result);
+      expect(result.iterations).toBeLessThanOrEqual(3);
+    });
+
+    it('应该在质量达标时提前结束', async () => {
+      const loop = new WorkflowPivotLoop({
+        maxIterations: 50,
+        qualityThreshold: 0.4  // 0.55 quality score will exceed this
+      });
+      loop.registerTools(mockTools);
+
+      const mock: MockLLM = {
+        callCount: 0,
+        shouldReturnFinal: true,
+        finalResponse: '这是一个高质量的完整回答，包含足够的细节和结构化内容。'
+      };
+
+      const llm = createMockLLM(mock);
+      const result = await loop.execute('需要高质量回答的任务', llm as any, '系统提示');
+
+      console.log('[Test] 质量达标结果:', result);
+      expect(result.exitReason).toBe('quality_threshold_met');
+    });
+  });
+
+  describe('任务复杂度分析', () => {
+    it('应该识别简单任务', async () => {
+      const loop = new WorkflowPivotLoop(createDefaultPivotConfig('simple'));
+      loop.registerTools(mockTools);
+
+      const mock: MockLLM = {
+        callCount: 0,
+        shouldReturnFinal: true,
+        finalResponse: '简单回答'
+      };
+
+      const llm = createMockLLM(mock);
+      const result = await loop.execute('查看当前时间', llm as any, '系统提示');
+
+      console.log('[Test] 简单任务结果:', result);
+      expect(result.iterations).toBeLessThanOrEqual(15);
+    });
+
+    it('应该识别复杂任务', async () => {
+      const loop = new WorkflowPivotLoop(createDefaultPivotConfig('complex'));
+      loop.registerTools(mockTools);
+
+      const mock: MockLLM = {
+        callCount: 0,
+        shouldReturnFinal: true,
+        finalResponse: '复杂的分析结果'
+      };
+
+      const llm = createMockLLM(mock);
+      const result = await loop.execute(
+        '分析并比较这个项目的所有文档，设计优化方案并实现重构',
+        llm as any,
+        '系统提示'
+      );
+
+      console.log('[Test] 复杂任务结果:', result);
+      expect(result.iterations).toBeLessThanOrEqual(60);
+    });
+  });
+
+  describe('runPivotLoop 快捷函数', () => {
+    it('应该使用默认配置运行', async () => {
+      const mock: MockLLM = {
+        callCount: 0,
+        shouldReturnFinal: true,
+        finalResponse: '快速回答'
+      };
+
+      const llm = createMockLLM(mock);
+      const result = await runPivotLoop(
+        '查看时间',
+        llm as any,
+        mockTools,
+        '你是一个助手'
+      );
+
+      console.log('[Test] 快捷函数结果:', result);
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe('状态重置', () => {
+    it('应该正确重置状态', async () => {
+      const loop = new WorkflowPivotLoop({ maxIterations: 10 });
+      loop.registerTools(mockTools);
+
+      const mock: MockLLM = {
+        callCount: 0,
+        shouldReturnFinal: true,
+        finalResponse: '回答'
+      };
+
+      const llm = createMockLLM(mock);
+      await loop.execute('任务1', llm as any, '提示');
+
+      const state1 = loop.getState();
+      loop.reset();
+      const state2 = loop.getState();
+
+      expect(state1.iteration).toBeGreaterThan(0);
+      expect(state2.iteration).toBe(0);
+    });
+  });
+});
+
+describe('PiSDK PivotLoop Integration', () => {
+  it('should export promptWithPivotLoop method', async () => {
+    const { createAgentSession } = await import('../agents/pi-sdk.js');
+
+    const session = await createAgentSession({
+      cwd: process.cwd(),
+      usePivotLoop: true
+    });
+
+    expect(typeof session.promptWithPivotLoop).toBe('function');
+  });
+
+  it('should use pivot loop when configured', async () => {
+    const { createAgentSession } = await import('../agents/pi-sdk.js');
+
+    const session = await createAgentSession({
+      cwd: process.cwd(),
+      usePivotLoop: true,
+      pivotLoopConfig: createDefaultPivotConfig('simple')
+    });
+
+    const result = await session.promptWithPivotLoop('你好');
+
+    console.log('[Test] Pivot Loop 集成测试结果:', {
+      success: result.success,
+      iterations: result.iterations,
+      exitReason: result.exitReason
+    });
+
+    expect(result).toBeDefined();
+    expect(result.exitReason).toBeDefined();
+  });
+});
