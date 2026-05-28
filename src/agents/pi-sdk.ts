@@ -914,6 +914,7 @@ ${toolDefs}
 
         try {
           const result = await tool.execute(toolCall.args);
+          console.log(`[PiAgent] 工具 ${toolCall.name} 执行完成: success=${result.success}`);
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result });
           this.logToHarness(toolCall.name, toolCall.args, result);
 
@@ -925,6 +926,8 @@ ${toolDefs}
             if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) {
               refineAttempts++;
               console.log(`[PiAgent] 工具结果质量低，自动重试 (${refineAttempts}/${this.MAX_REFINE_ATTEMPTS})`);
+            } else {
+              console.log(`[PiAgent] 工具执行成功，质量评分: ${(lastQualityScore * 10).toFixed(1)}/10`);
             }
           } else {
             consecutiveErrors++;
