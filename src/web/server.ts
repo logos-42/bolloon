@@ -1797,12 +1797,17 @@ app.get('/channels', async (_req, res) => {
   });
 }
 
-function broadcast(data: object, channelId?: string) {
+function broadcast(data: { type: string; [key: string]: unknown }, channelId?: string) {
   const envelope = { ...data, channelId };
   const message = `data: ${JSON.stringify(envelope)}\n\n`;
+  console.log(`[broadcast] type=${data.type}, channelId=${channelId}, clients=${sseClients.size}`);
   for (const client of sseClients) {
     if (!channelId || client.channelId === channelId) {
-      client.res.write(message);
+      try {
+        client.res.write(message);
+      } catch (e: unknown) {
+        console.error(`[broadcast] 写入失败:`, (e as Error).message);
+      }
     }
   }
 }
