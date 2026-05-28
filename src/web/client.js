@@ -11,15 +11,16 @@ const channelNameEl = document.getElementById('channel-name');
 const loadSessionBtn = document.getElementById('load-session-btn');
 const sessionFileInput = document.getElementById('session-file-input');
 
-let eventSource = null;
+let eventSources = new Map(); // channelId -> EventSource
 let currentChannelId = null;
 let currentAgentId = '';
 let channels = [];
 let isSidebarCollapsed = false;
-let reconnectAttempts = 0;
-let reconnectTimer = null; // 改进: 跟踪重连定时器
+let reconnectAttempts = new Map(); // channelId -> attempts
+let reconnectTimers = new Map(); // channelId -> timer
 let lastUserCommand = ''; // 防止用户消息重复显示
 let lastAiContent = ''; // 防止 AI 消息重复显示
+let messagesContainers = new Map(); // channelId -> messages container div
 
 function generateId() {
   return crypto.randomUUID();
@@ -804,92 +805,102 @@ function showUserCommand(command) {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function connect() {
-  // 清除旧的重连定时器
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
+function connect(channelId) {
+  const targetChannelId = channelId || currentChannelId;
+  if (!targetChannelId) return;
+
+  // 清除该频道的重连定时器
+  if (reconnectTimers.has(targetChannelId)) {
+    clearTimeout(reconnectTimers.get(targetChannelId));
+    reconnectTimers.delete(targetChannelId);
   }
 
-  // 关闭已有连接
-  if (eventSource) {
-    eventSource.close();
-    eventSource = null;
+  // 关闭该频道的旧连接
+  if (eventSources.has(targetChannelId)) {
+    eventSources.get(targetChannelId).close();
+    eventSources.delete(targetChannelId);
   }
 
-  const sseUrl = currentChannelId ? `/events?channelId=${encodeURIComponent(currentChannelId)}` : '/events';
+  const sseUrl = `/events?channelId=${encodeURIComponent(targetChannelId)}`;
   console.log('[connect] 创建 SSE 连接:', sseUrl);
 
-  eventSource = new EventSource(sseUrl);
+  const eventSource = new EventSource(sseUrl);
+  eventSources.set(targetChannelId, eventSource);
+
+  if (!reconnectAttempts.has(targetChannelId)) {
+    reconnectAttempts.set(targetChannelId, 0);
+  }
 
   eventSource.onopen = () => {
-    console.log('[SSE] 已连接');
-    reconnectAttempts = 0;
+    console.log('[SSE] 已连接 channelId:', targetChannelId);
+    reconnectAttempts.set(targetChannelId, 0);
   };
 
   eventSource.onerror = () => {
-    console.error('[SSE] 连接错误');
+    console.error('[SSE] 连接错误 channelId:', targetChannelId);
     eventSource.close();
-    eventSource = null;
-    reconnectAttempts++;
-    // 清除旧的重连定时器
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connect, Math.min(5000 * reconnectAttempts, 30000));
+    eventSources.delete(targetChannelId);
+    const attempts = (reconnectAttempts.get(targetChannelId) || 0) + 1;
+    reconnectAttempts.set(targetChannelId, attempts);
+    const timer = setTimeout(() => connect(targetChannelId), Math.min(5000 * attempts, 30000));
+    reconnectTimers.set(targetChannelId, timer);
   };
 
   eventSource.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
-      console.log('[SSE] 收到消息:', data.type, 'channelId:', data.channelId);
+      const msgChannelId = data.channelId || targetChannelId;
+      console.log('[SSE] 收到消息:', data.type, 'channelId:', msgChannelId);
 
-      // 只处理当前频道的消息
-      if (data.channelId && data.channelId !== currentChannelId) {
-        console.log('[SSE] 忽略非当前频道消息');
+      // 路由消息到正确的频道（即使该频道不是当前视图）
+      if (msgChannelId !== targetChannelId) {
+        console.log('[SSE] 忽略非目标频道消息');
         return;
       }
 
+      // 使用正确的消息容器
+      const container = messagesContainers.get(msgChannelId) || messagesEl;
+
       if (data.type === 'user') {
-        showUserCommand(data.content); // 用户命令可视化（已包含 message-user）
-        // 不再调用 addMessage，避免重复
+        showUserCommand(data.content, container);
       } else if (data.type === 'ai') {
-          addMessage(data.content, 'ai');
-        } else if (data.type === 'stream') {
-          handleStreamEvent(data);
-        } else if (data.type === 'regenerating') {
-          // 开始重新生成，清除最后一个 AI 消息
-          const messages = messagesEl.querySelectorAll('.message-ai');
-          if (messages.length > 0) {
-            const lastAiMsg = messages[messages.length - 1];
-            lastAiMsg.remove();
-          }
-          showTyping();
-        } else if (data.type === 'status') {
-          handleStatusEvent(data);
-        } else if (data.type === 'done') {
-          hideTyping();
-        } else if (data.type === 'renamed') {
-          const channel = channels.find(c => c.id === data.channelId);
-          if (channel) {
-            channel.name = data.newName;
-            renderChannels();
-            if (currentChannelId === data.channelId && channelNameEl) {
-              channelNameEl.textContent = data.newName;
-            }
-          }
-        } else if (data.type === 'error') {
-          hideTyping();
-          addMessage('错误: ' + data.content, 'ai');
-        } else if (data.type === 'task_status') {
-          handleTaskStatusEvent(data);
-        } else if (data.type === 'workflow_step') {
-          handleWorkflowStepEvent(data);
-        } else if (data.type === 'workflow_loop') {
-          handleWorkflowLoopEvent(data);
+        addMessage(data.content, 'ai', true, container);
+      } else if (data.type === 'stream') {
+        handleStreamEvent(data, container);
+      } else if (data.type === 'regenerating') {
+        const messages = container.querySelectorAll('.message-ai');
+        if (messages.length > 0) {
+          const lastAiMsg = messages[messages.length - 1];
+          lastAiMsg.remove();
         }
-      } catch (parseErr) {
-        console.error('[SSE] 解析错误', parseErr);
+        showTyping(container);
+      } else if (data.type === 'status') {
+        handleStatusEvent(data, container);
+      } else if (data.type === 'done') {
+        hideTyping();
+      } else if (data.type === 'renamed') {
+        const channel = channels.find(c => c.id === data.channelId);
+        if (channel) {
+          channel.name = data.newName;
+          renderChannels();
+          if (currentChannelId === data.channelId && channelNameEl) {
+            channelNameEl.textContent = data.newName;
+          }
+        }
+      } else if (data.type === 'error') {
+        hideTyping();
+        addMessage('错误: ' + data.content, 'ai', true, container);
+      } else if (data.type === 'task_status') {
+        handleTaskStatusEvent(data, container);
+      } else if (data.type === 'workflow_step') {
+        handleWorkflowStepEvent(data, container);
+      } else if (data.type === 'workflow_loop') {
+        handleWorkflowLoopEvent(data, container);
       }
-    };
+    } catch (parseErr) {
+      console.error('[SSE] 解析错误', parseErr);
+    }
+  };
 }
 
 async function sendMessage() {
