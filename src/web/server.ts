@@ -1,6 +1,7 @@
 import express from 'express';
 import { createServer } from 'http';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import {
@@ -18,8 +19,9 @@ import { createAgentSession, type AgentSession, type StreamCallback, type Stream
 import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
 import { irohTransport } from '../network/iroh-transport.js';
 
-// 前端资源路径：在打包后会通过 CommonJS require 加载，使用全局 __dirname
-// @ts-ignore - __dirname is available in CommonJS
+// 前端资源路径：在打包后会通过 CommonJS require 加载，使用 import.meta.url
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const webRoot = path.join(__dirname, '..', '..', 'dist', 'web');
 
 const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'sessions');

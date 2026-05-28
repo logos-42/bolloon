@@ -4,6 +4,7 @@
   "type": "module",
   "description": "P2P AI Document Agent with libp2p",
   "main": "dist/index.js",
+  "author": "Bolloon Team",
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "build:main": "tsc",
@@ -72,10 +73,11 @@
     },
     "files": [
       "dist/**/*",
+      "src/electron-main.js",
       "package.json"
     ],
     "extraMetadata": {
-      "main": "dist/electron.js",
+      "main": "src/electron-main.js",
       "type": "commonjs"
     },
     "win": {
