@@ -931,7 +931,7 @@ ${toolDefs}
 重要:
 - 每次只调用一个工具
 - 仔细分析工具返回结果
-- 如果任务完成，返回完整回答
+- 当任务完成时，必须在回答末尾添加 <final gen> 标记表示结束
 - 如果需要更多信息，继续调用工具`;
 
       const response = await llm.chat(context, systemPrompt);
@@ -1175,30 +1175,23 @@ Workspace root folder: ${this.cwd}
   }
 
   private isFinalResponse(content: string): boolean {
-    const finalMarkers = ['最终回答', '完成', '答案如下', '结果是', 'final', 'answer:'];
-    const lower = content.toLowerCase();
-    // 更保守的判断：只有明确标记最终回答，且回复较短时才认为是最终回复
-    if (content.includes('✅') && content.length < 200 && finalMarkers.some(m => lower.includes(m))) {
-      return true;
-    }
-    return finalMarkers.some(m => lower.includes(m));
+    // 只有明确输出 <final gen> 才认为是最终回答
+    return content.includes('<final gen>');
   }
 
   private extractFinalAnswer(content: string): string {
-    // 移除任何 tool call 标记（保持完整回复）
+    // 提取 <final gen> 后的内容作为最终回答
+    const marker = '<final gen>';
+    const markerIndex = content.indexOf(marker);
+    if (markerIndex !== -1) {
+      content = content.substring(markerIndex + marker.length).trim();
+    }
+    // 移除任何 tool call 标记
     let cleaned = content
       .replace(/调用工具[：:]\s*\w+\s*\([^)]*\)/g, '')
       .replace(/使用工具[：:]\s*\w+\s*\([^)]*\)/g, '')
       .replace(/tool[_\w]*[：:]\s*\w+\s*\([^)]*\)/gi, '')
       .trim();
-
-    const lines = cleaned.split('\n');
-    const answerStart = lines.findIndex(l =>
-      ['最终回答', '完成', '答案如下', '结果是', 'final', 'answer:'].some(m => l.toLowerCase().includes(m))
-    );
-    if (answerStart >= 0) {
-      return lines.slice(answerStart + 1).join('\n').trim();
-    }
     return cleaned;
   }
 
