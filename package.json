@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "P2P AI Document Agent with libp2p",
   "main": "dist/index.js",
