@@ -688,22 +688,42 @@ function handleTaskStatusEvent(data) {
 function handleWorkflowStepEvent(data) {
   console.log('[工作流] 步骤:', data);
 
+  // 获取或创建工作流显示区域
   if (!workflowDisplayEl) {
     workflowDisplayEl = createWorkflowDisplay();
     messagesEl.appendChild(workflowDisplayEl);
   }
 
   const streamsDiv = workflowDisplayEl.querySelector('.workflow-streams');
+  const header = workflowDisplayEl.querySelector('.workflow-header');
+
+  // 更新工作流标题
+  if (data.step && data.step !== '系统' && data.step !== '状态') {
+    header.querySelector('.workflow-title').textContent = `执行: ${data.step}`;
+  }
 
   // 如果有步骤标签，显示步骤信息
-  if (data.step) {
+  if (data.step && data.content) {
     const stepEl = document.createElement('div');
     stepEl.className = 'workflow-step-stream';
+
+    // 根据内容类型选择不同样式
+    const isError = data.content.includes('❌') || data.content.includes('错误');
+    const isSuccess = data.content.includes('✅') || data.content.includes('成功');
+    const isLoop = data.content.includes('🔄') || data.content.includes('循环');
+
+    let icon = '🔧';
+    if (isError) icon = '❌';
+    else if (isSuccess) icon = '✅';
+    else if (isLoop) icon = '🔄';
+
     stepEl.innerHTML = `
-      <div class="step-label">🔧 ${data.step}</div>
-      <div class="step-content">${data.content || ''}</div>
+      <div class="step-label">${icon} ${data.step}</div>
+      <div class="step-content">${data.content}</div>
     `;
     streamsDiv.appendChild(stepEl);
+
+    // 自动滚动
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 }

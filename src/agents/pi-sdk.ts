@@ -741,6 +741,58 @@ class PiAgentSession implements AgentSession {
         };
       }
     });
+
+    // 添加文件列表工具
+    this.tools.set('list_files', {
+      name: 'list_files',
+      description: '列出目录中的文件',
+      parameters: { path: '目录路径（可选，默认为当前目录）' },
+      execute: async (args) => {
+        try {
+          const fs = await import('fs');
+          const path = args.path || this.cwd;
+          const files = fs.readdirSync(path);
+          return {
+            success: true,
+            output: `📁 目录 ${path} 中的文件 (${files.length} 个):\n${files.slice(0, 20).map(f => `  - ${f}`).join('\n')}${files.length > 20 ? '\n  ...' : ''}`
+          };
+        } catch (e) {
+          return { success: false, error: String(e) };
+        }
+      }
+    });
+
+    // 添加目录读取工具（更完整的实现）
+    this.tools.set('read_directory', {
+      name: 'read_directory',
+      description: '读取目录内容，返回文件列表和目录结构',
+      parameters: { path: '目录路径（可选，默认为当前目录）' },
+      execute: async (args) => {
+        try {
+          const fs = await import('fs');
+          const pathModule = await import('path');
+          const targetPath = args.path || this.cwd;
+          const items = fs.readdirSync(targetPath);
+          const result: string[] = [];
+          for (const item of items.slice(0, 30)) {
+            const fullPath = pathModule.join(targetPath, item);
+            try {
+              const stat = fs.statSync(fullPath);
+              const type = stat.isDirectory() ? '📁' : '📄';
+              result.push(`${type} ${item}${stat.isDirectory() ? '/' : ''}`);
+            } catch {
+              result.push(`📄 ${item}`);
+            }
+          }
+          return {
+            success: true,
+            output: `📂 ${targetPath} (${items.length} 项):\n${result.join('\n')}${items.length > 30 ? '\n... 还有更多文件' : ''}`
+          };
+        } catch (e) {
+          return { success: false, error: `无法读取目录: ${String(e)}` };
+        }
+      }
+    });
   }
 
   private getToolDefinitions(): string {

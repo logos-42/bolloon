@@ -24,6 +24,8 @@ paths:
 | 设置 Persona | 更新智能体 persona 信息 | `set_persona(persona_json)` |
 | 执行工作流 | 执行预定义工作流 | `run_workflow(steps)` |
 | 查看日志 | 查看最近操作日志 | `get_operation_logs()` |
+| 列出文件 | 列出目录中的文件 | `list_files(path?)` |
+| 读取目录 | 读取目录内容，返回文件列表和目录结构 | `read_directory(path?)` |
 
 ---
 

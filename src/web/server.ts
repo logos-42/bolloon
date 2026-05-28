@@ -541,11 +541,13 @@ export async function createWebServer(port: number = 3000) {
           }
         } else if (event.type === 'status' || event.type === 'tool') {
           broadcast({ type: 'status', tool: event.tool, content: event.content }, channelId);
-          broadcast({ type: 'workflow_step', step: event.tool || '状态', content: event.content }, channelId);
+          broadcast({ type: 'workflow_step', step: event.tool || '系统', content: event.content }, channelId);
         } else if (event.type === 'error') {
           broadcast({ type: 'error', content: event.content }, channelId);
         }
       };
+
+      console.log(`[消息处理] 开始处理用户消息, channelId: ${channelId}`);
 
       // 将真实 DID 作为上下文前缀，让 AI 使用真实的 DID 而不是自己编造的
       const contextHint = realChannelDid ? `[系统上下文] 当前频道名称: ${realChannelName}, 你的真实 DID: ${realChannelDid}\n\n` : '';
