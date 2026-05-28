@@ -974,20 +974,31 @@ Workspace root folder: ${this.cwd}
   }
 
   private isFinalResponse(content: string): boolean {
-    const finalMarkers = ['最终回答', '完成', '答案如下', '结果是', 'final', 'answer:', '结果:'];
+    const finalMarkers = ['最终回答', '完成', '答案如下', '结果是', 'final', 'answer:'];
     const lower = content.toLowerCase();
-    return finalMarkers.some(m => lower.includes(m)) || (content.includes('✅') && content.length < 500);
+    // 更保守的判断：只有明确标记最终回答，且回复较短时才认为是最终回复
+    if (content.includes('✅') && content.length < 200 && finalMarkers.some(m => lower.includes(m))) {
+      return true;
+    }
+    return finalMarkers.some(m => lower.includes(m));
   }
 
   private extractFinalAnswer(content: string): string {
-    const lines = content.split('\n');
+    // 移除任何 tool call 标记（保持完整回复）
+    let cleaned = content
+      .replace(/调用工具[：:]\s*\w+\s*\([^)]*\)/g, '')
+      .replace(/使用工具[：:]\s*\w+\s*\([^)]*\)/g, '')
+      .replace(/tool[_\w]*[：:]\s*\w+\s*\([^)]*\)/gi, '')
+      .trim();
+
+    const lines = cleaned.split('\n');
     const answerStart = lines.findIndex(l =>
       ['最终回答', '完成', '答案如下', '结果是', 'final', 'answer:'].some(m => l.toLowerCase().includes(m))
     );
     if (answerStart >= 0) {
       return lines.slice(answerStart + 1).join('\n').trim();
     }
-    return content;
+    return cleaned;
   }
 
   private parseToolCall(content: string): { name: string; args: Record<string, string> } | null {
