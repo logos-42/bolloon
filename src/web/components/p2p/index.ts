@@ -55,21 +55,48 @@ class P2PModalUI {
 
     // 获取身份信息
     let identityHtml = '<div class="p2p-loading">加载中...</div>';
+    let identityData: any = { name: '未知', did: '未知', cid: '未知' };
     try {
-      const resp = await fetch('/api/identity');
-      const data = await resp.json();
+      // 尝试获取 iroh 身份（包含 CID）
+      const irohResp = await fetch('/api/iroh/init', { method: 'POST' });
+      const irohData = await irohResp.json();
+      if (irohData.cid) {
+        identityData = {
+          name: irohData.name || irohData.name?.split('-').slice(-1)[0] || 'Bolloon',
+          did: irohData.did || '未知',
+          cid: irohData.cid || '未知',
+          nodeId: irohData.irohNodeId ? irohData.irohNodeId.substring(0, 20) + '...' : '未知'
+        };
+      } else {
+        // 回退到 /api/identity
+        const resp = await fetch('/api/identity');
+        identityData = await resp.json();
+        identityData.cid = identityData.cid || '未初始化';
+        identityData.nodeId = identityData.nodeId || '未知';
+      }
       identityHtml = `
         <div class="p2p-section">
           <h3>身份信息</h3>
           <div class="p2p-info-row">
             <span class="label">名称:</span>
-            <span class="value">${this.escapeHtml(data.name || '未知')}</span>
+            <span class="value">${this.escapeHtml(identityData.name || '未知')}</span>
+          </div>
+          <div class="p2p-info-row">
+            <span class="label">CID:</span>
+            <span class="value mono">${this.escapeHtml(identityData.cid || '未知')}</span>
           </div>
           <div class="p2p-info-row">
             <span class="label">DID:</span>
-            <span class="value mono">${this.escapeHtml(data.did || '未知')}</span>
+            <span class="value mono">${this.escapeHtml(identityData.did || '未知')}</span>
           </div>
-          <button class="p2p-btn-primary" id="p2p-copy-btn">复制 DID</button>
+          <div class="p2p-info-row">
+            <span class="label">Node ID:</span>
+            <span class="value mono">${this.escapeHtml(identityData.nodeId || '未知')}</span>
+          </div>
+          <div class="p2p-actions">
+            <button class="p2p-btn-secondary" id="p2p-copy-cid-btn">复制 CID</button>
+            <button class="p2p-btn-secondary" id="p2p-copy-did-btn">复制 DID</button>
+          </div>
         </div>
       `;
     } catch {
@@ -131,12 +158,27 @@ class P2PModalUI {
       });
     });
 
-    // 复制 DID
-    const copyBtn = this.modal.querySelector('#p2p-copy-btn');
-    copyBtn?.addEventListener('click', async () => {
+    // 复制 CID
+    const copyCidBtn = this.modal.querySelector('#p2p-copy-cid-btn');
+    copyCidBtn?.addEventListener('click', async () => {
       try {
-        const resp = await fetch('/api/identity');
-        const data = await resp.json();
+        const irohResp = await fetch('/api/iroh/init', { method: 'POST' });
+        const data = await irohResp.json();
+        if (data.cid) {
+          await navigator.clipboard.writeText(data.cid);
+          this.showToast('CID 已复制到剪贴板');
+        }
+      } catch (e) {
+        console.error('复制失败:', e);
+      }
+    });
+
+    // 复制 DID
+    const copyDidBtn = this.modal.querySelector('#p2p-copy-did-btn');
+    copyDidBtn?.addEventListener('click', async () => {
+      try {
+        const irohResp = await fetch('/api/iroh/init', { method: 'POST' });
+        const data = await irohResp.json();
         if (data.did) {
           await navigator.clipboard.writeText(data.did);
           this.showToast('DID 已复制到剪贴板');
