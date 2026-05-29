@@ -22,6 +22,8 @@ let reconnectTimers = new Map(); // channelId -> timer
 let lastUserCommand = ''; // 防止用户消息重复显示
 let lastAiContent = ''; // 防止 AI 消息重复显示
 let messagesContainers = new Map(); // channelId -> messages container div
+let sessionMessages = new Map(); // channelId:sessionId -> messages array
+let currentSessionId = null; // 当前显示的 session ID
 
 function generateId() {
   return crypto.randomUUID();
@@ -157,6 +159,20 @@ async function createNewSession() {
     return;
   }
   try {
+    // 保存当前 session 的消息
+    const channel = channels.find(c => c.id === currentChannelId);
+    if (channel && currentSessionId) {
+      const container = messagesContainers.get(currentChannelId);
+      if (container) {
+        const messages = Array.from(container.querySelectorAll('.message')).map(msg => ({
+          type: msg.classList.contains('message-user') ? 'user' : 'ai',
+          content: msg.querySelector('.message-content')?.textContent || ''
+        }));
+        sessionMessages.set(`${currentChannelId}:${currentSessionId}`, messages);
+        console.log('[新会话] 保存旧 session 消息:', messages.length);
+      }
+    }
+
     const res = await fetch(`/channels/${currentChannelId}/sessions`, {
       method: 'POST'
     });
@@ -164,20 +180,21 @@ async function createNewSession() {
     console.log('[新会话] 创建成功:', data);
 
     // 更新本地频道数据
-    const channel = channels.find(c => c.id === currentChannelId);
     if (channel) {
       if (!channel.sessions) channel.sessions = [];
       channel.sessions.push(data.session);
       channel.currentSessionId = data.currentSessionId;
     }
 
-    // 获取当前频道的消息容器并清空
+    // 切换到新 session
+    const oldSessionId = currentSessionId;
+    currentSessionId = data.currentSessionId;
+
+    // 清空容器并加载新 session
     const container = messagesContainers.get(currentChannelId);
     if (container) {
       container.innerHTML = '';
-      // 确保容器在 DOM 中可见
       showChannelView(currentChannelId);
-      // 显示欢迎语
       addMessage('你好！新会话已开始，有什么我可以帮你的吗？', 'ai', false, container);
     }
 
