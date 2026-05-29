@@ -54,6 +54,9 @@ class P2PModalUI {
   private async render(): Promise<void> {
     if (!this.modal) return;
 
+    // 加载连接历史
+    await this.loadConnectionHistory();
+
     // 获取身份信息
     let identityHtml = '<div class="p2p-loading">加载中...</div>';
     let identityData: any = { name: '未知', did: '未知', cid: '未知' };
@@ -252,13 +255,21 @@ class P2PModalUI {
         result.className = 'p2p-result success';
         // 清空输入框
         input.value = '';
-        // 保存已连接节点
-        this.connectedPeers.set(data.targetNodeId, {
-          nodeId: data.targetNodeId,
-          name: data.nodeName || cid.substring(0, 16),
-          time: Date.now()
-        });
-        this.updateConnectedPeersDisplay();
+        // 保存已连接节点到后端
+        try {
+          await fetch('/api/p2p/history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              cid: cid,  // 输入的 CID 或 Node ID
+              irohNodeId: data.targetNodeId,
+              did: data.targetNodeId,  // 用 Node ID 作为 DID
+              name: data.nodeName || cid.substring(0, 16)
+            })
+          });
+        } catch (e) {
+          console.error('保存连接失败:', e);
+        }
       } else {
         result.innerHTML = `<div class="p2p-error">${this.escapeHtml(data.error || '连接失败')}</div>`;
         result.className = 'p2p-result error';
@@ -267,6 +278,24 @@ class P2PModalUI {
       const msg = e instanceof Error ? e.message : '连接失败';
       result.innerHTML = `<div class="p2p-error">${this.escapeHtml(msg)}</div>`;
       result.className = 'p2p-result error';
+    }
+  }
+
+  private async loadConnectionHistory(): Promise<void> {
+    try {
+      const resp = await fetch('/api/p2p/history');
+      const history = await resp.json();
+      this.connectedPeers.clear();
+      for (const entry of history) {
+        this.connectedPeers.set(entry.irohNodeId || entry.did, {
+          nodeId: entry.irohNodeId || entry.did,
+          name: entry.name || 'Unknown',
+          time: entry.lastConnectedAt || Date.now()
+        });
+      }
+      this.updateConnectedPeersDisplay();
+    } catch (e) {
+      console.error('加载连接历史失败:', e);
     }
   }
 
