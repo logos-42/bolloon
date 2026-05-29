@@ -157,7 +157,22 @@ class LLMConfigStore {
     try {
       await fs.mkdir(CONFIG_DIR, { recursive: true });
       const data = await fs.readFile(CONFIG_PATH, 'utf-8');
-      this.config = JSON.parse(data);
+      const loadedConfig = JSON.parse(data);
+
+      // 确保加载的配置包含所有默认供应商，缺失的用默认值补充
+      const defaultProviders = Object.keys(DEFAULT_PROVIDER_CONFIGS) as ModelProvider[];
+      for (const provider of defaultProviders) {
+        if (!loadedConfig.providers[provider]) {
+          loadedConfig.providers[provider] = { ...DEFAULT_PROVIDER_CONFIGS[provider] };
+        }
+      }
+
+      // 确保有 activeProvider
+      if (!loadedConfig.activeProvider || !DEFAULT_PROVIDER_CONFIGS[loadedConfig.activeProvider]) {
+        loadedConfig.activeProvider = 'ollama';
+      }
+
+      this.config = loadedConfig;
     } catch {
       this.config = getDefaultConfig();
       await this.save();

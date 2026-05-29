@@ -1845,8 +1845,24 @@ ${this.extractOperationsFromRef(operationsRef)}
 let sessionInstance: AgentSession | null = null;
 let lastIdentityDid: string | null = null;
 
-export async function createAgentSession(config: AgentSessionConfig): Promise<AgentSession> {
+// 独立的 session 实例缓存（用于多 session 支持）
+const independentSessions: Map<string, AgentSession> = new Map();
+
+export async function createAgentSession(config: AgentSessionConfig, forceNew?: boolean): Promise<AgentSession> {
   const incomingDid = config.identityDoc?.did;
+  const sessionKey = config.peerId || 'default';
+
+  // 如果指定了 forceNew 或有独立的 session key，创建独立实例
+  if (forceNew || (config.peerId && config.peerId.includes(':'))) {
+    const key = `${sessionKey}:${forceNew ? Date.now() : ''}`;
+    if (!forceNew && independentSessions.has(key)) {
+      return independentSessions.get(key)!;
+    }
+    const session = new PiAgentSession(config);
+    independentSessions.set(key, session);
+    console.log(`[createAgentSession] 创建独立 session, key=${key}, DID=${incomingDid}`);
+    return session;
+  }
 
   // 如果有新的 DID，强制重建 session
   if (sessionInstance && lastIdentityDid && incomingDid && lastIdentityDid !== incomingDid) {

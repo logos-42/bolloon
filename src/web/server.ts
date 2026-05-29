@@ -339,10 +339,13 @@ async function getAgentForChannel(
   const currentSessionId = channel?.currentSessionId || 'default';
   const sessionKey = `${channelId}:${currentSessionId}`;
 
-  const existingSession = channelSessions.get(channelId);
+  console.log(`[Agent] 获取频道 ${channelId} 的 session, sessionKey = ${sessionKey}`);
+
+  const existingSession = channelSessions.get(sessionKey);
 
   // 如果已有 session，检查是否需要更新 identity
   if (existingSession) {
+    console.log(`[Agent] 找到现有 session: ${sessionKey}`);
     const currentIdentity = existingSession.getIdentity();
 
     // 如果当前 identity 没有真实 DID，或者 DID 与频道的 DID 不匹配，需要重建
@@ -378,17 +381,18 @@ async function getAgentForChannel(
     ipnsName: channelDidDoc?.ipnsName
   } : undefined;
 
+  console.log(`[Agent] 创建新 session: ${sessionKey}`);
   const session = await createAgentSession({
     cwd: process.cwd(),
-    peerId: `channel-${channelId}`,
+    peerId: `channel-${channelId}:${currentSessionId}`,
     identityDoc
-  });
-  channelSessions.set(channelId, session);
+  }, true); // forceNew: true 强制创建新实例
+  channelSessions.set(sessionKey, session);
 
   if (channelDid) {
-    console.log(`[Agent] 新建频道 ${channelId} session, DID = ${channelDid}, CID = ${channelDidDoc?.cid || '无'}`);
+    console.log(`[Agent] 新建频道 ${channelId} session, DID = ${channelDid}, sessionId = ${currentSessionId}`);
   } else {
-    console.log(`[Agent] 新建频道 ${channelId} session, 使用默认身份`);
+    console.log(`[Agent] 新建频道 ${channelId} session, 使用默认身份, sessionId = ${currentSessionId}`);
   }
 
   return session;
