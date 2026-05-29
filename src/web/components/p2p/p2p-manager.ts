@@ -11,7 +11,9 @@ import type {
   ConnectResult,
   ConnectProgress,
   P2PMessage,
-  ConnectionHistoryEntry
+  ConnectionHistoryEntry,
+  PersistentConnection,
+  CIDResolveResult
 } from './types.js';
 
 export class P2PManager {
@@ -95,6 +97,42 @@ export class P2PManager {
   destroy(): void {
     this.connection.destroy();
     this.messages.destroy();
+  }
+
+  // 获取持久连接列表
+  async getPersistentConnections(): Promise<PersistentConnection[]> {
+    return this.connection.getPersistentConnections();
+  }
+
+  // 更新连接状态
+  async updateConnectionStatus(
+    id: string,
+    status: string,
+    channelId?: string
+  ): Promise<void> {
+    await fetch('/api/p2p/connection-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, status, channelId })
+    });
+  }
+
+  // 切换连接状态
+  async toggleConnection(connection: PersistentConnection, enable: boolean): Promise<boolean> {
+    return this.connection.toggleConnection(connection, enable);
+  }
+
+  // CID 解析
+  async resolveFromCID(cid: string): Promise<CIDResolveResult> {
+    return this.connection.resolveFromCID(cid);
+  }
+
+  // 连接并创建对话通道
+  async connectAndCreateChannel(
+    input: string,
+    onProgress?: (progress: ConnectProgress) => void
+  ): Promise<ConnectResult> {
+    return this.connection.connectAndCreateChannel(input, onProgress);
   }
 }
 

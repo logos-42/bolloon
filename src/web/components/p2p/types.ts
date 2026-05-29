@@ -110,3 +110,61 @@ export interface ConnectedPeer {
   info: any;
   lastSeen: number;
 }
+
+// 持久连接状态
+export enum PersistentConnectionStatus {
+  CONNECTED = 'connected',
+  DISCONNECTED = 'disconnected',
+  RECONNECTING = 'reconnecting'
+}
+
+// 持久连接节点
+export interface PersistentConnection {
+  id: string;
+  peerId: string;
+  peerDid: string;
+  peerName: string;
+  cid: string;
+  status: PersistentConnectionStatus;
+  lastConnectedAt: number;
+  channelId?: string;
+  isAutoConnect: boolean;
+}
+
+// P2P 工具调用
+export interface P2PToolRequest {
+  toolName: string;
+  payload: ToolPayload;
+  targetDid?: string;
+  targetNodeId?: string;
+}
+
+export interface ToolPayload {
+  type: 'file' | 'info' | 'custom';
+  data: string | FileInfo;
+}
+
+export interface FileInfo {
+  name: string;
+  size: number;
+  mimeType: string;
+  content: string; // base64
+}
+
+// CID 解析结果
+export interface CIDResolveResult {
+  success: boolean;
+  did?: string;
+  cid?: string;
+  name?: string;
+  peerId?: string;
+  error?: string;
+}
+
+// 连接并创建通道结果
+export interface ConnectAndChannelResult {
+  success: boolean;
+  channelId?: string;
+  identity?: CIDResolveResult;
+  error?: string;
+}

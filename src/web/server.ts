@@ -1783,6 +1783,102 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // 获取持久连接列表
+  app.get('/api/p2p/persistent-connections', async (_req, res) => {
+    try {
+      const sessionProvider = app.locals.sessionProvider;
+      if (!sessionProvider) {
+        return res.json([]);
+      }
+      const channels = sessionProvider.getAllChannels().filter((ch: any) => ch.peerId);
+      res.json(
+        channels.map((ch: any) => ({
+          id: ch.id,
+          peerId: ch.peerId || '',
+          peerDid: ch.peerDid || '',
+          peerName: ch.peerName || 'Unknown',
+          cid: ch.cid || '',
+          status: ch.peerId ? 'connected' : 'disconnected',
+          lastConnectedAt: new Date(ch.updatedAt).getTime(),
+          channelId: ch.id,
+          isAutoConnect: false
+        }))
+      );
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 更新连接状态
+  app.post('/api/p2p/connection-status', async (req, res) => {
+    try {
+      const { id, status, channelId } = req.body;
+      const sessionProvider = app.locals.sessionProvider;
+      if (sessionProvider && channelId) {
+        await sessionProvider.setChannelInfo(channelId, {
+          peerId: status === 'connected' ? (req.body.peerId || 'connected') : undefined
+        });
+      }
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 创建对话通道
+  app.post('/api/p2p/create-channel', async (req, res) => {
+    try {
+      const { peerDid, peerName, cid, peerId } = req.body;
+      const sessionProvider = app.locals.sessionProvider;
+      if (!sessionProvider) {
+        return res.status(500).json({ error: 'sessionProvider not available' });
+      }
+      const channel = await sessionProvider.getOrCreatePeerChannel(peerDid, peerName);
+      await sessionProvider.setChannelInfo(channel.id, { peerId: peerId || '', cid: cid || '' });
+      res.json({ channelId: channel.id });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // CID 解析
+  app.post('/api/p2p/resolve-cid', async (req, res) => {
+    try {
+      const { cid } = req.body;
+      const { DiapDocParser } = await import('../social/channels/diap-doc-parser.js');
+      const parser = new DiapDocParser();
+      const result = await parser.parseFromCID(cid);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // P2P 工具调用
+  app.post('/api/p2p/tool-call', async (req, res) => {
+    try {
+      const { tool, targetDid, payload } = req.body;
+
+      let result;
+      switch (tool) {
+        case 'system_info':
+          const { getLocalSystemInfo } = await import('./components/p2p/p2p-tools.js');
+          result = getLocalSystemInfo();
+          break;
+        case 'file_list':
+          const { getLocalFileList } = await import('./components/p2p/p2p-tools.js');
+          result = getLocalFileList(payload?.path || '/');
+          break;
+        default:
+          return res.status(400).json({ error: `Unknown tool: ${tool}` });
+      }
+
+      res.json({ success: true, data: result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   return new Promise<{ app: express.Express; server: typeof server }>((resolve) => {
     server.listen(port, () => {
       console.log(`Web 服务器启动完成: http://localhost:${port}`);
