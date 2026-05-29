@@ -6,7 +6,7 @@
   "main": "dist/cli.js",
   "author": "Bolloon Team",
   "bin": {
-    "bolloon": "./bin/bolloon.js"
+    "bolloon": "./bin/bolloon.cjs"
   },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
