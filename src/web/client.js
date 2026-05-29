@@ -10,6 +10,7 @@ const newChannelInput = document.getElementById('new-channel-input');
 const channelNameEl = document.getElementById('channel-name');
 const loadSessionBtn = document.getElementById('load-session-btn');
 const sessionFileInput = document.getElementById('session-file-input');
+const newSessionBtn = document.getElementById('new-session-btn');
 
 let eventSources = new Map(); // channelId -> EventSource
 let currentChannelId = null;
@@ -147,6 +148,37 @@ async function deleteChannel(channelId, e) {
     renderCollapsedChannels();
   } catch (err) {
     console.error('Failed to delete channel:', err);
+  }
+}
+
+async function createNewSession() {
+  if (!currentChannelId) {
+    console.log('[新会话] 没有选中的频道');
+    return;
+  }
+  try {
+    const res = await fetch(`/channels/${currentChannelId}/sessions`, {
+      method: 'POST'
+    });
+    const data = await res.json();
+    console.log('[新会话] 创建成功:', data);
+
+    // 更新本地频道数据
+    const channel = channels.find(c => c.id === currentChannelId);
+    if (channel) {
+      if (!channel.sessions) channel.sessions = [];
+      channel.sessions.push(data.session);
+      channel.currentSessionId = data.currentSessionId;
+    }
+
+    // 清空消息区域，提示用户新会话已开始
+    if (messagesEl) {
+      messagesEl.innerHTML = '<div class="system-message">新会话已开始</div>';
+    }
+
+    console.log('[新会话] 已切换到:', data.currentSessionId);
+  } catch (err) {
+    console.error('Failed to create new session:', err);
   }
 }
 
@@ -1042,6 +1074,12 @@ if (loadSessionBtn && sessionFileInput) {
 if (newChannelBtn) {
   newChannelBtn.addEventListener('click', () => {
     createChannel('智能体');
+  });
+}
+
+if (newSessionBtn) {
+  newSessionBtn.addEventListener('click', () => {
+    createNewSession();
   });
 }
 

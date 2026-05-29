@@ -51,6 +51,15 @@ interface Channel {
   didDocument?: any;
   createdAt: string;
   updatedAt: string;
+  currentSessionId?: string;
+  sessions?: SessionSummary[];
+}
+
+interface SessionSummary {
+  id: string;
+  createdAt: string;
+  messageCount: number;
+  preview: string;
 }
 
 interface SessionMessage {
@@ -675,6 +684,13 @@ app.get('/channels', async (_req, res) => {
         agentId,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        currentSessionId: `sess_${Date.now()}`,
+        sessions: [{
+          id: `sess_${Date.now()}`,
+          createdAt: new Date().toISOString(),
+          messageCount: 0,
+          preview: ''
+        }]
       };
 
       console.log(`[创建频道] 先保存频道 ID: ${id}`);
@@ -713,6 +729,85 @@ app.get('/channels', async (_req, res) => {
       }, 100);
     } catch (err: any) {
       console.error('[创建频道] 错误:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 创建新 Session（在现有 Channel 下）
+  app.post('/channels/:channelId/sessions', async (req, res) => {
+    try {
+      const { channelId } = req.params;
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+
+      const sessionId = `sess_${Date.now()}`;
+      const session: SessionSummary = {
+        id: sessionId,
+        createdAt: new Date().toISOString(),
+        messageCount: 0,
+        preview: ''
+      };
+
+      if (!channel.sessions) {
+        channel.sessions = [];
+      }
+      channel.sessions.push(session);
+      channel.currentSessionId = sessionId;
+      channel.updatedAt = new Date().toISOString();
+
+      await saveChannels(channels);
+      await saveSession({ channelId, sessionId, messages: [], lastUpdated: new Date().toISOString() });
+
+      res.json({ session, currentSessionId: sessionId });
+    } catch (err: any) {
+      console.error('[创建Session] 错误:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 获取 Channel 下的所有 Sessions
+  app.get('/channels/:channelId/sessions', async (req, res) => {
+    try {
+      const { channelId } = req.params;
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+
+      res.json({
+        sessions: channel.sessions || [],
+        currentSessionId: channel.currentSessionId
+      });
+    } catch (err: any) {
+      console.error('[获取Sessions] 错误:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 切换 Session
+  app.post('/channels/:channelId/sessions/:sessionId/switch', async (req, res) => {
+    try {
+      const { channelId, sessionId } = req.params;
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+
+      channel.currentSessionId = sessionId;
+      channel.updatedAt = new Date().toISOString();
+      await saveChannels(channels);
+
+      res.json({ ok: true, currentSessionId: sessionId });
+    } catch (err: any) {
+      console.error('[切换Session] 错误:', err);
       res.status(500).json({ error: err.message });
     }
   });
