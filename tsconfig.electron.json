@@ -16,5 +16,5 @@
     "types": ["node"]
   },
   "include": ["src/electron.ts", "src/electron-preload.ts"],
-  "exclude": ["node_modules", "dist", "src/constraint-runtime", "src/agents", "src/web"]
+  "exclude": ["node_modules", "dist", "src/constraint-runtime", "src/agents", "src/web", "src/bollharness"]
 }

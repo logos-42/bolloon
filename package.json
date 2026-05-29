@@ -2,14 +2,19 @@
   "name": "@bolloon/bolloon-agent",
   "version": "0.1.1",
   "type": "module",
-  "description": "P2P AI Document Agent with libp2p",
-  "main": "dist/index.js",
+  "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
+  "main": "dist/cli.js",
   "author": "Bolloon Team",
+  "bin": {
+    "bolloon": "./bin/bolloon.js"
+  },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "build:main": "tsc",
+    "build:cli": "node scripts/build-cli.js",
     "build:web": "npx tsx scripts/build-web.ts",
     "build:electron": "tsc -p tsconfig.electron.json",
+    "build:all": "npm run build:main && npm run build:web && npm run build:electron && npm run build:cli",
     "start": "node dist/index.js",
     "dev": "tsx -r dotenv/config src/index.ts",
     "dev:web": "npm run build:web && npm run dev",
@@ -20,7 +25,8 @@
     "electron:pack": "electron-builder --dir",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:pi-sdk": "tsx src/test/pi-sdk.test.ts"
+    "test:pi-sdk": "tsx src/test/pi-sdk.test.ts",
+    "postinstall": "node scripts/postinstall.js"
   },
   "workspaces": [
     "src/constraint-runtime"
@@ -73,11 +79,11 @@
     },
     "files": [
       "dist/**/*",
-      "src/electron-main.js",
+      "bin/**/*",
       "package.json"
     ],
     "extraMetadata": {
-      "main": "src/electron-main.js",
+      "main": "dist/electron.js",
       "type": "commonjs"
     },
     "win": {
