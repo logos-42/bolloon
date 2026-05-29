@@ -168,7 +168,8 @@ class LLMConfigStore {
       }
 
       // 确保有 activeProvider
-      if (!loadedConfig.activeProvider || !DEFAULT_PROVIDER_CONFIGS[loadedConfig.activeProvider]) {
+      const activeProvider = loadedConfig.activeProvider as ModelProvider;
+      if (!activeProvider || !DEFAULT_PROVIDER_CONFIGS[activeProvider]) {
         loadedConfig.activeProvider = 'ollama';
       }
 
@@ -317,11 +318,13 @@ export function getPiSDKConfig(): {
     return { provider: 'ollama' };
   }
 
-  const activeConfig = config.providers[config.activeProvider];
+  const activeProvider = config.activeProvider as ModelProvider;
+  const activeConfig = config.providers[activeProvider] || {};
+  const defaultConfig = DEFAULT_PROVIDER_CONFIGS[activeProvider] || { baseUrl: '', model: '' };
   return {
-    provider: config.activeProvider,
+    provider: activeProvider,
     apiKey: activeConfig.apiKey || undefined,
-    baseUrl: activeConfig.baseUrl !== DEFAULT_PROVIDER_CONFIGS[config.activeProvider].baseUrl ? activeConfig.baseUrl : undefined,
-    model: activeConfig.model !== DEFAULT_PROVIDER_CONFIGS[config.activeProvider].model ? activeConfig.model : undefined
+    baseUrl: activeConfig.baseUrl !== defaultConfig.baseUrl ? activeConfig.baseUrl : undefined,
+    model: activeConfig.model !== defaultConfig.model ? activeConfig.model : undefined
   };
 }
