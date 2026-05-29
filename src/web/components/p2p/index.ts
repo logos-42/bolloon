@@ -5,6 +5,7 @@
 class P2PModalUI {
   private modal: HTMLElement | null = null;
   private overlay: HTMLElement | null = null;
+  private connectedPeers: Map<string, { nodeId: string; name: string; time: number }> = new Map();
 
   constructor() {
     this.createModal();
@@ -127,6 +128,12 @@ class P2PModalUI {
             </div>
             <div id="p2p-connect-result" class="p2p-result"></div>
           </div>
+          <div class="p2p-section">
+            <h3>已连接的节点</h3>
+            <div id="p2p-connected-peers" class="p2p-connected-peers">
+              暂无连接
+            </div>
+          </div>
         </div>
         <div class="p2p-tab-content" data-tab="messages">
           <div class="p2p-section">
@@ -243,6 +250,15 @@ class P2PModalUI {
       if (data.ok) {
         result.innerHTML = `<div class="p2p-success">连接成功！节点: ${this.escapeHtml(data.nodeName || cid.substring(0, 16))}...</div>`;
         result.className = 'p2p-result success';
+        // 清空输入框
+        input.value = '';
+        // 保存已连接节点
+        this.connectedPeers.set(data.targetNodeId, {
+          nodeId: data.targetNodeId,
+          name: data.nodeName || cid.substring(0, 16),
+          time: Date.now()
+        });
+        this.updateConnectedPeersDisplay();
       } else {
         result.innerHTML = `<div class="p2p-error">${this.escapeHtml(data.error || '连接失败')}</div>`;
         result.className = 'p2p-result error';
@@ -252,6 +268,30 @@ class P2PModalUI {
       result.innerHTML = `<div class="p2p-error">${this.escapeHtml(msg)}</div>`;
       result.className = 'p2p-result error';
     }
+  }
+
+  private updateConnectedPeersDisplay(): void {
+    const container = document.getElementById('p2p-connected-peers');
+    if (!container) return;
+
+    if (this.connectedPeers.size === 0) {
+      container.innerHTML = '<div class="p2p-empty">暂无连接</div>';
+      return;
+    }
+
+    let html = '';
+    for (const [nodeId, info] of this.connectedPeers) {
+      const shortId = nodeId.substring(0, 16) + '...';
+      const time = new Date(info.time).toLocaleTimeString();
+      html += `
+        <div class="p2p-peer-item">
+          <span class="p2p-peer-name">${this.escapeHtml(info.name || shortId)}</span>
+          <span class="p2p-peer-id">${shortId}</span>
+          <span class="p2p-peer-time">${time}</span>
+        </div>
+      `;
+    }
+    container.innerHTML = html;
   }
 
   private escapeHtml(str: string): string {
@@ -448,6 +488,41 @@ style.textContent = `
     color: var(--text-muted, #606058);
   }
   .p2p-error { color: var(--error, #ef4444); }
+  .p2p-connected-peers {
+    background: var(--bg, #1a1a18);
+    border: 1px solid var(--border, #3a3a36);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .p2p-connected-peers .p2p-empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-muted, #606058);
+    font-size: 14px;
+  }
+  .p2p-peer-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border, #3a3a36);
+  }
+  .p2p-peer-item:last-child { border-bottom: none; }
+  .p2p-peer-name {
+    font-size: 14px;
+    color: var(--text, #d8d8c8);
+    min-width: 80px;
+  }
+  .p2p-peer-id {
+    flex: 1;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-secondary, #909088);
+  }
+  .p2p-peer-time {
+    font-size: 12px;
+    color: var(--text-muted, #606058);
+  }
 `;
 document.head.appendChild(style);
 

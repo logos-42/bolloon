@@ -1314,7 +1314,7 @@ app.get('/channels', async (_req, res) => {
     });
   });
 
-  // 通过 CID 连接到其他节点
+  // 通过 CID 或 Node ID 连接到其他节点
   app.post('/api/iroh/connect', async (req, res) => {
     try {
       const { cid } = req.body;
@@ -1327,21 +1327,38 @@ app.get('/channels', async (_req, res) => {
         return res.status(500).json({ error: 'iroh not initialized' });
       }
 
-      console.log(`[iroh API] 连接到 CID: ${cid}`);
+      let targetNodeId: string;
+      let nodeName = 'Unknown';
 
-      // 从 IPFS 获取节点信息
-      const ipfsRes = await fetch(`${IPFS_ENDPOINT}/api/v0/cat?arg=${cid}`, {
-        method: 'POST'
-      });
-      const content = await ipfsRes.text();
-      const doc = JSON.parse(content);
+      console.log(`[iroh API] 连接到: ${cid}`);
 
-      if (!doc.irohNodeId) {
-        return res.status(400).json({ error: '节点信息中不包含 irohNodeId' });
+      // 检查是 Node ID（64字符十六进制）还是 CID
+      const isNodeId = /^[a-f0-9]{64}$/i.test(cid);
+
+      if (isNodeId) {
+        // 直接使用 Node ID
+        targetNodeId = cid;
+        console.log(`[iroh API] 使用直接 Node ID: ${targetNodeId.substring(0, 20)}...`);
+      } else {
+        // 从 IPFS 获取节点信息
+        try {
+          const ipfsRes = await fetch(`${IPFS_ENDPOINT}/api/v0/cat?arg=${cid}`, {
+            method: 'POST'
+          });
+          const content = await ipfsRes.text();
+          const doc = JSON.parse(content);
+
+          if (!doc.irohNodeId) {
+            return res.status(400).json({ error: '节点信息中不包含 irohNodeId' });
+          }
+
+          targetNodeId = doc.irohNodeId;
+          nodeName = doc.name || 'Unknown';
+          console.log(`[iroh API] 从 IPFS 获取节点: ${targetNodeId.substring(0, 20)}...`);
+        } catch {
+          return res.status(400).json({ error: '无法从 CID 获取节点信息，请确认 CID 有效' });
+        }
       }
-
-      const targetNodeId = doc.irohNodeId;
-      console.log(`[iroh API] 目标节点: ${targetNodeId.substring(0, 20)}...`);
 
       // 发送连接消息
       const message = JSON.stringify({
@@ -1362,7 +1379,7 @@ app.get('/channels', async (_req, res) => {
         res.json({
           ok: true,
           targetNodeId,
-          nodeName: doc.name || 'Unknown'
+          nodeName
         });
       } else {
         console.log(`[iroh API] 连接失败（对方可能离线）`);
