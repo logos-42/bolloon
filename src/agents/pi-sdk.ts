@@ -1850,17 +1850,26 @@ const independentSessions: Map<string, AgentSession> = new Map();
 
 export async function createAgentSession(config: AgentSessionConfig, forceNew?: boolean): Promise<AgentSession> {
   const incomingDid = config.identityDoc?.did;
-  const sessionKey = config.peerId || 'default';
 
-  // 如果指定了 forceNew 或有独立的 session key，创建独立实例
-  if (forceNew || (config.peerId && config.peerId.includes(':'))) {
-    const key = `${sessionKey}:${forceNew ? Date.now() : ''}`;
+  // 如果有独立的 peerId (包含 :)，使用它作为 key
+  if (config.peerId && config.peerId.includes(':')) {
+    const key = config.peerId;
     if (!forceNew && independentSessions.has(key)) {
+      console.log(`[createAgentSession] 找到现有独立 session, key=${key}`);
       return independentSessions.get(key)!;
     }
     const session = new PiAgentSession(config);
     independentSessions.set(key, session);
     console.log(`[createAgentSession] 创建独立 session, key=${key}, DID=${incomingDid}`);
+    return session;
+  }
+
+  // 如果指定了 forceNew 但没有 peerId，生成带时间戳的 key
+  if (forceNew) {
+    const key = `force:${Date.now()}`;
+    const session = new PiAgentSession(config);
+    independentSessions.set(key, session);
+    console.log(`[createAgentSession] 创建强制新 session, key=${key}`);
     return session;
   }
 
