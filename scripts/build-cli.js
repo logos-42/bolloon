@@ -195,7 +195,12 @@ main().catch((err) => {
 
 fs.writeFileSync(path.join(binDir, 'bolloon.cjs'), unixContent);
 
+// 确保 bin/bolloon.js 存在（npm link 需要）
+const jsSymlink = path.join(binDir, 'bolloon.js');
+if (fs.existsSync(jsSymlink)) fs.unlinkSync(jsSymlink);
+fs.symlinkSync('bolloon.cjs', jsSymlink);
+
 console.log("✓ CLI 构建完成");
-console.log("  bin/bolloon.cjs    - CommonJS 入口 (npm bin)");
-console.log("  bin/bolloon.js     - 备用别名");
+console.log("  bin/bolloon.cjs    - CommonJS 入口");
+console.log("  bin/bolloon.js     - 符号链接 -> bolloon.cjs");
 console.log("  bin/bolloon.cmd    - Windows 入口");
