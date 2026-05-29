@@ -236,7 +236,7 @@ export function getLocalSystemInfo(): SystemInfo {
     nodeVersion: process.version,
     memory: {
       total: memUsage.heapTotal,
-      free: memUsage.heapFree,
+      free: memUsage.heapTotal - memUsage.heapUsed,
       used: memUsage.heapUsed
     },
     cpu: {
@@ -250,14 +250,15 @@ export function getLocalSystemInfo(): SystemInfo {
 // 本地文件列表 (用于响应来自远程的请求)
 export function getLocalFileList(dirPath: string): FileListResult {
   try {
+    // Dynamic import for ESM compatibility
+    const pathModule = require('path');
     const fs = require('fs');
-    const path = require('path');
 
-    const fullPath = path.resolve(dirPath);
+    const fullPath = pathModule.resolve(dirPath);
     const files = fs.readdirSync(fullPath);
 
     const fileList: FileListItem[] = files.map((name: string) => {
-      const fullFilePath = path.join(fullPath, name);
+      const fullFilePath = pathModule.join(fullPath, name);
       let stat;
       try {
         stat = fs.statSync(fullFilePath);
