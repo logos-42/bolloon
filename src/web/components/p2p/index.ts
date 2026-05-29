@@ -96,6 +96,7 @@ class P2PModalUI {
           <div class="p2p-actions">
             <button class="p2p-btn-secondary" id="p2p-copy-cid-btn">复制 CID</button>
             <button class="p2p-btn-secondary" id="p2p-copy-did-btn">复制 DID</button>
+            <button class="p2p-btn-secondary" id="p2p-copy-nodeid-btn">复制 Node ID</button>
           </div>
         </div>
       `;
@@ -182,6 +183,21 @@ class P2PModalUI {
         if (data.did) {
           await navigator.clipboard.writeText(data.did);
           this.showToast('DID 已复制到剪贴板');
+        }
+      } catch (e) {
+        console.error('复制失败:', e);
+      }
+    });
+
+    // 复制 Node ID
+    const copyNodeIdBtn = this.modal.querySelector('#p2p-copy-nodeid-btn');
+    copyNodeIdBtn?.addEventListener('click', async () => {
+      try {
+        const irohResp = await fetch('/api/iroh/init', { method: 'POST' });
+        const data = await irohResp.json();
+        if (data.irohNodeId) {
+          await navigator.clipboard.writeText(data.irohNodeId);
+          this.showToast('Node ID 已复制到剪贴板');
         }
       } catch (e) {
         console.error('复制失败:', e);

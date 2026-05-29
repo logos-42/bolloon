@@ -77,23 +77,6 @@ async function testP2PIdentityPage() {
 
     console.log('\n=== 测试完成 ===');
 
-    // 5. 检查是否显示了 CID
-    const hasCid = pageIdentity['CID'] && pageIdentity['CID'] !== '-';
-    console.log('\n5. CID 显示状态:', hasCid ? '✅ 显示' : '❌ 未显示');
-
-    // 6. 检查状态
-    const statusText = await page.evaluate(() => {
-      return document.querySelector('.status-row span:last-child')?.textContent || '未知';
-    });
-    console.log('   状态:', statusText);
-
-    // 7. 截图
-    console.log('\n6. 截图...');
-    await page.screenshot({ path: '/tmp/bolloon-p2p-identity.png', fullPage: false });
-    console.log('   截图保存到: /tmp/bolloon-p2p-identity.png');
-
-    console.log('\n=== 测试完成 ===');
-
   } catch (error) {
     console.error('测试失败:', error);
   } finally {
