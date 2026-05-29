@@ -1879,6 +1879,85 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // ==================== 24h Heartbeat System ====================
+
+  let healthMonitor: any = null;
+  let watchdog: any = null;
+
+  // 延迟导入避免循环依赖
+  try {
+    const { createHealthMonitor, createWatchdog } = await import('../heartbeat/index.js');
+    healthMonitor = createHealthMonitor();
+    watchdog = createWatchdog();
+
+    console.log('[24h] Heartbeat modules loaded');
+  } catch (err) {
+    console.warn('[24h] Failed to load heartbeat modules:', err);
+  }
+
+  // 健康检查端点
+  app.get('/api/health', async (req, res) => {
+    try {
+      if (!healthMonitor) {
+        res.status(503).json({ error: 'Health monitor not initialized' });
+        return;
+      }
+
+      const status = await healthMonitor.check();
+
+      // 记录心跳活跃
+      healthMonitor.recordHeartbeat?.();
+      watchdog?.recordActivity?.('health_check');
+
+      // 根据状态返回不同 HTTP 状态码
+      const httpStatus = status.status === 'healthy' ? 200 :
+                         status.status === 'degraded' ? 200 : 503;
+
+      res.status(httpStatus).json(status);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 看门狗状态
+  app.get('/api/watchdog', async (req, res) => {
+    try {
+      if (!watchdog) {
+        res.status(503).json({ error: 'Watchdog not initialized' });
+        return;
+      }
+
+      const state = watchdog.getState();
+      res.json(state);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 看门狗重置
+  app.post('/api/watchdog/reset', async (req, res) => {
+    try {
+      if (watchdog) {
+        watchdog.reset();
+      }
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 启动看门狗监控
+  if (watchdog) {
+    watchdog.start();
+    console.log('[24h] Watchdog started');
+  }
+
+  // 定期健康检查（不阻塞主服务器启动）
+  if (healthMonitor) {
+    healthMonitor.startPeriodicCheck(60000);
+    console.log('[24h] Health monitor periodic check started');
+  }
+
   return new Promise<{ app: express.Express; server: typeof server }>((resolve) => {
     server.listen(port, () => {
       console.log(`Web 服务器启动完成: http://localhost:${port}`);
