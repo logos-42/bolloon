@@ -82,11 +82,11 @@ export class IrohTransport {
   private requestIdToNodeId: Map<string, string> = new Map();
 
   async start(secretKey?: string, enablePersistence = false): Promise<{ nodeId: string; addr: string }> {
-    if (this.endpoint) {
+    if (this.endpoint && this.ownNodeId) {
       // 已启动，返回当前信息
       return {
         nodeId: this.ownNodeId,
-        addr: this.endpoint.listenAddresses()[0]?.toString() || ''
+        addr: this.ownNodeId // iroh 没有 listenAddresses，用 nodeId 作为 addr
       };
     }
 
@@ -114,7 +114,7 @@ export class IrohTransport {
 
     return {
       nodeId: this.endpoint.nodeId(),
-      addr: this.endpoint.addr() || this.endpoint.nodeId(),
+      addr: this.ownNodeId // iroh 没有 addr()，用 nodeId
     };
   }
 
