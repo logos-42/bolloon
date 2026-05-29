@@ -271,15 +271,31 @@ function showChannelView(channelId) {
 async function selectChannel(channelId) {
   console.log('[selectChannel] 开始切换到:', channelId);
 
+  // 保存当前 session 的消息
+  if (currentChannelId && currentSessionId) {
+    const container = messagesContainers.get(currentChannelId);
+    if (container) {
+      const messages = Array.from(container.querySelectorAll('.message')).map(msg => ({
+        type: msg.classList.contains('message-user') ? 'user' : 'ai',
+        content: msg.querySelector('.message-content')?.textContent || ''
+      }));
+      if (messages.length > 0) {
+        sessionMessages.set(`${currentChannelId}:${currentSessionId}`, messages);
+        console.log('[selectChannel] 保存 session 消息:', messages.length);
+      }
+    }
+  }
+
   // 立即更新当前频道 ID
   currentChannelId = channelId;
   reconnectAttempts.set(channelId, 0);
 
-  // 找到当前频道
+  // 找到当前频道和 session
   const channel = channels.find(c => c.id === channelId);
-  if (channel && channelNameEl) {
-    channelNameEl.textContent = channel.name;
-    console.log('[selectChannel] 频道:', channel.name, 'DID:', channel.did || '无');
+  if (channel) {
+    if (channelNameEl) channelNameEl.textContent = channel.name;
+    currentSessionId = channel.currentSessionId || 'default';
+    console.log('[selectChannel] 频道:', channel.name, 'session:', currentSessionId);
   }
 
   renderChannels();
@@ -296,8 +312,18 @@ async function selectChannel(channelId) {
     connect(channelId);
   }
 
-  // 如果容器是空的，加载 session
-  if (container.innerHTML.trim() === '') {
+  // 检查是否有保存的 session 消息
+  const sessionKey = `${channelId}:${currentSessionId}`;
+  const savedMessages = sessionMessages.get(sessionKey);
+
+  if (savedMessages && savedMessages.length > 0) {
+    console.log('[selectChannel] 加载已保存的 session 消息:', savedMessages.length);
+    container.innerHTML = '';
+    savedMessages.forEach(msg => {
+      addMessage(msg.content, msg.type, false, container);
+    });
+  } else if (container.innerHTML.trim() === '') {
+    // 如果容器是空的，加载 session
     try {
       const res = await fetch(`/sessions/${channelId}`);
       const session = await res.json();
