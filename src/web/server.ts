@@ -324,7 +324,8 @@ interface SSEClient {
 }
 
 let sseClients: Set<SSEClient> = new Set();
-let channelSessions: Map<string, AgentSession> = new Map();
+let channelSessions: Map<string, AgentSession> = new Map(); // key: channelId
+let sessionMessages: Map<string, any[]> = new Map(); // key: channelId + sessionId
 
 async function getAgentForChannel(
   channelId: string,
@@ -332,6 +333,12 @@ async function getAgentForChannel(
   channelName?: string,
   channelDidDoc?: any
 ): Promise<AgentSession> {
+  // 获取当前 channel 的 currentSessionId
+  const channels = await loadChannels();
+  const channel = channels.find(c => c.id === channelId);
+  const currentSessionId = channel?.currentSessionId || 'default';
+  const sessionKey = `${channelId}:${currentSessionId}`;
+
   const existingSession = channelSessions.get(channelId);
 
   // 如果已有 session，检查是否需要更新 identity
