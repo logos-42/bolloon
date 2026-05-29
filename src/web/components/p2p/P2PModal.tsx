@@ -35,6 +35,11 @@ export function P2PModal({ visible, onClose }: P2PModalProps) {
 
   useEffect(() => {
     if (visible && !initialized) {
+      console.log('[P2P Modal] visible=true, initialized=false, calling initP2P');
+      initP2P();
+    } else if (visible && initialized && !identity) {
+      // 已初始化但没有identity，可能是首次未触发
+      console.log('[P2P Modal] visible=true, initialized=true, but no identity, calling initP2P again');
       initP2P();
     }
   }, [visible, initialized]);
