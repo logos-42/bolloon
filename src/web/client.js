@@ -171,9 +171,14 @@ async function createNewSession() {
       channel.currentSessionId = data.currentSessionId;
     }
 
-    // 清空消息区域，提示用户新会话已开始
-    if (messagesEl) {
-      messagesEl.innerHTML = '<div class="system-message">新会话已开始</div>';
+    // 获取当前频道的消息容器并清空
+    const container = messagesContainers.get(currentChannelId);
+    if (container) {
+      container.innerHTML = '';
+      // 确保容器在 DOM 中可见
+      showChannelView(currentChannelId);
+      // 显示欢迎语
+      addMessage('你好！新会话已开始，有什么我可以帮你的吗？', 'ai', false, container);
     }
 
     console.log('[新会话] 已切换到:', data.currentSessionId);
