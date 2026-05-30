@@ -2,8 +2,6 @@
 .git
 .gitignore
 .github
-*.md
-coverage/
 *.log
 .env
 .env.*
