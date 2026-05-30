@@ -545,6 +545,7 @@ export async function createWebServer(port: number = 3000) {
     // 获取频道信息，包括真实 DID 和完整 DID 文档
     const channels = await loadChannels();
     const channel = channels.find(c => c.id === channelId);
+    const currentSessionId = channel?.currentSessionId || 'default';
     const realChannelDid = channelDid || channel?.did || '';
     const realChannelName = channel?.name || '';
     const realChannelDidDoc = channel?.didDocument;
@@ -712,7 +713,7 @@ app.get('/channels', async (_req, res) => {
       console.log(`[创建频道] 先保存频道 ID: ${id}`);
       channels.push(channel);
       await saveChannels(channels);
-      await saveSession({ channelId: id, messages: [], lastUpdated: new Date().toISOString() });
+      await saveSession({ channelId: id, sessionId: 'default', messages: [], lastUpdated: new Date().toISOString() });
       res.json(channel);
 
       // 后台生成 DID
@@ -1705,26 +1706,18 @@ app.get('/channels', async (_req, res) => {
         return;
       }
 
-      // 通过 P2P 发送消息
-      if (p2pCommunicator) {
-        const payload = JSON.stringify({
-          from: 'bolloon-web',
-          content: message,
-          timestamp: Date.now()
-        });
-
-        // 找到连接并发送
-        const connections = p2pCommunicator.getConnections();
-        for (const conn of connections) {
-          if (conn.publicKey.includes(targetPeerId) || targetPeerId.includes(conn.publicKey.substring(0, 16))) {
-            conn.send(payload);
-            res.json({ ok: true, sent: true });
-            return;
-          }
+      // 通过 P2P 发送消息（如果可用）
+      try {
+        const comm = p2pCommunicator as any;
+        if (comm && typeof comm.send === 'function') {
+          await comm.send(message, targetPeerId);
+          res.json({ ok: true, sent: true });
+          return;
         }
-      }
+      } catch {}
 
-      res.json({ ok: true, sent: false, message: '对方不在线，消息已加入队列' });
+      // 如果 P2P 不可用，消息已在上面加入队列
+      res.json({ ok: true, queued: true, message: '消息已加入队列，等待对方上线' });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
