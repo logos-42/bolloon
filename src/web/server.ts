@@ -71,6 +71,7 @@ interface SessionMessage {
 
 interface Session {
   channelId: string;
+  sessionId: string;
   messages: SessionMessage[];
   lastUpdated: string;
 }
@@ -103,8 +104,10 @@ async function saveChannels(channels: Channel[]): Promise<void> {
   });
 }
 
-async function loadSession(channelId: string): Promise<Session | null> {
-  const sessionPath = path.join(SESSION_CACHE_PATH, `${channelId}.json`);
+async function loadSession(channelId: string, sessionId?: string): Promise<Session | null> {
+  // sessionId is optional for backward compatibility; if provided, load specific session
+  const key = sessionId ? `${channelId}:${sessionId}` : channelId;
+  const sessionPath = path.join(SESSION_CACHE_PATH, `${key}.json`);
   try {
     const data = await fs.readFile(sessionPath, 'utf-8');
     return JSON.parse(data);
@@ -114,7 +117,8 @@ async function loadSession(channelId: string): Promise<Session | null> {
 }
 
 async function saveSession(session: Session): Promise<void> {
-  const sessionPath = path.join(SESSION_CACHE_PATH, `${session.channelId}.json`);
+  const key = session.sessionId ? `${session.channelId}:${session.sessionId}` : session.channelId;
+  const sessionPath = path.join(SESSION_CACHE_PATH, `${key}.json`);
   await fs.writeFile(sessionPath, JSON.stringify(session, null, 2));
 }
 
@@ -568,7 +572,7 @@ export async function createWebServer(port: number = 3000) {
         }
       };
 
-      console.log(`[消息处理] 开始处理用户消息, channelId: ${channelId}`);
+      console.log(`[消息处理] 开始处理用户消息, channelId: ${channelId}, sessionId: ${currentSessionId}`);
 
       // 将真实 DID 作为上下文前缀，让 AI 使用真实的 DID 而不是自己编造的
       const contextHint = realChannelDid ? `[系统上下文] 当前频道名称: ${realChannelName}, 你的真实 DID: ${realChannelDid}\n\n` : '';
@@ -576,8 +580,9 @@ export async function createWebServer(port: number = 3000) {
 
       broadcast({ type: 'ai', content: fullResponse }, channelId);
 
-      const existingSession = await loadSession(channelId);
-      const session: Session = existingSession || { channelId, messages: [], lastUpdated: new Date().toISOString() };
+      const existingSession = await loadSession(channelId, currentSessionId);
+      const session: Session = existingSession || { channelId, sessionId: currentSessionId, messages: [], lastUpdated: new Date().toISOString() };
+      session.sessionId = currentSessionId;
       session.messages.push({ id: crypto.randomUUID(), type: 'user' as const, content: text, timestamp: new Date().toISOString() });
       session.messages.push({ id: crypto.randomUUID(), type: 'ai' as const, content: fullResponse, timestamp: new Date().toISOString() });
       session.lastUpdated = new Date().toISOString();
@@ -907,6 +912,7 @@ app.get('/channels', async (_req, res) => {
     try {
       const channels = await loadChannels();
       const channel = channels.find(c => c.id === channelId);
+      const currentSessionId = channel?.currentSessionId || 'default';
       const realChannelDid = channel?.did || '';
       const realChannelName = channel?.name || '';
       const realChannelDidDoc = channel?.didDocument;
@@ -933,7 +939,7 @@ app.get('/channels', async (_req, res) => {
       broadcast({ type: 'ai', content: fullResponse }, channelId);
 
       // 更新 session
-      const existingSession = await loadSession(channelId);
+      const existingSession = await loadSession(channelId, currentSessionId);
       if (existingSession && existingSession.messages.length > 0) {
         // 移除最后一个 AI 消息，替换为新的
         const lastAiIndex = existingSession.messages.map((m: any) => m.type).lastIndexOf('ai');

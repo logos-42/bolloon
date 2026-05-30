@@ -10,7 +10,7 @@ datastore/
 bin/
 .ipfs
 release/
-
+.playwright-mcp
 py-bolloon/
 
 .kilo/
