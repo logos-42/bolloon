@@ -13,6 +13,7 @@ import { ConstraintLayer, WorkflowContext } from './constraint-layer.js';
 import { WorkflowEngine, WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
 import { DeepThinkingEngine, AgentCoordinator, type ThinkResult, type AgentResult } from '@bolloon/constraint-runtime';
 import { WorkflowPivotLoop, createDefaultPivotConfig, type PivotLoopConfig, type LoopResult } from './workflow-pivot-loop.js';
+import { p2pDocumentTools, initDocumentReceiver } from './p2p-document-tools.js';
 import {
   DiscoveredAgentsManager,
   SocialHeartbeat,
@@ -572,6 +573,7 @@ class PiAgentSession implements AgentSession {
     this.usePivotLoop = config.usePivotLoop ?? false;
     this.pivotLoopConfig = config.pivotLoopConfig;
     this.initSession();
+    initDocumentReceiver();
     this.registerTools();
     this.initHarness();
   }
@@ -801,6 +803,15 @@ class PiAgentSession implements AgentSession {
         }
       }
     });
+
+    // P2P Document Tools
+    for (const tool of p2pDocumentTools) {
+      this.tools.set(tool.name, tool);
+    }
+  }
+
+  private async registerP2PDocumentReceiver(): Promise<void> {
+    await initDocumentReceiver();
   }
 
   private getToolDefinitions(): string {
