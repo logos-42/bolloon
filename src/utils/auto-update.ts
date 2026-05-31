@@ -66,17 +66,61 @@ function httpGet(url: string): Promise<string> {
 }
 
 /**
+ * 获取 bolloon 全局安装目录
+ */
+function getGlobalBolloonDir(): string | null {
+  const possiblePaths = [
+    path.join(process.env.HOME || '', '.npm-global/lib/node_modules/@bolloon/bolloon-agent'),
+    path.join(process.env.PREFIX || '/usr/local', 'lib/node_modules/@bolloon/bolloon-agent'),
+  ];
+  for (const p of possiblePaths) {
+    if (fs.existsSync(path.join(p, 'package.json'))) {
+      return p;
+    }
+  }
+  return null;
+}
+
+/**
  * 获取当前安装的包版本
+ * 优先使用全局安装的版本（更准确反映实际运行的版本）
  */
 function getInstalledVersion(packageName: string): string | null {
-  try {
-    const packageJsonPath = findPackageJson(packageName);
-    if (packageJsonPath) {
+  // 对于 @bolloon/bolloon-agent，始终优先从全局安装位置读取版本
+  // 这样可以准确检测实际安装的版本，而不受 cwd 影响
+  if (packageName === '@bolloon/bolloon-agent') {
+    const globalDir = getGlobalBolloonDir();
+    if (globalDir) {
+      const pkgPath = path.join(globalDir, 'package.json');
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+        return pkg.version || null;
+      } catch (e) {
+        // 忽略
+      }
+    }
+
+    // 回退到本地 package.json
+    const localPkgPath = path.join(process.cwd(), 'package.json');
+    if (fs.existsSync(localPkgPath)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(localPkgPath, 'utf-8'));
+        return pkg.version || null;
+      } catch (e) {
+        // 忽略
+      }
+    }
+  }
+
+  // 检查本地 node_modules
+  const packageJsonPath = findPackageJson(packageName);
+  if (packageJsonPath) {
+    try {
       const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
       return pkg.version || null;
+    } catch (e) {
+      // 忽略错误
     }
-  } catch (e) {
-    // 忽略错误
   }
   return null;
 }
