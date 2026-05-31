@@ -22,6 +22,7 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
+import { checkAndUpdate } from './utils/auto-update.js';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -601,6 +602,8 @@ const AVAILABLE_TOOLS = [
   { name: 'harness_classify', description: '分类变更类型', example: '--harness-classify <description>' },
   { name: 'harness_context', description: '获取文件上下文', example: '--harness-context <file>' },
   { name: 'harness_check', description: '执行 Guard 检查', example: '--harness-check <file>' },
+  { name: 'update_check', description: '检查 npm 包更新', example: '--update-check' },
+  { name: 'update_now', description: '立即更新到最新版本', example: '--update-now [package]' },
 ];
 
 async function runToolCommand(
@@ -1036,6 +1039,39 @@ async function runToolCommand(
 break;
       }
 
+      // ==================== Update Commands ====================
+
+      case 'update-check': {
+        const { checkForUpdates } = await import('./utils/auto-update.js');
+        const info = await checkForUpdates();
+        if (info && info.outdated) {
+          response = `📦 发现更新可用:\n\n` +
+            `当前版本: ${info.version}\n` +
+            `最新版本: ${info.latest}\n\n` +
+            `待更新包:\n${info.packages.map(p => `  - ${p.name}: ${p.current} → ${p.latest}`).join('\n')}\n\n` +
+            `运行 --update-now 进行更新`;
+        } else {
+          response = `✅ 已是最新版本 (${info?.version || 'unknown'})`;
+        }
+        break;
+      }
+
+      case 'update-now': {
+        const { performUpdate } = await import('./utils/auto-update.js');
+        const packages = args.length > 0 ? args : undefined;
+        const result = await performUpdate(packages as string[] | undefined);
+        if (result.success) {
+          response = `✅ 更新成功${result.updatedPackages ? `: ${result.updatedPackages.join(', ')}` : ''}`;
+          if (result.updated) {
+            response += `\n\n${YELLOW}请重新启动应用以使用新版本${RESET}`;
+          }
+        } else {
+          response = `❌ 更新失败: ${result.error}`;
+          error = response;
+        }
+        break;
+      }
+
       default:
         response = `错误: 未知工具 "${tool}"`;
         error = response;
@@ -1151,6 +1187,8 @@ interface ParsedArgs {
   globalAgents?: boolean;
   addAction?: boolean;
   tui?: boolean;
+  updateCheck?: boolean;
+  updateNow?: boolean;
 }
 
 function parseArgs(): ParsedArgs {
@@ -1338,6 +1376,19 @@ function parseArgs(): ParsedArgs {
         }
         result.toolArgs = sessionArgs;
         break;
+      case '--update-check':
+        result.updateCheck = true;
+        result.tool = 'update-check';
+        break;
+      case '--update-now':
+        result.updateNow = true;
+        result.tool = 'update-now';
+        const updateArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          updateArgs.push(args[++i]);
+        }
+        result.toolArgs = updateArgs;
+        break;
       case '--tui':
         result.tui = true;
         break;
@@ -1409,6 +1460,10 @@ function printHelp(): void {
   --harness-sessions         列出 Session 归档记录
   --harness-session-context [id]  获取 Session 上下文
 
+  # 自动更新
+  --update-check             检查 npm 包更新
+  --update-now [pkg]        更新到最新版本
+
   # AI 对话
   --prompt, -p <text>        通用 AI 对话（默认）
   --model <name>             指定使用的模型
@@ -1458,6 +1513,14 @@ async function main() {
 
   if (args.help) {
     printHelp();
+    process.exit(0);
+  }
+
+  // 启动时检查 npm 包更新
+  const updateResult = await checkAndUpdate();
+  if (updateResult.hasUpdate && updateResult.updated) {
+    console.log(`\n${YELLOW}更新完成，请重新启动 bolloon${RESET}\n`);
+    // 更新完成后退出，让用户重新启动
     process.exit(0);
   }
 
