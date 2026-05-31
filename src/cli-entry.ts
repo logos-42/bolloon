@@ -26,7 +26,7 @@ const GREEN = '\x1b[32m';
 const MAGENTA = '\x1b[35m';
 
 // 版本信息
-const VERSION = '0.1.10';
+const VERSION = '0.1.11';
 
 function log(msg: string, color: string = RESET) {
   console.log(`${color}${msg}${RESET}`);
