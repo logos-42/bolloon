@@ -47,7 +47,7 @@ function initUserDirs() {
   const configPath = path.join(bolloonDir, 'config.json');
   if (!fs.existsSync(configPath)) {
     const defaultConfig = {
-      version: '0.1.1',
+      version: '0.1.10',
       initializedAt: new Date().toISOString(),
       defaults: {
         port: 54188,
