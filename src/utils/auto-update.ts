@@ -86,14 +86,20 @@ function getGlobalBolloonDir(): string | null {
  * 优先使用全局安装的版本（更准确反映实际运行的版本）
  */
 function getInstalledVersion(packageName: string): string | null {
+  // 调试：打印 cwd
+  console.error(`[DEBUG] getInstalledVersion called, cwd=${process.cwd()}, package=${packageName}`);
+
   // 对于 @bolloon/bolloon-agent，始终优先从全局安装位置读取版本
   // 这样可以准确检测实际安装的版本，而不受 cwd 影响
   if (packageName === '@bolloon/bolloon-agent') {
     const globalDir = getGlobalBolloonDir();
+    console.error(`[DEBUG] globalDir=${globalDir}`);
     if (globalDir) {
       const pkgPath = path.join(globalDir, 'package.json');
+      console.error(`[DEBUG] pkgPath=${pkgPath}, exists=${fs.existsSync(pkgPath)}`);
       try {
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+        console.error(`[DEBUG] pkg.version=${pkg.version}`);
         return pkg.version || null;
       } catch (e) {
         // 忽略
@@ -102,9 +108,11 @@ function getInstalledVersion(packageName: string): string | null {
 
     // 回退到本地 package.json
     const localPkgPath = path.join(process.cwd(), 'package.json');
+    console.error(`[DEBUG] localPkgPath=${localPkgPath}, exists=${fs.existsSync(localPkgPath)}`);
     if (fs.existsSync(localPkgPath)) {
       try {
         const pkg = JSON.parse(fs.readFileSync(localPkgPath, 'utf-8'));
+        console.error(`[DEBUG] local pkg.version=${pkg.version}`);
         return pkg.version || null;
       } catch (e) {
         // 忽略
@@ -114,9 +122,11 @@ function getInstalledVersion(packageName: string): string | null {
 
   // 检查本地 node_modules
   const packageJsonPath = findPackageJson(packageName);
+  console.error(`[DEBUG] findPackageJson=${packageJsonPath}`);
   if (packageJsonPath) {
     try {
       const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+      console.error(`[DEBUG] node_modules pkg.version=${pkg.version}`);
       return pkg.version || null;
     } catch (e) {
       // 忽略错误
@@ -188,10 +198,16 @@ async function checkBolloonUpdates(): Promise<PackageInfo | null> {
 
   for (const pkg of packagesToCheck) {
     const installed = getInstalledVersion(pkg);
+    console.error(`[DEBUG] getInstalledVersion(${pkg}) = ${installed}`);
     if (!installed) continue;
 
-    currentVersion = installed;
+    // 只记录 @bolloon/bolloon-agent 的版本作为当前版本
+    if (pkg === '@bolloon/bolloon-agent') {
+      currentVersion = installed;
+    }
+
     const latest = await getLatestVersion(pkg);
+    console.error(`[DEBUG] getLatestVersion(${pkg}) = ${latest}`);
 
     if (latest && compareVersions(installed, latest) < 0) {
       hasUpdate = true;
