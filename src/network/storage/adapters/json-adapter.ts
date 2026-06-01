@@ -238,6 +238,21 @@ export class JsonMessageStore implements MessageStore {
     return count;
   }
 
+  async getAllOfflineTargets(): Promise<string[]> {
+    // 重新从磁盘加载最新状态（避免内存 vs 磁盘不一致）
+    const baseDir = path.join(this.config.baseDir, 'offline');
+    let files: string[] = [];
+    try {
+      files = await fs.readdir(baseDir);
+    } catch {
+      return Array.from(this.offlineMessages.keys());
+    }
+    return files
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => f.replace(/\.json$/, ''))
+      .filter((id) => id.length > 0);
+  }
+
   // ============================================================================
   // 待响应请求
   // ============================================================================

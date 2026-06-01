@@ -4,6 +4,7 @@
 
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
+import * as path from 'path';
 import { irohTransport } from '../network/iroh-transport.js';
 import { documentReader, type DocumentContent } from '../documents/reader.js';
 import { documentStore, type DocumentChunk, type ReceivedDocument } from '../documents/store.js';
@@ -34,8 +35,10 @@ function getMimeType(filename: string): string {
 export async function initDocumentReceiver(): Promise<void> {
   await documentStore.initialize();
 
-  documentStore.onDocumentReceived((doc) => {
+  documentStore.onDocumentReceived(async (doc) => {
     console.log(`[DocumentReceiver] Document received: ${doc.fileName} from ${doc.fromNodeIdShort}`);
+    // 异步调用 LLM 解析（不阻塞接收流程）
+    void parseDocumentWithLLM(doc);
   });
 
   irohTransport.onMessage('document_chunk', async (msg) => {
@@ -51,6 +54,114 @@ export async function initDocumentReceiver(): Promise<void> {
   });
 
   console.log('[DocumentReceiver] Initialized and listening for document chunks');
+}
+
+// ============================================================================
+// AI 解析反馈：接收方解析完文档后把摘要回送给发送方
+// ============================================================================
+
+export interface AIFeedbackMessage {
+  docId: string;
+  fileName: string;
+  mimeType: string;
+  summary: string;
+  qualityScore: number;
+  feedbackAt: number;
+  fromNodeId: string;
+}
+
+export type AIFeedbackHandler = (feedback: AIFeedbackMessage, fromNodeId: string) => void;
+const feedbackHandlers: Set<AIFeedbackHandler> = new Set();
+
+/** 注册 AI 解析反馈监听器（发送方调用） */
+export function onAIFeedback(handler: AIFeedbackHandler): void {
+  feedbackHandlers.add(handler);
+  // iroh listener 只挂一次
+  ensureFeedbackListenerInstalled();
+}
+
+let feedbackListenerInstalled = false;
+function ensureFeedbackListenerInstalled(): void {
+  if (feedbackListenerInstalled) return;
+  feedbackListenerInstalled = true;
+  irohTransport.onMessage('ai_feedback', (msg) => {
+    try {
+      const fb: AIFeedbackMessage = JSON.parse(new TextDecoder().decode(msg.payload));
+      for (const h of feedbackHandlers) {
+        try {
+          h(fb, msg.from);
+        } catch (e) {
+          console.error('[AIFeedback] handler error:', e);
+        }
+      }
+    } catch (e) {
+      console.error('[AIFeedback] failed to parse message:', e);
+    }
+  });
+}
+
+async function parseDocumentWithLLM(doc: ReceivedDocument): Promise<void> {
+  // 没有配 API key 就跳过（保持向后兼容）
+  const apiKey = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.MINIMAX_API_KEY || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.log(`[DocumentReceiver] No LLM API key set, skip AI parse for ${doc.fileName}`);
+    return;
+  }
+  try {
+    const filePath = path.join(
+      process.env.HOME || '/tmp',
+      '.bolloon', 'documents', 'received',
+      doc.id, doc.fileName
+    );
+    const content = await fs.readFile(filePath, 'utf-8');
+    // 限制长度，避免超 token
+    const truncated = content.length > 6000 ? content.substring(0, 6000) + '...[截断]' : content;
+    const { getMinimax } = await import('../constraints/index.js');
+    const llm = getMinimax();
+    const prompt = `请分析以下 ${doc.mimeType} 文档，并给出 (1) 一句话中文摘要 (2) 关键要点列表 (3) 文档质量评分(0-1)。\n\n文件名: ${doc.fileName}\n\n内容:\n${truncated}`;
+    const r = await llm.summarize(prompt);
+    const sidecar = {
+      filename: doc.fileName,
+      mimeType: doc.mimeType,
+      fromNodeId: doc.fromNodeId,
+      receivedAt: doc.receivedAt,
+      summary: r.summary,
+      qualityScore: r.qualityScore,
+      analyzedAt: Date.now(),
+    };
+    const sidecarPath = path.join(
+      process.env.HOME || '/tmp',
+      '.bolloon', 'documents', 'received',
+      doc.id, 'ai-analysis.json'
+    );
+    await fs.writeFile(sidecarPath, JSON.stringify(sidecar, null, 2));
+    console.log(`[DocumentReceiver] AI parsed ${doc.fileName} (score=${r.qualityScore.toFixed(2)})`);
+
+    // 把 AI 解析结果回送给发送方 (doc.fromNodeId)，形成 "接收 → 解析 → 反馈" 闭环
+    if (doc.fromNodeId) {
+      const feedback: AIFeedbackMessage = {
+        docId: doc.id,
+        fileName: doc.fileName,
+        mimeType: doc.mimeType,
+        summary: r.summary,
+        qualityScore: r.qualityScore,
+        feedbackAt: Date.now(),
+        fromNodeId: irohTransport.getNodeId() || '',
+      };
+      const sent = await irohTransport.sendMessage(
+        doc.fromNodeId,
+        'ai_feedback',
+        new TextEncoder().encode(JSON.stringify(feedback))
+      );
+      if (sent) {
+        console.log(`[DocumentReceiver] Feedback sent to ${doc.fromNodeIdShort}`);
+      } else {
+        console.warn(`[DocumentReceiver] Failed to send feedback to ${doc.fromNodeIdShort}`);
+      }
+    }
+  } catch (e) {
+    console.error(`[DocumentReceiver] AI parse failed for ${doc.fileName}:`, e);
+  }
 }
 
 export const p2pDocumentTools: Tool[] = [

@@ -143,13 +143,14 @@ export class PiAIModel {
       return this.config.baseUrl;
     }
 
+    // 允许通过 OPENAI_BASE_URL 等环境变量覆盖默认 base URL
     const baseUrls: Record<ModelProvider, string> = {
-      openai: 'https://api.openai.com/v1',
+      openai: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
       anthropic: 'https://api.anthropic.com/v1',
       ollama: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
-      openrouter: 'https://openrouter.ai/api/v1',
+      openrouter: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
       gemini: 'https://generativelanguage.googleapis.com/v1beta',
-      minimax: 'https://api.minimaxi.com/v1',
+      minimax: process.env.MINIMAX_BASE_URL || 'https://api.minimaxi.com/v1',
       local: 'http://localhost:11434'
     };
 
@@ -158,12 +159,12 @@ export class PiAIModel {
 
   private mapModel(): string {
     const modelMap: Record<ModelProvider, string> = {
-      openai: this.config.model || 'gpt-4',
+      openai: this.config.model || process.env.OPENAI_MODEL || 'gpt-4',
       anthropic: this.config.model || 'claude-3-5-sonnet-20241022',
       ollama: this.config.model || 'llama3.2',
       openrouter: this.config.model || 'anthropic/claude-3.5-sonnet',
       gemini: this.config.model || 'gemini-2.0-flash',
-      minimax: this.config.model || 'MiniMax-M2.7',
+      minimax: this.config.model || process.env.MINIMAX_MODEL || 'MiniMax-M2.7',
       local: this.config.model || 'llama3.2'
     };
     return modelMap[this.provider];

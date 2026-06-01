@@ -56,6 +56,7 @@ interface MessageStore {
   dequeueOfflineMessage(id: string): Promise<void>;
   incrementOfflineRetry(id: string): Promise<void>;
   getPendingOfflineCount(): Promise<number>;
+  getAllOfflineTargets(): Promise<string[]>;
   savePendingResponse(req: Omit<PendingResponse, 'id'>): Promise<PendingResponse>;
   getPendingResponse(requestId: string): Promise<PendingResponse | null>;
   removePendingResponse(requestId: string): Promise<void>;
@@ -172,6 +173,9 @@ export class IrohTransport {
         for (const queue of offlineQueues.values()) count += queue.length;
         return count;
       },
+      async getAllOfflineTargets() {
+        return Array.from(offlineQueues.keys());
+      },
       async savePendingResponse(req) {
         const id = crypto.randomUUID();
         const pending = { ...req, id };
@@ -196,9 +200,14 @@ export class IrohTransport {
     if (!this.messageStore) return;
 
     this.offlineDeliveryInterval = setInterval(async () => {
+      // 遍历所有有离线消息的目标节点（不仅是"已连接"的）
+      // 这样目标节点一旦在线（accept 连接）就能拿到离线消息
+      const allTargets = await this.messageStore!.getAllOfflineTargets();
       const connectedPeers = this.getConnectedPeers();
+      // 合并：已连接 + 有离线消息但未连接（也会去尝试 connect）
+      const targets = new Set<string>([...connectedPeers, ...allTargets]);
 
-      for (const peerId of connectedPeers) {
+      for (const peerId of targets) {
         const offlineMsgs = await this.messageStore!.getOfflineMessages(peerId);
 
         for (const msg of offlineMsgs) {
@@ -216,6 +225,8 @@ export class IrohTransport {
             if (success) {
               await this.messageStore!.dequeueOfflineMessage(msg.id);
               console.log(`[IrohTransport] Delivered offline message to ${peerId.substring(0, 12)}...`);
+            } else {
+              await this.messageStore!.incrementOfflineRetry(msg.id);
             }
           } catch {
             await this.messageStore!.incrementOfflineRetry(msg.id);
@@ -461,8 +472,10 @@ export class IrohTransport {
         await send.finish();
 
         // 等待响应，带超时
+        // 注意: server sendResponse 后会关闭连接，导致 readToEnd 以 "connection lost" 错误 reject
+        // 这里我们把 readToEnd 的错误吞掉（视为流结束），只有超时才视为失败
         const response = await Promise.race([
-          recv.readToEnd(64 * 1024),
+          recv.readToEnd(64 * 1024).catch(() => new Uint8Array(0)),
           new Promise<null>((_, rejectTimeout) =>
             setTimeout(() => rejectTimeout(new Error('timeout')), timeout)
           ),
