@@ -20,6 +20,11 @@ function getMimeType(filename: string): string {
   const mimeTypes: Record<string, string> = {
     'txt': 'text/plain',
     'md': 'text/markdown',
+    'html': 'text/html',
+    'htm': 'text/html',
+    'yaml': 'application/yaml',
+    'yml': 'application/yaml',
+    'json': 'application/json',
     'pdf': 'application/pdf',
     'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   };

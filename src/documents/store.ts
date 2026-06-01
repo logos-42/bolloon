@@ -205,11 +205,11 @@ export class DocumentStore {
   async readDocument(docId: string): Promise<{ content: string; metadata: ReceivedDocument } | null> {
     const docDir = path.join(this.baseDir, docId);
     const manifestPath = path.join(docDir, 'manifest.json');
-    const filePath = path.join(docDir);
 
     try {
       const manifestData = await fs.readFile(manifestPath, 'utf-8');
       const manifest = JSON.parse(manifestData);
+      const filePath = path.join(docDir, manifest.fileName);
       const fileContent = await fs.readFile(filePath, 'utf-8');
 
       return {

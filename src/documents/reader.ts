@@ -23,6 +23,11 @@ export class DocumentReader {
     switch (ext) {
       case '.txt':
       case '.md':
+      case '.html':
+      case '.htm':
+      case '.yaml':
+      case '.yml':
+      case '.json':
         text = await fs.readFile(filePath, 'utf-8');
         break;
       case '.pdf':
