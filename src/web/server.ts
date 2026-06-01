@@ -2273,6 +2273,45 @@ app.get('/channels', async (_req, res) => {
     console.log('[24h] Health monitor periodic check started');
   }
 
+  // ==================== Self-Improve 端点 ====================
+  // 手动触发 (供前端按钮 / 调试用)
+  app.post('/api/self-improve/trigger', async (req: any, res: any) => {
+    const { goal, kind } = req.body || {};
+    const { reportSelfImproveEvent } = await import('../heartbeat/self-improve-bus.js');
+    const result = reportSelfImproveEvent({
+      kind: kind || 'user-requested',
+      details: String(goal || '用户手动触发')
+    });
+    res.json(result);
+  });
+
+  // 事件历史 (供前端显示 / 调试)
+  app.get('/api/self-improve/history', async (_req: any, res: any) => {
+    const { getEventHistory } = await import('../heartbeat/self-improve-bus.js');
+    res.json(getEventHistory());
+  });
+
+  // 健康检查错误数 ≥ 2 -> 触发自改信号
+  if (healthMonitor) {
+    healthMonitor.startPeriodicCheck(60000, (status: any) => {
+      const errorCount = Object.values(status.checks as Record<string, { status: string }>)
+        .filter((c) => c.status === 'error').length;
+      if (errorCount >= 2) {
+        import('../heartbeat/self-improve-bus.js').then(({ reportSelfImproveEvent }) => {
+          const failedKeys = Object.entries(status.checks as Record<string, { status: string }>)
+            .filter(([_, c]) => c.status === 'error').map(([k]) => k).join(', ');
+          reportSelfImproveEvent({
+            kind: 'silent-timeout',
+            details: `健康检查有 ${errorCount} 项失败: ${failedKeys}`
+          });
+        });
+      }
+    });
+  }
+
+  // 安装自改总线 -> SSE 桥
+  void installSelfImproveHook();
+
   return new Promise<{ app: express.Express; server: typeof server }>((resolve) => {
     server.listen(port, () => {
       console.log(`Web 服务器启动完成: http://localhost:${port}`);
@@ -2320,6 +2359,45 @@ async function installChatBusHook(): Promise<void> {
     console.log('[chat-bus] SSE bridge installed');
   } catch (e) {
     console.warn('[chat-bus] install failed:', (e as Error).message);
+  }
+}
+
+// ============================================================================
+// Self-Improve Bus -> SSE 桥 (供前端 / 用户看到自改触发)
+// ============================================================================
+let selfImproveHookInstalled = false;
+async function installSelfImproveHook(): Promise<void> {
+  if (selfImproveHookInstalled) return;
+  selfImproveHookInstalled = true;
+  try {
+    const { onSelfImproveTrigger } = await import('../heartbeat/self-improve-bus.js');
+    const { runSelfImproveLoop } = await import('../agents/pi-sdk.js');
+
+    // 监听自改事件 -> 跑循环 + 广播到前端
+    onSelfImproveTrigger(async (event, goal) => {
+      broadcast({
+        type: 'self_improve_triggered',
+        eventKind: event.kind,
+        details: event.details,
+        goal,
+        ts: Date.now()
+      }, undefined);
+
+      // 实际跑循环 (创分支等)
+      const result = await runSelfImproveLoop(goal);
+
+      broadcast({
+        type: 'self_improve_result',
+        success: result.success,
+        output: result.output,
+        error: result.error,
+        ts: Date.now()
+      }, undefined);
+    });
+
+    console.log('[self-improve] SSE bridge installed');
+  } catch (e) {
+    console.warn('[self-improve] install failed:', (e as Error).message);
   }
 }
 

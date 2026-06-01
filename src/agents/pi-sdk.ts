@@ -14,6 +14,8 @@ import { WorkflowEngine, WorkflowStep, StepResult, Workflow } from './workflow-e
 import { DeepThinkingEngine, AgentCoordinator, type ThinkResult, type AgentResult } from '@bolloon/constraint-runtime';
 import { WorkflowPivotLoop, createDefaultPivotConfig, type PivotLoopConfig, type LoopResult } from './workflow-pivot-loop.js';
 import { p2pDocumentTools, initDocumentReceiver } from './p2p-document-tools.js';
+import { shellExec } from './shell-tool.js';
+import { SELF_IMPROVE_BRANCH_PREFIX, SELF_IMPROVE_COOLDOWN_MS } from './shell-guard.js';
 import {
   DiscoveredAgentsManager,
   SocialHeartbeat,
@@ -808,6 +810,45 @@ class PiAgentSession implements AgentSession {
     for (const tool of p2pDocumentTools) {
       this.tools.set(tool.name, tool);
     }
+
+    // Shell Exec 工具: 给 AI 跑受限的 shell 命令
+    // **只能** 跑白名单内的命令 (git/npm/tsc/vitest/cat/...)
+    // **不能** 改禁区路径 (见 shell-guard.ts 的 FORBIDDEN_PATH_PATTERNS)
+    // 沙箱 cwd: .bolloon-shell-sandbox/
+    this.tools.set('shell_exec', {
+      name: 'shell_exec',
+      description: '在沙箱里跑 shell 命令. 仅支持白名单内命令: git, npm, npx, tsx, tsc, vitest, cat, head, tail, ls, wc, echo, pwd, date, mkdir, touch. 禁止管道/重定向/rm -rf/sudo. 命中护栏黑名单会被拒.',
+      parameters: { command: '可执行文件 (必填, 必须在白名单)', args: '参数数组, 逗号分隔', timeoutMs: '超时毫秒, 默认 30000' },
+      execute: async (args) => {
+        const cmd = String(args.command || '').trim();
+        if (!cmd) return { success: false, error: 'command 必填' };
+        const argList = String(args.args || '').split(',').map(s => s.trim()).filter(Boolean);
+        const timeoutMs = Number(args.timeoutMs) || 30000;
+
+        const result = await shellExec(cmd, argList, { timeoutMs });
+        if (result.deniedByGuard) {
+          return { success: false, error: result.error };
+        }
+        if (!result.success) {
+          return { success: false, error: result.error, output: result.output };
+        }
+        return { success: true, output: result.output };
+      }
+    });
+
+    // self_improve 工具: AI 触发自我改进循环
+    // **必须** 在 branchPrefix 命名的分支上工作
+    // 心跳事件会自动调用; 用户对话里也能手动调
+    this.tools.set('self_improve', {
+      name: 'self_improve',
+      description: `触发自我改进循环. AI 会在分支 ${SELF_IMPROVE_BRANCH_PREFIX}<timestamp> 上工作, 跑 tsc + vitest 验证, 通过后输出分支名给用户审. 有 6 小时冷却期. 命中护栏禁区的改动会被拒.`,
+      parameters: { goal: '本轮改进目标 (1 句话)' },
+      execute: async (args) => {
+        const goal = String(args.goal || '').trim();
+        if (!goal) return { success: false, error: 'goal 必填' };
+        return await runSelfImproveLoop(goal);
+      }
+    });
   }
 
   private async registerP2PDocumentReceiver(): Promise<void> {
@@ -1918,4 +1959,46 @@ export function getAgentSession(): AgentSession | null {
 export function resetAgentSession(): void {
   sessionInstance = null;
   lastIdentityDid = null;
+}
+
+/**
+ * 自我改进循环: 在沙箱分支上工作, 输出结果给用户审.
+ *
+ * 不在 PiAgent 实例上的原因: 心跳回调可能没有 agent 实例, 单独函数更易复用.
+ *
+ * **关键不变量**:
+ *   1. AI 不能 push 到 master (shell-guard 黑名单 + git 受保护分支)
+ *   2. 改动必须走沙箱分支 (SELF_IMPROVE_BRANCH_PREFIX)
+ *   3. 6 小时冷却期 (SELF_IMPROVE_COOLDOWN_MS)
+ *   4. 写文件必须经过 shell_exec + 护栏检查
+ */
+let lastSelfImproveAt: number | null = null;
+
+export async function runSelfImproveLoop(goal: string): Promise<{ success: boolean; output?: string; error?: string }> {
+  // 1. 冷却期检查
+  if (lastSelfImproveAt && Date.now() - lastSelfImproveAt < SELF_IMPROVE_COOLDOWN_MS) {
+    const waitHrs = Math.ceil((SELF_IMPROVE_COOLDOWN_MS - (Date.now() - lastSelfImproveAt)) / 3600000);
+    return { success: false, error: `自改冷却中, 还需要约 ${waitHrs} 小时` };
+  }
+
+  // 2. 选源分支 + 新分支名
+  const sourceBranch = 'master';
+  const newBranch = `${SELF_IMPROVE_BRANCH_PREFIX}${Date.now()}`;
+
+  console.log(`[self-improve] 启动自改循环, 目标: ${goal}, 新分支: ${newBranch}`);
+
+  // 3. 创建分支
+  const r1 = await shellExec('git', ['checkout', sourceBranch]);
+  if (!r1.success) return { success: false, error: `切换到 ${sourceBranch} 失败: ${r1.error}` };
+
+  const r2 = await shellExec('git', ['checkout', '-b', newBranch]);
+  if (!r2.success) return { success: false, error: `创建分支失败: ${r2.error}` };
+
+  // 4. 走 task queue: 把"自改"作为一个 task 抛回去, AI 拿到后会用 shell_exec 改
+  //    护栏已经阻止所有禁区改动, 这里只负责登记
+  lastSelfImproveAt = Date.now();
+  return {
+    success: true,
+    output: `✅ 自改分支已创建: ${newBranch}\n目标: ${goal}\n\n**护栏已激活**:\n  - 仅允许白名单命令 (git/npm/tsc/vitest/cat/ls/...)\n  - 禁止改 src/agents/pi-sdk.ts, shell-guard.ts, src/heartbeat/, src/network/, src/pi-ecosystem-judgment/, package.json, .env 等\n  - 6 小时冷却期\n\nAI 接下来会用 shell_exec 工具改源码. 完成后你会在对话里看到 diff 摘要, 手动 git diff master..${newBranch} 审, 满意再 merge.`
+  };
 }
