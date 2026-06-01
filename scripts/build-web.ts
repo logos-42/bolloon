@@ -29,7 +29,7 @@ async function main() {
   ];
 
   try {
-    execSync(`npx tsc --ignoreConfig --outDir dist/web/components/p2p --declaration false --skipLibCheck --target ES2022 --module ESNext --moduleResolution bundler ${moduleFiles.join(' ')}`, {
+    execSync(`npx tsc --outDir dist/web/components/p2p --declaration false --skipLibCheck --target ES2022 --module ESNext --moduleResolution bundler ${moduleFiles.join(' ')}`, {
       cwd: ROOT,
       stdio: 'inherit'
     });
