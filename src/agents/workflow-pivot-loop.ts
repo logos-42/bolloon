@@ -138,7 +138,7 @@ export class WorkflowPivotLoop {
   private config: Required<PivotLoopConfig>;
   private state: PivotLoopState;
   private tools: Map<string, Tool>;
-  private messageHistory: Array<{ role: string; content: string; toolCall?: { name: string; args: Record<string, string> }; toolResult?: ToolResult }>;
+  private messageHistory: Array<{ role: string; content: string; toolCall?: ToolDefinition; toolResult?: ToolResult }>;
   private streamCallback?: StreamCallback;
   
   constructor(config: PivotLoopConfig) {
@@ -319,7 +319,7 @@ export class WorkflowPivotLoop {
           });
           
           try {
-            const result = await tool.execute(toolCall.args);
+            const result = await tool.execute(toolCall.args ?? {});
             
             this.emit({
               type: result.success ? 'status' : 'error',
@@ -419,7 +419,7 @@ export class WorkflowPivotLoop {
    */
   private extractPendingToolUses(content: string): ToolDefinition[] {
     const pending: ToolDefinition[] = [];
-    
+
     // Pattern 1: Chinese format "调用工具: tool_name(args)"
     const pattern1 = /调用工具[：:]\s*(\w+)\s*\(([^)]*)\)/g;
     let match;
@@ -428,10 +428,10 @@ export class WorkflowPivotLoop {
       const argsStr = match[2];
       const args = this.parseArgs(argsStr);
       if (this.tools.has(name)) {
-        pending.push({ name, args });
+        pending.push({ name, args, description: '', parameters: {} });
       }
     }
-    
+
     // Pattern 2: tool_name(args) format
     const pattern2 = /(\w+)\s*\(\s*([^)]*)\s*\)/g;
     while ((match = pattern2.exec(content)) !== null) {
@@ -440,11 +440,11 @@ export class WorkflowPivotLoop {
       // Skip if already matched or doesn't look like a tool call
       if (pending.some(p => p.name === name)) continue;
       if (!this.tools.has(name)) continue;
-      
+
       const args = this.parseArgs(argsStr);
-      pending.push({ name, args });
+      pending.push({ name, args, description: '', parameters: {} });
     }
-    
+
     // Pattern 3: JSON format tool calls
     try {
       const jsonMatch = content.match(/\{[\s\S]*"tool_calls"[\s\S]*\}/);
@@ -453,7 +453,7 @@ export class WorkflowPivotLoop {
         if (Array.isArray(parsed.tool_calls)) {
           for (const tc of parsed.tool_calls) {
             if (this.tools.has(tc.name)) {
-              pending.push({ name: tc.name, args: tc.args || {} });
+              pending.push({ name: tc.name, args: tc.args || {}, description: '', parameters: {} });
             }
           }
         }
@@ -461,7 +461,7 @@ export class WorkflowPivotLoop {
     } catch {
       // JSON parsing failed, ignore
     }
-    
+
     return pending;
   }
   
