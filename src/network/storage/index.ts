@@ -3,7 +3,7 @@
  * 导出消息存储工厂函数和类型
  */
 
-export type {
+import type {
   MessageStore,
   StoredMessage,
   OfflineMessage,
@@ -18,11 +18,27 @@ export type {
   IrohMessage,
   IrohMessageHandler,
 } from './types.js';
+import { DEFAULT_STORAGE_CONFIG } from './types.js';
 
-export { DEFAULT_STORAGE_CONFIG } from './types.js';
+export type {
+  MessageStore,
+  StoredMessage,
+  OfflineMessage,
+  PendingResponse,
+  LocalPendingRequest,
+  MessageQueryOptions,
+  StorageConfig,
+  MessageDirection,
+  MessageStatus,
+  TransportType,
+  IrohPeer,
+  IrohMessage,
+  IrohMessageHandler,
+};
+
+export { DEFAULT_STORAGE_CONFIG };
 
 import { JsonMessageStore } from './adapters/json-adapter.js';
-import type { MessageStore, StorageConfig } from './types.js';
 import * as path from 'path';
 
 // 默认存储配置

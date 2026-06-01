@@ -16,7 +16,7 @@ import type {
   MessageQueryOptions,
   StorageConfig,
   MessageStatus,
-} from './types.js';
+} from './types';
 
 const DEFAULT_CONFIG: Required<StorageConfig> = {
   baseDir: '',
@@ -69,7 +69,7 @@ export class JsonMessageStore implements MessageStore {
     const filePath = this.getMessageFilePath(new Date(msg.timestamp));
 
     await this.withLock(filePath, async () => {
-      const messages = await this.readJsonFile<StoredMessage[]>(filePath) || [];
+      let messages = await this.readJsonFile<StoredMessage[]>(filePath) || [];
       messages.push(stored);
 
       // 如果文件过大，拆分
