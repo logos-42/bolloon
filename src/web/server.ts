@@ -829,6 +829,50 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // 删除单个 Session
+  app.delete('/channels/:channelId/sessions/:sessionId', async (req, res) => {
+    try {
+      const { channelId, sessionId } = req.params;
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+
+      // 不允许删除最后一个 session —— 至少要保留一个
+      if (!channel.sessions || channel.sessions.length <= 1) {
+        return res.status(400).json({ error: 'At least one session is required' });
+      }
+
+      const sessionIndex = channel.sessions.findIndex(s => s.id === sessionId);
+      if (sessionIndex === -1) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+
+      channel.sessions.splice(sessionIndex, 1);
+
+      // 如果删除的是当前 session，切换到列表里的第一个
+      if (channel.currentSessionId === sessionId) {
+        const nextSession = channel.sessions[0];
+        channel.currentSessionId = nextSession.id;
+      }
+
+      channel.updatedAt = new Date().toISOString();
+      await saveChannels(channels);
+
+      // 删除 session 文件
+      try {
+        await fs.unlink(path.join(SESSION_CACHE_PATH, `${channelId}:${sessionId}.json`));
+      } catch {}
+
+      res.json({ ok: true, currentSessionId: channel.currentSessionId });
+    } catch (err: any) {
+      console.error('[删除Session] 错误:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.delete('/channels/:channelId', async (req, res) => {
     try {
       const { channelId } = req.params;
@@ -837,11 +881,21 @@ app.get('/channels', async (_req, res) => {
       if (index === -1) {
         return res.status(404).json({ error: 'Channel not found' });
       }
+      const channel = channels[index];
       channels.splice(index, 1);
       await saveChannels(channels);
-      try {
-        await fs.unlink(path.join(SESSION_CACHE_PATH, `${channelId}.json`));
-      } catch {}
+
+      // 清理该 channel 名下所有的 session 文件 + 默认 session 文件
+      const candidates = new Set<string>([`${channelId}.json`]);
+      if (channel.sessions) {
+        channel.sessions.forEach(s => candidates.add(`${channelId}:${s.id}.json`));
+      }
+      for (const filename of candidates) {
+        try {
+          await fs.unlink(path.join(SESSION_CACHE_PATH, filename));
+        } catch {}
+      }
+
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -871,8 +925,8 @@ app.get('/channels', async (_req, res) => {
 
   app.get('/sessions/:channelId', async (req, res) => {
     try {
-      const session = await loadSession(req.params.channelId);
-      res.json(session || { channelId: req.params.channelId, messages: [], lastUpdated: null });
+      const session = await loadSession(req.params.channelId, req.query.sessionId as string | undefined);
+      res.json(session || { channelId: req.params.channelId, sessionId: req.query.sessionId || 'default', messages: [], lastUpdated: null });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

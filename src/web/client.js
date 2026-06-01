@@ -10,7 +10,7 @@ const newChannelInput = document.getElementById('new-channel-input');
 const channelNameEl = document.getElementById('channel-name');
 const loadSessionBtn = document.getElementById('load-session-btn');
 const sessionFileInput = document.getElementById('session-file-input');
-const newSessionBtn = document.getElementById('new-session-btn');
+const newSessionBtn = document.getElementById('new-session-btn'); // 兼容旧引用（右上角按钮已移除）
 
 let eventSources = new Map(); // channelId -> EventSource
 let currentChannelId = null;
@@ -24,6 +24,7 @@ let lastAiContent = ''; // 防止 AI 消息重复显示
 let messagesContainers = new Map(); // channelId -> messages container div
 let sessionMessages = new Map(); // channelId:sessionId -> messages array
 let currentSessionId = null; // 当前显示的 session ID
+let expandedAgents = new Set(); // 当前展开的 agent(channel) id 集合
 
 function generateId() {
   return crypto.randomUUID();
@@ -135,15 +136,21 @@ async function createChannel(name) {
 
 async function deleteChannel(channelId, e) {
   e.stopPropagation();
+  if (!confirm('确定要删除该智能体及其所有会话吗？此操作不可撤销。')) return;
   try {
     await fetch(`/channels/${channelId}`, { method: 'DELETE' });
     channels = channels.filter(c => c.id !== channelId);
+    expandedAgents.delete(channelId);
     if (currentChannelId === channelId) {
       currentChannelId = channels[0]?.id || null;
+      currentSessionId = null;
       if (currentChannelId) {
-        await loadSession(currentChannelId);
+        const ch = channels.find(c => c.id === currentChannelId);
+        if (channelNameEl) channelNameEl.textContent = ch?.name || 'Bolloon Agent';
+        await selectChannel(currentChannelId);
       } else {
         messagesEl.innerHTML = '';
+        if (channelNameEl) channelNameEl.textContent = 'Bolloon Agent';
       }
     }
     renderChannels();
@@ -160,18 +167,7 @@ async function createNewSession() {
   }
   try {
     // 保存当前 session 的消息
-    const channel = channels.find(c => c.id === currentChannelId);
-    if (channel && currentSessionId) {
-      const container = messagesContainers.get(currentChannelId);
-      if (container) {
-        const messages = Array.from(container.querySelectorAll('.message')).map(msg => ({
-          type: msg.classList.contains('message-user') ? 'user' : 'ai',
-          content: msg.querySelector('.message-content')?.textContent || ''
-        }));
-        sessionMessages.set(`${currentChannelId}:${currentSessionId}`, messages);
-        console.log('[新会话] 保存旧 session 消息:', messages.length);
-      }
-    }
+    saveCurrentSessionMessages();
 
     const res = await fetch(`/channels/${currentChannelId}/sessions`, {
       method: 'POST'
@@ -180,6 +176,7 @@ async function createNewSession() {
     console.log('[新会话] 创建成功:', data);
 
     // 更新本地频道数据
+    const channel = channels.find(c => c.id === currentChannelId);
     if (channel) {
       if (!channel.sessions) channel.sessions = [];
       channel.sessions.push(data.session);
@@ -187,7 +184,6 @@ async function createNewSession() {
     }
 
     // 切换到新 session
-    const oldSessionId = currentSessionId;
     currentSessionId = data.currentSessionId;
 
     // 清空容器并加载新 session
@@ -198,41 +194,247 @@ async function createNewSession() {
       addMessage('你好！新会话已开始，有什么我可以帮你的吗？', 'ai', false, container);
     }
 
+    // 展开当前智能体，刷新侧边栏让新会话显示出来
+    expandedAgents.add(currentChannelId);
+    renderChannels();
+
     console.log('[新会话] 已切换到:', data.currentSessionId);
   } catch (err) {
     console.error('Failed to create new session:', err);
   }
 }
 
+async function createNewSessionForChannel(channelId, e) {
+  if (e) e.stopPropagation();
+  if (!channelId) return;
+
+  // 给自己创建：复用统一的 createNewSession
+  if (channelId === currentChannelId) {
+    if (currentSessionId) saveCurrentSessionMessages();
+    await createNewSession();
+    return;
+  }
+
+  // 给别的智能体创建：后端建好后直接 re-fetch 一次保持本地与后端一致
+  try {
+    const res = await fetch(`/channels/${channelId}/sessions`, { method: 'POST' });
+    if (!res.ok) throw new Error('create session failed');
+    const data = await res.json();
+    const channel = channels.find(c => c.id === channelId);
+    if (channel) {
+      if (!channel.sessions) channel.sessions = [];
+      channel.sessions.push(data.session);
+      channel.currentSessionId = data.currentSessionId;
+    }
+    expandedAgents.add(channelId);
+    renderChannels();
+  } catch (err) {
+    console.error('Failed to create new session:', err);
+  }
+}
+
+async function switchSession(channelId, sessionId, e) {
+  if (e) e.stopPropagation();
+  if (!channelId || !sessionId) return;
+  if (channelId === currentChannelId && sessionId === currentSessionId) return;
+
+  // 先保存当前 session 的本地消息
+  if (currentChannelId && currentSessionId) {
+    saveCurrentSessionMessages();
+  }
+
+  try {
+    const res = await fetch(`/channels/${channelId}/sessions/${sessionId}/switch`, { method: 'POST' });
+    if (!res.ok) throw new Error('switch failed');
+    const channel = channels.find(c => c.id === channelId);
+    if (channel) {
+      channel.currentSessionId = sessionId;
+      await saveChannels();
+    }
+
+    // 切换到目标 agent + session
+    await selectChannel(channelId, sessionId);
+    renderChannels();
+  } catch (err) {
+    console.error('Failed to switch session:', err);
+  }
+}
+
+async function deleteSession(channelId, sessionId, e) {
+  if (e) e.stopPropagation();
+  if (!confirm('确定要删除该会话吗？此操作不可撤销。')) return;
+  try {
+    const res = await fetch(`/channels/${channelId}/sessions/${sessionId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error || '删除失败');
+      return;
+    }
+    const data = await res.json();
+    const channel = channels.find(c => c.id === channelId);
+    if (channel) {
+      if (channel.sessions) {
+        channel.sessions = channel.sessions.filter(s => s.id !== sessionId);
+      }
+      if (data.currentSessionId) {
+        channel.currentSessionId = data.currentSessionId;
+      }
+    }
+
+    // 如果删的是当前打开的会话，切换到新的当前会话
+    if (channelId === currentChannelId && sessionId === currentSessionId) {
+      if (data.currentSessionId) {
+        currentSessionId = data.currentSessionId;
+        const container = messagesContainers.get(channelId);
+        if (container) container.innerHTML = '';
+        await loadSession(channelId);
+      }
+    }
+    renderChannels();
+  } catch (err) {
+    console.error('Failed to delete session:', err);
+  }
+}
+
+function saveCurrentSessionMessages() {
+  if (!currentChannelId || !currentSessionId) return;
+  const container = messagesContainers.get(currentChannelId);
+  if (!container) return;
+  const messages = Array.from(container.querySelectorAll('.message')).map(msg => ({
+    type: msg.classList.contains('message-user') ? 'user' : 'ai',
+    content: msg.querySelector('.message-content')?.textContent || ''
+  }));
+  if (messages.length > 0) {
+    sessionMessages.set(`${currentChannelId}:${currentSessionId}`, messages);
+  }
+}
+
+async function saveChannels() {
+  // 简单地 re-fetch，保持本地 channels 与服务端一致
+  try {
+    const res = await fetch('/channels');
+    if (res.ok) {
+      const fresh = await res.json();
+      // 保留当前已展开状态
+      channels = fresh;
+    }
+  } catch (err) {
+    console.error('Failed to re-fetch channels:', err);
+  }
+}
+
+function toggleAgentExpand(channelId, e) {
+  if (e) e.stopPropagation();
+  if (expandedAgents.has(channelId)) {
+    expandedAgents.delete(channelId);
+  } else {
+    expandedAgents.add(channelId);
+  }
+  renderChannels();
+}
+
 function renderChannels() {
   if (!channelList) return;
   channelList.innerHTML = '';
 
-  // 使用 DocumentFragment 减少 DOM 操作
   const fragment = document.createDocumentFragment();
 
   channels.forEach(ch => {
     const li = document.createElement('li');
-    li.className = `channel-item ${ch.id === currentChannelId ? 'active' : ''}`;
-    li.onclick = () => {
-      expandSidebar();
-      selectChannel(ch.id);
-    };
-    li.innerHTML = `
+    const isExpanded = expandedAgents.has(ch.id);
+    li.className = `agent-group ${isExpanded ? 'expanded' : ''}`;
+    li.dataset.channelId = ch.id;
+
+    // --- 智能体行 ---
+    const row = document.createElement('div');
+    row.className = `agent-row ${ch.id === currentChannelId ? 'active' : ''}`;
+
+    // 找到当前智能体（如果它是激活的）的当前 session
+    const currentSess = (ch.id === currentChannelId && Array.isArray(ch.sessions))
+      ? ch.sessions.find(s => s.id === ch.currentSessionId)
+      : null;
+    const currentSessLabel = currentSess ? formatSessionName(currentSess) : '';
+    const sessionCount = Array.isArray(ch.sessions) ? ch.sessions.length : 0;
+
+    row.innerHTML = `
+      <svg class="agent-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="9 18 15 12 9 6"></polyline>
+      </svg>
       <div class="channel-icon">💬</div>
-      <span class="channel-name">${ch.name}</span>
-      <button class="channel-delete" data-id="${ch.id}">×</button>
+      <span class="channel-name" title="${escapeHtml(ch.name)}">${escapeHtml(ch.name)}</span>
+      ${sessionCount > 1 ? `<span class="agent-session-count" title="${sessionCount} 个会话">${sessionCount}</span>` : ''}
+      ${currentSessLabel ? `<span class="agent-current-session" title="当前会话：${escapeHtml(currentSessLabel)}">· ${escapeHtml(currentSessLabel)}</span>` : ''}
+      <button class="channel-delete" title="删除智能体">×</button>
+      <button class="agent-new-session" title="新建会话">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      </button>
     `;
 
-    const deleteBtn = li.querySelector('.channel-delete');
-    if (deleteBtn) {
-      deleteBtn.onclick = (e) => deleteChannel(ch.id, e);
+    // 行点击：切换展开；点击名字/图标区域则切到该智能体
+    row.addEventListener('click', (ev) => {
+      // 如果点在删除/新会话按钮上，单独处理
+      if (ev.target.closest('.channel-delete') || ev.target.closest('.agent-new-session')) return;
+      if (ev.target.closest('.agent-caret')) {
+        toggleAgentExpand(ch.id, ev);
+        return;
+      }
+      toggleAgentExpand(ch.id, ev);
+      if (ch.id !== currentChannelId) {
+        expandSidebar();
+        selectChannel(ch.id);
+      }
+    });
+
+    // 智能体删除
+    row.querySelector('.channel-delete').addEventListener('click', (ev) => deleteChannel(ch.id, ev));
+    // 新会话按钮
+    row.querySelector('.agent-new-session').addEventListener('click', (ev) => createNewSessionForChannel(ch.id, ev));
+
+    li.appendChild(row);
+
+    // --- Session 列表（仅展开时渲染 DOM）---
+    const sessionUl = document.createElement('ul');
+    sessionUl.className = 'session-list';
+    if (isExpanded) {
+      const sessions = Array.isArray(ch.sessions) ? ch.sessions : [];
+      sessions.forEach(sess => {
+        const sessLi = document.createElement('li');
+        const isActive = ch.id === currentChannelId && sess.id === ch.currentSessionId;
+        sessLi.className = `session-item ${isActive ? 'active' : ''}`;
+        sessLi.innerHTML = `
+          <span class="session-name" title="${escapeHtml(formatSessionName(sess))}">${escapeHtml(formatSessionName(sess))}</span>
+          <button class="session-delete" title="删除会话">×</button>
+        `;
+        sessLi.addEventListener('click', (ev) => {
+          if (ev.target.closest('.session-delete')) return;
+          switchSession(ch.id, sess.id, ev);
+        });
+        sessLi.querySelector('.session-delete').addEventListener('click', (ev) => deleteSession(ch.id, sess.id, ev));
+        sessionUl.appendChild(sessLi);
+      });
     }
+    li.appendChild(sessionUl);
 
     fragment.appendChild(li);
   });
 
   channelList.appendChild(fragment);
+}
+
+function formatSessionName(sess) {
+  if (!sess) return '新会话';
+  if (sess.preview && sess.preview.trim()) return sess.preview.trim();
+  const id = sess.id || '';
+  return id ? `会话 ${id.slice(-6)}` : '新会话';
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
 }
 
 function renderCollapsedChannels() {
@@ -268,8 +470,8 @@ function showChannelView(channelId) {
   }
 }
 
-async function selectChannel(channelId) {
-  console.log('[selectChannel] 开始切换到:', channelId);
+async function selectChannel(channelId, targetSessionId = null) {
+  console.log('[selectChannel] 开始切换到:', channelId, 'targetSession:', targetSessionId);
 
   // 保存当前 session 的消息
   if (currentChannelId && currentSessionId) {
@@ -294,7 +496,11 @@ async function selectChannel(channelId) {
   const channel = channels.find(c => c.id === channelId);
   if (channel) {
     if (channelNameEl) channelNameEl.textContent = channel.name;
-    currentSessionId = channel.currentSessionId || 'default';
+    currentSessionId = targetSessionId || channel.currentSessionId || 'default';
+    if (targetSessionId) {
+      channel.currentSessionId = targetSessionId;
+    }
+    // 默认折叠会话列表 —— 智能体不自动展开
     console.log('[selectChannel] 频道:', channel.name, 'session:', currentSessionId);
   }
 
@@ -325,7 +531,7 @@ async function selectChannel(channelId) {
   } else if (container.innerHTML.trim() === '') {
     // 如果容器是空的，加载 session
     try {
-      const res = await fetch(`/sessions/${channelId}`);
+      const res = await fetch(`/sessions/${channelId}?sessionId=${encodeURIComponent(currentSessionId)}`);
       const session = await res.json();
       if (session.messages && session.messages.length > 0) {
         session.messages.forEach(msg => {
@@ -341,11 +547,12 @@ async function selectChannel(channelId) {
   }
 }
 
-async function loadSession(channelId) {
+async function loadSession(channelId, sessionId = null) {
   const container = messagesContainers.get(channelId);
   if (!container) return;
+  const targetSessionId = sessionId || currentSessionId || 'default';
   try {
-    const res = await fetch(`/sessions/${channelId}`);
+    const res = await fetch(`/sessions/${channelId}?sessionId=${encodeURIComponent(targetSessionId)}`);
     const session = await res.json();
     container.innerHTML = '';
     if (session.messages && session.messages.length > 0) {
@@ -1122,12 +1329,6 @@ if (loadSessionBtn && sessionFileInput) {
 if (newChannelBtn) {
   newChannelBtn.addEventListener('click', () => {
     createChannel('智能体');
-  });
-}
-
-if (newSessionBtn) {
-  newSessionBtn.addEventListener('click', () => {
-    createNewSession();
   });
 }
 

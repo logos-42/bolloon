@@ -424,6 +424,47 @@ body {
   text-overflow: ellipsis;
 }
 
+.agent-session-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 4px;
+  border-radius: 9px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.agent-current-session {
+  flex: 0 1 auto;
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  height: 18px;
+  line-height: 16px;
+  max-width: 100px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+}
+
+.agent-row.active .agent-current-session {
+  color: var(--accent);
+  border-color: var(--border-light);
+  background: var(--bg-hover);
+}
+
 .channel-delete {
   width: 24px;
   height: 24px;
@@ -445,6 +486,172 @@ body {
 }
 
 .channel-delete:hover {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+/* Agent group (formerly channel-item — kept classname for back-compat) */
+.agent-group {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.agent-row {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
+  gap: 10px;
+}
+
+.agent-row:hover {
+  background: var(--bg-hover);
+}
+
+.agent-row.active {
+  background: var(--bg-active);
+  border: 1px solid var(--border-light);
+}
+
+.agent-row.active .channel-name {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.agent-caret {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  transition: transform 0.18s ease;
+  flex-shrink: 0;
+}
+
+.agent-group.expanded .agent-caret {
+  transform: rotate(90deg);
+}
+
+.agent-new-session {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: var(--transition);
+  flex-shrink: 0;
+}
+
+.agent-row:hover .agent-new-session {
+  opacity: 1;
+}
+
+.agent-new-session:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.agent-new-session svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Session list nested under each agent */
+.session-list {
+  list-style: none;
+  margin: 0 0 4px 0;
+  padding: 0 0 0 28px;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-group.expanded .session-list {
+  display: flex;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: var(--transition);
+  gap: 8px;
+  position: relative;
+}
+
+.session-item::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+  transition: var(--transition);
+}
+
+.session-item:hover {
+  background: var(--bg-hover);
+}
+
+.session-item:hover::before {
+  background: var(--text-secondary);
+}
+
+.session-item.active {
+  background: var(--bg-active);
+}
+
+.session-item.active::before {
+  background: var(--accent);
+  box-shadow: 0 0 4px var(--accent-glow);
+}
+
+.session-item.active .session-name {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.session-name {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-delete {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: var(--transition);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.session-item:hover .session-delete {
+  opacity: 1;
+}
+
+.session-delete:hover {
   background: var(--error-bg);
   color: var(--error);
 }
