@@ -1263,6 +1263,79 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // 统一 AI 解析入口：CLI / 接收方节点 调这里完成 LLM + judgment + harness
+  // 入参: { text, mimeType, fileName, fromNodeId, source }
+  // 出参: { summary, qualityScore, judgmentId?, gateArtifact? }
+  app.post('/api/ai-parse', async (req, res) => {
+    try {
+      const { text, mimeType, fileName, fromNodeId, source } = req.body || {};
+      if (!text || !fileName) {
+        return res.status(400).json({ error: 'text and fileName required' });
+      }
+
+      const truncated = text.length > 6000 ? text.substring(0, 6000) + '...[截断]' : text;
+      const prompt = `请分析以下 ${mimeType || 'text'} 文档，并给出 (1) 一句话中文摘要 (2) 三个关键要点 (3) 质量评分(0-1)。\n\n文件名: ${fileName}\n\n内容:\n${truncated}`;
+
+      // 1. LLM 解析
+      const llm = getMinimax();
+      const t0 = Date.now();
+      const llmResult = await llm.summarize(prompt);
+      const dt = Date.now() - t0;
+
+      const out: any = {
+        ok: true,
+        summary: llmResult.summary,
+        qualityScore: llmResult.qualityScore,
+        latencyMs: dt,
+        mimeType: mimeType || 'text/plain',
+        fileName,
+      };
+
+      // 2. 蒸馏为 judgment (异步,失败不影响主返回)
+      try {
+        const judgmentMod = await import('../pi-ecosystem-judgment/index.js');
+        await judgmentMod.initializeJudgmentStore();
+        const j = await judgmentMod.createJudgment({
+          type: 'trajectory',
+          content: `AI 解析 ${fileName}: ${llmResult.summary.slice(0, 200)}`,
+          source: 'agent',
+          confidence: Math.min(1, llmResult.qualityScore),
+          context: `ai-parse:${mimeType || 'text'}:${source || 'p2p'}`,
+          evidence: {
+            trajectory: [{
+              timestamp: new Date().toISOString(),
+              action: `parse:${fileName}`,
+              outcome: `score=${llmResult.qualityScore.toFixed(2)}`,
+              approved: true,
+            }],
+          },
+        });
+        out.judgmentId = j.id;
+      } catch (e) {
+        out.judgmentError = (e as Error).message;
+      }
+
+      // 3. 在 harness 落产物 (异步,失败不影响)
+      try {
+        const harnessMod = await import('../bollharness-integration/index.js');
+        const gate = new harnessMod.GateStateMachine();
+        gate.submitArtifact(`ai-parse:${fileName}`, {
+          summary: llmResult.summary,
+          score: llmResult.qualityScore,
+          fromNodeId: fromNodeId || null,
+          parsedAt: Date.now(),
+        });
+        out.gateArtifact = `ai-parse:${fileName}`;
+      } catch (e) {
+        out.gateError = (e as Error).message;
+      }
+
+      res.json(out);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ==================== P2P Network API ====================
 
   // 获取当前身份

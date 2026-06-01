@@ -100,13 +100,47 @@ function ensureFeedbackListenerInstalled(): void {
   });
 }
 
-async function parseDocumentWithLLM(doc: ReceivedDocument): Promise<void> {
-  // 没有配 API key 就跳过（保持向后兼容）
+/** 文档解析服务：优先走 web 统一入口 (含 judgment + harness), fallback 到本地 LLM */
+async function callAIParseService(text: string, fileName: string, mimeType: string, fromNodeId?: string): Promise<{ summary: string; qualityScore: number; source: 'web' | 'local'; judgmentId?: string; gateArtifact?: string }> {
+  // 1) 优先: 调 web 端 POST /api/ai-parse (统一入口, 含 judgment + harness)
+  const webBase = process.env.BOLLOON_WEB_URL || process.env.PORTAL_URL || 'http://127.0.0.1:54188';
+  try {
+    const r = await fetch(`${webBase}/api/ai-parse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, mimeType, fileName, fromNodeId, source: 'p2p-document' }),
+      // 短超时, fallback 友好
+      signal: AbortSignal.timeout(8000),
+    });
+    if (r.ok) {
+      const data = await r.json() as any;
+      return {
+        summary: data.summary,
+        qualityScore: data.qualityScore,
+        source: 'web',
+        judgmentId: data.judgmentId,
+        gateArtifact: data.gateArtifact,
+      };
+    }
+    console.warn(`[AIParse] web returned ${r.status}, fallback to local`);
+  } catch (e) {
+    console.warn(`[AIParse] web ${webBase} unreachable (${(e as Error).message}), fallback to local`);
+  }
+
+  // 2) Fallback: 直接调本地 LLM (不调 judgment/harness, 仅在 web 不可用时使用)
   const apiKey = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.MINIMAX_API_KEY || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    console.log(`[DocumentReceiver] No LLM API key set, skip AI parse for ${doc.fileName}`);
-    return;
+    throw new Error('No web endpoint and no LLM API key configured. Set BOLLOON_WEB_URL or OPENAI_API_KEY.');
   }
+  const { getMinimax } = await import('../constraints/index.js');
+  const llm = getMinimax();
+  const truncated = text.length > 6000 ? text.substring(0, 6000) + '...[截断]' : text;
+  const prompt = `请分析以下 ${mimeType} 文档，并给出 (1) 一句话中文摘要 (2) 关键要点列表 (3) 文档质量评分(0-1)。\n\n文件名: ${fileName}\n\n内容:\n${truncated}`;
+  const r = await llm.summarize(prompt);
+  return { summary: r.summary, qualityScore: r.qualityScore, source: 'local' };
+}
+
+async function parseDocumentWithLLM(doc: ReceivedDocument): Promise<void> {
   try {
     const filePath = path.join(
       process.env.HOME || '/tmp',
@@ -114,12 +148,9 @@ async function parseDocumentWithLLM(doc: ReceivedDocument): Promise<void> {
       doc.id, doc.fileName
     );
     const content = await fs.readFile(filePath, 'utf-8');
-    // 限制长度，避免超 token
-    const truncated = content.length > 6000 ? content.substring(0, 6000) + '...[截断]' : content;
-    const { getMinimax } = await import('../constraints/index.js');
-    const llm = getMinimax();
-    const prompt = `请分析以下 ${doc.mimeType} 文档，并给出 (1) 一句话中文摘要 (2) 关键要点列表 (3) 文档质量评分(0-1)。\n\n文件名: ${doc.fileName}\n\n内容:\n${truncated}`;
-    const r = await llm.summarize(prompt);
+
+    const r = await callAIParseService(content, doc.fileName, doc.mimeType, doc.fromNodeId);
+
     const sidecar = {
       filename: doc.fileName,
       mimeType: doc.mimeType,
@@ -127,6 +158,9 @@ async function parseDocumentWithLLM(doc: ReceivedDocument): Promise<void> {
       receivedAt: doc.receivedAt,
       summary: r.summary,
       qualityScore: r.qualityScore,
+      parseSource: r.source,
+      judgmentId: r.judgmentId,
+      gateArtifact: r.gateArtifact,
       analyzedAt: Date.now(),
     };
     const sidecarPath = path.join(
@@ -135,7 +169,7 @@ async function parseDocumentWithLLM(doc: ReceivedDocument): Promise<void> {
       doc.id, 'ai-analysis.json'
     );
     await fs.writeFile(sidecarPath, JSON.stringify(sidecar, null, 2));
-    console.log(`[DocumentReceiver] AI parsed ${doc.fileName} (score=${r.qualityScore.toFixed(2)})`);
+    console.log(`[DocumentReceiver] AI parsed ${doc.fileName} via ${r.source} (score=${r.qualityScore.toFixed(2)})${r.judgmentId ? ` judgment=${r.judgmentId}` : ''}${r.gateArtifact ? ` gate=${r.gateArtifact}` : ''}`);
 
     // 把 AI 解析结果回送给发送方 (doc.fromNodeId)，形成 "接收 → 解析 → 反馈" 闭环
     if (doc.fromNodeId) {
