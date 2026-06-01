@@ -388,7 +388,7 @@ export class ChannelHeartbeatAgent {
         senderName: peer.name
       };
 
-      const decision = this.judgmentEngine.decide(context);
+      const decision = await this.judgmentEngine.decide(context);
 
       if (decision.shouldCall) {
         console.log(`[HeartbeatAgent] Auto-triggering Harness: Gate ${decision.gate} for ${peer.name}`);

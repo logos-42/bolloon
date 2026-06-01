@@ -17,7 +17,9 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as yaml from 'js-yaml';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const yaml: { load: (s: string) => unknown; dump: (v: unknown) => string } =
+  require('js-yaml');
 
 export type JudgmentType = 'rule' | 'preference' | 'trajectory' | 'reward';
 export type JudgmentSource = 'human' | 'agent' | 'collaboration';
@@ -457,11 +459,43 @@ function parseYaml(content: string): unknown {
  */
 
 /**
+ * Best-effort coercion for a scalar frontmatter value.
+ * Returns booleans, numbers, or the raw string.
+ */
+function parseFrontmatterValue(raw: string): unknown {
+  const value = raw.trim();
+  if (value === '') return '';
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (value === 'null' || value === '~') return null;
+  if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
+  // Strip surrounding quotes if present
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+/**
  * Extract YAML frontmatter from markdown
  */
 function extractFrontmatter(content: string): Record<string, unknown> {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return {};
+
+  // Try js-yaml first; fall back to simple line parser if it fails or types missing.
+  try {
+    const parsed = yaml.load(match[1]);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // fall through to manual parsing
+  }
+
 
   const frontmatter: Record<string, unknown> = {};
   const lines = match[1].split('\n');
@@ -483,9 +517,9 @@ function extractFrontmatter(content: string): Record<string, unknown> {
       const value = valueParts.join(':').trim();
 
       if (currentKey === 'judgment' && indent > 0) {
-        (frontmatter[currentKey] as Record<string, unknown>)[key] = parseValue(value);
+        (frontmatter[currentKey] as Record<string, unknown>)[key] = parseFrontmatterValue(value);
       } else {
-        frontmatter[key.trim()] = parseValue(value);
+        frontmatter[key.trim()] = parseFrontmatterValue(value);
         currentKey = key.trim();
       }
     }

@@ -546,8 +546,8 @@ export class P2PNetwork {
         const colonIdx = messageStr.indexOf(':');
         const didMarker = 'DID:';
         let did: string | undefined;
-        let type: string;
-        let payload: string;
+        let type = 'message';
+        let payload = '';
         let requestId: string | undefined = undefined;
 
         if (messageStr.startsWith(didMarker)) {
@@ -770,7 +770,11 @@ export class P2PNetwork {
    * Register a handler for responses (used by the receiving side)
    */
   onResponse(type: string, handler: (payload: string, from: string, did?: string, requestId?: string) => void): void {
-    this.messageHandlers.set(type, handler);
+    // Store as pendingResponseHandlers-shaped wrapper. Extra args (did, requestId) are not
+    // available in pendingResponseHandlers signature, so ignore them when invoked.
+    this.pendingResponseHandlers.set(type, (responseData: string, from: string) => {
+      handler(responseData, from, undefined, undefined);
+    });
   }
 
   /**
@@ -797,11 +801,8 @@ export class P2PNetwork {
   private handleRequest(type: string, payload: string, requestId: string, fromPeerId: string, did?: string): void {
     const handler = this.messageHandlers.get(type);
     if (handler) {
-      // Create a wrapper that sends the response
-      const originalHandler = handler;
-      handler = (msg: Uint8Array, from: string, didParam?: string) => {
-        originalHandler(msg, from, didParam);
-      };
+      // Forward raw payload; callers register with onMessage() and adapt as needed.
+      handler(new TextEncoder().encode(payload), fromPeerId, did);
     }
 
     // Check if there's a response handler registered

@@ -505,7 +505,7 @@ export class ChannelJudgmentEngine {
    * 确定 Skills（基于 Gate 和上下文）
    */
   private determineSkills(gate: Gate, context: JudgmentContext): string[] {
-    const baseSkills = GATE_PROMPTS[gate]?.skills || ['arch'];
+    const baseSkills = (GATE_PROMPTS as Record<number, { skills: string[] }>)[gate]?.skills || ['arch'];
 
     // 根据上下文调整 Skills
     const { currentMessage } = context;

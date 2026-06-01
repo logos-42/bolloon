@@ -400,7 +400,7 @@ function buildValueProfile(agentId: string, judgments: HumanJudgment[]): ValuePr
     const [category] = key.split('_');
     const dimensionKey = `${category}_focus` as keyof ValueProfile;
     if (dimensionKey in profile) {
-      (profile as Record<string, unknown>)[dimensionKey] = Math.min(1, weight / judgments.length);
+      (profile as unknown as Record<string, unknown>)[dimensionKey] = Math.min(1, weight / judgments.length);
     }
   }
 

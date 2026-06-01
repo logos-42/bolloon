@@ -89,9 +89,10 @@ export class IrohDiscoveryService {
   }
 
   private startDiscoveryLoop(): void {
+    const interval = this.config.discoveryIntervalMs ?? 30000;
     this.discoveryTimer = setInterval(async () => {
       await this.discoverPeers();
-    }, this.discoveryIntervalMs!);
+    }, interval);
 
     setTimeout(() => this.discoverPeers(), 2000);
   }

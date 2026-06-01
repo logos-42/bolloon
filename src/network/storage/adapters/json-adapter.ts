@@ -16,7 +16,7 @@ import type {
   MessageQueryOptions,
   StorageConfig,
   MessageStatus,
-} from './types';
+} from '../types';
 
 const DEFAULT_CONFIG: Required<StorageConfig> = {
   baseDir: '',

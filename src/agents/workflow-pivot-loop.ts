@@ -38,6 +38,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, string>;
+  args?: Record<string, string>;
 }
 
 export interface LoopResult {
@@ -416,8 +417,8 @@ export class WorkflowPivotLoop {
   /**
    * Extract pending tool uses from LLM response
    */
-  private extractPendingToolUses(content: string): Array<{ name: string; args: Record<string, string> }> {
-    const pending: Array<{ name: string; args: Record<string, string> }> = [];
+  private extractPendingToolUses(content: string): ToolDefinition[] {
+    const pending: ToolDefinition[] = [];
     
     // Pattern 1: Chinese format "调用工具: tool_name(args)"
     const pattern1 = /调用工具[：:]\s*(\w+)\s*\(([^)]*)\)/g;
