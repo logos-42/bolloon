@@ -1807,6 +1807,61 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // Chat inbox: 列出所有 peer 的 inbox + outbox
+  app.get('/api/chat/inbox', async (_req, res) => {
+    try {
+      const { getInbox } = await import('../agents/p2p-chat-tools.js');
+      const entries = await getInbox();
+      // 按 status 分组, 时间倒序
+      const grouped = {
+        received: entries.filter((e: any) => e.status === 'received'),
+        drafted:  entries.filter((e: any) => e.status === 'drafted'),
+        sent:     entries.filter((e: any) => e.status === 'sent'),
+        dismissed: entries.filter((e: any) => e.status === 'dismissed'),
+      };
+      res.json({ total: entries.length, grouped, all: entries });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 触发 processPendingInbox (手动 wake-up)
+  app.post('/api/chat/process-pending', async (_req, res) => {
+    try {
+      const { processPendingInbox } = await import('../agents/p2p-chat-tools.js');
+      const r = await processPendingInbox();
+      res.json({ ok: true, ...r });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 主人审阅: 批准 draft
+  app.post('/api/chat/approve', async (req, res) => {
+    try {
+      const { messageId, peerDID, finalText } = req.body || {};
+      if (!messageId || !peerDID) return res.status(400).json({ error: 'messageId and peerDID required' });
+      const { approveAndSend } = await import('../agents/p2p-chat-tools.js');
+      const ok = await approveAndSend(messageId, peerDID, finalText);
+      res.json({ ok, messageId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 主人审阅: 丢弃 draft
+  app.post('/api/chat/dismiss', async (req, res) => {
+    try {
+      const { messageId, peerDID } = req.body || {};
+      if (!messageId || !peerDID) return res.status(400).json({ error: 'messageId and peerDID required' });
+      const { dismissDraft } = await import('../agents/p2p-chat-tools.js');
+      const ok = await dismissDraft(messageId, peerDID);
+      res.json({ ok, messageId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 标记消息已读
   app.post('/api/peer-messages/:messageId/read', async (req, res) => {
     try {
@@ -2168,6 +2223,8 @@ app.get('/channels', async (_req, res) => {
     server.listen(port, () => {
       console.log(`Web 服务器启动完成: http://localhost:${port}`);
       console.log('服务器已监听');
+      // 安装 chat bus -> SSE 桥 (供前端 inbox UI 实时刷新)
+      void installChatBusHook();
       setInterval(() => {
         for (const client of sseClients) {
           client.res.write(': ping\n\n');
@@ -2190,6 +2247,25 @@ function broadcast(data: { type: string; [key: string]: unknown }, channelId?: s
         console.error(`[broadcast] 写入失败:`, (e as Error).message);
       }
     }
+  }
+}
+
+// ============================================================================
+// Chat 事件总线 -> SSE 桥 (供前端 inbox UI 用)
+// ============================================================================
+let chatBusHookInstalled = false;
+async function installChatBusHook(): Promise<void> {
+  if (chatBusHookInstalled) return;
+  chatBusHookInstalled = true;
+  try {
+    const { chatEventBus } = await import('../agents/p2p-chat-tools.js');
+    chatEventBus.on('chat', (ev: any) => {
+      // 推送给所有 SSE 客户端 (channelId 留空 = 广播)
+      broadcast({ type: 'chat_event', chatKind: ev.kind, payload: ev }, undefined);
+    });
+    console.log('[chat-bus] SSE bridge installed');
+  } catch (e) {
+    console.warn('[chat-bus] install failed:', (e as Error).message);
   }
 }
 

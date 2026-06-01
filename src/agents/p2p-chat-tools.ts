@@ -22,12 +22,27 @@ import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { EventEmitter } from 'events';
 import { irohTransport as defaultIrohTransport, type IrohTransport } from '../network/iroh-transport.js';
 import { getRelevantValues, getValueProfile, loadAllJudgments } from '../pi-ecosystem-judgment/human-value-store.js';
 
 function homeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || os.homedir();
 }
+
+// ============================================================================
+// 事件总线 — 任何状态变化都 emit, web SSE/UI 可订阅
+// ============================================================================
+export type ChatEvent =
+  | { kind: 'inbox_new';        peerDID: string; entry: ChatMessage }
+  | { kind: 'draft_ready';      peerDID: string; entry: ChatMessage }
+  | { kind: 'outbox_updated';   peerDID: string; entry: ChatMessage }
+  | { kind: 'outbox_draft_in';  peerDID: string; originalId: string; draft: string }
+  | { kind: 'inbox_sent';       peerDID: string; entry: ChatMessage }
+  | { kind: 'inbox_dismissed';  peerDID: string; entry: ChatMessage };
+
+class ChatEventBus extends EventEmitter {}
+export const chatEventBus = new ChatEventBus();
 
 // ============================================================================
 // 类型
@@ -160,12 +175,14 @@ async function handleIncomingChat(transport: IrohTransport, fromNodeId: string, 
     const preview = data.text.slice(0, 60);
     const peerShort = peerDID.slice(0, 12);
     console.log('[ChatReceiver] received from ' + peerShort + ': ' + preview);
+    chatEventBus.emit('chat', { kind: 'inbox_new', peerDID, entry } satisfies ChatEvent);
     for (const h of getState(transport).handlers) {
       try { h(entry, fromNodeId); } catch {}
     }
   } else if (data.kind === 'draft' && data.originalId) {
     await markOutboundDraft(data.originalId, data.text, Date.now());
     console.log('[ChatReceiver] inbound draft for ' + data.originalId);
+    chatEventBus.emit('chat', { kind: 'outbox_draft_in', peerDID, originalId: data.originalId, draft: data.text } satisfies ChatEvent);
   }
 }
 
@@ -199,6 +216,7 @@ export async function sendChat(peerDID: string, text: string, transport: IrohTra
     };
     await fs.mkdir(inboxDir(), { recursive: true });
     await fs.appendFile(outboxPath(), JSON.stringify(entry) + '\n', 'utf-8');
+    chatEventBus.emit('chat', { kind: 'outbox_updated', peerDID, entry } satisfies ChatEvent);
   } else {
     console.warn(`[ChatReceiver] send to ${peerDID.slice(0, 12)}... failed`);
   }
@@ -307,7 +325,9 @@ export async function generateDraft(
       new TextEncoder().encode(JSON.stringify({ kind: 'draft', id: crypto.randomUUID(), text: draftText, originalId: messageId })),
     );
     if (sent) console.log('[DraftEngine] draft sent to ' + peerDID.slice(0, 12) + ' for ' + messageId.slice(0, 8));
-    else console.warn(`[DraftEngine] failed to send draft`);
+    else console.warn('[DraftEngine] failed to send draft');
+    chatEventBus.emit('chat', { kind: 'draft_ready', peerDID, entry: updated } satisfies ChatEvent);
+    chatEventBus.emit('chat', { kind: 'outbox_updated', peerDID, entry: updated } satisfies ChatEvent);
   }
   return updated;
 }
@@ -343,7 +363,8 @@ export async function approveAndSend(
     new TextEncoder().encode(JSON.stringify({ kind: 'user', id: crypto.randomUUID(), text })),
   );
   if (ok) {
-    await updateInboxEntry(peerDID, messageId, { status: 'sent', sentText: text, sentAt: Date.now() });
+    const updated = await updateInboxEntry(peerDID, messageId, { status: 'sent', sentText: text, sentAt: Date.now() });
+    if (updated) chatEventBus.emit('chat', { kind: 'inbox_sent', peerDID, entry: updated } satisfies ChatEvent);
   }
   return ok;
 }
@@ -352,7 +373,8 @@ export async function dismissDraft(messageId: string, peerDID: string): Promise<
   const entries = await readInbox(peerDID);
   const entry = entries.find((e) => e.id === messageId);
   if (!entry) return false;
-  await updateInboxEntry(peerDID, messageId, { status: 'dismissed' });
+  const updated = await updateInboxEntry(peerDID, messageId, { status: 'dismissed' });
+  if (updated) chatEventBus.emit('chat', { kind: 'inbox_dismissed', peerDID, entry: updated } satisfies ChatEvent);
   return true;
 }
 
