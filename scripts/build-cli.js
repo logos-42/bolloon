@@ -196,9 +196,19 @@ main().catch((err) => {
 fs.writeFileSync(path.join(binDir, 'bolloon.cjs'), unixContent);
 
 // 确保 bin/bolloon.js 存在（npm link 需要）
+// 优先用符号链接（POSIX），Windows 上若权限不足则退化为复制文件
 const jsSymlink = path.join(binDir, 'bolloon.js');
 if (fs.existsSync(jsSymlink)) fs.unlinkSync(jsSymlink);
-fs.symlinkSync('bolloon.cjs', jsSymlink);
+try {
+  fs.symlinkSync('bolloon.cjs', jsSymlink);
+} catch (err) {
+  if (err && err.code === 'EPERM') {
+    fs.copyFileSync(path.join(binDir, 'bolloon.cjs'), jsSymlink);
+    console.warn('  ⚠ symlink 不支持（Windows），已退化为文件复制');
+  } else {
+    throw err;
+  }
+}
 
 console.log("✓ CLI 构建完成");
 console.log("  bin/bolloon.cjs    - CommonJS 入口");
