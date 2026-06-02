@@ -8,6 +8,7 @@ export * from './HealthMonitor.js';
 export * from './Watchdog.js';
 export * from './DaemonManager.js';
 export * from './StartupVerifier.js';
+export * from './self-improve-bus.js';
 
 import { createHealthMonitor, getHealthMonitor } from './HealthMonitor.js';
 import { createWatchdog, getWatchdog } from './Watchdog.js';
