@@ -17,9 +17,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const yaml: { load: (s: string) => unknown; dump: (v: unknown) => string } =
-  require('js-yaml');
+import yaml from 'js-yaml';
 
 export type JudgmentType = 'rule' | 'preference' | 'trajectory' | 'reward';
 export type JudgmentSource = 'human' | 'agent' | 'collaboration';

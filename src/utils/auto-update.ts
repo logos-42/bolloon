@@ -283,27 +283,27 @@ function checkNpmOutdated(): OutdatedPackage[] {
  * 自动更新 npm 包
  */
 async function updatePackages(packages?: string[]): Promise<UpdateResult> {
+  // 记录更新前的版本，用于事后判断"是否真的升级了"
+  // 与 getInstalledVersion 的"优先读全局"保持一致 —— install 也用 -g，
+  // 否则判断和执行落在不同的目录，永远改不到那个被读取的版本号。
+  const targets = packages && packages.length > 0 ? packages : ['@bolloon/bolloon-agent'];
+  const before = new Map<string, string | null>();
+  for (const p of targets) before.set(p, getInstalledVersion(p));
+
+  const isGlobal = !packages || packages.length === 0;
+  const args = isGlobal
+    ? ['npm', 'install', '-g', ...targets]
+    : ['npm', 'install', ...targets, '--save'];
+
+  log(`\n${CYAN}📦 正在更新包...${RESET}\n`, RESET);
+
   try {
-    const args = packages && packages.length > 0
-      ? ['npm', 'install', ...packages, '--save']
-      : ['npm', 'install', '-g', '@bolloon/bolloon-agent'];
-
-    log(`\n${CYAN}📦 正在更新包...${RESET}\n`, RESET);
-
-    // 执行 npm install
-    const result = execSync(args.join(' '), {
+    execSync(args.join(' '), {
       encoding: 'utf-8',
       timeout: 300000, // 5分钟超时
       stdio: 'inherit',
       cwd: process.cwd()
     });
-
-    return {
-      success: true,
-      updated: true,
-      message: '更新成功',
-      updatedPackages: packages
-    };
   } catch (e: any) {
     return {
       success: false,
@@ -312,6 +312,37 @@ async function updatePackages(packages?: string[]): Promise<UpdateResult> {
       error: e.message
     };
   }
+
+  // install 退出码 0 并不等于"真的升上去了"（"up to date" 也是 0）。
+  // 重新读取磁盘版本，只有真的达到目标 latest 之一才算 updated。
+  const upgraded: string[] = [];
+  const failed: string[] = [];
+  for (const p of targets) {
+    const after = getInstalledVersion(p);
+    const was = before.get(p);
+    if (after && was && compareVersions(was, after) < 0) {
+      upgraded.push(p);
+    } else if (after && was && compareVersions(was, after) === 0) {
+      // 版本没变 —— install 跑过但没改动；不当作"刚升级"
+    } else {
+      failed.push(p);
+    }
+  }
+
+  if (upgraded.length > 0) {
+    return {
+      success: true,
+      updated: true,
+      message: `已更新: ${upgraded.join(', ')}`,
+      updatedPackages: upgraded
+    };
+  }
+  return {
+    success: true,
+    updated: false,
+    message: '已是最新版本，无需重启',
+    updatedPackages: []
+  };
 }
 
 /**
