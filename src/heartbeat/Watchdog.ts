@@ -126,12 +126,14 @@ export class Watchdog {
       return;
     }
 
-    // 检查内存使用
+    // 检查内存使用: 用绝对阈值, 不看 heapUsed/heapTotal 比例 (V8 内部比例不可靠, 经常 80-95% 误报)
     const usage = process.memoryUsage();
-    const heapUsedPercent = (usage.heapUsed / usage.heapTotal) * 100;
-    if (heapUsedPercent > 90) {
-      console.warn(`[Watchdog] Memory usage critical: ${heapUsedPercent.toFixed(1)}%`);
-      this.triggerRestart(1, `Memory usage ${heapUsedPercent.toFixed(1)}%`);
+    const heapUsedMB = usage.heapUsed / 1024 / 1024;
+    const rssMB = usage.rss / 1024 / 1024;
+    // 1.2GB heap 或 1.5GB RSS 才是真危险
+    if (heapUsedMB > 1224 || rssMB > 1536) {
+      console.warn(`[Watchdog] Memory usage critical: heapUsed=${heapUsedMB.toFixed(0)}MB, rss=${rssMB.toFixed(0)}MB`);
+      this.triggerRestart(1, `Memory usage heap=${heapUsedMB.toFixed(0)}MB rss=${rssMB.toFixed(0)}MB`);
     }
   }
 

@@ -2299,6 +2299,12 @@ app.get('/channels', async (_req, res) => {
 
   // 启动看门狗监控
   if (watchdog) {
+    // level 1 (内存爆) → 进程自杀, 依赖外层 supervisor / 用户重启 (Windows 任务计划/手动)
+    // 否则 Node.js 高 GC 压力下 HTTP 响应丢失, 客户端 fetch 永远 pending
+    watchdog.registerRestartStrategy(1, () => {
+      console.error('[Watchdog] memory critical, 进程退出 (期望外层重启)');
+      setTimeout(() => process.exit(1), 100);
+    });
     watchdog.start();
     console.log('[24h] Watchdog started');
   }

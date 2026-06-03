@@ -1,3 +1,8 @@
+// marked 库可能从 CDN 加载失败, 这里做安全降级 (避免 ReferenceError 让 addMessage 整体崩溃)
+if (typeof marked === 'undefined') {
+  window.marked = { parse: (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') };
+}
+
 const messagesEl = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
@@ -19,6 +24,7 @@ let channels = [];
 let isSidebarCollapsed = false;
 let reconnectAttempts = new Map(); // channelId -> attempts
 let reconnectTimers = new Map(); // channelId -> timer
+let heartbeatTimers = new Map(); // channelId -> setInterval handle (防止泄漏)
 let lastUserCommand = ''; // 防止用户消息重复显示
 let lastAiContent = ''; // 防止 AI 消息重复显示
 let messagesContainers = new Map(); // channelId -> messages container div
@@ -113,7 +119,7 @@ async function createChannel(name) {
     channels.push(channel);
     renderChannels();
     selectChannel(channel.id);
-    newChannelInput.value = '';
+    if (newChannelInput) newChannelInput.value = '';
 
     // 后台更新 DID（如果还没有的话）
     if (!channel.did || channel.did === 'undefined') {
@@ -454,7 +460,7 @@ function ensureMessageContainer(channelId) {
 }
 
 function showChannelView(channelId) {
-  // Hide all channel message containers
+  // Hide all channel message containers (不要 innerHTML='' 销毁, 保留以便快速切换)
   messagesContainers.forEach((container, cid) => {
     container.style.display = 'none';
   });
@@ -462,11 +468,6 @@ function showChannelView(channelId) {
   const container = messagesContainers.get(channelId);
   if (container) {
     container.style.display = 'block';
-  }
-  // Update messagesEl reference for functions that use it directly
-  messagesEl.innerHTML = '';
-  if (container) {
-    messagesEl.appendChild(container);
   }
 }
 
@@ -1117,6 +1118,12 @@ function connect(channelId) {
   if (reconnectTimers.has(targetChannelId)) {
     clearTimeout(reconnectTimers.get(targetChannelId));
     reconnectTimers.delete(targetChannelId);
+  }
+
+  // 清除该频道的心跳定时器 (防止多次调用 connect 导致 setInterval 累积)
+  if (heartbeatTimers.has(targetChannelId)) {
+    clearInterval(heartbeatTimers.get(targetChannelId));
+    heartbeatTimers.delete(targetChannelId);
   }
 
   // 关闭该频道的旧连接
