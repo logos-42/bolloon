@@ -1295,7 +1295,9 @@ ${toolDefs}
         // 检查是否需要继续循环处理
         // 更严格的判断：只有当回复明确表示需要更多信息时才继续
         const containsToolCallIntent = reply.includes('调用工具') || reply.includes('tool(') ||
-          reply.includes('使用工具') || reply.includes('需要获取') || reply.includes('需要查看');
+          reply.includes('使用工具') || reply.includes('需要获取') || reply.includes('需要查看') ||
+          // 兼容 LLM 用对象字面量输出 tool call (上轮没解析成功时, 至少要继续)
+          reply.includes('tool =>') || reply.includes('[TOOL_CALL]');
         const hasError = ['不存在', '找不到', '无法找到', 'not found', 'does not exist',
           '错误', 'error', '失败', 'failed'].some(k => reply.includes(k));
         const isTooShort = reply.length < 50 && reply.length > 0;
@@ -1437,21 +1439,43 @@ Workspace root folder: ${this.cwd}
       /调用工具[：:]\s*(\w+)\s*\(([^)]*)\)/,
       /使用工具[：:]\s*(\w+)\s*\(([^)]*)\)/,
       /tool[_\w]*[：:]\s*(\w+)\s*\(([^)]*)\)/i,
-      /(\w+)\s*\(\s*([^)]*)\s*\)/
+      /(\w+)\s*\(\s*([^)]*)\s*\)/,
+      // 兼容 LLM 输出的对象字面量格式: {tool => "get_identity", args => {...}}
+      /\{\s*tool\s*=>\s*["'](\w+)["']\s*(?:,\s*args\s*=>\s*(\{[\s\S]*?\}))?\s*\}/,
+      // 兼容: tool => "get_identity"  (无 args 包裹)
+      /\btool\s*=>\s*["'](\w+)["']/,
+      // 兼容: [TOOL_CALL] 块内 JSON 形式 {"name": "x", "args": {...}}
+      /\[TOOL_CALL\][\s\S]*?\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*(\{[\s\S]*?\})/i,
     ];
 
     for (const pattern of patterns) {
       const match = content.match(pattern);
       if (match) {
         const name = match[1];
-        const argsStr = match[2] || '';
-        const args: Record<string, string> = {};
+        let args: Record<string, string> = {};
+        const rawArgs = match[2] || '';
 
-        const argPairs = argsStr.split(',').map(s => s.trim()).filter(Boolean);
-        for (const pair of argPairs) {
-          const [key, ...valueParts] = pair.split(':').map(s => s.trim().replace(/['"]/g, ''));
-          if (key) {
-            args[key] = valueParts.join(':') || '';
+        if (rawArgs && rawArgs.trim().startsWith('{')) {
+          // JSON 形式, 尝试解析
+          try {
+            const parsed = JSON.parse(rawArgs);
+            if (parsed && typeof parsed === 'object') {
+              args = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v)]));
+            }
+          } catch {
+            // 解析失败就当字符串处理
+            const argPairs = rawArgs.split(',').map(s => s.trim()).filter(Boolean);
+            for (const pair of argPairs) {
+              const [key, ...valueParts] = pair.split(':').map(s => s.trim().replace(/['"]/g, ''));
+              if (key) args[key] = valueParts.join(':') || '';
+            }
+          }
+        } else if (rawArgs) {
+          // 形参串, 形如 key: value, key2: value2
+          const argPairs = rawArgs.split(',').map(s => s.trim()).filter(Boolean);
+          for (const pair of argPairs) {
+            const [key, ...valueParts] = pair.split(':').map(s => s.trim().replace(/['"]/g, ''));
+            if (key) args[key] = valueParts.join(':') || '';
           }
         }
 

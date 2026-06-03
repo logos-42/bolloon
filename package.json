@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli.js",
@@ -32,7 +32,7 @@
     "src/constraint-runtime"
   ],
   "dependencies": {
-    "@bolloon/bolloon-agent": "^0.1.14",
+    "@bolloon/bolloon-agent": "^0.1.15",
     "@bolloon/constraint-runtime": "0.1.0",
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",

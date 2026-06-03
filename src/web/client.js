@@ -714,6 +714,8 @@ function addMessage(content, type, save = true, container) {
     .replace(/TOOL_CALL[\s\S]*?\/TOOL_CALL/g, '')
     .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
     .replace(/{\s*"tool":[\s\S]*?}/g, '')
+    // 兼容 pi-sdk LLM 输出: {tool => "name", args => {...}}
+    .replace(/\{\s*tool\s*=>\s*["'][^"']+["']\s*(?:,\s*args\s*=>\s*\{[\s\S]*?\})?\s*\}/g, '')
     .replace(/\[Function[^\]]*\]\s*/g, '')
     .trim();
 
