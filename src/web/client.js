@@ -467,20 +467,13 @@ function renderChannels() {
           </svg>
         </button>
         <button class="channel-delete" title="删除智能体">×</button>
-        <button class="agent-new-session" title="新建会话">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="12" y1="5" x2="12" y2="19"></line>
-            <line x1="5" y1="12" x2="19" y2="12"></line>
-          </svg>
-        </button>
       </span>
     `;
 
     // 行点击：切换展开；点击名字/图标区域则切到该智能体
     row.addEventListener('click', (ev) => {
-      // 如果点在删除/新会话/配置按钮上, 单独处理
+      // 如果点在删除/配置按钮上, 单独处理
       if (ev.target.closest('.channel-delete')
-          || ev.target.closest('.agent-new-session')
           || ev.target.closest('.agent-config-btn')) return;
       if (ev.target.closest('.agent-caret')) {
         toggleAgentExpand(ch.id, ev);
@@ -495,8 +488,6 @@ function renderChannels() {
 
     // 智能体删除
     row.querySelector('.channel-delete').addEventListener('click', (ev) => deleteChannel(ch.id, ev));
-    // 新会话按钮
-    row.querySelector('.agent-new-session').addEventListener('click', (ev) => createNewSessionForChannel(ch.id, ev));
     // 配置按钮: 打开同一个 modal 编辑已有智能体
     row.querySelector('.agent-config-btn').addEventListener('click', (ev) => {
       ev.stopPropagation();
@@ -509,6 +500,32 @@ function renderChannels() {
     const sessionUl = document.createElement('ul');
     sessionUl.className = 'session-list';
     if (isExpanded) {
+      // "新建会话" 按钮 — 放在 session 列表最前面, 始终可见
+      const newSessLi = document.createElement('li');
+      newSessLi.className = 'session-new-item';
+      newSessLi.setAttribute('role', 'button');
+      newSessLi.setAttribute('tabindex', '0');
+      newSessLi.title = '新建会话';
+      newSessLi.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+        <span>新建会话</span>
+      `;
+      const onNewSession = (ev) => {
+        ev.stopPropagation();
+        createNewSessionForChannel(ch.id, ev);
+      };
+      newSessLi.addEventListener('click', onNewSession);
+      newSessLi.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          onNewSession(ev);
+        }
+      });
+      sessionUl.appendChild(newSessLi);
+
       const sessions = Array.isArray(ch.sessions) ? ch.sessions : [];
       sessions.forEach(sess => {
         const sessLi = document.createElement('li');

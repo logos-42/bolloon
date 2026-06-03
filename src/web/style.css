@@ -576,33 +576,8 @@ body {
 }
 
 .agent-new-session {
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0;
-  transition: var(--transition);
-  flex-shrink: 0;
-}
-
-.agent-row:hover .agent-new-session {
-  opacity: 1;
-}
-
-.agent-new-session:hover {
-  background: var(--accent);
-  color: var(--bg);
-}
-
-.agent-new-session svg {
-  width: 14px;
-  height: 14px;
+  /* 已废弃: 新建会话按钮迁移到 session 列表顶部, 见 .session-new-item */
+  display: none;
 }
 
 /* Session list nested under each agent */
@@ -660,6 +635,41 @@ body {
 .session-item.active .session-name {
   color: var(--accent);
   font-weight: 500;
+}
+
+/* "新建会话" 入口, 固定在 session 列表最前面, 始终可见 */
+.session-new-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 2px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px dashed var(--border-light);
+  transition: var(--transition);
+  user-select: none;
+}
+
+.session-new-item:hover {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  border-style: solid;
+}
+
+.session-new-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.session-new-item svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
 }
 
 .session-name {
