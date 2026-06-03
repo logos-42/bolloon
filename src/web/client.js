@@ -1983,12 +1983,12 @@ function openWalletModal() {
     walletAutoTools.checked = !!ch.autoInvokeTools;
   }
   renderWalletList();
-  walletModal.classList.add('open');
+  walletModal.classList.add('active');
 }
 
 function closeWalletModal() {
   if (!walletModal) return;
-  walletModal.classList.remove('open');
+  walletModal.classList.remove('active');
   walletModalPendingSecret = null;
 }
 
@@ -2205,12 +2205,12 @@ function openAgentAddModal(existingChannel) {
   agentAddWalletInfo.style.display = 'none';
   agentAddWalletInfo.innerHTML = '';
   pendingWalletSecret = null;
-  agentAddModal.classList.add('open');
+  agentAddModal.classList.add('active');
 }
 
 function closeAgentAddModal() {
   if (!agentAddModal) return;
-  agentAddModal.classList.remove('open');
+  agentAddModal.classList.remove('active');
   pendingWalletSecret = null;
 }
 
