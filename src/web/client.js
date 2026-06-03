@@ -500,7 +500,8 @@ async function selectChannel(channelId, targetSessionId = null) {
     if (targetSessionId) {
       channel.currentSessionId = targetSessionId;
     }
-    // 默认折叠会话列表 —— 智能体不自动展开
+    // 自动展开当前智能体的会话列表，让用户能切换会话
+    expandedAgents.add(channelId);
     console.log('[selectChannel] 频道:', channel.name, 'session:', currentSessionId);
   }
 

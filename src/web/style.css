@@ -476,12 +476,13 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0;
+  opacity: 0.45;
   transition: var(--transition);
   font-size: 16px;
 }
 
-.channel-item:hover .channel-delete {
+.channel-item:hover .channel-delete,
+.agent-row:hover .channel-delete {
   opacity: 1;
 }
 
