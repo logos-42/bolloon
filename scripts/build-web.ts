@@ -12,8 +12,11 @@ const DIST_WEB = path.join(ROOT, 'dist', 'web');
 async function main() {
   console.log('[build-web] 开始构建...');
 
-  // 清理并创建目录
-  await fs.rm(DIST_WEB, { recursive: true, force: true });
+  // 重要: 不能 rm -rf 整个 dist/web/, 否则会删掉 build:main 编译出来的
+  // dist/web/server.js. 只清理 web 静态资源, 保留 server.js.
+  for (const f of ['index.html', 'api-config.html', 'style.css', 'client.js', 'components']) {
+    await fs.rm(path.join(DIST_WEB, f), { recursive: true, force: true });
+  }
   await fs.mkdir(DIST_WEB, { recursive: true });
   await fs.mkdir(path.join(DIST_WEB, 'components', 'p2p'), { recursive: true });
 
