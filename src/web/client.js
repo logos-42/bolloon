@@ -473,21 +473,6 @@ function showChannelView(channelId) {
 async function selectChannel(channelId, targetSessionId = null) {
   console.log('[selectChannel] 开始切换到:', channelId, 'targetSession:', targetSessionId);
 
-  // 保存当前 session 的消息
-  if (currentChannelId && currentSessionId) {
-    const container = messagesContainers.get(currentChannelId);
-    if (container) {
-      const messages = Array.from(container.querySelectorAll('.message')).map(msg => ({
-        type: msg.classList.contains('message-user') ? 'user' : 'ai',
-        content: msg.querySelector('.message-content')?.textContent || ''
-      }));
-      if (messages.length > 0) {
-        sessionMessages.set(`${currentChannelId}:${currentSessionId}`, messages);
-        console.log('[selectChannel] 保存 session 消息:', messages.length);
-      }
-    }
-  }
-
   // 立即更新当前频道 ID
   currentChannelId = channelId;
   reconnectAttempts.set(channelId, 0);
@@ -519,34 +504,21 @@ async function selectChannel(channelId, targetSessionId = null) {
     connect(channelId);
   }
 
-  // 检查是否有保存的 session 消息
-  const sessionKey = `${channelId}:${currentSessionId}`;
-  const savedMessages = sessionMessages.get(sessionKey);
-
-  if (savedMessages && savedMessages.length > 0) {
-    console.log('[selectChannel] 加载已保存的 session 消息:', savedMessages.length);
-    container.innerHTML = '';
-    savedMessages.forEach(msg => {
-      addMessage(msg.content, msg.type, false, container);
-    });
-  } else {
-    // 没有缓存 → 重新 fetch 加载
-    // 注意: container 是 channel 级别共享的, 必须先清空再加载, 不然会看到上一个 session 的内容
-    container.innerHTML = '';
-    try {
-      const res = await fetch(`/sessions/${channelId}?sessionId=${encodeURIComponent(currentSessionId)}`);
-      const session = await res.json();
-      if (session.messages && session.messages.length > 0) {
-        session.messages.forEach(msg => {
-          addMessage(msg.content, msg.type, false, container);
-        });
-      } else {
-        addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
-      }
-    } catch (err) {
-      console.error('[selectChannel] 加载 session 失败:', err);
+  // 直接从 server 拉 session 消息 (container 跨 session 共享, 先清空再加载)
+  container.innerHTML = '';
+  try {
+    const res = await fetch(`/sessions/${channelId}?sessionId=${encodeURIComponent(currentSessionId)}`);
+    const session = await res.json();
+    if (session.messages && session.messages.length > 0) {
+      session.messages.forEach(msg => {
+        addMessage(msg.content, msg.type, false, container);
+      });
+    } else {
       addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
     }
+  } catch (err) {
+    console.error('[selectChannel] 加载 session 失败:', err);
+    addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
   }
 }
 
@@ -1240,6 +1212,11 @@ function connect(channelId) {
         handleStatusEvent(data, container);
       } else if (data.type === 'done') {
         hideTyping();
+        // AI 回复完, 把最后一条 ai 消息落盘 (兜底, 避免 server saveSession 漏写)
+        const lastAi = container.querySelector('.message-ai:last-of-type .message-content');
+        if (lastAi) {
+          persistLastMessageToServer('ai', lastAi.textContent || '');
+        }
       } else if (data.type === 'renamed') {
         const channel = channels.find(c => c.id === data.channelId);
         if (channel) {
@@ -1272,6 +1249,9 @@ async function sendMessage() {
   input.value = '';
   showTyping();
 
+  // 立即把用户消息落盘, 避免切走再切回时丢失
+  persistLastMessageToServer('user', text);
+
   // 获取当前频道的 DID
   const channel = channels.find(c => c.id === currentChannelId);
   const channelDid = channel?.did || '';
@@ -1297,6 +1277,21 @@ async function sendMessage() {
     addMessage('连接错误', 'ai');
     console.error('Send error', err);
   }
+}
+
+// 主动落盘: 把当前 channelId/sessionId 最后一条消息 PATCH 到 server
+// fire-and-forget, 失败只打日志, 不影响 UI
+function persistLastMessageToServer(type, content) {
+  if (!currentChannelId || !currentSessionId) return;
+  fetch(`/sessions/${currentChannelId}/${currentSessionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: { type, content, timestamp: new Date().toISOString() }
+    })
+  }).catch(err => {
+    console.warn('[persist] 落盘失败:', err);
+  });
 }
 
 sendBtn.addEventListener('click', sendMessage);

@@ -937,6 +937,37 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // 增量追加消息到 session (前端落盘用, 避免丢消息)
+  // body: { message: { type, content, timestamp? } }
+  app.patch('/sessions/:channelId/:sessionId', async (req, res) => {
+    try {
+      const { channelId, sessionId } = req.params;
+      const { message } = req.body || {};
+      if (!message || (message.type !== 'user' && message.type !== 'ai') || typeof message.content !== 'string') {
+        return res.status(400).json({ error: 'invalid message' });
+      }
+      const existing = await loadSession(channelId, sessionId);
+      const session: Session = existing || { channelId, sessionId, messages: [], lastUpdated: new Date().toISOString() };
+      session.sessionId = sessionId;
+      // 去重: 跳过与最后一条完全相同的 (避免 SSE 重复推导致双写)
+      const last = session.messages[session.messages.length - 1];
+      if (last && last.type === message.type && last.content === message.content) {
+        return res.json({ ok: true, count: session.messages.length, deduped: true });
+      }
+      session.messages.push({
+        id: message.id || crypto.randomUUID(),
+        type: message.type,
+        content: message.content,
+        timestamp: message.timestamp || new Date().toISOString()
+      });
+      session.lastUpdated = new Date().toISOString();
+      await saveSession(session);
+      res.json({ ok: true, count: session.messages.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get('/theme', async (req, res) => {
     try {
       const themeData = await loadTheme();
