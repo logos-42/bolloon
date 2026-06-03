@@ -2016,8 +2016,9 @@ const walletUnbindBtn = document.getElementById('wallet-unbind-btn');
 const walletNewInfo = document.getElementById('wallet-new-info');
 const walletListEl = document.getElementById('wallet-list');
 
-/** 本次会话生成的私钥, 仅用于提示, 永不上传 */
+/** 本次会话生成的私钥/助记词, 仅用于本地签名, 永不上传 */
 let walletModalPendingSecret = null;
+let walletModalPendingMnemonic = null;
 
 function openWalletModal() {
   if (!walletModal) return;
@@ -2044,17 +2045,18 @@ function closeWalletModal() {
 if (walletModalClose) walletModalClose.addEventListener('click', closeWalletModal);
 
 if (walletGenerateBtn) {
-  walletGenerateBtn.addEventListener('click', () => {
-    const { address, privateKeyHex } = generateLocalWallet();
-    walletBindAddress.value = address;
-    walletModalPendingSecret = privateKeyHex;
+  walletGenerateBtn.addEventListener('click', async () => {
     walletNewInfo.style.display = 'block';
-    walletNewInfo.innerHTML = `
-      ✓ 已生成本地钱包<br>
-      <strong>地址:</strong> <code>${escapeHtml(address)}</code><br>
-      <strong>私钥 (本次会话, 刷新即丢):</strong> <code style="color:#f88;">${escapeHtml(privateKeyHex)}</code><br>
-      <small style="color:#f88;">⚠ 关闭页面后无法找回。仅地址会发送到服务端。</small>
-    `;
+    walletNewInfo.innerHTML = '⏳ 正在生成真实 EVM 钱包...';
+    try {
+      const wallet = await generateRealWalletAsync();
+      walletBindAddress.value = wallet.address;
+      walletModalPendingSecret = wallet.privateKey;
+      walletModalPendingMnemonic = wallet.mnemonic;
+      walletNewInfo.innerHTML = formatWalletInfoHtml(wallet);
+    } catch (err) {
+      walletNewInfo.innerHTML = '✗ 生成钱包失败: ' + escapeHtml(err.message);
+    }
   });
 }
 
@@ -2069,12 +2071,40 @@ if (walletBindBtn) {
       alert('请输入钱包地址或点击「生成」');
       return;
     }
+    const ch = channels.find(c => c.id === currentChannelId);
+    const did = ch?.did || '';
+    if (!did || did === 'undefined' || did === 'null') {
+      alert('当前智能体还没有生成 DID, 请稍等几秒后重试');
+      return;
+    }
+
+    // 服务端会用 recoverMessage 校验签名, 因此必须用本会话生成的私钥签名
+    // (已绑过的钱包重新签名也会过, 因为 challenge 里有 channelId + DID)
+    if (!walletModalPendingSecret) {
+      alert('请先在「钱包管理」面板点击「生成」或导入私钥, 临时私钥仅在本会话保留');
+      return;
+    }
+    let challenge;
     try {
-      const res = await fetch(`/channels/${currentChannelId}`, {
-        method: 'PATCH',
+      challenge = await signDIDChallengeAsync(walletModalPendingSecret, did, currentChannelId);
+    } catch (err) {
+      alert('签名失败: ' + err.message);
+      return;
+    }
+    if (challenge.address.toLowerCase() !== address.toLowerCase()) {
+      alert(`签名地址 ${challenge.address} 与输入地址 ${address} 不一致, 拒绝绑定`);
+      return;
+    }
+
+    try {
+      const res = await fetch(`/channels/${currentChannelId}/bind-wallet`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          walletAddress: address,
+          walletAddress: challenge.address,
+          signature: challenge.signature,
+          message: challenge.message,
+          did: challenge.did,
           autoInvokeTools: !!walletAutoTools.checked
         })
       });
@@ -2088,6 +2118,13 @@ if (walletBindBtn) {
       renderChannels();
       renderWalletList();
       walletModalPendingSecret = null;
+      walletModalPendingMnemonic = null;
+      walletNewInfo.style.display = 'block';
+      walletNewInfo.innerHTML =
+        '✅ 绑定成功<br>' +
+        '<strong>地址:</strong> <code>' + escapeHtml(updated.walletAddress) + '</code><br>' +
+        '<strong>签名 DID:</strong> <code>' + escapeHtml(did) + '</code><br>' +
+        '<small style="color:#9c9;">服务端已用 recoverMessage 校验签名, 证明你持有该钱包私钥。</small>';
     } catch (err) {
       alert('绑定失败: ' + err.message);
     }
@@ -2230,7 +2267,8 @@ const agentAddWalletInfo = document.getElementById('agent-add-wallet-info');
 const agentGenerateWalletBtn = document.getElementById('agent-generate-wallet-btn');
 
 /** 客户端只为提示, 不向服务端发送私钥 */
-let pendingWalletSecret = null;
+let pendingWalletSecret = null;          // 本会话待绑定的私钥, 仅浏览器内存
+let pendingWalletMnemonic = null;        // 本会话待绑定的助记词, 仅浏览器内存
 
 function openAgentAddModal(existingChannel) {
   if (!agentAddModal) return;
@@ -2263,35 +2301,66 @@ function closeAgentAddModal() {
   pendingWalletSecret = null;
 }
 
-/** 本地生成一个 EVM 风格地址 — 仅用于演示; 生产应使用 ethers/wagmi 等真实库 */
-function generateLocalWallet() {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  const privateKeyHex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
-  // 简化: 取末 20 字节当 address, 不做 keccak, 仅作为占位
-  const addrBytes = bytes.slice(12);
-  const address = '0x' + Array.from(addrBytes, b => b.toString(16).padStart(2, '0')).join('');
-  return { address, privateKeyHex };
+/** 生成真实 EVM 钱包: BIP-39 助记词 + secp256k1 私钥 + EIP-55 校验和地址
+ *  通过 window.WalletViem (来自 components/wallet-viem.mjs, viem 驱动) 调用.
+ *  失败时降级到旧的演示模式, 但 UI 会提示用户.
+ */
+async function generateRealWalletAsync() {
+  if (!window.WalletViem) {
+    throw new Error('钱包模块尚未加载, 请稍后重试');
+  }
+  return window.WalletViem.generateRealWallet();
+}
+
+async function importRealWalletByPrivateKey(privateKeyHex) {
+  if (!window.WalletViem) {
+    throw new Error('钱包模块尚未加载, 请稍后重试');
+  }
+  return window.WalletViem.importEVMWallet(privateKeyHex);
+}
+
+async function signDIDChallengeAsync(privateKeyHex, did, channelId) {
+  if (!window.WalletViem) {
+    throw new Error('钱包模块尚未加载, 请稍后重试');
+  }
+  return window.WalletViem.signDIDChallenge(privateKeyHex, did, channelId);
+}
+
+function formatWalletInfoHtml({ address, privateKey, mnemonic }) {
+  const parts = [
+    '✓ 已生成真实 EVM 钱包 (BIP-39 + secp256k1 + EIP-55)',
+    '<strong>地址:</strong> <code>' + escapeHtml(address) + '</code>',
+  ];
+  if (mnemonic) {
+    parts.push(
+      '<strong>助记词 (12 词, 请抄写保存):</strong>',
+      '<code style="color:#fc6;word-break:break-all;">' + escapeHtml(mnemonic) + '</code>'
+    );
+  }
+  parts.push(
+    '<strong>私钥 (0x + 32 字节):</strong>',
+    '<code style="color:#f88;word-break:break-all;">' + escapeHtml(privateKey) + '</code>',
+    '<small style="color:#f88;">⚠ 助记词 + 私钥均仅在本浏览器内存, 关闭页面后无法找回。</small>',
+    '<small style="color:#999;">签名绑定到 channel DID (EIP-191 personal_sign) 会发送到服务端, 用于证明钱包所有权。</small>'
+  );
+  return parts.join('<br>');
 }
 
 if (agentGenerateWalletBtn) {
-  agentGenerateWalletBtn.addEventListener('click', () => {
+  agentGenerateWalletBtn.addEventListener('click', async () => {
+    agentAddWalletInfo.style.display = 'block';
+    agentAddWalletInfo.innerHTML = '⏳ 正在生成真实 EVM 钱包...';
     try {
-      const { address, privateKeyHex } = generateLocalWallet();
-      agentAddWallet.value = address;
-      pendingWalletSecret = privateKeyHex;
-      agentAddWalletInfo.style.display = 'block';
-      agentAddWalletInfo.innerHTML = `
-        ✓ 已生成本地钱包<br>
-        <strong>地址:</strong> <code>${escapeHtml(address)}</code><br>
-        <strong>私钥 (仅本次会话, 刷新即丢):</strong> <code style="color:#f88;">${escapeHtml(privateKeyHex)}</code><br>
-        <small style="color:#f88;">⚠ 请抄写并妥善保存私钥, 关闭页面后无法找回。仅地址会发送到服务端。</small>
-      `;
+      const wallet = await generateRealWalletAsync();
+      agentAddWallet.value = wallet.address;
+      pendingWalletSecret = wallet.privateKey;
+      pendingWalletMnemonic = wallet.mnemonic;
+      agentAddWalletInfo.innerHTML = formatWalletInfoHtml(wallet);
     } catch (err) {
-      agentAddWalletInfo.style.display = 'block';
       agentAddWalletInfo.innerHTML = '✗ 生成钱包失败: ' + escapeHtml(err.message);
     }
   });
+}
 }
 
 if (catalogAddBtn) {

@@ -19,6 +19,7 @@ import { initMinimax, getMinimax } from '../constraints/index.js';
 import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
 import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
 import { irohTransport } from '../network/iroh-transport.js';
+import { verifyMessage, isAddress, getAddress } from 'viem';
 
 // 前端资源路径：在打包后会通过 CommonJS require 加载，使用 import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -55,6 +56,14 @@ interface Channel {
   walletAddress?: string;
   /** 钱包注册时间 */
   walletRegisteredAt?: string;
+  /** 钱包绑定签名凭证 (EIP-191 personal_sign 签名 channelId + DID) */
+  walletBinding?: {
+    address: string;
+    signature: string;
+    message: string;
+    did: string;
+    signedAt: string;
+  };
   /** 自动工具调用开关 — 当 LLM 决定调用受信任工具时, agent 是否自动执行 */
   autoInvokeTools?: boolean;
   createdAt: string;
@@ -1045,6 +1054,66 @@ app.get('/channels', async (_req, res) => {
       }
       channel.updatedAt = new Date().toISOString();
       await saveChannels(channels);
+      res.json(channel);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * 钱包 DID 绑定: 客户端用钱包私钥对 (channelId + DID) 做 EIP-191 personal_sign,
+   * 服务端用 viem.verifyMessage 校验签名恢复出地址, 校验一致才落盘
+   * body: { walletAddress, signature, message, did, autoInvokeTools? }
+   */
+  app.post('/channels/:channelId/bind-wallet', async (req, res) => {
+    try {
+      const { channelId } = req.params;
+      const { walletAddress, signature, message, did, autoInvokeTools } = req.body || {};
+      if (!walletAddress || !signature || !message || !did) {
+        return res.status(400).json({ error: '缺少必填字段: walletAddress, signature, message, did' });
+      }
+      if (!isAddress(walletAddress)) {
+        return res.status(400).json({ error: 'Invalid wallet address format' });
+      }
+      // 防 message 重放: 必须包含本次 channelId + did
+      if (!message.includes(`Channel ID: ${channelId}`) || !message.includes(`Agent DID: ${did}`)) {
+        return res.status(400).json({ error: 'Challenge message does not match channelId/did' });
+      }
+      // viem 校验签名: recoverMessage 返回签名地址 (EIP-191 personal_sign)
+      const recovered = await verifyMessage({
+        address: getAddress(walletAddress),
+        message,
+        signature,
+      }).catch(() => false);
+      if (!recovered) {
+        return res.status(400).json({ error: '签名验证失败, 钱包私钥与地址不匹配或 message 被篡改' });
+      }
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+      if (!channel) {
+        return res.status(404).json({ error: 'Channel not found' });
+      }
+      // 签名里写的 DID 必须 = 当前 channel 的 DID (防绑定到旧 DID)
+      if (channel.did && channel.did !== did) {
+        return res.status(400).json({
+          error: `签名 DID (${did}) 与当前 channel DID (${channel.did}) 不一致`,
+        });
+      }
+      channel.walletAddress = getAddress(walletAddress);
+      channel.walletRegisteredAt = channel.walletRegisteredAt || new Date().toISOString();
+      channel.walletBinding = {
+        address: channel.walletAddress,
+        signature,
+        message,
+        did,
+        signedAt: new Date().toISOString(),
+      };
+      if (typeof autoInvokeTools === 'boolean') {
+        channel.autoInvokeTools = autoInvokeTools;
+      }
+      channel.updatedAt = new Date().toISOString();
+      await saveChannels(channels);
+      console.log(`[Wallet] channel ${channelId} 绑定钱包 ${channel.walletAddress} 到 DID ${did}`);
       res.json(channel);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
