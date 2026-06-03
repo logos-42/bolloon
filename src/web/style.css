@@ -1462,21 +1462,96 @@ body {
   50% { opacity: 1; transform: scale(1.2); }
 }
 
-/* Loading Dots */
-.loading-dots {
+/* Agent status bar (sits between .messages and .input-area) */
+.agent-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 24px;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    var(--accent-glow) 100%
+  );
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-secondary);
   font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.3px;
+  animation: statusFadeIn 0.3s ease-out;
+  min-height: 36px;
 }
 
-.loading-dots span {
-  animation: blink 1.4s infinite;
+.agent-status[hidden] {
+  display: none;
 }
 
-.loading-dots span:nth-child(2) { animation-delay: 0.2s; }
-.loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes statusFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 
-@keyframes blink {
-  0%, 20% { opacity: 0; }
-  40%, 100% { opacity: 1; }
+.agent-status-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-light);
+  border-top-color: var(--accent);
+  border-right-color: var(--accent-hover);
+  border-radius: 50%;
+  animation: spin 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: transform;
+  flex-shrink: 0;
+}
+
+.agent-status-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  /* 默认不显示, 仅在切换为"执行"状态时显示 */
+  display: none;
+}
+
+.agent-status[data-mode="executing"] .agent-status-spinner { display: none; }
+.agent-status[data-mode="executing"] .agent-status-icon { display: inline-block; }
+.agent-status[data-mode="executing"] .agent-status-icon { animation: pulseGlow 1.4s ease-in-out infinite; }
+
+.agent-status-text {
+  flex: 1;
+  background: linear-gradient(
+    90deg,
+    var(--text-secondary) 0%,
+    var(--accent) 50%,
+    var(--text-secondary) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: textShimmer 2.4s linear infinite;
+}
+
+@keyframes textShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { transform: scale(1); filter: drop-shadow(0 0 2px var(--accent-glow)); }
+  50%      { transform: scale(1.15); filter: drop-shadow(0 0 6px var(--accent)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-status-spinner,
+  .agent-status-text,
+  .agent-status-icon,
+  .agent-status {
+    animation: none;
+  }
+  .agent-status-text {
+    color: var(--text-secondary);
+    -webkit-text-fill-color: var(--text-secondary);
+  }
 }
 
 /* Input Area */

@@ -4,6 +4,8 @@ if (typeof marked === 'undefined') {
 }
 
 const messagesEl = document.getElementById('messages');
+const agentStatusEl = document.getElementById('agent-status');
+const agentStatusTextEl = document.getElementById('agent-status-text');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const sidebar = document.getElementById('sidebar');
@@ -900,20 +902,45 @@ function addMessage(content, type, save = true, container) {
   msgContainer.scrollTop = msgContainer.scrollHeight;
 }
 
+// Agent status bar — sits between the message list and the input box.
+// Two visual states: "planning" (spinner) and "executing" (glowing icon).
+// The text alternates to convey the action loop.
+let agentStatusState = null; // 'planning' | 'executing' | null
+let agentStatusTextIdx = 0;
+
+const AGENT_STATUS_TEXTS = {
+  planning: ['正在计划下一步行动', '正在规划任务路径', '正在分析当前状态'],
+  executing: ['正在执行下一步行动', '正在执行任务', '正在调用工具'],
+};
+
+function setAgentStatus(state) {
+  if (!agentStatusEl || !agentStatusTextEl) return;
+  if (state === null) {
+    agentStatusEl.hidden = true;
+    agentStatusEl.removeAttribute('data-mode');
+    agentStatusState = null;
+    return;
+  }
+  agentStatusEl.hidden = false;
+  agentStatusEl.setAttribute('data-mode', state);
+  agentStatusState = state;
+  // 重排一下文本, 避免长时间停留过于单调
+  agentStatusTextIdx = (agentStatusTextIdx + 1) % AGENT_STATUS_TEXTS[state].length;
+  agentStatusTextEl.textContent = AGENT_STATUS_TEXTS[state][agentStatusTextIdx];
+}
+
 function showTyping(container) {
-  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   hideTyping();
-  const div = document.createElement('div');
-  div.className = 'message message-ai';
-  div.id = 'typing';
-  div.innerHTML = '<div class="typing"><div class="typing-spinner"></div><span class="typing-text">思考中...</span></div>';
-  msgContainer.appendChild(div);
-  msgContainer.scrollTop = msgContainer.scrollHeight;
+  // 兼容旧路径: container 参数保留但不再使用, status bar 是全局唯一的
+  void container;
+  setAgentStatus('planning');
 }
 
 function hideTyping() {
-  const typing = document.getElementById('typing');
-  if (typing) typing.remove();
+  setAgentStatus(null);
+  // 兜底: 旧版本的 #typing 元素可能还残留在 DOM 里, 顺手清掉
+  const old = document.getElementById('typing');
+  if (old) old.remove();
   hideStreaming();
 }
 
@@ -1346,8 +1373,10 @@ function connect(channelId) {
         showUserCommand(data.content, container);
       } else if (data.type === 'ai') {
         addMessage(data.content, 'ai', true, container);
+        hideTyping();
       } else if (data.type === 'stream') {
         handleStreamEvent(data, container);
+        setAgentStatus('executing');
       } else if (data.type === 'regenerating') {
         const messages = container.querySelectorAll('.message-ai');
         if (messages.length > 0) {
@@ -1357,6 +1386,7 @@ function connect(channelId) {
         showTyping(container);
       } else if (data.type === 'status') {
         handleStatusEvent(data, container);
+        setAgentStatus('executing');
       } else if (data.type === 'done') {
         hideTyping();
         // AI 回复完, 把最后一条 ai 消息落盘 (兜底, 避免 server saveSession 漏写)
