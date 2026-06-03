@@ -119,7 +119,7 @@ export class ContextRouter {
 
   constructor(fragmentsDir?: string) {
     this.fragmentsDir = fragmentsDir || FRAGMENTS_DIR;
-    this.injectedFile = path.join('.boll', 'guard', 'injected.json');
+    this.injectedFile = path.join('.bolloon', 'guard', 'injected.json');
   }
 
   /**

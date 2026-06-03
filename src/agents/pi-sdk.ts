@@ -5,6 +5,7 @@
 
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { documentReader, DocumentContent } from '../documents/reader.js';
 import { getMinimax } from '../constraints/index.js';
@@ -38,6 +39,7 @@ import {
   type GlobalSharedContext
 } from '../social/global-shared-context.js';
 import { Session, SkillRegistry, saveSession, loadSession, type Skill, type StoredSession } from '@bolloon/constraint-runtime';
+import { loadSkillsFromPaths, defaultSkillPaths, describeSkill } from './skill-loader.js';
 
 // Pi Ecosystem Integration (lazy imports - initialized on demand)
 // Functions from: createGoal, getCurrentGoal, completeCurrentGoal, failCurrentGoal, getGoalStats, getQueueSummary
@@ -48,6 +50,12 @@ export interface AgentSessionConfig {
   identityDoc?: IdentityDoc;
   usePivotLoop?: boolean;
   pivotLoopConfig?: PivotLoopConfig;
+  /**
+   * Skills 加载目录列表, 后者覆盖前者同名 skill.
+   * 留空时使用 defaultSkillPaths() 推断的默认路径
+   * ( ~/.bolloon/skills/ → <cwd>/.bolloon/skills/ → ~/.boll/skills/ )
+   */
+  skillsPaths?: string[];
 }
 
 export interface IdentityDoc {
@@ -577,7 +585,70 @@ class PiAgentSession implements AgentSession {
     this.initSession();
     initDocumentReceiver();
     this.registerTools();
+    this.loadSkills(config.skillsPaths);
     this.initHarness();
+  }
+
+  /**
+   * 从 SKILL.md 目录加载 skills 进 skillRegistry.
+   *
+   * 路径解析优先级 (后者覆盖前者同名 skill):
+   *   1. 显式传入的 skillsPaths
+   *   2. ~/.bolloon/skills/         全局用户级
+   *   3. <cwd>/.bolloon/skills/     项目级
+   *   4. ~/.boll/skills/            全局 (兼容 bollharness 旧用户)
+   *   5. <bolloon-repo>/src/bollharness/.boll/skills/  bolloon 仓库内置 skill
+   *      (bolloon 项目本身用 pi-sdk 写核心, 这 19 个 skill 视为项目级 builtin)
+   *
+   * 静默忽略不存在的目录.
+   */
+  private loadSkills(paths?: string[]): void {
+    let resolved: string[];
+    if (paths && paths.length > 0) {
+      resolved = paths;
+    } else {
+      resolved = [
+        ...defaultSkillPaths(os.homedir(), this.cwd),
+        // bolloon 仓库内置 skill (相对本 npm 包的位置)
+        this.findBolloonBuiltinSkillsPath(),
+      ].filter((p): p is string => Boolean(p));
+    }
+    loadSkillsFromPaths(resolved)
+      .then((skills) => {
+        for (const s of skills) {
+          if (this.skillRegistry.has(s.name)) {
+            this.skillRegistry.unregister(s.name);
+          }
+          this.skillRegistry.register(s);
+        }
+        console.log(`[loadSkills] 已加载 ${skills.length} 个 skill: ${skills.map(describeSkill).join(' | ')}`);
+      })
+      .catch((err) => {
+        console.error('[loadSkills] 加载失败:', err);
+      });
+  }
+
+  /**
+   * 定位 bolloon 仓库内置的 bollharness skill 目录.
+   * 向上回溯 cwd, 找第一个包含 src/bollharness/.boll/skills 的祖先.
+   * 找不到时返回 null (例如把 bolloon-agent 作为外部依赖安装时).
+   */
+  private findBolloonBuiltinSkillsPath(): string | null {
+    let dir = this.cwd;
+    for (let i = 0; i < 6; i++) {
+      const candidate = path.join(dir, 'src', 'bollharness', '.boll', 'skills');
+      try {
+        if (fsSync.existsSync(candidate) && fsSync.statSync(candidate).isDirectory()) {
+          return candidate;
+        }
+      } catch {
+        // 忽略 stat 异常, 继续向上
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return null;
   }
 
   private async initHarness(): Promise<void> {
@@ -847,6 +918,47 @@ class PiAgentSession implements AgentSession {
         const goal = String(args.goal || '').trim();
         if (!goal) return { success: false, error: 'goal 必填' };
         return await runSelfImproveLoop(goal);
+      }
+    });
+
+    // list_skills 工具: 列出当前 session 已加载的 skills
+    // 加载源: ~/.bolloon/skills/ → <cwd>/.bolloon/skills/ → ~/.boll/skills/
+    this.tools.set('list_skills', {
+      name: 'list_skills',
+      description: '列出当前 session 已加载的 skills 及其描述. Skills 是从 SKILL.md 文件加载的, 兼容 Anthropic Agent Skills 标准 frontmatter 和 bollharness 现有 frontmatter.',
+      parameters: {},
+      execute: async () => {
+        const skills = this.skillRegistry.list();
+        if (skills.length === 0) {
+          return {
+            success: true,
+            output: '当前 session 没有加载任何 skill. 检查 ~/.bolloon/skills/ 或项目 .bolloon/skills/ 目录.',
+          };
+        }
+        const lines = skills.map((s, i) => `${i + 1}. ${s.name} — ${s.description}`);
+        return { success: true, output: `已加载 ${skills.length} 个 skill:\n${lines.join('\n')}` };
+      }
+    });
+
+    // use_skill 工具: 加载指定 skill 的 body 进 LLM context
+    // Skills 协议核心: 把 SKILL.md body 作为 Markdown 指南返回, LLM 下一轮按它执行
+    this.tools.set('use_skill', {
+      name: 'use_skill',
+      description: '按名称加载一个 skill, 把它的 SKILL.md body 作为 Markdown 文档返回. 调用后 LLM 会在下一轮按 skill 指南执行. 与 shell_exec / read_document 这些 "能力工具" 不同, use_skill 是 "知识注入".',
+      parameters: { name: 'skill 名称 (用 list_skills 查可用的)' },
+      execute: async (args) => {
+        const name = String(args.name || '').trim();
+        if (!name) return { success: false, error: 'name 必填' };
+        if (!this.skillRegistry.has(name)) {
+          const available = this.skillRegistry.list().map((s) => s.name).join(', ');
+          return { success: false, error: `skill "${name}" 未找到. 已加载: ${available || '(无)'}` };
+        }
+        try {
+          const body = await this.skillRegistry.execute(name, {});
+          return { success: true, output: body };
+        } catch (e) {
+          return { success: false, error: `执行 skill 失败: ${String(e)}` };
+        }
       }
     });
   }

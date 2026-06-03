@@ -4,20 +4,20 @@
  * Integrates with existing ContextRouter and Judgment systems.
  *
  * Architecture:
- * - Session end → extract summary by work_type → store in .boll/state/context-chains/
+ * - Session end → extract summary by work_type → store in .bolloon/state/context-chains/
  * - Session start (Gate 0/3) → lookup related chains → inject summaries
  * - Work type: code_change | review | design | question | planning | debugging
  *
  * Integration points:
  * - Uses existing context-router-judgment.ts pattern (extends, not replaces)
  * - Gate injection via gate-judgment-inject.ts
- * - Storage in .boll/state/context-chains/
+ * - Storage in .bolloon/state/context-chains/
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 
-export const CONTEXT_CHAINS_DIR = path.join('.boll', 'state', 'context-chains');
+export const CONTEXT_CHAINS_DIR = path.join('.bolloon', 'state', 'context-chains');
 
 export type WorkType = 'code_change' | 'review' | 'design' | 'question' | 'planning' | 'debugging';
 
