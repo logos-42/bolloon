@@ -120,8 +120,13 @@ async function saveChannels(channels: Channel[]): Promise<void> {
   console.log('[saveChannels] 保存频道数据, 数量:', sanitized.length);
   console.log('[saveChannels] JSON 长度:', jsonStr.length);
   await fs.writeFile(CHANNELS_PATH, jsonStr);
-  invalidateChannelsCache();
+  // 写盘即令缓存失效: 用 lastChannelsWriteAt 标记, getChannelsWithDID 会检查
+  lastChannelsWriteAt = Date.now();
 }
+
+// 模块级: 最近一次 channels.json 写盘时间. saveChannels 在模块顶层,
+// getChannelsWithDID 在 createWebServer 内部, 跨作用域用模块变量桥接.
+let lastChannelsWriteAt = 0;
 
 async function loadSession(channelId: string, sessionId?: string): Promise<Session | null> {
   // sessionId is optional for backward compatibility; if provided, load specific session
@@ -582,6 +587,11 @@ export async function createWebServer(port: number = 3000) {
 
     broadcast({ type: 'user', content: text }, channelId);
 
+    // 提前捕获 wallet/autoTools 到本地变量, 避免下面 try 块内的 inner const channel
+    // (line ~638) 与这里外层的 const channel 形成 shadowing 让 TS 误报"使用前未声明"
+    const boundWalletAddress = channel?.walletAddress;
+    const autoToolsEnabled = channel?.autoInvokeTools !== false; // 默认开启
+
     try {
       const agent = await getAgentForChannel(channelId, realChannelDid, realChannelName, realChannelDidDoc);
       let fullResponse = '';
@@ -608,10 +618,10 @@ export async function createWebServer(port: number = 3000) {
       // 将真实 DID 作为上下文前缀，让 AI 使用真实的 DID 而不是自己编造的
       let contextHint = '';
       if (realChannelDid) contextHint += `[系统上下文] 当前频道名称: ${realChannelName}, 你的真实 DID: ${realChannelDid}\n`;
-      if (channel?.walletAddress) {
-        contextHint += `[系统上下文] 已绑定的加密钱包地址: ${channel.walletAddress}。当用户授权或启用自动工具调用时, 可使用该地址发起链上操作。\n`;
+      if (boundWalletAddress) {
+        contextHint += `[系统上下文] 已绑定的加密钱包地址: ${boundWalletAddress}。当用户授权或启用自动工具调用时, 可使用该地址发起链上操作。\n`;
       }
-      if (channel?.autoInvokeTools) {
+      if (autoToolsEnabled) {
         contextHint += `[系统上下文] 自动工具调用已开启: 你可以使用受信任的本地工具 (shell / 文件 / skill) 而无需逐次询问用户。\n`;
       } else {
         contextHint += `[系统上下文] 自动工具调用已关闭: 每次执行工具前必须先与用户确认。\n`;
@@ -731,13 +741,15 @@ export async function createWebServer(port: number = 3000) {
   }
 
   // 频道列表响应缓存: 短时间内重复请求走缓存, 避免每次重读 + 重序列化 channels.json
-  const channelsCache = { data: null as Channel[] | null, expiresAt: 0 };
+  // 跨作用域 (saveChannels 在模块顶层, 本函数在 createWebServer 内) 用 lastChannelsWriteAt 协调失效
+  const channelsCache = { data: null as Channel[] | null, cachedAt: 0 };
   const CHANNELS_CACHE_TTL_MS = 500;
 
   /** 获取频道列表 — 立即返回, 缺 DID 的频道入队后台修复 */
   async function getChannelsWithDID(): Promise<Channel[]> {
     const now = Date.now();
-    if (channelsCache.data && channelsCache.expiresAt > now) {
+    // 缓存命中: 数据有效 AND 在写盘之后 AND 在 TTL 内
+    if (channelsCache.data && channelsCache.cachedAt > lastChannelsWriteAt && channelsCache.cachedAt + CHANNELS_CACHE_TTL_MS > now) {
       return channelsCache.data;
     }
     const channels = await loadChannels();
@@ -753,13 +765,8 @@ export async function createWebServer(port: number = 3000) {
       }
     }
     channelsCache.data = sanitized;
-    channelsCache.expiresAt = now + CHANNELS_CACHE_TTL_MS;
+    channelsCache.cachedAt = now;
     return sanitized;
-  }
-
-  function invalidateChannelsCache() {
-    channelsCache.data = null;
-    channelsCache.expiresAt = 0;
   }
 
 app.get('/channels', async (_req, res) => {
