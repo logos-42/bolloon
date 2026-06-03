@@ -11,7 +11,7 @@
 
 import { spawn } from 'child_process';
 import * as fs from 'fs';
-import { checkCommand, checkWritePath, SHELL_SANDBOX_CWD } from './shell-guard.js';
+import { checkCommand, checkWritePath, getSandboxCwd } from './shell-guard.js';
 
 export interface ShellExecResult {
   success: boolean;
@@ -59,8 +59,9 @@ export async function shellExec(
   }
 
   // 3. 确保沙箱存在
+  const sandboxCwd = getSandboxCwd();
   try {
-    fs.mkdirSync(SHELL_SANDBOX_CWD, { recursive: true });
+    fs.mkdirSync(sandboxCwd, { recursive: true });
   } catch {
     // 已经存在则忽略
   }
@@ -68,7 +69,7 @@ export async function shellExec(
   // 4. 跑命令
   return new Promise((resolve) => {
     const proc = spawn(cmd, args, {
-      cwd: SHELL_SANDBOX_CWD,
+      cwd: sandboxCwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, // 禁止 git 弹交互
       shell: false,  // **关键**: 禁用 shell, 防止元字符注入
       windowsHide: true

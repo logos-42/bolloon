@@ -16,7 +16,7 @@ import { DeepThinkingEngine, AgentCoordinator, type ThinkResult, type AgentResul
 import { WorkflowPivotLoop, createDefaultPivotConfig, type PivotLoopConfig, type LoopResult } from './workflow-pivot-loop.js';
 import { p2pDocumentTools, initDocumentReceiver } from './p2p-document-tools.js';
 import { shellExec } from './shell-tool.js';
-import { SELF_IMPROVE_BRANCH_PREFIX, SELF_IMPROVE_COOLDOWN_MS } from './shell-guard.js';
+import { getBranchPrefix, getCooldownMs } from './shell-guard.js';
 import {
   DiscoveredAgentsManager,
   SocialHeartbeat,
@@ -912,7 +912,7 @@ class PiAgentSession implements AgentSession {
     // 心跳事件会自动调用; 用户对话里也能手动调
     this.tools.set('self_improve', {
       name: 'self_improve',
-      description: `触发自我改进循环. AI 会在分支 ${SELF_IMPROVE_BRANCH_PREFIX}<timestamp> 上工作, 跑 tsc + vitest 验证, 通过后输出分支名给用户审. 有 6 小时冷却期. 命中护栏禁区的改动会被拒.`,
+      description: `触发自我改进循环. AI 会在分支 ${getBranchPrefix()}<timestamp> 上工作, 跑 tsc + vitest 验证, 通过后输出分支名给用户审. 冷却期由策略文件决定. 命中护栏禁区的改动会被拒.`,
       parameters: { goal: '本轮改进目标 (1 句话)' },
       execute: async (args) => {
         const goal = String(args.goal || '').trim();
@@ -2087,15 +2087,16 @@ export function resetAgentSession(): void {
 let lastSelfImproveAt: number | null = null;
 
 export async function runSelfImproveLoop(goal: string): Promise<{ success: boolean; output?: string; error?: string }> {
+  const cooldownMs = getCooldownMs();
   // 1. 冷却期检查
-  if (lastSelfImproveAt && Date.now() - lastSelfImproveAt < SELF_IMPROVE_COOLDOWN_MS) {
-    const waitHrs = Math.ceil((SELF_IMPROVE_COOLDOWN_MS - (Date.now() - lastSelfImproveAt)) / 3600000);
+  if (lastSelfImproveAt && Date.now() - lastSelfImproveAt < cooldownMs) {
+    const waitHrs = Math.ceil((cooldownMs - (Date.now() - lastSelfImproveAt)) / 3600000);
     return { success: false, error: `自改冷却中, 还需要约 ${waitHrs} 小时` };
   }
 
   // 2. 选源分支 + 新分支名
   const sourceBranch = 'master';
-  const newBranch = `${SELF_IMPROVE_BRANCH_PREFIX}${Date.now()}`;
+  const newBranch = `${getBranchPrefix()}${Date.now()}`;
 
   console.log(`[self-improve] 启动自改循环, 目标: ${goal}, 新分支: ${newBranch}`);
 

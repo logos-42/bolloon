@@ -522,13 +522,18 @@ export async function createWebServer(port: number = 3000) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    // 反向代理 (nginx/cloudflair) 需要: 禁用缓冲 + 立即 flush
+    res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
 
     const clientInfo = { res, channelId };
     sseClients.add(clientInfo as any);
+    console.log(`[SSE] 客户端连接 channelId=${channelId || '(broadcast)'}, 总数=${sseClients.size}`);
 
     req.on('close', () => {
       sseClients.delete(clientInfo as any);
+      try { res.end(); } catch {}
+      console.log(`[SSE] 客户端断开 channelId=${channelId || '(broadcast)'}, 剩余=${sseClients.size}`);
     });
   });
 
@@ -2274,6 +2279,66 @@ app.get('/channels', async (_req, res) => {
   }
 
   // ==================== Self-Improve 端点 ====================
+  // 查看当前策略 (白名单 / 黑名单)
+  app.get('/api/self-improve/policy', async (_req: any, res: any) => {
+    const { loadPolicy } = await import('../agents/shell-guard.js');
+    const policy = loadPolicy(true); // 强制重读
+    if (!policy) {
+      res.status(500).json({ error: '策略加载失败, 当前用硬编码兜底' });
+      return;
+    }
+    res.json(policy);
+  });
+
+  // 更新策略 (白名单 / 黑名单)
+  // **仅供人手动调用**, 不会暴露给 AI
+  app.put('/api/self-improve/policy', async (req: any, res: any) => {
+    const { writePolicy, auditShellCall } = await import('../agents/shell-guard.js');
+    const newPolicy = req.body;
+    if (!newPolicy || typeof newPolicy !== 'object') {
+      res.status(400).json({ error: 'body 必须是对象' });
+      return;
+    }
+    // 极简校验
+    if (!Array.isArray(newPolicy.commandAllowlist) || !Array.isArray(newPolicy.pathAllowlist) || !Array.isArray(newPolicy.pathDenylist)) {
+      res.status(400).json({ error: 'commandAllowlist/pathAllowlist/pathDenylist 必须是数组' });
+      return;
+    }
+    try {
+      const success = writePolicy(newPolicy);
+      if (success) {
+        auditShellCall('allowed', 'api:PUT:/api/self-improve/policy', [], `人类用户更新策略`);
+        res.json({ ok: true, message: '策略已更新, 60 秒内生效' });
+      } else {
+        res.status(500).json({ error: '写入策略文件失败' });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 查看审计日志
+  app.get('/api/self-improve/audit', async (_req: any, res: any) => {
+    try {
+      const { POLICY_AUDIT_PATH_PUBLIC } = await import('../agents/shell-guard.js');
+      const fs = await import('fs/promises');
+      const auditPath = POLICY_AUDIT_PATH_PUBLIC;
+      const exists = await fs.stat(auditPath).then(() => true).catch(() => false);
+      if (!exists) {
+        res.json([]);
+        return;
+      }
+      const content = await fs.readFile(auditPath, 'utf-8');
+      const lines = content.split('\n').filter(Boolean).slice(-200); // 最近 200 条
+      const entries = lines.map((l) => {
+        try { return JSON.parse(l); } catch { return { raw: l }; }
+      });
+      res.json(entries);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 手动触发 (供前端按钮 / 调试用)
   app.post('/api/self-improve/trigger', async (req: any, res: any) => {
     const { goal, kind } = req.body || {};

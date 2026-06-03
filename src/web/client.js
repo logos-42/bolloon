@@ -529,8 +529,10 @@ async function selectChannel(channelId, targetSessionId = null) {
     savedMessages.forEach(msg => {
       addMessage(msg.content, msg.type, false, container);
     });
-  } else if (container.innerHTML.trim() === '') {
-    // 如果容器是空的，加载 session
+  } else {
+    // 没有缓存 → 重新 fetch 加载
+    // 注意: container 是 channel 级别共享的, 必须先清空再加载, 不然会看到上一个 session 的内容
+    container.innerHTML = '';
     try {
       const res = await fetch(`/sessions/${channelId}?sessionId=${encodeURIComponent(currentSessionId)}`);
       const session = await res.json();
@@ -1166,24 +1168,54 @@ function connect(channelId) {
     reconnectAttempts.set(targetChannelId, 0);
   };
 
+  // 心跳超时: 如果 60s 没收到任何数据 (含 ping), 强制重建
+  // 覆盖网络半开 / 浏览器没触发 onerror 的情况
+  let lastEventTime = Date.now();
+  const heartbeatTimer = setInterval(() => {
+    if (!eventSources.has(targetChannelId)) {
+      clearInterval(heartbeatTimer);
+      return;
+    }
+    if (Date.now() - lastEventTime > 60000) {
+      console.warn('[SSE] 60s 无数据, 强制重建连接:', targetChannelId);
+      clearInterval(heartbeatTimer);
+      try { eventSource.close(); } catch {}
+      eventSources.delete(targetChannelId);
+      // 退避重连 (有上限)
+      const attempts = (reconnectAttempts.get(targetChannelId) || 0) + 1;
+      reconnectAttempts.set(targetChannelId, attempts);
+      const delay = Math.min(1000 * Math.pow(2, attempts - 1), 15000);
+      const timer = setTimeout(() => connect(targetChannelId), delay);
+      reconnectTimers.set(targetChannelId, timer);
+    }
+  }, 10000);
+
+  // onerror: 不要手动 close — 浏览器 EventSource 会自动重连
+  // 我们只需在 readyState 永久 CLOSED 时 (罕见) 才介入
   eventSource.onerror = () => {
-    console.error('[SSE] 连接错误 channelId:', targetChannelId);
-    eventSource.close();
-    eventSources.delete(targetChannelId);
-    const attempts = (reconnectAttempts.get(targetChannelId) || 0) + 1;
-    reconnectAttempts.set(targetChannelId, attempts);
-    const timer = setTimeout(() => connect(targetChannelId), Math.min(5000 * attempts, 30000));
-    reconnectTimers.set(targetChannelId, timer);
+    console.warn('[SSE] 错误, 浏览器自动重连中:', targetChannelId, 'readyState=', eventSource.readyState);
+    if (eventSource.readyState === EventSource.CLOSED) {
+      // 浏览器放弃重连, 我们接手
+      clearInterval(heartbeatTimer);
+      eventSources.delete(targetChannelId);
+      const attempts = (reconnectAttempts.get(targetChannelId) || 0) + 1;
+      reconnectAttempts.set(targetChannelId, attempts);
+      const delay = Math.min(1000 * Math.pow(2, attempts - 1), 15000);
+      const timer = setTimeout(() => connect(targetChannelId), delay);
+      reconnectTimers.set(targetChannelId, timer);
+    }
   };
 
   eventSource.onmessage = (e) => {
+    lastEventTime = Date.now();
     try {
       const data = JSON.parse(e.data);
       const msgChannelId = data.channelId || targetChannelId;
       console.log('[SSE] 收到消息:', data.type, 'channelId:', msgChannelId);
 
-      // 路由消息到正确的频道（即使该频道不是当前视图）
-      if (msgChannelId !== targetChannelId) {
+      // 路由消息到正确的频道
+      // 只有 envelope.channelId 存在且与目标不同时才丢弃 (空/undefined 视为广播给自己)
+      if (msgChannelId && msgChannelId !== targetChannelId) {
         console.log('[SSE] 忽略非目标频道消息');
         return;
       }
