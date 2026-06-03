@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli.js",
@@ -56,7 +56,8 @@
     "pdf-parse": "^1.1.4",
     "platform": "^1.3.6",
     "react": "^18.3.0",
-    "react-dom": "^18.3.0"
+    "react-dom": "^18.3.0",
+    "viem": "^2.52.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
