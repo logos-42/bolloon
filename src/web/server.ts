@@ -117,12 +117,22 @@ async function saveChannels(channels: Channel[]): Promise<void> {
     return rest as Channel;
   });
   const jsonStr = JSON.stringify(sanitized, null, 2);
+
+  // 写盘保护: 内容和上次完全一致就跳过, 避免 SSE ping / 重新 init 触发的无意义写盘
+  if (jsonStr === lastChannelsJson) {
+    return; // 静默跳过, 不打日志
+  }
+  lastChannelsJson = jsonStr;
+
   console.log('[saveChannels] 保存频道数据, 数量:', sanitized.length);
   console.log('[saveChannels] JSON 长度:', jsonStr.length);
   await fs.writeFile(CHANNELS_PATH, jsonStr);
   // 写盘即令缓存失效: 用 lastChannelsWriteAt 标记, getChannelsWithDID 会检查
   lastChannelsWriteAt = Date.now();
 }
+
+// 写盘去重: 上次写盘内容, 用于跳过幂等调用
+let lastChannelsJson = '';
 
 // 模块级: 最近一次 channels.json 写盘时间. saveChannels 在模块顶层,
 // getChannelsWithDID 在 createWebServer 内部, 跨作用域用模块变量桥接.

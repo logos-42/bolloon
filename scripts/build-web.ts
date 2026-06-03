@@ -57,6 +57,10 @@ async function main() {
   await fs.copyFile(path.join(ROOT, 'src/web/api-config.html'), path.join(DIST_WEB, 'api-config.html'));
   await fs.copyFile(path.join(ROOT, 'src/web/style.css'), path.join(DIST_WEB, 'style.css'));
   await fs.copyFile(path.join(ROOT, 'src/web/client.js'), path.join(DIST_WEB, 'client.js'));
+  // 复制 PWA manifest (index.html 里有 <link rel="manifest">, 否则浏览器会 404)
+  await fs.copyFile(path.join(ROOT, 'src/web/manifest.json'), path.join(DIST_WEB, 'manifest.json'));
+  // 复制 icons 目录 (manifest.json 里引用了 favicon 等)
+  await fs.cp(path.join(ROOT, 'src/web/icons'), path.join(DIST_WEB, 'icons'), { recursive: true });
 
   console.log('[build-web] 完成!');
 }
