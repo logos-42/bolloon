@@ -2361,7 +2361,6 @@ if (agentGenerateWalletBtn) {
     }
   });
 }
-}
 
 if (catalogAddBtn) {
   catalogAddBtn.addEventListener('click', () => openAgentAddModal(null));
