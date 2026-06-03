@@ -280,27 +280,40 @@ function checkNpmOutdated(): OutdatedPackage[] {
 }
 
 /**
- * 自动更新 npm 包
+ * 自动更新 npm 包 (legacy: 只传包名, 让 npm 按本地 semver 约束判断 — 不可靠)
+ * 新代码应使用 updatePackagesWithVersion 并传 name@version
  */
 async function updatePackages(packages?: string[]): Promise<UpdateResult> {
-  // 记录更新前的版本，用于事后判断"是否真的升级了"
-  // 与 getInstalledVersion 的"优先读全局"保持一致 —— install 也用 -g，
-  // 否则判断和执行落在不同的目录，永远改不到那个被读取的版本号。
   const targets = packages && packages.length > 0 ? packages : ['@bolloon/bolloon-agent'];
+  // 旧 API 没有 version, 加一个空 placeholder 走相同路径
+  return updatePackagesWithVersion(targets);
+}
+
+/**
+ * 自动更新 npm 包, 传 `name@version` 形式的目标让 npm install 不被本地
+ * package.json 的 semver 约束卡住 (旧版只传 name 时, npm 看到本地
+ * package.json 里 "^0.1.17" 已经满足就判 up to date, 永远升不上去)
+ */
+async function updatePackagesWithVersion(packagesWithVersion: string[]): Promise<UpdateResult> {
+  // 解析 `name@version` 形式, 提取 name 用于 before/after 校验
+  const parsed = packagesWithVersion.map(spec => {
+    const at = spec.lastIndexOf('@');
+    if (at <= 0) return { name: spec, version: '' };
+    return { name: spec.slice(0, at), version: spec.slice(at + 1) };
+  });
+  const targets = parsed.map(p => p.name);
   const before = new Map<string, string | null>();
   for (const p of targets) before.set(p, getInstalledVersion(p));
 
-  const isGlobal = !packages || packages.length === 0;
-  const args = isGlobal
-    ? ['npm', 'install', '-g', ...targets]
-    : ['npm', 'install', ...targets, '--save'];
+  // 用 targetsWithVersion 直接拼命令 - 包含具体版本号, 不会被本地约束拦截
+  const args = ['npm', 'install', '-g', ...packagesWithVersion];
 
   log(`\n${CYAN}📦 正在更新包...${RESET}\n`, RESET);
 
   try {
     execSync(args.join(' '), {
       encoding: 'utf-8',
-      timeout: 300000, // 5分钟超时
+      timeout: 300000,
       stdio: 'inherit',
       cwd: process.cwd()
     });
@@ -313,20 +326,16 @@ async function updatePackages(packages?: string[]): Promise<UpdateResult> {
     };
   }
 
-  // install 退出码 0 并不等于"真的升上去了"（"up to date" 也是 0）。
-  // 重新读取磁盘版本，只有真的达到目标 latest 之一才算 updated。
+  // install 退出码 0 并不等于"真的升上去了" ("up to date" 也是 0)。
+  // 重新读取磁盘版本, 只有真的达到 latest 之一才算 updated。
   const upgraded: string[] = [];
-  const failed: string[] = [];
-  for (const p of targets) {
-    const after = getInstalledVersion(p);
-    const was = before.get(p);
+  for (const p of parsed) {
+    const after = getInstalledVersion(p.name);
+    const was = before.get(p.name);
     if (after && was && compareVersions(was, after) < 0) {
-      upgraded.push(p);
-    } else if (after && was && compareVersions(was, after) === 0) {
-      // 版本没变 —— install 跑过但没改动；不当作"刚升级"
-    } else {
-      failed.push(p);
+      upgraded.push(p.name);
     }
+    // 版本没变 = npm 仍判 up to date; 不当成功
   }
 
   if (upgraded.length > 0) {
@@ -376,7 +385,10 @@ export async function checkAndUpdate(): Promise<{
       log(`   最新版本: ${bolloonInfo.latest}\n\n`, RESET);
 
       // 自动更新
-      const result = await updatePackages(bolloonInfo.packages.map(p => p.name));
+      // 关键: 把目标版本号也传过去, 否则 `npm install -g @bolloon/bolloon-agent`
+      // 会按本地 package.json 的 "^0.1.17" 约束去判断, 永远装不上去
+      const targetsWithVersion = bolloonInfo.packages.map(p => `${p.name}@${p.latest}`);
+      const result = await updatePackagesWithVersion(targetsWithVersion);
 
       if (result.success) {
         log(`\n${GREEN}✅ 更新成功！请重新启动应用${RESET}\n`, RESET);
