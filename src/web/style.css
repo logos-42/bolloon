@@ -261,18 +261,37 @@ body {
 
 /* Sidebar Section */
 .sidebar-section {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0; /* 关键: flex 子项 min-height 默认 auto, 会撑破 overflow */
   display: flex;
   flex-direction: column;
   overflow: hidden;
   padding: 16px;
+  position: relative;
 }
-
 .section-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
+  /* sticky 头部: 长列表滚动时, 智能体标题始终可见, 防止用户失去方向感 */
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding-bottom: 6px;
+  /* 用伪元素做模糊底色, 让滚动的内容在它下面淡出而不是硬切 */
+}
+
+.section-header::after {
+  content: '';
+  position: absolute;
+  left: -16px;
+  right: -16px;
+  bottom: -6px;
+  height: 18px;
+  background: linear-gradient(to bottom, var(--bg-sidebar), transparent);
+  pointer-events: none;
+  z-index: -1;
 }
 
 .section-title {
@@ -355,13 +374,25 @@ body {
   list-style: none;
   flex: 1;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  overflow-x: hidden;
+  /* 流畅的上下滑动: iOS 弹性滚动 + 桌面惯性滚动 + 边界不外溢 */
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  /* contain 让长列表滚动时不影响外层布局, 减少 reflow */
+  contain: strict;
+  /* 重要: gap 在 overflow 容器里会触发滚动跳帧, 用 margin 替代 */
+  display: block;
+  padding: 0;
+  margin: 0;
+}
+
+.channel-list > .agent-group + .agent-group {
+  margin-top: 4px;
 }
 
 .channel-list::-webkit-scrollbar {
-  width: 4px;
+  width: 6px;
 }
 
 .channel-list::-webkit-scrollbar-track {
@@ -370,7 +401,16 @@ body {
 
 .channel-list::-webkit-scrollbar-thumb {
   background: var(--border);
-  border-radius: 2px;
+  border-radius: 3px;
+  /* 滚动条 hover 才出现, 默认隐藏, 减少视觉干扰 */
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.channel-list:hover::-webkit-scrollbar-thumb,
+.channel-list:focus-within::-webkit-scrollbar-thumb,
+.channel-list.is-scrolling::-webkit-scrollbar-thumb {
+  opacity: 1;
 }
 
 .channel-item {
@@ -1661,6 +1701,119 @@ body {
   text-align: center;
   color: var(--text-secondary);
   padding: 40px 20px;
+}
+
+/* ============================================ */
+/* Wallet Manager                               */
+/* ============================================ */
+.wallet-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  contain: strict;
+  margin-top: 8px;
+}
+
+.wallet-empty {
+  text-align: center;
+  color: var(--text-secondary);
+  padding: 24px 16px;
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.wallet-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: var(--transition);
+}
+
+.wallet-row:hover {
+  border-color: var(--accent);
+}
+
+.wallet-row.is-active {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.wallet-row .wallet-chain {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.wallet-row.is-active .wallet-chain {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.wallet-row .wallet-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wallet-row .wallet-agent {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wallet-row .wallet-address {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wallet-row .wallet-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.wallet-row .wallet-mini-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: var(--transition);
+}
+
+.wallet-row .wallet-mini-btn:hover {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
 }
 
 .task-item {
@@ -3583,4 +3736,140 @@ body {
   10% { opacity: 1; transform: translateX(-50%) translateY(0); }
   80% { opacity: 1; }
   100% { opacity: 0; }
+}
+
+/* ============================================ */
+/* Catalog: section header `+` button, badges   */
+/* ============================================ */
+
+.section-header-action {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: var(--transition);
+}
+
+.section-header-action:hover {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+
+.agent-row .agent-wallet-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--accent-glow);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  letter-spacing: 0.3px;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.agent-row .agent-tools-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(80, 200, 120, 0.12);
+  color: rgb(80, 200, 120);
+  border: 1px solid rgba(80, 200, 120, 0.4);
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.agent-row .agent-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.agent-row .agent-config-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  opacity: 0;
+  transition: var(--transition);
+  margin-left: 4px;
+}
+
+.agent-row:hover .agent-config-btn {
+  opacity: 1;
+}
+
+.agent-row .agent-config-btn:hover {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+
+/* Form hints and info blocks in modals */
+.form-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.form-info {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.form-info code {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.checkbox-label {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
 }

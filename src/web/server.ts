@@ -48,7 +48,14 @@ interface Channel {
   did?: string;
   publicKey?: string;
   cid?: string;
-  didDocument?: any;
+  /** 轻量引用：从 didDocument 只挑出 cid/ipnsName, 不存整份文档 */
+  didDocRef?: { cid?: string; ipnsName?: string };
+  /** 加密钱包地址（公链地址, e.g. 0x...）— 与频道绑定, 启用自动 on-chain 工具调用 */
+  walletAddress?: string;
+  /** 钱包注册时间 */
+  walletRegisteredAt?: string;
+  /** 自动工具调用开关 — 当 LLM 决定调用受信任工具时, agent 是否自动执行 */
+  autoInvokeTools?: boolean;
   createdAt: string;
   updatedAt: string;
   currentSessionId?: string;
@@ -80,6 +87,20 @@ async function ensureSessionDirs() {
   await fs.mkdir(SESSION_CACHE_PATH, { recursive: true });
 }
 
+/** 粗校验链上地址格式 — 不做 EIP-55 校验, 避免阻塞 UI; 失败返回空字符串 */
+function isValidWalletAddress(addr: unknown): string {
+  if (typeof addr !== 'string') return '';
+  const a = addr.trim();
+  if (!a) return '';
+  // EVM: 0x + 40 hex chars
+  if (/^0x[0-9a-fA-F]{40}$/.test(a)) return a;
+  // Sui / Aptos: 0x + 64 hex chars
+  if (/^0x[0-9a-fA-F]{64}$/.test(a)) return a;
+  // Solana: base58, 32-44 chars
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a) && !a.startsWith('0x')) return a;
+  return '';
+}
+
 async function loadChannels(): Promise<Channel[]> {
   try {
     const data = await fs.readFile(CHANNELS_PATH, 'utf-8');
@@ -90,18 +111,16 @@ async function loadChannels(): Promise<Channel[]> {
 }
 
 async function saveChannels(channels: Channel[]): Promise<void> {
-  const jsonStr = JSON.stringify(channels, null, 2);
-  console.log('[saveChannels] 保存频道数据, 数量:', channels.length);
+  // 写盘前剥掉任何遗留的 didDocument 字段, 防止历史脏数据撑大文件
+  const sanitized = channels.map(ch => {
+    const { didDocument: _omit, ...rest } = ch as any;
+    return rest as Channel;
+  });
+  const jsonStr = JSON.stringify(sanitized, null, 2);
+  console.log('[saveChannels] 保存频道数据, 数量:', sanitized.length);
   console.log('[saveChannels] JSON 长度:', jsonStr.length);
   await fs.writeFile(CHANNELS_PATH, jsonStr);
-
-  // 验证保存的内容
-  const verifyData = await fs.readFile(CHANNELS_PATH, 'utf-8');
-  const verifyChannels = JSON.parse(verifyData);
-  console.log('[saveChannels] 验证 - 保存了', verifyChannels.length, '个频道');
-  verifyChannels.forEach((ch: Channel, i: number) => {
-    console.log(`  [${i}] ${ch.name}: did=${ch.did || '无'}`);
-  });
+  invalidateChannelsCache();
 }
 
 async function loadSession(channelId: string, sessionId?: string): Promise<Session | null> {
@@ -109,6 +128,12 @@ async function loadSession(channelId: string, sessionId?: string): Promise<Sessi
   const key = sessionId ? `${channelId}:${sessionId}` : channelId;
   const sessionPath = path.join(SESSION_CACHE_PATH, `${key}.json`);
   try {
+    // 内存保护: 拒绝加载过大的 session 文件 (> 50MB 视为异常, 避免 OOM)
+    const stat = await fs.stat(sessionPath);
+    if (stat.size > 50 * 1024 * 1024) {
+      console.warn(`[loadSession] session 过大 (${stat.size} bytes): ${key}`);
+      return null;
+    }
     const data = await fs.readFile(sessionPath, 'utf-8');
     return JSON.parse(data);
   } catch {
@@ -375,7 +400,7 @@ async function getAgentForChannel(
     return existingSession;
   }
 
-  // 构建频道的身份文档
+  // 构建频道的身份文档 (从 didDocRef 拿 cid/ipnsName, 不读整份 didDocument)
   const identityDoc = channelDid ? {
     did: channelDid,
     name: channelName || `Channel-${channelId.slice(-6)}`,
@@ -547,13 +572,13 @@ export async function createWebServer(port: number = 3000) {
       return res.status(400).json({ error: 'No channelId provided' });
     }
 
-    // 获取频道信息，包括真实 DID 和完整 DID 文档
+    // 获取频道信息（只取轻量引用, 不再读完整 DID 文档）
     const channels = await loadChannels();
     const channel = channels.find(c => c.id === channelId);
     const currentSessionId = channel?.currentSessionId || 'default';
     const realChannelDid = channelDid || channel?.did || '';
     const realChannelName = channel?.name || '';
-    const realChannelDidDoc = channel?.didDocument;
+    const realChannelDidDoc = channel?.didDocRef;
 
     broadcast({ type: 'user', content: text }, channelId);
 
@@ -581,7 +606,17 @@ export async function createWebServer(port: number = 3000) {
       console.log(`[消息处理] 开始处理用户消息, channelId: ${channelId}, sessionId: ${currentSessionId}`);
 
       // 将真实 DID 作为上下文前缀，让 AI 使用真实的 DID 而不是自己编造的
-      const contextHint = realChannelDid ? `[系统上下文] 当前频道名称: ${realChannelName}, 你的真实 DID: ${realChannelDid}\n\n` : '';
+      let contextHint = '';
+      if (realChannelDid) contextHint += `[系统上下文] 当前频道名称: ${realChannelName}, 你的真实 DID: ${realChannelDid}\n`;
+      if (channel?.walletAddress) {
+        contextHint += `[系统上下文] 已绑定的加密钱包地址: ${channel.walletAddress}。当用户授权或启用自动工具调用时, 可使用该地址发起链上操作。\n`;
+      }
+      if (channel?.autoInvokeTools) {
+        contextHint += `[系统上下文] 自动工具调用已开启: 你可以使用受信任的本地工具 (shell / 文件 / skill) 而无需逐次询问用户。\n`;
+      } else {
+        contextHint += `[系统上下文] 自动工具调用已关闭: 每次执行工具前必须先与用户确认。\n`;
+      }
+      if (contextHint) contextHint += '\n';
       fullResponse = await agent.promptStream(contextHint + text, streamCallback);
 
       broadcast({ type: 'ai', content: fullResponse }, channelId);
@@ -618,61 +653,114 @@ export async function createWebServer(port: number = 3000) {
     }
   });
 
-  // 获取频道并确保每个频道都有 DID
-async function getChannelsWithDID(): Promise<Channel[]> {
-  const channels = await loadChannels();
-  console.log(`[getChannelsWithDID] 加载了 ${channels.length} 个频道`);
-  let changed = false;
+  // ---------- 频道元数据后台修复队列 ----------
+  // 关键点: 旧实现会在每次 GET /channels 时同步执行 KeyManager.generate() + IPFS POST,
+  // 多频道场景下持续分配密钥对 + 发起 HTTP 请求, 几轮就会把 Node 内存撑爆。
+  // 新实现: 入队 + 节流(2s) + 单飞, 立刻返回当前 channels, 修复异步进行。
+  const didFixQueue = new Set<string>(); // 待修复的 channelId
+  let didFixRunning = false;
+  let didFixTimer: NodeJS.Timeout | null = null;
 
-  for (const channel of channels) {
-    // 检查 DID 是否有效
-    const didMissing = channel.did === undefined || channel.did === null || channel.did === 'undefined' || channel.did === 'null' || channel.did === '';
-    console.log(`[getChannelsWithDID] 频道 ${channel.name}: did=${JSON.stringify(channel.did)}, 缺失=${didMissing}`);
+  function scheduleDidFix(channelId: string) {
+    didFixQueue.add(channelId);
+    if (didFixTimer) return;
+    didFixTimer = setTimeout(() => {
+      didFixTimer = null;
+      void runDidFixOnce();
+    }, 2000);
+  }
 
-    if (didMissing) {
-      console.log(`[修复频道] ${channel.name} (${channel.id}) 缺少 DID，正在生成...`);
-      try {
-        const kp = KeyManager.generate();
-        const generatedDid = kp.did;
-        console.log(`[修复频道] KeyManager.generate() 结果: kp=${!!kp}, did=${generatedDid}`);
-
-        if (generatedDid && typeof generatedDid === 'string' && generatedDid.length > 0) {
-          channel.did = generatedDid;
-          channel.publicKey = Buffer.from(kp.publicKey).toString('hex');
-          console.log(`[修复频道] ${channel.name} 生成了 DID: ${channel.did}`);
-
-          // 发布到 IPFS 并保存完整 DID 文档
-          try {
-            const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
-            const result = await auth.registerAgent({ name: channel.name, services: [] }, kp, '');
-            channel.cid = result.cid || '';
-            // 保存完整 DID 文档（用于传递给 session）
-            if (result.didDocument) {
-              channel.didDocument = result.didDocument;
-            }
-            console.log(`[修复频道] ${channel.name} CID: ${channel.cid}`);
-          } catch (ipfsErr) {
-            console.log(`[修复频道] ${channel.name} IPFS 失败`);
-          }
-        } else {
-          console.log(`[修复频道] ${channel.name} KeyManager 返回无效 DID`);
-          channel.did = `did:web:${channel.id}`;
-          channel.publicKey = `pk_${channel.id}`;
+  async function runDidFixOnce(): Promise<void> {
+    if (didFixRunning) return;
+    didFixRunning = true;
+    try {
+      while (didFixQueue.size > 0) {
+        const id = didFixQueue.values().next().value as string;
+        didFixQueue.delete(id);
+        try {
+          await fixOneChannelDID(id);
+        } catch (e) {
+          console.log(`[DID 修复] ${id} 失败: ${(e as Error).message}`);
         }
-        changed = true;
-      } catch (e) {
-        console.log(`[修复频道] ${channel.name} 失败: ${e}`);
       }
+    } finally {
+      didFixRunning = false;
     }
   }
 
-  if (changed) {
-    console.log('[getChannelsWithDID] 保存修改后的频道');
+  async function fixOneChannelDID(channelId: string): Promise<void> {
+    const channels = await loadChannels();
+    const channel = channels.find(c => c.id === channelId);
+    if (!channel) return;
+    const didMissing = !channel.did || channel.did === 'undefined' || channel.did === 'null' || channel.did === '';
+    if (!didMissing) return;
+
+    let kp: any;
+    try {
+      kp = KeyManager.generate();
+    } catch {
+      kp = null;
+    }
+    if (kp && kp.did) {
+      channel.did = kp.did;
+      channel.publicKey = Buffer.from(kp.publicKey).toString('hex');
+    } else {
+      // 兜底: 用 channelId 派生, 不阻塞 UI
+      channel.did = `did:web:${channel.id}`;
+      channel.publicKey = `pk_${channel.id}`;
+    }
+    console.log(`[DID 修复] ${channel.name} DID = ${channel.did}`);
+
+    // IPFS 注册: 失败也无所谓, 后续可重试
+    try {
+      const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+      const result = await auth.registerAgent({ name: channel.name, services: [] }, kp, '');
+      channel.cid = result.cid || channel.cid;
+      // 关键: 不再保存整份 didDocument, 只留 cid/ipnsName 两个引用字段
+      if (result.didDocument) {
+        channel.didDocRef = {
+          cid: result.cid,
+          ipnsName: (result.didDocument as any)?.ipnsName
+        };
+        delete (channel as any).didDocument;
+      }
+    } catch {
+      // IPFS 不可用, 跳过 — 下次再试
+    }
     await saveChannels(channels);
   }
 
-  return channels;
-}
+  // 频道列表响应缓存: 短时间内重复请求走缓存, 避免每次重读 + 重序列化 channels.json
+  const channelsCache = { data: null as Channel[] | null, expiresAt: 0 };
+  const CHANNELS_CACHE_TTL_MS = 500;
+
+  /** 获取频道列表 — 立即返回, 缺 DID 的频道入队后台修复 */
+  async function getChannelsWithDID(): Promise<Channel[]> {
+    const now = Date.now();
+    if (channelsCache.data && channelsCache.expiresAt > now) {
+      return channelsCache.data;
+    }
+    const channels = await loadChannels();
+    // 防御性剥除: 任何旧 channels.json 残留的 didDocument 都不返回给客户端
+    const sanitized = channels.map(ch => {
+      const { didDocument: _omit, ...rest } = ch as any;
+      return rest as Channel;
+    });
+    for (const channel of sanitized) {
+      const didMissing = !channel.did || channel.did === 'undefined' || channel.did === 'null' || channel.did === '';
+      if (didMissing) {
+        scheduleDidFix(channel.id);
+      }
+    }
+    channelsCache.data = sanitized;
+    channelsCache.expiresAt = now + CHANNELS_CACHE_TTL_MS;
+    return sanitized;
+  }
+
+  function invalidateChannelsCache() {
+    channelsCache.data = null;
+    channelsCache.expiresAt = 0;
+  }
 
 app.get('/channels', async (_req, res) => {
   try {
@@ -691,13 +779,16 @@ app.get('/channels', async (_req, res) => {
 
   app.post('/channels', async (req, res) => {
     try {
-      const { name, agentId } = req.body;
-      console.log(`[创建频道] 收到请求: name=${name}, agentId=${agentId}`);
+      const { name, agentId, walletAddress, autoInvokeTools } = req.body;
+      console.log(`[创建频道] 收到请求: name=${name}, agentId=${agentId}, wallet=${walletAddress ? 'yes' : 'no'}`);
       if (!name || !agentId) {
         return res.status(400).json({ error: 'name and agentId required' });
       }
       const channels = await loadChannels();
       const id = `ch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+      // 校验钱包地址格式 (粗校验: 0x + 40 hex / Solana base58 / Sui 0x+64)
+      const validWallet = isValidWalletAddress(walletAddress);
 
       // 先创建频道（不阻塞等待 DID 生成）
       const channel: Channel = {
@@ -707,6 +798,9 @@ app.get('/channels', async (_req, res) => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         currentSessionId: `sess_${Date.now()}`,
+        walletAddress: validWallet || undefined,
+        walletRegisteredAt: validWallet ? new Date().toISOString() : undefined,
+        autoInvokeTools: autoInvokeTools !== false, // 默认 true
         sessions: [{
           id: `sess_${Date.now()}`,
           createdAt: new Date().toISOString(),
@@ -721,34 +815,9 @@ app.get('/channels', async (_req, res) => {
       await saveSession({ channelId: id, sessionId: 'default', messages: [], lastUpdated: new Date().toISOString() });
       res.json(channel);
 
-      // 后台生成 DID
-      console.log(`[创建频道] 后台生成 DID...`);
-      setTimeout(async () => {
-        try {
-          const kp = KeyManager.generate();
-          if (kp.did) {
-            const allChannels = await loadChannels();
-            const ch = allChannels.find(c => c.id === id);
-            if (ch) {
-              ch.did = kp.did;
-              ch.publicKey = Buffer.from(kp.publicKey).toString('hex');
-              console.log(`[创建频道] DID 生成完成: ${ch.did}`);
-
-              // 发布到 IPFS
-              try {
-                const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
-                const result = await auth.registerAgent({ name, services: [] }, kp, '');
-                ch.cid = result.cid || '';
-                console.log(`[创建频道] CID: ${ch.cid}`);
-              } catch {}
-
-              await saveChannels(allChannels);
-            }
-          }
-        } catch (e) {
-          console.log(`[创建频道] ${name} 后台生成 DID 失败`);
-        }
-      }, 100);
+      // 后台生成 DID — 用统一的修复队列, 避免每个 POST 都启动独立 setTimeout
+      console.log(`[创建频道] 加入 DID 修复队列...`);
+      scheduleDidFix(id);
     } catch (err: any) {
       console.error('[创建频道] 错误:', err);
       res.status(500).json({ error: err.message });
@@ -910,16 +979,32 @@ app.get('/channels', async (_req, res) => {
   app.patch('/channels/:channelId', async (req, res) => {
     try {
       const { channelId } = req.params;
-      const { name } = req.body;
-      if (!name) {
-        return res.status(400).json({ error: 'Name required' });
-      }
+      const { name, walletAddress, autoInvokeTools } = req.body;
       const channels = await loadChannels();
       const channel = channels.find(c => c.id === channelId);
       if (!channel) {
         return res.status(404).json({ error: 'Channel not found' });
       }
-      channel.name = name;
+      if (typeof name === 'string' && name.trim()) {
+        channel.name = name.trim();
+      }
+      // walletAddress 允许 null/'' 来解绑
+      if (walletAddress !== undefined) {
+        if (walletAddress === null || walletAddress === '') {
+          channel.walletAddress = undefined;
+          channel.walletRegisteredAt = undefined;
+        } else {
+          const valid = isValidWalletAddress(walletAddress);
+          if (!valid) {
+            return res.status(400).json({ error: 'Invalid wallet address format' });
+          }
+          channel.walletAddress = valid;
+          channel.walletRegisteredAt = channel.walletRegisteredAt || new Date().toISOString();
+        }
+      }
+      if (typeof autoInvokeTools === 'boolean') {
+        channel.autoInvokeTools = autoInvokeTools;
+      }
       channel.updatedAt = new Date().toISOString();
       await saveChannels(channels);
       res.json(channel);
@@ -1006,7 +1091,7 @@ app.get('/channels', async (_req, res) => {
       const currentSessionId = channel?.currentSessionId || 'default';
       const realChannelDid = channel?.did || '';
       const realChannelName = channel?.name || '';
-      const realChannelDidDoc = channel?.didDocument;
+      const realChannelDidDoc = channel?.didDocRef;
 
       // 通知前端开始重新生成
       broadcast({ type: 'regenerating', channelId }, channelId);

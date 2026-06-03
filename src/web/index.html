@@ -47,6 +47,12 @@
       <div class="sidebar-section">
         <div class="section-header">
           <span class="section-title">智能体</span>
+          <button id="catalog-add-btn" class="section-header-action" title="添加智能体">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </button>
         </div>
         <button id="new-channel-btn" class="section-action" title="新建智能体">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -103,6 +109,14 @@
               <line x1="12" y1="8" x2="5" y2="16"></line>
               <line x1="12" y1="8" x2="19" y2="16"></line>
             </svg>
+          </button>
+          <button id="wallet-btn" class="header-action" title="钱包管理">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3"></path>
+              <circle cx="17" cy="12" r="1.5" fill="currentColor"></circle>
+              <path d="M3 7l3-3h12l3 3"></path>
+            </svg>
+            <span id="wallet-badge" class="task-badge" style="display:none;">0</span>
           </button>
           <button id="task-queue-btn" class="header-action" title="任务队列">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -171,6 +185,77 @@
             <div class="btn-group">
               <button id="task-cancel-btn" class="btn-secondary">取消</button>
               <button id="task-create-btn" class="btn-primary">创建并执行</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Agent Add / Wallet / Auto-tool Modal -->
+      <div id="agent-add-modal" class="modal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2 id="agent-add-title">添加智能体</h2>
+            <button id="agent-add-modal-close" class="modal-close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>智能体名称</label>
+              <input type="text" id="agent-add-name" placeholder="例如: 交易助手">
+            </div>
+            <div class="form-group">
+              <label>加密钱包地址 (EVM 0x... 或 Solana/Sui 等)</label>
+              <div style="display:flex;gap:8px;">
+                <input type="text" id="agent-add-wallet" placeholder="0x... (留空则不绑定)" style="flex:1;">
+                <button type="button" id="agent-generate-wallet-btn" class="btn-secondary btn-sm" title="本地生成新钱包">生成</button>
+              </div>
+              <small class="form-hint">本地生成的钱包仅在浏览器内存, 服务端只保存公链地址, 不会上传私钥。</small>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="agent-add-auto-tools" checked>
+                <span>启用自动工具调用 (LLM 决定调用受信任工具时, agent 自动执行)</span>
+              </label>
+            </div>
+            <div id="agent-add-wallet-info" class="form-info" style="display:none;"></div>
+            <div class="btn-group">
+              <button id="agent-add-cancel-btn" class="btn-secondary">取消</button>
+              <button id="agent-add-confirm-btn" class="btn-primary">创建</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Wallet Manager Modal (header 钱包按钮入口) -->
+      <div id="wallet-modal" class="modal">
+        <div class="modal-content modal-wide">
+          <div class="modal-header">
+            <h2>钱包管理</h2>
+            <button id="wallet-modal-close" class="modal-close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>为当前智能体绑定加密钱包</label>
+              <div style="display:flex;gap:8px;">
+                <input type="text" id="wallet-bind-address" placeholder="0x... / Solana / Sui" style="flex:1;">
+                <button type="button" id="wallet-generate-btn" class="btn-secondary btn-sm" title="本地生成新钱包">生成</button>
+              </div>
+              <small class="form-hint">仅当前激活智能体会使用此钱包; 服务端只保存公链地址, 私钥仅在浏览器内存。</small>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="wallet-auto-tools" checked>
+                <span>启用自动工具调用 (LLM 决定调用受信任工具时, agent 自动执行)</span>
+              </label>
+            </div>
+            <div id="wallet-new-info" class="form-info" style="display:none;"></div>
+            <div class="btn-group">
+              <button id="wallet-bind-btn" class="btn-primary">绑定到当前智能体</button>
+              <button id="wallet-unbind-btn" class="btn-secondary">解绑当前智能体</button>
+            </div>
+
+            <h3 style="margin-top:24px;font-size:14px;font-weight:600;">所有已绑定钱包</h3>
+            <div id="wallet-list" class="wallet-list">
+              <div class="wallet-empty">暂未绑定钱包</div>
             </div>
           </div>
         </div>

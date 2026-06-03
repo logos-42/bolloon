@@ -124,16 +124,8 @@ async function createChannel(name) {
     // 后台更新 DID（如果还没有的话）
     if (!channel.did || channel.did === 'undefined') {
       console.log('[创建频道] 后台生成 DID...');
-      // 触发后台刷新，DID 会在下次请求时更新
-      setTimeout(() => {
-        fetch('/channels').then(res => res.json()).then(allChannels => {
-          channels = allChannels;
-          const updated = channels.find(c => c.id === channel.id);
-          if (updated && updated.did && updated.did !== 'undefined') {
-            console.log('[创建频道] DID 生成完成:', updated.did);
-          }
-        });
-      }, 2000);
+      // 复用全局 channelRefreshTimer, 把多个刷新请求合并成一个 1.5s 后的请求
+      scheduleChannelsRefresh();
     }
   } catch (err) {
     console.error('Failed to create channel:', err);
@@ -147,6 +139,10 @@ async function deleteChannel(channelId, e) {
     await fetch(`/channels/${channelId}`, { method: 'DELETE' });
     channels = channels.filter(c => c.id !== channelId);
     expandedAgents.delete(channelId);
+
+    // 释放浏览器侧引用 + DOM, 避免长时间使用后内存累积
+    cleanupChannelState(channelId);
+
     if (currentChannelId === channelId) {
       currentChannelId = channels[0]?.id || null;
       currentSessionId = null;
@@ -163,6 +159,38 @@ async function deleteChannel(channelId, e) {
     renderCollapsedChannels();
   } catch (err) {
     console.error('Failed to delete channel:', err);
+  }
+}
+
+/** 释放一个 channel 在浏览器侧占用的所有资源 (DOM 容器, SSE, 缓存 session 消息) */
+function cleanupChannelState(channelId) {
+  // 1. SSE 连接
+  if (eventSources.has(channelId)) {
+    try { eventSources.get(channelId).close(); } catch {}
+    eventSources.delete(channelId);
+  }
+  // 2. 心跳 + 重连 timer
+  if (heartbeatTimers.has(channelId)) {
+    clearInterval(heartbeatTimers.get(channelId));
+    heartbeatTimers.delete(channelId);
+  }
+  if (reconnectTimers.has(channelId)) {
+    clearTimeout(reconnectTimers.get(channelId));
+    reconnectTimers.delete(channelId);
+  }
+  reconnectAttempts.delete(channelId);
+  // 3. 消息容器 DOM — 真从 #messages 里移除, 不只是隐藏
+  const container = messagesContainers.get(channelId);
+  if (container && container.parentNode) {
+    container.parentNode.removeChild(container);
+  }
+  messagesContainers.delete(channelId);
+  // 4. 缓存的所有 session 消息 (按 channel:session 索引)
+  const prefix = `${channelId}:`;
+  for (const key of sessionMessages.keys()) {
+    if (key === channelId || key.startsWith(prefix)) {
+      sessionMessages.delete(key);
+    }
   }
 }
 
@@ -302,31 +330,61 @@ async function deleteSession(channelId, sessionId, e) {
   }
 }
 
+let _saveSessionMessagesDirty = false;
+let _saveSessionMessagesTimer = null;
 function saveCurrentSessionMessages() {
   if (!currentChannelId || !currentSessionId) return;
-  const container = messagesContainers.get(currentChannelId);
-  if (!container) return;
-  const messages = Array.from(container.querySelectorAll('.message')).map(msg => ({
-    type: msg.classList.contains('message-user') ? 'user' : 'ai',
-    content: msg.querySelector('.message-content')?.textContent || ''
-  }));
-  if (messages.length > 0) {
-    sessionMessages.set(`${currentChannelId}:${currentSessionId}`, messages);
-  }
+  // 内存保护: 多次快速调用合并成一个, 避免在切会话时反复 .textContent 读 DOM
+  // (每个 textContent 会序列化整棵子树, 200 条消息 = 几百 MB 临时字符串)
+  _saveSessionMessagesDirty = true;
+  if (_saveSessionMessagesTimer) return;
+  _saveSessionMessagesTimer = setTimeout(() => {
+    _saveSessionMessagesTimer = null;
+    if (!_saveSessionMessagesDirty) return;
+    _saveSessionMessagesDirty = false;
+    if (!currentChannelId || !currentSessionId) return;
+    const container = messagesContainers.get(currentChannelId);
+    if (!container) return;
+    const messages = Array.from(container.querySelectorAll('.message')).map(msg => ({
+      type: msg.classList.contains('message-user') ? 'user' : 'ai',
+      content: msg.querySelector('.message-content')?.textContent || ''
+    }));
+    if (messages.length > 0) {
+      sessionMessages.set(`${currentChannelId}:${currentSessionId}`, messages);
+    }
+  }, 50);
 }
 
 async function saveChannels() {
   // 简单地 re-fetch，保持本地 channels 与服务端一致
-  try {
-    const res = await fetch('/channels');
-    if (res.ok) {
-      const fresh = await res.json();
-      // 保留当前已展开状态
-      channels = fresh;
-    }
-  } catch (err) {
-    console.error('Failed to re-fetch channels:', err);
-  }
+  // 改成走 scheduleChannelsRefresh, 多个调用合并成一个请求 — 减少内存峰值和后端压力
+  scheduleChannelsRefresh();
+  await new Promise(r => setTimeout(r, 600));
+}
+
+let channelRefreshTimer = null;
+let channelRefreshInFlight = null;
+function scheduleChannelsRefresh() {
+  if (channelRefreshTimer) return;
+  channelRefreshTimer = setTimeout(async () => {
+    channelRefreshTimer = null;
+    if (channelRefreshInFlight) return channelRefreshInFlight;
+    channelRefreshInFlight = (async () => {
+      try {
+        const res = await fetch('/channels');
+        if (res.ok) {
+          const fresh = await res.json();
+          channels = fresh;
+          renderChannels();
+        }
+      } catch (err) {
+        console.error('Failed to re-fetch channels:', err);
+      } finally {
+        channelRefreshInFlight = null;
+      }
+    })();
+    return channelRefreshInFlight;
+  }, 800);
 }
 
 function toggleAgentExpand(channelId, e) {
@@ -345,6 +403,26 @@ function renderChannels() {
 
   const fragment = document.createDocumentFragment();
 
+  // 滚动可见性监听只绑定一次 (channelList 是同一个 DOM 节点,
+  // renderChannels 每次清空 innerHTML 都会重渲, 不能重复 addEventListener)
+  if (!channelList._scrollListenersBound) {
+    const onUserScroll = () => {
+      channelList.classList.add('is-scrolling');
+      if (channelList._scrollIdleTimer) clearTimeout(channelList._scrollIdleTimer);
+      channelList._scrollIdleTimer = setTimeout(() => {
+        channelList.classList.remove('is-scrolling');
+      }, 1200);
+    };
+    channelList.addEventListener('wheel', onUserScroll, { passive: true });
+    channelList.addEventListener('touchmove', onUserScroll, { passive: true });
+    channelList.addEventListener('keydown', (ev) => {
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(ev.key)) {
+        onUserScroll();
+      }
+    });
+    channelList._scrollListenersBound = true;
+  }
+
   channels.forEach(ch => {
     const li = document.createElement('li');
     const isExpanded = expandedAgents.has(ch.id);
@@ -362,27 +440,46 @@ function renderChannels() {
     const currentSessLabel = currentSess ? formatSessionName(currentSess) : '';
     const sessionCount = Array.isArray(ch.sessions) ? ch.sessions.length : 0;
 
+    const walletBadge = ch.walletAddress
+      ? `<span class="agent-wallet-badge" title="已绑定钱包: ${escapeHtml(ch.walletAddress)}">⛓</span>`
+      : '';
+    const toolsBadge = ch.autoInvokeTools
+      ? `<span class="agent-tools-badge" title="自动工具调用已开启">⚡</span>`
+      : '';
+
     row.innerHTML = `
       <svg class="agent-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="9 18 15 12 9 6"></polyline>
       </svg>
       <div class="channel-icon">💬</div>
       <span class="channel-name" title="${escapeHtml(ch.name)}">${escapeHtml(ch.name)}</span>
-      ${sessionCount > 1 ? `<span class="agent-session-count" title="${sessionCount} 个会话">${sessionCount}</span>` : ''}
-      ${currentSessLabel ? `<span class="agent-current-session" title="当前会话：${escapeHtml(currentSessLabel)}">· ${escapeHtml(currentSessLabel)}</span>` : ''}
-      <button class="channel-delete" title="删除智能体">×</button>
-      <button class="agent-new-session" title="新建会话">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="12" y1="5" x2="12" y2="19"></line>
-          <line x1="5" y1="12" x2="19" y2="12"></line>
-        </svg>
-      </button>
+      <span class="agent-row-meta">
+        ${walletBadge}
+        ${toolsBadge}
+        ${sessionCount > 1 ? `<span class="agent-session-count" title="${sessionCount} 个会话">${sessionCount}</span>` : ''}
+        ${currentSessLabel ? `<span class="agent-current-session" title="当前会话：${escapeHtml(currentSessLabel)}">· ${escapeHtml(currentSessLabel)}</span>` : ''}
+        <button class="agent-config-btn" title="配置智能体 (钱包 / 工具)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+        <button class="channel-delete" title="删除智能体">×</button>
+        <button class="agent-new-session" title="新建会话">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+        </button>
+      </span>
     `;
 
     // 行点击：切换展开；点击名字/图标区域则切到该智能体
     row.addEventListener('click', (ev) => {
-      // 如果点在删除/新会话按钮上，单独处理
-      if (ev.target.closest('.channel-delete') || ev.target.closest('.agent-new-session')) return;
+      // 如果点在删除/新会话/配置按钮上, 单独处理
+      if (ev.target.closest('.channel-delete')
+          || ev.target.closest('.agent-new-session')
+          || ev.target.closest('.agent-config-btn')) return;
       if (ev.target.closest('.agent-caret')) {
         toggleAgentExpand(ch.id, ev);
         return;
@@ -398,6 +495,11 @@ function renderChannels() {
     row.querySelector('.channel-delete').addEventListener('click', (ev) => deleteChannel(ch.id, ev));
     // 新会话按钮
     row.querySelector('.agent-new-session').addEventListener('click', (ev) => createNewSessionForChannel(ch.id, ev));
+    // 配置按钮: 打开同一个 modal 编辑已有智能体
+    row.querySelector('.agent-config-btn').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      openAgentAddModal(ch);
+    });
 
     li.appendChild(row);
 
@@ -428,6 +530,30 @@ function renderChannels() {
   });
 
   channelList.appendChild(fragment);
+
+  // header 钱包徽章计数: 只在 channels 变化时刷新, 避免每次 renderChannels 都重算
+  refreshWalletBadge();
+
+  // 把当前激活的 channel 平滑滚到视口内 — 用户切换后不会看不到
+  // 只在非用户主动滚动状态下执行, 避免与正在进行的滚动冲突
+  if (currentChannelId) {
+    requestAnimationFrame(() => scrollActiveChannelIntoView(false));
+  }
+}
+
+/** 把当前激活的 channel 滚到侧边栏视口内 */
+function scrollActiveChannelIntoView(smooth = true) {
+  if (!channelList || !currentChannelId) return;
+  const active = channelList.querySelector(`.agent-group[data-channel-id="${currentChannelId}"]`);
+  if (!active) return;
+  const listRect = channelList.getBoundingClientRect();
+  const itemRect = active.getBoundingClientRect();
+  const margin = 24; // 视口上下各留 24px
+  if (itemRect.top < listRect.top + margin) {
+    channelList.scrollBy({ top: itemRect.top - listRect.top - margin, behavior: smooth ? 'smooth' : 'auto' });
+  } else if (itemRect.bottom > listRect.bottom - margin) {
+    channelList.scrollBy({ top: itemRect.bottom - listRect.bottom + margin, behavior: smooth ? 'smooth' : 'auto' });
+  }
 }
 
 function formatSessionName(sess) {
@@ -547,6 +673,18 @@ async function loadSession(channelId, sessionId = null) {
 
 function addMessage(content, type, save = true, container) {
   const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
+
+  // 浏览器侧内存保护: 单个 channel 的消息容器超过 MAX_MESSAGES_PER_CHANNEL
+  // 就从最旧的开始淘汰。SSE 流式场景下不淘汰 (save=true 时不裁剪),
+  // 因为流消息一般很短; 只对长会话加载 (save=false) 做上限。
+  // 上限是 200 条: 大约相当于 100 轮对话, 足够日常使用, 又把 DOM 控制在 5MB 以内.
+  if (!save && msgContainer && msgContainer.children.length > 200) {
+    const toRemove = msgContainer.children.length - 200;
+    for (let i = 0; i < toRemove; i++) {
+      const first = msgContainer.firstElementChild;
+      if (first) msgContainer.removeChild(first);
+    }
+  }
   // 去重：只有 save=true 时（来自 SSE）才去重，save=false 时（来自 session 加载）直接显示
   if (save) {
     const lastContent = type === 'user' ? lastUserCommand : lastAiContent;
@@ -1320,6 +1458,24 @@ if (apiConfigBtn) {
   });
 }
 
+// 钱包管理按钮
+const walletBtn = document.getElementById('wallet-btn');
+const walletBadge = document.getElementById('wallet-badge');
+if (walletBtn) {
+  walletBtn.addEventListener('click', openWalletModal);
+}
+/** 刷新 header 钱包徽章: 统计已绑定钱包的智能体数 */
+function refreshWalletBadge() {
+  if (!walletBadge) return;
+  const count = channels.filter(c => c.walletAddress).length;
+  if (count > 0) {
+    walletBadge.textContent = String(count);
+    walletBadge.style.display = '';
+  } else {
+    walletBadge.style.display = 'none';
+  }
+}
+
 if (sidebarToggle) {
   sidebarToggle.addEventListener('click', toggleSidebar);
 }
@@ -1798,6 +1954,350 @@ connect = async function() {
   };
 };
 
+// =====================================================
+// 钱包管理 (header 钱包按钮 → 全局管理面板)
+// =====================================================
+const walletModal = document.getElementById('wallet-modal');
+const walletModalClose = document.getElementById('wallet-modal-close');
+const walletBindAddress = document.getElementById('wallet-bind-address');
+const walletGenerateBtn = document.getElementById('wallet-generate-btn');
+const walletAutoTools = document.getElementById('wallet-auto-tools');
+const walletBindBtn = document.getElementById('wallet-bind-btn');
+const walletUnbindBtn = document.getElementById('wallet-unbind-btn');
+const walletNewInfo = document.getElementById('wallet-new-info');
+const walletListEl = document.getElementById('wallet-list');
+
+/** 本次会话生成的私钥, 仅用于提示, 永不上传 */
+let walletModalPendingSecret = null;
+
+function openWalletModal() {
+  if (!walletModal) return;
+  walletModalPendingSecret = null;
+  walletNewInfo.style.display = 'none';
+  walletNewInfo.innerHTML = '';
+  walletBindAddress.value = '';
+  // 用当前 channel 的状态预填
+  const ch = channels.find(c => c.id === currentChannelId);
+  if (ch) {
+    walletBindAddress.value = ch.walletAddress || '';
+    walletAutoTools.checked = !!ch.autoInvokeTools;
+  }
+  renderWalletList();
+  walletModal.classList.add('open');
+}
+
+function closeWalletModal() {
+  if (!walletModal) return;
+  walletModal.classList.remove('open');
+  walletModalPendingSecret = null;
+}
+
+if (walletModalClose) walletModalClose.addEventListener('click', closeWalletModal);
+
+if (walletGenerateBtn) {
+  walletGenerateBtn.addEventListener('click', () => {
+    const { address, privateKeyHex } = generateLocalWallet();
+    walletBindAddress.value = address;
+    walletModalPendingSecret = privateKeyHex;
+    walletNewInfo.style.display = 'block';
+    walletNewInfo.innerHTML = `
+      ✓ 已生成本地钱包<br>
+      <strong>地址:</strong> <code>${escapeHtml(address)}</code><br>
+      <strong>私钥 (本次会话, 刷新即丢):</strong> <code style="color:#f88;">${escapeHtml(privateKeyHex)}</code><br>
+      <small style="color:#f88;">⚠ 关闭页面后无法找回。仅地址会发送到服务端。</small>
+    `;
+  });
+}
+
+if (walletBindBtn) {
+  walletBindBtn.addEventListener('click', async () => {
+    if (!currentChannelId) {
+      alert('请先在侧边栏选择一个智能体');
+      return;
+    }
+    const address = (walletBindAddress.value || '').trim();
+    if (!address) {
+      alert('请输入钱包地址或点击「生成」');
+      return;
+    }
+    try {
+      const res = await fetch(`/channels/${currentChannelId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          walletAddress: address,
+          autoInvokeTools: !!walletAutoTools.checked
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'bind failed');
+      }
+      const updated = await res.json();
+      const idx = channels.findIndex(c => c.id === currentChannelId);
+      if (idx >= 0) channels[idx] = updated;
+      renderChannels();
+      renderWalletList();
+      walletModalPendingSecret = null;
+    } catch (err) {
+      alert('绑定失败: ' + err.message);
+    }
+  });
+}
+
+if (walletUnbindBtn) {
+  walletUnbindBtn.addEventListener('click', async () => {
+    if (!currentChannelId) {
+      alert('请先选择一个智能体');
+      return;
+    }
+    if (!confirm('解绑当前智能体的钱包?')) return;
+    try {
+      const res = await fetch(`/channels/${currentChannelId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ walletAddress: null })
+      });
+      if (!res.ok) throw new Error('unbind failed');
+      const updated = await res.json();
+      const idx = channels.findIndex(c => c.id === currentChannelId);
+      if (idx >= 0) channels[idx] = updated;
+      walletBindAddress.value = '';
+      renderChannels();
+      renderWalletList();
+    } catch (err) {
+      alert('解绑失败: ' + err.message);
+    }
+  });
+}
+
+/** 渲染"所有已绑定钱包"列表 */
+function renderWalletList() {
+  if (!walletListEl) return;
+  const bound = channels.filter(c => c.walletAddress);
+  if (bound.length === 0) {
+    walletListEl.innerHTML = '<div class="wallet-empty">暂未绑定钱包</div>';
+    return;
+  }
+  // 用 DocumentFragment 避免多次 reflow
+  const frag = document.createDocumentFragment();
+  bound.forEach(ch => {
+    const isActive = ch.id === currentChannelId;
+    const chain = detectChain(ch.walletAddress);
+    const row = document.createElement('div');
+    row.className = 'wallet-row' + (isActive ? ' is-active' : '');
+    row.innerHTML = `
+      <span class="wallet-chain">${escapeHtml(chain)}</span>
+      <div class="wallet-info">
+        <span class="wallet-agent" title="${escapeHtml(ch.name)}">${escapeHtml(ch.name)}</span>
+        <span class="wallet-address" title="${escapeHtml(ch.walletAddress)}">${escapeHtml(ch.walletAddress)}</span>
+      </div>
+      <div class="wallet-actions">
+        <button class="wallet-mini-btn" data-action="copy" data-addr="${escapeHtml(ch.walletAddress)}" title="复制地址">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </button>
+        <button class="wallet-mini-btn" data-action="goto" data-id="${escapeHtml(ch.id)}" title="切换到该智能体">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M5 12h14M12 5l7 7-7 7"></path>
+          </svg>
+        </button>
+        <button class="wallet-mini-btn" data-action="unbind" data-id="${escapeHtml(ch.id)}" title="解绑">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+    `;
+    frag.appendChild(row);
+  });
+  walletListEl.innerHTML = '';
+  walletListEl.appendChild(frag);
+
+  // 事件委托: 一次绑定处理三个动作
+  walletListEl.onclick = async (ev) => {
+    const btn = ev.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    if (action === 'copy') {
+      try {
+        await navigator.clipboard.writeText(btn.dataset.addr);
+        btn.style.background = 'var(--accent)';
+        btn.style.color = 'var(--bg)';
+        setTimeout(() => { btn.style.background = ''; btn.style.color = ''; }, 800);
+      } catch {}
+    } else if (action === 'goto') {
+      closeWalletModal();
+      selectChannel(btn.dataset.id);
+    } else if (action === 'unbind') {
+      if (!confirm('解绑该智能体的钱包?')) return;
+      try {
+        const res = await fetch(`/channels/${btn.dataset.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ walletAddress: null })
+        });
+        if (!res.ok) throw new Error('unbind failed');
+        const updated = await res.json();
+        const idx = channels.findIndex(c => c.id === btn.dataset.id);
+        if (idx >= 0) channels[idx] = updated;
+        renderChannels();
+        renderWalletList();
+        if (btn.dataset.id === currentChannelId) walletBindAddress.value = '';
+      } catch (err) {
+        alert('解绑失败: ' + err.message);
+      }
+    }
+  };
+}
+
+function detectChain(addr) {
+  if (!addr) return '?';
+  if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return 'EVM';
+  if (/^0x[0-9a-fA-F]{64}$/.test(addr)) return 'SUI';
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) return 'SOL';
+  return '?';
+}
+
 // 启动应用
 init();
+
+// =====================================================
+// 智能体目录：catalog add 按钮 + 钱包注册 + 自动工具调用
+// =====================================================
+const catalogAddBtn = document.getElementById('catalog-add-btn');
+const agentAddModal = document.getElementById('agent-add-modal');
+const agentAddTitle = document.getElementById('agent-add-title');
+const agentAddModalClose = document.getElementById('agent-add-modal-close');
+const agentAddName = document.getElementById('agent-add-name');
+const agentAddWallet = document.getElementById('agent-add-wallet');
+const agentAddAutoTools = document.getElementById('agent-add-auto-tools');
+const agentAddConfirmBtn = document.getElementById('agent-add-confirm-btn');
+const agentAddCancelBtn = document.getElementById('agent-add-cancel-btn');
+const agentAddWalletInfo = document.getElementById('agent-add-wallet-info');
+const agentGenerateWalletBtn = document.getElementById('agent-generate-wallet-btn');
+
+/** 客户端只为提示, 不向服务端发送私钥 */
+let pendingWalletSecret = null;
+
+function openAgentAddModal(existingChannel) {
+  if (!agentAddModal) return;
+  if (existingChannel) {
+    agentAddTitle.textContent = '配置智能体：' + existingChannel.name;
+    agentAddName.value = existingChannel.name || '';
+    agentAddName.readOnly = true; // 改名走 PATCH
+    agentAddWallet.value = existingChannel.walletAddress || '';
+    agentAddAutoTools.checked = !!existingChannel.autoInvokeTools;
+    agentAddConfirmBtn.dataset.mode = 'update';
+    agentAddConfirmBtn.dataset.channelId = existingChannel.id;
+  } else {
+    agentAddTitle.textContent = '添加智能体';
+    agentAddName.value = '';
+    agentAddName.readOnly = false;
+    agentAddWallet.value = '';
+    agentAddAutoTools.checked = true;
+    agentAddConfirmBtn.dataset.mode = 'create';
+    delete agentAddConfirmBtn.dataset.channelId;
+  }
+  agentAddWalletInfo.style.display = 'none';
+  agentAddWalletInfo.innerHTML = '';
+  pendingWalletSecret = null;
+  agentAddModal.classList.add('open');
+}
+
+function closeAgentAddModal() {
+  if (!agentAddModal) return;
+  agentAddModal.classList.remove('open');
+  pendingWalletSecret = null;
+}
+
+/** 本地生成一个 EVM 风格地址 — 仅用于演示; 生产应使用 ethers/wagmi 等真实库 */
+function generateLocalWallet() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const privateKeyHex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  // 简化: 取末 20 字节当 address, 不做 keccak, 仅作为占位
+  const addrBytes = bytes.slice(12);
+  const address = '0x' + Array.from(addrBytes, b => b.toString(16).padStart(2, '0')).join('');
+  return { address, privateKeyHex };
+}
+
+if (agentGenerateWalletBtn) {
+  agentGenerateWalletBtn.addEventListener('click', () => {
+    try {
+      const { address, privateKeyHex } = generateLocalWallet();
+      agentAddWallet.value = address;
+      pendingWalletSecret = privateKeyHex;
+      agentAddWalletInfo.style.display = 'block';
+      agentAddWalletInfo.innerHTML = `
+        ✓ 已生成本地钱包<br>
+        <strong>地址:</strong> <code>${escapeHtml(address)}</code><br>
+        <strong>私钥 (仅本次会话, 刷新即丢):</strong> <code style="color:#f88;">${escapeHtml(privateKeyHex)}</code><br>
+        <small style="color:#f88;">⚠ 请抄写并妥善保存私钥, 关闭页面后无法找回。仅地址会发送到服务端。</small>
+      `;
+    } catch (err) {
+      agentAddWalletInfo.style.display = 'block';
+      agentAddWalletInfo.innerHTML = '✗ 生成钱包失败: ' + escapeHtml(err.message);
+    }
+  });
+}
+
+if (catalogAddBtn) {
+  catalogAddBtn.addEventListener('click', () => openAgentAddModal(null));
+}
+if (agentAddModalClose) agentAddModalClose.addEventListener('click', closeAgentAddModal);
+if (agentAddCancelBtn) agentAddCancelBtn.addEventListener('click', closeAgentAddModal);
+
+if (agentAddConfirmBtn) {
+  agentAddConfirmBtn.addEventListener('click', async () => {
+    const mode = agentAddConfirmBtn.dataset.mode || 'create';
+    const name = (agentAddName.value || '').trim();
+    if (!name && mode === 'create') {
+      alert('请输入智能体名称');
+      return;
+    }
+    const walletAddress = (agentAddWallet.value || '').trim();
+    const autoInvokeTools = !!agentAddAutoTools.checked;
+
+    try {
+      if (mode === 'create') {
+        const res = await fetch('/channels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            agentId: currentAgentId,
+            walletAddress: walletAddress || undefined,
+            autoInvokeTools
+          })
+        });
+        if (!res.ok) throw new Error('create failed');
+        const channel = await res.json();
+        channels.push(channel);
+        renderChannels();
+        selectChannel(channel.id);
+      } else {
+        // update
+        const channelId = agentAddConfirmBtn.dataset.channelId;
+        const res = await fetch(`/channels/${channelId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ walletAddress: walletAddress || null, autoInvokeTools })
+        });
+        if (!res.ok) throw new Error('update failed');
+        const updated = await res.json();
+        const idx = channels.findIndex(c => c.id === channelId);
+        if (idx >= 0) channels[idx] = updated;
+        renderChannels();
+      }
+      closeAgentAddModal();
+    } catch (err) {
+      console.error('Failed to save agent:', err);
+      alert('保存失败: ' + err.message);
+    }
+  });
+}
 
