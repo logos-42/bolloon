@@ -1115,7 +1115,10 @@ ${this.getToolDefinitions()}
     let lastQualityScore = 0;
     let refineAttempts = 0;
     let consecutiveErrors = 0;
+    let lastFailedTool = ''; // 跟踪最近一次失败的 tool name
+    let lastFailedToolCount = 0; // 最近失败工具的连续失败次数
     const MAX_CONSECUTIVE_ERRORS = 3;
+    const MAX_SAME_TOOL_FAILURES = 3; // 同一工具连续失败 3 次, 强制让 LLM 给出最终答案
 
     // 发送循环开始的事件
     if (onStream) {
@@ -1260,17 +1263,36 @@ ${toolDefs}
             // 不 break，继续下一次循环
           } else {
             consecutiveErrors++;
-            console.warn(`[PiAgent] 工具执行失败 (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${result.error}`);
+            // 跟踪同一工具连续失败次数
+            if (toolCall.name === lastFailedTool) {
+              lastFailedToolCount++;
+            } else {
+              lastFailedTool = toolCall.name;
+              lastFailedToolCount = 1;
+            }
+            console.warn(`[PiAgent] 工具 ${toolCall.name} 执行失败 (${lastFailedToolCount}/${MAX_SAME_TOOL_FAILURES}): ${result.error}`);
 
-            // 连续错误达到上限，尝试换一种方式
-            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-              console.log(`[PiAgent] 连续 ${MAX_CONSECUTIVE_ERRORS} 次错误，尝试换一种方式处理`);
-              // 添加错误上下文，让 LLM 换一种方式
+            // 同一工具连续失败达到上限, 不再重试, 强制 LLM 给出最终答案
+            if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
+              console.log(`[PiAgent] 工具 ${toolCall.name} 连续 ${MAX_SAME_TOOL_FAILURES} 次失败, 放弃并要求直接回答`);
               this.messageHistory.push({
                 role: 'system',
-                content: `[注意] 前面的工具调用连续失败。请尝试其他工具或换一种方式完成用户请求。`
+                content: `[注意] 工具 ${toolCall.name} 在这个上下文中不可用 (连续 ${MAX_SAME_TOOL_FAILURES} 次失败: ${result.error}). 请不要再次调用它, 直接用你已知的信息回答用户, 并在回答开头标记 <final gen>.`
               });
-              consecutiveErrors = 0; // 重置以继续尝试
+              lastFailedTool = '';
+              lastFailedToolCount = 0;
+              consecutiveErrors = 0;
+              continue; // 让 LLM 看到系统提示后再决定
+            }
+
+            // 连续错误达到上限(混合不同工具), 尝试换一种方式
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              console.log(`[PiAgent] 连续 ${MAX_CONSECUTIVE_ERRORS} 次错误，尝试换一种方式处理`);
+              this.messageHistory.push({
+                role: 'system',
+                content: `[注意] 前面的工具调用连续失败。请尝试其他工具或换一种方式完成用户请求, 或用 <final gen> 给出最终回答.`
+              });
+              consecutiveErrors = 0;
             }
           }
         } catch (execError) {
@@ -1323,9 +1345,14 @@ ${toolDefs}
     }
 
     if (!finalResponse) {
-      finalResponse = '任务处理超时，请尝试更具体的请求。';
+      // 走到这里通常是 LLM 一直在调同一个不存在的工具, 没输出 <final gen>
+      // 把已知的失败信息也带回去, 让用户知道发生了什么
+      const reason = lastFailedTool
+        ? `(工具 ${lastFailedTool} 连续 ${MAX_SAME_TOOL_FAILURES} 次失败, 已放弃)`
+        : `(共 ${iteration - 1} 轮无最终输出)`;
+      finalResponse = `抱歉，任务未能完成 ${reason}。请换个方式提问，或明确告诉 agent 不要调用工具。`;
       if (onStream) {
-        onStream({ type: 'error', content: '⚠️ 任务处理超时', tool: 'system' });
+        onStream({ type: 'error', content: `⚠️ 任务未完成: ${reason}`, tool: 'system' });
       }
     }
 
@@ -1654,9 +1681,17 @@ ${this.extractOperationsFromRef(operationsRef)}
       );
 
       const name = response.reply.trim();
-      if (name && name.length <= 20 && name !== '智能体') {
-        return `Agent | ${name}`;
+      // 拒绝错误回退串 (LLM 不可用时返回的占位文本)
+      if (!name) return null;
+      if (/^(抱歉|对不起|sorry|error|错误|失败|暂不可用|服务不可用)/i.test(name)) {
+        console.log(`[suggestRename] 拒绝错误回退: "${name}"`);
+        return null;
       }
+      if (name.length > 20) return null;
+      if (name === '智能体') return null;
+      // 拒绝纯符号/标点
+      if (!/[一-鿿\w]/.test(name)) return null;
+      return `Agent | ${name}`;
     } catch {
       // ignore
     }
