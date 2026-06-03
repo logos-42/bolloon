@@ -3,6 +3,7 @@ import { createServer } from 'http';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as path from 'path';
 import {
   HyperswarmCommunicator,
@@ -554,7 +555,27 @@ export async function createWebServer(port: number = 3000) {
   });
 
   app.get('/api-config', (req, res) => {
-    res.sendFile(join(webRoot, 'api-config.html'));
+    // 防御: sendFile 在文件缺失时会异步抛 NotFoundError, 这里用同步读 + send 兜底
+    const filePath = join(webRoot, 'api-config.html');
+    if (!fsSync.existsSync(filePath)) {
+      // 回退到 SPA 主页, 避免 404 崩溃
+      return res.status(404).type('text/plain').send('api-config.html not found; please run `npm run build:web`');
+    }
+    res.sendFile(filePath, (err) => {
+      if (err && !res.headersSent) {
+        console.error('[api-config] sendFile failed:', err.message);
+        res.status(500).type('text/plain').send('api-config.html send error: ' + err.message);
+      }
+    });
+  });
+
+  // 全局兜底: 任何 next(err) 走到这里, 给出结构化 4xx/5xx 而不是默认 HTML
+  app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('[server] unhandled error on', req.method, req.path, '-', err?.message || err);
+    if (res.headersSent) return;
+    res.status(err?.status || 500).type('text/plain').send(
+      `Error ${err?.status || 500}: ${err?.message || 'internal error'} on ${req.method} ${req.path}`
+    );
   });
 
   app.get('/events', (req, res) => {
