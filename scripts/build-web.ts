@@ -62,6 +62,20 @@ async function main() {
   // 复制 icons 目录 (manifest.json 里引用了 favicon 等)
   await fs.cp(path.join(ROOT, 'src/web/icons'), path.join(DIST_WEB, 'icons'), { recursive: true });
 
+  // 复制 components/ 下的独立 ESM 模块 (非 p2p 那些, 已被 esbuild 单独编译)
+  // 例如 wallet-viem.mjs: 浏览器侧 viem 封装, 被 index.html 引用
+  const extraComponentsDir = path.join(ROOT, 'src/web/components');
+  for (const entry of await fs.readdir(extraComponentsDir)) {
+    if (entry === 'p2p') continue;
+    const src = path.join(extraComponentsDir, entry);
+    const dest = path.join(DIST_WEB, 'components', entry);
+    const stat = await fs.stat(src);
+    if (stat.isFile()) {
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      await fs.copyFile(src, dest);
+    }
+  }
+
   console.log('[build-web] 完成!');
 }
 
