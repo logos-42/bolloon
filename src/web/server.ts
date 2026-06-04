@@ -454,7 +454,14 @@ async function getAgentForChannel(
   return session;
 }
 
-export async function createWebServer(port: number = 3000) {
+export interface CreateWebServerOptions {
+  selfImprove?: boolean;
+}
+
+let selfImproveEnabled = false;
+
+export async function createWebServer(port: number = 3000, options: CreateWebServerOptions = {}) {
+  selfImproveEnabled = options.selfImprove ?? false;
   // 防止 P2P DHT 超时等错误导致进程崩溃
   process.on('unhandledRejection', (reason, promise) => {
     console.error('[警告] 未处理的 Promise 拒绝:', reason);
@@ -2676,6 +2683,94 @@ app.get('/channels', async (_req, res) => {
       res.json({ ok: true, imported: imported.length, failed: errors.length, errors: errors.slice(0, 5), judgments: imported });
     } catch (err: any) {
       console.error('[judgments] import failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 修改判断 (手动编辑 decision / reasons / context / values_derived)
+  app.patch('/api/judgments/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { updateJudgment, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+      const updated = await updateJudgment(id, req.body || {});
+      if (!updated) return res.status(404).json({ error: 'judgment not found' });
+      res.json({ ok: true, judgment: updated });
+    } catch (err: any) {
+      console.error('[judgments] PATCH failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 删除判断
+  app.delete('/api/judgments/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { deleteJudgment, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+      const ok = await deleteJudgment(id);
+      if (!ok) return res.status(404).json({ error: 'judgment not found' });
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error('[judgments] DELETE failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // AI 自动委派: 根据新判断的 capability / context 找最匹配的远端 agent, 委派任务
+  // 由前端在 POST /api/judgments 成功后调用 (fire-and-forget)
+  // 出参: { matched, targetAgent, response | skipped, reason }
+  app.post('/api/judgments/auto-delegate', async (req, res) => {
+    try {
+      const { judgmentId, capability, instruction } = req.body as {
+        judgmentId?: string; capability?: string; instruction?: string;
+      };
+      if (!judgmentId && !capability) {
+        return res.status(400).json({ error: 'judgmentId or capability required' });
+      }
+      const cap = capability || 'general';
+      // 用 agent-manifest-protocol 里的 pickAgent (内存) — 走本节点已经缓存的远端 manifest
+      const manifestMod = await import('../agents/agent-manifest-protocol.js');
+      const picked = manifestMod.pickAgent(cap);
+      if (!picked) {
+        return res.json({ ok: true, matched: false, reason: 'no remote agent matches capability' });
+      }
+      // 命中后, 用 iroh delegate transport 真正发过去
+      // 注: irohDelegateTransport.sendToNode 走的是 sendToNode(publicKey, frame, timeoutMs)
+      // irohTransport 的 sendMessage 不等回包, 所以委托是 fire-and-forget
+      // 想等回包需要新接口. 这里先把 "找得到目标 + 发送成功" 作为成功.
+      // TODO: 接入 requestResponse 等待远端 agent_response
+      try {
+        const idMod = await import('../network/iroh-integration.js');
+        const integ = idMod.getIrohIntegration();
+        if (!integ || !integ.getNodeId()) {
+          return res.json({ ok: true, matched: true, targetAgent: picked.agent, sent: false, reason: 'iroh not initialized' });
+        }
+        // 用 pickAgent 选出来的 agent 关联的 irohNodeId (有的话), 没有就跳到本地自处理
+        const targetIrohNodeId = picked.agent.irohNodeId;
+        if (!targetIrohNodeId) {
+          return res.json({ ok: true, matched: true, targetAgent: picked.agent, sent: false, reason: 'target agent has no irohNodeId (peer identity not bound)' });
+        }
+        const ok = await integ.sendTo(targetIrohNodeId, 'agent_delegate', new TextEncoder().encode(JSON.stringify({
+          type: 'agent_delegate',
+          payload: {
+            capability: cap,
+            instruction: instruction || `请执行我的判断: ${judgmentId}`,
+            fromAgentId: 'local-judgment',
+          },
+          ts: Date.now(),
+          fromDid: '',
+        })));
+        res.json({ ok: true, matched: true, targetAgent: picked.agent, sent: ok });
+      } catch (e: any) {
+        res.json({ ok: true, matched: true, targetAgent: picked.agent, sent: false, error: e.message });
+      }
+    } catch (err: any) {
+      console.error('[judgments] auto-delegate failed:', err);
       res.status(500).json({ error: err.message });
     }
   });

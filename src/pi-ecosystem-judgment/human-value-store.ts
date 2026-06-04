@@ -246,6 +246,47 @@ export async function learnFromCorrection(
 // ============================================================
 
 /**
+ * 修改一个判断 (手动编辑). 允许改: decision, reasons, context, values_derived, decision_type, confidence.
+ * 不能改 id, timestamp (id 不暴露, 靠 id 查).
+ */
+export async function updateJudgment(
+  id: string,
+  patch: Partial<Pick<HumanJudgment, 'decision' | 'decision_type' | 'reasons' | 'values_derived' | 'context' | 'outcome'>>
+): Promise<HumanJudgment | null> {
+  const judgments = await loadAllJudgments();
+  const idx = judgments.findIndex((j) => j.id === id);
+  if (idx < 0) return null;
+  const cur = judgments[idx];
+  const next: HumanJudgment = {
+    ...cur,
+    ...(patch.decision !== undefined ? { decision: patch.decision } : {}),
+    ...(patch.decision_type !== undefined ? { decision_type: patch.decision_type } : {}),
+    ...(patch.reasons !== undefined ? { reasons: patch.reasons } : {}),
+    ...(patch.values_derived !== undefined ? { values_derived: patch.values_derived } : {}),
+    ...(patch.context !== undefined ? { context: { ...cur.context, ...patch.context } } : {}),
+    ...(patch.outcome !== undefined ? { outcome: { ...cur.outcome, ...patch.outcome } } : {}),
+  };
+  judgments[idx] = next;
+  await saveJudgments(judgments);
+  // 价值画像缓存失效 (内容变了画像也得重算)
+  valueProfileCache.clear();
+  return next;
+}
+
+/**
+ * 删除一个判断.
+ */
+export async function deleteJudgment(id: string): Promise<boolean> {
+  const judgments = await loadAllJudgments();
+  const idx = judgments.findIndex((j) => j.id === id);
+  if (idx < 0) return false;
+  judgments.splice(idx, 1);
+  await saveJudgments(judgments);
+  valueProfileCache.clear();
+  return true;
+}
+
+/**
  * 加载所有人类判断
  */
 export async function loadAllJudgments(): Promise<HumanJudgment[]> {

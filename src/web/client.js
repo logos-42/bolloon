@@ -1506,6 +1506,44 @@ input.addEventListener('keydown', (e) => {
   }
 });
 
+// 拖拽落点: 把判断库里的判断拖到输入框, 直接作为指令发给 AI (走"代我决定"路径).
+// 用户拖进来后输入框被预填, 点发送就把这条判断作为指令交给当前 agent.
+const inputArea = document.querySelector('.input-area');
+if (input && inputArea) {
+  const onDragOver = (e) => {
+    if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('application/x-bolloon-judgment')) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      inputArea.classList.add('drop-target');
+    }
+  };
+  const onDragLeave = (e) => {
+    if (e.target === inputArea || !inputArea.contains(e.relatedTarget)) {
+      inputArea.classList.remove('drop-target');
+    }
+  };
+  const onDrop = (e) => {
+    inputArea.classList.remove('drop-target');
+    const raw = e.dataTransfer.getData('application/x-bolloon-judgment');
+    if (!raw) return;
+    e.preventDefault();
+    try {
+      const { id, decision } = JSON.parse(raw);
+      // 预填输入框: 用户可改, 然后发出去 AI 就知道"按这条判断做"
+      const prefix = input.value.trim() ? input.value.trim() + '\n' : '';
+      input.value = `${prefix}按我的判断 #${id?.substring(0, 8) || ''} 执行: ${decision}`;
+      input.focus();
+      // 视觉提示
+      input.style.transition = 'box-shadow 0.3s';
+      input.style.boxShadow = '0 0 0 2px #2563eb';
+      setTimeout(() => { input.style.boxShadow = ''; }, 800);
+    } catch {}
+  };
+  inputArea.addEventListener('dragover', onDragOver);
+  inputArea.addEventListener('dragleave', onDragLeave);
+  inputArea.addEventListener('drop', onDrop);
+}
+
 if (themeToggle) {
   themeToggle.addEventListener('click', toggleTheme);
 }
@@ -1983,17 +2021,24 @@ function renderJudgments(items) {
     const domain = (j.context && j.context.domain) ? escapeHtml(j.context.domain) : 'general';
     const stakes = (j.context && j.context.stakes) ? escapeHtml(j.context.stakes) : 'medium';
     return `
-      <div class="task-item completed" style="cursor:default;">
+      <div class="task-item completed judgment-row"
+           data-judgment-id="${escapeHtml(j.id)}"
+           draggable="true"
+           style="cursor:grab;">
         <div class="task-item-header">
           <div class="task-item-title">
             <span>🛡️</span>
-            <span>${escapeHtml(j.decision)}</span>
+            <span class="judgment-decision">${escapeHtml(j.decision)}</span>
           </div>
           <span class="task-item-status completed">${stakes}</span>
         </div>
         ${reason ? `<div class="task-item-desc" style="color:#555;font-size:13px;margin-top:4px;">理由: ${reason}</div>` : ''}
-        <div class="task-item-meta" style="color:#999;font-size:11px;margin-top:4px;">
-          ${domain} · ${escapeHtml(j.timestamp)} · ${escapeHtml(j.id)}
+        <div class="task-item-meta" style="color:#999;font-size:11px;margin-top:4px;display:flex;justify-content:space-between;align-items:center;">
+          <span>${domain} · ${escapeHtml(j.timestamp)} · ${escapeHtml(j.id)}</span>
+          <span style="display:flex;gap:4px;">
+            <button class="judgment-edit-btn" data-id="${escapeHtml(j.id)}" title="编辑判断" style="background:none;border:1px solid #d1d5db;color:#374151;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:11px;">编辑</button>
+            <button class="judgment-del-btn" data-id="${escapeHtml(j.id)}" title="删除判断" style="background:none;border:1px solid #fca5a5;color:#b91c1c;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:11px;">删除</button>
+          </span>
         </div>
       </div>
     `;
@@ -2022,6 +2067,69 @@ async function loadJudgments() {
   }
 }
 
+// 列表内编辑/删除 + 拖拽 — 事件委托
+if (judgmentsList) {
+  judgmentsList.addEventListener('click', async (e) => {
+    const editBtn = e.target.closest && e.target.closest('.judgment-edit-btn');
+    const delBtn = e.target.closest && e.target.closest('.judgment-del-btn');
+    if (editBtn) {
+      const id = editBtn.getAttribute('data-id');
+      await editJudgment(id);
+    } else if (delBtn) {
+      const id = delBtn.getAttribute('data-id');
+      if (!confirm('确定删除这条判断?')) return;
+      try {
+        const res = await fetch('/api/judgments/' + encodeURIComponent(id), { method: 'DELETE' });
+        const out = await res.json();
+        if (!out.ok) throw new Error(out.error || 'delete failed');
+        await loadJudgments();
+      } catch (err) {
+        showJudgmentError('删除失败: ' + err.message);
+      }
+    }
+  });
+
+  // 拖拽: 每条 judgment 是 drag source, dataTransfer 装 decision text
+  judgmentsList.addEventListener('dragstart', (e) => {
+    const row = e.target.closest && e.target.closest('.judgment-row');
+    if (!row) return;
+    const decision = row.querySelector('.judgment-decision')?.textContent || '';
+    const id = row.getAttribute('data-judgment-id') || '';
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData('text/plain', decision);
+    e.dataTransfer.setData('application/x-bolloon-judgment', JSON.stringify({ id, decision }));
+  });
+}
+
+async function editJudgment(id) {
+  // 简单做法: 用 prompt 弹 3 个字段. 想要更好的体验就用 inline editor, 但 v1 不必.
+  const all = await (await fetch('/api/judgments')).json();
+  const j = (all.judgments || []).find(x => x.id === id);
+  if (!j) { showJudgmentError('找不到该判断 (可能已删除)'); return; }
+  const newDecision = prompt('修改判断 (decision):', j.decision);
+  if (newDecision === null) return;
+  const newReason = prompt('修改理由 (reason, 留空不改):', (j.reasons && j.reasons[0]) || '');
+  const newStakes = prompt('修改风险 (low/medium/high/critical):', (j.context && j.context.stakes) || 'medium');
+  const patch = {
+    decision: newDecision.trim() || j.decision,
+    reasons: newReason !== null ? [newReason.trim()].filter(Boolean) : j.reasons,
+    context: newStakes ? { ...(j.context || {}), stakes: newStakes } : j.context,
+  };
+  try {
+    const res = await fetch('/api/judgments/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    const out = await res.json();
+    if (!out.ok) throw new Error(out.error || 'update failed');
+    showJudgmentOk('✓ 已更新');
+    await loadJudgments();
+  } catch (err) {
+    showJudgmentError('更新失败: ' + err.message);
+  }
+}
+
 async function submitJudgment() {
   if (!judgmentSubmitBtn) return;
   const decision = (judgmentDecision?.value || '').trim();
@@ -2047,6 +2155,30 @@ async function submitJudgment() {
     if (judgmentDecision) judgmentDecision.value = '';
     if (judgmentReason) judgmentReason.value = '';
     await loadJudgments();
+
+    // AI 自动委派: fire-and-forget. 根据 domain 找匹配的远端 agent, 触发 agent_delegate 协议.
+    // 失败也不影响本次记录.
+    try {
+      const del = await fetch('/api/judgments/auto-delegate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          judgmentId: out.judgment.id,
+          capability: judgmentDomain?.value || 'general',
+          instruction: `执行判断: ${out.judgment.decision}` + (reason ? ` (理由: ${reason})` : ''),
+        }),
+      });
+      const delOut = await del.json();
+      if (delOut.matched && delOut.sent) {
+        showJudgmentOk(`✓ 已记录并自动委派给 ${delOut.targetAgent.name}`);
+      } else if (delOut.matched) {
+        showJudgmentOk(`✓ 已记录 (匹配到 ${delOut.targetAgent.name}, 但 ${delOut.reason || '未发送'})`);
+      } else {
+        showJudgmentOk('✓ 已记录 (本地, 无匹配远端 agent)');
+      }
+    } catch (e) {
+      console.warn('[judgments] auto-delegate fire failed:', e);
+    }
   } catch (e) {
     if (judgmentError) { judgmentError.textContent = '记录失败: ' + e.message; judgmentError.style.display = ''; }
   } finally {
