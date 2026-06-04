@@ -22,7 +22,8 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
-import { checkAndUpdate } from './utils/auto-update.js';
+// 启动时自动检查更新已禁用 (改用 --update-check / --update-now 显式触发)
+
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -1516,13 +1517,10 @@ async function main() {
     process.exit(0);
   }
 
-  // 启动时检查 npm 包更新
-  const updateResult = await checkAndUpdate();
-  if (updateResult.hasUpdate && updateResult.updated) {
-    console.log(`\n${YELLOW}更新完成，请重新启动 bolloon${RESET}\n`);
-    // 更新完成后退出，让用户重新启动
-    process.exit(0);
-  }
+  // 自动更新已禁用: 启动时不再自动检查/安装更新.
+  // 想手动检查: bolloon --update-check
+  // 想手动更新: bolloon --update-now [package]
+  // 想完全屏蔽 (CI / sandbox): BOLLOON_SKIP_UPDATE=true
 
   const mode = args.web ? 'web' : 'cli';
   const isNonInteractive = !!(args.tool || args.prompt);

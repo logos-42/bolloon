@@ -2721,6 +2721,29 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // 批量删除: { ids: ['hv-xxx', ...] } → { ok, deleted, notFound }
+  app.post('/api/judgments/batch-delete', async (req, res) => {
+    try {
+      const ids = (req.body && Array.isArray(req.body.ids)) ? (req.body.ids as unknown[]) : null;
+      if (!ids) return res.status(400).json({ error: 'ids array required' });
+      const { deleteJudgment, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+      const idStrs = ids.filter((x): x is string => typeof x === 'string' && x.length > 0);
+      let deleted = 0;
+      const notFound: string[] = [];
+      for (const id of idStrs) {
+        const ok = await deleteJudgment(id);
+        if (ok) deleted++; else notFound.push(id);
+      }
+      res.json({ ok: true, deleted, notFound });
+    } catch (err: any) {
+      console.error('[judgments] batch-delete failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // AI 自动委派: 根据新判断的 capability / context 找最匹配的远端 agent, 委派任务
   // 由前端在 POST /api/judgments 成功后调用 (fire-and-forget)
   // 出参: { matched, targetAgent, response | skipped, reason }

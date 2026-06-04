@@ -236,7 +236,16 @@
               <input type="file" id="judgment-import-file" accept=".json,.yaml,.yml,.md,.txt,.html,.htm" style="display:none">
             </div>
             <div id="judgment-error" class="form-info" style="display:none;color:#b91c1c;"></div>
-            <h3 style="margin-top:24px;font-size:14px;font-weight:600;">已记录的判断</h3>
+            <h3 style="margin-top:24px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+              <span>已记录的判断</span>
+              <span style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12px;font-weight:normal;">
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;color:#6b7280;">
+                  <input type="checkbox" id="judgment-select-all" style="cursor:pointer;"> 全选
+                </label>
+                <span id="judgment-selected-count" style="color:#6b7280;">已选 0</span>
+                <button id="judgment-bulk-delete-btn" class="btn-secondary btn-sm" disabled style="background:none;border:1px solid #fca5a5;color:#b91c1c;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:11px;opacity:0.5;">批量删除</button>
+              </span>
+            </h3>
             <div id="judgments-list" class="task-list" style="max-height:420px;overflow-y:auto;">
               <div class="task-empty">加载中...</div>
             </div>

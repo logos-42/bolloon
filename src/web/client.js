@@ -936,8 +936,8 @@ let agentStatusState = null; // 'planning' | 'executing' | null
 let agentStatusTextIdx = 0;
 
 const AGENT_STATUS_TEXTS = {
-  planning: ['正在计划下一步行动', '正在规划任务路径', '正在分析当前状态'],
-  executing: ['正在执行下一步行动', '正在执行任务', '正在调用工具'],
+  planning: ['正在计划', '正在分析', '正在思考'],
+  executing: ['正在执行', '正在调用工具', '正在处理'],
 };
 
 function setAgentStatus(state) {
@@ -1245,10 +1245,9 @@ function handleWorkflowLoopEvent(data, container) {
   const loopCount = workflowDisplayEl.querySelector('.workflow-loop-count');
   const streamsDiv = workflowDisplayEl.querySelector('.workflow-streams');
 
-  // 更新循环次数
+  // 更新循环次数 — 用户不需要看到 "循环 N", 只看步骤内容
   if (data.loopCount !== undefined) {
-    loopCount.textContent = `循环 #${data.loopCount}`;
-    loopCount.style.display = 'inline';
+    // 不显示循环计数, 仅在内部保留
   }
 
   // 显示循环信息
@@ -1258,8 +1257,7 @@ function handleWorkflowLoopEvent(data, container) {
     loopEl.innerHTML = `
       <div class="loop-header">
         <span class="loop-icon">🔁</span>
-        <span>循环 ${data.loopCount || '?'}</span>
-        <span class="loop-status">${data.status || ''}</span>
+        <span class="loop-status">${data.status || '执行中'}</span>
       </div>
       <div class="loop-content">${data.content}</div>
     `;
@@ -2026,6 +2024,9 @@ function renderJudgments(items) {
            draggable="true"
            style="cursor:grab;">
         <div class="task-item-header">
+          <label class="judgment-checkbox" style="display:flex;align-items:center;cursor:pointer;margin-right:8px;" onclick="event.stopPropagation();">
+            <input type="checkbox" class="judgment-select-cb" data-id="${escapeHtml(j.id)}" style="cursor:pointer;" onclick="event.stopPropagation();">
+          </label>
           <div class="task-item-title">
             <span>🛡️</span>
             <span class="judgment-decision">${escapeHtml(j.decision)}</span>
@@ -2098,6 +2099,76 @@ if (judgmentsList) {
     e.dataTransfer.effectAllowed = 'copy';
     e.dataTransfer.setData('text/plain', decision);
     e.dataTransfer.setData('application/x-bolloon-judgment', JSON.stringify({ id, decision }));
+  });
+
+  // 多选 checkbox 变化 → 更新工具栏
+  judgmentsList.addEventListener('change', (e) => {
+    if (e.target.classList && e.target.classList.contains('judgment-select-cb')) {
+      updateBulkDeleteToolbar();
+    }
+  });
+}
+
+// 批量选择工具栏: 全选 / 计数 / 启用删除按钮
+const judgmentSelectAll = document.getElementById('judgment-select-all');
+const judgmentSelectedCount = document.getElementById('judgment-selected-count');
+const judgmentBulkDeleteBtn = document.getElementById('judgment-bulk-delete-btn');
+
+function getSelectedJudgmentIds() {
+  if (!judgmentsList) return [];
+  return Array.from(judgmentsList.querySelectorAll('.judgment-select-cb'))
+    .filter(cb => cb.checked)
+    .map(cb => cb.getAttribute('data-id'))
+    .filter(Boolean);
+}
+
+function updateBulkDeleteToolbar() {
+  const ids = getSelectedJudgmentIds();
+  if (judgmentSelectedCount) judgmentSelectedCount.textContent = `已选 ${ids.length}`;
+  if (judgmentBulkDeleteBtn) {
+    judgmentBulkDeleteBtn.disabled = ids.length === 0;
+    judgmentBulkDeleteBtn.style.opacity = ids.length === 0 ? '0.5' : '1';
+    judgmentBulkDeleteBtn.style.cursor = ids.length === 0 ? 'not-allowed' : 'pointer';
+  }
+  // 全选 checkbox 的 indeterminate / checked 状态同步
+  if (judgmentSelectAll && judgmentsList) {
+    const all = judgmentsList.querySelectorAll('.judgment-select-cb');
+    const checked = Array.from(all).filter(cb => cb.checked);
+    judgmentSelectAll.checked = all.length > 0 && checked.length === all.length;
+    judgmentSelectAll.indeterminate = checked.length > 0 && checked.length < all.length;
+  }
+}
+
+if (judgmentSelectAll) {
+  judgmentSelectAll.addEventListener('change', (e) => {
+    if (!judgmentsList) return;
+    const checked = e.target.checked;
+    judgmentsList.querySelectorAll('.judgment-select-cb').forEach(cb => { cb.checked = checked; });
+    updateBulkDeleteToolbar();
+  });
+}
+
+if (judgmentBulkDeleteBtn) {
+  judgmentBulkDeleteBtn.addEventListener('click', async () => {
+    const ids = getSelectedJudgmentIds();
+    if (ids.length === 0) return;
+    if (!confirm(`确定删除选中的 ${ids.length} 条判断? 此操作不可撤销.`)) return;
+    judgmentBulkDeleteBtn.disabled = true;
+    try {
+      const res = await fetch('/api/judgments/batch-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      const out = await res.json();
+      if (!out.ok) throw new Error(out.error || 'failed');
+      showJudgmentOk(`✓ 批量删除 ${out.deleted} 条${out.notFound?.length ? ` (${out.notFound.length} 条未找到)` : ''}`);
+      await loadJudgments();
+    } catch (err) {
+      showJudgmentError('批量删除失败: ' + err.message);
+    } finally {
+      if (judgmentBulkDeleteBtn) judgmentBulkDeleteBtn.disabled = false;
+    }
   });
 }
 

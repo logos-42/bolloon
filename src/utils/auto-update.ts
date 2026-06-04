@@ -363,12 +363,22 @@ export async function checkAndUpdate(): Promise<{
   updated: boolean;
   message: string;
 }> {
-  // 检查是否有 --no-update 标志
+  // opt-in: 默认跳过更新检查. 想允许必须显式提供以下任一标志:
+  //   --update-check, --update-now, --allow-update
+  //   BOLLOON_AUTO_UPDATE=1
+  const allowFlag = process.argv.includes('--update-check')
+    || process.argv.includes('--update-now')
+    || process.argv.includes('--allow-update');
+  const allowEnv = process.env.BOLLOON_AUTO_UPDATE === '1';
+  if (!allowFlag && !allowEnv) {
+    return { hasUpdate: false, info: null, updated: false, message: '跳过更新检查 (默认关闭, 用 --update-check 显式触发)' };
+  }
+
+  // 显式屏蔽仍然优先
   if (process.argv.includes('--no-update') || process.argv.includes('--skip-update')) {
     return { hasUpdate: false, info: null, updated: false, message: '跳过更新检查' };
   }
 
-  // 检查环境变量
   if (process.env.BOLLOON_SKIP_UPDATE === 'true') {
     return { hasUpdate: false, info: null, updated: false, message: '跳过更新检查（环境变量）' };
   }
