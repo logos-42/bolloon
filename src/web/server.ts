@@ -2502,6 +2502,65 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // ==================== Judgments (v1 核心: 让我能记录判断) ====================
+  // POST /api/judgments       — 记录一个判断
+  // GET  /api/judgments       — 列出所有判断 (新→旧)
+  // 存储: ~/.bolloon/human-values/judgments.json (human-value-store)
+  //      极简版: 只记录 decision + reason; 其它字段可选
+  app.post('/api/judgments', async (req, res) => {
+    try {
+      const { decision, reason, context } = req.body as {
+        decision?: string; reason?: string; context?: { domain?: string; stakes?: string };
+      };
+      if (!decision || typeof decision !== 'string' || !decision.trim()) {
+        return res.status(400).json({ error: 'decision required' });
+      }
+      const { storeHumanJudgment, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+      const j = await storeHumanJudgment({
+        decision: decision.trim(),
+        decision_type: 'approve',
+        reasons: reason ? [reason.trim()] : [],
+        values_derived: [],
+        context: {
+          domain: context?.domain || 'general',
+          complexity: 'moderate',
+          stakes: (context?.stakes as 'low' | 'medium' | 'high' | 'critical') || 'medium',
+          time_pressure: 'low',
+        },
+        metadata: {
+          source: 'explicit',
+          confidence: 0.8,
+          revisable: true,
+        },
+      });
+      res.json({ ok: true, judgment: j });
+    } catch (err: any) {
+      console.error('[judgments] POST failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/judgments', async (_req, res) => {
+    try {
+      const { loadAllJudgments, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+      const all = await loadAllJudgments();
+      // 新的在前
+      all.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+      res.json({ count: all.length, judgments: all });
+    } catch (err: any) {
+      console.error('[judgments] GET failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // (判断的 UI 已合并到主页面 header 的盾牌按钮 + modal, 不再走独立路由)
+
   // 启动看门狗监控
   if (watchdog) {
     // level 1 (内存爆) → 进程自杀, 依赖外层 supervisor / 用户重启 (Windows 任务计划/手动)

@@ -127,6 +127,13 @@
             </svg>
             <span id="task-badge" class="task-badge" style="display:none;">0</span>
           </button>
+          <button id="judgments-btn" class="header-action" title="我的判断">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2L4 6v6c0 5 3.5 9.5 8 10 4.5-.5 8-5 8-10V6l-8-4z"></path>
+              <path d="M9 12l2 2 4-4"></path>
+            </svg>
+            <span id="judgments-badge" class="task-badge" style="display:none;">0</span>
+          </button>
         </div>
       </header>
 
@@ -185,6 +192,51 @@
             <div class="btn-group">
               <button id="task-cancel-btn" class="btn-secondary">取消</button>
               <button id="task-create-btn" class="btn-primary">创建并执行</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Judgments Modal (v1 核心) -->
+      <div id="judgments-modal" class="modal">
+        <div class="modal-content modal-wide">
+          <div class="modal-header">
+            <h2>我的判断</h2>
+            <button id="judgments-modal-close" class="modal-close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>判断 (decision)</label>
+              <textarea id="judgment-decision" rows="2" placeholder="例: 不在时让 AI 替我做决定"></textarea>
+            </div>
+            <div class="form-group">
+              <label>理由 (reason, 可选)</label>
+              <input type="text" id="judgment-reason" placeholder="例: 信任 Bolloon 的判断存储">
+            </div>
+            <div class="form-group" style="display:flex;gap:8px;align-items:center;">
+              <label style="margin:0;">领域 (domain)</label>
+              <select id="judgment-domain">
+                <option value="general">general</option>
+                <option value="code">code</option>
+                <option value="architecture">architecture</option>
+                <option value="security">security</option>
+                <option value="testing">testing</option>
+              </select>
+              <label style="margin:0 0 0 16px;">风险 (stakes)</label>
+              <select id="judgment-stakes">
+                <option value="medium">medium</option>
+                <option value="low">low</option>
+                <option value="high">high</option>
+                <option value="critical">critical</option>
+              </select>
+            </div>
+            <div class="btn-group">
+              <button id="judgment-submit-btn" class="btn-primary">记录</button>
+            </div>
+            <div id="judgment-error" class="form-info" style="display:none;color:#b91c1c;"></div>
+            <h3 style="margin-top:24px;font-size:14px;font-weight:600;">已记录的判断</h3>
+            <div id="judgments-list" class="task-list" style="max-height:420px;overflow-y:auto;">
+              <div class="task-empty">加载中...</div>
             </div>
           </div>
         </div>

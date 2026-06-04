@@ -1932,6 +1932,132 @@ if (taskModalClose) {
   taskModalClose.addEventListener('click', hideTaskModal);
 }
 
+// ==================== Judgments (v1 极简) ====================
+const judgmentsModal = document.getElementById('judgments-modal');
+const judgmentsBtn = document.getElementById('judgments-btn');
+const judgmentsModalClose = document.getElementById('judgments-modal-close');
+const judgmentDecision = document.getElementById('judgment-decision');
+const judgmentReason = document.getElementById('judgment-reason');
+const judgmentDomain = document.getElementById('judgment-domain');
+const judgmentStakes = document.getElementById('judgment-stakes');
+const judgmentSubmitBtn = document.getElementById('judgment-submit-btn');
+const judgmentError = document.getElementById('judgment-error');
+const judgmentsList = document.getElementById('judgments-list');
+const judgmentsBadge = document.getElementById('judgments-badge');
+
+let judgmentsLoaded = false;
+
+function showJudgmentsModal() {
+  if (judgmentsModal) judgmentsModal.classList.add('active');
+  if (!judgmentsLoaded) loadJudgments();
+}
+
+function hideJudgmentsModal() {
+  if (judgmentsModal) judgmentsModal.classList.remove('active');
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function renderJudgments(items) {
+  if (!judgmentsList) return;
+  if (!items || items.length === 0) {
+    judgmentsList.innerHTML = '<div class="task-empty">还没有判断, 在上面记录第一条吧</div>';
+    return;
+  }
+  const html = items.map(j => {
+    const reason = (j.reasons && j.reasons[0]) ? escapeHtml(j.reasons[0]) : '';
+    const domain = (j.context && j.context.domain) ? escapeHtml(j.context.domain) : 'general';
+    const stakes = (j.context && j.context.stakes) ? escapeHtml(j.context.stakes) : 'medium';
+    return `
+      <div class="task-item completed" style="cursor:default;">
+        <div class="task-item-header">
+          <div class="task-item-title">
+            <span>🛡️</span>
+            <span>${escapeHtml(j.decision)}</span>
+          </div>
+          <span class="task-item-status completed">${stakes}</span>
+        </div>
+        ${reason ? `<div class="task-item-desc" style="color:#555;font-size:13px;margin-top:4px;">理由: ${reason}</div>` : ''}
+        <div class="task-item-meta" style="color:#999;font-size:11px;margin-top:4px;">
+          ${domain} · ${escapeHtml(j.timestamp)} · ${escapeHtml(j.id)}
+        </div>
+      </div>
+    `;
+  }).join('');
+  judgmentsList.innerHTML = html;
+}
+
+async function loadJudgments() {
+  if (!judgmentsList) return;
+  try {
+    const res = await fetch('/api/judgments');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    renderJudgments(data.judgments);
+    if (judgmentsBadge) {
+      if (data.count > 0) {
+        judgmentsBadge.textContent = data.count;
+        judgmentsBadge.style.display = '';
+      } else {
+        judgmentsBadge.style.display = 'none';
+      }
+    }
+    judgmentsLoaded = true;
+  } catch (e) {
+    if (judgmentsList) judgmentsList.innerHTML = '<div class="task-empty">加载失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+async function submitJudgment() {
+  if (!judgmentSubmitBtn) return;
+  const decision = (judgmentDecision?.value || '').trim();
+  const reason = (judgmentReason?.value || '').trim();
+  if (!decision) {
+    if (judgmentError) { judgmentError.textContent = '判断不能为空'; judgmentError.style.display = ''; }
+    return;
+  }
+  judgmentSubmitBtn.disabled = true;
+  if (judgmentError) judgmentError.style.display = 'none';
+  try {
+    const res = await fetch('/api/judgments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        decision,
+        reason: reason || undefined,
+        context: { domain: judgmentDomain?.value, stakes: judgmentStakes?.value },
+      }),
+    });
+    const out = await res.json();
+    if (!out.ok) throw new Error(out.error || 'unknown');
+    if (judgmentDecision) judgmentDecision.value = '';
+    if (judgmentReason) judgmentReason.value = '';
+    await loadJudgments();
+  } catch (e) {
+    if (judgmentError) { judgmentError.textContent = '记录失败: ' + e.message; judgmentError.style.display = ''; }
+  } finally {
+    judgmentSubmitBtn.disabled = false;
+  }
+}
+
+if (judgmentsBtn) judgmentsBtn.addEventListener('click', showJudgmentsModal);
+if (judgmentsModalClose) judgmentsModalClose.addEventListener('click', hideJudgmentsModal);
+if (judgmentsModal) {
+  judgmentsModal.addEventListener('click', (e) => {
+    if (e.target === judgmentsModal) hideJudgmentsModal();
+  });
+}
+if (judgmentSubmitBtn) judgmentSubmitBtn.addEventListener('click', submitJudgment);
+
+// 启动时拉一次, 让徽章显示总数 (不打开 modal 也能看到)
+loadJudgments();
+// 后台定期刷新 (与 modal 打开/关闭无关, 任何时候都保持徽章新鲜)
+setInterval(loadJudgments, 10000);
+
 if (taskModal) {
   taskModal.addEventListener('click', (e) => {
     if (e.target === taskModal) {

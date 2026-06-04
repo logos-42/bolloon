@@ -368,6 +368,8 @@ export async function getPriorityRules(): Promise<PriorityRule[]> {
 async function saveJudgments(judgments: HumanJudgment[]): Promise<void> {
   await fs.mkdir(VALUE_STORE_DIR, { recursive: true });
   await fs.writeFile(JUDGMENTS_FILE, JSON.stringify(judgments, null, 2), 'utf-8');
+  // 让 loadAllJudgments 下次重新读盘, 避免缓存与磁盘脱节
+  judgmentCache = judgments;
 }
 
 function buildValueProfile(agentId: string, judgments: HumanJudgment[]): ValueProfile {
