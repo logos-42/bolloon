@@ -909,7 +909,17 @@ function addMessage(content, type, save = true, container) {
     };
 
     actionsDiv.appendChild(copyBtn);
-    actionsDiv.appendChild(regenerateBtn);
+
+    // "存为判断" 按钮: 把这条消息正文作为 decision 存到判断库
+    const saveJudgmentBtn = document.createElement('button');
+    saveJudgmentBtn.className = 'action-btn save-as-judgment';
+    saveJudgmentBtn.title = '把这条消息存为判断';
+    saveJudgmentBtn.setAttribute('data-decision', rawContent.substring(0, 800)); // 截断防超长
+    saveJudgmentBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L4 6v6c0 5 3.5 9.5 8 10 4.5-.5 8-5 8-10V6l-8-4z"></path><path d="M9 12l2 2 4-4"></path></svg> 存为判断`;
+    actionsDiv.appendChild(saveJudgmentBtn);
+    if (type === 'ai') {
+      actionsDiv.appendChild(regenerateBtn);
+    }
     div.appendChild(actionsDiv);
   }
 
@@ -2051,6 +2061,96 @@ if (judgmentsModal) {
     if (e.target === judgmentsModal) hideJudgmentsModal();
   });
 }
+
+// --- 导入文件 (.json / .yaml / .md / .txt / .html) ---
+const judgmentImportBtn = document.getElementById('judgment-import-btn');
+const judgmentImportFile = document.getElementById('judgment-import-file');
+
+function showJudgmentError(msg) {
+  if (!judgmentError) return;
+  judgmentError.textContent = msg;
+  judgmentError.style.display = '';
+  judgmentError.style.color = '#b91c1c';
+}
+function showJudgmentOk(msg) {
+  if (!judgmentError) return;
+  judgmentError.textContent = msg;
+  judgmentError.style.display = '';
+  judgmentError.style.color = '#15803d';
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      // result is "data:<mime>;base64,<payload>" — strip prefix
+      const s = String(r.result || '');
+      const idx = s.indexOf(',');
+      resolve(idx >= 0 ? s.substring(idx + 1) : s);
+    };
+    r.onerror = () => reject(r.error || new Error('read failed'));
+    r.readAsDataURL(file);
+  });
+}
+
+async function importJudgmentFile(file) {
+  if (!file) return;
+  if (judgmentImportBtn) judgmentImportBtn.disabled = true;
+  try {
+    const content = await fileToBase64(file);
+    const res = await fetch('/api/judgments/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: file.name, content }),
+    });
+    const out = await res.json();
+    if (!out.ok) throw new Error(out.error || 'import failed');
+    showJudgmentOk(`✓ 导入 ${out.imported} 条${out.failed ? `, ${out.failed} 条失败` : ''}`);
+    await loadJudgments();
+  } catch (e) {
+    showJudgmentError('导入失败: ' + e.message);
+  } finally {
+    if (judgmentImportBtn) judgmentImportBtn.disabled = false;
+    if (judgmentImportFile) judgmentImportFile.value = '';
+  }
+}
+
+if (judgmentImportBtn) {
+  judgmentImportBtn.addEventListener('click', () => {
+    if (judgmentImportFile) judgmentImportFile.click();
+  });
+}
+if (judgmentImportFile) {
+  judgmentImportFile.addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) importJudgmentFile(f);
+  });
+}
+
+// --- 从对话里 "存为判断": 事件委托到消息容器, 匹配 .save-as-judgment ---
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest && e.target.closest('.save-as-judgment');
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const decision = (btn.getAttribute('data-decision') || '').trim();
+  if (!decision) return;
+  try {
+    const res = await fetch('/api/judgments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision, reason: '从对话保存' }),
+    });
+    const out = await res.json();
+    if (!out.ok) throw new Error(out.error || 'failed');
+    btn.classList.add('saved');
+    btn.title = '已存为判断';
+    // 顶部徽章会通过 setInterval 拉新数据, 不用手动触发
+  } catch (err) {
+    console.error('[judgments] save-from-chat failed:', err);
+    btn.title = '保存失败: ' + err.message;
+  }
+});
 if (judgmentSubmitBtn) judgmentSubmitBtn.addEventListener('click', submitJudgment);
 
 // 启动时拉一次, 让徽章显示总数 (不打开 modal 也能看到)

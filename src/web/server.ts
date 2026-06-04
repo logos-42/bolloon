@@ -2559,6 +2559,127 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // 导入判断: 接受 { filename, content (base64), context }.
+  // 支持 .json / .yaml / .yml / .md / .txt / .html. 完全离线解析, 不调 LLM.
+  // 解析规则:
+  //   - .json: 顶层数组 [{decision, reason?, context?}, ...] 或 {judgments: [...]} 或 {items: [...]}
+  //   - .yaml/.yml: 期望顶层数组 (用 js-yaml); 不支持复杂结构
+  //   - .md/.txt/.html: 每一段 (按空行分隔) 算一条判断, 首行非空 = decision, 整段 = content
+  //                     如果首行是 markdown 标题 (# ...) 则去掉 #, 整段去掉首行后作 reason
+  app.post('/api/judgments/import', async (req, res) => {
+    try {
+      const { filename, content, context } = req.body as {
+        filename?: string; content?: string; context?: { domain?: string; stakes?: string };
+      };
+      if (!filename || !content) {
+        return res.status(400).json({ error: 'filename and content (base64) required' });
+      }
+      let raw: string;
+      try { raw = Buffer.from(content, 'base64').toString('utf-8'); }
+      catch { return res.status(400).json({ error: 'content is not valid base64' }); }
+
+      const lower = filename.toLowerCase();
+      let items: Array<{ decision: string; reason?: string; context?: any }> = [];
+      if (lower.endsWith('.json')) {
+        try {
+          const parsed = JSON.parse(raw);
+          const arr = Array.isArray(parsed) ? parsed
+            : Array.isArray(parsed?.judgments) ? parsed.judgments
+            : Array.isArray(parsed?.items) ? parsed.items
+            : null;
+          if (!arr) return res.status(400).json({ error: 'JSON must be an array, or {judgments:[]}/{items:[]}' });
+          for (const it of arr) {
+            if (it && typeof it.decision === 'string' && it.decision.trim()) {
+              items.push({ decision: it.decision.trim(), reason: it.reason, context: it.context });
+            }
+          }
+        } catch (e: any) {
+          return res.status(400).json({ error: 'JSON parse failed: ' + e.message });
+        }
+      } else if (lower.endsWith('.yaml') || lower.endsWith('.yml')) {
+        try {
+          const yaml = (await import('js-yaml')).default;
+          const parsed = yaml.load(raw);
+          if (!Array.isArray(parsed)) return res.status(400).json({ error: 'YAML must be a top-level array' });
+          for (const it of parsed) {
+            if (it && typeof it.decision === 'string' && it.decision.trim()) {
+              items.push({ decision: it.decision.trim(), reason: it.reason, context: it.context });
+            }
+          }
+        } catch (e: any) {
+          return res.status(400).json({ error: 'YAML parse failed: ' + e.message });
+        }
+      } else if (lower.endsWith('.md') || lower.endsWith('.txt') || lower.endsWith('.html') || lower.endsWith('.htm')) {
+        // 通用纯文本: 按空行分段, 每段是一条判断
+        // 对 .html 先剥掉标签, 但保留段落分隔
+        let text = raw;
+        if (lower.endsWith('.html') || lower.endsWith('.htm')) {
+          text = text.replace(/<script[\s\S]*?<\/script>/gi, '')
+                     .replace(/<style[\s\S]*?<\/style>/gi, '')
+                     // 块级标签 -> 双换行 (保留段落分隔)
+                     .replace(/<\/?(p|div|h[1-6]|li|tr|br)[^>]*>/gi, '\n\n')
+                     .replace(/<[^>]+>/g, ' ')
+                     .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+        }
+        const blocks = text.split(/\n\s*\n/).map(b => b.trim()).filter(b => b.length > 0);
+        for (const block of blocks) {
+          const lines = block.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+          if (lines.length === 0) continue;
+          let decision = lines[0];
+          // 如果首行是 markdown 标题, 去掉 # 前缀
+          decision = decision.replace(/^#+\s*/, '');
+          // 如果整段就是一个短句 (没有换行), 直接当 decision
+          const reason = lines.length > 1 ? lines.slice(1).join(' ').trim() || undefined : undefined;
+          if (decision) items.push({ decision, reason });
+        }
+      } else {
+        return res.status(400).json({ error: 'unsupported file type (use .json .yaml .yml .md .txt .html)' });
+      }
+
+      if (items.length === 0) {
+        return res.status(400).json({ error: 'no parseable judgments found in file' });
+      }
+
+      const { storeHumanJudgment, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+
+      const imported: any[] = [];
+      const errors: string[] = [];
+      for (let i = 0; i < items.length; i++) {
+        try {
+          const it = items[i];
+          const j = await storeHumanJudgment({
+            decision: it.decision,
+            decision_type: 'approve',
+            reasons: it.reason ? [String(it.reason)] : [],
+            values_derived: [],
+            context: {
+              domain: it.context?.domain || context?.domain || 'general',
+              complexity: 'moderate',
+              stakes: (it.context?.stakes as any) || context?.stakes || 'medium',
+              time_pressure: 'low',
+            },
+            metadata: {
+              source: 'explicit',
+              confidence: 0.8,
+              revisable: true,
+            },
+          });
+          imported.push(j);
+        } catch (e: any) {
+          errors.push(`#${i + 1} (${items[i].decision.substring(0, 30)}): ${e.message}`);
+        }
+      }
+
+      res.json({ ok: true, imported: imported.length, failed: errors.length, errors: errors.slice(0, 5), judgments: imported });
+    } catch (err: any) {
+      console.error('[judgments] import failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // (判断的 UI 已合并到主页面 header 的盾牌按钮 + modal, 不再走独立路由)
 
   // 启动看门狗监控

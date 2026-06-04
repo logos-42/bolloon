@@ -575,6 +575,13 @@ body {
   transform: rotate(90deg);
 }
 
+/* ⚡ 自动工具徽章 + 当前会话名: 折叠时不显示, 只在展开时可见.
+   配置 (钱包/工具) 按钮保留在行上, 用户随时能进 modal. */
+.agent-group:not(.expanded) .agent-tools-badge,
+.agent-group:not(.expanded) .agent-current-session {
+  display: none !important;
+}
+
 .agent-new-session {
   /* 已废弃: 新建会话按钮迁移到 session 列表顶部, 见 .session-new-item */
   display: none;

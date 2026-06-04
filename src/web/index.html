@@ -230,8 +230,10 @@
                 <option value="critical">critical</option>
               </select>
             </div>
-            <div class="btn-group">
+            <div class="btn-group" style="gap:8px;">
               <button id="judgment-submit-btn" class="btn-primary">记录</button>
+              <button id="judgment-import-btn" class="btn-secondary" title="从 .json / .yaml / .md / .txt / .html 文件批量导入">导入文件</button>
+              <input type="file" id="judgment-import-file" accept=".json,.yaml,.yml,.md,.txt,.html,.htm" style="display:none">
             </div>
             <div id="judgment-error" class="form-info" style="display:none;color:#b91c1c;"></div>
             <h3 style="margin-top:24px;font-size:14px;font-weight:600;">已记录的判断</h3>
