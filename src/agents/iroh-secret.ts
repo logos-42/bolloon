@@ -21,7 +21,9 @@ export function loadOrCreateIrohSecret(role: string = 'default'): { secretKey: U
   }
   const sk = crypto.randomBytes(32);
   const createdAt = new Date().toISOString();
-  fs.writeFileSync(fp, JSON.stringify({ secretKey: sk.toString('hex'), createdAt }, null, 2));
+  fs.writeFileSync(fp, JSON.stringify({ secretKey: sk.toString('hex'), createdAt }, null, 2), { mode: 0o600 });
+  // chmod in case the file already existed and umask produced looser perms
+  try { fs.chmodSync(fp, 0o600); } catch {}
   return { secretKey: sk, createdAt, reused: false };
 }
 

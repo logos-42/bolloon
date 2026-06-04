@@ -1,5 +1,6 @@
 import { Endpoint, Connection } from '@rayhanadev/iroh';
 import * as crypto from 'crypto';
+import { loadOrCreateIrohSecret } from '../agents/iroh-secret.js';
 
 export interface IrohMessage {
   type: string;
@@ -89,6 +90,19 @@ export class IrohTransport {
         nodeId: this.ownNodeId,
         addr: this.ownNodeId // iroh 没有 listenAddresses，用 nodeId 作为 addr
       };
+    }
+
+    // 若调用方未传 secretKey，从 ~/.bolloon/iroh-secret-default.json 落盘/读取
+    // 保证 iroh nodeId 在同一台机器上跨重启保持稳定
+    if (!secretKey) {
+      try {
+        const sec = loadOrCreateIrohSecret('default');
+        // iroh binding 的 secretKey 字段是 hex 字符串 (32 字节 Ed25519 种子)
+        secretKey = Buffer.from(sec.secretKey).toString('hex');
+        console.log(`[IrohTransport] ${sec.reused ? '复用' : '新建'} iroh-secret-default.json (createdAt=${sec.createdAt})`);
+      } catch (e) {
+        console.warn('[IrohTransport] iroh-secret 加载失败, 将使用临时身份:', e);
+      }
     }
 
     const options: any = { alpns: [IROH_ALPN] };

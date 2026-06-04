@@ -19,6 +19,8 @@ import { initMinimax, getMinimax } from '../constraints/index.js';
 import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
 import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
 import { irohTransport } from '../network/iroh-transport.js';
+import { createAgentDelegateApp } from './agent-delegate-server.js';
+import { createIrohDelegateTransport } from './iroh-delegate-transport.js';
 import { verifyMessage, isAddress, getAddress } from 'viem';
 
 // 前端资源路径：在打包后会通过 CommonJS require 加载，使用 import.meta.url
@@ -1732,6 +1734,17 @@ app.get('/channels', async (_req, res) => {
         initialized: true
       };
       irohInitialized = true;
+
+      // 挂载 agent-delegate app (manifest 协议 + agent_delegate)
+      // 必须在 irohInitialized 之后挂, 因为适配器要监听 irohTransport.onMessage
+      try {
+        const delegateTransport = createIrohDelegateTransport({ verbose: true });
+        const delegateApp = createAgentDelegateApp(delegateTransport);
+        app.use('/api/agent', delegateApp);
+        console.log('[iroh API] agent-delegate app 已挂载到 /api/agent');
+      } catch (e) {
+        console.error('[iroh API] 挂载 agent-delegate app 失败:', e);
+      }
 
       // 设置消息处理
       irohTransport.onMessage('chat', (msg) => {
