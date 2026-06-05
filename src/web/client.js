@@ -448,6 +448,8 @@ function renderChannels() {
     const toolsBadge = ch.autoInvokeTools
       ? `<span class="agent-tools-badge" title="自动工具调用已开启">⚡</span>`
       : '';
+    const judgmentCount = Array.isArray(ch.judgment_ids) ? ch.judgment_ids.length : 0;
+    const judgmentBadge = `<span class="agent-judgment-badge" data-channel-id="${escapeHtml(ch.id)}" title="已绑定 ${judgmentCount} 条判断力 (点击管理)">🧠 ${judgmentCount}</span>`;
 
     row.innerHTML = `
       <svg class="agent-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -458,6 +460,7 @@ function renderChannels() {
       <span class="agent-row-meta">
         ${walletBadge}
         ${toolsBadge}
+        ${judgmentBadge}
         ${sessionCount > 1 ? `<span class="agent-session-count" title="${sessionCount} 个会话">${sessionCount}</span>` : ''}
         ${currentSessLabel ? `<span class="agent-current-session" title="当前会话：${escapeHtml(currentSessLabel)}">· ${escapeHtml(currentSessLabel)}</span>` : ''}
         <button class="agent-config-btn" title="配置智能体 (钱包 / 工具)">
@@ -493,6 +496,14 @@ function renderChannels() {
       ev.stopPropagation();
       openAgentAddModal(ch);
     });
+    // 🧠 判断力 badge: 打开判断力选择器
+    const judgmentBadgeEl = row.querySelector('.agent-judgment-badge');
+    if (judgmentBadgeEl) {
+      judgmentBadgeEl.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        openChannelJudgmentPicker(ch.id);
+      });
+    }
 
     li.appendChild(row);
 
@@ -2701,6 +2712,11 @@ let pendingWalletMnemonic = null;        // 本会话待绑定的助记词, 仅�
 
 function openAgentAddModal(existingChannel) {
   if (!agentAddModal) return;
+  const selectedIds = new Set(
+    existingChannel && Array.isArray(existingChannel.judgment_ids)
+      ? existingChannel.judgment_ids
+      : []
+  );
   if (existingChannel) {
     agentAddTitle.textContent = '配置智能体：' + existingChannel.name;
     agentAddName.value = existingChannel.name || '';
@@ -2722,6 +2738,35 @@ function openAgentAddModal(existingChannel) {
   agentAddWalletInfo.innerHTML = '';
   pendingWalletSecret = null;
   agentAddModal.classList.add('active');
+  // v3: 加载判断力列表到多选框
+  loadJudgmentsIntoAgentModal(selectedIds);
+}
+
+async function loadJudgmentsIntoAgentModal(selectedIds) {
+  const container = document.getElementById('agent-add-judgments');
+  if (!container) return;
+  try {
+    const res = await fetch('/api/judgments');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const all = Array.isArray(data) ? data : (data.judgments || []);
+    if (all.length === 0) {
+      container.innerHTML = '<div style="color:#9ca3af;font-size:12px;padding:4px;">还没有任何判断力, 请先在右上角盾牌按钮里记录。</div>';
+      return;
+    }
+    container.innerHTML = all.map(j => {
+      const checked = selectedIds.has(j.id) ? 'checked' : '';
+      return `
+        <label style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;cursor:pointer;font-size:12px;">
+          <input type="checkbox" data-jid="${j.id}" ${checked} style="margin-top:2px;cursor:pointer;">
+          <span style="flex:1;line-height:1.3;">${escapeHtml((j.decision || j.content || '').toString().slice(0, 80))}</span>
+        </label>
+      `;
+    }).join('');
+  } catch (err) {
+    container.innerHTML = '<div style="color:#b91c1c;font-size:12px;padding:4px;">加载判断力失败</div>';
+    console.error('loadJudgmentsIntoAgentModal:', err);
+  }
 }
 
 function closeAgentAddModal() {
@@ -2807,6 +2852,10 @@ if (agentAddConfirmBtn) {
     }
     const walletAddress = (agentAddWallet.value || '').trim();
     const autoInvokeTools = !!agentAddAutoTools.checked;
+    // v3: 收集选中的 judgment_ids
+    const judgmentIds = [...document.querySelectorAll('#agent-add-judgments input[type=checkbox][data-jid]:checked')]
+      .map(el => Number(el.dataset.jid))
+      .filter(n => Number.isFinite(n));
 
     try {
       if (mode === 'create') {
@@ -2817,7 +2866,8 @@ if (agentAddConfirmBtn) {
             name,
             agentId: currentAgentId,
             walletAddress: walletAddress || undefined,
-            autoInvokeTools
+            autoInvokeTools,
+            judgment_ids: judgmentIds
           })
         });
         if (!res.ok) throw new Error('create failed');
@@ -2831,7 +2881,11 @@ if (agentAddConfirmBtn) {
         const res = await fetch(`/channels/${channelId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ walletAddress: walletAddress || null, autoInvokeTools })
+          body: JSON.stringify({
+            walletAddress: walletAddress || null,
+            autoInvokeTools,
+            judgment_ids: judgmentIds
+          })
         });
         if (!res.ok) throw new Error('update failed');
         const updated = await res.json();
@@ -2847,3 +2901,107 @@ if (agentAddConfirmBtn) {
   });
 }
 
+
+// ============================================================================
+// Channel ↔ Judgment 绑定 (v3 核心)
+// ============================================================================
+
+async function openChannelJudgmentPicker(channelId) {
+  const ch = channels.find(c => c.id === channelId);
+  if (!ch) return alert('Channel 不存在');
+
+  // 拉取所有 judgment
+  let allJudgments = [];
+  try {
+    const res = await fetch('/api/judgments');
+    if (res.ok) {
+      const data = await res.json();
+      allJudgments = Array.isArray(data) ? data : (data.judgments || []);
+    }
+  } catch (err) {
+    console.error('Failed to load judgments:', err);
+    return alert('加载判断力失败');
+  }
+
+  const selected = new Set(Array.isArray(ch.judgment_ids) ? ch.judgment_ids : []);
+
+  const rows = allJudgments.length === 0
+    ? '<div style="color:#6b7280;padding:12px;text-align:center;">还没有任何判断力。请先在右上角盾牌按钮里记录判断。</div>'
+    : allJudgments.map(j => `
+        <label class="channel-jp-row" style="display:flex;align-items:flex-start;gap:8px;padding:6px 4px;cursor:pointer;border-bottom:1px solid #f3f4f6;">
+          <input type="checkbox" data-jid="${j.id}" ${selected.has(j.id) ? 'checked' : ''} style="margin-top:4px;cursor:pointer;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;color:#111827;line-height:1.4;">${escapeHtml(j.decision || '')}</div>
+            ${j.reason ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(j.reason)}</div>` : ''}
+            <div style="font-size:10px;color:#9ca3af;margin-top:2px;">
+              ${j.domain || 'general'} · ${j.stakes || 'medium'}
+            </div>
+          </div>
+        </label>
+      `).join('');
+
+  const html = `
+    <div id="channel-jp-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10000;display:flex;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:8px;width:520px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.2);">
+        <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <h3 style="margin:0;font-size:15px;font-weight:600;color:#111827;">绑定判断力</h3>
+            <div style="font-size:12px;color:#6b7280;margin-top:2px;">Channel: ${escapeHtml(ch.name)}</div>
+          </div>
+          <button id="channel-jp-close" style="background:none;border:none;font-size:20px;color:#6b7280;cursor:pointer;padding:4px 8px;">×</button>
+        </div>
+        <div style="padding:8px 12px;background:#f9fafb;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:12px;">
+          <label style="font-size:12px;color:#374151;cursor:pointer;display:flex;align-items:center;gap:4px;">
+            <input type="checkbox" id="channel-jp-select-all" style="cursor:pointer;"> 全选
+          </label>
+          <span id="channel-jp-count" style="font-size:12px;color:#6b7280;">已选 ${selected.size} 条</span>
+        </div>
+        <div id="channel-jp-list" style="flex:1;overflow-y:auto;padding:8px 16px;">${rows}</div>
+        <div style="padding:12px 20px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;">
+          <button id="channel-jp-cancel" class="btn-secondary" style="padding:6px 14px;border:1px solid #d1d5db;background:#fff;border-radius:4px;cursor:pointer;font-size:13px;">取消</button>
+          <button id="channel-jp-save" class="btn-primary" style="padding:6px 14px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">保存绑定</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+
+  const overlay = document.getElementById('channel-jp-overlay');
+  const updateCount = () => {
+    const n = overlay.querySelectorAll('input[type=checkbox][data-jid]:checked').length;
+    document.getElementById('channel-jp-count').textContent = `已选 ${n} 条`;
+  };
+  overlay.querySelectorAll('input[type=checkbox][data-jid]').forEach(cb => {
+    cb.addEventListener('change', updateCount);
+  });
+  document.getElementById('channel-jp-select-all').addEventListener('change', (ev) => {
+    overlay.querySelectorAll('input[type=checkbox][data-jid]').forEach(cb => { cb.checked = ev.target.checked; });
+    updateCount();
+  });
+  document.getElementById('channel-jp-close').onclick = () => overlay.remove();
+  document.getElementById('channel-jp-cancel').onclick = () => overlay.remove();
+  document.getElementById('channel-jp-save').onclick = async () => {
+    const ids = [...overlay.querySelectorAll('input[type=checkbox][data-jid]:checked')]
+      .map(el => Number(el.dataset.jid))
+      .filter(n => Number.isFinite(n));
+    try {
+      const res = await fetch(`/channels/${channelId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ judgment_ids: ids })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const updated = await res.json();
+      const idx = channels.findIndex(c => c.id === channelId);
+      if (idx >= 0) channels[idx] = updated;
+      renderChannels();
+      overlay.remove();
+    } catch (err) {
+      console.error('Failed to save judgment binding:', err);
+      alert('保存失败: ' + err.message);
+    }
+  };
+}

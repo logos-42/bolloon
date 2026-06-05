@@ -578,7 +578,8 @@ body {
 /* ⚡ 自动工具徽章 + 当前会话名: 折叠时不显示, 只在展开时可见.
    配置 (钱包/工具) 按钮保留在行上, 用户随时能进 modal. */
 .agent-group:not(.expanded) .agent-tools-badge,
-.agent-group:not(.expanded) .agent-current-session {
+.agent-group:not(.expanded) .agent-current-session,
+.agent-group:not(.expanded) .agent-judgment-badge {
   display: none !important;
 }
 
@@ -3884,6 +3885,27 @@ body {
   border: 1px solid rgba(80, 200, 120, 0.4);
   margin-left: 4px;
   flex-shrink: 0;
+}
+
+.agent-row .agent-judgment-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(139, 92, 246, 0.12);
+  color: rgb(109, 40, 217);
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  margin-left: 4px;
+  flex-shrink: 0;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.agent-row .agent-judgment-badge:hover {
+  background: rgba(139, 92, 246, 0.22);
 }
 
 .agent-row .agent-row-meta {

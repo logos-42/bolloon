@@ -279,6 +279,13 @@
                 <span>启用自动工具调用 (LLM 决定调用受信任工具时, agent 自动执行)</span>
               </label>
             </div>
+            <div class="form-group">
+              <label>绑定判断力 (可多选, channel 跑 LLM 时会注入这些 judgment)</label>
+              <div id="agent-add-judgments" style="max-height:140px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:4px;padding:6px 8px;background:#fff;">
+                <div style="color:#9ca3af;font-size:12px;">加载中...</div>
+              </div>
+              <small class="form-hint" id="agent-add-judgments-hint">可后续在侧边栏 🧠 按钮调整</small>
+            </div>
             <div id="agent-add-wallet-info" class="form-info" style="display:none;"></div>
             <div class="btn-group">
               <button id="agent-add-cancel-btn" class="btn-secondary">取消</button>
