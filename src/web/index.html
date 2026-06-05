@@ -236,8 +236,19 @@
               <input type="file" id="judgment-import-file" accept=".json,.yaml,.yml,.md,.txt,.html,.htm" style="display:none">
             </div>
             <div id="judgment-error" class="form-info" style="display:none;color:#b91c1c;"></div>
-            <h3 style="margin-top:24px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-              <span>已记录的判断</span>
+            <!-- v3 重做: tab 切换 — 默认显示当前 channel 的 judgment 上下文, 切换后才是全部 -->
+            <div id="judgments-tabs" style="display:flex;border-bottom:1px solid #e5e7eb;margin-top:20px;">
+              <button class="judgment-tab active" data-tab="channel"
+                      style="flex:1;padding:10px 12px;background:none;border:none;border-bottom:2px solid #2563eb;color:#2563eb;font-size:13px;font-weight:600;cursor:pointer;">
+                本 channel <span id="judgments-tab-channel-name" style="font-weight:normal;color:#6b7280;"></span>
+              </button>
+              <button class="judgment-tab" data-tab="global"
+                      style="flex:1;padding:10px 12px;background:none;border:none;border-bottom:2px solid transparent;color:#6b7280;font-size:13px;font-weight:600;cursor:pointer;">
+                全局
+              </button>
+            </div>
+            <h3 style="margin-top:16px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+              <span id="judgments-list-title">本 channel 的判断力</span>
               <span style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12px;font-weight:normal;">
                 <label style="display:flex;align-items:center;gap:4px;cursor:pointer;color:#6b7280;">
                   <input type="checkbox" id="judgment-select-all" style="cursor:pointer;"> 全选
@@ -278,13 +289,6 @@
                 <input type="checkbox" id="agent-add-auto-tools" checked>
                 <span>启用自动工具调用 (LLM 决定调用受信任工具时, agent 自动执行)</span>
               </label>
-            </div>
-            <div class="form-group">
-              <label>绑定判断力 (可多选, channel 跑 LLM 时会注入这些 judgment)</label>
-              <div id="agent-add-judgments" style="max-height:140px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:4px;padding:6px 8px;background:#fff;">
-                <div style="color:#9ca3af;font-size:12px;">加载中...</div>
-              </div>
-              <small class="form-hint" id="agent-add-judgments-hint">可后续在侧边栏 🧠 按钮调整</small>
             </div>
             <div id="agent-add-wallet-info" class="form-info" style="display:none;"></div>
             <div class="btn-group">

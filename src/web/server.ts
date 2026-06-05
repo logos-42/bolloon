@@ -72,8 +72,8 @@ interface Channel {
   updatedAt: string;
   currentSessionId?: string;
   sessions?: SessionSummary[];
-  /** 绑定的判断力 ID 列表 — channel 跑 LLM 时会注入这些 judgment (HumanJudgment.id 是 string) */
-  judgment_ids?: string[];
+  /** 用户在盾牌里手动绑定的判断力 (LLM 跑 channel 时会注入). 默认 []. */
+  bound_judgment_ids?: string[];
 }
 
 interface SessionSummary {
@@ -386,40 +386,59 @@ let channelSessions: Map<string, AgentSession> = new Map(); // key: channelId
 let sessionMessages: Map<string, any[]> = new Map(); // key: channelId + sessionId
 
 /**
- * v3: 构造 channel 绑定判断力的 prompt 片段
- * 返回 "" 表示没有绑定/无匹配; 否则返回完整 "[系统上下文] ..." 块 (含尾部换行)
+ * v3 重做: 构造 channel 的两路 judgment prompt 片段
+ *   路 1: 用户在盾牌里手动绑定的 judgment (channel.bound_judgment_ids)
+ *   路 2: 全局 judgment 列表 (供 LLM 在主调用中按需挑选, 写入回复)
+ * 返回 "" 表示完全没数据; 否则返回完整 "[系统上下文] ..." 块 (含尾部换行)
  * 失败非致命 — 任何异常都返回空串, 保证 LLM 调用不被阻塞
  */
 async function buildJudgmentHint(
   channel: Channel | undefined | null,
   channelIdForLog: string
 ): Promise<string> {
-  if (!channel || !Array.isArray(channel.judgment_ids) || channel.judgment_ids.length === 0) {
-    return '';
-  }
   try {
     const { loadAllJudgments, initializeValueStore } = await import(
       '../pi-ecosystem-judgment/human-value-store.js'
     );
     await initializeValueStore();
     const allJudgments = await loadAllJudgments();
-    const idSet = new Set(channel.judgment_ids);
-    const bound = allJudgments.filter(j => j.id !== undefined && idSet.has(j.id));
-    if (bound.length === 0) {
-      console.log(`[v3] channel ${channelIdForLog} 有 ${channel.judgment_ids.length} 个 judgment_ids, store 里没匹配到`);
-      return '';
+    if (allJudgments.length === 0) return '';
+
+    const boundIds = new Set(
+      channel && Array.isArray(channel.bound_judgment_ids) ? channel.bound_judgment_ids : []
+    );
+    const bound = allJudgments.filter(j => j.id !== undefined && boundIds.has(j.id));
+    const others = allJudgments.filter(j => j.id !== undefined && !boundIds.has(j.id));
+
+    let hint = '';
+
+    // 路 1: 用户手动绑定的 judgment — 硬约束, 必须遵循
+    if (bound.length > 0) {
+      hint += `[系统上下文] 此 channel 用户绑定了 ${bound.length} 条判断力, 必须严格遵循:\n`;
+      for (const j of bound) {
+        const decision = (j.decision || '').toString().slice(0, 200);
+        const reasonList = Array.isArray(j.reasons) ? j.reasons : [];
+        const reasonText = reasonList.length > 0
+          ? ` (理由: ${reasonList.join('; ').slice(0, 100)})`
+          : '';
+        hint += `- ${decision}${reasonText}\n`;
+      }
+      hint += '\n';
     }
-    let hint = `[系统上下文] 此 channel 绑定了 ${bound.length} 条判断力, 回答时必须遵循:\n`;
-    for (const j of bound) {
-      const decision = (j.decision || '').toString().slice(0, 200);
-      const reasonList = Array.isArray(j.reasons) ? j.reasons : [];
-      const reasonText = reasonList.length > 0
-        ? ` (理由: ${reasonList.join('; ').slice(0, 100)})`
-        : '';
-      hint += `- ${decision}${reasonText}\n`;
+
+    // 路 2: 全局 judgment 候选池 — 软参考, LLM 自己挑
+    if (others.length > 0) {
+      hint += `[系统上下文] 候选判断力 (用户未明确绑定, 你可以按相关性自主选择参考):\n`;
+      for (const j of others) {
+        const decision = (j.decision || '').toString().slice(0, 120);
+        hint += `- [id=${j.id}] ${decision}\n`;
+      }
+      hint += `\n[系统上下文] 如果你的回复参考了某条候选判断力, 请在回复中自然提及 "我参考了你的判断: <decision 简述>" 即可, 无需复述 id.\n\n`;
     }
-    hint += '\n';
-    console.log(`[v3] channel ${channelIdForLog} 注入了 ${bound.length} 条 judgment`);
+
+    console.log(
+      `[v3] channel ${channelIdForLog} 注入: 绑定 ${bound.length} 条, 候选 ${others.length} 条`
+    );
     return hint;
   } catch (err) {
     console.error(`[v3] 加载判断力失败 (非致命):`, (err as Error).message);
@@ -887,8 +906,8 @@ app.get('/channels', async (_req, res) => {
 
   app.post('/channels', async (req, res) => {
     try {
-      const { name, agentId, walletAddress, autoInvokeTools, judgment_ids } = req.body;
-      console.log(`[创建频道] 收到请求: name=${name}, agentId=${agentId}, wallet=${walletAddress ? 'yes' : 'no'}, judgments=${Array.isArray(judgment_ids) ? judgment_ids.length : 0}`);
+      const { name, agentId, walletAddress, autoInvokeTools, bound_judgment_ids } = req.body;
+      console.log(`[创建频道] 收到请求: name=${name}, agentId=${agentId}, wallet=${walletAddress ? 'yes' : 'no'}, boundJudgments=${Array.isArray(bound_judgment_ids) ? bound_judgment_ids.length : 0}`);
       if (!name || !agentId) {
         return res.status(400).json({ error: 'name and agentId required' });
       }
@@ -898,9 +917,9 @@ app.get('/channels', async (_req, res) => {
       // 校验钱包地址格式 (粗校验: 0x + 40 hex / Solana base58 / Sui 0x+64)
       const validWallet = isValidWalletAddress(walletAddress);
 
-      // 过滤 judgment_ids: 只保留 string
-      const safeJudgmentIds = Array.isArray(judgment_ids)
-        ? judgment_ids.filter((x: unknown) => typeof x === 'string' && x.length > 0)
+      // 过滤 bound_judgment_ids: 只保留 string
+      const safeBoundIds = Array.isArray(bound_judgment_ids)
+        ? bound_judgment_ids.filter((x: unknown) => typeof x === 'string' && (x as string).length > 0)
         : [];
 
       // 先创建频道（不阻塞等待 DID 生成）
@@ -914,7 +933,7 @@ app.get('/channels', async (_req, res) => {
         walletAddress: validWallet || undefined,
         walletRegisteredAt: validWallet ? new Date().toISOString() : undefined,
         autoInvokeTools: autoInvokeTools !== false, // 默认 true
-        judgment_ids: safeJudgmentIds,
+        bound_judgment_ids: safeBoundIds,
         sessions: [{
           id: `sess_${Date.now()}`,
           createdAt: new Date().toISOString(),
@@ -1093,7 +1112,7 @@ app.get('/channels', async (_req, res) => {
   app.patch('/channels/:channelId', async (req, res) => {
     try {
       const { channelId } = req.params;
-      const { name, walletAddress, autoInvokeTools, judgment_ids } = req.body;
+      const { name, walletAddress, autoInvokeTools, bound_judgment_ids } = req.body;
       const channels = await loadChannels();
       const channel = channels.find(c => c.id === channelId);
       if (!channel) {
@@ -1119,18 +1138,18 @@ app.get('/channels', async (_req, res) => {
       if (typeof autoInvokeTools === 'boolean') {
         channel.autoInvokeTools = autoInvokeTools;
       }
-      // judgment_ids: 允许数组(替换)/null(清空)/undefined(不改)
-      if (judgment_ids !== undefined) {
-        if (judgment_ids === null) {
-          channel.judgment_ids = [];
-        } else if (Array.isArray(judgment_ids)) {
-          channel.judgment_ids = judgment_ids.filter(
+      // bound_judgment_ids: 允许数组(替换)/null(清空)/undefined(不改)
+      if (bound_judgment_ids !== undefined) {
+        if (bound_judgment_ids === null) {
+          channel.bound_judgment_ids = [];
+        } else if (Array.isArray(bound_judgment_ids)) {
+          channel.bound_judgment_ids = bound_judgment_ids.filter(
             (x: unknown) => typeof x === 'string' && (x as string).length > 0
           );
         } else {
-          return res.status(400).json({ error: 'judgment_ids must be array or null' });
+          return res.status(400).json({ error: 'bound_judgment_ids must be array or null' });
         }
-        console.log(`[Channel ${channelId}] 绑定判断力: ${channel.judgment_ids.length} 条`);
+        console.log(`[Channel ${channelId}] 绑定判断力: ${channel.bound_judgment_ids.length} 条`);
       }
       channel.updatedAt = new Date().toISOString();
       await saveChannels(channels);
@@ -2523,7 +2542,8 @@ app.get('/channels', async (_req, res) => {
   try {
     const { createHealthMonitor, createWatchdog } = await import('../heartbeat/index.js');
     healthMonitor = createHealthMonitor();
-    watchdog = createWatchdog();
+    // 把 watchdog 静默阈值拉到 30 分钟, 避免开发期 / 用户空闲时被误杀
+    watchdog = createWatchdog({ silentThresholdMs: 30 * 60 * 1000 });
 
     console.log('[24h] Heartbeat modules loaded');
   } catch (err) {
