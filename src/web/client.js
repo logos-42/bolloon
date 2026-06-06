@@ -2746,6 +2746,47 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   startV3GlobalSSE();
 }
 
+// Phase 3: 我的 ID 按钮 → 弹窗显示并支持复制自己的 P2PDirect publicKey
+const showMyIdBtn = document.getElementById('show-my-p2p-id-btn');
+if (showMyIdBtn) {
+  showMyIdBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try {
+      const res = await fetch('/api/p2p-publickey');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const pk = data.publicKey || '';
+      if (!pk || pk.length !== 64) {
+        alert('P2PDirect 还没启动, 刷新页面稍后再试');
+        return;
+      }
+      // 显示 + 一键复制
+      const ok = confirm(
+        `我的 P2P publicKey (64 字符 hex):\n\n${pk}\n\n` +
+        `点 "确定" 复制到剪贴板, 发给好友.\n` +
+        `好友点 "+ 好友" 粘贴这个 ID 就能加我.`
+      );
+      if (ok) {
+        try {
+          await navigator.clipboard.writeText(pk);
+          alert('✓ 已复制到剪贴板');
+        } catch {
+          // 旧浏览器 fallback
+          const ta = document.createElement('textarea');
+          ta.value = pk;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          alert('✓ 已复制到剪贴板 (fallback)');
+        }
+      }
+    } catch (err) {
+      alert('获取 publicKey 失败: ' + (err.message || err));
+    }
+  });
+}
+
 // Phase 3 重做: + 添加好友按钮 → 弹窗输入 publicKey + name, 同时 joinPeer
 const addPeerBtn = document.getElementById('add-p2p-peer-btn');
 if (addPeerBtn) {

@@ -76,7 +76,10 @@
             <span id="remote-agents-toggle" style="font-size:10px;color:var(--text-muted);transition:transform 0.2s;">▼</span>
             <span class="section-title" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);">P2P 好友</span>
           </span>
-          <button id="add-p2p-peer-btn" title="添加 P2P 好友 (输入 publicKey)" style="background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:11px;line-height:1;">+ 好友</button>
+          <span style="display:flex;gap:4px;">
+            <button id="show-my-p2p-id-btn" title="查看并复制我的 P2P publicKey" style="background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:11px;line-height:1;">我的 ID</button>
+            <button id="add-p2p-peer-btn" title="添加 P2P 好友 (输入对方的 publicKey)" style="background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:11px;line-height:1;">+ 好友</button>
+          </span>
         </div>
         <ul class="channel-list" id="remote-channel-list" style="list-style:none;padding:0;margin:0;">
           <li style="color:var(--text-muted);font-size:11px;padding:8px 4px;text-align:center;">(暂无好友, 点 + 添加)</li>
@@ -120,15 +123,7 @@
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
             </svg>
           </button>
-          <button id="p2p-network-btn" class="header-action" title="P2P 网络">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="5" r="3"></circle>
-              <circle cx="5" cy="19" r="3"></circle>
-              <circle cx="19" cy="19" r="3"></circle>
-              <line x1="12" y1="8" x2="5" y2="16"></line>
-              <line x1="12" y1="8" x2="19" y2="16"></line>
-            </svg>
-          </button>
+          <!-- v3: 顶栏 P2P 按钮 (旧 iroh/Diap 路径) 已移除, 改用侧边栏 "P2P 好友" → "+ 好友" -->
           <button id="wallet-btn" class="header-action" title="钱包管理">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 12V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3"></path>
