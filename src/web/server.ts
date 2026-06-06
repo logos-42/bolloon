@@ -3151,19 +3151,51 @@ app.get('/channels', async (_req, res) => {
   // 安装自改总线 -> SSE 桥
   void installSelfImproveHook();
 
-  return new Promise<{ app: express.Express; server: typeof server }>((resolve) => {
-    server.listen(port, () => {
-      console.log(`Web 服务器启动完成: http://localhost:${port}`);
-      console.log('服务器已监听');
-      // 安装 chat bus -> SSE 桥 (供前端 inbox UI 实时刷新)
-      void installChatBusHook();
-      setInterval(() => {
-        for (const client of sseClients) {
-          client.res.write(': ping\n\n');
+  // 端口冲突时自动找下一个可用端口（最多 10 次），避免 EADDRINUSE 直接崩溃
+  return new Promise<{ app: express.Express; server: ReturnType<typeof createServer>; port: number }>((resolve, reject) => {
+    const maxAttempts = 10;
+    const startPort = port;
+    let currentPort = startPort;
+    let attempt = 0;
+    // 局部可变 server 引用 — listen 失败后必须重新 createServer 再 listen
+    let currentServer: ReturnType<typeof createServer> = server;
+
+    const tryListen = () => {
+      currentServer.removeAllListeners('error');
+      currentServer.once('error', onError);
+      currentServer.listen(currentPort, () => {
+        if (currentPort !== startPort) {
+          console.warn(`⚠ 端口 ${startPort} 被占用，已自动切换到 ${currentPort}`);
         }
-      }, 30000);
-      resolve({ app, server });
-    });
+        console.log(`Web 服务器启动完成: http://localhost:${currentPort}`);
+        console.log('服务器已监听');
+        // 安装 chat bus -> SSE 桥 (供前端 inbox UI 实时刷新)
+        void installChatBusHook();
+        setInterval(() => {
+          for (const client of sseClients) {
+            client.res.write(': ping\n\n');
+          }
+        }, 30000);
+        resolve({ app, server: currentServer, port: currentPort });
+      });
+    };
+
+    const onError = (err: NodeJS.ErrnoException) => {
+      if (err && err.code === 'EADDRINUSE' && attempt < maxAttempts - 1) {
+        attempt += 1;
+        const nextPort = currentPort + 1;
+        console.log(`⚠ 端口 ${currentPort} 被占用，尝试 ${nextPort}...`);
+        try { currentServer.close(); } catch { /* ignore */ }
+        // 重新创建 server 实例（listen 失败后原 server 无法再次 listen）
+        currentServer = createServer(app);
+        currentPort = nextPort;
+        tryListen();
+      } else {
+        reject(err);
+      }
+    };
+
+    tryListen();
   });
 }
 

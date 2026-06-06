@@ -1629,10 +1629,10 @@ async function main() {
     const { createWebServer, openBrowser } = await import('./web/server.js');
 
     s.info(`启动 Web 服务端口 ${port}...`);
-    await createWebServer(port);
+    const { port: actualPort } = await createWebServer(port);
 
-    s.success(`浏览器已打开 → http://localhost:${port}`);
-    openBrowser(`http://localhost:${port}`);
+    s.success(`浏览器已打开 → http://localhost:${actualPort}`);
+    openBrowser(`http://localhost:${actualPort}`);
   } else if (isNonInteractive) {
     console.log = originalLog;
     console.info = originalInfo;
