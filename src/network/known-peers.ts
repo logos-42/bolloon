@@ -49,18 +49,19 @@ async function writeFile(data: KnownPeersFile): Promise<void> {
 }
 
 /** 添加或更新一个 known peer (key 用 name) */
-export async function addOrUpdatePeer(name: string, publicKey: string, notes?: string): Promise<void> {
+export async function addOrUpdatePeer(name: string | null | undefined, publicKey: string, notes?: string): Promise<void> {
+  const safeName = (name && name.length > 0) ? name : `peer-${publicKey.substring(0, 8)}`;
   const data = await readFile();
-  const existing = data.peers[name];
-  data.peers[name] = {
+  const existing = data.peers[safeName];
+  data.peers[safeName] = {
     publicKey,
-    name,
+    name: safeName,
     addedAt: existing?.addedAt || new Date().toISOString(),
     lastConnectedAt: existing?.lastConnectedAt,
     notes: notes || existing?.notes
   };
   await writeFile(data);
-  console.log(`[known-peers] 添加/更新: ${name} = ${publicKey.substring(0, 12)}...`);
+  console.log(`[known-peers] 添加/更新: ${safeName} = ${publicKey.substring(0, 12)}...`);
 }
 
 /** 删除 known peer */

@@ -818,6 +818,33 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       });
 
       console.log(`[v3] P2PDirect 已启动, publicKey=${v3P2PRef.getPublicKey().substring(0,12)}...`);
+
+      // v3: 启动后自动重连 known peers — 让"启动就互联"成为现实
+      setTimeout(async () => {
+        try {
+          const { listPeers, markConnected } = await import('../network/known-peers.js');
+          const peers = await listPeers();
+          if (peers.length === 0) {
+            console.log(`[v3] 没有 known peers, 跳过自动重连`);
+            return;
+          }
+          const swarm = (v3P2PRef as any).swarm;
+          if (!swarm) return;
+          for (const peer of peers) {
+            try {
+              await swarm.joinPeer(Buffer.from(peer.publicKey, 'hex'));
+              await markConnected(peer.name || '');
+              console.log(`[v3] 自动重连 ${peer.name} (${peer.publicKey.substring(0, 12)}...) ✓`);
+            } catch (err) {
+              console.warn(`[v3] 自动重连 ${peer.name} 失败:`, (err as Error).message);
+            }
+          }
+          // 触发一次 broadcast 推送给所有重连的 peer
+          setTimeout(() => v3BroadcastOwn(), 2000);
+        } catch (err) {
+          console.error('[v3] 自动重连失败:', (err as Error).message);
+        }
+      }, 5000); // 5s 后再重连, 让 swarm 充分 bootstrap
     } catch (err) {
       console.error('[v3] P2PDirect 启动失败:', (err as Error).message);
       v3P2PRef = null;
@@ -1184,6 +1211,25 @@ app.get('/channels', async (_req, res) => {
   // 用法: B 端用户点 "刷新远端智能体" → 触发本 endpoint
   app.post('/api/remote-channels/refresh', async (_req, res) => {
     try {
+      // Phase 3: 优先用 P2PDirect conns (Phase 2/3 的真实通道)
+      if (v3P2PRef) {
+        const conns = (v3P2PRef as any).conns as Map<string, any>;
+        const peerIds = Array.from(conns.keys()).filter(pk => {
+          const c = conns.get(pk);
+          return c && !c.destroyed;
+        });
+        if (peerIds.length === 0) {
+          return res.json({ ok: true, sent: 0, note: 'no connected peers (P2PDirect)' });
+        }
+        // 让每个 peer 拉 list — Phase 3 个性化分享过滤
+        let sent = 0;
+        for (const peerPk of peerIds) {
+          const ok = await (v3P2PRef as any).sendTo(peerPk, JSON.stringify({ v: 3, op: 'agent.meta.list', payload: {} }));
+          if (ok) sent++;
+        }
+        return res.json({ ok: true, sent, total: peerIds.length });
+      }
+      // Fallback: 老 iroh 路径
       const peers = irohTransport.getPeers ? irohTransport.getPeers() : [];
       const peerIds = Array.isArray(peers) ? peers.map((p: any) => p.nodeId || p) : [];
       if (peerIds.length === 0) {
@@ -2172,7 +2218,7 @@ app.get('/channels', async (_req, res) => {
         const peerName = name || `peer-${targetPublicKey.substring(0, 8)}`;
         // 如果 publicKey 已被别的 name 占用, 用现有 name
         const existingName = await findNameByPublicKey(targetPublicKey);
-        persistedAs = existingName || peerName;
+        persistedAs = existingName ?? peerName ?? `peer-${targetPublicKey.substring(0, 8)}`;
         await addOrUpdatePeer(persistedAs, targetPublicKey);
         console.log(`[v3] 自动持久化 peer: ${persistedAs}`);
       }
@@ -2392,7 +2438,8 @@ app.get('/channels', async (_req, res) => {
         console.log(`[v3] 收到 agent.meta.list from ${msg.from.substring(0, 12)}...`);
         try {
           const channels = await loadChannels();
-          const publicMeta = channels.map(sanitizeChannelForPeer);
+          // iroh 路径保留 (admin / debug 用, 不走分享过滤)
+          const publicMeta = channels.map((ch) => sanitizeChannelForPeer(ch));
           const response = JSON.stringify({ ok: true, channels: publicMeta });
           const encoded = new TextEncoder().encode(response);
           // 沿用 msg.from 路由回去

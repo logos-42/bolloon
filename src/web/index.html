@@ -69,17 +69,17 @@
         <div class="split-handle-grip"></div>
       </div>
 
-      <!-- v3: 远端智能体 — 从 P2P 连接的 peer 拉取的 channel UI 元数据 -->
+      <!-- v3 远端 P2P 好友 — 显式分享 + 持久化连接 -->
       <div class="sidebar-section" id="remote-agents-section">
         <div class="section-header" id="remote-agents-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;cursor:pointer;user-select:none;">
           <span style="display:flex;align-items:center;gap:6px;">
             <span id="remote-agents-toggle" style="font-size:10px;color:var(--text-muted);transition:transform 0.2s;">▼</span>
-            <span class="section-title" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);">远端智能体</span>
+            <span class="section-title" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);">P2P 好友</span>
           </span>
-          <button id="refresh-remote-agents-btn" title="从已连接 P2P peer 拉取" style="background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:11px;line-height:1;">↻ 刷新</button>
+          <button id="add-p2p-peer-btn" title="添加 P2P 好友 (输入 publicKey)" style="background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:11px;line-height:1;">+ 好友</button>
         </div>
         <ul class="channel-list" id="remote-channel-list" style="list-style:none;padding:0;margin:0;">
-          <li style="color:var(--text-muted);font-size:11px;padding:8px 4px;text-align:center;">(暂无, 点 ↻ 刷新)</li>
+          <li style="color:var(--text-muted);font-size:11px;padding:8px 4px;text-align:center;">(暂无好友, 点 + 添加)</li>
         </ul>
       </div>
 

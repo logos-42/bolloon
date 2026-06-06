@@ -2056,12 +2056,6 @@ function hideJudgmentsModal() {
   if (judgmentsModal) judgmentsModal.classList.remove('active');
 }
 
-function escapeHtml(s) {
-  return String(s || '').replace(/[&<>"']/g, c => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[c]));
-}
-
 let currentJudgmentTab = 'channel'; // 'channel' | 'global'
 let lastJudgmentsCache = []; // 最近一次 loadJudgments 拿到的原始列表, 切 tab / 切 channel 时复用
 
@@ -2528,15 +2522,17 @@ loadJudgments();
 setInterval(loadJudgments, 10000);
 
 // ============================================================================
-// v3: 远端智能体 (从 P2P 连接的 peer 拉取的 channel UI 元数据)
+// v3: P2P 好友 (known peers) + 收到的分享
 // ============================================================================
+
+let knownPeers = [];  // { name, publicKey, lastConnectedAt, addedAt }
 
 async function loadRemoteChannels() {
   try {
-    const res = await fetch('/api/remote-channels');
+    const res = await fetch('/api/p2p-peers');
     if (!res.ok) return;
     const data = await res.json();
-    remoteChannels = Array.isArray(data.peers) ? data.peers : [];
+    knownPeers = Array.isArray(data.peers) ? data.peers : [];
     renderRemoteChannels();
   } catch (err) {
     console.error('[v3] loadRemoteChannels 失败:', err);
@@ -2546,34 +2542,51 @@ async function loadRemoteChannels() {
 function renderRemoteChannels() {
   const list = document.getElementById('remote-channel-list');
   if (!list) return;
-  if (remoteChannels.length === 0) {
-    list.innerHTML = '<li style="color:var(--text-muted);font-size:11px;padding:8px 4px;text-align:center;">(暂无, 点 ↻ 刷新)</li>';
+
+  // Phase 3 重做: 好友列表 + 收到的 channel 分组
+  if (knownPeers.length === 0) {
+    list.innerHTML = '<li style="color:var(--text-muted);font-size:11px;padding:8px 4px;text-align:center;">(暂无好友, 点 + 添加)</li>';
     return;
   }
-  const html = remoteChannels.map(p => {
-    const peerShort = p.peerId.substring(0, 12) + '…';
+
+  // 按 peerId 分组 channels
+  const channelsByPeer = {};
+  for (const p of remoteChannels) {
+    channelsByPeer[p.peerId] = p.channels || [];
+  }
+
+  const html = knownPeers.map(peer => {
+    const peerChannels = channelsByPeer[peer.publicKey] || [];
+    const lastConn = peer.lastConnectedAt
+      ? new Date(peer.lastConnectedAt).toLocaleDateString()
+      : '从未连接';
     return `
-      <li class="remote-peer-group" style="margin-bottom:8px;">
-        <div style="font-size:10px;color:var(--text-muted);padding:2px 4px;display:flex;align-items:center;gap:4px;">
-          <span>🌐</span><span title="${escapeHtml(p.peerId)}">${escapeHtml(peerShort)}</span>
-          <span>·</span>
-          <span>${p.channels.length} 个</span>
+      <li class="remote-peer-group" style="margin-bottom:10px;">
+        <div class="remote-peer-header" data-peer-name="${escapeHtml(peer.name)}" data-peer-pk="${escapeHtml(peer.publicKey)}"
+             style="display:flex;align-items:center;gap:6px;padding:4px 6px;background:var(--bg-hover);border-radius:4px;cursor:pointer;">
+          <span style="font-size:12px;">👤</span>
+          <span style="flex:1;font-size:12px;font-weight:600;" title="${escapeHtml(peer.publicKey)}">${escapeHtml(peer.name)}</span>
+          <span style="font-size:9px;color:var(--text-muted);">${lastConn}</span>
         </div>
-        ${p.channels.map(c => `
-          <div class="remote-channel-row" data-peer-id="${escapeHtml(p.peerId)}" data-channel-id="${escapeHtml(c.id)}"
-               style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--text);">
-            <span>🤖</span>
-            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(c.name || '')}">${escapeHtml(c.name || '(未命名)')}</span>
-            ${c.hasWallet ? '<span title="绑定钱包">⛓</span>' : ''}
-            <span title="绑定判断力数" style="font-size:10px;color:var(--text-muted);">🧠${c.boundJudgmentCount || 0}</span>
-          </div>
-        `).join('')}
+        <div class="remote-peer-channels" style="margin-top:4px;margin-left:8px;">
+          ${peerChannels.length === 0
+            ? '<div style="font-size:10px;color:var(--text-muted);padding:2px 4px;">(对方还没分享 channel 给你)</div>'
+            : peerChannels.map(c => `
+              <div class="remote-channel-row" data-peer-id="${escapeHtml(peer.publicKey)}" data-channel-id="${escapeHtml(c.id)}"
+                   style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:4px;font-size:12px;">
+                <span>🤖</span>
+                <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(c.name || '')}">${escapeHtml(c.name || '(未命名)')}</span>
+                <span title="对方 judgment 数 (不会同步到本地)" style="font-size:9px;color:var(--text-muted);">🧠${c.boundJudgmentCount || 0}</span>
+              </div>
+            `).join('')
+          }
+        </div>
       </li>
     `;
   }).join('');
   list.innerHTML = html;
 
-  // 绑定点击 — 弹聊天窗口, 跟远端 channel 对话 (judgment 在对方节点)
+  // 绑定: 点击 channel → 弹聊天窗口
   list.querySelectorAll('.remote-channel-row').forEach(row => {
     row.addEventListener('click', () => {
       const peerId = row.dataset.peerId;
@@ -2583,6 +2596,85 @@ function renderRemoteChannels() {
       openRemoteChannelChat(peerId, channelId, channelName);
     });
   });
+  // 绑定: 点击 peer 头部 → 弹分享 modal (让 A 决定分享本机哪些 channel 给这个 peer)
+  list.querySelectorAll('.remote-peer-header').forEach(row => {
+    row.addEventListener('click', () => {
+      const peerName = row.dataset.peerName;
+      const peerPk = row.dataset.peerPk;
+      openShareToPeerModal(peerName, peerPk);
+    });
+  });
+}
+
+/** v3: 分享 channel 给指定 peer 的 modal (A 侧用) */
+async function openShareToPeerModal(peerName, peerPublicKey) {
+  document.getElementById('share-to-peer-modal')?.remove();
+  let allChannels = [];
+  try {
+    const res = await fetch('/channels');
+    if (res.ok) allChannels = await res.json();
+  } catch (err) { console.error('openShareToPeerModal:', err); }
+  const rows = allChannels.length === 0
+    ? '<div style="color:#6b7280;padding:12px;text-align:center;">还没有 channel</div>'
+    : allChannels.map(ch => {
+        const isShared = Array.isArray(ch.shared_with_peers) && ch.shared_with_peers.includes(peerPublicKey);
+        return `
+          <label style="display:flex;align-items:flex-start;gap:8px;padding:6px 4px;cursor:pointer;border-bottom:1px solid #f3f4f6;">
+            <input type="checkbox" data-cid="${escapeHtml(ch.id)}" ${isShared ? 'checked' : ''} style="margin-top:4px;cursor:pointer;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;font-weight:500;">${escapeHtml(ch.name)}</div>
+              <div style="font-size:10px;color:#9ca3af;margin-top:2px;">
+                ${isShared ? '✓ 已分享' : '未分享'} · ${ch.id}
+              </div>
+            </div>
+          </label>
+        `;
+      }).join('');
+  const html = `
+    <div id="share-to-peer-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10003;display:flex;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:8px;width:480px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.2);">
+        <div style="padding:12px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <div style="font-size:15px;font-weight:600;">分享 channel 给 ${escapeHtml(peerName)}</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(peerPublicKey.substring(0,16))}…</div>
+          </div>
+          <button id="spm-close" style="background:none;border:none;font-size:20px;color:#6b7280;cursor:pointer;">×</button>
+        </div>
+        <div style="padding:8px 12px;background:#f9fafb;font-size:12px;color:#6b7280;">勾选要分享的 channel, 对方才能看到</div>
+        <div id="spm-list" style="flex:1;overflow-y:auto;padding:8px 16px;">${rows}</div>
+        <div style="padding:12px 20px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;">
+          <button id="spm-cancel" style="padding:6px 14px;border:1px solid #d1d5db;background:#fff;border-radius:4px;cursor:pointer;font-size:13px;">取消</button>
+          <button id="spm-save" style="padding:6px 14px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">保存分享</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+  const overlay = document.getElementById('share-to-peer-modal');
+  document.getElementById('spm-close').onclick = () => overlay.remove();
+  document.getElementById('spm-cancel').onclick = () => overlay.remove();
+  document.getElementById('spm-save').onclick = async () => {
+    const checkedIds = [...overlay.querySelectorAll('input[type=checkbox][data-cid]:checked')].map(el => el.dataset.cid);
+    // 对每个 channel 单独 PATCH — 设 shared_with_peers 为 checked 列表
+    let ok = 0, fail = 0;
+    for (const ch of allChannels) {
+      const shouldShare = checkedIds.includes(ch.id);
+      const wasShared = Array.isArray(ch.shared_with_peers) && ch.shared_with_peers.includes(peerPublicKey);
+      if (shouldShare === wasShared) continue; // 没变化跳过
+      const newList = (ch.shared_with_peers || []).filter((p) => p !== peerPublicKey);
+      if (shouldShare) newList.push(peerPublicKey);
+      try {
+        const res = await fetch(`/channels/${encodeURIComponent(ch.id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shared_with_peers: newList })
+        });
+        if (res.ok) ok++; else fail++;
+      } catch { fail++; }
+    }
+    alert(`分享更新完成: 成功 ${ok}, 失败 ${fail}`);
+    overlay.remove();
+  };
 }
 
 /** v3: 跟远端 channel 聊天的简易弹窗 */
@@ -2654,24 +2746,32 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   startV3GlobalSSE();
 }
 
-const refreshRemoteBtn = document.getElementById('refresh-remote-agents-btn');
-if (refreshRemoteBtn) {
-  refreshRemoteBtn.addEventListener('click', async (e) => {
-    e.stopPropagation(); // 防止冒泡触发折叠
-    refreshRemoteBtn.disabled = true;
-    refreshRemoteBtn.textContent = '⏳';
+// Phase 3 重做: + 添加好友按钮 → 弹窗输入 publicKey + name, 同时 joinPeer
+const addPeerBtn = document.getElementById('add-p2p-peer-btn');
+if (addPeerBtn) {
+  addPeerBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const name = prompt('给这个 P2P 好友起个名字 (如: 同事-张磊)');
+    if (!name) return;
+    const publicKey = prompt('粘贴对方的 P2PDirect publicKey (64 字符 hex):\n\n获取方式: 对方在 http://localhost:54188/api/p2p-publickey');
+    if (!publicKey) return;
+    if (publicKey.length !== 64) {
+      alert('publicKey 长度不对, 应该是 64 字符 hex');
+      return;
+    }
     try {
-      const res = await fetch('/api/remote-channels/refresh', { method: 'POST' });
+      // 调 p2p-connect (会 joinPeer + 持久化)
+      const res = await fetch('/api/remote-channels/p2p-connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetPublicKey: publicKey, name, persist: true })
+      });
       const data = await res.json();
-      console.log('[v3] 刷新远端智能体:', data);
-      setTimeout(loadRemoteChannels, 1500);
+      if (!res.ok) throw new Error(data.error || 'connect failed');
+      alert(`已添加好友: ${name} (${publicKey.substring(0, 12)}...)\n重启后会自动重连`);
+      await loadRemoteChannels();
     } catch (err) {
-      console.error('[v3] 刷新失败:', err);
-    } finally {
-      setTimeout(() => {
-        refreshRemoteBtn.disabled = false;
-        refreshRemoteBtn.textContent = '↻ 刷新';
-      }, 2000);
+      alert('添加失败: ' + (err.message || err));
     }
   });
 }
