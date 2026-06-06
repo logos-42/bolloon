@@ -18,10 +18,24 @@ import crypto from 'crypto';
 import { EventEmitter } from 'events';
 // @ts-ignore — b4a 没官方 .d.ts
 import b4a from 'b4a';
+import { loadOrCreateKeyPair, writebackPublicKey } from './p2p-secret.js';
 
 export interface P2PDirectOptions {
   /** 节点标识 (用于日志) */
   name?: string;
+  /**
+   * 角色标识 (对应 ~/.bolloon/p2p-direct-secret-{role}.json).
+   * 留空时, P2PDirect 自动从 IROH_ROLE / BOLLOON_ROLE / 'default' 选.
+   *
+   * 同一台机器同一 role → 同一 publicKey (持久化 secretKey)
+   * 不同 role → 独立身份 (例: nodeA 和 nodeB 同机开发, 不冲突)
+   */
+  role?: string;
+  /**
+   * 跳过持久化 secret 加载, 完全随机 keyPair.
+   * (调试 / 测试用, 真实环境应保持默认 false)
+   */
+  ephemeral?: boolean;
 }
 
 export interface DataEvent {
@@ -33,19 +47,39 @@ export interface DataEvent {
 export class P2PDirect extends EventEmitter {
   private swarm: Hyperswarm | null = null;
   private name: string;
+  private role: string;
   private joinedTopics: Set<string> = new Set();
   // 维护: 远端 publicKey -> conn (用于主动 send)
   private conns: Map<string, any> = new Map();
   private started: boolean = false;
+  private ephemeral: boolean;
 
   constructor(opts: P2PDirectOptions = {}) {
     super();
     this.name = opts.name || 'p2p-direct';
+    this.role = opts.role || (process.env.IROH_ROLE || process.env.BOLLOON_ROLE || 'default');
+    this.ephemeral = !!opts.ephemeral;
   }
 
   async start(): Promise<void> {
     if (this.started) return;
-    this.swarm = new Hyperswarm();
+
+    // 1. 加载/生成持久化 keyPair (同一 role 跨重启同一 publicKey)
+    if (this.ephemeral) {
+      console.log(`[P2PDirect:${this.name}] ephemeral 模式, 不持久化`);
+      this.swarm = new Hyperswarm();
+    } else {
+      const kp = await loadOrCreateKeyPair(this.role);
+      // hyperswarm 4.x 支持 `seed` 选项, DHT.keyPair(seed) 内部派生稳定 publicKey
+      this.swarm = new Hyperswarm({
+        seed: Buffer.from(kp.secretKey, 'hex'),  // 32-byte ed25519/X25519 seed
+      });
+      // 验证 / 写回 publicKey (首次启动时文件里是空)
+      const realPub = b4a.toString(this.swarm.keyPair.publicKey, 'hex');
+      if (kp.publicKey !== realPub) {
+        await writebackPublicKey(this.role, kp.secretKey, realPub);
+      }
+    }
 
     this.swarm.on('connection', (conn: any, info: any) => {
       const remotePubKeyHex = b4a.toString(info.publicKey, 'hex');
@@ -128,6 +162,11 @@ export class P2PDirect extends EventEmitter {
   getPublicKey(): string {
     if (!this.swarm) return '';
     return b4a.toString(this.swarm.keyPair.publicKey, 'hex');
+  }
+
+  /** 当前 P2PDirect 用的 role (对应 secret 文件名) */
+  getRole(): string {
+    return this.role;
   }
 
   getConnectionCount(): number {

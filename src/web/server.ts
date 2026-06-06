@@ -817,7 +817,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         }, 500);
       });
 
-      console.log(`[v3] P2PDirect 已启动, publicKey=${v3P2PRef.getPublicKey().substring(0,12)}...`);
+      console.log(`[v3] P2PDirect 已启动, role=${v3P2PRef.getRole()}, publicKey=${v3P2PRef.getPublicKey().substring(0,12)}...`);
 
       // v3: 启动后自动重连 known peers — 让"启动就互联"成为现实
       setTimeout(async () => {
