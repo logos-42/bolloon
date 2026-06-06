@@ -106,6 +106,42 @@ async function loadChannels() {
   }
 }
 
+// v3: 全局 SSE 监听 (p2p-global channel) - 接收远端 chat.reply 等事件
+let v3GlobalEventSource = null;
+function startV3GlobalSSE() {
+  if (v3GlobalEventSource) return;
+  try {
+    v3GlobalEventSource = new EventSource('/events?channelId=p2p-global');
+    v3GlobalEventSource.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'remote-chat-reply') {
+          // 找到当前打开的远端 chat modal 的 log
+          const log = document.getElementById('rcm-log');
+          if (log) {
+            const bubble = document.createElement('div');
+            bubble.style.cssText = 'padding:8px 10px;margin:4px 0;border-radius:6px;font-size:13px;line-height:1.4;max-width:80%;word-wrap:break-word;background:#e5e7eb;color:#111;';
+            bubble.textContent = msg.text || '(空回复)';
+            if (msg.error) {
+              bubble.textContent = '(错误: ' + msg.error + ')';
+              bubble.style.background = '#fca5a5';
+            }
+            log.appendChild(bubble);
+            log.scrollTop = log.scrollHeight;
+          }
+        }
+      } catch (err) {
+        console.error('[v3] 全局 SSE 解析失败:', err);
+      }
+    };
+    v3GlobalEventSource.onerror = (e) => {
+      console.warn('[v3] 全局 SSE 错误');
+    };
+  } catch (err) {
+    console.error('[v3] 启动全局 SSE 失败:', err);
+  }
+}
+
 async function createChannel(name) {
   if (!name.trim()) return;
   try {
@@ -2537,15 +2573,85 @@ function renderRemoteChannels() {
   }).join('');
   list.innerHTML = html;
 
-  // 绑定点击 — 暂时只是 console.log + 提示, Phase 2 接 chat
+  // 绑定点击 — 弹聊天窗口, 跟远端 channel 对话 (judgment 在对方节点)
   list.querySelectorAll('.remote-channel-row').forEach(row => {
     row.addEventListener('click', () => {
       const peerId = row.dataset.peerId;
       const channelId = row.dataset.channelId;
+      const channelName = row.querySelector('span[title]')?.getAttribute('title') || channelId;
       console.log('[v3] 点击远端 channel:', peerId.substring(0,12), channelId);
-      alert(`远端智能体点击 — Phase 2 实现 chat 调用\n\nPeer: ${peerId}\nChannel: ${channelId}`);
+      openRemoteChannelChat(peerId, channelId, channelName);
     });
   });
+}
+
+/** v3: 跟远端 channel 聊天的简易弹窗 */
+function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
+  // 移除已有 modal
+  document.getElementById('remote-chat-modal')?.remove();
+  const html = `
+    <div id="remote-chat-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10002;display:flex;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:8px;width:520px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.2);">
+        <div style="padding:12px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <div style="font-size:15px;font-weight:600;">跟 ${escapeHtml(channelName)} 聊天</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:2px;">远端 peer: ${escapeHtml(peerPublicKey.substring(0,16))}… · channel: ${escapeHtml(channelId)}</div>
+          </div>
+          <button id="rcm-close" style="background:none;border:none;font-size:20px;color:#6b7280;cursor:pointer;">×</button>
+        </div>
+        <div id="rcm-log" style="flex:1;overflow-y:auto;padding:12px 16px;min-height:240px;background:#f9fafb;"></div>
+        <div style="padding:10px 12px;border-top:1px solid #e5e7eb;display:flex;gap:6px;">
+          <input id="rcm-input" type="text" placeholder="输入消息, 发送到远端 channel..."
+                 style="flex:1;padding:8px 10px;border:1px solid #d1d5db;border-radius:4px;font-size:13px;">
+          <button id="rcm-send" style="padding:8px 14px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">发送</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+
+  const log = document.getElementById('rcm-log');
+  const inputEl = document.getElementById('rcm-input');
+  const sendBtn = document.getElementById('rcm-send');
+  document.getElementById('rcm-close').onclick = () => document.getElementById('remote-chat-modal').remove();
+
+  const append = (text, isUser) => {
+    const bubble = document.createElement('div');
+    bubble.style.cssText = `padding:8px 10px;margin:4px 0;border-radius:6px;font-size:13px;line-height:1.4;max-width:80%;word-wrap:break-word;${
+      isUser ? 'background:#2563eb;color:#fff;margin-left:auto;text-align:left;'
+             : 'background:#e5e7eb;color:#111;'
+    }`;
+    bubble.textContent = text;
+    log.appendChild(bubble);
+    log.scrollTop = log.scrollHeight;
+  };
+
+  const doSend = async () => {
+    const text = inputEl.value.trim();
+    if (!text) return;
+    append(text, true);
+    inputEl.value = '';
+    sendBtn.disabled = true;
+    sendBtn.textContent = '...';
+    try {
+      const res = await fetch('/api/remote-channels/chat-send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetPublicKey: peerPublicKey, channelId, text })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'send failed');
+    } catch (err) {
+      append('(发送失败: ' + (err.message || err) + ')', false);
+    } finally {
+      sendBtn.disabled = false;
+      sendBtn.textContent = '发送';
+    }
+  };
+  sendBtn.onclick = doSend;
+  inputEl.onkeydown = (e) => { if (e.key === 'Enter') doSend(); };
+  inputEl.focus();
+  startV3GlobalSSE();
 }
 
 const refreshRemoteBtn = document.getElementById('refresh-remote-agents-btn');

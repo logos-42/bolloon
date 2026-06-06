@@ -74,6 +74,10 @@ interface Channel {
   sessions?: SessionSummary[];
   /** 用户在盾牌里手动绑定的判断力 (LLM 跑 channel 时会注入). 默认 []. */
   bound_judgment_ids?: string[];
+  /** v3: 显式共享给哪些 P2P 好友 (peerPublicKey 列表). 只有这些 peer 能看到这个 channel. */
+  shared_with_peers?: string[];
+  /** v3: 自动生成的 share ID (短字符串), 方便分享给 P2P 好友. */
+  share_id?: string;
 }
 
 interface SessionSummary {
@@ -402,8 +406,21 @@ let sessionMessages: Map<string, any[]> = new Map(); // key: channelId + session
  * v3: 过滤 channel 元数据, 只返回对远端 peer 安全的字段.
  * 关键: bound_judgment_ids / walletBinding / autoInvokeTools 内部状态不外传.
  * judgment 内容永远不会出现在 RPC 响应里 (judgment 始终在 A 节点内存, 由 A 跑 LLM).
+ *
+ * Phase 3 分享模式: 加 peerPublicKey 参数 — 只有 shared_with_peers 包含此 peer 的 channel 才返回.
+ * peerPublicKey 不传 = admin 路径, 返回所有 channel (老行为).
  */
-function sanitizeChannelForPeer(ch: Channel): Record<string, unknown> {
+function sanitizeChannelForPeer(
+  ch: Channel,
+  peerPublicKey?: string
+): Record<string, unknown> | null {
+  // Phase 3 核心: 分享过滤
+  if (peerPublicKey) {
+    const shared = Array.isArray(ch.shared_with_peers) ? ch.shared_with_peers : [];
+    if (!shared.includes(peerPublicKey)) {
+      return null; // 没分享给这个 peer, 不返回
+    }
+  }
   return {
     id: ch.id,
     name: ch.name,
@@ -411,9 +428,10 @@ function sanitizeChannelForPeer(ch: Channel): Record<string, unknown> {
     publicKey: ch.publicKey,
     createdAt: ch.createdAt,
     updatedAt: ch.updatedAt,
-    hasWallet: !!ch.walletAddress,    // 只告诉 B "有没有钱包", 不传地址
+    hasWallet: !!ch.walletAddress,
     boundJudgmentCount: Array.isArray(ch.bound_judgment_ids) ? ch.bound_judgment_ids.length : 0,
-    // 🔒 不返回: bound_judgment_ids, walletAddress, walletBinding, autoInvokeTools, sessions
+    share_id: ch.share_id,
+    // 🔒 不返回: bound_judgment_ids, walletAddress, walletBinding, autoInvokeTools, sessions, shared_with_peers
   };
 }
 
@@ -429,13 +447,15 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
   const peerKey = conn.publicKey;
 
   if (op === 'agent.meta.list') {
-    // 对方问我的 channel 列表 — 回
+    // 对方问我的 channel 列表 — 只返回分享给他的
     try {
       const channels = await loadChannels();
-      const publicMeta = channels.map(sanitizeChannelForPeer);
+      const publicMeta = channels
+        .map(ch => sanitizeChannelForPeer(ch, peerKey))
+        .filter((x): x is Record<string, unknown> => x !== null);
       const reply = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: publicMeta } });
       await comm.sendToConnection(conn.id, reply);
-      console.log(`[v3] 回 ${peerKey.substring(0,12)}... agent.meta.list.reply (${publicMeta.length} 个)`);
+      console.log(`[v3] 回 ${peerKey.substring(0,12)}... list.reply (${publicMeta.length} 个分享给 ta)`);
     } catch (err) {
       console.error('[v3] 处理 agent.meta.list 失败:', (err as Error).message);
     }
@@ -462,8 +482,15 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       const channels = await loadChannels();
       const ch = channels.find(c => c.id === channelId);
       if (ch) {
-        const reply = JSON.stringify({ v: 3, op: 'agent.meta.get.reply', payload: { channel: sanitizeChannelForPeer(ch) } });
-        await comm.sendToConnection(conn.id, reply);
+        // Phase 3: 分享过滤 — 必须分享给该 peer
+        const sanitized = sanitizeChannelForPeer(ch, peerKey);
+        if (sanitized) {
+          const reply = JSON.stringify({ v: 3, op: 'agent.meta.get.reply', payload: { channel: sanitized } });
+          await comm.sendToConnection(conn.id, reply);
+        } else {
+          const reply = JSON.stringify({ v: 3, op: 'agent.meta.get.reply', payload: { error: 'not shared with you' } });
+          await comm.sendToConnection(conn.id, reply);
+        }
       }
     }
     return;
@@ -482,6 +509,65 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         peerId: peerKey,
         channels: list
       }, 'p2p-global');
+    }
+    return;
+  }
+
+  if (op === 'agent.chat.send') {
+    // B 端发来: 在 A 节点上对 channelId 跑 LLM, 结果回 B
+    // judgment 永远在 A 节点 (buildJudgmentHint 已经用 bound_judgment_ids)
+    const { channelId, text, fromPublicKey } = parsed.payload || {};
+    if (!channelId || !text) {
+      console.warn(`[v3] agent.chat.send 缺少 channelId/text`);
+      return;
+    }
+    console.log(`[v3] 收到 ${fromPublicKey?.substring(0,12) || peerKey.substring(0,12)}... 对 channel ${channelId} 的 chat: "${text.substring(0, 40)}..."`);
+    try {
+      // 1. 找到 channel
+      const channels = await loadChannels();
+      const ch = channels.find(c => c.id === channelId);
+      if (!ch) {
+        const reply = JSON.stringify({
+          v: 3, op: 'agent.chat.reply',
+          payload: { channelId, fromPublicKey: v3P2PRef?.getPublicKey() || '', error: 'channel not found', text: '' }
+        });
+        await comm.sendToConnection(conn.id, reply);
+        return;
+      }
+      // 2. 跑 LLM (复用 Phase 1 的 buildJudgmentHint — 注入 channel 的 judgment)
+      const judgmentHint = await buildJudgmentHint(ch, channelId);
+      const { getMinimax } = await import('../constraints/index.js');
+      const llm = getMinimax();
+      const fullPrompt = `${judgmentHint}${text}`;
+      let fullResponse = '';
+      const streamCallback: any = (event: any) => {
+        // 流式 token, 不广播给 B (避免半成品噪音), 只记 A 自己的日志
+        if (event.type === 'token') {
+          fullResponse += event.content;
+        }
+      };
+      const agent = await getAgentForChannel(channelId, ch.did || '', ch.name, ch.didDocRef);
+      fullResponse = await agent.promptStream(fullPrompt, streamCallback);
+      // 3. 把完整回复发给 B
+      const reply = JSON.stringify({
+        v: 3, op: 'agent.chat.reply',
+        payload: {
+          channelId,
+          fromPublicKey: v3P2PRef?.getPublicKey() || '',
+          text: fullResponse
+        }
+      });
+      await comm.sendToConnection(conn.id, reply);
+      console.log(`[v3] 回 chat.reply 给 ${fromPublicKey?.substring(0,12) || peerKey.substring(0,12)}... (${fullResponse.length} chars)`);
+    } catch (err) {
+      console.error(`[v3] agent.chat.send 处理失败:`, (err as Error).message);
+      try {
+        const reply = JSON.stringify({
+          v: 3, op: 'agent.chat.reply',
+          payload: { channelId, fromPublicKey: v3P2PRef?.getPublicKey() || '', error: (err as Error).message, text: '' }
+        });
+        await comm.sendToConnection(conn.id, reply);
+      } catch {}
     }
     return;
   }
@@ -689,6 +775,18 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         try {
           const parsed = JSON.parse(evt.data.toString('utf-8'));
           if (parsed && parsed.v === 3 && parsed.op) {
+            // v3 跨用户 chat: B 端收到 A 的 chat.reply, 直接 SSE 推给前端
+            if (parsed.op === 'agent.chat.reply') {
+              console.log(`[v3] 收到来自 ${evt.fromPublicKey.substring(0,12)}... 的 chat.reply (${(parsed.payload?.text || '').length} chars)`);
+              broadcast({
+                type: 'remote-chat-reply',
+                fromPublicKey: evt.fromPublicKey,
+                channelId: parsed.payload?.channelId,
+                text: parsed.payload?.text || '',
+                error: parsed.payload?.error
+              }, 'p2p-global');
+              return;
+            }
             const commShim = {
               sendToConnection: (_id: string, data: string) => {
                 v3P2PRef!.sendTo(evt.fromPublicKey, data);
@@ -702,14 +800,17 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         }
       });
 
-      // 新连接进来 → 主动发我自己的 channel 列表
+      // 新连接进来 → 主动发我分享给 ta 的 channel 列表
       v3P2PRef.on('connection', (evt: any) => {
         setTimeout(async () => {
           try {
             const channels = await loadChannels();
-            const publicMeta = channels.map(sanitizeChannelForPeer);
+            const publicMeta = channels
+              .map(ch => sanitizeChannelForPeer(ch, evt.remotePublicKey))
+              .filter((x): x is Record<string, unknown> => x !== null);
             const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: publicMeta } });
             v3P2PRef!.sendTo(evt.remotePublicKey, msg);
+            console.log(`[v3] 新连接 ${evt.remotePublicKey.substring(0,12)}... → 发 ${publicMeta.length} 个分享给 ta`);
           } catch (err) {
             console.error('[v3] 新连接发 list.reply 失败:', (err as Error).message);
           }
@@ -722,13 +823,23 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       v3P2PRef = null;
     }
 
-    // v3: 定期 broadcast 自己的 channel 列表 — 通过 P2PDirect (真通道)
+    // v3: 定期 broadcast — 每个 peer 只收到分享给他的 channel (按 peer 个性化)
     const v3BroadcastOwn = () => {
       if (!v3P2PRef) return;
       loadChannels().then(channels => {
-        const publicMeta = channels.map(sanitizeChannelForPeer);
-        const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: publicMeta } });
-        v3P2PRef!.broadcast(msg);
+        const conns = (v3P2PRef as any).conns as Map<string, any>;
+        if (!conns) return;
+        for (const [peerPk, conn] of conns.entries()) {
+          if (conn?.destroyed) continue;
+          const sharedForPeer = channels
+            .map(ch => sanitizeChannelForPeer(ch, peerPk))
+            .filter((x): x is Record<string, unknown> => x !== null);
+          if (sharedForPeer.length > 0) {
+            const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: sharedForPeer } });
+            try { conn.write(Buffer.from(msg)); } catch {}
+          }
+        }
+        console.log(`[v3] broadcast 个性化: ${conns.size} 个 peer, 各自收到分享的 channel`);
       }).catch(err => console.error('[v3] broadcast 失败:', (err as Error).message));
     };
     setTimeout(v3BroadcastOwn, 3000);
@@ -1335,7 +1446,7 @@ app.get('/channels', async (_req, res) => {
   app.patch('/channels/:channelId', async (req, res) => {
     try {
       const { channelId } = req.params;
-      const { name, walletAddress, autoInvokeTools, bound_judgment_ids } = req.body;
+      const { name, walletAddress, autoInvokeTools, bound_judgment_ids, shared_with_peers } = req.body;
       const channels = await loadChannels();
       const channel = channels.find(c => c.id === channelId);
       if (!channel) {
@@ -1373,6 +1484,24 @@ app.get('/channels', async (_req, res) => {
           return res.status(400).json({ error: 'bound_judgment_ids must be array or null' });
         }
         console.log(`[Channel ${channelId}] 绑定判断力: ${channel.bound_judgment_ids.length} 条`);
+      }
+      // Phase 3: shared_with_peers (显式分享给指定 peerPublicKey 列表)
+      if (shared_with_peers !== undefined) {
+        if (shared_with_peers === null) {
+          channel.shared_with_peers = [];
+        } else if (Array.isArray(shared_with_peers)) {
+          channel.shared_with_peers = shared_with_peers.filter(
+            (x: unknown) => typeof x === 'string' && (x as string).length === 64  // iroh/hyperswarm pubkey 32 字节 = 64 hex
+          );
+        } else {
+          return res.status(400).json({ error: 'shared_with_peers must be array of publicKey hex' });
+        }
+        console.log(`[Channel ${channelId}] 分享给 ${channel.shared_with_peers.length} 个 peer`);
+      }
+      // 首次保存时自动生成 share_id (短字符串, 方便粘贴)
+      if (!channel.share_id) {
+        channel.share_id = `shr_${channelId.slice(3, 12)}_${Math.random().toString(36).substring(2, 8)}`;
+        console.log(`[Channel ${channelId}] 自动生成 share_id: ${channel.share_id}`);
       }
       channel.updatedAt = new Date().toISOString();
       await saveChannels(channels);
@@ -1983,6 +2112,41 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // v3: known peers CRUD (持久化到 ~/.bolloon/known_peers.json)
+  // GET 列表, POST 加/更新, DELETE 删, PATCH 重命名
+  app.get('/api/p2p-peers', async (_req, res) => {
+    try {
+      const { listPeers } = await import('../network/known-peers.js');
+      const peers = await listPeers();
+      res.json({ count: peers.length, peers });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  app.post('/api/p2p-peers', async (req, res) => {
+    try {
+      const { name, publicKey, notes } = req.body || {};
+      if (!name || !publicKey) return res.status(400).json({ error: 'name and publicKey required' });
+      if (typeof publicKey !== 'string' || publicKey.length !== 64) {
+        return res.status(400).json({ error: 'publicKey must be 64-char hex (32 bytes)' });
+      }
+      const { addOrUpdatePeer } = await import('../network/known-peers.js');
+      await addOrUpdatePeer(name, publicKey, notes);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  app.delete('/api/p2p-peers/:name', async (req, res) => {
+    try {
+      const { removePeer } = await import('../network/known-peers.js');
+      await removePeer(req.params.name);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // v3: 主动 connect 到对端的 P2PDirect publicKey
   // 用法: POST /api/remote-channels/p2p-connect { targetPublicKey: "<hex>" }
   app.post('/api/remote-channels/p2p-connect', async (req, res) => {
@@ -1990,7 +2154,7 @@ app.get('/channels', async (_req, res) => {
       if (!v3P2PRef) {
         return res.status(503).json({ error: 'P2PDirect not started' });
       }
-      const { targetPublicKey } = req.body || {};
+      const { targetPublicKey, name, persist } = req.body || {};
       if (!targetPublicKey || typeof targetPublicKey !== 'string') {
         return res.status(400).json({ error: 'targetPublicKey required (hex)' });
       }
@@ -1999,9 +2163,58 @@ app.get('/channels', async (_req, res) => {
       if (!swarm) return res.status(503).json({ error: 'swarm not available' });
       const conn = await swarm.joinPeer(Buffer.from(targetPublicKey, 'hex'));
       console.log(`[v3] 已主动 joinPeer ${targetPublicKey.substring(0, 12)}...`);
-      res.json({ ok: true, target: targetPublicKey });
+
+      // 自动持久化 (默认开启) — 之后启动自动重连
+      let persistedAs: string | null = null;
+      if (persist !== false) {
+        const { addOrUpdatePeer, findNameByPublicKey } = await import('../network/known-peers.js');
+        // 优先用客户端传的 name, 否则用 publicKey 前 8 位
+        const peerName = name || `peer-${targetPublicKey.substring(0, 8)}`;
+        // 如果 publicKey 已被别的 name 占用, 用现有 name
+        const existingName = await findNameByPublicKey(targetPublicKey);
+        persistedAs = existingName || peerName;
+        await addOrUpdatePeer(persistedAs, targetPublicKey);
+        console.log(`[v3] 自动持久化 peer: ${persistedAs}`);
+      }
+
+      res.json({ ok: true, target: targetPublicKey, persistedAs });
     } catch (err: any) {
       console.error('[v3] p2p-connect 失败:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // v3: 给远端 channel 发消息 (B 节点) - 通过 P2PDirect 转发到 A, A 跑 LLM, 回 B
+  // 用法: POST /api/remote-channels/chat-send
+  //   { targetPublicKey, channelId, text }
+  app.post('/api/remote-channels/chat-send', async (req, res) => {
+    try {
+      if (!v3P2PRef) {
+        return res.status(503).json({ error: 'P2PDirect not started' });
+      }
+      const { targetPublicKey, channelId, text } = req.body || {};
+      if (!targetPublicKey || !channelId || !text) {
+        return res.status(400).json({ error: 'targetPublicKey, channelId, text required' });
+      }
+      if (typeof text !== 'string' || text.length === 0 || text.length > 8000) {
+        return res.status(400).json({ error: 'text length must be 1-8000' });
+      }
+      const fromPk = v3P2PRef.getPublicKey();
+      const msg = JSON.stringify({
+        v: 3,
+        op: 'agent.chat.send',
+        payload: { channelId, text, fromPublicKey: fromPk }
+      });
+      const ok = v3P2PRef.sendTo(targetPublicKey, msg);
+      if (!ok) {
+        return res.status(502).json({
+          error: 'peer not connected. POST /api/remote-channels/p2p-connect first.'
+        });
+      }
+      console.log(`[v3] chat-send 转发到 ${targetPublicKey.substring(0, 12)}... (channelId=${channelId})`);
+      res.json({ ok: true, sent: true });
+    } catch (err: any) {
+      console.error('[v3] chat-send 失败:', err);
       res.status(500).json({ error: err.message });
     }
   });
