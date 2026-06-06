@@ -385,6 +385,8 @@ let sseClients: Set<SSEClient> = new Set();
 // v3: 远端 channel UI 元数据缓存 — key: peerId, value: sanitize 过的 channel 列表
 // in-memory only, 进程重启清空 (judgment 内容永远不在这里)
 let remoteChannelCache: Map<string, Array<Record<string, unknown>>> = new Map();
+// v3: P2PDirect 引用 (Hyperswarm 薄包装) - 模块级, 因为 web server 闭包里不可用
+let v3P2PRef: import('../network/p2p-direct.js').P2PDirect | null = null;
 let channelSessions: Map<string, AgentSession> = new Map(); // key: channelId
 let sessionMessages: Map<string, any[]> = new Map(); // key: channelId + sessionId
 
@@ -674,7 +676,67 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       console.log('P2P DID 本地模式运行');
     }
 
-    // 初始化 P2P 通信器
+    // v3: 完全用 P2PDirect 取代 @diap/sdk 的 HyperswarmCommunicator
+    // 原因: @diap/sdk 的 sendToConnection 是 stub, 不真发数据
+    // 这里故意不启动 p2pCommunicator (保持 null), 让 P2PDirect 独占 hyperswarm 通道
+    try {
+      const { P2PDirect } = await import('../network/p2p-direct.js');
+      v3P2PRef = new P2PDirect({ name: 'v3' });
+      await v3P2PRef.start();
+      await v3P2PRef.joinTopic(Buffer.from('bolloon-agent-harness'));
+
+      v3P2PRef.on('data', (evt: any) => {
+        try {
+          const parsed = JSON.parse(evt.data.toString('utf-8'));
+          if (parsed && parsed.v === 3 && parsed.op) {
+            const commShim = {
+              sendToConnection: (_id: string, data: string) => {
+                v3P2PRef!.sendTo(evt.fromPublicKey, data);
+                return Promise.resolve();
+              }
+            };
+            handleV3P2PMessage(parsed, { id: evt.fromPublicKey, publicKey: evt.fromPublicKey } as any, commShim as any);
+          }
+        } catch (err) {
+          console.error('[v3-P2PDirect] 解析/处理消息失败:', (err as Error).message);
+        }
+      });
+
+      // 新连接进来 → 主动发我自己的 channel 列表
+      v3P2PRef.on('connection', (evt: any) => {
+        setTimeout(async () => {
+          try {
+            const channels = await loadChannels();
+            const publicMeta = channels.map(sanitizeChannelForPeer);
+            const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: publicMeta } });
+            v3P2PRef!.sendTo(evt.remotePublicKey, msg);
+          } catch (err) {
+            console.error('[v3] 新连接发 list.reply 失败:', (err as Error).message);
+          }
+        }, 500);
+      });
+
+      console.log(`[v3] P2PDirect 已启动, publicKey=${v3P2PRef.getPublicKey().substring(0,12)}...`);
+    } catch (err) {
+      console.error('[v3] P2PDirect 启动失败:', (err as Error).message);
+      v3P2PRef = null;
+    }
+
+    // v3: 定期 broadcast 自己的 channel 列表 — 通过 P2PDirect (真通道)
+    const v3BroadcastOwn = () => {
+      if (!v3P2PRef) return;
+      loadChannels().then(channels => {
+        const publicMeta = channels.map(sanitizeChannelForPeer);
+        const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: publicMeta } });
+        v3P2PRef!.broadcast(msg);
+      }).catch(err => console.error('[v3] broadcast 失败:', (err as Error).message));
+    };
+    setTimeout(v3BroadcastOwn, 3000);
+    setTimeout(v3BroadcastOwn, 10000);
+    setTimeout(v3BroadcastOwn, 20000);
+    setTimeout(v3BroadcastOwn, 40000);
+
+    // 保留 @diap/sdk 的旧实例 (它的 Hyperswarm 实例能帮 P2PDirect 做 DHT bootstrap)
     try {
       const rawSeed = crypto.getRandomValues(new Uint8Array(32));
       p2pCommunicator = createHyperswarmCommunicator({
@@ -684,66 +746,19 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         maxConnections: 50,
         seed: rawSeed
       } as any);
-
-      p2pCommunicator.on('connection', (conn: P2PConnection) => {
-        console.log(`P2P 连接: ${conn.publicKey.substring(0, 8)}...`);
-        // v3: 新连接进来 → 主动发我自己的 channel 列表给这个 peer
-        // 这样 B 比 A 早启动时, A 也能拿到 B 的列表
-        setTimeout(async () => {
-          try {
-            const channels = await loadChannels();
-            const publicMeta = channels.map(sanitizeChannelForPeer);
-            const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: publicMeta } });
-            await p2pCommunicator!.sendToConnection(conn.id, msg);
-            console.log(`[v3] 新连接 ${conn.publicKey.substring(0,12)}... → 主动发 list.reply (${publicMeta.length} 个)`);
-          } catch (err) {
-            console.error('[v3] 新连接发 list.reply 失败:', (err as Error).message);
-          }
-        }, 500);
-      });
-
       p2pCommunicator.on('message', async (msg: any, conn: P2PConnection) => {
+        // 旧 p2p_message 路径 (非 v3)
         const content = new TextDecoder().decode(msg.content);
-        // v3: 解析 JSON, 看是不是 v3 RPC
-        try {
-          const parsed = JSON.parse(content);
-          if (parsed && parsed.v === 3 && parsed.op) {
-            if (p2pCommunicator) {
-              await handleV3P2PMessage(parsed, conn, p2pCommunicator);
-            }
-            return;
-          }
-        } catch {
-          // 非 v3 消息, 走老的处理
-        }
-        console.log(`P2P 收到消息: ${content.substring(0, 50)}...`);
         broadcast({ type: 'p2p_message', from: conn.publicKey.substring(0, 8), content }, undefined);
       });
-
-      // v3: 启动后定期 broadcast 自己的 channel 列表 — 让所有已连接 peer 缓存
-      // Hyperswarm DHT 节点稳定需要 5-30 秒, 所以重复 broadcast 几次
-      const v3BroadcastOwn = async () => {
-        try {
-          const channels = await loadChannels();
-          const publicMeta = channels.map(sanitizeChannelForPeer);
-          const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: publicMeta } });
-          await p2pCommunicator!.broadcast(msg);
-          console.log(`[v3] broadcast agent.meta.list.reply (${publicMeta.length} 个 channel)`);
-        } catch (err) {
-          console.error('[v3] broadcast 失败:', (err as Error).message);
-        }
-      };
-      setTimeout(v3BroadcastOwn, 3000);
-      setTimeout(v3BroadcastOwn, 10000);
-      setTimeout(v3BroadcastOwn, 20000);
-      setTimeout(v3BroadcastOwn, 40000);
-
       await p2pCommunicator.start();
-      const topic = createTopic('bolloon-agent-harness') as Buffer;
-      await p2pCommunicator.joinTopic(topic);
-      console.log(`P2P 网络已就绪`);
+      // @diap/sdk 也 join topic — 它的 Hyperswarm 实例帮 P2PDirect 做 DHT 引导
+      // @diap/sdk 收到的数据是 mock (不真发), 但 DHT 发现 + 节点连接是 OK 的
+      const oldTopic = createTopic('bolloon-agent-harness') as Buffer;
+      await p2pCommunicator.joinTopic(oldTopic);
+      console.log(`P2P 老通道已就绪 (DHT bootstrap 帮 P2PDirect, 实际数据走 P2PDirect)`);
     } catch (e: any) {
-      console.log(`P2P 网络初始化失败: ${e.message}`);
+      console.log(`P2P 老通道初始化失败: ${e.message}`);
     }
   } catch (e: any) {
     console.log(`P2P 身份初始化失败: ${e.message}`);
@@ -1952,6 +1967,41 @@ app.get('/channels', async (_req, res) => {
         : irohTransport.getNodeId();
       res.json({ addr });
     } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // v3: 暴露 P2PDirect 自己的 publicKey, 对方可用它主动 connect
+  app.get('/api/p2p-publickey', async (_req, res) => {
+    try {
+      if (!v3P2PRef) {
+        return res.status(503).json({ error: 'P2PDirect not started' });
+      }
+      res.json({ publicKey: v3P2PRef.getPublicKey() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // v3: 主动 connect 到对端的 P2PDirect publicKey
+  // 用法: POST /api/remote-channels/p2p-connect { targetPublicKey: "<hex>" }
+  app.post('/api/remote-channels/p2p-connect', async (req, res) => {
+    try {
+      if (!v3P2PRef) {
+        return res.status(503).json({ error: 'P2PDirect not started' });
+      }
+      const { targetPublicKey } = req.body || {};
+      if (!targetPublicKey || typeof targetPublicKey !== 'string') {
+        return res.status(400).json({ error: 'targetPublicKey required (hex)' });
+      }
+      // v3P2PRef 直接连到目标 publicKey (用 hyperswarm 的 joinPeer API)
+      const swarm = (v3P2PRef as any).swarm;
+      if (!swarm) return res.status(503).json({ error: 'swarm not available' });
+      const conn = await swarm.joinPeer(Buffer.from(targetPublicKey, 'hex'));
+      console.log(`[v3] 已主动 joinPeer ${targetPublicKey.substring(0, 12)}...`);
+      res.json({ ok: true, target: targetPublicKey });
+    } catch (err: any) {
+      console.error('[v3] p2p-connect 失败:', err);
       res.status(500).json({ error: err.message });
     }
   });
