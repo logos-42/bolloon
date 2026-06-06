@@ -64,6 +64,25 @@
         <ul class="channel-list" id="channel-list"></ul>
       </div>
 
+      <!-- v3: 本地/远端分隔线 — 可拖拽改变两边高度 -->
+      <div id="sidebar-split-handle" title="拖动调整上方/下方高度">
+        <div class="split-handle-grip"></div>
+      </div>
+
+      <!-- v3: 远端智能体 — 从 P2P 连接的 peer 拉取的 channel UI 元数据 -->
+      <div class="sidebar-section" id="remote-agents-section">
+        <div class="section-header" id="remote-agents-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;cursor:pointer;user-select:none;">
+          <span style="display:flex;align-items:center;gap:6px;">
+            <span id="remote-agents-toggle" style="font-size:10px;color:var(--text-muted);transition:transform 0.2s;">▼</span>
+            <span class="section-title" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);">远端智能体</span>
+          </span>
+          <button id="refresh-remote-agents-btn" title="从已连接 P2P peer 拉取" style="background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:11px;line-height:1;">↻ 刷新</button>
+        </div>
+        <ul class="channel-list" id="remote-channel-list" style="list-style:none;padding:0;margin:0;">
+          <li style="color:var(--text-muted);font-size:11px;padding:8px 4px;text-align:center;">(暂无, 点 ↻ 刷新)</li>
+        </ul>
+      </div>
+
       <div class="sidebar-footer">
         <div class="agent-status">
           <span class="status-dot"></span>

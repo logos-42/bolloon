@@ -382,6 +382,9 @@ interface SSEClient {
 }
 
 let sseClients: Set<SSEClient> = new Set();
+// v3: 远端 channel UI 元数据缓存 — key: peerId, value: sanitize 过的 channel 列表
+// in-memory only, 进程重启清空 (judgment 内容永远不在这里)
+let remoteChannelCache: Map<string, Array<Record<string, unknown>>> = new Map();
 let channelSessions: Map<string, AgentSession> = new Map(); // key: channelId
 let sessionMessages: Map<string, any[]> = new Map(); // key: channelId + sessionId
 
@@ -392,6 +395,26 @@ let sessionMessages: Map<string, any[]> = new Map(); // key: channelId + session
  * 返回 "" 表示完全没数据; 否则返回完整 "[系统上下文] ..." 块 (含尾部换行)
  * 失败非致命 — 任何异常都返回空串, 保证 LLM 调用不被阻塞
  */
+
+/**
+ * v3: 过滤 channel 元数据, 只返回对远端 peer 安全的字段.
+ * 关键: bound_judgment_ids / walletBinding / autoInvokeTools 内部状态不外传.
+ * judgment 内容永远不会出现在 RPC 响应里 (judgment 始终在 A 节点内存, 由 A 跑 LLM).
+ */
+function sanitizeChannelForPeer(ch: Channel): Record<string, unknown> {
+  return {
+    id: ch.id,
+    name: ch.name,
+    did: ch.did,
+    publicKey: ch.publicKey,
+    createdAt: ch.createdAt,
+    updatedAt: ch.updatedAt,
+    hasWallet: !!ch.walletAddress,    // 只告诉 B "有没有钱包", 不传地址
+    boundJudgmentCount: Array.isArray(ch.bound_judgment_ids) ? ch.bound_judgment_ids.length : 0,
+    // 🔒 不返回: bound_judgment_ids, walletAddress, walletBinding, autoInvokeTools, sessions
+  };
+}
+
 async function buildJudgmentHint(
   channel: Channel | undefined | null,
   channelIdForLog: string
@@ -903,6 +926,43 @@ app.get('/channels', async (_req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+  // v3: 列出本节点缓存的远端 channel (按 peerId 分组)
+  app.get('/api/remote-channels', async (_req, res) => {
+    try {
+      const out: Array<{ peerId: string; channels: Array<Record<string, unknown>> }> = [];
+      for (const [peerId, list] of remoteChannelCache.entries()) {
+        out.push({ peerId, channels: list });
+      }
+      res.json({ count: out.length, peers: out });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // v3: 主动向所有已连接 P2P peer 拉 channel 列表
+  // 用法: B 端用户点 "刷新远端智能体" → 触发本 endpoint
+  app.post('/api/remote-channels/refresh', async (_req, res) => {
+    try {
+      const peers = irohTransport.getPeers ? irohTransport.getPeers() : [];
+      const peerIds = Array.isArray(peers) ? peers.map((p: any) => p.nodeId || p) : [];
+      if (peerIds.length === 0) {
+        return res.json({ ok: true, sent: 0, note: 'no connected peers' });
+      }
+      let sent = 0;
+      for (const peerId of peerIds) {
+        const ok = await irohTransport.sendMessage(
+          peerId,
+          'agent.meta.list',
+          new TextEncoder().encode('{}')
+        );
+        if (ok) sent++;
+      }
+      res.json({ ok: true, sent, total: peerIds.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   app.post('/channels', async (req, res) => {
     try {
@@ -1856,6 +1916,88 @@ app.get('/channels', async (_req, res) => {
           content,
           timestamp: Date.now()
         }, 'p2p-global');
+      });
+
+      // ============ v3: 跨用户 channel 元数据 RPC ============
+      // 设计原则: judgment / bound_judgment_ids / wallet 等敏感字段绝不出现在 RPC 响应里.
+      // 收到 'agent.meta.list' → 返回本节点所有 channel 的 UI 元数据 (无 judgment)
+      // 收到 'agent.meta.get' + channelId → 返回单条 channel 的 UI 元数据
+      // B 节点收到响应 → 存到远端 cache → 渲染到 "远端智能体" 区域
+
+      // B 侧: 收到对端的 list/get 回复 → 更新远端 cache → SSE 推给前端
+      irohTransport.onMessage('agent.meta.list.reply', (msg) => {
+        try {
+          const data = JSON.parse(new TextDecoder().decode(msg.payload));
+          if (!data.ok) return;
+          const peerId = msg.from;
+          const list = Array.isArray(data.channels) ? data.channels : [];
+          remoteChannelCache.set(peerId, list);
+          console.log(`[v3] 缓存远端 peer ${peerId.substring(0, 12)}... 的 ${list.length} 个 channel`);
+          broadcast({
+            type: 'remote-channel-update',
+            peerId,
+            channels: list
+          }, 'p2p-global');
+        } catch (err) {
+          console.error('[v3] 处理 agent.meta.list.reply 失败:', err);
+        }
+      });
+
+      irohTransport.onMessage('agent.meta.get.reply', (msg) => {
+        try {
+          const data = JSON.parse(new TextDecoder().decode(msg.payload));
+          if (!data.ok || !data.channel) return;
+          const peerId = msg.from;
+          const ch = data.channel;
+          const list = remoteChannelCache.get(peerId) || [];
+          const idx = list.findIndex(c => c.id === ch.id);
+          if (idx >= 0) list[idx] = ch;
+          else list.push(ch);
+          remoteChannelCache.set(peerId, list);
+          broadcast({
+            type: 'remote-channel-update',
+            peerId,
+            channels: list
+          }, 'p2p-global');
+        } catch (err) {
+          console.error('[v3] 处理 agent.meta.get.reply 失败:', err);
+        }
+      });
+
+      // A 侧: 收到对端的 list/get 请求
+      irohTransport.onMessage('agent.meta.list', async (msg) => {
+        console.log(`[v3] 收到 agent.meta.list from ${msg.from.substring(0, 12)}...`);
+        try {
+          const channels = await loadChannels();
+          const publicMeta = channels.map(sanitizeChannelForPeer);
+          const response = JSON.stringify({ ok: true, channels: publicMeta });
+          const encoded = new TextEncoder().encode(response);
+          // 沿用 msg.from 路由回去
+          irohTransport.sendMessage(msg.from, 'agent.meta.list.reply', encoded).catch(err => {
+            console.error('[v3] 发送 agent.meta.list.reply 失败:', err);
+          });
+        } catch (err) {
+          console.error('[v3] 处理 agent.meta.list 失败:', err);
+        }
+      });
+
+      irohTransport.onMessage('agent.meta.get', async (msg) => {
+        try {
+          const req = JSON.parse(new TextDecoder().decode(msg.payload));
+          const channelId = req.channelId;
+          console.log(`[v3] 收到 agent.meta.get for ${channelId} from ${msg.from.substring(0, 12)}...`);
+          const channels = await loadChannels();
+          const ch = channels.find(c => c.id === channelId);
+          if (!ch) {
+            const response = JSON.stringify({ ok: false, error: 'channel not found' });
+            irohTransport.sendMessage(msg.from, 'agent.meta.get.reply', new TextEncoder().encode(response));
+            return;
+          }
+          const response = JSON.stringify({ ok: true, channel: sanitizeChannelForPeer(ch) });
+          irohTransport.sendMessage(msg.from, 'agent.meta.get.reply', new TextEncoder().encode(response));
+        } catch (err) {
+          console.error('[v3] 处理 agent.meta.get 失败:', err);
+        }
       });
 
       irohTransport.onMessage('ai-dialogue', (msg) => {

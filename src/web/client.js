@@ -23,6 +23,7 @@ let eventSources = new Map(); // channelId -> EventSource
 let currentChannelId = null;
 let currentAgentId = '';
 let channels = [];
+let remoteChannels = []; // v3: 远端 channel UI 元数据 (按 peer 分组)
 let isSidebarCollapsed = false;
 let reconnectAttempts = new Map(); // channelId -> attempts
 let reconnectTimers = new Map(); // channelId -> timer
@@ -2489,6 +2490,163 @@ if (judgmentSubmitBtn) judgmentSubmitBtn.addEventListener('click', submitJudgmen
 loadJudgments();
 // 后台定期刷新 (与 modal 打开/关闭无关, 任何时候都保持徽章新鲜)
 setInterval(loadJudgments, 10000);
+
+// ============================================================================
+// v3: 远端智能体 (从 P2P 连接的 peer 拉取的 channel UI 元数据)
+// ============================================================================
+
+async function loadRemoteChannels() {
+  try {
+    const res = await fetch('/api/remote-channels');
+    if (!res.ok) return;
+    const data = await res.json();
+    remoteChannels = Array.isArray(data.peers) ? data.peers : [];
+    renderRemoteChannels();
+  } catch (err) {
+    console.error('[v3] loadRemoteChannels 失败:', err);
+  }
+}
+
+function renderRemoteChannels() {
+  const list = document.getElementById('remote-channel-list');
+  if (!list) return;
+  if (remoteChannels.length === 0) {
+    list.innerHTML = '<li style="color:var(--text-muted);font-size:11px;padding:8px 4px;text-align:center;">(暂无, 点 ↻ 刷新)</li>';
+    return;
+  }
+  const html = remoteChannels.map(p => {
+    const peerShort = p.peerId.substring(0, 12) + '…';
+    return `
+      <li class="remote-peer-group" style="margin-bottom:8px;">
+        <div style="font-size:10px;color:var(--text-muted);padding:2px 4px;display:flex;align-items:center;gap:4px;">
+          <span>🌐</span><span title="${escapeHtml(p.peerId)}">${escapeHtml(peerShort)}</span>
+          <span>·</span>
+          <span>${p.channels.length} 个</span>
+        </div>
+        ${p.channels.map(c => `
+          <div class="remote-channel-row" data-peer-id="${escapeHtml(p.peerId)}" data-channel-id="${escapeHtml(c.id)}"
+               style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--text);">
+            <span>🤖</span>
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(c.name || '')}">${escapeHtml(c.name || '(未命名)')}</span>
+            ${c.hasWallet ? '<span title="绑定钱包">⛓</span>' : ''}
+            <span title="绑定判断力数" style="font-size:10px;color:var(--text-muted);">🧠${c.boundJudgmentCount || 0}</span>
+          </div>
+        `).join('')}
+      </li>
+    `;
+  }).join('');
+  list.innerHTML = html;
+
+  // 绑定点击 — 暂时只是 console.log + 提示, Phase 2 接 chat
+  list.querySelectorAll('.remote-channel-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const peerId = row.dataset.peerId;
+      const channelId = row.dataset.channelId;
+      console.log('[v3] 点击远端 channel:', peerId.substring(0,12), channelId);
+      alert(`远端智能体点击 — Phase 2 实现 chat 调用\n\nPeer: ${peerId}\nChannel: ${channelId}`);
+    });
+  });
+}
+
+const refreshRemoteBtn = document.getElementById('refresh-remote-agents-btn');
+if (refreshRemoteBtn) {
+  refreshRemoteBtn.addEventListener('click', async (e) => {
+    e.stopPropagation(); // 防止冒泡触发折叠
+    refreshRemoteBtn.disabled = true;
+    refreshRemoteBtn.textContent = '⏳';
+    try {
+      const res = await fetch('/api/remote-channels/refresh', { method: 'POST' });
+      const data = await res.json();
+      console.log('[v3] 刷新远端智能体:', data);
+      setTimeout(loadRemoteChannels, 1500);
+    } catch (err) {
+      console.error('[v3] 刷新失败:', err);
+    } finally {
+      setTimeout(() => {
+        refreshRemoteBtn.disabled = false;
+        refreshRemoteBtn.textContent = '↻ 刷新';
+      }, 2000);
+    }
+  });
+}
+
+// 启动时拉一次 + 定期轮询 (SSE 接收 P2P reply 后也会更新)
+loadRemoteChannels();
+setInterval(loadRemoteChannels, 8000);
+
+// ============ v3: 折叠 + 拖拽分隔线 ============
+
+// 给本地/远端 section 加 flex 修饰类 (CSS variable 驱动比例)
+const localSection = document.querySelector('.sidebar-section'); // 第一个 section = 本地 channel
+const remoteSection = document.getElementById('remote-agents-section');
+if (localSection) localSection.classList.add('local-flex');
+if (remoteSection) remoteSection.classList.add('remote-flex');
+
+// 折叠: 点 header 切换 collapsed 类
+const remoteHeader = document.getElementById('remote-agents-header');
+if (remoteHeader && remoteSection) {
+  remoteHeader.addEventListener('click', (e) => {
+    // 阻止刷新按钮的事件冒泡在 refreshRemoteBtn 里已处理
+    remoteSection.classList.toggle('collapsed');
+  });
+}
+
+// 拖拽分隔线: 鼠标按下开始拖, mousemove 改 --local-flex / --remote-flex, mouseup 结束
+const splitHandle = document.getElementById('sidebar-split-handle');
+if (splitHandle && localSection && remoteSection) {
+  // 初始化等分
+  const updateFlexVars = (localRatio, remoteRatio) => {
+    localSection.style.setProperty('--local-flex', String(localRatio));
+    remoteSection.style.setProperty('--remote-flex', String(remoteRatio));
+  };
+  updateFlexVars(1, 1);
+
+  let isDragging = false;
+  let dragStartY = 0;
+  let startLocalFlex = 1;
+  let startRemoteFlex = 1;
+  let sidebarHeight = 0;
+
+  splitHandle.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    splitHandle.classList.add('dragging');
+    dragStartY = e.clientY;
+    // 读当前 CSS variable 拿真实 flex 值
+    const lf = parseFloat(getComputedStyle(localSection).getPropertyValue('--local-flex')) || 1;
+    const rf = parseFloat(getComputedStyle(remoteSection).getPropertyValue('--remote-flex')) || 1;
+    startLocalFlex = lf;
+    startRemoteFlex = rf;
+    // 父容器可用高度 = sidebar-section 总和 (本地+远端+handle)
+    const sidebar = document.querySelector('.sidebar');
+    if (sidebar) sidebarHeight = sidebar.clientHeight;
+    e.preventDefault();
+    document.body.style.cursor = 'ns-resize';
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const deltaY = e.clientY - dragStartY;
+    if (sidebarHeight <= 0) return;
+    // deltaY 正 = 鼠标下移 = 拉大本地 / 缩小远端
+    // 转换: 1 像素 ≈ sidebarHeight 中 0.005 的比例
+    const deltaRatio = deltaY / sidebarHeight * 4; // 4 倍灵敏
+    let newLocal = Math.max(0.1, startLocalFlex + deltaRatio);
+    let newRemote = Math.max(0.1, startRemoteFlex - deltaRatio);
+    updateFlexVars(newLocal, newRemote);
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!isDragging) return;
+    isDragging = false;
+    splitHandle.classList.remove('dragging');
+    document.body.style.cursor = '';
+  });
+
+  // 双击分隔线 = 重置为等分
+  splitHandle.addEventListener('dblclick', () => {
+    updateFlexVars(1, 1);
+  });
+}
 
 if (taskModal) {
   taskModal.addEventListener('click', (e) => {

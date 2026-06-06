@@ -269,6 +269,41 @@ body {
   padding: 16px;
   position: relative;
 }
+
+/* v3: 本地/远端 flex 比例由 CSS variable 驱动, 拖拽分隔线时改这两个值 */
+.sidebar-section.local-flex { flex: var(--local-flex, 1) 1 0; }
+.sidebar-section.remote-flex { flex: var(--remote-flex, 1) 1 0; transition: flex 0.15s; }
+
+/* v3: 可拖拽分隔线 */
+#sidebar-split-handle {
+  flex: 0 0 auto;
+  height: 6px;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  background: transparent;
+  user-select: none;
+}
+#sidebar-split-handle:hover { background: var(--bg-hover); }
+#sidebar-split-handle.dragging { background: var(--accent-glow); }
+#sidebar-split-handle .split-handle-grip {
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-light);
+  pointer-events: none;
+}
+#sidebar-split-handle:hover .split-handle-grip,
+#sidebar-split-handle.dragging .split-handle-grip { background: var(--accent); }
+
+/* v3: 远端区域折叠状态 */
+#remote-agents-section.collapsed .channel-list { display: none; }
+#remote-agents-section.collapsed { flex: 0 0 auto; padding-top: 0; padding-bottom: 0; }
+#remote-agents-section.collapsed .section-header { margin-bottom: 0; }
+#remote-agents-section.collapsed #remote-agents-toggle { transform: rotate(-90deg); }
+
 .section-header {
   display: flex;
   align-items: center;
