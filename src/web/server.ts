@@ -964,6 +964,33 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // ===== v3 测试用: 主动 connect 到对端 iroh nodeId, 再发 agent.meta.list =====
+  // 用法: POST /api/remote-channels/connect { targetNodeId: "..." }
+  app.post('/api/remote-channels/connect', async (req, res) => {
+    try {
+      const { targetNodeId } = req.body || {};
+      if (!targetNodeId || typeof targetNodeId !== 'string') {
+        return res.status(400).json({ error: 'targetNodeId required' });
+      }
+      console.log(`[v3] 主动 connect 到 ${targetNodeId.substring(0, 16)}...`);
+      const ok = await irohTransport.connect(targetNodeId);
+      if (!ok) {
+        return res.status(502).json({ error: 'connect failed' });
+      }
+      // 立即发 agent.meta.list 请求对端返回元数据
+      const sent = await irohTransport.sendMessage(
+        targetNodeId,
+        'agent.meta.list',
+        new TextEncoder().encode('{}')
+      );
+      console.log(`[v3] connect+list 发送结果: connect=ok, list=${sent}`);
+      res.json({ ok: true, connected: true, sent });
+    } catch (err: any) {
+      console.error('[v3] /api/remote-channels/connect 失败:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post('/channels', async (req, res) => {
     try {
       const { name, agentId, walletAddress, autoInvokeTools, bound_judgment_ids } = req.body;

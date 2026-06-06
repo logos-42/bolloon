@@ -92,14 +92,16 @@ export class IrohTransport {
       };
     }
 
-    // 若调用方未传 secretKey，从 ~/.bolloon/iroh-secret-default.json 落盘/读取
-    // 保证 iroh nodeId 在同一台机器上跨重启保持稳定
+    // 若调用方未传 secretKey，从 ~/.bolloon/iroh-secret-{role}.json 落盘/读取
+    // role 可通过 IROH_ROLE 环境变量覆盖, 方便同机起多个实例 (A/B 跨用户测试)
+    // 不设 IROH_ROLE 时 = 'default', 与旧行为一致
     if (!secretKey) {
+      const role = process.env.IROH_ROLE || 'default';
       try {
-        const sec = loadOrCreateIrohSecret('default');
+        const sec = loadOrCreateIrohSecret(role);
         // iroh binding 的 secretKey 字段是 hex 字符串 (32 字节 Ed25519 种子)
         secretKey = Buffer.from(sec.secretKey).toString('hex');
-        console.log(`[IrohTransport] ${sec.reused ? '复用' : '新建'} iroh-secret-default.json (createdAt=${sec.createdAt})`);
+        console.log(`[IrohTransport] ${sec.reused ? '复用' : '新建'} iroh-secret-${role}.json (createdAt=${sec.createdAt})`);
       } catch (e) {
         console.warn('[IrohTransport] iroh-secret 加载失败, 将使用临时身份:', e);
       }
