@@ -560,6 +560,20 @@ export class IrohTransport {
     return this.ownNodeId;
   }
 
+  /**
+   * v3: 返回 iroh endpoint 完整地址字符串 (含 relay URL)
+   * 这是 connect() 真正需要的"网络地址", 光有 nodeId 不足以建连
+   * 如果 endpoint 还没 online, 返回纯 nodeId
+   */
+  getEndpointAddr(): string | null {
+    if (!this.endpoint) return null;
+    try {
+      return this.endpoint.addr();
+    } catch (e) {
+      return this.endpoint.nodeId();
+    }
+  }
+
   getPeers(): IrohPeer[] {
     return Array.from(this.peers.values());
   }

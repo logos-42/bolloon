@@ -415,6 +415,78 @@ function sanitizeChannelForPeer(ch: Channel): Record<string, unknown> {
   };
 }
 
+/**
+ * v3: 处理 Hyperswarm 通道收到的 v3 RPC 消息
+ * 设计: 用 HyperswarmCommunicator (DHT topic 自动发现) 取代 iroh 直接 connect
+ *   - A 启动 → broadcast(agent.meta.list.reply) → 所有已连接 peer 缓存 A 的 channel
+ *   - B 启动 → 同样 broadcast
+ *   - 任何节点收到 list 请求 → 回 list.reply
+ */
+async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: HyperswarmCommunicator): Promise<void> {
+  const op = parsed.op;
+  const peerKey = conn.publicKey;
+
+  if (op === 'agent.meta.list') {
+    // 对方问我的 channel 列表 — 回
+    try {
+      const channels = await loadChannels();
+      const publicMeta = channels.map(sanitizeChannelForPeer);
+      const reply = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: publicMeta } });
+      await comm.sendToConnection(conn.id, reply);
+      console.log(`[v3] 回 ${peerKey.substring(0,12)}... agent.meta.list.reply (${publicMeta.length} 个)`);
+    } catch (err) {
+      console.error('[v3] 处理 agent.meta.list 失败:', (err as Error).message);
+    }
+    return;
+  }
+
+  if (op === 'agent.meta.list.reply') {
+    // 对方把他自己的 channel 列表推给我 — 缓存
+    const list = parsed.payload?.channels || [];
+    remoteChannelCache.set(peerKey, list);
+    console.log(`[v3] 收到 ${peerKey.substring(0,12)}... 的 ${list.length} 个 channel, 已缓存`);
+    broadcast({
+      type: 'remote-channel-update',
+      peerId: peerKey,
+      channels: list
+    }, 'p2p-global');
+    return;
+  }
+
+  if (op === 'agent.meta.get') {
+    // 对方问单条 channel — 回
+    const channelId = parsed.payload?.channelId;
+    if (channelId) {
+      const channels = await loadChannels();
+      const ch = channels.find(c => c.id === channelId);
+      if (ch) {
+        const reply = JSON.stringify({ v: 3, op: 'agent.meta.get.reply', payload: { channel: sanitizeChannelForPeer(ch) } });
+        await comm.sendToConnection(conn.id, reply);
+      }
+    }
+    return;
+  }
+
+  if (op === 'agent.meta.get.reply') {
+    const ch = parsed.payload?.channel;
+    if (ch && ch.id) {
+      const list = remoteChannelCache.get(peerKey) || [];
+      const idx = list.findIndex((c: any) => c.id === ch.id);
+      if (idx >= 0) list[idx] = ch;
+      else list.push(ch);
+      remoteChannelCache.set(peerKey, list);
+      broadcast({
+        type: 'remote-channel-update',
+        peerId: peerKey,
+        channels: list
+      }, 'p2p-global');
+    }
+    return;
+  }
+
+  console.log(`[v3] 收到未知 op: ${op}`);
+}
+
 async function buildJudgmentHint(
   channel: Channel | undefined | null,
   channelIdForLog: string
@@ -615,14 +687,56 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
       p2pCommunicator.on('connection', (conn: P2PConnection) => {
         console.log(`P2P 连接: ${conn.publicKey.substring(0, 8)}...`);
+        // v3: 新连接进来 → 主动发我自己的 channel 列表给这个 peer
+        // 这样 B 比 A 早启动时, A 也能拿到 B 的列表
+        setTimeout(async () => {
+          try {
+            const channels = await loadChannels();
+            const publicMeta = channels.map(sanitizeChannelForPeer);
+            const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: publicMeta } });
+            await p2pCommunicator!.sendToConnection(conn.id, msg);
+            console.log(`[v3] 新连接 ${conn.publicKey.substring(0,12)}... → 主动发 list.reply (${publicMeta.length} 个)`);
+          } catch (err) {
+            console.error('[v3] 新连接发 list.reply 失败:', (err as Error).message);
+          }
+        }, 500);
       });
 
       p2pCommunicator.on('message', async (msg: any, conn: P2PConnection) => {
         const content = new TextDecoder().decode(msg.content);
+        // v3: 解析 JSON, 看是不是 v3 RPC
+        try {
+          const parsed = JSON.parse(content);
+          if (parsed && parsed.v === 3 && parsed.op) {
+            if (p2pCommunicator) {
+              await handleV3P2PMessage(parsed, conn, p2pCommunicator);
+            }
+            return;
+          }
+        } catch {
+          // 非 v3 消息, 走老的处理
+        }
         console.log(`P2P 收到消息: ${content.substring(0, 50)}...`);
-        // 可以在这里处理接收到的消息
         broadcast({ type: 'p2p_message', from: conn.publicKey.substring(0, 8), content }, undefined);
       });
+
+      // v3: 启动后定期 broadcast 自己的 channel 列表 — 让所有已连接 peer 缓存
+      // Hyperswarm DHT 节点稳定需要 5-30 秒, 所以重复 broadcast 几次
+      const v3BroadcastOwn = async () => {
+        try {
+          const channels = await loadChannels();
+          const publicMeta = channels.map(sanitizeChannelForPeer);
+          const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: publicMeta } });
+          await p2pCommunicator!.broadcast(msg);
+          console.log(`[v3] broadcast agent.meta.list.reply (${publicMeta.length} 个 channel)`);
+        } catch (err) {
+          console.error('[v3] broadcast 失败:', (err as Error).message);
+        }
+      };
+      setTimeout(v3BroadcastOwn, 3000);
+      setTimeout(v3BroadcastOwn, 10000);
+      setTimeout(v3BroadcastOwn, 20000);
+      setTimeout(v3BroadcastOwn, 40000);
 
       await p2pCommunicator.start();
       const topic = createTopic('bolloon-agent-harness') as Buffer;
@@ -964,27 +1078,34 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
-  // ===== v3 测试用: 主动 connect 到对端 iroh nodeId, 再发 agent.meta.list =====
-  // 用法: POST /api/remote-channels/connect { targetNodeId: "..." }
+  // ===== v3: 主动 connect 到对端, 再发 agent.meta.list =====
+  // 用法: POST /api/remote-channels/connect { targetAddr: "<完整 EndpointAddr 含 relay URL>" }
+  // targetAddr 应来自对端 GET /api/iroh-addr (完整字符串, 不只是 nodeId)
+  // 兼容旧用法: 也接受 targetNodeId, 但只有 nodeId 不一定能 connect 成功
   app.post('/api/remote-channels/connect', async (req, res) => {
     try {
-      const { targetNodeId } = req.body || {};
-      if (!targetNodeId || typeof targetNodeId !== 'string') {
-        return res.status(400).json({ error: 'targetNodeId required' });
+      const { targetAddr, targetNodeId } = req.body || {};
+      const target = targetAddr || targetNodeId;
+      if (!target || typeof target !== 'string') {
+        return res.status(400).json({ error: 'targetAddr (or targetNodeId) required' });
       }
-      console.log(`[v3] 主动 connect 到 ${targetNodeId.substring(0, 16)}...`);
-      const ok = await irohTransport.connect(targetNodeId);
+      console.log(`[v3] 主动 connect 到 ${target.substring(0, 32)}...`);
+      // iroh connect 接受 nodeId 或完整 addr 字符串 — 用完整 addr 才会成功
+      const ok = await irohTransport.connect(target);
       if (!ok) {
-        return res.status(502).json({ error: 'connect failed' });
+        return res.status(502).json({
+          error: 'connect failed',
+          hint: '传 targetAddr (完整 EndpointAddr 字符串, 含 relay URL) 而非仅 nodeId'
+        });
       }
       // 立即发 agent.meta.list 请求对端返回元数据
       const sent = await irohTransport.sendMessage(
-        targetNodeId,
+        target,
         'agent.meta.list',
         new TextEncoder().encode('{}')
       );
       console.log(`[v3] connect+list 发送结果: connect=ok, list=${sent}`);
-      res.json({ ok: true, connected: true, sent });
+      res.json({ ok: true, connected: true, sent, target });
     } catch (err: any) {
       console.error('[v3] /api/remote-channels/connect 失败:', err);
       res.status(500).json({ error: err.message });
@@ -1819,6 +1940,18 @@ app.get('/channels', async (_req, res) => {
       });
     } catch (err: any) {
       console.error('API identity 错误:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // v3 测试: 返回 iroh endpoint 完整地址 (含 relay URL), 这才是 connect() 真正需要的
+  app.get('/api/iroh-addr', async (_req, res) => {
+    try {
+      const addr = irohTransport.getEndpointAddr
+        ? irohTransport.getEndpointAddr()
+        : irohTransport.getNodeId();
+      res.json({ addr });
+    } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
