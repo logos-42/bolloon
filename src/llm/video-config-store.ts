@@ -232,9 +232,15 @@ class VideoConfigStore {
         return { success: true, latency };
       } else {
         const errorText = await response.text().catch(() => 'Unknown error');
+        // 401 通常是 key 错误，给出针对性提示
+        const hint = response.status === 401
+          ? '（请确认是火山方舟 ARK 的 API Key，不是 MiniMax / 其他平台）'
+          : response.status === 404
+          ? '（端点不存在 — 火山方舟可能没有 /models，请检查 baseUrl）'
+          : '';
         return {
           success: false,
-          error: `HTTP ${response.status}: ${errorText.substring(0, 200)}`,
+          error: `HTTP ${response.status}: ${errorText.substring(0, 500)}${hint ? ' ' + hint : ''}`,
           latency
         };
       }

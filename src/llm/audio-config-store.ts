@@ -222,9 +222,14 @@ class AudioConfigStore {
         return { success: true, latency };
       } else {
         const errorText = await response.text().catch(() => 'Unknown error');
+        const hint = response.status === 401
+          ? '（请确认是 MiniMax 的 API Key）'
+          : response.status === 404
+          ? '（端点不存在 — 请检查 baseUrl）'
+          : '';
         return {
           success: false,
-          error: `HTTP ${response.status}: ${errorText.substring(0, 200)}`,
+          error: `HTTP ${response.status}: ${errorText.substring(0, 500)}${hint ? ' ' + hint : ''}`,
           latency
         };
       }
