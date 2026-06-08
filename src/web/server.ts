@@ -2212,6 +2212,12 @@ app.get('/channels', async (_req, res) => {
         return res.status(400).json({ error: 'provider and config required' });
       }
 
+      // 如果前端发的是掩码（***xxx），从当前配置里取真实 key
+      const currentConfig = await llmConfigStore.getProvider(provider as ModelProvider);
+      if (currentConfig && config.apiKey && config.apiKey.startsWith('***')) {
+        config.apiKey = currentConfig.apiKey;
+      }
+
       await llmConfigStore.updateProvider(provider, config);
 
       // 如果是活跃供应商，重新初始化 Pi SDK
