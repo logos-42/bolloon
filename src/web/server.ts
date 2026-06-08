@@ -23,10 +23,31 @@ import { createAgentDelegateApp } from './agent-delegate-server.js';
 import { createIrohDelegateTransport } from './iroh-delegate-transport.js';
 import { verifyMessage, isAddress, getAddress } from 'viem';
 
-// 前端资源路径：在打包后会通过 CommonJS require 加载，使用 import.meta.url
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const webRoot = path.join(__dirname, '..', '..', 'dist', 'web');
+// 前端资源路径: 兼容 src 运行 + dist 运行 + npm 全局安装
+// - src 跑 (tsx):   __dirname = .../src/web  →  .../dist/web
+// - dist 跑 (npm):  __dirname = .../dist/web → 自身就是 web 根
+// - 环境变量覆盖:  BOLLOON_WEB_ROOT=xxx
+// ESM scope 没有 __dirname, 这里自己声明
+const __filename_local = fileURLToPath(import.meta.url);
+const __dirname_local = dirname(__filename_local);
+let _baseDirname = __dirname_local;
+function resolveWebRoot(): string {
+  if (process.env.BOLLOON_WEB_ROOT && fsSync.existsSync(process.env.BOLLOON_WEB_ROOT)) {
+    return process.env.BOLLOON_WEB_ROOT;
+  }
+  const d = _baseDirname;
+  const candidates = [
+    path.join(d),                                    // dist/web
+    path.join(d, '..', '..', 'dist', 'web'),         // src/web → dist/web
+    path.join(d, '..', 'web'),                       // dist/ → web/ 兄弟
+  ];
+  for (const c of candidates) {
+    if (fsSync.existsSync(path.join(c, 'index.html'))) return c;
+  }
+  return candidates[1];
+}
+const webRoot = resolveWebRoot();
+console.log(`[web] webRoot = ${webRoot}`);
 
 const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'sessions');
 const SESSION_CACHE_PATH = path.join(SHARED_SESSION_PATH, 'cache');

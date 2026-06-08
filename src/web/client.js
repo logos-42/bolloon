@@ -2862,43 +2862,71 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   loadHistory();
 }
 
-// Phase 3: 我的 ID 按钮 → 弹窗显示并支持复制自己的 P2PDirect publicKey
+// Phase 3: 我的 ID 按钮 → 真 modal (避免 confirm 在某些环境被禁用)
 const showMyIdBtn = document.getElementById('show-my-p2p-id-btn');
 if (showMyIdBtn) {
   showMyIdBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
+    // 移除已有 modal
+    document.getElementById('my-p2p-id-modal')?.remove();
+    // 立即弹出 loading 状态 modal
+    const html = `
+      <div id="my-p2p-id-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10003;display:flex;align-items:center;justify-content:center;">
+        <div style="background:#fff;border-radius:8px;width:480px;max-width:92vw;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.2);">
+          <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
+            <div style="font-size:15px;font-weight:600;">🪪 我的 P2P 身份</div>
+            <button id="mpim-close" style="background:none;border:none;font-size:20px;color:#6b7280;cursor:pointer;">×</button>
+          </div>
+          <div id="mpim-body" style="padding:16px 18px;">
+            <div style="color:#6b7280;font-size:13px;margin-bottom:10px;">正在获取 publicKey…</div>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', html);
+    document.getElementById('mpim-close').onclick = () => document.getElementById('my-p2p-id-modal').remove();
+
     try {
       const res = await fetch('/api/p2p-publickey');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const pk = data.publicKey || '';
+      const body = document.getElementById('mpim-body');
       if (!pk || pk.length !== 64) {
-        alert('P2PDirect 还没启动, 刷新页面稍后再试');
+        body.innerHTML = `<div style="color:#b91c1c;font-size:13px;">✗ P2PDirect 还没启动, 刷新页面稍后再试</div>`;
         return;
       }
-      // 显示 + 一键复制
-      const ok = confirm(
-        `我的 P2P publicKey (64 字符 hex):\n\n${pk}\n\n` +
-        `点 "确定" 复制到剪贴板, 发给好友.\n` +
-        `好友点 "+ 好友" 粘贴这个 ID 就能加我.`
-      );
-      if (ok) {
+      body.innerHTML = `
+        <div style="font-size:12px;color:#6b7280;margin-bottom:8px;">把下面这串发给好友, 好友在 P2P 好友区点 "+ 好友" 粘贴即可加你:</div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:12px;">
+          <code id="mpim-pk" style="flex:1;padding:8px 10px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:4px;font-family:monospace;font-size:11px;word-break:break-all;line-height:1.4;">${escapeHtml(pk)}</code>
+          <button id="mpim-copy" style="padding:8px 14px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;white-space:nowrap;">📋 复制</button>
+        </div>
+        <div id="mpim-status" style="font-size:12px;color:#059669;min-height:16px;"></div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:11px;color:#6b7280;">
+          💡 同一个 role 重启后 publicKey 不会变, 好友不需要重新加你.
+        </div>
+      `;
+      document.getElementById('mpim-copy').onclick = async () => {
+        const statusEl = document.getElementById('mpim-status');
         try {
           await navigator.clipboard.writeText(pk);
-          alert('✓ 已复制到剪贴板');
+          statusEl.textContent = '✓ 已复制到剪贴板';
         } catch {
-          // 旧浏览器 fallback
           const ta = document.createElement('textarea');
           ta.value = pk;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
           document.body.appendChild(ta);
           ta.select();
-          document.execCommand('copy');
+          try { document.execCommand('copy'); statusEl.textContent = '✓ 已复制 (fallback)'; }
+          catch { statusEl.textContent = '✗ 复制失败, 请手动选中复制'; }
           document.body.removeChild(ta);
-          alert('✓ 已复制到剪贴板 (fallback)');
         }
-      }
+      };
     } catch (err) {
-      alert('获取 publicKey 失败: ' + (err.message || err));
+      const body = document.getElementById('mpim-body');
+      if (body) body.innerHTML = `<div style="color:#b91c1c;font-size:13px;">✗ 获取失败: ${escapeHtml(err.message || String(err))}</div>`;
     }
   });
 }
