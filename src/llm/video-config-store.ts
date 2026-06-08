@@ -8,7 +8,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-export type VideoProvider = 'seedance';
+export type VideoProvider = 'seedance' | 'minimax-video';
 
 export interface VideoProviderConfig {
   enabled: boolean;
@@ -45,6 +45,16 @@ export const DEFAULT_VIDEO_PROVIDER_CONFIGS: Record<VideoProvider, VideoProvider
     duration: 5,
     ratio: '16:9',
     requiresApiKey: true
+  },
+  'minimax-video': {
+    enabled: false,
+    apiKey: '',
+    baseUrl: 'https://api.minimaxi.com/v1',
+    model: 'MiniMax-video-01',
+    resolution: '720p',
+    duration: 6,
+    ratio: '16:9',
+    requiresApiKey: true
   }
 };
 
@@ -54,6 +64,12 @@ export const VIDEO_PROVIDER_INFO: Record<VideoProvider, { name: string; descript
     description: '字节跳动文生视频 / 图生视频模型',
     requiresApiKey: true,
     docs: 'https://www.volcengine.com/docs/82379'
+  },
+  'minimax-video': {
+    name: 'MiniMax Video',
+    description: 'MiniMax 文生视频 (Video-01)',
+    requiresApiKey: true,
+    docs: 'https://platform.minimaxi.com/document/Video%20Generation'
   }
 };
 
@@ -65,6 +81,15 @@ function getDefaultConfig(): VideoConfig {
       ...DEFAULT_VIDEO_PROVIDER_CONFIGS.seedance,
       enabled: true,
       apiKey: process.env.SEEDANCE_API_KEY || process.env.ARK_API_KEY || ''
+    };
+  }
+
+  const sharedKey = process.env.MINIMAX_API_KEY || '';
+  if (sharedKey) {
+    envConfigs['minimax-video'] = {
+      ...DEFAULT_VIDEO_PROVIDER_CONFIGS['minimax-video'],
+      enabled: true,
+      apiKey: sharedKey
     };
   }
 
