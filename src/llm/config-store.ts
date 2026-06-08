@@ -328,8 +328,11 @@ class LLMConfigStore {
         return { success: true, latency };
       } else {
         const errorText = await response.text().catch(() => 'Unknown error');
+        const isCodingPlanKey = config.apiKey?.startsWith('sk-cp-');
         const hint = response.status === 401
-          ? '（API Key 无效或不匹配该供应商）'
+          ? isCodingPlanKey
+            ? '（这是 MiniMax Coding Plan 专用 key（sk-cp- 前缀），不能用于 chat/通用接口。请创建一个通用 API Key（sk- 开头，无 cp））'
+            : '（API Key 无效或不匹配该供应商）'
           : response.status === 404
           ? '（端点不存在 — 请检查 baseUrl）'
           : '';
