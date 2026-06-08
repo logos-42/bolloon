@@ -391,6 +391,8 @@ let sseClients: Set<SSEClient> = new Set();
 let remoteChannelCache: Map<string, Array<Record<string, unknown>>> = new Map();
 // v3: P2PDirect 引用 (Hyperswarm 薄包装) - 模块级, 因为 web server 闭包里不可用
 let v3P2PRef: import('../network/p2p-direct.js').P2PDirect | null = null;
+// v3: 等待中的 history RPC (B 端 chat-history endpoint 用) — rpcId → { resolve, reject }
+const v3PendingHistoryGets: Map<string, { resolve: (data: any) => void; reject: (err: Error) => void }> = new Map();
 let channelSessions: Map<string, AgentSession> = new Map(); // key: channelId
 let sessionMessages: Map<string, any[]> = new Map(); // key: channelId + sessionId
 
@@ -433,6 +435,12 @@ function sanitizeChannelForPeer(
     share_id: ch.share_id,
     // 🔒 不返回: bound_judgment_ids, walletAddress, walletBinding, autoInvokeTools, sessions, shared_with_peers
   };
+}
+
+/** v3 新增: 判断 channel 是否分享给 peerPublicKey */
+function isSharedWith(ch: Channel, peerPublicKey: string): boolean {
+  const shared = Array.isArray(ch.shared_with_peers) ? ch.shared_with_peers : [];
+  return shared.includes(peerPublicKey);
 }
 
 /**
@@ -521,7 +529,8 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       console.warn(`[v3] agent.chat.send 缺少 channelId/text`);
       return;
     }
-    console.log(`[v3] 收到 ${fromPublicKey?.substring(0,12) || peerKey.substring(0,12)}... 对 channel ${channelId} 的 chat: "${text.substring(0, 40)}..."`);
+    const senderKey = fromPublicKey || peerKey;
+    console.log(`[v3] 收到 ${senderKey.substring(0,12)}... 对 channel ${channelId} 的 chat: "${text.substring(0, 40)}..."`);
     try {
       // 1. 找到 channel
       const channels = await loadChannels();
@@ -534,20 +543,85 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         await comm.sendToConnection(conn.id, reply);
         return;
       }
-      // 2. 跑 LLM (复用 Phase 1 的 buildJudgmentHint — 注入 channel 的 judgment)
+      // v3 新增: 持久化 B 的 user 消息到 A 的 session — 让历史可拉
+      try {
+        const existing = await loadSession(channelId, 'default');
+        const session: Session = existing || {
+          channelId, sessionId: 'default', messages: [], lastUpdated: new Date().toISOString()
+        };
+        session.messages.push({
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          type: 'user',
+          content: text,
+          timestamp: new Date().toISOString()
+        });
+        session.lastUpdated = new Date().toISOString();
+        await saveSession(session);
+        console.log(`[v3] (${channelId}) 存 user 消息 (${text.length} chars) 到 A 的 session`);
+      } catch (saveErr) {
+        console.warn(`[v3] 存 user 消息失败 (不影响 chat):`, (saveErr as Error).message);
+      }
+
+      // v3 新增: 告诉 B "我开始想了, 用了哪些 judgment" — 让 B 看到决策依据
       const judgmentHint = await buildJudgmentHint(ch, channelId);
+      const usedJudgments = await extractJudgmentsFromHint(ch);
+      try {
+        const thinkingStart = JSON.stringify({
+          v: 3, op: 'agent.chat.thinking',
+          payload: {
+            channelId,
+            phase: 'start',
+            fromPublicKey: v3P2PRef?.getPublicKey() || '',
+            hint: judgmentHint,
+            usedJudgments,
+            userText: text
+          }
+        });
+        await comm.sendToConnection(conn.id, thinkingStart);
+      } catch {}
+
+      // 2. 跑 LLM (复用 Phase 1 的 buildJudgmentHint — 注入 channel 的 judgment)
       const { getMinimax } = await import('../constraints/index.js');
       const llm = getMinimax();
       const fullPrompt = `${judgmentHint}${text}`;
       let fullResponse = '';
+      // v3 新增: 流式 token 节流推给 B — 让 B 看到过程
+      let lastFlushAt = 0;
       const streamCallback: any = (event: any) => {
-        // 流式 token, 不广播给 B (避免半成品噪音), 只记 A 自己的日志
         if (event.type === 'token') {
           fullResponse += event.content;
+          if (fullResponse.length - lastFlushAt >= 20) {
+            lastFlushAt = fullResponse.length;
+            const msg = JSON.stringify({
+              v: 3, op: 'agent.chat.thinking',
+              payload: { channelId, phase: 'token', partial: fullResponse, fromPublicKey: v3P2PRef?.getPublicKey() || '' }
+            });
+            comm.sendToConnection(conn.id, msg).catch(() => {});
+          }
         }
       };
       const agent = await getAgentForChannel(channelId, ch.did || '', ch.name, ch.didDocRef);
       fullResponse = await agent.promptStream(fullPrompt, streamCallback);
+
+      // v3 新增: 存 A 的 assistant 消息到 session — B 拉历史时能看到完整对话
+      try {
+        const existing = await loadSession(channelId, 'default');
+        const session: Session = existing || {
+          channelId, sessionId: 'default', messages: [], lastUpdated: new Date().toISOString()
+        };
+        session.messages.push({
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          type: 'ai',
+          content: fullResponse,
+          timestamp: new Date().toISOString()
+        });
+        session.lastUpdated = new Date().toISOString();
+        await saveSession(session);
+        console.log(`[v3] (${channelId}) 存 assistant 回复 (${fullResponse.length} chars) 到 A 的 session`);
+      } catch (saveErr) {
+        console.warn(`[v3] 存 assistant 消息失败 (不影响):`, (saveErr as Error).message);
+      }
+
       // 3. 把完整回复发给 B
       const reply = JSON.stringify({
         v: 3, op: 'agent.chat.reply',
@@ -558,7 +632,7 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         }
       });
       await comm.sendToConnection(conn.id, reply);
-      console.log(`[v3] 回 chat.reply 给 ${fromPublicKey?.substring(0,12) || peerKey.substring(0,12)}... (${fullResponse.length} chars)`);
+      console.log(`[v3] 回 chat.reply 给 ${senderKey.substring(0,12)}... (${fullResponse.length} chars)`);
     } catch (err) {
       console.error(`[v3] agent.chat.send 处理失败:`, (err as Error).message);
       try {
@@ -567,6 +641,65 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
           payload: { channelId, fromPublicKey: v3P2PRef?.getPublicKey() || '', error: (err as Error).message, text: '' }
         });
         await comm.sendToConnection(conn.id, reply);
+      } catch {}
+    }
+    return;
+  }
+
+  if (op === 'agent.history.get') {
+    // v3 新增: B 拉 A 的 channel 历史 (含所有 message + judgment hint)
+    // 共享过滤: 只返回 B 可见的 channel + 包含的 judgment
+    const { channelId, rpcId, fromPublicKey } = parsed.payload || {};
+    if (!channelId || !rpcId) {
+      console.warn(`[v3] agent.history.get 缺少 channelId/rpcId`);
+      return;
+    }
+    try {
+      const channels = await loadChannels();
+      const ch = channels.find(c => c.id === channelId);
+      if (!ch) {
+        const err = JSON.stringify({
+          v: 3, op: 'agent.history.get.reply',
+          payload: { rpcId, error: 'channel not found', messages: [], judgments: { bound: [], candidates: [] } }
+        });
+        await comm.sendToConnection(conn.id, err);
+        return;
+      }
+      // 共享过滤: 必须 peerKey 在 shared_with_peers 里 (避免泄露未分享的 channel)
+      const peerKey = fromPublicKey;
+      if (!peerKey || !isSharedWith(ch, peerKey)) {
+        const err = JSON.stringify({
+          v: 3, op: 'agent.history.get.reply',
+          payload: { rpcId, error: 'channel not shared with you', messages: [], judgments: { bound: [], candidates: [] } }
+        });
+        await comm.sendToConnection(conn.id, err);
+        return;
+      }
+      // 加载 A 端 session
+      const session = await loadSession(channelId, 'default');
+      // 加载 channel 用到的 judgment
+      const judgments = await extractJudgmentsFromHint(ch);
+      const reply = JSON.stringify({
+        v: 3, op: 'agent.history.get.reply',
+        payload: {
+          rpcId,
+          channelId,
+          messages: session?.messages || [],
+          lastUpdated: session?.lastUpdated,
+          judgments,
+          channelName: ch.name
+        }
+      });
+      await comm.sendToConnection(conn.id, reply);
+      console.log(`[v3] 回 history.reply 给 ${peerKey.substring(0,12)}... (channelId=${channelId}, ${session?.messages?.length || 0} messages)`);
+    } catch (err) {
+      console.error(`[v3] agent.history.get 处理失败:`, (err as Error).message);
+      try {
+        const errMsg = JSON.stringify({
+          v: 3, op: 'agent.history.get.reply',
+          payload: { rpcId, error: (err as Error).message, messages: [], judgments: { bound: [], candidates: [] } }
+        });
+        await comm.sendToConnection(conn.id, errMsg);
       } catch {}
     }
     return;
@@ -626,6 +759,47 @@ async function buildJudgmentHint(
   } catch (err) {
     console.error(`[v3] 加载判断力失败 (非致命):`, (err as Error).message);
     return '';
+  }
+}
+
+/**
+ * v3 新增: 把 channel 当前用到的 judgment 提取成结构化数据, 给 B 端 UI 显示.
+ * 返回 { bound: [...], candidates: [...] } — bound 是硬绑定, candidates 是参考池.
+ */
+async function extractJudgmentsFromHint(
+  channel: Channel | undefined | null
+): Promise<{ bound: any[]; candidates: any[] }> {
+  try {
+    const { loadAllJudgments, initializeValueStore } = await import(
+      '../pi-ecosystem-judgment/human-value-store.js'
+    );
+    await initializeValueStore();
+    const allJudgments = await loadAllJudgments();
+    if (allJudgments.length === 0) return { bound: [], candidates: [] };
+
+    const boundIds = new Set(
+      channel && Array.isArray(channel.bound_judgment_ids) ? channel.bound_judgment_ids : []
+    );
+
+    const summarize = (j: any) => ({
+      id: j.id,
+      decision: (j.decision || '').toString().slice(0, 200),
+      reasons: Array.isArray(j.reasons) ? j.reasons : [],
+      domain: j.domain,
+      stakes: j.stakes
+    });
+
+    const bound = allJudgments
+      .filter((j: any) => j.id !== undefined && boundIds.has(j.id))
+      .map(summarize);
+    const candidates = allJudgments
+      .filter((j: any) => j.id !== undefined && !boundIds.has(j.id))
+      .map(summarize);
+
+    return { bound, candidates };
+  } catch (err) {
+    console.warn(`[v3] extractJudgmentsFromHint 失败:`, (err as Error).message);
+    return { bound: [], candidates: [] };
   }
 }
 
@@ -785,6 +959,44 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                 text: parsed.payload?.text || '',
                 error: parsed.payload?.error
               }, 'p2p-global');
+              return;
+            }
+            // v3 新增: B 端收到 A 的 thinking (开始 + 流式 token)
+            if (parsed.op === 'agent.chat.thinking') {
+              const phase = parsed.payload?.phase;
+              if (phase === 'start') {
+                console.log(`[v3] 收到来自 ${evt.fromPublicKey.substring(0,12)}... 的 thinking start (judgments: bound=${(parsed.payload?.usedJudgments?.bound || []).length}, candidates=${(parsed.payload?.usedJudgments?.candidates || []).length})`);
+              }
+              broadcast({
+                type: 'remote-chat-thinking',
+                fromPublicKey: evt.fromPublicKey,
+                channelId: parsed.payload?.channelId,
+                phase: parsed.payload?.phase,
+                partial: parsed.payload?.partial,
+                hint: parsed.payload?.hint,
+                usedJudgments: parsed.payload?.usedJudgments,
+                userText: parsed.payload?.userText
+              }, 'p2p-global');
+              return;
+            }
+            // v3 新增: B 端收到 A 的 history reply → resolve pending promise
+            if (parsed.op === 'agent.history.get.reply') {
+              const rpcId = parsed.payload?.rpcId;
+              if (rpcId && v3PendingHistoryGets.has(rpcId)) {
+                const pending = v3PendingHistoryGets.get(rpcId)!;
+                v3PendingHistoryGets.delete(rpcId);
+                if (parsed.payload?.error) {
+                  pending.reject(new Error(parsed.payload.error));
+                } else {
+                  pending.resolve({
+                    channelId: parsed.payload.channelId,
+                    messages: parsed.payload.messages || [],
+                    lastUpdated: parsed.payload.lastUpdated,
+                    judgments: parsed.payload.judgments || { bound: [], candidates: [] },
+                    channelName: parsed.payload.channelName
+                  });
+                }
+              }
               return;
             }
             const commShim = {
@@ -2262,6 +2474,53 @@ app.get('/channels', async (_req, res) => {
     } catch (err: any) {
       console.error('[v3] chat-send 失败:', err);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // v3 新增: B 拉 A 的 channel 历史 + 用了哪些 judgment
+  // GET /api/remote-channels/chat-history?targetPublicKey=...&channelId=...
+  // 实现: B → POST 给 A 一个 agent.history.get RPC → A 把 session 返回 → B 渲染
+  app.get('/api/remote-channels/chat-history', async (req, res) => {
+    try {
+      if (!v3P2PRef) {
+        return res.status(503).json({ error: 'P2PDirect not started' });
+      }
+      const targetPublicKey = String(req.query.targetPublicKey || '');
+      const channelId = String(req.query.channelId || '');
+      if (!targetPublicKey || !channelId) {
+        return res.status(400).json({ error: 'targetPublicKey, channelId required' });
+      }
+
+      // 通过 RPC 拉 A 的 session — A 端收到后异步回复
+      const fromPk = v3P2PRef.getPublicKey();
+      const rpcId = `hist-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const msg = JSON.stringify({
+        v: 3,
+        op: 'agent.history.get',
+        payload: { rpcId, channelId, fromPublicKey: fromPk }
+      });
+      const ok = v3P2PRef.sendTo(targetPublicKey, msg);
+      if (!ok) {
+        return res.status(502).json({ error: 'peer not connected' });
+      }
+
+      // 等待 A 异步回复 (15s timeout) — 用一个 Promise 等
+      const result = await new Promise<any>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          v3PendingHistoryGets.delete(rpcId);
+          reject(new Error('A 端 15s 内未回复, 可能未分享该 channel'));
+        }, 15000);
+        v3PendingHistoryGets.set(rpcId, {
+          resolve: (data) => { clearTimeout(timer); resolve(data); },
+          reject: (err) => { clearTimeout(timer); reject(err); }
+        });
+      });
+
+      console.log(`[v3] chat-history 从 ${targetPublicKey.substring(0,12)}... 拉到 ${(result.messages || []).length} 条`);
+      res.json(result);
+    } catch (err: any) {
+      console.error('[v3] chat-history 失败:', err.message);
+      res.status(504).json({ error: err.message });
     }
   });
 

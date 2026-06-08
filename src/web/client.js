@@ -118,6 +118,8 @@ function startV3GlobalSSE() {
         if (msg.type === 'remote-chat-reply') {
           // 找到当前打开的远端 chat modal 的 log
           const log = document.getElementById('rcm-log');
+          const thinkingEl = document.getElementById('rcm-thinking');
+          if (thinkingEl) thinkingEl.style.display = 'none'; // 思考结束, 隐藏
           if (log) {
             const bubble = document.createElement('div');
             bubble.style.cssText = 'padding:8px 10px;margin:4px 0;border-radius:6px;font-size:13px;line-height:1.4;max-width:80%;word-wrap:break-word;background:#e5e7eb;color:#111;';
@@ -128,6 +130,44 @@ function startV3GlobalSSE() {
             }
             log.appendChild(bubble);
             log.scrollTop = log.scrollHeight;
+          }
+        } else if (msg.type === 'remote-chat-thinking') {
+          // v3 新增: B 端实时显示 A 节点的思考过程
+          const phase = msg.phase;
+          const log = document.getElementById('rcm-log');
+          if (!log) return;
+
+          if (phase === 'start') {
+            // 头部插入"判断力依据"区块 (只第一次)
+            const judgments = msg.usedJudgments || { bound: [], candidates: [] };
+            const judgmentBlock = document.createElement('div');
+            judgmentBlock.className = 'rcm-judgment-block';
+            judgmentBlock.style.cssText = 'margin:6px 0;padding:8px 10px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:4px;font-size:12px;';
+            let jh = '<div style="font-weight:600;color:#92400e;margin-bottom:4px;">🛡️ 对方使用的判断力 (来自 ta 的 channel)</div>';
+            if (judgments.bound && judgments.bound.length > 0) {
+              jh += '<div style="color:#78350f;margin-bottom:4px;"><b>硬绑定</b> (必须遵循):</div>';
+              for (const j of judgments.bound) {
+                jh += `<div style="margin:2px 0;padding-left:8px;">• <b>${escapeHtml((j.decision || '').slice(0, 80))}</b>${j.reasons && j.reasons.length ? '<br><span style="color:#92400e;font-size:11px;">理由: ' + escapeHtml(j.reasons.join('; ').slice(0, 80)) + '</span>' : ''}</div>`;
+              }
+            }
+            if (judgments.candidates && judgments.candidates.length > 0) {
+              jh += `<div style="color:#78350f;margin-top:4px;"><b>候选池</b> (${judgments.candidates.length} 条, LLM 自选)</div>`;
+            }
+            log.appendChild(judgmentBlock);
+            // "思考中" 区块
+            const thinkingEl = document.createElement('div');
+            thinkingEl.id = 'rcm-thinking-live';
+            thinkingEl.style.cssText = 'margin:6px 0;padding:8px 10px;background:#ede9fe;border-left:3px solid #8b5cf6;border-radius:4px;font-size:12px;color:#5b21b6;font-style:italic;';
+            thinkingEl.textContent = '💭 对方正在思考...';
+            log.appendChild(thinkingEl);
+            log.scrollTop = log.scrollHeight;
+          } else if (phase === 'token') {
+            // 实时更新思考中的 partial
+            const thinkingEl = document.getElementById('rcm-thinking-live');
+            if (thinkingEl) {
+              thinkingEl.textContent = '💭 对方正在思考: ' + (msg.partial || '').slice(-200);
+              log.scrollTop = log.scrollHeight;
+            }
           }
         }
       } catch (err) {
@@ -2683,15 +2723,19 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   document.getElementById('remote-chat-modal')?.remove();
   const html = `
     <div id="remote-chat-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10002;display:flex;align-items:center;justify-content:center;">
-      <div style="background:#fff;border-radius:8px;width:520px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.2);">
+      <div style="background:#fff;border-radius:8px;width:560px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.2);">
         <div style="padding:12px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
-          <div>
+          <div style="flex:1;min-width:0;">
             <div style="font-size:15px;font-weight:600;">跟 ${escapeHtml(channelName)} 聊天</div>
-            <div style="font-size:11px;color:#6b7280;margin-top:2px;">远端 peer: ${escapeHtml(peerPublicKey.substring(0,16))}… · channel: ${escapeHtml(channelId)}</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">远端 peer: ${escapeHtml(peerPublicKey.substring(0,16))}… · ${escapeHtml(channelId)}</div>
           </div>
+          <button id="rcm-refresh-history" title="重新拉历史" style="background:none;border:1px solid var(--border);color:#6b7280;cursor:pointer;padding:2px 8px;border-radius:4px;font-size:11px;margin-right:6px;">↻ 历史</button>
           <button id="rcm-close" style="background:none;border:none;font-size:20px;color:#6b7280;cursor:pointer;">×</button>
         </div>
-        <div id="rcm-log" style="flex:1;overflow-y:auto;padding:12px 16px;min-height:240px;background:#f9fafb;"></div>
+        <div id="rcm-thinking" style="display:none;padding:8px 16px;background:#fef3c7;color:#92400e;font-size:12px;border-bottom:1px solid #e5e7eb;">
+          📥 正在从远端拉历史 + 判断力…
+        </div>
+        <div id="rcm-log" style="flex:1;overflow-y:auto;padding:12px 16px;min-height:240px;max-height:60vh;background:#f9fafb;"></div>
         <div style="padding:10px 12px;border-top:1px solid #e5e7eb;display:flex;gap:6px;">
           <input id="rcm-input" type="text" placeholder="输入消息, 发送到远端 channel..."
                  style="flex:1;padding:8px 10px;border:1px solid #d1d5db;border-radius:4px;font-size:13px;">
@@ -2705,10 +2749,13 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   const log = document.getElementById('rcm-log');
   const inputEl = document.getElementById('rcm-input');
   const sendBtn = document.getElementById('rcm-send');
+  const thinkingEl = document.getElementById('rcm-thinking');
   document.getElementById('rcm-close').onclick = () => document.getElementById('remote-chat-modal').remove();
+  document.getElementById('rcm-refresh-history').onclick = () => loadHistory();
 
-  const append = (text, isUser) => {
+  const append = (text, role) => {
     const bubble = document.createElement('div');
+    const isUser = role === 'user';
     bubble.style.cssText = `padding:8px 10px;margin:4px 0;border-radius:6px;font-size:13px;line-height:1.4;max-width:80%;word-wrap:break-word;${
       isUser ? 'background:#2563eb;color:#fff;margin-left:auto;text-align:left;'
              : 'background:#e5e7eb;color:#111;'
@@ -2718,10 +2765,75 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
     log.scrollTop = log.scrollHeight;
   };
 
+  const appendSystem = (text, kind = 'info') => {
+    const el = document.createElement('div');
+    const colors = {
+      info: { bg: '#dbeafe', fg: '#1e40af' },
+      warn: { bg: '#fef3c7', fg: '#92400e' },
+      error: { bg: '#fca5a5', fg: '#7f1d1d' }
+    };
+    const c = colors[kind] || colors.info;
+    el.style.cssText = `margin:6px 0;padding:6px 10px;background:${c.bg};color:${c.fg};border-radius:4px;font-size:11px;text-align:center;`;
+    el.textContent = text;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+  };
+
+  // v3 新增: 拉 A 端的 channel 历史 (含 messages + judgments)
+  async function loadHistory() {
+    thinkingEl.style.display = 'block';
+    log.innerHTML = '';
+    appendSystem('正在拉取远端 channel 的历史和判断力...', 'info');
+    try {
+      const res = await fetch(`/api/remote-channels/chat-history?targetPublicKey=${encodeURIComponent(peerPublicKey)}&channelId=${encodeURIComponent(channelId)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        appendSystem(`拉取失败: ${data.error || 'unknown'}`, 'error');
+        thinkingEl.style.display = 'none';
+        return;
+      }
+      // 清掉 loading
+      log.innerHTML = '';
+
+      // 1. 显示 judgment 依据 (header)
+      const judgments = data.judgments || { bound: [], candidates: [] };
+      if (judgments.bound && judgments.bound.length > 0) {
+        const jh = document.createElement('div');
+        jh.style.cssText = 'margin:0 0 8px;padding:8px 10px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:4px;font-size:12px;';
+        let h = `<div style="font-weight:600;color:#92400e;margin-bottom:4px;">🛡️ 对方 channel 绑定的判断力 (${judgments.bound.length} 条硬约束)</div>`;
+        for (const j of judgments.bound) {
+          h += `<div style="margin:3px 0;padding-left:8px;">• <b>${escapeHtml((j.decision || '').slice(0, 100))}</b>${j.domain ? `<span style="color:#a16207;font-size:10px;"> [${escapeHtml(j.domain)}${j.stakes ? '/' + escapeHtml(j.stakes) : ''}]</span>` : ''}${j.reasons && j.reasons.length ? '<br><span style="color:#92400e;font-size:11px;">理由: ' + escapeHtml(j.reasons.join('; ').slice(0, 100)) + '</span>' : ''}</div>`;
+        }
+        if (judgments.candidates && judgments.candidates.length > 0) {
+          h += `<div style="margin-top:6px;color:#92400e;font-size:11px;">+ ${judgments.candidates.length} 条候选判断力 (LLM 可自选参考)</div>`;
+        }
+        jh.innerHTML = h;
+        log.appendChild(jh);
+      }
+
+      // 2. 显示历史 messages
+      const msgs = data.messages || [];
+      if (msgs.length === 0) {
+        appendSystem('还没有历史消息, 在下面发第一条吧', 'info');
+      } else {
+        appendSystem(`从远端拉到 ${msgs.length} 条历史消息`, 'info');
+        for (const m of msgs) {
+          append(m.content || '', m.type === 'user' ? 'user' : 'ai');
+        }
+        // 滚到底部
+        setTimeout(() => { log.scrollTop = log.scrollHeight; }, 50);
+      }
+    } catch (err) {
+      appendSystem(`拉取异常: ${err.message}`, 'error');
+    } finally {
+      thinkingEl.style.display = 'none';
+    }
+  }
+
   const doSend = async () => {
     const text = inputEl.value.trim();
     if (!text) return;
-    append(text, true);
+    append(text, 'user');
     inputEl.value = '';
     sendBtn.disabled = true;
     sendBtn.textContent = '...';
@@ -2733,8 +2845,9 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'send failed');
+      appendSystem('已发送, 等待对方回复...', 'info');
     } catch (err) {
-      append('(发送失败: ' + (err.message || err) + ')', false);
+      append('(发送失败: ' + (err.message || err) + ')', 'ai');
     } finally {
       sendBtn.disabled = false;
       sendBtn.textContent = '发送';
@@ -2744,6 +2857,9 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   inputEl.onkeydown = (e) => { if (e.key === 'Enter') doSend(); };
   inputEl.focus();
   startV3GlobalSSE();
+
+  // 打开时立即拉历史
+  loadHistory();
 }
 
 // Phase 3: 我的 ID 按钮 → 弹窗显示并支持复制自己的 P2PDirect publicKey
@@ -2813,6 +2929,31 @@ if (addPeerBtn) {
       await loadRemoteChannels();
     } catch (err) {
       alert('添加失败: ' + (err.message || err));
+    }
+  });
+}
+
+// v3 双向刷新: 主动向所有好友发 agent.meta.list, 拿到 ta 们分享给我的 channel
+const refreshSharedBtn = document.getElementById('refresh-shared-btn');
+if (refreshSharedBtn) {
+  refreshSharedBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const originalText = refreshSharedBtn.textContent;
+    refreshSharedBtn.disabled = true;
+    refreshSharedBtn.textContent = '...';
+    try {
+      const res = await fetch('/api/remote-channels/refresh', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'refresh failed');
+      // 等 1.5s 让 RPC 回复回来 (向所有 peer 广播)
+      await new Promise(r => setTimeout(r, 1500));
+      await loadRemoteChannels();
+      console.log(`[v3] 双向刷新: 向 ${data.peerCount || 0} 个好友发 list 请求`);
+    } catch (err) {
+      alert('刷新失败: ' + (err.message || err));
+    } finally {
+      refreshSharedBtn.disabled = false;
+      refreshSharedBtn.textContent = originalText;
     }
   });
 }
