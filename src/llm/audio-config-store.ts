@@ -84,7 +84,7 @@ export const AUDIO_PROVIDER_INFO: Record<AudioProvider, { name: string; descript
 function getDefaultConfig(): AudioConfig {
   const envConfigs: Partial<Record<AudioProvider, AudioProviderConfig>> = {};
 
-  const sharedKey = process.env.MINIMAX_API_KEY || process.env.MINIMAX_API_KEY || '';
+  const sharedKey = process.env.MINIMAX_API_KEY || '';
   if (sharedKey) {
     envConfigs['minimax-speech'] = {
       ...DEFAULT_AUDIO_PROVIDER_CONFIGS['minimax-speech'],

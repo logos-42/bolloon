@@ -19,6 +19,7 @@ import { initMinimax, getMinimax } from '../constraints/index.js';
 import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
 import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
 import { videoConfigStore, type VideoProvider } from '../llm/video-config-store.js';
+import { audioConfigStore, type AudioProvider } from '../llm/audio-config-store.js';
 import { irohTransport } from '../network/iroh-transport.js';
 import { createAgentDelegateApp } from './agent-delegate-server.js';
 import { createIrohDelegateTransport } from './iroh-delegate-transport.js';
@@ -2335,6 +2336,66 @@ app.get('/channels', async (_req, res) => {
       }
 
       const result = await videoConfigStore.testProvider(provider as VideoProvider);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==================== 音频生成配置 (TTS / Music) ====================
+
+  // 获取音频配置
+  app.get('/api/audio-config', async (req, res) => {
+    try {
+      const config = await audioConfigStore.getConfig();
+      const providerInfo = audioConfigStore.getAllProviderInfo();
+
+      const masked = Object.fromEntries(
+        Object.entries(config.providers).map(([key, val]) => [
+          key,
+          { ...val, apiKey: val.apiKey ? '***' + val.apiKey.slice(-4) : '' }
+        ])
+      );
+
+      res.json({
+        activeProvider: config.activeProvider,
+        providers: masked,
+        providerInfo
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 更新音频供应商配置
+  app.post('/api/audio-config', async (req, res) => {
+    try {
+      const { provider, config } = req.body;
+      if (!provider || !config) {
+        return res.status(400).json({ error: 'provider and config required' });
+      }
+
+      // 掩码回写真实 key
+      const currentConfig = await audioConfigStore.getProvider(provider as AudioProvider);
+      if (currentConfig && config.apiKey && config.apiKey.startsWith('***')) {
+        config.apiKey = currentConfig.apiKey;
+      }
+
+      await audioConfigStore.updateProvider(provider as AudioProvider, config);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 测试音频供应商连接
+  app.post('/api/audio-test', async (req, res) => {
+    try {
+      const { provider } = req.body;
+      if (!provider) {
+        return res.status(400).json({ error: 'provider required' });
+      }
+      const result = await audioConfigStore.testProvider(provider as AudioProvider);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });

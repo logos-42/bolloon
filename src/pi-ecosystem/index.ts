@@ -230,7 +230,7 @@ export interface PiEcosystemStatus {
  * Default Pi ecosystem configuration (mirrors oh-pi)
  */
 const DEFAULT_CONFIG: PiEcosystemConfig = {
-  model: process.env.MINIMAX_MODEL || 'MiniMax-M2.7',
+  model: process.env.MINIMAX_MODEL || 'MiniMax-M3',
   extensions: [
     'safe-guard',
     'git-guard',

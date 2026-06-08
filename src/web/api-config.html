@@ -30,6 +30,10 @@
         <span class="api-tab-icon">🎬</span>
         <span>视频生成</span>
       </button>
+      <button class="api-tab" data-tab="audio" onclick="switchTab('audio')">
+        <span class="api-tab-icon">🎵</span>
+        <span>音频生成</span>
+      </button>
     </div>
 
     <!-- LLM 面板 -->
@@ -42,9 +46,19 @@
     <!-- 视频生成面板 -->
     <div class="api-panel" id="panel-video" data-panel="video" style="display: none;">
       <div class="video-intro">
-        <p>视频生成走异步任务流（提交任务 → 轮询结果），与 LLM 实时对话不同。Seedance 由字节火山方舟 (ARK) 提供，支持文生视频 (t2v) 与图生视频 (i2v)。</p>
+        <p>视频生成走异步任务流（提交任务 → 轮询结果），与 LLM 实时对话不同。Seedance 由字节火山方舟 (ARK) 提供，支持文生视频 (t2v) 与图生视频 (i2v)；MiniMax Video 为同 tab 下的另一选项。</p>
       </div>
       <div class="provider-list" id="videoProviderList">
+        <div class="loading-state">加载中...</div>
+      </div>
+    </div>
+
+    <!-- 音频生成面板 -->
+    <div class="api-panel" id="panel-audio" data-panel="audio" style="display: none;">
+      <div class="video-intro">
+        <p>音频生成：TTS（文生语音）/ Music（文生音乐）。MiniMax 提供 speech-01 与 music-01 模型，TTS 默认走 OpenAI 兼容 <code>/audio/speech</code> 端点，Music 走 MiniMax 自有 <code>/music_generation</code> 端点。</p>
+      </div>
+      <div class="provider-list" id="audioProviderList">
         <div class="loading-state">加载中...</div>
       </div>
     </div>
@@ -78,7 +92,8 @@
 
           <div class="form-group">
             <label>模型</label>
-            <input type="text" id="modelInput" placeholder="如 gpt-4">
+            <input type="text" id="modelInput" placeholder="如 gpt-4" list="modelSuggestList">
+            <datalist id="modelSuggestList"></datalist>
             <p class="form-hint" id="modelHint"></p>
           </div>
 
@@ -112,6 +127,41 @@
             </div>
           </div>
 
+          <!-- 音频模型专用字段 -->
+          <div class="audio-only-fields" style="display: none;">
+            <div class="form-group">
+              <label>音色 / 风格</label>
+              <input type="text" id="voiceInput" placeholder="male-qn-jingying / female-shaonv ...">
+              <p class="form-hint" id="voiceHint"></p>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>语速</label>
+                <input type="number" id="speedInput" min="0.5" max="2.0" step="0.1" value="1.0">
+              </div>
+              <div class="form-group">
+                <label>输出格式</label>
+                <select id="formatInput">
+                  <option value="mp3">mp3</option>
+                  <option value="pcm">pcm</option>
+                  <option value="wav">wav</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group" id="audioModeGroup" style="display: none;">
+              <label>模式</label>
+              <select id="modeInput">
+                <option value="instrumental">纯音乐</option>
+                <option value="lyrics">带歌词</option>
+              </select>
+            </div>
+            <div class="form-group" id="audioDurationGroup" style="display: none;">
+              <label>默认时长（秒）</label>
+              <input type="number" id="audioDurationInput" min="5" max="120" step="1" value="30">
+              <p class="form-hint">music-01 支持 5-120 秒</p>
+            </div>
+          </div>
+
           <!-- LLM 专用字段 -->
           <div class="llm-only-fields">
             <div class="form-group form-group-small">
@@ -140,11 +190,12 @@
     // 当前 tab
     let currentTab = 'llm';
 
-    // 缓存两份配置
+    // 缓存三份配置
     let llmConfigData = null;
     let videoConfigData = null;
+    let audioConfigData = null;
     let currentProvider = null;
-    let currentProviderType = 'llm'; // 'llm' | 'video'
+    let currentProviderType = 'llm'; // 'llm' | 'video' | 'audio'
 
     // ==================== Tab 切换 ====================
     function switchTab(tab) {
@@ -160,8 +211,8 @@
     }
 
     function updateCountBadge() {
-      const data = currentTab === 'llm' ? llmConfigData : videoConfigData;
-      const list = currentTab === 'llm' ? 'providers' : 'providers';
+      const data = currentTab === 'llm' ? llmConfigData :
+                   currentTab === 'video' ? videoConfigData : audioConfigData;
       if (!data) {
         document.getElementById('configCount').textContent = '加载中...';
         return;
@@ -170,7 +221,6 @@
       for (const key in data.providers) {
         total++;
         const p = data.providers[key];
-        // 视频面板：仅看 enabled（视频配置通常没有必填 apiKey 的判断）
         if (currentTab === 'llm') {
           if (p.enabled && p.apiKey) configured++;
         } else {
@@ -178,13 +228,14 @@
           if (p.enabled && (!info.requiresApiKey || p.apiKey)) configured++;
         }
       }
-      const label = currentTab === 'llm' ? '' : '视频';
+      const labelMap = { llm: '', video: '视频', audio: '音频' };
+      const label = labelMap[currentTab] || '';
       document.getElementById('configCount').textContent = configured + '/' + total + ' ' + label + '已配置';
     }
 
     // ==================== 加载 ====================
     async function loadAll() {
-      await Promise.all([loadLLMConfig(), loadVideoConfig()]);
+      await Promise.all([loadLLMConfig(), loadVideoConfig(), loadAudioConfig()]);
     }
 
     async function loadLLMConfig() {
@@ -211,10 +262,26 @@
       }
     }
 
+    async function loadAudioConfig() {
+      try {
+        const resp = await fetch('/api/audio-config');
+        audioConfigData = await resp.json();
+        renderProviders('audio');
+        if (currentTab === 'audio') updateCountBadge();
+      } catch (err) {
+        document.getElementById('audioProviderList').innerHTML =
+          '<div class="error-state">加载失败: ' + err.message + '</div>';
+      }
+    }
+
     // ==================== 渲染 ====================
     function renderProviders(type) {
-      const data = type === 'llm' ? llmConfigData : videoConfigData;
-      const listEl = document.getElementById(type === 'llm' ? 'providerList' : 'videoProviderList');
+      const data = type === 'llm' ? llmConfigData :
+                   type === 'video' ? videoConfigData : audioConfigData;
+      const listEl = document.getElementById(
+        type === 'llm' ? 'providerList' :
+        type === 'video' ? 'videoProviderList' : 'audioProviderList'
+      );
       if (!data) return;
 
       const providers = data.providers;
@@ -276,7 +343,8 @@
     function openModal(type, providerKey) {
       currentProviderType = type;
       currentProvider = providerKey;
-      const data = type === 'llm' ? llmConfigData : videoConfigData;
+      const data = type === 'llm' ? llmConfigData :
+                   type === 'video' ? videoConfigData : audioConfigData;
       const p = data.providers[providerKey];
       const i = data.providerInfo[providerKey] || { name: providerKey, description: '供应商' };
 
@@ -291,16 +359,49 @@
       document.getElementById('baseUrlInput').value = p.baseUrl || '';
       document.getElementById('modelInput').value = p.model || '';
 
-      // 视频专用字段显隐
+      // 填充模型下拉建议（仅 LLM 类型有 providerInfo.models）
+      const datalist = document.getElementById('modelSuggestList');
+      datalist.innerHTML = '';
+      if (type === 'llm' && i.models && Array.isArray(i.models)) {
+        for (const m of i.models) {
+          const opt = document.createElement('option');
+          opt.value = m;
+          datalist.appendChild(opt);
+        }
+      }
+
+      // 视频/音频/LLM 专用字段显隐
       const isVideo = type === 'video';
+      const isAudio = type === 'audio';
       document.querySelector('.video-only-fields').style.display = isVideo ? 'block' : 'none';
-      document.querySelector('.llm-only-fields').style.display = isVideo ? 'none' : 'block';
+      document.querySelector('.audio-only-fields').style.display = isAudio ? 'block' : 'none';
+      document.querySelector('.llm-only-fields').style.display = (!isVideo && !isAudio) ? 'block' : 'none';
 
       if (isVideo) {
         document.getElementById('resolutionInput').value = p.resolution || '720p';
         document.getElementById('ratioInput').value = p.ratio || '16:9';
         document.getElementById('durationInput').value = p.duration || 5;
         document.getElementById('modelHint').textContent = '示例: doubao-seedance-1-0-lite-t2v-250428 (文生视频) 或 ...-i2v-... (图生视频)';
+      } else if (isAudio) {
+        const isMusic = (i.kind === 'music');
+        // TTS 字段
+        document.getElementById('voiceInput').parentElement.style.display = isMusic ? 'none' : 'block';
+        document.getElementById('speedInput').parentElement.parentElement.style.display = isMusic ? 'none' : 'flex';
+        document.getElementById('modeInput').parentElement.style.display = isMusic ? 'block' : 'none';
+        document.getElementById('audioDurationInput').parentElement.style.display = isMusic ? 'block' : 'none';
+
+        if (!isMusic) {
+          document.getElementById('voiceInput').value = p.voice || 'male-qn-jingying';
+          document.getElementById('voiceHint').textContent = '常用音色: male-qn-jingying, female-shaonv, female-yujie, presenter_male, presenter_female';
+          document.getElementById('speedInput').value = p.speed || 1.0;
+          document.getElementById('formatInput').value = p.format || 'mp3';
+        } else {
+          document.getElementById('modeInput').value = p.mode || 'instrumental';
+          document.getElementById('audioDurationInput').value = p.duration || 30;
+        }
+        document.getElementById('modelHint').textContent = isMusic
+          ? '示例: music-01'
+          : '示例: speech-01 (TTS) / asr-01 (语音转写)';
       } else {
         document.getElementById('temperatureInput').value = p.temperature || 0.7;
       }
@@ -323,7 +424,9 @@
       btn.innerHTML = '<span class="spinner"></span> 测试中...';
       result.style.display = 'none';
 
-      const endpoint = currentProviderType === 'llm' ? '/api/llm-test' : '/api/video-test';
+      const endpoint = currentProviderType === 'llm' ? '/api/llm-test' :
+                       currentProviderType === 'video' ? '/api/video-test' :
+                       '/api/audio-test';
 
       try {
         const resp = await fetch(endpoint, {
@@ -366,11 +469,24 @@
         updateData.resolution = document.getElementById('resolutionInput').value;
         updateData.ratio = document.getElementById('ratioInput').value;
         updateData.duration = parseInt(document.getElementById('durationInput').value) || 5;
+      } else if (currentProviderType === 'audio') {
+        const info = audioConfigData.providerInfo[currentProvider] || {};
+        const isMusic = info.kind === 'music';
+        if (isMusic) {
+          updateData.mode = document.getElementById('modeInput').value;
+          updateData.duration = parseInt(document.getElementById('audioDurationInput').value) || 30;
+        } else {
+          updateData.voice = document.getElementById('voiceInput').value;
+          updateData.speed = parseFloat(document.getElementById('speedInput').value) || 1.0;
+          updateData.format = document.getElementById('formatInput').value;
+        }
       } else {
         updateData.temperature = parseFloat(document.getElementById('temperatureInput').value) || 0.7;
       }
 
-      const endpoint = currentProviderType === 'llm' ? '/api/llm-config' : '/api/video-config';
+      const endpoint = currentProviderType === 'llm' ? '/api/llm-config' :
+                       currentProviderType === 'video' ? '/api/video-config' :
+                       '/api/audio-config';
 
       try {
         await fetch(endpoint, {
@@ -383,7 +499,9 @@
         saveBtn.textContent = '✓ 已保存';
         setTimeout(() => {
           closeModal();
-          currentProviderType === 'llm' ? loadLLMConfig() : loadVideoConfig();
+          if (currentProviderType === 'llm') loadLLMConfig();
+          else if (currentProviderType === 'video') loadVideoConfig();
+          else loadAudioConfig();
         }, 500);
       } catch (err) {
         alert('保存失败: ' + err.message);
