@@ -18,6 +18,7 @@ import { documentReader } from '../documents/reader.js';
 import { initMinimax, getMinimax } from '../constraints/index.js';
 import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
 import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
+import { videoConfigStore, type VideoProvider } from '../llm/video-config-store.js';
 import { irohTransport } from '../network/iroh-transport.js';
 import { createAgentDelegateApp } from './agent-delegate-server.js';
 import { createIrohDelegateTransport } from './iroh-delegate-transport.js';
@@ -2270,6 +2271,70 @@ app.get('/channels', async (_req, res) => {
       }
 
       const result = await llmConfigStore.testProvider(provider as ModelProvider);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==================== 视频生成配置 (Seedance 等) ====================
+
+  // 获取视频生成配置
+  app.get('/api/video-config', async (req, res) => {
+    try {
+      const config = await videoConfigStore.getConfig();
+      const providerInfo = videoConfigStore.getAllProviderInfo();
+
+      // 脱敏：不返回 apiKey 明文
+      const masked = Object.fromEntries(
+        Object.entries(config.providers).map(([key, val]) => [
+          key,
+          { ...val, apiKey: val.apiKey ? '***' + val.apiKey.slice(-4) : '' }
+        ])
+      );
+
+      res.json({
+        activeProvider: config.activeProvider,
+        providers: masked,
+        providerInfo
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 更新视频供应商配置
+  app.post('/api/video-config', async (req, res) => {
+    try {
+      const { provider, config } = req.body;
+
+      if (!provider || !config) {
+        return res.status(400).json({ error: 'provider and config required' });
+      }
+
+      // 如果前端发的是掩码（***xxx），从当前配置里取真实 key
+      const currentConfig = await videoConfigStore.getProvider(provider as VideoProvider);
+      if (currentConfig && config.apiKey && config.apiKey.startsWith('***')) {
+        config.apiKey = currentConfig.apiKey;
+      }
+
+      await videoConfigStore.updateProvider(provider as VideoProvider, config);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 测试视频供应商连接
+  app.post('/api/video-test', async (req, res) => {
+    try {
+      const { provider } = req.body;
+
+      if (!provider) {
+        return res.status(400).json({ error: 'provider required' });
+      }
+
+      const result = await videoConfigStore.testProvider(provider as VideoProvider);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });

@@ -2989,6 +2989,89 @@ body {
   max-width: 900px;
   margin: 0 auto;
   padding: 24px;
+  min-height: 100vh;
+}
+
+/* Standalone api-config page: enable page-level scrolling.
+   Default body has overflow:hidden (for app shell with sidebar). */
+body:has(> .api-config-page) {
+  height: auto;
+  min-height: 100vh;
+  overflow-y: auto;
+}
+
+/* Tab switcher */
+.api-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+.api-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.api-tab:hover {
+  color: var(--text);
+}
+
+.api-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.api-tab-icon {
+  font-size: 16px;
+}
+
+.api-panel {
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.video-intro {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.video-intro p {
+  margin: 0;
+}
+
+.provider-docs {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+  opacity: 0.8;
+}
+
+.provider-docs:hover {
+  opacity: 1;
+  text-decoration: underline;
 }
 
 .loading-state {

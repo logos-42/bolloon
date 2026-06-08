@@ -6,7 +6,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'local';
+export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'local';
 
 export interface ProviderConfig {
   enabled: boolean;
@@ -82,6 +82,42 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     maxTokens: 4096,
     requiresApiKey: true
   },
+  deepseek: {
+    enabled: false,
+    apiKey: '',
+    baseUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-chat',
+    temperature: 0.7,
+    maxTokens: 4096,
+    requiresApiKey: true
+  },
+  kimi: {
+    enabled: false,
+    apiKey: '',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    model: 'moonshot-v1-8k',
+    temperature: 0.7,
+    maxTokens: 4096,
+    requiresApiKey: true
+  },
+  glm: {
+    enabled: false,
+    apiKey: '',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4-flash',
+    temperature: 0.7,
+    maxTokens: 4096,
+    requiresApiKey: true
+  },
+  qwen: {
+    enabled: false,
+    apiKey: '',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen-plus',
+    temperature: 0.7,
+    maxTokens: 4096,
+    requiresApiKey: true
+  },
   local: {
     enabled: false,
     apiKey: '',
@@ -100,6 +136,10 @@ export const PROVIDER_INFO: Record<ModelProvider, { name: string; description: s
   gemini: { name: 'Google Gemini', description: 'Gemini 系列模型', requiresApiKey: true },
   ollama: { name: 'Ollama', description: '本地 LLM 运行框架', requiresApiKey: false },
   minimax: { name: 'MiniMax', description: '国产大模型服务', requiresApiKey: true },
+  deepseek: { name: 'DeepSeek', description: '深度求索大模型', requiresApiKey: true },
+  kimi: { name: 'Kimi (月之暗面)', description: 'Moonshot 长上下文模型', requiresApiKey: true },
+  glm: { name: 'GLM (智谱)', description: '智谱 ChatGLM 系列模型', requiresApiKey: true },
+  qwen: { name: 'Qwen (通义千问)', description: '阿里云通义千问系列', requiresApiKey: true },
   local: { name: '本地模型', description: '本地部署的模型服务', requiresApiKey: false }
 };
 
@@ -121,6 +161,18 @@ function getDefaultConfig(): LLMConfig {
   if (process.env.MINIMAX_API_KEY) {
     envConfigs.minimax = { ...DEFAULT_PROVIDER_CONFIGS.minimax, enabled: true, apiKey: process.env.MINIMAX_API_KEY };
   }
+  if (process.env.DEEPSEEK_API_KEY) {
+    envConfigs.deepseek = { ...DEFAULT_PROVIDER_CONFIGS.deepseek, enabled: true, apiKey: process.env.DEEPSEEK_API_KEY };
+  }
+  if (process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY) {
+    envConfigs.kimi = { ...DEFAULT_PROVIDER_CONFIGS.kimi, enabled: true, apiKey: process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY || '' };
+  }
+  if (process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY) {
+    envConfigs.glm = { ...DEFAULT_PROVIDER_CONFIGS.glm, enabled: true, apiKey: process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY || '' };
+  }
+  if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
+    envConfigs.qwen = { ...DEFAULT_PROVIDER_CONFIGS.qwen, enabled: true, apiKey: process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '' };
+  }
   if (process.env.OLLAMA_BASE_URL) {
     envConfigs.ollama = { ...DEFAULT_PROVIDER_CONFIGS.ollama, enabled: true, baseUrl: process.env.OLLAMA_BASE_URL };
   }
@@ -131,6 +183,10 @@ function getDefaultConfig(): LLMConfig {
   else if (process.env.OPENROUTER_API_KEY) activeProvider = 'openrouter';
   else if (process.env.GEMINI_API_KEY) activeProvider = 'gemini';
   else if (process.env.MINIMAX_API_KEY) activeProvider = 'minimax';
+  else if (process.env.DEEPSEEK_API_KEY) activeProvider = 'deepseek';
+  else if (process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY) activeProvider = 'kimi';
+  else if (process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY) activeProvider = 'glm';
+  else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) activeProvider = 'qwen';
   else if (process.env.OLLAMA_BASE_URL) activeProvider = 'ollama';
 
   const providers = { ...DEFAULT_PROVIDER_CONFIGS };
@@ -281,6 +337,10 @@ class LLMConfigStore {
       case 'openai':
       case 'openrouter':
       case 'minimax':
+      case 'deepseek':
+      case 'kimi':
+      case 'glm':
+      case 'qwen':
         if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
         break;
       case 'anthropic':

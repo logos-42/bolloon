@@ -1499,6 +1499,10 @@ function printHelp(): void {
 
 环境变量:
   MINIMAX_API_KEY       MiniMax API 密钥
+  DEEPSEEK_API_KEY      DeepSeek API 密钥
+  KIMI_API_KEY / MOONSHOT_API_KEY  Kimi/Moonshot API 密钥
+  GLM_API_KEY / ZHIPU_API_KEY      智谱 GLM API 密钥
+  QWEN_API_KEY / DASHSCOPE_API_KEY 通义千问 API 密钥
   OPENAI_API_KEY        OpenAI API 密钥（Pi SDK）
   ANTHROPIC_API_KEY     Anthropic API 密钥（Pi SDK）
   PORT                  Web 服务端口（默认 54188）
@@ -1563,6 +1567,10 @@ async function main() {
   const hasOpenAI = !!process.env.OPENAI_API_KEY;
   const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
   const hasMinimax = !!process.env.MINIMAX_API_KEY;
+  const hasDeepSeek = !!process.env.DEEPSEEK_API_KEY;
+  const hasKimi = !!(process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY);
+  const hasGlm = !!(process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY);
+  const hasQwen = !!(process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY);
   const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
   const hasGemini = !!process.env.GEMINI_API_KEY;
   const hasOllama = !!process.env.OLLAMA_BASE_URL;
@@ -1572,7 +1580,11 @@ async function main() {
                       hasOpenRouter ? 'OpenRouter' :
                       hasGemini ? 'Gemini' :
                       hasOllama ? 'Ollama' :
-                      hasMinimax ? 'MiniMax' : null;
+                      hasMinimax ? 'MiniMax' :
+                      hasDeepSeek ? 'DeepSeek' :
+                      hasKimi ? 'Kimi' :
+                      hasGlm ? 'GLM' :
+                      hasQwen ? 'Qwen' : null;
 
   if (llmProvider) {
     s.step(0, 4, `LLM: ${llmProvider}`, 'ok');

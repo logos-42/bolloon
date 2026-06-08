@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 
-export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'local';
+export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'local';
 
 export interface ModelConfig {
   provider: ModelProvider;
@@ -105,6 +105,10 @@ export class PiAIModel {
     switch (this.provider) {
       case 'openai':
       case 'minimax':
+      case 'deepseek':
+      case 'kimi':
+      case 'glm':
+      case 'qwen':
         return this.callOpenAI(messages, temperature, maxTokens);
       case 'anthropic':
         return this.callAnthropic(messages, temperature, maxTokens);
@@ -133,6 +137,10 @@ export class PiAIModel {
       openrouter: process.env.OPENROUTER_API_KEY || '',
       gemini: process.env.GEMINI_API_KEY || '',
       minimax: process.env.MINIMAX_API_KEY || '',
+      deepseek: process.env.DEEPSEEK_API_KEY || '',
+      kimi: process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY || '',
+      glm: process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY || '',
+      qwen: process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '',
       local: ''
     };
     return envVars[this.provider] || '';
@@ -151,6 +159,10 @@ export class PiAIModel {
       openrouter: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
       gemini: 'https://generativelanguage.googleapis.com/v1beta',
       minimax: process.env.MINIMAX_BASE_URL || 'https://api.minimaxi.com/v1',
+      deepseek: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
+      kimi: process.env.KIMI_BASE_URL || process.env.MOONSHOT_BASE_URL || 'https://api.moonshot.cn/v1',
+      glm: process.env.GLM_BASE_URL || process.env.ZHIPU_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4',
+      qwen: process.env.QWEN_BASE_URL || process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       local: 'http://localhost:11434'
     };
 
@@ -165,6 +177,10 @@ export class PiAIModel {
       openrouter: this.config.model || 'anthropic/claude-3.5-sonnet',
       gemini: this.config.model || 'gemini-2.0-flash',
       minimax: this.config.model || process.env.MINIMAX_MODEL || 'MiniMax-M2.7',
+      deepseek: this.config.model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+      kimi: this.config.model || process.env.KIMI_MODEL || process.env.MOONSHOT_MODEL || 'moonshot-v1-8k',
+      glm: this.config.model || process.env.GLM_MODEL || process.env.ZHIPU_MODEL || 'glm-4-flash',
+      qwen: this.config.model || process.env.QWEN_MODEL || process.env.DASHSCOPE_MODEL || 'qwen-plus',
       local: this.config.model || 'llama3.2'
     };
     return modelMap[this.provider];
@@ -451,6 +467,10 @@ function detectProvider(): ModelProvider {
   if (process.env.GEMINI_API_KEY) return 'gemini';
   if (process.env.OLLAMA_BASE_URL) return 'ollama';
   if (process.env.MINIMAX_API_KEY) return 'minimax';
+  if (process.env.DEEPSEEK_API_KEY) return 'deepseek';
+  if (process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY) return 'kimi';
+  if (process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY) return 'glm';
+  if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) return 'qwen';
 
   return 'openai';
 }
@@ -463,6 +483,10 @@ function detectModel(provider: ModelProvider): string {
     openrouter: 'anthropic/claude-3.5-sonnet',
     gemini: 'gemini-2.0-flash',
     minimax: 'MiniMax-M2.7',
+    deepseek: 'deepseek-chat',
+    kimi: 'moonshot-v1-8k',
+    glm: 'glm-4-flash',
+    qwen: 'qwen-plus',
     local: 'llama3.2'
   };
   return defaults[provider];

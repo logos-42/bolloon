@@ -20,9 +20,33 @@
       <a href="/" class="back-link">← 返回主页</a>
     </div>
 
-    <!-- 提供商列表 -->
-    <div class="provider-list" id="providerList">
-      <div class="loading-state">加载中...</div>
+    <!-- 标签切换 -->
+    <div class="api-tabs">
+      <button class="api-tab active" data-tab="llm" onclick="switchTab('llm')">
+        <span class="api-tab-icon">💬</span>
+        <span>LLM 对话</span>
+      </button>
+      <button class="api-tab" data-tab="video" onclick="switchTab('video')">
+        <span class="api-tab-icon">🎬</span>
+        <span>视频生成</span>
+      </button>
+    </div>
+
+    <!-- LLM 面板 -->
+    <div class="api-panel" id="panel-llm" data-panel="llm">
+      <div class="provider-list" id="providerList">
+        <div class="loading-state">加载中...</div>
+      </div>
+    </div>
+
+    <!-- 视频生成面板 -->
+    <div class="api-panel" id="panel-video" data-panel="video" style="display: none;">
+      <div class="video-intro">
+        <p>视频生成走异步任务流（提交任务 → 轮询结果），与 LLM 实时对话不同。Seedance 由字节火山方舟 (ARK) 提供，支持文生视频 (t2v) 与图生视频 (i2v)。</p>
+      </div>
+      <div class="provider-list" id="videoProviderList">
+        <div class="loading-state">加载中...</div>
+      </div>
     </div>
 
     <!-- 配置弹窗 -->
@@ -43,7 +67,7 @@
           <div class="form-group">
             <label>API Key</label>
             <input type="password" id="apiKeyInput" placeholder="输入 API Key">
-            <p class="form-hint">已有 Key 会保留，输入新值以更新</p>
+            <p class="form-hint" id="apiKeyHint">已有 Key 会保留，输入新值以更新</p>
           </div>
 
           <div class="form-group">
@@ -52,11 +76,44 @@
             <p class="form-hint">留空使用默认地址</p>
           </div>
 
-          <div class="form-row">
-            <div class="form-group">
-              <label>模型</label>
-              <input type="text" id="modelInput" placeholder="如 gpt-4">
+          <div class="form-group">
+            <label>模型</label>
+            <input type="text" id="modelInput" placeholder="如 gpt-4">
+            <p class="form-hint" id="modelHint"></p>
+          </div>
+
+          <!-- 视频模型专用字段 -->
+          <div class="video-only-fields" style="display: none;">
+            <div class="form-row">
+              <div class="form-group">
+                <label>分辨率</label>
+                <select id="resolutionInput">
+                  <option value="480p">480p</option>
+                  <option value="720p">720p</option>
+                  <option value="1080p">1080p</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>宽高比</label>
+                <select id="ratioInput">
+                  <option value="16:9">16:9</option>
+                  <option value="9:16">9:16</option>
+                  <option value="1:1">1:1</option>
+                  <option value="4:3">4:3</option>
+                  <option value="3:4">3:4</option>
+                  <option value="21:9">21:9</option>
+                </select>
+              </div>
             </div>
+            <div class="form-group">
+              <label>默认时长（秒）</label>
+              <input type="number" id="durationInput" min="3" max="12" step="1" value="5">
+              <p class="form-hint">Seedance 支持 3-12 秒</p>
+            </div>
+          </div>
+
+          <!-- LLM 专用字段 -->
+          <div class="llm-only-fields">
             <div class="form-group form-group-small">
               <label>温度</label>
               <input type="number" id="temperatureInput" value="0.7" min="0" max="2" step="0.1">
@@ -80,49 +137,98 @@
   </div>
 
   <script>
-    // 当前配置数据
-    let configData = null;
-    let currentProvider = null;
+    // 当前 tab
+    let currentTab = 'llm';
 
-    // 加载配置
-    async function loadConfig() {
+    // 缓存两份配置
+    let llmConfigData = null;
+    let videoConfigData = null;
+    let currentProvider = null;
+    let currentProviderType = 'llm'; // 'llm' | 'video'
+
+    // ==================== Tab 切换 ====================
+    function switchTab(tab) {
+      currentTab = tab;
+      document.querySelectorAll('.api-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+      });
+      document.querySelectorAll('.api-panel').forEach(panel => {
+        panel.style.display = panel.dataset.panel === tab ? 'block' : 'none';
+      });
+      // 切换 tab 时更新计数 badge
+      updateCountBadge();
+    }
+
+    function updateCountBadge() {
+      const data = currentTab === 'llm' ? llmConfigData : videoConfigData;
+      const list = currentTab === 'llm' ? 'providers' : 'providers';
+      if (!data) {
+        document.getElementById('configCount').textContent = '加载中...';
+        return;
+      }
+      let configured = 0, total = 0;
+      for (const key in data.providers) {
+        total++;
+        const p = data.providers[key];
+        // 视频面板：仅看 enabled（视频配置通常没有必填 apiKey 的判断）
+        if (currentTab === 'llm') {
+          if (p.enabled && p.apiKey) configured++;
+        } else {
+          const info = data.providerInfo[key] || {};
+          if (p.enabled && (!info.requiresApiKey || p.apiKey)) configured++;
+        }
+      }
+      const label = currentTab === 'llm' ? '' : '视频';
+      document.getElementById('configCount').textContent = configured + '/' + total + ' ' + label + '已配置';
+    }
+
+    // ==================== 加载 ====================
+    async function loadAll() {
+      await Promise.all([loadLLMConfig(), loadVideoConfig()]);
+    }
+
+    async function loadLLMConfig() {
       try {
         const resp = await fetch('/api/llm-config');
-        configData = await resp.json();
-        renderProviders();
+        llmConfigData = await resp.json();
+        renderProviders('llm');
+        if (currentTab === 'llm') updateCountBadge();
       } catch (err) {
         document.getElementById('providerList').innerHTML =
           '<div class="error-state">加载失败: ' + err.message + '</div>';
       }
     }
 
-    // 渲染提供商列表
-    function renderProviders() {
-      const list = document.getElementById('providerList');
-      const providers = configData.providers;
-      const info = configData.providerInfo;
-
-      // 计算已配置数量
-      let configured = 0;
-      let total = 0;
-      for (const key in providers) {
-        total++;
-        if (providers[key].enabled && providers[key].apiKey) {
-          configured++;
-        }
+    async function loadVideoConfig() {
+      try {
+        const resp = await fetch('/api/video-config');
+        videoConfigData = await resp.json();
+        renderProviders('video');
+        if (currentTab === 'video') updateCountBadge();
+      } catch (err) {
+        document.getElementById('videoProviderList').innerHTML =
+          '<div class="error-state">加载失败: ' + err.message + '</div>';
       }
-      document.getElementById('configCount').textContent = configured + '/' + total + ' 已配置';
+    }
 
-      // 生成卡片
+    // ==================== 渲染 ====================
+    function renderProviders(type) {
+      const data = type === 'llm' ? llmConfigData : videoConfigData;
+      const listEl = document.getElementById(type === 'llm' ? 'providerList' : 'videoProviderList');
+      if (!data) return;
+
+      const providers = data.providers;
+      const info = data.providerInfo;
+      const isActive = (key) => data.activeProvider === key;
+
       let html = '';
       for (const key in providers) {
         const p = providers[key];
         const i = info[key] || { name: key, description: '供应商', requiresApiKey: true };
-        const isActive = configData.activeProvider === key;
+        const active = isActive(key);
 
-        // 状态判断
         let statusText, statusClass;
-        if (isActive) {
+        if (active) {
           statusText = '使用中';
           statusClass = 'status-accent';
         } else if (p.enabled && p.apiKey) {
@@ -136,16 +242,16 @@
           statusClass = 'status-muted';
         }
 
-        // 配置状态
         const isConfigured = p.enabled && p.apiKey;
 
         html += `
-          <div class="provider-card ${isActive ? 'active' : ''}" onclick="openModal('${key}')">
+          <div class="provider-card ${active ? 'active' : ''}" onclick="openModal('${type}', '${key}')">
             <div class="provider-header">
               <div class="provider-icon">${i.name.charAt(0).toUpperCase()}</div>
               <div class="provider-info">
                 <h3 class="provider-name">${i.name}</h3>
                 <p class="provider-desc">${i.description}</p>
+                ${i.docs ? '<a class="provider-docs" href="' + i.docs + '" target="_blank" onclick="event.stopPropagation()">📖 文档</a>' : ''}
               </div>
               <div class="status-badge ${statusClass}">
                 <span class="status-dot"></span>
@@ -163,35 +269,52 @@
           </div>
         `;
       }
-      list.innerHTML = html;
+      listEl.innerHTML = html;
     }
 
-    // 打开弹窗
-    function openModal(providerKey) {
+    // ==================== 弹窗 ====================
+    function openModal(type, providerKey) {
+      currentProviderType = type;
       currentProvider = providerKey;
-      const p = configData.providers[providerKey];
-      const i = configData.providerInfo[providerKey] || { name: providerKey, description: '供应商' };
+      const data = type === 'llm' ? llmConfigData : videoConfigData;
+      const p = data.providers[providerKey];
+      const i = data.providerInfo[providerKey] || { name: providerKey, description: '供应商' };
 
       document.getElementById('modalIcon').textContent = i.name.charAt(0).toUpperCase();
       document.getElementById('modalTitle').textContent = '配置 ' + i.name;
       document.getElementById('modalSubtitle').textContent = i.description;
 
       document.getElementById('apiKeyInput').value = '';
+      document.getElementById('apiKeyHint').textContent = p.apiKey
+        ? '当前已配置 (***' + (p.apiKey.slice(-4) || '') + ')，输入新值以更新'
+        : '输入 API Key';
       document.getElementById('baseUrlInput').value = p.baseUrl || '';
       document.getElementById('modelInput').value = p.model || '';
-      document.getElementById('temperatureInput').value = p.temperature || 0.7;
+
+      // 视频专用字段显隐
+      const isVideo = type === 'video';
+      document.querySelector('.video-only-fields').style.display = isVideo ? 'block' : 'none';
+      document.querySelector('.llm-only-fields').style.display = isVideo ? 'none' : 'block';
+
+      if (isVideo) {
+        document.getElementById('resolutionInput').value = p.resolution || '720p';
+        document.getElementById('ratioInput').value = p.ratio || '16:9';
+        document.getElementById('durationInput').value = p.duration || 5;
+        document.getElementById('modelHint').textContent = '示例: doubao-seedance-1-0-lite-t2v-250428 (文生视频) 或 ...-i2v-... (图生视频)';
+      } else {
+        document.getElementById('temperatureInput').value = p.temperature || 0.7;
+      }
 
       document.getElementById('testResult').style.display = 'none';
       document.getElementById('configModal').style.display = 'flex';
     }
 
-    // 关闭弹窗
     function closeModal() {
       document.getElementById('configModal').style.display = 'none';
       currentProvider = null;
     }
 
-    // 测试连接
+    // ==================== 测试连接 ====================
     async function testConnection() {
       const btn = document.getElementById('testBtn');
       const result = document.getElementById('testResult');
@@ -200,8 +323,10 @@
       btn.innerHTML = '<span class="spinner"></span> 测试中...';
       result.style.display = 'none';
 
+      const endpoint = currentProviderType === 'llm' ? '/api/llm-test' : '/api/video-test';
+
       try {
-        const resp = await fetch('/api/llm-test', {
+        const resp = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ provider: currentProvider })
@@ -222,44 +347,56 @@
       btn.innerHTML = '⚡ 测试连接';
     }
 
-    // 保存配置
+    // ==================== 保存 ====================
     document.getElementById('configForm').onsubmit = async function(e) {
       e.preventDefault();
 
+      const data = currentProviderType === 'llm' ? llmConfigData : videoConfigData;
+      const existing = data.providers[currentProvider];
+      const apiKeyVal = document.getElementById('apiKeyInput').value;
+
       const updateData = {
         enabled: true,
-        apiKey: document.getElementById('apiKeyInput').value || configData.providers[currentProvider].apiKey || '',
-        baseUrl: document.getElementById('baseUrlInput').value || configData.providers[currentProvider].baseUrl || '',
-        model: document.getElementById('modelInput').value || configData.providers[currentProvider].model || '',
-        temperature: parseFloat(document.getElementById('temperatureInput').value) || 0.7
+        apiKey: apiKeyVal || existing.apiKey || '',
+        baseUrl: document.getElementById('baseUrlInput').value || existing.baseUrl || '',
+        model: document.getElementById('modelInput').value || existing.model || ''
       };
 
+      if (currentProviderType === 'video') {
+        updateData.resolution = document.getElementById('resolutionInput').value;
+        updateData.ratio = document.getElementById('ratioInput').value;
+        updateData.duration = parseInt(document.getElementById('durationInput').value) || 5;
+      } else {
+        updateData.temperature = parseFloat(document.getElementById('temperatureInput').value) || 0.7;
+      }
+
+      const endpoint = currentProviderType === 'llm' ? '/api/llm-config' : '/api/video-config';
+
       try {
-        await fetch('/api/llm-config', {
+        await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ provider: currentProvider, config: updateData })
         });
 
-        // 显示保存成功
         const saveBtn = this.querySelector('.btn-save');
         saveBtn.textContent = '✓ 已保存';
         setTimeout(() => {
           closeModal();
-          loadConfig();
+          currentProviderType === 'llm' ? loadLLMConfig() : loadVideoConfig();
         }, 500);
       } catch (err) {
         alert('保存失败: ' + err.message);
       }
     };
 
-    // 点击遮罩关闭弹窗
+    // ==================== 关闭弹窗 ====================
     document.getElementById('configModal').onclick = function(e) {
       if (e.target === this) closeModal();
     };
 
     // 启动
-    loadConfig();
+    loadAll();
   </script>
 </body>
 </html>
