@@ -1178,6 +1178,7 @@ ${toolDefs}
       const reply = response.reply.trim();
 
       console.log(`[PiAgent] LLM 回复长度: ${reply.length}, 内容预览: "${reply.substring(0, 80)}..."`);
+      console.log(`[PiAgent] LLM 完整回复:\n${reply}`);
 
       // 通知前端：收到 LLM 回复
       if (onStream) {
@@ -1450,7 +1451,14 @@ Workspace root folder: ${this.cwd}
     const marker = '<final gen>';
     const markerIndex = content.indexOf(marker);
     if (markerIndex !== -1) {
-      content = content.substring(markerIndex + marker.length).trim();
+      const after = content.substring(markerIndex + marker.length).trim();
+      // v3 修复: 如果 <final gen> 之后是空, fallback 用 marker 之前的内容 (去掉 marker)
+      // 否则 LLM 写了 <final gen> 在末尾时, 用户看到空回复 + error
+      if (after) {
+        content = after;
+      } else {
+        content = content.substring(0, markerIndex).trim();
+      }
     }
     // 移除任何 tool call 标记
     let cleaned = content
