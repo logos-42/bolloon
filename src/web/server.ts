@@ -1218,6 +1218,30 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                 return Promise.resolve();
               }
             };
+            // v3 新增: 好友申请 RPC — 任何对端可以发, 推到前端 UI 让用户接受
+            if (parsed.op === 'agent.friend.request') {
+              console.log(`[v3-friend] 收到 ${evt.fromPublicKey.substring(0,12)}... 的好友申请: ${parsed.payload?.name || '(无名字)'}`);
+              broadcast({
+                type: 'friend-request',
+                fromPublicKey: evt.fromPublicKey,
+                fromName: parsed.payload?.name || ('peer-' + evt.fromPublicKey.substring(0, 8)),
+                message: parsed.payload?.message || '想加你为 P2P 好友',
+                timestamp: Date.now()
+              }, 'p2p-global');
+              return;
+            }
+            // v3 修复: agent.meta.list.reply 也走 v3P2PRef.on('data') (因为 handleV3P2PMessage 只走老通道)
+            if (parsed.op === 'agent.meta.list.reply') {
+              const list = parsed.payload?.channels || [];
+              remoteChannelCache.set(evt.fromPublicKey, list);
+              console.log(`[v3] 收到 ${evt.fromPublicKey.substring(0,12)}... 的 ${list.length} 个 channel, 已缓存`);
+              broadcast({
+                type: 'remote-channel-update',
+                peerId: evt.fromPublicKey,
+                channels: list
+              }, 'p2p-global');
+              return;
+            }
             handleV3P2PMessage(parsed, { id: evt.fromPublicKey, publicKey: evt.fromPublicKey } as any, commShim as any);
           }
         } catch (err) {
@@ -1276,23 +1300,31 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     }
 
     // v3: 定期 broadcast — 每个 peer 只收到分享给他的 channel (按 peer 个性化)
-    const v3BroadcastOwn = () => {
-      if (!v3P2PRef) return;
-      loadChannels().then(channels => {
-        const conns = (v3P2PRef as any).conns as Map<string, any>;
-        if (!conns) return;
-        for (const [peerPk, conn] of conns.entries()) {
-          if (conn?.destroyed) continue;
-          const sharedForPeer = channels
-            .map(ch => sanitizeChannelForPeer(ch, peerPk))
-            .filter((x): x is Record<string, unknown> => x !== null);
-          if (sharedForPeer.length > 0) {
-            const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: sharedForPeer } });
-            try { conn.write(Buffer.from(msg)); } catch {}
+    // 走 known_peers (持久化) + sendTo (自动 joinPeer 重连), 不只 conns
+    const v3BroadcastOwn = async () => {
+      if (!v3P2PRef) return { sent: 0, total: 0 };
+      const channels = await loadChannels();
+      const { listPeers } = await import('../network/known-peers.js');
+      const peers = await listPeers();
+      const myPk = v3P2PRef.getPublicKey();
+      let sent = 0;
+      for (const peer of peers) {
+        if (peer.publicKey === myPk) continue;  // 跳过自己
+        const sharedForPeer = channels
+          .map(ch => sanitizeChannelForPeer(ch, peer.publicKey))
+          .filter((x): x is Record<string, unknown> => x !== null);
+        if (sharedForPeer.length > 0) {
+          const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: sharedForPeer } });
+          // sendTo 会自动 joinPeer + 重连 (P2PDirect.sendTo 内部实现)
+          const ok = v3P2PRef.sendTo(peer.publicKey, msg);
+          if (ok) {
+            sent++;
+            console.log(`[v3] broadcast: ${peer.name || peer.publicKey.substring(0,8)} → ${sharedForPeer.length} 个 channel`);
           }
         }
-        console.log(`[v3] broadcast 个性化: ${conns.size} 个 peer, 各自收到分享的 channel`);
-      }).catch(err => console.error('[v3] broadcast 失败:', (err as Error).message));
+      }
+      console.log(`[v3] broadcast 完成: sent=${sent}/${peers.length} 个 peer`);
+      return { sent, total: peers.length };
     };
     setTimeout(v3BroadcastOwn, 3000);
     setTimeout(v3BroadcastOwn, 10000);
@@ -2808,6 +2840,78 @@ app.get('/channels', async (_req, res) => {
       res.json({ ok: true, target: targetPublicKey, persistedAs });
     } catch (err: any) {
       console.error('[v3] p2p-connect 失败:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // v3: 主动给对端发好友申请 — 推到对端 UI 让对方接受
+  // 用法: POST /api/friend-request { targetPublicKey, name, message }
+  app.post('/api/friend-request', async (req, res) => {
+    try {
+      if (!v3P2PRef) {
+        return res.status(503).json({ error: 'P2PDirect not started' });
+      }
+      const { targetPublicKey, name, message } = req.body || {};
+      if (!targetPublicKey || typeof targetPublicKey !== 'string' || targetPublicKey.length !== 64) {
+        return res.status(400).json({ error: 'targetPublicKey (64 hex) required' });
+      }
+      // 先 joinPeer 确保能连上
+      const swarm = (v3P2PRef as any).swarm;
+      if (swarm) {
+        try { await swarm.joinPeer(Buffer.from(targetPublicKey, 'hex')); } catch {}
+      }
+      // 主动把对方加为本机 known_peers (本地视角认为对方是朋友)
+      const { addOrUpdatePeer, findNameByPublicKey } = await import('../network/known-peers.js');
+      const existing = await findNameByPublicKey(targetPublicKey);
+      const peerName = name || existing || `peer-${targetPublicKey.substring(0, 8)}`;
+      await addOrUpdatePeer(peerName, targetPublicKey);
+      // 构造 RPC, 推到对端 — 对端会 SSE 推 friend-request 到前端
+      const myPk = v3P2PRef.getPublicKey();
+      const rpc = JSON.stringify({
+        v: 3,
+        op: 'agent.friend.request',
+        payload: {
+          fromPublicKey: myPk,
+          name: peerName,
+          message: message || '想加你为 P2P 好友, 共享 channel 协作'
+        }
+      });
+      const sent = v3P2PRef.sendTo(targetPublicKey, rpc);
+      console.log(`[v3-friend] ${myPk.substring(0,12)}... 发送好友申请给 ${targetPublicKey.substring(0,12)}... (sent=${sent})`);
+      res.json({ ok: true, sent, persistedAs: peerName });
+    } catch (err: any) {
+      console.error('[v3-friend] friend-request 失败:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // v3: 接受对方的好友申请 — 把对方加为 known_peers, 立即推我的 channel 列表给 ta
+  // 用法: POST /api/friend-accept { fromPublicKey, name }
+  app.post('/api/friend-accept', async (req, res) => {
+    try {
+      if (!v3P2PRef) {
+        return res.status(503).json({ error: 'P2PDirect not started' });
+      }
+      const { fromPublicKey, name } = req.body || {};
+      if (!fromPublicKey || typeof fromPublicKey !== 'string' || fromPublicKey.length !== 64) {
+        return res.status(400).json({ error: 'fromPublicKey (64 hex) required' });
+      }
+      // 持久化
+      const { addOrUpdatePeer, findNameByPublicKey } = await import('../network/known-peers.js');
+      const existing = await findNameByPublicKey(fromPublicKey);
+      const peerName = name || existing || `peer-${fromPublicKey.substring(0, 8)}`;
+      await addOrUpdatePeer(peerName, fromPublicKey);
+      // joinPeer + 对方 inbound connection 时, v3P2PRef.on('connection') handler
+      // 会自动发 list.reply 给对端 → 对端 cache + SSE 推到前端
+      // 不需要这里再主动 broadcast
+      const swarm = (v3P2PRef as any).swarm;
+      if (swarm) {
+        try { await swarm.joinPeer(Buffer.from(fromPublicKey, 'hex')); } catch {}
+      }
+      console.log(`[v3-friend] 接受好友申请: ${fromPublicKey.substring(0,12)}... → ${peerName}`);
+      res.json({ ok: true, persistedAs: peerName });
+    } catch (err: any) {
+      console.error('[v3-friend] friend-accept 失败:', err);
       res.status(500).json({ error: err.message });
     }
   });

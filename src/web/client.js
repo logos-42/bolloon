@@ -182,6 +182,21 @@ function startV3GlobalSSE() {
             log.appendChild(toast);
             log.scrollTop = log.scrollHeight;
           }
+        } else if (msg.type === 'remote-channel-update') {
+          // v3 新增: 远端节点发来新分享 / 删除 / 改名, 立即更新本地 cache
+          const peerId = msg.peerId;
+          const channels = msg.channels || [];
+          let group = remoteChannels.find(g => g.peerId === peerId);
+          if (!group) {
+            group = { peerId, channels: [], peerName: msg.peerName || ('peer-' + peerId.substring(0, 8)) };
+            remoteChannels.push(group);
+          }
+          group.channels = channels;
+          renderRemoteChannels();
+          console.log(`[v3] 收到远端 ${peerId.substring(0,12)}... 的 ${channels.length} 个 channel 更新`);
+        } else if (msg.type === 'friend-request') {
+          // v3 新增: 收到好友申请
+          showFriendRequestModal(msg);
         }
       } catch (err) {
         console.error('[v3] 全局 SSE 解析失败:', err);
@@ -3305,20 +3320,71 @@ if (addPeerBtn) {
       return;
     }
     try {
-      // 调 p2p-connect (会 joinPeer + 持久化)
-      const res = await fetch('/api/remote-channels/p2p-connect', {
+      // v3 新增: 改用 friend-request RPC — 不光 joinPeer, 还发申请到对方
+      // 对方会收到 SSE friend-request 事件, 弹一个申请 modal
+      const res = await fetch('/api/friend-request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetPublicKey: publicKey, name, persist: true })
+        body: JSON.stringify({ targetPublicKey: publicKey, name, message: '想加你为 P2P 好友, 共享 channel 协作' })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'connect failed');
-      alert(`已添加好友: ${name} (${publicKey.substring(0, 12)}...)\n重启后会自动重连`);
+      alert(`已发送好友申请给 ${name} (${publicKey.substring(0, 12)}...)\n对方接受后会自动出现在 P2P 好友区.`);
       await loadRemoteChannels();
     } catch (err) {
-      alert('添加失败: ' + (err.message || err));
+      alert('申请失败: ' + (err.message || err));
     }
   });
+}
+
+/**
+ * v3 新增: 收到好友申请时, 弹一个 modal 让用户接受或拒绝
+ */
+function showFriendRequestModal(req) {
+  // 移除已有 modal
+  document.getElementById('friend-request-modal')?.remove();
+  const html = `
+    <div id="friend-request-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10004;display:flex;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:8px;width:420px;max-width:92vw;box-shadow:0 10px 40px rgba(0,0,0,0.2);">
+        <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:18px;">🤝</span>
+          <div style="flex:1;">
+            <div style="font-size:15px;font-weight:600;">好友申请</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:2px;">来自 ${escapeHtml(req.fromName)} (${escapeHtml(req.fromPublicKey.substring(0, 12))}…)</div>
+          </div>
+        </div>
+        <div style="padding:14px 18px;font-size:13px;color:#374151;">
+          <p>${escapeHtml(req.message || '想加你为 P2P 好友')}</p>
+          <p style="margin-top:8px;color:#6b7280;font-size:11px;">接受后: 双方都加为好友, 对方分享给你的 channel 会自动出现在 P2P 好友区.</p>
+        </div>
+        <div style="padding:10px 18px;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end;">
+          <button id="frm-deny" style="padding:6px 14px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:4px;cursor:pointer;font-size:13px;">拒绝</button>
+          <button id="frm-accept" style="padding:6px 14px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">接受</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+  const close = () => document.getElementById('friend-request-modal')?.remove();
+  document.getElementById('frm-deny').onclick = close;
+  document.getElementById('frm-accept').onclick = async () => {
+    close();
+    try {
+      const res = await fetch('/api/friend-accept', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fromPublicKey: req.fromPublicKey, name: req.fromName })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'accept failed');
+      console.log('[v3-friend] 接受了好友申请:', req.fromName);
+      // 立刻拉一次 — 对方刚 accept, ta 的 channel 列表会被推到我们这
+      setTimeout(loadRemoteChannels, 1000);
+    } catch (err) {
+      console.error('[v3-friend] accept 失败:', err);
+      alert('接受失败: ' + (err.message || err));
+    }
+  };
 }
 
 // v3 双向刷新: 主动向所有好友发 agent.meta.list, 拿到 ta 们分享给我的 channel
