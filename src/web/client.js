@@ -1599,6 +1599,278 @@ input.addEventListener('keydown', (e) => {
   }
 });
 
+// ============ v3 新增: @-mention 自动补全 (主聊天框 #input) ============
+let mentionChannels = []; // { id, name, source: 'local'|'remote', ownerPublicKey? }
+let mentionDropdownEl = null;
+let mentionHighlightIdx = -1;
+let mentionQuery = null;
+let mentionStartPos = -1;
+
+async function refreshMentionChannels() {
+  try {
+    const res = await fetch('/channels');
+    const local = res.ok ? await res.json() : [];
+    const r2 = await fetch('/api/remote-channels');
+    const remoteData = r2.ok ? await r2.json() : { peers: [] };
+    const remote = [];
+    for (const p of (remoteData.peers || [])) {
+      for (const c of (p.channels || [])) {
+        remote.push({ id: c.id, name: c.name, source: 'remote', ownerPublicKey: p.peerId });
+      }
+    }
+    mentionChannels = [
+      ...(Array.isArray(local) ? local.map(c => ({ id: c.id, name: c.name, source: 'local' })) : []),
+      ...remote
+    ];
+  } catch (err) {
+    console.warn('[mention] 加载渠道列表失败:', err);
+  }
+}
+
+function closeMentionDropdown() {
+  if (mentionDropdownEl) { mentionDropdownEl.remove(); mentionDropdownEl = null; }
+  mentionHighlightIdx = -1;
+  mentionQuery = null;
+  mentionStartPos = -1;
+}
+
+function getCurrentMentionQuery() {
+  const pos = input.selectionStart || input.value.length;
+  const before = input.value.slice(0, pos);
+  const m = before.match(/@([一-龥A-Za-z0-9_\-]{0,30})$/);
+  return m ? { query: m[1], start: pos - m[0].length } : null;
+}
+
+function renderMentionDropdown(items) {
+  if (!mentionDropdownEl) {
+    mentionDropdownEl = document.createElement('div');
+    mentionDropdownEl.id = 'mention-dropdown';
+    mentionDropdownEl.style.cssText = 'position:fixed;background:#fff;border:1px solid #d1d5db;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.15);max-height:240px;overflow-y:auto;z-index:10000;font-size:13px;min-width:220px;';
+    document.body.appendChild(mentionDropdownEl);
+    document.addEventListener('mousedown', function onDocClick(e) {
+      if (mentionDropdownEl && !mentionDropdownEl.contains(e.target) && e.target !== input) {
+        closeMentionDropdown();
+      }
+    });
+  }
+  if (items.length === 0) {
+    mentionDropdownEl.innerHTML = '<div style="padding:10px 12px;color:#6b7280;font-size:12px;">没有匹配的渠道</div>';
+  } else {
+    mentionDropdownEl.innerHTML = items.map((c, i) => {
+      const isLocal = c.source === 'local';
+      const tag = isLocal ? '🏠 本地' : '🌐 远端';
+      const owner = !isLocal && c.ownerPublicKey ? ` <span style="color:#9ca3af;font-size:11px;">(${c.ownerPublicKey.substring(0, 8)}…)</span>` : '';
+      const bg = i === mentionHighlightIdx ? '#eff6ff' : '#fff';
+      return `<div class="mention-item" data-idx="${i}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;">
+        <span style="font-size:10px;color:${isLocal ? '#059669' : '#2563eb'};background:${isLocal ? '#d1fae5' : '#dbeafe'};padding:1px 6px;border-radius:3px;white-space:nowrap;">${tag}</span>
+        <span style="flex:1;">${escapeHtml(c.name)}</span>${owner}
+      </div>`;
+    }).join('');
+    mentionDropdownEl.querySelectorAll('.mention-item').forEach((el) => {
+      el.onclick = () => {
+        const idx = parseInt(el.getAttribute('data-idx'));
+        const q = (mentionQuery || '').toLowerCase();
+        const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+        applyMention(filtered[idx]);
+      };
+      el.onmouseenter = () => {
+        mentionHighlightIdx = parseInt(el.getAttribute('data-idx'));
+        const q = (mentionQuery || '').toLowerCase();
+        const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+        renderMentionDropdown(filtered);
+      };
+    });
+  }
+  const rect = input.getBoundingClientRect();
+  mentionDropdownEl.style.left = rect.left + 'px';
+  // 改到 input 上方显示
+  mentionDropdownEl.style.top = 'auto';
+  mentionDropdownEl.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+}
+
+function applyMention(channel) {
+  const before = input.value.slice(0, mentionStartPos);
+  const afterQ = input.value.slice(mentionStartPos + 1 + mentionQuery.length);
+  const name = channel.name;
+  const newValue = `${before}@${name} ${afterQ}`;
+  input.value = newValue;
+  const newPos = before.length + 1 + name.length + 1;
+  input.focus();
+  input.setSelectionRange(newPos, newPos);
+  closeMentionDropdown();
+}
+
+function updateMentionDropdown() {
+  if (!mentionChannels.length) return;
+  const m = getCurrentMentionQuery();
+  if (!m) { closeMentionDropdown(); return; }
+  mentionQuery = m.query;
+  mentionStartPos = m.start;
+  const q = m.query.toLowerCase();
+  const items = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+  mentionHighlightIdx = items.length > 0 ? 0 : -1;
+  renderMentionDropdown(items);
+}
+
+input.addEventListener('input', () => {
+  updateMentionDropdown();
+});
+input.addEventListener('keydown', (e) => {
+  if (!mentionDropdownEl) return;
+  const items = mentionDropdownEl.querySelectorAll('.mention-item');
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (items.length === 0) return;
+    mentionHighlightIdx = (mentionHighlightIdx + 1) % items.length;
+    const q = (mentionQuery || '').toLowerCase();
+    const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+    renderMentionDropdown(filtered);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (items.length === 0) return;
+    mentionHighlightIdx = (mentionHighlightIdx - 1 + items.length) % items.length;
+    const q = (mentionQuery || '').toLowerCase();
+    const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+    renderMentionDropdown(filtered);
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    if (mentionHighlightIdx >= 0 && items.length > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      const q = (mentionQuery || '').toLowerCase();
+      const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+      applyMention(filtered[mentionHighlightIdx]);
+    }
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeMentionDropdown();
+  }
+}, true);  // capture phase, 先于 sendMessage 那个 keydown
+
+// 初始化
+refreshMentionChannels();
+// 定时刷新 (channel 列表可能变化)
+setInterval(refreshMentionChannels, 5000);
+// 远端 channel 列表变化时也刷新
+const _origLoadRemote = loadRemoteChannels;
+loadRemoteChannels = async function() {
+  await _origLoadRemote.apply(this, arguments);
+  refreshMentionChannels();
+};
+
+// v3 新增: 通用版 @-autocomplete (任意 input 元素都能挂, 比如 B 端的 #rcm-input)
+function setupMentionAutocomplete(inputEl) {
+  if (!inputEl || inputEl.__mentionBound) return;
+  inputEl.__mentionBound = true;
+  let localQuery = null;
+  let localStart = -1;
+  let localHighlight = -1;
+
+  function closeLocal() {
+    if (inputEl.__mentionDD) { inputEl.__mentionDD.remove(); inputEl.__mentionDD = null; }
+    localHighlight = -1; localQuery = null; localStart = -1;
+  }
+
+  function detectQuery() {
+    const pos = inputEl.selectionStart || inputEl.value.length;
+    const before = inputEl.value.slice(0, pos);
+    const m = before.match(/@([一-龥A-Za-z0-9_\-]{0,30})$/);
+    return m ? { query: m[1], start: pos - m[0].length } : null;
+  }
+
+  function renderLocal(items) {
+    if (!inputEl.__mentionDD) {
+      inputEl.__mentionDD = document.createElement('div');
+      inputEl.__mentionDD.style.cssText = 'position:fixed;background:#fff;border:1px solid #d1d5db;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.15);max-height:240px;overflow-y:auto;z-index:10001;font-size:13px;min-width:220px;';
+      document.body.appendChild(inputEl.__mentionDD);
+    }
+    if (items.length === 0) {
+      inputEl.__mentionDD.innerHTML = '<div style="padding:10px 12px;color:#6b7280;font-size:12px;">没有匹配的渠道</div>';
+    } else {
+      inputEl.__mentionDD.innerHTML = items.map((c, i) => {
+        const isLocal = c.source === 'local';
+        const tag = isLocal ? '🏠 本地' : '🌐 远端';
+        const owner = !isLocal && c.ownerPublicKey ? ` <span style="color:#9ca3af;font-size:11px;">(${c.ownerPublicKey.substring(0, 8)}…)</span>` : '';
+        const bg = i === localHighlight ? '#eff6ff' : '#fff';
+        return `<div class="mention-item" data-idx="${i}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:10px;color:${isLocal ? '#059669' : '#2563eb'};background:${isLocal ? '#d1fae5' : '#dbeafe'};padding:1px 6px;border-radius:3px;white-space:nowrap;">${tag}</span>
+          <span style="flex:1;">${escapeHtml(c.name)}</span>${owner}
+        </div>`;
+      }).join('');
+      inputEl.__mentionDD.querySelectorAll('.mention-item').forEach((el) => {
+        el.onclick = () => {
+          const idx = parseInt(el.getAttribute('data-idx'));
+          const q = (localQuery || '').toLowerCase();
+          const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+          applyLocal(filtered[idx]);
+        };
+        el.onmouseenter = () => {
+          localHighlight = parseInt(el.getAttribute('data-idx'));
+          const q = (localQuery || '').toLowerCase();
+          const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+          renderLocal(filtered);
+        };
+      });
+    }
+    const rect = inputEl.getBoundingClientRect();
+    inputEl.__mentionDD.style.left = rect.left + 'px';
+    // 改到 input 上方显示
+    inputEl.__mentionDD.style.top = 'auto';
+    inputEl.__mentionDD.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+  }
+
+  function applyLocal(channel) {
+    const before = inputEl.value.slice(0, localStart);
+    const afterQ = inputEl.value.slice(localStart + 1 + localQuery.length);
+    const newValue = `${before}@${channel.name} ${afterQ}`;
+    inputEl.value = newValue;
+    const newPos = before.length + 1 + channel.name.length + 1;
+    inputEl.focus();
+    inputEl.setSelectionRange(newPos, newPos);
+    closeLocal();
+  }
+
+  function update() {
+    if (!mentionChannels.length) return;
+    const m = detectQuery();
+    if (!m) { closeLocal(); return; }
+    localQuery = m.query; localStart = m.start;
+    const q = m.query.toLowerCase();
+    const items = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+    localHighlight = items.length > 0 ? 0 : -1;
+    renderLocal(items);
+  }
+
+  inputEl.addEventListener('input', update);
+  inputEl.addEventListener('keydown', (e) => {
+    if (!inputEl.__mentionDD) return;
+    const items = inputEl.__mentionDD.querySelectorAll('.mention-item');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (items.length === 0) return;
+      localHighlight = (localHighlight + 1) % items.length;
+      const q = (localQuery || '').toLowerCase();
+      renderLocal(mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (items.length === 0) return;
+      localHighlight = (localHighlight - 1 + items.length) % items.length;
+      const q = (localQuery || '').toLowerCase();
+      renderLocal(mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8));
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      if (localHighlight >= 0 && items.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        const q = (localQuery || '').toLowerCase();
+        const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+        applyLocal(filtered[localHighlight]);
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeLocal();
+    }
+  }, true);
+}
+
 // 拖拽落点: 把判断库里的判断拖到输入框, 直接作为指令发给 AI (走"代我决定"路径).
 // 用户拖进来后输入框被预填, 点发送就把这条判断作为指令交给当前 agent.
 const inputArea = document.querySelector('.input-area');
@@ -2890,6 +3162,8 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   };
   sendBtn.onclick = doSend;
   inputEl.onkeydown = (e) => { if (e.key === 'Enter') doSend(); };
+  // v3 新增: B 端远端 chat 也支持 @-autocomplete
+  setupMentionAutocomplete(inputEl);
   inputEl.focus();
   startV3GlobalSSE();
 
