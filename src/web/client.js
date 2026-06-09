@@ -1599,12 +1599,24 @@ input.addEventListener('keydown', (e) => {
   }
 });
 
-// ============ v3 新增: @-mention 自动补全 (主聊天框 #input) ============
+// ============ v3 新增: @-mention 单选自动补全 (主聊天框 #input) ============
 let mentionChannels = []; // { id, name, source: 'local'|'remote', ownerPublicKey? }
 let mentionDropdownEl = null;
 let mentionHighlightIdx = -1;
 let mentionQuery = null;
-let mentionStartPos = -1;
+let mentionAnchor = -1;        // @ 字符的绝对位置 (固定, 直到 dropdown 关闭)
+let mentionBlockEnd = -1;      // 插入区块的终点 (单选模式下 = anchor + 1 + query)
+let mentionDocMousedownBound = false; // 防止重复注册 document mousedown
+
+function ensureMentionDocMousedown() {
+  if (mentionDocMousedownBound) return;
+  mentionDocMousedownBound = true;
+  document.addEventListener('mousedown', (e) => {
+    if (mentionDropdownEl && !mentionDropdownEl.contains(e.target) && e.target !== input) {
+      closeMentionDropdown();
+    }
+  });
+}
 
 async function refreshMentionChannels() {
   try {
@@ -1631,70 +1643,88 @@ function closeMentionDropdown() {
   if (mentionDropdownEl) { mentionDropdownEl.remove(); mentionDropdownEl = null; }
   mentionHighlightIdx = -1;
   mentionQuery = null;
-  mentionStartPos = -1;
+  mentionAnchor = -1;
+  mentionBlockEnd = -1;
+  // 不重置 mentionDocMousedownBound — 监听器是空操作 (mentionDropdownEl === null) 留着无妨, 避免重复绑
 }
 
 function getCurrentMentionQuery() {
   const pos = input.selectionStart || input.value.length;
   const before = input.value.slice(0, pos);
   const m = before.match(/@([一-龥A-Za-z0-9_\-]{0,30})$/);
-  return m ? { query: m[1], start: pos - m[0].length } : null;
+  return m ? { query: m[1], anchor: pos - m[0].length } : null;
 }
 
 function renderMentionDropdown(items) {
   if (!mentionDropdownEl) {
     mentionDropdownEl = document.createElement('div');
     mentionDropdownEl.id = 'mention-dropdown';
-    mentionDropdownEl.style.cssText = 'position:fixed;background:#fff;border:1px solid #d1d5db;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.15);max-height:240px;overflow-y:auto;z-index:10000;font-size:13px;min-width:220px;';
+    mentionDropdownEl.style.cssText = 'position:fixed;background:#fff;border:1px solid #d1d5db;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.15);max-height:240px;overflow-y:auto;z-index:10000;font-size:13px;min-width:240px;';
     document.body.appendChild(mentionDropdownEl);
-    document.addEventListener('mousedown', function onDocClick(e) {
-      if (mentionDropdownEl && !mentionDropdownEl.contains(e.target) && e.target !== input) {
-        closeMentionDropdown();
-      }
-    });
+    ensureMentionDocMousedown();
   }
+  // v3 简化: 单选 + 立即填入输入框
+  const headerHtml = `<div style="padding:6px 10px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-size:11px;color:#6b7280;display:flex;justify-content:space-between;align-items:center;">
+    <span>💡 点击或回车选中 → 自动填入输入框</span>
+    <span style="color:#9ca3af;">↑↓ 移动</span>
+  </div>`;
+
   if (items.length === 0) {
-    mentionDropdownEl.innerHTML = '<div style="padding:10px 12px;color:#6b7280;font-size:12px;">没有匹配的渠道</div>';
+    mentionDropdownEl.innerHTML = headerHtml + '<div style="padding:10px 12px;color:#6b7280;font-size:12px;">没有匹配的渠道</div>';
   } else {
-    mentionDropdownEl.innerHTML = items.map((c, i) => {
+    const rows = items.map((c, i) => {
       const isLocal = c.source === 'local';
       const tag = isLocal ? '🏠 本地' : '🌐 远端';
       const owner = !isLocal && c.ownerPublicKey ? ` <span style="color:#9ca3af;font-size:11px;">(${c.ownerPublicKey.substring(0, 8)}…)</span>` : '';
+      // 浅蓝 = 键盘高亮, 白 = 普通
       const bg = i === mentionHighlightIdx ? '#eff6ff' : '#fff';
-      return `<div class="mention-item" data-idx="${i}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;">
+      const borderLeft = i === mentionHighlightIdx ? '3px solid #93c5fd' : '3px solid transparent';
+      return `<div class="mention-item" data-idx="${i}" data-channel-id="${escapeHtml(c.id)}" data-channel-name="${escapeHtml(c.name)}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;border-left:${borderLeft};">
         <span style="font-size:10px;color:${isLocal ? '#059669' : '#2563eb'};background:${isLocal ? '#d1fae5' : '#dbeafe'};padding:1px 6px;border-radius:3px;white-space:nowrap;">${tag}</span>
         <span style="flex:1;">${escapeHtml(c.name)}</span>${owner}
       </div>`;
     }).join('');
+    mentionDropdownEl.innerHTML = headerHtml + rows;
     mentionDropdownEl.querySelectorAll('.mention-item').forEach((el) => {
+      const idx = parseInt(el.getAttribute('data-idx'));
       el.onclick = () => {
-        const idx = parseInt(el.getAttribute('data-idx'));
-        const q = (mentionQuery || '').toLowerCase();
-        const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
-        applyMention(filtered[idx]);
+        // 单击 → 立即填入输入框 + 关闭 dropdown
+        applyMention(items[idx]);
       };
+      // v3 关键修复: mouseenter 只更新高亮, 不重建 dropdown — 否则用户实际点击的 element 被销毁,
+      // click 事件落到新 element, 但实际触发的是新 element 的 onclick (空), 而不是被销毁前那个
       el.onmouseenter = () => {
-        mentionHighlightIdx = parseInt(el.getAttribute('data-idx'));
-        const q = (mentionQuery || '').toLowerCase();
-        const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
-        renderMentionDropdown(filtered);
+        if (mentionHighlightIdx === idx) return;
+        mentionHighlightIdx = idx;
+        // 只更新背景色 + 左边框, 不重建 innerHTML
+        const itemEls = mentionDropdownEl.querySelectorAll('.mention-item');
+        itemEls.forEach((ie, ii) => {
+          const isHi = ii === idx;
+          ie.style.background = isHi ? '#eff6ff' : '#fff';
+          ie.style.borderLeft = isHi ? '3px solid #93c5fd' : '3px solid transparent';
+        });
       };
     });
   }
   const rect = input.getBoundingClientRect();
   mentionDropdownEl.style.left = rect.left + 'px';
-  // 改到 input 上方显示
   mentionDropdownEl.style.top = 'auto';
   mentionDropdownEl.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
 }
 
+/** v3 单选: 把 @xxx 替换为 @渠道名 + 空格, 关闭 dropdown, 光标放空格后 */
 function applyMention(channel) {
-  const before = input.value.slice(0, mentionStartPos);
-  const afterQ = input.value.slice(mentionStartPos + 1 + mentionQuery.length);
-  const name = channel.name;
-  const newValue = `${before}@${name} ${afterQ}`;
-  input.value = newValue;
-  const newPos = before.length + 1 + name.length + 1;
+  const anchor = mentionAnchor;
+  const blockEnd = mentionBlockEnd >= 0 ? mentionBlockEnd : (anchor + 1 + (mentionQuery || '').length);
+  if (anchor < 0 || anchor > input.value.length || input.value[anchor] !== '@') {
+    closeMentionDropdown();
+    return;
+  }
+  const before = input.value.slice(0, anchor);   // 含 @
+  const after = input.value.slice(blockEnd);     // query 之后 (可能用户已输入正文)
+  const insert = `@${channel.name} `;
+  input.value = before + insert + after;
+  const newPos = before.length + insert.length;
   input.focus();
   input.setSelectionRange(newPos, newPos);
   closeMentionDropdown();
@@ -1704,8 +1734,12 @@ function updateMentionDropdown() {
   if (!mentionChannels.length) return;
   const m = getCurrentMentionQuery();
   if (!m) { closeMentionDropdown(); return; }
+  // 只在 dropdown 刚打开时设置 anchor (blockEnd 跟着 insert 走)
+  if (mentionAnchor === -1) {
+    mentionAnchor = m.anchor;
+    mentionBlockEnd = m.anchor + 1 + (m.query || '').length;
+  }
   mentionQuery = m.query;
-  mentionStartPos = m.start;
   const q = m.query.toLowerCase();
   const items = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
   mentionHighlightIdx = items.length > 0 ? 0 : -1;
@@ -1733,12 +1767,14 @@ input.addEventListener('keydown', (e) => {
     const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
     renderMentionDropdown(filtered);
   } else if (e.key === 'Enter' || e.key === 'Tab') {
-    if (mentionHighlightIdx >= 0 && items.length > 0) {
+    // 单选: Enter/Tab 立即填入 + 关闭 dropdown
+    if (items.length > 0) {
       e.preventDefault();
       e.stopPropagation();
       const q = (mentionQuery || '').toLowerCase();
       const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
-      applyMention(filtered[mentionHighlightIdx]);
+      const cur = filtered[mentionHighlightIdx];
+      if (cur) applyMention(cur);
     }
   } else if (e.key === 'Escape') {
     e.preventDefault();
@@ -1750,90 +1786,104 @@ input.addEventListener('keydown', (e) => {
 refreshMentionChannels();
 // 定时刷新 (channel 列表可能变化)
 setInterval(refreshMentionChannels, 5000);
-// 远端 channel 列表变化时也刷新
-const _origLoadRemote = loadRemoteChannels;
-loadRemoteChannels = async function() {
-  await _origLoadRemote.apply(this, arguments);
-  refreshMentionChannels();
-};
+// 远端 channel 列表变化时也刷新 (loadRemoteChannels 是 function declaration, 不能重新赋值)
+// 用 setInterval 兜底: 每 5s 刷一次 (已经有定时器, 这里不重复)
+// 实际上 refreshMentionChannels() 已经在 setInterval 里跑了
 
 // v3 新增: 通用版 @-autocomplete (任意 input 元素都能挂, 比如 B 端的 #rcm-input)
 function setupMentionAutocomplete(inputEl) {
   if (!inputEl || inputEl.__mentionBound) return;
   inputEl.__mentionBound = true;
   let localQuery = null;
-  let localStart = -1;
+  let localAnchor = -1;       // @ 字符的绝对位置 (固定, 直到 dropdown 关闭)
+  let localBlockEnd = -1;     // 插入区块的终点
   let localHighlight = -1;
 
   function closeLocal() {
     if (inputEl.__mentionDD) { inputEl.__mentionDD.remove(); inputEl.__mentionDD = null; }
-    localHighlight = -1; localQuery = null; localStart = -1;
+    localHighlight = -1; localQuery = null; localAnchor = -1; localBlockEnd = -1;
   }
 
   function detectQuery() {
     const pos = inputEl.selectionStart || inputEl.value.length;
     const before = inputEl.value.slice(0, pos);
     const m = before.match(/@([一-龥A-Za-z0-9_\-]{0,30})$/);
-    return m ? { query: m[1], start: pos - m[0].length } : null;
+    return m ? { query: m[1], anchor: pos - m[0].length } : null;
+  }
+
+  // v3 单选: 点击 / Enter 立即填入输入框 + 关闭 dropdown
+  function applyLocal(channel) {
+    const anchor = localAnchor;
+    const blockEnd = localBlockEnd >= 0 ? localBlockEnd : (anchor + 1 + (localQuery || '').length);
+    if (anchor < 0 || anchor > inputEl.value.length || inputEl.value[anchor] !== '@') {
+      closeLocal();
+      return;
+    }
+    const before = inputEl.value.slice(0, anchor);   // 含 @
+    const after = inputEl.value.slice(blockEnd);
+    const insert = `@${channel.name} `;
+    inputEl.value = before + insert + after;
+    const newPos = before.length + insert.length;
+    inputEl.focus();
+    inputEl.setSelectionRange(newPos, newPos);
+    closeLocal();
   }
 
   function renderLocal(items) {
     if (!inputEl.__mentionDD) {
       inputEl.__mentionDD = document.createElement('div');
-      inputEl.__mentionDD.style.cssText = 'position:fixed;background:#fff;border:1px solid #d1d5db;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.15);max-height:240px;overflow-y:auto;z-index:10001;font-size:13px;min-width:220px;';
+      inputEl.__mentionDD.style.cssText = 'position:fixed;background:#fff;border:1px solid #d1d5db;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.15);max-height:240px;overflow-y:auto;z-index:10001;font-size:13px;min-width:240px;';
       document.body.appendChild(inputEl.__mentionDD);
     }
+    const headerHtml = `<div style="padding:6px 10px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-size:11px;color:#6b7280;display:flex;justify-content:space-between;align-items:center;">
+      <span>💡 点击或回车选中 → 自动填入输入框</span>
+      <span style="color:#9ca3af;">↑↓ 移动</span>
+    </div>`;
     if (items.length === 0) {
-      inputEl.__mentionDD.innerHTML = '<div style="padding:10px 12px;color:#6b7280;font-size:12px;">没有匹配的渠道</div>';
+      inputEl.__mentionDD.innerHTML = headerHtml + '<div style="padding:10px 12px;color:#6b7280;font-size:12px;">没有匹配的渠道</div>';
     } else {
-      inputEl.__mentionDD.innerHTML = items.map((c, i) => {
+      inputEl.__mentionDD.innerHTML = headerHtml + items.map((c, i) => {
         const isLocal = c.source === 'local';
         const tag = isLocal ? '🏠 本地' : '🌐 远端';
         const owner = !isLocal && c.ownerPublicKey ? ` <span style="color:#9ca3af;font-size:11px;">(${c.ownerPublicKey.substring(0, 8)}…)</span>` : '';
         const bg = i === localHighlight ? '#eff6ff' : '#fff';
-        return `<div class="mention-item" data-idx="${i}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;">
+        const borderLeft = i === localHighlight ? '3px solid #93c5fd' : '3px solid transparent';
+        return `<div class="mention-item" data-idx="${i}" data-channel-id="${escapeHtml(c.id)}" data-channel-name="${escapeHtml(c.name)}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;border-left:${borderLeft};">
           <span style="font-size:10px;color:${isLocal ? '#059669' : '#2563eb'};background:${isLocal ? '#d1fae5' : '#dbeafe'};padding:1px 6px;border-radius:3px;white-space:nowrap;">${tag}</span>
           <span style="flex:1;">${escapeHtml(c.name)}</span>${owner}
         </div>`;
       }).join('');
       inputEl.__mentionDD.querySelectorAll('.mention-item').forEach((el) => {
-        el.onclick = () => {
-          const idx = parseInt(el.getAttribute('data-idx'));
-          const q = (localQuery || '').toLowerCase();
-          const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
-          applyLocal(filtered[idx]);
-        };
+        const idx = parseInt(el.getAttribute('data-idx'));
+        el.onclick = () => applyLocal(items[idx]);
+        // v3 关键修复: mouseenter 只更新高亮, 不重建 dropdown (同主 input)
         el.onmouseenter = () => {
-          localHighlight = parseInt(el.getAttribute('data-idx'));
-          const q = (localQuery || '').toLowerCase();
-          const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
-          renderLocal(filtered);
+          if (localHighlight === idx) return;
+          localHighlight = idx;
+          const itemEls = inputEl.__mentionDD.querySelectorAll('.mention-item');
+          itemEls.forEach((ie, ii) => {
+            const isHi = ii === idx;
+            ie.style.background = isHi ? '#eff6ff' : '#fff';
+            ie.style.borderLeft = isHi ? '3px solid #93c5fd' : '3px solid transparent';
+          });
         };
       });
     }
     const rect = inputEl.getBoundingClientRect();
     inputEl.__mentionDD.style.left = rect.left + 'px';
-    // 改到 input 上方显示
     inputEl.__mentionDD.style.top = 'auto';
     inputEl.__mentionDD.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
-  }
-
-  function applyLocal(channel) {
-    const before = inputEl.value.slice(0, localStart);
-    const afterQ = inputEl.value.slice(localStart + 1 + localQuery.length);
-    const newValue = `${before}@${channel.name} ${afterQ}`;
-    inputEl.value = newValue;
-    const newPos = before.length + 1 + channel.name.length + 1;
-    inputEl.focus();
-    inputEl.setSelectionRange(newPos, newPos);
-    closeLocal();
   }
 
   function update() {
     if (!mentionChannels.length) return;
     const m = detectQuery();
     if (!m) { closeLocal(); return; }
-    localQuery = m.query; localStart = m.start;
+    if (localAnchor === -1) {
+      localAnchor = m.anchor;
+      localBlockEnd = m.anchor + 1 + (m.query || '').length;
+    }
+    localQuery = m.query;
     const q = m.query.toLowerCase();
     const items = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
     localHighlight = items.length > 0 ? 0 : -1;
@@ -1857,12 +1907,13 @@ function setupMentionAutocomplete(inputEl) {
       const q = (localQuery || '').toLowerCase();
       renderLocal(mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8));
     } else if (e.key === 'Enter' || e.key === 'Tab') {
-      if (localHighlight >= 0 && items.length > 0) {
+      if (items.length > 0) {
         e.preventDefault();
         e.stopPropagation();
         const q = (localQuery || '').toLowerCase();
         const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
-        applyLocal(filtered[localHighlight]);
+        const cur = filtered[localHighlight];
+        if (cur) applyLocal(cur);
       }
     } else if (e.key === 'Escape') {
       e.preventDefault();
