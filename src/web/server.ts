@@ -115,6 +115,13 @@ interface SessionMessage {
   type: 'user' | 'ai';
   content: string;
   timestamp: string;
+  /** v3: 'local' = channel 内部 owner 发的, 'remote' = 远端访客通过 P2P 发的, 'ai-mention' = 同节点其他 channel 的 AI @-mention, 'ai-mention-remote' = 远端节点的 AI @-mention */
+  source?: 'local' | 'remote' | 'ai-mention' | 'ai-mention-remote';
+  /** v3: 当 source='remote' 或 'ai-mention-remote' 时记录对方 publicKey */
+  fromPublicKey?: string;
+  /** v3: 当 source 是 ai-mention* 时, 是哪个 channel 触发的 */
+  originChannelId?: string;
+  originChannelName?: string;
 }
 
 interface Session {
@@ -467,6 +474,118 @@ function isSharedWith(ch: Channel, peerPublicKey: string): boolean {
 }
 
 /**
+ * v3 新增: 解析 LLM 回复里的 @-mentions, 把消息发到目标 channel.
+ *
+ * 语法: "@渠道名 消息内容" — 渠道名匹配 local channels by name, 或 remote channels by name.
+ * - 本地 channel: 直接 push 到 session
+ * - 远端 channel: 通过 P2P RPC 转发到对端
+ *
+ * 返回: 解析到的 mention 列表, 供 SSE 广播
+ */
+async function routeMentionsInReply(
+  originChannelId: string,
+  replyText: string,
+  localChannels: any[],
+  remoteChannels: any[]
+): Promise<Array<{ targetName: string; targetId: string; source: 'local' | 'remote'; text: string; status: 'sent' | 'failed' }>> {
+  const results: any[] = [];
+  // 解析: 匹配 @渠道名 后面跟一段文字 (到下一个 @ 或 行尾)
+  // 渠道名: 中文/英文/数字/下划线/连字符, 1-30 字符
+  const regex = /@([一-龥A-Za-z0-9_\-]{1,30})\s+([^\n@]+?)(?=(?:\s*@[一-龥A-Za-z0-9_\-]{1,30}\s)|$)/g;
+  const matches = [...replyText.matchAll(regex)];
+
+  if (matches.length === 0) return results;
+
+  // 找当前 channel 的 name (用于日志)
+  let originChannelName = originChannelId;
+  try {
+    const chs = await loadChannels();
+    const oc = chs.find(c => c.id === originChannelId);
+    if (oc) originChannelName = oc.name;
+  } catch {}
+
+  console.log(`[v3-cross] (${originChannelName}) 解析到 ${matches.length} 个 @-mention`);
+
+  for (const m of matches) {
+    const targetName = m[1].trim();
+    const text = m[2].trim();
+    if (!text) continue;
+
+    // 优先本地 (本地 channel 不能有 ownerPublicKey)
+    const localTarget = localChannels.find(c => c.name === targetName);
+    const remoteTarget = !localTarget ? remoteChannels.find(c => c.name === targetName) : null;
+
+    if (localTarget) {
+      // 本地: 直接 push 到 session
+      try {
+        const existing = await loadSession(localTarget.id, 'default');
+        const session: Session = existing || {
+          channelId: localTarget.id, sessionId: 'default', messages: [], lastUpdated: new Date().toISOString()
+        };
+        session.messages.push({
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          type: 'ai' as const,
+          content: text,
+          timestamp: new Date().toISOString(),
+          source: 'ai-mention' as any,             // v3: 标记是其他 channel 的 AI @-mention 进来的
+          originChannelId,                        // 谁 @ 过来的
+          originChannelName                       // 渠道名 (方便显示)
+        });
+        session.lastUpdated = new Date().toISOString();
+        await saveSession(session);
+        console.log(`[v3-cross] (${originChannelName}) @${targetName} → 本地 channel ${localTarget.id}, 存了 ${text.length} chars`);
+        // 推 SSE 让本地 UI 知道有 AI 跨渠道消息
+        broadcast({
+          type: 'cross-mention-received',
+          originChannelId, originChannelName,
+          targetChannelId: localTarget.id, targetChannelName: localTarget.name,
+          text, source: 'ai-mention'
+        }, 'broadcast');
+        results.push({ targetName, targetId: localTarget.id, source: 'local', text, status: 'sent' });
+      } catch (err) {
+        console.error(`[v3-cross] @${targetName} 本地存失败:`, (err as Error).message);
+        results.push({ targetName, targetId: localTarget.id, source: 'local', text, status: 'failed' });
+      }
+    } else if (remoteTarget) {
+      // 远端: 通过 P2P RPC 转发
+      const ownerPk = remoteTarget._ownerPublicKey;
+      if (!v3P2PRef) {
+        console.warn(`[v3-cross] P2PDirect 未启动, 跳过远端 @${targetName}`);
+        results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'failed' });
+        continue;
+      }
+      try {
+        const rpc = JSON.stringify({
+          v: 3, op: 'agent.cross.post',
+          payload: {
+            targetChannelId: remoteTarget.id,
+            targetChannelName: remoteTarget.name,
+            originChannelId,
+            originChannelName,
+            text,
+            fromPublicKey: v3P2PRef.getPublicKey()
+          }
+        });
+        const ok = v3P2PRef.sendTo(ownerPk, rpc);
+        if (ok) {
+          console.log(`[v3-cross] (${originChannelName}) @${targetName} → 远端 peer ${ownerPk.substring(0,12)}... (channelId=${remoteTarget.id})`);
+          results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'sent' });
+        } else {
+          results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'failed' });
+        }
+      } catch (err) {
+        console.error(`[v3-cross] @${targetName} 远端 RPC 失败:`, (err as Error).message);
+        results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'failed' });
+      }
+    } else {
+      console.warn(`[v3-cross] @${targetName} 找不到匹配 channel (本地 ${localChannels.length} 个, 远端 ${remoteChannels.length} 个)`);
+    }
+  }
+
+  return results;
+}
+
+/**
  * v3: 处理 Hyperswarm 通道收到的 v3 RPC 消息
  * 设计: 用 HyperswarmCommunicator (DHT topic 自动发现) 取代 iroh 直接 connect
  *   - A 启动 → broadcast(agent.meta.list.reply) → 所有已连接 peer 缓存 A 的 channel
@@ -576,11 +695,13 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
           id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           type: 'user',
           content: text,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          source: 'remote',                      // v3: 标记远端访客
+          fromPublicKey: senderKey               // v3: 记录对方 publicKey
         });
         session.lastUpdated = new Date().toISOString();
         await saveSession(session);
-        console.log(`[v3] (${channelId}) 存 user 消息 (${text.length} chars) 到 A 的 session`);
+        console.log(`[v3] (${channelId}) 存 user 消息 (${text.length} chars) 到 A 的 session (来自 ${senderKey.substring(0,12)}...)`);
       } catch (saveErr) {
         console.warn(`[v3] 存 user 消息失败 (不影响 chat):`, (saveErr as Error).message);
       }
@@ -606,7 +727,29 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       // 2. 跑 LLM (复用 Phase 1 的 buildJudgmentHint — 注入 channel 的 judgment)
       const { getMinimax } = await import('../constraints/index.js');
       const llm = getMinimax();
-      const fullPrompt = `${judgmentHint}${text}`;
+      // v3 新增: 在 prompt 头部标记"这是远端访客", 让 AI 知道对方不是自己 owner
+      const visitorHint = `[系统上下文] 消息来源: 远端访客 (P2P 连接, publicKey=${senderKey.substring(0, 12)}...). 对方不是你 owner, 是通过 P2P 网络访问你这个 channel 的合作者. 称呼对方时可用 "远端访客" / "朋友" / "合作者", 不要叫 "主人".\n\n`;
+      // v3 新增: 也注入 channel 目录给 LLM (B 的 channel 也可以 @-mention 其他)
+      let dirHint = '';
+      const localChannels = (await loadChannels()).filter(c => c.id !== channelId);
+      const remoteChannels: any[] = [];
+      for (const [peerPk, list] of remoteChannelCache.entries()) {
+        if (peerPk === senderKey) continue; // 跳过发起方
+        for (const ch of list) {
+          remoteChannels.push({ ...ch, _ownerPublicKey: peerPk });
+        }
+      }
+      if (localChannels.length > 0 || remoteChannels.length > 0) {
+        dirHint += '[系统上下文] 可用渠道 (你可以用 @渠道名 消息内容 给它们发消息):\n';
+        for (const c of localChannels) {
+          dirHint += `  - [本地] @${c.name} (id=${c.id})\n`;
+        }
+        for (const c of remoteChannels) {
+          dirHint += `  - [远端, owner=${(c._ownerPublicKey || '').substring(0,8)}…] @${c.name} (id=${c.id})\n`;
+        }
+        dirHint += '语法: 在回复中写 "@渠道名 我要说的话" 即可. 消息会持久化到目标 channel 的 session.\n\n';
+      }
+      const fullPrompt = `${visitorHint}${dirHint}${judgmentHint}${text}`;
       let fullResponse = '';
       // v3 新增: 流式 token 节流推给 B — 让 B 看到过程
       let lastFlushAt = 0;
@@ -724,6 +867,53 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         });
         await comm.sendToConnection(conn.id, errMsg);
       } catch {}
+    }
+    return;
+  }
+
+  // v3 新增: 收到远端发来的 @-mention 跨渠道消息, 存到本地 target channel
+  if (op === 'agent.cross.post') {
+    const { targetChannelId, targetChannelName, originChannelId, originChannelName, text, fromPublicKey } = parsed.payload || {};
+    if (!targetChannelId || !text) {
+      console.warn(`[v3-cross] agent.cross.post 缺少 targetChannelId/text`);
+      return;
+    }
+    try {
+      // 找 channel — 必须存在于本节点
+      const channels = await loadChannels();
+      const ch = channels.find(c => c.id === targetChannelId);
+      if (!ch) {
+        console.warn(`[v3-cross] agent.cross.post: 本节点无 channel ${targetChannelId}, 忽略`);
+        return;
+      }
+      // 存到 session — 这是一条来自其他节点的 LLM @-mention
+      const existing = await loadSession(targetChannelId, 'default');
+      const session: Session = existing || {
+        channelId: targetChannelId, sessionId: 'default', messages: [], lastUpdated: new Date().toISOString()
+      };
+      session.messages.push({
+        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        type: 'ai' as const,
+        content: text,
+        timestamp: new Date().toISOString(),
+        source: 'ai-mention-remote' as any,    // v3: 来自其他节点的 AI @-mention
+        originChannelId,                        // 哪个 channel 触发的
+        originChannelName,
+        fromPublicKey                          // 哪个节点来的
+      });
+      session.lastUpdated = new Date().toISOString();
+      await saveSession(session);
+      console.log(`[v3-cross] 收到远端 @-mention: ${originChannelName} → 本地 ${targetChannelName} (${text.length} chars)`);
+      // 推 SSE 让本地 UI 知道有跨渠道消息到达
+      broadcast({
+        type: 'cross-mention-received',
+        originChannelId, originChannelName,
+        targetChannelId, targetChannelName: ch.name,
+        text, source: 'ai-mention-remote',
+        fromPublicKey
+      }, 'broadcast');
+    } catch (err) {
+      console.error(`[v3-cross] 处理 agent.cross.post 失败:`, (err as Error).message);
     }
     return;
   }
@@ -1257,6 +1447,8 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       // 将真实 DID 作为上下文前缀，让 AI 使用真实的 DID 而不是自己编造的
       let contextHint = '';
       if (realChannelDid) contextHint += `[系统上下文] 当前频道名称: ${realChannelName}, 你的真实 DID: ${realChannelDid}\n`;
+      // v3 新增: 标识发送方 — 让 AI 分清内部 owner vs 远端访客
+      contextHint += `[系统上下文] 消息来源: 本地 (channel 内部 owner / 此机器上的用户). 称呼对方时用 "你" 或 "主人" 即可.\n`;
       if (boundWalletAddress) {
         contextHint += `[系统上下文] 已绑定的加密钱包地址: ${boundWalletAddress}。当用户授权或启用自动工具调用时, 可使用该地址发起链上操作。\n`;
       }
@@ -1271,16 +1463,41 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       const judgmentHint = await buildJudgmentHint(channelForJudgment, channelId);
       if (judgmentHint) contextHint += judgmentHint;
 
+      // v3 新增: 注入"可用渠道"目录, 让 LLM 知道可以 @-mention 哪些 channel
+      // - 本地 channels (除了自己)
+      // - 远端 channels (remoteChannelCache 缓存的)
+      const localChannels = (await loadChannels()).filter(c => c.id !== channelId);
+      const remoteChannels: any[] = [];
+      for (const [peerPk, list] of remoteChannelCache.entries()) {
+        for (const ch of list) {
+          remoteChannels.push({ ...ch, _ownerPublicKey: peerPk });
+        }
+      }
+      if (localChannels.length > 0 || remoteChannels.length > 0) {
+        contextHint += '[系统上下文] 可用渠道 (你可以用 @渠道名 消息内容 给它们发消息):\n';
+        for (const c of localChannels) {
+          contextHint += `  - [本地] @${c.name} (id=${c.id})\n`;
+        }
+        for (const c of remoteChannels) {
+          contextHint += `  - [远端, owner=${(c._ownerPublicKey || '').substring(0,8)}…] @${c.name} (id=${c.id})\n`;
+        }
+        contextHint += '语法: 当你想给其他渠道发消息, 在回复中写 "@渠道名 我要说的话" 即可. 消息会持久化到目标 channel 的 session, 你之后能看到"自己"在那里说的话.\n\n';
+      }
+
       if (contextHint) contextHint += '\n';
       fullResponse = await agent.promptStream(contextHint + text, streamCallback);
+
+      // v3 新增: 解析 LLM 回复里的 @-mentions, 转发到目标 channel
+      await routeMentionsInReply(channelId, fullResponse, localChannels, remoteChannels);
 
       broadcast({ type: 'ai', content: fullResponse }, channelId);
 
       const existingSession = await loadSession(channelId, currentSessionId);
       const session: Session = existingSession || { channelId, sessionId: currentSessionId, messages: [], lastUpdated: new Date().toISOString() };
       session.sessionId = currentSessionId;
-      session.messages.push({ id: crypto.randomUUID(), type: 'user' as const, content: text, timestamp: new Date().toISOString() });
-      session.messages.push({ id: crypto.randomUUID(), type: 'ai' as const, content: fullResponse, timestamp: new Date().toISOString() });
+      // v3: 加 source 标记 (local = 内部 owner, remote = 远端访客)
+      session.messages.push({ id: crypto.randomUUID(), type: 'user' as const, content: text, timestamp: new Date().toISOString(), source: 'local' as any });
+      session.messages.push({ id: crypto.randomUUID(), type: 'ai' as const, content: fullResponse, timestamp: new Date().toISOString(), source: 'local' as any });
       session.lastUpdated = new Date().toISOString();
       await saveSession(session);
 

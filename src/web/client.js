@@ -169,6 +169,19 @@ function startV3GlobalSSE() {
               log.scrollTop = log.scrollHeight;
             }
           }
+        } else if (msg.type === 'cross-mention-received') {
+          // v3 新增: A 节点上, 某个 channel 的 LLM @-mention 了另一个 channel, SSE 推过来
+          // 在所有打开的 chat modal 上显示"AI 跨渠道 @-mention" 提示
+          const allModals = document.querySelectorAll('.rcm-mention-toast, [id^="rcm-log"]');
+          for (const log of allModals) {
+            if (!log.id) continue;
+            const toast = document.createElement('div');
+            toast.style.cssText = 'margin:6px 0;padding:8px 10px;background:#fce7f3;border-left:3px solid #ec4899;border-radius:4px;font-size:12px;color:#831843;';
+            const fromTxt = msg.source === 'ai-mention-remote' ? `远端节点 ${(msg.fromPublicKey || '').substring(0, 8)}… 的 ${msg.originChannelName}` : `${msg.originChannelName} (本地)`;
+            toast.innerHTML = `📡 <b>${fromTxt}</b> @-mention → 当前 channel: <i>${escapeHtml((msg.text || '').slice(0, 100))}</i>${msg.text && msg.text.length > 100 ? '…' : ''}`;
+            log.appendChild(toast);
+            log.scrollTop = log.scrollHeight;
+          }
         }
       } catch (err) {
         console.error('[v3] 全局 SSE 解析失败:', err);
@@ -2811,14 +2824,36 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
         log.appendChild(jh);
       }
 
-      // 2. 显示历史 messages
+      // 2. 显示历史 messages (带 source 标签: 内部 owner vs 远端访客)
       const msgs = data.messages || [];
       if (msgs.length === 0) {
         appendSystem('还没有历史消息, 在下面发第一条吧', 'info');
       } else {
-        appendSystem(`从远端拉到 ${msgs.length} 条历史消息`, 'info');
+        appendSystem(`从远端拉到 ${msgs.length} 条历史消息 (A 内部 owner + B 远端访客 都会显示)`, 'info');
         for (const m of msgs) {
-          append(m.content || '', m.type === 'user' ? 'user' : 'ai');
+          const isUser = m.type === 'user';
+          // v3: 加 source 标签
+          let tag = '';
+          if (isUser) {
+            if (m.source === 'remote') {
+              tag = `<div style="font-size:10px;color:#6b7280;margin-bottom:2px;">🌐 远端访客${m.fromPublicKey ? ' (' + m.fromPublicKey.substring(0, 8) + '…)' : ''} → A 的 channel</div>`;
+            } else {
+              tag = `<div style="font-size:10px;color:#6b7280;margin-bottom:2px;">👤 A (内部 owner) → A 的 channel</div>`;
+            }
+          } else {
+            tag = `<div style="font-size:10px;color:#6b7280;margin-bottom:2px;">🤖 A 的 LLM (在 A 节点上跑)</div>`;
+          }
+          const bubble = document.createElement('div');
+          const isRemoteUser = isUser && m.source === 'remote';
+          bubble.style.cssText = `padding:8px 10px;margin:4px 0;border-radius:6px;font-size:13px;line-height:1.4;max-width:80%;word-wrap:break-word;${
+            isUser
+              ? (isRemoteUser
+                  ? 'background:#dbeafe;color:#1e3a8a;margin-right:auto;text-align:left;border:1px solid #93c5fd;'
+                  : 'background:#f3f4f6;color:#374151;margin-left:auto;text-align:left;border:1px solid #d1d5db;')
+              : 'background:#e5e7eb;color:#111;'
+          }`;
+          bubble.innerHTML = tag + `<div>${escapeHtml(m.content || '')}</div>`;
+          log.appendChild(bubble);
         }
         // 滚到底部
         setTimeout(() => { log.scrollTop = log.scrollHeight; }, 50);
