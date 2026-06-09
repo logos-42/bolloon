@@ -3767,19 +3767,23 @@ function openAgentAddModal(existingChannel) {
   if (existingChannel) {
     agentAddTitle.textContent = '配置智能体：' + existingChannel.name;
     agentAddName.value = existingChannel.name || '';
-    agentAddName.readOnly = true; // 改名走 PATCH
+    agentAddName.readOnly = false; // v3: 名字改成可编辑 (PATCH 支持更新 name)
+    agentAddName.placeholder = '输入新名称';
     agentAddWallet.value = existingChannel.walletAddress || '';
     agentAddAutoTools.checked = !!existingChannel.autoInvokeTools;
     agentAddConfirmBtn.dataset.mode = 'update';
     agentAddConfirmBtn.dataset.channelId = existingChannel.id;
+    agentAddConfirmBtn.dataset.originalName = existingChannel.name || '';
   } else {
     agentAddTitle.textContent = '添加智能体';
     agentAddName.value = '';
     agentAddName.readOnly = false;
+    agentAddName.placeholder = '例如: 交易助手';
     agentAddWallet.value = '';
     agentAddAutoTools.checked = true;
     agentAddConfirmBtn.dataset.mode = 'create';
     delete agentAddConfirmBtn.dataset.channelId;
+    delete agentAddConfirmBtn.dataset.originalName;
   }
   agentAddWalletInfo.style.display = 'none';
   agentAddWalletInfo.innerHTML = '';
@@ -3891,13 +3895,16 @@ if (agentAddConfirmBtn) {
       } else {
         // update
         const channelId = agentAddConfirmBtn.dataset.channelId;
+        const originalName = agentAddConfirmBtn.dataset.originalName || '';
+        // v3 新增: 名字改了才发 (没改就不发, 保持原状)
+        const body = { walletAddress: walletAddress || null, autoInvokeTools };
+        if (name && name !== originalName) {
+          body.name = name;
+        }
         const res = await fetch(`/channels/${channelId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            walletAddress: walletAddress || null,
-            autoInvokeTools
-          })
+          body: JSON.stringify(body)
         });
         if (!res.ok) throw new Error('update failed');
         const updated = await res.json();
