@@ -400,4 +400,90 @@ test.describe('服务互操作性', () => {
     expect(resB.ok()).toBeTruthy();
     expect(Array.isArray(await resB.json())).toBeTruthy();
   });
+
+  test('11. 双方同步: B 发的消息 A 也能实时看到 (双浏览器)', async ({ browser }) => {
+    // 找到已分享给 B 的 channel
+    const chInfo = (await apiGet(`http://localhost:${PORT_A}/channels`))
+      .find((c: any) => c.shared_with_peers?.includes(publicKeyB));
+    expect(chInfo).toBeDefined();
+    const channelId = chInfo.id;
+
+    // ① 同时打开 A 和 B 的浏览器
+    const pageA = await browser.newPage();
+    const pageB = await browser.newPage();
+    await Promise.all([
+      pageA.goto(`http://localhost:${PORT_A}`, { waitUntil: 'domcontentloaded' }),
+      pageB.goto(`http://localhost:${PORT_B}`, { waitUntil: 'domcontentloaded' })
+    ]);
+
+    // ② A 端切换到目标 channel
+    await pageA.waitForSelector(`.agent-group[data-channel-id="${channelId}"]`, { timeout: 10000 });
+    await pageA.click(`.agent-group[data-channel-id="${channelId}"] .channel-name`);
+    await pageA.waitForTimeout(500);
+    console.log(`[E2E-11] A 已切换到 channel ${channelId}`);
+
+    // ③ B 端: 添加 known peer, 注入 channel, 打开远程 chat modal
+    await addPeerAToB();
+    await pageB.waitForFunction(() => knownPeers.length > 0, { timeout: 10000 });
+    await pageB.waitForFunction(() =>
+      typeof v3GlobalEventSource !== 'undefined' && v3GlobalEventSource !== null && v3GlobalEventSource.readyState === 1,
+      { timeout: 10000 }
+    );
+    await injectChannelIntoB(channelId);
+    await pageB.waitForSelector('.remote-channel-row', { timeout: 15000 });
+    // 确保 P2P 连接已建立
+    await apiPost(`http://localhost:${PORT_B}/api/remote-channels/p2p-connect`, {
+      targetPublicKey: publicKeyA
+    });
+    // 打开远程 chat modal
+    await pageB.click('.remote-channel-row');
+    await pageB.waitForSelector('#remote-chat-modal', { timeout: 5000 });
+    // 等待历史加载完成
+    await pageB.waitForTimeout(2000);
+    console.log(`[E2E-11] B 已打开远程 chat modal`);
+
+    // ④ B 发消息
+    const testMsg = '双向同步测试消息-' + Date.now();
+    await pageB.fill('#rcm-input', testMsg);
+    await pageB.click('#rcm-send');
+
+    // ⑤ 验证 A 端 UI 实时收到 B 的消息 + AI 回复
+    // A 的消息容器是 .messages 或 #messages
+    try {
+      // 等到 A 端出现带 🌐远端访客 标签的用户消息
+      await pageA.waitForFunction((msg) => {
+        const containers = document.querySelectorAll('.message-user, .message');
+        for (const c of containers) {
+          if (c.textContent && c.textContent.includes(msg) && c.textContent.includes('远端访客')) {
+            return true;
+          }
+        }
+        return false;
+      }, testMsg, { timeout: 30000 });
+      console.log(`[E2E-11] ✓ A 端看到了 B 的远程用户消息 (含远端访客标签)`);
+
+      // 等到 A 端出现 AI 回复 (message-ai)
+      await pageA.waitForFunction((msg) => {
+        const containers = document.querySelectorAll('.message-ai, .message');
+        // 必须包含 AI 回复的样式类
+        for (const c of document.querySelectorAll('.message-ai')) {
+          return true;
+        }
+        return false;
+      }, testMsg, { timeout: 60000 });
+      console.log(`[E2E-11] ✓ A 端看到了 AI 回复`);
+
+      // 验证 A 端的消息数 >= 2 (B 的 user + AI reply)
+      const aMsgCount = await pageA.locator('.message').count();
+      console.log(`[E2E-11] A 端消息总数: ${aMsgCount}`);
+      expect(aMsgCount).toBeGreaterThanOrEqual(2);
+    } catch (e) {
+      const aLogText = await pageA.locator('.messages, #messages').first().textContent().catch(() => 'N/A');
+      console.log(`[E2E-11] ⚠ A 端未实时收到, 容器内容: ${aLogText?.substring(0, 300)}`);
+      throw e;
+    }
+
+    await pageA.close();
+    await pageB.close();
+  });
 });

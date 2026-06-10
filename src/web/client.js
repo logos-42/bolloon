@@ -1379,7 +1379,7 @@ function handleWorkflowLoopEvent(data, container) {
 // 用户命令可视化 - 当用户发送命令时调用
 let userCommandDisplayEl = null;
 
-function showUserCommand(command, container) {
+function showUserCommand(command, container, opts) {
   const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
   // 先移除之前的消息中的 user bubble（如果有重复的话）
   const existingUserBubbles = msgContainer.querySelectorAll('.message-user');
@@ -1393,12 +1393,17 @@ function showUserCommand(command, container) {
   // 创建美化版本的命令显示
   userCommandDisplayEl = document.createElement('div');
   userCommandDisplayEl.className = 'message message-user';
+  // v3 新增: 远端访客消息加 tag (source === 'remote' 表示是 B 通过 P2P 发来的)
+  const sourceTag = (opts && opts.source === 'remote')
+    ? `<div style="font-size:10px;color:#6b7280;margin-bottom:2px;">🌐 远端访客${opts.fromPublicKey ? ' (' + opts.fromPublicKey.substring(0, 8) + '…)' : ''} → A 的 channel</div>`
+    : '';
   userCommandDisplayEl.innerHTML = `
     <div class="user-command-display">
       <div class="command-prompt">
         <span class="prompt-icon">›</span>
         <span class="prompt-text">${command}</span>
       </div>
+      ${sourceTag}
     </div>
   `;
 
@@ -1505,7 +1510,7 @@ function connect(channelId) {
       const container = messagesContainers.get(msgChannelId) || messagesEl;
 
       if (data.type === 'user') {
-        showUserCommand(data.content, container);
+        showUserCommand(data.content, container, { source: data.source, fromPublicKey: data.fromPublicKey });
       } else if (data.type === 'ai') {
         addMessage(data.content, 'ai', true, container);
         hideTyping();

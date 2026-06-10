@@ -705,6 +705,15 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         console.warn(`[v3] 存 user 消息失败 (不影响 chat):`, (saveErr as Error).message);
       }
 
+      // v3 修复: 同步给 A 自己的 UI — broadcast SSE 事件让 A 的 owner 实时看到 B 的消息
+      broadcast({
+        type: 'user',
+        content: text,
+        channelId,
+        source: 'remote',
+        fromPublicKey: senderKey
+      }, channelId);
+
       // v3 新增: 告诉 B "我开始想了, 用了哪些 judgment" — 让 B 看到决策依据
       const judgmentHint = await buildJudgmentHint(ch, channelId);
       const usedJudgments = await extractJudgmentsFromHint(ch);
@@ -786,6 +795,13 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       } catch (saveErr) {
         console.warn(`[v3] 存 assistant 消息失败 (不影响):`, (saveErr as Error).message);
       }
+
+      // v3 修复: 同步给 A 自己的 UI — broadcast AI 回复给 A 的 owner 实时看到
+      broadcast({
+        type: 'ai',
+        content: fullResponse,
+        channelId
+      }, channelId);
 
       // 3. 把完整回复发给 B
       const reply = JSON.stringify({
