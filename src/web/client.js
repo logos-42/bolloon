@@ -2979,28 +2979,43 @@ function renderRemoteChannels() {
   const list = document.getElementById('remote-channel-list');
   if (!list) return;
 
-  // Phase 3 重做: 好友列表 + 收到的 channel 分组
-  if (knownPeers.length === 0) {
-    list.innerHTML = '<li style="color:var(--text-muted);font-size:11px;padding:8px 4px;text-align:center;">(暂无好友, 点 + 添加)</li>';
-    return;
-  }
-
   // 按 peerId 分组 channels
   const channelsByPeer = {};
   for (const p of remoteChannels) {
     channelsByPeer[p.peerId] = p.channels || [];
   }
 
-  const html = knownPeers.map(peer => {
+  // 2026-06-10 修: 之前 UI 只渲染 knownPeers, 但对面 publicKey 可能跟本机 known_peers 不匹配
+  // (例如对面重启 / 换 role / 第一次相连还没加为好友), 导致 remoteChannels 里有数据 UI 却空白.
+  // 修法: 把 remoteChannels 里的 "陌生 peer" (不在 known_peers 里) 也渲染出来, 标记为未加好友.
+  const knownPks = new Set(knownPeers.map(p => p.publicKey));
+  const strangerPeers = remoteChannels
+    .filter(p => !knownPks.has(p.peerId))
+    .map(p => ({
+      publicKey: p.peerId,
+      name: p.peerName || ('未授权 ' + p.peerId.substring(0, 8)),
+      lastConnectedAt: null,
+      _isStranger: true
+    }));
+  const allPeers = [...knownPeers, ...strangerPeers];
+
+  if (allPeers.length === 0) {
+    list.innerHTML = '<li style="color:var(--text-muted);font-size:11px;padding:8px 4px;text-align:center;">(暂无好友, 点 + 添加)</li>';
+    return;
+  }
+
+  const html = allPeers.map(peer => {
     const peerChannels = channelsByPeer[peer.publicKey] || [];
     const lastConn = peer.lastConnectedAt
       ? new Date(peer.lastConnectedAt).toLocaleDateString()
-      : '从未连接';
+      : (peer._isStranger ? '陌生 peer' : '从未连接');
+    const strangerStyle = peer._isStranger ? 'border:1px dashed var(--border-light);' : '';
+    const strangerIcon = peer._isStranger ? '❔' : '👤';
     return `
-      <li class="remote-peer-group" style="margin-bottom:10px;">
+      <li class="remote-peer-group" style="margin-bottom:10px;${strangerStyle}">
         <div class="remote-peer-header" data-peer-name="${escapeHtml(peer.name)}" data-peer-pk="${escapeHtml(peer.publicKey)}"
              style="display:flex;align-items:center;gap:6px;padding:4px 6px;background:var(--bg-hover);border-radius:4px;cursor:pointer;">
-          <span style="font-size:12px;">👤</span>
+          <span style="font-size:12px;">${strangerIcon}</span>
           <span style="flex:1;font-size:12px;font-weight:600;" title="${escapeHtml(peer.publicKey)}">${escapeHtml(peer.name)}</span>
           <span style="font-size:9px;color:var(--text-muted);">${lastConn}</span>
         </div>
