@@ -1751,13 +1751,23 @@ function applyMention(channel) {
 }
 
 function updateMentionDropdown() {
-  if (!mentionChannels.length) return;
+  // 2026-06-10 修: 数组空时主动刷一次, 不再静默 return
+  // 之前 `if (!mentionChannels.length) return` 导致初始化 0-8s 窗口按 @ 看不到任何 item
+  if (!mentionChannels.length) {
+    refreshMentionChannels().then(() => {
+      // 拉完再重试一次 (异步, 不阻塞当前键击)
+      if (mentionChannels.length) updateMentionDropdown();
+    });
+    return;
+  }
   const m = getCurrentMentionQuery();
   if (!m) { closeMentionDropdown(); return; }
   // 只在 dropdown 刚打开时设置 anchor (blockEnd 跟着 insert 走)
   if (mentionAnchor === -1) {
     mentionAnchor = m.anchor;
     mentionBlockEnd = m.anchor + 1 + (m.query || '').length;
+    // dropdown 首次打开 → 强制刷一次, 保证 remote 列表最新
+    refreshMentionChannels();
   }
   mentionQuery = m.query;
   const q = m.query.toLowerCase();
@@ -2925,11 +2935,33 @@ let knownPeers = [];  // { name, publicKey, lastConnectedAt, addedAt }
 
 async function loadRemoteChannels() {
   try {
+    // 1) 拉 known peers (好友列表)
     const res = await fetch('/api/p2p-peers');
-    if (!res.ok) return;
-    const data = await res.json();
-    knownPeers = Array.isArray(data.peers) ? data.peers : [];
+    if (res.ok) {
+      const data = await res.json();
+      knownPeers = Array.isArray(data.peers) ? data.peers : [];
+    }
+    // 2) 2026-06-10 修: 同时拉 /api/remote-channels, 兜底 SSE 推送漏掉的情况
+    //    (页面刷新后 remoteChannels[] = [], 必须主动拉一次才有数据)
+    const r2 = await fetch('/api/remote-channels');
+    if (r2.ok) {
+      const data2 = await r2.json();
+      const peers = Array.isArray(data2.peers) ? data2.peers : [];
+      // 合并到 remoteChannels[]: 按 peerId 覆盖
+      for (const p of peers) {
+        let group = remoteChannels.find(g => g.peerId === p.peerId);
+        if (!group) {
+          group = { peerId: p.peerId, channels: [], peerName: ('peer-' + p.peerId.substring(0, 8)) };
+          remoteChannels.push(group);
+        }
+        group.channels = p.channels || [];
+      }
+    }
     renderRemoteChannels();
+    // 3) 远端数据可能变化, 同步 @-mention 列表
+    if (typeof refreshMentionChannels === 'function') {
+      refreshMentionChannels();
+    }
   } catch (err) {
     console.error('[v3] loadRemoteChannels 失败:', err);
   }

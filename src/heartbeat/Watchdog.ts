@@ -42,11 +42,19 @@ export class Watchdog {
 
   /**
    * 记录活动（调用后更新 lastActivityTime）
+   * 2026-06-10: 加 5s 去抖, 防 broadcast / SSE 高频路径炸 log + CPU
+   * - lastActivityTime 始终更新 (cheap)
+   * - 但 onLog 回调只在距上次 ≥5s 时触发, 避免每秒几十次 console.log
    */
+  private _lastLogAt = 0;
   recordActivity(component?: string): void {
     this.state.lastActivityTime = Date.now();
     if (component) {
-      this.callbacks.onLog?.(`[Watchdog] Activity from ${component}`);
+      const now = Date.now();
+      if (now - this._lastLogAt >= 5000) {
+        this._lastLogAt = now;
+        this.callbacks.onLog?.(`[Watchdog] Activity from ${component}`);
+      }
     }
   }
 

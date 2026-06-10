@@ -421,6 +421,9 @@ let sseClients: Set<SSEClient> = new Set();
 let remoteChannelCache: Map<string, Array<Record<string, unknown>>> = new Map();
 // v3: P2PDirect 引用 (Hyperswarm 薄包装) - 模块级, 因为 web server 闭包里不可用
 let v3P2PRef: import('../network/p2p-direct.js').P2PDirect | null = null;
+// 2026-06-10: watchdog 提升到 module-level, 让 broadcast() / 模块级业务函数能埋点喂活动
+// 之前在 createWebServer 闭包内, 闭包外的 broadcast() 拿不到 → 误判 30min 无活动 → 自杀.
+let watchdogRef: any = null;
 // v3: 等待中的 history RPC (B 端 chat-history endpoint 用) — rpcId → { resolve, reject }
 const v3PendingHistoryGets: Map<string, { resolve: (data: any) => void; reject: (err: Error) => void }> = new Map();
 let channelSessions: Map<string, AgentSession> = new Map(); // key: channelId
@@ -1294,6 +1297,8 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
       // 新连接进来 → 主动发我分享给 ta 的 channel 列表
       v3P2PRef.on('connection', (evt: any) => {
+        // 2026-06-10: 喂 watchdog —— 新连接到来是真实业务活动
+        watchdogRef?.recordActivity?.();
         setTimeout(async () => {
           try {
             const channels = await loadChannels();
@@ -2985,6 +2990,8 @@ app.get('/channels', async (_req, res) => {
           error: 'peer not connected. POST /api/remote-channels/p2p-connect first.'
         });
       }
+      // 2026-06-10: 喂 watchdog — chat-send 成功是真实业务活动
+      watchdogRef?.recordActivity?.();
       console.log(`[v3] chat-send 转发到 ${targetPublicKey.substring(0, 12)}... (channelId=${channelId})`);
       res.json({ ok: true, sent: true });
     } catch (err: any) {
@@ -3931,6 +3938,8 @@ app.get('/channels', async (_req, res) => {
     healthMonitor = createHealthMonitor();
     // 把 watchdog 静默阈值拉到 30 分钟, 避免开发期 / 用户空闲时被误杀
     watchdog = createWatchdog({ silentThresholdMs: 30 * 60 * 1000 });
+    // 2026-06-10: 同步到 module-level, 让 broadcast() / P2P handler / chat-send 都能喂活动
+    watchdogRef = watchdog;
 
     console.log('[24h] Heartbeat modules loaded');
   } catch (err) {
@@ -4284,8 +4293,12 @@ app.get('/channels', async (_req, res) => {
     // level 1 (内存爆) → 进程自杀, 依赖外层 supervisor / 用户重启 (Windows 任务计划/手动)
     // 否则 Node.js 高 GC 压力下 HTTP 响应丢失, 客户端 fetch 永远 pending
     watchdog.registerRestartStrategy(1, () => {
-      console.error('[Watchdog] memory critical, 进程退出 (期望外层重启)');
-      setTimeout(() => process.exit(1), 100);
+      // 2026-06-10: 改为不退出, 因为我们直接后台 tsx 启动没有外层 supervisor.
+      // 误判主要因 recordActivity 仅在显式调用时刷新, 而 broadcast/SSE/连接均不触发.
+      // 退出策略原文保留在注释里:
+      //   console.error('[Watchdog] memory critical, 进程退出 (期望外层重启)');
+      //   setTimeout(() => process.exit(1), 100);
+      console.warn('[Watchdog] silentThreshold 触发, 但跳过 process.exit (无 supervisor)');
     });
     watchdog.start();
     console.log('[24h] Watchdog started');
@@ -4445,6 +4458,8 @@ app.get('/channels', async (_req, res) => {
 }
 
 function broadcast(data: { type: string; [key: string]: unknown }, channelId?: string) {
+  // 2026-06-10: 喂 watchdog, 避免 30min 空闲被误判 (recordActivity 内有 5s 去抖)
+  watchdogRef?.recordActivity?.();
   const envelope = { ...data, channelId };
   const message = `data: ${JSON.stringify(envelope)}\n\n`;
   console.log(`[broadcast] type=${data.type}, channelId=${channelId}, clients=${sseClients.size}`);
