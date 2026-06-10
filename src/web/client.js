@@ -60,6 +60,8 @@ function togglePeerCollapsed(peerPk) {
   }
   saveCollapsedPeers();
   renderRemoteChannels();
+  // 2026-06-10: 通知 header 切换按钮同步图标
+  if (typeof window.__syncP2PToggleAllBtn === 'function') window.__syncP2PToggleAllBtn();
 }
 // 2026-06-10: 一键展开/折叠所有 P2P peer (header 按钮调用)
 function expandAllPeers() {
@@ -71,6 +73,7 @@ function expandAllPeers() {
   for (const pk of allPks) collapsedPeers.delete(pk);
   saveCollapsedPeers();
   renderRemoteChannels();
+  if (typeof window.__syncP2PToggleAllBtn === 'function') window.__syncP2PToggleAllBtn();
 }
 function collapseAllPeers() {
   const allPks = new Set([
@@ -80,6 +83,7 @@ function collapseAllPeers() {
   for (const pk of allPks) collapsedPeers.add(pk);
   saveCollapsedPeers();
   renderRemoteChannels();
+  if (typeof window.__syncP2PToggleAllBtn === 'function') window.__syncP2PToggleAllBtn();
 }
 let lastAiContent = ''; // 防止 AI 消息重复显示
 let messagesContainers = new Map(); // channelId -> messages container div
@@ -3155,6 +3159,9 @@ function renderRemoteChannels() {
       openShareToPeerModal(peerName, peerPk);
     });
   });
+
+  // 2026-06-10: 渲染完成后同步 header 切换按钮图标
+  if (typeof window.__syncP2PToggleAllBtn === 'function') window.__syncP2PToggleAllBtn();
 }
 
 /** v3: 分享 channel 给指定 peer 的 modal (A 侧用) */
@@ -3602,20 +3609,52 @@ function showSimpleToast(text, kind = 'info') {
   }, 3000);
 }
 
-// 2026-06-10: P2P 全部展开/折叠按钮 (header 上)
-const p2pExpandAllBtn = document.getElementById('p2p-expand-all-btn');
-if (p2pExpandAllBtn) {
-  p2pExpandAllBtn.addEventListener('click', (e) => {
-    e.stopPropagation();  // 防止冒泡触发 section header 整段折叠
-    expandAllPeers();
-  });
-}
-const p2pCollapseAllBtn = document.getElementById('p2p-collapse-all-btn');
-if (p2pCollapseAllBtn) {
-  p2pCollapseAllBtn.addEventListener('click', (e) => {
+// 2026-06-10: P2P 全部展开/折叠切换按钮 (单按钮, 根据当前多数态切换)
+const p2pToggleAllBtn = document.getElementById('p2p-toggle-all-btn');
+if (p2pToggleAllBtn) {
+  // 同步图标/文字: 多数 peer 折叠 → 显示 "⊞ 展开"; 多数展开 → 显示 "⊟ 折叠"
+  function syncToggleAllBtn() {
+    const allPks = new Set([
+      ...knownPeers.map(p => p.publicKey),
+      ...remoteChannels.map(g => g.peerId)
+    ]);
+    if (allPks.size === 0) {
+      p2pToggleAllBtn.textContent = '⊞ 展开';
+      p2pToggleAllBtn.title = '切换全部展开/折叠';
+      return;
+    }
+    let collapsedCount = 0;
+    for (const pk of allPks) if (collapsedPeers.has(pk)) collapsedCount++;
+    const majorityCollapsed = collapsedCount >= allPks.size / 2;
+    if (majorityCollapsed) {
+      p2pToggleAllBtn.textContent = '⊞ 展开';
+      p2pToggleAllBtn.title = '点击展开所有 P2P 好友';
+    } else {
+      p2pToggleAllBtn.textContent = '⊟ 折叠';
+      p2pToggleAllBtn.title = '点击折叠所有 P2P 好友';
+    }
+  }
+  p2pToggleAllBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    collapseAllPeers();
+    const allPks = new Set([
+      ...knownPeers.map(p => p.publicKey),
+      ...remoteChannels.map(g => g.peerId)
+    ]);
+    if (allPks.size === 0) return;
+    // 多数折叠 → 全展开; 否则全折叠
+    let collapsedCount = 0;
+    for (const pk of allPks) if (collapsedPeers.has(pk)) collapsedCount++;
+    const majorityCollapsed = collapsedCount >= allPks.size / 2;
+    if (majorityCollapsed) {
+      expandAllPeers();
+    } else {
+      collapseAllPeers();
+    }
+    syncToggleAllBtn();
   });
+  // 暴露给 renderRemoteChannels 渲染后调用 (保持图标跟实际状态一致)
+  window.__syncP2PToggleAllBtn = syncToggleAllBtn;
+  syncToggleAllBtn();  // 首次同步
 }
 
 // v3 双向刷新: 主动向所有好友发 agent.meta.list, 拿到 ta 们分享给我的 channel
