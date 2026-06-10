@@ -88,10 +88,9 @@ export class P2PDirect extends EventEmitter {
       // 双向记录 (inbound + outbound 都能拿到)
       this.conns.set(remotePubKeyHex, conn);
 
-      // v3: 触发 'connection' 事件, 上层 (web server) 可以主动给新连接发消息
-      this.emit('connection', { remotePublicKey: remotePubKeyHex, conn });
-
       // 收到数据时 → 触发 'data' 事件
+      // 注意: data 监听器必须在 emit('connection') 之前注册,
+      // 否则 server 的 connection handler 发送消息后, 对端回复可能在 data 监听器就绪前到达
       conn.on('data', (chunk: Buffer | Uint8Array) => {
         const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         console.log(`[P2PDirect:${this.name}] 收到数据 from ${remotePubKeyHex.substring(0,12)}... (${buf.length} bytes)`);
@@ -108,6 +107,10 @@ export class P2PDirect extends EventEmitter {
       conn.on('close', () => {
         this.conns.delete(remotePubKeyHex);
       });
+
+      // v3: 触发 'connection' 事件, 上层 (web server) 可以主动给新连接发消息
+      // 注意: 放在 data/error/close 监听器之后, 确保 server 的 connection handler 不会先于 data 就绪
+      this.emit('connection', { remotePublicKey: remotePubKeyHex, conn });
     });
 
     await this.swarm.listen(); // server 模式

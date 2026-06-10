@@ -461,7 +461,6 @@ function sanitizeChannelForPeer(
     createdAt: ch.createdAt,
     updatedAt: ch.updatedAt,
     hasWallet: !!ch.walletAddress,
-    boundJudgmentCount: Array.isArray(ch.bound_judgment_ids) ? ch.bound_judgment_ids.length : 0,
     share_id: ch.share_id,
     // 🔒 不返回: bound_judgment_ids, walletAddress, walletBinding, autoInvokeTools, sessions, shared_with_peers
   };
@@ -1116,6 +1115,34 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
   };
   let p2pCommunicator: HyperswarmCommunicator | null = null;
 
+  // v3: 定期 broadcast — 每个 peer 只收到分享给他的 channel (按 peer 个性化)
+  // 走 known_peers (持久化) + sendTo (自动 joinPeer 重连), 不只 conns
+  // 定义在此处 (所有 try 外部), 确保 route handlers 也能访问
+  const v3BroadcastOwn = async () => {
+    if (!v3P2PRef) return { sent: 0, total: 0 };
+    const channels = await loadChannels();
+    const { listPeers } = await import('../network/known-peers.js');
+    const peers = await listPeers();
+    const myPk = v3P2PRef.getPublicKey();
+    let sent = 0;
+    for (const peer of peers) {
+      if (peer.publicKey === myPk) continue;
+      const sharedForPeer = channels
+        .map(ch => sanitizeChannelForPeer(ch, peer.publicKey))
+        .filter((x): x is Record<string, unknown> => x !== null);
+      if (sharedForPeer.length > 0) {
+        const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: sharedForPeer } });
+        const ok = v3P2PRef.sendTo(peer.publicKey, msg);
+        if (ok) {
+          sent++;
+          console.log(`[v3] broadcast: ${peer.name || peer.publicKey.substring(0,8)} → ${sharedForPeer.length} 个 channel`);
+        }
+      }
+    }
+    console.log(`[v3] broadcast 完成: sent=${sent}/${peers.length} 个 peer`);
+    return { sent, total: peers.length };
+  };
+
   try {
     console.log('开始生成 P2P 身份...');
 
@@ -1299,37 +1326,10 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       v3P2PRef = null;
     }
 
-    // v3: 定期 broadcast — 每个 peer 只收到分享给他的 channel (按 peer 个性化)
-    // 走 known_peers (持久化) + sendTo (自动 joinPeer 重连), 不只 conns
-    const v3BroadcastOwn = async () => {
-      if (!v3P2PRef) return { sent: 0, total: 0 };
-      const channels = await loadChannels();
-      const { listPeers } = await import('../network/known-peers.js');
-      const peers = await listPeers();
-      const myPk = v3P2PRef.getPublicKey();
-      let sent = 0;
-      for (const peer of peers) {
-        if (peer.publicKey === myPk) continue;  // 跳过自己
-        const sharedForPeer = channels
-          .map(ch => sanitizeChannelForPeer(ch, peer.publicKey))
-          .filter((x): x is Record<string, unknown> => x !== null);
-        if (sharedForPeer.length > 0) {
-          const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: sharedForPeer } });
-          // sendTo 会自动 joinPeer + 重连 (P2PDirect.sendTo 内部实现)
-          const ok = v3P2PRef.sendTo(peer.publicKey, msg);
-          if (ok) {
-            sent++;
-            console.log(`[v3] broadcast: ${peer.name || peer.publicKey.substring(0,8)} → ${sharedForPeer.length} 个 channel`);
-          }
-        }
-      }
-      console.log(`[v3] broadcast 完成: sent=${sent}/${peers.length} 个 peer`);
-      return { sent, total: peers.length };
-    };
+    // 首次广播: 等 swarm bootstrap 完成后推一次
     setTimeout(v3BroadcastOwn, 3000);
-    setTimeout(v3BroadcastOwn, 10000);
-    setTimeout(v3BroadcastOwn, 20000);
-    setTimeout(v3BroadcastOwn, 40000);
+    // v3 修复: 用 setInterval 替代一次性 setTimeout, 确保分享变更后能持续推送给 peer
+    setInterval(v3BroadcastOwn, 30000);
 
     // 保留 @diap/sdk 的旧实例 (它的 Hyperswarm 实例能帮 P2PDirect 做 DHT bootstrap)
     try {
@@ -1691,6 +1691,27 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // v3 测试专用: 直接注入远端频道缓存 (绕过 P2P)
+  // 仅当 NODE_ENV=test 时可用
+  app.post('/api/test/inject-remote-channel', async (req, res) => {
+    if (process.env.NODE_ENV !== 'test') {
+      return res.status(403).json({ error: 'only available in test mode' });
+    }
+    try {
+      const { peerPublicKey, channel } = req.body || {};
+      if (!peerPublicKey || !channel) {
+        return res.status(400).json({ error: 'peerPublicKey and channel required' });
+      }
+      const list = remoteChannelCache.get(peerPublicKey) || [];
+      list.push(channel);
+      remoteChannelCache.set(peerPublicKey, list);
+      broadcast({ type: 'remote-channel-update', peerId: peerPublicKey, channels: list }, 'p2p-global');
+      res.json({ ok: true, count: list.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // v3: 主动向所有已连接 P2P peer 拉 channel 列表
   // 用法: B 端用户点 "刷新远端智能体" → 触发本 endpoint
   app.post('/api/remote-channels/refresh', async (_req, res) => {
@@ -2035,6 +2056,10 @@ app.get('/channels', async (_req, res) => {
       }
       channel.updatedAt = new Date().toISOString();
       await saveChannels(channels);
+      // v3 修复: 分享变更后立即广播给所有 peer, 不用等对方手动刷新
+      if (shared_with_peers !== undefined) {
+        v3BroadcastOwn().catch(err => console.error('[v3] broadcast after share update failed:', err));
+      }
       res.json(channel);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -2901,13 +2926,14 @@ app.get('/channels', async (_req, res) => {
       const existing = await findNameByPublicKey(fromPublicKey);
       const peerName = name || existing || `peer-${fromPublicKey.substring(0, 8)}`;
       await addOrUpdatePeer(peerName, fromPublicKey);
-      // joinPeer + 对方 inbound connection 时, v3P2PRef.on('connection') handler
-      // 会自动发 list.reply 给对端 → 对端 cache + SSE 推到前端
-      // 不需要这里再主动 broadcast
+      // joinPeer 确保连接存在 (连接可能已在 friend-request 时建立, 这里可能是 no-op)
       const swarm = (v3P2PRef as any).swarm;
       if (swarm) {
         try { await swarm.joinPeer(Buffer.from(fromPublicKey, 'hex')); } catch {}
       }
+      // v3 修复: 主动广播自己的 channel 列表给新好友,
+      // 不能依赖 connection handler, 因为连接在 friend-request 阶段已建立, 不会触发新 connection 事件
+      v3BroadcastOwn().catch(err => console.error('[v3] broadcast after friend-accept failed:', err));
       console.log(`[v3-friend] 接受好友申请: ${fromPublicKey.substring(0,12)}... → ${peerName}`);
       res.json({ ok: true, persistedAs: peerName });
     } catch (err: any) {
