@@ -61,6 +61,26 @@ function togglePeerCollapsed(peerPk) {
   saveCollapsedPeers();
   renderRemoteChannels();
 }
+// 2026-06-10: 一键展开/折叠所有 P2P peer (header 按钮调用)
+function expandAllPeers() {
+  // 从 remoteChannels + knownPeers 收集所有 publicKey
+  const allPks = new Set([
+    ...knownPeers.map(p => p.publicKey),
+    ...remoteChannels.map(g => g.peerId)
+  ]);
+  for (const pk of allPks) collapsedPeers.delete(pk);
+  saveCollapsedPeers();
+  renderRemoteChannels();
+}
+function collapseAllPeers() {
+  const allPks = new Set([
+    ...knownPeers.map(p => p.publicKey),
+    ...remoteChannels.map(g => g.peerId)
+  ]);
+  for (const pk of allPks) collapsedPeers.add(pk);
+  saveCollapsedPeers();
+  renderRemoteChannels();
+}
 let lastAiContent = ''; // 防止 AI 消息重复显示
 let messagesContainers = new Map(); // channelId -> messages container div
 let sessionMessages = new Map(); // channelId:sessionId -> messages array
@@ -148,20 +168,34 @@ function startV3GlobalSSE() {
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === 'remote-chat-reply') {
-          // 找到当前打开的远端 chat modal 的 log
+          // 2026-06-10: 复用本地 addMessage 渲染 — 自动 marked + 剥 think/env + 主题样式
+          // 之前是 textContent 硬编码灰底, 跟 Step 3 重写的 modal 风格不一致,
+          // 而且 SSE 异步回到时 modal 可能已被切到 thinking 占满, 用户看不到 reply.
           const log = document.getElementById('rcm-log');
           const thinkingEl = document.getElementById('rcm-thinking');
           if (thinkingEl) thinkingEl.style.display = 'none'; // 思考结束, 隐藏
+          // 也清掉 "对方正在思考..." 行 (流式 token 留下的)
+          const liveThinking = document.getElementById('rcm-thinking-live');
+          if (liveThinking) liveThinking.remove();
           if (log) {
-            const bubble = document.createElement('div');
-            bubble.style.cssText = 'padding:8px 10px;margin:4px 0;border-radius:6px;font-size:13px;line-height:1.4;max-width:80%;word-wrap:break-word;background:#e5e7eb;color:#111;';
-            bubble.textContent = msg.text || '(空回复)';
             if (msg.error) {
-              bubble.textContent = '(错误: ' + msg.error + ')';
-              bubble.style.background = '#fca5a5';
+              // 错误用 sysmsg 样式 (跟 modal 风格一致)
+              const errEl = document.createElement('div');
+              errEl.className = 'remote-chat-sysmsg remote-chat-sysmsg-error';
+              errEl.textContent = `❌ 对方回复出错: ${msg.error}`;
+              log.appendChild(errEl);
+            } else {
+              // 走本地 addMessage, 跟主聊天框完全一致 (marked + think/env 折叠 + 主题色)
+              const prefix = `🤖 远端 AI 回复\n\n`;
+              addMessage(prefix + (msg.text || '(空回复)'), 'ai', false, log);
             }
-            log.appendChild(bubble);
             log.scrollTop = log.scrollHeight;
+          } else {
+            // modal 没开 → 用右下 toast 提示用户"对方回了, 打开聊天看"
+            if (typeof showSimpleToast === 'function') {
+              const preview = (msg.text || '').slice(0, 50);
+              showSimpleToast(`💬 远端 channel 有新回复: ${preview}${msg.text && msg.text.length > 50 ? '…' : ''}`);
+            }
           }
         } else if (msg.type === 'remote-chat-thinking') {
           // v3 新增: B 端实时显示 A 节点的思考过程
@@ -3053,9 +3087,10 @@ function renderRemoteChannels() {
       : (peer._isStranger ? '陌生 peer' : '从未连接');
     const strangerStyle = peer._isStranger ? 'border:1px dashed var(--border-light);' : '';
     const strangerIcon = peer._isStranger ? '❔' : '👤';
-    // 2026-06-10: 折叠逻辑
-    // - 第一次见 (不在 seenPeers): 默认折叠 (减少 10+ peer 视觉噪声), 加入 collapsedPeers + seenPeers
-    // - 已见过: 沿用 collapsedPeers 状态 (用户上次选择)
+    // 2026-06-10: 折叠逻辑 (定稿)
+    // - 首次见 peer: 默认 *折叠* (10+ peer 时减少视觉噪声; 标题栏右侧 "X ch" 提示有内容)
+    // - 已见过: 沿用 collapsedPeers (用户上次选择)
+    // - "全部展开/折叠" 按钮在 P2P header (id=p2p-expand-all-btn)
     if (!seenPeers.has(peer.publicKey)) {
       seenPeers.add(peer.publicKey);
       collapsedPeers.add(peer.publicKey);  // 首次默认折叠
@@ -3067,10 +3102,11 @@ function renderRemoteChannels() {
     return `
       <li class="remote-peer-group ${isCollapsed ? 'collapsed' : ''}" style="margin-bottom:10px;${strangerStyle}">
         <div class="remote-peer-header" data-peer-name="${escapeHtml(peer.name)}" data-peer-pk="${escapeHtml(peer.publicKey)}"
-             style="display:flex;align-items:center;gap:6px;padding:4px 6px;background:var(--bg-hover);border-radius:4px;cursor:pointer;">
-          <span class="peer-caret" data-toggle-peer="${escapeHtml(peer.publicKey)}" title="折叠/展开">${caretChar}</span>
-          <span style="font-size:12px;">${strangerIcon}</span>
-          <span style="flex:1;font-size:12px;font-weight:600;" title="${escapeHtml(peer.publicKey)}">${escapeHtml(peer.name)}</span>
+             style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--bg-hover);border-radius:4px;cursor:pointer;">
+          <button class="peer-caret-btn" data-toggle-peer="${escapeHtml(peer.publicKey)}" title="折叠/展开"
+                  style="background:var(--bg-active);border:1px solid var(--border);color:var(--text);cursor:pointer;width:22px;height:22px;border-radius:4px;font-size:12px;line-height:1;padding:0;display:flex;align-items:center;justify-content:center;flex:0 0 auto;">${caretChar}</button>
+          <span style="font-size:13px;">${strangerIcon}</span>
+          <span style="flex:1;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(peer.publicKey)}">${escapeHtml(peer.name)}</span>
           <span style="font-size:9px;color:var(--text-muted);">${peerChannels.length > 0 ? `${peerChannels.length} ch · ` : ''}${lastConn}</span>
         </div>
         <div class="remote-peer-channels" style="margin-top:4px;margin-left:8px;">
@@ -3090,11 +3126,11 @@ function renderRemoteChannels() {
   }).join('');
   list.innerHTML = html;
 
-  // 2026-06-10: caret 点击 → 折叠/展开 (要在 share modal binding 之前, 阻止冒泡)
-  list.querySelectorAll('.peer-caret[data-toggle-peer]').forEach(el => {
-    el.addEventListener('click', (e) => {
+  // 2026-06-10: 折叠按钮点击 → 切折叠 (stopPropagation 防止冒泡触发 header 的分享 modal)
+  list.querySelectorAll('.peer-caret-btn[data-toggle-peer]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const pk = el.getAttribute('data-toggle-peer');
+      const pk = btn.getAttribute('data-toggle-peer');
       togglePeerCollapsed(pk);
     });
   });
@@ -3472,11 +3508,12 @@ if (addPeerBtn) {
       window.__pendingFriendRequests = window.__pendingFriendRequests || new Map();
       if (data.requestId) {
         window.__pendingFriendRequests.set(data.requestId, { name, publicKey, at: Date.now() });
-        // 8s 后还没 ack → 提示
+        // 8s 后还没 ack → 提示用户对方可能跑旧版 (无 ack 协议)
         setTimeout(() => {
           if (window.__pendingFriendRequests.has(data.requestId)) {
             window.__pendingFriendRequests.delete(data.requestId);
             console.warn(`[v3-friend] 申请超时未收到 ack (requestId=${data.requestId.substring(0,8)})`);
+            showSimpleToast(`⚠️ 对方未确认收到 (可能是旧版客户端, 申请已发出但无法验证)`, 'warn');
           }
         }, 8000);
       }
@@ -3563,6 +3600,22 @@ function showSimpleToast(text, kind = 'info') {
     el.style.transform = 'translateX(20px)';
     setTimeout(() => el.remove(), 320);
   }, 3000);
+}
+
+// 2026-06-10: P2P 全部展开/折叠按钮 (header 上)
+const p2pExpandAllBtn = document.getElementById('p2p-expand-all-btn');
+if (p2pExpandAllBtn) {
+  p2pExpandAllBtn.addEventListener('click', (e) => {
+    e.stopPropagation();  // 防止冒泡触发 section header 整段折叠
+    expandAllPeers();
+  });
+}
+const p2pCollapseAllBtn = document.getElementById('p2p-collapse-all-btn');
+if (p2pCollapseAllBtn) {
+  p2pCollapseAllBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    collapseAllPeers();
+  });
 }
 
 // v3 双向刷新: 主动向所有好友发 agent.meta.list, 拿到 ta 们分享给我的 channel
