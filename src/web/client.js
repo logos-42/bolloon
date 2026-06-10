@@ -29,6 +29,38 @@ let reconnectAttempts = new Map(); // channelId -> attempts
 let reconnectTimers = new Map(); // channelId -> timer
 let heartbeatTimers = new Map(); // channelId -> setInterval handle (防止泄漏)
 let lastUserCommand = ''; // 防止用户消息重复显示
+
+// 2026-06-10: P2P peer-group 折叠状态持久化 (跨刷新)
+// key = bolloon.p2p.collapsedPeers, value = JSON array of publicKey hex
+const COLLAPSED_PEERS_KEY = 'bolloon.p2p.collapsedPeers';
+const SEEN_PEERS_KEY = 'bolloon.p2p.seenPeers';
+let collapsedPeers = (function loadCollapsed() {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_PEERS_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch { return new Set(); }
+})();
+let seenPeers = (function loadSeen() {
+  try {
+    const raw = localStorage.getItem(SEEN_PEERS_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch { return new Set(); }
+})();
+function saveCollapsedPeers() {
+  try { localStorage.setItem(COLLAPSED_PEERS_KEY, JSON.stringify([...collapsedPeers])); } catch {}
+}
+function saveSeenPeers() {
+  try { localStorage.setItem(SEEN_PEERS_KEY, JSON.stringify([...seenPeers])); } catch {}
+}
+function togglePeerCollapsed(peerPk) {
+  if (collapsedPeers.has(peerPk)) {
+    collapsedPeers.delete(peerPk);
+  } else {
+    collapsedPeers.add(peerPk);
+  }
+  saveCollapsedPeers();
+  renderRemoteChannels();
+}
 let lastAiContent = ''; // 防止 AI 消息重复显示
 let messagesContainers = new Map(); // channelId -> messages container div
 let sessionMessages = new Map(); // channelId:sessionId -> messages array
@@ -197,6 +229,16 @@ function startV3GlobalSSE() {
         } else if (msg.type === 'friend-request') {
           // v3 新增: 收到好友申请
           showFriendRequestModal(msg);
+        } else if (msg.type === 'friend-request-ack') {
+          // 2026-06-10: 收到对方 ack, 给发送方提示"已送达"
+          const pending = window.__pendingFriendRequests;
+          if (pending && msg.requestId && pending.has(msg.requestId)) {
+            const { name } = pending.get(msg.requestId);
+            pending.delete(msg.requestId);
+            console.log(`[v3-friend] ✅ ack 收到: ${name} 已收到好友申请`);
+            // 简短 toast (右下角), 不阻塞
+            showSimpleToast(`📬 ${name} 已收到你的好友申请, 等对方接受`);
+          }
         }
       } catch (err) {
         console.error('[v3] 全局 SSE 解析失败:', err);
@@ -3011,13 +3053,25 @@ function renderRemoteChannels() {
       : (peer._isStranger ? '陌生 peer' : '从未连接');
     const strangerStyle = peer._isStranger ? 'border:1px dashed var(--border-light);' : '';
     const strangerIcon = peer._isStranger ? '❔' : '👤';
+    // 2026-06-10: 折叠逻辑
+    // - 第一次见 (不在 seenPeers): 默认折叠 (减少 10+ peer 视觉噪声), 加入 collapsedPeers + seenPeers
+    // - 已见过: 沿用 collapsedPeers 状态 (用户上次选择)
+    if (!seenPeers.has(peer.publicKey)) {
+      seenPeers.add(peer.publicKey);
+      collapsedPeers.add(peer.publicKey);  // 首次默认折叠
+      saveSeenPeers();
+      saveCollapsedPeers();
+    }
+    const isCollapsed = collapsedPeers.has(peer.publicKey);
+    const caretChar = '▾';  // CSS rotate -90deg 处理折叠态
     return `
-      <li class="remote-peer-group" style="margin-bottom:10px;${strangerStyle}">
+      <li class="remote-peer-group ${isCollapsed ? 'collapsed' : ''}" style="margin-bottom:10px;${strangerStyle}">
         <div class="remote-peer-header" data-peer-name="${escapeHtml(peer.name)}" data-peer-pk="${escapeHtml(peer.publicKey)}"
              style="display:flex;align-items:center;gap:6px;padding:4px 6px;background:var(--bg-hover);border-radius:4px;cursor:pointer;">
+          <span class="peer-caret" data-toggle-peer="${escapeHtml(peer.publicKey)}" title="折叠/展开">${caretChar}</span>
           <span style="font-size:12px;">${strangerIcon}</span>
           <span style="flex:1;font-size:12px;font-weight:600;" title="${escapeHtml(peer.publicKey)}">${escapeHtml(peer.name)}</span>
-          <span style="font-size:9px;color:var(--text-muted);">${lastConn}</span>
+          <span style="font-size:9px;color:var(--text-muted);">${peerChannels.length > 0 ? `${peerChannels.length} ch · ` : ''}${lastConn}</span>
         </div>
         <div class="remote-peer-channels" style="margin-top:4px;margin-left:8px;">
           ${peerChannels.length === 0
@@ -3036,6 +3090,15 @@ function renderRemoteChannels() {
   }).join('');
   list.innerHTML = html;
 
+  // 2026-06-10: caret 点击 → 折叠/展开 (要在 share modal binding 之前, 阻止冒泡)
+  list.querySelectorAll('.peer-caret[data-toggle-peer]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const pk = el.getAttribute('data-toggle-peer');
+      togglePeerCollapsed(pk);
+    });
+  });
+
   // 绑定: 点击 channel → 弹聊天窗口
   list.querySelectorAll('.remote-channel-row').forEach(row => {
     row.addEventListener('click', () => {
@@ -3048,7 +3111,9 @@ function renderRemoteChannels() {
   });
   // 绑定: 点击 peer 头部 → 弹分享 modal (让 A 决定分享本机哪些 channel 给这个 peer)
   list.querySelectorAll('.remote-peer-header').forEach(row => {
-    row.addEventListener('click', () => {
+    row.addEventListener('click', (e) => {
+      // 2026-06-10: 防御 — 点 caret 时已 stopPropagation, 但万一冒泡逃逸再挡一道
+      if (e.target.closest('.peer-caret')) return;
       const peerName = row.dataset.peerName;
       const peerPk = row.dataset.peerPk;
       openShareToPeerModal(peerName, peerPk);
@@ -3395,8 +3460,27 @@ if (addPeerBtn) {
         body: JSON.stringify({ targetPublicKey: publicKey, name, message: '想加你为 P2P 好友, 共享 channel 协作' })
       });
       const data = await res.json();
+      if (res.status === 502) {
+        // 2026-06-10: 区分"对方不在线"和"写失败" — 让用户知道是否需要重试
+        const reason = data.code === 'NO_CONN' ? '对方未在线或 P2P 握手超时' : '写入 P2P 通道失败';
+        alert(`好友申请发送失败: ${reason}\n\n本地已记住对方 publicKey (${publicKey.substring(0,8)}...), 等对方上线后可在 P2P 面板手动重试.`);
+        await loadRemoteChannels();
+        return;
+      }
       if (!res.ok) throw new Error(data.error || 'connect failed');
-      alert(`已发送好友申请给 ${name} (${publicKey.substring(0, 12)}...)\n对方接受后会自动出现在 P2P 好友区.`);
+      // 成功 — 但不阻塞地等 ack (ack 经 SSE 'friend-request-ack' 推回, 由 v3GlobalEventSource 处理)
+      window.__pendingFriendRequests = window.__pendingFriendRequests || new Map();
+      if (data.requestId) {
+        window.__pendingFriendRequests.set(data.requestId, { name, publicKey, at: Date.now() });
+        // 8s 后还没 ack → 提示
+        setTimeout(() => {
+          if (window.__pendingFriendRequests.has(data.requestId)) {
+            window.__pendingFriendRequests.delete(data.requestId);
+            console.warn(`[v3-friend] 申请超时未收到 ack (requestId=${data.requestId.substring(0,8)})`);
+          }
+        }, 8000);
+      }
+      alert(`已发送好友申请给 ${name} (${publicKey.substring(0, 12)}...)\n对方收到后自己端弹申请 modal, 接受后会出现在 P2P 好友区.`);
       await loadRemoteChannels();
     } catch (err) {
       alert('申请失败: ' + (err.message || err));
@@ -3410,23 +3494,24 @@ if (addPeerBtn) {
 function showFriendRequestModal(req) {
   // 移除已有 modal
   document.getElementById('friend-request-modal')?.remove();
+  // 2026-06-10: 同 Step 3 远端 chat modal 一样, 改用 class + CSS 变量, 跟本地风格统一
   const html = `
-    <div id="friend-request-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10004;display:flex;align-items:center;justify-content:center;">
-      <div style="background:#fff;border-radius:8px;width:420px;max-width:92vw;box-shadow:0 10px 40px rgba(0,0,0,0.2);">
-        <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:8px;">
-          <span style="font-size:18px;">🤝</span>
-          <div style="flex:1;">
-            <div style="font-size:15px;font-weight:600;">好友申请</div>
-            <div style="font-size:11px;color:#6b7280;margin-top:2px;">来自 ${escapeHtml(req.fromName)} (${escapeHtml(req.fromPublicKey.substring(0, 12))}…)</div>
+    <div id="friend-request-modal" class="friend-req-overlay">
+      <div class="friend-req-shell">
+        <div class="friend-req-header">
+          <span style="font-size:20px;">🤝</span>
+          <div style="flex:1;min-width:0;">
+            <div class="friend-req-title">好友申请</div>
+            <div class="friend-req-meta">来自 ${escapeHtml(req.fromName)} (${escapeHtml(req.fromPublicKey.substring(0, 16))}…)</div>
           </div>
         </div>
-        <div style="padding:14px 18px;font-size:13px;color:#374151;">
-          <p>${escapeHtml(req.message || '想加你为 P2P 好友')}</p>
-          <p style="margin-top:8px;color:#6b7280;font-size:11px;">接受后: 双方都加为好友, 对方分享给你的 channel 会自动出现在 P2P 好友区.</p>
+        <div class="friend-req-body">
+          <p style="margin:0 0 8px;">${escapeHtml(req.message || '想加你为 P2P 好友')}</p>
+          <p style="margin:0;color:var(--text-muted);font-size:11px;">接受后: 双方互加好友, 对方分享的 channel 会自动出现在 P2P 好友区.</p>
         </div>
-        <div style="padding:10px 18px;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end;">
-          <button id="frm-deny" style="padding:6px 14px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:4px;cursor:pointer;font-size:13px;">拒绝</button>
-          <button id="frm-accept" style="padding:6px 14px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">接受</button>
+        <div class="friend-req-actions">
+          <button id="frm-deny" class="friend-req-btn-deny">拒绝</button>
+          <button id="frm-accept" class="friend-req-btn-accept">接受</button>
         </div>
       </div>
     </div>
@@ -3447,11 +3532,37 @@ function showFriendRequestModal(req) {
       console.log('[v3-friend] 接受了好友申请:', req.fromName);
       // 立刻拉一次 — 对方刚 accept, ta 的 channel 列表会被推到我们这
       setTimeout(loadRemoteChannels, 1000);
+      showSimpleToast(`✅ 已接受 ${req.fromName} 的好友申请`);
     } catch (err) {
       console.error('[v3-friend] accept 失败:', err);
       alert('接受失败: ' + (err.message || err));
     }
   };
+}
+
+/**
+ * 2026-06-10: 简单的右下 toast, 3s 自动消失. 用于 ack / 接受好友 等非阻塞反馈
+ */
+function showSimpleToast(text, kind = 'info') {
+  const containerId = 'simple-toast-container';
+  let container = document.getElementById(containerId);
+  if (!container) {
+    container = document.createElement('div');
+    container.id = containerId;
+    container.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:10005;display:flex;flex-direction:column;gap:8px;max-width:320px;';
+    document.body.appendChild(container);
+  }
+  const el = document.createElement('div');
+  el.className = `simple-toast simple-toast-${kind}`;
+  el.style.cssText = `background:var(--bg-sidebar);color:var(--text);border:1px solid var(--border);padding:10px 14px;border-radius:6px;font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,0.3);font-family:inherit;animation:toast-in .2s ease-out;`;
+  el.textContent = text;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.style.transition = 'opacity .3s, transform .3s';
+    el.style.opacity = '0';
+    el.style.transform = 'translateX(20px)';
+    setTimeout(() => el.remove(), 320);
+  }, 3000);
 }
 
 // v3 双向刷新: 主动向所有好友发 agent.meta.list, 拿到 ta 们分享给我的 channel

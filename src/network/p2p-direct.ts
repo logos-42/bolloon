@@ -162,6 +162,55 @@ export class P2PDirect extends EventEmitter {
     }
   }
 
+  /**
+   * 2026-06-10: 真"主动发, 等握手完成"版本 — 修复好友申请 fire-and-forget bug.
+   *
+   * 之前的问题: server.ts:2914 `await swarm.joinPeer(...)` 只触发握手, conn 还没 push 进 this.conns,
+   * 立即调 sendTo 找不到 conn → 静默返回 false → 消息扔进虚空.
+   *
+   * 现在: sendToWithWait 监听 'connection' 事件, 等到 targetPublicKey 真正出现在 this.conns,
+   * 才 write; 超时返回 NO_CONN; 写失败返回 WRITE_FAIL; 成功返回 SENT.
+   *
+   * 上层调用: const r = await p2p.sendToWithWait(pk, rpc, 5000);
+   *           if (r !== 'SENT') return 502 给前端.
+   */
+  async sendToWithWait(
+    publicKeyHex: string,
+    data: Buffer | string,
+    timeoutMs: number = 5000
+  ): Promise<'SENT' | 'NO_CONN' | 'WRITE_FAIL'> {
+    // 1) 已有 conn → 立即试
+    let conn = this.conns.get(publicKeyHex);
+    if (!conn || conn.destroyed) {
+      // 2) 等 'connection' 事件 (this.emit('connection', { remotePublicKey, conn }))
+      const waitResult = await new Promise<'READY' | 'TIMEOUT'>((resolve) => {
+        const timer = setTimeout(() => {
+          this.off('connection', onConn);
+          resolve('TIMEOUT');
+        }, timeoutMs);
+        const onConn = (evt: { remotePublicKey: string; conn: any }) => {
+          if (evt.remotePublicKey === publicKeyHex) {
+            clearTimeout(timer);
+            this.off('connection', onConn);
+            resolve('READY');
+          }
+        };
+        this.on('connection', onConn);
+      });
+      if (waitResult === 'TIMEOUT') return 'NO_CONN';
+      conn = this.conns.get(publicKeyHex);
+      if (!conn || conn.destroyed) return 'NO_CONN'; // 双保险
+    }
+    const buf = typeof data === 'string' ? Buffer.from(data) : data;
+    try {
+      conn.write(buf);
+      return 'SENT';
+    } catch (err) {
+      console.error(`[P2PDirect:${this.name}] sendToWithWait 写失败 (${publicKeyHex.substring(0,12)}...):`, (err as Error).message);
+      return 'WRITE_FAIL';
+    }
+  }
+
   getPublicKey(): string {
     if (!this.swarm) return '';
     return b4a.toString(this.swarm.keyPair.publicKey, 'hex');

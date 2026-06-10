@@ -4266,3 +4266,130 @@ body:has(> .api-config-page) {
   color: var(--text-muted);
   font-size: 11px;
 }
+
+/* ============================================================
+ * 2026-06-10: 好友申请 modal — 对齐本地风格 + CSS 变量
+ * ============================================================ */
+.friend-req-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 10004;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.friend-req-shell {
+  background: var(--bg-main);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 460px;
+  max-width: 92vw;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+  font-family: inherit;
+}
+.friend-req-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 8px 8px 0 0;
+}
+.friend-req-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.friend-req-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.friend-req-body {
+  padding: 14px 18px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.friend-req-actions {
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  background: var(--bg-sidebar);
+  border-radius: 0 0 8px 8px;
+}
+.friend-req-btn-deny {
+  padding: 6px 14px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+}
+.friend-req-btn-deny:hover {
+  background: var(--bg-active);
+  color: var(--text);
+}
+.friend-req-btn-accept {
+  padding: 6px 14px;
+  background: var(--user-bg);
+  color: var(--user-text);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+}
+.friend-req-btn-accept:hover {
+  filter: brightness(1.1);
+}
+
+/* ============================================================
+ * 2026-06-10: Toast 入场动画 (simple-toast 用)
+ * ============================================================ */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ============================================================
+ * 2026-06-10: P2P peer-group 可折叠 — 复用 #remote-agents-section.collapsed 模式
+ * peer header 加 .peer-caret, 点击切 .remote-peer-group.collapsed
+ * 折叠后隐藏 .remote-peer-channels, caret 旋转 -90deg
+ * ============================================================ */
+.remote-peer-group .peer-caret {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+  user-select: none;
+  width: 12px;
+  text-align: center;
+}
+.remote-peer-group.collapsed .peer-caret {
+  transform: rotate(-90deg);
+}
+.remote-peer-group.collapsed > .remote-peer-channels {
+  display: none;
+}
+.remote-peer-group .remote-peer-header {
+  /* 让 caret 单独成可点区域时不撑破 header */
+  user-select: none;
+}

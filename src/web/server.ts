@@ -1272,6 +1272,33 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                 fromPublicKey: evt.fromPublicKey,
                 fromName: parsed.payload?.name || ('peer-' + evt.fromPublicKey.substring(0, 8)),
                 message: parsed.payload?.message || '想加你为 P2P 好友',
+                requestId: parsed.payload?.requestId,    // 2026-06-10: 透传 requestId 给前端
+                timestamp: Date.now()
+              }, 'p2p-global');
+              // 2026-06-10 新增: 立刻发 ack 回给发送方, 让发送方 UI 知道"对方收到了"
+              try {
+                const ackRpc = JSON.stringify({
+                  v: 3,
+                  op: 'agent.friend.request.ack',
+                  payload: {
+                    requestId: parsed.payload?.requestId,
+                    receivedBy: v3P2PRef?.getPublicKey(),
+                    timestamp: Date.now()
+                  }
+                });
+                v3P2PRef?.sendTo(evt.fromPublicKey, ackRpc);
+              } catch (err) {
+                console.warn('[v3-friend] 发 ack 失败 (不阻塞):', (err as Error).message);
+              }
+              return;
+            }
+            // 2026-06-10 新增: 发送方收到对方 ack → SSE 推前端, 显示"对方已收到"
+            if (parsed.op === 'agent.friend.request.ack') {
+              console.log(`[v3-friend] 收到 ack: requestId=${(parsed.payload?.requestId || '').substring(0,8)} 来自 ${evt.fromPublicKey.substring(0,12)}...`);
+              broadcast({
+                type: 'friend-request-ack',
+                requestId: parsed.payload?.requestId,
+                receivedBy: parsed.payload?.receivedBy,
                 timestamp: Date.now()
               }, 'p2p-global');
               return;
@@ -2899,16 +2926,17 @@ app.get('/channels', async (_req, res) => {
 
   // v3: 主动给对端发好友申请 — 推到对端 UI 让对方接受
   // 用法: POST /api/friend-request { targetPublicKey, name, message }
+  // 2026-06-10 改: 用 sendToWithWait 等握手完成, 不再 fire-and-forget; 返回结构化 code 让前端知道失败
   app.post('/api/friend-request', async (req, res) => {
     try {
       if (!v3P2PRef) {
-        return res.status(503).json({ error: 'P2PDirect not started' });
+        return res.status(503).json({ ok: false, code: 'P2P_NOT_STARTED', error: 'P2PDirect not started' });
       }
       const { targetPublicKey, name, message } = req.body || {};
       if (!targetPublicKey || typeof targetPublicKey !== 'string' || targetPublicKey.length !== 64) {
-        return res.status(400).json({ error: 'targetPublicKey (64 hex) required' });
+        return res.status(400).json({ ok: false, code: 'BAD_REQUEST', error: 'targetPublicKey (64 hex) required' });
       }
-      // 先 joinPeer 确保能连上
+      // 先 joinPeer 触发握手 (注意: joinPeer 不阻塞到 conn 就绪)
       const swarm = (v3P2PRef as any).swarm;
       if (swarm) {
         try { await swarm.joinPeer(Buffer.from(targetPublicKey, 'hex')); } catch {}
@@ -2920,21 +2948,34 @@ app.get('/channels', async (_req, res) => {
       await addOrUpdatePeer(peerName, targetPublicKey);
       // 构造 RPC, 推到对端 — 对端会 SSE 推 friend-request 到前端
       const myPk = v3P2PRef.getPublicKey();
+      const requestId = crypto.randomUUID();
       const rpc = JSON.stringify({
         v: 3,
         op: 'agent.friend.request',
         payload: {
+          requestId,                  // 2026-06-10: 加 requestId, ack 时回带
           fromPublicKey: myPk,
           name: peerName,
           message: message || '想加你为 P2P 好友, 共享 channel 协作'
         }
       });
-      const sent = v3P2PRef.sendTo(targetPublicKey, rpc);
-      console.log(`[v3-friend] ${myPk.substring(0,12)}... 发送好友申请给 ${targetPublicKey.substring(0,12)}... (sent=${sent})`);
-      res.json({ ok: true, sent, persistedAs: peerName });
+      // 2026-06-10: 用 sendToWithWait, 等 conn 真就绪后再发, 默认 5s 超时
+      const result = await v3P2PRef.sendToWithWait(targetPublicKey, rpc, 5000);
+      console.log(`[v3-friend] ${myPk.substring(0,12)}... 发送好友申请给 ${targetPublicKey.substring(0,12)}... (result=${result}, requestId=${requestId.substring(0,8)})`);
+      if (result !== 'SENT') {
+        return res.status(502).json({
+          ok: false,
+          code: result,            // NO_CONN / WRITE_FAIL
+          error: result === 'NO_CONN'
+            ? '对方未在线, 请确认对方已启动 bolloon 并互联'
+            : '写入 P2P 通道失败, 请重试',
+          persistedAs: peerName    // 本地仍持久化, 等对方上线再 retry 即可
+        });
+      }
+      res.json({ ok: true, sent: true, code: 'SENT', persistedAs: peerName, requestId });
     } catch (err: any) {
       console.error('[v3-friend] friend-request 失败:', err);
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ ok: false, code: 'EXCEPTION', error: err.message });
     }
   });
 
