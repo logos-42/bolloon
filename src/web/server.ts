@@ -1534,7 +1534,14 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         for (const c of remoteChannels) {
           contextHint += `  - [远端, owner=${(c._ownerPublicKey || '').substring(0,8)}…] @${c.name} (id=${c.id})\n`;
         }
-        contextHint += '语法: 当你想给其他渠道发消息, 在回复中写 "@渠道名 我要说的话" 即可. 消息会持久化到目标 channel 的 session, 你之后能看到"自己"在那里说的话.\n\n';
+        contextHint += '语法: 当你想给其他渠道发消息, 在回复中写 "@渠道名 我要说的话" 即可. 消息会持久化到目标 channel 的 session, 你之后能看到"自己"在那里说的话.\n';
+        // 2026-06-10 强化: 当用户消息里出现 @渠道名, 默认是请你代为转发, 务必在回复里包含对应的 @ 转发
+        if (remoteChannels.length > 0) {
+          contextHint += '重要: 上面列表里 [远端] 标记的 channel 在另一台机器上, 你可以像 @本地 channel 一样 @ 它们 — 我会通过 P2P 自动把消息送达对方智能体, 对方智能体的回复也会同步回来.\n';
+          contextHint += '当用户在消息里 @ 了某个 (本地或远端) channel, 默认意图是希望你代为转发 — 你应该在回复中写出对应的 "@渠道名 转发内容", 否则用户的请求不会被路由出去.\n\n';
+        } else {
+          contextHint += '\n';
+        }
       }
 
       if (contextHint) contextHint += '\n';

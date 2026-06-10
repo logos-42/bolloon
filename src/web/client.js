@@ -1906,12 +1906,20 @@ function setupMentionAutocomplete(inputEl) {
   }
 
   function update() {
-    if (!mentionChannels.length) return;
+    // 2026-06-10 修: 与主输入框同步 — 数组空时主动刷新, 首次打开 dropdown 强制刷新
+    if (!mentionChannels.length) {
+      refreshMentionChannels().then(() => {
+        if (mentionChannels.length) update();
+      });
+      return;
+    }
     const m = detectQuery();
     if (!m) { closeLocal(); return; }
     if (localAnchor === -1) {
       localAnchor = m.anchor;
       localBlockEnd = m.anchor + 1 + (m.query || '').length;
+      // dropdown 首次打开 → 强制刷一次保证 remote 最新
+      refreshMentionChannels();
     }
     localQuery = m.query;
     const q = m.query.toLowerCase();
@@ -3104,29 +3112,31 @@ async function openShareToPeerModal(peerName, peerPublicKey) {
   };
 }
 
-/** v3: 跟远端 channel 聊天的简易弹窗 */
+/** v3: 跟远端 channel 聊天的简易弹窗
+ *  2026-06-10 重写: UI 完全对齐本地聊天 (复用 addMessage / .messages / .bubble 整套样式),
+ *  marked.parse + cleanThink + cleanEnv 自动生效, 不再裸文本.
+ */
 function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   // 移除已有 modal
   document.getElementById('remote-chat-modal')?.remove();
   const html = `
-    <div id="remote-chat-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10002;display:flex;align-items:center;justify-content:center;">
-      <div style="background:#fff;border-radius:8px;width:560px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.2);">
-        <div style="padding:12px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
+    <div id="remote-chat-modal" class="remote-chat-overlay">
+      <div class="remote-chat-shell">
+        <div class="remote-chat-header">
           <div style="flex:1;min-width:0;">
-            <div style="font-size:15px;font-weight:600;">跟 ${escapeHtml(channelName)} 聊天</div>
-            <div style="font-size:11px;color:#6b7280;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">远端 peer: ${escapeHtml(peerPublicKey.substring(0,16))}… · ${escapeHtml(channelId)}</div>
+            <div class="remote-chat-title">🌐 跟 ${escapeHtml(channelName)} 聊天</div>
+            <div class="remote-chat-meta">远端 peer: ${escapeHtml(peerPublicKey.substring(0,16))}… · ${escapeHtml(channelId)}</div>
           </div>
-          <button id="rcm-refresh-history" title="重新拉历史" style="background:none;border:1px solid var(--border);color:#6b7280;cursor:pointer;padding:2px 8px;border-radius:4px;font-size:11px;margin-right:6px;">↻ 历史</button>
-          <button id="rcm-close" style="background:none;border:none;font-size:20px;color:#6b7280;cursor:pointer;">×</button>
+          <button id="rcm-refresh-history" title="重新拉历史" class="remote-chat-btn-secondary">↻ 历史</button>
+          <button id="rcm-close" class="remote-chat-btn-close">×</button>
         </div>
-        <div id="rcm-thinking" style="display:none;padding:8px 16px;background:#fef3c7;color:#92400e;font-size:12px;border-bottom:1px solid #e5e7eb;">
+        <div id="rcm-thinking" class="remote-chat-thinking" style="display:none;">
           📥 正在从远端拉历史 + 判断力…
         </div>
-        <div id="rcm-log" style="flex:1;overflow-y:auto;padding:12px 16px;min-height:240px;max-height:60vh;background:#f9fafb;"></div>
-        <div style="padding:10px 12px;border-top:1px solid #e5e7eb;display:flex;gap:6px;">
-          <input id="rcm-input" type="text" placeholder="输入消息, 发送到远端 channel..."
-                 style="flex:1;padding:8px 10px;border:1px solid #d1d5db;border-radius:4px;font-size:13px;">
-          <button id="rcm-send" style="padding:8px 14px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">发送</button>
+        <div id="rcm-log" class="messages remote-chat-log"></div>
+        <div class="remote-chat-input-row">
+          <input id="rcm-input" type="text" placeholder="输入消息, 发送到远端 channel..." class="remote-chat-input">
+          <button id="rcm-send" class="remote-chat-btn-send">发送</button>
         </div>
       </div>
     </div>
@@ -3144,27 +3154,16 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   };
   document.getElementById('rcm-refresh-history').onclick = () => loadHistory(false);
 
+  // 2026-06-10 改: 直接复用本地 addMessage, 自动获得 marked + think 折叠 + env 折叠 + 主题变量
   const append = (text, role) => {
-    const bubble = document.createElement('div');
-    const isUser = role === 'user';
-    bubble.style.cssText = `padding:8px 10px;margin:4px 0;border-radius:6px;font-size:13px;line-height:1.4;max-width:80%;word-wrap:break-word;${
-      isUser ? 'background:#2563eb;color:#fff;margin-left:auto;text-align:left;'
-             : 'background:#e5e7eb;color:#111;'
-    }`;
-    bubble.textContent = text;
-    log.appendChild(bubble);
+    addMessage(text, role === 'user' ? 'user' : 'ai', false, log);
     log.scrollTop = log.scrollHeight;
   };
 
+  // 系统提示用更轻量的样式 (不走 addMessage, 避免被当聊天记录裁剪)
   const appendSystem = (text, kind = 'info') => {
     const el = document.createElement('div');
-    const colors = {
-      info: { bg: '#dbeafe', fg: '#1e40af' },
-      warn: { bg: '#fef3c7', fg: '#92400e' },
-      error: { bg: '#fca5a5', fg: '#7f1d1d' }
-    };
-    const c = colors[kind] || colors.info;
-    el.style.cssText = `margin:6px 0;padding:6px 10px;background:${c.bg};color:${c.fg};border-radius:4px;font-size:11px;text-align:center;`;
+    el.className = `remote-chat-sysmsg remote-chat-sysmsg-${kind}`;
     el.textContent = text;
     log.appendChild(el);
     log.scrollTop = log.scrollHeight;
@@ -3180,7 +3179,7 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
         if (!res.ok || !document.getElementById('remote-chat-modal')) return;
         const data = await res.json();
         const newMsgs = data.messages || [];
-        const oldCount = log.querySelectorAll('.rcm-msg')?.length || 0;
+        const oldCount = log.querySelectorAll('.message').length;
         if (newMsgs.length === oldCount) return;
         const scrollWasAtBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
         renderHistory(data);
@@ -3193,7 +3192,6 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
 
     thinkingEl.style.display = 'block';
     log.innerHTML = '';
-    appendSystem('正在拉取远端 channel 的历史和判断力...', 'info');
     try {
       const res = await fetch(`/api/remote-channels/chat-history?targetPublicKey=${encodeURIComponent(peerPublicKey)}&channelId=${encodeURIComponent(channelId)}`);
       const data = await res.json();
@@ -3213,52 +3211,42 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   function renderHistory(data) {
     log.innerHTML = '';
 
-    // 1. 显示 judgment 依据 (header)
+    // 1. 显示 judgment 依据 (header) — 保留, 但用 class 化样式
     const judgments = data.judgments || { bound: [], candidates: [] };
     if (judgments.bound && judgments.bound.length > 0) {
       const jh = document.createElement('div');
-      jh.style.cssText = 'margin:0 0 8px;padding:8px 10px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:4px;font-size:12px;';
-      let h = `<div style="font-weight:600;color:#92400e;margin-bottom:4px;">🛡️ 对方 channel 绑定的判断力 (${judgments.bound.length} 条硬约束)</div>`;
+      jh.className = 'remote-chat-judgments';
+      let h = `<div class="remote-chat-judgments-title">🛡️ 对方 channel 绑定的判断力 (${judgments.bound.length} 条硬约束)</div>`;
       for (const j of judgments.bound) {
-        h += `<div style="margin:3px 0;padding-left:8px;">• <b>${escapeHtml((j.decision || '').slice(0, 100))}</b>${j.domain ? `<span style="color:#a16207;font-size:10px;"> [${escapeHtml(j.domain)}${j.stakes ? '/' + escapeHtml(j.stakes) : ''}]</span>` : ''}${j.reasons && j.reasons.length ? '<br><span style="color:#92400e;font-size:11px;">理由: ' + escapeHtml(j.reasons.join('; ').slice(0, 100)) + '</span>' : ''}</div>`;
+        h += `<div class="remote-chat-judgment-item">• <b>${escapeHtml((j.decision || '').slice(0, 100))}</b>${j.domain ? `<span class="remote-chat-judgment-tag"> [${escapeHtml(j.domain)}${j.stakes ? '/' + escapeHtml(j.stakes) : ''}]</span>` : ''}${j.reasons && j.reasons.length ? '<br><span class="remote-chat-judgment-reason">理由: ' + escapeHtml(j.reasons.join('; ').slice(0, 100)) + '</span>' : ''}</div>`;
       }
       if (judgments.candidates && judgments.candidates.length > 0) {
-        h += `<div style="margin-top:6px;color:#92400e;font-size:11px;">+ ${judgments.candidates.length} 条候选判断力 (LLM 可自选参考)</div>`;
+        h += `<div class="remote-chat-judgments-foot">+ ${judgments.candidates.length} 条候选判断力 (LLM 可自选参考)</div>`;
       }
       jh.innerHTML = h;
       log.appendChild(jh);
     }
 
-    // 2. 显示历史 messages (带 source 标签)
+    // 2. 显示历史 messages — 完全复用本地 addMessage 渲染
     const msgs = data.messages || [];
     if (msgs.length === 0) {
       appendSystem('还没有历史消息, 在下面发第一条吧', 'info');
     } else {
-      appendSystem(`从远端拉到 ${msgs.length} 条历史消息 (A 内部 owner + B 远端访客 都会显示)`, 'info');
       for (const m of msgs) {
-        const bubble = document.createElement('div');
-        bubble.className = 'rcm-msg';
-        const isUser = m.type === 'user';
-        let tag = '';
-        if (isUser) {
+        // 远端 owner 的 user 消息 vs 远端访客 (B) 的 user 消息 vs A 的 LLM 回复
+        // 全部走 addMessage, 让 marked/think/env 自动处理. 来源用一个小 prefix 标记.
+        const type = m.type === 'user' ? 'user' : 'ai';
+        let prefix = '';
+        if (m.type === 'user') {
           if (m.source === 'remote') {
-            tag = `<div style="font-size:10px;color:#6b7280;margin-bottom:2px;">🌐 远端访客${m.fromPublicKey ? ' (' + m.fromPublicKey.substring(0, 8) + '…)' : ''} → A 的 channel</div>`;
+            prefix = `🌐 远端访客${m.fromPublicKey ? ' (' + m.fromPublicKey.substring(0, 8) + '…)' : ''}\n\n`;
           } else {
-            tag = `<div style="font-size:10px;color:#6b7280;margin-bottom:2px;">👤 A (内部 owner) → A 的 channel</div>`;
+            prefix = `👤 A (内部 owner)\n\n`;
           }
         } else {
-          tag = `<div style="font-size:10px;color:#6b7280;margin-bottom:2px;">🤖 A 的 LLM (在 A 节点上跑)</div>`;
+          prefix = `🤖 A 的 LLM\n\n`;
         }
-        const isRemoteUser = isUser && m.source === 'remote';
-        bubble.style.cssText = `padding:8px 10px;margin:4px 0;border-radius:6px;font-size:13px;line-height:1.4;max-width:80%;word-wrap:break-word;${
-          isUser
-            ? (isRemoteUser
-                ? 'background:#dbeafe;color:#1e3a8a;margin-right:auto;text-align:left;border:1px solid #93c5fd;'
-                : 'background:#f3f4f6;color:#374151;margin-left:auto;text-align:left;border:1px solid #d1d5db;')
-            : 'background:#e5e7eb;color:#111;'
-        }`;
-        bubble.innerHTML = tag + `<div>${escapeHtml(m.content || '')}</div>`;
-        log.appendChild(bubble);
+        addMessage(prefix + (m.content || ''), type, false, log);
       }
       setTimeout(() => { log.scrollTop = log.scrollHeight; }, 50);
     }
@@ -3279,9 +3267,9 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'send failed');
-      appendSystem('已发送, 等待对方回复...', 'info');
+      // 不再 appendSystem('已发送...') —— 用户看到自己消息已上屏就知道, 系统提示是噪音
     } catch (err) {
-      append('(发送失败: ' + (err.message || err) + ')', 'ai');
+      appendSystem('发送失败: ' + (err.message || err), 'error');
     } finally {
       sendBtn.disabled = false;
       sendBtn.textContent = '发送';

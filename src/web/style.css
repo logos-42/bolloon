@@ -4083,3 +4083,186 @@ body:has(> .api-config-page) {
   cursor: pointer;
   accent-color: var(--accent);
 }
+
+/* ============================================================
+ * 2026-06-10: 远程聊天 modal — 完全对齐本地聊天风格
+ * 用 CSS 变量, 字体继承全局 JetBrains Mono, 支持深/浅色主题切换
+ * ============================================================ */
+.remote-chat-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 10002;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.remote-chat-shell {
+  background: var(--bg-main);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 720px;
+  max-width: 92vw;
+  height: 80vh;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+  font-family: inherit;
+}
+.remote-chat-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--bg-sidebar);
+  border-radius: 8px 8px 0 0;
+}
+.remote-chat-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.remote-chat-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.remote-chat-btn-secondary {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: inherit;
+}
+.remote-chat-btn-secondary:hover {
+  background: var(--bg-active);
+  color: var(--text);
+}
+.remote-chat-btn-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 8px;
+  line-height: 1;
+}
+.remote-chat-btn-close:hover {
+  color: var(--text);
+}
+.remote-chat-thinking {
+  padding: 8px 16px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.remote-chat-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  background: var(--bg-main);
+}
+.remote-chat-input-row {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  background: var(--bg-sidebar);
+  border-radius: 0 0 8px 8px;
+}
+.remote-chat-input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  background: var(--bg-main);
+  color: var(--text);
+  font-family: inherit;
+}
+.remote-chat-input:focus {
+  outline: none;
+  border-color: var(--accent, #a4b630);
+}
+.remote-chat-btn-send {
+  padding: 8px 14px;
+  background: var(--user-bg);
+  color: var(--user-text);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+}
+.remote-chat-btn-send:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.remote-chat-btn-send:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.remote-chat-sysmsg {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  text-align: center;
+  border: 1px solid var(--border);
+}
+.remote-chat-sysmsg-info {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.remote-chat-sysmsg-warn {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border-light);
+}
+.remote-chat-sysmsg-error {
+  background: rgba(220, 38, 38, 0.12);
+  color: #fca5a5;
+  border-color: rgba(220, 38, 38, 0.3);
+}
+.remote-chat-judgments {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--bg-hover);
+  border-left: 3px solid var(--accent, #a4b630);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.remote-chat-judgments-title {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.remote-chat-judgment-item {
+  margin: 3px 0;
+  padding-left: 8px;
+  color: var(--text);
+}
+.remote-chat-judgment-tag {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.remote-chat-judgment-reason {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.remote-chat-judgments-foot {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
