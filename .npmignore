@@ -61,6 +61,7 @@ py-bolloon/
 
 # Electron specific
 release/
+.bolloon-logs
 
 # Duplicate source from monorepo sub-packages (compiled into dist/ already)
 src/constraint-runtime/

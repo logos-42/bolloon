@@ -614,35 +614,31 @@ function renderChannelsLite(activeChannelId, activeSessionId) {
   });
   // 2. 当前 channel 的展开状态: 强制展开, 其他不动
   if (activeChannelId) expandedAgents.add(activeChannelId);
-  // 3. 当前 session label 跟计数: 只重渲当前 channel 那一行
+  // 3. 当前 channel 行展开 + 只切 session-item 的 active class (不再 innerHTML 重渲!)
+  //    原因: 重渲 innerHTML 会清掉原始 renderChannels 绑的 session-item click handler,
+  //    即使补绑也会因为 lite HTML 结构 (.session-dot + .session-msg-count) 跟原始不同
+  //    导致"第 1 次点不动 (原始), 第 2 次点才能用 (lite)" 现象
+  //    修法: 完全不动 session-list DOM, 只 toggle .active
   const activeLi = channelList.querySelector(`.agent-group[data-channel-id="${activeChannelId}"]`);
   if (activeLi) {
+    activeLi.classList.add('expanded');
+    // 只切 active class, 不动 innerHTML (避免清掉原始 click handler)
     const ch = channels.find(c => c.id === activeChannelId);
+    // 2026-06-11: 原始 renderChannels 已经给 session-item 加了 data-session-id (line 791),
+    // 这里先清空所有 .active 再设新的, 避免多个 active 共存 (因为 renderChannels 初始 DOM
+    // 上会有一个 active 标记旧 session, 新切 session 容易出现两个 active)
+    activeLi.querySelectorAll('.session-item').forEach(sessLi => {
+      const sessId = sessLi.dataset.sessionId;
+      const shouldBeActive = sessId === activeSessionId;
+      sessLi.classList.toggle('active', shouldBeActive);
+    });
+    // 更新顶部 current session label
     if (ch) {
-      // 展开
-      activeLi.classList.add('expanded');
-      // 重渲 session 列表子 UL
-      const sessionList = activeLi.querySelector('.session-list');
-      if (sessionList) {
-        const sl = ch.sessions || [];
-        sessionList.innerHTML = sl.map(s => {
-          const active = s.id === activeSessionId;
-          return `<li class="session-item ${active ? 'active' : ''}" data-session-id="${escapeHtml(s.id)}">
-            <span class="session-dot"></span>
-            <span class="session-name">${escapeHtml(formatSessionName(s))}</span>
-            <span class="session-msg-count">${s.messageCount || 0}</span>
-          </li>`;
-        }).join('');
-      }
-      // 更新顶部 current session label
       const currentSess = Array.isArray(ch.sessions) ? ch.sessions.find(s => s.id === activeSessionId) : null;
       const labelEl = activeLi.querySelector('.agent-current-session');
       if (labelEl) {
         labelEl.textContent = currentSess ? '· ' + formatSessionName(currentSess) : '';
       }
-      const countEl = activeLi.querySelector('.agent-session-count');
-      const sl = ch.sessions || [];
-      if (countEl) countEl.textContent = sl.length > 1 ? sl.length : '';
     }
   }
 }
@@ -776,6 +772,7 @@ function renderChannels() {
         const sessLi = document.createElement('li');
         const isActive = ch.id === currentChannelId && sess.id === ch.currentSessionId;
         sessLi.className = `session-item ${isActive ? 'active' : ''}`;
+        sessLi.dataset.sessionId = sess.id;  // 2026-06-11: 给 session-item 加上 data-session-id, renderChannelsLite 才能 toggle active class
         sessLi.innerHTML = `
           <span class="session-name" title="${escapeHtml(formatSessionName(sess))}">${escapeHtml(formatSessionName(sess))}</span>
           <button class="session-delete" title="删除会话">×</button>
@@ -1663,7 +1660,19 @@ function connect(channelId) {
       const container = messagesContainers.get(msgChannelId) || messagesEl;
 
       if (data.type === 'user') {
-        showUserCommand(data.content, container, { source: data.source, fromPublicKey: data.fromPublicKey });
+        // 2026-06-11 修: 不再走 showUserCommand (› 装饰条) 路径, 因为:
+        // 1. sendMessage 已经在客户端 addMessage(text, 'user', true) 渲染成 .bubble-user 气泡
+        // 2. SSE 推 user 又调 showUserCommand → 同时出现气泡 + 装饰条 (双重显示)
+        // 3. 第二次切 channel 时, showUserCommand 会 remove 已有 .message-user 元素 (line 1477),
+        //    但 .bubble-user class 不是 .message-user → 残留装饰条, 表现"模式变了"
+        // 改法: SSE 收到 user 后, 跳过显示 (lastUserCommand 已经匹配, addMessage(save=true) 内部去重)
+        // 但要确保 lastUserCommand 已经设过 — sendMessage 调 addMessage(true) 时会设
+        // 远端 user (source === 'remote') 不会被 sendMessage 渲染, 需要走 addMessage 一次
+        if (data.source === 'remote') {
+          // 远端访客 (B 通过 P2P 发来的), sendMessage 没渲染它, 这里补上气泡
+          addMessage(data.content, 'user', true, container);
+        }
+        // 本地 user 已经由 sendMessage 渲染 + 去重, 这里不再显示
       } else if (data.type === 'ai') {
         addMessage(data.content, 'ai', true, container);
         hideTyping();

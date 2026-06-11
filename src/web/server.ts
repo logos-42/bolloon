@@ -1576,7 +1576,10 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     const channelId = req.query.channelId as string;
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
+    // 2026-06-11: 改 keep-alive → close
+    // 原因: SSE 长连接占着 keep-alive 槽 (HTTP/1.1 + 浏览器 max 6 并发), 后续同源 fetch 排队 30s+
+    // 设 close 让浏览器把 SSE 当长期流, 不抢占普通请求的 keep-alive 槽
+    res.setHeader('Connection', 'close');
     // 反向代理 (nginx/cloudflair) 需要: 禁用缓冲 + 立即 flush
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
