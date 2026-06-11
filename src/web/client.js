@@ -3338,6 +3338,7 @@ async function openEditPeerModal(peerName, peerPublicKey) {
 }
 
 /** v3: 分享 channel 给指定 peer 的 modal (A 侧用) */
+/** v3: 分享 channel 给指定 peer 的 modal (A 侧用) — 2026-06-11 改用 Step 3 风格 class */
 async function openShareToPeerModal(peerName, peerPublicKey) {
   document.getElementById('share-to-peer-modal')?.remove();
   let allChannels = [];
@@ -3346,36 +3347,37 @@ async function openShareToPeerModal(peerName, peerPublicKey) {
     if (res.ok) allChannels = await res.json();
   } catch (err) { console.error('openShareToPeerModal:', err); }
   const rows = allChannels.length === 0
-    ? '<div style="color:#6b7280;padding:12px;text-align:center;">还没有 channel</div>'
+    ? '<div class="share-modal-empty">还没有 channel</div>'
     : allChannels.map(ch => {
         const isShared = Array.isArray(ch.shared_with_peers) && ch.shared_with_peers.includes(peerPublicKey);
         return `
-          <label style="display:flex;align-items:flex-start;gap:8px;padding:6px 4px;cursor:pointer;border-bottom:1px solid #f3f4f6;">
-            <input type="checkbox" data-cid="${escapeHtml(ch.id)}" ${isShared ? 'checked' : ''} style="margin-top:4px;cursor:pointer;">
-            <div style="flex:1;min-width:0;">
-              <div style="font-size:13px;font-weight:500;">${escapeHtml(ch.name)}</div>
-              <div style="font-size:10px;color:#9ca3af;margin-top:2px;">
-                ${isShared ? '✓ 已分享' : '未分享'} · ${ch.id}
+          <label class="share-modal-row">
+            <input type="checkbox" data-cid="${escapeHtml(ch.id)}" ${isShared ? 'checked' : ''} class="share-modal-cb">
+            <div class="share-modal-row-info">
+              <div class="share-modal-row-name">${escapeHtml(ch.name)}</div>
+              <div class="share-modal-row-meta">
+                ${isShared ? '✓ 已分享' : '未分享'} · ${escapeHtml(ch.id.slice(0, 24))}…
               </div>
             </div>
           </label>
         `;
       }).join('');
   const html = `
-    <div id="share-to-peer-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10003;display:flex;align-items:center;justify-content:center;">
-      <div style="background:#fff;border-radius:8px;width:480px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.2);">
-        <div style="padding:12px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
-          <div>
-            <div style="font-size:15px;font-weight:600;">分享 channel 给 ${escapeHtml(peerName)}</div>
-            <div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(peerPublicKey.substring(0,16))}…</div>
+    <div id="share-to-peer-modal" class="friend-req-overlay">
+      <div class="friend-req-shell share-modal-shell">
+        <div class="friend-req-header">
+          <span style="font-size:18px;">📤</span>
+          <div style="flex:1;min-width:0;">
+            <div class="friend-req-title">分享 channel 给 ${escapeHtml(peerName)}</div>
+            <div class="friend-req-meta">${escapeHtml(peerPublicKey.substring(0,16))}…</div>
           </div>
-          <button id="spm-close" style="background:none;border:none;font-size:20px;color:#6b7280;cursor:pointer;">×</button>
+          <button id="spm-close" class="friend-req-btn-close">×</button>
         </div>
-        <div style="padding:8px 12px;background:#f9fafb;font-size:12px;color:#6b7280;">勾选要分享的 channel, 对方才能看到</div>
-        <div id="spm-list" style="flex:1;overflow-y:auto;padding:8px 16px;">${rows}</div>
-        <div style="padding:12px 20px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;">
-          <button id="spm-cancel" style="padding:6px 14px;border:1px solid #d1d5db;background:#fff;border-radius:4px;cursor:pointer;font-size:13px;">取消</button>
-          <button id="spm-save" style="padding:6px 14px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">保存分享</button>
+        <div class="share-modal-hint">勾选要分享的 channel, 对方才能看到</div>
+        <div id="spm-list" class="share-modal-list">${rows}</div>
+        <div class="friend-req-actions">
+          <button id="spm-cancel" class="friend-req-btn-deny">取消</button>
+          <button id="spm-save" class="friend-req-btn-accept">保存分享</button>
         </div>
       </div>
     </div>
@@ -3391,7 +3393,7 @@ async function openShareToPeerModal(peerName, peerPublicKey) {
     for (const ch of allChannels) {
       const shouldShare = checkedIds.includes(ch.id);
       const wasShared = Array.isArray(ch.shared_with_peers) && ch.shared_with_peers.includes(peerPublicKey);
-      if (shouldShare === wasShared) continue; // 没变化跳过
+      if (shouldShare === wasShared) continue;
       const newList = (ch.shared_with_peers || []).filter((p) => p !== peerPublicKey);
       if (shouldShare) newList.push(peerPublicKey);
       try {
@@ -3403,7 +3405,7 @@ async function openShareToPeerModal(peerName, peerPublicKey) {
         if (res.ok) ok++; else fail++;
       } catch { fail++; }
     }
-    alert(`分享更新完成: 成功 ${ok}, 失败 ${fail}`);
+    showSimpleToast(`分享更新完成: 成功 ${ok}, 失败 ${fail}`, ok > 0 ? 'info' : (fail > 0 ? 'error' : 'info'));
     overlay.remove();
   };
 }
