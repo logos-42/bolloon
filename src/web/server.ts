@@ -73,6 +73,17 @@ interface Channel {
   name: string;
   agentId: string;
   did?: string;
+  // 2026-06-11: channel 级 persona + 关联文档 (从 ~/.bolloon/persona.json 复制或独立覆盖)
+  persona?: {
+    name?: string;
+    description?: string;
+    personality?: string;
+    greeting?: string;
+    capabilities?: string[];
+    interests?: string[];
+  };
+  // 关联的文档 ID 列表 (启动 LLM 时自动加载到 context)
+  linkedDocumentIds?: string[];
   publicKey?: string;
   cid?: string;
   /** 轻量引用：从 didDocument 只挑出 cid/ipnsName, 不存整份文档 */
@@ -1705,6 +1716,46 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         // 静默失败
       }
 
+      // 2026-06-11: 注入此 channel 专属的 persona + 关联文档 (从 channel 字段读, LLM 长期记忆)
+      const chPersona = channelForJudgment?.persona;
+      if (chPersona && typeof chPersona === 'object') {
+        contextHint += '[系统上下文] 此 channel 的人设 (你是这个角色):\n';
+        if (chPersona.name) contextHint += `  名字: ${chPersona.name}\n`;
+        if (chPersona.description) contextHint += `  描述: ${chPersona.description}\n`;
+        if (chPersona.personality) contextHint += `  性格: ${chPersona.personality}\n`;
+        if (chPersona.greeting) contextHint += `  问候: ${chPersona.greeting}\n`;
+        if (Array.isArray(chPersona.capabilities) && chPersona.capabilities.length > 0) {
+          contextHint += `  能力: ${chPersona.capabilities.join('、')}\n`;
+        }
+        if (Array.isArray(chPersona.interests) && chPersona.interests.length > 0) {
+          contextHint += `  兴趣: ${chPersona.interests.join('、')}\n`;
+        }
+        contextHint += '回复时应自然体现这个角色 (不要硬搬原文, 像这个角色说话即可).\n\n';
+      }
+      const linkedIds = channelForJudgment?.linkedDocumentIds;
+      if (Array.isArray(linkedIds) && linkedIds.length > 0) {
+        try {
+          const { documentStore } = await import('../documents/store.js');
+          contextHint += `[系统上下文] 此 channel 关联了 ${linkedIds.length} 篇文档 (已自动加载内容, 你应基于它们回答):\n`;
+          let loaded = 0;
+          for (const docId of linkedIds.slice(0, 10)) {
+            const doc = await documentStore.readDocument(docId).catch(() => null);
+            if (!doc) continue;
+            const name = doc.metadata?.name || docId;
+            const content = (doc.content || '').slice(0, 1500);  // 单篇 1.5KB 上限, 总 prompt 防爆
+            contextHint += `\n--- 文档: ${name} ---\n${content}\n--- 文档结束 ---\n`;
+            loaded++;
+          }
+          if (loaded === 0) {
+            contextHint += `(但加载失败, 文档可能已被删除)\n\n`;
+          } else {
+            contextHint += '\n';
+          }
+        } catch (err) {
+          console.warn('[v3-persona] 加载关联文档失败 (非致命):', (err as Error).message);
+        }
+      }
+
       // v3 新增: 注入"可用渠道"目录, 让 LLM 知道可以 @-mention 哪些 channel
       // - 本地 channels (除了自己)
       // - 远端 channels (remoteChannelCache 缓存的)
@@ -2008,7 +2059,7 @@ app.get('/channels', async (_req, res) => {
 
   app.post('/channels', async (req, res) => {
     try {
-      const { name, agentId, walletAddress, autoInvokeTools, bound_judgment_ids } = req.body;
+      const { name, agentId, walletAddress, autoInvokeTools, bound_judgment_ids, personaOverride, linkedDocumentIds } = req.body;
       console.log(`[创建频道] 收到请求: name=${name}, agentId=${agentId}, wallet=${walletAddress ? 'yes' : 'no'}, boundJudgments=${Array.isArray(bound_judgment_ids) ? bound_judgment_ids.length : 0}`);
       if (!name || !agentId) {
         return res.status(400).json({ error: 'name and agentId required' });
@@ -2024,6 +2075,42 @@ app.get('/channels', async (_req, res) => {
         ? bound_judgment_ids.filter((x: unknown) => typeof x === 'string' && (x as string).length > 0)
         : [];
 
+      // 2026-06-11: persona 加载 — 优先用 personaOverride, 否则从 ~/.bolloon/persona.json 读全局默认
+      let channelPersona: Channel['persona'];
+      if (personaOverride && typeof personaOverride === 'object') {
+        channelPersona = {
+          name: personaOverride.name,
+          description: personaOverride.description,
+          personality: personaOverride.personality,
+          greeting: personaOverride.greeting,
+          capabilities: Array.isArray(personaOverride.capabilities) ? personaOverride.capabilities.slice(0, 20) : undefined,
+          interests: Array.isArray(personaOverride.interests) ? personaOverride.interests.slice(0, 20) : undefined,
+        };
+      } else {
+        try {
+          const { readFileSync, existsSync } = await import('fs');
+          const personaPath = `${process.env.HOME || '/tmp'}/.bolloon/persona.json`;
+          if (existsSync(personaPath)) {
+            const p = JSON.parse(readFileSync(personaPath, 'utf-8'));
+            channelPersona = {
+              name: p.name,
+              description: p.description,
+              personality: p.personality,
+              greeting: p.greeting,
+              capabilities: Array.isArray(p.capabilities) ? p.capabilities.slice(0, 20) : undefined,
+              interests: Array.isArray(p.interests) ? p.interests.slice(0, 20) : undefined,
+            };
+          }
+        } catch (err) {
+          console.warn('[创建频道] 加载 persona.json 失败 (非致命):', (err as Error).message);
+        }
+      }
+
+      // 过滤 linkedDocumentIds: 只保留 string
+      const safeLinkedDocIds = Array.isArray(linkedDocumentIds)
+        ? linkedDocumentIds.filter((x: unknown) => typeof x === 'string' && (x as string).length > 0).slice(0, 50)
+        : [];
+
       // 先创建频道（不阻塞等待 DID 生成）
       const channel: Channel = {
         id,
@@ -2036,6 +2123,8 @@ app.get('/channels', async (_req, res) => {
         walletRegisteredAt: validWallet ? new Date().toISOString() : undefined,
         autoInvokeTools: autoInvokeTools !== false, // 默认 true
         bound_judgment_ids: safeBoundIds,
+        persona: channelPersona,
+        linkedDocumentIds: safeLinkedDocIds,
         sessions: [{
           id: `sess_${Date.now()}`,
           createdAt: new Date().toISOString(),
@@ -2214,7 +2303,7 @@ app.get('/channels', async (_req, res) => {
   app.patch('/channels/:channelId', async (req, res) => {
     try {
       const { channelId } = req.params;
-      const { name, walletAddress, autoInvokeTools, bound_judgment_ids, shared_with_peers } = req.body;
+      const { name, walletAddress, autoInvokeTools, bound_judgment_ids, shared_with_peers, persona, linkedDocumentIds } = req.body;
       const channels = await loadChannels();
       const channel = channels.find(c => c.id === channelId);
       if (!channel) {
@@ -2222,6 +2311,25 @@ app.get('/channels', async (_req, res) => {
       }
       if (typeof name === 'string' && name.trim()) {
         channel.name = name.trim();
+      }
+      // 2026-06-11: 改 persona (允许 null 重置回全局默认)
+      if (persona !== undefined) {
+        if (persona === null) {
+          channel.persona = undefined;
+        } else if (typeof persona === 'object') {
+          channel.persona = {
+            name: persona.name,
+            description: persona.description,
+            personality: persona.personality,
+            greeting: persona.greeting,
+            capabilities: Array.isArray(persona.capabilities) ? persona.capabilities.slice(0, 20) : channel.persona?.capabilities,
+            interests: Array.isArray(persona.interests) ? persona.interests.slice(0, 20) : channel.persona?.interests,
+          };
+        }
+      }
+      // 2026-06-11: 改关联文档列表 (数组整体替换, 空数组 = 解绑所有)
+      if (Array.isArray(linkedDocumentIds)) {
+        channel.linkedDocumentIds = linkedDocumentIds.filter((x: unknown) => typeof x === 'string' && (x as string).length > 0).slice(0, 50);
       }
       // walletAddress 允许 null/'' 来解绑
       if (walletAddress !== undefined) {

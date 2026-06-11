@@ -1655,6 +1655,14 @@ async function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
 
+  // 2026-06-11: 立即把用户消息渲染成气泡上屏 (走 .bubble-user, 跟本地聊天一致)
+  // 之前只靠 SSE `type: user` 回调显示, 但 addMessage(user) 默认 save=true 走去重, 容易跟 SSE 二次显示冲突/丢失
+  // 现在: sendMessage 自己上屏, SSE `user` 回调来时因为 lastUserCommand 已匹配, 自动跳过 → 不重复
+  const container = messagesContainers.get(currentChannelId) || messagesEl;
+  addMessage(text, 'user', true, container);
+  // 滚动到底
+  if (container) container.scrollTop = container.scrollHeight;
+
   input.value = '';
   showTyping();
 
