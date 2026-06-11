@@ -256,14 +256,27 @@ function startV3GlobalSSE() {
           // v3 新增: 远端节点发来新分享 / 删除 / 改名, 立即更新本地 cache
           const peerId = msg.peerId;
           const channels = msg.channels || [];
+          const peerName = msg.peerName || null;   // 2026-06-10: 同步接收对方名字
           let group = remoteChannels.find(g => g.peerId === peerId);
           if (!group) {
-            group = { peerId, channels: [], peerName: msg.peerName || ('peer-' + peerId.substring(0, 8)) };
+            group = { peerId, channels: [], peerName: peerName || ('peer-' + peerId.substring(0, 8)) };
             remoteChannels.push(group);
+          } else if (peerName) {
+            group.peerName = peerName;  // 更新名字
           }
           group.channels = channels;
+          // 2026-06-10: 如果对面告知名字, 同步刷新 knownPeers 列表, 避免陌生 peer 状态
+          if (peerName && !knownPeers.find(p => p.publicKey === peerId)) {
+            knownPeers.push({
+              publicKey: peerId,
+              name: peerName,
+              addedAt: new Date().toISOString(),
+              lastConnectedAt: new Date().toISOString(),
+            });
+            console.log(`[v3] 远端 ${peerId.substring(0,12)}... 自报名字 = ${peerName}, 已加到 knownPeers`);
+          }
           renderRemoteChannels();
-          console.log(`[v3] 收到远端 ${peerId.substring(0,12)}... 的 ${channels.length} 个 channel 更新`);
+          console.log(`[v3] 收到远端 ${peerId.substring(0,12)}... 的 ${channels.length} 个 channel 更新 (name=${peerName || '?'})`);
         } else if (msg.type === 'friend-request') {
           // v3 新增: 收到好友申请
           showFriendRequestModal(msg);
@@ -3156,8 +3169,91 @@ function renderRemoteChannels() {
     });
   });
 
+  // 2026-06-10: 每个 peer 头部双击 → 改名字 / 改备注
+  list.querySelectorAll('.remote-peer-header').forEach(row => {
+    row.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.peer-caret-btn')) return;
+      const peerName = row.dataset.peerName;
+      const peerPk = row.dataset.peerPk;
+      openEditPeerModal(peerName, peerPk);
+    });
+  });
+
   // 2026-06-10: 渲染完成后同步 header 切换按钮图标
   if (typeof window.__syncP2PToggleAllBtn === 'function') window.__syncP2PToggleAllBtn();
+}
+
+/** v3: 改 peer 名字 / 备注 modal (持久化到 known_peers.json) */
+async function openEditPeerModal(peerName, peerPublicKey) {
+  document.getElementById('edit-peer-modal')?.remove();
+  // 先读 known_peers 拿到现有 notes
+  let currentNotes = '';
+  let currentName = peerName;
+  try {
+    const r = await fetch('/api/p2p-peers');
+    if (r.ok) {
+      const d = await r.json();
+      const entry = (d.peers || []).find(p => p.publicKey === peerPublicKey);
+      if (entry) {
+        currentName = entry.name || peerName;
+        currentNotes = entry.notes || '';
+      }
+    }
+  } catch {}
+  const html = `
+    <div id="edit-peer-modal" class="friend-req-overlay">
+      <div class="friend-req-shell" style="width:520px;">
+        <div class="friend-req-header">
+          <span style="font-size:18px;">✏️</span>
+          <div style="flex:1;min-width:0;">
+            <div class="friend-req-title">编辑好友</div>
+            <div class="friend-req-meta">publicKey: ${escapeHtml(peerPublicKey.substring(0,16))}…</div>
+          </div>
+        </div>
+        <div class="friend-req-body">
+          <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-secondary);">显示名字</label>
+          <input id="epm-name" type="text" value="${escapeHtml(currentName)}"
+                 style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-main);color:var(--text);font-family:inherit;font-size:13px;box-sizing:border-box;margin-bottom:12px;">
+          <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-secondary);">备注 (自由文本, 例如合作领域 / 怎么认识的)</label>
+          <textarea id="epm-notes" rows="4" placeholder="例如: 2026-06 合作 LLM 代发验证"
+                    style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-main);color:var(--text);font-family:inherit;font-size:13px;box-sizing:border-box;resize:vertical;">${escapeHtml(currentNotes)}</textarea>
+        </div>
+        <div class="friend-req-actions">
+          <button id="epm-cancel" class="friend-req-btn-deny">取消</button>
+          <button id="epm-save" class="friend-req-btn-accept">保存</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+  const close = () => document.getElementById('edit-peer-modal')?.remove();
+  document.getElementById('epm-cancel').onclick = close;
+  document.getElementById('epm-save').onclick = async () => {
+    const newName = document.getElementById('epm-name').value.trim() || currentName;
+    const newNotes = document.getElementById('epm-notes').value;
+    try {
+      const r = await fetch(`/api/p2p-peers/${encodeURIComponent(peerName)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName, notes: newNotes })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'save failed');
+      console.log('[v3] 改 peer 成功:', newName, '备注:', newNotes);
+      showSimpleToast(`✅ 已保存 ${newName}`);
+      close();
+      // 重新拉 known_peers + 远程 channels 重新渲染
+      const r2 = await fetch('/api/p2p-peers');
+      if (r2.ok) {
+        const d2 = await r2.json();
+        knownPeers = Array.isArray(d2.peers) ? d2.peers : [];
+      }
+      renderRemoteChannels();
+    } catch (err) {
+      console.error('[v3] 保存 peer 失败:', err);
+      alert('保存失败: ' + (err.message || err));
+    }
+  };
 }
 
 /** v3: 分享 channel 给指定 peer 的 modal (A 侧用) */

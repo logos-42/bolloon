@@ -419,6 +419,47 @@ let sseClients: Set<SSEClient> = new Set();
 // v3: 远端 channel UI 元数据缓存 — key: peerId, value: sanitize 过的 channel 列表
 // in-memory only, 进程重启清空 (judgment 内容永远不在这里)
 let remoteChannelCache: Map<string, Array<Record<string, unknown>>> = new Map();
+
+// 2026-06-10: 持久化 remote channel cache 到 ~/.bolloon/remote-channels-cache.json
+// 之前是纯内存 Map, nodeA 重启后所有对端 channel 列表丢失, 需要等对面再推一次
+const REMOTE_CACHE_FILE = `${process.env.HOME || '/tmp'}/.bolloon/remote-channels-cache.json`;
+async function loadRemoteChannelCacheFromDisk(): Promise<void> {
+  try {
+    const { readFile, mkdir } = await import('fs/promises');
+    const { existsSync } = await import('fs');
+    if (!existsSync(REMOTE_CACHE_FILE)) return;
+    const raw = await readFile(REMOTE_CACHE_FILE, 'utf-8');
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === 'object') {
+      for (const [pk, list] of Object.entries(obj)) {
+        if (Array.isArray(list)) {
+          remoteChannelCache.set(pk, list as Array<Record<string, unknown>>);
+        }
+      }
+      console.log(`[v3-meta] 从磁盘恢复 ${remoteChannelCache.size} 个 peer 的 channel cache`);
+    }
+  } catch (err) {
+    console.warn('[v3-meta] 恢复 remote channel cache 失败 (非致命):', (err as Error).message);
+  }
+}
+async function persistRemoteChannelCache(): Promise<void> {
+  try {
+    const { writeFile, mkdir } = await import('fs/promises');
+    const { existsSync } = await import('fs');
+    if (!existsSync(`${process.env.HOME || '/tmp'}/.bolloon`)) {
+      await mkdir(`${process.env.HOME || '/tmp'}/.bolloon`, { recursive: true });
+    }
+    const obj: Record<string, unknown> = {};
+    for (const [pk, list] of remoteChannelCache.entries()) {
+      obj[pk] = list;
+    }
+    await writeFile(REMOTE_CACHE_FILE, JSON.stringify(obj, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('[v3-meta] 持久化 remote channel cache 失败 (非致命):', (err as Error).message);
+  }
+}
+// 启动时立即同步读一次 (异步, 不阻塞)
+loadRemoteChannelCacheFromDisk();
 // v3: P2PDirect 引用 (Hyperswarm 薄包装) - 模块级, 因为 web server 闭包里不可用
 let v3P2PRef: import('../network/p2p-direct.js').P2PDirect | null = null;
 // 2026-06-10: watchdog 提升到 module-level, 让 broadcast() / 模块级业务函数能埋点喂活动
@@ -1143,6 +1184,16 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     const { listPeers } = await import('../network/known-peers.js');
     const peers = await listPeers();
     const myPk = v3P2PRef.getPublicKey();
+    // 2026-06-10: 本机名字一起携带, 对端能直接显示 + 落到自己的 known_peers
+    let myName = process.env.BOLLOON_USER_NAME || process.env.USER || 'node';
+    try {
+      const { readFileSync, existsSync } = await import('fs');
+      const cfgPath = `${process.env.HOME || '/tmp'}/.bolloon/config.json`;
+      if (existsSync(cfgPath)) {
+        const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
+        if (cfg.userName) myName = cfg.userName;
+      }
+    } catch {}
     let sent = 0;
     for (const peer of peers) {
       if (peer.publicKey === myPk) continue;
@@ -1150,7 +1201,10 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         .map(ch => sanitizeChannelForPeer(ch, peer.publicKey))
         .filter((x): x is Record<string, unknown> => x !== null);
       if (sharedForPeer.length > 0) {
-        const msg = JSON.stringify({ v: 3, op: 'agent.meta.list.reply', payload: { channels: sharedForPeer } });
+        const msg = JSON.stringify({
+          v: 3, op: 'agent.meta.list.reply',
+          payload: { channels: sharedForPeer, name: myName, fromPublicKey: myPk }
+        });
         const ok = v3P2PRef.sendTo(peer.publicKey, msg);
         if (ok) {
           sent++;
@@ -1307,12 +1361,38 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
             if (parsed.op === 'agent.meta.list.reply') {
               const list = parsed.payload?.channels || [];
               remoteChannelCache.set(evt.fromPublicKey, list);
-              console.log(`[v3] 收到 ${evt.fromPublicKey.substring(0,12)}... 的 ${list.length} 个 channel, 已缓存`);
+              // 2026-06-10: 持久化到 ~/.bolloon/remote-channels-cache.json, 重启后不丢
+              persistRemoteChannelCache();
+              // 2026-06-10: 接收侧记录对方名字 (来自 list.reply payload.name), 落 known_peers
+              const senderName = parsed.payload?.name;
+              if (senderName && typeof senderName === 'string') {
+                import('../network/known-peers.js').then(({ addOrUpdatePeer }) =>
+                  addOrUpdatePeer(senderName, evt.fromPublicKey)
+                ).catch(err => console.warn('[v3] 记录对端名字失败:', (err as Error).message));
+              }
+              console.log(`[v3] 收到 ${evt.fromPublicKey.substring(0,12)}... 的 ${list.length} 个 channel, 已缓存 (sender=${senderName || '?'})`);
               broadcast({
                 type: 'remote-channel-update',
                 peerId: evt.fromPublicKey,
+                peerName: senderName,           // 2026-06-10: 一并带名字到 UI
                 channels: list
               }, 'p2p-global');
+              return;
+            }
+            // 2026-06-10: 收到对方请求本机的 channel 列表 (启动时主动发请求, 加速 cache 填充)
+            if (parsed.op === 'agent.meta.list.request') {
+              console.log(`[v3-meta] 收到 ${evt.fromPublicKey.substring(0,12)}... 的 channel 列表请求 → 立刻回包`);
+              // 不能 await (在 on('data') sync 回调里), 改用 .then 异步处理
+              loadChannels().then(channels => {
+                const sharedForPeer = channels
+                  .map(ch => sanitizeChannelForPeer(ch, evt.fromPublicKey))
+                  .filter((x): x is Record<string, unknown> => x !== null);
+                const msg = JSON.stringify({
+                  v: 3, op: 'agent.meta.list.reply',
+                  payload: { channels: sharedForPeer }
+                });
+                v3P2PRef!.sendTo(evt.fromPublicKey, msg);
+              }).catch(err => console.warn('[v3-meta] 回应 channel 列表失败:', (err as Error).message));
               return;
             }
             handleV3P2PMessage(parsed, { id: evt.fromPublicKey, publicKey: evt.fromPublicKey } as any, commShim as any);
@@ -1365,10 +1445,37 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
           }
           // 触发一次 broadcast 推送给所有重连的 peer
           setTimeout(() => v3BroadcastOwn(), 2000);
+          // 2026-06-10: 同时主动请求每个 known peer 把 ta 的 channel 列表推过来
+          // 避免对面 publicKey 没变但 cache 丢了(本机重启) → 一直空
+          setTimeout(() => requestChannelsFromAllPeers(), 3500);
         } catch (err) {
           console.error('[v3] 自动重连失败:', (err as Error).message);
         }
       }, 5000); // 5s 后再重连, 让 swarm 充分 bootstrap
+
+      // 2026-06-10 新增: 主动向所有 known peer 发起 channel 列表请求
+      async function requestChannelsFromAllPeers() {
+        if (!v3P2PRef) return;
+        try {
+          const { listPeers } = await import('../network/known-peers.js');
+          const peers = await listPeers();
+          const myPk = v3P2PRef.getPublicKey();
+          const req = JSON.stringify({ v: 3, op: 'agent.meta.list.request', payload: { fromPublicKey: myPk } });
+          let sent = 0;
+          for (const peer of peers) {
+            if (peer.publicKey === myPk) continue;
+            // 用 sendToWithWait, 等 conn 就绪再发 (同 Step 5 sendToWithWait 修复)
+            const r = await v3P2PRef.sendToWithWait(peer.publicKey, req, 3000);
+            if (r === 'SENT') sent++;
+          }
+          console.log(`[v3-meta] requestChannelsFromAllPeers → sent=${sent}/${peers.length - 1}`);
+        } catch (err) {
+          console.warn('[v3-meta] requestChannelsFromAllPeers failed:', (err as Error).message);
+        }
+      }
+      // 立即跑一次 + 每 30s 兜底 (跟 v3BroadcastOwn 一样的节奏)
+      setTimeout(requestChannelsFromAllPeers, 4000);
+      setInterval(requestChannelsFromAllPeers, 30000);
     } catch (err) {
       console.error('[v3] P2PDirect 启动失败:', (err as Error).message);
       v3P2PRef = null;
@@ -1542,6 +1649,61 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       // 这是 v3 的核心 — channel 跑 LLM 时, 它的判断力 = 绑定的 judgment 列表
       const judgmentHint = await buildJudgmentHint(channelForJudgment, channelId);
       if (judgmentHint) contextHint += judgmentHint;
+
+      // 2026-06-10: 注入 skills 列表 (本机 ~/.bolloon/skills/ 下所有 skills)
+      // 让 LLM 知道有哪些 skill 可用, 在回复中提示用户
+      try {
+        const { loadSkillsFromPaths, defaultSkillPaths, describeSkill } = await import('../agents/skill-loader.js');
+        const paths = defaultSkillPaths();
+        const skills = await loadSkillsFromPaths(paths);
+        if (skills.length > 0) {
+          contextHint += `[系统上下文] 本机已加载的 skills (${skills.length} 个, 你可以提示用户主动调用):\n`;
+          for (const s of skills.slice(0, 20)) {  // 上限 20 避免 prompt 过长
+            const desc = (s.description || '').slice(0, 80);
+            contextHint += `  - /${s.name}${desc ? ' — ' + desc : ''}\n`;
+          }
+          contextHint += '调用语法: 用户说 "/技能名 ..." 或 你回复时建议 "/技能名 ..." 让用户主动触发.\n\n';
+        }
+      } catch (err) {
+        // 静默失败 — skills 不是核心, 加载失败不阻塞
+      }
+
+      // 2026-06-10: 注入 human values 摘要 (最常用的 judgment / 价值偏好)
+      // 与 judgment 不同: values 是更宏观的"用户偏好", judgment 是针对具体决策的约束
+      try {
+        const { loadAllJudgments } = await import('../pi-ecosystem-judgment/human-value-store.js');
+        const allJudgments = await loadAllJudgments().catch(() => []);
+        // 把所有 judgment 视作软参考 (跟 buildJudgmentHint 的 candidates 同理)
+        if (Array.isArray(allJudgments) && allJudgments.length > 0) {
+          contextHint += `[系统上下文] 用户的核心价值倾向 (来自 ${allJudgments.length} 条历史 judgment, 软参考, 体现而非复述):\n`;
+          for (const j of allJudgments.slice(0, 8)) {
+            const decision = (j.decision || '').slice(0, 80);
+            contextHint += `  - ${decision}\n`;
+          }
+          contextHint += '\n';
+        }
+      } catch (err) {
+        // 静默失败
+      }
+
+      // 2026-06-10: 注入 documents 列表 (本机 documents/ 目录的文档元数据)
+      // 让 LLM 知道有文档存在, 用户可主动要求读
+      try {
+        const { documentStore } = await import('../documents/store.js');
+        const docs = await documentStore.getReceivedDocuments(50).catch(() => []);
+        if (Array.isArray(docs) && docs.length > 0) {
+          contextHint += `[系统上下文] 本机 documents (${docs.length} 篇, 用户可让你读):\n`;
+          for (const d of docs.slice(0, 10)) {
+            const name = d.name || d.title || d.id || '(未命名)';
+            const size = d.size ? ` (${Math.round(d.size / 1024)}KB)` : '';
+            const sender = d.senderPeerId ? ` [来自 ${d.senderPeerId.substring(0,8)}…]` : '';
+            contextHint += `  - ${name}${size}${sender}\n`;
+          }
+          contextHint += '用户提到某文档时, 你可以调用读文档工具读取并总结.\n\n';
+        }
+      } catch (err) {
+        // 静默失败
+      }
 
       // v3 新增: 注入"可用渠道"目录, 让 LLM 知道可以 @-mention 哪些 channel
       // - 本地 channels (除了自己)
@@ -2840,13 +3002,24 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
-  // v3: 暴露 P2PDirect 自己的 publicKey, 对方可用它主动 connect
+  // v3: 暴露 P2PDirect 自己的 publicKey + 本机名字, 对方可用它主动 connect 并自动取名
   app.get('/api/p2p-publickey', async (_req, res) => {
     try {
       if (!v3P2PRef) {
         return res.status(503).json({ error: 'P2PDirect not started' });
       }
-      res.json({ publicKey: v3P2PRef.getPublicKey() });
+      const publicKey = v3P2PRef.getPublicKey();
+      // 2026-06-10: 把本机 user/agent name 一起返回, 对方拿到后能直接用
+      let name = process.env.BOLLOON_USER_NAME || process.env.USER || 'node';
+      try {
+        const { readFileSync, existsSync } = await import('fs');
+        const cfgPath = `${process.env.HOME || '/tmp'}/.bolloon/config.json`;
+        if (existsSync(cfgPath)) {
+          const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
+          if (cfg.userName) name = cfg.userName;
+        }
+      } catch {}
+      res.json({ publicKey, name, role: v3P2PRef.getRole() });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -2882,6 +3055,37 @@ app.get('/channels', async (_req, res) => {
       const { removePeer } = await import('../network/known-peers.js');
       await removePeer(req.params.name);
       res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  // 2026-06-10: PATCH 重命名 / 改备注 / 同时影响 publicKey
+  // 用法: PATCH /api/p2p-peers/:name { name?, notes?, publicKey? }
+  app.patch('/api/p2p-peers/:name', async (req, res) => {
+    try {
+      const { addOrUpdatePeer, removePeer } = await import('../network/known-peers.js');
+      const { readFile, writeFile } = await import('fs/promises');
+      const { existsSync } = await import('fs');
+      const filePath = `${process.env.HOME || '/tmp'}/.bolloon/known_peers.json`;
+      if (!existsSync(filePath)) return res.status(404).json({ error: 'no known_peers.json' });
+      const data = JSON.parse(await readFile(filePath, 'utf-8'));
+      const oldName = req.params.name;
+      const oldEntry = data.peers[oldName];
+      if (!oldEntry) return res.status(404).json({ error: `peer "${oldName}" not found` });
+      const { name: newName, notes, publicKey: newPk } = req.body || {};
+      const finalName = newName || oldName;
+      const finalPk = newPk || oldEntry.publicKey;
+      if (finalName !== oldName) {
+        delete data.peers[oldName];
+      }
+      data.peers[finalName] = {
+        ...oldEntry,
+        publicKey: finalPk,
+        name: finalName,
+        notes: notes !== undefined ? notes : oldEntry.notes
+      };
+      await writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
+      res.json({ ok: true, peer: data.peers[finalName] });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
