@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>API 配置 - Bolloon</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- 2026-06-11: 移除 Google Fonts 外部 CSS — 在大陆/跨公网时经常 30s+ timeout 阻塞首屏
+       style.css 里只用字体名字符串 (JetBrains Mono / monospace), 浏览器看字面量自动落回系统字体
+       2026-06-11 提速: 不再等 Google CDN 即可渲染 -->
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>

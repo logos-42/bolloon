@@ -16,12 +16,12 @@
   <!-- PWA Manifest -->
   <link rel="manifest" href="/manifest.json">
 
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- 2026-06-11: 移除 Google Fonts + jsdelivr 外部 CDN 阻塞 — 在大陆/跨公网 timeout 拖慢首屏/返回主页
+       字体: style.css 只用字面量 'JetBrains Mono', 系统有就用, 没有自动 fall back monospace
+       marked/qrcode: 改 async 不阻塞 (下载失败时本地降级到 escape 文本, 不影响主聊天) -->
   <link rel="stylesheet" href="/style.css">
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <script async src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script async src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
   <div class="app-container">
