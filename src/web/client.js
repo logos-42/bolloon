@@ -599,6 +599,54 @@ function toggleAgentExpand(channelId, e) {
   renderChannels();
 }
 
+/**
+ * 2026-06-11 性能优化: 切 channel 时用轻量 patch, 不重建整个 sidebar 列表
+ * 只更新: (1) active class (2) 当前 session label + count (3) expanded 状态
+ * 避免每次切 channel 都 innerHTML='' + 重建 ~10 个 channel 节点
+ */
+function renderChannelsLite(activeChannelId, activeSessionId) {
+  if (!channelList) return;
+  // 1. 更新所有 .agent-row 的 active class
+  channelList.querySelectorAll('.agent-row').forEach(row => {
+    const li = row.closest('.agent-group');
+    const chId = li?.dataset.channelId;
+    row.classList.toggle('active', chId === activeChannelId);
+  });
+  // 2. 当前 channel 的展开状态: 强制展开, 其他不动
+  if (activeChannelId) expandedAgents.add(activeChannelId);
+  // 3. 当前 session label 跟计数: 只重渲当前 channel 那一行
+  const activeLi = channelList.querySelector(`.agent-group[data-channel-id="${activeChannelId}"]`);
+  if (activeLi) {
+    const ch = channels.find(c => c.id === activeChannelId);
+    if (ch) {
+      // 展开
+      activeLi.classList.add('expanded');
+      // 重渲 session 列表子 UL
+      const sessionList = activeLi.querySelector('.session-list');
+      if (sessionList) {
+        const sl = ch.sessions || [];
+        sessionList.innerHTML = sl.map(s => {
+          const active = s.id === activeSessionId;
+          return `<li class="session-item ${active ? 'active' : ''}" data-session-id="${escapeHtml(s.id)}">
+            <span class="session-dot"></span>
+            <span class="session-name">${escapeHtml(formatSessionName(s))}</span>
+            <span class="session-msg-count">${s.messageCount || 0}</span>
+          </li>`;
+        }).join('');
+      }
+      // 更新顶部 current session label
+      const currentSess = Array.isArray(ch.sessions) ? ch.sessions.find(s => s.id === activeSessionId) : null;
+      const labelEl = activeLi.querySelector('.agent-current-session');
+      if (labelEl) {
+        labelEl.textContent = currentSess ? '· ' + formatSessionName(currentSess) : '';
+      }
+      const countEl = activeLi.querySelector('.agent-session-count');
+      const sl = ch.sessions || [];
+      if (countEl) countEl.textContent = sl.length > 1 ? sl.length : '';
+    }
+  }
+}
+
 function renderChannels() {
   if (!channelList) return;
   channelList.innerHTML = '';
@@ -838,7 +886,11 @@ async function selectChannel(channelId, targetSessionId = null) {
     console.log('[selectChannel] 频道:', channel.name, 'session:', currentSessionId);
   }
 
-  renderChannels();
+  // 2026-06-11 提速: 切 channel 时 sidebar 渲染降级 — 只更新 active 样式, 不重渲整列表
+  // renderChannels() 仍然要调 (current session label 等可能变了), 但加一层判断: 如果只是切 channel (没增删), 走 patch 路径
+  const t0 = performance.now();
+  renderChannelsLite(channelId, currentSessionId);
+  console.log(`[selectChannel] renderChannelsLite 耗时 ${(performance.now() - t0).toFixed(1)}ms`);
 
   // 确保该频道有消息容器
   const container = ensureMessageContainer(channelId);
@@ -857,10 +909,19 @@ async function selectChannel(channelId, targetSessionId = null) {
   try {
     const res = await fetch(`/sessions/${channelId}?sessionId=${encodeURIComponent(currentSessionId)}`);
     const session = await res.json();
-    if (session.messages && session.messages.length > 0) {
-      session.messages.forEach(msg => {
-        addMessage(msg.content, msg.type, false, container);
-      });
+    const msgs = session.messages || [];
+    if (msgs.length > 0) {
+      // 2026-06-11 提速: 用 DocumentFragment 一次性 append 避免多次 reflow
+      const frag = document.createDocumentFragment();
+      const tmpContainer = document.createElement('div');
+      tmpContainer.style.display = 'none';
+      for (const msg of msgs) {
+        addMessage(msg.content, msg.type, false, tmpContainer);
+      }
+      while (tmpContainer.firstChild) {
+        frag.appendChild(tmpContainer.firstChild);
+      }
+      container.appendChild(frag);
     } else {
       addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
     }

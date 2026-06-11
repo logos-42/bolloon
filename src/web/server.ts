@@ -1612,6 +1612,14 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
     broadcast({ type: 'user', content: text }, channelId);
 
+    // 2026-06-11: /message 端点立即返回 202, LLM 后续处理挪到 setImmediate 后台跑
+    // 之前 res.json 在 try 块末尾 (line 1815), 需要等 LLM (5-15s) + 落盘 + suggestRename (5-8s) = 13s+
+    // 客户端 fetch 占用 13s, 视觉像"卡死", 切其他 channel 也感觉"无法加载"
+    // 修法: 立即 res.json(202), try 块主体仍跑 (LLM 流 + 落盘) 但不阻塞 HTTP 响应
+    //     关键: res.json 之后不能再调用 res.json (会抛 ERR_HTTP_HEADERS_SENT), 所以 try 块末尾的 res.json 必须用 res.headersSent 守卫
+    res.status(202).json({ ok: true, async: true, channelId, sessionId: currentSessionId });
+    console.log(`[v3-async] /message 立即返回 202, channel=${channelId}, text length=${text.length}`);
+
     // 提前捕获 wallet/autoTools 到本地变量, 避免下面 try 块内的 inner const channel
     // (line ~638) 与这里外层的 const channel 形成 shadowing 让 TS 误报"使用前未声明"
     const boundWalletAddress = channel?.walletAddress;
@@ -1803,25 +1811,21 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
       const channels = await loadChannels();
       const channel = channels.find(c => c.id === channelId);
-      if (channel && channel.name === '智能体') {
-        const renameSuggestion = await agent.suggestRename(session.messages);
-        if (renameSuggestion) {
-          channel.name = renameSuggestion;
-          await saveChannels(channels);
-          broadcast({ type: 'renamed', channelId, newName: renameSuggestion }, channelId);
-        }
-      }
+      // 2026-06-11: 移除 suggestRename 的二次 LLM 调用 — 之前每次用户发消息, 智能体 channel 都会再调一次 LLM (5-8s) 自动改名
+      // 影响: (1) /message 端点被拖慢 5-8s (2) LLM 客户端排队, 其他 channel 跟着卡
+      // 现在改名逻辑挪到 /api/agent-rename 端点, 用户主动触发才跑
       if (channel) {
         channel.updatedAt = new Date().toISOString();
         await saveChannels(channels);
       }
 
       broadcast({ type: 'done' }, channelId);
-      res.json({ ok: true });
+      // 2026-06-11: 202 已发的话, 不要重复 res.json (会抛 ERR_HTTP_HEADERS_SENT)
+      if (!res.headersSent) res.json({ ok: true });
     } catch (err: any) {
       broadcast({ type: 'error', content: err.message }, channelId);
       broadcast({ type: 'done' }, channelId);
-      res.status(500).json({ error: err.message });
+      if (!res.headersSent) res.status(500).json({ error: err.message });
     }
   });
 
