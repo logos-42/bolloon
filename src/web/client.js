@@ -156,6 +156,8 @@ async function loadChannels() {
     channels.forEach((ch, i) => {
       console.log(`  [${i}] ${ch.name} - did: "${ch.did}"`);
     });
+    // 2026-06-11: 全部默认不展开 (用户需要手动点 caret 展开 session 列表)
+    // 之前默认展开第一个会喧宾夺主, 用户看不到完整 channel 列表
     renderChannels();
   } catch (err) {
     console.error('[加载频道] 失败:', err);
@@ -3100,13 +3102,14 @@ function renderRemoteChannels() {
       : (peer._isStranger ? '陌生 peer' : '从未连接');
     const strangerStyle = peer._isStranger ? 'border:1px dashed var(--border-light);' : '';
     const strangerIcon = peer._isStranger ? '❔' : '👤';
-    // 2026-06-10: 折叠逻辑 (定稿)
-    // - 首次见 peer: 默认 *折叠* (10+ peer 时减少视觉噪声; 标题栏右侧 "X ch" 提示有内容)
+    // 2026-06-11: 折叠逻辑 (全不展开)
+    // - 所有 peer 首次见都默认 *折叠* (包括 known_peers 第一个) — 用户一进来看到完整 peer 列表
+    // - 标题栏右侧 "X ch" 提示有内容, 用户点 caret 展开
     // - 已见过: 沿用 collapsedPeers (用户上次选择)
-    // - "全部展开/折叠" 按钮在 P2P header (id=p2p-expand-all-btn)
+    // - "全部展开/折叠" 按钮在 P2P header (id=p2p-toggle-all-btn)
     if (!seenPeers.has(peer.publicKey)) {
       seenPeers.add(peer.publicKey);
-      collapsedPeers.add(peer.publicKey);  // 首次默认折叠
+      collapsedPeers.add(peer.publicKey);  // 全部默认折叠
       saveSeenPeers();
       saveCollapsedPeers();
     }
