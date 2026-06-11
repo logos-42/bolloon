@@ -113,7 +113,8 @@ export {
   loadColony,
   onColonyEvent,
   offColonyEvent,
-} from '../pi-ecosystem-colony/index.js';
+} from '../pi-ecosystem-colony/index.js'; // 2026-06-11: 蚁群模块已被用户删除, 这行已经无效 (改用 stub)
+
 
 export type { Ant, ColonyTask, ColonySignalEvent, ColonySignal, AntRole } from '../pi-ecosystem-colony/index.js';
 

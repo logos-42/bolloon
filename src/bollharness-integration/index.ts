@@ -96,38 +96,14 @@ export {
   type SubagentResult,
 } from '../pi-ecosystem-subagents/index.js';
 
-export {
-  registerAnt,
-  antScouting,
-  antWorking,
-  antReviewing,
-  antComplete,
-  antFail,
-  antAbort,
-  antTick,
-  createTask,
-  dispatchTask,
-  recordResult,
-  getAnt,
-  listAnts,
-  listAntsByRole,
-  listAntsBySignal,
-  getActiveAnts,
-  getTask,
-  listTasks,
-  getSignalHistory,
-  getColonyStatus,
-  getColonyDump,
-  persistColony,
-  loadColony,
-  onColonyEvent,
-  offColonyEvent,
-  type Ant,
-  type ColonyTask,
-  type ColonySignalEvent,
-  type ColonySignal,
-  type AntRole,
-} from '../pi-ecosystem-colony/index.js';
+// 2026-06-11: 蚁群模块 (pi-ecosystem-colony) 已被用户删除, 移除对应 re-export 防止启动失败
+// export {
+//   registerAnt, antScouting, antWorking, antReviewing, antComplete, antFail, antAbort, antTick,
+//   createTask, dispatchTask, recordResult, getAnt, listAnts, listAntsByRole, listAntsBySignal,
+//   getActiveAnts, getTask, listTasks, getSignalHistory, getColonyStatus, getColonyDump,
+//   persistColony, loadColony, onColonyEvent, offColonyEvent,
+//   type Ant, type ColonyTask, type ColonySignalEvent, type ColonySignal, type AntRole,
+// } from '../pi-ecosystem-colony/index.js';
 
 // Judgment exports
 export {

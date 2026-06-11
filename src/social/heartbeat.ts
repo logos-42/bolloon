@@ -1,8 +1,9 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { PheromoneEngine, PheromoneType } from './ant-colony/PheromoneEngine.js';
-import { AdaptiveHeartbeat } from './ant-colony/AdaptiveHeartbeat.js';
+// 2026-06-11: 蚁群模块 (PheromoneEngine / AdaptiveHeartbeat) 已被用户删除, 移除对应 import 防止启动失败
+// import { PheromoneEngine, PheromoneType } from './ant-colony/PheromoneEngine.js';
+// import { AdaptiveHeartbeat } from './ant-colony/AdaptiveHeartbeat.js';
 import { ChannelManager } from './channels/ChannelManager.js';
 import { ChannelType } from './channels/types.js';
 import { DiapChannelBridge } from './channels/DiapChannelBridge.js';

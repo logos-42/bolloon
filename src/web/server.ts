@@ -1956,9 +1956,21 @@ app.get('/channels', async (_req, res) => {
   // v3: 列出本节点缓存的远端 channel (按 peerId 分组)
   app.get('/api/remote-channels', async (_req, res) => {
     try {
-      const out: Array<{ peerId: string; channels: Array<Record<string, unknown>> }> = [];
+      const out: Array<{ peerId: string; channels: Array<Record<string, unknown>>; peerName?: string }> = [];
+      // 2026-06-11: 合并 known_peers + cache, 避免 cache 空时 UI 一个 peer 都看不到
+      // (cache 是纯内存, 重启即丢; known_peers 持久化, 至少能让 UI 显示"这些 peer 我认识")
+      const { listPeers } = await import('../network/known-peers.js');
+      const knownPeers = await listPeers();
+      const knownByPk = new Map<string, { name?: string }>();
+      for (const p of knownPeers) knownByPk.set(p.publicKey, { name: p.name });
       for (const [peerId, list] of remoteChannelCache.entries()) {
-        out.push({ peerId, channels: list });
+        out.push({ peerId, channels: list, peerName: knownByPk.get(peerId)?.name });
+      }
+      // known_peers 里但 cache 没的, 占位推进 out (channels=[]) 让 UI 能渲染 peer header
+      for (const [peerId, info] of knownByPk.entries()) {
+        if (!remoteChannelCache.has(peerId)) {
+          out.push({ peerId, channels: [], peerName: info.name });
+        }
       }
       res.json({ count: out.length, peers: out });
     } catch (err: any) {

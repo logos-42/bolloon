@@ -33,8 +33,13 @@ import {
   processFeedback,
   type FeedbackSignal,
 } from './distillation.js';
-import { listAnts, type Ant } from '../pi-ecosystem-colony/index.js';
+// 2026-06-11: 蚁群模块已被用户删除, 移除 import 防止启动失败, 加本地 stub
+// import { listAnts, type Ant } from '../pi-ecosystem-colony/index.js';
 import { listSubagents, type Subagent } from '../pi-ecosystem-subagents/index.js';
+
+// Stub: 蚁群删除后, 永远返回空列表
+function listAnts(): any[] { return []; }
+type Ant = { name: string; signal: string };
 
 export type DecisionLevel = 'autonomous' | 'consult_internal' | 'consult_external' | 'require_human';
 export type ConsultationTarget = 'human' | 'colony_ant' | 'subagent' | 'p2p_agent';
