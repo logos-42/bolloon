@@ -1,9 +1,24 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
-// 2026-06-11: 蚁群模块 (PheromoneEngine / AdaptiveHeartbeat) 已被用户删除, 移除对应 import 防止启动失败
-// import { PheromoneEngine, PheromoneType } from './ant-colony/PheromoneEngine.js';
-// import { AdaptiveHeartbeat } from './ant-colony/AdaptiveHeartbeat.js';
+// 2026-06-11: 蚁群模块 (PheromoneEngine / AdaptiveHeartbeat) 已被用户删除, 仅保留最小 stub
+// 让 heartbeat 内的 antColony 代码块继续类型合法, 但运行时所有方法都是 no-op
+class PheromoneEngine {
+  async initialize() { /* stub */ }
+  shutdown() { /* stub */ }
+  getStats() { return { totalTrails: 0, avgStrength: 0, capabilityCount: 0, density: 0 }; }
+  async deposit(_type: any, _from: string, _to: string, _strength: number, _meta?: any) { /* stub */ }
+}
+class AdaptiveHeartbeat {
+  constructor(_opts: any) { /* stub */ }
+  shutdown() { /* stub */ }
+  decide() { return { interval: 0, priorityLevel: 'normal' }; }
+  setPheromoneDensity(_d: number) { /* stub */ }
+  recordActivity(_t: string) { /* stub */ }
+}
+enum PheromoneType {
+  DISCOVERY = 'discovery',
+}
 import { ChannelManager } from './channels/ChannelManager.js';
 import { ChannelType } from './channels/types.js';
 import { DiapChannelBridge } from './channels/DiapChannelBridge.js';

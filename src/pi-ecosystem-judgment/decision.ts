@@ -302,7 +302,7 @@ async function consultColonyAnt(
 
   return {
     target: 'colony_ant',
-    agentId: ant.id,
+    agentId: ant.name,
     response: `[Simulated] Ant ${ant.name} suggests: ${request.description.substring(0, 30)}...`,
     confidence: 0.6,
   };

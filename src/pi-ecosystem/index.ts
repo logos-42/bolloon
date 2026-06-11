@@ -412,19 +412,22 @@ export class PiEcosystem {
 
   async registerAnt(name: string, role: 'scout' | 'worker' | 'reviewer' | 'coordinator'): Promise<string> {
     const colony = await import('../pi-ecosystem-colony/index.js');
-    const ant = colony.registerAnt(name, role);
-    return ant.id;
+    // 2026-06-11: colony 已退化为 stub, registerAnt 不接参数, 返回 void
+    colony.registerAnt();
+    return name;
   }
 
   async createColonyTask(description: string): Promise<string> {
     const colony = await import('../pi-ecosystem-colony/index.js');
-    const task = colony.createTask(description);
-    return task.id;
+    // 2026-06-11: createTask 不接参数, 返回空对象
+    const task: any = colony.createTask();
+    return task?.id ?? description;
   }
 
   async dispatchToColony(taskId: string, antIds: string[]): Promise<void> {
     const colony = await import('../pi-ecosystem-colony/index.js');
-    colony.dispatchTask(taskId, antIds);
+    // 2026-06-11: dispatchTask 已退化为 stub
+    colony.dispatchTask();
   }
 
   async persist(): Promise<void> {

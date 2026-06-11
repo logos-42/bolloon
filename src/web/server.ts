@@ -1716,9 +1716,9 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         if (Array.isArray(docs) && docs.length > 0) {
           contextHint += `[系统上下文] 本机 documents (${docs.length} 篇, 用户可让你读):\n`;
           for (const d of docs.slice(0, 10)) {
-            const name = d.name || d.title || d.id || '(未命名)';
-            const size = d.size ? ` (${Math.round(d.size / 1024)}KB)` : '';
-            const sender = d.senderPeerId ? ` [来自 ${d.senderPeerId.substring(0,8)}…]` : '';
+            const name = d.fileName || d.id || '(未命名)';
+            const size = d.fileSize ? ` (${Math.round(d.fileSize / 1024)}KB)` : '';
+            const sender = d.fromNodeId ? ` [来自 ${d.fromNodeIdShort || d.fromNodeId.substring(0,8)}…]` : '';
             contextHint += `  - ${name}${size}${sender}\n`;
           }
           contextHint += '用户提到某文档时, 你可以调用读文档工具读取并总结.\n\n';
@@ -1752,7 +1752,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
           for (const docId of linkedIds.slice(0, 10)) {
             const doc = await documentStore.readDocument(docId).catch(() => null);
             if (!doc) continue;
-            const name = doc.metadata?.name || docId;
+            const name = doc.metadata?.fileName || docId;
             const content = (doc.content || '').slice(0, 1500);  // 单篇 1.5KB 上限, 总 prompt 防爆
             contextHint += `\n--- 文档: ${name} ---\n${content}\n--- 文档结束 ---\n`;
             loaded++;
