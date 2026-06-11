@@ -627,12 +627,9 @@ function renderChannels() {
     const currentSessLabel = currentSess ? formatSessionName(currentSess) : '';
     const sessionCount = Array.isArray(ch.sessions) ? ch.sessions.length : 0;
 
-    const walletBadge = ch.walletAddress
-      ? `<span class="agent-wallet-badge" title="已绑定钱包: ${escapeHtml(ch.walletAddress)}">⛓</span>`
-      : '';
-    const toolsBadge = ch.autoInvokeTools
-      ? `<span class="agent-tools-badge" title="自动工具调用已开启">⚡</span>`
-      : '';
+    // 2026-06-10: 隐藏 channel 行右侧的勋章 (钱包 / 工具) — UI 简洁
+    const walletBadge = '';
+    const toolsBadge = '';
 
     row.innerHTML = `
       <svg class="agent-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2637,7 +2634,6 @@ function renderJudgmentItems(items, opts) {
             <input type="checkbox" class="judgment-select-cb" data-id="${escapeHtml(j.id)}" style="cursor:pointer;" onclick="event.stopPropagation();">
           </label>
           <div class="task-item-title">
-            <span>🛡️</span>
             <span class="judgment-decision">${escapeHtml(j.decision)}</span>
           </div>
           <span class="task-item-status completed">${stakes}</span>
