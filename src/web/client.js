@@ -4,8 +4,6 @@ if (typeof marked === 'undefined') {
 }
 
 const messagesEl = document.getElementById('messages');
-const agentStatusEl = document.getElementById('agent-status');
-const agentStatusTextEl = document.getElementById('agent-status-text');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const sidebar = document.getElementById('sidebar');
@@ -981,12 +979,6 @@ function addMessage(content, type, save = true, container, usedJudgmentIds = [])
   const div = document.createElement('div');
   div.className = `message message-${type}`;
 
-  // 清理工具结果容器（当新的 AI 消息到达时）
-  if (type === 'ai' && toolResultContainer) {
-    toolResultContainer.remove();
-    toolResultContainer = null;
-  }
-
   // 清理内容：移除 tool call 标记和其他不应该显示的内容
   let cleanContent = content
     .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/g, '')
@@ -1184,15 +1176,17 @@ function addMessage(content, type, save = true, container, usedJudgmentIds = [])
     div.appendChild(actionsDiv);
   }
 
-  // P0.5: 引用原则徽章 (AI 消息)
+  // P0.5: 反向引用链接 (AI 消息) — 极简, 点击跳判断力 modal
   if (type === 'ai' && Array.isArray(usedJudgmentIds) && usedJudgmentIds.length > 0) {
-    const principlesDiv = document.createElement('div');
-    principlesDiv.className = 'used-judgments';
-    principlesDiv.style.cssText = 'margin-top:6px;padding:6px 10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:4px;font-size:11px;color:#0c4a6e;cursor:pointer;user-select:none;';
-    principlesDiv.setAttribute('data-used-ids', JSON.stringify(usedJudgmentIds));
-    principlesDiv.innerHTML = `📚 引用了 <strong>${usedJudgmentIds.length}</strong> 条判断力原则 <span style="color:#0369a1;">▾</span>`;
-    principlesDiv.onclick = () => toggleUsedPrinciples(principlesDiv, usedJudgmentIds);
-    div.appendChild(principlesDiv);
+    const link = document.createElement('a');
+    link.className = 'used-judgments-link';
+    link.style.cssText = 'display:inline-block;margin-top:4px;font-size:11px;color:#0369a1;text-decoration:underline;cursor:pointer;';
+    link.textContent = `📎 参考 ${usedJudgmentIds.length} 条原则`;
+    link.onclick = (e) => {
+      e.preventDefault();
+      openJudgmentsModalWithFilter(usedJudgmentIds);
+    };
+    div.appendChild(link);
   }
 
   div.appendChild(time);
@@ -1201,193 +1195,187 @@ function addMessage(content, type, save = true, container, usedJudgmentIds = [])
   msgContainer.scrollTop = msgContainer.scrollHeight;
 }
 
-// Agent status bar — sits between the message list and the input box.
-// Two visual states: "planning" (spinner) and "executing" (glowing icon).
-// The text alternates to convey the action loop.
-let agentStatusState = null; // 'planning' | 'executing' | null
-let agentStatusTextIdx = 0;
+// ============================================================
+// Loop timeline panel (Claude Code 风格)
+// ============================================================
 
-const AGENT_STATUS_TEXTS = {
-  planning: ['正在计划', '正在分析', '正在思考'],
-  executing: ['正在执行', '正在调用工具', '正在处理'],
+let timelinePanelEl = null;
+let timelineRowsEl = null;
+let currentTokenRow = null;
+let currentTokenText = '';
+let lastUsedJudgmentIds = []; // 用于 finalizeTimelineAsMessage 给 addMessage 第 5 参
+
+const PHASE_TEXT = {
+  gate_compute: '正在检索相关判断力...',
+  gate_done:    '已注入 {usedCount} 条原则',
+  d_detect:     'D 触发: 监测对话...',
+  d_distill:    'D 触发: 蒸馏判断力...',
+  d_done:       'D 触发: 已入库',
+  d_skip:       'D 触发: 跳过',
+  d_error:      'D 触发: 错误',
 };
 
-function setAgentStatus(state) {
-  if (!agentStatusEl || !agentStatusTextEl) return;
-  if (state === null) {
-    agentStatusEl.hidden = true;
-    agentStatusEl.removeAttribute('data-mode');
-    agentStatusState = null;
-    return;
+function initTimelinePanel() {
+  if (timelinePanelEl) return;
+  timelinePanelEl = document.getElementById('loop-timeline-panel');
+  timelineRowsEl = document.getElementById('loop-timeline-rows');
+  const abortBtn = document.getElementById('loop-abort-btn');
+  if (abortBtn) abortBtn.addEventListener('click', abortCurrentRun);
+}
+
+function resetTimeline() {
+  if (timelineRowsEl) timelineRowsEl.innerHTML = '';
+  currentTokenRow = null;
+  currentTokenText = '';
+  lastUsedJudgmentIds = [];
+  const title = document.getElementById('loop-timeline-title');
+  if (title) title.textContent = '▸ 运行中';
+}
+
+function showTimelinePanel() {
+  initTimelinePanel();
+  resetTimeline();
+  if (timelinePanelEl) timelinePanelEl.hidden = false;
+}
+
+function hideTimelinePanel() {
+  if (timelinePanelEl) timelinePanelEl.hidden = true;
+}
+
+function scrollTimelineToBottom() {
+  if (timelinePanelEl) timelinePanelEl.scrollTop = timelinePanelEl.scrollHeight;
+}
+
+function appendPhaseRow(text, status) {
+  if (!timelineRowsEl) return;
+  const row = document.createElement('div');
+  row.className = 'loop-row loop-row-phase';
+  row.style.cssText = 'padding:2px 0;color:#374151;';
+  const icon = status === 'done' ? '✓' : status === 'error' ? '✗' : '●';
+  row.innerHTML = `<span style="color:#6b7280;">${icon}</span> <span>${escapeHtml(text)}</span>`;
+  timelineRowsEl.appendChild(row);
+  scrollTimelineToBottom();
+}
+
+function appendOrUpdateTokenRow(delta) {
+  if (!timelineRowsEl) return;
+  if (!currentTokenRow) {
+    currentTokenRow = document.createElement('div');
+    currentTokenRow.className = 'loop-row loop-row-token';
+    currentTokenRow.style.cssText = 'padding:2px 0 2px 16px;color:#1f2937;white-space:pre-wrap;word-break:break-word;';
+    currentTokenText = '';
+    timelineRowsEl.appendChild(currentTokenRow);
   }
-  agentStatusEl.hidden = false;
-  agentStatusEl.setAttribute('data-mode', state);
-  agentStatusState = state;
-  // 重排一下文本, 避免长时间停留过于单调
-  agentStatusTextIdx = (agentStatusTextIdx + 1) % AGENT_STATUS_TEXTS[state].length;
-  agentStatusTextEl.textContent = AGENT_STATUS_TEXTS[state][agentStatusTextIdx];
+  currentTokenText += delta;
+  currentTokenRow.textContent = currentTokenText;
+  scrollTimelineToBottom();
 }
 
-function showTyping(container) {
-  hideTyping();
-  // 兼容旧路径: container 参数保留但不再使用, status bar 是全局唯一的
-  void container;
-  setAgentStatus('planning');
-}
-
-function hideTyping() {
-  setAgentStatus(null);
-  // 兜底: 旧版本的 #typing 元素可能还残留在 DOM 里, 顺手清掉
-  const old = document.getElementById('typing');
-  if (old) old.remove();
-  hideStreaming();
-}
-
-let streamingMessageEl = null;
-
-function showStreaming(container) {
-  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
-  hideStreaming();
-  streamingMessageEl = document.createElement('div');
-  streamingMessageEl.className = 'message message-ai';
-  streamingMessageEl.id = 'streaming';
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble bubble-ai streaming-content';
-  streamingMessageEl.appendChild(bubble);
-  msgContainer.appendChild(streamingMessageEl);
-  msgContainer.scrollTop = msgContainer.scrollHeight;
-}
-
-function hideStreaming() {
-  if (streamingMessageEl) {
-    streamingMessageEl.remove();
-    streamingMessageEl = null;
-  }
-}
-
-function updateStreamingContent(content, container) {
-  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
-  if (streamingMessageEl) {
-    const bubble = streamingMessageEl.querySelector('.streaming-content');
-    if (bubble) {
-      bubble.textContent = content;
-      msgContainer.scrollTop = msgContainer.scrollHeight;
+function appendToolRow(toolName, status) {
+  if (!timelineRowsEl) return;
+  const row = document.createElement('div');
+  row.className = 'loop-row loop-row-tool';
+  row.dataset.status = status;
+  row.style.cssText = 'padding:2px 0;color:#1e40af;cursor:pointer;user-select:none;';
+  const icon = status === 'done' ? '✓' : status === 'error' ? '✗' : '●';
+  row.innerHTML = `<span style="color:#6b7280;">${icon}</span> ${escapeHtml(toolName)} <span class="toggle" style="color:#6b7280;">▸</span>`;
+  row.addEventListener('click', () => {
+    const detail = row.nextElementSibling;
+    if (detail && detail.classList.contains('loop-row-tool-detail')) {
+      const isHidden = detail.style.display === 'none';
+      detail.style.display = isHidden ? 'block' : 'none';
+      const tg = row.querySelector('.toggle');
+      if (tg) tg.textContent = isHidden ? '▾' : '▸';
     }
-  }
+  });
+  timelineRowsEl.appendChild(row);
+  return row;
 }
 
-function handleStreamEvent(data, container) {
-  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
-  // 始终确保有工作流显示区域
-  if (!workflowDisplayEl) {
-    workflowDisplayEl = createWorkflowDisplay();
-    msgContainer.appendChild(workflowDisplayEl);
-  }
-
-  if (data.streamType === 'thinking') {
-    showStreaming(msgContainer);
-    updateStreamingContent(data.content || '思考中...', msgContainer);
-  } else if (data.streamType === 'token') {
-    showStreaming(msgContainer);
-    const current = streamingMessageEl?.querySelector('.streaming-content')?.textContent || '';
-    updateStreamingContent(current + data.content, msgContainer);
-  }
+function appendToolDetail(row, content) {
+  if (!row || !timelineRowsEl) return;
+  const detail = document.createElement('div');
+  detail.className = 'loop-row loop-row-tool-detail';
+  detail.style.cssText = 'padding:4px 0 6px 24px;color:#4b5563;font-size:11px;white-space:pre-wrap;word-break:break-word;background:#f3f4f6;border-radius:3px;margin-bottom:4px;';
+  detail.textContent = content;
+  detail.style.display = 'none';
+  timelineRowsEl.insertBefore(detail, row.nextSibling);
+  scrollTimelineToBottom();
 }
 
-function handleStatusEvent(data, container) {
-  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
-  // 检查是否是工具调用结果
+function findLastPendingToolRow() {
+  if (!timelineRowsEl) return null;
+  const rows = timelineRowsEl.querySelectorAll('.loop-row-tool');
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].dataset.status === 'pending') return rows[i];
+  }
+  return null;
+}
+
+function handlePhaseEventTimeline(data) {
+  initTimelinePanel();
+  const tmpl = PHASE_TEXT[data.phase];
+  if (!tmpl) return;
+  if (timelinePanelEl.hidden) showTimelinePanel();
+  let text = tmpl;
+  if (data.usedCount !== undefined) text = text.replace('{usedCount}', String(data.usedCount));
+  if (data.detail && (data.phase === 'd_done' || data.phase === 'd_skip' || data.phase === 'd_error')) {
+    text = `${text} — ${data.detail}`;
+  }
+  const status = data.phase.endsWith('_done') || data.phase === 'd_skip' ? 'done'
+               : data.phase === 'd_error' ? 'error' : 'pending';
+  appendPhaseRow(text, status);
+}
+
+function handleStatusEventTimeline(data) {
+  initTimelinePanel();
   const content = data.content || '';
   const isJsonResult = content.startsWith('{') && content.includes('"success"');
-
-  if (isJsonResult) {
-    // 工具结果：折叠显示
-    showToolResult(data.tool, content, msgContainer);
-  } else {
-    // 普通状态：流式显示
-    showStreaming(msgContainer);
-    const icon = data.tool ? `🔧 ${data.tool}: ` : '';
-    updateStreamingContent(icon + data.content, msgContainer);
-  }
-}
-
-// 显示工具调用结果（折叠）
-let toolResultContainer = null;
-
-function showToolResult(toolName, resultJson, container) {
-  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
-  // 清理之前的流式显示
-  hideStreaming();
-
-  // 获取或创建工具结果容器
-  if (!toolResultContainer) {
-    toolResultContainer = document.createElement('div');
-    toolResultContainer.className = 'tool-results-container';
-    msgContainer.appendChild(toolResultContainer);
-  }
-
-  // 尝试解析并格式化 JSON
-  let formattedResult = resultJson;
-  try {
-    const parsed = JSON.parse(resultJson);
-    formattedResult = formatToolResult(parsed);
-  } catch {}
-
-  // 创建折叠项
-  const resultEl = document.createElement('div');
-  resultEl.className = 'tool-result-item collapsed';
-
-  const toolDisplayName = toolName || '工具结果';
-  const headerEl = document.createElement('div');
-  headerEl.className = 'tool-result-header';
-  headerEl.innerHTML = `
-    <span class="tool-result-icon">🔧</span>
-    <span class="tool-result-name">${toolDisplayName}</span>
-    <span class="tool-result-toggle">▸</span>
-  `;
-  // 绑定事件处理器（避免内联 onclick）
-  headerEl.addEventListener('click', () => {
-    resultEl.classList.toggle('collapsed');
-    resultEl.classList.toggle('expanded');
-  });
-
-  const contentEl = document.createElement('div');
-  contentEl.className = 'tool-result-content';
-  contentEl.innerHTML = `<pre>${formattedResult}</pre>`;
-
-  resultEl.appendChild(headerEl);
-  resultEl.appendChild(contentEl);
-  toolResultContainer.appendChild(resultEl);
-  msgContainer.scrollTop = msgContainer.scrollHeight;
-}
-
-// 格式化工具结果为易读格式
-function formatToolResult(obj, indent = 0) {
-  const spaces = '  '.repeat(indent);
-
-  if (obj === null || obj === undefined) {
-    return 'null';
-  }
-
-  if (typeof obj === 'object') {
-    if (Array.isArray(obj)) {
-      if (obj.length === 0) return '[]';
-      return obj.map(item => spaces + '- ' + formatToolResult(item, indent + 1)).join('\n');
+  if (data.tool) {
+    // 工具事件: 折叠行 + 可选挂 output
+    const pending = findLastPendingToolRow();
+    if (pending && pending.textContent && pending.textContent.includes(data.tool) && content.length > 100) {
+      // 把 output 挂到上一个同工具的 pending 行
+      pending.dataset.status = 'done';
+      const iconEl = pending.firstElementChild;
+      if (iconEl) iconEl.textContent = '✓';
+      const tg = pending.querySelector('.toggle');
+      if (tg) tg.textContent = '▸';
+      appendToolDetail(pending, content);
+    } else {
+      const status = isJsonResult ? 'done' : 'pending';
+      const row = appendToolRow(data.tool, status);
+      if (isJsonResult) appendToolDetail(row, content);
     }
-
-    const keys = Object.keys(obj);
-    if (keys.length === 0) return '{}';
-
-    return keys.map(key => {
-      const value = obj[key];
-      if (typeof value === 'object') {
-        return `${spaces}${key}:\n${formatToolResult(value, indent + 1)}`;
-      }
-      return `${spaces}${key}: ${value}`;
-    }).join('\n');
+    scrollTimelineToBottom();
+  } else {
+    // 普通 status: 当作 phase done
+    if (timelinePanelEl.hidden) showTimelinePanel();
+    const label = (data.tool ? `🔧 ${data.tool}: ` : '') + content;
+    appendPhaseRow(label, 'done');
   }
+}
 
-  return String(obj);
+function handleStreamTokenEvent(data) {
+  initTimelinePanel();
+  if (timelinePanelEl.hidden) showTimelinePanel();
+  appendOrUpdateTokenRow(data.content || '');
+}
+
+function handleQueueUpdateTimeline(data) {
+  const title = document.getElementById('loop-timeline-title');
+  if (!title) return;
+  title.textContent = data.queueLength > 0
+    ? `▸ 运行中 · 队列 +${data.queueLength}`
+    : '▸ 运行中';
+}
+
+function finalizeTimelineAsMessage() {
+  const container = messagesContainers.get(currentChannelId) || messagesEl;
+  if (currentTokenText.trim().length > 0) {
+    addMessage(currentTokenText, 'ai', true, container, lastUsedJudgmentIds);
+  }
+  // tool 折叠行保留在 timeline 内, 用户能回看
 }
 
 // 工作流状态显示
@@ -1579,6 +1567,12 @@ function showUserCommand(command, container, opts) {
   msgContainer.scrollTop = msgContainer.scrollHeight;
 }
 
+// ============================================================
+// 状态条 + phase + queue + abort (UI 体验补丁) — 旧版, 已被 timeline panel 取代
+// ============================================================
+
+
+
 function connect(channelId) {
   const targetChannelId = channelId || currentChannelId;
   if (!targetChannelId) return;
@@ -1686,28 +1680,25 @@ function connect(channelId) {
         }
         // 本地 user 已经由 sendMessage 渲染 + 去重, 这里不再显示
       } else if (data.type === 'ai') {
-        addMessage(data.content, 'ai', true, container);
-        hideTyping();
+        addMessage(data.content, 'ai', true, container, lastUsedJudgmentIds);
       } else if (data.type === 'stream') {
-        handleStreamEvent(data, container);
-        setAgentStatus('executing');
+        if (data.streamType === 'thinking' || data.streamType === 'token') {
+          handleStreamTokenEvent(data);
+        }
       } else if (data.type === 'regenerating') {
+        // 删旧的最后一条 AI 消息, 准备重新生成
         const messages = container.querySelectorAll('.message-ai');
         if (messages.length > 0) {
           const lastAiMsg = messages[messages.length - 1];
           lastAiMsg.remove();
         }
-        showTyping(container);
+        showTimelinePanel();
       } else if (data.type === 'status') {
-        handleStatusEvent(data, container);
-        setAgentStatus('executing');
+        handleStatusEventTimeline(data);
       } else if (data.type === 'done') {
-        hideTyping();
-        // AI 回复完, 把最后一条 ai 消息落盘 (兜底, 避免 server saveSession 漏写)
-        const lastAi = container.querySelector('.message-ai:last-of-type .message-content');
-        if (lastAi) {
-          persistLastMessageToServer('ai', lastAi.textContent || '');
-        }
+        // AI 回复生成完, 从 timeline 拿出 token 文本作为正式消息
+        finalizeTimelineAsMessage();
+        hideTimelinePanel();
       } else if (data.type === 'renamed') {
         const channel = channels.find(c => c.id === data.channelId);
         if (channel) {
@@ -1718,7 +1709,6 @@ function connect(channelId) {
           }
         }
       } else if (data.type === 'error') {
-        hideTyping();
         addMessage('错误: ' + data.content, 'ai', true, container);
       } else if (data.type === 'task_status') {
         handleTaskStatusEvent(data, container);
@@ -1726,6 +1716,13 @@ function connect(channelId) {
         handleWorkflowStepEvent(data, container);
       } else if (data.type === 'workflow_loop') {
         handleWorkflowLoopEvent(data, container);
+      } else if (data.type === 'phase') {
+        handlePhaseEventTimeline(data);
+      } else if (data.type === 'queue_update') {
+        handleQueueUpdateTimeline(data);
+      } else if (data.type === 'used_judgments' && Array.isArray(data.usedIds)) {
+        // 注入门回传: 保存 usedIds, finalizeTimelineAsMessage 时给 addMessage
+        lastUsedJudgmentIds = data.usedIds;
       }
     } catch (parseErr) {
       console.error('[SSE] 解析错误', parseErr);
@@ -1746,7 +1743,7 @@ async function sendMessage() {
   if (container) container.scrollTop = container.scrollHeight;
 
   input.value = '';
-  showTyping();
+  showTimelinePanel();
 
   // 立即把用户消息落盘, 避免切走再切回时丢失
   persistLastMessageToServer('user', text);
@@ -1768,11 +1765,11 @@ async function sendMessage() {
     });
 
     if (!res.ok) {
-      hideTyping();
+      hideTimelinePanel();
       addMessage('发送失败', 'ai');
     }
   } catch (err) {
-    hideTyping();
+    hideTimelinePanel();
     addMessage('连接错误', 'ai');
     console.error('Send error', err);
   }
@@ -2660,62 +2657,25 @@ function switchStatusFilter(status) {
 }
 
 /**
- * P0.5: 切换显示 AI 消息引用的判断力原则
- * - 第一次点击: 异步拉 /api/judgments/resolve-usage, 展开列表
- * - 再次点击: 折叠
+ * P0.5: 打开判断力 modal 并 filter 到指定 ids
+ * - 调 openJudgmentsModal() + 等 loadJudgments() 完成
+ * - 然后用 ids filter lastJudgmentsCache
  */
-async function toggleUsedPrinciples(div, ids) {
-  // 已展开 → 折叠
-  const existing = div.nextElementSibling;
-  if (existing && existing.classList && existing.classList.contains('used-judgments-detail')) {
-    existing.remove();
-    div.querySelector('span:last-child').textContent = '▾';
-    return;
+function openJudgmentsModalWithFilter(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  if (typeof openJudgmentsModal === 'function') {
+    openJudgmentsModal();
+  } else if (judgmentsModal) {
+    judgmentsModal.classList.add('active');
   }
-
-  // 已加载缓存 → 复用
-  if (div._resolved) {
-    div.insertAdjacentHTML('afterend', formatPrincipleList(div._resolved));
-    div.querySelector('span:last-child').textContent = '▴';
-    return;
-  }
-
-  // 第一次: 拉 API
-  div.style.opacity = '0.6';
-  try {
-    const res = await fetch('/api/judgments/resolve-usage', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    div._resolved = data.items || [];
-    div.insertAdjacentHTML('afterend', formatPrincipleList(div._resolved));
-    div.querySelector('span:last-child').textContent = '▴';
-  } catch (err) {
-    div.insertAdjacentHTML(
-      'afterend',
-      `<div style="margin-top:4px;padding:6px 10px;background:#fee2e2;border-radius:4px;font-size:11px;color:#991b1b;">加载失败: ${escapeHtml(err.message)}</div>`
-    );
-  } finally {
-    div.style.opacity = '';
-  }
-}
-
-function formatPrincipleList(items) {
-  if (!items || items.length === 0) {
-    return '<div style="margin-top:4px;padding:6px 10px;background:#f3f4f6;border-radius:4px;font-size:11px;color:#6b7280;">(无相关判断力)</div>';
-  }
-  const rows = items.map((j) => {
-    const isSuperseded = j.status === 'superseded';
-    const dimStyle = isSuperseded ? 'opacity:0.55;' : '';
-    const statusTag = isSuperseded ? ' <span style="color:#92400e;font-size:10px;">(已过时)</span>' : '';
-    return `<div style="${dimStyle}padding:3px 0;border-bottom:1px solid #e0f2fe;">
-      <span style="color:#0c4a6e;">•</span> ${escapeHtml(j.decision)}${statusTag}
-    </div>`;
-  }).join('');
-  return `<div class="used-judgments-detail" style="margin-top:4px;padding:8px 10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:4px;font-size:11px;">${rows}</div>`;
+  // 等 loadJudgments 完成 (它会 await fetch 然后 renderJudgments)
+  setTimeout(() => {
+    if (typeof lastJudgmentsCache === 'undefined') return;
+    lastJudgmentsCache = (lastJudgmentsCache || []).filter((j) => ids.includes(j.id));
+    if (typeof renderJudgments === 'function') {
+      renderJudgments(lastJudgmentsCache);
+    }
+  }, 150);
 }
 
 function hideJudgmentsModal() {

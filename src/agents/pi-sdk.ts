@@ -505,8 +505,8 @@ export interface HeartbeatConfig {
 }
 
 export interface AgentSession {
-  prompt(input: string): Promise<string>;
-  promptStream(input: string, onStream: StreamCallback): Promise<string>;
+  prompt(input: string, options?: { onStream?: StreamCallback; signal?: AbortSignal }): Promise<string>;
+  promptStream(input: string, onStream: StreamCallback, signal?: AbortSignal): Promise<string>;
   promptWithPivotLoop(input: string, config?: PivotLoopConfig): Promise<LoopResult>;
   suggestRename(messages: { type: string; content: string }[]): Promise<string | null>;
   readDocument(filePath: string): Promise<string>;
@@ -585,14 +585,34 @@ class PiAgentSession implements AgentSession {
   private judgmentGateUsedIds: string[] = [];
 
   /**
+   * 当前 onStream 引用 + abort signal (computeJudgmentGate 需要 onStream 广播 phase)
+   * 每次 prompt / promptStream / promptWithPivotLoop 入口设置, 用完即清
+   */
+  private currentOnStream: StreamCallback | null = null;
+  private currentSignal: AbortSignal | null = null;
+
+  /**
    * 算 judgment 注入门: 失败静默, 不阻塞主对话
+   * 期间通过 currentOnStream 广播 phase 事件, 前端可显示 "正在检索判断力..." 状态
    * 调用方负责用完即清 (judgmentGateAddition='')
    */
   private async computeJudgmentGate(input: string): Promise<void> {
+    const safePhase = (phase: string, extra: Record<string, unknown> = {}) => {
+      try {
+        if (this.currentOnStream) {
+          this.currentOnStream({ type: 'phase', phase, ...extra, content: '' } as any);
+        }
+      } catch { /* 静默 */ }
+    };
+
+    safePhase('gate_compute', { detail: '正在检索相关判断力...' });
     try {
       const gate = await injectJudgmentGate(input);
       this.judgmentGateAddition = gate.systemAddition;
       this.judgmentGateUsedIds = gate.usedIds;
+      if (gate.usedIds.length > 0) {
+        safePhase('gate_done', { usedCount: gate.usedIds.length });
+      }
     } catch (err) {
       console.warn('[PiAgent] judgment gate failed (non-fatal):', err);
       this.judgmentGateAddition = '';
@@ -1038,7 +1058,7 @@ class PiAgentSession implements AgentSession {
     }
   }
 
-  async prompt(input: string): Promise<string> {
+  async prompt(input: string, options?: { onStream?: StreamCallback; signal?: AbortSignal }): Promise<string> {
     this.minimaxAvailable = this.checkMinimax();
 
     this.messageHistory.push({
@@ -1053,9 +1073,11 @@ class PiAgentSession implements AgentSession {
     }
 
     // P0 注入门
+    this.currentSignal = options?.signal ?? null;
+    this.currentOnStream = options?.onStream ?? null;
     await this.computeJudgmentGate(input);
     try {
-      return await this.runReActLoop();
+      return await this.runReActLoop(undefined, options?.signal);
     } finally {
       if (this.judgmentGateUsedIds.length > 0) {
         recordJudgmentUsage(this.judgmentGateUsedIds, { userInput: input }).catch((err) =>
@@ -1063,10 +1085,12 @@ class PiAgentSession implements AgentSession {
         );
       }
       this.clearJudgmentGate();
+      this.currentSignal = null;
+      this.currentOnStream = null;
     }
   }
 
-  async promptStream(input: string, onStream: StreamCallback): Promise<string> {
+  async promptStream(input: string, onStream: StreamCallback, signal?: AbortSignal): Promise<string> {
     this.minimaxAvailable = this.checkMinimax();
 
     this.messageHistory.push({
@@ -1083,11 +1107,20 @@ class PiAgentSession implements AgentSession {
       return response;
     }
 
-    // P0 注入门: 在 runReActLoop 之前算一次, runReActLoop 拼到 systemPrompt 末尾
-    // 失败静默 (空字符串), 不会阻塞主对话
+    // P0 注入门: 缓存 onStream + signal, computeJudgmentGate 用 currentOnStream 广播 phase
+    this.currentOnStream = onStream;
+    this.currentSignal = signal ?? null;
     await this.computeJudgmentGate(input);
 
-    const result = await this.runReActLoop(onStream);
+    let result: string;
+    try {
+      result = await this.runReActLoop(onStream, signal);
+    } catch (err: any) {
+      // abort 失败: 视作"已中断", 抛错让上层用 partial 兜底
+      this.currentOnStream = null;
+      this.currentSignal = null;
+      throw err;
+    }
     onStream({ type: 'done', content: '' });
 
     // 回溯: 异步记录 usage (不等)
@@ -1104,6 +1137,8 @@ class PiAgentSession implements AgentSession {
 
     // 用完即清, 避免污染下一轮
     this.clearJudgmentGate();
+    this.currentOnStream = null;
+    this.currentSignal = null;
 
     return result;
   }
@@ -1184,7 +1219,7 @@ ${this.getToolDefinitions()}
     return result;
   }
 
-  private async runReActLoop(onStream?: StreamCallback): Promise<string> {
+  private async runReActLoop(onStream?: StreamCallback, signal?: AbortSignal): Promise<string> {
     const llm = getMinimax();
     let iteration = 0;
     let finalResponse = '';
@@ -1250,7 +1285,7 @@ ${toolDefs}
 - 当任务完成时，必须在回答末尾添加 <final gen> 标记表示结束
 - 如果需要更多信息，继续调用工具${this.judgmentGateAddition}`;
 
-      const response = await llm.chat(context, systemPrompt);
+      const response = await llm.chat(context, systemPrompt, signal);
       const reply = response.reply.trim();
 
       console.log(`[PiAgent] LLM 回复长度: ${reply.length}, 内容预览: "${reply.substring(0, 80)}..."`);

@@ -1637,6 +1637,18 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     // 捕获外层 channel 到独立变量, 避免被 try 块内 (line 740+) 的 const channel 遮蔽
     const channelForJudgment = channel;
 
+    // per-channel queue 检查: 已在跑就入队, 等当前跑完自动接上
+    const runState = getOrCreateRunState(channelId);
+    if (runState.running) {
+      runState.queue.push({ channelId, text, boundWalletAddress, autoToolsEnabled });
+      broadcastQueueUpdate(channelId);
+      console.log(`[queue] /message 入队 channel=${channelId}, queue len=${runState.queue.length}`);
+      return;
+    }
+    runState.running = true;
+    runState.abortController = new AbortController();
+    broadcastQueueUpdate(channelId);
+
     try {
       const agent = await getAgentForChannel(channelId, realChannelDid, realChannelName, realChannelDidDoc);
       let fullResponse = '';
@@ -1647,6 +1659,18 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         // P0.5: 捕获注入门回传
         if ((event as any).type === 'used_judgments' && Array.isArray((event as any).usedIds)) {
           usedJudgmentIds = (event as any).usedIds;
+          // 同步推给前端 (用于 finalizeTimelineAsMessage 时给 addMessage 传 usedIds)
+          broadcast({ type: 'used_judgments', usedIds: usedJudgmentIds }, channelId);
+          return;
+        }
+        // 阶段事件 (注入门 / D 触发)
+        if ((event as any).type === 'phase') {
+          broadcast({
+            type: 'phase',
+            phase: (event as any).phase,
+            detail: (event as any).detail,
+            usedCount: (event as any).usedCount,
+          }, channelId);
           return;
         }
         // 同时发送给流式显示和工作流显示
@@ -1810,7 +1834,20 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       }
 
       if (contextHint) contextHint += '\n';
-      fullResponse = await agent.promptStream(contextHint + text, streamCallback);
+      try {
+        fullResponse = await agent.promptStream(contextHint + text, streamCallback, runState.abortController?.signal);
+      } catch (err: any) {
+        // abort 抛错: 保留已输出的部分 (fullResponse 可能是空字符串)
+        if (runState.abortController?.signal.aborted || err?.name === 'AbortError') {
+          console.log(`[chat] aborted channel=${channelId}`);
+        } else {
+          throw err;
+        }
+      }
+      // abort 模式: 给 partial 拼后缀
+      if (runState.abortController?.signal.aborted && fullResponse.trim().length > 0) {
+        fullResponse = fullResponse + '\n\n_[生成已中断]_';
+      }
 
       // v3 新增: 解析 LLM 回复里的 @-mentions, 转发到目标 channel
       await routeMentionsInReply(channelId, fullResponse, localChannels, remoteChannels);
@@ -1854,13 +1891,16 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
             content: m.content,
           }));
           if (lastTurns.length < 2) return;
+          broadcast({ type: 'phase', phase: 'd_detect', detail: '监测对话...' }, channelId);
           import('../pi-ecosystem-judgment/human-value-pipeline.js')
             .then(async ({ detectAndDistillFromChannel, throttleDHook }) => {
               // channel 维度 5min 节流, 防对话卡顿时 LLM 反复触发
               if (!throttleDHook(channelId, 5 * 60_000)) {
                 console.log(`[D-hook ${channelId}] throttled (within 5min)`);
+                broadcast({ type: 'phase', phase: 'd_skip', detail: 'throttled' }, channelId);
                 return null;
               }
+              broadcast({ type: 'phase', phase: 'd_distill', detail: '蒸馏判断力...' }, channelId);
               return detectAndDistillFromChannel(lastTurns, { channelId });
             })
             .then((result) => {
@@ -1869,12 +1909,15 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                   `[D-hook ${channelId}] stored: ${result.reason}`,
                   result.evolved
                 );
+                broadcast({ type: 'phase', phase: 'd_done', detail: result.reason }, channelId);
               } else if (result && result.reason) {
                 console.log(`[D-hook ${channelId}] skipped: ${result.reason}`);
+                broadcast({ type: 'phase', phase: 'd_skip', detail: result.reason }, channelId);
               }
             })
             .catch((err) => {
               console.warn(`[D-hook ${channelId}] failed:`, err);
+              broadcast({ type: 'phase', phase: 'd_error', detail: String(err) }, channelId);
             });
         } catch (err) {
           console.warn(`[D-hook ${channelId}] sync error:`, err);
@@ -1887,6 +1930,14 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       broadcast({ type: 'error', content: err.message }, channelId);
       broadcast({ type: 'done' }, channelId);
       if (!res.headersSent) res.status(500).json({ error: err.message });
+    } finally {
+      // queue dequeue: 跑完或失败都要清状态
+      // 当前实现: 自动接下一条需要把 ~200 行 try 块抽函数, 暂不抽.
+      // 替代: 用户点 [队列 +N] 按钮时, 客户端发起一个特殊的 HTTP 请求触发下一条
+      // (在 client.js 实现). 这里只清状态 + 广播.
+      runState.running = false;
+      runState.abortController = null;
+      broadcastQueueUpdate(channelId);
     }
   });
 
@@ -1897,6 +1948,36 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
   const didFixQueue = new Set<string>(); // 待修复的 channelId
   let didFixRunning = false;
   let didFixTimer: NodeJS.Timeout | null = null;
+
+  // ---------- per-channel 消息 queue + abort 状态 ----------
+  // 同 channel 串行 (避免 LLM 调用互踩上下文), 跨 channel 互不干扰
+  interface PendingMessage {
+    channelId: string;
+    text: string;
+    boundWalletAddress?: string;
+    autoToolsEnabled?: boolean;
+    // (req, res 已经在 /message 里 res.status(202) 返回, 入队的只是要重跑的内容参数)
+  }
+  interface ChannelRunState {
+    running: boolean;
+    queue: PendingMessage[];
+    abortController: AbortController | null;
+  }
+  const channelRunState: Map<string, ChannelRunState> = new Map();
+  function getOrCreateRunState(channelId: string): ChannelRunState {
+    let s = channelRunState.get(channelId);
+    if (!s) {
+      s = { running: false, queue: [], abortController: null };
+      channelRunState.set(channelId, s);
+    }
+    return s;
+  }
+  function broadcastQueueUpdate(channelId: string): void {
+    const s = channelRunState.get(channelId);
+    const queueLength = s ? s.queue.length : 0;
+    const running = s ? s.running : false;
+    try { broadcast({ type: 'queue_update', channelId, queueLength, running }, channelId); } catch { /* */ }
+  }
 
   function scheduleDidFix(channelId: string) {
     didFixQueue.add(channelId);
@@ -4062,6 +4143,23 @@ app.get('/channels', async (_req, res) => {
       const { processPendingInbox } = await import('../agents/p2p-chat-tools.js');
       const r = await processPendingInbox();
       res.json({ ok: true, ...r });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 终止当前 channel 的 LLM 流 (UI 终止按钮)
+  app.post('/api/chat/abort', async (req, res) => {
+    try {
+      const { channelId } = req.body as { channelId?: string };
+      if (!channelId) return res.status(400).json({ error: 'channelId required' });
+      const s = channelRunState.get(channelId);
+      if (s?.abortController) {
+        s.abortController.abort();
+        console.log(`[abort] user aborted channel=${channelId}`);
+        return res.json({ ok: true, aborted: true });
+      }
+      res.json({ ok: true, aborted: false });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

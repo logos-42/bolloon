@@ -28,6 +28,7 @@ export interface GenerateOptions {
   messages: ChatMessage[];
   temperature?: number;
   maxTokens?: number;
+  signal?: AbortSignal;
 }
 
 export class PiAIModel {
@@ -39,7 +40,7 @@ export class PiAIModel {
     this.provider = config.provider;
   }
 
-  async chat(message: string, context?: string): Promise<ChatResult> {
+  async chat(message: string, context?: string, signal?: AbortSignal): Promise<ChatResult> {
     const systemPrompt = this.buildSystemPrompt(context);
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -49,10 +50,15 @@ export class PiAIModel {
     try {
       const response = await this.generateText({
         messages,
-        temperature: 0.8
+        temperature: 0.8,
+        signal,
       });
       return { reply: response };
-    } catch (error) {
+    } catch (error: any) {
+      // abort 不当作错误, 透传一个 sentinel 让上层能识别
+      if (signal?.aborted || error?.name === 'AbortError') {
+        throw error; // 上层 try/catch 处理
+      }
       console.error('PiAI chat error:', error);
       return { reply: '抱歉，AI服务暂时不可用。' };
     }
@@ -100,7 +106,7 @@ export class PiAIModel {
   }
 
   private async generateText(options: GenerateOptions): Promise<string> {
-    const { messages, temperature = 0.7, maxTokens = 4096 } = options;
+    const { messages, temperature = 0.7, maxTokens = 4096, signal } = options;
 
     switch (this.provider) {
       case 'openai':
@@ -109,17 +115,17 @@ export class PiAIModel {
       case 'kimi':
       case 'glm':
       case 'qwen':
-        return this.callOpenAI(messages, temperature, maxTokens);
+        return this.callOpenAI(messages, temperature, maxTokens, signal);
       case 'anthropic':
-        return this.callAnthropic(messages, temperature, maxTokens);
+        return this.callAnthropic(messages, temperature, maxTokens, signal);
       case 'ollama':
-        return this.callOllama(messages, temperature);
+        return this.callOllama(messages, temperature, signal);
       case 'openrouter':
-        return this.callOpenRouter(messages, temperature, maxTokens);
+        return this.callOpenRouter(messages, temperature, maxTokens, signal);
       case 'gemini':
-        return this.callGemini(messages, temperature, maxTokens);
+        return this.callGemini(messages, temperature, maxTokens, signal);
       case 'local':
-        return this.callLocal(messages, temperature);
+        return this.callLocal(messages, temperature, signal);
       default:
         throw new Error(`Unsupported provider: ${this.provider}`);
     }
@@ -186,7 +192,7 @@ export class PiAIModel {
     return modelMap[this.provider];
   }
 
-  private async callOpenAI(messages: ChatMessage[], temperature: number, maxTokens: number): Promise<string> {
+  private async callOpenAI(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
     const apiKey = this.getApiKey();
     if (!apiKey) {
       throw new Error('OPENAI_API_KEY not set');
@@ -203,7 +209,8 @@ export class PiAIModel {
         messages,
         temperature,
         max_tokens: maxTokens
-      })
+      }),
+      signal,
     });
 
     if (!response.ok) {
@@ -214,7 +221,7 @@ export class PiAIModel {
     return data.choices?.[0]?.message?.content || '';
   }
 
-  private async callAnthropic(messages: ChatMessage[], temperature: number, maxTokens: number): Promise<string> {
+  private async callAnthropic(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
     const apiKey = this.getApiKey();
     if (!apiKey) {
       throw new Error('ANTHROPIC_API_KEY not set');
@@ -237,7 +244,8 @@ export class PiAIModel {
         system: systemMessage,
         temperature,
         max_tokens: maxTokens
-      })
+      }),
+      signal,
     });
 
     if (!response.ok) {
@@ -248,7 +256,7 @@ export class PiAIModel {
     return data.content?.[0]?.text || '';
   }
 
-  private async callOllama(messages: ChatMessage[], temperature: number): Promise<string> {
+  private async callOllama(messages: ChatMessage[], temperature: number, signal?: AbortSignal): Promise<string> {
     const response = await fetch(`${this.getBaseUrl()}/api/chat`, {
       method: 'POST',
       headers: {
@@ -259,7 +267,8 @@ export class PiAIModel {
         messages,
         temperature,
         stream: false
-      })
+      }),
+      signal,
     });
 
     if (!response.ok) {
@@ -270,7 +279,7 @@ export class PiAIModel {
     return data.message?.content || '';
   }
 
-  private async callOpenRouter(messages: ChatMessage[], temperature: number, maxTokens: number): Promise<string> {
+  private async callOpenRouter(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
     const apiKey = this.getApiKey();
     if (!apiKey) {
       throw new Error('OPENROUTER_API_KEY not set');
@@ -289,7 +298,8 @@ export class PiAIModel {
         messages,
         temperature,
         max_tokens: maxTokens
-      })
+      }),
+      signal,
     });
 
     if (!response.ok) {
@@ -300,7 +310,7 @@ export class PiAIModel {
     return data.choices?.[0]?.message?.content || '';
   }
 
-  private async callGemini(messages: ChatMessage[], temperature: number, maxTokens: number): Promise<string> {
+  private async callGemini(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
     const apiKey = this.getApiKey();
     if (!apiKey) {
       throw new Error('GEMINI_API_KEY not set');
@@ -329,7 +339,8 @@ export class PiAIModel {
             temperature,
             maxOutputTokens: maxTokens
           }
-        })
+        }),
+        signal,
       }
     );
 
@@ -341,8 +352,8 @@ export class PiAIModel {
     return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   }
 
-  private async callLocal(messages: ChatMessage[], temperature: number): Promise<string> {
-    return this.callOllama(messages, temperature);
+  private async callLocal(messages: ChatMessage[], temperature: number, signal?: AbortSignal): Promise<string> {
+    return this.callOllama(messages, temperature, signal);
   }
 
   private buildSystemPrompt(context?: string): string {
