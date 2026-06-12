@@ -1823,6 +1823,42 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       }
 
       broadcast({ type: 'done' }, channelId);
+
+      // D 触发: AI 被动捕获判断力 (后台异步, 不阻塞主对话)
+      setImmediate(() => {
+        try {
+          const lastTurns = session.messages.slice(-6).map((m) => ({
+            role: (m.type === 'user' ? 'human' : 'agent') as 'human' | 'agent',
+            content: m.content,
+          }));
+          if (lastTurns.length < 2) return;
+          import('../pi-ecosystem-judgment/human-value-pipeline.js')
+            .then(async ({ detectAndDistillFromChannel, throttleDHook }) => {
+              // channel 维度 5min 节流, 防对话卡顿时 LLM 反复触发
+              if (!throttleDHook(channelId, 5 * 60_000)) {
+                console.log(`[D-hook ${channelId}] throttled (within 5min)`);
+                return null;
+              }
+              return detectAndDistillFromChannel(lastTurns, { channelId });
+            })
+            .then((result) => {
+              if (result && result.triggered) {
+                console.log(
+                  `[D-hook ${channelId}] stored: ${result.reason}`,
+                  result.evolved
+                );
+              } else if (result && result.reason) {
+                console.log(`[D-hook ${channelId}] skipped: ${result.reason}`);
+              }
+            })
+            .catch((err) => {
+              console.warn(`[D-hook ${channelId}] failed:`, err);
+            });
+        } catch (err) {
+          console.warn(`[D-hook ${channelId}] sync error:`, err);
+        }
+      });
+
       // 2026-06-11: 202 已发的话, 不要重复 res.json (会抛 ERR_HTTP_HEADERS_SENT)
       if (!res.headersSent) res.json({ ok: true });
     } catch (err: any) {
@@ -4417,18 +4453,107 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
-  app.get('/api/judgments', async (_req, res) => {
+  app.get('/api/judgments', async (req, res) => {
     try {
-      const { loadAllJudgments, initializeValueStore } = await import(
+      const { listJudgmentsByStatus, initializeValueStore } = await import(
         '../pi-ecosystem-judgment/human-value-store.js'
       );
       await initializeValueStore();
-      const all = await loadAllJudgments();
-      // 新的在前
+      const status = (typeof req.query.status === 'string' ? req.query.status : 'all') as
+        | 'active'
+        | 'pending'
+        | 'superseded'
+        | 'rejected'
+        | 'all';
+      const all = await listJudgmentsByStatus(status);
       all.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
-      res.json({ count: all.length, judgments: all });
+      res.json({ count: all.length, status, judgments: all });
     } catch (err: any) {
       console.error('[judgments] GET failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 蒸馏 B 触发 (人类点按钮) — 同步执行演化对齐
+  app.post('/api/judgments/distill-from-conversation', async (req, res) => {
+    try {
+      const { channelId, messageId, recentTurns } = req.body as {
+        channelId?: string;
+        messageId?: string;
+        recentTurns?: number;
+      };
+      if (!channelId) {
+        return res.status(400).json({ error: 'channelId required' });
+      }
+
+      // 取 channel 最近的对话
+      const channels = await loadChannels();
+      const channel = channels.find((c) => c.id === channelId);
+      if (!channel) return res.status(404).json({ error: 'channel not found' });
+
+      const currentSessionId = channel.currentSessionId;
+      if (!currentSessionId) {
+        return res.status(400).json({ error: 'no active session in channel' });
+      }
+      const session = await loadSession(channelId, currentSessionId);
+      if (!session) return res.status(404).json({ error: 'session not found' });
+
+      // 取最近 N 轮 (默认 10), 转成 DistillTurn 格式
+      const limit = Math.min(Math.max(recentTurns ?? 10, 2), 30);
+      const turns = session.messages.slice(-limit).map((m) => ({
+        role: (m.type === 'user' ? 'human' : 'agent') as 'human' | 'agent',
+        content: m.content,
+      }));
+
+      const { distillAndStoreFromChannel } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const result = await distillAndStoreFromChannel(turns, { channelId });
+
+      res.json({
+        ok: true,
+        triggered: result.triggered,
+        reason: result.reason,
+        judgment: result.judgment,
+        evolved: result.evolved,
+      });
+    } catch (err: any) {
+      console.error('[judgments] distill-from-conversation failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 蒸馏 D 触发 (AI 被动) — 后台异步,不阻塞 HTTP 响应
+  app.post('/api/judgments/detect-and-distill', async (req, res) => {
+    try {
+      const { channelId, turns } = req.body as {
+        channelId?: string;
+        turns?: Array<{ role: 'human' | 'agent'; content: string }>;
+      };
+
+      // 先立即返回 202, 不等 LLM
+      res.status(202).json({ ok: true, queued: true });
+
+      if (!channelId || !Array.isArray(turns) || turns.length === 0) {
+        return;
+      }
+
+      // 异步处理 (不 await, 不阻塞响应)
+      setImmediate(async () => {
+        try {
+          const { detectAndDistillFromChannel } = await import(
+            '../pi-ecosystem-judgment/human-value-pipeline.js'
+          );
+          const result = await detectAndDistillFromChannel(turns, { channelId });
+          if (result.triggered) {
+            console.log(`[D-hook] ${channelId}: ${result.reason}`, result.evolved);
+          }
+        } catch (err) {
+          console.warn('[D-hook] background failed:', err);
+        }
+      });
+    } catch (err: any) {
+      console.error('[judgments] detect-and-distill failed:', err);
       res.status(500).json({ error: err.message });
     }
   });

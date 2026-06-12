@@ -1170,12 +1170,13 @@ function addMessage(content, type, save = true, container) {
 
     actionsDiv.appendChild(copyBtn);
 
-    // "存为判断" 按钮: 把这条消息正文作为 decision 存到判断库
+    // "存为判断" 按钮: AI 蒸馏 (30-80 字) + 自动演化对齐
     const saveJudgmentBtn = document.createElement('button');
     saveJudgmentBtn.className = 'action-btn save-as-judgment';
-    saveJudgmentBtn.title = '把这条消息存为判断';
-    saveJudgmentBtn.setAttribute('data-decision', rawContent.substring(0, 800)); // 截断防超长
-    saveJudgmentBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L4 6v6c0 5 3.5 9.5 8 10 4.5-.5 8-5 8-10V6l-8-4z"></path><path d="M9 12l2 2 4-4"></path></svg> 存为判断`;
+    saveJudgmentBtn.title = 'AI 蒸馏为 30-80 字判断力 + 自动演化对齐';
+    saveJudgmentBtn.setAttribute('data-decision', rawContent.substring(0, 800));
+    if (currentChannelId) saveJudgmentBtn.setAttribute('data-channel-id', currentChannelId);
+    saveJudgmentBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L4 6v6c0 5 3.5 9.5 8 10 4.5-.5 8-5 8-10V6l-8-4z"></path><path d="M9 12l2 2 4-4"></path></svg> 蒸馏为判断`;
     actionsDiv.appendChild(saveJudgmentBtn);
     if (type === 'ai') {
       actionsDiv.appendChild(regenerateBtn);
@@ -2636,11 +2637,23 @@ function switchJudgmentTab(tab) {
   renderJudgments(lastJudgmentsCache);
 }
 
+function switchStatusFilter(status) {
+  currentStatusFilter = status;
+  document.querySelectorAll('.judgment-status-tab').forEach(btn => {
+    const active = btn.dataset.status === status;
+    btn.classList.toggle('active', active);
+    btn.style.background = active ? '#2563eb' : '#e5e7eb';
+    btn.style.color = active ? '#fff' : '#374151';
+  });
+  loadJudgments();
+}
+
 function hideJudgmentsModal() {
   if (judgmentsModal) judgmentsModal.classList.remove('active');
 }
 
 let currentJudgmentTab = 'channel'; // 'channel' | 'global'
+let currentStatusFilter = 'all'; // 'all' | 'active' | 'superseded'
 let lastJudgmentsCache = []; // 最近一次 loadJudgments 拿到的原始列表, 切 tab / 切 channel 时复用
 
 /**
@@ -2712,6 +2725,19 @@ function renderJudgmentItems(items, opts) {
     const reason = (j.reasons && j.reasons[0]) ? escapeHtml(j.reasons[0]) : '';
     const domain = (j.context && j.context.domain) ? escapeHtml(j.context.domain) : 'general';
     const stakes = (j.context && j.context.stakes) ? escapeHtml(j.context.stakes) : 'medium';
+    const isSuperseded = j.status === 'superseded';
+    const isRejected = j.status === 'rejected';
+    const dimmedStyle = isSuperseded || isRejected
+      ? 'opacity:0.55;background:#f3f4f6;'
+      : '';
+    const statusTag = isSuperseded
+      ? `<span style="display:inline-block;background:#fef3c7;color:#92400e;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;" title="已被新判断力演化替代">已过时</span>`
+      : isRejected
+      ? `<span style="display:inline-block;background:#fee2e2;color:#991b1b;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;">已拒绝</span>`
+      : '';
+    const evolveNote = isSuperseded && j.supersededBy
+      ? `<div style="font-size:10px;color:#6b7280;margin-top:2px;">被新条替代 · ${escapeHtml(j.evolutionReason || 'merged')} · ${escapeHtml(j.evolvedAt || '').substring(0,10)}</div>`
+      : '';
     const bindBtn = showBindToggle
       ? isBound
         ? `<button class="judgment-toggle-btn" data-id="${escapeHtml(j.id)}" data-action="unbind" title="从当前 channel 移除" style="background:none;border:1px solid #fca5a5;color:#b91c1c;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:11px;">× 移除</button>`
@@ -2721,17 +2747,18 @@ function renderJudgmentItems(items, opts) {
       <div class="task-item completed judgment-row"
            data-judgment-id="${escapeHtml(j.id)}"
            draggable="true"
-           style="cursor:grab;">
+           style="cursor:grab;${dimmedStyle}">
         <div class="task-item-header">
           <label class="judgment-checkbox" style="display:flex;align-items:center;cursor:pointer;margin-right:8px;" onclick="event.stopPropagation();">
             <input type="checkbox" class="judgment-select-cb" data-id="${escapeHtml(j.id)}" style="cursor:pointer;" onclick="event.stopPropagation();">
           </label>
           <div class="task-item-title">
-            <span class="judgment-decision">${escapeHtml(j.decision)}</span>
+            <span class="judgment-decision">${escapeHtml(j.decision)}</span>${statusTag}
           </div>
           <span class="task-item-status completed">${stakes}</span>
         </div>
         ${reason ? `<div class="task-item-desc" style="color:#555;font-size:13px;margin-top:4px;">理由: ${reason}</div>` : ''}
+        ${evolveNote}
         <div class="task-item-meta" style="color:#999;font-size:11px;margin-top:4px;display:flex;justify-content:space-between;align-items:center;">
           <span>${domain} · ${escapeHtml(j.timestamp)} · ${escapeHtml(j.id)}</span>
           <span style="display:flex;gap:4px;">
@@ -2748,14 +2775,23 @@ function renderJudgmentItems(items, opts) {
 async function loadJudgments() {
   if (!judgmentsList) return;
   try {
-    const res = await fetch('/api/judgments');
+    const res = await fetch('/api/judgments?status=' + encodeURIComponent(currentStatusFilter));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     lastJudgmentsCache = data.judgments || [];
     renderJudgments(lastJudgmentsCache);
     if (judgmentsBadge) {
-      if (data.count > 0) {
-        judgmentsBadge.textContent = data.count;
+      // 徽章永远显示 active 数量; 不跟 filter 变
+      // 当 filter=active 时, 主 fetch 已经返回的就是 active 列表, 直接用 data.count
+      // 当 filter=all/superseded 时, 从主列表本地数 active 条 (status ?? 'active' 兼容老数据)
+      let activeCount;
+      if (currentStatusFilter === 'active') {
+        activeCount = data.count;
+      } else {
+        activeCount = lastJudgmentsCache.filter((j) => (j.status ?? 'active') === 'active').length;
+      }
+      if (activeCount > 0) {
+        judgmentsBadge.textContent = activeCount;
         judgmentsBadge.style.display = '';
       } else {
         judgmentsBadge.style.display = 'none';
@@ -2831,6 +2867,11 @@ if (judgmentsList) {
   // tab 切换
   document.querySelectorAll('.judgment-tab').forEach(btn => {
     btn.addEventListener('click', () => switchJudgmentTab(btn.dataset.tab));
+  });
+
+  // status 过滤
+  document.querySelectorAll('.judgment-status-tab').forEach(btn => {
+    btn.addEventListener('click', () => switchStatusFilter(btn.dataset.status));
   });
 
   // 拖拽: 每条 judgment 是 drag source, dataTransfer 装 decision text
@@ -3073,13 +3114,84 @@ if (judgmentImportFile) {
   });
 }
 
-// --- 从对话里 "存为判断": 事件委托到消息容器, 匹配 .save-as-judgment ---
+// --- 从对话里 "蒸馏为判断": 事件委托到消息容器, 匹配 .save-as-judgment ---
+// 两条路径:
+// 1. 有 data-channel-id → 调 /api/judgments/distill-from-conversation (B 触发, AI 蒸馏 + 演化对齐)
+// 2. 没有 channelId (老按钮 / 历史数据) → fallback 到老 /api/judgments (直存)
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest && e.target.closest('.save-as-judgment');
   if (!btn) return;
   e.preventDefault();
   e.stopPropagation();
+
+  const channelId = btn.getAttribute('data-channel-id');
   const decision = (btn.getAttribute('data-decision') || '').trim();
+
+  if (channelId) {
+    btn.classList.add('loading');
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/judgments/distill-from-conversation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channelId }),
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.error || 'HTTP ' + res.status);
+
+      if (!out.triggered) {
+        btn.classList.remove('loading');
+        btn.disabled = false;
+        btn.title = '蒸馏失败: ' + (out.reason || '无内容');
+        return;
+      }
+
+      const j = out.judgment;
+      const ev = out.evolved || { merged: 0, superseded: 0 };
+      btn.classList.remove('loading');
+      btn.classList.add('saved');
+      btn.title = '已蒸馏为判断';
+
+      // inline 确认弹框 (在按钮下方出现, 5 秒后自动消失)
+      showDistillConfirm(btn, {
+        value: j.decision,
+        evidence: (j.reasons && j.reasons[0]) || '',
+        merged: ev.merged,
+        superseded: ev.superseded,
+        onEdit: async (newText) => {
+          try {
+            await fetch('/api/judgments/' + encodeURIComponent(j.id), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ decision: newText }),
+            });
+          } catch (err) {
+            console.error('[judgments] edit failed:', err);
+          }
+        },
+        onReject: async () => {
+          try {
+            await fetch('/api/judgments/' + encodeURIComponent(j.id), {
+              method: 'DELETE',
+            });
+          } catch (err) {
+            console.error('[judgments] reject failed:', err);
+          }
+        },
+      });
+
+      // 刷新判断力库缓存
+      setTimeout(() => loadJudgments(), 100);
+    } catch (err) {
+      console.error('[judgments] distill-from-chat failed:', err);
+      btn.classList.remove('loading');
+      btn.disabled = false;
+      btn.title = '蒸馏失败: ' + err.message;
+    }
+    return;
+  }
+
+  // 老路径 fallback (没有 channelId, 直接存原文)
   if (!decision) return;
   try {
     const res = await fetch('/api/judgments', {
@@ -3091,12 +3203,65 @@ document.addEventListener('click', async (e) => {
     if (!out.ok) throw new Error(out.error || 'failed');
     btn.classList.add('saved');
     btn.title = '已存为判断';
-    // 顶部徽章会通过 setInterval 拉新数据, 不用手动触发
   } catch (err) {
     console.error('[judgments] save-from-chat failed:', err);
     btn.title = '保存失败: ' + err.message;
   }
 });
+
+/**
+ * inline 蒸馏确认弹框 — 在按钮下方出现, 显示凝练结果 + 演化结果
+ * 5 秒后自动消失, 用户可点 "编辑" / "拒绝"
+ */
+function showDistillConfirm(btn, opts) {
+  const { value, evidence, merged, superseded, onEdit, onReject } = opts;
+  const old = document.getElementById('distill-confirm-popup');
+  if (old) old.remove();
+
+  const popup = document.createElement('div');
+  popup.id = 'distill-confirm-popup';
+  popup.style.cssText = `
+    position:absolute; z-index:1000;
+    background:#fff; border:1px solid #d1d5db; border-radius:6px;
+    box-shadow:0 4px 12px rgba(0,0,0,0.1);
+    padding:10px 12px; min-width:280px; max-width:380px;
+    font-size:13px; color:#1f2937;
+  `;
+  let evolveNote = '';
+  if (merged > 0 || superseded > 0) {
+    evolveNote = `<div style="font-size:11px;color:#059669;margin-top:6px;">✓ 演化对齐: ${merged} 条已合并${superseded > 0 ? `, ${superseded} 条已淘汰` : ''}</div>`;
+  }
+  popup.innerHTML = `
+    <div style="font-weight:600;margin-bottom:4px;">已蒸馏为判断力</div>
+    <div style="background:#f9fafb;padding:6px 8px;border-radius:4px;line-height:1.4;">${escapeHtml(value)}</div>
+    ${evidence ? `<div style="font-size:11px;color:#6b7280;margin-top:4px;">证据: ${escapeHtml(evidence)}</div>` : ''}
+    ${evolveNote}
+    <div style="display:flex;gap:6px;margin-top:8px;">
+      <button class="dc-edit" style="background:none;border:1px solid #d1d5db;color:#374151;padding:2px 10px;border-radius:3px;cursor:pointer;font-size:11px;">编辑</button>
+      <button class="dc-reject" style="background:none;border:1px solid #fca5a5;color:#b91c1c;padding:2px 10px;border-radius:3px;cursor:pointer;font-size:11px;">拒绝</button>
+      <button class="dc-close" style="margin-left:auto;background:none;border:none;color:#6b7280;cursor:pointer;font-size:14px;">×</button>
+    </div>
+  `;
+
+  // 定位
+  const rect = btn.getBoundingClientRect();
+  popup.style.top = (window.scrollY + rect.bottom + 4) + 'px';
+  popup.style.left = (window.scrollX + rect.left) + 'px';
+  document.body.appendChild(popup);
+
+  // 绑定按钮
+  popup.querySelector('.dc-edit').onclick = () => {
+    const newText = prompt('编辑判断力:', value);
+    if (newText && newText.trim() && onEdit) onEdit(newText.trim());
+    popup.remove();
+  };
+  popup.querySelector('.dc-reject').onclick = () => {
+    if (onReject) onReject();
+    popup.remove();
+  };
+  popup.querySelector('.dc-close').onclick = () => popup.remove();
+  setTimeout(() => popup.remove(), 5000);
+}
 if (judgmentSubmitBtn) judgmentSubmitBtn.addEventListener('click', submitJudgment);
 
 // 启动时拉一次, 让徽章显示总数 (不打开 modal 也能看到)

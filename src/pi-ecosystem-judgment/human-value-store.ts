@@ -16,6 +16,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { createHash } from 'crypto';
 
 export interface ValueTag {
   category: 'quality' | 'efficiency' | 'safety' | 'collaboration' | 'learning' | 'priorities';
@@ -56,6 +57,12 @@ export interface HumanJudgment {
     confidence: number;
     revisable: boolean;
   };
+
+  // 演化状态 (可选, 旧数据无此字段视为 active)
+  status?: 'active' | 'pending' | 'superseded' | 'rejected';
+  supersededBy?: string;
+  evolutionReason?: 'merged' | 'contradicted';
+  evolvedAt?: string;
 }
 
 export interface ValueProfile {
@@ -251,7 +258,7 @@ export async function learnFromCorrection(
  */
 export async function updateJudgment(
   id: string,
-  patch: Partial<Pick<HumanJudgment, 'decision' | 'decision_type' | 'reasons' | 'values_derived' | 'context' | 'outcome'>>
+  patch: Partial<Pick<HumanJudgment, 'decision' | 'decision_type' | 'reasons' | 'values_derived' | 'context' | 'outcome' | 'status' | 'supersededBy' | 'evolutionReason' | 'evolvedAt'>>
 ): Promise<HumanJudgment | null> {
   const judgments = await loadAllJudgments();
   const idx = judgments.findIndex((j) => j.id === id);
@@ -265,12 +272,129 @@ export async function updateJudgment(
     ...(patch.values_derived !== undefined ? { values_derived: patch.values_derived } : {}),
     ...(patch.context !== undefined ? { context: { ...cur.context, ...patch.context } } : {}),
     ...(patch.outcome !== undefined ? { outcome: { ...cur.outcome, ...patch.outcome } } : {}),
+    ...(patch.status !== undefined ? { status: patch.status } : {}),
+    ...(patch.supersededBy !== undefined ? { supersededBy: patch.supersededBy } : {}),
+    ...(patch.evolutionReason !== undefined ? { evolutionReason: patch.evolutionReason } : {}),
+    ...(patch.evolvedAt !== undefined ? { evolvedAt: patch.evolvedAt } : {}),
   };
   judgments[idx] = next;
   await saveJudgments(judgments);
   // 价值画像缓存失效 (内容变了画像也得重算)
   valueProfileCache.clear();
   return next;
+}
+
+/**
+ * 按 status 过滤查询 (用于判断力库的 active/superseded tab)
+ * status='all' 或不传 → 返回所有
+ */
+export async function listJudgmentsByStatus(
+  status?: 'active' | 'pending' | 'superseded' | 'rejected' | 'all'
+): Promise<HumanJudgment[]> {
+  const judgments = await loadAllJudgments();
+  if (!status || status === 'all') return judgments;
+  return judgments.filter((j) => (j.status ?? 'active') === status);
+}
+
+/**
+ * 内容 hash 用于去重窗口 (24h 滑窗内撞 hash 视为重复)
+ * 归一化: 去标点 + 折叠空白 + lowercase
+ * 64-bit 截断: 1 万条库碰撞率 < 1e-13, 够用
+ */
+export function hashDecision(decision: string): string {
+  const normalized = decision
+    .toLowerCase()
+    .replace(/[\s,.，。、！？!?""''()（）:：;；\-—_]/g, '')
+    .trim();
+  return createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+}
+
+export interface RecentSimilar {
+  id: string;
+  decision: string;
+  timestamp: string;
+  /** 1.0 表示 hash 精确相等; 当前实现只做精确去重 */
+  similarity: number;
+}
+
+/**
+ * 在 withinMs 时间内查找与 decision hash 相同的判断力
+ * - 默认扫全库 (100 条库 < 1ms, 不建索引)
+ * - 可按 channelId 隔离 (判断力的 context.domain 是 'channel:xxx' 格式)
+ * - 当前实现只做精确 hash 匹配, 不做相似度评分; 撞 hash 即视为重复
+ */
+export async function findRecentSimilarDecisions(
+  decision: string,
+  withinMs: number,
+  options?: { status?: 'active' | 'superseded' | 'rejected' | 'all'; channelId?: string }
+): Promise<RecentSimilar[]> {
+  const judgments = await loadAllJudgments();
+  const targetHash = hashDecision(decision);
+  const cutoff = Date.now() - withinMs;
+  const statusFilter = options?.status ?? 'all';
+  const wantChannel = options?.channelId ? `channel:${options.channelId}` : null;
+
+  const out: RecentSimilar[] = [];
+  for (const j of judgments) {
+    if (statusFilter !== 'all' && (j.status ?? 'active') !== statusFilter) continue;
+    if (new Date(j.timestamp).getTime() < cutoff) continue;
+    if (wantChannel) {
+      const jChannel = (j.context as { domain?: string } | undefined)?.domain;
+      if (jChannel !== wantChannel) continue;
+    }
+    if (hashDecision(j.decision) === targetHash) {
+      out.push({ id: j.id, decision: j.decision, timestamp: j.timestamp, similarity: 1.0 });
+    }
+  }
+  return out;
+}
+
+/**
+ * 批量更新 (用于演化对齐后批量标 superseded)
+ * 写完文件 + 清缓存
+ * 返回成功更新的条数
+ */
+export async function batchUpdateJudgments(
+  updates: Array<{ id: string; patch: Partial<HumanJudgment> }>
+): Promise<{ updated: number; notFound: string[] }> {
+  const judgments = await loadAllJudgments();
+  const notFound: string[] = [];
+  let updated = 0;
+
+  const next = judgments.map((cur) => {
+    const u = updates.find((x) => x.id === cur.id);
+    if (!u) return cur;
+    updated++;
+    return { ...cur, ...u.patch };
+  });
+
+  for (const u of updates) {
+    if (!judgments.some((j) => j.id === u.id)) notFound.push(u.id);
+  }
+
+  if (updated > 0) {
+    await saveJudgments(next);
+    valueProfileCache.clear();
+  }
+  return { updated, notFound };
+}
+
+/**
+ * 更新单条 judgment (给"标记 rejected"等用)
+ * id 不变; 不能改 id, timestamp
+ * 允许改的字段: decision, decision_type, reasons, values_derived, context, outcome, status, supersededBy, evolutionReason, evolvedAt
+ */
+export async function updateJudgmentStatus(
+  id: string,
+  status: 'active' | 'pending' | 'superseded' | 'rejected',
+  extra?: { supersededBy?: string; evolutionReason?: 'merged' | 'contradicted' }
+): Promise<HumanJudgment | null> {
+  return updateJudgment(id, {
+    status,
+    ...(extra?.supersededBy !== undefined ? { supersededBy: extra.supersededBy } : {}),
+    ...(extra?.evolutionReason !== undefined ? { evolutionReason: extra.evolutionReason } : {}),
+    ...(extra ? { evolvedAt: new Date().toISOString() } : {}),
+  });
 }
 
 /**
@@ -295,13 +419,21 @@ export async function loadAllJudgments(): Promise<HumanJudgment[]> {
   }
 
   if (judgmentCache.length > 0) {
+    // 早返回路径也要确保每条都有 status (防御性, 防止 saveJudgments 路径异常)
+    const needs = judgmentCache.some((j) => j.status === undefined);
+    if (needs) {
+      judgmentCache = judgmentCache.map((j) =>
+        j.status === undefined ? { ...j, status: 'active' } : j
+      );
+    }
     return [...judgmentCache];
   }
 
   try {
     const content = await fs.readFile(JUDGMENTS_FILE, 'utf-8');
-    judgmentCache = JSON.parse(content);
-    return judgmentCache;
+    const parsed: HumanJudgment[] = JSON.parse(content);
+    judgmentCache = parsed.map((j) => (j.status === undefined ? { ...j, status: 'active' } : j));
+    return [...judgmentCache];
   } catch {
     judgmentCache = [];
     return [];
@@ -410,7 +542,8 @@ async function saveJudgments(judgments: HumanJudgment[]): Promise<void> {
   await fs.mkdir(VALUE_STORE_DIR, { recursive: true });
   await fs.writeFile(JUDGMENTS_FILE, JSON.stringify(judgments, null, 2), 'utf-8');
   // 让 loadAllJudgments 下次重新读盘, 避免缓存与磁盘脱节
-  judgmentCache = judgments;
+  // 同时在写盘时也补 status 默认值, 防止 loadAllJudgments 走早返回路径时绕过迁移
+  judgmentCache = judgments.map((j) => (j.status === undefined ? { ...j, status: 'active' } : j));
 }
 
 function buildValueProfile(agentId: string, judgments: HumanJudgment[]): ValueProfile {
