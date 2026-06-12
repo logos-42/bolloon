@@ -33,3 +33,22 @@ export {
   type DetectHookOptions,
   type DetectHookResult,
 } from './detect-hook.js';
+
+export {
+  injectJudgmentGate,
+  recordJudgmentUsage,
+  getRecentUsage,
+  chatWithJudgmentGate,
+  DEFAULT_INJECTION_CONFIG,
+  type InjectionGateOptions,
+  type InjectionGateResult,
+} from './injection-gate.js';
+
+export {
+  checkCompliance,
+  monitorAfterReply,
+  logViolation,
+  getRecentViolations,
+  type MonitorResult,
+  type MonitorLogEntry,
+} from './monitor-gate.js';

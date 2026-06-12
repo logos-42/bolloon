@@ -41,6 +41,12 @@ import {
 import { Session, SkillRegistry, saveSession, loadSession, type Skill, type StoredSession } from '@bolloon/constraint-runtime';
 import { loadSkillsFromPaths, defaultSkillPaths, describeSkill } from './skill-loader.js';
 
+// Judgment 注入门 (P0): 在主对话 LLM 调起前自动拼入 Top 3 判断力
+// 失败静默, 不阻塞主对话
+import { injectJudgmentGate, recordJudgmentUsage } from '../pi-ecosystem-judgment/injection-gate.js';
+// 持续监控门 (P3): AI 回复后审计是否违反原则
+import { monitorAfterReply } from '../pi-ecosystem-judgment/monitor-gate.js';
+
 // Pi Ecosystem Integration (lazy imports - initialized on demand)
 // Functions from: createGoal, getCurrentGoal, completeCurrentGoal, failCurrentGoal, getGoalStats, getQueueSummary
 
@@ -571,6 +577,34 @@ class PiAgentSession implements AgentSession {
   private usePivotLoop: boolean = false;
   private pivotLoopConfig?: PivotLoopConfig;
 
+  /**
+   * Judgment 注入门临时结果: 在 prompt / promptStream / promptWithPivotLoop 入口算一次, 拼到本轮 systemPrompt 末尾
+   * 每次调用都会重置 (避免上一轮遗留)
+   */
+  private judgmentGateAddition: string = '';
+  private judgmentGateUsedIds: string[] = [];
+
+  /**
+   * 算 judgment 注入门: 失败静默, 不阻塞主对话
+   * 调用方负责用完即清 (judgmentGateAddition='')
+   */
+  private async computeJudgmentGate(input: string): Promise<void> {
+    try {
+      const gate = await injectJudgmentGate(input);
+      this.judgmentGateAddition = gate.systemAddition;
+      this.judgmentGateUsedIds = gate.usedIds;
+    } catch (err) {
+      console.warn('[PiAgent] judgment gate failed (non-fatal):', err);
+      this.judgmentGateAddition = '';
+      this.judgmentGateUsedIds = [];
+    }
+  }
+
+  private clearJudgmentGate(): void {
+    this.judgmentGateAddition = '';
+    this.judgmentGateUsedIds = [];
+  }
+
   constructor(config: AgentSessionConfig) {
     this.cwd = config.cwd;
     this.peerId = config.peerId || 'local';
@@ -1018,7 +1052,18 @@ class PiAgentSession implements AgentSession {
       return response;
     }
 
-    return this.runReActLoop();
+    // P0 注入门
+    await this.computeJudgmentGate(input);
+    try {
+      return await this.runReActLoop();
+    } finally {
+      if (this.judgmentGateUsedIds.length > 0) {
+        recordJudgmentUsage(this.judgmentGateUsedIds, { userInput: input }).catch((err) =>
+          console.warn('[PiAgent] recordJudgmentUsage failed:', err)
+        );
+      }
+      this.clearJudgmentGate();
+    }
   }
 
   async promptStream(input: string, onStream: StreamCallback): Promise<string> {
@@ -1038,8 +1083,28 @@ class PiAgentSession implements AgentSession {
       return response;
     }
 
+    // P0 注入门: 在 runReActLoop 之前算一次, runReActLoop 拼到 systemPrompt 末尾
+    // 失败静默 (空字符串), 不会阻塞主对话
+    await this.computeJudgmentGate(input);
+
     const result = await this.runReActLoop(onStream);
     onStream({ type: 'done', content: '' });
+
+    // 回溯: 异步记录 usage (不等)
+    if (this.judgmentGateUsedIds.length > 0) {
+      recordJudgmentUsage(this.judgmentGateUsedIds, { userInput: input }).catch((err) =>
+        console.warn('[PiAgent] recordJudgmentUsage failed:', err)
+      );
+      // P0.5: 把 usedIds 通过 stream 事件回传给调用方 (server.ts 写到 session message)
+      try { onStream({ type: 'used_judgments', usedIds: this.judgmentGateUsedIds, content: '' } as any); } catch {}
+    }
+
+    // P3 监控门: fire-and-forget 审计 AI 回复是否违反原则
+    monitorAfterReply(input, result);
+
+    // 用完即清, 避免污染下一轮
+    this.clearJudgmentGate();
+
     return result;
   }
 
@@ -1073,6 +1138,9 @@ class PiAgentSession implements AgentSession {
       loop.registerTool(tool);
     }
 
+    // P0 注入门: 在构造 systemPrompt 之前算一次, 拼到末尾
+    await this.computeJudgmentGate(input);
+
     const personaSection = this.persona ? `
 角色描述: ${this.persona.description || '无'}
 性格特点: ${this.persona.personality || '无'}
@@ -1096,7 +1164,7 @@ ${this.getToolDefinitions()}
 - 每次只调用一个工具
 - 仔细分析工具返回结果
 - 当任务完成时，必须在回答末尾添加 <final gen> 标记表示结束
-- 如果需要更多信息，继续调用工具`;
+- 如果需要更多信息，继续调用工具${this.judgmentGateAddition}`;
 
     const result = await loop.execute(input, llm, systemPrompt);
 
@@ -1104,6 +1172,14 @@ ${this.getToolDefinitions()}
     if (result.response) {
       this.messageHistory.push({ role: 'assistant', content: result.response });
     }
+
+    // 回溯 + 清场
+    if (this.judgmentGateUsedIds.length > 0) {
+      recordJudgmentUsage(this.judgmentGateUsedIds, { userInput: input }).catch((err) =>
+        console.warn('[PiAgent] recordJudgmentUsage failed:', err)
+      );
+    }
+    this.clearJudgmentGate();
 
     return result;
   }
@@ -1172,7 +1248,7 @@ ${toolDefs}
 - 每次只调用一个工具
 - 仔细分析工具返回结果
 - 当任务完成时，必须在回答末尾添加 <final gen> 标记表示结束
-- 如果需要更多信息，继续调用工具`;
+- 如果需要更多信息，继续调用工具${this.judgmentGateAddition}`;
 
       const response = await llm.chat(context, systemPrompt);
       const reply = response.reply.trim();

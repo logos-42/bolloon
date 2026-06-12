@@ -442,7 +442,11 @@ export async function loadAllJudgments(): Promise<HumanJudgment[]> {
 
 /**
  * 获取相关价值观
- * 将 context 拆分为关键词，任意一个匹配即可
+ * 两路召回 (P2 升级):
+ * 1. 关键词匹配 (精确, 高权重)
+ * 2. bigram 软相似度 (措辞改写也能命中, 低权重)
+ * - 关键词完全匹配 → weight 不衰减
+ * - 软相似 > 0.4 → weight * 0.7 (留作辅助, 不冲掉精确命中)
  */
 export async function getRelevantValues(context: string, domain?: string): Promise<ValueTag[]> {
   const judgments = await loadAllJudgments();
@@ -450,46 +454,109 @@ export async function getRelevantValues(context: string, domain?: string): Promi
   const keywords = context.split(/[\s,，、]+/).filter(k => k.length >= 2);
   const contextLower = context.toLowerCase();
 
-  const relevant = judgments.filter(j => {
-    if (domain && j.context.domain !== domain) return false;
+  const relevant: Array<{ j: HumanJudgment; softWeight: number }> = [];
+  for (const j of judgments) {
+    if (domain && j.context.domain !== domain) continue;
+
+    let matched = false;
+    let soft = 0;
 
     if (keywords.length === 0) {
-      return j.decision.toLowerCase().includes(contextLower) ||
-             j.reasons.some(r => r.toLowerCase().includes(contextLower));
+      if (j.decision.toLowerCase().includes(contextLower) ||
+          j.reasons.some(r => r.toLowerCase().includes(contextLower)) ||
+          j.values_derived.some(v => v.value.toLowerCase().includes(contextLower))) {
+        matched = true;
+      }
+    } else {
+      const decisionLower = j.decision.toLowerCase();
+      const reasonsLower = j.reasons.map(r => r.toLowerCase());
+      // values_derived[i].value 也是索引一部分 (如 'security-first', 'privacy-first')
+      const valueTokens = j.values_derived.map(v => v.value.toLowerCase());
+
+      for (const kw of keywords) {
+        const kwLower = kw.toLowerCase();
+        if (
+          decisionLower.includes(kwLower) ||
+          reasonsLower.some(r => r.includes(kwLower)) ||
+          valueTokens.some(vt => vt.includes(kwLower))
+        ) {
+          matched = true;
+        } else {
+          // P2: 软相似度召回 — 关键词没命中, 但 bigram 相似度阈值
+          // - 长句 (>8 字符): 阈值 0.4 (合理召回, 不易误触)
+          // - 短句 (≤8 字符): 阈值 0.15 (bigram 模式天然偏低, 放宽避免漏召)
+          const threshold = kw.length > 8 ? 0.4 : 0.15;
+          const simA = softBigramSimilarity(kw, j.decision);
+          const simReason = Math.max(0, ...j.reasons.map(r => softBigramSimilarity(kw, r)));
+          const simValue = Math.max(0, ...valueTokens.map(vt => softBigramSimilarity(kw, vt)));
+          const best = Math.max(simA, simReason, simValue);
+          if (best > threshold) soft = Math.max(soft, best);
+        }
+      }
     }
 
-    const decisionLower = j.decision.toLowerCase();
-    const reasonsLower = j.reasons.map(r => r.toLowerCase());
+    if (matched) relevant.push({ j, softWeight: 1.0 });
+    else if (soft > 0) relevant.push({ j, softWeight: soft });
+  }
 
-    return keywords.some(kw => {
-      const kwLower = kw.toLowerCase();
-      return decisionLower.includes(kwLower) ||
-             reasonsLower.some(r => r.includes(kwLower));
-    });
-  });
+  const valueMap: Map<string, { tag: ValueTag; count: number; softFactor: number }> = new Map();
 
-  const valueMap: Map<string, { tag: ValueTag; count: number }> = new Map();
-
-  for (const j of relevant) {
+  for (const { j, softWeight } of relevant) {
     for (const v of j.values_derived) {
       const key = `${v.category}:${v.value}`;
       const existing = valueMap.get(key);
       if (existing) {
         existing.count++;
         existing.tag.weight = Math.min(1, existing.tag.weight + 0.1);
+        existing.softFactor = Math.max(existing.softFactor, softWeight);
       } else {
-        valueMap.set(key, { tag: { ...v }, count: 1 });
+        valueMap.set(key, {
+          tag: { ...v },
+          count: 1,
+          softFactor: softWeight,
+        });
       }
     }
   }
 
   return Array.from(valueMap.values())
-    .map(({ tag, count }) => ({
+    .map(({ tag, count, softFactor }) => ({
       ...tag,
-      weight: tag.weight * Math.min(1, count / 3)
+      // 软命中: 额外乘 0.7 衰减, 避免冲掉精确命中的排序
+      weight: tag.weight * Math.min(1, count / 3) * (softFactor >= 0.999 ? 1.0 : 0.7),
     }))
     .sort((a, b) => b.weight - a.weight)
     .slice(0, 10);
+}
+
+/**
+ * P2 软相似度: 用于"关键词未命中但措辞相近"的兜底召回
+ * - 与 evolve-judgment.ts 的 jaccardSimilarity 算法一致 (避免循环依赖, inline 一份)
+ * - 短句 (<8 字符) 走 bigram, 长句走单字 set
+ */
+function softBigramSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const normalize = (s: string) =>
+    s.toLowerCase().replace(/[\s,.，。、！？!?""''()（）:：;；\-—_]/g, '').trim();
+  const textA = normalize(a);
+  const textB = normalize(b);
+  if (textA.length === 0 || textB.length === 0) return 0;
+
+  const grams = (s: string): Set<string> => {
+    if (s.length < 8) {
+      const out = new Set<string>();
+      for (let i = 0; i < s.length - 1; i++) out.add(s.slice(i, i + 2));
+      for (const c of s) out.add(c);
+      return out;
+    }
+    return new Set(s);
+  };
+  const setA = grams(textA);
+  const setB = grams(textB);
+  let inter = 0;
+  for (const c of setA) if (setB.has(c)) inter++;
+  const union = setA.size + setB.size - inter;
+  return union === 0 ? 0 : inter / union;
 }
 
 /**

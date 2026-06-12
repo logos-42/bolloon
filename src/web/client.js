@@ -913,7 +913,7 @@ async function selectChannel(channelId, targetSessionId = null) {
       const tmpContainer = document.createElement('div');
       tmpContainer.style.display = 'none';
       for (const msg of msgs) {
-        addMessage(msg.content, msg.type, false, tmpContainer);
+        addMessage(msg.content, msg.type, false, tmpContainer, msg.metadata?.usedJudgmentIds || []);
       }
       while (tmpContainer.firstChild) {
         frag.appendChild(tmpContainer.firstChild);
@@ -938,7 +938,7 @@ async function loadSession(channelId, sessionId = null) {
     container.innerHTML = '';
     if (session.messages && session.messages.length > 0) {
       session.messages.forEach(msg => {
-        addMessage(msg.content, msg.type, false, container);
+        addMessage(msg.content, msg.type, false, container, msg.metadata?.usedJudgmentIds || []);
       });
     } else {
       addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
@@ -950,7 +950,7 @@ async function loadSession(channelId, sessionId = null) {
   }
 }
 
-function addMessage(content, type, save = true, container) {
+function addMessage(content, type, save = true, container, usedJudgmentIds = []) {
   const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
 
   // 浏览器侧内存保护: 单个 channel 的消息容器超过 MAX_MESSAGES_PER_CHANNEL
@@ -1182,6 +1182,17 @@ function addMessage(content, type, save = true, container) {
       actionsDiv.appendChild(regenerateBtn);
     }
     div.appendChild(actionsDiv);
+  }
+
+  // P0.5: 引用原则徽章 (AI 消息)
+  if (type === 'ai' && Array.isArray(usedJudgmentIds) && usedJudgmentIds.length > 0) {
+    const principlesDiv = document.createElement('div');
+    principlesDiv.className = 'used-judgments';
+    principlesDiv.style.cssText = 'margin-top:6px;padding:6px 10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:4px;font-size:11px;color:#0c4a6e;cursor:pointer;user-select:none;';
+    principlesDiv.setAttribute('data-used-ids', JSON.stringify(usedJudgmentIds));
+    principlesDiv.innerHTML = `📚 引用了 <strong>${usedJudgmentIds.length}</strong> 条判断力原则 <span style="color:#0369a1;">▾</span>`;
+    principlesDiv.onclick = () => toggleUsedPrinciples(principlesDiv, usedJudgmentIds);
+    div.appendChild(principlesDiv);
   }
 
   div.appendChild(time);
@@ -2648,12 +2659,71 @@ function switchStatusFilter(status) {
   loadJudgments();
 }
 
+/**
+ * P0.5: 切换显示 AI 消息引用的判断力原则
+ * - 第一次点击: 异步拉 /api/judgments/resolve-usage, 展开列表
+ * - 再次点击: 折叠
+ */
+async function toggleUsedPrinciples(div, ids) {
+  // 已展开 → 折叠
+  const existing = div.nextElementSibling;
+  if (existing && existing.classList && existing.classList.contains('used-judgments-detail')) {
+    existing.remove();
+    div.querySelector('span:last-child').textContent = '▾';
+    return;
+  }
+
+  // 已加载缓存 → 复用
+  if (div._resolved) {
+    div.insertAdjacentHTML('afterend', formatPrincipleList(div._resolved));
+    div.querySelector('span:last-child').textContent = '▴';
+    return;
+  }
+
+  // 第一次: 拉 API
+  div.style.opacity = '0.6';
+  try {
+    const res = await fetch('/api/judgments/resolve-usage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    div._resolved = data.items || [];
+    div.insertAdjacentHTML('afterend', formatPrincipleList(div._resolved));
+    div.querySelector('span:last-child').textContent = '▴';
+  } catch (err) {
+    div.insertAdjacentHTML(
+      'afterend',
+      `<div style="margin-top:4px;padding:6px 10px;background:#fee2e2;border-radius:4px;font-size:11px;color:#991b1b;">加载失败: ${escapeHtml(err.message)}</div>`
+    );
+  } finally {
+    div.style.opacity = '';
+  }
+}
+
+function formatPrincipleList(items) {
+  if (!items || items.length === 0) {
+    return '<div style="margin-top:4px;padding:6px 10px;background:#f3f4f6;border-radius:4px;font-size:11px;color:#6b7280;">(无相关判断力)</div>';
+  }
+  const rows = items.map((j) => {
+    const isSuperseded = j.status === 'superseded';
+    const dimStyle = isSuperseded ? 'opacity:0.55;' : '';
+    const statusTag = isSuperseded ? ' <span style="color:#92400e;font-size:10px;">(已过时)</span>' : '';
+    return `<div style="${dimStyle}padding:3px 0;border-bottom:1px solid #e0f2fe;">
+      <span style="color:#0c4a6e;">•</span> ${escapeHtml(j.decision)}${statusTag}
+    </div>`;
+  }).join('');
+  return `<div class="used-judgments-detail" style="margin-top:4px;padding:8px 10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:4px;font-size:11px;">${rows}</div>`;
+}
+
 function hideJudgmentsModal() {
   if (judgmentsModal) judgmentsModal.classList.remove('active');
 }
 
 let currentJudgmentTab = 'channel'; // 'channel' | 'global'
-let currentStatusFilter = 'all'; // 'all' | 'active' | 'superseded'
+let currentStatusFilter = 'all'; // 'all' | 'active' | 'superseded' | 'violations'
 let lastJudgmentsCache = []; // 最近一次 loadJudgments 拿到的原始列表, 切 tab / 切 channel 时复用
 
 /**
@@ -2775,6 +2845,16 @@ function renderJudgmentItems(items, opts) {
 async function loadJudgments() {
   if (!judgmentsList) return;
   try {
+    // P3: 违规记录走单独 API
+    if (currentStatusFilter === 'violations') {
+      const res = await fetch('/api/judgments/violations?limit=50');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      renderViolations(data.items || []);
+      judgmentsLoaded = true;
+      return;
+    }
+
     const res = await fetch('/api/judgments?status=' + encodeURIComponent(currentStatusFilter));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
@@ -2801,6 +2881,36 @@ async function loadJudgments() {
   } catch (e) {
     if (judgmentsList) judgmentsList.innerHTML = '<div class="task-empty">加载失败: ' + escapeHtml(e.message) + '</div>';
   }
+}
+
+/**
+ * P3 渲染违规记录 (与 renderJudgments 同位置, 但内容不同)
+ */
+function renderViolations(items) {
+  if (!judgmentsList) return;
+  if (!items || items.length === 0) {
+    judgmentsList.innerHTML = '<div class="task-empty">暂无违规记录 (AI 回复未违反注入原则).</div>';
+    return;
+  }
+  judgmentsList.innerHTML = items.map((v) => {
+    const ts = escapeHtml((v.ts || '').substring(0, 19).replace('T', ' '));
+    const userPrev = escapeHtml(v.userInputPreview || '');
+    const aiPrev = escapeHtml(v.aiReplyPreview || '');
+    const principles = (v.result?.violatedPrinciples || []).map((p) =>
+      `<div style="margin-top:3px;padding:4px 8px;background:#fef2f2;border-radius:3px;">
+        <span style="color:#dc2626;">⚠</span> <strong>${escapeHtml(p.principle || '')}</strong>
+        <span style="color:#991b1b;">— ${escapeHtml(p.reason || '')}</span>
+      </div>`
+    ).join('');
+    return `
+      <div class="task-item" style="border-left:3px solid #dc2626;padding:8px 12px;background:#fffbfb;">
+        <div style="font-size:11px;color:#6b7280;margin-bottom:4px;">${ts} · confidence=${escapeHtml(String(v.result?.confidence ?? 0))}</div>
+        <div style="font-size:12px;color:#1f2937;"><strong>用户:</strong> ${userPrev}</div>
+        <div style="font-size:12px;color:#1f2937;margin-top:2px;"><strong>AI:</strong> ${aiPrev}</div>
+        <div style="margin-top:6px;">${principles}</div>
+      </div>
+    `;
+  }).join('');
 }
 
 /** 把 judgment id 加进 / 移出当前 channel.bound_judgment_ids, 然后刷新两边 UI */

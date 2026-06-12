@@ -816,7 +816,13 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       let fullResponse = '';
       // v3 新增: 流式 token 节流推给 B — 让 B 看到过程
       let lastFlushAt = 0;
+      let usedJudgmentIds: string[] = [];
       const streamCallback: any = (event: any) => {
+        // P0.5: 注入门回传
+        if (event?.type === 'used_judgments' && Array.isArray(event.usedIds)) {
+          usedJudgmentIds = event.usedIds;
+          return;
+        }
         if (event.type === 'token') {
           fullResponse += event.content;
           if (fullResponse.length - lastFlushAt >= 20) {
@@ -842,6 +848,7 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
           id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           type: 'ai',
           content: fullResponse,
+          ...(usedJudgmentIds.length > 0 ? { metadata: { usedJudgmentIds } } : {}),
           timestamp: new Date().toISOString()
         });
         session.lastUpdated = new Date().toISOString();
@@ -1633,8 +1640,15 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     try {
       const agent = await getAgentForChannel(channelId, realChannelDid, realChannelName, realChannelDidDoc);
       let fullResponse = '';
+      // P0.5: 注入门回传的 usedIds, 落 session message metadata, UI 可查
+      let usedJudgmentIds: string[] = [];
 
       const streamCallback: StreamCallback = (event: StreamEvent) => {
+        // P0.5: 捕获注入门回传
+        if ((event as any).type === 'used_judgments' && Array.isArray((event as any).usedIds)) {
+          usedJudgmentIds = (event as any).usedIds;
+          return;
+        }
         // 同时发送给流式显示和工作流显示
         if (event.type === 'token' || event.type === 'thinking') {
           broadcast({ type: 'stream', streamType: event.type, content: event.content }, channelId);
@@ -1808,7 +1822,15 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       session.sessionId = currentSessionId;
       // v3: 加 source 标记 (local = 内部 owner, remote = 远端访客)
       session.messages.push({ id: crypto.randomUUID(), type: 'user' as const, content: text, timestamp: new Date().toISOString(), source: 'local' as any });
-      session.messages.push({ id: crypto.randomUUID(), type: 'ai' as const, content: fullResponse, timestamp: new Date().toISOString(), source: 'local' as any });
+      session.messages.push({
+        id: crypto.randomUUID(),
+        type: 'ai' as const,
+        content: fullResponse,
+        timestamp: new Date().toISOString(),
+        source: 'local' as any,
+        // P0.5: 这条 AI 回复引用了哪些 judgment (注入门回传)
+        ...(usedJudgmentIds.length > 0 ? { metadata: { usedJudgmentIds } } : {}),
+      });
       session.lastUpdated = new Date().toISOString();
       await saveSession(session);
 
@@ -2591,8 +2613,14 @@ app.get('/channels', async (_req, res) => {
 
       const agent = await getAgentForChannel(channelId, realChannelDid, realChannelName, realChannelDidDoc);
       let fullResponse = '';
+      let usedJudgmentIds: string[] = [];
 
       const streamCallback: StreamCallback = (event: StreamEvent) => {
+        // P0.5: 注入门回传
+        if ((event as any).type === 'used_judgments' && Array.isArray((event as any).usedIds)) {
+          usedJudgmentIds = (event as any).usedIds;
+          return;
+        }
         if (event.type === 'token' || event.type === 'thinking') {
           broadcast({ type: 'stream', streamType: event.type, content: event.content }, channelId);
         } else if (event.type === 'status' || event.type === 'tool') {
@@ -2620,7 +2648,8 @@ app.get('/channels', async (_req, res) => {
           id: crypto.randomUUID(),
           type: 'ai' as const,
           content: fullResponse,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          ...(usedJudgmentIds.length > 0 ? { metadata: { usedJudgmentIds } } : {}),
         });
         existingSession.lastUpdated = new Date().toISOString();
         await saveSession(existingSession);
@@ -4554,6 +4583,50 @@ app.get('/channels', async (_req, res) => {
       });
     } catch (err: any) {
       console.error('[judgments] detect-and-distill failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 判断力使用回溯 (P0.5): 给定 judgmentIds, 反查对应的 decision 文本
+  // 用途: UI 上"这条 AI 回复引用了哪些原则"
+  app.post('/api/judgments/resolve-usage', async (req, res) => {
+    try {
+      const { ids } = req.body as { ids?: string[] };
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.json({ items: [] });
+      }
+      const { loadAllJudgments } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      const all = await loadAllJudgments();
+      const byId = new Map(all.map((j) => [j.id, j]));
+      const items = ids
+        .map((id) => byId.get(id))
+        .filter((j): j is NonNullable<typeof j> => Boolean(j))
+        .map((j) => ({
+          id: j.id,
+          decision: j.decision,
+          status: j.status ?? 'active',
+          timestamp: j.timestamp,
+        }));
+      res.json({ items });
+    } catch (err: any) {
+      console.error('[judgments] resolve-usage failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 判断力违规日志 (P3 UI): 读 violations.jsonl
+  app.get('/api/judgments/violations', async (req, res) => {
+    try {
+      const { getRecentViolations } = await import(
+        '../pi-ecosystem-judgment/monitor-gate.js'
+      );
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '20'), 10) || 20, 1), 200);
+      const items = await getRecentViolations(limit);
+      res.json({ count: items.length, items });
+    } catch (err: any) {
+      console.error('[judgments] violations failed:', err);
       res.status(500).json({ error: err.message });
     }
   });
