@@ -2815,6 +2815,16 @@ async function loadJudgments() {
       return;
     }
 
+    // 类 B: 自适应扫描建议
+    if (currentStatusFilter === 'adaptive') {
+      const res = await fetch('/api/judgments/adaptive-suggestions');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      renderAdaptiveSuggestions(data);
+      judgmentsLoaded = true;
+      return;
+    }
+
     const res = await fetch('/api/judgments?status=' + encodeURIComponent(currentStatusFilter));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
@@ -2871,6 +2881,123 @@ function renderViolations(items) {
       </div>
     `;
   }).join('');
+}
+
+/**
+ * 类 B 自适应建议渲染
+ *  - rising (绿色 boost 标记): 7 天使用率高于 30 天均值的 1.5 倍
+ *  - stale (黄色 deprecate 标记): 90 天未用 + 总使用 < 3
+ *  - unused (灰色 review 标记): 30 天未用 + 总使用 < 5
+ * 每条带 "✓ 接受" / "✗ 拒绝" 按钮, 接受会真改库, 拒绝只留痕
+ */
+function renderAdaptiveSuggestions(data) {
+  if (!judgmentsList) return;
+  const { judgmentsTotal, usageEntriesScanned, suggestions, scannedAt } = data;
+  const ts = escapeHtml((scannedAt || '').substring(0, 19).replace('T', ' '));
+
+  if (!suggestions || suggestions.length === 0) {
+    judgmentsList.innerHTML = `
+      <div class="task-empty">📊 自适应扫描: 无建议
+        <div style="margin-top:8px;font-size:11px;color:#6b7280;">扫了 ${judgmentsTotal} 条原则, ${usageEntriesScanned} 条使用记录, 都挺健康.</div>
+        <div style="margin-top:4px;font-size:11px;color:#6b7280;">扫描于 ${ts}</div>
+      </div>`;
+    return;
+  }
+
+  const KIND_STYLE = {
+    rising:  { color: '#059669', bg: '#ecfdf5', label: '↑ rising',  action: 'boost' },
+    stale:   { color: '#92400e', bg: '#fef3c7', label: '⏰ stale',  action: 'deprecate' },
+    unused:  { color: '#6b7280', bg: '#f3f4f6', label: '👀 unused', action: 'review' },
+  };
+
+  const header = `
+    <div style="padding:8px 12px;background:#f9fafb;border-radius:4px;margin-bottom:8px;font-size:11px;color:#374151;">
+      📊 扫描于 ${ts} · ${judgmentsTotal} 条原则 · ${usageEntriesScanned} 条使用记录 · <strong>${suggestions.length}</strong> 条建议
+      <button class="rescan-btn" style="margin-left:8px;background:none;border:1px solid #6b7280;color:#374151;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:11px;">🔄 重新扫描</button>
+    </div>
+  `;
+
+  const rows = suggestions.map((s) => {
+    const style = KIND_STYLE[s.kind] || KIND_STYLE.unused;
+    const m = s.metrics || {};
+    return `
+      <div class="task-item" data-suggestion-key="${escapeHtml(s.key)}"
+           style="border-left:3px solid ${style.color};padding:8px 12px;background:${style.bg};margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+          <span style="color:${style.color};font-weight:600;font-size:12px;">${style.label}</span>
+          <span style="font-size:11px;color:#6b7280;">${s.action === 'boost' ? '建议加权' : s.action === 'deprecate' ? '建议废弃' : '建议审视'}</span>
+        </div>
+        <div style="font-size:12px;color:#1f2937;margin-bottom:4px;"><strong>${escapeHtml(s.decision)}</strong></div>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:6px;">${escapeHtml(s.reason)}</div>
+        <div style="font-size:11px;color:#9ca3af;margin-bottom:6px;">
+          7天 ${m.usage7d || 0} · 30天 ${m.usage30d || 0} · 共 ${m.totalUsage || 0} · 上次用 ${m.daysSinceLastUse || 0} 天前
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="adaptive-accept" data-key="${escapeHtml(s.key)}" data-id="${escapeHtml(s.judgmentId)}" data-action-kind="${escapeHtml(s.action)}"
+                  style="background:#059669;color:#fff;border:none;padding:2px 10px;border-radius:3px;cursor:pointer;font-size:11px;">✓ 接受</button>
+          <button class="adaptive-reject" data-key="${escapeHtml(s.key)}" data-id="${escapeHtml(s.judgmentId)}" data-action-kind="${escapeHtml(s.action)}"
+                  style="background:none;border:1px solid #d1d5db;color:#6b7280;padding:2px 10px;border-radius:3px;cursor:pointer;font-size:11px;">✗ 拒绝</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  judgmentsList.innerHTML = header + rows;
+
+  // 绑定按钮
+  const rescanBtn = judgmentsList.querySelector('.rescan-btn');
+  if (rescanBtn) {
+    rescanBtn.onclick = async () => {
+      rescanBtn.disabled = true;
+      rescanBtn.textContent = '🔄 扫描中...';
+      try {
+        const r = await fetch('/api/judgments/adaptive-suggestions?force=1');
+        if (r.ok) renderAdaptiveSuggestions(await r.json());
+      } catch (err) {
+        console.error('[adaptive] rescan failed:', err);
+      } finally {
+        rescanBtn.disabled = false;
+        rescanBtn.textContent = '🔄 重新扫描';
+      }
+    };
+  }
+  judgmentsList.querySelectorAll('.adaptive-accept').forEach((btn) => {
+    btn.onclick = () => applyAdaptiveSuggestion(btn.dataset.key, btn.dataset.id, btn.dataset.actionKind, 'accept');
+  });
+  judgmentsList.querySelectorAll('.adaptive-reject').forEach((btn) => {
+    btn.onclick = () => applyAdaptiveSuggestion(btn.dataset.key, btn.dataset.id, btn.dataset.actionKind, 'reject');
+  });
+}
+
+async function applyAdaptiveSuggestion(key, judgmentId, actionKind, decision) {
+  const row = judgmentsList?.querySelector(`[data-suggestion-key="${key}"]`);
+  if (row) row.style.opacity = '0.5';
+  try {
+    const res = await fetch('/api/judgments/adaptive-apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: decision,
+        suggestion: {
+          key,
+          judgmentId,
+          kind: actionKind,
+          action: actionKind,
+          decision: '',
+          reason: '',
+          metrics: {},
+          scannedAt: new Date().toISOString(),
+        },
+      }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    // 视觉反馈: 隐藏该行
+    if (row) row.style.display = 'none';
+  } catch (err) {
+    if (row) row.style.opacity = '';
+    console.error('[adaptive] apply failed:', err);
+    alert('操作失败: ' + (err && err.message || 'unknown'));
+  }
 }
 
 /** 把 judgment id 加进 / 移出当前 channel.bound_judgment_ids, 然后刷新两边 UI */

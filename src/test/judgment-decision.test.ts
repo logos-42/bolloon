@@ -114,7 +114,9 @@ describe('Decision System - Internal vs External Judgment Communication', () => 
   });
 
   describe('Internal Consultation (colony_ant, subagent)', () => {
-    it('should query up to 3 colony ants for consult_internal', async () => {
+    it('should query subagents (and tolerate absent colony_ant) for consult_internal', async () => {
+      // 2026-06-11: 蚁群模块已被用户删除, listAnts() 现在永远返回空列表.
+      // 本测试覆盖 consult_internal 的 fallback 行为: colony_ant 缺席时, subagent 仍能被查询到.
       const request = await evaluateDecision(
         'Which approach is better: A or B?',
         'decision',
@@ -126,8 +128,13 @@ describe('Decision System - Internal vs External Judgment Communication', () => 
 
       const results = await queryInternalAgents(request);
 
-      expect(results.length).toBeGreaterThan(0);
-      expect(results.some(r => r.target === 'colony_ant')).toBe(true);
+      // colony_ant 缺席时不报错; subagent 应该能正常返回
+      // (若以后蚁群恢复, colony_ant 也会回到 results)
+      const hasColonyAnt = results.some((r) => r.target === 'colony_ant');
+      const hasSubagent = results.some((r) => r.target === 'subagent');
+      // 二者至少一个, 且 colony_ant 不是必需的
+      expect(hasColonyAnt || hasSubagent).toBe(true);
+      expect(results.every((r) => r.target === 'colony_ant' || r.target === 'subagent')).toBe(true);
     });
 
     it('should query up to 2 subagents for consult_internal', async () => {

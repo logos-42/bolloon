@@ -4729,6 +4729,82 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // 类 B 自适应扫描: 读 judgments.json + usage.jsonl, 给出 stale/rising/unused 建议
+  // ?force=1 跳过 24h 缓存
+  app.get('/api/judgments/adaptive-suggestions', async (req, res) => {
+    try {
+      const { getCachedScan } = await import(
+        '../pi-ecosystem-judgment/adaptive-scan.js'
+      );
+      const force = String(req.query.force ?? '') === '1';
+      const result = await getCachedScan(force);
+      res.json(result);
+    } catch (err: any) {
+      console.error('[judgments] adaptive-scan failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 自适应接受/拒绝: 写 evolution.jsonl 留痕, 接受时同时 patch judgments.json
+  // body: { action: 'accept'|'reject'|'revert', suggestion, appliedPatch? }
+  app.post('/api/judgments/adaptive-apply', async (req, res) => {
+    try {
+      const { action, suggestion, appliedPatch } = req.body as {
+        action: 'accept' | 'reject' | 'revert';
+        suggestion: { judgmentId: string; kind: string; decision: string; reason: string; action: string; metrics: unknown; scannedAt: string; key: string };
+        appliedPatch?: Record<string, unknown>;
+      };
+      if (!action || !suggestion?.judgmentId) {
+        return res.status(400).json({ error: 'action and suggestion.judgmentId required' });
+      }
+      const { updateJudgmentStatus } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      const { logEvolution } = await import(
+        '../pi-ecosystem-judgment/adaptive-scan.js'
+      );
+      // accept 时: 真正改库
+      if (action === 'accept') {
+        if (suggestion.action === 'deprecate') {
+          // 标记 superseded (语义: 不再用, 但保留可回滚)
+          await updateJudgmentStatus(suggestion.judgmentId, 'superseded', {
+            evolutionReason: 'merged', // 借 merged 字段表达"被自适应废弃"
+          });
+        } else if (suggestion.action === 'boost') {
+          // boost: 用户手动接受后, 不改库本身 (weight 在 getRelevantValues 里动态算),
+          // 但写 evolution 留痕, 未来可以基于此调整算法
+          // 当前不直接改库, 仅留痕
+        }
+        // 'review' 类不需要自动改库, 仅 log 接受
+      }
+      await logEvolution({
+        ts: new Date().toISOString(),
+        action,
+        suggestion: suggestion as any,
+        appliedPatch,
+      });
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error('[judgments] adaptive-apply failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 演化日志 (audit / 一键回滚源)
+  app.get('/api/judgments/evolution-log', async (req, res) => {
+    try {
+      const { readEvolutionLog } = await import(
+        '../pi-ecosystem-judgment/adaptive-scan.js'
+      );
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '50'), 10) || 50, 1), 200);
+      const items = await readEvolutionLog(limit);
+      res.json({ count: items.length, items });
+    } catch (err: any) {
+      console.error('[judgments] evolution-log failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 导入判断: 接受 { filename, content (base64), context }.
   // 支持 .json / .yaml / .yml / .md / .txt / .html. 完全离线解析, 不调 LLM.
   // 解析规则:

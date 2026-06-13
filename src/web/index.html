@@ -245,7 +245,7 @@
                 全局
               </button>
             </div>
-            <!-- AI 演化 status 过滤: active / superseded / all / violations -->
+            <!-- AI 演化 status 过滤: active / superseded / all / violations / 自适应 -->
             <div id="judgments-status-filter" style="display:flex;gap:6px;margin-top:10px;font-size:12px;align-items:center;">
               <span style="color:#6b7280;">演化过滤:</span>
               <button class="judgment-status-tab active" data-status="all"
@@ -256,6 +256,8 @@
                       style="background:#e5e7eb;color:#374151;border:none;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;">已过时</button>
               <button class="judgment-status-tab" data-status="violations"
                       style="background:#e5e7eb;color:#374151;border:none;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;">违规记录</button>
+              <button class="judgment-status-tab" data-status="adaptive"
+                      style="background:#e5e7eb;color:#374151;border:none;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;">📊 自适应</button>
             </div>
             <h3 style="margin-top:16px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
               <span id="judgments-list-title">本 channel 的判断力</span>

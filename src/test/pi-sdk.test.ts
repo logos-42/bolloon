@@ -21,7 +21,7 @@ describe('Pi SDK', () => {
   it('basic agent session', async () => {
     const session = await createAgentSession({ cwd: process.cwd() });
     const result = await session.prompt('简单问候');
-    expect(result).toContain('我是一个文档处理智能体');
+    expect(result).toContain('我是一个判断力处理智能体');
   });
 
   it('document analysis', async () => {

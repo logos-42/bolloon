@@ -52,3 +52,17 @@ export {
   type MonitorResult,
   type MonitorLogEntry,
 } from './monitor-gate.js';
+
+export {
+  runAdaptiveScan,
+  getCachedScan,
+  clearAdaptiveScanCache,
+  logEvolution,
+  readEvolutionLog,
+  type AdaptiveSuggestion,
+  type AdaptiveScanResult,
+  type SuggestionKind,
+  type SuggestionAction,
+  type EvolutionEntry,
+  type EvolutionAction,
+} from './adaptive-scan.js';
