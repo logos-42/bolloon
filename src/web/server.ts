@@ -1177,6 +1177,18 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     console.error('[警告] 未处理的 Promise 拒绝:', reason);
   });
 
+  // Bolloon Bootstrap (幂等, 重复调不会重复挂定时器)
+  // 这里独立调一次以保证 CLI-only 模式 (无 index.ts 引导) 也能 bootstrap
+  try {
+    const { bootstrapBolloon } = await import(
+      '../pi-ecosystem-judgment/human-value-pipeline.js'
+    );
+    const bs = await bootstrapBolloon({ cwd: process.cwd() });
+    console.log(`[createWebServer] bootstrap 完成 (${bs.durationMs}ms)`);
+  } catch (err) {
+    console.warn('[createWebServer] bootstrap 失败 (非致命):', err);
+  }
+
   // 重置旧的 agent session，确保使用新的 LLM 配置
   const { resetAgentSession } = await import('../agents/pi-sdk.js');
   resetAgentSession();
@@ -4741,6 +4753,41 @@ app.get('/channels', async (_req, res) => {
       res.json(result);
     } catch (err: any) {
       console.error('[judgments] adaptive-scan failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Bootstrap Context 调试视图: 返出完整 BolloonContext
+  app.get('/api/bolloon/context', async (req, res) => {
+    try {
+      const { getCachedBolloonContext } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const force = String(req.query.force ?? '') === '1';
+      const ctx = await getCachedBolloonContext({ cwd: process.cwd() }, force);
+      res.json(ctx);
+    } catch (err: any) {
+      console.error('[bolloon] context failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Bootstrap Context → 拼好的 system prompt 片段 (供调试看注入效果)
+  app.get('/api/bolloon/context/system-prompt', async (req, res) => {
+    try {
+      const { getCachedBolloonContext } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const { formatContextForSystemPrompt } = await import(
+        '../bootstrap/project-context.js'
+      );
+      const ctx = await getCachedBolloonContext({ cwd: process.cwd() });
+      const systemAddition = formatContextForSystemPrompt(ctx, {
+        maxChars: parseInt(String(req.query.max ?? '4000'), 10) || 4000,
+      });
+      res.json({ systemAddition, length: systemAddition.length, truncated: systemAddition.includes('截断模式') });
+    } catch (err: any) {
+      console.error('[bolloon] context/system-prompt failed:', err);
       res.status(500).json({ error: err.message });
     }
   });

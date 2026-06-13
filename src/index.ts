@@ -1634,6 +1634,17 @@ async function main() {
 
   await bootstrapIroh(keypair, name);
 
+  // Bolloon Bootstrap: 启动扫描 + Context 收集 + 挂定时任务
+  // 失败静默 (主流程不被阻塞)
+  try {
+    const { bootstrapBolloon } = await import('./pi-ecosystem-judgment/human-value-pipeline.js');
+    s.info('正在 bootstrap bolloon 上下文...');
+    const bs = await bootstrapBolloon({ cwd: process.cwd() });
+    s.info(`Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
+  } catch (err: any) {
+    s.warn(`Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);
+  }
+
   s.divider();
 
   if (mode === 'web') {

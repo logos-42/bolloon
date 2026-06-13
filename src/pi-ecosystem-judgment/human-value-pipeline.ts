@@ -66,3 +66,31 @@ export {
   type EvolutionEntry,
   type EvolutionAction,
 } from './adaptive-scan.js';
+
+// Bootstrap 入口 (re-export 给 index.ts / server.ts 用)
+export {
+  bootstrapBolloon,
+  type BootstrapResult,
+} from '../bootstrap/bootstrap.js';
+export {
+  onSessionStart,
+  onStop,
+  onPreToolUse,
+  clearSessionStartCache,
+  type SessionStartOptions,
+  type SessionStartResult,
+  type StopOptions,
+  type StopResult,
+  type PreToolUseOptions,
+  type PreToolUseResult,
+} from '../bootstrap/lifecycle-hooks.js';
+export {
+  collectBolloonContext,
+  getCachedBolloonContext,
+  clearBolloonContextCache,
+  type BolloonContext,
+  type CollectOptions,
+} from '../bootstrap/context-collector.js';
+export {
+  formatContextForSystemPrompt,
+} from '../bootstrap/project-context.js';

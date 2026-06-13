@@ -46,6 +46,8 @@ import { loadSkillsFromPaths, defaultSkillPaths, describeSkill } from './skill-l
 import { injectJudgmentGate, recordJudgmentUsage } from '../pi-ecosystem-judgment/injection-gate.js';
 // 持续监控门 (P3): AI 回复后审计是否违反原则
 import { monitorAfterReply } from '../pi-ecosystem-judgment/monitor-gate.js';
+// Bootstrap 生命周期 hook (SessionStart / Stop)
+import { onSessionStart, onStop } from '../pi-ecosystem-judgment/human-value-pipeline.js';
 
 // Pi Ecosystem Integration (lazy imports - initialized on demand)
 // Functions from: createGoal, getCurrentGoal, completeCurrentGoal, failCurrentGoal, getGoalStats, getQueueSummary
@@ -590,6 +592,10 @@ class PiAgentSession implements AgentSession {
    */
   private currentOnStream: StreamCallback | null = null;
   private currentSignal: AbortSignal | null = null;
+  /** Bootstrap SessionStart 拼的 system prompt 片段 (用完即清) */
+  private bootstrapAddition: string = '';
+  /** 当前 prompt 开始时间 (供 Stop hook 计算 durationMs) */
+  private promptStartTime: number = 0;
 
   /**
    * 算 judgment 注入门: 失败静默, 不阻塞主对话
@@ -1112,6 +1118,18 @@ class PiAgentSession implements AgentSession {
     this.currentSignal = signal ?? null;
     await this.computeJudgmentGate(input);
 
+    // Bootstrap SessionStart: 收集项目 Context, 拼到 systemAddition 头部
+    // (失败静默, 5s 限流防止循环)
+    let bootstrapAddition = '';
+    try {
+      const ss = await onSessionStart({});
+      bootstrapAddition = ss.systemAddition || '';
+    } catch (err) {
+      console.warn('[PiAgent] onSessionStart failed (non-fatal):', err);
+    }
+    this.bootstrapAddition = bootstrapAddition;
+    this.promptStartTime = Date.now();
+
     let result: string;
     try {
       result = await this.runReActLoop(onStream, signal);
@@ -1135,10 +1153,20 @@ class PiAgentSession implements AgentSession {
     // P3 监控门: fire-and-forget 审计 AI 回复是否违反原则
     monitorAfterReply(input, result);
 
+    // Bootstrap Stop hook: fire-and-forget 写本次 session 摘要
+    const stopStartTime = this.promptStartTime || Date.now();
+    onStop({
+      channelId: 'unknown',  // channelId 当前未传到 PiAgent 层 (留作下个迭代)
+      durationMs: Date.now() - stopStartTime,
+      usedJudgmentIds: [...this.judgmentGateUsedIds],
+    }).catch((err) => console.warn('[PiAgent] onStop failed:', err));
+
     // 用完即清, 避免污染下一轮
     this.clearJudgmentGate();
     this.currentOnStream = null;
     this.currentSignal = null;
+    this.bootstrapAddition = '';
+    this.promptStartTime = 0;
 
     return result;
   }
@@ -1182,7 +1210,7 @@ class PiAgentSession implements AgentSession {
 问候语: ${this.persona.greeting || '无'}
 ` : '';
 
-    const systemPrompt = `你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
+    const systemPrompt = `${this.bootstrapAddition}你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
 当前工作目录: ${this.cwd}
 当前身份: ${this.identity.name} (${this.identity.did})
 
@@ -1265,7 +1293,7 @@ ${this.getToolDefinitions()}
 问候语: ${this.persona.greeting || '无'}
 ` : '';
 
-      const systemPrompt = `你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
+      const systemPrompt = `${this.bootstrapAddition}你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
 当前工作目录: ${this.cwd}
 当前身份: ${this.identity.name} (${this.identity.did})
 ${refineContext}
