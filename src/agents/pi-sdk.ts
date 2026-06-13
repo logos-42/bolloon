@@ -46,8 +46,8 @@ import { loadSkillsFromPaths, defaultSkillPaths, describeSkill } from './skill-l
 import { injectJudgmentGate, recordJudgmentUsage } from '../pi-ecosystem-judgment/injection-gate.js';
 // 持续监控门 (P3): AI 回复后审计是否违反原则
 import { monitorAfterReply } from '../pi-ecosystem-judgment/monitor-gate.js';
-// Bootstrap 生命周期 hook (SessionStart / Stop)
-import { onSessionStart, onStop } from '../pi-ecosystem-judgment/human-value-pipeline.js';
+// Bootstrap 生命周期 hook (SessionStart / Stop / PreToolUse)
+import { onSessionStart, onStop, onPreToolUse } from '../pi-ecosystem-judgment/human-value-pipeline.js';
 
 // Pi Ecosystem Integration (lazy imports - initialized on demand)
 // Functions from: createGoal, getCurrentGoal, completeCurrentGoal, failCurrentGoal, getGoalStats, getQueueSummary
@@ -507,9 +507,9 @@ export interface HeartbeatConfig {
 }
 
 export interface AgentSession {
-  prompt(input: string, options?: { onStream?: StreamCallback; signal?: AbortSignal }): Promise<string>;
-  promptStream(input: string, onStream: StreamCallback, signal?: AbortSignal): Promise<string>;
-  promptWithPivotLoop(input: string, config?: PivotLoopConfig): Promise<LoopResult>;
+  prompt(input: string, options?: { onStream?: StreamCallback; signal?: AbortSignal; channelId?: string }): Promise<string>;
+  promptStream(input: string, onStream: StreamCallback, signal?: AbortSignal, channelId?: string): Promise<string>;
+  promptWithPivotLoop(input: string, config?: PivotLoopConfig, channelId?: string): Promise<LoopResult>;
   suggestRename(messages: { type: string; content: string }[]): Promise<string | null>;
   readDocument(filePath: string): Promise<string>;
   summarizeDocument(filePath: string, context?: string): Promise<{
@@ -528,6 +528,7 @@ export interface AgentSession {
   broadcast(message: string): Promise<void>;
   getIdentity(): IdentityDoc;
   updateIdentity(updates: Partial<IdentityDoc>): void;
+  setCurrentChannelId(channelId: string): void;
   getSessionState(): PiSessionState;
   getMemory(): PiMemory;
   getPersona(): PersonaDoc | null;
@@ -596,6 +597,8 @@ class PiAgentSession implements AgentSession {
   private bootstrapAddition: string = '';
   /** 当前 prompt 开始时间 (供 Stop hook 计算 durationMs) */
   private promptStartTime: number = 0;
+  /** 当前 channel id (由 getAgentForChannel / prompt 4 参注入, 供 hook / log 使用) */
+  private currentChannelId: string = '';
 
   /**
    * 算 judgment 注入门: 失败静默, 不阻塞主对话
@@ -1064,8 +1067,9 @@ class PiAgentSession implements AgentSession {
     }
   }
 
-  async prompt(input: string, options?: { onStream?: StreamCallback; signal?: AbortSignal }): Promise<string> {
+  async prompt(input: string, options?: { onStream?: StreamCallback; signal?: AbortSignal; channelId?: string }): Promise<string> {
     this.minimaxAvailable = this.checkMinimax();
+    this.currentChannelId = options?.channelId ?? this.currentChannelId;
 
     this.messageHistory.push({
       role: 'user',
@@ -1096,8 +1100,9 @@ class PiAgentSession implements AgentSession {
     }
   }
 
-  async promptStream(input: string, onStream: StreamCallback, signal?: AbortSignal): Promise<string> {
+  async promptStream(input: string, onStream: StreamCallback, signal?: AbortSignal, channelId?: string): Promise<string> {
     this.minimaxAvailable = this.checkMinimax();
+    this.currentChannelId = channelId ?? this.currentChannelId;
 
     this.messageHistory.push({
       role: 'user',
@@ -1122,7 +1127,7 @@ class PiAgentSession implements AgentSession {
     // (失败静默, 5s 限流防止循环)
     let bootstrapAddition = '';
     try {
-      const ss = await onSessionStart({});
+      const ss = await onSessionStart({ channelId: this.currentChannelId || undefined });
       bootstrapAddition = ss.systemAddition || '';
     } catch (err) {
       console.warn('[PiAgent] onSessionStart failed (non-fatal):', err);
@@ -1156,7 +1161,7 @@ class PiAgentSession implements AgentSession {
     // Bootstrap Stop hook: fire-and-forget 写本次 session 摘要
     const stopStartTime = this.promptStartTime || Date.now();
     onStop({
-      channelId: 'unknown',  // channelId 当前未传到 PiAgent 层 (留作下个迭代)
+      channelId: this.currentChannelId || 'unknown',
       durationMs: Date.now() - stopStartTime,
       usedJudgmentIds: [...this.judgmentGateUsedIds],
     }).catch((err) => console.warn('[PiAgent] onStop failed:', err));
@@ -1171,7 +1176,8 @@ class PiAgentSession implements AgentSession {
     return result;
   }
 
-  async promptWithPivotLoop(input: string, config?: PivotLoopConfig): Promise<LoopResult> {
+  async promptWithPivotLoop(input: string, config?: PivotLoopConfig, channelId?: string): Promise<LoopResult> {
+    this.currentChannelId = channelId ?? this.currentChannelId;
     if (!this.minimaxAvailable) {
       const response = await this.handleFallback(input);
       return {
@@ -1363,6 +1369,37 @@ ${toolDefs}
           this.logToHarness(toolCall.name, toolCall.args, errorResult);
           console.warn(`[PiAgent] 未知工具: ${toolCall.name}，跳过并继续`);
           continue;
+        }
+
+        // Bootstrap PreToolUse hook: 调工具前校验 (危险命令拦截)
+        // 失败静默 — hook 自身挂掉 = 放行
+        let toolToExecute = tool;
+        try {
+          const pre = await onPreToolUse({ tool: toolCall.name, args: toolCall.args || {} });
+          if (!pre.allowed) {
+            const deniedResult: ToolResult = {
+              success: false,
+              error: `PreToolUse 拒绝: ${pre.reason || '未通过安全校验'}`,
+            };
+            this.messageHistory.push({
+              role: 'tool',
+              content: JSON.stringify(deniedResult),
+              toolResult: deniedResult,
+            });
+            this.logToHarness(toolCall.name, toolCall.args, deniedResult);
+            if (onStream) {
+              onStream({
+                type: 'error',
+                content: `🛡️ PreToolUse 拒绝 ${toolCall.name}: ${pre.reason || '安全校验失败'}`,
+                tool: toolCall.name,
+              });
+            }
+            console.warn(`[PiAgent] PreToolUse denied ${toolCall.name}: ${pre.reason}`);
+            // 不调 tool.execute, 也不计 consecutiveErrors (这是用户级拒绝, 不是工具错)
+            continue;
+          }
+        } catch (err) {
+          console.warn('[PiAgent] onPreToolUse failed (non-fatal, allowing):', err);
         }
 
         try {
@@ -2022,6 +2059,10 @@ ${this.extractOperationsFromRef(operationsRef)}
 
   updateIdentity(updates: Partial<IdentityDoc>): void {
     this.identity = { ...this.identity, ...updates };
+  }
+
+  setCurrentChannelId(channelId: string): void {
+    this.currentChannelId = channelId;
   }
 
   getSessionState(): PiSessionState {

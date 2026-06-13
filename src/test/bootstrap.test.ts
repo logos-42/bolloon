@@ -260,6 +260,39 @@ describe('onPreToolUse', () => {
 });
 
 // ============================================================
+// 7. channelId 传递 — onSessionStart / onStop
+// ============================================================
+
+describe('channelId 传递', () => {
+  it('onSessionStart 拼 channelId 标识到 systemAddition 头部', async () => {
+    clearSessionStartCache();
+    const r = await onSessionStart({ cwd: TEST_DIR, channelId: 'ch-test-abc' });
+    expect(r.systemAddition).toContain('# 当前 channel: ch-test-abc');
+  });
+
+  it('onSessionStart 无 channelId 时不应有 channel 行', async () => {
+    clearSessionStartCache();
+    const r = await onSessionStart({ cwd: TEST_DIR });
+    expect(r.systemAddition).not.toContain('当前 channel:');
+  });
+
+  it('onStop 写 last-stop.json 的 channelId 应真实', async () => {
+    const ch = `ch-onstop-${Date.now()}`;
+    const r = await onStop({
+      channelId: ch,
+      durationMs: 9999,
+      usedJudgmentIds: ['hv-99'],
+    });
+    expect(r.persisted).toBe(true);
+    const content = await fs.readFile(r.path!, 'utf-8');
+    const parsed = JSON.parse(content);
+    expect(parsed.channelId).toBe(ch);
+    expect(parsed.durationMs).toBe(9999);
+    expect(parsed.usedJudgmentIds).toEqual(['hv-99']);
+  });
+});
+
+// ============================================================
 // 6. bootstrapBolloon
 // ============================================================
 

@@ -51,7 +51,11 @@ export async function onSessionStart(opts: SessionStartOptions = {}): Promise<Se
       { cwd: opts.cwd ?? process.cwd() },
       opts.force ?? false
     );
-    const systemAddition = formatContextForSystemPrompt(ctx, { maxChars: opts.maxChars });
+    let systemAddition = formatContextForSystemPrompt(ctx, { maxChars: opts.maxChars });
+    // 在头部加 channel 标识 (供 LLM 知道当前对话归属)
+    if (opts.channelId) {
+      systemAddition = `# 当前 channel: ${opts.channelId}\n\n` + systemAddition;
+    }
     return {
       systemAddition,
       collectMs: Date.now() - start,

@@ -836,7 +836,7 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         }
       };
       const agent = await getAgentForChannel(channelId, ch.did || '', ch.name, ch.didDocRef);
-      fullResponse = await agent.promptStream(fullPrompt, streamCallback);
+      fullResponse = await agent.promptStream(fullPrompt, streamCallback, undefined, channelId);
 
       // v3 新增: 存 A 的 assistant 消息到 session — B 拉历史时能看到完整对话
       try {
@@ -1847,7 +1847,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
       if (contextHint) contextHint += '\n';
       try {
-        fullResponse = await agent.promptStream(contextHint + text, streamCallback, runState.abortController?.signal);
+        fullResponse = await agent.promptStream(contextHint + text, streamCallback, runState.abortController?.signal, channelId);
       } catch (err: any) {
         // abort 抛错: 保留已输出的部分 (fullResponse 可能是空字符串)
         if (runState.abortController?.signal.aborted || err?.name === 'AbortError') {
@@ -2725,7 +2725,7 @@ app.get('/channels', async (_req, res) => {
 
       // 重新生成时只发送用户消息 (v3: 同时注入 channel 绑定的判断力)
       const regenHint = await buildJudgmentHint(channel, channelId);
-      fullResponse = await agent.promptStream(regenHint + userMessage, streamCallback);
+      fullResponse = await agent.promptStream(regenHint + userMessage, streamCallback, undefined, channelId);
 
       broadcast({ type: 'ai', content: fullResponse }, channelId);
 
