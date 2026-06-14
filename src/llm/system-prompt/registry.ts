@@ -63,7 +63,7 @@ const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
   { id: 'core.wellbeing',        version: '1.0.0', priority: 120, appliesTo: ['all'], source: 'static-md', maxChars: 2500 },
   { id: 'core.evenhandedness',   version: '1.0.0', priority: 130, appliesTo: ['all'], source: 'static-md', maxChars: 700 },
   { id: 'core.memory_system',    version: '1.0.0', priority: 140, appliesTo: ['all'], source: 'static-md', maxChars: 600 },
-  { id: 'core.artifacts_storage',version: '1.0.0', priority: 145, appliesTo: ['all'], source: 'static-md', maxChars: 1500 },
+  { id: 'core.artifacts_storage',version: '1.0.0', priority: 145, appliesTo: ['all'], source: 'static-md', maxChars: 2500 },
   { id: 'core.network_filesystem',version: '1.0.0', priority: 148, appliesTo: ['all'], source: 'static-md', maxChars: 900 },
 
   // ── role/ ──
@@ -81,10 +81,10 @@ const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
   { id: 'tool.bash',             version: '1.0.0', priority: 250, appliesTo: ['tool:bash'],                source: 'static-md', maxChars: 900 },
   { id: 'tool.web_search',       version: '1.0.0', priority: 250, appliesTo: ['tool:web_search'],          source: 'static-md', maxChars: 3000 },
   { id: 'tool.mcp_apps',         version: '1.0.0', priority: 250, appliesTo: ['tool:mcp_apps'],            source: 'static-md', maxChars: 1800 },
-  { id: 'tool.hibs_api',         version: '1.0.0', priority: 250, appliesTo: ['tool:hibs_api'],            source: 'static-md', maxChars: 2500 },
-  { id: 'tool.image_search',     version: '1.0.0', priority: 250, appliesTo: ['tool:image_search'],        source: 'static-md', maxChars: 1500 },
+  { id: 'tool.hibs_api',         version: '1.0.0', priority: 250, appliesTo: ['tool:hibs_api'],            source: 'static-md', maxChars: 4500 },
+  { id: 'tool.image_search',     version: '1.0.0', priority: 250, appliesTo: ['tool:image_search'],        source: 'static-md', maxChars: 2500 },
   { id: 'tool.artifacts',        version: '1.0.0', priority: 250, appliesTo: ['tool:artifacts'],           source: 'static-md', maxChars: 2500 },
-  { id: 'tool.manifest',         version: '1.0.0', priority: 250, appliesTo: ['tool:manifest'],            source: 'static-md', maxChars: 2000 },
+  { id: 'tool.manifest',         version: '1.0.0', priority: 250, appliesTo: ['tool:manifest'],            source: 'static-md', maxChars: 3500 },
 ];
 
 /**

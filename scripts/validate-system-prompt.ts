@@ -28,7 +28,7 @@ const MAX_CHARS: Record<string, number> = {
   'core/wellbeing': 2500,
   'core/evenhandedness': 700,
   'core/memory_system': 600,
-  'core/artifacts_storage': 1500,
+  'core/artifacts_storage': 2500,
   'core/network_filesystem': 900,
   'role/expert': 500,
   'role/architect': 500,
@@ -40,10 +40,10 @@ const MAX_CHARS: Record<string, number> = {
   'tool/bash': 900,
   'tool/web_search': 3000,
   'tool/mcp_apps': 1800,
-  'tool/hibs_api': 2500,
-  'tool/image_search': 1500,
+  'tool/hibs_api': 4500,
+  'tool/image_search': 2500,
   'tool/artifacts': 2500,
-  'tool/manifest': 2000,
+  'tool/manifest': 3500,
 };
 
 interface Issue {
