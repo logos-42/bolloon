@@ -5367,8 +5367,7 @@ app.get('/channels', async (_req, res) => {
   function readPermModeOverride(): { mode: string; ts: string } | null {
     try {
       // 同步读, 文件很小
-      const fs = require('fs') as typeof import('fs');
-      const raw = fs.readFileSync(PERM_MODE_FILE, 'utf-8');
+      const raw = fsSync.readFileSync(PERM_MODE_FILE, 'utf-8');
       const obj = JSON.parse(raw);
       if (obj && typeof obj.mode === 'string') {
         return { mode: obj.mode, ts: obj.ts || new Date().toISOString() };
@@ -5379,10 +5378,9 @@ app.get('/channels', async (_req, res) => {
 
   function writePermModeOverride(mode: string): void {
     try {
-      const fs = require('fs') as typeof import('fs');
       const dir = path.dirname(PERM_MODE_FILE);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(PERM_MODE_FILE, JSON.stringify({ mode, ts: new Date().toISOString() }, null, 2), 'utf-8');
+      fsSync.mkdirSync(dir, { recursive: true });
+      fsSync.writeFileSync(PERM_MODE_FILE, JSON.stringify({ mode, ts: new Date().toISOString() }, null, 2), 'utf-8');
     } catch (err) {
       console.warn('[server] writePermModeOverride failed:', err);
     }
@@ -5422,13 +5420,12 @@ app.get('/channels', async (_req, res) => {
     writePermModeOverride(mode);
     // 写历史 (append-only JSONL, 跟 bolloon 其他 audit 一致)
     try {
-      const fs = require('fs') as typeof import('fs');
       const HISTORY_FILE = path.join(
         process.env.HOME || os.homedir() || '/tmp',
         '.bolloon', 'sessions', 'permission-mode-history.jsonl'
       );
-      fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
-      fs.appendFileSync(HISTORY_FILE, JSON.stringify({
+      fsSync.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+      fsSync.appendFileSync(HISTORY_FILE, JSON.stringify({
         ts: new Date().toISOString(),
         from: oldMode,
         to: mode,
@@ -5449,20 +5446,18 @@ app.get('/channels', async (_req, res) => {
   app.delete('/api/permission-mode', async (_req: any, res: any) => {
     const oldMode = readPermModeOverride()?.mode || process.env.BOLLOON_PERM_MODE || 'default';
     try {
-      const fs = require('fs') as typeof import('fs');
-      if (fs.existsSync(PERM_MODE_FILE)) fs.unlinkSync(PERM_MODE_FILE);
+      if (fsSync.existsSync(PERM_MODE_FILE)) fsSync.unlinkSync(PERM_MODE_FILE);
     } catch (err) {
       console.warn('[server] delete perm-mode override failed:', err);
     }
     // 写历史
     try {
-      const fs = require('fs') as typeof import('fs');
       const HISTORY_FILE = path.join(
         process.env.HOME || os.homedir() || '/tmp',
         '.bolloon', 'sessions', 'permission-mode-history.jsonl'
       );
-      fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
-      fs.appendFileSync(HISTORY_FILE, JSON.stringify({
+      fsSync.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+      fsSync.appendFileSync(HISTORY_FILE, JSON.stringify({
         ts: new Date().toISOString(),
         from: oldMode,
         to: 'env-or-default',
@@ -5480,10 +5475,9 @@ app.get('/channels', async (_req, res) => {
       '.bolloon', 'sessions', 'permission-mode-history.jsonl'
     );
     try {
-      const fs = require('fs') as typeof import('fs');
-      if (!fs.existsSync(HISTORY_FILE)) return res.json([]);
-      const lines = fs.readFileSync(HISTORY_FILE, 'utf-8').split('\n').filter(Boolean);
-      const entries = lines.map((l) => {
+      if (!fsSync.existsSync(HISTORY_FILE)) return res.json([]);
+      const lines = fsSync.readFileSync(HISTORY_FILE, 'utf-8').split('\n').filter(Boolean);
+      const entries = lines.map((l: string) => {
         try { return JSON.parse(l); } catch { return null; }
       }).filter(Boolean);
       res.json(entries.slice(-50));  // 最近 50 条
