@@ -1,0 +1,14 @@
+diff --git a/src/utils/_e2e-clean.ts b/src/utils/_e2e-clean.ts
+new file mode 100644
+index 0000000..314f5a1
+--- /dev/null
++++ b/src/utils/_e2e-clean.ts
+@@ -0,0 +1,8 @@
++/**
++ * _e2e-clean.ts — 干净的 LLM 改动示例
++ */
++export function formatBytes(n: number): string {
++  if (n < 1024) return `${n} B`;
++  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
++  return `${(n / 1024 / 1024).toFixed(1)} MB`;
++}
