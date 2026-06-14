@@ -4852,6 +4852,76 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // 阶段 2: Causal-judge 4 个 endpoint
+  app.get('/api/judgments/causal/correlation', async (req, res) => {
+    try {
+      const { runCorrelationAnalysis } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const topN = Math.min(Math.max(parseInt(String(req.query.topN ?? '5'), 10) || 5, 1), 50);
+      const useLLM = String(req.query.useLLM ?? '1') !== '0';
+      const items = await runCorrelationAnalysis({ topN, useLLM });
+      res.json({ count: items.length, items });
+    } catch (err: any) {
+      console.error('[causal] correlation failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/judgments/causal/intervention', async (req, res) => {
+    try {
+      const { runIntervention } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const { judgmentId, scenario } = req.query as { judgmentId?: string; scenario?: string };
+      if (!judgmentId) return res.status(400).json({ error: 'judgmentId required' });
+      const result = await runIntervention(judgmentId, { scenarioContext: scenario });
+      res.json(result);
+    } catch (err: any) {
+      console.error('[causal] intervention failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/judgments/causal/counterfactual', async (req, res) => {
+    try {
+      const { runCounterfactualAudit } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const { userInput, aiReply, violatedPrinciples } = req.body as {
+        userInput?: string;
+        aiReply?: string;
+        violatedPrinciples?: Array<{ principle: string; reason: string }>;
+      };
+      if (!userInput || !aiReply) {
+        return res.status(400).json({ error: 'userInput and aiReply required' });
+      }
+      const audit = await runCounterfactualAudit({
+        userInput,
+        aiReply,
+        violatedPrinciples: violatedPrinciples ?? [],
+      });
+      res.json(audit);
+    } catch (err: any) {
+      console.error('[causal] counterfactual failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/judgments/causal/audit-log', async (req, res) => {
+    try {
+      const { readCounterfactualLog } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '20'), 10) || 20, 1), 200);
+      const items = await readCounterfactualLog(limit);
+      res.json({ count: items.length, items });
+    } catch (err: any) {
+      console.error('[causal] audit-log failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 导入判断: 接受 { filename, content (base64), context }.
   // 支持 .json / .yaml / .yml / .md / .txt / .html. 完全离线解析, 不调 LLM.
   // 解析规则:

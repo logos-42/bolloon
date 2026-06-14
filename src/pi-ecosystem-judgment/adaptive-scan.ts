@@ -30,7 +30,7 @@ function getEvolutionLogPath(): string {
   return (os.homedir() || process.env.HOME || '/tmp') + '/.bolloon/human-values/evolution.jsonl';
 }
 
-export type SuggestionKind = 'stale' | 'rising' | 'unused';
+export type SuggestionKind = 'stale' | 'rising' | 'unused' | 'causal_conflict' | 'low_causal_power';
 export type SuggestionAction = 'deprecate' | 'boost' | 'review';
 
 export interface AdaptiveSuggestion {
@@ -182,7 +182,39 @@ export async function runAdaptiveScan(): Promise<AdaptiveScanResult> {
   }
 
   // 按 action 重要性排序: rising > stale > unused
-  const order: Record<SuggestionKind, number> = { rising: 0, stale: 1, unused: 2 };
+  const order: Record<SuggestionKind, number> = { rising: 0, stale: 1, unused: 2, causal_conflict: 3, low_causal_power: 4 };
+  // 阶段 2: causal_conflict — judgment 库内自动检测冲突对
+  const { runConflictDetection } = await import('./causal-judge.js');
+  const conflictResult = await runConflictDetection();
+  for (const a of judgments) {
+    if ((a.status ?? 'active') !== 'active') continue;
+    if (!Array.isArray(a.conflictWith) || a.conflictWith.length === 0) continue;
+    // 列出每对冲突 (limit 每个 judgment 最多 3 对, 避免 UI 刷屏)
+    const conflicts = a.conflictWith.slice(0, 3);
+    for (const otherId of conflicts) {
+      const other = judgments.find((j) => j.id === otherId);
+      if (!other) continue;
+      const c = await import('./causal-judge.js');
+      const det = c.detectConflict(a, other);
+      suggestions.push({
+        key: `causal_conflict:${a.id}:${other.id}`,
+        kind: 'causal_conflict',
+        judgmentId: a.id,
+        decision: `${a.decision} ↔ ${other.decision}`,
+        reason: det.isConflict ? det.reason : '库内已标冲突, 需 LLM 复核',
+        action: 'review',
+        metrics: { usage7d: 0, usage30d: 0, daysSinceLastUse: 0, totalUsage: 0 },
+        scannedAt: now.toISOString(),
+      });
+    }
+  }
+  // 静默 conflictResult.detected 计数 (已通过 import 触发了)
+  void conflictResult;
+
+  // 阶段 2: low_causal_power — 留空 (依赖 do-calculus 跑过后的低边际贡献记录)
+  // 当前不主动跑 (cost 高), 仅在 UI 手动触发后, 类 B 下次扫描时捡起来
+  // 此处不实现, 留作下个迭代
+
   suggestions.sort((a, b) => order[a.kind] - order[b.kind]);
 
   return {

@@ -63,6 +63,29 @@ export interface HumanJudgment {
   supersededBy?: string;
   evolutionReason?: 'merged' | 'contradicted';
   evolvedAt?: string;
+
+  // ============================================================
+  // Causal-judge 字段 (阶段 2 升级, 旧数据 migration 时补默认值)
+  // ============================================================
+
+  /** 1. TTL: 90 天全局默认, 显式设可覆盖. 到期后 status 自动转 'pending'. */
+  expiresAt?: string;
+
+  /** 2. 适用范围: 留空 = 全部适用; 填了 = 只在那些 tool 类别注入. */
+  appliesTo?: string[];  // ['shell', 'file', 'network', 'memory', 'social']
+
+  /** 3. 冲突: 自动检测填入, 表示该 judgment 与哪些 judgment 语义冲突. */
+  conflictWith?: string[];  // ['hv-xxx', 'hv-yyy']
+
+  /** 4. 因果链: 优先级 + 替代关系 + LLM 推断的原因. */
+  causalChain?: {
+    /** 语义上 '优先于' (更基础) 的 judgment id 列表 */
+    precedes?: string[];
+    /** 链式替代关系 (跟 status=superseded 区别: 链式, 不是简单二选一) */
+    supersededBy?: string[];
+    /** 为什么 A 优先于 B (LLM 推断) */
+    reason?: string;
+  };
 }
 
 export interface ValueProfile {
@@ -147,14 +170,70 @@ export async function initializeValueStore(): Promise<void> {
   }
 }
 
+// ============================================================
+// 阶段 2: Causal-judge 4 字段 migration
+// ============================================================
+
+/** TTL 默认 90 天 (用户可在 createUI 显式覆盖) */
+export const DEFAULT_TTL_DAYS = 90;
+
+/** 已 migration 标记 (避免每次 loadAllJudgments 都重写盘) */
+let migratedOnce = false;
+
+/**
+ * 给老数据补 4 字段默认值 (in-place).
+ * - expiresAt: createdAt + 90 天
+ * - appliesTo: undefined (适用所有)
+ * - conflictWith: []
+ * - causalChain: undefined
+ *
+ * 返回 true 表示这次实际有 migration (写盘时持久化), false 表示无变化
+ */
+export function migrateJudgmentInPlace(j: HumanJudgment): boolean {
+  let changed = false;
+  if (j.expiresAt === undefined) {
+    const base = new Date(j.timestamp || Date.now());
+    base.setDate(base.getDate() + DEFAULT_TTL_DAYS);
+    j.expiresAt = base.toISOString();
+    changed = true;
+  }
+  if (j.conflictWith === undefined) {
+    j.conflictWith = [];
+    changed = true;
+  }
+  // appliesTo / causalChain 留空不补 (语义性, 由 causal-judge 自动填)
+  return changed;
+}
+
+/**
+ * 不可变版本: 返回新对象, 不 mutate 原 j. 供测试/谨慎场景用.
+ */
+export function migrateJudgmentImmutable(j: HumanJudgment): HumanJudgment {
+  const next: HumanJudgment = { ...j };
+  migrateJudgmentInPlace(next);
+  return next;
+}
+
 /**
  * 存储人类判断
  */
 export async function storeHumanJudgment(judgment: Omit<HumanJudgment, 'id' | 'timestamp'>): Promise<HumanJudgment> {
+  const now = new Date().toISOString();
+  // 阶段 2: 4 字段默认值补全 (新 judgment)
+  if (!judgment.expiresAt) {
+    const expireDate = new Date();
+    expireDate.setDate(expireDate.getDate() + DEFAULT_TTL_DAYS);
+    (judgment as any).expiresAt = expireDate.toISOString();
+  }
+  if (!Array.isArray(judgment.conflictWith)) {
+    (judgment as any).conflictWith = [];
+  }
+  // 留空: appliesTo / causalChain 由后续 causal-judge 自动填
+
   const fullJudgment: HumanJudgment = {
     ...judgment,
     id: generateId(),
-    timestamp: new Date().toISOString()
+    timestamp: now
   };
 
   // 加载现有判断
@@ -426,6 +505,17 @@ export async function loadAllJudgments(): Promise<HumanJudgment[]> {
         j.status === undefined ? { ...j, status: 'active' } : j
       );
     }
+    // 阶段 2: 4 字段 migration (in-place, 仅一次)
+    if (!migratedOnce) {
+      let anyChanged = false;
+      judgmentCache.forEach((j) => {
+        if (migrateJudgmentInPlace(j)) anyChanged = true;
+      });
+      if (anyChanged) {
+        await saveJudgments(judgmentCache).catch(() => { /* 静默 */ });
+      }
+      migratedOnce = true;
+    }
     return [...judgmentCache];
   }
 
@@ -433,6 +523,17 @@ export async function loadAllJudgments(): Promise<HumanJudgment[]> {
     const content = await fs.readFile(JUDGMENTS_FILE, 'utf-8');
     const parsed: HumanJudgment[] = JSON.parse(content);
     judgmentCache = parsed.map((j) => (j.status === undefined ? { ...j, status: 'active' } : j));
+    // 阶段 2: 4 字段 migration (in-place, 仅一次)
+    if (!migratedOnce) {
+      let anyChanged = false;
+      judgmentCache.forEach((j) => {
+        if (migrateJudgmentInPlace(j)) anyChanged = true;
+      });
+      if (anyChanged) {
+        await saveJudgments(judgmentCache).catch(() => { /* 静默 */ });
+      }
+      migratedOnce = true;
+    }
     return [...judgmentCache];
   } catch {
     judgmentCache = [];
@@ -448,7 +549,11 @@ export async function loadAllJudgments(): Promise<HumanJudgment[]> {
  * - 关键词完全匹配 → weight 不衰减
  * - 软相似 > 0.4 → weight * 0.7 (留作辅助, 不冲掉精确命中)
  */
-export async function getRelevantValues(context: string, domain?: string): Promise<ValueTag[]> {
+export async function getRelevantValues(
+  context: string,
+  domain?: string,
+  currentTool?: string
+): Promise<ValueTag[]> {
   const judgments = await loadAllJudgments();
 
   const keywords = context.split(/[\s,，、]+/).filter(k => k.length >= 2);
@@ -457,6 +562,12 @@ export async function getRelevantValues(context: string, domain?: string): Promi
   const relevant: Array<{ j: HumanJudgment; softWeight: number }> = [];
   for (const j of judgments) {
     if (domain && j.context.domain !== domain) continue;
+
+    // 阶段 2: appliesTo 路由 — 不匹配当前 tool 类别的 judgment 直接跳过
+    // appliesTo 为空 / undefined = 适用所有 (默认)
+    if (currentTool && Array.isArray(j.appliesTo) && j.appliesTo.length > 0) {
+      if (!j.appliesTo.includes(currentTool)) continue;
+    }
 
     let matched = false;
     let soft = 0;
@@ -610,7 +721,13 @@ async function saveJudgments(judgments: HumanJudgment[]): Promise<void> {
   await fs.writeFile(JUDGMENTS_FILE, JSON.stringify(judgments, null, 2), 'utf-8');
   // 让 loadAllJudgments 下次重新读盘, 避免缓存与磁盘脱节
   // 同时在写盘时也补 status 默认值, 防止 loadAllJudgments 走早返回路径时绕过迁移
-  judgmentCache = judgments.map((j) => (j.status === undefined ? { ...j, status: 'active' } : j));
+  // 关键: 用浅拷贝 + spread 避免 mutate 入参 (storeHumanJudgment 返回的 fullJudgment 也会被改)
+  judgmentCache = judgments.map((j) => {
+    const next: HumanJudgment = { ...j };
+    if (next.status === undefined) next.status = 'active';
+    migrateJudgmentInPlace(next);
+    return next;
+  });
 }
 
 function buildValueProfile(agentId: string, judgments: HumanJudgment[]): ValueProfile {

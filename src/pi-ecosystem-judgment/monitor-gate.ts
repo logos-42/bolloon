@@ -189,6 +189,25 @@ export function monitorAfterReply(
           `[monitor-gate] VIOLATION detected (confidence=${result.confidence}):`,
           result.violatedPrinciples
         );
+
+        // 阶段 2: 触发反事实审计 (do-calculus 风格, 默认 disabled)
+        // 启用方式: BOLLOON_COUNTERFACTUAL_ON_VIOLATION=1 或 UI 手动触发
+        if (process.env.BOLLOON_COUNTERFACTUAL_ON_VIOLATION === '1') {
+          (async () => {
+            try {
+              const { runCounterfactualAudit, logCounterfactualAudit } = await import('./causal-judge.js');
+              const audit = await runCounterfactualAudit({
+                userInput,
+                aiReply,
+                violatedPrinciples: result.violatedPrinciples,
+              });
+              await logCounterfactualAudit(audit);
+              console.log(`[monitor-gate] counterfactual audit: ${audit.verdict}, ${audit.scenarios.length} scenarios`);
+            } catch (err) {
+              console.warn('[monitor-gate] counterfactual audit failed:', err);
+            }
+          })();
+        }
       }
     })
     .catch((err) => {

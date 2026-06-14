@@ -2825,6 +2825,16 @@ async function loadJudgments() {
       return;
     }
 
+    // 阶段 2: causal-judge 因果分析
+    if (currentStatusFilter === 'causal') {
+      const res = await fetch('/api/judgments/causal/correlation?topN=10');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      renderCausalAnalysis(data.items || []);
+      judgmentsLoaded = true;
+      return;
+    }
+
     const res = await fetch('/api/judgments?status=' + encodeURIComponent(currentStatusFilter));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
@@ -2998,6 +3008,98 @@ async function applyAdaptiveSuggestion(key, judgmentId, actionKind, decision) {
     console.error('[adaptive] apply failed:', err);
     alert('操作失败: ' + (err && err.message || 'unknown'));
   }
+}
+
+// ============================================================
+// 阶段 2: causal-judge 渲染
+// ============================================================
+
+/**
+ * 渲染关联分析 (top 5 互信息对)
+ * - 显示每对: judgmentA ↔ judgmentB + 互信息 + co-occurrence + 因果方向
+ * - 每条 judgment 旁加"🔬 跑 do-calculus"按钮, 异步显示 causalEffect
+ */
+function renderCausalAnalysis(items) {
+  if (!judgmentsList) return;
+  if (!items || items.length === 0) {
+    judgmentsList.innerHTML = `
+      <div class="task-empty">🔍 因果分析: 无高关联对
+        <div style="margin-top:8px;font-size:11px;color:#6b7280;">usage 数据不足 (至少 3 条同现), 或 LLM 不可用. 多用 bolloon 一段时间后重试.</div>
+      </div>`;
+    return;
+  }
+
+  const rows = items.map((p, idx) => `
+    <div class="task-item" data-causal-idx="${idx}" data-judgment-a="${escapeHtml(p.judgmentA)}" data-judgment-b="${escapeHtml(p.judgmentB)}"
+         style="border-left:3px solid #7c3aed;padding:8px 12px;background:#faf5ff;margin-bottom:6px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+        <span style="color:#7c3aed;font-weight:600;font-size:12px;">${escapeHtml(p.causalDirection)}</span>
+        <span style="font-size:11px;color:#6b7280;">MI=${p.mutualInfo} · co=${p.coOccurrence}</span>
+      </div>
+      <div style="font-size:11px;color:#374151;margin-bottom:4px;">${escapeHtml(p.explanation || '(无 LLM 解释)')}</div>
+      <div style="font-size:10px;color:#9ca3af;">A: ${escapeHtml(p.judgmentA)} ↔ B: ${escapeHtml(p.judgmentB)}</div>
+      <div style="margin-top:6px;display:flex;gap:6px;">
+        <button class="causal-intervention-a" data-jid="${escapeHtml(p.judgmentA)}"
+                style="background:#7c3aed;color:#fff;border:none;padding:2px 10px;border-radius:3px;cursor:pointer;font-size:11px;">🔬 do(A)</button>
+        <button class="causal-intervention-b" data-jid="${escapeHtml(p.judgmentB)}"
+                style="background:#7c3aed;color:#fff;border:none;padding:2px 10px;border-radius:3px;cursor:pointer;font-size:11px;">🔬 do(B)</button>
+      </div>
+      <div class="causal-result" data-jid="" style="display:none;margin-top:6px;padding:6px;background:#f3e8ff;border-radius:3px;font-size:11px;"></div>
+    </div>
+  `).join('');
+
+  judgmentsList.innerHTML = `
+    <div style="padding:8px 12px;background:#f9fafb;border-radius:4px;margin-bottom:8px;font-size:11px;color:#374151;">
+      🔍 关联分析 (top ${items.length} 互信息对) · <span style="color:#7c3aed;">LLM 推断方向</span>
+      <button class="causal-refresh" style="margin-left:8px;background:none;border:1px solid #7c3aed;color:#7c3aed;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:11px;">🔄 重新跑</button>
+    </div>
+    ${rows}
+  `;
+
+  // 按钮: 重新跑
+  const refresh = judgmentsList.querySelector('.causal-refresh');
+  if (refresh) {
+    refresh.onclick = async () => {
+      refresh.disabled = true;
+      refresh.textContent = '🔄 跑中...';
+      try {
+        const r = await fetch('/api/judgments/causal/correlation?topN=10');
+        if (r.ok) renderCausalAnalysis((await r.json()).items || []);
+      } finally {
+        refresh.disabled = false;
+        refresh.textContent = '🔄 重新跑';
+      }
+    };
+  }
+
+  // 按钮: 跑 do-calculus
+  judgmentsList.querySelectorAll('.causal-intervention-a, .causal-intervention-b').forEach((btn) => {
+    btn.onclick = async () => {
+      const jid = btn.getAttribute('data-jid');
+      const resultDiv = btn.closest('.task-item')?.querySelector('.causal-result');
+      if (!resultDiv) return;
+      resultDiv.style.display = 'block';
+      resultDiv.textContent = '🔬 跑 do-calculus (LLM 模拟反事实)...';
+      btn.disabled = true;
+      try {
+        const r = await fetch(`/api/judgments/causal/intervention?judgmentId=${encodeURIComponent(jid)}`);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        const effect = data.causalEffect;
+        const sign = effect > 0 ? '+' : '';
+        const color = Math.abs(effect) > 0.5 ? '#dc2626' : Math.abs(effect) > 0.2 ? '#d97706' : '#059669';
+        resultDiv.innerHTML = `
+          <div style="color:${color};font-weight:600;">do-calculus: causalEffect = ${sign}${effect} (${data.marginalContribution})</div>
+          <div style="color:#374151;margin-top:4px;">${escapeHtml(data.reasoning)}</div>
+          <div style="color:#9ca3af;margin-top:4px;">confidence=${data.confidence}</div>
+        `;
+      } catch (err) {
+        resultDiv.innerHTML = `<div style="color:#dc2626;">失败: ${escapeHtml(err.message)}</div>`;
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  });
 }
 
 /** 把 judgment id 加进 / 移出当前 channel.bound_judgment_ids, 然后刷新两边 UI */

@@ -67,6 +67,20 @@ export {
   type EvolutionAction,
 } from './adaptive-scan.js';
 
+// Causal-judge 引擎 (阶段 2)
+export {
+  runCorrelationAnalysis,
+  runIntervention,
+  runCounterfactualAudit,
+  logCounterfactualAudit,
+  readCounterfactualLog,
+  runConflictDetection,
+  detectConflict,
+  type CorrelationPair,
+  type InterventionResult,
+  type CounterfactualAudit,
+} from './causal-judge.js';
+
 // Bootstrap 入口 (re-export 给 index.ts / server.ts 用)
 export {
   bootstrapBolloon,
