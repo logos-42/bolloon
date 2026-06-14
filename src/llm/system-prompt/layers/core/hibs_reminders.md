@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 90
+author: yuanjie
+---
+
 <!-- core.hibs_reminders@1.0.0 -->
 # bolloon_behavior > hibs_reminders (原样)
 

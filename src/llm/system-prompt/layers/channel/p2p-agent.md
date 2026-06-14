@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 180
+author: yuanjie
+---
+
 <!-- channel.p2p-agent@1.0.0 -->
 # P2P 远程智能体 (另一个 bolloon 经 P2P 路由)
 

@@ -46,45 +46,120 @@ export interface PromptLayer {
   content?: string;
   /** 动态内容 (source='function' 时) */
   resolver?: () => string | Promise<string>;
+  /**
+   * Provenance + Lifecycle metadata (P-Action 2)
+   * 安全/identity 类: ttl_days=90 (季度审)
+   * channel/role persona: ttl_days=180
+   * tool/manual: ttl_days=270
+   * knowledge/context: ttl_days=365
+   * author ∈ {yuanjie | community | maintainer-name}; 拒绝 llm-judge
+   */
+  meta?: SectionMeta;
+}
+
+export interface SectionMeta {
+  /** 初始填入时间 (ISO 8601) */
+  addedAt: string;
+  /** 上次审视时间 (ISO 8601) */
+  lastReviewedAt: string;
+  /** 过期天数 (从 lastReviewedAt 算起) */
+  ttlDays: number;
+  /** 维护者 */
+  author: string;
+  /** 自由 notes (例如 '需要 domain expert 复审', '依赖 external lib X') */
+  notes?: string;
+}
+
+/** 解析 .md frontmatter (手写 3 行 regex, 不引 yaml 依赖) */
+function parseFrontmatter(raw: string): { meta: SectionMeta | null; body: string } {
+  const m = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  if (!m) return { meta: null, body: raw };
+  const block = m[1];
+  const body = m[2];
+  const get = (key: string): string | undefined => {
+    const re = new RegExp(`^${key}:\\s*(.+)$`, 'm');
+    const found = block.match(re);
+    return found ? found[1].trim() : undefined;
+  };
+  const addedAt = get('added_at');
+  const lastReviewedAt = get('last_reviewed_at');
+  const ttlDaysStr = get('ttl_days');
+  const author = get('author');
+  const notes = get('notes');
+  if (!addedAt || !lastReviewedAt || !ttlDaysStr || !author) {
+    // frontmatter 不完整 → 视为无 metadata (health 会标 missing-frontmatter)
+    return { meta: null, body: raw };
+  }
+  const ttlDays = parseInt(ttlDaysStr, 10);
+  if (isNaN(ttlDays) || ttlDays <= 0) {
+    return { meta: null, body: raw };
+  }
+  return {
+    meta: { addedAt, lastReviewedAt, ttlDays, author, notes },
+    body,
+  };
 }
 
 /**
  * 静态 layer 注册表 — 一个 layer 一个文件
  * 这里只声明 metadata, 内容从 .md 读
+ *
+ * P-Action 2: meta 默认值, 跟分层 TTL 决策一致
+ *   safety  (refusal / hibs_reminders / tools.thin)        = 90
+ *   channel (local / p2p-* persona)                         = 180
+ *   role    (expert / architect / implementer / security)  = 180
+ *   tool    (bash / search / artifacts / etc)               = 270
+ *   knowledge (knowledge / tone / wellbeing / etc)         = 365
+ * author = yuanjie (可被 .md frontmatter 覆盖)
  */
+const DEFAULT_META_AUTHOR = 'yuanjie';
+const DEFAULT_ADDED_AT = '2026-06-15';
+const DEFAULT_REVIEWED_AT = '2026-06-15';
+const TTL_SAFETY = 90;
+const TTL_CHANNEL = 180;
+const TTL_ROLE = 180;
+const TTL_TOOL = 270;
+const TTL_KNOWLEDGE = 365;
+const DEFAULT_META = (ttlDays: number): SectionMeta => ({
+  addedAt: DEFAULT_ADDED_AT,
+  lastReviewedAt: DEFAULT_REVIEWED_AT,
+  ttlDays,
+  author: DEFAULT_META_AUTHOR,
+});
+
 const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
   // ── core/ ──
-  { id: 'core.identity',         version: '1.0.0', priority: 50,  appliesTo: ['all'], source: 'static-md', maxChars: 2500 },
-  { id: 'core.knowledge',        version: '1.0.0', priority: 60,  appliesTo: ['all'], source: 'static-md', maxChars: 1200 },
-  { id: 'core.tools.thin',       version: '1.0.0', priority: 70,  appliesTo: ['all'], source: 'static-md', maxChars: 400 },
-  { id: 'core.hibs_reminders',   version: '1.0.0', priority: 80,  appliesTo: ['all'], source: 'static-md', maxChars: 800 },
-  { id: 'core.refusal',          version: '1.0.0', priority: 100, appliesTo: ['all'], source: 'static-md', maxChars: 1200 },
-  { id: 'core.tone',             version: '1.0.0', priority: 110, appliesTo: ['all'], source: 'static-md', maxChars: 1000 },
-  { id: 'core.wellbeing',        version: '1.0.0', priority: 120, appliesTo: ['all'], source: 'static-md', maxChars: 2500 },
-  { id: 'core.evenhandedness',   version: '1.0.0', priority: 130, appliesTo: ['all'], source: 'static-md', maxChars: 700 },
-  { id: 'core.memory_system',    version: '1.0.0', priority: 140, appliesTo: ['all'], source: 'static-md', maxChars: 600 },
-  { id: 'core.artifacts_storage',version: '1.0.0', priority: 145, appliesTo: ['all'], source: 'static-md', maxChars: 2500 },
-  { id: 'core.network_filesystem',version: '1.0.0', priority: 148, appliesTo: ['all'], source: 'static-md', maxChars: 900 },
+  { id: 'core.identity',         version: '1.0.0', priority: 50,  appliesTo: ['all'], source: 'static-md', maxChars: 2500 , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  { id: 'core.knowledge',        version: '1.0.0', priority: 60,  appliesTo: ['all'], source: 'static-md', maxChars: 1200 , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  { id: 'core.tools.thin',       version: '1.0.0', priority: 70,  appliesTo: ['all'], source: 'static-md', maxChars: 400 , meta: DEFAULT_META(TTL_SAFETY) },
+  { id: 'core.hibs_reminders',   version: '1.0.0', priority: 80,  appliesTo: ['all'], source: 'static-md', maxChars: 800 , meta: DEFAULT_META(TTL_SAFETY) },
+  { id: 'core.refusal',          version: '1.0.0', priority: 100, appliesTo: ['all'], source: 'static-md', maxChars: 1200 , meta: DEFAULT_META(TTL_SAFETY) },
+  { id: 'core.tone',             version: '1.0.0', priority: 110, appliesTo: ['all'], source: 'static-md', maxChars: 1000 , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  { id: 'core.wellbeing',        version: '1.0.0', priority: 120, appliesTo: ['all'], source: 'static-md', maxChars: 2500 , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  { id: 'core.evenhandedness',   version: '1.0.0', priority: 130, appliesTo: ['all'], source: 'static-md', maxChars: 700 , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  { id: 'core.memory_system',    version: '1.0.0', priority: 140, appliesTo: ['all'], source: 'static-md', maxChars: 600 , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  { id: 'core.artifacts_storage',version: '1.0.0', priority: 145, appliesTo: ['all'], source: 'static-md', maxChars: 2500 , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  { id: 'core.network_filesystem',version: '1.0.0', priority: 148, appliesTo: ['all'], source: 'static-md', maxChars: 900 , meta: DEFAULT_META(TTL_KNOWLEDGE) },
 
   // ── role/ ──
-  { id: 'role.expert',           version: '1.0.0', priority: 200, appliesTo: ['all', 'role:expert'],         source: 'static-md', maxChars: 500 },
-  { id: 'role.architect',        version: '1.0.0', priority: 200, appliesTo: ['all', 'role:architect'],      source: 'static-md', maxChars: 500 },
-  { id: 'role.implementer',      version: '1.0.0', priority: 200, appliesTo: ['all', 'role:implementer'],    source: 'static-md', maxChars: 500 },
-  { id: 'role.security',          version: '1.0.0', priority: 200, appliesTo: ['all', 'role:security'],        source: 'static-md', maxChars: 500 },
+  { id: 'role.expert',           version: '1.0.0', priority: 200, appliesTo: ['all', 'role:expert'],         source: 'static-md', maxChars: 500 , meta: DEFAULT_META(TTL_ROLE) },
+  { id: 'role.architect',        version: '1.0.0', priority: 200, appliesTo: ['all', 'role:architect'],      source: 'static-md', maxChars: 500 , meta: DEFAULT_META(TTL_ROLE) },
+  { id: 'role.implementer',      version: '1.0.0', priority: 200, appliesTo: ['all', 'role:implementer'],    source: 'static-md', maxChars: 500 , meta: DEFAULT_META(TTL_ROLE) },
+  { id: 'role.security',          version: '1.0.0', priority: 200, appliesTo: ['all', 'role:security'],        source: 'static-md', maxChars: 500 , meta: DEFAULT_META(TTL_ROLE) },
 
   // ── channel/ ──
-  { id: 'channel.local',         version: '1.0.0', priority: 150, appliesTo: ['local'],                     source: 'static-md', maxChars: 500 },
+  { id: 'channel.local',         version: '1.0.0', priority: 150, appliesTo: ['local'],                     source: 'static-md', maxChars: 500 , meta: DEFAULT_META(TTL_CHANNEL) },
   { id: 'channel.p2p-visitor',   version: '1.0.0', priority: 150, appliesTo: ['p2p-visitor'],               source: 'static-md', maxChars: 700 },
   { id: 'channel.p2p-agent',     version: '1.0.0', priority: 150, appliesTo: ['p2p-agent'],                 source: 'static-md', maxChars: 700 },
 
   // ── tool/ (按工具调用嵌对应 layer) ──
-  { id: 'tool.bash',             version: '1.0.0', priority: 250, appliesTo: ['tool:bash'],                source: 'static-md', maxChars: 900 },
-  { id: 'tool.web_search',       version: '1.0.0', priority: 250, appliesTo: ['tool:web_search'],          source: 'static-md', maxChars: 3000 },
-  { id: 'tool.mcp_apps',         version: '1.0.0', priority: 250, appliesTo: ['tool:mcp_apps'],            source: 'static-md', maxChars: 1800 },
-  { id: 'tool.hibs_api',         version: '1.0.0', priority: 250, appliesTo: ['tool:hibs_api'],            source: 'static-md', maxChars: 4500 },
-  { id: 'tool.image_search',     version: '1.0.0', priority: 250, appliesTo: ['tool:image_search'],        source: 'static-md', maxChars: 2500 },
-  { id: 'tool.artifacts',        version: '1.0.0', priority: 250, appliesTo: ['tool:artifacts'],           source: 'static-md', maxChars: 2500 },
-  { id: 'tool.manifest',         version: '1.0.0', priority: 250, appliesTo: ['tool:manifest'],            source: 'static-md', maxChars: 3500 },
+  { id: 'tool.bash',             version: '1.0.0', priority: 250, appliesTo: ['tool:bash'],                source: 'static-md', maxChars: 900 , meta: DEFAULT_META(TTL_TOOL) },
+  { id: 'tool.web_search',       version: '1.0.0', priority: 250, appliesTo: ['tool:web_search'],          source: 'static-md', maxChars: 3000 , meta: DEFAULT_META(TTL_TOOL) },
+  { id: 'tool.mcp_apps',         version: '1.0.0', priority: 250, appliesTo: ['tool:mcp_apps'],            source: 'static-md', maxChars: 1800 , meta: DEFAULT_META(TTL_TOOL) },
+  { id: 'tool.hibs_api',         version: '1.0.0', priority: 250, appliesTo: ['tool:hibs_api'],            source: 'static-md', maxChars: 4500 , meta: DEFAULT_META(TTL_TOOL) },
+  { id: 'tool.image_search',     version: '1.0.0', priority: 250, appliesTo: ['tool:image_search'],        source: 'static-md', maxChars: 2500 , meta: DEFAULT_META(TTL_TOOL) },
+  { id: 'tool.artifacts',        version: '1.0.0', priority: 250, appliesTo: ['tool:artifacts'],           source: 'static-md', maxChars: 2500 , meta: DEFAULT_META(TTL_TOOL) },
+  { id: 'tool.manifest',         version: '1.0.0', priority: 250, appliesTo: ['tool:manifest'],            source: 'static-md', maxChars: 3500 , meta: DEFAULT_META(TTL_TOOL) },
 ];
 
 /**
@@ -128,14 +203,18 @@ export async function assembleSystemPrompt(ctx: AssembleContext): Promise<{
   layerIds: string[];
   totalChars: number;
   truncated: string[];
+  /** P-Action 2: 每层 provenance + lifecycle metadata, 供 health 端点用 */
+  layers: PromptLayer[];
 }> {
   // 1. 收集所有 layer
   const allLayers: PromptLayer[] = [];
   for (const meta of STATIC_LAYERS) {
-    const content = await loadStaticLayer(meta.id);
-    allLayers.push({ ...meta, content });
+    const { content, meta: sectionMeta } = await loadStaticLayer(meta.id);
+    allLayers.push({ ...meta, content, meta: sectionMeta ?? meta.meta });
   }
-  allLayers.push(...DYNAMIC_LAYERS);
+  for (const dyn of DYNAMIC_LAYERS) {
+    allLayers.push({ ...dyn, meta: dyn.meta });
+  }
 
   // 2. 过滤
   const matched = allLayers.filter((l) => matchesContext(l, ctx));
@@ -187,6 +266,7 @@ export async function assembleSystemPrompt(ctx: AssembleContext): Promise<{
     layerIds: used,
     totalChars: usedChars,
     truncated,
+    layers: matched,  // P-Action 2: 把 meta 也带回, 供 health 端点
   };
 }
 
@@ -200,13 +280,15 @@ function matchesContext(layer: PromptLayer, ctx: AssembleContext): boolean {
   return false;
 }
 
-async function loadStaticLayer(id: string): Promise<string> {
+async function loadStaticLayer(id: string): Promise<{ content: string; meta: SectionMeta | null }> {
   const path2md = idToPath(id);
   try {
-    return await fs.readFile(path2md, 'utf-8');
+    const raw = await fs.readFile(path2md, 'utf-8');
+    const { meta, body } = parseFrontmatter(raw);
+    return { content: body, meta };
   } catch (err: any) {
     console.warn(`[system-prompt] layer ${id} 读失败: ${err.message?.slice(0, 100)}`);
-    return `<!-- ${id}: 文件丢失 -->`;
+    return { content: `<!-- ${id}: 文件丢失 -->`, meta: null };
   }
 }
 

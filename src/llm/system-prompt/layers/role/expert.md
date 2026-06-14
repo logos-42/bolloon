@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 180
+author: yuanjie
+---
+
 <!-- role.expert@1.0.0 -->
 # 任务分析专家 (默认判断)
 

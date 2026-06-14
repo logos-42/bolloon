@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 90
+author: yuanjie
+---
+
 <!-- core.tools.thin@1.0.0 -->
 # computer_use (原样 high_level + package)
 

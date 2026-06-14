@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 270
+author: yuanjie
+---
+
 <!-- tool.manifest@1.0.0 -->
 # 工具清单 (变薄版 — 详细 schema 搬到代码侧)
 

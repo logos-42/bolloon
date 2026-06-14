@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 180
+author: yuanjie
+---
+
 <!-- role.architect@1.0.0 -->
 # 系统架构师
 

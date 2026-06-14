@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 270
+author: yuanjie
+---
+
 <!-- tool.web_search@1.0.0 -->
 # search_instructions (原样) + search_examples (完整 4 例) + using_image_search_tool (摘要, 示例在 image_search.md)
 

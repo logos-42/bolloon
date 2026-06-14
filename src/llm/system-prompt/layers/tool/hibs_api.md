@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 270
+author: yuanjie
+---
+
 <!-- tool.hibs_api@1.0.0 -->
 # hibs_api_in_artifacts ("Bolloonception") — 完整代码, 原样
 

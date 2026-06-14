@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 180
+author: yuanjie
+---
+
 <!-- channel.p2p-visitor@1.0.0 -->
 # P2P 远程访客 (人类用户经 P2P 路由)
 

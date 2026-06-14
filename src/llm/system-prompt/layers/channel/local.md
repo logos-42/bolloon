@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 180
+author: yuanjie
+---
+
 <!-- channel.local@1.0.0 -->
 # 本地渠道 (默认, bolloon 跑在用户本机)
 

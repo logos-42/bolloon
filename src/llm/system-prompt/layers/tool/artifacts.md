@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 270
+author: yuanjie
+---
+
 <!-- tool.artifacts@1.0.0 -->
 # computer_use > file_creation_advice + file_handling_rules + artifact_usage_criteria + high_level (原样)
 

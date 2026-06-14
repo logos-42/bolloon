@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 270
+author: yuanjie
+---
+
 <!-- tool.bash@1.0.0 -->
 # Bash 工具 (computer_use 包管理 + bash 沙箱)
 

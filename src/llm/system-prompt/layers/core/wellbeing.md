@@ -1,3 +1,10 @@
+---
+added_at: 2026-06-15
+last_reviewed_at: 2026-06-15
+ttl_days: 365
+author: yuanjie
+---
+
 <!-- core.wellbeing@1.0.0 -->
 # bolloon_behavior > user_wellbeing (原样)
 
