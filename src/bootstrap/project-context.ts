@@ -9,7 +9,7 @@
 
 import type { BolloonContext } from './context-collector.js';
 
-const DEFAULT_MAX_CHARS = 4000;
+const DEFAULT_MAX_CHARS = 8000;  // 从 4000 提到 8000, 给 4 级 Bolloon.md 留空间
 const BOLLOON_MD_KEEP = 500;  // 砍到这么长
 
 export function formatContextForSystemPrompt(
@@ -21,7 +21,15 @@ export function formatContextForSystemPrompt(
   lines.push(`# 你的项目上下文 (自动 bootstrap, 时间: ${ctx.collectedAt})`);
   lines.push('');
 
-  // 1. 项目名 + Bolloon.md 摘要
+  // 1. Bolloon.md 4 级层次 (Claude Code 论文, 严格 1:1)
+  //    managed → user → project → local, 已在 collector 层 merge
+  if (ctx.hierarchy && ctx.hierarchy.merged && ctx.hierarchy.merged.length > 0) {
+    lines.push('## 规则层次 (4 级, Claude Code 论文对齐)');
+    lines.push(ctx.hierarchy.merged);
+    lines.push('');
+  }
+
+  // 1b. 项目名 + Bolloon.md 摘要 (向后兼容, Bolloon.md 也算 project 层之一)
   lines.push(`## 项目: ${ctx.projectName}`);
   lines.push(`- 路径: ${ctx.projectRoot}`);
   if (ctx.bolloonMd) {

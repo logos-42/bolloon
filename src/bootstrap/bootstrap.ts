@@ -62,6 +62,7 @@ export async function bootstrapBolloon(opts: { cwd?: string } = {}): Promise<Boo
     projectRoot: opts.cwd ?? process.cwd(),
     projectName: 'unknown',
     bolloonMd: null,
+    hierarchy: { managed: null, user: null, project: null, local: null, merged: '' },
     git: null,
     persona: null,
     judgmentsSummary: { total: 0, active: 0, superseded: 0, rejected: 0, topValues: [] },

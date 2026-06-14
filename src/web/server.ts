@@ -5353,6 +5353,145 @@ app.get('/channels', async (_req, res) => {
     res.json(getEventHistory());
   });
 
+  // ============================================================
+  // Permission Mode (P2.2 — UI 暴露开关)
+  // 优先级: 运行时 session 覆盖 > env BOLLOON_PERM_MODE > 'default'
+  // 运行时覆盖存在 ~/.bolloon/sessions/permission-mode.json, 每次 promptStream 入口读取
+  // ============================================================
+
+  const PERM_MODE_FILE = path.join(
+    process.env.HOME || os.homedir() || '/tmp',
+    '.bolloon', 'sessions', 'permission-mode.json'
+  );
+
+  function readPermModeOverride(): { mode: string; ts: string } | null {
+    try {
+      // 同步读, 文件很小
+      const fs = require('fs') as typeof import('fs');
+      const raw = fs.readFileSync(PERM_MODE_FILE, 'utf-8');
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj.mode === 'string') {
+        return { mode: obj.mode, ts: obj.ts || new Date().toISOString() };
+      }
+    } catch { /* 不存在 = 无 override */ }
+    return null;
+  }
+
+  function writePermModeOverride(mode: string): void {
+    try {
+      const fs = require('fs') as typeof import('fs');
+      const dir = path.dirname(PERM_MODE_FILE);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(PERM_MODE_FILE, JSON.stringify({ mode, ts: new Date().toISOString() }, null, 2), 'utf-8');
+    } catch (err) {
+      console.warn('[server] writePermModeOverride failed:', err);
+    }
+  }
+
+  // 读当前生效 mode (runtime override > env > default)
+  app.get('/api/permission-mode', async (_req: any, res: any) => {
+    const { resolvePermissionMode, ALL_PERMISSION_MODES } = await import('../agents/permission-mode.js');
+    const override = readPermModeOverride();
+    const envMode = process.env.BOLLOON_PERM_MODE || null;
+    const effective = resolvePermissionMode();
+    res.json({
+      effective,
+      override: override?.mode || null,
+      overrideTs: override?.ts || null,
+      env: envMode,
+      allowed: ALL_PERMISSION_MODES,
+      description: {
+        default: '每次工具调用询问; shell 走 shell-guard',
+        acceptEdits: 'edit_*/write_* 跳过黑名单; shell 仍走 shell-guard',
+        bypassPermissions: '非 shell 全部放行; shell 永远走 shell-guard (硬约束)',
+      },
+    });
+  });
+
+  // 设 runtime override (存盘, 下次 promptStream 入口读取生效)
+  app.post('/api/permission-mode', async (req: any, res: any) => {
+    const { resolvePermissionMode, ALL_PERMISSION_MODES } = await import('../agents/permission-mode.js');
+    const mode = String(req.body?.mode || '');
+    if (!ALL_PERMISSION_MODES.includes(mode as any)) {
+      return res.status(400).json({
+        error: `Invalid mode. Allowed: ${ALL_PERMISSION_MODES.join(', ')}`,
+        allowed: ALL_PERMISSION_MODES,
+      });
+    }
+    const oldMode = readPermModeOverride()?.mode || process.env.BOLLOON_PERM_MODE || 'default';
+    writePermModeOverride(mode);
+    // 写历史 (append-only JSONL, 跟 bolloon 其他 audit 一致)
+    try {
+      const fs = require('fs') as typeof import('fs');
+      const HISTORY_FILE = path.join(
+        process.env.HOME || os.homedir() || '/tmp',
+        '.bolloon', 'sessions', 'permission-mode-history.jsonl'
+      );
+      fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+      fs.appendFileSync(HISTORY_FILE, JSON.stringify({
+        ts: new Date().toISOString(),
+        from: oldMode,
+        to: mode,
+        source: 'api',
+      }) + '\n', 'utf-8');
+    } catch { /* 历史写失败不阻塞主流程 */ }
+    console.log(`[server] permission-mode override set to "${mode}" via API (was "${oldMode}")`);
+    res.json({
+      ok: true,
+      mode,
+      previousMode: oldMode,
+      ts: new Date().toISOString(),
+      note: '新 mode 在下一次 promptStream 入口生效 (不打断当前对话)',
+    });
+  });
+
+  // 取消 runtime override, 回到 env 或 default
+  app.delete('/api/permission-mode', async (_req: any, res: any) => {
+    const oldMode = readPermModeOverride()?.mode || process.env.BOLLOON_PERM_MODE || 'default';
+    try {
+      const fs = require('fs') as typeof import('fs');
+      if (fs.existsSync(PERM_MODE_FILE)) fs.unlinkSync(PERM_MODE_FILE);
+    } catch (err) {
+      console.warn('[server] delete perm-mode override failed:', err);
+    }
+    // 写历史
+    try {
+      const fs = require('fs') as typeof import('fs');
+      const HISTORY_FILE = path.join(
+        process.env.HOME || os.homedir() || '/tmp',
+        '.bolloon', 'sessions', 'permission-mode-history.jsonl'
+      );
+      fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+      fs.appendFileSync(HISTORY_FILE, JSON.stringify({
+        ts: new Date().toISOString(),
+        from: oldMode,
+        to: 'env-or-default',
+        source: 'api',
+        action: 'delete-override',
+      }) + '\n', 'utf-8');
+    } catch { /* ignore */ }
+    res.json({ ok: true, note: '已删除 runtime override, 回到 env / default' });
+  });
+
+  // 历史 (类似 self-improve history, 供前端 timeline)
+  app.get('/api/permission-mode/history', async (_req: any, res: any) => {
+    const HISTORY_FILE = path.join(
+      process.env.HOME || os.homedir() || '/tmp',
+      '.bolloon', 'sessions', 'permission-mode-history.jsonl'
+    );
+    try {
+      const fs = require('fs') as typeof import('fs');
+      if (!fs.existsSync(HISTORY_FILE)) return res.json([]);
+      const lines = fs.readFileSync(HISTORY_FILE, 'utf-8').split('\n').filter(Boolean);
+      const entries = lines.map((l) => {
+        try { return JSON.parse(l); } catch { return null; }
+      }).filter(Boolean);
+      res.json(entries.slice(-50));  // 最近 50 条
+    } catch (err) {
+      res.json([]);
+    }
+  });
+
   // 健康检查错误数 ≥ 2 -> 触发自改信号
   if (healthMonitor) {
     healthMonitor.startPeriodicCheck(60000, (status: any) => {

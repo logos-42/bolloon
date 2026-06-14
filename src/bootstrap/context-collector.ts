@@ -29,6 +29,18 @@ export interface BolloonContext {
   projectRoot: string;
   projectName: string;
   bolloonMd: string | null;
+  // 1b. Bolloon.md 4 级层次 (Claude Code 论文对齐, 严格 1:1)
+  // managed: /etc/bolloon/Bolloon.md (企业 IT 部署)
+  // user:    ~/.bolloon/Bolloon.md
+  // project: <cwd>/Bolloon.md (Bolloon.md 兼容)
+  // local:   <cwd>/CLAUDE.local.md
+  hierarchy: {
+    managed: string | null;
+    user: string | null;
+    project: string | null;
+    local: string | null;
+    merged: string;  // 已按优先级合并的 markdown 片段
+  };
   // 2. git 层
   git: {
     branch: string;
@@ -105,6 +117,21 @@ async function collectProject(cwd: string, bolloonMdMaxBytes: number) {
   const bolloonMd = await safeReadFile(path.join(cwd, 'Bolloon.md'), bolloonMdMaxBytes);
   return { projectName, bolloonMd };
 }
+
+async function collectHierarchy(cwd: string): Promise<BolloonContext['hierarchy']> {
+  // 动态 import 避免循环依赖
+  const { collectHierarchyLayers, mergeHierarchyLayers } = await import('./context-hierarchy.js');
+  try {
+    const layers = await collectHierarchyLayers({ cwd });
+    const merged = mergeHierarchyLayers(layers, { maxChars: DEFAULT_HIERARCHY_MERGED_MAX });
+    return { ...layers, merged };
+  } catch (err) {
+    console.warn('[context-collector] collectHierarchy failed (silent):', err);
+    return { managed: null, user: null, project: null, local: null, merged: '' };
+  }
+}
+
+const DEFAULT_HIERARCHY_MERGED_MAX = 4000;  // merged 输出上限, 留给 project-context.ts 进一步截断
 
 async function collectGit(cwd: string, limit: number): Promise<BolloonContext['git']> {
   const branchOut = await safeExecFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
@@ -296,13 +323,14 @@ export async function collectBolloonContext(opts: CollectOptions): Promise<Bollo
     topValuesLimit = 10,
   } = opts;
   // 并行收集 (除 judgments 因为要动态 import + 依赖其它)
-  const [project, git, persona, skills, env, pending] = await Promise.all([
+  const [project, git, persona, skills, env, pending, hierarchy] = await Promise.all([
     collectProject(cwd, bolloonMdMaxBytes),
     collectGit(cwd, gitCommitLimit),
     collectPersona(),
     collectSkills(),
     Promise.resolve(collectEnv()),
     collectPending(opts),
+    collectHierarchy(cwd),
   ]);
   // judgments 单独调 (内部 import)
   const judgmentsSummary = await collectJudgmentsSummary(topValuesLimit);
@@ -311,6 +339,7 @@ export async function collectBolloonContext(opts: CollectOptions): Promise<Bollo
     projectRoot: cwd,
     projectName: project.projectName,
     bolloonMd: project.bolloonMd,
+    hierarchy,
     git,
     persona,
     judgmentsSummary,

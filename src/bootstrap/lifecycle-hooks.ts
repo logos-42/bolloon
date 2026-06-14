@@ -121,49 +121,45 @@ function sanitizeChannelId(id: string): string {
 }
 
 // ============================================================
-// PreToolUse (接口预留, 当前仅实现白名单 + 危险命令拦截)
+// PreToolUse (P2: 4 步链式 validator + permission mode)
 // ============================================================
+
+import { resolvePermissionMode, type PermissionMode } from '../agents/permission-mode.js';
+import { validatePreToolUse } from '../agents/pre-tool-validator.js';
 
 export interface PreToolUseOptions {
   tool: string;
   args: Record<string, unknown>;
+  /** 可选, 不传则用 env BOLLOON_PERM_MODE 或 default */
+  permissionMode?: PermissionMode;
 }
 
 export interface PreToolUseResult {
   allowed: boolean;
   reason?: string;
+  /** P2: 哪一步拒绝的, 供 audit log */
+  rejectedBy?: 'mode' | 'blacklist' | 'shell-guard' | 'schema';
+  mode: PermissionMode;
+  shellGuardRetained?: boolean;
 }
 
-// 黑名单: 高危 shell 命令模式
-const DANGEROUS_PATTERNS: Array<{ re: RegExp; reason: string }> = [
-  { re: /\brm\s+(-[a-z]*f[a-z]*\s+)?-[a-z]*r[a-z]*\s+\//, reason: '禁止递归删除根目录' },
-  { re: /\bgit\s+push\s+.*--force\b/, reason: '禁止 force push' },
-  { re: /\brm\s+-rf\s+~\//, reason: '禁止递归删除 home' },
-  { re: /\bdd\s+if=.*\s+of=\/dev\//, reason: '禁止 dd 覆盖块设备' },
-  { re: /\bcurl\s+.*\|\s*(ba)?sh\b/, reason: '禁止 curl|sh 直执行' },
-  { re: />\s*\/dev\/sd[a-z]/, reason: '禁止写裸设备' },
-];
-
 /**
- * PreToolUse: 当前实现"危险命令拦截" (黑名单)
- * 白名单机制未启用 (默认放行所有非黑名单)
- * PreToolUse hook 接入 pi-sdk.ts 的 ReAct 循环是下个迭代
+ * PreToolUse: 4 步链式 validator
+ *   1. modeGate         (bypassPermissions + 非 shell 直接放行)
+ *   2. blacklistGate    (6 模式危险命令)
+ *   3. shellGuardGate   (路径黑名单, 绕过 mode 永远生效)
+ *   4. schemaGate       (第一版 stub: always allow)
+ *
+ * 向后兼容: 不传 permissionMode → 默认 'default' (env BOLLOON_PERM_MODE 仍生效)
+ * 失败静默: 任何异常 → allowed: true (与原行为一致)
  */
 export async function onPreToolUse(opts: PreToolUseOptions): Promise<PreToolUseResult> {
   try {
-    // 仅检查 shell 类工具的命令字符串
-    if (opts.tool === 'shell' || opts.tool === 'shell_exec' || opts.tool === 'bash') {
-      const cmd = String(opts.args.command || opts.args.cmd || '');
-      for (const { re, reason } of DANGEROUS_PATTERNS) {
-        if (re.test(cmd)) {
-          return { allowed: false, reason };
-        }
-      }
-    }
-    return { allowed: true };
+    const mode = resolvePermissionMode({ permissionMode: opts.permissionMode });
+    return validatePreToolUse(opts.tool, opts.args || {}, mode);
   } catch (err) {
-    console.warn('[lifecycle-hooks] onPreToolUse failed (silent):', err);
-    return { allowed: true };  // 失败放行 (不阻塞)
+    console.warn('[lifecycle-hooks] onPreToolUse failed (silent, allowing):', err);
+    return { allowed: true, mode: 'default' };  // 失败放行 (不阻塞)
   }
 }
 

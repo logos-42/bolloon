@@ -48,6 +48,7 @@ import { injectJudgmentGate, recordJudgmentUsage } from '../pi-ecosystem-judgmen
 import { monitorAfterReply } from '../pi-ecosystem-judgment/monitor-gate.js';
 // Bootstrap 生命周期 hook (SessionStart / Stop / PreToolUse)
 import { onSessionStart, onStop, onPreToolUse } from '../pi-ecosystem-judgment/human-value-pipeline.js';
+import { budgetReduce, snip, microcompact } from '../context-compaction/index.js';
 // React Harness: 8-gate + 4-guard (防越权 / 防 prompt 注入)
 import { ReactHarness } from '../security/react-harness.js';
 
@@ -583,6 +584,10 @@ class PiAgentSession implements AgentSession {
   private reactHarness: ReactHarness = new ReactHarness();
   private usePivotLoop: boolean = false;
   private pivotLoopConfig?: PivotLoopConfig;
+  /** P2: 当前会话的 permission mode (每次 promptStream 入口解析) */
+  private currentPermissionMode: import('./permission-mode.js').PermissionMode = 'default';
+  /** P1.2: Context Collapse 读时投影结果 (feature flag 开启时由 maybeAutoCompact 写入, buildContext 优先用) */
+  private projectedHistory: Message[] | null = null;
 
   /**
    * Judgment 注入门临时结果: 在 prompt / promptStream / promptWithPivotLoop 入口算一次, 拼到本轮 systemPrompt 末尾
@@ -1094,6 +1099,16 @@ class PiAgentSession implements AgentSession {
     this.currentSignal = options?.signal ?? null;
     this.currentOnStream = options?.onStream ?? null;
     await this.computeJudgmentGate(input);
+
+    // P2: 解析当前 permission mode
+    try {
+      const { resolvePermissionMode } = await import('./permission-mode.js');
+      this.currentPermissionMode = resolvePermissionMode();
+    } catch (err) {
+      console.warn('[PiAgent] resolvePermissionMode failed (non-fatal):', err);
+      this.currentPermissionMode = 'default';
+    }
+
     try {
       return await this.runReActLoop(undefined, options?.signal);
     } finally {
@@ -1131,6 +1146,14 @@ class PiAgentSession implements AgentSession {
     this.currentSignal = signal ?? null;
     await this.computeJudgmentGate(input);
 
+    // P1.1: 异步跑 Auto-Compact (LLM 摘要, 仅在 budget 超限时触发, 失败静默)
+    // 复用 computeJudgmentGate 的 onStream 广播 phase, 跟 judgment 注入门风格一致
+    try {
+      await this.maybeAutoCompact(onStream, signal);
+    } catch (err) {
+      console.warn('[PiAgent] maybeAutoCompact failed (non-fatal):', err);
+    }
+
     // Bootstrap SessionStart: 收集项目 Context, 拼到 systemAddition 头部
     // (失败静默, 5s 限流防止循环)
     let bootstrapAddition = '';
@@ -1141,6 +1164,16 @@ class PiAgentSession implements AgentSession {
       console.warn('[PiAgent] onSessionStart failed (non-fatal):', err);
     }
     this.bootstrapAddition = bootstrapAddition;
+
+    // P2: 解析当前 permission mode (BootstrapOptions > env BOLLOON_PERM_MODE > default)
+    try {
+      const { resolvePermissionMode } = await import('./permission-mode.js');
+      this.currentPermissionMode = resolvePermissionMode();
+    } catch (err) {
+      console.warn('[PiAgent] resolvePermissionMode failed (non-fatal, using default):', err);
+      this.currentPermissionMode = 'default';
+    }
+
     this.promptStartTime = Date.now();
 
     let result: string;
@@ -1389,9 +1422,14 @@ ${toolDefs}
 
         // Bootstrap PreToolUse hook: 调工具前校验 (危险命令拦截)
         // 失败静默 — hook 自身挂掉 = 放行
+        // P2: 透传 permissionMode (从 BootstrapOptions / env BOLLOON_PERM_MODE 解析)
         let toolToExecute = tool;
         try {
-          const pre = await onPreToolUse({ tool: toolCall.name, args: toolCall.args || {} });
+          const pre = await onPreToolUse({
+            tool: toolCall.name,
+            args: toolCall.args || {},
+            permissionMode: this.currentPermissionMode,
+          });
           if (!pre.allowed) {
             const deniedResult: ToolResult = {
               success: false,
@@ -1703,7 +1741,13 @@ Workspace root folder: ${this.cwd}
   }
 
   private buildContext(): string {
-    const recentMessages = this.messageHistory.slice(-10);
+    // P1 接入: 同步跑前 3 层压缩 (Budget Reduction / Snip / Microcompact)
+    // 异步层 (Context Collapse / Auto-Compact) 在 promptStream 入口处单独跑 (用 LLM)
+    // 失败静默: 任何 stage 抛错 → 走老 slice(-10) 逻辑
+    //
+    // P1.2: 如果 maybeAutoCompact 算过 Context Collapse 投影, 用 this.projectedHistory (读时投影, 非破坏)
+    const source = this.projectedHistory ?? this.messageHistory;
+    const recentMessages = this.compressHistorySync(source).slice(-10);
     return recentMessages.map(m => {
       if (m.role === 'user') return `用户: ${m.content}`;
       if (m.role === 'assistant') return `助手: ${m.content}`;
@@ -1713,6 +1757,86 @@ Workspace root folder: ${this.cwd}
       }
       return m.content;
     }).join('\n');
+  }
+
+  /**
+   * 同步压缩: 跑前 3 层 (Budget Reduction / Snip / Microcompact).
+   * Context Collapse / Auto-Compact 是 async, 不在 buildContext 同步链里跑.
+   * 失败静默: 任何 stage 抛错 → 返回原 history.
+   */
+  private compressHistorySync(history: Message[]): Message[] {
+    try {
+      // context-compaction 的 Message 与 pi-sdk 的 Message 字段兼容
+      // 这里用 any cast 跳过 structural type 严格校验 (避免双向 import)
+      let h: any = history;
+      const r1 = budgetReduce(h);
+      h = r1.history;
+      const r2 = snip(h);
+      h = r2.history;
+      const r3 = microcompact(h);
+      h = r3.history;
+      return h as Message[];
+    } catch (err) {
+      console.warn('[PiAgent] compressHistorySync failed (silent, using original):', err);
+      return history;
+    }
+  }
+
+  /**
+   * P1.1: 异步跑 Auto-Compact (LLM 摘要).
+   * 入口: promptStream 入口, 在 computeJudgmentGate 之后, onSessionStart 之前.
+   *
+   * 逻辑:
+   *   1. 跑完整 compactPipeline (5 层, 异步)
+   *   2. 第 5 层 (Auto-Compact) 需要 LLM, 通过 getMinimax().chat 注入
+   *   3. 如果 budgetGate 不超限, 5 层短路在前 3 层, 不会调 LLM → 零开销
+   *   4. 失败静默: 任何异常 → console.warn + 保留原 messageHistory
+   *
+   * onStream 广播: 跟 computeJudgmentGate 风格一致 (phase 事件供 UI timeline 显示)
+   */
+  private async maybeAutoCompact(
+    onStream?: (chunk: any) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (this.messageHistory.length < 10) return;  // 历史太短, 不值得压
+
+    onStream?.({ type: 'status', content: '🗜️ 评估是否需要压缩上下文...', tool: 'compactor' });
+
+    // 注入 LLM (用 getMinimax().chat, 与 judgment 注入门 / ReAct 循环同一来源)
+    // 给 Context Collapse (虚拟投影) 和 Auto-Compact (摘要) 共用
+    const llm = getMinimax();
+    const llmChat = async (systemPrompt: string, userPrompt: string): Promise<string> => {
+      const r = await llm.chat(userPrompt, systemPrompt, signal);
+      return r.reply;
+    };
+
+    const { compactPipeline, isContextCollapseEnabled } = await import('../context-compaction/index.js');
+    const result = await compactPipeline(this.messageHistory as any, {
+      maxTokens: 8000,
+      llmChat,
+      collapseLlmChat: llmChat,  // P1.2: Context Collapse 投影也用同一 LLM
+      cacheScope: this.currentChannelId || 'default',
+    });
+
+    if (result.compacted && result.history.length < this.messageHistory.length) {
+      const saved = this.messageHistory.length - result.history.length;
+      const stagesApplied = result.stages.filter((s) => s.applied).map((s) => s.stage).join(' → ');
+      onStream?.({
+        type: 'status',
+        content: `🗜️ 上下文压缩: ${stagesApplied || 'no-op'} | 节省 ${saved} 条 (剩余 ${result.history.length}, collapse=${isContextCollapseEnabled() ? 'on' : 'off'})`,
+        tool: 'compactor',
+      });
+      // 关键: 第 4 层 (Context Collapse) 是读时投影 (非破坏)
+      //       第 5 层 (Auto-Compact) 是破坏性折叠
+      //       这里用 if-else 区分: collapse on → 仅 buildContext 用; collapse off → 真更新
+      if (isContextCollapseEnabled()) {
+        this.projectedHistory = result.history as Message[];  // buildContext 用
+        // messageHistory 不变 (非破坏)
+      } else {
+        this.messageHistory = result.history as Message[];  // 真破坏性更新
+        this.projectedHistory = null;
+      }
+    }
   }
 
   private isFinalResponse(content: string): boolean {
