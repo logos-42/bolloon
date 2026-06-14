@@ -29,6 +29,8 @@ export interface GenerateOptions {
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
+  /** 工具 id 列表 — 代码侧 (src/llm/tool-manifest/) 查 schema, prompt 里只嵌 oneLine + callExample */
+  tools?: string[];
 }
 
 export class PiAIModel {
@@ -106,7 +108,27 @@ export class PiAIModel {
   }
 
   private async generateText(options: GenerateOptions): Promise<string> {
-    const { messages, temperature = 0.7, maxTokens = 4096, signal } = options;
+    const { messages, temperature = 0.7, maxTokens = 4096, signal, tools } = options;
+
+    // 工具清单: 代码侧 schema → 进 system prompt (作为额外 system message)
+    let finalMessages = messages;
+    if (tools && tools.length > 0) {
+      try {
+        const { getToolManifest, formatForPrompt } = await import('./tool-manifest/index.js');
+        const manifests = tools
+          .map((id) => getToolManifest(id))
+          .filter((m): m is NonNullable<typeof m> => m !== undefined);
+        if (manifests.length > 0) {
+          const toolPrompt = formatForPrompt(manifests);
+          finalMessages = [
+            { role: 'system', content: toolPrompt },
+            ...messages,
+          ];
+        }
+      } catch (err: any) {
+        console.warn('[pi-ai] tool-manifest 加载失败:', err.message?.slice(0, 100));
+      }
+    }
 
     switch (this.provider) {
       case 'openai':
@@ -115,17 +137,17 @@ export class PiAIModel {
       case 'kimi':
       case 'glm':
       case 'qwen':
-        return this.callOpenAI(messages, temperature, maxTokens, signal);
+        return this.callOpenAI(finalMessages, temperature, maxTokens, signal);
       case 'anthropic':
-        return this.callAnthropic(messages, temperature, maxTokens, signal);
+        return this.callAnthropic(finalMessages, temperature, maxTokens, signal);
       case 'ollama':
-        return this.callOllama(messages, temperature, signal);
+        return this.callOllama(finalMessages, temperature, signal);
       case 'openrouter':
-        return this.callOpenRouter(messages, temperature, maxTokens, signal);
+        return this.callOpenRouter(finalMessages, temperature, maxTokens, signal);
       case 'gemini':
-        return this.callGemini(messages, temperature, maxTokens, signal);
+        return this.callGemini(finalMessages, temperature, maxTokens, signal);
       case 'local':
-        return this.callLocal(messages, temperature, signal);
+        return this.callLocal(finalMessages, temperature, signal);
       default:
         throw new Error(`Unsupported provider: ${this.provider}`);
     }
