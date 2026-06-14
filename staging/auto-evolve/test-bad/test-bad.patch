@@ -1,0 +1,11 @@
+diff --git a/src/utils/foo.ts b/src/utils/foo.ts
+new file mode 100644
+index 0000000..abc
+--- /dev/null
++++ b/src/utils/foo.ts
+@@ -0,0 +1,5 @@
++export function parseInput(input: string): any {
++  const x: any = JSON.parse(input);
++  console.log('parsed', x);
++  return x;
++}

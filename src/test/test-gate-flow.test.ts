@@ -3,6 +3,9 @@ import { GateStateMachine } from '../bollharness-integration/gate-state-machine.
 import { initializeGateHooks, listGateHooks, clearGateHooks } from '../bollharness-integration/gate-transition-hooks.js';
 import { generateJudgmentInjection, getCoreJudgmentsForSession, getJudgmentsForPath } from '../bollharness-integration/context-router-judgment.js';
 import { getCombinedJudgments } from '../pi-ecosystem-judgment/index.js';
+import { isModelAvailable } from '../llm/pi-ai.js';
+
+const hasLlm = isModelAvailable();
 
 describe('Gate State Machine', () => {
   it('should initialize at gate 0', () => {
@@ -19,6 +22,10 @@ describe('Gate State Machine', () => {
   });
 
   it('should transition to gate 1', async () => {
+    if (!hasLlm) {
+      console.log('[skip] 无 LLM, gate transition 测试需 LLM');
+      return;
+    }
     const gsm = new GateStateMachine();
     const result = await gsm.transition();
     expect(result.from).toBe(0);
