@@ -23,6 +23,7 @@ export type AppliesTo = (
   | 'local' | 'p2p-visitor' | 'p2p-agent'
   | 'role:expert' | 'role:architect' | 'role:implementer' | 'role:security'
   | 'tool:bash' | 'tool:str_replace' | 'tool:view' | 'tool:web_search' | 'tool:web_fetch'
+  | 'tool:mcp_apps' | 'tool:hibs_api' | 'tool:image_search' | 'tool:artifacts' | 'tool:manifest'
   | 'all'
 );
 
@@ -53,29 +54,37 @@ export interface PromptLayer {
  */
 const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
   // ── core/ ──
-  { id: 'core.refusal',          version: '1.0.0', priority: 100, appliesTo: ['all'], source: 'static-md', maxChars: 800 },
-  { id: 'core.tone',             version: '1.0.0', priority: 110, appliesTo: ['all'], source: 'static-md', maxChars: 600 },
-  { id: 'core.wellbeing',        version: '1.0.0', priority: 120, appliesTo: ['all'], source: 'static-md', maxChars: 1500 },
-  { id: 'core.evenhandedness',   version: '1.0.0', priority: 130, appliesTo: ['all'], source: 'static-md', maxChars: 500 },
-  // identity + product-info + knowledge 合并到一个 identity.md
-  { id: 'core.identity',         version: '1.0.0', priority: 50,  appliesTo: ['all'], source: 'static-md', maxChars: 1500 },
-  { id: 'core.knowledge',        version: '1.0.0', priority: 60,  appliesTo: ['all'], source: 'static-md', maxChars: 600 },
-  { id: 'core.tools.thin',       version: '1.0.0', priority: 70,  appliesTo: ['all'], source: 'static-md', maxChars: 200 },  // 变薄
+  { id: 'core.identity',         version: '1.0.0', priority: 50,  appliesTo: ['all'], source: 'static-md', maxChars: 2500 },
+  { id: 'core.knowledge',        version: '1.0.0', priority: 60,  appliesTo: ['all'], source: 'static-md', maxChars: 1200 },
+  { id: 'core.tools.thin',       version: '1.0.0', priority: 70,  appliesTo: ['all'], source: 'static-md', maxChars: 400 },
+  { id: 'core.hibs_reminders',   version: '1.0.0', priority: 80,  appliesTo: ['all'], source: 'static-md', maxChars: 800 },
+  { id: 'core.refusal',          version: '1.0.0', priority: 100, appliesTo: ['all'], source: 'static-md', maxChars: 1200 },
+  { id: 'core.tone',             version: '1.0.0', priority: 110, appliesTo: ['all'], source: 'static-md', maxChars: 1000 },
+  { id: 'core.wellbeing',        version: '1.0.0', priority: 120, appliesTo: ['all'], source: 'static-md', maxChars: 2500 },
+  { id: 'core.evenhandedness',   version: '1.0.0', priority: 130, appliesTo: ['all'], source: 'static-md', maxChars: 700 },
+  { id: 'core.memory_system',    version: '1.0.0', priority: 140, appliesTo: ['all'], source: 'static-md', maxChars: 600 },
+  { id: 'core.artifacts_storage',version: '1.0.0', priority: 145, appliesTo: ['all'], source: 'static-md', maxChars: 1500 },
+  { id: 'core.network_filesystem',version: '1.0.0', priority: 148, appliesTo: ['all'], source: 'static-md', maxChars: 900 },
 
   // ── role/ ──
-  { id: 'role.expert',           version: '1.0.0', priority: 200, appliesTo: ['all', 'role:expert'],         source: 'static-md', maxChars: 400 },
-  { id: 'role.architect',        version: '1.0.0', priority: 200, appliesTo: ['all', 'role:architect'],      source: 'static-md', maxChars: 400 },
-  { id: 'role.implementer',      version: '1.0.0', priority: 200, appliesTo: ['all', 'role:implementer'],    source: 'static-md', maxChars: 400 },
-  { id: 'role.security',          version: '1.0.0', priority: 200, appliesTo: ['all', 'role:security'],        source: 'static-md', maxChars: 400 },
+  { id: 'role.expert',           version: '1.0.0', priority: 200, appliesTo: ['all', 'role:expert'],         source: 'static-md', maxChars: 500 },
+  { id: 'role.architect',        version: '1.0.0', priority: 200, appliesTo: ['all', 'role:architect'],      source: 'static-md', maxChars: 500 },
+  { id: 'role.implementer',      version: '1.0.0', priority: 200, appliesTo: ['all', 'role:implementer'],    source: 'static-md', maxChars: 500 },
+  { id: 'role.security',          version: '1.0.0', priority: 200, appliesTo: ['all', 'role:security'],        source: 'static-md', maxChars: 500 },
 
   // ── channel/ ──
-  { id: 'channel.local',         version: '1.0.0', priority: 150, appliesTo: ['local'],                     source: 'static-md', maxChars: 400 },
-  { id: 'channel.p2p-visitor',   version: '1.0.0', priority: 150, appliesTo: ['p2p-visitor'],               source: 'static-md', maxChars: 500 },
-  { id: 'channel.p2p-agent',     version: '1.0.0', priority: 150, appliesTo: ['p2p-agent'],                 source: 'static-md', maxChars: 500 },
+  { id: 'channel.local',         version: '1.0.0', priority: 150, appliesTo: ['local'],                     source: 'static-md', maxChars: 500 },
+  { id: 'channel.p2p-visitor',   version: '1.0.0', priority: 150, appliesTo: ['p2p-visitor'],               source: 'static-md', maxChars: 700 },
+  { id: 'channel.p2p-agent',     version: '1.0.0', priority: 150, appliesTo: ['p2p-agent'],                 source: 'static-md', maxChars: 700 },
 
   // ── tool/ (按工具调用嵌对应 layer) ──
-  { id: 'tool.bash',             version: '1.0.0', priority: 250, appliesTo: ['tool:bash'],                source: 'static-md', maxChars: 300 },
-  { id: 'tool.web_search',       version: '1.0.0', priority: 250, appliesTo: ['tool:web_search'],          source: 'static-md', maxChars: 400 },
+  { id: 'tool.bash',             version: '1.0.0', priority: 250, appliesTo: ['tool:bash'],                source: 'static-md', maxChars: 900 },
+  { id: 'tool.web_search',       version: '1.0.0', priority: 250, appliesTo: ['tool:web_search'],          source: 'static-md', maxChars: 3000 },
+  { id: 'tool.mcp_apps',         version: '1.0.0', priority: 250, appliesTo: ['tool:mcp_apps'],            source: 'static-md', maxChars: 1800 },
+  { id: 'tool.hibs_api',         version: '1.0.0', priority: 250, appliesTo: ['tool:hibs_api'],            source: 'static-md', maxChars: 2500 },
+  { id: 'tool.image_search',     version: '1.0.0', priority: 250, appliesTo: ['tool:image_search'],        source: 'static-md', maxChars: 1500 },
+  { id: 'tool.artifacts',        version: '1.0.0', priority: 250, appliesTo: ['tool:artifacts'],           source: 'static-md', maxChars: 2500 },
+  { id: 'tool.manifest',         version: '1.0.0', priority: 250, appliesTo: ['tool:manifest'],            source: 'static-md', maxChars: 2000 },
 ];
 
 /**
@@ -112,7 +121,7 @@ export interface AssembleContext {
   tool?: 'bash' | 'str_replace' | 'view' | 'web_search' | 'web_fetch';
 }
 
-const TOTAL_BUDGET = 12000; // 单次 system prompt 总字符上限
+const TOTAL_BUDGET = 15000; // 单次 system prompt 总字符上限 (hibs 1 完整版)
 
 export async function assembleSystemPrompt(ctx: AssembleContext): Promise<{
   text: string;
@@ -205,6 +214,7 @@ function idToPath(id: string): string {
   // core.refusal → layers/core/refusal.md
   // tool.bash → layers/tool/bash.md
   // channel.p2p-visitor → layers/channel/p2p-visitor.md
+  // core.tools.thin → layers/core/tools.thin.md (注意: 第一段是 group, 后面整段是文件名)
   const [group, ...rest] = id.split('.');
   return path.join(LAYERS_DIR, group, `${rest.join('.')}.md`);
 }
