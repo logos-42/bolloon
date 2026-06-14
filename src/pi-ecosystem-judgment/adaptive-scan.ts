@@ -33,6 +33,36 @@ function getEvolutionLogPath(): string {
 export type SuggestionKind = 'stale' | 'rising' | 'unused' | 'causal_conflict' | 'low_causal_power';
 export type SuggestionAction = 'deprecate' | 'boost' | 'review';
 
+/**
+ * P-Action 1: next-action hint (4 仓库都强调的错误信息 = 修复指令 思想)
+ * - deusyu: "Lint error messages should embed fix instructions, turning them into
+ *   a self-correction loop the agent can execute."
+ * - walkinglabs lecture 10: "POST /api/reset-password returned 500. Check that
+ *   the email service config exists..." 而非 "Test failed"
+ * - 马书 Capybara v8 4-class behavior mitigation
+ * - china-qijizhifeng Agent Debugger LLM 分析
+ *
+ * 在 adaptive-scan 启发式产出 hint, 不调 LLM (保持类 B 失败静默 + 无 LLM 不变量)
+ */
+export function suggestionHint(kind: SuggestionKind, action: SuggestionAction, metrics: AdaptiveSuggestion['metrics']): string {
+  switch (kind) {
+    case 'stale':
+      return action === 'deprecate'
+        ? `此判断力 30+ 天未使用 (last ${metrics.daysSinceLastUse}d ago, total ${metrics.totalUsage}×). 建议: 接受废弃前, 跑一次 'npm run judgments:search "<topic>"' 确认是否真的不再相关; 若仍相关, 用 boost + active 标签标记, 不要 deprecate.`
+        : `Stale judgment 建议: review 后 决定 boost / deprecate. 7d 用量 ${metrics.usage7d}× 30d 用量 ${metrics.usage30d}×.`;
+    case 'rising':
+      return `🔥 30 天内用量翻倍 (7d=${metrics.usage7d}×, 30d=${metrics.usage30d}×). 建议: 接受 boost 提升该 judgment 的注入优先级; 同时检查 conflicts.jsonl 看是否与其他判断力冲突.`;
+    case 'unused':
+      return `此判断力从未被注入 (total ${metrics.totalUsage}× = 0). 建议: (1) 跑 'npm run judgments:debug <id>' 确认检测钩子是否正常工作; (2) 若是 false positive, 接受 reject; (3) 若需要激活, 接受 review + 触发 D 路径蒸馏.`;
+    case 'causal_conflict':
+      return `检测到与另一判断力因果冲突. 建议: 接受 review 后, 优先保留因果强度 (causal power) 高的那条; 或在 persona.json 加一条 human override. 详细因果矩阵: '~/.bolloon/human-values/causal-matrix.json'.`;
+    case 'low_causal_power':
+      return `此判断力的因果强度持续低 (causal power < 0.3). 建议: 接受 review 后考虑 deprecate; 跑 'npm run causal:audit <id>' 看是哪条 related event 拉低了分数.`;
+    default:
+      return `建议 review: ${action} 这条 judgment. 7d 用量 ${metrics.usage7d}× 30d 用量 ${metrics.usage30d}×.`;
+  }
+}
+
 export interface AdaptiveSuggestion {
   /** unique key: kind + judgmentId */
   key: string;
@@ -44,6 +74,8 @@ export interface AdaptiveSuggestion {
   reason: string;
   /** 建议动作 */
   action: SuggestionAction;
+  /** P-Action 1: next-action hint (4 仓库共识 — 错误信息 = 修复指令) */
+  hint: string;
   /** 相关数据 (count / 频率) */
   metrics: {
     usage7d: number;
@@ -144,6 +176,7 @@ export async function runAdaptiveScan(): Promise<AdaptiveScanResult> {
           decision: j.decision,
           reason: `7 天使用率 (${dailyRate7.toFixed(2)}/d) 是 30 天均值的 ${(dailyRate7 / dailyAvg30).toFixed(1)} 倍`,
           action: 'boost',
+          hint: suggestionHint('rising', 'boost', metrics),
           metrics,
           scannedAt: now.toISOString(),
         });
@@ -160,6 +193,7 @@ export async function runAdaptiveScan(): Promise<AdaptiveScanResult> {
         decision: j.decision,
         reason: `已 ${daysSinceLastUse} 天未使用, 总使用仅 ${u.total} 次`,
         action: 'deprecate',
+        hint: suggestionHint('stale', 'deprecate', metrics),
         metrics,
         scannedAt: now.toISOString(),
       });
@@ -175,6 +209,7 @@ export async function runAdaptiveScan(): Promise<AdaptiveScanResult> {
         decision: j.decision,
         reason: `已 ${daysSinceLastUse} 天未使用, 总使用 ${u.total} 次 (可能不再相关)`,
         action: 'review',
+        hint: suggestionHint('unused', 'review', metrics),
         metrics,
         scannedAt: now.toISOString(),
       });
@@ -203,6 +238,7 @@ export async function runAdaptiveScan(): Promise<AdaptiveScanResult> {
         decision: `${a.decision} ↔ ${other.decision}`,
         reason: det.isConflict ? det.reason : '库内已标冲突, 需 LLM 复核',
         action: 'review',
+        hint: suggestionHint('causal_conflict', 'review', { usage7d: 0, usage30d: 0, daysSinceLastUse: 0, totalUsage: 0 }),
         metrics: { usage7d: 0, usage30d: 0, daysSinceLastUse: 0, totalUsage: 0 },
         scannedAt: now.toISOString(),
       });
@@ -242,6 +278,21 @@ export interface EvolutionEntry {
 
 export async function logEvolution(entry: EvolutionEntry): Promise<void> {
   try {
+    // P-Action 3: 摄入点扫描 (只跳 prompt-injection, 不扫 PII — judgment 决策文本含人话是合法的)
+    const { scanInput, writeScanAudit, shouldHardBlock } = await import('../security/input-scanner.js') as typeof import('../security/input-scanner.js');
+    const fieldsToScan = [
+      entry.suggestion?.decision ?? '',
+      entry.suggestion?.reason ?? '',
+    ].join('\n');
+    const result = scanInput(fieldsToScan, { source: 'judgment', scanPii: false });
+    if (shouldHardBlock(result)) {
+      console.warn(`[adaptive-scan] logEvolution 阻断恶意 entry: verdict=${result.verdict}, threats=${result.threats.length}`);
+      writeScanAudit(result, { evolutionKey: entry.suggestion?.key, blocked: true }).catch(() => { /* silent */ });
+      return;  // 不写磁盘
+    }
+    if (result.verdict !== 'pass') {
+      writeScanAudit(result, { evolutionKey: entry.suggestion?.key, blocked: false }).catch(() => { /* silent */ });
+    }
     await fs.mkdir(path.dirname(getEvolutionLogPath()), { recursive: true });
     await fs.appendFile(getEvolutionLogPath(), JSON.stringify(entry) + '\n', 'utf-8');
   } catch (err) {

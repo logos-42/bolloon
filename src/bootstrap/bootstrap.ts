@@ -37,6 +37,7 @@ export async function bootstrapBolloon(opts: { cwd?: string } = {}): Promise<Boo
   };
   try {
     scanResult = await runAdaptiveScan();
+    const { suggestionHint } = await import('../pi-ecosystem-judgment/adaptive-scan.js');
     await logEvolution({
       ts: new Date().toISOString(),
       action: 'accept',  // 用 accept 表示"系统记录" (跟 reject 区分)
@@ -47,6 +48,7 @@ export async function bootstrapBolloon(opts: { cwd?: string } = {}): Promise<Boo
         decision: 'Bolloon 启动扫描',
         reason: `本次启动扫描了 ${scanResult.judgmentsTotal} 条原则, ${scanResult.usageEntriesScanned} 条使用记录, 生成 ${scanResult.suggestions.length} 条建议`,
         action: 'review',
+        hint: suggestionHint('unused', 'review', { usage7d: 0, usage30d: 0, daysSinceLastUse: 0, totalUsage: 0 }),
         metrics: { usage7d: 0, usage30d: 0, daysSinceLastUse: 0, totalUsage: 0 },
         scannedAt: scanResult.scannedAt,
       },
