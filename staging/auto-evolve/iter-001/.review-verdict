@@ -1,9 +1,0 @@
-{
-  "patchId": "iter-001",
-  "model": "claude-sonnet-4-6",
-  "schemaChange": false,
-  "verdict": "PASS",
-  "concerns": [],
-  "suggestions": [],
-  "reviewedAt": "2026-06-14T12:02:48.762Z"
-}

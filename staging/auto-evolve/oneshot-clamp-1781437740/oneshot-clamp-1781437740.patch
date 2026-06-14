@@ -1,8 +1,0 @@
---- a/src/utils/clamp.ts
-+++ b/src/utils/clamp.ts
-@@ -2,5 +2,5 @@ export function clamp(n: number, min: number, max: number): number {
-   if (n < min) return min;
--  if (n < max) return max;
-+  if (n > max) return max;
-   return n;
- }
