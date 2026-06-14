@@ -1,0 +1,8 @@
+--- a/src/utils/double.ts
++++ b/src/utils/double.ts
+@@ -3,5 +3,5 @@
+  */
+ export function double(n: number): number {
+-  return n + 2;  // BUG: 应该是 n * 2
++  return n * 2;  // 修复: 正确实现 double
+ }
