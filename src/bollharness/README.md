@@ -22,7 +22,7 @@ You end up supervising more than you saved in development time. The 80% it does 
 ## The Insight
 
 ```
-CLAUDE.md instruction compliance:  ~20%
+Bolloon.md instruction compliance:  ~20%
 PreToolUse hook enforcement:       100%
 ```
 
@@ -103,7 +103,7 @@ your-project/
 ├── scripts/
 │   ├── hooks/           # 16 lifecycle hooks
 │   └── checks/          # 15 automated validators
-└── CLAUDE.md            # Governance guide (generated, yours to edit)
+└── Bolloon.md            # Governance guide (generated, yours to edit)
 ```
 
 The installer is idempotent — run it twice, get the same result.

@@ -256,7 +256,7 @@ Agent tool:
 - [ ] issue 文档 status/prevention_status
 
 ### 可能需要更新（写进 PR 描述）
-- [ ] CLAUDE.md 路由表（如果改了 API）
+- [ ] Bolloon.md 路由表（如果改了 API）
 - [ ] 其他 issue 文档（如果修复也解决了其他问题）
 
 ### 不需要更新
@@ -264,7 +264,7 @@ Agent tool:
 ```
 
 **禁止修改的文件**：
-- CLAUDE.md（行为指令部分）
+- Bolloon.md（行为指令部分）
 - AGENTS.md
 - `.claude/skills/*/SKILL.md`
 - `scripts/guard-feedback.py`

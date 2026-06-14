@@ -39,7 +39,7 @@
 
 这 19 个 finding 聚成 5 个共同病因（审计 Section 7 的根因分析）：
 
-1. **代码演化快，真相收敛慢**（7.1）— 代码改了但文档/测试/消费方没同步。多层真相源（代码、CLAUDE.md、MEMORY.md、INDEX.md、plans、.boll memory、部署现实）没有显式治理。
+1. **代码演化快，真相收敛慢**（7.1）— 代码改了但文档/测试/消费方没同步。多层真相源（代码、Bolloon.md、MEMORY.md、INDEX.md、plans、.boll memory、部署现实）没有显式治理。
 2. **目标态文档跑在实现前面**（7.2）— plan/ADR 写的是"已完成"语气，代码还在过渡态。场景文档说"真实协议"，跑的是 demo fallback。
 3. **共享数据结构承担太多角色**（7.3）— `run_events` 同时是审计日志、重放历史、进度来源、轮次来源。一旦过载，每个消费方都从一个不完整的存储中推断语义。
 4. **多实现产品缺乏主动一致性治理**（7.4）— Python MCP 和 Node MCP 不会"自动"保持一致。auth、config、版本号各自漂移。
@@ -63,7 +63,7 @@
 - 改了 Python MCP auth 但不知道 Node MCP 是消费方 → 病因 4（多实现漂移）
 - 改了 run_events 的读取逻辑但不知道 6 个消费方 → 病因 3（共享结构过载）
 - 改了 scene 文档承诺但不知道运行时还是 fallback → 病因 2（承诺 vs 现实）
-- 改了 CLAUDE.md 的版本号但不知道 pyproject.toml 也要改 → 病因 1（真相漂移）
+- 改了 Bolloon.md 的版本号但不知道 pyproject.toml 也要改 → 病因 1（真相漂移）
 - 改了 skill 文档但不知道旧版还在其他地方被引用 → 病因 5（元层漂移）
 
 **共同根因**：AI 做决策时，相关的上下文不在它的窗口里。
@@ -81,7 +81,7 @@
 - 改 `backend/product/bridge/` 时，AI 窗口里有 Bridge 宪法 5 条规则
 - 改 issue doc 标 Fixed 时，AI 窗口里有 "Fixed 三层"定义
 - 改 scene 文档承诺时，AI 窗口里有该 scene 的实际 runtime fidelity 分级
-- 改 `CLAUDE.md` 版本号时，AI 窗口里有所有版本号来源的清单
+- 改 `Bolloon.md` 版本号时，AI 窗口里有所有版本号来源的清单
 - 改契约（URL/schema/env var）时，AI 窗口里有消费方列表
 
 这些上下文不靠 AI 自己想起来，不靠 skill 碰巧被加载，不靠人提醒。由代码确定性地路由和注入。
@@ -140,7 +140,7 @@ Guard 不只是语法检查——**它是思维规则的可执行编码**。当 
 - 改了 run_events 读取逻辑但不知道 6 个消费方（窗口里没有消费方列表）
 - 改了 scene 文档承诺但不知道运行时是 fallback（窗口里没有 fidelity 分级）
 
-传统的解决方式是 prompt："把所有规则写进 CLAUDE.md / skill，让 AI 记住"。
+传统的解决方式是 prompt："把所有规则写进 Bolloon.md / skill，让 AI 记住"。
 
 问题：
 - 规则太多 → 注意力稀释
@@ -172,7 +172,7 @@ Part A 治标（阻止错误产出进入代码库），Part B 治本（让 AI �
   ┌─────────────────────────────────────────────────┐
   │  Layer 1: Convention                            │
   │  定义"正确的产物长什么样"                        │
-  │  载体: CLAUDE.md + docs/ + issue/plan 格式约定   │
+  │  载体: Bolloon.md + docs/ + issue/plan 格式约定   │
   │  覆盖: 通用                                     │
   ├─────────────────────────────────────────────────┤
   │  Layer 2: Guard                                 │
@@ -368,7 +368,7 @@ const GUARD_MAP: Record<string, string[]> = {
   "docs/decisions/":      ["check_doc_links"],
   "docs/":                ["check_doc_links"],
 
-  "CLAUDE.md":            ["check_doc_links"],
+  "Bolloon.md":            ["check_doc_links"],
   ".boll/skills/":        ["check_doc_links"],
   ".boll/settings.json":   ["check_hook_installed"],
   ".githooks/":           ["check_hook_installed"],
@@ -510,7 +510,7 @@ const CONTEXT_MAP: Record<string, string[]> = {
   "website/app/[scene]/":             ["scene-fidelity", "two-language"],
   "website/components/scene/":        ["scene-fidelity", "two-language"],
 
-  "CLAUDE.md":                        ["truth-source-hierarchy"],
+  "Bolloon.md":                        ["truth-source-hierarchy"],
   "MEMORY.md":                        ["truth-source-hierarchy"],
   "docs/INDEX.md":                    ["truth-source-hierarchy"],
 
@@ -829,7 +829,7 @@ guard_ref: check_bridge_deps
 | `guard_ref` | 条件 | guard 脚本名 | `guard_status=exists` 时必填 |
 | `scope` | 推荐 | 代码目录列表 | 受影响的代码路径（用于 artifact linkage scope binding，见 3.9） |
 
-#### Status 语义（新增到 CLAUDE.md）
+#### Status 语义（新增到 Bolloon.md）
 
 ```
 - Runtime-Fixed: 现网症状已消除，生产验证通过。
@@ -1062,7 +1062,7 @@ Phase 3 路径 B 的缺口是已知的过渡状态。Phase 4 通过 `commit-msg`
 
 | 层 | 覆盖范围 | 非 Claude 环境行为 |
 |----|---------|-------------------|
-| Convention (L1) | 通用 | CLAUDE.md、issue frontmatter 格式对任何开发者/工具可见 |
+| Convention (L1) | 通用 | Bolloon.md、issue frontmatter 格式对任何开发者/工具可见 |
 | Guard (L2) | 通用 | 纯 TypeScript 脚本，`npx ts-node scripts/coherence.ts` 任何环境可跑 |
 | Signal (L3) | 通用 | JSON 文件，人或任何工具可读可解析 |
 | Trigger - hard (L4) | 通用 | `pre-commit` + `deploy.sh` 只依赖 git + shell |

@@ -1,6 +1,6 @@
 ﻿#!/bin/bash
 # Walks up from $PWD to find the boll repo root.
-# Identifies it by presence of BOTH CLAUDE.md and scripts/guard-feedback.py.
+# Identifies it by presence of BOTH Bolloon.md and scripts/guard-feedback.py.
 # This handles nested git repos (e.g. boll-progress/) that would confuse
 # `git rev-parse --show-toplevel`.
 #
@@ -8,7 +8,7 @@
 set -e
 d="${PWD}"
 while [ "$d" != "/" ] && [ -n "$d" ]; do
-  if [ -f "$d/CLAUDE.md" ] && [ -f "$d/scripts/guard-feedback.py" ]; then
+  if [ -f "$d/Bolloon.md" ] && [ -f "$d/scripts/guard-feedback.py" ]; then
     echo "$d"
     exit 0
   fi

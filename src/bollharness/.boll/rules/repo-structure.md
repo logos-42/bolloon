@@ -32,7 +32,7 @@ paths:
 │   ├── decisions/        # ADR / PLAN / TECH 决策文档
 │   ├── issues/           # Guardian issue (ADR-030 closure semantics)
 │   └── architecture/     # 架构图与核心概念
-└── CLAUDE.md             # 项目根入口, 声明不可妥协约束 + path-scoped rules 触发表
+└── Bolloon.md             # 项目根入口, 声明不可妥协约束 + path-scoped rules 触发表
 ```
 
 ## 禁止事项

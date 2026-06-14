@@ -67,7 +67,7 @@ Each mode maps to a tool allowlist and a review binding. `capability-router.ts` 
 
 ## What mode is **not**
 
-- Mode is not a prompt string. CLAUDE.md-vnext does not describe modes — it points the model at `.boll/state/mode` and the router hook does the rest.
+- Mode is not a prompt string. Bolloon.md-vnext does not describe modes — it points the model at `.boll/state/mode` and the router hook does the rest.
 - Mode is not a skill. `lead` skill's 0–8 gate state machine (Phase 1 §3.4) is an example of mode-as-prose; it is **retired** (see `../03-design.md` §12 matrix).
 - Mode is not per-subagent. Subagents inherit the parent run's mode; a subagent cannot self-elevate.
 - Mode is not per-team. Parallel runs each have their own `.boll/state/<run-id>/mode` file.

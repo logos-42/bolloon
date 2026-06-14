@@ -38,8 +38,14 @@ export const web_fetch: ToolManifest = {
   ],
   parameters: [
     { name: 'url', type: 'string', required: true, description: '完整 URL (含协议, https://...)', format: 'uri' },
+    { name: 'allowed_domains', type: 'array', required: false, description: '仅允许的域名白名单 (如 ["example.com","*.github.com"])', items: { name: 'd', type: 'string', required: true, description: '域名' } },
+    { name: 'blocked_domains', type: 'array', required: false, description: '黑名单域名', items: { name: 'd', type: 'string', required: true, description: '域名' } },
+    { name: 'html_extraction_method', type: 'string', required: false, description: 'HTML 提取方法 (e.g. "text"/"markdown")' },
+    { name: 'is_zdr', type: 'boolean', required: false, description: '是否 Zero Data Retention 请求 (true 时不记录 URL)' },
     { name: 'text_content_token_limit', type: 'integer', required: false, description: 'token 限制', minimum: 0 },
     { name: 'web_fetch_pdf_extract_text', type: 'boolean', required: false, description: '是否提取 PDF 文本' },
+    { name: 'web_fetch_rate_limit_key', type: 'string', required: false, description: '速率限制键' },
+    { name: 'web_fetch_rate_limit_dark_launch', type: 'boolean', required: false, description: '速率限制暗启动模式' },
   ],
   callExample: `[TOOL:web_fetch]
 [P:url]https://example.com/article

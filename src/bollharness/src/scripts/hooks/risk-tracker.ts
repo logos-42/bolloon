@@ -9,7 +9,7 @@ const RISK_ORDER: Record<string, number> = { R0: 0, R1: 1, R2: 2, R3: 3, R4: 4 }
 const RISK_ELEVATORS: [string, string][] = [
   ["scripts/deploy", "R4"],
   ["backend/product/db/migration", "R4"],
-  ["CLAUDE.md", "R3"],
+  ["Bolloon.md", "R3"],
   [".boll/settings.json", "R3"],
   [".boll/skills/", "R3"],
   [".boll/rules/", "R3"],

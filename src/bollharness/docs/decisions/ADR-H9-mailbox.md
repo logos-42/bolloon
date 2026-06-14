@@ -152,7 +152,7 @@ ack_for: <msg_id>              # kind=ack 时必填，引用被 ack 的消息 ID
 - **ADR-058 §D1 hook IO schema**：3 stdout-bearing hook 全部走 `_hook_output` helper
 - **ADR-038 D10 / .boll/proposals/**：proposal-v1 与 message-v1 schema 分开，§4 已签字
 - **MEMORY feedback_local_worktrees_only.md**：harness 系列例外（main 直接 commit）已在 ADR-H0 §8 说明，H9 沿用
-- **CLAUDE.md §四 4.3 / `.boll/rules/review-agent-isolation.md`**：H9 reviewer 用 `boll-review-toolkit:reviewer`（frontmatter schema-level 物理隔离）
+- **Bolloon.md §四 4.3 / `.boll/rules/review-agent-isolation.md`**：H9 reviewer 用 `boll-review-toolkit:reviewer`（frontmatter schema-level 物理隔离）
 
 ## 11. 配套文件
 

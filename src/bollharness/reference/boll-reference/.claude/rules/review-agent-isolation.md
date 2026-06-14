@@ -15,7 +15,7 @@ OpenDev arXiv 2603.05344 在 Plan mode 实验中证明：
 - **Schema 隔离**（frontmatter 不列 Edit/Write）：100% 遵从率（物理上无法调用）
 - 写权限误用造成的 silent corruption 比可见错误更难恢复
 
-我们 Round 5 数据也呼应了这个：CLAUDE.md 遵从率仅 10-20%。任何"靠 prompt 约束"的安全措施都是脆弱的。
+我们 Round 5 数据也呼应了这个：Bolloon.md 遵从率仅 10-20%。任何"靠 prompt 约束"的安全措施都是脆弱的。
 
 ## 实施清单
 
@@ -100,7 +100,7 @@ tools:
 ## 与其他规则的关系
 
 - **ADR-030 不可降级要求 §5**：审查 agent 必须使用 opus 4.6 — 与本规则正交，都要遵守
-- **CLAUDE.md §四 4.3**：subagent 模型约束 — 本规则补充工具约束
+- **Bolloon.md §四 4.3**：subagent 模型约束 — 本规则补充工具约束
 - **review-base.yaml**：白名单/黑名单的机器可读规范 — 本规则的 spec 文档
 
 ## 例外申请

@@ -47,7 +47,7 @@ flowchart TB
         Mode[阶段切换<br/>自动收/放权<br/>mode-toolkit]
         Review[审查标准写在契约里<br/>不在提示词里漂<br/>review-toolkit]
     end
-    subgraph V1[v1 · 物理拦截层 · 解决 AI 写规则但不听规则 CLAUDE.md 遵从率仅 20%]
+    subgraph V1[v1 · 物理拦截层 · 解决 AI 写规则但不听规则 Bolloon.md 遵从率仅 20%]
         Hooks[想做错事<br/>就在动作那一刻挡下<br/>18 hooks]
         Skills[把 AI 拆成<br/>各司其职的角色<br/>16 skills]
         Checks[不靠 AI 记规则<br/>靠脚本自动验<br/>15 checks]
@@ -63,7 +63,7 @@ flowchart TB
 ```
 
 每层都在答一个问题：「上一层不够用的时候补什么」。
-- **v1 解决** AI 写规则但不听规则（CLAUDE.md 遵从率仅 ~20%）→ 用 hook 物理拦截
+- **v1 解决** AI 写规则但不听规则（Bolloon.md 遵从率仅 ~20%）→ 用 hook 物理拦截
 - **v2 解决** AI 工具权限一直全开 → 用阶段机自动收/放权
 - **v3 解决** harness 自己跑出 bug → 9 站自治协议（修问题不在自己交付物里重现该问题等）
 

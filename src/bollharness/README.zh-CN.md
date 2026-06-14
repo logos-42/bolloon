@@ -22,7 +22,7 @@ Claude Code 能力很强。但不加约束时，它有结构性偏见：
 ## 核心洞察
 
 ```
-CLAUDE.md 指令遵从率:     ~20%
+Bolloon.md 指令遵从率:     ~20%
 PreToolUse hook 执行率:   100%
 ```
 
@@ -101,7 +101,7 @@ your-project/
 ├── scripts/
 │   ├── hooks/           # 16 个生命周期 hook
 │   └── checks/          # 15 个自动化验证器
-└── CLAUDE.md            # 治理指南（自动生成，你可以自由编辑）
+└── Bolloon.md            # 治理指南（自动生成，你可以自由编辑）
 ```
 
 安装器是幂等的——跑两次，结果一样。

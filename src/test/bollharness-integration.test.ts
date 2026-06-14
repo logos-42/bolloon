@@ -87,7 +87,7 @@ const GUARD_MAP: Record<string, string[]> = {
   'src/documents/': ['check_doc_freshness', 'check_api_types'],
   'src/network/': ['check_api_types', 'check_versions'],
   'docs/': ['check_doc_freshness', 'check_doc_links'],
-  'CLAUDE.md': ['check_doc_freshness', 'check_artifact_link'],
+  'Bolloon.md': ['check_doc_freshness', 'check_artifact_link'],
   'docs/decisions/': ['check_artifact_link', 'check_versions'],
   'src/test/': ['check_api_types', 'check_versions'],
 };
@@ -132,8 +132,8 @@ describe('GuardRouter', () => {
       expect(guards.length).toBe(0);
     });
 
-    it('should handle CLAUDE.md special case', () => {
-      const guards = route('CLAUDE.md');
+    it('should handle Bolloon.md special case', () => {
+      const guards = route('Bolloon.md');
       expect(guards).toContain('check_doc_freshness');
       expect(guards).toContain('check_artifact_link');
     });
@@ -157,7 +157,7 @@ const CONTEXT_MAP: Record<string, string[]> = {
   'docs/': ['documentation-standards'],
   'docs/decisions/': ['decision-tracking', 'adr-patterns'],
   'src/test/': ['testing-patterns', 'quality-standards'],
-  'CLAUDE.md': ['project-governance', 'truth-source-hierarchy'],
+  'Bolloon.md': ['project-governance', 'truth-source-hierarchy'],
 };
 
 const FALLBACK_FRAGMENTS = ['general-dev-principles', 'code-quality'];
@@ -196,8 +196,8 @@ describe('ContextRouter', () => {
       expect(fragments).toContain('adr-patterns');
     });
 
-    it('should match CLAUDE.md', () => {
-      const fragments = match('CLAUDE.md');
+    it('should match Bolloon.md', () => {
+      const fragments = match('Bolloon.md');
       expect(fragments).toContain('project-governance');
     });
 

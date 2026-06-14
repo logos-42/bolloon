@@ -5,7 +5,7 @@ import { Finding } from "./finding";
 export function run(repoRoot: string, mode: string = "full"): Finding[] {
   const findings: Finding[] = [];
 
-  const docFiles = ["CLAUDE.md", "docs/ROADMAP.md", "README.md"];
+  const docFiles = ["Bolloon.md", "docs/ROADMAP.md", "README.md"];
   const maxAgeDays = 7;
 
   for (const docFile of docFiles) {

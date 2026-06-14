@@ -28,7 +28,7 @@ export const CONTEXT_MAP: Record<string, string[]> = {
   'src/bollharness-integration/': ['truth-source-hierarchy', 'artifact-linkage'],
   'docs/': ['truth-source-hierarchy', 'two-language'],
   'docs/decisions/': ['truth-source-hierarchy', 'artifact-linkage'],
-  'CLAUDE.md': ['truth-source-hierarchy', 'bridge-constitution'],
+  'Bolloon.md': ['truth-source-hierarchy', 'bridge-constitution'],
   'README.md': ['truth-source-hierarchy', 'general-dev-principles'],
 };
 
@@ -357,7 +357,7 @@ export const CONTEXT_FRAGMENTS = {
   'project-governance': `# Project Governance
 
 ## Truth Sources
-- CLAUDE.md: Project overview and norms
+- Bolloon.md: Project overview and norms
 - docs/: Architecture and decisions
 - code/: Implementation
 - issues/: Tracking and discussions

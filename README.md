@@ -274,7 +274,7 @@ Gate 8: Test & Integration (测试集成) → 完成
 | src/network/ | truth-source-hierarchy, protocol-consumers |
 | src/constraints/ | truth-source-hierarchy, fixed-three-layers |
 | docs/ | truth-source-hierarchy, two-language |
-| CLAUDE.md | truth-source-hierarchy, bridge-constitution |
+| Bolloon.md | truth-source-hierarchy, bridge-constitution |
 
 #### 4.2.5 Session Archive (操作历史归档)
 

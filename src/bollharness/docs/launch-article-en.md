@@ -75,11 +75,11 @@ One number changed everything:
 
 <!-- [Diagram ①: Six-Layer Governance Stack] -->
 
-> **CLAUDE.md instruction compliance: ~20%**
+> **Bolloon.md instruction compliance: ~20%**
 >
 > **Hook enforcement: 100%**
 
-The rules you write in CLAUDE.md are consistently followed only about 20% of the time.
+The rules you write in Bolloon.md are consistently followed only about 20% of the time.
 
 Not because the AI doesn't want to comply. Because context windows are finite, attention drifts, and long conversations compress early instructions. This is a **structural constraint** of LLMs, not a prompting skill issue.
 
@@ -216,7 +216,7 @@ Every rule exists because the previous rule had a loophole.
 
 ## 06 How does it compare?
 
-| | CLAUDE.md | Cursor Rules | Managed Agents | **bollharness** |
+| | Bolloon.md | Cursor Rules | Managed Agents | **bollharness** |
 |---|---|---|---|---|
 | Constraint method | Text instructions | Text instructions | Cloud-hosted | Local hooks |
 | Compliance rate | ~20% | ~20% | N/A (cloud) | **100% (mechanical)** |
@@ -227,7 +227,7 @@ Every rule exists because the previous rule had a loophole.
 | Deployment | Write a file | Write a file | API integration | **One-command install** |
 | Works with | Any AI editor | Cursor | API calls | **Claude Code** |
 
-CLAUDE.md is still useful. bollharness doesn't replace it — **it enforces it**.
+Bolloon.md is still useful. bollharness doesn't replace it — **it enforces it**.
 
 ---
 

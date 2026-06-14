@@ -65,7 +65,7 @@ ADR-041 v1.0 §3 已签"先调规则不加机制"哲学；本 ADR **完全继承
 | 维度 | ADR-041 v1.0 | ADR-H4 |
 |------|--------------|--------|
 | 治理对象 | Codex 分流决策（"是否派 Codex"） | 表达行为（"怎么说话"） |
-| 物理介质 | CLAUDE.md §零 + ADR-041 §3 红线 | lead/SKILL.md `## 行为治理`段 |
+| 物理介质 | Bolloon.md §零 + ADR-041 §3 红线 | lead/SKILL.md `## 行为治理`段 |
 | 机制化禁令 | hook / router / metrics 全砍 | 同砍（INV-H4-3）|
 | 升级路径 | 每周复盘人脑回顾 | 同（H4 不另立机制） |
 
@@ -118,7 +118,7 @@ H4 是 ADR-041 在不同行为侧（决策 vs 表达）的孪生子，**不重�
 
 **反对 3**：H4 只做 lead SKILL.md = 漏覆盖 arch / boll-dev 等其他 skill 加载时的违规。
 
-**取舍**：lead 是 entry tier，CLAUDE.md 隐式默认加载；其他 skill 是按需加载。70% 遵从率基线建立在"必读 skill"的位置；arch/boll-dev session 已经有 lead 加载，规则会跨级生效。如未来发现 arch session 的违规率显著高于 lead session，按 ADR-041 路径："先调规则文字" — 在 lead `## 行为治理`段加 1 条"在 arch 子任务中同样适用"，不复制清单。
+**取舍**：lead 是 entry tier，Bolloon.md 隐式默认加载；其他 skill 是按需加载。70% 遵从率基线建立在"必读 skill"的位置；arch/boll-dev session 已经有 lead 加载，规则会跨级生效。如未来发现 arch session 的违规率显著高于 lead session，按 ADR-041 路径："先调规则文字" — 在 lead `## 行为治理`段加 1 条"在 arch 子任务中同样适用"，不复制清单。
 
 ## 5. ADR-H0 元规约自检
 

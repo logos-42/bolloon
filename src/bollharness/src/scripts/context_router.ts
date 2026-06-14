@@ -20,7 +20,7 @@ export const CONTEXT_MAP: Record<string, string[]> = {
   "scenes/": ["scene-fidelity", "two-language"],
   "website/app/[scene]/": ["scene-fidelity", "two-language"],
   "website/components/scene/": ["scene-fidelity", "two-language"],
-  "CLAUDE.md": ["truth-source-hierarchy"],
+  "Bolloon.md": ["truth-source-hierarchy"],
   "MEMORY.md": ["truth-source-hierarchy"],
   "docs/INDEX.md": ["truth-source-hierarchy"],
   "mcp-server/pyproject.toml": ["version-sources"],

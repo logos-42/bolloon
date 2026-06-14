@@ -313,7 +313,7 @@ truth_policy:
 **强制执行**。计划中声明的每个 API 端点，必须能映射到至少一个 WP 的 write set。
 
 检查方法：
-- 扫描 CLAUDE.md / ADR 中列出的所有 API 端点
+- 扫描 Bolloon.md / ADR 中列出的所有 API 端点
 - 对前端组件的每个 `fetch` / `coachingFetch` / `protocolFetch` 调用，追踪后端端点归属
 - 如果某端点不在任何 WP 的 write set 中 → **BLOCKED**，必须显式分配到某个 WP 或创建独立 Gate 任务
 

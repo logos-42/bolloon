@@ -75,7 +75,7 @@ export function run(repoRoot: string, mode: string = "full"): Finding[] {
 
   const actualRoutes = countRouteDecorators(repoRoot);
   const routesDoc = path.join(repoRoot, ".boll", "rules", "backend-routes.md");
-  const claudeMd = path.join(repoRoot, "CLAUDE.md");
+  const claudeMd = path.join(repoRoot, "Bolloon.md");
 
   if (fs.existsSync(routesDoc)) {
     const routesContent = fs.readFileSync(routesDoc, "utf-8");

@@ -125,7 +125,7 @@ PLAN 必须回答的问题（详见 SKILL.md 模板）：
 - 超过 3 个代码文件
 - API/schema/event 契约变更
 - 需要数据库 migration
-- 涉及 `scripts/guard-feedback.py`、`scripts/context_router.py`、`.claude/skills/*/SKILL.md`、`CLAUDE.md` 行为指令部分
+- 涉及 `scripts/guard-feedback.py`、`scripts/context_router.py`、`.claude/skills/*/SKILL.md`、`Bolloon.md` 行为指令部分
 
 ### Step 3: Gate 2 — 独立审查 PLAN
 
@@ -228,7 +228,7 @@ Spawn 独立审查者审查代码 diff + TEST.md + LOG.md。审查者检查：
 
 写 CLOSURE.md。检查文档同步：
 - issue 文档的 status/prevention_status/mechanism_layer 是否已更新
-- 如果改了 API → CLAUDE.md 路由表需要更新吗？（写进 PR 描述，不要自己改 CLAUDE.md）
+- 如果改了 API → Bolloon.md 路由表需要更新吗？（写进 PR 描述，不要自己改 Bolloon.md）
 - 如果修复也解决了其他 issue → 记录下来
 
 ### Step 10: Gate 8 — Push + PR
@@ -350,7 +350,7 @@ PREOF
 
 ### 你不可以做的
 
-- 修改 `CLAUDE.md` 的行为指令部分（路由表可以在 PR 描述中建议更新）
+- 修改 `Bolloon.md` 的行为指令部分（路由表可以在 PR 描述中建议更新）
 - 修改 `.claude/skills/*/SKILL.md`（包括你自己的 SKILL.md）
 - 修改 `scripts/guard-feedback.py` 或 `scripts/context_router.py`
 - 修改 `AGENTS.md`

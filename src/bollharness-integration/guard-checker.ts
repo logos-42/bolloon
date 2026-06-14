@@ -90,7 +90,7 @@ export const GUARD_MAP: Record<string, string[]> = {
   'src/constraints/': ['check_api_types', 'check_versions'],
   'src/social/': ['check_api_types', 'check_versions'],
   'docs/': ['check_doc_freshness', 'check_doc_links'],
-  'CLAUDE.md': ['check_doc_freshness', 'check_artifact_link'],
+  'Bolloon.md': ['check_doc_freshness', 'check_artifact_link'],
   'README.md': ['check_doc_freshness'],
   'docs/decisions/': ['check_artifact_link', 'check_versions'],
   '.boll/': ['check_hook_installed'],

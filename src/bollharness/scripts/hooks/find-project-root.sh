@@ -3,7 +3,7 @@
 #
 # Anchor priority:
 #   1. .bollharness/MANIFEST.yaml  (primary — declared by installer)
-#   2. CLAUDE.md                   (fallback — older projects or pre-install)
+#   2. Bolloon.md                   (fallback — older projects or pre-install)
 #
 # Why not scripts/guard-feedback.ts like the old boll-specific script?
 # Because that created a circular dependency: guard-feedback.ts was both
@@ -23,10 +23,10 @@ while [ "$d" != "/" ] && [ -n "$d" ]; do
   d="$(dirname "$d")"
 done
 
-# Fallback 1: walk up again looking for CLAUDE.md alone
+# Fallback 1: walk up again looking for Bolloon.md alone
 d="${PWD}"
 while [ "$d" != "/" ] && [ -n "$d" ]; do
-  if [ -f "$d/CLAUDE.md" ]; then
+  if [ -f "$d/Bolloon.md" ]; then
     echo "$d"
     exit 0
   fi
@@ -35,7 +35,7 @@ done
 
 # Fallback 2: CLAUDE_PROJECT_DIR env var set by Claude Code
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
-  if [ -f "${CLAUDE_PROJECT_DIR}/.bollharness/MANIFEST.yaml" ] || [ -f "${CLAUDE_PROJECT_DIR}/CLAUDE.md" ]; then
+  if [ -f "${CLAUDE_PROJECT_DIR}/.bollharness/MANIFEST.yaml" ] || [ -f "${CLAUDE_PROJECT_DIR}/Bolloon.md" ]; then
     echo "${CLAUDE_PROJECT_DIR}"
     exit 0
   fi

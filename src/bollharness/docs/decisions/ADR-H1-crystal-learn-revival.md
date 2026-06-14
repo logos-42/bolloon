@@ -48,7 +48,7 @@ H 系列实施 11 天累积，Nature 已超载；reviewer / coordinator 角色�
 
 ## §2 决策本质
 
-把"何时触发 crystal-learn"从隐式人脑依赖转为显式 prompt-level checklist，**写进 lead/SKILL.md**（CLAUDE.md 隐式默认加载，70% adherence baseline）。继承 ADR-041 v1.0 "调字不加机制" + H4 INV-H4-3 "禁 hook/metrics/review-contract"。
+把"何时触发 crystal-learn"从隐式人脑依赖转为显式 prompt-level checklist，**写进 lead/SKILL.md**（Bolloon.md 隐式默认加载，70% adherence baseline）。继承 ADR-041 v1.0 "调字不加机制" + H4 INV-H4-3 "禁 hook/metrics/review-contract"。
 
 具体：
 

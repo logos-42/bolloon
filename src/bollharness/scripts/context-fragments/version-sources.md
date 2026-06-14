@@ -4,7 +4,7 @@
 
 | 版本号 | 权威来源 | 必须同步的位置 |
 |--------|----------|----------------|
-| MCP Python | `mcp-server/pyproject.toml` | CLAUDE.md 引用 |
+| MCP Python | `mcp-server/pyproject.toml` | Bolloon.md 引用 |
 | MCP Node | `mcp-server-node/package.json` | 必须与 Python 版本一致 |
 | 后端 API | `backend/product/protocol/service.py` | /protocol 元数据返回 |
 | 前端 | `website/package.json` | 部署产物 BUILD_ID |

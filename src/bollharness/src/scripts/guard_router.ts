@@ -10,7 +10,7 @@ export const GUARD_MAP: Record<string, string[]> = {
   "docs/issues/": ["check_issue_closure"],
   "backend/product/routes/": ["check_doc_freshness"],
   "docs/ROADMAP.md": ["check_doc_freshness"],
-  "CLAUDE.md": ["check_doc_freshness"],
+  "Bolloon.md": ["check_doc_freshness"],
   "docs/magic/": ["check_doc_freshness"],
   ".boll/rules/backend-routes.md": ["check_doc_freshness"],
   ".boll/settings.json": ["check_hook_installed"],

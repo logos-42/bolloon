@@ -21,7 +21,7 @@ for example: trace-analyzer proposals, magic-doc rebuild, doc-freshness scan, me
 This is a **pull surface**, not a push notification. The predecessor hook
 `session-start-toolkit-reminder.ts` injected the same content every ~3 hours whether the user
 wanted it or not; that push channel was retired in WP-031 and replaced by this on-demand
-readout. Discoverability is preserved (the kernel CLAUDE.md points at `/toolkit`); context
+readout. Discoverability is preserved (the kernel Bolloon.md points at `/toolkit`); context
 pollution is eliminated (zero bytes cost until the user invokes).
 
 ## Sub-commands

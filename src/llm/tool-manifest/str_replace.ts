@@ -16,7 +16,7 @@ export const str_replace: ToolManifest = {
   parameters: [
     { name: 'description', type: 'string', required: true, description: '为什么我要做这个编辑' },
     { name: 'old_str', type: 'string', required: true, description: '要被替换的字符串 (必须唯一)' },
-    { name: 'new_str', type: 'string', required: true, description: '新字符串 (空字符串 = 删除)' },
+    { name: 'new_str', type: 'string', required: true, description: '新字符串 (空字符串 = 删除)', default: '' },
     { name: 'path', type: 'string', required: true, description: '文件路径' },
   ],
   callExample: `[TOOL:str_replace]

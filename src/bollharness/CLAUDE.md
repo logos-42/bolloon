@@ -1,4 +1,4 @@
-﻿# CLAUDE.md — bollharness
+﻿# Bolloon.md — bollharness
 
 bollharness 是一个 **AI Agent Session 治理框架**——通过 Claude Code hooks、guards、上下文路由和安装器，给任意项目加装结构化的 agent 行为约束。
 

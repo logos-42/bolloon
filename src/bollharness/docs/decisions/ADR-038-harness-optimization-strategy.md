@@ -74,7 +74,7 @@
 
 | 数据点 | 数值 | 含义 |
 |--------|------|------|
-| CLAUDE.md 遵从率 | ~10-20% | 最大 token 投入（11.9k）的 80-90% 被忽略 |
+| Bolloon.md 遵从率 | ~10-20% | 最大 token 投入（11.9k）的 80-90% 被忽略 |
 | Convention 层占比 | 53% (73/138 issue) | 超过一半的治理靠最弱的执行层 |
 | Guard 层占比 | 9.2% (13/138 issue) | 最强执行层覆盖不到十分之一 |
 | ADR-030 自身合规率 | 50-60% (Round 5) | 治理系统只遵守自己一半的规则 |
@@ -101,7 +101,7 @@ Solo 的三个精确失败点（来源: Anthropic 文章 §Solo Run）：
 
 ### 1.2 根因
 
-**R1: 投入分配倒挂** — 最多精力投入遵从率最低的层（CLAUDE.md 规则文字），而非最高的层（guard 代码）。
+**R1: 投入分配倒挂** — 最多精力投入遵从率最低的层（Bolloon.md 规则文字），而非最高的层（guard 代码）。
 [来源: OpenAI "给 agent 地图，不是千页手册" — https://openai.com/index/harness-engineering/]
 
 **R2: 没有负反馈循环** — Harness 组件只有"增加"路径，没有"移除"路径。Anthropic 验证：从 Sonnet 4.5（V1）升级到 Opus 4.5（V2）后移除了 Sprint 分解——组件必要性随模型能力变化。
@@ -249,7 +249,7 @@ Round 1 QA 发现的三个精确 bug（代码行号级别）：
 
 | 能力 | 现状 | 价值 |
 |------|------|------|
-| `@include` 指令 | ❌ | CLAUDE.md 引用外部文件，不复制内容 |
+| `@include` 指令 | ❌ | Bolloon.md 引用外部文件，不复制内容 |
 | `.claude/rules/*.md` + `paths` | ❌ | 目录级规则（不同 scene 不同规则） |
 | `PreCompact` hook | ❌ | compact 时保留关键信息 |
 | HTML 注释 `<!-- -->` | ❌ | 只供人类阅读，不消耗 token |
@@ -294,7 +294,7 @@ Round 1 QA 发现的三个精确 bug（代码行号级别）：
 | 插件 | 核心价值 | 子结构 |
 |------|---------|-------|
 | **skill-creator** | Skill eval+benchmark+迭代循环 | 3 子 agent（Grader/Analyzer/Comparator）+ `run_loop.py` 描述优化 + eval-viewer 人类审查 |
-| **claude-md-management** | CLAUDE.md 6 维质量审计 | Commands (20) / Architecture (20) / Patterns (15) / Conciseness (15) / Currency (15) / Actionability (15) = A-F 等级 |
+| **claude-md-management** | Bolloon.md 6 维质量审计 | Commands (20) / Architecture (20) / Patterns (15) / Conciseness (15) / Currency (15) / Actionability (15) = A-F 等级 |
 | **ralph-loop** | Stop hook + completion promise 自动迭代 | 读 transcript JSONL → 提取 `<promise>` tag → 未完成则 increment iteration + feed same prompt |
 | **feature-dev** | 7 阶段特性开发 | Discovery → Exploration (2-3 parallel agents) → **Clarifying Questions (HARD GATE)** → Architecture (2-3 agents: minimal/clean/pragmatic) → Implementation (需 user approval) → Review (3 parallel reviewers: simplicity/DRY, bugs/correctness, conventions) → Summary |
 | **pr-review-toolkit** | 6 独立 reviewer agent | code-reviewer (compliance+bugs, ≥80 置信度), code-simplifier (clarity+DRY, opus), comment-analyzer (comment rot), pr-test-analyzer (behavioral coverage, 1-10 criticality), silent-failure-hunter (CRITICAL/HIGH/MEDIUM), type-design-analyzer (4 维各 1-10: Encapsulation/Expression/Usefulness/Enforcement) |
@@ -307,7 +307,7 @@ Round 1 QA 发现的三个精确 bug（代码行号级别）：
 
 | 来源 | 核心贡献 | 对我们的直接价值 | URL |
 |------|---------|----------------|-----|
-| **OpenAI Codex** (3 篇) | "给 agent 地图，不是千页手册"；100 万行代码+1500 PR | CLAUDE.md 越长越无效 | https://openai.com/index/harness-engineering/ |
+| **OpenAI Codex** (3 篇) | "给 agent 地图，不是千页手册"；100 万行代码+1500 PR | Bolloon.md 越长越无效 | https://openai.com/index/harness-engineering/ |
 | **Stripe Minions** (2 篇) | **"Walls matter more than the model"**——确定性约束比更好的模型更重要。Blueprint: agentic+deterministic 交替。每周 1300+ PR | 确定性 checkpoint 设计 | https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents |
 | **LangChain** (3 篇) | 只改 harness: 52.8%→66.5%。PreCompletionChecklist + LoopDetection + LocalContext | **3 个 middleware 模式** | https://blog.langchain.com/improving-deep-agents-with-harness-engineering/ |
 | **Trail of Bits** | 201 skills，15 bugs/week→200 bugs/week。AI Maturity Level 3 = agent 全自动分析+triage+report | Skill 设计 + 成熟度分级 | https://github.com/trailofbits/skills |
@@ -366,7 +366,7 @@ https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agent
 - Just-in-time 加载：维护轻量标识符（文件路径、查询），运行时用工具加载数据
 - Subagent 返回压缩摘要（**1,000-2,000 tokens**）而非完整上下文
 
-**对我们的价值**: 我们的 v3 PreCompact hook 关注"保留什么"（正确），但忽略了 context rot 的本质——不是信息丢失，是注意力分散。11.9k token 的 CLAUDE.md 本身就是 context rot 来源。@include 拆分（D3.1）不只是省 token，更是减少 rot。这给 D3.1 增加了一个新的优化目标维度。
+**对我们的价值**: 我们的 v3 PreCompact hook 关注"保留什么"（正确），但忽略了 context rot 的本质——不是信息丢失，是注意力分散。11.9k token 的 Bolloon.md 本身就是 context rot 来源。@include 拆分（D3.1）不只是省 token，更是减少 rot。这给 D3.1 增加了一个新的优化目标维度。
 
 #### 2.4.3 Trace Analyzer Skill
 
@@ -421,7 +421,7 @@ https://arxiv.org/html/2602.16666v1
 - **Prompt brittleness paradox**: 模型处理真实基础设施故障比处理同义语义改写更好
 - 多轮评估方法：每任务 5 次不同 seed + 5 种语义等价改写 + 20% API 故障注入
 
-**对我们的价值**: 我们没有可靠性维度的测量。目前只有"是否遵从规则"（binary），没有"在多大程度上可重复"（continuous）。Prompt brittleness paradox 也解释了为什么 CLAUDE.md 规则遵从率低——同一规则的不同表述，遵从率可能差异巨大。这指向 v3 D1 metrics 之上的下一层测量维度。
+**对我们的价值**: 我们没有可靠性维度的测量。目前只有"是否遵从规则"（binary），没有"在多大程度上可重复"（continuous）。Prompt brittleness paradox 也解释了为什么 Bolloon.md 规则遵从率低——同一规则的不同表述，遵从率可能差异巨大。这指向 v3 D1 metrics 之上的下一层测量维度。
 
 ---
 
@@ -436,7 +436,7 @@ https://arxiv.org/html/2602.16666v1
 [来源: Anthropic 元原则 + V2 移除 Sprint 的实际案例]
 
 ### 3.3 遵从率阶梯决定投入分配
-blocking hooks (~100%) > advisory (~40-60%) > CLAUDE.md (~10-20%)。一条 guard > 十条 CLAUDE.md 规则。
+blocking hooks (~100%) > advisory (~40-60%) > Bolloon.md (~10-20%)。一条 guard > 十条 Bolloon.md 规则。
 [来源: boll Round 3 自研数据 — deploy.sh 无 hook 遵从率 3%, 有 hook ~100%]
 
 ### 3.4 分离生产者和评估者
@@ -645,16 +645,16 @@ Hook 返回 `updatedPermissions` 可在运行时按上下文动态授权。例�
 
 工具调用失败时记录失败模式，累积数据后可识别系统性问题。
 
-### D3: CLAUDE.md 重构
+### D3: Bolloon.md 重构
 
 **假设被测试**：11.9k token 的 80-90% 被忽略。
 [来源: OpenAI — "Give Codex a map, not a 1,000-page instruction manual"]
-[来源: boll Round 3 — CLAUDE.md 遵从率 ~10-20%]
+[来源: boll Round 3 — Bolloon.md 遵从率 ~10-20%]
 
 #### D3.1: @include 拆分
 
 ```markdown
-# CLAUDE.md (核心 — 只保留最高优先级规则)
+# Bolloon.md (核心 — 只保留最高优先级规则)
 
 ## 不可妥协的约束
 (精简到真正被违反过的高价值规则)
@@ -715,9 +715,9 @@ paths:
 
 `<!-- -->` 自动剥离，不消耗 token。
 
-#### D3.4: 已有 guard 覆盖的规则从 CLAUDE.md 删除
+#### D3.4: 已有 guard 覆盖的规则从 Bolloon.md 删除
 
-Guard 遵从率 ~100%，CLAUDE.md ~10-20%。重复写是浪费 token。
+Guard 遵从率 ~100%，Bolloon.md ~10-20%。重复写是浪费 token。
 
 ### D4: Evaluator 架构（V2 设计）
 
@@ -855,7 +855,7 @@ _Keep this file in sync with backend/product/routes/ — list all active routes 
 | Guard | 最近 N 个 WP findings = 0 | — |
 | Fragment | 最近 N 个 WP 注入 < 3 次 | — |
 | Skill | 最近 N 个 WP 调用 = 0 | — |
-| CLAUDE.md 规则 | 已有 guard 覆盖 → 删除 | 高违反率+可自动化 → 写 guard |
+| Bolloon.md 规则 | 已有 guard 覆盖 → 删除 | 高违反率+可自动化 → 写 guard |
 
 [SC-3 合规：事件驱动而非日历驱动]
 
@@ -878,9 +878,9 @@ _Keep this file in sync with backend/product/routes/ — list all active routes 
 这是 Anthropic Generator-Evaluator 架构的直接工程实现。
 [来源: CC skill-creator 插件 — Grader/Analyzer/Comparator 三子 agent + run_loop.py]
 
-#### D6.4: CLAUDE.md 质量审计（claude-md-management）
+#### D6.4: Bolloon.md 质量审计（claude-md-management）
 
-**触发条件**（事件驱动）：当 CLAUDE.md 或 @include 文件被编辑后触发；或累积 N 个 session 的 Reflection 数据后触发。
+**触发条件**（事件驱动）：当 Bolloon.md 或 @include 文件被编辑后触发；或累积 N 个 session 的 Reflection 数据后触发。
 
 用 CC 官方插件审计：6 维评分（Commands 20 / Architecture 20 / Patterns 15 / Conciseness 15 / Currency 15 / Actionability 15）→ A-F 等级。
 [来源: CC claude-md-management 插件 — quality-criteria.md]
@@ -1192,7 +1192,7 @@ Session 结束
   ├─ 累积 N WP 数据 → Load-Bearing 审计 (D6.1 移除 + D10 新增)
   ├─ Trace Analyzer 触发 → 失败模式分析 → 提议 harness 变更 (D10) [v4]
   ├─ Skill Creator eval 循环 → Skill 质量提升
-  ├─ CLAUDE.md 审计 → 6 维评分
+  ├─ Bolloon.md 审计 → 6 维评分
   └─ Prompt Tuning 积累 → "Eventually the prompt is the product"
 ```
 
@@ -1347,7 +1347,7 @@ docs/reference/
 | 2 | CC 28 hook events | Stop/PreCompact/UserPromptSubmit/SessionEnd/PostToolUseFailure/PermissionRequest/FileChanged | hooks.json | 生产就绪 |
 | 3 | CC agent hook type | agentic verifier for Stop | hooks.json | 生产就绪 |
 | 4 | CC asyncRewake | 后台监控，发现问题才中断 | 候选 | 生产就绪 |
-| 5 | CC @include | CLAUDE.md 引用外部文件 | CLAUDE.md 拆分 | 生产就绪 |
+| 5 | CC @include | Bolloon.md 引用外部文件 | Bolloon.md 拆分 | 生产就绪 |
 | 6 | CC .claude/rules/ | 目录级规则 + paths | bridge/coaching/hackathon | 生产就绪 |
 | 7 | CC attribution | Co-Authored-By | settings.json | 生产就绪 |
 | 8 | CC Verification Agent | 对抗性验证 prompt + 5 种 rationalization 模式 | Stop hook 参考 | 生产就绪 |
@@ -1417,7 +1417,7 @@ docs/reference/
 
 本 ADR 的方法论适用于任何使用 Claude Code 的项目：
 
-**可迁移**：D1 测量 / D2 hook 配置模式 / D3 CLAUDE.md 拆分 / D4 Evaluator 循环 / D5 Magic Docs / D6 自我进化 / D7 官方插件
+**可迁移**：D1 测量 / D2 hook 配置模式 / D3 Bolloon.md 拆分 / D4 Evaluator 循环 / D5 Magic Docs / D6 自我进化 / D7 官方插件
 
 **不可迁移**：具体 guard 规则 / 具体 fragment 内容 / 具体 Grading Criteria 权重
 
@@ -1579,7 +1579,7 @@ v4 把多个 source 的概念归到了"Anthropic 第二篇"，实际上：
 | 决策 | v4 状态 | v5 闭环 | 实现位置 |
 |------|--------|---------|---------|
 | **D2.4** if 条件过滤 | ❌ deferred ("ADR 给了 spec 没做") | ✅ 实施 | `.claude/settings.json` PreToolUse Bash + `scripts/hooks/auto-python3.py` |
-| **D3.1** CLAUDE.md @include 拆分 | ❌ deferred | ✅ 11 个 rule 文件 | `.claude/rules/*.md`（subagent 独立完成） |
+| **D3.1** Bolloon.md @include 拆分 | ❌ deferred | ✅ 11 个 rule 文件 | `.claude/rules/*.md`（subagent 独立完成） |
 | **D5.1** Magic Docs 模式 | ❌ deferred | ✅ 实施 | `docs/magic/api-routes.md` + `scripts/checks/regenerate_magic_docs.py` |
 | **D5.2** SessionStart 漂移检测 | ❌ deferred | ✅ 实施 | `scripts/hooks/session-start-magic-docs.py` |
 | **D8** features schema 三字段 | ⚠️ "形式 70%, 本意 30%" — 缺 `steps[]`/`verification_command`/`evidence` | ✅ schema 已扩展 | `scripts/hooks/initializer-agent.py` + `scripts/hooks/stop-evaluator.py` |
@@ -1607,13 +1607,13 @@ v4 把多个 source 的概念归到了"Anthropic 第二篇"，实际上：
 }
 ```
 
-**意义**：把"裸 python 命令必须重写为 python3"从规则提示（CLAUDE.md §4.1）变成机械化拦截。命中率从 ~10-20% 升到 100%。
+**意义**：把"裸 python 命令必须重写为 python3"从规则提示（Bolloon.md §4.1）变成机械化拦截。命中率从 ~10-20% 升到 100%。
 
 ---
 
-### §12.2 — D3.1 CLAUDE.md @include 拆分（subagent 独立完成）
+### §12.2 — D3.1 Bolloon.md @include 拆分（subagent 独立完成）
 
-**v4 spec**（§4 D3.1）：把单 CLAUDE.md 拆为 `.claude/rules/*.md`，按路径条件加载（CC 的 directory-level instructions 机制）。
+**v4 spec**（§4 D3.1）：把单 Bolloon.md 拆为 `.claude/rules/*.md`，按路径条件加载（CC 的 directory-level instructions 机制）。
 
 **v5 实施**：派遣 background subagent 完成拆分。最终结构：
 
@@ -1627,7 +1627,7 @@ v4 把多个 source 的概念归到了"Anthropic 第二篇"，实际上：
 | `closure-semantics.md` | 1KB | 改 `docs/issues/*.md` 时 |
 | `coaching.md` / `deployment.md` / `hackathon.md` / `scenes.md` / `source-of-truth.md` | < 2KB | 各自路径触发 |
 
-**结果**：CLAUDE.md 从 600+ 行降到 144 行（slim 76%）。每个 session 不再"一次加载 11.9k tokens 全部规则"，而是按需加载相关条目。
+**结果**：Bolloon.md 从 600+ 行降到 144 行（slim 76%）。每个 session 不再"一次加载 11.9k tokens 全部规则"，而是按需加载相关条目。
 
 **KV-cache 友好性**（来源: Anthropic Effective Context Engineering）：常见上下文片段稳定不变 → cache hit 率提升。
 
@@ -1695,7 +1695,7 @@ def _check_magic_docs(repo_root: Path) -> list[Finding]:
 
 **意义**：派生文档不再需要"靠 AI 记得手动同步"，而是 (a) regenerator 命令一键 rebuild + (b) freshness check 自动检测漂移 + (c) SessionStart 在 session 开始时主动告警。这是治理强度从 convention（10-20%）升到 guard（~100%）。
 
-**Pre-existing bug 顺手修了**：原 `check_doc_freshness.py` 的 route count check 仍然 grep CLAUDE.md，但 routes 已经拆到 `.claude/rules/backend-routes.md` 了。修正后改为读 rules 文件。
+**Pre-existing bug 顺手修了**：原 `check_doc_freshness.py` 的 route count check 仍然 grep Bolloon.md，但 routes 已经拆到 `.claude/rules/backend-routes.md` 了。修正后改为读 rules 文件。
 
 ---
 
@@ -1993,7 +1993,7 @@ def main() -> int:
 |------|------|------|
 | `.claude/settings.json` | hooks 配置 | 7 events / 13 hook entries（v4 → v5 增加 4 entry） |
 | `scripts/hooks/auto-python3.py` | PreToolUse Bash if-filter | D2.4 — 自动 `python *` → `python3 *` |
-| `.claude/rules/*.md`（11 files） | 路径触发 rules | D3.1 — CLAUDE.md 拆分 |
+| `.claude/rules/*.md`（11 files） | 路径触发 rules | D3.1 — Bolloon.md 拆分 |
 | `docs/magic/api-routes.md` | Magic Doc | D5.1 reference impl |
 | `scripts/checks/regenerate_magic_docs.py` | regenerator | D5.1 — `--check` 模式支持 freshness |
 | `scripts/checks/check_doc_freshness.py` | freshness 集成 | D5.1 — 加 `_check_magic_docs()` + 修复 routes 路径 |

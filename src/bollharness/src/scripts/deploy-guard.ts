@@ -134,7 +134,7 @@ function block(reason: string, host: string | null = null): void {
   Demo 正式: bash scripts/deploy-demo.sh <name> --channel prod --yes
   Demo 内测: bash scripts/deploy-demo.sh <name> --channel preview --yes
   Edge/Nginx: bash scripts/deploy-edge.sh --yes
-详见 CLAUDE.md Development Commands。`;
+详见 Bolloon.md Development Commands。`;
   } else if (BRIDGE_VPS_HOSTS.includes(host ?? "")) {
     guidance = `Bridge VPS 必须走 git pull 更新路径：
   ssh root@${host} 'sudo -u boll git -C /opt/boll pull --ff-only'

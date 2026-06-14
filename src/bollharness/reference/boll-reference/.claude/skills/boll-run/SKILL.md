@@ -153,7 +153,7 @@ tests/convergence_poc/simulations/real/run_NNN/
 
 ### 3.4 预组装提示词
 
-从项目根目录执行（即 CLAUDE.md 所在目录）：
+从项目根目录执行（即 Bolloon.md 所在目录）：
 
 ```bash
 python3 tests/convergence_poc/simulations/real/assemble_prompts.py \

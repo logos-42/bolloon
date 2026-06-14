@@ -63,7 +63,7 @@ truth_policy:
 
 遇到信息冲突时，按这个优先级判断：
 
-1. `CLAUDE.md`
+1. `Bolloon.md`
 2. `MEMORY.md`
 3. `docs/INDEX.md`
 4. 最近的 `docs/issues/*.md`、`docs/decisions/*.md`、`docs/reviews/**/*.md`

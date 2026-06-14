@@ -20,9 +20,9 @@ v1.0 是干净重写。v0.1/v0.2/v0.3 全部 superseded，**不**作为参考实
 
 四件事，没有别的：
 
-### D1: CLAUDE.md 加「老板心态」硬规则（§零）
+### D1: Bolloon.md 加「老板心态」硬规则（§零）
 
-`CLAUDE.md` 的 §一（不可妥协约束）之前插入新的 §零，约 30 行，明确：
+`Bolloon.md` 的 §一（不可妥协约束）之前插入新的 §零，约 30 行，明确：
 
 > 你是技术主管，你有 Codex 这个员工。每接到任务先问"能不能 Codex 干"。默认假设 Codex 能干。
 
@@ -41,7 +41,7 @@ v1.0 是干净重写。v0.1/v0.2/v0.3 全部 superseded，**不**作为参考实
 
 1. **前端 React 组件结构 / 交互逻辑 / 新页面或新 feature 的实现** — Codex 前端小错多
 2. **跨模块数据流穿透**（前端 → API → DB） — Codex 类型对齐 ≠ 数据流通的元失败模式
-3. **审美决策 / `nature-designer` 流程** — CLAUDE.md §一 1.2
+3. **审美决策 / `nature-designer` 流程** — Bolloon.md §一 1.2
 
 红线之外的任务，main agent 决定要不要分流，不强制。
 
@@ -60,7 +60,7 @@ GitHub main branch protection 必须开启（禁直接 push main、禁 force pus
 
 ### D4: AGENTS.md 派生 + 双配置同步
 
-Codex 不读 `CLAUDE.md`。在仓根的 `AGENTS.md` 加一段从 `CLAUDE.md` 抽取的 Codex 必知子集（路径、commit 双语、python3、浅色主题、3 条红线）。手动维护即可，不写自动同步脚本——一周复盘时顺便对一遍。
+Codex 不读 `Bolloon.md`。在仓根的 `AGENTS.md` 加一段从 `Bolloon.md` 抽取的 Codex 必知子集（路径、commit 双语、python3、浅色主题、3 条红线）。手动维护即可，不写自动同步脚本——一周复盘时顺便对一遍。
 
 ## 3. 不做的事（明确砍掉）
 
@@ -81,7 +81,7 @@ Codex 不读 `CLAUDE.md`。在仓根的 `AGENTS.md` 加一段从 `CLAUDE.md` 抽
 
 | # | 文件 | 改动 |
 |---|---|---|
-| C1 | `CLAUDE.md` | 在 §一 之前插入 §零「老板心态」硬段 |
+| C1 | `Bolloon.md` | 在 §一 之前插入 §零「老板心态」硬段 |
 | C2 | `.claude/agents/codex-dev.md` | 顶部加 3 条红线 |
 | C3 | `AGENTS.md` | 加「Codex 必知子集」一节（红线 + commit 双语 + python3 + 浅色主题） |
 | C4 | ChatGPT Pro 控制台 | Nature 手动配置 5 个 Automation（D3 表）+ 验证 main branch protection 已开 |
@@ -113,7 +113,7 @@ C1/C2/C3 由本 ADR 同 commit 一起做。C4 由 Nature 手动完成，做完�
 
 - ADR-038 D11 — 审查 agent 工具隔离，与本 ADR 正交（本 ADR 不动审查门，Codex 不参与审查）
 - <EXTERNAL_PIPELINE_REDACTED> — Automation 下游消费方示例（已脱敏移除）
-- `CLAUDE.md §四 4.3` — subagent 模型约束。codex-dev 是**执行类**而非判断类 subagent，不受 4.3 opus 约束（这一句加到 4.3 末尾的例外子句里，由 C1 顺手做）
+- `Bolloon.md §四 4.3` — subagent 模型约束。codex-dev 是**执行类**而非判断类 subagent，不受 4.3 opus 约束（这一句加到 4.3 末尾的例外子句里，由 C1 顺手做）
 - `memory/feedback_codex_quality_issues.md` / `feedback_codex_error_patterns_crystal_learn.md` — Codex 已知失败模式，沉淀在 memory 而不是 hook
 
 ## 8. 失败模式记录（v0.1 → v0.3 教训）
@@ -123,6 +123,6 @@ C1/C2/C3 由本 ADR 同 commit 一起做。C4 由 Nature 手动完成，做完�
 1. **审查门 PEHK 规则在小决策上反向放大**：「任一 reviewer P0 → BLOCK」逼出"每轮按红队最大威胁假设加机制"的循环
 2. **没人喊停**：作者在 Gate 流程里默认遵循 reviewer，没意识到原始诉求只需要 100 行 ADR
 3. **威胁模型不显式**：v0.3 才补 §2.0 威胁模型，但已经是在过度工程之上的防御
-4. **Skill 状态机鼓励完整性**：lead skill 的 Gate 0→8 完整流程对"30 分钟级别的偏好调整"是过度的——快速通道（CLAUDE.md §零行为约束 2.2）的 5 条触发条件应该被本 ADR 命中
+4. **Skill 状态机鼓励完整性**：lead skill 的 Gate 0→8 完整流程对"30 分钟级别的偏好调整"是过度的——快速通道（Bolloon.md §零行为约束 2.2）的 5 条触发条件应该被本 ADR 命中
 
 教训沉淀到 `feedback_review_driven_complexity_inflation.md`，将来类似规模的 ADR 直接走快速通道，不开 Gate 2 三角审查。

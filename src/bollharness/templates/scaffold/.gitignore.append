@@ -13,4 +13,4 @@
 .claude/
 !.claude/settings.json
 !.claude/settings.json.template
-!.claude/CLAUDE.md.template
+!.claude/Bolloon.md.template
