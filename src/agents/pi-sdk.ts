@@ -48,6 +48,8 @@ import { injectJudgmentGate, recordJudgmentUsage } from '../pi-ecosystem-judgmen
 import { monitorAfterReply } from '../pi-ecosystem-judgment/monitor-gate.js';
 // Bootstrap 生命周期 hook (SessionStart / Stop / PreToolUse)
 import { onSessionStart, onStop, onPreToolUse } from '../pi-ecosystem-judgment/human-value-pipeline.js';
+// React Harness: 8-gate + 4-guard (防越权 / 防 prompt 注入)
+import { ReactHarness } from '../security/react-harness.js';
 
 // Pi Ecosystem Integration (lazy imports - initialized on demand)
 // Functions from: createGoal, getCurrentGoal, completeCurrentGoal, failCurrentGoal, getGoalStats, getQueueSummary
@@ -577,6 +579,8 @@ class PiAgentSession implements AgentSession {
   private coordinator = new AgentCoordinator(3);
   private harness: any = null;
   private harnessEnabled = false;
+  /** 8-gate + 4-guard 集中调度 (防越权 / 防 prompt 注入) */
+  private reactHarness: ReactHarness = new ReactHarness();
   private usePivotLoop: boolean = false;
   private pivotLoopConfig?: PivotLoopConfig;
 
@@ -719,9 +723,13 @@ class PiAgentSession implements AgentSession {
       const { createBollharnessIntegration } = await import('../bollharness-integration/index.js');
       this.harness = createBollharnessIntegration();
       this.harnessEnabled = true;
+      // ReactHarness 已用 bollharness, 这里也记一份以供 archive 调用
+      this.reactHarness = new ReactHarness({ harnessEnabled: true, gateEnabled: true });
     } catch (e) {
       console.warn('[PiAgentSession] Harness initialization failed:', e);
       this.harnessEnabled = false;
+      // 失败 fallback: 走纯 8-gate (不带 bollharness 的 8-gate 工作流)
+      this.reactHarness = new ReactHarness({ harnessEnabled: false, gateEnabled: true });
     }
   }
 
@@ -1270,6 +1278,14 @@ ${this.getToolDefinitions()}
       onStream({ type: 'status', content: '🔄 开始 ReAct 循环...', tool: 'system' });
     }
 
+    // React Harness: 循环开始 (重置 turn 计数 + 触发 harness sessionStart)
+    // 失败静默 (fail-open), 不阻塞主循环
+    try {
+      await this.reactHarness.onSessionStart(this.currentChannelId || undefined);
+    } catch (err) {
+      console.warn('[PiAgent] reactHarness.onSessionStart failed (non-fatal):', err);
+    }
+
     while (iteration < this.MAX_REACT_ITERATIONS) {
       iteration++;
 
@@ -1402,9 +1418,83 @@ ${toolDefs}
           console.warn('[PiAgent] onPreToolUse failed (non-fatal, allowing):', err);
         }
 
+        // React Harness: 8-gate + builtin-guards 校验 (在 PreToolUse 之后, 串接双层)
+        // 失败静默, 拒绝时不调 tool.execute
         try {
-          const result = await tool.execute(toolCall.args);
+          const pre = await this.reactHarness.preToolCall(
+            toolCall.name,
+            toolCall.args || {},
+            this.currentChannelId || undefined
+          );
+          if (!pre.allowed) {
+            const deniedResult: ToolResult = {
+              success: false,
+              error: `Harness gate 拒绝 (${pre.details.rejectedBy}): ${pre.reason || '未通过安全校验'}`,
+            };
+            this.messageHistory.push({
+              role: 'tool',
+              content: JSON.stringify(deniedResult),
+              toolResult: deniedResult,
+            });
+            this.logToHarness(toolCall.name, toolCall.args, deniedResult);
+            if (onStream) {
+              onStream({
+                type: 'error',
+                content: `🛡️ Harness ${pre.details.rejectedBy} 拒绝 ${toolCall.name}: ${pre.reason || '安全校验失败'}`,
+                tool: toolCall.name,
+              });
+            }
+            console.warn(`[PiAgent] Harness denied ${toolCall.name} (${pre.details.rejectedBy}): ${pre.reason}`);
+            continue;
+          }
+        } catch (err) {
+          console.warn('[PiAgent] reactHarness.preToolCall failed (non-fatal, allowing):', err);
+        }
+
+        try {
+          let result = await tool.execute(toolCall.args);
           console.log(`[PiAgent] 工具 ${toolCall.name} 执行完成: success=${result.success}`);
+
+          // Context router: 拿最近一次 preToolCall 算的 hint, 拼到 tool result messageHistory
+          // (LLM 下次看到 tool result 时, 能"记得"这次调用的安全约束)
+          const routeHint = this.reactHarness.getLastRouteHint();
+          if (routeHint && routeHint.systemAddition) {
+            this.messageHistory.push({
+              role: 'system',
+              content: `[Harness Router Hint: ${routeHint.reason}]\n${routeHint.systemAddition}`,
+            });
+            this.reactHarness.clearRouteHint();
+          }
+
+          // React Harness: post-tool call (output 审计: secret leak 等)
+          // 拒绝时 result.output 含敏感 → 替换为 generic message, 不污染 messageHistory
+          try {
+            const post = await this.reactHarness.postToolCall(
+              toolCall.name,
+              String(result.output || ''),
+              this.currentChannelId || undefined
+            );
+            if (!post.allowed) {
+              if (onStream) {
+                onStream({
+                  type: 'error',
+                  content: `🛡️ Harness output 拒绝 ${toolCall.name}: ${post.reason || '输出含敏感信息'}`,
+                  tool: toolCall.name,
+                });
+              }
+              console.warn(`[PiAgent] Harness output denied ${toolCall.name}: ${post.reason}`);
+              // 替换 result: success 仍保留 (tool 本身没错), 但 output 改成 generic
+              // 这样 LLM 下轮看 output 不会拿到秘密, 但 success 标志让它知道 "工具执行了"
+              result = {
+                ...result,
+                output: `[harness output gate: output 含敏感内容, 已屏蔽. 原因: ${post.reason || 'unknown'}]`,
+                _harnessDenied: true,
+              } as typeof result;
+            }
+          } catch (err) {
+            console.warn('[PiAgent] reactHarness.postToolCall failed (non-fatal, allowing):', err);
+          }
+
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result });
           this.logToHarness(toolCall.name, toolCall.args, result);
 
@@ -1549,6 +1639,14 @@ Workspace root folder: ${this.cwd}
     finalResponse = identityPrefix + finalResponse;
 
     this.messageHistory.push({ role: 'assistant', content: finalResponse });
+
+    // React Harness: 循环结束
+    try {
+      await this.reactHarness.onSessionEnd();
+    } catch (err) {
+      console.warn('[PiAgent] reactHarness.onSessionEnd failed (non-fatal):', err);
+    }
+
     return finalResponse;
   }
 
