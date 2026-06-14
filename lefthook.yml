@@ -13,6 +13,10 @@ pre-commit:
     tsc-check:
       glob: "src/**/*.{ts,tsx}"
       run: npx tsc --noEmit
+    # system-prompt 字符上限 + 版本标记 + hibsml 脱除 (layer 改动时触发)
+    validate-prompt-layers:
+      glob: "src/llm/system-prompt/layers/**/*.md"
+      run: npx tsx -r dotenv/config scripts/validate-system-prompt.ts
 
 pre-push:
   parallel: true

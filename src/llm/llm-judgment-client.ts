@@ -7,10 +7,32 @@
 
 import { llmConfigStore, type ModelProvider } from './config-store.js';
 import { PiAIModel, type ChatMessage } from './pi-ai.js';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LAYERS_DIR = path.join(__dirname, 'system-prompt', 'layers');
+
+/**
+ * 从 layer 读 .md 文件作为系统 prompt
+ * 失败时降级到兜底字符串 (不挂)
+ */
+async function loadRoleLayer(layerId: string, fallback: string): Promise<string> {
+  const [group, ...rest] = layerId.split('.');
+  const path2md = path.join(LAYERS_DIR, group, `${rest.join('.')}.md`);
+  try {
+    return await fs.readFile(path2md, 'utf-8');
+  } catch {
+    return fallback;
+  }
+}
 
 export interface JudgmentPromptConfig {
-  // 系统 Prompt
+  // 系统 Prompt (静态字符串, 向后兼容)
   systemPrompt: string;
+  // 系统 Prompt resolver (优先于 systemPrompt; 异步从 layer 读)
+  systemPromptResolver?: () => Promise<string>;
 
   // 用户 Prompt 模板
   userPromptTemplate: string;
@@ -29,16 +51,8 @@ export interface JudgmentPromptConfig {
 export const JUDGMENT_PROMPTS: Record<string, JudgmentPromptConfig> = {
   // 默认判断 Prompt
   default: {
-    systemPrompt: `你是一个专业的 AI 任务分析专家。你的职责是深入理解用户的问题，并给出精准的判断。
-
-核心原则：
-1. 第一性原理：追问问题的本质，而非表面现象
-2. 多角度思考：考虑不同视角和影响因素
-3. 上下文感知：理解对话历史和隐含意图
-4. 动态评估：根据实际情况判断复杂性
-
-你的判断会影响后续的智能体协作方式，请认真分析。`,
-
+    systemPrompt: '',
+    systemPromptResolver: () => loadRoleLayer('role.expert', '你是一个专业的 AI 任务分析专家. '),
     userPromptTemplate: `【当前输入】
 {user_input}
 
@@ -95,17 +109,8 @@ export const JUDGMENT_PROMPTS: Record<string, JudgmentPromptConfig> = {
 
   // 架构相关问题
   architecture: {
-    systemPrompt: `你是一个经验丰富的系统架构师。你擅长：
-- 从需求中提取本质问题
-- 设计可扩展的系统架构
-- 权衡技术方案
-- 识别架构风险
-
-你相信：
-- 本质和实现必须分离
-- 好的架构从简单规则中生长
-- 复杂性应该被控制而非消除`,
-
+    systemPrompt: '',
+    systemPromptResolver: () => loadRoleLayer('role.architect', '你是一个经验丰富的系统架构师. '),
     userPromptTemplate: `【架构设计问题】
 {user_input}
 
@@ -133,12 +138,8 @@ export const JUDGMENT_PROMPTS: Record<string, JudgmentPromptConfig> = {
 
   // 代码相关问题
   code: {
-    systemPrompt: `你是一个高效的代码实现专家。你擅长：
-- 快速理解和实现需求
-- 编写清晰、可维护的代码
-- 遵循最佳实践
-- 处理边界情况`,
-
+    systemPrompt: '',
+    systemPromptResolver: () => loadRoleLayer('role.implementer', '你是一个高效的代码实现专家. '),
     userPromptTemplate: `【代码问题】
 {user_input}
 
@@ -162,12 +163,8 @@ export const JUDGMENT_PROMPTS: Record<string, JudgmentPromptConfig> = {
 
   // 安全相关问题
   security: {
-    systemPrompt: `你是一个严格的安全专家。你擅长：
-- 识别安全风险
-- 评估威胁模型
-- 设计安全方案
-- 遵循安全最佳实践`,
-
+    systemPrompt: '',
+    systemPromptResolver: () => loadRoleLayer('role.security', '你是一个严格的安全专家. '),
     userPromptTemplate: `【安全问题】
 {user_input}
 
@@ -300,8 +297,12 @@ export class LLMJudgmentClient {
 
     try {
       // 调用 LLM
+      // 优先用 systemPromptResolver (从 layer 读), fallback 静态 systemPrompt
+      const systemPrompt = this.promptConfig.systemPromptResolver
+        ? await this.promptConfig.systemPromptResolver()
+        : this.promptConfig.systemPrompt;
       const messages: ChatMessage[] = [
-        { role: 'system', content: this.promptConfig.systemPrompt },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ];
 

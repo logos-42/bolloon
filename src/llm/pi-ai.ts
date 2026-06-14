@@ -41,7 +41,7 @@ export class PiAIModel {
   }
 
   async chat(message: string, context?: string, signal?: AbortSignal): Promise<ChatResult> {
-    const systemPrompt = this.buildSystemPrompt(context);
+    const systemPrompt = await this.buildSystemPromptAsync(context);
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: message }
@@ -356,6 +356,33 @@ export class PiAIModel {
     return this.callOllama(messages, temperature, signal);
   }
 
+  private async buildSystemPromptAsync(context?: string): Promise<string> {
+    // 走 layer registry: 装配所有相关 layer (身份/行为/工具/角色/渠道)
+    try {
+      const { assembleSystemPrompt, SYSTEM_PROMPT_VERSION } = await import(
+        './system-prompt/registry.js' as any
+      ).catch(() => import('./system-prompt/registry.js'));
+      // channel = 本机 (PI SDK 直接调就是 local)
+      // role = 由 prompt context 决定 (默认 expert)
+      const ctx = context ? { channel: 'local' as const, role: 'expert' as const } : { channel: 'local' as const, role: 'expert' as const };
+      const result = await assembleSystemPrompt(ctx);
+      return `${result.text}\n\n## User Working Directory\n${context || process.cwd()}\n\n## bolloon-runtime\n${SYSTEM_PROMPT_VERSION} · layers: ${result.layerIds.join(',')}`;
+    } catch (err: any) {
+      // 降级: 旧硬编码 (layer registry 不可用时不挂)
+      console.warn('[pi-ai] layer registry 不可用, 降级:', err.message?.slice(0, 100));
+      const envDetails = this.getEnvironmentDetails();
+      return `You are a friendly AI assistant in a P2P document collaboration network.
+
+## User Working Directory
+${context || process.cwd()}
+
+## Environment
+${envDetails}`;
+    }
+  }
+
+  // 同步版: 旧调用点 (buildSystemPrompt 是同步)
+  // 保留但内部用 sync fallback; 后续可改成 async
   private buildSystemPrompt(context?: string): string {
     const envDetails = this.getEnvironmentDetails();
     return `You are a friendly AI assistant in a P2P document collaboration network.
