@@ -94,6 +94,28 @@ export class P2PDirect extends EventEmitter {
       conn.on('data', (chunk: Buffer | Uint8Array) => {
         const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         console.log(`[P2PDirect:${this.name}] 收到数据 from ${remotePubKeyHex.substring(0,12)}... (${buf.length} bytes)`);
+        // P-Action 3: untrusted-input scanner (默认 silence-on-fail + log-only)
+        // 包装层 跨机器 @-mention 代发 (已 WORKING) 不能 block-on-suspicion
+        try {
+          // 动态 import 避免循环依赖 + 启动时加载
+          // (lazy require to keep cold-start fast)
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { scanInput, writeScanAudit, shouldHardBlock } = require('../security/input-scanner.js') as typeof import('../security/input-scanner.js');
+          const result = scanInput(buf, { source: 'p2p' });
+          if (shouldHardBlock(result)) {
+            console.warn(`[P2PDirect:${this.name}] 阻断恶意消息 from ${remotePubKeyHex.substring(0,12)}... (verdict=${result.verdict}, threats=${result.threats.length})`);
+            writeScanAudit(result, { fromPublicKey: remotePubKeyHex, blocked: true }).catch(() => { /* silent */ });
+            return;  // 不 emit('data'), 跨机中转不传播
+          }
+          if (result.verdict !== 'pass') {
+            // log-only: 仍然 emit('data'), 但写 audit 留痕
+            writeScanAudit(result, { fromPublicKey: remotePubKeyHex, blocked: false }).catch(() => { /* silent */ });
+            console.log(`[P2PDirect:${this.name}] 输入扫描 verdict=${result.verdict} (${result.threats.length} threats) from ${remotePubKeyHex.substring(0,12)}... (audit-only)`);
+          }
+        } catch (err) {
+          // scanner 自身挂掉 → 静默, 不阻断
+          console.warn(`[P2PDirect:${this.name}] input scanner failed (silent, fail-safe):`, err);
+        }
         this.emit('data', {
           data: buf,
           fromPublicKey: remotePubKeyHex,
