@@ -1,0 +1,29 @@
+# lefthook.yml — Bolloon 源码护栏 (阶段 C 护栏 1)
+#
+# 用户授权装(2026-06-14 决定阶段 C 护栏全套)
+# 触发: git commit / git push
+# 目的: LLM 自动改的代码在进库前先过 vitest + tsc,坏就拦
+
+pre-commit:
+  parallel: true
+  commands:
+    vitest-bail:
+      glob: "src/**/*.{ts,tsx,js}"
+      run: npx vitest run --bail=1 --reporter=dot
+    tsc-check:
+      glob: "src/**/*.{ts,tsx}"
+      run: npx tsc --noEmit
+
+pre-push:
+  parallel: true
+  commands:
+    vitest-full:
+      run: npx vitest run --reporter=dot
+    build-check:
+      run: npm run build:main
+    tag-baseline:
+      run: |
+        if ! git tag -l "auto-evolve-baseline-*" | head -1 | grep -q .; then
+          echo "❌ 没有 auto-evolve-baseline-* tag. 先跑: bash scripts/auto-evolve-snapshot.sh"
+          exit 1
+        fi

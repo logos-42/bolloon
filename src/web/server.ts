@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import {
   HyperswarmCommunicator,
   createHyperswarmCommunicator,
@@ -4772,6 +4773,84 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // 阶段 B: 周报 (weekly-report.ts 产物) — 仅 API 读取, 不做 UI tab
+  // GET /api/reports           → { files: ['2026-W24.md', ...] }
+  // GET /api/reports/2026-W24  → { week, content }
+  app.get('/api/reports', async (_req, res) => {
+    try {
+      const dir = path.join(os.homedir(), '.bolloon', 'reports');
+      try {
+        const entries = await fs.readdir(dir);
+        const files = entries
+          .filter((f) => f.endsWith('.md'))
+          .sort()
+          .reverse(); // 新的在前
+        res.json({ dir, files });
+      } catch {
+        res.json({ dir, files: [] });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/reports/:week', async (req, res) => {
+    try {
+      const week = req.params.week;
+      // 严格校验, 防路径穿越
+      if (!/^\d{4}-W\d{1,2}$/.test(week)) {
+        return res.status(400).json({ error: 'week must match YYYY-Www' });
+      }
+      const file = path.join(os.homedir(), '.bolloon', 'reports', `${week}.md`);
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        res.json({ week, content, length: content.length });
+      } catch {
+        res.status(404).json({ error: 'not found', week });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 阶段 C 护栏 5: auto-evolve baseline 管理 (无 UI, 仅 API)
+  // GET    /api/auto-evolve/baselines             → 列出所有 baseline tag
+  // GET    /api/auto-evolve/baselines/:tag/diff  → 看某 baseline 的 diff 摘要
+  // POST   /api/auto-evolve/rollback {tag}       → 回滚到指定 baseline
+  app.get('/api/auto-evolve/baselines', async (_req, res) => {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const pExec = promisify(execFile);
+      const { stdout } = await pExec('git', [
+        'tag', '-l', 'auto-evolve-baseline-*', '--format=%(refname:short)|%(contents)|%(objectname:short)|%(taggerdate:iso)',
+      ], { cwd: process.cwd() });
+      const tags = stdout.trim().split('\n').filter(Boolean).map((line) => {
+        const [tag, msg, sha, date] = line.split('|');
+        return { tag, message: msg || '', sha, date };
+      });
+      res.json({ tags, count: tags.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/auto-evolve/baselines/:tag/diff', async (req, res) => {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const pExec = promisify(execFile);
+      const tag = req.params.tag;
+      if (!/^auto-evolve-baseline-[\w-]+$/.test(tag)) {
+        return res.status(400).json({ error: 'tag must match auto-evolve-baseline-*' });
+      }
+      const { stdout } = await pExec('git', ['show', '--stat', '--no-color', tag], { cwd: process.cwd() });
+      res.json({ tag, diff: stdout.slice(0, 5000) }); // 限长 5KB
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Bootstrap Context → 拼好的 system prompt 片段 (供调试看注入效果)
   app.get('/api/bolloon/context/system-prompt', async (req, res) => {
     try {
@@ -4794,8 +4873,11 @@ app.get('/channels', async (_req, res) => {
 
   // 自适应接受/拒绝: 写 evolution.jsonl 留痕, 接受时同时 patch judgments.json
   // body: { action: 'accept'|'reject'|'revert', suggestion, appliedPatch? }
+  // query: ?auto=1  → 类 B 自动路径, 受 auto-evolve-policy 网关保护
+  //         缺省    → 用户在 UI 手动触发, 不查开关 (避免阻塞用户)
   app.post('/api/judgments/adaptive-apply', async (req, res) => {
     try {
+      const isAuto = req.query.auto === '1' || req.query.auto === 'true';
       const { action, suggestion, appliedPatch } = req.body as {
         action: 'accept' | 'reject' | 'revert';
         suggestion: { judgmentId: string; kind: string; decision: string; reason: string; action: string; metrics: unknown; scannedAt: string; key: string };
@@ -4812,6 +4894,21 @@ app.get('/channels', async (_req, res) => {
       );
       // accept 时: 真正改库
       if (action === 'accept') {
+        // 阶段 A: 自动路径需先过 auto-evolve-policy 网关
+        if (isAuto) {
+          const { requireDataLayerAutoEvolve } = await import(
+            '../utils/auto-evolve-policy.js'
+          );
+          try {
+            await requireDataLayerAutoEvolve('adaptive-apply.auto.deprecate');
+          } catch (err: any) {
+            return res.status(423).json({
+              error: 'data-layer-auto-evolve-disabled',
+              message: err.message,
+              hint: '设 BOLLOON_AUTO_EVOLVE_DATA=1 或在 self-improve-policy.json 加 dataLayerAutoEvolve: true',
+            });
+          }
+        }
         if (suggestion.action === 'deprecate') {
           // 标记 superseded (语义: 不再用, 但保留可回滚)
           await updateJudgmentStatus(suggestion.judgmentId, 'superseded', {
