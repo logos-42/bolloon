@@ -48,6 +48,7 @@ import { injectJudgmentGate, recordJudgmentUsage } from '../pi-ecosystem-judgmen
 import { monitorAfterReply } from '../pi-ecosystem-judgment/monitor-gate.js';
 // Bootstrap 生命周期 hook (SessionStart / Stop / PreToolUse)
 import { onSessionStart, onStop, onPreToolUse } from '../pi-ecosystem-judgment/human-value-pipeline.js';
+import { onPostToolUse, onJudgmentInjected, onMonitorViolation } from '../bootstrap/lifecycle-hooks.js';
 import { budgetReduce, snip, microcompact } from '../context-compaction/index.js';
 // React Harness: 8-gate + 4-guard (防越权 / 防 prompt 注入)
 import { ReactHarness } from '../security/react-harness.js';
@@ -576,6 +577,10 @@ class PiAgentSession implements AgentSession {
   private readonly MAX_REACT_ITERATIONS = 100;
   private readonly MAX_REFINE_ATTEMPTS = 3;
   private readonly QUALITY_THRESHOLD = 0.6;
+  /** P1: 上下文溢出阈值 (单轮估算 token 数, 超过则强制终止防止 prompt-too-long) */
+  private readonly MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD = 60_000;  // 60K tokens 上限
+  /** P1: max output token 升级重试 (LLM 截断时重试, 最多 3 次) */
+  private readonly MAX_OUTPUT_TOKEN_ESCALATION_RETRIES = 3;
   private thinkingEngine = new DeepThinkingEngine(3);
   private coordinator = new AgentCoordinator(3);
   private harness: any = null;
@@ -1322,6 +1327,31 @@ ${this.getToolDefinitions()}
     while (iteration < this.MAX_REACT_ITERATIONS) {
       iteration++;
 
+      // 停止条件 1: max turns
+      if (iteration >= this.MAX_REACT_ITERATIONS) {
+        console.warn(`[PiAgent] 达到最大循环数 ${this.MAX_REACT_ITERATIONS}, 强制终止`);
+        onStream?.({ type: 'error', content: `⏹️ 达到最大循环数 (${this.MAX_REACT_ITERATIONS})`, tool: 'loop' });
+        finalResponse = finalResponse || '(本轮 ReAct 循环达到最大步数, 强制结束)';
+        break;
+      }
+
+      // 停止条件 2: signal.aborted (显式 abort / 用户中断)
+      if (signal?.aborted) {
+        console.warn('[PiAgent] runReActLoop aborted by signal');
+        onStream?.({ type: 'error', content: '⏹️ 用户中断', tool: 'loop' });
+        finalResponse = finalResponse || '(用户中断)';
+        break;
+      }
+
+      // 停止条件 3: context overflow (估算后超 budget 太多, 不能继续)
+      const estimatedTokens = this.estimateHistoryTokens();
+      if (estimatedTokens > this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD) {
+        console.warn(`[PiAgent] context overflow (${estimatedTokens} tokens > ${this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD})`);
+        onStream?.({ type: 'error', content: `⏹️ 上下文溢出 (${estimatedTokens} tokens, 阈值 ${this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD})`, tool: 'loop' });
+        finalResponse = finalResponse || '(本轮 ReAct 循环因上下文溢出终止)';
+        break;
+      }
+
       // 调试日志：显示每次循环开始
       console.log(`[PiAgent] 循环 ${iteration}/${this.MAX_REACT_ITERATIONS} 开始`);
       if (onStream) {
@@ -1368,8 +1398,13 @@ ${toolDefs}
 - 当任务完成时，必须在回答末尾添加 <final gen> 标记表示结束
 - 如果需要更多信息，继续调用工具${this.judgmentGateAddition}`;
 
-      const response = await llm.chat(context, systemPrompt, signal);
-      const reply = response.reply.trim();
+      // 3 个恢复机制 (Claude Code 论文 9-step pipeline 内部):
+      //   1. max output token 升级 (最多 3 次, 每次 maxOutputTokens 翻倍)
+      //   2. reactive compaction (prompt 估算超阈值, 跑压缩)
+      //   3. prompt-too-long (LLM 报错 4xxx token 错误, 跑 reactive compaction 再试 1 次)
+      // 失败静默: 全部重试失败 → 空 reply (上层用 no tool_use 终止)
+      const response = await this.callLlmWithRecovery(llm, context, systemPrompt, signal, onStream);
+      const reply = (response.reply || '').trim();
 
       console.log(`[PiAgent] LLM 回复长度: ${reply.length}, 内容预览: "${reply.substring(0, 80)}..."`);
       console.log(`[PiAgent] LLM 完整回复:\n${reply}`);
@@ -1490,8 +1525,26 @@ ${toolDefs}
         }
 
         try {
+          const toolStart = Date.now();
           let result = await tool.execute(toolCall.args);
-          console.log(`[PiAgent] 工具 ${toolCall.name} 执行完成: success=${result.success}`);
+          const toolDurationMs = Date.now() - toolStart;
+          console.log(`[PiAgent] 工具 ${toolCall.name} 执行完成: success=${result.success} (${toolDurationMs}ms)`);
+
+          // PostToolUse 审计 hook: 写 audit log, 默认 continue
+          try {
+            await onPostToolUse({
+              tool: toolCall.name,
+              args: toolCall.args || {},
+              result: {
+                success: result.success,
+                output: result.output?.substring(0, 500),
+                error: result.error,
+              },
+              durationMs: toolDurationMs,
+            });
+          } catch (postErr) {
+            console.warn('[PiAgent] onPostToolUse failed (non-fatal):', postErr);
+          }
 
           // Context router: 拿最近一次 preToolCall 算的 hint, 拼到 tool result messageHistory
           // (LLM 下次看到 tool result 时, 能"记得"这次调用的安全约束)
@@ -1757,6 +1810,84 @@ Workspace root folder: ${this.cwd}
       }
       return m.content;
     }).join('\n');
+  }
+
+  /**
+   * 估算 messageHistory 的 token 数 (4 字符 ≈ 1 token, 与 context-compaction 同步).
+   * 失败静默: 任何异常 → 0 (不阻塞)
+   */
+  private estimateHistoryTokens(): number {
+    try {
+      const { estimateTokens } = require('../context-compaction/index.js') as typeof import('../context-compaction/index.js');
+      return estimateTokens(this.messageHistory as any);
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * 3 个恢复机制合一:
+   *   1. max output token 升级: 最多 3 次, 每次 maxOutputTokens 翻倍 (如果 llm.chat 支持)
+   *   2. reactive compaction: 估算 > 80% 阈值, 跑 sync compressHistorySync + 必要时 maybeAutoCompact
+   *   3. prompt-too-long: LLM 报错 4xxx token 错误, 跑 reactive compaction 再试 1 次
+   *
+   * 失败静默: 全部失败 → 返回空 reply, 让上层 no-tool_use 终止
+   */
+  private async callLlmWithRecovery(
+    llm: any,
+    context: string,
+    systemPrompt: string,
+    signal: AbortSignal | undefined,
+    onStream?: (chunk: any) => void
+  ): Promise<{ reply: string }> {
+    // Reactive compaction 预检: 估算 token 超 80% 阈值, 跑一次
+    const estimated = this.estimateHistoryTokens();
+    if (estimated > this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD * 0.8) {
+      console.warn(`[PiAgent] reactive compaction pre-check (${estimated} tokens > 80% threshold)`);
+      onStream?.({ type: 'status', content: '⚠️ reactive compaction 预检触发', tool: 'recovery' });
+      try {
+        const compacted = this.compressHistorySync(this.messageHistory);
+        this.messageHistory = compacted;
+        if (this.estimateHistoryTokens() > this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD * 0.8) {
+          await this.maybeAutoCompact(onStream, signal);
+        }
+      } catch (err) {
+        console.warn('[PiAgent] reactive compaction pre-check failed:', err);
+      }
+    }
+
+    // 主调用 + 3 个恢复路径
+    let lastErr: any = null;
+    for (let attempt = 0; attempt <= this.MAX_OUTPUT_TOKEN_ESCALATION_RETRIES; attempt++) {
+      try {
+        const response = await llm.chat(context, systemPrompt, signal);
+        return { reply: response.reply || '' };
+      } catch (err: any) {
+        lastErr = err;
+        const errMsg = String(err?.message || err || '');
+        const isPromptTooLong = /token|too long|exceed|length|context|4000|413|429/i.test(errMsg);
+        if (isPromptTooLong) {
+          console.warn(`[PiAgent] prompt-too-long 触发 (attempt ${attempt + 1}), 跑 reactive compaction`);
+          onStream?.({ type: 'status', content: `⚠️ prompt-too-long 触发 (attempt ${attempt + 1}/${this.MAX_OUTPUT_TOKEN_ESCALATION_RETRIES + 1})`, tool: 'recovery' });
+          try {
+            await this.maybeAutoCompact(onStream, signal);
+          } catch (compactionErr) {
+            console.warn('[PiAgent] reactive compaction on prompt-too-long failed:', compactionErr);
+          }
+          // 重新生成 context (compressHistorySync + projected)
+          context = this.buildContext();
+        } else {
+          // 非 prompt-too-long 错误, 1 次重试就放弃
+          if (attempt === 0) {
+            console.warn(`[PiAgent] LLM 调用失败 (non-prompt-too-long), 1 次重试:`, err);
+            continue;
+          }
+          break;
+        }
+      }
+    }
+    console.warn('[PiAgent] callLlmWithRecovery 全失败 (silent):', lastErr);
+    return { reply: '' };
   }
 
   /**

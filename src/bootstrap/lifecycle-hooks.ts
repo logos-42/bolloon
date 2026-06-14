@@ -170,3 +170,120 @@ export async function onPreToolUse(opts: PreToolUseOptions): Promise<PreToolUseR
 export function getStopLogPathForTest(): string {
   return STOP_LOG;
 }
+
+// ============================================================
+// PostToolUse (P+ : 工具调用后审计)
+// ============================================================
+
+export interface PostToolUseOptions {
+  tool: string;
+  args: Record<string, unknown>;
+  result: { success: boolean; output?: string; error?: string };
+  durationMs?: number;
+}
+
+export interface PostToolUseResult {
+  /** 是否允许继续 (false = abort 整个 ReAct 循环) */
+  continue: boolean;
+  reason?: string;
+}
+
+/**
+ * PostToolUse: 工具调用后审计
+ * 默认 always continue. 项目可挂 shell-guard audit log / judgment 注入门 / 监控门
+ * 失败静默: 任何异常 → continue: true (不阻塞主循环)
+ */
+export async function onPostToolUse(opts: PostToolUseOptions): Promise<PostToolUseResult> {
+  try {
+    // 审计日志: 写 ~/.bolloon/sessions/post-tool-audit.jsonl
+    const fs = await import('fs/promises');
+    const os = await import('os');
+    const path = await import('path');
+    const file = path.join(
+      process.env.HOME || os.homedir() || '/tmp',
+      '.bolloon', 'sessions', 'post-tool-audit.jsonl'
+    );
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const entry = {
+      ts: new Date().toISOString(),
+      tool: opts.tool,
+      success: opts.result.success,
+      durationMs: opts.durationMs ?? 0,
+      // 不写 args (可能含密钥), 只写 result 的 success/error
+      error: opts.result.error?.substring(0, 200) || null,
+    };
+    await fs.appendFile(file, JSON.stringify(entry) + '\n', 'utf-8').catch(() => { /* ignore */ });
+    return { continue: true };
+  } catch (err) {
+    console.warn('[lifecycle-hooks] onPostToolUse failed (silent, allowing):', err);
+    return { continue: true };
+  }
+}
+
+// ============================================================
+// JudgmentInjected (bolloon 独有 : 注入门使用时审计)
+// ============================================================
+
+export interface JudgmentInjectedOptions {
+  judgmentIds: string[];
+  channelId?: string;
+  userInput?: string;
+}
+
+export async function onJudgmentInjected(opts: JudgmentInjectedOptions): Promise<void> {
+  try {
+    const fs = await import('fs/promises');
+    const os = await import('os');
+    const path = await import('path');
+    const file = path.join(
+      process.env.HOME || os.homedir() || '/tmp',
+      '.bolloon', 'sessions', 'judgment-injected.jsonl'
+    );
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const entry = {
+      ts: new Date().toISOString(),
+      channelId: opts.channelId || 'unknown',
+      judgmentIds: opts.judgmentIds,
+      userInputSnippet: (opts.userInput || '').substring(0, 200),
+    };
+    await fs.appendFile(file, JSON.stringify(entry) + '\n', 'utf-8').catch(() => { /* ignore */ });
+  } catch (err) {
+    console.warn('[lifecycle-hooks] onJudgmentInjected failed (silent):', err);
+  }
+}
+
+// ============================================================
+// MonitorViolation (bolloon 独有 : 监控门审计违规)
+// ============================================================
+
+export interface MonitorViolationOptions {
+  channelId?: string;
+  judgmentId: string;
+  rule: string;
+  actualBehavior: string;
+  severity: 'low' | 'medium' | 'high';
+}
+
+export async function onMonitorViolation(opts: MonitorViolationOptions): Promise<void> {
+  try {
+    const fs = await import('fs/promises');
+    const os = await import('os');
+    const path = await import('path');
+    const file = path.join(
+      process.env.HOME || os.homedir() || '/tmp',
+      '.bolloon', 'sessions', 'monitor-violation.jsonl'
+    );
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const entry = {
+      ts: new Date().toISOString(),
+      channelId: opts.channelId || 'unknown',
+      judgmentId: opts.judgmentId,
+      rule: opts.rule.substring(0, 200),
+      actualBehavior: opts.actualBehavior.substring(0, 200),
+      severity: opts.severity,
+    };
+    await fs.appendFile(file, JSON.stringify(entry) + '\n', 'utf-8').catch(() => { /* ignore */ });
+  } catch (err) {
+    console.warn('[lifecycle-hooks] onMonitorViolation failed (silent):', err);
+  }
+}
