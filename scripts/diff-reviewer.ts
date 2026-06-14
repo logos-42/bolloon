@@ -15,7 +15,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { Anthropic } from '@anthropic-ai/sdk';
+// Anthropic SDK 在 review() 里 lazy import — 无 API key 或没装 SDK 都不应炸
 
 const STAGING_DIR = 'staging/auto-evolve';
 const ENV_KEY_MODEL = 'AUTO_EVOLVE_REVIEW_MODEL';
@@ -47,21 +47,34 @@ DIFF:
 {{DIFF}}
 `;
 
+function degradedGrepReview(patchContent: string): { verdict: string; concerns: string[]; suggestions: string[]; raw: string } {
+  console.warn('[diff-reviewer] ⚠️ 降级 grep 检查 (无 API key 或无 SDK)');
+  const concerns: string[] = [];
+  if (/\+.*\bany\b/.test(patchContent)) concerns.push('使用了 any');
+  if (/\+.*\b@ts-ignore\b/.test(patchContent)) concerns.push('使用了 @ts-ignore');
+  if (/\+.*\bconsole\.log\b/.test(patchContent)) concerns.push('留了 console.log');
+  if (/\-.*test\(/.test(patchContent)) concerns.push('删除了测试');
+  return {
+    verdict: concerns.length > 0 ? 'FAIL' : 'PASS',
+    concerns,
+    suggestions: [],
+    raw: '(degraded grep mode)',
+  };
+}
+
 async function review(patchContent: string, model: string): Promise<{ verdict: string; concerns: string[]; suggestions: string[]; raw: string }> {
+  // 无 API key → 直接降级, 不 import SDK (避免 no-ANTHROPIC 环境下也炸)
   if (!process.env.ANTHROPIC_API_KEY) {
-    // 无 API key 时降级: 用 grep 做粗筛 (兜底, 不真审)
-    console.warn('[diff-reviewer] ⚠️ 无 ANTHROPIC_API_KEY, 降级 grep 检查');
-    const concerns: string[] = [];
-    if (/\+.*\bany\b/.test(patchContent)) concerns.push('使用了 any');
-    if (/\+.*\b@ts-ignore\b/.test(patchContent)) concerns.push('使用了 @ts-ignore');
-    if (/\+.*\bconsole\.log\b/.test(patchContent)) concerns.push('留了 console.log');
-    if (/\-.*test\(/.test(patchContent)) concerns.push('删除了测试');
-    return {
-      verdict: concerns.length > 0 ? 'FAIL' : 'PASS',
-      concerns,
-      suggestions: [],
-      raw: '(degraded grep mode)',
-    };
+    return degradedGrepReview(patchContent);
+  }
+
+  // 有 API key → 尝试 lazy import SDK
+  let Anthropic: any;
+  try {
+    ({ Anthropic } = await import('@anthropic-ai/sdk'));
+  } catch (err) {
+    console.warn('[diff-reviewer] ⚠️ @anthropic-ai/sdk 未装, 降级 grep');
+    return degradedGrepReview(patchContent);
   }
 
   const client = new Anthropic();
