@@ -17,7 +17,7 @@ export const message_compose_v1: ToolManifest = {
   parameters: [
     { name: 'kind', type: 'enum', required: true, description: 'email | textMessage | other', enumValues: ['email', 'textMessage', 'other'] },
     { name: 'summary_title', type: 'string', required: true, description: '消息的摘要标题' },
-    { name: 'variants', type: 'array', required: true, description: '至少 1 个变体', items: {
+    { name: 'variants', type: 'array', required: true, description: '至少 1 个变体', minItems: 1, items: {
       name: 'variant', type: 'object', required: true, description: '变体', properties: [
         { name: 'label', type: 'string', required: true, description: '变体标签' },
         { name: 'body', type: 'string', required: true, description: '消息内容' },

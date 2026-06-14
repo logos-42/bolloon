@@ -12,10 +12,22 @@ export interface ToolParameter {
   description: string;
   /** 枚举值 (type='enum' 时) */
   enumValues?: string[];
+  /** 默认值 (LLM 不传时用) */
+  default?: string | number | boolean;
   /** 嵌套对象的字段 (type='object' 时) */
   properties?: ToolParameter[];
   /** 数组元素 (type='array' 时) */
   items?: ToolParameter;
+  /** 数组最小项数 (type='array' 时) */
+  minItems?: number;
+  /** 数组最大项数 (type='array' 时) */
+  maxItems?: number;
+  /** 数字最小值 (type='integer'/'number' 时) */
+  minimum?: number;
+  /** 数字最大值 (type='integer'/'number' 时) */
+  maximum?: number;
+  /** 字符串格式约束 (e.g. 'uri', 'date-time') */
+  format?: string;
 }
 
 export interface ToolManifest {

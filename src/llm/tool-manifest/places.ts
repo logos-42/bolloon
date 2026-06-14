@@ -15,15 +15,15 @@ export const places_search: ToolManifest = {
     '只问天气 (用 weather_fetch)',
   ],
   parameters: [
-    { name: 'queries', type: 'array', required: true, description: '1-10 个查询', items: {
+    { name: 'queries', type: 'array', required: true, description: '1-10 个查询', minItems: 1, maxItems: 10, items: {
       name: 'q', type: 'object', required: true, description: '单查询', properties: [
         { name: 'query', type: 'string', required: true, description: '自然语言搜索' },
-        { name: 'max_results', type: 'integer', required: false, description: '1-10, 默认 5' },
+        { name: 'max_results', type: 'integer', required: false, description: '1-10, 默认 5', minimum: 1, maximum: 10, default: 5 }
       ],
     } },
     { name: 'location_bias_lat', type: 'number', required: false, description: '可选纬度' },
     { name: 'location_bias_lng', type: 'number', required: false, description: '可选经度' },
-    { name: 'location_bias_radius', type: 'number', required: false, description: '米 (默认 5000)' },
+    { name: 'location_bias_radius', type: 'number', required: false, description: '米 (默认 5000)', default: 5000 }
   ],
   callExample: `[TOOL:places_search]
 [P:queries]${'${'}JSON.stringify([{"query":"ramen restaurants Tokyo"}])[ENDTOOL]`,
@@ -43,7 +43,7 @@ export const places_map_display_v0: ToolManifest = {
     '只问地点信息 (用 places_search 文字回答)',
   ],
   parameters: [
-    { name: 'locations', type: 'array', required: false, description: '简单标记模式', items: {
+    { name: 'locations', type: 'array', required: false, description: '简单标记模式', minItems: 1, maxItems: 50, items: {
       name: 'loc', type: 'object', required: true, description: '地点', properties: [
         { name: 'name', type: 'string', required: true, description: '地点名' },
         { name: 'latitude', type: 'number', required: true, description: '纬度' },
@@ -52,9 +52,9 @@ export const places_map_display_v0: ToolManifest = {
         { name: 'notes', type: 'string', required: false, description: '你的小贴士' },
       ],
     } },
-    { name: 'days', type: 'array', required: false, description: '行程模式', items: {
+    { name: 'days', type: 'array', required: false, description: '行程模式', minItems: 1, maxItems: 30, items: {
       name: 'day', type: 'object', required: true, description: '单日', properties: [
-        { name: 'day_number', type: 'integer', required: true, description: '天数' },
+        { name: 'day_number', type: 'integer', required: true, description: '天数 (从 1 开始)', minimum: 1 },
         { name: 'title', type: 'string', required: false, description: '日期标题' },
         { name: 'locations', type: 'array', required: true, description: '该日地点', items: { name: 'loc', type: 'object', required: true, description: '地点', properties: [] } },
       ],

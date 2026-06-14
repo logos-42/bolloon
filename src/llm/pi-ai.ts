@@ -377,6 +377,7 @@ export class PiAIModel {
   private async callLocal(messages: ChatMessage[], temperature: number, signal?: AbortSignal): Promise<string> {
     return this.callOllama(messages, temperature, signal);
   }
+  // 注: callLocal 直接代理 ollama. 工具清单由 generateText 在外层拼到 messages, 这里 messages 已是 finalMessages.
 
   private async buildSystemPromptAsync(context?: string): Promise<string> {
     // 走 layer registry: 装配所有相关 layer (身份/行为/工具/角色/渠道)

@@ -16,7 +16,7 @@ export const fetch_sports_data: ToolManifest = {
   ],
   parameters: [
     { name: 'data_type', type: 'enum', required: true, description: 'scores | standings | game_stats', enumValues: ['scores', 'standings', 'game_stats'] },
-    { name: 'game_id', type: 'string', required: false, description: 'SportRadar 比赛 ID (game_stats 必需)' },
+    { name: 'game_id', type: 'string', required: false, description: 'SportRadar 比赛 ID (data_type=game_stats 时必需)' },
     { name: 'league', type: 'enum', required: true, description: 'nfl/nba/nhl/mlb/wnba/ncaafb/ncaamb/ncaawb/epl/la_liga/serie_a/bundesliga/ligue_1/mls/champions_league/tennis/golf/nascar/cricket/mma', enumValues: ['nfl','nba','nhl','mlb','wnba','ncaafb','ncaamb','ncaawb','epl','la_liga','serie_a','bundesliga','ligue_1','mls','champions_league','tennis','golf','nascar','cricket','mma'] },
     { name: 'team', type: 'string', required: false, description: '可选的球队名称' },
   ],

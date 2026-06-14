@@ -20,7 +20,7 @@ export const recipe_display_v0: ToolManifest = {
     { name: 'ingredients', type: 'array', required: true, description: '食材', items: {
       name: 'ing', type: 'object', required: true, description: '食材', properties: [
         { name: 'id', type: 'string', required: true, description: '唯一 ID' },
-        { name: 'amount', type: 'number', required: true, description: '数量' },
+        { name: 'amount', type: 'number', required: true, description: '数量', minimum: 0 },
         { name: 'unit', type: 'enum', required: false, description: 'g/kg/ml/l/tsp/tbsp/cup/fl_oz/oz/lb/pinch', enumValues: ['g','kg','ml','l','tsp','tbsp','cup','fl_oz','oz','lb','pinch'] },
         { name: 'name', type: 'string', required: true, description: '显示名 (整体可数项, 把 counting noun 放在这里)' },
       ],
@@ -30,7 +30,7 @@ export const recipe_display_v0: ToolManifest = {
         { name: 'id', type: 'string', required: true, description: '唯一 ID' },
         { name: 'title', type: 'string', required: true, description: '步骤摘要' },
         { name: 'content', type: 'string', required: true, description: '完整指令 (用 {id} 引用食材)' },
-        { name: 'timer_seconds', type: 'integer', required: false, description: '等待/烹饪计时秒数' },
+        { name: 'timer_seconds', type: 'integer', required: false, description: '等待/烹饪计时秒数', minimum: 0 }
       ],
     } },
     { name: 'notes', type: 'string', required: false, description: '附加说明' },

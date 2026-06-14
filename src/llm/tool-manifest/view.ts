@@ -16,7 +16,7 @@ export const view: ToolManifest = {
   parameters: [
     { name: 'description', type: 'string', required: true, description: '为什么我要查看' },
     { name: 'path', type: 'string', required: true, description: '绝对路径' },
-    { name: 'view_range', type: 'array', required: false, description: '[start, end] 1-indexed, end=-1 表示到末尾', items: { name: 'r', type: 'integer', required: true, description: '行号' } },
+    { name: 'view_range', type: 'array', required: false, description: '[start, end] 1-indexed, end=-1 表示到末尾', minItems: 2, maxItems: 2, items: { name: 'r', type: 'integer', required: true, description: '行号' } }
   ],
   callExample: `[TOOL:view]
 [P:description]读 README

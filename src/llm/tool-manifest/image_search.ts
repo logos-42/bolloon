@@ -16,7 +16,7 @@ export const image_search: ToolManifest = {
     '关于非视觉主题的分析',
   ],
   parameters: [
-    { name: 'max_results', type: 'integer', required: false, description: '返回图片数 (默认 3, 最少 3, 最多 5)' },
+    { name: 'max_results', type: 'integer', required: false, description: '返回图片数 (默认 3, 最少 3, 最多 5)', minimum: 3, maximum: 5, default: 3 },
     { name: 'query', type: 'string', required: true, description: '搜索查询 (3-6 词具体)' },
   ],
   callExample: `[TOOL:image_search]

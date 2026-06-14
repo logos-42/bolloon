@@ -21,8 +21,8 @@ export const ask_user_input_v0: ToolManifest = {
     { name: 'questions', type: 'array', required: true, description: '1-3 个问题', items: {
       name: 'question', type: 'object', required: true, description: '单个问题', properties: [
         { name: 'question', type: 'string', required: true, description: '向用户显示的问题' },
-        { name: 'type', type: 'enum', required: false, description: 'single_select | multi-select | rank_priorities', enumValues: ['single_select', 'multi_select', 'rank_priorities'] },
-        { name: 'options', type: 'array', required: true, description: '2-4 个带短标签的选项', items: {
+        { name: 'type', type: 'enum', required: false, description: 'single_select | multi-select | rank_priorities', enumValues: ['single_select', 'multi_select', 'rank_priorities'], default: 'single_select' },
+        { name: 'options', type: 'array', required: true, description: '2-4 个带短标签的选项', minItems: 2, maxItems: 4, items: {
           name: 'option', type: 'object', required: true, description: '选项', properties: [
             { name: 'label', type: 'string', required: true, description: '短标签' },
             { name: 'description', type: 'string', required: false, description: '选项描述' },

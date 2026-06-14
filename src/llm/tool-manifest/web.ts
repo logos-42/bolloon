@@ -37,8 +37,8 @@ export const web_fetch: ToolManifest = {
     'web_search 已经足够时',
   ],
   parameters: [
-    { name: 'url', type: 'string', required: true, description: '完整 URL (含协议)' },
-    { name: 'text_content_token_limit', type: 'integer', required: false, description: 'token 限制' },
+    { name: 'url', type: 'string', required: true, description: '完整 URL (含协议, https://...)', format: 'uri' },
+    { name: 'text_content_token_limit', type: 'integer', required: false, description: 'token 限制', minimum: 0 },
     { name: 'web_fetch_pdf_extract_text', type: 'boolean', required: false, description: '是否提取 PDF 文本' },
   ],
   callExample: `[TOOL:web_fetch]

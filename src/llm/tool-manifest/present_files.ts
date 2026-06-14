@@ -15,7 +15,7 @@ export const present_files: ToolManifest = {
     '临时或中间文件',
   ],
   parameters: [
-    { name: 'filepaths', type: 'array', required: true, description: '至少 1 个文件路径', items: { name: 'path', type: 'string', required: true, description: '容器内路径' } },
+    { name: 'filepaths', type: 'array', required: true, description: '至少 1 个文件路径', minItems: 1, items: { name: 'path', type: 'string', required: true, description: '容器内路径' } },
   ],
   callExample: `[TOOL:present_files]
 [P:filepaths]${'${'}JSON.stringify(["/home/bolloon/report.md"])[ENDTOOL]`,

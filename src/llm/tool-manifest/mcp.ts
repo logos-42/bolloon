@@ -15,7 +15,7 @@ export const search_mcp_registry: ToolManifest = {
     '用户已指名了已连接的特定服务 (直接用)',
   ],
   parameters: [
-    { name: 'keywords', type: 'array', required: true, description: '搜索关键词', items: { name: 'kw', type: 'string', required: true, description: '关键词' } },
+    { name: 'keywords', type: 'array', required: true, description: '搜索关键词', minItems: 1, items: { name: 'kw', type: 'string', required: true, description: '关键词' } }
   ],
   callExample: `[TOOL:search_mcp_registry]
 [P:keywords]${'${'}JSON.stringify(["calendar","schedule"])[ENDTOOL]`,
@@ -38,7 +38,7 @@ export const suggest_connectors: ToolManifest = {
     '没有 search_mcp_registry 上下文',
   ],
   parameters: [
-    { name: 'uuids', type: 'array', required: true, description: '从 search_mcp_registry 结果的 directoryUuid 复制', items: { name: 'u', type: 'string', required: true, description: 'uuid' } },
+    { name: 'uuids', type: 'array', required: true, description: '从 search_mcp_registry 结果的 directoryUuid 复制', minItems: 1, items: { name: 'u', type: 'string', required: true, description: 'uuid' } }
   ],
   callExample: `[TOOL:suggest_connectors]
 [P:uuids]${'${'}JSON.stringify(["uuid-from-search-result"])[ENDTOOL]`,
