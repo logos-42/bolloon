@@ -131,7 +131,7 @@ async function collectHierarchy(cwd: string): Promise<BolloonContext['hierarchy'
   }
 }
 
-const DEFAULT_HIERARCHY_MERGED_MAX = 4000;  // merged 输出上限, 留给 project-context.ts 进一步截断
+const DEFAULT_HIERARCHY_MERGED_MAX = 2000;  // 4000 → 2000 (P-Action 4), 跟 context-hierarchy.ts DEFAULT_MERGE_MAX_CHARS 对齐
 
 async function collectGit(cwd: string, limit: number): Promise<BolloonContext['git']> {
   const branchOut = await safeExecFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd);

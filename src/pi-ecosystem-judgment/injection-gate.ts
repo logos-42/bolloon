@@ -29,24 +29,46 @@ export interface InjectionGateOptions {
   mode?: 'concise' | 'standard';
   /** 跳过注入 (测试用) */
   skip?: boolean;
+  /**
+   * 单次注入字符硬上限 (P-Action 4 + 路径 1 整合, 2026-06-15).
+   * 默认 1500 字符 (≈ 375 tokens), 超限硬截断 + 加 "已截断" 标记.
+   * 0 = 不限 (仅测试用).
+   */
+  maxChars?: number;
+  /**
+   * 调用方已注入的 source 标记集合 (P-Action 4 路径整合).
+   * 如果传了已含 'value-store' 或 'situational', 路径 1 自动跳过避免重复注入.
+   * 来源: assembleSystemPrompt 输出, pi-sdk 透传.
+   */
+  alreadyInjectedSources?: string[];
 }
 
 export interface InjectionGateResult {
   systemAddition: string;
   usedIds: string[];
   matchedCount: number;
+  /** P-Action 4: 实际是否执行注入 (供调用方记录 / 调试) */
+  didInject: boolean;
+  /** P-Action 4: 跳过的原因 ('already-injected-by-xxx' | 'empty-values' | 'skip' | 'no-input') */
+  skipReason: string | null;
 }
 
 export const DEFAULT_INJECTION_CONFIG = {
   topN: 3,
   mode: 'standard' as 'concise' | 'standard',
   skip: false,
+  maxChars: 1500,
 };
 
 /**
  * 注入门主函数: 给定用户输入, 返回要追加到 system prompt 的文本 + 用到的判断力 id
  *
  * 静默: 任意步骤失败返回空字符串, 不 throw (主对话不阻塞)
+ *
+ * P-Action 4 (2026-06-15) 路径 1 整合:
+ * - maxChars 默认 1500 (≈ 375 tokens), 硬上限
+ * - alreadyInjectedSources 检测: 路径 2/3 已注则跳过, 避免重复
+ * - 返回 didInject + skipReason 供调用方记录
  */
 export async function injectJudgmentGate(
   userInput: string,
@@ -54,15 +76,36 @@ export async function injectJudgmentGate(
   options: InjectionGateOptions = {}
 ): Promise<InjectionGateResult> {
   const cfg = { ...DEFAULT_INJECTION_CONFIG, ...options };
-  if (cfg.skip || !userInput || userInput.trim().length === 0) {
-    return { systemAddition: '', usedIds: [], matchedCount: 0 };
+
+  // 0a. 路径整合: 调用方已通过路径 2/3 注入, 跳过
+  if (cfg.alreadyInjectedSources && cfg.alreadyInjectedSources.length > 0) {
+    const conflict = cfg.alreadyInjectedSources.find((s) =>
+      s === 'value-store' || s === 'situational' || s === 'injection-gate'
+    );
+    if (conflict) {
+      return {
+        systemAddition: '',
+        usedIds: [],
+        matchedCount: 0,
+        didInject: false,
+        skipReason: `already-injected-by-${conflict}`,
+      };
+    }
+  }
+
+  // 0b. 跳过 / 空输入
+  if (cfg.skip) {
+    return { systemAddition: '', usedIds: [], matchedCount: 0, didInject: false, skipReason: 'skip' };
+  }
+  if (!userInput || userInput.trim().length === 0) {
+    return { systemAddition: '', usedIds: [], matchedCount: 0, didInject: false, skipReason: 'no-input' };
   }
 
   try {
     // 1. 拉相关价值观 (已带 weight 排序, Top 10)
     const values = await getRelevantValues(userInput, ctx.domain);
     if (values.length === 0) {
-      return { systemAddition: '', usedIds: [], matchedCount: 0 };
+      return { systemAddition: '', usedIds: [], matchedCount: 0, didInject: false, skipReason: 'empty-values' };
     }
 
     // 2. 选 Top N (按 weight desc)
@@ -72,17 +115,19 @@ export async function injectJudgmentGate(
     //    同一 category+value 可能来自多条 judgment, 取最近一条 active
     const usedIds = await resolveJudgmentIds(top);
 
-    // 4. 拼注入文本
-    const systemAddition = formatInjection(top, cfg.mode, usedIds.length);
+    // 4. 拼注入文本 (P-Action 4: 加 maxChars 硬上限 + source 标记)
+    const systemAddition = formatInjection(top, cfg.mode, usedIds.length, cfg.maxChars);
 
     return {
       systemAddition,
       usedIds,
       matchedCount: values.length,
+      didInject: true,
+      skipReason: null,
     };
   } catch (err) {
     console.warn('[injection-gate] failed (silent fallback):', err);
-    return { systemAddition: '', usedIds: [], matchedCount: 0 };
+    return { systemAddition: '', usedIds: [], matchedCount: 0, didInject: false, skipReason: 'exception' };
   }
 }
 
@@ -122,14 +167,17 @@ async function resolveJudgmentIds(
 function formatInjection(
   values: Array<{ category: string; value: string; weight: number }>,
   mode: 'concise' | 'standard',
-  resolvedCount: number
+  resolvedCount: number,
+  maxChars: number = 1500
 ): string {
   if (values.length === 0) return '';
 
+  // P-Action 4 (2026-06-15) 路径 1 整合: 加 source 标记, 让下游/调试可识别
+  const SOURCE_TAG = '<!-- source: injection-gate -->';
   const header =
     mode === 'concise'
-      ? '\n# 用户判断力原则 (自动注入, 按相关度)\n'
-      : '\n# 用户的判断力原则 (自动注入, 按相关度排序)\n- 适用时主动遵守; 冲突时在回复中说明\n';
+      ? `\n${SOURCE_TAG}\n# 用户判断力原则 (自动注入, 按相关度)\n`
+      : `\n${SOURCE_TAG}\n# 用户的判断力原则 (自动注入, 按相关度排序)\n- 适用时主动遵守; 冲突时在回复中说明\n`;
 
   const lines = values.map((v, i) => {
     if (mode === 'concise') {
@@ -143,7 +191,13 @@ function formatInjection(
       ? `\n# (本轮注入了 ${resolvedCount} 条具体判断力, 已记录以便回溯)\n`
       : '\n';
 
-  return header + lines.join('\n') + footer;
+  let result = header + lines.join('\n') + footer;
+
+  // P-Action 4: maxChars 硬上限 (默认 1500 ≈ 375 tokens)
+  if (maxChars > 0 && result.length > maxChars) {
+    result = result.substring(0, maxChars) + '\n...(注入已截断)';
+  }
+  return result;
 }
 
 // ============================================================
@@ -212,18 +266,24 @@ export async function chatWithJudgmentGate(
   baseSystemPrompt: string,
   ctx: { channelId?: string; domain?: string } = {},
   options: InjectionGateOptions = {}
-): Promise<{ reply: string; usedIds: string[]; matchedCount: number }> {
+): Promise<{ reply: string; usedIds: string[]; matchedCount: number; didInject: boolean; skipReason: string | null }> {
   const gate = await injectJudgmentGate(userInput, ctx, options);
   const systemPrompt = baseSystemPrompt + gate.systemAddition;
 
   const reply = await llm.chat(userInput, systemPrompt);
 
-  // 异步记录使用 (不等)
+  // 异步记录使用 (不等, 仅在确实注入了时)
   if (gate.usedIds.length > 0) {
     recordJudgmentUsage(gate.usedIds, { channelId: ctx.channelId, userInput }).catch(
       (err) => console.warn('[injection-gate] recordJudgmentUsage async failed:', err)
     );
   }
 
-  return { reply: reply.reply, usedIds: gate.usedIds, matchedCount: gate.matchedCount };
+  return {
+    reply: reply.reply,
+    usedIds: gate.usedIds,
+    matchedCount: gate.matchedCount,
+    didInject: gate.didInject,
+    skipReason: gate.skipReason,
+  };
 }

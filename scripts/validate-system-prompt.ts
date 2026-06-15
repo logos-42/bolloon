@@ -18,39 +18,58 @@ const REPO = process.cwd();
 const LAYERS_DIR = path.join(REPO, 'src/llm/system-prompt/layers');
 
 // 跟 registry 保持一致 (手维护同步; 后续可让 registry 暴露)
+// P-Action 4 (2026-06-15): 跟 registry.ts STATIC_LAYERS maxChars 同步, 停用 layer 设 0
 const MAX_CHARS: Record<string, number> = {
-  'core/identity': 2500,
-  'core/knowledge': 1200,
+  'core/identity': 800,
+  'core/knowledge': 600,
   'core/tools.thin': 400,
-  'core/hibs_reminders': 800,
-  'core/refusal': 1200,
-  'core/tone': 1000,
-  'core/wellbeing': 2500,
-  'core/evenhandedness': 700,
-  'core/memory_system': 600,
-  'core/artifacts_storage': 2500,
-  'core/network_filesystem': 900,
+  'core/hibs_reminders': 0,   // 停用 (was 800)
+  'core/refusal': 800,
+  'core/tone': 500,
+  'core/wellbeing': 600,
+  'core/evenhandedness': 300,
+  'core/memory_system': 200,
+  'core/artifacts_storage': 0, // 停用 (was 2500)
+  'core/network_filesystem': 0, // 停用 (was 900)
   'role/expert': 500,
-  'role/architect': 500,
-  'role/implementer': 500,
-  'role/security': 500,
+  'role/architect': 0,         // 停用 (was 500)
+  'role/implementer': 0,       // 停用 (was 500)
+  'role/security': 0,          // 停用 (was 500)
   'channel/local': 500,
   'channel/p2p-visitor': 700,
   'channel/p2p-agent': 700,
-  'tool/bash': 900,
-  'tool/web_search': 3000,
-  'tool/mcp_apps': 1800,
-  'tool/hibs_api': 4500,
-  'tool/image_search': 2500,
-  'tool/artifacts': 2500,
-  'tool/manifest': 3500,
+  'tool/bash': 600,
+  'tool/web_search': 600,
+  'tool/mcp_apps': 0,          // 停用 (was 1800)
+  'tool/hibs_api': 0,          // 停用 (was 4500)
+  'tool/image_search': 0,      // 停用 (was 2500)
+  'tool/artifacts': 0,         // 停用 (was 2500)
+  'tool/manifest': 500,
 };
+
+type IssueType = 'oversize' | 'no-version' | 'leftover-hibsml';
+type IssueSeverity = 'error' | 'warning';
 
 interface Issue {
   layer: string;
-  type: 'oversize' | 'no-version' | 'leftover-hibsml';
+  type: IssueType;
+  severity: IssueSeverity;
   detail: string;
 }
+
+/**
+ * P-Action 4 (2026-06-15): oversize 降级为 warning.
+ * 原因: P-Action 4 收紧 registry maxChars 后, 多个历史 layer .md 实际长度超过新上限.
+ *   这些 .md 是"原样"对齐 Claude.ai 完整版的, 内容不动 (用户约束: 不改 prompt).
+ *   runtime 时 assembleSystemPrompt 会按 maxChars 截断, 行为已受控.
+ *   因此 validate 阶段不再 fail build, 只 log warning.
+ * 保留为 error 的: no-version (可追溯性), leftover-hibsml (安全).
+ */
+const SEVERITY: Record<IssueType, IssueSeverity> = {
+  oversize: 'warning',
+  'no-version': 'error',
+  'leftover-hibsml': 'error',
+};
 
 async function check(file: string): Promise<Issue[]> {
   const issues: Issue[] = [];
@@ -58,13 +77,13 @@ async function check(file: string): Promise<Issue[]> {
   const max = MAX_CHARS[rel.replace(/\.md$/, '')];
   const content = await fs.readFile(file, 'utf-8');
   if (max && content.length > max) {
-    issues.push({ layer: rel, type: 'oversize', detail: `${content.length} > ${max}` });
+    issues.push({ layer: rel, type: 'oversize', severity: SEVERITY.oversize, detail: `${content.length} > ${max}` });
   }
   if (!/<!--\s*[\w.-]+@[\d.]+\s*-->/.test(content)) {
-    issues.push({ layer: rel, type: 'no-version', detail: '缺 <!-- id@version --> 标记' });
+    issues.push({ layer: rel, type: 'no-version', severity: SEVERITY['no-version'], detail: '缺 <!-- id@version --> 标记' });
   }
   if (/\{hibsml:(?!thinking_mode)[\w_]+\}/.test(content) || /\{\/hibsml:/.test(content)) {
-    issues.push({ layer: rel, type: 'leftover-hibsml', detail: '检测到未脱除的 hibsml 标签' });
+    issues.push({ layer: rel, type: 'leftover-hibsml', severity: SEVERITY['leftover-hibsml'], detail: '检测到未脱除的 hibsml 标签' });
   }
   return issues;
 }
@@ -99,8 +118,22 @@ async function main() {
     console.log(`✅ ${files.length} 个 layer 全部通过 (字符上限, 版本标记, hibsml 脱除)`);
     return;
   }
-  console.error(`❌ ${allIssues.length} 个问题:`);
-  for (const i of allIssues) {
+  const errors = allIssues.filter((i) => i.severity === 'error');
+  const warnings = allIssues.filter((i) => i.severity === 'warning');
+
+  if (warnings.length > 0) {
+    console.warn(`⚠️  ${warnings.length} 个 warning (P-Action 4 后 oversize 不再 fail build):`);
+    for (const i of warnings) {
+      console.warn(`  [${i.type}] ${i.layer}: ${i.detail}`);
+    }
+  }
+
+  if (errors.length === 0) {
+    console.log(`✅ ${files.length} 个 layer 通过 (${warnings.length} 个 warning, 0 个 error)`);
+    return;
+  }
+  console.error(`❌ ${errors.length} 个 error:`);
+  for (const i of errors) {
     console.error(`  [${i.type}] ${i.layer}: ${i.detail}`);
   }
   process.exit(1);

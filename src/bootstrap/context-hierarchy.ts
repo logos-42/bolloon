@@ -55,11 +55,15 @@ export const DEFAULT_PATHS: HierarchyPaths = {
   local: '',
 };
 
+/**
+ * 单层字符上限 (P-Action 4 收紧, 阶段 0 把 4 级层次控制在 ≤ 2KB).
+ * 反向截断策略保证 managed 优先, 单层超限由 truncate() 截断.
+ */
 export const DEFAULT_MAX_CHARS: HierarchyChars = {
-  managed: 1500,
-  user: 1500,
-  project: 2500,
-  local: 1500,
+  managed: 700,   // 1500 → 700, 保 bolloon 自身约束
+  user: 500,      // 1500 → 500, 跨项目偏好
+  project: 500,   // 2500 → 500, 项目规则
+  local: 300,     // 1500 → 300, 个人覆盖
 };
 
 // ============================================================
@@ -184,7 +188,11 @@ export interface MergeOptions {
   maxChars?: number;
 }
 
-export const DEFAULT_MERGE_MAX_CHARS = 8000;
+/**
+ * 4 级合并总字符上限 (P-Action 4 收紧, ≤ 2KB ≈ 500 tokens).
+ * 反向截断 (local → project → user → managed) 保证 managed 不丢.
+ */
+export const DEFAULT_MERGE_MAX_CHARS = 2000;
 
 /**
  * 按 4 级顺序 (managed → user → project → local) 拼接为 markdown 片段.

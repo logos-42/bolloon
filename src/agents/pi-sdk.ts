@@ -630,11 +630,13 @@ class PiAgentSession implements AgentSession {
 
     safePhase('gate_compute', { detail: '正在检索相关判断力...' });
     try {
-      const gate = await injectJudgmentGate(input);
+      // P-Action 4 (2026-06-15) 路径 1 整合: 透传 maxChars=1500 (≈ 375 tokens 硬上限)
+      // 路径 2/3 检测由 injection-gate 内部 alreadyInjectedSources 处理 (目前 assembleSystemPrompt 还没注入 value-store 标记, 所以这里不传)
+      const gate = await injectJudgmentGate(input, {}, { maxChars: 1500 });
       this.judgmentGateAddition = gate.systemAddition;
       this.judgmentGateUsedIds = gate.usedIds;
       if (gate.usedIds.length > 0) {
-        safePhase('gate_done', { usedCount: gate.usedIds.length });
+        safePhase('gate_done', { usedCount: gate.usedIds.length, didInject: gate.didInject, skipReason: gate.skipReason });
       }
     } catch (err) {
       console.warn('[PiAgent] judgment gate failed (non-fatal):', err);
