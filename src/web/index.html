@@ -352,6 +352,13 @@
       <div class="messages" id="messages"></div>
 
       <!-- 2026-06-15: 旧 loop-timeline-panel 删除 — 步骤状态条改在每条 AI 消息气泡内挂 step-timeline 组件 -->
+      <!-- 2026-06-16 新增: 循环进度 status bar — 渲染 tool='loop' | 'compactor' | 'recovery' 的 status 事件
+           (只显示系统级循环进度, 不污染每条 AI 消息的 step-timeline) -->
+      <div id="loop-status-bar" class="loop-status-bar" hidden>
+        <span class="loop-status-spinner" aria-hidden="true"></span>
+        <span class="loop-status-text" id="loop-status-text"></span>
+        <span class="loop-status-meta" id="loop-status-meta"></span>
+      </div>
 
       <div class="input-area">
         <div class="input-wrapper">

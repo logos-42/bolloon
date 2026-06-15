@@ -814,7 +814,9 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         dirHint += '语法: 在回复中写 "@渠道名 我要说的话" 即可. 消息会持久化到目标 channel 的 session.\n\n';
       }
       // 2026-06-15: P2P 远端访客路径也用显式 marker 包裹 text
-      const fullPrompt = `${visitorHint}${dirHint}${judgmentHint}\n\n【本轮用户请求】\n${text}\n【请求结束】\n`;
+      // 2026-06-15 二次修: 把 text 放在最前 (与主路径 server.ts:1868 对齐),
+      //   避免 LLM 被 judgmentHint 末尾的 "..." 误判为整个 input 被截断
+      const fullPrompt = `【本轮用户请求】\n${text}\n【请求结束】\n\n${visitorHint}${dirHint}${judgmentHint}\n`;
       let fullResponse = '';
       // v3 新增: 流式 token 节流推给 B — 让 B 看到过程
       let lastFlushAt = 0;

@@ -72,6 +72,47 @@ const messagesEl = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const sidebar = document.getElementById('sidebar');
+// 2026-06-16 新增: 循环进度 status bar (渲染 tool='loop'|'compactor'|'recovery' 的 status 事件)
+const loopStatusBar = document.getElementById('loop-status-bar') as HTMLElement | null;
+const loopStatusText = document.getElementById('loop-status-text');
+const loopStatusMeta = document.getElementById('loop-status-meta');
+
+// 把 status 事件路由到 status bar; 只关心 system 级 (loop/compactor/recovery), 其他静默
+const LOOP_STATUS_TOOLS = new Set(['loop', 'compactor', 'recovery', 'system']);
+function renderLoopStatusBar(tool: string | undefined, content: string | undefined): void {
+  if (!loopStatusBar || !loopStatusText) return;
+  const t = String(tool || '').toLowerCase();
+  if (!LOOP_STATUS_TOOLS.has(t)) {
+    // 非 system 级 status (例如 tool='shell_exec' 工具执行消息) — 仍走 console.log, 不画 UI
+    console.log('[SSE] status (tool=' + t + ', ignored by UI):', content?.slice(0, 80));
+    return;
+  }
+  // tone: 错误事件用 error, 警告/compact 用 warn, 其他 normal
+  let tone: 'normal' | 'warn' | 'error' = 'normal';
+  if (content?.includes('⛔') || content?.includes('强制终止') || content?.includes('溢出')) tone = 'error';
+  else if (content?.includes('🗜️') || content?.includes('⚠️') || content?.includes('reactive')) tone = 'warn';
+
+  loopStatusBar.hidden = false;
+  loopStatusBar.dataset.tone = tone;
+  // 主文本去掉 emoji (emoji 已在 spinner 体现), 截 80 字符
+  loopStatusText.textContent = String(content || '').replace(/^[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}]\s*/u, '').slice(0, 200);
+
+  // meta: 从 "🔄 循环 5/10000" 提取 X/Y 显示进度
+  const m = String(content || '').match(/(\d+)\s*\/\s*(\d+)/);
+  if (m) {
+    const cur = Number(m[1]);
+    const tot = Number(m[2]);
+    const pct = tot > 0 ? Math.min(100, Math.round((cur / tot) * 100)) : 0;
+    loopStatusMeta.textContent = `${cur}/${tot} · ${pct}%`;
+  } else {
+    loopStatusMeta.textContent = '';
+  }
+}
+function hideLoopStatusBar(): void {
+  if (!loopStatusBar) return;
+  loopStatusBar.hidden = true;
+  if (loopStatusMeta) loopStatusMeta.textContent = '';
+}
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const themeToggle = document.getElementById('theme-toggle');
 const channelList = document.getElementById('channel-list');
@@ -1317,15 +1358,17 @@ function connect(channelId) {
         // 重新进入 abort 模式 (新一次生成开始)
         setSendMode('abort');
       } else if (data.type === 'status') {
-        // 2026-06-15: status 事件不再画 timeline 行 — step 状态机改走 step_* 事件
-        //   保留 status 事件不报错, 仅 console.log 方便调试
-        console.log('[SSE] status (deprecated for UI):', data.tool, data.content?.slice(0, 80));
+        // 2026-06-16: status 事件渲染到 system 级 status bar (tool=loop/compactor/recovery)
+        // 旧 step_timeline 状态机走 step_* 事件, 不受影响
+        renderLoopStatusBar(data.tool, data.content);
       } else if (data.type === 'step_start' || data.type === 'step_done' || data.type === 'step_error') {
         // 2026-06-15: 步骤状态机事件 — 推给 message-renderer 的 step-timeline
         handleStepEvent(data);
       } else if (data.type === 'done') {
         // AI 回复生成完, 从流式元素搬 token 文本到正式消息
         finalizeTimelineAsMessage();
+        // 2026-06-16: 隐藏循环进度 status bar
+        hideLoopStatusBar();
         // 2026-06-15: 切回 idle 模式 (用户可发下一条)
         setSendMode('idle');
       } else if (data.type === 'renamed') {
@@ -1348,6 +1391,8 @@ function connect(channelId) {
         } else {
           console.error('[SSE] error:', data.content);
         }
+        // 2026-06-16: error 触发时也隐藏 status bar (任务中止)
+        hideLoopStatusBar();
         setSendMode('idle');
       } else if (data.type === 'task_status' || data.type === 'workflow_step' || data.type === 'workflow_loop') {
         // 2026-06-15: 旧工作流事件, 不再单独画 — server 仍可推, 客户端仅 log

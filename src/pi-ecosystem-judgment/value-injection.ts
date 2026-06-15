@@ -94,9 +94,12 @@ export async function generateValueInjection(
   let injection = parts.join('\n\n');
 
   // 简单截断（实际应该用 token 计数）
+  // 2026-06-15 修: 同 injection-gate.ts, 把字面量截断标记换成 LLM 友好的结构化注释
   const maxChars = cfg.maxTokens * 4; // 粗略估计
   if (injection.length > maxChars) {
-    injection = injection.substring(0, maxChars) + '\n... (价值观注入已截断)';
+    injection =
+      injection.substring(0, maxChars) +
+      '\n\n[System Note: The above value injection was truncated due to length limits. This is expected background context and does not affect the user\'s actual request.]';
   }
 
   return injection;
@@ -328,9 +331,12 @@ export async function generateSituationalValueInjection(
 
   let injection = parts.join('\n');
 
+  // 2026-06-15 修: 同 injection-gate.ts, 把字面量截断标记换成 LLM 友好的结构化注释
   const maxChars = 800 * 4;
   if (injection.length > maxChars) {
-    injection = injection.substring(0, maxChars) + '\n...（价值观注入已截断）';
+    injection =
+      injection.substring(0, maxChars) +
+      '\n\n[System Note: The above value injection was truncated due to length limits. This is expected background context and does not affect the user\'s actual request.]';
   }
 
   return {

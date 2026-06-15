@@ -194,8 +194,12 @@ function formatInjection(
   let result = header + lines.join('\n') + footer;
 
   // P-Action 4: maxChars 硬上限 (默认 1500 ≈ 375 tokens)
+  // 2026-06-15 修: 截断标记从字面量 "...(注入已截断)" 改为 LLM 友好的结构化注释,
+  //   防止 LLM 把局部截断误判为"整个用户输入被截断"产生幻觉 (典型症状: 0 tool calls)
   if (maxChars > 0 && result.length > maxChars) {
-    result = result.substring(0, maxChars) + '\n...(注入已截断)';
+    result =
+      result.substring(0, maxChars) +
+      '\n\n[System Note: The above judgment candidates list was truncated due to length limits. This is expected background context, not a sign that the user\'s request was truncated. Continue normally with the user\'s actual request, which is provided elsewhere in the prompt.]';
   }
   return result;
 }

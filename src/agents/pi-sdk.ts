@@ -580,11 +580,19 @@ class PiAgentSession implements AgentSession {
   private messageHistory: Message[] = [];
   private tools: Map<string, Tool> = new Map();
   private skillRegistry: SkillRegistry = new SkillRegistry();
-  private readonly MAX_REACT_ITERATIONS = 100;
+  // 2026-06-16 修: 父要求把 ReAct loop 上限放大到 "几乎无限", 靠自动压缩上下文 + fail-safe 兜底
+  // 默认 10000 — 正常任务永远跑不到, 但作为防 LLM 死循环 / 防 OOM 的最后一道闸
+  // 旧默认 100 写死导致中等复杂度任务 (10-50 个 tool call + 多步反思) 会被误杀
+  private readonly MAX_REACT_ITERATIONS = 10_000;
   private readonly MAX_REFINE_ATTEMPTS = 3;
   private readonly QUALITY_THRESHOLD = 0.6;
   /** P1: 上下文溢出阈值 (单轮估算 token 数, 超过则强制终止防止 prompt-too-long) */
   private readonly MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD = 60_000;  // 60K tokens 上限
+  /** 2026-06-16 新增: 累计错误总数兜底 (不管是否同工具, 累计 N 次就强制退出)
+   *  防 LLM 轮换工具名绕开 MAX_SAME_TOOL_FAILURES 的死循环攻击 */
+  private readonly MAX_TOTAL_ERRORS = 20;
+  /** 2026-06-16 新增: loop 内自动压缩触发阈值 (相对 60K 阈值的比例) */
+  private readonly LOOP_COMPACT_RATIO = 0.8;
   /** P1: max output token 升级重试 (LLM 截断时重试, 最多 3 次) */
   private readonly MAX_OUTPUT_TOKEN_ESCALATION_RETRIES = 3;
   private thinkingEngine = new DeepThinkingEngine(3);
@@ -1314,6 +1322,8 @@ ${this.getToolDefinitions()}
     let lastQualityScore = 0;
     let refineAttempts = 0;
     let consecutiveErrors = 0;
+    // 2026-06-16 新增: 累计错误数 (跨工具, 兜底防 LLM 轮换工具名死循环)
+    let totalErrors = 0;
     let lastFailedTool = ''; // 跟踪最近一次失败的 tool name
     let lastFailedToolCount = 0; // 最近失败工具的连续失败次数
     const MAX_CONSECUTIVE_ERRORS = 3;
@@ -1335,10 +1345,10 @@ ${this.getToolDefinitions()}
     while (iteration < this.MAX_REACT_ITERATIONS) {
       iteration++;
 
-      // 停止条件 1: max turns
+      // 停止条件 1: max turns (fail-safe 10000, 正常任务永远跑不到)
       if (iteration >= this.MAX_REACT_ITERATIONS) {
-        console.warn(`[PiAgent] 达到最大循环数 ${this.MAX_REACT_ITERATIONS}, 强制终止`);
-        onStream?.({ type: 'error', content: `⏹️ 达到最大循环数 (${this.MAX_REACT_ITERATIONS})`, tool: 'loop' });
+        console.warn(`[PiAgent] 达到最大循环数 ${this.MAX_REACT_ITERATIONS}, 强制终止 (fail-safe)`);
+        onStream?.({ type: 'error', content: `⏹️ 达到最大循环数 (${this.MAX_REACT_ITERATIONS}, fail-safe)`, tool: 'loop' });
         finalResponse = finalResponse || '(本轮 ReAct 循环达到最大步数, 强制结束)';
         break;
       }
@@ -1351,7 +1361,31 @@ ${this.getToolDefinitions()}
         break;
       }
 
-      // 停止条件 3: context overflow (估算后超 budget 太多, 不能继续)
+      // 2026-06-16 新增: 累计错误兜底 — 跨工具, 防 LLM 轮换工具名绕过 MAX_SAME_TOOL_FAILURES
+      if (totalErrors >= this.MAX_TOTAL_ERRORS) {
+        console.warn(`[PiAgent] 累计错误 ${totalErrors} >= ${this.MAX_TOTAL_ERRORS}, 强制终止 (防死循环)`);
+        onStream?.({ type: 'error', content: `⛔ 累计 ${totalErrors} 次错误, 强制终止 (防止 LLM 死循环)`, tool: 'loop' });
+        finalResponse = finalResponse || `(本轮 ReAct 循环累计 ${totalErrors} 次错误, 强制结束。请换个思路或简化任务重试。)`;
+        break;
+      }
+
+      // 2026-06-16 新增: loop 内自动压缩 — token 超 80% 阈值时跑一次
+      // compact 失败走 C 路径: 不强行 break, 让现有 60K 阈值兜底 (后面有检查)
+      const compactThreshold = this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD * this.LOOP_COMPACT_RATIO;
+      const estimatedTokensBefore = this.estimateHistoryTokens();
+      if (estimatedTokensBefore > compactThreshold) {
+        const tokensBeforeCompact = estimatedTokensBefore;
+        console.log(`[PiAgent] loop 入口 token ${tokensBeforeCompact} > ${compactThreshold}, 触发自动压缩`);
+        onStream?.({ type: 'status', content: `🗜️ loop 自动压缩 (token ${tokensBeforeCompact} > ${compactThreshold})`, tool: 'compactor' });
+        try {
+          await this.maybeAutoCompact(onStream, signal);
+        } catch (compactErr) {
+          // C 路径: compact 失败不 break, 让 token 阈值检查兜底
+          console.warn(`[PiAgent] loop 内 maybeAutoCompact 失败 (non-fatal, 继续走 token 阈值):`, compactErr);
+        }
+      }
+
+      // 停止条件 3: context overflow (compact 后还超, 强制终止)
       const estimatedTokens = this.estimateHistoryTokens();
       if (estimatedTokens > this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD) {
         console.warn(`[PiAgent] context overflow (${estimatedTokens} tokens > ${this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD})`);
@@ -1482,10 +1516,12 @@ ${toolDefs}
         const tool = this.tools.get(toolCall.name);
         if (!tool) {
           consecutiveErrors++;
+          // 2026-06-16 新增: 未知工具也要累计 (LLM 幻觉高频场景)
+          totalErrors++;
           const errorResult: ToolResult = { success: false, error: `未知工具: ${toolCall.name}` };
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
           this.logToHarness(toolCall.name, toolCall.args, errorResult);
-          console.warn(`[PiAgent] 未知工具: ${toolCall.name}，跳过并继续`);
+          console.warn(`[PiAgent] 未知工具: ${toolCall.name} (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS})，跳过并继续`);
           continue;
         }
 
@@ -1684,6 +1720,8 @@ ${toolDefs}
             // 不 break，继续下一次循环
           } else {
             consecutiveErrors++;
+            // 2026-06-16 新增: 累计错误 (跨工具, 兜底防 LLM 轮换工具名死循环)
+            totalErrors++;
             // 跟踪同一工具连续失败次数
             if (toolCall.name === lastFailedTool) {
               lastFailedToolCount++;
@@ -1691,7 +1729,7 @@ ${toolDefs}
               lastFailedTool = toolCall.name;
               lastFailedToolCount = 1;
             }
-            console.warn(`[PiAgent] 工具 ${toolCall.name} 执行失败 (${lastFailedToolCount}/${MAX_SAME_TOOL_FAILURES}): ${result.error}`);
+            console.warn(`[PiAgent] 工具 ${toolCall.name} 执行失败 (${lastFailedToolCount}/${MAX_SAME_TOOL_FAILURES}, 累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS}): ${result.error}`);
 
             // 同一工具连续失败达到上限, 不再重试, 强制 LLM 给出最终答案
             if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
@@ -1718,10 +1756,12 @@ ${toolDefs}
           }
         } catch (execError) {
           consecutiveErrors++;
+          // 2026-06-16 新增: 异常分支也要累计
+          totalErrors++;
           const errorResult: ToolResult = { success: false, error: String(execError) };
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
           this.logToHarness(toolCall.name, toolCall.args, errorResult);
-          console.error(`[PiAgent] 工具执行异常: ${execError}`);
+          console.error(`[PiAgent] 工具执行异常 (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS}): ${execError}`);
         }
       } else {
         // LLM 返回的不是 tool call 格式
@@ -1740,7 +1780,10 @@ ${toolDefs}
         const containsToolCallIntent = reply.includes('调用工具') || reply.includes('tool(') ||
           reply.includes('使用工具') || reply.includes('需要获取') || reply.includes('需要查看') ||
           // 兼容 LLM 用对象字面量输出 tool call (上轮没解析成功时, 至少要继续)
-          reply.includes('tool =>') || reply.includes('[TOOL_CALL]');
+          reply.includes('tool =>') || reply.includes('[TOOL_CALL]') ||
+          // 2026-06-15 修: 兼容 LLM 用 XML 标签输出 tool call (<shell_exec>...</shell_exec>)
+          //   这时 parseToolCall 失败, 至少要让 loop 继续
+          /<\w+>[\s\S]*?<\/\w+>/.test(reply);
         const hasError = ['不存在', '找不到', '无法找到', 'not found', 'does not exist',
           '错误', 'error', '失败', 'failed'].some(k => reply.includes(k));
         const isTooShort = reply.length < 50 && reply.length > 0;
@@ -2073,6 +2116,9 @@ Workspace root folder: ${this.cwd}
       /\btool\s*=>\s*["'](\w+)["']/,
       // 兼容: [TOOL_CALL] 块内 JSON 形式 {"name": "x", "args": {...}}
       /\[TOOL_CALL\][\s\S]*?\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*(\{[\s\S]*?\})/i,
+      // 2026-06-15 修: 兼容 LLM 输出的 XML 格式 <tool_name>...<arg>value</arg>...</tool_name>
+      //   实际 LLM 习惯: <shell_exec>\n<command>ls</command>\n<args>["-la", "..."]</args>\n</shell_exec>
+      /<(\w+)>([\s\S]*?)<\/\1>/,
     ];
 
     for (const pattern of patterns) {
@@ -2095,6 +2141,18 @@ Workspace root folder: ${this.cwd}
             for (const pair of argPairs) {
               const [key, ...valueParts] = pair.split(':').map(s => s.trim().replace(/['"]/g, ''));
               if (key) args[key] = valueParts.join(':') || '';
+            }
+          }
+        } else if (rawArgs && /<\w+>[\s\S]*<\/\w+>/.test(rawArgs)) {
+          // 2026-06-15 修: XML 格式, 解析内嵌子标签 <argname>value</argname>
+          //   例: <command>ls</command>\n<args>["-la","~/.bolloon/skills"]</args>
+          const xmlArgPattern = /<(\w+)>([\s\S]*?)<\/\1>/g;
+          let xmlMatch: RegExpExecArray | null;
+          while ((xmlMatch = xmlArgPattern.exec(rawArgs)) !== null) {
+            const argName = xmlMatch[1];
+            const argValue = xmlMatch[2].trim();
+            if (argName && argValue) {
+              args[argName] = argValue;
             }
           }
         } else if (rawArgs) {
