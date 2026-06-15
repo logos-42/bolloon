@@ -3,6 +3,69 @@ if (typeof marked === 'undefined') {
   window.marked = { parse: (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') };
 }
 
+// 2026-06-15: 拆出 message-renderer 模块 (TS, ESM 编译).
+//   浏览器侧: <script type="module"> 加载, 模块挂到 window.MR (build:web 输出 IIFE 包装)
+//   客户端顶层直接拿 window.MR (ESM deferred 但 client.js 顶层只取 ref, 实际调用延后到 DOMContentLoaded)
+//   tsx 跑测试: 走 require() 同名拿
+let MR = {};
+try { if (typeof require !== 'undefined') MR = require('./ui/message-renderer.js') || {}; } catch (e) { /* 浏览器没 require, 走 window.MR */ }
+function _getMR() {
+  if (MR && MR.addMessage) return MR;
+  if (typeof window !== 'undefined' && (window as any).MR) return (window as any).MR;
+  return {};
+}
+const MR_addMessage = (...args: any[]) => _getMR().addMessage?.(...args);
+const MR_handleStreamTokenEvent = (...args: any[]) => _getMR().handleStreamTokenEvent?.(...args);
+const MR_finalizeTimelineAsMessage = (...args: any[]) => _getMR().finalizeTimelineAsMessage?.(...args);
+const MR_showUserCommand = (...args: any[]) => _getMR().showUserCommand?.(...args);
+const MR_getMessagesContainerForCurrent = (...args: any[]) => _getMR().getMessagesContainerForCurrent?.(...args);
+const MR_escapeHtml = (s: any) => _getMR().escapeHtml?.(s);
+const MR_resetRendererState = () => _getMR().resetRendererState?.();
+
+// ctx 对象: 把全局状态打包, 避免硬引用 client.js 顶层 let
+function getRendererCtx() {
+  return {
+    messagesEl,
+    messagesContainers,
+    currentChannelId,
+    lastUsedJudgmentIds,
+    openJudgmentsModalWithFilter,  // 引用 client.js 函数, 通过参数注入避免循环 import
+    workflowDisplayEl,
+  };
+}
+
+// 2026-06-15: 浏览器侧: 等待 ESM 模块 (ui/message-renderer.js) 加载完才执行 client.js 主体.
+// ESM 是 deferred, 默认 DOMContentLoaded 才执行. 普通 <script src> 阻塞, 在 ESM 之前执行.
+// → 客户端顶层直接拿 window.MR 可能 undefined. 用 DOMContentLoaded 兜底, 把 bootstrap 挪到回调里.
+if (typeof window !== 'undefined' && document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    // ESM 应该已加载, 但再 check 一次保险
+    ensureMRLoaded().then(() => bootstrap());
+  });
+} else {
+  // 文档已 ready (例如 tsx 跑测试), 直接 bootstrap
+  ensureMRLoaded().then(() => bootstrap());
+}
+
+function ensureMRLoaded() {
+  return new Promise((resolve) => {
+    if (window.MR && window.MR.addMessage) return resolve();
+    // 浏览器 ESM 是 deferred, 已经在执行中, 这里只是补一个轮询兜底
+    let attempts = 0;
+    const t = setInterval(() => {
+      attempts++;
+      if (window.MR && window.MR.addMessage) {
+        clearInterval(t);
+        resolve();
+      } else if (attempts > 100) {
+        clearInterval(t);
+        console.warn('[client.js] message-renderer.js ESM 未在 1s 内加载, 走 fallback');
+        resolve();
+      }
+    }, 10);
+  });
+}
+
 const messagesEl = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
@@ -822,11 +885,10 @@ function formatSessionName(sess) {
   return id ? `会话 ${id.slice(-6)}` : '新会话';
 }
 
-function escapeHtml(s) {
-  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[c]));
-}
+// 2026-06-15: escapeHtml 已迁到 ui/message-renderer.js
+const escapeHtml = MR_escapeHtml || ((s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+}[c])));
 
 function renderCollapsedChannels() {
   return;
@@ -948,252 +1010,11 @@ async function loadSession(channelId, sessionId = null) {
   }
 }
 
+// 2026-06-15: addMessage 委托给 ui/message-renderer.js, 客户端代码原位调用同名函数, 不感知拆分
 function addMessage(content, type, save = true, container, usedJudgmentIds = []) {
-  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
-
-  // 浏览器侧内存保护: 单个 channel 的消息容器超过 MAX_MESSAGES_PER_CHANNEL
-  // 就从最旧的开始淘汰。SSE 流式场景下不淘汰 (save=true 时不裁剪),
-  // 因为流消息一般很短; 只对长会话加载 (save=false) 做上限。
-  // 上限是 200 条: 大约相当于 100 轮对话, 足够日常使用, 又把 DOM 控制在 5MB 以内.
-  if (!save && msgContainer && msgContainer.children.length > 200) {
-    const toRemove = msgContainer.children.length - 200;
-    for (let i = 0; i < toRemove; i++) {
-      const first = msgContainer.firstElementChild;
-      if (first) msgContainer.removeChild(first);
-    }
-  }
-  // 去重：只有 save=true 时（来自 SSE）才去重，save=false 时（来自 session 加载）直接显示
-  if (save) {
-    const lastContent = type === 'user' ? lastUserCommand : lastAiContent;
-    if (lastContent && content === lastContent) {
-      console.log(`[addMessage] 跳过重复的 ${type} 消息`);
-      return;
-    }
-    if (type === 'user') {
-      lastUserCommand = content;
-    } else {
-      lastAiContent = content;
-    }
-  }
-
-  const div = document.createElement('div');
-  div.className = `message message-${type}`;
-
-  // 清理内容：移除 tool call 标记和其他不应该显示的内容
-  let cleanContent = content
-    .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/g, '')
-    .replace(/TOOL_CALL[\s\S]*?\/TOOL_CALL/g, '')
-    .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
-    .replace(/{\s*"tool":[\s\S]*?}/g, '')
-    // 兼容 pi-sdk LLM 输出: {tool => "name", args => {...}}
-    .replace(/\{\s*tool\s*=>\s*["'][^"']+["']\s*(?:,\s*args\s*=>\s*\{[\s\S]*?\})?\s*\}/g, '')
-    .replace(/\[Function[^\]]*\]\s*/g, '')
-    .trim();
-
-  // 处理思维链内容（</think> 标签）- 折叠显示
-  const thinkMatch = cleanContent.match(/<think>([\s\S]*?)<\/think>/);
-  let mainContent = cleanContent;
-  let thinkContainer = null;
-
-  if (thinkMatch) {
-    const thinkContent = thinkMatch[1].trim();
-    mainContent = cleanContent.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-
-    // 创建思维链折叠区域
-    thinkContainer = document.createElement('div');
-    thinkContainer.className = 'think-container';
-
-    const thinkToggle = document.createElement('div');
-    thinkToggle.className = 'think-toggle';
-    thinkToggle.innerHTML = '💭 思考过程 <span class="think-arrow">▸</span>';
-    thinkToggle.onclick = function() {
-      const details = thinkContainer.querySelector('.think-content');
-      const arrow = thinkToggle.querySelector('.think-arrow');
-      if (details.style.display === 'none') {
-        details.style.display = 'block';
-        arrow.textContent = '▾';
-      } else {
-        details.style.display = 'none';
-        arrow.textContent = '▸';
-      }
-    };
-
-    const thinkDiv = document.createElement('div');
-    thinkDiv.className = 'think-content';
-    thinkDiv.style.display = 'none'; // 默认折叠
-    thinkDiv.innerHTML = `<pre>${thinkContent.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`;
-
-    thinkContainer.appendChild(thinkToggle);
-    thinkContainer.appendChild(thinkDiv);
-  }
-
-  const envMatch = mainContent.match(/^(.+?)\n<environment_details>([\s\S]*?)<\/environment_details>\n([\s\S]*)$/);
-
-  if (envMatch) {
-    const identity = envMatch[1].trim();
-    const envDetails = envMatch[2].trim();
-    const messageBody = envMatch[3].trim();
-
-    const header = document.createElement('div');
-    header.className = 'message-header';
-    header.textContent = identity;
-    div.appendChild(header);
-
-    // 环境信息区域（可折叠，默认折叠）
-    const envContainer = document.createElement('div');
-    envContainer.className = 'env-container';
-
-    const envToggle = document.createElement('div');
-    envToggle.className = 'env-toggle';
-    envToggle.innerHTML = '⚙️ 环境信息 <span class="env-arrow">▸</span>';
-    envToggle.onclick = function() {
-      const details = envContainer.querySelector('.environment-details');
-      const arrow = envToggle.querySelector('.env-arrow');
-      if (details.style.display === 'none') {
-        details.style.display = 'block';
-        arrow.textContent = '▾';
-      } else {
-        details.style.display = 'none';
-        arrow.textContent = '▸';
-      }
-    };
-
-    const envDiv = document.createElement('div');
-    envDiv.className = 'environment-details';
-    envDiv.style.display = 'none'; // 默认折叠
-    envDiv.innerHTML = `<pre>${envDetails}</pre>`;
-
-    envContainer.appendChild(envToggle);
-    envContainer.appendChild(envDiv);
-    div.appendChild(envContainer);
-
-    // 思考在环境信息下面
-    if (thinkContainer) {
-      div.appendChild(thinkContainer);
-    }
-
-    if (messageBody) {
-      const bubble = document.createElement('div');
-      bubble.className = `bubble bubble-${type}`;
-      bubble.innerHTML = marked.parse(messageBody);
-      div.appendChild(bubble);
-    }
-  } else if (cleanContent) {
-    // 没有环境信息时，思考放在消息之前
-    if (thinkContainer) {
-      div.appendChild(thinkContainer);
-    }
-    const bubble = document.createElement('div');
-    bubble.className = `bubble bubble-${type}`;
-    bubble.innerHTML = marked.parse(cleanContent);
-    div.appendChild(bubble);
-  } else {
-    return; // 没有有效内容，不显示空消息
-  }
-
-  // 提取纯文本内容用于复制（去除 HTML 标签）
-  const rawContent = cleanContent
-    .replace(/<[^>]+>/g, '')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/&nbsp;/g, ' ');
-
-  const time = document.createElement('div');
-  time.className = 'time';
-  time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-
-  // AI 消息添加操作按钮
-  if (type === 'ai') {
-    const actionsDiv = document.createElement('div');
-    actionsDiv.className = 'message-actions';
-
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'action-btn copy-btn';
-    copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> 复制`;
-    copyBtn.title = '复制消息';
-    copyBtn.onclick = function() {
-      navigator.clipboard.writeText(rawContent).then(() => {
-        copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> 已复制`;
-        setTimeout(() => {
-          copyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> 复制`;
-        }, 2000);
-      });
-    };
-
-    const regenerateBtn = document.createElement('button');
-    regenerateBtn.className = 'action-btn regenerate-btn';
-    regenerateBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg> 重新回答`;
-    regenerateBtn.title = '重新生成回复';
-    regenerateBtn.onclick = function() {
-      regenerateBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg> 生成中...`;
-      regenerateBtn.disabled = true;
-      // 获取当前频道对应的用户消息
-      const messages = div.parentElement.querySelectorAll('.message');
-      let lastUserMsg = '';
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-        if (msg.classList.contains('message-user')) {
-          const bubble = msg.querySelector('.bubble');
-          if (bubble) {
-            lastUserMsg = bubble.textContent || bubble.innerText || '';
-            break;
-          }
-        }
-      }
-      // 调用重新生成 API
-      fetch('/regenerate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channelId: currentChannelId, userMessage: lastUserMsg })
-      }).then(res => {
-        if (!res.ok) {
-          throw new Error('regenerate failed');
-        }
-      }).catch(err => {
-        console.error('重新生成失败:', err);
-        regenerateBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg> 失败`;
-        setTimeout(() => {
-          regenerateBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg> 重新回答`;
-          regenerateBtn.disabled = false;
-        }, 2000);
-      });
-    };
-
-    actionsDiv.appendChild(copyBtn);
-
-    // "存为判断" 按钮: AI 蒸馏 (30-80 字) + 自动演化对齐
-    const saveJudgmentBtn = document.createElement('button');
-    saveJudgmentBtn.className = 'action-btn save-as-judgment';
-    saveJudgmentBtn.title = 'AI 蒸馏为 30-80 字判断力 + 自动演化对齐';
-    saveJudgmentBtn.setAttribute('data-decision', rawContent.substring(0, 800));
-    if (currentChannelId) saveJudgmentBtn.setAttribute('data-channel-id', currentChannelId);
-    saveJudgmentBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L4 6v6c0 5 3.5 9.5 8 10 4.5-.5 8-5 8-10V6l-8-4z"></path><path d="M9 12l2 2 4-4"></path></svg> 蒸馏为判断`;
-    actionsDiv.appendChild(saveJudgmentBtn);
-    if (type === 'ai') {
-      actionsDiv.appendChild(regenerateBtn);
-    }
-    div.appendChild(actionsDiv);
-  }
-
-  // P0.5: 反向引用链接 (AI 消息) — 极简, 点击跳判断力 modal
-  if (type === 'ai' && Array.isArray(usedJudgmentIds) && usedJudgmentIds.length > 0) {
-    const link = document.createElement('a');
-    link.className = 'used-judgments-link';
-    link.style.cssText = 'display:inline-block;margin-top:4px;font-size:11px;color:#0369a1;text-decoration:underline;cursor:pointer;';
-    link.textContent = `📎 参考 ${usedJudgmentIds.length} 条原则`;
-    link.onclick = (e) => {
-      e.preventDefault();
-      openJudgmentsModalWithFilter(usedJudgmentIds);
-    };
-    div.appendChild(link);
-  }
-
-  div.appendChild(time);
-  msgContainer.appendChild(div);
-
-  msgContainer.scrollTop = msgContainer.scrollHeight;
+  return MR_addMessage(content, type, save, container, usedJudgmentIds, getRendererCtx());
 }
+
 
 // ============================================================
 // Loop timeline panel (Claude Code 风格)
@@ -1456,48 +1277,6 @@ let streamingTextNode = null;     // 累积文本的 textNode (光标前的部�
 let streamingCursorEl = null;     // 末尾光标 span (流式时显示, finalize 时移除)
 let streamingText = '';          // 累积的 token 文本 (用于 finalize 时 addMessage)
 
-function handleStreamTokenEvent(data) {
-  // 确保 message 元素在 messages 容器内, 跟对话消息同一流
-  const container = messagesContainers.get(currentChannelId) || messagesEl;
-  if (!container) return;
-  const delta = data.content || '';
-  if (!delta) return;
-  if (!streamingMessageEl || !streamingMessageEl.isConnected) {
-    // 新建流式消息 (看起来像 AI 消息气泡)
-    streamingMessageEl = document.createElement('div');
-    streamingMessageEl.className = 'message message-ai message-streaming';
-    streamingMessageEl.style.cssText = 'margin:8px 12px;padding:10px 14px;border-radius:8px;background:var(--bg-hover);color:var(--text);max-width:80%;line-height:1.5;white-space:pre-wrap;word-break:break-word;font-size:14px;';
-    // 累积文本 + 光标 (cursor 单独 span, 只在 streamingText 变化时 insertBefore, 不重排整个)
-    streamingTextNode = document.createTextNode('');
-    streamingCursorEl = document.createElement('span');
-    streamingCursorEl.className = 'streaming-cursor';
-    streamingCursorEl.textContent = '▍';
-    streamingCursorEl.style.cssText = 'color:var(--accent);animation:streaming-blink 1s infinite;';
-    streamingMessageEl.appendChild(streamingTextNode);
-    streamingMessageEl.appendChild(streamingCursorEl);
-    streamingText = '';
-    container.appendChild(streamingMessageEl);
-    // 首次滚动到底 (之后每 200ms 限频, 避免 reflow 过频)
-    scheduleScrollToBottom(container);
-  }
-  // O(1) 增量 append: 把 delta 拆成单字符 append, 避免大段重排
-  // (textNode.appendData 也行, 但分次更平滑)
-  streamingTextNode.appendData(delta);
-  streamingText += delta;
-  // 限频滚动, 避免每 token 触发 reflow
-  scheduleScrollToBottom(container);
-}
-
-// 限频滚动 (60ms / 16fps, 用户感觉不到延迟, 但减少 reflow)
-let scrollToBottomTimer = null;
-function scheduleScrollToBottom(container) {
-  if (!container) return;
-  if (scrollToBottomTimer) return; // 已在 pending
-  scrollToBottomTimer = setTimeout(() => {
-    container.scrollTop = container.scrollHeight;
-    scrollToBottomTimer = null;
-  }, 60);
-}
 
 function handleQueueUpdateTimeline(data) {
   const title = document.getElementById('loop-timeline-title');
@@ -1609,24 +1388,6 @@ function handleSelfImproveResult(data) {
   card.scrollIntoView({ block: 'end', behavior: 'smooth' });
 }
 
-function finalizeTimelineAsMessage() {
-  // 2026-06-15: 把流式累积的 streaming 元素转成正式 AI 消息 (走 addMessage 含 markdown 渲染)
-  const container = messagesContainers.get(currentChannelId) || messagesEl;
-  if (streamingText.trim().length > 0) {
-    // 用 addMessage (含 marked.parse + cleanThink + 自动渲染 bubble), 它会自己创建新元素
-    // 移除 streaming 元素 (光标 + 累积文本), 避免重复
-    if (streamingMessageEl && streamingMessageEl.parentNode) {
-      streamingMessageEl.parentNode.removeChild(streamingMessageEl);
-    }
-    addMessage(streamingText, 'ai', true, container, lastUsedJudgmentIds);
-  }
-  // 重置流式状态
-  streamingMessageEl = null;
-  streamingTextNode = null;
-  streamingCursorEl = null;
-  streamingText = '';
-  // tool 折叠行保留在 timeline 内, 用户能回看
-}
 
 // 工作流状态显示
 let workflowDisplayEl = null;
@@ -1776,46 +1537,14 @@ function handleWorkflowLoopEvent(data, container) {
   }
 }
 
+// 2026-06-15: showUserCommand 委托给 ui/message-renderer.js
+function showUserCommand(command, container, opts) {
+  return MR_showUserCommand(command, container, opts, getRendererCtx());
+}
+
 // 用户命令可视化 - 当用户发送命令时调用
 let userCommandDisplayEl = null;
 
-function showUserCommand(command, container, opts) {
-  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
-  // 先移除之前的消息中的 user bubble（如果有重复的话）
-  const existingUserBubbles = msgContainer.querySelectorAll('.message-user');
-  existingUserBubbles.forEach(el => el.remove());
-
-  // 移除之前的命令显示
-  if (userCommandDisplayEl) {
-    userCommandDisplayEl.remove();
-  }
-
-  // 创建美化版本的命令显示
-  userCommandDisplayEl = document.createElement('div');
-  userCommandDisplayEl.className = 'message message-user';
-  // v3 新增: 远端访客消息加 tag (source === 'remote' 表示是 B 通过 P2P 发来的)
-  const sourceTag = (opts && opts.source === 'remote')
-    ? `<div style="font-size:10px;color:#6b7280;margin-bottom:2px;">🌐 远端访客${opts.fromPublicKey ? ' (' + opts.fromPublicKey.substring(0, 8) + '…)' : ''} → A 的 channel</div>`
-    : '';
-  userCommandDisplayEl.innerHTML = `
-    <div class="user-command-display">
-      <div class="command-prompt">
-        <span class="prompt-icon">›</span>
-        <span class="prompt-text">${command}</span>
-      </div>
-      ${sourceTag}
-    </div>
-  `;
-
-  // 在工作流显示之前插入
-  if (workflowDisplayEl) {
-    msgContainer.insertBefore(userCommandDisplayEl, workflowDisplayEl);
-  } else {
-    msgContainer.appendChild(userCommandDisplayEl);
-  }
-
-  msgContainer.scrollTop = msgContainer.scrollHeight;
-}
 
 // ============================================================
 // 状态条 + phase + queue + abort (UI 体验补丁) — 旧版, 已被 timeline panel 取代

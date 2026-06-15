@@ -51,6 +51,19 @@ async function main() {
     minify: false,
   });
 
+  // 2026-06-15: 编译 message-renderer.ts (对话显示 UI 模块)
+  //   esbuild 编译 .ts → dist/web/ui/message-renderer.js (ESM, 浏览器侧 <script type="module"> 加载)
+  console.log('[build-web] 编译 message-renderer.ts...');
+  await fs.mkdir(path.join(DIST_WEB, 'ui'), { recursive: true });
+  await esbuild.build({
+    entryPoints: [path.join(ROOT, 'src/web/ui/message-renderer.ts')],
+    outfile: path.join(DIST_WEB, 'ui/message-renderer.js'),
+    format: 'esm',
+    target: 'es2022',
+    platform: 'browser',
+    minify: false,
+  });
+
   // 复制静态文件
   console.log('[build-web] 复制静态文件...');
   await fs.copyFile(path.join(ROOT, 'src/web/index.html'), path.join(DIST_WEB, 'index.html'));
