@@ -32,6 +32,7 @@ function getRendererCtx() {
     lastUsedJudgmentIds,
     openJudgmentsModalWithFilter,  // 引用 client.js 函数, 通过参数注入避免循环 import
     workflowDisplayEl,
+    setTimelineState,  // B-3: 3 状态机回调注入
   };
 }
 
@@ -1114,20 +1115,63 @@ function resetTimeline() {
 function showTimelinePanel() {
   initTimelinePanel();
   resetTimeline();
-  if (timelinePanelEl) timelinePanelEl.hidden = false;
+  if (timelinePanelEl) {
+    // B-3: 显隐走 opacity 过渡 (200ms), 比直接 hidden 更平滑
+    timelinePanelEl.hidden = false;
+    // 强制 reflow 让 transition 触发 (hidden=false 后下一帧才设 opacity=1)
+    void timelinePanelEl.offsetHeight;
+    timelinePanelEl.style.opacity = '1';
+  }
+  setTimelineToggleVisible(true);  // B-3: 折叠箭头跟 panel 同步显
+  setTimelineState('loading');     // B-3: 3 状态机 — 初始 loading
   loopRunning = true; // 2026-06-15: 标志 loop 在跑, done 后才 hide
   // 2026-06-15: 启动 5s 自动隐藏计时器, 没有新事件就 hide (避免 phase 持续 show 不 hide)
   scheduleTimelineAutoHide();
 }
 
 function hideTimelinePanel() {
-  if (timelinePanelEl) timelinePanelEl.hidden = true;
+  if (timelinePanelEl) {
+    // B-3: hide 时先 opacity=0 走过渡, 200ms 后再 hidden=true (否则 transition 看不到)
+    timelinePanelEl.style.opacity = '0';
+    setTimeout(() => {
+      // 二次校验: 避免过渡期间又被 showTimelinePanel 重置
+      if (timelinePanelEl && timelinePanelEl.style.opacity === '0') {
+        timelinePanelEl.hidden = true;
+      }
+    }, 220);
+  }
+  setTimelineToggleVisible(false);  // B-3: 折叠箭头跟 panel 同步隐
+  setTimelineState('idle');         // B-3: 重置状态徽标
   if (timelineAutoHideTimer) {
     clearTimeout(timelineAutoHideTimer);
     timelineAutoHideTimer = null;
   }
   // 2026-06-15: 标志 loop 已结束, 后续 phase / status 事件不再 show panel
   loopRunning = false;
+}
+
+// B-3: 折叠箭头 ▸ 跟 panel 显隐同步 (panel hidden 时箭头也隐藏)
+// index.html 里 toggle 初始 data-hidden=true, opacity=0 — 这函数统一控制
+function setTimelineToggleVisible(visible) {
+  const toggle = document.getElementById('loop-timeline-toggle');
+  if (!toggle) return;
+  toggle.dataset.hidden = visible ? 'false' : 'true';
+  toggle.style.opacity = visible ? '1' : '0';
+}
+
+// B-3: 3 状态机 — loading(灰) / streaming(蓝, 工作中) / done(绿, 1.5s 后转 idle)
+// 徽标颜色由 CSS [data-state] 属性切, 不污染全局样式
+function setTimelineState(state) {
+  const badge = document.getElementById('loop-timeline-state-badge');
+  if (!badge) return;
+  badge.dataset.state = state;
+  const colors = {
+    idle: '#9ca3af',       // 灰
+    loading: '#f59e0b',    // 橙
+    streaming: '#3b82f6',  // 蓝
+    done: '#10b981',       // 绿
+  };
+  badge.style.background = colors[state] || colors.idle;
 }
 
 // 2026-06-15: loop 状态标志, done 后任何 phase 事件不重 show panel

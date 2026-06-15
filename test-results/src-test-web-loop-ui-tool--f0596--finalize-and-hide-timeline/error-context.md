@@ -16,79 +16,115 @@ Test timeout of 30000ms exceeded.
 ```
 
 ```
-Error: expect(locator).toContainText(expected) failed
+Error: expect(received).toEqual(expected) // deep equality
 
-Locator: locator('.message-streaming')
-Expected substring: "工具结果已读取"
-Timeout: 5000ms
-Error: element(s) not found
+- Expected  -  1
++ Received  + 10
 
-Call log:
-  - Expect "toContainText" with timeout 5000ms
-  - waiting for locator('.message-streaming')
-
+- Array []
++ Array [
++   "Failed to load module script: Expected a JavaScript-or-Wasm module script but the server responded with a MIME type of \"application/octet-stream\". Strict MIME type checking is enforced for module scripts per HTML spec.",
++   "Failed to load resource: the server responded with a status of 404 (Not Found)",
++   "bootstrap is not defined",
++   "Failed to load resource: the server responded with a status of 404 (Not Found)",
++   "加载连接历史失败: SyntaxError: Unexpected token 'N', \"Not found\" is not valid JSON",
++   "Failed to load resource: the server responded with a status of 404 (Not Found)",
++   "Failed to load resource: the server responded with a status of 404 (Not Found)",
++   "Failed to check API config: SyntaxError: Unexpected token 'N', \"Not found\" is not valid JSON",
++ ]
 ```
 
+# Page snapshot
+
 ```yaml
-- complementary:
-  - button "收起侧边栏":
-    - img
-  - text: ◈ Bolloon 智能体
-  - button "新建智能体":
-    - img
-    - text: 新建智能体
-  - list:
-    - listitem:
-      - img
-      - text: 💬 Loop UI Test
-      - button "配置智能体 (钱包 / 工具)":
-        - img
-      - button "×"
-      - list
-  - text: ▼ P2P 好友
-  - button "⊞ 展开"
-  - button "我的 ID"
-  - button "+ 好友"
-  - list:
-    - listitem: (暂无好友, 点 + 添加)
-  - text: 已连接
-- main:
-  - heading "Loop UI Test" [level=1]
-  - button "切换主题":
-    - img
-  - button "API 配置":
-    - img
-  - button "钱包管理":
-    - img
-  - button "我的判断":
-    - img
-  - paragraph: 你好！我是 Bolloon Agent。有什么我可以帮你的吗？
-  - button "复制":
-    - img
-    - text: 复制
-  - button "蒸馏为判断":
-    - img
-    - text: 蒸馏为判断
-  - button "重新回答":
-    - img
-    - text: 重新回答
-  - text: 17:20
-  - paragraph: 读取 README 并总结
-  - text: 17:20
-  - textbox "输入消息..."
-  - button:
-    - img
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - generic [ref=e4]:
+      - button "收起侧边栏" [ref=e5] [cursor=pointer]:
+        - img [ref=e6]
+      - generic [ref=e8]:
+        - generic [ref=e9]: ◈
+        - generic [ref=e10]: Bolloon
+    - generic [ref=e11]:
+      - generic [ref=e13]: 智能体
+      - button "新建智能体" [ref=e14] [cursor=pointer]:
+        - img [ref=e15]
+        - generic [ref=e16]: 新建智能体
+      - list [ref=e17]:
+        - listitem [ref=e18]:
+          - generic [ref=e19] [cursor=pointer]:
+            - img [ref=e20]
+            - generic [ref=e22]: 💬
+            - generic "Loop UI Test" [ref=e23]
+            - generic [ref=e24]:
+              - button "配置智能体 (钱包 / 工具)" [ref=e25]:
+                - img [ref=e26]
+              - button "×" [ref=e29]
+          - list
+    - generic "拖动调整上方/下方高度" [ref=e30]
+    - generic [ref=e31]:
+      - generic [ref=e32] [cursor=pointer]:
+        - generic [ref=e33]:
+          - generic [ref=e34]: ▼
+          - generic [ref=e35]: P2P 好友
+        - generic [ref=e36]:
+          - button "⊞ 展开" [ref=e37]
+          - button "我的 ID" [ref=e38]
+          - button "+ 好友" [ref=e39]
+      - list [ref=e40]:
+        - listitem [ref=e41]: (暂无好友, 点 + 添加)
+    - generic [ref=e45]: 已连接
+  - main [ref=e46]:
+    - generic [ref=e47]:
+      - heading "Loop UI Test" [level=1] [ref=e50]
+      - generic [ref=e51]:
+        - button "切换主题" [ref=e52] [cursor=pointer]:
+          - img [ref=e53]
+        - button "API 配置" [ref=e59] [cursor=pointer]:
+          - img [ref=e60]
+        - button "钱包管理" [ref=e63] [cursor=pointer]:
+          - img [ref=e64]
+        - button "我的判断" [ref=e68] [cursor=pointer]:
+          - img [ref=e69]
+    - generic [ref=e73]:
+      - generic [ref=e74]:
+        - generic [ref=e75]: 你好！我是 Bolloon Agent。有什么我可以帮你的吗？
+        - generic [ref=e76]:
+          - button "复制" [ref=e77] [cursor=pointer]:
+            - img [ref=e78]
+            - text: 复制
+          - button "蒸馏为判断" [ref=e81] [cursor=pointer]:
+            - img [ref=e82]
+            - text: 蒸馏为判断
+          - button "重新回答" [ref=e85] [cursor=pointer]:
+            - img [ref=e86]
+            - text: 重新回答
+        - generic [ref=e88]: 18:35
+      - generic [ref=e89]:
+        - paragraph [ref=e91]: 读取 README 并总结
+        - generic [ref=e92]: 18:35
+      - generic [ref=e93]:
+        - paragraph [ref=e95]: 工具结果已读取，这是最终回复。
+        - generic [ref=e96]:
+          - button "复制" [ref=e97] [cursor=pointer]:
+            - img [ref=e98]
+            - text: 复制
+          - button "蒸馏为判断" [ref=e101] [cursor=pointer]:
+            - img [ref=e102]
+            - text: 蒸馏为判断
+          - button "重新回答" [ref=e105] [cursor=pointer]:
+            - img [ref=e106]
+            - text: 重新回答
+        - generic [ref=e108]: 18:35
+    - generic [ref=e110]:
+      - textbox "输入消息..." [ref=e111]
+      - button [active] [ref=e112] [cursor=pointer]:
+        - img [ref=e113]
 ```
 
 # Test source
 
 ```ts
-  83  |   send(100, { type: 'status', tool: 'loop', content: '循环 1/3' });
-  84  |   send(250, { type: 'status', tool: 'read_document', content: '调用工具: read_document(path: README.md)' });
-  85  |   send(500, { type: 'status', tool: 'read_document', content: '{"success":true,"output":"README content"}' });
-  86  |   send(750, { type: 'stream', streamType: 'token', content: '工具结果已读取，' });
-  87  |   send(950, { type: 'stream', streamType: 'token', content: '这是最终回复。' });
-  88  |   send(1500, { type: 'done' });
   89  | }
   90  | 
   91  | async function startMockWebServer() {
@@ -183,14 +219,14 @@ Call log:
   180 | 
   181 |     await expect(page.locator('#loop-timeline-panel')).toBeVisible();
   182 |     await expect(page.locator('#loop-timeline-rows')).toContainText('read_document');
-> 183 |     await expect(page.locator('.message-streaming')).toContainText('工具结果已读取');
-      |                                                      ^ Error: expect(locator).toContainText(expected) failed
+  183 |     await expect(page.locator('.message-streaming')).toContainText('工具结果已读取');
   184 | 
   185 |     await expect(page.locator('.message-streaming')).toHaveCount(0);
   186 |     await expect(page.locator('.message-ai .bubble').filter({ hasText: '工具结果已读取，这是最终回复。' })).toBeVisible();
   187 |     await expect(page.locator('#loop-timeline-panel')).toBeHidden();
   188 | 
-  189 |     expect(consoleErrors.filter((line) => !line.includes('favicon'))).toEqual([]);
+> 189 |     expect(consoleErrors.filter((line) => !line.includes('favicon'))).toEqual([]);
+      |                                                                       ^ Error: expect(received).toEqual(expected) // deep equality
   190 |   } finally {
   191 |     await server.close();
   192 |   }

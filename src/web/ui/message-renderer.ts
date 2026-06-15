@@ -58,6 +58,13 @@ export interface RendererCtx {
   /** 引用 client.js 函数, 避免循环 import */
   openJudgmentsModalWithFilter?: (ids: string[]) => void;
   workflowDisplayEl?: HTMLElement | null;
+  /**
+   * B-3 (2026-06-15) 3 状态机回调:
+   *   - setTimelineState('streaming'): 首个 token 来时切到 streaming (蓝徽)
+   *   - setTimelineState('done'): finalize 时切到 done (绿徽), 1.5s 后自动 hide
+   * 走 ctx 注入而非直接 import, 保持 message-renderer 零业务依赖.
+   */
+  setTimelineState?: (state: 'idle' | 'loading' | 'streaming' | 'done') => void;
 }
 
 export interface UsedJudgmentsLink {
@@ -395,6 +402,10 @@ export function handleStreamTokenEvent(data: StreamTokenEvent, ctx: RendererCtx 
     streamingMessageEl.appendChild(streamingCursorEl);
     streamingText = '';
     container.appendChild(streamingMessageEl);
+    // B-3: 首个 token 来时切状态到 streaming (蓝徽), 提示用户 panel 在工作
+    if (typeof ctx.setTimelineState === 'function') {
+      ctx.setTimelineState('streaming');
+    }
     scheduleScrollToBottom(container);
   }
   if (streamingTextNode) streamingTextNode.appendData(delta);
@@ -421,6 +432,10 @@ export function finalizeTimelineAsMessage(ctx: RendererCtx = { messagesEl: null,
   streamingTextNode = null;
   streamingCursorEl = null;
   streamingText = '';
+  // B-3: finalize 时切 done 状态 (绿徽), hide 延迟由 client.js 的 hideTimelinePanel 统一管
+  if (typeof ctx.setTimelineState === 'function') {
+    ctx.setTimelineState('done');
+  }
 }
 
 // ---------------------------------------------------------------------------
