@@ -4871,6 +4871,41 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // ============================================================
+  // system-prompt health (P-Action 2 — Harness Gardening)
+  // 返回每层 lifecycle 状态: ok | stale | overdue-review | missing-frontmatter | dynamic
+  // query: ?activeOnly=1 → 只返回当前 context 激活的层
+  // ============================================================
+  app.get('/api/prompt/health', async (req, res) => {
+    try {
+      const { listLayers } = await import('../llm/system-prompt/registry.js');
+      const { evaluateLayers, markActive } = await import('../llm/system-prompt/health.js');
+      const all = listLayers() as Array<any>;
+      const baseReport = evaluateLayers(all);
+
+      // 如果 query 里有 activeOnly, 跑一次 assembleSystemPrompt 拿激活列表
+      if (String(req.query.activeOnly ?? '') === '1') {
+        const { assembleSystemPrompt } = await import('../llm/system-prompt/registry.js');
+        const channel = String(req.query.channel ?? 'local') as 'local' | 'p2p-visitor' | 'p2p-agent';
+        const role = req.query.role as any;
+        const tool = req.query.tool as any;
+        try {
+          const r = await assembleSystemPrompt({ channel, role, tool });
+          const activeIds = new Set(r.layerIds);
+          res.json(markActive(baseReport, activeIds));
+        } catch (err: any) {
+          console.warn('[prompt-health] assembleSystemPrompt failed (silent, returning base report):', err);
+          res.json(baseReport);
+        }
+      } else {
+        res.json(baseReport);
+      }
+    } catch (err: any) {
+      console.error('[prompt-health] failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 自适应接受/拒绝: 写 evolution.jsonl 留痕, 接受时同时 patch judgments.json
   // body: { action: 'accept'|'reject'|'revert', suggestion, appliedPatch? }
   // query: ?auto=1  → 类 B 自动路径, 受 auto-evolve-policy 网关保护
