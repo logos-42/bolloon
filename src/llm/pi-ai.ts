@@ -33,6 +33,26 @@ export interface GenerateOptions {
   tools?: string[];
 }
 
+/**
+ * 外部 system 注入钩子.
+ * 调用方 (e.g. auto-evolve-loop) 用 setSystemPrependProvider() 注册一个返回字符串的函数,
+ * generateText 在拼 finalMessages 时, 把返回的字符串作为最前一个 system message.
+ *
+ * 用途: P2P 协作时把"行级 reserve 状态"实时塞给 LLM,
+ *       让 LLM 主动避开对方正在改的代码行.
+ *
+ * 返回 '' / null / undefined → 不注入.
+ */
+let _prependProvider: (() => string | null | undefined | Promise<string | null | undefined>) | null = null;
+export function setSystemPrependProvider(
+  p: (() => string | null | undefined | Promise<string | null | undefined>) | null
+): void {
+  _prependProvider = p;
+}
+export function getSystemPrependProvider(): typeof _prependProvider {
+  return _prependProvider;
+}
+
 export class PiAIModel {
   private config: ModelConfig;
   private provider: ModelProvider;
@@ -112,6 +132,19 @@ export class PiAIModel {
 
     // 工具清单: 代码侧 schema → 进 system prompt (作为额外 system message)
     let finalMessages = messages;
+
+    // 1) 外部 prepend (e.g. P2P 行级 reserve 状态), 拼到最前
+    if (_prependProvider) {
+      try {
+        const pre = await _prependProvider();
+        if (pre && typeof pre === 'string' && pre.trim()) {
+          finalMessages = [{ role: 'system', content: pre }, ...finalMessages];
+        }
+      } catch (err: any) {
+        console.warn('[pi-ai] systemPrepend 失败:', err?.message?.slice(0, 100));
+      }
+    }
+
     if (tools && tools.length > 0) {
       try {
         const { getToolManifest, formatForPrompt } = await import('./tool-manifest/index.js');

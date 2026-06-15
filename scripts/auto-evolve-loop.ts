@@ -31,6 +31,64 @@ import * as path from 'path';
 const pExec = promisify(execFile);
 const REPO = process.cwd();
 
+/**
+ * P2P 协作 broadcaster (行级 reserve + commit-intent 广播)
+ * 走现有 P2PDirect + 'bolloon-agent-harness' topic, 不开新端口.
+ * 失败 → 整个 loop 仍能跑 (broadcaster = null 时跳过), 不阻塞自迭代.
+ */
+let broadcaster: any = null;
+async function initBroadcaster(): Promise<void> {
+  try {
+    const { P2PDirect } = await import('../src/network/p2p-direct.js');
+    const { SourceIntentBroadcaster } = await import('../src/network/source-intent-broadcaster.js');
+    const hostname = await pExec('hostname', []).then(r => r.stdout.trim()).catch(() => 'unknown');
+    const p2p = new P2PDirect({ name: 'auto-evolve', role: 'auto-evolve-agent' });
+    await p2p.start();
+    const sb = new SourceIntentBroadcaster(p2p, {
+      agent: `agent-${hostname}`,
+      topic: 'bolloon-agent-harness',
+    });
+    await sb.start();
+
+    // P2P Hook 4: 监听远端事件, 打印到日志 (聊天框能看)
+    sb.on('remoteReserve', (m: any) => {
+      console.log(`[p2p] 远端 ${m.agent} reserve ${m.file} 行 ${m.lines[0]}-${m.lines[1]} (task=${m.taskId})`);
+    });
+    sb.on('remoteConflict', (c: any) => {
+      console.log(`[p2p] 冲突: 远端 ${c.agent} 也想改 ${JSON.stringify(c.lines)} — 我方让步 / 改方向`);
+    });
+    sb.on('remoteRelease', (m: any) => {
+      console.log(`[p2p] 远端 ${m.agent} release ${m.file} 行 ${m.lines[0]}-${m.lines[1]}`);
+    });
+    sb.on('remoteCommit', (m: any) => {
+      console.log(`[p2p] 远端 ${m.agent} commit ${m.file} sha=${m.sha} diffHash=${m.diffHash}`);
+    });
+
+    // 把 live reserves 注入到 LLM 系统 prompt (pi-ai Hook)
+    try {
+      const pi = await import('../src/llm/pi-ai.js');
+      pi.setSystemPrependProvider(() => {
+        const live = sb.liveReserves();
+        if (live.length === 0) return null;
+        return [
+          '【行级 P2P 协调】其他智能体正在改的代码行:',
+          ...live.map(r => `  - ${r.file} 行 ${r.lines[0]}-${r.lines[1]} (${r.agent}, task=${r.taskId})`),
+          '你即将改的代码行如果重叠, 请让出或改别的行.',
+        ].join('\n');
+      });
+      console.log('[p2p] systemPrependProvider 已注册');
+    } catch (err: any) {
+      console.warn(`[p2p] systemPrependProvider 注册失败: ${err.message?.slice(0, 100)}`);
+    }
+
+    broadcaster = sb;
+    console.log('[p2p] broadcaster 已启动');
+  } catch (err: any) {
+    console.warn(`[p2p] broadcaster 启动失败 (loop 继续): ${err.message?.slice(0, 200)}`);
+    broadcaster = null;
+  }
+}
+
 interface VitestResult {
   failed: number;
   passed: number;
@@ -238,6 +296,28 @@ async function commitPatch(patchId: string): Promise<boolean> {
       } catch { /* binary or removed */ }
     }
     await pExec('git', ['commit', '-m', `auto-evolve: ${patchId} (LLM 修复)`], { cwd: REPO });
+
+    // P2P Hook 2: 广播 commit-intent (供对方智能体做轻量审计 / 触发 push)
+    if (broadcaster) {
+      try {
+        const { stdout: shaOut } = await pExec('git', ['rev-parse', '--short', 'HEAD'], { cwd: REPO });
+        const sha = shaOut.trim();
+        for (const f of files) {
+          // 简化: 整文件视为 [1, 99999], diffHash 用 patchId
+          await broadcaster.broadcastCommitIntent({
+            taskId: patchId,
+            file: f,
+            lines: [1, 99999],
+            sha,
+            diffHash: patchId.slice(0, 16),
+          });
+        }
+        console.log(`[p2p] commit-intent 广播: ${files.length} 个文件, sha=${sha}`);
+      } catch (err: any) {
+        console.warn(`[p2p] commit-intent 广播失败: ${err.message?.slice(0, 100)}`);
+      }
+    }
+
     return true;
   } catch (err: any) {
     console.error(`[loop] commit 失败: ${err.message?.slice(0, 200)}`);
@@ -265,6 +345,9 @@ async function main() {
     if (args[i] === '--max-iter' && args[i + 1]) maxIter = parseInt(args[++i], 10);
     if (args[i] === '--target' && args[i + 1]) targetFile = args[++i];
   }
+
+  // P2P Hook 1: 启动 broadcaster (失败不阻塞 loop)
+  await initBroadcaster();
 
   // 必须先有 baseline
   if (!(await fs.stat('.last-auto-evolve-baseline').catch(() => null))) {
@@ -301,6 +384,28 @@ async function main() {
       .replace('{{SOURCE}}', sourceCtx);
 
     console.log('[loop] 调 LLM 修...');
+
+    // P2P Hook 3: best-effort reserve 我方即将改的文件 (行级粒度, 整文件 [1, 99999])
+    // 失败/冲突 → 仅 log, 不阻塞 loop (LLM 已经能从 systemPrepend 看到 liveReserves)
+    if (broadcaster) {
+      const filesToReserve = [firstTest, ...(srcCtx.match(/^=== SRC FILE \(imported\) ===\s*\n([^\n]+)$/m)?.[1] ? [srcCtx.match(/^=== SRC FILE \(imported\) ===\s*\n([^\n]+)$/m)![1]] : [])]
+        .map(p => p.replace(REPO + '/', ''))
+        .filter((p, i, a) => p && a.indexOf(p) === i);
+      for (const f of filesToReserve) {
+        if (!f || f === 'unknown') continue;
+        try {
+          const r = await broadcaster.reserve({ taskId: patchId || `iter-${iter}`, file: f, lines: [1, 99999] });
+          if (r.ok) {
+            console.log(`[p2p] reserve OK: ${f}`);
+          } else {
+            console.log(`[p2p] reserve 冲突: ${f} 已被 ${r.existing.agent} 占用, LLM 会避开`);
+          }
+        } catch (err: any) {
+          console.warn(`[p2p] reserve 失败 (继续): ${err.message?.slice(0, 80)}`);
+        }
+      }
+    }
+
     const llmOut = await callLLM(prompt);
     const diff = extractDiff(llmOut);
     if (!diff) {
