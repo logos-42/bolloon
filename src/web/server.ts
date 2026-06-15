@@ -1863,7 +1863,9 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         // 2026-06-15: 把 user text 单独 marker 包起来, LLM 不会被 8K+ 的 system context 吞掉
         //   (之前 contextHint + text 拼成一整段当 user role, 24 字符的 user input 埋在 8K+ 里看不出)
         //   修法: contextHint 当 "背景信息", text 当 "本轮用户请求" — 显式 marker 让 LLM 区分
-        const markedPrompt = `${contextHint}\n\n【本轮用户请求】\n${text}\n【请求结束】\n`;
+        // 2026-06-15 二次修: 把 text 放在最前 (LLM 看到 input 第一眼是 user text, 不会被 judgmentHint 末尾
+        //   的 "..." 误判为整个 input 截断)
+        const markedPrompt = `【本轮用户请求】\n${text}\n【请求结束】\n\n${contextHint}`;
         fullResponse = await agent.promptStream(markedPrompt, streamCallback, runState.abortController?.signal, channelId);
       } catch (err: any) {
         // abort 抛错: 保留已输出的部分 (fullResponse 可能是空字符串)
