@@ -1221,6 +1221,19 @@ function initTimelinePanel() {
   timelineRowsEl = document.getElementById('loop-timeline-rows');
   const abortBtn = document.getElementById('loop-abort-btn');
   if (abortBtn) abortBtn.addEventListener('click', abortCurrentRun);
+  // 2026-06-15: header 点击 → 折叠/展开 body (用户可收起 timeline 节省空间)
+  const header = document.getElementById('loop-timeline-header');
+  const body = document.getElementById('loop-timeline-body');
+  const toggle = document.getElementById('loop-timeline-toggle');
+  if (header && body && toggle) {
+    header.addEventListener('click', (e) => {
+      // 终止按钮点击不触发折叠
+      if (e.target.closest('#loop-abort-btn')) return;
+      const collapsed = body.style.display === 'none';
+      body.style.display = collapsed ? 'block' : 'none';
+      toggle.style.transform = collapsed ? 'rotate(90deg)' : 'rotate(0deg)';
+    });
+  }
 }
 
 // 2026-06-15: 之前 abortCurrentRun 未定义 → 点终止按钮 ReferenceError.
@@ -1269,10 +1282,35 @@ function showTimelinePanel() {
   initTimelinePanel();
   resetTimeline();
   if (timelinePanelEl) timelinePanelEl.hidden = false;
+  loopRunning = true; // 2026-06-15: 标志 loop 在跑, done 后才 hide
+  // 2026-06-15: 启动 5s 自动隐藏计时器, 没有新事件就 hide (避免 phase 持续 show 不 hide)
+  scheduleTimelineAutoHide();
 }
 
 function hideTimelinePanel() {
   if (timelinePanelEl) timelinePanelEl.hidden = true;
+  if (timelineAutoHideTimer) {
+    clearTimeout(timelineAutoHideTimer);
+    timelineAutoHideTimer = null;
+  }
+  // 2026-06-15: 标志 loop 已结束, 后续 phase / status 事件不再 show panel
+  loopRunning = false;
+}
+
+// 2026-06-15: loop 状态标志, done 后任何 phase 事件不重 show panel
+let loopRunning = false;
+
+// 2026-06-15: 任何 SSE 事件 (status / phase / workflow_step / stream token) 都调这个,
+// 重置 5s 自动隐藏计时器. 没有新事件 → panel 自动 hide, 不再永远显示.
+let timelineAutoHideTimer = null;
+function scheduleTimelineAutoHide() {
+  if (timelineAutoHideTimer) clearTimeout(timelineAutoHideTimer);
+  timelineAutoHideTimer = setTimeout(() => {
+    if (timelinePanelEl && !timelinePanelEl.hidden) {
+      timelinePanelEl.hidden = true;
+    }
+    timelineAutoHideTimer = null;
+  }, 5000);
 }
 
 function scrollTimelineToBottom() {
@@ -1349,7 +1387,14 @@ function handlePhaseEventTimeline(data) {
   initTimelinePanel();
   const tmpl = PHASE_TEXT[data.phase];
   if (!tmpl) return;
-  if (timelinePanelEl.hidden) showTimelinePanel();
+  // 2026-06-15: loop 已 done 后, 后续 phase 事件不重 show panel (避免持续显示)
+  if (!loopRunning) return;
+  if (timelinePanelEl.hidden) {
+    timelinePanelEl.hidden = false;
+    scheduleTimelineAutoHide();
+  } else {
+    scheduleTimelineAutoHide();
+  }
   let text = tmpl;
   if (data.usedCount !== undefined) text = text.replace('{usedCount}', String(data.usedCount));
   if (data.detail && (data.phase === 'd_done' || data.phase === 'd_skip' || data.phase === 'd_error')) {
@@ -1383,16 +1428,75 @@ function handleStatusEventTimeline(data) {
     scrollTimelineToBottom();
   } else {
     // 普通 status: 当作 phase done
-    if (timelinePanelEl.hidden) showTimelinePanel();
+    // 2026-06-15: loop 已 done 后不重 show panel
+    if (!loopRunning) return;
+    if (timelinePanelEl.hidden) {
+      timelinePanelEl.hidden = false;
+      scheduleTimelineAutoHide();
+    } else {
+      scheduleTimelineAutoHide();
+    }
     const label = (data.tool ? `🔧 ${data.tool}: ` : '') + content;
     appendPhaseRow(label, 'done');
   }
 }
 
+// 2026-06-15: 流式输出重写 — 之前把 token 写到 timeline panel, 然后等 done 时搬
+// 到 messages 流, 过程中:
+//   1. 看不到 token 在哪里累积 (底部白色小框挤占空间)
+//   2. 不能折叠
+//   3. server `done` 事件丢了 → 内容没搬走, 直接消失 (过早截断)
+// 现在: token 直接 append 到 messages 容器, 跟对话消息同一流, 即时 render,
+// 不需要 timeline panel 中转.
+//
+// 性能优化: 用 lastDelta 增量 append (appendChild textNode), 不用 textContent 重写整文本.
+// 1000 token 长回复时, 旧版每次重写 = O(n) reflow, 后段会卡; 新版每次 append = O(1).
+let streamingMessageEl = null;   // 当前正在流式增长的 message 元素
+let streamingTextNode = null;     // 累积文本的 textNode (光标前的部分)
+let streamingCursorEl = null;     // 末尾光标 span (流式时显示, finalize 时移除)
+let streamingText = '';          // 累积的 token 文本 (用于 finalize 时 addMessage)
+
 function handleStreamTokenEvent(data) {
-  initTimelinePanel();
-  if (timelinePanelEl.hidden) showTimelinePanel();
-  appendOrUpdateTokenRow(data.content || '');
+  // 确保 message 元素在 messages 容器内, 跟对话消息同一流
+  const container = messagesContainers.get(currentChannelId) || messagesEl;
+  if (!container) return;
+  const delta = data.content || '';
+  if (!delta) return;
+  if (!streamingMessageEl || !streamingMessageEl.isConnected) {
+    // 新建流式消息 (看起来像 AI 消息气泡)
+    streamingMessageEl = document.createElement('div');
+    streamingMessageEl.className = 'message message-ai message-streaming';
+    streamingMessageEl.style.cssText = 'margin:8px 12px;padding:10px 14px;border-radius:8px;background:var(--bg-hover);color:var(--text);max-width:80%;line-height:1.5;white-space:pre-wrap;word-break:break-word;font-size:14px;';
+    // 累积文本 + 光标 (cursor 单独 span, 只在 streamingText 变化时 insertBefore, 不重排整个)
+    streamingTextNode = document.createTextNode('');
+    streamingCursorEl = document.createElement('span');
+    streamingCursorEl.className = 'streaming-cursor';
+    streamingCursorEl.textContent = '▍';
+    streamingCursorEl.style.cssText = 'color:var(--accent);animation:streaming-blink 1s infinite;';
+    streamingMessageEl.appendChild(streamingTextNode);
+    streamingMessageEl.appendChild(streamingCursorEl);
+    streamingText = '';
+    container.appendChild(streamingMessageEl);
+    // 首次滚动到底 (之后每 200ms 限频, 避免 reflow 过频)
+    scheduleScrollToBottom(container);
+  }
+  // O(1) 增量 append: 把 delta 拆成单字符 append, 避免大段重排
+  // (textNode.appendData 也行, 但分次更平滑)
+  streamingTextNode.appendData(delta);
+  streamingText += delta;
+  // 限频滚动, 避免每 token 触发 reflow
+  scheduleScrollToBottom(container);
+}
+
+// 限频滚动 (60ms / 16fps, 用户感觉不到延迟, 但减少 reflow)
+let scrollToBottomTimer = null;
+function scheduleScrollToBottom(container) {
+  if (!container) return;
+  if (scrollToBottomTimer) return; // 已在 pending
+  scrollToBottomTimer = setTimeout(() => {
+    container.scrollTop = container.scrollHeight;
+    scrollToBottomTimer = null;
+  }, 60);
 }
 
 function handleQueueUpdateTimeline(data) {
@@ -1506,10 +1610,21 @@ function handleSelfImproveResult(data) {
 }
 
 function finalizeTimelineAsMessage() {
+  // 2026-06-15: 把流式累积的 streaming 元素转成正式 AI 消息 (走 addMessage 含 markdown 渲染)
   const container = messagesContainers.get(currentChannelId) || messagesEl;
-  if (currentTokenText.trim().length > 0) {
-    addMessage(currentTokenText, 'ai', true, container, lastUsedJudgmentIds);
+  if (streamingText.trim().length > 0) {
+    // 用 addMessage (含 marked.parse + cleanThink + 自动渲染 bubble), 它会自己创建新元素
+    // 移除 streaming 元素 (光标 + 累积文本), 避免重复
+    if (streamingMessageEl && streamingMessageEl.parentNode) {
+      streamingMessageEl.parentNode.removeChild(streamingMessageEl);
+    }
+    addMessage(streamingText, 'ai', true, container, lastUsedJudgmentIds);
   }
+  // 重置流式状态
+  streamingMessageEl = null;
+  streamingTextNode = null;
+  streamingCursorEl = null;
+  streamingText = '';
   // tool 折叠行保留在 timeline 内, 用户能回看
 }
 

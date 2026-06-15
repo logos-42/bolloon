@@ -1356,6 +1356,16 @@ body {
   50% { opacity: 0.3; }
 }
 
+/* 2026-06-15: 流式输出光标 blink 动画 (黄色光标) */
+@keyframes streaming-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.streaming-cursor {
+  display: inline-block;
+  margin-left: 1px;
+}
+
 /* Tool Results Container */
 .tool-results-container {
   margin: 8px 0;
