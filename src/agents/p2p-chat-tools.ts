@@ -1,7 +1,7 @@
 /**
  * p2p-chat-tools — 异步 chat 通道 + 持久化 inbox + 判断力外包 (draft)
  *
- * 解决痛点: 两个节点的智能体代替各自人类主人做异步判断
+ * 解决痛点: 两个节点的智能体代替各自人类用户做异步判断
  *
  * 流程:
  *   1. A 节点 (人类在线) 通过 sendChat(peerDID, text) 发消息 → iroh 'agent_chat'
@@ -9,7 +9,7 @@
  *        - onMessage('agent_chat') → 落 ~/.bolloon/inbox/<peerDID>.jsonl
  *        - 状态 = 'received' (未处理)
  *   3. B 节点 wake-up (processPendingInbox) → 扫描 status='received' 的消息
- *        - 调 LLM 生成 draft (注入主人历史判断 + ValueProfile)
+ *        - 调 LLM 生成 draft (注入用户历史判断 + ValueProfile)
  *        - 写 status='drafted', draft 落盘
  *        - 通过 'agent_chat' 消息类型回送 draft (前缀 [DRAFT] 表明是代回)
  *   4. A 节点收到 draft → 写到 A 的 outbox (inbox 中 from=B 的那条)
@@ -258,7 +258,7 @@ async function buildValueHint(text: string): Promise<string> {
       .slice(-10)
       .flatMap((j) => j.reasons || [])
       .slice(0, 20);
-    return `\n[主人历史判断 (style 参考, 不可外泄)]\n关注维度: ${profileHint}\n关键理由示例: ${reasons.join(' | ').slice(0, 400) || '(无)'}\n`;
+    return `\n[用户历史判断 (style 参考, 不可外泄)]\n关注维度: ${profileHint}\n关键理由示例: ${reasons.join(' | ').slice(0, 400) || '(无)'}\n`;
   } catch (e) {
     return '';
   }
@@ -275,7 +275,7 @@ export async function generateDraft(
   if (entry.status !== 'received') return entry;
 
   const valueHint = await buildValueHint(entry.text);
-  const promptForDraft = `你是主人的代理. 对方发来这条消息: "${entry.text.slice(0, 1500)}"\n${valueHint}\n请基于主人的历史判断, 用 1-2 句话代主人拟一个回复草案. 草案要保留主人的语气和立场, 开头标注 [DRAFT]. 直接给草案文本, 不要解释.`;
+  const promptForDraft = `你是用户的代理. 对方发来这条消息: "${entry.text.slice(0, 1500)}"\n${valueHint}\n请基于用户的历史判断, 用 1-2 句话代用户拟一个回复草案. 草案要保留用户的语气和立场, 开头标注 [DRAFT]. 直接给草案文本, 不要解释.`;
 
   let draftText = '';
   let confidence = 0.5;
@@ -290,7 +290,7 @@ export async function generateDraft(
       body: JSON.stringify({
         model: openaiModel,
         messages: [
-          { role: 'system', content: '你是主人的代理. 你的输出会被主人审阅后才发出. 请谨慎.' },
+          { role: 'system', content: '你是用户的代理. 你的输出会被用户审阅后才发出. 请谨慎.' },
           { role: 'user', content: promptForDraft },
         ],
         temperature: 0.4,
@@ -310,7 +310,7 @@ export async function generateDraft(
   }
 
   if (!draftText) {
-    draftText = `[DRAFT] 已收到. (本地 draft 引擎未配置 LLM, 主人上线后请手写回复)`;
+    draftText = `[DRAFT] 已收到. (本地 draft 引擎未配置 LLM, 用户上线后请手写回复)`;
     confidence = 0.1;
   }
 

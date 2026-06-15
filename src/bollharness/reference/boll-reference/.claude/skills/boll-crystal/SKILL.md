@@ -485,7 +485,7 @@ Formulated demand: {formulated_demand_path}
 
 **Spawn prompt 模板**:
 ```
-你是 {participant_name} 的交付代理。你的任务是将协作方案从主人的视角呈现出来。
+你是 {participant_name} 的交付代理。你的任务是将协作方案从用户的视角呈现出来。
 
 【重要】你的 system prompt 已预组装，名称和 Profile 已绑定：
   {assembled_dir}/delivery_{participant_id}_system.txt

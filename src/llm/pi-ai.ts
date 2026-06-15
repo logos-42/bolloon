@@ -261,19 +261,34 @@ export class PiAIModel {
       throw new Error('OPENAI_API_KEY not set');
     }
 
+    const requestBody = {
+      model: this.mapModel(),
+      messages,
+      temperature,
+      max_tokens: maxTokens
+    };
+    // 2026-06-15: debug — 看实际发的 messages 形状 (确认 user 角色 + 真实 input)
+    //   末 200 字符 (用户真实 input 拼接在 contextHint 之后)
+    const lastUserRaw = requestBody.messages[requestBody.messages.length - 1]?.content || '';
+    console.log('[callOpenAI] sending', JSON.stringify({
+      model: requestBody.model,
+      messageRoles: requestBody.messages.map(m => m.role),
+      lastUserLen: lastUserRaw.length,
+      lastUserTail: lastUserRaw.slice(-200),
+      lastUserHead: lastUserRaw.slice(0, 120),
+      systemLen: requestBody.messages[0]?.content?.length || 0,
+    }));
     const response = await fetch(`${this.getBaseUrl()}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`
       },
-      body: JSON.stringify({
-        model: this.mapModel(),
-        messages,
-        temperature,
-        max_tokens: maxTokens
-      }),
-      signal,
+      body: JSON.stringify(requestBody),
+      // 2026-06-15: signal 字段防御 — Node 22+ undici 强类型 AbortSignal, 非 AbortSignal 实例
+      //   (e.g. 误传的 { maxTokens: 1 } 对象) 会 throw "Expected signal to be AbortSignal".
+      //   若不是 AbortSignal, 退到无 signal 调用, fetch 自然支持 timeout 由外层控制.
+      signal: signal instanceof AbortSignal ? signal : undefined,
     });
 
     if (!response.ok) {

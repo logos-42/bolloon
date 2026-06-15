@@ -792,7 +792,7 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       const { getMinimax } = await import('../constraints/index.js');
       const llm = getMinimax();
       // v3 新增: 在 prompt 头部标记"这是远端访客", 让 AI 知道对方不是自己 owner
-      const visitorHint = `[系统上下文] 消息来源: 远端访客 (P2P 连接, publicKey=${senderKey.substring(0, 12)}...). 对方不是你 owner, 是通过 P2P 网络访问你这个 channel 的合作者. 称呼对方时可用 "远端访客" / "朋友" / "合作者", 不要叫 "主人".\n\n`;
+      const visitorHint = `[系统上下文] 消息来源: 远端访客 (P2P 连接, publicKey=${senderKey.substring(0, 12)}...). 对方不是你 owner, 是通过 P2P 网络访问你这个 channel 的合作者. 称呼对方时可用 "远端访客" / "朋友" / "合作者", 不要叫 "用户".\n\n`;
       // v3 新增: 也注入 channel 目录给 LLM (B 的 channel 也可以 @-mention 其他)
       let dirHint = '';
       const localChannels = (await loadChannels()).filter(c => c.id !== channelId);
@@ -1719,7 +1719,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       let contextHint = '';
       if (realChannelDid) contextHint += `[系统上下文] 当前频道名称: ${realChannelName}, 你的真实 DID: ${realChannelDid}\n`;
       // v3 新增: 标识发送方 — 让 AI 分清内部 owner vs 远端访客
-      contextHint += `[系统上下文] 消息来源: 本地 (channel 内部 owner / 此机器上的用户). 称呼对方时用 "你" 或 "主人" 即可.\n`;
+      contextHint += `[系统上下文] 消息来源: 本地 (channel 内部 owner / 此机器上的用户). 称呼对方时用 "你" 或 "用户" 即可.\n`;
       if (boundWalletAddress) {
         contextHint += `[系统上下文] 已绑定的加密钱包地址: ${boundWalletAddress}。当用户授权或启用自动工具调用时, 可使用该地址发起链上操作。\n`;
       }
@@ -4200,7 +4200,7 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
-  // 主人审阅: 批准 draft
+  // 用户审阅: 批准 draft
   app.post('/api/chat/approve', async (req, res) => {
     try {
       const { messageId, peerDID, finalText } = req.body || {};
@@ -4213,7 +4213,7 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
-  // 主人审阅: 丢弃 draft
+  // 用户审阅: 丢弃 draft
   app.post('/api/chat/dismiss', async (req, res) => {
     try {
       const { messageId, peerDID } = req.body || {};

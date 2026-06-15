@@ -57,7 +57,7 @@ export function formatContextForSystemPrompt(
 
   // 3. Persona
   if (ctx.persona) {
-    lines.push(`## 主人身份 (persona)`);
+    lines.push(`## 用户身份 (persona)`);
     lines.push(`- 名字: ${ctx.persona.name}`);
     if (ctx.persona.description) lines.push(`- 描述: ${ctx.persona.description}`);
     if (ctx.persona.personality) lines.push(`- 性格: ${ctx.persona.personality}`);

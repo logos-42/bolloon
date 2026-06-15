@@ -257,9 +257,10 @@ export class HealthMonitor implements HealthCheckProvider {
   private async pingLLM(minimax: any): Promise<number> {
     const start = Date.now();
     try {
-      // 简单的 chat 测试
+      // 2026-06-15: signal 位置正确传 undefined (chat signature 是 (message, context?, signal?))
+      //   之前传 { maxTokens: 1 } 被当 signal, Node 22+ undici 强类型 AbortSignal 校验 throw
       if (minimax.chat) {
-        await minimax.chat('ping', 'test', { maxTokens: 1 });
+        await minimax.chat('ping', 'test', undefined);
       } else if (minimax.ping) {
         await minimax.ping();
       }

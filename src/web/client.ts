@@ -1338,7 +1338,16 @@ function connect(channelId) {
           }
         }
       } else if (data.type === 'error') {
-        addMessage('错误: ' + data.content, 'ai', true, container);
+        // 2026-06-15: 错误不再 addMessage 成 AI 气泡 — server 推 error 时, stream 的
+        //   部分 token 已经被流式元素收下, finalizeTimelineAsMessage 也会被 done 触发
+        //   再渲染一次, 跟错误文本混在一起就是用户看到的"多了一个气泡 + 半个 system context"
+        //   改: error 走 toast 提示, 留给流式 finalize 处理残余
+        if (typeof showSimpleToast === 'function') {
+          const msg = String(data.content || '').slice(0, 200);
+          showSimpleToast('⚠️ ' + msg);
+        } else {
+          console.error('[SSE] error:', data.content);
+        }
         setSendMode('idle');
       } else if (data.type === 'task_status' || data.type === 'workflow_step' || data.type === 'workflow_loop') {
         // 2026-06-15: 旧工作流事件, 不再单独画 — server 仍可推, 客户端仅 log

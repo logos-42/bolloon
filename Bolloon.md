@@ -84,7 +84,7 @@ AI 回复下方挂极简 `📎 参考 N 条原则` 链接（不展开内嵌）�
 - `human-values/usage.jsonl` — 注入门使用记录
 - `human-values/violations.jsonl` — 监控门违规记录
 - `human-values/evolution.jsonl` — 类 B 自适应演化日志
-- `persona.json` — 主人身份
+- `persona.json` — 用户身份
 - `sessions/<channel>/` — 每个 channel 的会话持久化
 - `skills/` — 用户级 skills (与 .bolloon/skills/ 项目级并存)
 
