@@ -813,7 +813,8 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         }
         dirHint += '语法: 在回复中写 "@渠道名 我要说的话" 即可. 消息会持久化到目标 channel 的 session.\n\n';
       }
-      const fullPrompt = `${visitorHint}${dirHint}${judgmentHint}${text}`;
+      // 2026-06-15: P2P 远端访客路径也用显式 marker 包裹 text
+      const fullPrompt = `${visitorHint}${dirHint}${judgmentHint}\n\n【本轮用户请求】\n${text}\n【请求结束】\n`;
       let fullResponse = '';
       // v3 新增: 流式 token 节流推给 B — 让 B 看到过程
       let lastFlushAt = 0;
@@ -1859,7 +1860,11 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
       if (contextHint) contextHint += '\n';
       try {
-        fullResponse = await agent.promptStream(contextHint + text, streamCallback, runState.abortController?.signal, channelId);
+        // 2026-06-15: 把 user text 单独 marker 包起来, LLM 不会被 8K+ 的 system context 吞掉
+        //   (之前 contextHint + text 拼成一整段当 user role, 24 字符的 user input 埋在 8K+ 里看不出)
+        //   修法: contextHint 当 "背景信息", text 当 "本轮用户请求" — 显式 marker 让 LLM 区分
+        const markedPrompt = `${contextHint}\n\n【本轮用户请求】\n${text}\n【请求结束】\n`;
+        fullResponse = await agent.promptStream(markedPrompt, streamCallback, runState.abortController?.signal, channelId);
       } catch (err: any) {
         // abort 抛错: 保留已输出的部分 (fullResponse 可能是空字符串)
         if (runState.abortController?.signal.aborted || err?.name === 'AbortError') {
@@ -2747,8 +2752,10 @@ app.get('/channels', async (_req, res) => {
       };
 
       // 重新生成时只发送用户消息 (v3: 同时注入 channel 绑定的判断力)
+      // 2026-06-15: 同 /message 路径, 用显式 marker 包裹 userMessage, 避免 LLM 把它当背景信息
       const regenHint = await buildJudgmentHint(channel, channelId);
-      fullResponse = await agent.promptStream(regenHint + userMessage, streamCallback, undefined, channelId);
+      const markedRegen = `${regenHint}\n\n【本轮用户请求】\n${userMessage}\n【请求结束】\n`;
+      fullResponse = await agent.promptStream(markedRegen, streamCallback, undefined, channelId);
 
       broadcast({ type: 'ai', content: fullResponse }, channelId);
 

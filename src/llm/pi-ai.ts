@@ -267,17 +267,6 @@ export class PiAIModel {
       temperature,
       max_tokens: maxTokens
     };
-    // 2026-06-15: debug — 看实际发的 messages 形状 (确认 user 角色 + 真实 input)
-    //   末 200 字符 (用户真实 input 拼接在 contextHint 之后)
-    const lastUserRaw = requestBody.messages[requestBody.messages.length - 1]?.content || '';
-    console.log('[callOpenAI] sending', JSON.stringify({
-      model: requestBody.model,
-      messageRoles: requestBody.messages.map(m => m.role),
-      lastUserLen: lastUserRaw.length,
-      lastUserTail: lastUserRaw.slice(-200),
-      lastUserHead: lastUserRaw.slice(0, 120),
-      systemLen: requestBody.messages[0]?.content?.length || 0,
-    }));
     const response = await fetch(`${this.getBaseUrl()}/chat/completions`, {
       method: 'POST',
       headers: {

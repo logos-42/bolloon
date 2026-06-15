@@ -1132,6 +1132,32 @@ async function runNonInteractive(
     return;
   }
 
+  if (tool === 'prompt' && prompt) {
+    // 2026-06-15: --prompt "text" 走直接调 a.prompt(prompt) 路径, 避开 runToolCommand
+    //   (case 'prompt' 内的 [text] = args 从 toolArgs 取值是空数组, 永远报"缺少 prompt 文本"是 CLI bug)
+    const startTime = Date.now();
+    const a = await getAgent();
+    try {
+      const response = await a.prompt(prompt);
+      const elapsed = Date.now() - startTime;
+      if (json) {
+        console.log(JSON.stringify({ success: true, response, elapsedMs: elapsed }, null, 2));
+      } else {
+        console.log(response);
+        console.log(`\n耗时: ${elapsed}ms`);
+      }
+    } catch (e: any) {
+      const error = e?.message || String(e);
+      if (json) {
+        console.log(JSON.stringify({ success: false, error }, null, 2));
+      } else {
+        console.log(`\n错误: ${error}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
   if (tool) {
     await runToolCommand(tool, toolArgs, !!json, comm);
   } else if (prompt) {
@@ -1565,7 +1591,9 @@ async function main() {
   s.section('系统初始化');
 
   const hasOpenAI = !!process.env.OPENAI_API_KEY;
-  const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
+  // 2026-06-15: 修复 — 之前 anthropic 401 是因为 shell env 残留的旧 ANTHROPIC_API_KEY 抢了 provider 选择
+  //   用 BOLLOON_LLM_PROVIDER env 显式覆盖, 否则还是按 env hasXxx 顺序自动选
+  const hasAnthropic = !!process.env.ANTHROPIC_API_KEY && !process.env.BOLLOON_LLM_PROVIDER;
   const hasMinimax = !!process.env.MINIMAX_API_KEY;
   const hasDeepSeek = !!process.env.DEEPSEEK_API_KEY;
   const hasKimi = !!(process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY);
