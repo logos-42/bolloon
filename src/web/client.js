@@ -1223,6 +1223,39 @@ function initTimelinePanel() {
   if (abortBtn) abortBtn.addEventListener('click', abortCurrentRun);
 }
 
+// 2026-06-15: 之前 abortCurrentRun 未定义 → 点终止按钮 ReferenceError.
+// 现在: 调 POST /api/chat/abort (server 会触发 channelRunState[channelId].abortController.abort()),
+// UI 反馈: 按钮 → "⏳ 终止中..." → 1.5s 后 "✓ 已终止" / 失败 "✗ 终止失败".
+async function abortCurrentRun() {
+  const btn = document.getElementById('loop-abort-btn');
+  if (!btn) return;
+  if (btn.disabled) return; // 防止双击
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ 终止中...';
+  try {
+    const r = await fetch('/api/chat/abort', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId: currentChannelId || '' }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j.aborted) {
+      btn.textContent = '✓ 已终止';
+    } else {
+      btn.textContent = '○ 当前无运行中 loop';
+    }
+  } catch (err) {
+    btn.textContent = '✗ 终止失败';
+    console.error('[abort] error:', err);
+  }
+  // 1.5s 后恢复 (用户可能想再点)
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.textContent = orig || '⏹ 终止';
+  }, 1500);
+}
+
 function resetTimeline() {
   if (timelineRowsEl) timelineRowsEl.innerHTML = '';
   currentTokenRow = null;
@@ -1368,6 +1401,108 @@ function handleQueueUpdateTimeline(data) {
   title.textContent = data.queueLength > 0
     ? `▸ 运行中 · 队列 +${data.queueLength}`
     : '▸ 运行中';
+}
+
+// ============================================================================
+// 2026-06-15: self_improve SSE handler — 之前 server 推 self_improve_triggered
+// / self_improve_result 但 client 完全没注册, 消息就丢了 (Bug 2).
+// 修: 即时 render 卡片到 messages 容器内 (Bug 4), 用主题色 var(--accent/--success/--warning) (Bug 3).
+// 失败重试: 卡片的 retry 按钮 → POST /self-improve 再触发.
+// ============================================================================
+let selfImproveCardSeq = 0;
+function getMessagesContainerForCurrent() {
+  if (currentChannelId && messagesContainers.get(currentChannelId)) {
+    return messagesContainers.get(currentChannelId);
+  }
+  return messagesEl; // fallback: 主 messages
+}
+
+function makeSelfImproveCard(data) {
+  const seq = ++selfImproveCardSeq;
+  const id = `self-improve-card-${seq}`;
+  // 用主题色 var(--accent/--success/--warning) 不写死 (Bug 3)
+  const card = document.createElement('div');
+  card.className = 'self-improve-card';
+  card.id = id;
+  card.dataset.seq = String(seq);
+  card.style.cssText = 'margin:8px 12px;padding:10px 12px;border:1px solid var(--accent);border-left:3px solid var(--accent);border-radius:6px;background:var(--bg-hover);color:var(--text);font-size:12px;line-height:1.5;';
+  card.innerHTML = `
+    <div class="self-improve-header" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;">
+      <span class="self-improve-caret" style="font-size:10px;color:var(--text-muted);">▾</span>
+      <span class="self-improve-title" style="flex:1;font-weight:600;color:var(--accent);"></span>
+      <span class="self-improve-status" style="font-size:10px;color:var(--text-muted);"></span>
+    </div>
+    <div class="self-improve-body" style="margin-top:6px;display:none;color:var(--text-muted);white-space:pre-wrap;word-break:break-word;"></div>
+  `;
+  // 折叠 (Bug 4: 卡片内自带折叠, 跟对话消息同一容器)
+  const header = card.querySelector('.self-improve-header');
+  const body = card.querySelector('.self-improve-body');
+  const caret = card.querySelector('.self-improve-caret');
+  header.addEventListener('click', () => {
+    const collapsed = body.style.display === 'none';
+    body.style.display = collapsed ? 'block' : 'none';
+    caret.style.transform = collapsed ? 'rotate(0deg)' : 'rotate(-90deg)';
+  });
+  return card;
+}
+
+function handleSelfImproveTriggered(data) {
+  const container = getMessagesContainerForCurrent();
+  if (!container) return;
+  const card = makeSelfImproveCard(data);
+  card.querySelector('.self-improve-title').textContent =
+    `🧠 自迭代触发 · ${data.eventKind || 'unknown'}`;
+  card.querySelector('.self-improve-status').textContent =
+    new Date(data.ts || Date.now()).toLocaleTimeString();
+  const body = card.querySelector('.self-improve-body');
+  body.textContent = JSON.stringify({
+    eventKind: data.eventKind,
+    details: data.details,
+    goal: data.goal,
+  }, null, 2);
+  container.appendChild(card);
+  card.scrollIntoView({ block: 'end', behavior: 'smooth' });
+}
+
+function handleSelfImproveResult(data) {
+  const container = getMessagesContainerForCurrent();
+  if (!container) return;
+  const card = makeSelfImproveCard(data);
+  const ok = !!data.success;
+  card.style.borderColor = ok ? 'var(--success)' : 'var(--warning)';
+  card.style.borderLeftColor = ok ? 'var(--success)' : 'var(--warning)';
+  card.querySelector('.self-improve-title').textContent =
+    `${ok ? '✅' : '⚠️'} 自迭代完成 · ${ok ? '成功' : '失败'}`;
+  card.querySelector('.self-improve-status').textContent =
+    new Date(data.ts || Date.now()).toLocaleTimeString();
+  const body = card.querySelector('.self-improve-body');
+  body.textContent = (ok ? (data.output || '') : (data.error || '')) || '(no output)';
+  // 失败 → 加 retry 按钮 (Bug 2 重试机制)
+  if (!ok) {
+    const btn = document.createElement('button');
+    btn.textContent = '🔁 重试';
+    btn.style.cssText = 'margin-top:6px;padding:4px 10px;background:var(--accent);color:var(--bg-main);border:none;border-radius:4px;cursor:pointer;font-size:11px;';
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = '⏳ 重试中...';
+      try {
+        const r = await fetch('/self-improve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: 'user retry from UI card' }),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        btn.textContent = '✓ 已重试';
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = '🔁 重试 (失败)';
+        body.textContent += `\n[retry error] ${(err && err.message) || err}`;
+      }
+    };
+    body.appendChild(btn);
+  }
+  container.appendChild(card);
+  card.scrollIntoView({ block: 'end', behavior: 'smooth' });
 }
 
 function finalizeTimelineAsMessage() {
@@ -1723,6 +1858,12 @@ function connect(channelId) {
       } else if (data.type === 'used_judgments' && Array.isArray(data.usedIds)) {
         // 注入门回传: 保存 usedIds, finalizeTimelineAsMessage 时给 addMessage
         lastUsedJudgmentIds = data.usedIds;
+      } else if (data.type === 'self_improve_triggered') {
+        // 2026-06-15: 即时 render (不再丢消息, 修 Bug 2)
+        handleSelfImproveTriggered(data);
+      } else if (data.type === 'self_improve_result') {
+        // 2026-06-15: 即时 render + 失败 retry 按钮 (修 Bug 2/3)
+        handleSelfImproveResult(data);
       }
     } catch (parseErr) {
       console.error('[SSE] 解析错误', parseErr);
@@ -3666,6 +3807,8 @@ function renderRemoteChannels() {
           <span style="font-size:13px;">${strangerIcon}</span>
           <span style="flex:1;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(peer.publicKey)}">${escapeHtml(peer.name)}</span>
           <span style="font-size:9px;color:var(--text-muted);">${peerChannels.length > 0 ? `${peerChannels.length} ch · ` : ''}${lastConn}</span>
+          <button class="peer-share-btn" title="分享 channel 给 ${escapeHtml(peer.name)}"
+                  style="background:transparent;border:1px solid var(--border);color:var(--text);cursor:pointer;width:22px;height:22px;border-radius:4px;font-size:12px;line-height:1;padding:0;display:flex;align-items:center;justify-content:center;flex:0 0 auto;">📤</button>
         </div>
         <div class="remote-peer-channels" style="margin-top:4px;margin-left:8px;">
           ${peerChannels.length === 0
@@ -3704,14 +3847,17 @@ function renderRemoteChannels() {
     });
   });
   // 绑定: 点击 peer 头部 → 弹分享 modal (让 A 决定分享本机哪些 channel 给这个 peer)
+  // 2026-06-15 修正: 整块 click 改成显式 "📤 分享" 按钮触发, 避免 caret 折叠与分享 modal 冲突
   list.querySelectorAll('.remote-peer-header').forEach(row => {
-    row.addEventListener('click', (e) => {
-      // 2026-06-10: 防御 — 点 caret 时已 stopPropagation, 但万一冒泡逃逸再挡一道
-      if (e.target.closest('.peer-caret')) return;
-      const peerName = row.dataset.peerName;
-      const peerPk = row.dataset.peerPk;
-      openShareToPeerModal(peerName, peerPk);
-    });
+    const shareBtn = row.querySelector('.peer-share-btn');
+    if (shareBtn) {
+      shareBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const peerName = row.dataset.peerName;
+        const peerPk = row.dataset.peerPk;
+        openShareToPeerModal(peerName, peerPk);
+      });
+    }
   });
 
   // 2026-06-10: 每个 peer 头部双击 → 改名字 / 改备注
@@ -3848,8 +3994,27 @@ async function openShareToPeerModal(peerName, peerPublicKey) {
   `;
   document.body.insertAdjacentHTML('beforeend', html);
   const overlay = document.getElementById('share-to-peer-modal');
-  document.getElementById('spm-close').onclick = () => overlay.remove();
-  document.getElementById('spm-cancel').onclick = () => overlay.remove();
+
+  // 关闭函数 — 集中处理 (ESC / backdrop / × / 取消 共用)
+  const closeModal = () => {
+    overlay.remove();
+    document.removeEventListener('keydown', onEsc);
+  };
+
+  // ESC 关闭
+  const onEsc = (e) => {
+    if (e.key === 'Escape') closeModal();
+  };
+  document.addEventListener('keydown', onEsc);
+
+  // × 关闭
+  document.getElementById('spm-close').onclick = closeModal;
+  // 取消关闭
+  document.getElementById('spm-cancel').onclick = closeModal;
+  // 点击 overlay 背景关闭 (点到 shell 不关)
+  overlay.onclick = (e) => {
+    if (e.target === overlay) closeModal();
+  };
   document.getElementById('spm-save').onclick = async () => {
     const checkedIds = [...overlay.querySelectorAll('input[type=checkbox][data-cid]:checked')].map(el => el.dataset.cid);
     // 对每个 channel 单独 PATCH — 设 shared_with_peers 为 checked 列表

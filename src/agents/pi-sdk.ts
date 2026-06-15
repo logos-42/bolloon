@@ -1406,6 +1406,18 @@ ${toolDefs}
       const response = await this.callLlmWithRecovery(llm, context, systemPrompt, signal, onStream);
       const reply = (response.reply || '').trim();
 
+      // 2026-06-15: 看到 [AI 服务调用失败] sentinel → 立即终止 loop, 不再 retry
+      // (LLM API 401 / 网络错 / 配额满时, pi-ai 返回这个 prefix,
+      // 继续 retry 只会再调 100 次空转, 用户看到 100 圈但实际啥都没改)
+      if (reply.startsWith('[AI 服务调用失败]')) {
+        console.log(`[PiAgent] 收到 AI 错误 sentinel, 立即终止 loop (不再 retry)`);
+        if (onStream) {
+          onStream({ type: 'status', content: `❌ AI 服务调用失败，已终止 loop`, tool: 'system' });
+        }
+        finalResponse = reply;
+        break;
+      }
+
       console.log(`[PiAgent] LLM 回复长度: ${reply.length}, 内容预览: "${reply.substring(0, 80)}..."`);
       console.log(`[PiAgent] LLM 完整回复:\n${reply}`);
 

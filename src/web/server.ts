@@ -40,14 +40,14 @@ function resolveWebRoot(): string {
   }
   const d = _baseDirname;
   const candidates = [
-    path.join(d),                                    // dist/web
-    path.join(d, '..', '..', 'dist', 'web'),         // src/web → dist/web
+    path.join(d, '..', '..', 'dist', 'web'),         // 2026-06-15 优先: src/web → dist/web (build 产物)
+    path.join(d),                                    // dist/web (npm 跑时)
     path.join(d, '..', 'web'),                       // dist/ → web/ 兄弟
   ];
   for (const c of candidates) {
     if (fsSync.existsSync(path.join(c, 'index.html'))) return c;
   }
-  return candidates[1];
+  return candidates[0];
 }
 const webRoot = resolveWebRoot();
 console.log(`[web] webRoot = ${webRoot}`);

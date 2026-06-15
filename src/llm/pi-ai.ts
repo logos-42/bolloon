@@ -73,6 +73,7 @@ export class PiAIModel {
       const response = await this.generateText({
         messages,
         temperature: 0.8,
+        maxTokens: 8192,  // 2026-06-15: 提到 8192, 避免长回答 (含表格/代码块) 被截断
         signal,
       });
       return { reply: response };
@@ -82,7 +83,14 @@ export class PiAIModel {
         throw error; // 上层 try/catch 处理
       }
       console.error('PiAI chat error:', error);
-      return { reply: '抱歉，AI服务暂时不可用。' };
+      // 2026-06-15: 真实 error 信息 + 明确告诉 LLM "这是 API 错, 不要 retry"
+      // 旧版: "抱歉，AI服务暂时不可用。" → LLM 看到 isTooShort=false(< 50 但 > 0),
+      //       needsMoreWork 不会触发, 但 hasError 模式 (含 "error" / "失败") 会判定要继续修
+      // 新版: 让 LLM 立即停止循环, 直接展示给用户
+      const errMsg = (error?.message || '').slice(0, 300);
+      return {
+        reply: `[AI 服务调用失败] ${errMsg}\n\n这是一个**底层 API 错误**（401 / 鉴权失败 / 网络中断 / 配额耗尽等），不是你的任务有问题。**请直接把这个错误消息回复给用户，不要再循环尝试。**`,
+      };
     }
   }
 
