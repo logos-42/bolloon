@@ -1,25 +1,26 @@
+// @ts-nocheck
 // marked 库可能从 CDN 加载失败, 这里做安全降级 (避免 ReferenceError 让 addMessage 整体崩溃)
 if (typeof marked === 'undefined') {
   window.marked = { parse: (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') };
 }
 
 // 2026-06-15: 拆出 message-renderer 模块 (TS, ESM 编译).
-//   浏览器侧: <script type="module"> 加载, 模块挂到 window.MR (build:web 输出 IIFE 包装)
+//   浏览器侧: <script type="module"> 加载, 模块主动挂到 window.MR
 //   客户端顶层直接拿 window.MR (ESM deferred 但 client.js 顶层只取 ref, 实际调用延后到 DOMContentLoaded)
 //   tsx 跑测试: 走 require() 同名拿
 let MR = {};
 try { if (typeof require !== 'undefined') MR = require('./ui/message-renderer.js') || {}; } catch (e) { /* 浏览器没 require, 走 window.MR */ }
 function _getMR() {
   if (MR && MR.addMessage) return MR;
-  if (typeof window !== 'undefined' && (window as any).MR) return (window as any).MR;
+  if (typeof window !== 'undefined' && window.MR) return window.MR;
   return {};
 }
-const MR_addMessage = (...args: any[]) => _getMR().addMessage?.(...args);
-const MR_handleStreamTokenEvent = (...args: any[]) => _getMR().handleStreamTokenEvent?.(...args);
-const MR_finalizeTimelineAsMessage = (...args: any[]) => _getMR().finalizeTimelineAsMessage?.(...args);
-const MR_showUserCommand = (...args: any[]) => _getMR().showUserCommand?.(...args);
-const MR_getMessagesContainerForCurrent = (...args: any[]) => _getMR().getMessagesContainerForCurrent?.(...args);
-const MR_escapeHtml = (s: any) => _getMR().escapeHtml?.(s);
+const MR_addMessage = (...args) => _getMR().addMessage?.(...args);
+const MR_handleStreamTokenEvent = (...args) => _getMR().handleStreamTokenEvent?.(...args);
+const MR_finalizeTimelineAsMessage = (...args) => _getMR().finalizeTimelineAsMessage?.(...args);
+const MR_showUserCommand = (...args) => _getMR().showUserCommand?.(...args);
+const MR_getMessagesContainerForCurrent = (...args) => _getMR().getMessagesContainerForCurrent?.(...args);
+const MR_escapeHtml = (s) => _getMR().escapeHtml?.(s);
 const MR_resetRendererState = () => _getMR().resetRendererState?.();
 
 // ctx 对象: 把全局状态打包, 避免硬引用 client.js 顶层 let
@@ -49,6 +50,7 @@ if (typeof window !== 'undefined' && document.readyState === 'loading') {
 
 function ensureMRLoaded() {
   return new Promise((resolve) => {
+    if (typeof window === 'undefined') return resolve();
     if (window.MR && window.MR.addMessage) return resolve();
     // 浏览器 ESM 是 deferred, 已经在执行中, 这里只是补一个轮询兜底
     let attempts = 0;
@@ -1013,6 +1015,16 @@ async function loadSession(channelId, sessionId = null) {
 // 2026-06-15: addMessage 委托给 ui/message-renderer.js, 客户端代码原位调用同名函数, 不感知拆分
 function addMessage(content, type, save = true, container, usedJudgmentIds = []) {
   return MR_addMessage(content, type, save, container, usedJudgmentIds, getRendererCtx());
+}
+
+// 2026-06-15: stream / done 事件也委托给 ui/message-renderer.js.
+// 保留同名 wrapper, 让 SSE 分发代码不感知模块拆分。
+function handleStreamTokenEvent(data) {
+  return MR_handleStreamTokenEvent(data, getRendererCtx());
+}
+
+function finalizeTimelineAsMessage() {
+  return MR_finalizeTimelineAsMessage(getRendererCtx());
 }
 
 

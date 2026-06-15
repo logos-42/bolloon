@@ -64,12 +64,22 @@ async function main() {
     minify: false,
   });
 
+  // 编译主客户端入口 (classic script, 非 module; 由 index.html 以 /client.js 加载)
+  console.log('[build-web] 编译 client.ts...');
+  await esbuild.build({
+    entryPoints: [path.join(ROOT, 'src/web/client.ts')],
+    outfile: path.join(DIST_WEB, 'client.js'),
+    format: 'iife',
+    target: 'es2022',
+    platform: 'browser',
+    minify: false,
+  });
+
   // 复制静态文件
   console.log('[build-web] 复制静态文件...');
   await fs.copyFile(path.join(ROOT, 'src/web/index.html'), path.join(DIST_WEB, 'index.html'));
   await fs.copyFile(path.join(ROOT, 'src/web/api-config.html'), path.join(DIST_WEB, 'api-config.html'));
   await fs.copyFile(path.join(ROOT, 'src/web/style.css'), path.join(DIST_WEB, 'style.css'));
-  await fs.copyFile(path.join(ROOT, 'src/web/client.js'), path.join(DIST_WEB, 'client.js'));
   // 复制 PWA manifest (index.html 里有 <link rel="manifest">, 否则浏览器会 404)
   await fs.copyFile(path.join(ROOT, 'src/web/manifest.json'), path.join(DIST_WEB, 'manifest.json'));
   // 复制 icons 目录 (manifest.json 里引用了 favicon 等)

@@ -481,3 +481,23 @@ export function resetRendererState(): void {
     scrollToBottomTimer = null;
   }
 }
+
+export const MessageRenderer = {
+  addMessage,
+  handleStreamTokenEvent,
+  finalizeTimelineAsMessage,
+  showUserCommand,
+  escapeHtml,
+  getMessagesContainerForCurrent,
+  resetRendererState,
+};
+
+declare global {
+  interface Window {
+    MR?: typeof MessageRenderer;
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.MR = MessageRenderer;
+}
