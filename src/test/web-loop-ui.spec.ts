@@ -80,9 +80,10 @@ function emitMockLoop(clients: Set<SseClient>) {
     }, delayMs);
   };
 
+  // 2026-06-15: 改走 step_* 事件 (新协议), 旧 status 事件不再渲染 UI
   send(100, { type: 'status', tool: 'loop', content: '循环 1/3' });
-  send(250, { type: 'status', tool: 'read_document', content: '调用工具: read_document(path: README.md)' });
-  send(500, { type: 'status', tool: 'read_document', content: '{"success":true,"output":"README content"}' });
+  send(250, { type: 'step_start', tool: 'read_document', args: { path: 'README.md' } });
+  send(500, { type: 'step_done', tool: 'read_document', success: true, output: 'README content' });
   send(750, { type: 'stream', streamType: 'token', content: '工具结果已读取，' });
   send(950, { type: 'stream', streamType: 'token', content: '这是最终回复。' });
   send(1500, { type: 'done' });
@@ -178,13 +179,19 @@ test('tool-call loop SSE events render, finalize, and hide timeline', async ({ p
     await page.locator('#input').fill('读取 README 并总结');
     await page.locator('#send').click();
 
-    await expect(page.locator('#loop-timeline-panel')).toBeVisible();
-    await expect(page.locator('#loop-timeline-rows')).toContainText('read_document');
+    // 2026-06-15: 新 step-timeline 组件 — step_start 推入后, 流式 message 内的 timeline 出现 active 节点
+    await expect(page.locator('.message-streaming [data-step-timeline] .step-timeline-node[data-status="active"] .step-timeline-label'))
+      .toHaveText('read_document');
     await expect(page.locator('.message-streaming')).toContainText('工具结果已读取');
 
+    // step_done 后节点变 done, 流式结束 finalize 后节点搬到正式 message 内
     await expect(page.locator('.message-streaming')).toHaveCount(0);
     await expect(page.locator('.message-ai .bubble').filter({ hasText: '工具结果已读取，这是最终回复。' })).toBeVisible();
-    await expect(page.locator('#loop-timeline-panel')).toBeHidden();
+    await expect(page.locator('.message-ai [data-step-timeline] .step-timeline-node[data-status="done"] .step-timeline-label'))
+      .toHaveText('read_document');
+    // 摘要条应显示已完成
+    await expect(page.locator('.message-ai [data-step-timeline] [data-current-tool]'))
+      .toHaveText('✓ 已完成 · 1 步');
 
     expect(consoleErrors.filter((line) => !line.includes('favicon'))).toEqual([]);
   } finally {

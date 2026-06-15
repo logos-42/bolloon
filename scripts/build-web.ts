@@ -64,6 +64,17 @@ async function main() {
     minify: false,
   });
 
+  // 2026-06-15: 编译 step-timeline.ts (气泡内 4 状态步骤条)
+  console.log('[build-web] 编译 step-timeline.ts...');
+  await esbuild.build({
+    entryPoints: [path.join(ROOT, 'src/web/ui/step-timeline.ts')],
+    outfile: path.join(DIST_WEB, 'ui/step-timeline.js'),
+    format: 'esm',
+    target: 'es2022',
+    platform: 'browser',
+    minify: false,
+  });
+
   // 编译主客户端入口 (classic script, 非 module; 由 index.html 以 /client.js 加载)
   console.log('[build-web] 编译 client.ts...');
   await esbuild.build({

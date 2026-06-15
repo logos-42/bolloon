@@ -18,6 +18,7 @@ function _getMR() {
 const MR_addMessage = (...args) => _getMR().addMessage?.(...args);
 const MR_handleStreamTokenEvent = (...args) => _getMR().handleStreamTokenEvent?.(...args);
 const MR_finalizeTimelineAsMessage = (...args) => _getMR().finalizeTimelineAsMessage?.(...args);
+const MR_handleStepEvent = (...args) => _getMR().handleStepEvent?.(...args);
 const MR_showUserCommand = (...args) => _getMR().showUserCommand?.(...args);
 const MR_getMessagesContainerForCurrent = (...args) => _getMR().getMessagesContainerForCurrent?.(...args);
 const MR_escapeHtml = (s) => _getMR().escapeHtml?.(s);
@@ -31,8 +32,6 @@ function getRendererCtx() {
     currentChannelId,
     lastUsedJudgmentIds,
     openJudgmentsModalWithFilter,  // 引用 client.js 函数, 通过参数注入避免循环 import
-    workflowDisplayEl,
-    setTimelineState,  // B-3: 3 状态机回调注入
   };
 }
 
@@ -1028,319 +1027,17 @@ function finalizeTimelineAsMessage() {
   return MR_finalizeTimelineAsMessage(getRendererCtx());
 }
 
+function handleStepEvent(data) {
+  return MR_handleStepEvent(data, getRendererCtx());
+}
+
 
 // ============================================================
-// Loop timeline panel (Claude Code 风格)
+// 2026-06-15: 旧 timeline panel + 3 状态机 + workflowDisplayEl 全部删除
+//   新组件: step-timeline (气泡内 4 状态步骤条, 见 src/web/ui/step-timeline.ts)
 // ============================================================
 
-let timelinePanelEl = null;
-let timelineRowsEl = null;
-let currentTokenRow = null;
-let currentTokenText = '';
 let lastUsedJudgmentIds = []; // 用于 finalizeTimelineAsMessage 给 addMessage 第 5 参
-
-const PHASE_TEXT = {
-  gate_compute: '正在检索相关判断力...',
-  gate_done:    '已注入 {usedCount} 条原则',
-  d_detect:     'D 触发: 监测对话...',
-  d_distill:    'D 触发: 蒸馏判断力...',
-  d_done:       'D 触发: 已入库',
-  d_skip:       'D 触发: 跳过',
-  d_error:      'D 触发: 错误',
-};
-
-function initTimelinePanel() {
-  if (timelinePanelEl) return;
-  timelinePanelEl = document.getElementById('loop-timeline-panel');
-  timelineRowsEl = document.getElementById('loop-timeline-rows');
-  const abortBtn = document.getElementById('loop-abort-btn');
-  if (abortBtn) abortBtn.addEventListener('click', abortCurrentRun);
-  // 2026-06-15: header 点击 → 折叠/展开 body (用户可收起 timeline 节省空间)
-  const header = document.getElementById('loop-timeline-header');
-  const body = document.getElementById('loop-timeline-body');
-  const toggle = document.getElementById('loop-timeline-toggle');
-  if (header && body && toggle) {
-    header.addEventListener('click', (e) => {
-      // 终止按钮点击不触发折叠
-      if (e.target.closest('#loop-abort-btn')) return;
-      const collapsed = body.style.display === 'none';
-      body.style.display = collapsed ? 'block' : 'none';
-      toggle.style.transform = collapsed ? 'rotate(90deg)' : 'rotate(0deg)';
-    });
-  }
-}
-
-// 2026-06-15: 之前 abortCurrentRun 未定义 → 点终止按钮 ReferenceError.
-// 现在: 调 POST /api/chat/abort (server 会触发 channelRunState[channelId].abortController.abort()),
-// UI 反馈: 按钮 → "⏳ 终止中..." → 1.5s 后 "✓ 已终止" / 失败 "✗ 终止失败".
-async function abortCurrentRun() {
-  const btn = document.getElementById('loop-abort-btn');
-  if (!btn) return;
-  if (btn.disabled) return; // 防止双击
-  const orig = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '⏳ 终止中...';
-  try {
-    const r = await fetch('/api/chat/abort', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channelId: currentChannelId || '' }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (j.aborted) {
-      btn.textContent = '✓ 已终止';
-    } else {
-      btn.textContent = '○ 当前无运行中 loop';
-    }
-  } catch (err) {
-    btn.textContent = '✗ 终止失败';
-    console.error('[abort] error:', err);
-  }
-  // 1.5s 后恢复 (用户可能想再点)
-  setTimeout(() => {
-    btn.disabled = false;
-    btn.textContent = orig || '⏹ 终止';
-  }, 1500);
-}
-
-function resetTimeline() {
-  if (timelineRowsEl) timelineRowsEl.innerHTML = '';
-  currentTokenRow = null;
-  currentTokenText = '';
-  lastUsedJudgmentIds = [];
-  const title = document.getElementById('loop-timeline-title');
-  if (title) title.textContent = '▸ 运行中';
-}
-
-function showTimelinePanel() {
-  initTimelinePanel();
-  resetTimeline();
-  if (timelinePanelEl) {
-    // B-3: 显隐走 opacity 过渡 (200ms), 比直接 hidden 更平滑
-    timelinePanelEl.hidden = false;
-    // 强制 reflow 让 transition 触发 (hidden=false 后下一帧才设 opacity=1)
-    void timelinePanelEl.offsetHeight;
-    timelinePanelEl.style.opacity = '1';
-  }
-  setTimelineToggleVisible(true);  // B-3: 折叠箭头跟 panel 同步显
-  setTimelineState('loading');     // B-3: 3 状态机 — 初始 loading
-  loopRunning = true; // 2026-06-15: 标志 loop 在跑, done 后才 hide
-  // 2026-06-15: 启动 5s 自动隐藏计时器, 没有新事件就 hide (避免 phase 持续 show 不 hide)
-  scheduleTimelineAutoHide();
-}
-
-function hideTimelinePanel() {
-  if (timelinePanelEl) {
-    // B-3: hide 时先 opacity=0 走过渡, 200ms 后再 hidden=true (否则 transition 看不到)
-    timelinePanelEl.style.opacity = '0';
-    setTimeout(() => {
-      // 二次校验: 避免过渡期间又被 showTimelinePanel 重置
-      if (timelinePanelEl && timelinePanelEl.style.opacity === '0') {
-        timelinePanelEl.hidden = true;
-      }
-    }, 220);
-  }
-  setTimelineToggleVisible(false);  // B-3: 折叠箭头跟 panel 同步隐
-  setTimelineState('idle');         // B-3: 重置状态徽标
-  if (timelineAutoHideTimer) {
-    clearTimeout(timelineAutoHideTimer);
-    timelineAutoHideTimer = null;
-  }
-  // 2026-06-15: 标志 loop 已结束, 后续 phase / status 事件不再 show panel
-  loopRunning = false;
-}
-
-// B-3: 折叠箭头 ▸ 跟 panel 显隐同步 (panel hidden 时箭头也隐藏)
-// index.html 里 toggle 初始 data-hidden=true, opacity=0 — 这函数统一控制
-function setTimelineToggleVisible(visible) {
-  const toggle = document.getElementById('loop-timeline-toggle');
-  if (!toggle) return;
-  toggle.dataset.hidden = visible ? 'false' : 'true';
-  toggle.style.opacity = visible ? '1' : '0';
-}
-
-// B-3: 3 状态机 — loading(灰) / streaming(蓝, 工作中) / done(绿, 1.5s 后转 idle)
-// 徽标颜色由 CSS [data-state] 属性切, 不污染全局样式
-function setTimelineState(state) {
-  const badge = document.getElementById('loop-timeline-state-badge');
-  if (!badge) return;
-  badge.dataset.state = state;
-  const colors = {
-    idle: '#9ca3af',       // 灰
-    loading: '#f59e0b',    // 橙
-    streaming: '#3b82f6',  // 蓝
-    done: '#10b981',       // 绿
-  };
-  badge.style.background = colors[state] || colors.idle;
-}
-
-// 2026-06-15: loop 状态标志, done 后任何 phase 事件不重 show panel
-let loopRunning = false;
-
-// 2026-06-15: 任何 SSE 事件 (status / phase / workflow_step / stream token) 都调这个,
-// 重置 5s 自动隐藏计时器. 没有新事件 → panel 自动 hide, 不再永远显示.
-let timelineAutoHideTimer = null;
-function scheduleTimelineAutoHide() {
-  if (timelineAutoHideTimer) clearTimeout(timelineAutoHideTimer);
-  timelineAutoHideTimer = setTimeout(() => {
-    if (timelinePanelEl && !timelinePanelEl.hidden) {
-      timelinePanelEl.hidden = true;
-    }
-    timelineAutoHideTimer = null;
-  }, 5000);
-}
-
-function scrollTimelineToBottom() {
-  if (timelinePanelEl) timelinePanelEl.scrollTop = timelinePanelEl.scrollHeight;
-}
-
-function appendPhaseRow(text, status) {
-  if (!timelineRowsEl) return;
-  const row = document.createElement('div');
-  row.className = 'loop-row loop-row-phase';
-  row.style.cssText = 'padding:2px 0;color:#374151;';
-  const icon = status === 'done' ? '✓' : status === 'error' ? '✗' : '●';
-  row.innerHTML = `<span style="color:#6b7280;">${icon}</span> <span>${escapeHtml(text)}</span>`;
-  timelineRowsEl.appendChild(row);
-  scrollTimelineToBottom();
-}
-
-function appendOrUpdateTokenRow(delta) {
-  if (!timelineRowsEl) return;
-  if (!currentTokenRow) {
-    currentTokenRow = document.createElement('div');
-    currentTokenRow.className = 'loop-row loop-row-token';
-    currentTokenRow.style.cssText = 'padding:2px 0 2px 16px;color:#1f2937;white-space:pre-wrap;word-break:break-word;';
-    currentTokenText = '';
-    timelineRowsEl.appendChild(currentTokenRow);
-  }
-  currentTokenText += delta;
-  currentTokenRow.textContent = currentTokenText;
-  scrollTimelineToBottom();
-}
-
-function appendToolRow(toolName, status) {
-  if (!timelineRowsEl) return;
-  const row = document.createElement('div');
-  row.className = 'loop-row loop-row-tool';
-  row.dataset.status = status;
-  row.style.cssText = 'padding:2px 0;color:#1e40af;cursor:pointer;user-select:none;';
-  const icon = status === 'done' ? '✓' : status === 'error' ? '✗' : '●';
-  row.innerHTML = `<span style="color:#6b7280;">${icon}</span> ${escapeHtml(toolName)} <span class="toggle" style="color:#6b7280;">▸</span>`;
-  row.addEventListener('click', () => {
-    const detail = row.nextElementSibling;
-    if (detail && detail.classList.contains('loop-row-tool-detail')) {
-      const isHidden = detail.style.display === 'none';
-      detail.style.display = isHidden ? 'block' : 'none';
-      const tg = row.querySelector('.toggle');
-      if (tg) tg.textContent = isHidden ? '▾' : '▸';
-    }
-  });
-  timelineRowsEl.appendChild(row);
-  return row;
-}
-
-function appendToolDetail(row, content) {
-  if (!row || !timelineRowsEl) return;
-  const detail = document.createElement('div');
-  detail.className = 'loop-row loop-row-tool-detail';
-  detail.style.cssText = 'padding:4px 0 6px 24px;color:#4b5563;font-size:11px;white-space:pre-wrap;word-break:break-word;background:#f3f4f6;border-radius:3px;margin-bottom:4px;';
-  detail.textContent = content;
-  detail.style.display = 'none';
-  timelineRowsEl.insertBefore(detail, row.nextSibling);
-  scrollTimelineToBottom();
-}
-
-function findLastPendingToolRow() {
-  if (!timelineRowsEl) return null;
-  const rows = timelineRowsEl.querySelectorAll('.loop-row-tool');
-  for (let i = rows.length - 1; i >= 0; i--) {
-    if (rows[i].dataset.status === 'pending') return rows[i];
-  }
-  return null;
-}
-
-function handlePhaseEventTimeline(data) {
-  initTimelinePanel();
-  const tmpl = PHASE_TEXT[data.phase];
-  if (!tmpl) return;
-  // 2026-06-15: loop 已 done 后, 后续 phase 事件不重 show panel (避免持续显示)
-  if (!loopRunning) return;
-  if (timelinePanelEl.hidden) {
-    timelinePanelEl.hidden = false;
-    scheduleTimelineAutoHide();
-  } else {
-    scheduleTimelineAutoHide();
-  }
-  let text = tmpl;
-  if (data.usedCount !== undefined) text = text.replace('{usedCount}', String(data.usedCount));
-  if (data.detail && (data.phase === 'd_done' || data.phase === 'd_skip' || data.phase === 'd_error')) {
-    text = `${text} — ${data.detail}`;
-  }
-  const status = data.phase.endsWith('_done') || data.phase === 'd_skip' ? 'done'
-               : data.phase === 'd_error' ? 'error' : 'pending';
-  appendPhaseRow(text, status);
-}
-
-function handleStatusEventTimeline(data) {
-  initTimelinePanel();
-  const content = data.content || '';
-  const isJsonResult = content.startsWith('{') && content.includes('"success"');
-  if (data.tool) {
-    // 工具事件: 折叠行 + 可选挂 output
-    const pending = findLastPendingToolRow();
-    if (pending && pending.textContent && pending.textContent.includes(data.tool) && content.length > 100) {
-      // 把 output 挂到上一个同工具的 pending 行
-      pending.dataset.status = 'done';
-      const iconEl = pending.firstElementChild;
-      if (iconEl) iconEl.textContent = '✓';
-      const tg = pending.querySelector('.toggle');
-      if (tg) tg.textContent = '▸';
-      appendToolDetail(pending, content);
-    } else {
-      const status = isJsonResult ? 'done' : 'pending';
-      const row = appendToolRow(data.tool, status);
-      if (isJsonResult) appendToolDetail(row, content);
-    }
-    scrollTimelineToBottom();
-  } else {
-    // 普通 status: 当作 phase done
-    // 2026-06-15: loop 已 done 后不重 show panel
-    if (!loopRunning) return;
-    if (timelinePanelEl.hidden) {
-      timelinePanelEl.hidden = false;
-      scheduleTimelineAutoHide();
-    } else {
-      scheduleTimelineAutoHide();
-    }
-    const label = (data.tool ? `🔧 ${data.tool}: ` : '') + content;
-    appendPhaseRow(label, 'done');
-  }
-}
-
-// 2026-06-15: 流式输出重写 — 之前把 token 写到 timeline panel, 然后等 done 时搬
-// 到 messages 流, 过程中:
-//   1. 看不到 token 在哪里累积 (底部白色小框挤占空间)
-//   2. 不能折叠
-//   3. server `done` 事件丢了 → 内容没搬走, 直接消失 (过早截断)
-// 现在: token 直接 append 到 messages 容器, 跟对话消息同一流, 即时 render,
-// 不需要 timeline panel 中转.
-//
-// 性能优化: 用 lastDelta 增量 append (appendChild textNode), 不用 textContent 重写整文本.
-// 1000 token 长回复时, 旧版每次重写 = O(n) reflow, 后段会卡; 新版每次 append = O(1).
-let streamingMessageEl = null;   // 当前正在流式增长的 message 元素
-let streamingTextNode = null;     // 累积文本的 textNode (光标前的部分)
-let streamingCursorEl = null;     // 末尾光标 span (流式时显示, finalize 时移除)
-let streamingText = '';          // 累积的 token 文本 (用于 finalize 时 addMessage)
-
-
-function handleQueueUpdateTimeline(data) {
-  const title = document.getElementById('loop-timeline-title');
-  if (!title) return;
-  title.textContent = data.queueLength > 0
-    ? `▸ 运行中 · 队列 +${data.queueLength}`
-    : '▸ 运行中';
-}
 
 // ============================================================================
 // 2026-06-15: self_improve SSE handler — 之前 server 推 self_improve_triggered
@@ -1445,154 +1142,6 @@ function handleSelfImproveResult(data) {
 }
 
 
-// 工作流状态显示
-let workflowDisplayEl = null;
-
-function createWorkflowDisplay() {
-  const container = document.createElement('div');
-  container.id = 'workflow-display';
-  container.className = 'workflow-display';
-  container.innerHTML = `
-    <div class="workflow-header">
-      <span class="workflow-icon">🔄</span>
-      <span class="workflow-title">工作流执行中</span>
-      <span class="workflow-loop-count"></span>
-    </div>
-    <div class="workflow-steps-list"></div>
-    <div class="workflow-streams"></div>
-  `;
-  return container;
-}
-
-function handleTaskStatusEvent(data, container) {
-  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
-  console.log('[工作流] 任务状态:', data);
-
-  // 获取或创建工作流显示区域
-  if (!workflowDisplayEl) {
-    workflowDisplayEl = createWorkflowDisplay();
-    msgContainer.appendChild(workflowDisplayEl);
-  }
-
-  const stepsList = workflowDisplayEl.querySelector('.workflow-steps-list');
-  const header = workflowDisplayEl.querySelector('.workflow-header');
-
-  // 更新标题
-  if (data.taskId) {
-    header.querySelector('.workflow-title').textContent = `任务: ${data.taskId.substring(0, 12)}...`;
-  }
-
-  // 更新状态
-  if (data.status) {
-    const statusText = header.querySelector('.workflow-title');
-    statusText.textContent = `任务 ${data.status === 'running' ? '执行中' : data.status}`;
-  }
-
-  // 更新进度
-  if (data.progress !== undefined) {
-    header.querySelector('.workflow-title').textContent = `进度: ${data.progress}%`;
-  }
-
-  // 更新步骤
-  if (data.currentStep !== undefined && data.totalSteps) {
-    const stepEl = document.createElement('div');
-    stepEl.className = 'workflow-step-item';
-    stepEl.innerHTML = `
-      <span class="step-running">⟳</span>
-      <span>步骤 ${data.currentStep + 1}/${data.totalSteps}</span>
-    `;
-    stepsList.appendChild(stepEl);
-  }
-
-  // 完成时移除显示
-  if (data.status === 'completed' || data.status === 'failed') {
-    setTimeout(() => {
-      if (workflowDisplayEl) {
-        workflowDisplayEl.remove();
-        workflowDisplayEl = null;
-      }
-    }, 3000);
-  }
-}
-
-function handleWorkflowStepEvent(data, container) {
-  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
-  console.log('[工作流] 步骤:', data);
-  console.log('[工作流] 步骤标签:', data.step, '内容:', data.content?.substring(0, 80));
-
-  // 获取或创建工作流显示区域
-  if (!workflowDisplayEl) {
-    workflowDisplayEl = createWorkflowDisplay();
-    msgContainer.appendChild(workflowDisplayEl);
-  }
-
-  const streamsDiv = workflowDisplayEl.querySelector('.workflow-streams');
-  const header = workflowDisplayEl.querySelector('.workflow-header');
-
-  // 更新工作流标题
-  if (data.step && data.step !== '系统' && data.step !== '状态') {
-    header.querySelector('.workflow-title').textContent = `执行: ${data.step}`;
-  }
-
-  // 如果有步骤标签，显示步骤信息
-  if (data.step && data.content) {
-    const stepEl = document.createElement('div');
-    stepEl.className = 'workflow-step-stream';
-
-    // 根据内容类型选择不同样式
-    const isError = data.content.includes('❌') || data.content.includes('错误');
-    const isSuccess = data.content.includes('✅') || data.content.includes('成功');
-    const isLoop = data.content.includes('🔄') || data.content.includes('循环');
-
-    let icon = '🔧';
-    if (isError) icon = '❌';
-    else if (isSuccess) icon = '✅';
-    else if (isLoop) icon = '🔄';
-
-    stepEl.innerHTML = `
-      <div class="step-label">${icon} ${data.step}</div>
-      <div class="step-content">${data.content}</div>
-    `;
-    streamsDiv.appendChild(stepEl);
-
-    // 自动滚动
-    msgContainer.scrollTop = msgContainer.scrollHeight;
-  }
-}
-
-function handleWorkflowLoopEvent(data, container) {
-  const msgContainer = container || messagesContainers.get(currentChannelId) || messagesEl;
-  console.log('[工作流] 循环:', data);
-
-  if (!workflowDisplayEl) {
-    workflowDisplayEl = createWorkflowDisplay();
-    msgContainer.appendChild(workflowDisplayEl);
-  }
-
-  const loopCount = workflowDisplayEl.querySelector('.workflow-loop-count');
-  const streamsDiv = workflowDisplayEl.querySelector('.workflow-streams');
-
-  // 更新循环次数 — 用户不需要看到 "循环 N", 只看步骤内容
-  if (data.loopCount !== undefined) {
-    // 不显示循环计数, 仅在内部保留
-  }
-
-  // 显示循环信息
-  if (data.content) {
-    const loopEl = document.createElement('div');
-    loopEl.className = 'workflow-loop-item';
-    loopEl.innerHTML = `
-      <div class="loop-header">
-        <span class="loop-icon">🔁</span>
-        <span class="loop-status">${data.status || '执行中'}</span>
-      </div>
-      <div class="loop-content">${data.content}</div>
-    `;
-    streamsDiv.appendChild(loopEl);
-    msgContainer.scrollTop = msgContainer.scrollHeight;
-  }
-}
-
 // 2026-06-15: showUserCommand 委托给 ui/message-renderer.js
 function showUserCommand(command, container, opts) {
   return MR_showUserCommand(command, container, opts, getRendererCtx());
@@ -1601,10 +1150,48 @@ function showUserCommand(command, container, opts) {
 // 用户命令可视化 - 当用户发送命令时调用
 let userCommandDisplayEl = null;
 
+// ============================================================
+// 2026-06-15: 发送按钮 ↔ 终止按钮 状态机
+//   idle: sendMessage 入口, 飞机图标
+//   abort: 流式期间, ▢ 图标 + 红边框, click 调 abortCurrentRun
+//   aborting: 已点终止, 等待 server 反馈, 半透明
+//   done/error 事件触发时回到 idle
+// ============================================================
+function setSendMode(mode) {
+  if (!sendBtn) return;
+  sendBtn.dataset.state = mode;
+  sendBtn.title = mode === 'abort' ? '⏹ 终止当前生成 (Esc)' : '发送 (Enter)';
+  // 切 svg 显示
+  const sendIcon = sendBtn.querySelector('[data-mode="send"]');
+  const abortIcon = sendBtn.querySelector('[data-mode="abort"]');
+  if (sendIcon) sendIcon.style.display = mode === 'idle' ? '' : 'none';
+  if (abortIcon) abortIcon.style.display = mode === 'idle' ? 'none' : '';
+}
 
-// ============================================================
-// 状态条 + phase + queue + abort (UI 体验补丁) — 旧版, 已被 timeline panel 取代
-// ============================================================
+async function abortCurrentRun() {
+  if (sendBtn && sendBtn.dataset.state === 'aborting') return; // 防双击
+  setSendMode('aborting');
+  try {
+    const r = await fetch('/api/chat/abort', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId: currentChannelId || '' }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j.aborted) {
+      if (typeof showSimpleToast === 'function') showSimpleToast('✓ 已终止');
+    } else {
+      if (typeof showSimpleToast === 'function') showSimpleToast('○ 当前无运行中');
+    }
+  } catch (err) {
+    console.error('[abort] error:', err);
+    if (typeof showSimpleToast === 'function') showSimpleToast('✗ 终止失败');
+  }
+  // 1.5s 后回到 idle (server 推 done/error 时会立即再切, 这里只是兜底)
+  setTimeout(() => {
+    if (sendBtn && sendBtn.dataset.state === 'aborting') setSendMode('idle');
+  }, 1500);
+}
 
 
 
@@ -1727,13 +1314,20 @@ function connect(channelId) {
           const lastAiMsg = messages[messages.length - 1];
           lastAiMsg.remove();
         }
-        showTimelinePanel();
+        // 重新进入 abort 模式 (新一次生成开始)
+        setSendMode('abort');
       } else if (data.type === 'status') {
-        handleStatusEventTimeline(data);
+        // 2026-06-15: status 事件不再画 timeline 行 — step 状态机改走 step_* 事件
+        //   保留 status 事件不报错, 仅 console.log 方便调试
+        console.log('[SSE] status (deprecated for UI):', data.tool, data.content?.slice(0, 80));
+      } else if (data.type === 'step_start' || data.type === 'step_done' || data.type === 'step_error') {
+        // 2026-06-15: 步骤状态机事件 — 推给 message-renderer 的 step-timeline
+        handleStepEvent(data);
       } else if (data.type === 'done') {
-        // AI 回复生成完, 从 timeline 拿出 token 文本作为正式消息
+        // AI 回复生成完, 从流式元素搬 token 文本到正式消息
         finalizeTimelineAsMessage();
-        hideTimelinePanel();
+        // 2026-06-15: 切回 idle 模式 (用户可发下一条)
+        setSendMode('idle');
       } else if (data.type === 'renamed') {
         const channel = channels.find(c => c.id === data.channelId);
         if (channel) {
@@ -1745,16 +1339,16 @@ function connect(channelId) {
         }
       } else if (data.type === 'error') {
         addMessage('错误: ' + data.content, 'ai', true, container);
-      } else if (data.type === 'task_status') {
-        handleTaskStatusEvent(data, container);
-      } else if (data.type === 'workflow_step') {
-        handleWorkflowStepEvent(data, container);
-      } else if (data.type === 'workflow_loop') {
-        handleWorkflowLoopEvent(data, container);
+        setSendMode('idle');
+      } else if (data.type === 'task_status' || data.type === 'workflow_step' || data.type === 'workflow_loop') {
+        // 2026-06-15: 旧工作流事件, 不再单独画 — server 仍可推, 客户端仅 log
+        console.log('[SSE] workflow (deprecated for UI):', data.type, data.content?.slice(0, 80));
       } else if (data.type === 'phase') {
-        handlePhaseEventTimeline(data);
+        // phase 事件 (注入门 / D 触发) 仍可推, 客户端仅 log
+        console.log('[SSE] phase (no UI):', data.phase);
       } else if (data.type === 'queue_update') {
-        handleQueueUpdateTimeline(data);
+        // 队列事件无 UI 入口, 仅 log
+        console.log('[SSE] queue_update (no UI):', data.queueLength);
       } else if (data.type === 'used_judgments' && Array.isArray(data.usedIds)) {
         // 注入门回传: 保存 usedIds, finalizeTimelineAsMessage 时给 addMessage
         lastUsedJudgmentIds = data.usedIds;
@@ -1784,7 +1378,8 @@ async function sendMessage() {
   if (container) container.scrollTop = container.scrollHeight;
 
   input.value = '';
-  showTimelinePanel();
+  // 2026-06-15: 切到 abort 模式, 用户可点按钮或按 Esc 终止
+  setSendMode('abort');
 
   // 立即把用户消息落盘, 避免切走再切回时丢失
   persistLastMessageToServer('user', text);
@@ -1806,13 +1401,13 @@ async function sendMessage() {
     });
 
     if (!res.ok) {
-      hideTimelinePanel();
       addMessage('发送失败', 'ai');
+      setSendMode('idle');
     }
   } catch (err) {
-    hideTimelinePanel();
     addMessage('连接错误', 'ai');
     console.error('Send error', err);
+    setSendMode('idle');
   }
 }
 
@@ -1831,11 +1426,27 @@ function persistLastMessageToServer(type, content) {
   });
 }
 
-sendBtn.addEventListener('click', sendMessage);
+// 2026-06-15: sendBtn click 分发 — 看 data-state 决定 send 还是 abort
+sendBtn.addEventListener('click', () => {
+  if (sendBtn.dataset.state === 'abort' || sendBtn.dataset.state === 'aborting') {
+    abortCurrentRun();
+  } else {
+    sendMessage();
+  }
+});
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    sendMessage();
+    if (sendBtn.dataset.state === 'abort' || sendBtn.dataset.state === 'aborting') {
+      // 流式期间按 Enter 也走终止 (跟按钮一致)
+      abortCurrentRun();
+    } else {
+      sendMessage();
+    }
+  } else if (e.key === 'Escape' && (sendBtn.dataset.state === 'abort' || sendBtn.dataset.state === 'aborting')) {
+    // 2026-06-15: Esc 终止 — Claude Code 风格
+    e.preventDefault();
+    abortCurrentRun();
   }
 });
 

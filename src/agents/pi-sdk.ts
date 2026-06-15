@@ -482,10 +482,16 @@ export interface StreamCallback {
 }
 
 export interface StreamEvent {
-  type: 'status' | 'thinking' | 'tool' | 'token' | 'done' | 'error';
+  type: 'status' | 'thinking' | 'tool' | 'token' | 'done' | 'error'
+      | 'step_start' | 'step_done' | 'step_error';
   content: string;
   tool?: string;
   data?: unknown;
+  // step_* 专用: success / output / error
+  success?: boolean;
+  output?: string;
+  error?: string;
+  args?: Record<string, unknown>;
 }
 
 const TOOL_DEFINITIONS = `
@@ -1415,6 +1421,13 @@ ${toolDefs}
         console.log(`[PiAgent] 收到 AI 错误 sentinel, 立即终止 loop (不再 retry)`);
         if (onStream) {
           onStream({ type: 'status', content: `❌ AI 服务调用失败，已终止 loop`, tool: 'system' });
+          // 2026-06-15: step-timeline — LLM 调用整体失败, 标 step_error
+          onStream({
+            type: 'step_error',
+            content: 'AI 服务调用失败',
+            tool: 'llm',
+            error: 'AI service unavailable',
+          });
         }
         finalResponse = reply;
         break;
@@ -1457,6 +1470,13 @@ ${toolDefs}
           if (toolCall.args && Object.keys(toolCall.args).length > 0) {
             onStream({ type: 'status', content: `📋 参数: ${JSON.stringify(toolCall.args)}`, tool: toolCall.name });
           }
+          // 2026-06-15: step-timeline 状态机 — 开新节点
+          onStream({
+            type: 'step_start',
+            content: `调用 ${toolCall.name}`,
+            tool: toolCall.name,
+            args: toolCall.args || {},
+          });
         }
 
         const tool = this.tools.get(toolCall.name);
@@ -1496,6 +1516,13 @@ ${toolDefs}
                 content: `🛡️ PreToolUse 拒绝 ${toolCall.name}: ${pre.reason || '安全校验失败'}`,
                 tool: toolCall.name,
               });
+              // 2026-06-15: step-timeline — 拦在 PreToolUse, 标 step_error
+              onStream({
+                type: 'step_error',
+                content: `PreToolUse 拒绝 ${toolCall.name}`,
+                tool: toolCall.name,
+                error: pre.reason || '安全校验失败',
+              });
             }
             console.warn(`[PiAgent] PreToolUse denied ${toolCall.name}: ${pre.reason}`);
             // 不调 tool.execute, 也不计 consecutiveErrors (这是用户级拒绝, 不是工具错)
@@ -1529,6 +1556,13 @@ ${toolDefs}
                 type: 'error',
                 content: `🛡️ Harness ${pre.details.rejectedBy} 拒绝 ${toolCall.name}: ${pre.reason || '安全校验失败'}`,
                 tool: toolCall.name,
+              });
+              // 2026-06-15: step-timeline — Harness gate 拒绝, 标 step_error
+              onStream({
+                type: 'step_error',
+                content: `Harness 拒绝 ${toolCall.name}`,
+                tool: toolCall.name,
+                error: pre.reason || '安全校验失败',
               });
             }
             console.warn(`[PiAgent] Harness denied ${toolCall.name} (${pre.details.rejectedBy}): ${pre.reason}`);
@@ -1611,8 +1645,23 @@ ${toolDefs}
                 const outputPreview = result.output.substring(0, 200);
                 onStream({ type: 'tool', content: `📤 结果: ${outputPreview}${result.output.length > 200 ? '...' : ''}`, tool: toolCall.name });
               }
+              // 2026-06-15: step-timeline 状态机 — 关闭当前节点 (成功)
+              onStream({
+                type: 'step_done',
+                content: `${toolCall.name} 执行成功`,
+                tool: toolCall.name,
+                success: true,
+                output: result.output,
+              });
             } else {
               onStream({ type: 'error', content: `❌ ${toolCall.name} 执行失败: ${result.error}`, tool: toolCall.name });
+              // 2026-06-15: step-timeline 状态机 — 关闭当前节点 (失败)
+              onStream({
+                type: 'step_error',
+                content: `${toolCall.name} 执行失败`,
+                tool: toolCall.name,
+                error: result.error,
+              });
             }
           }
 

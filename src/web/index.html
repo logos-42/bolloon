@@ -351,31 +351,19 @@
 
       <div class="messages" id="messages"></div>
 
-      <!-- 2026-06-15: timeline 面板改为可折叠, 默认折叠 (流式输出已搬进 messages 容器, 这里只剩工作流结构化事件) -->
-      <!-- B-3 (2026-06-15): 加 fade 过渡, hidden/visible 平滑切换; state 由 JS 加 .state-loading/.state-streaming/.state-done class 控制徽标 -->
-      <div id="loop-timeline-panel" hidden
-           style="border-top:1px solid #d1d5db;background:#fafafa;font-family:ui-monospace,monospace;font-size:12px;color:#1f2937;max-height:50vh;overflow:hidden;padding:0;opacity:0;transition:opacity .2s ease-out;">
-        <div id="loop-timeline-header" style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:#f3f4f6;cursor:pointer;user-select:none;border-bottom:1px solid #e5e7eb;">
-          <!-- B-3: 折叠箭头 ▸ 单独隐藏 — 用 [data-hidden] 标记, panel 显隐时 JS 同步切 -->
-          <span id="loop-timeline-toggle" data-hidden="true" style="font-size:10px;color:#6b7280;transition:transform .15s, opacity .15s;opacity:0;">▸</span>
-          <!-- B-3: state 徽标 (loading/streaming/done) 由 JS 切 class -->
-          <span id="loop-timeline-state-badge" data-state="idle" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#9ca3af;transition:background .15s;"></span>
-          <span id="loop-timeline-title" style="font-weight:600;color:#374151;">▸ 运行中</span>
-          <span style="flex:1;"></span>
-          <button id="loop-abort-btn" style="background:none;border:1px solid #dc2626;color:#dc2626;padding:2px 10px;border-radius:3px;cursor:pointer;font-size:11px;">⏹ 终止</button>
-        </div>
-        <div id="loop-timeline-body" style="overflow-y:auto;max-height:calc(50vh - 36px);padding:8px 12px;display:none;">
-          <div id="loop-timeline-rows"></div>
-        </div>
-      </div>
+      <!-- 2026-06-15: 旧 loop-timeline-panel 删除 — 步骤状态条改在每条 AI 消息气泡内挂 step-timeline 组件 -->
 
       <div class="input-area">
         <div class="input-wrapper">
           <input type="text" id="input" placeholder="输入消息..." autocomplete="off">
-          <button id="send" class="send-btn">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <button id="send" class="send-btn" data-state="idle" title="发送 (Enter)">
+            <!-- 2026-06-15: 状态机 — 流式期间切到 abort 模式 (▢ 图标 + 红色边框) -->
+            <svg class="send-icon" data-mode="send" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="22" y1="2" x2="11" y2="13"></line>
               <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+            <svg class="send-icon" data-mode="abort" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" style="display:none;">
+              <rect x="6" y="6" width="12" height="12" rx="1.5"></rect>
             </svg>
           </button>
         </div>
@@ -385,6 +373,7 @@
 
   <script type="module" src="/components/wallet-viem.mjs"></script>
   <script type="module" src="/components/p2p/index.js"></script>
+  <script type="module" src="/ui/step-timeline.js"></script>
   <script type="module" src="/ui/message-renderer.js"></script>
   <script src="/client.js"></script>
 </body>

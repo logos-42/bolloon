@@ -1697,6 +1697,17 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
           broadcast({ type: 'status', tool: event.tool, content: event.content }, channelId);
           broadcast({ type: 'workflow_step', step: event.tool || '系统', content: event.content }, channelId);
           console.log(`[SSE 广播] workflow_step: step=${event.tool}, content="${event.content?.substring(0, 80)}..."`);
+        } else if (event.type === 'step_start' || event.type === 'step_done' || event.type === 'step_error') {
+          // 2026-06-15: 步骤状态机事件 — 原样转发 (前端 step-timeline 组件订阅)
+          broadcast({
+            type: event.type,
+            tool: event.tool,
+            content: event.content,
+            success: event.success,
+            output: event.output,
+            error: event.error,
+            args: event.args,
+          }, channelId);
         } else if (event.type === 'error') {
           broadcast({ type: 'error', content: event.content }, channelId);
         }
@@ -2719,6 +2730,17 @@ app.get('/channels', async (_req, res) => {
           broadcast({ type: 'stream', streamType: event.type, content: event.content }, channelId);
         } else if (event.type === 'status' || event.type === 'tool') {
           broadcast({ type: 'status', tool: event.tool, content: event.content }, channelId);
+        } else if (event.type === 'step_start' || event.type === 'step_done' || event.type === 'step_error') {
+          // 2026-06-15: 步骤状态机事件 — 原样转发
+          broadcast({
+            type: event.type,
+            tool: event.tool,
+            content: event.content,
+            success: event.success,
+            output: event.output,
+            error: event.error,
+            args: event.args,
+          }, channelId);
         } else if (event.type === 'error') {
           broadcast({ type: 'error', content: event.content }, channelId);
         }

@@ -1677,6 +1677,24 @@ body {
   transform: scale(0.95);
 }
 
+/* 2026-06-15: 流式期间切到 abort 状态 — 红色边框 + 终止图标 */
+.send-btn[data-state="abort"] {
+  background: var(--bg-main);
+  border: 1.5px solid var(--warning);
+  color: var(--warning);
+}
+.send-btn[data-state="abort"]:hover {
+  background: color-mix(in srgb, var(--warning) 12%, var(--bg-main));
+  transform: scale(1.05);
+}
+.send-btn[data-state="aborting"] {
+  background: var(--bg-main);
+  border: 1.5px solid var(--warning);
+  color: var(--warning);
+  opacity: 0.7;
+  cursor: wait;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .sidebar {
@@ -4463,3 +4481,173 @@ body:has(> .api-config-page) {
   margin-top: 2px;
   font-family: 'JetBrains Mono', monospace;
 }
+
+/* ============================================================================
+ * 2026-06-15: step-timeline — 气泡内 4 状态步骤条
+ *   摘要条 (折叠态) + 详情区 (展开态) 共用同一份 steps: Step[] 数据
+ *   状态: idle ○ / active ● / done 🟢 / error 🔴
+ * ========================================================================== */
+
+.step-timeline {
+  margin: 8px 0 4px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-hover);
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+}
+
+.step-timeline-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.step-timeline-summary:hover { background: var(--bg-main); }
+
+.step-timeline-title {
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+.step-timeline-dots {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.step-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+.step-dot[data-status="active"] {
+  background: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent);
+  animation: step-dot-pulse 1.4s infinite;
+}
+.step-dot[data-status="done"]   { background: var(--success); }
+.step-dot[data-status="error"]  { background: var(--warning); }
+
+@keyframes step-dot-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); }
+  70%  { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+
+.step-timeline-arrow {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+
+.step-timeline-body {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease-in-out;
+  border-top: 1px solid transparent;
+}
+.step-timeline:not([data-empty]) .step-timeline-body {
+  /* 内容存在时给 body 一个合理上限, 避免长任务撑爆 */
+  max-height: 320px;
+  overflow-y: auto;
+  border-top-color: var(--border);
+}
+
+.step-timeline-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 10px 8px 24px;
+  position: relative;
+}
+/* 详情区垂直时间轴线 */
+.step-timeline-list::before {
+  content: '';
+  position: absolute;
+  left: 14px;
+  top: 12px;
+  bottom: 12px;
+  width: 1px;
+  background: var(--border);
+}
+
+.step-timeline-node {
+  position: relative;
+  padding: 4px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.step-timeline-node:last-child { padding-bottom: 2px; }
+
+.step-timeline-marker {
+  position: absolute;
+  left: -18px;
+  top: 9px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  border: 2px solid var(--bg-hover);
+  box-shadow: 0 0 0 1px var(--border);
+  flex-shrink: 0;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+.step-timeline-node[data-status="active"] .step-timeline-marker {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  animation: step-dot-pulse 1.4s infinite;
+}
+.step-timeline-node[data-status="done"]  .step-timeline-marker { background: var(--success); box-shadow: 0 0 0 1px var(--success); }
+.step-timeline-node[data-status="error"] .step-timeline-marker { background: var(--warning); box-shadow: 0 0 0 1px var(--warning); }
+
+.step-timeline-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.step-timeline-node[data-status="error"] .step-timeline-label { color: var(--warning); }
+.step-timeline-node[data-status="done"]  .step-timeline-label { color: var(--success); }
+
+.step-timeline-args {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.step-timeline-more {
+  list-style: none;
+  padding: 4px 0 4px 0;
+  margin: 0;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  user-select: none;
+  font-family: 'JetBrains Mono', monospace;
+}
+.step-timeline-more:hover { text-decoration: underline; }
+

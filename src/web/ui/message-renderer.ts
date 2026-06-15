@@ -7,6 +7,7 @@
  *   - finalize 流式消息为正式 AI 气泡
  *   - 折叠 think / environment_details 块
  *   - 复制 / 重新回答 / 蒸馏为判断 按钮
+ *   - 挂载 step-timeline (2026-06-15) 步骤状态条到每条 AI 消息内
  *
  * 状态 (本模块私有):
  *   - streamingMessageEl / streamingTextNode / streamingCursorEl / streamingText
@@ -15,8 +16,9 @@
  *
  * 依赖 (import):
  *   - 浏览器 API (document, marked, fetch, navigator)
+ *   - ./step-timeline (4 状态步骤条模块)
  *
- * 不依赖 (零 import, 防循环):
+ * 不依赖 (零业务 import, 防循环):
  *   - 不 import client.js
  *   - 不 import 任何业务模块
  *
@@ -24,6 +26,7 @@
  *   - addMessage(content, type, save, container, usedIds, ctx)
  *   - handleStreamTokenEvent({ streamType, content }, ctx)
  *   - finalizeTimelineAsMessage(ctx)
+ *   - handleStepEvent({ type: 'step_start'|'step_done'|'step_error', ... }, ctx)
  *   - showUserCommand(command, container, opts, ctx)
  *   - escapeHtml(s)
  *   - getMessagesContainerForCurrent(currentChannelId, messagesContainers, messagesEl)
@@ -33,11 +36,18 @@
  *   - .message-streaming (流式期间, finalize 时移除)
  *   - .message-actions (复制/重新回答/蒸馏按钮)
  *   - .used-judgments-link (P0.5 反向引用)
+ *   - .step-timeline (气泡内步骤状态条, 由 ./step-timeline 渲染)
  */
 
 // ---------------------------------------------------------------------------
 // 类型定义
 // ---------------------------------------------------------------------------
+import {
+  mountStepTimeline,
+  pushStepToTimeline,
+  migrateStepTimeline,
+  getStepTimeline,
+} from './step-timeline.js';
 export type MessageType = 'user' | 'ai' | 'system' | 'error';
 
 export interface StreamTokenEvent {
@@ -228,6 +238,12 @@ export function addMessage(
     div.appendChild(link);
   }
 
+  // 2026-06-15: 每条 AI 消息挂一个空 step-timeline 占位 (用户决策)
+  //   后续 step_start/step_done 事件会通过 handleStepEvent 推入
+  if (type === 'ai' && msgContainer) {
+    mountStepTimeline(div, currentChannelId);
+  }
+
   div.appendChild(time);
   if (msgContainer) {
     msgContainer.appendChild(div);
@@ -401,6 +417,9 @@ export function handleStreamTokenEvent(data: StreamTokenEvent, ctx: RendererCtx 
     streamingMessageEl.appendChild(streamingTextNode);
     streamingMessageEl.appendChild(streamingCursorEl);
     streamingText = '';
+    // 2026-06-15: 流式期间也挂一个空 step-timeline 占位 — step_start/done/error 事件
+    //   走 handleStepEvent, getStepTimeline 找到这个流式元素内的 timeline 推入
+    mountStepTimeline(streamingMessageEl, currentChannelId);
     container.appendChild(streamingMessageEl);
     // B-3: 首个 token 来时切状态到 streaming (蓝徽), 提示用户 panel 在工作
     if (typeof ctx.setTimelineState === 'function') {
@@ -422,10 +441,21 @@ export function finalizeTimelineAsMessage(ctx: RendererCtx = { messagesEl: null,
   const currentChannelId = ctx.currentChannelId;
   const container = getMessagesContainerForCurrent(currentChannelId, messagesContainers, messagesEl);
   if (streamingText.trim().length > 0) {
-    if (streamingMessageEl && streamingMessageEl.parentNode) {
-      streamingMessageEl.parentNode.removeChild(streamingMessageEl);
+    // 2026-06-15: finalize 时把 streaming 内的 step-timeline 整体搬到新建的正式 AI message 内
+    //   addMessage 会建一个新 timeline 占位, 先记下 streaming 的引用, addMessage 后再迁移
+    //   避免节点从 0 重渲 (10+ 步的任务, 重渲闪烁会很厉害)
+    const oldStreamingEl = streamingMessageEl;
+    if (oldStreamingEl && oldStreamingEl.parentNode) {
+      oldStreamingEl.parentNode.removeChild(oldStreamingEl);
     }
     addMessage(streamingText, 'ai', true, container, ctx.lastUsedJudgmentIds || [], ctx);
+    if (oldStreamingEl && container) {
+      // 找刚 addMessage 创建的最后一条 ai message
+      const newAiMsg = container.querySelector('.message-ai:last-of-type') as HTMLElement | null;
+      if (newAiMsg && newAiMsg !== oldStreamingEl) {
+        migrateStepTimeline(oldStreamingEl, newAiMsg);
+      }
+    }
   }
   // 重置流式状态
   streamingMessageEl = null;
@@ -481,6 +511,52 @@ export function showUserCommand(
 }
 
 // ---------------------------------------------------------------------------
+// 2026-06-15: step-timeline 事件入口 (server 推 step_start/step_done/step_error)
+//   找到当前正在流式 / 最后一条 AI 消息的 timeline 容器, 推入
+// ---------------------------------------------------------------------------
+export interface StepEvent {
+  type: 'step_start' | 'step_done' | 'step_error';
+  tool?: string;
+  content?: string;
+  success?: boolean;
+  output?: string;
+  error?: string;
+  args?: Record<string, unknown>;
+}
+
+export function handleStepEvent(data: StepEvent, ctx: RendererCtx = { messagesEl: null, messagesContainers: new Map(), currentChannelId: null }): void {
+  const messagesEl = ctx.messagesEl || (typeof document !== 'undefined' ? document.getElementById('messages') : null);
+  const messagesContainers = ctx.messagesContainers || new Map<string, HTMLElement>();
+  const currentChannelId = ctx.currentChannelId;
+  const container = getMessagesContainerForCurrent(currentChannelId, messagesContainers, messagesEl);
+  if (!container) return;
+  if (!data || !data.type) return;
+
+  // 1. 优先用正在流式的元素 (流式期间能即时看到)
+  let target: HTMLElement | null = streamingMessageEl && streamingMessageEl.isConnected
+    ? streamingMessageEl
+    : null;
+  // 2. 否则用最后一条 AI message
+  if (!target) {
+    const aiMsgs = container.querySelectorAll('.message-ai');
+    if (aiMsgs.length === 0) return;
+    target = aiMsgs[aiMsgs.length - 1] as HTMLElement;
+  }
+  if (!target) return;
+
+  const timeline = getStepTimeline(target);
+  if (!timeline) return;
+
+  pushStepToTimeline(timeline, data.type, {
+    tool: data.tool || 'unknown',
+    args: data.args,
+    success: data.success,
+    output: data.output,
+    error: data.error,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // 重置模块状态 (切频道时调用)
 // ---------------------------------------------------------------------------
 export function resetRendererState(): void {
@@ -501,6 +577,7 @@ export const MessageRenderer = {
   addMessage,
   handleStreamTokenEvent,
   finalizeTimelineAsMessage,
+  handleStepEvent,
   showUserCommand,
   escapeHtml,
   getMessagesContainerForCurrent,
