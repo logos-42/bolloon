@@ -18,18 +18,26 @@ dist/*/*.test.js.map
 
 # Local configs
 .tsconfig*.json
+tsconfig*.json
 vitest.config.ts
 .eslint*
 .prettier*
 jest*
 
+# Build scripts (keep dist/ output only)
+scripts/
+
+# Lefthook / git hooks config
+lefthook.yml
+
+# Playwright test artifacts
+.playwright-mcp/
+
 # Source code artifacts (keep compiled dist only)
-src/*/package-lock.json
-src/*/tsconfig.json
-src/*/node_modules/
-src/*/tests/
-**/.claude/
-**/.githooks/
+src/
+**/*.ts
+**/*.tsx
+**/*.map
 
 # Source test files
 src/test/
@@ -54,6 +62,17 @@ task_plan.md
 .DS_Store
 *.tgz
 *.log
+
+# Auto-evolve artifacts (staging, baselines, call logs) — not for end users
+staging/
+test-results/
+.auto-evolve-calls
+.last-auto-evolve-baseline
+.auto-evolve-*
+
+# Stray research / scratch dirs that aren't part of the product
+Dive-into/
+Bolloon.md
 
 # Exclude packages that should be built separately
 py-bolloon/
