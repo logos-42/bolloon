@@ -3921,6 +3921,28 @@ if (splitHandle && localSection && remoteSection) {
   });
 }
 
+// 2026-06-16 修复: wallet modal 相关 const 在之前的死代码清理中误删
+//  (Task 套件 L2145-2419 用 Python 行号删除时波及了钱包模块顶部声明)
+// 补回: walletModal / walletBindBtn / walletGenerateBtn / walletAutoTools /
+//  walletUnbindBtn / walletNewInfo / walletListEl / walletBindAddress
+const walletModal = document.getElementById('wallet-modal');
+const walletModalClose = document.getElementById('wallet-modal-close');
+const walletBindAddress = document.getElementById('wallet-bind-address');
+const walletGenerateBtn = document.getElementById('wallet-generate-btn');
+const walletAutoTools = document.getElementById('wallet-auto-tools');
+const walletBindBtn = document.getElementById('wallet-bind-btn');
+const walletUnbindBtn = document.getElementById('wallet-unbind-btn');
+const walletNewInfo = document.getElementById('wallet-new-info');
+const walletListEl = document.getElementById('wallet-list');
+
+/** 本次会话生成的私钥/助记词, 仅用于本地签名, 永不上传 */
+let walletModalPendingSecret = null;
+let walletModalPendingMnemonic = null;
+
+if (walletModalClose) {
+  walletModalClose.addEventListener('click', closeWalletModal);
+}
+
 if (walletBindBtn) {
   walletBindBtn.addEventListener('click', async () => {
     if (!currentChannelId) {
@@ -4016,6 +4038,24 @@ if (walletUnbindBtn) {
       alert('解绑失败: ' + err.message);
     }
   });
+}
+
+/** 2026-06-16 修复: openWalletModal 之前在 git 历史里被误删 (L2018 引用但未定义)
+ *  - 表现: 点击 header 钱包按钮 → ReferenceError → init() 之后的代码不执行
+ *  - 影响: sidebar channel / session 全部不渲染, 用户看到"按钮没反应 / channel 消失"
+ *  修: 补回 openWalletModal + closeWalletModal */
+function openWalletModal() {
+  if (walletModal) {
+    walletModal.classList.add('active');
+    if (currentChannelId && walletBindAddress && channels.find(c => c.id === currentChannelId)) {
+      const ch = channels.find(c => c.id === currentChannelId);
+      walletBindAddress.value = ch?.walletAddress || '';
+    }
+    renderWalletList();
+  }
+}
+function closeWalletModal() {
+  if (walletModal) walletModal.classList.remove('active');
 }
 
 /** 渲染"所有已绑定钱包"列表 */
