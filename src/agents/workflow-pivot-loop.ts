@@ -298,12 +298,25 @@ export class WorkflowPivotLoop {
         
         for (const toolCall of pendingTools) {
           this.state.toolCallsCount++;
-          
+
           const tool = this.tools.get(toolCall.name);
           if (!tool) {
             this.emit({
               type: 'error',
               content: `❌ 未知工具: ${toolCall.name}`
+            });
+            // 2026-06-15: step-timeline — 未知工具也开/关一个 step 节点
+            this.emit({
+              type: 'step_start',
+              content: `未知工具 ${toolCall.name}`,
+              tool: toolCall.name,
+              args: toolCall.args || {},
+            });
+            this.emit({
+              type: 'step_error',
+              content: `未知工具 ${toolCall.name}`,
+              tool: toolCall.name,
+              error: 'Unknown tool',
             });
             this.messageHistory.push({
               role: 'tool',
@@ -311,20 +324,38 @@ export class WorkflowPivotLoop {
             });
             continue;
           }
-          
+
           this.emit({
             type: 'tool',
             content: `🔧 执行: ${toolCall.name}`,
             tool: toolCall.name
           });
-          
+          // 2026-06-15: step-timeline — 开节点
+          this.emit({
+            type: 'step_start',
+            content: `调用 ${toolCall.name}`,
+            tool: toolCall.name,
+            args: toolCall.args || {},
+          });
+
           try {
             const result = await tool.execute(toolCall.args ?? {});
-            
+
+            // 2026-06-15: step-timeline — 关闭节点 (success / error)
+            this.emit({
+              type: result.success ? 'step_done' : 'step_error',
+              content: result.success
+                ? `${toolCall.name} 成功`
+                : `${toolCall.name} 失败: ${result.error}`,
+              tool: toolCall.name,
+              success: result.success,
+              output: result.output,
+              error: result.error,
+            });
             this.emit({
               type: result.success ? 'status' : 'error',
-              content: result.success 
-                ? `✅ ${toolCall.name} 成功` 
+              content: result.success
+                ? `✅ ${toolCall.name} 成功`
                 : `❌ ${toolCall.name} 失败: ${result.error}`
             });
             
@@ -420,9 +451,49 @@ export class WorkflowPivotLoop {
   private extractPendingToolUses(content: string): ToolDefinition[] {
     const pending: ToolDefinition[] = [];
 
+    // Pattern 0: <tool_use>{...JSON...}</tool_use> (Anthropic 风格 + minimax 也用)
+    // 这次 LLM 输出: <tool_use>\n{"name": "read_document", "arguments": {"path": "/Users/.../README.md"}}\n</tool_use>
+    const toolUseRe = /<tool_use>\s*(\{[\s\S]*?\})\s*<\/tool_use>/g;
+    let match;
+    while ((match = toolUseRe.exec(content)) !== null) {
+      try {
+        const obj = JSON.parse(match[1]);
+        if (obj && obj.name && this.tools.has(obj.name)) {
+          const args = this.normalizeArgs(obj.arguments || {});
+          pending.push({ name: obj.name, args, description: '', parameters: {} });
+        }
+      } catch (e) {
+        // JSON 解析失败, 继续下一 match
+      }
+    }
+
+    // Pattern 0b: <function_calls><invoke name="X"><parameter name="k">v</parameter>...</invoke></function_calls>
+    //   这次 minimax LLM 用这种 Anthropic 风格 XML
+    const fnCallsRe = /<function_calls>([\s\S]*?)<\/function_calls>/g;
+    while ((match = fnCallsRe.exec(content)) !== null) {
+      const block = match[1];
+      // 抓 <invoke name="X">...</invoke>
+      const invokeRe = /<invoke\s+name="(\w+)"\s*>([\s\S]*?)<\/invoke>/g;
+      let im;
+      while ((im = invokeRe.exec(block)) !== null) {
+        const name = im[1];
+        if (!this.tools.has(name)) continue;
+        // 抓 <parameter name="k">v</parameter> 列表
+        const args: Record<string, string> = {};
+        const paramRe = /<parameter\s+name="(\w+)"\s*>([\s\S]*?)<\/parameter>/g;
+        let pm;
+        while ((pm = paramRe.exec(im[2])) !== null) {
+          args[pm[1]] = pm[2].trim().replace(/^["']|['"]$/g, '');
+        }
+        // 避免重复添加
+        if (!pending.some(p => p.name === name)) {
+          pending.push({ name, args, description: '', parameters: {} });
+        }
+      }
+    }
+
     // Pattern 1: Chinese format "调用工具: tool_name(args)"
     const pattern1 = /调用工具[：:]\s*(\w+)\s*\(([^)]*)\)/g;
-    let match;
     while ((match = pattern1.exec(content)) !== null) {
       const name = match[1];
       const argsStr = match[2];
@@ -471,25 +542,45 @@ export class WorkflowPivotLoop {
   private parseArgs(argsStr: string): Record<string, string> {
     const args: Record<string, string> = {};
     if (!argsStr || !argsStr.trim()) return args;
-    
+
     const pairs = argsStr.split(',').map(s => s.trim()).filter(Boolean);
     for (const pair of pairs) {
-      const colonIdx = pair.indexOf(':');
-      if (colonIdx > 0) {
-        const key = pair.substring(0, colonIdx).trim();
-        const value = pair.substring(colonIdx + 1).trim().replace(/^['"]|['"]$/g, '');
-        args[key] = value;
-      } else {
-        // No colon, try to parse as positional
-        const parts = pair.split(/\s+/);
-        if (parts.length >= 2) {
-          args[parts[0]] = parts.slice(1).join(' ');
-        }
+      // 2026-06-15: LLM 实际输出 3 种格式 — 全支持
+      //   1) JSON 风格: {"key":"value"}     (服务器日志显示, 但 LLM 不会真输出完整 JSON)
+      //   2) key="value" 含双引号         (本次 read_document(path="/Users/..."))
+      //   3) key='value' 含单引号
+      //   4) key:value                    (老 Chinese 格式)
+      //   5) key value                    (positional 兜底)
+      let m = pair.match(/^["']?([\w-]+)["']?\s*=\s*["']([^"']*)["']$/);
+      if (m) { args[m[1]] = m[2]; continue; }
+      m = pair.match(/^["']?([\w-]+)["']?\s*[:=]\s*([^,]+)$/);
+      if (m) { args[m[1]] = m[2].trim().replace(/^['"]|['"]$/g, ''); continue; }
+      m = pair.match(/^["']?([\w-]+)["']?\s*[:]\s*["']?([^"']*)["']?$/);
+      if (m) { args[m[1]] = m[2].trim(); continue; }
+      // positional 兜底
+      const parts = pair.split(/\s+/);
+      if (parts.length >= 2) {
+        args[parts[0]] = parts.slice(1).join(' ');
       }
     }
     return args;
   }
   
+  /**
+   * 把 tool_use JSON 里的 arguments (已经是对象) 转成 Record<string, string>
+   *   JSON parser 直接给对象, 但 tool.execute 期望 Record<string, string>
+   *   非字符串值 JSON.stringify 一下
+   */
+  private normalizeArgs(args: Record<string, unknown>): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(args || {})) {
+      if (v == null) continue;
+      if (typeof v === 'string') out[k] = v;
+      else out[k] = JSON.stringify(v);
+    }
+    return out;
+  }
+
   /**
    * Build context from message history
    */

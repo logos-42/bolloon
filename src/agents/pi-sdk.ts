@@ -763,7 +763,7 @@ class PiAgentSession implements AgentSession {
     this.tools.set('read_document', {
       name: 'read_document',
       description: '读取文档内容，支持 .txt, .md, .pdf, .docx 格式',
-      parameters: { path: '文件路径' },
+      parameters: { path: 'string' },
       execute: async (args) => {
         try {
           const content = await documentReader.read(args.path);
@@ -780,7 +780,7 @@ class PiAgentSession implements AgentSession {
     this.tools.set('summarize_document', {
       name: 'summarize_document',
       description: '总结文档内容，分析并生成摘要',
-      parameters: { path: '文件路径', context: '可选上下文信息' },
+      parameters: { path: 'string', context: 'string' },
       execute: async (args) => {
         try {
           if (!this.minimaxAvailable) {
@@ -800,7 +800,7 @@ class PiAgentSession implements AgentSession {
     this.tools.set('improve_document', {
       name: 'improve_document',
       description: '根据要求改进文档内容',
-      parameters: { path: '文件路径', requirements: '改进要求' },
+      parameters: { path: 'string', requirements: 'string' },
       execute: async (args) => {
         try {
           if (!this.minimaxAvailable) {
@@ -1297,7 +1297,10 @@ ${this.getToolDefinitions()}
 - 当任务完成时，必须在回答末尾添加 <final gen> 标记表示结束
 - 如果需要更多信息，继续调用工具${this.judgmentGateAddition}`;
 
-    const result = await loop.execute(input, llm, systemPrompt);
+    // 2026-06-15: 把 currentOnStream 传给 loop, 让 step-timeline 在 pivot 循环里也能 emit step_start/done
+    //   之前 loop.execute() 不接 streamCallback, 导致 step-timeline 只能看到老 runReActLoop 路径
+    //   promptWithPivotLoop 路径 0 step events — UI 显示 timeline 但永远是空
+    const result = await loop.execute(input, llm, systemPrompt, this.currentOnStream ?? undefined);
 
     this.messageHistory.push({ role: 'user', content: input });
     if (result.response) {
