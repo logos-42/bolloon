@@ -3,9 +3,7 @@
  * Part of OpenClaw dual-layer architecture (Constraint Layer + Execution Layer)
  */
 
-import { ToolPermissionContext } from '../constraint-runtime/src/constraint/permission.js';
-import { BudgetTracker } from '../constraint-runtime/src/constraint/budget.js';
-import type { UsageSummary } from '../constraint-runtime/src/models.js';
+import { ToolPermissionContext, BudgetTracker, type UsageSummary } from '@bolloon/constraint-runtime';
 
 export interface Guardrail {
   name: string;
