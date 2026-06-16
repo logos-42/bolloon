@@ -26,6 +26,9 @@ jest*
 
 # Build scripts (keep dist/ output only)
 scripts/
+# Exception: postinstall must ship — package.json's "postinstall" script runs it
+# to set bin/bolloon.cjs executable and create user data dirs.
+!scripts/postinstall.js
 
 # Lefthook / git hooks config
 lefthook.yml
