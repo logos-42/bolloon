@@ -238,11 +238,10 @@ async function saveTheme(theme: 'light' | 'dark', agentId: string): Promise<void
 // ==================== Task Queue & Workflow System ====================
 
 const TASK_QUEUE_PATH = path.join(SHARED_SESSION_PATH, 'task-queue.json');
-const WORKFLOW_STATE_PATH = path.join(SHARED_SESSION_PATH, 'workflow-state.json');
 
 interface Task {
   id: string;
-  type: 'read' | 'summarize' | 'improve' | 'chat' | 'workflow';
+  type: 'read' | 'summarize' | 'improve' | 'chat';
   title: string;
   description?: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'paused';
@@ -251,21 +250,8 @@ interface Task {
   error?: string;
   createdAt: string;
   updatedAt: string;
-  steps?: TaskStep[];
+  steps?: any[];
   currentStep?: number;
-}
-
-interface TaskStep {
-  id: string;
-  name: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  result?: string;
-}
-
-interface WorkflowState {
-  channelId: string;
-  tasks: Task[];
-  lastUpdated: string;
 }
 
 async function loadTaskQueue(): Promise<Task[]> {
@@ -279,32 +265,6 @@ async function loadTaskQueue(): Promise<Task[]> {
 
 async function saveTaskQueue(tasks: Task[]): Promise<void> {
   await fs.writeFile(TASK_QUEUE_PATH, JSON.stringify(tasks, null, 2));
-}
-
-async function loadWorkflowState(channelId: string): Promise<WorkflowState | null> {
-  try {
-    const data = await fs.readFile(WORKFLOW_STATE_PATH, 'utf-8');
-    const states = JSON.parse(data) as WorkflowState[];
-    return states.find(s => s.channelId === channelId) || null;
-  } catch {
-    return null;
-  }
-}
-
-async function saveWorkflowState(state: WorkflowState): Promise<void> {
-  try {
-    const data = await fs.readFile(WORKFLOW_STATE_PATH, 'utf-8');
-    const states = JSON.parse(data) as WorkflowState[];
-    const index = states.findIndex(s => s.channelId === state.channelId);
-    if (index >= 0) {
-      states[index] = state;
-    } else {
-      states.push(state);
-    }
-    await fs.writeFile(WORKFLOW_STATE_PATH, JSON.stringify(states, null, 2));
-  } catch {
-    await fs.writeFile(WORKFLOW_STATE_PATH, JSON.stringify([state], null, 2));
-  }
 }
 
 let isExecutingTask = false;
@@ -352,37 +312,6 @@ async function executeTask(task: Task, channelId: string): Promise<void> {
           const llm = getMinimax();
           const summary = await llm.summarize(content.text);
           result = `📝 文档总结:\n\n${summary.summary}`;
-        }
-        break;
-
-      case 'workflow':
-        // 执行多步骤工作流
-        if (task.steps && task.steps.length > 0) {
-          let loopCount = 0;
-          for (let i = 0; i < task.steps.length; i++) {
-            // 广播循环开始
-            loopCount++;
-            broadcast({ type: 'workflow_loop', loopCount, content: `开始步骤 ${i + 1}/${task.steps.length}: ${task.steps[i].name}` }, channelId);
-
-            task.steps[i].status = 'running';
-            broadcast({ type: 'task_status', taskId: task.id, status: 'running', currentStep: i, totalSteps: task.steps.length }, channelId);
-            broadcast({ type: 'workflow_step', step: `步骤 ${i + 1}`, content: `执行中: ${task.steps[i].name}` }, channelId);
-
-            // 执行步骤 - 模拟流式输出
-            for (let j = 0; j < 3; j++) {
-              await new Promise(resolve => setTimeout(resolve, 300));
-              broadcast({ type: 'workflow_step', step: `步骤 ${i + 1}`, content: `执行中... (${(j + 1) * 33}%)` }, channelId);
-            }
-
-            task.steps[i].status = 'completed';
-            task.progress = Math.round(((i + 1) / task.steps.length) * 100);
-
-            broadcast({ type: 'workflow_step', step: `步骤 ${i + 1}`, content: `✅ 完成: ${task.steps[i].name}` }, channelId);
-            broadcast({ type: 'workflow_loop', loopCount, status: 'completed', content: `步骤 ${i + 1} 完成` }, channelId);
-            broadcast({ type: 'task_status', taskId: task.id, progress: task.progress }, channelId);
-          }
-          result = '✅ 工作流执行完成';
-          broadcast({ type: 'workflow_loop', loopCount, status: 'finished', content: result }, channelId);
         }
         break;
 
@@ -2942,46 +2871,6 @@ app.get('/channels', async (_req, res) => {
       executeTask(nextTask, channelId);
 
       res.json({ ok: true, taskId: nextTask.id });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // 创建并执行工作流
-  app.post('/api/workflow', async (req, res) => {
-    try {
-      const { channelId, title, steps } = req.body;
-      if (!channelId || !steps || !Array.isArray(steps)) {
-        return res.status(400).json({ error: 'channelId and steps required' });
-      }
-
-      const tasks = await loadTaskQueue();
-      const task: Task = {
-        id: `wf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
-        type: 'workflow',
-        title: title || '工作流',
-        description: `包含 ${steps.length} 个步骤的工作流`,
-        status: 'pending',
-        progress: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        steps: steps.map((s: string, i: number) => ({
-          id: `step_${i}`,
-          name: s,
-          status: 'pending'
-        })),
-        currentStep: 0
-      };
-
-      tasks.push(task);
-      await saveTaskQueue(tasks);
-
-      // 自动开始执行
-      if (!isExecutingTask) {
-        executeTask(task, channelId);
-      }
-
-      res.json({ ok: true, task });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

@@ -2146,7 +2146,6 @@ function getTaskIcon(type) {
     case 'read': return '📄';
     case 'summarize': return '📝';
     case 'improve': return '✏️';
-    case 'workflow': return '🔄';
     default: return '📋';
   }
 }
@@ -2216,10 +2215,6 @@ async function createTask() {
     title,
     description
   };
-
-  if (type === 'workflow' && taskStepsInput?.value) {
-    taskData.steps = taskStepsInput.value.split('\n').filter(s => s.trim());
-  }
 
   try {
     const res = await fetch('/api/tasks', {
@@ -4170,15 +4165,6 @@ if (createTaskModal) {
 
 if (taskCreateBtn) {
   taskCreateBtn.addEventListener('click', createTask);
-}
-
-if (taskTypeSelect) {
-  taskTypeSelect.addEventListener('change', () => {
-    const workflowSteps = document.querySelector('.workflow-steps');
-    if (workflowSteps) {
-      workflowSteps.style.display = taskTypeSelect.value === 'workflow' ? 'block' : 'none';
-    }
-  });
 }
 
 // Handle SSE task status updates

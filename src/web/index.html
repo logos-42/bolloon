@@ -168,12 +168,11 @@
           <div class="modal-body">
             <div class="form-group">
               <label>任务类型</label>
-              <select id="task-type">
-                <option value="chat">对话</option>
-                <option value="read">读取文档</option>
-                <option value="summarize">总结文档</option>
-                <option value="workflow">工作流</option>
-              </select>
+               <select id="task-type">
+                 <option value="chat">对话</option>
+                 <option value="read">读取文档</option>
+                 <option value="summarize">总结文档</option>
+               </select>
             </div>
             <div class="form-group">
               <label>任务标题</label>
@@ -182,10 +181,6 @@
             <div class="form-group">
               <label>任务描述</label>
               <textarea id="task-desc" placeholder="输入任务描述或内容" rows="3"></textarea>
-            </div>
-            <div class="form-group workflow-steps" style="display:none;">
-              <label>工作流步骤（每行一个）</label>
-              <textarea id="task-steps" placeholder="步骤1&#10;步骤2&#10;步骤3" rows="4"></textarea>
             </div>
             <div class="btn-group">
               <button id="task-cancel-btn" class="btn-secondary">取消</button>
