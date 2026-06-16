@@ -19,6 +19,10 @@ import { stripHibsml } from './strip-hibsml.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LAYERS_DIR = path.join(__dirname, 'layers');
 
+// 2026-06-17: VERBOSE 开关 — BOLLOON_VERBOSE=1 时打 layer 读失败诊断
+// 默认静默 (每次 chat 跑 25 次 fs.readFile, 失败 spam 会污染终端)
+const VERBOSE = process.env.BOLLOON_VERBOSE === '1';
+
 export type AppliesTo = (
   | 'local' | 'p2p-visitor' | 'p2p-agent'
   | 'role:expert' | 'role:architect' | 'role:implementer' | 'role:security'
@@ -299,7 +303,7 @@ async function loadStaticLayer(id: string): Promise<{ content: string; meta: Sec
     const { meta, body } = parseFrontmatter(raw);
     return { content: body, meta };
   } catch (err: any) {
-    console.warn(`[system-prompt] layer ${id} 读失败: ${err.message?.slice(0, 100)}`);
+    if (VERBOSE) console.warn(`[system-prompt] layer ${id} 读失败: ${err.message?.slice(0, 100)}`);
     return { content: `<!-- ${id}: 文件丢失 -->`, meta: null };
   }
 }

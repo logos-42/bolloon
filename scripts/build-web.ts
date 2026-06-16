@@ -96,6 +96,15 @@ async function main() {
   // 复制 icons 目录 (manifest.json 里引用了 favicon 等)
   await fs.cp(path.join(ROOT, 'src/web/icons'), path.join(DIST_WEB, 'icons'), { recursive: true });
 
+  // 复制 system-prompt layer .md 文件到 dist/llm/system-prompt/layers/
+  //   原因: tsc 不复制 .md, src/llm/system-prompt/layers/{core,role,channel,tool}/*.md
+  //   在 dist 里完全不存在, registry.ts 用 __dirname + 'layers' 读它们时 100% ENOENT.
+  //   这里全量复制 25 个 .md, 不过滤 'never' 层 — registry.matchesContext 已做过滤.
+  const srcLayers = path.join(ROOT, 'src/llm/system-prompt/layers');
+  const dstLayers = path.join(ROOT, 'dist/llm/system-prompt/layers');
+  await fs.cp(srcLayers, dstLayers, { recursive: true });
+  console.log('[build-web] system-prompt layers copied →', path.relative(ROOT, dstLayers));
+
   // 复制 components/ 下的独立 ESM 模块 (非 p2p 那些, 已被 esbuild 单独编译)
   // 例如 wallet-viem.mjs: 浏览器侧 viem 封装, 被 index.html 引用
   const extraComponentsDir = path.join(ROOT, 'src/web/components');

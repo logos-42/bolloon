@@ -4,6 +4,25 @@ if (typeof marked === 'undefined') {
   window.marked = { parse: (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') };
 }
 
+// 2026-06-17: 终端静默 — 前端 console.log 走 proxy, 默认不打 SSE 接收 spam.
+//   仅 DevTools console 侧静默, 不影响终端;浏览器调试仍可设 BOLLOON_VERBOSE=1 走 build 嵌入.
+//   console.error 仍走原生 (异常路径可见).
+(function installConsoleProxy() {
+  const VERBOSE = (typeof process !== 'undefined' && process.env && process.env.BOLLOON_VERBOSE === '1');
+  const SUPPRESSED = ['[SSE]', '[broadcast]'];
+  const orig = console.log.bind(console);
+  console.log = (...args) => {
+    if (VERBOSE) return orig(...args);
+    const first = args[0];
+    if (typeof first === 'string') {
+      for (const p of SUPPRESSED) {
+        if (first.startsWith(p)) return;
+      }
+    }
+    return orig(...args);
+  };
+})();
+
 // 2026-06-15: 拆出 message-renderer 模块 (TS, ESM 编译).
 //   浏览器侧: <script type="module"> 加载, 模块主动挂到 window.MR
 //   客户端顶层直接拿 window.MR (ESM deferred 但 client.js 顶层只取 ref, 实际调用延后到 DOMContentLoaded)
@@ -21,6 +40,8 @@ const MR_finalizeTimelineAsMessage = (...args) => _getMR().finalizeTimelineAsMes
 const MR_handleStepEvent = (...args) => _getMR().handleStepEvent?.(...args);
 const MR_getMessagesContainerForCurrent = (...args) => _getMR().getMessagesContainerForCurrent?.(...args);
 const MR_escapeHtml = (s) => _getMR().escapeHtml?.(s);
+// 2026-06-17: 流式状态查询 — 'ai' 事件用它在双气泡竞态下决定是否跳过 addMessage
+const MR_hasStreamingText = () => _getMR().hasStreamingText?.() ?? false;
 const MR_resetRendererState = () => _getMR().resetRendererState?.();
 
 // ctx 对象: 把全局状态打包, 避免硬引用 client.js 顶层 let
@@ -1454,7 +1475,12 @@ function connect(channelId) {
         }
         // 本地 user 已经由 sendMessage 渲染 + 去重, 这里不再显示
       } else if (data.type === 'ai') {
-        addMessage(data.content, 'ai', true, container, lastUsedJudgmentIds);
+        // 2026-06-17: 防双气泡 — 流式过程中 streamingText 已累积同一份 fullResponse,
+        //   server `ai` 事件携带的 content 与之重复, 跳过;真正渲染走 done → finalizeTimelineAsMessage.
+        //   非流式场景 (远端 P2P 直推 / 流式前 chat 异常中断) streamingText 为空, 正常 addMessage.
+        if (!MR_hasStreamingText()) {
+          addMessage(data.content, 'ai', true, container, lastUsedJudgmentIds);
+        }
       } else if (data.type === 'stream') {
         if (data.streamType === 'thinking' || data.streamType === 'token') {
           handleStreamTokenEvent(data);

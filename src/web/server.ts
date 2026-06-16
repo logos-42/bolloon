@@ -6,6 +6,35 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+
+// 2026-06-17: 终端静默 — server.ts 高频 spam (LLM 流式每个 token 一次 broadcast,
+// 每次 P2P 收发 [v3]/[v3-meta]/[v3-cross]/[v3-friend] 各一次) 全部走 console.log proxy,
+// 默认 (BOLLOON_VERBOSE != '1') 完全不打;VERBOSE=1 时恢复.
+// 注意: console.error 走原生,所有错误仍然可见.
+const VERBOSE = process.env.BOLLOON_VERBOSE === '1';
+const SUPPRESSED_LOG_PREFIXES = [
+  '[broadcast]',
+  '[SSE 广播]',
+  '[API] /channels',
+  '[获取频道]',
+  '[v3]',
+  '[v3-meta]',
+  '[v3-cross]',
+  '[v3-friend]',
+  '[v3-async]',
+  '[saveChannels]',
+];
+const _origConsoleLog = console.log.bind(console);
+console.log = (...args: unknown[]): void => {
+  if (VERBOSE) return _origConsoleLog(...args);
+  const first = args[0];
+  if (typeof first === 'string') {
+    for (const p of SUPPRESSED_LOG_PREFIXES) {
+      if (first.startsWith(p)) return;
+    }
+  }
+  return _origConsoleLog(...args);
+};
 import {
   HyperswarmCommunicator,
   createHyperswarmCommunicator,
@@ -2061,12 +2090,14 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
 app.get('/channels', async (_req, res) => {
   try {
-    console.log('[API] /channels 被调用');
+    // 2026-06-17: 缓存命中 → 0 行;未命中 → 1 行 summary (上面 console.log proxy 已吃掉 [API] /channels 等旧日志)
+    const t0 = Date.now();
+    const now = t0;
+    const hit = !!(channelsCache.data && channelsCache.cachedAt > lastChannelsWriteAt && channelsCache.cachedAt + CHANNELS_CACHE_TTL_MS > now);
     const channels = await getChannelsWithDID();
-    console.log('[获取频道] 返回', channels.length, '个');
-    channels.forEach((ch, i) => {
-      console.log(`  [${i}] ${ch.name} - did: ${ch.did || '无'} - cid: ${ch.cid || '无'}`);
-    });
+    if (!hit) {
+      console.log(`[channels] refresh, n=${channels.length}, t=+${Date.now() - t0}ms`);
+    }
     res.json(channels);
   } catch (err: any) {
     console.error('[API] /channels 错误:', err);

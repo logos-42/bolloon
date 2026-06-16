@@ -84,6 +84,16 @@ let streamingText = '';
 let lastUserCommand = '';
 let lastAiContent = '';
 
+/**
+ * 2026-06-17: 流式状态查询 — 客户端用它在收到 server `ai` 事件时判断是否需要跳过 addMessage,
+ *   避免和后续 `done` → finalizeTimelineAsMessage 产生双气泡.
+ *   流式过程中 (streamingText > 0) server 推 `ai(content=fullResponse)` 时跳过,
+ *   真正渲染走 `done` 触发的 finalizeTimelineAsMessage.
+ */
+export function hasStreamingText(): boolean {
+  return streamingText.length > 0;
+}
+
 // 滚动限频 (60ms 16fps, 减 reflow)
 let scrollToBottomTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleScrollToBottom(container: HTMLElement | null): void {
