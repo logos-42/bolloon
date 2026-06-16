@@ -35,19 +35,12 @@ function getRendererCtx() {
   };
 }
 
-// 2026-06-15: 浏览器侧: 等待 ESM 模块 (ui/message-renderer.js) 加载完才执行 client.js 主体.
-// ESM 是 deferred, 默认 DOMContentLoaded 才执行. 普通 <script src> 阻塞, 在 ESM 之前执行.
-// → 客户端顶层直接拿 window.MR 可能 undefined. 用 DOMContentLoaded 兜底, 把 bootstrap 挪到回调里.
-if (typeof window !== 'undefined' && document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    // ESM 应该已加载, 但再 check 一次保险
-    ensureMRLoaded().then(() => bootstrap());
-  });
-} else {
-  // 文档已 ready (例如 tsx 跑测试), 直接 bootstrap
-  ensureMRLoaded().then(() => bootstrap());
-}
-
+// 2026-06-16: 实际入口是底部顶层调用的 init() (见 line ~4451).
+//   之前的 bootstrap() 是死代码残留 — 没人定义过它, 这里调用会在 console 抛 ReferenceError,
+//   虽然不影响 init() 继续跑 (它在另一个 async tick), 但污染日志 + 影响新接手的同学理解流程.
+//   真实 init 流程: DOMContentLoaded → 模块顶层同步执行 → 注册所有 addEventListener → fire-and-forget init()
+//   init() 内部: loadTheme → loadChannels → checkApiConfig → selectChannel → connect (SSE)
+//   这里保留 ensureMRLoaded() 给外部测试用, 浏览器顶层不再调用.
 function ensureMRLoaded() {
   return new Promise((resolve) => {
     if (typeof window === 'undefined') return resolve();
@@ -1273,7 +1266,8 @@ function connect(channelId) {
     reconnectAttempts.set(targetChannelId, 0);
   };
 
-  // 心跳超时: 如果 60s 没收到任何数据 (含 ping), 强制重建
+  // 心跳超时: 2026-06-16 收紧到 30s (配合 server 端 30s ping).
+  // 之前 60s 在 mobile/sleep 唤醒后误判; 后端 ping 已改为 data: {"type":"ping"}, onmessage 会重置 lastEventTime.
   // 覆盖网络半开 / 浏览器没触发 onerror 的情况
   let lastEventTime = Date.now();
   const heartbeatTimer = setInterval(() => {
@@ -1281,8 +1275,8 @@ function connect(channelId) {
       clearInterval(heartbeatTimer);
       return;
     }
-    if (Date.now() - lastEventTime > 60000) {
-      console.warn('[SSE] 60s 无数据, 强制重建连接:', targetChannelId);
+    if (Date.now() - lastEventTime > 30000) {
+      console.warn('[SSE] 30s 无数据, 强制重建连接:', targetChannelId);
       clearInterval(heartbeatTimer);
       try { eventSource.close(); } catch {}
       eventSources.delete(targetChannelId);
@@ -1315,6 +1309,11 @@ function connect(channelId) {
     lastEventTime = Date.now();
     try {
       const data = JSON.parse(e.data);
+      // 2026-06-16: server ping 走 data: {"type":"ping"}, onmessage 收到后重置 lastEventTime 后立即返回.
+      // 不走通用路由 — 流式元素、流式容器、step-timeline 都不动, 避免 reset 误清.
+      if (data && data.type === 'ping') {
+        return;
+      }
       const msgChannelId = data.channelId || targetChannelId;
       console.log('[SSE] 收到消息:', data.type, 'channelId:', msgChannelId);
 
@@ -1395,7 +1394,13 @@ function connect(channelId) {
         hideLoopStatusBar();
         setSendMode('idle');
       } else if (data.type === 'task_status' || data.type === 'workflow_step' || data.type === 'workflow_loop') {
-        // 2026-06-15: 旧工作流事件, 不再单独画 — server 仍可推, 客户端仅 log
+        // 2026-06-16: 旧工作流事件, 不再单独画 — server 仍可推, 客户端仅 log
+        // 特别: server 端 token/thinking 流会同时推一份 workflow_step (title="AI 思考"),
+        //   跟前端 message-renderer 的 think 折叠块重复, 这里统一丢弃.
+        // 开发者模式想看原始事件, 打开 console.log 过滤 "[SSE] workflow"
+        if (data.type === 'workflow_step' && (data.step === 'AI 思考' || data.step === '开始思考')) {
+          return;
+        }
         console.log('[SSE] workflow (deprecated for UI):', data.type, data.content?.slice(0, 80));
       } else if (data.type === 'phase') {
         // phase 事件 (注入门 / D 触发) 仍可推, 客户端仅 log

@@ -939,7 +939,11 @@ body {
   padding: 14px 18px;
   border-radius: var(--radius);
   line-height: 1.6;
-  white-space: pre-wrap;
+  /* 2026-06-16: pre-wrap 改为 pre-line — 保留换行, 但折叠 token 间的多余空格.
+     pre-wrap 模式下 marked 输出里 "\n\n" 之外的 token 边界空格被原样保留,
+     视觉上字符间隔过大. pre-line 保持段落结构 (换行生效), 不再放大空格.
+     重要: .bubble pre 子元素走 pre-wrap (见 .bubble pre), 代码块缩进不受影响. */
+  white-space: pre-line;
   word-break: break-word;
   font-size: 15px;
 }

@@ -5555,25 +5555,36 @@ app.get('/channels', async (_req, res) => {
   });
 
   // 健康检查错误数 ≥ 2 -> 触发自改信号
+  // 2026-06-16: 自迭代默认关 (用户模式), 仅 BOLLOON_DEV_MODE=1 或 selfImprove=true 启动项才装 callback
   if (healthMonitor) {
-    healthMonitor.startPeriodicCheck(60000, (status: any) => {
-      const errorCount = Object.values(status.checks as Record<string, { status: string }>)
-        .filter((c) => c.status === 'error').length;
-      if (errorCount >= 2) {
-        import('../heartbeat/self-improve-bus.js').then(({ reportSelfImproveEvent }) => {
-          const failedKeys = Object.entries(status.checks as Record<string, { status: string }>)
-            .filter(([_, c]) => c.status === 'error').map(([k]) => k).join(', ');
-          reportSelfImproveEvent({
-            kind: 'silent-timeout',
-            details: `健康检查有 ${errorCount} 项失败: ${failedKeys}`
+    if (selfImproveEnabled) {
+      healthMonitor.startPeriodicCheck(60000, (status: any) => {
+        const errorCount = Object.values(status.checks as Record<string, { status: string }>)
+          .filter((c) => c.status === 'error').length;
+        if (errorCount >= 2) {
+          import('../heartbeat/self-improve-bus.js').then(({ reportSelfImproveEvent }) => {
+            const failedKeys = Object.entries(status.checks as Record<string, { status: string }>)
+              .filter(([_, c]) => c.status === 'error').map(([k]) => k).join(', ');
+            reportSelfImproveEvent({
+              kind: 'silent-timeout',
+              details: `健康检查有 ${errorCount} 项失败: ${failedKeys}`
+            });
           });
-        });
-      }
-    });
+        }
+      });
+    } else {
+      // 用户模式: 只跑监控不打自改信号, 心跳仍工作
+      healthMonitor.startPeriodicCheck(60000);
+      console.log('[24h] Health monitor periodic check (no self-improve)');
+    }
   }
 
-  // 安装自改总线 -> SSE 桥
-  void installSelfImproveHook();
+  // 安装自改总线 -> SSE 桥 (开发者模式才装, 用户模式靠 /api/self-improve/trigger 手动触发)
+  if (selfImproveEnabled) {
+    void installSelfImproveHook();
+  } else {
+    console.log('[self-improve] 用户模式, installSelfImproveHook 跳过 (可用 POST /api/self-improve/trigger 手动触发)');
+  }
 
   // 端口冲突时自动找下一个可用端口（最多 10 次），避免 EADDRINUSE 直接崩溃
   return new Promise<{ app: express.Express; server: ReturnType<typeof createServer>; port: number }>((resolve, reject) => {
@@ -5595,11 +5606,24 @@ app.get('/channels', async (_req, res) => {
         console.log('服务器已监听');
         // 安装 chat bus -> SSE 桥 (供前端 inbox UI 实时刷新)
         void installChatBusHook();
+        // 2026-06-16: ping 改为 data: {"type":"ping"} — 之前是 SSE 注释格式 (: ping\n\n),
+        //   浏览器 EventSource 不触发 onmessage, 客户端 60s 阈值 (现已 30s) 误判死链.
+        //   改后前端 onmessage 收到 ping 就重置 lastEventTime, 真死链才 30s 后重建.
         setInterval(() => {
           for (const client of sseClients) {
-            client.res.write(': ping\n\n');
+            try {
+              client.res.write('data: {"type":"ping"}\n\n');
+            } catch (err) {
+              // socket 已断, 跳过 — client 端 onerror 会触发重连
+              console.warn('[SSE ping] write 失败, 跳过该客户端:', (err as Error).message);
+            }
           }
         }, 30000);
+        // 2026-06-16: 全局捕获 socket error 事件, 避免未处理 EPIPE/ETIMEDOUT 让进程崩
+currentServer.on('clientError', (err, socket) => {
+           console.warn('[server] clientError:', (err as any).code, err.message);
+          try { socket.end(); } catch {}
+        });
         resolve({ app, server: currentServer, port: currentPort });
       });
     };

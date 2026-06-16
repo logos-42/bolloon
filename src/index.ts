@@ -1677,10 +1677,16 @@ async function main() {
 
   if (mode === 'web') {
     const port = parseInt(process.env.PORT || '54188');
+    // 2026-06-16: BOLLOON_DEV_MODE=1 或 selfImprove=true 启动项 → 开发者模式, 启用自迭代 (健康监控+自改总线)
+    // 默认用户模式: 不自迭代, 自改卡片不自动出现, 仍可 POST /api/self-improve/trigger 手动触发
+    const selfImprove = process.env.BOLLOON_DEV_MODE === '1' || process.env.BOLLOON_DEV_MODE === 'true';
+    if (selfImprove) {
+      console.log('[startup] BOLLOON_DEV_MODE=1, 开发者模式: 自迭代已启用');
+    }
     const { createWebServer, openBrowser } = await import('./web/server.js');
 
     s.info(`启动 Web 服务端口 ${port}...`);
-    const { port: actualPort } = await createWebServer(port);
+    const { port: actualPort } = await createWebServer(port, { selfImprove });
 
     s.success(`浏览器已打开 → http://localhost:${actualPort}`);
     openBrowser(`http://localhost:${actualPort}`);
