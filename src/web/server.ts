@@ -1640,6 +1640,21 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
             error: event.error,
             args: event.args,
           }, channelId);
+          // 2026-06-16: 累积 step 到 runState, 供 /api/loop/inspect 读取
+          try {
+            if (event.type === 'step_done' || event.type === 'step_error') {
+              const rs = channelRunState.get(channelId);
+              if (rs) {
+                if (!rs.lastSteps) rs.lastSteps = [];
+                rs.lastSteps.push({
+                  name: String(event.tool || event.content || 'step').slice(0, 60),
+                  status: event.type === 'step_error' ? 'failed' : (event.success === false ? 'failed' : 'ok'),
+                  durationMs: typeof event.durationMs === 'number' ? event.durationMs : undefined,
+                  output: event.output ? String(event.output).slice(0, 800) : (event.error ? String(event.error).slice(0, 800) : undefined),
+                });
+              }
+            }
+          } catch { /* non-fatal */ }
         } else if (event.type === 'error') {
           broadcast({ type: 'error', content: event.content }, channelId);
         }
@@ -1924,12 +1939,17 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     running: boolean;
     queue: PendingMessage[];
     abortController: AbortController | null;
+    // 2026-06-16: loop 检查 — 最近一轮的步骤/摘要/最终回复/token
+    lastSteps?: Array<{ name: string; status: string; durationMs?: number; output?: string }>;
+    lastSummary?: string;
+    lastFinalReply?: string;
+    lastTokens?: { input?: number; output?: number };
   }
   const channelRunState: Map<string, ChannelRunState> = new Map();
   function getOrCreateRunState(channelId: string): ChannelRunState {
     let s = channelRunState.get(channelId);
     if (!s) {
-      s = { running: false, queue: [], abortController: null };
+      s = { running: false, queue: [], abortController: null, lastSteps: [], lastSummary: '', lastFinalReply: '', lastTokens: {} };
       channelRunState.set(channelId, s);
     }
     return s;
@@ -5423,6 +5443,32 @@ app.get('/channels', async (_req, res) => {
       }) + '\n', 'utf-8');
     } catch { /* ignore */ }
     res.json({ ok: true, note: '已删除 runtime override, 回到 env / default' });
+  });
+
+  // 2026-06-16: 循环检查 — GET /api/loop/inspect?channelId=...
+  // 返回最近一轮 ReAct loop 的产出: 步骤 / 工具调用 / 压缩摘要 / 最终回复 / token 用量.
+  // 用于前端 status bar 的「✓ 检查」按钮弹 modal.
+  app.get('/api/loop/inspect', async (req: any, res: any) => {
+    try {
+      const channelId = String(req.query.channelId || '');
+      if (!channelId) return res.status(400).json({ error: 'channelId required' });
+      const s = channelRunState.get(channelId);
+      if (!s) return res.json({ summary: '该 channel 无活跃 loop', steps: [], finalReply: '' });
+      const steps = (s.lastSteps || []).map((st: any) => ({
+        name: st.name || st.tool || 'step',
+        status: st.status || 'completed',
+        durationMs: st.durationMs,
+        output: st.output || st.result || '',
+      }));
+      res.json({
+        summary: s.lastSummary || (s.running ? 'loop 仍在运行中' : 'loop 已结束'),
+        steps,
+        finalReply: s.lastFinalReply || '',
+        tokens: s.lastTokens || {},
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // 历史 (类似 self-improve history, 供前端 timeline)

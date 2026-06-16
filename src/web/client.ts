@@ -19,7 +19,6 @@ const MR_addMessage = (...args) => _getMR().addMessage?.(...args);
 const MR_handleStreamTokenEvent = (...args) => _getMR().handleStreamTokenEvent?.(...args);
 const MR_finalizeTimelineAsMessage = (...args) => _getMR().finalizeTimelineAsMessage?.(...args);
 const MR_handleStepEvent = (...args) => _getMR().handleStepEvent?.(...args);
-const MR_showUserCommand = (...args) => _getMR().showUserCommand?.(...args);
 const MR_getMessagesContainerForCurrent = (...args) => _getMR().getMessagesContainerForCurrent?.(...args);
 const MR_escapeHtml = (s) => _getMR().escapeHtml?.(s);
 const MR_resetRendererState = () => _getMR().resetRendererState?.();
@@ -35,31 +34,10 @@ function getRendererCtx() {
   };
 }
 
-// 2026-06-16: 实际入口是底部顶层调用的 init() (见 line ~4451).
-//   之前的 bootstrap() 是死代码残留 — 没人定义过它, 这里调用会在 console 抛 ReferenceError,
-//   虽然不影响 init() 继续跑 (它在另一个 async tick), 但污染日志 + 影响新接手的同学理解流程.
+// 2026-06-16: 实际入口是底部顶层调用的 init().
 //   真实 init 流程: DOMContentLoaded → 模块顶层同步执行 → 注册所有 addEventListener → fire-and-forget init()
 //   init() 内部: loadTheme → loadChannels → checkApiConfig → selectChannel → connect (SSE)
-//   这里保留 ensureMRLoaded() 给外部测试用, 浏览器顶层不再调用.
-function ensureMRLoaded() {
-  return new Promise((resolve) => {
-    if (typeof window === 'undefined') return resolve();
-    if (window.MR && window.MR.addMessage) return resolve();
-    // 浏览器 ESM 是 deferred, 已经在执行中, 这里只是补一个轮询兜底
-    let attempts = 0;
-    const t = setInterval(() => {
-      attempts++;
-      if (window.MR && window.MR.addMessage) {
-        clearInterval(t);
-        resolve();
-      } else if (attempts > 100) {
-        clearInterval(t);
-        console.warn('[client.js] message-renderer.js ESM 未在 1s 内加载, 走 fallback');
-        resolve();
-      }
-    }, 10);
-  });
-}
+//   之前的 ensureMRLoaded() 是死代码残留 (init 不 await 它, 也没人调用) — 2026-06-16 删除.
 
 const messagesEl = document.getElementById('messages');
 const input = document.getElementById('input');
@@ -72,6 +50,10 @@ const loopStatusMeta = document.getElementById('loop-status-meta');
 
 // 把 status 事件路由到 status bar; 只关心 system 级 (loop/compactor/recovery), 其他静默
 const LOOP_STATUS_TOOLS = new Set(['loop', 'compactor', 'recovery', 'system']);
+// 2026-06-16: 三态机 — loading (spinner+文本) / retrying (spinner + "自动重试中 X/N") / done (检查按钮)
+// 重试是 server 端自动的 (pi-sdk.ts promptStream 包 retry 循环), 不暴露按钮给用户.
+let loopBarState: 'loading' | 'retrying' | 'done' = 'loading';
+let loopBarLastSummary: string = '';
 function renderLoopStatusBar(tool: string | undefined, content: string | undefined): void {
   if (!loopStatusBar || !loopStatusText) return;
   const t = String(tool || '').toLowerCase();
@@ -80,31 +62,176 @@ function renderLoopStatusBar(tool: string | undefined, content: string | undefin
     console.log('[SSE] status (tool=' + t + ', ignored by UI):', content?.slice(0, 80));
     return;
   }
-  // tone: 错误事件用 error, 警告/compact 用 warn, 其他 normal
-  let tone: 'normal' | 'warn' | 'error' = 'normal';
-  if (content?.includes('⛔') || content?.includes('强制终止') || content?.includes('溢出')) tone = 'error';
-  else if (content?.includes('🗜️') || content?.includes('⚠️') || content?.includes('reactive')) tone = 'warn';
+  // 2026-06-16: 抽取 retry 信息 — "↻ 自动重试 loop 1/3" / "⛔ loop 自动重试 3 次后仍失败"
+  // 用 meta 显示, 不放到主文本里
+  const retryMatch = String(content || '').match(/自动重试(?: loop)?\s+(\d+)\/(\d+)/);
+  const retryFinal = /自动重试\s+\d+\s*次后仍失败/.test(String(content || ''));
 
   loopStatusBar.hidden = false;
-  loopStatusBar.dataset.tone = tone;
-  // 主文本去掉 emoji (emoji 已在 spinner 体现), 截 80 字符
-  loopStatusText.textContent = String(content || '').replace(/^[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}]\s*/u, '').slice(0, 200);
+  // 主文本去掉 emoji 和 retry 前缀, 只留干净的描述
+  let mainText = String(content || '')
+    .replace(/^[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}]\s*/u, '')
+    .replace(/^↻\s*/, '')
+    .replace(/^⛔\s*/, '')
+    .replace(/^⚠️\s*/, '')
+    .slice(0, 200);
+  loopStatusText.textContent = mainText;
 
-  // meta: 从 "🔄 循环 5/10000" 提取 X/Y 显示进度
-  const m = String(content || '').match(/(\d+)\s*\/\s*(\d+)/);
-  if (m) {
-    const cur = Number(m[1]);
-    const tot = Number(m[2]);
-    const pct = tot > 0 ? Math.min(100, Math.round((cur / tot) * 100)) : 0;
-    loopStatusMeta.textContent = `${cur}/${tot} · ${pct}%`;
+  // retry 态: spinner + "自动重试中 X/N" badge (橙色)
+  if (retryMatch) {
+    loopBarState = 'retrying';
+    const retryEl = document.getElementById('loop-status-retry');
+    if (retryEl) {
+      retryEl.hidden = false;
+      retryEl.textContent = `自动重试 ${retryMatch[1]}/${retryMatch[2]}`;
+    }
+  } else if (retryFinal) {
+    // 最终失败: 进入 done 态, 让用户点"检查"看错误详情 (替代手动重试按钮)
+    loopBarState = 'done';
+    const retryEl = document.getElementById('loop-status-retry');
+    if (retryEl) retryEl.hidden = true;
   } else {
-    loopStatusMeta.textContent = '';
+    // 正常 status (loop/compactor/recovery/system) → loading 态
+    if (loopBarState !== 'loading') loopBarState = 'loading';
+    const retryEl = document.getElementById('loop-status-retry');
+    if (retryEl) retryEl.hidden = true;
   }
+  applyLoopBarState();
+}
+
+// 2026-06-16: 完成态由 SSE `done` 事件触发; 不依赖 system 推 "✅ 完成"
+function markLoopBarDone(summary?: string): void {
+  loopBarState = 'done';
+  if (summary) loopBarLastSummary = summary;
+  applyLoopBarState();
+}
+
+function applyLoopBarState(): void {
+  if (!loopStatusBar) return;
+  loopStatusBar.dataset.state = loopBarState;
+  const checkBtn = document.getElementById('loop-status-check') as HTMLButtonElement | null;
+  if (checkBtn) checkBtn.hidden = loopBarState !== 'done';
 }
 function hideLoopStatusBar(): void {
   if (!loopStatusBar) return;
   loopStatusBar.hidden = true;
-  if (loopStatusMeta) loopStatusMeta.textContent = '';
+  loopBarState = 'loading';
+  loopBarLastSummary = '';
+  const retryEl = document.getElementById('loop-status-retry');
+  if (retryEl) retryEl.hidden = true;
+  applyLoopBarState();
+}
+
+// 2026-06-16: 完成后检查 — GET /api/loop/inspect 拉循环产出的工作记忆/工具结果, 弹 modal
+async function inspectLoopResult(): Promise<void> {
+  const checkBtn = document.getElementById('loop-status-check') as HTMLButtonElement | null;
+  if (checkBtn) {
+    checkBtn.disabled = true;
+    checkBtn.textContent = '⏳ 加载...';
+  }
+  try {
+    const r = await fetch(`/api/loop/inspect?channelId=${encodeURIComponent(currentChannelId || '')}`);
+    const j = await r.json().catch(() => ({}));
+    openLoopInspectModal(j);
+  } catch (err) {
+    console.error('[inspect] error:', err);
+    if (typeof showSimpleToast === 'function') showSimpleToast('✗ 检查失败');
+  } finally {
+    if (checkBtn) {
+      checkBtn.disabled = false;
+      checkBtn.textContent = '✓ 检查';
+    }
+  }
+}
+
+// 2026-06-16: 检查结果 modal — 列循环产出的工具结果 / 压缩摘要 / 最终回复
+function openLoopInspectModal(data: { summary?: string; steps?: Array<{ name: string; status: string; durationMs?: number; output?: string }>; finalReply?: string; tokens?: { input?: number; output?: number }; error?: string }): void {
+  const existing = document.getElementById('loop-inspect-modal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'loop-inspect-modal';
+  modal.className = 'modal active';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;';
+
+  const panel = document.createElement('div');
+  panel.className = 'modal-panel';
+  panel.style.cssText = 'background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:20px;max-width:720px;width:90%;max-height:80vh;overflow:auto;position:relative;';
+
+  const title = document.createElement('h3');
+  title.textContent = '🔍 循环检查';
+  title.style.cssText = 'margin:0 0 12px;font-size:16px;';
+  panel.appendChild(title);
+
+  const close = document.createElement('button');
+  close.textContent = '×';
+  close.style.cssText = 'position:absolute;top:8px;right:12px;background:transparent;border:0;font-size:24px;cursor:pointer;color:var(--text-secondary);';
+  close.onclick = () => modal.remove();
+  panel.appendChild(close);
+
+  if (data.error) {
+    const e = document.createElement('div');
+    e.style.cssText = 'padding:8px 12px;background:rgba(239,68,68,0.12);color:var(--error,#ef4444);border-radius:4px;margin-bottom:12px;font-size:13px;';
+    e.textContent = '⚠️ ' + data.error;
+    panel.appendChild(e);
+  }
+
+  if (data.summary) {
+    const s = document.createElement('div');
+    s.style.cssText = 'padding:8px 12px;background:var(--bg-tertiary);border-radius:4px;margin-bottom:12px;font-size:13px;';
+    s.textContent = data.summary;
+    panel.appendChild(s);
+  }
+
+  if (data.tokens && (data.tokens.input || data.tokens.output)) {
+    const t = document.createElement('div');
+    t.style.cssText = 'font-size:12px;color:var(--text-muted);margin-bottom:12px;';
+    t.textContent = `token: input ${data.tokens.input || 0} · output ${data.tokens.output || 0}`;
+    panel.appendChild(t);
+  }
+
+  if (Array.isArray(data.steps) && data.steps.length > 0) {
+    const h = document.createElement('div');
+    h.textContent = `步骤 (${data.steps.length})`;
+    h.style.cssText = 'font-weight:600;margin-bottom:8px;';
+    panel.appendChild(h);
+    for (const step of data.steps) {
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:6px 10px;margin-bottom:4px;background:var(--bg-secondary);border-left:3px solid var(--accent);border-radius:3px;font-size:12px;';
+      const icon = step.status === 'ok' || step.status === 'completed' ? '✓' : step.status === 'error' || step.status === 'failed' ? '✗' : '○';
+      const dur = step.durationMs ? ` (${(step.durationMs / 1000).toFixed(1)}s)` : '';
+      row.innerHTML = `<b>${icon} ${escapeHtml(step.name)}</b>${dur}`;
+      if (step.output) {
+        const pre = document.createElement('pre');
+        pre.style.cssText = 'margin:4px 0 0;padding:6px;background:var(--bg);border-radius:3px;font-size:11px;white-space:pre-wrap;word-break:break-word;max-height:120px;overflow:auto;';
+        pre.textContent = String(step.output).slice(0, 800);
+        row.appendChild(pre);
+      }
+      panel.appendChild(row);
+    }
+  }
+
+  if (data.finalReply) {
+    const h = document.createElement('div');
+    h.textContent = '最终回复';
+    h.style.cssText = 'font-weight:600;margin:12px 0 8px;';
+    panel.appendChild(h);
+    const r = document.createElement('div');
+    r.style.cssText = 'padding:8px 12px;background:var(--bg-secondary);border-radius:4px;font-size:13px;white-space:pre-wrap;word-break:break-word;';
+    r.textContent = data.finalReply;
+    panel.appendChild(r);
+  }
+
+  if (!data.error && !data.summary && (!data.steps || data.steps.length === 0) && !data.finalReply) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'text-align:center;padding:24px;color:var(--text-muted);font-size:13px;';
+    empty.textContent = '无循环产出 (可能已 abort, 或没产生 step)';
+    panel.appendChild(empty);
+  }
+
+  modal.appendChild(panel);
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+  document.body.appendChild(modal);
 }
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const themeToggle = document.getElementById('theme-toggle');
@@ -112,9 +239,6 @@ const channelList = document.getElementById('channel-list');
 const newChannelBtn = document.getElementById('new-channel-btn');
 const newChannelInput = document.getElementById('new-channel-input');
 const channelNameEl = document.getElementById('channel-name');
-const loadSessionBtn = document.getElementById('load-session-btn');
-const sessionFileInput = document.getElementById('session-file-input');
-const newSessionBtn = document.getElementById('new-session-btn'); // 兼容旧引用（右上角按钮已移除）
 
 let eventSources = new Map(); // channelId -> EventSource
 let currentChannelId = null;
@@ -455,7 +579,6 @@ async function deleteChannel(channelId, e) {
       }
     }
     renderChannels();
-    renderCollapsedChannels();
   } catch (err) {
     console.error('Failed to delete channel:', err);
   }
@@ -926,10 +1049,6 @@ const escapeHtml = MR_escapeHtml || ((s) => String(s ?? '').replace(/[&<>"']/g, 
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 }[c])));
 
-function renderCollapsedChannels() {
-  return;
-}
-
 function ensureMessageContainer(channelId) {
   if (!messagesContainers.has(channelId)) {
     const container = document.createElement('div');
@@ -1176,13 +1295,6 @@ function handleSelfImproveResult(data) {
 }
 
 
-// 2026-06-15: showUserCommand 委托给 ui/message-renderer.js
-function showUserCommand(command, container, opts) {
-  return MR_showUserCommand(command, container, opts, getRendererCtx());
-}
-
-// 用户命令可视化 - 当用户发送命令时调用
-let userCommandDisplayEl = null;
 
 // ============================================================
 // 2026-06-15: 发送按钮 ↔ 终止按钮 状态机
@@ -1921,43 +2033,6 @@ if (sidebarToggle) {
   sidebarToggle.addEventListener('click', toggleSidebar);
 }
 
-if (loadSessionBtn && sessionFileInput) {
-  loadSessionBtn.addEventListener('click', () => {
-    sessionFileInput.click();
-  });
-
-  sessionFileInput.addEventListener('change', async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    try {
-      const text = await file.text();
-      const session = JSON.parse(text);
-
-      if (session.messages && Array.isArray(session.messages)) {
-        messagesEl.innerHTML = '';
-        session.messages.forEach(msg => {
-          addMessage(msg.content, msg.type, false);
-        });
-
-        const channelName = session.channelId || file.name.replace('.json', '');
-        if (channelNameEl) {
-          channelNameEl.textContent = channelName;
-        }
-
-        addMessage(`已加载 session: ${file.name}`, 'ai', false);
-      } else {
-        addMessage('无效的 session 文件格式', 'ai', false);
-      }
-    } catch (err) {
-      console.error('Failed to load session:', err);
-      addMessage('加载 session 失败: ' + err.message, 'ai', false);
-    }
-
-    sessionFileInput.value = '';
-  });
-}
-
 if (newChannelBtn) {
   newChannelBtn.addEventListener('click', () => {
     createChannel('智能体');
@@ -2038,287 +2113,6 @@ if (p2pNetworkBtn) {
   });
 }
 
-// Task Queue
-const taskModal = document.getElementById('task-modal');
-const taskQueueBtn = document.getElementById('task-queue-btn');
-const taskModalClose = document.getElementById('task-modal-close');
-const createTaskModal = document.getElementById('create-task-modal');
-const createTaskModalClose = document.getElementById('create-task-modal-close');
-const taskList = document.getElementById('task-list');
-const taskAddBtn = document.getElementById('task-add-btn');
-const taskExecuteNextBtn = document.getElementById('task-execute-next-btn');
-const taskTypeSelect = document.getElementById('task-type');
-const taskTitleInput = document.getElementById('task-title');
-const taskDescInput = document.getElementById('task-desc');
-const taskStepsInput = document.getElementById('task-steps');
-const taskCreateBtn = document.getElementById('task-create-btn');
-const taskCancelBtn = document.getElementById('task-cancel-btn');
-const taskBadge = document.getElementById('task-badge');
-
-let tasks = [];
-
-async function loadTasks() {
-  try {
-    const res = await fetch('/api/tasks');
-    if (res.ok) {
-      tasks = await res.json();
-      renderTasks();
-      updateTaskBadge();
-    }
-  } catch {
-    tasks = [];
-    renderTasks();
-  }
-}
-
-function renderTasks() {
-  if (!taskList) return;
-
-  if (tasks.length === 0) {
-    taskList.innerHTML = '<div class="task-empty">暂无任务，点击上方按钮创建</div>';
-    return;
-  }
-
-  // 使用 DocumentFragment 优化性能
-  const fragment = document.createDocumentFragment();
-
-  tasks.forEach(task => {
-    const div = document.createElement('div');
-    div.className = `task-item ${task.status}`;
-    div.dataset.id = task.id;
-
-    div.innerHTML = `
-      <div class="task-item-header">
-        <div class="task-item-title">
-          <span>${getTaskIcon(task.type)}</span>
-          <span>${task.title}</span>
-        </div>
-        <span class="task-item-status ${task.status}">${getTaskStatusText(task.status)}</span>
-      </div>
-      ${task.description ? `<div class="task-item-desc">${task.description.substring(0, 100)}${task.description.length > 100 ? '...' : ''}</div>` : ''}
-      <div class="task-item-progress">
-        <div class="task-item-progress-bar" style="width: ${task.progress}%"></div>
-      </div>
-      ${task.steps && task.steps.length > 0 ? `
-        <div class="task-item-steps">
-          ${task.steps.map((step, i) => `
-            <div class="task-item-step ${step.status}">
-              ${step.status === 'completed' ? '✓' : step.status === 'running' ? '⟳' : step.status === 'failed' ? '✗' : '○'} ${i + 1}. ${step.name}
-            </div>
-          `).join('')}
-        </div>
-      ` : ''}
-      <div class="task-item-actions">
-        ${task.status === 'pending' ? `<button class="btn-sm btn-primary" data-action="execute">▶ 执行</button>` : ''}
-        ${task.status === 'running' ? `<button class="btn-sm" disabled>执行中...</button>` : ''}
-        ${task.status === 'completed' ? `<button class="btn-sm" data-action="delete">删除</button>` : ''}
-        ${task.status === 'failed' ? `<button class="btn-sm btn-primary" data-action="retry">重试</button>` : ''}
-      </div>
-    `;
-
-    fragment.appendChild(div);
-  });
-
-  taskList.innerHTML = '';
-  taskList.appendChild(fragment);
-
-  // 绑定事件处理器（避免内联 onclick）
-  taskList.querySelectorAll('[data-action]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const item = e.currentTarget.closest('.task-item');
-      const taskId = item?.dataset.id;
-      if (!taskId) return;
-
-      const action = e.currentTarget.dataset.action;
-      switch (action) {
-        case 'execute': executeTask(taskId); break;
-        case 'delete': deleteTask(taskId); break;
-        case 'retry': retryTask(taskId); break;
-      }
-    });
-  });
-}
-
-function getTaskIcon(type) {
-  switch (type) {
-    case 'chat': return '💬';
-    case 'read': return '📄';
-    case 'summarize': return '📝';
-    case 'improve': return '✏️';
-    default: return '📋';
-  }
-}
-
-function getTaskStatusText(status) {
-  switch (status) {
-    case 'pending': return '待执行';
-    case 'running': return '执行中';
-    case 'completed': return '已完成';
-    case 'failed': return '失败';
-    case 'paused': return '已暂停';
-    default: return status;
-  }
-}
-
-function updateTaskBadge() {
-  if (!taskBadge) return;
-  const pending = tasks.filter(t => t.status === 'pending').length;
-  if (pending > 0) {
-    taskBadge.textContent = pending.toString();
-    taskBadge.style.display = 'block';
-  } else {
-    taskBadge.style.display = 'none';
-  }
-}
-
-function showTaskModal() {
-  if (taskModal) {
-    taskModal.classList.add('active');
-    loadTasks();
-  }
-}
-
-function hideTaskModal() {
-  if (taskModal) {
-    taskModal.classList.remove('active');
-  }
-}
-
-function showCreateTaskModal() {
-  if (createTaskModal) {
-    createTaskModal.classList.add('active');
-    if (taskTitleInput) taskTitleInput.value = '';
-    if (taskDescInput) taskDescInput.value = '';
-    if (taskStepsInput) taskStepsInput.value = '';
-  }
-}
-
-function hideCreateTaskModal() {
-  if (createTaskModal) {
-    createTaskModal.classList.remove('active');
-  }
-}
-
-async function createTask() {
-  const type = taskTypeSelect?.value || 'chat';
-  const title = taskTitleInput?.value?.trim();
-  const description = taskDescInput?.value?.trim();
-
-  if (!title) {
-    alert('请输入任务标题');
-    return;
-  }
-
-  const taskData = {
-    type,
-    title,
-    description
-  };
-
-  try {
-    const res = await fetch('/api/tasks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(taskData)
-    });
-
-    if (res.ok) {
-      const task = await res.json();
-
-      // 自动执行任务
-      if (currentChannelId) {
-        await fetch(`/api/tasks/${task.id}/execute`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ channelId: currentChannelId })
-        });
-      }
-
-      hideCreateTaskModal();
-      await loadTasks();
-    }
-  } catch (err) {
-    console.error('Failed to create task:', err);
-  }
-}
-
-async function executeTask(taskId) {
-  if (!currentChannelId) {
-    alert('请先选择一个频道');
-    return;
-  }
-
-  try {
-    await fetch(`/api/tasks/${taskId}/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channelId: currentChannelId })
-    });
-    await loadTasks();
-  } catch (err) {
-    console.error('Failed to execute task:', err);
-  }
-}
-
-async function retryTask(taskId) {
-  const tasks = await (await fetch('/api/tasks')).json();
-  const task = tasks.find(t => t.id === taskId);
-  if (task) {
-    task.status = 'pending';
-    task.error = undefined;
-    await fetch(`/api/tasks/${taskId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'pending' })
-    });
-    await executeTask(taskId);
-  }
-}
-
-async function deleteTask(taskId) {
-  try {
-    await fetch(`/api/tasks/${taskId}`, { method: 'DELETE' });
-    await loadTasks();
-  } catch (err) {
-    console.error('Failed to delete task:', err);
-  }
-}
-
-async function executeNextTask() {
-  if (!currentChannelId) {
-    alert('请先选择一个频道');
-    return;
-  }
-
-  try {
-    const res = await fetch('/api/tasks/execute-next', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channelId: currentChannelId })
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      if (!data.ok) {
-        addMessage(data.message || '没有待执行的任务', 'ai');
-      }
-      await loadTasks();
-    }
-  } catch (err) {
-    console.error('Failed to execute next task:', err);
-  }
-}
-
-// Task modal events
-if (taskQueueBtn) {
-  taskQueueBtn.addEventListener('click', showTaskModal);
-}
-
-if (taskModalClose) {
-  taskModalClose.addEventListener('click', hideTaskModal);
-}
-
 // ==================== Judgments (v1 极简) ====================
 const judgmentsModal = document.getElementById('judgments-modal');
 const judgmentsBtn = document.getElementById('judgments-btn');
@@ -2342,22 +2136,18 @@ function showJudgmentsModal() {
 
 function switchJudgmentTab(tab) {
   currentJudgmentTab = tab;
+  // 2026-06-16: 样式切 active 改用 CSS class, 不再写 style.borderBottomColor
   document.querySelectorAll('.judgment-tab').forEach(btn => {
-    const active = btn.dataset.tab === tab;
-    btn.classList.toggle('active', active);
-    btn.style.borderBottomColor = active ? '#2563eb' : 'transparent';
-    btn.style.color = active ? '#2563eb' : '#6b7280';
+    btn.classList.toggle('active', btn.dataset.tab === tab);
   });
   renderJudgments(lastJudgmentsCache);
 }
 
 function switchStatusFilter(status) {
   currentStatusFilter = status;
+  // 2026-06-16: 样式切 active 改用 CSS class, 不再写 style.background
   document.querySelectorAll('.judgment-status-tab').forEach(btn => {
-    const active = btn.dataset.status === status;
-    btn.classList.toggle('active', active);
-    btn.style.background = active ? '#2563eb' : '#e5e7eb';
-    btn.style.color = active ? '#fff' : '#374151';
+    btn.classList.toggle('active', btn.dataset.status === status);
   });
   loadJudgments();
 }
@@ -4131,125 +3921,6 @@ if (splitHandle && localSection && remoteSection) {
   });
 }
 
-if (taskModal) {
-  taskModal.addEventListener('click', (e) => {
-    if (e.target === taskModal) {
-      hideTaskModal();
-    }
-  });
-}
-
-if (taskAddBtn) {
-  taskAddBtn.addEventListener('click', showCreateTaskModal);
-}
-
-if (taskExecuteNextBtn) {
-  taskExecuteNextBtn.addEventListener('click', executeNextTask);
-}
-
-if (taskCancelBtn) {
-  taskCancelBtn.addEventListener('click', hideCreateTaskModal);
-}
-
-if (createTaskModalClose) {
-  createTaskModalClose.addEventListener('click', hideCreateTaskModal);
-}
-
-if (createTaskModal) {
-  createTaskModal.addEventListener('click', (e) => {
-    if (e.target === createTaskModal) {
-      hideCreateTaskModal();
-    }
-  });
-}
-
-if (taskCreateBtn) {
-  taskCreateBtn.addEventListener('click', createTask);
-}
-
-// Handle SSE task status updates
-const originalOnMessage = window.addEventListener ? null : null;
-
-// Extend SSE handler for task updates
-const originalConnect = connect;
-connect = async function() {
-  // Call original connect
-  await originalConnect();
-
-  // Reconnect SSE for task updates
-  const taskEventSource = new EventSource('/events');
-
-  taskEventSource.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      if (data.type === 'task_status') {
-        loadTasks();
-      }
-    } catch {}
-  };
-
-  taskEventSource.onerror = () => {
-    taskEventSource.close();
-  };
-};
-
-// =====================================================
-// 钱包管理 (header 钱包按钮 → 全局管理面板)
-// =====================================================
-const walletModal = document.getElementById('wallet-modal');
-const walletModalClose = document.getElementById('wallet-modal-close');
-const walletBindAddress = document.getElementById('wallet-bind-address');
-const walletGenerateBtn = document.getElementById('wallet-generate-btn');
-const walletAutoTools = document.getElementById('wallet-auto-tools');
-const walletBindBtn = document.getElementById('wallet-bind-btn');
-const walletUnbindBtn = document.getElementById('wallet-unbind-btn');
-const walletNewInfo = document.getElementById('wallet-new-info');
-const walletListEl = document.getElementById('wallet-list');
-
-/** 本次会话生成的私钥/助记词, 仅用于本地签名, 永不上传 */
-let walletModalPendingSecret = null;
-let walletModalPendingMnemonic = null;
-
-function openWalletModal() {
-  if (!walletModal) return;
-  walletModalPendingSecret = null;
-  walletNewInfo.style.display = 'none';
-  walletNewInfo.innerHTML = '';
-  walletBindAddress.value = '';
-  // 用当前 channel 的状态预填
-  const ch = channels.find(c => c.id === currentChannelId);
-  if (ch) {
-    walletBindAddress.value = ch.walletAddress || '';
-    walletAutoTools.checked = !!ch.autoInvokeTools;
-  }
-  renderWalletList();
-  walletModal.classList.add('active');
-}
-
-function closeWalletModal() {
-  if (!walletModal) return;
-  walletModal.classList.remove('active');
-  walletModalPendingSecret = null;
-}
-
-if (walletModalClose) walletModalClose.addEventListener('click', closeWalletModal);
-
-if (walletGenerateBtn) {
-  walletGenerateBtn.addEventListener('click', async () => {
-    walletNewInfo.style.display = 'block';
-    walletNewInfo.innerHTML = '⏳ 正在生成真实 EVM 钱包...';
-    try {
-      const wallet = await generateRealWalletAsync();
-      walletBindAddress.value = wallet.address;
-      walletModalPendingSecret = wallet.privateKey;
-      walletModalPendingMnemonic = wallet.mnemonic;
-      walletNewInfo.innerHTML = formatWalletInfoHtml(wallet);
-    } catch (err) {
-      walletNewInfo.innerHTML = '✗ 生成钱包失败: ' + escapeHtml(err.message);
-    }
-  });
-}
-
 if (walletBindBtn) {
   walletBindBtn.addEventListener('click', async () => {
     if (!currentChannelId) {
@@ -4442,9 +4113,8 @@ function detectChain(addr) {
 init();
 
 // =====================================================
-// 智能体目录：catalog add 按钮 + 钱包注册 + 自动工具调用
+// 智能体目录：钱包注册 + 自动工具调用 (2026-06-11: catalog-add-btn 已删除)
 // =====================================================
-const catalogAddBtn = document.getElementById('catalog-add-btn');
 const agentAddModal = document.getElementById('agent-add-modal');
 const agentAddTitle = document.getElementById('agent-add-title');
 const agentAddModalClose = document.getElementById('agent-add-modal-close');
@@ -4556,9 +4226,6 @@ if (agentGenerateWalletBtn) {
   });
 }
 
-if (catalogAddBtn) {
-  catalogAddBtn.addEventListener('click', () => openAgentAddModal(null));
-}
 if (agentAddModalClose) agentAddModalClose.addEventListener('click', closeAgentAddModal);
 if (agentAddCancelBtn) agentAddCancelBtn.addEventListener('click', closeAgentAddModal);
 

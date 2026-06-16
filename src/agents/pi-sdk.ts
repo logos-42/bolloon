@@ -492,6 +492,8 @@ export interface StreamEvent {
   output?: string;
   error?: string;
   args?: Record<string, unknown>;
+  // step_* 可选: 步骤耗时 (server 端用来展示 in 状态条 + 性能分析)
+  durationMs?: number;
 }
 
 const TOOL_DEFINITIONS = `
@@ -1131,7 +1133,9 @@ class PiAgentSession implements AgentSession {
     }
 
     try {
-      return await this.runReActLoop(undefined, options?.signal);
+      // 2026-06-16: runReActLoop 现在返回 { reply, aiFailed, aiFailureReason } — 这里只需 reply 字符串
+      const loopResult = await this.runReActLoop(undefined, options?.signal);
+      return loopResult.reply;
     } finally {
       if (this.judgmentGateUsedIds.length > 0) {
         recordJudgmentUsage(this.judgmentGateUsedIds, { userInput: input }).catch((err) =>
@@ -1197,14 +1201,64 @@ class PiAgentSession implements AgentSession {
 
     this.promptStartTime = Date.now();
 
-    let result: string;
-    try {
-      result = await this.runReActLoop(onStream, signal);
-    } catch (err: any) {
-      // abort 失败: 视作"已中断", 抛错让上层用 partial 兜底
-      this.currentOnStream = null;
-      this.currentSignal = null;
-      throw err;
+    // 2026-06-16: loop 自动重试 — runReActLoop 内部遇到 [AI 服务调用失败] sentinel 时,
+    //   会设 aiFailed=true 并提前 break. 这里在外层重跑整个 loop (不是单次 LLM 调用),
+    //   临时网络抖动 / 配额瞬时超限可自愈. 最多 3 次, 指数退避 1s/2s/4s.
+    //   用户看到 status bar 显示 "自动重试中 X/N" — 不暴露按钮.
+    const MAX_LOOP_RETRIES = 3;
+    let attempt = 0;
+    let result: string = '';
+    let lastAiFailureReason = '';
+    while (attempt <= MAX_LOOP_RETRIES) {
+      try {
+        const loopResult = await this.runReActLoop(onStream, signal);
+        result = loopResult.reply;
+        if (!loopResult.aiFailed) break; // 正常完成, 退出 retry 循环
+        lastAiFailureReason = loopResult.aiFailureReason || 'AI 调用失败';
+      } catch (err: any) {
+        // abort 失败: 视作"已中断", 抛错让上层用 partial 兜底
+        this.currentOnStream = null;
+        this.currentSignal = null;
+        throw err;
+      }
+      attempt++;
+      if (attempt > MAX_LOOP_RETRIES) {
+        console.warn(`[PiAgent] loop 自动重试 ${MAX_LOOP_RETRIES} 次后仍失败, 终止`);
+        if (onStream) {
+          onStream({ type: 'status', content: `⛔ loop 自动重试 ${MAX_LOOP_RETRIES} 次后仍失败: ${lastAiFailureReason}`, tool: 'system' });
+        }
+        result = lastAiFailureReason || 'AI 服务调用失败, 自动重试后仍不可用';
+        break;
+      }
+      const backoffMs = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+      console.log(`[PiAgent] loop 自动重试 ${attempt}/${MAX_LOOP_RETRIES}, 等待 ${backoffMs}ms`);
+      if (onStream) {
+        onStream({ type: 'status', content: `↻ 自动重试 loop ${attempt}/${MAX_LOOP_RETRIES} (${(backoffMs / 1000).toFixed(0)}s 后)`, tool: 'system' });
+      }
+      // 中途 abort 也要响应
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => {
+          signal?.removeEventListener?.('abort', onAbort);
+          resolve();
+        }, backoffMs);
+        const onAbort = () => {
+          clearTimeout(t);
+          reject(new Error('aborted during retry backoff'));
+        };
+        if (signal?.aborted) {
+          clearTimeout(t);
+          reject(new Error('aborted during retry backoff'));
+          return;
+        }
+        signal?.addEventListener?.('abort', onAbort, { once: true });
+      });
+      // 重试时要把这条 user message 从 history 里移除 (避免下一次 runReActLoop 又重复加入),
+      // 因为 messageHistory.push({role:'user'}) 在 promptStream 顶部已经做过, 重跑 runReActLoop 不会重复 push,
+      // 但 assistant 失败那条也别留 (留了会污染下一轮 LLM context).
+      // 简化: 重试前 pop 一次 assistant (如果最后一条是 assistant)
+      if (this.messageHistory.length > 0 && this.messageHistory[this.messageHistory.length - 1].role === 'assistant') {
+        this.messageHistory.pop();
+      }
     }
     onStream({ type: 'done', content: '' });
 
@@ -1318,7 +1372,7 @@ ${this.getToolDefinitions()}
     return result;
   }
 
-  private async runReActLoop(onStream?: StreamCallback, signal?: AbortSignal): Promise<string> {
+  private async runReActLoop(onStream?: StreamCallback, signal?: AbortSignal): Promise<{ reply: string; aiFailed: boolean; aiFailureReason?: string }> {
     const llm = getMinimax();
     let iteration = 0;
     let finalResponse = '';
@@ -1329,6 +1383,10 @@ ${this.getToolDefinitions()}
     let totalErrors = 0;
     let lastFailedTool = ''; // 跟踪最近一次失败的 tool name
     let lastFailedToolCount = 0; // 最近失败工具的连续失败次数
+    // 2026-06-16: AI sentinel 标志 — runReActLoop 返回 aiFailed=true,
+    //   promptStream 据此自动重跑整个 loop 最多 N 次 (不是单次 LLM 重试)
+    let aiFailed = false;
+    let aiFailureReason = '';
     const MAX_CONSECUTIVE_ERRORS = 3;
     const MAX_SAME_TOOL_FAILURES = 3; // 同一工具连续失败 3 次, 强制让 LLM 给出最终答案
 
@@ -1451,22 +1509,17 @@ ${toolDefs}
       const response = await this.callLlmWithRecovery(llm, context, systemPrompt, signal, onStream);
       const reply = (response.reply || '').trim();
 
-      // 2026-06-15: 看到 [AI 服务调用失败] sentinel → 立即终止 loop, 不再 retry
-      // (LLM API 401 / 网络错 / 配额满时, pi-ai 返回这个 prefix,
-      // 继续 retry 只会再调 100 次空转, 用户看到 100 圈但实际啥都没改)
+      // 2026-06-16: 看到 [AI 服务调用失败] sentinel → 不再立即 break,
+      // 而是设 aiFailed=true, 让外层 promptStream 自动重跑整个 loop 最多 N 次
+      // (LLM API 401 / 网络错 / 配额满时, pi-ai 返回这个 prefix;
+      //  自动 retry 兜底: 临时网络抖动可自愈, 真挂 N 次后才报失败)
       if (reply.startsWith('[AI 服务调用失败]')) {
-        console.log(`[PiAgent] 收到 AI 错误 sentinel, 立即终止 loop (不再 retry)`);
+        console.log(`[PiAgent] 收到 AI 错误 sentinel, 标记 aiFailed, 外层会自动重试整个 loop`);
+        aiFailed = true;
+        aiFailureReason = reply.length > 200 ? reply.substring(0, 200) : reply;
         if (onStream) {
-          onStream({ type: 'status', content: `❌ AI 服务调用失败，已终止 loop`, tool: 'system' });
-          // 2026-06-15: step-timeline — LLM 调用整体失败, 标 step_error
-          onStream({
-            type: 'step_error',
-            content: 'AI 服务调用失败',
-            tool: 'llm',
-            error: 'AI service unavailable',
-          });
+          onStream({ type: 'status', content: `⚠️ AI 调用失败, 将自动重试整个 loop`, tool: 'system' });
         }
-        finalResponse = reply;
         break;
       }
 
@@ -1847,7 +1900,8 @@ Workspace root folder: ${this.cwd}
       console.warn('[PiAgent] reactHarness.onSessionEnd failed (non-fatal):', err);
     }
 
-    return finalResponse;
+    // 2026-06-16: 暴露 aiFailed 标志 — promptStream 据此决定是否自动重试整个 loop
+    return { reply: finalResponse, aiFailed, aiFailureReason: aiFailureReason || undefined };
   }
 
   async deepThink(prompt: string): Promise<{ result: ThinkResult; response: string }> {

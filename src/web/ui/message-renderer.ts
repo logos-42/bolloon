@@ -10,9 +10,8 @@
  *   - 挂载 step-timeline (2026-06-15) 步骤状态条到每条 AI 消息内
  *
  * 状态 (本模块私有):
- *   - streamingMessageEl / streamingTextNode / streamingCursorEl / streamingText
+ *   - streamingMessageEl / streamingTextNode / streamingText
  *   - lastUserCommand / lastAiContent  (去重)
- *   - userCommandDisplayEl (用户命令装饰条)
  *
  * 依赖 (import):
  *   - 浏览器 API (document, marked, fetch, navigator)
@@ -27,7 +26,6 @@
  *   - handleStreamTokenEvent({ streamType, content }, ctx)
  *   - finalizeTimelineAsMessage(ctx)
  *   - handleStepEvent({ type: 'step_start'|'step_done'|'step_error', ... }, ctx)
- *   - showUserCommand(command, container, opts, ctx)
  *   - escapeHtml(s)
  *   - getMessagesContainerForCurrent(currentChannelId, messagesContainers, messagesEl)
  *
@@ -53,11 +51,6 @@ export type MessageType = 'user' | 'ai' | 'system' | 'error';
 export interface StreamTokenEvent {
   streamType: 'token' | 'thinking';
   content: string;
-}
-
-export interface UserCommandOpts {
-  source?: 'local' | 'remote';
-  fromPublicKey?: string;
 }
 
 export interface RendererCtx {
@@ -87,11 +80,9 @@ export interface UsedJudgmentsLink {
 // ---------------------------------------------------------------------------
 let streamingMessageEl: HTMLElement | null = null;
 let streamingTextNode: Text | null = null;
-let streamingCursorEl: HTMLElement | null = null;
 let streamingText = '';
 let lastUserCommand = '';
 let lastAiContent = '';
-let userCommandDisplayEl: HTMLElement | null = null;
 
 // 滚动限频 (60ms 16fps, 减 reflow)
 let scrollToBottomTimer: ReturnType<typeof setTimeout> | null = null;
@@ -411,11 +402,7 @@ export function handleStreamTokenEvent(data: StreamTokenEvent, ctx: RendererCtx 
     streamingMessageEl = document.createElement('div');
     streamingMessageEl.className = 'message message-ai message-streaming';
     streamingTextNode = document.createTextNode('');
-    streamingCursorEl = document.createElement('span');
-    streamingCursorEl.className = 'streaming-cursor';
-    streamingCursorEl.textContent = '▍';
     streamingMessageEl.appendChild(streamingTextNode);
-    streamingMessageEl.appendChild(streamingCursorEl);
     streamingText = '';
     // 2026-06-15: 流式期间也挂一个空 step-timeline 占位 — step_start/done/error 事件
     //   走 handleStepEvent, getStepTimeline 找到这个流式元素内的 timeline 推入
@@ -460,7 +447,6 @@ export function finalizeTimelineAsMessage(ctx: RendererCtx = { messagesEl: null,
   // 重置流式状态
   streamingMessageEl = null;
   streamingTextNode = null;
-  streamingCursorEl = null;
   streamingText = '';
   // B-3: finalize 时切 done 状态 (绿徽), hide 延迟由 client.js 的 hideTimelinePanel 统一管
   if (typeof ctx.setTimelineState === 'function') {
@@ -469,46 +455,8 @@ export function finalizeTimelineAsMessage(ctx: RendererCtx = { messagesEl: null,
 }
 
 // ---------------------------------------------------------------------------
-// 用户命令装饰条 (showUserCommand)
-// ---------------------------------------------------------------------------
-export function showUserCommand(
-  command: string,
-  container: HTMLElement | null,
-  opts: UserCommandOpts = {},
-  ctx: RendererCtx = { messagesEl: null, messagesContainers: new Map(), currentChannelId: null }
-): void {
-  const messagesEl = ctx.messagesEl || (typeof document !== 'undefined' ? document.getElementById('messages') : null);
-  const messagesContainers = ctx.messagesContainers || new Map<string, HTMLElement>();
-  const currentChannelId = ctx.currentChannelId;
-  const msgContainer = container || getMessagesContainerForCurrent(currentChannelId, messagesContainers, messagesEl);
-  if (!msgContainer) return;
-  // 移除之前的 user bubble (防重复)
-  msgContainer.querySelectorAll('.message-user').forEach(el => el.remove());
-  if (userCommandDisplayEl) userCommandDisplayEl.remove();
-
-  userCommandDisplayEl = document.createElement('div');
-  userCommandDisplayEl.className = 'message message-user';
-  const sourceTag = (opts.source === 'remote')
-    ? `<div style="font-size:10px;color:#6b7280;margin-bottom:2px;">🌐 远端访客${opts.fromPublicKey ? ' (' + opts.fromPublicKey.substring(0, 8) + '…)' : ''} → A 的 channel</div>`
-    : '';
-  userCommandDisplayEl.innerHTML = `
-    <div class="user-command-display">
-      <div class="command-prompt">
-        <span class="prompt-icon">›</span>
-        <span class="prompt-text">${escapeHtml(command)}</span>
-      </div>
-      ${sourceTag}
-    </div>
-  `;
-  // 在工作流显示之前插入 (兼容 client.js 的 workflowDisplayEl)
-  const workflowDisplayEl = ctx.workflowDisplayEl;
-  if (workflowDisplayEl) {
-    msgContainer.insertBefore(userCommandDisplayEl, workflowDisplayEl);
-  } else {
-    msgContainer.appendChild(userCommandDisplayEl);
-  }
-  scheduleScrollToBottom(msgContainer);
-}
+// 用户命令装饰条 (showUserCommand) — 2026-06-16 整段删除, SSE 已走 addMessage 路径
+//   2026-06-11 修: 不再走 showUserCommand (› 装饰条) 路径 — 会和 user bubble 双重显示
 
 // ---------------------------------------------------------------------------
 // 2026-06-15: step-timeline 事件入口 (server 推 step_start/step_done/step_error)
@@ -562,11 +510,9 @@ export function handleStepEvent(data: StepEvent, ctx: RendererCtx = { messagesEl
 export function resetRendererState(): void {
   streamingMessageEl = null;
   streamingTextNode = null;
-  streamingCursorEl = null;
   streamingText = '';
   lastUserCommand = '';
   lastAiContent = '';
-  userCommandDisplayEl = null;
   if (scrollToBottomTimer) {
     clearTimeout(scrollToBottomTimer);
     scrollToBottomTimer = null;
@@ -578,7 +524,6 @@ export const MessageRenderer = {
   handleStreamTokenEvent,
   finalizeTimelineAsMessage,
   handleStepEvent,
-  showUserCommand,
   escapeHtml,
   getMessagesContainerForCurrent,
   resetRendererState,

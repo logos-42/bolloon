@@ -39,6 +39,13 @@
   --warning-bg: rgba(245, 158, 11, 0.1);
   --info: #2196f3;
   --info-bg: rgba(33, 150, 243, 0.1);
+
+  /* 二级 / 三级面 (次级背景, 嵌套层) — 补全未定义变量, 此前引用处 fallback 到 unset */
+  --bg-secondary: #252522;
+  --bg-tertiary: #2f2f2a;
+  --text-primary: #e8e8e0;
+  --font-mono: 'SF Mono', 'Monaco', 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  --accent-light: #e8f060;
 }
 
 [data-theme="light"] {
@@ -58,6 +65,13 @@
   --ai-text: #2a2a20;
   --border: #d0d0c0;
   --border-light: #c0c0b0;
+
+  /* 二级 / 三级面 — 补全未定义变量 */
+  --bg-secondary: #f5f5ed;
+  --bg-tertiary: #fafaf2;
+  --text-primary: #1a1a18;
+  --font-mono: 'SF Mono', 'Monaco', 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  --accent-light: #c4d240;
 }
 
 body {
@@ -470,6 +484,63 @@ body {
 .channel-item.active .channel-name {
   color: var(--accent);
   font-weight: 500;
+}
+
+/* 2026-06-16: P2P 远端 header 紧凑变体 + mini 按钮 (替代 HTML L66-74 内联) */
+.section-header.is-compact {
+  margin-bottom: 8px;
+  padding-bottom: 0;
+  position: static;
+}
+.section-header.is-compact::after {
+  display: none;
+}
+.section-header.is-clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.section-header.is-clickable:hover {
+  background: var(--bg-hover);
+}
+.section-header-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.section-header-row .section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+.section-header-actions {
+  display: flex;
+  gap: 4px;
+}
+.sidebar-mini-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1;
+  transition: var(--transition);
+}
+.sidebar-mini-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-light);
+}
+.sidebar-empty-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 8px 4px;
+  text-align: center;
+  list-style: none;
 }
 
 .channel-icon {
@@ -938,7 +1009,7 @@ body {
 .bubble {
   padding: 14px 18px;
   border-radius: var(--radius);
-  line-height: 1.6;
+  line-height: 1.7;
   /* 2026-06-16: pre-wrap 改为 pre-line — 保留换行, 但折叠 token 间的多余空格.
      pre-wrap 模式下 marked 输出里 "\n\n" 之外的 token 边界空格被原样保留,
      视觉上字符间隔过大. pre-line 保持段落结构 (换行生效), 不再放大空格.
@@ -960,6 +1031,21 @@ body {
   color: var(--ai-text);
   border: 1px solid var(--border);
   border-bottom-left-radius: 4px;
+}
+
+/* System / Error 变体 — 2026-06-16 补全, 之前 system/error 走 addMessage 缺样式
+   - system: 信息提示感, 左色条
+   - error: 错误提示, 红边 */
+.bubble-system {
+  background: var(--bg-secondary);
+  border-left: 3px solid var(--accent-dark);
+  color: var(--text);
+}
+.bubble-error {
+  background: #3a2a2a;
+  border: 1px solid var(--error);
+  border-left: 3px solid var(--error);
+  color: #f0d0d0;
 }
 
 .message-header {
@@ -1143,10 +1229,6 @@ body {
 }
 
 /* Markdown Styles */
-.bubble {
-  line-height: 1.7;
-}
-
 .bubble h1, .bubble h2, .bubble h3, .bubble h4, .bubble h5, .bubble h6 {
   margin-top: 16px;
   margin-bottom: 8px;
@@ -1265,128 +1347,9 @@ body {
   margin: 0;
 }
 
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-/* 2026-06-15: 流式输出光标 blink 动画 (黄色光标) */
-@keyframes streaming-blink {
-  0%, 49% { opacity: 1; }
-  50%, 100% { opacity: 0; }
-}
-.streaming-cursor {
-  display: inline-block;
-  margin-left: 1px;
-}
-
-/* Tool Results Container */
-.tool-results-container {
-  margin: 8px 0;
-}
-
-.tool-result-item {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  margin-bottom: 6px;
-  overflow: hidden;
-}
-
-.tool-result-item.collapsed .tool-result-content {
-  display: none;
-}
-
-.tool-result-item.expanded {
-  border-color: var(--accent);
-}
-
-.tool-result-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-  background: var(--bg-tertiary);
-  transition: background 0.2s;
-}
-
-.tool-result-header:hover {
-  background: var(--bg);
-}
-
-.tool-result-icon {
-  font-size: 14px;
-}
-
-.tool-result-name {
-  font-size: 12px;
-  color: var(--text-secondary);
-  flex: 1;
-}
-
-.tool-result-toggle {
-  font-size: 10px;
-  color: var(--text-muted);
-  transition: transform 0.2s;
-}
-
-.tool-result-item.expanded .tool-result-toggle {
-  transform: rotate(90deg);
-}
-
-.tool-result-content {
-  padding: 10px 12px;
-  background: var(--bg);
-}
-
-.tool-result-content pre {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  color: var(--text-secondary);
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.loop-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-
-.loop-icon {
-  font-size: 16px;
-}
-
-.loop-status {
-  font-size: 11px;
-  color: var(--accent);
-  background: var(--bg-tertiary);
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-.loop-content {
-  font-size: 13px;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.7; transform: scale(1.1); }
-}
-
 @keyframes slideIn {
   from { opacity: 0; transform: translateY(-10px); }
   to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 
 /* Typing Indicator */
@@ -1410,10 +1373,6 @@ body {
 .typing-text {
   color: var(--text-secondary);
   font-size: 14px;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
 }
 
 /* Streaming Indicator */
@@ -1538,8 +1497,11 @@ body {
   flex-shrink: 0;
 }
 
-/* 2026-06-16 新增: 循环进度 status bar — 显示在 input-area 上方
-   只渲染 system 级 (loop / compactor / recovery),不挡消息流 */
+/* 2026-06-16: 循环 status bar — 三态机 (loading / error / done)
+   loading: spinner + 描述文本
+   error:   🔴 提示 + 「重试」按钮 → POST /api/loop/retry
+   done:    ✓ 提示 + 「检查」按钮 → GET /api/loop/inspect (弹 modal 看循环产出)
+   不再显示循环计数, 不再显示百分比. */
 .loop-status-bar {
   position: relative;
   display: flex;
@@ -1551,7 +1513,7 @@ body {
   font-size: 12px;
   color: var(--text-secondary);
   flex-shrink: 0;
-  transition: opacity 0.2s ease, max-height 0.2s ease;
+  transition: opacity 0.2s ease, max-height 0.2s ease, background 0.2s ease;
   max-height: 60px;
   overflow: hidden;
 }
@@ -1563,21 +1525,67 @@ body {
   color: var(--warning, #f59e0b);
   border-top-color: rgba(245, 158, 11, 0.35);
 }
-.loop-status-bar[data-tone="error"] {
+.loop-status-bar[data-state="error"] {
   background: rgba(239, 68, 68, 0.12);
   color: var(--error, #ef4444);
   border-top-color: rgba(239, 68, 68, 0.35);
+  animation: loop-status-shake 0.4s ease-out;
+}
+.loop-status-bar[data-state="retrying"] {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warning, #f59e0b);
+  border-top-color: rgba(245, 158, 11, 0.35);
+}
+.loop-status-bar[data-state="done"] {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success, #22c55e);
+  border-top-color: rgba(34, 197, 94, 0.35);
+  animation: loop-status-fade-in 0.3s ease-out;
+}
+@keyframes loop-status-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+@keyframes loop-status-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .loop-status-spinner {
   display: inline-block;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border: 2px solid currentColor;
   border-right-color: transparent;
   border-radius: 50%;
-  animation: loop-status-spin 0.8s linear infinite;
+  animation: loop-status-spin 0.7s linear infinite;
   flex-shrink: 0;
-  opacity: 0.7;
+  opacity: 0.85;
+}
+.loop-status-bar[data-state="done"] .loop-status-spinner {
+  animation: none;
+  border-right-color: currentColor;
+  opacity: 1;
+}
+.loop-status-icon {
+  display: none;
+  font-size: 14px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.loop-status-bar[data-state="done"] .loop-status-icon::before { content: '✓'; }
+.loop-status-bar[data-state="done"] .loop-status-icon {
+  display: inline-block;
+}
+.loop-status-retry {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 8px;
+  background: rgba(245, 158, 11, 0.2);
+  border-radius: 3px;
+  letter-spacing: 0.3px;
 }
 @keyframes loop-status-spin {
   to { transform: rotate(360deg); }
@@ -1589,11 +1597,29 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.loop-status-meta {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
+.loop-status-action {
   flex-shrink: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.loop-status-action:hover {
+  background: currentColor;
+  color: var(--bg);
+}
+.loop-status-action:active {
+  transform: scale(0.96);
+}
+.loop-status-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 .input-wrapper {
@@ -1704,6 +1730,125 @@ body {
 
 .modal.active {
   display: flex;
+}
+
+/* 2026-06-16: Judgment Modal tabs (替换 HTML L233-258 内联) */
+.judgment-tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-top: 20px;
+}
+.judgment-tab {
+  flex: 1;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.judgment-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.judgment-tab.active {
+  color: var(--accent-hover);
+  border-bottom-color: var(--accent-hover);
+}
+.judgment-tab .tab-channel-name {
+  font-weight: normal;
+  color: var(--text-muted);
+}
+.judgment-status-bar {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12px;
+  align-items: center;
+}
+.judgment-status-bar .label {
+  color: var(--text-muted);
+}
+.judgment-status-tab {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border: none;
+  padding: 3px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: var(--transition);
+}
+.judgment-status-tab:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+.judgment-status-tab.active {
+  background: var(--accent);
+  color: var(--bg);
+}
+.judgment-form-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.judgment-form-row label {
+  margin: 0;
+}
+.judgment-form-row label + label {
+  margin-left: 16px;
+}
+.judgment-list-header {
+  margin-top: 16px;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.judgment-list-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: normal;
+}
+.judgment-select-all-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.judgment-bulk-delete {
+  background: transparent;
+  border: 1px solid var(--error);
+  color: var(--error);
+  padding: 1px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  opacity: 0.5;
+}
+.judgment-bulk-delete:not(:disabled):hover {
+  opacity: 1;
+  background: var(--error-bg);
+}
+.judgment-bulk-delete:disabled {
+  cursor: not-allowed;
+}
+.judgment-error {
+  color: var(--error);
+  display: none;
+}
+.judgment-list {
+  max-height: 420px;
+  overflow-y: auto;
 }
 
 .modal-content {
@@ -2775,10 +2920,6 @@ body {
 .btn-save:hover {
   opacity: 0.9;
 }
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
   background: var(--bg-sidebar);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -3094,10 +3235,6 @@ body:has(> .api-config-page) {
   will-change: transform;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 .error-state {
   display: flex;
   flex-direction: column;
@@ -3238,11 +3375,6 @@ body:has(> .api-config-page) {
   display: block;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
 /* P2P Identity Card */
 .p2p-identity-card {
   background: var(--bg-secondary);
@@ -3278,11 +3410,6 @@ body:has(> .api-config-page) {
 
 .status-indicator.offline {
   background: var(--text-muted);
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
 }
 
 .identity-info {
@@ -3862,11 +3989,6 @@ body:has(> .api-config-page) {
   animation: pulse 2s infinite;
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
-}
-
 .peer-status-indicator {
   flex-shrink: 0;
 }
@@ -4356,18 +4478,8 @@ body:has(> .api-config-page) {
 }
 
 /* ============================================================
- * 2026-06-10: Toast 入场动画 (simple-toast 用)
+ * 2026-06-10: Toast 入场动画 (simple-toast 用 — 实际用 toastFade @ L3992, toast-in 是死代码)
  * ============================================================ */
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateX(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
 
 /* ============================================================
  * 2026-06-10: P2P peer-group 可折叠 — 复用 #remote-agents-section.collapsed 模式

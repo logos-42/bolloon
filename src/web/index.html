@@ -36,10 +36,8 @@
           <span class="brand-icon">◈</span>
           <span class="brand-text">Bolloon</span>
         </span>
-        <!-- 2026-06-11: 加载 Session 文件夹按钮删除 -->
+        <!-- 2026-06-11: 加载 Session 文件夹按钮删除 (2026-06-16: 残留注释 + input 占位同步清除) -->
       </div>
-      <!-- 2026-06-11: session-file-input 已无用, 同步删除 -->
-      <!-- <input type="file" id="session-file-input" accept=".json" style="display:none"> -->
 
       <div class="sidebar-section">
         <div class="section-header">
@@ -63,19 +61,19 @@
 
       <!-- v3 远端 P2P 好友 — 显式分享 + 持久化连接 -->
       <div class="sidebar-section" id="remote-agents-section">
-        <div class="section-header" id="remote-agents-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;cursor:pointer;user-select:none;">
-          <span style="display:flex;align-items:center;gap:6px;">
-            <span id="remote-agents-toggle" style="font-size:10px;color:var(--text-muted);transition:transform 0.2s;">▼</span>
-            <span class="section-title" style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);">P2P 好友</span>
+        <div class="section-header is-compact is-clickable" id="remote-agents-header">
+          <span class="section-header-row">
+            <span id="remote-agents-toggle">▼</span>
+            <span class="section-title">P2P 好友</span>
           </span>
-          <span style="display:flex;gap:4px;">
-            <button id="p2p-toggle-all-btn" title="切换全部展开/折叠" style="background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:11px;line-height:1;">⊞ 展开</button>
-            <button id="show-my-p2p-id-btn" title="查看并复制我的 P2P publicKey" style="background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:11px;line-height:1;">我的 ID</button>
-            <button id="add-p2p-peer-btn" title="添加 P2P 好友 (输入对方的 publicKey)" style="background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer;padding:2px 6px;border-radius:4px;font-size:11px;line-height:1;">+ 好友</button>
+          <span class="section-header-actions">
+            <button id="p2p-toggle-all-btn" class="sidebar-mini-btn" title="切换全部展开/折叠">⊞ 展开</button>
+            <button id="show-my-p2p-id-btn" class="sidebar-mini-btn" title="查看并复制我的 P2P publicKey">我的 ID</button>
+            <button id="add-p2p-peer-btn" class="sidebar-mini-btn" title="添加 P2P 好友 (输入对方的 publicKey)">+ 好友</button>
           </span>
         </div>
-        <ul class="channel-list" id="remote-channel-list" style="list-style:none;padding:0;margin:0;">
-          <li style="color:var(--text-muted);font-size:11px;padding:8px 4px;text-align:center;">(暂无好友, 点 + 添加)</li>
+        <ul class="channel-list" id="remote-channel-list">
+          <li class="sidebar-empty-hint">(暂无好友, 点 + 添加)</li>
         </ul>
       </div>
 
@@ -206,8 +204,8 @@
               <label>理由 (reason, 可选)</label>
               <input type="text" id="judgment-reason" placeholder="例: 信任 Bolloon 的判断存储">
             </div>
-            <div class="form-group" style="display:flex;gap:8px;align-items:center;">
-              <label style="margin:0;">领域 (domain)</label>
+            <div class="form-group judgment-form-row">
+              <label>领域 (domain)</label>
               <select id="judgment-domain">
                 <option value="general">general</option>
                 <option value="code">code</option>
@@ -215,7 +213,7 @@
                 <option value="security">security</option>
                 <option value="testing">testing</option>
               </select>
-              <label style="margin:0 0 0 16px;">风险 (stakes)</label>
+              <label>风险 (stakes)</label>
               <select id="judgment-stakes">
                 <option value="medium">medium</option>
                 <option value="low">low</option>
@@ -223,50 +221,40 @@
                 <option value="critical">critical</option>
               </select>
             </div>
-            <div class="btn-group" style="gap:8px;">
+            <div class="btn-group">
               <button id="judgment-submit-btn" class="btn-primary">记录</button>
               <button id="judgment-import-btn" class="btn-secondary" title="从 .json / .yaml / .md / .txt / .html 文件批量导入">导入文件</button>
               <input type="file" id="judgment-import-file" accept=".json,.yaml,.yml,.md,.txt,.html,.htm" style="display:none">
             </div>
-            <div id="judgment-error" class="form-info" style="display:none;color:#b91c1c;"></div>
+            <div id="judgment-error" class="form-info judgment-error"></div>
             <!-- v3 重做: tab 切换 — 默认显示当前 channel 的 judgment 上下文, 切换后才是全部 -->
-            <div id="judgments-tabs" style="display:flex;border-bottom:1px solid #e5e7eb;margin-top:20px;">
-              <button class="judgment-tab active" data-tab="channel"
-                      style="flex:1;padding:10px 12px;background:none;border:none;border-bottom:2px solid #2563eb;color:#2563eb;font-size:13px;font-weight:600;cursor:pointer;">
-                本 channel <span id="judgments-tab-channel-name" style="font-weight:normal;color:#6b7280;"></span>
+            <div id="judgments-tabs" class="judgment-tab-bar">
+              <button class="judgment-tab active" data-tab="channel">
+                本 channel <span id="judgments-tab-channel-name" class="tab-channel-name"></span>
               </button>
-              <button class="judgment-tab" data-tab="global"
-                      style="flex:1;padding:10px 12px;background:none;border:none;border-bottom:2px solid transparent;color:#6b7280;font-size:13px;font-weight:600;cursor:pointer;">
-                全局
-              </button>
+              <button class="judgment-tab" data-tab="global">全局</button>
             </div>
             <!-- AI 演化 status 过滤: active / superseded / all / violations / 自适应 -->
-            <div id="judgments-status-filter" style="display:flex;gap:6px;margin-top:10px;font-size:12px;align-items:center;">
-              <span style="color:#6b7280;">演化过滤:</span>
-              <button class="judgment-status-tab active" data-status="all"
-                      style="background:#2563eb;color:#fff;border:none;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;">全部</button>
-              <button class="judgment-status-tab" data-status="active"
-                      style="background:#e5e7eb;color:#374151;border:none;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;">活跃</button>
-              <button class="judgment-status-tab" data-status="superseded"
-                      style="background:#e5e7eb;color:#374151;border:none;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;">已过时</button>
-              <button class="judgment-status-tab" data-status="violations"
-                      style="background:#e5e7eb;color:#374151;border:none;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;">违规记录</button>
-              <button class="judgment-status-tab" data-status="adaptive"
-                      style="background:#e5e7eb;color:#374151;border:none;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;">📊 自适应</button>
-              <button class="judgment-status-tab" data-status="causal"
-                      style="background:#e5e7eb;color:#374151;border:none;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;">🔍 因果分析</button>
+            <div id="judgments-status-filter" class="judgment-status-bar">
+              <span class="label">演化过滤:</span>
+              <button class="judgment-status-tab active" data-status="all">全部</button>
+              <button class="judgment-status-tab" data-status="active">活跃</button>
+              <button class="judgment-status-tab" data-status="superseded">已过时</button>
+              <button class="judgment-status-tab" data-status="violations">违规记录</button>
+              <button class="judgment-status-tab" data-status="adaptive">📊 自适应</button>
+              <button class="judgment-status-tab" data-status="causal">🔍 因果分析</button>
             </div>
-            <h3 style="margin-top:16px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <h3 class="judgment-list-header">
               <span id="judgments-list-title">本 channel 的判断力</span>
-              <span style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12px;font-weight:normal;">
-                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;color:#6b7280;">
-                  <input type="checkbox" id="judgment-select-all" style="cursor:pointer;"> 全选
+              <span class="judgment-list-actions">
+                <label class="judgment-select-all-label">
+                  <input type="checkbox" id="judgment-select-all"> 全选
                 </label>
-                <span id="judgment-selected-count" style="color:#6b7280;">已选 0</span>
-                <button id="judgment-bulk-delete-btn" class="btn-secondary btn-sm" disabled style="background:none;border:1px solid #fca5a5;color:#b91c1c;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:11px;opacity:0.5;">批量删除</button>
+                <span id="judgment-selected-count">已选 0</span>
+                <button id="judgment-bulk-delete-btn" class="judgment-bulk-delete" disabled>批量删除</button>
               </span>
             </h3>
-            <div id="judgments-list" class="task-list" style="max-height:420px;overflow-y:auto;">
+            <div id="judgments-list" class="task-list judgment-list">
               <div class="task-empty">加载中...</div>
             </div>
           </div>
@@ -347,12 +335,15 @@
       <div class="messages" id="messages"></div>
 
       <!-- 2026-06-15: 旧 loop-timeline-panel 删除 — 步骤状态条改在每条 AI 消息气泡内挂 step-timeline 组件 -->
-      <!-- 2026-06-16 新增: 循环进度 status bar — 渲染 tool='loop' | 'compactor' | 'recovery' 的 status 事件
-           (只显示系统级循环进度, 不污染每条 AI 消息的 step-timeline) -->
-      <div id="loop-status-bar" class="loop-status-bar" hidden>
+      <!-- 2026-06-16: 循环 status bar — 渲染 tool='loop' | 'compactor' | 'recovery' 的 status 事件
+           三态机: loading (spinner, 循环中) / retrying (spinner + "自动重试中 X/N", 失败自动重试) / done (检查按钮)
+           重试是 server 端自动的, 不暴露按钮给用户. -->
+      <div id="loop-status-bar" class="loop-status-bar" hidden data-state="loading">
         <span class="loop-status-spinner" aria-hidden="true"></span>
+        <span class="loop-status-icon" id="loop-status-icon" aria-hidden="true"></span>
         <span class="loop-status-text" id="loop-status-text"></span>
-        <span class="loop-status-meta" id="loop-status-meta"></span>
+        <span class="loop-status-retry" id="loop-status-retry" hidden></span>
+        <button id="loop-status-check" class="loop-status-action" hidden type="button">✓ 检查</button>
       </div>
 
       <div class="input-area">
