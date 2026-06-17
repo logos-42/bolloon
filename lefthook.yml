@@ -28,6 +28,6 @@ pre-push:
     tag-baseline:
       run: |
         if ! git tag -l "auto-evolve-baseline-*" | head -1 | grep -q .; then
-          echo "❌ 没有 auto-evolve-baseline-* tag. 先跑: bash scripts/auto-evolve-snapshot.sh"
+          echo "[ERROR] No auto-evolve-baseline-* tag found. Run: bash scripts/auto-evolve-snapshot.sh"
           exit 1
         fi
