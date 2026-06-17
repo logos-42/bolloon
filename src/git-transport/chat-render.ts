@@ -53,6 +53,11 @@ function parseFrontmatter(raw: string): { fm: ChatFrontmatter | null; body: stri
       val = obj;
     } else {
       val = stripQuotes(val);
+      // 数字字面量尽量 parse 成 number, 让 fm.v 严格比较能过
+      if (/^-?\d+(\.\d+)?$/.test(val)) {
+        const n = Number(val);
+        if (!Number.isNaN(n)) val = n;
+      }
       i++;
     }
     fm[key] = val;

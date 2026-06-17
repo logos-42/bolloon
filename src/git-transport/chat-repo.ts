@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { spawn } from 'child_process';
 import {
   chatPaths,
@@ -15,7 +16,7 @@ import {
   COMMIT_MESSAGE_MAX,
   CHAT_P2P_NOTIFY_THRESHOLD,
 } from './chat-types.js';
-import { parseMessageFile, dedupeKey } from './chat-render.js';
+import { parseMessageFile, dedupeKey, listMessageFiles } from './chat-render.js';
 
 // ---------- helpers ----------
 
@@ -263,7 +264,7 @@ export async function chatSend(opts: {
   await mkdirp(paths.stateDir);
 
   const ts = new Date().toISOString();
-  const shortHash = require('crypto').createHash('sha256').update(`${id.publicKey}|${ts}|${body}`).digest('hex').slice(0, 8);
+  const shortHash = crypto.createHash('sha256').update(`${id.publicKey}|${ts}|${body}`).digest('hex').slice(0, 8);
   const safeTs = ts.replace(/[:.]/g, '-');
   const filename = `${safeTs}-${shortHash}.md`;
   const relPath = path.join('.comm', sanitizeRoleName(id.role), filename);
@@ -439,6 +440,5 @@ export async function chatStatus(opts: { repoDir: string; roleOverride?: string 
 }
 
 function listMessageFilesLocal(repoDir: string): string[] {
-  const { listMessageFiles } = require('./chat-render.js');
   return listMessageFiles(repoDir);
 }
