@@ -1920,6 +1920,9 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         fullResponse = fullResponse + '\n\n_[生成已中断]_';
       }
 
+      // 2026-06-18: 修 lastFinalReply 没设 → /api/loop/inspect 永远返回空
+      runState.lastFinalReply = fullResponse;
+
       // v3 新增: 解析 LLM 回复里的 @-mentions, 转发到目标 channel
       await routeMentionsInReply(channelId, fullResponse, localChannels, remoteChannels);
 

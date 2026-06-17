@@ -205,7 +205,10 @@ export class WorkflowPivotLoop {
     // Analyze task complexity and adapt config
     const taskProfile = analyzeTaskComplexity(input);
     const effectiveConfig = this.adaptConfigForTask(taskProfile);
-    
+    // 2026-06-18 (supervisor): taskProfile 算的 tokenBudget 只看 input 长度, 但 systemPrompt 53K 时不够
+    // 把 effectiveConfig.maxTokenBudget 提到 systemPrompt * 1.2 留余量, 简单问题也走完
+    effectiveConfig.maxTokenBudget = Math.max(effectiveConfig.maxTokenBudget, Math.ceil(systemPrompt.length * 1.2));
+
     this.emit({
       type: 'status',
       content: `🔍 任务复杂度: ${taskProfile.complexity} (预估 ${taskProfile.estimatedSteps} 步)`,
@@ -232,14 +235,17 @@ export class WorkflowPivotLoop {
       // Build context for LLM
       const context = this.buildContext();
       const fullPrompt = `${systemPrompt}\n\n${context}`;
-      
+      console.log(`[pivot] iter=${this.state.iteration} ctx=${context.length} fullPrompt=${fullPrompt.length} budget=${effectiveConfig.maxTokenBudget}`);
+
       try {
         // Call LLM
+        const t0 = Date.now();
         const llmResponse = await llm.chat(context, systemPrompt);
         const reply = llmResponse.reply.trim();
-        
+        console.log(`[pivot] iter=${this.state.iteration} LLM took=${Date.now()-t0}ms reply=${reply.length} head=${reply.substring(0, 80).replace(/\n/g,' ')}`);
+
         this.emit({ type: 'token', content: reply.substring(0, 100) });
-        
+
         // Estimate token usage
         this.state.totalTokens += this.estimateTokens(fullPrompt) + this.estimateTokens(reply);
         
