@@ -19,6 +19,8 @@ import { EventEmitter } from 'events';
 // @ts-ignore — b4a 没官方 .d.ts
 import b4a from 'b4a';
 import { loadOrCreateKeyPair, writebackPublicKey } from './p2p-secret.js';
+// 静态 import input-scanner (ESM, 替代 require 避免 "require is not defined" 报错)
+import * as inputScanner from '../security/input-scanner.js';
 
 export interface P2PDirectOptions {
   /** 节点标识 (用于日志) */
@@ -97,10 +99,7 @@ export class P2PDirect extends EventEmitter {
         // P-Action 3: untrusted-input scanner (默认 silence-on-fail + log-only)
         // 包装层 跨机器 @-mention 代发 (已 WORKING) 不能 block-on-suspicion
         try {
-          // 动态 import 避免循环依赖 + 启动时加载
-          // (lazy require to keep cold-start fast)
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const { scanInput, writeScanAudit, shouldHardBlock } = require('../security/input-scanner.js') as typeof import('../security/input-scanner.js');
+          const { scanInput, writeScanAudit, shouldHardBlock } = inputScanner;
           const result = scanInput(buf, { source: 'p2p' });
           if (shouldHardBlock(result)) {
             console.warn(`[P2PDirect:${this.name}] 阻断恶意消息 from ${remotePubKeyHex.substring(0,12)}... (verdict=${result.verdict}, threats=${result.threats.length})`);
