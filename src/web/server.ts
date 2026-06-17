@@ -1529,20 +1529,31 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     res.sendFile(join(webRoot, 'index.html'));
   });
 
-  app.get('/api-config', (req, res) => {
-    // 防御: sendFile 在文件缺失时会异步抛 NotFoundError, 这里用同步读 + send 兜底
-    const filePath = join(webRoot, 'api-config.html');
-    if (!fsSync.existsSync(filePath)) {
-      // 回退到 SPA 主页, 避免 404 崩溃
-      return res.status(404).type('text/plain').send('api-config.html not found; please run `npm run build:web`');
-    }
-    res.sendFile(filePath, (err) => {
-      if (err && !res.headersSent) {
-        console.error('[api-config] sendFile failed:', err.message);
-        res.status(500).type('text/plain').send('api-config.html send error: ' + err.message);
+  // 2026-06-17: /api-config 与 / 改用 fs.readFileSync + res.send 兑底,
+  //   不再依赖 express.sendFile. 原因: npm 全局安装路径下, send library 偶发报
+  //   "Not Found" 即使 fs.existsSync+fs.stat 都成功. 现象: 页面 200 但内容是
+  //   "api-config.html send error: Not Found" 5xx 错误页. 同步读 + res.type().send
+  //   可靠返回原始 HTML bytes.
+  function serveStaticHtml(relPath: string, notFoundMsg: string, label: string): (req: express.Request, res: express.Response) => void {
+    return (_req, res) => {
+      const filePath = join(webRoot, relPath);
+      if (!fsSync.existsSync(filePath)) {
+        return res.status(404).type('text/plain').send(notFoundMsg);
       }
-    });
-  });
+      try {
+        const html = fsSync.readFileSync(filePath);
+        res.type('text/html; charset=utf-8').send(html);
+      } catch (err) {
+        console.error(`[${label}] readFileSync failed:`, (err as Error).message);
+        if (!res.headersSent) {
+          res.status(500).type('text/plain').send(`${relPath} read error: ${(err as Error).message}`);
+        }
+      }
+    };
+  }
+
+  app.get('/', serveStaticHtml('index.html', 'index.html not found; please run `npm run build:web`', 'index'));
+  app.get('/api-config', serveStaticHtml('api-config.html', 'api-config.html not found; please run `npm run build:web`', 'api-config'));
 
   // 全局兜底: 任何 next(err) 走到这里, 给出结构化 4xx/5xx 而不是默认 HTML
   app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
