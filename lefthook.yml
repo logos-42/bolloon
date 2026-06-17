@@ -14,10 +14,10 @@ pre-commit:
   commands:
     vitest-bail:
       glob: "src/**/*.{ts,tsx,js}"
-      run: sh -c 'if [ "$BOLLOON_AUTO_EVOLVE" = "1" ] || git log -1 --pretty=%B 2>/dev/null | head -1 | grep -q "^auto-evolve:"; then echo "[skip] vitest-bail (auto-evolve)"; exit 0; fi; npx vitest run --bail=1 --reporter=dot'
+      run: "sh -c 'if [ \"$BOLLOON_AUTO_EVOLVE\" = \"1\" ] || git log -1 --pretty=%B 2>/dev/null | head -1 | grep -q \"^auto-evolve:\"; then echo \"[skip] vitest-bail (auto-evolve)\"; exit 0; fi; npx vitest run --bail=1 --reporter=dot'"
     tsc-check:
       glob: "src/**/*.{ts,tsx}"
-      run: sh -c 'if [ "$BOLLOON_AUTO_EVOLVE" = "1" ] || git log -1 --pretty=%B 2>/dev/null | head -1 | grep -q "^auto-evolve:"; then echo "[skip] tsc-check (auto-evolve)"; exit 0; fi; npx tsc --noEmit'
+      run: "sh -c 'if [ \"$BOLLOON_AUTO_EVOLVE\" = \"1\" ] || git log -1 --pretty=%B 2>/dev/null | head -1 | grep -q \"^auto-evolve:\"; then echo \"[skip] tsc-check (auto-evolve)\"; exit 0; fi; npx tsc --noEmit'"
     # system-prompt 字符上限 + 版本标记 + hibsml 脱除 (layer 改动时触发)
     validate-prompt-layers:
       glob: "src/llm/system-prompt/layers/**/*.md"
@@ -27,8 +27,8 @@ pre-push:
   parallel: true
   commands:
     vitest-full:
-      run: sh -c 'branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none); if [ "$branch" = "master" ] || [ "$branch" = "main" ]; then npx vitest run --reporter=dot; else echo "[skip] vitest-full (not master/main, branch=$branch)"; exit 0; fi'
+      run: "sh -c 'branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none); if [ \"$branch\" = \"master\" ] || [ \"$branch\" = \"main\" ]; then npx vitest run --reporter=dot; else echo \"[skip] vitest-full (not master/main, branch=$branch)\"; exit 0; fi'"
     build-check:
-      run: sh -c 'branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none); if [ "$branch" = "master" ] || [ "$branch" = "main" ]; then npm run build:main; else echo "[skip] build-check (not master/main, branch=$branch)"; exit 0; fi'
+      run: "sh -c 'branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none); if [ \"$branch\" = \"master\" ] || [ \"$branch\" = \"main\" ]; then npm run build:main; else echo \"[skip] build-check (not master/main, branch=$branch)\"; exit 0; fi'"
     tag-baseline:
-      run: sh -c 'branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none); if [ "$branch" = "master" ] || [ "$branch" = "main" ]; then if git tag -l "auto-evolve-baseline-*" | grep -q .; then exit 0; else echo "[ERROR] push to master/main requires auto-evolve-baseline-* tag. Run: bash scripts/auto-evolve-snapshot.sh"; exit 1; fi; else echo "[skip] tag-baseline (not master/main, branch=$branch)"; exit 0; fi'
+      run: "sh -c 'branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none); if [ \"$branch\" = \"master\" ] || [ \"$branch\" = \"main\" ]; then if git tag -l \"auto-evolve-baseline-*\" | grep -q .; then exit 0; else echo \"[ERROR] push to master/main requires auto-evolve-baseline-* tag. Run: bash scripts/auto-evolve-snapshot.sh\"; exit 1; fi; else echo \"[skip] tag-baseline (not master/main, branch=$branch)\"; exit 0; fi'"
