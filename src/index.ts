@@ -761,6 +761,96 @@ async function runToolCommand(
         break;
       }
 
+      // ---- Collaboration: 派任务给对端 agent 跑, 等回结果 ----
+      // 走 P2PDirect, 不经 GitHub
+      case 'collab': {
+        response = '';
+        const [peerOrName, ...rest] = args;
+        const task = rest.join(' ').trim();
+        if (!peerOrName || !task) {
+          response = '用法: --collab <peer-name-or-publicKey> "<任务描述>"';
+          error = response;
+          break;
+        }
+        let targetPk = peerOrName;
+        if (!/^[0-9a-fA-F]{64}$/.test(peerOrName)) {
+          const { listPeers } = await import('./network/known-peers.js');
+          const peers = await listPeers();
+          for (const p of peers) {
+            if (p.name === peerOrName) { targetPk = p.publicKey; break; }
+          }
+          if (targetPk === peerOrName) {
+            response = `❌ 找不到 peer "${peerOrName}" (也不是 64-hex publicKey)`;
+            error = response;
+            break;
+          }
+        }
+        const { resolveIdentity } = await import('./git-transport/chat-repo.js');
+        const { P2PDirect } = await import('./network/p2p-direct.js');
+        const id = await resolveIdentity();
+        const requestId = `collab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        // 启动一个 listen 实例专门等 reply (含超时)
+        const p2pListen = new P2PDirect({ name: 'cli-collab-listen', role: id.role });
+        const replyPromise = new Promise<any>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            reject(new Error('reply timeout (90s)'));
+          }, 90_000);
+          p2pListen.on('data', (ev: any) => {
+            try {
+              const text = Buffer.isBuffer(ev.data) ? ev.data.toString('utf8') : String(ev.data);
+              if (ev.fromPublicKey !== targetPk) return; // 不是对方回的就忽略
+              const env = JSON.parse(text);
+              if (env?.v === 3 && env?.op === 'agent.collab.reply' && env.payload?.requestId === requestId) {
+                clearTimeout(timer);
+                resolve(env.payload);
+              }
+            } catch {}
+          });
+        });
+
+        try {
+          await p2pListen.start();
+          await p2pListen.joinTopic(Buffer.from('bolloon-agent-harness'));
+
+          const envelope = JSON.stringify({
+            v: 3,
+            op: 'agent.collab.run',
+            payload: {
+              requestId,
+              task,
+              fromRole: id.role,
+              fromPk: id.publicKey,
+              ts: new Date().toISOString(),
+              timeoutMs: 85_000,
+            },
+          });
+          const sent = await p2pListen.sendToWithWait(targetPk, Buffer.from(envelope), 8000);
+          if (!sent) {
+            response = `❌ 握手超时: 对方 ${targetPk.slice(0, 12)}... 不可达`;
+            error = response;
+            try { await p2pListen.stop(); } catch {}
+            break;
+          }
+          process.stdout.write(`⏳ 任务已派给 ${targetPk.slice(0, 12)}..., 等回复 (最多 90s)...\n`);
+          const reply = await replyPromise;
+          const lines = [
+            `✅ 协作完成 (${reply.durationMs ? Math.round(reply.durationMs / 1000) + 's' : '?'})`,
+            `   任务:  ${task.slice(0, 80)}${task.length > 80 ? '...' : ''}`,
+            ``,
+            `📥 对方结果:`,
+            `${reply.result || '(empty)'}`,
+          ];
+          response = lines.join('\n');
+        } catch (e: any) {
+          response = `❌ 协作失败: ${e?.message ?? e}`;
+          error = response;
+        } finally {
+          try { await p2pListen.stop(); } catch {}
+        }
+        break;
+      }
+
       case 'prompt': {
         const [text] = args;
         if (!text) {
@@ -1475,6 +1565,7 @@ interface ParsedArgs {
   // --- P2P-only chat (no git) ---
   chatP2pSend?: boolean;
   chatP2pListen?: boolean;
+  collab?: boolean;
 }
 
 function parseArgs(): ParsedArgs {
@@ -1709,6 +1800,14 @@ function parseArgs(): ParsedArgs {
       case '--chat-p2p-listen':
         result.tool = 'chat-p2p-listen';
         break;
+      case '--collab':
+        result.tool = 'collab';
+        const collabArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          collabArgs.push(args[++i]);
+        }
+        result.toolArgs = collabArgs;
+        break;
       case '--update-check':
         result.updateCheck = true;
         result.tool = 'update-check';
@@ -1808,6 +1907,9 @@ function printHelp(): void {
   # 纯 P2P 私聊 (不走 GitHub, 不写 git, 不持久化)
   --chat-p2p-send <peer|publicKey> "消息正文"   通过 P2P 直接发一条
   --chat-p2p-listen          后台监听对方 P2P 私聊消息 (Ctrl-C 退出)
+
+  # 跨机 agent 协作 (对方 bolloon --web 起着才能处理, 走 P2P 不经 GitHub)
+  --collab <peer|publicKey> "<任务描述>"  派任务给对端 LLM 干活, 等回结果 (90s 超时)
 
   # AI 对话
   --prompt, -p <text>        通用 AI 对话（默认）

@@ -910,6 +910,49 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
     return;
   }
 
+  // v3 新增: --collab CLI 派任务过来, 对方 web 收到后跑 LLM 干活, 回结果
+  if (op === 'agent.collab.run') {
+    const { requestId, task, fromPublicKey, fromRole, timeoutMs } = parsed.payload || {};
+    if (!requestId || !task) {
+      console.warn(`[v3-collab] agent.collab.run 缺少 requestId/task`);
+      return;
+    }
+    const senderKey = fromPublicKey || peerKey;
+    console.log(`[v3-collab] 收到 ${senderKey.substring(0, 12)}... (${fromRole}) 的协作任务: "${task.substring(0, 60)}..."`);
+    const startTs = Date.now();
+    try {
+      // 调 LLM: 走 getAgentForChannel 拿 agent, 用 prompt() 拿 string 结果
+      const visitorHint = `[系统上下文] 协作任务来源: 远端 peer (P2P, publicKey=${senderKey.substring(0, 12)}..., role=${fromRole || 'unknown'}). 这是通过 P2P 派过来的协作任务, 回答后会自动回到对方那里. 简洁完成, 不需要反问.\n\n`;
+      const fullPrompt = `【本轮协作任务】\n${task}\n【任务结束】\n\n${visitorHint}`;
+      // 临时用 channelId = "__collab__" 拿个一次性 agent
+      const collabChannelId = `__collab_${senderKey.substring(0, 8)}__`;
+      const agent = await getAgentForChannel(collabChannelId, '', `collab-${senderKey.substring(0, 8)}`, undefined);
+      const resultText = await agent.prompt(fullPrompt);
+      const reply = JSON.stringify({
+        v: 3,
+        op: 'agent.collab.reply',
+        payload: {
+          requestId,
+          fromPublicKey: v3P2PRef?.getPublicKey() || '',
+          result: resultText || '(empty)',
+          durationMs: Date.now() - startTs,
+        },
+      });
+      await comm.sendToConnection(conn.id, reply);
+      console.log(`[v3-collab] 已回 reply (${Date.now() - startTs}ms, ${(resultText || '').length} chars)`);
+    } catch (e: any) {
+      console.error(`[v3-collab] 处理失败:`, (e as Error).message);
+      try {
+        const errReply = JSON.stringify({
+          v: 3, op: 'agent.collab.reply',
+          payload: { requestId, fromPublicKey: v3P2PRef?.getPublicKey() || '', error: (e as Error).message, result: '' }
+        });
+        await comm.sendToConnection(conn.id, errReply);
+      } catch {}
+    }
+    return;
+  }
+
   // v3 新增: 收到远端发来的 @-mention 跨渠道消息, 存到本地 target channel
   if (op === 'agent.cross.post') {
     const { targetChannelId, targetChannelName, originChannelId, originChannelName, text, fromPublicKey } = parsed.payload || {};
