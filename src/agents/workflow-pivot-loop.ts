@@ -499,6 +499,29 @@ export class WorkflowPivotLoop {
       }
     }
 
+    // 2026-06-18 (supervisor): Claude Code 风格 <tool_call><tool_name>...</tool_call>
+    //   bolloon agent 之前一直被 model 教用这个格式, 但 pivot loop 只认 3 个旧 pattern.
+    //   现在加: <tool_call><invoke name="X"><parameter name="k">v</parameter></invoke></tool_call>
+    const toolCodeRe = /<tool_code>([\s\S]*?)<\/tool_code>/g;
+    while ((match = toolCodeRe.exec(content)) !== null) {
+      const block = match[1];
+      const invokeRe = /<invoke\s+name="(\w+)"\s*>([\s\S]*?)<\/invoke>/g;
+      let im;
+      while ((im = invokeRe.exec(block)) !== null) {
+        const name = im[1];
+        if (!this.tools.has(name)) continue;
+        const args: Record<string, string> = {};
+        const paramRe = /<parameter\s+name="(\w+)"\s*>([\s\S]*?)<\/parameter>/g;
+        let pm;
+        while ((pm = paramRe.exec(im[2])) !== null) {
+          args[pm[1]] = pm[2].trim().replace(/^["']|['"]$/g, '');
+        }
+        if (!pending.some(p => p.name === name)) {
+          pending.push({ name, args, description: '', parameters: {} });
+        }
+      }
+    }
+
     // Pattern 1: Chinese format "调用工具: tool_name(args)"
     const pattern1 = /调用工具[：:]\s*(\w+)\s*\(([^)]*)\)/g;
     while ((match = pattern1.exec(content)) !== null) {
