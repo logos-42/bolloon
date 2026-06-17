@@ -72,14 +72,16 @@ export const DEFAULT_MAX_CHARS: HierarchyChars = {
 
 export function resolveUserPath(home?: string): string {
   const h = home ?? process.env.HOME ?? os.homedir() ?? '/tmp';
-  return path.join(h, '.bolloon', 'Bolloon.md');
+  // 用 path.posix.join — 这些是配置/注入路径,跨平台语义稳定, 便于测试断言 + 注入 system prompt
+  // (Windows 文件系统也接受 '/' 分隔符, 所以 fs.readFile 不受影响)
+  return path.posix.join(h, '.bolloon', 'Bolloon.md');
 }
 
 export function resolveProjectPaths(cwd: string): { project: string; projectRulesDir: string; local: string } {
   return {
-    project: path.join(cwd, 'Bolloon.md'),
-    projectRulesDir: path.join(cwd, '.claude', 'rules'),
-    local: path.join(cwd, 'CLAUDE.local.md'),
+    project: path.posix.join(cwd, 'Bolloon.md'),
+    projectRulesDir: path.posix.join(cwd, '.claude', 'rules'),
+    local: path.posix.join(cwd, 'CLAUDE.local.md'),
   };
 }
 

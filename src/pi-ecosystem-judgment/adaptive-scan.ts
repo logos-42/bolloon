@@ -23,11 +23,15 @@ import { loadAllJudgments, type HumanJudgment } from './human-value-store.js';
 
 // 用 getter 函数而非模块顶层 const: process.env.HOME 在测试 beforeAll 才设,
 // 模块顶层求值时还是真 home. 运行时求值才能正确响应测试 fixture.
+// 跨平台: 优先 process.env.HOME (测试可控), 然后 os.homedir() (Windows 上读 USERPROFILE).
+// 用 path.join 而不是字符串拼接, 保证 Windows 上用 \ 分隔.
 function getUsageLogPath(): string {
-  return (os.homedir() || process.env.HOME || '/tmp') + '/.bolloon/human-values/usage.jsonl';
+  const home = process.env.HOME || os.homedir() || '/tmp';
+  return path.join(home, '.bolloon', 'human-values', 'usage.jsonl');
 }
 function getEvolutionLogPath(): string {
-  return (os.homedir() || process.env.HOME || '/tmp') + '/.bolloon/human-values/evolution.jsonl';
+  const home = process.env.HOME || os.homedir() || '/tmp';
+  return path.join(home, '.bolloon', 'human-values', 'evolution.jsonl');
 }
 
 export type SuggestionKind = 'stale' | 'rising' | 'unused' | 'causal_conflict' | 'low_causal_power';

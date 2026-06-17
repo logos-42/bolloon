@@ -381,7 +381,7 @@ export async function extractFromFragment(fragmentPath: string): Promise<Judgmen
       type: 'rule',
       content: ruleContent,
       source: 'human',
-      confidence: 0.8,
+      confidence: 0.9,
       context,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

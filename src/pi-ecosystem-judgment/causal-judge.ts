@@ -24,9 +24,9 @@ import * as path from 'path';
 import { getModel, type PiAIModel } from '../llm/pi-ai.js';
 import { loadAllJudgments, type HumanJudgment } from './human-value-store.js';
 
-const EVOLUTION_LOG = (process.env.HOME || os.homedir() || '/tmp') + '/.bolloon/human-values/evolution.jsonl';
-const COUNTERFACTUAL_LOG = (process.env.HOME || os.homedir() || '/tmp') + '/.bolloon/human-values/counterfactual-audit.jsonl';
-const USAGE_LOG = (process.env.HOME || os.homedir() || '/tmp') + '/.bolloon/human-values/usage.jsonl';
+const EVOLUTION_LOG = path.join(process.env.HOME || os.homedir() || '/tmp', '.bolloon', 'human-values', 'evolution.jsonl');
+const COUNTERFACTUAL_LOG = path.join(process.env.HOME || os.homedir() || '/tmp', '.bolloon', 'human-values', 'counterfactual-audit.jsonl');
+const USAGE_LOG = path.join(process.env.HOME || os.homedir() || '/tmp', '.bolloon', 'human-values', 'usage.jsonl');
 
 // ============================================================
 // 1. 关联性 (Correlation) — 互信息
