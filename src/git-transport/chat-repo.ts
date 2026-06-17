@@ -366,6 +366,15 @@ export async function chatPull(opts: { repoDir: string; since?: string; roleOver
           newMessages.push(msg);
           seen[key] = Date.now();
         }
+        // 关键: 每个对方消息都顺手 addOrUpdatePeer (幂等), 让 web 模式 5s 后自动 joinPeer 直连
+        // 即使消息之前见过, 也值得刷一次"lastConnectedAt"语义
+        try {
+          const { addOrUpdatePeer } = await import('../network/known-peers.js');
+          const name = msg.frontmatter.from || `peer-${msg.frontmatter.fromPk.slice(0, 8)}`;
+          addOrUpdatePeer(name, msg.frontmatter.fromPk, `auto from chat ${sha.slice(0, 8)}`);
+        } catch {
+          // known-peers import / 写盘失败 — 不影响消息收集
+        }
       }
     }
   }
