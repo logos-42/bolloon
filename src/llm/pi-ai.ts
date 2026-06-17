@@ -56,10 +56,37 @@ export function getSystemPrependProvider(): typeof _prependProvider {
 export class PiAIModel {
   private config: ModelConfig;
   private provider: ModelProvider;
+  /** 单次 LLM HTTP 请求硬上限 (ms), 防止上游卡住挂死整个 loop. 可通过 BOLLOON_LLM_TIMEOUT 覆盖. */
+  private requestTimeoutMs: number;
 
   constructor(config: ModelConfig) {
     this.config = config;
     this.provider = config.provider;
+    const envTimeout = Number(process.env.BOLLOON_LLM_TIMEOUT);
+    this.requestTimeoutMs = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 120_000;
+  }
+
+  /**
+   * 把外部 signal 和内部 timeout 合并: 任一触发都 abort.
+   * - 外部 signal 优先 (用户主动 abort)
+   * - 否则套 120s timeout
+   * - 任一不合法 (非 AbortSignal 实例) 时退到无 signal
+   */
+  private combinedSignal(external?: AbortSignal): AbortSignal | undefined {
+    const valid = external instanceof AbortSignal ? external : undefined;
+    // Node 18+ 支持 AbortSignal.timeout, 旧版本兜底用 setTimeout 构造
+    if (typeof AbortSignal !== 'undefined' && typeof (AbortSignal as any).timeout === 'function') {
+      const timeoutSignal = (AbortSignal as any).timeout(this.requestTimeoutMs);
+      if (!valid) return timeoutSignal;
+      // 合并两个 signal
+      const ctrl = new AbortController();
+      const onAbort = () => ctrl.abort();
+      valid.addEventListener('abort', onAbort, { once: true });
+      timeoutSignal.addEventListener('abort', onAbort, { once: true });
+      if (valid.aborted || timeoutSignal.aborted) ctrl.abort();
+      return ctrl.signal;
+    }
+    return valid;
   }
 
   async chat(message: string, context?: string, signal?: AbortSignal): Promise<ChatResult> {
@@ -277,7 +304,8 @@ export class PiAIModel {
       // 2026-06-15: signal 字段防御 — Node 22+ undici 强类型 AbortSignal, 非 AbortSignal 实例
       //   (e.g. 误传的 { maxTokens: 1 } 对象) 会 throw "Expected signal to be AbortSignal".
       //   若不是 AbortSignal, 退到无 signal 调用, fetch 自然支持 timeout 由外层控制.
-      signal: signal instanceof AbortSignal ? signal : undefined,
+      // 2026-06-17: combinedSignal 把外部 signal 和 120s timeout 合并, 防止上游卡死
+      signal: this.combinedSignal(signal),
     });
 
     if (!response.ok) {
@@ -312,7 +340,7 @@ export class PiAIModel {
         temperature,
         max_tokens: maxTokens
       }),
-      signal,
+      signal: this.combinedSignal(signal),
     });
 
     if (!response.ok) {
@@ -335,7 +363,7 @@ export class PiAIModel {
         temperature,
         stream: false
       }),
-      signal,
+      signal: this.combinedSignal(signal),
     });
 
     if (!response.ok) {
@@ -366,7 +394,7 @@ export class PiAIModel {
         temperature,
         max_tokens: maxTokens
       }),
-      signal,
+      signal: this.combinedSignal(signal),
     });
 
     if (!response.ok) {
@@ -407,7 +435,7 @@ export class PiAIModel {
             maxOutputTokens: maxTokens
           }
         }),
-        signal,
+        signal: this.combinedSignal(signal),
       }
     );
 

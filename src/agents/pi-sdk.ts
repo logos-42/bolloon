@@ -16,7 +16,7 @@ import { DeepThinkingEngine, AgentCoordinator, type ThinkResult, type AgentResul
 import { WorkflowPivotLoop, createDefaultPivotConfig, type PivotLoopConfig, type LoopResult } from './workflow-pivot-loop.js';
 import { p2pDocumentTools, initDocumentReceiver } from './p2p-document-tools.js';
 import { shellExec } from './shell-tool.js';
-import { getBranchPrefix, getCooldownMs } from './shell-guard.js';
+import { getBranchPrefix, getCooldownMs, checkWritePath } from './shell-guard.js';
 import {
   DiscoveredAgentsManager,
   SocialHeartbeat,
@@ -68,6 +68,10 @@ export interface AgentSessionConfig {
    * ( ~/.bolloon/skills/ → <cwd>/.bolloon/skills/ → ~/.boll/skills/ )
    */
   skillsPaths?: string[];
+  /** M2.3 (2026-06-17): 指定时构造时从 ~/.bolloon/sessions/cache/<channel>:<sessionId>.json 加载历史到 messageHistory */
+  loadSessionKey?: string;
+  /** M2.3: 历史回灌最多取 N 条 (默认 30, 防止 context 爆) */
+  loadSessionMaxMessages?: number;
 }
 
 export interface IdentityDoc {
@@ -582,6 +586,10 @@ class PiAgentSession implements AgentSession {
   private messageHistory: Message[] = [];
   private tools: Map<string, Tool> = new Map();
   private skillRegistry: SkillRegistry = new SkillRegistry();
+  /** M2.4: 缓存 tool 列表, registerTools() 之后不变, runReActLoop 多次循环复用 */
+  private cachedToolDefinitions: string = '';
+  /** M2.4: 缓存 persona section */
+  private cachedPersonaSection: string = '';
   // 2026-06-16 修: 父要求把 ReAct loop 上限放大到 "几乎无限", 靠自动压缩上下文 + fail-safe 兜底
   // 默认 10000 — 正常任务永远跑不到, 但作为防 LLM 死循环 / 防 OOM 的最后一道闸
   // 旧默认 100 写死导致中等复杂度任务 (10-50 个 tool call + 多步反思) 会被误杀
@@ -629,6 +637,10 @@ class PiAgentSession implements AgentSession {
   private promptStartTime: number = 0;
   /** 当前 channel id (由 getAgentForChannel / prompt 4 参注入, 供 hook / log 使用) */
   private currentChannelId: string = '';
+
+  /** M2.2 (2026-06-17): 当前轮的用户请求 intent, runReActLoop 拼 systemPrompt 时会读这个 */
+  private currentIntent: 'question' | 'code_edit' | 'multi_step' | 'chitchat' | 'document' = 'chitchat';
+  private currentIntentHint: string = '';
 
   /**
    * 算 judgment 注入门: 失败静默, 不阻塞主对话
@@ -682,6 +694,46 @@ class PiAgentSession implements AgentSession {
     this.registerTools();
     this.loadSkills(config.skillsPaths);
     this.initHarness();
+    // M2.3 (2026-06-17): 重启后 LLM 恢复记忆 — 从 session JSON 加载历史到 messageHistory
+    //   之前 messageHistory 是空的, 服务重启后 LLM 看到的是新对话
+    //   现在 loadSessionKey 形如 "channel-xxx:default" 走 ~/.bolloon/sessions/cache/<key>.json
+    if (config.loadSessionKey) {
+      this.hydrateMessageHistory(config.loadSessionKey, config.loadSessionMaxMessages ?? 30);
+    }
+  }
+
+  /**
+   * M2.3: 从 session JSON 加载历史, 转成 messageHistory 格式
+   * - 失败静默 (历史加载失败不应该阻塞 agent 启动)
+   * - 限制 max 条数, 防止 context 爆
+   * - user 消息 role=user, ai 消息 role=assistant
+   * - 跳过 metadata 中含 error 的 (错误消息会污染 LLM)
+   */
+  private async hydrateMessageHistory(sessionKey: string, maxMessages: number): Promise<void> {
+    try {
+      const sessionPath = path.join(os.homedir(), '.bolloon', 'sessions', 'cache', `${sessionKey}.json`);
+      const content = await fs.readFile(sessionPath, 'utf-8');
+      const session = JSON.parse(content);
+      const messages = Array.isArray(session?.messages) ? session.messages : [];
+      // 保留最后 N 条, 转换 role 字段
+      const tail = messages.slice(-maxMessages);
+      const hydrated: Message[] = [];
+      for (const m of tail) {
+        // 跳过错误的 AI 消息 (M1.2 之后, AI 错误时 reply 是 [AI 服务调用失败] 字符串, 不该进 history)
+        if (m?.type === 'ai' && typeof m.content === 'string' && m.content.startsWith('[AI 服务调用失败]')) continue;
+        if (m?.type === 'ai' && typeof m.content === 'string' && m.content.startsWith('[错误:')) continue;
+        if (!m?.content) continue;
+        const role = m.type === 'user' ? 'user' : m.type === 'ai' ? 'assistant' : null;
+        if (!role) continue;
+        hydrated.push({ role, content: String(m.content) });
+      }
+      if (hydrated.length > 0) {
+        this.messageHistory = hydrated;
+        console.log(`[PiAgent] 从 ${sessionKey} 回灌 ${hydrated.length} 条历史`);
+      }
+    } catch (err) {
+      console.warn(`[PiAgent] hydrateMessageHistory 失败 (non-fatal): ${(err as Error).message?.slice(0, 100)}`);
+    }
   }
 
   /**
@@ -1060,6 +1112,321 @@ class PiAgentSession implements AgentSession {
         }
       }
     });
+
+    // M2.1 (2026-06-17): 注册 4 个长期缺失的工具 — 让 agent 真正能"修改 + 提交"代码
+    // 路径限制走 shell-guard 同款 allowlist (复用 checkWritePath / checkCommand)
+    // 这些工具之前在 tool-gate 白名单 + tool-manifest 中存在, 但 pi-sdk 未注册 — 修复孤儿
+
+    this.tools.set('write_file', {
+      name: 'write_file',
+      description: '写入一个文件. 路径必须在白名单 (src/web/*, src/agents/workflow-*, *.md, docs/**, src/test/**, src/agents/pi-sdk.ts 等). 大文件 (> 100KB) 会被拒. 命中护栏黑名单 (shell-guard.ts, package.json, .env, .git, .bolloon, dist) 会拒.',
+      parameters: { path: '相对路径 (必填, 相对 cwd)', content: '文件内容 (必填)' },
+      execute: async (args) => {
+        const relPath = String(args.path || '').trim();
+        const content = String(args.content ?? '');
+        if (!relPath) return { success: false, error: 'path 必填' };
+        if (content.length > 100_000) return { success: false, error: `内容过大 (${content.length} > 100000 字节), 请分块写` };
+        // 路径检查: 复用 shell-guard 的 checkWritePath
+        const pathResult = checkWritePath(relPath);
+        if (!pathResult.allowed) {
+          return { success: false, error: `路径被护栏拒: ${pathResult.reason}` };
+        }
+        try {
+          const absPath = path.resolve(this.cwd, relPath);
+          await fs.mkdir(path.dirname(absPath), { recursive: true });
+          await fs.writeFile(absPath, content, 'utf-8');
+          return { success: true, output: `✅ wrote ${relPath} (${content.length} bytes)` };
+        } catch (e) {
+          return { success: false, error: `写文件失败: ${String(e)}` };
+        }
+      }
+    });
+
+    this.tools.set('edit_file', {
+      name: 'edit_file',
+      description: '编辑一个文件: 在 path 处查找 old_text, 替换为 new_text. 找不到 old_text 会失败 (避免静默不替换). 路径同样受护栏限制.',
+      parameters: { path: '相对路径 (必填)', old_text: '要替换的文本 (必填, 全文匹配)', new_text: '新文本 (必填)' },
+      execute: async (args) => {
+        const relPath = String(args.path || '').trim();
+        const oldText = String(args.old_text ?? '');
+        const newText = String(args.new_text ?? '');
+        if (!relPath) return { success: false, error: 'path 必填' };
+        if (!oldText) return { success: false, error: 'old_text 必填' };
+        const pathResult = checkWritePath(relPath);
+        if (!pathResult.allowed) {
+          return { success: false, error: `路径被护栏拒: ${pathResult.reason}` };
+        }
+        try {
+          const absPath = path.resolve(this.cwd, relPath);
+          const original = await fs.readFile(absPath, 'utf-8');
+          if (!original.includes(oldText)) {
+            return { success: false, error: `old_text 在 ${relPath} 中未找到, 拒绝静默写入. 请先用 read_document 读最新内容.` };
+          }
+          const updated = original.replace(oldText, newText);
+          await fs.writeFile(absPath, updated, 'utf-8');
+          return { success: true, output: `✅ edited ${relPath} (${oldText.length} → ${newText.length} 字节)` };
+        } catch (e) {
+          return { success: false, error: `编辑文件失败: ${String(e)}` };
+        }
+      }
+    });
+
+    this.tools.set('git_diff', {
+      name: 'git_diff',
+      description: '查看 git diff. 默认显示未提交改动 (staged + unstaged), 可指定 ref1..ref2 看两个 commit/分支之间的 diff. 输出会截到 8000 字符避免超长.',
+      parameters: { range: '可选. e.g. "HEAD~3..HEAD" 或 "master..agent/feat-x". 省略则看未提交改动.' },
+      execute: async (args) => {
+        const range = String(args.range || '').trim();
+        const argv = range ? ['diff', range] : ['diff'];
+        const result = await shellExec('git', argv, { timeoutMs: 10_000 });
+        if (result.deniedByGuard) return { success: false, error: result.error };
+        if (!result.success) return { success: false, error: result.error, output: result.output };
+        const out = (result.output || '').slice(0, 8000);
+        return { success: true, output: out || '(空 diff — 没有未提交改动)' };
+      }
+    });
+
+    this.tools.set('git_commit', {
+      name: 'git_commit',
+      description: 'git add -A + git commit. 提交信息由 LLM 提供. 不会 push — push 是 agent 显式调 git_commit_and_push 触发. 命中护栏 (push to master/main, force-push) 仍会被拒. 内部自动设 BOLLOON_AUTO_EVOLVE=1 让 pre-commit hook 跳过 vitest/tsc (auto-evolve 模式, CI 兜底).',
+      parameters: { message: 'commit message (必填, 用 HEREDOC 多行)' },
+      execute: async (args) => {
+        const message = String(args.message || '').trim();
+        if (!message) return { success: false, error: 'message 必填' };
+        // M3.4 (2026-06-17): agent git_commit 自动设 BOLLOON_AUTO_EVOLVE=1, 让 lefthook pre-commit 跳过 vitest/tsc
+        //   这样频繁 commit 不会被 30s+ 的 pre-commit 阻塞. CI 会兜底 (push 后 GitHub Actions 跑测试)
+        // 先 add
+        const addResult = await shellExec('git', ['add', '-A'], { timeoutMs: 10_000 });
+        if (addResult.deniedByGuard) return { success: false, error: addResult.error };
+        if (!addResult.success) return { success: false, error: `git add 失败: ${addResult.error}` };
+        // 再 commit (message 用 -m, 避免 HEREDOC 注入)
+        // Windows shell 不支持 inline env var, 改用 child_process 直接 spawn
+        // 简单方案: 用 spawn + 临时设 env
+        try {
+          const { spawn: spawnFn } = await import('child_process');
+          const env = { ...process.env, BOLLOON_AUTO_EVOLVE: '1' };
+          const output = await new Promise<string>((resolve, reject) => {
+            const proc = spawnFn('git', ['commit', '-m', message], {
+              cwd: this.cwd, env, stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            let stdout = ''; let stderr = '';
+            proc.stdout.on('data', (d: any) => stdout += d.toString());
+            proc.stderr.on('data', (d: any) => stderr += d.toString());
+            proc.on('close', (code: number) => code === 0 ? resolve(stdout) : reject(new Error(stderr || `git commit exited ${code}`)));
+            proc.on('error', reject);
+          });
+          return { success: true, output: `✅ committed: ${message.split('\n')[0]}\n${output}` };
+        } catch (e) {
+          return { success: false, error: `git commit 失败: ${String((e as Error).message || e).slice(0, 500)}` };
+        }
+      }
+    });
+
+    // M3.4: git_push — 改完直接 push (Q3-B 决策, 修改了 pre-push hook 让它别卡)
+    // 命中护栏 (push to master/main, force-push) 仍会被拒 — 这两条底线不变
+    this.tools.set('git_push', {
+      name: 'git_push',
+      description: 'git push 当前分支到 origin. 命中护栏 (push to master/main, --force) 仍会被拒. 用于长期项目自动 commit + push 循环.',
+      parameters: { remote: '可选, 默认 origin', branch: '可选, 默认当前分支' },
+      execute: async (args) => {
+        const remote = String(args.remote || 'origin').trim();
+        const branch = String(args.branch || '').trim();
+        const argv = branch ? ['push', remote, branch] : ['push', remote];
+        const result = await shellExec('git', argv, { timeoutMs: 60_000 });
+        if (result.deniedByGuard) return { success: false, error: result.error };
+        if (!result.success) return { success: false, error: result.error, output: result.output };
+        return { success: true, output: `✅ pushed to ${remote}${branch ? `/${branch}` : ''}\n${result.output || ''}` };
+      }
+    });
+
+    // M3.4: git_branch — 创建/切换分支 (用于多任务并行隔离)
+    this.tools.set('git_branch', {
+      name: 'git_branch',
+      description: 'git checkout -b <name> 或 git checkout <name>. 用于多任务并行隔离 — 改前先 checkout 到 agent/<task-id> 分支.',
+      parameters: { name: '分支名 (必填, e.g. "agent/task-123")', create: '可选, "true" 表示创建新分支 (默认 false = 切到已有)' },
+      execute: async (args) => {
+        const name = String(args.name || '').trim();
+        const create = String(args.create || 'false') === 'true';
+        if (!name) return { success: false, error: 'name 必填' };
+        const argv = create ? ['checkout', '-b', name] : ['checkout', name];
+        const result = await shellExec('git', argv, { timeoutMs: 10_000 });
+        if (result.deniedByGuard) return { success: false, error: result.error };
+        if (!result.success) return { success: false, error: result.error, output: result.output };
+        return { success: true, output: `✅ ${create ? 'created + checked out' : 'checked out'} ${name}\n${result.output || ''}` };
+      }
+    });
+
+    // M3.2: 任务状态机工具 — 让 agent 自己维护 multi_step 任务的状态
+    this.tools.set('create_task', {
+      name: 'create_task',
+      description: '创建一个新多步任务, 初始 steps 列表由 LLM 给出. 返回 task-id, 后续用 update_task / get_task 跟踪进度. 任务状态写 ~/.bolloon/tasks/<id>.yaml 持久化.',
+      parameters: {
+        goal: '任务目标 (1 句话, 必填)',
+        steps: '步骤列表 (数组, 必填, 至少 1 步)',
+        sessionKey: '可选, 关联的 session key (channel:sessionId)',
+        branch: '可选, 关联的 git 分支名',
+      },
+      execute: async (args) => {
+        const goal = String(args.goal || '').trim();
+        const stepsRaw = args.steps;
+        if (!goal) return { success: false, error: 'goal 必填' };
+        let steps: string[] = [];
+        if (Array.isArray(stepsRaw)) {
+          steps = stepsRaw.map((s: any) => String(s).trim()).filter(Boolean);
+        } else if (typeof stepsRaw === 'string') {
+          // 支持 "step1\nstep2\nstep3" 或 "step1,step2,step3"
+          steps = stepsRaw.split(/[\n,]/).map(s => s.trim()).filter(Boolean);
+        }
+        if (steps.length === 0) return { success: false, error: 'steps 必填且至少 1 步' };
+        const sessionKey = String(args.sessionKey || '').trim() || undefined;
+        const branch = String(args.branch || '').trim() || undefined;
+        try {
+          const { createTask } = await import('./task-state.js');
+          const task = await createTask({ goal, steps, sessionKey, branch });
+          return { success: true, output: `✅ task created: ${task.id}\nbranch: ${branch || '(未指定)'}\nsteps:\n${steps.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}` };
+        } catch (e) {
+          return { success: false, error: `create_task 失败: ${String(e)}` };
+        }
+      }
+    });
+
+    this.tools.set('update_task', {
+      name: 'update_task',
+      description: '更新任务的某一步状态 (pending → running → done/failed/skipped). 系统会自动推进下一步 pending → running (当当前步 done 时).',
+      parameters: {
+        task_id: '任务 id (必填)',
+        step_id: '步骤 id (必填, e.g. "step-1")',
+        status: '新状态 (running | done | failed | skipped)',
+        result_summary: '可选, 结果摘要',
+        error: '可选, 失败原因 (status=failed 时填)',
+      },
+      execute: async (args) => {
+        const taskId = String(args.task_id || '').trim();
+        const stepId = String(args.step_id || '').trim();
+        const status = String(args.status || '').trim() as any;
+        if (!taskId || !stepId) return { success: false, error: 'task_id + step_id 必填' };
+        if (!['running', 'done', 'failed', 'skipped'].includes(status)) {
+          return { success: false, error: `status 必须是 running|done|failed|skipped` };
+        }
+        try {
+          const { updateStep } = await import('./task-state.js');
+          const patch: any = { status };
+          if (args.result_summary) patch.resultSummary = String(args.result_summary);
+          if (args.error) patch.error = String(args.error);
+          const updated = await updateStep(taskId, stepId, patch);
+          if (!updated) return { success: false, error: `任务 ${taskId} 未找到` };
+          const nextRunning = updated.steps.find((s) => s.status === 'running');
+          return {
+            success: true,
+            output: `✅ step ${stepId} → ${status}\ntask 状态: ${updated.status}${nextRunning ? `\n下一步: ${nextRunning.id} — ${nextRunning.description}` : ''}`,
+          };
+        } catch (e) {
+          return { success: false, error: `update_task 失败: ${String(e)}` };
+        }
+      }
+    });
+
+    this.tools.set('get_task', {
+      name: 'get_task',
+      description: '查任务的当前状态和步骤进度. 用于跨 loop / 跨 session 恢复.',
+      parameters: { task_id: '任务 id (必填)' },
+      execute: async (args) => {
+        const taskId = String(args.task_id || '').trim();
+        if (!taskId) return { success: false, error: 'task_id 必填' };
+        try {
+          const { getTask } = await import('./task-state.js');
+          const t = await getTask(taskId);
+          if (!t) return { success: false, error: `任务 ${taskId} 未找到` };
+          const lines = [
+            `任务: ${t.id}`,
+            `目标: ${t.goal}`,
+            `状态: ${t.status}`,
+            `branch: ${t.branch || '(未指定)'}`,
+            `sessionKey: ${t.sessionKey || '(未指定)'}`,
+            `创建: ${t.createdAt}`,
+            `更新: ${t.updatedAt}`,
+            ``,
+            `步骤:`,
+            ...t.steps.map((s) => `  ${s.status === 'done' ? '✅' : s.status === 'running' ? '🔄' : s.status === 'failed' ? '❌' : s.status === 'skipped' ? '⏭️' : '⏳'} ${s.id} — ${s.description}${s.resultSummary ? `\n     结果: ${s.resultSummary}` : ''}${s.error ? `\n     错误: ${s.error}` : ''}`),
+          ];
+          return { success: true, output: lines.join('\n') };
+        } catch (e) {
+          return { success: false, error: `get_task 失败: ${String(e)}` };
+        }
+      }
+    });
+
+    this.tools.set('list_tasks', {
+      name: 'list_tasks',
+      description: '列出最近 N 个任务 (默认 10). 用于多任务并行管理.',
+      parameters: { limit: '可选, 默认 10' },
+      execute: async (args) => {
+        const limit = Number(args.limit) || 10;
+        try {
+          const { listTasks } = await import('./task-state.js');
+          const tasks = await listTasks(limit);
+          if (tasks.length === 0) {
+            return { success: true, output: '当前没有任务. 用 create_task 创建一个.' };
+          }
+          const lines = tasks.map((t) => {
+            const done = t.steps.filter((s) => s.status === 'done').length;
+            const total = t.steps.length;
+            return `${t.status === 'completed' ? '✅' : t.status === 'failed' ? '❌' : '🔄'} ${t.id} — ${t.goal} (${done}/${total} steps, branch: ${t.branch || '-'})`;
+          });
+          return { success: true, output: `最近 ${tasks.length} 个任务:\n${lines.join('\n')}` };
+        } catch (e) {
+          return { success: false, error: `list_tasks 失败: ${String(e)}` };
+        }
+      }
+    });
+
+    // M3.3 (2026-06-17): 工具幂等性 — 显式 cache 防止重试时副作用执行两次
+    // 设计: 在 registerTools 末尾 wrap 所有 this.tools, 每个调用走 cache:
+    //   - 算 (toolName + JSON.stringify(args)) 的 hash
+    //   - 命中 cache → 返缓存结果 (不重跑副作用, 关键对 write_file / edit_file / shell_exec)
+    //   - 失败结果不缓存 (避免缓存 transient 错误)
+    //   - 缓存容量 200 条, 超过就清空
+    this.wrapToolsWithIdempotency();
+  }
+
+  /** M3.3: 工具结果缓存 — 防止 loop 重试时副作用 (写文件 / 改代码) 执行多次 */
+  private idempotencyCache: Map<string, { result: any; ts: number }> = new Map();
+  private readonly IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 分钟内同 (tool, args) 走 cache
+  private readonly IDEMPOTENCY_MAX = 200;
+
+  private wrapToolsWithIdempotency(): void {
+    // 只 wrap 会产生副作用的工具 — 读类工具 (list_files, read_document, get_task) 不 wrap
+    //   (让 LLM 拿到最新数据, 不会因为缓存读到旧 task 状态)
+    const SIDE_EFFECT_TOOLS = new Set([
+      'write_file', 'edit_file', 'shell_exec', 'git_commit', 'git_push', 'git_branch',
+      'create_task', 'update_task',
+    ]);
+    for (const [name, tool] of this.tools.entries()) {
+      if (!SIDE_EFFECT_TOOLS.has(name)) continue;
+      const original = tool.execute;
+      tool.execute = async (args: any) => {
+        const key = `${name}|${JSON.stringify(args)}`;
+        const cached = this.idempotencyCache.get(key);
+        if (cached && Date.now() - cached.ts < this.IDEMPOTENCY_TTL_MS) {
+          // 命中 — 加标记让 LLM 知道这是 cache (不会真执行副作用)
+          return { ...cached.result, output: (cached.result.output || '') + '\n[↻ idempotency cache hit]' };
+        }
+        const result = await original(args);
+        // 只缓存成功结果, 避免缓存 transient 错误
+        if (result && result.success) {
+          if (this.idempotencyCache.size >= this.IDEMPOTENCY_MAX) {
+            this.idempotencyCache.clear();
+          }
+          this.idempotencyCache.set(key, { result, ts: Date.now() });
+        }
+        return result;
+      };
+    }
+  }
+
+  /** 清幂等性缓存 — 强制下次调用真正执行 (用于 agent 显式需要重新跑的场景) */
+  clearIdempotencyCache(): void {
+    this.idempotencyCache.clear();
   }
 
   private async registerP2PDocumentReceiver(): Promise<void> {
@@ -1067,12 +1434,15 @@ class PiAgentSession implements AgentSession {
   }
 
   private getToolDefinitions(): string {
+    // M2.4 (2026-06-17): 缓存 tool 定义 — registerTools() 在构造时调一次, 此后不变
+    if (this.cachedToolDefinitions) return this.cachedToolDefinitions;
     const defs: string[] = ['可用工具:'];
     for (const tool of this.tools.values()) {
       const params = Object.entries(tool.parameters).map(([k, v]) => `${k}: ${v}`).join(', ');
       defs.push(`- ${tool.name}(${params}) - ${tool.description}`);
     }
-    return defs.join('\n');
+    this.cachedToolDefinitions = defs.join('\n');
+    return this.cachedToolDefinitions;
   }
 
   private async initSession(): Promise<void> {
@@ -1171,6 +1541,20 @@ class PiAgentSession implements AgentSession {
     this.currentSignal = signal ?? null;
     await this.computeJudgmentGate(input);
 
+    // M2.2 (2026-06-17): intent 分类 — 0 LLM 成本, 5 行 keyword 匹配
+    try {
+      const { classifyIntent, intentHint } = await import('./intent-classifier.js');
+      this.currentIntent = classifyIntent(input);
+      this.currentIntentHint = intentHint(this.currentIntent);
+      if (this.currentIntent !== 'chitchat') {
+        onStream({ type: 'phase', phase: 'intent_classified', detail: this.currentIntent, content: '' } as any);
+      }
+    } catch (err) {
+      console.warn('[PiAgent] classifyIntent failed (non-fatal):', err);
+      this.currentIntent = 'chitchat';
+      this.currentIntentHint = '';
+    }
+
     // P1.1: 异步跑 Auto-Compact (LLM 摘要, 仅在 budget 超限时触发, 失败静默)
     // 复用 computeJudgmentGate 的 onStream 广播 phase, 跟 judgment 注入门风格一致
     try {
@@ -1200,6 +1584,42 @@ class PiAgentSession implements AgentSession {
     }
 
     this.promptStartTime = Date.now();
+
+    // M3.1 (2026-06-17): 走 WorkflowPivotLoop (usePivotLoop: true)
+    //   pivot loop 自带 quality scoring / 30 iter cap / complexity analysis — 比老 runReActLoop 鲁棒
+    if (this.usePivotLoop) {
+      let pivotResult = '';
+      try {
+        const lr = await this.promptWithPivotLoop(input, undefined, channelId);
+        pivotResult = lr.response || '';
+        onStream({ type: 'done', content: '' });
+      } catch (err: any) {
+        if (signal?.aborted || err?.name === 'AbortError') {
+          console.log(`[chat] pivot aborted channel=${channelId}`);
+        } else {
+          console.error(`[chat] pivot 失败 channel=${channelId}:`, err);
+          pivotResult = `[错误: pivot loop 失败] ${String(err?.message || err).slice(0, 300)}`;
+          try { onStream({ type: 'error', content: pivotResult, tool: 'system' }); } catch {}
+        }
+      } finally {
+        if (this.judgmentGateUsedIds.length > 0) {
+          try { onStream({ type: 'used_judgments', usedIds: this.judgmentGateUsedIds, content: '' } as any); } catch {}
+        }
+        monitorAfterReply(input, pivotResult);
+        const stopStartTime = this.promptStartTime || Date.now();
+        onStop({
+          channelId: this.currentChannelId || 'unknown',
+          durationMs: Date.now() - stopStartTime,
+          usedJudgmentIds: [...this.judgmentGateUsedIds],
+        }).catch((err) => console.warn('[PiAgent] onStop failed:', err));
+        this.clearJudgmentGate();
+        this.currentOnStream = null;
+        this.currentSignal = null;
+        this.bootstrapAddition = '';
+        this.promptStartTime = 0;
+      }
+      return pivotResult;
+    }
 
     // 2026-06-16: loop 自动重试 — runReActLoop 内部遇到 [AI 服务调用失败] sentinel 时,
     //   会设 aiFailed=true 并提前 break. 这里在外层重跑整个 loop (不是单次 LLM 调用),
@@ -1326,15 +1746,28 @@ class PiAgentSession implements AgentSession {
     // P0 注入门: 在构造 systemPrompt 之前算一次, 拼到末尾
     await this.computeJudgmentGate(input);
 
-    const personaSection = this.persona ? `
+    // M2.2 (2026-06-17): intent 分类 — pivot loop 也要拿到 hint
+    try {
+      const { classifyIntent, intentHint } = await import('./intent-classifier.js');
+      this.currentIntent = classifyIntent(input);
+      this.currentIntentHint = intentHint(this.currentIntent);
+    } catch (err) {
+      console.warn('[PiAgent] classifyIntent in pivot failed:', err);
+    }
+
+    // M2.4: persona 缓存
+    if (!this.cachedPersonaSection && this.persona) {
+      this.cachedPersonaSection = `
 角色描述: ${this.persona.description || '无'}
 性格特点: ${this.persona.personality || '无'}
 问候语: ${this.persona.greeting || '无'}
-` : '';
+`;
+    }
 
-    const systemPrompt = `${this.bootstrapAddition}你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
+    const systemPrompt = `${this.bootstrapAddition}你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${this.cachedPersonaSection}
 当前工作目录: ${this.cwd}
 当前身份: ${this.identity.name} (${this.identity.did})
+${this.currentIntentHint}
 
 ${this.getToolDefinitions()}
 
@@ -1354,6 +1787,8 @@ ${this.getToolDefinitions()}
     // 2026-06-15: 把 currentOnStream 传给 loop, 让 step-timeline 在 pivot 循环里也能 emit step_start/done
     //   之前 loop.execute() 不接 streamCallback, 导致 step-timeline 只能看到老 runReActLoop 路径
     //   promptWithPivotLoop 路径 0 step events — UI 显示 timeline 但永远是空
+    // 2026-06-17: 透传 signal 让 abort 工作 — loop.execute() 当前不接 signal 参数,
+    //   所以 abort 行为通过 this.currentSignal 共享给 loop 内部读 (后续 M3.2 接 task plan 时一起加)
     const result = await loop.execute(input, llm, systemPrompt, this.currentOnStream ?? undefined);
 
     this.messageHistory.push({ role: 'user', content: input });
@@ -1475,16 +1910,21 @@ ${this.getToolDefinitions()}
         refineContext += `\n【错误提示】上轮发生 ${consecutiveErrors} 次错误，请重新分析问题或换一种方式处理。`;
       }
 
-      const personaSection = this.persona ? `
+      // M2.4: persona section 缓存 — persona 在 loadPersona() 时一次设定, 此后不变
+      if (!this.cachedPersonaSection && this.persona) {
+        this.cachedPersonaSection = `
 角色描述: ${this.persona.description || '无'}
 性格特点: ${this.persona.personality || '无'}
 问候语: ${this.persona.greeting || '无'}
-` : '';
+`;
+      }
+      const personaSection = this.cachedPersonaSection;
 
       const systemPrompt = `${this.bootstrapAddition}你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
 当前工作目录: ${this.cwd}
 当前身份: ${this.identity.name} (${this.identity.did})
 ${refineContext}
+${this.currentIntentHint}
 
 ${toolDefs}
 
@@ -2019,38 +2459,80 @@ Workspace root folder: ${this.cwd}
       }
     }
 
-    // 主调用 + 3 个恢复路径
+    // 错误分级 (M1.3, 2026-06-17):
+    //   - 401/403/400 (认证/请求错误): 不重试, 直接 fail-fast
+    //   - 429 (rate limit): 重试 2 次, 指数退避
+    //   - 5xx (上游错误): 重试 2 次, 指数退避
+    //   - network (ECONNRESET / fetch failed / abort/timeout): 重试 2 次
+    //   - 4xx prompt-too-long: 走 reactive compaction
+    // 这样以前所有错误都触发整个 runReActLoop 重跑(浪费 token),现在 4xx 直接失败
+    //   让上层把失败原因广播给用户,而不是闷在 loop 里 retry 3 次后给空回复
+    const classifyError = (err: any): 'auth' | 'rate_limit' | 'server' | 'network' | 'prompt_too_long' | 'other' => {
+      const msg = String(err?.message || err || '');
+      // 401/403: 认证失败
+      if (/401|unauthor|invalid api key|api_key|forbidden|403/i.test(msg)) return 'auth';
+      // 400 prompt-too-long
+      if (/token|too long|exceed|length|context|4000|413/i.test(msg)) return 'prompt_too_long';
+      // 429 rate limit
+      if (/429|rate.?limit|too many requests/i.test(msg)) return 'rate_limit';
+      // 5xx
+      if (/5\d\d|internal server|bad gateway|service unavailable|gateway timeout|cloudflare|502|503|504/i.test(msg)) return 'server';
+      // network
+      if (/econnreset|econnrefused|enotfound|etimedout|fetch failed|network|aborted|timeout/i.test(msg)) return 'network';
+      return 'other';
+    };
+
+    const isRetryable = (cls: ReturnType<typeof classifyError>) =>
+      cls === 'rate_limit' || cls === 'server' || cls === 'network' || cls === 'prompt_too_long';
+    const maxAttempts = (cls: ReturnType<typeof classifyError>) => isRetryable(cls) ? 3 : 1;
+    const backoffMs = (attempt: number) => Math.min(1000 * 2 ** attempt, 8000); // 1s, 2s, 4s, 8s cap
+
     let lastErr: any = null;
-    for (let attempt = 0; attempt <= this.MAX_OUTPUT_TOKEN_ESCALATION_RETRIES; attempt++) {
+    let lastClass: ReturnType<typeof classifyError> = 'other';
+    for (let attempt = 0; attempt < 4; attempt++) {  // 最多 4 次尝试
       try {
         const response = await llm.chat(context, systemPrompt, signal);
         return { reply: response.reply || '' };
       } catch (err: any) {
+        // 用户主动 abort: 不重试, 立即抛
+        if (signal?.aborted || err?.name === 'AbortError') throw err;
         lastErr = err;
-        const errMsg = String(err?.message || err || '');
-        const isPromptTooLong = /token|too long|exceed|length|context|4000|413|429/i.test(errMsg);
-        if (isPromptTooLong) {
-          console.warn(`[PiAgent] prompt-too-long 触发 (attempt ${attempt + 1}), 跑 reactive compaction`);
-          onStream?.({ type: 'status', content: `⚠️ prompt-too-long 触发 (attempt ${attempt + 1}/${this.MAX_OUTPUT_TOKEN_ESCALATION_RETRIES + 1})`, tool: 'recovery' });
+        lastClass = classifyError(err);
+        const errMsg = String(err?.message || err || '').slice(0, 200);
+        const attempts = maxAttempts(lastClass);
+        if (attempt + 1 >= attempts) {
+          console.warn(`[PiAgent] LLM 调用失败, 不再重试 (class=${lastClass}, attempt=${attempt + 1}/${attempts}): ${errMsg}`);
+          break;
+        }
+        console.warn(`[PiAgent] LLM 调用失败 (class=${lastClass}, attempt=${attempt + 1}/${attempts}), ${backoffMs(attempt)}ms 后重试: ${errMsg}`);
+        onStream?.({ type: 'status', content: `⚠️ LLM 调用失败 (${lastClass}), 重试 ${attempt + 2}/${attempts}...`, tool: 'recovery' });
+        if (lastClass === 'prompt_too_long') {
           try {
             await this.maybeAutoCompact(onStream, signal);
           } catch (compactionErr) {
             console.warn('[PiAgent] reactive compaction on prompt-too-long failed:', compactionErr);
           }
-          // 重新生成 context (compressHistorySync + projected)
+          // 重新生成 context
           context = this.buildContext();
         } else {
-          // 非 prompt-too-long 错误, 1 次重试就放弃
-          if (attempt === 0) {
-            console.warn(`[PiAgent] LLM 调用失败 (non-prompt-too-long), 1 次重试:`, err);
-            continue;
-          }
-          break;
+          // 指数退避
+          await new Promise<void>((r) => setTimeout(r, backoffMs(attempt)));
         }
       }
     }
-    console.warn('[PiAgent] callLlmWithRecovery 全失败 (silent):', lastErr);
-    return { reply: '' };
+    // 失败: 返回结构化错误 reply (而不是空字符串), 上层可识别 + UI 可显示
+    const errMsg = String(lastErr?.message || lastErr || '').slice(0, 300);
+    const userMsg = lastClass === 'auth'
+      ? `[AI 服务调用失败] 认证错误: ${errMsg}\n请检查 API key 配置 (env: OPENAI_API_KEY / ANTHROPIC_API_KEY 等)`
+      : lastClass === 'rate_limit'
+      ? `[AI 服务调用失败] 上游限流 (429): ${errMsg}\n请稍后重试`
+      : lastClass === 'server'
+      ? `[AI 服务调用失败] 上游错误: ${errMsg}\n已重试 2 次仍失败, 可稍后重试`
+      : lastClass === 'network'
+      ? `[AI 服务调用失败] 网络错误: ${errMsg}\n请检查网络连接`
+      : `[AI 服务调用失败] ${errMsg}`;
+    console.warn(`[PiAgent] callLlmWithRecovery 全部失败 (class=${lastClass}): ${errMsg}`);
+    return { reply: userMsg };
   }
 
   /**

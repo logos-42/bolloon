@@ -128,7 +128,8 @@ function shellGuardGate(tool: string, args: Record<string, unknown>, mode: Permi
     // 只对**写/删/改**类命令生效 (rm, cp, mv, sed -i, echo >); 读类命令 (cat, head, tail, ls) 跳过
     const READ_BINS = new Set(['cat', 'head', 'tail', 'wc', 'ls', 'echo', 'pwd', 'date', 'mkdir', 'touch', 'find', 'grep', 'git', 'node', 'npm', 'npx', 'tsx', 'tsc', 'vitest']);
     const FILENAME_DENYLIST = [
-      'pi-sdk.ts', 'shell-guard.ts', 'shell-tool.ts',
+      // 2026-06-17 (Q2-B): 解除 pi-sdk.ts — agent 可改自己源码
+      'shell-guard.ts', 'shell-tool.ts',
       '.env', 'package.json', 'tsconfig.json',
     ];
     const isReadOperation = READ_BINS.has(bin);

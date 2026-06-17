@@ -9,10 +9,31 @@ pre-commit:
   commands:
     vitest-bail:
       glob: "src/**/*.{ts,tsx,js}"
-      run: npx vitest run --bail=1 --reporter=dot
+      # 2026-06-17 (Q3-B): agent auto-evolve commit 不阻塞 — 让 CI 兜底
+      #   跳过条件: 环境变量 BOLLOON_AUTO_EVOLVE=1 (agent 调用 git_commit 时设)
+      #   或 commit message 以 "auto-evolve:" 开头
+      run: |
+        if [ "$BOLLOON_AUTO_EVOLVE" = "1" ]; then
+          echo "[skip] vitest-bail: BOLLOON_AUTO_EVOLVE=1 (agent auto-evolve, CI 兜底)"
+          exit 0
+        fi
+        if git log -1 --pretty='%B' 2>/dev/null | head -1 | grep -q '^auto-evolve:'; then
+          echo "[skip] vitest-bail: commit message starts with auto-evolve:"
+          exit 0
+        fi
+        npx vitest run --bail=1 --reporter=dot
     tsc-check:
       glob: "src/**/*.{ts,tsx}"
-      run: npx tsc --noEmit
+      run: |
+        if [ "$BOLLOON_AUTO_EVOLVE" = "1" ]; then
+          echo "[skip] tsc-check: BOLLOON_AUTO_EVOLVE=1"
+          exit 0
+        fi
+        if git log -1 --pretty='%B' 2>/dev/null | head -1 | grep -q '^auto-evolve:'; then
+          echo "[skip] tsc-check: commit message starts with auto-evolve:"
+          exit 0
+        fi
+        npx tsc --noEmit
     # system-prompt 字符上限 + 版本标记 + hibsml 脱除 (layer 改动时触发)
     validate-prompt-layers:
       glob: "src/llm/system-prompt/layers/**/*.md"
@@ -22,12 +43,37 @@ pre-push:
   parallel: true
   commands:
     vitest-full:
-      run: npx vitest run --reporter=dot
-    build-check:
-      run: npm run build:main
-    tag-baseline:
+      # 2026-06-17 (Q3-B): agent auto-evolve 不阻塞 push
+      #   push agent/* 分支时跳过 (agent 已经在循环里跑过测试, 失败会自动 rollback)
+      #   push master/main 时仍要跑 (人手动 push 必须验证)
       run: |
-        if ! git tag -l "auto-evolve-baseline-*" | head -1 | grep -q .; then
-          echo "[ERROR] No auto-evolve-baseline-* tag found. Run: bash scripts/auto-evolve-snapshot.sh"
-          exit 1
+        branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+        if [ "$branch" = "master" ] || [ "$branch" = "main" ]; then
+          npx vitest run --reporter=dot
+        else
+          echo "[skip] vitest-full: not pushing to master/main (branch=$branch), agent auto-evolve"
+          exit 0
+        fi
+    build-check:
+      run: |
+        branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+        if [ "$branch" = "master" ] || [ "$branch" = "main" ]; then
+          npm run build:main
+        else
+          echo "[skip] build-check: not pushing to master/main (branch=$branch), agent auto-evolve"
+          exit 0
+        fi
+    tag-baseline:
+      # 2026-06-17: agent auto-evolve 不再强制要求 baseline tag
+      #   agent/* 分支直接放过; master/main 仍要 tag 守护
+      run: |
+        branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+        if [ "$branch" = "master" ] || [ "$branch" = "main" ]; then
+          if ! git tag -l "auto-evolve-baseline-*" | head -1 | grep -q .; then
+            echo "[ERROR] push to ${branch} requires auto-evolve-baseline-* tag. Run: bash scripts/auto-evolve-snapshot.sh"
+            exit 1
+          fi
+        else
+          echo "[skip] tag-baseline: not pushing to master/main (branch=$branch)"
+          exit 0
         fi

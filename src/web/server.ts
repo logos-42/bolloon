@@ -1156,7 +1156,14 @@ async function getAgentForChannel(
   const session = await createAgentSession({
     cwd: process.cwd(),
     peerId: `channel-${channelId}:${currentSessionId}`,
-    identityDoc
+    identityDoc,
+    // M2.3 (2026-06-17): 构造时从 session JSON 回灌历史 — 服务重启后 LLM 仍记得前面对话
+    //   key 跟 server.ts:240 写入路径保持一致: ~/.bolloon/sessions/cache/<key>.json
+    loadSessionKey: sessionKey,
+    // M3.1 (2026-06-17): 默认启用 WorkflowPivotLoop — web 路径以前死代码, 现在用
+    //   pivot loop 自带 quality scoring + task complexity analysis + 30 iters cap
+    //   (老 ReAct 10000 iter cap 容易跑飞)
+    usePivotLoop: true,
   }, true); // forceNew: true 强制创建新实例
   channelSessions.set(sessionKey, session);
 
@@ -1901,7 +1908,11 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         if (runState.abortController?.signal.aborted || err?.name === 'AbortError') {
           console.log(`[chat] aborted channel=${channelId}`);
         } else {
-          throw err;
+          // M1.2 (2026-06-17): 不再 rethrow — 把错误塞到 fullResponse 让 broadcast 出来, 后续 session 仍保存
+          // 旧行为: 抛到外层 catch, 触发 500 + 用户消息丢失 (session 不保存)
+          console.error(`[chat] LLM 调用失败 channel=${channelId}:`, err);
+          fullResponse = `[错误: LLM 调用失败] ${String(err?.message || err).slice(0, 300)}`;
+          broadcast({ type: 'error', content: fullResponse }, channelId);
         }
       }
       // abort 模式: 给 partial 拼后缀

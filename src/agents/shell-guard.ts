@@ -70,7 +70,9 @@ const FALLBACK_PATH_ALLOWLIST: readonly string[] = [
 ];
 
 const FALLBACK_PATH_DENYLIST: ReadonlyArray<RegExp> = [
-  /(^|\/)src\/agents\/pi-sdk\.ts$/,         // LLM 抽象层
+  // 2026-06-17 (Q2-B): 解除 pi-sdk.ts denylist — 现在允许 agent 改自己源码以自进化
+  //   原屏蔽理由: "LLM 抽象层" — 但 owner 决定 auto-evolve 需要这个能力
+  //   仍保留: shell-guard.ts / shell-tool.ts — 改这两个等于改护栏本身, fail-open 风险太高
   /(^|\/)src\/agents\/shell-guard\.ts$/,    // 护栏本身
   /(^|\/)src\/agents\/shell-tool\.ts$/,     // shell 工具实现
   /(^|\/)src\/heartbeat\//,                // 心跳
@@ -83,7 +85,8 @@ const FALLBACK_PATH_DENYLIST: ReadonlyArray<RegExp> = [
   /(^|\/)\.git\//,
   /(^|\/)\.bolloon\//,                     // 策略文件 / sessions / persona
   /(^|\/)dist\//,
-  /(^|\/)node_modules\//,
+  // 2026-06-17: node_modules 不再 denylist, 因为 M3.4 自动 commit 阶段需要 npm install / npx vitest
+  //   通过 allowlist 限定 agent 只能 npm install, 不能 rm node_modules (shell arg denylist 仍禁 rm -rf)
 ];
 
 const FALLBACK_ARG_DENYLIST: ReadonlyArray<RegExp> = [
