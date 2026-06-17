@@ -89,8 +89,24 @@ export class PiAIModel {
     return valid;
   }
 
-  async chat(message: string, context?: string, signal?: AbortSignal): Promise<ChatResult> {
-    const systemPrompt = await this.buildSystemPromptAsync(context);
+  /**
+   * 2026-06-17 扩展: chat 接受可选 systemPrompt 覆盖 — pivot loop 之前调 chat(context, systemPrompt)
+   *   把 system 当 context 传, 把 context 当 message 传, 导致 46K char context 被当 user message
+   *   发出去, 模型撞 max_tokens 上限返回空. 现在 chat(message, systemOverride?, signal?) 优先用 systemOverride.
+   */
+  async chat(message: string, systemOrContext?: string, signal?: AbortSignal): Promise<ChatResult> {
+    // Heuristic: if the 2nd arg is huge (> 2K) it's likely a system prompt (pivot loop 风格);
+    // if small/null, treat as context (旧 chat 风格).
+    let systemPrompt: string;
+    let contextForBuild: string | undefined;
+    if (systemOrContext && systemOrContext.length > 2000) {
+      // pivot loop style: 直接当 system prompt 用, 拼上 base 模板
+      const baseSystem = await this.buildSystemPromptAsync(undefined);
+      systemPrompt = baseSystem + '\n\n' + systemOrContext;
+    } else {
+      contextForBuild = systemOrContext;
+      systemPrompt = await this.buildSystemPromptAsync(contextForBuild);
+    }
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: message }
@@ -100,7 +116,7 @@ export class PiAIModel {
       const response = await this.generateText({
         messages,
         temperature: 0.8,
-        maxTokens: 8192,  // 2026-06-15: 提到 8192, 避免长回答 (含表格/代码块) 被截断
+        maxTokens: 16384, // 2026-06-17: 提到 16384 — agent 注入 16K+ system prompt + 8K tool defs 时, 8K 撞上限返回空 content (见 memory: bolloon-llm-empty-large-prompt)
         signal,
       });
       return { reply: response };
@@ -312,8 +328,16 @@ export class PiAIModel {
       throw new Error(`OpenAI API error: ${response.status}`);
     }
 
-    const data = await response.json() as { choices?: { message?: { content?: string } }[] };
-    return data.choices?.[0]?.message?.content || '';
+    // 2026-06-17: 读 finish_reason — 之前只读 content, 撞 max_tokens 上限时空字符串难诊断
+    const data = await response.json() as {
+      choices?: { message?: { content?: string }; finish_reason?: string; index?: number }[];
+    };
+    const choice = data.choices?.[0];
+    const content = choice?.message?.content || '';
+    if (!content && choice?.finish_reason === 'length') {
+      console.warn(`[pi-ai] hit max_tokens ceiling (model=${this.mapModel()}, max_tokens=${maxTokens}) — caller should trim prompt or raise cap`);
+    }
+    return content;
   }
 
   private async callAnthropic(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
