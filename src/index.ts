@@ -1207,6 +1207,121 @@ break;
         break;
       }
 
+      // ---- P2P-only chat (no git, no GitHub) ----
+      case 'chat-p2p-send': {
+        response = '';
+        // 形态: --chat-p2p-send <peerOrName> "消息正文"
+        // peerOrName: 64-hex publicKey 或 known_peers.json 里的 name
+        // 走 P2PDirect (纯 TS, 不走坏了的 @diap/sdk HyperswarmCommunicator)
+        const [peerOrName, ...rest] = args;
+        const body = rest.join(' ').trim();
+        if (!peerOrName || !body) {
+          response = '用法: --chat-p2p-send <peer-name-or-publicKey> "消息正文"';
+          error = response;
+          break;
+        }
+        let targetPk = peerOrName;
+        if (!/^[0-9a-fA-F]{64}$/.test(peerOrName)) {
+          const { listPeers } = await import('./network/known-peers.js');
+          const peers = await listPeers();
+          for (const p of peers) {
+            if (p.name === peerOrName) { targetPk = p.publicKey; break; }
+          }
+          if (targetPk === peerOrName) {
+            response = `❌ 找不到 peer "${peerOrName}" (也不是 64-hex publicKey)`;
+            error = response;
+            break;
+          }
+        }
+        const { resolveIdentity } = await import('./git-transport/chat-repo.js');
+        const { P2PDirect } = await import('./network/p2p-direct.js');
+        const id = await resolveIdentity();
+        const envelope = JSON.stringify({
+          v: 3,
+          op: 'agent.chat.direct',
+          payload: {
+            text: body,
+            fromRole: id.role,
+            fromPk: id.publicKey,
+            ts: new Date().toISOString(),
+          },
+        });
+        const p2p = new P2PDirect({ name: 'cli-send', role: id.role });
+        try {
+          await p2p.start();
+          await p2p.joinTopic(Buffer.from('bolloon-agent-harness'));
+          const sent = await p2p.sendToWithWait(targetPk, Buffer.from(envelope), 8000);
+          if (sent) {
+            response = `✅ 私发 → ${targetPk.slice(0, 12)}...\n   role: ${id.role}\n   text: ${body.slice(0, 80)}${body.length > 80 ? '...' : ''}\n   (P2P-only, 未写入 git / GitHub)`;
+          } else {
+            response = `❌ 握手超时: 对方 ${targetPk.slice(0, 12)}... 未在 8s 内响应 (对方可能离线 / NAT 后 / DHT 还在 bootstrap)`;
+            error = response;
+          }
+        } catch (e: any) {
+          response = `❌ 发送失败: ${e?.message ?? e}`;
+          error = response;
+        } finally {
+          try { await p2p.stop(); } catch {}
+        }
+        break;
+      }
+      case 'chat-p2p-listen': {
+        response = '';
+        // 后台长循环: P2PDirect 监听, 只打印 op=agent.chat.direct 的
+        const { resolveIdentity } = await import('./git-transport/chat-repo.js');
+        const { P2PDirect } = await import('./network/p2p-direct.js');
+        const id = await resolveIdentity();
+        const p2p = new P2PDirect({ name: 'cli-listen', role: id.role });
+        process.stdout.write(`[chat-p2p-listen] role=${id.role} pk=${id.publicKey.slice(0, 12)} listening on bolloon-agent-harness\n`);
+        process.stdout.write(`[chat-p2p-listen] press Ctrl-C to stop\n`);
+
+        const onData = (ev: any) => {
+          try {
+            const text = Buffer.isBuffer(ev.data) ? ev.data.toString('utf8') : String(ev.data);
+            try {
+              const env = JSON.parse(text);
+              if (env && env.v === 3 && env.op === 'agent.chat.direct') {
+                const { text: body, fromRole } = env.payload || {};
+                const ts = (env.payload?.ts || new Date().toISOString()).replace('T', ' ').replace(/\.\d+Z$/, '');
+                process.stdout.write(`\n[${ts} ${fromRole || ev.fromPublicKey?.slice(0, 12)} → me] ${body}\n> `);
+                return;
+              }
+            } catch { /* 非 v3 envelope, 当 raw 显示 */ }
+            process.stdout.write(`\n[raw ${ev.fromPublicKey?.slice(0, 12)}] ${text.slice(0, 200)}\n> `);
+          } catch (e: any) {
+            process.stdout.write(`[chat-p2p-listen] decode error: ${e?.message ?? e}\n`);
+          }
+        };
+        p2p.on('data', onData);
+
+        let lastPing = 0;
+        const keepAlive = setInterval(() => {
+          const now = Date.now();
+          if (now - lastPing > 5 * 60_000) {
+            process.stdout.write(`[chat-p2p-listen] alive, role=${id.role}\n`);
+            lastPing = now;
+          }
+        }, 30_000);
+
+        const stop = async () => {
+          process.stdout.write(`\n[chat-p2p-listen] stopping...\n`);
+          try { p2p.off('data', onData); } catch {}
+          clearInterval(keepAlive);
+          try { await p2p.stop(); } catch {}
+          process.exit(0);
+        };
+        process.on('SIGINT', stop);
+        process.on('SIGTERM', stop);
+        process.on('SIGHUP', stop);
+
+        await p2p.start();
+        await p2p.joinTopic(Buffer.from('bolloon-agent-harness'));
+        process.stdout.write(`[chat-p2p-listen] joined topic ✓\n> `);
+
+        await new Promise(() => {});
+        break;
+      }
+
       default:
         response = `错误: 未知工具 "${tool}"`;
         error = response;
@@ -1357,6 +1472,9 @@ interface ParsedArgs {
   chatList?: boolean;
   chatWatch?: boolean;
   chatStatus?: boolean;
+  // --- P2P-only chat (no git) ---
+  chatP2pSend?: boolean;
+  chatP2pListen?: boolean;
 }
 
 function parseArgs(): ParsedArgs {
@@ -1580,6 +1698,17 @@ function parseArgs(): ParsedArgs {
         result.chatStatus = true;
         result.tool = 'chat-status';
         break;
+      case '--chat-p2p-send':
+        result.tool = 'chat-p2p-send';
+        const p2pSendArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          p2pSendArgs.push(args[++i]);
+        }
+        result.toolArgs = p2pSendArgs;
+        break;
+      case '--chat-p2p-listen':
+        result.tool = 'chat-p2p-listen';
+        break;
       case '--update-check':
         result.updateCheck = true;
         result.tool = 'update-check';
@@ -1675,6 +1804,10 @@ function printHelp(): void {
   --chat-list                列出本地所有已同步消息
   --chat-watch [--interval 15s]  后台定时拉取, 有新消息时输出
   --chat-status              一屏查看: role / publicKey / remote / ahead-behind
+
+  # 纯 P2P 私聊 (不走 GitHub, 不写 git, 不持久化)
+  --chat-p2p-send <peer|publicKey> "消息正文"   通过 P2P 直接发一条
+  --chat-p2p-listen          后台监听对方 P2P 私聊消息 (Ctrl-C 退出)
 
   # AI 对话
   --prompt, -p <text>        通用 AI 对话（默认）
@@ -1883,8 +2016,8 @@ async function main() {
     console.log();
     await runNonInteractive(args, comm!);
     comm?.stop();
-    // chat-watch 是长循环, 不会自然 return, 走 SIGINT 自然退出
-    if (!args.chatWatch) {
+    // chat-watch / chat-p2p-listen 是长循环, 不会自然 return, 走 SIGINT 自然退出
+    if (!args.chatWatch && args.tool !== 'chat-p2p-listen') {
       process.exit(0);
     }
   } else {
