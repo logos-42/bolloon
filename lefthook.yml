@@ -51,7 +51,7 @@ pre-push:
         if [ "$branch" = "master" ] || [ "$branch" = "main" ]; then
           npx vitest run --reporter=dot
         else
-          echo "[skip] vitest-full: not pushing to master/main (branch=$branch), agent auto-evolve"
+          echo '[skip] vitest-full: not pushing to master/main (agent auto-evolve)'
           exit 0
         fi
     build-check:
@@ -60,7 +60,7 @@ pre-push:
         if [ "$branch" = "master" ] || [ "$branch" = "main" ]; then
           npm run build:main
         else
-          echo "[skip] build-check: not pushing to master/main (branch=$branch), agent auto-evolve"
+          echo '[skip] build-check: not pushing to master/main (agent auto-evolve)'
           exit 0
         fi
     tag-baseline:
@@ -69,11 +69,11 @@ pre-push:
       run: |
         branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
         if [ "$branch" = "master" ] || [ "$branch" = "main" ]; then
-          if ! git tag -l "auto-evolve-baseline-*" | head -1 | grep -q .; then
-            echo "[ERROR] push to ${branch} requires auto-evolve-baseline-* tag. Run: bash scripts/auto-evolve-snapshot.sh"
+          if ! git tag -l 'auto-evolve-baseline-*' | head -1 | grep -q .; then
+            echo '[ERROR] push to master/main requires auto-evolve-baseline-* tag. Run: bash scripts/auto-evolve-snapshot.sh'
             exit 1
           fi
         else
-          echo "[skip] tag-baseline: not pushing to master/main (branch=$branch)"
+          echo '[skip] tag-baseline: not pushing to master/main (agent auto-evolve)'
           exit 0
         fi
