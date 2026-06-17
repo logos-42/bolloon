@@ -199,6 +199,7 @@ export class WorkflowPivotLoop {
   ): Promise<LoopResult> {
     this.streamCallback = streamCallback;
     this.state = this.createInitialState();
+    console.log(`[pivot] execute: input chars=${input.length}, systemPrompt chars=${systemPrompt.length}`);
     this.messageHistory = [{ role: 'user', content: input }];
     
     // Analyze task complexity and adapt config

@@ -624,6 +624,9 @@ class PiAgentSession implements AgentSession {
    */
   private judgmentGateAddition: string = '';
   private judgmentGateUsedIds: string[] = [];
+  // 2026-06-18: 来自 web server markedPrompt 外的 contextHint (channel/judgment/distill/remote channels),
+  //   拼到 systemPrompt 末尾, 别再混进 user message
+  private contextHintAddition: string = '';
 
   /**
    * 当前 onStream 引用 + abort signal (computeJudgmentGate 需要 onStream 广播 phase)
@@ -1519,18 +1522,31 @@ class PiAgentSession implements AgentSession {
   }
 
   async promptStream(input: string, onStream: StreamCallback, signal?: AbortSignal, channelId?: string): Promise<string> {
+    console.log(`[PiAgent.promptStream] ENTRY, channelId=${channelId}, input chars=${input.length}`);
     this.minimaxAvailable = this.checkMinimax();
+    console.log(`[PiAgent.promptStream] minimaxAvailable=${this.minimaxAvailable}`);
     this.currentChannelId = channelId ?? this.currentChannelId;
+
+    // 2026-06-18 (supervisor): web server 把 46K markedPrompt 喂过来
+    //   (【本轮用户请求】\n<text>\n【请求结束】\n\n<contextHint>).
+    //   整个 input 走下游, pivot loop 之前拿 47K buildContext 当 user message 发出去,
+    //   模型撞 context window. 提取 userText 替代 input, contextHint 拼到 systemPrompt 末尾.
+    const markerMatch = input.match(/【本轮用户请求】\s*([\s\S]*?)\s*【请求结束】/);
+    const userText = markerMatch ? markerMatch[1].trim() : input;
+    const contextHint = markerMatch ? input.replace(markerMatch[0], '').trim() : '';
+    console.log(`[PiAgent.promptStream] marker matched=${!!markerMatch}, userText chars=${userText.length}, contextHint chars=${contextHint.length}`);
 
     this.messageHistory.push({
       role: 'user',
-      content: input
+      content: userText
     });
+    // 2026-06-18: web server 喂的 markedPrompt 外的 contextHint 拼到 system 末尾 (而不是当 user message)
+    this.contextHintAddition = contextHint;
 
     onStream({ type: 'thinking', content: '🤔 开始思考...' });
 
     if (!this.minimaxAvailable) {
-      const response = await this.handleFallback(input);
+      const response = await this.handleFallback(userText);
       this.messageHistory.push({ role: 'assistant', content: response });
       onStream({ type: 'done', content: '' });
       return response;
@@ -1539,12 +1555,12 @@ class PiAgentSession implements AgentSession {
     // P0 注入门: 缓存 onStream + signal, computeJudgmentGate 用 currentOnStream 广播 phase
     this.currentOnStream = onStream;
     this.currentSignal = signal ?? null;
-    await this.computeJudgmentGate(input);
+    await this.computeJudgmentGate(userText);
 
     // M2.2 (2026-06-17): intent 分类 — 0 LLM 成本, 5 行 keyword 匹配
     try {
       const { classifyIntent, intentHint } = await import('./intent-classifier.js');
-      this.currentIntent = classifyIntent(input);
+      this.currentIntent = classifyIntent(userText);
       this.currentIntentHint = intentHint(this.currentIntent);
       if (this.currentIntent !== 'chitchat') {
         onStream({ type: 'phase', phase: 'intent_classified', detail: this.currentIntent, content: '' } as any);
@@ -1590,7 +1606,7 @@ class PiAgentSession implements AgentSession {
     if (this.usePivotLoop) {
       let pivotResult = '';
       try {
-        const lr = await this.promptWithPivotLoop(input, undefined, channelId);
+        const lr = await this.promptWithPivotLoop(userText, undefined, channelId);
         pivotResult = lr.response || '';
         onStream({ type: 'done', content: '' });
       } catch (err: any) {
@@ -1605,7 +1621,7 @@ class PiAgentSession implements AgentSession {
         if (this.judgmentGateUsedIds.length > 0) {
           try { onStream({ type: 'used_judgments', usedIds: this.judgmentGateUsedIds, content: '' } as any); } catch {}
         }
-        monitorAfterReply(input, pivotResult);
+        monitorAfterReply(userText, pivotResult);
         const stopStartTime = this.promptStartTime || Date.now();
         onStop({
           channelId: this.currentChannelId || 'unknown',
@@ -1616,6 +1632,7 @@ class PiAgentSession implements AgentSession {
         this.currentOnStream = null;
         this.currentSignal = null;
         this.bootstrapAddition = '';
+        this.contextHintAddition = '';
         this.promptStartTime = 0;
       }
       return pivotResult;
@@ -1782,7 +1799,7 @@ ${this.getToolDefinitions()}
 - 每次只调用一个工具
 - 仔细分析工具返回结果
 - 当任务完成时，必须在回答末尾添加 <final gen> 标记表示结束
-- 如果需要更多信息，继续调用工具${this.judgmentGateAddition}`;
+- 如果需要更多信息，继续调用工具${this.judgmentGateAddition}${this.contextHintAddition}`;
 
     // 2026-06-15: 把 currentOnStream 传给 loop, 让 step-timeline 在 pivot 循环里也能 emit step_start/done
     //   之前 loop.execute() 不接 streamCallback, 导致 step-timeline 只能看到老 runReActLoop 路径
@@ -1939,7 +1956,7 @@ ${toolDefs}
 - 每次只调用一个工具
 - 仔细分析工具返回结果
 - 当任务完成时，必须在回答末尾添加 <final gen> 标记表示结束
-- 如果需要更多信息，继续调用工具${this.judgmentGateAddition}`;
+- 如果需要更多信息，继续调用工具${this.judgmentGateAddition}${this.contextHintAddition}`;
 
       // 3 个恢复机制 (Claude Code 论文 9-step pipeline 内部):
       //   1. max output token 升级 (最多 3 次, 每次 maxOutputTokens 翻倍)
