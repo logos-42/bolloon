@@ -1073,6 +1073,140 @@ break;
         break;
       }
 
+      // ---- chat transport (commits-as-messages) ----
+      case 'chat-init': {
+        const { chatInit } = await import('./git-transport/chat-repo.js');
+        const r = await chatInit(process.cwd());
+        response = ['✅ chat-init', ...r.messages].join('\n');
+        break;
+      }
+      case 'chat-send': {
+        const { chatSend, resolveIdentity } = await import('./git-transport/chat-repo.js');
+        // body 优先: 显式参数 > stdin
+        let body = args.join(' ').trim();
+        if (!body && !process.stdin.isTTY) {
+          body = await new Promise<string>((resolve) => {
+            let chunks = '';
+            process.stdin.setEncoding('utf8');
+            process.stdin.on('data', (c) => { chunks += c; });
+            process.stdin.on('end', () => resolve(chunks.trim()));
+            process.stdin.on('error', () => resolve(''));
+            // 1s timeout 防止无 stdin 时挂住
+            setTimeout(() => resolve(chunks.trim()), 1000);
+          });
+        }
+        const r = await chatSend({ repoDir: process.cwd(), body });
+        if (!r.ok) {
+          response = `❌ chat-send: ${r.reason}`;
+          error = response;
+        } else {
+          const id = await resolveIdentity();
+          const lines = [
+            `✅ chat-send`,
+            `   role:    ${id.role}`,
+            `   sha:     ${r.sha?.slice(0, 12)}`,
+            `   pushed:  ${r.pushed ? 'yes' : 'no (will retry on next send)'}`,
+            `   file:    ${r.filePath}`,
+            `   p2pNotify: ${r.p2pNotifyEligible ? 'eligible' : 'skipped (>4 KiB)'}`,
+          ];
+          response = lines.join('\n');
+          // 短消息且 P2P 在线 → 走 v3 RPC 推通知 (best-effort)
+          if (r.p2pNotifyEligible && r.sha) {
+            try {
+              const { listPeers } = await import('./network/known-peers.js');
+              const peers = listPeers();
+              const peerPks = Object.values(peers).map((p: any) => p.publicKey);
+              if (peerPks.length > 0 && comm && typeof (comm as any).sendTo === 'function') {
+                const envelope = JSON.stringify({
+                  v: 3,
+                  op: 'agent.chat.gitnotify',
+                  payload: { sha: r.sha, fromPk: id.publicKey, role: id.role, ts: new Date().toISOString(), file: r.filePath },
+                });
+                let pushed = 0;
+                for (const pk of peerPks) {
+                  try {
+                    (comm as any).sendTo(pk, envelope);
+                    pushed++;
+                  } catch {}
+                }
+                response += `\n   p2p:     sent to ${pushed}/${peerPks.length} peer(s)`;
+              } else {
+                response += `\n   p2p:     no peers or no sendTo`;
+              }
+            } catch (e: any) {
+              response += `\n   p2p:     notify failed (${e?.message ?? e})`;
+            }
+          }
+        }
+        break;
+      }
+      case 'chat-pull': {
+        const { chatPull } = await import('./git-transport/chat-repo.js');
+        const { renderOneLine } = await import('./git-transport/chat-render.js');
+        const r = await chatPull({ repoDir: process.cwd() });
+        if (!r.ok) {
+          response = `❌ chat-pull: ${r.reason}`;
+          error = response;
+        } else if (r.newMessages.length === 0) {
+          response = `✅ chat-pull: 0 new (${r.newCommits} commit(s) scanned)`;
+        } else {
+          response = [
+            `✅ chat-pull: ${r.newMessages.length} new message(s)`,
+            ...r.newMessages.map(renderOneLine),
+          ].join('\n');
+        }
+        break;
+      }
+      case 'chat-list': {
+        const { listMessages } = await import('./git-transport/chat-render.js');
+        const limit = (() => {
+          const idx = args.indexOf('--limit');
+          if (idx >= 0 && args[idx + 1]) return parseInt(args[idx + 1], 10);
+          return 20;
+        })();
+        const withIdx = args.indexOf('--with');
+        const withRole = withIdx >= 0 ? args[withIdx + 1] : undefined;
+        const all = listMessages(process.cwd(), withRole, limit);
+        const { renderOneLine } = await import('./git-transport/chat-render.js');
+        if (all.length === 0) {
+          response = '(no messages yet — try `bolloon --chat-init` first)';
+        } else {
+          response = [
+            `📜 ${all.length} message(s)${withRole ? ` (with=${withRole})` : ''}:`,
+            ...all.map(renderOneLine),
+          ].join('\n');
+        }
+        break;
+      }
+      case 'chat-watch': {
+        // 长循环, 直接 runToolCommand 内部跑, main 末尾的 process.exit(0) 不会触发
+        // (见 main() 特判)
+        const { chatWatch } = await import('./git-transport/chat-watch.js');
+        const idx = args.indexOf('--interval');
+        const intervalMs = idx >= 0 && args[idx + 1] ? parseInt(args[idx + 1], 10) : undefined;
+        await chatWatch({ repoDir: process.cwd(), intervalMs });
+        response = '✅ chat-watch stopped';
+        break;
+      }
+      case 'chat-status': {
+        const { chatStatus } = await import('./git-transport/chat-repo.js');
+        const s = await chatStatus({ repoDir: process.cwd() });
+        const lines = [
+          `📡 chat status`,
+          `   role:     ${s.role}`,
+          `   publicKey: ${s.publicKey.slice(0, 16)}...`,
+          `   repo:     ${s.repoDir}`,
+          `   remote:   ${s.remote ?? '(none — local-only mode)'}`,
+          `   branch:   ${s.branch ?? '(unknown)'}`,
+          `   head:     ${s.head ?? '(no commits)'}`,
+          `   ahead/behind: ${s.ahead ?? 0} / ${s.behind ?? 0}`,
+          `   mode:     ${s.mode}`,
+          `   files:    ${s.fileCount} (${Object.entries(s.byRole).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'})`,
+        ];
+        response = lines.join('\n');
+        break;
+      }
+
       default:
         response = `错误: 未知工具 "${tool}"`;
         error = response;
@@ -1216,6 +1350,13 @@ interface ParsedArgs {
   tui?: boolean;
   updateCheck?: boolean;
   updateNow?: boolean;
+  // --- chat transport (commits as messages) ---
+  chatInit?: boolean;
+  chatSend?: boolean;
+  chatPull?: boolean;
+  chatList?: boolean;
+  chatWatch?: boolean;
+  chatStatus?: boolean;
 }
 
 function parseArgs(): ParsedArgs {
@@ -1403,6 +1544,42 @@ function parseArgs(): ParsedArgs {
         }
         result.toolArgs = sessionArgs;
         break;
+      // --- chat transport (commits as messages) ---
+      case '--chat-init':
+        result.chatInit = true;
+        result.tool = 'chat-init';
+        break;
+      case '--chat-send':
+        result.chatSend = true;
+        result.tool = 'chat-send';
+        // 吃掉所有非 flag 参数作为消息体 (--chat-send "消息正文" 或 stdin)
+        const chatSendArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          chatSendArgs.push(args[++i]);
+        }
+        result.toolArgs = chatSendArgs;
+        break;
+      case '--chat-pull':
+        result.chatPull = true;
+        result.tool = 'chat-pull';
+        break;
+      case '--chat-list':
+        result.chatList = true;
+        result.tool = 'chat-list';
+        break;
+      case '--chat-watch':
+        result.chatWatch = true;
+        result.tool = 'chat-watch';
+        const watchArgs: string[] = [];
+        while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+          watchArgs.push(args[++i]);
+        }
+        result.toolArgs = watchArgs;
+        break;
+      case '--chat-status':
+        result.chatStatus = true;
+        result.tool = 'chat-status';
+        break;
       case '--update-check':
         result.updateCheck = true;
         result.tool = 'update-check';
@@ -1490,6 +1667,14 @@ function printHelp(): void {
   # 自动更新
   --update-check             检查 npm 包更新
   --update-now [pkg]        更新到最新版本
+
+  # 跨机聊天 (commits-as-messages, 共享 GitHub 仓库)
+  --chat-init                初始化 .comm/ 目录 (一次性)
+  --chat-send "消息正文"     把消息写到 .comm/<role>/, commit + push
+  --chat-pull                拉取远端 .comm/ 的新消息并显示
+  --chat-list                列出本地所有已同步消息
+  --chat-watch [--interval 15s]  后台定时拉取, 有新消息时输出
+  --chat-status              一屏查看: role / publicKey / remote / ahead-behind
 
   # AI 对话
   --prompt, -p <text>        通用 AI 对话（默认）
@@ -1698,7 +1883,10 @@ async function main() {
     console.log();
     await runNonInteractive(args, comm!);
     comm?.stop();
-    process.exit(0);
+    // chat-watch 是长循环, 不会自然 return, 走 SIGINT 自然退出
+    if (!args.chatWatch) {
+      process.exit(0);
+    }
   } else {
     s.section('对话模式');
     console.log(`${GRAY}输入命令即可开始对话，示例:${RESET}\n`);

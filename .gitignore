@@ -23,3 +23,9 @@ minimax-proxy
 .bolloon-logs
 Dive-into-Claude-Code/
 Dive-into/
+
+# bolloon chat transport (commits-as-messages) runtime state
+# 整个 .comm/ 目录不能 ignore — 它就是消息的载体.
+# 但 _state (cursor/seen/lock) 和 _inbox 是本机运行态, 不该 commit.
+.comm/_state/
+.comm/_inbox/

@@ -1,4 +1,5 @@
 import * as readline from 'readline';
+import { spawn } from 'child_process';
 import { documentReader } from '../documents/reader.js';
 import { getMinimax } from '../constraints/index.js';
 import { AgentProtocol } from '../agents/protocol.js';
@@ -78,6 +79,7 @@ export class CLIInterface {
     console.log('  send <peer>     - 向指定节点发送消息');
     console.log('  broadcast       - 广播任务到所有节点');
     console.log('  summary <text>  - 总结文本');
+    console.log('  chat <消息正文>  - 跨机聊天 (commits as messages, wrapper)');
     console.log('  help            - 显示帮助');
     console.log('  exit            - 退出\n');
   }
@@ -106,6 +108,9 @@ export class CLIInterface {
             break;
           case 'summary':
             await this.handleSummary(args.join(' '));
+            break;
+          case 'chat':
+            await this.handleChat(args.join(' '));
             break;
           case 'help':
             this.showHelp();
@@ -200,6 +205,29 @@ export class CLIInterface {
     console.log('\n📝 摘要结果:');
     console.log(result.summary);
     console.log(`\n质量评分: ${(result.qualityScore * 10).toFixed(1)}/10`);
+  }
+
+  private handleChat(text: string): Promise<void> {
+    return new Promise((resolve) => {
+      if (!text) {
+        console.log('请提供聊天内容: chat <消息正文>');
+        resolve();
+        return;
+      }
+      // 委派给 bolloon --chat-send, spawn 子进程, 同步输出
+      const child = spawn('npx', ['tsx', 'src/index.ts', '--chat-send', text], {
+        cwd: process.cwd(),
+        stdio: 'inherit',
+      });
+      child.on('close', (code) => {
+        if (code !== 0) console.error(`chat 子进程退出码 ${code}`);
+        resolve();
+      });
+      child.on('error', (err) => {
+        console.error('chat 子进程启动失败:', err.message);
+        resolve();
+      });
+    });
   }
 
   private async shutdown(): Promise<void> {
