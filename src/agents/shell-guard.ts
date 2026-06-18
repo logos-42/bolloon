@@ -53,7 +53,10 @@ import * as os from 'os';
 const FALLBACK_COMMAND_ALLOWLIST: ReadonlySet<string> = new Set([
   'git', 'node', 'npm', 'npx', 'tsx', 'tsc', 'vitest',
   'cat', 'head', 'tail', 'wc', 'ls', 'echo', 'pwd', 'date',
-  'mkdir', 'touch'
+  'mkdir', 'touch',
+  // M3.5 (2026-06-17): Windows cmd 内置命令 (cmd.exe shell 模式)
+  //   'cat'/'ls' 在 Git Bash 才存在, Windows 原生 cmd 用 'type'/'dir'
+  'type', 'dir', 'cd', 'where', 'set', 'echo.',
 ]);
 
 const FALLBACK_PATH_ALLOWLIST: readonly string[] = [

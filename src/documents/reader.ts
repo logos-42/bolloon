@@ -28,6 +28,20 @@ export class DocumentReader {
       case '.yaml':
       case '.yml':
       case '.json':
+      // M3.5 (2026-06-17): agent 自读源码需要 — 之前 .ts 不支持, LLM 拿到空内容
+      //   .ts/.tsx/.js/.jsx 都是纯文本, 直接 readFile
+      case '.ts':
+      case '.tsx':
+      case '.js':
+      case '.jsx':
+      case '.mjs':
+      case '.cjs':
+      case '.py':
+      case '.go':
+      case '.rs':
+      case '.java':
+      case '.sh':
+      case '.bash':
         text = await fs.readFile(filePath, 'utf-8');
         break;
       case '.pdf':

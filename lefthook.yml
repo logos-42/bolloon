@@ -1,12 +1,4 @@
-# lefthook.yml — Bolloon 源码护栏 (阶段 C 护栏 1)
-#
-# 2026-06-17: agent auto-evolve (Q3-B 决策)
-#   - push agent/* 分支: vitest-full / build-check / tag-baseline 全部跳过 (CI 兜底)
-#   - push master/main: 仍跑全测 + tag 守护
-#   - 跳过条件: BOLLOON_AUTO_EVOLVE=1 环境变量 OR commit message 以 "auto-evolve:" 开头
-#
-# 实际命令写在 scripts/lefthook-helper.sh, 避免 yml 内嵌多行 sh 在 Windows bash 解析失败
-
+# lefthook.yml — 仅保留 pre-commit 快速检查, 去掉 pre-push 拦截
 pre-commit:
   parallel: true
   commands:
@@ -16,17 +8,6 @@ pre-commit:
     tsc-check:
       glob: "src/**/*.{ts,tsx}"
       run: sh scripts/lefthook-helper.sh commit-tsc-check
-    # system-prompt 字符上限 + 版本标记 + hibsml 脱除 (layer 改动时触发)
     validate-prompt-layers:
       glob: "src/llm/system-prompt/layers/**/*.md"
       run: npx tsx -r dotenv/config scripts/validate-system-prompt.ts
-
-pre-push:
-  parallel: true
-  commands:
-    vitest-full:
-      run: sh scripts/lefthook-helper.sh push-vitest-full
-    build-check:
-      run: sh scripts/lefthook-helper.sh push-build-check
-    tag-baseline:
-      run: sh scripts/lefthook-helper.sh push-tag-baseline

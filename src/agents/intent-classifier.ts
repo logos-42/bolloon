@@ -69,7 +69,25 @@ export function intentHint(intent: Intent): string {
 2. 用 \`edit_file\` 精确定位改 (old_text 全文匹配) 或 \`write_file\` 整体覆写
 3. 改完跑 \`npx tsc --noEmit\` 和 \`npx vitest run --reporter=dot --bail=1\` 验证
 4. 用 \`git_commit\` 提交到当前分支 (分支名 agent/<task-id>)
-不要调用 \`<final gen>\` 标记除非任务真正完成 (commit + 测试通过).`;
+不要调用 \`<final gen>\` 标记除非任务真正完成 (commit + 测试通过).
+
+## 信息不足时主动查询
+**重要**: 不要假设! 如果任何步骤信息不足 (路径不明确/命令参数不知道/分支策略不清楚/保护规则不明白), 用工具主动查:
+- \`list_files\` 看目录结构
+- \`read_document\` 读配置文件 / 源文件
+- \`shell_exec\` 跑 \`git status\` / \`git branch\` / \`git log\` / \`git diff\` 等
+- \`git_diff\` 看当前修改
+
+常见查询命令:
+- \`shell_exec(command="git", args=["status"])\`
+- \`shell_exec(command="git", args=["branch", "-a"])\`
+- \`shell_exec(command="git", args=["log", "--oneline", "-5"])\`
+- \`shell_exec(command="git", args=["diff"])\` (查看 staged + unstaged)
+- \`shell_exec(command="git", args=["remote", "-v"])\`
+- \`list_files(path="src/agents")\` 看 bolloon agent 模块
+- \`read_document(path="~/.bolloon/self-improve-policy.json")\` 看你的护栏规则
+
+不要凭空推理, 查不到再问用户.`;
     case 'multi_step':
       return `\n\n## 任务类型: multi_step
 当前请求是多步任务. 你应该:

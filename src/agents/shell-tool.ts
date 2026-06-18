@@ -11,7 +11,17 @@
 
 import { spawn } from 'child_process';
 import * as fs from 'fs';
-import { checkCommand, checkWritePath, getSandboxCwd } from './shell-guard.js';
+import { checkCommand, checkWritePath } from './shell-guard.js';
+
+/**
+ * 把参数 quote 一下,避免 shell 元字符注入 (&& | ; ` > < 等).
+ * Windows: 用双引号包, 内部双引号转义.
+ */
+function shellQuoteArgs(arg: string): string {
+  if (process.platform !== 'win32') return arg;  // POSIX shell 由 checkCommand 防护
+  if (!/[\s"&|<>^()%!`]/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '""')}"`;
+}
 
 export interface ShellExecResult {
   success: boolean;
@@ -58,20 +68,27 @@ export async function shellExec(
     }
   }
 
-  // 3. 确保沙箱存在
-  const sandboxCwd = getSandboxCwd();
-  try {
-    fs.mkdirSync(sandboxCwd, { recursive: true });
-  } catch {
-    // 已经存在则忽略
-  }
+  // 3. 确定运行 cwd
+  // M3.5 (2026-06-17 + 2026-06-18): 全部走 process.cwd() (即 agent 实际工作目录).
+  //   老逻辑写命令走 sandbox 反而出问题 — sandbox 是个独立 git 目录,
+  //   在里面 git add/commit/push 看不到外面的 working tree,
+  //   agent 看到的 status 是 sandbox 自己的, 容易误判.
+  //   现在全部走 cwd. (注: 老逻辑 `getSandboxCwd()` 已废弃, 不再使用)
+  const cwd: string = process.cwd();
 
   // 4. 跑命令
+  // M3.5 (2026-06-17): Windows 上 ls/cat/pwd 不在 PATH, 必须用 cmd 内置命令 (dir/type/cd)
+  //   但 cmd 内置命令不能在 shell: false 下跑, 切到 shell: true (Windows shell: cmd.exe, POSIX shell: /bin/sh)
+  //   风险: 元字符注入 — 通过 checkCommand + arg denylist 防护, 加 shellQuoteArgs() 转义
+  const isWindows = process.platform === 'win32';
+  const needsShell = isWindows;  // Windows: 必须用 shell 才能跑 cmd 内置
+  const quotedArgs = isWindows ? args.map(shellQuoteArgs) : args;
+
   return new Promise((resolve) => {
-    const proc = spawn(cmd, args, {
-      cwd: sandboxCwd,
+    const proc = spawn(cmd, quotedArgs, {
+      cwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, // 禁止 git 弹交互
-      shell: false,  // **关键**: 禁用 shell, 防止元字符注入
+      shell: needsShell,
       windowsHide: true
     });
 

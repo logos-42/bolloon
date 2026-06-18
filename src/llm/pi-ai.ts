@@ -90,27 +90,42 @@ export class PiAIModel {
   }
 
   /**
-   * 2026-06-17 扩展: chat 接受可选 systemPrompt 覆盖 — pivot loop 之前调 chat(context, systemPrompt)
-   *   把 system 当 context 传, 把 context 当 message 传, 导致 46K char context 被当 user message
-   *   发出去, 模型撞 max_tokens 上限返回空. 现在 chat(message, systemOverride?, signal?) 优先用 systemOverride.
+   * 与 LLM 对话.
+   *
+   * 支持三种调用形式:
+   *   - 旧: chat(message: string, context?: string, signal?)
+   *       单一 user message + 附加 system context. 简单场景用.
+   *   - 新: chat(messages: ChatMessage[], context?: string, signal?)
+   *       完整 messages 数组, 含 user/assistant/tool/system role.
+   *       工具调用场景必用 — 否则 LLM 看不到工具结果.
+   *   - pivot loop 兼容: chat(context: string, systemPrompt: string, signal?)
+   *       第二参超过 2K 时视为 system prompt 覆盖, 避免把 46K context 当 user message 发送.
+   *
+   * 2026-06-17 (M3.5 调试): buildContext() 之前把所有 history 序列化成单字符串,
+   *   LLM 看不到 tool 调用的真实结果,导致 CLI loop 卡死.
+   *   现在 messages 数组版本保留 role 语义, LLM 能正确看到工具返回.
    */
-  async chat(message: string, systemOrContext?: string, signal?: AbortSignal): Promise<ChatResult> {
-    // Heuristic: if the 2nd arg is huge (> 2K) it's likely a system prompt (pivot loop 风格);
-    // if small/null, treat as context (旧 chat 风格).
-    let systemPrompt: string;
-    let contextForBuild: string | undefined;
-    if (systemOrContext && systemOrContext.length > 2000) {
-      // pivot loop style: 直接当 system prompt 用, 拼上 base 模板
+  async chat(
+    messageOrMessages: string | ChatMessage[],
+    contextOrSystemPrompt?: string,
+    signal?: AbortSignal
+  ): Promise<ChatResult> {
+    const systemPrompt = await this.buildSystemPromptAsync(contextOrSystemPrompt);
+    let messages: ChatMessage[];
+    if (Array.isArray(messageOrMessages)) {
+      messages = [{ role: 'system', content: systemPrompt }, ...messageOrMessages];
+    } else if (contextOrSystemPrompt && contextOrSystemPrompt.length > 2000) {
       const baseSystem = await this.buildSystemPromptAsync(undefined);
-      systemPrompt = baseSystem + '\n\n' + systemOrContext;
+      messages = [
+        { role: 'system', content: baseSystem + '\n\n' + contextOrSystemPrompt },
+        { role: 'user', content: messageOrMessages }
+      ];
     } else {
-      contextForBuild = systemOrContext;
-      systemPrompt = await this.buildSystemPromptAsync(contextForBuild);
+      messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: messageOrMessages }
+      ];
     }
-    const messages: ChatMessage[] = [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: message }
-    ];
 
     try {
       const response = await this.generateText({
