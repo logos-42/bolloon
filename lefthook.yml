@@ -5,7 +5,7 @@
 #   - push master/main: 仍跑全测 + tag 守护
 #   - 跳过条件: BOLLOON_AUTO_EVOLVE=1 环境变量 OR commit message 以 "auto-evolve:" 开头
 #
-# 实际命令写在 scripts/lefthook-helper.sh, 避免 yml 内嵌多行 sh 在 Windows bash 解析失败
+# 所有命令写在 scripts/lefthook-helper.sh, 避免 yml 内嵌多行 sh 在 Windows bash 解析失败
 
 pre-commit:
   parallel: true

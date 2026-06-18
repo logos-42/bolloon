@@ -13,6 +13,16 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import { checkCommand, checkWritePath, getSandboxCwd } from './shell-guard.js';
 
+/**
+ * 把参数 quote 一下,避免 shell 元字符注入 (&& | ; ` > < 等).
+ * Windows: 用双引号包, 内部双引号转义.
+ */
+function shellQuoteArgs(arg: string): string {
+  if (process.platform !== 'win32') return arg;  // POSIX shell 由 checkCommand 防护
+  if (!/[\s"&|<>^()%!`]/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '""')}"`;
+}
+
 export interface ShellExecResult {
   success: boolean;
   output?: string;
@@ -58,20 +68,37 @@ export async function shellExec(
     }
   }
 
-  // 3. 确保沙箱存在
-  const sandboxCwd = getSandboxCwd();
-  try {
-    fs.mkdirSync(sandboxCwd, { recursive: true });
-  } catch {
-    // 已经存在则忽略
+  // 3. 确定运行 cwd
+  // M3.5 (2026-06-17): 之前所有命令强制跑在 .bolloon-shell-sandbox/, 但 git / npm install / 读 cwd 相对路径 都会失败
+  //   现在策略: 写命令 (echo > / cat > / sed -i) 走 sandbox (隔离), 读命令 (ls / cat / head / git / npm) 走 cwd (能访问 .git)
+  //   简单判断: 第一个 arg 含 '>' '|' '<file' 'sed -i' 'tee' 的走 sandbox, 否则走 cwd
+  const WRITE_HINT_RE = /^(>|>>|tee\s|sed\s.*-i|.*>\s*\S+|.*\|\s*\S+\s*>)/;
+  const looksLikeWrite = args.some((a) => WRITE_HINT_RE.test(a));
+  let cwd: string;
+  if (looksLikeWrite) {
+    cwd = getSandboxCwd();
+    try {
+      fs.mkdirSync(cwd, { recursive: true });
+    } catch {
+      // 已经存在则忽略
+    }
+  } else {
+    cwd = process.cwd();
   }
 
   // 4. 跑命令
+  // M3.5 (2026-06-17): Windows 上 ls/cat/pwd 不在 PATH, 必须用 cmd 内置命令 (dir/type/cd)
+  //   但 cmd 内置命令不能在 shell: false 下跑, 切到 shell: true (Windows shell: cmd.exe, POSIX shell: /bin/sh)
+  //   风险: 元字符注入 — 通过 checkCommand + arg denylist 防护, 加 shellQuoteArgs() 转义
+  const isWindows = process.platform === 'win32';
+  const needsShell = isWindows;  // Windows: 必须用 shell 才能跑 cmd 内置
+  const quotedArgs = isWindows ? args.map(shellQuoteArgs) : args;
+
   return new Promise((resolve) => {
-    const proc = spawn(cmd, args, {
-      cwd: sandboxCwd,
+    const proc = spawn(cmd, quotedArgs, {
+      cwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, // 禁止 git 弹交互
-      shell: false,  // **关键**: 禁用 shell, 防止元字符注入
+      shell: needsShell,
       windowsHide: true
     });
 

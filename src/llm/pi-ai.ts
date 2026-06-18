@@ -89,12 +89,35 @@ export class PiAIModel {
     return valid;
   }
 
-  async chat(message: string, context?: string, signal?: AbortSignal): Promise<ChatResult> {
+  /**
+   * 与 LLM 对话.
+   *
+   * 支持两种调用形式:
+   *   - 旧: chat(message: string, context?: string, signal?)
+   *       单一 user message + 附加 system context. 简单场景用.
+   *   - 新: chat(messages: ChatMessage[], context?: string, signal?)
+   *       完整 messages 数组, 含 user/assistant/tool/system role.
+   *       工具调用场景必用 — 否则 LLM 看不到工具结果.
+   *
+   * 2026-06-17 (M3.5 调试): buildContext() 之前把所有 history 序列化成单字符串,
+   *   LLM 看不到 tool 调用的真实结果,导致 CLI loop 卡死.
+   *   现在 messages 数组版本保留 role 语义, LLM 能正确看到工具返回.
+   */
+  async chat(
+    messageOrMessages: string | ChatMessage[],
+    context?: string,
+    signal?: AbortSignal
+  ): Promise<ChatResult> {
     const systemPrompt = await this.buildSystemPromptAsync(context);
-    const messages: ChatMessage[] = [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: message }
-    ];
+    let messages: ChatMessage[];
+    if (Array.isArray(messageOrMessages)) {
+      messages = [{ role: 'system', content: systemPrompt }, ...messageOrMessages];
+    } else {
+      messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: messageOrMessages }
+      ];
+    }
 
     try {
       const response = await this.generateText({

@@ -5,15 +5,17 @@
 #   <command> = commit | vitest-full | build-check | tag-baseline
 
 CMD="$1"
-BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "none")
-AUTO_EVOLVE_MSG=$(git log -1 --pretty='%B' 2>/dev/null | head -1 | grep -c '^auto-evolve:' || true)
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo none)
+AUTO_EVOLVE_MSG=$(git log -1 --pretty=%B 2>/dev/null | head -1 | grep -c ^auto-evolve: || echo 0)
 
 is_master_main() {
   [ "$BRANCH" = "master" ] || [ "$BRANCH" = "main" ]
 }
 
 is_auto_evolve() {
-  [ "$BOLLOON_AUTO_EVOLVE" = "1" ] || [ "$AUTO_EVOLVE_MSG" -gt 0 ]
+  if [ "$BOLLOON_AUTO_EVOLVE" = "1" ]; then return 0; fi
+  if [ "$AUTO_EVOLVE_MSG" -gt 0 ] 2>/dev/null; then return 0; fi
+  return 1
 }
 
 case "$CMD" in

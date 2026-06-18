@@ -1493,6 +1493,17 @@ class PiAgentSession implements AgentSession {
     this.currentOnStream = options?.onStream ?? null;
     await this.computeJudgmentGate(input);
 
+    // M2.2 (2026-06-17): intent 分类 — prompt() 路径也跑 (跟 promptStream 对齐)
+    try {
+      const { classifyIntent, intentHint } = await import('./intent-classifier.js');
+      this.currentIntent = classifyIntent(input);
+      this.currentIntentHint = intentHint(this.currentIntent);
+    } catch (err) {
+      console.warn('[PiAgent] classifyIntent in prompt() failed:', err);
+      this.currentIntent = 'chitchat';
+      this.currentIntentHint = '';
+    }
+
     // P2: 解析当前 permission mode
     try {
       const { resolvePermissionMode } = await import('./permission-mode.js');
@@ -1500,6 +1511,24 @@ class PiAgentSession implements AgentSession {
     } catch (err) {
       console.warn('[PiAgent] resolvePermissionMode failed (non-fatal):', err);
       this.currentPermissionMode = 'default';
+    }
+
+    // M3.1 (2026-06-17): 跟 promptStream 一样, usePivotLoop 时走 pivotLoop 路径
+    //   之前 prompt() 永远跑老 runReActLoop, CLI/web 行为不一致
+    if (this.usePivotLoop) {
+      try {
+        const lr = await this.promptWithPivotLoop(input, undefined, options?.channelId);
+        return lr.response || '';
+      } finally {
+        if (this.judgmentGateUsedIds.length > 0) {
+          recordJudgmentUsage(this.judgmentGateUsedIds, { userInput: input }).catch((err) =>
+            console.warn('[PiAgent] recordJudgmentUsage failed:', err)
+          );
+        }
+        this.clearJudgmentGate();
+        this.currentSignal = null;
+        this.currentOnStream = null;
+      }
     }
 
     try {
@@ -1897,6 +1926,10 @@ ${this.getToolDefinitions()}
       }
 
       const context = this.buildContext();
+      // M3.5 (2026-06-17): 也构造 messages 数组版本, 让 LLM 看到结构化 tool 角色
+      //   buildContext() 把 history 序列化成字符串 — LLM 看不到 tool 调用的真实结果
+      //   新版用 messages 数组直接喂给 LLM, 保留 role 语义 (user/assistant/tool/system)
+      const messages = this.buildMessages();
       const toolDefs = this.getToolDefinitions();
 
       // 动态构建 refine 上下文
@@ -1946,7 +1979,7 @@ ${toolDefs}
       //   2. reactive compaction (prompt 估算超阈值, 跑压缩)
       //   3. prompt-too-long (LLM 报错 4xxx token 错误, 跑 reactive compaction 再试 1 次)
       // 失败静默: 全部重试失败 → 空 reply (上层用 no tool_use 终止)
-      const response = await this.callLlmWithRecovery(llm, context, systemPrompt, signal, onStream);
+      const response = await this.callLlmWithRecovery(llm, messages, systemPrompt, signal, onStream);
       const reply = (response.reply || '').trim();
 
       // 2026-06-16: 看到 [AI 服务调用失败] sentinel → 不再立即 break,
@@ -2416,6 +2449,44 @@ Workspace root folder: ${this.cwd}
   }
 
   /**
+   * M3.5 (2026-06-17): 把 history 转成 messages 数组, 给 llm.chat() 用.
+   *   不再用 buildContext() 把所有 role 压成字符串 — LLM 看不到 tool 调用结果.
+   *   messages 数组保留 role 语义, tool role 单独传递, LLM 能看到完整 tool 结果.
+   *
+   * 取最近 N 条, 同步压缩前 3 层 (跟 buildContext 同步).
+   * 跳过 projectedHistory 路径 — messages 数组必须真实, 不能用投影.
+   */
+  private buildMessages(): Array<{ role: string; content: string }> {
+    try {
+      const recentMessages = this.compressHistorySync(this.messageHistory).slice(-15);
+      const out: Array<{ role: string; content: string }> = [];
+      for (const m of recentMessages) {
+        const role = m.role;
+        let content = m.content;
+        // tool role: 用 toolResult 序列化 (跟 buildContext 一样)
+        if (role === 'tool') {
+          const result = (m as any).toolResult ? JSON.stringify((m as any).toolResult) : content;
+          content = `[工具结果] ${result}`;
+        }
+        // system role (router hint 等) 直接保留
+        if (role === 'system') {
+          out.push({ role: 'system', content });
+          continue;
+        }
+        // assistant / user / tool 直接转
+        if (role === 'user' || role === 'assistant' || role === 'tool') {
+          out.push({ role, content });
+        }
+      }
+      return out;
+    } catch (err) {
+      console.warn('[PiAgent] buildMessages failed (silent, falling back to text):', err);
+      // 退化: 用 buildContext 字符串包装成单 user message
+      return [{ role: 'user', content: this.buildContext() }];
+    }
+  }
+
+  /**
    * 估算 messageHistory 的 token 数 (4 字符 ≈ 1 token, 与 context-compaction 同步).
    * 失败静默: 任何异常 → 0 (不阻塞)
    */
@@ -2438,7 +2509,7 @@ Workspace root folder: ${this.cwd}
    */
   private async callLlmWithRecovery(
     llm: any,
-    context: string,
+    contextOrMessages: string | Array<{ role: string; content: string }>,
     systemPrompt: string,
     signal: AbortSignal | undefined,
     onStream?: (chunk: any) => void
@@ -2491,7 +2562,9 @@ Workspace root folder: ${this.cwd}
     let lastClass: ReturnType<typeof classifyError> = 'other';
     for (let attempt = 0; attempt < 4; attempt++) {  // 最多 4 次尝试
       try {
-        const response = await llm.chat(context, systemPrompt, signal);
+        // M3.5 (2026-06-17): 传 messages 数组 (如果 contextOrMessages 是数组) 或字符串
+        //   数组版让 LLM 看到结构化的 user/assistant/tool role, 而不是把 history 拼成单字符串
+        const response = await llm.chat(contextOrMessages, systemPrompt, signal);
         return { reply: response.reply || '' };
       } catch (err: any) {
         // 用户主动 abort: 不重试, 立即抛
@@ -2512,8 +2585,12 @@ Workspace root folder: ${this.cwd}
           } catch (compactionErr) {
             console.warn('[PiAgent] reactive compaction on prompt-too-long failed:', compactionErr);
           }
-          // 重新生成 context
-          context = this.buildContext();
+          // 重新生成 context (重试 prompt_too_long 时重建 messages — 包含压缩后的 history)
+          if (Array.isArray(contextOrMessages)) {
+            contextOrMessages = this.buildMessages();
+          } else {
+            contextOrMessages = this.buildContext();
+          }
         } else {
           // 指数退避
           await new Promise<void>((r) => setTimeout(r, backoffMs(attempt)));

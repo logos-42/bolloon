@@ -46,6 +46,10 @@ const TOOL_WHITELIST = new Set<string>([
   'read', 'write', 'edit_file', 'list_files',
   'list_sessions', 'get_session_state', 'list_messages',
   'send_to_channel', 'create_channel',
+  // M2.1 (2026-06-17): 新增的 10 个 agent 工具 (跟 pi-sdk registerTools 同步)
+  'write_file', 'git_diff', 'git_commit', 'git_push', 'git_branch',
+  'create_task', 'update_task', 'get_task', 'list_tasks',
+  'use_skill', 'self_improve',
   // MCP 注册的工具
   'mcp_tool',
 ]);
