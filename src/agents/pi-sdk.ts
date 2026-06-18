@@ -1039,7 +1039,7 @@ class PiAgentSession implements AgentSession {
     // 沙箱 cwd: .bolloon-shell-sandbox/
     this.tools.set('shell_exec', {
       name: 'shell_exec',
-      description: '在沙箱里跑 shell 命令. 仅支持白名单内命令: git, npm, npx, tsx, tsc, vitest, cat, head, tail, ls, wc, echo, pwd, date, mkdir, touch. 禁止管道/重定向/rm -rf/sudo. 命中护栏黑名单会被拒.',
+      description: '在 cwd (process.cwd(), 即 bolloon 当前工作目录) 跑 shell 命令. 仅支持白名单内命令: git, npm, npx, tsx, tsc, vitest, cat, head, tail, ls, wc, echo, pwd, date, mkdir, touch. 禁止管道/重定向/rm -rf/sudo. 命中护栏黑名单会被拒. 注意: cwd 是真正的 git repo 工作目录, git add/commit/push 等命令会作用于本仓库, 不是 sandbox.',
       parameters: { command: '可执行文件 (必填, 必须在白名单)', args: '参数数组, 逗号分隔', timeoutMs: '超时毫秒, 默认 30000' },
       execute: async (args) => {
         const cmd = String(args.command || '').trim();

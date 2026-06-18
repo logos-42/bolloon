@@ -173,33 +173,23 @@ async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPa
 }
 
 function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<{ cid?: string; ipnsName?: string }> {
+  // 2026-06-17: 去掉 IPNS 重试机制 — 老逻辑 60s × 10 次 = 10 分钟阻塞,
+  //   严重拖慢 agent 启动. 失败就立刻 fallback, 不阻塞主流程.
   s.step(2, 5, '发布 DID → IPFS (后台)', 'loading');
 
   return new Promise((resolve) => {
     const attempt = async () => {
-      let lastLogTime = 0;
-      const retryWithBackoff = async (retries: number): Promise<void> => {
-        try {
-          const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
-          const result = await auth.registerAgent({ name, services: [] }, kp, '');
-          s.step(2, 5, '发布 DID → IPFS', 'ok');
-          resolve({ cid: result.cid });
-        } catch (e: any) {
-          const now = Date.now();
-          if (now - lastLogTime > 30000) {
-            process.stdout.write(`     ${YELLOW}⏳ IPNS发布中 (失败${retries}次), 后台重试...${RESET}\r`);
-            lastLogTime = now;
-          }
-          if (retries < 10) {
-            setTimeout(() => retryWithBackoff(retries + 1), 60000);
-          } else {
-            process.stdout.write(`     ${YELLOW}⚠ IPNS发布重试结束，本地模式运行${RESET}\n`);
-            resolve({});
-          }
-        }
-      };
-
-      setTimeout(() => retryWithBackoff(1), 100);
+      try {
+        const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+        const result = await auth.registerAgent({ name, services: [] }, kp, '');
+        s.step(2, 5, '发布 DID → IPFS', 'ok');
+        resolve({ cid: result.cid });
+      } catch (e: any) {
+        // 一次失败直接放弃 — 本地模式运行就够了, 不重试
+        process.stdout.write(`     ${YELLOW}⚠ IPFS 发布失败 (${e?.message?.slice(0, 80) || 'unknown'}), 本地模式运行${RESET}\n`);
+        s.step(2, 5, '发布 DID → IPFS', 'warn');
+        resolve({});
+      }
     };
 
     attempt();

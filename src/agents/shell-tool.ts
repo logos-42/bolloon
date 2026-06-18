@@ -11,7 +11,7 @@
 
 import { spawn } from 'child_process';
 import * as fs from 'fs';
-import { checkCommand, checkWritePath, getSandboxCwd } from './shell-guard.js';
+import { checkCommand, checkWritePath } from './shell-guard.js';
 
 /**
  * 把参数 quote 一下,避免 shell 元字符注入 (&& | ; ` > < 等).
@@ -69,22 +69,12 @@ export async function shellExec(
   }
 
   // 3. 确定运行 cwd
-  // M3.5 (2026-06-17): 之前所有命令强制跑在 .bolloon-shell-sandbox/, 但 git / npm install / 读 cwd 相对路径 都会失败
-  //   现在策略: 写命令 (echo > / cat > / sed -i) 走 sandbox (隔离), 读命令 (ls / cat / head / git / npm) 走 cwd (能访问 .git)
-  //   简单判断: 第一个 arg 含 '>' '|' '<file' 'sed -i' 'tee' 的走 sandbox, 否则走 cwd
-  const WRITE_HINT_RE = /^(>|>>|tee\s|sed\s.*-i|.*>\s*\S+|.*\|\s*\S+\s*>)/;
-  const looksLikeWrite = args.some((a) => WRITE_HINT_RE.test(a));
-  let cwd: string;
-  if (looksLikeWrite) {
-    cwd = getSandboxCwd();
-    try {
-      fs.mkdirSync(cwd, { recursive: true });
-    } catch {
-      // 已经存在则忽略
-    }
-  } else {
-    cwd = process.cwd();
-  }
+  // M3.5 (2026-06-17 + 2026-06-18): 全部走 process.cwd() (即 agent 实际工作目录).
+  //   老逻辑写命令走 sandbox 反而出问题 — sandbox 是个独立 git 目录,
+  //   在里面 git add/commit/push 看不到外面的 working tree,
+  //   agent 看到的 status 是 sandbox 自己的, 容易误判.
+  //   现在全部走 cwd. (注: 老逻辑 `getSandboxCwd()` 已废弃, 不再使用)
+  const cwd: string = process.cwd();
 
   // 4. 跑命令
   // M3.5 (2026-06-17): Windows 上 ls/cat/pwd 不在 PATH, 必须用 cmd 内置命令 (dir/type/cd)
