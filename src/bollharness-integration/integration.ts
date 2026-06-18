@@ -12,6 +12,8 @@ import { GateStateMachine, type Gate } from './gate-state-machine.js';
 import { GuardChecker, runGuards, type GuardResult } from './guard-checker.js';
 import { ContextRouter } from './context-router.js';
 import { SkillAdapter, createSkillAdapter } from './skill-adapter.js';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export interface BollharnessConfig {
   enabled: boolean;
@@ -19,6 +21,7 @@ export interface BollharnessConfig {
   contextEnabled: boolean;
   skillsEnabled: boolean;
   gatesEnabled: boolean;
+  persistencePath?: string;
 }
 
 export interface IntegrationResult {
@@ -62,12 +65,75 @@ export class BollharnessIntegration {
       contextEnabled: config.contextEnabled ?? true,
       skillsEnabled: config.skillsEnabled ?? true,
       gatesEnabled: config.gatesEnabled ?? true,
+      persistencePath: config.persistencePath,
     };
 
     this.gateMachine = new GateStateMachine();
     this.guardChecker = new GuardChecker();
     this.contextRouter = new ContextRouter();
     this.skillAdapter = createSkillAdapter();
+
+    if (this.config.persistencePath) {
+      this.loadState();
+    }
+  }
+
+  saveState(): void {
+    if (!this.config.persistencePath) return;
+    try {
+      const gateState = this.gateMachine.getState();
+      const data = JSON.stringify({
+        gateState: {
+          currentGate: gateState.currentGate,
+          entrySatisfied: gateState.entrySatisfied,
+          blockers: gateState.blockers,
+          requiredArtifact: gateState.requiredArtifact,
+          requiredNextSkill: gateState.requiredNextSkill,
+          valueInjection: gateState.valueInjection,
+          artifacts: Array.from(gateState.artifacts.entries()),
+          conversationHistory: gateState.conversationHistory,
+        },
+        sessionArchives: this.sessionArchives,
+        currentSessionId: this.currentSessionId,
+      }, null, 2);
+      const dir = path.dirname(this.config.persistencePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(this.config.persistencePath, data, 'utf-8');
+    } catch (err: any) {
+      console.warn(`[BollharnessIntegration] 持久化失败: ${err.message}`);
+    }
+  }
+
+  private loadState(): void {
+    if (!this.config.persistencePath) return;
+    try {
+      if (!fs.existsSync(this.config.persistencePath)) return;
+      const raw = fs.readFileSync(this.config.persistencePath, 'utf-8');
+      const data = JSON.parse(raw);
+      if (data.gateState) {
+        this.gateMachine.restore({
+          currentGate: data.gateState.currentGate,
+          entrySatisfied: data.gateState.entrySatisfied,
+          blockers: data.gateState.blockers,
+          requiredArtifact: data.gateState.requiredArtifact,
+          requiredNextSkill: data.gateState.requiredNextSkill,
+          requiredReviewSubstrate: undefined,
+          valueInjection: data.gateState.valueInjection || '',
+          artifacts: new Map(data.gateState.artifacts || []),
+          conversationHistory: data.gateState.conversationHistory || [],
+        });
+      }
+      if (data.sessionArchives) {
+        this.sessionArchives = data.sessionArchives;
+      }
+      if (data.currentSessionId) {
+        this.currentSessionId = data.currentSessionId;
+      }
+    } catch (err: any) {
+      console.warn(`[BollharnessIntegration] 状态恢复失败: ${err.message}`);
+    }
   }
 
   /**
@@ -172,6 +238,7 @@ export class BollharnessIntegration {
    */
   submitGateArtifact(name: string, artifact: unknown): void {
     this.gateMachine.submitArtifact(name, artifact);
+    this.saveState();
   }
 
   /**
@@ -182,6 +249,7 @@ export class BollharnessIntegration {
     transition: unknown;
   }> {
     const transition = await this.gateMachine.transition(reviewResult);
+    this.saveState();
     return {
       success: transition.blockers.length === 0,
       transition,
@@ -319,6 +387,7 @@ export class BollharnessIntegration {
 
     this.sessionArchives.push(archive);
     this.currentSessionId = id;
+    this.saveState();
 
     return archive;
   }
@@ -421,6 +490,7 @@ export class BollharnessIntegration {
    */
   startNewSession(): string {
     this.currentSessionId = `session_${Date.now()}`;
+    this.saveState();
     return this.currentSessionId;
   }
 

@@ -143,6 +143,20 @@ export class GateStateMachine {
     return { ...this.state, artifacts: new Map(this.state.artifacts), conversationHistory: [...this.state.conversationHistory] };
   }
 
+  restore(state: GateState): void {
+    this.state = {
+      currentGate: state.currentGate,
+      entrySatisfied: state.entrySatisfied,
+      blockers: [...state.blockers],
+      requiredArtifact: state.requiredArtifact,
+      requiredNextSkill: state.requiredNextSkill,
+      requiredReviewSubstrate: state.requiredReviewSubstrate,
+      valueInjection: state.valueInjection,
+      artifacts: new Map(state.artifacts),
+      conversationHistory: [...state.conversationHistory],
+    };
+  }
+
   getCurrentGate(): Gate {
     return this.state.currentGate;
   }

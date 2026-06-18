@@ -22,6 +22,10 @@
  */
 
 import { SkillRegistry, Skill } from '@bolloon/constraint-runtime';
+
+type LlmClient = {
+  chat: (messages: { role: string; content: string }[], systemPrompt?: string, signal?: any) => Promise<{ reply: string }>;
+};
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -131,6 +135,12 @@ export abstract class BaseSkill implements Skill {
   abstract name: string;
   abstract description: string;
 
+  private static llm: LlmClient | null = null;
+
+  static setLlm(instance: LlmClient): void {
+    BaseSkill.llm = instance;
+  }
+
   abstract execute(params: Record<string, unknown>): Promise<string>;
 
   protected log(message: string, level: 'info' | 'warn' | 'error' = 'info'): void {
@@ -140,6 +150,32 @@ export abstract class BaseSkill implements Skill {
 
   protected formatOutput(output: Record<string, unknown>): string {
     return JSON.stringify(output, null, 2);
+  }
+
+  protected async callLm(system: string, user: string): Promise<string> {
+    let llm = BaseSkill.llm;
+    if (!llm) {
+      try {
+        const { getMinimax } = await import('../llm/pi-ai.js');
+        const m = getMinimax();
+        if (m && typeof m.chat === 'function') {
+          BaseSkill.setLlm(m as unknown as LlmClient);
+          llm = m as unknown as LlmClient;
+        }
+      } catch {
+        return this.formatOutput({ warning: 'LLM 未注入', name: this.name });
+      }
+    }
+    if (!llm) {
+      return this.formatOutput({ warning: 'LLM 未注入', name: this.name });
+    }
+    try {
+      const res = await llm.chat([{ role: 'user', content: user }], system);
+      return res.reply || '(空回复)';
+    } catch (err: any) {
+      this.log(`LLM 调用失败: ${err.message}`, 'error');
+      return this.formatOutput({ error: `LLM 调用失败: ${err.message}` });
+    }
   }
 }
 
@@ -151,69 +187,18 @@ export class ArchSkill extends BaseSkill {
   description = 'Project architect. Responsible for architecture decisions, scheme comparison, and boundary freezing.';
 
   async execute(params: Record<string, unknown>): Promise<string> {
-    const task = params.task as string || params.description as string;
+    const task = (params.task || params.description || params.action || '') as string;
     
     this.log('Analyzing architecture task');
 
-    // Extract essence
-    const essence = this.extractEssence(task);
-    
-    // Find tensions
-    const tensions = this.identifyTensions(task);
-    
-    // Compare alternatives
-    const alternatives = this.compareAlternatives(task);
-    
-    // Identify boundaries to freeze
-    const boundaries = this.identifyBoundaries(task);
+    if (!task) {
+      return this.formatOutput({ warning: '未提供任务', usage: '--harness-skill arch "你的架构任务"' });
+    }
 
-    return this.formatOutput({
-      essence,
-      tensions,
-      alternatives,
-      boundaries,
-      recommendation: this.makeRecommendation(task, alternatives),
-    });
-  }
-
-  private extractEssence(task: string): string {
-    // Simplified essence extraction
-    return `The core challenge is: ${task}`;
-  }
-
-  private identifyTensions(task: string): string[] {
-    return [
-      'Simplicity vs Flexibility',
-      'Performance vs Maintainability',
-      'Coupling vs Cohesion',
-    ];
-  }
-
-  private compareAlternatives(task: string): Array<{name: string; tradeoffs: string[]; recommendation: string}> {
-    return [
-      {
-        name: 'Option A: Direct Implementation',
-        tradeoffs: ['Fast to implement', 'May not scale'],
-        recommendation: 'Suitable for MVP',
-      },
-      {
-        name: 'Option B: Abstraction Layer',
-        tradeoffs: ['More upfront work', 'Better for extension'],
-        recommendation: 'Suitable for long-term',
-      },
-    ];
-  }
-
-  private identifyBoundaries(task: string): string[] {
-    return [
-      'API contract boundaries',
-      'Data format boundaries',
-      'Capability boundaries',
-    ];
-  }
-
-  private makeRecommendation(task: string, alternatives: Array<{name: string; recommendation: string}>): string {
-    return alternatives[1]?.recommendation || 'Consider abstraction layer for long-term maintainability';
+    return this.callLm(
+      'You are a senior software architect. Analyze the task and output structured JSON with fields: essence, tensions, alternatives, boundaries, recommendation.',
+      `Architecture task: ${task}`
+    );
   }
 }
 
@@ -293,20 +278,13 @@ export class LeadSkill extends BaseSkill {
     });
   }
 
-  private classifyChange(params: Record<string, unknown>): string {
+  private async classifyChange(params: Record<string, unknown>): Promise<string> {
     const description = params.description as string || '';
-    
-    // Simplified classification
-    const isPolicy = description.includes('policy') || description.includes('boundary');
-    const isContract = description.includes('API') || description.includes('contract') || description.includes('schema');
-    const isImplementation = !isPolicy && !isContract;
 
-    return this.formatOutput({
-      classification: isPolicy ? 'policy' : isContract ? 'contract' : 'implementation',
-      description,
-      minimum_gate_path: isPolicy ? '0→8 (full)' : isContract ? '0→8 (full + consumers)' : '0→7 (fast track eligible)',
-      fast_track_eligible: isImplementation,
-    });
+    return this.callLm(
+      'You are a change classifier. Given a description, classify the change as policy, contract, or implementation. Output JSON: { classification, description, minimum_gate_path, fast_track_eligible }.',
+      `Classify this change: ${description}`
+    );
   }
 }
 
@@ -318,53 +296,18 @@ export class TaskArchSkill extends BaseSkill {
   description = 'Task decomposition. Breaks down PLAN into parallelizable work packages (WP).';
 
   async execute(params: Record<string, unknown>): Promise<string> {
-    const plan = params.plan as string;
+    const plan = (params.plan || params.task || params.description || params.action || '') as string;
     
     this.log('Decomposing plan into work packages');
 
-    // Extract work packages
-    const workPackages = this.extractWorkPackages(plan);
-    
-    // Identify seams
-    const seams = this.identifySeams(workPackages);
-    
-    // Identify integration points
-    const integration = this.identifyIntegration(workPackages);
-
-    return this.formatOutput({
-      work_packages: workPackages,
-      seams,
-      integration,
-      seam_owners: this.assignSeamOwners(seams),
-    });
-  }
-
-  private extractWorkPackages(plan: string): Array<{id: string; description: string; files: string[]}> {
-    // Simplified WP extraction
-    return [
-      { id: 'WP-1', description: 'Core implementation', files: ['src/agents/*.ts'] },
-      { id: 'WP-2', description: 'Network layer', files: ['src/network/*.ts'] },
-      { id: 'WP-3', description: 'Testing', files: ['src/test/*.ts'] },
-    ];
-  }
-
-  private identifySeams(packages: Array<{id: string}>): Array<{from: string; to: string; interface: string}> {
-    return [
-      { from: 'WP-1', to: 'WP-2', interface: 'P2PNetwork interface' },
-      { from: 'WP-1', to: 'WP-3', interface: 'Test fixtures' },
-    ];
-  }
-
-  private identifyIntegration(packages: Array<{id: string}>): string[] {
-    return ['Integration test at WP-1/WP-2 boundary'];
-  }
-
-  private assignSeamOwners(seams: Array<{from: string; to: string}>): Record<string, string> {
-    const owners: Record<string, string> = {};
-    for (const seam of seams) {
-      owners[`${seam.from}/${seam.to}`] = 'integration-owner';
+    if (!plan) {
+      return this.formatOutput({ warning: '未提供 plan', usage: '--harness-skill task-arch "你的开发计划"' });
     }
-    return owners;
+
+    return this.callLm(
+      'You are a task decomposition specialist. Given a plan, break it down into work packages (WP) with seams and integration points. Output JSON: { work_packages, seams, integration }.',
+      `Plan: ${plan}`
+    );
   }
 }
 
@@ -506,43 +449,18 @@ export class CrystalLearnSkill extends BaseSkill {
   description = 'Extracts failure patterns and maintains invariants.';
 
   async execute(params: Record<string, unknown>): Promise<string> {
-    const task = params.task as string;
+    const task = (params.task || params.description || params.action || '') as string;
     
-    this.log('Extracting failure patterns');
+    this.log('Extracting failure patterns from: ' + (task || '(空)'));
 
-    // Identify failure modes
-    const failures = this.identifyFailures(task);
-    
-    // Extract patterns
-    const patterns = this.extractPatterns(failures);
-    
-    // Generate invariants
-    const invariants = this.generateInvariants(patterns);
+    if (!task) {
+      return this.formatOutput({ warning: '未提供任务', usage: '--harness-skill crystal-learn "你的任务描述"' });
+    }
 
-    return this.formatOutput({
-      failure_modes: failures,
-      patterns,
-      invariants,
-    });
-  }
-
-  private identifyFailures(task: string): string[] {
-    return [
-      'Truth source split',
-      'Verification decay',
-      'Orphaned seams',
-    ];
-  }
-
-  private extractPatterns(failures: string[]): Array<{pattern: string; prevention: string}> {
-    return failures.map(f => ({
-      pattern: f,
-      prevention: `Implement guard to prevent ${f}`,
-    }));
-  }
-
-  private generateInvariants(patterns: Array<{pattern: string}>): string[] {
-    return patterns.map(p => `INV: ${p.pattern} must not occur`);
+    return this.callLm(
+      'You are a failure pattern analyst. Extract failure modes, patterns, and invariants from the task description. Output structured JSON with failure_modes, patterns, invariants.',
+      `Task: ${task}`
+    );
   }
 }
 
@@ -603,6 +521,11 @@ export class SkillAdapter {
 
   getSkill(name: string): Skill | undefined {
     return this.registry.get(name);
+  }
+
+  injectLlm(llm: LlmClient): void {
+    BaseSkill.setLlm(llm);
+    this.log('LLM 已注入到所有 BaseSkill');
   }
 
   listSkills(): Skill[] {

@@ -2021,22 +2021,12 @@ ${toolDefs}
         onStream({ type: 'token', content: reply.substring(0, 100) });
       }
 
-      if (this.isFinalResponse(reply)) {
-        // 检查质量分数
-        lastQualityScore = this.estimateResponseQuality(reply);
-
-        // 如果质量太低且还有改进机会，进入改进循环
-        if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) {
-          refineAttempts++;
-          console.log(`[PiAgent] 质量评分 ${(lastQualityScore * 10).toFixed(1)}/10 < ${(this.QUALITY_THRESHOLD * 10).toFixed(1)}/10，自动改进中 (${refineAttempts}/${this.MAX_REFINE_ATTEMPTS})`);
-          continue;
-        }
-
-        finalResponse = this.extractFinalAnswer(reply);
-        break;
-      }
-
+      // 2026-06-19 架构 fix: parseToolCall 优先于 isFinalResponse
+      //   之前: 思考块里的 "<final gen>" 触发 isFinalResponse 提前 break, 工具从未真正执行
+      //   现在: 先尝试解析 tool_call, 有就执行; 没有才检查是不是真正的 final gen
       const toolCall = this.parseToolCall(reply);
+      // 2026-06-19 修: 即便 reply 含 <final gen>, 只要 parseToolCall 命中, 就执行工具
+      //   (之前 isFinalResponse break 会先于 parseToolCall 触发, 思考块里有 final gen 字符串就误杀)
       if (toolCall) {
         this.messageHistory.push({
           role: 'assistant',
@@ -2319,6 +2309,14 @@ ${toolDefs}
         // 通知前端收到非工具调用回复
         if (onStream) {
           onStream({ type: 'token', content: reply.substring(0, 150) });
+        }
+
+        // 2026-06-19 架构 fix: 只有 strip <think> 后才检查 isFinalResponse
+        //   (parseToolCall 已先尝试, 既然没解析出 tool_call, 现在检查 final gen 是否真的在最终回答区)
+        if (this.isFinalResponse(reply)) {
+          lastQualityScore = this.estimateResponseQuality(reply);
+          finalResponse = this.extractFinalAnswer(reply);
+          break;
         }
 
         // 检查是否需要继续循环处理
@@ -2710,8 +2708,11 @@ Workspace root folder: ${this.cwd}
   }
 
   private isFinalResponse(content: string): boolean {
-    // 只有明确输出 <final gen> 才认为是最终回答
-    return content.includes('<final gen>');
+    // 2026-06-19 修: 先剥离 <think>...</think> 思考块, 再判断 <final gen>.
+    //   之前用 includes('<final gen>') 误杀: LLM 思考块里说"先看看当前状态再 <final gen>"
+    //   也会被识别成终止信号, 工具调用直接跳过了.
+    const stripped = content.replace(/<think>[\s\S]*?<\/think>/g, '');
+    return stripped.includes('<final gen>');
   }
 
   private extractFinalAnswer(content: string): string {
@@ -2738,7 +2739,89 @@ Workspace root folder: ${this.cwd}
   }
 
   private parseToolCall(content: string): { name: string; args: Record<string, string> } | null {
+    // 2026-06-19 修: JSON function-call (OpenAI/Anthropic/Minimax-style) 优先 — match[1] 是 name 字段, match[2] 是 arguments/input 对象
+    //   LLM 实际产出变体:
+    //     {"name": "shell_exec", "arguments": {"command": "git", "args": ["status"]}}  (OpenAI 标准)
+    //     {"name": "shell_exec", "input": {"command": "git", "args": ["status"]}}      (Anthropic/Minimax 风格)
+    //   常见包裹: ```json\n{...}\n``` (markdown code block), <tool_call>{...}</tool_call> (OpenAI Hermes)
+    const jsonPatterns = [
+      // markdown json code block + OpenAI <tool_call> 块, 同时匹配 arguments/input 字段
+      /(?:```(?:json|json5)?\s*\n?)?\{[\s\S]*?"name"\s*:\s*["'](\w+)["']\s*,\s*["']?(?:arguments|input)["']?\s*:\s*(\{[\s\S]*?\})\s*\}/,
+    ];
+    for (const p of jsonPatterns) {
+      const m = content.match(p);
+      if (m) {
+        const name = m[1];
+        let args: Record<string, string> = {};
+        try {
+          const parsed = JSON.parse(m[2]);
+          if (parsed && typeof parsed === 'object') {
+            args = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v)]));
+          }
+        } catch { /* 解析失败保持 args={} */ }
+        const resolved = this.resolveToolName(name);
+        if (resolved) {
+          return { name: resolved, args };
+        }
+      }
+    }
+
+    // 2026-06-19 修: fallback — LLM 有时输出 <tool_name>shell_exec</tool_name> 这种伪 XML 标签
+    //   旧正则 /<(\w+)>([\s\S]*?)<\/\1>/ 会匹配, 但 name="tool_name" 不在 tools 里
+    //   这里 detect 内容是否像 tool_call (有 <command>/<args>/<path> 子标签) 然后按 <command> 第一词推断工具
+    const xmlTagMatch = content.match(/<(\w+)>([\s\S]*?)<\/\1>/);
+    if (xmlTagMatch) {
+      const outerTag = xmlTagMatch[1];
+      const inner = xmlTagMatch[2];
+      // 如果外层标签不在 tools 里但有 <command>/<args> 子标签, 尝试按内容推断
+      if (!this.resolveToolName(outerTag)) {
+        const cmdMatch = inner.match(/<command>(\w+)<\/command>/);
+        if (cmdMatch) {
+          const cmd = cmdMatch[1];
+          // 推测工具: git/npx/npm/tsx → shell_exec; cat/head/tail → read_document
+          if (['git', 'npx', 'npm', 'tsx', 'tsc', 'vitest', 'node', 'mkdir', 'touch', 'ls', 'echo', 'cat', 'head', 'tail', 'wc', 'pwd', 'date'].includes(cmd)) {
+            const args: Record<string, string> = {};
+            const argsMatch = inner.match(/<args>([\s\S]*?)<\/args>/);
+            if (argsMatch) args.args = argsMatch[1].trim();
+            const cmdsMatch = inner.match(/<command>([\s\S]*?)<\/command>/);
+            if (cmdsMatch) args.command = cmdsMatch[1].trim();
+            return { name: 'shell_exec', args };
+          }
+        }
+      }
+    }
+
+    // 2026-06-19 修: <tools:call name="X">...</tools:call> 嵌套格式
+    //   LLM 实际产出变体: <tools:call name="shell_exec"><tools:call name="command">git</tools:call>...</tools:call>
+    const toolsCallMatch = content.match(/<tools:call\s+name=["'](\w+)["']>([\s\S]*?)<\/tools:call>/);
+    if (toolsCallMatch) {
+      const name = toolsCallMatch[1];
+      const inner = toolsCallMatch[2];
+      const args: Record<string, string> = {};
+      const argTags = inner.matchAll(/<tools:call\s+name=["'](\w+)["']>([\s\S]*?)<\/tools:call>/g);
+      for (const m of argTags) {
+        args[m[1]] = m[2].trim();
+      }
+      const resolved = this.resolveToolName(name);
+      if (resolved) {
+        return { name: resolved, args };
+      }
+      // 兜底: 如果外层 tool name 不在 tools, 但内层有 command, 推断 shell_exec
+      if (args.command) {
+        const cmdFirst = args.command.split(/\s+/)[0];
+        if (['git', 'npx', 'npm', 'tsx', 'tsc', 'vitest', 'node', 'mkdir', 'touch', 'ls', 'echo', 'cat', 'head', 'tail', 'wc', 'pwd', 'date'].includes(cmdFirst)) {
+          return { name: 'shell_exec', args };
+        }
+      }
+    }
+
     const patterns = [
+      // 2026-06-19 修: minimax/Hermes 自闭合 XML 格式 <invoke name="X">...</invoke>
+      //   实际 LLM 习惯: <invoke name="shell_exec"><command>sed</command><args>["-n","1060,1095p"]</args></invoke>
+      //   必须放在最前 — 旧正则 /<(\w+)>([\s\S]*?)<\/\1>/ 会匹配到外层 <invoke> 但 name 是 "invoke" 而不是 "shell_exec"
+      new RegExp('<invoke\\s+name=["\']([\\w]+)["\']>([\\s\\S]*?)</invoke>'),
+      // 2026-06-19 修: <function_calls> 包裹
+      new RegExp('<function_calls>[\\s\\S]*?<invoke\\s+name=["\']([\\w]+)["\']>([\\s\\S]*?)</invoke>[\\s\\S]*?</function_calls>'),
       /调用工具[：:]\s*(\w+)\s*\(([^)]*)\)/,
       /使用工具[：:]\s*(\w+)\s*\(([^)]*)\)/,
       /tool[_\w]*[：:]\s*(\w+)\s*\(([^)]*)\)/i,
@@ -2797,11 +2880,55 @@ Workspace root folder: ${this.cwd}
           }
         }
 
-        if (this.tools.has(name) || this.tools.has(name.replace(/_/g, '_'))) {
+        if (this.tools.has(name)) {
           return { name, args };
+        }
+        const resolved = this.resolveToolName(name);
+        if (resolved) {
+          return { name: resolved, args };
         }
       }
     }
+    return null;
+  }
+
+  // [debug-2026-06-19] 临时: 打印 parseToolCall 输入和返回
+  private _dbgParseToolCall(content: string): { name: string; args: Record<string, string> } | null {
+    const r = this.parseToolCall(content);
+    console.log('[DBG parseToolCall] result:', JSON.stringify(r), 'content head:', JSON.stringify(content.substring(0, 200)));
+    return r;
+  }
+
+  /**
+   * 2026-06-19: 工具名大小写不敏感 + Claude Code 风格别名映射
+
+  /**
+   * 2026-06-19: 工具名大小写不敏感 + Claude Code 风格别名映射
+   *   LLM 实际产出 Read/Edit/Write/Bash/Grep/Glob 等大写名 (Claude Code 工具命名)
+   *   bolloon 注册的是 read_document / edit_file / write_file / shell_exec / list_files
+   *   返回 this.tools 里的标准名, 或 null 表示未识别
+   */
+  private resolveToolName(name: string): string | null {
+    if (this.tools.has(name)) return name;
+    const lower = name.toLowerCase();
+    const aliasMap: Record<string, string> = {
+      read: 'read_document',
+      edit: 'edit_file',
+      write: 'write_file',
+      bash: 'shell_exec',
+      shell: 'shell_exec',
+      grep: 'list_files',
+      glob: 'list_files',
+      ls: 'list_files',
+      webfetch: 'list_files',
+      websearch: 'list_files',
+      todo_write: 'create_task',
+      todowrite: 'create_task',
+      task: 'create_task',
+    };
+    const aliased = aliasMap[lower];
+    if (aliased && this.tools.has(aliased)) return aliased;
+    if (this.tools.has(lower)) return lower;
     return null;
   }
 

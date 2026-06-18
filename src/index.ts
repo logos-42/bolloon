@@ -870,6 +870,13 @@ async function runToolCommand(
           `已加载 Harness Skills: ${harnessSkills.length}\n\n` +
           `Skills:\n${skills.map(s => `  - ${s.name}: ${s.description}`).join('\n')}\n\n` +
           `Gates: 0-8 (8-Gate 工作流)`;
+        // Fix 1: write-back 初始化摘要到 AGENTS.md
+        try {
+          const fs_write = await import('fs');
+          const agentMd = path.join(process.cwd(), 'AGENTS.md');
+          const entry = `\n<!-- bolloon-init -->\n**Bollharness 初始化**: ${new Date().toISOString().slice(0, 10)} | Skills: ${skills.length} | Gates: 0-8\n`;
+          fs_write.appendFileSync(agentMd, entry);
+        } catch { /* 静默 */ }
         break;
       }
 
@@ -932,6 +939,13 @@ async function runToolCommand(
         response = `📊 变更分类: ${result.classification}\n` +
           `最小路径: ${result.minimum_gates}\n` +
           `快速通道: ${result.fast_track ? '✅ 可用' : '❌ 不可用'}`;
+        // Fix 1: write-back 分类结果到 CLAUDE.md
+        try {
+          const fs_write = await import('fs');
+          const agentMd = path.join(process.cwd(), 'CLAUDE.md');
+          const entry = `\n<!-- bolloon-classify -->\n**变更分类**: ${result.classification} | ${description} | ${new Date().toISOString().slice(0, 10)}\n`;
+          fs_write.appendFileSync(agentMd, entry);
+        } catch { /* 静默 */ }
         break;
       }
 
