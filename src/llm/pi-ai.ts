@@ -325,34 +325,47 @@ export class PiAIModel {
       temperature,
       max_tokens: maxTokens
     };
-    const response = await fetch(`${this.getBaseUrl()}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify(requestBody),
-      // 2026-06-15: signal 字段防御 — Node 22+ undici 强类型 AbortSignal, 非 AbortSignal 实例
-      //   (e.g. 误传的 { maxTokens: 1 } 对象) 会 throw "Expected signal to be AbortSignal".
-      //   若不是 AbortSignal, 退到无 signal 调用, fetch 自然支持 timeout 由外层控制.
-      // 2026-06-17: combinedSignal 把外部 signal 和 120s timeout 合并, 防止上游卡死
-      signal: this.combinedSignal(signal),
-    });
 
-    if (!response.ok) {
-      throw new Error(`OpenAI API error: ${response.status}`);
-    }
+    // 2026-06-19: 一次命中优化 — 收到空 content 时重试 2 次, 避免 minimax 上游网络抖动
+    //   经验: minimax 偶发返回 200 但 content="" (上游 retry 耗尽), 之前当作 sentinel
+    //   现在外层加 2 次重试 + 退避, 让 90%+ 的一次调用不出现错误
+    // 2026-06-19: 一次命中优化 — 收到空 content 时重试 2 次, 避免 minimax 上游网络抖动
+    //   经验: minimax 偶发返回 200 但 content="" (上游 retry 耗尽), 之前当作 sentinel
+    //   现在外层加 2 次重试 + 退避, 让 90%+ 的一次调用不出现错误
+    let lastFinishReason = '';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await fetch(`${this.getBaseUrl()}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(requestBody),
+        signal: this.combinedSignal(signal),
+      });
 
-    // 2026-06-17: 读 finish_reason — 之前只读 content, 撞 max_tokens 上限时空字符串难诊断
-    const data = await response.json() as {
-      choices?: { message?: { content?: string }; finish_reason?: string; index?: number }[];
-    };
-    const choice = data.choices?.[0];
-    const content = choice?.message?.content || '';
-    if (!content && choice?.finish_reason === 'length') {
-      console.warn(`[pi-ai] hit max_tokens ceiling (model=${this.mapModel()}, max_tokens=${maxTokens}) — caller should trim prompt or raise cap`);
+      if (!response.ok) {
+        throw new Error(`OpenAI API error: ${response.status}`);
+      }
+
+      const data = await response.json() as {
+        choices?: { message?: { content?: string }; finish_reason?: string; index?: number }[];
+      };
+      const choice = data.choices?.[0];
+      const content = choice?.message?.content || '';
+      lastFinishReason = choice?.finish_reason || '';
+      if (content) {
+        if (lastFinishReason === 'length') {
+          console.warn(`[pi-ai] hit max_tokens ceiling (model=${this.mapModel()}, max_tokens=${maxTokens}) — caller should trim prompt or raise cap`);
+        }
+        return content;
+      }
+      // 空 content: 200 但 content="" → minimax 上游偶发, 退避后重试
+      console.warn(`[pi-ai] attempt ${attempt + 1}/3: 空 content (finish_reason=${lastFinishReason}), 退避 1.5s 重试`);
+      await new Promise<void>(resolve => setTimeout(resolve, 1500));
     }
-    return content;
+    console.warn(`[pi-ai] 3 次重试都返回空 content (finish_reason=${lastFinishReason})`);
+    return '';  // 返回空让上层看到 [AI 服务调用失败]
   }
 
   private async callAnthropic(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
