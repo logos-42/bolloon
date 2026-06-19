@@ -50,6 +50,13 @@ const TOOL_WHITELIST = new Set<string>([
   'write_file', 'git_diff', 'git_commit', 'git_push', 'git_branch',
   'create_task', 'update_task', 'get_task', 'list_tasks',
   'use_skill', 'self_improve',
+  // 2026-06-19: M4 新增 (跟 pi-sdk.ts registerTools 同步)
+  'read_file', 'delete_file', 'mkdir', 'move_file',
+  'grep_files', 'glob_files',
+  'git_log', 'git_show', 'git_stash',
+  'vitest_run', 'tsc_check',
+  // 2026-06-19: Agent Mesh 通信工具 (跟 pi-sdk.ts registerTools 同步)
+  'check_inbox', 'send_to_peer', 'p2p_broadcast', 'send_to_local_agent', 'list_local_agents', 'agent_call',
   // MCP 注册的工具
   'mcp_tool',
 ]);

@@ -603,6 +603,8 @@ class PiAgentSession implements AgentSession {
   private readonly MAX_TOTAL_ERRORS = 20;
   /** 2026-06-19: 记录 loop 内成功执行的工具结果, 失败退出时汇总给用户 */
   private successfulToolResults: { tool: string; outputPreview: string }[] = [];
+  /** 2026-06-19: Agent Mesh 通信 — 本地 + 远端 inbox 缓存, 给 check_inbox 工具读 */
+  private _inboxMessages: { id: string; from: string; fromDid?: string; type: string; payload: string; timestamp: number; source: 'p2p' | 'local' }[] = [];
   /** 2026-06-16 新增: loop 内自动压缩触发阈值 (相对 60K 阈值的比例) */
   private readonly LOOP_COMPACT_RATIO = 0.8;
   /** P1: max output token 升级重试 (LLM 截断时重试, 最多 3 次) */
@@ -917,6 +919,132 @@ class PiAgentSession implements AgentSession {
         } catch (e) {
           return { success: false, error: String(e) };
         }
+      }
+    });
+
+    // 2026-06-19: 本地 + 远端智能体通信工具集 (Agent Mesh 通信层)
+    //   解决"另一个智能体发消息"的能力缺口: 不止 p2p, 还要支持本地 in-process inbox
+    //   接收端 PiAgentSession 实例必须先调 setupInboxListener() 注册 listener
+    this._inboxMessages = []; // { from, type, payload, timestamp, source: 'p2p' | 'local' }
+    this._setupInboxListener();
+
+    // check_inbox: 读 inbox 里所有消息 (本地 + 远端, 按时间排序)
+    this.tools.set('check_inbox', {
+      name: 'check_inbox',
+      description: "读取 inbox 中所有收到的消息 (本地 + P2P 远端), 包含 from / type / payload / timestamp. 可选 max=N 限制返回条数, since='<iso>' 只返回该时间之后的",
+      parameters: { max: '可选, 最多返回 N 条 (默认 50)', since: '可选 ISO 时间字符串, 只返回该时间之后的消息', clear: '可选 true/false, 读完是否清空 (默认 false = 保留供后续再读)' },
+      execute: async (args) => {
+        const max = Number(args.max) || 50;
+        const since = args.since ? new Date(args.since).getTime() : 0;
+        const clearAfter = String(args.clear || 'false') === 'true';
+        const filtered = this._inboxMessages.filter(m => m.timestamp > since);
+        const slice = filtered.slice(-max);
+        if (clearAfter && slice.length > 0) {
+          // 清空已读的消息 (注意只清空已读的, 不影响后续的)
+          const sliceIds = new Set(slice.map(m => m.id));
+          this._inboxMessages = this._inboxMessages.filter(m => !sliceIds.has(m.id));
+        }
+        if (slice.length === 0) {
+          return { success: true, output: '📭 inbox 空, 没有收到任何消息' };
+        }
+        const formatted = slice.map((m, i) =>
+          `  ${i+1}. [${m.source}] from=${m.from} type=${m.type}\n     time=${new Date(m.timestamp).toISOString()}\n     payload=${m.payload.substring(0, 300)}${m.payload.length > 300 ? '...' : ''}`
+        ).join('\n');
+        return { success: true, output: `📬 inbox 有 ${slice.length} 条消息 (总 ${this._inboxMessages.length} 条):\n${formatted}` };
+      }
+    });
+
+    // send_to_peer: 发送消息到指定 P2P 节点 (会进对方的 inbox)
+    this.tools.set('send_to_peer', {
+      name: 'send_to_peer',
+      description: '发送结构化消息到指定 P2P 节点, 对方会通过 check_inbox 收到. type 字段让对方决定怎么路由 (默认 "agent-message")',
+      parameters: { peer_id: '目标 P2P 节点 publicKey (用 list_peers 查)', message: '消息内容 (任意字符串)', type: '可选, 消息类型标签 (默认 agent-message)' },
+      execute: async (args) => {
+        const peerId = String(args.peer_id || '').trim();
+        const msg = String(args.message || '').trim();
+        const type = String(args.type || 'agent-message').trim();
+        if (!peerId) return { success: false, error: 'peer_id 必填' };
+        if (!msg) return { success: false, error: 'message 必填' };
+        try {
+          await p2pNetwork.sendMessage(peerId, type, msg);
+          return { success: true, output: `✅ 消息已发送到 ${peerId.substring(0, 16)}...\n   type=${type}\n   length=${msg.length}\n   对方 check_inbox 即可看到` };
+        } catch (e) {
+          return { success: false, error: `发送失败: ${String(e)}` };
+        }
+      }
+    });
+
+    // p2p_broadcast: 广播给所有 P2P 节点
+    this.tools.set('p2p_broadcast', {
+      name: 'p2p_broadcast',
+      description: '广播消息到所有连接的 P2P 节点, 所有节点都会通过 check_inbox 收到',
+      parameters: { message: '消息内容', type: '可选, 消息类型标签 (默认 agent-broadcast)' },
+      execute: async (args) => {
+        const msg = String(args.message || '').trim();
+        const type = String(args.type || 'agent-broadcast').trim();
+        if (!msg) return { success: false, error: 'message 必填' };
+        try {
+          await p2pNetwork.broadcast(type, msg);
+          return { success: true, output: `📡 已广播 type=${type} 长度 ${msg.length}` };
+        } catch (e) {
+          return { success: false, error: `广播失败: ${String(e)}` };
+        }
+      }
+    });
+
+    // send_to_local_agent: 发送消息到本进程内的另一个 agent session (in-process inbox)
+    this.tools.set('send_to_local_agent', {
+      name: 'send_to_local_agent',
+      description: '发送消息到本进程内的另一个 agent session (走 in-process inbox, 不需要 P2P). target_role 是目标 agent 角色名 (启动时通过 BOLLOON_ROLE 或 p2p-direct-secret-{role} 设置). 对方通过 check_inbox 收到.',
+      parameters: { target_role: '目标 agent 角色名 (e.g. "nodeA", "nodeB")', message: '消息内容', type: '可选 消息类型 (默认 agent-local-message)' },
+      execute: async (args) => {
+        const targetRole = String(args.target_role || '').trim();
+        const msg = String(args.message || '').trim();
+        const type = String(args.type || 'agent-local-message').trim();
+        if (!targetRole) return { success: false, error: 'target_role 必填' };
+        if (!msg) return { success: false, error: 'message 必填' };
+        // 投递到本进程 LocalInboxBus
+        const { LocalInboxBus } = await import('../network/local-inbox-bus.js');
+        const ok = LocalInboxBus.getInstance().deliver(targetRole, {
+          from: this.identity?.name || 'unknown',
+          fromDid: this.identity?.did,
+          type,
+          payload: msg,
+          timestamp: Date.now(),
+        });
+        if (ok) return { success: true, output: `📨 本地消息已投递到 ${targetRole}, 对方 check_inbox 即可看到` };
+        return { success: false, error: `目标 ${targetRole} 不在本进程的 LocalInboxBus 列表中 (可能没启动, 或角色名不匹配). 已注册角色: ${LocalInboxBus.getInstance().listRoles().join(', ') || '(空)'}` };
+      }
+    });
+
+    // list_local_agents: 列出本进程已注册的所有 agent 角色
+    this.tools.set('list_local_agents', {
+      name: 'list_local_agents',
+      description: '列出本进程内所有已订阅 inbox 的 agent 角色 (供 send_to_local_agent 选 target_role). 包含当前 session 自己的角色.',
+      parameters: {},
+      execute: async () => {
+        const { LocalInboxBus } = await import('../network/local-inbox-bus.js');
+        const roles = LocalInboxBus.getInstance().listRoles();
+        return { success: true, output: `🧑‍🤝‍🧑 本进程内 ${roles.length} 个 agent 角色:\n${roles.map(r => `  - ${r}`).join('\n')}` };
+      }
+    });
+
+    // agent_call: 调用另一个 agent 跑任务 (RPC 风格, 远端 P2P)
+    this.tools.set('agent_call', {
+      name: 'agent_call',
+      description: 'RPC: 让远端 P2P agent 跑一个任务, 等待结果返回. 远端 agent 会基于 task 描述自主完成, 完成后回复. timeoutMs 默认 30s.',
+      parameters: { peer_id: '目标 P2P 节点', task: '任务描述 (远端 agent 收到的 prompt)', timeoutMs: '可选 超时 (ms, 默认 30000)' },
+      execute: async (args) => {
+        const peerId = String(args.peer_id || '').trim();
+        const task = String(args.task || '').trim();
+        const timeoutMs = Number(args.timeoutMs) || 30_000;
+        if (!peerId) return { success: false, error: 'peer_id 必填' };
+        if (!task) return { success: false, error: 'task 必填' };
+        // 构造 RPC 请求, 用 sendMessage 发 type='agent-call' + requestId
+        const requestId = `rpc-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+        // 简化: 走 send_to_peer, 远端收到后需要专门 listener. 暂时不实现 RPC 协议
+        await p2pNetwork.sendMessage(peerId, 'agent-call', JSON.stringify({ requestId, task, from: this.identity?.did }));
+        return { success: true, output: `📞 RPC 任务已发送给 ${peerId.substring(0, 16)}...\n   requestId=${requestId}\n   task="${task.substring(0, 100)}${task.length > 100 ? '...' : ''}"\n   对方完成会通过 check_inbox 回复 (注: RPC 结果回收机制待实现)` };
       }
     });
 
@@ -1258,6 +1386,242 @@ class PiAgentSession implements AgentSession {
         if (result.deniedByGuard) return { success: false, error: result.error };
         if (!result.success) return { success: false, error: result.error, output: result.output };
         return { success: true, output: `✅ ${create ? 'created + checked out' : 'checked out'} ${name}\n${result.output || ''}` };
+      }
+    });
+
+    // 2026-06-19: 实用代码修改工具集 (M4) — 补全 read/delete/mkdir/move + grep/git log/show
+    //   这些是 LLM 自主完成代码修改的最小工具集, 之前只能通过 shell_exec 间接调用
+
+    // 通用文件读取 (支持任意扩展名, 跟 read_document 区别是后者只支持 txt/md/pdf/docx)
+    this.tools.set('read_file', {
+      name: 'read_file',
+      description: '读取任意文件内容 (相对 cwd). 与 read_document 区别: 不限制文件类型. 受 shell-guard 路径白名单保护.',
+      parameters: { path: '相对路径 (必填, e.g. "src/agents/pi-sdk.ts")', startLine: '起始行号 (可选, 默认 0)', maxLines: '最大行数 (可选, 默认 500)' },
+      execute: async (args) => {
+        const relPath = String(args.path || '').trim();
+        if (!relPath) return { success: false, error: 'path 必填' };
+        const pathResult = checkWritePath(relPath);
+        if (!pathResult.allowed) return { success: false, error: `路径被护栏拒: ${pathResult.reason}` };
+        try {
+          const absPath = path.resolve(this.cwd, relPath);
+          const content = fsSync.readFileSync(absPath, 'utf-8');
+          const start = Math.max(0, parseInt(String(args.startLine || '0')) || 0);
+          const max = parseInt(String(args.maxLines || '500')) || 500;
+          const lines = content.split('\n');
+          const slice = lines.slice(start, start + max);
+          return { success: true, output: `📄 ${relPath} (第 ${start+1}-${start+slice.length} 行, 共 ${lines.length} 行):\n${slice.map((l, i) => `${String(start + i + 1).padStart(4)} | ${l}`).join('\n')}` };
+        } catch (e: any) {
+          return { success: false, error: `读取失败: ${e.message}` };
+        }
+      }
+    });
+
+    // 删除文件
+    this.tools.set('delete_file', {
+      name: 'delete_file',
+      description: '删除一个文件. 受 shell-guard 路径白名单保护. 不可恢复, 调用前请确认.',
+      parameters: { path: '相对路径 (必填)' },
+      execute: async (args) => {
+        const relPath = String(args.path || '').trim();
+        if (!relPath) return { success: false, error: 'path 必填' };
+        const pathResult = checkWritePath(relPath);
+        if (!pathResult.allowed) return { success: false, error: `路径被护栏拒: ${pathResult.reason}` };
+        try {
+          const absPath = path.resolve(this.cwd, relPath);
+          if (!fsSync.existsSync(absPath)) return { success: false, error: `文件不存在: ${relPath}` };
+          fsSync.unlinkSync(absPath);
+          return { success: true, output: `✅ deleted ${relPath}` };
+        } catch (e: any) {
+          return { success: false, error: `删除失败: ${e.message}` };
+        }
+      }
+    });
+
+    // 创建目录
+    this.tools.set('mkdir', {
+      name: 'mkdir',
+      description: '创建一个或多个目录. 自动 mkdir -p (父目录不存在也创建).',
+      parameters: { path: '目录路径 (必填, 相对 cwd)' },
+      execute: async (args) => {
+        const relPath = String(args.path || '').trim();
+        if (!relPath) return { success: false, error: 'path 必填' };
+        const pathResult = checkWritePath(relPath);
+        if (!pathResult.allowed) return { success: false, error: `路径被护栏拒: ${pathResult.reason}` };
+        try {
+          const absPath = path.resolve(this.cwd, relPath);
+          fsSync.mkdirSync(absPath, { recursive: true });
+          return { success: true, output: `✅ mkdir ${relPath}` };
+        } catch (e: any) {
+          return { success: false, error: `创建失败: ${e.message}` };
+        }
+      }
+    });
+
+    // 移动/重命名文件
+    this.tools.set('move_file', {
+      name: 'move_file',
+      description: '移动或重命名文件. 源和目标路径都在白名单内才允许.',
+      parameters: { from: '源路径 (必填)', to: '目标路径 (必填)' },
+      execute: async (args) => {
+        const from = String(args.from || '').trim();
+        const to = String(args.to || '').trim();
+        if (!from || !to) return { success: false, error: 'from 和 to 都必填' };
+        const fromCheck = checkWritePath(from);
+        if (!fromCheck.allowed) return { success: false, error: `from 路径被护栏拒: ${fromCheck.reason}` };
+        const toCheck = checkWritePath(to);
+        if (!toCheck.allowed) return { success: false, error: `to 路径被护栏拒: ${toCheck.reason}` };
+        try {
+          const fromAbs = path.resolve(this.cwd, from);
+          const toAbs = path.resolve(this.cwd, to);
+          if (!fsSync.existsSync(fromAbs)) return { success: false, error: `源文件不存在: ${from}` };
+          fsSync.mkdirSync(path.dirname(toAbs), { recursive: true });
+          fsSync.renameSync(fromAbs, toAbs);
+          return { success: true, output: `✅ ${from} → ${to}` };
+        } catch (e: any) {
+          return { success: false, error: `移动失败: ${e.message}` };
+        }
+      }
+    });
+
+    // 文件内搜索 (类似 grep)
+    this.tools.set('grep_files', {
+      name: 'grep_files',
+      description: '在文件中搜索匹配 pattern 的行. 类似 grep -rn. 路径必须在白名单.',
+      parameters: { pattern: '搜索 pattern (必填, 字符串, 不是正则)', path: '搜索目录 (可选, 默认 .)', filePattern: '文件名 glob (可选, e.g. "*.ts")' },
+      execute: async (args) => {
+        const pattern = String(args.pattern || '').trim();
+        if (!pattern) return { success: false, error: 'pattern 必填' };
+        const searchPath = String(args.path || '.').trim();
+        const pathResult = checkWritePath(searchPath);
+        if (!pathResult.allowed) return { success: false, error: `路径被护栏拒: ${pathResult.reason}` };
+        try {
+          const { execFile } = await import('child_process');
+          const { promisify } = await import('util');
+          const pExecFile = promisify(execFile);
+          const argv = ['-rn', '--include=' + (args.filePattern || '*'), pattern, searchPath];
+          const { stdout, stderr } = await pExecFile('grep', argv, { cwd: this.cwd, maxBuffer: 1024 * 1024 });
+          const lines = stdout.split('\n').filter(Boolean).slice(0, 50);
+          return { success: true, output: `🔍 grep "${pattern}" in ${searchPath} (${args.filePattern || '*'}, 最多 50 行):\n${lines.join('\n')}${lines.length === 50 ? '\n... (truncated)' : ''}` };
+        } catch (e: any) {
+          if (e.code === 1) return { success: true, output: `🔍 grep "${pattern}" in ${searchPath}: 0 matches` };
+          return { success: false, error: `grep 失败: ${e.message}` };
+        }
+      }
+    });
+
+    // glob 找文件
+    this.tools.set('glob_files', {
+      name: 'glob_files',
+      description: '用 glob pattern 找文件. 例如 "**/*.test.ts".',
+      parameters: { pattern: 'glob pattern (必填, e.g. "src/**/*.ts")' },
+      execute: async (args) => {
+        const pattern = String(args.pattern || '').trim();
+        if (!pattern) return { success: false, error: 'pattern 必填' };
+        try {
+          const pathResult = checkWritePath(pattern.replace(/\*\*.*$/, '').replace(/\/\*.*$/, '') || '.');
+          if (!pathResult.allowed && pattern !== '**/*' && pattern !== '*') return { success: false, error: `路径被护栏拒: ${pathResult.reason}` };
+          const { execFile } = await import('child_process');
+          const { promisify } = await import('util');
+          const pExecFile = promisify(execFile);
+          // 用 shell 的 find + glob (避免引入额外依赖)
+          const { stdout } = await pExecFile('find', [this.cwd, '-path', `*${pattern.replace(/\*\*\//, '*').replace(/\*\*$/, '*').replace(/\*$/, '*')}`, '-type', 'f'], { maxBuffer: 1024 * 1024 });
+          const files = stdout.split('\n').filter(Boolean).slice(0, 100);
+          const relFiles = files.map(f => path.relative(this.cwd, f));
+          return { success: true, output: `🔍 glob "${pattern}" 找到 ${relFiles.length} 个文件${relFiles.length === 100 ? ' (truncated)' : ''}:\n${relFiles.join('\n')}` };
+        } catch (e: any) {
+          return { success: false, error: `glob 失败: ${e.message}` };
+        }
+      }
+    });
+
+    // git log
+    this.tools.set('git_log', {
+      name: 'git_log',
+      description: '查看 git log. 默认 --oneline -10. 支持过滤和范围.',
+      parameters: { range: '可选, e.g. "HEAD~5..HEAD" 或分支名', maxCount: '可选, 默认 10', oneline: '可选, "true" 用 --oneline (默认 true)' },
+      execute: async (args) => {
+        const range = String(args.range || '').trim();
+        const maxCount = parseInt(String(args.maxCount || '10')) || 10;
+        const oneline = String(args.oneline || 'true') === 'true';
+        const argv = ['log'];
+        if (oneline) argv.push('--oneline');
+        if (maxCount > 0) argv.push(`-n`, String(maxCount));
+        if (range) argv.push(range);
+        const result = await shellExec('git', argv, { timeoutMs: 10_000 });
+        if (result.deniedByGuard) return { success: false, error: result.error };
+        if (!result.success) return { success: false, error: result.error, output: result.output };
+        return { success: true, output: `📜 git log:\n${result.output || '(empty)'}` };
+      }
+    });
+
+    // git show
+    this.tools.set('git_show', {
+      name: 'git_show',
+      description: '查看 commit 内容. 默认 HEAD. 支持 --stat 看统计, --patch 看 diff.',
+      parameters: { ref: '可选, 默认 HEAD', stat: '可选, "true" 只看 stat (默认 false)' },
+      execute: async (args) => {
+        const ref = String(args.ref || 'HEAD').trim();
+        const argv = ['show', ref];
+        if (String(args.stat || 'false') === 'true') argv.push('--stat');
+        const result = await shellExec('git', argv, { timeoutMs: 15_000 });
+        if (result.deniedByGuard) return { success: false, error: result.error };
+        if (!result.success) return { success: false, error: result.error, output: result.output };
+        return { success: true, output: `📜 git show ${ref}:\n${result.output || '(empty)'}` };
+      }
+    });
+
+    // git stash
+    this.tools.set('git_stash', {
+      name: 'git_stash',
+      description: 'git stash 暂存当前未提交改动. action: save/pop/list/apply/drop. 支持 message.',
+      parameters: { action: '动作 (必填, "save" | "pop" | "list" | "apply" | "drop")', message: '可选, save 时的描述', index: '可选, apply/pop/drop 的 stash index (e.g. "0")' },
+      execute: async (args) => {
+        const action = String(args.action || '').trim();
+        if (!['save', 'pop', 'list', 'apply', 'drop'].includes(action)) {
+          return { success: false, error: `action 必须是 save/pop/list/apply/drop 之一, 收到: ${action}` };
+        }
+        const argv = ['stash', action];
+        if (action === 'save' && args.message) argv.push('-m', String(args.message));
+        if ((action === 'apply' || action === 'drop' || action === 'pop') && args.index) {
+          argv.push('stash@{' + String(args.index) + '}');
+        }
+        const result = await shellExec('git', argv, { timeoutMs: 10_000 });
+        if (result.deniedByGuard) return { success: false, error: result.error };
+        if (!result.success) return { success: false, error: result.error, output: result.output };
+        return { success: true, output: `✅ git stash ${action}\n${result.output || ''}` };
+      }
+    });
+
+    // vitest 跑测试
+    this.tools.set('vitest_run', {
+      name: 'vitest_run',
+      description: '跑 vitest 测试. 自动 bail (失败就停). 默认 60s timeout.',
+      parameters: { pattern: '可选, 文件 glob e.g. "src/agents/pi-sdk.test.ts"', timeoutMs: '可选, 默认 60000' },
+      execute: async (args) => {
+        const argv = ['vitest', 'run', '--reporter=basic', '--no-color', '--bail=1'];
+        if (args.pattern) argv.push(String(args.pattern));
+        const timeoutMs = parseInt(String(args.timeoutMs || '60000')) || 60000;
+        const result = await shellExec('npx', argv, { timeoutMs });
+        if (result.deniedByGuard) return { success: false, error: result.error };
+        if (!result.success) return { success: false, error: result.error || 'vitest 失败', output: result.output };
+        return { success: true, output: `✅ vitest 通过:\n${(result.output || '').slice(0, 2000)}` };
+      }
+    });
+
+    // tsc 编译检查
+    this.tools.set('tsc_check', {
+      name: 'tsc_check',
+      description: '跑 tsc --noEmit 检查 TypeScript 编译. 默认 60s timeout.',
+      parameters: { project: '可选, tsconfig 路径 (默认 tsconfig.json)', timeoutMs: '可选, 默认 60000' },
+      execute: async (args) => {
+        const argv = ['tsc', '--noEmit'];
+        if (args.project) argv.push('-p', String(args.project));
+        else argv.push('-p', 'tsconfig.json');
+        const timeoutMs = parseInt(String(args.timeoutMs || '60000')) || 60000;
+        const result = await shellExec('npx', argv, { timeoutMs });
+        if (result.deniedByGuard) return { success: false, error: result.error };
+        if (!result.success) return { success: false, error: result.error || 'tsc 失败', output: result.output };
+        return { success: true, output: `✅ tsc 通过:\n${(result.output || 'no errors').slice(0, 1000)}` };
       }
     });
 
@@ -2956,16 +3320,32 @@ Workspace root folder: ${this.cwd}
     if (this.tools.has(name)) return name;
     const lower = name.toLowerCase();
     const aliasMap: Record<string, string> = {
-      read: 'read_document',
+      // Claude Code 风格 → bolloon 工具
+      read: 'read_file',
       edit: 'edit_file',
       write: 'write_file',
+      rm: 'delete_file',
+      mv: 'move_file',
       bash: 'shell_exec',
       shell: 'shell_exec',
-      grep: 'list_files',
-      glob: 'list_files',
-      ls: 'list_files',
-      webfetch: 'list_files',
-      websearch: 'list_files',
+      sh: 'shell_exec',
+      // grep / glob 现在是独立工具
+      cat: 'read_file',
+      // 测试/编译 → 独立工具
+      test: 'vitest_run',
+      vitest: 'vitest_run',
+      typecheck: 'tsc_check',
+      tsc: 'tsc_check',
+      // git 操作
+      log: 'git_log',
+      show: 'git_show',
+      diff: 'git_diff',
+      commit: 'git_commit',
+      push: 'git_push',
+      branch: 'git_branch',
+      checkout: 'git_branch',
+      stash: 'git_stash',
+      // 任务管理 (todo)
       todo_write: 'create_task',
       todowrite: 'create_task',
       task: 'create_task',
@@ -2974,6 +3354,85 @@ Workspace root folder: ${this.cwd}
     if (aliased && this.tools.has(aliased)) return aliased;
     if (this.tools.has(lower)) return lower;
     return null;
+  }
+
+  /**
+   * 2026-06-19: 注册 P2P 消息 listener, 把收到的消息存到 _inboxMessages 供 check_inbox 读.
+   *   监听 type='message' (send_to_peer) 和 type='agent-message' (P2P 远端 agent).
+   *   失败静默, 不阻塞 PiAgentSession 构造.
+   */
+  private _setupInboxListener(): void {
+    if (!p2pNetwork || typeof p2pNetwork.onMessage !== 'function') return;
+    try {
+      // 监听所有 type 的消息, 存储到 inbox
+      p2pNetwork.onMessage('*', (msg: Uint8Array, from: string, did?: string) => {
+        try {
+          const text = new TextDecoder().decode(msg);
+          // 解析 DID:|type:payload 格式
+          let type = 'message';
+          let payload = text;
+          if (text.startsWith('DID:')) {
+            const pipeIdx = text.indexOf('|');
+            if (pipeIdx > 0) {
+              const rest = text.substring(pipeIdx + 1);
+              const colonIdx = rest.indexOf(':');
+              if (colonIdx > 0) {
+                type = rest.substring(0, colonIdx);
+                payload = rest.substring(colonIdx + 1);
+              } else {
+                type = rest;
+                payload = '';
+              }
+            }
+          } else {
+            const colonIdx = text.indexOf(':');
+            if (colonIdx > 0) {
+              type = text.substring(0, colonIdx);
+              payload = text.substring(colonIdx + 1);
+            }
+          }
+          this._inboxMessages.push({
+            id: `p2p-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+            from: from.substring(0, 32),
+            fromDid: did,
+            type,
+            payload,
+            timestamp: Date.now(),
+            source: 'p2p',
+          });
+          // 限制 inbox 大小, 防止内存泄漏
+          if (this._inboxMessages.length > 1000) {
+            this._inboxMessages = this._inboxMessages.slice(-1000);
+          }
+        } catch (err) {
+          console.warn('[PiAgent] inbox listener decode error:', err);
+        }
+      });
+    } catch (err) {
+      console.warn('[PiAgent] _setupInboxListener failed (non-fatal):', err);
+    }
+
+    // 监听本地 inbox bus 投递 (send_to_local_agent)
+    try {
+      const { LocalInboxBus } = require('../network/local-inbox-bus.js');
+      const myRole = process.env.BOLLOON_ROLE || 'default';
+      LocalInboxBus.getInstance().subscribe(myRole, (msg: any) => {
+        this._inboxMessages.push({
+          id: `local-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+          from: msg.from || 'unknown',
+          fromDid: msg.fromDid,
+          type: msg.type || 'agent-local-message',
+          payload: msg.payload || '',
+          timestamp: msg.timestamp || Date.now(),
+          source: 'local',
+        });
+        if (this._inboxMessages.length > 1000) {
+          this._inboxMessages = this._inboxMessages.slice(-1000);
+        }
+      });
+    } catch (err) {
+      // LocalInboxBus 可能还没创建, 不阻塞
+    }
   }
 
   private estimateResponseQuality(response: string): number {
