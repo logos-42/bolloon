@@ -601,6 +601,8 @@ class PiAgentSession implements AgentSession {
   /** 2026-06-16 新增: 累计错误总数兜底 (不管是否同工具, 累计 N 次就强制退出)
    *  防 LLM 轮换工具名绕开 MAX_SAME_TOOL_FAILURES 的死循环攻击 */
   private readonly MAX_TOTAL_ERRORS = 20;
+  /** 2026-06-19: 记录 loop 内成功执行的工具结果, 失败退出时汇总给用户 */
+  private successfulToolResults: { tool: string; outputPreview: string }[] = [];
   /** 2026-06-16 新增: loop 内自动压缩触发阈值 (相对 60K 阈值的比例) */
   private readonly LOOP_COMPACT_RATIO = 0.8;
   /** P1: max output token 升级重试 (LLM 截断时重试, 最多 3 次) */
@@ -1907,7 +1909,14 @@ ${this.getToolDefinitions()}
       if (totalErrors >= this.MAX_TOTAL_ERRORS) {
         console.warn(`[PiAgent] 累计错误 ${totalErrors} >= ${this.MAX_TOTAL_ERRORS}, 强制终止 (防死循环)`);
         onStream?.({ type: 'error', content: `⛔ 累计 ${totalErrors} 次错误, 强制终止 (防止 LLM 死循环)`, tool: 'loop' });
-        finalResponse = finalResponse || `(本轮 ReAct 循环累计 ${totalErrors} 次错误, 强制结束。请换个思路或简化任务重试。)`;
+        // 2026-06-19: 即使 LLM 一直失败, 也汇总之前成功执行的 tool result 给用户
+        if (this.successfulToolResults.length > 0) {
+          finalResponse = `✅ 之前步骤成功执行了 ${this.successfulToolResults.length} 个工具 (但 LLM 后续 ${totalErrors} 次调用失败):\n` +
+            this.successfulToolResults.map((r, i) => `  ${i+1}. ${r.tool}: ${r.outputPreview}`).join('\n') +
+            `\n\n⚠️ (LLM 连续失败, 可能是 minimax 上游限流/网络问题, 工具已成功执行但 LLM 没能继续总结)`;
+        } else {
+          finalResponse = finalResponse || `(本轮 ReAct 循环累计 ${totalErrors} 次错误, 强制结束。请换个思路或简化任务重试。)`;
+        }
         break;
       }
 
@@ -1999,18 +2008,27 @@ ${toolDefs}
       const response = await this.callLlmWithRecovery(llm, messages, systemPrompt, signal, onStream);
       const reply = (response.reply || '').trim();
 
-      // 2026-06-16: 看到 [AI 服务调用失败] sentinel → 不再立即 break,
-      // 而是设 aiFailed=true, 让外层 promptStream 自动重跑整个 loop 最多 N 次
-      // (LLM API 401 / 网络错 / 配额满时, pi-ai 返回这个 prefix;
-      //  自动 retry 兜底: 临时网络抖动可自愈, 真挂 N 次后才报失败)
+      // 2026-06-19 架构 fix: 不再因 [AI 服务调用失败] break
+      //   旧逻辑: sentinel → aiFailed=true → break → 外层 retry 整个 loop (重置 history)
+      //   新逻辑: 把错误当 tool_result push 进 history → 下一轮 LLM 看到错误能反思重试
+      //   这是 dive-into 文档的"fail-open error recovery" — 错误进入 context, 不让 LLM 重复犯同样错
       if (reply.startsWith('[AI 服务调用失败]')) {
-        console.log(`[PiAgent] 收到 AI 错误 sentinel, 标记 aiFailed, 外层会自动重试整个 loop`);
-        aiFailed = true;
+        console.log(`[PiAgent] 收到 AI 错误 sentinel, 推到 history 让 LLM 反思, 继续 loop`);
         aiFailureReason = reply.length > 200 ? reply.substring(0, 200) : reply;
+        totalErrors++;
+        consecutiveErrors++;
+        // 把错误当成 tool 结果 push 进 history, 这样下一轮 LLM 看到错误能调整
+        this.messageHistory.push({
+          role: 'system',
+          content: `[Loop 错误恢复 ${totalErrors}/${this.MAX_TOTAL_ERRORS}] ${aiFailureReason}\n\n请基于上轮工具结果继续完成任务, 不要重复调用同一失败操作. 如果工具已成功执行, 请基于 result.output 给用户总结; 如果工具失败, 请换其他方式或重试.`
+        });
         if (onStream) {
-          onStream({ type: 'status', content: `⚠️ AI 调用失败, 将自动重试整个 loop`, tool: 'system' });
+          onStream({ type: 'status', content: `⚠️ AI 调用失败 ${totalErrors}/${this.MAX_TOTAL_ERRORS}, 已 push 错误到 history 让 LLM 反思`, tool: 'system' });
         }
-        break;
+        // 退避 2s 后继续 — 临时 minimax 限流避开, 不让 loop 终止
+        await new Promise<void>(resolve => setTimeout(resolve, 2000));
+        // 关键: 不设 aiFailed=true, 让外层不重试整个 loop (重置 history), 继续内层循环
+        continue;
       }
 
       console.log(`[PiAgent] LLM 回复长度: ${reply.length}, 内容预览: "${reply.substring(0, 80)}..."`);
@@ -2240,6 +2258,16 @@ ${toolDefs}
           if (result.success) {
             consecutiveErrors = 0; // 重置连续错误计数
 
+            // 2026-06-19: 记录成功结果, 用于 LLM 失败退出时汇总给用户
+            if (result.output) {
+              this.successfulToolResults.push({
+                tool: toolCall.name,
+                outputPreview: result.output.substring(0, 200) + (result.output.length > 200 ? '...' : '')
+              });
+            } else {
+              this.successfulToolResults.push({ tool: toolCall.name, outputPreview: '(无输出)' });
+            }
+
             // 检查工具执行质量
             lastQualityScore = this.estimateToolResultQuality(result);
             if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) {
@@ -2314,6 +2342,22 @@ ${toolDefs}
         // 2026-06-19 架构 fix: 只有 strip <think> 后才检查 isFinalResponse
         //   (parseToolCall 已先尝试, 既然没解析出 tool_call, 现在检查 final gen 是否真的在最终回答区)
         if (this.isFinalResponse(reply)) {
+          // 2026-06-19 dive-into 风格修复: 如果还有 successful tool results 没汇报,
+          //   LLM 不能提前 final_gen — harness 自动注入"请汇报剩余工具结果" hint 再 continue
+          //   这是 dive-into 文档"step 9 stop condition check" 的具体化:
+          //   stop condition = (有工具结果未汇报) ? continue : break
+          if (this.successfulToolResults.length > 0 && iteration < this.MAX_REACT_ITERATIONS) {
+            const unreported = this.successfulToolResults.length;
+            console.log(`[PiAgent] LLM 想 final_gen 但还有 ${unreported} 个工具结果未汇报, push hint 让其继续`);
+            this.messageHistory.push({
+              role: 'system',
+              content: `[dive-into stop condition] 你之前已成功执行了 ${unreported} 个工具, 但当前回复里没把它们的结果告诉用户. 请基于已有的工具结果 (在 history 里) 写一个完整总结回复给用户, 用 <final gen> 结尾. 不要再调工具.`
+            });
+            if (onStream) {
+              onStream({ type: 'status', content: `🔄 还有 ${unreported} 个工具结果未汇报, 让 LLM 继续总结`, tool: 'system' });
+            }
+            continue;
+          }
           lastQualityScore = this.estimateResponseQuality(reply);
           finalResponse = this.extractFinalAnswer(reply);
           break;
