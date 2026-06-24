@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli.js",
@@ -90,7 +90,13 @@
     "npmRebuild": false,
     "buildDependenciesFromSource": false,
     "extraResources": [
-      { "from": "build", "to": "build", "filter": ["**/*"] }
+      {
+        "from": "build",
+        "to": "build",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "extraMetadata": {
       "main": "dist/electron.js",
