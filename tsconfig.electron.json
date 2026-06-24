@@ -15,6 +15,6 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["src/electron.ts", "src/electron-preload.ts"],
+  "include": ["src/electron.ts", "src/electron-preload.ts", "src/electron/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/constraint-runtime", "src/agents", "src/web", "src/bollharness"]
 }

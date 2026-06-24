@@ -1178,6 +1178,12 @@ async function getAgentForChannel(
 
 export interface CreateWebServerOptions {
   selfImprove?: boolean;
+  /**
+   * Bind host for the HTTP server. Defaults to 127.0.0.1 (loopback only)
+   * for safety; Electron packaging keeps this loopback too. Set to '0.0.0.0'
+   * explicitly (or via BOLLOON_HOST env) only when LAN access is needed.
+   */
+  host?: string;
 }
 
 let selfImproveEnabled = false;
@@ -5626,17 +5632,24 @@ app.get('/channels', async (_req, res) => {
     const startPort = port;
     let currentPort = startPort;
     let attempt = 0;
+    // 2026-06-24: 默认 loopback bind，避免在 LAN 上暴露 (CORS 已经 * 了)。
+    // Electron 包装里强制 127.0.0.1; CLI 用户想 LAN 访问可显式 BOLLOON_HOST=0.0.0.0
+    const bindHost = options.host ?? process.env.BOLLOON_HOST ?? '127.0.0.1';
     // 局部可变 server 引用 — listen 失败后必须重新 createServer 再 listen
     let currentServer: ReturnType<typeof createServer> = server;
 
     const tryListen = () => {
       currentServer.removeAllListeners('error');
       currentServer.once('error', onError);
-      currentServer.listen(currentPort, () => {
+      currentServer.listen(currentPort, bindHost, () => {
         if (currentPort !== startPort) {
           console.warn(`⚠ 端口 ${startPort} 被占用，已自动切换到 ${currentPort}`);
         }
-        console.log(`Web 服务器启动完成: http://localhost:${currentPort}`);
+        // 2026-06-24: BOLLOON_PORT=NNNN 是 Electron 主进程解析的契约行 (parseable),
+        // 旧 marker ('服务器已监听') 也保留给日志/调试看。
+        console.log(`BOLLOON_PORT=${currentPort}`);
+        console.log(`BOLLOON_HOST=${bindHost}`);
+        console.log(`Web 服务器启动完成: http://${bindHost}:${currentPort}`);
         console.log('服务器已监听');
         // 安装 chat bus -> SSE 桥 (供前端 inbox UI 实时刷新)
         void installChatBusHook();

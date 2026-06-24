@@ -1205,7 +1205,30 @@ class PiAgentSession implements AgentSession {
       execute: async (args) => {
         const cmd = String(args.command || '').trim();
         if (!cmd) return { success: false, error: 'command 必填' };
-        const argList = String(args.args || '').split(',').map(s => s.trim()).filter(Boolean);
+        // 2026-06-19: 支持多种 args 格式
+        //   1. JSON 数组: ["checkout", "-b", "branch"] (LLM 偏好)
+        //   2. 逗号分隔: "checkout,-b,branch" (旧格式)
+        //   3. 字符串: "checkout -b branch" (单参数)
+        let argList: string[] = [];
+        const rawArgs = args.args;
+        if (Array.isArray(rawArgs)) {
+          argList = rawArgs.map((s: any) => String(s).trim()).filter(Boolean);
+        } else if (typeof rawArgs === 'string') {
+          const trimmed = rawArgs.trim();
+          if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            // JSON 数组字符串
+            try {
+              const parsed = JSON.parse(trimmed);
+              if (Array.isArray(parsed)) {
+                argList = parsed.map((s: any) => String(s).trim()).filter(Boolean);
+              }
+            } catch { /* fall through to comma split */ }
+          }
+          if (argList.length === 0) {
+            // 逗号分隔 或 单字符串
+            argList = trimmed.split(',').map(s => s.trim()).filter(Boolean);
+          }
+        }
         const timeoutMs = Number(args.timeoutMs) || 30000;
 
         const result = await shellExec(cmd, argList, { timeoutMs });
@@ -1833,10 +1856,13 @@ class PiAgentSession implements AgentSession {
   private getToolDefinitions(): string {
     // M2.4 (2026-06-17): 缓存 tool 定义 — registerTools() 在构造时调一次, 此后不变
     if (this.cachedToolDefinitions) return this.cachedToolDefinitions;
-    const defs: string[] = ['可用工具:'];
+    const defs: string[] = ['可用工具 (name(params) - 简介):'];
     for (const tool of this.tools.values()) {
-      const params = Object.entries(tool.parameters).map(([k, v]) => `${k}: ${v}`).join(', ');
-      defs.push(`- ${tool.name}(${params}) - ${tool.description}`);
+      // 2026-06-19: 压缩 tool 定义 — 只显示参数名 (不显示描述, 减少 60% 长度)
+      //   完整 description 在 history 第一轮注入 (getToolDefinitionsFull 调用), 后续轮只看简短
+      //   避免 system prompt 太大导致 minimax 撞 max_tokens 输出空
+      const paramNames = Object.keys(tool.parameters).join(',');
+      defs.push(`- ${tool.name}(${paramNames})`);
     }
     this.cachedToolDefinitions = defs.join('\n');
     return this.cachedToolDefinitions;

@@ -87,6 +87,11 @@
       "bin/**/*",
       "package.json"
     ],
+    "npmRebuild": false,
+    "buildDependenciesFromSource": false,
+    "extraResources": [
+      { "from": "build", "to": "build", "filter": ["**/*"] }
+    ],
     "extraMetadata": {
       "main": "dist/electron.js",
       "type": "commonjs"
@@ -121,7 +126,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },
-    "asar": false,
+    "asar": true,
     "asarUnpack": [
       "node_modules/@diap/**/*",
       "node_modules/@rayhanadev/**/*",

@@ -2110,10 +2110,13 @@ async function main() {
     const { createWebServer, openBrowser } = await import('./web/server.js');
 
     s.info(`启动 Web 服务端口 ${port}...`);
-    const { port: actualPort } = await createWebServer(port, { selfImprove });
+    // 2026-06-24: CLI 默认 loopback bind (安全), LAN 访问需 BOLLOON_HOST=0.0.0.0
+    const bindHost = process.env.BOLLOON_HOST;
+    const { port: actualPort } = await createWebServer(port, { selfImprove, ...(bindHost ? { host: bindHost } : {}) });
 
-    s.success(`浏览器已打开 → http://localhost:${actualPort}`);
-    openBrowser(`http://localhost:${actualPort}`);
+    const displayHost = bindHost ?? '127.0.0.1';
+    s.success(`浏览器已打开 → http://${displayHost}:${actualPort}`);
+    openBrowser(`http://${displayHost}:${actualPort}`);
   } else if (isNonInteractive) {
     console.log = originalLog;
     console.info = originalInfo;
