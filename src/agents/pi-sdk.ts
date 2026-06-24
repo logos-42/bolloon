@@ -3276,6 +3276,10 @@ Workspace root folder: ${this.cwd}
       /\btool\s*=>\s*["'](\w+)["']/,
       // 兼容: [TOOL_CALL] 块内 JSON 形式 {"name": "x", "args": {...}}
       /\[TOOL_CALL\][\s\S]*?\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*(\{[\s\S]*?\})/i,
+      // 2026-06-19: 兼容 LLM 输出 "tool_name {json_args}" 形式 (单行, 无 name 字段)
+      //   实际输出: write_file {"path":"docs/test.md","content":"..."}
+      //   只在行首/新行匹配, 避免误匹配普通文本里的 "foo {...}"
+      /(?:^|\n)(\w+)\s+(\{[\s\S]*?\})(?=\n|$)/,
       // 2026-06-15 修: 兼容 LLM 输出的 XML 格式 <tool_name>...<arg>value</arg>...</tool_name>
       //   实际 LLM 习惯: <shell_exec>\n<command>ls</command>\n<args>["-la", "..."]</args>\n</shell_exec>
       /<(\w+)>([\s\S]*?)<\/\1>/,
@@ -3306,13 +3310,26 @@ Workspace root folder: ${this.cwd}
         } else if (rawArgs && /<\w+>[\s\S]*<\/\w+>/.test(rawArgs)) {
           // 2026-06-15 修: XML 格式, 解析内嵌子标签 <argname>value</argname>
           //   例: <command>ls</command>\n<args>["-la","~/.bolloon/skills"]</args>
-          const xmlArgPattern = /<(\w+)>([\s\S]*?)<\/\1>/g;
-          let xmlMatch: RegExpExecArray | null;
-          while ((xmlMatch = xmlArgPattern.exec(rawArgs)) !== null) {
-            const argName = xmlMatch[1];
-            const argValue = xmlMatch[2].trim();
+          // 2026-06-19 修: 也支持 <parameter name="X">value</parameter> 形式 (OpenAI Hermes function_call)
+          const paramRe = /<parameter\s+name=["'](\w+)["']>([\s\S]*?)<\/parameter>/g;
+          let pMatch: RegExpExecArray | null;
+          while ((pMatch = paramRe.exec(rawArgs)) !== null) {
+            const argName = pMatch[1];
+            const argValue = pMatch[2].trim();
             if (argName && argValue) {
               args[argName] = argValue;
+            }
+          }
+          // 如果没匹配到 <parameter>, 用普通 XML 子标签
+          if (Object.keys(args).length === 0) {
+            const xmlArgPattern = /<(\w+)>([\s\S]*?)<\/\1>/g;
+            let xmlMatch: RegExpExecArray | null;
+            while ((xmlMatch = xmlArgPattern.exec(rawArgs)) !== null) {
+              const argName = xmlMatch[1];
+              const argValue = xmlMatch[2].trim();
+              if (argName && argValue) {
+                args[argName] = argValue;
+              }
             }
           }
         } else if (rawArgs) {
