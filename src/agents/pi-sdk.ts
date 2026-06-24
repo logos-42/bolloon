@@ -1626,7 +1626,7 @@ class PiAgentSession implements AgentSession {
       description: '跑 vitest 测试. 自动 bail (失败就停). 默认 60s timeout.',
       parameters: { pattern: '可选, 文件 glob e.g. "src/agents/pi-sdk.test.ts"', timeoutMs: '可选, 默认 60000' },
       execute: async (args) => {
-        const argv = ['vitest', 'run', '--reporter=basic', '--no-color', '--bail=1'];
+        const argv = ['vitest', 'run', '--reporter=default', '--no-color', '--bail=1'];
         if (args.pattern) argv.push(String(args.pattern));
         const timeoutMs = parseInt(String(args.timeoutMs || '60000')) || 60000;
         const result = await shellExec('npx', argv, { timeoutMs });
