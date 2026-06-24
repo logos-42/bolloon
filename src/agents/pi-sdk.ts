@@ -1256,6 +1256,12 @@ class PiAgentSession implements AgentSession {
       }
     });
 
+    // 2026-06-24: Wallet + Polymarket + Safe 工具集 (基于 constraint-runtime/src/tools/)
+    //   真实可用实现: ethers v6 + JsonRpcProvider, 默认走 eth.llamarpc.com
+    //   agent 可以创建/导入/查询 EVM 钱包, 查余额, 签名, 转账, 部署 Safe 多签钱包
+    this._registerWalletTools();
+
+
     // list_skills 工具: 列出当前 session 已加载的 skills
     // 加载源: ~/.bolloon/skills/ → <cwd>/.bolloon/skills/ → ~/.boll/skills/
     this.tools.set('list_skills', {
@@ -3384,6 +3390,247 @@ Workspace root folder: ${this.cwd}
     const r = this.parseToolCall(content);
     console.log('[DBG parseToolCall] result:', JSON.stringify(r), 'content head:', JSON.stringify(content.substring(0, 200)));
     return r;
+  }
+
+  /**
+   * 2026-06-24: 注册 Wallet + Polymarket + Safe 工具
+   *   真实实现 (ethers v6 + JsonRpcProvider) — agent 可以创建 EVM 钱包, 查余额, 转账, 签名, Polymarket 下单
+   *   工具来源: src/constraint-runtime/src/tools/{WalletTools,PolymarketSDK,SafeSDK}/
+   */
+  private _registerWalletTools(): void {
+    // === WalletTools (EVM 钱包) ===
+    this.tools.set('wallet_create', {
+      name: 'wallet_create',
+      description: '创建新 EVM 钱包 (BIP-39 12 词助记词 + 私钥 + 地址). 私钥会在响应中返回, agent 应当保存到 ~/.bolloon/wallets/<address>.json',
+      parameters: {},
+      execute: async () => {
+        try {
+          const { createWallet } = await import('../constraint-runtime/dist/tools/WalletTools/createWallet.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/createWallet.js'));
+          const r = await createWallet();
+          return { success: true, output: `✅ 钱包创建成功:\n  address: ${r.address}\n  privateKey: ${r.privateKey}\n  mnemonic: ${r.mnemonic}\n  createdAt: ${r.createdAt}\n\n⚠️ 请 agent 立即把私钥保存到 ~/.bolloon/wallets/${r.address}.json` };
+        } catch (e: any) {
+          return { success: false, error: `创建失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    this.tools.set('wallet_import', {
+      name: 'wallet_import',
+      description: '导入已有 EVM 钱包 (用助记词或私钥)',
+      parameters: { mnemonic: '可选, 12/15/18/21/24 词助记词', privateKey: '可选, 0x 开头的私钥' },
+      execute: async (args) => {
+        try {
+          const { importWallet } = await import('../constraint-runtime/dist/tools/WalletTools/importWallet.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/importWallet.js'));
+          const r = await importWallet({ mnemonic: args.mnemonic, privateKey: args.privateKey });
+          return { success: true, output: `✅ 钱包导入成功:\n  address: ${r.address}\n  privateKey: ${r.privateKey}\n  source: ${r.source}` };
+        } catch (e: any) {
+          return { success: false, error: `导入失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    this.tools.set('wallet_get_balance', {
+      name: 'wallet_get_balance',
+      description: '查 EVM 钱包 ETH 余额. 默认 RPC = https://eth.llamarpc.com, 可指定其他 RPC URL',
+      parameters: { address: '0x 开头的 EVM 地址 (必填)', rpcUrl: '可选 RPC URL (默认 eth.llamarpc.com)' },
+      execute: async (args) => {
+        try {
+          const { getBalance } = await import('../constraint-runtime/dist/tools/WalletTools/getBalance.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/getBalance.js'));
+          const r = await getBalance({ address: String(args.address), rpcUrl: args.rpcUrl });
+          return { success: true, output: `💰 ${r.address}\n  ${r.balanceEth} ${r.symbol} (${r.balance} wei)` };
+        } catch (e: any) {
+          return { success: false, error: `查余额失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    this.tools.set('wallet_sign_message', {
+      name: 'wallet_sign_message',
+      description: '用私钥对消息做 EIP-191 personal_sign 签名',
+      parameters: { message: '要签名的消息 (必填)', privateKey: '0x 开头的私钥 (必填)' },
+      execute: async (args) => {
+        try {
+          const { signMessage } = await import('../constraint-runtime/dist/tools/WalletTools/signMessage.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/signMessage.js'));
+          const r = await signMessage({ message: String(args.message), privateKey: String(args.privateKey) });
+          return { success: true, output: `✅ 签名完成:\n  address: ${r.address}\n  message: ${r.message}\n  signature: ${r.signature}` };
+        } catch (e: any) {
+          return { success: false, error: `签名失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    this.tools.set('wallet_send_tx', {
+      name: 'wallet_send_tx',
+      description: '用 EVM 钱包发送交易 (转账 ETH 或调用合约). 走 EIP-1559, 默认 RPC = eth.llamarpc.com',
+      parameters: { privateKey: '私钥 (必填)', to: '接收地址 (必填)', value: '发送 wei 数量 (必填)', data: '可选 0x 开头的 calldata', rpcUrl: '可选 RPC URL' },
+      execute: async (args) => {
+        try {
+          const { sendTransaction } = await import('../constraint-runtime/dist/tools/WalletTools/sendTransaction.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/sendTransaction.js'));
+          const r = await sendTransaction({
+            privateKey: String(args.privateKey),
+            to: String(args.to),
+            value: String(args.value),
+            data: args.data ? String(args.data) : undefined,
+            rpcUrl: args.rpcUrl,
+          });
+          return { success: true, output: `✅ 交易已发送:\n  hash: ${r.hash}\n  from: ${r.from} → to: ${r.to}\n  value: ${r.value} wei\n  status: ${r.status}\n  blockNumber: ${r.blockNumber || '(pending)'}\n  gasUsed: ${r.gasUsed || '?'}` };
+        } catch (e: any) {
+          return { success: false, error: `交易失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    this.tools.set('wallet_transfer_token', {
+      name: 'wallet_transfer_token',
+      description: '用 EVM 钱包转 ERC20 token (需要 token 合约地址)',
+      parameters: { privateKey: '私钥 (必填)', tokenAddress: 'ERC20 合约地址 (必填)', to: '接收地址 (必填)', amount: 'token 数量 (人类可读, 自动按 decimals 转换)', decimals: '可选 token decimals (默认查合约)', rpcUrl: '可选 RPC URL' },
+      execute: async (args) => {
+        try {
+          const { transferToken } = await import('../constraint-runtime/dist/tools/WalletTools/transferToken.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/transferToken.js'));
+          const r = await transferToken({
+            privateKey: String(args.privateKey),
+            tokenAddress: String(args.tokenAddress),
+            to: String(args.to),
+            amount: String(args.amount),
+            decimals: args.decimals ? Number(args.decimals) : undefined,
+            rpcUrl: args.rpcUrl,
+          });
+          return { success: true, output: `✅ Token 转账完成:\n  hash: ${r.hash}\n  ${r.amount} ${r.tokenAddress.substring(0, 10)}...\n  from: ${r.from} → to: ${r.to}\n  status: ${r.status}` };
+        } catch (e: any) {
+          return { success: false, error: `转账失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    this.tools.set('wallet_autopay', {
+      name: 'wallet_autopay',
+      description: '设置自动付款 (订阅/定期扣款, 用 SafeSDK 自动执行). 实际能力取决于 SafeSDK autopay 实现',
+      parameters: { from: '付款方地址 (必填)', to: '收款方地址 (必填)', amount: '金额 (必填)', interval: '周期 (e.g. daily/weekly/monthly)', token: '可选, 默认 ETH' },
+      execute: async (args) => {
+        try {
+          const mod: any = await import('../constraint-runtime/dist/tools/WalletTools/autoPay.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/autoPay.js'));
+          const fn = mod.autoPay || mod.setAutoPay || mod.default;
+          if (!fn) return { success: false, error: 'autoPay 接口未找到' };
+          const r = await fn({
+            from: String(args.from), to: String(args.to), amount: String(args.amount),
+            interval: String(args.interval || 'monthly'), token: args.token,
+          });
+          return { success: true, output: `✅ 自动付款已设置: ${JSON.stringify(r)}` };
+        } catch (e: any) {
+          return { success: false, error: `设置失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    // === PolymarketSDK (预测市场) ===
+    this.tools.set('polymarket_list_markets', {
+      name: 'polymarket_list_markets',
+      description: '列出 Polymarket 预测市场 (用 Polymarket CLOB API). limit 默认 50',
+      parameters: { limit: '可选 数量 (默认 50)', offset: '可选 偏移', closed: '可选 是否只显示已关闭 (默认 false = 只显示活跃)' },
+      execute: async (args) => {
+        try {
+          const { listMarkets } = await import('../constraint-runtime/dist/tools/PolymarketSDK/listMarkets.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/listMarkets.js'));
+          const markets = await listMarkets({
+            limit: args.limit ? Number(args.limit) : 50,
+            offset: args.offset ? Number(args.offset) : 0,
+            closed: args.closed ? String(args.closed) === 'true' : false,
+          });
+          if (!markets || markets.length === 0) {
+            return { success: true, output: '📊 Polymarket 当前没有活跃市场 (或 API 不可达, 因为 constraint-runtime 是占位实现, 需要装 polymarket-sdk 包)' };
+          }
+          const lines = markets.slice(0, 10).map((m: any, i: number) => `  ${i+1}. [${m.id}] ${m.question}\n     vol=${m.volume} active=${m.active}`);
+          return { success: true, output: `📊 Polymarket 找到 ${markets.length} 个市场 (前 10):\n${lines.join('\n')}` };
+        } catch (e: any) {
+          return { success: false, error: `查询失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    this.tools.set('polymarket_get_market', {
+      name: 'polymarket_get_market',
+      description: '获取单个 Polymarket 市场的详情 (id/conditionId 都可)',
+      parameters: { marketId: '市场 ID (必填)' },
+      execute: async (args) => {
+        try {
+          const mod: any = await import('../constraint-runtime/dist/tools/PolymarketSDK/getMarket.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/getMarket.js'));
+          const fn = mod.getMarket || mod.default;
+          const m: any = await fn(String(args.marketId));
+          if (!m) return { success: false, error: '市场不存在' };
+          return { success: true, output: `📊 市场详情:\n  ${JSON.stringify(m, null, 2).substring(0, 1500)}` };
+        } catch (e: any) {
+          return { success: false, error: `查询失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    this.tools.set('polymarket_get_orders', {
+      name: 'polymarket_get_orders',
+      description: '查询 Polymarket 订单 (需要 CLOB client + auth, 当前 constraint-runtime 是占位实现)',
+      parameters: { marketId: '可选 按市场 ID 过滤' },
+      execute: async (args) => {
+        try {
+          const { getOrders } = await import('../constraint-runtime/dist/tools/PolymarketSDK/getOrders.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/getOrders.js'));
+          const orders = await getOrders(args.marketId ? { marketId: String(args.marketId) } : {});
+          return { success: true, output: `📋 订单列表: ${JSON.stringify(orders, null, 2).substring(0, 1500)}` };
+        } catch (e: any) {
+          return { success: false, error: `查询失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    this.tools.set('polymarket_create_order', {
+      name: 'polymarket_create_order',
+      description: '在 Polymarket 下单 (BUY/SELL, price 0-1, size USDC). 当前 constraint-runtime 是占位实现, 实际下单需要 CLOB client + 私钥签名',
+      parameters: { marketId: '市场 ID (必填)', side: 'BUY 或 SELL (必填)', price: '价格 0-1 (必填)', size: '数量 USDC (必填)' },
+      execute: async (args) => {
+        try {
+          const { createOrder } = await import('../constraint-runtime/dist/tools/PolymarketSDK/createOrder.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/createOrder.js'));
+          const r = await createOrder({
+            marketId: String(args.marketId),
+            side: String(args.side).toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
+            price: Number(args.price),
+            size: Number(args.size),
+          });
+          if (r.success) return { success: true, output: `✅ 订单: ${r.message}` };
+          return { success: false, error: r.message, output: r.message };
+        } catch (e: any) {
+          return { success: false, error: `下单失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    this.tools.set('polymarket_cancel_order', {
+      name: 'polymarket_cancel_order',
+      description: '取消 Polymarket 订单 (order ID)',
+      parameters: { orderId: '订单 ID (必填)' },
+      execute: async (args) => {
+        try {
+          const { cancelOrder } = await import('../constraint-runtime/dist/tools/PolymarketSDK/cancelOrder.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/cancelOrder.js'));
+          const r = await cancelOrder({ orderId: String(args.orderId) });
+          if (r.success) return { success: true, output: `✅ 取消订单: ${r.message}` };
+          return { success: false, error: r.message, output: r.message };
+        } catch (e: any) {
+          return { success: false, error: `取消失败: ${String(e.message || e)}` };
+        }
+      }
+    });
+
+    // === SafeSDK (多签钱包) ===
+    this.tools.set('safe_deploy', {
+      name: 'safe_deploy',
+      description: '部署 Safe 多签钱包 (需要 owners/threshold 参数)',
+      parameters: { owners: 'JSON 数组 owner 地址 (必填)', threshold: '需要几个签名 (必填, e.g. 2)' },
+      execute: async (args) => {
+        try {
+          const { deploySafe } = await import('../constraint-runtime/dist/tools/SafeSDK/deploySafe.js').catch(() => import('../constraint-runtime/src/tools/SafeSDK/deploySafe.js'));
+          const owners = Array.isArray(args.owners) ? args.owners : JSON.parse(String(args.owners));
+          const r = await deploySafe({ owners, threshold: Number(args.threshold) });
+          return { success: true, output: `✅ Safe 部署: ${JSON.stringify(r)}` };
+        } catch (e: any) {
+          return { success: false, error: `部署失败: ${String(e.message || e)}` };
+        }
+      }
+    });
   }
 
   /**

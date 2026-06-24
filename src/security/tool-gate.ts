@@ -57,6 +57,10 @@ const TOOL_WHITELIST = new Set<string>([
   'vitest_run', 'tsc_check',
   // 2026-06-19: Agent Mesh 通信工具 (跟 pi-sdk.ts registerTools 同步)
   'check_inbox', 'send_to_peer', 'p2p_broadcast', 'send_to_local_agent', 'list_local_agents', 'agent_call',
+  // 2026-06-24: Wallet + Polymarket + Safe 工具 (跟 pi-sdk.ts _registerWalletTools 同步)
+  'wallet_create', 'wallet_import', 'wallet_get_balance', 'wallet_sign_message', 'wallet_send_tx', 'wallet_transfer_token', 'wallet_autopay',
+  'polymarket_list_markets', 'polymarket_get_market', 'polymarket_get_orders', 'polymarket_create_order', 'polymarket_cancel_order',
+  'safe_deploy',
   // MCP 注册的工具
   'mcp_tool',
 ]);
