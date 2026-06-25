@@ -23,6 +23,8 @@
     "electron:dev": "concurrently \"npm run dev:web\" \"npm run electron:start\"",
     "electron:build": "npm run build:electron && electron-builder",
     "electron:pack": "electron-builder --dir",
+    "app:bundle": "node scripts/build-app-bundle.cjs",
+    "app:bundle:open": "node scripts/build-app-bundle.cjs && open \"release/mac-arm64/Bolloon Agent.app\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:pi-sdk": "tsx src/test/pi-sdk.test.ts",
@@ -34,6 +36,8 @@
   "dependencies": {
     "@bolloon/bolloon-agent": "^0.1.36",
     "@bolloon/constraint-runtime": "0.1.0",
+    "@capacitor/core": "^8.4.1",
+    "@capacitor/ios": "^8.4.1",
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
     "@diap/sdk": "^0.1.10",
@@ -60,6 +64,7 @@
     "viem": "^2.52.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.4.1",
     "@playwright/test": "^1.60.0",
     "@types/express": "^5.0.6",
     "@types/node": "^25.9.1",
@@ -68,7 +73,7 @@
     "@types/react-dom": "^18.3.0",
     "concurrently": "^9.2.1",
     "electron": "^42.3.0",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "^26.15.5",
     "lefthook": "^2.1.9",
     "playwright": "^1.60.0",
     "tsx": "^4.0.0",

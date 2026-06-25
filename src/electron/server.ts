@@ -59,6 +59,7 @@ export function startWebServer(preferredPort: number): Promise<{ port: number }>
     webServerProcess.stderr?.on('data', (data: Buffer) => {
       stderrData += data.toString();
       process.stderr.write(`[WebServer ERR] ${data}`);
+      log(`[WebServer stderr] ${data.toString().trim()}`, 'warn');
     });
 
     webServerProcess.on('error', (err) => {
@@ -69,7 +70,7 @@ export function startWebServer(preferredPort: number): Promise<{ port: number }>
     webServerProcess.on('exit', (code, signal) => {
       log(`Web 服务器退出: code=${code} signal=${signal}`);
       if (code !== 0 && code !== null) {
-        log(`Web 服务器 stderr: ${stderrData}`, 'error');
+        log(`Web 服务器 stderr: ${stderrData.slice(0, 500)}`, 'error');
       }
       webServerProcess = null;
     });
