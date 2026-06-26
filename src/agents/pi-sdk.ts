@@ -3388,6 +3388,12 @@ for (const pattern of patterns) {
         }
 
         if (this.tools.has(name)) {
+          // 2026-06-19: auto-split command field — shell_exec expects command='git', args='status' split
+          if (typeof args.command === 'string' && args.command.includes(' ') && !args.args) {
+            const parts = args.command.split(/\s+/);
+            args.command = parts[0];
+            args.args = parts.slice(1).join(' ');
+          }
           return { name, args };
         }
         const resolved = this.resolveToolName(name);
