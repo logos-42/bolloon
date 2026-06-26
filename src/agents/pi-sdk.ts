@@ -3226,6 +3226,7 @@ Workspace root folder: ${this.cwd}
     ];
     for (const p of jsonPatterns) {
       const m = content.match(p);
+      console.log(`[parseToolCall DEBUG] jsonPattern match: ${m ? `name=${m[1]}, args=${JSON.stringify(m[2]).slice(0, 80)}` : 'null'}`);
       if (m) {
         const name = m[1];
         let args: Record<string, string> = {};
@@ -3235,6 +3236,14 @@ Workspace root folder: ${this.cwd}
             args = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v)]));
           }
         } catch { /* 解析失败保持 args={} */ }
+        // 2026-06-19: 自动 split command 字段 — LLM 常把 "git status" 整体当 command
+        //   shell_exec execute 要求 command="git", args="status" 拆分形式
+        //   这里检测 command 含空格且 args 字段空, 自动按空格 split
+        if (typeof args.command === 'string' && args.command.includes(' ') && !args.args) {
+          const parts = args.command.split(/\s+/);
+          args.command = parts[0];
+          args.args = parts.slice(1).join(' ');
+        }
         const resolved = this.resolveToolName(name);
         if (resolved) {
           return { name: resolved, args };
@@ -3291,37 +3300,42 @@ Workspace root folder: ${this.cwd}
       }
     }
 
-    const patterns = [
-      // 2026-06-19 修: minimax/Hermes 自闭合 XML 格式 <invoke name="X">...</invoke>
-      //   实际 LLM 习惯: <invoke name="shell_exec"><command>sed</command><args>["-n","1060,1095p"]</args></invoke>
-      //   必须放在最前 — 旧正则 /<(\w+)>([\s\S]*?)<\/\1>/ 会匹配到外层 <invoke> 但 name 是 "invoke" 而不是 "shell_exec"
-      new RegExp('<invoke\\s+name=["\']([\\w]+)["\']>([\\s\\S]*?)</invoke>'),
-      // 2026-06-19 修: <function_calls> 包裹
-      new RegExp('<function_calls>[\\s\\S]*?<invoke\\s+name=["\']([\\w]+)["\']>([\\s\\S]*?)</invoke>[\\s\\S]*?</function_calls>'),
-      /调用工具[：:]\s*(\w+)\s*\(([^)]*)\)/,
-      /使用工具[：:]\s*(\w+)\s*\(([^)]*)\)/,
-      /tool[_\w]*[：:]\s*(\w+)\s*\(([^)]*)\)/i,
-      /(\w+)\s*\(\s*([^)]*)\s*\)/,
-      // 兼容 LLM 输出的对象字面量格式: {tool => "get_identity", args => {...}}
-      /\{\s*tool\s*=>\s*["'](\w+)["']\s*(?:,\s*args\s*=>\s*(\{[\s\S]*?\}))?\s*\}/,
-      // 兼容: tool => "get_identity"  (无 args 包裹)
-      /\btool\s*=>\s*["'](\w+)["']/,
-      // 兼容: [TOOL_CALL] 块内 JSON 形式 {"name": "x", "args": {...}}
-      /\[TOOL_CALL\][\s\S]*?\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*(\{[\s\S]*?\})/i,
-      // 2026-06-19: 兼容 LLM 输出 "tool_name {json_args}" 形式 (单行, 无 name 字段)
-      //   实际输出: write_file {"path":"docs/test.md","content":"..."}
-      //   只在行首/新行匹配, 避免误匹配普通文本里的 "foo {...}"
-      /(?:^|\n)(\w+)\s+(\{[\s\S]*?\})(?=\n|$)/,
-      // 2026-06-15 修: 兼容 LLM 输出的 XML 格式 <tool_name>...<arg>value</arg>...</tool_name>
-      //   实际 LLM 习惯: <shell_exec>\n<command>ls</command>\n<args>["-la", "..."]</args>\n</shell_exec>
-      /<(\w+)>([\s\S]*?)<\/\1>/,
-    ];
+    // 2026-06-19 修: 先剥离 <think>...</think> 思考块, 避免旧正则 `<(\w+)>([\s\S]*?)<\/\1>` 优先匹配到 <think>
+//   之前 LLM 输出含 <think>...</think><invoke name="X">...</invoke> 时, <think> 先 match, name="think" 不在 tools → return null → 后续 <invoke> 没机会 match
+const strippedContent = content.replace(/<think>[\s\S]*?<\/think>/g, '');
 
-    for (const pattern of patterns) {
-      const match = content.match(pattern);
+const patterns = [
+  // 2026-06-19 修: minimax/Hermes 自闭合 XML 格式 <invoke name="X">...</invoke>
+  //   实际 LLM 习惯: <invoke name="shell_exec"><command>sed</command><args>["-n","1060,1095p"]</args></invoke>
+  //   必须放在最前 — 旧正则 /<(\w+)>([\s\S]*?)<\/\1>/ 会匹配到外层 <invoke> 但 name 是 "invoke" 而不是 "shell_exec"
+  new RegExp('<invoke\\s+name=["\']([\\w]+)["\']>([\\s\\S]*?)</invoke>'),
+  // 2026-06-19 修: <function_calls> 包裹
+  new RegExp('<function_calls>[\\s\\S]*?<invoke\\s+name=["\']([\\w]+)["\']>([\\s\\S]*?)</invoke>[\\s\\S]*?</function_calls>'),
+  /调用工具[：:]\s*(\w+)\s*\(([^)]*)\)/,
+  /使用工具[：:]\s*(\w+)\s*\(([^)]*)\)/,
+  /tool[_\w]*[：:]\s*(\w+)\s*\(([^)]*)\)/i,
+  /(\w+)\s*\(\s*([^)]*)\s*\)/,
+  // 兼容 LLM 输出的对象字面量格式: {tool => "get_identity", args => {...}}
+  /\{\s*tool\s*=>\s*["'](\w+)["']\s*(?:,\s*args\s*=>\s*(\{[\s\S]*?\}))?\s*\}/,
+  // 兼容: tool => "get_identity"  (无 args 包裹)
+  /\btool\s*=>\s*["'](\w+)["']/,
+  // 兼容: [TOOL_CALL] 块内 JSON 形式 {"name": "x", "args": {...}}
+  /\[TOOL_CALL\][\s\S]*?\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*(\{[\s\S]*?\})/i,
+  // 2026-06-19: 兼容 LLM 输出 "tool_name {json_args}" 形式 (单行, 无 name 字段)
+  //   实际输出: write_file {"path":"docs/test.md","content":"..."}
+  //   只在行首/新行匹配, 避免误匹配普通文本里的 "foo {...}"
+  /(?:^|\n)(\w+)\s+(\{[\s\S]*?\})(?=\n|$)/,
+  // 2026-06-15 修: 兼容 LLM 输出的 XML 格式 <tool_name>...<arg>value</arg>...</tool_name>
+  //   实际 LLM 习惯: <shell_exec>\n<command>ls</command>\n<args>["-la", "..."]</args>\n</shell_exec>
+  /<(\w+)>([\s\S]*?)<\/\1>/,
+];
+
+for (const pattern of patterns) {
+      const match = strippedContent.match(pattern);
       if (match) {
         const name = match[1];
         let args: Record<string, string> = {};
+        console.log(`[parseToolCall DEBUG] pattern matched: name=${name}, rawArgs=${(match[2] || '').slice(0, 100)}`);
         const rawArgs = match[2] || '';
 
         if (rawArgs && rawArgs.trim().startsWith('{')) {
