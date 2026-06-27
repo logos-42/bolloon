@@ -2778,6 +2778,18 @@ ${toolDefs}
           //   LLM 不能提前 final_gen — harness 自动注入"请汇报剩余工具结果" hint 再 continue
           //   这是 dive-into 文档"step 9 stop condition check" 的具体化:
           //   stop condition = (有工具结果未汇报) ? continue : break
+          
+          // 检查回复是否包含工具结果内容（避免无限循环）
+          const hasToolResultContent = this.successfulToolResults.some(r => 
+            reply.includes(r.tool) || reply.includes(r.outputPreview.substring(0, 50))
+          );
+          
+          // 如果回复包含工具结果内容，清除 successfulToolResults
+          if (hasToolResultContent) {
+            console.log(`[PiAgent] 回复包含工具结果内容, 清除 successfulToolResults (${this.successfulToolResults.length} 个)`);
+            this.successfulToolResults = [];
+          }
+          
           if (this.successfulToolResults.length > 0 && iteration < this.MAX_REACT_ITERATIONS) {
             const unreported = this.successfulToolResults.length;
             console.log(`[PiAgent] LLM 想 final_gen 但还有 ${unreported} 个工具结果未汇报, push hint 让其继续`);
@@ -2958,14 +2970,17 @@ Workspace root folder: ${this.cwd}
         if (role === 'tool') {
           const result = (m as any).toolResult ? JSON.stringify((m as any).toolResult) : content;
           content = `[工具结果] ${result}`;
+          // MiniMax 等 API 不支持 tool role, 转为 user role
+          out.push({ role: 'user', content });
+          continue;
         }
         // system role (router hint 等) 直接保留
         if (role === 'system') {
           out.push({ role: 'system', content });
           continue;
         }
-        // assistant / user / tool 直接转
-        if (role === 'user' || role === 'assistant' || role === 'tool') {
+        // assistant / user 直接转
+        if (role === 'user' || role === 'assistant') {
           out.push({ role, content });
         }
       }
@@ -3221,8 +3236,8 @@ Workspace root folder: ${this.cwd}
     //     {"name": "shell_exec", "input": {"command": "git", "args": ["status"]}}      (Anthropic/Minimax 风格)
     //   常见包裹: ```json\n{...}\n``` (markdown code block), <tool_call>{...}</tool_call> (OpenAI Hermes)
     const jsonPatterns = [
-      // markdown json code block + OpenAI <tool_call> 块, 同时匹配 arguments/input 字段
-      /(?:```(?:json|json5)?\s*\n?)?\{[\s\S]*?"name"\s*:\s*["'](\w+)["']\s*,\s*["']?(?:arguments|input)["']?\s*:\s*(\{[\s\S]*?\})\s*\}/,
+      // markdown json code block + OpenAI <tool_call> 块, 同时匹配 arguments/input/params 字段
+      /(?:```(?:json|json5)?\s*\n?)?\{[\s\S]*?"name"\s*:\s*["'](\w+)["']\s*,\s*["']?(?:arguments|input|params)["']?\s*:\s*(\{[\s\S]*?\})\s*\}/,
     ];
     for (const p of jsonPatterns) {
       const m = content.match(p);
