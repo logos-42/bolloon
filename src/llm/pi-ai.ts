@@ -17,6 +17,17 @@ export interface ChatMessage {
 
 export interface ChatResult {
   reply: string;
+  /** 2026-06-30: OpenAI 协议 native tool_calls 数组 (minimax/M3 返回)
+   *  每个 tool_call 包含 id/type/function.name/function.arguments
+   *  bolloon 用来给后续 tool result 提供 tool_call_id 引用 */
+  toolCalls?: Array<{
+    id: string;
+    type: 'function';
+    function: {
+      name: string;
+      arguments: string; // JSON string
+    };
+  }>;
 }
 
 export interface SummarizeResult {
@@ -134,7 +145,7 @@ export class PiAIModel {
         maxTokens: 16384, // 2026-06-17: 提到 16384 — agent 注入 16K+ system prompt + 8K tool defs 时, 8K 撞上限返回空 content (见 memory: bolloon-llm-empty-large-prompt)
         signal,
       });
-      return { reply: response };
+      return { reply: response.reply, toolCalls: response.toolCalls };
     } catch (error: any) {
       // abort 不当作错误, 透传一个 sentinel 让上层能识别
       if (signal?.aborted || error?.name === 'AbortError') {
@@ -164,8 +175,8 @@ export class PiAIModel {
         temperature: 0.7
       });
 
-      const qualityScore = this.estimateQuality(text, response);
-      return { summary: response, qualityScore };
+      const qualityScore = this.estimateQuality(text, response.reply);
+      return { summary: response.reply, qualityScore };
     } catch (error) {
       console.error('PiAI summarize error:', error);
       return {
@@ -186,14 +197,14 @@ export class PiAIModel {
         ],
         temperature: 0.8
       });
-      return response;
+      return response.reply;
     } catch (error) {
       console.error('PiAI improve error:', error);
       return content;
     }
   }
 
-  private async generateText(options: GenerateOptions): Promise<string> {
+  private async generateText(options: GenerateOptions): Promise<ChatResult> {
     const { messages, temperature = 0.7, maxTokens = 4096, signal, tools } = options;
 
     // 工具清单: 代码侧 schema → 进 system prompt (作为额外 system message)
@@ -313,13 +324,13 @@ export class PiAIModel {
     return modelMap[this.provider];
   }
 
-  private async callOpenAI(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
+  private async callOpenAI(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<ChatResult> {
     const apiKey = this.getApiKey();
     if (!apiKey) {
       throw new Error('OPENAI_API_KEY not set');
     }
 
-    const requestBody = {
+    const requestBody: any = {
       model: this.mapModel(),
       messages,
       temperature,
@@ -345,30 +356,34 @@ export class PiAIModel {
       });
 
       if (!response.ok) {
-        throw new Error(`OpenAI API error: ${response.status}`);
+        const errBody = await response.text().catch(() => '(no body)');
+        console.log(`[pi-ai DEBUG] OpenAI 错误 ${response.status}: ${errBody.slice(0, 500)}`);
+        console.log(`[pi-ai DEBUG] 请求体: model=${requestBody.model}, messages=${requestBody.messages?.length}, max_tokens=${requestBody.max_tokens}, baseUrl=${this.getBaseUrl()}`);
+        throw new Error(`OpenAI API error: ${response.status} ${errBody.slice(0, 300)}`);
       }
 
       const data = await response.json() as {
-        choices?: { message?: { content?: string }; finish_reason?: string; index?: number }[];
+        choices?: { message?: { content?: string; tool_calls?: any[] }; finish_reason?: string; index?: number }[];
       };
       const choice = data.choices?.[0];
       const content = choice?.message?.content || '';
+      const toolCalls = choice?.message?.tool_calls;
       lastFinishReason = choice?.finish_reason || '';
       if (content) {
         if (lastFinishReason === 'length') {
           console.warn(`[pi-ai] hit max_tokens ceiling (model=${this.mapModel()}, max_tokens=${maxTokens}) — caller should trim prompt or raise cap`);
         }
-        return content;
+        return { reply: content, toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined };
       }
       // 空 content: 200 但 content="" → minimax 上游偶发, 退避后重试
       console.warn(`[pi-ai] attempt ${attempt + 1}/3: 空 content (finish_reason=${lastFinishReason}), 退避 1.5s 重试`);
       await new Promise<void>(resolve => setTimeout(resolve, 1500));
     }
     console.warn(`[pi-ai] 3 次重试都返回空 content (finish_reason=${lastFinishReason})`);
-    return '';  // 返回空让上层看到 [AI 服务调用失败]
+    return { reply: '' };  // 返回空让上层看到 [AI 服务调用失败]
   }
 
-  private async callAnthropic(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
+  private async callAnthropic(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<ChatResult> {
     const apiKey = this.getApiKey();
     if (!apiKey) {
       throw new Error('ANTHROPIC_API_KEY not set');
@@ -400,10 +415,10 @@ export class PiAIModel {
     }
 
     const data = await response.json() as { content?: { text?: string }[] };
-    return data.content?.[0]?.text || '';
+    return { reply: data.content?.[0]?.text || '' };
   }
 
-  private async callOllama(messages: ChatMessage[], temperature: number, signal?: AbortSignal): Promise<string> {
+  private async callOllama(messages: ChatMessage[], temperature: number, signal?: AbortSignal): Promise<ChatResult> {
     const response = await fetch(`${this.getBaseUrl()}/api/chat`, {
       method: 'POST',
       headers: {
@@ -423,10 +438,10 @@ export class PiAIModel {
     }
 
     const data = await response.json() as { message?: { content?: string } };
-    return data.message?.content || '';
+    return { reply: data.message?.content || '' };
   }
 
-  private async callOpenRouter(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
+  private async callOpenRouter(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<ChatResult> {
     const apiKey = this.getApiKey();
     if (!apiKey) {
       throw new Error('OPENROUTER_API_KEY not set');
@@ -454,10 +469,10 @@ export class PiAIModel {
     }
 
     const data = await response.json() as { choices?: { message?: { content?: string } }[] };
-    return data.choices?.[0]?.message?.content || '';
+    return { reply: data.choices?.[0]?.message?.content || '' };
   }
 
-  private async callGemini(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
+  private async callGemini(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<ChatResult> {
     const apiKey = this.getApiKey();
     if (!apiKey) {
       throw new Error('GEMINI_API_KEY not set');
@@ -496,10 +511,10 @@ export class PiAIModel {
     }
 
     const data = await response.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    return { reply: data.candidates?.[0]?.content?.parts?.[0]?.text || '' };
   }
 
-  private async callLocal(messages: ChatMessage[], temperature: number, signal?: AbortSignal): Promise<string> {
+  private async callLocal(messages: ChatMessage[], temperature: number, signal?: AbortSignal): Promise<ChatResult> {
     return this.callOllama(messages, temperature, signal);
   }
   // 注: callLocal 直接代理 ollama. 工具清单由 generateText 在外层拼到 messages, 这里 messages 已是 finalMessages.

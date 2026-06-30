@@ -52,6 +52,7 @@ import { onPostToolUse, onJudgmentInjected, onMonitorViolation } from '../bootst
 import { budgetReduce, snip, microcompact } from '../context-compaction/index.js';
 // React Harness: 8-gate + 4-guard (防越权 / 防 prompt 注入)
 import { ReactHarness } from '../security/react-harness.js';
+import { parseToolCall as parseToolCallImpl, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl } from './parse-tool-call.js';
 
 // Pi Ecosystem Integration (lazy imports - initialized on demand)
 // Functions from: createGoal, getCurrentGoal, completeCurrentGoal, failCurrentGoal, getGoalStats, getQueueSummary
@@ -477,8 +478,10 @@ interface Message {
   toolCall?: {
     name: string;
     args: Record<string, string>;
+    id?: string;
   };
   toolResult?: ToolResult;
+  toolCallId?: string;
 }
 
 export interface StreamCallback {
@@ -2439,6 +2442,8 @@ ${toolDefs}
       // 失败静默: 全部重试失败 → 空 reply (上层用 no tool_use 终止)
       const response = await this.callLlmWithRecovery(llm, messages, systemPrompt, signal, onStream);
       const reply = (response.reply || '').trim();
+      // 2026-06-30: OpenAI 协议 native tool_calls (LLM 真产了 tool_call 时, minimax/M3 会返回 id)
+      const nativeToolCalls = response.toolCalls;
 
       // 2026-06-19 架构 fix: 不再因 [AI 服务调用失败] break
       //   旧逻辑: sentinel → aiFailed=true → break → 外层 retry 整个 loop (重置 history)
@@ -2446,6 +2451,8 @@ ${toolDefs}
       //   这是 dive-into 文档的"fail-open error recovery" — 错误进入 context, 不让 LLM 重复犯同样错
       if (reply.startsWith('[AI 服务调用失败]')) {
         console.log(`[PiAgent] 收到 AI 错误 sentinel, 推到 history 让 LLM 反思, 继续 loop`);
+        console.log(`[sentinel DEBUG] 完整 reply: ${reply}`);
+        console.log(`[sentinel DEBUG] 上一轮 messages 数量: ${Array.isArray(messages) ? messages.length : 'N/A'}, systemPrompt 长度: ${systemPrompt.length}`);
         aiFailureReason = reply.length > 200 ? reply.substring(0, 200) : reply;
         totalErrors++;
         consecutiveErrors++;
@@ -2475,9 +2482,10 @@ ${toolDefs}
       //   之前: 思考块里的 "<final gen>" 触发 isFinalResponse 提前 break, 工具从未真正执行
       //   现在: 先尝试解析 tool_call, 有就执行; 没有才检查是不是真正的 final gen
       const toolCall = this.parseToolCall(reply);
-      // 2026-06-19 修: 即便 reply 含 <final gen>, 只要 parseToolCall 命中, 就执行工具
-      //   (之前 isFinalResponse break 会先于 parseToolCall 触发, 思考块里有 final gen 字符串就误杀)
+      // 2026-06-30 修: 给 toolCall 分配稳定 id, 让后续 tool result 能引用同一个 id
+      //   OpenAI 协议要求 messages 里 tool result 必须有对应的 tool_call_id, 否则 400
       if (toolCall) {
+        (toolCall as any).id = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         this.messageHistory.push({
           role: 'assistant',
           content: reply,
@@ -2656,7 +2664,7 @@ ${toolDefs}
             console.warn('[PiAgent] reactHarness.postToolCall failed (non-fatal, allowing):', err);
           }
 
-          this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result });
+          this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result, toolCallId: (toolCall as any).id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` });
           this.logToHarness(toolCall.name, toolCall.args, result);
 
           // 通知前端工具执行结果
@@ -2947,25 +2955,50 @@ Workspace root folder: ${this.cwd}
    * 取最近 N 条, 同步压缩前 3 层 (跟 buildContext 同步).
    * 跳过 projectedHistory 路径 — messages 数组必须真实, 不能用投影.
    */
-  private buildMessages(): Array<{ role: string; content: string }> {
+  private buildMessages(): Array<{ role: string; content: string; tool_call_id?: string; name?: string; tool_calls?: any[] }> {
     try {
       const recentMessages = this.compressHistorySync(this.messageHistory).slice(-15);
-      const out: Array<{ role: string; content: string }> = [];
+      const out: Array<{ role: string; content: string; tool_call_id?: string; name?: string; tool_calls?: any[] }> = [];
       for (const m of recentMessages) {
         const role = m.role;
         let content = m.content;
-        // tool role: 用 toolResult 序列化 (跟 buildContext 一样)
+        // 2026-06-30 修: OpenAI 协议 tool role 必须带 tool_call_id, 否则 minimax (OpenAI-compatible) 报 400
+        //   bolloon 之前把所有 tool result 包成 "[工具结果] ..." 当 user/assistant role 发, minimax 严格校验失败
+        //   现在: 保留 role='tool' + 加 tool_call_id 字段 (用 messageHistory 里自己生成的 id)
         if (role === 'tool') {
           const result = (m as any).toolResult ? JSON.stringify((m as any).toolResult) : content;
-          content = `[工具结果] ${result}`;
+          const tcId = (m as any).toolCallId || `call_${Math.random().toString(36).slice(2, 10)}`;
+          out.push({ role: 'tool', content: result, tool_call_id: tcId });
+          continue;
         }
         // system role (router hint 等) 直接保留
         if (role === 'system') {
           out.push({ role: 'system', content });
           continue;
         }
-        // assistant / user / tool 直接转
-        if (role === 'user' || role === 'assistant' || role === 'tool') {
+        // 2026-06-30 修: assistant 消息如果带 toolCall (bolloon 内部对象), emit OpenAI 协议的 tool_calls 数组
+        //   minimax 严格要求 assistant 消息含 tool_calls 字段, 后续 tool result 才能引用 tool_call_id
+        if (role === 'assistant') {
+          const tc = (m as any).toolCall;
+          if (tc && tc.id) {
+            out.push({
+              role: 'assistant',
+              content: content || '',
+              tool_calls: [{
+                id: tc.id,
+                type: 'function',
+                function: {
+                  name: tc.name,
+                  arguments: JSON.stringify(tc.args || {}),
+                },
+              }],
+            });
+          } else {
+            out.push({ role, content });
+          }
+          continue;
+        }
+        if (role === 'user') {
           out.push({ role, content });
         }
       }
@@ -3004,7 +3037,7 @@ Workspace root folder: ${this.cwd}
     systemPrompt: string,
     signal: AbortSignal | undefined,
     onStream?: (chunk: any) => void
-  ): Promise<{ reply: string }> {
+  ): Promise<{ reply: string; toolCalls?: any[] }> {
     // Reactive compaction 预检: 估算 token 超 80% 阈值, 跑一次
     const estimated = this.estimateHistoryTokens();
     if (estimated > this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD * 0.8) {
@@ -3056,7 +3089,8 @@ Workspace root folder: ${this.cwd}
         // M3.5 (2026-06-17): 传 messages 数组 (如果 contextOrMessages 是数组) 或字符串
         //   数组版让 LLM 看到结构化的 user/assistant/tool role, 而不是把 history 拼成单字符串
         const response = await llm.chat(contextOrMessages, systemPrompt, signal);
-        return { reply: response.reply || '' };
+        // 2026-06-30: 透传 toolCalls (OpenAI 协议 native) 给上层, 让 assistant message 能 emit 真 id
+        return { reply: response.reply || '', toolCalls: response.toolCalls };
       } catch (err: any) {
         // 用户主动 abort: 不重试, 立即抛
         if (signal?.aborted || err?.name === 'AbortError') throw err;
@@ -3182,227 +3216,26 @@ Workspace root folder: ${this.cwd}
       }
     }
   }
-
   private isFinalResponse(content: string): boolean {
-    // 2026-06-19 修: 先剥离 <think>...</think> 思考块, 再判断 <final gen>.
-    //   之前用 includes('<final gen>') 误杀: LLM 思考块里说"先看看当前状态再 <final gen>"
-    //   也会被识别成终止信号, 工具调用直接跳过了.
-    const stripped = content.replace(/<think>[\s\S]*?<\/think>/g, '');
-    return stripped.includes('<final gen>');
+    // 2026-06-30: 抽到 ./parse-tool-call.ts 作为纯函数 — 这里只构建 ctx 并调用
+    return isFinalResponseImpl(content, this._parseCtx());
   }
 
   private extractFinalAnswer(content: string): string {
-    // 提取 <final gen> 后的内容作为最终回答
-    const marker = '<final gen>';
-    const markerIndex = content.indexOf(marker);
-    if (markerIndex !== -1) {
-      const after = content.substring(markerIndex + marker.length).trim();
-      // v3 修复: 如果 <final gen> 之后是空, fallback 用 marker 之前的内容 (去掉 marker)
-      // 否则 LLM 写了 <final gen> 在末尾时, 用户看到空回复 + error
-      if (after) {
-        content = after;
-      } else {
-        content = content.substring(0, markerIndex).trim();
-      }
-    }
-    // 移除任何 tool call 标记
-    let cleaned = content
-      .replace(/调用工具[：:]\s*\w+\s*\([^)]*\)/g, '')
-      .replace(/使用工具[：:]\s*\w+\s*\([^)]*\)/g, '')
-      .replace(/tool[_\w]*[：:]\s*\w+\s*\([^)]*\)/gi, '')
-      .trim();
-    return cleaned;
+    // 抽取实现已挪到 ./parse-tool-call.ts (纯函数, 易测)
+    return extractFinalAnswerImpl(content);
+  }
+
+  private _parseCtx() {
+    return {
+      tools: new Set(Array.from(this.tools.keys())),
+      resolveAlias: (name: string) => this.resolveToolName(name),
+    };
   }
 
   private parseToolCall(content: string): { name: string; args: Record<string, string> } | null {
-    // 2026-06-19 修: JSON function-call (OpenAI/Anthropic/Minimax-style) 优先 — match[1] 是 name 字段, match[2] 是 arguments/input 对象
-    //   LLM 实际产出变体:
-    //     {"name": "shell_exec", "arguments": {"command": "git", "args": ["status"]}}  (OpenAI 标准)
-    //     {"name": "shell_exec", "input": {"command": "git", "args": ["status"]}}      (Anthropic/Minimax 风格)
-    //   常见包裹: ```json\n{...}\n``` (markdown code block), <tool_call>{...}</tool_call> (OpenAI Hermes)
-    const jsonPatterns = [
-      // markdown json code block + OpenAI <tool_call> 块, 同时匹配 arguments/input 字段
-      /(?:```(?:json|json5)?\s*\n?)?\{[\s\S]*?"name"\s*:\s*["'](\w+)["']\s*,\s*["']?(?:arguments|input)["']?\s*:\s*(\{[\s\S]*?\})\s*\}/,
-    ];
-    for (const p of jsonPatterns) {
-      const m = content.match(p);
-      console.log(`[parseToolCall DEBUG] jsonPattern match: ${m ? `name=${m[1]}, args=${JSON.stringify(m[2]).slice(0, 80)}` : 'null'}`);
-      if (m) {
-        const name = m[1];
-        let args: Record<string, string> = {};
-        try {
-          const parsed = JSON.parse(m[2]);
-          if (parsed && typeof parsed === 'object') {
-            args = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v)]));
-          }
-        } catch { /* 解析失败保持 args={} */ }
-        // 2026-06-19: 自动 split command 字段 — LLM 常把 "git status" 整体当 command
-        //   shell_exec execute 要求 command="git", args="status" 拆分形式
-        //   这里检测 command 含空格且 args 字段空, 自动按空格 split
-        if (typeof args.command === 'string' && args.command.includes(' ') && !args.args) {
-          const parts = args.command.split(/\s+/);
-          args.command = parts[0];
-          args.args = parts.slice(1).join(' ');
-        }
-        const resolved = this.resolveToolName(name);
-        if (resolved) {
-          return { name: resolved, args };
-        }
-      }
-    }
-
-    // 2026-06-19 修: fallback — LLM 有时输出 <tool_name>shell_exec</tool_name> 这种伪 XML 标签
-    //   旧正则 /<(\w+)>([\s\S]*?)<\/\1>/ 会匹配, 但 name="tool_name" 不在 tools 里
-    //   这里 detect 内容是否像 tool_call (有 <command>/<args>/<path> 子标签) 然后按 <command> 第一词推断工具
-    const xmlTagMatch = content.match(/<(\w+)>([\s\S]*?)<\/\1>/);
-    if (xmlTagMatch) {
-      const outerTag = xmlTagMatch[1];
-      const inner = xmlTagMatch[2];
-      // 如果外层标签不在 tools 里但有 <command>/<args> 子标签, 尝试按内容推断
-      if (!this.resolveToolName(outerTag)) {
-        const cmdMatch = inner.match(/<command>(\w+)<\/command>/);
-        if (cmdMatch) {
-          const cmd = cmdMatch[1];
-          // 推测工具: git/npx/npm/tsx → shell_exec; cat/head/tail → read_document
-          if (['git', 'npx', 'npm', 'tsx', 'tsc', 'vitest', 'node', 'mkdir', 'touch', 'ls', 'echo', 'cat', 'head', 'tail', 'wc', 'pwd', 'date'].includes(cmd)) {
-            const args: Record<string, string> = {};
-            const argsMatch = inner.match(/<args>([\s\S]*?)<\/args>/);
-            if (argsMatch) args.args = argsMatch[1].trim();
-            const cmdsMatch = inner.match(/<command>([\s\S]*?)<\/command>/);
-            if (cmdsMatch) args.command = cmdsMatch[1].trim();
-            return { name: 'shell_exec', args };
-          }
-        }
-      }
-    }
-
-    // 2026-06-19 修: <tools:call name="X">...</tools:call> 嵌套格式
-    //   LLM 实际产出变体: <tools:call name="shell_exec"><tools:call name="command">git</tools:call>...</tools:call>
-    const toolsCallMatch = content.match(/<tools:call\s+name=["'](\w+)["']>([\s\S]*?)<\/tools:call>/);
-    if (toolsCallMatch) {
-      const name = toolsCallMatch[1];
-      const inner = toolsCallMatch[2];
-      const args: Record<string, string> = {};
-      const argTags = inner.matchAll(/<tools:call\s+name=["'](\w+)["']>([\s\S]*?)<\/tools:call>/g);
-      for (const m of argTags) {
-        args[m[1]] = m[2].trim();
-      }
-      const resolved = this.resolveToolName(name);
-      if (resolved) {
-        return { name: resolved, args };
-      }
-      // 兜底: 如果外层 tool name 不在 tools, 但内层有 command, 推断 shell_exec
-      if (args.command) {
-        const cmdFirst = args.command.split(/\s+/)[0];
-        if (['git', 'npx', 'npm', 'tsx', 'tsc', 'vitest', 'node', 'mkdir', 'touch', 'ls', 'echo', 'cat', 'head', 'tail', 'wc', 'pwd', 'date'].includes(cmdFirst)) {
-          return { name: 'shell_exec', args };
-        }
-      }
-    }
-
-    // 2026-06-19 修: 先剥离 <think>...</think> 思考块, 避免旧正则 `<(\w+)>([\s\S]*?)<\/\1>` 优先匹配到 <think>
-//   之前 LLM 输出含 <think>...</think><invoke name="X">...</invoke> 时, <think> 先 match, name="think" 不在 tools → return null → 后续 <invoke> 没机会 match
-const strippedContent = content.replace(/<think>[\s\S]*?<\/think>/g, '');
-
-const patterns = [
-  // 2026-06-19 修: minimax/Hermes 自闭合 XML 格式 <invoke name="X">...</invoke>
-  //   实际 LLM 习惯: <invoke name="shell_exec"><command>sed</command><args>["-n","1060,1095p"]</args></invoke>
-  //   必须放在最前 — 旧正则 /<(\w+)>([\s\S]*?)<\/\1>/ 会匹配到外层 <invoke> 但 name 是 "invoke" 而不是 "shell_exec"
-  new RegExp('<invoke\\s+name=["\']([\\w]+)["\']>([\\s\\S]*?)</invoke>'),
-  // 2026-06-19 修: <function_calls> 包裹
-  new RegExp('<function_calls>[\\s\\S]*?<invoke\\s+name=["\']([\\w]+)["\']>([\\s\\S]*?)</invoke>[\\s\\S]*?</function_calls>'),
-  /调用工具[：:]\s*(\w+)\s*\(([^)]*)\)/,
-  /使用工具[：:]\s*(\w+)\s*\(([^)]*)\)/,
-  /tool[_\w]*[：:]\s*(\w+)\s*\(([^)]*)\)/i,
-  /(\w+)\s*\(\s*([^)]*)\s*\)/,
-  // 兼容 LLM 输出的对象字面量格式: {tool => "get_identity", args => {...}}
-  /\{\s*tool\s*=>\s*["'](\w+)["']\s*(?:,\s*args\s*=>\s*(\{[\s\S]*?\}))?\s*\}/,
-  // 兼容: tool => "get_identity"  (无 args 包裹)
-  /\btool\s*=>\s*["'](\w+)["']/,
-  // 兼容: [TOOL_CALL] 块内 JSON 形式 {"name": "x", "args": {...}}
-  /\[TOOL_CALL\][\s\S]*?\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*(\{[\s\S]*?\})/i,
-  // 2026-06-19: 兼容 LLM 输出 "tool_name {json_args}" 形式 (单行, 无 name 字段)
-  //   实际输出: write_file {"path":"docs/test.md","content":"..."}
-  //   只在行首/新行匹配, 避免误匹配普通文本里的 "foo {...}"
-  /(?:^|\n)(\w+)\s+(\{[\s\S]*?\})(?=\n|$)/,
-  // 2026-06-15 修: 兼容 LLM 输出的 XML 格式 <tool_name>...<arg>value</arg>...</tool_name>
-  //   实际 LLM 习惯: <shell_exec>\n<command>ls</command>\n<args>["-la", "..."]</args>\n</shell_exec>
-  /<(\w+)>([\s\S]*?)<\/\1>/,
-];
-
-for (const pattern of patterns) {
-      const match = strippedContent.match(pattern);
-      if (match) {
-        const name = match[1];
-        let args: Record<string, string> = {};
-        console.log(`[parseToolCall DEBUG] pattern matched: name=${name}, rawArgs=${(match[2] || '').slice(0, 100)}`);
-        const rawArgs = match[2] || '';
-
-        if (rawArgs && rawArgs.trim().startsWith('{')) {
-          // JSON 形式, 尝试解析
-          try {
-            const parsed = JSON.parse(rawArgs);
-            if (parsed && typeof parsed === 'object') {
-              args = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v)]));
-            }
-          } catch {
-            // 解析失败就当字符串处理
-            const argPairs = rawArgs.split(',').map(s => s.trim()).filter(Boolean);
-            for (const pair of argPairs) {
-              const [key, ...valueParts] = pair.split(':').map(s => s.trim().replace(/['"]/g, ''));
-              if (key) args[key] = valueParts.join(':') || '';
-            }
-          }
-        } else if (rawArgs && /<\w+>[\s\S]*<\/\w+>/.test(rawArgs)) {
-          // 2026-06-15 修: XML 格式, 解析内嵌子标签 <argname>value</argname>
-          //   例: <command>ls</command>\n<args>["-la","~/.bolloon/skills"]</args>
-          // 2026-06-19 修: 也支持 <parameter name="X">value</parameter> 形式 (OpenAI Hermes function_call)
-          const paramRe = /<parameter\s+name=["'](\w+)["']>([\s\S]*?)<\/parameter>/g;
-          let pMatch: RegExpExecArray | null;
-          while ((pMatch = paramRe.exec(rawArgs)) !== null) {
-            const argName = pMatch[1];
-            const argValue = pMatch[2].trim();
-            if (argName && argValue) {
-              args[argName] = argValue;
-            }
-          }
-          // 如果没匹配到 <parameter>, 用普通 XML 子标签
-          if (Object.keys(args).length === 0) {
-            const xmlArgPattern = /<(\w+)>([\s\S]*?)<\/\1>/g;
-            let xmlMatch: RegExpExecArray | null;
-            while ((xmlMatch = xmlArgPattern.exec(rawArgs)) !== null) {
-              const argName = xmlMatch[1];
-              const argValue = xmlMatch[2].trim();
-              if (argName && argValue) {
-                args[argName] = argValue;
-              }
-            }
-          }
-        } else if (rawArgs) {
-          // 形参串, 形如 key: value, key2: value2
-          const argPairs = rawArgs.split(',').map(s => s.trim()).filter(Boolean);
-          for (const pair of argPairs) {
-            const [key, ...valueParts] = pair.split(':').map(s => s.trim().replace(/['"]/g, ''));
-            if (key) args[key] = valueParts.join(':') || '';
-          }
-        }
-
-        if (this.tools.has(name)) {
-          // 2026-06-19: auto-split command field — shell_exec expects command='git', args='status' split
-          if (typeof args.command === 'string' && args.command.includes(' ') && !args.args) {
-            const parts = args.command.split(/\s+/);
-            args.command = parts[0];
-            args.args = parts.slice(1).join(' ');
-          }
-          return { name, args };
-        }
-        const resolved = this.resolveToolName(name);
-        if (resolved) {
-          return { name: resolved, args };
-        }
-      }
-    }
-    return null;
+    // 2026-06-30: 抽到 ./parse-tool-call.ts 作为纯函数 — 这里只构建 ctx 并调用
+    return parseToolCallImpl(content, this._parseCtx());
   }
 
   // [debug-2026-06-19] 临时: 打印 parseToolCall 输入和返回
