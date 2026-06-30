@@ -262,6 +262,23 @@ export class WorkflowPivotLoop {
         const pendingTools = this.extractPendingToolUses(reply);
         
         if (pendingTools.length === 0) {
+          // Check if the reply contains tool call intent but couldn't be parsed
+          const containsToolCallIntent = reply.includes('调用工具') || reply.includes('tool(') ||
+            reply.includes('使用工具') || reply.includes('需要获取') || reply.includes('需要查看') ||
+            reply.includes('tool =>') || reply.includes('[TOOL_CALL]') ||
+            /<\w+>[\s\S]*?<\/\w+>/.test(reply);
+          
+          // If there's tool call intent but no parsed tools, continue the loop
+          if (containsToolCallIntent && this.state.iteration < effectiveConfig.maxIterations) {
+            this.emit({
+              type: 'status',
+              content: `🔄 检测到工具调用意图但格式无法解析，继续循环...`,
+              tool: 'system'
+            });
+            this.state.consecutiveNoProgress++;
+            continue;
+          }
+          
           // No pending tool uses - this is a normal completion
           this.state.pendingToolUses = [];
           
@@ -561,6 +578,29 @@ export class WorkflowPivotLoop {
       }
     } catch {
       // JSON parsing failed, ignore
+    }
+
+    // Pattern 4: Single JSON tool call format {"name": "tool_name", "arguments": {...}}
+    try {
+      const singleJsonRe = /\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
+      let singleMatch;
+      while ((singleMatch = singleJsonRe.exec(content)) !== null) {
+        const name = singleMatch[1];
+        if (pending.some(p => p.name === name)) continue;
+        if (!this.tools.has(name)) continue;
+        
+        try {
+          const args = JSON.parse(singleMatch[2]);
+          if (args && typeof args === 'object') {
+            const normalizedArgs = this.normalizeArgs(args);
+            pending.push({ name, args: normalizedArgs, description: '', parameters: {} });
+          }
+        } catch {
+          // JSON parsing failed, skip
+        }
+      }
+    } catch {
+      // Pattern matching failed, ignore
     }
 
     return pending;

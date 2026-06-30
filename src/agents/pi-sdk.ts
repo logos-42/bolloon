@@ -2786,6 +2786,18 @@ ${toolDefs}
           //   LLM 不能提前 final_gen — harness 自动注入"请汇报剩余工具结果" hint 再 continue
           //   这是 dive-into 文档"step 9 stop condition check" 的具体化:
           //   stop condition = (有工具结果未汇报) ? continue : break
+          
+          // 检查回复是否包含工具结果内容（避免无限循环）
+          const hasToolResultContent = this.successfulToolResults.some(r => 
+            reply.includes(r.tool) || reply.includes(r.outputPreview.substring(0, 50))
+          );
+          
+          // 如果回复包含工具结果内容，清除 successfulToolResults
+          if (hasToolResultContent) {
+            console.log(`[PiAgent] 回复包含工具结果内容, 清除 successfulToolResults (${this.successfulToolResults.length} 个)`);
+            this.successfulToolResults = [];
+          }
+          
           if (this.successfulToolResults.length > 0 && iteration < this.MAX_REACT_ITERATIONS) {
             const unreported = this.successfulToolResults.length;
             console.log(`[PiAgent] LLM 想 final_gen 但还有 ${unreported} 个工具结果未汇报, push hint 让其继续`);
@@ -2967,8 +2979,9 @@ Workspace root folder: ${this.cwd}
         //   现在: 保留 role='tool' + 加 tool_call_id 字段 (用 messageHistory 里自己生成的 id)
         if (role === 'tool') {
           const result = (m as any).toolResult ? JSON.stringify((m as any).toolResult) : content;
-          const tcId = (m as any).toolCallId || `call_${Math.random().toString(36).slice(2, 10)}`;
-          out.push({ role: 'tool', content: result, tool_call_id: tcId });
+          content = `[工具结果] ${result}`;
+          // MiniMax 等 API 不支持 tool role, 转为 user role
+          out.push({ role: 'user', content });
           continue;
         }
         // system role (router hint 等) 直接保留
@@ -3234,7 +3247,7 @@ Workspace root folder: ${this.cwd}
   }
 
   private parseToolCall(content: string): { name: string; args: Record<string, string> } | null {
-    // 2026-06-30: 抽到 ./parse-tool-call.ts 作为纯函数 — 这里只构建 ctx 并调用
+  // 2026-06-30: 抽到 ./parse-tool-call.ts 作为纯函数 — 这里只构建 ctx 并调用
     return parseToolCallImpl(content, this._parseCtx());
   }
 
