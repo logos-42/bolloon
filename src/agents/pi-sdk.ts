@@ -53,6 +53,8 @@ import { budgetReduce, snip, microcompact } from '../context-compaction/index.js
 // React Harness: 8-gate + 4-guard (防越权 / 防 prompt 注入)
 import { ReactHarness } from '../security/react-harness.js';
 import { parseToolCall as parseToolCallImpl, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl } from './parse-tool-call.js';
+import { sessionStore as defaultSessionStore, type SessionStore, type PersistedMessage } from './session-store.js';
+import { ToolRegistry } from './tool-registry.js';
 
 // Pi Ecosystem Integration (lazy imports - initialized on demand)
 // Functions from: createGoal, getCurrentGoal, completeCurrentGoal, failCurrentGoal, getGoalStats, getQueueSummary
@@ -73,6 +75,8 @@ export interface AgentSessionConfig {
   loadSessionKey?: string;
   /** M2.3: 历史回灌最多取 N 条 (默认 30, 防止 context 爆) */
   loadSessionMaxMessages?: number;
+  /** 2026-06-30: 注入自定义 SessionStore — 测试用临时目录, 默认 ~/.bolloon/sessions/cache/ */
+  sessionStore?: SessionStore;
 }
 
 export interface IdentityDoc {
@@ -572,6 +576,12 @@ export interface AgentSession {
   isHarnessEnabled(): boolean;
   getHarness(): any;
   getOperationLog(): Array<{ timestamp: number; action: string; args: any; result: any; status: string }>;
+  // === 2026-06-30: 持久化 / 续接接口 (claue code 接入点) ===
+  saveCurrentSession(key: string): Promise<void>;
+  resumeSession(key: string, maxMessages?: number): Promise<number>;
+  peekSessionHistory(key: string, maxMessages?: number): Promise<Message[]>;
+  /** 等构造期间所有 fire-and-forget 任务完成 (hydrate 等) — claude code 接入时立即可用 */
+  whenReady(): Promise<void>;
 }
 
 class PiAgentSession implements AgentSession {
@@ -588,11 +598,17 @@ class PiAgentSession implements AgentSession {
   private socialHeartbeat: SocialHeartbeat | null = null;
   private messageHistory: Message[] = [];
   private tools: Map<string, Tool> = new Map();
+  /** 2026-06-30: tool registry 模块 — 独立 alias resolve, 测试可消融. */
+  private _toolRegistry: ToolRegistry = new ToolRegistry();
   private skillRegistry: SkillRegistry = new SkillRegistry();
   /** M2.4: 缓存 tool 列表, registerTools() 之后不变, runReActLoop 多次循环复用 */
   private cachedToolDefinitions: string = '';
   /** M2.4: 缓存 persona section */
   private cachedPersonaSection: string = '';
+  /** 2026-06-30: 持久化层 — 默认走 ~/.bolloon/sessions/cache/, 测试可注入临时目录. */
+  private _sessionStore: SessionStore;
+  /** 构造期间 fire-and-forget 任务的 promise — whenReady() 等它 */
+  private _readyPromise: Promise<void> | null = null;
   // 2026-06-16 修: 父要求把 ReAct loop 上限放大到 "几乎无限", 靠自动压缩上下文 + fail-safe 兜底
   // 默认 10000 — 正常任务永远跑不到, 但作为防 LLM 死循环 / 防 OOM 的最后一道闸
   // 旧默认 100 写死导致中等复杂度任务 (10-50 个 tool call + 多步反思) 会被误杀
@@ -693,6 +709,8 @@ class PiAgentSession implements AgentSession {
     this.peerId = config.peerId || 'local';
     this.identity = config.identityDoc || this.createDefaultIdentity();
     this.minimaxAvailable = this.checkMinimax();
+    // 2026-06-30: 持久化层可注入 — 测试传 tmpDir, 业务用默认 ~/.bolloon/sessions/cache/
+    this._sessionStore = (config as any).sessionStore ?? defaultSessionStore;
     this.constraintLayer = new ConstraintLayer();
     this.workflowEngine = new WorkflowEngine(this.constraintLayer);
     this.sessionManager = new PiSessionManager(this.identity.did, this.cwd);
@@ -708,35 +726,42 @@ class PiAgentSession implements AgentSession {
     //   之前 messageHistory 是空的, 服务重启后 LLM 看到的是新对话
     //   现在 loadSessionKey 形如 "channel-xxx:default" 走 ~/.bolloon/sessions/cache/<key>.json
     if (config.loadSessionKey) {
-      this.hydrateMessageHistory(config.loadSessionKey, config.loadSessionMaxMessages ?? 30);
+      this._readyPromise = this.hydrateMessageHistory(
+        config.loadSessionKey,
+        config.loadSessionMaxMessages ?? 30
+      ).catch((err) => {
+        // 失败静默, 但不让 whenReady 永久 hang
+        console.warn(`[PiAgent] hydrateMessageHistory failed: ${(err as Error).message?.slice(0, 100)}`);
+      });
     }
   }
 
   /**
-   * M2.3: 从 session JSON 加载历史, 转成 messageHistory 格式
+   * 2026-06-30: 让外部 await 构造期间的 hydrate 完成.
+   * 解决 fire-and-forget 让 messageHistory 不可预测的问题.
+   * 不传 loadSessionKey 时立即返回.
+   */
+  whenReady(): Promise<void> {
+    return this._readyPromise ?? Promise.resolve();
+  }
+
+  /**
+   * M2.3 (2026-06-30 重构): 从 SessionStore 加载历史, 转成 messageHistory 格式
    * - 失败静默 (历史加载失败不应该阻塞 agent 启动)
    * - 限制 max 条数, 防止 context 爆
-   * - user 消息 role=user, ai 消息 role=assistant
-   * - 跳过 metadata 中含 error 的 (错误消息会污染 LLM)
+   * - 跳过错误消息 ([AI 服务调用失败] / [错误:...]) 不污染 LLM
+   * - 委托 SessionStore 完成 IO, 保证 save/load 路径对称
+   *
+   * 历史格式兼容旧 schema ({type, content}) 和新 schema (PersistedMessage[])
    */
   private async hydrateMessageHistory(sessionKey: string, maxMessages: number): Promise<void> {
     try {
-      const sessionPath = path.join(os.homedir(), '.bolloon', 'sessions', 'cache', `${sessionKey}.json`);
-      const content = await fs.readFile(sessionPath, 'utf-8');
-      const session = JSON.parse(content);
-      const messages = Array.isArray(session?.messages) ? session.messages : [];
-      // 保留最后 N 条, 转换 role 字段
-      const tail = messages.slice(-maxMessages);
-      const hydrated: Message[] = [];
-      for (const m of tail) {
-        // 跳过错误的 AI 消息 (M1.2 之后, AI 错误时 reply 是 [AI 服务调用失败] 字符串, 不该进 history)
-        if (m?.type === 'ai' && typeof m.content === 'string' && m.content.startsWith('[AI 服务调用失败]')) continue;
-        if (m?.type === 'ai' && typeof m.content === 'string' && m.content.startsWith('[错误:')) continue;
-        if (!m?.content) continue;
-        const role = m.type === 'user' ? 'user' : m.type === 'ai' ? 'assistant' : null;
-        if (!role) continue;
-        hydrated.push({ role, content: String(m.content) });
+      const loaded = await this._sessionStore.loadMessages(sessionKey);
+      if (!loaded) {
+        console.log(`[PiAgent] hydrate: 没有 ${sessionKey} 的历史`);
+        return;
       }
+      const hydrated = this._filterToMessage(loaded).slice(-maxMessages);
       if (hydrated.length > 0) {
         this.messageHistory = hydrated;
         console.log(`[PiAgent] 从 ${sessionKey} 回灌 ${hydrated.length} 条历史`);
@@ -744,6 +769,82 @@ class PiAgentSession implements AgentSession {
     } catch (err) {
       console.warn(`[PiAgent] hydrateMessageHistory 失败 (non-fatal): ${(err as Error).message?.slice(0, 100)}`);
     }
+  }
+
+  /**
+   * 2026-06-30: 把当前 messageHistory 持久化到 SessionStore.
+   * 公开方法 — claude code / 外部 harness 在每次 prompt 完成后调一下,
+   *   即可获得"重启 / 跨进程接续"的语义.
+   */
+  async saveCurrentSession(key: string): Promise<void> {
+    const persisted: PersistedMessage[] = this.messageHistory.map((m) => ({
+      role: m.role,
+      content: m.content,
+      toolCall: m.toolCall,
+      toolResult: m.toolResult,
+      toolCallId: m.toolCallId,
+      timestamp: Date.now(),
+      source: 'pi-session',
+    }));
+    await this._sessionStore.saveMessages(key, persisted);
+  }
+
+  /**
+   * 2026-06-30: 从 disk 拉历史覆盖当前 messageHistory.
+   * 返回加载条数 — 失败或空则返回 0.
+   * 与 loadSessionKey (构造时读) 不同: 这个是 session 已建好后再读.
+   */
+  async resumeSession(key: string, maxMessages: number = 30): Promise<number> {
+    const before = this.messageHistory.length;
+    await this.hydrateMessageHistory(key, maxMessages);
+    return this.messageHistory.length - before;
+  }
+
+  /**
+   * 2026-06-30: 读历史不修改 messageHistory.
+   * 给 claude code / 测试做"先看一下历史"用 — 不破坏当前会话.
+   * 返回 Message[] 数组 (空数组表示无历史).
+   */
+  async peekSessionHistory(key: string, maxMessages: number = 30): Promise<Message[]> {
+    try {
+      const loaded = await this._sessionStore.loadMessages(key);
+      if (!loaded) return [];
+      return this._filterToMessage(loaded).slice(-maxMessages);
+    } catch {
+      return [];
+    }
+  }
+
+  /** hydrateMessageHistory 用的过滤逻辑 — 提到外面复用 */
+  private _filterToMessage(loaded: PersistedMessage[]): Message[] {
+    const hydrated: Message[] = [];
+    const VALID_ROLES = new Set(['user', 'assistant', 'tool', 'system']);
+    for (const m of loaded) {
+      // role 必须合法 (拒绝旧 schema {type:'user'} 没 role 字段的)
+      if (!VALID_ROLES.has(m.role as any)) continue;
+      // 跳过污染消息
+      if (typeof m.content === 'string' && m.content.startsWith('[AI 服务调用失败]')) continue;
+      if (typeof m.content === 'string' && m.content.startsWith('[错误:')) continue;
+      // 注意: '!m.content' 会跳过 content='' 的 tool call 消息 (assistant role + toolCall 字段),
+      //   这种是合法的 (LLM 输出只有 tool call, 没有正文) — 必须保留.
+      //   这里只跳过"无内容 + 也没 tool call/tool result"的废消息.
+      if (!m.content && !m.toolCall && !m.toolResult) continue;
+      // 跳过空 tool role (tool result 占位但没有任何内容)
+      if (m.role === 'tool' && !m.toolResult) continue;
+      hydrated.push({
+        role: m.role,
+        content: m.content ?? '',
+        toolCall: m.toolCall,
+        toolResult: m.toolResult,
+        toolCallId: m.toolCallId,
+      });
+    }
+    return hydrated;
+  }
+
+  /** 暴露 store 给测试 / 高级集成用. */
+  get sessionStoreInstance(): SessionStore {
+    return this._sessionStore;
   }
 
   /**
@@ -1816,6 +1917,11 @@ class PiAgentSession implements AgentSession {
     //   - 失败结果不缓存 (避免缓存 transient 错误)
     //   - 缓存容量 200 条, 超过就清空
     this.wrapToolsWithIdempotency();
+    // 2026-06-30: 镜像到 ToolRegistry — resolveToolName 走 registry 的 alias 表.
+    //   被 wrap 的 tool (idempotency cache) 也直接拿来用, registry 不重复 wrap.
+    for (const [name, tool] of this.tools.entries()) {
+      this._toolRegistry.register(tool);
+    }
   }
 
   /** M3.3: 工具结果缓存 — 防止 loop 重试时副作用 (写文件 / 改代码) 执行多次 */
@@ -3508,44 +3614,15 @@ Workspace root folder: ${this.cwd}
    *   bolloon 注册的是 read_document / edit_file / write_file / shell_exec / list_files
    *   返回 this.tools 里的标准名, 或 null 表示未识别
    */
+  /**
+   * 把 LLM 给的工具名 (可能大小写不一, 或者 Claude Code 风格的别名) 解析为
+   * bolloon 注册的标准工具名.
+   *
+   * 2026-06-30: 委托给 ToolRegistry 模块 — alias 表在 tool-registry.ts 统一维护,
+   *   这里只做 thin wrapper 保留 backward compat (private API 但其它地方可能用).
+   */
   private resolveToolName(name: string): string | null {
-    if (this.tools.has(name)) return name;
-    const lower = name.toLowerCase();
-    const aliasMap: Record<string, string> = {
-      // Claude Code 风格 → bolloon 工具
-      read: 'read_file',
-      edit: 'edit_file',
-      write: 'write_file',
-      rm: 'delete_file',
-      mv: 'move_file',
-      bash: 'shell_exec',
-      shell: 'shell_exec',
-      sh: 'shell_exec',
-      // grep / glob 现在是独立工具
-      cat: 'read_file',
-      // 测试/编译 → 独立工具
-      test: 'vitest_run',
-      vitest: 'vitest_run',
-      typecheck: 'tsc_check',
-      tsc: 'tsc_check',
-      // git 操作
-      log: 'git_log',
-      show: 'git_show',
-      diff: 'git_diff',
-      commit: 'git_commit',
-      push: 'git_push',
-      branch: 'git_branch',
-      checkout: 'git_branch',
-      stash: 'git_stash',
-      // 任务管理 (todo)
-      todo_write: 'create_task',
-      todowrite: 'create_task',
-      task: 'create_task',
-    };
-    const aliased = aliasMap[lower];
-    if (aliased && this.tools.has(aliased)) return aliased;
-    if (this.tools.has(lower)) return lower;
-    return null;
+    return this._toolRegistry.resolve(name);
   }
 
   /**
@@ -4196,11 +4273,14 @@ export async function createAgentSession(config: AgentSessionConfig, forceNew?: 
     const key = config.peerId;
     if (!forceNew && independentSessions.has(key)) {
       console.log(`[createAgentSession] 找到现有独立 session, key=${key}`);
-      return independentSessions.get(key)!;
+      const existing = independentSessions.get(key)!;
+      await existing.whenReady();
+      return existing;
     }
     const session = new PiAgentSession(config);
     independentSessions.set(key, session);
     console.log(`[createAgentSession] 创建独立 session, key=${key}, DID=${incomingDid}`);
+    await session.whenReady();
     return session;
   }
 
@@ -4210,6 +4290,7 @@ export async function createAgentSession(config: AgentSessionConfig, forceNew?: 
     const session = new PiAgentSession(config);
     independentSessions.set(key, session);
     console.log(`[createAgentSession] 创建强制新 session, key=${key}`);
+    await session.whenReady();
     return session;
   }
 
@@ -4231,12 +4312,14 @@ export async function createAgentSession(config: AgentSessionConfig, forceNew?: 
         createdAt: Date.now()
       });
     }
+    await sessionInstance.whenReady();
     return sessionInstance;
   }
 
   sessionInstance = new PiAgentSession(config);
   lastIdentityDid = config.identityDoc?.did || null;
   console.log(`[createAgentSession] 新建 session, DID=${lastIdentityDid}`);
+  await sessionInstance.whenReady();
   return sessionInstance;
 }
 
