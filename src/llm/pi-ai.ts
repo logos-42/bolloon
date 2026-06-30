@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 
-export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'local';
+export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'local';
 
 export interface ModelConfig {
   provider: ModelProvider;
@@ -247,6 +247,7 @@ export class PiAIModel {
       case 'kimi':
       case 'glm':
       case 'qwen':
+      case 'mimo':
         return this.callOpenAI(finalMessages, temperature, maxTokens, signal);
       case 'anthropic':
         return this.callAnthropic(finalMessages, temperature, maxTokens, signal);
@@ -279,6 +280,7 @@ export class PiAIModel {
       kimi: process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY || '',
       glm: process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY || '',
       qwen: process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '',
+      mimo: process.env.MIMO_API_KEY || '',
       local: ''
     };
     return envVars[this.provider] || '';
@@ -301,6 +303,8 @@ export class PiAIModel {
       kimi: process.env.KIMI_BASE_URL || process.env.MOONSHOT_BASE_URL || 'https://api.moonshot.cn/v1',
       glm: process.env.GLM_BASE_URL || process.env.ZHIPU_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4',
       qwen: process.env.QWEN_BASE_URL || process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      // 小米 MiMo: 走 OpenAI 兼容 API, 官方 endpoint
+      mimo: process.env.MIMO_BASE_URL || 'https://api.xiaomi.com/v1',
       local: 'http://localhost:11434'
     };
 
@@ -309,16 +313,18 @@ export class PiAIModel {
 
   private mapModel(): string {
     const modelMap: Record<ModelProvider, string> = {
-      openai: this.config.model || process.env.OPENAI_MODEL || 'gpt-4',
-      anthropic: this.config.model || 'claude-3-5-sonnet-20241022',
+      openai: this.config.model || process.env.OPENAI_MODEL || 'gpt-4.1',
+      anthropic: this.config.model || 'claude-sonnet-4-5-20250929',
       ollama: this.config.model || 'llama3.2',
-      openrouter: this.config.model || 'anthropic/claude-3.5-sonnet',
-      gemini: this.config.model || 'gemini-2.0-flash',
+      openrouter: this.config.model || 'anthropic/claude-sonnet-4.5',
+      gemini: this.config.model || 'gemini-2.5-pro',
       minimax: this.config.model || process.env.MINIMAX_MODEL || 'MiniMax-M3',
       deepseek: this.config.model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
       kimi: this.config.model || process.env.KIMI_MODEL || process.env.MOONSHOT_MODEL || 'moonshot-v1-8k',
       glm: this.config.model || process.env.GLM_MODEL || process.env.ZHIPU_MODEL || 'glm-4-flash',
       qwen: this.config.model || process.env.QWEN_MODEL || process.env.DASHSCOPE_MODEL || 'qwen-plus',
+      // 小米 MiMo (openai 兼容) — env override 优先, 默认 mimo-7b
+      mimo: this.config.model || process.env.MIMO_MODEL || 'mimo-7b',
       local: this.config.model || 'llama3.2'
     };
     return modelMap[this.provider];
@@ -672,22 +678,25 @@ function detectProvider(): ModelProvider {
   if (process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY) return 'kimi';
   if (process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY) return 'glm';
   if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) return 'qwen';
+  if (process.env.MIMO_API_KEY) return 'mimo';
 
   return 'openai';
 }
 
 function detectModel(provider: ModelProvider): string {
   const defaults: Record<ModelProvider, string> = {
-    openai: 'gpt-4',
-    anthropic: 'claude-3-5-sonnet-20241022',
+    openai: 'gpt-4.1',
+    anthropic: 'claude-sonnet-4-5-20250929',
     ollama: 'llama3.2',
-    openrouter: 'anthropic/claude-3.5-sonnet',
-    gemini: 'gemini-2.0-flash',
+    openrouter: 'anthropic/claude-sonnet-4.5',
+    gemini: 'gemini-2.5-pro',
     minimax: 'MiniMax-M3',
     deepseek: 'deepseek-chat',
     kimi: 'moonshot-v1-8k',
     glm: 'glm-4-flash',
     qwen: 'qwen-plus',
+    // 小米 MiMo 默认走最新开源版; 2026-06 当前公开版
+    mimo: 'mimo-7b',
     local: 'llama3.2'
   };
   return defaults[provider];

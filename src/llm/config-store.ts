@@ -6,7 +6,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'local';
+export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'local';
 
 export interface ProviderConfig {
   enabled: boolean;
@@ -32,7 +32,7 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4',
+    model: 'gpt-5.5',
     temperature: 0.7,
     maxTokens: 4096,
     requiresApiKey: true
@@ -41,7 +41,7 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://api.anthropic.com/v1',
-    model: 'claude-3-5-sonnet-20241022',
+    model: 'claude-sonnet-4-5-20250929',
     temperature: 0.7,
     maxTokens: 4096,
     requiresApiKey: true
@@ -50,7 +50,7 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://openrouter.ai/api/v1',
-    model: 'anthropic/claude-3.5-sonnet',
+    model: 'anthropic/claude-sonnet-4.5',
     temperature: 0.7,
     maxTokens: 4096,
     requiresApiKey: true
@@ -59,7 +59,7 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-3.5-pro',
     temperature: 0.7,
     maxTokens: 4096,
     requiresApiKey: true
@@ -118,6 +118,16 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     maxTokens: 4096,
     requiresApiKey: true
   },
+  // 小米 MiMo (openai 兼容) — 默认 base URL https://api.xiaomi.com/v1
+  mimo: {
+    enabled: false,
+    apiKey: '',
+    baseUrl: 'https://api.xiaomi.com/v1',
+    model: 'mimo-7b',
+    temperature: 0.7,
+    maxTokens: 4096,
+    requiresApiKey: true
+  },
   local: {
     enabled: false,
     apiKey: '',
@@ -130,10 +140,10 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
 };
 
 export const PROVIDER_INFO: Record<ModelProvider, { name: string; description: string; requiresApiKey: boolean; models?: string[] }> = {
-  openai: { name: 'OpenAI', description: 'GPT-4, GPT-3.5 等模型', requiresApiKey: true, models: ['gpt-4', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
-  anthropic: { name: 'Anthropic', description: 'Claude 3.5 系列模型', requiresApiKey: true, models: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
-  openrouter: { name: 'OpenRouter', description: '聚合多个 AI 供应商', requiresApiKey: true },
-  gemini: { name: 'Google Gemini', description: 'Gemini 系列模型', requiresApiKey: true, models: ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'] },
+  openai: { name: 'OpenAI', description: 'GPT-4, GPT-3.5 等模型', requiresApiKey: true, models: ['gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
+  anthropic: { name: 'Anthropic', description: 'Claude 3.5+ 系列模型', requiresApiKey: true, models: ['claude-sonnet-4-5-20250929', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
+  openrouter: { name: 'OpenRouter', description: '聚合多个 AI 供应商', requiresApiKey: true, models: ['anthropic/claude-sonnet-4.5', 'anthropic/claude-3.5-sonnet'] },
+  gemini: { name: 'Google Gemini', description: 'Gemini 系列模型', requiresApiKey: true, models: ['gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'] },
   ollama: { name: 'Ollama', description: '本地 LLM 运行框架', requiresApiKey: false },
   minimax: {
     name: 'MiniMax',
@@ -145,6 +155,7 @@ export const PROVIDER_INFO: Record<ModelProvider, { name: string; description: s
   kimi: { name: 'Kimi (月之暗面)', description: 'Moonshot 长上下文模型', requiresApiKey: true, models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'] },
   glm: { name: 'GLM (智谱)', description: '智谱 ChatGLM 系列模型', requiresApiKey: true, models: ['glm-4-flash', 'glm-4', 'glm-4-plus', 'glm-4-air', 'glm-4-airx'] },
   qwen: { name: 'Qwen (通义千问)', description: '阿里云通义千问系列', requiresApiKey: true, models: ['qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen-long'] },
+  mimo: { name: 'MiMo (小米)', description: '小米 MiMo 系列 (openai 兼容)', requiresApiKey: true, models: ['mimo-7b', 'mimo-32b'] },
   local: { name: '本地模型', description: '本地部署的模型服务', requiresApiKey: false }
 };
 
@@ -178,6 +189,9 @@ function getDefaultConfig(): LLMConfig {
   if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
     envConfigs.qwen = { ...DEFAULT_PROVIDER_CONFIGS.qwen, enabled: true, apiKey: process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '' };
   }
+  if (process.env.MIMO_API_KEY) {
+    envConfigs.mimo = { ...DEFAULT_PROVIDER_CONFIGS.mimo, enabled: true, apiKey: process.env.MIMO_API_KEY };
+  }
   if (process.env.OLLAMA_BASE_URL) {
     envConfigs.ollama = { ...DEFAULT_PROVIDER_CONFIGS.ollama, enabled: true, baseUrl: process.env.OLLAMA_BASE_URL };
   }
@@ -192,6 +206,7 @@ function getDefaultConfig(): LLMConfig {
   else if (process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY) activeProvider = 'kimi';
   else if (process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY) activeProvider = 'glm';
   else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) activeProvider = 'qwen';
+  else if (process.env.MIMO_API_KEY) activeProvider = 'mimo';
   else if (process.env.OLLAMA_BASE_URL) activeProvider = 'ollama';
 
   const providers = { ...DEFAULT_PROVIDER_CONFIGS };
