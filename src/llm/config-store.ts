@@ -123,7 +123,7 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://api.xiaomi.com/v1',
-    model: 'mimo-7b',
+    model: 'mimo-v2.5-pro',
     temperature: 0.7,
     maxTokens: 4096,
     requiresApiKey: true
@@ -155,7 +155,7 @@ export const PROVIDER_INFO: Record<ModelProvider, { name: string; description: s
   kimi: { name: 'Kimi (月之暗面)', description: 'Moonshot 长上下文模型', requiresApiKey: true, models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'] },
   glm: { name: 'GLM (智谱)', description: '智谱 ChatGLM 系列模型', requiresApiKey: true, models: ['glm-4-flash', 'glm-4', 'glm-4-plus', 'glm-4-air', 'glm-4-airx'] },
   qwen: { name: 'Qwen (通义千问)', description: '阿里云通义千问系列', requiresApiKey: true, models: ['qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen-long'] },
-  mimo: { name: 'MiMo (小米)', description: '小米 MiMo 系列 (openai 兼容)', requiresApiKey: true, models: ['mimo-7b', 'mimo-32b'] },
+  mimo: { name: 'MiMo (小米)', description: '小米 MiMo V2 系列 (openai 兼容)', requiresApiKey: true, models: ['mimo-v2.5-pro', 'mimo-v2-pro', 'mimo-v2-omni', 'mimo-v2-flash', 'mimo-v2.5-pro-ultraspeed'] },
   local: { name: '本地模型', description: '本地部署的模型服务', requiresApiKey: false }
 };
 

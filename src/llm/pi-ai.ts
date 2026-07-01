@@ -323,8 +323,8 @@ export class PiAIModel {
       kimi: this.config.model || process.env.KIMI_MODEL || process.env.MOONSHOT_MODEL || 'moonshot-v1-8k',
       glm: this.config.model || process.env.GLM_MODEL || process.env.ZHIPU_MODEL || 'glm-4-flash',
       qwen: this.config.model || process.env.QWEN_MODEL || process.env.DASHSCOPE_MODEL || 'qwen-plus',
-      // 小米 MiMo (openai 兼容) — env override 优先, 默认 mimo-7b
-      mimo: this.config.model || process.env.MIMO_MODEL || 'mimo-7b',
+      // 小米 MiMo (openai 兼容) — env override 优先, 默认 mimo-v2.5-pro
+      mimo: this.config.model || process.env.MIMO_MODEL || 'mimo-v2.5-pro',
       local: this.config.model || 'llama3.2'
     };
     return modelMap[this.provider];
@@ -695,8 +695,8 @@ function detectModel(provider: ModelProvider): string {
     kimi: 'moonshot-v1-8k',
     glm: 'glm-4-flash',
     qwen: 'qwen-plus',
-    // 小米 MiMo 默认走最新开源版; 2026-06 当前公开版
-    mimo: 'mimo-7b',
+    // 小米 MiMo 默认走最新旗舰版 (v2.5-Pro); 2026-06 当前公开版
+    mimo: 'mimo-v2.5-pro',
     local: 'llama3.2'
   };
   return defaults[provider];
