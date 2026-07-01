@@ -1690,8 +1690,12 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     runState.abortController = new AbortController();
     broadcastQueueUpdate(channelId);
 
+    // 2026-07-01 (v0.2.5): hoist sessionKey 到 try 外, 让 finally 块的 saveCurrentSession 能用
+    const sessionKey = `${channelId}:${currentSessionId}`;
+    let agent: AgentSession | null = null;
+
     try {
-      const agent = await getAgentForChannel(channelId, realChannelDid, realChannelName, realChannelDidDoc);
+      agent = await getAgentForChannel(channelId, realChannelDid, realChannelName, realChannelDidDoc);
       let fullResponse = '';
       // P0.5: 注入门回传的 usedIds, 落 session message metadata, UI 可查
       let usedJudgmentIds: string[] = [];
@@ -2018,6 +2022,18 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       runState.running = false;
       runState.abortController = null;
       broadcastQueueUpdate(channelId);
+
+      // 2026-07-01 (v0.2.5): 持久化当前 messageHistory — 让 web 用户跨刷新保留对话.
+      //   saveCurrentSession 失败静默, 不阻塞 channel 状态清理.
+      //   saveCurrentSession 内部走 SessionStore (默认 ~/.bolloon/sessions/cache/<sessionKey>.json).
+      //   agent 可能在 try 抛错后仍为 null (getAgentForChannel 失败), null-guard 跳过 save.
+      if (agent) {
+        try {
+          await agent.saveCurrentSession(sessionKey);
+        } catch (saveErr: any) {
+          console.warn(`[web] saveCurrentSession failed (non-fatal): ${saveErr?.message?.slice(0, 100)}`);
+        }
+      }
     }
   });
 

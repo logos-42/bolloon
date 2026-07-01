@@ -107,6 +107,52 @@ export function shouldForceExit(totalErrors: number, maxTotalErrors: number): bo
 }
 
 /**
+ * 2026-07-01 (v0.2.4 子任务 1): 迭代上限判定 — 纯函数.
+ * 之前 runReActLoop 在循环顶部硬编码 `if (iteration >= MAX_REACT_ITERATIONS)`,
+ * 抽出后 claude code 可独立单测 + 替代.
+ */
+export function decideMaxIterations(iteration: number, maxIterations: number): {
+  shouldExit: boolean;
+  finalAnswer: string;
+} {
+  return {
+    shouldExit: iteration >= maxIterations,
+    finalAnswer: iteration >= maxIterations
+      ? '(本轮 ReAct 循环达到最大步数, 强制结束)'
+      : '',
+  };
+}
+
+/**
+ * 2026-07-01 (v0.2.4 子任务 1): context overflow 判定 — 纯函数.
+ * 之前 runReActLoop 紧接 decideMaxIterations 之后硬编码 token 阈值检查.
+ * 抽出后行为一致 + 可测.
+ */
+export function decideContextOverflow(
+  estimatedTokens: number,
+  threshold: number,
+): { shouldExit: boolean; finalAnswer: string } {
+  return {
+    shouldExit: estimatedTokens > threshold,
+    finalAnswer: estimatedTokens > threshold
+      ? `(本轮 ReAct 循环因上下文溢出终止)`
+      : '',
+  };
+}
+
+/**
+ * 2026-07-01 (v0.2.4 子任务 1): compact 触发判定 — 纯函数.
+ * 之前 runReActLoop 入口处: estimatedTokens > compactThreshold → 跑 maybeAutoCompact.
+ * 抽出纯函数后, claude code 能 dry-run "token X 时该 compact 吗".
+ */
+export function shouldCompactBeforeIteration(
+  estimatedTokens: number,
+  compactThreshold: number,
+): boolean {
+  return estimatedTokens > compactThreshold;
+}
+
+/**
  * 同一工具连续失败 N 次, 提示 LLM 不要再用同一个工具 (force final).
  */
 export function shouldHintToStopSameTool(consecutiveFails: number, threshold: number): boolean {

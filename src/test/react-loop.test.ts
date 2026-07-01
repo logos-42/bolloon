@@ -14,6 +14,9 @@ import {
   extractFinalText,
   shouldForceExit,
   shouldHintToStopSameTool,
+  decideMaxIterations,
+  decideContextOverflow,
+  shouldCompactBeforeIteration,
   type StepContext,
 } from '../agents/react-loop.js';
 
@@ -272,4 +275,63 @@ describe('decideNext — 全场景组合', () => {
       if (reason && 'reason' in r) expect(r.reason).toBe(reason);
     });
   }
+});
+
+describe('decideMaxIterations — 迭代上限纯函数 (v0.2.4 子任务 1)', () => {
+  it('未达上限 → 不退出, finalAnswer 空', () => {
+    const r = decideMaxIterations(50, 10000);
+    expect(r.shouldExit).toBe(false);
+    expect(r.finalAnswer).toBe('');
+  });
+
+  it('到达上限 → 退出, finalAnswer 给提示', () => {
+    const r = decideMaxIterations(10000, 10000);
+    expect(r.shouldExit).toBe(true);
+    expect(r.finalAnswer).toContain('最大步数');
+  });
+
+  it('超过上限 (理论上不会发生, 但 fail-safe 仍退)', () => {
+    const r = decideMaxIterations(10001, 10000);
+    expect(r.shouldExit).toBe(true);
+    expect(r.finalAnswer).toContain('最大步数');
+  });
+
+  it('上限为 0 → 第一次调用就退', () => {
+    const r = decideMaxIterations(0, 0);
+    expect(r.shouldExit).toBe(true);
+  });
+});
+
+describe('decideContextOverflow — context 阈值纯函数 (v0.2.4 子任务 1)', () => {
+  it('tokens 在阈值内 → 不退', () => {
+    const r = decideContextOverflow(50000, 60000);
+    expect(r.shouldExit).toBe(false);
+    expect(r.finalAnswer).toBe('');
+  });
+
+  it('tokens 超过阈值 → 退, finalAnswer 给提示', () => {
+    const r = decideContextOverflow(60001, 60000);
+    expect(r.shouldExit).toBe(true);
+    expect(r.finalAnswer).toContain('上下文溢出');
+  });
+
+  it('tokens 正好等于阈值 → 不退 (> 严格不等式)', () => {
+    const r = decideContextOverflow(60000, 60000);
+    expect(r.shouldExit).toBe(false);
+  });
+});
+
+describe('shouldCompactBeforeIteration — compact 触发判定 (v0.2.4 子任务 1)', () => {
+  it('tokens 在 compact 阈值内 → 不 compact', () => {
+    expect(shouldCompactBeforeIteration(40000, 48000)).toBe(false);
+  });
+
+  it('tokens 超过 compact 阈值 → 应 compact', () => {
+    // 默认 LOOP_COMPACT_RATIO = 0.8, threshold = 60000 * 0.8 = 48000
+    expect(shouldCompactBeforeIteration(50000, 48000)).toBe(true);
+  });
+
+  it('边界 — 等于阈值 → 不 compact (严格大于)', () => {
+    expect(shouldCompactBeforeIteration(48000, 48000)).toBe(false);
+  });
 });

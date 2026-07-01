@@ -55,6 +55,7 @@ import { ReactHarness } from '../security/react-harness.js';
 import { parseToolCall as parseToolCallImpl, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl } from './parse-tool-call.js';
 import { sessionStore as defaultSessionStore, type SessionStore, type PersistedMessage } from './session-store.js';
 import { ToolRegistry } from './tool-registry.js';
+import { decideMaxIterations, decideContextOverflow, shouldCompactBeforeIteration } from './react-loop.js';
 
 // Pi Ecosystem Integration (lazy imports - initialized on demand)
 // Functions from: createGoal, getCurrentGoal, completeCurrentGoal, failCurrentGoal, getGoalStats, getQueueSummary
@@ -2431,10 +2432,12 @@ ${this.getToolDefinitions()}
       iteration++;
 
       // 停止条件 1: max turns (fail-safe 10000, 正常任务永远跑不到)
-      if (iteration >= this.MAX_REACT_ITERATIONS) {
+      //   2026-07-01 (v0.2.4 子任务 1): 委托给 react-loop.decideMaxIterations 纯函数
+      const maxIterDecision = decideMaxIterations(iteration, this.MAX_REACT_ITERATIONS);
+      if (maxIterDecision.shouldExit) {
         console.warn(`[PiAgent] 达到最大循环数 ${this.MAX_REACT_ITERATIONS}, 强制终止 (fail-safe)`);
         onStream?.({ type: 'error', content: `⏹️ 达到最大循环数 (${this.MAX_REACT_ITERATIONS}, fail-safe)`, tool: 'loop' });
-        finalResponse = finalResponse || '(本轮 ReAct 循环达到最大步数, 强制结束)';
+        finalResponse = finalResponse || maxIterDecision.finalAnswer;
         break;
       }
 
@@ -2463,9 +2466,10 @@ ${this.getToolDefinitions()}
 
       // 2026-06-16 新增: loop 内自动压缩 — token 超 80% 阈值时跑一次
       // compact 失败走 C 路径: 不强行 break, 让现有 60K 阈值兜底 (后面有检查)
+      //   2026-07-01 (v0.2.4 子任务 1): 触发判定走 shouldCompactBeforeIteration 纯函数
       const compactThreshold = this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD * this.LOOP_COMPACT_RATIO;
       const estimatedTokensBefore = this.estimateHistoryTokens();
-      if (estimatedTokensBefore > compactThreshold) {
+      if (shouldCompactBeforeIteration(estimatedTokensBefore, compactThreshold)) {
         const tokensBeforeCompact = estimatedTokensBefore;
         console.log(`[PiAgent] loop 入口 token ${tokensBeforeCompact} > ${compactThreshold}, 触发自动压缩`);
         onStream?.({ type: 'status', content: `🗜️ loop 自动压缩 (token ${tokensBeforeCompact} > ${compactThreshold})`, tool: 'compactor' });
@@ -2478,11 +2482,13 @@ ${this.getToolDefinitions()}
       }
 
       // 停止条件 3: context overflow (compact 后还超, 强制终止)
+      //   2026-07-01 (v0.2.4 子任务 1): 委托给 react-loop.decideContextOverflow 纯函数
       const estimatedTokens = this.estimateHistoryTokens();
-      if (estimatedTokens > this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD) {
+      const overflowDecision = decideContextOverflow(estimatedTokens, this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD);
+      if (overflowDecision.shouldExit) {
         console.warn(`[PiAgent] context overflow (${estimatedTokens} tokens > ${this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD})`);
         onStream?.({ type: 'error', content: `⏹️ 上下文溢出 (${estimatedTokens} tokens, 阈值 ${this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD})`, tool: 'loop' });
-        finalResponse = finalResponse || '(本轮 ReAct 循环因上下文溢出终止)';
+        finalResponse = finalResponse || overflowDecision.finalAnswer;
         break;
       }
 
