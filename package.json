@@ -3,8 +3,17 @@
   "version": "0.2.3",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
-  "main": "dist/cli.js",
-  "author": "Bolloon Team",
+  "main": "dist/cli-entry.js",
+  "author": "Bolloon Leo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/logos-42/bolloon.git"
+  },
+  "license": "MIT",
+  "files": [
+    "dist",
+    "bin"
+  ],
   "bin": {
     "bolloon": "./bin/bolloon-cli.cjs"
   },
