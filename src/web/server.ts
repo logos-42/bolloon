@@ -6,6 +6,34 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import {
+  validateMessageInput,
+  validateChannelInput,
+  healthCheck,
+} from './input-validator.js';
+
+// 读自身 package.json 拿 version (health endpoint 用)
+//   路径: src/web/server.ts → ../../package.json (编译后 dist/web/server.js)
+let cachedVersion: string | null = null;
+function getPackageVersion(): string {
+  if (cachedVersion) return cachedVersion;
+  try {
+    const here = fileURLToPath(import.meta.url);
+    const hereDir = path.dirname(here);
+    // 试 ../package.json (相对 dist/web/) 或 ../../package.json (相对 src/web/)
+    let raw: string | null = null;
+    for (const rel of ['../package.json', '../../package.json']) {
+      try {
+        raw = fsSync.readFileSync(path.join(hereDir, rel), 'utf-8');
+        break;
+      } catch {}
+    }
+    cachedVersion = raw ? ((JSON.parse(raw).version as string) ?? '0.0.0') : 'unknown';
+  } catch {
+    cachedVersion = 'unknown';
+  }
+  return cachedVersion;
+}
 
 // 2026-06-17: 终端静默 — server.ts 高频 spam (LLM 流式每个 token 一次 broadcast,
 // 每次 P2P 收发 [v3]/[v3-meta]/[v3-cross]/[v3-friend] 各一次) 全部走 console.log proxy,
@@ -1610,6 +1638,36 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
   app.get('/', serveStaticHtml('index.html', 'index.html not found; please run `npm run build:web`', 'index'));
   app.get('/api-config', serveStaticHtml('api-config.html', 'api-config.html not found; please run `npm run build:web`', 'api-config'));
+
+  // 2026-07-01 (v0.2.5): 输入验证 + 健康检查 API
+  //   - POST /api/validate-input: 前端发送前预校验, 避免后端 reject
+  //   - GET  /api/health: liveness probe + validators 清单
+  //   这些端点不依赖 LLM / P2P, 永远可以响应.
+  app.post('/api/validate-input', async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      const kind = body.kind || 'message';
+      let result;
+      if (kind === 'channel') {
+        result = validateChannelInput({ name: body.name, agentId: body.agentId });
+      } else {
+        result = validateMessageInput({ text: body.text, channelId: body.channelId });
+      }
+      res.json({
+        ok: result.ok,
+        severity: result.severity ?? (result.ok ? 'info' : 'block'),
+        reason: result.reason,
+        cleaned: result.cleaned,
+        kind,
+      });
+    } catch (e: any) {
+      res.status(400).json({ ok: false, severity: 'block', reason: e?.message ?? 'parse error' });
+    }
+  });
+
+  app.get('/api/health', (_req, res) => {
+    res.json(healthCheck(getPackageVersion()));
+  });
 
   // 全局兜底: 任何 next(err) 走到这里, 给出结构化 4xx/5xx 而不是默认 HTML
   app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {

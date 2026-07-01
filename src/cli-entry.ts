@@ -14,6 +14,7 @@
 import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { fileURLToPath } from 'url';
 
 const isWindows = process.platform === 'win32';
 
@@ -74,8 +75,11 @@ ${BOLD}环境变量:${RESET}
 }
 
 function getDistDir(): string {
-  // 对于打包后的应用，__dirname 是 dist 目录
-  return __dirname;
+  // 2026-07-01: ESM 模块无 __dirname, 用 import.meta.url + path.dirname 拿当前文件所在目录.
+  // 对于打包后的应用, 这是 dist 目录; 对于 tsx 跑 src/index.ts 时, 是 src/ 目录
+  // (后续 getMainScript 会优先用 dist/cli-entry.js, 不依赖这里的返回值)
+  const __filename_esm = fileURLToPath(import.meta.url);
+  return path.dirname(__filename_esm);
 }
 
 function getMainScript(): string {
