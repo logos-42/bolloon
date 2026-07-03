@@ -46,74 +46,157 @@ export function segmentChatReply(reply: string, ctx: SegmenterContext): ChatSegm
   const segments: ChatSegment[] = [];
   let remaining = reply;
 
-  // === 1. 切 <think>...</think> (内容保留, wrap 成 think segment) ===
+  // === 1. 启发式: 开头"让我.../First I'll.../I should..." 句子进 think 段 ===
+  //   LLM 偶尔不写 <think> 标签但直接出思考. 启发式: 文本首句以这些模式开头 → think
+  //   必须在 step 1 (显式 <think> 切分) 之前 — 因为显式切分 push 完会反序
+  if (!remaining.startsWith('<think>')) {
+    remaining = extractLeadingThinking(remaining, segments);
+  }
+
+  // === 2. 切 <think>...</think> (内容保留, wrap 成 think segment) ===
   remaining = extractAndPush('think', remaining, segments, /<think>([\s\S]*?)<\/think>/g);
 
-  // === 2. 切 <environment_details>...</environment_details> ===
+  // === 3. 切 <environment_details>...</environment_details> ===
   remaining = extractAndPush('env_details', remaining, segments, /<environment_details>([\s\S]*?)<\/environment_details>/g);
 
-  // === 3. 切 <final gen>...</final gen> 或单 marker ===
-  //   final 标记后面是最终答案. 整个切出, 只留 marker 之前的内容作为 text.
+  // === 4. 切 tool_call 标记 (核心: 完全去掉, 不让前端看到) ===
+  //   2026-07-01 修: 这步必须在 final 之前 — final 标记之前的 tool_call 是
+  //   "LLM 在 final 之前还在调工具", 这部分 content 应进 text (中间过程), 不应进 final.
+  remaining = stripToolCallMarkers(remaining, segments, ctx);
+
+  // === 5. 过滤 LLM 填充词 ("好了"/"完成"/"可以" 等单句 text 不上屏) ===
+  if (remaining.trim()) {
+    remaining = filterFillerText(remaining);
+  }
+
+  // === 6. final 之前的 text 段 (中间对话) push — 必须在 final push 之前 ===
+  //   注意: 这时 remaining 还含 <final gen> 标记 + 标记后内容. 切 final 前先把 <final gen> 之后内容清掉
+  //   实际: 切 final 后再切 text 更清楚
   const finalIdx = remaining.indexOf('<final gen>');
+  let beforeFinalText = remaining;
+  if (finalIdx >= 0) {
+    beforeFinalText = remaining.substring(0, finalIdx);
+  }
+
+  const textContent = beforeFinalText.trim();
+  if (textContent) {
+    segments.push({ type: 'text', content: textContent });
+  }
+
+  // === 7. 切 <final gen>...</final gen> (永远最后 push, 渲染时在最后) ===
   if (finalIdx >= 0) {
     const afterFinal = remaining.substring(finalIdx + '<final gen>'.length).trim();
     if (afterFinal) {
       segments.push({ type: 'final', content: afterFinal });
     }
-    remaining = remaining.substring(0, finalIdx).trim();
-  }
-
-  // === 4. 切 tool_call 标记 (核心: 完全去掉, 不让前端看到) ===
-  //    parse-tool-call 知道怎么定位. 我们做类似但收集 segment.
-  remaining = stripToolCallMarkers(remaining, segments, ctx);
-
-  // === 5. 剩余当 text ===
-  const textContent = remaining.trim();
-  if (textContent) {
-    segments.push({ type: 'text', content: textContent });
   }
 
   return segments;
 }
 
-/** 提取正则匹配的 group(1) 内容, 包装为 segment; 原文位置去掉 */
+/**
+ * 修 extractAndPush 的 reverse 删除 bug (2026-07-01)
+ *   之前: 用 mutate 后的 next 算切片, idx 错位 → 多 match 时删除错
+ *   现在: 用 lastIndex 累加在原文上标记删除区, 最后一次性 slice
+ */
 function extractAndPush(
   type: ChatSegmentType,
   text: string,
   out: ChatSegment[],
   re: RegExp
 ): string {
-  // 关键是保留顺序. 用 exec 循环 + lastIndex 累加
-  const matches: Array<{ idx: number; len: number; content: string }> = [];
-  let m: RegExpExecArray | null;
-  // 复制正则避免 lastIndex stateful 污染
+  const matches: Array<{ start: number; end: number; content: string }> = [];
   const localRe = new RegExp(re.source, re.flags);
+  let m: RegExpExecArray | null;
   while ((m = localRe.exec(text)) !== null) {
+    const content = m[1] ? m[1].trim() : '';
     matches.push({
-      idx: m.index,
-      len: m[0].length,
-      content: m[1].trim(),
+      start: m.index,
+      end: m.index + m[0].length,
+      content,
     });
-    if (m[0].length === 0) localRe.lastIndex++; // 防无限 loop
+    if (m[0].length === 0) localRe.lastIndex++;
   }
   if (matches.length === 0) return text;
 
-  // 反向遍历删除, 同时按原顺序 push
-  let next = text;
-  for (let i = matches.length - 1; i >= 0; i--) {
-    const { idx, len, content } = matches[i];
-    if (!content) continue;
-    next = next.substring(0, idx) + next.substring(idx + len);
-    // 但 push 是正向, 倒着算 position
-  }
-  // 重新正向 push
+  // push 正向 (保顺序)
   for (const m of matches) {
     if (m.content) out.push({ type, content: m.content });
   }
+
+  // 删除: 在原文上基于 start/end 切片, 不在 mutate 后算 idx
+  let next = '';
+  let cursor = 0;
+  for (const m of matches) {
+    next += text.substring(cursor, m.start);
+    cursor = m.end;
+  }
+  next += text.substring(cursor);
   return next;
 }
 
-/** 去掉 tool_call 标记 (XML / JSON / Sentinel 各种形式), 留下纯 text. 识别到的 wrap 成 tool_call segment. */
+/**
+ * 启发式: 提取开头的"思考"句子 (2026-07-01 新增)
+ *   模式: 文本开头遇到这些起手式, 整句 (到下一个 \n 或 . 或 句号) 切到 think 段
+ *   例子:
+ *     "让我先想想用户的需求" + 正文 → think(让我先想想用户的需求) + 正文
+ *     "First I'll check the project structure" → think(...)
+ *   不命中 → 整段保留, 走 text
+ */
+function extractLeadingThinking(text: string, out: ChatSegment[]): string {
+  // 模式 1: 显式/隐式思考句首 (一句到第一个 \n 或 \.\?\! 结束)
+  //   "让我..." / "我先..." / "先来..." / "接下来..." / "First, ..." / "I'll ..."
+  //   整句进 think, 后续 content 进 text
+  // 模式 2: 整行都是思考 (一行 \n 间隔)
+  const firstLineEnd = text.indexOf('\n');
+  const firstLine = firstLineEnd === -1 ? text : text.substring(0, firstLineEnd);
+  const rest = firstLineEnd === -1 ? '' : text.substring(firstLineEnd + 1);
+
+  // 中文/英文思考起手词
+  const thinkingStartRe = /^(让我|我先|我应该|先来|先|接下来|好的[,，]?\s*我|让我先|先看看|让我看看|思考|考虑)/;
+  const enThinkingStartRe = /^(Let me|I'll|I will|First,|Next,|Now,|So,|Alright[,.]\s+(?:let me|I'll|I will))/i;
+
+  if (firstLine.trim().length === 0) {
+    return text; // 空开头不动
+  }
+
+  // 单行启发式: 整行 < 120 字符 + 起始 match → 整行进 think
+  if (firstLine.length <= 120 && (thinkingStartRe.test(firstLine) || enThinkingStartRe.test(firstLine))) {
+    out.push({ type: 'think', content: firstLine.trim() });
+    return rest;
+  }
+
+  // 多行启发式: 第一段 (到第一个空行) 是思考
+  if (firstLine.length <= 80 && (thinkingStartRe.test(firstLine) || enThinkingStartRe.test(firstLine))) {
+    out.push({ type: 'think', content: firstLine.trim() });
+    return rest;
+  }
+
+  return text;
+}
+
+/**
+ * 过滤 LLM 填充词 (2026-07-01 新增)
+ *   单独的"好了"/"完成"/"可以"/"答完了"等单句不显示在气泡
+ *   配合 segmentChatReply 步骤 6
+ */
+function filterFillerText(text: string): string {
+  // 整行 = filler 词 → 整行丢
+  const lines = text.split('\n');
+  const filtered: string[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    // 匹配: 整行 = 填充词 (可带标点)
+    if (/^(好|好了|好的|完成|完成了|任务完成|可以|可以了|答完了|说完了|就这样|完了|done|ok|OK|Okay|okay|alright|fine|let me check|我来)\.?$/i.test(t)) {
+      continue;
+    }
+    filtered.push(line);
+  }
+  return filtered.join('\n').trim();
+}
+
+/** 提取正则匹配的 group(1) 内容, 包装为 segment; 原文位置去掉 */
 function stripToolCallMarkers(
   text: string,
   out: ChatSegment[],
@@ -185,6 +268,44 @@ function stripToolCallMarkers(
   // 7. [Function calling]...[/Function calling] 旧 bolloon
   result = result.replace(/\[Function[^\]]*\]\s*/g, '');
 
+  // 8. (2026-07-01) 未闭合的 tool_call 起始标签 (LLM 偶输出截断)
+  //   例子: "<tool_call><invoke name="shell_exec"><command>ls</command></invoke>" 缺少 </tool_call>
+  //   上面 1-7 步的正则都要求完整闭合对, 不闭合会留残文.
+  //   修法: 扫到孤立起始标签 (后面没有匹配的闭合) → 整段删到 \n\n 或 end
+  result = stripUnclosedToolCallTags(result);
+
+  return result;
+}
+
+/**
+ * 删未闭合的 tool_call 起始标签 + 后面到段结束 (2026-07-01)
+ *   例子: "<tool_call><invoke name="shell_exec"><command>ls</command></invoke>"
+ *   → 检查每个起始标签 (<tool_call>, <invoke, <function_calls, [TOOL_CALL])
+ *   → 如果没找到对应闭合, 删整段
+ */
+function stripUnclosedToolCallTags(text: string): string {
+  const startTags: Array<{ tag: string; closeTag: string; openRe: RegExp }> = [
+    { tag: '<tool_call>', closeTag: '</tool_call>', openRe: /<tool_call>/g },
+    { tag: '<invoke ', closeTag: '</invoke>', openRe: /<invoke\s+name=["']([\w]+)["']>/g },
+    { tag: '<function_calls>', closeTag: '</function_calls>', openRe: /<function_calls>/g },
+    { tag: '[TOOL_CALL]', closeTag: '[/TOOL_CALL]', openRe: /\[TOOL_CALL\]/g },
+  ];
+  let result = text;
+  for (const { tag, closeTag, openRe } of startTags) {
+    let m: RegExpExecArray | null;
+    while ((m = openRe.exec(result)) !== null) {
+      // 检查 startIdx 之后是否还有 closeTag
+      const tail = result.substring(m.index);
+      const closeIdx = tail.indexOf(closeTag);
+      if (closeIdx === -1) {
+        // 未闭合 — 删起始标签 + 之后所有内容 (到 \n\n 或 end)
+        const nextBlank = result.indexOf('\n\n', m.index);
+        const endIdx = nextBlank === -1 ? result.length : nextBlank;
+        result = result.substring(0, m.index) + result.substring(endIdx);
+        break; // 重新开始本 tag 扫描
+      }
+    }
+  }
   return result;
 }
 
