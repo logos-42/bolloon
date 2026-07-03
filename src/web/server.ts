@@ -11,6 +11,7 @@ import {
   validateChannelInput,
   healthCheck,
 } from './input-validator.js';
+import { segmentChatReply, type ChatSegment } from '../agents/chat-segmenter.js';
 
 // 读自身 package.json 拿 version (health endpoint 用)
 //   路径: src/web/server.ts → ../../package.json (编译后 dist/web/server.js)
@@ -1667,6 +1668,31 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
   app.get('/api/health', (_req, res) => {
     res.json(healthCheck(getPackageVersion()));
+  });
+
+  // 2026-07-01 (v0.2.6): 前后端分离核心 — 后端切 LLM 输出为结构化 segments
+  //   - POST /api/segment-reply { reply, knownTools }
+  //   - 返回 ChatSegment[] (think / text / env_details / tool_call / final)
+  //   前端拿到 segments 后只渲染, 不知道任何 LLM 格式 (minimax <invoke>, Hermes <tool_call>, Qwen function_calls, JSON 形式)
+  app.post('/api/segment-reply', async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      const reply = typeof body.reply === 'string' ? body.reply : '';
+      const knownToolsArr = Array.isArray(body.knownTools) ? body.knownTools : [];
+      const knownToolNames = new Set<string>(knownToolsArr.filter((s: any) => typeof s === 'string'));
+      const segments: ChatSegment[] = segmentChatReply(reply, { knownToolNames });
+      res.json({
+        ok: true,
+        input_length: reply.length,
+        segments,
+        segments_count: segments.length,
+        has_think: segments.some(s => s.type === 'think'),
+        has_tool_call: segments.some(s => s.type === 'tool_call'),
+        has_final: segments.some(s => s.type === 'final'),
+      });
+    } catch (e: any) {
+      res.status(400).json({ ok: false, reason: e?.message ?? 'parse error' });
+    }
   });
 
   // 全局兜底: 任何 next(err) 走到这里, 给出结构化 4xx/5xx 而不是默认 HTML

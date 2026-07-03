@@ -46,6 +46,9 @@ import {
   migrateStepTimeline,
   getStepTimeline,
 } from './step-timeline.js';
+// 2026-07-01 (v0.2.6): 共享后端切 LLM 输出. 消除 <invoke>/<function_calls>/<tool_call>
+//   等各种 LLM 格式在前端气泡里出现的 bug.
+import { segmentChatReply } from '../../agents/chat-segmenter.js';
 export type MessageType = 'user' | 'ai' | 'system' | 'error';
 
 export interface StreamTokenEvent {
@@ -57,6 +60,10 @@ export interface RendererCtx {
   messagesEl: HTMLElement | null;
   messagesContainers: Map<string, HTMLElement>;
   currentChannelId: string | null;
+  /** 2026-07-01 (v0.2.6): 注册到 client 的工具名集合 — segmenter 用它决定 tool_call 段是否保留 */
+  knownToolNames?: Set<string>;
+  /** tool_call segment 渲染时回调 (外层挂到 step-timeline) */
+  toolCallCallback?: (tool: { name: string; args: Record<string, string> }, hostEl: HTMLElement) => void;
   lastUsedJudgmentIds?: string[];
   /** 引用 client.js 函数, 避免循环 import */
   openJudgmentsModalWithFilter?: (ids: string[]) => void;
@@ -167,53 +174,60 @@ export function addMessage(
   const div = document.createElement('div');
   div.className = `message message-${type}`;
 
-  // 清理: 移除 tool_call 标记
-  let cleanContent = content
-    .replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/g, '')
-    .replace(/TOOL_CALL[\s\S]*?\/TOOL_CALL/g, '')
-    .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
-    .replace(/\{\s*"tool":[\s\S]*?\}/g, '')
-    .replace(/\{\s*tool\s*=>\s*["'][^"']+["']\s*(?:,\s*args\s*=>\s*\{[\s\S]*?\})?\s*\}/g, '')
-    .replace(/\[Function[^\]]*\]\s*/g, '')
-    .trim();
+  // 2026-07-01 (v0.2.6 前后端分离): 改用 chat-segmenter 纯函数切 LLM 输出.
+  //   之前 8 行正则漏 minimax <invoke> / Qwen function_calls / <tool_call> / {tool:..}.
+  //   单一来源: src/agents/chat-segmenter.ts (server + client 共享).
+  //   knownToolNames: 用 ctx 传入的注册表, fallback 空集 (不识别 tool_call 就 strip 不显示).
+  const knownToolNames = (ctx && ctx.knownToolNames) || new Set<string>();
+  const segments = segmentChatReply(content, { knownToolNames });
 
-  // think 折叠
-  const thinkMatch = cleanContent.match(/<think>([\s\S]*?)<\/think>/);
-  let mainContent = cleanContent;
+  // 没有可显示的 segment, 不上屏
+  if (segments.length === 0) {
+    return;
+  }
+
+  // 渲染各 segment (按 type 走不同容器)
   let thinkContainer: HTMLElement | null = null;
-  if (thinkMatch) {
-    const thinkContent = thinkMatch[1].trim();
-    mainContent = cleanContent.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-    thinkContainer = buildThinkContainer(thinkContent);
+  let renderedAny = false;
+  for (const seg of segments) {
+    if (seg.type === 'think' && seg.content) {
+      thinkContainer = buildThinkContainer(seg.content);
+      div.appendChild(thinkContainer);
+      renderedAny = true;
+    } else if (seg.type === 'env_details' && seg.content) {
+      div.appendChild(buildEnvContainer(seg.content));
+      renderedAny = true;
+    } else if (seg.type === 'text' && seg.content) {
+      if (thinkContainer) div.appendChild(thinkContainer);
+      thinkContainer = null;
+      div.appendChild(buildBubble(seg.content, type));
+      renderedAny = true;
+    } else if (seg.type === 'final' && seg.content) {
+      if (thinkContainer) div.appendChild(thinkContainer);
+      thinkContainer = null;
+      // final 段渲染为特殊气泡 (顶部有标记, 表示 LLM 显式终止)
+      const finalEl = buildBubble(seg.content, type);
+      finalEl.classList.add('bubble-final');
+      div.appendChild(finalEl);
+      renderedAny = true;
+    } else if (seg.type === 'tool_call' && seg.tool) {
+      // tool_call segment 不渲染文字 — 走 step-timeline (步骤状态条)
+      //   这里只记录到 ctx 让外层在 addMessage 后挂到 timeline
+      if (ctx && ctx.toolCallCallback) {
+        ctx.toolCallCallback(seg.tool, div);
+      }
+      renderedAny = true; // 即使没文字, tool_call 也算"有意义"
+    }
+  }
+  if (!renderedAny) {
+    return; // 没有渲染任何东西, 不上屏
   }
 
-  // environment_details 折叠 + 身份头
-  const envMatch = mainContent.match(/^(.+?)\n<environment_details>([\s\S]*?)<\/environment_details>\n([\s\S]*)$/);
-  if (envMatch) {
-    const identity = envMatch[1].trim();
-    const envDetails = envMatch[2].trim();
-    const messageBody = envMatch[3].trim();
-    const header = document.createElement('div');
-    header.className = 'message-header';
-    header.textContent = identity;
-    div.appendChild(header);
-    div.appendChild(buildEnvContainer(envDetails));
-    if (thinkContainer) div.appendChild(thinkContainer);
-    if (messageBody) div.appendChild(buildBubble(messageBody, type));
-  } else if (cleanContent) {
-    if (thinkContainer) div.appendChild(thinkContainer);
-    div.appendChild(buildBubble(cleanContent, type));
-  } else {
-    return; // 空内容, 不上屏
-  }
-
-  // 纯文本用于复制按钮
-  const rawContent = cleanContent
-    .replace(/<[^>]+>/g, '')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/&nbsp;/g, ' ');
+  // 纯文本用于复制按钮 — 现在从 segments 拼, 不再依赖 cleanContent 变量
+  const rawContent = segments
+    .filter(s => s.type === 'text' || s.type === 'final')
+    .map(s => s.content || '')
+    .join('\n');
 
   // 时间
   const time = document.createElement('div');
