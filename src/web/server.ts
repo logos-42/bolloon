@@ -1609,6 +1609,12 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
   });
 
   app.use(express.static(webRoot));
+  // 2026-07-01 (v0.2.6 修复): 前端 message-renderer import 了 src/agents/chat-segmenter.js,
+  //   浏览器加载时按相对路径解析成 /agents/chat-segmenter.js. 这个路径在 webRoot (dist/web) 之外.
+  //   解决: 把 dist/agents 也 mount 到 /agents 静态路径, 让前端 import 解析成功.
+  //   这条不破坏 segmenter 内部 import (Node 走文件系统, 浏览器走 HTTP).
+  const agentsRoot = path.join(webRoot, '..', 'agents');
+  app.use('/agents', express.static(agentsRoot));
 
   app.get('/', (req, res) => {
     res.sendFile(join(webRoot, 'index.html'));
