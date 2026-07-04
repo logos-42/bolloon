@@ -96,8 +96,9 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', () => {
     await session.saveCurrentSession('e2e:tool-call-roundtrip');
 
     // 验证文件落地到 tmpDir (不污染 ~/.bolloon/)
+    // 2026-07-04: Windows 兼容 — `:` escape 成 `__` (SessionStore.filenameEscape)
     const dirListing = await fs.readdir(tmpDir);
-    expect(dirListing).toContain('e2e:tool-call-roundtrip.json');
+    expect(dirListing).toContain('e2e__tool-call-roundtrip.json');
 
     // 验证持久化的数据完整
     const persisted = await testStore.loadMessages('e2e:tool-call-roundtrip');

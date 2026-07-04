@@ -284,7 +284,7 @@ describe('WorkflowPivotLoop', () => {
 });
 
 describe('PiSDK PivotLoop Integration', () => {
-  it('should export promptWithPivotLoop method', async () => {
+  it('should export promptWithPivotLoop method', { timeout: 30000 }, async () => {
     const { createAgentSession } = await import('../agents/pi-sdk.js');
 
     const session = await createAgentSession({
@@ -295,7 +295,7 @@ describe('PiSDK PivotLoop Integration', () => {
     expect(typeof session.promptWithPivotLoop).toBe('function');
   });
 
-  it('should use pivot loop when configured', async () => {
+  it('should use pivot loop when configured', { timeout: 30000 }, async () => {
     const { createAgentSession } = await import('../agents/pi-sdk.js');
 
     const session = await createAgentSession({

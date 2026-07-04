@@ -66,12 +66,27 @@ export class SessionStore {
     return this.cacheDir;
   }
 
-  /** 单文件路径 — 暴露出来方便测试和外部读取. */
+  /** 单文件路径 — 暴露出来方便测试和外部读取.
+   *
+   * 2026-07-04 fix: Windows 文件名禁止 `:` (NTFS). web server 用 `channelId:currentSessionId`
+   * 拼 sessionKey (server.ts:1759 之类), 会含 `:`. 在 Linux/macOS 上能用, Windows 上
+   * fs.writeFile 抛 EINVAL. 修法: filename 层 escape `:` → `__`, key 保持不变
+   * (load/save/listKeys/deleteKey 全部透明).
+   */
   pathFor(key: string): string {
     if (!key || key.includes('/') || key.includes('..')) {
       throw new Error(`SessionStore: invalid key ${JSON.stringify(key)}`);
     }
-    return path.join(this.cacheDir, `${key}.json`);
+    return path.join(this.cacheDir, `${SessionStore.filenameEscape(key)}.json`);
+  }
+
+  /** 把 session key 转换成跨平台安全的 filename (escape Windows 非法字符). */
+  static filenameEscape(key: string): string {
+    return key.replace(/:/g, '__');
+  }
+  /** listKeys 反向: 把 filename 还原成 session key. */
+  static filenameUnescape(filenameKey: string): string {
+    return filenameKey.replace(/__/g, ':');
   }
 
   /**
@@ -156,7 +171,7 @@ export class SessionStore {
       const files = await fs.readdir(this.cacheDir);
       return files
         .filter(f => f.endsWith('.json') && !f.endsWith('.tmp'))
-        .map(f => f.slice(0, -'.json'.length))
+        .map(f => SessionStore.filenameUnescape(f.slice(0, -'.json'.length)))
         .sort();
     } catch {
       return [];

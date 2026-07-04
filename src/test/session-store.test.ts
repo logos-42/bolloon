@@ -86,8 +86,9 @@ describe('SessionStore — save/load round-trip', () => {
   it('原子写: 写完后读到完整文件, 不存在 .tmp 中间态', async () => {
     await store.saveMessages('cli:atomic', sampleMessages);
     const files = await fs.readdir(tmpDir);
-    expect(files).toContain('cli:atomic.json');
-    expect(files).not.toContain('cli:atomic.json.tmp');
+    // 2026-07-04: Windows 兼容 — key 含 `:` 被 escape 成 `__` (SessionStore.filenameEscape)
+    expect(files).toContain('cli__atomic.json');
+    expect(files).not.toContain('cli__atomic.json.tmp');
   });
 });
 
