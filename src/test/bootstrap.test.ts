@@ -139,6 +139,7 @@ describe('formatContextForSystemPrompt', () => {
       projectRoot: '/x',
       projectName: 'demo',
       bolloonMd: '内容',
+      hierarchy: { managed: null, user: null, project: null, local: null, merged: '' },
       git: null,
       persona: { name: 'A', description: 'd', personality: 'p' },
       judgmentsSummary: { total: 5, active: 5, superseded: 0, rejected: 0, topValues: [] },
@@ -161,6 +162,7 @@ describe('formatContextForSystemPrompt', () => {
       projectRoot: '/x',
       projectName: 'demo',
       bolloonMd: 'A'.repeat(3000),
+      hierarchy: { managed: null, user: null, project: null, local: null, merged: '' },
       git: { branch: 'main', lastCommits: Array(20).fill('c'), uncommittedChanges: 5 },
       persona: { name: 'A', description: 'd', personality: 'p' },
       judgmentsSummary: {

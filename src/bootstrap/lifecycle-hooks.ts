@@ -10,6 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { getCachedBolloonContext, clearBolloonContextCache } from './context-collector.js';
 import { formatContextForSystemPrompt } from './project-context.js';
+import { loadPersonaDocs, formatPersonaForSystemPrompt } from './persona-loader.js';
 
 // ============================================================
 // SessionStart
@@ -18,6 +19,8 @@ import { formatContextForSystemPrompt } from './project-context.js';
 export interface SessionStartOptions {
   /** channelId 暂时不传到 context (单 channel 维度, plan 范围) */
   channelId?: string;
+  /** agentId 透传 (来自 Channel.agentId), 用来加载 persona 文档 */
+  agentId?: string;
   /** 工作目录, 默认 process.cwd() */
   cwd?: string;
   /** 强制重扫, 跳过 24h 缓存 */
@@ -56,10 +59,22 @@ export async function onSessionStart(opts: SessionStartOptions = {}): Promise<Se
     if (opts.channelId) {
       systemAddition = `# 当前 channel: ${opts.channelId}\n\n` + systemAddition;
     }
+    // 在头部最前拼 persona 文档 (如果 agentId 存在)
+    if (opts.agentId) {
+      try {
+        const docs = await loadPersonaDocs(opts.agentId);
+        const personaText = formatPersonaForSystemPrompt(docs);
+        if (personaText) {
+          systemAddition = personaText + '\n\n' + systemAddition;
+        }
+      } catch (err) {
+        console.warn('[lifecycle-hooks] loadPersonaDocs failed (silent):', err);
+      }
+    }
     return {
       systemAddition,
       collectMs: Date.now() - start,
-      truncated: systemAddition.length > 0 && systemAddition.includes('截断模式'),
+      truncated: systemAddition.length > 0 && systemAddition.includes('截断'),
     };
   } catch (err) {
     console.warn('[lifecycle-hooks] onSessionStart failed (silent):', err);

@@ -1186,6 +1186,8 @@ async function getAgentForChannel(
     cwd: process.cwd(),
     peerId: `channel-${channelId}:${currentSessionId}`,
     identityDoc,
+    // 2026-07-04: 透传 agentId 让 onSessionStart 加载 persona docs
+    agentId: channel?.agentId,
     // M2.3 (2026-06-17): 构造时从 session JSON 回灌历史 — 服务重启后 LLM 仍记得前面对话
     //   key 跟 server.ts:240 写入路径保持一致: ~/.bolloon/sessions/cache/<key>.json
     loadSessionKey: sessionKey,
@@ -2071,6 +2073,27 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       });
       session.lastUpdated = new Date().toISOString();
       await saveSession(session);
+
+      // 2026-07-04: 写 session 后, 调 memory-compressor 把消息历史压缩到
+      //   ~/.bolloon/memory/<channel.agentId>/sessions/<safe-channel>__<safe-session>.summary.md
+      // 失败静默, 不阻塞 /message 主路径.
+      try {
+        const channelsForMemory = await loadChannels();
+        const channelForMemory = channelsForMemory.find(c => c.id === channelId);
+        if (channelForMemory?.agentId) {
+          const { compressSessionToMemory } = await import('../bootstrap/memory-compressor.js');
+          const compressRes = await compressSessionToMemory({
+            agentId: channelForMemory.agentId,
+            channelId,
+            sessionId: currentSessionId,
+          });
+          if (!compressRes.skipped && compressRes.bytesWritten > 0) {
+            console.log(`[memory] compressed ${compressRes.messagesCount} new messages for ${channelForMemory.agentId}/${channelId} → ${compressRes.summaryPath} (${compressRes.bytesWritten}B)`);
+          }
+        }
+      } catch (memErr: any) {
+        console.warn('[memory] compressSessionToMemory failed (non-fatal):', memErr?.message?.slice(0, 200));
+      }
 
       const channels = await loadChannels();
       const channel = channels.find(c => c.id === channelId);

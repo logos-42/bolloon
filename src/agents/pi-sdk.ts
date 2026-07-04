@@ -78,6 +78,8 @@ export interface AgentSessionConfig {
   loadSessionMaxMessages?: number;
   /** 2026-06-30: 注入自定义 SessionStore — 测试用临时目录, 默认 ~/.bolloon/sessions/cache/ */
   sessionStore?: SessionStore;
+  /** 2026-07-04: 当前 channel 的 agentId (来自 Channel.agentId), 用来加载 persona docs */
+  agentId?: string;
 }
 
 export interface IdentityDoc {
@@ -664,6 +666,8 @@ class PiAgentSession implements AgentSession {
   private promptStartTime: number = 0;
   /** 当前 channel id (由 getAgentForChannel / prompt 4 参注入, 供 hook / log 使用) */
   private currentChannelId: string = '';
+  /** 2026-07-04: 当前 agentId (server.ts 通过 createAgentSession 选项注入), 供 onSessionStart 加载 persona docs */
+  private currentAgentId: string = '';
 
   /** M2.2 (2026-06-17): 当前轮的用户请求 intent, runReActLoop 拼 systemPrompt 时会读这个 */
   private currentIntent: 'question' | 'code_edit' | 'multi_step' | 'chitchat' | 'document' = 'chitchat';
@@ -710,6 +714,8 @@ class PiAgentSession implements AgentSession {
     this.peerId = config.peerId || 'local';
     this.identity = config.identityDoc || this.createDefaultIdentity();
     this.minimaxAvailable = this.checkMinimax();
+    // 2026-07-04: 透传 agentId (server.ts 通过 createAgentSession 选项注入)
+    this.currentAgentId = config.agentId || '';
     // 2026-06-30: 持久化层可注入 — 测试传 tmpDir, 业务用默认 ~/.bolloon/sessions/cache/
     this._sessionStore = (config as any).sessionStore ?? defaultSessionStore;
     this.constraintLayer = new ConstraintLayer();
@@ -2123,9 +2129,13 @@ class PiAgentSession implements AgentSession {
 
     // Bootstrap SessionStart: 收集项目 Context, 拼到 systemAddition 头部
     // (失败静默, 5s 限流防止循环)
+    // 2026-07-04: 透传 agentId 让 onSessionStart 加载 persona 文档
     let bootstrapAddition = '';
     try {
-      const ss = await onSessionStart({ channelId: this.currentChannelId || undefined });
+      const ss = await onSessionStart({
+        channelId: this.currentChannelId || undefined,
+        agentId: this.currentAgentId || undefined,
+      });
       bootstrapAddition = ss.systemAddition || '';
     } catch (err) {
       console.warn('[PiAgent] onSessionStart failed (non-fatal):', err);
