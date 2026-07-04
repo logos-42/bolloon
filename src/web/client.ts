@@ -936,7 +936,7 @@ function renderChannels() {
         <polyline points="9 18 15 12 9 6"></polyline>
       </svg>
       <div class="channel-icon">💬</div>
-      <span class="channel-name" title="${escapeHtml(ch.name)}">${escapeHtml(ch.name)}</span>
+      <span class="channel-name" title="${escapeHtml(ch.name || '')}">${escapeHtml(ch.name || '(未命名)')}</span>
       <span class="agent-row-meta">
         ${walletBadge}
         ${toolsBadge}
@@ -1109,7 +1109,7 @@ async function selectChannel(channelId, targetSessionId = null) {
   // 找到当前频道和 session
   const channel = channels.find(c => c.id === channelId);
   if (channel) {
-    if (channelNameEl) channelNameEl.textContent = channel.name;
+    if (channelNameEl) channelNameEl.textContent = channel.name || '(未命名)';
     currentSessionId = targetSessionId || channel.currentSessionId || 'default';
     if (targetSessionId) {
       channel.currentSessionId = targetSessionId;
@@ -1727,9 +1727,9 @@ function renderMentionDropdown(items) {
       // 浅蓝 = 键盘高亮, 白 = 普通
       const bg = i === mentionHighlightIdx ? '#eff6ff' : '#fff';
       const borderLeft = i === mentionHighlightIdx ? '3px solid #93c5fd' : '3px solid transparent';
-      return `<div class="mention-item" data-idx="${i}" data-channel-id="${escapeHtml(c.id)}" data-channel-name="${escapeHtml(c.name)}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;border-left:${borderLeft};">
+      return `<div class="mention-item" data-idx="${i}" data-channel-id="${escapeHtml(c.id)}" data-channel-name="${escapeHtml(c.name || '')}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;border-left:${borderLeft};">
         <span style="font-size:10px;color:${isLocal ? '#059669' : '#2563eb'};background:${isLocal ? '#d1fae5' : '#dbeafe'};padding:1px 6px;border-radius:3px;white-space:nowrap;">${tag}</span>
-        <span style="flex:1;">${escapeHtml(c.name)}</span>${owner}
+        <span style="flex:1;">${escapeHtml(c.name || '(未命名)')}</span>${owner}
       </div>`;
     }).join('');
     mentionDropdownEl.innerHTML = headerHtml + rows;
@@ -1906,9 +1906,9 @@ function setupMentionAutocomplete(inputEl) {
         const owner = !isLocal && c.ownerPublicKey ? ` <span style="color:#9ca3af;font-size:11px;">(${c.ownerPublicKey.substring(0, 8)}…)</span>` : '';
         const bg = i === localHighlight ? '#eff6ff' : '#fff';
         const borderLeft = i === localHighlight ? '3px solid #93c5fd' : '3px solid transparent';
-        return `<div class="mention-item" data-idx="${i}" data-channel-id="${escapeHtml(c.id)}" data-channel-name="${escapeHtml(c.name)}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;border-left:${borderLeft};">
+        return `<div class="mention-item" data-idx="${i}" data-channel-id="${escapeHtml(c.id)}" data-channel-name="${escapeHtml(c.name || '')}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;border-left:${borderLeft};">
           <span style="font-size:10px;color:${isLocal ? '#059669' : '#2563eb'};background:${isLocal ? '#d1fae5' : '#dbeafe'};padding:1px 6px;border-radius:3px;white-space:nowrap;">${tag}</span>
-          <span style="flex:1;">${escapeHtml(c.name)}</span>${owner}
+          <span style="flex:1;">${escapeHtml(c.name || '(未命名)')}</span>${owner}
         </div>`;
       }).join('');
       inputEl.__mentionDD.querySelectorAll('.mention-item').forEach((el) => {
@@ -3345,7 +3345,7 @@ async function openShareToPeerModal(peerName, peerPublicKey) {
           <label class="share-modal-row">
             <input type="checkbox" data-cid="${escapeHtml(ch.id)}" ${isShared ? 'checked' : ''} class="share-modal-cb">
             <div class="share-modal-row-info">
-              <div class="share-modal-row-name">${escapeHtml(ch.name)}</div>
+              <div class="share-modal-row-name">${escapeHtml(ch.name || '(未命名)')}</div>
               <div class="share-modal-row-meta">
                 ${isShared ? '✓ 已分享' : '未分享'} · ${escapeHtml(ch.id.slice(0, 24))}…
               </div>
@@ -4102,7 +4102,7 @@ function renderWalletList() {
     row.innerHTML = `
       <span class="wallet-chain">${escapeHtml(chain)}</span>
       <div class="wallet-info">
-        <span class="wallet-agent" title="${escapeHtml(ch.name)}">${escapeHtml(ch.name)}</span>
+        <span class="wallet-agent" title="${escapeHtml(ch.name || '')}">${escapeHtml(ch.name || '(未命名)')}</span>
         <span class="wallet-address" title="${escapeHtml(ch.walletAddress)}">${escapeHtml(ch.walletAddress)}</span>
       </div>
       <div class="wallet-actions">
