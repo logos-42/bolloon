@@ -5,6 +5,8 @@
 
 | 日期 | phase | 一句话 | 关联 |
 |------|-------|--------|------|
+| 2026-07-04 | docs | P1: AGENTS.md 合并 skill 默认 + Bolloon 特定工程约定 (§5 路径/验证/checklist/commit 风格/容忍噪音) | commit `206b0cf` |
+| 2026-07-04 | fix | P1: SessionStore escape `:` → `__` 修 Windows 文件名非法 + workflow-pivot 测试加 30s timeout, vitest-bail 711/711 pass, lefthook 不再需 LEFTHOOK=0 | commit `a6113e9` |
 | 2026-07-04 | fix | P0: iroh `discovery.update` 降级 + `/api/iroh/info` nodeId fallback, 消融实验 16/16 pass | [ablation/report.md](../ablation/report.md) |
 | 2026-07-04 | init | bootstrap 知识系统 v2.0.0 + 接入消融实验报告 (37 文件, 5 内容页) | [current-status.md](./current-status.md) |
 | 2026-07-04 | test | 4 功能消融实验 15/15 pass (documents + skills + tool_loop + p2p) | [ablation/report.md](../ablation/report.md) |
@@ -12,6 +14,21 @@
 | 2026-07-04 | fix | 频道名称渲染加 (未命名) fallback, 修复 sidebar / 顶栏 / mention / wallet 显示 "undefined" | commit `2e9e921` |
 
 ## 详细日志
+
+### [2026-07-04] fix | P1 SessionStore escape `:` + vitest-bail 不再 flaky
+
+- **根因 1**: web server 用 `channelId:currentSessionId` 拼 sessionKey (含 `:`), Windows NTFS 文件名禁止 `:`, fs.writeFile 抛 EINVAL.
+- **根因 2**: workflow-pivot-loop 集成测试默认 5s 超时, `createAgentSession` + LLM init 实际需要 10-30s.
+- **修复 1**: `src/agents/session-store.ts` 加 `filenameEscape`/`filenameUnescape` (`:` ↔ `__`), pathFor/listKeys 透明. 同时改 3 个测试断言 (web-server-session.test.ts / session-store.test.ts / persistence-e2e-flow.test.ts).
+- **修复 2**: `workflow-pivot-loop.test.ts` 给 2 个测试加 `{ timeout: 30000 }`.
+- **结果**: `npx vitest run --bail=1` → **711/711 pass**, 0 失败 (36 个测试文件). lefthook pre-commit 现在自动跑, 不再需 `LEFTHOOK=0` 跳过.
+- commit `a6113e9` push 到 master.
+
+### [2026-07-04] docs | AGENTS.md 合并 skill + Bolloon 特定约定
+
+- skill bootstrap 时生成的 `AGENTS.md` 只有 wiki-first 规则, 缺 Bolloon 工程约定.
+- 补充 §5 (路径/文件, 验证命令, 提交前 checklist, commit 风格, 容忍噪音) + §6 (wiki 触发) + §7 (消融实验触发).
+- commit `206b0cf` push 到 master.
 
 ### [2026-07-04] fix | P0 iroh `discovery.update` 降级 + `/api/iroh/info` nodeId fallback
 
