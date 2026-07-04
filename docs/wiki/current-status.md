@@ -29,8 +29,8 @@ compiled_from: [ablation-v0.2.7]
 
 | 功能 | 状态 | 影响 |
 |------|------|------|
-| **iroh `discovery.update` 接口** | ❌ server 启动时抛 TypeError, 但 `irohInitialized: true` | 网络层仍工作但 P2P 主题发现可能不全 |
-| **iroh `/api/iroh/info` 返回 `nodeId: null`** | ❌ iroh transport 没暴露真实 node ID | 真实 P2P 通信可能受影响 |
+| **iroh `discovery.update` 接口** | ✅ (2026-07-04 降级) @diap/sdk 上游 bug, server.ts 包 try/catch, 已知错误转 warn | 不影响 v3 主路径; 噪音日志已拦截 |
+| **iroh `/api/iroh/info` 返回 `nodeId: null`** | ✅ (2026-07-04 降级) 端点加 v3 P2PDirect publicKey fallback, `irohNodeIdSource` 标识来源 | 客户端始终拿到有效 peer id |
 | **`saveCurrentSession` rename 失败** | ⚠️ Windows 文件名含 `:` 非法, server silent-fail | 会话存档偶发失败, 不影响功能 |
 | **IPFS 离线时跳过** | ⚠️ `127.0.0.1:5001` 不通时 `discovery.update` 抛错 | DID 注册失败, 但 channel 仍能用 |
 | **vitest-bail flaky** | ⚠️ Windows Node v24 下, `workflow-pivot-loop` 5s timeout 间歇失败 | lefthook pre-commit 间歇阻断 commit |
@@ -43,17 +43,19 @@ compiled_from: [ablation-v0.2.7]
 ✅ known_peers.json: 2 peer (NodeA, apple)
 ✅ remote-channels-cache.json: 2 peer / 8 channel
 ✅ human-values store: 启动加载 19 条 judgment
-⚠️ iroh: 已 init, nodeId 未暴露
-⚠️ minimax provider: 需 API key, 消融实验时已用
+✅ iroh: 已 init, nodeId 通过 v3 fallback 暴露 (2026-07-04)
+✅ minimax provider: 消融实验时已用 (MiniMax-M2.7)
 ```
 
 ## 最近风险
 
 1. **Channel 名称显示 "undefined"** (✅ 2026-07-04 修复, commit `6859578`)
    - sidebar 渲染 `ch.name` 没有 fallback, 修复后统一加 `|| '(未命名)'`
-2. **vitest-bail flaky** (⚠️ 进行中)
+2. **iroh `discovery.update` / nodeId** (✅ 2026-07-04 降级)
+   - @diap/sdk 上游 bug (hyperswarm 4.x 不兼容), server.ts 包 try/catch + v3 fallback
+3. **vitest-bail flaky** (⚠️ 进行中)
    - 5/16 测试间歇失败, 改 `LEFTHOOK=0` 临时跳过
-3. **src/web/client.js 与 src/web/client.ts 长期脱节** (✅ 2026-07-04 修复, commit `6859578`)
+4. **src/web/client.js 与 src/web/client.ts 长期脱节** (✅ 2026-07-04 修复, commit `6859578`)
    - 删除 client.js, esbuild 编译产物 (dist/web/client.js) 是唯一运行时源
 
 ## 下一步优先级

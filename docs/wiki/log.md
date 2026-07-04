@@ -5,12 +5,22 @@
 
 | 日期 | phase | 一句话 | 关联 |
 |------|-------|--------|------|
+| 2026-07-04 | fix | P0: iroh `discovery.update` 降级 + `/api/iroh/info` nodeId fallback, 消融实验 16/16 pass | [ablation/report.md](../ablation/report.md) |
 | 2026-07-04 | init | bootstrap 知识系统 v2.0.0 + 接入消融实验报告 (37 文件, 5 内容页) | [current-status.md](./current-status.md) |
 | 2026-07-04 | test | 4 功能消融实验 15/15 pass (documents + skills + tool_loop + p2p) | [ablation/report.md](../ablation/report.md) |
 | 2026-07-04 | refactor | 移除 src/web/client.js (3550 行历史副本), client.ts 成为唯一源 | commit `6859578` |
 | 2026-07-04 | fix | 频道名称渲染加 (未命名) fallback, 修复 sidebar / 顶栏 / mention / wallet 显示 "undefined" | commit `2e9e921` |
 
 ## 详细日志
+
+### [2026-07-04] fix | P0 iroh `discovery.update` 降级 + `/api/iroh/info` nodeId fallback
+
+- **问题 1**: `@diap/sdk 0.1.10` 的 `HyperswarmCommunicator.joinTopic` 在 hyperswarm 4.x 上调不存在的 `Discovery.update()`, 抛 `TypeError`. 来自上游 `@diap/sdk`, 已记录于 `docs/plans/2026-06-17-supervisor-iter-1.md`.
+- **修复 1**: `src/web/server.ts:1584` 把 `joinTopic` 用 try/catch 包, 已知错误转 `console.warn` (标记 `[v3-legacy]`), 未知错误 rethrow. v3 P2PDirect 是主路径, 此处不阻断.
+- **问题 2**: `@rayhanadev/iroh` 的 `endpoint.nodeId()` 在某些环境下返回空字符串, 导致 `/api/iroh/info` 暴露 `irohNodeId: null`.
+- **修复 2**: `/api/iroh/info` 加 `irohNodeIdSource` 字段 + v3 P2PDirect `getPublicKey()` fallback. 客户端可看到来源标识 (`iroh` / `v3-p2p-fallback` / `unavailable`).
+- **新增 C4**: 消融实验 P2P 部分加 `irohNodeId fallback 验证`. 重跑 ablation → **16/16 pass**.
+- **更新 ablation 报告**: 工程观察 #7 #8 mark ✅ 2026-07-04 降级, 建议清单标 [x].
 
 ### [2026-07-04] init | bootstrap 知识系统 + 接入消融实验报告
 

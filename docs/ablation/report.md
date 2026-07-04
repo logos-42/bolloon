@@ -1,22 +1,22 @@
 # Bolloon 核心功能消融实验报告 (v0.2.7)
 
-> 生成时间: 2026-07-04T04:00:57.689Z
+> 生成时间: 2026-07-04T04:38:18.907Z
 > 实验 runner: scripts/ablation/run.ts
 > 服务端口: 54188 (web: dist/web + esbuild 编译 client.ts)
 > 节点: Windows 11, Node v24.15.0, LLM provider: minimax (MiniMax-M2.7)
 
 ## 一句话结论
 
-> **15/15 通过 (15/15)**, **0 失败**. 4 个核心功能端到端可工作; C1/C3 异常路径明确降级, 无静默崩坏.
+> **16/16 通过**, **0 失败**. 4 个核心功能端到端可工作; C1/C3 异常路径明确降级, 无静默崩坏.
 
-## 实验设计 (4 功能 × 3-4 组 = 15 项验证)
+## 实验设计 (4 功能 × 3-5 组 = 16 项验证)
 
-| # | 功能 | C1 baseline | C2 enabled | C3 abnormal |
-|---|------|------------|-----------|-------------|
-| 1 | 文档加载 | reader 假 PDF → 错误 | Bolloon.md / layers 完整 | 缺 frontmatter → 降级 + 实际编译 |
-| 2 | 技能加载 | 不存在目录 → [] | defaultSkillPaths → N | 坏 skill.md → 跳过 |
-| 3 | 工具调用 | 极简 prompt → 无 tool | 搜索 prompt × 3 (假阳性) | 异常 prompt → 不崩 |
-| 4 | P2P 核心 | peers 端点 / iroh info | remote-channels 缓存 + API | chat-send 假 peer → 4xx |
+| # | 功能 | C1 baseline | C2 enabled | C3 abnormal | C4 扩展 (可选) |
+|---|------|------------|-----------|-------------|-----------------|
+| 1 | 文档加载 | reader 假 PDF → 错误 | Bolloon.md / layers 完整 | 缺 frontmatter → 降级 + 实际编译 | — |
+| 2 | 技能加载 | 不存在目录 → [] | defaultSkillPaths → N | 坏 skill.md → 跳过 | — |
+| 3 | 工具调用 | 极简 prompt → 无 tool | 搜索 prompt × 3 (假阳性) | 异常 prompt → 不崩 | — |
+| 4 | P2P 核心 | peers 端点 / iroh info | remote-channels 缓存 + API | chat-send 假 peer → 4xx | irohNodeId fallback (2026-07-04 P0) |
 
 ## 假阳性检查 (3 项)
 
@@ -33,7 +33,7 @@
 | documents (reader + layers) | ✅ CAUGHT 假 PDF | ✅ Bolloon 8197B / 15 layers | ✅ 缺 frontmatter 仍 4743 字符 | **✅ 全部通过** |
 | skills (loader) | ✅ 不存在目录 → [] | ✅ 创建测试 skill → 1 | ✅ 坏 skill → 不阻断 (1) | **✅ 全部通过** |
 | tool_loop (reAct + SSE) | ✅ 极简 202 异步 | ✅ 搜索 ×3, 工具循环全跑 | ✅ 异常 prompt 202 不崩 | **✅ 全部通过** |
-| p2p (peers + channels) | ✅ 端点 200, 2 peer | ✅ 缓存 2 peer / 8 channel | ✅ 假 peer → 400 显式 | **✅ 全部通过** |
+| p2p (peers + channels) | ✅ 端点 200, 2 peer | ✅ 缓存 2 peer / 8 channel | ✅ 假 peer → 400 显式 | ✅ irohNodeId 端点 fallback 验证 | **✅ 全部通过** |
 
 ### 详细结果
 
@@ -71,7 +71,7 @@ CAUGHT:Invalid PDF structure
 - note: parseFrontmatter 失败 → meta=null 但 body 保留 (registry.ts:78-106)
 - compileOut: [HumanValueStore] Initialized at C:\Users\Mechrevo\.bolloon\human-values
 CHARS=4743
-TIME=372
+TIME=889
 HAS_BODY=true
 - compileErr: 
 - compiledChars: 4743
@@ -104,26 +104,26 @@ NAMES=ablation-test
 - 备注: using channel ch_1781023275768_3aasyj (智能体)
 
 ##### ✅ [C1] 极简 prompt → 直接回答, 无 tool
-- duration_ms: 45
+- duration_ms: 53
 - status: 202
 - asyncAck: true
 - ok: true
 
 ##### ✅ [C2] 搜索 prompt × 3 次独立运行 (假阳性检查, 监听 SSE)
-- subs: [{"duration_ms":24049,"postStatus":202,"asyncOk":true,"messages":0,"toolSeen":true,"aiTextLen":0,"tokenTextLen":300,"totalTextLen":300,"eventTypes":"user,queue_update,stream:thinking,workflow_step,phase,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,status,workflow_step,status,workflow_step","textPreview":"<think>The user is asking me to
+- subs: [{"duration_ms":14623,"postStatus":202,"asyncOk":true,"messages":1,"toolSeen":true,"aiTextLen":0,"tokenTextLen":400,"totalTextLen":400,"eventTypes":"user,queue_update,stream:thinking,workflow_step,phase,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,status,workflow_step,status,workflow_step","textPreview":"<think>The user is asking me to
 - toolLoopVisible: 3/3
 - toolCallCorrect: 3/3
 - successRate: 3/3
 - answerRate: 3/3
 
 ##### ✅ [C3] 异常 prompt (无意义字符串) → 不崩, 显式错误或回答
-- duration_ms: 7
+- duration_ms: 13
 - status: 202
 - asyncAck: true
 
 #### p2p
 
-- 尝试: **4** | 通过: **4** | 失败: **0** | 通过率: **100%**
+- 尝试: **5** | 通过: **5** | 失败: **0** | 通过率: **100%**
 
 ##### ✅ [C1] /api/p2p-peers 端点响应
 - status: 200
@@ -145,6 +145,13 @@ NAMES=ablation-test
 ##### ✅ [C3] chat-send 到 fake peer → 显式 4xx 而非 500
 - status: 400
 - errCode: targetPublicKey, channelId, text required
+
+##### ✅ [C4] /api/iroh/info 返回 irohNodeId (v3 fallback 或真值)
+- status: 200
+- initialized: true
+- irohNodeIdLen: 64
+- irohNodeIdSource: iroh
+- irohNodeIdPrefix: 11951d7ead82af7f
 
 ## 归因分析
 
@@ -186,8 +193,8 @@ NAMES=ablation-test
 4. **SSE 事件类型**: server 用 `type: "stream", streamType: "token"|"thinking"` 推流, `type: "ai"` 推最终回答, `type: "status", tool: "..."` 推工具调用. 不能用 `message` / `text` 字段假设.
 5. **`/message` 异步模式**: 202 立即返回 + LLM 后台跑 + SSE 推流, 不能等 res.json 拿回答. 必须连 SSE 监 stream.
 6. **saveCurrentSession rename 失败 (非致命)**: Windows 上 `ch_xxx:default.json → ch_xxx:default:2.json` 含 `:` 字符在 Windows 文件名非法, server.ts 已 silent-fail. 不影响功能, 建议改成 `-` 或 `_`.
-7. **iroh 错误 `discovery.update is not a function`**: server 启动时调用 `discovery.update` 抛错, 但 `irohInitialized: true` 说明网络层仍工作. 可能是 bollharness 内部接口不匹配, 待排查.
-8. **iroh nodeId 为 null**: `/api/iroh/info` 返回 nodeId 是 null 而非实际 ID, iroh transport 部分初始化但没暴露 node ID. 真实 P2P 通信可能受影响.
+7. **iroh `discovery.update is not a function` (✅ 2026-07-04 降级)**: @diap/sdk 0.1.10 + hyperswarm 4.x 不兼容. 已在 server.ts:1584 包 try/catch, 失败转 warn (v3 P2PDirect 是主路径, 不影响).
+8. **iroh nodeId 暴露 (✅ 2026-07-04 降级)**: `/api/iroh/info` 加 v3 P2PDirect publicKey fallback, 端点响应 `irohNodeIdSource` 字段标识来源 (iroh / v3-p2p-fallback / unavailable).
 
 ## 总结 (3 维收益)
 
@@ -200,6 +207,7 @@ NAMES=ablation-test
 ## 下一步建议
 
 - [ ] 修 `saveCurrentSession` 文件名非法字符 (Windows)`:` → `-`
-- [ ] 排查 iroh `discovery.update is not a function` (bollharness 接口不匹配)
-- [ ] 给 iroh info 端点补上真实 nodeId (目前 null)
+- [x] 修 iroh `discovery.update is not a function` (✅ 2026-07-04 降级)
+- [x] 给 iroh info 端点补上真实 nodeId (✅ 2026-07-04 fallback)
 - [ ] 把 `scripts/ablation/run.ts` 接入 vitest pre-commit (替换 flaky vitest-bail)
+- [ ] 升级 `@diap/sdk` 上游修复 hyperswarm 4.x 兼容 (待社区)

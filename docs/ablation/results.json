@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-07-04T04:00:57.692Z",
+  "timestamp": "2026-07-04T04:38:18.918Z",
   "results": {
     "documents": {
       "name": "documents",
@@ -50,7 +50,7 @@
             "wellbeing.md"
           ],
           "note": "parseFrontmatter 失败 → meta=null 但 body 保留 (registry.ts:78-106)",
-          "compileOut": "[HumanValueStore] Initialized at C:\\Users\\Mechrevo\\.bolloon\\human-values\nCHARS=4743\nTIME=372\nHAS_BODY=true",
+          "compileOut": "[HumanValueStore] Initialized at C:\\Users\\Mechrevo\\.bolloon\\human-values\nCHARS=4743\nTIME=889\nHAS_BODY=true",
           "compileErr": "",
           "compiledChars": 4743,
           "pass": true
@@ -101,7 +101,7 @@
         {
           "c": "C1",
           "desc": "极简 prompt → 直接回答, 无 tool",
-          "duration_ms": 45,
+          "duration_ms": 53,
           "status": 202,
           "asyncAck": true,
           "ok": true,
@@ -112,31 +112,31 @@
           "desc": "搜索 prompt × 3 次独立运行 (假阳性检查, 监听 SSE)",
           "subs": [
             {
-              "duration_ms": 24049,
+              "duration_ms": 14623,
               "postStatus": 202,
               "asyncOk": true,
-              "messages": 0,
+              "messages": 1,
               "toolSeen": true,
               "aiTextLen": 0,
-              "tokenTextLen": 300,
-              "totalTextLen": 300,
+              "tokenTextLen": 400,
+              "totalTextLen": 400,
               "eventTypes": "user,queue_update,stream:thinking,workflow_step,phase,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,status,workflow_step,status,workflow_step",
-              "textPreview": "<think>The user is asking me to reply with just \"ok\" - a single word. This is a simple, benign reque"
+              "textPreview": "<think>The user is asking me to reply with a single word: \"ok\". This is a simple, benign request. I "
             },
             {
-              "duration_ms": 25695,
+              "duration_ms": 15977,
               "postStatus": 202,
               "asyncOk": true,
-              "messages": 0,
+              "messages": 1,
               "toolSeen": true,
               "aiTextLen": 0,
-              "tokenTextLen": 200,
-              "totalTextLen": 200,
-              "eventTypes": "user,queue_update,stream:thinking,workflow_step,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,phase,ping,stream:token,workflow_step,status,workflow_step,status",
-              "textPreview": "<think>The user is asking what \"Bolloon agent\" is, and wants a one-sentence answer. The task type is"
+              "tokenTextLen": 500,
+              "totalTextLen": 500,
+              "eventTypes": "user,queue_update,stream:thinking,workflow_step,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,phase,stream:token,workflow_step,status,workflow_step,status,workflow_step",
+              "textPreview": "<think>The user is asking what \"Bolloon agent\" is, and wants a one-sentence answer. This is a questi"
             },
             {
-              "duration_ms": 10160,
+              "duration_ms": 15886,
               "postStatus": 202,
               "asyncOk": true,
               "messages": 1,
@@ -145,7 +145,7 @@
               "tokenTextLen": 500,
               "totalTextLen": 500,
               "eventTypes": "user,queue_update,stream:thinking,workflow_step,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,status,workflow_step,status,workflow_step,stream:token",
-              "textPreview": "<think>\nThe user is asking what \"Bolloon agent\" is, and wants a one-sentence answer. The system cont"
+              "textPreview": "<think>The user is asking what \"Bolloon agent\" is, and wants a one-sentence answer. This is a simple"
             }
           ],
           "toolLoopVisible": "3/3",
@@ -157,7 +157,7 @@
         {
           "c": "C3",
           "desc": "异常 prompt (无意义字符串) → 不崩, 显式错误或回答",
-          "duration_ms": 7,
+          "duration_ms": 13,
           "status": 202,
           "asyncAck": true,
           "pass": true
@@ -167,8 +167,8 @@
     },
     "p2p": {
       "name": "p2p",
-      "attempts": 4,
-      "successCount": 4,
+      "attempts": 5,
+      "successCount": 5,
       "failCount": 0,
       "samples": [
         {
@@ -215,41 +215,51 @@
           "status": 400,
           "errCode": "targetPublicKey, channelId, text required",
           "pass": "targetPublicKey, channelId, text required"
+        },
+        {
+          "c": "C4",
+          "desc": "/api/iroh/info 返回 irohNodeId (v3 fallback 或真值)",
+          "status": 200,
+          "initialized": true,
+          "irohNodeIdLen": 64,
+          "irohNodeIdSource": "iroh",
+          "irohNodeIdPrefix": "11951d7ead82af7f",
+          "pass": true
         }
       ],
       "notes": ""
     }
   },
   "serverLogTail": [
-    "[out] [pivot] iter=4 ctx=33 fullPrompt=16548 budget=19816\n",
-    "[out] [pivot] iter=4 LLM took=4074ms reply=308 head=<think>用户问\"Bolloon agent\"是什么,要求一句话回答。这是question类型任务,直接给答案即可。  从系统上下文中可以看到当前项目就是 \n",
-    "[out] [pivot] iter=5 ctx=33 fullPrompt=16548 budget=19816\n",
-    "[out] [pivot] iter=5 LLM took=6043ms reply=376 head=<think> 用户问的是\"Bolloon agent\"是什么，要用一句话回答。这是一个问题类任务，规则说\"直接给答案，不要调用工具\"。  从系统上下文里我已经\n",
+    "[out] [pivot] iter=4 LLM took=2674ms reply=453 head=<think>The user is asking me to look up what \"Bolloon agent\" is and answer in on\n",
+    "[out] [pivot] iter=5 ctx=33 fullPrompt=16523 budget=19786\n",
+    "[out] [pivot] iter=5 LLM took=2797ms reply=483 head=<think>The user is asking what \"Bolloon agent\" is and wants a one-sentence answe\n",
     "[out] [D-hook ch_1781023275768_3aasyj] throttled (within 5min)\n[SSE] 客户端断开 channelId=ch_1781023275768_3aasyj, 剩余=6\n",
     "[err] [server] clientError: ECONNABORTED write ECONNABORTED\n",
     "[out] [SSE] 客户端连接 channelId=ch_1781023275768_3aasyj, 总数=7\n",
     "[err] [web] saveCurrentSession failed (non-fatal): EINVAL: invalid argument, rename 'C:\\Users\\Mechrevo\\.bolloon\\sessions\\cache\\ch_1781023275768_3aasyj:\n",
-    "[out] [Agent] 获取频道 ch_1781023275768_3aasyj 的 session, sessionKey = ch_1781023275768_3aasyj:sess_1781023275768\n[Agent] 找到现有 session: ch_1781023275768_3aasyj:sess_1781023275768\n[Agent] 频道 ch_1781023275768_3aasyj 身份更新: DID = did:key:z6MkgXmP33iiH6HuHj4kd75ZGDowX9NxJKdRGWqLcJopJ99m\n[消息处理] 开始处理用户消息, channelId: ch_1781023275768_3aasyj, sessionId: sess_1781023275768\n",
-    "[out] [PiAgent.promptStream] ENTRY, channelId=ch_1781023275768_3aasyj, input chars=11966\n[PiAgent.promptStream] minimaxAvailable=true\n",
+    "[out] [Agent] 获取频道 ch_1781023275768_3aasyj 的 session, sessionKey = ch_1781023275768_3aasyj:sess_1781023275768\n[Agent] 找到现有 session: ch_1781023275768_3aasyj:sess_1781023275768\n",
+    "[out] [Agent] 频道 ch_1781023275768_3aasyj 身份更新: DID = did:key:z6MkgXmP33iiH6HuHj4kd75ZGDowX9NxJKdRGWqLcJopJ99m\n[消息处理] 开始处理用户消息, channelId: ch_1781023275768_3aasyj, sessionId: sess_1781023275768\n",
+    "[out] [PiAgent.promptStream] ENTRY, channelId=ch_1781023275768_3aasyj, input chars=11966\n",
+    "[out] [PiAgent.promptStream] minimaxAvailable=true\n",
     "[out] [PiAgent.promptStream] marker matched=true, userText chars=29, contextHint chars=11916\n",
-    "[out] [pivot] execute: input chars=29, systemPrompt chars=16513\n",
-    "[out] [pivot] iter=1 ctx=33 fullPrompt=16548 budget=19816\n",
-    "[out] [pivot] iter=1 LLM took=1904ms reply=536 head=<think> The user is asking what \"Bolloon agent\" is, and wants a one-sentence ans\n",
-    "[out] [pivot] iter=2 ctx=33 fullPrompt=16548 budget=19816\n",
-    "[out] [pivot] iter=2 LLM took=2900ms reply=814 head=<think> The user is asking what \"Bolloon agent\" is, and wants a one-sentence ans\n",
-    "[out] [pivot] iter=3 ctx=33 fullPrompt=16548 budget=19816\n",
-    "[out] [pivot] iter=3 LLM took=2295ms reply=609 head=<think> The user is asking me to look up what \"Bolloon agent\" is and answer in o\n",
-    "[out] [pivot] iter=4 ctx=33 fullPrompt=16548 budget=19816\n",
-    "[out] [pivot] iter=4 LLM took=1513ms reply=244 head=<think> 用户问\"查一下 Bolloon agent 是什么?用一句话回答\"。从项目上下文里我能直接看到答案: Bolloon 是一个本地优先的 P2P \n",
-    "[out] [pivot] iter=5 ctx=33 fullPrompt=16548 budget=19816\n",
-    "[out] [pivot] iter=5 LLM took=1489ms reply=381 head=<think> The user is asking what \"Bolloon agent\" is, and wants a one-sentence ans\n",
+    "[out] [pivot] execute: input chars=29, systemPrompt chars=16488\n",
+    "[out] [pivot] iter=1 ctx=33 fullPrompt=16523 budget=19786\n",
+    "[out] [pivot] iter=1 LLM took=2889ms reply=783 head=<think>The user is asking what \"Bolloon agent\" is, and wants a one-sentence answ\n",
+    "[out] [pivot] iter=2 ctx=33 fullPrompt=16523 budget=19786\n",
+    "[out] [pivot] iter=2 LLM took=2684ms reply=475 head=<think>The user is asking what \"Bolloon agent\" is and wants a one-sentence answe\n",
+    "[out] [pivot] iter=3 ctx=33 fullPrompt=16523 budget=19786\n",
+    "[out] [pivot] iter=3 LLM took=3633ms reply=799 head=<think>The user is asking what \"Bolloon agent\" is and wants a one-sentence answe\n",
+    "[out] [pivot] iter=4 ctx=33 fullPrompt=16523 budget=19786\n",
+    "[out] [pivot] iter=4 LLM took=3703ms reply=460 head=<think>用户问\"Bolloon agent\"是什么，要用一句话回答。任务类型是question，应该直接给答案不调用工具。  从项目上下文来看，Bollo\n",
+    "[out] [pivot] iter=5 ctx=33 fullPrompt=16523 budget=19786\n",
+    "[out] [pivot] iter=5 LLM took=2941ms reply=302 head=<think>用户问\"Bolloon agent\"是什么，要求用一句话回答。任务类型是 question，直接给答案。  从当前项目上下文可以看到，Bolloo\n",
     "[out] [D-hook ch_1781023275768_3aasyj] throttled (within 5min)\n[SSE] 客户端断开 channelId=ch_1781023275768_3aasyj, 剩余=6\n",
-    "[err] [server] clientError: ECONNABORTED write ECONNABORTED\n",
-    "[err] [web] saveCurrentSession failed (non-fatal): EINVAL: invalid argument, rename 'C:\\Users\\Mechrevo\\.bolloon\\sessions\\cache\\ch_1781023275768_3aasyj:\n",
+    "[err] [server] clientError: ECONNABORTED write ECONNABORTED\n[web] saveCurrentSession failed (non-fatal): EINVAL: invalid argument, rename 'C:\\Users\\Mechrevo\\.bolloon\\sessions\\cache\\ch_1781023275768_3aasyj:\n",
     "[out] [Agent] 获取频道 ch_1781023275768_3aasyj 的 session, sessionKey = ch_1781023275768_3aasyj:sess_1781023275768\n[Agent] 找到现有 session: ch_1781023275768_3aasyj:sess_1781023275768\n[Agent] 频道 ch_1781023275768_3aasyj 身份更新: DID = did:key:z6MkgXmP33iiH6HuHj4kd75ZGDowX9NxJKdRGWqLcJopJ99m\n[消息处理] 开始处理用户消息, channelId: ch_1781023275768_3aasyj, sessionId: sess_1781023275768\n",
     "[out] [PiAgent.promptStream] ENTRY, channelId=ch_1781023275768_3aasyj, input chars=12017\n[PiAgent.promptStream] minimaxAvailable=true\n",
     "[out] [PiAgent.promptStream] marker matched=true, userText chars=80, contextHint chars=11916\n",
-    "[out] [pivot] execute: input chars=80, systemPrompt chars=16458\n",
-    "[out] [pivot] iter=1 ctx=84 fullPrompt=16544 budget=19750\n"
+    "[out] [pivot] execute: input chars=80, systemPrompt chars=16433\n",
+    "[out] [pivot] iter=1 ctx=84 fullPrompt=16519 budget=19720\n"
   ]
 }

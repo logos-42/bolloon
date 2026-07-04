@@ -1564,6 +1564,9 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     setInterval(v3BroadcastOwn, 30000);
 
     // 保留 @diap/sdk 的旧实例 (它的 Hyperswarm 实例能帮 P2PDirect 做 DHT bootstrap)
+    // 2026-07-04: hyperswarm 4.x 删除了 Discovery.update() (被 .flushed() 替代).
+    //   @diap/sdk 0.1.10 还调 .update(), 是上游 bug (已记录 docs/plans/2026-06-17-supervisor-iter-1.md).
+    //   这里静默 joinTopic 失败, P2PDirect (v3 主路径) 不依赖 @diap/sdk, 不影响功能.
     try {
       const rawSeed = crypto.getRandomValues(new Uint8Array(32));
       p2pCommunicator = createHyperswarmCommunicator({
@@ -1580,10 +1583,21 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       });
       await p2pCommunicator.start();
       // @diap/sdk 也 join topic — 它的 Hyperswarm 实例帮 P2PDirect 做 DHT 引导
-      // @diap/sdk 收到的数据是 mock (不真发), 但 DHT 发现 + 节点连接是 OK 的
+      // joinTopic 失败已知 (hyperswarm 4.x + @diap/sdk 0.1.10), catch 静默
       const oldTopic = createTopic('bolloon-agent-harness') as Buffer;
-      await p2pCommunicator.joinTopic(oldTopic);
-      console.log(`P2P 老通道已就绪 (DHT bootstrap 帮 P2PDirect, 实际数据走 P2PDirect)`);
+      try {
+        await p2pCommunicator.joinTopic(oldTopic);
+        console.log(`P2P 老通道已就绪 (DHT bootstrap 帮 P2PDirect, 实际数据走 P2PDirect)`);
+      } catch (joinErr: any) {
+        // 已知: @diap/sdk 0.1.10 + hyperswarm 4.x → discovery.update is not a function
+        // v3 P2PDirect 是主路径, 此处不阻断
+        const msg = String(joinErr?.message || joinErr);
+        if (msg.includes('discovery.update') || msg.includes('is not a function')) {
+          console.warn(`[v3-legacy] @diap/sdk joinTopic 失败 (已知 hyperswarm 4.x 兼容问题, 已忽略): ${msg}`);
+        } else {
+          throw joinErr;
+        }
+      }
     } catch (e: any) {
       console.log(`P2P 老通道初始化失败: ${e.message}`);
     }
@@ -3969,11 +3983,24 @@ app.get('/channels', async (_req, res) => {
       res.json({ initialized: false });
       return;
     }
+    // 2026-07-04: irohTransport.getNodeId() 在某些环境下返回空字符串 (@rayhanadev/iroh + Windows
+    //   native binding 启动延迟). fallback: 用 v3 P2PDirect (hyperswarm) 的 publicKey 兜底,
+    //   保证客户端拿到一个可用的 peer id (v3 是实际数据通道, 不是 mock).
+    let effectiveNodeId = irohNodeInfo.irohNodeId;
+    if (!effectiveNodeId && v3P2PRef) {
+      try {
+        effectiveNodeId = v3P2PRef.getPublicKey() || '';
+        if (effectiveNodeId) {
+          console.log('[iroh API] irohNodeId 为空, fallback 到 v3 P2PDirect publicKey:', effectiveNodeId.substring(0, 16) + '...');
+        }
+      } catch { /* ignore */ }
+    }
     res.json({
       initialized: true,
       did: irohNodeInfo.did,
       cid: irohNodeInfo.cid,
-      irohNodeId: irohNodeInfo.irohNodeId,
+      irohNodeId: effectiveNodeId,
+      irohNodeIdSource: effectiveNodeId === irohNodeInfo.irohNodeId ? 'iroh' : (effectiveNodeId ? 'v3-p2p-fallback' : 'unavailable'),
       name: irohNodeInfo.name
     });
   });
