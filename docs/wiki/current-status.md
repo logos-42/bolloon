@@ -20,6 +20,8 @@ compiled_from: [ablation-v0.2.7]
 | 文档加载 | `src/documents/reader.ts` + `src/llm/system-prompt/layers/*.md` | ablation-v0.2.7 C1-C3 全 pass: Bolloon.md 8197B, 15 layers 完整, 缺 frontmatter 仍能装配 4743 字符 system prompt |
 | 技能加载 | `src/agents/skill-loader.ts` | ablation C1-C3 pass: 不存在目录 → `[]`, 创建测试 skill 加载成功, 坏 SKILL.md 被 skip |
 | 工具调用循环 | `src/agents/pi-sdk.ts` + `src/agents/react-loop.ts` + SSE | ablation C2 跑 3 次独立, 3/3 都有 `toolSeen=true` + 300+ 字符 tokenText, 事件链完整 (`stream:thinking → status:tool → stream:token → ai → done`) |
+| **长任务循环** (2026-07-04) | `src/agents/pi-sdk.ts` + `scripts/ablation/run-long-loop.ts` | **ablation-v0.2.8-long-loop**: 10/13 pass, 6 步循环 (探索→调整→验证→行动存档→记忆→再次探索) 验证; D1 4/5 多轮对话, D2 3/3 多 tool 调用 (D2.1 触发 9 业务 tool), D3 1/3 use_skill e2e (D3.1 真实加载 "技能写作"), D4 142 条 messages 持久化 |
+| **项目特定 skill** (2026-07-04) | `.bolloon/skills/消融实验技能/` + `.bolloon/skills/技能写作/` | 已从 opencode 复制 2 个 skill 到项目级, `loadSkillsFromPaths` 输出 COUNT=2; bolloon agent 通过 `use_skill` 工具端到端调用 |
 | P2P 核心 | `src/network/p2p-direct.ts` + `src/web/server.ts` 100+ API | ablation pass: 2 peer 持久化, remote-channels 缓存 2 peer/8 channel, fake peer → 显式 4xx |
 | Web UI | `src/web/client.ts` → `dist/web/client.js` (iife) | npm run build:web 跑通, `/client.js` 返回 166KB |
 | LLM 多 provider | `src/llm/pi-ai.ts` + `src/llm/llm-judgment-client.ts` | minimax / openai / anthropic / openrouter 都配置项 |
@@ -69,3 +71,5 @@ compiled_from: [ablation-v0.2.7]
 | P1 | 把 `scripts/ablation/run.ts` 接入 vitest pre-commit, 替换 flaky vitest-bail | ✅ 2026-07-04 lefthook 711/711 通过 (commit `a6113e9`) |
 | P2 | 把 4 个 layer 加上 frontmatter (当前 `withMeta: 0`) | ✅ ablation runner CRLF 误判已修, 实际 11/11 都已有 |
 | P2 | 补 `docs/wiki/skills-index.md` (skill 系统索引) | ✅ 35 个全局 skill + 触发词映射已写 |
+| P2 | 把 2 个 opencode skill 接入 bolloon, 验证 use_skill 协议端到端 | ✅ 2026-07-04 复制 + ablation v0.2.8 D3.1 真实加载 |
+| P3 | 把 `scripts/ablation/run-long-loop.ts` 接入 vitest pre-commit | 待做 (跟 v0.2.7 runner 一样) |

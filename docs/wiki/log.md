@@ -6,6 +6,8 @@
 | 日期 | phase | 一句话 | 关联 |
 |------|-------|--------|------|
 | 2026-07-04 | docs | P2: skills-index.md (35 个全局 skill + 触发词) + crystallized-claims.md (4 条断言从 ablation 蒸馏) | [skills-index.md](./skills-index.md) / [crystallized-claims.md](./crystallized-claims.md) |
+| 2026-07-04 | test | 长任务循环消融实验 (v0.2.8-long-loop): 6 步循环 (探索→调整→验证→行动存档→记忆→再次探索) + use_skill 协议端到端, 10/13 pass (2 失败为合理 LLM 行为) | [ablation/report-long-loop.md](../ablation/report-long-loop.md) |
+| 2026-07-04 | feature | 复制 2 个 opencode skill (消融实验技能 + 技能写作) 到 bolloon `.bolloon/skills/`, 注册到 manifest, bolloon agent 可通过 use_skill 工具调用 | [skills-index.md](./skills-index.md) |
 | 2026-07-04 | chore | P2: 修 ablation C3 layer frontmatter CRLF/LF 误判 — 实际 11/11 都有 (之前 withMeta=0 是脚本 bug) | commit 包含 |
 | 2026-07-04 | docs | P1: AGENTS.md 合并 skill 默认 + Bolloon 特定工程约定 (§5 路径/验证/checklist/commit 风格/容忍噪音) | commit `206b0cf` |
 | 2026-07-04 | fix | P1: SessionStore escape `:` → `__` 修 Windows 文件名非法 + workflow-pivot 测试加 30s timeout, vitest-bail 711/711 pass, lefthook 不再需 LEFTHOOK=0 | commit `a6113e9` |
@@ -31,6 +33,37 @@
 - skill bootstrap 时生成的 `AGENTS.md` 只有 wiki-first 规则, 缺 Bolloon 工程约定.
 - 补充 §5 (路径/文件, 验证命令, 提交前 checklist, commit 风格, 容忍噪音) + §6 (wiki 触发) + §7 (消融实验触发).
 - commit `206b0cf` push 到 master.
+
+### [2026-07-04] test | 长任务循环消融实验 v0.2.8 (10/13 pass)
+
+- 用户需求: "让 bolloon agent 系统使用本地 skill, 测试完整循环 (探索→调整→验证→行动存档→记忆→再次探索)"
+- **前置**: 复制 2 个 opencode skill (消融实验技能 + 技能写作) 到 `bolloon/.bolloon/skills/`, 注册到 `manifests/raw_sources.csv` (2 行新增), `loadSkillsFromPaths` 输出 `COUNT=2`
+- **新 runner**: `scripts/ablation/run-long-loop.ts` (4 组 D1-D4 = 13 项验证)
+  - **D1 多轮对话循环 (5 轮)**: 4/5 pass (toolSeen=true 4/5); 第 5 轮 (再次探索) LLM 走直答路径, tokenLen=0 — 合理行为
+  - **D2 单条多 tool 调用**: 3/3 pass; D2.1 单条 prompt 触发 9 个业务 tool (read_document/summarize_document/improve_document/list_files/...)
+  - **D3 use_skill 协议端到端**: 2/3 pass; **D3.1 真实加载 "技能写作" skill** (businessTools=[use_skill]); D3.2/3 LLM 选直答 (LLM 自主决策, 不是 bug)
+  - **D4 工作记忆持久化**: pass; `/sessions/:channelId?sessionId=xxx` 返回 142 条 messages
+- **工程关键**:
+  - SSE 监听必须**先建立再 POST** (v0.2.7 runner 模式), 不能用异步 race condition
+  - `channel.currentSessionId` 必须显式带, server 用它决定写入哪个 session 文件
+  - system tool (compactor/system/loop) 是 system-prompt 注入工具, 判定业务 tool 要排除
+- **报告**: `docs/ablation/report-long-loop.md` (200 行) + `results-long-loop.json` + `run-long-loop.stdout.log`
+- **writeback**: skills-index.md 加 2 个项目特定 skill, log.md 加 2 行
+- **未做**: 没 commit (用户没明确要求), 没接入 vitest pre-commit (跟 v0.2.7 runner 同样的 follow-up)
+
+### [2026-07-04] feature | 2 个 opencode skill 接入 bolloon
+
+- **消融实验技能** (skill-ablation-2026, 9898 B, SHA-256 `8BA2180F152646799BF56DC84DAEA1A191FC3C932BC006B0BF54EF5DC9755E2C`):
+  - 来源: `C:\Users\Mechrevo\.config\opencode\skills\消融实验技能`
+  - 目标: `D:\AI\bolloon\.bolloon\skills\消融实验技能`
+  - 用途: 让 bolloon agent 能用消融实验方法论验证自己的组件
+- **技能写作** (skill-writing-2026, 23144 B, SHA-256 `697BAC74414F3A97738AB1EB2B6766952F5E9292707C12CE1F95D4137B2B27F5`):
+  - 来源: `C:\Users\Mechrevo\.config\opencode\skills\技能写作`
+  - 目标: `D:\AI\bolloon\.bolloon\skills\技能写作`
+  - 用途: 元技能, 让 bolloon agent 能按 TDD 模式写新 skill (D3 use_skill 协议 e2e)
+- 路径策略: 选 **项目级 `.bolloon/skills/`** (defaultSkillPaths 优先级 2), 因为 git 可见 + 跨机器可同步. 不改 `defaultSkillPaths` (侵入小, 上层 0 改动)
+- 验证: `npx tsx scripts/ablation/check_skills.ts` → `COUNT=2 SKILL name=技能写作 + name=消融实验技能` ✅
+- manifest: `manifests/raw_sources.csv` 加 2 行 (skill_ablation_2026 + skill_writing_2026, confidence=0.85, lifecycle=stable)
 
 ### [2026-07-04] fix | P0 iroh `discovery.update` 降级 + `/api/iroh/info` nodeId fallback
 

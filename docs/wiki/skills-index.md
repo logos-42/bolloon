@@ -13,7 +13,7 @@ tags: [skills, indexing]
 ---
 
 > Bolloon 项目用到的 skill 系统: 全局 opencode skills (35 个, `~/.config/opencode/skills/`)
-> + Bolloon 项目特定 (0 个, 暂无).
+> + Bolloon 项目特定 (2 个, 已从 opencode 复制到 `.bolloon/skills/`, 2026-07-04).
 
 ## 全局 Skill 索引 (35 个)
 
@@ -70,7 +70,19 @@ tags: [skills, indexing]
 
 ## 项目特定 Skill (Bolloon 内部)
 
-暂无. 如果要新增, 跟全局 skill 一样放 `~/.config/opencode/skills/<name>/SKILL.md`.
+| Skill | 来源 | 用途 | 接入时间 |
+|-------|------|------|----------|
+| 消融实验技能 | opencode (元木) | 验证 bolloon 工具调用循环 (D1) + skill 加载器 (D2) | 2026-07-04 |
+| 技能写作 | opencode (元木/Anthropic) | 元技能: 验证 use_skill 协议端到端 (D3), 让 bolloon agent 能按 TDD 模式写新 skill | 2026-07-04 |
+
+**复制方法** (将来新增 skill):
+```bash
+mkdir -p .bolloon/skills
+cp -r ~/.config/opencode/skills/<skill_name> .bolloon/skills/
+# 然后在 manifests/raw_sources.csv 加一行 (skill-source, hash, lifecycle)
+```
+
+验证加载: `npx tsx scripts/ablation/check_skills.ts` → 应输出 `COUNT=2` 及两个 skill 名字.
 
 ## 自定义 opencode 配置目录
 

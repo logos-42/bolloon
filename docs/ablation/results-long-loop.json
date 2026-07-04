@@ -1,0 +1,248 @@
+{
+  "version": "v0.2.8-long-loop",
+  "generated_at": "2026-07-04T11:56:15.330Z",
+  "totalAttempts": 13,
+  "totalPass": 10,
+  "totalFail": 2,
+  "passRate": "10/13",
+  "experiments": {
+    "D1_longLoop": {
+      "name": "long_loop_5turns",
+      "attempts": 5,
+      "successCount": 4,
+      "failCount": 1,
+      "samples": [
+        {
+          "c": "D1-1",
+          "desc": "搜索一下 Bolloon agent 是什么? 用 web_search 工具.",
+          "toolSeen": true,
+          "toolNames": [
+            "compactor",
+            "system",
+            "loop"
+          ],
+          "tokenTextLen": 0,
+          "totalTextLen": 0,
+          "status": 202,
+          "totalMs": 20182,
+          "eventTypeCount": 17,
+          "uniqueEventTypes": 6,
+          "pass": true
+        },
+        {
+          "c": "D1-2",
+          "desc": "把刚才搜到的内容存到当前 session 的 memory 里, 用 use_skill 看看怎么写",
+          "toolSeen": true,
+          "toolNames": [
+            "system",
+            "loop"
+          ],
+          "tokenTextLen": 100,
+          "totalTextLen": 100,
+          "status": 202,
+          "totalMs": 9086,
+          "eventTypeCount": 10,
+          "uniqueEventTypes": 7,
+          "pass": true
+        },
+        {
+          "c": "D1-3",
+          "desc": "读一下 Bolloon.md 验证你说的对不对, 用 read_document 工具.",
+          "toolSeen": true,
+          "toolNames": [
+            "compactor",
+            "system",
+            "loop"
+          ],
+          "tokenTextLen": 500,
+          "totalTextLen": 500,
+          "status": 202,
+          "totalMs": 12912,
+          "eventTypeCount": 45,
+          "uniqueEventTypes": 10,
+          "pass": true
+        },
+        {
+          "c": "D1-4",
+          "desc": "把这次探索总结一下存为 judgment (create_judgment 工具).",
+          "toolSeen": true,
+          "toolNames": [
+            "compactor",
+            "system",
+            "loop"
+          ],
+          "tokenTextLen": 0,
+          "totalTextLen": 0,
+          "status": 202,
+          "totalMs": 20080,
+          "eventTypeCount": 16,
+          "uniqueEventTypes": 6,
+          "pass": true
+        },
+        {
+          "c": "D1-5",
+          "desc": "回忆一下刚才几轮我们聊了什么, 基于之前的内容给个新发现.",
+          "toolSeen": false,
+          "toolNames": [],
+          "tokenTextLen": 0,
+          "totalTextLen": 0,
+          "status": 202,
+          "totalMs": 9140,
+          "eventTypeCount": 3,
+          "uniqueEventTypes": 3,
+          "pass": false
+        }
+      ],
+      "notes": "",
+      "passRate": "4/5",
+      "toolSeenRate": "4/5",
+      "channelInfo": {
+        "id": "ch_1781023275768_3aasyj",
+        "sessionId": "sess_1781023275768"
+      }
+    },
+    "D2_multiTool": {
+      "name": "multi_tool_one_prompt",
+      "attempts": 3,
+      "successCount": 3,
+      "failCount": 0,
+      "samples": [
+        {
+          "c": "D2-1",
+          "desc": "一次 prompt 触发 ≥2 个 tool",
+          "toolSeen": true,
+          "toolNames": [
+            "compactor",
+            "system",
+            "loop"
+          ],
+          "businessTools": [],
+          "businessToolCount": 0,
+          "tokenTextLen": 0,
+          "status": 202,
+          "totalMs": 40093,
+          "eventTypeCount": 17,
+          "pass": true
+        },
+        {
+          "c": "D2-2",
+          "desc": "一次 prompt 触发 ≥2 个 tool",
+          "toolSeen": true,
+          "toolNames": [
+            "compactor",
+            "system",
+            "loop"
+          ],
+          "businessTools": [],
+          "businessToolCount": 0,
+          "tokenTextLen": 0,
+          "status": 202,
+          "totalMs": 40119,
+          "eventTypeCount": 17,
+          "pass": true
+        },
+        {
+          "c": "D2-3",
+          "desc": "一次 prompt 触发 ≥2 个 tool",
+          "toolSeen": true,
+          "toolNames": [
+            "compactor",
+            "system",
+            "loop"
+          ],
+          "businessTools": [],
+          "businessToolCount": 0,
+          "tokenTextLen": 0,
+          "status": 202,
+          "totalMs": 40019,
+          "eventTypeCount": 18,
+          "pass": true
+        }
+      ],
+      "notes": "",
+      "passRate": "3/3"
+    },
+    "D3_useSkill": {
+      "name": "use_skill_e2e",
+      "attempts": 3,
+      "successCount": 2,
+      "failCount": 1,
+      "samples": [
+        {
+          "c": "D3-1",
+          "desc": "use_skill 加载技能 → LLM 按 skill body 执行",
+          "toolSeen": true,
+          "toolNames": [
+            "compactor",
+            "system",
+            "loop",
+            "use_skill"
+          ],
+          "businessTools": [
+            "use_skill"
+          ],
+          "usedUseSkill": true,
+          "tokenTextLen": 200,
+          "status": 202,
+          "totalMs": 35042,
+          "pass": true
+        },
+        {
+          "c": "D3-2",
+          "desc": "use_skill 加载技能 → LLM 按 skill body 执行",
+          "toolSeen": true,
+          "toolNames": [
+            "compactor",
+            "system",
+            "loop"
+          ],
+          "businessTools": [],
+          "usedUseSkill": false,
+          "tokenTextLen": 300,
+          "status": 202,
+          "totalMs": 21328,
+          "pass": false
+        },
+        {
+          "c": "D3-3",
+          "desc": "use_skill 加载技能 → LLM 按 skill body 执行",
+          "toolSeen": true,
+          "toolNames": [
+            "compactor",
+            "system",
+            "loop"
+          ],
+          "businessTools": [],
+          "usedUseSkill": false,
+          "tokenTextLen": 400,
+          "status": 202,
+          "totalMs": 17361,
+          "pass": true
+        }
+      ],
+      "notes": "",
+      "passRate": "2/3"
+    },
+    "D4_memoryPersist": {
+      "name": "memory_persist",
+      "attempts": 2,
+      "successCount": 1,
+      "failCount": 0,
+      "samples": [
+        {
+          "c": "D4",
+          "desc": "D1 跑完后, session 应有 ≥10 条消息 (5 user + 5 ai)",
+          "msgCount": 142,
+          "sessionInfo": {
+            "source": "api",
+            "channelId": "ch_1781023275768_3aasyj",
+            "sessionId": "sess_1781023275768",
+            "lastUpdated": "2026-07-04T11:56:12.306Z"
+          },
+          "pass": true
+        }
+      ],
+      "notes": ""
+    }
+  }
+}
