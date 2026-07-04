@@ -8,6 +8,9 @@
 | 2026-07-04 | docs | P2: skills-index.md (35 个全局 skill + 触发词) + crystallized-claims.md (4 条断言从 ablation 蒸馏) | [skills-index.md](./skills-index.md) / [crystallized-claims.md](./crystallized-claims.md) |
 | 2026-07-04 | test | 长任务循环消融实验 (v0.2.8-long-loop): 6 步循环 (探索→调整→验证→行动存档→记忆→再次探索) + use_skill 协议端到端, 10/13 pass (2 失败为合理 LLM 行为) | [ablation/report-long-loop.md](../ablation/report-long-loop.md) |
 | 2026-07-04 | feature | 复制 2 个 opencode skill (消融实验技能 + 技能写作) 到 bolloon `.bolloon/skills/`, 注册到 manifest, bolloon agent 可通过 use_skill 工具调用 | [skills-index.md](./skills-index.md) |
+| 2026-07-04 | feature | persona 文档体系 (v0.2.9): 6 md (soul/identity/project/user/agent/wiki) 按 agentId 分类 ~/.bolloon/persona/<agentId>/, 启动加载到 system prompt (onSessionStart 集成) | [ablation/report-persona-memory.md](../ablation/report-persona-memory.md) |
+| 2026-07-04 | feature | memory 压缩写入 (v0.2.9): 每次 /message 后调 compressSessionToMemory, ≥4 新 messages 触发 LLM 摘要, 写 ~/.bolloon/memory/<agentId>/sessions/<safe-channel>__<safe-session>.summary.md + cursor 推进 | [ablation/report-persona-memory.md](../ablation/report-persona-memory.md) |
+| 2026-07-04 | test | persona + memory 消融实验 (v0.2.9): 8/8 pass (D6 3/3 + D7 2/2 + D8 3/3), 模块化子验证 (纯函数 + onSessionStart 集成 + 冷启动) | [ablation/report-persona-memory.md](../ablation/report-persona-memory.md) |
 | 2026-07-04 | chore | P2: 修 ablation C3 layer frontmatter CRLF/LF 误判 — 实际 11/11 都有 (之前 withMeta=0 是脚本 bug) | commit 包含 |
 | 2026-07-04 | docs | P1: AGENTS.md 合并 skill 默认 + Bolloon 特定工程约定 (§5 路径/验证/checklist/commit 风格/容忍噪音) | commit `206b0cf` |
 | 2026-07-04 | fix | P1: SessionStore escape `:` → `__` 修 Windows 文件名非法 + workflow-pivot 测试加 30s timeout, vitest-bail 711/711 pass, lefthook 不再需 LEFTHOOK=0 | commit `a6113e9` |
@@ -64,6 +67,31 @@
 - 路径策略: 选 **项目级 `.bolloon/skills/`** (defaultSkillPaths 优先级 2), 因为 git 可见 + 跨机器可同步. 不改 `defaultSkillPaths` (侵入小, 上层 0 改动)
 - 验证: `npx tsx scripts/ablation/check_skills.ts` → `COUNT=2 SKILL name=技能写作 + name=消融实验技能` ✅
 - manifest: `manifests/raw_sources.csv` 加 2 行 (skill_ablation_2026 + skill_writing_2026, confidence=0.85, lifecycle=stable)
+
+### [2026-07-04] feature | persona 文档体系 + memory 压缩 (v0.2.9)
+
+- **persona docs 体系**:
+  - 路径: `~/.bolloon/persona/<agentId>/` (按 agentId 分类)
+  - 6 个 md 文件: soul (价值观) / identity (DID + 性格 + 兴趣 + 能力) / project (项目背景) / user (用户画像) / agent (元信息) / wiki (认知图)
+  - 加载: `src/bootstrap/persona-loader.ts:loadPersonaDocs()` 读 6 文件, 文件不存在 → 字段 = '' (不抛错)
+  - 格式化: `formatPersonaForSystemPrompt()` 按 identity → soul → project → user → agent → wiki 顺序输出, 超 4000 字符按段截断
+  - 集成: `lifecycle-hooks.ts:onSessionStart({agentId})` 调上面两个函数, 拼到 systemAddition 头部
+  - agentId 透传: server.ts:1188 `agentId: channel?.agentId` → createAgentSession options → PiAgentSession.currentAgentId → onSessionStart 调时用
+  - 安全: `sanitizeAgentId()` 把 `[^a-zA-Z0-9_-]` 转 `_` (防路径穿越)
+- **memory 压缩写入**:
+  - 路径: `~/.bolloon/memory/<agentId>/sessions/<safe-channel>__<safe-session>.summary.md`
+  - 触发: server.ts:2075 saveSession 之后调 `compressSessionToMemory()`, ≥ 4 条新 messages 才压缩
+  - LLM 摘要: 调 `src/llm/pi-ai.ts:generateText` 走 minimax, 失败 fallback 到纯模板
+  - cursor 推进: `~/.bolloon/memory/<agentId>/sessions/<safe-channel>__<safe-session>.cursor` 记上次压到第几条
+- **示例数据** (agent_33e1fa85, 6 个 md):
+  - identity.md: 901 字符 (DID did:key:z6MkgXmP... + 4 性格 + 4 兴趣 + 11 能力)
+  - soul.md: 717 字符 (6 价值观 + 4 心法 + 3 不做的事)
+  - project.md / user.md / agent.md / wiki.md: 各 200+ 字符
+- **接入 wiki-first 范式**: 不引外部 dep, 不破坏现有 711/711 测试 (现 734/734, +23 新测试)
+- **失败静默**: 任何 hook / 压缩失败 console.warn 不阻塞主流程
+- **冷启动持久**: server 重启后 persona md 仍能加载 (D8-C 验证 SYS_ADD_LEN=4560)
+- **消融验证**: scripts/ablation/run-persona-memory.ts 8/8 pass (D6 3/3 + D7 2/2 + D8 3/3)
+- **报告**: docs/ablation/report-persona-memory.md (8 项子验证)
 
 ### [2026-07-04] fix | P0 iroh `discovery.update` 降级 + `/api/iroh/info` nodeId fallback
 

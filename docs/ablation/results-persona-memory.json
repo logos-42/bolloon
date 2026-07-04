@@ -1,0 +1,99 @@
+{
+  "version": "v0.2.9-persona-memory",
+  "generated_at": "2026-07-04T14:24:40.173Z",
+  "totalAttempts": 8,
+  "totalPass": 8,
+  "totalFail": 0,
+  "passRate": "8/8",
+  "experiments": {
+    "D6": {
+      "name": "persona_docs_load",
+      "submodules": [
+        {
+          "c": "D6-A",
+          "desc": "loadPersonaDocs 6 文件读取 (纯 fs)",
+          "out": "ALL_NONEMPTY=true\nHAS_KEYWORD=true\nIDENTITY_LEN=901\nSOUL_LEN=717",
+          "pass": true
+        },
+        {
+          "c": "D6-B",
+          "desc": "formatPersonaForSystemPrompt 6 段输出 + 截断 (纯函数)",
+          "out": "TEXT_LEN=4000\nHAS_IDENTITY=true\nHAS_SOUL=true\nHAS_PROJECT=true\nHAS_USER=true\nHAS_AGENT=true\nHAS_WIKI=true\nIDENTITY_BEFORE_SOUL=true",
+          "pass": true
+        },
+        {
+          "c": "D6-C",
+          "desc": "onSessionStart({agentId}) 集成 — systemAddition 含 persona",
+          "out": "[HumanValueStore] Initialized at C:\\Users\\Mechrevo\\.bolloon\\human-values\nSYS_ADD_LEN=4560\nHAS_PERSONA_HEADER=true\nHAS_IDENTITY=true\nHAS_SOUL_KEYWORD=true",
+          "pass": true
+        }
+      ],
+      "attempts": 3,
+      "successCount": 3,
+      "failCount": 0,
+      "passRate": "3/3"
+    },
+    "D7": {
+      "name": "memory_compress",
+      "submodules": [
+        {
+          "c": "D7-A",
+          "desc": "session 不存在 → skipped (纯函数)",
+          "out": "SKIPPED=no-new-messages\nBYTES=0",
+          "pass": true
+        },
+        {
+          "c": "D7-B",
+          "desc": "session 含 5 messages → 写 summary.md + Session 摘要",
+          "out": "SKIPPED=undefined\nMSG_COUNT=5\nBYTES=533\nPATH=C:\\Users\\Mechrevo\\.bolloon\\memory\\agent_33e1fa85\\sessions\\ch_ablation_pm_d7b__sess_d7b.summary.md",
+          "summaryPath": "C:\\Users\\Mechrevo\\.bolloon\\memory\\agent_33e1fa85\\sessions\\ch_ablation_pm_d7b__sess_d7b.summary.md",
+          "contentLen": 411,
+          "pass": true
+        }
+      ],
+      "attempts": 2,
+      "successCount": 2,
+      "failCount": 0,
+      "passRate": "2/2"
+    },
+    "D8": {
+      "name": "persona_memory_e2e",
+      "submodules": [
+        {
+          "c": "D8-A",
+          "desc": "persona 真进了 server system prompt (强约束 prompt + 复读关键词)",
+          "channelId": "ch_1783175017497_on07cl",
+          "postStatus": 202,
+          "totalMs": 19298,
+          "tokenLen": 400,
+          "aiLen": 0,
+          "toolSeen": true,
+          "totalTextLen": 400,
+          "totalTextPreview": "<think>The user is asking me to reply with one word: \"你好\" (Hello). This is a simple greeting. I need<think>The user is asking me to answer with one word: \"你好\" (Hello). This is a simple greeting. I sho",
+          "pass": true
+        },
+        {
+          "c": "D8-B",
+          "desc": "memory summary 写到磁盘 (直调 compressSessionToMemory)",
+          "out": "SKIPPED=undefined\nBYTES=428\nPATH=C:\\Users\\Mechrevo\\.bolloon\\memory\\agent_33e1fa85\\sessions\\ch_ablation_pm_d8b__sess_d8b.summary.md",
+          "summaryPath": "C:\\Users\\Mechrevo\\.bolloon\\memory\\agent_33e1fa85\\sessions\\ch_ablation_pm_d8b__sess_d8b.summary.md",
+          "contentLen": 332,
+          "hasSummary": true,
+          "pass": true
+        },
+        {
+          "c": "D8-C",
+          "desc": "server 重启后冷启动加载 persona (纯 GET, 不依赖 LLM)",
+          "healthOk": true,
+          "version": "0.2.7",
+          "out": "[HumanValueStore] Initialized at C:\\Users\\Mechrevo\\.bolloon\\human-values\nSYS_ADD_LEN=4560\nHAS_PERSONA=true\nHAS_DID=true",
+          "pass": true
+        }
+      ],
+      "attempts": 3,
+      "successCount": 3,
+      "failCount": 0,
+      "passRate": "3/3"
+    }
+  }
+}

@@ -22,6 +22,8 @@ compiled_from: [ablation-v0.2.7, ablation-results-v0.2.7, ablation-runner]
 | **代码产物** | `dist/` | ❌ gitignore | `npm run build:web` 输出, web server 实际服务 |
 | **本机配置** | `~/.bolloon/*.json` | ❌ 不进 git | channels.json / known_peers.json / sessions/ |
 | **LLM 私钥** | `~/.bolloon/llm-config.json` | ❌ 不进 git | provider API key 配置 |
+| **persona 文档** (2026-07-04) | `~/.bolloon/persona/<agentId>/*.md` | ❌ 不进 git | 6 md (soul/identity/project/user/agent/wiki), 按 agentId 分类 |
+| **memory 摘要** (2026-07-04) | `~/.bolloon/memory/<agentId>/sessions/*.summary.md` + `*.cursor` | ❌ 不进 git | LLM 摘要 + cursor 推进, 跨 session 累积 |
 
 ## Raw 来源清单 (manifest 已注册 3 条)
 

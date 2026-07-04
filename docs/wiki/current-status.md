@@ -22,6 +22,8 @@ compiled_from: [ablation-v0.2.7]
 | 工具调用循环 | `src/agents/pi-sdk.ts` + `src/agents/react-loop.ts` + SSE | ablation C2 跑 3 次独立, 3/3 都有 `toolSeen=true` + 300+ 字符 tokenText, 事件链完整 (`stream:thinking → status:tool → stream:token → ai → done`) |
 | **长任务循环** (2026-07-04) | `src/agents/pi-sdk.ts` + `scripts/ablation/run-long-loop.ts` | **ablation-v0.2.8-long-loop**: 10/13 pass, 6 步循环 (探索→调整→验证→行动存档→记忆→再次探索) 验证; D1 4/5 多轮对话, D2 3/3 多 tool 调用 (D2.1 触发 9 业务 tool), D3 1/3 use_skill e2e (D3.1 真实加载 "技能写作"), D4 142 条 messages 持久化 |
 | **项目特定 skill** (2026-07-04) | `.bolloon/skills/消融实验技能/` + `.bolloon/skills/技能写作/` | 已从 opencode 复制 2 个 skill 到项目级, `loadSkillsFromPaths` 输出 COUNT=2; bolloon agent 通过 `use_skill` 工具端到端调用 |
+| **persona 文档体系** (2026-07-04) | `src/bootstrap/persona-loader.ts` + `~/.bolloon/persona/<agentId>/*.md` | **ablation-v0.2.9-persona-memory**: 8/8 pass, 6 md 文件按 agentId 分类 (soul/identity/project/user/agent/wiki), onSessionStart 加载到 system prompt (systemAddition 4560 字符), agentId 透传 server.ts:1188 → createAgentSession → currentAgentId |
+| **memory 压缩写入** (2026-07-04) | `src/bootstrap/memory-compressor.ts` + `~/.bolloon/memory/<agentId>/sessions/` | 每次 /message saveSession 之后调 compressSessionToMemory, ≥ 4 新 messages 触发 LLM 摘要, 写 summary.md + cursor 推进; 失败 fallback 模板 |
 | P2P 核心 | `src/network/p2p-direct.ts` + `src/web/server.ts` 100+ API | ablation pass: 2 peer 持久化, remote-channels 缓存 2 peer/8 channel, fake peer → 显式 4xx |
 | Web UI | `src/web/client.ts` → `dist/web/client.js` (iife) | npm run build:web 跑通, `/client.js` 返回 166KB |
 | LLM 多 provider | `src/llm/pi-ai.ts` + `src/llm/llm-judgment-client.ts` | minimax / openai / anthropic / openrouter 都配置项 |
