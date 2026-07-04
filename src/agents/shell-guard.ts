@@ -13,7 +13,7 @@
  *   "commandAllowlist": ["git", "npm", "tsc", "vitest", "cat", "ls", "..."],
  *   "commandDenylist": ["rm", "mv", "chmod", "sudo", "su", "curl", "wget"],
  *   "pathAllowlist": [
- *     "src/web/client.js",
+ *     "src/web/client.ts",
  *     "src/agents/workflow-engine.ts",
  *     "*.md",
  *     "docs/**"
@@ -61,7 +61,7 @@ const FALLBACK_COMMAND_ALLOWLIST: ReadonlySet<string> = new Set([
 
 const FALLBACK_PATH_ALLOWLIST: readonly string[] = [
   // 自由区: AI 可以改
-  'src/web/client.js',
+  'src/web/client.ts',
   'src/web/style.css',
   'src/agents/workflow-engine.ts',
   'src/agents/workflow-pivot-loop.ts',

@@ -33,7 +33,7 @@
 | `src/context-compaction/` | **本轮新增** — 5 层上下文压缩流水线 (Budget Reduction / Snip / Microcompact / Context Collapse / Auto-Compact) |
 | `src/bootstrap/context-hierarchy.ts` | **本轮新增** — Bolloon.md 4 级层次 (Managed / User / Project / Local) |
 | `src/web/server.ts` | Web server 主入口 (port 54188), 所有 REST API |
-| `src/web/client.js` | 前端 (timeline panel, 反向引用链接, 自适应 tab) |
+| `src/web/client.ts` | 前端 (timeline panel, 反向引用链接, 自适应 tab) |
 | `src/network/` | P2P 网络层 (iroh-bootstrap, p2p-direct) |
 | `src/constraint-runtime/` | Workflow / 技能注册 / 会话持久化 |
 | `src/social/` | 全局共享上下文 / 智能体心跳 / 协作任务 |
