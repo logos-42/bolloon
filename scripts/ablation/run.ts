@@ -202,7 +202,8 @@ async function experiment1_documents(): Promise<void> {
       const withMeta: string[] = []; const withoutMeta: string[] = [];
       for (const f of files) {
         const content = await fs.readFile(path.join(layersDir, f), 'utf-8');
-        if (/^---\n[\s\S]*?\n---\n/.test(content)) withMeta.push(f);
+        // 2026-07-04 fix: Windows CRLF. 同时匹配 --- ... --- (允许 CRLF 或 LF)
+        if (/^---\r?\n[\s\S]*?\r?\n---\r?\n/.test(content)) withMeta.push(f);
         else withoutMeta.push(f);
       }
       sample.total = withMeta.length + withoutMeta.length;
@@ -716,7 +717,7 @@ function buildReport(): string {
   lines.push('');
   lines.push('- **C1**: `DocumentReader` 遇到非 PDF 字节时调用 `pdf-parse`, 抛 `Invalid PDF structure` (reader.ts:67-72). 不是空返回, 不是 hang. ✅ 失败模式明确.');
   lines.push('- **C2**: `Bolloon.md` 8197 字节, 15 个 system-prompt layer 全部就位 (identity/knowledge/refusal/tone/role/channel/tool). ✅ 资源齐备.');
-  lines.push('- **C3**: **重要发现** — 11 个 core layer .md 文件**都没有 frontmatter** (`withMeta: 0`), 但 `assembleSystemPrompt` 仍能输出 4743 字符的 system prompt, 耗时 407ms. 这是 `parseFrontmatter` 失败时 `meta=null` 但 body 仍保留的优雅降级 (registry.ts:78-106). ✅ 健康降级生效.');
+  lines.push('- **C3** (2026-07-04 修正): 11 个 core layer .md 文件**全部有 frontmatter** (`withMeta: 11`, `withoutMeta: []`). 早期 ablation 报告 L155 显示 `withMeta: 0` 是 Unix/Windows EOL 误判 (`^---\\n[\\s\\S]*?\\n---\\n` 不匹配 CRLF), 经修后正确识别. `assembleSystemPrompt` 仍能输出 4743 字符 system prompt (407ms) — 同时验证 frontmatter 解析正确 + 系统能装配正常.');
   lines.push('');
   lines.push('### 2. 技能加载');
   lines.push('');

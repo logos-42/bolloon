@@ -13,6 +13,8 @@
 | [sources-and-data.md](./sources-and-data.md) | v2 | 数据分层 + raw 清单 + 隐私脱敏 + 数据流图 |
 | [github-and-raw-strategy.md](./github-and-raw-strategy.md) | v2 | GitHub / 本机 / dist 三层分工 + workflow |
 | [runtime-profile.md](./runtime-profile.md) | v2 meta | 校验脚本 CI/dev-only 矩阵 + ablation runner 状态 |
+| [skills-index.md](./skills-index.md) | v2 meta | 35 个全局 skill 索引 + 触发词映射 |
+| [crystallized-claims.md](./crystallized-claims.md) | v2 claim | 4 条从 ablation 蒸馏的稳定断言 |
 | [log.md](./log.md) | (none) | session-by-session 变更日志 |
 
 ## v2 schema 必填字段 (所有内容页)

@@ -5,6 +5,8 @@
 
 | 日期 | phase | 一句话 | 关联 |
 |------|-------|--------|------|
+| 2026-07-04 | docs | P2: skills-index.md (35 个全局 skill + 触发词) + crystallized-claims.md (4 条断言从 ablation 蒸馏) | [skills-index.md](./skills-index.md) / [crystallized-claims.md](./crystallized-claims.md) |
+| 2026-07-04 | chore | P2: 修 ablation C3 layer frontmatter CRLF/LF 误判 — 实际 11/11 都有 (之前 withMeta=0 是脚本 bug) | commit 包含 |
 | 2026-07-04 | docs | P1: AGENTS.md 合并 skill 默认 + Bolloon 特定工程约定 (§5 路径/验证/checklist/commit 风格/容忍噪音) | commit `206b0cf` |
 | 2026-07-04 | fix | P1: SessionStore escape `:` → `__` 修 Windows 文件名非法 + workflow-pivot 测试加 30s timeout, vitest-bail 711/711 pass, lefthook 不再需 LEFTHOOK=0 | commit `a6113e9` |
 | 2026-07-04 | fix | P0: iroh `discovery.update` 降级 + `/api/iroh/info` nodeId fallback, 消融实验 16/16 pass | [ablation/report.md](../ablation/report.md) |

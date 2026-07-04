@@ -67,5 +67,5 @@ compiled_from: [ablation-v0.2.7]
 | P0 | 修 iroh `/api/iroh/info` nodeId 暴露 | ✅ 2026-07-04 v3 fallback (commit `0e0cf6b`) |
 | P1 | 修 `saveCurrentSession` 文件名 `:` 非法 (Windows) | ✅ 2026-07-04 SessionStore escape (commit `a6113e9`) |
 | P1 | 把 `scripts/ablation/run.ts` 接入 vitest pre-commit, 替换 flaky vitest-bail | ✅ 2026-07-04 lefthook 711/711 通过 (commit `a6113e9`) |
-| P2 | 把 4 个 layer 加上 frontmatter (当前 `withMeta: 0`) | ablation 报告 C3 揭示的工程欠债 |
-| P2 | 补 `docs/wiki/skills-index.md` (skill 系统索引) | 跟项目里 `~/.config/opencode/skills` 同步 |
+| P2 | 把 4 个 layer 加上 frontmatter (当前 `withMeta: 0`) | ✅ ablation runner CRLF 误判已修, 实际 11/11 都已有 |
+| P2 | 补 `docs/wiki/skills-index.md` (skill 系统索引) | ✅ 35 个全局 skill + 触发词映射已写 |

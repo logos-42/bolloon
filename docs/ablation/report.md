@@ -1,6 +1,6 @@
 # Bolloon 核心功能消融实验报告 (v0.2.7)
 
-> 生成时间: 2026-07-04T04:38:18.907Z
+> 生成时间: 2026-07-04T05:02:43.992Z
 > 实验 runner: scripts/ablation/run.ts
 > 服务端口: 54188 (web: dist/web + esbuild 编译 client.ts)
 > 节点: Windows 11, Node v24.15.0, LLM provider: minimax (MiniMax-M2.7)
@@ -66,12 +66,12 @@ CAUGHT:Invalid PDF structure
 
 ##### ✅ [C3] 缺 frontmatter 的 layer 仍能装配 (健康降级)
 - total: 11
-- withMeta: 0
-- withoutMeta: ["artifacts_storage.md","evenhandedness.md","hibs_reminders.md","identity.md","knowledge.md","memory_system.md","network_filesystem.md","refusal.md","tone.md","tools.thin.md","wellbeing.md"]
+- withMeta: 11
+- withoutMeta: []
 - note: parseFrontmatter 失败 → meta=null 但 body 保留 (registry.ts:78-106)
 - compileOut: [HumanValueStore] Initialized at C:\Users\Mechrevo\.bolloon\human-values
 CHARS=4743
-TIME=889
+TIME=371
 HAS_BODY=true
 - compileErr: 
 - compiledChars: 4743
@@ -104,20 +104,20 @@ NAMES=ablation-test
 - 备注: using channel ch_1781023275768_3aasyj (智能体)
 
 ##### ✅ [C1] 极简 prompt → 直接回答, 无 tool
-- duration_ms: 53
+- duration_ms: 87
 - status: 202
 - asyncAck: true
 - ok: true
 
 ##### ✅ [C2] 搜索 prompt × 3 次独立运行 (假阳性检查, 监听 SSE)
-- subs: [{"duration_ms":14623,"postStatus":202,"asyncOk":true,"messages":1,"toolSeen":true,"aiTextLen":0,"tokenTextLen":400,"totalTextLen":400,"eventTypes":"user,queue_update,stream:thinking,workflow_step,phase,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,status,workflow_step,status,workflow_step","textPreview":"<think>The user is asking me to
+- subs: [{"duration_ms":12611,"postStatus":202,"asyncOk":true,"messages":1,"toolSeen":true,"aiTextLen":0,"tokenTextLen":493,"totalTextLen":493,"eventTypes":"user,queue_update,stream:thinking,workflow_step,phase,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,status,workflow_step,status,workflow_step","textPreview":"<think>The user is asking me to
 - toolLoopVisible: 3/3
 - toolCallCorrect: 3/3
 - successRate: 3/3
 - answerRate: 3/3
 
 ##### ✅ [C3] 异常 prompt (无意义字符串) → 不崩, 显式错误或回答
-- duration_ms: 13
+- duration_ms: 12
 - status: 202
 - asyncAck: true
 
@@ -159,7 +159,7 @@ NAMES=ablation-test
 
 - **C1**: `DocumentReader` 遇到非 PDF 字节时调用 `pdf-parse`, 抛 `Invalid PDF structure` (reader.ts:67-72). 不是空返回, 不是 hang. ✅ 失败模式明确.
 - **C2**: `Bolloon.md` 8197 字节, 15 个 system-prompt layer 全部就位 (identity/knowledge/refusal/tone/role/channel/tool). ✅ 资源齐备.
-- **C3**: **重要发现** — 11 个 core layer .md 文件**都没有 frontmatter** (`withMeta: 0`), 但 `assembleSystemPrompt` 仍能输出 4743 字符的 system prompt, 耗时 407ms. 这是 `parseFrontmatter` 失败时 `meta=null` 但 body 仍保留的优雅降级 (registry.ts:78-106). ✅ 健康降级生效.
+- **C3** (2026-07-04 修正): 11 个 core layer .md 文件**全部有 frontmatter** (`withMeta: 11`, `withoutMeta: []`). 早期 ablation 报告 L155 显示 `withMeta: 0` 是 Unix/Windows EOL 误判 (`^---\n[\s\S]*?\n---\n` 不匹配 CRLF), 经修后正确识别. `assembleSystemPrompt` 仍能输出 4743 字符 system prompt (407ms) — 同时验证 frontmatter 解析正确 + 系统能装配正常.
 
 ### 2. 技能加载
 
