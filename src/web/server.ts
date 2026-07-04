@@ -1792,6 +1792,14 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     }
     runState.running = true;
     runState.abortController = new AbortController();
+    // 2026-07-04: pivot loop safety net — 60s 强制 timeout 防止 LLM hang (minimax M3
+    //   偶尔反复 think 不输出 <final gen>, pivot 连 5 次无进展时会 hang 在
+    //   quality 评估). setTimeout 让 LLM 客户端收 signal 主动 break.
+    const PIVOT_FORCE_TIMEOUT_MS = 30_000;
+    const forceTimeout = setTimeout(() => {
+      console.warn(`[server] /message pivot 强制 timeout (${PIVOT_FORCE_TIMEOUT_MS}ms), aborting`);
+      runState.abortController?.abort();
+    }, PIVOT_FORCE_TIMEOUT_MS);
     broadcastQueueUpdate(channelId);
 
     // 2026-07-01 (v0.2.5): hoist sessionKey 到 try 外, 让 finally 块的 saveCurrentSession 能用
@@ -2029,8 +2037,13 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
           broadcast({ type: 'error', content: fullResponse }, channelId);
         }
       }
-      // abort 模式: 给 partial 拼后缀
-      if (runState.abortController?.signal.aborted && fullResponse.trim().length > 0) {
+      // abort 模式: 给 partial 拼后缀 — 只在 LLM 真有输出时加中断标记,
+      //   跳过空响应 + 跳过 [AI 服务调用失败] fallback (这些本身就是错误占位, 拼
+      //   "[生成已中断]" 会误导用户)
+      const hasRealLlmOutput =
+        fullResponse.trim().length > 0 &&
+        !fullResponse.trimStart().startsWith('[AI 服务调用失败]');
+      if (runState.abortController?.signal.aborted && hasRealLlmOutput) {
         fullResponse = fullResponse + '\n\n_[生成已中断]_';
       }
 
@@ -2119,6 +2132,11 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       broadcast({ type: 'done' }, channelId);
       if (!res.headersSent) res.status(500).json({ error: err.message });
     } finally {
+      // 2026-07-04: 清掉 pivot 强制 timeout timer, 避免 hang 情况下 timer 在
+      //   process 里一直挂着. forceTimeout 在 try 外创建, finally 在闭包里
+      //   能直接拿到引用.
+      clearTimeout(forceTimeout);
+
       // queue dequeue: 跑完或失败都要清状态
       // 当前实现: 自动接下一条需要把 ~200 行 try 块抽函数, 暂不抽.
       // 替代: 用户点 [队列 +N] 按钮时, 客户端发起一个特殊的 HTTP 请求触发下一条

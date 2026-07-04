@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Pi-SDK - Agent Session for Document Processing
  * Part of OpenClaw dual-layer architecture
  */
@@ -856,22 +856,17 @@ class PiAgentSession implements AgentSession {
    *   2. ~/.bolloon/skills/         全局用户级
    *   3. <cwd>/.bolloon/skills/     项目级
    *   4. ~/.boll/skills/            全局 (兼容 bollharness 旧用户)
-   *   5. <bolloon-repo>/src/bollharness/.boll/skills/  bolloon 仓库内置 skill
-   *      (bolloon 项目本身用 pi-sdk 写核心, 这 19 个 skill 视为项目级 builtin)
+   *
+   * 2026-07-04: 移除 18 个 bollharness builtin skill (findBolloonBuiltinSkillsPath).
+   *   历史遗留: 写 pi-sdk 时为方便演示, 把 bolloon 项目里的 19 个 skill 强制注入到 system prompt.
+   *   问题: system prompt 涨到 22K chars, LLM (minimax M3) 在 pivot loop 里反复 think 不输出
+   *          `<final gen>`, session 落盘拿不到最终回答.
+   *   现在: 只让用户放 .bolloon/skills/SKILL.md 才生效, 干净且 project-owned.
    *
    * 静默忽略不存在的目录.
    */
   private loadSkills(paths?: string[]): void {
-    let resolved: string[];
-    if (paths && paths.length > 0) {
-      resolved = paths;
-    } else {
-      resolved = [
-        ...defaultSkillPaths(os.homedir(), this.cwd),
-        // bolloon 仓库内置 skill (相对本 npm 包的位置)
-        this.findBolloonBuiltinSkillsPath(),
-      ].filter((p): p is string => Boolean(p));
-    }
+    const resolved = (paths && paths.length > 0) ? paths : defaultSkillPaths(os.homedir(), this.cwd);
     loadSkillsFromPaths(resolved)
       .then((skills) => {
         for (const s of skills) {
@@ -880,34 +875,16 @@ class PiAgentSession implements AgentSession {
           }
           this.skillRegistry.register(s);
         }
-        console.log(`[loadSkills] 已加载 ${skills.length} 个 skill: ${skills.map(describeSkill).join(' | ')}`);
+        console.log(`[loadSkills] 已加载 ${skills.length} 个 skill from ${resolved.join(', ')}`);
+        if (skills.length > 0) {
+          for (const s of skills) {
+            console.log(`  - ${s.name}: ${s.description.substring(0, 100)}${s.description.length > 100 ? '...' : ''}`);
+          }
+        }
       })
       .catch((err) => {
         console.error('[loadSkills] 加载失败:', err);
       });
-  }
-
-  /**
-   * 定位 bolloon 仓库内置的 bollharness skill 目录.
-   * 向上回溯 cwd, 找第一个包含 src/bollharness/.boll/skills 的祖先.
-   * 找不到时返回 null (例如把 bolloon-agent 作为外部依赖安装时).
-   */
-  private findBolloonBuiltinSkillsPath(): string | null {
-    let dir = this.cwd;
-    for (let i = 0; i < 6; i++) {
-      const candidate = path.join(dir, 'src', 'bollharness', '.boll', 'skills');
-      try {
-        if (fsSync.existsSync(candidate) && fsSync.statSync(candidate).isDirectory()) {
-          return candidate;
-        }
-      } catch {
-        // 忽略 stat 异常, 继续向上
-      }
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-    return null;
   }
 
   private async initHarness(): Promise<void> {
@@ -2379,7 +2356,7 @@ ${this.getToolDefinitions()}
     //   promptWithPivotLoop 路径 0 step events — UI 显示 timeline 但永远是空
     // 2026-06-17: 透传 signal 让 abort 工作 — loop.execute() 当前不接 signal 参数,
     //   所以 abort 行为通过 this.currentSignal 共享给 loop 内部读 (后续 M3.2 接 task plan 时一起加)
-    const result = await loop.execute(input, llm, systemPrompt, this.currentOnStream ?? undefined);
+    const result = await loop.execute(input, llm, systemPrompt, this.currentOnStream ?? undefined, this.currentSignal ?? undefined);
 
     this.messageHistory.push({ role: 'user', content: input });
     if (result.response) {

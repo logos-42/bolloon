@@ -195,10 +195,13 @@ async function collectJudgmentsSummary(topN: number): Promise<BolloonContext['ju
   };
 }
 
-async function collectSkills(): Promise<BolloonContext['skills']> {
+async function collectSkills(projectCwd?: string): Promise<BolloonContext['skills']> {
   const home = process.env.HOME || os.homedir() || '/tmp';
   const userSkillsDir = path.join(home, '.bolloon', 'skills');
-  const projectSkillsDir = path.join(process.cwd(), '.bolloon', 'skills');
+  // 2026-07-04: 用 opts.cwd 而不是 process.cwd(), 让 collectBolloonContext({cwd})
+  //   在测试或子进程里能正确隔离项目级 skill 目录 (之前 process.cwd() 会读到
+  //   caller 的 cwd, 测试空目录时泄漏真实项目 skills).
+  const projectSkillsDir = path.join(projectCwd || process.cwd(), '.bolloon', 'skills');
   const out: BolloonContext['skills'] = [];
   const seen = new Set<string>();
   for (const dir of [userSkillsDir, projectSkillsDir]) {
@@ -327,7 +330,7 @@ export async function collectBolloonContext(opts: CollectOptions): Promise<Bollo
     collectProject(cwd, bolloonMdMaxBytes),
     collectGit(cwd, gitCommitLimit),
     collectPersona(),
-    collectSkills(),
+    collectSkills(cwd),
     Promise.resolve(collectEnv()),
     collectPending(opts),
     collectHierarchy(cwd),

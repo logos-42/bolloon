@@ -195,11 +195,12 @@ export class WorkflowPivotLoop {
     input: string,
     llm: LLMInterface,
     systemPrompt: string,
-    streamCallback?: StreamCallback
+    streamCallback?: StreamCallback,
+    signal?: AbortSignal
   ): Promise<LoopResult> {
     this.streamCallback = streamCallback;
     this.state = this.createInitialState();
-    console.log(`[pivot] execute: input chars=${input.length}, systemPrompt chars=${systemPrompt.length}`);
+    console.log(`[pivot] execute: input chars=${input.length}, systemPrompt chars=${systemPrompt.length}, signal=${!!signal}`);
     this.messageHistory = [{ role: 'user', content: input }];
     
     // Analyze task complexity and adapt config
@@ -222,16 +223,25 @@ export class WorkflowPivotLoop {
     });
     
     let response = '';
-    
+
     while (this.shouldContinue(effectiveConfig)) {
+      // 2026-07-04: signal abort 让 pivot 提前退出 (防止 LLM hang)
+      if (signal?.aborted) {
+        this.emit({
+          type: 'status',
+          content: `⏹️ pivot loop 被 abort (iter=${this.state.iteration})`,
+          tool: 'loop'
+        });
+        break;
+      }
       this.state.iteration++;
-      
+
       this.emit({
         type: 'status',
         content: `🔄 循环 ${this.state.iteration}/${effectiveConfig.maxIterations}`,
         tool: 'loop'
       });
-      
+
       // Build context for LLM
       const context = this.buildContext();
       const fullPrompt = `${systemPrompt}\n\n${context}`;
@@ -240,7 +250,7 @@ export class WorkflowPivotLoop {
       try {
         // Call LLM
         const t0 = Date.now();
-        const llmResponse = await llm.chat(context, systemPrompt);
+        const llmResponse = await llm.chat(context, systemPrompt, signal);
         const reply = llmResponse.reply.trim();
         console.log(`[pivot] iter=${this.state.iteration} LLM took=${Date.now()-t0}ms reply=${reply.length} head=${reply.substring(0, 80).replace(/\n/g,' ')}`);
 
@@ -785,7 +795,8 @@ export class WorkflowPivotLoop {
  * Interface for LLM chat capability
  */
 export interface LLMInterface {
-  chat(context: string, systemPrompt: string): Promise<{ reply: string; tokens?: number }>;
+  // 2026-07-04: 加 signal 让 pivot loop 支持 abort (防止 LLM hang)
+  chat(context: string, systemPrompt: string, signal?: AbortSignal): Promise<{ reply: string; tokens?: number }>;
 }
 
 /**
