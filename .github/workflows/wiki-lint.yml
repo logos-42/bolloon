@@ -1,0 +1,20 @@
+name: Wiki Lint
+on: [push, pull_request]
+jobs:
+  ci-safe-checks:
+    # Only the checks that don't depend on raw files (raw files are kept
+    # outside Git per the wiki-first paradigm). For dev-only checks
+    # (provenance, stale, delta_compile, ingest), see docs/wiki/runtime-profile.md.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wiki structure
+        run: python3 scripts/wiki_check.py
+      - name: Raw manifest schema + integrity
+        run: python3 scripts/raw_manifest_check.py
+      - name: Untracked raw files
+        run: python3 scripts/untracked_raw_check.py
+      - name: Wiki size + RAG threshold
+        run: python3 scripts/wiki_size_report.py
+      - name: Provenance (structural only)
+        run: python3 scripts/provenance_check.py --ci

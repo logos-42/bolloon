@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "columns": [
+    "source_id",
+    "company",
+    "vendor",
+    "kind",
+    "filename",
+    "raw_rel_path",
+    "status",
+    "compiled_into",
+    "notes",
+    "content_hash",
+    "size_bytes",
+    "ingested_at",
+    "compiled_at",
+    "last_validated_at",
+    "confidence",
+    "supersedes",
+    "lifecycle_stage",
+    "crystallized_into"
+  ],
+  "allowed_status": ["new", "compiled", "archived"],
+  "allowed_lifecycle_stage": ["draft", "active", "stable", "stale", "archived"],
+  "v2_note": "v2.0.0 schema with content_hash, provenance, and crystallized_into fields. Wiki lint via scripts/wiki_lint.py --strict=v2."
+}

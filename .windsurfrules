@@ -1,0 +1,22 @@
+This project (Bolloon) uses a wiki-first knowledge system.
+
+Before starting any non-trivial task:
+0. Run: python3 scripts/version_check.py (silent if up to date)
+1. Read docs/wiki/index.md for the wiki page list
+2. Read docs/wiki/current-status.md for project state
+3. Read docs/wiki/log.md for recent session history
+
+After completing work:
+- Update docs/wiki/current-status.md with new state
+- Append a log entry to docs/wiki/log.md (date | topic | outcome)
+- If a durable decision was made, write it into the relevant wiki page
+
+Consistency:
+- If current-status.md conflicts with other wiki pages, trust the specific page and fix current-status.md
+- If log.md is missing prior entries, don't guess — only append your own
+- If two wiki pages contradict, flag it to the user before proceeding
+
+Rules:
+- Compile raw documents into wiki pages, don't just reference them
+- Every conclusion goes back into the wiki (writeback is mandatory)
+- Raw files (PDF/XLSX) stay outside Git, only manifests/ indexes go in

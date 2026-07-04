@@ -1,0 +1,150 @@
+{
+  "schema_version": 2,
+  "wiki_root": "D:\\AI\\bolloon\\docs\\wiki",
+  "nodes": [
+    {
+      "id": "current-status.md",
+      "type": "chapter",
+      "label": "Bolloon 当前状态",
+      "tags": "[status, v0.2.7]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs\\wiki\\current-status.md"
+    },
+    {
+      "id": "github-and-raw-strategy.md",
+      "type": "chapter",
+      "label": "Bolloon GitHub 与 raw 仓分工策略",
+      "tags": "[github, raw-strategy]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs\\wiki\\github-and-raw-strategy.md"
+    },
+    {
+      "id": "index.md",
+      "type": "meta",
+      "label": "index.md",
+      "tags": "",
+      "stage": "",
+      "audience": "",
+      "source_file": "docs\\wiki\\index.md"
+    },
+    {
+      "id": "log.md",
+      "type": "meta",
+      "label": "log.md",
+      "tags": "",
+      "stage": "",
+      "audience": "",
+      "source_file": "docs\\wiki\\log.md"
+    },
+    {
+      "id": "project-overview.md",
+      "type": "chapter",
+      "label": "Bolloon 项目概览",
+      "tags": "[overview, ai-agent, p2p]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs\\wiki\\project-overview.md"
+    },
+    {
+      "id": "README.md",
+      "type": "meta",
+      "label": "README.md",
+      "tags": "",
+      "stage": "",
+      "audience": "",
+      "source_file": "docs\\wiki\\README.md"
+    },
+    {
+      "id": "runtime-profile.md",
+      "type": "meta",
+      "label": "Bolloon 校验脚本运行时配置",
+      "tags": "[meta, ci, validation]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs\\wiki\\runtime-profile.md"
+    },
+    {
+      "id": "SCHEMA.md",
+      "type": "meta",
+      "label": "SCHEMA.md",
+      "tags": "",
+      "stage": "",
+      "audience": "",
+      "source_file": "docs\\wiki\\SCHEMA.md"
+    },
+    {
+      "id": "sources-and-data.md",
+      "type": "chapter",
+      "label": "Bolloon 数据与原始资料",
+      "tags": "[sources, data]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs\\wiki\\sources-and-data.md"
+    }
+  ],
+  "edges": [
+    {
+      "from": "index.md",
+      "to": "README.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "SCHEMA.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "project-overview.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "current-status.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "sources-and-data.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "github-and-raw-strategy.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "runtime-profile.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "log.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "current-status.md",
+      "type": "references"
+    },
+    {
+      "from": "project-overview.md",
+      "to": "current-status.md",
+      "type": "references"
+    }
+  ],
+  "stats": {
+    "node_count": 9,
+    "edge_count": 10,
+    "node_types": {
+      "chapter": 4,
+      "meta": 5
+    },
+    "edge_types": {
+      "references": 10
+    }
+  }
+}

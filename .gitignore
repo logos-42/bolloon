@@ -29,3 +29,12 @@ Dive-into/
 # 但 _state (cursor/seen/lock) 和 _inbox 是本机运行态, 不该 commit.
 .comm/_state/
 .comm/_inbox/
+# wiki system (维基 llm v2.0.0)
+.obsidian/
+raw/
+raw_local/
+raw_vault/
+bolloon_raw/
+# wiki 命令在 v2.5+ 用 scratch 目录
+.wiki-scratch/
+
