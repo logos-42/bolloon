@@ -85,7 +85,8 @@ import { createIrohDelegateTransport } from './iroh-delegate-transport.js';
 import { verifyMessage, isAddress, getAddress } from 'viem';
 // 2026-07-05: peer 目录管理 + manifest 协议
 import * as peerFs from '../network/peer-fs.js';
-import { buildManifestPayload, type AgentManifest, type AgentManifestEntry } from '../agents/agent-manifest-protocol.js';
+import { buildManifestPayload, type AgentManifest, type AgentManifestEntry, type ManifestGroup, type ManifestFunction, type ManifestExportment, type ManifestScience } from '../agents/agent-manifest-protocol.js';
+import { loadLocalResources, writeRemoteResources } from '../network/peer-resource-bridge.js';
 
 // 前端资源路径: 兼容 src 运行 + dist 运行 + npm 全局安装
 // - src 跑 (tsx):   __dirname = .../src/web  →  .../dist/web
@@ -1152,9 +1153,11 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       } catch {}
       const manifest: AgentManifest = {
         ownerName,
+        ownerDescription,
         ownerPublicKey: v3P2PRef?.getPublicKey() || '',
         agents: entries,
         publishedAt: Date.now(),
+        ...(await loadLocalResources()),
       };
       const reply = JSON.stringify({
         v: 3, op: 'agent.manifest.exchange.reply',
@@ -1214,6 +1217,9 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         ownerName: manifest.ownerName,
         ownerDescription,
         agents: manifest.agents as peerFs.PeerAgentEntry[],
+        groups: manifest.groups,
+        functions: manifest.functions,
+        exportments: manifest.exportments,
         updatedAt: new Date().toISOString(),
         manifestTs: manifest.publishedAt,
       };
@@ -1222,9 +1228,11 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       for (const a of manifest.agents) {
         await peerFs.writeAgentDescription(peerKey2, a as peerFs.PeerAgentEntry, ownerDescription);
       }
+      // 2026-07-05: 4 类资源 (groups/function/exportment/science) 也落盘
+      const counts = await writeRemoteResources(peerKey2, manifest);
       // capability-index.md (≤500 字, 进 prompt)
       await peerFs.writeCapabilityIndex(peerKey2, idx);
-      console.log(`[v3-manifest] 收到 ${peerKey2.substring(0,12)}... manifest (${manifest.agents.length} agents, owner=${manifest.ownerName || '?'}) → 落盘`);
+      console.log(`[v3-manifest] 收到 ${peerKey2.substring(0,12)}... manifest (${manifest.agents.length} agents, owner=${manifest.ownerName || '?'}, +g${counts.groups}/f${counts.functions}/e${counts.exportments}/s${counts.sciences}) → 落盘`);
       // 推 SSE 让前端知道"对方能力刷新了"
       broadcast({
         type: 'peer-manifest-updated',
@@ -1244,8 +1252,29 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
     try {
       const agentId = parsed.payload?.agentId;
       if (!agentId) return;
-      // 读本地 persona/<agentId>/agent.md (6 段 persona 之一)
+      // 2026-07-05: 4 类资源 (group/function/exportment/science) 也走同一个 RPC
+      // 识别方式: id 前缀 group:/fn:/game:/exp:  → 读 ~/.bolloon/local-resources/<cat>/<id>.md
       let body = '';
+      const prefixMatch = String(agentId).match(/^(group|fn|game|exp):(.+)$/);
+      if (prefixMatch) {
+        const cat = prefixMatch[1] === 'fn' ? 'functions'
+                  : prefixMatch[1] === 'game' ? 'exportments'
+                  : prefixMatch[1] === 'exp' ? 'sciences'
+                  : 'groups';
+        try {
+          const fsPromises = await import('fs/promises');
+          const safe = String(prefixMatch[2]).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+          const file = path.join(process.env.HOME || '/tmp', '.bolloon', 'local-resources', cat, `${safe}.md`);
+          body = await fsPromises.readFile(file, 'utf-8');
+        } catch { body = ''; }
+        const reply = JSON.stringify({
+          v: 3, op: 'agent.resource.get.reply',
+          payload: { agentId, body: body || '(空)', fromPublicKey: v3P2PRef?.getPublicKey() || '' }
+        });
+        await comm.sendToConnection(conn.id, reply);
+        return;
+      }
+      // 默认: 读本地 persona/<agentId>/agent.md (6 段 persona 之一)
       try {
         const fsPromises = await import('fs/promises');
         const safeId = (agentId as string).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
@@ -1738,6 +1767,9 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                     ownerName: manifest.ownerName,
                     ownerDescription,
                     agents: manifest.agents as peerFs.PeerAgentEntry[],
+                    groups: manifest.groups,
+                    functions: manifest.functions,
+                    exportments: manifest.exportments,
                     updatedAt: new Date().toISOString(),
                     manifestTs: manifest.publishedAt,
                   };
@@ -1745,8 +1777,9 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                   for (const a of manifest.agents) {
                     await peerFs.writeAgentDescription(peerKey2, a as peerFs.PeerAgentEntry, ownerDescription);
                   }
+                  const counts = await writeRemoteResources(peerKey2, manifest);
                   await peerFs.writeCapabilityIndex(peerKey2, idx);
-                  console.log(`[v3-manifest] (P2PDirect) 收到 ${peerKey2.substring(0,12)}... manifest (${manifest.agents.length} agents, owner=${manifest.ownerName || '?'}) → 落盘`);
+                  console.log(`[v3-manifest] (P2PDirect) 收到 ${peerKey2.substring(0,12)}... manifest (${manifest.agents.length} agents, owner=${manifest.ownerName || '?'}, +g${counts.groups}/f${counts.functions}/e${counts.exportments}/s${counts.sciences}) → 落盘`);
                   broadcast({
                     type: 'peer-manifest-updated',
                     fromPublicKey: peerKey2,
@@ -1829,6 +1862,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
               ownerPublicKey: v3P2PRef?.getPublicKey() || '',
               agents: entries,
               publishedAt: Date.now(),
+              ...(await loadLocalResources()),
             };
             const msg = JSON.stringify({
               v: 3, op: 'agent.manifest.exchange.reply',

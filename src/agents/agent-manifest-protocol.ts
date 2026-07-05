@@ -27,11 +27,52 @@ export interface AgentManifestEntry {
   ipnsName?: string;
 }
 
+// 2026-07-05: 扩展 manifest 携带 groups/function/exportment/science 四类资源
+// (peer-fs.ts 已有 reader + 新增 writer; 这些类型跟 PeerIndexFile 对齐, 走同一份落盘)
+
+export interface ManifestGroup {
+  id: string;
+  name: string;
+  description?: string;
+  visibility?: 'public' | 'invite' | 'private';
+  memberCount?: number;
+}
+
+export interface ManifestFunction {
+  capability: string;
+  description?: string;
+  mediaType?: 'video' | 'music' | 'image' | 'text' | 'mixed';
+  endpoint?: string;
+  examples?: string[];
+}
+
+export interface ManifestExportment {
+  name: string;
+  description?: string;
+  genre?: string;
+  minPlayers?: number;
+  maxPlayers?: number;
+}
+
+export interface ManifestScience {
+  id: string;
+  title: string;
+  description?: string;
+  status?: 'planned' | 'running' | 'completed' | 'archived';
+  tags?: string[];
+}
+
 export interface AgentManifest {
   ownerName: string;
   ownerPublicKey: string;
   agents: AgentManifestEntry[];
   publishedAt: number;
+  // v2 字段: 可选, 旧 manifest 不带
+  ownerDescription?: string;
+  groups?: ManifestGroup[];
+  functions?: ManifestFunction[];
+  exportments?: ManifestExportment[];
+  sciences?: ManifestScience[];
 }
 
 // ============== 帧构造 ==============
@@ -78,6 +119,12 @@ const localManifest: AgentManifest = {
 
 export function setLocalManifest(m: Partial<AgentManifest>) {
   Object.assign(localManifest, m, { publishedAt: Date.now() });
+  // 2026-07-05: 显式重置 v2 数组字段 — Partial merge 不会清空未提供的 key,
+  // 但调用者通常期望"整片替换", 所以这里强制对齐 (避免测试间泄漏).
+  if (!('groups' in m)) localManifest.groups = [];
+  if (!('functions' in m)) localManifest.functions = [];
+  if (!('exportments' in m)) localManifest.exportments = [];
+  if (!('sciences' in m)) localManifest.sciences = [];
   return localManifest;
 }
 
@@ -89,6 +136,45 @@ export function addLocalAgent(agent: AgentManifestEntry) {
   const idx = localManifest.agents.findIndex((a) => a.id === agent.id);
   if (idx >= 0) localManifest.agents[idx] = agent;
   else localManifest.agents.push(agent);
+  localManifest.publishedAt = Date.now();
+  return localManifest;
+}
+
+// ============== 2026-07-05: 4 类资源 setter (groups/function/exportment/science) ==============
+// 默认 localManifest 不带这些字段; 一旦调用就 patch 进去. 不强制覆盖旧值.
+
+export function addLocalGroup(g: ManifestGroup): AgentManifest {
+  localManifest.groups = localManifest.groups || [];
+  const idx = localManifest.groups.findIndex((x) => x.id === g.id);
+  if (idx >= 0) localManifest.groups[idx] = { ...localManifest.groups[idx], ...g };
+  else localManifest.groups.push(g);
+  localManifest.publishedAt = Date.now();
+  return localManifest;
+}
+
+export function addLocalFunction(f: ManifestFunction): AgentManifest {
+  localManifest.functions = localManifest.functions || [];
+  const idx = localManifest.functions.findIndex((x) => x.capability === f.capability);
+  if (idx >= 0) localManifest.functions[idx] = { ...localManifest.functions[idx], ...f };
+  else localManifest.functions.push(f);
+  localManifest.publishedAt = Date.now();
+  return localManifest;
+}
+
+export function addLocalExportment(e: ManifestExportment): AgentManifest {
+  localManifest.exportments = localManifest.exportments || [];
+  const idx = localManifest.exportments.findIndex((x) => x.name === e.name);
+  if (idx >= 0) localManifest.exportments[idx] = { ...localManifest.exportments[idx], ...e };
+  else localManifest.exportments.push(e);
+  localManifest.publishedAt = Date.now();
+  return localManifest;
+}
+
+export function addLocalScience(s: ManifestScience): AgentManifest {
+  localManifest.sciences = localManifest.sciences || [];
+  const idx = localManifest.sciences.findIndex((x) => x.id === s.id);
+  if (idx >= 0) localManifest.sciences[idx] = { ...localManifest.sciences[idx], ...s };
+  else localManifest.sciences.push(s);
   localManifest.publishedAt = Date.now();
   return localManifest;
 }

@@ -19,6 +19,9 @@
 | 2026-07-04 | test | 4 功能消融实验 15/15 pass (documents + skills + tool_loop + p2p) | [ablation/report.md](../ablation/report.md) |
 | 2026-07-04 | refactor | 移除 src/web/client.js (3550 行历史副本), client.ts 成为唯一源 | commit `6859578` |
 | 2026-07-04 | fix | 频道名称渲染加 (未命名) fallback, 修复 sidebar / 顶栏 / mention / wallet 显示 "undefined" | commit `2e9e921` |
+| 2026-07-05 | feature | peer 4 类资源完整化: peer-fs 加 writeGroup/Function/Exportment/Science, agent-manifest-protocol v2 加 groups/functions/exportments/sciences, manifest.exchange 收发都带 4 类并落盘 ~/.bolloon/peers/<pk>/{groups,function,exportment,science}/*.md, agent.resource.get 支持 group:/fn:/game:/exp: 前缀读 ~/.bolloon/local-resources/, vitest 748/748 pass | [current-status.md](./current-status.md) |
+| 2026-07-05 | test | peer-resource-bridge.test.ts (14/14): 4 类 writer round-trip + addLocal* setter + 本地读/远端落 round-trip + safeName 路径安全 | — |
+| 2026-07-05 | docs | 当前 chat-archiver.ts 已有月度压缩归档机制 (peers/<pk>/chat-<YYYY-MM>.md + memory/<agentId>/peers/<pk>/<YYYY-MM>.summary.md), 验证后无需新写, 合并到 current-status | [current-status.md](./current-status.md) |
 
 ## 详细日志
 
@@ -134,3 +137,32 @@
 - `src/web/client.js` 用 `npm run build:web` 重新编译, 让 .ts / .js 同步
 - commit `2e9e921` push 到 master
 - vitest-bail 在本 Windows 环境 flaky (改前改后均 1 failed), 显式 `LEFTHOOK=0` 跳过
+
+### [2026-07-05] feature | peer 4 类资源完整化 (groups/function/exportment/science)
+
+**触发**: user 问能不能给 p2p channel 加 user/agent/group/function/exportment/science 6 类文件夹, 以及聊天记录压缩进 memory.
+
+**调研**: peer-fs.ts 已经预留了全部路径 helpers 和 `listPeerResources` reader, 缺的只是 4 类 writer + manifest 协议 v2 字段 + 收发端落盘逻辑. chat-archiver.ts 也已经有完整月度压缩归档机制 (含 LLM 摘要 + cursor + 模板 fallback), 不需要新写. 主要缺口在 writer 缺失 → 收到的 manifest 没法落盘.
+
+**实施**:
+
+| 改动 | 文件 | 目的 |
+|---|---|---|
+| 4 个 writer + frontmatter 工具 | `src/network/peer-fs.ts` | writeGroup/Function/Exportment/Science 写对应子目录 md |
+| v2 字段 + setter | `src/agents/agent-manifest-protocol.ts` | AgentManifest 加 groups/functions/exportments/sciences + addLocal* setter; setLocalManifest 显式重置 v2 数组 (避免跨测试泄漏) |
+| 本地读 + 远端落桥 | `src/network/peer-resource-bridge.ts` (新) | loadLocalResources 从 ~/.bolloon/local-resources/<cat>/<id>.md 读 frontmatter; writeRemoteResources 把 manifest 4 类落 peerFs |
+| server.ts 三处接入 | `src/web/server.ts` | 两个 manifest.exchange.reply handler 都把 4 类写入 peerFs + 更新 PeerIndexFile; 两个 manifest.exchange sender 都把 loadLocalResources() 合进 manifest; agent.resource.get 加 group:/fn:/game:/exp: 前缀识别 |
+| 测试 | `src/test/peer-resource-bridge.test.ts` (新, 14 测试) | 4 类 writer round-trip + addLocal* setter + 本地读/远端落 round-trip + safeName 路径安全 |
+
+**验证**:
+
+- `npx tsc --noEmit`: 0 错
+- `npx vitest run --bail=1`: **748/748 pass** (原 711 + 新增 14 peer-resource-bridge + 14 memory-compressor 改动未破)
+- `python scripts/wiki_check.py` + `raw_manifest_check.py` + `wiki_lint.py --strict=v2` + `supersede_check.py`: 全 OK
+- ablation v0.2.7 rerun: 14/16 pass (2 失败为 baseline 已存在的 skill C3 + iroh nodeId 环境差异, 与本次改动无关, 已在 AGENTS.md §5.5 列容忍噪音)
+
+**未做**: `npm run build:web` — 改动都在 server 端协议层 + peer-fs/peer-resource-bridge, 前端 client.ts 没碰.
+
+**已知小坑**: `addLocalGroup` 等 setter 不会自动重置 `localManifest.groups` — 第一次 patch 时初始化 `[]`, 后续 push. 测试间隔离靠 `setLocalManifest` 的显式重置 (改完 setLocalManifest).
+
+**惊险**: ablation 跑完后发现工作区被某次 `git pull --ff-only` 重置 (老 stash 自动 pop?), 现已重新应用所有 edit (peer-fs.ts / agent-manifest-protocol.ts / server.ts / log.md), 重新跑 tsc + vitest 验证仍然 748/748 pass. 新文件 (peer-resource-bridge.ts / test) 全程未丢.

@@ -2,14 +2,14 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-07-04
+last_confirmed: 2026-07-05
 schema_version: 2
 audience: self
 stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [status, v0.2.7]
+tags: [status, v0.2.7, v0.2.10-p2p-resources]
 compiled_from: [ablation-v0.2.7]
 ---
 
@@ -28,6 +28,8 @@ compiled_from: [ablation-v0.2.7]
 | Web UI | `src/web/client.ts` → `dist/web/client.js` (iife) | npm run build:web 跑通, `/client.js` 返回 166KB |
 | LLM 多 provider | `src/llm/pi-ai.ts` + `src/llm/llm-judgment-client.ts` | minimax / openai / anthropic / openrouter 都配置项 |
 | iroh P2P transport | `src/network/iroh-transport.ts` | `irohInitialized: true` 但 `nodeId: null` (见下方未支持) |
+| **peer 4 类资源完整化** (2026-07-05) | `src/network/peer-fs.ts` (`writeGroup/Function/Exportment/Science`) + `src/agents/agent-manifest-protocol.ts` (v2 字段 `groups/functions/exportments/sciences`) + `src/network/peer-resource-bridge.ts` (新) | manifest.exchange 收发都带 4 类 + 落盘 `~/.bolloon/peers/<pk>/{groups,function,exportment,science}/*.md`; 本地资源从 `~/.bolloon/local-resources/<cat>/<id>.md` frontmatter 读; `agent.resource.get` 支持 `group:/fn:/game:/exp:` 前缀 |
+| **chat 月度压缩归档** (2026-07-05 确认已存在) | `src/bootstrap/chat-archiver.ts` + `src/network/peer-fs.ts` (`appendChat` 月度滚动) | 每次 /message 后调 `appendChatArchive` 写 `peers/<pk>/chat-<YYYY-MM>.md`; 月底/显式调 `compressMonthlyArchive` 调 LLM 摘要 + 模板 fallback, append 写 `~/.bolloon/memory/<agentId>/peers/<pk>/<YYYY-MM>.summary.md` + cursor 推进 |
 
 ## 未支持 (❌ 或 ⚠️ 部分)
 

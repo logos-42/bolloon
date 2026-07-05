@@ -380,6 +380,138 @@ export async function writeUserPortrait(publicKey: string, markdown: string): Pr
   await atomicWrite(getPeerUserMdPath(publicKey), markdown);
 }
 
+// ============== 单个 group/function/exportment/science writer ==============
+// (peer-fs.ts 之前只有 reader — 现在补齐 4 类资源的 writer, 让 manifest.exchange.reply
+//  能落盘对方的群组/功能/娱乐/实验清单, 跟 agents/*.md 一样被本地 agent 看见.)
+
+function formatFrontmatter(fields: Record<string, unknown>): string {
+  const lines = ['---'];
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined || v === null) continue;
+    if (Array.isArray(v)) {
+      lines.push(`${k}: [${v.map((x) => JSON.stringify(x)).join(', ')}]`);
+    } else if (typeof v === 'string') {
+      lines.push(`${k}: ${JSON.stringify(v)}`);
+    } else {
+      lines.push(`${k}: ${JSON.stringify(v)}`);
+    }
+  }
+  lines.push('---');
+  return lines.join('\n');
+}
+
+function mdBody(title: string, fields: Record<string, unknown>, description?: string, extra?: string[]): string {
+  const parts: string[] = [];
+  parts.push(`# ${title}`);
+  parts.push('');
+  parts.push(formatFrontmatter(fields));
+  parts.push('');
+  if (description) {
+    parts.push(description.trim());
+    parts.push('');
+  }
+  if (extra?.length) {
+    parts.push(...extra);
+    parts.push('');
+  }
+  parts.push(`> 自动写入于 ${new Date().toISOString()} (peer 来源)`);
+  parts.push('');
+  return parts.join('\n');
+}
+
+export interface PeerGroupInput {
+  id: string;
+  name: string;
+  description?: string;
+  memberCount?: number;
+  visibility?: 'public' | 'invite' | 'private';
+}
+
+export async function writeGroup(publicKey: string, g: PeerGroupInput): Promise<void> {
+  const body = mdBody(
+    g.name,
+    {
+      id: g.id,
+      name: g.name,
+      visibility: g.visibility || 'invite',
+      memberCount: g.memberCount,
+    },
+    g.description,
+  );
+  await atomicWrite(getPeerGroupMdPath(publicKey, g.id), body);
+}
+
+export interface PeerFunctionInput {
+  capability: string;
+  description?: string;
+  mediaType?: 'video' | 'music' | 'image' | 'text' | 'mixed';
+  endpoint?: string;
+  examples?: string[];
+}
+
+export async function writeFunction(publicKey: string, f: PeerFunctionInput): Promise<void> {
+  const body = mdBody(
+    f.capability,
+    {
+      capability: f.capability,
+      mediaType: f.mediaType || 'text',
+      endpoint: f.endpoint,
+    },
+    f.description,
+    f.examples?.length ? ['## 示例', '', ...f.examples.map((e) => `- ${e}`)] : undefined,
+  );
+  await atomicWrite(getPeerFunctionMdPath(publicKey, f.capability), body);
+}
+
+export interface PeerExportmentInput {
+  name: string;
+  description?: string;
+  genre?: string;
+  minPlayers?: number;
+  maxPlayers?: number;
+}
+
+export async function writeExportment(publicKey: string, e: PeerExportmentInput): Promise<void> {
+  const body = mdBody(
+    e.name,
+    {
+      name: e.name,
+      genre: e.genre,
+      minPlayers: e.minPlayers,
+      maxPlayers: e.maxPlayers,
+    },
+    e.description,
+  );
+  await atomicWrite(getPeerExportmentMdPath(publicKey, e.name), body);
+}
+
+export interface PeerScienceInput {
+  id: string;
+  title: string;
+  description?: string;
+  status?: 'planned' | 'running' | 'completed' | 'archived';
+  tags?: string[];
+  records?: Array<{ ts: string; note: string }>;
+}
+
+export async function writeScience(publicKey: string, s: PeerScienceInput): Promise<void> {
+  const recordsBlock = s.records?.length
+    ? ['## 记录', '', ...s.records.map((r) => `- **${r.ts}**: ${r.note}`)]
+    : undefined;
+  const body = mdBody(
+    s.title,
+    {
+      id: s.id,
+      title: s.title,
+      status: s.status || 'planned',
+      tags: s.tags,
+    },
+    s.description,
+    recordsBlock,
+  );
+  await atomicWrite(getPeerScienceMdPath(publicKey, s.id), body);
+}
+
 // ============== 通用: 读所有类别目录 (groups/function/exportment/science) ==============
 
 export interface ResourceListing {
