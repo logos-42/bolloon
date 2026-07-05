@@ -438,10 +438,10 @@ async function loadLocalSubAgents(): Promise<any[]> {
     const raw = await fsPromises.readFile(file, 'utf-8');
     const parsed = JSON.parse(raw);
     const arr = Array.isArray(parsed) ? parsed : [];
-    console.log(`[manifest] loadLocalSubAgents → ${arr.length} agents from ${file}`);
+    console.error(`[manifest] loadLocalSubAgents → ${arr.length} agents from ${file}`);  // console.error 绕开 log 抑制
     return arr;
   } catch (e: any) {
-    console.warn('[manifest] loadLocalSubAgents failed:', e?.message?.slice(0, 100));
+    console.error('[manifest] loadLocalSubAgents failed:', e?.message?.slice(0, 100));
     return [];
   }
 }
