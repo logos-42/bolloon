@@ -437,7 +437,9 @@ async function loadLocalSubAgents(): Promise<any[]> {
     const file = path.join(home, '.bolloon', 'agents', 'agents.json');
     const raw = await fsPromises.readFile(file, 'utf-8');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const arr = Array.isArray(parsed) ? parsed : [];
+    console.log(`[manifest] loadLocalSubAgents → ${arr.length} agents from ${file}`);
+    return arr;
   } catch (e: any) {
     console.warn('[manifest] loadLocalSubAgents failed:', e?.message?.slice(0, 100));
     return [];
