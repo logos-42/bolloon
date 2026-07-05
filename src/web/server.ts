@@ -1144,7 +1144,15 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         }
       });
       await comm.sendToConnection(conn.id, reply);
-      console.log(`[v3-manifest] 回 ${peerKey.substring(0,12)}... manifest (${entries.length} agents, owner=${ownerName || '?'})`);
+      // 2026-07-05: P2PDirect.sendToWithWait 双发 (兼容同机 P2PDirect 互不相连场景)
+      if (v3P2PRef && peerKey) {
+        try {
+          const r = await v3P2PRef.sendToWithWait(peerKey, reply, 2000);
+          console.log(`[v3-manifest] 回 ${peerKey.substring(0,12)}... manifest (comm=${await comm.sendToConnection.length}, p2p=${r}, ${entries.length} agents)`);
+        } catch {}
+      } else {
+        console.log(`[v3-manifest] 回 ${peerKey.substring(0,12)}... manifest (${entries.length} agents, owner=${ownerName || '?'})`);
+      }
     } catch (err) {
       console.error('[v3-manifest] 处理 agent.manifest.exchange 失败:', (err as Error).message);
     }
@@ -1674,6 +1682,58 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
               }, 'p2p-global');
               return;
             }
+            // 2026-07-05: v3 P2PDirect 主路径也要独立处理 manifest.exchange.reply — 否则只走老通道就拿不到
+            if (parsed.op === 'agent.manifest.exchange.reply') {
+              const manifest = parsed.payload?.manifest as AgentManifest;
+              if (!manifest || !manifest.ownerPublicKey) {
+                console.warn('[v3-manifest] manifest.exchange.reply 缺 manifest/ownerPublicKey');
+                return;
+              }
+              const peerKey2 = manifest.ownerPublicKey;
+              // 异步落盘, 不阻塞 data handler
+              (async () => {
+                try {
+                  const existing = await peerFs.readPeerIndex(peerKey2);
+                  if (existing?.manifestTs && existing.manifestTs >= manifest.publishedAt && parsed.payload?.since) {
+                    console.log(`[v3-manifest] ${peerKey2.substring(0,12)}... manifest 已是最新, 跳过`);
+                    return;
+                  }
+                  await peerFs.upsertPeer({
+                    publicKey: peerKey2,
+                    name: manifest.ownerName,
+                    lastSeenAt: new Date().toISOString(),
+                    lastManifestTs: manifest.publishedAt,
+                  });
+                  const ownerDescription = (manifest as any).ownerDescription || '';
+                  const idx: peerFs.PeerIndexFile = {
+                    version: 1,
+                    publicKey: peerKey2,
+                    ownerName: manifest.ownerName,
+                    ownerDescription,
+                    agents: manifest.agents as peerFs.PeerAgentEntry[],
+                    updatedAt: new Date().toISOString(),
+                    manifestTs: manifest.publishedAt,
+                  };
+                  await peerFs.writePeerIndex(peerKey2, idx);
+                  for (const a of manifest.agents) {
+                    await peerFs.writeAgentDescription(peerKey2, a as peerFs.PeerAgentEntry, ownerDescription);
+                  }
+                  await peerFs.writeCapabilityIndex(peerKey2, idx);
+                  console.log(`[v3-manifest] (P2PDirect) 收到 ${peerKey2.substring(0,12)}... manifest (${manifest.agents.length} agents, owner=${manifest.ownerName || '?'}) → 落盘`);
+                  broadcast({
+                    type: 'peer-manifest-updated',
+                    fromPublicKey: peerKey2,
+                    ownerName: manifest.ownerName,
+                    agentCount: manifest.agents.length,
+                    capabilityIndex: await peerFs.readCapabilityIndex(peerKey2),
+                  }, 'p2p-global');
+                } catch (err) {
+                  console.error('[v3-manifest] (P2PDirect) manifest.exchange.reply 失败:', (err as Error).message);
+                }
+              })();
+              return;
+            }
+
             // 2026-06-10: 收到对方请求本机的 channel 列表 (启动时主动发请求, 加速 cache 填充)
             if (parsed.op === 'agent.meta.list.request') {
               console.log(`[v3-meta] 收到 ${evt.fromPublicKey.substring(0,12)}... 的 channel 列表请求 → 立刻回包`);
@@ -1714,6 +1774,42 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
             console.error('[v3] 新连接发 list.reply 失败:', (err as Error).message);
           }
         }, 500);
+
+        // 2026-07-05: 新连接到来立刻推自己的 manifest — 让对方秒知道我有哪些 agent
+        setTimeout(async () => {
+          try {
+            const { getSubAgentManager } = await import('../agents/subagent-manager.js');
+            const localAgents = await getSubAgentManager().getAllAgents();
+            const entries: AgentManifestEntry[] = localAgents.map((a: any) => ({
+              id: a.id, name: a.name,
+              capabilities: a.capabilities || [],
+              status: a.status || 'active',
+              peerId: a.peerId, irohNodeId: a.irohNodeId,
+              sessionId: a.sessionId, cid: a.cid, ipnsName: a.ipnsName,
+            }));
+            let ownerName = '';
+            try {
+              const fsPromises = await import('fs/promises');
+              const p = (process.env.HOME || '/tmp') + '/.bolloon/persona.json';
+              const raw = await fsPromises.readFile(p, 'utf-8');
+              ownerName = JSON.parse(raw).name || '';
+            } catch {}
+            const manifest: AgentManifest = {
+              ownerName,
+              ownerPublicKey: v3P2PRef?.getPublicKey() || '',
+              agents: entries,
+              publishedAt: Date.now(),
+            };
+            const msg = JSON.stringify({
+              v: 3, op: 'agent.manifest.exchange.reply',
+              payload: { manifest, since: 0 }
+            });
+            const r = await v3P2PRef!.sendToWithWait(evt.remotePublicKey, msg, 3000);
+            console.log(`[v3-manifest] 新连接 ${evt.remotePublicKey.substring(0,12)}... → 主动推 manifest (${entries.length} agents, p2p=${r})`);
+          } catch (err) {
+            console.error('[v3-manifest] 新连接推 manifest 失败:', (err as Error).message);
+          }
+        }, 800);
       });
 
       console.log(`[v3] P2PDirect 已启动, role=${v3P2PRef.getRole()}, publicKey=${v3P2PRef.getPublicKey().substring(0,12)}...`);
@@ -1867,6 +1963,18 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         // 旧 p2p_message 路径 (非 v3)
         const content = new TextDecoder().decode(msg.content);
         broadcast({ type: 'p2p_message', from: conn.publicKey.substring(0, 8), content }, undefined);
+
+        // 2026-07-05: 老通道也要走 v3 RPC handler — 兼容同机/跨机 P2PDirect 互不相连的场景
+        //   实测: P2PDirect 用 hyperswarm 4.x, 同机 2 role 互不相连; 但 @diap/sdk 0.1.10 的 HyperswarmCommunicator 能互通
+        //   所以 manifest/exchange/chat.send 都可能从老通道来, 必须进 handleV3P2PMessage
+        try {
+          const parsed = JSON.parse(content);
+          if (parsed && parsed.v === 3 && parsed.op && p2pCommunicator) {
+            await handleV3P2PMessage(parsed, conn, p2pCommunicator);
+          }
+        } catch (err) {
+          // 非 v3 JSON 帧 (老 p2p_message), 静默忽略
+        }
       });
       await p2pCommunicator.start();
       // @diap/sdk 也 join topic — 它的 Hyperswarm 实例帮 P2PDirect 做 DHT 引导
