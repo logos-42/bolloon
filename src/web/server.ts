@@ -426,6 +426,24 @@ let remoteChannelCache: Map<string, Array<Record<string, unknown>>> = new Map();
 //   用于 manifest-loader 加载对方能力后, 仅影响本次对话, 不污染主 prompt
 const nextPromptHints: Map<string, string> = new Map();
 
+// 2026-07-05: 直接读 ~/.bolloon/agents/agents.json, 跳过 subagent-manager 的 lazy init
+//   原因: getSubAgentManager().getAllAgents() 只在 SubAgentManager.initialize() 后才加载,
+//   但没人调 initialize(), 永远返回 []. 这里用 raw 文件 IO 直接拿数据.
+async function loadLocalSubAgents(): Promise<any[]> {
+  try {
+    const fsPromises = await import('fs/promises');
+    const path = await import('path');
+    const home = process.env.BOLLOON_HOME || process.env.HOME || '/tmp';
+    const file = path.join(home, '.bolloon', 'agents', 'agents.json');
+    const raw = await fsPromises.readFile(file, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e: any) {
+    console.warn('[manifest] loadLocalSubAgents failed:', e?.message?.slice(0, 100));
+    return [];
+  }
+}
+
 // 2026-06-10: 持久化 remote channel cache 到 ~/.bolloon/remote-channels-cache.json
 // 之前是纯内存 Map, nodeA 重启后所有对端 channel 列表丢失, 需要等对面再推一次
 const REMOTE_CACHE_FILE = `${process.env.HOME || '/tmp'}/.bolloon/remote-channels-cache.json`;
@@ -1104,8 +1122,8 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
   // 我们回: agent.manifest.exchange.reply, 含本地 SubAgent + persona 描述
   if (op === 'agent.manifest.exchange') {
     try {
-      const { getSubAgentManager } = await import('../agents/subagent-manager.js');
-      const localAgents = await getSubAgentManager().getAllAgents();
+      // 直接读 agents.json, 跳过 subagent-manager 的 lazy initialize
+      const localAgents = await loadLocalSubAgents();
       // 转成 AgentManifestEntry
       const entries: AgentManifestEntry[] = localAgents.map((a: any) => ({
         id: a.id,
@@ -1230,8 +1248,7 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       } catch { body = ''; }
       // fallback: 用 subagent-manager 的 description
       if (!body) {
-        const { getSubAgentManager } = await import('../agents/subagent-manager.js');
-        const all = await getSubAgentManager().getAllAgents();
+        const all = await loadLocalSubAgents();
         const a = all.find((x: any) => x.id === agentId);
         if (a?.persona?.description) body = a.persona.description;
       }
@@ -1778,8 +1795,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         // 2026-07-05: 新连接到来立刻推自己的 manifest — 让对方秒知道我有哪些 agent
         setTimeout(async () => {
           try {
-            const { getSubAgentManager } = await import('../agents/subagent-manager.js');
-            const localAgents = await getSubAgentManager().getAllAgents();
+            const localAgents = await loadLocalSubAgents();
             const entries: AgentManifestEntry[] = localAgents.map((a: any) => ({
               id: a.id, name: a.name,
               capabilities: a.capabilities || [],
