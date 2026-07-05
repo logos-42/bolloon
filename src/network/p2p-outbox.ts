@@ -144,21 +144,36 @@ export async function queueOnly(publicKey: string, op: string, payload: any): Pr
 
 /**
  * 查 outbox 状态
+ * 直接扫 ~/.bolloon/peers/ 子目录, 看每个目录里 outbox.jsonl 是否有内容 (不依赖 peer.json)
  */
 export async function outboxStats(): Promise<{
   totalPeers: number;
   totalQueued: number;
   byPeer: Array<{ publicKey: string; count: number }>;
 }> {
-  const all = await peerFs.listPeersFromDisk();
+  const fsPromises = await import('fs/promises');
+  const path = await import('path');
   const byPeer: Array<{ publicKey: string; count: number }> = [];
   let totalQueued = 0;
-  for (const peer of all) {
-    const cnt = await peerFs.countOutbox(peer.publicKey);
-    if (cnt > 0) {
-      byPeer.push({ publicKey: peer.publicKey, count: cnt });
-      totalQueued += cnt;
+  try {
+    const entries = await fsPromises.readdir(peerFs._debug.PEERS_ROOT);
+    for (const e of entries) {
+      const outboxFile = path.join(peerFs._debug.PEERS_ROOT, e, 'outbox.jsonl');
+      try {
+        const raw = await fsPromises.readFile(outboxFile, 'utf-8');
+        const cnt = raw.split('\n').filter(Boolean).length;
+        if (cnt > 0) {
+          // 从目录名反推 publicKey (peerDirName 是 hash__prefix)
+          const prefix = e.split('__').slice(1).join('__') || e;
+          byPeer.push({ publicKey: prefix, count: cnt });
+          totalQueued += cnt;
+        }
+      } catch {
+        // 没 outbox.jsonl → 跳过
+      }
     }
+  } catch {
+    // PEERS_ROOT 不存在 → 空
   }
   return { totalPeers: byPeer.length, totalQueued, byPeer };
 }

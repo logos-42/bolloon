@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/claude-code-ai/claude-code/main/.lsp.schema.json",
+  "servers": {
+    "typescript": {
+      "command": "/Users/apple/.npm-global/bin/typescript-language-server",
+      "args": ["--stdio"],
+      "rootPatterns": ["tsconfig.json", "package.json"],
+      "filePatterns": ["**/*.ts", "**/*.tsx"],
+      "disabled": false,
+      "env": {
+        "NODE_ENV": "development",
+        "TSLSP_TELEMETRY_DISABLED": "1"
+      }
+    }
+  }
+}

@@ -337,7 +337,7 @@ export async function listPeerSummaries(agentId: string, publicKey: string): Pro
     return entries
       .filter(e => /^\d{4}-\d{2}\.summary\.md$/.test(e))
       .map(e => ({
-        yearMonth: e.replace(/^\d{4}-\d{2}\./, '').replace(/\.summary\.md$/, ''),
+        yearMonth: e.replace(/\.summary\.md$/, ''),
         path: path.join(dir, e),
         size: fsSync.statSync(path.join(dir, e)).size,
       }))
