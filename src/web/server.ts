@@ -83,6 +83,9 @@ import { irohTransport } from '../network/iroh-transport.js';
 import { createAgentDelegateApp } from './agent-delegate-server.js';
 import { createIrohDelegateTransport } from './iroh-delegate-transport.js';
 import { verifyMessage, isAddress, getAddress } from 'viem';
+// 2026-07-05: peer 目录管理 + manifest 协议
+import * as peerFs from '../network/peer-fs.js';
+import { buildManifestPayload, type AgentManifest, type AgentManifestEntry } from '../agents/agent-manifest-protocol.js';
 
 // 前端资源路径: 兼容 src 运行 + dist 运行 + npm 全局安装
 // - src 跑 (tsx):   __dirname = .../src/web  →  .../dist/web
@@ -419,6 +422,10 @@ let sseClients: Set<SSEClient> = new Set();
 // in-memory only, 进程重启清空 (judgment 内容永远不在这里)
 let remoteChannelCache: Map<string, Array<Record<string, unknown>>> = new Map();
 
+// 2026-07-05: 一次性 prompt 附加块 — key: channelId, value: 下一次 LLM prompt 时 prepend 的内容
+//   用于 manifest-loader 加载对方能力后, 仅影响本次对话, 不污染主 prompt
+const nextPromptHints: Map<string, string> = new Map();
+
 // 2026-06-10: 持久化 remote channel cache 到 ~/.bolloon/remote-channels-cache.json
 // 之前是纯内存 Map, nodeA 重启后所有对端 channel 列表丢失, 需要等对面再推一次
 const REMOTE_CACHE_FILE = `${process.env.HOME || '/tmp'}/.bolloon/remote-channels-cache.json`;
@@ -597,21 +604,23 @@ async function routeMentionsInReply(
         continue;
       }
       try {
-        const rpc = JSON.stringify({
-          v: 3, op: 'agent.cross.post',
-          payload: {
-            targetChannelId: remoteTarget.id,
-            targetChannelName: remoteTarget.name,
-            originChannelId,
-            originChannelName,
-            text,
-            fromPublicKey: v3P2PRef.getPublicKey()
-          }
-        });
-        const ok = v3P2PRef.sendTo(ownerPk, rpc);
-        if (ok) {
+        const rpcPayload = {
+          targetChannelId: remoteTarget.id,
+          targetChannelName: remoteTarget.name,
+          originChannelId,
+          originChannelName,
+          text,
+          fromPublicKey: v3P2PRef.getPublicKey()
+        };
+        // 2026-07-05: 用 outbox.sendOrQueue 兜底 — 对方不在线时自动入队, 上线后批量重发
+        const { sendOrQueue } = await import('../network/p2p-outbox.js');
+        const r = await sendOrQueue(ownerPk, 'agent.cross.post', rpcPayload, v3P2PRef);
+        if (r === 'SENT') {
           console.log(`[v3-cross] (${originChannelName}) @${targetName} → 远端 peer ${ownerPk.substring(0,12)}... (channelId=${remoteTarget.id})`);
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'sent' });
+        } else if (r === 'QUEUED') {
+          console.log(`[v3-cross] (${originChannelName}) @${targetName} → 远端 peer ${ownerPk.substring(0,12)}... 已入队 (对方不在线)`);
+          results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'queued' });
         } else {
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'failed' });
         }
@@ -748,6 +757,28 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         console.warn(`[v3] 存 user 消息失败 (不影响 chat):`, (saveErr as Error).message);
       }
 
+      // 2026-07-05: 同时追加到 sender 的 peer 月度归档 — 让 A 本地的"与 sender 对话历史"也能离线查看
+      try {
+        const { appendChatArchive } = await import('../bootstrap/chat-archiver.js');
+        const chanObj = (await loadChannels()).find(c => c.id === channelId);
+        await appendChatArchive({
+          publicKey: senderKey,
+          entry: {
+            ts: new Date().toISOString(),
+            source: 'remote',
+            channelId, channelName: chanObj?.name,
+            text,
+            fromPublicKey: senderKey,
+            msgType: 'user',
+          }
+        });
+        // 顺手把 sender 加入 known peers (如果没有)
+        const { addOrUpdatePeer } = await import('../network/known-peers.js');
+        await addOrUpdatePeer(undefined, senderKey);
+      } catch (archiveErr: any) {
+        console.warn('[chat-archive] remote user 归档失败 (non-fatal):', archiveErr?.message?.slice(0, 200));
+      }
+
       // v3 修复: 同步给 A 自己的 UI — broadcast SSE 事件让 A 的 owner 实时看到 B 的消息
       broadcast({
         type: 'user',
@@ -847,6 +878,25 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         console.log(`[v3] (${channelId}) 存 assistant 回复 (${fullResponse.length} chars) 到 A 的 session`);
       } catch (saveErr) {
         console.warn(`[v3] 存 assistant 消息失败 (不影响):`, (saveErr as Error).message);
+      }
+
+      // 2026-07-05: A 的 assistant 回复也归档到 sender 的月度 — 这样 sender 本地也有一份"与 A 的对话"
+      try {
+        const { appendChatArchive } = await import('../bootstrap/chat-archiver.js');
+        const chanObj = (await loadChannels()).find(c => c.id === channelId);
+        await appendChatArchive({
+          publicKey: senderKey,
+          entry: {
+            ts: new Date().toISOString(),
+            source: 'ai-mention-remote',
+            channelId, channelName: chanObj?.name,
+            text: `[${v3P2PRef?.getPublicKey()?.slice(0, 12)}…] ${fullResponse.slice(0, 1500)}`,
+            fromPublicKey: v3P2PRef?.getPublicKey(),
+            msgType: 'ai',
+          }
+        });
+      } catch (archiveErr: any) {
+        console.warn('[chat-archive] remote ai 归档失败 (non-fatal):', archiveErr?.message?.slice(0, 200));
       }
 
       // v3 修复: 同步给 A 自己的 UI — broadcast AI 回复给 A 的 owner 实时看到
@@ -1015,6 +1065,26 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       session.lastUpdated = new Date().toISOString();
       await saveSession(session);
       console.log(`[v3-cross] 收到远端 @-mention: ${originChannelName} → 本地 ${targetChannelName} (${text.length} chars)`);
+
+      // 2026-07-05: 跨渠道 @-mention 也归档到 fromPublicKey 的月度 — 本节点 owner 看月度历史能还原跨节点对话
+      if (fromPublicKey) {
+        try {
+          const { appendChatArchive } = await import('../bootstrap/chat-archiver.js');
+          await appendChatArchive({
+            publicKey: fromPublicKey,
+            entry: {
+              ts: new Date().toISOString(),
+              source: 'ai-mention-remote',
+              channelId: targetChannelId, channelName: targetChannelName,
+              text: `[跨渠道] from ${originChannelName}: ${text.slice(0, 1500)}`,
+              fromPublicKey,
+              msgType: 'ai',
+            }
+          });
+        } catch (archiveErr: any) {
+          console.warn('[chat-archive] cross.post 归档失败 (non-fatal):', archiveErr?.message?.slice(0, 200));
+        }
+      }
       // 推 SSE 让本地 UI 知道有跨渠道消息到达
       broadcast({
         type: 'cross-mention-received',
@@ -1026,6 +1096,152 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
     } catch (err) {
       console.error(`[v3-cross] 处理 agent.cross.post 失败:`, (err as Error).message);
     }
+    return;
+  }
+
+  // ============== 2026-07-05: agent.manifest.exchange ==============
+  // 对方问: "给我你的 agent 清单 + capabilities"
+  // 我们回: agent.manifest.exchange.reply, 含本地 SubAgent + persona 描述
+  if (op === 'agent.manifest.exchange') {
+    try {
+      const { getSubAgentManager } = await import('../agents/subagent-manager.js');
+      const localAgents = await getSubAgentManager().getAllAgents();
+      // 转成 AgentManifestEntry
+      const entries: AgentManifestEntry[] = localAgents.map((a: any) => ({
+        id: a.id,
+        name: a.name,
+        capabilities: a.capabilities || [],
+        status: a.status || 'active',
+        peerId: a.peerId,
+        irohNodeId: a.irohNodeId,
+        sessionId: a.sessionId,
+        cid: a.cid,
+        ipnsName: a.ipnsName,
+      }));
+      // 读本地 persona 拿 owner 名字 + 简介
+      let ownerName = '';
+      let ownerDescription = '';
+      try {
+        const { readFileSync, existsSync } = await import('fs');
+        const p = path.join(process.env.HOME || '/tmp', '.bolloon', 'persona.json');
+        if (existsSync(p)) {
+          const pj = JSON.parse(readFileSync(p, 'utf-8'));
+          ownerName = pj.name || '';
+          ownerDescription = pj.description || '';
+        }
+      } catch {}
+      const manifest: AgentManifest = {
+        ownerName,
+        ownerPublicKey: v3P2PRef?.getPublicKey() || '',
+        agents: entries,
+        publishedAt: Date.now(),
+      };
+      const reply = JSON.stringify({
+        v: 3, op: 'agent.manifest.exchange.reply',
+        payload: {
+          manifest,
+          since: parsed.payload?.since || 0,
+        }
+      });
+      await comm.sendToConnection(conn.id, reply);
+      console.log(`[v3-manifest] 回 ${peerKey.substring(0,12)}... manifest (${entries.length} agents, owner=${ownerName || '?'})`);
+    } catch (err) {
+      console.error('[v3-manifest] 处理 agent.manifest.exchange 失败:', (err as Error).message);
+    }
+    return;
+  }
+
+  // 对方推 manifest 过来 (我们这边是接收方)
+  if (op === 'agent.manifest.exchange.reply') {
+    try {
+      const manifest = parsed.payload?.manifest as AgentManifest;
+      if (!manifest || !manifest.ownerPublicKey) {
+        console.warn('[v3-manifest] manifest.exchange.reply 缺 manifest/ownerPublicKey');
+        return;
+      }
+      // 增量: 如果 since >= 本地最新 ts, 跳过
+      const peerKey2 = manifest.ownerPublicKey;
+      const existing = await peerFs.readPeerIndex(peerKey2);
+      if (existing?.manifestTs && existing.manifestTs >= manifest.publishedAt && parsed.payload?.since) {
+        console.log(`[v3-manifest] ${peerKey2.substring(0,12)}... manifest 已是最新 (ts=${manifest.publishedAt}), 跳过`);
+        return;
+      }
+      // 写 peer.json + _index.json + 每个 agent 的 md
+      await peerFs.upsertPeer({
+        publicKey: peerKey2,
+        name: manifest.ownerName,
+        lastSeenAt: new Date().toISOString(),
+        lastManifestTs: manifest.publishedAt,
+        manifestCount: (await peerFs.getPeer(peerKey2))?.manifestCount ?? 0 + 1,
+      });
+      // 拼 _index.json
+      const ownerDescription = (manifest as any).ownerDescription || '';
+      const idx: peerFs.PeerIndexFile = {
+        version: 1,
+        publicKey: peerKey2,
+        ownerName: manifest.ownerName,
+        ownerDescription,
+        agents: manifest.agents as peerFs.PeerAgentEntry[],
+        updatedAt: new Date().toISOString(),
+        manifestTs: manifest.publishedAt,
+      };
+      await peerFs.writePeerIndex(peerKey2, idx);
+      // 每个 agent 写一份 markdown
+      for (const a of manifest.agents) {
+        await peerFs.writeAgentDescription(peerKey2, a as peerFs.PeerAgentEntry, ownerDescription);
+      }
+      // capability-index.md (≤500 字, 进 prompt)
+      await peerFs.writeCapabilityIndex(peerKey2, idx);
+      console.log(`[v3-manifest] 收到 ${peerKey2.substring(0,12)}... manifest (${manifest.agents.length} agents, owner=${manifest.ownerName || '?'}) → 落盘`);
+      // 推 SSE 让前端知道"对方能力刷新了"
+      broadcast({
+        type: 'peer-manifest-updated',
+        fromPublicKey: peerKey2,
+        ownerName: manifest.ownerName,
+        agentCount: manifest.agents.length,
+        capabilityIndex: await peerFs.readCapabilityIndex(peerKey2),
+      }, 'p2p-global');
+    } catch (err) {
+      console.error('[v3-manifest] 处理 manifest.exchange.reply 失败:', (err as Error).message);
+    }
+    return;
+  }
+
+  // 对方问: "给我某个 agent 的详细描述" (markdown 全文)
+  if (op === 'agent.resource.get') {
+    try {
+      const agentId = parsed.payload?.agentId;
+      if (!agentId) return;
+      // 读本地 persona/<agentId>/agent.md (6 段 persona 之一)
+      let body = '';
+      try {
+        const fsPromises = await import('fs/promises');
+        const safeId = (agentId as string).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+        const file = path.join(process.env.HOME || '/tmp', '.bolloon', 'persona', safeId, 'agent.md');
+        body = await fsPromises.readFile(file, 'utf-8');
+      } catch { body = ''; }
+      // fallback: 用 subagent-manager 的 description
+      if (!body) {
+        const { getSubAgentManager } = await import('../agents/subagent-manager.js');
+        const all = await getSubAgentManager().getAllAgents();
+        const a = all.find((x: any) => x.id === agentId);
+        if (a?.persona?.description) body = a.persona.description;
+      }
+      const reply = JSON.stringify({
+        v: 3, op: 'agent.resource.get.reply',
+        payload: { agentId, body: body || '(空)', fromPublicKey: v3P2PRef?.getPublicKey() || '' }
+      });
+      await comm.sendToConnection(conn.id, reply);
+    } catch (err) {
+      console.error('[v3-manifest] resource.get 失败:', (err as Error).message);
+    }
+    return;
+  }
+
+  // 对方回某 agent 的详细描述
+  if (op === 'agent.resource.get.reply') {
+    // 由 caller 端通过 rpcId 解析 (这里只 log)
+    console.log(`[v3-manifest] 收到 agent.resource.get.reply (agentId=${parsed.payload?.agentId}, body=${(parsed.payload?.body || '').length} chars)`);
     return;
   }
 
@@ -1527,6 +1743,10 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
           // 2026-06-10: 同时主动请求每个 known peer 把 ta 的 channel 列表推过来
           // 避免对面 publicKey 没变但 cache 丢了(本机重启) → 一直空
           setTimeout(() => requestChannelsFromAllPeers(), 3500);
+          // 2026-07-05: 拉每个 known peer 的 manifest (agent 能力清单)
+          setTimeout(() => requestManifestsFromAllPeers(), 4500);
+          // 2026-07-05: 对方刚连上来, 把本地的 outbox 重发出去
+          setTimeout(() => flushAllOutboxes(), 6000);
         } catch (err) {
           console.error('[v3] 自动重连失败:', (err as Error).message);
         }
@@ -1555,6 +1775,71 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       // 立即跑一次 + 每 30s 兜底 (跟 v3BroadcastOwn 一样的节奏)
       setTimeout(requestChannelsFromAllPeers, 4000);
       setInterval(requestChannelsFromAllPeers, 30000);
+
+      // 2026-07-05 新增: 主动向所有 known peer 发起 manifest 拉取
+      async function requestManifestsFromAllPeers() {
+        if (!v3P2PRef) return;
+        try {
+          const { listPeers } = await import('../network/known-peers.js');
+          const peers = await listPeers();
+          const myPk = v3P2PRef.getPublicKey();
+          let sent = 0;
+          for (const peer of peers) {
+            if (peer.publicKey === myPk) continue;
+            // 增量: since = 本地已有的 lastManifestTs, 对端 manifestTs <= since 则跳过
+            const peerRec = await peerFs.getPeer(peer.publicKey);
+            const since = peerRec?.lastManifestTs || 0;
+            const req = JSON.stringify({
+              v: 3, op: 'agent.manifest.exchange',
+              payload: { since, fromPublicKey: myPk }
+            });
+            const r = await v3P2PRef.sendToWithWait(peer.publicKey, req, 3000);
+            if (r === 'SENT') sent++;
+          }
+          console.log(`[v3-manifest] requestManifestsFromAllPeers → sent=${sent}/${peers.length - 1}`);
+        } catch (err) {
+          console.warn('[v3-manifest] requestManifestsFromAllPeers failed:', (err as Error).message);
+        }
+      }
+      // 每 5 分钟兜底 (manifest 增量拉取)
+      setInterval(requestManifestsFromAllPeers, 5 * 60 * 1000);
+
+      // 2026-07-05 新增: 把每个 peer 的 outbox 队列重发出去 (对方上线后)
+      async function flushAllOutboxes() {
+        if (!v3P2PRef) return;
+        try {
+          const { listPeers } = await import('../network/known-peers.js');
+          const peers = await listPeers();
+          const myPk = v3P2PRef.getPublicKey();
+          let totalFlushed = 0;
+          for (const peer of peers) {
+            if (peer.publicKey === myPk) continue;
+            const outbox = await peerFs.readOutbox(peer.publicKey);
+            if (outbox.length === 0) continue;
+            let sent = 0;
+            for (const entry of outbox) {
+              const rpc = JSON.stringify({ v: 3, op: entry.op, payload: entry.payload });
+              const r = await v3P2PRef.sendToWithWait(peer.publicKey, rpc, 3000);
+              if (r === 'SENT') sent++;
+            }
+            if (sent > 0) {
+              // 全部成功 → 清空; 部分成功 → 写回剩余 (简单起见, 全成功才清)
+              if (sent === outbox.length) {
+                await peerFs.clearOutbox(peer.publicKey);
+                totalFlushed += sent;
+                console.log(`[v3-outbox] flush → ${peer.publicKey.substring(0,12)}... 重发 ${sent} 条 ✓`);
+              }
+            }
+          }
+          if (totalFlushed > 0) {
+            console.log(`[v3-outbox] 累计重发 ${totalFlushed} 条离线消息`);
+          }
+        } catch (err) {
+          console.warn('[v3-outbox] flushAllOutboxes failed:', (err as Error).message);
+        }
+      }
+      // 每 2 分钟兜底 flush
+      setInterval(flushAllOutboxes, 2 * 60 * 1000);
     } catch (err) {
       console.error('[v3] P2PDirect 启动失败:', (err as Error).message);
       v3P2PRef = null;
@@ -2025,7 +2310,14 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         //   修法: contextHint 当 "背景信息", text 当 "本轮用户请求" — 显式 marker 让 LLM 区分
         // 2026-06-15 二次修: 把 text 放在最前 (LLM 看到 input 第一眼是 user text, 不会被 judgmentHint 末尾
         //   的 "..." 误判为整个 input 截断)
-        const markedPrompt = `【本轮用户请求】\n${text}\n【请求结束】\n\n${contextHint}`;
+        // 2026-07-05: prepend nextPromptHints (manifest-loader 加载的对方能力, 仅本次生效)
+        let extraHint = '';
+        const hint = nextPromptHints.get(channelId);
+        if (hint) {
+          extraHint = hint + '\n\n';
+          nextPromptHints.delete(channelId);
+        }
+        const markedPrompt = `${extraHint}【本轮用户请求】\n${text}\n【请求结束】\n\n${contextHint}`;
         fullResponse = await agent.promptStream(markedPrompt, streamCallback, runState.abortController?.signal, channelId);
       } catch (err: any) {
         // abort 抛错: 保留已输出的部分 (fullResponse 可能是空字符串)
@@ -2093,6 +2385,95 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         }
       } catch (memErr: any) {
         console.warn('[memory] compressSessionToMemory failed (non-fatal):', memErr?.message?.slice(0, 200));
+      }
+
+      // 2026-07-05: 把 session 里的 user/ai 消息按涉及到的远端 peer 归档到月度 markdown
+      //   触发条件: 消息里出现过 @远端 channel, 或者 session 历史上与该 peer 通信过
+      //   失败静默, 不阻塞主对话
+      try {
+        const { appendChatArchive } = await import('../bootstrap/chat-archiver.js');
+        // 找到这条消息涉及到的远端 peer (从 routeMentionsInReply 的结果推断 — 简单起见直接遍历 remoteChannels)
+        const localChannels2 = (await loadChannels());
+        const remoteChannels2: any[] = [];
+        for (const [peerPk, list] of remoteChannelCache.entries()) {
+          for (const ch of list) {
+            remoteChannels2.push({ ...ch, _ownerPublicKey: peerPk });
+          }
+        }
+        // 找出本次 text/fullResponse 里出现 @ 的 channel 对应的 owner pk
+        const peerSet = new Set<string>();
+        const mentionRe = /@([一-龥A-Za-z0-9_\-]{1,30})/g;
+        const mentionedNames = new Set<string>();
+        for (const m of text.matchAll(mentionRe)) mentionedNames.add(m[1]);
+        for (const m of fullResponse.matchAll(mentionRe)) mentionedNames.add(m[1]);
+        for (const rc of remoteChannels2) {
+          if (mentionedNames.has(rc.name)) peerSet.add(rc._ownerPublicKey);
+        }
+        // 追加到每个相关 peer 的月度归档
+        for (const pk of peerSet) {
+          await appendChatArchive({
+            publicKey: pk,
+            entry: {
+              ts: new Date().toISOString(),
+              source: 'local',
+              channelId, channelName: (await loadChannels()).find(c => c.id === channelId)?.name,
+              text: `[本节点] user: ${text.slice(0, 500)}\n[本节点] ai: ${fullResponse.slice(0, 800)}`,
+              fromPublicKey: v3P2PRef?.getPublicKey(),
+              msgType: 'user',
+            }
+          });
+        }
+      } catch (archiveErr: any) {
+        console.warn('[chat-archive] append failed (non-fatal):', archiveErr?.message?.slice(0, 200));
+      }
+
+      // 2026-07-05: 懒加载触发器 — 探测到 @-mention 远端 / 连续失败 / 关键词, 拉对方 manifest
+      //   把 capability-index 拼到下一次 prompt 上下文 (只生效 1 次, 不污染主循环)
+      try {
+        const { detectLoadTrigger, loadPeerManifest, clearFailure } = await import('../agents/peer-manifest-loader.js');
+        const remoteChannelsForDetect: any[] = [];
+        for (const [peerPk, list] of remoteChannelCache.entries()) {
+          for (const ch of list) {
+            remoteChannelsForDetect.push({ ...ch, _ownerPublicKey: peerPk });
+          }
+        }
+        // 检测 + 加载
+        const detection = detectLoadTrigger({
+          text,
+          channelId,
+          remoteChannels: remoteChannelsForDetect,
+        });
+        if (detection.shouldLoad && detection.remotePublicKey && v3P2PRef) {
+          const result = await loadPeerManifest(
+            {
+              channelId,
+              channelName: (await loadChannels()).find(c => c.id === channelId)?.name,
+              reason: detection.reason!,
+              triggerValue: detection.triggerValue!,
+              remotePublicKey: detection.remotePublicKey,
+            },
+            { p2p: v3P2PRef }
+          );
+          if (result && result.promptBlock) {
+            console.log(`[manifest-loader] ${detection.reason} → ${detection.remotePublicKey.slice(0,12)}... (${result.durationMs}ms, rpc=${result.rpcTriggered}, agents=${result.agentDescriptions.length})`);
+            // 把 promptBlock 推给前端 + 写入一次性的 prompt 附加 (nextPromptHint 全局变量, 在下次 agent.promptStream 前 prepend)
+            broadcast({
+              type: 'peer-manifest-loaded',
+              fromPublicKey: detection.remotePublicKey,
+              reason: detection.reason,
+              promptBlock: result.promptBlock,
+              capabilityIndex: result.capabilityIndex,
+            }, channelId);
+            // 缓存到 channel 维度的 nextPromptHint (下一次 LLM prompt 前 inject)
+            nextPromptHints.set(channelId, (nextPromptHints.get(channelId) || '') + '\n\n' + result.promptBlock);
+            clearFailure(channelId);
+          }
+        } else {
+          // 没触发, 也清掉连续失败计数 (用户消息说明对话还在正常进行)
+          clearFailure(channelId);
+        }
+      } catch (loaderErr: any) {
+        console.warn('[manifest-loader] failed (non-fatal):', loaderErr?.message?.slice(0, 200));
       }
 
       const channels = await loadChannels();
