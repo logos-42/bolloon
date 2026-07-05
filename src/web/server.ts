@@ -1187,8 +1187,12 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         console.warn('[v3-manifest] manifest.exchange.reply 缺 manifest/ownerPublicKey');
         return;
       }
-      // 增量: 如果 since >= 本地最新 ts, 跳过
+      // 2026-07-05 修复: 跳过自己的 manifest (Hyperswarm 内部 peer discovery 会推送自己)
       const peerKey2 = manifest.ownerPublicKey;
+      if (v3P2PRef && peerKey2 === v3P2PRef.getPublicKey()) {
+        return;
+      }
+      // 增量: 如果 since >= 本地最新 ts, 跳过
       const existing = await peerFs.readPeerIndex(peerKey2);
       if (existing?.manifestTs && existing.manifestTs >= manifest.publishedAt && parsed.payload?.since) {
         console.log(`[v3-manifest] ${peerKey2.substring(0,12)}... manifest 已是最新 (ts=${manifest.publishedAt}), 跳过`);
@@ -1709,6 +1713,10 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                 return;
               }
               const peerKey2 = manifest.ownerPublicKey;
+              // 2026-07-05 修复: 跳过自己的 manifest
+              if (v3P2PRef && peerKey2 === v3P2PRef.getPublicKey()) {
+                return;
+              }
               // 异步落盘, 不阻塞 data handler
               (async () => {
                 try {
@@ -1797,6 +1805,10 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         // 2026-07-05: 新连接到来立刻推自己的 manifest — 让对方秒知道我有哪些 agent
         setTimeout(async () => {
           try {
+            // 跳过自己的连接 (Hyperswarm 内部 peer discovery 会推自己过来, 形成循环)
+            if (v3P2PRef && evt.remotePublicKey === v3P2PRef.getPublicKey()) {
+              return;
+            }
             const localAgents = await loadLocalSubAgents();
             const entries: AgentManifestEntry[] = localAgents.map((a: any) => ({
               id: a.id, name: a.name,
