@@ -2,6 +2,8 @@
  * P2P Modal - 纯 TypeScript 版本
  */
 
+import { safeName as safeAnyName } from '../../util/safe-name.js';
+
 class P2PModalUI {
   private modal: HTMLElement | null = null;
   private overlay: HTMLElement | null = null;
@@ -338,11 +340,8 @@ class P2PModalUI {
   // 2026-07-06: 通用 name 兜底 — 防止 name=undefined/null/'undefined' 字串
   //   时 UI 渲染字面量 "undefined".
   private safeName(input: any, fallback: string): string {
-    const f = fallback || '未知';
-    if (input === undefined || input === null) return f;
-    const s = String(input).trim();
-    if (!s || s === 'undefined' || s === 'null' || s === 'NaN') return f;
-    return s;
+    // 2026-07-06: 委托共享 safe-name.ts (有单测覆盖); 保持方法签名兼容旧调用.
+    return safeAnyName(input, fallback || '未知');
   }
 
   private showToast(message: string): void {
