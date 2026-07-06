@@ -65,8 +65,14 @@ class P2PModalUI {
       const irohResp = await fetch('/api/iroh/init', { method: 'POST' });
       const irohData = await irohResp.json();
       if (irohData.cid) {
+        // 2026-07-06: 防御 irohData.name 是 'undefined'/'null'/空白 的情况,
+        //   否则 UI 会渲染字面量 "undefined". (multi-confirmed fix: 避免再现 v0.2.7 的 bug)
+        const rawName = (typeof irohData.name === 'string' && irohData.name.trim()
+          && irohData.name.trim() !== 'undefined'
+          && irohData.name.trim() !== 'null') ? irohData.name.trim() : '';
+        const tailName = rawName.split('-').slice(-1)[0] || '';
         identityData = {
-          name: irohData.name || irohData.name?.split('-').slice(-1)[0] || 'Bolloon',
+          name: rawName || tailName || 'Bolloon',
           did: irohData.did || '未知',
           cid: irohData.cid || '未知',
           nodeId: irohData.irohNodeId ? irohData.irohNodeId.substring(0, 20) + '...' : '未知'

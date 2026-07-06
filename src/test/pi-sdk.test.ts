@@ -47,7 +47,7 @@ async function isMinimaxReachable(): Promise<boolean> {
     expect(result.summary).toBeDefined();
   });
 
-  it('minimax LLM integration', { timeout: 30000 }, async () => {
+  it('minimax LLM integration', { timeout: 90000 }, async () => {
     if (!(await isMinimaxReachable())) return;
     const session = await createAgentSession({ cwd: process.cwd() });
     const result = await session.prompt('总结: 这是一个测试文档，用于验证LLM摘要功能。');

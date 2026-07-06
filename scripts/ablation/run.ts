@@ -347,8 +347,8 @@ description: ablation test skill
       const m = out.match(/LEN=(\d+)/);
       sample.count = m ? parseInt(m[1], 10) : -1;
       sample.c2Count = c2Count;
-      // 期望: LEN=1 (ablation-test 在, bad 被 skip)
-      const pass = sample.count === 1;
+      // 期望: LEN === c2Count (加坏 skill.md 不影响加载数; baseline 含用户已有 skills)
+      const pass = c2Count >= 0 && sample.count === c2Count;
       sample.pass = pass;
       if (pass) r.successCount++; else r.failCount++;
     } catch (e: any) {

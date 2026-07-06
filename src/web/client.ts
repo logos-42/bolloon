@@ -1,4 +1,4 @@
-// @ts-nocheck
+﻿// @ts-nocheck
 // marked 库可能从 CDN 加载失败, 这里做安全降级 (避免 ReferenceError 让 addMessage 整体崩溃)
 if (typeof marked === 'undefined') {
   window.marked = { parse: (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') };
@@ -592,7 +592,7 @@ async function deleteChannel(channelId, e) {
       currentSessionId = null;
       if (currentChannelId) {
         const ch = channels.find(c => c.id === currentChannelId);
-        if (channelNameEl) channelNameEl.textContent = ch?.name || 'Bolloon Agent';
+        if (channelNameEl) channelNameEl.textContent = safeChannelName(ch?.name, 'Bolloon Agent');
         await selectChannel(currentChannelId);
       } else {
         messagesEl.innerHTML = '';
@@ -936,7 +936,7 @@ function renderChannels() {
         <polyline points="9 18 15 12 9 6"></polyline>
       </svg>
       <div class="channel-icon">💬</div>
-      <span class="channel-name" title="${escapeHtml(ch.name || '')}">${escapeHtml(ch.name || '(未命名)')}</span>
+      <span class="channel-name" title="${escapeHtml(safeChannelName(ch.name, ''))}">${escapeHtml(safeChannelName(ch.name))}</span>
       <span class="agent-row-meta">
         ${walletBadge}
         ${toolsBadge}
@@ -1070,6 +1070,16 @@ const escapeHtml = MR_escapeHtml || ((s) => String(s ?? '').replace(/[&<>"']/g, 
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 }[c])));
 
+// 2026-07-06: 通用 channel name 兜底 — 防止 name=undefined/null/'undefined' 字串
+//   时 UI 出现 "undefined" 字面量. 用法: safeChannelName(ch) 或 safeChannelName(ch.name).
+function safeChannelName(input, fallback) {
+  const fallbackText = fallback || '(未命名)';
+  if (input === undefined || input === null) return fallbackText;
+  const s = String(input).trim();
+  if (!s || s === 'undefined' || s === 'null' || s === 'NaN') return fallbackText;
+  return s;
+}
+
 function ensureMessageContainer(channelId) {
   if (!messagesContainers.has(channelId)) {
     const container = document.createElement('div');
@@ -1109,7 +1119,7 @@ async function selectChannel(channelId, targetSessionId = null) {
   // 找到当前频道和 session
   const channel = channels.find(c => c.id === channelId);
   if (channel) {
-    if (channelNameEl) channelNameEl.textContent = channel.name || '(未命名)';
+    if (channelNameEl) channelNameEl.textContent = safeChannelName(channel.name);
     currentSessionId = targetSessionId || channel.currentSessionId || 'default';
     if (targetSessionId) {
       channel.currentSessionId = targetSessionId;
@@ -1514,7 +1524,7 @@ function connect(channelId) {
           channel.name = data.newName;
           renderChannels();
           if (currentChannelId === data.channelId && channelNameEl) {
-            channelNameEl.textContent = data.newName;
+            channelNameEl.textContent = safeChannelName(data.newName);
           }
         }
       } else if (data.type === 'error') {
@@ -1675,7 +1685,7 @@ async function refreshMentionChannels() {
     const remote = [];
     for (const p of (remoteData.peers || [])) {
       for (const c of (p.channels || [])) {
-        remote.push({ id: c.id, name: c.name, source: 'remote', ownerPublicKey: p.peerId });
+        remote.push({ id: c.id, name: safeChannelName(c.name, '(远端未命名)'), source: 'remote', ownerPublicKey: p.peerId });
       }
     }
     mentionChannels = [
@@ -1727,9 +1737,9 @@ function renderMentionDropdown(items) {
       // 浅蓝 = 键盘高亮, 白 = 普通
       const bg = i === mentionHighlightIdx ? '#eff6ff' : '#fff';
       const borderLeft = i === mentionHighlightIdx ? '3px solid #93c5fd' : '3px solid transparent';
-      return `<div class="mention-item" data-idx="${i}" data-channel-id="${escapeHtml(c.id)}" data-channel-name="${escapeHtml(c.name || '')}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;border-left:${borderLeft};">
+      return `<div class="mention-item" data-idx="${i}" data-channel-id="${escapeHtml(c.id)}" data-channel-name="${escapeHtml(safeChannelName(c.name, ''))}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;border-left:${borderLeft};">
         <span style="font-size:10px;color:${isLocal ? '#059669' : '#2563eb'};background:${isLocal ? '#d1fae5' : '#dbeafe'};padding:1px 6px;border-radius:3px;white-space:nowrap;">${tag}</span>
-        <span style="flex:1;">${escapeHtml(c.name || '(未命名)')}</span>${owner}
+        <span style="flex:1;">${escapeHtml(safeChannelName(c.name))}</span>${owner}
       </div>`;
     }).join('');
     mentionDropdownEl.innerHTML = headerHtml + rows;
@@ -1770,7 +1780,7 @@ function applyMention(channel) {
   }
   const before = input.value.slice(0, anchor);   // 含 @
   const after = input.value.slice(blockEnd);     // query 之后 (可能用户已输入正文)
-  const insert = `@${channel.name} `;
+  const insert = `@${safeChannelName(channel.name)} `;
   input.value = before + insert + after;
   const newPos = before.length + insert.length;
   input.focus();
@@ -1797,9 +1807,9 @@ function updateMentionDropdown() {
     // dropdown 首次打开 → 强制刷一次, 保证 remote 列表最新
     refreshMentionChannels();
   }
-  mentionQuery = m.query;
+mentionQuery = m.query;
   const q = m.query.toLowerCase();
-  const items = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+  const items = mentionChannels.filter(c => safeChannelName(c.name).toLowerCase().includes(q)).slice(0, 8);
   mentionHighlightIdx = items.length > 0 ? 0 : -1;
   renderMentionDropdown(items);
 }
@@ -1815,14 +1825,14 @@ input.addEventListener('keydown', (e) => {
     if (items.length === 0) return;
     mentionHighlightIdx = (mentionHighlightIdx + 1) % items.length;
     const q = (mentionQuery || '').toLowerCase();
-    const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+    const filtered = mentionChannels.filter(c => safeChannelName(c.name).toLowerCase().includes(q)).slice(0, 8);
     renderMentionDropdown(filtered);
   } else if (e.key === 'ArrowUp') {
     e.preventDefault();
     if (items.length === 0) return;
     mentionHighlightIdx = (mentionHighlightIdx - 1 + items.length) % items.length;
     const q = (mentionQuery || '').toLowerCase();
-    const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+    const filtered = mentionChannels.filter(c => safeChannelName(c.name).toLowerCase().includes(q)).slice(0, 8);
     renderMentionDropdown(filtered);
   } else if (e.key === 'Enter' || e.key === 'Tab') {
     // 单选: Enter/Tab 立即填入 + 关闭 dropdown
@@ -1830,7 +1840,7 @@ input.addEventListener('keydown', (e) => {
       e.preventDefault();
       e.stopPropagation();
       const q = (mentionQuery || '').toLowerCase();
-      const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+      const filtered = mentionChannels.filter(c => safeChannelName(c.name).toLowerCase().includes(q)).slice(0, 8);
       const cur = filtered[mentionHighlightIdx];
       if (cur) applyMention(cur);
     }
@@ -1879,7 +1889,7 @@ function setupMentionAutocomplete(inputEl) {
     }
     const before = inputEl.value.slice(0, anchor);   // 含 @
     const after = inputEl.value.slice(blockEnd);
-    const insert = `@${channel.name} `;
+    const insert = `@${safeChannelName(channel.name)} `;
     inputEl.value = before + insert + after;
     const newPos = before.length + insert.length;
     inputEl.focus();
@@ -1906,10 +1916,10 @@ function setupMentionAutocomplete(inputEl) {
         const owner = !isLocal && c.ownerPublicKey ? ` <span style="color:#9ca3af;font-size:11px;">(${c.ownerPublicKey.substring(0, 8)}…)</span>` : '';
         const bg = i === localHighlight ? '#eff6ff' : '#fff';
         const borderLeft = i === localHighlight ? '3px solid #93c5fd' : '3px solid transparent';
-        return `<div class="mention-item" data-idx="${i}" data-channel-id="${escapeHtml(c.id)}" data-channel-name="${escapeHtml(c.name || '')}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;border-left:${borderLeft};">
-          <span style="font-size:10px;color:${isLocal ? '#059669' : '#2563eb'};background:${isLocal ? '#d1fae5' : '#dbeafe'};padding:1px 6px;border-radius:3px;white-space:nowrap;">${tag}</span>
-          <span style="flex:1;">${escapeHtml(c.name || '(未命名)')}</span>${owner}
-        </div>`;
+return `<div class="mention-item" data-idx="${i}" data-channel-id="${escapeHtml(c.id)}" data-channel-name="${escapeHtml(safeChannelName(c.name, ''))}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;border-left:${borderLeft};">
+        <span style="font-size:10px;color:${isLocal ? '#059669' : '#2563eb'};background:${isLocal ? '#d1fae5' : '#dbeafe'};padding:1px 6px;border-radius:3px;white-space:nowrap;">${tag}</span>
+        <span style="flex:1;">${escapeHtml(safeChannelName(c.name))}</span>${owner}
+      </div>`;
       }).join('');
       inputEl.__mentionDD.querySelectorAll('.mention-item').forEach((el) => {
         const idx = parseInt(el.getAttribute('data-idx'));
@@ -1951,7 +1961,7 @@ function setupMentionAutocomplete(inputEl) {
     }
     localQuery = m.query;
     const q = m.query.toLowerCase();
-    const items = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+    const items = mentionChannels.filter(c => safeChannelName(c.name).toLowerCase().includes(q)).slice(0, 8);
     localHighlight = items.length > 0 ? 0 : -1;
     renderLocal(items);
   }
@@ -1965,19 +1975,19 @@ function setupMentionAutocomplete(inputEl) {
       if (items.length === 0) return;
       localHighlight = (localHighlight + 1) % items.length;
       const q = (localQuery || '').toLowerCase();
-      renderLocal(mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8));
+      renderLocal(mentionChannels.filter(c => safeChannelName(c.name).toLowerCase().includes(q)).slice(0, 8));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (items.length === 0) return;
       localHighlight = (localHighlight - 1 + items.length) % items.length;
       const q = (localQuery || '').toLowerCase();
-      renderLocal(mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8));
+      renderLocal(mentionChannels.filter(c => safeChannelName(c.name).toLowerCase().includes(q)).slice(0, 8));
     } else if (e.key === 'Enter' || e.key === 'Tab') {
       if (items.length > 0) {
         e.preventDefault();
         e.stopPropagation();
         const q = (localQuery || '').toLowerCase();
-        const filtered = mentionChannels.filter(c => c.name.toLowerCase().includes(q)).slice(0, 8);
+        const filtered = mentionChannels.filter(c => safeChannelName(c.name).toLowerCase().includes(q)).slice(0, 8);
         const cur = filtered[localHighlight];
         if (cur) applyLocal(cur);
       }
@@ -2224,7 +2234,7 @@ function renderJudgments(items) {
     : null;
 
   if (chNameEl) {
-    chNameEl.textContent = currentCh ? `(${currentCh.name})` : '(未选)';
+    chNameEl.textContent = currentCh ? `(${safeChannelName(currentCh.name)})` : '(未选)';
   }
 
   if (all.length === 0) {
@@ -2257,7 +2267,7 @@ function renderJudgments(items) {
   const bound = all.filter(j => boundIds.has(j.id));
   const unbound = all.filter(j => !boundIds.has(j.id));
 
-  if (titleEl) titleEl.textContent = `${currentCh.name} 的判断力 (已绑 ${bound.length} / 共 ${all.length})`;
+  if (titleEl) titleEl.textContent = `${safeChannelName(currentCh.name)} 的判断力 (已绑 ${bound.length} / 共 ${all.length})`;
 
   let html = '';
   if (bound.length > 0) {
@@ -3198,7 +3208,7 @@ function renderRemoteChannels() {
               <div class="remote-channel-row" data-peer-id="${escapeHtml(peer.publicKey)}" data-channel-id="${escapeHtml(c.id)}"
                    style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:4px;font-size:12px;">
                 <span>🤖</span>
-                <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(c.name || '')}">${escapeHtml(c.name || '(未命名)')}</span>
+                <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(safeChannelName(c.name, ''))}">${escapeHtml(safeChannelName(c.name))}</span>
               </div>
             `).join('')
           }
