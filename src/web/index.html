@@ -368,6 +368,7 @@
   <script type="module" src="/components/p2p/index.js"></script>
   <script type="module" src="/ui/step-timeline.js"></script>
   <script type="module" src="/ui/message-renderer.js"></script>
-  <script src="/client.js"></script>
+  <!-- 2026-07-06: client.js 含 import 语句 (safeChannelName 兜底), 必须 type="module" -->
+  <script type="module" src="/client.js"></script>
 </body>
 </html>

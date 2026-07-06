@@ -6,6 +6,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import {
   validateMessageInput,
   validateChannelInput,
@@ -4952,6 +4953,69 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // 2026-07-06: SSE 断连恢复 — 拉该 channel 从 afterSeq 之后的 AI 回复 + 状态
+  // body: { channelId, sessionId?, afterSeq }
+  app.post('/api/chat/resume', async (req, res) => {
+    try {
+      const { channelId, sessionId, afterSeq } = req.body as { channelId?: string; sessionId?: string; afterSeq?: number };
+      if (!channelId) return res.status(400).json({ error: 'channelId required' });
+      const curSeq = channelEventSeq.get(channelId) || 0;
+      // 1) 拉 session.messages — 这部分已经持久化, 不依赖内存 state
+      const sess = await loadSession(channelId, sessionId || 'default');
+      const messages = sess?.messages || [];
+      // 2) 找从 afterSeq 之后发生的 user/ai 消息 (从 messages[] 推导出"事后视角")
+      // 注意: messages[] 是按时间顺序, 没有 seq 字段; 我们用 lastUpdated + AI msgId 列表 推断
+      // 简单方案: 返回 channels 上 >= afterSeq 对应时间的 ai/user messages (按 timestamp 截)
+      // 因为 seq 是事件层, messages 是实体层 — 这里实体层的 fallback 就够用
+      const afterSeqNum = typeof afterSeq === 'number' ? afterSeq : 0;
+      // 启发式: 如果当前 seq 已经超过 afterSeq, 至少漏了一些事件
+      const missedSome = curSeq > afterSeqNum;
+      // 3) 返回给前端的"补发包": 当 missedSome, 拿最近 1 轮 user+ai (最近的 ai message)
+      let resume: any = {
+        ok: true,
+        channelId,
+        currentSeq: curSeq,
+        missedSome,
+        recoveredMessages: [] as any[],
+      };
+      if (missedSome && messages.length > 0) {
+        // 拿最后一条 ai message
+        const lastAi = [...messages].reverse().find(m => m.type === 'ai');
+        if (lastAi) {
+          resume.recoveredMessages.push({
+            msgId: lastAi.id || `recover_${Date.now()}`,
+            type: 'ai',
+            content: lastAi.content,
+            source: lastAi.source,
+            timestamp: lastAi.timestamp,
+          });
+        }
+        // 拿最近一条 user message (如果不是用户本地发的, 也能补全)
+        const lastUser = [...messages].reverse().find(m => m.type === 'user');
+        if (lastUser) {
+          resume.recoveredMessages.push({
+            msgId: lastUser.id || `recover_user_${Date.now()}`,
+            type: 'user',
+            content: lastUser.content,
+            source: lastUser.source,
+            timestamp: lastUser.timestamp,
+          });
+        }
+        // 4) 如果当前还在跑 (channelRunState.running), 通知前端"正在生成中"
+        const runState = channelRunState.get(channelId);
+        if (runState?.running) {
+          resume.stillRunning = true;
+          resume.partialText = runState.lastFinalReply || '';
+        }
+      }
+      console.log(`[resume] channel=${channelId}, afterSeq=${afterSeqNum}, curSeq=${curSeq}, recovered=${resume.recoveredMessages.length}, stillRunning=${resume.stillRunning || false}`);
+      res.json(resume);
+    } catch (err: any) {
+      console.error('[resume] failed:', err.message?.slice(0, 200));
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 用户审阅: 批准 draft
   app.post('/api/chat/approve', async (req, res) => {
     try {
@@ -6421,12 +6485,33 @@ currentServer.on('clientError', (err, socket) => {
   });
 }
 
+// 2026-07-06: 每个 channelId 维护递增 sequence + msgId, 让前端能去重 + 重连后 resume
+const channelEventSeq: Map<string, number> = new Map();
+const channelMsgIds: Map<string, string> = new Map(); // channelId -> 上一条 msgId (uuid)
+
+function nextEventSeq(channelId: string | undefined): number {
+  if (!channelId) return 0;
+  const cur = channelEventSeq.get(channelId) || 0;
+  const next = cur + 1;
+  channelEventSeq.set(channelId, next);
+  return next;
+}
+
+function nextMsgId(channelId: string | undefined): string {
+  const id = `msg_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  if (channelId) channelMsgIds.set(channelId, id);
+  return id;
+}
+
 function broadcast(data: { type: string; [key: string]: unknown }, channelId?: string) {
   // 2026-06-10: 喂 watchdog, 避免 30min 空闲被误判 (recordActivity 内有 5s 去抖)
   watchdogRef?.recordActivity?.();
-  const envelope = { ...data, channelId };
+  // 2026-07-06: 加 seq + msgId, 前端断连重连后可请求 /api/chat/resume?channelId=X&afterSeq=N 拿回
+  const seq = nextEventSeq(channelId);
+  const msgId = (data.type === 'ai' || data.type === 'user') ? nextMsgId(channelId) : `evt_${seq}`;
+  const envelope = { ...data, channelId, seq, msgId };
   const message = `data: ${JSON.stringify(envelope)}\n\n`;
-  console.log(`[broadcast] type=${data.type}, channelId=${channelId}, clients=${sseClients.size}`);
+  console.log(`[broadcast] type=${data.type}, channelId=${channelId}, seq=${seq}, msgId=${msgId}, clients=${sseClients.size}`);
   for (const client of sseClients) {
     if (!channelId || client.channelId === channelId) {
       try {

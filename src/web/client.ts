@@ -43,6 +43,9 @@ const MR_escapeHtml = (s) => _getMR().escapeHtml?.(s);
 // 2026-06-17: 流式状态查询 — 'ai' 事件用它在双气泡竞态下决定是否跳过 addMessage
 const MR_hasStreamingText = () => _getMR().hasStreamingText?.() ?? false;
 const MR_resetRendererState = () => _getMR().resetRendererState?.();
+// 2026-07-06: SSE 重连恢复用 — 用 server 给的完整内容替换流式累积, 然后 finalize
+const MR_replaceStreamingText = (text: string) => _getMR().replaceStreamingText?.(text);
+const MR_injectRecoveredText = (text: string, ctx?: any) => _getMR().injectRecoveredText?.(text, ctx ?? getRendererCtx());
 
 // ctx 对象: 把全局状态打包, 避免硬引用 client.js 顶层 let
 function getRendererCtx() {
@@ -271,6 +274,9 @@ let reconnectAttempts = new Map(); // channelId -> attempts
 let reconnectTimers = new Map(); // channelId -> timer
 let heartbeatTimers = new Map(); // channelId -> setInterval handle (防止泄漏)
 let lastUserCommand = ''; // 防止用户消息重复显示
+// 2026-07-06: SSE 重连恢复用 — 每个 channel 记收到的最大 seq + 已渲染的 msgId 集合
+const lastKnownSeq: Map<string, number> = new Map(); // channelId -> max seq
+const lastSeenMsgIds: Map<string, string[]> = new Map(); // channelId -> msgId[] (最近 100)
 
 // 2026-06-10: P2P peer-group 折叠状态持久化 (跨刷新)
 // key = bolloon.p2p.collapsedPeers, value = JSON array of publicKey hex
@@ -1398,9 +1404,68 @@ function connect(channelId) {
     reconnectAttempts.set(targetChannelId, 0);
   }
 
+  // 2026-07-06: 记忆"每个 channel 收到的最大 seq + 已渲染 msgId", 重连后能检测断线期间丢的事件
+  let localMaxSeq: number = lastKnownSeq.get(targetChannelId) || 0;
+  const seenMsgIds: Set<string> = new Set(lastSeenMsgIds.get(targetChannelId) || []);
+
   eventSource.onopen = () => {
     console.log('[SSE] 已连接 channelId:', targetChannelId);
     reconnectAttempts.set(targetChannelId, 0);
+    // 重连后主动调用 /api/chat/resume, 拿回断线期间漏的事件 (尤其是 type: ai 收尾 + done)
+    // 防止"气泡为空" + "卡在 streaming"的根本问题
+    (async () => {
+      try {
+        const resp = await fetch('/api/chat/resume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channelId: targetChannelId,
+            sessionId: currentSessionId || 'default',
+            afterSeq: localMaxSeq,
+          }),
+        });
+        const data = await resp.json();
+        if (data?.ok && (data.missedSome || data.stillRunning)) {
+          console.log('[SSE-resume] 恢复 channel=', targetChannelId, 'curSeq=', data.currentSeq, 'recovered=', data.recoveredMessages?.length || 0, 'stillRunning=', !!data.stillRunning);
+          // 把 server 给的恢复包, 经过 onmessage 同样的路由
+          for (const msg of (data.recoveredMessages || [])) {
+            if (msg.msgId && seenMsgIds.has(msg.msgId)) continue;
+            if (msg.msgId) {
+              seenMsgIds.add(msg.msgId);
+              lastSeenMsgIds.set(targetChannelId, Array.from(seenMsgIds).slice(-100));
+            }
+            const container = messagesContainers.get(targetChannelId) || messagesEl;
+            if (msg.type === 'ai') {
+              if (!MR_hasStreamingText()) {
+                addMessage(msg.content, 'ai', true, container, lastUsedJudgmentIds || []);
+              } else {
+                // 如果还在 streaming, 强制把 streamingText 替换为 recovered content, 然后 finalize
+                MR_replaceStreamingText?.(msg.content);
+                MR_finalizeTimelineAsMessage(getRendererCtx());
+              }
+            } else if (msg.type === 'user') {
+              if (msg.source === 'remote' || msg.source === 'local') {
+                addMessage(msg.content, 'user', true, container);
+              }
+            }
+          }
+          // 如果 server 说还在 running, 就当 abort 状态处理 (前端可以重新渲染"AI 思考中")
+          if (data.stillRunning && !MR_hasStreamingText() && data.partialText) {
+            // 触发 streaming 的"恢复" — 模拟一个 token 回调把 partialText 注入, 然后 finalize
+            try {
+              MR_injectRecoveredText?.(data.partialText);
+            } catch (e) { console.warn('[SSE-resume] inject 失败:', e); }
+          }
+        }
+        // 同步 currentSeq 给后续事件用
+        if (typeof data?.currentSeq === 'number') {
+          localMaxSeq = Math.max(localMaxSeq, data.currentSeq);
+          lastKnownSeq.set(targetChannelId, localMaxSeq);
+        }
+      } catch (e) {
+        console.warn('[SSE-resume] 请求失败:', e);
+      }
+    })();
   };
 
   // 心跳超时: 2026-06-16 收紧到 30s (配合 server 端 30s ping).
@@ -1451,8 +1516,20 @@ function connect(channelId) {
       if (data && data.type === 'ping') {
         return;
       }
+      // 2026-07-06: msgId 去重 + seq 跟踪 (让 SSE 重连后能精确补包)
+      if (data?.msgId) {
+        if (seenMsgIds.has(data.msgId)) {
+          return; // 已渲染过 — 跳过 (防 dup)
+        }
+        seenMsgIds.add(data.msgId);
+        lastSeenMsgIds.set(targetChannelId, Array.from(seenMsgIds).slice(-100));
+      }
+      if (typeof data?.seq === 'number') {
+        if (data.seq > localMaxSeq) localMaxSeq = data.seq;
+        lastKnownSeq.set(targetChannelId, localMaxSeq);
+      }
       const msgChannelId = data.channelId || targetChannelId;
-      console.log('[SSE] 收到消息:', data.type, 'channelId:', msgChannelId);
+      console.log('[SSE] 收到消息:', data.type, 'channelId:', msgChannelId, 'msgId:', data.msgId);
 
       // 路由消息到正确的频道
       // 只有 envelope.channelId 存在且与目标不同时才丢弃 (空/undefined 视为广播给自己)

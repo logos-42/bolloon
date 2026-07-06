@@ -101,6 +101,37 @@ export function hasStreamingText(): boolean {
   return streamingText.length > 0;
 }
 
+// 2026-07-06: SSE 重连恢复用 — 把 streamingText 替换成 server 给的 fullContent
+//   然后 caller 调 finalizeTimelineAsMessage 把它落定为正式气泡
+export function replaceStreamingText(fullContent: string): void {
+  if (!streamingTextNode || !streamingMessageEl) {
+    // 还没启动流式元素 — 不动, 让 caller 自己 addMessage
+    return;
+  }
+  streamingTextNode.nodeValue = String(fullContent || '');
+  streamingText = String(fullContent || '');
+}
+
+// 2026-07-06: SSE 重连时 server 说"还在生成", 把现有的 streamingMessageEl 填上 partialText
+//   让用户看到 AI 在生成中的状态, 不会卡死
+export function injectRecoveredText(partialText: string, ctx: RendererCtx = { messagesEl: null, messagesContainers: new Map(), currentChannelId: null }): void {
+  if (streamingMessageEl && streamingTextNode) {
+    streamingTextNode.nodeValue = String(partialText || '');
+    streamingText = String(partialText || '');
+    return;
+  }
+  // 还没流式元素 — 创建一个空流式容器, 然后把 partialText 灌进去, 用户看到"AI 在思考"
+  handleStreamTokenEvent(
+    {
+      type: 'token',
+      streamType: 'token',
+      content: String(partialText || ''),
+      delta: String(partialText || ''),
+    } as any,
+    ctx
+  );
+}
+
 // 滚动限频 (60ms 16fps, 减 reflow)
 let scrollToBottomTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleScrollToBottom(container: HTMLElement | null): void {
