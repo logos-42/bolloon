@@ -469,8 +469,22 @@ export function handleStreamTokenEvent(data: StreamTokenEvent, ctx: RendererCtx 
     }
     scheduleScrollToBottom(container);
   }
-  if (streamingTextNode) streamingTextNode.appendData(delta);
-  streamingText += delta;
+
+  // 2026-07-06: pivot loop 现在用 stream: false, 每次 emit type='token' + content=reply.substring(0, 100)
+  //   也就是说每个 token event 实际是"LLM 这一轮回复的前 100 字符", 不是真正的 token 增量.
+  //   多次 emit 会让 streamingText 累积成 "片段1 + 片段2 + ..." 而不是最终回复.
+  //   改成 "replace last segment" 语义: streamingText 始终是 LLM 最新一轮的回执的前缀.
+  //   这样 finalize 出来的 ai message bubble 就是当前最完整的那一轮 (通常是最新的, pivot loop 最后一次 reply),
+  //   用户看到的就是 LLM 真正的最终回答, 不是堆叠的中间产物.
+  if (data.streamType === 'token') {
+    // 把 streamingText 用 nodeValue 整体替换, 不累加
+    if (streamingTextNode) streamingTextNode.nodeValue = delta;
+    streamingText = delta;
+  } else {
+    // thinking 类的保持原本的 append 语义 (罕见, 留个口子)
+    if (streamingTextNode) streamingTextNode.appendData(delta);
+    streamingText += delta;
+  }
   scheduleScrollToBottom(container);
 }
 

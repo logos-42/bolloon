@@ -1329,32 +1329,65 @@ async function buildJudgmentHint(
 
     let hint = '';
 
+    // 2026-07-06: 硬上限 — judgment 总数可能 1875 条 (1.3MB), 全注入会把 LLM context 撑爆
+    // MiniMax-M3 只有 8K context ≈ 32K 字符, 完整 judgment hint 必须 < 8K 字符
+    const HARD_LIMIT = 6000; // 总 hint 字符数 < 6K (留 ~26K 给 user + contextHint 其他部分)
+    const BOUND_MAX = 16;    // 绑定最多 16 条
+    const OTHERS_MAX = 24;   // 候选最多 24 条
+    let boundIncluded = 0;
+    let othersIncluded = 0;
+    let boundSkipped = 0;
+    let othersSkipped = 0;
+
     // 路 1: 用户手动绑定的 judgment — 硬约束, 必须遵循
     if (bound.length > 0) {
-      hint += `[系统上下文] 此 channel 用户绑定了 ${bound.length} 条判断力, 必须严格遵循:\n`;
+      const headerText = `[系统上下文] 此 channel 用户绑定了 ${bound.length} 条判断力, 必须严格遵循:\n`;
+      hint += headerText;
       for (const j of bound) {
+        if (boundIncluded >= BOUND_MAX) { boundSkipped++; continue; }
+        if (hint.length >= HARD_LIMIT) { boundSkipped++; continue; }
         const decision = (j.decision || '').toString().slice(0, 200);
         const reasonList = Array.isArray(j.reasons) ? j.reasons : [];
         const reasonText = reasonList.length > 0
           ? ` (理由: ${reasonList.join('; ').slice(0, 100)})`
           : '';
-        hint += `- ${decision}${reasonText}\n`;
+        const line = `- ${decision}${reasonText}\n`;
+        if (hint.length + line.length > HARD_LIMIT) { boundSkipped++; continue; }
+        hint += line;
+        boundIncluded++;
       }
       hint += '\n';
     }
 
     // 路 2: 全局 judgment 候选池 — 软参考, LLM 自己挑
     if (others.length > 0) {
-      hint += `[系统上下文] 候选判断力 (用户未明确绑定, 你可以按相关性自主选择参考):\n`;
-      for (const j of others) {
-        const decision = (j.decision || '').toString().slice(0, 120);
-        hint += `- [id=${j.id}] ${decision}\n`;
+      const headerText = `[系统上下文] 候选判断力 (用户未明确绑定, 你可以按相关性自主选择参考, 共 ${others.length} 条):\n`;
+      const footerText = `\n[系统上下文] 如果你的回复参考了某条候选判断力, 请在回复中自然提及 "我参考了你的判断: <decision 简述>" 即可, 无需复述 id.\n\n`;
+      // 先判断 header + footer 能不能放
+      if (hint.length + headerText.length + footerText.length < HARD_LIMIT) {
+        hint += headerText;
+        // 按 id 排序 (deterministic 取最近 N 条)
+        for (const j of others) {
+          if (othersIncluded >= OTHERS_MAX) { othersSkipped++; continue; }
+          if (hint.length + footerText.length >= HARD_LIMIT) { othersSkipped++; continue; }
+          const decision = (j.decision || '').toString().slice(0, 120);
+          const line = `- [id=${j.id}] ${decision}\n`;
+          if (hint.length + line.length + footerText.length > HARD_LIMIT) { othersSkipped++; continue; }
+          hint += line;
+          othersIncluded++;
+        }
+        hint += footerText;
+      } else {
+        othersSkipped = others.length;
       }
-      hint += `\n[系统上下文] 如果你的回复参考了某条候选判断力, 请在回复中自然提及 "我参考了你的判断: <decision 简述>" 即可, 无需复述 id.\n\n`;
     }
 
+    // 2026-07-06: 加个 truncate hint (在统计日志打印出来)
+    if (boundSkipped > 0 || othersSkipped > 0) {
+      console.log(`[v3] channel ${channelIdForLog} judgment hint truncated: bound=${boundIncluded}/${bound.length} (skip ${boundSkipped}), others=${othersIncluded}/${others.length} (skip ${othersSkipped}), hint=${hint.length} chars / limit ${HARD_LIMIT}`);
+    }
     console.log(
-      `[v3] channel ${channelIdForLog} 注入: 绑定 ${bound.length} 条, 候选 ${others.length} 条`
+      `[v3] channel ${channelIdForLog} 注入: 绑定 ${bound.length} 条, 候选 ${others.length} 条 (实际 ${boundIncluded}+${othersIncluded})`
     );
     return hint;
   } catch (err) {
@@ -2477,6 +2510,18 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       }
 
       if (contextHint) contextHint += '\n';
+
+      // 2026-07-06: 全局 contextHint 硬裁 — MiniMax-M3 context window 8K token ≈ 32K 字符
+      //   如果 contextHint 超过 14K 字符 (留 ~18K 给 userText + LLM 输出 + system), 主动截断
+      const CONTEXT_LIMIT = 14000;
+      let contextTruncated = false;
+      if (contextHint.length > CONTEXT_LIMIT) {
+        const originalLen = contextHint.length;
+        contextHint = contextHint.slice(0, CONTEXT_LIMIT);
+        contextHint += `\n[系统上下文] (...剩余 ${originalLen - CONTEXT_LIMIT} 字符因 context window 限制已截断, 完整内容请用 /judgments 查)\n`;
+        contextTruncated = true;
+        console.warn(`[chat] channel=${channelId} contextHint truncated: ${originalLen} -> ${contextHint.length} chars`);
+      }
       try {
         // 2026-06-15: 把 user text 单独 marker 包起来, LLM 不会被 8K+ 的 system context 吞掉
         //   (之前 contextHint + text 拼成一整段当 user role, 24 字符的 user input 埋在 8K+ 里看不出)
@@ -6508,7 +6553,12 @@ function broadcast(data: { type: string; [key: string]: unknown }, channelId?: s
   watchdogRef?.recordActivity?.();
   // 2026-07-06: 加 seq + msgId, 前端断连重连后可请求 /api/chat/resume?channelId=X&afterSeq=N 拿回
   const seq = nextEventSeq(channelId);
-  const msgId = (data.type === 'ai' || data.type === 'user') ? nextMsgId(channelId) : `evt_${seq}`;
+  // 2026-07-06: 每次广播都用 crypto randomBytes 4 生成唯一 id — 防止 seq 撞车 + 前端 seenMsgIds 去重
+  //   user/ai 用 nextMsgId (按 channelId 缓存最后一条) — 让 SSE onmessage 收到时识别
+  //   其他事件用 evt_<ts>_<rand> 形式 — 让前端 seenMsgIds 集合能跨 emit 去重
+  const msgId = (data.type === 'ai' || data.type === 'user')
+    ? nextMsgId(channelId)
+    : `evt_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
   const envelope = { ...data, channelId, seq, msgId };
   const message = `data: ${JSON.stringify(envelope)}\n\n`;
   console.log(`[broadcast] type=${data.type}, channelId=${channelId}, seq=${seq}, msgId=${msgId}, clients=${sseClients.size}`);
