@@ -5,6 +5,8 @@
 
 | 日期 | phase | 一句话 | 关联 |
 |------|-------|--------|------|
+| 2026-07-06 | feat | CLI 启动简化: 去掉 banner/5步/section/命令列表, 仅显示单行旋转光标 → `✓ Bolloon ready` (v0.2.11) | [loading-tui.ts](../../src/cli/loading-tui.ts) |
+| 2026-07-06 | fix | AI 消息渲染适配非流式模式: 后端返回 `<think>...<final gen>` 结构, 前端自动剥离后只显示纯回复 (v0.2.10) | [message-renderer.ts](../../src/web/ui/message-renderer.ts) / [server.ts](../../src/web/server.ts) |
 | 2026-07-04 | docs | P2: skills-index.md (35 个全局 skill + 触发词) + crystallized-claims.md (4 条断言从 ablation 蒸馏) | [skills-index.md](./skills-index.md) / [crystallized-claims.md](./crystallized-claims.md) |
 | 2026-07-04 | test | 长任务循环消融实验 (v0.2.8-long-loop): 6 步循环 (探索→调整→验证→行动存档→记忆→再次探索) + use_skill 协议端到端, 10/13 pass (2 失败为合理 LLM 行为) | [ablation/report-long-loop.md](../ablation/report-long-loop.md) |
 | 2026-07-04 | feature | 复制 2 个 opencode skill (消融实验技能 + 技能写作) 到 bolloon `.bolloon/skills/`, 注册到 manifest, bolloon agent 可通过 use_skill 工具调用 | [skills-index.md](./skills-index.md) |

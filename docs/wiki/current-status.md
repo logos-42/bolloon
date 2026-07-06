@@ -9,7 +9,7 @@ stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name]
+tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render]
 compiled_from: [ablation-v0.2.7]
 ---
 
@@ -33,6 +33,8 @@ compiled_from: [ablation-v0.2.7]
 | **safe-name 兜底** (2026-07-06) | `src/web/util/safe-name.ts` + `src/test/safe-name.test.ts` | 抽出 `safeChannelName/safePeerName/safeName` 通用名兜底, 防 undefined/null/'undefined'/'null'/'NaN'/空白 在 UI 渲染字面量. client.ts 7 处接入 (顶栏 / sidebar / selectChannel / mention dropdown x2 / wallet / share-modal / judgment), p2p-modal.ts + p2p/index.ts 也接入. 18/18 单测 + ablation 16/16 pass | [ablation/report.md](../ablation/report.md) |
 | **pi-sdk 大拆分** (2026-07-06) | `src/agents/pi-sdk*.ts` 5 个文件 | 原 4369 行 → 主文件 2455 行 (-44%) + 4 子模块 (types 187 / session-manager 365 / tools 1257 / session-factory 129). 子模块从顶部 re-export, 外部 import 路径不变. tsc 0 错, vitest 765/766 pass | [log.md](./log.md) |
 | **server + client 部分拆分** (2026-07-06) | `src/web/server*.ts` + `src/web/client*.ts` 共 6 个文件 | server.ts 类型抽到 server-types.ts (113 行) + 创建 3 个支持模块 (storage 138 / sse 132 / v3-p2p 242) 共 625 行. client.ts 循环状态条抽到 client-loop-status.ts (229 行). tsc 0 错, vitest 766/766 pass (含上次 flaky 的 minimax 也通过) | [log.md](./log.md) |
+| **AI 消息渲染适配非流式** (2026-07-06) | `src/web/ui/message-renderer.ts` + `src/web/server.ts` | 后端返回 `<think>...<final gen>` 结构, `addMessage` 入口剥离 think 块 + 取 final gen 前为实际回复; 三处 broadcast 路径加空内容兜底 (abort/error). tsc 0 错, vitest 766/766 | [v0.2.10](../ablation/report.md) |
+| **CLI 启动简化** (2026-07-06) | `src/cli/loading-tui.ts` + `src/index.ts` | 去掉 banner/5步/section/命令列表, CLI 交互模式启动期间 console.log 静音, 仅旋转光标; 完成显示 `✓ Bolloon ready` + 提示符. tsc 0 错, vitest 766/766, build:web pass | [loading-tui.ts](../../src/cli/loading-tui.ts) |
 
 ## 未支持 (❌ 或 ⚠️ 部分)
 
@@ -76,6 +78,7 @@ compiled_from: [ablation-v0.2.7]
 | `src/agents/pi-sdk-session-factory.ts` | 129 | createAgentSession/getAgentSession |
 | `src/web/client-loop-status.ts` | 229 | renderLoopStatusBar/markLoopBarDone |
 | `src/web/client.ts` | 4261 (原 4435) | 浏览器端 UI |
+| `src/cli/loading-tui.ts` | 45 | 单行旋转光标 (启动时隐藏所有 console.log, 完成后显式 ready) |
 
 ## 最近风险
 
