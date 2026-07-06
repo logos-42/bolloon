@@ -57,6 +57,26 @@ compiled_from: [ablation-v0.2.7]
 ✅ minimax provider: 消融实验时已用 (MiniMax-M2.7)
 ```
 
+## 代码结构 (2026-07-06 重构后)
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `src/web/server.ts` | 5275 (原 6705) | Web server 主体, createWebServer 闭包 |
+| `src/web/server-types.ts` | 113 | Channel/Session/Task/SSEClient 接口 + 路径常量 |
+| `src/web/server-storage.ts` | 137 | loadChannels/saveChannels + loadSession/saveSession + 任务队列锁 |
+| `src/web/server-sse.ts` | 132 | broadcast/SSE client 管理 |
+| `src/web/server-v3-p2p.ts` | 241 | sanitizeChannelForPeer/isSharedWith/routeMentionsInReply/v3 引用管理 |
+| `src/web/routes-judgments.ts` | 788 | judgments/self-improve/permission-mode 路由 |
+| `src/web/routes-llm-config.ts` | 319 | LLM/video/audio 配置路由 + ai-parse |
+| `src/web/routes-tasks.ts` | 250 | Task Queue CRUD + executeTask |
+| `src/agents/pi-sdk.ts` | 2455 (原 4369) | PiAgent 核心 (ReAct loop) |
+| `src/agents/pi-sdk-types.ts` | 187 | 全部 interface/type |
+| `src/agents/pi-sdk-session-manager.ts` | 365 | PiSessionManager 类 |
+| `src/agents/pi-sdk-tools.ts` | 1257 | registerBuiltinTools/registerWalletTools |
+| `src/agents/pi-sdk-session-factory.ts` | 129 | createAgentSession/getAgentSession |
+| `src/web/client-loop-status.ts` | 229 | renderLoopStatusBar/markLoopBarDone |
+| `src/web/client.ts` | 4261 (原 4435) | 浏览器端 UI |
+
 ## 最近风险
 
 1. **Channel 名称显示 "undefined"** (✅ 2026-07-04 修复, commit `6859578`)

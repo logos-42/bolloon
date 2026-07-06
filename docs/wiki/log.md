@@ -247,3 +247,27 @@
 
 
 **惊险**: ablation 跑完后发现工作区被某次 `git pull --ff-only` 重置 (老 stash 自动 pop?), 现已重新应用所有 edit (peer-fs.ts / agent-manifest-protocol.ts / server.ts / log.md), 重新跑 tsc + vitest 验证仍然 748/748 pass. 新文件 (peer-resource-bridge.ts / test) 全程未丢.
+
+## [2026-07-06] refactor | server.ts 拆分 — routes-llm-config + routes-tasks + 存储去重
+
+- routes-llm-config.ts: 修复 5 个 tsc 错误 (添加 llmConfigStore/videoConfigStore/audioConfigStore/initMinimax/getMinimax 导入, 修复 Object.entries spread 类型 `: [string, any]`)
+- routes-tasks.ts: 新建 ~250 行, 从 server.ts 抽出全部 Task Queue CRUD + executeTask (通过 broadcast/getAgentForChannel 参数注入, executeTask 内部用 startTaskExecution/endTaskExecution 锁)
+- server.ts 删除旧 loadChannels/saveChannels/loadSession/saveSession/loadTheme/saveTheme 定义, 改为从 server-storage.ts 导入包装
+- 修复 agent sentinel 错误循环: 检测不可恢复 API 错误 (chat content is empty / 401 / 403 / quota / rate limit / API key / authentication) 立即终止; consecutiveErrors≥3 也终止; 保留可恢复错误的 push-to-history 机制
+- server.ts 5328 行 (原 6705, -21%), vitest 766/766 pass, tsc 0 errors
+
+## [2026-07-06] refactor | pi-sdk.ts 拆分 (4 子模块)
+
+- pi-sdk-types.ts (187 行): 全部 interface/type
+- pi-sdk-session-manager.ts (365 行): PiSessionManager 类
+- pi-sdk-tools.ts (1257 行): registerBuiltinTools/registerWalletTools/setupInboxListener/IdempotencyCache
+- pi-sdk-session-factory.ts (129 行): createAgentSession/getAgentSession/resetAgentSession/runSelfImproveLoop
+- pi-sdk.ts 2455 行 (原 4369, -44%), 所有外部导入路径不变 (re-export 保持向后兼容)
+
+## [2026-07-06] refactor | server.ts 拆分 — routes-judgments + server-types/storage/sse/v3-p2p
+
+- routes-judgments.ts (788 行): 全部 judgments/self-improve/permission-mode 路由
+- server-types.ts (113 行): Channel/Session/Task/SSEClient 接口 + 路径常量
+- server-storage.ts (137 行): loadChannels/saveChannels/loadSession/saveSession/loadTheme/saveTheme + 任务队列锁
+- server-sse.ts (132 行): broadcast/SSE client 管理
+- server-v3-p2p.ts (241 行): sanitizeChannelForPeer/isSharedWith/routeMentionsInReply/v3 引用管理
