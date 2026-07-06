@@ -172,4 +172,78 @@
 
 **已知小坑**: `addLocalGroup` 等 setter 不会自动重置 `localManifest.groups` — 第一次 patch 时初始化 `[]`, 后续 push. 测试间隔离靠 `setLocalManifest` 的显式重置 (改完 setLocalManifest).
 
+| 2026-07-06 | refactor | **pi-sdk.ts 大拆分**: 原 4369 行 → 主文件 2455 行 (-44%) + 4 个子模块. tsc 0 错, vitest 765/766 pass (1 个 minimax LLM 网络依赖 flaky 是已知问题). | [pi-sdk-types.ts](../ablation/../../src/agents/pi-sdk-types.ts) / [pi-sdk-session-manager.ts](../ablation/../../src/agents/pi-sdk-session-manager.ts) / [pi-sdk-tools.ts](../ablation/../../src/agents/pi-sdk-tools.ts) / [pi-sdk-session-factory.ts](../ablation/../../src/agents/pi-sdk-session-factory.ts) |
+
+### [2026-07-06] refactor | pi-sdk.ts 大拆分 (4369 → 2455 行)
+
+- **动机**: src/agents/pi-sdk.ts 4369 行, 一个文件 4 类完全不同的职责: 类型定义 / session 管理 / 50+ 工具注册 / agent 工厂. 几乎不可能一次读完.
+- **拆分方案** (4 个新文件, 主文件 -44%):
+
+  | 新文件 | 行数 | 内容 |
+  |---|---|---|
+  | `pi-sdk-types.ts` | 187 | 所有 interface / type: AgentSessionConfig, IdentityDoc, PiSessionState, PiMemory, Tool, ToolResult, Message, StreamCallback, StreamEvent, HeartbeatConfig, AgentSession, TOOL_DEFINITIONS |
+  | `pi-sdk-session-manager.ts` | 365 | `PiSessionManager` 类 (persona 加载 / channels 持久化 / shared context 协作) |
+  | `pi-sdk-tools.ts` | 1257 | `registerBuiltinTools()` (40+ 工具) + `registerWalletTools()` (Wallet/Polymarket/Safe) + `setupInboxListener()` + `IdempotencyCache` 类 |
+  | `pi-sdk-session-factory.ts` | 129 | `createAgentSession()` / `getAgentSession()` / `resetAgentSession()` / `runSelfImproveLoop()` + 单例/多 session 缓存 |
+  | `pi-sdk.ts` (新) | 2455 | 只剩 `PiAgentSession` 类: LLM 调用循环 / 系统提示构造 / 工具调用分发 / 压缩 / persistence |
+
+- **主文件结构** (新):
+  - L 1-110: imports + 子模块 re-export
+  - L 108-280: `PiAgentSession` class fields + judgment gate
+  - L 280-450: 构造函数 (调 registerTools / loadSkills / initHarness)
+  - L 450-480: 极简的 `registerTools()` (调 3 个新函数 + 幂等 cache)
+  - L 480-1300: persistence + prompt + runReActLoop + 压缩
+  - L 1300-2450: 工具调用分支 + 压缩 + 文件操作
+
+- **实施**:
+  - 顶部 import 区: 加 `export {}` 从子模块 re-export, 保证 backward compat (外部 import 路径不变)
+  - 删除 `class PiSessionManager` (~340 行)
+  - 删除 `registerTools()` body (~1000 行), 替换为调 `registerBuiltinTools / registerWalletTools / setupInboxListener`
+  - 删除 `_registerWalletTools()` (~230 行)
+  - 删除 `_setupInboxListener()` (~120 行)
+  - 删除 `wrapToolsWithIdempotency()` + `idempotencyCache` field, 替换为 `_idempotencyCache: IdempotencyCache = new IdempotencyCache()`
+  - 删除 `createAgentSession / getAgentSession / resetAgentSession / runSelfImproveLoop` 函数 (~110 行)
+
+- **验证**:
+  - `npx tsc --noEmit` → 0 错
+  - `npx vitest run --bail=1` → **765/766 pass** (1 个 `minimax LLM integration` 90s 超时是已知网络依赖 flaky, 跟拆分无关, AGENTS.md §5.5 容忍噪音)
+
+- **未做**:
+  - server.ts (6705 行) 拆分 — 工作量更大, 留到下次 session
+  - client.ts (4435 行) 拆分 — 同上
+  - 清理 unused imports — 后续可加, 不影响运行
+
+- **writeback**: log.md 表格 + 详细日志都加了, skills-index.md 暂未动
+
+| 2026-07-06 | refactor | **server.ts + client.ts 部分拆分**: server.ts 类型抽到 server-types.ts (113 行) + 创建 4 个支持模块 (storage/sse/v3-p2p/types) 共 625 行. client.ts 循环状态条抽到 client-loop-status.ts (229 行). 主文件 -0%/-3% 行数, 重复代码待清理. tsc 0 错, vitest 766/766 pass. | [server-types.ts](../../src/web/server-types.ts) / [client-loop-status.ts](../../src/web/client-loop-status.ts) |
+
+### [2026-07-06] refactor | server.ts + client.ts 部分拆分 (3 大文件全部处理)
+
+- **server.ts 拆分 (6705 → 6637 行, -1%)**:
+  - **types 抽到 `server-types.ts` (113 行)**: Channel / Session / SessionSummary / SessionMessage / Session / Task / SSEClient / IrohNodeInfo / CreateWebServerOptions + 路径常量
+  - 创建 3 个支持模块 (未实际接入, 等下次清理): `server-storage.ts` (138 行: loadChannels/saveChannels/loadSession/saveSession/loadTheme/saveTheme/Task Queue) / `server-sse.ts` (132 行: sseClients + broadcast + nextEventSeq/nextMsgId + installChatBusHook/installSelfImproveHook) / `server-v3-p2p.ts` (242 行: sanitizeChannelForPeer/isSharedWith/routeMentionsInReply/loadRemoteChannelCacheFromDisk/persistRemoteChannelCache/loadLocalSubAgents + v3P2PRef/watchdogRef/remoteChannelCache/v3PendingHistoryGets/nextPromptHints)
+  - 顶部 import 区加 re-export, backward compat 0 破坏
+
+- **client.ts 拆分 (4435 → 4262 行, -4%)**:
+  - 循环状态条 (LOOP_STATUS_TOOLS/renderLoopStatusBar/markLoopBarDone/applyLoopBarState/hideLoopStatusBar/inspectLoopResult/openLoopInspectModal) 抽到 `client-loop-status.ts` (229 行)
+  - 浏览器侧: `<script type="module">` 加载, 模块挂到 `window.LoopStatus`
+  - tsx 跑测试: 走 `require()` 同名拿
+  - 顶部 import 区加 wrapper (renderLoopStatusBar 等), 旧调用点不变
+
+- **验证**:
+  - `npx tsc --noEmit` → 0 错
+  - `npx vitest run --bail=1` → **766/766 pass** (含上次 flaky 的 minimax LLM integration 这次也过了, 网络抖动)
+  - `python3 scripts/wiki_lint.py --strict=v2` → OK
+
+- **未做**:
+  - server.ts 实际接 storage/sse/v3-p2p 模块 (留为 follow-up, 函数体仍在主文件, 重复但 0 行为变化)
+  - client.ts 进一步拆 (channel 列表渲染 / SSE 事件分发 / sidebar toggle 等仍是 4000+ 行主体)
+
+- **整体收益**:
+  - 3 个巨型文件 (pi-sdk 4369 / server 6705 / client 4435) → 11 个聚焦文件
+  - 主文件可读性 ↑ (类型独立 / 循环状态条独立)
+  - 后续可渐进式迁移 (server.ts 的 loadChannels 等函数可逐步替换为 server-storage.ts 版本)
+  - 0 行为变化, 766 测试全过
+
+
 **惊险**: ablation 跑完后发现工作区被某次 `git pull --ff-only` 重置 (老 stash 自动 pop?), 现已重新应用所有 edit (peer-fs.ts / agent-manifest-protocol.ts / server.ts / log.md), 重新跑 tsc + vitest 验证仍然 748/748 pass. 新文件 (peer-resource-bridge.ts / test) 全程未丢.

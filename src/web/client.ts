@@ -67,196 +67,22 @@ const messagesEl = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const sidebar = document.getElementById('sidebar');
-// 2026-06-16 新增: 循环进度 status bar (渲染 tool='loop'|'compactor'|'recovery' 的 status 事件)
-const loopStatusBar = document.getElementById('loop-status-bar') as HTMLElement | null;
-const loopStatusText = document.getElementById('loop-status-text');
-const loopStatusMeta = document.getElementById('loop-status-meta');
-
-// 把 status 事件路由到 status bar; 只关心 system 级 (loop/compactor/recovery), 其他静默
-const LOOP_STATUS_TOOLS = new Set(['loop', 'compactor', 'recovery', 'system']);
-// 2026-06-16: 三态机 — loading (spinner+文本) / retrying (spinner + "自动重试中 X/N") / done (检查按钮)
-// 重试是 server 端自动的 (pi-sdk.ts promptStream 包 retry 循环), 不暴露按钮给用户.
-let loopBarState: 'loading' | 'retrying' | 'done' = 'loading';
-let loopBarLastSummary: string = '';
-function renderLoopStatusBar(tool: string | undefined, content: string | undefined): void {
-  if (!loopStatusBar || !loopStatusText) return;
-  const t = String(tool || '').toLowerCase();
-  if (!LOOP_STATUS_TOOLS.has(t)) {
-    // 非 system 级 status (例如 tool='shell_exec' 工具执行消息) — 仍走 console.log, 不画 UI
-    console.log('[SSE] status (tool=' + t + ', ignored by UI):', content?.slice(0, 80));
-    return;
-  }
-  // 2026-06-16: 抽取 retry 信息 — "↻ 自动重试 loop 1/3" / "⛔ loop 自动重试 3 次后仍失败"
-  // 用 meta 显示, 不放到主文本里
-  const retryMatch = String(content || '').match(/自动重试(?: loop)?\s+(\d+)\/(\d+)/);
-  const retryFinal = /自动重试\s+\d+\s*次后仍失败/.test(String(content || ''));
-
-  loopStatusBar.hidden = false;
-  // 主文本去掉 emoji 和 retry 前缀, 只留干净的描述
-  let mainText = String(content || '')
-    .replace(/^[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}]\s*/u, '')
-    .replace(/^↻\s*/, '')
-    .replace(/^⛔\s*/, '')
-    .replace(/^⚠️\s*/, '')
-    .slice(0, 200);
-  loopStatusText.textContent = mainText;
-
-  // retry 态: spinner + "自动重试中 X/N" badge (橙色)
-  if (retryMatch) {
-    loopBarState = 'retrying';
-    const retryEl = document.getElementById('loop-status-retry');
-    if (retryEl) {
-      retryEl.hidden = false;
-      retryEl.textContent = `自动重试 ${retryMatch[1]}/${retryMatch[2]}`;
-    }
-  } else if (retryFinal) {
-    // 最终失败: 进入 done 态, 让用户点"检查"看错误详情 (替代手动重试按钮)
-    loopBarState = 'done';
-    const retryEl = document.getElementById('loop-status-retry');
-    if (retryEl) retryEl.hidden = true;
-  } else {
-    // 正常 status (loop/compactor/recovery/system) → loading 态
-    if (loopBarState !== 'loading') loopBarState = 'loading';
-    const retryEl = document.getElementById('loop-status-retry');
-    if (retryEl) retryEl.hidden = true;
-  }
-  applyLoopBarState();
+// 2026-07-06: 循环状态条 UI 抽到 ./client-loop-status.ts
+//   浏览器侧: 走 <script type="module"> 加载, 模块挂到 window.LoopStatus
+//   tsx 跑测试: 走 require() 同名拿
+let LS = {};
+try { if (typeof require !== 'undefined') LS = require('./client-loop-status.js') || {}; } catch (e) { /* 浏览器没 require, 走 window.LoopStatus */ }
+function _getLS() {
+  if (LS && LS.renderLoopStatusBar) return LS;
+  if (typeof window !== 'undefined' && (window as any).LoopStatus) return (window as any).LoopStatus;
+  return {};
 }
+const renderLoopStatusBar = (...args: any[]) => _getLS().renderLoopStatusBar?.(...args);
+const markLoopBarDone = (...args: any[]) => _getLS().markLoopBarDone?.(...args);
+const hideLoopStatusBar = (...args: any[]) => _getLS().hideLoopStatusBar?.(...args);
+const inspectLoopResult = (...args: any[]) => _getLS().inspectLoopResult?.(...args);
+const openLoopInspectModal = (...args: any[]) => _getLS().openLoopInspectModal?.(...args);
 
-// 2026-06-16: 完成态由 SSE `done` 事件触发; 不依赖 system 推 "✅ 完成"
-function markLoopBarDone(summary?: string): void {
-  loopBarState = 'done';
-  if (summary) loopBarLastSummary = summary;
-  applyLoopBarState();
-}
-
-function applyLoopBarState(): void {
-  if (!loopStatusBar) return;
-  loopStatusBar.dataset.state = loopBarState;
-  const checkBtn = document.getElementById('loop-status-check') as HTMLButtonElement | null;
-  if (checkBtn) checkBtn.hidden = loopBarState !== 'done';
-}
-function hideLoopStatusBar(): void {
-  if (!loopStatusBar) return;
-  loopStatusBar.hidden = true;
-  loopBarState = 'loading';
-  loopBarLastSummary = '';
-  const retryEl = document.getElementById('loop-status-retry');
-  if (retryEl) retryEl.hidden = true;
-  applyLoopBarState();
-}
-
-// 2026-06-16: 完成后检查 — GET /api/loop/inspect 拉循环产出的工作记忆/工具结果, 弹 modal
-async function inspectLoopResult(): Promise<void> {
-  const checkBtn = document.getElementById('loop-status-check') as HTMLButtonElement | null;
-  if (checkBtn) {
-    checkBtn.disabled = true;
-    checkBtn.textContent = '⏳ 加载...';
-  }
-  try {
-    const r = await fetch(`/api/loop/inspect?channelId=${encodeURIComponent(currentChannelId || '')}`);
-    const j = await r.json().catch(() => ({}));
-    openLoopInspectModal(j);
-  } catch (err) {
-    console.error('[inspect] error:', err);
-    if (typeof showSimpleToast === 'function') showSimpleToast('✗ 检查失败');
-  } finally {
-    if (checkBtn) {
-      checkBtn.disabled = false;
-      checkBtn.textContent = '✓ 检查';
-    }
-  }
-}
-
-// 2026-06-16: 检查结果 modal — 列循环产出的工具结果 / 压缩摘要 / 最终回复
-function openLoopInspectModal(data: { summary?: string; steps?: Array<{ name: string; status: string; durationMs?: number; output?: string }>; finalReply?: string; tokens?: { input?: number; output?: number }; error?: string }): void {
-  const existing = document.getElementById('loop-inspect-modal');
-  if (existing) existing.remove();
-
-  const modal = document.createElement('div');
-  modal.id = 'loop-inspect-modal';
-  modal.className = 'modal active';
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;';
-
-  const panel = document.createElement('div');
-  panel.className = 'modal-panel';
-  panel.style.cssText = 'background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:20px;max-width:720px;width:90%;max-height:80vh;overflow:auto;position:relative;';
-
-  const title = document.createElement('h3');
-  title.textContent = '🔍 循环检查';
-  title.style.cssText = 'margin:0 0 12px;font-size:16px;';
-  panel.appendChild(title);
-
-  const close = document.createElement('button');
-  close.textContent = '×';
-  close.style.cssText = 'position:absolute;top:8px;right:12px;background:transparent;border:0;font-size:24px;cursor:pointer;color:var(--text-secondary);';
-  close.onclick = () => modal.remove();
-  panel.appendChild(close);
-
-  if (data.error) {
-    const e = document.createElement('div');
-    e.style.cssText = 'padding:8px 12px;background:rgba(239,68,68,0.12);color:var(--error,#ef4444);border-radius:4px;margin-bottom:12px;font-size:13px;';
-    e.textContent = '⚠️ ' + data.error;
-    panel.appendChild(e);
-  }
-
-  if (data.summary) {
-    const s = document.createElement('div');
-    s.style.cssText = 'padding:8px 12px;background:var(--bg-tertiary);border-radius:4px;margin-bottom:12px;font-size:13px;';
-    s.textContent = data.summary;
-    panel.appendChild(s);
-  }
-
-  if (data.tokens && (data.tokens.input || data.tokens.output)) {
-    const t = document.createElement('div');
-    t.style.cssText = 'font-size:12px;color:var(--text-muted);margin-bottom:12px;';
-    t.textContent = `token: input ${data.tokens.input || 0} · output ${data.tokens.output || 0}`;
-    panel.appendChild(t);
-  }
-
-  if (Array.isArray(data.steps) && data.steps.length > 0) {
-    const h = document.createElement('div');
-    h.textContent = `步骤 (${data.steps.length})`;
-    h.style.cssText = 'font-weight:600;margin-bottom:8px;';
-    panel.appendChild(h);
-    for (const step of data.steps) {
-      const row = document.createElement('div');
-      row.style.cssText = 'padding:6px 10px;margin-bottom:4px;background:var(--bg-secondary);border-left:3px solid var(--accent);border-radius:3px;font-size:12px;';
-      const icon = step.status === 'ok' || step.status === 'completed' ? '✓' : step.status === 'error' || step.status === 'failed' ? '✗' : '○';
-      const dur = step.durationMs ? ` (${(step.durationMs / 1000).toFixed(1)}s)` : '';
-      row.innerHTML = `<b>${icon} ${escapeHtml(step.name)}</b>${dur}`;
-      if (step.output) {
-        const pre = document.createElement('pre');
-        pre.style.cssText = 'margin:4px 0 0;padding:6px;background:var(--bg);border-radius:3px;font-size:11px;white-space:pre-wrap;word-break:break-word;max-height:120px;overflow:auto;';
-        pre.textContent = String(step.output).slice(0, 800);
-        row.appendChild(pre);
-      }
-      panel.appendChild(row);
-    }
-  }
-
-  if (data.finalReply) {
-    const h = document.createElement('div');
-    h.textContent = '最终回复';
-    h.style.cssText = 'font-weight:600;margin:12px 0 8px;';
-    panel.appendChild(h);
-    const r = document.createElement('div');
-    r.style.cssText = 'padding:8px 12px;background:var(--bg-secondary);border-radius:4px;font-size:13px;white-space:pre-wrap;word-break:break-word;';
-    r.textContent = data.finalReply;
-    panel.appendChild(r);
-  }
-
-  if (!data.error && !data.summary && (!data.steps || data.steps.length === 0) && !data.finalReply) {
-    const empty = document.createElement('div');
-    empty.style.cssText = 'text-align:center;padding:24px;color:var(--text-muted);font-size:13px;';
-    empty.textContent = '无循环产出 (可能已 abort, 或没产生 step)';
-    panel.appendChild(empty);
-  }
-
-  modal.appendChild(panel);
-  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
-  document.body.appendChild(modal);
-}
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const themeToggle = document.getElementById('theme-toggle');
 const channelList = document.getElementById('channel-list');
