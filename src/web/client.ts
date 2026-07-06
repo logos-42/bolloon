@@ -1382,11 +1382,9 @@ function connect(channelId) {
         }
         // 本地 user 已经由 sendMessage 渲染 + 去重, 这里不再显示
       } else if (data.type === 'ai') {
-        // 2026-07-06: 简化逻辑 — 不再依赖 streamingText 状态机
-        //   后端 type=ai 事件携带完整 fullResponse, 直接渲染成气泡
-        //   server 不再依靠流式累积, 我们直接用这次事件的内容
-        //   但要避开 finalize 路径 (done → finalize) 覆盖 — 用 msgId 去重让每个 ai 事件只渲染一次
-        addMessage(data.content, 'ai', true, container, lastUsedJudgmentIds || []);
+        // 2026-07-06: 非流式模式 — type=ai 事件携带完整 fullResponse
+        //   addMessage 内部统一清洗 <think>/<final gen>, 这里直接传原始内容
+        addMessage(data.content || '', 'ai', true, container, lastUsedJudgmentIds || []);
       } else if (data.type === 'stream') {
         // 2026-07-06: 简化流式处理 — 完全不显示 token/thinking 中间产物
         //   原因: 后端 pivot loop 用了 stream:false, 每次 emit type='token' + content=reply.substring(0,100)

@@ -30,6 +30,9 @@
 | 2026-07-05 | test | peer-resource-bridge.test.ts (14/14): 4 类 writer round-trip + addLocal* setter + 本地读/远端落 round-trip + safeName 路径安全 | — |
 | 2026-07-05 | docs | 当前 chat-archiver.ts 已有月度压缩归档机制 (peers/<pk>/chat-<YYYY-MM>.md + memory/<agentId>/peers/<pk>/<YYYY-MM>.summary.md), 验证后无需新写, 合并到 current-status | [current-status.md](./current-status.md) |
 
+| 2026-07-06 | fix | AI 气泡显示修复: 后端取消流式后, `type:ai` 事件携带完整响应含 `<think>...</think>` + 实际回复 + `<final gen>`, 前端 `client.ts` 提取时 strip think 块 + `<final gen>` 及之后内容, 只渲染实际回复; 三处 broadcast 加空内容兜底防止气泡不渲染 | client.ts:1384 / server.ts 三处 |
+| 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
+
 ## 详细日志
 
 ### [2026-07-04] fix | P1 SessionStore escape `:` + vitest-bail 不再 flaky

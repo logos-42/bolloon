@@ -670,6 +670,11 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       const agent = await getAgentForChannel(channelId, ch.did || '', ch.name, ch.didDocRef);
       fullResponse = await agent.promptStream(fullPrompt, streamCallback, undefined, channelId);
 
+      // 2026-07-06: 防御性兜底
+      if (!fullResponse.trim()) {
+        fullResponse = '⚠️ AI 未返回内容, 请重试';
+      }
+
       // v3 新增: 存 A 的 assistant 消息到 session — B 拉历史时能看到完整对话
       try {
         const existing = await loadSession(channelId, 'default');
@@ -2320,6 +2325,10 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         // abort 抛错: 保留已输出的部分 (fullResponse 可能是空字符串)
         if (runState.abortController?.signal.aborted || err?.name === 'AbortError') {
           console.log(`[chat] aborted channel=${channelId}`);
+          // 2026-07-06: abort 时 fullResponse 可能为空 (LLM 还没输出), 必须给用户一个反馈
+          if (!fullResponse.trim()) {
+            fullResponse = '⚠️ 生成已中断 (用户取消)';
+          }
         } else {
           // M1.2 (2026-06-17): 不再 rethrow — 把错误塞到 fullResponse 让 broadcast 出来, 后续 session 仍保存
           // 旧行为: 抛到外层 catch, 触发 500 + 用户消息丢失 (session 不保存)
@@ -2340,6 +2349,13 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
       // 2026-06-18: 修 lastFinalReply 没设 → /api/loop/inspect 永远返回空
       runState.lastFinalReply = fullResponse;
+
+      // 2026-07-06: 防御性兜底 — fullResponse 为空时, 前端 segmentChatReply('') 返回 [],
+      //   导致气泡不渲染, 用户只看到"思考中"占位符. 这里保证永远有内容可渲染.
+      if (!fullResponse.trim()) {
+        fullResponse = '⚠️ AI 未返回内容, 请重试';
+        console.warn(`[chat] fullResponse empty for channel=${channelId}, using fallback`);
+      }
 
       // v3 新增: 解析 LLM 回复里的 @-mentions, 转发到目标 channel
       await routeMentionsInReply(channelId, fullResponse, localChannels, remoteChannels);
@@ -3353,6 +3369,11 @@ app.get('/channels', async (_req, res) => {
       const regenHint = await buildJudgmentHint(channel, channelId);
       const markedRegen = `${regenHint}\n\n【本轮用户请求】\n${userMessage}\n【请求结束】\n`;
       fullResponse = await agent.promptStream(markedRegen, streamCallback, undefined, channelId);
+
+      // 2026-07-06: 防御性兜底 — 同 /message 路径
+      if (!fullResponse.trim()) {
+        fullResponse = '⚠️ AI 未返回内容, 请重试';
+      }
 
       broadcast({ type: 'ai', content: fullResponse }, channelId);
 
