@@ -117,7 +117,7 @@ export class P2PModal extends HTMLElement {
         <div class="history-item-icon">💬</div>
         <div class="history-item-info">
           <div class="history-item-name">
-            ${this.escapeHtml(item.name || 'Unknown')}
+            ${this.escapeHtml(this.safeName(item.name, 'Unknown'))}
             ${item.isPinned ? '<span class="pin-icon">📌</span>' : ''}
           </div>
           <div class="history-item-meta">
@@ -234,7 +234,7 @@ export class P2PModal extends HTMLElement {
       div.innerHTML = `
         <div class="peer-status"><span class="dot online"></span></div>
         <div class="peer-info">
-          <div class="peer-name">${this.escapeHtml(peer.info?.name || 'Unknown')}</div>
+          <div class="peer-name">${this.escapeHtml(this.safeName(peer.info?.name, 'Unknown'))}</div>
           <div class="peer-meta">${(peer.nodeId || '').substring(0, 16)}...</div>
         </div>
       `;
@@ -291,6 +291,16 @@ export class P2PModal extends HTMLElement {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  // 2026-07-06: 通用 name 兜底 — 防止 name=undefined/null/'undefined' 字串
+  //   时 UI 渲染字面量 "undefined".
+  private safeName(input: any, fallback: string): string {
+    const f = fallback || 'Unknown';
+    if (input === undefined || input === null) return f;
+    const s = String(input).trim();
+    if (!s || s === 'undefined' || s === 'null' || s === 'NaN') return f;
+    return s;
   }
 
   private showToast(message: string): void {

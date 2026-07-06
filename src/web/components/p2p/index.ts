@@ -89,7 +89,7 @@ class P2PModalUI {
           <h3>身份信息</h3>
           <div class="p2p-info-row">
             <span class="label">名称:</span>
-            <span class="value">${this.escapeHtml(identityData.name || '未知')}</span>
+            <span class="value">${this.escapeHtml(this.safeName(identityData.name, '未知'))}</span>
           </div>
           <div class="p2p-info-row">
             <span class="label">CID:</span>
@@ -257,7 +257,7 @@ class P2PModalUI {
       const data = await resp.json();
 
       if (data.ok) {
-        result.innerHTML = `<div class="p2p-success">连接成功！节点: ${this.escapeHtml(data.nodeName || cid.substring(0, 16))}...</div>`;
+        result.innerHTML = `<div class="p2p-success">连接成功！节点: ${this.escapeHtml(this.safeName(data.nodeName, cid.substring(0, 16)))}...</div>`;
         result.className = 'p2p-result success';
         // 清空输入框
         input.value = '';
@@ -320,7 +320,7 @@ class P2PModalUI {
       const time = new Date(info.time).toLocaleTimeString();
       html += `
         <div class="p2p-peer-item">
-          <span class="p2p-peer-name">${this.escapeHtml(info.name || shortId)}</span>
+          <span class="p2p-peer-name">${this.escapeHtml(this.safeName(info.name, shortId))}</span>
           <span class="p2p-peer-id">${shortId}</span>
           <span class="p2p-peer-time">${time}</span>
         </div>
@@ -333,6 +333,16 @@ class P2PModalUI {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  // 2026-07-06: 通用 name 兜底 — 防止 name=undefined/null/'undefined' 字串
+  //   时 UI 渲染字面量 "undefined".
+  private safeName(input: any, fallback: string): string {
+    const f = fallback || '未知';
+    if (input === undefined || input === null) return f;
+    const s = String(input).trim();
+    if (!s || s === 'undefined' || s === 'null' || s === 'NaN') return f;
+    return s;
   }
 
   private showToast(message: string): void {
