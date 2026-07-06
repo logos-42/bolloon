@@ -1556,16 +1556,18 @@ function connect(channelId) {
         }
         // 本地 user 已经由 sendMessage 渲染 + 去重, 这里不再显示
       } else if (data.type === 'ai') {
-        // 2026-06-17: 防双气泡 — 流式过程中 streamingText 已累积同一份 fullResponse,
-        //   server `ai` 事件携带的 content 与之重复, 跳过;真正渲染走 done → finalizeTimelineAsMessage.
-        //   非流式场景 (远端 P2P 直推 / 流式前 chat 异常中断) streamingText 为空, 正常 addMessage.
-        if (!MR_hasStreamingText()) {
-          addMessage(data.content, 'ai', true, container, lastUsedJudgmentIds);
-        }
+        // 2026-07-06: 简化逻辑 — 不再依赖 streamingText 状态机
+        //   后端 type=ai 事件携带完整 fullResponse, 直接渲染成气泡
+        //   server 不再依靠流式累积, 我们直接用这次事件的内容
+        //   但要避开 finalize 路径 (done → finalize) 覆盖 — 用 msgId 去重让每个 ai 事件只渲染一次
+        addMessage(data.content, 'ai', true, container, lastUsedJudgmentIds || []);
       } else if (data.type === 'stream') {
-        if (data.streamType === 'thinking' || data.streamType === 'token') {
-          handleStreamTokenEvent(data);
-        }
+        // 2026-07-06: 简化流式处理 — 完全不显示 token/thinking 中间产物
+        //   原因: 后端 pivot loop 用了 stream:false, 每次 emit type='token' + content=reply.substring(0,100)
+        //   前端 streaming 容器 appendData 会把多轮 token 累加成 "片段1 + 片段2 + ...", 看起来很乱
+        //   改成: stream 事件全部忽略, 等 type=ai 终文事件直接渲染最终内容
+        //   thinking 折叠块仍然保留 - 由 step-timeline 自己处理 (不依赖 token stream)
+        if (false) handleStreamTokenEvent(data); // disable — 走 type=ai 直接渲染最终内容
       } else if (data.type === 'regenerating') {
         // 删旧的最后一条 AI 消息, 准备重新生成
         const messages = container.querySelectorAll('.message-ai');
@@ -1599,17 +1601,17 @@ function connect(channelId) {
           }
         }
       } else if (data.type === 'error') {
-        // 2026-06-15: 错误不再 addMessage 成 AI 气泡 — server 推 error 时, stream 的
-        //   部分 token 已经被流式元素收下, finalizeTimelineAsMessage 也会被 done 触发
-        //   再渲染一次, 跟错误文本混在一起就是用户看到的"多了一个气泡 + 半个 system context"
-        //   改: error 走 toast 提示, 留给流式 finalize 处理残余
+        // 2026-07-06: 不再走 toast — error 也是 LLM 实际产物 (529/timeout/abort), 应该作为 ai 气泡显示
+        //   之前: 走 toast 但前端 streaming 元素还会残留, 用户看不到 错误内容
+        //   改成: 直接 addMessage 成 ai 气泡, 让用户清楚看到 LLM 失败原因
+        const errContent = String(data.content || '未知错误');
+        addMessage(`⚠️ ${errContent}`, 'ai', false, container);
+        // 顺便给个 toast (兼容旧逻辑)
         if (typeof showSimpleToast === 'function') {
-          const msg = String(data.content || '').slice(0, 200);
-          showSimpleToast('⚠️ ' + msg);
+          showSimpleToast('⚠️ ' + errContent.slice(0, 200));
         } else {
-          console.error('[SSE] error:', data.content);
+          console.error('[SSE] error:', errContent);
         }
-        // 2026-06-16: error 触发时也隐藏 status bar (任务中止)
         hideLoopStatusBar();
         setSendMode('idle');
       } else if (data.type === 'task_status' || data.type === 'workflow_step' || data.type === 'workflow_loop') {
