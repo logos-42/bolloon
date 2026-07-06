@@ -1071,14 +1071,8 @@ const escapeHtml = MR_escapeHtml || ((s) => String(s ?? '').replace(/[&<>"']/g, 
 }[c])));
 
 // 2026-07-06: 通用 channel name 兜底 — 防止 name=undefined/null/'undefined' 字串
-//   时 UI 出现 "undefined" 字面量. 用法: safeChannelName(ch) 或 safeChannelName(ch.name).
-function safeChannelName(input, fallback) {
-  const fallbackText = fallback || '(未命名)';
-  if (input === undefined || input === null) return fallbackText;
-  const s = String(input).trim();
-  if (!s || s === 'undefined' || s === 'null' || s === 'NaN') return fallbackText;
-  return s;
-}
+//   时 UI 出现 "undefined" 字面量. 委托 util/safe-name.ts (有单测覆盖).
+import { safeChannelName } from './util/safe-name.js';
 
 function ensureMessageContainer(channelId) {
   if (!messagesContainers.has(channelId)) {

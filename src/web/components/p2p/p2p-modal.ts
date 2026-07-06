@@ -4,6 +4,7 @@
 
 import { p2pManager } from './p2p-manager.js';
 import type { ConnectProgress, P2PMessage, ConnectionHistoryEntry } from './types.js';
+import { safeName as safeAnyName, safePeerName } from '../../util/safe-name.js';
 
 export class P2PModal extends HTMLElement {
   private shadow = this.attachShadow({ mode: 'open' });
@@ -296,11 +297,10 @@ export class P2PModal extends HTMLElement {
   // 2026-07-06: 通用 name 兜底 — 防止 name=undefined/null/'undefined' 字串
   //   时 UI 渲染字面量 "undefined".
   private safeName(input: any, fallback: string): string {
-    const f = fallback || 'Unknown';
-    if (input === undefined || input === null) return f;
-    const s = String(input).trim();
-    if (!s || s === 'undefined' || s === 'null' || s === 'NaN') return f;
-    return s;
+    // 2026-07-06: 委托共享 safe-name.ts (有单测覆盖); 保持方法签名兼容旧调用.
+    const { safePeerName, safeName: safeAny } = require('../../util/safe-name.js');
+    if (fallback === 'Unknown') return safePeerName(input, fallback);
+    return safeAny(input, fallback);
   }
 
   private showToast(message: string): void {
