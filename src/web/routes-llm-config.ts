@@ -6,6 +6,10 @@
  */
 
 import type { Express } from 'express';
+import { llmConfigStore, type ModelProvider } from '../llm/config-store.js';
+import { videoConfigStore, type VideoProvider } from '../llm/video-config-store.js';
+import { audioConfigStore, type AudioProvider } from '../llm/audio-config-store.js';
+import { initMinimax, getMinimax } from '../constraints/index.js';
 
 export function registerLlmConfigRoutes(app: Express): void {
   // ==================== LLM 配置 API ====================
@@ -20,7 +24,7 @@ export function registerLlmConfigRoutes(app: Express): void {
       const safeConfig = {
         ...config,
         providers: Object.fromEntries(
-          Object.entries(config.providers).map(([key, val]) => [
+          Object.entries(config.providers).map(([key, val]: [string, any]) => [
             key,
             { ...val, apiKey: val.apiKey ? '***' + val.apiKey.slice(-4) : '' }
           ])
