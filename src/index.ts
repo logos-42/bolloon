@@ -22,6 +22,7 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
+import { LoadingTUI } from './cli/loading-tui.js';
 // 启动时自动检查更新已禁用 (改用 --update-check / --update-now 显式触发)
 
 
@@ -1964,6 +1965,8 @@ function printHelp(): void {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  let loading: LoadingTUI | null = null;
+  try {
   const args = parseArgs();
 
   if (args.help) {
@@ -1988,7 +1991,15 @@ async function main() {
     return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(msg);
   };
 
-  if (isTuiMode) {
+  // CLI interactive mode: suppress all startup output, show minimal spinner
+  const isCLIInteractive = mode === 'cli' && !isNonInteractive;
+  loading = isCLIInteractive ? new LoadingTUI() : null;
+  if (loading) {
+    loading.start();
+    console.log = () => {};
+    console.info = () => {};
+    process.stdout.write = () => true as any;
+  } else if (isTuiMode) {
     console.log = (...args: any[]) => {
       const msg = args.join(' ');
       if (isSdkLog(msg)) return;
@@ -2130,24 +2141,42 @@ async function main() {
       process.exit(0);
     }
   } else {
-    s.section('对话模式');
-    console.log(`${GRAY}输入命令即可开始对话，示例:${RESET}\n`);
-    console.log(`  ${CYAN}读取 想法.md${RESET}          ${GRAY}- 读取文档${RESET}`);
-    console.log(`  ${CYAN}总结 文档.md${RESET}           ${GRAY}- 总结文档${RESET}`);
-    console.log(`  ${CYAN}--agents${RESET}               ${GRAY}- 查看 SubAgent${RESET}`);
-    console.log(`  ${CYAN}--context${RESET}              ${GRAY}- 查看全局上下文${RESET}`);
-    console.log(`  ${CYAN}--delegate 任务 coding${RESET}  ${GRAY}- 委派任务${RESET}`);
-    console.log(`  ${CYAN}peers${RESET}                  ${GRAY}- 查看 P2P 节点${RESET}`);
-    console.log(`  ${CYAN}iroh${RESET}                   ${GRAY}- 查看 iroh 状态${RESET}`);
-    console.log(`  ${CYAN}退出${RESET}                   ${GRAY}- 结束对话${RESET}\n`);
-
-    if (!isTuiMode) {
+    // Restore logging and stop loading spinner
+    if (loading) {
       console.log = originalLog;
       console.info = originalInfo;
       process.stdout.write = originalStdoutWrite;
+      loading.stop(true);
+    } else {
+      // For non-loading TUI CLI mode: apply SDK filtering if needed
+      if (isTuiMode) {
+        console.log = (...args: any[]) => {
+          const msg = args.join(' ');
+          if (isSdkLog(msg)) return;
+          originalLog.apply(console, args);
+        };
+        console.info = (...args: any[]) => {
+          const msg = args.join(' ');
+          if (isSdkLog(msg)) return;
+          originalInfo.apply(console, args);
+        };
+        process.stdout.write = (chunk: any, ...args: any[]) => {
+          const msg = String(chunk);
+          if (isSdkLog(msg)) return true;
+          return originalStdoutWrite(chunk, ...args);
+        };
+      } else {
+        console.log = originalLog;
+        console.info = originalInfo;
+        process.stdout.write = originalStdoutWrite;
+      }
     }
 
     startCLI(comm!);
+  }
+  } catch (e) {
+    loading?.stop(false);
+    throw e;
   }
 }
 
