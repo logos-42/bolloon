@@ -1,6 +1,6 @@
 # Bolloon 核心功能消融实验报告 (v0.2.7)
 
-> 生成时间: 2026-07-04T05:02:43.992Z
+> 生成时间: 2026-07-06T04:15:34.853Z
 > 实验 runner: scripts/ablation/run.ts
 > 服务端口: 54188 (web: dist/web + esbuild 编译 client.ts)
 > 节点: Windows 11, Node v24.15.0, LLM provider: minimax (MiniMax-M2.7)
@@ -71,7 +71,7 @@ CAUGHT:Invalid PDF structure
 - note: parseFrontmatter 失败 → meta=null 但 body 保留 (registry.ts:78-106)
 - compileOut: [HumanValueStore] Initialized at C:\Users\Mechrevo\.bolloon\human-values
 CHARS=4743
-TIME=371
+TIME=450
 HAS_BODY=true
 - compileErr: 
 - compiledChars: 4743
@@ -87,16 +87,16 @@ HAS_BODY=true
 
 ##### ✅ [C2] loadSkillsFromPaths(defaultSkillPaths) → 有 N 个
 - out: PATHS=["C:\\Users\\Mechrevo\\.bolloon\\skills","D:\\AI\\bolloon\\.bolloon\\skills","C:\\Users\\Mechrevo\\.boll\\skills"]
-LEN=1
-NAMES=ablation-test
+LEN=3
+NAMES=ablation-test,技能写作,消融实验技能
 - err: 
-- count: 1
+- count: 3
 
 ##### ✅ [C3] 坏 skill.md 不阻断其他加载
-- out: LEN=1
+- out: LEN=3
 - err: 
-- count: 1
-- c2Count: 1
+- count: 3
+- c2Count: 3
 
 #### tool_loop
 
@@ -104,20 +104,20 @@ NAMES=ablation-test
 - 备注: using channel ch_1781023275768_3aasyj (智能体)
 
 ##### ✅ [C1] 极简 prompt → 直接回答, 无 tool
-- duration_ms: 87
+- duration_ms: 62
 - status: 202
 - asyncAck: true
 - ok: true
 
 ##### ✅ [C2] 搜索 prompt × 3 次独立运行 (假阳性检查, 监听 SSE)
-- subs: [{"duration_ms":12611,"postStatus":202,"asyncOk":true,"messages":1,"toolSeen":true,"aiTextLen":0,"tokenTextLen":493,"totalTextLen":493,"eventTypes":"user,queue_update,stream:thinking,workflow_step,phase,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,status,workflow_step,status,workflow_step","textPreview":"<think>The user is asking me to
+- subs: [{"duration_ms":24301,"postStatus":202,"asyncOk":true,"messages":1,"toolSeen":true,"aiTextLen":0,"tokenTextLen":100,"totalTextLen":100,"eventTypes":"user,queue_update,stream:thinking,workflow_step,phase,phase,status,workflow_step,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,error,ai","textPreview":"<think>The user wants a single word reply: 
 - toolLoopVisible: 3/3
-- toolCallCorrect: 3/3
+- toolCallCorrect: 2/3
 - successRate: 3/3
-- answerRate: 3/3
+- answerRate: 2/3
 
 ##### ✅ [C3] 异常 prompt (无意义字符串) → 不崩, 显式错误或回答
-- duration_ms: 12
+- duration_ms: 9
 - status: 202
 - asyncAck: true
 
