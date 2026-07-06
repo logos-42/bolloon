@@ -13,9 +13,6 @@ import {
   healthCheck,
 } from './input-validator.js';
 import { segmentChatReply, type ChatSegment } from '../agents/chat-segmenter.js';
-import { registerJudgmentsRoutes } from './routes-judgments.js';
-import { registerLlmConfigRoutes } from './routes-llm-config.js';
-import { registerTaskRoutes } from './routes-tasks.js';
 
 // 2026-07-06: 类型抽到 ./server-types.ts (channel / session / task / sse client / iroh info / paths)
 import {
@@ -184,27 +181,182 @@ function isValidWalletAddress(addr: unknown): string {
   return '';
 }
 
-// 2026-07-06: loadChannels / saveChannels / loadSession / saveSession / loadTheme / saveTheme
-// 已抽到 ./server-storage.ts — 这里只保留旧引用供 createWebServer 内部闭包使用
-// TODO: 后续让所有调用走 import, 然后删除这段冗余定义
-import {
-  loadChannels as _loadChannels,
-  saveChannels as _saveChannels,
-  loadSession as _loadSession,
-  saveSession as _saveSession,
-  loadTheme as _loadTheme,
-  saveTheme as _saveTheme,
-  getLastChannelsWriteAt,
-} from './server-storage.js';
+async function loadChannels(): Promise<Channel[]> {
+  try {
+    const data = await fs.readFile(CHANNELS_PATH, 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
+}
 
-// 包装成闭包内可用的形式, 保持 createWebServer 内代码不用改
-const loadChannels = _loadChannels;
-const saveChannels = _saveChannels;
-const loadSession = _loadSession;
-const saveSession = _saveSession;
-const loadTheme = _loadTheme;
-const saveTheme = _saveTheme;
-// 2026-07-06: Task Queue 已抽到 ./routes-tasks.ts + ./server-storage.ts
+async function saveChannels(channels: Channel[]): Promise<void> {
+  // 写盘前剥掉任何遗留的 didDocument 字段, 防止历史脏数据撑大文件
+  const sanitized = channels.map(ch => {
+    const { didDocument: _omit, ...rest } = ch as any;
+    return rest as Channel;
+  });
+  const jsonStr = JSON.stringify(sanitized, null, 2);
+
+  // 写盘保护: 内容和上次完全一致就跳过, 避免 SSE ping / 重新 init 触发的无意义写盘
+  if (jsonStr === lastChannelsJson) {
+    return; // 静默跳过, 不打日志
+  }
+  lastChannelsJson = jsonStr;
+
+  console.log('[saveChannels] 保存频道数据, 数量:', sanitized.length);
+  console.log('[saveChannels] JSON 长度:', jsonStr.length);
+  await fs.writeFile(CHANNELS_PATH, jsonStr);
+  // 写盘即令缓存失效: 用 lastChannelsWriteAt 标记, getChannelsWithDID 会检查
+  lastChannelsWriteAt = Date.now();
+}
+
+// 写盘去重: 上次写盘内容, 用于跳过幂等调用
+let lastChannelsJson = '';
+
+// 模块级: 最近一次 channels.json 写盘时间. saveChannels 在模块顶层,
+// getChannelsWithDID 在 createWebServer 内部, 跨作用域用模块变量桥接.
+let lastChannelsWriteAt = 0;
+
+async function loadSession(channelId: string, sessionId?: string): Promise<Session | null> {
+  // sessionId is optional for backward compatibility; if provided, load specific session
+  const key = sessionId ? `${channelId}:${sessionId}` : channelId;
+  const sessionPath = path.join(SESSION_CACHE_PATH, `${key}.json`);
+  try {
+    // 内存保护: 拒绝加载过大的 session 文件 (> 50MB 视为异常, 避免 OOM)
+    const stat = await fs.stat(sessionPath);
+    if (stat.size > 50 * 1024 * 1024) {
+      console.warn(`[loadSession] session 过大 (${stat.size} bytes): ${key}`);
+      return null;
+    }
+    const data = await fs.readFile(sessionPath, 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+async function saveSession(session: Session): Promise<void> {
+  const key = session.sessionId ? `${session.channelId}:${session.sessionId}` : session.channelId;
+  const sessionPath = path.join(SESSION_CACHE_PATH, `${key}.json`);
+  await fs.writeFile(sessionPath, JSON.stringify(session, null, 2));
+}
+
+async function loadTheme(): Promise<{ theme: 'light' | 'dark'; agentId: string }> {
+  try {
+    const data = await fs.readFile(THEME_PATH, 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return { theme: 'light', agentId: '' };
+  }
+}
+
+async function saveTheme(theme: 'light' | 'dark', agentId: string): Promise<void> {
+  await fs.writeFile(THEME_PATH, JSON.stringify({ theme, agentId }, null, 2));
+}
+
+// ==================== Task Queue & Workflow System ====================
+
+
+
+
+async function loadTaskQueue(): Promise<Task[]> {
+  try {
+    const data = await fs.readFile(TASK_QUEUE_PATH, 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
+}
+
+async function saveTaskQueue(tasks: Task[]): Promise<void> {
+  await fs.writeFile(TASK_QUEUE_PATH, JSON.stringify(tasks, null, 2));
+}
+
+let isExecutingTask = false;
+let executionTaskId: string | null = null;
+
+async function executeTask(task: Task, channelId: string): Promise<void> {
+  if (isExecutingTask) return;
+  isExecutingTask = true;
+  executionTaskId = task.id;
+
+  const agent = await getAgentForChannel(channelId);
+  const tasks = await loadTaskQueue();
+  const taskIndex = tasks.findIndex(t => t.id === task.id);
+  if (taskIndex >= 0) {
+    tasks[taskIndex].status = 'running';
+    tasks[taskIndex].updatedAt = new Date().toISOString();
+    await saveTaskQueue(tasks);
+  }
+
+  broadcast({ type: 'task_status', taskId: task.id, status: 'running', progress: 0 }, channelId);
+
+  try {
+    let result = '';
+
+    switch (task.type) {
+      case 'chat':
+        if (task.description) {
+          broadcast({ type: 'status', content: `执行任务: ${task.title}` }, channelId);
+          result = await agent.prompt(task.description);
+        }
+        break;
+
+      case 'read':
+        if (task.description) {
+          broadcast({ type: 'status', content: `读取文档: ${task.description}` }, channelId);
+          const content = await documentReader.read(task.description);
+          result = `📄 文档读取完成\n\n${content.text.substring(0, 500)}${content.text.length > 500 ? '...' : ''}`;
+        }
+        break;
+
+      case 'summarize':
+        if (task.description) {
+          broadcast({ type: 'status', content: `总结文档: ${task.description}` }, channelId);
+          const content = await documentReader.read(task.description);
+          const llm = getMinimax();
+          const summary = await llm.summarize(content.text);
+          result = `📝 文档总结:\n\n${summary.summary}`;
+        }
+        break;
+
+      default:
+        result = '未知任务类型';
+    }
+
+    // 更新任务状态
+    const tasks = await loadTaskQueue();
+    const idx = tasks.findIndex(t => t.id === task.id);
+    if (idx >= 0) {
+      tasks[idx].status = 'completed';
+      tasks[idx].progress = 100;
+      tasks[idx].result = result;
+      tasks[idx].updatedAt = new Date().toISOString();
+      await saveTaskQueue(tasks);
+    }
+
+    broadcast({ type: 'task_status', taskId: task.id, status: 'completed', progress: 100, result }, channelId);
+    broadcast({ type: 'ai', content: result }, channelId);
+
+  } catch (error: any) {
+    const tasks = await loadTaskQueue();
+    const idx = tasks.findIndex(t => t.id === task.id);
+    if (idx >= 0) {
+      tasks[idx].status = 'failed';
+      tasks[idx].error = error.message;
+      tasks[idx].updatedAt = new Date().toISOString();
+      await saveTaskQueue(tasks);
+    }
+
+    broadcast({ type: 'task_status', taskId: task.id, status: 'failed', error: error.message }, channelId);
+    broadcast({ type: 'error', content: `任务执行失败: ${error.message}` }, channelId);
+  }
+
+  isExecutingTask = false;
+  executionTaskId = null;
+}
+
 
 
 let sseClients: Set<SSEClient> = new Set();
@@ -2681,7 +2833,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
   async function getChannelsWithDID(): Promise<Channel[]> {
     const now = Date.now();
     // 缓存命中: 数据有效 AND 在写盘之后 AND 在 TTL 内
-    if (channelsCache.data && channelsCache.cachedAt > getLastChannelsWriteAt() && channelsCache.cachedAt + CHANNELS_CACHE_TTL_MS > now) {
+    if (channelsCache.data && channelsCache.cachedAt > lastChannelsWriteAt && channelsCache.cachedAt + CHANNELS_CACHE_TTL_MS > now) {
       return channelsCache.data;
     }
     const channels = await loadChannels();
@@ -2706,7 +2858,7 @@ app.get('/channels', async (_req, res) => {
     // 2026-06-17: 缓存命中 → 0 行;未命中 → 1 行 summary (上面 console.log proxy 已吃掉 [API] /channels 等旧日志)
     const t0 = Date.now();
     const now = t0;
-    const hit = !!(channelsCache.data && channelsCache.cachedAt > getLastChannelsWriteAt() && channelsCache.cachedAt + CHANNELS_CACHE_TTL_MS > now);
+    const hit = !!(channelsCache.data && channelsCache.cachedAt > lastChannelsWriteAt && channelsCache.cachedAt + CHANNELS_CACHE_TTL_MS > now);
     const channels = await getChannelsWithDID();
     if (!hit) {
       console.log(`[channels] refresh, n=${channels.length}, t=+${Date.now() - t0}ms`);
@@ -3384,11 +3536,465 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
-  // 2026-07-06: Task Queue API 抽到 ./routes-tasks.ts
-  registerTaskRoutes(app, { broadcast, getAgentForChannel });
+  // ==================== Task Queue API ====================
 
-  // 2026-07-06: LLM/Video/Audio 配置路由抽到 ./routes-llm-config.ts
-  registerLlmConfigRoutes(app);
+  // 获取所有任务
+  app.get('/api/tasks', async (req, res) => {
+    try {
+      const tasks = await loadTaskQueue();
+      res.json(tasks);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 创建新任务
+  app.post('/api/tasks', async (req, res) => {
+    try {
+      const { type, title, description, steps } = req.body;
+      if (!type || !title) {
+        return res.status(400).json({ error: 'type and title required' });
+      }
+
+      const tasks = await loadTaskQueue();
+      const task: Task = {
+        id: `task_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+        type,
+        title,
+        description,
+        status: 'pending',
+        progress: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        steps: steps?.map((s: string, i: number) => ({
+          id: `step_${i}`,
+          name: s,
+          status: 'pending'
+        }))
+      };
+
+      tasks.push(task);
+      await saveTaskQueue(tasks);
+
+      res.json(task);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 获取单个任务
+  app.get('/api/tasks/:taskId', async (req, res) => {
+    try {
+      const { taskId } = req.params;
+      const tasks = await loadTaskQueue();
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+      res.json(task);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 更新任务
+  app.patch('/api/tasks/:taskId', async (req, res) => {
+    try {
+      const { taskId } = req.params;
+      const { status, currentStep } = req.body;
+      const tasks = await loadTaskQueue();
+      const taskIndex = tasks.findIndex(t => t.id === taskId);
+      if (taskIndex === -1) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+
+      if (status) {
+        tasks[taskIndex].status = status;
+      }
+      if (currentStep !== undefined) {
+        tasks[taskIndex].currentStep = currentStep;
+      }
+      tasks[taskIndex].updatedAt = new Date().toISOString();
+
+      await saveTaskQueue(tasks);
+      res.json(tasks[taskIndex]);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 删除任务
+  app.delete('/api/tasks/:taskId', async (req, res) => {
+    try {
+      const { taskId } = req.params;
+      const tasks = await loadTaskQueue();
+      const filtered = tasks.filter(t => t.id !== taskId);
+      await saveTaskQueue(filtered);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 执行任务（自动执行下一步）
+  app.post('/api/tasks/:taskId/execute', async (req, res) => {
+    try {
+      const { taskId } = req.params;
+      const { channelId } = req.body;
+      if (!channelId) {
+        return res.status(400).json({ error: 'channelId required' });
+      }
+
+      const tasks = await loadTaskQueue();
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+
+      if (isExecutingTask) {
+        return res.status(409).json({ error: 'Another task is currently executing' });
+      }
+
+      // 异步执行任务
+      executeTask(task, channelId);
+
+      res.json({ ok: true, taskId: task.id });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 执行下一个待处理任务
+  app.post('/api/tasks/execute-next', async (req, res) => {
+    try {
+      const { channelId } = req.body;
+      if (!channelId) {
+        return res.status(400).json({ error: 'channelId required' });
+      }
+
+      const tasks = await loadTaskQueue();
+      const nextTask = tasks.find(t => t.status === 'pending');
+
+      if (!nextTask) {
+        return res.json({ ok: false, message: 'No pending tasks' });
+      }
+
+      if (isExecutingTask) {
+        return res.status(409).json({ error: 'Another task is currently executing' });
+      }
+
+      // 异步执行任务
+      executeTask(nextTask, channelId);
+
+      res.json({ ok: true, taskId: nextTask.id });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==================== LLM 配置 API ====================
+
+  // 获取所有 LLM 配置
+  app.get('/api/llm-config', async (req, res) => {
+    try {
+      const config = await llmConfigStore.getConfig();
+      const providerInfo = llmConfigStore.getAllProviderInfo();
+
+      // 隐藏 API Key
+      const safeConfig = {
+        ...config,
+        providers: Object.fromEntries(
+          Object.entries(config.providers).map(([key, val]) => [
+            key,
+            { ...val, apiKey: val.apiKey ? '***' + val.apiKey.slice(-4) : '' }
+          ])
+        ),
+        providerInfo
+      };
+
+      res.json(safeConfig);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 更新 LLM 配置
+  app.post('/api/llm-config', async (req, res) => {
+    try {
+      const { provider, config } = req.body;
+
+      if (!provider || !config) {
+        return res.status(400).json({ error: 'provider and config required' });
+      }
+
+      // 如果前端发的是掩码（***xxx），从当前配置里取真实 key
+      const currentConfig = await llmConfigStore.getProvider(provider as ModelProvider);
+      if (currentConfig && config.apiKey && config.apiKey.startsWith('***')) {
+        config.apiKey = currentConfig.apiKey;
+      }
+
+      await llmConfigStore.updateProvider(provider, config);
+
+      // 如果是活跃供应商，重新初始化 Pi SDK
+      const currentActive = await llmConfigStore.getActiveProvider();
+      if (provider === currentActive) {
+        const newConfig = await llmConfigStore.getActiveProviderConfig();
+        if (newConfig) {
+          initMinimax({
+            provider,
+            apiKey: newConfig.apiKey || undefined,
+            baseUrl: newConfig.baseUrl || undefined,
+            model: newConfig.model || undefined
+          });
+        }
+      }
+
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 设置活跃供应商
+  app.post('/api/llm-provider', async (req, res) => {
+    try {
+      const { provider } = req.body;
+
+      if (!provider) {
+        return res.status(400).json({ error: 'provider required' });
+      }
+
+      await llmConfigStore.setActiveProvider(provider as ModelProvider);
+
+      // 重新初始化 Pi SDK
+      const config = await llmConfigStore.getActiveProviderConfig();
+      if (config) {
+        initMinimax({
+          provider: provider as ModelProvider,
+          apiKey: config.apiKey || undefined,
+          baseUrl: config.baseUrl || undefined,
+          model: config.model || undefined
+        });
+      }
+
+      res.json({ ok: true, provider });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 测试供应商连接
+  app.post('/api/llm-test', async (req, res) => {
+    try {
+      const { provider } = req.body;
+
+      if (!provider) {
+        return res.status(400).json({ error: 'provider required' });
+      }
+
+      const result = await llmConfigStore.testProvider(provider as ModelProvider);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==================== 视频生成配置 (Seedance 等) ====================
+
+  // 获取视频生成配置
+  app.get('/api/video-config', async (req, res) => {
+    try {
+      const config = await videoConfigStore.getConfig();
+      const providerInfo = videoConfigStore.getAllProviderInfo();
+
+      // 脱敏：不返回 apiKey 明文
+      const masked = Object.fromEntries(
+        Object.entries(config.providers).map(([key, val]) => [
+          key,
+          { ...val, apiKey: val.apiKey ? '***' + val.apiKey.slice(-4) : '' }
+        ])
+      );
+
+      res.json({
+        activeProvider: config.activeProvider,
+        providers: masked,
+        providerInfo
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 更新视频供应商配置
+  app.post('/api/video-config', async (req, res) => {
+    try {
+      const { provider, config } = req.body;
+
+      if (!provider || !config) {
+        return res.status(400).json({ error: 'provider and config required' });
+      }
+
+      // 如果前端发的是掩码（***xxx），从当前配置里取真实 key
+      const currentConfig = await videoConfigStore.getProvider(provider as VideoProvider);
+      if (currentConfig && config.apiKey && config.apiKey.startsWith('***')) {
+        config.apiKey = currentConfig.apiKey;
+      }
+
+      await videoConfigStore.updateProvider(provider as VideoProvider, config);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 测试视频供应商连接
+  app.post('/api/video-test', async (req, res) => {
+    try {
+      const { provider } = req.body;
+
+      if (!provider) {
+        return res.status(400).json({ error: 'provider required' });
+      }
+
+      const result = await videoConfigStore.testProvider(provider as VideoProvider);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==================== 音频生成配置 (TTS / Music) ====================
+
+  // 获取音频配置
+  app.get('/api/audio-config', async (req, res) => {
+    try {
+      const config = await audioConfigStore.getConfig();
+      const providerInfo = audioConfigStore.getAllProviderInfo();
+
+      const masked = Object.fromEntries(
+        Object.entries(config.providers).map(([key, val]) => [
+          key,
+          { ...val, apiKey: val.apiKey ? '***' + val.apiKey.slice(-4) : '' }
+        ])
+      );
+
+      res.json({
+        activeProvider: config.activeProvider,
+        providers: masked,
+        providerInfo
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 更新音频供应商配置
+  app.post('/api/audio-config', async (req, res) => {
+    try {
+      const { provider, config } = req.body;
+      if (!provider || !config) {
+        return res.status(400).json({ error: 'provider and config required' });
+      }
+
+      // 掩码回写真实 key
+      const currentConfig = await audioConfigStore.getProvider(provider as AudioProvider);
+      if (currentConfig && config.apiKey && config.apiKey.startsWith('***')) {
+        config.apiKey = currentConfig.apiKey;
+      }
+
+      await audioConfigStore.updateProvider(provider as AudioProvider, config);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 测试音频供应商连接
+  app.post('/api/audio-test', async (req, res) => {
+    try {
+      const { provider } = req.body;
+      if (!provider) {
+        return res.status(400).json({ error: 'provider required' });
+      }
+      const result = await audioConfigStore.testProvider(provider as AudioProvider);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 统一 AI 解析入口：CLI / 接收方节点 调这里完成 LLM + judgment + harness
+  // 入参: { text, mimeType, fileName, fromNodeId, source }
+  // 出参: { summary, qualityScore, judgmentId?, gateArtifact? }
+  app.post('/api/ai-parse', async (req, res) => {
+    try {
+      const { text, mimeType, fileName, fromNodeId, source } = req.body || {};
+      if (!text || !fileName) {
+        return res.status(400).json({ error: 'text and fileName required' });
+      }
+
+      const truncated = text.length > 6000 ? text.substring(0, 6000) + '...[截断]' : text;
+      const prompt = `请分析以下 ${mimeType || 'text'} 文档，并给出 (1) 一句话中文摘要 (2) 三个关键要点 (3) 质量评分(0-1)。\n\n文件名: ${fileName}\n\n内容:\n${truncated}`;
+
+      // 1. LLM 解析
+      const llm = getMinimax();
+      const t0 = Date.now();
+      const llmResult = await llm.summarize(prompt);
+      const dt = Date.now() - t0;
+
+      const out: any = {
+        ok: true,
+        summary: llmResult.summary,
+        qualityScore: llmResult.qualityScore,
+        latencyMs: dt,
+        mimeType: mimeType || 'text/plain',
+        fileName,
+      };
+
+      // 2. 蒸馏为 judgment (异步,失败不影响主返回)
+      try {
+        const judgmentMod = await import('../pi-ecosystem-judgment/index.js');
+        await judgmentMod.initializeJudgmentStore();
+        const j = await judgmentMod.createJudgment({
+          type: 'trajectory',
+          content: `AI 解析 ${fileName}: ${llmResult.summary.slice(0, 200)}`,
+          source: 'agent',
+          confidence: Math.min(1, llmResult.qualityScore),
+          context: `ai-parse:${mimeType || 'text'}:${source || 'p2p'}`,
+          evidence: {
+            trajectory: [{
+              timestamp: new Date().toISOString(),
+              action: `parse:${fileName}`,
+              outcome: `score=${llmResult.qualityScore.toFixed(2)}`,
+              approved: true,
+            }],
+          },
+        });
+        out.judgmentId = j.id;
+      } catch (e) {
+        out.judgmentError = (e as Error).message;
+      }
+
+      // 3. 在 harness 落产物 (异步,失败不影响)
+      try {
+        const harnessMod = await import('../bollharness-integration/index.js');
+        const gate = new harnessMod.GateStateMachine();
+        gate.submitArtifact(`ai-parse:${fileName}`, {
+          summary: llmResult.summary,
+          score: llmResult.qualityScore,
+          fromNodeId: fromNodeId || null,
+          parsedAt: Date.now(),
+        });
+        out.gateArtifact = `ai-parse:${fileName}`;
+      } catch (e) {
+        out.gateError = (e as Error).message;
+      }
+
+      res.json(out);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // ==================== P2P Network API ====================
 
@@ -4760,8 +5366,763 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
-  // 2026-07-06: judgments / self-improve / permission-mode 路由抽到 ./routes-judgments.ts
-  registerJudgmentsRoutes(app);
+  // ==================== Judgments (v1 核心: 让我能记录判断) ====================
+  // POST /api/judgments       — 记录一个判断
+  // GET  /api/judgments       — 列出所有判断 (新→旧)
+  // 存储: ~/.bolloon/human-values/judgments.json (human-value-store)
+  //      极简版: 只记录 decision + reason; 其它字段可选
+  app.post('/api/judgments', async (req, res) => {
+    try {
+      const { decision, reason, context } = req.body as {
+        decision?: string; reason?: string; context?: { domain?: string; stakes?: string };
+      };
+      if (!decision || typeof decision !== 'string' || !decision.trim()) {
+        return res.status(400).json({ error: 'decision required' });
+      }
+      const { storeHumanJudgment, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+      const j = await storeHumanJudgment({
+        decision: decision.trim(),
+        decision_type: 'approve',
+        reasons: reason ? [reason.trim()] : [],
+        values_derived: [],
+        context: {
+          domain: context?.domain || 'general',
+          complexity: 'moderate',
+          stakes: (context?.stakes as 'low' | 'medium' | 'high' | 'critical') || 'medium',
+          time_pressure: 'low',
+        },
+        metadata: {
+          source: 'explicit',
+          confidence: 0.8,
+          revisable: true,
+        },
+      });
+      res.json({ ok: true, judgment: j });
+    } catch (err: any) {
+      console.error('[judgments] POST failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/judgments', async (req, res) => {
+    try {
+      const { listJudgmentsByStatus, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+      const status = (typeof req.query.status === 'string' ? req.query.status : 'all') as
+        | 'active'
+        | 'pending'
+        | 'superseded'
+        | 'rejected'
+        | 'all';
+      const all = await listJudgmentsByStatus(status);
+      all.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+      res.json({ count: all.length, status, judgments: all });
+    } catch (err: any) {
+      console.error('[judgments] GET failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 蒸馏 B 触发 (人类点按钮) — 同步执行演化对齐
+  app.post('/api/judgments/distill-from-conversation', async (req, res) => {
+    try {
+      const { channelId, messageId, recentTurns } = req.body as {
+        channelId?: string;
+        messageId?: string;
+        recentTurns?: number;
+      };
+      if (!channelId) {
+        return res.status(400).json({ error: 'channelId required' });
+      }
+
+      // 取 channel 最近的对话
+      const channels = await loadChannels();
+      const channel = channels.find((c) => c.id === channelId);
+      if (!channel) return res.status(404).json({ error: 'channel not found' });
+
+      const currentSessionId = channel.currentSessionId;
+      if (!currentSessionId) {
+        return res.status(400).json({ error: 'no active session in channel' });
+      }
+      const session = await loadSession(channelId, currentSessionId);
+      if (!session) return res.status(404).json({ error: 'session not found' });
+
+      // 取最近 N 轮 (默认 10), 转成 DistillTurn 格式
+      const limit = Math.min(Math.max(recentTurns ?? 10, 2), 30);
+      const turns = session.messages.slice(-limit).map((m) => ({
+        role: (m.type === 'user' ? 'human' : 'agent') as 'human' | 'agent',
+        content: m.content,
+      }));
+
+      const { distillAndStoreFromChannel } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const result = await distillAndStoreFromChannel(turns, { channelId });
+
+      res.json({
+        ok: true,
+        triggered: result.triggered,
+        reason: result.reason,
+        judgment: result.judgment,
+        evolved: result.evolved,
+      });
+    } catch (err: any) {
+      console.error('[judgments] distill-from-conversation failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 蒸馏 D 触发 (AI 被动) — 后台异步,不阻塞 HTTP 响应
+  app.post('/api/judgments/detect-and-distill', async (req, res) => {
+    try {
+      const { channelId, turns } = req.body as {
+        channelId?: string;
+        turns?: Array<{ role: 'human' | 'agent'; content: string }>;
+      };
+
+      // 先立即返回 202, 不等 LLM
+      res.status(202).json({ ok: true, queued: true });
+
+      if (!channelId || !Array.isArray(turns) || turns.length === 0) {
+        return;
+      }
+
+      // 异步处理 (不 await, 不阻塞响应)
+      setImmediate(async () => {
+        try {
+          const { detectAndDistillFromChannel } = await import(
+            '../pi-ecosystem-judgment/human-value-pipeline.js'
+          );
+          const result = await detectAndDistillFromChannel(turns, { channelId });
+          if (result.triggered) {
+            console.log(`[D-hook] ${channelId}: ${result.reason}`, result.evolved);
+          }
+        } catch (err) {
+          console.warn('[D-hook] background failed:', err);
+        }
+      });
+    } catch (err: any) {
+      console.error('[judgments] detect-and-distill failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 判断力使用回溯 (P0.5): 给定 judgmentIds, 反查对应的 decision 文本
+  // 用途: UI 上"这条 AI 回复引用了哪些原则"
+  app.post('/api/judgments/resolve-usage', async (req, res) => {
+    try {
+      const { ids } = req.body as { ids?: string[] };
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.json({ items: [] });
+      }
+      const { loadAllJudgments } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      const all = await loadAllJudgments();
+      const byId = new Map(all.map((j) => [j.id, j]));
+      const items = ids
+        .map((id) => byId.get(id))
+        .filter((j): j is NonNullable<typeof j> => Boolean(j))
+        .map((j) => ({
+          id: j.id,
+          decision: j.decision,
+          status: j.status ?? 'active',
+          timestamp: j.timestamp,
+        }));
+      res.json({ items });
+    } catch (err: any) {
+      console.error('[judgments] resolve-usage failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 判断力违规日志 (P3 UI): 读 violations.jsonl
+  app.get('/api/judgments/violations', async (req, res) => {
+    try {
+      const { getRecentViolations } = await import(
+        '../pi-ecosystem-judgment/monitor-gate.js'
+      );
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '20'), 10) || 20, 1), 200);
+      const items = await getRecentViolations(limit);
+      res.json({ count: items.length, items });
+    } catch (err: any) {
+      console.error('[judgments] violations failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 类 B 自适应扫描: 读 judgments.json + usage.jsonl, 给出 stale/rising/unused 建议
+  // ?force=1 跳过 24h 缓存
+  app.get('/api/judgments/adaptive-suggestions', async (req, res) => {
+    try {
+      const { getCachedScan } = await import(
+        '../pi-ecosystem-judgment/adaptive-scan.js'
+      );
+      const force = String(req.query.force ?? '') === '1';
+      const result = await getCachedScan(force);
+      res.json(result);
+    } catch (err: any) {
+      console.error('[judgments] adaptive-scan failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Bootstrap Context 调试视图: 返出完整 BolloonContext
+  app.get('/api/bolloon/context', async (req, res) => {
+    try {
+      const { getCachedBolloonContext } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const force = String(req.query.force ?? '') === '1';
+      const ctx = await getCachedBolloonContext({ cwd: process.cwd() }, force);
+      res.json(ctx);
+    } catch (err: any) {
+      console.error('[bolloon] context failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 阶段 B: 周报 (weekly-report.ts 产物) — 仅 API 读取, 不做 UI tab
+  // GET /api/reports           → { files: ['2026-W24.md', ...] }
+  // GET /api/reports/2026-W24  → { week, content }
+  app.get('/api/reports', async (_req, res) => {
+    try {
+      const dir = path.join(os.homedir(), '.bolloon', 'reports');
+      try {
+        const entries = await fs.readdir(dir);
+        const files = entries
+          .filter((f) => f.endsWith('.md'))
+          .sort()
+          .reverse(); // 新的在前
+        res.json({ dir, files });
+      } catch {
+        res.json({ dir, files: [] });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/reports/:week', async (req, res) => {
+    try {
+      const week = req.params.week;
+      // 严格校验, 防路径穿越
+      if (!/^\d{4}-W\d{1,2}$/.test(week)) {
+        return res.status(400).json({ error: 'week must match YYYY-Www' });
+      }
+      const file = path.join(os.homedir(), '.bolloon', 'reports', `${week}.md`);
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        res.json({ week, content, length: content.length });
+      } catch {
+        res.status(404).json({ error: 'not found', week });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 阶段 C 护栏 5: auto-evolve baseline 管理 (无 UI, 仅 API)
+  // GET    /api/auto-evolve/baselines             → 列出所有 baseline tag
+  // GET    /api/auto-evolve/baselines/:tag/diff  → 看某 baseline 的 diff 摘要
+  // POST   /api/auto-evolve/rollback {tag}       → 回滚到指定 baseline
+  app.get('/api/auto-evolve/baselines', async (_req, res) => {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const pExec = promisify(execFile);
+      const { stdout } = await pExec('git', [
+        'tag', '-l', 'auto-evolve-baseline-*', '--format=%(refname:short)|%(contents)|%(objectname:short)|%(taggerdate:iso)',
+      ], { cwd: process.cwd() });
+      const tags = stdout.trim().split('\n').filter(Boolean).map((line) => {
+        const [tag, msg, sha, date] = line.split('|');
+        return { tag, message: msg || '', sha, date };
+      });
+      res.json({ tags, count: tags.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/auto-evolve/baselines/:tag/diff', async (req, res) => {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const pExec = promisify(execFile);
+      const tag = req.params.tag;
+      if (!/^auto-evolve-baseline-[\w-]+$/.test(tag)) {
+        return res.status(400).json({ error: 'tag must match auto-evolve-baseline-*' });
+      }
+      const { stdout } = await pExec('git', ['show', '--stat', '--no-color', tag], { cwd: process.cwd() });
+      res.json({ tag, diff: stdout.slice(0, 5000) }); // 限长 5KB
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Bootstrap Context → 拼好的 system prompt 片段 (供调试看注入效果)
+  app.get('/api/bolloon/context/system-prompt', async (req, res) => {
+    try {
+      const { getCachedBolloonContext } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const { formatContextForSystemPrompt } = await import(
+        '../bootstrap/project-context.js'
+      );
+      const ctx = await getCachedBolloonContext({ cwd: process.cwd() });
+      const systemAddition = formatContextForSystemPrompt(ctx, {
+        maxChars: parseInt(String(req.query.max ?? '4000'), 10) || 4000,
+      });
+      res.json({ systemAddition, length: systemAddition.length, truncated: systemAddition.includes('截断模式') });
+    } catch (err: any) {
+      console.error('[bolloon] context/system-prompt failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ============================================================
+  // system-prompt health (P-Action 2 — Harness Gardening)
+  // 返回每层 lifecycle 状态: ok | stale | overdue-review | missing-frontmatter | dynamic
+  // query: ?activeOnly=1 → 只返回当前 context 激活的层
+  // ============================================================
+  app.get('/api/prompt/health', async (req, res) => {
+    try {
+      const { listLayers } = await import('../llm/system-prompt/registry.js');
+      const { evaluateLayers, markActive } = await import('../llm/system-prompt/health.js');
+      const all = listLayers() as Array<any>;
+      const baseReport = evaluateLayers(all);
+
+      // 如果 query 里有 activeOnly, 跑一次 assembleSystemPrompt 拿激活列表
+      if (String(req.query.activeOnly ?? '') === '1') {
+        const { assembleSystemPrompt } = await import('../llm/system-prompt/registry.js');
+        const channel = String(req.query.channel ?? 'local') as 'local' | 'p2p-visitor' | 'p2p-agent';
+        const role = req.query.role as any;
+        const tool = req.query.tool as any;
+        try {
+          const r = await assembleSystemPrompt({ channel, role, tool });
+          const activeIds = new Set(r.layerIds);
+          res.json(markActive(baseReport, activeIds));
+        } catch (err: any) {
+          console.warn('[prompt-health] assembleSystemPrompt failed (silent, returning base report):', err);
+          res.json(baseReport);
+        }
+      } else {
+        res.json(baseReport);
+      }
+    } catch (err: any) {
+      console.error('[prompt-health] failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 自适应接受/拒绝: 写 evolution.jsonl 留痕, 接受时同时 patch judgments.json
+  // body: { action: 'accept'|'reject'|'revert', suggestion, appliedPatch? }
+  // query: ?auto=1  → 类 B 自动路径, 受 auto-evolve-policy 网关保护
+  //         缺省    → 用户在 UI 手动触发, 不查开关 (避免阻塞用户)
+  app.post('/api/judgments/adaptive-apply', async (req, res) => {
+    try {
+      const isAuto = req.query.auto === '1' || req.query.auto === 'true';
+      const { action, suggestion, appliedPatch } = req.body as {
+        action: 'accept' | 'reject' | 'revert';
+        suggestion: { judgmentId: string; kind: string; decision: string; reason: string; action: string; metrics: unknown; scannedAt: string; key: string };
+        appliedPatch?: Record<string, unknown>;
+      };
+      if (!action || !suggestion?.judgmentId) {
+        return res.status(400).json({ error: 'action and suggestion.judgmentId required' });
+      }
+      const { updateJudgmentStatus } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      const { logEvolution } = await import(
+        '../pi-ecosystem-judgment/adaptive-scan.js'
+      );
+      // accept 时: 真正改库
+      if (action === 'accept') {
+        // 阶段 A: 自动路径需先过 auto-evolve-policy 网关
+        if (isAuto) {
+          const { requireDataLayerAutoEvolve } = await import(
+            '../utils/auto-evolve-policy.js'
+          );
+          try {
+            await requireDataLayerAutoEvolve('adaptive-apply.auto.deprecate');
+          } catch (err: any) {
+            return res.status(423).json({
+              error: 'data-layer-auto-evolve-disabled',
+              message: err.message,
+              hint: '设 BOLLOON_AUTO_EVOLVE_DATA=1 或在 self-improve-policy.json 加 dataLayerAutoEvolve: true',
+            });
+          }
+        }
+        if (suggestion.action === 'deprecate') {
+          // 标记 superseded (语义: 不再用, 但保留可回滚)
+          await updateJudgmentStatus(suggestion.judgmentId, 'superseded', {
+            evolutionReason: 'merged', // 借 merged 字段表达"被自适应废弃"
+          });
+        } else if (suggestion.action === 'boost') {
+          // boost: 用户手动接受后, 不改库本身 (weight 在 getRelevantValues 里动态算),
+          // 但写 evolution 留痕, 未来可以基于此调整算法
+          // 当前不直接改库, 仅留痕
+        }
+        // 'review' 类不需要自动改库, 仅 log 接受
+      }
+      await logEvolution({
+        ts: new Date().toISOString(),
+        action,
+        suggestion: suggestion as any,
+        appliedPatch,
+      });
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error('[judgments] adaptive-apply failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 演化日志 (audit / 一键回滚源)
+  app.get('/api/judgments/evolution-log', async (req, res) => {
+    try {
+      const { readEvolutionLog } = await import(
+        '../pi-ecosystem-judgment/adaptive-scan.js'
+      );
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '50'), 10) || 50, 1), 200);
+      const items = await readEvolutionLog(limit);
+      res.json({ count: items.length, items });
+    } catch (err: any) {
+      console.error('[judgments] evolution-log failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 阶段 2: Causal-judge 4 个 endpoint
+  app.get('/api/judgments/causal/correlation', async (req, res) => {
+    try {
+      const { runCorrelationAnalysis } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const topN = Math.min(Math.max(parseInt(String(req.query.topN ?? '5'), 10) || 5, 1), 50);
+      const useLLM = String(req.query.useLLM ?? '1') !== '0';
+      const items = await runCorrelationAnalysis({ topN, useLLM });
+      res.json({ count: items.length, items });
+    } catch (err: any) {
+      console.error('[causal] correlation failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/judgments/causal/intervention', async (req, res) => {
+    try {
+      const { runIntervention } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const { judgmentId, scenario } = req.query as { judgmentId?: string; scenario?: string };
+      if (!judgmentId) return res.status(400).json({ error: 'judgmentId required' });
+      const result = await runIntervention(judgmentId, { scenarioContext: scenario });
+      res.json(result);
+    } catch (err: any) {
+      console.error('[causal] intervention failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/judgments/causal/counterfactual', async (req, res) => {
+    try {
+      const { runCounterfactualAudit } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const { userInput, aiReply, violatedPrinciples } = req.body as {
+        userInput?: string;
+        aiReply?: string;
+        violatedPrinciples?: Array<{ principle: string; reason: string }>;
+      };
+      if (!userInput || !aiReply) {
+        return res.status(400).json({ error: 'userInput and aiReply required' });
+      }
+      const audit = await runCounterfactualAudit({
+        userInput,
+        aiReply,
+        violatedPrinciples: violatedPrinciples ?? [],
+      });
+      res.json(audit);
+    } catch (err: any) {
+      console.error('[causal] counterfactual failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/judgments/causal/audit-log', async (req, res) => {
+    try {
+      const { readCounterfactualLog } = await import(
+        '../pi-ecosystem-judgment/human-value-pipeline.js'
+      );
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '20'), 10) || 20, 1), 200);
+      const items = await readCounterfactualLog(limit);
+      res.json({ count: items.length, items });
+    } catch (err: any) {
+      console.error('[causal] audit-log failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 导入判断: 接受 { filename, content (base64), context }.
+  // 支持 .json / .yaml / .yml / .md / .txt / .html. 完全离线解析, 不调 LLM.
+  // 解析规则:
+  //   - .json: 顶层数组 [{decision, reason?, context?}, ...] 或 {judgments: [...]} 或 {items: [...]}
+  //   - .yaml/.yml: 期望顶层数组 (用 js-yaml); 不支持复杂结构
+  //   - .md/.txt/.html: 每一段 (按空行分隔) 算一条判断, 首行非空 = decision, 整段 = content
+  //                     如果首行是 markdown 标题 (# ...) 则去掉 #, 整段去掉首行后作 reason
+  app.post('/api/judgments/import', async (req, res) => {
+    try {
+      const { filename, content, context } = req.body as {
+        filename?: string; content?: string; context?: { domain?: string; stakes?: string };
+      };
+      if (!filename || !content) {
+        return res.status(400).json({ error: 'filename and content (base64) required' });
+      }
+      let raw: string;
+      try { raw = Buffer.from(content, 'base64').toString('utf-8'); }
+      catch { return res.status(400).json({ error: 'content is not valid base64' }); }
+
+      const lower = filename.toLowerCase();
+      let items: Array<{ decision: string; reason?: string; context?: any }> = [];
+      if (lower.endsWith('.json')) {
+        try {
+          const parsed = JSON.parse(raw);
+          const arr = Array.isArray(parsed) ? parsed
+            : Array.isArray(parsed?.judgments) ? parsed.judgments
+            : Array.isArray(parsed?.items) ? parsed.items
+            : null;
+          if (!arr) return res.status(400).json({ error: 'JSON must be an array, or {judgments:[]}/{items:[]}' });
+          for (const it of arr) {
+            if (it && typeof it.decision === 'string' && it.decision.trim()) {
+              items.push({ decision: it.decision.trim(), reason: it.reason, context: it.context });
+            }
+          }
+        } catch (e: any) {
+          return res.status(400).json({ error: 'JSON parse failed: ' + e.message });
+        }
+      } else if (lower.endsWith('.yaml') || lower.endsWith('.yml')) {
+        try {
+          const yaml = (await import('js-yaml')).default;
+          const parsed = yaml.load(raw);
+          if (!Array.isArray(parsed)) return res.status(400).json({ error: 'YAML must be a top-level array' });
+          for (const it of parsed) {
+            if (it && typeof it.decision === 'string' && it.decision.trim()) {
+              items.push({ decision: it.decision.trim(), reason: it.reason, context: it.context });
+            }
+          }
+        } catch (e: any) {
+          return res.status(400).json({ error: 'YAML parse failed: ' + e.message });
+        }
+      } else if (lower.endsWith('.md') || lower.endsWith('.txt') || lower.endsWith('.html') || lower.endsWith('.htm')) {
+        // 通用纯文本: 按空行分段, 每段是一条判断
+        // 对 .html 先剥掉标签, 但保留段落分隔
+        let text = raw;
+        if (lower.endsWith('.html') || lower.endsWith('.htm')) {
+          text = text.replace(/<script[\s\S]*?<\/script>/gi, '')
+                     .replace(/<style[\s\S]*?<\/style>/gi, '')
+                     // 块级标签 -> 双换行 (保留段落分隔)
+                     .replace(/<\/?(p|div|h[1-6]|li|tr|br)[^>]*>/gi, '\n\n')
+                     .replace(/<[^>]+>/g, ' ')
+                     .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+        }
+        const blocks = text.split(/\n\s*\n/).map(b => b.trim()).filter(b => b.length > 0);
+        for (const block of blocks) {
+          const lines = block.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+          if (lines.length === 0) continue;
+          let decision = lines[0];
+          // 如果首行是 markdown 标题, 去掉 # 前缀
+          decision = decision.replace(/^#+\s*/, '');
+          // 如果整段就是一个短句 (没有换行), 直接当 decision
+          const reason = lines.length > 1 ? lines.slice(1).join(' ').trim() || undefined : undefined;
+          if (decision) items.push({ decision, reason });
+        }
+      } else {
+        return res.status(400).json({ error: 'unsupported file type (use .json .yaml .yml .md .txt .html)' });
+      }
+
+      if (items.length === 0) {
+        return res.status(400).json({ error: 'no parseable judgments found in file' });
+      }
+
+      const { storeHumanJudgment, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+
+      const imported: any[] = [];
+      const errors: string[] = [];
+      for (let i = 0; i < items.length; i++) {
+        try {
+          const it = items[i];
+          const j = await storeHumanJudgment({
+            decision: it.decision,
+            decision_type: 'approve',
+            reasons: it.reason ? [String(it.reason)] : [],
+            values_derived: [],
+            context: {
+              domain: it.context?.domain || context?.domain || 'general',
+              complexity: 'moderate',
+              stakes: (it.context?.stakes as any) || context?.stakes || 'medium',
+              time_pressure: 'low',
+            },
+            metadata: {
+              source: 'explicit',
+              confidence: 0.8,
+              revisable: true,
+            },
+          });
+          imported.push(j);
+        } catch (e: any) {
+          errors.push(`#${i + 1} (${items[i].decision.substring(0, 30)}): ${e.message}`);
+        }
+      }
+
+      res.json({ ok: true, imported: imported.length, failed: errors.length, errors: errors.slice(0, 5), judgments: imported });
+    } catch (err: any) {
+      console.error('[judgments] import failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 修改判断 (手动编辑 decision / reasons / context / values_derived)
+  app.patch('/api/judgments/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { updateJudgment, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+      const updated = await updateJudgment(id, req.body || {});
+      if (!updated) return res.status(404).json({ error: 'judgment not found' });
+      res.json({ ok: true, judgment: updated });
+    } catch (err: any) {
+      console.error('[judgments] PATCH failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 删除判断
+  app.delete('/api/judgments/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { deleteJudgment, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+      const ok = await deleteJudgment(id);
+      if (!ok) return res.status(404).json({ error: 'judgment not found' });
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error('[judgments] DELETE failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 批量删除: { ids: ['hv-xxx', ...] } → { ok, deleted, notFound }
+  app.post('/api/judgments/batch-delete', async (req, res) => {
+    try {
+      const ids = (req.body && Array.isArray(req.body.ids)) ? (req.body.ids as unknown[]) : null;
+      if (!ids) return res.status(400).json({ error: 'ids array required' });
+      const { deleteJudgment, initializeValueStore } = await import(
+        '../pi-ecosystem-judgment/human-value-store.js'
+      );
+      await initializeValueStore();
+      const idStrs = ids.filter((x): x is string => typeof x === 'string' && x.length > 0);
+      let deleted = 0;
+      const notFound: string[] = [];
+      for (const id of idStrs) {
+        const ok = await deleteJudgment(id);
+        if (ok) deleted++; else notFound.push(id);
+      }
+      res.json({ ok: true, deleted, notFound });
+    } catch (err: any) {
+      console.error('[judgments] batch-delete failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // AI 自动委派: 根据新判断的 capability / context 找最匹配的远端 agent, 委派任务
+  // 由前端在 POST /api/judgments 成功后调用 (fire-and-forget)
+  // 出参: { matched, targetAgent, response | skipped, reason }
+  app.post('/api/judgments/auto-delegate', async (req, res) => {
+    try {
+      const { judgmentId, capability, instruction } = req.body as {
+        judgmentId?: string; capability?: string; instruction?: string;
+      };
+      if (!judgmentId && !capability) {
+        return res.status(400).json({ error: 'judgmentId or capability required' });
+      }
+      const cap = capability || 'general';
+      // 用 agent-manifest-protocol 里的 pickAgent (内存) — 走本节点已经缓存的远端 manifest
+      const manifestMod = await import('../agents/agent-manifest-protocol.js');
+      const picked = manifestMod.pickAgent(cap);
+      if (!picked) {
+        return res.json({ ok: true, matched: false, reason: 'no remote agent matches capability' });
+      }
+      // 命中后, 用 iroh delegate transport 真正发过去
+      // 注: irohDelegateTransport.sendToNode 走的是 sendToNode(publicKey, frame, timeoutMs)
+      // irohTransport 的 sendMessage 不等回包, 所以委托是 fire-and-forget
+      // 想等回包需要新接口. 这里先把 "找得到目标 + 发送成功" 作为成功.
+      // TODO: 接入 requestResponse 等待远端 agent_response
+      try {
+        const idMod = await import('../network/iroh-integration.js');
+        const integ = idMod.getIrohIntegration();
+        if (!integ || !integ.getNodeId()) {
+          return res.json({ ok: true, matched: true, targetAgent: picked.agent, sent: false, reason: 'iroh not initialized' });
+        }
+        // 用 pickAgent 选出来的 agent 关联的 irohNodeId (有的话), 没有就跳到本地自处理
+        const targetIrohNodeId = picked.agent.irohNodeId;
+        if (!targetIrohNodeId) {
+          return res.json({ ok: true, matched: true, targetAgent: picked.agent, sent: false, reason: 'target agent has no irohNodeId (peer identity not bound)' });
+        }
+        const ok = await integ.sendTo(targetIrohNodeId, 'agent_delegate', new TextEncoder().encode(JSON.stringify({
+          type: 'agent_delegate',
+          payload: {
+            capability: cap,
+            instruction: instruction || `请执行我的判断: ${judgmentId}`,
+            fromAgentId: 'local-judgment',
+          },
+          ts: Date.now(),
+          fromDid: '',
+        })));
+        res.json({ ok: true, matched: true, targetAgent: picked.agent, sent: ok });
+      } catch (e: any) {
+        res.json({ ok: true, matched: true, targetAgent: picked.agent, sent: false, error: e.message });
+      }
+    } catch (err: any) {
+      console.error('[judgments] auto-delegate failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // (判断的 UI 已合并到主页面 header 的盾牌按钮 + modal, 不再走独立路由)
+
+  // 启动看门狗监控
+  if (watchdog) {
+    // level 1 (内存爆) → 进程自杀, 依赖外层 supervisor / 用户重启 (Windows 任务计划/手动)
+    // 否则 Node.js 高 GC 压力下 HTTP 响应丢失, 客户端 fetch 永远 pending
+    watchdog.registerRestartStrategy(1, () => {
+      // 2026-06-10: 改为不退出, 因为我们直接后台 tsx 启动没有外层 supervisor.
+      // 误判主要因 recordActivity 仅在显式调用时刷新, 而 broadcast/SSE/连接均不触发.
+      // 退出策略原文保留在注释里:
+      //   console.error('[Watchdog] memory critical, 进程退出 (期望外层重启)');
+      //   setTimeout(() => process.exit(1), 100);
+      console.warn('[Watchdog] silentThreshold 触发, 但跳过 process.exit (无 supervisor)');
+    });
+    watchdog.start();
+    console.log('[24h] Watchdog started');
+  }
+
+  // 定期健康检查（不阻塞主服务器启动）
+  if (healthMonitor) {
+    healthMonitor.startPeriodicCheck(60000);
+    console.log('[24h] Health monitor periodic check started');
+  }
 
   // ==================== Self-Improve 端点 ====================
   // 查看当前策略 (白名单 / 黑名单)

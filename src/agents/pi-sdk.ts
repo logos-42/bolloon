@@ -1061,13 +1061,48 @@ ${toolDefs}
       //   旧逻辑: sentinel → aiFailed=true → break → 外层 retry 整个 loop (重置 history)
       //   新逻辑: 把错误当 tool_result push 进 history → 下一轮 LLM 看到错误能反思重试
       //   这是 dive-into 文档的"fail-open error recovery" — 错误进入 context, 不让 LLM 重复犯同样错
+      // 2026-07-06: 对不可恢复的 API 错误直接终止, 不再无限重试
       if (reply.startsWith('[AI 服务调用失败]')) {
-        console.log(`[PiAgent] 收到 AI 错误 sentinel, 推到 history 让 LLM 反思, 继续 loop`);
+        console.log(`[PiAgent] 收到 AI 错误 sentinel`);
         console.log(`[sentinel DEBUG] 完整 reply: ${reply}`);
         console.log(`[sentinel DEBUG] 上一轮 messages 数量: ${Array.isArray(messages) ? messages.length : 'N/A'}, systemPrompt 长度: ${systemPrompt.length}`);
         aiFailureReason = reply.length > 200 ? reply.substring(0, 200) : reply;
         totalErrors++;
         consecutiveErrors++;
+
+        // 2026-07-06: 检测不可恢复的 API 错误 — 这些错误 LLM 无法通过反思修复, 重试无意义
+        const isFatalApiError =
+          reply.includes('chat content is empty') ||
+          reply.includes('invalid params') ||
+          reply.includes('401') ||
+          reply.includes('403') ||
+          reply.includes('quota') ||
+          reply.includes('rate limit') ||
+          reply.includes('API key') ||
+          reply.includes('authentication') ||
+          reply.includes('unauthorized');
+
+        if (isFatalApiError) {
+          console.log(`[PiAgent] 检测到不可恢复的 API 错误, 终止 loop: ${aiFailureReason}`);
+          if (onStream) {
+            onStream({ type: 'error', content: `⛔ API 错误无法恢复: ${aiFailureReason}`, tool: 'system' });
+          }
+          finalResponse = `❌ AI 服务调用失败: ${aiFailureReason}\n\n这是一个底层 API 错误, 不是任务本身的问题。请检查 API 配置或稍后重试。`;
+          aiFailed = true;
+          break;
+        }
+
+        // 连续错误过多也终止, 防止 LLM 陷入死循环
+        if (consecutiveErrors >= 3) {
+          console.log(`[PiAgent] 连续 ${consecutiveErrors} 次 AI 错误, 终止 loop`);
+          if (onStream) {
+            onStream({ type: 'error', content: `⛔ 连续 ${consecutiveErrors} 次 AI 错误, 终止循环`, tool: 'system' });
+          }
+          finalResponse = `❌ AI 连续调用失败 ${consecutiveErrors} 次, 已终止。\n\n失败原因: ${aiFailureReason}\n\n请检查 API 配置或简化任务后重试。`;
+          aiFailed = true;
+          break;
+        }
+
         // 把错误当成 tool 结果 push 进 history, 这样下一轮 LLM 看到错误能调整
         this.messageHistory.push({
           role: 'system',

@@ -129,7 +129,7 @@ export function registerLlmConfigRoutes(app: Express): void {
 
       // 脱敏：不返回 apiKey 明文
       const masked = Object.fromEntries(
-        Object.entries(config.providers).map(([key, val]) => [
+        Object.entries(config.providers).map(([key, val]: [string, any]) => [
           key,
           { ...val, apiKey: val.apiKey ? '***' + val.apiKey.slice(-4) : '' }
         ])
@@ -192,7 +192,7 @@ export function registerLlmConfigRoutes(app: Express): void {
       const providerInfo = audioConfigStore.getAllProviderInfo();
 
       const masked = Object.fromEntries(
-        Object.entries(config.providers).map(([key, val]) => [
+        Object.entries(config.providers).map(([key, val]: [string, any]) => [
           key,
           { ...val, apiKey: val.apiKey ? '***' + val.apiKey.slice(-4) : '' }
         ])
