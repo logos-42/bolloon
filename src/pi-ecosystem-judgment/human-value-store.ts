@@ -230,10 +230,22 @@ export async function storeHumanJudgment(judgment: Omit<HumanJudgment, 'id' | 't
   }
   // 留空: appliesTo / causalChain 由后续 causal-judge 自动填
 
+  // 2026-07-06: 写入时质量门 — 检测到测试灌水数据, 默认 status='rejected' 静默丢弃
+  //   启发式集见 ./cleanup.ts. 既不抛错(避免 D-hook 阻塞), 也不污染 active set.
+  let initialStatus: 'active' | 'rejected' = 'active';
+  try {
+    const { isJunkJudgment } = await import('./cleanup.js');
+    if (isJunkJudgment({ ...judgment, id: '', timestamp: '' } as any)) {
+      console.warn(`[HumanValueStore] junk detected, marking rejected: "${String(judgment.decision).substring(0, 40)}..."`);
+      initialStatus = 'rejected';
+    }
+  } catch { /* cleanup module load failed - allow store */ }
+
   const fullJudgment: HumanJudgment = {
     ...judgment,
     id: generateId(),
-    timestamp: now
+    timestamp: now,
+    status: initialStatus,
   };
 
   // 加载现有判断
@@ -554,7 +566,11 @@ export async function getRelevantValues(
   domain?: string,
   currentTool?: string
 ): Promise<ValueTag[]> {
-  const judgments = await loadAllJudgments();
+  const allJudgments = await loadAllJudgments();
+
+  // 2026-07-06: 过滤 active — 之前 superseded/rejected 也会进检索, 污染上下文
+  //   配合 storeHumanJudgment 写入时设 status='rejected' 拦截 junk data (见 cleanup.ts)
+  const judgments = allJudgments.filter((j) => (j.status ?? 'active') === 'active');
 
   const keywords = context.split(/[\s,，、]+/).filter(k => k.length >= 2);
   const contextLower = context.toLowerCase();
