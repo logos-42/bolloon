@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-07-07T10:20:18.430Z",
+  "timestamp": "2026-07-07T11:53:14.942Z",
   "results": {
     "documents": {
       "name": "documents",
@@ -38,7 +38,7 @@
           "withMeta": 11,
           "withoutMeta": [],
           "note": "parseFrontmatter 失败 → meta=null 但 body 保留 (registry.ts:78-106)",
-          "compileOut": "[HumanValueStore] Initialized at C:\\Users\\Mechrevo\\.bolloon\\human-values\nCHARS=4743\nTIME=660\nHAS_BODY=true",
+          "compileOut": "[HumanValueStore] Initialized at C:\\Users\\Mechrevo\\.bolloon\\human-values\nCHARS=4743\nTIME=582\nHAS_BODY=true",
           "compileErr": "",
           "compiledChars": 4743,
           "pass": true
@@ -89,7 +89,7 @@
         {
           "c": "C1",
           "desc": "极简 prompt → 直接回答, 无 tool",
-          "duration_ms": 21,
+          "duration_ms": 17,
           "status": 202,
           "asyncAck": true,
           "ok": true,
@@ -100,58 +100,58 @@
           "desc": "搜索 prompt × 3 次独立运行 (假阳性检查, 监听 SSE)",
           "subs": [
             {
-              "duration_ms": 7720,
-              "postStatus": 202,
-              "asyncOk": true,
-              "messages": 0,
-              "toolSeen": true,
-              "aiTextLen": 0,
-              "tokenTextLen": 0,
-              "totalTextLen": 0,
-              "eventTypes": "user,queue_update,stream:thinking,workflow_step,phase,phase,status,workflow_step,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,done",
-              "textPreview": ""
-            },
-            {
-              "duration_ms": 4951,
+              "duration_ms": 3013,
               "postStatus": 202,
               "asyncOk": true,
               "messages": 1,
               "toolSeen": true,
-              "aiTextLen": 217,
+              "aiTextLen": 288,
               "tokenTextLen": 100,
-              "totalTextLen": 317,
-              "eventTypes": "user,queue_update,stream:thinking,workflow_step,phase,phase,status,workflow_step,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,reply-preview,status,workflow_step",
-              "textPreview": "<think>用户问\"Bolloon agent\"是什么, 要求用一句话回答。这是问问题任务, 直接给答案, 不需要调工具。\n\n根据项目上下文,Bolloon 是本地优先的 P2P AI 智能体网络的"
+              "totalTextLen": 388,
+              "eventTypes": "user,queue_update,stream:thinking,workflow_step,phase,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,ping,stream:token,workflow_step,reply-preview,status,workflow_step",
+              "textPreview": "<think>The user is asking me to reply with the single word \"ok\" and nothing else. This is a simple r"
             },
             {
-              "duration_ms": 3856,
+              "duration_ms": 10259,
               "postStatus": 202,
               "asyncOk": true,
               "messages": 1,
               "toolSeen": true,
-              "aiTextLen": 284,
+              "aiTextLen": 2616,
               "tokenTextLen": 100,
-              "totalTextLen": 384,
-              "eventTypes": "user,queue_update,stream:thinking,workflow_step,phase,phase,status,workflow_step,phase,status,workflow_step,status,workflow_step,status,workflow_step,phase,stream:token,workflow_step,reply-preview,status",
-              "textPreview": "<think>用户问\"Bolloon agent\"是什么，要求一句话回答。这是个简单问题，我应该直接回答，不要调工具（任务类型是question）。\n\n从 system prompt 中 produc"
+              "totalTextLen": 2716,
+              "eventTypes": "user,queue_update,stream:thinking,workflow_step,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,phase,stream:token,workflow_step,reply-preview,status,workflow_step,ai",
+              "textPreview": "<think>The user is asking \"查一下'Bolloon agent'是什么?用一句话回答。\" which translates to \"Look up what 'Bolloon"
+            },
+            {
+              "duration_ms": 7535,
+              "postStatus": 202,
+              "asyncOk": true,
+              "messages": 1,
+              "toolSeen": true,
+              "aiTextLen": 607,
+              "tokenTextLen": 100,
+              "totalTextLen": 707,
+              "eventTypes": "user,queue_update,stream:thinking,workflow_step,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,p2p_message,p2p_message,stream:token,workflow_step,reply-preview,status,workflow_step",
+              "textPreview": "<think>用户问\"Bolloon agent\"是什么,要求用一句话回答。这是一个项目相关的概念,我需要简洁地回答。\n\n从项目上下文来看:\n- 项目名称是 @bolloon/bolloon-agen"
             }
           ],
           "toolLoopVisible": "3/3",
-          "toolCallCorrect": "2/3",
+          "toolCallCorrect": "3/3",
           "pass": true,
           "successRate": "3/3",
-          "answerRate": "2/3"
+          "answerRate": "3/3"
         },
         {
           "c": "C3",
           "desc": "异常 prompt (无意义字符串) → 不崩, 显式错误或回答",
-          "duration_ms": 11,
+          "duration_ms": 17,
           "status": 202,
           "asyncAck": true,
           "pass": true
         }
       ],
-      "notes": "using channel ch_1781055105696_82u2iv (喜羊羊)"
+      "notes": "using channel real-msg-1783425072254 (real test msg)"
     },
     "p2p": {
       "name": "p2p",
@@ -223,27 +223,13 @@
     }
   },
   "serverLogTail": [
-    "[out] 2026-07-07T10:20:07.418Z [\u001b[32minfo\u001b[39m]: 🚀 开始DID发布流程（简化版）\r\n",
-    "[out] 2026-07-07T10:20:07.418Z [\u001b[32minfo\u001b[39m]: 步骤1: 加密libp2p PeerID\r\n",
-    "[out] 2026-07-07T10:20:07.420Z [\u001b[32minfo\u001b[39m]: ✓ PeerID已加密\r\n2026-07-07T10:20:07.420Z [\u001b[32minfo\u001b[39m]: 步骤2: 构建DID文档\r\n",
-    "[out] 2026-07-07T10:20:07.420Z [\u001b[32minfo\u001b[39m]: ✓ DID文档构建完成\r\n2026-07-07T10:20:07.420Z [\u001b[32minfo\u001b[39m]:   DID: did:key:z6Mkk2uNiAgFrCLjKL2qrBy3hYyFWDtJZWf3mLKwv5uSJdm3\r\n",
-    "[out] 2026-07-07T10:20:07.420Z [\u001b[32minfo\u001b[39m]: 步骤3: 上传DID文档到IPFS\r\n",
-    "[out] P2P DID 本地模式运行\n",
-    "[out] 2026-07-07T10:20:10.822Z [\u001b[32minfo\u001b[39m]: 🔗 新连接: 661770f5...\r\n",
-    "[out]   \u001b[36m●\u001b[0m 🔌 连接: 661770f5...\n",
-    "[out] 2026-07-07T10:20:10.842Z [\u001b[32minfo\u001b[39m]: 🔗 新连接: 6402f252...\r\n",
-    "[out]   \u001b[36m●\u001b[0m 🔌 连接: 6402f252...\n",
-    "[out] [P2PDirect:v3] 启动 OK, publicKey: d92489cadd2a...\n",
-    "[out] [P2PDirect:v3] 新连接: 661770f57257... (inbound=false, type=object, hasWrite=function)\n",
-    "[out] [P2PDirect:v3] 新连接: a603e2b6c18c... (inbound=false, type=object, hasWrite=function)\n",
-    "[out] 2026-07-07T10:20:13.686Z [\u001b[32minfo\u001b[39m]: 🔗 新连接: d92489ca...\r\n",
-    "[out]   \u001b[36m●\u001b[0m 🔌 连接: d92489ca...\n",
     "[out] [P2PDirect:v3] 加入 topic: 626f6c6c6f6f6e2d...\n",
-    "[out] 2026-07-07T10:20:16.916Z [\u001b[32minfo\u001b[39m]: 🔧 Hyperswarm P2P 通信器已创建\r\n2026-07-07T10:20:16.916Z [\u001b[32minfo\u001b[39m]:   服务器模式: true\r\n",
-    "[out] 2026-07-07T10:20:16.916Z [\u001b[32minfo\u001b[39m]:   客户端模式: true\r\n2026-07-07T10:20:16.916Z [\u001b[32minfo\u001b[39m]:   最大连接数: 50\r\n2026-07-07T10:20:16.916Z [\u001b[32minfo\u001b[39m]: 🚀 启动 Hyperswarm P2P 网络...\r\n",
-    "[out] 2026-07-07T10:20:16.926Z [\u001b[32minfo\u001b[39m]: ✅ Hyperswarm P2P 网络已启动\r\n",
-    "[out] 2026-07-07T10:20:16.927Z [\u001b[32minfo\u001b[39m]: 🔗 加入主题: 626f6c6c...\r\n",
-    "[err] 2026-07-07T10:20:16.927Z [\u001b[31merror\u001b[39m]: ❌ 加入主题失败: TypeError: discovery.update is not a function\r\n",
+    "[out] 2026-07-07T11:53:09.060Z [\u001b[32minfo\u001b[39m]: 🔧 Hyperswarm P2P 通信器已创建\r\n",
+    "[out] 2026-07-07T11:53:09.060Z [\u001b[32minfo\u001b[39m]:   服务器模式: true\r\n2026-07-07T11:53:09.060Z [\u001b[32minfo\u001b[39m]:   客户端模式: true\r\n2026-07-07T11:53:09.060Z [\u001b[32minfo\u001b[39m]:   最大连接数: 50\r\n",
+    "[out] 2026-07-07T11:53:09.060Z [\u001b[32minfo\u001b[39m]: 🚀 启动 Hyperswarm P2P 网络...\r\n",
+    "[out] 2026-07-07T11:53:09.070Z [\u001b[32minfo\u001b[39m]: ✅ Hyperswarm P2P 网络已启动\r\n",
+    "[out] 2026-07-07T11:53:09.071Z [\u001b[32minfo\u001b[39m]: 🔗 加入主题: 626f6c6c...\r\n",
+    "[err] 2026-07-07T11:53:09.071Z [\u001b[31merror\u001b[39m]: ❌ 加入主题失败: TypeError: discovery.update is not a function\r\n",
     "[err] [v3-legacy] @diap/sdk joinTopic 失败 (已知 hyperswarm 4.x 兼容问题, 已忽略): discovery.update is not a function\n",
     "[out] [24h] Heartbeat modules loaded\n",
     "[out] [24h] Health monitor periodic check (no self-improve)\n[self-improve] 用户模式, installSelfImproveHook 跳过 (可用 POST /api/self-improve/trigger 手动触发)\n",
@@ -252,6 +238,20 @@
     "[out] BOLLOON_PORT=54189\nBOLLOON_HOST=127.0.0.1\nWeb 服务器启动完成: http://127.0.0.1:54189\n服务器已监听\n",
     "[out]   \u001b[32m✓\u001b[0m 浏览器已打开 → http://127.0.0.1:54189\n",
     "[out] [chat-bus] SSE bridge installed\n",
-    "[out] [P2PDirect:v3] 新连接: 661770f57257... (inbound=false, type=object, hasWrite=function)\n"
+    "[out] [P2PDirect:v3] 新连接: 6402f2528129... (inbound=false, type=object, hasWrite=function)\n",
+    "[out] [P2PDirect:v3] 新连接: 661770f57257... (inbound=false, type=object, hasWrite=function)\n",
+    "[err] [LOADED] 6 agents from C:\\Users\\Mechrevo\\.bolloon\\agents\\agents.json\n",
+    "[out] [v3-manifest] 新连接 6402f2528129... → 主动推 manifest (6 agents, p2p=SENT)\n",
+    "[out] [pi-ai timing] total=3039ms attempt=1 fetch=3037ms parse=2ms reply=190B model=MiniMax-M3 prompt=5362B\n",
+    "[out] [SSE] 客户端连接 channelId=p2p-global, 总数=1\n",
+    "[out] [channels] refresh, n=1, t=+48ms\n",
+    "[err] [LOADED] 6 agents from C:\\Users\\Mechrevo\\.bolloon\\agents\\agents.json\n",
+    "[out] [v3-manifest] 新连接 661770f57257... → 主动推 manifest (6 agents, p2p=SENT)\n",
+    "[out] [SSE] 客户端连接 channelId=real-msg-1783425072254, 总数=2\n",
+    "[out] [resume] channel=real-msg-1783425072254, afterSeq=0, curSeq=0, recovered=0, stillRunning=false\n",
+    "[out] 2026-07-07T11:53:13.604Z [\u001b[32minfo\u001b[39m]: 🔗 新连接: 6402f252...\r\n",
+    "[out] 2026-07-07T11:53:13.634Z [\u001b[32minfo\u001b[39m]: 🔗 新连接: 13e7080a...\r\n",
+    "[out] 2026-07-07T11:53:13.637Z [\u001b[32minfo\u001b[39m]: 🔗 新连接: bf837076...\r\n",
+    "[out]   \u001b[36m●\u001b[0m 🔌 连接: bf837076...\n"
   ]
 }

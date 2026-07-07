@@ -70,6 +70,7 @@ python3 scripts/stale_report.py
 ## 关联资产 (非 wiki)
 
 - [消融实验报告](../ablation/report.md) — 4 功能 × 15 项端到端验证
+- [Q1-Q5 报告 2026-07-07](./q1-q5-report-2026-07-07.md) — 远程交流链路 + 五层记忆架构 + H2 修复
 - [Bolloon.md](../../Bolloon.md) — 项目入口文档
 - [CLAUDE.md](../../CLAUDE.md) — Claude Code 上下文 (root)
 - [AGENTS.md](../../AGENTS.md) — 通用 agent 规则

@@ -1,6 +1,6 @@
 # Bolloon 核心功能消融实验报告 (v0.2.7)
 
-> 生成时间: 2026-07-07T10:20:18.425Z
+> 生成时间: 2026-07-07T11:53:14.940Z
 > 实验 runner: scripts/ablation/run.ts
 > 服务端口: 54188 (web: dist/web + esbuild 编译 client.ts)
 > 节点: Windows 11, Node v24.15.0, LLM provider: minimax (MiniMax-M2.7)
@@ -71,7 +71,7 @@ CAUGHT:Invalid PDF structure
 - note: parseFrontmatter 失败 → meta=null 但 body 保留 (registry.ts:78-106)
 - compileOut: [HumanValueStore] Initialized at C:\Users\Mechrevo\.bolloon\human-values
 CHARS=4743
-TIME=660
+TIME=582
 HAS_BODY=true
 - compileErr: 
 - compiledChars: 4743
@@ -101,23 +101,23 @@ NAMES=ablation-test,技能写作,消融实验技能
 #### tool_loop
 
 - 尝试: **4** | 通过: **4** | 失败: **0** | 通过率: **100%**
-- 备注: using channel ch_1781055105696_82u2iv (喜羊羊)
+- 备注: using channel real-msg-1783425072254 (real test msg)
 
 ##### ✅ [C1] 极简 prompt → 直接回答, 无 tool
-- duration_ms: 21
+- duration_ms: 17
 - status: 202
 - asyncAck: true
 - ok: true
 
 ##### ✅ [C2] 搜索 prompt × 3 次独立运行 (假阳性检查, 监听 SSE)
-- subs: [{"duration_ms":7720,"postStatus":202,"asyncOk":true,"messages":0,"toolSeen":true,"aiTextLen":0,"tokenTextLen":0,"totalTextLen":0,"eventTypes":"user,queue_update,stream:thinking,workflow_step,phase,phase,status,workflow_step,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,done","textPreview":""},{"duration_ms":4951,"postStatus":202,"asyncOk":true,"messages":1,"toolSeen":
+- subs: [{"duration_ms":3013,"postStatus":202,"asyncOk":true,"messages":1,"toolSeen":true,"aiTextLen":288,"tokenTextLen":100,"totalTextLen":388,"eventTypes":"user,queue_update,stream:thinking,workflow_step,phase,phase,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,ping,stream:token,workflow_step,reply-preview,status,workflow_step","textPreview":"<think>The user is asking me to 
 - toolLoopVisible: 3/3
-- toolCallCorrect: 2/3
+- toolCallCorrect: 3/3
 - successRate: 3/3
-- answerRate: 2/3
+- answerRate: 3/3
 
 ##### ✅ [C3] 异常 prompt (无意义字符串) → 不崩, 显式错误或回答
-- duration_ms: 11
+- duration_ms: 17
 - status: 202
 - asyncAck: true
 
