@@ -25,6 +25,19 @@ SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv",
     ".obsidian", ".next", "dist", "build",
     "manifests",  # manifest CSVs are the index, not raw data
+    # 构建产物 / 资产目录（不属 raw material）
+    "Assets.xcassets",  # iOS Xcode asset catalog
+    "icons",            # web 图标 (build:web 注入)
+    # git submodule (引用资料, 不是 raw 输入)
+    "bollharness",
+}
+
+# 文件名模式（不属 raw）—— 下游用 glob 校
+SKIP_FILENAMES = {
+    "splash-2732x2732.png",
+    "splash-2732x2732-1.png",
+    "splash-2732x2732-2.png",
+    "AppIcon-512@2x.png",
 }
 
 
@@ -57,7 +70,7 @@ def main() -> int:
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
             for fn in filenames:
                 ext = Path(fn).suffix.lower()
-                if ext in RAW_EXTENSIONS and fn.lower() not in known:
+                if ext in RAW_EXTENSIONS and fn.lower() not in known and fn not in SKIP_FILENAMES:
                     full = Path(dirpath) / fn
                     rel = full.relative_to(scan_root) if full.is_relative_to(scan_root) else full
                     untracked.append((fn, rel))
