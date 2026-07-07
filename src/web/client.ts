@@ -953,6 +953,16 @@ async function selectChannel(channelId, targetSessionId = null) {
     // 自动展开当前智能体的会话列表，让用户能切换会话
     expandedAgents.add(channelId);
     console.log('[selectChannel] 频道:', channel.name, 'session:', currentSessionId);
+  } else {
+    // 2026-07-07 H2 修复: channel 不在本地 channels 列表 → 显示明确提示, 不再 fallback 到 greeting
+    console.warn('[selectChannel] channel 不存在:', channelId);
+    if (channelNameEl) channelNameEl.textContent = safeChannelName('(channel 已删除)');
+    currentSessionId = targetSessionId || 'default';
+    const orphanContainer = ensureMessageContainer(channelId);
+    showChannelView(channelId);
+    orphanContainer.innerHTML = '';
+    appendSystem(`⚠️ Channel ${channelId} 已不存在, 无法继续对话。\n请刷新页面 (F5) 或在左侧选择其他 channel。`, 'error');
+    return;
   }
 
   // 2026-06-11 提速: 切 channel 时 sidebar 渲染降级 — 只更新 active 样式, 不重渲整列表
@@ -1006,6 +1016,13 @@ async function loadSession(channelId, sessionId = null) {
   const targetSessionId = sessionId || currentSessionId || 'default';
   try {
     const res = await fetch(`/sessions/${channelId}?sessionId=${encodeURIComponent(targetSessionId)}`);
+    // 2026-07-07 H2 修复: 404 = channel 不存在, 显示明确提示而非 fallback greeting
+    if (res.status === 404) {
+      const data = await res.json().catch(() => ({}));
+      container.innerHTML = '';
+      appendSystem(`⚠️ Channel ${channelId} 已不存在, 无法加载历史消息。\n${data.error || 'channel not found'}`, 'error');
+      return;
+    }
     const session = await res.json();
     container.innerHTML = '';
     if (session.messages && session.messages.length > 0) {

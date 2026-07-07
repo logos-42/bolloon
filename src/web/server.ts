@@ -2054,6 +2054,11 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     // 获取频道信息（只取轻量引用, 不再读完整 DID 文档）
     const channels = await loadChannels();
     const channel = channels.find(c => c.id === channelId);
+
+    // 2026-07-07 H2 修复: channel 不存在 → 404 (之前静默通过, 消息写到孤儿目录)
+    if (!channel) {
+      return res.status(404).json({ error: 'channel not found', channelId });
+    }
     const currentSessionId = channel?.currentSessionId || 'default';
     const realChannelDid = channelDid || channel?.did || '';
     const realChannelName = channel?.name || '';
@@ -3327,6 +3332,11 @@ app.get('/channels', async (_req, res) => {
 
   app.get('/sessions/:channelId', async (req, res) => {
     try {
+      // 2026-07-07 H2 修复: channel 不存在 → 404 (之前返回空 Session 导致客户端误以为是空对话)
+      const channels = await loadChannels();
+      if (!channels.find(c => c.id === req.params.channelId)) {
+        return res.status(404).json({ error: 'channel not found', channelId: req.params.channelId });
+      }
       const session = await loadSession(req.params.channelId, req.query.sessionId as string | undefined);
       res.json(session || { channelId: req.params.channelId, sessionId: req.query.sessionId || 'default', messages: [], lastUpdated: null });
     } catch (err: any) {

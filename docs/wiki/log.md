@@ -6,6 +6,50 @@
 | 日期 | phase | 一句话 | 关联 |
 |------|-------|--------|------|
 | 2026-07-07 | chore | 0.2.12: judgment 注入门质量门 (软删除测试灌水) + CLI 启动简化 + pivot loop 持久循环/reply-preview/final-gen 退出 + LLM 调用分段时间 instrumentation | [cleanup.ts](../../src/pi-ecosystem-judgment/cleanup.ts) / [loading-tui.ts](../../src/cli/loading-tui.ts) |
+| 2026-07-07 | feat | 远程交流加载链路 + 五层缓存架构 (L0 window / L1 summary / L2 events / L3 state / L4 vector) + H2 bug 修复 (channel 不存在三层失守 → 404 明确提示) | [q1-q5-report-2026-07-07.md](./q1-q5-report-2026-07-07.md) |
+
+## [2026-07-07] feat | 五层缓存架构 + H2 三层失守修复 (v0.2.12)
+
+### 触发
+
+用户问 4 个远程交流加载问题 + 引用"四类系统组合"缓存方案, 子智能体研究代码后定位 14 个根因 (R1.1~R4.4), 实施 P0/P1/P2 完整五层架构. 实施过程中用户发现 UI bug "channel 不在也没显示", 调研定位到 H2 (本地 channel 被删, UI 引用还在) 三层失守, 修复完成.
+
+### 改动清单 (5 新文件 + 5 改动 + 1 测试)
+
+| 改动 | 文件 | 行数 |
+|---|---|---|
+| **P0-A** Layer 0 显式 LRU 窗口 | `src/bootstrap/session-window.ts` (新) | 134 |
+| **P0-B** loadSession 加 window fallback 链 | `src/web/server-storage.ts` | +50 |
+| **P0-C** 远端 channel 镜像 | `src/bootstrap/remote-mirror.ts` (新) + `src/web/server.ts` | 130 + 18 |
+| **P1-A** Layer 2 事件日志 | `src/bootstrap/event-log.ts` (新) | 187 |
+| **P1-B** prompt 注入最近 5 条事件 | `src/agents/pi-sdk.ts` | +20 |
+| **P1-C** 撤回: 不改 UI (用户报告 bug 后回滚 client.ts 折叠块) | — | 0 |
+| **P2-A** Layer 3 项目状态 | `src/bootstrap/project-state.ts` (新) | 174 |
+| **P2-B** Layer 4 TF-IDF 向量索引 | `src/bootstrap/vector-index.ts` (新) | 233 |
+| **P2-C** prompt 注入 state + top-3 检索 | `src/agents/pi-sdk.ts` | +30 |
+| **H2-1** `/sessions/:channelId` 加 channel 校验 | `src/web/server.ts` | +8 |
+| **H2-2** `/message` 加 channel 校验 | `src/web/server.ts` | +5 |
+| **H2-3** `selectChannel` / `loadSession` 加 channel 校验 + 明确提示 | `src/web/client.ts` | +25 |
+| **测试** `channel-not-found.test.ts` | `src/test/channel-not-found.test.ts` (新) | 175 |
+| **报告** `q1-q5-report-2026-07-07.md` | `docs/wiki/` | 165 |
+
+**总预算**: ~1354 行 (10 个新文件 + 6 个改动)
+
+### 验证
+
+- `npx tsc --noEmit`: **0 错**
+- `npx vitest run`: **774/775 pass** (1 个已知 minimax 网络 flaky)
+- `python scripts/wiki_check.py`: OK (11 files, 7 frontmatter valid)
+- `python scripts/raw_manifest_check.py`: OK
+- `python scripts/wiki_lint.py --strict=v2`: OK
+- `python scripts/supersede_check.py`: OK
+
+### 已知未做
+
+- H1 (远端 channel 被取消分享) — P1 优先级, 未在本 session 修
+- H3 (远端 peer offline silent refresh) — P2 优先级
+- P0-C mirror 写盘失败重试
+- LLM 自动建议 state 更新 (UI confirm)
 | 2026-07-06 | feat | CLI 启动简化: 去掉 banner/5步/section/命令列表, 仅显示单行旋转光标 → `✓ Bolloon ready` (v0.2.11) | [loading-tui.ts](../../src/cli/loading-tui.ts) |
 | 2026-07-06 | fix | AI 消息渲染适配非流式模式: 后端返回 `<think>...<final gen>` 结构, 前端自动剥离后只显示纯回复 (v0.2.10) | [message-renderer.ts](../../src/web/ui/message-renderer.ts) / [server.ts](../../src/web/server.ts) |
 | 2026-07-04 | docs | P2: skills-index.md (35 个全局 skill + 触发词) + crystallized-claims.md (4 条断言从 ablation 蒸馏) | [skills-index.md](./skills-index.md) / [crystallized-claims.md](./crystallized-claims.md) |
