@@ -94,12 +94,12 @@ describe('jaccardSimilarity', () => {
 describe('schema 迁移', () => {
   it('旧数据无 status 字段应被补为 active', async () => {
     const j = await storeHumanJudgment({
-      decision: '迁移测试: 旧数据无 status 字段',
+      decision: '不暴露用户隐私给远端 peer, 除非用户授权明确',
       decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
+      reasons: ['安全原则'],
+      values_derived: [{ category: 'safety', value: 'privacy-first', weight: 0.9 }],
       context: {
-        domain: 'test',
+        domain: 'security',
         complexity: 'simple',
         stakes: 'low',
         time_pressure: 'low',

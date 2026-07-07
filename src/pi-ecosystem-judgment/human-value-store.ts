@@ -15,6 +15,7 @@
  */
 
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import { createHash } from 'crypto';
 
@@ -131,8 +132,24 @@ export interface ValuePreference {
   evidence_count: number;
 }
 
-const VALUE_STORE_DIR = path.join(process.env.HOME || '/tmp', '.bolloon', 'human-values');
-const JUDGMENTS_FILE = path.join(VALUE_STORE_DIR, 'judgments.json');
+// 2026-07-06: 模块级 const 改成 getter 函数 — vitest 会预设 process.env.HOME 为真实 home,
+//   在测试 beforeAll 修改 HOME 前已经捕获路径, 之前所有 test fixture 都污染 ~/.bolloon.
+//   改成运行时 getter 才能正确响应 test override, 不再污染真实数据.
+function getValueStoreDir(): string {
+  return path.join(process.env.HOME || os.homedir() || '/tmp', '.bolloon', 'human-values');
+}
+function getJudgmentsFile(): string {
+  return path.join(getValueStoreDir(), 'judgments.json');
+}
+function getProfileFile(): string {
+  return path.join(getValueStoreDir(), 'profile.json');
+}
+function getPatternsFile(): string {
+  return path.join(getValueStoreDir(), 'patterns.json');
+}
+function getCounterfactualFile(): string {
+  return path.join(getValueStoreDir(), 'counterfactual-audit.jsonl');
+}
 
 // In-memory cache
 let judgmentCache: HumanJudgment[] = [];
@@ -154,16 +171,16 @@ export async function initializeValueStore(): Promise<void> {
   if (initialized) return;
 
   try {
-    await fs.mkdir(VALUE_STORE_DIR, { recursive: true });
+    await fs.mkdir(getValueStoreDir(), { recursive: true });
 
     try {
-      await fs.access(JUDGMENTS_FILE);
+      await fs.access(getJudgmentsFile());
     } catch {
-      await fs.writeFile(JUDGMENTS_FILE, JSON.stringify([], null, 2), 'utf-8');
+      await fs.writeFile(getJudgmentsFile(), JSON.stringify([], null, 2), 'utf-8');
     }
 
     initialized = true;
-    console.log('[HumanValueStore] Initialized at', VALUE_STORE_DIR);
+    console.log('[HumanValueStore] Initialized at', getValueStoreDir());
   } catch (error) {
     console.error('[HumanValueStore] Initialization failed:', error);
     throw error;
@@ -232,7 +249,9 @@ export async function storeHumanJudgment(judgment: Omit<HumanJudgment, 'id' | 't
 
   // 2026-07-06: 写入时质量门 — 检测到测试灌水数据, 默认 status='rejected' 静默丢弃
   //   启发式集见 ./cleanup.ts. 既不抛错(避免 D-hook 阻塞), 也不污染 active set.
-  let initialStatus: 'active' | 'rejected' = 'active';
+  //   注意: 只在 isJunkJudgment 命中时显式设 status; 其余情况下让 migration layer 填默认 'active'
+  //   这样老 schema migration 测试 (验 j.status === undefined) 不会被破坏.
+  let initialStatus: 'active' | 'rejected' | undefined = undefined;
   try {
     const { isJunkJudgment } = await import('./cleanup.js');
     if (isJunkJudgment({ ...judgment, id: '', timestamp: '' } as any)) {
@@ -245,7 +264,7 @@ export async function storeHumanJudgment(judgment: Omit<HumanJudgment, 'id' | 't
     ...judgment,
     id: generateId(),
     timestamp: now,
-    status: initialStatus,
+    ...(initialStatus ? { status: initialStatus } : {}),
   };
 
   // 加载现有判断
@@ -532,7 +551,7 @@ export async function loadAllJudgments(): Promise<HumanJudgment[]> {
   }
 
   try {
-    const content = await fs.readFile(JUDGMENTS_FILE, 'utf-8');
+    const content = await fs.readFile(getJudgmentsFile(), 'utf-8');
     const parsed: HumanJudgment[] = JSON.parse(content);
     judgmentCache = parsed.map((j) => (j.status === undefined ? { ...j, status: 'active' } : j));
     // 阶段 2: 4 字段 migration (in-place, 仅一次)
@@ -733,8 +752,8 @@ export async function getPriorityRules(): Promise<PriorityRule[]> {
 // ============================================================
 
 async function saveJudgments(judgments: HumanJudgment[]): Promise<void> {
-  await fs.mkdir(VALUE_STORE_DIR, { recursive: true });
-  await fs.writeFile(JUDGMENTS_FILE, JSON.stringify(judgments, null, 2), 'utf-8');
+  await fs.mkdir(getValueStoreDir(), { recursive: true });
+  await fs.writeFile(getJudgmentsFile(), JSON.stringify(judgments, null, 2), 'utf-8');
   // 让 loadAllJudgments 下次重新读盘, 避免缓存与磁盘脱节
   // 同时在写盘时也补 status 默认值, 防止 loadAllJudgments 走早返回路径时绕过迁移
   // 关键: 用浅拷贝 + spread 避免 mutate 入参 (storeHumanJudgment 返回的 fullJudgment 也会被改)

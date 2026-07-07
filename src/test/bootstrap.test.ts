@@ -116,10 +116,10 @@ describe('collectBolloonContext', () => {
 
   it('judgments 摘要应反映 store 真实状态', async () => {
     await storeHumanJudgment({
-      decision: 'Bolloon bootstrap 测试原则',
+      decision: '本地启动 bolloon P2P 节点时优先复用 iroh-secret 缓存',
       decision_type: 'approve',
-      reasons: [],
-      values_derived: [{ category: 'quality', value: 'testing', weight: 0.8 }],
+      reasons: ['减少每次启动重新生成 secret 的成本'],
+      values_derived: [{ category: 'efficiency', value: 'caching-first', weight: 0.85 }],
       context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
       metadata: { source: 'explicit', confidence: 0.8, revisable: true },
     });

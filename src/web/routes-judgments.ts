@@ -94,6 +94,29 @@ export function registerJudgmentsRoutes(app: Express): void {
     }
   });
 
+  // 2026-07-06: 清测试灌水数据 — dry (报告) + run (实际写盘) 两端点
+  app.get('/api/judgments/cleanup-dry', async (_req, res) => {
+    try {
+      const { dryCleanup } = await import('../pi-ecosystem-judgment/cleanup.js');
+      const r = await dryCleanup();
+      res.json({ ok: true, ...r });
+    } catch (err: any) {
+      console.error('[judgments] cleanup-dry failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/judgments/cleanup', async (_req, res) => {
+    try {
+      const { runCleanup } = await import('../pi-ecosystem-judgment/cleanup.js');
+      const r = await runCleanup();
+      res.json({ ok: true, ...r });
+    } catch (err: any) {
+      console.error('[judgments] cleanup failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 蒸馏 B 触发 (人类点按钮) — 同步执行演化对齐
   app.post('/api/judgments/distill-from-conversation', async (req, res) => {
     try {

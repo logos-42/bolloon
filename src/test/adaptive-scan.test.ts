@@ -41,6 +41,21 @@ async function writeUsage(entries: Array<{ ts: string; usedIds: string[] }>) {
   await fs.writeFile(USAGE_LOG, lines + '\n', 'utf-8');
 }
 
+// 2026-07-06: 测试 fixture 必须带实质内容, 否则被 storeHumanJudgment 写入时质量门拦截
+//   (decision 长度 < 12 + values_derived 空 + reasons 空 → 启发式 2 命中, status 设为 rejected)
+const TEST_BASE_REASON = 'P-Junk 1 修复后测试 fixture 需带实质内容';
+const TEST_BASE_VALUE = { category: 'quality' as const, value: 'privacy-first' as const, weight: 0.9 };
+async function storeFixture(decision: string): Promise<{ id: string }> {
+  return storeHumanJudgment({
+    decision,
+    decision_type: 'approve',
+    reasons: [TEST_BASE_REASON],
+    values_derived: [TEST_BASE_VALUE],
+    context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
+    metadata: { source: 'explicit', confidence: 0.8, revisable: true },
+  }) as any;
+}
+
 async function clearUsage() {
   try { await fs.unlink(USAGE_LOG); } catch {}
   try { await fs.unlink(EVOLUTION_LOG); } catch {}
@@ -86,14 +101,7 @@ describe('adaptive scan: 失败静默', () => {
 
 describe('adaptive scan: rising', () => {
   it('7 天使用率 > 30 天均值 1.5 倍时应被识别', async () => {
-    const j = await storeHumanJudgment({
-      decision: 'rising 测试原则',
-      decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
-      context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
-      metadata: { source: 'explicit', confidence: 0.8, revisable: true },
-    });
+    const j = await storeFixture('rising 7 天使用率高于 30 天均值, 应进上升列表');
 
     // 30 天里只用过 3 次 (极少), 7 天里用过 10 次
     // 30d daily avg = 0.1, 7d daily rate = 1.43, ratio = 14.3
@@ -109,14 +117,7 @@ describe('adaptive scan: rising', () => {
   });
 
   it('稳定高频 (无显著上升) 不应被识别为 rising', async () => {
-    const j = await storeHumanJudgment({
-      decision: '稳定原则',
-      decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
-      context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
-      metadata: { source: 'explicit', confidence: 0.8, revisable: true },
-    });
+    const j = await storeFixture('稳定高频但无显著上升, 不应入 rising 列表');
     // 30 天每天 1 次, 7 天每天 1 次 → 比例 1
     const entries = [];
     for (let i = 0; i < 30; i++) entries.push({ ts: daysAgo(i), usedIds: [j.id] });
@@ -134,14 +135,7 @@ describe('adaptive scan: rising', () => {
 
 describe('adaptive scan: stale', () => {
   it('90+ 天未用 + 总 < 3 应被识别', async () => {
-    const j = await storeHumanJudgment({
-      decision: 'stale 测试原则',
-      decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
-      context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
-      metadata: { source: 'explicit', confidence: 0.8, revisable: true },
-    });
+    const j = await storeFixture('stale 90 天未用加总使用少于 3 次, 应进过时列表');
     // 100 天前用过 1 次
     await writeUsage([{ ts: daysAgo(100), usedIds: [j.id] }]);
 
@@ -158,14 +152,7 @@ describe('adaptive scan: stale', () => {
 
 describe('adaptive scan: unused', () => {
   it('30+ 天未用 + 总 < 5 应被识别', async () => {
-    const j = await storeHumanJudgment({
-      decision: 'unused 测试原则',
-      decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
-      context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
-      metadata: { source: 'explicit', confidence: 0.8, revisable: true },
-    });
+    const j = await storeFixture('unused 30 天未用且总使用少于 5, 应进未用列表');
     // 40 天前用过 2 次
     await writeUsage([
       { ts: daysAgo(45), usedIds: [j.id] },
@@ -185,14 +172,7 @@ describe('adaptive scan: unused', () => {
 
 describe('adaptive scan: healthy', () => {
   it('健康原则 (高频 + 最近用过) 不应出现在建议里', async () => {
-    const j = await storeHumanJudgment({
-      decision: '健康原则',
-      decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
-      context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
-      metadata: { source: 'explicit', confidence: 0.8, revisable: true },
-    });
+    const j = await storeFixture('健康原则: 高频使用 + 最近用过, 不应出现在建议列表');
     // 30 天每天 5 次
     const entries = [];
     for (let i = 0; i < 30; i++) {
@@ -212,30 +192,9 @@ describe('adaptive scan: healthy', () => {
 
 describe('adaptive scan: sort', () => {
   it('应按 rising > stale > unused 排序', async () => {
-    const risingJ = await storeHumanJudgment({
-      decision: 'sort-rising',
-      decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
-      context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
-      metadata: { source: 'explicit', confidence: 0.8, revisable: true },
-    });
-    const staleJ = await storeHumanJudgment({
-      decision: 'sort-stale',
-      decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
-      context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
-      metadata: { source: 'explicit', confidence: 0.8, revisable: true },
-    });
-    const unusedJ = await storeHumanJudgment({
-      decision: 'sort-unused',
-      decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
-      context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
-      metadata: { source: 'explicit', confidence: 0.8, revisable: true },
-    });
+    const risingJ = await storeFixture('sort rising 排序测试: 这条应排最前, 趋势向上');
+    const staleJ = await storeFixture('sort stale 排序测试: 这条 100 天未用, 应排第二');
+    const unusedJ = await storeFixture('sort unused 排序测试: 这条 35 天未用, 应排第三');
     void staleJ; void unusedJ;
 
     // rising 模式
@@ -262,14 +221,7 @@ describe('adaptive scan: sort', () => {
 
 describe('adaptive scan: 缓存', () => {
   it('getCachedScan 第二次调用应返回缓存 (force=false)', async () => {
-    const j = await storeHumanJudgment({
-      decision: 'cache 测试',
-      decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
-      context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
-      metadata: { source: 'explicit', confidence: 0.8, revisable: true },
-    });
+    const j = await storeFixture('cache 测试 fixture: 用于验证 getCachedScan 缓存命中');
     await writeUsage([{ ts: daysAgo(100), usedIds: [j.id] }]);
 
     const a = await getCachedScan();
@@ -297,11 +249,12 @@ describe('logEvolution / readEvolutionLog', () => {
   it('写 + 读 应能往返', async () => {
     const fakeSuggestion = {
       key: 'test-key',
-      kind: 'stale',
+      kind: 'stale' as const,
       judgmentId: 'hv-test',
-      decision: 'test',
+      decision: 'P-Junk 1 fixture for logEvolution',
       reason: 'test reason',
-      action: 'deprecate',
+      action: 'deprecate' as const,
+      hint: 'low usage',
       metrics: { usage7d: 0, usage30d: 0, daysSinceLastUse: 100, totalUsage: 1 },
       scannedAt: new Date().toISOString(),
     };

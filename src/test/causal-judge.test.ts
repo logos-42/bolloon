@@ -147,20 +147,23 @@ describe('detectConflict', () => {
 
 describe('runConflictDetection', () => {
   it('应自动写入 conflictWith 字段', async () => {
-    // 写一对冲突 judgment
+    // 写一对冲突 judgment — 标注必须触发 detectConflict 极性词匹配:
+    //   NEG list: ['不', '禁止', '避免', '勿', '不可', '不行', '不能']
+    //   POS list: ['可以', '允许', '优先', '应该', '应当', '需要', '必须']
+    //   A 包含"禁止" (负极) + B 包含"优先" (正极) → 冲突
     await storeHumanJudgment({
-      decision: '禁止自动调 shell',
+      decision: '禁止在用户没有明确授权时调用 shell 类工具, 必须逐次确认',
       decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
+      reasons: ['安全优先'],
+      values_derived: [{ category: 'safety', value: 'confirm-first', weight: 0.9 }],
       context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
       metadata: { source: 'explicit', confidence: 0.8, revisable: true },
     });
     await storeHumanJudgment({
-      decision: 'auto-tools 开启时优先 shell',
+      decision: 'auto-tools 启用时优先调用 shell 类工具以减少用户操作',
       decision_type: 'approve',
-      reasons: [],
-      values_derived: [],
+      reasons: ['效率优先'],
+      values_derived: [{ category: 'efficiency', value: 'auto-shell', weight: 0.85 }],
       context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
       metadata: { source: 'explicit', confidence: 0.8, revisable: true },
     });
@@ -184,9 +187,9 @@ describe('runConflictDetection', () => {
 describe('getRelevantValues appliesTo 路由', () => {
   it('appliesTo=[shell] 的 judgment, currentTool=read 时应不返回', async () => {
     const j = await storeHumanJudgment({
-      decision: 'shell 安全规则',
+      decision: 'shell 工具调用需要先 dry-run + 让用户确认破坏性命令',
       decision_type: 'approve',
-      reasons: [],
+      reasons: ['避免误删 / 误改'],
       values_derived: [{ category: 'safety', value: 'shell-safety', weight: 0.9 }],
       appliesTo: ['shell'],
       context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
@@ -203,9 +206,9 @@ describe('getRelevantValues appliesTo 路由', () => {
 
   it('无 appliesTo 的 judgment 适用所有 tool', async () => {
     const j = await storeHumanJudgment({
-      decision: '通用安全规则',
+      decision: '通用安全规则: 任何操作都可能影响生产, 默认让用户审核',
       decision_type: 'approve',
-      reasons: [],
+      reasons: ['通用防御'],
       values_derived: [{ category: 'safety', value: 'general-safety', weight: 0.9 }],
       context: { domain: 'general', complexity: 'simple', stakes: 'low', time_pressure: 'low' },
       metadata: { source: 'explicit', confidence: 0.8, revisable: true },

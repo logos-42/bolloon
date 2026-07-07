@@ -2818,6 +2818,38 @@ if (judgmentsModal) {
 const judgmentImportBtn = document.getElementById('judgment-import-btn');
 const judgmentImportFile = document.getElementById('judgment-import-file');
 
+// 2026-07-06: 清理测试灌水数据按钮 — 一键 soft-delete 启发式命中的条目
+const judgmentCleanupBtn = document.getElementById('judgment-cleanup-btn');
+async function runCleanupJudgments(dryRun) {
+  const url = dryRun ? '/api/judgments/cleanup-dry' : '/api/judgments/cleanup';
+  const method = dryRun ? 'GET' : 'POST';
+  if (judgmentCleanupBtn) judgmentCleanupBtn.disabled = true;
+  const origText = judgmentCleanupBtn?.textContent;
+  if (judgmentCleanupBtn) judgmentCleanupBtn.textContent = dryRun ? '🔍 扫描…' : '⚙️ 清理中…';
+  try {
+    const res = await fetch(url, { method });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showJudgmentError('清理失败: ' + (json.error || res.status));
+      return;
+    }
+    if (dryRun) {
+      showJudgmentOk(`扫描: ${json.totalBefore} 条 → 保留 ${json.totalAfter}, 将被软删除 ${json.removed} 条 (loadAll 测试/测试原则等启发式)`);
+    } else {
+      showJudgmentOk(`清理完成: ${json.totalBefore} → ${json.totalAfter} 条 (软删除 ${json.removed} 条)`);
+      // 重新拉一次列表刷新 UI
+      if (typeof loadJudgments === 'function') await loadJudgments();
+    }
+  } catch (err) {
+    showJudgmentError('清理请求失败: ' + (err?.message || err));
+  } finally {
+    if (judgmentCleanupBtn) {
+      judgmentCleanupBtn.disabled = false;
+      judgmentCleanupBtn.textContent = origText || '清理测试数据';
+    }
+  }
+}
+
 function showJudgmentError(msg) {
   if (!judgmentError) return;
   judgmentError.textContent = msg;
@@ -2876,6 +2908,17 @@ if (judgmentImportFile) {
   judgmentImportFile.addEventListener('change', (e) => {
     const f = e.target.files && e.target.files[0];
     if (f) importJudgmentFile(f);
+  });
+}
+
+// 2026-07-06: 清理测试数据 — 先 dry-run 看会删多少, 确认后正式清理
+if (judgmentCleanupBtn) {
+  judgmentCleanupBtn.addEventListener('click', async () => {
+    if (!window.confirm('将会软删除所有「测试灌水」判断力 (loadAll 测试/测试原则等启发式匹配).\n下一步将先 dry-run 预览, 二次确认再真清.')) return;
+    const dry = await runCleanupJudgments(true);
+    if (dry === false) return; // 失败已弹错
+    if (!window.confirm('确认清理吗? 软删除可追溯, 状态标记为 rejected, 不影响已 active 数据.')) return;
+    await runCleanupJudgments(false);
   });
 }
 
