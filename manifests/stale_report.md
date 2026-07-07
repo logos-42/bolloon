@@ -1,6 +1,6 @@
 # Stale Report
 
-- generated_at: `2026-07-04T04:13:08+00:00`
+- generated_at: `2026-07-07T11:59:40+00:00`
 - raw_root: `not configured`
 - fresh_pages: `0`
 - stale_pages: `0`
@@ -8,7 +8,7 @@
 - unresolved_sources: `0`
 - archived_refs: `0`
 - manifest_new: `0`
-- session_exempt: `5`
+- session_exempt: `8`
 
 ## Fresh Pages
 

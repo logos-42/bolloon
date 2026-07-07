@@ -1,6 +1,6 @@
 ---
 title: Bolloon Crystallized Claims
-source: ablation-v0.2.7
+source: session
 created: 2026-07-04
 last_confirmed: 2026-07-04
 schema_version: 2
@@ -11,6 +11,7 @@ confidence: high
 entity_type: claim
 tags: [crystallized, ablation-claims]
 crystallized_from: [ablation-v0.2.7]
+source_hash: 22463adbde717d56
 ---
 
 > 由 `scripts/crystallize.py` 蒸馏的稳定断言。每条 claim 都有 ≥2 处独立证据。
