@@ -76,6 +76,10 @@ async function main() {
   });
 
   // 编译主客户端入口 (classic script, 非 module; 由 index.html 以 /client.js 加载)
+  // 2026-07-06: client.ts 加了 import { safeChannelName } from './util/safe-name.js'.
+  //   不开 bundle 的话, esbuild 把 require("./util/safe-name.js") 内联到 IIFE 顶层
+  //   → 浏览器无 require → ReferenceError → init() 没跑 → UI 全空 (channels 不显示).
+  //   开 bundle=true 让 esbuild 把 safe-name 全部 inline 进 client.js (1.8KB, 无影响).
   console.log('[build-web] 编译 client.ts...');
   await esbuild.build({
     entryPoints: [path.join(ROOT, 'src/web/client.ts')],
@@ -84,6 +88,7 @@ async function main() {
     target: 'es2022',
     platform: 'browser',
     minify: false,
+    bundle: true,
   });
 
   // 复制静态文件

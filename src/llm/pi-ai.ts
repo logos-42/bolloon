@@ -350,7 +350,10 @@ export class PiAIModel {
     //   经验: minimax 偶发返回 200 但 content="" (上游 retry 耗尽), 之前当作 sentinel
     //   现在外层加 2 次重试 + 退避, 让 90%+ 的一次调用不出现错误
     let lastFinishReason = '';
+    // 2026-07-06: 加分阶段 instrumentation — 让"9.8s 大头是哪段"可定位
+    const _t0 = Date.now();
     for (let attempt = 0; attempt < 3; attempt++) {
+      const _tFetch = Date.now();
       const response = await fetch(`${this.getBaseUrl()}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -360,7 +363,7 @@ export class PiAIModel {
         body: JSON.stringify(requestBody),
         signal: this.combinedSignal(signal),
       });
-
+      const _tResp = Date.now();
       if (!response.ok) {
         const errBody = await response.text().catch(() => '(no body)');
         console.log(`[pi-ai DEBUG] OpenAI 错误 ${response.status}: ${errBody.slice(0, 500)}`);
@@ -371,6 +374,7 @@ export class PiAIModel {
       const data = await response.json() as {
         choices?: { message?: { content?: string; tool_calls?: any[] }; finish_reason?: string; index?: number }[];
       };
+      const _tParse = Date.now();
       const choice = data.choices?.[0];
       const content = choice?.message?.content || '';
       const toolCalls = choice?.message?.tool_calls;
@@ -379,11 +383,17 @@ export class PiAIModel {
         if (lastFinishReason === 'length') {
           console.warn(`[pi-ai] hit max_tokens ceiling (model=${this.mapModel()}, max_tokens=${maxTokens}) — caller should trim prompt or raise cap`);
         }
+        // 2026-07-06: 日志打 fetch/network/parse 三段 + prompt 体积, 以后 LLM 调用慢直接看这里定位
+        const _tAfter = Date.now();
+        const promptBytes = JSON.stringify(messages).length;
+        console.log(`[pi-ai timing] total=${_tAfter - _t0}ms attempt=${attempt + 1} fetch=${_tResp - _tFetch}ms parse=${_tParse - _tResp}ms reply=${content.length}B model=${this.mapModel()} prompt=${promptBytes}B`);
         return { reply: content, toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined };
       }
       // 空 content: 200 但 content="" → minimax 上游偶发, 退避后重试
       console.warn(`[pi-ai] attempt ${attempt + 1}/3: 空 content (finish_reason=${lastFinishReason}), 退避 1.5s 重试`);
+      const _tSleep = Date.now();
       await new Promise<void>(resolve => setTimeout(resolve, 1500));
+      console.log(`[pi-ai timing] attempt=${attempt + 1} empty; backoff=${Date.now() - _tSleep}ms; total=${Date.now() - _t0}ms so far`);
     }
     console.warn(`[pi-ai] 3 次重试都返回空 content (finish_reason=${lastFinishReason})`);
     return { reply: '' };  // 返回空让上层看到 [AI 服务调用失败]

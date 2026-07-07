@@ -2069,10 +2069,13 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     }
     runState.running = true;
     runState.abortController = new AbortController();
-    // 2026-07-04: pivot loop safety net — 60s 强制 timeout 防止 LLM hang (minimax M3
+    // 2026-07-04: pivot loop safety net — 防止 LLM hang (minimax M3
     //   偶尔反复 think 不输出 <final gen>, pivot 连 5 次无进展时会 hang 在
     //   quality 评估). setTimeout 让 LLM 客户端收 signal 主动 break.
-    const PIVOT_FORCE_TIMEOUT_MS = 30_000;
+    // 2026-07-06: 30s 太短 — minimax M3 单次 LLM 约 10s, pivot 默认 moderate profile 30 iter
+    //   留 ~300s. 之前 30s 自动 abort 时, 一次"你好"调用就被截断, 用户看到 ❌ 循环异常 + 空内容.
+    //   改为 5 分钟 = 5x 实际耗时上限.
+    const PIVOT_FORCE_TIMEOUT_MS = 5 * 60 * 1000;
     const forceTimeout = setTimeout(() => {
       console.warn(`[server] /message pivot 强制 timeout (${PIVOT_FORCE_TIMEOUT_MS}ms), aborting`);
       runState.abortController?.abort();
