@@ -51,13 +51,14 @@ export interface LoopResult {
   state: PivotLoopState;
 }
 
-export type ExitReason = 
+export type ExitReason =
   | 'max_iterations'
   | 'no_pending_tools'
   | 'quality_threshold_met'
   | 'no_progress_exhausted'
   | 'token_budget_exceeded'
   | 'min_iterations_not_met'
+  | 'final_gen_marker'
   | 'error';
 
 export type TaskComplexity = 'simple' | 'moderate' | 'complex';
@@ -340,14 +341,33 @@ export class WorkflowPivotLoop {
         
         // Check if this is a final response (no tool calls)
         const pendingTools = this.extractPendingToolUses(reply);
-        
+
         if (pendingTools.length === 0) {
+          // 2026-07-06: LLM 显式 <final gen> 标记 — pivot 立即退出, 不再走 quality/iter 流程
+          //   这个 marker 之前和 思考/ 同义被忽略, 害得 "你好" 类问题跑 11 iter 还不见停
+          //   加上之后 iter=1 收到 <final gen> 就 accept
+          if (/<final\s+gen\s*\/?>|<\/final\s+gen>/i.test(reply)) {
+            const cleaned = reply.replace(/<final\s+gen\s*\/?>|<\/final\s+gen>/gi, '').trim();
+            response = cleaned || reply;
+            this.emit({
+              type: 'status',
+              content: `✅ 检测到 <final gen> 结束标记, 立即退出 (iter=${this.state.iteration})`,
+              tool: 'system',
+            });
+            return this.createResult(true, response, 'final_gen_marker');
+          }
+
           // Check if the reply contains tool call intent but couldn't be parsed
-          const containsToolCallIntent = reply.includes('调用工具') || reply.includes('tool(') ||
-            reply.includes('使用工具') || reply.includes('需要获取') || reply.includes('需要查看') ||
-            reply.includes('tool =>') || reply.includes('[TOOL_CALL]') ||
-            /<\w+>[\s\S]*?<\/\w+>/.test(reply);
-          
+          // 2026-07-06: 排除合法的 思考/<final gen> 这些 tag (它们是 sentinel 不是 tool call)
+          const cleanedForIntentCheck = reply
+            .replace(/<final\s+gen\s*\/?>|<\/final\s+gen>/gi, '')
+            .replace(/<\/?think(?:ing)?>/gi, ''); // 移除
+          const containsToolCallIntent = cleanedForIntentCheck.includes('调用工具') || cleanedForIntentCheck.includes('tool(') ||
+            cleanedForIntentCheck.includes('使用工具') || cleanedForIntentCheck.includes('需要获取') || cleanedForIntentCheck.includes('需要查看') ||
+            cleanedForIntentCheck.includes('tool =>') || cleanedForIntentCheck.includes('[TOOL_CALL]') ||
+            // 仅匹配真工具调用 tag (tool_use / function_calls / tool_call / invoke / tool_code)
+            /<\s*(tool_use|tool_call|function_calls?|tool_code|invoke)\s*>/i.test(cleanedForIntentCheck);
+
           // If there's tool call intent but no parsed tools, continue the loop
           if (containsToolCallIntent && this.state.iteration < effectiveConfig.maxIterations) {
             this.emit({
@@ -358,7 +378,7 @@ export class WorkflowPivotLoop {
             this.state.consecutiveNoProgress++;
             continue;
           }
-          
+
           // No pending tool uses - this is a normal completion
           this.state.pendingToolUses = [];
           
@@ -749,26 +769,24 @@ export class WorkflowPivotLoop {
    * Evaluate response quality
    */
   private evaluateQuality(response: string): number {
-    let score = 0.5;
-    
-    // Length-based scoring
-    if (response.length > 100) score += 0.1;
+    let score = 0.7; // 2026-07-06: 起点 0.7 — 短回复不应被当成低质量打回去重跑
+
+    // Length bonus
+    if (response.length > 100) score += 0.05;
     if (response.length > 500) score += 0.1;
-    if (response.length < 30) score -= 0.2;
-    
-    // Structure indicators
+
+    // Structure
     if (response.includes('\n')) score += 0.05;
-    if (response.includes('-') || response.includes('•')) score += 0.05;
     if (response.includes('```')) score += 0.1;
-    
-    // Content quality indicators
-    const conclusionWords = ['完成', '结果', '总结', '所以', '因此', '答案', '推荐', '建议'];
-    if (conclusionWords.some(w => response.includes(w))) score += 0.1;
-    
+
+    // Conclusion language
+    const conclusionWords = ['完成', '总结', '所以', '因此', '答案', '推荐', '建议'];
+    if (conclusionWords.some(w => response.includes(w))) score += 0.05;
+
     // Negative indicators
     if (response.includes('调用工具') || response.includes('tool(')) score -= 0.15;
     if (response.includes('??') || response.includes('未知')) score -= 0.1;
-    
+
     return Math.max(0, Math.min(1, score));
   }
   
