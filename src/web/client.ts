@@ -1502,6 +1502,10 @@ async function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
 
+  // 2026-07-06: 第一行就切 abort 模式 — 用户期望按钮按完"立刻"变 abort icon
+  //   之前延迟是因为后面 addMessage + scrollTop 后才 setSendMode, 感官上有滞后
+  setSendMode('abort');
+
   // 2026-06-11: 立即把用户消息渲染成气泡上屏 (走 .bubble-user, 跟本地聊天一致)
   // 之前只靠 SSE `type: user` 回调显示, 但 addMessage(user) 默认 save=true 走去重, 容易跟 SSE 二次显示冲突/丢失
   // 现在: sendMessage 自己上屏, SSE `user` 回调来时因为 lastUserCommand 已匹配, 自动跳过 → 不重复
@@ -1517,8 +1521,6 @@ async function sendMessage() {
   }
 
   input.value = '';
-  // 2026-06-15: 切到 abort 模式, 用户可点按钮或按 Esc 终止
-  setSendMode('abort');
 
   // 立即把用户消息落盘, 避免切走再切回时丢失
   persistLastMessageToServer('user', text);

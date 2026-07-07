@@ -35,12 +35,20 @@ function renderLoopStatusBar(tool: string | undefined, content: string | undefin
   const retryFinal = /自动重试\s+\d+\s*次后仍失败/.test(String(content || ''));
 
   loopStatusBar.hidden = false;
-  let mainText = String(content || '')
-    .replace(/^[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}]\s*/u, '')
-    .replace(/^↻\s*/, '')
-    .replace(/^⛔\s*/, '')
-    .replace(/^⚠️\s*/, '')
-    .slice(0, 200);
+  // 2026-07-06: 静默 pivot "循环 N/M" 文字 — 只显示 spinner 动画, 不暴露计数进度
+  //   LLM 自己约束结束时机, 没有 hard cap. retrying 仍保留文字 (有意义提示).
+  const isPivotLoopMsg = /🔄\s*循环\s*\d+\s*\/\s*\d+/.test(String(content || ''));
+  let mainText: string;
+  if (isPivotLoopMsg && !retryMatch) {
+    mainText = ''; // 静默 — UI 用 spinner 表达"工作中"
+  } else {
+    mainText = String(content || '')
+      .replace(/^[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}]\s*/u, '')
+      .replace(/^↻\s*/, '')
+      .replace(/^⛔\s*/, '')
+      .replace(/^⚠️\s*/, '')
+      .slice(0, 200);
+  }
   loopStatusText.textContent = mainText;
 
   if (retryMatch) {

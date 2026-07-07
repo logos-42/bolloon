@@ -156,10 +156,10 @@ export class WorkflowPivotLoop {
     
     // Default configuration based on task complexity if not provided
     const defaults: Required<PivotLoopConfig> = {
-      maxIterations: config.maxIterations || 50,
+      maxIterations: config.maxIterations || 1000,  // 2026-07-06: 持久循环 (旧 50)
       minIterations: config.minIterations || 2,
       qualityThreshold: config.qualityThreshold || 0.7,
-      maxConsecutiveNoProgress: config.maxConsecutiveNoProgress || 5,
+      maxConsecutiveNoProgress: config.maxConsecutiveNoProgress || 8,
       maxTokenBudget: config.maxTokenBudget || 50000,
       complexity: config.complexity || 'moderate'
     };
@@ -888,26 +888,29 @@ export interface LLMInterface {
  * Factory to create a default pivot loop configuration
  */
 export function createDefaultPivotConfig(complexity?: TaskComplexity): PivotLoopConfig {
+  // 2026-07-06: maxIterations 默认大幅上调 — LLM 自己约束结束时机, 持久循环.
+  //   真实停止由 LLM emit <final gen> / 质量达标 / 连续无进展 / user abort 触发.
+  //   旧 30/60 iter 在长任务 (eg. 大文档改写) 太短, 现在跑到 N 次也不报超时.
   const profiles: Record<TaskComplexity, PivotLoopConfig> = {
     simple: {
-      maxIterations: 15,
+      maxIterations: 200,
       minIterations: 1,
       qualityThreshold: 0.6,
-      maxConsecutiveNoProgress: 3,
+      maxConsecutiveNoProgress: 5,
       maxTokenBudget: 10000
     },
     moderate: {
-      maxIterations: 30,
+      maxIterations: 1000,
       minIterations: 2,
       qualityThreshold: 0.7,
-      maxConsecutiveNoProgress: 5,
+      maxConsecutiveNoProgress: 8,
       maxTokenBudget: 30000
     },
     complex: {
-      maxIterations: 60,
+      maxIterations: 2000,
       minIterations: 3,
       qualityThreshold: 0.75,
-      maxConsecutiveNoProgress: 8,
+      maxConsecutiveNoProgress: 12,
       maxTokenBudget: 60000
     }
   };
