@@ -72,7 +72,7 @@ python3 scripts/delta_compile.py --write-drafts
 # 1. 类型检查
 npx tsc --noEmit
 
-# 2. 测试 (Windows 711 个测试)
+# 2. 测试 (Windows 775 个测试, 2026-07-07 实测)
 npx vitest run --bail=1
 
 # 3. Wiki schema 校验
