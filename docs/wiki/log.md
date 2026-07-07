@@ -1,10 +1,11 @@
-# Wiki 日志
+﻿# Wiki 日志
 
 > 每次 session 结束在这里追加一行, 格式 `## [YYYY-MM-DD] <phase> | <一句话>`.
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
 |------|-------|--------|------|
+| 2026-07-07 | chore | 0.2.12: judgment 注入门质量门 (软删除测试灌水) + CLI 启动简化 + pivot loop 持久循环/reply-preview/final-gen 退出 + LLM 调用分段时间 instrumentation | [cleanup.ts](../../src/pi-ecosystem-judgment/cleanup.ts) / [loading-tui.ts](../../src/cli/loading-tui.ts) |
 | 2026-07-06 | feat | CLI 启动简化: 去掉 banner/5步/section/命令列表, 仅显示单行旋转光标 → `✓ Bolloon ready` (v0.2.11) | [loading-tui.ts](../../src/cli/loading-tui.ts) |
 | 2026-07-06 | fix | AI 消息渲染适配非流式模式: 后端返回 `<think>...<final gen>` 结构, 前端自动剥离后只显示纯回复 (v0.2.10) | [message-renderer.ts](../../src/web/ui/message-renderer.ts) / [server.ts](../../src/web/server.ts) |
 | 2026-07-04 | docs | P2: skills-index.md (35 个全局 skill + 触发词) + crystallized-claims.md (4 条断言从 ablation 蒸馏) | [skills-index.md](./skills-index.md) / [crystallized-claims.md](./crystallized-claims.md) |
