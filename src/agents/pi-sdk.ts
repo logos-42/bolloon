@@ -653,6 +653,56 @@ export class PiAgentSession implements AgentSession {
     } catch (err) {
       console.warn('[PiAgent] onSessionStart failed (non-fatal):', err);
     }
+
+    // 2026-07-07 P1-B: 注入最近 5 条项目事件日志 (L2) — 让 LLM 知道项目状态/feature 变化
+    // 失败静默, append 到 bootstrapAddition 末尾 (超 800 字截断)
+    if (this.currentChannelId) {
+      try {
+        const { getRecentEvents } = await import('../bootstrap/event-log.js');
+        const events = await getRecentEvents(this.currentChannelId, 5);
+        if (events.length > 0) {
+          const eventBlock = [
+            '## 最近项目事件 (最近 5 条, 倒序)',
+            ...events.map(e => `- [${e.ts.slice(0, 16)}] [${e.type}] ${e.summary}`),
+          ].join('\n');
+          bootstrapAddition = (bootstrapAddition + '\n\n' + eventBlock).slice(-2000);
+        }
+      } catch (err) {
+        console.warn('[PiAgent] getRecentEvents failed (non-fatal):', err);
+      }
+
+      // 2026-07-07 P2-C: 注入项目当前状态 (L3) — 目标/约束/待办/已完成
+      try {
+        const { readState, formatStateForPrompt } = await import('../bootstrap/project-state.js');
+        const state = await readState({ channelId: this.currentChannelId });
+        const stateText = formatStateForPrompt(state);
+        if (stateText) {
+          bootstrapAddition = (bootstrapAddition + '\n\n' + stateText).slice(-2500);
+        }
+      } catch (err) {
+        console.warn('[PiAgent] readState failed (non-fatal):', err);
+      }
+
+      // 2026-07-07 P2-C: 向量检索 top-3 (L4) — 按当前 channelId + userText 找历史相关片段
+      try {
+        const { searchIndex } = await import('../bootstrap/vector-index.js');
+        const indexName = `channel-${this.currentChannelId}`;
+        const results = await searchIndex({
+          indexName,
+          query: userText,
+          topK: 3,
+        });
+        if (results.length > 0) {
+          const hitBlock = [
+            '## 相关历史片段 (top-3, TF-IDF cosine)',
+            ...results.map((r, i) => `- [${i + 1}] score=${r.score.toFixed(3)}: ${r.text.slice(0, 200).replace(/\n/g, ' ')}`),
+          ].join('\n');
+          bootstrapAddition = (bootstrapAddition + '\n\n' + hitBlock).slice(-3000);
+        }
+      } catch (err) {
+        // 索引不存在是常见情况 (新 channel), 不打 warn
+      }
+    }
     this.bootstrapAddition = bootstrapAddition;
 
     // P2: 解析当前 permission mode (BootstrapOptions > env BOLLOON_PERM_MODE > default)

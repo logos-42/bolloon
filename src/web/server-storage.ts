@@ -22,6 +22,7 @@ import {
   type Session,
   type Task,
 } from './server-types.js';
+import { saveWindow as saveSessionWindow, loadWindow as loadSessionWindow } from '../bootstrap/session-window.js';
 
 // 写盘去重: 上次写盘内容, 用于跳过幂等调用
 let lastChannelsJson = '';
@@ -61,27 +62,70 @@ export async function saveChannels(channels: Channel[]): Promise<void> {
   lastChannelsWriteAt = Date.now();
 }
 
+/**
+ * loadSession 加 L0 window fallback 链 (2026-07-07 P0-B):
+ *   1) full session.json (主路径)
+ *   2) full 超 50MB 拒加载 → 读 <key>.window.json
+ *   3) window 也没有 → 返回 null (前端 fallback "你好! 我是 Bolloon Agent")
+ */
 export async function loadSession(channelId: string, sessionId?: string): Promise<Session | null> {
   const key = sessionId ? `${channelId}:${sessionId}` : channelId;
   const sessionPath = `${SESSION_CACHE_PATH}/${key}.json`;
+  const sid = sessionId || 'default';
   try {
     // 内存保护: 拒绝加载过大的 session 文件 (> 50MB 视为异常, 避免 OOM)
     const stat = await fs.stat(sessionPath);
     if (stat.size > 50 * 1024 * 1024) {
-      console.warn(`[loadSession] session 过大 (${stat.size} bytes): ${key}`);
-      return null;
+      console.warn(`[loadSession] session 过大 (${stat.size} bytes): ${key}, fallback to window`);
+      return await loadSessionWindowFallback(channelId, sid);
     }
     const data = await fs.readFile(sessionPath, 'utf-8');
     return JSON.parse(data);
   } catch {
-    return null;
+    // 文件不存在 → 仍尝试 window (可能上次 session 删了, window 还在)
+    return await loadSessionWindowFallback(channelId, sid);
   }
+}
+
+/** window-only fallback: 窗口消息填入 Session.messages, 其他字段填占位 */
+async function loadSessionWindowFallback(channelId: string, sessionId: string): Promise<Session | null> {
+  const win = await loadSessionWindow(channelId, sessionId);
+  if (!win || win.messages.length === 0) return null;
+  console.log(`[loadSession] window fallback for ${channelId}: ${sessionId}, ${win.messages.length} msgs (${win.totalBehind} behind)`);
+  // WindowEntry → SessionMessage 映射 (id/timestamp 缺失时补占位)
+  const messages: Session['messages'] = win.messages.map((m, idx) => ({
+    id: m.id || `win-${win.lastUpdated}-${idx}`,
+    type: (m.type === 'user' || m.type === 'ai' ? m.type : 'user'),
+    content: m.content,
+    timestamp: m.timestamp || win.lastUpdated,
+    metadata: m.metadata,
+  }));
+  return {
+    channelId,
+    sessionId,
+    messages,
+    lastUpdated: win.lastUpdated,
+    _windowOnly: true as const,
+    _totalBehind: win.totalBehind,
+  } as unknown as Session;
 }
 
 export async function saveSession(session: Session): Promise<void> {
   const key = session.sessionId ? `${session.channelId}:${session.sessionId}` : session.channelId;
   const sessionPath = `${SESSION_CACHE_PATH}/${key}.json`;
   await fs.writeFile(sessionPath, JSON.stringify(session, null, 2));
+  // L0 窗口联动 (2026-07-07): 同步写最近 30 条到 <key>.window.json
+  // 失败静默 — 不阻塞主对话流
+  try {
+    await saveSessionWindow(
+      session.channelId,
+      session.sessionId || 'default',
+      session.messages || [],
+      { windowSize: 30 }
+    );
+  } catch (e: any) {
+    console.warn(`[saveSession] window write failed for ${key}: ${e?.message || e}`);
+  }
 }
 
 export async function loadTheme(): Promise<{ theme: 'light' | 'dark'; agentId: string }> {

@@ -1474,13 +1474,30 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                 if (parsed.payload?.error) {
                   pending.reject(new Error(parsed.payload.error));
                 } else {
-                  pending.resolve({
+                  const replyPayload = {
                     channelId: parsed.payload.channelId,
                     messages: parsed.payload.messages || [],
                     lastUpdated: parsed.payload.lastUpdated,
                     judgments: parsed.payload.judgments || { bound: [], candidates: [] },
                     channelName: parsed.payload.channelName
-                  });
+                  };
+                  // 2026-07-07 P0-C: 远端 channel 历史镜像 (B 端副本, 防 A 端删/损坏即丢)
+                  // fire-and-forget — 不阻塞 RPC reply 返回 (上层是 on('data') 同步回调)
+                  import('../bootstrap/remote-mirror.js')
+                    .then(({ mirrorRemoteHistory }) => mirrorRemoteHistory({
+                      targetPublicKey: evt.fromPublicKey,
+                      channelId: parsed.payload.channelId,
+                      channelName: parsed.payload.channelName,
+                      messages: parsed.payload.messages || [],
+                      lastUpdated: parsed.payload.lastUpdated,
+                    }))
+                    .then((r: any) => {
+                      if (!r?.ok) console.warn(`[v3-history] mirror 失败: ${r?.error}`);
+                    })
+                    .catch((mirrorErr: any) => {
+                      console.warn(`[v3-history] mirror 抛错 (${evt.fromPublicKey.substring(0,12)}/${parsed.payload.channelId}): ${mirrorErr?.message || mirrorErr}`);
+                    });
+                  pending.resolve(replyPayload);
                 }
               }
               return;
@@ -3260,6 +3277,51 @@ app.get('/channels', async (_req, res) => {
       res.json(channel);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 2026-07-07 P1-C: 列出 channel 的项目事件日志 (L2)
+  // 用于客户端时间线折叠块 + LLM prompt 注入
+  app.get('/api/events/:channelId', async (req, res) => {
+    try {
+      const { listEvents } = await import('../bootstrap/event-log.js');
+      const limit = parseInt((req.query.limit as string) || '20', 10);
+      const type = req.query.type as any;
+      const events = await listEvents({
+        channelId: req.params.channelId,
+        limit: Math.min(limit, 100),
+        type: type || undefined,
+      });
+      res.json({ events, total: events.length });
+    } catch (err: any) {
+      console.warn(`[api/events] ${req.params.channelId} 失败: ${err?.message || err}`);
+      res.json({ events: [], total: 0 });
+    }
+  });
+
+  // 2026-07-07 P1-C: 追加一条事件 (前端按钮 / 自动检测)
+  app.post('/api/events/:channelId', async (req, res) => {
+    try {
+      const { appendEvent, EVENT_TYPES } = await import('../bootstrap/event-log.js');
+      const { type, summary, detail, source, agentId } = req.body || {};
+      if (!type || !EVENT_TYPES.includes(type)) {
+        return res.status(400).json({ error: `type must be one of ${EVENT_TYPES.join(', ')}` });
+      }
+      if (!summary || typeof summary !== 'string') {
+        return res.status(400).json({ error: 'summary required' });
+      }
+      const r = await appendEvent({
+        channelId: req.params.channelId,
+        type,
+        summary: summary.slice(0, 200),
+        detail: detail || {},
+        source: source || 'user',
+        agentId,
+      });
+      res.json({ ok: true, ...r });
+    } catch (err: any) {
+      console.warn(`[api/events POST] ${req.params.channelId} 失败: ${err?.message || err}`);
+      res.status(500).json({ error: err?.message || String(err) });
     }
   });
 
