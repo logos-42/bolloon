@@ -879,7 +879,15 @@ ${this.getToolDefinitions()}
     //   promptWithPivotLoop 路径 0 step events — UI 显示 timeline 但永远是空
     // 2026-06-17: 透传 signal 让 abort 工作 — loop.execute() 当前不接 signal 参数,
     //   所以 abort 行为通过 this.currentSignal 共享给 loop 内部读 (后续 M3.2 接 task plan 时一起加)
-    const result = await loop.execute(input, llm, systemPrompt, this.currentOnStream ?? undefined, this.currentSignal ?? undefined);
+    // 2026-07-06: pivot 内 token 累计到 ~70% 时回调 (workflow-pivot-loop.ts line 270+).
+    //   pivot 的 messageHistory 是 process-local, 不和 pi-sdk 的 this.messageHistory 同步.
+    //   真正折叠需要把 pi-sdk 历史灌回 pivot 的 history 数组 — 侵入较大.
+    //   当前 priority: 临时传空实现, 让 budget 公式放够 (workflow-pivot-loop.ts line 220)
+    //   不再撞预算. 这条路径留作技术债.
+    const onCompact = async () => {
+      // no-op (best-effort hook for future pi-sdk/pivot history sync)
+    };
+    const result = await loop.execute(input, llm, systemPrompt, this.currentOnStream ?? undefined, this.currentSignal ?? undefined, onCompact);
 
     this.messageHistory.push({ role: 'user', content: input });
     if (result.response) {

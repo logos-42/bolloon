@@ -541,6 +541,10 @@ export class SkillAdapter {
   }
 
   private log(message: string, level: 'info' | 'warn' | 'error' = 'info'): void {
+    // 2026-07-06: info 默认静音 — 14 条 [SkillAdapter] Loaded/Registered 日志刷屏 web.log
+    //   调试时设 BOLLOON_VERBOSE=1 临时开起来. warn/error 仍正常打.
+    const VERBOSE = typeof process !== 'undefined' && process.env?.BOLLOON_VERBOSE === '1';
+    if (level === 'info' && !VERBOSE) return;
     const prefix = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : 'ℹ️';
     console.log(`${prefix} [SkillAdapter] ${message}`);
   }

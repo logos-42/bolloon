@@ -140,6 +140,16 @@ export class WorkflowPivotLoop {
   private tools: Map<string, Tool>;
   private messageHistory: Array<{ role: string; content: string; toolCall?: ToolDefinition; toolResult?: ToolResult }>;
   private streamCallback?: StreamCallback;
+  // 2026-07-06: pivot 想看内部明细设 BOLLOON_VERBOSE=1 — 默认只保留 status 事件给 UI
+  private verbose = typeof process !== 'undefined' && process.env?.BOLLOON_VERBOSE === '1';
+  private vlog(msg: string) { if (this.verbose) console.log(msg); }
+  private onApproachingTokenBudget?: () => Promise<void>;
+  private compactedThisRun = false;  // 防止 pivot 单次 execute 反复触发 compact
+  // 2026-07-06: iter ≥ 2 时用简短 systemHeader 替代完整 systemPrompt
+  //   pivot 默认 moderate profile 是 30 iter, 每次调 llm 都重复装 11K persona+tools 装 + 25 layer
+  //   (pi-ai.ts buildSystemPromptAsync 重复读 .md) — 真没必要. 第一轮装全, 后续用锚句占位.
+  //   compactor 触发后 (旧 systemHeader 代表性弱化) 再重新装一次全量.
+  private continuationSystemHeader: string | null = null;
   
   constructor(config: PivotLoopConfig) {
     this.tools = new Map();
@@ -196,11 +206,24 @@ export class WorkflowPivotLoop {
     llm: LLMInterface,
     systemPrompt: string,
     streamCallback?: StreamCallback,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    /**
+     * 2026-07-06: token 预算接近上限时回调 — 让上层 (PiAgentSession) 跑 compactor
+     *   否者单纯报 "Token 预算超支" 直接 break, 用户消息丢失.
+     *   回调同步返回值 (newMessageHistory) 时替换 this.messageHistory 后继续.
+     *   异步: PiAgent 触发 compactPipeline, 这里 await 等折叠完再继续.
+     */
+    onApproachingTokenBudget?: () => Promise<void>,
   ): Promise<LoopResult> {
     this.streamCallback = streamCallback;
     this.state = this.createInitialState();
-    console.log(`[pivot] execute: input chars=${input.length}, systemPrompt chars=${systemPrompt.length}, signal=${!!signal}`);
+    this.onApproachingTokenBudget = onApproachingTokenBudget;
+    // 2026-07-06: 准备短 systemHeader. iter ≥ 2 用它替代完整 systemPrompt
+    //   LLM 已经在 messageHistory 里看到全部历史, 不需要每次重装. compact 触发后下次再装全量.
+    this.continuationSystemHeader = this.buildContinuationHeader(systemPrompt);
+    // 重置 compact 状态 — 这次 execute 第一次 iter 仍用全量
+    this.compactedThisRun = false;
+    this.vlog(`[pivot] execute: input chars=${input.length}, systemPrompt chars=${systemPrompt.length}, signal=${!!signal}, continuationHeader chars=${this.continuationSystemHeader?.length ?? 0}`);
     this.messageHistory = [{ role: 'user', content: input }];
     
     // Analyze task complexity and adapt config
@@ -208,7 +231,13 @@ export class WorkflowPivotLoop {
     const effectiveConfig = this.adaptConfigForTask(taskProfile);
     // 2026-06-18 (supervisor): taskProfile 算的 tokenBudget 只看 input 长度, 但 systemPrompt 53K 时不够
     // 把 effectiveConfig.maxTokenBudget 提到 systemPrompt * 1.2 留余量, 简单问题也走完
-    effectiveConfig.maxTokenBudget = Math.max(effectiveConfig.maxTokenBudget, Math.ceil(systemPrompt.length * 1.2));
+    // 2026-07-06: 但累计 totalTokens = systemPrompt + sum(replies), 每 iter LLM 反 ~3-10K
+    //   旧公式 budget=11K*1.2=13K, 5 iter 累计 5 × 11K + replies = ~70K → 12-13K 处直接 break.
+    //   修法: budget = systemPrompt × 1.2 × maxIterations, 容纳 N 次 prompt + N-1 次 reply.
+    effectiveConfig.maxTokenBudget = Math.max(
+      effectiveConfig.maxTokenBudget,
+      Math.ceil(systemPrompt.length * 1.2 * effectiveConfig.maxIterations),
+    );
 
     this.emit({
       type: 'status',
@@ -245,20 +274,57 @@ export class WorkflowPivotLoop {
       // Build context for LLM
       const context = this.buildContext();
       const fullPrompt = `${systemPrompt}\n\n${context}`;
-      console.log(`[pivot] iter=${this.state.iteration} ctx=${context.length} fullPrompt=${fullPrompt.length} budget=${effectiveConfig.maxTokenBudget}`);
+      // 2026-07-06: iter ≥ 2 改用 continuationHeader — messageHistory 已经载过全 persona/tools,
+      //   重装 11K + 25 layer 是浪费, 同时让 pi-ai.chat 走 < 2000 分支 (不重新装 system prompt).
+      //   compact 触发 → 这次 iter 之后下一 iter 恢复用 full.
+      let headerForThisIter = systemPrompt;
+      let usingContinuation = false;
+      const shouldUseContinuation = this.state.iteration >= 2 && !this.compactedThisRun && this.continuationSystemHeader;
+      if (shouldUseContinuation) {
+        headerForThisIter = this.continuationSystemHeader!;
+        usingContinuation = true;
+      }
+      this.vlog(`[pivot] iter=${this.state.iteration} ctx=${context.length} fullPrompt=${fullPrompt.length} budget=${effectiveConfig.maxTokenBudget} iterHeader=${usingContinuation ? 'short' : 'full'} (${headerForThisIter.length}B)`);
 
       try {
         // Call LLM
         const t0 = Date.now();
-        const llmResponse = await llm.chat(context, systemPrompt, signal);
+        const llmResponse = await llm.chat(context, headerForThisIter, signal);
         const reply = llmResponse.reply.trim();
-        console.log(`[pivot] iter=${this.state.iteration} LLM took=${Date.now()-t0}ms reply=${reply.length} head=${reply.substring(0, 80).replace(/\n/g,' ')}`);
+        this.vlog(`[pivot] iter=${this.state.iteration} LLM took=${Date.now() - t0}ms reply=${reply.length} head=${reply.substring(0, 80).replace(/\n/g, ' ')}`);
 
         this.emit({ type: 'token', content: reply.substring(0, 100) });
 
         // Estimate token usage
-        this.state.totalTokens += this.estimateTokens(fullPrompt) + this.estimateTokens(reply);
+        this.state.totalTokens += this.estimateTokens(headerForThisIter + '\n\n' + context) + this.estimateTokens(reply);
         
+        // 2026-07-06: token 接近预算时先尝试自动压缩, 而不是直接 break — 上层 PiAgentSession
+        //   通过 onApproachingTokenBudget 回调触发 compactPipeline (5 层短路)
+        const budgetRatio = this.state.totalTokens / effectiveConfig.maxTokenBudget;
+        if (budgetRatio > 0.7 && this.onApproachingTokenBudget && !this.compactedThisRun && this.messageHistory.length >= 6) {
+          this.compactedThisRun = true;
+          this.emit({
+            type: 'status',
+            content: `🗜️ token ${this.state.totalTokens} 接近预算 (${(budgetRatio * 100).toFixed(0)}%), 尝试自动压缩上下文`,
+            tool: 'compactor',
+          });
+          try {
+            await this.onApproachingTokenBudget();
+            // 重置 totalTokens 因为 compactor 折叠后本来就不准
+            this.state.totalTokens = Math.ceil(systemPrompt.length * 0.5); // 粗略剩余量
+            this.emit({
+              type: 'status',
+              content: `🗜️ 自动压缩完成, 继续循环 (剩余估算 ${this.state.totalTokens} chars)`,
+              tool: 'compactor',
+            });
+            // 继续 loop, 不 break
+            continue;
+          } catch (err) {
+            console.warn('[pivot] onApproachingTokenBudget failed (non-fatal, 继续走 token 阈值):', String((err as any)?.message || err).slice(0, 100));
+            // compact 失败 → 回到原 check
+          }
+        }
+
         // Check token budget
         if (this.state.totalTokens > effectiveConfig.maxTokenBudget) {
           this.emit({
@@ -726,6 +792,21 @@ export class WorkflowPivotLoop {
   private estimateTokens(text: string): number {
     // Rough estimate: ~4 characters per token for Chinese/English mix
     return Math.ceil(text.length / 4);
+  }
+
+  /**
+   * 2026-07-06: build continuation header — iter ≥ 2 的短 system 头部
+   *   LLM 已在 messageHistory 里, 不需要每次 11K persona+tools 重装.
+   *   短头告诉 LLM: "你已经看过首轮; 继续 conversation, 详情见历史".
+   */
+  private buildContinuationHeader(fullSystemPrompt: string): string {
+    // 从 fullSystemPrompt 提取关键锚句: identity persona 第 1 行 + 工作模式 head 段
+    //   完整重装只在 iter=1 和 compact 之后两次
+    const lines = fullSystemPrompt.split('\n');
+    const identityLine = lines.find((l) => l.includes('你是') && !l.includes('(续)') ) ?? '';
+    return `[continuation] 你的 persona + tools + judgments 已在首轮 messageHistory 中.
+${identityLine ? identityLine + '\n' : ''}当前 step 别再读 persona 全文, 继续推进任务即可.
+> <final gen> 只在真完成时输出.`;
   }
   
   /**
