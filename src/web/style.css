@@ -1006,6 +1006,11 @@ body {
   align-self: flex-start;
 }
 
+/* 2026-07-06: 临时预览气泡 — pivot 每 iter 推, 等 loop 完 type=ai 终文覆盖 */
+.message-ai.preview {
+  opacity: 0.55;
+}
+
 .bubble {
   padding: 14px 18px;
   border-radius: var(--radius);

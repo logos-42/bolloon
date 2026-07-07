@@ -1048,6 +1048,9 @@ function handleStepEvent(data) {
 // ============================================================
 
 let lastUsedJudgmentIds = []; // 用于 finalizeTimelineAsMessage 给 addMessage 第 5 参
+// 2026-07-06: pivot loop 每 iter 推 reply-preview, 前端维持一个临时气泡给用户看进度
+//   type=ai 终文到达时清掉. 同一 channel 只保留一个.
+let currentPreviewBubble: HTMLElement | null = null;
 
 // ============================================================================
 // 2026-06-15: self_improve SSE handler — 之前 server 推 self_improve_triggered
@@ -1383,8 +1386,34 @@ function connect(channelId) {
         // 本地 user 已经由 sendMessage 渲染 + 去重, 这里不再显示
       } else if (data.type === 'ai') {
         // 2026-07-06: 非流式模式 — type=ai 事件携带完整 fullResponse
-        //   addMessage 内部统一清洗 <think>/<final gen>, 这里直接传原始内容
+        //   addMessage 内部统一清洗 思考/<final gen>, 这里直接传原始内容
+        //   如果已经存在 preview 气泡, 用 addMessage 模式 (新建一个) 让 user 看到 final + preview 两个气泡不对
+        //   — 改成在 type=ai 时: 先把 preview 气泡清空内容, 再 addMessage 新气泡 (preview 内容被覆盖)
+        //   极简: 直接 addMessage (后到的覆盖前到), 同一 channel 的 preview 会留痕迹但合预期.
         addMessage(data.content || '', 'ai', true, container, lastUsedJudgmentIds || []);
+        // 清掉 preview 气泡 — 它的内容跟 final 一样, 不重复渲染
+        if (currentPreviewBubble) {
+          currentPreviewBubble.remove();
+          currentPreviewBubble = null;
+        }
+      } else if (data.type === 'reply-preview') {
+        // 2026-07-06: pivot loop 每 iter 推 preview — 用户要求"后端只要在跑就要看到内容, 不是 '任务处理超时'"
+        //   这里维持一个临时气泡, content 每次替换. type=ai 终文到达后清掉这个临时气泡.
+        // 简化: 每次 reply-preview 都新建一个气泡 (旧的不清), 用户看到多个中间结果.
+        //   type=ai 终文到达时一并清掉 — 避免 preview 与 final 同时显示.
+        const previewContent = data.content || '';
+        if (!currentPreviewBubble) {
+          currentPreviewBubble = addMessage(previewContent, 'ai', true, container, []);
+          if (currentPreviewBubble) {
+            currentPreviewBubble.classList.add('preview');
+          }
+        } else {
+          // 更新已有气泡内容 — 把当前 preview 全部替换为最新 reply (不用累积)
+          currentPreviewBubble.replaceWith(addMessage(previewContent, 'ai', true, container, []));
+          // 重新抓取最新引用
+          const msgs = container.querySelectorAll('.message-ai.preview');
+          currentPreviewBubble = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+        }
       } else if (data.type === 'stream') {
         // 2026-07-06: 简化流式处理 — 完全不显示 token/thinking 中间产物
         //   原因: 后端 pivot loop 用了 stream:false, 每次 emit type='token' + content=reply.substring(0,100)
@@ -1480,6 +1509,12 @@ async function sendMessage() {
   addMessage(text, 'user', true, container);
   // 滚动到底
   if (container) container.scrollTop = container.scrollHeight;
+
+  // 2026-07-06: 新一轮 prompt 开始, 清掉上一轮的预览气泡 (如果还在) — 没清就被两个一起看到了
+  if (currentPreviewBubble) {
+    currentPreviewBubble.remove();
+    currentPreviewBubble = null;
+  }
 
   input.value = '';
   // 2026-06-15: 切到 abort 模式, 用户可点按钮或按 Esc 终止

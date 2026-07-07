@@ -2117,6 +2117,15 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
           if (event.content) {
             broadcast({ type: 'workflow_step', step: 'AI 思考', content: event.content.substring(0, 100) }, channelId);
           }
+        } else if ((event as any).type === 'reply-preview') {
+          // 2026-07-06: pivot 每 iter 把完整 reply 推给前端 — 前端可以更新临时气泡
+          //   等 loop 退完 type=ai 终文事件覆盖. 不依赖整个 promptWithPivotLoop 返回.
+          //   这样 pivot 中途网络慢 / 5min-long 任务, 用户看到中间内容不是空白 + '任务处理超时'.
+          broadcast({
+            type: 'reply-preview',
+            content: (event as any).content,
+            iteration: (event as any).iteration,
+          }, channelId);
         } else if (event.type === 'status' || event.type === 'tool') {
           broadcast({ type: 'status', tool: event.tool, content: event.content }, channelId);
           broadcast({ type: 'workflow_step', step: event.tool || '系统', content: event.content }, channelId);

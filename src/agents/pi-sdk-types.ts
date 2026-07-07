@@ -95,7 +95,8 @@ export interface StreamCallback {
 
 export interface StreamEvent {
   type: 'status' | 'thinking' | 'tool' | 'token' | 'done' | 'error'
-      | 'step_start' | 'step_done' | 'step_error';
+      | 'step_start' | 'step_done' | 'step_error'
+      | 'reply-preview';
   content: string;
   tool?: string;
   data?: unknown;
