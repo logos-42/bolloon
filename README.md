@@ -103,6 +103,34 @@ npm install -g pi-subagents pi-goals
 
 ---
 
+## 安装与启动 (Quickstart)
+
+> **多用户 Windows 机器常见疑问**：`bolloon` 命令只在**装它的那个用户**的 PATH 里 (`%APPDATA%\npm\bolloon.cmd`)。Windows npm 默认 per-user 隔离, 跨用户不会自动继承.
+
+**新用户/测试用户**: 在 PowerShell 跑这 3 行(任意项目子目录都行,只要能 `cd` 到仓库根):
+
+```powershell
+cd D:\AI\bolloon
+npm install -g .        # 这一行把 bin\bolloon-cli.cjs 写到 %APPDATA%\npm\, 装当前用户生效
+bolloon --version       # 应输出 v0.2.12
+```
+
+**一键脚本**(双击或在 PowerShell `cmd /c` 执行,适合非技术测试用户): `scripts\setup-bolloon-global.cmd`. 自动检测 Node / 跳过已装 deps / link / 自检.
+
+**日常使用**:
+
+```powershell
+bolloon              # 启动 GUI (Electron 桌面)
+bolloon --web        # 启动 Web UI (浏览器)
+bolloon --cli        # 启动 CLI 模式
+bolloon --read       # 读取文档能力
+bolloon --help       # 所有命令
+```
+
+详细打包 / 桌面 / iOS 流程见 [docs/BUILD.md](docs/BUILD.md).
+
+---
+
 ## 一、项目概述
 
 **Bolloon** 是一个判断力智能体协作平台，核心价值在于**保留人类的判断力决策，通过 Harness 实现异步自动化合作**。
