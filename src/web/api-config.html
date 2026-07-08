@@ -421,7 +421,15 @@
       const result = document.getElementById('testResult');
 
       btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span> 测试中...';
+      // v0.2.15: defer label mutation to the next frame. Synchronously
+      // replacing the button's innerHTML in its own click handler cancels
+      // the click event in several Chromium-derived engines — the user
+      // observed the first click "doing nothing" until they closed and
+      // reopened the modal. Wrapping the mutation in requestAnimationFrame
+      // lets the click event finish dispatching first.
+      requestAnimationFrame(() => {
+        btn.textContent = '⚡ 测试中...';
+      });
       result.style.display = 'none';
 
       const endpoint = currentProviderType === 'llm' ? '/api/llm-test' :
@@ -447,7 +455,9 @@
       }
 
       btn.disabled = false;
-      btn.innerHTML = '⚡ 测试连接';
+      requestAnimationFrame(() => {
+        btn.textContent = '⚡ 测试连接';
+      });
     }
 
     // ==================== 保存 ====================

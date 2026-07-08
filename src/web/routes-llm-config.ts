@@ -55,21 +55,32 @@ export function registerLlmConfigRoutes(app: Express): void {
 
       await llmConfigStore.updateProvider(provider, config);
 
-      // 如果是活跃供应商，重新初始化 Pi SDK
-      const currentActive = await llmConfigStore.getActiveProvider();
-      if (provider === currentActive) {
-        const newConfig = await llmConfigStore.getActiveProviderConfig();
-        if (newConfig) {
-          initMinimax({
-            provider,
-            apiKey: newConfig.apiKey || undefined,
-            baseUrl: newConfig.baseUrl || undefined,
-            model: newConfig.model || undefined
-          });
-        }
+      // v0.2.15: 当用户保存一个 LLM 配置为 enabled + 有 key 时，自动把它切为
+      // activeProvider 并 rebind runtime singleton。修原来的两个真问题：
+      //   1) frontend Save 从不调 /api/llm-provider，于是 activeProvider 一直
+      //      卡在 process 启动时的第一个值，新配置的 provider 永远不接管 chat
+      //   2) 即使用户手动 active，updateProvider 不替换 modelInstance（只有
+      //      当前 active 命中才 rebind），所以保存非 active 那个 provider 之后
+      //      runtime 还是指向旧 provider + 旧 key
+      // 现在：用户每保存一个 enabled 的 LLM 配置，bolloon 立即把这个 provider
+      // 设成 active + 重新 init MinLLM/Pi SDK，让"配置 + 立刻能跑"成立。
+      // 用户想保持旧 active，可以显式调 /api/llm-provider 改回去。
+      const newConfig = await llmConfigStore.getProvider(provider as ModelProvider);
+      const shouldAutoActivate =
+        newConfig?.enabled === true &&
+        // 如果 provider 不需要 key (如 ollama) 或者已经给了真 key，才激活
+        (newConfig.apiKey || !newConfig.requiresApiKey);
+      if (shouldAutoActivate) {
+        await llmConfigStore.setActiveProvider(provider as ModelProvider);
+        initMinimax({
+          provider: provider as ModelProvider,
+          apiKey: newConfig.apiKey || undefined,
+          baseUrl: newConfig.baseUrl || undefined,
+          model: newConfig.model || undefined
+        });
       }
 
-      res.json({ ok: true });
+      res.json({ ok: true, autoActivated: shouldAutoActivate });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

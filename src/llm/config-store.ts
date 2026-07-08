@@ -231,6 +231,19 @@ function getDefaultConfig(): LLMConfig {
 class LLMConfigStore {
   private config: LLMConfig | null = null;
   private initialized: boolean = false;
+  // v0.2.15: single-flight lock around read-modify-write of `~/.bolloon/llm-config.json`.
+  // Prevents concurrent save() calls from clobbering each other when the user
+  // configures two providers back-to-back (e.g. saving gemini, then anthropic, in
+  // quick succession). One operation at a time, in call order.
+  private writeChain: Promise<void> = Promise.resolve();
+
+  private async withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    // Chain the new op after the previous one; swallow the previous op's
+    // rejection so a single failed save does not poison subsequent writes.
+    const next = this.writeChain.then(fn, fn);
+    this.writeChain = next.then(() => undefined, () => undefined);
+    return next;
+  }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
@@ -303,8 +316,10 @@ class LLMConfigStore {
       throw new Error(`${provider} requires an API key but none is configured`);
     }
 
-    this.config.activeProvider = provider;
-    await this.save();
+    await this.withWriteLock(async () => {
+      this.config!.activeProvider = provider;
+      await this.save();
+    });
   }
 
   async updateProvider(provider: ModelProvider, updates: Partial<ProviderConfig>): Promise<void> {
@@ -314,12 +329,13 @@ class LLMConfigStore {
       throw new Error(`Unknown provider: ${provider}`);
     }
 
-    this.config.providers[provider] = {
-      ...this.config.providers[provider],
-      ...updates
-    };
-
-    await this.save();
+    await this.withWriteLock(async () => {
+      this.config!.providers[provider] = {
+        ...this.config!.providers[provider],
+        ...updates
+      };
+      await this.save();
+    });
   }
 
   async testProvider(provider: ModelProvider): Promise<{ success: boolean; error?: string; latency?: number }> {
@@ -337,10 +353,16 @@ class LLMConfigStore {
     const startTime = Date.now();
 
     try {
-      const response = await fetch(`${config.baseUrl}/models`, {
-        method: 'GET',
-        headers: this.buildHeaders(provider, config)
-      });
+      // v0.2.15: per-provider test endpoint. The old unified `GET baseUrl/models`
+      // is wrong on at least two providers:
+      //   - Anthropic has no GET /v1/models endpoint -> always 404.
+      //   - Google's GET /v1beta/models returns the public model catalog
+      //     without auth -> always 200, even with a wrong/expired key, so
+      //     the user saw "connected" while chat requests still failed.
+      // The per-provider branch below uses an endpoint that actually
+      // gates on the key.
+      const { url, init } = this.buildTestRequest(provider, config);
+      const response = await fetch(url, init);
 
       const latency = Date.now() - startTime;
 
@@ -350,13 +372,71 @@ class LLMConfigStore {
         const errorText = await response.text().catch(() => 'Unknown error');
         const hint = response.status === 401
           ? '（API Key 无效或不匹配该供应商 — 请检查是否复制完整、有无多余空格）'
+          : response.status === 403
+          ? '（API Key 没有调用此端点的权限 — 请检查 key scope 或供应商 endpoint）'
           : response.status === 404
           ? '（端点不存在 — 请检查 baseUrl）'
+          : response.status === 429
+          ? '（供应商限流中 — 稍候再试）'
           : '';
         return { success: false, error: `HTTP ${response.status}: ${errorText.substring(0, 500)}${hint ? ' ' + hint : ''}`, latency };
       }
     } catch (error: any) {
       return { success: false, error: error.message || 'Connection failed', latency: Date.now() - startTime };
+    }
+  }
+
+  /**
+   * Build the lightest "is the key + baseUrl healthy?" probe for the given
+   * provider. Each branch targets an endpoint that *actually* validates the
+   * credentials (as opposed to a public catalog or non-existent route).
+   */
+  private buildTestRequest(provider: ModelProvider, config: ProviderConfig): { url: string; init: RequestInit } {
+    switch (provider) {
+      case 'anthropic':
+        // No GET /v1/models. Use a minimal /messages ping that fails fast
+        // on bad keys (401) and rate-limits (429) without burning quota.
+        return {
+          url: `${config.baseUrl}/messages`,
+          init: {
+            method: 'POST',
+            headers: this.buildHeaders(provider, config),
+            body: JSON.stringify({
+              model: config.model || 'claude-sonnet-4-5-20250929',
+              max_tokens: 1,
+              messages: [{ role: 'user', content: 'ping' }],
+            }),
+          },
+        };
+      case 'gemini':
+        // listModels with the key in the query string returns 400 for
+        // an invalid key, 200 for a valid one. This is the only "light"
+        // Gemini endpoint that gates on auth (generateContent would
+        // burn quota on a real prompt).
+        return {
+          url: `${config.baseUrl}/models?key=${encodeURIComponent(config.apiKey)}`,
+          init: { method: 'GET' },
+        };
+      case 'ollama':
+        return { url: `${config.baseUrl}/api/tags`, init: { method: 'GET' } };
+      case 'openai':
+      case 'openrouter':
+      case 'deepseek':
+      case 'kimi':
+      case 'glm':
+      case 'qwen':
+      case 'mimo':
+      case 'minimax':
+      case 'local':
+        return {
+          url: `${config.baseUrl}/models`,
+          init: { method: 'GET', headers: this.buildHeaders(provider, config) },
+        };
+      default:
+        return {
+          url: `${config.baseUrl}/models`,
+          init: { method: 'GET', headers: this.buildHeaders(provider, config) },
+        };
     }
   }
 
