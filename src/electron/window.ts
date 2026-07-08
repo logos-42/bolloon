@@ -7,6 +7,16 @@ import { log } from './logger';
 import { isDev, MAIN_WINDOW_DEFAULT, MAIN_WINDOW_MIN, preferredPort } from './config';
 import { startWebServer } from './server';
 
+// Resolve to the directory holding this file. Electron's main process is always CJS
+// (electron-builder sets extraMetadata.type=commonjs on the packaged app), so `__dirname`
+// is the CJS magic global here. We read it via `globalThis` so the source compiles under
+// both `module: commonjs` and `module: esnext` tsconfigs without TS2300 / TS1343 errors.
+// Fallback to cwd is only hit if the runtime fully strips both (i.e. a future ESM electron).
+declare const process: { cwd(): string };
+const g = globalThis as { __dirname?: string; __filename?: string };
+const __basedir: string = g.__dirname
+  ?? (g.__filename ? path.dirname(g.__filename) : process.cwd());
+
 let mainWindow: BrowserWindow | null = null;
 
 export function getMainWindow(): BrowserWindow | null {
@@ -25,7 +35,7 @@ export async function createMainWindow(): Promise<void> {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false, // MCP/spawn 等需要 fs; 真正的隔离靠 preload 边界
-      preload: path.join(__dirname, '..', 'electron-preload.js'),
+      preload: path.join(__basedir, '..', 'electron-preload.js'),
     },
     show: false,
   });

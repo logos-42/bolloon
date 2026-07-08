@@ -9,6 +9,13 @@ import * as path from 'path';
 import { log } from './logger';
 import { WEB_SERVER_STARTUP_TIMEOUT_MS, DEFAULT_HOST } from './config';
 
+// Resolve to the directory holding this file. See src/electron/window.ts for the rationale;
+// this avoids the same `import.meta` / `__dirname` redeclaration conflicts that broke
+// the electron tsconfig when esnext module mode was set.
+const g = globalThis as { __dirname?: string; __filename?: string };
+const __basedir: string = g.__dirname
+  ?? (g.__filename ? path.dirname(g.__filename) : process.cwd());
+
 let webServerProcess: ChildProcess | null = null;
 
 export function getWebServerProcess(): ChildProcess | null {
@@ -25,7 +32,7 @@ export function killWebServer(): void {
 
 export function startWebServer(preferredPort: number): Promise<{ port: number }> {
   return new Promise((resolve, reject) => {
-    const serverScript = path.join(__dirname, '..', 'web', 'server.js');
+    const serverScript = path.join(__basedir, '..', 'web', 'server.js');
     log(`启动 Web 服务器进程: ${serverScript}`);
 
     // ELECTRON_RUN_AS_NODE=1 — packaged 时 process.execPath 是 Electron 二进制,

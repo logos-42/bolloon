@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli-entry.js",
@@ -37,6 +37,8 @@
     "electron:pack": "electron-builder --dir",
     "app:bundle": "node scripts/build-app-bundle.cjs",
     "app:bundle:open": "node scripts/build-app-bundle.cjs && open \"release/mac-arm64/Bolloon Agent.app\"",
+    "smoke:esm": "node scripts/smoke-esm.mjs",
+    "prepublishOnly": "npm run build:all && npm run smoke:esm",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:pi-sdk": "tsx src/test/pi-sdk.test.ts",
@@ -46,7 +48,7 @@
     "src/constraint-runtime"
   ],
   "dependencies": {
-    "@bolloon/bolloon-agent": "^0.1.36",
+    "@bolloon/bolloon-agent": "^0.2.13",
     "@bolloon/constraint-runtime": "0.1.0",
     "@capacitor/core": "^8.4.1",
     "@capacitor/ios": "^8.4.1",

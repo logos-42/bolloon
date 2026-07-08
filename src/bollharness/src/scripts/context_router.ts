@@ -1,6 +1,14 @@
 ﻿import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { fileURLToPath } from "url";
+
+// ESM compatibility: root package.json has "type": "module" so bare `__dirname`
+// is undefined at module-eval time (this module is re-exported via
+// dist/bollharness-integration/index.js which dist/index.js imports unconditionally,
+// so the crash fires before --web/--cli even reaches parseArgs).
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export const FRAGMENTS_DIR = path.join(__dirname, "..", "context-fragments");
 
