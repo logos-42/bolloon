@@ -59,7 +59,7 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    model: 'gemini-3.5-pro',
+    model: 'gemini-2.5-pro',
     temperature: 0.7,
     maxTokens: 4096,
     requiresApiKey: true
@@ -143,7 +143,12 @@ export const PROVIDER_INFO: Record<ModelProvider, { name: string; description: s
   openai: { name: 'OpenAI', description: 'GPT-4, GPT-3.5 等模型', requiresApiKey: true, models: ['gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
   anthropic: { name: 'Anthropic', description: 'Claude 3.5+ 系列模型', requiresApiKey: true, models: ['claude-sonnet-4-5-20250929', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
   openrouter: { name: 'OpenRouter', description: '聚合多个 AI 供应商', requiresApiKey: true, models: ['anthropic/claude-sonnet-4.5', 'anthropic/claude-3.5-sonnet'] },
-  gemini: { name: 'Google Gemini', description: 'Gemini 系列模型', requiresApiKey: true, models: ['gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'] },
+  gemini: { name: 'Google Gemini', description: 'Gemini 系列模型', requiresApiKey: true, models: [
+    'gemini-3.5-flash',     // 2026-06 官方推荐 stable 旗舰 (https://ai.google.dev/gemini-api/docs/models)
+    'gemini-2.5-pro',       // 高级推理, 仍为 GA
+    'gemini-3.1-flash-lite',// 成本敏感场景
+    'gemini-flash-latest',  // 滚动 alias → 当前 stable Flash
+  ] },
   ollama: { name: 'Ollama', description: '本地 LLM 运行框架', requiresApiKey: false },
   minimax: {
     name: 'MiniMax',

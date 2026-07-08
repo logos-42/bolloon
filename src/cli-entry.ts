@@ -27,7 +27,7 @@ const GREEN = '\x1b[32m';
 const MAGENTA = '\x1b[35m';
 
 // 版本信息 — 与 package.json:version 同步, 否则 banner 会显示过时版本误导用户
-const VERSION = '0.2.13';
+const VERSION = '0.2.14';
 
 function log(msg: string, color: string = RESET) {
   console.log(`${color}${msg}${RESET}`);

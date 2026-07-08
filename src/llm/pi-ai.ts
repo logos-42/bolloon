@@ -317,6 +317,8 @@ export class PiAIModel {
       anthropic: this.config.model || 'claude-sonnet-4-5-20250929',
       ollama: this.config.model || 'llama3.2',
       openrouter: this.config.model || 'anthropic/claude-sonnet-4.5',
+      // Pinned to 2.5-pro: the only `-pro` model that is GA per Google docs.
+      // The 3.x line ships as `-flash` only — there is no `gemini-3.x-pro`.
       gemini: this.config.model || 'gemini-2.5-pro',
       minimax: this.config.model || process.env.MINIMAX_MODEL || 'MiniMax-M3',
       deepseek: this.config.model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',

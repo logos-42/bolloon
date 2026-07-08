@@ -24,7 +24,7 @@
 //
 
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -82,6 +82,78 @@ if (syntaxErr) {
   process.exit(1);
 }
 console.log(`[smoke:esm] syntax check OK.`);
+
+// Layer 3: gemini model-ID allowlist gate.
+// Scans src/ + dist/ for any 'gemini-<version>' literal and rejects it if it is
+// not in the current allowlist. Catches typos like 'gemini-3.5-pro' (no such
+// model) or stale EOL IDs like 'gemini-2.0-flash' before they ship, mirroring
+// the prepublishOnly gate that protects the v0.2.13 ESM __dirname fix.
+//
+// The allowlist lives in TWO places — here and src/llm/config-store.ts:146 —
+// and a real diff between them is the whole point: the moment a dev types
+// 'gemini-3.5-pro' thinking it is a new model, prepublishOnly stops them.
+const ALLOWED_GEMINI_MODELS = new Set([
+  'gemini-3.5-flash',      // 2026-06 官方 stable 旗舰 (https://ai.google.dev/gemini-api/docs/models)
+  'gemini-2.5-pro',        // 高级推理, 仍为 GA
+  'gemini-3.1-flash-lite', // 成本敏感场景
+  'gemini-flash-latest',   // 滚动 alias -> 当前 stable Flash
+]);
+const BANNED_GEMINI_MODELS = new Set([
+  'gemini-3.5-pro',   // 不存在 (历史 typo, v0.2.12)
+  'gemini-2.0-flash', // Google docs 标 "已弃用即将关闭"
+  'gemini-1.5-pro',   // EOL
+  'gemini-1.5-flash', // EOL
+]);
+// Real model IDs follow two shapes:
+//   - versioned: `gemini-<digits>(.digits)?-<suffix>` (gemini-2.5-pro, gemini-3.5-flash)
+//   - alias:     `gemini-<token>-latest` (gemini-flash-latest)
+// The versioned regex requires a numeric version anchor so it skips
+// narrative prose like `gemini-3.x-pro` that appears in comments.
+const GEMINI_ID_RE_VERSIONED = /['"`‘’](gemini-\d+(?:\.\d+)?-[\w-]+)['"`‘’]/g;
+const GEMINI_ID_RE_ALIAS     = /['"`‘’](gemini-[\w-]+-latest)['"`‘’]/g;
+
+function scanForGeminiIds(dir) {
+  const hits = [];
+  if (!existsSync(dir)) return hits;
+  for (const name of readdirSync(dir)) {
+    const full = path.join(dir, name);
+    const st = statSync(full);
+    if (!st.isDirectory() && /\.(ts|mjs|cjs|js)$/.test(name) && !full.includes(`${path.sep}node_modules${path.sep}`)) {
+      const text = readFileSync(full, 'utf8');
+      for (const re of [GEMINI_ID_RE_VERSIONED, GEMINI_ID_RE_ALIAS]) {
+        re.lastIndex = 0;
+        let m;
+        while ((m = re.exec(text)) !== null) {
+          hits.push({ file: path.relative(repoRoot, full), id: m[1] });
+        }
+      }
+    } else if (st.isDirectory()) {
+      hits.push(...scanForGeminiIds(full));
+    }
+  }
+  return hits;
+}
+
+const geminiHits = [
+  ...scanForGeminiIds(path.join(repoRoot, 'src')),
+  ...scanForGeminiIds(path.join(repoRoot, 'dist')),
+];
+const bannedGemini = geminiHits.filter((h) => BANNED_GEMINI_MODELS.has(h.id));
+const unknownGemini = geminiHits.filter((h) => !ALLOWED_GEMINI_MODELS.has(h.id) && !BANNED_GEMINI_MODELS.has(h.id));
+
+if (bannedGemini.length > 0) {
+  console.error('[smoke:esm] BANNED gemini model IDs found in source:');
+  for (const h of bannedGemini) console.error(`  ${h.file}: ${h.id}`);
+  console.error('  历史 bug 修复见 v0.2.14; 修复参考 src/llm/config-store.ts:146 allowlist.');
+  process.exit(1);
+}
+if (unknownGemini.length > 0) {
+  console.error('[smoke:esm] Unknown gemini model IDs in source (not in allowlist):');
+  for (const h of unknownGemini) console.error(`  ${h.file}: ${h.id}`);
+  console.error('  Add to ALLOWED_GEMINI_MODELS in scripts/smoke-esm.mjs if intentional.');
+  process.exit(1);
+}
+console.log(`[smoke:esm] gemini model-ID check OK (${geminiHits.length} literal(s) verified).`);
 
 // Layer 2: dynamic-import each pure-functional target in a child node so a
 // ReferenceError / import-time exception fails the gate fast.
