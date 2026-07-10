@@ -5,8 +5,54 @@
 
 | 日期 | phase | 一句话 | 关联 |
 |------|-------|--------|------|
+| 2026-07-10 | feat | LoadingTUI 升级: 7 步进度可视化 + main() 错误路径自动 stop(false) + spinner 帧率不变 | [loading-tui.ts](../../src/cli/loading-tui.ts) / [index.ts](../../src/index.ts) |
 | 2026-07-07 | chore | 0.2.12: judgment 注入门质量门 (软删除测试灌水) + CLI 启动简化 + pivot loop 持久循环/reply-preview/final-gen 退出 + LLM 调用分段时间 instrumentation | [cleanup.ts](../../src/pi-ecosystem-judgment/cleanup.ts) / [loading-tui.ts](../../src/cli/loading-tui.ts) |
 | 2026-07-07 | feat | 远程交流加载链路 + 五层缓存架构 (L0 window / L1 summary / L2 events / L3 state / L4 vector) + H2 bug 修复 (channel 不存在三层失守 → 404 明确提示) | [q1-q5-report-2026-07-07.md](./q1-q5-report-2026-07-07.md) |
+
+## [2026-07-10] feat | LoadingTUI 渐进式 7 步进度 (v0.2.13)
+
+### 触发
+
+用户问 "TUI 有什么可以优化的地方", 调研发现 LoadingTUI 已经存在但只在 CLI interactive 模式用, 启动时 spinner **内容固定**, 用户看不到当前在干 step 几 (5 个 bootstrap 全是黑屏).
+
+### 改动清单 (2 文件)
+
+| 改动 | 文件 | 行数 |
+|---|---|---|
+| `setSteps()` / `startStep()` / `completeStep()` / `setMessage()` | `src/cli/loading-tui.ts` | 45 → 105 (+60) |
+| `main()` 接入 7 步进度 (LLM / 身份 / DID / P2P / iroh / Bootstrap / Web) | `src/index.ts` | +25 |
+
+### 关键改动
+
+1. **`LoadingTUI` API**: 增加 `setSteps(string[])` + `startStep(idx, label)` + `completeStep(idx, status, label)`
+2. **错误码颜色化**: `pending` ○ (灰) / `active` ⠹ (黄) / `ok` ✓ (绿) / `warn` ⚠ (黄) / `error` ✗ (红)
+3. **`stop()` 终态打印所有步骤**: 不再丢失上下文, 看到 `✓ LLM: MiniMax` `⚠ DID 本地模式` `✓ 2 peer 已连` ...
+4. **`main()` 错误路径自动 `stop(false)`**: 已存在 try/catch, error throw 自动到达 `loading?.stop(false)`, 用户看到红色 `✗ Bolloon startup failed` 而不是空行
+
+### 验证
+
+- `npx tsc --noEmit`: **0 错**
+- `npx vitest run`: **797/797 pass** (含之前 5 个 ablation 跑过的)
+- `npm run build:web`: pass
+- `npx tsx` 跑 fake 7-step dryrun: 终态布局正确, spinner 帧切换, escape 序列正确
+
+### 用户视角
+
+启动 console 输出从:
+```
+⠹ Bolloon loading...     <- 一行变来变去
+```
+变成 (完成时):
+```
+  ✓ LLM: MiniMax
+  ✓ blln-apple-x7q2
+  ⚠ DID 本地模式
+  ✓ 2 peer 已连
+  ✓ iroh 已就绪
+  ✓ Bootstrap 234ms
+  ✓ Web :54188
+  ✓ Bolloon ready
+```
 
 ## [2026-07-07] feat | 五层缓存架构 + H2 三层失守修复 (v0.2.12)
 
