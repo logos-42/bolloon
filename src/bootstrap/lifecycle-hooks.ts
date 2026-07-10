@@ -302,3 +302,77 @@ export async function onMonitorViolation(opts: MonitorViolationOptions): Promise
     console.warn('[lifecycle-hooks] onMonitorViolation failed (silent):', err);
   }
 }
+
+// ============================================================
+// GoalParked / GoalResumed (2026-07-10: 双栖 agent 网络"目标接力"用)
+// ============================================================
+
+export interface GoalParkedOptions {
+  goalId: string;
+  targetId: string;
+  reason: 'channel_switch' | 'user_away' | 'awaiting_external' | 'peer_handoff';
+  originChannel: string;
+  sessionKey: string;
+  taskId: string | null;
+  peerDid?: string;
+}
+
+export async function onGoalParked(opts: GoalParkedOptions): Promise<void> {
+  try {
+    const fs = await import('fs/promises');
+    const os = await import('os');
+    const path = await import('path');
+    const file = path.join(
+      process.env.HOME || os.homedir() || '/tmp',
+      '.bolloon', 'sessions', 'goal-parked.jsonl'
+    );
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const entry = {
+      ts: new Date().toISOString(),
+      goalId: opts.goalId,
+      targetId: opts.targetId,
+      reason: opts.reason,
+      originChannel: opts.originChannel,
+      sessionKey: opts.sessionKey,
+      taskId: opts.taskId,
+      peerDid: opts.peerDid,
+    };
+    await fs.appendFile(file, JSON.stringify(entry) + '\n', 'utf-8').catch(() => { /* ignore */ });
+  } catch (err) {
+    console.warn('[lifecycle-hooks] onGoalParked failed (silent):', err);
+  }
+}
+
+export interface GoalResumedOptions {
+  goalId: string;
+  targetId: string;
+  originChannel: string;
+  resumedIn: string;       // 新 session key
+  taskId: string | null;
+  fromPeerDid?: string;    // 跨机器 resume 时填
+}
+
+export async function onGoalResumed(opts: GoalResumedOptions): Promise<void> {
+  try {
+    const fs = await import('fs/promises');
+    const os = await import('os');
+    const path = await import('path');
+    const file = path.join(
+      process.env.HOME || os.homedir() || '/tmp',
+      '.bolloon', 'sessions', 'goal-resumed.jsonl'
+    );
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const entry = {
+      ts: new Date().toISOString(),
+      goalId: opts.goalId,
+      targetId: opts.targetId,
+      originChannel: opts.originChannel,
+      resumedIn: opts.resumedIn,
+      taskId: opts.taskId,
+      fromPeerDid: opts.fromPeerDid,
+    };
+    await fs.appendFile(file, JSON.stringify(entry) + '\n', 'utf-8').catch(() => { /* ignore */ });
+  } catch (err) {
+    console.warn('[lifecycle-hooks] onGoalResumed failed (silent):', err);
+  }
+}

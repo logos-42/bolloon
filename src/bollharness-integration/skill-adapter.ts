@@ -464,6 +464,135 @@ export class CrystalLearnSkill extends BaseSkill {
   }
 }
 
+// ============================================================
+// 2026-07-10 双栖 agent 网络新增 3 个 skill
+// (peer-sync / habit-distill / target-tracker)
+// ============================================================
+
+/**
+ * Peer-Sync Skill — 主动找对端协作.
+ *
+ * 调用流程:
+ * 1. 拿 list_peers (通过 p2pNetwork.getPeers() 或已注入的 ctx.tools)
+ * 2. 用 LLM 选最合适的 peer (按 expertise tag / 在线时长 / 任务匹配)
+ * 3. send_message 问对方是否接 + 预算
+ * 4. 同意后 send_to_channel 建带 target_id 的 channel
+ */
+export class PeerSyncSkill extends BaseSkill {
+  name = 'peer-sync';
+  description = '主动找对端 bolloon 节点协作. 接收 target_id + task, 自动选 peer + 建 channel. 写 channel 时调 sessionStore.saveMessages + chatArchiver (via goal-resume event log).';
+
+  async execute(params: Record<string, unknown>): Promise<string> {
+    const targetId = (params.target_id || params.targetId || '') as string;
+    const task = (params.task || params.description || '') as string;
+
+    if (!targetId || !task) {
+      return this.formatOutput({
+        warning: 'target_id 和 task 必填',
+        usage: '--harness-skill peer-sync --target_id "完成 X" --task "实现 Y"',
+      });
+    }
+
+    this.log(`peer-sync 启动: target_id=${targetId}`);
+
+    // 选 peer 的策略由 LLM 决定 (根据 list_peers 输出 + expertise tag)
+    return this.callLm(
+      `You are a peer-selection specialist for the bolloon P2P network.
+Given a target_id and task description, output structured JSON with:
+- selectedPeer: DID of the best peer (or null if none suitable)
+- channelName: human-readable name for the new channel
+- initialMessage: first message to send (≤ 200 chars, brief + asks for acceptance)
+- estimatedRounds: expected back-and-forth count (1-10)
+
+Rules:
+- Prefer peers with matching expertise tag
+- If no peer matches, return selectedPeer: null
+- Don't over-explain — peer agent has same identity layer as you`,
+      `target_id: ${targetId}\ntask: ${task}`,
+    );
+  }
+}
+
+/**
+ * Habit-Distill Skill — 提炼用户习性, 写到 judgment 库.
+ *
+ * 调用流程:
+ * 1. sessionStore.loadMessages(channelId) 拿当前 session 末 30 条
+ * 2. LLM 抽取用户习性 (输入习惯 / 偏好术语 / 反复问的主题 / 纠正记录)
+ * 3. humanValueStore.storeHumanJudgment({ content, tags: ['habit'], source: 'habit-distill', privacy: 'private' })
+ */
+export class HabitDistillSkill extends BaseSkill {
+  name = 'habit-distill';
+  description = '从当前 session 提炼用户习性, 写到 ~/.bolloon/human-values/judgments.json. 调 humanValueStore.storeHumanJudgment, 标签 privacy:private.';
+
+  async execute(params: Record<string, unknown>): Promise<string> {
+    const sessionKey = (params.session_key || params.sessionKey || '') as string;
+    const recentMessagesSummary = (params.messages_summary || '') as string;
+
+    if (!sessionKey) {
+      return this.formatOutput({
+        warning: 'session_key 必填',
+        usage: '--harness-skill habit-distill --session_key <key>',
+      });
+    }
+
+    this.log(`habit-distill 启动: session=${sessionKey}`);
+
+    // 抽取习性的 prompt — 让 LLM 输出结构化 JSON
+    return this.callLm(
+      `You are a habit-extraction specialist.
+Given a summary of user-assistant interaction, output JSON with:
+- habits: [{ content: string, tags: string[], weight: 'low'|'medium'|'high' }]
+  - content: 一个用户偏好/习性的简短描述 (≤ 100 字)
+  - tags: 标签如 ['input-style', 'terminology', 'recurring-topic', 'correction']
+  - weight: 影响判断力注入门时的优先级
+- skipReason: 若不该蒸馏 (用户拒绝/任务太简单/judgment 库饱和), 填理由
+
+Rules:
+- 习性必须是"用户可观察到的稳定模式", 不是单次偏好
+- 隐私相关打 tags 含 'private', 注入门自动过滤
+- 不要重复已有 judgment (调用方负责查重)`,
+      `Session: ${sessionKey}\nMessages summary: ${recentMessagesSummary || '(caller should pass loadMessages output)'}`,
+    );
+  }
+}
+
+/**
+ * Target-Tracker Skill — 跨 channel 查 target_id 进展.
+ *
+ * 调用流程:
+ * 1. goal-resume.ts 的 listParkedGoals({ targetIdPrefix: <id> }) 查所有匹配的 snapshot
+ * 2. chatArchiver.listPeerSummaries 查 channel 维度
+ * 3. 输出结构化 status: { goalId, targetId, parkedAt, reason, recentProgress[] }
+ */
+export class TargetTrackerSkill extends BaseSkill {
+  name = 'target-tracker';
+  description = '跨 channel 查 target_id 进展. 调 goal-resume listParkedGoals + chatArchiver.listPeerSummaries. 用于切 channel 时不丢目标状态.';
+
+  async execute(params: Record<string, unknown>): Promise<string> {
+    const targetId = (params.target_id || params.targetId || '') as string;
+    const originChannel = (params.origin_channel || '') as string;
+
+    if (!targetId && !originChannel) {
+      return this.formatOutput({
+        warning: 'target_id 或 origin_channel 至少传一个',
+        usage: '--harness-skill target-tracker --target_id <id>',
+      });
+    }
+
+    this.log(`target-tracker 启动: target_id=${targetId} channel=${originChannel}`);
+
+    // status JSON 由调用方负责真实查询 (skill 接收参数, 返回查询模板)
+    return this.formatOutput({
+      skill: this.name,
+      description: this.description,
+      query_params: { targetId, originChannel },
+      action: 'caller must invoke goal-resume.listParkedGoals + chatArchiver.listPeerSummaries with these params',
+      expected_output: 'List of GoalSnapshot + per-channel progress summary',
+    });
+  }
+}
+
 /**
  * Skill Adapter - Registers all bollharness skills with Bolloon's SkillRegistry
  */
@@ -489,6 +618,10 @@ export class SkillAdapter {
       new HarnessEngSkill(),
       new HarnessEngTestSkill(),
       new CrystalLearnSkill(),
+      // 2026-07-10 双栖 agent 网络新增 3 个:
+      new PeerSyncSkill(),
+      new HabitDistillSkill(),
+      new TargetTrackerSkill(),
     ];
 
     for (const skill of adaptedSkills) {

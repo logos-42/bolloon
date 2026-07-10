@@ -28,6 +28,10 @@ export type AppliesTo = (
   | 'role:expert' | 'role:architect' | 'role:implementer' | 'role:security'
   | 'tool:bash' | 'tool:str_replace' | 'tool:view' | 'tool:web_search' | 'tool:web_fetch'
   | 'tool:mcp_apps' | 'tool:hibs_api' | 'tool:image_search' | 'tool:artifacts' | 'tool:manifest'
+  // 2026-07-10 双栖 agent 网络新增 tool 维度 (按 plan 阶段 5):
+  | 'tool:list_peers' | 'tool:send_message' | 'tool:broadcast_message' | 'tool:send_to_channel'
+  | 'tool:check_inbox' | 'tool:agent_call'
+  | 'tool:park_goal' | 'tool:resume_goal' | 'tool:continue_goal_background'
   | 'all'
   | 'never'  // P-Action 4: 停用标记, .md 保留可回滚, runtime 永远不装配
 );
@@ -148,7 +152,6 @@ const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
   { id: 'core.tone',             version: '1.0.0', priority: 110, appliesTo: ['all'], source: 'static-md', maxChars: 500  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
   { id: 'core.wellbeing',        version: '1.0.0', priority: 120, appliesTo: ['all'], source: 'static-md', maxChars: 600  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
   { id: 'core.evenhandedness',   version: '1.0.0', priority: 130, appliesTo: ['all'], source: 'static-md', maxChars: 300  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
-  { id: 'core.memory_system',    version: '1.0.0', priority: 140, appliesTo: ['all'], source: 'static-md', maxChars: 200  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
   { id: 'core.artifacts_storage',version: '1.0.0', priority: 145, appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_KNOWLEDGE) },
   { id: 'core.network_filesystem',version: '1.0.0', priority: 148, appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_KNOWLEDGE) },
 
@@ -162,6 +165,18 @@ const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
   { id: 'channel.local',         version: '1.0.0', priority: 150, appliesTo: ['local'],                     source: 'static-md', maxChars: 500 , meta: DEFAULT_META(TTL_CHANNEL) },
   { id: 'channel.p2p-visitor',   version: '1.0.0', priority: 150, appliesTo: ['p2p-visitor'],               source: 'static-md', maxChars: 700 },
   { id: 'channel.p2p-agent',     version: '1.0.0', priority: 150, appliesTo: ['p2p-agent'],                 source: 'static-md', maxChars: 700 },
+  // 2026-07-10 双栖 agent 网络新增 (按 plan 阶段 3):
+  { id: 'channel.p2p-peer-sync',   version: '1.0.0', priority: 150, appliesTo: ['local', 'p2p-agent'],    source: 'static-md', maxChars: 600 , meta: DEFAULT_META(TTL_CHANNEL) },
+  { id: 'channel.p2p-proactive',   version: '1.0.0', priority: 150, appliesTo: ['p2p-agent'],               source: 'static-md', maxChars: 600 , meta: DEFAULT_META(TTL_CHANNEL) },
+  { id: 'channel.human-async',     version: '1.0.0', priority: 150, appliesTo: ['local'],                  source: 'static-md', maxChars: 500 , meta: DEFAULT_META(TTL_CHANNEL) },
+  { id: 'channel.session-handoff', version: '1.0.0', priority: 150, appliesTo: ['local', 'p2p-visitor', 'p2p-agent'], source: 'static-md', maxChars: 600 , meta: DEFAULT_META(TTL_CHANNEL) },
+
+  // ── core/ ──
+  { id: 'core.memory_system',    version: '1.0.0', priority: 140, appliesTo: ['all'], source: 'static-md', maxChars: 200  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  // 2026-07-10 双栖 agent 网络新增 (按 plan 阶段 4):
+  // priority 90 (在 channel 150 之后) — 保证 channel 装完后再装 core, 避免 channel 预算被 core 吃掉
+  // maxChars 700 → 400: 7 个新 layer 总预算 3900 chars, 必须让出空间给 tool.p2p_request (700) + tool.goal_handoff (600)
+  { id: 'core.external-engagement', version: '1.0.0', priority: 90, appliesTo: ['all'], source: 'static-md', maxChars: 400 , meta: DEFAULT_META(TTL_KNOWLEDGE) },
 
   // ── tool/ (按工具调用嵌对应 layer) ──
   { id: 'tool.bash',             version: '1.0.0', priority: 250, appliesTo: ['tool:bash'],                source: 'static-md', maxChars: 600 , meta: DEFAULT_META(TTL_TOOL) },
@@ -171,6 +186,9 @@ const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
   { id: 'tool.image_search',     version: '1.0.0', priority: 250, appliesTo: ['never'],                   source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_TOOL) },
   { id: 'tool.artifacts',        version: '1.0.0', priority: 250, appliesTo: ['never'],                   source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_TOOL) },
   { id: 'tool.manifest',         version: '1.0.0', priority: 250, appliesTo: ['tool:manifest'],           source: 'static-md', maxChars: 500 , meta: DEFAULT_META(TTL_TOOL) },
+  // 2026-07-10 双栖 agent 网络新增 (按 plan 阶段 5):
+  { id: 'tool.p2p_request',      version: '1.0.0', priority: 250, appliesTo: ['tool:send_message', 'tool:send_to_channel', 'tool:check_inbox', 'tool:list_peers', 'tool:agent_call', 'tool:broadcast_message'], source: 'static-md', maxChars: 700 , meta: DEFAULT_META(TTL_TOOL) },
+  { id: 'tool.goal_handoff',     version: '1.0.0', priority: 250, appliesTo: ['tool:park_goal', 'tool:resume_goal', 'tool:continue_goal_background'], source: 'static-md', maxChars: 600 , meta: DEFAULT_META(TTL_TOOL) },
 ];
 
 /**
@@ -211,8 +229,13 @@ export interface AssembleContext {
  * P-Action 4 (2026-06-15): 总字符上限 15000 → 4500.
  * 阶段 0 单次 system prompt 控制在 ≤ 4.5KB (≈ 1125 tokens).
  * 配合单 layer maxChars 收紧 + 6 layer 停用, 每轮 chat 节省 ≈ 2625 tokens.
+ *
+ * 2026-07-10 改造: 4500 → 6500 → 8000 (≈ 2000 tokens).
+ *   原因: 7 个新 layer (4 channel + 1 core + 2 tool) 合计 ≈ 3500 chars.
+ *   实际测算: 现有 11 个 layer 装配后 ≈ 6930 chars; 必须松绑到 8000 才能保证 tool.* 也装入.
+ *   每次 chat 多 ~875 tokens input (7% 增), 可接受 — 双栖 agent 网络的"目标接力"必须让 LLM 看到.
  */
-const TOTAL_BUDGET = 4500;
+const TOTAL_BUDGET = 8000;
 
 export async function assembleSystemPrompt(ctx: AssembleContext): Promise<{
   text: string;

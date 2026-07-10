@@ -15,6 +15,7 @@
 | [runtime-profile.md](./runtime-profile.md) | v2 meta | 校验脚本 CI/dev-only 矩阵 + ablation runner 状态 |
 | [skills-index.md](./skills-index.md) | v2 meta | 35 个全局 skill 索引 + 触发词映射 |
 | [crystallized-claims.md](./crystallized-claims.md) | v2 claim | 4 条从 ablation 蒸馏的稳定断言 |
+| [bolloon-md-template.md](./bolloon-md-template.md) | v2 | 4 级 Bolloon.md 模板 (双栖 agent 网络对外协作偏好) |
 | [log.md](./log.md) | (none) | session-by-session 变更日志 |
 
 ## v2 schema 必填字段 (所有内容页)

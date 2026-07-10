@@ -906,6 +906,113 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       }
     }
   });
+
+  // ============================================================
+  // 2026-07-10 双栖 agent 网络新增: goal handoff 工具
+  // (park_goal / resume_goal / continue_goal_background)
+  // 内部调用 goal-resume.ts, 错误不抛, 静默返回 error 字段
+  // ============================================================
+
+  ctx.tools.set('park_goal', {
+    name: 'park_goal',
+    description: '暂停当前目标并落盘快照. 切换 channel / 用户离开 / 等对端响应 / 推到对端 前必调. 接收 goalRef (含 goalId + targetId) + reason.',
+    parameters: {
+      goal_id: '已存在或新生成的 goal ID (建议 goal-${ts}-${rand} 格式)',
+      target_id: '用户视角的稳定目标描述 (e.g. "完成财务模块迁移")',
+      created_by: 'user | agent | peer',
+      origin_channel: '当前 session / channel id',
+      reason: 'channel_switch | user_away | awaiting_external | peer_handoff',
+    },
+    execute: async (args) => {
+      try {
+        const { parkGoal } = await import('./goal-resume.js');
+        const handle = await parkGoal(
+          {
+            goalId: String(args.goal_id || '').trim(),
+            targetId: String(args.target_id || '').trim(),
+            createdBy: (args.created_by === 'user' || args.created_by === 'peer') ? args.created_by : 'agent',
+            createdAt: new Date().toISOString(),
+            originChannel: String(args.origin_channel || '').trim(),
+          },
+          (args.reason as 'channel_switch' | 'user_away' | 'awaiting_external' | 'peer_handoff') || 'channel_switch',
+        );
+        return { success: !handle.error, output: JSON.stringify(handle, null, 2), error: handle.error };
+      } catch (e) {
+        return { success: false, error: `park_goal 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('resume_goal', {
+    name: 'resume_goal',
+    description: '恢复一个 park 的目标. 加载末 30 条消息到 session + 关联 task 改 running. 切回 channel / 用户回来 / 收到对端 ack 时调.',
+    parameters: {
+      goal_id: 'park 时记的 goal ID',
+      new_session: 'true = 在新 session key 下续, 默认 false (留原 session)',
+      channel_id: '可选, 指定 channelId 恢复 (默认 = originChannel)',
+    },
+    execute: async (args) => {
+      try {
+        const { resumeGoal } = await import('./goal-resume.js');
+        const newSessionStr = String(args.new_session || '').toLowerCase();
+        const handle = await resumeGoal(String(args.goal_id || '').trim(), {
+          newSession: newSessionStr === 'true' || newSessionStr === '1',
+          channelId: args.channel_id ? String(args.channel_id) : undefined,
+        });
+        return { success: !handle.error, output: JSON.stringify(handle, null, 2), error: handle.error };
+      } catch (e) {
+        return { success: false, error: `resume_goal 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('continue_goal_background', {
+    name: 'continue_goal_background',
+    description: '把目标推到对端 peer 后台跑. 内部 park 本机 + P2P 推消息 + 隐私过滤 (judgment 不发). 任务大 / 想分工时用.',
+    parameters: {
+      goal_id: '当前 goal ID',
+      target_id: '用户视角目标描述',
+      origin_channel: '当前 session id',
+      peer_did: '对端 DID (来自 list_peers)',
+    },
+    execute: async (args) => {
+      try {
+        const { continueGoalInBackground } = await import('./goal-resume.js');
+        const peerDid = String(args.peer_did || '').trim();
+        if (!peerDid) return { success: false, error: 'peer_did 必填' };
+
+        // 注入 p2p 发送函数 — 通过 ctx.p2pNetwork 调用
+        const p2pSendMessage = async (peerId: string, type: string, message: string) => {
+          try {
+            // p2pNetwork 在 ctx 里 (由 PiAgentSession 注入)
+            const p2pNetwork = (ctx as any).p2pNetwork;
+            if (!p2pNetwork || typeof p2pNetwork.sendMessage !== 'function') {
+              return { success: false, error: 'p2pNetwork 未注入到 ctx' };
+            }
+            await p2pNetwork.sendMessage(peerId, type, message);
+            return { success: true };
+          } catch (e) {
+            return { success: false, error: String(e).slice(0, 100) };
+          }
+        };
+
+        const result = await continueGoalInBackground(
+          {
+            goalId: String(args.goal_id || '').trim(),
+            targetId: String(args.target_id || '').trim(),
+            createdBy: 'agent',
+            createdAt: new Date().toISOString(),
+            originChannel: String(args.origin_channel || '').trim(),
+          },
+          peerDid,
+          p2pSendMessage,
+        );
+        return { success: !result.handle.error, output: JSON.stringify(result, null, 2), error: result.handle.error };
+      } catch (e) {
+        return { success: false, error: `continue_goal_background 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
 }
 
 /**
