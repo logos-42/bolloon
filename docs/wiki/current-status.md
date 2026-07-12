@@ -2,15 +2,15 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-07-06
+last_confirmed: 2026-07-12
 schema_version: 2
 audience: self
 stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render]
-compiled_from: [ablation-v0.2.7]
+tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation]
+compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ---
 
 ## 已支持 (✅ 生产可用)
@@ -35,6 +35,8 @@ compiled_from: [ablation-v0.2.7]
 | **server + client 部分拆分** (2026-07-06) | `src/web/server*.ts` + `src/web/client*.ts` 共 6 个文件 | server.ts 类型抽到 server-types.ts (113 行) + 创建 3 个支持模块 (storage 138 / sse 132 / v3-p2p 242) 共 625 行. client.ts 循环状态条抽到 client-loop-status.ts (229 行). tsc 0 错, vitest 766/766 pass (含上次 flaky 的 minimax 也通过) | [log.md](./log.md) |
 | **AI 消息渲染适配非流式** (2026-07-06) | `src/web/ui/message-renderer.ts` + `src/web/server.ts` | 后端返回 `<think>...<final gen>` 结构, `addMessage` 入口剥离 think 块 + 取 final gen 前为实际回复; 三处 broadcast 路径加空内容兜底 (abort/error). tsc 0 错, vitest 766/766 | [v0.2.10](../ablation/report.md) |
 | **CLI 启动简化** (2026-07-06) | `src/cli/loading-tui.ts` + `src/index.ts` | 去掉 banner/5步/section/命令列表, CLI 交互模式启动期间 console.log 静音, 仅旋转光标; 完成显示 `✓ Bolloon ready` + 提示符. tsc 0 错, vitest 766/766, build:web pass | [loading-tui.ts](../../src/cli/loading-tui.ts) |
+| **3 个 document 工具 path 校验** (2026-07-12) | `src/agents/pi-sdk-tools.ts` + `src/documents/reader.ts` + `src/test/pi-sdk-tools-validation.test.ts` | read_document / summarize_document / improve_document 加 `if (!path) return { success: false, error: 'path 必填' }` 前置校验 + documentReader.read() 加非空字符串防御; 10 个新测试 (含 LLM 未初始化 case) 锁住. tsc 0 错, vitest 807/807 (+10) | [pi-sdk-tools-validation.test.ts](../../src/test/pi-sdk-tools-validation.test.ts) |
+| **UI 暴露工具原始 error** (2026-07-12) | `src/web/ui/step-timeline.ts` + `src/web/style.css` + `src/test/step-timeline-error-display.test.ts` | step-timeline render() 之前只渲染 name/args, 完全忽略 step.error 数据 → LLM 在下一轮回复里把 `ERR_INVALID_ARG_TYPE: Received undefined` 改写成"X 必填"误导调试. 修复: error 状态 step 渲染时显示 `.step-timeline-error-wrap` 容器展示原始 error (mono 字体 + 橙色边框 + 等宽换行), CSS 加 .step-timeline-error / .step-timeline-error-wrap 样式. 6 个新测试 (含 ERR_INVALID_ARG_TYPE 完整显示 / done 不显示 / active 不显示 / 混合场景 / step_error 事件) 锁住. tsc 0 错, vitest 813/813 (+16) | [step-timeline-error-display.test.ts](../../src/test/step-timeline-error-display.test.ts) |
 
 ## 未支持 (❌ 或 ⚠️ 部分)
 

@@ -62,10 +62,12 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   ctx.tools.set('read_document', {
     name: 'read_document',
     description: '读取文档内容，支持 .txt, .md, .pdf, .docx 格式',
-    parameters: { path: 'string' },
+    parameters: { path: '文件路径 (必填)' },
     execute: async (args) => {
       try {
-        const content: DocumentContent = await documentReader.read(args.path);
+        const path = String(args.path || '').trim();
+        if (!path) return { success: false, error: 'path 必填' };
+        const content: DocumentContent = await documentReader.read(path);
         return {
           success: true,
           output: `📄 ${content.metadata.filename}\n大小: ${content.metadata.size} 字节\n\n${content.text.substring(0, 1000)}${content.text.length > 1000 ? '...' : ''}`
@@ -79,16 +81,18 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   ctx.tools.set('summarize_document', {
     name: 'summarize_document',
     description: '总结文档内容，分析并生成摘要',
-    parameters: { path: 'string', context: 'string' },
+    parameters: { path: '文件路径 (必填)', context: '可选, 总结上下文提示' },
     execute: async (args) => {
       try {
+        const path = String(args.path || '').trim();
+        if (!path) return { success: false, error: 'path 必填' };
         if (!ctx.minimaxAvailable) {
           return { success: false, error: 'LLM未初始化，请设置 MINIMAX_API_KEY' };
         }
         // summarizeDocument 走 PiAgentSession.summarizeDocument, 这里通过 tools 反向调用不好处理
         // 简化: 让 LLM 自己直接走 shell_exec / use_skill 路径
         const llm = getMinimax();
-        const content = await documentReader.read(args.path);
+        const content = await documentReader.read(path);
         const r = await llm.summarize(content.text, args.context);
         return {
           success: true,
@@ -103,15 +107,19 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   ctx.tools.set('improve_document', {
     name: 'improve_document',
     description: '根据要求改进文档内容',
-    parameters: { path: 'string', requirements: 'string' },
+    parameters: { path: '文件路径 (必填)', requirements: '改进要求 (必填)' },
     execute: async (args) => {
       try {
+        const path = String(args.path || '').trim();
+        if (!path) return { success: false, error: 'path 必填' };
+        const requirements = String(args.requirements || '').trim();
+        if (!requirements) return { success: false, error: 'requirements 必填' };
         if (!ctx.minimaxAvailable) {
           return { success: false, error: 'LLM未初始化，请设置 MINIMAX_API_KEY' };
         }
         const llm = getMinimax();
-        const content = await documentReader.read(args.path);
-        const improved = await llm.summarize(content.text + '\n\n改进要求: ' + args.requirements, undefined);
+        const content = await documentReader.read(path);
+        const improved = await llm.summarize(content.text + '\n\n改进要求: ' + requirements, undefined);
         return {
           success: true,
           output: `✅ 改进完成\n质量评分: ${(improved.qualityScore * 10).toFixed(1)}/10\n${improved.summary ? '\n改进内容:\n' + improved.summary.substring(0, 500) + '...' : ''}`

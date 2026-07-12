@@ -14,6 +14,9 @@ export interface DocumentContent {
 
 export class DocumentReader {
   async read(filePath: string): Promise<DocumentContent> {
+    if (!filePath || typeof filePath !== 'string' || !filePath.trim()) {
+      throw new Error('read(filePath): filePath 必填且必须是非空字符串');
+    }
     const stats = await fs.stat(filePath);
     const ext = path.extname(filePath).toLowerCase();
     const filename = path.basename(filePath);

@@ -5,6 +5,8 @@
 
 | 日期 | phase | 一句话 | 关联 |
 |------|-------|--------|------|
+| 2026-07-12 | fix | 3 个 document 工具缺 path 前置校验, Node fs 抛 ERR_INVALID_ARG_TYPE: read_document / summarize_document / improve_document 加 if (!path) return { success: false, error: 'path 必填' }; documentReader.read() 加非空字符串防御; 加 10 测试锁住 | [pi-sdk-tools.ts:62/79/103](../../src/agents/pi-sdk-tools.ts) / [reader.ts:16](../../src/documents/reader.ts) / [pi-sdk-tools-validation.test.ts](../../src/test/pi-sdk-tools-validation.test.ts) |
+| 2026-07-12 | fix | UI 暴露工具原始 error: step-timeline.ts 之前只渲染 name/args, 完全忽略 step.error (LLM 改写后误导调试 "X 必填"); 现在 error 状态 step 显示 .step-timeline-error-wrap 容器展示原始错误 (mono 字体 + 橙色边框), style.css 加对应样式; 6 个新测试锁住 | [step-timeline.ts](../../src/web/ui/step-timeline.ts) / [style.css](../../src/web/style.css) / [step-timeline-error-display.test.ts](../../src/test/step-timeline-error-display.test.ts) |
 | 2026-07-10 | feat | LoadingTUI 升级: 7 步进度可视化 + main() 错误路径自动 stop(false) + spinner 帧率不变 | [loading-tui.ts](../../src/cli/loading-tui.ts) / [index.ts](../../src/index.ts) |
 | 2026-07-07 | chore | 0.2.12: judgment 注入门质量门 (软删除测试灌水) + CLI 启动简化 + pivot loop 持久循环/reply-preview/final-gen 退出 + LLM 调用分段时间 instrumentation | [cleanup.ts](../../src/pi-ecosystem-judgment/cleanup.ts) / [loading-tui.ts](../../src/cli/loading-tui.ts) |
 | 2026-07-07 | feat | 远程交流加载链路 + 五层缓存架构 (L0 window / L1 summary / L2 events / L3 state / L4 vector) + H2 bug 修复 (channel 不存在三层失守 → 404 明确提示) | [q1-q5-report-2026-07-07.md](./q1-q5-report-2026-07-07.md) |

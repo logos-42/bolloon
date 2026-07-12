@@ -86,6 +86,44 @@ export function parseToolCall(content: string, ctx: ParseContext): ToolCall | nu
   // === 0. 剥离 思考块 — 必须先做, 否则旧 regex `<(\w+)>...</\1>` 会先匹配 想想标签 ===
   const strippedContent = content.replace(/<think[\s\S]*?<\/think/g, '');
 
+  // [diag-2026-07-12] 临时诊断日志:WebUI 出现 7 个 “必填/参数 undefined” 错误,
+  //   怀疑 parseToolCall 没拿到正确的 name/args. 这里只打日志不改任何逻辑.
+  //   日志形态: [parseToolCall diag] ok=true/false name=... argKeys=... rawHead=...
+  //   用 console.warn 一行 JSON, 方便 grep + 排时间线.
+  try {
+    const result = (function _diagProbe() {
+      // 用与正文完全相同的解析路径,但提前跑一次,记录是否命中
+      // 走完下面所有分支再覆盖回原值即可
+      return null as ToolCall | null;
+    })();
+    void result;
+    const probe = (function _doParse(): ToolCall | null {
+      // 内联一份最便宜的 "能不能解出 name" 探测 — 不重复跑全部分支
+      const m1 = strippedContent.match(/<invoke\s+name=["']([\w]+)["']/);
+      if (m1) {
+        return { name: m1[1], args: { __probe_invoketag: '1' } };
+      }
+      const m2 = strippedContent.match(/<function_calls>[\s\S]*?<invoke\s+name=["']([\w]+)["']/);
+      if (m2) {
+        return { name: m2[1], args: { __probe_function_calls: '1' } };
+      }
+      const m3 = strippedContent.match(/\{[\s\S]*?"name"\s*:\s*["']([\w]+)["']/);
+      if (m3) {
+        return { name: m3[1], args: { __probe_json_name: '1' } };
+      }
+      return null;
+    })();
+    console.warn(
+      '[parseToolCall diag] rawLen=' + content.length +
+      ' strippedLen=' + strippedContent.length +
+      ' probeName=' + (probe?.name ?? 'null') +
+      ' rawHead=' + JSON.stringify(content.slice(0, 500))
+    );
+  } catch (diagErr) {
+    // 诊断日志绝不能影响主路径 — 吞掉任何 diag 自身抛错
+    console.warn('[parseToolCall diag] diag-self-failed:', String(diagErr));
+  }
+
   // === 1. JSON function-call (OpenAI / Anthropic / Minimax-style) ===
   const jsonPatterns = [
     // markdown json code block + OpenAI  块, 同时匹配 arguments/input 字段

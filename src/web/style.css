@@ -4740,3 +4740,30 @@ body:has(> .api-config-page) {
 }
 .step-timeline-more:hover { text-decoration: underline; }
 
+
+/* 2026-07-12: 工具原始 error 展示 — 之前 step.error 数据存了但没渲染, 用户只看到
+   LLM 改写的"X 必填"误导调试. 现在展示原始 error (mono 字体 + 红色 + 缩进).
+   默认 hidden, error 状态时 step-timeline.ts 显示出来. */
+.step-timeline-error-wrap {
+  flex-basis: 100%;
+  margin: 2px 0 0 0;
+  padding-left: 16px;
+}
+.step-timeline-error {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  color: var(--warning);
+  background: rgba(255, 165, 0, 0.08);
+  border-left: 2px solid var(--warning);
+  padding: 2px 6px;
+  border-radius: 0 3px 3px 0;
+  word-break: break-word;
+  white-space: pre-wrap;
+  max-width: 100%;
+}
+.step-timeline-node[data-status="error"] .step-timeline-error {
+  /* error 状态下加粗, 用户视线引导 */
+  font-weight: 500;
+}
+

@@ -169,6 +169,14 @@ function render(timelineEl: HTMLElement): void {
         node.appendChild(marker);
         node.appendChild(label);
         node.appendChild(args);
+        // 2026-07-12: 原始 error 容器, 默认 hidden, error 状态时显示
+        const errContainer = document.createElement('div');
+        errContainer.className = 'step-timeline-error-wrap';
+        errContainer.style.display = 'none';
+        const errEl = document.createElement('span');
+        errEl.className = 'step-timeline-error';
+        errContainer.appendChild(errEl);
+        node.appendChild(errContainer);
         if (existing[htmlIdx] && existing[htmlIdx] !== node) {
           listEl.replaceChild(node, existing[htmlIdx]);
         } else {
@@ -187,6 +195,17 @@ function render(timelineEl: HTMLElement): void {
           : '';
         argsEl.textContent = argStr;
         argsEl.style.display = argStr ? '' : 'none';
+      }
+      // 2026-07-12: 暴露原始工具 error 给用户 (之前完全藏起来, LLM 改写后误导调试)
+      const errWrap = node.querySelector('.step-timeline-error-wrap') as HTMLElement | null;
+      const errEl2 = node.querySelector('.step-timeline-error') as HTMLElement | null;
+      if (step.status === 'error' && step.error && errWrap && errEl2) {
+        errEl2.textContent = String(step.error);
+        errEl2.setAttribute('title', String(step.error));
+        errWrap.style.display = '';
+      } else if (errWrap && errEl2) {
+        errWrap.style.display = 'none';
+        errEl2.textContent = '';
       }
       htmlIdx++;
     }

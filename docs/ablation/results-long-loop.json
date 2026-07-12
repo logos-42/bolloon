@@ -1,31 +1,30 @@
 {
   "version": "v0.2.8-long-loop",
-  "generated_at": "2026-07-04T11:56:15.330Z",
+  "generated_at": "2026-07-12T08:20:36.874Z",
   "totalAttempts": 13,
-  "totalPass": 10,
-  "totalFail": 2,
-  "passRate": "10/13",
+  "totalPass": 7,
+  "totalFail": 5,
+  "passRate": "7/13",
   "experiments": {
     "D1_longLoop": {
       "name": "long_loop_5turns",
       "attempts": 5,
-      "successCount": 4,
-      "failCount": 1,
+      "successCount": 3,
+      "failCount": 2,
       "samples": [
         {
           "c": "D1-1",
           "desc": "搜索一下 Bolloon agent 是什么? 用 web_search 工具.",
           "toolSeen": true,
           "toolNames": [
-            "compactor",
             "system",
             "loop"
           ],
           "tokenTextLen": 0,
           "totalTextLen": 0,
           "status": 202,
-          "totalMs": 20182,
-          "eventTypeCount": 17,
+          "totalMs": 20155,
+          "eventTypeCount": 18,
           "uniqueEventTypes": 6,
           "pass": true
         },
@@ -37,68 +36,63 @@
             "system",
             "loop"
           ],
-          "tokenTextLen": 100,
-          "totalTextLen": 100,
+          "tokenTextLen": 0,
+          "totalTextLen": 0,
           "status": 202,
-          "totalMs": 9086,
-          "eventTypeCount": 10,
-          "uniqueEventTypes": 7,
+          "totalMs": 20033,
+          "eventTypeCount": 14,
+          "uniqueEventTypes": 6,
           "pass": true
         },
         {
           "c": "D1-3",
           "desc": "读一下 Bolloon.md 验证你说的对不对, 用 read_document 工具.",
-          "toolSeen": true,
-          "toolNames": [
-            "compactor",
-            "system",
-            "loop"
-          ],
-          "tokenTextLen": 500,
-          "totalTextLen": 500,
-          "status": 202,
-          "totalMs": 12912,
-          "eventTypeCount": 45,
-          "uniqueEventTypes": 10,
-          "pass": true
-        },
-        {
-          "c": "D1-4",
-          "desc": "把这次探索总结一下存为 judgment (create_judgment 工具).",
-          "toolSeen": true,
-          "toolNames": [
-            "compactor",
-            "system",
-            "loop"
-          ],
-          "tokenTextLen": 0,
-          "totalTextLen": 0,
-          "status": 202,
-          "totalMs": 20080,
-          "eventTypeCount": 16,
-          "uniqueEventTypes": 6,
-          "pass": true
-        },
-        {
-          "c": "D1-5",
-          "desc": "回忆一下刚才几轮我们聊了什么, 基于之前的内容给个新发现.",
           "toolSeen": false,
           "toolNames": [],
           "tokenTextLen": 0,
           "totalTextLen": 0,
           "status": 202,
-          "totalMs": 9140,
-          "eventTypeCount": 3,
-          "uniqueEventTypes": 3,
+          "totalMs": 20008,
+          "eventTypeCount": 2,
+          "uniqueEventTypes": 2,
           "pass": false
+        },
+        {
+          "c": "D1-4",
+          "desc": "把这次探索总结一下存为 judgment (create_judgment 工具).",
+          "toolSeen": false,
+          "toolNames": [],
+          "tokenTextLen": 0,
+          "totalTextLen": 0,
+          "status": 202,
+          "totalMs": 20013,
+          "eventTypeCount": 2,
+          "uniqueEventTypes": 2,
+          "pass": false
+        },
+        {
+          "c": "D1-5",
+          "desc": "回忆一下刚才几轮我们聊了什么, 基于之前的内容给个新发现.",
+          "toolSeen": true,
+          "toolNames": [
+            "system",
+            "loop"
+          ],
+          "tokenTextLen": 0,
+          "totalTextLen": 0,
+          "status": 202,
+          "totalMs": 18714,
+          "eventTypeCount": 14,
+          "uniqueEventTypes": 7,
+          "pass": true
         }
       ],
       "notes": "",
-      "passRate": "4/5",
-      "toolSeenRate": "4/5",
+      "passRate": "3/5",
+      "toolSeenRate": "3/5",
       "channelInfo": {
-        "id": "ch_1781023275768_3aasyj",
-        "sessionId": "sess_1781023275768"
+        "id": "real-msg-1783844079104",
+        "sessionId": "default"
       }
     },
     "D2_multiTool": {
@@ -120,8 +114,8 @@
           "businessToolCount": 0,
           "tokenTextLen": 0,
           "status": 202,
-          "totalMs": 40093,
-          "eventTypeCount": 17,
+          "totalMs": 40157,
+          "eventTypeCount": 19,
           "pass": true
         },
         {
@@ -137,8 +131,8 @@
           "businessToolCount": 0,
           "tokenTextLen": 0,
           "status": 202,
-          "totalMs": 40119,
-          "eventTypeCount": 17,
+          "totalMs": 11221,
+          "eventTypeCount": 18,
           "pass": true
         },
         {
@@ -154,8 +148,8 @@
           "businessToolCount": 0,
           "tokenTextLen": 0,
           "status": 202,
-          "totalMs": 40019,
-          "eventTypeCount": 18,
+          "totalMs": 40022,
+          "eventTypeCount": 17,
           "pass": true
         }
       ],
@@ -165,63 +159,48 @@
     "D3_useSkill": {
       "name": "use_skill_e2e",
       "attempts": 3,
-      "successCount": 2,
-      "failCount": 1,
+      "successCount": 0,
+      "failCount": 3,
       "samples": [
         {
           "c": "D3-1",
           "desc": "use_skill 加载技能 → LLM 按 skill body 执行",
-          "toolSeen": true,
-          "toolNames": [
-            "compactor",
-            "system",
-            "loop",
-            "use_skill"
-          ],
-          "businessTools": [
-            "use_skill"
-          ],
-          "usedUseSkill": true,
-          "tokenTextLen": 200,
+          "toolSeen": false,
+          "toolNames": [],
+          "businessTools": [],
+          "usedUseSkill": false,
+          "tokenTextLen": 0,
           "status": 202,
-          "totalMs": 35042,
-          "pass": true
+          "totalMs": 37009,
+          "pass": false
         },
         {
           "c": "D3-2",
           "desc": "use_skill 加载技能 → LLM 按 skill body 执行",
-          "toolSeen": true,
-          "toolNames": [
-            "compactor",
-            "system",
-            "loop"
-          ],
+          "toolSeen": false,
+          "toolNames": [],
           "businessTools": [],
           "usedUseSkill": false,
-          "tokenTextLen": 300,
+          "tokenTextLen": 0,
           "status": 202,
-          "totalMs": 21328,
+          "totalMs": 39490,
           "pass": false
         },
         {
           "c": "D3-3",
           "desc": "use_skill 加载技能 → LLM 按 skill body 执行",
-          "toolSeen": true,
-          "toolNames": [
-            "compactor",
-            "system",
-            "loop"
-          ],
+          "toolSeen": false,
+          "toolNames": [],
           "businessTools": [],
           "usedUseSkill": false,
-          "tokenTextLen": 400,
+          "tokenTextLen": 0,
           "status": 202,
-          "totalMs": 17361,
-          "pass": true
+          "totalMs": 35009,
+          "pass": false
         }
       ],
       "notes": "",
-      "passRate": "2/3"
+      "passRate": "0/3"
     },
     "D4_memoryPersist": {
       "name": "memory_persist",
@@ -232,12 +211,12 @@
         {
           "c": "D4",
           "desc": "D1 跑完后, session 应有 ≥10 条消息 (5 user + 5 ai)",
-          "msgCount": 142,
+          "msgCount": 10,
           "sessionInfo": {
             "source": "api",
-            "channelId": "ch_1781023275768_3aasyj",
-            "sessionId": "sess_1781023275768",
-            "lastUpdated": "2026-07-04T11:56:12.306Z"
+            "channelId": "real-msg-1783844079104",
+            "sessionId": "default",
+            "lastUpdated": "2026-07-12T08:17:58.222Z"
           },
           "pass": true
         }
