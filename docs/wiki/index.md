@@ -5,7 +5,7 @@
 ## 8 个标准页
 
 | 页 | frontmatter | 用途 |
-|----|-------------|------|
+| --- | --- | --- |
 | [README.md](./README.md) | (none) | 范式 + 自检命令 |
 | [SCHEMA.md](./SCHEMA.md) | (none) | v1/v2 双 schema 完整文档 |
 | [project-overview.md](./project-overview.md) | v2 | 一句话定义 + 主线目标 + 交付边界 + 技术栈 |
@@ -17,6 +17,14 @@
 | [crystallized-claims.md](./crystallized-claims.md) | v2 claim | 4 条从 ablation 蒸馏的稳定断言 |
 | [bolloon-md-template.md](./bolloon-md-template.md) | v2 | 4 级 Bolloon.md 模板 (双栖 agent 网络对外协作偏好) |
 | [log.md](./log.md) | (none) | session-by-session 变更日志 |
+
+## 读者向页面 (docs/, audience=reader)
+
+| 页 | schema | 用途 |
+|----|--------|------|
+| [../why-bolloon.md](../why-bolloon.md) | v2 | 面向读者的导读:用户画像、为什么用 Bolloon、项目优势 |
+| [../真正要做的事.md](../真正要做的事.md) | (none) | Bolloon 真正在做的事 (历史校准) |
+| [../数学辅助智能体-核心效果定义.md](../数学辅助智能体-核心效果定义.md) | (none) | 数学场景下的核心效果定义 |
 
 ## v2 schema 必填字段 (所有内容页)
 
