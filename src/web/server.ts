@@ -3124,6 +3124,38 @@ app.get('/channels', async (_req, res) => {
       channels.push(channel);
       await saveChannels(channels);
       await saveSession({ channelId: id, sessionId: 'default', messages: [], lastUpdated: new Date().toISOString() });
+
+      // 2026-07-15 修 Bug 6: 同步把 agent 定义写进 ~/.bolloon/agents/agents.json
+      //   之前 channel 只落 channels.json, 不会出现在 agents.json 里.
+      //   重新启动 server 时 loadLocalSubAgents 只读 agents.json — 用户以为"智能体没保存".
+      //   修法: 直接读 + append (idempotent) 写 agents.json, 用 channel.agentId 作为主键 (跟 channels.json 引用对齐).
+      //   不走 SubAgentManager.registerAgent 因为它会自己生成新 id, 跟 channel.agentId 对不上.
+      try {
+        const agentsPath = path.join(process.env.HOME || '/tmp', '.bolloon', 'agents', 'agents.json');
+        await fs.mkdir(path.dirname(agentsPath), { recursive: true });
+        let arr: any[] = [];
+        try { arr = JSON.parse(await fs.readFile(agentsPath, 'utf-8')); } catch {}
+        if (!Array.isArray(arr)) arr = [];
+        const exists = arr.some(a => a && a.id === agentId);
+        if (!exists) {
+          arr.push({
+            id: agentId,
+            name,
+            did: `did:local:${id}`,
+            description: `Agent ${name} (auto-registered from channel ${id})`,
+            capabilities: Array.isArray(channelPersona?.capabilities) ? channelPersona.capabilities : [],
+            status: 'active',
+            createdAt: new Date().toISOString(),
+            lastActive: new Date().toISOString(),
+            channelId: id,
+          });
+          await fs.writeFile(agentsPath, JSON.stringify(arr, null, 2), 'utf-8');
+          console.log(`[创建频道] agent 写进 agents.json: name=${name} id=${agentId}`);
+        }
+      } catch (e: any) {
+        console.warn('[创建频道] 写 agents.json 失败 (非致命):', e?.message?.slice(0, 120));
+      }
+
       res.json(channel);
 
       // 后台生成 DID — 用统一的修复队列, 避免每个 POST 都启动独立 setTimeout
