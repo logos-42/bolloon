@@ -1,0 +1,55 @@
+# Caddyfile — judgeness.bolloon.com 反向代理
+# 反攻期 (18+ 月) 主用. 防御期本地 5418/hearth 回环冒烟足够.
+
+# ---- 主站 (默认) ----
+judgeness.bolloon.com {
+  encode zstd gzip
+  # 反向代理到本地 bolloon hearth 子服务
+  # 端口契约: bolloon 主端口 54188; 子路径 /hearth
+  # 见 src/web/server-v3-p2p.ts (本机 127.0.0.1:54188)
+  reverse_proxy 127.0.0.1:54188 {
+    header_up Host {host}
+    header_up X-Real-IP {remote}
+    header_up X-Forwarded-For {remote}
+    header_up X-Forwarded-Proto {scheme}
+    transport http {
+      dial_timeout 5s
+      response_header_timeout 30s
+    }
+  }
+
+  # 安全头 (与 bolloon web 默认一致, 但补全 ACME bot 友好)
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "no-referrer"
+    Permissions-Policy "interest-cohort=()"
+    # CORS 对 agent 必须开放 (头等公民)
+    Access-Control-Allow-Origin "*"
+    Access-Control-Allow-Methods "GET, POST, PATCH, PUT, DELETE, OPTIONS"
+    Access-Control-Allow-Headers "Content-Type, Authorization, X-Bolloon-Pubkey, X-Bolloon-Role"
+    Access-Control-Max-Age "86400"
+  }
+
+  # ACME (Let's Encrypt) — Caddy 自动
+  tls {
+    issuer internal  # 实际部署改 letsencrypt
+  }
+}
+
+# ---- 显式 www redirect ----
+www.judgeness.bolloon.com {
+  redir https://judgeness.bolloon.com{uri} permanent
+}
+
+# ---- 防御期用: 本地回环冒烟 ----
+#
+# 反代到 src/web/server.ts createWebServer(port) — 默认 54188
+# 用法:
+#   caddy run --config infra/judgeness-bolloon-com/caddy/Caddyfile
+#
+# 如需在 dev 用 https://localhost:54189, 把 54188 改为 54189 即可
+
+# ---- 备注: HSTS 与 OCSP stapling ----
+# HSTS 已上方设置; OCSP stapling 是 Caddy 默认开.
+# preload list 提交不在本文件范围 (定期人工维护).

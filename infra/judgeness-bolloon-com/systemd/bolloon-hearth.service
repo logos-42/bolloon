@@ -1,0 +1,27 @@
+[Unit]
+Description=Bolloon Hearth (judgeness.bolloon.com back-end)
+Documentation=https://github.com/bolloon/bolloon-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bolloon
+Group=bolloon
+WorkingDirectory=/opt/bolloon-agent
+ExecStart=/usr/bin/node bin/bolloon-cli.cjs --web --bind 127.0.0.1 --port 54188
+Restart=on-failure
+RestartSec=5
+# Hardening
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/bolloon
+Environment=BOLLOON_HOME=/var/lib/bolloon
+Environment=BOLLOON_HOST=127.0.0.1
+# 端口契约 (见 CLAUDE.md / src/index.ts:2142)
+Environment=PORT=54188
+
+[Install]
+WantedBy=multi-user.target

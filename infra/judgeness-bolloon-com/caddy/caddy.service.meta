@@ -1,0 +1,16 @@
+# caddy.service.meta
+# 让 systemd 接管的最小说明 — 反攻期 (O1) 由具体运维者填
+# 实际安装步骤:
+#   1. apt-get install -y caddy   或  curl -fsSL https://getcaddy.com | bash
+#   2. cp infra/judgeness-bolloon-com/caddy/Caddyfile /etc/caddy/Caddyfile
+#   3. systemctl enable --now caddy
+#   4. (可选) 把 bolloon-hearth.service 也 cp 进 /etc/systemd/system/
+#   5. systemctl enable --now bolloon-hearth
+#   6. caddy reload   (或 systemctl reload caddy)
+#
+# 验证: curl -I https://judgeness.bolloon.com/api/hearth → 200 + JSON
+#
+# DNS (注册商手动):
+#   judgeness.bolloon.com  A  <server-ip>
+#   www.judgeness.bolloon.com  CNAME judgeness.bolloon.com
+#   (Cloudflare / Namecheap / Route53 选一个; HSTS preload 需要顶级域同意)
