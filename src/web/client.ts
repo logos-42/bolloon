@@ -995,7 +995,8 @@ async function selectChannel(channelId, targetSessionId = null) {
       const tmpContainer = document.createElement('div');
       tmpContainer.style.display = 'none';
       for (const msg of msgs) {
-        addMessage(msg.content, msg.type, false, tmpContainer, msg.metadata?.usedJudgmentIds || []);
+        // 2026-07-15 修 Bug 2: 历史消息恢复时传 msg.timestamp, 不传会被 addMessage 内部用 new Date() 刷成"打开时间"
+        addMessage(msg.content, msg.type, false, tmpContainer, msg.metadata?.usedJudgmentIds || [], msg.timestamp);
       }
       while (tmpContainer.firstChild) {
         frag.appendChild(tmpContainer.firstChild);
@@ -1027,7 +1028,8 @@ async function loadSession(channelId, sessionId = null) {
     container.innerHTML = '';
     if (session.messages && session.messages.length > 0) {
       session.messages.forEach(msg => {
-        addMessage(msg.content, msg.type, false, container, msg.metadata?.usedJudgmentIds || []);
+        // 2026-07-15 修 Bug 2: 传历史 timestamp, 不被 addMessage 刷新成打开时间
+        addMessage(msg.content, msg.type, false, container, msg.metadata?.usedJudgmentIds || [], msg.timestamp);
       });
     } else {
       addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
@@ -1040,8 +1042,8 @@ async function loadSession(channelId, sessionId = null) {
 }
 
 // 2026-06-15: addMessage 委托给 ui/message-renderer.js, 客户端代码原位调用同名函数, 不感知拆分
-function addMessage(content, type, save = true, container, usedJudgmentIds = []) {
-  return MR_addMessage(content, type, save, container, usedJudgmentIds, getRendererCtx());
+function addMessage(content, type, save = true, container, usedJudgmentIds = [], timestamp = undefined) {
+  return MR_addMessage(content, type, save, container, usedJudgmentIds, getRendererCtx(), timestamp);
 }
 
 // 2026-06-15: stream / done 事件也委托给 ui/message-renderer.js.
@@ -1282,15 +1284,21 @@ function connect(channelId) {
             }
             const container = messagesContainers.get(targetChannelId) || messagesEl;
             if (msg.type === 'ai') {
+              // 2026-07-15 修 Bug 2: SSE-resume 补包也带历史 timestamp, 不被刷成"打开时间"
               if (!MR_hasStreamingText()) {
-                addMessage(msg.content, 'ai', true, container, lastUsedJudgmentIds || []);
+                addMessage(msg.content, 'ai', true, container, lastUsedJudgmentIds || [], msg.timestamp);
               } else {
                 // 如果还在 streaming, 强制把 streamingText 替换为 recovered content, 然后 finalize
                 MR_replaceStreamingText?.(msg.content);
                 MR_finalizeTimelineAsMessage(getRendererCtx());
               }
             } else if (msg.type === 'user') {
-              if (msg.source === 'remote' || msg.source === 'local') {
+              // 2026-07-15 修 Bug 1: SSE-resume 路径只渲染远端 user, 跳过 local.
+              //   原因: sendMessage 本地已经 addMessage(user) 上屏, SSE 重连补包时如果再 addMessage 一次
+              //   同一内容, 即便有 lastUserCommand 去重, 在切 channel / 长会话场景下仍可能"显示 2 条"
+              //   (因为 lastUserCommand 是内存变量, selectChannel 切走再回来后会被 server finalize 端
+              //    的 user 事件覆盖). 远端 user 由其他节点发送, 本地没渲染, 必须 addMessage.
+              if (msg.source === 'remote') {
                 addMessage(msg.content, 'user', true, container);
               }
             }
@@ -1545,6 +1553,14 @@ async function sendMessage() {
   // 获取当前频道的 DID
   const channel = channels.find(c => c.id === currentChannelId);
   const channelDid = channel?.did || '';
+
+  // 2026-07-15 修 Bug 3: 把本轮累计的附件一并发出, 同时清掉本地累计
+  const attachmentsForSend = pendingAttachments.slice();
+  pendingAttachments = [];
+  // 清掉 chip 行
+  const chipsEl = document.getElementById('input-attachment-chips');
+  if (chipsEl) chipsEl.innerHTML = '';
+
   console.log('[发送消息] 频道 DID:', channelDid);
 
   try {
@@ -1554,7 +1570,8 @@ async function sendMessage() {
       body: JSON.stringify({
         text,
         channelId: currentChannelId,
-        channelDid
+        channelDid,
+        attachments: attachmentsForSend, // 后端解析为 LLM contextHint
       })
     });
 
@@ -1949,14 +1966,53 @@ return `<div class="mention-item" data-idx="${i}" data-channel-id="${escapeHtml(
   }, true);
 }
 
-// 拖拽落点: 把判断库里的判断拖到输入框, 直接作为指令发给 AI (走"代我决定"路径).
-// 用户拖进来后输入框被预填, 点发送就把这条判断作为指令交给当前 agent.
+// 拖拽落点:
+//   - 判断库拖入 (application/x-bolloon-judgment): 预填输入框, AI 看到 "按判断 #xxx 执行"
+//   - 操作系统文件拖入 (Files MIME): 自动上传到 /api/attachments/upload, 在输入框追加附件标签
+// 2026-07-15 修 Bug 3: 之前只判断 application/x-bolloon-judgment MIME, 文件拖拽被浏览器默认行为拦截 (整个浏览器页面变蓝)
+//   现在同时识别 files, 走异步上传路径, 修复后拖文件直接生效.
 const inputArea = document.querySelector('.input-area');
+let pendingAttachments = []; // { attachmentId, filename, mimeType, size, url }
+function fileToBase64Local(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = () => reject(r.error || new Error('FileReader error'));
+    r.onload = () => {
+      const s = String(r.result || '');
+      // data:xxx;base64,YYYY → YYYY
+      const idx = s.indexOf(',');
+      resolve(idx >= 0 ? s.slice(idx + 1) : s);
+    };
+    r.readAsDataURL(file);
+  });
+}
+function appendAttachmentChip(name) {
+  // 在输入框上方显示一个附件 chip — 让用户看到文件被识别
+  let chipsEl = document.getElementById('input-attachment-chips');
+  if (!chipsEl) {
+    chipsEl = document.createElement('div');
+    chipsEl.id = 'input-attachment-chips';
+    chipsEl.style.cssText = 'padding:6px 12px 0;display:flex;gap:6px;flex-wrap:wrap;font-size:12px;color:#475569;';
+    if (inputArea && inputArea.parentNode) inputArea.parentNode.insertBefore(chipsEl, inputArea);
+  }
+  const chip = document.createElement('span');
+  chip.className = 'attach-chip';
+  chip.style.cssText = 'background:#e2e8f0;border-radius:12px;padding:3px 9px;display:inline-flex;align-items:center;gap:6px;';
+  chip.textContent = `📎 ${name}`;
+  chip.title = '附件已加入本条消息';
+  chipsEl.appendChild(chip);
+  return chipsEl;
+}
 if (input && inputArea) {
   const onDragOver = (e) => {
-    if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('application/x-bolloon-judgment')) {
+    if (!e.dataTransfer) return;
+    const types = Array.from(e.dataTransfer.types || []);
+    const hasJudgment = types.includes('application/x-bolloon-judgment');
+    const hasFiles = types.includes('Files');
+    if (hasJudgment || hasFiles) {
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'copy';
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = hasFiles ? 'copy' : 'copy';
       inputArea.classList.add('drop-target');
     }
   };
@@ -1965,26 +2021,105 @@ if (input && inputArea) {
       inputArea.classList.remove('drop-target');
     }
   };
-  const onDrop = (e) => {
+  const onDrop = async (e) => {
     inputArea.classList.remove('drop-target');
-    const raw = e.dataTransfer.getData('application/x-bolloon-judgment');
-    if (!raw) return;
-    e.preventDefault();
-    try {
-      const { id, decision } = JSON.parse(raw);
-      // 预填输入框: 用户可改, 然后发出去 AI 就知道"按这条判断做"
-      const prefix = input.value.trim() ? input.value.trim() + '\n' : '';
-      input.value = `${prefix}按我的判断 #${id?.substring(0, 8) || ''} 执行: ${decision}`;
-      input.focus();
-      // 视觉提示
-      input.style.transition = 'box-shadow 0.3s';
-      input.style.boxShadow = '0 0 0 2px #2563eb';
-      setTimeout(() => { input.style.boxShadow = ''; }, 800);
-    } catch {}
+    if (!e.dataTransfer) return;
+    const types = Array.from(e.dataTransfer.types || []);
+    // 路径 1: judgment (用户内嵌卡片拖入)
+    if (types.includes('application/x-bolloon-judgment')) {
+      const raw = e.dataTransfer.getData('application/x-bolloon-judgment');
+      if (!raw) return;
+      e.preventDefault();
+      try {
+        const { id, decision } = JSON.parse(raw);
+        const prefix = input.value.trim() ? input.value.trim() + '\n' : '';
+        input.value = `${prefix}按我的判断 #${id?.substring(0, 8) || ''} 执行: ${decision}`;
+        input.focus();
+        input.style.transition = 'box-shadow 0.3s';
+        input.style.boxShadow = '0 0 0 2px #2563eb';
+        setTimeout(() => { input.style.boxShadow = ''; }, 800);
+      } catch {}
+      return;
+    }
+    // 路径 2: 操作系统文件 (image / txt / pdf …)
+    if (types.includes('Files')) {
+      e.preventDefault();
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length === 0) return;
+      const chipsEl = appendAttachmentChip(`上传中 ${files.length} 个…`);
+      for (const file of files) {
+        try {
+          const dataB64 = await fileToBase64Local(file);
+          const res = await fetch('/api/attachments/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              filename: file.name,
+              mimeType: file.type || 'application/octet-stream',
+              content: dataB64,
+            }),
+          });
+          if (!res.ok) {
+            const errText = await res.text().catch(() => '');
+            throw new Error(`HTTP ${res.status}: ${errText}`);
+          }
+          const out = await res.json();
+          if (!out.ok) throw new Error(out.error || 'upload failed');
+          pendingAttachments.push({
+            attachmentId: out.attachmentId,
+            filename: out.filename,
+            mimeType: out.mimeType,
+            size: out.size,
+            url: out.url,
+          });
+          // 在输入框文本里追加标记 (发送时一并送出)
+          const prefix = input.value ? input.value + '\n' : '';
+          input.value = `${prefix}📎 ${out.filename}`;
+          input.focus();
+          // 把 chip 文字改成"已上传"
+          chipsEl && chipsEl.lastChild;
+          if (chipsEl) {
+            const existing = Array.from(chipsEl.children).find((c) => c.textContent?.includes(`📎 ${out.filename}`));
+            if (existing) existing.textContent = `📎 ${out.filename} ✅`;
+          }
+          // 视觉提示
+          input.style.transition = 'box-shadow 0.3s';
+          input.style.boxShadow = '0 0 0 2px #16a34a';
+          setTimeout(() => { input.style.boxShadow = ''; }, 1200);
+        } catch (err: any) {
+          console.error('[drag-file] 上传失败:', err);
+          if (chipsEl) {
+            const failChip = document.createElement('span');
+            failChip.style.cssText = 'background:#fee2e2;color:#b91c1c;border-radius:12px;padding:3px 9px;display:inline-block;';
+            failChip.textContent = `❌ ${file.name}: ${err?.message || '上传失败'}`;
+            chipsEl.appendChild(failChip);
+          }
+        }
+      }
+      return;
+    }
   };
   inputArea.addEventListener('dragover', onDragOver);
   inputArea.addEventListener('dragleave', onDragLeave);
   inputArea.addEventListener('drop', onDrop);
+  // 整页 dragover 也接住, 防止浏览器在 input 之外时离开页面 (跳到地址栏 / 文件 URL)
+  const onPageDragOver = (e) => {
+    if (!e.dataTransfer) return;
+    const types = Array.from(e.dataTransfer.types || []);
+    if (types.includes('Files')) {
+      e.preventDefault(); // 阻止浏览器默认 (打开新页面 / 退出当前页)
+    }
+  };
+  window.addEventListener('dragover', onPageDragOver);
+  // drop 在 inputArea 之外 → 阻止浏览器默认行为
+  const onPageDrop = (e) => {
+    if (!e.dataTransfer) return;
+    const types = Array.from(e.dataTransfer.types || []);
+    if (types.includes('Files') && e.target !== input && !inputArea?.contains(e.target)) {
+      e.preventDefault();
+    }
+  };
+  window.addEventListener('drop', onPageDrop);
 }
 
 if (themeToggle) {

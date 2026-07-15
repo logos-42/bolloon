@@ -175,7 +175,9 @@ export function addMessage(
   save: boolean = true,
   container?: HTMLElement | null,
   usedJudgmentIds: string[] = [],
-  ctx: RendererCtx = { messagesEl: null, messagesContainers: new Map(), currentChannelId: null }
+  ctx: RendererCtx = { messagesEl: null, messagesContainers: new Map(), currentChannelId: null },
+  // 2026-07-15 修 Bug 2: 历史消息恢复时传历史 timestamp, 不传 = 用"现在" (新消息默认值, 防破坏 LLM 流式事件链).
+  timestamp?: string | number | Date
 ): void {
   const messagesEl = ctx.messagesEl || (typeof document !== 'undefined' ? document.getElementById('messages') : null);
   const messagesContainers = ctx.messagesContainers || new Map<string, HTMLElement>();
@@ -271,10 +273,20 @@ export function addMessage(
     .map(s => s.content || '')
     .join('\n');
 
-  // 时间
+  // 时间 — 2026-07-15 修 Bug 2: 历史消息恢复时用历史 timestamp, 不传则用"现在"
+  let timeLabel = '';
+  try {
+    if (timestamp !== undefined && timestamp !== null) {
+      const d = timestamp instanceof Date ? timestamp : new Date(timestamp);
+      if (!isNaN(d.getTime())) {
+        timeLabel = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      }
+    }
+  } catch { /* fallback below */ }
+  if (!timeLabel) timeLabel = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
   const time = document.createElement('div');
   time.className = 'time';
-  time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  time.textContent = timeLabel;
 
   // AI 消息操作按钮
   if (type === 'ai') {

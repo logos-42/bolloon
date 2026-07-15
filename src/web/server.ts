@@ -2009,6 +2009,123 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     }
   });
 
+  // 2026-07-15 修 Bug 3: 拖拽文件上传
+  //   - POST /api/attachments/upload  body: { filename, mimeType, content: base64 }
+  //   - 文件落到 ~/.bolloon/attachments/<YYYY-MM>/<uuid>__<safeName>
+  //   - 返回 { ok, attachmentId, url, size, mimeType, filename }
+  //   - 前端拿到 attachmentId 后, 在消息文本里插一个 [attachment:id] 标记
+  //     (这条消息发出去时 server 端 /message 把它解析成 contextHint + 行内下载链接)
+  //   没用 multer/formidable — 复用 base64 JSON 简化, 跟 existing /api/judgments/import 同样的传输方式
+  const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024; // 10MB 单文件硬上限
+  app.post('/api/attachments/upload', async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      const filename = String(body.filename || '').trim();
+      const mimeType = String(body.mimeType || 'application/octet-stream');
+      const content = String(body.content || '');
+      if (!filename || !content) {
+        return res.status(400).json({ ok: false, error: 'filename 与 content 必填' });
+      }
+      // base64 → bytes
+      const buf = Buffer.from(content, 'base64');
+      if (buf.length === 0) {
+        return res.status(400).json({ ok: false, error: '文件为空' });
+      }
+      if (buf.length > ATTACHMENT_MAX_BYTES) {
+        return res.status(413).json({
+          ok: false,
+          error: `文件超过 ${ATTACHMENT_MAX_BYTES / 1024 / 1024}MB 上限`,
+        });
+      }
+      // safeName: 跟 safeChannelName 同样规则, 防路径穿越 + Windows 非法字符
+      //   注意: 把 . 也加进替换 (不然 "../../" 被转成 "..__" 还残留 .. 序列), 整个文件 base 安全
+      const safeName = filename
+        .replace(/[\\/:*?"<>|\x00-\x1f.]/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 120) || 'unnamed';
+      if (safeName !== filename) {
+        console.log(`[attachments] safeName 转换: "${filename}" → "${safeName}"`);
+      }
+      const month = new Date().toISOString().slice(0, 7); // YYYY-MM
+      const attachmentsDir = path.join(
+        process.env.HOME || '/tmp',
+        '.bolloon', 'attachments', month
+      );
+      await fs.mkdir(attachmentsDir, { recursive: true });
+      const attachmentId = `${Date.now().toString(36)}_${crypto.randomBytes(6).toString('hex')}`;
+      const storedFilename = `${attachmentId}__${safeName}`;
+      const fullPath = path.join(attachmentsDir, storedFilename);
+      await fs.writeFile(fullPath, buf);
+      const urlPath = `/api/attachments/${attachmentId}`;
+      console.log(`[attachments] 上传 ${filename} (${buf.length}B, ${mimeType}) → ${fullPath}`);
+      res.json({
+        ok: true,
+        attachmentId,
+        url: urlPath,
+        filename,
+        storedFilename,
+        size: buf.length,
+        mimeType,
+      });
+    } catch (e: any) {
+      console.error('[attachments] upload failed:', e?.message || e);
+      res.status(500).json({ ok: false, error: e?.message || '上传失败' });
+    }
+  });
+
+  // GET /api/attachments/:id — 下载 (按 attachmentId 找当月目录; 月份遍历回退)
+  app.get('/api/attachments/:id', async (req, res) => {
+    try {
+      const id = String(req.params.id || '').replace(/[^a-zA-Z0-9_]/g, '');
+      if (!id) return res.status(400).type('text/plain').send('invalid id');
+      const attachmentsRoot = path.join(process.env.HOME || '/tmp', '.bolloon', 'attachments');
+      // 先按当前月 → 前一月 → …→ 全部月份列表 (3 个月够历史用)
+      const candidates: string[] = [];
+      const now = new Date();
+      for (let i = 0; i < 6; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const month = d.toISOString().slice(0, 7);
+        try {
+          const files = await fs.readdir(path.join(attachmentsRoot, month));
+          for (const f of files) {
+            if (f.startsWith(id + '__')) candidates.push(path.join(attachmentsRoot, month, f));
+          }
+        } catch { /* month dir 可能不存在, 跳过 */ }
+        if (candidates.length > 0) break;
+      }
+      if (candidates.length === 0) {
+        return res.status(404).type('text/plain').send('attachment not found');
+      }
+      const fullPath = candidates[0];
+      const stat = await fs.stat(fullPath).catch(() => null);
+      if (!stat || !stat.isFile()) {
+        return res.status(404).type('text/plain').send('attachment missing');
+      }
+      // 从文件名还原原 mimeType: 按扩展名猜
+      const fileBase = path.basename(fullPath);
+      const origName = fileBase.substring(id.length + 2); // 跳过 "<id>__"
+      const ext = path.extname(origName).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+        '.pdf': 'application/pdf',
+        '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json',
+        '.csv': 'text/csv', '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
+        '.zip': 'application/zip',
+        '.mp3': 'audio/mpeg', '.mp4': 'video/mp4', '.webm': 'video/webm',
+      };
+      const mime = mimeMap[ext] || 'application/octet-stream';
+      const buf = await fs.readFile(fullPath);
+      res.setHeader('Content-Length', String(buf.length));
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(origName)}`);
+      res.send(buf);
+    } catch (e: any) {
+      console.error('[attachments] download failed:', e?.message || e);
+      res.status(500).type('text/plain').send('download error: ' + (e?.message || ''));
+    }
+  });
+
   // 全局兜底: 任何 next(err) 走到这里, 给出结构化 4xx/5xx 而不是默认 HTML
   app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('[server] unhandled error on', req.method, req.path, '-', err?.message || err);
@@ -2042,10 +2159,31 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
   });
 
   app.post('/message', async (req, res) => {
-    const { text, channelId, channelDid } = req.body;
+    const { text, channelId, channelDid, attachments } = req.body;
     if (!text) {
       return res.status(400).json({ error: 'No text provided' });
     }
+
+    // 2026-07-15 修 Bug 3: 拖拽附件 — LLM 在 contextHint 里看到文件清单, 用户文本保持可读
+    //   替代方案: 把 [attachment:id] 标记塞 text 里, 这里解析回 attachments 数组
+    let parsedAttachments: Array<{ attachmentId: string; filename?: string; mimeType?: string; size?: number }> = [];
+    if (Array.isArray(attachments) && attachments.length > 0) {
+      parsedAttachments = attachments.filter((a: any) =>
+        a && typeof a.attachmentId === 'string' && a.attachmentId.length > 0
+      );
+    } else {
+      // 兼容老前端: 从 text 里抽 [attachment:<id>] 标记
+      const rx = /\[attachment:([a-zA-Z0-9_]+)\]/g;
+      let m: RegExpExecArray | null;
+      while ((m = rx.exec(String(text))) !== null) {
+        parsedAttachments.push({ attachmentId: m[1] });
+      }
+    }
+    const attachmentContext = parsedAttachments.length > 0
+      ? `[系统上下文] 用户上传了 ${parsedAttachments.length} 个附件: ` +
+        parsedAttachments.map(a => `${a.filename || a.attachmentId} (id=${a.attachmentId}, mime=${a.mimeType || '?'}, size=${a.size ?? '?'}B, URL=/api/attachments/${a.attachmentId})`).join('; ') +
+        `\n你需要时可以调用文件读工具 (curl /api/attachments/<id>) 拉取真实内容。\n\n`
+      : '';
 
     if (!channelId) {
       return res.status(400).json({ error: 'No channelId provided' });
@@ -2353,7 +2491,8 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
           extraHint = hint + '\n\n';
           nextPromptHints.delete(channelId);
         }
-        const markedPrompt = `${extraHint}【本轮用户请求】\n${text}\n【请求结束】\n\n${contextHint}`;
+        // 2026-07-15 修 Bug 3: 拖拽附件 — attachmentContext 提到 contextHint 最前, LLM 第一眼看到文件清单
+        const markedPrompt = `${extraHint}【本轮用户请求】\n${text}\n【请求结束】\n\n${attachmentContext}${contextHint}`;
         fullResponse = await agent.promptStream(markedPrompt, streamCallback, runState.abortController?.signal, channelId);
       } catch (err: any) {
         // abort 抛错: 保留已输出的部分 (fullResponse 可能是空字符串)
