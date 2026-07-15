@@ -16,6 +16,7 @@ import { segmentChatReply, type ChatSegment } from '../agents/chat-segmenter.js'
 import { registerJudgmentsRoutes } from './routes-judgments.js';
 import { registerLlmConfigRoutes } from './routes-llm-config.js';
 import { registerTaskRoutes } from './routes-tasks.js';
+import { registerHearthRoutes } from './routes-hearth.js';
 
 // 2026-07-06: 类型抽到 ./server-types.ts (channel / session / task / sse client / iroh info / paths)
 import {
@@ -1904,7 +1905,11 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
   await ensureSessionDirs();
 
-  app.use(express.json());
+  // 2026-07-15 修 Bug 3 续: attachment 路由需要单独大 limit body parser.
+  //   关键: 必须挂在主 app.use(express.json()) 之前, 否则 4MB attachment 在主 100KB parser 阶段就被拒.
+  //   path-prefix 让它只对 /api/attachments/* 生效, 不污染其他端点的限制.
+  app.use('/api/attachments', express.json({ limit: '15mb' }));
+  app.use(express.json({ limit: '100kb' }));
 
   app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -2016,6 +2021,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
   //   - 前端拿到 attachmentId 后, 在消息文本里插一个 [attachment:id] 标记
   //     (这条消息发出去时 server 端 /message 把它解析成 contextHint + 行内下载链接)
   //   没用 multer/formidable — 复用 base64 JSON 简化, 跟 existing /api/judgments/import 同样的传输方式
+  //   body parser 在上面 path-prefix 中间件已挂, 这里直接 handler 即可.
   const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024; // 10MB 单文件硬上限
   app.post('/api/attachments/upload', async (req, res) => {
     try {
@@ -2539,7 +2545,15 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       const session: Session = existingSession || { channelId, sessionId: currentSessionId, messages: [], lastUpdated: new Date().toISOString() };
       session.sessionId = currentSessionId;
       // v3: 加 source 标记 (local = 内部 owner, remote = 远端访客)
-      session.messages.push({ id: crypto.randomUUID(), type: 'user' as const, content: text, timestamp: new Date().toISOString(), source: 'local' as any });
+      // 2026-07-15 修 Bug 4: client.ts sendMessage 已经通过 persistLastMessageToServer PATCH /sessions/.../...
+      //   把 user msg 落盘一次 (立即落, 切走再切回不丢). 这里再 push 一次 → session.messages 出现两条相同的 user msg,
+      //   loadSession 重渲染时两条都上屏, 表现"每条 user 气泡重复两次".
+      //   修法: 持久化以 client PATCH 为准, /message 这边只 push ai 消息. 同时去重检查上次的 user 避免极端竞态 (并行 PATCH).
+      const lastMsg = session.messages[session.messages.length - 1];
+      const userAlreadyPushed = lastMsg && lastMsg.type === 'user' && lastMsg.content === text;
+      if (!userAlreadyPushed) {
+        session.messages.push({ id: crypto.randomUUID(), type: 'user' as const, content: text, timestamp: new Date().toISOString(), source: 'local' as any });
+      }
       session.messages.push({
         id: crypto.randomUUID(),
         type: 'ai' as const,
@@ -5006,6 +5020,9 @@ app.get('/channels', async (_req, res) => {
 
   // 2026-07-06: judgments / self-improve / permission-mode 路由抽到 ./routes-judgments.ts
   registerJudgmentsRoutes(app);
+
+  // 2026-07-15: judgeness · hearth 主路由 + peer 4 类写 API
+  registerHearthRoutes(app);
 
   // ==================== Self-Improve 端点 ====================
   // 查看当前策略 (白名单 / 黑名单)

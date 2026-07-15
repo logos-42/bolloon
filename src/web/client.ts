@@ -990,11 +990,22 @@ async function selectChannel(channelId, targetSessionId = null) {
     const session = await res.json();
     const msgs = session.messages || [];
     if (msgs.length > 0) {
+      // 2026-07-15 修 Bug 4 重启后气泡重复: 历史 session.messages 里有重复条目
+      //   (client PATCH + server /message 都 push user msg, 老数据更乱).
+      //   loadSession 直接 addMessage, 不带 source 判断; 历史数据 user 几乎全是 local
+      //   (没 source 字段也是 client PATCH 的产物). 用相邻去重防御重复渲染.
+      let lastType: string | null = null;
+      let lastContent: string | null = null;
+      const dedupedMsgs = msgs.filter((m: any) => {
+        const same = lastType === m.type && lastContent === m.content;
+        lastType = m.type; lastContent = m.content;
+        return !same;
+      });
       // 2026-06-11 提速: 用 DocumentFragment 一次性 append 避免多次 reflow
       const frag = document.createDocumentFragment();
       const tmpContainer = document.createElement('div');
       tmpContainer.style.display = 'none';
-      for (const msg of msgs) {
+      for (const msg of dedupedMsgs) {
         // 2026-07-15 修 Bug 2: 历史消息恢复时传 msg.timestamp, 不传会被 addMessage 内部用 new Date() 刷成"打开时间"
         addMessage(msg.content, msg.type, false, tmpContainer, msg.metadata?.usedJudgmentIds || [], msg.timestamp);
       }
@@ -1002,6 +1013,9 @@ async function selectChannel(channelId, targetSessionId = null) {
         frag.appendChild(tmpContainer.firstChild);
       }
       container.appendChild(frag);
+      if (dedupedMsgs.length !== msgs.length) {
+        console.log(`[loadSession] 去重 ${msgs.length - dedupedMsgs.length} 条相邻重复消息 (${msgs.length} → ${dedupedMsgs.length})`);
+      }
     } else {
       addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
     }
@@ -1027,10 +1041,22 @@ async function loadSession(channelId, sessionId = null) {
     const session = await res.json();
     container.innerHTML = '';
     if (session.messages && session.messages.length > 0) {
-      session.messages.forEach(msg => {
+      // 2026-07-15 修 Bug 4: 同样在 loadSession 里相邻去重 (防止历史数据里 user msg 重复)
+      const rawMsgs: any[] = session.messages;
+      let lastType: string | null = null;
+      let lastContent: string | null = null;
+      const deduped = rawMsgs.filter((m: any) => {
+        const same = lastType === m.type && lastContent === m.content;
+        lastType = m.type; lastContent = m.content;
+        return !same;
+      });
+      deduped.forEach(msg => {
         // 2026-07-15 修 Bug 2: 传历史 timestamp, 不被 addMessage 刷新成打开时间
         addMessage(msg.content, msg.type, false, container, msg.metadata?.usedJudgmentIds || [], msg.timestamp);
       });
+      if (deduped.length !== rawMsgs.length) {
+        console.log(`[loadSession-v2] 去重 ${rawMsgs.length - deduped.length} 条`);
+      }
     } else {
       addMessage('你好！我是 Bolloon Agent。有什么我可以帮你的吗？', 'ai', false, container);
     }
