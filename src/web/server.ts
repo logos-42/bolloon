@@ -3313,6 +3313,28 @@ app.get('/channels', async (_req, res) => {
         } catch {}
       }
 
+      // 2026-07-15 修 Bug 7: 同步清理 agents.json 里挂在这个 channel 下的 agent 定义
+      //   之前 v0.3.6 (Bug 6) 创建频道时同步往 agents.json append, 删频道却没删回来
+      //   → agents.json 里残留孤儿 agent, 重启后 loadLocalSubAgents 还能读到这些 — 看起来像"删不掉"
+      //   修法: 用 channel.agentId 找, 同步从 agents.json 删一条
+      try {
+        const agentsPath = path.join(process.env.HOME || '/tmp', '.bolloon', 'agents', 'agents.json');
+        const raw = await fs.readFile(agentsPath, 'utf-8').catch(() => '');
+        if (raw) {
+          let arr: any[] = [];
+          try { arr = JSON.parse(raw); } catch {}
+          if (!Array.isArray(arr)) arr = [];
+          const before = arr.length;
+          arr = arr.filter(a => !(a && (a.id === channel.agentId || a.channelId === channelId)));
+          if (arr.length !== before) {
+            await fs.writeFile(agentsPath, JSON.stringify(arr, null, 2), 'utf-8');
+            console.log(`[删除频道] agents.json 清掉 ${before - arr.length} 条 orphan agent (channel=${channelId})`);
+          }
+        }
+      } catch (e: any) {
+        console.warn('[删除频道] 清理 agents.json 失败 (非致命):', e?.message?.slice(0, 120));
+      }
+
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
