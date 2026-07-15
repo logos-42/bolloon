@@ -1446,14 +1446,21 @@ function connect(channelId) {
       } else if (data.type === 'reply-preview') {
         // 2026-07-06: pivot loop 每 iter 推 preview — 用户要求"后端只要在跑就要看到内容, 不是 '任务处理超时'"
         //   2026-07-15 修 Bug 5: 之前每次 preview 新建气泡, pivot 多 iter → 屏幕上叠 3-5 个 R1/R2/R3 气泡, 看起来像"重复"
-        //   修法: 始终只保留一个 preview (替换当前 preview, 不在 DOM 留残余)
+        //   Bug 5.1: addMessage 是 void 返回, 之前 currentPreviewBubble = addMessage(...) 实际是 undefined,
+        //     导致 .preview class 永远没贴上 → querySelectorAll('.message-ai.preview') 找不到 → 重叠依然存在.
+        //   修法: 先清所有 .message-ai.preview (按容器最新那条来加 .preview), 再以 container.lastElementChild 拿到刚加的 div 加 .preview.
         const previewContent = data.content || '';
-        // 先把所有老 preview 删掉 — 不管 DOM 里有多少层, 都一次性清
+        // 清掉所有老 preview — 上一次 reply-preview 加的也带 .preview
         const oldPreviews = container.querySelectorAll('.message-ai.preview');
         oldPreviews.forEach(el => el.remove());
-        currentPreviewBubble = addMessage(previewContent, 'ai', false, container, []);
-        if (currentPreviewBubble) {
-          currentPreviewBubble.classList.add('preview');
+        // 加新 preview
+        addMessage(previewContent, 'ai', false, container, []);
+        // 拿到刚加的那一条 — 它是 container 的最后一个 .message-ai
+        const newPreview = container.querySelector('.message-ai:not(.preview):last-of-type')
+          || container.lastElementChild;
+        if (newPreview) {
+          newPreview.classList.add('preview');
+          currentPreviewBubble = newPreview as HTMLElement;
         }
       } else if (data.type === 'stream') {
         // 2026-07-06: 简化流式处理 — 完全不显示 token/thinking 中间产物
