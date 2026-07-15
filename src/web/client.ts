@@ -1438,32 +1438,22 @@ function connect(channelId) {
       } else if (data.type === 'ai') {
         // 2026-07-06: 非流式模式 — type=ai 事件携带完整 fullResponse
         //   addMessage 内部统一清洗 思考/<final gen>, 这里直接传原始内容
-        //   如果已经存在 preview 气泡, 用 addMessage 模式 (新建一个) 让 user 看到 final + preview 两个气泡不对
-        //   — 改成在 type=ai 时: 先把 preview 气泡清空内容, 再 addMessage 新气泡 (preview 内容被覆盖)
-        //   极简: 直接 addMessage (后到的覆盖前到), 同一 channel 的 preview 会留痕迹但合预期.
+        // 2026-07-15 修 Bug 5: final 到达前可能有多个 preview 气泡残留 (R1/R2/R3), 一并清除
+        const allPreviews = container.querySelectorAll('.message-ai.preview');
+        allPreviews.forEach(el => el.remove());
+        currentPreviewBubble = null;
         addMessage(data.content || '', 'ai', true, container, lastUsedJudgmentIds || []);
-        // 清掉 preview 气泡 — 它的内容跟 final 一样, 不重复渲染
-        if (currentPreviewBubble) {
-          currentPreviewBubble.remove();
-          currentPreviewBubble = null;
-        }
       } else if (data.type === 'reply-preview') {
         // 2026-07-06: pivot loop 每 iter 推 preview — 用户要求"后端只要在跑就要看到内容, 不是 '任务处理超时'"
-        //   这里维持一个临时气泡, content 每次替换. type=ai 终文到达后清掉这个临时气泡.
-        // 简化: 每次 reply-preview 都新建一个气泡 (旧的不清), 用户看到多个中间结果.
-        //   type=ai 终文到达时一并清掉 — 避免 preview 与 final 同时显示.
+        //   2026-07-15 修 Bug 5: 之前每次 preview 新建气泡, pivot 多 iter → 屏幕上叠 3-5 个 R1/R2/R3 气泡, 看起来像"重复"
+        //   修法: 始终只保留一个 preview (替换当前 preview, 不在 DOM 留残余)
         const previewContent = data.content || '';
-        if (!currentPreviewBubble) {
-          currentPreviewBubble = addMessage(previewContent, 'ai', true, container, []);
-          if (currentPreviewBubble) {
-            currentPreviewBubble.classList.add('preview');
-          }
-        } else {
-          // 更新已有气泡内容 — 把当前 preview 全部替换为最新 reply (不用累积)
-          currentPreviewBubble.replaceWith(addMessage(previewContent, 'ai', true, container, []));
-          // 重新抓取最新引用
-          const msgs = container.querySelectorAll('.message-ai.preview');
-          currentPreviewBubble = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+        // 先把所有老 preview 删掉 — 不管 DOM 里有多少层, 都一次性清
+        const oldPreviews = container.querySelectorAll('.message-ai.preview');
+        oldPreviews.forEach(el => el.remove());
+        currentPreviewBubble = addMessage(previewContent, 'ai', false, container, []);
+        if (currentPreviewBubble) {
+          currentPreviewBubble.classList.add('preview');
         }
       } else if (data.type === 'stream') {
         // 2026-07-06: 简化流式处理 — 完全不显示 token/thinking 中间产物
