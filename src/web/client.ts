@@ -2015,17 +2015,95 @@ function appendAttachmentChip(name) {
   if (!chipsEl) {
     chipsEl = document.createElement('div');
     chipsEl.id = 'input-attachment-chips';
-    chipsEl.style.cssText = 'padding:6px 12px 0;display:flex;gap:6px;flex-wrap:wrap;font-size:12px;color:#475569;';
+    chipsEl.style.cssText = 'padding:8px 12px 4px;display:flex;gap:8px;flex-wrap:wrap;font-size:13px;';
     if (inputArea && inputArea.parentNode) inputArea.parentNode.insertBefore(chipsEl, inputArea);
   }
   const chip = document.createElement('span');
   chip.className = 'attach-chip';
-  chip.style.cssText = 'background:#e2e8f0;border-radius:12px;padding:3px 9px;display:inline-flex;align-items:center;gap:6px;';
+  chip.style.cssText =
+    'background:linear-gradient(135deg,#dbeafe,#e0e7ff);' +
+    'border:1px solid #6366f1;' +
+    'border-radius:14px;' +
+    'padding:5px 12px;' +
+    'display:inline-flex;' +
+    'align-items:center;' +
+    'gap:6px;' +
+    'color:#3730a3;' +
+    'font-weight:500;' +
+    'box-shadow:0 1px 3px rgba(99,102,241,0.18);' +
+    'animation:attach-pop-in 0.25s ease-out;';
   chip.textContent = `📎 ${name}`;
   chip.title = '附件已加入本条消息';
   chipsEl.appendChild(chip);
   return chipsEl;
 }
+
+// 全屏拖拽遮罩 — dragenter 时显示
+function ensureFileDropOverlay() {
+  let overlay = document.getElementById('file-drop-overlay');
+  if (overlay) return overlay;
+  overlay = document.createElement('div');
+  overlay.id = 'file-drop-overlay';
+  overlay.style.cssText =
+    'position:fixed;inset:0;background:rgba(99,102,241,0.18);' +
+    'backdrop-filter:blur(2px);' +
+    'z-index:9998;display:none;align-items:center;justify-content:center;' +
+    'pointer-events:none;transition:opacity 0.18s;';
+  overlay.innerHTML = `
+    <div style="
+      background:white;
+      border:3px dashed #6366f1;
+      border-radius:18px;
+      padding:48px 64px;
+      box-shadow:0 24px 60px rgba(99,102,241,0.25);
+      color:#4338ca;
+      text-align:center;
+      max-width:520px;
+      animation:attach-pulse 1.4s ease-in-out infinite;
+    ">
+      <div style="font-size:64px;line-height:1;margin-bottom:16px;">📥</div>
+      <div style="font-size:22px;font-weight:600;margin-bottom:8px;">松开上传到 Bolloon</div>
+      <div style="font-size:14px;color:#64748b;">拖入文件立即作为附件发给 AI, 最大 10MB/文件</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+// 在控制台附加 keyframes (一次性)
+function ensureAttachStyles() {
+  if (document.getElementById('attach-style-tag')) return;
+  const s = document.createElement('style');
+  s.id = 'attach-style-tag';
+  s.textContent = `
+    @keyframes attach-pop-in {
+      0% { transform: scale(0.6); opacity: 0; }
+      60% { transform: scale(1.08); opacity: 1; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    @keyframes attach-pulse {
+      0%, 100% { transform: scale(1); box-shadow: 0 24px 60px rgba(99,102,241,0.25); }
+      50%      { transform: scale(1.04); box-shadow: 0 30px 80px rgba(99,102,241,0.4); }
+    }
+    @keyframes attach-success-flash {
+      0% { background: linear-gradient(135deg,#dcfce7,#bbf7d0); }
+      100% { background: linear-gradient(135deg,#dbeafe,#e0e7ff); }
+    }
+    .drop-target {
+      outline: 3px dashed #6366f1 !important;
+      outline-offset: 4px !important;
+      background-color: rgba(99,102,241,0.08) !important;
+    }
+  `;
+  document.head.appendChild(s);
+}
+ensureAttachStyles();
+// 直接给 body 上加 drop-target class 也能触发 (拖到 inputArea 子元素包括拖到整个页面)
+const _dropStyle = document.createElement('style');
+_dropStyle.textContent = `
+  body.file-drag-active { outline: 4px dashed #6366f1; outline-offset: -8px; }
+`;
+document.head.appendChild(_dropStyle);
 if (input && inputArea) {
   const onDragOver = (e) => {
     if (!e.dataTransfer) return;
@@ -2067,12 +2145,38 @@ if (input && inputArea) {
     // 路径 2: 操作系统文件 (image / txt / pdf …)
     if (types.includes('Files')) {
       e.preventDefault();
+      // 关掉遮罩
+      const ov = document.getElementById('file-drop-overlay');
+      if (ov) ov.style.display = 'none';
+      document.body.classList.remove('file-drag-active');
+
       const files = Array.from(e.dataTransfer.files || []);
       if (files.length === 0) return;
-      const chipsEl = appendAttachmentChip(`上传中 ${files.length} 个…`);
+      const totalBytes = files.reduce((s, f) => s + f.size, 0);
+      const fmtSize = (b: number) => b < 1024 ? `${b}B` : b < 1024*1024 ? `${(b/1024).toFixed(1)}KB` : `${(b/1024/1024).toFixed(2)}MB`;
+      // 1) 拖入时立刻 toast 提示用户
+      if (typeof showSimpleToast === 'function') {
+        showSimpleToast(`📥 收到 ${files.length} 个文件 (${fmtSize(totalBytes)}), 上传中…`);
+      }
+      const chipsEl = appendAttachmentChip(`⏳ 上传中 ${files.length} 个 (${fmtSize(totalBytes)})…`);
+      // 在 input 上方闪一次蓝高亮, 提示用户 "拖动接受"
+      inputArea.classList.add('drop-target');
+      setTimeout(() => inputArea.classList.remove('drop-target'), 600);
+
       for (const file of files) {
         try {
+          // 0) 在 chip 流显示进度
+          const progressChip = document.createElement('span');
+          progressChip.style.cssText =
+            'background:#fef3c7;color:#92400e;border:1px solid #fbbf24;' +
+            'border-radius:14px;padding:5px 12px;display:inline-flex;align-items:center;gap:6px;' +
+            'font-weight:500;animation:attach-pop-in 0.25s ease-out;';
+          progressChip.innerHTML = `⏳ <strong>${file.name}</strong> 读取中…`;
+          chipsEl.appendChild(progressChip);
+
           const dataB64 = await fileToBase64Local(file);
+          progressChip.innerHTML = `⏳ <strong>${file.name}</strong> 上传中 (${fmtSize(file.size)})…`;
+
           const res = await fetch('/api/attachments/upload', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2088,6 +2192,7 @@ if (input && inputArea) {
           }
           const out = await res.json();
           if (!out.ok) throw new Error(out.error || 'upload failed');
+
           pendingAttachments.push({
             attachmentId: out.attachmentId,
             filename: out.filename,
@@ -2099,25 +2204,54 @@ if (input && inputArea) {
           const prefix = input.value ? input.value + '\n' : '';
           input.value = `${prefix}📎 ${out.filename}`;
           input.focus();
-          // 把 chip 文字改成"已上传"
-          chipsEl && chipsEl.lastChild;
-          if (chipsEl) {
-            const existing = Array.from(chipsEl.children).find((c) => c.textContent?.includes(`📎 ${out.filename}`));
-            if (existing) existing.textContent = `📎 ${out.filename} ✅`;
-          }
-          // 视觉提示
-          input.style.transition = 'box-shadow 0.3s';
-          input.style.boxShadow = '0 0 0 2px #16a34a';
+
+          // 把临时 progress chip 替换成 ✅ 成功 chip
+          progressChip.style.background = 'linear-gradient(135deg,#dcfce7,#bbf7d0)';
+          progressChip.style.borderColor = '#16a34a';
+          progressChip.style.color = '#15803d';
+          progressChip.innerHTML = `✅ <strong>${out.filename}</strong> (${fmtSize(out.size)})`;
+          // 触发外部强视觉反馈:
+          //   - 输入框边框闪烁 2 次 (绿)
+          //   - 大气泡样式
+          input.style.transition = 'box-shadow 0.4s ease, transform 0.2s ease';
+          input.style.boxShadow = '0 0 0 3px #16a34a, 0 0 18px rgba(34,197,94,0.4)';
+          input.style.transform = 'scale(1.005)';
+          setTimeout(() => {
+            input.style.boxShadow = '0 0 0 2px #16a34a';
+            input.style.transform = '';
+          }, 200);
           setTimeout(() => { input.style.boxShadow = ''; }, 1200);
+
+          // 全屏 toast 通知 (强化)
+          if (typeof showSimpleToast === 'function') {
+            showSimpleToast(`✅ 附件 ${out.filename} (${fmtSize(out.size)}) 已上传, 等待发送`);
+          }
         } catch (err: any) {
           console.error('[drag-file] 上传失败:', err);
+          // 失败 chip 红色
           if (chipsEl) {
             const failChip = document.createElement('span');
-            failChip.style.cssText = 'background:#fee2e2;color:#b91c1c;border-radius:12px;padding:3px 9px;display:inline-block;';
-            failChip.textContent = `❌ ${file.name}: ${err?.message || '上传失败'}`;
+            failChip.style.cssText =
+              'background:#fee2e2;color:#b91c1c;border:1px solid #ef4444;' +
+              'border-radius:14px;padding:5px 12px;display:inline-flex;align-items:center;gap:6px;' +
+              'font-weight:500;animation:attach-pop-in 0.25s ease-out;';
+            failChip.innerHTML = `❌ <strong>${file.name}</strong>: ${err?.message || '上传失败'}`;
             chipsEl.appendChild(failChip);
           }
+          if (typeof showSimpleToast === 'function') {
+            showSimpleToast(`❌ ${file.name} 上传失败: ${err?.message || ''}`);
+          }
         }
+      }
+      // 收尾 chip 流提示用户所有文件已 ready, 等待发送
+      if (pendingAttachments.length > 0) {
+        const ready = document.createElement('span');
+        ready.style.cssText =
+          'background:#f1f5f9;color:#0f172a;border:1px dashed #94a3b8;' +
+          'border-radius:12px;padding:4px 10px;display:inline-flex;align-items:center;gap:6px;' +
+          'font-size:12px;font-style:italic;';
+        ready.innerHTML = `📨 共 ${pendingAttachments.length} 个附件待发送, 按 ↩ 发送`;
+        chipsEl.appendChild(ready);
       }
       return;
     }
@@ -2126,6 +2260,18 @@ if (input && inputArea) {
   inputArea.addEventListener('dragleave', onDragLeave);
   inputArea.addEventListener('drop', onDrop);
   // 整页 dragover 也接住, 防止浏览器在 input 之外时离开页面 (跳到地址栏 / 文件 URL)
+  let pageDragDepth = 0;
+  const onPageDragEnter = (e) => {
+    if (!e.dataTransfer) return;
+    const types = Array.from(e.dataTransfer.types || []);
+    if (types.includes('Files')) {
+      e.preventDefault();
+      pageDragDepth++;
+      const overlay = ensureFileDropOverlay();
+      overlay.style.display = 'flex';
+      document.body.classList.add('file-drag-active');
+    }
+  };
   const onPageDragOver = (e) => {
     if (!e.dataTransfer) return;
     const types = Array.from(e.dataTransfer.types || []);
@@ -2133,13 +2279,34 @@ if (input && inputArea) {
       e.preventDefault(); // 阻止浏览器默认 (打开新页面 / 退出当前页)
     }
   };
+  const onPageDragLeave = (e) => {
+    if (!e.dataTransfer) return;
+    const types = Array.from(e.dataTransfer.types || []);
+    if (types.includes('Files')) {
+      pageDragDepth = Math.max(0, pageDragDepth - 1);
+      if (pageDragDepth === 0) {
+        const overlay = document.getElementById('file-drop-overlay');
+        if (overlay) overlay.style.display = 'none';
+        document.body.classList.remove('file-drag-active');
+      }
+    }
+  };
+  window.addEventListener('dragenter', onPageDragEnter);
   window.addEventListener('dragover', onPageDragOver);
+  window.addEventListener('dragleave', onPageDragLeave);
   // drop 在 inputArea 之外 → 阻止浏览器默认行为
   const onPageDrop = (e) => {
     if (!e.dataTransfer) return;
     const types = Array.from(e.dataTransfer.types || []);
     if (types.includes('Files') && e.target !== input && !inputArea?.contains(e.target)) {
       e.preventDefault();
+    }
+    // 关闭全屏遮罩 (无论落点, 拖动结束)
+    if (types.includes('Files')) {
+      pageDragDepth = 0;
+      const overlay = document.getElementById('file-drop-overlay');
+      if (overlay) overlay.style.display = 'none';
+      document.body.classList.remove('file-drag-active');
     }
   };
   window.addEventListener('drop', onPageDrop);
