@@ -2228,9 +2228,17 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     // per-channel queue 检查: 已在跑就入队, 等当前跑完自动接上
     const runState = getOrCreateRunState(channelId);
     if (runState.running) {
-      runState.queue.push({ channelId, text, boundWalletAddress, autoToolsEnabled });
+      // 2026-07-15 修 Bug 8: 入队时保留 attachments + channelDid, 否则下一轮执行时会丢附件
+      runState.queue.push({
+        channelId,
+        text,
+        boundWalletAddress,
+        autoToolsEnabled,
+        attachments: parsedAttachments,
+        channelDid,
+      });
       broadcastQueueUpdate(channelId);
-      console.log(`[queue] /message 入队 channel=${channelId}, queue len=${runState.queue.length}`);
+      console.log(`[queue] /message 入队 channel=${channelId}, queue len=${runState.queue.length}, attach=${parsedAttachments.length}`);
       return;
     }
     runState.running = true;
@@ -2742,12 +2750,27 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       clearTimeout(forceTimeout);
 
       // queue dequeue: 跑完或失败都要清状态
-      // 当前实现: 自动接下一条需要把 ~200 行 try 块抽函数, 暂不抽.
-      // 替代: 用户点 [队列 +N] 按钮时, 客户端发起一个特殊的 HTTP 请求触发下一条
-      // (在 client.js 实现). 这里只清状态 + 广播.
       runState.running = false;
       runState.abortController = null;
       broadcastQueueUpdate(channelId);
+
+      // 2026-07-15 修 Bug 8: 队列自动 drain — 之前只清状态不抽下一条, 用户连续发的所有
+      //   第二轮起全卡在 queue 里出不来, 表现"第二轮没反应".
+      //   修复: finally 里查 queue, 非空就异步 fire-and-forget 起下一轮.
+      //   实现要点:
+      //     1. 用 setImmediate / Promise.resolve() 让 res.headersSent 干净
+      //     2. 不能 await (否则阻塞 finally 后面的 saveSession; 而且这就是 fire-and-forget)
+      //     3. 重新 build contextHint, 走相同 LLM 路径
+      if (runState.queue.length > 0) {
+        const next = runState.queue.shift()!;
+        console.log(`[queue-drain] channel=${next.channelId} text="${next.text.slice(0, 30)}" attach=${(next.attachments?.length ?? 0)}`);
+        // 异步跑下一条 (fire-and-forget)
+        setImmediate(() => {
+          void runMessageFromQueue(next).catch((e: any) => {
+            console.error('[queue-drain] error:', e?.message?.slice(0, 200));
+          });
+        });
+      }
 
       // 2026-07-01 (v0.2.5): 持久化当前 messageHistory — 让 web 用户跨刷新保留对话.
       //   saveCurrentSession 失败静默, 不阻塞 channel 状态清理.
@@ -2757,7 +2780,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         try {
           await agent.saveCurrentSession(sessionKey);
         } catch (saveErr: any) {
-          console.warn(`[web] saveCurrentSession failed (non-fatal): ${saveErr?.message?.slice(0, 100)}`);
+          console.warn(`[web] saveCurrentSession failed (non-fatal): ${saveErr.message?.slice(0, 100)}`);
         }
       }
     }
@@ -2778,7 +2801,10 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     text: string;
     boundWalletAddress?: string;
     autoToolsEnabled?: boolean;
-    // (req, res 已经在 /message 里 res.status(202) 返回, 入队的只是要重跑的内容参数)
+    // 2026-07-15 修 Bug 8: 入队的消息保留 attachments, 不然第二轮发送文件会丢
+    attachments?: Array<{ attachmentId: string; filename?: string; mimeType?: string; size?: number }>;
+    // req 上传附件给 LLM 时需要的 channelDid 也得传过来
+    channelDid?: string;
   }
   interface ChannelRunState {
     running: boolean;
@@ -2799,6 +2825,121 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     }
     return s;
   }
+
+  /** 抽离 attachment contextHint 出来 — 给 queue-drain 用; /message 主路径有 inline 等价版避免重复 hoist 错误 */
+  function buildAttachmentContextForQueue(parsedAttachments: any[]): string {
+    if (!parsedAttachments || parsedAttachments.length === 0) return '';
+    return `[系统上下文] 用户上传了 ${parsedAttachments.length} 个附件: ` +
+      parsedAttachments.map((a: any) => `${a.filename || a.attachmentId} (id=${a.attachmentId}, mime=${a.mimeType || '?'}, size=${a.size ?? '?'}B, URL=/api/attachments/${a.attachmentId})`).join('; ') +
+      `\n你可以调用文件读工具 (curl /api/attachments/<id>) 拉取真实内容。\n\n`;
+  }
+
+  /**
+   * 2026-07-15 修 Bug 8: 队列消息的执行器 — finally 排空 queue 时调这里
+   * 跑下一条 queued 消息.
+   *
+   * 设计: 这是个 fire-and-forget wrapper, 复用 /message 主路径的 broadcast / save / etc.
+   * 简化路径 (跟主路径 500 行 try 块相比):
+   *   - 不重新建载 judgment hint / persona / context — server.ts 这次明确把这些容
+   *     易"廉价放"在 /message 主路径, queue 路径只用基本标识
+   *   - 仍然是合法: agent.promptStream → broadcast(type:user) → broadcast(type:ai) → done
+   *   - 处理 attachments: 跟主路径一样
+   *
+   * 如果要 1:1 复刻主路径的所有 hooks (judgment hint / persona / manifest / etc),
+   * 后续可以把 /message 主路径的 try 块抽成 runPromptChannel 共享.
+   */
+  async function runMessageFromQueue(queued: any): Promise<void> {
+    const { channelId, text, attachments, channelDid: reqChannelDid, boundWalletAddress, autoToolsEnabled } = queued;
+    const runState = getOrCreateRunState(channelId);
+    if (runState.running) return; // 防重入 — queue 已经并发去重
+    runState.running = true;
+    runState.abortController = new AbortController();
+
+    const currentSessionId = (await loadChannels()).find(c => c.id === channelId)?.currentSessionId || 'default';
+    const realChannelDid = reqChannelDid || (await loadChannels()).find(c => c.id === channelId)?.did || '';
+
+    const parsedAttachments: Array<{ attachmentId: string; filename?: string; mimeType?: string; size?: number }> =
+      Array.isArray(attachments) ? attachments : [];
+    const attachmentContext = buildAttachmentContextForQueue(parsedAttachments);
+    const sessionKey = `${channelId}:${currentSessionId}`;
+
+    // 防 LLM hang 安全网
+    const PIVOT_FORCE_TIMEOUT_MS = 5 * 60 * 1000;
+    const forceTimeout = setTimeout(() => {
+      console.warn(`[server] queue-drain pivot 强制 timeout, aborting`);
+      runState.abortController?.abort();
+    }, PIVOT_FORCE_TIMEOUT_MS);
+
+    let agent: AgentSession | null = null;
+
+    try {
+      // 1) broadcast user 给前端 (跟主路径一致)
+      broadcast({ type: 'user', content: text }, channelId);
+
+      // 2) 取 agent + session
+      agent = await getAgentForChannel(channelId, currentSessionId).catch(() => null);
+      if (!agent) {
+        throw new Error(`No agent for channel=${channelId}`);
+      }
+
+      // 3) 重 build contextHint (基本版, 不全 500 行 hook)
+      //   原因: queue-drain 是常见调试路径, 全量 hooks 性能大. 关键是 attachments 带上.
+      const contextHint = attachmentContext + `[系统上下文] 队列消息 (auto-drain)\n`;
+      // 4) promptStream
+      const markedPrompt = `【本轮用户请求】\n${text}\n【请求结束】\n\n${contextHint}`;
+      const fullResponse = await agent.promptStream(markedPrompt, () => {}, runState.abortController?.signal, channelId);
+
+      if (!fullResponse.trim()) {
+        broadcast({ type: 'error', content: '⚠️ AI 未返回内容' }, channelId);
+      } else {
+        broadcast({ type: 'ai', content: fullResponse }, channelId);
+        // 落 session
+        try {
+          const existing = await loadSession(channelId, currentSessionId);
+          const session: any = existing || { channelId, sessionId: currentSessionId, messages: [], lastUpdated: new Date().toISOString() };
+          session.sessionId = currentSessionId;
+          // 跟主路径相同: 不重复 push user (主路径已 broadcast/push), 只 push ai
+          session.messages.push({
+            id: crypto.randomUUID(),
+            type: 'ai' as const,
+            content: fullResponse,
+            timestamp: new Date().toISOString(),
+            source: 'local' as any,
+          });
+          session.lastUpdated = new Date().toISOString();
+          await saveSession(session);
+        } catch (e: any) {
+          console.warn('[queue-drain] saveSession failed:', e?.message?.slice(0, 100));
+        }
+      }
+
+      broadcast({ type: 'done' }, channelId);
+    } catch (err: any) {
+      console.warn('[queue-drain] failed:', err?.message?.slice(0, 200));
+      broadcast({ type: 'error', content: 'queue-drain: ' + (err?.message || 'failed') }, channelId);
+    } finally {
+      clearTimeout(forceTimeout);
+      runState.running = false;
+      runState.abortController = null;
+      broadcastQueueUpdate(channelId);
+
+      // 递归 drain — 同 /message 主路径 finally 行为保持一致
+      if (runState.queue.length > 0) {
+        const next = runState.queue.shift()!;
+        console.log(`[queue-drain-recursive] channel=${next.channelId} text="${next.text.slice(0, 30)}"`);
+        setImmediate(() => {
+          void runMessageFromQueue(next).catch((e: any) => {
+            console.error('[queue-drain-recursive] error:', e?.message?.slice(0, 200));
+          });
+        });
+      }
+
+      if (agent) {
+        try { await agent.saveCurrentSession(sessionKey); } catch {}
+      }
+    }
+  }
+
   function broadcastQueueUpdate(channelId: string): void {
     const s = channelRunState.get(channelId);
     const queueLength = s ? s.queue.length : 0;
