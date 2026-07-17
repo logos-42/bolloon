@@ -96,7 +96,7 @@ import { onPostToolUse, onJudgmentInjected, onMonitorViolation } from '../bootst
 import { budgetReduce, snip, microcompact } from '../context-compaction/index.js';
 // React Harness: 8-gate + 4-guard (防越权 / 防 prompt 注入)
 import { ReactHarness } from '../security/react-harness.js';
-import { parseToolCall as parseToolCallImpl, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl } from './parse-tool-call.js';
+import { parseToolCall as parseToolCallImpl, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl, type ToolCall } from './parse-tool-call.js';
 import { sessionStore as defaultSessionStore, type SessionStore, type PersistedMessage } from './session-store.js';
 import { ToolRegistry } from './tool-registry.js';
 import { decideMaxIterations, decideContextOverflow, shouldCompactBeforeIteration } from './react-loop.js';
@@ -934,12 +934,25 @@ ${this.getToolDefinitions()}
     //   真正折叠需要把 pi-sdk 历史灌回 pivot 的 history 数组 — 侵入较大.
     //   当前 priority: 临时传空实现, 让 budget 公式放够 (workflow-pivot-loop.ts line 220)
     //   不再撞预算. 这条路径留作技术债.
+    // 2026-07-17 Bug 1 修: 注入 messageHistory (hydrateMessageHistory 从 session JSON 回灌的) 到 system prompt
+    //   pivot loop execute() 内部自己维护 messageHistory, 跟 pi-sdk 的 this.messageHistory 隔离,
+    //   不注入的话 LLM 看不到历史对话, 每次都是新对话.
+    const historyLines: string[] = [];
+    const historyToInject = this.messageHistory.slice(-20, -1);
+    for (const m of historyToInject) {
+      const roleLabel = m.role === 'user' ? '用户' : m.role === 'assistant' ? '你' : m.role === 'tool' ? '工具结果' : m.role;
+      const text = (m.content || '').slice(0, 2000);
+      if (text) historyLines.push(`[${roleLabel}]: ${text}`);
+    }
+    const historyBlock = historyLines.length > 0
+      ? `\n\n【历史对话 (最近 ${historyLines.length} 条)】\n${historyLines.join('\n')}\n【历史对话结束】`
+      : '';
+
     const onCompact = async () => {
       // no-op (best-effort hook for future pi-sdk/pivot history sync)
     };
-    const result = await loop.execute(input, llm, systemPrompt, this.currentOnStream ?? undefined, this.currentSignal ?? undefined, onCompact);
+    const result = await loop.execute(input, llm, systemPrompt + historyBlock, this.currentOnStream ?? undefined, this.currentSignal ?? undefined, onCompact);
 
-    this.messageHistory.push({ role: 'user', content: input });
     if (result.response) {
       this.messageHistory.push({ role: 'assistant', content: result.response });
     }
@@ -1110,7 +1123,9 @@ ${toolDefs}
       //   2. reactive compaction (prompt 估算超阈值, 跑压缩)
       //   3. prompt-too-long (LLM 报错 4xxx token 错误, 跑 reactive compaction 再试 1 次)
       // 失败静默: 全部重试失败 → 空 reply (上层用 no tool_use 终止)
-      const response = await this.callLlmWithRecovery(llm, messages, systemPrompt, signal, onStream);
+      // Bug 5: pass tool IDs for native OpenAI tool calling
+      const toolIds = Array.from(this.tools.keys());
+      const response = await this.callLlmWithRecovery(llm, messages, systemPrompt, signal, onStream, toolIds);
       const reply = (response.reply || '').trim();
       // 2026-06-30: OpenAI 协议 native tool_calls (LLM 真产了 tool_call 时, minimax/M3 会返回 id)
       const nativeToolCalls = response.toolCalls;
@@ -1186,11 +1201,38 @@ ${toolDefs}
       // 2026-06-19 架构 fix: parseToolCall 优先于 isFinalResponse
       //   之前: 思考块里的 "<final gen>" 触发 isFinalResponse 提前 break, 工具从未真正执行
       //   现在: 先尝试解析 tool_call, 有就执行; 没有才检查是不是真正的 final gen
-      const toolCall = this.parseToolCall(reply);
+      // Bug 5 (2026-07-17): 优先用 LLM 的 native tool_calls (response.toolCalls), 再回退到文本解析
+      //   deepseek-v4-flash 用 OpenAI 协议 tools 时, 会真返回结构化 tool_calls 数组
+      //   之前 nativeToolCalls 被读了不用, 只查 reply 文本, 导致 LLM 明明选了工具但代码找不到
+      let toolCall: ToolCall | null = null;
+      if (nativeToolCalls && nativeToolCalls.length > 0) {
+        const nc = nativeToolCalls[0];
+        // OpenAI 协议: { id, type: 'function', function: { name, arguments: JSON string } }
+        // 转换成 internal { name, args, id }
+        try {
+          const args = typeof nc.function?.arguments === 'string'
+            ? JSON.parse(nc.function.arguments)
+            : (nc.function?.arguments || {});
+          toolCall = {
+            name: nc.function?.name,
+            args,
+            id: nc.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          } as any;
+          console.log(`[PiAgent] 用 native tool_call: ${toolCall!.name} (id=${(toolCall as any).id})`);
+        } catch (err) {
+          console.warn(`[PiAgent] 解析 native tool_call 失败, 回退到文本解析: ${(err as Error).message?.slice(0, 100)}`);
+          toolCall = null;
+        }
+      }
+      if (!toolCall) {
+        toolCall = this.parseToolCall(reply);
+      }
       // 2026-06-30 修: 给 toolCall 分配稳定 id, 让后续 tool result 能引用同一个 id
       //   OpenAI 协议要求 messages 里 tool result 必须有对应的 tool_call_id, 否则 400
-      if (toolCall) {
+      if (toolCall && !(toolCall as any).id) {
         (toolCall as any).id = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      }
+      if (toolCall) {
         this.messageHistory.push({
           role: 'assistant',
           content: reply,
@@ -1683,10 +1725,14 @@ Workspace root folder: ${this.cwd}
         //   bolloon 之前把所有 tool result 包成 "[工具结果] ..." 当 user/assistant role 发, minimax 严格校验失败
         //   现在: 保留 role='tool' + 加 tool_call_id 字段 (用 messageHistory 里自己生成的 id)
         if (role === 'tool') {
-          const result = (m as any).toolResult ? JSON.stringify((m as any).toolResult) : content;
-          content = `[工具结果] ${result}`;
-          // MiniMax 等 API 不支持 tool role, 转为 user role
-          out.push({ role: 'user', content });
+          const toolCallId = (m as any).toolCallId || (m as any).toolCall?.id || '';
+          const result = (m as any).toolResult;
+          out.push({
+            role: 'tool',
+            content: result ? (typeof result === 'string' ? result : JSON.stringify(result)) : content,
+            tool_call_id: toolCallId,
+            name: (m as any).toolCall?.name || '',
+          });
           continue;
         }
         // system role (router hint 等) 直接保留
@@ -1754,7 +1800,8 @@ Workspace root folder: ${this.cwd}
     contextOrMessages: string | Array<{ role: string; content: string }>,
     systemPrompt: string,
     signal: AbortSignal | undefined,
-    onStream?: (chunk: any) => void
+    onStream?: (chunk: any) => void,
+    tools?: string[]
   ): Promise<{ reply: string; toolCalls?: any[] }> {
     // Reactive compaction 预检: 估算 token 超 80% 阈值, 跑一次
     const estimated = this.estimateHistoryTokens();
@@ -1806,7 +1853,8 @@ Workspace root folder: ${this.cwd}
       try {
         // M3.5 (2026-06-17): 传 messages 数组 (如果 contextOrMessages 是数组) 或字符串
         //   数组版让 LLM 看到结构化的 user/assistant/tool role, 而不是把 history 拼成单字符串
-        const response = await llm.chat(contextOrMessages, systemPrompt, signal);
+        // Bug 5: pass tool IDs for native OpenAI tool calling
+        const response = await llm.chat(contextOrMessages, systemPrompt, signal, tools);
         // 2026-06-30: 透传 toolCalls (OpenAI 协议 native) 给上层, 让 assistant message 能 emit 真 id
         return { reply: response.reply || '', toolCalls: response.toolCalls };
       } catch (err: any) {

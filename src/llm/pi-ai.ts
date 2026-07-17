@@ -119,7 +119,8 @@ export class PiAIModel {
   async chat(
     messageOrMessages: string | ChatMessage[],
     contextOrSystemPrompt?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    tools?: string[]
   ): Promise<ChatResult> {
     const systemPrompt = await this.buildSystemPromptAsync(contextOrSystemPrompt);
     let messages: ChatMessage[];
@@ -144,6 +145,7 @@ export class PiAIModel {
         temperature: 0.8,
         maxTokens: 16384, // 2026-06-17: 提到 16384 — agent 注入 16K+ system prompt + 8K tool defs 时, 8K 撞上限返回空 content (见 memory: bolloon-llm-empty-large-prompt)
         signal,
+        tools,  // pass through for native tool calling
       });
       return { reply: response.reply, toolCalls: response.toolCalls };
     } catch (error: any) {
@@ -222,9 +224,10 @@ export class PiAIModel {
       }
     }
 
+    let openaiTools: any[] | undefined;
     if (tools && tools.length > 0) {
       try {
-        const { getToolManifest, formatForPrompt } = await import('./tool-manifest/index.js');
+        const { getToolManifest, formatForPrompt, formatForOpenAI } = await import('./tool-manifest/index.js');
         const manifests = tools
           .map((id) => getToolManifest(id))
           .filter((m): m is NonNullable<typeof m> => m !== undefined);
@@ -234,6 +237,8 @@ export class PiAIModel {
             { role: 'system', content: toolPrompt },
             ...messages,
           ];
+          // Bug 3: 从 manifests 生成原生 OpenAI tools 格式
+          openaiTools = formatForOpenAI(manifests);
         }
       } catch (err: any) {
         console.warn('[pi-ai] tool-manifest 加载失败:', err.message?.slice(0, 100));
@@ -248,7 +253,7 @@ export class PiAIModel {
       case 'glm':
       case 'qwen':
       case 'mimo':
-        return this.callOpenAI(finalMessages, temperature, maxTokens, signal);
+        return this.callOpenAI(finalMessages, temperature, maxTokens, signal, openaiTools);
       case 'anthropic':
         return this.callAnthropic(finalMessages, temperature, maxTokens, signal);
       case 'ollama':
@@ -321,7 +326,8 @@ export class PiAIModel {
       // The 3.x line ships as `-flash` only — there is no `gemini-3.x-pro`.
       gemini: this.config.model || 'gemini-2.5-pro',
       minimax: this.config.model || process.env.MINIMAX_MODEL || 'MiniMax-M3',
-      deepseek: this.config.model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+      // 2026-07-17: deepseek-chat (V3) 官方已下线, 迁 deepseek-v4-flash
+      deepseek: this.config.model || process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash',
       kimi: this.config.model || process.env.KIMI_MODEL || process.env.MOONSHOT_MODEL || 'moonshot-v1-8k',
       glm: this.config.model || process.env.GLM_MODEL || process.env.ZHIPU_MODEL || 'glm-4-flash',
       qwen: this.config.model || process.env.QWEN_MODEL || process.env.DASHSCOPE_MODEL || 'qwen-plus',
@@ -332,7 +338,7 @@ export class PiAIModel {
     return modelMap[this.provider];
   }
 
-  private async callOpenAI(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<ChatResult> {
+  private async callOpenAI(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal, tools?: any[]): Promise<ChatResult> {
     const apiKey = this.getApiKey();
     if (!apiKey) {
       throw new Error('OPENAI_API_KEY not set');
@@ -345,14 +351,13 @@ export class PiAIModel {
       max_tokens: maxTokens
     };
 
-    // 2026-06-19: 一次命中优化 — 收到空 content 时重试 2 次, 避免 minimax 上游网络抖动
-    //   经验: minimax 偶发返回 200 但 content="" (上游 retry 耗尽), 之前当作 sentinel
-    //   现在外层加 2 次重试 + 退避, 让 90%+ 的一次调用不出现错误
-    // 2026-06-19: 一次命中优化 — 收到空 content 时重试 2 次, 避免 minimax 上游网络抖动
-    //   经验: minimax 偶发返回 200 但 content="" (上游 retry 耗尽), 之前当作 sentinel
-    //   现在外层加 2 次重试 + 退避, 让 90%+ 的一次调用不出现错误
+    // Bug 3: 传入原生 tools 参数 + tool_choice auto, LLM 返回结构化 tool_calls
+    if (tools && tools.length > 0) {
+      requestBody.tools = tools;
+      requestBody.tool_choice = 'auto';
+    }
+
     let lastFinishReason = '';
-    // 2026-07-06: 加分阶段 instrumentation — 让"9.8s 大头是哪段"可定位
     const _t0 = Date.now();
     for (let attempt = 0; attempt < 3; attempt++) {
       const _tFetch = Date.now();
@@ -381,24 +386,23 @@ export class PiAIModel {
       const content = choice?.message?.content || '';
       const toolCalls = choice?.message?.tool_calls;
       lastFinishReason = choice?.finish_reason || '';
-      if (content) {
+      // Bug 7: tool_calls 存在时不走重试 — LLM 选工具时 content 空是合法的
+      if (content || (toolCalls && toolCalls.length > 0)) {
         if (lastFinishReason === 'length') {
           console.warn(`[pi-ai] hit max_tokens ceiling (model=${this.mapModel()}, max_tokens=${maxTokens}) — caller should trim prompt or raise cap`);
         }
-        // 2026-07-06: 日志打 fetch/network/parse 三段 + prompt 体积, 以后 LLM 调用慢直接看这里定位
         const _tAfter = Date.now();
         const promptBytes = JSON.stringify(messages).length;
-        console.log(`[pi-ai timing] total=${_tAfter - _t0}ms attempt=${attempt + 1} fetch=${_tResp - _tFetch}ms parse=${_tParse - _tResp}ms reply=${content.length}B model=${this.mapModel()} prompt=${promptBytes}B`);
+        console.log(`[pi-ai timing] total=${_tAfter - _t0}ms attempt=${attempt + 1} fetch=${_tResp - _tFetch}ms parse=${_tParse - _tResp}ms reply=${content.length}B toolCalls=${toolCalls?.length ?? 0} model=${this.mapModel()} prompt=${promptBytes}B`);
         return { reply: content, toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined };
       }
-      // 空 content: 200 但 content="" → minimax 上游偶发, 退避后重试
       console.warn(`[pi-ai] attempt ${attempt + 1}/3: 空 content (finish_reason=${lastFinishReason}), 退避 1.5s 重试`);
       const _tSleep = Date.now();
       await new Promise<void>(resolve => setTimeout(resolve, 1500));
       console.log(`[pi-ai timing] attempt=${attempt + 1} empty; backoff=${Date.now() - _tSleep}ms; total=${Date.now() - _t0}ms so far`);
     }
     console.warn(`[pi-ai] 3 次重试都返回空 content (finish_reason=${lastFinishReason})`);
-    return { reply: '' };  // 返回空让上层看到 [AI 服务调用失败]
+    return { reply: '' };
   }
 
   private async callAnthropic(messages: ChatMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<ChatResult> {
@@ -703,7 +707,8 @@ function detectModel(provider: ModelProvider): string {
     openrouter: 'anthropic/claude-sonnet-4.5',
     gemini: 'gemini-2.5-pro',
     minimax: 'MiniMax-M3',
-    deepseek: 'deepseek-chat',
+    // 2026-07-17: V3 官方下线, 迁 V4
+    deepseek: 'deepseek-v4-flash',
     kimi: 'moonshot-v1-8k',
     glm: 'glm-4-flash',
     qwen: 'qwen-plus',

@@ -86,7 +86,9 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://api.deepseek.com/v1',
-    model: 'deepseek-chat',
+    // 2026-07-17: deepseek-chat (V3) 已不在官方 model list, 迁到 V4 系列 — deepseek-v4-flash
+    //   1M context, 支持 tool calls, 默认 thinking mode (官方 https://api-docs.deepseek.com/quick_start/pricing)
+    model: 'deepseek-v4-flash',
     temperature: 0.7,
     maxTokens: 4096,
     requiresApiKey: true
@@ -156,7 +158,8 @@ export const PROVIDER_INFO: Record<ModelProvider, { name: string; description: s
     requiresApiKey: true,
     models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2', 'MiniMax-M2.1-highspeed', 'MiniMax-M2.7-highspeed']
   },
-  deepseek: { name: 'DeepSeek', description: '深度求索大模型', requiresApiKey: true, models: ['deepseek-chat', 'deepseek-reasoner'] },
+  // 2026-07-17: V3 系列 (deepseek-chat / deepseek-reasoner) 官方已下线, 改 V4
+  deepseek: { name: 'DeepSeek', description: '深度求索大模型 (V4)', requiresApiKey: true, models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
   kimi: { name: 'Kimi (月之暗面)', description: 'Moonshot 长上下文模型', requiresApiKey: true, models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'] },
   glm: { name: 'GLM (智谱)', description: '智谱 ChatGLM 系列模型', requiresApiKey: true, models: ['glm-4-flash', 'glm-4', 'glm-4-plus', 'glm-4-air', 'glm-4-airx'] },
   qwen: { name: 'Qwen (通义千问)', description: '阿里云通义千问系列', requiresApiKey: true, models: ['qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen-long'] },

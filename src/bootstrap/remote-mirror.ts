@@ -15,12 +15,47 @@
  * 触发:
  *   - server.ts: agent.history.get.reply handler 写完 → mirrorRemoteHistory
  *   - client.ts: openRemoteChannelChat → loadRemoteHistory 优先读镜像
+ *
+ * 2026-07-17: 加写盘重试 → 短暂文件系统抖动不吞消息
  */
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { saveWindow as saveSessionWindow, loadWindow as loadSessionWindow } from './session-window.js';
+
+// ============== 重试 ==============
+
+const MIRROR_RETRIES = 3;
+const MIRROR_BACKOFF_MS = 200;
+const MAX_BACKOFF_MS = 3000;
+
+const RETRYABLE_CODES = new Set([
+  'EBUSY', 'EAGAIN', 'EMFILE', 'ENFILE', 'ENOSPC', 'EIO',
+]);
+
+function isRetryable(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false;
+  const code: string = (e as any).code || '';
+  return RETRYABLE_CODES.has(code);
+}
+
+async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  for (let attempt = 0; attempt <= MIRROR_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      if (attempt < MIRROR_RETRIES && isRetryable(e)) {
+        const ms = Math.min(MIRROR_BACKOFF_MS * Math.pow(2, attempt), MAX_BACKOFF_MS);
+        console.warn(`[mirror] ${label} 失败 (attempt ${attempt + 1}/${MIRROR_RETRIES}), ${ms}ms 后重试: ${e?.message || e}`);
+        await new Promise(r => setTimeout(r, ms));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error(`unreachable: ${label}`);
+}
 
 // ============== 类型 ==============
 
@@ -72,7 +107,7 @@ export function getRemoteMirrorWindowPath(targetPublicKey: string, channelId: st
 
 /**
  * 把 A 端的 history 镜像到 B 端本地. atomic (单文件 writeFile, 中途崩溃顶多旧版本留下).
- * 失败静默不阻塞 RPC reply 返回.
+ * 失败自动重试 MIRROR_RETRIES 次 (暂态文件系统错误), 最终失败静默不阻塞 RPC reply.
  */
 export async function mirrorRemoteHistory(opts: MirrorOpts): Promise<MirrorResult> {
   try {
@@ -80,7 +115,10 @@ export async function mirrorRemoteHistory(opts: MirrorOpts): Promise<MirrorResul
     const mirrorPath = getRemoteMirrorPath(opts.targetPublicKey, opts.channelId, home);
     const windowPath = getRemoteMirrorWindowPath(opts.targetPublicKey, opts.channelId, home);
 
-    await fs.mkdir(path.dirname(mirrorPath), { recursive: true });
+    await withRetry(
+      () => fs.mkdir(path.dirname(mirrorPath), { recursive: true }),
+      'mkdir'
+    );
 
     // 主体镜像
     const payload = {
@@ -91,18 +129,25 @@ export async function mirrorRemoteHistory(opts: MirrorOpts): Promise<MirrorResul
       lastUpdated: opts.lastUpdated || new Date().toISOString(),
       mirroredAt: new Date().toISOString(),
     };
-    await fs.writeFile(mirrorPath, JSON.stringify(payload, null, 2), 'utf-8');
+    await withRetry(
+      () => fs.writeFile(mirrorPath, JSON.stringify(payload, null, 2), 'utf-8'),
+      'write mirror'
+    );
 
     // 窗口联动
-    await saveSessionWindow(
-      opts.channelId,
-      `remote-${opts.targetPublicKey.slice(0, 12)}`,
-      opts.messages,
-      { home, windowSize: 30 }
+    await withRetry(
+      () => saveSessionWindow(
+        opts.channelId,
+        `remote-${opts.targetPublicKey.slice(0, 12)}`,
+        opts.messages,
+        { home, windowSize: 30 }
+      ),
+      'write window'
     );
 
     return { ok: true, mirrorPath, windowPath };
   } catch (e: any) {
+    console.warn(`[mirror] 最终失败: ${e?.message || e}`);
     return { ok: false, error: e?.message || String(e) };
   }
 }

@@ -12,8 +12,7 @@ import type {
 import { getGlobalSharedContext } from '../social/global-shared-context.js';
 import { Session, saveSession, loadSession, type StoredSession } from '@bolloon/constraint-runtime';
 import type { PiSessionState, PiMemory } from './pi-sdk-types.js';
-
-const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'sessions');
+import { SHARED_SESSION_PATH } from '../web/server-types.js';
 const PERSONA_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'persona.json');
 
 /**

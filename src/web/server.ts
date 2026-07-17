@@ -30,6 +30,7 @@ import {
   type SSEClient,
   CHANNELS_PATH,
   SESSION_CACHE_PATH,
+  SHARED_SESSION_PATH,
   THEME_PATH,
   TASK_QUEUE_PATH,
   IPFS_ENDPOINT,
@@ -46,6 +47,7 @@ export {
   type SSEClient,
   CHANNELS_PATH,
   SESSION_CACHE_PATH,
+  SHARED_SESSION_PATH,
   THEME_PATH,
   TASK_QUEUE_PATH,
   IPFS_ENDPOINT,
@@ -151,8 +153,6 @@ function resolveWebRoot(): string {
 }
 const webRoot = resolveWebRoot();
 console.log(`[web] webRoot = ${webRoot}`);
-
-const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'sessions');
 
 // iroh P2P 状态
 
@@ -1314,12 +1314,65 @@ async function getAgentForChannel(
 // 2026-07-06: CreateWebServerOptions 抽到 ./server-types.ts (顶部 re-export)
 let selfImproveEnabled = false;
 
+// ========== 端口锁 + 优雅关闭 ==========
+
+const LOCK_PATH = path.join(os.homedir(), '.bolloon', 'port.lock.json');
+let activeServer: ReturnType<typeof createServer> | null = null;
+let cleanupDone = false;
+
+function cleanupAndExit(signal: string): void {
+  if (cleanupDone) return;
+  cleanupDone = true;
+  console.log(`[server] 收到 ${signal}, 开始清理...`);
+  try { fsSync.unlinkSync(LOCK_PATH); } catch (e: any) { if (e?.code !== 'ENOENT') console.warn(`[port-lock] 删锁失败:`, e?.message); }
+  if (activeServer) {
+    activeServer.close(() => { process.exit(0); });
+    setTimeout(() => process.exit(0), 5000);
+  } else {
+    process.exit(0);
+  }
+}
+
+function writeLock(port: number): void {
+  try {
+    fsSync.writeFileSync(LOCK_PATH, JSON.stringify({ port, pid: process.pid, startedAt: new Date().toISOString() }));
+  } catch (e: any) {
+    console.warn(`[port-lock] 写锁文件失败:`, e?.message);
+  }
+}
+
+function checkStaleLock(startPort: number): void {
+  try {
+    const raw = fsSync.readFileSync(LOCK_PATH, 'utf-8');
+    const lock = JSON.parse(raw);
+    if (!lock?.pid || lock.pid === process.pid) return;
+    if (lock.port < startPort || lock.port > startPort + 10) return;
+    try {
+      process.kill(lock.pid, 0);
+      console.warn(`⚠ 旧进程 PID ${lock.pid} 仍存活 (端口 ${lock.port}), 尝试终止...`);
+      process.kill(lock.pid, 'SIGTERM');
+    } catch (e2: any) {
+      if (e2?.code === 'ESRCH') {
+        console.log(`[port-lock] 上一实例 (PID ${lock.pid}) 已结束`);
+      }
+    }
+  } catch (e: any) {
+    if (e?.code !== 'ENOENT') console.warn(`[port-lock] 读取失败:`, e?.message);
+  }
+}
+
 export async function createWebServer(port: number = 3000, options: CreateWebServerOptions = {}) {
   selfImproveEnabled = options.selfImprove ?? false;
   // 防止 P2P DHT 超时等错误导致进程崩溃
   process.on('unhandledRejection', (reason, promise) => {
     console.error('[警告] 未处理的 Promise 拒绝:', reason);
   });
+  // 优雅关闭信号
+  process.on('SIGTERM', () => cleanupAndExit('SIGTERM'));
+  process.on('SIGINT', () => cleanupAndExit('SIGINT'));
+
+  // 启动前检查残存锁文件
+  checkStaleLock(port);
 
   // Bolloon Bootstrap (幂等, 重复调不会重复挂定时器)
   // 这里独立调一次以保证 CLI-only 模式 (无 index.ts 引导) 也能 bootstrap
@@ -5533,6 +5586,8 @@ currentServer.on('clientError', (err, socket) => {
            console.warn('[server] clientError:', (err as any).code, err.message);
           try { socket.end(); } catch {}
         });
+        activeServer = currentServer;
+        writeLock(currentPort);
         resolve({ app, server: currentServer, port: currentPort });
       });
     };

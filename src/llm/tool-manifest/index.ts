@@ -6,11 +6,12 @@
  *   - listTools(): 返回所有 16 个
  *   - getToolManifest(id): 按 id 拿
  *   - formatForPrompt(): 把清单缩到 1-2KB 进 system prompt (远小于 24KB)
+ *   - formatForOpenAI(): 转成 OpenAI function calling 格式, 发给原生 tools 参数
  *
  * 设计: prompt 只看到 oneLine + whenToUse + whenNotToUse + callExample (1-3 行).
  * 详细 schema (parameters 嵌套) 在代码侧 — bolloon 真实调用工具时由 PiAI 客户端读.
  */
-import type { ToolManifest } from './types.js';
+import type { ToolManifest, ToolParameter } from './types.js';
 
 import { ask_user_input_v0 } from './ask_user_input.js';
 import { bash_tool } from './bash.js';
@@ -67,6 +68,58 @@ export function getToolsByLayer(layerId: string): ToolManifest[] {
  *
  * 不包含: 完整 parameters schema (那是 PiAI 客户端在调用时读)
  */
+/**
+ * 把 ToolManifest 转成 OpenAI function calling 格式 (tools 数组)
+ * 用于 native tool_choice: "auto" 模式, 让 LLM 选择调用.
+ *
+ * 注意: 递归处理嵌套参数 (type='object' 的 properties / type='array' 的 items)
+ */
+export function formatForOpenAI(tools?: ToolManifest[]): any[] {
+  const list = tools ?? ALL;
+  return list.map((t) => {
+    const properties: Record<string, any> = {};
+    const required: string[] = [];
+    for (const p of t.parameters) {
+      properties[p.name] = convertParameter(p);
+      if (p.required) required.push(p.name);
+    }
+    return {
+      type: 'function',
+      function: {
+        name: t.id,
+        description: t.oneLine,
+        parameters: {
+          type: 'object',
+          properties,
+          required,
+        },
+      },
+    };
+  });
+}
+
+function convertParameter(p: ToolParameter): any {
+  const schema: any = { type: p.type === 'enum' ? 'string' : p.type };
+  if (p.description) schema.description = p.description;
+  if (p.enumValues) schema.enum = p.enumValues;
+  if (p.default !== undefined) schema.default = p.default;
+  if (p.minimum !== undefined) schema.minimum = p.minimum;
+  if (p.maximum !== undefined) schema.maximum = p.maximum;
+  if (p.format) schema.format = p.format;
+  if (p.type === 'object' && p.properties) {
+    schema.properties = {};
+    for (const sub of p.properties) {
+      schema.properties[sub.name] = convertParameter(sub);
+    }
+  }
+  if (p.type === 'array' && p.items) {
+    schema.items = convertParameter(p.items);
+    if (p.minItems !== undefined) schema.minItems = p.minItems;
+    if (p.maxItems !== undefined) schema.maxItems = p.maxItems;
+  }
+  return schema;
+}
+
 export function formatForPrompt(tools?: ToolManifest[]): string {
   const list = tools ?? ALL;
   const lines: string[] = [
