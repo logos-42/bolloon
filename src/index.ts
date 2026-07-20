@@ -52,7 +52,7 @@ const SHOW_CURSOR = '\x1b[?25h';
 
 const s = {
   banner: () => {
-    const verStr = ` v${_BOLLOON_VERSION}`;
+    const verStr = `v${_BOLLOON_VERSION}`;
     const pad = Math.max(0, 39 - 17 - verStr.length);
     const spaces = ' '.repeat(pad);
     console.log(`\n${CYAN}${BOLD}
