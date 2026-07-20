@@ -9,12 +9,15 @@ export class CLIInterface {
   private agent: AgentProtocol | null = null;
   private localNode: P2PNode | null = null;
   private rl: readline.Interface;
+  // 2026-07-20 Bug 3: quiet 模式压制 console.error
+  private _quiet: boolean;
 
-  constructor() {
+  constructor(quiet = false) {
     this.rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout
     });
+    this._quiet = quiet;
   }
 
   async start(): Promise<void> {
@@ -122,7 +125,7 @@ export class CLIInterface {
             console.log('未知命令，输入 help 查看可用命令');
         }
       } catch (e) {
-        console.error('错误:', e);
+        if (!this._quiet) console.error('错误:', e);
       }
     }
   }
@@ -220,11 +223,11 @@ export class CLIInterface {
         stdio: 'inherit',
       });
       child.on('close', (code) => {
-        if (code !== 0) console.error(`chat 子进程退出码 ${code}`);
+        if (code !== 0 && !this._quiet) console.warn(`chat 子进程退出码 ${code}`);
         resolve();
       });
       child.on('error', (err) => {
-        console.error('chat 子进程启动失败:', err.message);
+        if (!this._quiet) console.warn('chat 子进程启动失败:', err.message);
         resolve();
       });
     });

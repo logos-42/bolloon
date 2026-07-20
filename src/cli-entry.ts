@@ -26,8 +26,17 @@ const YELLOW = '\x1b[33m';
 const GREEN = '\x1b[32m';
 const MAGENTA = '\x1b[35m';
 
-// 版本信息 — 与 package.json:version 同步, 否则 banner 会显示过时版本误导用户
-const VERSION = '0.2.15';
+// 版本信息 — 2026-07-20 Bug 3: 从 package.json 读取, 不再硬编码
+const VERSION = ((): string => {
+  try {
+    const entryDir = path.dirname(fileURLToPath(import.meta.url));
+    const pkgPath = path.resolve(entryDir, '..', 'package.json');
+    const raw = fs.readFileSync(pkgPath, 'utf-8');
+    return JSON.parse(raw).version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 function log(msg: string, color: string = RESET) {
   console.log(`${color}${msg}${RESET}`);

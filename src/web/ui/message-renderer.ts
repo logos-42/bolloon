@@ -91,6 +91,9 @@ let streamingText = '';
 let lastUserCommand = '';
 let lastAiContent = '';
 
+// 2026-07-20: Bug 1 — 非流式模式 step 事件缓冲, 按 channelId 分组
+const stepEventBuffer = new Map<string, StepEvent[]>();
+
 /**
  * 2026-06-17: 流式状态查询 — 客户端用它在收到 server `ai` 事件时判断是否需要跳过 addMessage,
  *   避免和后续 `done` → finalizeTimelineAsMessage 产生双气泡.
@@ -311,6 +314,8 @@ export function addMessage(
   //   后续 step_start/step_done 事件会通过 handleStepEvent 推入
   if (type === 'ai' && msgContainer) {
     mountStepTimeline(div, currentChannelId);
+    // 2026-07-20 Bug 1: AI 消息创建后回放此前缓冲的 step 事件
+    flushStepEventBuffer(currentChannelId, ctx);
   }
 
   div.appendChild(time);
@@ -579,7 +584,15 @@ export function handleStepEvent(data: StepEvent, ctx: RendererCtx = { messagesEl
   // 2. 否则用最后一条 AI message
   if (!target) {
     const aiMsgs = container.querySelectorAll('.message-ai');
-    if (aiMsgs.length === 0) return;
+    if (aiMsgs.length === 0) {
+      // 2026-07-20 Bug 1: 非流式模式, AI 消息尚未创建 — 缓冲事件, addMessage 后回放
+      if (currentChannelId) {
+        const buf = stepEventBuffer.get(currentChannelId) || [];
+        buf.push(data);
+        stepEventBuffer.set(currentChannelId, buf);
+      }
+      return;
+    }
     target = aiMsgs[aiMsgs.length - 1] as HTMLElement;
   }
   if (!target) return;
@@ -594,6 +607,17 @@ export function handleStepEvent(data: StepEvent, ctx: RendererCtx = { messagesEl
     output: data.output,
     error: data.error,
   });
+}
+
+// 2026-07-20 Bug 1: 回放缓冲的 step 事件到刚创建的 AI 消息
+export function flushStepEventBuffer(channelId: string | null, ctx: RendererCtx): void {
+  if (!channelId) return;
+  const buf = stepEventBuffer.get(channelId);
+  if (!buf || buf.length === 0) return;
+  stepEventBuffer.delete(channelId);
+  for (const evt of buf) {
+    handleStepEvent(evt, ctx);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +640,7 @@ export const MessageRenderer = {
   handleStreamTokenEvent,
   finalizeTimelineAsMessage,
   handleStepEvent,
+  flushStepEventBuffer,
   escapeHtml,
   getMessagesContainerForCurrent,
   resetRendererState,

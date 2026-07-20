@@ -2,14 +2,14 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-07-12
+last_confirmed: 2026-07-20
 schema_version: 2
 audience: self
 stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation]
+tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic]
 compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ---
 
@@ -37,6 +37,9 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 | **CLI 启动简化** (2026-07-06) | `src/cli/loading-tui.ts` + `src/index.ts` | 去掉 banner/5步/section/命令列表, CLI 交互模式启动期间 console.log 静音, 仅旋转光标; 完成显示 `✓ Bolloon ready` + 提示符. tsc 0 错, vitest 766/766, build:web pass | [loading-tui.ts](../../src/cli/loading-tui.ts) |
 | **3 个 document 工具 path 校验** (2026-07-12) | `src/agents/pi-sdk-tools.ts` + `src/documents/reader.ts` + `src/test/pi-sdk-tools-validation.test.ts` | read_document / summarize_document / improve_document 加 `if (!path) return { success: false, error: 'path 必填' }` 前置校验 + documentReader.read() 加非空字符串防御; 10 个新测试 (含 LLM 未初始化 case) 锁住. tsc 0 错, vitest 807/807 (+10) | [pi-sdk-tools-validation.test.ts](../../src/test/pi-sdk-tools-validation.test.ts) |
 | **UI 暴露工具原始 error** (2026-07-12) | `src/web/ui/step-timeline.ts` + `src/web/style.css` + `src/test/step-timeline-error-display.test.ts` | step-timeline render() 之前只渲染 name/args, 完全忽略 step.error 数据 → LLM 在下一轮回复里把 `ERR_INVALID_ARG_TYPE: Received undefined` 改写成"X 必填"误导调试. 修复: error 状态 step 渲染时显示 `.step-timeline-error-wrap` 容器展示原始 error (mono 字体 + 橙色边框 + 等宽换行), CSS 加 .step-timeline-error / .step-timeline-error-wrap 样式. 6 个新测试 (含 ERR_INVALID_ARG_TYPE 完整显示 / done 不显示 / active 不显示 / 混合场景 / step_error 事件) 锁住. tsc 0 错, vitest 813/813 (+16) | [step-timeline-error-display.test.ts](../../src/test/step-timeline-error-display.test.ts) |
+| **Bug 1: step 事件缓冲** (2026-07-20) | `src/web/ui/message-renderer.ts` | step 事件可能在 AI message DOM 创建前到达 (先 step_start 后 addMessage). 加 stepEventBuffer 按 currentChannelId 缓冲; handleStepEvent 找不到 .message-ai 时入队; flushStepEventBuffer 在 addMessage + mountStepTimeline 后回放. tsc 0 错 | [message-renderer.ts](../../src/web/ui/message-renderer.ts) |
+| **Bug 2: 远端 channel owner 标记** (2026-07-20) | `src/web/server-v3-p2p.ts` | sanitizeChannelForPeer 返回缺 ownerPublicKey, 前端无法区分来自不同 peer 的 channel. 加 _ownerPublicKey: ch.publicKey. tsc 0 错 | [server-v3-p2p.ts](../../src/web/server-v3-p2p.ts) |
+| **Bug 3: 动态版本号 + 日志抑制** (2026-07-20) | `src/cli-entry.ts` + `src/index.ts` + `src/cli/interface.ts` | cli-entry.ts 硬编码 v0.2.15, 改从 package.json 读; src/index.ts banner 加版本号; CLIInterface 加 _quiet 标志抑制 console.error. tsc 0 错 | [cli-entry.ts](../../src/cli-entry.ts) |
 
 ## 未支持 (❌ 或 ⚠️ 部分)
 

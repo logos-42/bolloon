@@ -5,6 +5,9 @@
 
 | 日期 | phase | 一句话 | 关联 |
 |------|-------|--------|------|
+| 2026-07-20 | fix | Bug 1: tool call 结果不在前端渲染 — step 事件在 .message-ai 未创建时静默丢弃; 加 stepEventBuffer (按 channelId 缓冲), handleStepEvent 无 .message-ai 时入队, flushStepEventBuffer 在 addMessage + mountStepTimeline 后回放 | [message-renderer.ts:88](../../src/web/ui/message-renderer.ts) |
+| 2026-07-20 | fix | Bug 2: friend-shared channel tags 不标记来源 peer — sanitizeChannelForPeer 缺 ownerPublicKey, 前端收到所有远端 channel 无法区分来自哪个节点; 加 _ownerPublicKey: ch.publicKey | [server-v3-p2p.ts:76](../../src/web/server-v3-p2p.ts) |
+| 2026-07-20 | fix | Bug 3: 终端版本/日志抑制 — cli-entry.ts 硬编码 v0.2.15 改读 package.json; src/index.ts banner 加版本号; CLIInterface 加 _quiet 标志抑制 console.error | [cli-entry.ts:30](../../src/cli-entry.ts) / [index.ts:47](../../src/index.ts) / [interface.ts:122](../../src/cli/interface.ts) |
 | 2026-07-12 | fix | 3 个 document 工具缺 path 前置校验, Node fs 抛 ERR_INVALID_ARG_TYPE: read_document / summarize_document / improve_document 加 if (!path) return { success: false, error: 'path 必填' }; documentReader.read() 加非空字符串防御; 加 10 测试锁住 | [pi-sdk-tools.ts:62/79/103](../../src/agents/pi-sdk-tools.ts) / [reader.ts:16](../../src/documents/reader.ts) / [pi-sdk-tools-validation.test.ts](../../src/test/pi-sdk-tools-validation.test.ts) |
 | 2026-07-12 | fix | UI 暴露工具原始 error: step-timeline.ts 之前只渲染 name/args, 完全忽略 step.error (LLM 改写后误导调试 "X 必填"); 现在 error 状态 step 显示 .step-timeline-error-wrap 容器展示原始错误 (mono 字体 + 橙色边框), style.css 加对应样式; 6 个新测试锁住 | [step-timeline.ts](../../src/web/ui/step-timeline.ts) / [style.css](../../src/web/style.css) / [step-timeline-error-display.test.ts](../../src/test/step-timeline-error-display.test.ts) |
 | 2026-07-10 | feat | LoadingTUI 升级: 7 步进度可视化 + main() 错误路径自动 stop(false) + spinner 帧率不变 | [loading-tui.ts](../../src/cli/loading-tui.ts) / [index.ts](../../src/index.ts) |

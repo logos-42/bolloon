@@ -70,6 +70,8 @@ export function sanitizeChannelForPeer(
     updatedAt: ch.updatedAt,
     hasWallet: !!ch.walletAddress,
     share_id: ch.share_id,
+    // 2026-07-20 Bug 2: 保留 ownerPublicKey, 前端用 peerId 区分多节点
+    _ownerPublicKey: ch.publicKey,
   };
 }
 

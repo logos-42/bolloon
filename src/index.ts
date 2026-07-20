@@ -25,6 +25,12 @@ import * as readline from 'readline';
 import { LoadingTUI } from './cli/loading-tui.js';
 // 启动时自动检查更新已禁用 (改用 --update-check / --update-now 显式触发)
 
+import { createRequire } from 'module';
+const _require = createRequire(import.meta.url);
+const _BOLLOON_VERSION = ((): string => {
+  try { return _require('../package.json').version || '0.0.0'; }
+  catch { return '0.0.0'; }
+})();
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -45,11 +51,16 @@ const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
 
 const s = {
-  banner: () => console.log(`\n${CYAN}${BOLD}
+  banner: () => {
+    const verStr = ` v${_BOLLOON_VERSION}`;
+    const pad = Math.max(0, 39 - 17 - verStr.length);
+    const spaces = ' '.repeat(pad);
+    console.log(`\n${CYAN}${BOLD}
    ╔═══════════════════════════════════════════╗
-   ║      ${WHITE}🤖 Bolloon ${CYAN}                       ║
+   ║      ${WHITE}🤖 Bolloon ${CYAN}${verStr}${spaces}║
    ║      ${WHITE}P2P AI Document Processor${CYAN}                ║
-   ╚═══════════════════════════════════════════╝${RESET}\n`),
+   ╚═══════════════════════════════════════════╝${RESET}\n`);
+  },
 
   step: (num: number, total: number, text: string, status?: 'ok' | 'loading' | 'warn' | 'error') => {
     const check = status === 'ok' ? `${GREEN}✓` :
