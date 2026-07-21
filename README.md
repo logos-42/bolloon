@@ -129,6 +129,37 @@ bolloon --help       # 所有命令
 
 详细打包 / 桌面 / iOS 流程见 [docs/BUILD.md](docs/BUILD.md).
 
+### 从 npm / GitHub 安装（终端用户）
+
+Bolloon 已发布到 npm，也可通过 GitHub 一键脚本安装（无需克隆仓库）。
+
+**方式一：npm（各系统通用，需先装 Node.js LTS）**
+
+```bash
+npm install -g @bolloon/bolloon-agent
+bolloon --version
+```
+
+**方式二：GitHub 一键脚本（macOS / Linux）**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/logos-42/bolloon/master/scripts/install.sh | sh
+```
+
+脚本优先从 GitHub Releases 下载预编译包，未提供对应平台包时自动回退 `npm install -g`。
+
+**各系统安装 Node.js（若尚未安装）**
+
+| 系统 | 命令 |
+|------|------|
+| macOS（Homebrew） | `brew install node` |
+| Linux（apt） | `sudo apt update && sudo apt install -y nodejs npm` |
+| Linux（dnf / yum） | `sudo dnf install -y nodejs npm` |
+| Windows（winget） | `winget install -e --id OpenJS.NodeJS.LTS` |
+| Windows（Chocolatey） | `choco install nodejs` |
+
+> 说明：bolloon 暂未上架 apt / yum / brew / winget / choco 原生仓库，统一经 npm 安装；上表命令仅用于安装 Node.js 运行时。
+
 ---
 
 ## 一、项目概述

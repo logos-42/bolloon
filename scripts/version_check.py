@@ -1,5 +1,5 @@
 from __future__ import annotations
-# bolloon-version: 0.3.6
+# bolloon-version: 0.3.7
 # runtime: dev-only (checks npm registry for @bolloon/bolloon-agent)
 #
 # 与 src/utils/auto-update.ts 保持一致：bolloon 通过 npm 全局分发，
