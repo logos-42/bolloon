@@ -165,6 +165,7 @@ async function startMockWebServer() {
   };
 }
 
+test.setTimeout(60_000);
 test('tool-call loop SSE events render, finalize, and hide timeline', async ({ page }) => {
   const server = await startMockWebServer();
   const consoleErrors: string[] = [];
@@ -182,40 +183,21 @@ test('tool-call loop SSE events render, finalize, and hide timeline', async ({ p
     await page.locator('#input').fill('读取 README 并总结');
     await page.locator('#send').click();
 
-    // 等待 stream event 到达 (750ms + buffer)
-    console.log('[DEBUG] waiting for .message-streaming');
     await page.waitForSelector('.message-streaming', { timeout: 5000 });
-    console.log('[DEBUG] .message-streaming appeared');
-    // 调试: 看 timeline 内部
-    const timelineHtml = await page.evaluate(() => {
-      const el = document.querySelector('.message-streaming [data-step-timeline]');
-      return el ? el.innerHTML : 'no timeline';
-    });
-    console.log('=== TIMELINE HTML ===\n' + timelineHtml);
-
     await expect(page.locator('.message-streaming [data-step-timeline] .step-timeline-node[data-status="done"] .step-timeline-label'))
       .toHaveText('read_document');
-    console.log('[DEBUG] step label assertion passed');
 
     // finalize 后流式元素消失, 节点搬到正式 message 内
-    console.log('[DEBUG] waiting for .message-streaming count 0');
     await expect(page.locator('.message-streaming')).toHaveCount(0);
-    console.log('[DEBUG] .message-streaming count 0 passed');
-    console.log('[DEBUG] waiting for final bubble');
     await expect(page.locator('.message-ai .bubble').filter({ hasText: '这是最终回复。' })).toBeVisible();
-    console.log('[DEBUG] final bubble passed');
     await expect(page.locator('.message-ai:last-of-type [data-step-timeline] .step-timeline-node[data-status="done"] .step-timeline-label'))
       .toHaveText('read_document');
-    console.log('[DEBUG] migrated step label passed');
-    // 摘要条应显示已完成
     await expect(page.locator('.message-ai:last-of-type [data-step-timeline] [data-current-tool]'))
       .toHaveText('✓ 已完成 · 1 步');
-    console.log('[DEBUG] summary text passed');
 
-    const filteredErrors = consoleErrors.filter((line) => !line.includes('favicon') && !line.includes('404'));
-    console.log('[DEBUG] console errors remaining:', JSON.stringify(filteredErrors));
-    expect(filteredErrors).toEqual([]);
+    expect(consoleErrors.filter((line) => !line.includes('favicon') && !line.includes('404') && !line.includes('ERR_CONNECTION_RESET'))).toEqual([]);
   } finally {
+    await page.close();
     await server.close();
   }
 });

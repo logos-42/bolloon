@@ -9,7 +9,7 @@ stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5]
+tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix]
 compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ---
 
