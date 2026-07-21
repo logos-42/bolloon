@@ -2,14 +2,14 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-07-20
+last_confirmed: 2026-07-21
 schema_version: 2
 audience: self
 stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix]
+tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector]
 compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ---
 
@@ -40,6 +40,9 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 | **Bug 1: step 事件缓冲** (2026-07-20) | `src/web/ui/message-renderer.ts` | step 事件可能在 AI message DOM 创建前到达 (先 step_start 后 addMessage). 加 stepEventBuffer 按 currentChannelId 缓冲; handleStepEvent 找不到 .message-ai 时入队; flushStepEventBuffer 在 addMessage + mountStepTimeline 后回放. tsc 0 错 | [message-renderer.ts](../../src/web/ui/message-renderer.ts) |
 | **Bug 2: 远端 channel owner 标记** (2026-07-20) | `src/web/server-v3-p2p.ts` | sanitizeChannelForPeer 返回缺 ownerPublicKey, 前端无法区分来自不同 peer 的 channel. 加 _ownerPublicKey: ch.publicKey. tsc 0 错 | [server-v3-p2p.ts](../../src/web/server-v3-p2p.ts) |
 | **Bug 3: 动态版本号 + 日志抑制** (2026-07-20) | `src/cli-entry.ts` + `src/index.ts` + `src/cli/interface.ts` | cli-entry.ts 硬编码 v0.2.15, 改从 package.json 读; src/index.ts banner 加版本号; CLIInterface 加 _quiet 标志抑制 console.error. tsc 0 错 | [cli-entry.ts](../../src/cli-entry.ts) |
+| **流式 timeline 渲染修复** (2026-07-21) | `src/web/ui/message-renderer.ts` | `handleStreamTokenEvent` 中 `appendChild` 在 `flushStepEventBuffer` 之前, 确保 step 回放时 `streamingMessageEl.isConnected=true`; 流式阶段 timeline 正常渲染, finalize 后迁移到最终消息, 不产生第二个被截断气泡. tsc 0 错 | [message-renderer.ts:492](../../src/web/ui/message-renderer.ts) |
+| **流式 finalize 连接器** (2026-07-21) | `src/web/client.ts` | `ai` 事件处理: 有流式文本时改用 `MR_replaceStreamingText` + `MR_finalizeTimelineAsMessage` 用完整内容 finalize 成单个最终气泡, 不再 `addMessage` 出第二个被截断到 100 字的气泡; 非流式仍走 `addMessage`. tsc 0 错, Playwright e2e pass | [client.ts:1442](../../src/web/client.ts) |
+| **流式 timeline 端到端测试** (2026-07-21) | `src/test/web-loop-ui.spec.ts` | Playwright mock SSE 跑完整事件链 (step_start/step_done/stream/done), 验证 timeline 流式渲染 + finalize 迁移到最终消息 + 摘要完成态, 0 console error. 1 passed | [web-loop-ui.spec.ts](../../src/test/web-loop-ui.spec.ts) |
 
 ## 未支持 (❌ 或 ⚠️ 部分)
 
@@ -82,7 +85,7 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 | `src/agents/pi-sdk-tools.ts` | 1257 | registerBuiltinTools/registerWalletTools |
 | `src/agents/pi-sdk-session-factory.ts` | 129 | createAgentSession/getAgentSession |
 | `src/web/client-loop-status.ts` | 229 | renderLoopStatusBar/markLoopBarDone |
-| `src/web/client.ts` | 4261 (原 4435) | 浏览器端 UI |
+| `src/web/client.ts` | 4268 (原 4435) | 浏览器端 UI |
 | `src/cli/loading-tui.ts` | 45 | 单行旋转光标 (启动时隐藏所有 console.log, 完成后显式 ready) |
 
 ## 最近风险
