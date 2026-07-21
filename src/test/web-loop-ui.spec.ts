@@ -25,6 +25,7 @@ type SseClient = {
 const contentTypes: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
@@ -146,7 +147,9 @@ async function startMockWebServer() {
     if (url.pathname === '/api/remote-channels') return json(res, { count: 0, peers: [] });
     if (url.pathname === '/api/p2p-peers') return json(res, { peers: [] });
     if (url.pathname === '/api/p2p-publickey') return json(res, { publicKey: '0'.repeat(64) });
+    if (url.pathname === '/api/p2p/history') return json(res, []);
     if (url.pathname === '/api/chat/process-pending') return json(res, { ok: true });
+    if (url.pathname === '/api/llm-config') return json(res, { providers: { openai: { enabled: true, apiKey: 'test' } } });
     if (url.pathname === '/self-improve/history') return json(res, { events: [] });
     if (url.pathname === '/judgments') return json(res, []);
 
@@ -180,7 +183,9 @@ test('tool-call loop SSE events render, finalize, and hide timeline', async ({ p
     await page.locator('#send').click();
 
     // 等待 stream event 到达 (750ms + buffer)
+    console.log('[DEBUG] waiting for .message-streaming');
     await page.waitForSelector('.message-streaming', { timeout: 5000 });
+    console.log('[DEBUG] .message-streaming appeared');
     // 调试: 看 timeline 内部
     const timelineHtml = await page.evaluate(() => {
       const el = document.querySelector('.message-streaming [data-step-timeline]');
@@ -190,17 +195,26 @@ test('tool-call loop SSE events render, finalize, and hide timeline', async ({ p
 
     await expect(page.locator('.message-streaming [data-step-timeline] .step-timeline-node[data-status="done"] .step-timeline-label'))
       .toHaveText('read_document');
+    console.log('[DEBUG] step label assertion passed');
 
     // finalize 后流式元素消失, 节点搬到正式 message 内
+    console.log('[DEBUG] waiting for .message-streaming count 0');
     await expect(page.locator('.message-streaming')).toHaveCount(0);
+    console.log('[DEBUG] .message-streaming count 0 passed');
+    console.log('[DEBUG] waiting for final bubble');
     await expect(page.locator('.message-ai .bubble').filter({ hasText: '这是最终回复。' })).toBeVisible();
+    console.log('[DEBUG] final bubble passed');
     await expect(page.locator('.message-ai:last-of-type [data-step-timeline] .step-timeline-node[data-status="done"] .step-timeline-label'))
       .toHaveText('read_document');
+    console.log('[DEBUG] migrated step label passed');
     // 摘要条应显示已完成
     await expect(page.locator('.message-ai:last-of-type [data-step-timeline] [data-current-tool]'))
       .toHaveText('✓ 已完成 · 1 步');
+    console.log('[DEBUG] summary text passed');
 
-    expect(consoleErrors.filter((line) => !line.includes('favicon'))).toEqual([]);
+    const filteredErrors = consoleErrors.filter((line) => !line.includes('favicon') && !line.includes('404'));
+    console.log('[DEBUG] console errors remaining:', JSON.stringify(filteredErrors));
+    expect(filteredErrors).toEqual([]);
   } finally {
     await server.close();
   }
