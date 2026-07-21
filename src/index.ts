@@ -23,7 +23,7 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
-import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage } from './cli/loading-tui.js';
+import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderToolCall, flowConnector, termWidth } from './cli/loading-tui.js';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
 
@@ -571,14 +571,39 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     // 已发送消息框
     process.stdout.write(renderUserMessage(trimmed) + '\n');
     const a = await getAgent();
-    const thinking = setInterval(() => {
-      if (!isRunning) return;
-      process.stdout.write('\r  \x1b[33m⟳\x1b[0m 思考中...    \x1b[?25l');
-    }, 80);
-    const response = await a.prompt(trimmed);
-    clearInterval(thinking);
-    process.stdout.write('\r' + ' '.repeat(30) + '\r');
-    // 智能体回复框
+    const boxW = Math.min(termWidth() - 2, 76);
+    const pending: { tool: string; args: any; t0: number }[] = [];
+    let firstEvent = true;
+    const clearThinking = () => {
+      if (firstEvent) {
+        process.stdout.write('\r' + ' '.repeat(30) + '\r');
+        firstEvent = false;
+      }
+    };
+    const onStream = (e: any) => {
+      if (e.type === 'step_start') {
+        pending.push({ tool: e.tool, args: e.args, t0: Date.now() });
+      } else if (e.type === 'step_done' || e.type === 'step_error') {
+        const p = pending.shift();
+        clearThinking();
+        // 连接线只在第 2 个及之后的工具框前出现
+        if (!firstEvent) process.stdout.write(flowConnector(boxW) + '\n');
+        process.stdout.write(
+          renderToolCall({
+            tool: e.tool ?? p?.tool ?? '?',
+            args: p?.args,
+            status: e.type === 'step_done' ? 'ok' : 'error',
+            output: e.output,
+            error: e.error,
+            durationMs: p ? Date.now() - p.t0 : undefined,
+            width: boxW,
+          }) + '\n',
+        );
+      }
+    };
+    const response = await a.prompt(trimmed, { onStream });
+    clearThinking();
+    // 智能体回复框 (圆角)
     process.stdout.write(renderAgentMessage(response) + '\n');
   } catch (e: any) {
     if (!e.message?.includes('ERR_USE_AFTER_CLOSE') && !e.message?.includes('write after end')) {

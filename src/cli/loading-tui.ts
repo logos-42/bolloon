@@ -66,13 +66,13 @@ function brandArtLines(): string[] {
   const icon = BOLLOON_ICON.split('\n');
   const banner = BOLLOON_BANNER.split('\n');
   const gap = 2;
-  const iconW = Math.max(1, ...icon.map(l => stripAnsi(l).length));
+  const iconW = Math.max(1, ...icon.map(l => dispWidth(l)));
   const rows: string[] = [];
   const n = Math.max(icon.length, banner.length);
   for (let i = 0; i < n; i++) {
     const il = icon[i] ?? '';
     const bl = banner[i] ?? '';
-    const pad = Math.max(0, iconW - stripAnsi(il).length);
+    const pad = Math.max(0, iconW - dispWidth(il));
     rows.push(il + ' '.repeat(pad + gap) + bl);
   }
   return rows;
@@ -97,9 +97,13 @@ export const STATUS_SYMBOL: Record<string, string> = {
 };
 
 // ── 通用边框构件 ───────────────────────────────────
-const BOX = { tl: '┌', tr: '┐', bl: '└', br: '┘', h: '─', v: '│' };
+type Corners = { tl: string; tr: string; bl: string; br: string; v: string; h: string };
+// 方角 (启动仪表盘 / 对话框 / 引用框)
+const SQ: Corners = { tl: '┌', tr: '┐', bl: '└', br: '┘', v: '│', h: '─' };
+// 圆角 (工具调用显示 / 智能体回复内容)
+const RD: Corners = { tl: '╭', tr: '╮', bl: '╰', br: '╯', v: '│', h: '─' };
 
-function termWidth(): number {
+export function termWidth(): number {
   const c = (process.stdout as any).columns;
   return typeof c === 'number' && c > 24 ? c : 80;
 }
@@ -108,36 +112,83 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
+/** 显示宽度: CJK / 全角符号算 2, 其余算 1 (ANSI 转义不计入) */
+function dispWidth(s: string): number {
+  const clean = s.replace(/\x1b\[[0-9;]*m/g, '');
+  let n = 0;
+  for (const ch of clean) {
+    const c = ch.codePointAt(0)!;
+    const wide =
+      c > 0x1100 &&
+      (c <= 0x115f ||
+        c === 0x2329 ||
+        c === 0x232a ||
+        (c >= 0x2e80 && c <= 0xa4cf) ||
+        (c >= 0xac00 && c <= 0xd7a3) ||
+        (c >= 0xf900 && c <= 0xfaff) ||
+        (c >= 0xfe30 && c <= 0xfe4f) ||
+        (c >= 0xff00 && c <= 0xff60) ||
+        (c >= 0xffe0 && c <= 0xffe6));
+    n += wide ? 2 : 1;
+  }
+  return n;
+}
+
 function centerAnsi(text: string, inner: number): string {
-  const vis = stripAnsi(text).length;
+  const vis = dispWidth(text);
   const pad = Math.max(0, inner - vis);
   const left = Math.floor(pad / 2);
   const right = pad - left;
   return ' '.repeat(left) + text + ' '.repeat(right);
 }
 
+/** 左侧对齐并按显示宽度填充/截断到 inner */
 function fitLeft(text: string, inner: number): string {
-  const vis = stripAnsi(text).length;
-  return text + ' '.repeat(Math.max(0, inner - vis));
+  const vis = dispWidth(text);
+  if (vis <= inner) return text + ' '.repeat(inner - vis);
+  let out = '';
+  let w = 0;
+  for (const ch of text) {
+    const cw = dispWidth(ch);
+    if (w + cw > inner - 1) break;
+    out += ch;
+    w += cw;
+  }
+  return out + '…';
 }
 
-export function boxTop(title: string, width: number): string {
+/** 按显示宽度截断并加省略号 */
+function truncate(text: string, max: number): string {
+  if (dispWidth(text) <= max) return text;
+  let out = '';
+  let w = 0;
+  for (const ch of text) {
+    const cw = dispWidth(ch);
+    if (w + cw > max - 1) break;
+    out += ch;
+    w += cw;
+  }
+  return out + '…';
+}
+
+export function boxTop(title: string, width: number, corners: Corners = SQ): string {
   const inner = Math.max(0, width - 2);
-  const t = title ? ` ${title} ` : '';
-  const pad = Math.max(0, inner - stripAnsi(t).length);
+  let t = title ? ` ${title} ` : '';
+  if (dispWidth(t) > inner) t = truncate(t, inner);
+  const pad = Math.max(0, inner - dispWidth(t));
   const left = Math.floor(pad / 2);
   const right = pad - left;
-  return BOX.tl + BOX.h.repeat(left) + t + BOX.h.repeat(right) + BOX.tr;
+  return corners.tl + corners.h.repeat(left) + t + corners.h.repeat(right) + corners.tr;
 }
 
-export function boxRow(content: string, width: number, align: 'left' | 'center' = 'left'): string {
+export function boxRow(content: string, width: number, align: 'left' | 'center' = 'left', corners: Corners = SQ): string {
   const inner = Math.max(0, width - 4);
   const body = align === 'center' ? centerAnsi(content, inner) : fitLeft(content, inner);
-  return BOX.v + ' ' + body + ' ' + BOX.v;
+  return corners.v + ' ' + body + ' ' + corners.v;
 }
 
-export function boxBottom(width: number): string {
-  return BOX.bl + BOX.h.repeat(Math.max(0, width - 2)) + BOX.br;
+export function boxBottom(width: number, corners: Corners = SQ): string {
+  return corners.bl + corners.h.repeat(Math.max(0, width - 2)) + corners.br;
 }
 
 // ── 仪表盘 / 对话框 ───────────────────────────────
@@ -157,12 +208,12 @@ export interface DashboardOpts {
 export function renderDashboard(opts: DashboardOpts): string {
   const showBrand = opts.brand !== false;
   const art = showBrand ? brandArtLines() : [];
-  const maxArt = art.reduce((m, l) => Math.max(m, stripAnsi(l).length), 0);
+  const maxArt = art.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
   const maxRow = opts.rows.reduce(
-    (m, r) => Math.max(m, stripAnsi(r.label).length + (r.detail ? stripAnsi(r.detail).length + 2 : 0) + 4),
+    (m, r) => Math.max(m, dispWidth(r.label) + (r.detail ? dispWidth(r.detail) + 2 : 0) + 4),
     0,
   );
-  const maxTitle = stripAnsi(opts.title ?? 'Bolloon Agent · 仪表盘').length + 4;
+  const maxTitle = dispWidth(opts.title ?? 'Bolloon Agent · 仪表盘') + 4;
   const inner = Math.max(40, maxArt, maxRow, maxTitle);
   const width = Math.min(termWidth() - 2, opts.width ?? inner + 4);
   const lines: string[] = [];
@@ -187,12 +238,12 @@ export interface DialogOpts {
 
 export function renderDialog(opts: DialogOpts): string {
   const art = brandArtLines();
-  const maxArt = art.reduce((m, l) => Math.max(m, stripAnsi(l).length), 0);
+  const maxArt = art.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
   const inner = Math.max(
     40,
     maxArt,
-    stripAnsi(opts.prompt).length + 4,
-    stripAnsi(opts.title ?? 'Bolloon Agent').length + 4,
+    dispWidth(opts.prompt) + 4,
+    dispWidth(opts.title ?? 'Bolloon Agent') + 4,
   );
   const width = Math.min(termWidth() - 2, opts.width ?? inner + 4);
   const lines: string[] = [];
@@ -204,25 +255,50 @@ export function renderDialog(opts: DialogOpts): string {
 }
 
 // ── 消息对话框 (聊天流: 已发送 / 智能体回复) ───────
-/** 按可见宽度折行 (保留 ANSI, 优先在空格处断行) */
+/** 按显示宽度折行 (保留 ANSI, 优先在空格处断行; 超长无空格片段按字符硬断) */
 function wrapText(text: string, width: number): string[] {
+  if (width <= 0) return text.split('\n');
   const out: string[] = [];
   for (const rawLine of text.split('\n')) {
-    if (stripAnsi(rawLine).length <= width) {
+    if (dispWidth(rawLine) <= width) {
       out.push(rawLine);
       continue;
     }
     const words = rawLine.split(/(\s+)/);
     let cur = '';
-    for (const w of words) {
-      if (stripAnsi(cur).length + stripAnsi(w).length > width && stripAnsi(cur).length > 0) {
+    const flush = () => {
+      if (cur) {
         out.push(cur);
+        cur = '';
+      }
+    };
+    for (const w of words) {
+      if (w.length === 0) continue;
+      const wv = dispWidth(w);
+      if (wv > width) {
+        // 超长无空格片段 (如中文长句) → 按字符硬断
+        flush();
+        let chunk = '';
+        for (const ch of w) {
+          const cv = dispWidth(ch);
+          if (dispWidth(chunk) + cv > width && dispWidth(chunk) > 0) {
+            out.push(chunk);
+            chunk = ch;
+          } else {
+            chunk += ch;
+          }
+        }
+        cur = chunk;
+        continue;
+      }
+      if (dispWidth(cur) + wv > width && dispWidth(cur) > 0) {
+        flush();
         cur = w.replace(/^\s+/, '');
       } else {
         cur += w;
       }
     }
-    if (cur) out.push(cur);
+    flush();
   }
   return out;
 }
@@ -248,13 +324,13 @@ export function renderMessageBox(opts: MessageBoxOpts): string {
   if (maxLines > 0 && bodyLines.length > maxLines) {
     return renderReference({ title, body: opts.body, color, hidden: bodyLines.length, width: opts.width });
   }
-  const maxLine = bodyLines.reduce((m, l) => Math.max(m, stripAnsi(l).length), 0);
-  const inner = Math.max(20, stripAnsi(title).length + 4, maxLine);
+  const maxLine = bodyLines.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
+  const inner = Math.max(20, dispWidth(title) + 4, maxLine);
   const width = Math.min(termWidth() - 2, opts.width ?? inner + 4);
   const lines: string[] = [];
-  lines.push(boxTop(`${color}${title}${RESET}`, width));
-  for (const l of wrapText(opts.body, width - 4)) lines.push(boxRow(l, width));
-  lines.push(boxBottom(width));
+  lines.push(boxTop(`${color}${title}${RESET}`, width, RD));
+  for (const l of wrapText(opts.body, width - 4)) lines.push(boxRow(l, width, 'left', RD));
+  lines.push(boxBottom(width, RD));
   return lines.join('\n');
 }
 
@@ -262,10 +338,7 @@ export function renderMessageBox(opts: MessageBoxOpts): string {
 function firstLinePreview(text: string, width: number): string {
   for (const raw of text.split('\n')) {
     const t = raw.trim();
-    if (t) {
-      const s = stripAnsi(t);
-      return s.length > width ? s.slice(0, Math.max(0, width - 1)) + '…' : t;
-    }
+    if (t) return truncate(t, width);
   }
   return '';
 }
@@ -281,16 +354,16 @@ function renderReference(opts: {
   const preview = firstLinePreview(opts.body, 60);
   const inner = Math.max(
     20,
-    stripAnsi(opts.title).length + 8,
-    stripAnsi(`已压缩 ${opts.hidden} 行 · 完整内容已发送给智能体`).length,
-    stripAnsi(preview).length + 2,
+    dispWidth(opts.title) + 8,
+    dispWidth(`已压缩 ${opts.hidden} 行 · 完整内容已发送给智能体`),
+    dispWidth(preview) + 2,
   );
   const width = Math.min(termWidth() - 2, opts.width ?? inner + 4);
   const lines: string[] = [];
-  lines.push(boxTop(`${GRAY}引用${RESET} ${opts.color}${opts.title}${RESET}`, width));
-  lines.push(boxRow(`${GRAY}已压缩 ${opts.hidden} 行 · 完整内容已发送给智能体${RESET}`, width));
-  if (preview) lines.push(boxRow(`${GRAY}▏ ${preview}${RESET}`, width));
-  lines.push(boxBottom(width));
+  lines.push(boxTop(`${GRAY}引用${RESET} ${opts.color}${opts.title}${RESET}`, width, RD));
+  lines.push(boxRow(`${GRAY}已压缩 ${opts.hidden} 行 · 完整内容已发送给智能体${RESET}`, width, 'left', RD));
+  if (preview) lines.push(boxRow(`${GRAY}▏ ${preview}${RESET}`, width, 'left', RD));
+  lines.push(boxBottom(width, RD));
   return lines.join('\n');
 }
 
@@ -302,6 +375,50 @@ export function renderUserMessage(body: string): string {
 /** 智能体回复框 */
 export function renderAgentMessage(body: string): string {
   return renderMessageBox({ title: '◉ Bolloon Agent', body, color: CYAN, maxLines: DEFAULT_MAX_LINES });
+}
+
+// ── 工具调用显示 (圆角框 + ╼╾ 连接) ────────────────
+/** 单步工具调用的视图数据 */
+export interface ToolCallView {
+  tool: string;
+  args?: Record<string, unknown> | string;
+  status: 'ok' | 'error';
+  output?: string;
+  error?: string;
+  durationMs?: number;
+  width?: number;
+}
+
+/** 循环工作流连接线: 用 ╼ ╾ 串联相邻工具框 */
+export function flowConnector(width: number): string {
+  const unit = '╼ ╾ ';
+  let s = '';
+  while (s.length < width) s += unit;
+  return s.slice(0, width);
+}
+
+/** 渲染单个工具调用为圆角框 (参数 / 状态 / 输出预览) */
+export function renderToolCall(v: ToolCallView): string {
+  const color = v.status === 'ok' ? GREEN : RED;
+  const sym = v.status === 'ok' ? '✅' : '❌';
+  const w = Math.min(termWidth() - 2, v.width ?? 72);
+  const rows: string[] = [];
+  const argStr = typeof v.args === 'string' ? v.args : v.args ? JSON.stringify(v.args) : '';
+  if (argStr) rows.push(`参数: ${truncate(argStr, w - 10)}`);
+  const dur = v.durationMs != null ? ` (${v.durationMs}ms)` : '';
+  rows.push(`状态: ${sym} ${v.status === 'ok' ? '成功' : '失败'}${dur}`);
+  const body = v.status === 'ok' ? v.output : v.error;
+  if (body) {
+    const wrapped = wrapText(body, w - 6);
+    const shown = wrapped.slice(0, 3);
+    for (const l of shown) rows.push(`▏ ${l}`);
+    if (wrapped.length > 3) rows.push(`▏ … 已压缩 ${wrapped.length - 3} 行`);
+  }
+  const lines: string[] = [];
+  lines.push(boxTop(`${color}◉ ${v.tool}${RESET}`, w, RD));
+  for (const l of rows) lines.push(boxRow(l, w, 'left', RD));
+  lines.push(boxBottom(w, RD));
+  return lines.join('\n');
 }
 
 // ── 启动仪表盘 (原地刷新) ──────────────────────────
@@ -331,7 +448,7 @@ export class LoadingTUI {
   private computeWidth(): number {
     const cols = (process.stdout as any).columns;
     const maxCols = cols && cols > 30 ? cols - 2 : 60;
-    const artW = brandArtLines().reduce((m, l) => Math.max(m, stripAnsi(l).length), 0);
+    const artW = brandArtLines().reduce((m, l) => Math.max(m, dispWidth(l)), 0);
     const needed = Math.max(
       40,
       artW,
