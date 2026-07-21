@@ -280,6 +280,8 @@ async function persistRemoteChannelCache(): Promise<void> {
 loadRemoteChannelCacheFromDisk();
 // v3: P2PDirect 引用 (Hyperswarm 薄包装) - 模块级, 因为 web server 闭包里不可用
 let v3P2PRef: import('../network/p2p-direct.js').P2PDirect | null = null;
+// 2026-07-21: 智能体社交心跳实例 (beacon + 自主决策发起对话), data 事件处理器会引用它
+let agentHeartbeat: import('../social/agent-heartbeat.js').AgentHeartbeat | null = null;
 // 2026-06-10: watchdog 提升到 module-level, 让 broadcast() / 模块级业务函数能埋点喂活动
 // 之前在 createWebServer 闭包内, 闭包外的 broadcast() 拿不到 → 误判 30min 无活动 → 自杀.
 let watchdogRef: any = null;
@@ -1325,6 +1327,8 @@ function cleanupAndExit(signal: string): void {
   if (cleanupDone) return;
   cleanupDone = true;
   console.log(`[server] 收到 ${signal}, 开始清理...`);
+  // 优雅停止社交心跳: 清理 beacon/social 定时器, 防止进程退出前仍一直社交
+  try { agentHeartbeat?.stop(); } catch (e: any) { console.warn('[heartbeat] 停止失败:', e?.message); }
   try { fsSync.unlinkSync(LOCK_PATH); } catch (e: any) { if (e?.code !== 'ENOENT') console.warn(`[port-lock] 删锁失败:`, e?.message); }
   if (activeServer) {
     activeServer.close(() => { process.exit(0); });
@@ -1500,6 +1504,11 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                 text: parsed.payload?.text || '',
                 error: parsed.payload?.error
               }, 'p2p-global');
+              return;
+            }
+            // 2026-07-21: 社交心跳 beacon — 远端智能体宣告存活/能力, 更新本地 liveness
+            if (parsed.op === 'agent.heartbeat') {
+              agentHeartbeat?.handleIncoming('agent.heartbeat', parsed.payload, evt.fromPublicKey);
               return;
             }
             // v3 新增: B 端收到 A 的 thinking (开始 + 流式 token)
@@ -1706,6 +1715,158 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
           console.error('[v3-P2PDirect] 解析/处理消息失败:', (err as Error).message);
         }
       });
+
+      // === 2026-07-21: 智能体社交心跳 (beacon + 自主决策发起对话) ===
+      // beacon 周期向已知 peer 宣告存活/能力; social 循环让本地 agent 自主决定跟哪个远端智能体发起对话.
+      // 远端唤醒/回复链路已存在 (agent.chat.send → server.ts:529 跑 LLM → agent.chat.reply → SSE remote-chat-reply).
+      try {
+        const { AgentHeartbeat } = await import('../social/agent-heartbeat.js');
+        const socialOn = process.env.BOLLOON_AGENT_HEARTBEAT_SOCIAL !== '0';
+        const myName = await (async () => {
+          let n = process.env.BOLLOON_USER_NAME || process.env.USER || 'node';
+          try {
+            const { readFileSync, existsSync } = await import('fs');
+            const cfgPath = `${process.env.HOME || '/tmp'}/.bolloon/config.json`;
+            if (existsSync(cfgPath)) {
+              const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
+              if (cfg.userName) n = cfg.userName;
+            }
+          } catch {}
+          return n;
+        })();
+        agentHeartbeat = new AgentHeartbeat({
+          enabled: true,
+          socialEnabled: socialOn,
+          beaconIntervalMs: Number(process.env.BOLLOON_HEARTBEAT_BEACON_MS) || 30_000,
+          socialIntervalMs: Number(process.env.BOLLOON_HEARTBEAT_SOCIAL_MS) || 120_000,
+          cooldownMs: Number(process.env.BOLLOON_HEARTBEAT_COOLDOWN_MS) || 10 * 60_000,
+          self: async () => {
+            const channels = await loadChannels();
+            const myPk = v3P2PRef?.getPublicKey() || '';
+            return {
+              publicKey: myPk,
+              agentId: channels[0]?.agentId,
+              name: myName,
+              channels: channels.map((c: any) => ({ id: c.id, name: c.name })),
+            };
+          },
+          getPeers: async () => {
+            const { listPeers } = await import('../network/known-peers.js');
+            const kp = await listPeers();
+            const myPk = v3P2PRef?.getPublicKey() || '';
+            const peers: any[] = [];
+            for (const p of kp) {
+              if (p.publicKey === myPk) continue;
+              const cached = remoteChannelCache.get(p.publicKey) || [];
+              peers.push({
+                publicKey: p.publicKey,
+                name: p.name,
+                channels: cached.map((c: any) => ({ id: c.id, name: c.name })),
+              });
+            }
+            return peers;
+          },
+          transport: {
+            send: async (pk: string, op: string, payload: any) => {
+              const { sendOrQueue } = await import('../network/p2p-outbox.js');
+              return sendOrQueue(pk, op, payload, v3P2PRef);
+            },
+          },
+          decide: socialOn ? llmSocialDecide : undefined,
+          // 目标: 社交服务于"与网络中的其他智能体建立并维持协作". 配额/效果阈值防止一直社交.
+          // owner 可通过 env BOLLOON_AGENT_GOAL 覆盖描述; 也可经 RPC setGoal 运行时注入.
+          getGoal: async () => ({
+            id: 'owner-collab',
+            description: process.env.BOLLOON_AGENT_GOAL || '与网络中的其他智能体建立并维持协作关系, 主动分享进展并获取所需信息',
+            maxInitiations: Number(process.env.BOLLOON_HEARTBEAT_GOAL_MAX) || 8,
+            effectThreshold: Number(process.env.BOLLOON_HEARTBEAT_GOAL_EFFECT) || 3,
+          }),
+          // 效果度量: 远端回了非空且有实质内容的消息, 视为推进了目标 (生产可换 LLM 判定 achievedGoal)
+          assessEffect: ({ replyText }) => {
+            const t = (replyText || '').trim();
+            return { advanced: t.length > 0, achievedGoal: false };
+          },
+          onPeerAlive: (peer: any) => {
+            broadcast({
+              type: 'peer-heartbeat',
+              fromPublicKey: peer.publicKey,
+              name: peer.name,
+              channels: peer.channels,
+              ts: Date.now(),
+            }, 'p2p-global');
+          },
+          // 每次社交 tick 喂给 24h 看门狗, 防止误判卡死重启
+          onActivity: () => {
+            try { watchdogRef?.recordActivity?.('agent-heartbeat'); } catch {}
+          },
+          // 生命周期阶段变化 → 推 SSE 给前端展示
+          onLifecycleChange: (phase: any, snap: any) => {
+            broadcast({
+              type: 'agent-lifecycle',
+              phase,
+              snapshot: snap,
+              ts: Date.now(),
+            }, 'p2p-global');
+          },
+        });
+        agentHeartbeat.start();
+        // 注册到全局, 让 24h HealthMonitor.checkHeartbeat 能观测到本智能体 (getDiscoveredAgents/isAntColonyEnabled)
+        (global as any).socialHeartbeat = agentHeartbeat;
+        (global as any).agentHeartbeat = agentHeartbeat;
+      } catch (hbErr) {
+        console.warn('[heartbeat] 启动失败 (non-fatal):', (hbErr as Error)?.message);
+      }
+
+      // 社交决策: 让本地 agent (用第一个本地 channel 的身份) 判断是否主动联络某 peer
+      // 目标感知: ctx.goal 是当前要达成的目标, 决策应服务于它, 达成后可声明 goalAchieved 进入 RESTING
+      async function llmSocialDecide(ctx: { self: any; peers: any[]; goal?: any }): Promise<{
+        initiate: boolean;
+        targetPeerPublicKey?: string;
+        targetChannelId?: string;
+        message?: string;
+        goalAchieved?: boolean;
+        reason?: string;
+      }> {
+        try {
+          const channels = await loadChannels();
+          const local = channels[0];
+          if (!local) return { initiate: false };
+          const agent = await getAgentForChannel(local.id, local.did || '', local.name, local.didDocRef);
+          const peerLines = ctx.peers
+            .map((p: any) => `- ${p.name || p.publicKey.slice(0, 8)} (pk=${p.publicKey.slice(0, 12)}…): 渠道[${p.channels.map((c: any) => c.name).join(', ') || '无'}]`)
+            .join('\n');
+          const goalDesc = ctx.goal ? `当前目标: ${ctx.goal.description} (已发起 ${ctx.goal.initiationsUsed}/${ctx.goal.maxInitiations}, 有效回复 ${ctx.goal.effectfulReplies}/${ctx.goal.effectThreshold})` : '当前无明确目标';
+          const prompt =
+`你是智能体「${ctx.self.name || '本地智能体'}」。你通过 P2P 网络认识以下其他智能体:
+${peerLines}
+
+${goalDesc}
+
+规则:
+1. 社交是为了达成上述目标, 不是闲聊。只在你有真正有价值的信息要分享/询问、且能推进目标时才主动发起。
+2. 不要重复最近已经聊过的话题, 不要每条心跳都发消息, 保持克制。
+3. 如果目标已经通过已有交流达成 (或你认为无需再聊), 输出 {"initiate": false, "goalAchieved": true}。
+4. 如果决定发起, 选一个最合适的目标渠道 (用对方渠道的真实 id)。
+
+现在是否要主动联系其中某个智能体? 只输出一个 JSON 对象, 不要任何其他文字:
+{"initiate": true 或 false, "goalAchieved": true 或 false, "targetPeerPublicKey": "对方 pk", "targetChannelId": "对方渠道 id", "message": "你要说的话"}
+若不想发起, 输出 {"initiate": false}。`;
+          const raw = await agent.promptStream(prompt, () => {}, undefined, local.id);
+          const m = raw.match(/\{[\s\S]*\}/);
+          if (!m) return { initiate: false };
+          const obj = JSON.parse(m[0]);
+          return {
+            initiate: !!obj.initiate,
+            goalAchieved: !!obj.goalAchieved,
+            targetPeerPublicKey: obj.targetPeerPublicKey,
+            targetChannelId: obj.targetChannelId,
+            message: obj.message,
+          };
+        } catch (err) {
+          console.warn('[heartbeat] 社交决策 LLM 失败 (跳过本次发起):', (err as Error)?.message);
+          return { initiate: false };
+        }
+      }
 
       // 新连接进来 → 主动发我分享给 ta 的 channel 列表
       v3P2PRef.on('connection', (evt: any) => {

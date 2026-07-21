@@ -11,6 +11,7 @@
 | 2026-07-20 | fix | v0.3.5 发布 — banner 双空格修复 (verStr 去前导空格, padEnd→手动计算, 小版本号对齐 39 列) + npm publish | [index.ts:54](../../src/index.ts) |
 | 2026-07-21 | fix | 流式 timeline 渲染修复 — handleStreamTokenEvent 中 appendChild 在 flushStepEventBuffer 之前, 确保 step 回放时 streamingMessageEl.isConnected=true | [message-renderer.ts:492](../../src/web/ui/message-renderer.ts) |
 | 2026-07-21 | test | 流式 timeline Playwright 测试 — 模拟完整 SSE 事件链 (step_start/step_done/stream/done), 验证 timeline 在流式阶段渲染、finalize 后迁移到最终消息、摘要是完成状态 | [web-loop-ui.spec.ts](../../src/test/web-loop-ui.spec.ts) |
+| 2026-07-21 | feat | 智能体社交心跳 (目标驱动生命周期) — 给 agent 加心跳 + 目标驱动状态机 (DISCOVERING/ENGAGING/RESTING/PAUSED), 社交服务于目标而非闲聊, 达成效果即 RESTING, 无效果退避; 接入全局 runtime (cleanupAndExit 停定时器 / global.socialHeartbeat / Watchdog / SSE), 10 单测 + 双节点仿真 PASS | [agent-heartbeat.ts](../../src/social/agent-heartbeat.ts) / [run-agent-heartbeat.ts](../../scripts/ablation/run-agent-heartbeat.ts) |
 | 2026-07-12 | fix | 3 个 document 工具缺 path 前置校验, Node fs 抛 ERR_INVALID_ARG_TYPE: read_document / summarize_document / improve_document 加 if (!path) return { success: false, error: 'path 必填' }; documentReader.read() 加非空字符串防御; 加 10 测试锁住 | [pi-sdk-tools.ts:62/79/103](../../src/agents/pi-sdk-tools.ts) / [reader.ts:16](../../src/documents/reader.ts) / [pi-sdk-tools-validation.test.ts](../../src/test/pi-sdk-tools-validation.test.ts) |
 | 2026-07-12 | fix | UI 暴露工具原始 error: step-timeline.ts 之前只渲染 name/args, 完全忽略 step.error (LLM 改写后误导调试 "X 必填"); 现在 error 状态 step 显示 .step-timeline-error-wrap 容器展示原始错误 (mono 字体 + 橙色边框), style.css 加对应样式; 6 个新测试锁住 | [step-timeline.ts](../../src/web/ui/step-timeline.ts) / [style.css](../../src/web/style.css) / [step-timeline-error-display.test.ts](../../src/test/step-timeline-error-display.test.ts) |
 | 2026-07-10 | feat | LoadingTUI 升级: 7 步进度可视化 + main() 错误路径自动 stop(false) + spinner 帧率不变 | [loading-tui.ts](../../src/cli/loading-tui.ts) / [index.ts](../../src/index.ts) |
@@ -135,6 +136,58 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+
+### [2026-07-21] feat | 智能体社交心跳 (让 agent 自主选 peer 交流)
+
+- **触发**: 用户问"智能体会在过程中被本地智能体主动去交流吗? 信道通畅吗? 我要测验本地↔远端智能体顺畅自动交流, agent 要有心跳去选择跟谁交流."
+- **调研结论**: 唤醒/回复链路已通 (agent.chat.send → server.ts:529 跑 LLM → agent.chat.reply → SSE remote-chat-reply), 但没有任何"agent 自主/定时主动联络 peer"的机制; 系统级心跳只保活进程; 消融脚本全是单节点.
+- **实施** (2 新文件 + server.ts 接入):
+  | 改动 | 文件 | 行数 |
+  |---|---|---|
+  | `AgentHeartbeat` 类 (beacon + 社交决策 + 入站处理 + 冷却, transport/decide/getPeers/self 全可注入) | `src/social/agent-heartbeat.ts` (新) | 230 |
+  | 单元验证 (mock transport/decide: beacon/自主发起/回复/冷却/存活/不自聊) | `src/test/agent-heartbeat.test.ts` (新) | 6 测试 |
+  | 双节点内存总线仿真 (NodeA↔NodeB 自动双向交流, 无网络/LLM) | `scripts/ablation/run-agent-heartbeat.ts` (新) | 120 |
+  | server.ts 接入: 声明实例 + data 处理器路由 `agent.heartbeat` + 创建/启动 + `llmSocialDecide` (本地 LLM 决策) + `onPeerAlive` SSE `peer-heartbeat` | `src/web/server.ts` | +90 |
+- **关键设计**:
+  1. beacon 周期向 known_peers 发 `agent.heartbeat` (payload 带 publicKey/agentId/name/channels/ts), 接收方更新 liveness.
+  2. social tick 对"存活" peer 调 `decide` (生产=本地 LLM, 用第一个本地 channel 身份), 返回 `{initiate, targetPeerPublicKey, targetChannelId, message}` → 发 `agent.chat.send` 唤醒远端 agent.
+  3. 冷却 (默认 10min/peer) 防刷屏与无限互 ping; liveWindow 过滤离线 peer.
+  4. env 开关: `BOLLOON_AGENT_HEARTBEAT_SOCIAL=0` 关社交循环 (只发 beacon); `BOLLOON_HEARTBEAT_BEACON_MS` / `SOCIAL_MS` / `COOLDOWN_MS` 可调.
+- **验证**:
+  - `npx tsc --noEmit`: 0 错
+  - `npx vitest run`: 902/902 pass (含 6 个新心跳测试, 原 896 → 902)
+  - `npm run build:web`: pass
+  - `npx tsx scripts/ablation/run-agent-heartbeat.ts`: PASS (beacon 互发 + 双方自主发起 + 远端自动回复 + 冷却生效)
+- **真实双节点运行**: 两台机器各跑 `BOLLOON_USER_NAME=NodeX npx tsx src/index.ts --web`, Hyperswarm DHT 互联后 beacon 互相感知, social 循环驱动自动对话; 远端回复经 SSE `remote-chat-reply` 推到本地前端.
+
+#### [2026-07-21] feat | 生命周期完善 — 防止"一直社交却无效果"
+- **用户反馈**: "记得设计好智能体生命周期, 否则会一直社交且无法获取任何效果. 看一下全局 runtime 怎么管理生命周期, 你来完善."
+- **诊断 (全局 runtime 现状)**:
+  1. `cleanupAndExit` (server.ts) 只删锁 + close server, **没有停 `agentHeartbeat` 定时器** → 关闭不彻底.
+  2. 24h 心跳系统 `HealthMonitor.checkHeartbeat` 依赖 `global.socialHeartbeat.getDiscoveredAgents()/isAntColonyEnabled()`, 但本实例**从未注册** → 24h 系统对它不可见.
+  3. `Watchdog` 靠 `recordActivity` 防误重启, 心跳 tick 没喂它.
+  4. 原 `AgentHeartbeat` 无目标/配额/效果度量 → 每 120s 让 LLM 决定聊天, **会无限闲聊, 无目的**.
+- **完善 (`src/social/agent-heartbeat.ts` 重构)**:
+  | 改动 | 文件 | 说明 |
+  |---|---|---|
+  | 目标驱动状态机 `LifecyclePhase` (BOOTSTRAP/DISCOVERING/ENGAGING/RESTING/PAUSED) | `agent-heartbeat.ts` | 社交服务于目标, 非闲聊 |
+  | `AgentGoal` {maxInitiations 配额, effectThreshold 效果阈值, ttlMs} + `GoalRuntime` 运行期状态 | `agent-heartbeat.ts` | 每目标有边界 |
+  | `evaluateLifecycle()`: 达成→RESTING / 配额耗尽→RESTING / 连续无效果→退避 RESTING (noEffectBackoffMs) / goalReevalMs 后重置配额再试一轮 | `agent-heartbeat.ts` | 防失控核心 |
+  | `handleIncoming('agent.chat.reply')` 效果度量: 有效回复累计, 达阈值→目标达成→RESTING; 解除退避 | `agent-heartbeat.ts` | "获取效果"闭环 |
+  | `assessEffect` / `getGoal` 可注入; `pause()/resume()/stop()` 运行期控制; `getLifecycle()` 快照 | `agent-heartbeat.ts` | 可测 + 可控 |
+  | 自适应 social 间隔 (退避时指数增长, 上限 maxSocialIntervalMs) | `agent-heartbeat.ts` | 替代固定 setInterval |
+- **全局 runtime 接入 (server.ts)**:
+  1. `cleanupAndExit` 调 `agentHeartbeat?.stop()` → 优雅清理 beacon/social 定时器.
+  2. 注册 `global.socialHeartbeat = global.agentHeartbeat = agentHeartbeat` → HealthMonitor 可观测 (新增 `getDiscoveredAgents()/isAntColonyEnabled()` 兼容契约).
+  3. `onActivity` → `watchdogRef.recordActivity('agent-heartbeat')` 防看门狗误重启.
+  4. `onLifecycleChange` → 广播 SSE `agent-lifecycle` 给前端展示阶段.
+  5. 注入 `getGoal` (env `BOLLOON_AGENT_GOAL` / `BOLLOON_HEARTBEAT_GOAL_MAX` / `_EFFECT` 可配) + `assessEffect` (非空回复即有效) + 目标感知的 `llmSocialDecide` (可声明 `goalAchieved`).
+- **验证**:
+  - `npx tsc --noEmit`: 0 错
+  - `npx vitest run`: **906/909 pass** (含 10 个心跳测试: beacon/发起/回复/冷却/存活/目标达成→REST/配额耗尽→REST/无效果退避/pause-resume-stop, 原 902 → 906)
+  - `npm run build:web`: pass
+  - `npx tsx scripts/ablation/run-agent-heartbeat.ts`: **PASS** (beacon 互发 + 双方自主发起 + 远端自动回复 + 目标达成→RESTING 不再社交 + stop() 清理定时器)
+- **结论**: 智能体现在"有目的社交"——达成效果即休息 (RESTING, 仍 beacon 可见), 不会一直社交; 进程关闭时心跳优雅停止, 并被 24h 系统纳管.
 
 ### [2026-07-04] fix | P1 SessionStore escape `:` + vitest-bail 不再 flaky
 
