@@ -1442,13 +1442,20 @@ function connect(channelId) {
         }
         // 本地 user 已经由 sendMessage 渲染 + 去重, 这里不再显示
       } else if (data.type === 'ai') {
-        // 2026-07-06: 非流式模式 — type=ai 事件携带完整 fullResponse
-        //   addMessage 内部统一清洗 思考/<final gen>, 这里直接传原始内容
-        // 2026-07-15 修 Bug 5: final 到达前可能有多个 preview 气泡残留 (R1/R2/R3), 一并清除
+        // 2026-07-06: type=ai 事件携带完整 fullResponse
+        //   流式进行中 (hasStreamingText): 用完整内容替换流式文本并 finalize,
+        //   只产生一个最终气泡 — 避免 done 再 finalize 出第二个被截断到 100 字的气泡.
+        //   非流式: 直接 addMessage.
+        //   2026-07-15 修 Bug 5: final 到达前清掉 preview 残留气泡 (R1/R2/R3).
         const allPreviews = container.querySelectorAll('.message-ai.preview');
         allPreviews.forEach(el => el.remove());
         currentPreviewBubble = null;
-        addMessage(data.content || '', 'ai', true, container, lastUsedJudgmentIds || []);
+        if (!MR_hasStreamingText()) {
+          addMessage(data.content || '', 'ai', true, container, lastUsedJudgmentIds || []);
+        } else {
+          MR_replaceStreamingText?.(data.content || '');
+          MR_finalizeTimelineAsMessage(getRendererCtx());
+        }
       } else if (data.type === 'reply-preview') {
         // 2026-07-06: pivot loop 每 iter 推 preview — 用户要求"后端只要在跑就要看到内容, 不是 '任务处理超时'"
         //   2026-07-15 修 Bug 5: 之前每次 preview 新建气泡, pivot 多 iter → 屏幕上叠 3-5 个 R1/R2/R3 气泡, 看起来像"重复"
