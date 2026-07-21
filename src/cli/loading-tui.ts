@@ -101,11 +101,6 @@ export class LoadingTUI {
         this.write(`  ${STEP_SYMBOL[step.status]} ${step.label}\n`);
       }
     }
-    if (this.ok) {
-      this.write(`  ${GREEN}✓${RESET} ${CYAN}Bolloon${RESET} ${GRAY}ready${RESET}\n`);
-    } else {
-      this.write(`  ${RED}✗${RESET} ${CYAN}Bolloon${RESET} ${GRAY}startup failed${RESET}\n`);
-    }
     this.write(SHOW);
   }
 

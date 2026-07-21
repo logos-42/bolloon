@@ -489,8 +489,12 @@ export function handleStreamTokenEvent(data: StreamTokenEvent, ctx: RendererCtx 
     streamingText = '';
     // 2026-06-15: 流式期间也挂一个空 step-timeline 占位 — step_start/done/error 事件
     //   走 handleStepEvent, getStepTimeline 找到这个流式元素内的 timeline 推入
-    mountStepTimeline(streamingMessageEl, currentChannelId);
+         mountStepTimeline(streamingMessageEl, currentChannelId);
     container.appendChild(streamingMessageEl);
+    // 2026-07-21: 流式元素创建后立即回放缓冲的 step 事件, 让用户尽早看到 tool call 状态
+    //   必须先 appendChild 让元素 isConnected=true, 否则 flushStepEventBuffer → handleStepEvent
+    //   会因 streamingMessageEl.isConnected===false 而丢弃缓冲中的 step.
+    flushStepEventBuffer(currentChannelId, ctx);
     // B-3: 首个 token 来时切状态到 streaming (蓝徽), 提示用户 panel 在工作
     if (typeof ctx.setTimelineState === 'function') {
       ctx.setTimelineState('streaming');
@@ -581,19 +585,15 @@ export function handleStepEvent(data: StepEvent, ctx: RendererCtx = { messagesEl
   let target: HTMLElement | null = streamingMessageEl && streamingMessageEl.isConnected
     ? streamingMessageEl
     : null;
-  // 2. 否则用最后一条 AI message
+  // 2. 无流式元素 → 缓冲等待 stream token 或 addMessage 后回放
+  //    (2026-07-21: 不再回退到 welcome 等旧 AI 消息, 避免 step 贴错 message)
   if (!target) {
-    const aiMsgs = container.querySelectorAll('.message-ai');
-    if (aiMsgs.length === 0) {
-      // 2026-07-20 Bug 1: 非流式模式, AI 消息尚未创建 — 缓冲事件, addMessage 后回放
-      if (currentChannelId) {
-        const buf = stepEventBuffer.get(currentChannelId) || [];
-        buf.push(data);
-        stepEventBuffer.set(currentChannelId, buf);
-      }
-      return;
+    if (currentChannelId) {
+      const buf = stepEventBuffer.get(currentChannelId) || [];
+      buf.push(data);
+      stepEventBuffer.set(currentChannelId, buf);
     }
-    target = aiMsgs[aiMsgs.length - 1] as HTMLElement;
+    return;
   }
   if (!target) return;
 

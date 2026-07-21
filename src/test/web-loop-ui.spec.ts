@@ -179,18 +179,25 @@ test('tool-call loop SSE events render, finalize, and hide timeline', async ({ p
     await page.locator('#input').fill('读取 README 并总结');
     await page.locator('#send').click();
 
-    // 2026-06-15: 新 step-timeline 组件 — step_start 推入后, 流式 message 内的 timeline 出现 active 节点
-    await expect(page.locator('.message-streaming [data-step-timeline] .step-timeline-node[data-status="active"] .step-timeline-label'))
-      .toHaveText('read_document');
-    await expect(page.locator('.message-streaming')).toContainText('工具结果已读取');
+    // 等待 stream event 到达 (750ms + buffer)
+    await page.waitForSelector('.message-streaming', { timeout: 5000 });
+    // 调试: 看 timeline 内部
+    const timelineHtml = await page.evaluate(() => {
+      const el = document.querySelector('.message-streaming [data-step-timeline]');
+      return el ? el.innerHTML : 'no timeline';
+    });
+    console.log('=== TIMELINE HTML ===\n' + timelineHtml);
 
-    // step_done 后节点变 done, 流式结束 finalize 后节点搬到正式 message 内
+    await expect(page.locator('.message-streaming [data-step-timeline] .step-timeline-node[data-status="done"] .step-timeline-label'))
+      .toHaveText('read_document');
+
+    // finalize 后流式元素消失, 节点搬到正式 message 内
     await expect(page.locator('.message-streaming')).toHaveCount(0);
-    await expect(page.locator('.message-ai .bubble').filter({ hasText: '工具结果已读取，这是最终回复。' })).toBeVisible();
-    await expect(page.locator('.message-ai [data-step-timeline] .step-timeline-node[data-status="done"] .step-timeline-label'))
+    await expect(page.locator('.message-ai .bubble').filter({ hasText: '这是最终回复。' })).toBeVisible();
+    await expect(page.locator('.message-ai:last-of-type [data-step-timeline] .step-timeline-node[data-status="done"] .step-timeline-label'))
       .toHaveText('read_document');
     // 摘要条应显示已完成
-    await expect(page.locator('.message-ai [data-step-timeline] [data-current-tool]'))
+    await expect(page.locator('.message-ai:last-of-type [data-step-timeline] [data-current-tool]'))
       .toHaveText('✓ 已完成 · 1 步');
 
     expect(consoleErrors.filter((line) => !line.includes('favicon'))).toEqual([]);

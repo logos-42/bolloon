@@ -22,7 +22,7 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
-import { LoadingTUI } from './cli/loading-tui.js';
+
 // 启动时自动检查更新已禁用 (改用 --update-check / --update-now 显式触发)
 
 import { createRequire } from 'module';
@@ -1976,7 +1976,7 @@ function printHelp(): void {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  let loading: LoadingTUI | null = null;
+
   try {
   const args = parseArgs();
 
@@ -1992,7 +1992,6 @@ async function main() {
 
   const mode = args.web ? 'web' : 'cli';
   const isNonInteractive = !!(args.tool || args.prompt);
-  const isTuiMode = mode === 'cli' && !isNonInteractive && args.tui;
 
   const originalLog = console.log;
   const originalInfo = console.info;
@@ -2002,48 +2001,16 @@ async function main() {
     return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(msg);
   };
 
-  // CLI interactive mode: suppress all startup output, show minimal spinner
   const isCLIInteractive = mode === 'cli' && !isNonInteractive;
-  loading = isCLIInteractive ? new LoadingTUI() : null;
-  if (loading) {
-    loading.setSteps([
-      'LLM provider 检测',
-      'DIAP 身份生成',
-      'DID 发布到 IPFS',
-      'P2P 网络启动',
-      'iroh transport 启动',
-      'Bolloon 上下文 bootstrap',
-      'Web 服务启动',
-    ]);
-    loading.start('启动中...');
+  if (isCLIInteractive) {
     console.log = () => {};
     console.info = () => {};
     process.stdout.write = () => true as any;
-  } else if (isTuiMode) {
-    console.log = (...args: any[]) => {
-      const msg = args.join(' ');
-      if (isSdkLog(msg)) return;
-      originalLog.apply(console, args);
-    };
-    console.info = (...args: any[]) => {
-      const msg = args.join(' ');
-      if (isSdkLog(msg)) return;
-      originalInfo.apply(console, args);
-    };
-    process.stdout.write = (chunk: any, ...args: any[]) => {
-      const msg = String(chunk);
-      if (isSdkLog(msg)) return true;
-      return originalStdoutWrite(chunk, ...args);
-    };
   }
 
   if (isNonInteractive) {
     console.error = () => {};
   }
-
-  s.banner();
-
-  s.section('系统初始化');
 
   const hasOpenAI = !!process.env.OPENAI_API_KEY;
   // 2026-06-15: 修复 — 之前 anthropic 401 是因为 shell env 残留的旧 ANTHROPIC_API_KEY 抢了 provider 选择
@@ -2070,32 +2037,22 @@ async function main() {
                       hasQwen ? 'Qwen' : null;
 
   if (llmProvider) {
-    s.step(0, 4, `LLM: ${llmProvider}`, 'ok');
-    loading?.completeStep(0, 'ok', `LLM: ${llmProvider}`);
     initMinimax({ provider: llmProvider.toLowerCase() as any });
   } else {
-    s.step(0, 4, 'LLM: 未配置', 'warn');
-    loading?.completeStep(0, 'warn', 'LLM: 未配置');
     if (isNonInteractive) {
       s.warn('未设置任何 LLM API Key，功能受限');
     }
   }
 
-  loading?.startStep(1, '生成 DIAP 身份...');
   const { keypair, did, name } = await bootstrapIdentity();
   agentIdentity = { did, name, publicKey: Buffer.from(keypair.publicKey).toString('hex') };
-  loading?.completeStep(1, 'ok', `身份 ${name}`);
 
-  loading?.startStep(2, '发布 DID 到 IPFS...');
   publishDID(name, keypair).then(({ cid, ipnsName }) => {
     if (cid) agentIdentity!.cid = cid;
     if (ipnsName) agentIdentity!.ipnsName = ipnsName;
-    loading?.completeStep(2, cid ? 'ok' : 'warn', cid ? 'DID 已发布' : 'DID 本地模式');
-  }).catch(() => {
-    loading?.completeStep(2, 'warn', 'DID 本地模式');
-  });
+  }).catch(() => {});
 
-  loading?.startStep(3, '启动 P2P 网络...');
+  
 
   const verifier = createVerificationManager();
   let comm: HyperswarmCommunicator | null = null;
@@ -2109,9 +2066,8 @@ async function main() {
           agentIdentity!.peerId = connections[0].publicKey;
           agentIdentity!.p2pChannel = 'bolloon-agent-harness';
         }
-        loading?.completeStep(3, 'ok', 'P2P 已连接');
       }).catch(err => {
-        loading?.completeStep(3, 'warn', 'P2P Web 模式启动失败');
+  
         s.warn(`P2P Web 模式启动失败: ${err.message}`);
       });
     } else {
@@ -2121,33 +2077,24 @@ async function main() {
         agentIdentity.peerId = connections[0].publicKey;
         agentIdentity.p2pChannel = 'bolloon-agent-harness';
       }
-      loading?.completeStep(3, 'ok', 'P2P 已连接');
     }
   } catch (err: any) {
     s.warn(`P2P 初始化失败: ${err.message}`);
     s.warn('将使用无 P2P 模式运行');
-    loading?.completeStep(3, 'error', 'P2P 初始化失败');
   }
 
-  loading?.startStep(4, '启动 iroh transport...');
   await bootstrapIroh(keypair, name);
-  loading?.completeStep(4, 'ok', 'iroh 已就绪');
 
   // Bolloon Bootstrap: 启动扫描 + Context 收集 + 挂定时任务
   // 失败静默 (主流程不被阻塞)
-  loading?.startStep(5, '正在 bootstrap bolloon 上下文...');
   try {
     const { bootstrapBolloon } = await import('./pi-ecosystem-judgment/human-value-pipeline.js');
     s.info('正在 bootstrap bolloon 上下文...');
     const bs = await bootstrapBolloon({ cwd: process.cwd() });
     s.info(`Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
-    loading?.completeStep(5, 'ok', `Bootstrap 完成 (${bs.durationMs}ms)`);
   } catch (err: any) {
     s.warn(`Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);
-    loading?.completeStep(5, 'warn', 'Bootstrap 失败 (已跳过)');
   }
-
-  s.divider();
 
   if (mode === 'web') {
     const port = parseInt(process.env.PORT || '54188');
@@ -2159,12 +2106,9 @@ async function main() {
     }
     const { createWebServer, openBrowser } = await import('./web/server.js');
 
-    loading?.startStep(6, `启动 Web 服务端口 ${port}...`);
-    s.info(`启动 Web 服务端口 ${port}...`);
     // 2026-06-24: CLI 默认 loopback bind (安全), LAN 访问需 BOLLOON_HOST=0.0.0.0
     const bindHost = process.env.BOLLOON_HOST;
     const { port: actualPort } = await createWebServer(port, { selfImprove, ...(bindHost ? { host: bindHost } : {}) });
-    loading?.completeStep(6, 'ok', `Web 服务 :${actualPort}`);
 
     const displayHost = bindHost ?? '127.0.0.1';
     s.success(`浏览器已打开 → http://${displayHost}:${actualPort}`);
@@ -2182,41 +2126,13 @@ async function main() {
       process.exit(0);
     }
   } else {
-    // Restore logging and stop loading spinner
-    if (loading) {
-      console.log = originalLog;
-      console.info = originalInfo;
-      process.stdout.write = originalStdoutWrite;
-      loading.stop(true);
-    } else {
-      // For non-loading TUI CLI mode: apply SDK filtering if needed
-      if (isTuiMode) {
-        console.log = (...args: any[]) => {
-          const msg = args.join(' ');
-          if (isSdkLog(msg)) return;
-          originalLog.apply(console, args);
-        };
-        console.info = (...args: any[]) => {
-          const msg = args.join(' ');
-          if (isSdkLog(msg)) return;
-          originalInfo.apply(console, args);
-        };
-        process.stdout.write = (chunk: any, ...args: any[]) => {
-          const msg = String(chunk);
-          if (isSdkLog(msg)) return true;
-          return originalStdoutWrite(chunk, ...args);
-        };
-      } else {
-        console.log = originalLog;
-        console.info = originalInfo;
-        process.stdout.write = originalStdoutWrite;
-      }
-    }
+    console.log = originalLog;
+    console.info = originalInfo;
+    process.stdout.write = originalStdoutWrite;
 
     startCLI(comm!);
   }
   } catch (e) {
-    loading?.stop(false);
     throw e;
   }
 }

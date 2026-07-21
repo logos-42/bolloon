@@ -13,6 +13,7 @@ import {
   healthCheck,
 } from './input-validator.js';
 import { segmentChatReply, type ChatSegment } from '../agents/chat-segmenter.js';
+import { listTools } from '../llm/tool-manifest/index.js';
 import { registerJudgmentsRoutes } from './routes-judgments.js';
 import { registerLlmConfigRoutes } from './routes-llm-config.js';
 import { registerTaskRoutes } from './routes-tasks.js';
@@ -2040,6 +2041,10 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
 
   app.get('/api/health', (_req, res) => {
     res.json(healthCheck(getPackageVersion()));
+  });
+
+  app.get('/api/tools', (_req, res) => {
+    res.json(listTools().map(t => t.id));
   });
 
   // 2026-07-01 (v0.2.6): 前后端分离核心 — 后端切 LLM 输出为结构化 segments

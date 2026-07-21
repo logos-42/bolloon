@@ -48,13 +48,19 @@ const MR_replaceStreamingText = (text: string) => _getMR().replaceStreamingText?
 const MR_injectRecoveredText = (text: string, ctx?: any) => _getMR().injectRecoveredText?.(text, ctx ?? getRendererCtx());
 
 // ctx 对象: 把全局状态打包, 避免硬引用 client.js 顶层 let
+let knownToolNames = new Set<string>();
+
 function getRendererCtx() {
   return {
     messagesEl,
     messagesContainers,
     currentChannelId,
     lastUsedJudgmentIds,
-    openJudgmentsModalWithFilter,  // 引用 client.js 函数, 通过参数注入避免循环 import
+    knownToolNames,
+    toolCallCallback: (tool: { name: string; args: Record<string, string> }, _hostEl: HTMLElement) => {
+      console.log('[toolCall]', tool.name, tool.args);
+    },
+    openJudgmentsModalWithFilter,
   };
 }
 
@@ -1468,7 +1474,7 @@ function connect(channelId) {
         //   前端 streaming 容器 appendData 会把多轮 token 累加成 "片段1 + 片段2 + ...", 看起来很乱
         //   改成: stream 事件全部忽略, 等 type=ai 终文事件直接渲染最终内容
         //   thinking 折叠块仍然保留 - 由 step-timeline 自己处理 (不依赖 token stream)
-        if (false) handleStreamTokenEvent(data); // disable — 走 type=ai 直接渲染最终内容
+        handleStreamTokenEvent(data);
       } else if (data.type === 'regenerating') {
         // 删旧的最后一条 AI 消息, 准备重新生成
         const messages = container.querySelectorAll('.message-ai');
@@ -2401,6 +2407,17 @@ async function init() {
 
   if (!themeData.agentId) {
     await saveTheme(themeData.theme, currentAgentId);
+  }
+
+  // 2026-07-21: 从 server 拉工具列表, 用于前端 segmenter 识别 tool_call
+  try {
+    const res = await fetch('/api/tools');
+    if (res.ok) {
+      const toolIds: string[] = await res.json();
+      knownToolNames = new Set(toolIds);
+    }
+  } catch (e) {
+    console.warn('[init] 获取工具列表失败:', e);
   }
 
   await loadChannels();
