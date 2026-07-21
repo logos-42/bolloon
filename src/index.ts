@@ -15,6 +15,7 @@ import * as ed25519 from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import { documentReader } from './documents/reader.js';
 import { initMinimax } from './constraints/index.js';
 import { createAgentSession } from './agents/pi-sdk.js';
@@ -22,8 +23,9 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
+import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage } from './cli/loading-tui.js';
 
-// 启动时自动检查更新已禁用 (改用 --update-check / --update-now 显式触发)
+// 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
 
 import { createRequire } from 'module';
 const _require = createRequire(import.meta.url);
@@ -52,14 +54,7 @@ const SHOW_CURSOR = '\x1b[?25h';
 
 const s = {
   banner: () => {
-    const verStr = `v${_BOLLOON_VERSION}`;
-    const pad = Math.max(0, 39 - 17 - verStr.length);
-    const spaces = ' '.repeat(pad);
-    console.log(`\n${CYAN}${BOLD}
-   ╔═══════════════════════════════════════════╗
-   ║      ${WHITE}🤖 Bolloon ${CYAN}${verStr}${spaces}║
-   ║      ${WHITE}P2P AI Document Processor${CYAN}                ║
-   ╚═══════════════════════════════════════════╝${RESET}\n`);
+    printBanner(_BOLLOON_VERSION);
   },
 
   step: (num: number, total: number, text: string, status?: 'ok' | 'loading' | 'warn' | 'error') => {
@@ -115,6 +110,7 @@ const s = {
 
   dialog: async (title: string, promptText: string): Promise<string> => {
     return new Promise((resolve) => {
+      console.log(renderDialog({ title, prompt: promptText }));
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
@@ -445,6 +441,29 @@ function startCLI(comm: HyperswarmCommunicator): void {
   readline.emitKeypressEvents(process.stdin);
 
   process.stdout.write(CLEAR_LINE);
+
+  // ── Bolloon Agent 仪表盘 (ASCII 艺术字 + 品牌图标) ──
+  printBanner(_BOLLOON_VERSION);
+  let peerCount = 0;
+  try { peerCount = comm.getConnections().length; } catch { /* */ }
+  const llmName = process.env.MINIMAX_API_KEY ? 'MiniMax'
+    : process.env.OPENAI_API_KEY ? 'OpenAI'
+    : process.env.ANTHROPIC_API_KEY ? 'Anthropic'
+    : process.env.DEEPSEEK_API_KEY ? 'DeepSeek'
+    : '未配置';
+  process.stdout.write(renderDashboard({
+    title: '系统状态',
+    rows: [
+      { label: 'LLM Provider', status: llmName === '未配置' ? 'warn' : 'ok', detail: llmName },
+      { label: 'P2P 节点', status: peerCount > 0 ? 'ok' : 'warn', detail: `${peerCount} 个` },
+      { label: '输入方式', status: 'info', detail: '底部对话框' },
+    ],
+  }) + '\n');
+  process.stdout.write(renderDialog({
+    title: 'Bolloon Agent',
+    prompt: '输入消息开始对话 · 输入 help 查看命令',
+  }) + '\n');
+
   showBottomPrompt();
 
   const promptTimer = setInterval(() => {
@@ -549,6 +568,8 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
   }
 
   try {
+    // 已发送消息框
+    process.stdout.write(renderUserMessage(trimmed) + '\n');
     const a = await getAgent();
     const thinking = setInterval(() => {
       if (!isRunning) return;
@@ -557,7 +578,8 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     const response = await a.prompt(trimmed);
     clearInterval(thinking);
     process.stdout.write('\r' + ' '.repeat(30) + '\r');
-    process.stdout.write(`${response}\n`);
+    // 智能体回复框
+    process.stdout.write(renderAgentMessage(response) + '\n');
   } catch (e: any) {
     if (!e.message?.includes('ERR_USE_AFTER_CLOSE') && !e.message?.includes('write after end')) {
       process.stdout.write(`${MAGENTA}❌ ${e.message}${RESET}\n`);
@@ -1975,6 +1997,25 @@ function printHelp(): void {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/**
+ * 以相同参数重新启动当前 Node 进程（用于更新后自动应用新版本）。
+ * 先 detached 拉起新进程，再退出旧进程。
+ */
+function restartCurrentProcess(): void {
+  try {
+    const entry = process.argv[1];
+    const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], {
+      stdio: 'inherit',
+      detached: true,
+      env: { ...process.env },
+    });
+    child.unref();
+  } catch {
+    // 拉起失败则退回手动重启
+  }
+  process.exit(0);
+}
+
 async function main() {
 
   try {
@@ -1985,10 +2026,22 @@ async function main() {
     process.exit(0);
   }
 
-  // 自动更新已禁用: 启动时不再自动检查/安装更新.
-  // 想手动检查: bolloon --update-check
-  // 想手动更新: bolloon --update-now [package]
-  // 想完全屏蔽 (CI / sandbox): BOLLOON_SKIP_UPDATE=true
+  // 启动自动更新检查（后台执行，不阻塞主流程）。
+  // 检测到新版本会自动安装；安装成功后自动重启以应用新版本。
+  // 可用 --no-update / BOLLOON_SKIP_UPDATE 关闭，
+  // 或用 config.json 的 autoUpdate:false / autoRestart:false / BOLLOON_AUTO_UPDATE=1 控制。
+  // 手动检查: bolloon --update-check
+  // 手动更新: bolloon --update-now [package]
+  if (!args.updateCheck && !args.updateNow) {
+    void (async () => {
+      try {
+        const { checkAndUpdate } = await import('./utils/auto-update.js');
+        await checkAndUpdate({ onUpdated: restartCurrentProcess });
+      } catch {
+        // 自动更新失败不影响主程序启动
+      }
+    })();
+  }
 
   const mode = args.web ? 'web' : 'cli';
   const isNonInteractive = !!(args.tool || args.prompt);

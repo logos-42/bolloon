@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# llm-wiki-version: 1.2.2
-# Upgrade LLM-wiki scripts to latest version.
-# Updates validation scripts and CI only. Never touches wiki content.
+# bolloon-version: 0.3.6
+# 升级 Bolloon Agent 到最新版本。
+# bolloon 通过 npm 全局分发，因此升级即 `npm install -g`。
 set -euo pipefail
-REPO="https://github.com/Ss1024sS/LLM-wiki.git"
-TMP=$(mktemp -d)
-trap "rm -rf $TMP" EXIT
-echo "Fetching latest LLM-wiki..."
-git clone --depth 1 "$REPO" "$TMP/repo" 2>/dev/null
-UPGRADE="$TMP/repo/scripts/upgrade_knowledge_system.py"
-if [ -f "$UPGRADE" ]; then
-  python3 "$UPGRADE" "$(pwd)"
+
+echo "🔄 升级 Bolloon Agent 到最新版本..."
+
+if npm install -g @bolloon/bolloon-agent@latest; then
+  echo "✅ 升级完成。"
+  echo "💡 请重新运行 bolloon 以使用新版本。"
 else
-  echo "Error: upgrade script not found in latest LLM-wiki"
+  echo "❌ 升级失败。若提示权限不足，请尝试加 sudo 或检查 npm 全局目录权限："
+  echo "   sudo npm install -g @bolloon/bolloon-agent@latest"
   exit 1
 fi

@@ -1,16 +1,21 @@
 from __future__ import annotations
-# llm-wiki-version: 2.0.0
-# runtime: dev-only (hits GitHub API)
+# bolloon-version: 0.3.6
+# runtime: dev-only (checks npm registry for @bolloon/bolloon-agent)
+#
+# 与 src/utils/auto-update.ts 保持一致：bolloon 通过 npm 全局分发，
+# 因此版本检查以 npm registry 为准，不再指向其它仓库的 GitHub releases。
 
 import json
 import re
+import subprocess
 import sys
 import urllib.request
 from pathlib import Path
 
-GITHUB_API = "https://api.github.com/repos/Ss1024sS/LLM-wiki/releases/latest"
-VERSION_RE = re.compile(r"# llm-wiki-version:\s*(\S+)")
+NPM_REGISTRY = "https://registry.npmjs.org/@bolloon/bolloon-agent"
+PKG_NAME = "@bolloon/bolloon-agent"
 SCRIPTS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPTS_DIR.parent
 
 
 def parse_version(value: str) -> tuple[int, ...]:
@@ -19,40 +24,53 @@ def parse_version(value: str) -> tuple[int, ...]:
 
 
 def get_local_version() -> str:
-    for script in ["wiki_check.py", "raw_manifest_check.py", "provenance_check.py"]:
-        path = SCRIPTS_DIR / script
-        if path.exists():
-            m = VERSION_RE.search(path.read_text(encoding="utf-8"))
-            if m:
-                return m.group(1)
+    # 优先：仓库 package.json（开发态）
+    repo_pkg = REPO_ROOT / "package.json"
+    if repo_pkg.exists():
+        try:
+            data = json.loads(repo_pkg.read_text(encoding="utf-8"))
+            if data.get("name") == PKG_NAME and data.get("version"):
+                return data["version"]
+        except Exception:
+            pass
+    # 回退：全局安装版本
+    try:
+        out = subprocess.run(
+            ["npm", "ls", "-g", PKG_NAME, "--depth=0", "--json"],
+            capture_output=True, text=True, timeout=8,
+        )
+        data = json.loads(out.stdout or "{}")
+        for node in (data.get("dependencies") or {}).values():
+            v = node.get("version")
+            if v:
+                return v
+    except Exception:
+        pass
     return "unknown"
 
 
-def get_remote_version() -> tuple[str, str]:
+def get_remote_version() -> str:
     try:
-        req = urllib.request.Request(GITHUB_API, headers={"Accept": "application/vnd.github.v3+json"})
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        req = urllib.request.Request(NPM_REGISTRY, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode())
-            tag = data.get("tag_name", "").lstrip("v")
-            url = data.get("html_url", "")
-            return tag, url
+            return data.get("dist-tags", {}).get("latest", "")
     except Exception:
-        return "", ""
+        return ""
 
 
 def main() -> int:
     local = get_local_version()
-    remote, release_url = get_remote_version()
+    remote = get_remote_version()
     if not remote:
         return 0
     if local == "unknown":
-        print(f"[llm-wiki] Could not detect local version. Latest is v{remote}")
+        print(f"[bolloon] 无法检测本地版本。最新版为 v{remote}")
         return 0
     if parse_version(remote) > parse_version(local):
-        print(f"[llm-wiki] Update available: v{local} -> v{remote}")
-        print(f"[llm-wiki] Run: bash scripts/upgrade.sh")
-        if release_url:
-            print(f"[llm-wiki] Release notes: {release_url}")
+        print(f"[bolloon] 发现新版本: v{local} -> v{remote}")
+        print(f"[bolloon] 运行: bash scripts/upgrade.sh")
+        print(f"[bolloon] 或: bolloon --update-now")
     return 0
 
 

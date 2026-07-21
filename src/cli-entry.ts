@@ -15,6 +15,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
+import { printBanner } from './cli/loading-tui.js';
 
 const isWindows = process.platform === 'win32';
 
@@ -42,14 +43,8 @@ function log(msg: string, color: string = RESET) {
   console.log(`${color}${msg}${RESET}`);
 }
 
-function printBanner() {
-  console.log(`
-${CYAN}${BOLD}
-   ╔═══════════════════════════════════════════╗
-   ║      🤖 Bolloon Agent ${VERSION}              ║
-   ║      P2P AI Document Processor            ║
-   ╚═══════════════════════════════════════════╝${RESET}
-`);
+function printBannerCli() {
+  printBanner(VERSION);
 }
 
 function printHelp() {
@@ -268,12 +263,12 @@ async function main() {
       break;
 
     case 'gui':
-      printBanner();
+      printBannerCli();
       await startElectron(args);
       break;
 
     case 'web':
-      printBanner();
+      printBannerCli();
       await startWebServer(args);
       break;
 

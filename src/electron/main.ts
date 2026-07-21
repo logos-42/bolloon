@@ -12,6 +12,7 @@ import { createTray, destroyTray } from './tray';
 import { registerCoreIpc } from './ipc';
 import { registerDialogIpc } from './dialogs';
 import { registerFirstRunIpc, maybeShowFirstRun } from './first-run';
+import { checkAndUpdate } from '../utils/auto-update.js';
 
 log('Bolloon Electron 启动');
 
@@ -33,6 +34,21 @@ app.whenReady().then(async () => {
   registerFirstRunIpc();
   installAppMenu(getMainWindow);
   createTray(getMainWindow);
+
+  // 启动自动更新检查（后台，不阻塞 UI）。
+  // 安装成功后用 app.relaunch() 自动重启以应用新版本（避免单实例锁冲突）。
+  void (async () => {
+    try {
+      await checkAndUpdate({
+        onUpdated: () => {
+          app.relaunch();
+          app.exit(0);
+        },
+      });
+    } catch {
+      // 自动更新失败不影响主程序
+    }
+  })();
 
   await createMainWindow();
 
