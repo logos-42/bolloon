@@ -13,7 +13,7 @@
 | 2026-07-21 | test | 流式 timeline Playwright 测试 — 模拟完整 SSE 事件链 (step_start/step_done/stream/done), 验证 timeline 在流式阶段渲染、finalize 后迁移到最终消息、摘要是完成状态 | [web-loop-ui.spec.ts](../../src/test/web-loop-ui.spec.ts) |
 | 2026-07-22 | feat | 实现 Polymarket 真实支付 (替换 STUB) — createOrder/getOrders/cancelOrder 改用 @polymarket/clob-client (ClobClient, chainId=137), 验证测试 16/16 pass (mock SDK 断言编排 + 真实入参校验); tsc 0 错 | [wallet-polymarket-verify.test.ts](../../src/test/wallet-polymarket-verify.test.ts) / [clobShared.ts](../../src/constraint-runtime/src/tools/PolymarketSDK/clobShared.ts) |
 | 2026-07-21 | feat | 智能体社交心跳 (目标驱动生命周期) — 给 agent 加心跳 + 目标驱动状态机 (DISCOVERING/ENGAGING/RESTING/PAUSED), 社交服务于目标而非闲聊, 达成效果即 RESTING, 无效果退避; 接入全局 runtime (cleanupAndExit 停定时器 / global.socialHeartbeat / Watchdog / SSE), 10 单测 + 双节点仿真 PASS | [agent-heartbeat.ts](../../src/social/agent-heartbeat.ts) / [run-agent-heartbeat.ts](../../scripts/ablation/run-agent-heartbeat.ts) |
-| 2026-07-22 | feat | 外部编码智能体 发现+配置+委派 — 自动发现本机 codex/claude-code/opencode/openclaw/hermes + 实验目录声明 API; GET 发现(脱敏) / POST 导入为 LLM provider (把别的工具的 api 当供应商) / POST 委派 CLI 当子智能体; agent 工具 delegate_to_engine; 补: API 配置页「外部智能体」tab + 可筛选模型下拉 (opencode 宽列表) | [discovery.ts](../../src/external-engines/discovery.ts) |
+| 2026-07-22 | feat | 外部编码智能体 发现+配置+委派 — 自动发现本机 codex/claude-code/opencode/openclaw/hermes + 实验目录声明 API; GET 发现(脱敏) / POST 导入为 LLM provider (把别的工具的 api 当供应商) / POST 委派 CLI 当子智能体; agent 工具 delegate_to_engine; 补: API 配置页「外部智能体」tab + 可筛选模型下拉 (opencode 宽列表); 实测修委派 opencode 三坑 (模板/run+--format json / stdin=ignore / exit+destroy) + 端到端验证 Bolloon→opencode→DeepSeek v4-flash (401 因 env key 失效) | [discovery.ts](../../src/external-engines/discovery.ts) |
 | 2026-07-12 | fix | 3 个 document 工具缺 path 前置校验, Node fs 抛 ERR_INVALID_ARG_TYPE: read_document / summarize_document / improve_document 加 if (!path) return { success: false, error: 'path 必填' }; documentReader.read() 加非空字符串防御; 加 10 测试锁住 | [pi-sdk-tools.ts:62/79/103](../../src/agents/pi-sdk-tools.ts) / [reader.ts:16](../../src/documents/reader.ts) / [pi-sdk-tools-validation.test.ts](../../src/test/pi-sdk-tools-validation.test.ts) |
 | 2026-07-12 | fix | UI 暴露工具原始 error: step-timeline.ts 之前只渲染 name/args, 完全忽略 step.error (LLM 改写后误导调试 "X 必填"); 现在 error 状态 step 显示 .step-timeline-error-wrap 容器展示原始错误 (mono 字体 + 橙色边框), style.css 加对应样式; 6 个新测试锁住 | [step-timeline.ts](../../src/web/ui/step-timeline.ts) / [style.css](../../src/web/style.css) / [step-timeline-error-display.test.ts](../../src/test/step-timeline-error-display.test.ts) |
 | 2026-07-10 | feat | LoadingTUI 升级: 7 步进度可视化 + main() 错误路径自动 stop(false) + spinner 帧率不变 | [loading-tui.ts](../../src/cli/loading-tui.ts) / [index.ts](../../src/index.ts) |
@@ -226,6 +226,20 @@
   | 测试 | `src/test/external-engines.test.ts` | 增 3 项: opencode 发现带 models 列表 / 配置文件 models 覆盖规格 / 导入 model 覆盖生效 (共 16 测试) |
 - **模型筛选**: opencode 是 provider 无关 (openai 兼容 + anthropic + gemini + openrouter), 给一份合并宽列表 (40+ 模型), 在弹窗里输入关键字实时筛选; 配置文件若声明 `models` 则以其为准.
 - **验证**: `npx tsc --noEmit` 0 错; `npx vitest run src/test/external-engines.test.ts` 16/16 pass; 完整 vitest 跑批 (后台) 中.
+
+### [2026-07-22 实测] fix | 委派 opencode 调 DeepSeek v4 三个真实坑 + 端到端验证
+
+- **触发**: 用户要求 "试试 bolloon 领域调用 opencode 的 DeepSeek v4 (free 版本)". 本机已装 opencode (`~/.opencode/bin/opencode`), 环境有 `DEEPSEEK_API_KEY`.
+- **实测发现三个真实 bug (单测覆盖不到, 只能真跑才暴露)**:
+  | # | 现象 | 根因 | 修复 |
+  |---|---|---|---|
+  | 1 | opencode 委派模板 `['-p', p]` 把 prompt 当成 `--password` | `opencode run` 的 `-p` 是密码, 消息应是位置参数 | 模板改 `['run', p, '--format', 'json']` (`--format json` 强制 headless 输出并退出, 否则进 TUI 不退) |
+  | 2 | 委派永久挂起 (90s 超时, 零输出) | spawn 没设 stdio → stdin 默认是管道, opencode run 阻塞等 stdin EOF 永不退出 | `stdio: ['ignore', 'pipe', 'pipe']` (stdin=/dev/null 立即 EOF) |
+  | 3 | 即便 opencode 退了, Node 的 `close` 事件不触发 / 事件循环不退 | opencode run 会留一个 headless server 孙进程继承 stdout 管道, 管道不关 → `close` 永不触发 | 监听 `exit` 而非 `close` (exit 进程退出即触发); exit 后 `proc.stdout/stderr.destroy()` 释放 Node 侧句柄让事件循环退出. (注: `detached:true` 实测会让 opencode 不退出, 不能用) |
+  | 4 | 无法指定模型 (用户要 deepseek-v4-flash) | 委派不支持 model | EngineSpec 加 `modelFlag`; `buildDelegateArgs(id,prompt,model?)` 追加 `[-m model]`; `delegateToEngine(opts.model)` / `POST /api/external-engines/run {model}` / agent 工具 `delegate_to_engine` 的 `model` 参数透传. opencode/claude-code 用 `-m`/`--model` |
+- **端到端验证 (Bolloon 领域)**: 用 Bolloon 自身 `delegateToEngine('opencode', prompt, {model:'deepseek/deepseek-v4-flash'})` → spawn `opencode run "<prompt>" --format json -m deepseek/deepseek-v4-flash` → opencode 读 `DEEPSEEK_API_KEY` 调 `https://api.deepseek.com/chat/completions` 模型 `deepseek-v4-flash` → **~10s 返回** `{"type":"error","statusCode":401,"message":"Authentication Fails, Your api key: ****2d23 is invalid"}`, Bolloon 捕获 JSON 返回 `success=false, exitCode=1`. 即: **整条 Bolloon→opencode→DeepSeek v4 链路正确接通**, 唯一挡在成功前的是环境里那个 `DEEPSEEK_API_KEY` 已失效 (直连 DeepSeek `/v1/models` 也 401, 同 key); 换有效 key 即可生成成功.
+- **残留**: opencode `run` 会起一个后台 headless server (`opencode --port <p>`), 后续 `opencode run` 会复用它而非每次新起; 进程退出时未自动收 (opencode 自身设计). Bolloon `cleanupAndExit` 暂未纳管, 后续可加.
+- **验证**: `npx tsc --noEmit` 0 错; `external-engines.test.ts` 17/17 pass (新增 buildDelegateArgs model 覆盖 + opencode 模板断言); pi-sdk-tools-validation 10/10 pass; 完整 vitest 跑批 (后台) 中.
 
 ### [2026-07-04] fix | P1 SessionStore escape `:` + vitest-bail 不再 flaky
 

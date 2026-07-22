@@ -87,6 +87,9 @@ export async function delegateToEngine(
       env: { ...process.env },
       shell: false,
       windowsHide: true,
+      // stdin 必须 'ignore' (/dev/null): 否则 stdin 是默认管道, opencode run 会阻塞等
+      // stdin EOF 导致永不退出. stdout/stderr 用 pipe 收集输出.
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     const killTree = () => {
