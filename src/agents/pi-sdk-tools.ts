@@ -10,6 +10,7 @@ import { runSelfImproveLoop } from './pi-sdk-session-factory.js';
 import type { Tool, ToolResult } from './pi-sdk-types.js';
 import type { PersonaDoc } from '../social/heartbeat.js';
 import { getMinimax } from '../constraints/index.js';
+import { delegateToEngine } from '../external-engines/delegate.js';
 
 /**
  * Tools 模块 — 从 pi-sdk.ts 抽出的 registerTools() / _registerWalletTools() / _setupInboxListener()
@@ -283,6 +284,36 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       const requestId = `rpc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       await p2pNetwork.sendMessage(peerId, 'agent-call', JSON.stringify({ requestId, task, from: ctx.identity.did }));
       return { success: true, output: `📞 RPC 任务已发送给 ${peerId.substring(0, 16)}...\n   requestId=${requestId}` };
+    }
+  });
+
+  // delegate_to_engine — 把编码任务委派给本机已安装的其他 AI 编码智能体 CLI
+  // (codex / claude-code / opencode / openclaw / hermes). 它们必须已安装且可达 PATH.
+  // 实验 API 引擎 (experiment:xxx) 是供应商不是 CLI, 不支持委派, 工具会提示改用 import.
+  ctx.tools.set('delegate_to_engine', {
+    name: 'delegate_to_engine',
+    description: '把编码任务委派给本机已安装的其他 AI 编码智能体 (子智能体) 执行: codex / claude-code / opencode / openclaw / hermes. 引擎需已安装且在 PATH 上. 返回其执行输出. 注意: 各工具 CLI 的非交互参数随版本变化, 若报错请检查该工具版本对应 flag.',
+      parameters: {
+        engine: "引擎 id: codex / claude-code / opencode / openclaw / hermes (实验 API 不支持委派)",
+        prompt: '派发的任务描述 (作为单参数传给该引擎 CLI)',
+        model: '可选, 强制指定模型 (如 deepseek/deepseek-v4-flash), 需引擎支持',
+        cwd: '可选, 工作目录, 默认当前目录'
+      },
+      execute: async (args) => {
+        const engine = String(args.engine || '').trim();
+        const prompt = String(args.prompt || '').trim();
+        if (!engine) return { success: false, error: 'engine 必填' };
+        if (!prompt) return { success: false, error: 'prompt 必填' };
+        const cwd = args.cwd ? String(args.cwd).trim() : undefined;
+        const model = args.model ? String(args.model).trim() : undefined;
+        const result = await delegateToEngine(engine, prompt, { cwd: cwd || undefined, ...(model ? { model } : {}) });
+      if (!result.success) {
+        return { success: false, error: result.error, output: result.output };
+      }
+      return {
+        success: true,
+        output: `🤖 ${engine} 执行结果 (exitCode=${result.exitCode}):\n${result.output || '(无输出)'}`
+      };
     }
   });
 
@@ -1193,12 +1224,26 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('polymarket_get_orders', {
     name: 'polymarket_get_orders',
-    description: '查询 Polymarket 订单.',
-    parameters: { marketId: '可选 按市场 ID 过滤' },
+    description: '查询 Polymarket 开放订单. 需要钱包私钥 privateKey 做 API key 鉴权.',
+    parameters: {
+      privateKey: '钱包私钥 0x... (必填)',
+      marketId: '可选 按市场 ID 过滤',
+      apiKey: '可选, 已存在的 API key',
+      apiSecret: '可选, API secret',
+      apiPassphrase: '可选, API passphrase',
+      funder: '可选, 资金地址',
+    },
     execute: async (args) => {
       try {
         const { getOrders } = await import('../constraint-runtime/dist/tools/PolymarketSDK/getOrders.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/getOrders.js'));
-        const orders = await getOrders(args.marketId ? { marketId: String(args.marketId) } : {});
+        const orders = await getOrders({
+          privateKey: String(args.privateKey),
+          marketId: args.marketId ? String(args.marketId) : undefined,
+          apiKey: args.apiKey ? String(args.apiKey) : undefined,
+          apiSecret: args.apiSecret ? String(args.apiSecret) : undefined,
+          apiPassphrase: args.apiPassphrase ? String(args.apiPassphrase) : undefined,
+          funder: args.funder ? String(args.funder) : undefined,
+        });
         return { success: true, output: `📋 订单列表: ${JSON.stringify(orders, null, 2).substring(0, 1500)}` };
       } catch (e: any) {
         return { success: false, error: `查询失败: ${String(e.message || e)}` };
@@ -1208,18 +1253,39 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('polymarket_create_order', {
     name: 'polymarket_create_order',
-    description: '在 Polymarket 下单 (BUY/SELL).',
-    parameters: { marketId: '市场 ID (必填)', side: 'BUY 或 SELL (必填)', price: '价格 0-1 (必填)', size: '数量 USDC (必填)' },
+    description: '在 Polymarket 下单 (BUY/SELL). 需要钱包私钥 privateKey 做 EIP-712 订单签名与 API key 派生.',
+    parameters: {
+      privateKey: '下单钱包私钥 0x... (必填)',
+      marketId: '市场 ID (必填)',
+      side: 'BUY 或 SELL (必填)',
+      price: '价格 0-1 (必填, 需符合 tickSize)',
+      size: '数量 USDC (必填)',
+      outcome: '可选, Yes/No 或索引 0/1, 默认第一个 (通常 Yes)',
+      tokenId: '可选, 显式条件代币 tokenID (优先于 outcome)',
+      orderType: '可选, GTC (默认) 或 GTD',
+      apiKey: '可选, 已存在的 API key (需配合 apiSecret/apiPassphrase)',
+      apiSecret: '可选, API secret',
+      apiPassphrase: '可选, API passphrase',
+      funder: '可选, 资金地址 (默认=私钥地址)',
+    },
     execute: async (args) => {
       try {
         const { createOrder } = await import('../constraint-runtime/dist/tools/PolymarketSDK/createOrder.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/createOrder.js'));
-        const r = await createOrder({
+        const r: any = await createOrder({
+          privateKey: String(args.privateKey),
           marketId: String(args.marketId),
           side: String(args.side).toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
           price: Number(args.price),
           size: Number(args.size),
+          outcome: args.outcome !== undefined ? args.outcome : undefined,
+          tokenId: args.tokenId ? String(args.tokenId) : undefined,
+          orderType: args.orderType ? String(args.orderType) as 'GTC' | 'GTD' : undefined,
+          apiKey: args.apiKey ? String(args.apiKey) : undefined,
+          apiSecret: args.apiSecret ? String(args.apiSecret) : undefined,
+          apiPassphrase: args.apiPassphrase ? String(args.apiPassphrase) : undefined,
+          funder: args.funder ? String(args.funder) : undefined,
         });
-        if (r.success) return { success: true, output: `✅ 订单: ${r.message}` };
+        if (r.success) return { success: true, output: `✅ 订单已提交: orderId=${r.orderId} status=${r.status}` };
         return { success: false, error: r.message, output: r.message };
       } catch (e: any) {
         return { success: false, error: `下单失败: ${String(e.message || e)}` };
@@ -1229,12 +1295,26 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('polymarket_cancel_order', {
     name: 'polymarket_cancel_order',
-    description: '取消 Polymarket 订单.',
-    parameters: { orderId: '订单 ID (必填)' },
+    description: '取消 Polymarket 订单. 需要钱包私钥 privateKey 做 API key 鉴权.',
+    parameters: {
+      privateKey: '钱包私钥 0x... (必填)',
+      orderId: '订单 ID (必填)',
+      apiKey: '可选, 已存在的 API key',
+      apiSecret: '可选, API secret',
+      apiPassphrase: '可选, API passphrase',
+      funder: '可选, 资金地址',
+    },
     execute: async (args) => {
       try {
         const { cancelOrder } = await import('../constraint-runtime/dist/tools/PolymarketSDK/cancelOrder.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/cancelOrder.js'));
-        const r = await cancelOrder({ orderId: String(args.orderId) });
+        const r = await cancelOrder({
+          privateKey: String(args.privateKey),
+          orderId: String(args.orderId),
+          apiKey: args.apiKey ? String(args.apiKey) : undefined,
+          apiSecret: args.apiSecret ? String(args.apiSecret) : undefined,
+          apiPassphrase: args.apiPassphrase ? String(args.apiPassphrase) : undefined,
+          funder: args.funder ? String(args.funder) : undefined,
+        });
         if (r.success) return { success: true, output: `✅ 取消订单: ${r.message}` };
         return { success: false, error: r.message, output: r.message };
       } catch (e: any) {

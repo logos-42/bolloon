@@ -2,14 +2,14 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-07-21
+last_confirmed: 2026-07-22
 schema_version: 2
 audience: self
 stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat]
+tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines]
 compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ---
 
@@ -44,6 +44,9 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 | **流式 finalize 连接器** (2026-07-21) | `src/web/client.ts` | `ai` 事件处理: 有流式文本时改用 `MR_replaceStreamingText` + `MR_finalizeTimelineAsMessage` 用完整内容 finalize 成单个最终气泡, 不再 `addMessage` 出第二个被截断到 100 字的气泡; 非流式仍走 `addMessage`. tsc 0 错, Playwright e2e pass | [client.ts:1442](../../src/web/client.ts) |
 | **流式 timeline 端到端测试** (2026-07-21) | `src/test/web-loop-ui.spec.ts` | Playwright mock SSE 跑完整事件链 (step_start/step_done/stream/done), 验证 timeline 流式渲染 + finalize 迁移到最终消息 + 摘要完成态, 0 console error. 1 passed | [web-loop-ui.spec.ts](../../src/test/web-loop-ui.spec.ts) |
 | **智能体社交心跳 (目标驱动生命周期)** (2026-07-21) | `src/social/agent-heartbeat.ts` + `src/web/server.ts` | 智能体拥有心跳, 但社交服务于"目标"而非闲聊: 生命周期状态机 DISCOVERING→ENGAGING→RESTING (+PAUSED), 每目标有配额 (maxInitiations) 与效果阈值 (effectThreshold); 收到有效回复达标→RESTING 停止社交, 连续发起却无效果→退避 RESTING, goalReevalMs 后重置配额再试一轮. beacon 默认 30s, social 默认 120s (env `BOLLOON_AGENT_HEARTBEAT_SOCIAL=0` 关闭), 每 peer 冷却 10min. 已接入全局 runtime: `cleanupAndExit` 调 `stop()` 清定时器, 注册 `global.socialHeartbeat/agentHeartbeat` 供 24h HealthMonitor 观测, `onActivity`→Watchdog, `onLifecycleChange`→SSE `agent-lifecycle`. tsc 0 错, vitest 10 测试 + 双节点仿真 PASS | [agent-heartbeat.ts](../../src/social/agent-heartbeat.ts) |
+| **外部编码智能体 发现+配置+委派** (2026-07-22) | `src/external-engines/*` + `src/web/routes-external-engines.ts` + `src/agents/pi-sdk-tools.ts` + `src/web/api-config.html` + `src/web/style.css` | 自动发现本机已装 AI 编码工具: codex / claude-code / opencode / openclaw / hermes (扫 CLI + 配置文件 + 环境变量里的 API key) + 实验目录声明的 API (`BOLLOON_EXPERIMENT_API_DIR`, 默认 `~/.bolloon/experiments/*.json`). 3 个能力: (1) `GET /api/external-engines` 发现并脱敏展示; (2) `POST /api/external-engines/import` 把发现到的 API 写进 Bolloon LLM provider 体系当成普通供应商启用 (把别的工具的 api 当供应商, 无需重复填 key; 支持 model/provider 覆盖); (3) `POST /api/external-engines/run` / agent 工具 `delegate_to_engine` 把编码任务委派给引擎 CLI 当子智能体执行 (shell:false, 单参数, 120s 超时可配). API 配置页新增「外部智能体」tab + 可筛选模型下拉 (opencode/openclaw/hermes 用跨供应商宽模型列表, codex 用 openai 列表, claude-code 用 anthropic 列表). tsc 0 错, 16 单测 pass | [discovery.ts](../../src/external-engines/discovery.ts) |
+| **钱包支付 (EVM)** (2026-07-22) | `src/agents/pi-sdk-tools.ts` registerWalletTools + `src/constraint-runtime/src/tools/WalletTools/*` | 验证测试 10/10 pass: create/import/sign 纯密码学真实可用 (BIP-39 助记词 + EIP-191 签名); getBalance ethers+RPC 路径接通 (llamarpc 返回 521 为公共 RPC 基础设施问题, 非代码); send_tx / transferToken / autoPay 为真实 ethers 实现, 上链需 funded wallet + 可达 RPC | [wallet-polymarket-verify.test.ts](../../src/test/wallet-polymarket-verify.test.ts) |
+| **Polymarket 查询 + 支付** (2026-07-22) | `src/constraint-runtime/src/tools/PolymarketSDK/{listMarkets,getMarket,createOrder,getOrders,cancelOrder,clobShared}.ts` + `@polymarket/clob-client` | 查询 (listMarkets/getMarket) 用 polymarket-sdk 真实返回; 支付用 ClobClient 真实实现: createOrder 解析 tokenID/tickSize/negRisk 并 EIP-712 签名下单, getOrders/cancelOrder 用派生 API key 鉴权. 验证测试 16/16 pass (mock SDK 断言编排 + 真实入参校验). 真实上链需 funded 私钥 + 联网派生 API key (chainId=137) | [wallet-polymarket-verify.test.ts](../../src/test/wallet-polymarket-verify.test.ts) |
 
 ## 未支持 (❌ 或 ⚠️ 部分)
 

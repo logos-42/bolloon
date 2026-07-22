@@ -34,6 +34,10 @@
         <span class="api-tab-icon">🎵</span>
         <span>音频生成</span>
       </button>
+      <button class="api-tab" data-tab="engines" onclick="switchTab('engines')">
+        <span class="api-tab-icon">🤖</span>
+        <span>外部智能体</span>
+      </button>
     </div>
 
     <!-- LLM 面板 -->
@@ -59,6 +63,16 @@
         <p>音频生成：TTS（文生语音）/ Music（文生音乐）。MiniMax 提供 speech-01 与 music-01 模型，TTS 默认走 OpenAI 兼容 <code>/audio/speech</code> 端点，Music 走 MiniMax 自有 <code>/music_generation</code> 端点。</p>
       </div>
       <div class="provider-list" id="audioProviderList">
+        <div class="loading-state">加载中...</div>
+      </div>
+    </div>
+
+    <!-- 外部智能体面板 -->
+    <div class="api-panel" id="panel-engines" data-panel="engines" style="display: none;">
+      <div class="video-intro">
+        <p>Bolloon 自动发现本机已安装的 AI 编码工具（Codex / Claude Code / OpenCode / OpenClaw / Hermes）与实验目录声明的 API。可在此筛选模型并把它们的 API 当作 Bolloon 的供应商一键导入，无需重复填 Key。委派执行请通过对话里的 <code>delegate_to_engine</code> 工具。</p>
+      </div>
+      <div class="provider-list" id="engineList">
         <div class="loading-state">加载中...</div>
       </div>
     </div>
@@ -186,6 +200,62 @@
     </div>
   </div>
 
+  <!-- 外部智能体 配置弹窗 -->
+  <div class="modal-overlay" id="engineModal" style="display: none;">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <div class="modal-icon" id="engineModalIcon">A</div>
+          <div>
+            <h2 id="engineModalTitle">配置</h2>
+            <p class="modal-subtitle" id="engineModalSubtitle">描述</p>
+          </div>
+        </div>
+        <button class="modal-close" onclick="closeEngineModal()">×</button>
+      </div>
+
+      <form class="modal-form" id="engineConfigForm">
+        <div class="form-group">
+          <label>映射供应商</label>
+          <select id="engineProviderInput"></select>
+          <p class="form-hint">导入时写进该 Bolloon 供应商 (可覆盖发现的映射)</p>
+        </div>
+
+        <div class="form-group">
+          <label>API Key</label>
+          <input type="password" id="engineApiKeyInput" placeholder="输入 API Key">
+          <p class="form-hint" id="engineApiKeyHint">已有 Key 会保留，输入新值以更新</p>
+        </div>
+
+        <div class="form-group">
+          <label>Base URL</label>
+          <input type="text" id="engineBaseUrlInput" placeholder="https://api.example.com/v1">
+          <p class="form-hint">留空使用默认地址</p>
+        </div>
+
+        <div class="form-group">
+          <label>模型（可筛选）</label>
+          <div class="combobox" id="engineModelCombobox">
+            <input type="text" id="engineModelInput" placeholder="输入关键字筛选模型…" autocomplete="off">
+            <div class="combobox-list" id="engineModelList" style="display: none;"></div>
+          </div>
+          <p class="form-hint" id="engineModelHint">从发现到的候选模型里筛选，或手动输入自定义模型名</p>
+        </div>
+
+        <div class="form-group">
+          <button type="button" class="test-btn" id="engineImportBtn" onclick="importEngine()">
+            ⚡ 导入为供应商
+          </button>
+          <div class="test-result" id="engineImportResult" style="display: none;"></div>
+        </div>
+
+        <div class="form-actions">
+          <button type="button" class="btn-cancel" onclick="closeEngineModal()">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <script>
     // 当前 tab
     let currentTab = 'llm';
@@ -194,7 +264,9 @@
     let llmConfigData = null;
     let videoConfigData = null;
     let audioConfigData = null;
+    let engineData = null;
     let currentProvider = null;
+    let currentEngine = null;
     let currentProviderType = 'llm'; // 'llm' | 'video' | 'audio'
 
     // ==================== Tab 切换 ====================
@@ -211,6 +283,13 @@
     }
 
     function updateCountBadge() {
+      if (currentTab === 'engines') {
+        const list = engineData && engineData.engines ? engineData.engines : [];
+        const total = list.length;
+        const available = list.filter(e => e.available).length;
+        document.getElementById('configCount').textContent = available + '/' + total + ' 智能体可用';
+        return;
+      }
       const data = currentTab === 'llm' ? llmConfigData :
                    currentTab === 'video' ? videoConfigData : audioConfigData;
       if (!data) {
@@ -235,7 +314,19 @@
 
     // ==================== 加载 ====================
     async function loadAll() {
-      await Promise.all([loadLLMConfig(), loadVideoConfig(), loadAudioConfig()]);
+      await Promise.all([loadLLMConfig(), loadVideoConfig(), loadAudioConfig(), loadEngines()]);
+    }
+
+    async function loadEngines() {
+      try {
+        const resp = await fetch('/api/external-engines');
+        engineData = await resp.json();
+        renderEngines();
+        if (currentTab === 'engines') updateCountBadge();
+      } catch (err) {
+        const el = document.getElementById('engineList');
+        if (el) el.innerHTML = '<div class="error-state">加载失败: ' + err.message + '</div>';
+      }
     }
 
     async function loadLLMConfig() {
@@ -517,6 +608,164 @@
         alert('保存失败: ' + err.message);
       }
     };
+
+    // ==================== 外部智能体 渲染 ====================
+    function renderEngines() {
+      const listEl = document.getElementById('engineList');
+      if (!listEl) return;
+      const list = engineData && engineData.engines ? engineData.engines : [];
+      if (list.length === 0) {
+        listEl.innerHTML = '<div class="error-state">未发现本机已安装的外部编码智能体，也未找到实验目录 API（BOLLOON_EXPERIMENT_API_DIR）</div>';
+        return;
+      }
+      let html = '';
+      for (const e of list) {
+        const isExperiment = String(e.id).startsWith('experiment:');
+        let statusText, statusClass;
+        if (e.available) { statusText = '可用'; statusClass = 'status-green'; }
+        else if (e.installed) { statusText = '已装未配'; statusClass = 'status-yellow'; }
+        else if (e.configured) { statusText = '已配未装'; statusClass = 'status-yellow'; }
+        else { statusText = '未发现'; statusClass = 'status-muted'; }
+
+        html += `
+          <div class="provider-card ${e.available ? 'active' : ''}" onclick="openEngineModal('${e.id}')">
+            <div class="provider-header">
+              <div class="provider-icon">${isExperiment ? '🧪' : e.displayName.charAt(0).toUpperCase()}</div>
+              <div class="provider-info">
+                <h3 class="provider-name">${e.displayName}</h3>
+                <p class="provider-desc">${e.id}${e.provider ? ' → ' + e.provider : ''}${e.cliPath ? ' · 已安装' : ''}</p>
+              </div>
+              <div class="status-badge ${statusClass}">
+                <span class="status-dot"></span>
+                ${statusText}
+              </div>
+            </div>
+            <div class="provider-footer">
+              <div class="config-status">
+                <span class="status-icon ${e.configured ? 'configured' : ''}">${e.configured ? '✓' : '○'}</span>
+                ${e.configured ? '已配置 API' : '未配置 API'}
+              </div>
+              ${e.model ? '<div class="model-info">模型: ' + e.model + '</div>' : ''}
+              ${e.models && e.models.length ? '<div class="model-info">候选模型: ' + e.models.length + ' 个（可筛选）</div>' : ''}
+              <div class="arrow-indicator">›</div>
+            </div>
+          </div>
+        `;
+      }
+      listEl.innerHTML = html;
+    }
+
+    // ==================== 外部智能体 配置弹窗 ====================
+    const ENGINE_PROVIDER_FALLBACK = ['openai','anthropic','ollama','openrouter','gemini','minimax','deepseek','kimi','glm','qwen','mimo','local'];
+
+    function openEngineModal(id) {
+      const list = engineData && engineData.engines ? engineData.engines : [];
+      const e = list.find(x => x.id === id);
+      if (!e) return;
+      currentEngine = e;
+
+      document.getElementById('engineModalIcon').textContent = String(e.displayName).charAt(0).toUpperCase();
+      document.getElementById('engineModalTitle').textContent = '配置 ' + e.displayName;
+      document.getElementById('engineModalSubtitle').textContent = (e.notes || '') + (e.configPath ? ' · 配置: ' + e.configPath : '');
+
+      // 映射供应商 select
+      const provSel = document.getElementById('engineProviderInput');
+      const provKeys = (llmConfigData && llmConfigData.providers) ? Object.keys(llmConfigData.providers) : ENGINE_PROVIDER_FALLBACK;
+      const mapped = e.provider || 'openai';
+      provSel.innerHTML = provKeys.map(k => `<option value="${k}" ${k === mapped ? 'selected' : ''}>${k}</option>`).join('');
+
+      document.getElementById('engineApiKeyInput').value = '';
+      document.getElementById('engineApiKeyHint').textContent = e.apiKey
+        ? '当前已发现 (***' + (e.apiKey.slice(-4) || '') + ')，输入新值以更新'
+        : '输入 API Key';
+      document.getElementById('engineBaseUrlInput').value = e.baseUrl || '';
+      document.getElementById('engineModelInput').value = e.model || '';
+      document.getElementById('engineModelHint').textContent = (e.models && e.models.length)
+        ? '从 ' + e.models.length + ' 个候选模型里筛选，或手动输入'
+        : '手动输入模型名';
+
+      document.getElementById('engineImportResult').style.display = 'none';
+      document.getElementById('engineModal').style.display = 'flex';
+      // 准备模型筛选下拉
+      renderEngineModelList('');
+      setTimeout(() => document.getElementById('engineModelInput').focus(), 50);
+    }
+
+    function closeEngineModal() {
+      document.getElementById('engineModal').style.display = 'none';
+      currentEngine = null;
+      document.getElementById('engineModelList').style.display = 'none';
+    }
+
+    // 模型筛选下拉
+    function renderEngineModelList(filter) {
+      const listEl = document.getElementById('engineModelList');
+      if (!currentEngine || !currentEngine.models) { listEl.style.display = 'none'; return; }
+      const f = (filter || '').toLowerCase();
+      const matched = currentEngine.models.filter(m => m.toLowerCase().includes(f));
+      if (matched.length === 0) { listEl.style.display = 'none'; return; }
+      listEl.innerHTML = matched.map(m => `<div class="combobox-option" onclick="selectEngineModel('${m.replace(/'/g, "\\'")}')">${m}</div>`).join('');
+      listEl.style.display = 'block';
+    }
+
+    function selectEngineModel(model) {
+      document.getElementById('engineModelInput').value = model;
+      document.getElementById('engineModelList').style.display = 'none';
+    }
+
+    document.getElementById('engineModelInput').addEventListener('input', (ev) => {
+      renderEngineModelList(ev.target.value);
+    });
+    document.getElementById('engineModelInput').addEventListener('focus', (ev) => {
+      renderEngineModelList(ev.target.value);
+    });
+    // 点击空白关闭下拉
+    document.addEventListener('click', (ev) => {
+      const cb = document.getElementById('engineModelCombobox');
+      if (cb && !cb.contains(ev.target)) {
+        document.getElementById('engineModelList').style.display = 'none';
+      }
+    });
+    document.getElementById('engineModal').addEventListener('click', (ev) => {
+      if (ev.target === document.getElementById('engineModal')) closeEngineModal();
+    });
+
+    async function importEngine() {
+      if (!currentEngine) return;
+      const btn = document.getElementById('engineImportBtn');
+      const result = document.getElementById('engineImportResult');
+      btn.disabled = true;
+      requestAnimationFrame(() => { btn.textContent = '⚡ 导入中...'; });
+      result.style.display = 'none';
+
+      const body = {
+        id: currentEngine.id,
+        model: document.getElementById('engineModelInput').value.trim(),
+        provider: document.getElementById('engineProviderInput').value,
+      };
+
+      try {
+        const resp = await fetch('/api/external-engines/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || '导入失败');
+        result.className = 'test-result test-success';
+        result.innerHTML = '<span>✓</span> 已导入为供应商: ' + (data.provider || '') +
+          (data.autoActivated ? '（已激活）' : '') + '，可在「LLM 对话」tab 选用';
+        result.style.display = 'flex';
+        // 刷新 LLM 配置 + 引擎列表
+        await Promise.all([loadLLMConfig(), loadEngines()]);
+      } catch (err) {
+        result.className = 'test-result test-error';
+        result.innerHTML = '<span>✗</span> ' + (err.message || '导入失败');
+        result.style.display = 'flex';
+      }
+      btn.disabled = false;
+      requestAnimationFrame(() => { btn.textContent = '⚡ 导入为供应商'; });
+    }
 
     // ==================== 关闭弹窗 ====================
     document.getElementById('configModal').onclick = function(e) {

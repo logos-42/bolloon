@@ -2820,6 +2820,37 @@ body {
   margin-top: 6px;
 }
 
+/* 模型筛选下拉 (外部智能体配置弹窗) */
+.combobox {
+  position: relative;
+}
+.combobox-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-elevated, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  z-index: 50;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.combobox-option {
+  padding: 9px 14px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.combobox-option:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
 .form-row {
   display: flex;
   gap: 12px;

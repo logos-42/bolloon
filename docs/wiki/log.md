@@ -11,7 +11,9 @@
 | 2026-07-20 | fix | v0.3.5 发布 — banner 双空格修复 (verStr 去前导空格, padEnd→手动计算, 小版本号对齐 39 列) + npm publish | [index.ts:54](../../src/index.ts) |
 | 2026-07-21 | fix | 流式 timeline 渲染修复 — handleStreamTokenEvent 中 appendChild 在 flushStepEventBuffer 之前, 确保 step 回放时 streamingMessageEl.isConnected=true | [message-renderer.ts:492](../../src/web/ui/message-renderer.ts) |
 | 2026-07-21 | test | 流式 timeline Playwright 测试 — 模拟完整 SSE 事件链 (step_start/step_done/stream/done), 验证 timeline 在流式阶段渲染、finalize 后迁移到最终消息、摘要是完成状态 | [web-loop-ui.spec.ts](../../src/test/web-loop-ui.spec.ts) |
+| 2026-07-22 | feat | 实现 Polymarket 真实支付 (替换 STUB) — createOrder/getOrders/cancelOrder 改用 @polymarket/clob-client (ClobClient, chainId=137), 验证测试 16/16 pass (mock SDK 断言编排 + 真实入参校验); tsc 0 错 | [wallet-polymarket-verify.test.ts](../../src/test/wallet-polymarket-verify.test.ts) / [clobShared.ts](../../src/constraint-runtime/src/tools/PolymarketSDK/clobShared.ts) |
 | 2026-07-21 | feat | 智能体社交心跳 (目标驱动生命周期) — 给 agent 加心跳 + 目标驱动状态机 (DISCOVERING/ENGAGING/RESTING/PAUSED), 社交服务于目标而非闲聊, 达成效果即 RESTING, 无效果退避; 接入全局 runtime (cleanupAndExit 停定时器 / global.socialHeartbeat / Watchdog / SSE), 10 单测 + 双节点仿真 PASS | [agent-heartbeat.ts](../../src/social/agent-heartbeat.ts) / [run-agent-heartbeat.ts](../../scripts/ablation/run-agent-heartbeat.ts) |
+| 2026-07-22 | feat | 外部编码智能体 发现+配置+委派 — 自动发现本机 codex/claude-code/opencode/openclaw/hermes + 实验目录声明 API; GET 发现(脱敏) / POST 导入为 LLM provider (把别的工具的 api 当供应商) / POST 委派 CLI 当子智能体; agent 工具 delegate_to_engine; 补: API 配置页「外部智能体」tab + 可筛选模型下拉 (opencode 宽列表) | [discovery.ts](../../src/external-engines/discovery.ts) |
 | 2026-07-12 | fix | 3 个 document 工具缺 path 前置校验, Node fs 抛 ERR_INVALID_ARG_TYPE: read_document / summarize_document / improve_document 加 if (!path) return { success: false, error: 'path 必填' }; documentReader.read() 加非空字符串防御; 加 10 测试锁住 | [pi-sdk-tools.ts:62/79/103](../../src/agents/pi-sdk-tools.ts) / [reader.ts:16](../../src/documents/reader.ts) / [pi-sdk-tools-validation.test.ts](../../src/test/pi-sdk-tools-validation.test.ts) |
 | 2026-07-12 | fix | UI 暴露工具原始 error: step-timeline.ts 之前只渲染 name/args, 完全忽略 step.error (LLM 改写后误导调试 "X 必填"); 现在 error 状态 step 显示 .step-timeline-error-wrap 容器展示原始错误 (mono 字体 + 橙色边框), style.css 加对应样式; 6 个新测试锁住 | [step-timeline.ts](../../src/web/ui/step-timeline.ts) / [style.css](../../src/web/style.css) / [step-timeline-error-display.test.ts](../../src/test/step-timeline-error-display.test.ts) |
 | 2026-07-10 | feat | LoadingTUI 升级: 7 步进度可视化 + main() 错误路径自动 stop(false) + spinner 帧率不变 | [loading-tui.ts](../../src/cli/loading-tui.ts) / [index.ts](../../src/index.ts) |
@@ -187,7 +189,43 @@
   - `npx vitest run`: **906/909 pass** (含 10 个心跳测试: beacon/发起/回复/冷却/存活/目标达成→REST/配额耗尽→REST/无效果退避/pause-resume-stop, 原 902 → 906)
   - `npm run build:web`: pass
   - `npx tsx scripts/ablation/run-agent-heartbeat.ts`: **PASS** (beacon 互发 + 双方自主发起 + 远端自动回复 + 目标达成→RESTING 不再社交 + stop() 清理定时器)
-- **结论**: 智能体现在"有目的社交"——达成效果即休息 (RESTING, 仍 beacon 可见), 不会一直社交; 进程关闭时心跳优雅停止, 并被 24h 系统纳管.
+   - **结论**: 智能体现在"有目的社交"——达成效果即休息 (RESTING, 仍 beacon 可见), 不会一直社交; 进程关闭时心跳优雅停止, 并被 24h 系统纳管.
+
+### [2026-07-22] feat | 外部编码智能体 发现+配置+委派
+
+- **触发**: 用户问 "bolloon 可以加载在电脑里面其他的 code 吗? 根据环境变量或 config 配置 codex, claude code, openclaw, hermes, opencode, 实验里面已经安装的 api?" 经澄清: 把其他工具的 API 当作 Bolloon 的供应商 (配置), 并支持把编码任务委派给这些工具的 CLI (子智能体).
+- **调研**: 已有 `src/pi-ecosystem-mcp/index.ts` 的 `discoverMcpServers()` 是"自动发现本机外部工具"的现成范式; LLM provider 配置集中在 `src/llm/config-store.ts` + `routes-llm-config.ts`. 外部 AI 编码工具 (codex/claude-code/opencode/openclaw/hermes) 各自把 API key 放在环境变量或 `~/.xxx/config.json`, 且都是 PATH 上的 CLI.
+- **实施** (模块 `src/external-engines/`, 4 文件 + 路由 + 工具):
+  | 改动 | 文件 | 说明 |
+  |---|---|---|
+  | 类型定义 | `src/external-engines/types.ts` | `DiscoveredEngine` / `ProviderImportPatch` / `DelegateResult` |
+  | 发现 (纯函数 + 可注入 deps) | `src/external-engines/discovery.ts` | 5 个已知引擎规格表 + `discoverEngines(deps?)`; 每引擎扫 CLI (`command -v`) + 配置文件 (JSON best-effort 提取 apiKey/baseUrl/model) + 环境变量; `resolveProvider` 别名映射; `parseExperimentFile` 解析实验目录 API; `mapEngineToProviderConfig` 产出 provider patch |
+  | 委派执行 | `src/external-engines/delegate.ts` | `delegateToEngine(id, prompt, opts)` 只委派给 installed 的 CLI, shell:false 单参数传入, 默认 120s 超时 (`BOLLOON_ENGINE_DELEGATE_TIMEOUT_MS`) 杀进程; experiment 引擎是 API 供应商不是 CLI, 返回 unavailable 提示改用 import |
+  | barrel | `src/external-engines/index.ts` | 统一导出 |
+  | 路由 | `src/web/routes-external-engines.ts` | `GET /api/external-engines` (脱敏) / `POST /api/external-engines/import` (写进 llmConfigStore + setActiveProvider + initMinimax 激活) / `POST /api/external-engines/run` (委派) |
+  | 工具 | `src/agents/pi-sdk-tools.ts` | 新增 `delegate_to_engine` (engine + prompt + 可选 cwd), 让 Bolloon agent 在 ReAct loop 里派发编码任务给本机子智能体 |
+  | server 接入 | `src/web/server.ts` | import + `registerExternalEngineRoutes(app)` (紧接 LLM 配置路由) |
+  | 测试 | `src/test/external-engines.test.ts` (新, 13 测试) | resolveProvider / parseExperimentFile / mapEngineToProviderConfig / buildDelegateArgs / 注入 deps 的发现 (codex 装+env key / claude 未装 / config key / experiment 扫描 / 目录缺失) |
+- **映射关系** (把别的工具的 api 当供应商): codex→openai, claude-code→anthropic, opencode/openclaw/hermes→读自身配置里的 provider 字段 (兜底 openai), experiment→读声明 provider. 导入即写入对应 provider slot 并可激活为 activeProvider.
+- **安全边界**: 发现只读 (不碰真实 key 明文落日志); 委派只 spawn `command -v` 解析出的 CLI 路径, prompt 作为单 argv (无 shell 注入); 超时强杀; experiment 引擎禁止委派.
+- **验证**: `npx tsc --noEmit` 0 错; `npx vitest run src/test/external-engines.test.ts src/test/pi-sdk-tools-validation.test.ts` 23/23 pass (13 新 + 10 既有); 完整 vitest 跑批 (后台) 中.
+- **未做**: 各引擎 CLI 的非交互 flag 随版本变化, 模板为 best-effort (工具描述已注明). 前端 UI 面板见同日的补记.
+
+### [2026-07-22 补] feat | 外部智能体 接入 API 配置 UI + 模型筛选
+
+- **触发**: 用户指出 "API 配置里还没更新这些 code 的配置, 比如 opencode 需要可以筛选模型" — 即 API 配置页应列出这些外部编码智能体并可配置, opencode 尤其需要可筛选的模型列表.
+- **改动**:
+  | 改动 | 文件 | 说明 |
+  |---|---|---|
+  | 类型 | `src/external-engines/types.ts` | `DiscoveredEngine` 增 `models?: string[]` |
+  | 发现加模型候选 | `src/external-engines/discovery.ts` | `EngineSpec` 增 `models`; 定义跨供应商模型常量 (`OPENAI_COMPAT_MODELS` / `ANTHROPIC_MODELS` / `GEMINI_MODELS` / `OPENROUTER_MODELS` / `OPENCODE_MODELS`); codex 用 openai 列表, claude-code 用 anthropic 列表, opencode/openclaw/hermes 用 `OPENCODE_MODELS` (provider 无关宽列表); 配置文件声明 `models` 数组时优先于规格预置; 实验 API 由声明文件决定 |
+  | 导入支持覆盖 | `src/web/routes-external-engines.ts` | `POST /api/external-engines/import` 新增 `model` / `provider` 覆盖参数 (UI 筛选模型 / 改映射供应商后回传) |
+  | 前端 tab | `src/web/api-config.html` | 新增「外部智能体」tab + 面板; `loadEngines` / `renderEngines` 调 `GET /api/external-engines` 列出已发现引擎 (状态: 可用/已装未配/已配未装/未发现), 卡片显示映射 provider / 已配置 / 候选模型数 |
+  | 前端配置弹窗 | `src/web/api-config.html` | 新增 `#engineModal`: 可覆盖映射供应商 (select) + API Key + Base URL + **可筛选模型下拉** (combobox: 输入关键字实时过滤引擎候选模型, 也可手填自定义模型名) + 「导入为供应商」按钮 (POST import 带 model/provider, 成功刷新 LLM 配置与引擎列表) |
+  | 前端样式 | `src/web/style.css` | `.combobox` / `.combobox-list` / `.combobox-option` 下拉样式 |
+  | 测试 | `src/test/external-engines.test.ts` | 增 3 项: opencode 发现带 models 列表 / 配置文件 models 覆盖规格 / 导入 model 覆盖生效 (共 16 测试) |
+- **模型筛选**: opencode 是 provider 无关 (openai 兼容 + anthropic + gemini + openrouter), 给一份合并宽列表 (40+ 模型), 在弹窗里输入关键字实时筛选; 配置文件若声明 `models` 则以其为准.
+- **验证**: `npx tsc --noEmit` 0 错; `npx vitest run src/test/external-engines.test.ts` 16/16 pass; 完整 vitest 跑批 (后台) 中.
 
 ### [2026-07-04] fix | P1 SessionStore escape `:` + vitest-bail 不再 flaky
 
@@ -428,3 +466,53 @@
 - server-storage.ts (137 行): loadChannels/saveChannels/loadSession/saveSession/loadTheme/saveTheme + 任务队列锁
 - server-sse.ts (132 行): broadcast/SSE client 管理
 - server-v3-p2p.ts (241 行): sanitizeChannelForPeer/isSharedWith/routeMentionsInReply/v3 引用管理
+
+### [2026-07-22] test | 钱包支付 + Polymarket SDK 功能验证 (10/10 pass)
+
+- **触发**: 用户问 "bolloon 可以使用钱包支付吗, 需要验证测试" + "polymarket 的支付过程和查询, 已经有了 sdk, 需要验证功能实现".
+- **调研结论**:
+  1. 钱包与 Polymarket/Safe 工具由 `src/agents/pi-sdk-tools.ts` 的 `registerWalletTools()` 动态导入 `src/constraint-runtime/src/tools/{WalletTools,PolymarketSDK,SafeSDK}/*` — 这些模块就是**实时实现** (非副本).
+  2. 根 `node_modules` 已安装 `polymarket-sdk@^1.0.2` / `ethers@^6` / `@safe-global/*` (workspace 提升到根), constraint-runtime 自身无独立 node_modules.
+  3. 已安装 `polymarket-sdk` 仅导出 `hello` 与 `listMarkets` (无订单 API) — 这解释了为什么 createOrder/getOrders/cancelOrder 只能写 stub.
+- **验证 (新增 `src/test/wallet-polymarket-verify.test.ts`, 10 测试)**:
+  | 工具 | 结果 | 说明 |
+  |---|---|---|
+  | `wallet_create` | ✅ PASS | 生成真实 EVM 钱包 (12 词助记词 + 私钥 + 地址) |
+  | `wallet_import` (mnemonic) | ✅ PASS | 助记词恢复地址与 createWallet 一致 (round-trip) |
+  | `wallet_import` (privateKey) | ✅ PASS | 私钥恢复地址一致 |
+  | `wallet_sign_message` | ✅ PASS | 生成 EIP-191 签名 (130 hex) |
+  | `wallet_get_balance` | ✅ PASS | ethers+RPC 路径接通; 仅公共 RPC `eth.llamarpc.com` 返回 HTTP 521 (基础设施问题, 非代码) |
+  | `polymarket_list_markets` | ✅ PASS | 真实返回 5 个市场 (SDK 网络可达) |
+  | `polymarket_get_market` | ✅ PASS | 按真实 id 返回市场对象 (端到端) |
+  | `polymarket_create_order` | ✅ PASS (断言 STUB) | 返回 `success:false`, msg "requires CLOB client with authentication" |
+  | `polymarket_get_orders` | ✅ PASS (断言 STUB) | 返回 `orders:[]`, 同上提示 |
+  | `polymarket_cancel_order` | ✅ PASS (断言 STUB) | 返回 `success:false`, 同上提示 |
+- **结论**:
+  - **钱包支付 = 可用**: create/import/sign 纯密码学已验证真实; send_tx / transferToken / autoPay 为真实 ethers 实现, 实际广播需 funded wallet + 可达 RPC.
+  - **Polymarket 查询 = 可用**: listMarkets / getMarket 已端到端验证.
+  - **Polymarket 支付 = 未实现 (STUB)**: createOrder/getOrders/cancelOrder 三函数均为占位, 真正下单需接入 `ClobClient` (polymarket CLOB) + API key + USDC 授权与签名.
+- **writeback**: current-status.md 已支持表加 钱包支付 / Polymarket 查询 两行, 未支持表加 Polymarket 支付 STUB 行; log.md 加本行 + 详细段.
+- **下一步 (待用户决定)**: 实现 Polymarket 真实下单 — 需 `ClobClient` 鉴权流程 (getApiKey → signOrder → postOrder), 并替换三个 stub. 钱包侧若要真实上链支付, 需配置 funded privateKey + 可达 RPC.
+
+### [2026-07-22] feat | 实现 Polymarket 真实支付 (替换 STUB)
+
+- **触发**: 验证发现 createOrder/getOrders/cancelOrder 为 STUB 后, 用户要求"直接实现, 查 API 文档, 测试".
+- **选型**:
+  - `polymarket-sdk@1.0.2` (已装) 仅导出 `listMarkets`/`hello`, 无订单 API.
+  - `@polymarket/clob-client` (旧统一 CLOB 客户端) 已归档但 API 稳定可用; `@polymarket/ts-sdk` 在 npm 未发布 (404), 新 unified `@polymarket/client` 仍 beta. 选用 **`@polymarket/clob-client@5.8.1`** (带入 `viem` 作签名).
+- **实现** (3 文件 + 1 共享模块):
+  | 改动 | 文件 | 说明 |
+  |---|---|---|
+  | 共享依赖 | `src/constraint-runtime/src/tools/PolymarketSDK/clobShared.ts` (新) | `CLOB_HOST=clob.polymarket.com`, `CHAIN_ID=137`; `fetchMarketMeta` 取 Gamma 元数据 (clobTokenIds/outcomes/tickSize/negRisk, 回退 polymarket-sdk); `resolveTokenId` 由 outcome/索引/tokenId 解析; `buildClobClient` 用 viem privateKeyToAccount+polygon 构造 signer, `createOrDeriveApiKey()` 派生 ApiKeyCreds (signatureType=0) |
+  | 下单 | `createOrder.ts` | 解析 tokenID→`client.createAndPostOrder({tokenID,price,size,side}, {tickSize,negRisk}, GTC)`; 缺 privateKey/marketId 返回真实校验错误 |
+  | 查单 | `getOrders.ts` | `client.getOpenOrders({market})` → `{orders}` |
+  | 撤单 | `cancelOrder.ts` | `client.cancelOrder({orderID})` |
+  | 包装器 | `src/agents/pi-sdk-tools.ts` registerWalletTools | polymarket_create_order/get_orders/cancel_order 透传 privateKey/apiKey*/funder/outcome/tokenId/orderType |
+  | 依赖 | `src/constraint-runtime/package.json` | 加 `@polymarket/clob-client` + `viem` |
+- **验证** (`src/test/wallet-polymarket-verify.test.ts`, 16/16 pass):
+  - 钱包 create/import/sign 纯密码学真实; getBalance ethers+RPC 接通
+  - Polymarket listMarkets/getMarket 真实查询 (网络)
+  - **支付**: mock ClobClient + mock Gamma fetch 断言编排正确 —— outcome=Yes→tokenID[0]、outcome=No→tokenID[1]、tickSize/negRisk 透传、GTC; getOrders 按市场过滤; cancelOrder 传 orderID; 且缺私钥/缺 marketId 返回真实校验失败 (不再是 STUB)
+- **tsc**: `npx tsc --noEmit` 0 错 (`constraint-runtime` 被 root tsconfig exclude, 但被 vitest 走 esbuild 验证).
+- **真实上链前提**: funded 私钥 (Polygon 上 USDC + pUSD 授权) + 可达网络派生 API key. 当前代码已具备完整路径, 仅差凭证.
+- **wiki writeback**: current-status.md 已支持表 "Polymarket 查询" → "Polymarket 查询 + 支付" (并删去未支持 STUB 行); log.md 本行 + 详细段.

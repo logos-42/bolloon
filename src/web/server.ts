@@ -16,6 +16,7 @@ import { segmentChatReply, type ChatSegment } from '../agents/chat-segmenter.js'
 import { listTools } from '../llm/tool-manifest/index.js';
 import { registerJudgmentsRoutes } from './routes-judgments.js';
 import { registerLlmConfigRoutes } from './routes-llm-config.js';
+import { registerExternalEngineRoutes } from './routes-external-engines.js';
 import { registerTaskRoutes } from './routes-tasks.js';
 import { registerHearthRoutes } from './routes-hearth.js';
 
@@ -4061,6 +4062,10 @@ app.get('/channels', async (_req, res) => {
 
   // 2026-07-06: LLM/Video/Audio 配置路由抽到 ./routes-llm-config.ts
   registerLlmConfigRoutes(app);
+
+  // 2026-07-22: 外部编码智能体 (codex/claude-code/opencode/openclaw/hermes/实验 API)
+  // 发现 + 配置为供应商 + 委派
+  registerExternalEngineRoutes(app);
 
   // ==================== P2P Network API ====================
 
