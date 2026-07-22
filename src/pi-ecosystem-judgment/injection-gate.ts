@@ -212,7 +212,7 @@ const USAGE_LOG = (os.homedir() || '/tmp') + '/.bolloon/human-values/usage.jsonl
 
 export async function recordJudgmentUsage(
   usedIds: string[],
-  meta: { channelId?: string; userInput?: string }
+  meta: { channelId?: string; userInput?: string; polarity?: 'positive' | 'negative' } = {}
 ): Promise<void> {
   if (usedIds.length === 0) return;
   try {
@@ -221,11 +221,107 @@ export async function recordJudgmentUsage(
       channelId: meta.channelId ?? null,
       userInputPreview: (meta.userInput ?? '').substring(0, 80),
       usedIds,
+      polarity: meta.polarity ?? 'positive',
     };
     await fs.appendFile(USAGE_LOG, JSON.stringify(entry) + '\n', 'utf-8');
   } catch (err) {
     console.warn('[injection-gate] recordJudgmentUsage failed:', err);
   }
+}
+
+// ============================================================
+// 2026-07-22 设计 B: 负向判断力回收 — "避免清单"注入 (显式, 进 prompt)
+//
+// 涡轮增压锚点: 判断力的负向是"判断力"不是"上下文废气", 可进 prompt 作为约束
+// (精准 = 正向指引 + 负向避免). 从 reject 类 + 高 stakes + 高 confidence 选 Top N,
+// 以"避免清单"语义产出 systemAddition. maxChars=300 (远小于正向 1500, 防噪音).
+// ============================================================
+
+export const DEFAULT_NEGATIVE_CONFIG = {
+  topN: 3,
+  mode: 'concise' as 'concise' | 'standard',
+  skip: false,
+  maxChars: 300,
+  /** 最低置信度门槛 (只注入足够可信的否决) */
+  minConfidence: 0.7,
+};
+
+function emptyGateResult(skipReason: string): InjectionGateResult {
+  return { systemAddition: '', usedIds: [], matchedCount: 0, didInject: false, skipReason };
+}
+
+/**
+ * 负向判断力注入门: 给定用户输入, 返回"避免清单"追加文本 + 用到的负向 judgment id.
+ *
+ * 筛选: decision_type='reject' && status='active' && stakes∈{high,critical} && confidence>=minConfidence
+ * 排序: critical 优先, 再按 confidence desc
+ * 静默: 任意步骤失败返回空字符串, 不 throw (主对话不阻塞)
+ */
+export async function injectNegativeGuard(
+  userInput: string,
+  _ctx: { channelId?: string; domain?: string } = {},
+  options: InjectionGateOptions & { minConfidence?: number } = {}
+): Promise<InjectionGateResult> {
+  const cfg = { ...DEFAULT_NEGATIVE_CONFIG, ...options };
+  if (cfg.skip) return emptyGateResult('skip');
+  if (!userInput || userInput.trim().length === 0) return emptyGateResult('no-input');
+
+  try {
+    const all = await loadAllJudgments();
+    const negatives = all.filter((j) =>
+      j.decision_type === 'reject' &&
+      (j.status ?? 'active') === 'active' &&
+      (j.context?.stakes === 'high' || j.context?.stakes === 'critical') &&
+      (j.metadata?.confidence ?? 0.5) >= (cfg.minConfidence ?? 0.7)
+    );
+    if (negatives.length === 0) return emptyGateResult('empty-negatives');
+
+    // 排序: critical > high, 再按 confidence desc
+    negatives.sort((a, b) => {
+      const sa = a.context?.stakes === 'critical' ? 2 : 1;
+      const sb = b.context?.stakes === 'critical' ? 2 : 1;
+      const ca = a.metadata?.confidence ?? 0.5;
+      const cb = b.metadata?.confidence ?? 0.5;
+      return (sb - sa) || (cb - ca);
+    });
+
+    const top = negatives.slice(0, cfg.topN);
+    const usedIds = top.map((j) => j.id);
+    const systemAddition = formatNegativeInjection(top, cfg.maxChars);
+
+    return {
+      systemAddition,
+      usedIds,
+      matchedCount: negatives.length,
+      didInject: true,
+      skipReason: null,
+    };
+  } catch (err) {
+    console.warn('[injection-gate] injectNegativeGuard failed (silent fallback):', err);
+    return emptyGateResult('exception');
+  }
+}
+
+function formatNegativeInjection(items: HumanJudgment[], maxChars: number): string {
+  if (items.length === 0) return '';
+  const SOURCE_TAG = '<!-- source: injection-gate (negative) -->';
+  const lines = items.map((j, i) => {
+    const stakes = j.context?.stakes === 'critical' ? ' [关键风险]' : ' [高风险]';
+    const decision = (j.decision || '').slice(0, 80);
+    return `${i + 1}. 避免: ${decision}${stakes}`;
+  });
+  let result =
+    `${SOURCE_TAG}\n` +
+    `# 避免清单 (负向判断力, 自动注入)\n` +
+    `- 以下行为已被明确否决, 执行时主动规避; 如情境冲突在回复中说明\n` +
+    `${lines.join('\n')}\n`;
+
+  if (maxChars > 0 && result.length > maxChars) {
+    result =
+      result.substring(0, maxChars) +
+      '\n[System Note: 避免清单因长度截断, 这是背景约束, 不影响用户实际请求.]\n';
+  }
+  return result;
 }
 
 /**

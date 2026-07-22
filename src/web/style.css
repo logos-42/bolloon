@@ -1795,6 +1795,36 @@ body {
   background: var(--accent);
   color: var(--bg);
 }
+
+/* 2026-07-22 设计 A: 正向/负向主分类 tab + 表单 toggle */
+.judgment-polarity-tab {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border: none;
+  padding: 4px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: var(--transition);
+}
+.judgment-polarity-tab:hover { background: var(--bg-active); color: var(--text-primary); }
+.judgment-polarity-tab[data-polarity="positive"].active { background: #059669; color: #fff; }
+.judgment-polarity-tab[data-polarity="negative"].active { background: #dc2626; color: #fff; }
+.judgment-advanced-fold > summary::-webkit-details-marker { display: none; }
+
+.judgment-polarity-toggle { display: flex; gap: 4px; }
+.polarity-opt {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 4px; cursor: pointer;
+  font-size: 12px; background: var(--bg-hover); color: var(--text-secondary);
+  border: 1px solid transparent; transition: var(--transition);
+}
+.polarity-opt input { display: none; }
+.polarity-opt small { color: var(--text-muted); font-weight: 400; }
+.polarity-opt.active[data-polarity="positive"] { background: #ecfdf5; color: #047857; border-color: #6ee7b7; }
+.polarity-opt.active[data-polarity="negative"] { background: #fef2f2; color: #b91c1c; border-color: #fca5a5; }
+
 .judgment-form-row {
   display: flex;
   gap: 8px;

@@ -5,6 +5,7 @@
 
 | 日期 | phase | 一句话 | 关联 |
 |------|-------|--------|------|
+| 2026-07-22 | feat | 判断力负向回收 + 上下文废气涡轮增压 (设计 A/B/C) — Web 判断力页面简化为正向/负向两类 (替换 6 个 status tab); injectNegativeGuard 以"避免清单"注入 prompt (maxChars=300, 显式); exhaust-scrubber 涡轮采样废气调参 (不进 prompt, 隐式); 背压→judgment 注入 maxChars(1800/1500/800)+检索 top-k(8/5/3); 落 log+memory; vitest 959/959 pass (+17) | [设计文档](../plans/2026-07-22-negative-exhaust-design.md) |
 | 2026-07-20 | fix | Bug 1: tool call 结果不在前端渲染 — step 事件在 .message-ai 未创建时静默丢弃; 加 stepEventBuffer (按 channelId 缓冲), handleStepEvent 无 .message-ai 时入队, flushStepEventBuffer 在 addMessage + mountStepTimeline 后回放 | [message-renderer.ts:88](../../src/web/ui/message-renderer.ts) |
 | 2026-07-20 | fix | Bug 2: friend-shared channel tags 不标记来源 peer — sanitizeChannelForPeer 缺 ownerPublicKey, 前端收到所有远端 channel 无法区分来自哪个节点; 加 _ownerPublicKey: ch.publicKey | [server-v3-p2p.ts:76](../../src/web/server-v3-p2p.ts) |
 | 2026-07-20 | fix | Bug 3: 终端版本/日志抑制 — cli-entry.ts 硬编码 v0.2.15 改读 package.json; src/index.ts banner 加版本号; CLIInterface 加 _quiet 标志抑制 console.error | [cli-entry.ts:30](../../src/cli-entry.ts) / [index.ts:47](../../src/index.ts) / [interface.ts:122](../../src/cli/interface.ts) |
@@ -138,6 +139,18 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+
+### [2026-07-22] feat | 判断力负向回收 + 上下文废气涡轮增压 (设计 A/B/C)
+
+- **触发**: 用户问"上下文废料和判断力废料有没有再利用环节". 调研发现 Bolloon 是"正向沉淀"架构 (summary 回注 / judgment 注入 / crystallized-claims 全是赢家通吃), 两类废料 (被丢弃原文 / 被否决判断) 没被再利用. 用户要求: 负向设计 + Web 判断力页面简化为正向/负向两类 + 上下文废气隐式设计, 锚点=涡轮增压.
+- **拍板**: 判断力负向回收 → 进 prompt (约束语义), 显式; 上下文废气回收 → 不进 prompt, 只调参, 进 log/memory, 隐式.
+- **设计 A (Web UI 简化)**: `src/web/index.html` judgments-modal 的 6 个 status filter → 正向/负向两个主 tab. 正向=approve/modify/escalate+active, 负向=reject/rejected/superseded. 表单加正/负向 toggle, domain/stakes 折叠. 高级分析 (违规/自适应/因果) 折叠保留, 数据/API 不删. `routes-judgments.ts` POST 接受 decision_type. `client.ts` loadJudgments 按 polarity 分桶 + switchPolarity. `style.css` 正负向 tab 样式.
+- **设计 B (判断力负向回收, 显式进 prompt)**: `injection-gate.ts` 新增 injectNegativeGuard — 从 reject+active+高 stakes(high/critical)+高 confidence(≥0.7) 选 Top N, "避免清单"语义注入, maxChars=300 (远小于正向 1500). `pi-sdk.ts` computeJudgmentGate 每轮同时跑正向 gate + 负向 guard. recordJudgmentUsage 加 polarity 字段区分正负.
+- **设计 C (上下文废气涡轮增压, 隐式不进 prompt)**: 新建 `src/bootstrap/exhaust-scrubber.ts`. recordExhaust 采样丢弃事件 (memory-compressor 已接入) → 环形缓冲 → 背压等级 (idle/low/medium/high) → getInjectionMaxChars 反向调 judgment 注入 maxChars(1800/1500/800) + getRetrievalTopK(8/5/3). 落盘 `~/.bolloon/engine/backpressure.jsonl` (log) + high 持续写 memory 月度摘要. `GET /api/engine/backpressure` 可观测. 废气内容永不暴露, 只展示压力.
+- **涡轮增压锚点**: 排气(丢弃事件)→涡轮(exhaust-scrubber 采样)→中冷+进气增压(背压调 maxChars/topK)→燃烧室(prompt, 废气不进).
+- **验证**: `npx tsc --noEmit` 0 错; `npx vitest run` 959/959 pass (新增 exhaust-scrubber 8 + negative-judgment-guard 9 = 17); `npm run build:web` pass.
+- **设计文档**: [docs/plans/2026-07-22-negative-exhaust-design.md](../plans/2026-07-22-negative-exhaust-design.md) (含涡轮增压锚点映射表 + 实施清单).
+- **未做**: compaction pipeline / context-collector 的废气采样接入 (目前只接 memory-compressor); 涡轮增压表 UI (只暴露 API, 前端展示待后续); 负向 judgment 的"已作为约束注入"徽标 (usage.jsonl 已记 polarity, 前端徽标待接).
 
 ### [2026-07-21] feat | 智能体社交心跳 (让 agent 自主选 peer 交流)
 

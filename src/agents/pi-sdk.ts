@@ -87,7 +87,8 @@ import { runSelfImproveLoop } from './pi-sdk-session-factory.js';
 
 // Judgment 注入门 (P0): 在主对话 LLM 调起前自动拼入 Top 3 判断力
 // 失败静默, 不阻塞主对话
-import { injectJudgmentGate, recordJudgmentUsage } from '../pi-ecosystem-judgment/injection-gate.js';
+import { injectJudgmentGate, injectNegativeGuard, recordJudgmentUsage } from '../pi-ecosystem-judgment/injection-gate.js';
+import { getInjectionMaxChars } from '../bootstrap/exhaust-scrubber.js';
 // 持续监控门 (P3): AI 回复后审计是否违反原则
 import { monitorAfterReply } from '../pi-ecosystem-judgment/monitor-gate.js';
 // Bootstrap 生命周期 hook (SessionStart / Stop / PreToolUse)
@@ -168,6 +169,8 @@ export class PiAgentSession implements AgentSession {
    */
   private judgmentGateAddition: string = '';
   private judgmentGateUsedIds: string[] = [];
+  /** 2026-07-22 设计 B: 负向判断力 (避免清单) 注入用到的 judgment id */
+  private judgmentGateNegativeUsedIds: string[] = [];
   // 2026-06-18: 来自 web server markedPrompt 外的 contextHint (channel/judgment/distill/remote channels),
   //   拼到 systemPrompt 末尾, 别再混进 user message
   private contextHintAddition: string = '';
@@ -209,11 +212,26 @@ export class PiAgentSession implements AgentSession {
     try {
       // P-Action 4 (2026-06-15) 路径 1 整合: 透传 maxChars=1500 (≈ 375 tokens 硬上限)
       // 路径 2/3 检测由 injection-gate 内部 alreadyInjectedSources 处理 (目前 assembleSystemPrompt 还没注入 value-store 标记, 所以这里不传)
-      const gate = await injectJudgmentGate(input, {}, { maxChars: 1500 });
+      // 2026-07-22 设计 C: maxChars 读背压动态值 (涡轮增压进气调参)
+      //   上下文紧张 (high) → 收紧 800; 宽裕 (idle/low) → 放宽 1800; 默认 medium 1500
+      const gate = await injectJudgmentGate(input, {}, { maxChars: getInjectionMaxChars() });
       this.judgmentGateAddition = gate.systemAddition;
       this.judgmentGateUsedIds = gate.usedIds;
-      if (gate.usedIds.length > 0) {
-        safePhase('gate_done', { usedCount: gate.usedIds.length, didInject: gate.didInject, skipReason: gate.skipReason });
+
+      // 2026-07-22 设计 B: 负向判断力回收 — "避免清单"注入 (显式, 进 prompt)
+      //   判断力负向是"判断力"非"废气", 可进 prompt 作为约束 (精准 = 正向指引 + 负向避免)
+      try {
+        const neg = await injectNegativeGuard(input, {}, { maxChars: 300 });
+        if (neg.didInject && neg.systemAddition) {
+          this.judgmentGateAddition += '\n' + neg.systemAddition;
+          this.judgmentGateNegativeUsedIds = neg.usedIds;
+        }
+      } catch (negErr) {
+        console.warn('[PiAgent] negative guard failed (non-fatal):', negErr);
+      }
+
+      if (this.judgmentGateUsedIds.length > 0 || this.judgmentGateNegativeUsedIds.length > 0) {
+        safePhase('gate_done', { usedCount: this.judgmentGateUsedIds.length, negativeCount: this.judgmentGateNegativeUsedIds.length, didInject: gate.didInject, skipReason: gate.skipReason });
       }
     } catch (err) {
       console.warn('[PiAgent] judgment gate failed (non-fatal):', err);
@@ -225,6 +243,7 @@ export class PiAgentSession implements AgentSession {
   private clearJudgmentGate(): void {
     this.judgmentGateAddition = '';
     this.judgmentGateUsedIds = [];
+    this.judgmentGateNegativeUsedIds = [];
   }
 
   constructor(config: AgentSessionConfig) {
@@ -572,8 +591,13 @@ export class PiAgentSession implements AgentSession {
       return loopResult.reply;
     } finally {
       if (this.judgmentGateUsedIds.length > 0) {
-        recordJudgmentUsage(this.judgmentGateUsedIds, { userInput: input }).catch((err) =>
+        recordJudgmentUsage(this.judgmentGateUsedIds, { userInput: input, polarity: 'positive' }).catch((err) =>
           console.warn('[PiAgent] recordJudgmentUsage failed:', err)
+        );
+      }
+      if (this.judgmentGateNegativeUsedIds.length > 0) {
+        recordJudgmentUsage(this.judgmentGateNegativeUsedIds, { userInput: input, polarity: 'negative' }).catch((err) =>
+          console.warn('[PiAgent] recordJudgmentUsage (negative) failed:', err)
         );
       }
       this.clearJudgmentGate();

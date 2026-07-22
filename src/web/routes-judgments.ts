@@ -39,19 +39,27 @@ export function registerJudgmentsRoutes(app: Express): void {
   //      极简版: 只记录 decision + reason; 其它字段可选
   app.post('/api/judgments', async (req, res) => {
     try {
-      const { decision, reason, context } = req.body as {
+      const { decision, reason, context, decision_type } = req.body as {
         decision?: string; reason?: string; context?: { domain?: string; stakes?: string };
+        decision_type?: 'approve' | 'reject' | 'modify' | 'escalate';
       };
       if (!decision || typeof decision !== 'string' || !decision.trim()) {
         return res.status(400).json({ error: 'decision required' });
       }
+      // 2026-07-22: 接受前端 polarity toggle 传来的 decision_type (正=approve / 负=reject)
+      // 不传或非法 → 默认 approve (向后兼容)
+      const allowedTypes = ['approve', 'reject', 'modify', 'escalate'] as const;
+      const finalType: 'approve' | 'reject' | 'modify' | 'escalate' =
+        decision_type && (allowedTypes as readonly string[]).includes(decision_type)
+          ? decision_type
+          : 'approve';
       const { storeHumanJudgment, initializeValueStore } = await import(
         '../pi-ecosystem-judgment/human-value-store.js'
       );
       await initializeValueStore();
       const j = await storeHumanJudgment({
         decision: decision.trim(),
-        decision_type: 'approve',
+        decision_type: finalType,
         reasons: reason ? [reason.trim()] : [],
         values_derived: [],
         context: {

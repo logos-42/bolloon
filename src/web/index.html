@@ -205,21 +205,39 @@
               <input type="text" id="judgment-reason" placeholder="例: 信任 Bolloon 的判断存储">
             </div>
             <div class="form-group judgment-form-row">
-              <label>领域 (domain)</label>
-              <select id="judgment-domain">
-                <option value="general">general</option>
-                <option value="code">code</option>
-                <option value="architecture">architecture</option>
-                <option value="security">security</option>
-                <option value="testing">testing</option>
-              </select>
-              <label>风险 (stakes)</label>
-              <select id="judgment-stakes">
-                <option value="medium">medium</option>
-                <option value="low">low</option>
-                <option value="high">high</option>
-                <option value="critical">critical</option>
-              </select>
+              <label>分类</label>
+              <div class="judgment-polarity-toggle" id="judgment-polarity-toggle">
+                <label class="polarity-opt active" data-polarity="positive">
+                  <input type="radio" name="judgment-polarity" value="positive" checked>
+                  <span>▲ 正向 <small>采纳</small></span>
+                </label>
+                <label class="polarity-opt" data-polarity="negative">
+                  <input type="radio" name="judgment-polarity" value="negative">
+                  <span>▼ 负向 <small>否决/避免</small></span>
+                </label>
+              </div>
+              <details class="judgment-advanced-fold" style="margin-left:auto;">
+                <summary style="font-size:11px;color:#6b7280;cursor:pointer;list-style:none;">高级 (领域/风险)</summary>
+                <div style="display:flex;gap:10px;padding:6px 0 0;flex-wrap:wrap;font-size:11px;">
+                  <label>领域
+                    <select id="judgment-domain">
+                      <option value="general">general</option>
+                      <option value="code">code</option>
+                      <option value="architecture">architecture</option>
+                      <option value="security">security</option>
+                      <option value="testing">testing</option>
+                    </select>
+                  </label>
+                  <label>风险
+                    <select id="judgment-stakes">
+                      <option value="medium">medium</option>
+                      <option value="low">low</option>
+                      <option value="high">high</option>
+                      <option value="critical">critical</option>
+                    </select>
+                  </label>
+                </div>
+              </details>
             </div>
             <div class="btn-group">
               <button id="judgment-submit-btn" class="btn-primary">记录</button>
@@ -235,15 +253,21 @@
               </button>
               <button class="judgment-tab" data-tab="global">全局</button>
             </div>
-            <!-- AI 演化 status 过滤: active / superseded / all / violations / 自适应 -->
+            <!-- 2026-07-22 简化: 正向 / 负向 两个主分类 (替换原 6 个 status tab)
+                 正向 = 采纳类 (approve/modify/escalate), 会注入 prompt 复用
+                 负向 = 否决/被推翻 (reject/rejected/superseded), 负向回收为避免清单
+                 高级分析 (违规/自适应/因果) 折叠保留, 数据/API 不删 -->
             <div id="judgments-status-filter" class="judgment-status-bar">
-              <span class="label">演化过滤:</span>
-              <button class="judgment-status-tab active" data-status="all">全部</button>
-              <button class="judgment-status-tab" data-status="active">活跃</button>
-              <button class="judgment-status-tab" data-status="superseded">已过时</button>
-              <button class="judgment-status-tab" data-status="violations">违规记录</button>
-              <button class="judgment-status-tab" data-status="adaptive">📊 自适应</button>
-              <button class="judgment-status-tab" data-status="causal">🔍 因果分析</button>
+              <button class="judgment-polarity-tab active" data-polarity="positive" title="采纳类: approve/modify/escalate, 会注入 prompt 复用">▲ 正向</button>
+              <button class="judgment-polarity-tab" data-polarity="negative" title="否决/被推翻: reject/rejected/superseded, 负向回收为避免清单">▼ 负向</button>
+              <details class="judgment-advanced-fold" style="margin-left:auto;">
+                <summary style="font-size:11px;color:#6b7280;cursor:pointer;list-style:none;">⋯ 高级分析</summary>
+                <div style="display:flex;gap:4px;padding:6px 0 0;flex-wrap:wrap;">
+                  <button class="judgment-status-tab" data-status="violations" style="font-size:11px;">违规记录</button>
+                  <button class="judgment-status-tab" data-status="adaptive" style="font-size:11px;">📊 自适应</button>
+                  <button class="judgment-status-tab" data-status="causal" style="font-size:11px;">🔍 因果分析</button>
+                </div>
+              </details>
             </div>
             <h3 class="judgment-list-header">
               <span id="judgments-list-title">本 channel 的判断力</span>

@@ -202,6 +202,17 @@ export async function compressSessionToMemory(opts: MemoryCompressOptions): Prom
   await fs.appendFile(summaryPath, block, 'utf-8');
   await writeCursor(cursorPath, allMessages.length);
 
+  // 2026-07-22 设计 C: 废气采样 — 压缩成功 = 上下文需要压缩的信号, 记入涡轮 (隐式)
+  //   废气不进 prompt, 只调参 (背压高 → judgment 注入收紧). 落 log/memory.
+  try {
+    const { recordExhaust } = await import('./exhaust-scrubber.js');
+    recordExhaust({
+      source: 'memory-compressor',
+      reason: 'compress-summary-written',
+      droppedTokens: newMessages.length * 200, // 粗估 200 tokens/msg
+    }, opts.home).catch(() => { /* 静默 */ });
+  } catch { /* 静默 */ }
+
   return {
     summaryPath,
     cursorPath,

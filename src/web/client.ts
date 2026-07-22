@@ -2479,9 +2479,21 @@ function switchJudgmentTab(tab) {
   renderJudgments(lastJudgmentsCache);
 }
 
+// 2026-07-22 简化: 主分类切 正向/负向 (替换原 6 个 status tab)
+//   正向 = active + decision_type∈{approve,modify,escalate}, 会注入 prompt 复用
+//   负向 = decision_type==='reject' || status∈{rejected,superseded}, 负向回收为避免清单
+function switchPolarity(polarity) {
+  currentPolarity = polarity;
+  currentAdvancedFilter = null; // 切回主分类, 退出高级分析
+  document.querySelectorAll('.judgment-polarity-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.polarity === polarity);
+  });
+  loadJudgments();
+}
+
+// 高级分析 (违规/自适应/因果) — 折叠保留, 数据/API 不删
 function switchStatusFilter(status) {
-  currentStatusFilter = status;
-  // 2026-06-16: 样式切 active 改用 CSS class, 不再写 style.background
+  currentAdvancedFilter = status;
   document.querySelectorAll('.judgment-status-tab').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.status === status);
   });
@@ -2515,7 +2527,8 @@ function hideJudgmentsModal() {
 }
 
 let currentJudgmentTab = 'channel'; // 'channel' | 'global'
-let currentStatusFilter = 'all'; // 'all' | 'active' | 'superseded' | 'violations'
+let currentPolarity = 'positive'; // 'positive' | 'negative' — 主分类 (2026-07-22 简化)
+let currentAdvancedFilter = null; // null | 'violations' | 'adaptive' | 'causal' — 高级分析 (折叠保留)
 let lastJudgmentsCache = []; // 最近一次 loadJudgments 拿到的原始列表, 切 tab / 切 channel 时复用
 
 /**
@@ -2638,7 +2651,7 @@ async function loadJudgments() {
   if (!judgmentsList) return;
   try {
     // P3: 违规记录走单独 API
-    if (currentStatusFilter === 'violations') {
+    if (currentAdvancedFilter === 'violations') {
       const res = await fetch('/api/judgments/violations?limit=50');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
@@ -2648,7 +2661,7 @@ async function loadJudgments() {
     }
 
     // 类 B: 自适应扫描建议
-    if (currentStatusFilter === 'adaptive') {
+    if (currentAdvancedFilter === 'adaptive') {
       const res = await fetch('/api/judgments/adaptive-suggestions');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
@@ -2658,7 +2671,7 @@ async function loadJudgments() {
     }
 
     // 阶段 2: causal-judge 因果分析
-    if (currentStatusFilter === 'causal') {
+    if (currentAdvancedFilter === 'causal') {
       const res = await fetch('/api/judgments/causal/correlation?topN=10');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
@@ -2667,20 +2680,29 @@ async function loadJudgments() {
       return;
     }
 
-    const res = await fetch('/api/judgments?status=' + encodeURIComponent(currentStatusFilter));
+    // 2026-07-22 主分类: 正向 / 负向
+    //   正向 = active + decision_type∈{approve,modify,escalate}
+    //   负向 = decision_type==='reject' || status∈{rejected,superseded}
+    const POSITIVE_TYPES = ['approve', 'modify', 'escalate'];
+    const fetchStatus = currentPolarity === 'positive' ? 'active' : 'all';
+    const res = await fetch('/api/judgments?status=' + encodeURIComponent(fetchStatus));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    lastJudgmentsCache = data.judgments || [];
-    renderJudgments(lastJudgmentsCache);
+    let list = data.judgments || [];
+    if (currentPolarity === 'positive') {
+      list = list.filter((j) => POSITIVE_TYPES.includes(j.decision_type) && (j.status ?? 'active') === 'active');
+    } else {
+      list = list.filter((j) => j.decision_type === 'reject' || ['rejected', 'superseded'].includes(j.status ?? ''));
+    }
+    lastJudgmentsCache = list;
+    renderJudgments(list);
     if (judgmentsBadge) {
-      // 徽章永远显示 active 数量; 不跟 filter 变
-      // 当 filter=active 时, 主 fetch 已经返回的就是 active 列表, 直接用 data.count
-      // 当 filter=all/superseded 时, 从主列表本地数 active 条 (status ?? 'active' 兼容老数据)
+      // 徽章永远显示正向 active 数量 (跟 filter 无关)
       let activeCount;
-      if (currentStatusFilter === 'active') {
+      if (currentPolarity === 'positive') {
         activeCount = data.count;
       } else {
-        activeCount = lastJudgmentsCache.filter((j) => (j.status ?? 'active') === 'active').length;
+        activeCount = (data.judgments || []).filter((j) => POSITIVE_TYPES.includes(j.decision_type) && (j.status ?? 'active') === 'active').length;
       }
       if (activeCount > 0) {
         judgmentsBadge.textContent = activeCount;
@@ -3000,7 +3022,11 @@ if (judgmentsList) {
     btn.addEventListener('click', () => switchJudgmentTab(btn.dataset.tab));
   });
 
-  // status 过滤
+  // 2026-07-22: 正向/负向主分类
+  document.querySelectorAll('.judgment-polarity-tab').forEach(btn => {
+    btn.addEventListener('click', () => switchPolarity(btn.dataset.polarity));
+  });
+  // status 过滤 (高级分析, 折叠保留)
   document.querySelectorAll('.judgment-status-tab').forEach(btn => {
     btn.addEventListener('click', () => switchStatusFilter(btn.dataset.status));
   });
@@ -3127,12 +3153,15 @@ async function submitJudgment() {
   judgmentSubmitBtn.disabled = true;
   if (judgmentError) judgmentError.style.display = 'none';
   try {
+    // 2026-07-22: 按 polarity toggle 设 decision_type (正=approve / 负=reject)
+    const polarity = (document.querySelector('input[name="judgment-polarity"]:checked') as HTMLInputElement | null)?.value || 'positive';
     const res = await fetch('/api/judgments', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         decision,
         reason: reason || undefined,
+        decision_type: polarity === 'negative' ? 'reject' : 'approve',
         context: { domain: judgmentDomain?.value, stakes: judgmentStakes?.value },
       }),
     });

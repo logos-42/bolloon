@@ -4620,6 +4620,17 @@ app.get('/channels', async (_req, res) => {
   });
 
   // 获取 iroh 节点信息
+  // 2026-07-22 设计 C: 引擎背压 API (涡轮增压表, 隐式可观测 — 废气内容不暴露, 只展示压力等级)
+  app.get('/api/engine/backpressure', async (_req, res) => {
+    try {
+      const { getBackpressure } = await import('../bootstrap/exhaust-scrubber.js');
+      const snap = getBackpressure();
+      res.json({ ok: true, ...snap });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get('/api/iroh/info', async (_req, res) => {
     if (!irohInitialized || !irohNodeInfo) {
       res.json({ initialized: false });
