@@ -9,6 +9,8 @@
  *   bolloon --summarize <file> # 总结文档
  *   bolloon --web              # 启动 Web UI
  *   bolloon --version          # 显示版本
+ *   bolloon engine list        # 列出外部编码智能体
+ *   bolloon engine run <prompt> --engine opencode --model opencode/deepseek-v4-flash-free  # 委派任务
  */
 
 import { spawn } from 'child_process';
@@ -16,6 +18,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { printBanner } from './cli/loading-tui.js';
+import { discoverEngines, delegateToEngine } from './external-engines/index.js';
 
 const isWindows = process.platform === 'win32';
 
@@ -137,10 +140,99 @@ function parseArgs(): { mode: string; args: string[] } {
     case '-c':
     case '--cli':
       return { mode: 'cli', args: args.slice(1) };
+    case 'engine':
+      return { mode: 'engine', args: args.slice(1) };
     default:
       // 传递所有参数给主程序
       return { mode: 'passthrough', args };
   }
+}
+
+/** 引擎子命令: list / run */
+async function handleEngineCommand(engineArgs: string[]): Promise<void> {
+  if (engineArgs.length === 0) {
+    console.log(`${BOLD}用法:${RESET}`);
+    console.log('  bolloon engine list                        # 列出外部编码智能体');
+    console.log('  bolloon engine run <prompt> [options]       # 委派任务给智能体');
+    console.log('');
+    console.log(`${BOLD}选项 (run):${RESET}`);
+    console.log('  --engine <id>   引擎 id (默认 opencode)');
+    console.log('  --model <name>  指定模型 (如 opencode/deepseek-v4-flash-free)');
+    return;
+  }
+
+  const sub = engineArgs[0];
+
+  if (sub === 'list') {
+    const engines = await discoverEngines();
+    console.log(`\n${BOLD}外部编码智能体:${RESET}`);
+    console.log('─'.repeat(60));
+    for (const e of engines) {
+      const status = e.available ? `${GREEN}✅ 可用${RESET}` : e.configured ? `${YELLOW}⚠ 已配置${RESET}` : e.installed ? `${YELLOW}⚠ 未配置${RESET}` : `${MAGENTA}✗ 未安装${RESET}`;
+      console.log(`  ${status}  ${e.displayName}`);
+      console.log(`       ID: ${e.id}`);
+      console.log(`       CLI: ${e.cliPath || '(未安装)'}`);
+      console.log(`       Provider: ${e.provider || '(未知)'}`);
+      if (e.model) console.log(`       模型: ${e.model}`);
+      if (e.apiKey) console.log(`       API Key: ***${e.apiKey.slice(-4)}`);
+      if (e.notes) console.log(`       ${e.notes}`);
+      console.log('');
+    }
+    return;
+  }
+
+  if (sub === 'run') {
+    // 解析子参数: bolloon engine run <prompt> --engine <id> --model <name>
+    const rest = engineArgs.slice(1);
+    const promptParts: string[] = [];
+    let engineId = 'opencode';
+    let modelName: string | undefined;
+    let cwd: string | undefined;
+
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i];
+      if (arg === '--engine' && i + 1 < rest.length) {
+        engineId = rest[++i];
+      } else if (arg === '--model' && i + 1 < rest.length) {
+        modelName = rest[++i];
+      } else if (arg === '--cwd' && i + 1 < rest.length) {
+        cwd = rest[++i];
+      } else {
+        promptParts.push(arg);
+      }
+    }
+
+    const prompt = promptParts.join(' ');
+    if (!prompt) {
+      console.error('错误: 请提供 prompt');
+      process.exit(1);
+    }
+
+    console.log(`${CYAN}🚀 委派给 ${engineId}${RESET}${modelName ? ` (模型: ${modelName})` : ''}`);
+    console.log(`   Prompt: ${prompt.slice(0, 120)}${prompt.length > 120 ? '...' : ''}`);
+    console.log('');
+
+    const result = await delegateToEngine(engineId as any, prompt, {
+      model: modelName,
+      cwd: cwd || process.cwd(),
+    });
+
+    if (result.success) {
+      console.log(`${GREEN}✅ 执行成功 (exit: ${result.exitCode})${RESET}`);
+      console.log('─'.repeat(40));
+      console.log(result.output || '(无输出)');
+    } else {
+      console.log(`${MAGENTA}❌ 执行失败${RESET}`);
+      console.log('─'.repeat(40));
+      if (result.error) console.error(`   Error: ${result.error}`);
+      if (result.output) console.log(result.output.slice(0, 2000));
+      process.exit(result.exitCode ?? 1);
+    }
+    return;
+  }
+
+  console.error(`未知引擎子命令: ${sub}`);
+  process.exit(1);
 }
 
 // 执行 Node.js 脚本
@@ -274,6 +366,10 @@ async function main() {
 
     case 'cli':
       await startCLI(args);
+      break;
+
+    case 'engine':
+      await handleEngineCommand(args);
       break;
 
     case 'passthrough':

@@ -660,7 +660,9 @@ async function runToolCommand(
   tool: string,
   args: string[],
   outputJson: boolean,
-  comm: HyperswarmCommunicator
+  comm: HyperswarmCommunicator,
+  model?: string,
+  prompt?: string
 ): Promise<void> {
   const a = await getAgent();
   const startTime = Date.now();
@@ -1157,6 +1159,28 @@ async function runToolCommand(
         break;
       }
 
+      case 'engine': {
+        const { delegateToEngine } = await import('./external-engines/delegate.js');
+        const engineId = args[0];
+        if (!engineId) {
+          response = '用法: --engine <engine-id> [--model <model>] <prompt>\n可用引擎: opencode, codex, claude-code, hermes';
+          error = response;
+          break;
+        }
+        const result = await delegateToEngine(engineId, prompt || '', {
+          ...(model ? { model } : {}),
+        });
+        const elapsed = Date.now() - startTime;
+        if (result.success) {
+          response = result.output || '(无输出)';
+        } else {
+          response = `❌ 委派失败: ${result.error}`;
+          if (result.output) response += `\n[输出]\n${result.output.slice(0, 2000)}`;
+        }
+        metadata = { ...metadata, duration: elapsed };
+        break;
+      }
+
       case 'context': {
         const ctx = await getGlobalSharedContext();
         response = await ctx.getContextSummary();
@@ -1522,7 +1546,7 @@ async function runNonInteractive(
     };
 
     if (tool) {
-      await runToolCommand(tool, toolArgs, false, comm);
+      await runToolCommand(tool, toolArgs, false, comm, args.model, prompt);
     } else if (prompt) {
       const a = await getAgent();
       console.log(await a.prompt(prompt));
@@ -1561,7 +1585,7 @@ async function runNonInteractive(
   }
 
   if (tool) {
-    await runToolCommand(tool, toolArgs, !!json, comm);
+    await runToolCommand(tool, toolArgs, !!json, comm, args.model, prompt);
   } else if (prompt) {
     const startTime = Date.now();
     const a = await getAgent();
@@ -1606,6 +1630,7 @@ interface ParsedArgs {
   send?: boolean;
   search?: boolean;
   model?: string;
+  engine?: string;
   output?: string;
   tool?: string;
   toolArgs: string[];
@@ -1738,6 +1763,12 @@ function parseArgs(): ParsedArgs {
           delArgs.push(args[++i]);
         }
         result.toolArgs = delArgs;
+        break;
+      case '--engine':
+      case '-e':
+        result.engine = args[++i];
+        result.tool = 'engine';
+        result.toolArgs = [result.engine];
         break;
       case '--context':
         result.context = true;
@@ -1888,6 +1919,7 @@ function parseArgs(): ParsedArgs {
         result.tui = true;
         break;
       case '--model':
+      case '-m':
         result.model = args[++i];
         break;
       case '--output':
@@ -1899,9 +1931,9 @@ function parseArgs(): ParsedArgs {
         i = args.length;
         break;
       default:
-        if (!arg.startsWith('-') && !result.prompt && !result.tool) {
+        if (!arg.startsWith('-') && !result.prompt) {
           result.prompt = arg;
-          result.tool = 'prompt';
+          if (!result.tool) result.tool = 'prompt';
         }
     }
   }
@@ -1974,9 +2006,9 @@ function printHelp(): void {
   # 跨机 agent 协作 (对方 bolloon --web 起着才能处理, 走 P2P 不经 GitHub)
   --collab <peer|publicKey> "<任务描述>"  派任务给对端 LLM 干活, 等回结果 (90s 超时)
 
-  # AI 对话
-  --prompt, -p <text>        通用 AI 对话（默认）
-  --model <name>             指定使用的模型
+  # 外部编码智能体委派
+  --engine, -e <id> [--model <m>] <prompt>  委派任务给外部引擎，如 opencode/codex
+  --model <name>             指定委派时使用的模型
 
   # 输出控制
   --json, -j                 输出 JSON 格式
@@ -2002,6 +2034,9 @@ function printHelp(): void {
 
   # 交互模式
   npx tsx src/index.ts
+
+  # 外部引擎委派
+  npx tsx src/index.ts --engine opencode --model opencode/deepseek-v4-flash-free "说你好"
 
   # Web 模式
   npx tsx src/index.ts --web

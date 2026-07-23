@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.3.10",
+  "version": "0.3.12",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli-entry.js",
@@ -18,7 +18,7 @@
     "scripts/build-web.ts"
   ],
   "bin": {
-    "bolloon": "./bin/bolloon-cli.cjs"
+    "bolloon": "./dist/cli-entry.js"
   },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
@@ -48,7 +48,7 @@
     "src/constraint-runtime"
   ],
   "dependencies": {
-    "@bolloon/bolloon-agent": "^0.3.3",
+    "@bolloon/bolloon-agent": "^0.3.10",
     "@bolloon/constraint-runtime": "0.1.0",
     "@capacitor/core": "^8.4.1",
     "@capacitor/ios": "^8.4.1",
@@ -56,7 +56,7 @@
     "@chainsafe/libp2p-yamux": "^8.0.1",
     "@diap/sdk": "^0.1.10",
     "@libp2p/autonat": "^3.0.20",
-    "@libp2p/circuit-relay-v2": "^4.2.5",
+    "@libp2p/circuit-relay-v2": "^4.2.9",
     "@libp2p/dcutr": "^3.0.20",
     "@libp2p/identify": "^4.1.6",
     "@libp2p/kad-dht": "^16.2.6",
