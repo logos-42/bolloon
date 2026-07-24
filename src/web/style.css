@@ -2123,6 +2123,31 @@ body {
   border-color: var(--accent);
 }
 
+.wallet-row .wallet-badges {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.wallet-row .wallet-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.wallet-row .badge-autopay {
+  background: #1a6d1a;
+  color: #8f8;
+}
+
+.wallet-row .badge-stored {
+  background: #1a4d6d;
+  color: #8cf;
+}
+
 .task-item {
   background: var(--bg-secondary);
   border: 1px solid var(--border);

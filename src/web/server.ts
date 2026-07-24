@@ -3853,6 +3853,74 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  /**
+   * 存储加密私钥: 客户端用 DID 派生 AES-GCM 密钥加密私钥后上传.
+   * body: { encryptedPrivateKey (base64), encryptedPrivateKeyIv (base64), autoPayEnabled? }
+   */
+  app.post('/channels/:channelId/encrypted-key', async (req, res) => {
+    try {
+      const { channelId } = req.params;
+      const { encryptedPrivateKey, encryptedPrivateKeyIv, autoPayEnabled } = req.body || {};
+      if (!encryptedPrivateKey || !encryptedPrivateKeyIv) {
+        return res.status(400).json({ error: '缺少必填字段: encryptedPrivateKey, encryptedPrivateKeyIv' });
+      }
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+      if (!channel) return res.status(404).json({ error: 'Channel not found' });
+      channel.encryptedPrivateKey = encryptedPrivateKey;
+      channel.encryptedPrivateKeyIv = encryptedPrivateKeyIv;
+      if (typeof autoPayEnabled === 'boolean') {
+        channel.autoPayEnabled = autoPayEnabled;
+      }
+      channel.updatedAt = new Date().toISOString();
+      await saveChannels(channels);
+      console.log(`[Wallet] channel ${channelId} 已存储加密私钥 (autoPay=${channel.autoPayEnabled})`);
+      res.json(channel);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** 清除加密私钥 (用户选择不再自动支付) */
+  app.delete('/channels/:channelId/encrypted-key', async (req, res) => {
+    try {
+      const { channelId } = req.params;
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+      if (!channel) return res.status(404).json({ error: 'Channel not found' });
+      channel.encryptedPrivateKey = undefined;
+      channel.encryptedPrivateKeyIv = undefined;
+      channel.autoPayEnabled = false;
+      channel.updatedAt = new Date().toISOString();
+      await saveChannels(channels);
+      console.log(`[Wallet] channel ${channelId} 已清除加密私钥`);
+      res.json(channel);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** 切换 autoPay 开关 */
+  app.patch('/channels/:channelId/auto-pay', async (req, res) => {
+    try {
+      const { channelId } = req.params;
+      const { autoPayEnabled } = req.body || {};
+      if (typeof autoPayEnabled !== 'boolean') {
+        return res.status(400).json({ error: 'autoPayEnabled 必须是 boolean' });
+      }
+      const channels = await loadChannels();
+      const channel = channels.find(c => c.id === channelId);
+      if (!channel) return res.status(404).json({ error: 'Channel not found' });
+      channel.autoPayEnabled = autoPayEnabled;
+      channel.updatedAt = new Date().toISOString();
+      await saveChannels(channels);
+      console.log(`[Wallet] channel ${channelId} autoPay → ${autoPayEnabled}`);
+      res.json(channel);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 2026-07-07 P1-C: 列出 channel 的项目事件日志 (L2)
   // 用于客户端时间线折叠块 + LLM prompt 注入
   app.get('/api/events/:channelId', async (req, res) => {

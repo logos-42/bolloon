@@ -344,9 +344,23 @@
               </label>
             </div>
             <div id="wallet-new-info" class="form-info" style="display:none;"></div>
+            <div class="form-group" id="wallet-encrypt-group" style="display:none;">
+              <label class="checkbox-label">
+                <input type="checkbox" id="wallet-store-key" checked>
+                <span>加密存储私钥到服务端 (用于 x402 自动支付)</span>
+              </label>
+              <small class="form-hint">私钥用 DID 派生密钥 AES-256-GCM 加密后上传, 仅当前智能体进程可解密。</small>
+            </div>
+            <div class="form-group" id="wallet-autopay-group" style="display:none;">
+              <label class="checkbox-label">
+                <input type="checkbox" id="wallet-autopay-enabled" checked>
+                <span>自动支付 (智能体遇到 402 Payment Required 时自动用绑定钱包支付)</span>
+              </label>
+            </div>
             <div class="btn-group">
               <button id="wallet-bind-btn" class="btn-primary">绑定到当前智能体</button>
               <button id="wallet-unbind-btn" class="btn-secondary">解绑当前智能体</button>
+              <button id="wallet-store-key-btn" class="btn-secondary" style="display:none;">存储加密私钥到服务端</button>
             </div>
 
             <h3 style="margin-top:24px;font-size:14px;font-weight:600;">所有已绑定钱包</h3>

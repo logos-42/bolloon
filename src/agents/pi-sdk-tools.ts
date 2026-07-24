@@ -57,6 +57,17 @@ export interface ToolRegistryContext {
   constraintLayer: { getLogs: () => any[] };
   /** P2P inbox 缓存 — _setupInboxListener 写入 */
   _inboxMessages: { id: string; from: string; fromDid?: string; type: string; payload: string; timestamp: number; source: 'p2p' | 'local' }[];
+  /**
+   * 获取当前 channel 已加密存储的钱包信息 (用于自动支付).
+   * 返回 null 表示未绑定或未加密存储私钥.
+   */
+  getChannelWallet?: () => Promise<{
+    encryptedPrivateKey: string;
+    encryptedPrivateKeyIv: string;
+    walletAddress: string;
+    autoPayEnabled: boolean;
+    did: string;
+  } | null>;
 }
 
 export function registerBuiltinTools(ctx: ToolRegistryContext): void {
@@ -1341,9 +1352,23 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     },
     execute: async (args) => {
       try {
-        const { x402Pay } = await import('./x402/x402Pay.js');
+        const { x402Pay, decryptChannelWallet } = await import('./x402/x402Pay.js');
+        let privateKey = args.privateKey ? String(args.privateKey) : undefined;
+        if (!privateKey && ctx.getChannelWallet) {
+          const wallet = await ctx.getChannelWallet();
+          if (wallet && wallet.autoPayEnabled) {
+            const decrypted = await decryptChannelWallet(
+              { encryptedPrivateKey: wallet.encryptedPrivateKey, encryptedPrivateKeyIv: wallet.encryptedPrivateKeyIv, walletAddress: wallet.walletAddress },
+              wallet.did
+            );
+            if (decrypted) privateKey = decrypted.privateKey;
+          }
+        }
+        if (!privateKey) {
+          return { success: false, error: '未提供 privateKey 且 channel 未绑定自动支付钱包' };
+        }
         const r = await x402Pay({
-          privateKey: String(args.privateKey),
+          privateKey,
           amount: String(args.amount),
           to: String(args.to),
           network: args.network ? String(args.network) : undefined,
@@ -1371,14 +1396,25 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     },
     execute: async (args) => {
       try {
-        const { x402Fetch } = await import('./x402/x402Pay.js');
+        const { x402Fetch, decryptChannelWallet } = await import('./x402/x402Pay.js');
+        let privateKey = args.privateKey ? String(args.privateKey) : undefined;
+        if (!privateKey && ctx.getChannelWallet) {
+          const wallet = await ctx.getChannelWallet();
+          if (wallet && wallet.autoPayEnabled) {
+            const decrypted = await decryptChannelWallet(
+              { encryptedPrivateKey: wallet.encryptedPrivateKey, encryptedPrivateKeyIv: wallet.encryptedPrivateKeyIv, walletAddress: wallet.walletAddress },
+              wallet.did
+            );
+            if (decrypted) privateKey = decrypted.privateKey;
+          }
+        }
         const headers = args.headers ? (typeof args.headers === 'string' ? JSON.parse(args.headers) : args.headers) : undefined;
         const r = await x402Fetch({
           url: String(args.url),
           method: args.method ? String(args.method) : undefined,
           body: args.body ? String(args.body) : undefined,
           headers,
-          privateKey: args.privateKey ? String(args.privateKey) : undefined,
+          privateKey,
           rpcUrl: args.rpcUrl ? String(args.rpcUrl) : undefined,
         });
         if (!r.success) return { success: false, error: r.error, output: r.data ? JSON.stringify(r.data).substring(0, 1000) : undefined };

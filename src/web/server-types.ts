@@ -51,6 +51,12 @@ export interface Channel {
     did: string;
     signedAt: string;
   };
+  /** 加密后的私钥 (AES-GCM, 密钥派生自用户 DID), 用于 x402 自动支付 */
+  encryptedPrivateKey?: string;
+  /** 私钥加密时的 IV (base64), 用于解密 */
+  encryptedPrivateKeyIv?: string;
+  /** 是否允许智能体自动使用钱包支付 (默认 false) */
+  autoPayEnabled?: boolean;
   autoInvokeTools?: boolean;
   createdAt: string;
   updatedAt: string;

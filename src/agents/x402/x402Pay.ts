@@ -355,3 +355,41 @@ function getUSDcAddress(network: string): `0x${string}` {
   };
   return (map[network] || map['base-sepolia']) as `0x${string}`;
 }
+
+// ============================================================
+// Channel 钱包自动支付 (AES-GCM 解密)
+// ============================================================
+
+/**
+ * 用 AES-256-GCM 解密 channel 绑定的加密私钥。
+ * 密钥派生: SHA-256(did) → 256 bit AES key
+ *
+ * 客户端用 Web Crypto API 加密后存储到服务端，
+ * agent 进程运行时用 Node.js crypto 解密。
+ */
+export async function decryptChannelWallet(
+  channel: { encryptedPrivateKey?: string; encryptedPrivateKeyIv?: string; walletAddress?: string },
+  did: string
+): Promise<{ privateKey: string; address: string } | null> {
+  if (!channel.encryptedPrivateKey || !channel.encryptedPrivateKeyIv) {
+    return null;
+  }
+  try {
+    const crypto = await import('crypto');
+    const key = crypto.createHash('sha256').update(did).digest();
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      key,
+      Buffer.from(channel.encryptedPrivateKeyIv, 'base64')
+    );
+    const tag = Buffer.from(channel.encryptedPrivateKey, 'base64').subarray(-16);
+    const ciphertext = Buffer.from(channel.encryptedPrivateKey, 'base64').subarray(0, -16);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    const privateKey = decrypted.toString('utf8');
+    return { privateKey, address: channel.walletAddress || '' };
+  } catch (e) {
+    console.error('[x402] 解密 channel 钱包失败:', e);
+    return null;
+  }
+}

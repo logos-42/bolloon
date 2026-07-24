@@ -4347,6 +4347,52 @@ const walletListEl = document.getElementById('wallet-list');
 let walletModalPendingSecret = null;
 let walletModalPendingMnemonic = null;
 
+// 加密私钥存储到服务端相关元素
+const walletStoreKey = document.getElementById('wallet-store-key');
+const walletAutopayEnabled = document.getElementById('wallet-autopay-enabled');
+const walletStoreKeyBtn = document.getElementById('wallet-store-key-btn');
+const walletEncryptGroup = document.getElementById('wallet-encrypt-group');
+const walletAutopayGroup = document.getElementById('wallet-autopay-group');
+
+/**
+ * 浏览器端 AES-256-GCM 加密: 用 DID 派生密钥加密私钥.
+ * 密钥派生: SHA-256(did) → AES-256 key
+ * 输出: { encryptedPrivateKey: base64(ciphertext + authTag), encryptedPrivateKeyIv: base64(iv) }
+ */
+async function encryptPrivateKeyAESGCM(privateKeyHex, did) {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(did),
+    'PBKDF2',
+    false,
+    ['deriveBits', 'deriveKey']
+  );
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: new TextEncoder().encode('bolloon-wallet-aes256'),
+      iterations: 100000,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt']
+  );
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(privateKeyHex);
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    encoded
+  );
+  const combined = new Uint8Array(encrypted);
+  const ciphertext = combined;
+  const ivHex = btoa(String.fromCharCode(...iv));
+  const encryptedHex = btoa(String.fromCharCode(...ciphertext));
+  return { encryptedPrivateKey: encryptedHex, encryptedPrivateKeyIv: ivHex };
+}
+
 if (walletModalClose) {
   walletModalClose.addEventListener('click', closeWalletModal);
 }
@@ -4416,6 +4462,10 @@ if (walletBindBtn) {
         '<strong>地址:</strong> <code>' + escapeHtml(updated.walletAddress) + '</code><br>' +
         '<strong>签名 DID:</strong> <code>' + escapeHtml(did) + '</code><br>' +
         '<small style="color:#9c9;">服务端已用 recoverMessage 校验签名, 证明你持有该钱包私钥。</small>';
+      // 绑定成功后显示加密存储选项
+      if (walletEncryptGroup) walletEncryptGroup.style.display = 'block';
+      if (walletAutopayGroup) walletAutopayGroup.style.display = 'block';
+      if (walletStoreKeyBtn) walletStoreKeyBtn.style.display = 'inline-block';
     } catch (err) {
       alert('绑定失败: ' + err.message);
     }
@@ -4442,8 +4492,66 @@ if (walletUnbindBtn) {
       walletBindAddress.value = '';
       renderChannels();
       renderWalletList();
+      // 解绑后隐藏加密存储选项
+      if (walletEncryptGroup) walletEncryptGroup.style.display = 'none';
+      if (walletAutopayGroup) walletAutopayGroup.style.display = 'none';
+      if (walletStoreKeyBtn) walletStoreKeyBtn.style.display = 'none';
     } catch (err) {
       alert('解绑失败: ' + err.message);
+    }
+  });
+}
+
+/** 存储加密私钥到服务端: DID 派生 AES-GCM 密钥加密后上传 */
+if (walletStoreKeyBtn) {
+  walletStoreKeyBtn.addEventListener('click', async () => {
+    if (!currentChannelId) {
+      alert('请先选择一个智能体');
+      return;
+    }
+    if (!walletModalPendingSecret) {
+      alert('未检测到临时私钥, 请先生成或导入钱包');
+      return;
+    }
+    const ch = channels.find(c => c.id === currentChannelId);
+    const did = ch?.did || '';
+    if (!did || did === 'undefined' || did === 'null') {
+      alert('当前智能体还没有生成 DID');
+      return;
+    }
+    try {
+      walletStoreKeyBtn.textContent = '加密中...';
+      walletStoreKeyBtn.disabled = true;
+      const { encryptedPrivateKey, encryptedPrivateKeyIv } = await encryptPrivateKeyAESGCM(walletModalPendingSecret, did);
+      const autoPay = walletAutopayEnabled ? walletAutopayEnabled.checked : true;
+      const res = await fetch(`/channels/${currentChannelId}/encrypted-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ encryptedPrivateKey, encryptedPrivateKeyIv, autoPayEnabled: autoPay })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'store encrypted key failed');
+      }
+      const updated = await res.json();
+      const idx = channels.findIndex(c => c.id === currentChannelId);
+      if (idx >= 0) channels[idx] = updated;
+      renderChannels();
+      renderWalletList();
+      walletNewInfo.style.display = 'block';
+      walletNewInfo.innerHTML =
+        '✅ 加密私钥已安全存储在服务端<br>' +
+        '<small style="color:#9c9;">私钥用 AES-256-GCM 加密, 仅当前智能体进程可解密用于自动支付。</small>';
+      if (walletStoreKeyBtn) {
+        walletStoreKeyBtn.textContent = '已存储 ✓';
+        walletStoreKeyBtn.disabled = true;
+      }
+    } catch (err) {
+      alert('存储加密私钥失败: ' + err.message);
+      if (walletStoreKeyBtn) {
+        walletStoreKeyBtn.textContent = '存储加密私钥到服务端';
+        walletStoreKeyBtn.disabled = false;
+      }
     }
   });
 }
@@ -4458,6 +4566,17 @@ function openWalletModal() {
     if (currentChannelId && walletBindAddress && channels.find(c => c.id === currentChannelId)) {
       const ch = channels.find(c => c.id === currentChannelId);
       walletBindAddress.value = ch?.walletAddress || '';
+      const hasWallet = !!ch?.walletAddress;
+      if (walletEncryptGroup) walletEncryptGroup.style.display = hasWallet ? 'block' : 'none';
+      if (walletAutopayGroup) walletAutopayGroup.style.display = hasWallet ? 'block' : 'none';
+      if (walletStoreKeyBtn) {
+        const hasEncryptedKey = !!ch?.encryptedPrivateKey;
+        walletStoreKeyBtn.style.display = hasWallet && !hasEncryptedKey ? 'inline-block' : 'none';
+        walletStoreKeyBtn.textContent = hasEncryptedKey ? '已存储 ✓' : '存储加密私钥到服务端';
+        walletStoreKeyBtn.disabled = hasEncryptedKey;
+      }
+      if (walletAutopayEnabled) walletAutopayEnabled.checked = ch?.autoPayEnabled ?? true;
+      if (walletStoreKey) walletStoreKey.checked = true;
     }
     renderWalletList();
   }
@@ -4481,11 +4600,17 @@ function renderWalletList() {
     const chain = detectChain(ch.walletAddress);
     const row = document.createElement('div');
     row.className = 'wallet-row' + (isActive ? ' is-active' : '');
+    const hasEncryptedKey = !!ch.encryptedPrivateKey;
+    const autoPay = ch.autoPayEnabled;
+    const badges = [];
+    if (autoPay) badges.push('<span class="wallet-badge badge-autopay" title="自动支付已启用">auto</span>');
+    else if (hasEncryptedKey) badges.push('<span class="wallet-badge badge-stored" title="私钥已加密存储">key</span>');
     row.innerHTML = `
       <span class="wallet-chain">${escapeHtml(chain)}</span>
       <div class="wallet-info">
         <span class="wallet-agent" title="${escapeHtml(ch.name || '')}">${escapeHtml(ch.name || '(未命名)')}</span>
         <span class="wallet-address" title="${escapeHtml(ch.walletAddress)}">${escapeHtml(ch.walletAddress)}</span>
+        ${badges.length ? '<span class="wallet-badges">' + badges.join('') + '</span>' : ''}
       </div>
       <div class="wallet-actions">
         <button class="wallet-mini-btn" data-action="copy" data-addr="${escapeHtml(ch.walletAddress)}" title="复制地址">

@@ -458,6 +458,26 @@ export class PiAgentSession implements AgentSession {
       sessionManager: this.sessionManager as any,
       constraintLayer: this.constraintLayer as any,
       _inboxMessages: this._inboxMessages,
+      getChannelWallet: async () => {
+        try {
+          const { CHANNELS_PATH } = await import('../web/server-types.js');
+          const { loadChannels } = await import('../web/server-storage.js');
+          const channels = await loadChannels();
+          const ch = channels.find((c: any) => c.id === this.currentChannelId);
+          if (ch && ch.encryptedPrivateKey && ch.encryptedPrivateKeyIv && ch.walletAddress) {
+            return {
+              encryptedPrivateKey: ch.encryptedPrivateKey,
+              encryptedPrivateKeyIv: ch.encryptedPrivateKeyIv,
+              walletAddress: ch.walletAddress,
+              autoPayEnabled: ch.autoPayEnabled ?? false,
+              did: this.identity.did,
+            };
+          }
+          return null;
+        } catch {
+          return null;
+        }
+      },
     };
     registerBuiltinTools(toolCtx);
     registerWalletTools(toolCtx);
