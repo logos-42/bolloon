@@ -1323,6 +1323,130 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     }
   });
 
+  // ============================================================
+  // x402 协议 — 智能体自动支付工作流 (2026-07-24)
+  // 基于 @x402/core + @x402/evm + @x402/fetch + @x402/mcp 协议栈
+  // ============================================================
+
+  ctx.tools.set('x402_pay', {
+    name: 'x402_pay',
+    description: 'x402 协议支付: 用私钥对 402 支付意图签名并提交链上交易。自动支持 ETH 和 USDC 支付。',
+    parameters: {
+      privateKey: '钱包私钥 0x... (必填)',
+      amount: '金额 (ETH 或 USDC 数量, 必填)',
+      to: '收款方地址 0x... (必填)',
+      network: '网络: base | base-sepolia | mainnet | sepolia (默认 base-sepolia)',
+      currency: '代币: ETH | USDC (默认 ETH)',
+      memo: '支付说明 (可选)',
+    },
+    execute: async (args) => {
+      try {
+        const { x402Pay } = await import('./x402/x402Pay.js');
+        const r = await x402Pay({
+          privateKey: String(args.privateKey),
+          amount: String(args.amount),
+          to: String(args.to),
+          network: args.network ? String(args.network) : undefined,
+          currency: args.currency ? String(args.currency) : undefined,
+          memo: args.memo ? String(args.memo) : undefined,
+        });
+        if (!r.success) return { success: false, error: r.error };
+        return { success: true, output: `✅ x402 支付成功:\n  txHash: ${r.txHash}\n  paid: ${r.paid}\n  to: ${r.to}\n  network: ${r.network}` };
+      } catch (e: any) {
+        return { success: false, error: `x402_pay 失败: ${String(e.message || e)}` };
+      }
+    },
+  });
+
+  ctx.tools.set('x402_fetch', {
+    name: 'x402_fetch',
+    description: 'x402 Fetch — 自动化的 "请求→检测 402 → 钱包支付 → 重试" 循环。无需手动处理 402 支付流程。',
+    parameters: {
+      url: '目标 URL (必填)',
+      method: 'HTTP method: GET | POST | PUT | DELETE (默认 GET)',
+      body: '请求体 (可选)',
+      headers: 'JSON 对象格式的额外 headers (可选)',
+      privateKey: '钱包私钥 0x... (可选, 不提供时遇到 402 会提示需支付)',
+      rpcUrl: '自定义 RPC URL (可选)',
+    },
+    execute: async (args) => {
+      try {
+        const { x402Fetch } = await import('./x402/x402Pay.js');
+        const headers = args.headers ? (typeof args.headers === 'string' ? JSON.parse(args.headers) : args.headers) : undefined;
+        const r = await x402Fetch({
+          url: String(args.url),
+          method: args.method ? String(args.method) : undefined,
+          body: args.body ? String(args.body) : undefined,
+          headers,
+          privateKey: args.privateKey ? String(args.privateKey) : undefined,
+          rpcUrl: args.rpcUrl ? String(args.rpcUrl) : undefined,
+        });
+        if (!r.success) return { success: false, error: r.error, output: r.data ? JSON.stringify(r.data).substring(0, 1000) : undefined };
+        const paymentLine = r.paymentInfo ? `\n  [自动支付] ${r.paymentInfo.paid} tx=${r.paymentInfo.txHash}` : '';
+        return {
+          success: true,
+          output: `✅ x402 fetch 完成 (status=${r.status})${paymentLine}\n${JSON.stringify(r.data, null, 2).substring(0, 2000)}`,
+        };
+      } catch (e: any) {
+        return { success: false, error: `x402_fetch 失败: ${String(e.message || e)}` };
+      }
+    },
+  });
+
+  ctx.tools.set('x402_request_payment', {
+    name: 'x402_request_payment',
+    description: 'x402 服务端: 生成 HTTP 402 PaymentRequired 响应信息。用于智能体作为服务端时告知调用方需支付。',
+    parameters: {
+      price: '价格 (数字, 必填)',
+      payTo: '收款方地址 0x... (必填)',
+      currency: '代币: USDC | ETH (默认 USDC)',
+      network: '网络: base | base-sepolia (默认 base)',
+      resourceDescription: '资源描述 (可选)',
+    },
+    execute: async (args) => {
+      try {
+        const { x402RequestPayment } = await import('./x402/x402Pay.js');
+        const r = x402RequestPayment({
+          price: Number(args.price),
+          payTo: String(args.payTo),
+          currency: args.currency ? String(args.currency) : undefined,
+          network: args.network ? String(args.network) : undefined,
+          resourceDescription: args.resourceDescription ? String(args.resourceDescription) : undefined,
+        });
+        return {
+          success: true,
+          output: `🛡️ 402 Payment Required:\n  金额: ${args.price} ${args.currency || 'USDC'}\n  网络: ${args.network || 'base'}\n  收款: ${args.payTo}\n  描述: ${args.resourceDescription || '(无)'}\n\nHTTP 响应模板:\n  statusCode: ${r.statusCode}\n  headers: ${JSON.stringify(r.headers, null, 2)}\n  body: ${r.body}`,
+        };
+      } catch (e: any) {
+        return { success: false, error: `x402_request_payment 失败: ${String(e.message || e)}` };
+      }
+    },
+  });
+
+  ctx.tools.set('x402_check_balance', {
+    name: 'x402_check_balance',
+    description: '查 EVM 地址余额，判断是否足够支付 x402 费用。',
+    parameters: {
+      address: 'EVM 地址 0x... (必填)',
+      network: '网络: base | base-sepolia | mainnet | sepolia (默认 base-sepolia)',
+      rpcUrl: '自定义 RPC URL (可选)',
+    },
+    execute: async (args) => {
+      try {
+        const { x402CheckBalance } = await import('./x402/x402Pay.js');
+        const r = await x402CheckBalance({
+          address: String(args.address),
+          network: args.network ? String(args.network) : undefined,
+          rpcUrl: args.rpcUrl ? String(args.rpcUrl) : undefined,
+        });
+        if (!r.success) return { success: false, error: r.error };
+        return { success: true, output: `💰 地址 ${args.address}\n  余额: ${r.balance} ETH\n  网络: ${r.network}` };
+      } catch (e: any) {
+        return { success: false, error: `x402_check_balance 失败: ${String(e.message || e)}` };
+      }
+    },
+  });
+
   // Safe
   ctx.tools.set('safe_deploy', {
     name: 'safe_deploy',

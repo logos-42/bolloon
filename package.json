@@ -65,6 +65,12 @@
     "@multiformats/multiaddr": "^13.0.3",
     "@noble/hashes": "^1.3.0",
     "@rayhanadev/iroh": "^0.1.1",
+    "@x402/core": "^2.19.0",
+    "@x402/evm": "^2.19.0",
+    "@x402/extensions": "^2.19.0",
+    "@x402/express": "^2.19.0",
+    "@x402/mcp": "^2.19.0",
+    "@x402/fetch": "^2.19.0",
     "b4a": "^1.8.1",
     "dotenv": "^17.4.2",
     "esbuild": "^0.24.0",
@@ -155,6 +161,7 @@
     "asarUnpack": [
       "node_modules/@diap/**/*",
       "node_modules/@rayhanadev/**/*",
+      "node_modules/@x402/**/*",
       "node_modules/libp2p/**/*",
       "node_modules/@libp2p/**/*"
     ]
