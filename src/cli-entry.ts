@@ -11,6 +11,7 @@
  *   bolloon --version          # 显示版本
  *   bolloon engine list        # 列出外部编码智能体
  *   bolloon engine run <prompt> --engine opencode --model opencode/deepseek-v4-flash-free  # 委派任务
+ *   bolloon x402 fetch <url> --private-key 0x...  # x402 钱包自动支付请求
  */
 
 import { spawn } from 'child_process';
@@ -19,6 +20,7 @@ import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { printBanner } from './cli/loading-tui.js';
 import { discoverEngines, delegateToEngine } from './external-engines/index.js';
+import { x402CheckBalance, x402Fetch } from './agents/x402/x402Pay.js';
 
 const isWindows = process.platform === 'win32';
 
@@ -66,6 +68,8 @@ ${BOLD}命令:${RESET}
   bolloon --read <file>           读取文档
   bolloon --summarize <file>      总结文档
   bolloon --improve <file> <req>  改进文档
+  bolloon x402 fetch <url>        x402 自动支付 HTTP 请求
+  bolloon x402 balance <address>  查询 x402 钱包余额
 
 ${BOLD}示例:${RESET}
   bolloon                    # 启动图形界面
@@ -142,10 +146,124 @@ function parseArgs(): { mode: string; args: string[] } {
       return { mode: 'cli', args: args.slice(1) };
     case 'engine':
       return { mode: 'engine', args: args.slice(1) };
+    case 'x402':
+      return { mode: 'x402', args: args.slice(1) };
     default:
       // 传递所有参数给主程序
       return { mode: 'passthrough', args };
   }
+}
+
+function readOption(args: string[], name: string): string | undefined {
+  const idx = args.indexOf(name);
+  if (idx >= 0 && idx + 1 < args.length) return args[idx + 1];
+  return undefined;
+}
+
+function hasFlag(args: string[], name: string): boolean {
+  return args.includes(name);
+}
+
+function firstPositional(args: string[]): string | undefined {
+  const optionsWithValue = new Set(['--private-key', '--method', '--body', '--header', '--network', '--rpc-url', '--engine', '--model', '--cwd']);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (optionsWithValue.has(arg)) {
+      i++;
+      continue;
+    }
+    if (!arg.startsWith('--')) return arg;
+  }
+  return undefined;
+}
+
+/** x402 子命令: fetch / balance */
+async function handleX402Command(x402Args: string[]): Promise<void> {
+  if (x402Args.length === 0) {
+    console.log(`${BOLD}用法:${RESET}`);
+    console.log('  bolloon x402 fetch <url> [options]        # 自动处理 402 Payment Required');
+    console.log('  bolloon x402 balance <address> [options]  # 查询钱包余额');
+    console.log('');
+    console.log(`${BOLD}选项:${RESET}`);
+    console.log('  --private-key <0x...>  自动支付钱包私钥，也可用 X402_PRIVATE_KEY');
+    console.log('  --method <GET|POST>    HTTP 方法 (默认 GET)');
+    console.log('  --body <json/text>     请求体');
+    console.log('  --header <K: V>        额外 header，可重复');
+    console.log('  --network <name>       base | base-sepolia | mainnet | sepolia');
+    console.log('  --rpc-url <url>        自定义 RPC URL');
+    console.log('  --json                 只输出 JSON 结果');
+    return;
+  }
+
+  const sub = x402Args[0];
+  const rest = x402Args.slice(1);
+
+  if (sub === 'fetch') {
+    const url = firstPositional(rest);
+    if (!url) {
+      console.error('错误: 请提供 URL');
+      process.exit(1);
+    }
+    const headers: Record<string, string> = {};
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--header' && i + 1 < rest.length) {
+        const raw = rest[++i];
+        const sep = raw.indexOf(':');
+        if (sep > 0) headers[raw.slice(0, sep).trim()] = raw.slice(sep + 1).trim();
+      }
+    }
+    const privateKey = readOption(rest, '--private-key') || process.env.X402_PRIVATE_KEY;
+    const result = await x402Fetch({
+      url,
+      method: readOption(rest, '--method') || 'GET',
+      body: readOption(rest, '--body'),
+      headers,
+      privateKey,
+      network: readOption(rest, '--network'),
+      rpcUrl: readOption(rest, '--rpc-url'),
+    });
+    if (hasFlag(rest, '--json')) {
+      console.log(JSON.stringify(result, null, 2));
+      if (!result.success) process.exit(1);
+    } else if (result.success) {
+      console.log(`${GREEN}✅ x402 请求完成${RESET} status=${result.status}`);
+      if (result.paymentInfo?.rawHeader) console.log(`${CYAN}   payment-response: ${result.paymentInfo.rawHeader.slice(0, 160)}${RESET}`);
+      console.log(typeof result.data === 'string' ? result.data : JSON.stringify(result.data, null, 2));
+    } else {
+      console.error(`${MAGENTA}❌ x402 请求失败${RESET} status=${result.status ?? 'n/a'} ${result.error || ''}`);
+      if (result.data) console.error(typeof result.data === 'string' ? result.data : JSON.stringify(result.data, null, 2));
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'balance') {
+    const address = firstPositional(rest);
+    if (!address) {
+      console.error('错误: 请提供 EVM 地址');
+      process.exit(1);
+    }
+    const result = await x402CheckBalance({
+      address,
+      network: readOption(rest, '--network'),
+      rpcUrl: readOption(rest, '--rpc-url'),
+    });
+    if (hasFlag(rest, '--json')) {
+      console.log(JSON.stringify(result, null, 2));
+      if (!result.success) process.exit(1);
+    } else if (result.success) {
+      console.log(`${GREEN}💰 ${address}${RESET}`);
+      console.log(`   balance: ${result.balance} ETH`);
+      console.log(`   network: ${result.network}`);
+    } else {
+      console.error(`${MAGENTA}❌ 查询失败:${RESET} ${result.error}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  console.error(`未知 x402 子命令: ${sub}`);
+  process.exit(1);
 }
 
 /** 引擎子命令: list / run */
@@ -370,6 +488,10 @@ async function main() {
 
     case 'engine':
       await handleEngineCommand(args);
+      break;
+
+    case 'x402':
+      await handleX402Command(args);
       break;
 
     case 'passthrough':

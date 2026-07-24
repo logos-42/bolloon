@@ -1341,7 +1341,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('x402_pay', {
     name: 'x402_pay',
-    description: 'x402 协议支付: 用私钥对 402 支付意图签名并提交链上交易。自动支持 ETH 和 USDC 支付。',
+    description: '低级钱包付款: 用私钥直接转 ETH/USDC。标准 x402 资源访问请优先用 x402_fetch。',
     parameters: {
       privateKey: '钱包私钥 0x... (必填)',
       amount: '金额 (ETH 或 USDC 数量, 必填)',
@@ -1392,6 +1392,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
       body: '请求体 (可选)',
       headers: 'JSON 对象格式的额外 headers (可选)',
       privateKey: '钱包私钥 0x... (可选, 不提供时遇到 402 会提示需支付)',
+      network: '限定可支付网络: base | base-sepolia | mainnet | sepolia (可选)',
       rpcUrl: '自定义 RPC URL (可选)',
     },
     execute: async (args) => {
@@ -1415,10 +1416,11 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
           body: args.body ? String(args.body) : undefined,
           headers,
           privateKey,
+          network: args.network ? String(args.network) : undefined,
           rpcUrl: args.rpcUrl ? String(args.rpcUrl) : undefined,
         });
         if (!r.success) return { success: false, error: r.error, output: r.data ? JSON.stringify(r.data).substring(0, 1000) : undefined };
-        const paymentLine = r.paymentInfo ? `\n  [自动支付] ${r.paymentInfo.paid} tx=${r.paymentInfo.txHash}` : '';
+        const paymentLine = r.paymentInfo?.rawHeader ? `\n  [x402 payment-response] ${r.paymentInfo.rawHeader.substring(0, 160)}` : '';
         return {
           success: true,
           output: `✅ x402 fetch 完成 (status=${r.status})${paymentLine}\n${JSON.stringify(r.data, null, 2).substring(0, 2000)}`,

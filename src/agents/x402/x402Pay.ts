@@ -64,10 +64,16 @@ export interface X402FetchParams {
   headers?: Record<string, string>;
   /** 钱包私钥 (自动支付用) */
   privateKey?: string;
-  /** 最大支付金额 (ETH) */
+  /** 限定可支付网络；默认注册 base/base-sepolia/mainnet/sepolia */
+  network?: string;
+  /** 最大支付金额 (按 token 人类单位, 如 USDC 的 0.25) */
+  maxPaymentAmount?: string;
+  /** @deprecated 用 maxPaymentAmount */
   maxPaymentEth?: string;
   /** RPC URL */
   rpcUrl?: string;
+  /** 测试/嵌入场景注入 fetch */
+  fetchImpl?: typeof fetch;
 }
 
 // ============================================================
@@ -79,6 +85,13 @@ const RPC_URLS: Record<string, string> = {
   'base-sepolia': 'https://sepolia.base.org',
   'mainnet': 'https://eth.llamarpc.com',
   'sepolia': 'https://rpc.sepolia.org',
+};
+
+const EVM_NETWORKS: Record<string, { caip2: string; v1: string; chainName: string }> = {
+  'base': { caip2: 'eip155:8453', v1: 'base', chainName: 'base' },
+  'base-sepolia': { caip2: 'eip155:84532', v1: 'base-sepolia', chainName: 'baseSepolia' },
+  'mainnet': { caip2: 'eip155:1', v1: 'mainnet', chainName: 'mainnet' },
+  'sepolia': { caip2: 'eip155:11155111', v1: 'sepolia', chainName: 'sepolia' },
 };
 
 // ============================================================
@@ -209,85 +222,135 @@ export async function x402Fetch(params: X402FetchParams): Promise<{
   data?: any;
   status?: number;
   error?: string;
-  paymentInfo?: { paid: string; txHash: string };
+  paymentInfo?: { header?: any; rawHeader?: string };
 }> {
   const { url, method = 'GET', body, headers = {}, privateKey } = params;
+  const fetchImpl = params.fetchImpl || fetch;
 
-  // 第 1 步: 普通请求
   const fetchHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
     ...headers,
   };
 
   try {
-    const res = await fetch(url, {
+    if (!privateKey) {
+      const res = await fetchImpl(url, {
+        method,
+        headers: fetchHeaders,
+        body: body || undefined,
+      });
+      const data = await readResponseBody(res);
+      if (res.status === 402) {
+        return {
+          success: false,
+          status: 402,
+          error: '需要 x402 支付: 提供 privateKey 或绑定 channel 自动支付钱包后可自动完成付款并重试',
+          data,
+        };
+      }
+      return { success: res.ok, data, status: res.status };
+    }
+
+    const x402FetchImpl = await createX402PaymentFetch({
+      privateKey,
+      network: params.network,
+      rpcUrl: params.rpcUrl,
+      maxPaymentAmount: params.maxPaymentAmount || params.maxPaymentEth,
+      fetchImpl,
+    });
+    const res = await x402FetchImpl(url, {
       method,
       headers: fetchHeaders,
       body: body || undefined,
     });
-
-    // 如果不需要支付，直接返回
-    if (res.status !== 402) {
-      const data = await res.json().catch(() => null);
-      return { success: res.ok, data, status: res.status };
-    }
-
-    // 第 2 步: 解析 402 支付要求
-    const paymentNetwork = res.headers.get('X-Payment-Network') || 'base-sepolia';
-    const paymentCurrency = res.headers.get('X-Payment-Currency') || 'USDC';
-    const paymentAmount = res.headers.get('X-Payment-Amount') || '0.01';
-    const payTo = res.headers.get('X-Pay-To') || '';
-
-    if (!privateKey) {
-      return {
-        success: false,
-        status: 402,
-        error: `需要支付: ${paymentAmount} ${paymentCurrency} → ${payTo} (提供 privateKey 可自动支付)`,
-        data: await res.json().catch(() => null),
-      };
-    }
-
-    if (!payTo) {
-      return { success: false, status: 402, error: '402 响应缺少 X-Pay-To header' };
-    }
-
-    // 第 3 步: 自动支付
-    const payResult = await x402Pay({
-      privateKey,
-      amount: paymentAmount,
-      to: payTo,
-      network: paymentNetwork,
-      currency: paymentCurrency,
-      memo: `x402 auto-pay for ${url}`,
-    });
-
-    if (!payResult.success) {
-      return { success: false, error: `自动支付失败: ${payResult.error}`, status: 402 };
-    }
-
-    // 第 4 步: 带支付凭据重试
-    const retryRes = await fetch(url, {
-      method,
-      headers: {
-        ...fetchHeaders,
-        'X-Payment-TxHash': payResult.txHash!,
-        'X-Payment-Signature': payResult.txHash!,
-      },
-      body: body || undefined,
-    });
-
-    const retryData = await retryRes.json().catch(() => null);
+    const data = await readResponseBody(res);
+    const rawHeader = res.headers.get('PAYMENT-RESPONSE') || res.headers.get('X-PAYMENT-RESPONSE') || undefined;
+    const paymentInfo = rawHeader ? { rawHeader, header: await decodePaymentResponse(rawHeader) } : undefined;
     return {
-      success: retryRes.ok,
-      status: retryRes.status,
-      data: retryData,
-      paymentInfo: {
-        paid: payResult.paid!,
-        txHash: payResult.txHash!,
-      },
+      success: res.ok,
+      status: res.status,
+      data,
+      paymentInfo,
     };
   } catch (e: any) {
     return { success: false, error: `x402 fetch 失败: ${String(e.message || e)}` };
+  }
+}
+
+export async function createX402PaymentFetch(params: {
+  privateKey: string;
+  network?: string;
+  rpcUrl?: string;
+  maxPaymentAmount?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>> {
+  const { wrapFetchWithPayment, x402Client } = await import('@x402/fetch');
+  const { ExactEvmScheme, toClientEvmSigner } = await import('@x402/evm');
+  const { createPublicClient, http } = await import('viem');
+  const { privateKeyToAccount } = await import('viem/accounts');
+  const { base, baseSepolia, mainnet, sepolia } = await import('viem/chains');
+
+  const normalizedKey = normalizePrivateKey(params.privateKey);
+  const account = privateKeyToAccount(normalizedKey as `0x${string}`);
+  const chainMap: Record<string, any> = { base, baseSepolia, mainnet, sepolia };
+  const client = new x402Client();
+  if (params.maxPaymentAmount) {
+    client.registerPolicy((_version: number, requirements: any[]) => requirements.filter((requirement) => {
+      const decimals = Number(requirement?.extra?.decimals ?? 6);
+      const maxRaw = parseHumanTokenAmount(params.maxPaymentAmount!, decimals);
+      return BigInt(requirement.amount) <= maxRaw;
+    }));
+  }
+  const entries = params.network ? [params.network] : Object.keys(EVM_NETWORKS);
+
+  for (const network of entries) {
+    const info = EVM_NETWORKS[network];
+    if (!info) {
+      throw new Error(`不支持的 x402 EVM 网络: ${network}`);
+    }
+    const publicClient = createPublicClient({
+      chain: chainMap[info.chainName],
+      transport: http(params.rpcUrl || RPC_URLS[network]),
+    });
+    const signer = toClientEvmSigner(account, publicClient);
+    client.register(info.caip2 as any, new ExactEvmScheme(signer));
+    client.registerV1(info.v1, new ExactEvmScheme(signer));
+  }
+
+  return wrapFetchWithPayment(params.fetchImpl || fetch, client);
+}
+
+function parseHumanTokenAmount(amount: string, decimals: number): bigint {
+  const trimmed = amount.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new Error(`无效 maxPaymentAmount: ${amount}`);
+  }
+  const [whole, fraction = ''] = trimmed.split('.');
+  const padded = (fraction + '0'.repeat(decimals)).slice(0, decimals);
+  return BigInt(whole) * (10n ** BigInt(decimals)) + BigInt(padded || '0');
+}
+
+function normalizePrivateKey(privateKey: string): `0x${string}` {
+  const trimmed = privateKey.trim();
+  return (trimmed.startsWith('0x') ? trimmed : `0x${trimmed}`) as `0x${string}`;
+}
+
+async function readResponseBody(res: Response): Promise<any> {
+  const text = await res.text().catch(() => '');
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+async function decodePaymentResponse(rawHeader: string): Promise<any> {
+  try {
+    const { decodePaymentResponseHeader } = await import('@x402/fetch');
+    return decodePaymentResponseHeader(rawHeader);
+  } catch {
+    return undefined;
   }
 }
 
@@ -312,8 +375,7 @@ export async function x402CheckBalance(params: {
   }
 
   try {
-    const { createWalletClient, http, formatEther } = await import('viem');
-    const { privateKeyToAccount } = await import('viem/accounts');
+    const { createPublicClient, http, formatEther } = await import('viem');
     const { base, baseSepolia, mainnet, sepolia } = await import('viem/chains');
 
     const chainMap: Record<string, any> = {
@@ -325,13 +387,12 @@ export async function x402CheckBalance(params: {
     const chain = chainMap[network];
     if (!chain) return { success: false, error: `网络 ${network} 的 chain 配置缺失` };
 
-    const client = createWalletClient({
-      account: privateKeyToAccount(('0x' + '1'.repeat(64)) as `0x${string}`),
+    const client = createPublicClient({
       chain,
       transport: http(rpcUrl),
-    } as any);
+    });
 
-    const balance = await (client as any).getBalance({ address: address as `0x${string}` });
+    const balance = await client.getBalance({ address: address as `0x${string}` });
     return {
       success: true,
       balance: formatEther(balance),
