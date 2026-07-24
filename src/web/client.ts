@@ -3570,9 +3570,11 @@ function renderRemoteChannels() {
           <span style="font-size:13px;">${strangerIcon}</span>
           <span style="flex:1;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(peer.publicKey)}">${escapeHtml(peer.name)}</span>
           <span style="font-size:9px;color:var(--text-muted);">${peerChannels.length > 0 ? `${peerChannels.length} ch · ` : ''}${lastConn}</span>
-          <button class="peer-share-btn" title="分享 channel 给 ${escapeHtml(peer.name)}"
-                  style="background:transparent;border:1px solid var(--border);color:var(--text);cursor:pointer;width:22px;height:22px;border-radius:4px;font-size:12px;line-height:1;padding:0;display:flex;align-items:center;justify-content:center;flex:0 0 auto;">📤</button>
-        </div>
+           <button class="peer-edit-btn" title="编辑好友名字/备注"
+                   style="background:transparent;border:1px solid var(--border);color:var(--text);cursor:pointer;width:22px;height:22px;border-radius:4px;font-size:12px;line-height:1;padding:0;display:flex;align-items:center;justify-content:center;flex:0 0 auto;">✏️</button>
+           <button class="peer-share-btn" title="分享 channel 给 ${escapeHtml(peer.name)}"
+                   style="background:transparent;border:1px solid var(--border);color:var(--text);cursor:pointer;width:22px;height:22px;border-radius:4px;font-size:12px;line-height:1;padding:0;display:flex;align-items:center;justify-content:center;flex:0 0 auto;">📤</button>
+         </div>
         <div class="remote-peer-channels" style="margin-top:4px;margin-left:8px;">
           ${peerChannels.length === 0
             ? '<div style="font-size:10px;color:var(--text-muted);padding:2px 4px;">(对方还没分享 channel 给你)</div>'
@@ -3623,10 +3625,25 @@ function renderRemoteChannels() {
     }
   });
 
-  // 2026-06-10: 每个 peer 头部双击 → 改名字 / 改备注
+  // 2026-07-24: "✏️ 编辑"按钮 → 改名字 / 改备注
+  list.querySelectorAll('.remote-peer-header').forEach(row => {
+    const editBtn = row.querySelector('.peer-edit-btn');
+    if (editBtn) {
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const peerName = row.dataset.peerName;
+        const peerPk = row.dataset.peerPk;
+        openEditPeerModal(peerName, peerPk);
+      });
+    }
+  });
+
+  // 2026-06-10: 每个 peer 头部双击 → 改名字 / 改备注 (保留作为快捷方式)
   list.querySelectorAll('.remote-peer-header').forEach(row => {
     row.addEventListener('dblclick', (e) => {
       if (e.target.closest('.peer-caret-btn')) return;
+      if (e.target.closest('.peer-edit-btn')) return;
+      if (e.target.closest('.peer-share-btn')) return;
       const peerName = row.dataset.peerName;
       const peerPk = row.dataset.peerPk;
       openEditPeerModal(peerName, peerPk);

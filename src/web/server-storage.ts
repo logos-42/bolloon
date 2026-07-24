@@ -13,6 +13,7 @@
 
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
+import * as path from 'path';
 import {
   CHANNELS_PATH,
   SESSION_CACHE_PATH,
@@ -28,38 +29,69 @@ import { saveWindow as saveSessionWindow, loadWindow as loadSessionWindow } from
 let lastChannelsJson = '';
 // 写盘保护: 任何调用 saveChannels 后更新
 let lastChannelsWriteAt = 0;
+// 2026-07-24: 简单的互斥锁, 防止并发 loadChannels→modify→saveChannels 的经典 read-modify-write 竞争
+let channelsLock: Promise<any> = Promise.resolve();
 
 export function getLastChannelsWriteAt(): number {
   return lastChannelsWriteAt;
 }
 
-export async function loadChannels(): Promise<Channel[]> {
+/** 对 channels 执行原子化的 read-modify-write, 自带互斥锁 */
+export async function updateChannels(fn: (channels: Channel[]) => Channel[]): Promise<Channel[]> {
+  channelsLock = channelsLock.then(async () => {
+    const chs = await rawLoadChannels();
+    const result = fn(chs);
+    await rawSaveChannels(result);
+    return result;
+  });
+  return channelsLock;
+}
+
+async function rawLoadChannels(): Promise<Channel[]> {
   try {
     const data = await fs.readFile(CHANNELS_PATH, 'utf-8');
     return JSON.parse(data);
-  } catch {
+  } catch (readErr: any) {
+    // 2026-07-24: 主文件损坏时尝试从 .tmp 恢复
+    if (readErr?.code !== 'ENOENT') {
+      console.warn('[loadChannels] channels.json 解析失败, 尝试从 .tmp 恢复:', readErr?.message?.slice(0, 80));
+      try {
+        const tmpData = await fs.readFile(CHANNELS_PATH + '.tmp', 'utf-8');
+        const recovered = JSON.parse(tmpData);
+        console.log(`[loadChannels] 从 .tmp 恢复成功: ${recovered.length} 个 channel`);
+        // 立即把恢复的内容写回主文件
+        await fs.writeFile(CHANNELS_PATH, tmpData, 'utf-8');
+        return recovered;
+      } catch (tmpErr: any) {
+        console.warn('[loadChannels] .tmp 恢复也失败:', tmpErr?.message?.slice(0, 80));
+      }
+    }
     return [];
   }
 }
 
-export async function saveChannels(channels: Channel[]): Promise<void> {
-  // 写盘前剥掉任何遗留的 didDocument 字段, 防止历史脏数据撑大文件
+async function rawSaveChannels(channels: Channel[]): Promise<void> {
   const sanitized = channels.map(ch => {
     const { didDocument: _omit, ...rest } = ch as any;
     return rest as Channel;
   });
   const jsonStr = JSON.stringify(sanitized, null, 2);
-
-  // 写盘保护: 内容和上次完全一致就跳过, 避免 SSE ping / 重新 init 触发的无意义写盘
-  if (jsonStr === lastChannelsJson) {
-    return;
-  }
+  if (jsonStr === lastChannelsJson) return;
   lastChannelsJson = jsonStr;
-
   console.log('[saveChannels] 保存频道数据, 数量:', sanitized.length);
-  console.log('[saveChannels] JSON 长度:', jsonStr.length);
-  await fs.writeFile(CHANNELS_PATH, jsonStr);
+  // 2026-07-24: 原子写入 — 先写 .tmp 再 rename, 防止崩溃导致 channels.json 损坏
+  const tmpPath = CHANNELS_PATH + '.tmp';
+  await fs.writeFile(tmpPath, jsonStr, 'utf-8');
+  await fs.rename(tmpPath, CHANNELS_PATH);
   lastChannelsWriteAt = Date.now();
+}
+
+export async function loadChannels(): Promise<Channel[]> {
+  return rawLoadChannels();
+}
+
+export async function saveChannels(channels: Channel[]): Promise<void> {
+  return rawSaveChannels(channels);
 }
 
 /**
