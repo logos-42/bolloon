@@ -298,6 +298,41 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     }
   });
 
+  // add_friend_by_id — 通过 Hyperswarm publicKey 添加 P2P 好友
+  ctx.tools.set('add_friend_by_id', {
+    name: 'add_friend_by_id',
+    description: '通过 Hyperswarm P2P publicKey (64 字符 hex) 添加好友. 对方在线时会收到好友申请弹窗, 接受后自动分享 channel.',
+    parameters: {
+      publicKey: '64 字符 hex publicKey (必填)',
+      name: '可选, 给好友的备注名 (如: 同事-张磊)',
+      message: '可选, 附加的好友申请消息'
+    },
+    execute: async (args) => {
+      const publicKey = String(args.publicKey || '').trim();
+      const name = String(args.name || '').trim();
+      const message = String(args.message || '想加你为 P2P 好友, 共享 channel 协作').trim();
+      if (!publicKey || publicKey.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(publicKey)) {
+        return { success: false, error: 'publicKey 必须是 64 字符 hex 格式' };
+      }
+      try {
+        const port = process.env.PORT || '54188';
+        const res = await fetch(`http://127.0.0.1:${port}/api/friend-request`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetPublicKey: publicKey, name: name || undefined, message })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          const reason = data.code === 'NO_CONN' ? '对方未在线, 已本地记住, 等对方上线后自动重连' : (data.error || '请求失败');
+          return { success: false, error: `添加好友失败: ${reason}`, output: data.persistedAs ? `本地已保存为: ${data.persistedAs}` : undefined };
+        }
+        return { success: true, output: `✅ 好友申请已发送给 ${data.persistedAs || name || publicKey.substring(0, 12)}...\n对方接受后会自动出现在 P2P 好友列表.` };
+      } catch (e: any) {
+        return { success: false, error: `添加好友失败: ${String(e.message || e)}` };
+      }
+    }
+  });
+
   // delegate_to_engine — 把编码任务委派给本机已安装的其他 AI 编码智能体 CLI
   // (codex / claude-code / opencode / openclaw / hermes). 它们必须已安装且可达 PATH.
   // 实验 API 引擎 (experiment:xxx) 是供应商不是 CLI, 不支持委派, 工具会提示改用 import.

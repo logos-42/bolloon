@@ -567,6 +567,37 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     return;
   }
 
+  if (trimmed.toLowerCase().startsWith('add_friend ') || trimmed.toLowerCase() === 'add_friend') {
+    const parts = trimmed.split(/\s+/);
+    if (parts.length < 2 || (parts.length === 2 && parts[1].length !== 64)) {
+      process.stdout.write(`${GRAY}用法: add_friend <64字符hex publicKey> [备注名]\n${RESET}`);
+      process.stdout.write(`${GRAY}示例: add_friend a1b2c3d4e5f6... 同事-张磊\n${RESET}`);
+      return;
+    }
+    const pk = parts[1];
+    const name = parts.slice(2).join(' ') || '';
+    process.stdout.write(`${GRAY}正在发送好友申请给 ${pk.substring(0, 16)}...${RESET}\n`);
+    try {
+      const port = process.env.PORT || '54188';
+      const res = await fetch(`http://127.0.0.1:${port}/api/friend-request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetPublicKey: pk, name: name || undefined })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const reason = data.code === 'NO_CONN' ? '对方未在线, 已本地记住, 等对方上线后自动重连' : (data.error || '请求失败');
+        process.stdout.write(`${MAGENTA}✗ 添加好友失败: ${reason}${RESET}\n`);
+        if (data.persistedAs) process.stdout.write(`${GRAY}本地已保存为: ${data.persistedAs}${RESET}\n`);
+      } else {
+        process.stdout.write(`${GREEN}✓ 好友申请已发送给 ${data.persistedAs || name || pk.substring(0, 12)}...${RESET}\n`);
+      }
+    } catch (err: any) {
+      process.stdout.write(`${MAGENTA}✗ 添加好友失败: ${err.message || String(err)}${RESET}\n`);
+    }
+    return;
+  }
+
   try {
     // 已发送消息框
     process.stdout.write(renderUserMessage(trimmed) + '\n');

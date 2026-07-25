@@ -4066,54 +4066,100 @@ if (showMyIdBtn) {
 }
 
 // Phase 3 重做: + 添加好友按钮 → 弹窗输入 publicKey + name, 同时 joinPeer
+// 2026-07-25: 改为 modal 对话框, 替代之前的 prompt() 链
 const addPeerBtn = document.getElementById('add-p2p-peer-btn');
 if (addPeerBtn) {
   addPeerBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
-    const name = prompt('给这个 P2P 好友起个名字 (如: 同事-张磊)');
-    if (!name) return;
-    const publicKey = prompt('粘贴对方的 P2PDirect publicKey (64 字符 hex):\n\n获取方式: 对方在 http://localhost:54188/api/p2p-publickey');
-    if (!publicKey) return;
-    if (publicKey.length !== 64) {
-      alert('publicKey 长度不对, 应该是 64 字符 hex');
-      return;
-    }
+    showAddFriendModal();
+  });
+}
+
+function showAddFriendModal() {
+  document.getElementById('add-friend-modal')?.remove();
+  const html = `
+    <div id="add-friend-modal" class="friend-req-overlay">
+      <div class="friend-req-shell" style="width:520px;">
+        <div class="friend-req-header">
+          <span style="font-size:20px;">➕</span>
+          <div style="flex:1;min-width:0;">
+            <div class="friend-req-title">添加 P2P 好友</div>
+            <div class="friend-req-meta">通过 Hyperswarm publicKey 添加</div>
+          </div>
+        </div>
+        <div class="friend-req-body">
+          <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-secondary);">好友名字（备注）</label>
+          <input id="afm-name" type="text" placeholder="如: 同事-张磊"
+                 style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-main);color:var(--text);font-family:inherit;font-size:13px;box-sizing:border-box;margin-bottom:12px;">
+          <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-secondary);">对方 publicKey (64 字符 hex)</label>
+          <input id="afm-pk" type="text" placeholder="粘贴对方的 P2PDirect publicKey"
+                 style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-main);color:var(--text);font-family:monospace;font-size:12px;box-sizing:border-box;margin-bottom:12px;">
+          <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-secondary);">申请消息（可选）</label>
+          <input id="afm-msg" type="text" value="想加你为 P2P 好友, 共享 channel 协作"
+                 style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-main);color:var(--text);font-family:inherit;font-size:13px;box-sizing:border-box;margin-bottom:12px;">
+          <div id="afm-status" style="display:none;font-size:12px;margin-bottom:8px;"></div>
+          <p style="margin:0;color:var(--text-muted);font-size:11px;">对方需已启动 Bolloon 并在线. 接受后双方互加好友, 对方分享的 channel 会自动出现.</p>
+        </div>
+        <div class="friend-req-actions">
+          <button id="afm-cancel" class="friend-req-btn-deny">取消</button>
+          <button id="afm-send" class="friend-req-btn-accept">发送申请</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+  const close = () => document.getElementById('add-friend-modal')?.remove();
+  const statusEl = document.getElementById('afm-status');
+  const setStatus = (text, color) => {
+    if (!statusEl) return;
+    statusEl.style.display = 'block';
+    statusEl.style.color = color || 'var(--text-secondary)';
+    statusEl.textContent = text;
+  };
+  document.getElementById('afm-cancel').onclick = close;
+  document.getElementById('afm-send').onclick = async () => {
+    const name = document.getElementById('afm-name').value.trim();
+    const publicKey = document.getElementById('afm-pk').value.trim();
+    const message = document.getElementById('afm-msg').value.trim();
+    if (!publicKey) { setStatus('请粘贴对方的 publicKey', '#b91c1c'); return; }
+    if (publicKey.length !== 64) { setStatus('publicKey 长度不对, 应该是 64 字符 hex', '#b91c1c'); return; }
+    const sendBtn = document.getElementById('afm-send');
+    if (sendBtn) { (sendBtn as HTMLButtonElement).disabled = true; sendBtn.textContent = '发送中...'; }
+    setStatus('正在发送...', 'var(--text-secondary)');
     try {
-      // v3 新增: 改用 friend-request RPC — 不光 joinPeer, 还发申请到对方
-      // 对方会收到 SSE friend-request 事件, 弹一个申请 modal
       const res = await fetch('/api/friend-request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetPublicKey: publicKey, name, message: '想加你为 P2P 好友, 共享 channel 协作' })
+        body: JSON.stringify({ targetPublicKey: publicKey, name: name || undefined, message: message || undefined })
       });
       const data = await res.json();
       if (res.status === 502) {
-        // 2026-06-10: 区分"对方不在线"和"写失败" — 让用户知道是否需要重试
         const reason = data.code === 'NO_CONN' ? '对方未在线或 P2P 握手超时' : '写入 P2P 通道失败';
-        alert(`好友申请发送失败: ${reason}\n\n本地已记住对方 publicKey (${publicKey.substring(0,8)}...), 等对方上线后可在 P2P 面板手动重试.`);
+        setStatus(`发送失败: ${reason}. 本地已记住, 等对方上线后可重试.`, '#b91c1c');
         await loadRemoteChannels();
+        if (sendBtn) { (sendBtn as HTMLButtonElement).disabled = false; sendBtn.textContent = '发送申请'; }
         return;
       }
       if (!res.ok) throw new Error(data.error || 'connect failed');
-      // 成功 — 但不阻塞地等 ack (ack 经 SSE 'friend-request-ack' 推回, 由 v3GlobalEventSource 处理)
       window.__pendingFriendRequests = window.__pendingFriendRequests || new Map();
       if (data.requestId) {
-        window.__pendingFriendRequests.set(data.requestId, { name, publicKey, at: Date.now() });
-        // 8s 后还没 ack → 提示用户对方可能跑旧版 (无 ack 协议)
+        window.__pendingFriendRequests.set(data.requestId, { name: name || publicKey.substring(0,8), publicKey, at: Date.now() });
         setTimeout(() => {
           if (window.__pendingFriendRequests.has(data.requestId)) {
             window.__pendingFriendRequests.delete(data.requestId);
             console.warn(`[v3-friend] 申请超时未收到 ack (requestId=${data.requestId.substring(0,8)})`);
-            showSimpleToast(`⚠️ 对方未确认收到 (可能是旧版客户端, 申请已发出但无法验证)`, 'warn');
+            showSimpleToast('对方未确认收到 (可能是旧版客户端, 申请已发出但无法验证)', 'warn');
           }
         }, 8000);
       }
-      alert(`已发送好友申请给 ${name} (${publicKey.substring(0, 12)}...)\n对方收到后自己端弹申请 modal, 接受后会出现在 P2P 好友区.`);
+      setStatus(`✅ 好友申请已发送给 ${data.persistedAs || name || publicKey.substring(0, 12)}... 对方接受后会出现在 P2P 好友区.`, '#16a34a');
+      setTimeout(close, 2000);
       await loadRemoteChannels();
     } catch (err) {
-      alert('申请失败: ' + (err.message || err));
+      setStatus('申请失败: ' + (err.message || err), '#b91c1c');
+      if (sendBtn) { (sendBtn as HTMLButtonElement).disabled = false; sendBtn.textContent = '发送申请'; }
     }
-  });
+  };
 }
 
 /**
