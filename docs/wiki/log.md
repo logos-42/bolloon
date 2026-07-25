@@ -4,7 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
-|------|-------|--------|------|
+| 2026-07-25 | feat | 添加好友三入口: agent 工具 `add_friend_by_id` + Web UI modal + CLI `add_friend`; 发布 v0.3.15 | [pi-sdk-tools.ts:301](../../src/agents/pi-sdk-tools.ts) / [client.ts:4071](../../src/web/client.ts) / [index.ts:570](../../src/index.ts) |
 | 2026-07-22 | feat | 判断力负向回收 + 上下文废气涡轮增压 (设计 A/B/C) — Web 判断力页面简化为正向/负向两类 (替换 6 个 status tab); injectNegativeGuard 以"避免清单"注入 prompt (maxChars=300, 显式); exhaust-scrubber 涡轮采样废气调参 (不进 prompt, 隐式); 背压→judgment 注入 maxChars(1800/1500/800)+检索 top-k(8/5/3); 落 log+memory; vitest 959/959 pass (+17) | [设计文档](../plans/2026-07-22-negative-exhaust-design.md) |
 | 2026-07-20 | fix | Bug 1: tool call 结果不在前端渲染 — step 事件在 .message-ai 未创建时静默丢弃; 加 stepEventBuffer (按 channelId 缓冲), handleStepEvent 无 .message-ai 时入队, flushStepEventBuffer 在 addMessage + mountStepTimeline 后回放 | [message-renderer.ts:88](../../src/web/ui/message-renderer.ts) |
 | 2026-07-20 | fix | Bug 2: friend-shared channel tags 不标记来源 peer — sanitizeChannelForPeer 缺 ownerPublicKey, 前端收到所有远端 channel 无法区分来自哪个节点; 加 _ownerPublicKey: ch.publicKey | [server-v3-p2p.ts:76](../../src/web/server-v3-p2p.ts) |
