@@ -1522,14 +1522,38 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
           if (parsed && parsed.v === 3 && parsed.op) {
             // v3 跨用户 chat: B 端收到 A 的 chat.reply, 直接 SSE 推给前端
             if (parsed.op === 'agent.chat.reply') {
-              console.log(`[v3] 收到来自 ${evt.fromPublicKey.substring(0,12)}... 的 chat.reply (${(parsed.payload?.text || '').length} chars)`);
+              const replyText = parsed.payload?.text || '';
+              const replyChannelId = parsed.payload?.channelId;
+              console.log(`[v3] 收到来自 ${evt.fromPublicKey.substring(0,12)}... 的 chat.reply (${replyText.length} chars, channel=${replyChannelId})`);
               broadcast({
                 type: 'remote-chat-reply',
                 fromPublicKey: evt.fromPublicKey,
-                channelId: parsed.payload?.channelId,
-                text: parsed.payload?.text || '',
+                channelId: replyChannelId,
+                text: replyText,
                 error: parsed.payload?.error
               }, 'p2p-global');
+              // 2026-07-27: 把远端回复持久化到本地 session, 让 LLM 下次能读到上下文
+              if (replyChannelId && replyText) {
+                import('../web/server-storage.js').then(async ({ loadSession, saveSession }) => {
+                  try {
+                    const existing = await loadSession(replyChannelId, 'default');
+                    const session: any = existing || { channelId: replyChannelId, sessionId: 'default', messages: [], lastUpdated: '' };
+                    session.messages.push({
+                      id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                      type: 'ai',
+                      content: replyText,
+                      timestamp: new Date().toISOString(),
+                      source: 'remote-reply',
+                      fromPublicKey: evt.fromPublicKey,
+                    });
+                    session.lastUpdated = new Date().toISOString();
+                    await saveSession(session);
+                    console.log(`[v3] chat.reply 已持久化到 session (${replyChannelId}): ${replyText.substring(0, 40)}...`);
+                  } catch (e: any) {
+                    console.warn('[v3] chat.reply 持久化失败:', e?.message?.substring(0, 100));
+                  }
+                }).catch(() => {});
+              }
               return;
             }
             // 2026-07-21: 社交心跳 beacon — 远端智能体宣告存活/能力, 更新本地 liveness
@@ -2113,8 +2137,8 @@ ${goalDesc}
           console.warn('[v3-outbox] flushAllOutboxes failed:', (err as Error).message);
         }
       }
-      // 每 2 分钟兜底 flush
-      setInterval(flushAllOutboxes, 2 * 60 * 1000);
+      // 每 15s 兜底 flush (连接窗口通常 5-10s, 要能抓住窗口 flush 出去)
+      setInterval(flushAllOutboxes, 15 * 1000);
     } catch (err) {
       console.error('[v3] P2PDirect 启动失败:', (err as Error).message);
       v3P2PRef = null;
@@ -4457,21 +4481,16 @@ app.get('/channels', async (_req, res) => {
         return res.status(400).json({ error: 'text length must be 1-8000' });
       }
       const fromPk = v3P2PRef.getPublicKey();
-      const msg = JSON.stringify({
-        v: 3,
-        op: 'agent.chat.send',
-        payload: { channelId, text, fromPublicKey: fromPk }
-      });
-      const ok = v3P2PRef.sendTo(targetPublicKey, msg);
-      if (!ok) {
-        return res.status(502).json({
-          error: 'peer not connected. POST /api/remote-channels/p2p-connect first.'
-        });
+      // 2026-07-27: 改用 sendOrQueue (先尝试直发, 失败则入队, 不断线不丢)
+      const { sendOrQueue } = await import('../network/p2p-outbox.js');
+      const r = await sendOrQueue(targetPublicKey, 'agent.chat.send', { channelId, text, fromPublicKey: fromPk }, v3P2PRef);
+      if (r === 'FAILED') {
+        return res.status(502).json({ error: 'send failed: peer not reachable' });
       }
       // 2026-06-10: 喂 watchdog — chat-send 成功是真实业务活动
       watchdogRef?.recordActivity?.();
-      console.log(`[v3] chat-send 转发到 ${targetPublicKey.substring(0, 12)}... (channelId=${channelId})`);
-      res.json({ ok: true, sent: true });
+      console.log(`[v3] chat-send 转发到 ${targetPublicKey.substring(0, 12)}... (channelId=${channelId}) => ${r}`);
+      res.json({ ok: true, sent: r === 'SENT', queued: r === 'QUEUED' });
     } catch (err: any) {
       console.error('[v3] chat-send 失败:', err);
       res.status(500).json({ error: err.message });

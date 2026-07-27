@@ -198,7 +198,7 @@ export class P2PDirect extends EventEmitter {
   async sendToWithWait(
     publicKeyHex: string,
     data: Buffer | string,
-    timeoutMs: number = 5000
+    timeoutMs: number = 15000
   ): Promise<'SENT' | 'NO_CONN' | 'WRITE_FAIL'> {
     // 2026-06-11: 先主动触发 joinPeer, 否则 DHT 上对面可能没 push conn
     if (this.swarm) {

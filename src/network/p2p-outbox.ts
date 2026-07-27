@@ -42,7 +42,7 @@ export async function sendOrQueue(
   // 先尝试直发
   if (!opts.forceQueue && p2p) {
     try {
-      const r = await p2p.sendToWithWait(publicKey, rpc, 3000);
+      const r = await p2p.sendToWithWait(publicKey, rpc, 15000);
       if (r === 'SENT') return 'SENT';
     } catch (err: any) {
       console.warn(`[outbox] sendToWithWait 抛错 (${publicKey.slice(0,12)}...): ${err?.message?.slice(0, 100)}`);
@@ -92,7 +92,7 @@ export async function flushAllOutboxes(p2p: P2PDirect | null | undefined): Promi
       for (const entry of outbox) {
         const rpc = JSON.stringify({ v: 3, op: entry.op, payload: entry.payload });
         try {
-          const r = await p2p.sendToWithWait(peer.publicKey, rpc, 3000);
+          const r = await p2p.sendToWithWait(peer.publicKey, rpc, 15000);
           if (r === 'SENT') {
             sent++;
           } else {
