@@ -1694,6 +1694,19 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                     agentCount: manifest.agents.length,
                     capabilityIndex: await peerFs.readCapabilityIndex(peerKey2),
                   }, 'p2p-global');
+
+                  // 2026-07-27: 对 manifest 中有 cid/ipnsName 的 agent 解析 DID 文档
+                  // 不阻塞主流程，fire-and-forget 后台进行
+                  const agentsWithDID = manifest.agents.filter((a: any) => a.cid || a.ipnsName);
+                  if (agentsWithDID.length > 0) {
+                    import('../network/did-agent-resolver.js').then(({ resolveAgentsFromManifest, persistResolvedAgent }) =>
+                      resolveAgentsFromManifest(agentsWithDID).then(resolved => {
+                        for (const r of resolved) {
+                          persistResolvedAgent(peerKey2, r).catch(() => {});
+                        }
+                      }).catch(() => {})
+                    ).catch(() => {});
+                  }
                 } catch (err) {
                   console.error('[v3-manifest] (P2PDirect) manifest.exchange.reply 失败:', (err as Error).message);
                 }
