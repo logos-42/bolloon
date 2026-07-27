@@ -1681,6 +1681,12 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                   const counts = await writeRemoteResources(peerKey2, manifest);
                   await peerFs.writeCapabilityIndex(peerKey2, idx);
                   console.log(`[v3-manifest] (P2PDirect) 收到 ${peerKey2.substring(0,12)}... manifest (${manifest.agents.length} agents, owner=${manifest.ownerName || '?'}, +g${counts.groups}/f${counts.functions}/e${counts.exportments}/s${counts.sciences}) → 落盘`);
+                  // 2026-07-27: 如果是自动发现的 peer，用 manifest 中的名字更新
+                  if (manifest.ownerName) {
+                    import('../network/auto-peer-discovery.js').then(({ updateDiscoveredPeerName }) =>
+                      updateDiscoveredPeerName(peerKey2, manifest.ownerName).catch(() => {})
+                    ).catch(() => {});
+                  }
                   broadcast({
                     type: 'peer-manifest-updated',
                     fromPublicKey: peerKey2,
@@ -1870,10 +1876,20 @@ ${goalDesc}
         }
       }
 
-      // 新连接进来 → 主动发我分享给 ta 的 channel 列表
+      // 新连接进来 → 主动发我分享给 ta 的 channel 列表 + 自动发现好友
       v3P2PRef.on('connection', (evt: any) => {
         // 2026-06-10: 喂 watchdog —— 新连接到来是真实业务活动
         watchdogRef?.recordActivity?.();
+
+        // 2026-07-27: 自动发现 — 通过 topic 进来的新 peer 自动加好友
+        // fire-and-forget: 不阻塞 connection 处理主流程
+        import('../network/auto-peer-discovery.js').then(({ tryAutoDiscoverPeer }) => {
+          const localPk = v3P2PRef?.getPublicKey() || '';
+          tryAutoDiscoverPeer(evt.remotePublicKey, localPk).catch((e: any) =>
+            console.warn('[auto-discover] 失败:', (e as Error)?.message)
+          );
+        }).catch(() => {});
+
         setTimeout(async () => {
           try {
             const channels = await loadChannels();
