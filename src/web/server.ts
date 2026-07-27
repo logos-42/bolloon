@@ -1453,9 +1453,33 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
   try {
     console.log('开始生成 P2P 身份...');
 
-    // 生成 DIAP 身份
-    const kp = KeyManager.generate();
-    console.log('KeyManager.generate() 完成, kp:', !!kp, 'kp.did:', kp?.did);
+    // 加载或生成持久化的 P2P 身份
+    const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
+    const p2pIdentityPath = path.join(homeDir, '.bolloon', 'p2p-identity.json');
+    let kp: import('@diap/sdk').KeyPair;
+    let reused = false;
+    try {
+      if (fsSync.existsSync(p2pIdentityPath)) {
+        const raw = fsSync.readFileSync(p2pIdentityPath, 'utf-8');
+        const j = JSON.parse(raw);
+        const pkBytes = Buffer.from(j.privateKey, 'hex');
+        if (pkBytes.length === 32) {
+          kp = KeyManager.fromPrivateKey(pkBytes);
+          reused = true;
+        } else throw 0;
+      } else throw 0;
+    } catch {
+      kp = KeyManager.generate();
+      const privateKeyHex = Buffer.from(kp.privateKey).toString('hex');
+      const publicKeyHex = Buffer.from(kp.publicKey).toString('hex');
+      fsSync.mkdirSync(path.dirname(p2pIdentityPath), { recursive: true });
+      fsSync.writeFileSync(p2pIdentityPath, JSON.stringify({
+        keyType: 'Ed25519', privateKey: privateKeyHex, publicKey: publicKeyHex,
+        did: kp.did, createdAt: new Date().toISOString(), version: '1.0'
+      }, null, 2), { mode: 0o600 });
+      try { fsSync.chmodSync(p2pIdentityPath, 0o600); } catch { /* ignore */ }
+    }
+    console.log(reused ? `复用 P2P 身份: ${kp.did.substring(0, 24)}...` : `新建 P2P 身份: ${kp.did.substring(0, 24)}...`);
     console.log('kp.publicKey:', kp?.publicKey);
 
     const did = kp.did || 'did:unknown:123456';

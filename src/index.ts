@@ -14,8 +14,10 @@ import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 import * as fs from 'fs/promises';
+import { existsSync, mkdirSync } from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import * as os from 'os';
 import { documentReader } from './documents/reader.js';
 import { initMinimax } from './constraints/index.js';
 import { createAgentSession } from './agents/pi-sdk.js';
@@ -169,14 +171,27 @@ function getUserName(): string {
 
 async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPair; did: string; name: string }> {
   s.step(1, 5, '生成 DIAP 身份', 'loading');
-  const kp = KeyManager.generate();
+  const homeDir = process.env.HOME || process.env.USERPROFILE || os.homedir?.() || '.';
+  const identityPath = path.join(homeDir, '.bolloon', 'identity.json');
+  let kp: import('@diap/sdk').KeyPair;
+  let reused = false;
+  try {
+    if (existsSync(identityPath)) {
+      kp = await KeyManager.fromFile(identityPath);
+      reused = true;
+    } else throw 0;
+  } catch {
+    kp = KeyManager.generate();
+    mkdirSync(path.dirname(identityPath), { recursive: true });
+    await KeyManager.saveToFile(kp, identityPath);
+  }
   const did = kp.did;
   const username = getUserName();
   const suffix = did.split(':').pop()?.substring(0, 4);
   const name = `blln-${username}-${suffix}`;
-  console.log(`     ${GRAY}DID:${RESET} ${did}`);
+  console.log(`     ${reused ? GRAY+'复用 ' : ''}${GRAY}DID:${RESET} ${did}`);
   console.log(`     ${GRAY}名称:${RESET} ${name}`);
-  s.step(1, 5, '生成 DIAP 身份', 'ok');
+  s.step(1, 5, reused ? '复用 DIAP 身份' : '生成 DIAP 身份', 'ok');
   return { keypair: kp, did, name };
 }
 
