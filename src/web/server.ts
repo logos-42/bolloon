@@ -19,6 +19,7 @@ import { registerLlmConfigRoutes } from './routes-llm-config.js';
 import { registerExternalEngineRoutes } from './routes-external-engines.js';
 import { registerTaskRoutes } from './routes-tasks.js';
 import { registerHearthRoutes } from './routes-hearth.js';
+import { loadOrCreateAgentIdentity } from '../agents/agent-identity.js';
 
 // 2026-07-06: 类型抽到 ./server-types.ts (channel / session / task / sse client / iroh info / paths)
 import {
@@ -3201,24 +3202,24 @@ ${goalDesc}
     const didMissing = !channel.did || channel.did === 'undefined' || channel.did === 'null' || channel.did === '';
     if (!didMissing) return;
 
-    let kp: any;
+    let identity: import('../agents/agent-identity.js').AgentIdentity | null = null;
     try {
-      kp = KeyManager.generate();
-    } catch {
-      kp = null;
-    }
-    if (kp && kp.did) {
-      channel.did = kp.did;
-      channel.publicKey = Buffer.from(kp.publicKey).toString('hex');
-    } else {
+      // 用 agentId 作为持久化身份的 key — 确保同一 agentId 跨重启稳定
+      identity = loadOrCreateAgentIdentity(channel.agentId || channel.id);
+      channel.did = identity.did;
+      channel.publicKey = identity.publicKey;
+    } catch (e) {
       // 兜底: 用 channelId 派生, 不阻塞 UI
+      console.warn(`[DID 修复] ${channel.name} agentIdentity 加载失败:`, (e as Error).message);
       channel.did = `did:web:${channel.id}`;
       channel.publicKey = `pk_${channel.id}`;
     }
-    console.log(`[DID 修复] ${channel.name} DID = ${channel.did}`);
+    console.log(`[DID 修复] ${channel.name} DID = ${channel.did} (${identity?.reused ? '复用' : '新建'} agent 持久身份)`);
 
     // IPFS 注册: 失败也无所谓, 后续可重试
     try {
+      const pkBytes = Buffer.from(channel.publicKey, 'hex');
+      const kp = { privateKey: new Uint8Array(32), publicKey: pkBytes, did: channel.did };
       const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
       const result = await auth.registerAgent({ name: channel.name, services: [] }, kp, '');
       channel.cid = result.cid || channel.cid;
