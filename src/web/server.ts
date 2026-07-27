@@ -1593,9 +1593,18 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
               return;
             }
             const commShim = {
-              sendToConnection: (_id: string, data: string) => {
+              sendToConnection: async (_id: string, data: string) => {
+                // 尝试解析 JSON 提取 op + payload，走 outbox（连接断开也不丢消息）
+                try {
+                  const parsed = JSON.parse(data);
+                  if (parsed && parsed.v === 3 && parsed.op) {
+                    const { sendOrQueue } = await import('../network/p2p-outbox.js');
+                    await sendOrQueue(evt.fromPublicKey, parsed.op, parsed.payload || {}, v3P2PRef);
+                    return;
+                  }
+                } catch {}
+                // 兜底：直接发送
                 v3P2PRef!.sendTo(evt.fromPublicKey, data);
-                return Promise.resolve();
               }
             };
             // v3 新增: 好友申请 RPC — 任何对端可以发, 推到前端 UI 让用户接受
