@@ -434,16 +434,7 @@ const pendingQueue: string[] = [];
 let cliStartTime = 0;
 let cliModelName = '…';
 let cliAgentName = '…';
-let cliContextPct = 0;         // 0-100
-
-function getTermHeight(): number {
-  return process.stdout.rows || 24;
-}
-
-function moveCursorToBottom(lines: number = 1): void {
-  const height = getTermHeight();
-  process.stdout.write(`\x1b[${height - lines + 1};1H`);
-}
+let cliContextPct = 0;
 
 function fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -459,41 +450,22 @@ function statusBarLine(): string {
   const barLen = 12;
   const filled = Math.round((cliContextPct / 100) * barLen);
   const bar = C_OK + '█'.repeat(filled) + C_DIM + '░'.repeat(barLen - filled) + RESET;
-  return `${C_DIM}${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${bar} ${C_DIM}${cliContextPct}%${RESET}`;
+  return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${bar} ${C_DIM}${cliContextPct}%${RESET}`;
 }
 
 function showBottomPrompt(): void {
   if (!isRunning) return;
   promptVisible = true;
-  process.stdout.write(SAVE_CURSOR);
-  moveCursorToBottom(2);
-  // 第 1 行: 状态栏 (从屏幕底上数第 2 行)
-  process.stdout.write(CLEAR_LINE + statusBarLine() + '\n');
-  // 第 2 行: 输入框
-  process.stdout.write(CLEAR_LINE);
+  const tw = process.stdout.columns || 80;
+  const sep = C_DIM + '─'.repeat(tw) + RESET;
   const hint = currentInput.length === 0 && !queueMode
     ? ` ${C_DIM}!cmd${RESET}  ${C_DIM}/queue${RESET}  ${C_DIM}/help${RESET}`
     : queueMode ? ` ${C_WARN}[队列${pendingQueue.length}]${RESET}` : '';
   const prefix = queueMode ? `${C_WARN}▸${RESET}` : `${C_ACCENT}❯${RESET}`;
-  const tw = process.stdout.columns || 80;
-  process.stdout.write(`${C_DIM}${'─'.repeat(tw)}${RESET}\n`);
-  process.stdout.write(`${prefix} ${currentInput}${hint}${HIDE_CURSOR_SEQ}`);
-  process.stdout.write(`\n${C_DIM}${'─'.repeat(tw)}${RESET}`);
-  process.stdout.write(RESTORE_CURSOR);
+  process.stdout.write(`\n${sep}\n${statusBarLine()}\n${sep}\n${C_DIM}${'─'.repeat(tw)}${RESET}\n${prefix} ${currentInput}${hint}`);
 }
 
 function clearPromptLine(): void {
-  if (!promptVisible) return;
-  process.stdout.write(SAVE_CURSOR);
-  moveCursorToBottom(4);
-  process.stdout.write(CLEAR_LINE);
-  process.stdout.write('\n');
-  process.stdout.write(CLEAR_LINE);
-  process.stdout.write('\n');
-  process.stdout.write(CLEAR_LINE);
-  process.stdout.write('\n');
-  process.stdout.write(CLEAR_LINE);
-  process.stdout.write(RESTORE_CURSOR);
   promptVisible = false;
 }
 
@@ -530,33 +502,9 @@ function startCLI(comm: HyperswarmCommunicator): void {
   cliModelName = foundProvider ? foundProvider[1] : '未配置';
   cliAgentName = agentIdentity?.name || 'bolloon';
   cliStartTime = Date.now();
-  const llmName = process.env.MINIMAX_API_KEY ? 'MiniMax'
-    : process.env.OPENAI_API_KEY ? 'OpenAI'
-    : process.env.ANTHROPIC_API_KEY ? 'Anthropic'
-    : process.env.DEEPSEEK_API_KEY ? 'DeepSeek'
-    : '未配置';
-  process.stdout.write(renderDashboard({
-    title: '系统状态',
-    brand: false,
-    rows: [
-      { label: 'LLM Provider', status: llmName === '未配置' ? 'warn' : 'ok', detail: llmName },
-      { label: 'P2P 节点', status: peerCount > 0 ? 'ok' : 'warn', detail: `${peerCount} 个` },
-      { label: '输入方式', status: 'info', detail: '底部对话框' },
-    ],
-  }) + '\n');
-  process.stdout.write(renderDialog({
-    title: 'Bolloon Agent',
-    brand: false,
-    prompt: '输入消息开始对话 · 输入 help 查看命令',
-  }) + '\n');
+  process.stdout.write(`${C_DIM}Bolloon CLI ready. 输入 !cmd /queue /help${RESET}\n\n`);
 
   showBottomPrompt();
-
-  const promptTimer = setInterval(() => {
-    if (isRunning && promptVisible) {
-      showBottomPrompt();
-    }
-  }, 500);
 
   const handleInput = (chunk: Buffer, key: { name: string; ctrl: boolean } | undefined) => {
     if (!isRunning) return;
@@ -566,7 +514,6 @@ function startCLI(comm: HyperswarmCommunicator): void {
       clearPromptLine();
       process.stdout.write(`\n${CYAN}👋 再见！${RESET}\n`);
       try { (process.stdin as any).setRawMode(false); } catch {}
-      clearInterval(promptTimer);
       process.exit(0);
       return;
     }
