@@ -537,6 +537,7 @@ function startCLI(comm: HyperswarmCommunicator): void {
     : '未配置';
   process.stdout.write(renderDashboard({
     title: '系统状态',
+    brand: false,
     rows: [
       { label: 'LLM Provider', status: llmName === '未配置' ? 'warn' : 'ok', detail: llmName },
       { label: 'P2P 节点', status: peerCount > 0 ? 'ok' : 'warn', detail: `${peerCount} 个` },
@@ -545,6 +546,7 @@ function startCLI(comm: HyperswarmCommunicator): void {
   }) + '\n');
   process.stdout.write(renderDialog({
     title: 'Bolloon Agent',
+    brand: false,
     prompt: '输入消息开始对话 · 输入 help 查看命令',
   }) + '\n');
 
@@ -556,8 +558,9 @@ function startCLI(comm: HyperswarmCommunicator): void {
     }
   }, 500);
 
-  const handleInput = (chunk: Buffer, key: { name: string; ctrl: boolean }) => {
+  const handleInput = (chunk: Buffer, key: { name: string; ctrl: boolean } | undefined) => {
     if (!isRunning) return;
+    if (!key) return;
 
     if (key.ctrl && key.name === 'c') {
       clearPromptLine();

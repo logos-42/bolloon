@@ -242,11 +242,13 @@ export function renderDashboard(opts: DashboardOpts): string {
 export interface DialogOpts {
   title?: string;
   prompt: string;
+  brand?: boolean;
   width?: number;
 }
 
 export function renderDialog(opts: DialogOpts): string {
-  const art = brandArtLines();
+  const showBrand = opts.brand !== false;
+  const art = showBrand ? brandArtLines() : [];
   const maxArt = art.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
   const inner = Math.max(
     40,
@@ -257,7 +259,9 @@ export function renderDialog(opts: DialogOpts): string {
   const width = Math.min(termWidth() - 2, opts.width ?? inner + 4);
   const lines: string[] = [];
   lines.push(boxTop(opts.title ?? 'Bolloon Agent', width));
-  for (const l of art) lines.push(boxRow(l, width, 'center'));
+  if (showBrand) {
+    for (const l of art) lines.push(boxRow(l, width, 'center'));
+  }
   lines.push(boxRow(opts.prompt, width));
   lines.push(boxBottom(width));
   return lines.join('\n');
