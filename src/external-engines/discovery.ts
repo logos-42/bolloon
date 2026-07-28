@@ -171,6 +171,17 @@ const KNOWN_ENGINES: EngineSpec[] = [
     models: OPENCODE_MODELS,
     delegateArgs: (p) => ['prompt', p],
   },
+  {
+    id: 'opencli',
+    displayName: 'OpenCLI',
+    binaries: ['opencli', 'open-cli'],
+    configFiles: ['.opencli/config.json', '.config/opencli/config.json'],
+    envKeys: ['OPENCLI_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
+    providerHint: 'openai',
+    models: OPENCODE_MODELS,
+    modelFlag: '-m',
+    delegateArgs: (p) => ['exec', p],
+  },
 ];
 
 // ====================== 默认 deps (真实 IO) ======================

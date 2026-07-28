@@ -1536,6 +1536,19 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
       }
     }
   });
+
+  // 2026-07-28: 注册 LSP 工具 (代码智能)
+  // registerBuiltinTools 不是 async, 用同步 import 兜底
+  try {
+    // 动态 import + 立即执行, 兼容 ESM
+    import('../lsp/lsp-tools.js').then(({ registerLspTools }) => {
+      registerLspTools(ctx);
+    }).catch((e) => {
+      console.warn('[registerTools] LSP 工具注册失败 (非致命):', e);
+    });
+  } catch (lspErr) {
+    console.warn('[registerTools] LSP 工具注册失败 (非致命):', lspErr);
+  }
 }
 
 /**
