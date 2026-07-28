@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.3.16",
+  "version": "0.3.17",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli-entry.js",
@@ -48,7 +48,7 @@
     "src/constraint-runtime"
   ],
   "dependencies": {
-    "@bolloon/bolloon-agent": "^0.3.15",
+    "@bolloon/bolloon-agent": "^0.3.16",
     "@bolloon/constraint-runtime": "0.1.0",
     "@capacitor/core": "^8.4.1",
     "@capacitor/ios": "^8.4.1",
