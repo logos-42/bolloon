@@ -420,11 +420,6 @@ export class PiAgentSession implements AgentSession {
           this.skillRegistry.register(s);
         }
         console.log(`[loadSkills] 已加载 ${skills.length} 个 skill from ${resolved.join(', ')}`);
-        if (skills.length > 0) {
-          for (const s of skills) {
-            console.log(`  - ${s.name}: ${s.description.substring(0, 100)}${s.description.length > 100 ? '...' : ''}`);
-          }
-        }
       })
       .catch((err) => {
         console.error('[loadSkills] 加载失败:', err);
@@ -1556,16 +1551,6 @@ ${toolDefs}
     if (onStream) {
       onStream({ type: 'status', content: `✅ 处理完成，共 ${iteration - 1} 次循环`, tool: 'system' });
     }
-
-    const now = new Date().toISOString();
-    const identityPrefix = `${this.identity.name} ｜ bolloon 智能体
-<environment_details>
-Current time: ${now}
-Working directory: ${this.cwd}
-Workspace root folder: ${this.cwd}
-</environment_details>
-`;
-    finalResponse = identityPrefix + finalResponse;
 
     this.messageHistory.push({ role: 'assistant', content: finalResponse });
 

@@ -446,6 +446,15 @@ function statusBarLine(): string {
 
 function startCLI(comm: HyperswarmCommunicator): void {
   isRunning = true;
+
+  // CLI 模式下过滤 [xxx] 内部日志
+  const _origLog = console.log;
+  const _origWarn = console.warn;
+  const _isInternal = (args: any[]) =>
+    args.length && typeof args[0] === 'string' && /^\[[A-Za-z _\-.]+/.test(args[0]);
+  console.log = (...args: any[]) => { if (_isInternal(args)) return; _origLog.apply(console, args); };
+  console.warn = (...args: any[]) => { if (_isInternal(args)) return; _origWarn.apply(console, args); };
+
   let peerCount = 0;
   try { peerCount = comm.getConnections().length; } catch { /* */ }
   
