@@ -25,7 +25,7 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
-import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderToolCall, flowConnector, termWidth } from './cli/loading-tui.js';
+import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderToolCall, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
 
@@ -415,18 +415,9 @@ function rpcErr(code: string, msg: string): string {
 
 // ---------------------------------------------------------------------------
 // CLI with persistent bottom prompt
-// ---------------------------------------------------------------------------
-
-const SAVE_CURSOR = '\x1b[s';
-const RESTORE_CURSOR = '\x1b[u';
-const MOVE_TO_BOTTOM = '\x1b[999A';
-const HIDE_CURSOR_SEQ = '\x1b[?25l';
-const SHOW_CURSOR_SEQ = '\x1b[?25h';
-const MOVE_UP_1 = '\x1b[1A';
+// 2026-07-28: 改用 readline.createInterface + replReadline 循环
 
 let isRunning = false;
-let currentInput = '';
-let promptVisible = false;
 let queueMode = false;
 const pendingQueue: string[] = [];
 
@@ -453,28 +444,8 @@ function statusBarLine(): string {
   return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${bar} ${C_DIM}${cliContextPct}%${RESET}`;
 }
 
-function showBottomPrompt(): void {
-  if (!isRunning) return;
-  promptVisible = true;
-  const tw = process.stdout.columns || 80;
-  const sep = C_DIM + '─'.repeat(tw) + RESET;
-  const hint = currentInput.length === 0 && !queueMode
-    ? ` ${C_DIM}!cmd${RESET}  ${C_DIM}/queue${RESET}  ${C_DIM}/help${RESET}`
-    : queueMode ? ` ${C_WARN}[队列${pendingQueue.length}]${RESET}` : '';
-  const prefix = queueMode ? `${C_WARN}▸${RESET}` : `${C_ACCENT}❯${RESET}`;
-  // 输出完整底部区域：上分界 → 状态栏 → 中分界 → 输入 → 下分界
-  process.stdout.write(`\n${sep}\n${statusBarLine()}\n${sep}\n${prefix} ${currentInput}${hint}\n${sep}`);
-}
-
-function clearPromptLine(): void {
-  promptVisible = false;
-}
-
 function startCLI(comm: HyperswarmCommunicator): void {
   isRunning = true;
-
-  // ── 品牌图标 ──
-  printBanner(_BOLLOON_VERSION);
   let peerCount = 0;
   try { peerCount = comm.getConnections().length; } catch { /* */ }
   
@@ -495,24 +466,32 @@ function startCLI(comm: HyperswarmCommunicator): void {
   cliStartTime = Date.now();
   process.stdout.write(`${C_DIM}输入 !cmd 执行终端 · /queue 入队 · /help 帮助${RESET}\n\n`);
 
-  // 用 readline 做输入循环, 不用 raw mode
-  replLoop(comm);
+  // 启动框: logo 左对齐（无状态栏 — 状态栏在输入框上方）
+  const art = brandArtLines();
+  const maxArt = art.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
+  const boxW = Math.min(termWidth() - 2, Math.max(40, maxArt) + 4);
+  process.stdout.write(boxTop('Bolloon Agent', boxW) + '\n');
+  for (const l of art) process.stdout.write(boxRow(l, boxW, 'left') + '\n');
+  process.stdout.write(boxBottom(boxW) + '\n\n');
+
+  // readline 输入循环（底部没有独立状态栏）
+  replReadline(comm);
 }
 
-async function replLoop(comm: HyperswarmCommunicator): Promise<void> {
+async function replReadline(comm: HyperswarmCommunicator): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const SEP = '\x1b[90m─';
+  const RST = '\x1b[0m';
+
   while (isRunning) {
-    const input = await new Promise<string>(resolve => {
-      const tw = process.stdout.columns || 80;
-      const sep = C_DIM + '─'.repeat(tw) + RESET;
-      const prefix = queueMode ? `${C_WARN}▸${RESET}` : `${C_ACCENT}❯${RESET}`;
-      // 显示底部区域: 上分界 → 状态栏 → 中分界
-      process.stdout.write(`\n${sep}\n${statusBarLine()}\n${sep}\n`);
-      rl.question(`${prefix} `, (answer) => {
-        resolve(answer);
-      });
-    });
-    const trimmed = input.trim();
+    const tw = process.stdout.columns || 80;
+    const sepLine = SEP.repeat(tw) + RST;
+    const prefix = queueMode ? `${C_WARN}▸${RST}` : `${C_ACCENT}❯${RST}`;
+    const raw = await new Promise<string>(resolve => rl.question(
+      `\n${sepLine}\n${statusBarLine()}\n${sepLine}\n${prefix} `, resolve
+    ));
+    const trimmed = raw.trim();
+    process.stdout.write(`\n${sepLine}\n\n\n\n\n`);
     if (!trimmed) continue;
     if (!isRunning) break;
     await processInput(trimmed, comm);

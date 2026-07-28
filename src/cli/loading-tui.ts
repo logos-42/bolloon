@@ -71,7 +71,7 @@ export const BOLLOON_BANNER = [
 ].join('\n');
 
 /** 艺术字全部行 (图标在左, BOLLOON 艺术字在右), 供框内渲染 */
-function brandArtLines(): string[] {
+export function brandArtLines(): string[] {
   const icon = BOLLOON_ICON.split('\n');
   const banner = BOLLOON_BANNER.split('\n');
   const gap = 2;
@@ -122,7 +122,7 @@ function stripAnsi(s: string): string {
 }
 
 /** 显示宽度: CJK / 全角符号算 2, 其余算 1 (ANSI 转义不计入) */
-function dispWidth(s: string): number {
+export function dispWidth(s: string): number {
   const clean = s.replace(/\x1b\[[0-9;]*m/g, '');
   let n = 0;
   for (const ch of clean) {
