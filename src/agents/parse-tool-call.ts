@@ -107,7 +107,7 @@ export function parseAllToolCalls(content: string, ctx: ParseContext): ToolCall[
 
   // 2. JSON 行: 每行一个 tool_call (minimax / deepseek 多行 JSON)
   //   也匹配连续 `{"name":"...","arguments":{...}}{"name":"...",...}` (无分隔符)
-  const jsonLineRe = /\{[^{}]*"name"\s*:\s*"(\\w+)"[^{}]*"arguments"\s*:\s*(\{[^{}]*\})[^{}]*\}/g;
+  const jsonLineRe = /\{[^{}]*"name"\s*:\s*"(\w+)"[^{}]*"arguments"\s*:\s*(\{[^{}]*\})[^{}]*\}/g;
   let jm: RegExpExecArray | null;
   while ((jm = jsonLineRe.exec(stripped)) !== null) {
     try {
@@ -174,9 +174,10 @@ export function parseAllToolCalls(content: string, ctx: ParseContext): ToolCall[
       const inner = tcm[1].trim();
       const parsed = JSON.parse(inner);
       if (parsed && parsed.name) {
-        const args = typeof parsed.args === 'object' && parsed.args
-          ? Object.fromEntries(Object.entries(parsed.args).map(([k, v]) => [k, String(v)]))
+        const rawArgs = (typeof parsed.args === 'object' && parsed.args) ? parsed.args
+          : (typeof parsed.arguments === 'object' && parsed.arguments) ? parsed.arguments
           : {};
+        const args = Object.fromEntries(Object.entries(rawArgs).map(([k, v]) => [k, String(v)]));
         const name = ctx.tools.has(parsed.name) ? parsed.name : resolve(ctx, parsed.name);
         if (!name) continue;
         autoSplitCommand(args);
@@ -194,9 +195,10 @@ export function parseAllToolCalls(content: string, ctx: ParseContext): ToolCall[
       const inner = tlcm[1].trim();
       const parsed = JSON.parse(inner);
       if (parsed && parsed.name) {
-        const args = typeof parsed.args === 'object' && parsed.args
-          ? Object.fromEntries(Object.entries(parsed.args).map(([k, v]) => [k, String(v)]))
+        const rawArgs = (typeof parsed.args === 'object' && parsed.args) ? parsed.args
+          : (typeof parsed.arguments === 'object' && parsed.arguments) ? parsed.arguments
           : {};
+        const args = Object.fromEntries(Object.entries(rawArgs).map(([k, v]) => [k, String(v)]));
         const name = ctx.tools.has(parsed.name) ? parsed.name : resolve(ctx, parsed.name);
         if (!name) continue;
         autoSplitCommand(args);
