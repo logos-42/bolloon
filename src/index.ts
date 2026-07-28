@@ -427,29 +427,64 @@ const MOVE_UP_1 = '\x1b[1A';
 let isRunning = false;
 let currentInput = '';
 let promptVisible = false;
+let queueMode = false;
+const pendingQueue: string[] = [];
+
+// 底部状态栏数据
+let cliStartTime = 0;
+let cliModelName = '…';
+let cliAgentName = '…';
+let cliContextPct = 0;         // 0-100
 
 function getTermHeight(): number {
   return process.stdout.rows || 24;
 }
 
-function moveCursorToBottom(): void {
+function moveCursorToBottom(lines: number = 1): void {
   const height = getTermHeight();
-  process.stdout.write(`\x1b[${height};1H`);
+  process.stdout.write(`\x1b[${height - lines + 1};1H`);
+}
+
+function fmtDuration(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  if (h > 0) return `${h}h${m % 60}m`;
+  if (m > 0) return `${m}m${s % 60}s`;
+  return `${s}s`;
+}
+
+function statusBarLine(): string {
+  const dur = cliStartTime ? fmtDuration(Date.now() - cliStartTime) : '0s';
+  const barLen = 12;
+  const filled = Math.round((cliContextPct / 100) * barLen);
+  const bar = C_OK + '█'.repeat(filled) + C_DIM + '░'.repeat(barLen - filled) + RESET;
+  return `${C_DIM}${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${bar} ${C_DIM}${cliContextPct}%${RESET}`;
 }
 
 function showBottomPrompt(): void {
   if (!isRunning) return;
   promptVisible = true;
   process.stdout.write(SAVE_CURSOR);
-  moveCursorToBottom();
-  process.stdout.write(`${CYAN}❯ ${RESET}${currentInput}${HIDE_CURSOR_SEQ}`);
+  moveCursorToBottom(2);
+  // 第 1 行: 状态栏 (从屏幕底上数第 2 行)
+  process.stdout.write(CLEAR_LINE + statusBarLine() + '\n');
+  // 第 2 行: 输入框
+  process.stdout.write(CLEAR_LINE);
+  const hint = currentInput.length === 0 && !queueMode
+    ? ` ${C_DIM}!cmd${RESET}  ${C_DIM}/queue${RESET}  ${C_DIM}/help${RESET}`
+    : queueMode ? ` ${C_WARN}[队列${pendingQueue.length}]${RESET}` : '';
+  const prefix = queueMode ? `${C_WARN}▸${RESET}` : `${C_ACCENT}❯${RESET}`;
+  process.stdout.write(`${prefix} ${currentInput}${hint}${HIDE_CURSOR_SEQ}`);
   process.stdout.write(RESTORE_CURSOR);
 }
 
 function clearPromptLine(): void {
   if (!promptVisible) return;
   process.stdout.write(SAVE_CURSOR);
-  moveCursorToBottom();
+  moveCursorToBottom(2);
+  process.stdout.write(CLEAR_LINE);
+  process.stdout.write('\n');
   process.stdout.write(CLEAR_LINE);
   process.stdout.write(RESTORE_CURSOR);
   promptVisible = false;
@@ -472,6 +507,22 @@ function startCLI(comm: HyperswarmCommunicator): void {
   printBanner(_BOLLOON_VERSION);
   let peerCount = 0;
   try { peerCount = comm.getConnections().length; } catch { /* */ }
+  
+  // 读取 LLM 模型名 (支持多 provider)
+  const providerNames: [string, string][] = [
+    ['OPENAI_API_KEY', 'OpenAI'],
+    ['ANTHROPIC_API_KEY', 'Anthropic'],
+    ['DEEPSEEK_API_KEY', 'DeepSeek'],
+    ['GOOGLE_API_KEY', 'Google'],
+    ['GROQ_API_KEY', 'Groq'],
+    ['MINIMAX_API_KEY', 'MiniMax'],
+    ['XAI_API_KEY', 'xAI'],
+    ['TOGETHER_API_KEY', 'Together'],
+  ];
+  const foundProvider = providerNames.find(([k]) => process.env[k]);
+  cliModelName = foundProvider ? foundProvider[1] : '未配置';
+  cliAgentName = agentIdentity?.name || 'bolloon';
+  cliStartTime = Date.now();
   const llmName = process.env.MINIMAX_API_KEY ? 'MiniMax'
     : process.env.OPENAI_API_KEY ? 'OpenAI'
     : process.env.ANTHROPIC_API_KEY ? 'Anthropic'
@@ -561,6 +612,63 @@ function startCLI(comm: HyperswarmCommunicator): void {
 async function processInput(input: string, comm: HyperswarmCommunicator): Promise<void> {
   const trimmed = input.trim();
 
+  // !command — 直接执行终端命令
+  if (trimmed.startsWith('!')) {
+    const cmd = trimmed.slice(1).trim();
+    if (!cmd) { process.stdout.write(`${C_DIM}!<命令> 执行终端命令, 如 !ls -la${RESET}\n`); return; }
+    process.stdout.write(`${C_DIM}── $ ${cmd}${RESET}\n`);
+    try {
+      const { execSync } = await import('child_process');
+      const out = execSync(cmd, { timeout: 30000, encoding: 'utf-8', cwd: process.cwd() });
+      process.stdout.write(`${C_DIM}${out || '(无输出)'}${RESET}`);
+    } catch (e: any) {
+      process.stdout.write(`${C_ERROR}${e.stderr || e.message}${RESET}\n`);
+    }
+    process.stdout.write(`${C_DIM}──${RESET}\n`);
+    return;
+  }
+
+  // /queue — 切换队列模式
+  if (trimmed.toLowerCase() === '/queue') {
+    queueMode = !queueMode;
+    process.stdout.write(`${C_WARN}队列 ${queueMode ? '开启' : '关闭'}${RESET} (${pendingQueue.length} 条)\n`);
+    return;
+  }
+
+  // /dequeue — 出队一条
+  if (trimmed.toLowerCase() === '/dequeue' || trimmed.toLowerCase() === '/dq') {
+    const next = pendingQueue.shift();
+    if (next) process.stdout.write(`${C_WARN}出队:${RESET} ${next}\n`);
+    else process.stdout.write(`${C_DIM}队列为空${RESET}\n`);
+    return;
+  }
+
+  // 队列模式: 入队
+  if (queueMode) {
+    pendingQueue.push(trimmed);
+    process.stdout.write(`${C_WARN}[${pendingQueue.length}]${RESET} 已入队\n`);
+    return;
+  }
+
+  // 队列非空: 也入队末尾 (排队执行)
+  if (pendingQueue.length > 0) {
+    pendingQueue.push(trimmed);
+    process.stdout.write(`${C_WARN}[队列 ${pendingQueue.length}]${RESET} 已入队, 执行完当前后自动运行\n`);
+    return;
+  }
+
+  if (trimmed.toLowerCase() === '/help' || trimmed === 'help') {
+    process.stdout.write(`${C_DIM}命令:${RESET}\n`);
+    process.stdout.write(`  ${C_ACCENT}!<cmd>${RESET}  执行终端命令  ${C_DIM}如 !ls -la${RESET}\n`);
+    process.stdout.write(`  ${C_ACCENT}/queue${RESET}  切换队列模式  ${C_DIM}输入排队, 当前结束后自动执行${RESET}\n`);
+    process.stdout.write(`  ${C_ACCENT}/dequeue${RESET} 出队一条\n`);
+    process.stdout.write(`  ${C_ACCENT}peers${RESET}   查看 P2P 节点\n`);
+    process.stdout.write(`  ${C_ACCENT}iroh${RESET}    查看 iroh 状态\n`);
+    process.stdout.write(`  ${C_ACCENT}add_friend${RESET} 添加好友\n`);
+    process.stdout.write(`  ${C_ACCENT}exit${RESET}    退出\n`);
+    return;
+  }
+
   if (trimmed === '退出' || trimmed === 'exit' || trimmed === 'quit') {
     clearPromptLine();
     process.stdout.write(`${CYAN}👋 再见！${RESET}\n`);
@@ -625,6 +733,8 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
   }
 
   try {
+    // 双横线分割
+    process.stdout.write(`${C_DIM}${'─'.repeat(8)} · ${'─'.repeat(8)}${RESET}\n`);
     // 已发送消息框
     process.stdout.write(renderUserMessage(trimmed) + '\n');
     const a = await getAgent();
@@ -662,6 +772,20 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     clearThinking();
     // 智能体回复框 (圆角)
     process.stdout.write(renderAgentMessage(response) + '\n');
+    // 更新底部状态栏: 上下文进度
+    try {
+      // 用 messageHistory 长度推断上下文占用
+      const msgLen = JSON.stringify((a as any).messageHistory ?? []).length;
+      cliContextPct = Math.min(100, Math.round((msgLen / 240_000) * 100));
+    } catch { /* 降级容忍 */ }
+    // 双横线分隔 + 自动消费队列
+    process.stdout.write(`${C_DIM}${'─'.repeat(8)} · ${'─'.repeat(8)}${RESET}\n`);
+    if (pendingQueue.length > 0) {
+      const next = pendingQueue.shift()!;
+      process.stdout.write(`${C_WARN}⏩ 自动执行队列 [${pendingQueue.length + 1}/${pendingQueue.length + 1}]${RESET}\n`);
+      await processInput(next, comm);
+      return;
+    }
   } catch (e: any) {
     if (!e.message?.includes('ERR_USE_AFTER_CLOSE') && !e.message?.includes('write after end')) {
       process.stdout.write(`${MAGENTA}❌ ${e.message}${RESET}\n`);
