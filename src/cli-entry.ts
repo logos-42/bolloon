@@ -21,16 +21,19 @@ import { fileURLToPath } from 'url';
 import { printBanner } from './cli/loading-tui.js';
 import { discoverEngines, delegateToEngine } from './external-engines/index.js';
 import { x402CheckBalance, x402Fetch } from './agents/x402/x402Pay.js';
+import { createRequire } from 'module';
+const _require = createRequire(import.meta.url);
 
 const isWindows = process.platform === 'win32';
 
-// ANSI 颜色
+// ANSI 颜色 — Bolloon Web UI 配色 truecolor
+function _fg(r: number, g: number, b: number): string { return `\x1b[38;2;${r};${g};${b}m`; }
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
-const CYAN = '\x1b[36m';
-const YELLOW = '\x1b[33m';
-const GREEN = '\x1b[32m';
-const MAGENTA = '\x1b[35m';
+const CYAN   = _fg(0xc4, 0xd6, 0x40);  // #c4d640
+const YELLOW = _fg(0xf5, 0x9e, 0x0b);  // #f59e0b
+const GREEN  = _fg(0x22, 0xc5, 0x5e);  // #22c55e
+const MAGENTA= _fg(0xef, 0x44, 0x44);  // #ef4444
 
 // 版本信息 — 2026-07-20 Bug 3: 从 package.json 读取, 不再硬编码
 const VERSION = ((): string => {
@@ -112,9 +115,12 @@ function getMainScript(): string {
 }
 
 function getElectronPath(): string {
-  // 获取 electron 可执行文件路径
-  const electronPath = require('electron');
-  return electronPath;
+  // ESM 兼容: use _require (createRequire) instead of raw require
+  try {
+    return _require('electron');
+  } catch {
+    return 'electron';
+  }
 }
 
 // 解析命令行参数

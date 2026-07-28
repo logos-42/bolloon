@@ -39,13 +39,24 @@ const _BOLLOON_VERSION = ((): string => {
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
-const CYAN = '\x1b[36m';
-const GREEN = '\x1b[32m';
-const YELLOW = '\x1b[33m';
-const BLUE = '\x1b[34m';
-const MAGENTA = '\x1b[35m';
-const WHITE = '\x1b[37m';
-const GRAY = '\x1b[90m';
+
+// Bolloon Web UI 配色 truecolor ANSI — 与 loading-tui.ts 一致
+function fg(r: number, g: number, b: number): string { return `\x1b[38;2;${r};${g};${b}m`; }
+const C_ACCENT = fg(0xc4, 0xd6, 0x40);  // #c4d640
+const C_TEXT   = fg(0xd8, 0xd8, 0xc8);  // #d8d8c8
+const C_DIM    = fg(0x90, 0x90, 0x88);  // #909088
+const C_OK     = fg(0x22, 0xc5, 0x5e);  // #22c55e
+const C_ERROR  = fg(0xef, 0x44, 0x44);  // #ef4444
+const C_WARN   = fg(0xf5, 0x9e, 0x0b);  // #f59e0b
+
+// 向下兼容 — 旧名映射到新色
+const CYAN   = C_ACCENT;
+const GREEN  = C_OK;
+const YELLOW = C_WARN;
+const MAGENTA = C_ERROR;
+const WHITE  = C_TEXT;
+const GRAY   = C_DIM;
+const BLUE   = C_DIM;
 const BG_WHITE = '\x1b[47m';
 const BG_BLUE = '\x1b[44m';
 const BLACK = '\x1b[30m';

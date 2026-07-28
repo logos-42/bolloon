@@ -18,12 +18,21 @@ import { fileURLToPath } from 'url';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
-const CYAN = '\x1b[36m';
-const YELLOW = '\x1b[33m';
-const GREEN = '\x1b[32m';
-const RED = '\x1b[31m';
-const GRAY = '\x1b[90m';
-const WHITE = '\x1b[37m';
+const DIM = '\x1b[2m';
+
+// Bolloon Web UI 配色 truecolor ANSI
+function fg(r: number, g: number, b: number): string { return `\x1b[38;2;${r};${g};${b}m`; }
+function bg(r: number, g: number, b: number): string { return `\x1b[48;2;${r};${g};${b}m`; }
+
+const C_ACCENT    = fg(0xc4, 0xd6, 0x40);  // #c4d640
+const C_ACCENT_BG = bg(0xc4, 0xd6, 0x40);
+const C_TEXT      = fg(0xd8, 0xd8, 0xc8);  // #d8d8c8
+const C_DIM       = fg(0x90, 0x90, 0x88);  // #909088
+const C_MUTED     = fg(0x60, 0x60, 0x58);  // #606058
+const C_OK        = fg(0x22, 0xc5, 0x5e);  // #22c55e
+const C_ERROR     = fg(0xef, 0x44, 0x44);  // #ef4444
+const C_WARN      = fg(0xf5, 0x9e, 0x0b);  // #f59e0b
+const C_BORDER    = fg(0x3a, 0x3a, 0x36);  // #3a3a36
 
 const HIDE = '\x1b[?25l';
 const SHOW = '\x1b[?25h';
@@ -42,23 +51,23 @@ const BOLLOON_VERSION = getPackageVersion();
 
 // ── 品牌图标: 顶部带圆标注的 0 (气球) ──────────────
 export const BOLLOON_ICON = [
-  `${CYAN}        ✦${RESET}`,
-  `${CYAN}      ╱ ╲${RESET}`,
-  `${CYAN}  ════◆════${RESET}`,
-  `${CYAN}      ╲ ╱${RESET}`,
-  `${CYAN}       ╲${RESET}`,
-  `${CYAN}    ✦  ╲${RESET}`,
+  `${C_ACCENT}        ✦${RESET}`,
+  `${C_ACCENT}      ╱ ╲${RESET}`,
+  `${C_ACCENT}  ════◆════${RESET}`,
+  `${C_ACCENT}      ╲ ╱${RESET}`,
+  `${C_ACCENT}       ╲${RESET}`,
+  `${C_ACCENT}    ✦  ╲${RESET}`,
 ].join('\n');
 
 // ── 艺术字: BOLLOON (box 字体) + Bolloon Agent 副标题 ──
 export const BOLLOON_BANNER = [
-  `${WHITE}${BOLD}██████╗  ██████╗ ██╗     ██╗      ██████╗  ██████╗ ███╗   ██╗${RESET}`,
-  `${WHITE}${BOLD}██╔══██╗██╔═══██╗██║     ██║     ██╔═══██╗██╔═══██╗████╗  ██║${RESET}`,
-  `${WHITE}${BOLD}██████╔╝██║   ██║██║     ██║     ██║   ██║██║   ██║██╔██╗ ██║${RESET}`,
-  `${WHITE}${BOLD}██╔══██╗██║   ██║██║     ██║     ██║   ██║██║   ██║██║╚██╗██║${RESET}`,
-  `${WHITE}${BOLD}██████╔╝╚██████╔╝███████╗███████╗╚██████╔╝╚██████╔╝██║ ╚████║${RESET}`,
-  `${WHITE}${BOLD}╚═════╝  ╚═════╝ ╚══════╝╚══════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝${RESET}`,
-  `${GRAY}Bolloon Agent v${BOLLOON_VERSION}${RESET}`,
+  `${C_TEXT}${BOLD}██████╗  ██████╗ ██╗     ██╗      ██████╗  ██████╗ ███╗   ██╗${RESET}`,
+  `${C_TEXT}${BOLD}██╔══██╗██╔═══██╗██║     ██║     ██╔═══██╗██╔═══██╗████╗  ██║${RESET}`,
+  `${C_TEXT}${BOLD}██████╔╝██║   ██║██║     ██║     ██║   ██║██║   ██║██╔██╗ ██║${RESET}`,
+  `${C_TEXT}${BOLD}██╔══██╗██║   ██║██║     ██║     ██║   ██║██║   ██║██║╚██╗██║${RESET}`,
+  `${C_TEXT}${BOLD}██████╔╝╚██████╔╝███████╗███████╗╚██████╔╝╚██████╔╝██║ ╚████║${RESET}`,
+  `${C_TEXT}${BOLD}╚═════╝  ╚═════╝ ╚══════╝╚══════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝${RESET}`,
+  `${C_DIM}Bolloon Agent v${BOLLOON_VERSION}${RESET}`,
 ].join('\n');
 
 /** 艺术字全部行 (图标在左, BOLLOON 艺术字在右), 供框内渲染 */
@@ -81,19 +90,19 @@ function brandArtLines(): string[] {
 export function printBanner(version?: string): void {
   console.log(BOLLOON_ICON);
   console.log(BOLLOON_BANNER);
-  if (version) console.log(`${GRAY}  Bolloon Agent v${version}${RESET}`);
-  console.log(`${GRAY}  P2P AI Agent · 文档智能体${RESET}`);
+  if (version) console.log(`${C_DIM}  Bolloon Agent v${version}${RESET}`);
+  console.log(`${C_DIM}  P2P AI Agent · 文档智能体${RESET}`);
   console.log('');
 }
 
 // ── 状态图标 ───────────────────────────────────────
 export const STATUS_SYMBOL: Record<string, string> = {
-  pending: `${GRAY}○${RESET}`,
-  active: `${YELLOW}⠹${RESET}`,
-  ok: `${GREEN}✓${RESET}`,
-  warn: `${YELLOW}⚠${RESET}`,
-  error: `${RED}✗${RESET}`,
-  info: `${CYAN}●${RESET}`,
+  pending: `${C_MUTED}○${RESET}`,
+  active: `${C_WARN}⠹${RESET}`,
+  ok: `${C_OK}✓${RESET}`,
+  warn: `${C_WARN}⚠${RESET}`,
+  error: `${C_ERROR}✗${RESET}`,
+  info: `${C_ACCENT}●${RESET}`,
 };
 
 // ── 通用边框构件 ───────────────────────────────────
@@ -223,7 +232,7 @@ export function renderDashboard(opts: DashboardOpts): string {
   }
   for (const r of opts.rows) {
     const sym = STATUS_SYMBOL[r.status ?? 'info'];
-    const detail = r.detail ? `  ${GRAY}${r.detail}${RESET}` : '';
+    const detail = r.detail ? `  ${C_DIM}${r.detail}${RESET}` : '';
     lines.push(boxRow(`${sym} ${r.label}${detail}`, width));
   }
   lines.push(boxBottom(width));
@@ -316,7 +325,7 @@ export interface MessageBoxOpts {
 const DEFAULT_MAX_LINES = 14;
 
 export function renderMessageBox(opts: MessageBoxOpts): string {
-  const color = opts.color ?? CYAN;
+  const color = opts.color ?? C_ACCENT;
   const title = opts.title ?? 'Bolloon Agent';
   const maxLines = opts.maxLines && opts.maxLines > 0 ? opts.maxLines : 0;
   const bodyLines = wrapText(opts.body, 1000);
@@ -360,21 +369,21 @@ function renderReference(opts: {
   );
   const width = Math.min(termWidth() - 2, opts.width ?? inner + 4);
   const lines: string[] = [];
-  lines.push(boxTop(`${GRAY}引用${RESET} ${opts.color}${opts.title}${RESET}`, width, RD));
-  lines.push(boxRow(`${GRAY}已压缩 ${opts.hidden} 行 · 完整内容已发送给智能体${RESET}`, width, 'left', RD));
-  if (preview) lines.push(boxRow(`${GRAY}▏ ${preview}${RESET}`, width, 'left', RD));
+  lines.push(boxTop(`${C_DIM}引用${RESET} ${opts.color}${opts.title}${RESET}`, width, RD));
+  lines.push(boxRow(`${C_DIM}已压缩 ${opts.hidden} 行 · 完整内容已发送给智能体${RESET}`, width, 'left', RD));
+  if (preview) lines.push(boxRow(`${C_DIM}▏ ${preview}${RESET}`, width, 'left', RD));
   lines.push(boxBottom(width, RD));
   return lines.join('\n');
 }
 
 /** 已发送消息框 (用户输入) */
 export function renderUserMessage(body: string): string {
-  return renderMessageBox({ title: '✓ 已发送', body, color: GREEN, maxLines: DEFAULT_MAX_LINES });
+  return renderMessageBox({ title: '✓ 已发送', body, color: C_OK, maxLines: DEFAULT_MAX_LINES });
 }
 
 /** 智能体回复框 */
 export function renderAgentMessage(body: string): string {
-  return renderMessageBox({ title: '◉ Bolloon Agent', body, color: CYAN, maxLines: DEFAULT_MAX_LINES });
+  return renderMessageBox({ title: '◉ Bolloon Agent', body, color: C_ACCENT, maxLines: DEFAULT_MAX_LINES });
 }
 
 // ── 工具调用显示 (圆角框 + ╼╾ 连接) ────────────────
@@ -399,7 +408,7 @@ export function flowConnector(width: number): string {
 
 /** 渲染单个工具调用为圆角框 (参数 / 状态 / 输出预览) */
 export function renderToolCall(v: ToolCallView): string {
-  const color = v.status === 'ok' ? GREEN : RED;
+  const color = v.status === 'ok' ? C_OK : C_ERROR;
   const sym = v.status === 'ok' ? '✅' : '❌';
   const w = Math.min(termWidth() - 2, v.width ?? 72);
   const rows: string[] = [];
@@ -472,7 +481,7 @@ export class LoadingTUI {
       out.push(boxRow(`${STATUS_SYMBOL[step.status]} ${step.label}`, w));
     }
     if (showSpinner) {
-      const sp = YELLOW + FRAMES[this.frameIdx % FRAMES.length] + RESET;
+      const sp = C_WARN + FRAMES[this.frameIdx % FRAMES.length] + RESET;
       out.push(boxRow(`${sp} ${this.currentLabel}`, w));
     } else {
       out.push(boxRow(`${STATUS_SYMBOL.ok} Bolloon ready`, w));
