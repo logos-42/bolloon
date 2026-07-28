@@ -2150,9 +2150,7 @@ ${goalDesc}
     setInterval(v3BroadcastOwn, 30000);
 
     // 保留 @diap/sdk 的旧实例 (它的 Hyperswarm 实例能帮 P2PDirect 做 DHT bootstrap)
-    // 2026-07-04: hyperswarm 4.x 删除了 Discovery.update() (被 .flushed() 替代).
-    //   @diap/sdk 0.1.10 还调 .update(), 是上游 bug (已记录 docs/plans/2026-06-17-supervisor-iter-1.md).
-    //   这里静默 joinTopic 失败, P2PDirect (v3 主路径) 不依赖 @diap/sdk, 不影响功能.
+    // 2026-07-04: @diap/sdk v0.2.0 已修复 seed/*update*/connect 类型, 此处走正常路径.
     try {
       const rawSeed = crypto.getRandomValues(new Uint8Array(32));
       p2pCommunicator = createHyperswarmCommunicator({
@@ -2161,7 +2159,7 @@ ${goalDesc}
         autoConnect: true,
         maxConnections: 50,
         seed: rawSeed
-      } as any);
+      });
       p2pCommunicator.on('message', async (msg: any, conn: P2PConnection) => {
         // 旧 p2p_message 路径 (非 v3)
         const content = new TextDecoder().decode(msg.content);
@@ -2181,17 +2179,16 @@ ${goalDesc}
       });
       await p2pCommunicator.start();
       // @diap/sdk 也 join topic — 它的 Hyperswarm 实例帮 P2PDirect 做 DHT 引导
-      // joinTopic 失败已知 (hyperswarm 4.x + @diap/sdk 0.1.10), catch 静默
-      const oldTopic = createTopic('bolloon-agent-harness') as Buffer;
+      // v0.2.1 (2026-07-28): hyperswarm seed 类型固定 + join() 返回 { refresh, flushed, destroy }
+      //   discovery.update 错误已彻底修复. catch 保留做防御性兜底.
+      const oldTopic = createTopic('bolloon-agent-harness');
       try {
         await p2pCommunicator.joinTopic(oldTopic);
         console.log(`P2P 老通道已就绪 (DHT bootstrap 帮 P2PDirect, 实际数据走 P2PDirect)`);
       } catch (joinErr: any) {
-        // 已知: @diap/sdk 0.1.10 + hyperswarm 4.x → discovery.update is not a function
-        // v3 P2PDirect 是主路径, 此处不阻断
         const msg = String(joinErr?.message || joinErr);
         if (msg.includes('discovery.update') || msg.includes('is not a function')) {
-          console.warn(`[v3-legacy] @diap/sdk joinTopic 失败 (已知 hyperswarm 4.x 兼容问题, 已忽略): ${msg}`);
+          console.warn(`[v3-legacy] joinTopic 触发旧版兼容警告: ${msg}`);
         } else {
           throw joinErr;
         }
@@ -6086,10 +6083,10 @@ export function publishDIDBackground(name: string, kp: any) {
 export async function bootstrapP2P(verifier: AgentVerificationManager): Promise<HyperswarmCommunicator> {
   console.log('🌐 P2P连接...');
   const rawSeed = crypto.getRandomValues(new Uint8Array(32));
-  const comm = createHyperswarmCommunicator({ server: true, client: true, autoConnect: true, maxConnections: 50, seed: rawSeed } as any);
+  const comm = createHyperswarmCommunicator({ server: true, client: true, autoConnect: true, maxConnections: 50, seed: rawSeed });
 
   await comm.start();
-  const topic = createTopic('bolloon-agent-harness') as Buffer;
+  const topic = createTopic('bolloon-agent-harness');
   await comm.joinTopic(topic);
   console.log('   P2P已就绪');
 
