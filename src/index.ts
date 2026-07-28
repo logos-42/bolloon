@@ -475,14 +475,21 @@ function showBottomPrompt(): void {
     ? ` ${C_DIM}!cmd${RESET}  ${C_DIM}/queue${RESET}  ${C_DIM}/help${RESET}`
     : queueMode ? ` ${C_WARN}[队列${pendingQueue.length}]${RESET}` : '';
   const prefix = queueMode ? `${C_WARN}▸${RESET}` : `${C_ACCENT}❯${RESET}`;
+  const tw = process.stdout.columns || 80;
+  process.stdout.write(`${C_DIM}${'─'.repeat(tw)}${RESET}\n`);
   process.stdout.write(`${prefix} ${currentInput}${hint}${HIDE_CURSOR_SEQ}`);
+  process.stdout.write(`\n${C_DIM}${'─'.repeat(tw)}${RESET}`);
   process.stdout.write(RESTORE_CURSOR);
 }
 
 function clearPromptLine(): void {
   if (!promptVisible) return;
   process.stdout.write(SAVE_CURSOR);
-  moveCursorToBottom(2);
+  moveCursorToBottom(4);
+  process.stdout.write(CLEAR_LINE);
+  process.stdout.write('\n');
+  process.stdout.write(CLEAR_LINE);
+  process.stdout.write('\n');
   process.stdout.write(CLEAR_LINE);
   process.stdout.write('\n');
   process.stdout.write(CLEAR_LINE);
