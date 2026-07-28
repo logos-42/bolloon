@@ -85,6 +85,12 @@ export interface Message {
     args: Record<string, string>;
     id?: string;
   };
+  /** 2026-07-28: 多工具调用 — 一次 LLM 回复含多个 tool_call */
+  toolCalls?: Array<{
+    name: string;
+    args: Record<string, string>;
+    id?: string;
+  }>;
   toolResult?: ToolResult;
   toolCallId?: string;
 }

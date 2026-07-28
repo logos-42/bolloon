@@ -97,7 +97,7 @@ import { onPostToolUse, onJudgmentInjected, onMonitorViolation } from '../bootst
 import { budgetReduce, snip, microcompact } from '../context-compaction/index.js';
 // React Harness: 8-gate + 4-guard (防越权 / 防 prompt 注入)
 import { ReactHarness } from '../security/react-harness.js';
-import { parseToolCall as parseToolCallImpl, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl, type ToolCall } from './parse-tool-call.js';
+import { parseToolCall as parseToolCallImpl, parseAllToolCalls, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl, type ToolCall } from './parse-tool-call.js';
 import { sessionStore as defaultSessionStore, type SessionStore, type PersistedMessage } from './session-store.js';
 import { ToolRegistry } from './tool-registry.js';
 import { decideMaxIterations, decideContextOverflow, shouldCompactBeforeIteration } from './react-loop.js';
@@ -1248,51 +1248,68 @@ ${toolDefs}
       // Bug 5 (2026-07-17): 优先用 LLM 的 native tool_calls (response.toolCalls), 再回退到文本解析
       //   deepseek-v4-flash 用 OpenAI 协议 tools 时, 会真返回结构化 tool_calls 数组
       //   之前 nativeToolCalls 被读了不用, 只查 reply 文本, 导致 LLM 明明选了工具但代码找不到
-      let toolCall: ToolCall | null = null;
+      // 2026-07-28: 修复多工具调用 — 收集 ALL tool calls, 顺序执行后一次性返回
+      let toolCalls: ToolCall[] = [];
+
+      // 路径 A: native OpenAI 协议 tool_calls (可能多个)
       if (nativeToolCalls && nativeToolCalls.length > 0) {
-        const nc = nativeToolCalls[0];
-        // OpenAI 协议: { id, type: 'function', function: { name, arguments: JSON string } }
-        // 转换成 internal { name, args, id }
-        try {
-          const args = typeof nc.function?.arguments === 'string'
-            ? JSON.parse(nc.function.arguments)
-            : (nc.function?.arguments || {});
-          toolCall = {
-            name: nc.function?.name,
-            args,
-            id: nc.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          } as any;
-          console.log(`[PiAgent] 用 native tool_call: ${toolCall!.name} (id=${(toolCall as any).id})`);
-        } catch (err) {
-          console.warn(`[PiAgent] 解析 native tool_call 失败, 回退到文本解析: ${(err as Error).message?.slice(0, 100)}`);
-          toolCall = null;
+        for (const nc of nativeToolCalls) {
+          try {
+            const args = typeof nc.function?.arguments === 'string'
+              ? JSON.parse(nc.function.arguments)
+              : (nc.function?.arguments || {});
+            toolCalls.push({
+              name: nc.function?.name,
+              args,
+              id: nc.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            } as any);
+          } catch (err) {
+            console.warn(`[PiAgent] 解析 native tool_call 失败: ${(err as Error).message?.slice(0, 100)}`);
+          }
         }
       }
-      if (!toolCall) {
-        toolCall = this.parseToolCall(reply);
+
+      // 路径 B: 文本解析 (parseAllToolCalls 收集全部)
+      if (toolCalls.length === 0) {
+        const knownTools = new Set(Array.from(this.tools.keys()));
+        toolCalls = parseAllToolCalls(reply, { tools: knownTools });
       }
-      // 2026-06-30 修: 给 toolCall 分配稳定 id, 让后续 tool result 能引用同一个 id
-      //   OpenAI 协议要求 messages 里 tool result 必须有对应的 tool_call_id, 否则 400
-      if (toolCall && !(toolCall as any).id) {
-        (toolCall as any).id = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      // 回退路径 C: 原生 parseToolCall (单个)
+      if (toolCalls.length === 0) {
+        const single = this.parseToolCall(reply);
+        if (single) toolCalls.push(single);
       }
-      if (toolCall) {
+
+      // 给每个 toolCall 分配稳定 id
+      for (const tc of toolCalls) {
+        if (!(tc as any).id) {
+          (tc as any).id = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        }
+      }
+
+      if (toolCalls.length > 0) {
+        // 把原始 LLM 回复 push 进 history (仅一次)
         this.messageHistory.push({
           role: 'assistant',
           content: reply,
-          toolCall
+          toolCalls: toolCalls.length > 1 ? toolCalls : [toolCalls[0]],
         });
 
-        // 通知前端：检测到工具调用
+        // 顺序执行每个工具
+        for (let ti = 0; ti < toolCalls.length; ti++) {
+        const toolCall = toolCalls[ti];
+        const isMulti = toolCalls.length > 1;
+
+        // 通知前端
         if (onStream) {
-          onStream({ type: 'tool', content: `🔧 调用工具: ${toolCall.name}`, tool: toolCall.name });
+          onStream({ type: 'tool', content: `🔧 调用工具 (${ti + 1}/${toolCalls.length}): ${toolCall.name}`, tool: toolCall.name });
           if (toolCall.args && Object.keys(toolCall.args).length > 0) {
             onStream({ type: 'status', content: `📋 参数: ${JSON.stringify(toolCall.args)}`, tool: toolCall.name });
           }
-          // 2026-06-15: step-timeline 状态机 — 开新节点
           onStream({
             type: 'step_start',
-            content: `调用 ${toolCall.name}`,
+            content: `调用 ${toolCall.name}${isMulti ? ` (${ti + 1}/${toolCalls.length})` : ''}`,
             tool: toolCall.name,
             args: toolCall.args || {},
           });
@@ -1301,7 +1318,6 @@ ${toolDefs}
         const tool = this.tools.get(toolCall.name);
         if (!tool) {
           consecutiveErrors++;
-          // 2026-06-16 新增: 未知工具也要累计 (LLM 幻觉高频场景)
           totalErrors++;
           const errorResult: ToolResult = { success: false, error: `未知工具: ${toolCall.name}` };
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
@@ -1325,66 +1341,29 @@ ${toolDefs}
               success: false,
               error: `PreToolUse 拒绝: ${pre.reason || '未通过安全校验'}`,
             };
-            this.messageHistory.push({
-              role: 'tool',
-              content: JSON.stringify(deniedResult),
-              toolResult: deniedResult,
-            });
+            this.messageHistory.push({ role: 'tool', content: JSON.stringify(deniedResult), toolResult: deniedResult });
             this.logToHarness(toolCall.name, toolCall.args, deniedResult);
             if (onStream) {
-              onStream({
-                type: 'error',
-                content: `🛡️ PreToolUse 拒绝 ${toolCall.name}: ${pre.reason || '安全校验失败'}`,
-                tool: toolCall.name,
-              });
-              // 2026-06-15: step-timeline — 拦在 PreToolUse, 标 step_error
-              onStream({
-                type: 'step_error',
-                content: `PreToolUse 拒绝 ${toolCall.name}`,
-                tool: toolCall.name,
-                error: pre.reason || '安全校验失败',
-              });
+              onStream({ type: 'error', content: `🛡️ PreToolUse 拒绝 ${toolCall.name}: ${pre.reason || '安全校验失败'}`, tool: toolCall.name });
+              onStream({ type: 'step_error', content: `PreToolUse 拒绝 ${toolCall.name}`, tool: toolCall.name, error: pre.reason || '安全校验失败' });
             }
             console.warn(`[PiAgent] PreToolUse denied ${toolCall.name}: ${pre.reason}`);
-            // 不调 tool.execute, 也不计 consecutiveErrors (这是用户级拒绝, 不是工具错)
             continue;
           }
         } catch (err) {
           console.warn('[PiAgent] onPreToolUse failed (non-fatal, allowing):', err);
         }
 
-        // React Harness: 8-gate + builtin-guards 校验 (在 PreToolUse 之后, 串接双层)
-        // 失败静默, 拒绝时不调 tool.execute
+        // React Harness: 8-gate + builtin-guards 校验 (串接双层)
         try {
-          const pre = await this.reactHarness.preToolCall(
-            toolCall.name,
-            toolCall.args || {},
-            this.currentChannelId || undefined
-          );
+          const pre = await this.reactHarness.preToolCall(toolCall.name, toolCall.args || {}, this.currentChannelId || undefined);
           if (!pre.allowed) {
-            const deniedResult: ToolResult = {
-              success: false,
-              error: `Harness gate 拒绝 (${pre.details.rejectedBy}): ${pre.reason || '未通过安全校验'}`,
-            };
-            this.messageHistory.push({
-              role: 'tool',
-              content: JSON.stringify(deniedResult),
-              toolResult: deniedResult,
-            });
+            const deniedResult: ToolResult = { success: false, error: `Harness gate 拒绝 (${pre.details.rejectedBy}): ${pre.reason || '未通过安全校验'}` };
+            this.messageHistory.push({ role: 'tool', content: JSON.stringify(deniedResult), toolResult: deniedResult });
             this.logToHarness(toolCall.name, toolCall.args, deniedResult);
             if (onStream) {
-              onStream({
-                type: 'error',
-                content: `🛡️ Harness ${pre.details.rejectedBy} 拒绝 ${toolCall.name}: ${pre.reason || '安全校验失败'}`,
-                tool: toolCall.name,
-              });
-              // 2026-06-15: step-timeline — Harness gate 拒绝, 标 step_error
-              onStream({
-                type: 'step_error',
-                content: `Harness 拒绝 ${toolCall.name}`,
-                tool: toolCall.name,
-                error: pre.reason || '安全校验失败',
-              });
+              onStream({ type: 'error', content: `🛡️ Harness ${pre.details.rejectedBy} 拒绝 ${toolCall.name}: ${pre.reason || '安全校验失败'}`, tool: toolCall.name });
+              onStream({ type: 'step_error', content: `Harness 拒绝 ${toolCall.name}`, tool: toolCall.name, error: pre.reason || '安全校验失败' });
             }
             console.warn(`[PiAgent] Harness denied ${toolCall.name} (${pre.details.rejectedBy}): ${pre.reason}`);
             continue;
@@ -1399,166 +1378,73 @@ ${toolDefs}
           const toolDurationMs = Date.now() - toolStart;
           console.log(`[PiAgent] 工具 ${toolCall.name} 执行完成: success=${result.success} (${toolDurationMs}ms)`);
 
-          // PostToolUse 审计 hook: 写 audit log, 默认 continue
-          try {
-            await onPostToolUse({
-              tool: toolCall.name,
-              args: toolCall.args || {},
-              result: {
-                success: result.success,
-                output: result.output?.substring(0, 500),
-                error: result.error,
-              },
-              durationMs: toolDurationMs,
-            });
-          } catch (postErr) {
-            console.warn('[PiAgent] onPostToolUse failed (non-fatal):', postErr);
-          }
+          try { await onPostToolUse({ tool: toolCall.name, args: toolCall.args || {}, result: { success: result.success, output: result.output?.substring(0, 500), error: result.error }, durationMs: toolDurationMs }); }
+          catch (postErr) { console.warn('[PiAgent] onPostToolUse failed (non-fatal):', postErr); }
 
-          // Context router: 拿最近一次 preToolCall 算的 hint, 拼到 tool result messageHistory
-          // (LLM 下次看到 tool result 时, 能"记得"这次调用的安全约束)
           const routeHint = this.reactHarness.getLastRouteHint();
           if (routeHint && routeHint.systemAddition) {
-            this.messageHistory.push({
-              role: 'system',
-              content: `[Harness Router Hint: ${routeHint.reason}]\n${routeHint.systemAddition}`,
-            });
+            this.messageHistory.push({ role: 'system', content: `[Harness Router Hint: ${routeHint.reason}]\n${routeHint.systemAddition}` });
             this.reactHarness.clearRouteHint();
           }
 
-          // React Harness: post-tool call (output 审计: secret leak 等)
-          // 拒绝时 result.output 含敏感 → 替换为 generic message, 不污染 messageHistory
           try {
-            const post = await this.reactHarness.postToolCall(
-              toolCall.name,
-              String(result.output || ''),
-              this.currentChannelId || undefined
-            );
+            const post = await this.reactHarness.postToolCall(toolCall.name, String(result.output || ''), this.currentChannelId || undefined);
             if (!post.allowed) {
-              if (onStream) {
-                onStream({
-                  type: 'error',
-                  content: `🛡️ Harness output 拒绝 ${toolCall.name}: ${post.reason || '输出含敏感信息'}`,
-                  tool: toolCall.name,
-                });
-              }
+              if (onStream) { onStream({ type: 'error', content: `🛡️ Harness output 拒绝 ${toolCall.name}: ${post.reason || '输出含敏感信息'}`, tool: toolCall.name }); }
               console.warn(`[PiAgent] Harness output denied ${toolCall.name}: ${post.reason}`);
-              // 替换 result: success 仍保留 (tool 本身没错), 但 output 改成 generic
-              // 这样 LLM 下轮看 output 不会拿到秘密, 但 success 标志让它知道 "工具执行了"
-              result = {
-                ...result,
-                output: `[harness output gate: output 含敏感内容, 已屏蔽. 原因: ${post.reason || 'unknown'}]`,
-                _harnessDenied: true,
-              } as typeof result;
+              result = { ...result, output: `[harness output gate: 输出含敏感内容, 已屏蔽. 原因: ${post.reason || 'unknown'}]`, _harnessDenied: true } as typeof result;
             }
-          } catch (err) {
-            console.warn('[PiAgent] reactHarness.postToolCall failed (non-fatal, allowing):', err);
-          }
+          } catch (err) { console.warn('[PiAgent] reactHarness.postToolCall failed (non-fatal, allowing):', err); }
 
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result, toolCallId: (toolCall as any).id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` });
           this.logToHarness(toolCall.name, toolCall.args, result);
 
-          // 通知前端工具执行结果
           if (onStream) {
             if (result.success) {
               onStream({ type: 'status', content: `✅ ${toolCall.name} 执行成功`, tool: toolCall.name });
-              if (result.output) {
-                const outputPreview = result.output.substring(0, 200);
-                onStream({ type: 'tool', content: `📤 结果: ${outputPreview}${result.output.length > 200 ? '...' : ''}`, tool: toolCall.name });
-              }
-              // 2026-06-15: step-timeline 状态机 — 关闭当前节点 (成功)
-              onStream({
-                type: 'step_done',
-                content: `${toolCall.name} 执行成功`,
-                tool: toolCall.name,
-                success: true,
-                output: result.output,
-              });
+              if (result.output) { onStream({ type: 'tool', content: `📤 结果: ${result.output.substring(0, 200)}${result.output.length > 200 ? '...' : ''}`, tool: toolCall.name }); }
+              onStream({ type: 'step_done', content: `${toolCall.name} 执行成功`, tool: toolCall.name, success: true, output: result.output });
             } else {
               onStream({ type: 'error', content: `❌ ${toolCall.name} 执行失败: ${result.error}`, tool: toolCall.name });
-              // 2026-06-15: step-timeline 状态机 — 关闭当前节点 (失败)
-              onStream({
-                type: 'step_error',
-                content: `${toolCall.name} 执行失败`,
-                tool: toolCall.name,
-                error: result.error,
-              });
+              onStream({ type: 'step_error', content: `${toolCall.name} 执行失败`, tool: toolCall.name, error: result.error });
             }
           }
 
           if (result.success) {
-            consecutiveErrors = 0; // 重置连续错误计数
-
-            // 2026-06-19: 记录成功结果, 用于 LLM 失败退出时汇总给用户
-            if (result.output) {
-              this.successfulToolResults.push({
-                tool: toolCall.name,
-                outputPreview: result.output.substring(0, 200) + (result.output.length > 200 ? '...' : '')
-              });
-            } else {
-              this.successfulToolResults.push({ tool: toolCall.name, outputPreview: '(无输出)' });
-            }
-
-            // 检查工具执行质量
+            consecutiveErrors = 0;
+            if (result.output) { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: result.output.substring(0, 200) + (result.output.length > 200 ? '...' : '') }); }
+            else { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: '(无输出)' }); }
             lastQualityScore = this.estimateToolResultQuality(result);
-            if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) {
-              refineAttempts++;
-              console.log(`[PiAgent] 工具结果质量低，自动重试 (${refineAttempts}/${this.MAX_REFINE_ATTEMPTS})`);
-            } else {
-              console.log(`[PiAgent] 工具执行成功，质量评分: ${(lastQualityScore * 10).toFixed(1)}/10`);
-            }
-
-            // 工具执行成功后，继续循环获取下一个 LLM 响应
-            if (onStream) {
-              onStream({ type: 'status', content: `🔄 工具执行完成，继续循环...`, tool: 'loop' });
-            }
-            // 不 break，继续下一次循环
+            if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) { refineAttempts++; }
+            if (onStream) { onStream({ type: 'status', content: `🔄 工具执行完成，继续循环...`, tool: 'loop' }); }
           } else {
             consecutiveErrors++;
-            // 2026-06-16 新增: 累计错误 (跨工具, 兜底防 LLM 轮换工具名死循环)
             totalErrors++;
-            // 跟踪同一工具连续失败次数
-            if (toolCall.name === lastFailedTool) {
-              lastFailedToolCount++;
-            } else {
-              lastFailedTool = toolCall.name;
-              lastFailedToolCount = 1;
-            }
+            if (toolCall.name === lastFailedTool) { lastFailedToolCount++; }
+            else { lastFailedTool = toolCall.name; lastFailedToolCount = 1; }
             console.warn(`[PiAgent] 工具 ${toolCall.name} 执行失败 (${lastFailedToolCount}/${MAX_SAME_TOOL_FAILURES}, 累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS}): ${result.error}`);
-
-            // 同一工具连续失败达到上限, 不再重试, 强制 LLM 给出最终答案
             if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
-              console.log(`[PiAgent] 工具 ${toolCall.name} 连续 ${MAX_SAME_TOOL_FAILURES} 次失败, 放弃并要求直接回答`);
-              this.messageHistory.push({
-                role: 'system',
-                content: `[注意] 工具 ${toolCall.name} 在这个上下文中不可用 (连续 ${MAX_SAME_TOOL_FAILURES} 次失败: ${result.error}). 请不要再次调用它, 直接用你已知的信息回答用户, 并在回答开头标记 <final gen>.`
-              });
-              lastFailedTool = '';
-              lastFailedToolCount = 0;
-              consecutiveErrors = 0;
-              continue; // 让 LLM 看到系统提示后再决定
+              this.messageHistory.push({ role: 'system', content: `[注意] 工具 ${toolCall.name} 在这个上下文中不可用 (连续 ${MAX_SAME_TOOL_FAILURES} 次失败: ${result.error}). 请不要再次调用它, 直接用你已知的信息回答用户, 并在回答开头标记 <final gen>.` });
+              lastFailedTool = ''; lastFailedToolCount = 0; consecutiveErrors = 0;
+              continue;
             }
-
-            // 连续错误达到上限(混合不同工具), 尝试换一种方式
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-              console.log(`[PiAgent] 连续 ${MAX_CONSECUTIVE_ERRORS} 次错误，尝试换一种方式处理`);
-              this.messageHistory.push({
-                role: 'system',
-                content: `[注意] 前面的工具调用连续失败。请尝试其他工具或换一种方式完成用户请求, 或用 <final gen> 给出最终回答.`
-              });
+              this.messageHistory.push({ role: 'system', content: `[注意] 前面的工具调用连续失败。请尝试其他工具或换一种方式完成用户请求, 或用 <final gen> 给出最终回答.` });
               consecutiveErrors = 0;
             }
           }
         } catch (execError) {
           consecutiveErrors++;
-          // 2026-06-16 新增: 异常分支也要累计
           totalErrors++;
           const errorResult: ToolResult = { success: false, error: String(execError) };
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
           this.logToHarness(toolCall.name, toolCall.args, errorResult);
           console.error(`[PiAgent] 工具执行异常 (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS}): ${execError}`);
         }
-      } else {
+        } // end for (ti)
+        // 所有工具执行完毕后, continue while 循环, 让 LLM 看到结果
+        continue;
+        } else {
         // LLM 返回的不是 tool call 格式
         this.messageHistory.push({
           role: 'assistant',

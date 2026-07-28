@@ -65,7 +65,173 @@ function defaultResolveAlias(name: string, tools: Set<string>): string | null {
   return null;
 }
 
-/** 拆分 args.command: "git status" → { command: "git", args: "status" } */
+/**
+ * parseAllToolCalls — 从 LLM 输出中提取**所有**工具调用.
+ *
+ * 与 parseToolCall 不同, 这个函数不短路: 从多种格式中收集全部匹配.
+ * 支持 JSON 数组、多行 XML invoke、连续 tool_call 标签等.
+ *
+ * 用法:
+ *   import { parseAllToolCalls } from './parse-tool-call';
+ *   const calls = parseAllToolCalls(reply, { tools: knownTools });
+ *   for (const tc of calls) tool.execute(tc.args);
+ */
+export function parseAllToolCalls(content: string, ctx: ParseContext): ToolCall[] {
+  if (!content) return [];
+  const stripped = content.replace(/<think[\s\S]*?<\/think/g, '');
+  const results: ToolCall[] = [];
+  const seen = new Set<string>(); // 去重: name+JSON.stringify(args)
+
+  // 1. JSON 数组: [{"name":"x","arguments":{...}}, ...]
+  const jsonArrayMatch = stripped.match(/\[\s*\{[\s\S]*?\}\s*\]/);
+  if (jsonArrayMatch) {
+    try {
+      const arr = JSON.parse(jsonArrayMatch[0]);
+      if (Array.isArray(arr)) {
+        for (const item of arr) {
+          if (item && item.name) {
+            const args = typeof item.arguments === 'object' && item.arguments
+              ? Object.fromEntries(Object.entries(item.arguments).map(([k, v]) => [k, String(v)]))
+              : {};
+            const name = ctx.tools.has(item.name) ? item.name : resolve(ctx, item.name);
+            if (!name) continue;
+            autoSplitCommand(args);
+            const key = name + JSON.stringify(args);
+            if (!seen.has(key)) { seen.add(key); results.push({ name, args }); }
+          }
+        }
+        if (results.length > 0) return results;
+      }
+    } catch { /* not valid JSON array, fall through */ }
+  }
+
+  // 2. JSON 行: 每行一个 tool_call (minimax / deepseek 多行 JSON)
+  //   也匹配连续 `{"name":"...","arguments":{...}}{"name":"...",...}` (无分隔符)
+  const jsonLineRe = /\{[^{}]*"name"\s*:\s*"(\\w+)"[^{}]*"arguments"\s*:\s*(\{[^{}]*\})[^{}]*\}/g;
+  let jm: RegExpExecArray | null;
+  while ((jm = jsonLineRe.exec(stripped)) !== null) {
+    try {
+      const name = jm[1];
+      const argsRaw = JSON.parse(jm[2]);
+      const args = typeof argsRaw === 'object' && argsRaw
+        ? Object.fromEntries(Object.entries(argsRaw).map(([k, v]) => [k, String(v)]))
+        : {};
+      const resolved = ctx.tools.has(name) ? name : resolve(ctx, name);
+      if (!resolved) continue;
+      autoSplitCommand(args);
+      const key = resolved + JSON.stringify(args);
+      if (!seen.has(key)) { seen.add(key); results.push({ name: resolved, args }); }
+    } catch { /* skip malformed */ }
+  }
+
+  // 3. 多行 XML: 连续 <invoke name="X">...</invoke>
+  const xmlRe = /<invoke\s+name=["'](\w+)["']>([\s\S]*?)<\/invoke>/g;
+  let xm: RegExpExecArray | null;
+  while ((xm = xmlRe.exec(stripped)) !== null) {
+    const name = xm[1];
+    const rawArgs = xm[2] || '';
+    const args = parseXmlArgs(rawArgs);
+    const resolved = ctx.tools.has(name) ? name : resolve(ctx, name);
+    if (!resolved) continue;
+    autoSplitCommand(args);
+    const key = resolved + JSON.stringify(args);
+    if (!seen.has(key)) { seen.add(key); results.push({ name: resolved, args }); }
+  }
+
+  // 4. <function_calls> 包裹
+  const fcRe = /<function_calls>[\s\S]*?<invoke\s+name=["'](\w+)["']>([\s\S]*?)<\/invoke>[\s\S]*?<\/function_calls>/g;
+  let fm: RegExpExecArray | null;
+  while ((fm = fcRe.exec(stripped)) !== null) {
+    const name = fm[1];
+    const rawArgs = fm[2] || '';
+    const args = parseXmlArgs(rawArgs);
+    const resolved = ctx.tools.has(name) ? name : resolve(ctx, name);
+    if (!resolved) continue;
+    autoSplitCommand(args);
+    const key = resolved + JSON.stringify(args);
+    if (!seen.has(key)) { seen.add(key); results.push({ name: resolved, args }); }
+  }
+
+  // 5. <function_calls><tool name="X">...</tool></function_calls>
+  const toolTagRe = /<function_calls>[\s\S]*?<tool\s+name=["'](\w+)["']>([\s\S]*?)<\/tool>[\s\S]*?<\/function_calls>/g;
+  let tm: RegExpExecArray | null;
+  while ((tm = toolTagRe.exec(stripped)) !== null) {
+    const name = tm[1];
+    const rawArgs = tm[2] || '';
+    const args = parseXmlArgs(rawArgs);
+    const resolved = ctx.tools.has(name) ? name : resolve(ctx, name);
+    if (!resolved) continue;
+    autoSplitCommand(args);
+    const key = resolved + JSON.stringify(args);
+    if (!seen.has(key)) { seen.add(key); results.push({ name: resolved, args }); }
+  }
+
+  // 6. [TOOL_CALL] 标签 — 可能有多段
+  const tcTagRe = /\[TOOL_CALL\]([\s\S]*?)\[\/TOOL_CALL\]/g;
+  let tcm: RegExpExecArray | null;
+  while ((tcm = tcTagRe.exec(stripped)) !== null) {
+    try {
+      const inner = tcm[1].trim();
+      const parsed = JSON.parse(inner);
+      if (parsed && parsed.name) {
+        const args = typeof parsed.args === 'object' && parsed.args
+          ? Object.fromEntries(Object.entries(parsed.args).map(([k, v]) => [k, String(v)]))
+          : {};
+        const name = ctx.tools.has(parsed.name) ? parsed.name : resolve(ctx, parsed.name);
+        if (!name) continue;
+        autoSplitCommand(args);
+        const key = name + JSON.stringify(args);
+        if (!seen.has(key)) { seen.add(key); results.push({ name, args }); }
+      }
+    } catch { /* skip */ }
+  }
+
+  // 7. tool_call 标签 — <tool_call>...</tool_call>
+  const toolCallTagRe = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+  let tlcm: RegExpExecArray | null;
+  while ((tlcm = toolCallTagRe.exec(stripped)) !== null) {
+    try {
+      const inner = tlcm[1].trim();
+      const parsed = JSON.parse(inner);
+      if (parsed && parsed.name) {
+        const args = typeof parsed.args === 'object' && parsed.args
+          ? Object.fromEntries(Object.entries(parsed.args).map(([k, v]) => [k, String(v)]))
+          : {};
+        const name = ctx.tools.has(parsed.name) ? parsed.name : resolve(ctx, parsed.name);
+        if (!name) continue;
+        autoSplitCommand(args);
+        const key = name + JSON.stringify(args);
+        if (!seen.has(key)) { seen.add(key); results.push({ name, args }); }
+      }
+    } catch { /* skip */ }
+  }
+
+  return results;
+}
+
+/** 从 XML 子标签中提取 args */
+function parseXmlArgs(rawArgs: string): Record<string, string> {
+  const args: Record<string, string> = {};
+  // <parameter name="X">value</parameter>
+  const paramRe = /<parameter\s+name=["'](\w+)["']>([\s\S]*?)<\/parameter>/g;
+  let pm: RegExpExecArray | null;
+  while ((pm = paramRe.exec(rawArgs)) !== null) {
+    args[pm[1]] = pm[2].trim();
+  }
+  if (Object.keys(args).length > 0) return args;
+  // <param name="X">value</param>
+  const pRe = /<param\s+name=["'](\w+)["']>([\s\S]*?)<\/param>/g;
+  while ((pm = pRe.exec(rawArgs)) !== null) {
+    args[pm[1]] = pm[2].trim().replace(/^["']|["']$/g, '');
+  }
+  if (Object.keys(args).length > 0) return args;
+  // <tag>value</tag>
+  const xmlArgPattern = /<(\w+)>([\s\S]*?)<\/\1>/g;
+  while ((pm = xmlArgPattern.exec(rawArgs)) !== null) {
+    args[pm[1]] = pm[2].trim();
+  }
+  return args;
+}
 function autoSplitCommand(args: Record<string, string>): void {
   if (typeof args.command === 'string' && args.command.includes(' ') && !args.args) {
     const parts = args.command.split(/\s+/);
