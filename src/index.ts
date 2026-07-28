@@ -462,7 +462,8 @@ function showBottomPrompt(): void {
     ? ` ${C_DIM}!cmd${RESET}  ${C_DIM}/queue${RESET}  ${C_DIM}/help${RESET}`
     : queueMode ? ` ${C_WARN}[队列${pendingQueue.length}]${RESET}` : '';
   const prefix = queueMode ? `${C_WARN}▸${RESET}` : `${C_ACCENT}❯${RESET}`;
-  process.stdout.write(`\n${sep}\n${statusBarLine()}\n${sep}\n${C_DIM}${'─'.repeat(tw)}${RESET}\n${prefix} ${currentInput}${hint}`);
+  // 输出完整底部区域：上分界 → 状态栏 → 中分界 → 输入 → 下分界
+  process.stdout.write(`\n${sep}\n${statusBarLine()}\n${sep}\n${prefix} ${currentInput}${hint}\n${sep}`);
 }
 
 function clearPromptLine(): void {
@@ -471,23 +472,13 @@ function clearPromptLine(): void {
 
 function startCLI(comm: HyperswarmCommunicator): void {
   isRunning = true;
-  currentInput = '';
-  promptVisible = false;
 
-  try {
-    (process.stdin as any).setRawMode(true);
-  } catch {
-  }
-  readline.emitKeypressEvents(process.stdin);
-
-  process.stdout.write(CLEAR_LINE);
-
-  // ── Bolloon Agent 仪表盘 (ASCII 艺术字 + 品牌图标) ──
+  // ── 品牌图标 ──
   printBanner(_BOLLOON_VERSION);
   let peerCount = 0;
   try { peerCount = comm.getConnections().length; } catch { /* */ }
   
-  // 读取 LLM 模型名 (支持多 provider)
+  // 读取 LLM 模型名
   const providerNames: [string, string][] = [
     ['OPENAI_API_KEY', 'OpenAI'],
     ['ANTHROPIC_API_KEY', 'Anthropic'],
@@ -502,68 +493,34 @@ function startCLI(comm: HyperswarmCommunicator): void {
   cliModelName = foundProvider ? foundProvider[1] : '未配置';
   cliAgentName = agentIdentity?.name || 'bolloon';
   cliStartTime = Date.now();
-  process.stdout.write(`${C_DIM}Bolloon CLI ready. 输入 !cmd /queue /help${RESET}\n\n`);
+  process.stdout.write(`${C_DIM}输入 !cmd 执行终端 · /queue 入队 · /help 帮助${RESET}\n\n`);
 
-  showBottomPrompt();
+  // 用 readline 做输入循环, 不用 raw mode
+  replLoop(comm);
+}
 
-  const handleInput = (chunk: Buffer, key: { name: string; ctrl: boolean } | undefined) => {
-    if (!isRunning) return;
-    if (!key) return;
-
-    if (key.ctrl && key.name === 'c') {
-      clearPromptLine();
-      process.stdout.write(`\n${CYAN}👋 再见！${RESET}\n`);
-      try { (process.stdin as any).setRawMode(false); } catch {}
-      process.exit(0);
-      return;
-    }
-
-    if (key.name === 'return') {
-      const trimmed = currentInput.trim();
-      currentInput = '';
-      clearPromptLine();
-
-      if (trimmed) {
-        process.stdout.write('\n');
-        processInput(trimmed, comm).then(() => {
-          if (isRunning) showBottomPrompt();
-        });
-      } else {
-        showBottomPrompt();
-      }
-      return;
-    }
-
-    if (key.name === 'backspace') {
-      if (currentInput.length > 0) {
-        currentInput = currentInput.slice(0, -1);
-        showBottomPrompt();
-      }
-      return;
-    }
-
-    if (key.name === 'escape' || (key.ctrl && key.name === 'u')) {
-      currentInput = '';
-      showBottomPrompt();
-      return;
-    }
-
-    if (key.name === 'tab') {
-      return;
-    }
-
-    if (key.name && key.name.length === 1) {
-      currentInput += chunk.toString();
-      showBottomPrompt();
-    }
-  };
-
-  process.stdin.on('data', handleInput);
-
-  process.on('exit', () => {
-    isRunning = false;
-    process.stdout.write(SHOW_CURSOR_SEQ);
-  });
+async function replLoop(comm: HyperswarmCommunicator): Promise<void> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  while (isRunning) {
+    const input = await new Promise<string>(resolve => {
+      const tw = process.stdout.columns || 80;
+      const sep = C_DIM + '─'.repeat(tw) + RESET;
+      const prefix = queueMode ? `${C_WARN}▸${RESET}` : `${C_ACCENT}❯${RESET}`;
+      // 显示底部区域: 上分界 → 状态栏 → 中分界
+      process.stdout.write(`\n${sep}\n${statusBarLine()}\n${sep}\n`);
+      rl.question(`${prefix} `, (answer) => {
+        resolve(answer);
+      });
+    });
+    const trimmed = input.trim();
+    if (!trimmed) continue;
+    if (!isRunning) break;
+    await processInput(trimmed, comm);
+  }
+  rl.close();
+  process.stdout.write(`\n${CYAN}👋 再见！${RESET}\n`);
+  process.stdin.destroy();
+  comm.stop();
 }
 
 async function processInput(input: string, comm: HyperswarmCommunicator): Promise<void> {
@@ -627,11 +584,8 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
   }
 
   if (trimmed === '退出' || trimmed === 'exit' || trimmed === 'quit') {
-    clearPromptLine();
-    process.stdout.write(`${CYAN}👋 再见！${RESET}\n`);
+    process.stdout.write(`\n${CYAN}👋 再见！${RESET}\n`);
     isRunning = false;
-    process.stdin.destroy();
-    comm.stop();
     return;
   }
 
