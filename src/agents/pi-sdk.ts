@@ -98,6 +98,7 @@ import { budgetReduce, snip, microcompact } from '../context-compaction/index.js
 // React Harness: 8-gate + 4-guard (防越权 / 防 prompt 注入)
 import { ReactHarness } from '../security/react-harness.js';
 import { parseToolCall as parseToolCallImpl, parseAllToolCalls, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl, type ToolCall } from './parse-tool-call.js';
+import { buildObservation, buildReflection, formatObservationWithReflection, classifyError } from './error-classifier.js';
 import { sessionStore as defaultSessionStore, type SessionStore, type PersistedMessage } from './session-store.js';
 import { ToolRegistry } from './tool-registry.js';
 import { decideMaxIterations, decideContextOverflow, shouldCompactBeforeIteration } from './react-loop.js';
@@ -1322,6 +1323,11 @@ ${toolDefs}
           const errorResult: ToolResult = { success: false, error: `未知工具: ${toolCall.name}` };
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
           this.logToHarness(toolCall.name, toolCall.args, errorResult);
+          // 2026-07-28: 注入 Reflection 帮助 LLM 理解错误
+          const obs = buildObservation(toolCall.name, toolCall.args, errorResult);
+          const ref = buildReflection(toolCall.name, errorResult.error, totalErrors, lastFailedToolCount);
+          this.messageHistory.push({ role: 'system', content: formatObservationWithReflection(obs, ref) });
+          if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary}`, tool: 'system' });
           console.warn(`[PiAgent] 未知工具: ${toolCall.name} (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS})，跳过并继续`);
           continue;
         }
@@ -1423,6 +1429,11 @@ ${toolDefs}
             if (toolCall.name === lastFailedTool) { lastFailedToolCount++; }
             else { lastFailedTool = toolCall.name; lastFailedToolCount = 1; }
             console.warn(`[PiAgent] 工具 ${toolCall.name} 执行失败 (${lastFailedToolCount}/${MAX_SAME_TOOL_FAILURES}, 累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS}): ${result.error}`);
+            // 2026-07-28: 注入 Observation + Reflection 替代旧 hardcode 提示
+            const obs = buildObservation(toolCall.name, toolCall.args, { success: false, error: result.error });
+            const ref = buildReflection(toolCall.name, result.error, totalErrors, lastFailedToolCount);
+            this.messageHistory.push({ role: 'system', content: formatObservationWithReflection(obs, ref) });
+            if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary} → ${ref[0]?.action || '放弃'}`, tool: 'system' });
             if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
               this.messageHistory.push({ role: 'system', content: `[注意] 工具 ${toolCall.name} 在这个上下文中不可用 (连续 ${MAX_SAME_TOOL_FAILURES} 次失败: ${result.error}). 请不要再次调用它, 直接用你已知的信息回答用户, 并在回答开头标记 <final gen>.` });
               lastFailedTool = ''; lastFailedToolCount = 0; consecutiveErrors = 0;
@@ -1439,6 +1450,10 @@ ${toolDefs}
           const errorResult: ToolResult = { success: false, error: String(execError) };
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
           this.logToHarness(toolCall.name, toolCall.args, errorResult);
+          const obs = buildObservation(toolCall.name, toolCall.args, errorResult);
+          const ref = buildReflection(toolCall.name, errorResult.error, totalErrors, lastFailedToolCount);
+          this.messageHistory.push({ role: 'system', content: formatObservationWithReflection(obs, ref) });
+          if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary}`, tool: 'system' });
           console.error(`[PiAgent] 工具执行异常 (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS}): ${execError}`);
         }
         } // end for (ti)
