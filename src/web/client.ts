@@ -2408,6 +2408,24 @@ async function checkApiConfig() {
   }
 }
 
+// 2026-07-28: 加载 DID 身份 → 渲染左下角头像 + DID 名
+async function loadUserIdentity() {
+  try {
+    const res = await fetch('/api/user/identity');
+    if (!res.ok) return;
+    const identity = await res.json();
+    const letter = identity.name ? identity.name.charAt(0).toUpperCase() : '?';
+    const nameEl = document.getElementById('user-name');
+    const didEl = document.getElementById('user-did');
+    const letterEl = document.getElementById('avatar-letter');
+    if (nameEl) nameEl.textContent = identity.name || '匿名';
+    if (didEl) didEl.textContent = identity.didShort ? `did:key:${identity.didShort}` : '';
+    if (letterEl) letterEl.textContent = letter;
+  } catch (e) {
+    // 静默失败 — 不影响主聊天
+  }
+}
+
 async function init() {
   const themeData = await loadTheme();
   currentAgentId = themeData.agentId || `agent_${generateId().substring(0, 8)}`;
@@ -2415,6 +2433,9 @@ async function init() {
   if (!themeData.agentId) {
     await saveTheme(themeData.theme, currentAgentId);
   }
+
+  // 2026-07-28: 加载用户 DID 身份 → 渲染左下角头像
+  loadUserIdentity();
 
   // 2026-07-21: 从 server 拉工具列表, 用于前端 segmenter 识别 tool_call
   try {

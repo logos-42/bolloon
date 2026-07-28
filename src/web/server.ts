@@ -2293,6 +2293,51 @@ ${goalDesc}
     res.json(listTools().map(t => t.id));
   });
 
+  // 2026-07-28: 用户 DID 身份端点 — 静默生成/加载, 持久化到 ~/.bolloon/identity/user.json
+  let userIdentityCache: Record<string, string> | null = null;
+  const IDENTITY_DIR = `${process.env.HOME || '/tmp'}/.bolloon/identity`;
+
+  async function loadOrCreateUserIdentity() {
+    if (userIdentityCache) return userIdentityCache;
+    try {
+      const { readFileSync, existsSync, mkdirSync, writeFileSync } = await import('fs');
+      const file = `${IDENTITY_DIR}/user.json`;
+      if (existsSync(file)) {
+        const raw = readFileSync(file, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (parsed.did && parsed.publicKeyHex) {
+          userIdentityCache = parsed;
+          return parsed;
+        }
+      }
+      // 生成新 DID keypair
+      const kp = KeyManager.generate();
+      const didShort = kp.did.split(':').pop()?.substring(0, 8) || 'unknown';
+      const publicKeyHex = Buffer.from(kp.publicKey).toString('hex');
+      const username = getUserName();
+      const identity = {
+        did: kp.did,
+        didShort,
+        publicKeyHex,
+        name: `blln-${username}`,
+        createdAt: new Date().toISOString(),
+      };
+      mkdirSync(IDENTITY_DIR, { recursive: true });
+      writeFileSync(file, JSON.stringify(identity, null, 2), { mode: 0o600 });
+      userIdentityCache = identity;
+      console.log(`[user-identity] ✅ DID: ${kp.did.substring(0, 30)}...`);
+      return identity;
+    } catch (e: any) {
+      console.warn('[user-identity] 加载失败:', e.message);
+      return { did: '', didShort: 'anon', publicKeyHex: '', name: getUserName() };
+    }
+  }
+
+  app.get('/api/user/identity', async (_req, res) => {
+    const identity = await loadOrCreateUserIdentity();
+    res.json(identity);
+  });
+
   // 2026-07-01 (v0.2.6): 前后端分离核心 — 后端切 LLM 输出为结构化 segments
   //   - POST /api/segment-reply { reply, knownTools }
   //   - 返回 ChatSegment[] (think / text / env_details / tool_call / final)
