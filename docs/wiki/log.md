@@ -548,3 +548,4 @@
 - **真实上链前提**: funded 私钥 (Polygon 上 USDC + pUSD 授权) + 可达网络派生 API key. 当前代码已具备完整路径, 仅差凭证.
 |- **wiki writeback**: current-status.md 已支持表 "Polymarket 查询" → "Polymarket 查询 + 支付" (并删去未支持 STUB 行); log.md 本行 + 详细段.
 || 2026-07-29 | fix | 修复 buildMessages tool_calls 配对 400 错误; 移除 whitelist 检查 (工具由 OpenAI tools 参数控制); 移除 tool-manifest/ 废弃代码 (728 行); idempotent/total-call 限制改为注入 hint 而非硬断; final gen 后加质量门控; 发布 v0.3.23 | [pi-sdk.ts](../../src/agents/pi-sdk.ts) / [tool-gate.ts](../../src/security/tool-gate.ts) / [pi-ai.ts](../../src/llm/pi-ai.ts) / [server.ts](../../src/web/server.ts) |
+| 2026-07-29 | v0.3.24 | feat | 替换 readline CLI 为 Ink (React for CLI) 渲染引擎 — 内容置顶、状态栏、全宽分界线、思考颜文字动画、console.log 静音 | @leo |

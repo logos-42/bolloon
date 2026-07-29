@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.3.23",
+  "version": "0.3.24",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli-entry.js",
@@ -12,7 +12,11 @@
   "license": "MIT",
   "files": [
     "dist",
-    "bin",
+    "bin/bolloon.cjs",
+    "bin/bolloon.js",
+    "bin/bolloon.cmd",
+    "bin/bolloon-cli.cjs",
+    "bin/bolloon-daemon.sh",
     "scripts/postinstall.js",
     "scripts/build-cli.js",
     "scripts/build-web.ts"

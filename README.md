@@ -1,526 +1,135 @@
-# Bolloon - 判断力对齐协议
+# Bolloon — P2P AI 智能体平台
 
-> **⚠️ 2026-06-10 重新校准**:本文档下方的"核心效果"是历史叙事。**Bolloon 的真正定义见 [docs/真正要做的事.md](docs/真正要做的事.md)**。  
-> 一句话:**Bolloon 是 A 和 B 对接判断力的协议层——让 A 和 B 在做重要决定前,把双方的 3 个反方观点互相看见。**
+Bolloon 是一个本地优先、P2P 协作的 AI 智能体平台。它在你的设备上运行，通过 DHT 网络发现并连接其他节点。
+
+> 中文 · [English](#english)
 
 ---
 
-## 核心效果(历史叙事,即将更新)
+## 快速安装
 
-> **两个有判断力的人的决策，被 Bolloon 记录后，异步进行合作，由 Harness 驱动自动化执行。**
-
-### Pi 生态集成
-
-Bolloon 基于 [Pi](https://github.com/earendil-works/pi) 构建，使用以下官方包：
+### macOS / Linux
 
 ```bash
-# 必装
-npx oh-pi
-
-# MCP 桥接
-pi tools add --mcp tavily
-
-# 增强工具
-pi tools add --git https://github.com/obra/superpowers
-
-# 可选
-npm install -g pi-subagents pi-goals
-```
-
-| 包名 | 用途 |
-|------|------|
-| `oh-pi` | Pi 的配置管理（类 oh-my-zsh） |
-| `pi-mcp-adapter` | MCP 协议桥接，按需加载工具 |
-| `pi-goals` | 持久化目标追踪和工作流编排 |
-| `pi-subagents` | 轻量级子 Agent（基于 tmux） |
-
-**设计哲学**：Pi 提倡最小化原语（read/write/edit/bash），没有 Plan Mode、没有权限弹窗、没有内置待办。系统开销极小，上下文空间最大化。
-
----
-
-```
-人类 A 的判断力                         人类 B 的判断力
-      │                                       │
-      ▼                                       ▼
-┌─────────────────┐                   ┌─────────────────┐
-│  Bolloon 记录    │                   │  Bolloon 记录    │
-│  决策日志        │                   │  决策日志        │
-└────────┬────────┘                   └────────┬────────┘
-         │                                     │
-         ▼                                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Bollharness 治理框架                       │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │ Session Archive (异步归档)  │  Gate State Machine     │  │
-│  │ • 操作历史压缩              │  • 8-Gate 工作流       │  │
-│  │ • 关键决策提取              │  • Entry/Blocker 检查  │  │
-│  │ • 跨 Session 关联            │  • 快速通道           │  │
-│  └─────────────────────────────────────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │ Skill Adapter (16 Skills)                           │  │
-│  │ • lead (流程统领)  • arch (架构)  • harness-eng    │  │
-│  │ • task-arch (任务分解)  • crystal-learn (学习)      │  │
-│  └─────────────────────────────────────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │ Guard Checker (15 项自动化检查)                      │  │
-│  │ • 命名规范  • 安全检查  • 质量门禁                  │  │
-│  └─────────────────────────────────────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │ Context Router (路径上下文自动注入)                   │  │
-│  └─────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-         │                                     │
-         ▼                                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 Pi Judgment System (判断系统)                 │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │ Judgment Distillation (判断蒸馏)                      │  │
-│  │ • 隐式信号检测  • 显式反馈处理  • 轨迹学习           │  │
-│  └─────────────────────────────────────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │ Human Value Store (人类价值观存储)                    │  │
-│  │ • 规则  • 偏好  • 轨迹  • 奖励                     │  │
-│  └─────────────────────────────────────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │ Value Injection (价值观注入)                         │  │
-│  │ • 情境感知匹配  • LLM 语义评分  • 动态置信度        │  │
-│  └─────────────────────────────────────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │ Decision Authorization (决策授权)                     │  │
-│  │ • 置信度阈值  • 多级授权  • 协作决策               │  │
-│  └─────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-         │                                     │
-         ▼                                     ▼
-    自动化执行 ←─────────────────────→ 自动化执行
-```
-
-### 关键词
-
-- **异步合作**：决策被记录，不阻塞当前工作流
-- **Harness 驱动**：基于 8-Gate 工作流的自动化执行框架
-- **判断力保留**：人类决策作为高优先级上下文，智能体执行时不丢失意图
-
----
-
-## 安装与启动 (Quickstart)
-
-> **多用户 Windows 机器常见疑问**：`bolloon` 命令只在**装它的那个用户**的 PATH 里 (`%APPDATA%\npm\bolloon.cmd`)。Windows npm 默认 per-user 隔离, 跨用户不会自动继承.
-
-**新用户/测试用户**: 在 PowerShell 跑这 3 行(任意项目子目录都行,只要能 `cd` 到仓库根):
-
-```powershell
-cd D:\AI\bolloon
-npm install -g .        # 这一行把 bin\bolloon-cli.cjs 写到 %APPDATA%\npm\, 装当前用户生效
-bolloon --version       # 应输出 v0.2.12
-```
-
-**一键脚本**(双击或在 PowerShell `cmd /c` 执行,适合非技术测试用户): `scripts\setup-bolloon-global.cmd`. 自动检测 Node / 跳过已装 deps / link / 自检.
-
-**日常使用**:
-
-```powershell
-bolloon              # 启动 GUI (Electron 桌面)
-bolloon --web        # 启动 Web UI (浏览器)
-bolloon --cli        # 启动 CLI 模式
-bolloon --read       # 读取文档能力
-bolloon --help       # 所有命令
-```
-
-详细打包 / 桌面 / iOS 流程见 [docs/BUILD.md](docs/BUILD.md).
-
-### 从 npm / GitHub 安装（终端用户）
-
-Bolloon 已发布到 npm，也可通过 GitHub 一键脚本安装（无需克隆仓库）。
-
-**方式一：npm（各系统通用，需先装 Node.js LTS）**
-
-```bash
+# 方式一：npm（需 Node.js ≥ 18）
 npm install -g @bolloon/bolloon-agent
-bolloon --version
-```
 
-**方式二：GitHub 一键脚本（macOS / Linux）**
-
-```bash
+# 方式二：一键脚本
 curl -fsSL https://raw.githubusercontent.com/logos-42/bolloon/master/scripts/install.sh | sh
 ```
 
-脚本优先从 GitHub Releases 下载预编译包，未提供对应平台包时自动回退 `npm install -g`。
+### Windows
 
-**各系统安装 Node.js（若尚未安装）**
+```powershell
+# 方式一：npm（需 Node.js ≥ 18）
+npm install -g @bolloon/bolloon-agent
 
-| 系统 | 命令 |
+# 方式二：一键脚本
+# 以管理员身份运行 PowerShell：
+iwr -useb https://raw.githubusercontent.com/logos-42/bolloon/master/scripts/install.ps1 | iex
+```
+
+> **Node.js 安装**：如果尚未安装，访问 [nodejs.org](https://nodejs.org) 下载 LTS 版本，或使用包管理器：
+> - macOS: `brew install node`
+> - Windows: `winget install -e --id OpenJS.NodeJS.LTS`
+> - Linux: `sudo apt install -y nodejs npm`
+
+---
+
+## 快速启动
+
+```bash
+bolloon              # CLI 交互模式（默认）
+bolloon --web        # Web UI 模式（浏览器）
+bolloon --cli        # 强制 CLI 模式
+bolloon --help       # 查看所有命令
+```
+
+首次启动会自动配置 LLM（需要 `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY` 环境变量）。
+
+---
+
+## 功能概览
+
+| 功能 | 描述 |
 |------|------|
-| macOS（Homebrew） | `brew install node` |
-| Linux（apt） | `sudo apt update && sudo apt install -y nodejs npm` |
-| Linux（dnf / yum） | `sudo dnf install -y nodejs npm` |
-| Windows（winget） | `winget install -e --id OpenJS.NodeJS.LTS` |
-| Windows（Chocolatey） | `choco install nodejs` |
-
-> 说明：bolloon 暂未上架 apt / yum / brew / winget / choco 原生仓库，统一经 npm 安装；上表命令仅用于安装 Node.js 运行时。
+| 🤖 AI 对话 | 本地运行的智能体，支持多轮对话 |
+| 🌐 P2P 网络 | 自动发现并连接其他 Bolloon 节点 |
+| 📄 文档处理 | 接收和管理文档，支持 DID 签名验证 |
+| 🔧 工具调用 | shell 命令、文件操作、代码分析等 |
+| 🔄 自我改进 | 自动检查更新、质量门控 |
 
 ---
 
-## 一、项目概述
+## 项目结构
 
-**Bolloon** 是一个判断力智能体协作平台，核心价值在于**保留人类的判断力决策，通过 Harness 实现异步自动化合作**。
-
-> 不是让 AI 替代人类思考，而是让人类的判断力与 AI 的执行能力解耦、异步协作。
+```
+bolloon/
+├── src/
+│   ├── agents/          # 智能体核心（pi-sdk、工具、session）
+│   ├── cli/             # CLI 界面（Ink TUI 渲染引擎）
+│   ├── network/         # P2P 网络（Hyperswarm / DIAP）
+│   ├── security/        # 安全层（工具闸门、守卫）
+│   ├── llm/             # LLM 接入层
+│   └── web/             # Web UI
+├── dist/                # 编译输出
+├── docs/                # 文档
+└── scripts/             # 构建和安装脚本
+```
 
 ---
 
-## 二、核心架构
+## 从源码构建
 
+```bash
+git clone https://github.com/logos-42/bolloon.git
+cd bolloon
+npm install
+npm run build:all
+npm start
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Bolloon 架构                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────┐     ┌─────────────────────────────────────────────────┐   │
-│  │   人类用户   │────▶│              Pi SDK (Agent Session)              │   │
-│  └─────────────┘     │  ┌─────────┐  ┌─────────┐  ┌─────────────────┐  │   │
-│                      │  │ Session │  │ Persona │  │  Tool Registry  │  │   │
-│                      │  └────┬────┘  └────┬────┘  └────────┬────────┘  │   │
-│                      │       │            │                 │            │   │
-│                      │       ▼            ▼                 ▼            │   │
-│                      │  ┌─────────────────────────────────────────────┐  │   │
-│                      │  │         Constraint Layer (约束层)            │  │   │
-│                      │  │   • 操作日志记录   • 权限检查   • 质量门禁   │  │   │
-│                      │  └──────────────────┬──────────────────────────┘  │   │
-│                      └─────────────────────┼────────────────────────────┘   │
-│                                            │                                  │
-│                    ┌───────────────────────┼───────────────────────┐       │
-│                    │                       ▼                       │       │
-│                    │  ┌─────────────────────────────────────────┐  │       │
-│                    │  │      Bollharness Integration           │  │       │
-│                    │  │        (治理框架集成层)                  │  │       │
-│                    │  ├─────────────────────────────────────────┤  │       │
-│                    │  │                                         │  │       │
-│                    │  │  ┌─────────────┐  ┌─────────────────┐  │  │       │
-│                    │  │  │ Gate State  │  │  Skill Adapter  │  │  │       │
-│                    │  │  │  Machine     │  │  (16 Skills)   │  │  │       │
-│                    │  │  │  (8-Gate)   │  └─────────────────┘  │  │       │
-│                    │  │  └──────┬──────┘                       │  │       │
-│                    │  │         │                              │  │       │
-│                    │  │  ┌──────▼──────┐  ┌─────────────────┐  │  │       │
-│                    │  │  │    Guard    │  │ Context Router  │  │  │       │
-│                    │  │  │   Checker   │  │  (路径上下文)   │  │  │       │
-│                    │  │  │ (15 检查项)  │  └─────────────────┘  │  │       │
-│                    │  │  └─────────────┘                       │  │       │
-│                    │  │                                        │  │       │
-│                    │  │  ┌─────────────────────────────────┐  │  │       │
-│                    │  │  │     Session Archive              │  │  │       │
-│                    │  │  │  (操作历史自动归档压缩)          │  │  │       │
-│                    │  │  └─────────────────────────────────┘  │  │       │
-│                    │  └─────────────────────────────────────────┘  │       │
-│                    └───────────────────────────────────────────────┘       │
-│                    ┌───────────────────────────────────────────────┐       │
-│                    │               Pi Judgment System               │       │
-│                    │  ┌───────────────┐  ┌─────────────────────┐  │       │
-│                    │  │   Distillation │  │   Value Injection   │  │       │
-│                    │  │  (判断蒸馏)    │  │  (情境感知注入)     │  │       │
-│                    │  └───────────────┘  └─────────────────────┘  │       │
-│                    │  ┌───────────────┐  ┌─────────────────────┐  │       │
-│                    │  │ Human Value   │  │  Decision Auth     │  │       │
-│                    │  │   Store       │  │  (多级授权)        │  │       │
-│                    │  └───────────────┘  └─────────────────────┘  │       │
-│                    └───────────────────────────────────────────────┘       │
-│                                          │                                    │
-│                                          ▼                                    │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                        外部服务层                                      │   │
-│  │   • P2P 网络 (Hyperswarm/DIAP)   • LLM (Minimax)   • IPFS        │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## 三、核心流程
-
-```
-人类 A (判断力)
-    │
-    ▼ 提出决策
-Pi SDK Session ──────────────────▶ Bollharness 治理框架
-    │                                    │
-    │                                    ├── Session Archive (归档)
-    │                                    ├── Gate State Machine (工作流)
-    │                                    ├── Skill Adapter (执行)
-    │                                    ├── Guard Checker (检查)
-    │                                    └── Context Router (注入)
-    │                                          │
-    │                                    Pi Judgment System
-    │                                    ├── Distillation (蒸馏)
-    │                                    ├── Value Store (存储)
-    │                                    ├── Value Injection (注入)
-    │                                    └── Decision Auth (授权)
-    │                                          │
-    ▼                                          ▼
-人类 B (判断力) ◀──────────────────── 自动化执行结果
-```
-
-### 流程说明
-
-1. **人类判断**：人类以自然语言/决策形式输入判断
-2. **自动记录**：Pi SDK 接收决策，自动记录操作日志
-3. **异步归档**：Session Archive 压缩存储关键决策
-4. **蒸馏存储**：判断信号蒸馏为结构化 judgment，存入 Human Value Store
-5. **价值观注入**：Judgment 结果通过 Value Injection 注入到 LLM prompt
-6. **Harness 执行**：Bollharness 根据归档历史驱动自动化
-7. **结果反馈**：执行结果反馈给人类，形成闭环
 
 ---
 
-## 四、核心功能
+## 环境变量
 
-### 4.1 Pi SDK (Agent Session)
-
-- **会话管理**：管理人类与智能体的对话 Session
-- **Persona 管理**：智能体的人格特征配置
-- **工具注册**：动态注册和执行各类工具
-- **约束层**：自动记录操作日志、权限检查、质量门禁
-- **Harness 集成**：与 Bollharness 治理框架无缝集成
-- **Judgment 集成**：支持判断蒸馏、价值观注入、决策授权流程
-
-### 4.2 Bollharness 治理框架
-
-#### 4.2.1 Gate State Machine (8-Gate 工作流)
-
-```
-Gate 0: Problem Lock (问题锁定) → Gate 1: Architecture Design (架构设计)
-Gate 2: Review (审查) → Gate 3: Plan Freeze (计划冻结)
-Gate 4: Review (审查) → Gate 5: Task Architecture (任务架构)
-Gate 6: Review (审查) → Gate 7: Execution (执行)
-Gate 8: Test & Integration (测试集成) → 完成
-```
-
-- **Entry 检查**：每个 Gate 有进入条件
-- **Blocker 追踪**：记录未完成的依赖项
-- **快速通道**：简单变更可跳过中间审查
-
-#### 4.2.2 Skill Adapter (16 Skills)
-
-| Skill | 职责 | 触发 Gate |
-|-------|------|-----------|
-| lead | 开发流程统领 | G0, G4, G8 |
-| arch | 架构设计专才 | G1, G2 |
-| task-arch | 任务分解 | G5 |
-| harness-eng | 执行编排 | G3, G7 |
-| harness-eng-test | 测试工程 | G8 |
-| crystal-learn | 结晶学习 | 任意 |
-| guardian-fixer | Issue 自动修复 | 任意 |
-| plan-lock | 计划锁定 | G3-G4 |
-| skill-discovery | Skill 发现 | 任意 |
-
-#### 4.2.3 Guard Checker (15 项自动化检查)
-
-- 文件命名规范检查
-- 代码重复率检查
-- 安全敏感信息检查
-- 文档完整性检查
-- 测试覆盖检查
-- 依赖版本检查
-- 等等...
-
-#### 4.2.4 Context Router (路径上下文自动注入)
-
-根据编辑的文件路径，自动注入相关上下文：
-
-| 文件路径 | 注入上下文 |
-|----------|-----------|
-| src/agents/ | truth-source-hierarchy, protocol-consumers |
-| src/documents/ | truth-source-hierarchy, db-shared-structures |
-| src/network/ | truth-source-hierarchy, protocol-consumers |
-| src/constraints/ | truth-source-hierarchy, fixed-three-layers |
-| docs/ | truth-source-hierarchy, two-language |
-| Bolloon.md | truth-source-hierarchy, bridge-constitution |
-
-#### 4.2.5 Session Archive (操作历史归档)
-
-- **自动归档**：Pi SDK 每次工具执行自动记录
-- **压缩存储**：去除重复操作，保留关键决策
-- **上下文获取**：Skill 可访问历史作为决策依据
-- **Gate 关联**：每次归档关联当前 Gate
-
-### 4.3 想法接收与文档化
-
-- **自然语言输入**：人类以自然语言提出研究想法或目标
-- **自动文档化**：智能体将想法自动转化为结构化协作文档
-- **文档结构**：包含研究目标、关键假设、验证步骤、所需资源、潜在风险
-
-### 4.4 智能体自组织
-
-- **服务发现**：智能体可发现网络中其他智能体的能力和状态
-- **动态协商**：智能体之间可协商任务分工、优先级、资源分配
-- **策略调整**：根据执行反馈，智能体自主调整协作策略
-- **冲突解决**：智能体间出现冲突时，自动协商解决方案
-
-### 4.5 文档分发机制
-
-- **DID签名验证**：文档发送前使用发送方DID签名，确保来源可信
-- **分发策略**：
-  - 广播分发：文档分发到所有可达智能体
-  - 定向分发：根据文档内容智能匹配目标智能体
-  - 分层分发：先分发给骨干智能体，再逐层传递
-
-### 4.6 Pi Judgment System（判断系统）
-
-人类判断力的捕获、蒸馏与注入，使 LLM 在决策时理解"为什么会这样决定"而非仅知道"应该怎么做"。
-
-#### 4.6.1 判断蒸馏（Judgment Distillation）
-
-将人类决策信号转化为结构化判断：
-
-| 触发类型 | 说明 |
-|---------|------|
-| `explicit` | 人类显式反馈（纠正、批准、拒绝） |
-| `implicit` | 隐式信号检测（犹豫、跳过、重复修改） |
-| `trajectory` | 轨迹学习（行动序列 + 结果 + 人工批准） |
-
-蒸馏产物为四种判断类型：
-
-| 类型 | 用途 |
+| 变量 | 说明 |
 |------|------|
-| `rule` | 硬性规则（安全底线、不可妥协） |
-| `preference` | 偏好（权衡时的倾向） |
-| `trajectory` | 轨迹（成功路径的模式） |
-| `reward` | 奖励信号（结果评价） |
+| `OPENAI_API_KEY` | OpenAI 提供商（可选） |
+| `DEEPSEEK_API_KEY` | DeepSeek 提供商（可选） |
+| `ANTHROPIC_API_KEY` | Anthropic 提供商（可选） |
+| `BOLLOON_LLM_PROVIDER` | 指定 LLM 提供商 |
 
-#### 4.6.2 人类价值观存储（Human Value Store）
+---
 
-分层存储，按访问频率和用途分流：
+<a name="english"></a>
 
-| 存储位置 | 内容 | 用途 |
-|----------|------|------|
-| `context-fragments/*.md` frontmatter | 高频规则 | Context Router 自动注入 |
-| `~/.bolloon/judgments/*.yaml` | 长期偏好、轨迹 | 语义检索、蒸馏来源 |
-| `~/.bolloon/human-values/judgments.json` | 结构化判断 | LLM 注入、语义匹配 |
+## English
 
-关键词 + LLM 语义双重匹配，支持按领域、决策类型、置信度过滤。
+**Bolloon** — A local-first, P2P-collaborative AI agent platform that runs on your device and discovers other nodes through a DHT network.
 
-#### 4.6.3 价值观注入（Value Injection）
+### Quick Install
 
-两种注入模式，适用于不同场景：
+**macOS / Linux:**
+```bash
+npm install -g @bolloon/bolloon-agent
+```
 
-**关键词匹配**（`generateValueInjection`）
-- 基于 `getRelevantValues()` 的关键词相似度
-- 适合判断数据不足 3 条时的 fallback
+**Windows (PowerShell):**
+```powershell
+npm install -g @bolloon/bolloon-agent
+```
 
-**情境感知**（`generateSituationalValueInjection`）
-- LLM 语义评分每条 judgment 的情境相关性（0-1）
-- `dynamicConfidence = situationalScore × historicalConfidence`
-- 注入内容包括：匹配的判断列表、相关价值观排序、历史决策参考
-- 需至少 3 条 judgment 才能启用 LLM 语义匹配
+### Quick Start
 
-**Gate 情境注入**（`GateStateMachine`）
-- 每次 gate transition 时生成
-- 基于 `GATE_CONFIGS[gate].situation` 扩展用户输入
-- 最多维护 10 条对话历史用于情境丰富化
-- 产出存入 `state.valueInjection`，通过 `getGatePack().value_injection` 暴露
+```bash
+bolloon            # CLI interactive mode
+bolloon --web      # Web UI mode
+bolloon --help     # All commands
+```
 
-#### 4.6.4 决策授权（Decision Authorization）
+Requires Node.js ≥ 18 and an LLM API key (`OPENAI_API_KEY` or `DEEPSEEK_API_KEY`).
 
-置信度低于阈值时的决策路由：
+### License
 
-| 等级 | 条件 | 行为 |
-|------|------|------|
-| `autonomous` | 置信度 > 阈值 | 自主执行 |
-| `consult_internal` | 置信度中等 | 咨询内部 agent（colony/subagent） |
-| `consult_external` | 置信度较低 | 咨询外部 P2P agent |
-| `require_human` | 置信度很低 | 人工确认 |
-
-决策请求包含：描述、上下文、置信度、阈值、授权等级、目标列表。
-
-#### 4.6.5 快速通道检查
-
-变更分类为 `implementation` 时，检查 5 个条件全部满足方可跳过中间审查门：
-
-1. 改动不超过 3 个文件
-2. 无契约变更
-3. 无跨模块接缝
-4. 不影响用户心智或产品语义
-5. 不引入新的架构决策
-
-### 4.7 反馈闭环
-
-- **进度反馈**：协作任务的阶段性进展
-- **结果反馈**：最终协作产出和发现
-- **异常反馈**：协作过程中出现的问题和解决情况
-- **审计日志**：完整的操作记录供人类追溯
-
-## 五、典型使用场景
-
-### 场景一：研究想法快速验证
-
-1. 人类提出研究想法："我想验证拓扑量子计算的可行性"
-2. 智能体接收想法，自动生成结构化协作文档
-3. 文档通过DID签名验证后，分发给网络中的相关智能体
-4. 各智能体根据文档执行验证任务，智能体间动态调整协作方法
-5. 验证结果汇总后反馈给人类
-
-### 场景二：跨团队协作协调
-
-1. 人类提出复杂目标："需要A团队和B团队的智能体协作完成这个课题"
-2. 智能体自动分解任务，生成跨团队协作文档
-3. 各团队智能体网络接收文档，自主协调执行
-4. 动态调整协作方法解决冲突和依赖
-5. 阶段性结果反馈给人类，人类进行目标调整
-
-### 场景三：智能体自组织协作
-
-1. 人类提出开放式目标："探索机器学习在组合优化中的应用"
-2. 智能体网络接收目标后，自主发现可协作的智能体，动态协商分工和协作方法
-3. 协作过程中记录操作日志供人类审计
-4. 最终结果和发现反馈给人类
-
-## 六、生态位分离
-
-| 角色 | 职责 | 特点 |
-|------|------|------|
-| **人类** | 目标设计者 | 提出研究想法/目标，不参与具体协作执行 |
-| **智能体** | 动态协作执行者 | 可在运行中调整协作方法，负责文档化和分发 |
-
-## 七、技术选型
-
-| 组件 | 技术方案 |
-|------|----------|
-| 核心能力 | 人类-智能体协作自动化 |
-| 身份系统 | DID（去中心化身份） |
-| 通信协议 | DIaoP（去中心化身份与通信协议） |
-| 开发语言 | TypeScript |
-| 运行环境 | Node.js |
-| 治理框架 | Bollharness (8-Gate 工作流) |
-| Session 归档 | 自动压缩归档 |
-| 判断存储 | 混合模式（YAML + JSON） |
-| 价值观注入 | LLM 语义匹配 + 关键词匹配双模式 |
-| 存储路径 | `~/.bolloon/judgments/*.yaml` / `~/.bolloon/human-values/judgments.json` |
-
-## 八、信任机制
-
-- **DID身份认证**：确保参与协作的智能体身份可信
-- **签名验证**：协作过程中的关键操作需签名确认
-- **操作审计**：所有协作操作记录在链，供人类追溯
-- **Gate 审查**：关键决策需通过 Gate 审查
-
-## 九、效果量化指标
-
-| 指标 | 目标值 | 说明 |
-|------|--------|------|
-| 想法转化成功率 | ≥ 95% | 人类想法成功转化为结构化文档的比例 |
-| 文档分发到达率 | ≥ 99% | 文档成功到达目标智能体的比例 |
-| 智能体自组织率 | ≥ 90% | 协作调整中无需人类干预的比例 |
-| 人类反馈满意度 | ≥ 85% | 人类对协作结果的满意程度 |
-| 信任建立时间 | ≤ 30秒 | 新智能体加入网络建立信任的耗时 |
-
-## 十、核心效果定义
-
-**产品核心效果：判断力智能体协作平台**
-
-> 两个有判断力的人的决策，被 Bolloon 记录后，异步进行合作，由 Harness 驱动自动化执行。人类的判断力决策作为高优先级上下文，智能体执行时不丢失意图。
-
-### 关键词
-
-- **异步合作**：决策被记录，不阻塞当前工作流
-- **Harness 驱动**：基于 8-Gate 工作流的自动化执行框架
-- **判断力保留**：人类决策作为高优先级上下文，智能体执行时不丢失意图
-- **信任机制**：基于 DID 的身份认证、签名验证确保分发可靠
+MIT
