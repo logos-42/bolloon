@@ -27,6 +27,7 @@ import { BollharnessIntegration, createBollharnessIntegration } from './bollharn
 import * as readline from 'readline';
 import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
+import { startInk, stopInk, inkAppendLine as appendLine, inkSetStatus, inkSetThinking } from './cli/ink-app.js';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
 
@@ -114,12 +115,12 @@ const s = {
     let i = 0;
     let dots = 0;
     const frame = frames[0];
-    process.stdout.write(`  ${frame} 思考...`);
+    appendLine(`  ${frame} 思考...`);
     return setInterval(() => {
       i = (i + 1) % frames.length;
       dots = (dots + 1) % 4;
       const dotStr = '.'.repeat(dots || 1);
-      process.stdout.write(`\r  ${frames[i]} 思考${dotStr}   `);
+      appendLine(`\r  ${frames[i]} 思考${dotStr}   `);
     }, 600);
   },
 
@@ -227,7 +228,7 @@ function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<{ ci
         resolve({ cid: result.cid });
       } catch (e: any) {
         // 一次失败直接放弃 — 本地模式运行就够了, 不重试
-        process.stdout.write(`     ${YELLOW}⚠ IPFS 发布失败 (${e?.message?.slice(0, 80) || 'unknown'}), 本地模式运行${RESET}\n`);
+        appendLine(`     ${YELLOW}⚠ IPFS 发布失败 (${e?.message?.slice(0, 80) || 'unknown'}), 本地模式运行${RESET}`);
         s.step(2, 5, '发布 DID → IPFS', 'warn');
         resolve({});
       }
@@ -425,14 +426,12 @@ function rpcErr(code: string, msg: string): string {
 // 2026-07-28: 改用 readline.createInterface + replReadline 循环
 
 let isRunning = false;
+let cliContextPct = 0;
 let queueMode = false;
 const pendingQueue: string[] = [];
-
-// 底部状态栏数据
 let cliStartTime = 0;
 let cliModelName = '…';
 let cliAgentName = '…';
-let cliContextPct = 0;
 
 function fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -451,16 +450,21 @@ function statusBarLine(): string {
   return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${bar} ${C_DIM}${cliContextPct}%${RESET}`;
 }
 
-function startCLI(comm: HyperswarmCommunicator): void {
+async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
   isRunning = true;
 
-  // CLI 模式下过滤 [xxx] 内部日志
-  const _origLog = console.log;
-  const _origWarn = console.warn;
-  const _isInternal = (args: any[]) =>
-    args.length && typeof args[0] === 'string' && /^\[[A-Za-z _\-.]+/.test(args[0]);
-  console.log = (...args: any[]) => { if (_isInternal(args)) return; _origLog.apply(console, args); };
-  console.warn = (...args: any[]) => { if (_isInternal(args)) return; _origWarn.apply(console, args); };
+  // CLI 模式下静音所有 console.log/warn
+  // (Ink 用自己的 render 引擎, console.log 输出会污染终端)
+  console.log = () => {};
+  console.warn = () => {};
+  // 同时过滤 process.stdout.write — 阻止 [xxx] 前缀的输出
+  const _origStdout = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: any, ...rest: any[]) => {
+    const s = typeof chunk === 'string' ? chunk : String(chunk);
+    // 过滤以 [ 开头的行 (agent 内部日志)
+    if (s.trimStart().startsWith('[')) return true;
+    return _origStdout(chunk, ...rest);
+  }) as any;
 
   let peerCount = 0;
   try { peerCount = comm.getConnections().length; } catch { /* */ }
@@ -480,117 +484,104 @@ function startCLI(comm: HyperswarmCommunicator): void {
   cliModelName = foundProvider ? foundProvider[1] : '未配置';
   cliAgentName = agentIdentity?.name || 'bolloon';
   cliStartTime = Date.now();
-  process.stdout.write(`${C_DIM}输入 !cmd 执行终端 · /queue 入队 · /help 帮助${RESET}\n\n`);
 
-  // 启动框: logo 左对齐（无状态栏 — 状态栏在输入框上方）
-  const art = brandArtLines();
-  const maxArt = art.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
-  const boxW = Math.min(termWidth() - 2, Math.max(40, maxArt) + 4);
-  process.stdout.write(boxTop('Bolloon Agent', boxW) + '\n');
-  for (const l of art) process.stdout.write(boxRow(l, boxW, 'left') + '\n');
-  process.stdout.write(boxBottom(boxW) + '\n\n');
-
-  // readline 输入循环（底部没有独立状态栏）
-  replReadline(comm);
-}
-
-async function replReadline(comm: HyperswarmCommunicator): Promise<void> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const SEP = '\x1b[90m─';
-  const RST = '\x1b[0m';
-
-  while (isRunning) {
-    const tw = process.stdout.columns || 80;
-    const sepLine = SEP.repeat(tw) + RST;
-    const prefix = queueMode ? `${C_WARN}▸${RST}` : `${C_ACCENT}❯${RST}`;
-    const raw = await new Promise<string>(resolve => rl.question(
-      `\n${sepLine}\n${statusBarLine()}\n${sepLine}\n${prefix} `, resolve
-    ));
-    const trimmed = raw.trim();
-    // 清除 readline echo 行, 避免与 renderUserMessage 重复
-    process.stdout.write('\r\x1b[K');
-    process.stdout.write(`\n${sepLine}\n\n\n\n\n`);
-    if (!trimmed) continue;
-    if (!isRunning) break;
-    await processInput(trimmed, comm);
-  }
-  rl.close();
-  process.stdout.write(`\n${CYAN}👋 再见！${RESET}\n`);
-  process.stdin.destroy();
+  // 进入 Ink TUI 输入循环
+  const initialStatus = `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ 0s`;
+  const getStatus = () => {
+    const dur = Math.floor((Date.now() - cliStartTime) / 1000);
+    const barLen = 12;
+    const filled = Math.round((cliContextPct / 100) * barLen);
+    const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
+    return `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ ${dur}s\x1b[90m │\x1b[0m ${bar} ${cliContextPct}%`;
+  };
+  startInk(
+    (text: string) => { processInput(text, comm); },
+    initialStatus,
+    getStatus,
+  );
+  // Wait on a promise that resolves on Ctrl+C
+  await new Promise<void>(() => {});
+  stopInk();
+  appendLine(`\n${CYAN}👋 再见！${RESET}`);
   comm.stop();
 }
 
 async function processInput(input: string, comm: HyperswarmCommunicator): Promise<void> {
   const trimmed = input.trim();
+  // TUI tool call state (local to this invocation)
+  const tuiToolCalls: Array<{ tool: string; args: any; _t: number }> = [];
+  let tuiToolCounter = 0;
+  // each iteration
+  let lastToolEvent: { tool: string; args: any } | null = null;
 
   // !command — 直接执行终端命令
   if (trimmed.startsWith('!')) {
     const cmd = trimmed.slice(1).trim();
-    if (!cmd) { process.stdout.write(`${C_DIM}!<命令> 执行终端命令, 如 !ls -la${RESET}\n`); return; }
-    process.stdout.write(`${C_DIM}── $ ${cmd}${RESET}\n`);
+    if (!cmd) { appendLine(`${C_DIM}!<命令> 执行终端命令, 如 !ls -la${RESET}`); return; }
+    appendLine(`${C_DIM}── $ ${cmd}${RESET}`);
     try {
       const { execSync } = await import('child_process');
       const out = execSync(cmd, { timeout: 30000, encoding: 'utf-8', cwd: process.cwd() });
-      process.stdout.write(`${C_DIM}${out || '(无输出)'}${RESET}`);
+      appendLine(`${C_DIM}${out || '(无输出)'}${RESET}`);
     } catch (e: any) {
-      process.stdout.write(`${C_ERROR}${e.stderr || e.message}${RESET}\n`);
+      appendLine(`${C_ERROR}${e.stderr || e.message}${RESET}`);
     }
-    process.stdout.write(`${C_DIM}──${RESET}\n`);
+    appendLine(`${C_DIM}──${RESET}`);
     return;
   }
 
   // /queue — 切换队列模式
   if (trimmed.toLowerCase() === '/queue') {
     queueMode = !queueMode;
-    process.stdout.write(`${C_WARN}队列 ${queueMode ? '开启' : '关闭'}${RESET} (${pendingQueue.length} 条)\n`);
+    appendLine(`${C_WARN}队列 ${queueMode ? '开启' : '关闭'}${RESET} (${pendingQueue.length} 条)`);
     return;
   }
 
   // /dequeue — 出队一条
   if (trimmed.toLowerCase() === '/dequeue' || trimmed.toLowerCase() === '/dq') {
     const next = pendingQueue.shift();
-    if (next) process.stdout.write(`${C_WARN}出队:${RESET} ${next}\n`);
-    else process.stdout.write(`${C_DIM}队列为空${RESET}\n`);
+    if (next) appendLine(`${C_WARN}出队:${RESET} ${next}`);
+    else appendLine(`${C_DIM}队列为空${RESET}`);
     return;
   }
 
   // 队列模式: 入队
   if (queueMode) {
     pendingQueue.push(trimmed);
-    process.stdout.write(`${C_WARN}[${pendingQueue.length}]${RESET} 已入队\n`);
+    appendLine(`${C_WARN}[${pendingQueue.length}]${RESET} 已入队`);
     return;
   }
 
   // 队列非空: 也入队末尾 (排队执行)
   if (pendingQueue.length > 0) {
     pendingQueue.push(trimmed);
-    process.stdout.write(`${C_WARN}[队列 ${pendingQueue.length}]${RESET} 已入队, 执行完当前后自动运行\n`);
+    appendLine(`${C_WARN}[队列 ${pendingQueue.length}]${RESET} 已入队, 执行完当前后自动运行`);
     return;
   }
 
   if (trimmed.toLowerCase() === '/help' || trimmed === 'help') {
-    process.stdout.write(`${C_DIM}命令:${RESET}\n`);
-    process.stdout.write(`  ${C_ACCENT}!<cmd>${RESET}  执行终端命令  ${C_DIM}如 !ls -la${RESET}\n`);
-    process.stdout.write(`  ${C_ACCENT}/queue${RESET}  切换队列模式  ${C_DIM}输入排队, 当前结束后自动执行${RESET}\n`);
-    process.stdout.write(`  ${C_ACCENT}/dequeue${RESET} 出队一条\n`);
-    process.stdout.write(`  ${C_ACCENT}peers${RESET}   查看 P2P 节点\n`);
-    process.stdout.write(`  ${C_ACCENT}iroh${RESET}    查看 iroh 状态\n`);
-    process.stdout.write(`  ${C_ACCENT}add_friend${RESET} 添加好友\n`);
-    process.stdout.write(`  ${C_ACCENT}exit${RESET}    退出\n`);
+    appendLine(`${C_DIM}命令:${RESET}`);
+    appendLine(`  ${C_ACCENT}!<cmd>${RESET}  执行终端命令  ${C_DIM}如 !ls -la${RESET}`);
+    appendLine(`  ${C_ACCENT}/queue${RESET}  切换队列模式  ${C_DIM}输入排队, 当前结束后自动执行${RESET}`);
+    appendLine(`  ${C_ACCENT}/dequeue${RESET} 出队一条`);
+    appendLine(`  ${C_ACCENT}peers${RESET}   查看 P2P 节点`);
+    appendLine(`  ${C_ACCENT}iroh${RESET}    查看 iroh 状态`);
+    appendLine(`  ${C_ACCENT}add_friend${RESET} 添加好友`);
+    appendLine(`  ${C_ACCENT}exit${RESET}    退出`);
     return;
   }
 
   if (trimmed === '退出' || trimmed === 'exit' || trimmed === 'quit') {
-    process.stdout.write(`\n${CYAN}👋 再见！${RESET}\n`);
+    appendLine(`\n${CYAN}👋 再见！${RESET}`);
     isRunning = false;
     return;
   }
 
   if (trimmed.toLowerCase() === 'peers') {
     const peers = comm.getConnections();
-    process.stdout.write(`${GRAY}已连接节点: ${peers.length}${RESET}\n`);
+    appendLine(`${GRAY}已连接节点: ${peers.length}${RESET}`);
     for (const c of peers) {
-      process.stdout.write(`  ${GRAY}·${RESET} ${c.publicKey.substring(0, 16)}...\n`);
+      appendLine(`  ${GRAY}·${RESET} ${c.publicKey.substring(0, 16)}...`);
     }
     return;
   }
@@ -599,12 +590,12 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     const nodeId = irohTransport.getNodeId();
     const running = irohTransport.isRunning();
     const peers = irohTransport.getPeers();
-    process.stdout.write(`${GRAY}iroh 状态:${RESET}\n`);
-    process.stdout.write(`  ${GRAY}运行中:${RESET} ${running ? '是' : '否'}\n`);
-    process.stdout.write(`  ${GRAY}Node ID:${RESET} ${nodeId ? nodeId.substring(0, 24) + '...' : 'N/A'}\n`);
-    process.stdout.write(`  ${GRAY}已知节点:${RESET} ${peers.length}\n`);
+    appendLine(`${GRAY}iroh 状态:${RESET}`);
+    appendLine(`  ${GRAY}运行中:${RESET} ${running ? '是' : '否'}`);
+    appendLine(`  ${GRAY}Node ID:${RESET} ${nodeId ? nodeId.substring(0, 24) + '...' : 'N/A'}`);
+    appendLine(`  ${GRAY}已知节点:${RESET} ${peers.length}`);
     if (hybridMessenger) {
-      process.stdout.write(`  ${GRAY}HybridMessenger:${RESET} 就绪\n`);
+      appendLine(`  ${GRAY}HybridMessenger:${RESET} 就绪`);
     }
     return;
   }
@@ -612,13 +603,13 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
   if (trimmed.toLowerCase().startsWith('add_friend ') || trimmed.toLowerCase() === 'add_friend') {
     const parts = trimmed.split(/\s+/);
     if (parts.length < 2 || (parts.length === 2 && parts[1].length !== 64)) {
-      process.stdout.write(`${GRAY}用法: add_friend <64字符hex publicKey> [备注名]\n${RESET}`);
-      process.stdout.write(`${GRAY}示例: add_friend a1b2c3d4e5f6... 同事-张磊\n${RESET}`);
+      appendLine(`${GRAY}用法: add_friend <64字符hex publicKey> [备注名]\n${RESET}`);
+      appendLine(`${GRAY}示例: add_friend a1b2c3d4e5f6... 同事-张磊\n${RESET}`);
       return;
     }
     const pk = parts[1];
     const name = parts.slice(2).join(' ') || '';
-    process.stdout.write(`${GRAY}正在发送好友申请给 ${pk.substring(0, 16)}...${RESET}\n`);
+    appendLine(`${GRAY}正在发送好友申请给 ${pk.substring(0, 16)}...${RESET}`);
     try {
       const port = process.env.PORT || '54188';
       const res = await fetch(`http://127.0.0.1:${port}/api/friend-request`, {
@@ -629,86 +620,74 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       const data = await res.json();
       if (!res.ok) {
         const reason = data.code === 'NO_CONN' ? '对方未在线, 已本地记住, 等对方上线后自动重连' : (data.error || '请求失败');
-        process.stdout.write(`${MAGENTA}✗ 添加好友失败: ${reason}${RESET}\n`);
-        if (data.persistedAs) process.stdout.write(`${GRAY}本地已保存为: ${data.persistedAs}${RESET}\n`);
+        appendLine(`${MAGENTA}✗ 添加好友失败: ${reason}${RESET}`);
+        if (data.persistedAs) appendLine(`${GRAY}本地已保存为: ${data.persistedAs}${RESET}`);
       } else {
-        process.stdout.write(`${GREEN}✓ 好友申请已发送给 ${data.persistedAs || name || pk.substring(0, 12)}...${RESET}\n`);
+        appendLine(`${GREEN}✓ 好友申请已发送给 ${data.persistedAs || name || pk.substring(0, 12)}...${RESET}`);
       }
     } catch (err: any) {
-      process.stdout.write(`${MAGENTA}✗ 添加好友失败: ${err.message || String(err)}${RESET}\n`);
+      appendLine(`${MAGENTA}✗ 添加好友失败: ${err.message || String(err)}${RESET}`);
     }
     return;
   }
 
   try {
     // 双横线分割
-    process.stdout.write(`${C_DIM}${'─'.repeat(8)} · ${'─'.repeat(8)}${RESET}\n`);
-    process.stdout.write(renderUserMessage(trimmed) + '\n');
+    appendLine(`${C_DIM}${'─'.repeat(8)} · ${'─'.repeat(8)}${RESET}`);
+    appendLine(renderUserMessage(trimmed));
+    // 启动思考动画
+    inkSetThinking(true);
 
     const a = await getAgent();
     const boxW = Math.min(termWidth() - 2, 76);
-    // 增量列表模式: 收集所有工具调用显示
-    type TDItem = { tool: string; args: any; _t: number };
-    const toolCalls: TDItem[] = [];
-    let toolCounter = 0;
-    // 启动 thinking 加载动画 (颜文字), 第一个工具事件或 prompt 完成后停止
-    let thinkingInterval: ReturnType<typeof setInterval> | null = null;
-    const stopThinking = () => {
-      if (thinkingInterval) {
-        s.clearThinking(thinkingInterval);
-        thinkingInterval = null;
-      }
-    };
-    thinkingInterval = s.Thinking();
+    // 工具调用显示由 tui-shell 的 onStream handler 处理
 
-    const onStream = (e: any) => {
-      if (e.type === 'step_start') {
-        toolCounter++;
-        toolCalls.push({ tool: e.tool, args: e.args, _t: Date.now() });
-      } else if (e.type === 'step_done' || e.type === 'step_error') {
-        stopThinking();
-        const p = toolCalls.shift();
-        const doneItem: ToolCallListItem = {
-          tool: e.tool ?? p?.tool ?? '?',
-          args: p?.args,
-          status: e.type === 'step_done' ? 'ok' : 'error',
-          output: e.output,
-          error: e.error,
-          durationMs: p ? Date.now() - p._t : undefined,
-        };
-        process.stdout.write(renderToolCallListItem(doneItem, toolCalls.length + 1, toolCounter) + '\n');
-        const bodyText = e.type === 'step_done' ? e.output : e.error;
-        if (bodyText && bodyText.length > 0) {
-          const bodyRendered = renderToolCallBody(doneItem, boxW);
-          if (bodyRendered) process.stdout.write(bodyRendered + '\n');
-        }
-        // 全部完成时打印 footer
-        if (toolCalls.length === 0 && toolCounter > 0) {
-          process.stdout.write(renderToolCallsFooter(toolCounter) + '\n');
+    const response = await a.prompt(trimmed, {
+      onStream: (e) => {
+        if (e.type === 'step_start') {
+          tuiToolCounter++;
+          tuiToolCalls.push({ tool: e.tool || '?', args: e.args, _t: Date.now() });
+        } else if (e.type === 'step_done' || e.type === 'step_error') {
+          const p = tuiToolCalls.shift();
+          const doneItem: ToolCallListItem = {
+            tool: e.tool ?? (p?.tool ?? '?'),
+            args: p?.args,
+            status: e.type === 'step_done' ? 'ok' : 'error',
+            output: e.output,
+            error: e.error,
+            durationMs: p ? Date.now() - p._t : undefined,
+          };
+          appendLine(renderToolCallListItem(doneItem, tuiToolCalls.length + 1, tuiToolCounter));
         }
       }
-    };
-    const response = await a.prompt(trimmed, { onStream });
-    stopThinking();
-    // 智能体回复框 (圆角)
-    process.stdout.write(renderAgentMessage(response) + '\n');
-    // 更新底部状态栏: 上下文进度
+    });
+    // 智能体回复框
+    appendLine(renderAgentMessage(response));
+    // 停止思考动画
+    inkSetThinking(false);
+    // 更新状态栏: 上下文进度
     try {
-      // 用 messageHistory 长度推断上下文占用
       const msgLen = JSON.stringify((a as any).messageHistory ?? []).length;
       cliContextPct = Math.min(100, Math.round((msgLen / 240_000) * 100));
+      const dur = Math.floor((Date.now() - cliStartTime) / 1000);
+      const barLen = 12;
+      const filled = Math.round((cliContextPct / 100) * barLen);
+      const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
+      const statusText = `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ ${dur}s \x1b[90m│\x1b[0m ${msgLen.toLocaleString()}B/240K │ ${bar} ${cliContextPct}%`;
+      inkSetStatus(statusText);
     } catch { /* 降级容忍 */ }
-    // 双横线分隔 + 自动消费队列
-    process.stdout.write(`${C_DIM}${'─'.repeat(8)} · ${'─'.repeat(8)}${RESET}\n`);
+    // 自动消费队列
     if (pendingQueue.length > 0) {
       const next = pendingQueue.shift()!;
-      process.stdout.write(`${C_WARN}⏩ 自动执行队列 [${pendingQueue.length + 1}/${pendingQueue.length + 1}]${RESET}\n`);
+      appendLine(`${C_WARN}⏩ 自动执行队列 [${pendingQueue.length + 1}/${pendingQueue.length + 1}]${RESET}`);
       await processInput(next, comm);
       return;
     }
+    inkSetThinking(false);
   } catch (e: any) {
+    inkSetThinking(false);
     if (!e.message?.includes('ERR_USE_AFTER_CLOSE') && !e.message?.includes('write after end')) {
-      process.stdout.write(`${MAGENTA}❌ ${e.message}${RESET}\n`);
+      appendLine(`${MAGENTA}❌ ${e.message}${RESET}`);
     }
   }
 }
@@ -984,7 +963,7 @@ async function runToolCommand(
             try { await p2pListen.stop(); } catch {}
             break;
           }
-          process.stdout.write(`⏳ 任务已派给 ${targetPk.slice(0, 12)}..., 等回复 (最多 90s)...\n`);
+          appendLine(`⏳ 任务已派给 ${targetPk.slice(0, 12)}..., 等回复 (最多 90s)...`);
           const reply = await replyPromise;
           const lines = [
             `✅ 协作完成 (${reply.durationMs ? Math.round(reply.durationMs / 1000) + 's' : '?'})`,
@@ -1550,8 +1529,8 @@ break;
         const { P2PDirect } = await import('./network/p2p-direct.js');
         const id = await resolveIdentity();
         const p2p = new P2PDirect({ name: 'cli-listen', role: id.role });
-        process.stdout.write(`[chat-p2p-listen] role=${id.role} pk=${id.publicKey.slice(0, 12)} listening on bolloon-agent-harness\n`);
-        process.stdout.write(`[chat-p2p-listen] press Ctrl-C to stop\n`);
+        appendLine(`[chat-p2p-listen] role=${id.role} pk=${id.publicKey.slice(0, 12)} listening on bolloon-agent-harness`);
+        appendLine(`[chat-p2p-listen] press Ctrl-C to stop`);
 
         const onData = (ev: any) => {
           try {
@@ -1561,13 +1540,13 @@ break;
               if (env && env.v === 3 && env.op === 'agent.chat.direct') {
                 const { text: body, fromRole } = env.payload || {};
                 const ts = (env.payload?.ts || new Date().toISOString()).replace('T', ' ').replace(/\.\d+Z$/, '');
-                process.stdout.write(`\n[${ts} ${fromRole || ev.fromPublicKey?.slice(0, 12)} → me] ${body}\n> `);
+                appendLine(`\n[${ts} ${fromRole || ev.fromPublicKey?.slice(0, 12)} → me] ${body}\n> `);
                 return;
               }
             } catch { /* 非 v3 envelope, 当 raw 显示 */ }
-            process.stdout.write(`\n[raw ${ev.fromPublicKey?.slice(0, 12)}] ${text.slice(0, 200)}\n> `);
+            appendLine(`\n[raw ${ev.fromPublicKey?.slice(0, 12)}] ${text.slice(0, 200)}\n> `);
           } catch (e: any) {
-            process.stdout.write(`[chat-p2p-listen] decode error: ${e?.message ?? e}\n`);
+            appendLine(`[chat-p2p-listen] decode error: ${e?.message ?? e}`);
           }
         };
         p2p.on('data', onData);
@@ -1576,13 +1555,13 @@ break;
         const keepAlive = setInterval(() => {
           const now = Date.now();
           if (now - lastPing > 5 * 60_000) {
-            process.stdout.write(`[chat-p2p-listen] alive, role=${id.role}\n`);
+            appendLine(`[chat-p2p-listen] alive, role=${id.role}`);
             lastPing = now;
           }
         }, 30_000);
 
         const stop = async () => {
-          process.stdout.write(`\n[chat-p2p-listen] stopping...\n`);
+          appendLine(`\n[chat-p2p-listen] stopping...`);
           try { p2p.off('data', onData); } catch {}
           clearInterval(keepAlive);
           try { await p2p.stop(); } catch {}
@@ -1594,7 +1573,7 @@ break;
 
         await p2p.start();
         await p2p.joinTopic(Buffer.from('bolloon-agent-harness'));
-        process.stdout.write(`[chat-p2p-listen] joined topic ✓\n> `);
+        appendLine(`[chat-p2p-listen] joined topic ✓\n> `);
 
         await new Promise(() => {});
         break;
@@ -2344,7 +2323,7 @@ async function main() {
     console.info = originalInfo;
     process.stdout.write = originalStdoutWrite;
 
-    startCLI(comm!);
+    await startCLI(comm!);
   }
   } catch (e) {
     throw e;
