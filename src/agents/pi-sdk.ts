@@ -1126,8 +1126,8 @@ ${this.getToolDefinitions()}
     const MAX_CONSECUTIVE_ERRORS = 3;
     const MAX_SAME_TOOL_FAILURES = 3; // 同一工具连续失败 3 次, 强制让 LLM 给出最终答案
     // 2026-07-29: Hermes 风格硬限制 — 防死循环 (不再靠 soft hint)
-    const MAX_IDEMPOTENT_TOOL = 4;  // 同工具成功调 4 次 → 硬断
-    const MAX_TOOL_CALLS_PER_LOOP = 20; // 单轮循环总工具调用上限 → 硬断
+    const MAX_IDEMPOTENT_TOOL = 5;  // 同工具成功调 5 次 → 注入 hint 强制 final gen
+    const MAX_TOOL_CALLS_PER_LOOP = 25; // 单轮循环总工具调用上限 → 注入 hint
     let totalToolCallsThisLoop = 0;
     const lastNTools: string[] = []; // 最近 MAX_IDEMPOTENT_TOOL 次工具名, 检测重复
 
@@ -1172,25 +1172,18 @@ ${this.getToolDefinitions()}
 
       // 2026-07-29: Hermes 风格硬限制 (idempotent tool / total call cap)
       if (totalToolCallsThisLoop >= MAX_TOOL_CALLS_PER_LOOP) {
-        console.warn(`[PiAgent] 单轮工具调用已达 ${MAX_TOOL_CALLS_PER_LOOP} 上限, 强制终止`);
-        onStream?.({ type: 'error', content: `⏹️ 工具调用已达上限 (${MAX_TOOL_CALLS_PER_LOOP}), 强制终止`, tool: 'loop' });
-        if (this.successfulToolResults.length > 0) {
-          finalResponse = `已执行 ${this.successfulToolResults.length} 个工具。请基于已有结果回答。`;
-        } else {
-          finalResponse = finalResponse || '(工具调用次数过多, 已终止)';
-        }
-        break;
+        console.warn(`[PiAgent] 单轮工具调用已达 ${MAX_TOOL_CALLS_PER_LOOP}, 注入 hint 让 LLM 总结`);
+        onStream?.({ type: 'error', content: `⏹️ 工具调用已达上限 (${MAX_TOOL_CALLS_PER_LOOP}), 请基于已有结果回答`, tool: 'loop' });
+        this.messageHistory.push({ role: 'system', content: `[注意] 你已连续调用 ${MAX_TOOL_CALLS_PER_LOOP} 次工具。请基于已有结果直接回答用户, 不要再次调用任何工具。在回答末尾加 <final gen> 标记结束。` });
+        totalToolCallsThisLoop = 0;  // 重置计数器, 只防连续死循环
       }
       if (lastNTools.length >= MAX_IDEMPOTENT_TOOL && new Set(lastNTools).size === 1) {
         const repeatedTool = lastNTools[0];
-        console.warn(`[PiAgent] 同工具 ${repeatedTool} 连续成功调 ${MAX_IDEMPOTENT_TOOL} 次, 强制终止`);
-        onStream?.({ type: 'error', content: `⏹️ 工具 ${repeatedTool} 重复调用 ${MAX_IDEMPOTENT_TOOL} 次, 强制终止`, tool: 'loop' });
-        if (this.successfulToolResults.length > 0) {
-          finalResponse = `已通过 ${repeatedTool} 获取到信息。请基于已有结果回答。`;
-        } else {
-          finalResponse = finalResponse || `(工具 ${repeatedTool} 重复调用 ${MAX_IDEMPOTENT_TOOL} 次无进展, 已终止)`;
-        }
-        break;
+        console.warn(`[PiAgent] 同工具 ${repeatedTool} 连续成功调 ${MAX_IDEMPOTENT_TOOL} 次, 注入 hint 让 LLM 总结`);
+        onStream?.({ type: 'error', content: `⏹️ 工具 ${repeatedTool} 重复调用 ${MAX_IDEMPOTENT_TOOL} 次, 请基于已有结果回答`, tool: 'loop' });
+        this.messageHistory.push({ role: 'system', content: `[注意] 你已连续 ${MAX_IDEMPOTENT_TOOL} 次调用 ${repeatedTool}。请基于已有结果直接回答用户, 不要再次调用任何工具。在回答末尾加 <final gen> 标记结束。` });
+        lastNTools.length = 0;  // 重置计数器
+        // 不 break — 让 LLM 在下一轮用已有信息回答
       }
 
       // 2026-06-16 新增: 累计错误兜底 — 跨工具, 防 LLM 轮换工具名绕过 MAX_SAME_TOOL_FAILURES
@@ -1700,6 +1693,13 @@ ${toolDefs}
             continue;
           }
           lastQualityScore = this.estimateResponseQuality(reply);
+          // 2026-07-29: 质量门 — 即使 LLM 声称完成, 质量太低也继续
+          if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) {
+            console.log(`[PiAgent] final gen 质量 ${lastQualityScore.toFixed(2)} < ${this.QUALITY_THRESHOLD}, 注入 refine hint`);
+            this.messageHistory.push({ role: 'system', content: `[质量检查] 你的回答质量评分为 ${(lastQualityScore * 10).toFixed(1)}/10, 低于 ${(this.QUALITY_THRESHOLD * 10).toFixed(1)}/10 阈值。请提供更完整、详细的回答, 包含工具调用获取到的具体信息, 末尾加 <final gen>。` });
+            refineAttempts++;
+            continue;
+          }
           finalResponse = this.extractFinalAnswer(reply);
           break;
         }
