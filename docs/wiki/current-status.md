@@ -9,7 +9,7 @@ stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain]
+tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate]
 compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ---
 
@@ -60,6 +60,7 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 || **Unified Deny-First Pipeline** (2026-07-29) | `src/agents/deny-pipeline.ts` + `src/agents/pi-sdk.ts` | 将 3 层拒绝逻辑统一为管道: deny-list (硬拒绝) → permission (静态权限) → hooks (可编程策略). 任何一层拒绝即阻塞工具调用, 第一层拒绝后不再检查后续. 拒绝消息带来源标记 `[deny-list/permission/hooks]`. tsc 0 错, vitest 978/978 pass | [deny-pipeline.ts](../../src/agents/deny-pipeline.ts) |
 || **append-only JSONL 存储** (2026-07-29) | `src/agents/session-store.ts` | 每次 saveMessages 同时写入 `~/.bolloon/sessions/jsonl/<key>.jsonl` (增量追加, 不覆盖). 每行一条独立 JSON, 完整可审计可重建. 新增 `appendMessageJsonl(key, msg)` / `loadFromJsonl(key)` 方法. 旧 JSON 兼容双写, 过渡期安全. tsc 0 错, vitest 978/978 pass | [session-store.ts](../../src/agents/session-store.ts) |
 || **Subagent sidechain 转录** (2026-07-29) | `src/external-engines/delegate.ts` | 每次 `delegateToEngine` 委派后在 `~/.bolloon/sidechains/<ts>-<engine>.jsonl` 保存完整记录: prompt / stdout / stderr / exitCode / duration / model. 失败静默, 不阻塞委派流程. tsc 0 错, vitest 978/978 pass | [delegate.ts](../../src/external-engines/delegate.ts) |
+|| **邓巴分层 + 两报换一报 P2P 社交博弈** (2026-07-29) | `src/social/dunbar-tier.ts` + `src/web/server.ts` | 5 层邓巴 (core/close/friends/social/acquaintance) + TFTT 双次宽容博弈引擎: 第一轮合作, 连续 2 次背叛才反击, 恢复合作立即恢复. 每次 P2P chat/beacon/reply 触发 `inferOpponentMove()` 语义分析 → `tfttPayoff()` 算信任分 → trustScore 隐式滑动 → 自动升降 tier. 模型视野门: 低 tier peer 的 channel/资源对模型不可见 (同 tool pre-filter 哲学). BLOCKED 层完全拒绝. tsc 0 错, vitest 978/978 pass | [dunbar-tier.ts](../../src/social/dunbar-tier.ts) |
 
 ## 未支持 (❌ 或 ⚠️ 部分)
 

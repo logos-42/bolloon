@@ -18,6 +18,7 @@ import { registerJudgmentsRoutes } from './routes-judgments.js';
 import { registerLlmConfigRoutes } from './routes-llm-config.js';
 import { registerExternalEngineRoutes } from './routes-external-engines.js';
 import { registerTaskRoutes } from './routes-tasks.js';
+import { loadPeerTier, recordInteraction, recordViolation, checkToolAccess, tierLabel } from '../social/dunbar-tier.js';
 import { registerHearthRoutes } from './routes-hearth.js';
 import { loadOrCreateAgentIdentity } from '../agents/agent-identity.js';
 
@@ -539,7 +540,22 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       return;
     }
     const senderKey = fromPublicKey || peerKey;
-    console.log(`[v3] 收到 ${senderKey.substring(0,12)}... 对 channel ${channelId} 的 chat: "${text.substring(0, 40)}..."`);
+
+    // 2026-07-29: Dunbar Tier 检查 — 远端 agent 不能触发禁区工具
+    const tierState = await loadPeerTier(senderKey);
+    if (tierState.tier === 'blocked') {
+      const reply = JSON.stringify({
+        v: 3, op: 'agent.chat.reply',
+        payload: { channelId, fromPublicKey: v3P2PRef?.getPublicKey() || '', error: 'blocked', text: '❌ 您已被本地系统加入通信黑名单。如需解除请联系系统管理员。' }
+      });
+      await comm.sendToConnection(conn.id, reply);
+      return;
+    }
+    // 2026-07-29: 语义分析 — 分析远端聊天内容, 隐式滑动 trustScore
+    recordInteraction(senderKey, text).catch(() => {});
+
+    console.log(`[v3] 收到 ${senderKey.substring(0,12)}... (${tierLabel(tierState.tier)}) 对 channel ${channelId} 的 chat: "${text.substring(0, 40)}..."`);
+
     try {
       // 1. 找到 channel
       const channels = await loadChannels();
@@ -1559,6 +1575,8 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
             // 2026-07-21: 社交心跳 beacon — 远端智能体宣告存活/能力, 更新本地 liveness
             if (parsed.op === 'agent.heartbeat') {
               agentHeartbeat?.handleIncoming('agent.heartbeat', parsed.payload, evt.fromPublicKey);
+              // 2026-07-29: 收到心跳也记录交互 (Dunbar 自动归类)
+              recordInteraction(evt.fromPublicKey).catch(() => {});
               return;
             }
             // v3 新增: B 端收到 A 的 thinking (开始 + 流式 token)
