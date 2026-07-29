@@ -1,52 +1,7 @@
 {
   "schema_version": 2,
-  "wiki_root": "D:\\AI\\bolloon\\docs\\wiki",
+  "wiki_root": "/Users/apple/Downloads/bolloon/docs/wiki",
   "nodes": [
-    {
-      "id": "current-status.md",
-      "type": "chapter",
-      "label": "Bolloon 当前状态",
-      "tags": "[status, v0.2.7]",
-      "stage": "current",
-      "audience": "self",
-      "source_file": "docs\\wiki\\current-status.md"
-    },
-    {
-      "id": "github-and-raw-strategy.md",
-      "type": "chapter",
-      "label": "Bolloon GitHub 与 raw 仓分工策略",
-      "tags": "[github, raw-strategy]",
-      "stage": "current",
-      "audience": "self",
-      "source_file": "docs\\wiki\\github-and-raw-strategy.md"
-    },
-    {
-      "id": "index.md",
-      "type": "meta",
-      "label": "index.md",
-      "tags": "",
-      "stage": "",
-      "audience": "",
-      "source_file": "docs\\wiki\\index.md"
-    },
-    {
-      "id": "log.md",
-      "type": "meta",
-      "label": "log.md",
-      "tags": "",
-      "stage": "",
-      "audience": "",
-      "source_file": "docs\\wiki\\log.md"
-    },
-    {
-      "id": "project-overview.md",
-      "type": "chapter",
-      "label": "Bolloon 项目概览",
-      "tags": "[overview, ai-agent, p2p]",
-      "stage": "current",
-      "audience": "self",
-      "source_file": "docs\\wiki\\project-overview.md"
-    },
     {
       "id": "README.md",
       "type": "meta",
@@ -54,16 +9,7 @@
       "tags": "",
       "stage": "",
       "audience": "",
-      "source_file": "docs\\wiki\\README.md"
-    },
-    {
-      "id": "runtime-profile.md",
-      "type": "meta",
-      "label": "Bolloon 校验脚本运行时配置",
-      "tags": "[meta, ci, validation]",
-      "stage": "current",
-      "audience": "self",
-      "source_file": "docs\\wiki\\runtime-profile.md"
+      "source_file": "docs/wiki/README.md"
     },
     {
       "id": "SCHEMA.md",
@@ -72,7 +18,115 @@
       "tags": "",
       "stage": "",
       "audience": "",
-      "source_file": "docs\\wiki\\SCHEMA.md"
+      "source_file": "docs/wiki/SCHEMA.md"
+    },
+    {
+      "id": "bolloon-md-template.md",
+      "type": "meta",
+      "label": "Bolloon.md 4 级模板 (双栖 agent 网络对外协作偏好)",
+      "tags": "[bolloon-md, configuration, p2p, dual-habitat, agent-network]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/bolloon-md-template.md"
+    },
+    {
+      "id": "crystallized-claims.md",
+      "type": "claim",
+      "label": "Bolloon Crystallized Claims",
+      "tags": "[crystallized, ablation-claims]",
+      "stage": "crystallized",
+      "audience": "self",
+      "source_file": "docs/wiki/crystallized-claims.md"
+    },
+    {
+      "id": "current-status.md",
+      "type": "chapter",
+      "label": "Bolloon 当前状态",
+      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/current-status.md"
+    },
+    {
+      "id": "drafts/anal-claude--anal-claude-2026-07-17.md",
+      "type": "meta",
+      "label": "Draft - Anal Claude",
+      "tags": "[draft, delta-compile]",
+      "stage": "",
+      "audience": "",
+      "source_file": "docs/wiki/drafts/anal-claude--anal-claude-2026-07-17.md"
+    },
+    {
+      "id": "drafts/bolloon-bug-report-20260716--bolloon-bug-report-2026-07-16.md",
+      "type": "meta",
+      "label": "Draft - Bolloon Bug Report 20260716",
+      "tags": "[draft, delta-compile]",
+      "stage": "",
+      "audience": "",
+      "source_file": "docs/wiki/drafts/bolloon-bug-report-20260716--bolloon-bug-report-2026-07-16.md"
+    },
+    {
+      "id": "github-and-raw-strategy.md",
+      "type": "chapter",
+      "label": "Bolloon GitHub 与 raw 仓分工策略",
+      "tags": "[github, raw-strategy]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/github-and-raw-strategy.md"
+    },
+    {
+      "id": "index.md",
+      "type": "meta",
+      "label": "index.md",
+      "tags": "",
+      "stage": "",
+      "audience": "",
+      "source_file": "docs/wiki/index.md"
+    },
+    {
+      "id": "log.md",
+      "type": "meta",
+      "label": "log.md",
+      "tags": "",
+      "stage": "",
+      "audience": "",
+      "source_file": "docs/wiki/log.md"
+    },
+    {
+      "id": "project-overview.md",
+      "type": "chapter",
+      "label": "Bolloon 项目概览",
+      "tags": "[overview, ai-agent, p2p]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/project-overview.md"
+    },
+    {
+      "id": "q1-q5-report-2026-07-07.md",
+      "type": "chapter",
+      "label": "远程交流缓存/加载链路诊断 + 五层记忆架构落地报告",
+      "tags": "[remote-load, p2p-cache, five-layer-memory, l0-window, l1-summary, l2-events, l3-state, l4-vector, h2-bug-fix]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/q1-q5-report-2026-07-07.md"
+    },
+    {
+      "id": "runtime-profile.md",
+      "type": "meta",
+      "label": "Bolloon 校验脚本运行时配置",
+      "tags": "[meta, ci, validation]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/runtime-profile.md"
+    },
+    {
+      "id": "skills-index.md",
+      "type": "meta",
+      "label": "Bolloon Skill 索引",
+      "tags": "[skills, indexing]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/skills-index.md"
     },
     {
       "id": "sources-and-data.md",
@@ -81,10 +135,15 @@
       "tags": "[sources, data]",
       "stage": "current",
       "audience": "self",
-      "source_file": "docs\\wiki\\sources-and-data.md"
+      "source_file": "docs/wiki/sources-and-data.md"
     }
   ],
   "edges": [
+    {
+      "from": "current-status.md",
+      "to": "log.md",
+      "type": "references"
+    },
     {
       "from": "index.md",
       "to": "README.md",
@@ -122,7 +181,42 @@
     },
     {
       "from": "index.md",
+      "to": "skills-index.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "crystallized-claims.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "bolloon-md-template.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "log.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "q1-q5-report-2026-07-07.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "q1-q5-report-2026-07-07.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "skills-index.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "crystallized-claims.md",
       "type": "references"
     },
     {
@@ -137,14 +231,15 @@
     }
   ],
   "stats": {
-    "node_count": 9,
-    "edge_count": 10,
+    "node_count": 15,
+    "edge_count": 18,
     "node_types": {
-      "chapter": 4,
-      "meta": 5
+      "meta": 9,
+      "claim": 1,
+      "chapter": 5
     },
     "edge_types": {
-      "references": 10
+      "references": 18
     }
   }
 }
