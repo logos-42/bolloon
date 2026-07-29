@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|| 2026-07-29 | feat | CLI 工具调用改为增量列表 (🔧 + 工具名, 无 ✓⟳✗, 无 header, 有 ╰── footer, diff 着色); loading spinner 换颜文字序列 (｀・ω・´)→(´･_･`)→(｡•́︿•̀｡)→ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ→(◕‿◕)→ヽ(´▽｀)/; TUI step-timeline 步数上限 8→20, 详情区高度 320px→520px; tsc 0 错, vitest 978/978 pass | [loading-tui.ts](../../src/cli/loading-tui.ts) / [index.ts](../../src/index.ts) / [step-timeline.ts](../../src/web/ui/step-timeline.ts) / [style.css](../../src/web/style.css) |
 | 2026-07-25 | feat | 添加好友三入口: agent 工具 `add_friend_by_id` + Web UI modal + CLI `add_friend`; 发布 v0.3.15 | [pi-sdk-tools.ts:301](../../src/agents/pi-sdk-tools.ts) / [client.ts:4071](../../src/web/client.ts) / [index.ts:570](../../src/index.ts) |
 | 2026-07-22 | feat | 判断力负向回收 + 上下文废气涡轮增压 (设计 A/B/C) — Web 判断力页面简化为正向/负向两类 (替换 6 个 status tab); injectNegativeGuard 以"避免清单"注入 prompt (maxChars=300, 显式); exhaust-scrubber 涡轮采样废气调参 (不进 prompt, 隐式); 背压→judgment 注入 maxChars(1800/1500/800)+检索 top-k(8/5/3); 落 log+memory; vitest 959/959 pass (+17) | [设计文档](../plans/2026-07-22-negative-exhaust-design.md) |
 | 2026-07-29 | feat | wiki 维护: 安装维基 llm skill -> 更新 current-status.md (CLI v0.3.20-v0.3.24 + LSP + OpenCLI 引擎) -> 编译 2 个 raw 源 (bug-report + claude-arch-parallels) -> 知识图谱 15 节点 18 边 -> 清理 drafts | [current-status.md](./current-status.md) / [graph_export](./bolloon-bug-report-20260716.md) / [claude-parallels](./claude-code-design-parallels.md) |

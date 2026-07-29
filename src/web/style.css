@@ -4793,8 +4793,8 @@ body:has(> .api-config-page) {
   border-top: 1px solid transparent;
 }
 .step-timeline:not([data-empty]) .step-timeline-body {
-  /* 内容存在时给 body 一个合理上限, 避免长任务撑爆 */
-  max-height: 320px;
+  /* 内容存在时给 body 一个合理上限, 避免长任务撑爆 — 2026-07-29: 从 320px 增大到 520px */
+  max-height: 520px;
   overflow-y: auto;
   border-top-color: var(--border);
 }

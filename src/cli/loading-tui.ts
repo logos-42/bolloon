@@ -410,7 +410,92 @@ export function flowConnector(width: number): string {
   return s.slice(0, width);
 }
 
-/** 渲染单个工具调用为圆角框 (参数 / 状态 / 输出预览) */
+// ── 增量列表工具调用 (简化版) ──────────────────────
+export interface ToolCallListItem {
+  tool: string;
+  status: 'ok' | 'error' | 'active';
+  durationMs?: number;
+  args?: Record<string, unknown> | string;
+  output?: string;
+  error?: string;
+}
+
+/** 判断输出是否包含 git diff / 补丁内容 */
+function isDiffOutput(text: string): boolean {
+  return /^diff --git|^--- |^\+\+\+ |^@@ /m.test(text) ||
+         /^[\+\-]\s+\S/m.test(text);  // + 开头的新增行 / - 开头的删除行
+}
+
+/** 把 diff 内容着色: + 行绿色, - 行红色, @@ 行蓝色, 其余不变 */
+function colorizeDiff(text: string): string {
+  const lines = text.split('\n');
+  const out = lines.map(line => {
+    if (line.startsWith('diff --git') || line.startsWith('---') || line.startsWith('+++')) {
+      return C_DIM + line + RESET;
+    }
+    if (line.startsWith('@@')) {
+      return fg(0x21, 0x96, 0xf3) + line + RESET;  // blue
+    }
+    if (line.startsWith('+')) {
+      return C_OK + line + RESET;  // green
+    }
+    if (line.startsWith('-')) {
+      return C_ERROR + line + RESET;  // red
+    }
+    // 上下文行用灰色缩进
+    if (/^\s/.test(line) || /^[ \t]/.test(line)) {
+      return C_DIM + line + RESET;
+    }
+    return line;
+  });
+  return out.join('\n');
+}
+
+/** 渲染单条工具调用为紧凑列表项 (增量显示, 一行) */
+export function renderToolCallListItem(item: ToolCallListItem, index: number, total: number): string {
+  const dur = item.durationMs != null ? ` ${C_DIM}${item.durationMs}ms${RESET}` : '';
+  const args = typeof item.args === 'string' ? item.args : item.args ? ` ${C_DIM}${truncate(JSON.stringify(item.args), 50)}${RESET}` : '';
+  const label = item.status === 'error' ? `${C_ERROR}${item.tool}${RESET}` : `${C_ACCENT}${item.tool}${RESET}`;
+  return `  🔧 ${label}${args}${dur}`;
+}
+
+/** 紧凑渲染工具输出 (检测到 diff 则着色, 否则普通截断) */
+export function renderToolCallBody(item: ToolCallListItem, width: number = 72): string {
+  const body = item.status === 'ok' ? item.output : item.error || item.error;
+  if (!body) return '';
+  const w = Math.min(termWidth() - 2, width);
+  if (isDiffOutput(body)) {
+    const colored = colorizeDiff(body);
+    const wrapped = wrapText(colored, w - 4);
+    const shown = wrapped.slice(0, 5);
+    const prefix = fg(0x21, 0x96, 0xf3) + '  ╭─ diff ' + RESET;
+    const lines: string[] = [prefix];
+    for (const l of shown) lines.push(`  │${l}`);
+    if (wrapped.length > 5) lines.push(`  ╰─ ${C_DIM}… ${wrapped.length - 5} 行已折叠${RESET}`);
+    else lines[lines.length - 1] = '  ╰' + lines[lines.length - 1].slice(3);
+    return lines.join('\n');
+  }
+  const wrapped = wrapText(body, w - 4);
+  const shown = wrapped.slice(0, 2);
+  const lines: string[] = [];
+  for (const l of shown) lines.push(`  ${C_DIM}▏ ${l}${RESET}`);
+  if (wrapped.length > 2) lines.push(`  ${C_DIM}▏ … ${wrapped.length - 2} 行${RESET}`);
+  return lines.join('\n');
+}
+
+/** 增量列表标题行 (含步骤计数) */
+export function renderToolCallsHeader(count: number): string {
+  if (count === 0) return '';
+  return `  ${C_DIM}╭─ 工具调用 (${count} 步)${RESET}`;
+}
+
+/** 增量列表结尾行 */
+export function renderToolCallsFooter(count: number): string {
+  if (count === 0) return '';
+  return `  ${C_DIM}╰${'─'.repeat(Math.min(termWidth() - 4, 30))}${RESET}`;
+}
+
+/** 渲染单个工具调用为圆角框 (参数 / 状态 / 输出预览) — 旧版保留兼容 */
 export function renderToolCall(v: ToolCallView): string {
   const color = v.status === 'ok' ? C_OK : C_ERROR;
   const sym = v.status === 'ok' ? '✅' : '❌';
@@ -422,10 +507,14 @@ export function renderToolCall(v: ToolCallView): string {
   rows.push(`状态: ${sym} ${v.status === 'ok' ? '成功' : '失败'}${dur}`);
   const body = v.status === 'ok' ? v.output : v.error;
   if (body) {
-    const wrapped = wrapText(body, w - 6);
-    const shown = wrapped.slice(0, 3);
-    for (const l of shown) rows.push(`▏ ${l}`);
-    if (wrapped.length > 3) rows.push(`▏ … 已压缩 ${wrapped.length - 3} 行`);
+    if (isDiffOutput(body)) {
+      rows.push(colorizeDiff(body));
+    } else {
+      const wrapped = wrapText(body, w - 6);
+      const shown = wrapped.slice(0, 3);
+      for (const l of shown) rows.push(`▏ ${l}`);
+      if (wrapped.length > 3) rows.push(`▏ … 已压缩 ${wrapped.length - 3} 行`);
+    }
   }
   const lines: string[] = [];
   lines.push(boxTop(`${color}◉ ${v.tool}${RESET}`, w, RD));
@@ -442,7 +531,7 @@ export interface LoadingStep {
   status: LoadingStepStatus;
 }
 
-const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const FRAMES = ['(｀・ω・´)', '(´･_･`)', '(｡•́︿•̀｡)', 'ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ', '(◕‿◕)', 'ヽ(´▽｀)/'];
 
 export class LoadingTUI {
   private write: (chunk: any, ...args: any[]) => boolean;

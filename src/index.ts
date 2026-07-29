@@ -25,7 +25,8 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
-import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderToolCall, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
+import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsFooter, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
+import type { ToolCallListItem } from './cli/loading-tui.js';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
 
@@ -634,11 +635,14 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
   try {
     // 双横线分割
     process.stdout.write(`${C_DIM}${'─'.repeat(8)} · ${'─'.repeat(8)}${RESET}\n`);
-    // 已发送消息框
     process.stdout.write(renderUserMessage(trimmed) + '\n');
+
     const a = await getAgent();
     const boxW = Math.min(termWidth() - 2, 76);
-    const pending: { tool: string; args: any; t0: number }[] = [];
+    // 增量列表模式: 收集所有工具调用显示
+    type TDItem = { tool: string; args: any; _t: number };
+    const toolCalls: TDItem[] = [];
+    let toolCounter = 0;
     let firstEvent = true;
     const clearThinking = () => {
       if (firstEvent) {
@@ -646,25 +650,38 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
         firstEvent = false;
       }
     };
+
     const onStream = (e: any) => {
       if (e.type === 'step_start') {
-        pending.push({ tool: e.tool, args: e.args, t0: Date.now() });
-      } else if (e.type === 'step_done' || e.type === 'step_error') {
-        const p = pending.shift();
-        clearThinking();
-        // 连接线只在第 2 个及之后的工具框前出现
-        if (!firstEvent) process.stdout.write(flowConnector(boxW) + '\n');
-        process.stdout.write(
-          renderToolCall({
-            tool: e.tool ?? p?.tool ?? '?',
-            args: p?.args,
-            status: e.type === 'step_done' ? 'ok' : 'error',
-            output: e.output,
-            error: e.error,
-            durationMs: p ? Date.now() - p.t0 : undefined,
-            width: boxW,
-          }) + '\n',
+        toolCounter++;
+        const activeLine = renderToolCallListItem(
+          { tool: e.tool, args: e.args, status: 'active' },
+          toolCalls.length + 1, toolCounter,
         );
+        process.stdout.write(activeLine + '\n');
+        toolCalls.push({ tool: e.tool, args: e.args, _t: Date.now() });
+      } else if (e.type === 'step_done' || e.type === 'step_error') {
+        clearThinking();
+        const p = toolCalls.shift();
+        const doneItem: ToolCallListItem = {
+          tool: e.tool ?? p?.tool ?? '?',
+          args: p?.args,
+          status: e.type === 'step_done' ? 'ok' : 'error',
+          output: e.output,
+          error: e.error,
+          durationMs: p ? Date.now() - p._t : undefined,
+        };
+        // \r 回溯覆盖上一行 active 行
+        process.stdout.write(`\r${renderToolCallListItem(doneItem, toolCalls.length + 1, toolCounter)}\n`);
+        const bodyText = e.type === 'step_done' ? e.output : e.error;
+        if (bodyText && bodyText.length > 0) {
+          const bodyRendered = renderToolCallBody(doneItem, boxW);
+          if (bodyRendered) process.stdout.write(bodyRendered + '\n');
+        }
+        // 全部完成时打印 footer
+        if (toolCalls.length === 0 && toolCounter > 0) {
+          process.stdout.write(renderToolCallsFooter(toolCounter) + '\n');
+        }
       }
     };
     const response = await a.prompt(trimmed, { onStream });

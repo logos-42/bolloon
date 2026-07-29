@@ -38,7 +38,7 @@ export interface Step {
   eventType?: 'step_start' | 'step_done' | 'step_error';
 }
 
-const MAX_VISIBLE_NODES = 8;
+const MAX_VISIBLE_NODES = 20;
 const STORAGE_PREFIX = 'bolloon.stepTimeline.expanded.';
 
 // ---------------------------------------------------------------------------
