@@ -97,7 +97,6 @@ import { onPostToolUse, onJudgmentInjected, onMonitorViolation } from '../bootst
 import { budgetReduce, snip, microcompact } from '../context-compaction/index.js';
 // React Harness: 8-gate + 4-guard (防越权 / 防 prompt 注入)
 import { ReactHarness } from '../security/react-harness.js';
-import { applyPreModelPipeline, type CollapsedMessage } from '../bootstrap/snip-collapse.js';
 import { HooksEngine } from '../hooks/hooks-engine.js';
 import { DenyPipeline, type DenyContext } from './deny-pipeline.js';
 import { parseToolCall as parseToolCallImpl, parseAllToolCalls, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl, type ToolCall } from './parse-tool-call.js';
@@ -1848,38 +1847,24 @@ ${toolDefs}
    */
   private buildMessages(): Array<{ role: string; content: string; tool_call_id?: string; name?: string }> {
     try {
-      // 取最后 15 条, 跳过孤立的 tool 消息
-      let projectedHistory: CollapsedMessage[] = this.messageHistory;
-      if (this._enableSnipCollapse) {
-        const collapsed: CollapsedMessage[] = applyPreModelPipeline(
-          this.messageHistory.map(m => ({ role: m.role, content: m.content || '' })),
-          { maxMessages: 60, maxMessageChars: 2000, maxToolResultChars: 500 },
-          { maxCollapsedToolChars: 200 }
-        );
-        projectedHistory = collapsed;
-      }
-      const recentMessages = this.compressHistorySync(projectedHistory).slice(-15);
+      // 直接取 history 最后 15 条，strip toolCalls 避免配对错误
+      const slice = this.messageHistory.slice(-15);
       const out: Array<{ role: string; content: string; tool_call_id?: string; name?: string }> = [];
-      let pendingToolCalls = false; // 上一条 assistant 是否带了 native tool_calls
-      for (const m of recentMessages) {
-        const role = m.role;
-        // 孤立的 tool 消息 → 跳过
-        if (role === 'tool' && !pendingToolCalls) continue;
-        if (role === 'tool') {
-          const toolCallId = (m as any).toolCallId || '';
-          const result = (m as any).toolResult;
-          out.push({ role: 'tool', content: result ? (typeof result === 'string' ? result : JSON.stringify(result)) : m.content || '', tool_call_id: toolCallId, name: '' });
+      let pending = false;
+      for (const m of slice) {
+        const r = m.role;
+        if (r === 'tool' && !pending) continue;
+        if (r === 'tool') {
+          out.push({ role: 'tool', content: m.content || '', tool_call_id: (m as any).toolCallId || '', name: '' });
           continue;
         }
-        // assistant: 永远不带 tool_calls (减法: 避免配对错误)
-        //   tool_calls 只通过 OpenAI tools 参数传给 LLM, LLM 返回结构化 tool_calls
-        if (role === 'assistant') {
-          pendingToolCalls = !!(m as any).toolCalls?.length || !!(m as any).toolCall;
+        if (r === 'assistant') {
+          pending = !!(m as any).toolCalls?.length || !!(m as any).toolCall;
           out.push({ role: 'assistant', content: m.content || '' });
           continue;
         }
-        if (role === 'user') { pendingToolCalls = false; out.push({ role, content: m.content || '' }); continue; }
-        if (role === 'system') { out.push({ role: 'system', content: m.content || '' }); continue; }
+        if (r === 'user') { pending = false; out.push({ role: 'user', content: m.content || '' }); }
+        if (r === 'system') { out.push({ role: 'system', content: m.content || '' }); }
       }
       return out;
     } catch (err) {
