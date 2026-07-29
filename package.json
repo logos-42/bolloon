@@ -48,7 +48,7 @@
     "src/constraint-runtime"
   ],
   "dependencies": {
-    "@bolloon/bolloon-agent": "^0.3.16",
+    "@bolloon/bolloon-agent": "^0.3.22",
     "@bolloon/constraint-runtime": "0.1.0",
     "@capacitor/core": "^8.4.1",
     "@capacitor/ios": "^8.4.2",
