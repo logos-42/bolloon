@@ -112,14 +112,20 @@ const s = {
   Thinking: () => {
     const frames = ['(｀・ω・´)', '(´･_･`)', '(｡•́︿•̀｡)', 'ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ', '(◕‿◕)'];
     let i = 0;
+    let dots = 0;
+    const frame = frames[0];
+    process.stdout.write(`  ${frame} 思考...`);
     return setInterval(() => {
-      process.stdout.write(`\r  ${frames[i++ % frames.length]} 思考中...${RESET}    `);
-    }, 80);
+      i = (i + 1) % frames.length;
+      dots = (dots + 1) % 4;
+      const dotStr = '.'.repeat(dots || 1);
+      process.stdout.write(`\r  ${frames[i]} 思考${dotStr}   `);
+    }, 600);
   },
 
   clearThinking: (interval: ReturnType<typeof setInterval>) => {
     clearInterval(interval);
-    process.stdout.write('\r' + ' '.repeat(30) + '\r');
+    process.stdout.write('\r' + ' '.repeat(40) + '\r');
   },
 
   dialog: async (title: string, promptText: string): Promise<string> => {
@@ -645,25 +651,22 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     type TDItem = { tool: string; args: any; _t: number };
     const toolCalls: TDItem[] = [];
     let toolCounter = 0;
-    let firstEvent = true;
-    const clearThinking = () => {
-      if (firstEvent) {
-        process.stdout.write('\r' + ' '.repeat(30) + '\r');
-        firstEvent = false;
+    // 启动 thinking 加载动画 (颜文字), 第一个工具事件或 prompt 完成后停止
+    let thinkingInterval: ReturnType<typeof setInterval> | null = null;
+    const stopThinking = () => {
+      if (thinkingInterval) {
+        s.clearThinking(thinkingInterval);
+        thinkingInterval = null;
       }
     };
+    thinkingInterval = s.Thinking();
 
     const onStream = (e: any) => {
       if (e.type === 'step_start') {
         toolCounter++;
-        const activeLine = renderToolCallListItem(
-          { tool: e.tool, args: e.args, status: 'active' },
-          toolCalls.length + 1, toolCounter,
-        );
-        process.stdout.write(activeLine + '\n');
         toolCalls.push({ tool: e.tool, args: e.args, _t: Date.now() });
       } else if (e.type === 'step_done' || e.type === 'step_error') {
-        clearThinking();
+        stopThinking();
         const p = toolCalls.shift();
         const doneItem: ToolCallListItem = {
           tool: e.tool ?? p?.tool ?? '?',
@@ -673,8 +676,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
           error: e.error,
           durationMs: p ? Date.now() - p._t : undefined,
         };
-        // \r 回溯覆盖上一行 active 行
-        process.stdout.write(`\r${renderToolCallListItem(doneItem, toolCalls.length + 1, toolCounter)}\n`);
+        process.stdout.write(renderToolCallListItem(doneItem, toolCalls.length + 1, toolCounter) + '\n');
         const bodyText = e.type === 'step_done' ? e.output : e.error;
         if (bodyText && bodyText.length > 0) {
           const bodyRendered = renderToolCallBody(doneItem, boxW);
@@ -687,7 +689,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       }
     };
     const response = await a.prompt(trimmed, { onStream });
-    clearThinking();
+    stopThinking();
     // 智能体回复框 (圆角)
     process.stdout.write(renderAgentMessage(response) + '\n');
     // 更新底部状态栏: 上下文进度

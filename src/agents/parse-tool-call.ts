@@ -208,21 +208,40 @@ export function parseAllToolCalls(content: string, ctx: ParseContext): ToolCall[
     } catch { /* skip */ }
   }
 
+  // 8. 自闭合 XML 标签: <toolName attr1="val1" attr2="val2" />
+  const selfCloseRe = /<(\w+)((?:\s+\w+\s*=\s*["'][^"']*["'])*)\s*\/\s*>/g;
+  let scm: RegExpExecArray | null;
+  while ((scm = selfCloseRe.exec(stripped)) !== null) {
+    const name = scm[1];
+    const attrStr = scm[2] || '';
+    const resolved = ctx.tools.has(name) ? name : resolve(ctx, name);
+    if (!resolved) continue;
+    const args: Record<string, string> = {};
+    const attrRe = /(\w+)\s*=\s*["']([^"']*)["']/g;
+    let am: RegExpExecArray | null;
+    while ((am = attrRe.exec(attrStr)) !== null) {
+      args[am[1]] = am[2].trim();
+    }
+    autoSplitCommand(args);
+    const key = resolved + JSON.stringify(args);
+    if (!seen.has(key)) { seen.add(key); results.push({ name: resolved, args }); }
+  }
+
   return results;
 }
 
 /** 从 XML 子标签中提取 args */
 function parseXmlArgs(rawArgs: string): Record<string, string> {
   const args: Record<string, string> = {};
-  // <parameter name="X">value</parameter>
-  const paramRe = /<parameter\s+name=["'](\w+)["']>([\s\S]*?)<\/parameter>/g;
+  // <parameter name="X" ...>value</parameter>  — 允许额外属性如 string="true"
+  const paramRe = /<parameter\s+name=["'](\w+)["'][^>]*>([\s\S]*?)<\/parameter>/g;
   let pm: RegExpExecArray | null;
   while ((pm = paramRe.exec(rawArgs)) !== null) {
     args[pm[1]] = pm[2].trim();
   }
   if (Object.keys(args).length > 0) return args;
-  // <param name="X">value</param>
-  const pRe = /<param\s+name=["'](\w+)["']>([\s\S]*?)<\/param>/g;
+  // <param name="X" ...>value</param>
+  const pRe = /<param\s+name=["'](\w+)["'][^>]*>([\s\S]*?)<\/param>/g;
   while ((pm = pRe.exec(rawArgs)) !== null) {
     args[pm[1]] = pm[2].trim().replace(/^["']|["']$/g, '');
   }

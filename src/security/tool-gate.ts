@@ -63,6 +63,10 @@ const TOOL_WHITELIST = new Set<string>([
   'safe_deploy',
   // MCP 注册的工具
   'mcp_tool',
+  // 2026-07-29: 同步 pi-sdk-tools.ts 注册的全部工具
+  'read_directory', 'add_friend_by_id', 'delegate_to_engine',
+  'set_persona', 'get_operation_logs', 'park_goal',
+  'list_channels', 'list_local_channels',
 ]);
 
 export const gateWhitelist: GateResult = { gate: 'whitelist', allowed: true };
