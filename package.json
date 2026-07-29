@@ -1,10 +1,10 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.3.22",
+  "version": "0.3.23",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli-entry.js",
-  "author": "Bolloon Leo",
+  "author": "yuanjie liu",
   "repository": {
     "type": "git",
     "url": "https://github.com/logos-42/bolloon.git"
