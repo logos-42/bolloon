@@ -1,6 +1,6 @@
 # Stale Report
 
-- generated_at: `2026-07-29T02:14:33+00:00`
+- generated_at: `2026-07-29T02:45:41+00:00`
 - raw_root: `not configured`
 - fresh_pages: `0`
 - stale_pages: `0`

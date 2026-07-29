@@ -11,6 +11,9 @@
  */
 
 import { spawn } from 'child_process';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as os from 'os';
 import { discoverEngines, buildDelegateArgs } from './discovery.js';
 import type { DelegateResult, EngineId } from './types.js';
 
@@ -148,6 +151,21 @@ export async function delegateToEngine(
         try { proc.stderr?.destroy(); } catch { /* noop */ }
         killTree();
         const combined = (stdout + (stderr ? `\n[stderr]\n${stderr}` : '')).trim();
+        // 2026-07-29: Sidechain transcript — 保存委派完整记录
+        try {
+          const sidechainDir = path.join(os.homedir(), '.bolloon', 'sidechains');
+          fs.mkdir(sidechainDir, { recursive: true });
+          const ts = Date.now();
+          const filePath = path.join(sidechainDir, `${ts}-${trimmedId}.jsonl`);
+          const entry = JSON.stringify({
+            ts, engineId: trimmedId, prompt: trimmedPrompt,
+            stdout: stdout.slice(0, 100_000),
+            stderr: stderr.slice(0, 10_000),
+            exitCode: code, duration: Date.now() - ts, model: opts.model || null,
+          }) + '\n';
+          // fire-and-forget, 不阻塞主流程
+          fs.appendFile(filePath, entry, 'utf-8').catch(() => {});
+        } catch { /* sidechain 写入失败静默 */ }
         if (code === 0) {
           resolve({ success: true, output: combined || '(无输出)', exitCode: code });
         } else if (signal) {

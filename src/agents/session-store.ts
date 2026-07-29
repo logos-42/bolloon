@@ -56,14 +56,80 @@ export interface SessionStoreConfig {
 
 export class SessionStore {
   private readonly cacheDir: string;
+  /** 2026-07-29: JSONL 目录 (~/.bolloon/sessions/jsonl/) */
+  private readonly jsonlDir: string;
 
   constructor(config: SessionStoreConfig = {}) {
     this.cacheDir = config.cacheDir ?? path.join(os.homedir(), '.bolloon', 'sessions', 'cache');
+    this.jsonlDir = path.join(os.homedir(), '.bolloon', 'sessions', 'jsonl');
   }
 
-  /** 当前缓存目录 (只读). */
   get dir(): string {
     return this.cacheDir;
+  }
+
+  /** JSONL 文件路径 */
+  jsonlPathFor(key: string): string {
+    if (!key || key.includes('/') || key.includes('..')) {
+      throw new Error(`SessionStore: invalid key ${JSON.stringify(key)}`);
+    }
+    return path.join(this.jsonlDir, `${SessionStore.filenameEscape(key)}.jsonl`);
+  }
+
+  /**
+   * 2026-07-29: Append-only JSONL — 追加一条消息.
+   * 每条消息独立一行 JSON, 不破坏历史数据.
+   * 每行格式: {ts, role, content, toolCall?, toolCallId?, toolResult?}
+   */
+  async appendMessageJsonl(key: string, msg: PersistedMessage): Promise<void> {
+    if (!key || key.includes('/') || key.includes('..')) {
+      throw new Error(`SessionStore: invalid key ${JSON.stringify(key)}`);
+    }
+    await fs.mkdir(this.jsonlDir, { recursive: true });
+    const filePath = this.jsonlPathFor(key);
+    const line = JSON.stringify({
+      ts: Date.now(),
+      role: msg.role,
+      content: msg.content,
+      toolCall: msg.toolCall || undefined,
+      toolCallId: msg.toolCallId || undefined,
+      toolResult: msg.toolResult || undefined,
+    }) + '\n';
+    await fs.appendFile(filePath, line, 'utf-8');
+  }
+
+  /**
+   * 2026-07-29: 从 JSONL 完整重建消息历史.
+   * 文件不存在 → 返回 []. 损坏行 → 跳过不抛错.
+   */
+  async loadFromJsonl(key: string): Promise<PersistedMessage[]> {
+    const filePath = this.jsonlPathFor(key);
+    let raw: string;
+    try {
+      raw = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      return [];
+    }
+    const messages: PersistedMessage[] = [];
+    for (const rawLine of raw.split('\n')) {
+      const trimmed = rawLine.trim();
+      if (!trimmed) continue;
+      try {
+        const entry = JSON.parse(trimmed);
+        if (!entry.role) continue;
+        messages.push({
+          role: entry.role,
+          content: entry.content || '',
+          toolCall: entry.toolCall,
+          toolCallId: entry.toolCallId,
+          toolResult: entry.toolResult,
+          timestamp: entry.ts,
+        });
+      } catch {
+        // 跳过损坏行
+      }
+    }
+    return messages;
   }
 
   /** 单文件路径 — 暴露出来方便测试和外部读取.
@@ -109,10 +175,27 @@ export class SessionStore {
       },
     };
     const filePath = this.pathFor(key);
-    // 写临时文件 + rename — 防止半写损坏
     const tmpPath = `${filePath}.tmp`;
     await fs.writeFile(tmpPath, JSON.stringify(payload, null, 2), 'utf-8');
     await fs.rename(tmpPath, filePath);
+    // 2026-07-29: 同时写 JSONL (增量追加, 不覆盖)
+    //   每个 message 一个 append, 保证可审计 + 可重建
+    try {
+      await fs.mkdir(this.jsonlDir, { recursive: true });
+      const jsonlPath = this.jsonlPathFor(key);
+      const lines: string[] = [];
+      for (const msg of messages) {
+        lines.push(JSON.stringify({
+          ts: msg.timestamp || Date.now(),
+          role: msg.role,
+          content: msg.content,
+          toolCall: msg.toolCall || undefined,
+          toolCallId: msg.toolCallId || undefined,
+          toolResult: msg.toolResult || undefined,
+        }));
+      }
+      await fs.appendFile(jsonlPath, lines.join('\n') + '\n', 'utf-8');
+    } catch { /* JSONL 写入失败不阻塞主存储 */ }
   }
 
   /**

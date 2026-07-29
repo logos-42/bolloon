@@ -97,6 +97,9 @@ import { onPostToolUse, onJudgmentInjected, onMonitorViolation } from '../bootst
 import { budgetReduce, snip, microcompact } from '../context-compaction/index.js';
 // React Harness: 8-gate + 4-guard (防越权 / 防 prompt 注入)
 import { ReactHarness } from '../security/react-harness.js';
+import { applyPreModelPipeline, type CollapsedMessage } from '../bootstrap/snip-collapse.js';
+import { HooksEngine } from '../hooks/hooks-engine.js';
+import { DenyPipeline, type DenyContext } from './deny-pipeline.js';
 import { parseToolCall as parseToolCallImpl, parseAllToolCalls, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl, type ToolCall } from './parse-tool-call.js';
 import { buildObservation, buildReflection, formatObservationWithReflection, classifyError } from './error-classifier.js';
 import { sessionStore as defaultSessionStore, type SessionStore, type PersistedMessage } from './session-store.js';
@@ -163,6 +166,52 @@ export class PiAgentSession implements AgentSession {
   private currentPermissionMode: import('./permission-mode.js').PermissionMode = 'default';
   /** P1.2: Context Collapse 读时投影结果 (feature flag 开启时由 maybeAutoCompact 写入, buildContext 优先用) */
   private projectedHistory: Message[] | null = null;
+
+  /**
+   * 2026-07-29 (Tool pre-filter): 拒绝工具列表 — 这些工具从模型视野完全删除
+   * 模型"看不到"这些工具 (name/description/params 不在 system prompt 列出,
+   * 也不出现在 native API tools 参数中).
+   * 在 registerTools() 之后立即应用, 也可运行时通过 denyTool/allowTool 动态调整.
+   * 首次 getToolDefinitions() 调用时会缓存带过滤的结果.
+   */
+  private _deniedToolNames: Set<string> = new Set();
+
+  /** 2026-07-29: Hook 引擎 */
+  private _hooks: HooksEngine = new HooksEngine();
+
+  /** 2026-07-29: Unified Deny-First Pipeline */
+  private _denyPipeline: DenyPipeline = new DenyPipeline();
+
+  /** 2026-07-29: Snip + Context Collapse 启用标志 (默认启用) */
+  private _enableSnipCollapse: boolean = true;
+
+  /** 注册一个或多个工具到拒绝列表 */
+  denyTool(...names: string[]): void {
+    for (const name of names) this._deniedToolNames.add(name);
+    // 拒绝列表变了, 清除缓存让下次 getToolDefinitions 重新生成
+    this.cachedToolDefinitions = '';
+  }
+
+  /** 从拒绝列表移除一个或多个工具 */
+  allowTool(...names: string[]): void {
+    for (const name of names) this._deniedToolNames.delete(name);
+    this.cachedToolDefinitions = '';
+  }
+
+  /** 获取当前拒绝列表 (快照) */
+  getDeniedTools(): string[] {
+    return Array.from(this._deniedToolNames);
+  }
+
+  /** 返回已过滤（剔除拒绝工具）的工具迭代器 */
+  private allowedTools(): IterableIterator<Tool> {
+    const self = this;
+    return (function* () {
+      for (const [name, tool] of self.tools) {
+        if (!self._deniedToolNames.has(name)) yield tool;
+      }
+    })();
+  }
 
   /**
    * Judgment 注入门临时结果: 在 prompt / promptStream / promptWithPivotLoop 入口算一次, 拼到本轮 systemPrompt 末尾
@@ -265,6 +314,55 @@ export class PiAgentSession implements AgentSession {
     this.initSession();
     initDocumentReceiver();
     this.registerTools();
+    // 2026-07-29: 从环境变量加载默认拒绝工具列表 (逗号分隔)
+    //   BOLLOON_DENIED_TOOLS=shell_exec,git_commit 会在启动时拒绝高危险工具
+    try {
+      const envDenied = process.env.BOLLOON_DENIED_TOOLS;
+      if (envDenied && envDenied.trim()) {
+        const names = envDenied.split(',').map(n => n.trim()).filter(Boolean);
+        if (names.length > 0) this.denyTool(...names);
+      }
+    } catch { /* env 读失败静默 */ }
+
+    // 2026-07-29: 从环境变量控制 Snip/Collapse
+    try {
+      if (process.env.BOLLOON_SNIP_COLLAPSE === '0') this._enableSnipCollapse = false;
+    } catch { /* 静默 */ }
+
+    // 2026-07-29: 从 ~/.bolloon/hooks.yaml 加载 hook 配置
+    //   失败静默 (无 hook 配置也正常)
+    try {
+      // fire-and-forget, 不阻塞构造
+      this._hooks.loadFromConfig().catch(() => {});
+    } catch { /* 静默 */ }
+
+    // 2026-07-29: 初始化 DenyPipeline — 注册所有检查器
+    //   顺序: deny-list (最快) → permission → hooks → judgment
+    this._denyPipeline.addChecker(
+      DenyPipeline.denyListChecker(this._deniedToolNames)
+    );
+    this._denyPipeline.addChecker(
+      DenyPipeline.permissionChecker()
+    );
+    // 仅当启用了 hook 时注册 hooks 检查器
+    //   (hook 可能走到 LLM, 是最贵的, 放在最后)
+    this._denyPipeline.addChecker(async (ctx: DenyContext) => {
+      try {
+        const hookResult = await this._hooks.checkToolUse(ctx.toolName, ctx.toolArgs as Record<string, unknown>);
+        if (hookResult?.deny) {
+          return {
+            denied: true,
+            reason: hookResult.reason || 'Hook 拒绝',
+            source: 'hooks',
+            systemAddition: hookResult.systemAddition,
+          };
+        }
+        if (hookResult?.systemAddition) {
+          this.contextHintAddition += '\n' + hookResult.systemAddition;
+        }
+      } catch { /* hook 失败不阻塞 */ }
+      return { denied: false, reason: '', source: 'hooks' };
+    });
     this.loadSkills(config.skillsPaths);
     this.initHarness();
     // M2.3 (2026-06-17): 重启后 LLM 恢复记忆 — 从 session JSON 加载历史到 messageHistory
@@ -502,9 +600,11 @@ export class PiAgentSession implements AgentSession {
 
   private getToolDefinitions(): string {
     // M2.4 (2026-06-17): 缓存 tool 定义 — registerTools() 在构造时调一次, 此后不变
+    // 2026-07-29: 拒绝列表变化时清空缓存, 重新生成
     if (this.cachedToolDefinitions) return this.cachedToolDefinitions;
     const defs: string[] = ['可用工具 (name(params) - 简介):'];
-    for (const tool of this.tools.values()) {
+    // 2026-07-29: 使用 allowedTools() 过滤掉拒绝列表中的工具
+    for (const tool of this.allowedTools()) {
       // 2026-06-19: 压缩 tool 定义 — 只显示参数名 (不显示描述, 减少 60% 长度)
       //   完整 description 在 history 第一轮注入 (getToolDefinitionsFull 调用), 后续轮只看简短
       //   避免 system prompt 太大导致 minimax 撞 max_tokens 输出空
@@ -1039,6 +1139,11 @@ ${this.getToolDefinitions()}
       console.warn('[PiAgent] reactHarness.onSessionStart failed (non-fatal):', err);
     }
 
+    // 2026-07-29: Hook onLoopStart
+    try {
+      await this._hooks.fire('onLoopStart', { event: 'onLoopStart', channelId: this.currentChannelId, agentId: this.currentAgentId });
+    } catch { /* hook 失败静默 */ }
+
     while (iteration < this.MAX_REACT_ITERATIONS) {
       iteration++;
 
@@ -1163,8 +1268,8 @@ ${toolDefs}
       //   2. reactive compaction (prompt 估算超阈值, 跑压缩)
       //   3. prompt-too-long (LLM 报错 4xxx token 错误, 跑 reactive compaction 再试 1 次)
       // 失败静默: 全部重试失败 → 空 reply (上层用 no tool_use 终止)
-      // Bug 5: pass tool IDs for native OpenAI tool calling
-      const toolIds = Array.from(this.tools.keys());
+      // Bug 5: pass tool IDs for native OpenAI tool calling — 2026-07-29: 过滤拒绝工具
+      const toolIds = Array.from(this.tools.keys()).filter(n => !this._deniedToolNames.has(n));
       const response = await this.callLlmWithRecovery(llm, messages, systemPrompt, signal, onStream, toolIds);
       const reply = (response.reply || '').trim();
       // 2026-06-30: OpenAI 协议 native tool_calls (LLM 真产了 tool_call 时, minimax/M3 会返回 id)
@@ -1309,6 +1414,29 @@ ${toolDefs}
             tool: toolCall.name,
             args: toolCall.args || {},
           });
+        }
+
+        // 2026-07-29: Unified Deny-First Pipeline — 统合所有拒绝检查
+        let denyResult: Awaited<ReturnType<DenyPipeline['check']>> = { denied: false, reason: '', source: '' };
+        try {
+          denyResult = await this._denyPipeline.check({
+            toolName: toolCall.name,
+            toolArgs: toolCall.args || {},
+            permissionMode: this.currentPermissionMode,
+            channelId: this.currentChannelId,
+            agentId: this.currentAgentId,
+          } as DenyContext);
+        } catch { /* pipeline 失败不阻塞工具调用 */ }
+        if (denyResult.denied) {
+          consecutiveErrors++;
+          totalErrors++;
+          const denyResultMsg: ToolResult = { success: false, error: `拒绝: [${denyResult.source}] ${denyResult.reason}` };
+          this.messageHistory.push({ role: 'tool', content: JSON.stringify(denyResultMsg), toolResult: denyResultMsg });
+          this.logToHarness(toolCall.name, toolCall.args, denyResultMsg);
+          continue;
+        }
+        if (denyResult.systemAddition) {
+          this.contextHintAddition += '\n' + denyResult.systemAddition;
         }
 
         const tool = this.tools.get(toolCall.name);
@@ -1646,7 +1774,24 @@ ${toolDefs}
    */
   private buildMessages(): Array<{ role: string; content: string; tool_call_id?: string; name?: string; tool_calls?: any[] }> {
     try {
-      const recentMessages = this.compressHistorySync(this.messageHistory).slice(-15);
+      // 2026-07-29: Phase 2+3 — Snip + Context Collapse 预处理管道
+      //   先构建一个"投影"版本的 history (不修改原始的 this.messageHistory),
+      //   然后只取投影版本的前 15 条.
+      let projectedHistory: CollapsedMessage[] = this.messageHistory;
+      if (this._enableSnipCollapse) {
+        const collapsed: CollapsedMessage[] = applyPreModelPipeline(
+          this.messageHistory.map(m => ({ role: m.role, content: m.content || '' })),
+          {
+            maxMessages: 60,
+            maxMessageChars: 2000,
+            maxToolResultChars: 500,
+          },
+          { maxCollapsedToolChars: 200 }
+        );
+        projectedHistory = collapsed;
+      }
+
+      const recentMessages = this.compressHistorySync(projectedHistory).slice(-15);
       const out: Array<{ role: string; content: string; tool_call_id?: string; name?: string; tool_calls?: any[] }> = [];
       for (const m of recentMessages) {
         const role = m.role;

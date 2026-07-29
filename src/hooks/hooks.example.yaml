@@ -1,0 +1,65 @@
+# Hook 配置示例 — ~/.bolloon/hooks.yaml
+# 每段定义一条 hook, 用 --- 分隔.
+# 支持的事件: preToolUse, postToolUse, onMessage, onSessionStart, onSessionEnd, onLoopStart, onLoopEnd, onError
+# 执行模式: shell (命令行), llm (LLM 评估)
+
+# Hook 1: shell 模式, 在 git_commit 前检查未提交文件
+---
+id: pre-commit-check
+event: preToolUse
+mode: shell
+command: |
+  if [ "$HOOK_TOOL" = "git_commit" ]; then
+    DIRTY=$(git status --porcelain 2>/dev/null | wc -l)
+    if [ "$DIRTY" -gt 5 ]; then
+      echo '{"deny":true,"reason":"工作区有 $DIRTY 个未提交的文件, 请先 review"}'
+    fi
+  fi
+tool_filter: shell_exec,git_commit
+timeout_ms: 3000
+description: 检查 git 工作区状态
+
+# Hook 2: shell 模式, 文件写入后自动备份
+---
+id: backup-on-write
+event: postToolUse
+mode: shell
+command: |
+  if [ "$HOOK_TOOL" = "write_file" ]; then
+    BACKUP_DIR=~/.bolloon/backups/$(date +%Y%m%d)
+    mkdir -p "$BACKUP_DIR"
+    cp -r . "$BACKUP_DIR" 2>/dev/null
+  fi
+tool_filter: write_file
+timeout_ms: 10000
+description: 自动备份项目文件
+
+# Hook 3: LLM 模式, 评估工具调用是否安全
+---
+id: safety-check
+event: preToolUse
+mode: llm
+prompt: |
+  用户要调用工具 {toolCall.name}。参数: {toolCall.args}
+  判断这个操作是否安全。如果存在风险 (可能破坏系统/泄露数据/删除文件), 返回 deny=true。
+  否则返回 deny=false。
+timeout_ms: 5000
+description: LLM 安全检查
+
+# Hook 4: onMessage 日志记录
+---
+id: log-messages
+event: onMessage
+mode: shell
+command: |
+  echo "[$(date '+%H:%M:%S')] $HOOK_EVENT: $HOOK_MESSAGE" >> ~/.bolloon/hook-messages.log
+description: 记录所有消息到日志文件
+
+# Hook 5: onError 通知
+---
+id: error-notify
+event: onError
+mode: shell
+command: |
+  echo "[ERROR] $HOOK_ERROR" >> ~/.bolloon/hook-errors.log
+description: 记录错误到日志
