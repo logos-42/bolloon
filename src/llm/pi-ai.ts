@@ -226,43 +226,13 @@ export class PiAIModel {
 
     let openaiTools: any[] | undefined;
     if (tools && tools.length > 0) {
-      try {
-        const { getToolManifest, formatForPrompt, formatForOpenAI } = await import('./tool-manifest/index.js');
-        const manifests = tools
-          .map((id) => getToolManifest(id))
-          .filter((m): m is NonNullable<typeof m> => m !== undefined);
-        if (manifests.length > 0) {
-          const toolPrompt = formatForPrompt(manifests);
-          finalMessages = [
-            { role: 'system', content: toolPrompt },
-            ...messages,
-          ];
-          // Bug 3: 从 manifests 生成原生 OpenAI tools 格式
-          openaiTools = formatForOpenAI(manifests);
-        }
-        // 2026-07-29: tool-manifest 找不到对应工具时, 从工具名生成最小 native tools
-        //   让 LLM (DeepSeek/OpenAI) 进入 tool_calls 模式, 大幅提升命中率
-        if (manifests.length === 0) {
-          openaiTools = tools.map(id => ({
-            type: 'function',
-            function: {
-              name: id,
-              description: id.replace(/_/g, ' '),
-              parameters: { type: 'object', properties: {} },
-            },
-          }));
-        }
-      } catch (err: any) {
-        console.warn('[pi-ai] tool-manifest 加载失败:', err.message?.slice(0, 100));
-        // 降级: 从工具名生成
-        openaiTools = tools.map(id => ({
-          type: 'function',
-          function: {
-            name: id,
-            description: id.replace(/_/g, ' '),
-            parameters: { type: 'object', properties: {} },
-          },
-        }));
+      // 预格式化的 tools (含参数 schema) → 直接使用
+      if (typeof tools[0] === 'object' && (tools[0] as any)?.type === 'function') {
+        openaiTools = tools as any[];
+        const toolDescriptions = (tools as any[]).map(t =>
+          `- ${t.function.name}: ${t.function.description || ''} ${Object.keys(t.function.parameters?.properties || {}).length > 0 ? `(${Object.keys(t.function.parameters.properties).join(', ')})` : ''}`
+        ).join('\n');
+        finalMessages = [{ role: 'system', content: `可用工具:\n${toolDescriptions}` }, ...messages];
       }
     }
 

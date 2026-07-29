@@ -288,10 +288,9 @@ describe('runToolGates (聚合: 7-gate, output gate 单独)', () => {
     expect(r.rejectedBy).toBe('inject');
   });
 
-  it('不在白名单的 tool 应被 whitelist 拦', () => {
+  it('不在白名单的 tool 应不再被 whitelist 拦 (白名单已废弃, 工具由 tools 参数控制)', () => {
     const r = runToolGates({ tool: '__malicious__', args: {} });
-    expect(r.allowed).toBe(false);
-    expect(r.rejectedBy).toBe('whitelist');
+    expect(r.allowed).toBe(true);  // whitelist 不再检查, 其他 gate 通过
   });
 
   it('链式调用超 5 次应被 chain 拦', () => {

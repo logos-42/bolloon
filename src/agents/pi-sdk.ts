@@ -1125,9 +1125,11 @@ ${this.getToolDefinitions()}
     let aiFailureReason = '';
     const MAX_CONSECUTIVE_ERRORS = 3;
     const MAX_SAME_TOOL_FAILURES = 3; // 同一工具连续失败 3 次, 强制让 LLM 给出最终答案
-    // 2026-07-29: 同一工具重复成功调用检测 — 防 LLM 在 tool_calls 模式下循环调同一工具
-    const toolCallFrequency = new Map<string, number>();
-    const MAX_SAME_TOOL_CALLS = 3;
+    // 2026-07-29: Hermes 风格硬限制 — 防死循环 (不再靠 soft hint)
+    const MAX_IDEMPOTENT_TOOL = 4;  // 同工具成功调 4 次 → 硬断
+    const MAX_TOOL_CALLS_PER_LOOP = 20; // 单轮循环总工具调用上限 → 硬断
+    let totalToolCallsThisLoop = 0;
+    const lastNTools: string[] = []; // 最近 MAX_IDEMPOTENT_TOOL 次工具名, 检测重复
 
     // 发送循环开始的事件
     if (onStream) {
@@ -1168,6 +1170,29 @@ ${this.getToolDefinitions()}
         break;
       }
 
+      // 2026-07-29: Hermes 风格硬限制 (idempotent tool / total call cap)
+      if (totalToolCallsThisLoop >= MAX_TOOL_CALLS_PER_LOOP) {
+        console.warn(`[PiAgent] 单轮工具调用已达 ${MAX_TOOL_CALLS_PER_LOOP} 上限, 强制终止`);
+        onStream?.({ type: 'error', content: `⏹️ 工具调用已达上限 (${MAX_TOOL_CALLS_PER_LOOP}), 强制终止`, tool: 'loop' });
+        if (this.successfulToolResults.length > 0) {
+          finalResponse = `已执行 ${this.successfulToolResults.length} 个工具。请基于已有结果回答。`;
+        } else {
+          finalResponse = finalResponse || '(工具调用次数过多, 已终止)';
+        }
+        break;
+      }
+      if (lastNTools.length >= MAX_IDEMPOTENT_TOOL && new Set(lastNTools).size === 1) {
+        const repeatedTool = lastNTools[0];
+        console.warn(`[PiAgent] 同工具 ${repeatedTool} 连续成功调 ${MAX_IDEMPOTENT_TOOL} 次, 强制终止`);
+        onStream?.({ type: 'error', content: `⏹️ 工具 ${repeatedTool} 重复调用 ${MAX_IDEMPOTENT_TOOL} 次, 强制终止`, tool: 'loop' });
+        if (this.successfulToolResults.length > 0) {
+          finalResponse = `已通过 ${repeatedTool} 获取到信息。请基于已有结果回答。`;
+        } else {
+          finalResponse = finalResponse || `(工具 ${repeatedTool} 重复调用 ${MAX_IDEMPOTENT_TOOL} 次无进展, 已终止)`;
+        }
+        break;
+      }
+
       // 2026-06-16 新增: 累计错误兜底 — 跨工具, 防 LLM 轮换工具名绕过 MAX_SAME_TOOL_FAILURES
       if (totalErrors >= this.MAX_TOTAL_ERRORS) {
         console.warn(`[PiAgent] 累计错误 ${totalErrors} >= ${this.MAX_TOTAL_ERRORS}, 强制终止 (防死循环)`);
@@ -1176,7 +1201,7 @@ ${this.getToolDefinitions()}
         if (this.successfulToolResults.length > 0) {
           finalResponse = `✅ 之前步骤成功执行了 ${this.successfulToolResults.length} 个工具 (但 LLM 后续 ${totalErrors} 次调用失败):\n` +
             this.successfulToolResults.map((r, i) => `  ${i+1}. ${r.tool}: ${r.outputPreview}`).join('\n') +
-            `\n\n⚠️ (LLM 连续失败, 可能是 minimax 上游限流/网络问题, 工具已成功执行但 LLM 没能继续总结)`;
+            `\n\n⚠️ (LLM 连续失败, 可能是上游限流/网络问题, 工具已成功执行但 LLM 没能继续总结)`;
         } else {
           finalResponse = finalResponse || `(本轮 ReAct 循环累计 ${totalErrors} 次错误, 强制结束。请换个思路或简化任务重试。)`;
         }
@@ -1273,7 +1298,27 @@ ${toolDefs}
       // 失败静默: 全部重试失败 → 空 reply (上层用 no tool_use 终止)
       // Bug 5: pass tool IDs for native OpenAI tool calling — 2026-07-29: 过滤拒绝工具
       const toolIds = Array.from(this.tools.keys()).filter(n => !this._deniedToolNames.has(n));
-      const response = await this.callLlmWithRecovery(llm, messages, systemPrompt, signal, onStream, toolIds);
+      // 2026-07-29: 从 this.tools Map 生成 OpenAI 原生 tools 格式 (含参数 schema)
+      const openaiFormattedTools: any[] = [];
+      for (const [name, tool] of this.tools) {
+        if (this._deniedToolNames.has(name)) continue;
+        const params = (tool as any).parameters || {};
+        const properties: Record<string, any> = {};
+        const required: string[] = [];
+        for (const [pName, pDesc] of Object.entries(params)) {
+          properties[pName] = { type: 'string', description: String(pDesc) };
+          if (String(pDesc).includes('必填')) required.push(pName);
+        }
+        openaiFormattedTools.push({
+          type: 'function',
+          function: {
+            name,
+            description: (tool as any).description || name,
+            parameters: { type: 'object', properties, required },
+          },
+        });
+      }
+      const response = await this.callLlmWithRecovery(llm, messages, systemPrompt, signal, onStream, openaiFormattedTools);
       const reply = (response.reply || '').trim();
       // 2026-06-30: OpenAI 协议 native tool_calls (LLM 真产了 tool_call 时, minimax/M3 会返回 id)
       const nativeToolCalls = response.toolCalls;
@@ -1332,7 +1377,7 @@ ${toolDefs}
         if (onStream) {
           onStream({ type: 'status', content: `⚠️ AI 调用失败 ${totalErrors}/${this.MAX_TOTAL_ERRORS}, 已 push 错误到 history 让 LLM 反思`, tool: 'system' });
         }
-        // 退避 2s 后继续 — 临时 minimax 限流避开, 不让 loop 终止
+        // 退避 2s 后继续 — 临时上游限流避开, 不让 loop 终止
         await new Promise<void>(resolve => setTimeout(resolve, 2000));
         // 关键: 不设 aiFailed=true, 让外层不重试整个 loop (重置 history), 继续内层循环
         continue;
@@ -1480,6 +1525,18 @@ ${toolDefs}
               onStream({ type: 'step_error', content: `PreToolUse 拒绝 ${toolCall.name}`, tool: toolCall.name, error: pre.reason || '安全校验失败' });
             }
             console.warn(`[PiAgent] PreToolUse denied ${toolCall.name}: ${pre.reason}`);
+            // 拒绝也算错误, 让错误恢复机制触发
+            consecutiveErrors++;
+            totalErrors++;
+            if (toolCall.name === lastFailedTool) { lastFailedToolCount++; }
+            else { lastFailedTool = toolCall.name; lastFailedToolCount = 1; }
+            if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
+              this.messageHistory.push({ role: 'system', content: `[注意] 工具 ${toolCall.name} 被系统拒绝 (连续 ${MAX_SAME_TOOL_FAILURES} 次). 请不要再次尝试, 直接用已有信息回答用户, 末尾加 <final gen>.` });
+              lastFailedTool = ''; lastFailedToolCount = 0; consecutiveErrors = 0;
+            } else if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              this.messageHistory.push({ role: 'system', content: `[注意] 连续 ${consecutiveErrors} 次工具调用被系统拒绝. 请换其他工具或直接回答用户, 末尾加 <final gen>.` });
+              consecutiveErrors = 0;
+            }
             continue;
           }
         } catch (err) {
@@ -1498,6 +1555,16 @@ ${toolDefs}
               onStream({ type: 'step_error', content: `Harness 拒绝 ${toolCall.name}`, tool: toolCall.name, error: pre.reason || '安全校验失败' });
             }
             console.warn(`[PiAgent] Harness denied ${toolCall.name} (${pre.details.rejectedBy}): ${pre.reason}`);
+            consecutiveErrors++; totalErrors++;
+            if (toolCall.name === lastFailedTool) { lastFailedToolCount++; }
+            else { lastFailedTool = toolCall.name; lastFailedToolCount = 1; }
+            if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
+              this.messageHistory.push({ role: 'system', content: `[注意] 工具 ${toolCall.name} 被 Harness 拒绝 (连续 ${MAX_SAME_TOOL_FAILURES} 次). 请不要再次尝试, 末尾加 <final gen>.` });
+              lastFailedTool = ''; lastFailedToolCount = 0; consecutiveErrors = 0;
+            } else if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              this.messageHistory.push({ role: 'system', content: `[注意] 连续 ${consecutiveErrors} 次工具调用被 Harness 拒绝. 请换其他工具或直接回答.` });
+              consecutiveErrors = 0;
+            }
             continue;
           }
         } catch (err) {
@@ -1544,12 +1611,10 @@ ${toolDefs}
 
           if (result.success) {
             consecutiveErrors = 0;
-            // 2026-07-29: 跟踪成功调用频率, 同工具超限则强制 LLM 收敛
-            const curCount = (toolCallFrequency.get(toolCall.name) || 0) + 1;
-            toolCallFrequency.set(toolCall.name, curCount);
-            if (curCount >= MAX_SAME_TOOL_CALLS) {
-              this.messageHistory.push({ role: 'system', content: `[注意] 工具 ${toolCall.name} 已成功调用 ${curCount} 次但任务仍未完成。请基于已有结果直接回答用户, 不要再次调用 ${toolCall.name}。在回答末尾加 <final gen> 标记结束。` });
-            }
+            // 2026-07-29: Hermes 风格硬限制计数
+            totalToolCallsThisLoop++;
+            lastNTools.push(toolCall.name);
+            if (lastNTools.length > MAX_IDEMPOTENT_TOOL) lastNTools.shift();
             if (result.output) { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: result.output.substring(0, 200) + (result.output.length > 200 ? '...' : '') }); }
             else { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: '(无输出)' }); }
             lastQualityScore = this.estimateToolResultQuality(result);
@@ -1781,80 +1846,40 @@ ${toolDefs}
    * 取最近 N 条, 同步压缩前 3 层 (跟 buildContext 同步).
    * 跳过 projectedHistory 路径 — messages 数组必须真实, 不能用投影.
    */
-  private buildMessages(): Array<{ role: string; content: string; tool_call_id?: string; name?: string; tool_calls?: any[] }> {
+  private buildMessages(): Array<{ role: string; content: string; tool_call_id?: string; name?: string }> {
     try {
-      // 2026-07-29: Phase 2+3 — Snip + Context Collapse 预处理管道
-      //   先构建一个"投影"版本的 history (不修改原始的 this.messageHistory),
-      //   然后只取投影版本的前 15 条.
+      // 取最后 15 条, 跳过孤立的 tool 消息
       let projectedHistory: CollapsedMessage[] = this.messageHistory;
       if (this._enableSnipCollapse) {
         const collapsed: CollapsedMessage[] = applyPreModelPipeline(
           this.messageHistory.map(m => ({ role: m.role, content: m.content || '' })),
-          {
-            maxMessages: 60,
-            maxMessageChars: 2000,
-            maxToolResultChars: 500,
-          },
+          { maxMessages: 60, maxMessageChars: 2000, maxToolResultChars: 500 },
           { maxCollapsedToolChars: 200 }
         );
         projectedHistory = collapsed;
       }
-
-      // 取最后 15 条 (但跳过孤立的 tool 消息, 避免 OpenAI 400)
-      let recentMessages = this.compressHistorySync(projectedHistory).slice(-15);
-      const out: Array<{ role: string; content: string; tool_call_id?: string; name?: string; tool_calls?: any[] }> = [];
-      let lastHadToolCalls = false;  // 上一条 assistant 是否带 tool_calls
+      const recentMessages = this.compressHistorySync(projectedHistory).slice(-15);
+      const out: Array<{ role: string; content: string; tool_call_id?: string; name?: string }> = [];
+      let pendingToolCalls = false; // 上一条 assistant 是否带了 native tool_calls
       for (const m of recentMessages) {
         const role = m.role;
-        let content = m.content;
-
-        // 跳过孤立的 tool 消息 (前面无 assistant with tool_calls)
-        if (role === 'tool' && !lastHadToolCalls) continue;
-
-        // 2026-06-30 修: OpenAI 协议 tool role 必须带 tool_call_id
+        // 孤立的 tool 消息 → 跳过
+        if (role === 'tool' && !pendingToolCalls) continue;
         if (role === 'tool') {
-          const toolCallId = (m as any).toolCallId || (m as any).toolCall?.id || '';
+          const toolCallId = (m as any).toolCallId || '';
           const result = (m as any).toolResult;
-          out.push({
-            role: 'tool',
-            content: result ? (typeof result === 'string' ? result : JSON.stringify(result)) : content,
-            tool_call_id: toolCallId,
-            name: (m as any).toolCall?.name || '',
-          });
+          out.push({ role: 'tool', content: result ? (typeof result === 'string' ? result : JSON.stringify(result)) : m.content || '', tool_call_id: toolCallId, name: '' });
           continue;
         }
-        // system role 直接保留 (不影响 tool pairing)
-        if (role === 'system') {
-          out.push({ role: 'system', content });
-          continue;
-        }
-        // assistant 消息, 带 toolCall → 标记后续 tool 合法
+        // assistant: 永远不带 tool_calls (减法: 避免配对错误)
+        //   tool_calls 只通过 OpenAI tools 参数传给 LLM, LLM 返回结构化 tool_calls
         if (role === 'assistant') {
-          const tc = (m as any).toolCall;
-          if (tc && tc.id) {
-            lastHadToolCalls = true;
-            out.push({
-              role: 'assistant',
-              content: content || '',
-              tool_calls: [{
-                id: tc.id,
-                type: 'function',
-                function: {
-                  name: tc.name,
-                  arguments: JSON.stringify(tc.args || {}),
-                },
-              }],
-            });
-          } else {
-            lastHadToolCalls = false;
-            out.push({ role, content });
-          }
+          pendingToolCalls = !!(m as any).toolCalls?.length || !!(m as any).toolCall;
+          out.push({ role: 'assistant', content: m.content || '' });
           continue;
         }
-        if (role === 'user') {
-          lastHadToolCalls = false;
-          out.push({ role, content });
-        }
+        if (role === 'user') { pendingToolCalls = false; out.push({ role, content: m.content || '' }); continue; }
+        if (role === 'system') { out.push({ role: 'system', content: m.content || '' }); continue; }
       }
       return out;
     } catch (err) {
@@ -1891,7 +1916,7 @@ ${toolDefs}
     systemPrompt: string,
     signal: AbortSignal | undefined,
     onStream?: (chunk: any) => void,
-    tools?: string[]
+    tools?: any[]
   ): Promise<{ reply: string; toolCalls?: any[] }> {
     // Reactive compaction 预检: 估算 token 超 80% 阈值, 跑一次
     const estimated = this.estimateHistoryTokens();
@@ -1971,6 +1996,19 @@ ${toolDefs}
             contextOrMessages = this.buildMessages();
           } else {
             contextOrMessages = this.buildContext();
+          }
+        } else if (errMsg.includes('insufficient tool messages') || errMsg.includes('must be followed by tool messages')) {
+          // 2026-07-29: 特殊的 400 错误 — tool_calls 配对异常, 降级为纯文本 context
+          console.warn('[PiAgent] insufficient tool messages — 降级为 buildContext 文本');
+          if (Array.isArray(contextOrMessages)) {
+            contextOrMessages = this.buildContext();
+            // 也清除最近一轮的 toolCalls, 防止再触发
+            if (this.messageHistory.length > 1) {
+              const last = this.messageHistory[this.messageHistory.length - 1];
+              if (last.role === 'assistant' && (last as any).toolCalls) {
+                delete (last as any).toolCalls;
+              }
+            }
           }
         } else {
           // 指数退避

@@ -71,6 +71,10 @@ const TOOL_WHITELIST = new Set<string>([
 
 export const gateWhitelist: GateResult = { gate: 'whitelist', allowed: true };
 
+/**
+ * @deprecated 不再被 TOOL_GATES 调用 (2026-07-29). 保留仅供测试直接引用.
+ * 工具准入由 `tools` 参数 (OpenAI 原生格式) 控制, 不再需要第二层白名单.
+ */
 export function checkWhitelist(ctx: GateContext): GateResult {
   if (TOOL_WHITELIST.has(ctx.tool)) {
     return gateWhitelist;
@@ -279,7 +283,6 @@ export interface ToolGateCheckResult {
 }
 
 const TOOL_GATES: Array<(ctx: GateContext) => GateResult> = [
-  checkWhitelist,
   checkSchema,
   checkChannel,
   checkRate,

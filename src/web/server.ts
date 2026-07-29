@@ -13,7 +13,6 @@ import {
   healthCheck,
 } from './input-validator.js';
 import { segmentChatReply, type ChatSegment } from '../agents/chat-segmenter.js';
-import { listTools } from '../llm/tool-manifest/index.js';
 import { registerJudgmentsRoutes } from './routes-judgments.js';
 import { registerLlmConfigRoutes } from './routes-llm-config.js';
 import { registerExternalEngineRoutes } from './routes-external-engines.js';
@@ -2308,7 +2307,7 @@ ${goalDesc}
   });
 
   app.get('/api/tools', (_req, res) => {
-    res.json(listTools().map(t => t.id));
+    res.json([]);  // tool-manifest 已废弃, 工具列表由 pi-sdk.ts this.tools 维护
   });
 
   // 2026-07-28: 用户 DID 身份端点 — 静默生成/加载, 持久化到 ~/.bolloon/identity/user.json
