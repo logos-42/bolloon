@@ -1845,25 +1845,22 @@ ${toolDefs}
    * 取最近 N 条, 同步压缩前 3 层 (跟 buildContext 同步).
    * 跳过 projectedHistory 路径 — messages 数组必须真实, 不能用投影.
    */
-  private buildMessages(): Array<{ role: string; content: string; tool_call_id?: string; name?: string }> {
+  private buildMessages(): Array<{ role: string; content: string }> {
     try {
-      // 直接取 history 最后 15 条，strip toolCalls 避免配对错误
+      // 直接取 history 最后 15 条, tool 结果转 user role, 避免 tool_calls 配对
       const slice = this.messageHistory.slice(-15);
-      const out: Array<{ role: string; content: string; tool_call_id?: string; name?: string }> = [];
-      let pending = false;
+      const out: Array<{ role: string; content: string }> = [];
       for (const m of slice) {
         const r = m.role;
-        if (r === 'tool' && !pending) continue;
         if (r === 'tool') {
-          out.push({ role: 'tool', content: m.content || '', tool_call_id: (m as any).toolCallId || '', name: '' });
+          out.push({ role: 'user', content: `[工具结果]\n${m.content || ''}` });
           continue;
         }
         if (r === 'assistant') {
-          pending = !!(m as any).toolCalls?.length || !!(m as any).toolCall;
           out.push({ role: 'assistant', content: m.content || '' });
           continue;
         }
-        if (r === 'user') { pending = false; out.push({ role: 'user', content: m.content || '' }); }
+        if (r === 'user') { out.push({ role: 'user', content: m.content || '' }); }
         if (r === 'system') { out.push({ role: 'system', content: m.content || '' }); }
       }
       return out;
