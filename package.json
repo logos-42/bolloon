@@ -12,7 +12,11 @@
   "license": "MIT",
   "files": [
     "dist",
-    "bin",
+    "bin/bolloon.cjs",
+    "bin/bolloon.js",
+    "bin/bolloon.cmd",
+    "bin/bolloon-cli.cjs",
+    "bin/bolloon-daemon.sh",
     "scripts/postinstall.js",
     "scripts/build-cli.js",
     "scripts/build-web.ts"
