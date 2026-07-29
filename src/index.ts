@@ -25,7 +25,7 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
-import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsFooter, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
+import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
@@ -110,10 +110,10 @@ const s = {
   },
 
   Thinking: () => {
-    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    const frames = ['(｀・ω・´)', '(´･_･`)', '(｡•́︿•̀｡)', 'ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ', '(◕‿◕)'];
     let i = 0;
     return setInterval(() => {
-      process.stdout.write(`\r  ${YELLOW}${frames[i++ % frames.length]} 思考中...${RESET}    `);
+      process.stdout.write(`\r  ${frames[i++ % frames.length]} 思考中...${RESET}    `);
     }, 80);
   },
 
@@ -501,6 +501,8 @@ async function replReadline(comm: HyperswarmCommunicator): Promise<void> {
       `\n${sepLine}\n${statusBarLine()}\n${sepLine}\n${prefix} `, resolve
     ));
     const trimmed = raw.trim();
+    // 清除 readline echo 行, 避免与 renderUserMessage 重复
+    process.stdout.write('\r\x1b[K');
     process.stdout.write(`\n${sepLine}\n\n\n\n\n`);
     if (!trimmed) continue;
     if (!isRunning) break;

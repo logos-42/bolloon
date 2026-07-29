@@ -703,7 +703,7 @@ export class PiAgentSession implements AgentSession {
 
     try {
       // 2026-06-16: runReActLoop 现在返回 { reply, aiFailed, aiFailureReason } — 这里只需 reply 字符串
-      const loopResult = await this.runReActLoop(undefined, options?.signal);
+      const loopResult = await this.runReActLoop(this.currentOnStream ?? undefined, options?.signal);
       return loopResult.reply;
     } finally {
       if (this.judgmentGateUsedIds.length > 0) {
@@ -1791,14 +1791,18 @@ ${toolDefs}
         projectedHistory = collapsed;
       }
 
-      const recentMessages = this.compressHistorySync(projectedHistory).slice(-15);
+      // 取最后 15 条 (但跳过孤立的 tool 消息, 避免 OpenAI 400)
+      let recentMessages = this.compressHistorySync(projectedHistory).slice(-15);
       const out: Array<{ role: string; content: string; tool_call_id?: string; name?: string; tool_calls?: any[] }> = [];
+      let lastHadToolCalls = false;  // 上一条 assistant 是否带 tool_calls
       for (const m of recentMessages) {
         const role = m.role;
         let content = m.content;
-        // 2026-06-30 修: OpenAI 协议 tool role 必须带 tool_call_id, 否则 minimax (OpenAI-compatible) 报 400
-        //   bolloon 之前把所有 tool result 包成 "[工具结果] ..." 当 user/assistant role 发, minimax 严格校验失败
-        //   现在: 保留 role='tool' + 加 tool_call_id 字段 (用 messageHistory 里自己生成的 id)
+
+        // 跳过孤立的 tool 消息 (前面无 assistant with tool_calls)
+        if (role === 'tool' && !lastHadToolCalls) continue;
+
+        // 2026-06-30 修: OpenAI 协议 tool role 必须带 tool_call_id
         if (role === 'tool') {
           const toolCallId = (m as any).toolCallId || (m as any).toolCall?.id || '';
           const result = (m as any).toolResult;
@@ -1810,16 +1814,16 @@ ${toolDefs}
           });
           continue;
         }
-        // system role (router hint 等) 直接保留
+        // system role 直接保留 (不影响 tool pairing)
         if (role === 'system') {
           out.push({ role: 'system', content });
           continue;
         }
-        // 2026-06-30 修: assistant 消息如果带 toolCall (bolloon 内部对象), emit OpenAI 协议的 tool_calls 数组
-        //   minimax 严格要求 assistant 消息含 tool_calls 字段, 后续 tool result 才能引用 tool_call_id
+        // assistant 消息, 带 toolCall → 标记后续 tool 合法
         if (role === 'assistant') {
           const tc = (m as any).toolCall;
           if (tc && tc.id) {
+            lastHadToolCalls = true;
             out.push({
               role: 'assistant',
               content: content || '',
@@ -1833,11 +1837,13 @@ ${toolDefs}
               }],
             });
           } else {
+            lastHadToolCalls = false;
             out.push({ role, content });
           }
           continue;
         }
         if (role === 'user') {
+          lastHadToolCalls = false;
           out.push({ role, content });
         }
       }

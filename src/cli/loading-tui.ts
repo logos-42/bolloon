@@ -385,9 +385,9 @@ export function renderUserMessage(body: string): string {
   return renderMessageBox({ title: '✓ 已发送', body, color: C_OK, maxLines: DEFAULT_MAX_LINES });
 }
 
-/** 智能体回复框 */
+/** 智能体回复框 (不压缩, 用户需要看到完整回复) */
 export function renderAgentMessage(body: string): string {
-  return renderMessageBox({ title: '◉ Bolloon Agent', body, color: C_ACCENT, maxLines: DEFAULT_MAX_LINES });
+  return renderMessageBox({ title: '◉ Bolloon Agent', body, color: C_ACCENT, maxLines: 0 });
 }
 
 // ── 工具调用显示 (圆角框 + ╼╾ 连接) ────────────────
