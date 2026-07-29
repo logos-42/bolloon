@@ -240,8 +240,29 @@ export class PiAIModel {
           // Bug 3: 从 manifests 生成原生 OpenAI tools 格式
           openaiTools = formatForOpenAI(manifests);
         }
+        // 2026-07-29: tool-manifest 找不到对应工具时, 从工具名生成最小 native tools
+        //   让 LLM (DeepSeek/OpenAI) 进入 tool_calls 模式, 大幅提升命中率
+        if (manifests.length === 0) {
+          openaiTools = tools.map(id => ({
+            type: 'function',
+            function: {
+              name: id,
+              description: id.replace(/_/g, ' '),
+              parameters: { type: 'object', properties: {} },
+            },
+          }));
+        }
       } catch (err: any) {
         console.warn('[pi-ai] tool-manifest 加载失败:', err.message?.slice(0, 100));
+        // 降级: 从工具名生成
+        openaiTools = tools.map(id => ({
+          type: 'function',
+          function: {
+            name: id,
+            description: id.replace(/_/g, ' '),
+            parameters: { type: 'object', properties: {} },
+          },
+        }));
       }
     }
 

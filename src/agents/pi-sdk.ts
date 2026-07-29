@@ -1125,6 +1125,9 @@ ${this.getToolDefinitions()}
     let aiFailureReason = '';
     const MAX_CONSECUTIVE_ERRORS = 3;
     const MAX_SAME_TOOL_FAILURES = 3; // 同一工具连续失败 3 次, 强制让 LLM 给出最终答案
+    // 2026-07-29: 同一工具重复成功调用检测 — 防 LLM 在 tool_calls 模式下循环调同一工具
+    const toolCallFrequency = new Map<string, number>();
+    const MAX_SAME_TOOL_CALLS = 3;
 
     // 发送循环开始的事件
     if (onStream) {
@@ -1541,6 +1544,12 @@ ${toolDefs}
 
           if (result.success) {
             consecutiveErrors = 0;
+            // 2026-07-29: 跟踪成功调用频率, 同工具超限则强制 LLM 收敛
+            const curCount = (toolCallFrequency.get(toolCall.name) || 0) + 1;
+            toolCallFrequency.set(toolCall.name, curCount);
+            if (curCount >= MAX_SAME_TOOL_CALLS) {
+              this.messageHistory.push({ role: 'system', content: `[注意] 工具 ${toolCall.name} 已成功调用 ${curCount} 次但任务仍未完成。请基于已有结果直接回答用户, 不要再次调用 ${toolCall.name}。在回答末尾加 <final gen> 标记结束。` });
+            }
             if (result.output) { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: result.output.substring(0, 200) + (result.output.length > 200 ? '...' : '') }); }
             else { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: '(无输出)' }); }
             lastQualityScore = this.estimateToolResultQuality(result);

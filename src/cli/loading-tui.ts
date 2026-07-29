@@ -451,36 +451,16 @@ function colorizeDiff(text: string): string {
   return out.join('\n');
 }
 
-/** 渲染单条工具调用为紧凑列表项 (增量显示, 一行) */
+/** 渲染单条工具调用为紧凑列表项 (增量显示, 一行, 无 args) */
 export function renderToolCallListItem(item: ToolCallListItem, index: number, total: number): string {
   const dur = item.durationMs != null ? ` ${C_DIM}${item.durationMs}ms${RESET}` : '';
-  const args = typeof item.args === 'string' ? item.args : item.args ? ` ${C_DIM}${truncate(JSON.stringify(item.args), 50)}${RESET}` : '';
   const label = item.status === 'error' ? `${C_ERROR}${item.tool}${RESET}` : `${C_ACCENT}${item.tool}${RESET}`;
-  return `  🔧 ${label}${args}${dur}`;
+  return `  🔧 ${label}${dur}`;
 }
 
-/** 紧凑渲染工具输出 (检测到 diff 则着色, 否则普通截断) */
+/** 紧凑渲染工具输出 (检测到 diff 则着色, 否则普通截断) — 当前不显示 body */
 export function renderToolCallBody(item: ToolCallListItem, width: number = 72): string {
-  const body = item.status === 'ok' ? item.output : item.error || item.error;
-  if (!body) return '';
-  const w = Math.min(termWidth() - 2, width);
-  if (isDiffOutput(body)) {
-    const colored = colorizeDiff(body);
-    const wrapped = wrapText(colored, w - 4);
-    const shown = wrapped.slice(0, 5);
-    const prefix = fg(0x21, 0x96, 0xf3) + '  ╭─ diff ' + RESET;
-    const lines: string[] = [prefix];
-    for (const l of shown) lines.push(`  │${l}`);
-    if (wrapped.length > 5) lines.push(`  ╰─ ${C_DIM}… ${wrapped.length - 5} 行已折叠${RESET}`);
-    else lines[lines.length - 1] = '  ╰' + lines[lines.length - 1].slice(3);
-    return lines.join('\n');
-  }
-  const wrapped = wrapText(body, w - 4);
-  const shown = wrapped.slice(0, 2);
-  const lines: string[] = [];
-  for (const l of shown) lines.push(`  ${C_DIM}▏ ${l}${RESET}`);
-  if (wrapped.length > 2) lines.push(`  ${C_DIM}▏ … ${wrapped.length - 2} 行${RESET}`);
-  return lines.join('\n');
+  return '';
 }
 
 /** 增量列表标题行 (含步骤计数) */
@@ -489,10 +469,9 @@ export function renderToolCallsHeader(count: number): string {
   return `  ${C_DIM}╭─ 工具调用 (${count} 步)${RESET}`;
 }
 
-/** 增量列表结尾行 */
+/** 增量列表结尾行 — 当前不显示 */
 export function renderToolCallsFooter(count: number): string {
-  if (count === 0) return '';
-  return `  ${C_DIM}╰${'─'.repeat(Math.min(termWidth() - 4, 30))}${RESET}`;
+  return '';
 }
 
 /** 渲染单个工具调用为圆角框 (参数 / 状态 / 输出预览) — 旧版保留兼容 */
