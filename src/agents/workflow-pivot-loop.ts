@@ -198,6 +198,55 @@ export class WorkflowPivotLoop {
       this.registerTool(tool);
     }
   }
+
+  /**
+   * 2026-08-02: 把 this.tools Map 转成 OpenAI 原生 tools 格式 (含参数 schema).
+   *   pivot loop 之前只把工具描述塞 system prompt, LLM 靠文本 JSON 猜格式
+   *   (deepseek 输出 {"name":"X","result":{...}} 编造结果), 从不真正执行工具.
+   *   传原生 tools + tool_choice auto → LLM 返回结构化 tool_calls.
+   */
+  private buildOpenAITools(): any[] {
+    const out: any[] = [];
+    for (const [name, tool] of this.tools) {
+      const params = (tool as any).parameters || {};
+      const properties: Record<string, any> = {};
+      const required: string[] = [];
+      for (const [pName, pDesc] of Object.entries(params)) {
+        properties[pName] = { type: 'string', description: String(pDesc) };
+        if (String(pDesc).includes('必填')) required.push(pName);
+      }
+      out.push({
+        type: 'function',
+        function: {
+          name,
+          description: (tool as any).description || name,
+          parameters: { type: 'object', properties, required },
+        },
+      });
+    }
+    return out;
+  }
+
+  /**
+   * 2026-08-02: 把 OpenAI 原生 tool_calls (结构化) 转成 ToolDefinition 数组.
+   *   优先于文本 JSON 解析 — LLM 返回 tool_calls 时直接执行, 不再猜格式.
+   */
+  private nativeToolCallsToDefinitions(toolCalls: any[]): ToolDefinition[] {
+    const out: ToolDefinition[] = [];
+    for (const tc of toolCalls || []) {
+      const fn = tc?.function;
+      if (!fn || !fn.name) continue;
+      const name = fn.name;
+      if (!this.tools.has(name)) continue;
+      let args: Record<string, string> = {};
+      try {
+        const parsed = JSON.parse(fn.arguments || '{}');
+        if (parsed && typeof parsed === 'object') args = parsed;
+      } catch { /* args 保持空 */ }
+      out.push({ name, args: this.normalizeArgs(args), description: '', parameters: {} });
+    }
+    return out;
+  }
   
   /**
    * Execute the pivot loop
@@ -290,9 +339,12 @@ export class WorkflowPivotLoop {
       try {
         // Call LLM
         const t0 = Date.now();
-        const llmResponse = await llm.chat(context, headerForThisIter, signal);
-        const reply = llmResponse.reply.trim();
-        this.vlog(`[pivot] iter=${this.state.iteration} LLM took=${Date.now() - t0}ms reply=${reply.length} head=${reply.substring(0, 80).replace(/\n/g, ' ')}`);
+        // 2026-08-02: 传原生 OpenAI tools — deepseek 返回结构化 tool_calls,
+        //   UI 才能显示真实的工具执行 step (之前靠文本 JSON 猜格式, LLM 编造 result)
+        const openAITools = this.buildOpenAITools();
+        const llmResponse = await llm.chat(context, headerForThisIter, signal, openAITools);
+        const reply = (llmResponse.reply || '').trim();
+        this.vlog(`[pivot] iter=${this.state.iteration} LLM took=${Date.now() - t0}ms reply=${reply.length} nativeToolCalls=${llmResponse.toolCalls?.length ?? 0} head=${reply.substring(0, 80).replace(/\n/g, ' ')}`);
 
         this.emit({ type: 'token', content: reply.substring(0, 100) });
         // 2026-07-06: 把完整 reply 推给前端 — 前端按需更新临时气泡
@@ -340,7 +392,10 @@ export class WorkflowPivotLoop {
         }
         
         // Check if this is a final response (no tool calls)
-        const pendingTools = this.extractPendingToolUses(reply);
+        // 2026-08-02: 优先用 OpenAI 原生 tool_calls (结构化, LLM 不会编造 result),
+        //   没有才 fallback 到文本 JSON 解析 (extractPendingToolUses)
+        const nativeTools = this.nativeToolCallsToDefinitions(llmResponse.toolCalls || []);
+        const pendingTools = nativeTools.length > 0 ? nativeTools : this.extractPendingToolUses(reply);
 
         if (pendingTools.length === 0) {
           // 2026-07-06: LLM 显式 <final gen> 标记 — pivot 立即退出, 不再走 quality/iter 流程
@@ -756,6 +811,11 @@ export class WorkflowPivotLoop {
   private buildContext(): string {
     return this.messageHistory.map(m => {
       if (m.role === 'user') return `用户: ${m.content}`;
+      if (m.role === 'assistant' && m.toolCall && m.toolResult) {
+        // 2026-08-02 fix: 工具调用后的 assistant 消息带 toolCall/toolResult,
+        //   之前只输出 content (原生 tool_calls 时 content 为空) → LLM 永远看不到结果 → 无限重试同一工具
+        return `工具调用: ${m.toolCall.name}(${JSON.stringify(m.toolCall.args)})\n工具结果: ${JSON.stringify(m.toolResult)}`;
+      }
       if (m.role === 'assistant') return `助手: ${m.content}`;
       if (m.role === 'tool' && m.toolResult) {
         return `工具结果: ${JSON.stringify(m.toolResult)}`;
@@ -898,7 +958,8 @@ ${identityLine ? identityLine + '\n' : ''}当前 step 别再读 persona 全文, 
  */
 export interface LLMInterface {
   // 2026-07-04: 加 signal 让 pivot loop 支持 abort (防止 LLM hang)
-  chat(context: string, systemPrompt: string, signal?: AbortSignal): Promise<{ reply: string; tokens?: number }>;
+  // 2026-08-02: 加 tools 参数 (OpenAI 原生函数定义) + toolCalls 返回 (结构化工具调用)
+  chat(context: string, systemPrompt: string, signal?: AbortSignal, tools?: any[]): Promise<{ reply: string; tokens?: number; toolCalls?: any[] }>;
 }
 
 /**
