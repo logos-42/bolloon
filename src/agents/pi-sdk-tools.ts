@@ -749,13 +749,11 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   // 通用文件读取 (M4)
   ctx.tools.set('read_file', {
     name: 'read_file',
-    description: '读取任意文件内容 (相对 cwd). 受 shell-guard 路径白名单保护.',
+    description: '读取任意文件内容 (相对 cwd). 只读操作, 无白名单限制.',
     parameters: { path: '相对路径 (必填)', startLine: '起始行号 (可选, 默认 0)', maxLines: '最大行数 (可选, 默认 500)' },
     execute: async (args) => {
       const relPath = String(args.path || '').trim();
       if (!relPath) return { success: false, error: 'path 必填' };
-      const pathResult = checkWritePath(relPath);
-      if (!pathResult.allowed) return { success: false, error: `路径被护栏拒: ${pathResult.reason}` };
       try {
         const absPath = path.resolve(ctx.cwd, relPath);
         const content = fsSync.readFileSync(absPath, 'utf-8');
@@ -836,14 +834,12 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('grep_files', {
     name: 'grep_files',
-    description: '在文件中搜索匹配 pattern 的行. 类似 grep -rn. 路径必须在白名单.',
+    description: '在文件中搜索匹配 pattern 的行. 类似 grep -rn. 只读操作, 无白名单限制.',
     parameters: { pattern: '搜索 pattern (必填, 字符串, 不是正则)', path: '搜索目录 (可选, 默认 .)', filePattern: '文件名 glob (可选)' },
     execute: async (args) => {
       const pattern = String(args.pattern || '').trim();
       if (!pattern) return { success: false, error: 'pattern 必填' };
       const searchPath = String(args.path || '.').trim();
-      const pathResult = checkWritePath(searchPath);
-      if (!pathResult.allowed) return { success: false, error: `路径被护栏拒: ${pathResult.reason}` };
       try {
         const { execFile } = await import('child_process');
         const { promisify } = await import('util');
@@ -861,14 +857,12 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('glob_files', {
     name: 'glob_files',
-    description: '用 glob pattern 找文件. 例如 "**/*.test.ts".',
+    description: '用 glob pattern 找文件. 例如 "**/*.test.ts". 只读操作, 无白名单限制.',
     parameters: { pattern: 'glob pattern (必填, e.g. "src/**/*.ts")' },
     execute: async (args) => {
       const pattern = String(args.pattern || '').trim();
       if (!pattern) return { success: false, error: 'pattern 必填' };
       try {
-        const pathResult = checkWritePath(pattern.replace(/\*\*.*$/, '').replace(/\/\*.*$/, '') || '.');
-        if (!pathResult.allowed && pattern !== '**/*' && pattern !== '*') return { success: false, error: `路径被护栏拒: ${pathResult.reason}` };
         const { execFile } = await import('child_process');
         const { promisify } = await import('util');
         const pExecFile = promisify(execFile);
