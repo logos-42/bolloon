@@ -4365,8 +4365,58 @@ app.get('/channels', async (_req, res) => {
   });
   app.delete('/api/p2p-peers/:name', async (req, res) => {
     try {
-      const { removePeer } = await import('../network/known-peers.js');
-      await removePeer(req.params.name);
+      const { removePeer, listPeers } = await import('../network/known-peers.js');
+      // 2026-08-02: 删除好友时同时撤回分享 — 从所有 channel 的 shared_with_peers 移除该 peer
+      // 参数支持 name 或 publicKey (陌生 peer 只有 publicKey, 不在 known_peers)
+      const peers = await listPeers();
+      const param = req.params.name;
+      const target = peers.find(p => p.name === param) || peers.find(p => p.publicKey === param);
+      if (target) {
+        const { readFile, writeFile } = await import('fs/promises');
+        const channelsPath = `${process.env.HOME || '/tmp'}/.bolloon/sessions/channels.json`;
+        try {
+          const raw = await readFile(channelsPath, 'utf-8');
+          const chData = JSON.parse(raw);
+          const chs = Array.isArray(chData) ? chData : (chData.channels || []);
+          let changed = 0;
+          for (const ch of chs) {
+            if (Array.isArray(ch.shared_with_peers) && ch.shared_with_peers.includes(target.publicKey)) {
+              ch.shared_with_peers = ch.shared_with_peers.filter((pk: string) => pk !== target.publicKey);
+              changed++;
+            }
+          }
+          if (changed > 0) {
+            if (Array.isArray(chData)) await writeFile(channelsPath, JSON.stringify(chs, null, 2), 'utf-8');
+            else { chData.channels = chs; await writeFile(channelsPath, JSON.stringify(chData, null, 2), 'utf-8'); }
+            console.log(`[p2p-peers] 删除好友 ${param}: 撤回 ${changed} 个 channel 的分享`);
+          }
+        } catch (e: any) {
+          console.warn('[p2p-peers] 撤回 channel 分享失败 (non-fatal):', e?.message?.slice(0, 120));
+        }
+      }
+      // 2026-08-02: 同时清掉 remote channel cache (内存 + 磁盘) — 否则 topic 在线节点
+      //   删除后仍以 "陌生 peer" (peer-xxx) 出现在 UI, 无法真正删除
+      try {
+        const targetPk = target?.publicKey || (param.length === 64 ? param : null);
+        if (targetPk) remoteChannelCache.delete(targetPk);
+        const { existsSync } = await import('fs');
+        if (existsSync(REMOTE_CACHE_FILE)) {
+          const { readFile, writeFile } = await import('fs/promises');
+          const cacheObj = JSON.parse(await readFile(REMOTE_CACHE_FILE, 'utf-8'));
+          if (cacheObj && typeof cacheObj === 'object') {
+            const pkToDel = targetPk || Object.keys(cacheObj).find((k: string) => k === param);
+            if (pkToDel && cacheObj[pkToDel]) {
+              delete cacheObj[pkToDel];
+              await writeFile(REMOTE_CACHE_FILE, JSON.stringify(cacheObj, null, 2), 'utf-8');
+              console.log(`[p2p-peers] 已清 remote cache: ${pkToDel.substring(0, 12)}...`);
+            }
+          }
+        }
+      } catch (e: any) {
+        console.warn('[p2p-peers] 清 remote cache 失败 (non-fatal):', e?.message?.slice(0, 120));
+      }
+      // 陌生 peer (只有 publicKey) 不在 known_peers, removePeer 无操作也 ok
+      await removePeer(target?.name || param);
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

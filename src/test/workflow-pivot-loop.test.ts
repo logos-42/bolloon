@@ -65,6 +65,14 @@ function createMockLLM(mock: MockLLM) {
         return { reply: '调用工具: read_document(path: test.txt)' };
       }
 
+      // 2026-08-02: 模拟 deepseek 真实输出 — system prompt 教的 {"name":"X","input":{...}} 格式
+      //   之前 extractPendingToolUses Pattern 4 只认 arguments 字段, input 解析不到 → 工具永不执行
+      if (context.includes('json_input_format') || context.includes('JSON格式')) {
+        return {
+          reply: '```json\n{"name":"read_document","input":{"path":"test.txt"}}\n```'
+        };
+      }
+
       if (context.includes('get_time') || context.includes('时间')) {
         return { reply: '调用工具: get_time()' };
       }
@@ -114,6 +122,31 @@ describe('WorkflowPivotLoop', () => {
       });
 
       expect(result.iterations).toBeGreaterThan(0);
+      expect(result.toolCalls).toBeGreaterThan(0);
+    });
+
+    it('应该解析 JSON 格式工具调用 (input 字段, 2026-08-02 修复)', async () => {
+      // 回归测试: system prompt 教的 {"name":"X","input":{...}} 格式
+      //   之前 Pattern 4 只认 arguments → input 解析不到 → 工具永不执行
+      const loop = new WorkflowPivotLoop({ maxIterations: 10, minIterations: 1, qualityThreshold: 0.5 });
+      loop.registerTools(mockTools);
+
+      const mock: MockLLM = {
+        callCount: 0,
+        shouldReturnFinal: false,
+        finalResponse: '读取完成'
+      };
+
+      const llm = createMockLLM(mock);
+      const result = await loop.execute('JSON格式读取文件', llm as any, '测试系统提示');
+
+      console.log('[Test] JSON input 格式结果:', {
+        iterations: result.iterations,
+        toolCalls: result.toolCalls,
+        exitReason: result.exitReason
+      });
+
+      // 第一轮 LLM 输出 {"name":"read_document","input":{...}} → 必须被解析并执行 (toolCalls >= 1)
       expect(result.toolCalls).toBeGreaterThan(0);
     });
 

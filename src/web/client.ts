@@ -3711,6 +3711,7 @@ async function openEditPeerModal(peerName, peerPublicKey) {
                     style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-main);color:var(--text);font-family:inherit;font-size:13px;box-sizing:border-box;resize:vertical;">${escapeHtml(currentNotes)}</textarea>
         </div>
         <div class="friend-req-actions">
+          <button id="epm-delete" class="friend-req-btn-deny" style="border-color:var(--danger,#e05d5d);color:var(--danger,#e05d5d);margin-right:auto;">🗑️ 删除好友</button>
           <button id="epm-cancel" class="friend-req-btn-deny">取消</button>
           <button id="epm-save" class="friend-req-btn-accept">保存</button>
         </div>
@@ -3720,6 +3721,32 @@ async function openEditPeerModal(peerName, peerPublicKey) {
   document.body.insertAdjacentHTML('beforeend', html);
   const close = () => document.getElementById('edit-peer-modal')?.remove();
   document.getElementById('epm-cancel').onclick = close;
+  // 2026-08-02: 删除好友按钮 — 确认后 DELETE /api/p2p-peers/:name, 并清理本机对该 peer 的 channel 分享
+  document.getElementById('epm-delete').onclick = async () => {
+    if (!confirm(`确定删除好友 "${currentName}" 吗？\n对方分享给你的 channel 将不再显示，你分享给对方的 channel 也会撤回。`)) return;
+    try {
+      // 2026-08-02: 优先用 publicKey 删除 (陌生 peer 只有 publicKey, 不在 known_peers)
+      const delKey = peerPublicKey || peerName;
+      const r = await fetch(`/api/p2p-peers/${encodeURIComponent(delKey)}`, { method: 'DELETE' });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${r.status}`);
+      }
+      console.log('[v3] 删除好友成功:', currentName);
+      showSimpleToast(`✅ 已删除 ${currentName}`);
+      close();
+      // 重新拉 known_peers + 远程 channels 重新渲染
+      const r2 = await fetch('/api/p2p-peers');
+      if (r2.ok) {
+        const d2 = await r2.json();
+        knownPeers = Array.isArray(d2.peers) ? d2.peers : [];
+      }
+      renderRemoteChannels();
+    } catch (err) {
+      console.error('[v3] 删除好友失败:', err);
+      alert('删除失败: ' + (err.message || err));
+    }
+  };
   document.getElementById('epm-save').onclick = async () => {
     const newName = document.getElementById('epm-name').value.trim() || currentName;
     const newNotes = document.getElementById('epm-notes').value;

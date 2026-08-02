@@ -681,31 +681,30 @@ export class WorkflowPivotLoop {
     }
 
     // Pattern 4: Single JSON tool call format {"name": "tool_name", "arguments": {...}}
-    try {
-      const singleJsonRe = /\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
-      let singleMatch;
-      while ((singleMatch = singleJsonRe.exec(content)) !== null) {
-        const name = singleMatch[1];
-        if (pending.some(p => p.name === name)) continue;
-        if (!this.tools.has(name)) continue;
-        
-        try {
-          const args = JSON.parse(singleMatch[2]);
-          if (args && typeof args === 'object') {
-            const normalizedArgs = this.normalizeArgs(args);
-            pending.push({ name, args: normalizedArgs, description: '', parameters: {} });
-          }
-        } catch {
-          // JSON parsing failed, skip
+    // 2026-08-02 fix: 兼容 system prompt 教的 {"name":"X","input":{...}} 格式 —
+    //   pi-sdk.ts 工具调用格式说明用 input 字段, 但解析器只认 arguments,
+    //   导致 LLM 输出 {"name":"read_document","input":{...}} 解析不到 → 工具永不执行。
+    const singleJsonRe = /\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"(?:arguments|input)"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
+    let singleMatch;
+    while ((singleMatch = singleJsonRe.exec(content)) !== null) {
+      const name = singleMatch[1];
+      if (pending.some(p => p.name === name)) continue;
+      if (!this.tools.has(name)) continue;
+
+      try {
+        const args = JSON.parse(singleMatch[2]);
+        if (args && typeof args === 'object') {
+          const normalizedArgs = this.normalizeArgs(args);
+          pending.push({ name, args: normalizedArgs, description: '', parameters: {} });
         }
+      } catch {
+        // JSON parsing failed, skip
       }
-    } catch {
-      // Pattern matching failed, ignore
     }
 
     return pending;
   }
-  
+
   /**
    * Parse tool arguments from string
    */
