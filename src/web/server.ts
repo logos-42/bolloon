@@ -216,6 +216,9 @@ let sseClients: Set<SSEClient> = new Set();
 // v3: 远端 channel UI 元数据缓存 — key: peerId, value: sanitize 过的 channel 列表
 // in-memory only, 进程重启清空 (judgment 内容永远不在这里)
 let remoteChannelCache: Map<string, Array<Record<string, unknown>>> = new Map();
+// 2026-08-02: channel 运行状态 (running/queue/abort/续看) — 模块级提升,
+//   triggerRemoteFollowup (模块级) 也要访问. createWebServer 启动时 clear.
+let channelRunState: Map<string, any> = new Map();
 
 // 2026-08-02: 待处理好友申请 (pending friend requests) — 收到 agent.friend.request 时暂存,
 //   人类通过 UI 处理, 智能体通过工具 list_pending_friend_requests / accept_friend_request 处理。
@@ -486,9 +489,22 @@ async function routeMentionsInReply(
         const r = await sendOrQueue(ownerPk, 'agent.cross.post', rpcPayload, v3P2PRef);
         if (r === 'SENT') {
           console.log(`[v3-cross] (${originChannelName}) @${targetName} → 远端 peer ${ownerPk.substring(0,12)}... (channelId=${remoteTarget.id})`);
+          // 2026-08-02: 激活远端协作续看 — 本地智能体 @ 远端后, 收到对方回复时多看一次
+          //   (Validator: 判断完成 or 继续), remoteChannelId 用于 reply 事件匹配, maxRounds=3 防死循环
+          const rs = channelRunState.get(originChannelId);
+          if (rs && !rs.remoteFollowup) {
+            rs.remoteFollowup = { rounds: 0, maxRounds: 3, remoteChannelId: remoteTarget.id };
+            console.log(`[v3-followup] ${originChannelId} 激活远端协作续看 → ${remoteTarget.id} (maxRounds=3)`);
+          }
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'sent' });
         } else if (r === 'QUEUED') {
           console.log(`[v3-cross] (${originChannelName}) @${targetName} → 远端 peer ${ownerPk.substring(0,12)}... 已入队 (对方不在线)`);
+          // 入队也激活 — 对方上线后会回复, 同样续看
+          const rs = channelRunState.get(originChannelId);
+          if (rs && !rs.remoteFollowup) {
+            rs.remoteFollowup = { rounds: 0, maxRounds: 3, remoteChannelId: remoteTarget.id };
+            console.log(`[v3-followup] ${originChannelId} 激活远端协作续看 (入队 → ${remoteTarget.id})`);
+          }
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'queued' });
         } else {
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'failed' });
@@ -503,6 +519,120 @@ async function routeMentionsInReply(
   }
 
   return results;
+}
+
+/**
+ * 2026-08-02: 远端协作续看 — 收到远端回复后, 本地智能体"多看一次回复".
+ * 流程 (与 /message 一致): 构建 context (注入远端回复 + 渠道目录) → promptStream →
+ *   routeMentionsInReply (LLM 若 @ 则继续转发) → broadcast 显示.
+ * LLM 判断: 任务未完成 → 回复里 @ 继续 (下次回复再续看); 完成 → 总结, 协作结束.
+ * 防死循环: roundsLeft 由调用方控制 (triggerRemoteFollowup 结束时若还有轮次, 保留
+ *   remoteFollowup; 否则清除).
+ */
+async function triggerRemoteFollowup(
+  channelId: string,
+  remoteReply: string,
+  fromPublicKey: string,
+  roundsLeft: number
+): Promise<void> {
+  try {
+    const channels = await loadChannels();
+    const ch = channels.find((c: any) => c.id === channelId);
+    if (!ch) return;
+    const agent = await getAgentForChannel(channelId, ch.did || '', ch.name, ch.didDocRef);
+    if (!agent) return;
+
+    // 构建 context: 远端回复 + 渠道目录 (让 LLM 知道可以 @ 谁继续)
+    let contextHint = `[系统上下文] 当前频道名称: ${ch.name}\n`;
+    contextHint += `[系统上下文] 你通过 P2P 给远端智能体发了消息, 对方回复如下. 请判断协作是否可以继续:\n`;
+    contextHint += `  对方回复: ${remoteReply.slice(0, 1500)}\n\n`;
+    contextHint += `[系统上下文] 协作规则 (本轮为自动续看, 非用户直接消息):\n`;
+    contextHint += `  1. 如果对方回复解决了问题/任务完成 → 给用户总结结果, 不要继续发消息.\n`;
+    contextHint += `  2. 如果对方回复不完整/需要进一步协作 → 在回复中写 "@渠道名 继续的内容" 继续协作 (剩余续看轮次: ${Math.max(0, roundsLeft)}).\n`;
+    contextHint += `  3. 最多再继续 ${Math.max(0, roundsLeft)} 轮, 之后必须总结收尾.\n\n`;
+
+    // 渠道目录 (本地跳过自己 + 远端)
+    try {
+      const localChs = await loadChannels();
+      const remoteForDir: any[] = [];
+      for (const [peerPk, list] of remoteChannelCache.entries()) {
+        for (const rc of list) remoteForDir.push({ ...rc, _ownerPublicKey: peerPk });
+      }
+      if (localChs.length > 0 || remoteForDir.length > 0) {
+        contextHint += '[系统上下文] 可用渠道 (回复中写 "@渠道名 消息内容" 可给它们发消息):\n';
+        for (const c of localChs) {
+          if (c.id === channelId) continue;
+          contextHint += `  - [本地] @${c.name} (id=${c.id})\n`;
+        }
+        for (const c of remoteForDir) {
+          contextHint += `  - [远端, owner=${(c._ownerPublicKey || '').substring(0, 8)}…] @${c.name} (id=${c.id})\n`;
+        }
+        contextHint += '\n';
+      }
+    } catch { /* 目录失败不阻塞 */ }
+
+    const markedPrompt = `【自动续看】远端智能体的回复需要你判断是否继续协作.\n【远端回复】\n${remoteReply.slice(0, 2000)}\n【回复结束】\n\n${contextHint}`;
+
+    // streamCallback: 广播 thinking/step (让用户看到续看过程), 不广播 token 流
+    const streamCallback: any = (event: any) => {
+      if (event?.type === 'used_judgments') return;
+      if (event.type === 'step_start' || event.type === 'step_done' || event.type === 'step_error') {
+        broadcast({ type: 'followup-step', ...event, channelId }, channelId);
+      }
+    };
+
+    const fullResponse = await agent.promptStream(markedPrompt, streamCallback, undefined, channelId);
+    if (!fullResponse.trim()) return;
+
+    // 广播续看结果给 UI
+    broadcast({
+      type: 'ai',
+      content: `🔄 远端智能体回复 (来自 ${fromPublicKey.substring(0, 10)}…):\n${remoteReply.slice(0, 600)}\n\n---\n\n${fullResponse}`,
+      followup: true,
+    }, channelId);
+
+    // 存 session (作为 ai 消息)
+    try {
+      const existing = await loadSession(channelId, ch.currentSessionId || 'default');
+      const session: any = existing || { channelId, sessionId: 'default', messages: [], lastUpdated: '' };
+      session.messages.push({
+        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        type: 'ai',
+        content: fullResponse,
+        timestamp: new Date().toISOString(),
+        source: 'followup',
+      });
+      session.lastUpdated = new Date().toISOString();
+      await saveSession(session);
+    } catch { /* 存失败不阻塞 */ }
+
+    // 路由 @ 转发 (LLM 若决定继续, 回复里会有 @渠道名)
+    try {
+      const localChs = await loadChannels();
+      const remoteForRoute: any[] = [];
+      for (const [peerPk, list] of remoteChannelCache.entries()) {
+        for (const rc of list) remoteForRoute.push({ ...rc, _ownerPublicKey: peerPk });
+      }
+      const mentions = await routeMentionsInReply(channelId, fullResponse, localChs, remoteForRoute);
+      const didContinue = mentions.some((m: any) => m.status === 'sent' || m.status === 'queued');
+      if (!didContinue) {
+        // LLM 决定结束 → 清除续看状态
+        const rs = channelRunState.get(channelId);
+        if (rs) rs.remoteFollowup = undefined;
+        console.log(`[v3-followup] ${channelId} 本地智能体决定结束协作 (无继续 @)`);
+      } else {
+        console.log(`[v3-followup] ${channelId} 本地智能体继续协作 (${mentions.length} 个 @ 转发)`);
+      }
+    } catch (routeErr: any) {
+      console.warn('[v3-followup] 路由 @ 失败:', routeErr?.message?.slice(0, 100));
+      const rs = channelRunState.get(channelId);
+      if (rs) rs.remoteFollowup = undefined;
+    }
+  } catch (err: any) {
+    console.error(`[v3-followup] ${channelId} 续看失败:`, err?.message?.slice(0, 200));
+    const rs = channelRunState.get(channelId);
+    if (rs) rs.remoteFollowup = undefined;
+  }
 }
 
 /**
@@ -1464,6 +1594,8 @@ function checkStaleLock(startPort: number): void {
 
 export async function createWebServer(port: number = 3000, options: CreateWebServerOptions = {}) {
   selfImproveEnabled = options.selfImprove ?? false;
+  // 2026-08-02: channelRunState 是模块级 (triggerRemoteFollowup 访问), 每次启动清空避免残留
+  channelRunState.clear();
   // 防止 P2P DHT 超时等错误导致进程崩溃
   process.on('unhandledRejection', (reason, promise) => {
     console.error('[警告] 未处理的 Promise 拒绝:', reason);
@@ -1692,6 +1824,42 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                     console.warn('[v3] chat.reply 持久化失败:', e?.message?.substring(0, 100));
                   }
                 }).catch(() => {});
+              }
+              // 2026-08-02: 远端协作续看 — 用户 @ 过远端 / 智能体发过 send_to_remote 的 channel,
+              //   收到对方回复时本地智能体"多看一次回复": LLM 判断任务是否完成, 未完成可 @ 继续.
+              //   防死循环: maxRounds 上限 (默认 3), 达到后结束协作.
+              //   replyChannelId 是远端 channel id, 需遍历 channelRunState 匹配 remoteFollowup.remoteChannelId
+              if (replyChannelId && replyText) {
+                try {
+                  let matchedLocalId: string | null = null;
+                  let matchedRs: any = null;
+                  for (const [cid, rs] of channelRunState.entries()) {
+                    if (rs?.remoteFollowup?.remoteChannelId === replyChannelId) {
+                      matchedLocalId = cid;
+                      matchedRs = rs;
+                      break;
+                    }
+                  }
+                  // 兜底: 若 replyChannelId 本身是本地 channel (旧协议), 直接用它
+                  if (!matchedRs && channelRunState.has(replyChannelId) && channelRunState.get(replyChannelId)?.remoteFollowup) {
+                    matchedLocalId = replyChannelId;
+                    matchedRs = channelRunState.get(replyChannelId);
+                  }
+                  if (matchedRs && matchedRs.remoteFollowup && !matchedRs.running && matchedLocalId) {
+                    const fu = matchedRs.remoteFollowup;
+                    fu.rounds += 1;
+                    if (fu.rounds <= fu.maxRounds) {
+                      console.log(`[v3-followup] ${matchedLocalId} 收到远端回复 (round ${fu.rounds}/${fu.maxRounds}), 本地智能体续看...`);
+                      // 异步触发本地智能体处理回复 (不阻塞 data 事件循环)
+                      void triggerRemoteFollowup(matchedLocalId, replyText, evt.fromPublicKey, fu.maxRounds - fu.rounds);
+                    } else {
+                      console.log(`[v3-followup] ${matchedLocalId} 达到续看上限 (${fu.maxRounds}), 结束协作`);
+                      matchedRs.remoteFollowup = undefined;
+                    }
+                  }
+                } catch (fuErr: any) {
+                  console.warn('[v3-followup] 续看调度失败 (非致命):', fuErr?.message?.slice(0, 100));
+                }
               }
               return;
             }
@@ -3490,8 +3658,11 @@ ${goalDesc}
     lastSummary?: string;
     lastFinalReply?: string;
     lastTokens?: { input?: number; output?: number };
+    // 2026-08-02: 远端协作续看 — 用户 @ 远端 / 智能体 send_to_remote 后, 收到对方回复时
+    //   多看一次回复 (本地 LLM 判断继续 or 结束), rounds 防死循环; remoteChannelId 用于 reply 事件匹配
+    remoteFollowup?: { rounds: number; maxRounds: number; remoteChannelId?: string };
   }
-  const channelRunState: Map<string, ChannelRunState> = new Map();
+  // 2026-08-02: channelRunState 已提升为模块级 (triggerRemoteFollowup 也访问), 这里复用
   function getOrCreateRunState(channelId: string): ChannelRunState {
     let s = channelRunState.get(channelId);
     if (!s) {
