@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|| 2026-08-02 | fix | 本地@远端交流完善: ① @ 转发 regex 修复 — 文字部分 [^\n]+? + lookahead 支持 \n 边界 (AI 回复带尾随解释行时匹配失败, @ 转发静默失效 — 本地无法与远端交流的真凶之一); ② 预激活 remoteFollowup — 消息含 @远端 立即激活 (之前只在 AI 回复后激活, 首次 @ 的本地工具 step 看不到 → P2P 对话框实时显示本地执行进程: 任务复杂度/循环/工具调用, 实测 18 个 remote-chat-step); ③ workflow_step (status/tool) 也转发到 rcm-log; ④ 对端 cross-mention-received 显示完整消息 (不只 toast) + renderHistory ai-mention-remote 前缀 "📡 远端智能体"; ⑤ 运行中自愈 — healMissingChannels 抽函数, 启动 + GET /channels 节流触发 (解决"刷新/build 后 channel 消失"); ⑥ 远端对话服务端镜像 ~/.bolloon/remote-chat-logs/ 替代 localStorage (磁盘无限/异步/多端一致), chat-history 镜像优先立即返回; ⑦ 镜像写入点: @ 发送 (local-sent) + chat.reply 收到 (remote-reply). 端到端: 镜像落盘 ✓, chat-history source=mirror ✓, remote-chat-sent 带正确 channelId ✓. tsc 0 错, vitest 993/993 | [server.ts](../../src/web/server.ts) / [client.ts](../../src/web/client.ts) |
 || 2026-08-02 | feat | 远端 channel 工具 + 本地 dirHint: ① 新工具 list_remote_channels (列出好友分享的远端 channel + owner) / send_to_remote_channel (发送消息到远端, 走 /api/remote-channels/chat-send); ② 本地 /message 路径注入 dirHint (远端 channel 列表) — 之前只有远端路径有, 本地智能体看不到远端 channel 无法 @ 交流; ③ 智能体持久化 4 层修复: updateChannels 锁毒化隔离 (某次失败不再让后续全 reject → UI 创建偶发不落盘), 创建时更新 agent channelId, 删除共享 agent 保护, 启动自愈 (从 agents.json 恢复有 session 的丢失 channel). 端到端: 本地智能体真实调用工具列出 3 个远端 channel (智能体小红/小米/布露) + 发送消息到小红"已送达"; 远端回复不触发本地 LLM (只显示+存 session, 无循环). tsc 0 错, vitest 993/993 | [pi-sdk-tools.ts](../../src/agents/pi-sdk-tools.ts) / [server.ts](../../src/web/server.ts) / [server-storage.ts](../../src/web/server-storage.ts) |
 || 2026-08-02 | feat | 执行闭环 + UI 修复: ① plan-store (create_plan/update_plan/review_plan/list_plans, ~/.bolloon/plans/) — 显式计划→todo 勾选→审查; ② skill 写工具 (create_skill/update_skill/list_skill_candidates/promote_skill, skill-writer.ts) + run-end 自动候选扫描; ③ memory 回读 — 每次对话注入历史摘要到 contextHint; ④ channel 丢失 bug 修复 — 12 处裸 saveChannels 改 updateChannels 原子写 (互斥锁, 并发测试 5/5 通过); ⑤ UI: / 斜杠命令菜单 (插入执行命令) + server 端命令路由, 用户名内联编辑 (PUT /api/user/identity), 发送工具 toggle (per-message autoInvokeTools), abort 后立即广播 done | fix(heartbeat) |
 || 2026-08-02 | fix | 邓巴 heartbeat 误判 blocked: server.ts:1578 收到 agent.heartbeat 时 recordInteraction 不传 text → inferOpponentMove('')=defect → 每次心跳 -5 → trustScore 跌至 -36 → peer 自动降级 blocked → 对端消息被拒 (❌ 您已被本地系统加入通信黑名单). 修复: 传 'heartbeat 存活信号(自动)' 让机器协议消息判为 cooperate; 手动解除已 blocked peer (friends + manualOverride). 跨机 P2P 通信恢复验证通过 (智能体小红回复正常). tsc 0 错, vitest 978/978 pass | [server.ts:1575](../../src/web/server.ts) / [dunbar-tier.ts](../../src/social/dunbar-tier.ts) |
@@ -165,6 +166,16 @@
   - 中断按钮: abort 端点立即广播 done (之前靠前端 1.5s 兜底, 视觉"点了没反应")
 - **验证**: tsc 0 错; vitest 993/993 (新增 plan-store 7 + skill-writer 7); npm run build 全绿; 端到端 `/plan 写一个 P2P 模块; 读需求, 写代码, 测试` → LLM 调 create_plan → plan JSON 落盘 ✓
 - **文件**: `src/agents/plan-store.ts`(新) / `skill-writer.ts`(新) / `src/agents/pi-sdk-tools.ts` / `src/security/tool-gate.ts` / `src/web/server.ts` / `src/web/client.ts` / `src/web/index.html` / `src/test/{plan-store,skill-writer}.test.ts`(新)
+
+### [2026-08-02] fix | 本地@远端交流完善 + 运行中自愈 + 服务端镜像
+
+- **触发**: 用户报告"本地@智能体的时候, 进程怎么看不到?"、">localStorage缓存会很慢有上限"、"每次刷新和 build 都会消失"、"交流加载还没有传递给对方".
+- **@ 转发 regex 修复 (真凶)**: routeMentionsInReply 的解析 regex `[^\n@]+?` 遇到 AI 回复的尾随解释行 (`@渠道名 消息\n\n（说明...）`) 时匹配失败 → @ 转发**静默失效** (本地 LLM 回复了 @ 但没发出去). 修复: `[^\n]+?` + lookahead 支持 `\n` 边界. Python 验证 5 场景全通过 (尾随说明/多 @/前置说明).
+- **预激活 remoteFollowup (进程显示)**: 之前只在 routeMentionsInReply (AI 回复后) 激活 → 首次 @ 时本地智能体的工具 step 发生在激活前, P2P 对话框看不到本地执行进程. 修复: 消息含 @远端 时收到即激活 → 本地思考运行的完整进程 (任务复杂度/动态配置/循环/工具调用) 实时显示在 rcm-log (remote-chat-step, 实测 18 个事件). workflow_step (status/tool) 也转发.
+- **消息传递给对方**: 对端 cross-mention-received 现在在 rcm-log 显示完整消息 (不只 toast); renderHistory 的 ai-mention-remote 前缀改为 "📡 远端智能体" (之前误显示 "🤖 A 的 LLM").
+- **运行中自愈**: healMissingChannels 抽成函数, 启动 + GET /channels 节流 (5s) 触发 — 解决"刷新/build 后 channel 消失" (之前只启动时跑一次, 运行中丢失不恢复).
+- **服务端镜像替代 localStorage**: ~/.bolloon/remote-chat-logs/<peerPk>__<channelId>.json — 磁盘无限 (500 条滚动) / 异步 / 多端一致 / 离线可读. 写入点: @ 发送 (local-sent) + chat.reply 收到 (remote-reply). chat-history API 镜像优先立即返回, 后台 RPC 增量合并.
+- **验证**: 镜像落盘 ✓ / chat-history source=mirror ✓ / remote-chat-sent 带正确 channelId ✓ / remote-chat-step 18 个 ✓ / tsc 0 错 / vitest 993/993.
 
 ### [2026-08-02] feat | 远端 channel 工具 + 本地 dirHint + 智能体持久化 4 层修复
 
