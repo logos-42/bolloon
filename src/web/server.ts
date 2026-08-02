@@ -496,6 +496,18 @@ async function routeMentionsInReply(
             rs.remoteFollowup = { rounds: 0, maxRounds: 3, remoteChannelId: remoteTarget.id };
             console.log(`[v3-followup] ${originChannelId} 激活远端协作续看 → ${remoteTarget.id} (maxRounds=3)`);
           }
+          // 2026-08-02: @ 消息也要显示在 P2P 对话框 — broadcast remote-chat-sent,
+          //   前端 rcm-log 打开且匹配 channelId 时显示"我 → 远端"这条消息
+          broadcast({
+            type: 'remote-chat-sent',
+            channelId: remoteTarget.id,
+            fromPublicKey: ownerPk,
+            text,
+            originChannelId,
+            originChannelName,
+            peerName: remoteTarget.name,
+            sent: true,
+          }, 'p2p-global');
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'sent' });
         } else if (r === 'QUEUED') {
           console.log(`[v3-cross] (${originChannelName}) @${targetName} → 远端 peer ${ownerPk.substring(0,12)}... 已入队 (对方不在线)`);
@@ -505,6 +517,18 @@ async function routeMentionsInReply(
             rs.remoteFollowup = { rounds: 0, maxRounds: 3, remoteChannelId: remoteTarget.id };
             console.log(`[v3-followup] ${originChannelId} 激活远端协作续看 (入队 → ${remoteTarget.id})`);
           }
+          // 入队也广播 (对方不在线, 显示"已入队")
+          broadcast({
+            type: 'remote-chat-sent',
+            channelId: remoteTarget.id,
+            fromPublicKey: ownerPk,
+            text,
+            originChannelId,
+            originChannelName,
+            peerName: remoteTarget.name,
+            sent: false,
+            queued: true,
+          }, 'p2p-global');
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'queued' });
         } else {
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'failed' });

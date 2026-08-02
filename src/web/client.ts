@@ -255,7 +255,25 @@ function startV3GlobalSSE() {
     v3GlobalEventSource.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.type === 'remote-chat-reply') {
+        if (msg.type === 'remote-chat-sent') {
+          // 2026-08-02: @ 命令发出去的消息 — 在 P2P 对话框 (rcm-log) 显示"我 → 远端"
+          //   之前只显示对方回复, 自己 @ 发出去的看不到
+          const log = document.getElementById('rcm-log');
+          if (!log) return;
+          // 只显示匹配当前打开的远端 channel 对话框
+          const modal = document.getElementById('remote-chat-modal');
+          const openChannelId = modal ? modal.dataset.channelId : null;
+          if (openChannelId && openChannelId !== msg.channelId) return;
+          const prefix = `👤 我 → 远端${msg.peerName ? ` ${msg.peerName}` : ''}\n\n`;
+          addMessage(prefix + (msg.text || ''), 'user', false, log);
+          if (msg.queued) {
+            const qEl = document.createElement('div');
+            qEl.className = 'remote-chat-sysmsg remote-chat-sysmsg-info';
+            qEl.textContent = '📤 对方不在线, 消息已入队, 上线后自动送达';
+            log.appendChild(qEl);
+          }
+          log.scrollTop = log.scrollHeight;
+        } else if (msg.type === 'remote-chat-reply') {
           // 2026-06-10: 复用本地 addMessage 渲染 — 自动 marked + 剥 think/env + 主题样式
           // 之前是 textContent 硬编码灰底, 跟 Step 3 重写的 modal 风格不一致,
           // 而且 SSE 异步回到时 modal 可能已被切到 thinking 占满, 用户看不到 reply.
@@ -4190,7 +4208,7 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   // 移除已有 modal
   document.getElementById('remote-chat-modal')?.remove();
   const html = `
-    <div id="remote-chat-modal" class="remote-chat-overlay">
+    <div id="remote-chat-modal" class="remote-chat-overlay" data-channel-id="${escapeHtml(channelId)}" data-peer-id="${escapeHtml(peerPublicKey)}">
       <div class="remote-chat-shell">
         <div class="remote-chat-header">
           <div style="flex:1;min-width:0;">
