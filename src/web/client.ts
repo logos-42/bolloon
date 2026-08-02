@@ -46,6 +46,8 @@ const MR_resetRendererState = () => _getMR().resetRendererState?.();
 // 2026-07-06: SSE 重连恢复用 — 用 server 给的完整内容替换流式累积, 然后 finalize
 const MR_replaceStreamingText = (text: string) => _getMR().replaceStreamingText?.(text);
 const MR_injectRecoveredText = (text: string, ctx?: any) => _getMR().injectRecoveredText?.(text, ctx ?? getRendererCtx());
+// 2026-08-02: loadSession 渲染历史后 seed 去重状态 (防 SSE resume 补包重复渲染)
+const MR_seedDedupState = (lastType: string | null, lastContent: string | null) => _getMR().seedDedupState?.(lastType, lastContent);
 
 // ctx 对象: 把全局状态打包, 避免硬引用 client.js 顶层 let
 let knownToolNames = new Set<string>();
@@ -318,6 +320,31 @@ function startV3GlobalSSE() {
             const thinkingEl = document.getElementById('rcm-thinking-live');
             if (thinkingEl) {
               thinkingEl.textContent = '💭 对方正在思考: ' + (msg.partial || '').slice(-200);
+              log.scrollTop = log.scrollHeight;
+            }
+          } else if (phase === 'step') {
+            // 2026-08-02 fix: 远端节点转发的工具调用过程 (step_start/done/error)
+            //   → 推给本地 message-renderer 的 step-timeline (挂在 P2P modal 的流式消息上)
+            const stepType = msg.stepType;
+            if (stepType === 'step_start' || stepType === 'step_done' || stepType === 'step_error') {
+              handleStepEvent({
+                type: stepType,
+                tool: msg.tool,
+                content: msg.content,
+                success: msg.success,
+                output: msg.output,
+                error: msg.error,
+                args: msg.args,
+              });
+              // 同时在 thinking 区块显示当前工具
+              const thinkingEl = document.getElementById('rcm-thinking-live');
+              if (thinkingEl && stepType === 'step_start') {
+                thinkingEl.textContent = `🔧 对方正在调用工具: ${msg.tool || '...'}`;
+              } else if (thinkingEl && stepType === 'step_done') {
+                thinkingEl.textContent = `✅ 对方工具调用完成: ${msg.tool || ''}`;
+              } else if (thinkingEl && stepType === 'step_error') {
+                thinkingEl.textContent = `❌ 对方工具调用失败: ${msg.tool || ''}`;
+              }
               log.scrollTop = log.scrollHeight;
             }
           }
@@ -959,6 +986,8 @@ async function selectChannel(channelId, targetSessionId = null) {
     // 自动展开当前智能体的会话列表，让用户能切换会话
     expandedAgents.add(channelId);
     console.log('[selectChannel] 频道:', channel.name, 'session:', currentSessionId);
+    // 2026-08-02: P2P/远端 channel 显示工具开关, 本地隐藏
+    updateSendToolsToggleVisibility();
   } else {
     // 2026-07-07 H2 修复: channel 不在本地 channels 列表 → 显示明确提示, 不再 fallback 到 greeting
     console.warn('[selectChannel] channel 不存在:', channelId);
@@ -1019,6 +1048,12 @@ async function selectChannel(channelId, targetSessionId = null) {
         frag.appendChild(tmpContainer.firstChild);
       }
       container.appendChild(frag);
+      // 2026-08-02 fix: 渲染历史后 seed 去重状态 — 否则紧接着的 SSE resume 补包
+      //   (save=true) 因 lastAiContent 为空, 同一条 AI 消息会被重复渲染 (回复出现两次)
+      if (dedupedMsgs.length > 0) {
+        const lastMsg = dedupedMsgs[dedupedMsgs.length - 1];
+        MR_seedDedupState(lastMsg.type, lastMsg.content);
+      }
       if (dedupedMsgs.length !== msgs.length) {
         console.log(`[loadSession] 去重 ${msgs.length - dedupedMsgs.length} 条相邻重复消息 (${msgs.length} → ${dedupedMsgs.length})`);
       }
@@ -1607,7 +1642,8 @@ async function sendMessage() {
         channelId: currentChannelId,
         channelDid,
         attachments: attachmentsForSend, // 后端解析为 LLM contextHint
-        autoInvokeTools: sendToolsEnabled, // 2026-08-02: 发送默认配置 — 本次是否允许工具调用
+        // 2026-08-02: 本地对话不传 autoInvokeTools (工具开关只针对远程 P2P 对话),
+        //   本地走 channel 自身 autoInvokeTools 配置
       })
     });
 
@@ -1623,6 +1659,7 @@ async function sendMessage() {
 }
 
 // 2026-08-02: 发送默认配置 — 工具调用 toggle (记忆上次选择, localStorage)
+// 2026-08-02 修正: 开关只在 P2P/远端 channel 对话时显示 (用户: 本地对话不需要, 放 P2P 对话栏)
 let sendToolsEnabled = true;
 try {
   const saved = localStorage.getItem('bolloon.sendToolsEnabled');
@@ -1636,6 +1673,14 @@ function updateSendToolsToggleUI() {
   sendToolsToggleBtn.style.borderColor = sendToolsEnabled ? 'var(--accent, #4f46e5)' : 'var(--border)';
   sendToolsToggleBtn.style.color = sendToolsEnabled ? 'var(--accent, #4f46e5)' : 'var(--text-muted)';
   try { localStorage.setItem('bolloon.sendToolsEnabled', sendToolsEnabled ? '1' : '0'); } catch { /* */ }
+}
+/** 只在远端/P2P channel 显示工具开关 (本地 channel 隐藏) */
+function updateSendToolsToggleVisibility() {
+  if (!sendToolsToggleBtn) return;
+  const ch = channels.find(c => c.id === currentChannelId);
+  // 远端判断: ① channel 带 ownerPublicKey (P2P 分享) ② 或不在本地 channels 列表 (远端会话)
+  const isRemote = !!(ch && (ch as any).ownerPublicKey) || !ch;
+  sendToolsToggleBtn.style.display = isRemote ? 'flex' : 'none';
 }
 if (sendToolsToggleBtn) {
   sendToolsToggleBtn.onclick = () => {
@@ -4227,7 +4272,8 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
       const res = await fetch('/api/remote-channels/chat-send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetPublicKey: peerPublicKey, channelId, text })
+        // 2026-08-02: 透传工具开关 (P2P 🔧 toggle, 只对本次远端消息生效)
+        body: JSON.stringify({ targetPublicKey: peerPublicKey, channelId, text, autoInvokeTools: sendToolsEnabled })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'send failed');

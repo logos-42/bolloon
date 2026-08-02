@@ -586,12 +586,14 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
   if (op === 'agent.chat.send') {
     // B 端发来: 在 A 节点上对 channelId 跑 LLM, 结果回 B
     // judgment 永远在 A 节点 (buildJudgmentHint 已经用 bound_judgment_ids)
-    const { channelId, text, fromPublicKey } = parsed.payload || {};
+    const { channelId, text, fromPublicKey, autoInvokeTools } = parsed.payload || {};
     if (!channelId || !text) {
       console.warn(`[v3] agent.chat.send 缺少 channelId/text`);
       return;
     }
     const senderKey = fromPublicKey || peerKey;
+    // 2026-08-02: 发送方工具开关 (P2P 对话栏的 🔧 toggle) — 显式 false 时远端消息不调工具
+    const remoteToolsOverride = typeof autoInvokeTools === 'boolean' ? autoInvokeTools : null;
 
     // 2026-07-29: Dunbar Tier 检查 — 远端 agent 不能触发禁区工具
     const tierState = await loadPeerTier(senderKey);
@@ -718,7 +720,11 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       // 2026-06-15: P2P 远端访客路径也用显式 marker 包裹 text
       // 2026-06-15 二次修: 把 text 放在最前 (与主路径 server.ts:1868 对齐),
       //   避免 LLM 被 judgmentHint 末尾的 "..." 误判为整个 input 被截断
-      const fullPrompt = `【本轮用户请求】\n${text}\n【请求结束】\n\n${visitorHint}${dirHint}${judgmentHint}\n`;
+      // 2026-08-02: 发送方工具开关 (P2P 🔧 toggle) — false 时禁止本轮工具调用
+      const toolsGateHint = remoteToolsOverride === false
+        ? '\n[系统指令] 本轮对话**禁止调用任何工具**, 直接基于已有知识回答即可.\n\n'
+        : '';
+      const fullPrompt = `【本轮用户请求】\n${text}\n【请求结束】\n\n${visitorHint}${dirHint}${toolsGateHint}${judgmentHint}\n`;
       let fullResponse = '';
       // v3 新增: 流式 token 节流推给 B — 让 B 看到过程
       let lastFlushAt = 0;
@@ -739,6 +745,26 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
             });
             comm.sendToConnection(conn.id, msg).catch(() => {});
           }
+        }
+        // 2026-08-02 fix: 远端路径转发 step 事件 (工具调用过程) — 之前只转 token,
+        //   B 端 P2P 对话看不到工具调用步骤. 复用 agent.chat.thinking 的 phase=step 通道.
+        else if (event.type === 'step_start' || event.type === 'step_done' || event.type === 'step_error') {
+          const msg = JSON.stringify({
+            v: 3, op: 'agent.chat.thinking',
+            payload: {
+              channelId,
+              phase: 'step',
+              stepType: event.type,
+              tool: event.tool,
+              content: event.content,
+              success: event.success,
+              output: event.output,
+              error: event.error,
+              args: event.args,
+              fromPublicKey: v3P2PRef?.getPublicKey() || ''
+            }
+          });
+          comm.sendToConnection(conn.id, msg).catch(() => {});
         }
       };
       const agent = await getAgentForChannel(channelId, ch.did || '', ch.name, ch.didDocRef);
@@ -4924,7 +4950,7 @@ app.get('/channels', async (_req, res) => {
       if (!v3P2PRef) {
         return res.status(503).json({ error: 'P2PDirect not started' });
       }
-      const { targetPublicKey, channelId, text } = req.body || {};
+      const { targetPublicKey, channelId, text, autoInvokeTools } = req.body || {};
       if (!targetPublicKey || !channelId || !text) {
         return res.status(400).json({ error: 'targetPublicKey, channelId, text required' });
       }
@@ -4933,8 +4959,12 @@ app.get('/channels', async (_req, res) => {
       }
       const fromPk = v3P2PRef.getPublicKey();
       // 2026-07-27: 改用 sendOrQueue (先尝试直发, 失败则入队, 不断线不丢)
+      // 2026-08-02: 透传 autoInvokeTools (发送方工具开关设置, 只对本次远端消息生效)
       const { sendOrQueue } = await import('../network/p2p-outbox.js');
-      const r = await sendOrQueue(targetPublicKey, 'agent.chat.send', { channelId, text, fromPublicKey: fromPk }, v3P2PRef);
+      const r = await sendOrQueue(targetPublicKey, 'agent.chat.send', {
+        channelId, text, fromPublicKey: fromPk,
+        ...(typeof autoInvokeTools === 'boolean' ? { autoInvokeTools } : {}),
+      }, v3P2PRef);
       if (r === 'FAILED') {
         return res.status(502).json({ error: 'send failed: peer not reachable' });
       }

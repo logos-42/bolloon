@@ -675,6 +675,16 @@ export function resetRendererState(): void {
   }
 }
 
+/**
+ * 2026-08-02 fix: loadSession 渲染历史后用最后一条消息 seed 去重状态.
+ *   之前 loadSession 走 save=false (不上屏去重逻辑), lastAiContent/lastUserCommand 不更新,
+ *   紧接着 SSE resume 补包 (save=true) 时 lastAiContent 是空的 → 同一条 AI 消息重复渲染两次.
+ */
+export function seedDedupState(lastType: string | null, lastContent: string | null): void {
+  if (lastType === 'user') lastUserCommand = lastContent || '';
+  else if (lastType === 'ai') lastAiContent = lastContent || '';
+}
+
 export const MessageRenderer = {
   addMessage,
   handleStreamTokenEvent,
@@ -684,6 +694,7 @@ export const MessageRenderer = {
   escapeHtml,
   getMessagesContainerForCurrent,
   resetRendererState,
+  seedDedupState,
 };
 
 declare global {

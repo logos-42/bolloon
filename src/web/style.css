@@ -950,6 +950,10 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  /* 2026-08-02: 防止任务徽标 (absolute right:-4px) 把 header 撑出视口 */
+  overflow: visible;
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 .theme-toggle {
@@ -2036,7 +2040,7 @@ body {
 .task-badge {
   position: absolute;
   top: -4px;
-  right: -4px;
+  right: 0;  /* 2026-08-02: -4px → 0, 防溢出视口 */
   background: var(--accent);
   color: var(--bg);
   font-size: 10px;

@@ -4,7 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
-|| 2026-08-02 | feat | P2P 好友体系完善: ① known-peers 按 publicKey 去重 (之前同节点被 auto-discover/手动添加/manifest 重命名存成多条, 如 apple/mechrevo/node 同一 key); ② 删除好友 API 增强 — 同时撤回 channel 分享 + 清 remote cache, 支持 publicKey 删除 (陌生 peer); ③ 编辑好友弹窗加 🗑️ 删除按钮; ④ 好友申请带 note 备注 (自我介绍/来源) — 人类 UI + 智能体 add_friend_by_id 都能填, 接收弹窗显示备注 + ✅ 一键通过; ⑤ 新增智能体工具 list_pending_friend_requests / accept_friend_request / ignore_friend_request (GET /api/friend-requests + ignore 端点). tsc 0 错, vitest 979/979 pass | [known-peers.ts](../../src/network/known-peers.ts) / [server.ts](../../src/web/server.ts) / [client.ts](../../src/web/client.ts) / [pi-sdk-tools.ts](../../src/agents/pi-sdk-tools.ts) |
+|| 2026-08-02 | feat | 执行闭环 + UI 修复: ① plan-store (create_plan/update_plan/review_plan/list_plans, ~/.bolloon/plans/) — 显式计划→todo 勾选→审查; ② skill 写工具 (create_skill/update_skill/list_skill_candidates/promote_skill, skill-writer.ts) + run-end 自动候选扫描; ③ memory 回读 — 每次对话注入历史摘要到 contextHint; ④ channel 丢失 bug 修复 — 12 处裸 saveChannels 改 updateChannels 原子写 (互斥锁, 并发测试 5/5 通过); ⑤ UI: / 斜杠命令菜单 (插入执行命令) + server 端命令路由, 用户名内联编辑 (PUT /api/user/identity), 发送工具 toggle (per-message autoInvokeTools), abort 后立即广播 done | fix(heartbeat) |
 || 2026-08-02 | fix | 邓巴 heartbeat 误判 blocked: server.ts:1578 收到 agent.heartbeat 时 recordInteraction 不传 text → inferOpponentMove('')=defect → 每次心跳 -5 → trustScore 跌至 -36 → peer 自动降级 blocked → 对端消息被拒 (❌ 您已被本地系统加入通信黑名单). 修复: 传 'heartbeat 存活信号(自动)' 让机器协议消息判为 cooperate; 手动解除已 blocked peer (friends + manualOverride). 跨机 P2P 通信恢复验证通过 (智能体小红回复正常). tsc 0 错, vitest 978/978 pass | [server.ts:1575](../../src/web/server.ts) / [dunbar-tier.ts](../../src/social/dunbar-tier.ts) |
 || 2026-07-29 | feat | CLI 工具调用改为增量列表 (🔧 + 工具名, 无 ✓⟳✗, 无 header, 有 ╰── footer, diff 着色); loading spinner 换颜文字序列 (｀・ω・´)→(´･_･`)→(｡•́︿•̀｡)→ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ→(◕‿◕)→ヽ(´▽｀)/; TUI step-timeline 步数上限 8→20, 详情区高度 320px→520px; tsc 0 错, vitest 978/978 pass | [loading-tui.ts](../../src/cli/loading-tui.ts) / [index.ts](../../src/index.ts) / [step-timeline.ts](../../src/web/ui/step-timeline.ts) / [style.css](../../src/web/style.css) |
 | 2026-07-25 | feat | 添加好友三入口: agent 工具 `add_friend_by_id` + Web UI modal + CLI `add_friend`; 发布 v0.3.15 | [pi-sdk-tools.ts:301](../../src/agents/pi-sdk-tools.ts) / [client.ts:4071](../../src/web/client.ts) / [index.ts:570](../../src/index.ts) |
@@ -145,6 +145,25 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+
+### [2026-08-02] feat | 执行闭环 (plan/todo/review) + memory 回读 + skill 沉淀 + channel 丢失修复 + UI 修复
+
+- **触发**: 用户要求 Bolloon 像 Hermes 一样"越用越聪明" — 验证 memory/skills/persona 机制后, 补齐缺失的 plan/todo/review 闭环; 同时修复 4 个 UI bug (中断按钮、插入命令、用户名修改、发送默认配置) 和 channel 丢失 bug.
+- **plan/todo/review** (`src/agents/plan-store.ts`, 新, 落盘 `~/.bolloon/plans/<planId>.json`):
+  - `create_plan` — 执行前显式列步骤 (goal + 3-8 steps), 状态 active
+  - `update_plan` — 勾选 step done/blocked + note, 追加步骤, finish 收尾 (未完成标 blocked)
+  - `review_plan` — 执行后审查 (completed/total + summary), 标记 done
+  - `list_plans` — 恢复上下文; server.ts 每次对话把 active plans 注入 contextHint (plan 回读)
+- **skill 沉淀** (`src/agents/skill-writer.ts`, 新): `create_skill` / `update_skill` / `list_skill_candidates` / `promote_skill`; run-end 后台扫描 (server.ts finally 里从 lastSteps 提取 ≥2 个连续成功工具 → 写候选到 `~/.bolloon/skill-candidates/`)
+- **memory 回读** (server.ts): 每次 /message 把 `~/.bolloon/memory/<agentId>/sessions/*.summary.md` 尾部注入 contextHint (当前 channel 优先, 兜底跨 channel 最近摘要) — 之前只写不读, 对话无记忆
+- **channel 丢失 bug 修复** (根因): 12 处裸 `loadChannels→modify→saveChannels` 是 read-modify-write 竞态, 并发时旧数组覆盖新 channel (DID 修复队列 vs 创建 vs /message updatedAt). 全部改 `updateChannels(fn)` (server-storage.ts 已有互斥锁, 2026-07-24 写好但从未使用). 并发创建 5 个 channel 测试 5/5 保留 ✓, 重启后 channel 全保留 ✓
+- **UI 修复**:
+  - `/` 斜杠命令菜单 (SLASH_COMMANDS: plan/todo/review/task/goal/skill/add-friend/help), Enter/Tab 插入 `/命令 ` 到输入框; server 端 /message 解析命令路由成 contextHint 引导 LLM 调对应工具
+  - 用户名内联编辑: PUT /api/user/identity (写回 `~/.bolloon/identity/user.json`), 左下角点击变 input
+  - 发送默认配置: 输入框旁 🔧 工具 toggle (localStorage 记忆), sendMessage 传 per-message `autoInvokeTools`, server 优先用消息级覆盖
+  - 中断按钮: abort 端点立即广播 done (之前靠前端 1.5s 兜底, 视觉"点了没反应")
+- **验证**: tsc 0 错; vitest 993/993 (新增 plan-store 7 + skill-writer 7); npm run build 全绿; 端到端 `/plan 写一个 P2P 模块; 读需求, 写代码, 测试` → LLM 调 create_plan → plan JSON 落盘 ✓
+- **文件**: `src/agents/plan-store.ts`(新) / `skill-writer.ts`(新) / `src/agents/pi-sdk-tools.ts` / `src/security/tool-gate.ts` / `src/web/server.ts` / `src/web/client.ts` / `src/web/index.html` / `src/test/{plan-store,skill-writer}.test.ts`(新)
 
 ### [2026-07-22] feat | 判断力负向回收 + 上下文废气涡轮增压 (设计 A/B/C)
 
