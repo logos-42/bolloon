@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|| 2026-08-02 | feat | 远端 channel 工具 + 本地 dirHint: ① 新工具 list_remote_channels (列出好友分享的远端 channel + owner) / send_to_remote_channel (发送消息到远端, 走 /api/remote-channels/chat-send); ② 本地 /message 路径注入 dirHint (远端 channel 列表) — 之前只有远端路径有, 本地智能体看不到远端 channel 无法 @ 交流; ③ 智能体持久化 4 层修复: updateChannels 锁毒化隔离 (某次失败不再让后续全 reject → UI 创建偶发不落盘), 创建时更新 agent channelId, 删除共享 agent 保护, 启动自愈 (从 agents.json 恢复有 session 的丢失 channel). 端到端: 本地智能体真实调用工具列出 3 个远端 channel (智能体小红/小米/布露) + 发送消息到小红"已送达"; 远端回复不触发本地 LLM (只显示+存 session, 无循环). tsc 0 错, vitest 993/993 | [pi-sdk-tools.ts](../../src/agents/pi-sdk-tools.ts) / [server.ts](../../src/web/server.ts) / [server-storage.ts](../../src/web/server-storage.ts) |
 || 2026-08-02 | feat | 执行闭环 + UI 修复: ① plan-store (create_plan/update_plan/review_plan/list_plans, ~/.bolloon/plans/) — 显式计划→todo 勾选→审查; ② skill 写工具 (create_skill/update_skill/list_skill_candidates/promote_skill, skill-writer.ts) + run-end 自动候选扫描; ③ memory 回读 — 每次对话注入历史摘要到 contextHint; ④ channel 丢失 bug 修复 — 12 处裸 saveChannels 改 updateChannels 原子写 (互斥锁, 并发测试 5/5 通过); ⑤ UI: / 斜杠命令菜单 (插入执行命令) + server 端命令路由, 用户名内联编辑 (PUT /api/user/identity), 发送工具 toggle (per-message autoInvokeTools), abort 后立即广播 done | fix(heartbeat) |
 || 2026-08-02 | fix | 邓巴 heartbeat 误判 blocked: server.ts:1578 收到 agent.heartbeat 时 recordInteraction 不传 text → inferOpponentMove('')=defect → 每次心跳 -5 → trustScore 跌至 -36 → peer 自动降级 blocked → 对端消息被拒 (❌ 您已被本地系统加入通信黑名单). 修复: 传 'heartbeat 存活信号(自动)' 让机器协议消息判为 cooperate; 手动解除已 blocked peer (friends + manualOverride). 跨机 P2P 通信恢复验证通过 (智能体小红回复正常). tsc 0 错, vitest 978/978 pass | [server.ts:1575](../../src/web/server.ts) / [dunbar-tier.ts](../../src/social/dunbar-tier.ts) |
 || 2026-07-29 | feat | CLI 工具调用改为增量列表 (🔧 + 工具名, 无 ✓⟳✗, 无 header, 有 ╰── footer, diff 着色); loading spinner 换颜文字序列 (｀・ω・´)→(´･_･`)→(｡•́︿•̀｡)→ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ→(◕‿◕)→ヽ(´▽｀)/; TUI step-timeline 步数上限 8→20, 详情区高度 320px→520px; tsc 0 错, vitest 978/978 pass | [loading-tui.ts](../../src/cli/loading-tui.ts) / [index.ts](../../src/index.ts) / [step-timeline.ts](../../src/web/ui/step-timeline.ts) / [style.css](../../src/web/style.css) |
@@ -165,8 +166,24 @@
 - **验证**: tsc 0 错; vitest 993/993 (新增 plan-store 7 + skill-writer 7); npm run build 全绿; 端到端 `/plan 写一个 P2P 模块; 读需求, 写代码, 测试` → LLM 调 create_plan → plan JSON 落盘 ✓
 - **文件**: `src/agents/plan-store.ts`(新) / `skill-writer.ts`(新) / `src/agents/pi-sdk-tools.ts` / `src/security/tool-gate.ts` / `src/web/server.ts` / `src/web/client.ts` / `src/web/index.html` / `src/test/{plan-store,skill-writer}.test.ts`(新)
 
-### [2026-08-02] feat | 渲染去重 + P2P 工具开关 + 远端对话本地缓存 + 远端 channel 删除
+### [2026-08-02] feat | 远端 channel 工具 + 本地 dirHint + 智能体持久化 4 层修复
 
+- **触发**: 用户报告"本地智能体无法获取远程智能体的信道和发送消息"、"工具没有给到位".
+- **根因**: ① 本地 /message 路径的 contextHint 没有注入远端 channel 列表 (dirHint 只有远端 agent.chat.send 路径有) → 本地 LLM 不知道有哪些远端 channel 可 @; ② 本地智能体的工具集没有"列出远端 channel / 发送到远端"的工具.
+- **修复**:
+  - `list_remote_channels` 工具: 读 GET /api/remote-channels, 列出好友分享的远端 channel + owner (peerId/peerName), 提示 @ 语法
+  - `send_to_remote_channel` 工具: POST /api/remote-channels/chat-send, 透传 autoInvokeTools, 返回 sent/queued 状态
+  - 本地 /message 注入 dirHint: 可用渠道列表 (本地跳过自己 + 远端带 owner), 语法 "@渠道名 消息内容"
+  - 两个工具加进 tool-gate 白名单
+- **智能体持久化 4 层修复** (同批, "build 后智能体消失"):
+  - updateChannels 锁毒化隔离: 之前 `channelsLock = channelsLock.then(...)`, 某次 fn 抛错 → 整链 rejected → 后续所有 updateChannels 直接 reject, fn 不执行 → UI 创建 channel 偶发不落盘. 改为操作链独立 + catch 隔离
+  - 创建时更新 agent channelId: agents.json 已存在该 agentId 时更新 channelId+name (之前 exists 直接跳过 → 引用旧 channel)
+  - 删除共享 agent 保护: 仅当无其他 channel 引用该 agentId 时才删 agent (之前无条件删 → 共享 agentId 的其他 channel 变孤儿)
+  - 启动自愈: 扫描 agents.json, 对 channelId 有 session 文件但不在 channels.json 的 channel 自动恢复
+- **验证**: 端到端 — 本地智能体真实调用 list_remote_channels 列出 3 个远端 channel (智能体小红/小米/布露) + send_to_remote_channel 发消息到小红"已送达"; "智能体小蓝"丢失后重启自愈恢复; 远端回复不触发本地 LLM (只 broadcast 显示 + 存 session, 无循环). tsc 0 错, vitest 993/993
+- **文件**: `src/agents/pi-sdk-tools.ts` / `src/security/tool-gate.ts` / `src/web/server.ts` / `src/web/server-storage.ts`
+
+### [2026-08-02] feat | 渲染去重 + P2P 工具开关 + 远端对话本地缓存 + 远端 channel 删除
 - **回复重复渲染修复** (根因): loadSession 用 save=false 渲染历史 → `lastAiContent` 不更新 → SSE resume 补包 (save=true) 时去重失效 → 同一条 AI 消息渲染两次. 修复: message-renderer 新增 `seedDedupState()`, loadSession 渲染后 seed 去重状态. 实测 3 条 AI 消息全部唯一 (adjacentDupes: 0)
 - **工具开关只针对远程**: ① 本地 sendMessage 不再传 autoInvokeTools (走 channel 配置); ② P2P chat-send 透传 autoInvokeTools → agent.chat.send RPC → 对端处理时 false 注入"禁止调用任何工具"指令; ③ 🔧 toggle 只在远端 channel 显示, P2P 对话框 (rcm-tools-toggle) 也有
 - **远端工具调用过程转发**: server 端 agent.chat.send 的 streamCallback 之前只转 token, 现在转发 step_start/step_done/step_error (phase=step); B 端收到 → handleStepEvent → step-timeline + thinking 区块显示 🔧/✅/❌
