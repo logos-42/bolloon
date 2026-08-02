@@ -276,6 +276,21 @@ function startV3GlobalSSE() {
               // 走本地 addMessage, 跟主聊天框完全一致 (marked + think/env 折叠 + 主题色)
               const prefix = `🤖 远端 AI 回复\n\n`;
               addMessage(prefix + (msg.text || '(空回复)'), 'ai', false, log);
+              // 2026-08-02: 收到的远端回复也写本地缓存 (离线可读)
+              if (msg.channelId && msg.fromPublicKey) {
+                try {
+                  const key = `bolloon.rcmCache.${msg.fromPublicKey}.${msg.channelId}`;
+                  let arr = [];
+                  try { const raw = localStorage.getItem(key); if (raw) arr = JSON.parse(raw); } catch { arr = []; }
+                  if (!Array.isArray(arr)) arr = [];
+                  const entry = { type: 'ai', content: msg.text || '', timestamp: new Date().toISOString(), source: 'remote' };
+                  const dup = arr.some(m => m.type === 'ai' && m.content === entry.content);
+                  if (!dup) {
+                    arr.push(entry);
+                    try { localStorage.setItem(key, JSON.stringify(arr.slice(-200))); } catch { /* */ }
+                  }
+                } catch { /* 缓存失败不阻塞 */ }
+              }
             }
             log.scrollTop = log.scrollHeight;
           } else {
@@ -364,7 +379,19 @@ function startV3GlobalSSE() {
         } else if (msg.type === 'remote-channel-update') {
           // v3 新增: 远端节点发来新分享 / 删除 / 改名, 立即更新本地 cache
           const peerId = msg.peerId;
-          const channels = msg.channels || [];
+          let channels = msg.channels || [];
+          // 2026-08-02 fix: 过滤掉用户已删除的远端 channel (本地 ignore 集合, localStorage)
+          //   否则对端每次心跳广播 list.reply 都会把删掉的 channel 加回来 — "删不干净"
+          const removedKey = `bolloon.removedRemoteChannels`;
+          let removedSet = new Set();
+          try { removedSet = new Set(JSON.parse(localStorage.getItem(removedKey) || '[]')); } catch { /* */ }
+          if (removedSet.size > 0) {
+            const before = channels.length;
+            channels = channels.filter(c => !removedSet.has(`${peerId}::${c.id}`));
+            if (channels.length !== before) {
+              console.log(`[v3] 过滤 ${before - channels.length} 个已删除的远端 channel (${peerId.substring(0,8)}...)`);
+            }
+          }
           const peerName = msg.peerName || null;   // 2026-06-10: 同步接收对方名字
           let group = remoteChannels.find(g => g.peerId === peerId);
           if (!group) {
@@ -3853,13 +3880,22 @@ function renderRemoteChannels() {
         <div class="remote-peer-channels" style="margin-top:4px;margin-left:8px;">
           ${peerChannels.length === 0
             ? '<div style="font-size:10px;color:var(--text-muted);padding:2px 4px;">(对方还没分享 channel 给你)</div>'
-            : peerChannels.map(c => `
-              <div class="remote-channel-row" data-peer-id="${escapeHtml(peer.publicKey)}" data-channel-id="${escapeHtml(c.id)}"
-                   style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:4px;font-size:12px;">
-                <span>🤖</span>
-                <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(safeChannelName(c.name, ''))}">${escapeHtml(safeChannelName(c.name))}</span>
-              </div>
-            `).join('')
+            : (() => {
+                // 2026-08-02 fix: 渲染时也过滤已删除的远端 channel
+                let removedSet = new Set();
+                try { removedSet = new Set(JSON.parse(localStorage.getItem('bolloon.removedRemoteChannels') || '[]')); } catch { /* */ }
+                const visible = peerChannels.filter(c => !removedSet.has(`${peer.publicKey}::${c.id}`));
+                if (visible.length === 0) return '<div style="font-size:10px;color:var(--text-muted);padding:2px 4px;">(已全部移除)</div>';
+                return visible.map(c => `
+                  <div class="remote-channel-row" data-peer-id="${escapeHtml(peer.publicKey)}" data-channel-id="${escapeHtml(c.id)}"
+                       style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:4px;font-size:12px;">
+                    <span>🤖</span>
+                    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(safeChannelName(c.name, ''))}">${escapeHtml(safeChannelName(c.name))}</span>
+                    <button class="remote-channel-del" data-peer-id="${escapeHtml(peer.publicKey)}" data-channel-id="${escapeHtml(c.id)}" title="从本地移除 (不再显示该远端 channel)"
+                            style="background:transparent;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;width:20px;height:20px;border-radius:4px;font-size:11px;line-height:1;padding:0;display:flex;align-items:center;justify-content:center;flex:0 0 auto;">🗑️</button>
+                  </div>
+                `).join('');
+              })()
           }
         </div>
       </li>
@@ -3884,6 +3920,31 @@ function renderRemoteChannels() {
       const channelName = row.querySelector('span[title]')?.getAttribute('title') || channelId;
       console.log('[v3] 点击远端 channel:', peerId.substring(0,12), channelId);
       openRemoteChannelChat(peerId, channelId, channelName);
+    });
+  });
+  // 2026-08-02 fix: 远端 channel 的 🗑️ 删除按钮 → 加入本地 ignore 集合 (localStorage),
+  //   对端再广播也会被过滤, 真正"删干净"
+  list.querySelectorAll('.remote-channel-del').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const peerId = btn.dataset.peerId;
+      const channelId = btn.dataset.channelId;
+      try {
+        const key = 'bolloon.removedRemoteChannels';
+        let arr = [];
+        try { arr = JSON.parse(localStorage.getItem(key) || '[]'); } catch { arr = []; }
+        if (!Array.isArray(arr)) arr = [];
+        const entry = `${peerId}::${channelId}`;
+        if (!arr.includes(entry)) arr.push(entry);
+        localStorage.setItem(key, JSON.stringify(arr));
+      } catch { /* */ }
+      // 从内存 remoteChannels 同步移除
+      const group = remoteChannels.find(g => g.peerId === peerId);
+      if (group && Array.isArray(group.channels)) {
+        group.channels = group.channels.filter(c => c.id !== channelId);
+      }
+      renderRemoteChannels();
+      showSimpleToast('🗑️ 已从本地移除该远端 channel (对方重新分享后会再次出现, 除非刷新后仍被过滤)');
     });
   });
   // 绑定: 点击 peer 头部 → 弹分享 modal (让 A 决定分享本机哪些 channel 给这个 peer)
@@ -4144,6 +4205,10 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
         </div>
         <div id="rcm-log" class="messages remote-chat-log"></div>
         <div class="remote-chat-input-row">
+          <button id="rcm-tools-toggle" class="remote-chat-tools-toggle" title="本次发送是否允许对方调用工具 (点击切换)"
+                  style="display:flex;align-items:center;gap:4px;background:transparent;border:1px solid var(--border,#444);color:var(--text-muted,#909088);border-radius:6px;padding:5px 9px;font-size:11px;cursor:pointer;white-space:nowrap;flex-shrink:0;">
+            🔧 <span id="rcm-tools-label">工具:开</span>
+          </button>
           <input id="rcm-input" type="text" placeholder="输入消息, 发送到远端 channel..." class="remote-chat-input">
           <button id="rcm-send" class="remote-chat-btn-send">发送</button>
         </div>
@@ -4157,6 +4222,14 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   const sendBtn = document.getElementById('rcm-send');
   const thinkingEl = document.getElementById('rcm-thinking');
   let historyRefreshTimer = null;
+  // 2026-08-02 fix: 点击 modal 外部空白关闭 (点 shell 内部不关)
+  const overlayEl = document.getElementById('remote-chat-modal');
+  overlayEl.addEventListener('mousedown', (e) => {
+    if (e.target === overlayEl) {
+      if (historyRefreshTimer) { clearInterval(historyRefreshTimer); historyRefreshTimer = null; }
+      overlayEl.remove();
+    }
+  });
   document.getElementById('rcm-close').onclick = () => {
     if (historyRefreshTimer) { clearInterval(historyRefreshTimer); historyRefreshTimer = null; }
     document.getElementById('remote-chat-modal').remove();
@@ -4259,12 +4332,24 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
       }
       setTimeout(() => { log.scrollTop = log.scrollHeight; }, 50);
     }
+    // 2026-08-02: 拉到的远程历史也写入本地缓存 (下次打开先读本地)
+    try {
+      const cacheMsgs = msgs.map((m: any) => ({
+        type: m.type === 'user' ? 'user' : 'ai',
+        content: m.content || '',
+        timestamp: m.timestamp || new Date().toISOString(),
+        source: m.source || 'remote',
+      }));
+      writeRcmCache(cacheMsgs);
+    } catch { /* 缓存失败不阻塞 */ }
   }
 
   const doSend = async () => {
     const text = inputEl.value.trim();
     if (!text) return;
     append(text, 'user');
+    // 2026-08-02: 发送后立即写本地缓存 (不依赖远程拉取)
+    cacheRemoteMessage(peerPublicKey, channelId, { type: 'user', content: text, timestamp: new Date().toISOString() });
     inputEl.value = '';
     sendBtn.disabled = true;
     sendBtn.textContent = '...';
@@ -4273,7 +4358,7 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         // 2026-08-02: 透传工具开关 (P2P 🔧 toggle, 只对本次远端消息生效)
-        body: JSON.stringify({ targetPublicKey: peerPublicKey, channelId, text, autoInvokeTools: sendToolsEnabled })
+        body: JSON.stringify({ targetPublicKey: peerPublicKey, channelId, text, autoInvokeTools: rcmToolsEnabled })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'send failed');
@@ -4292,8 +4377,91 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
   inputEl.focus();
   startV3GlobalSSE();
 
-  // 打开时立即拉历史
-  loadHistory(false);
+  // ============ 2026-08-02: P2P 对话框工具开关 (只针对远程) ============
+  // 每个 modal 独立状态, 默认跟随全局偏好 (localStorage)
+  let rcmToolsEnabled = true;
+  try {
+    const saved = localStorage.getItem('bolloon.rcmToolsEnabled');
+    if (saved !== null) rcmToolsEnabled = saved === '1';
+  } catch { /* */ }
+  const rcmToolsBtn = document.getElementById('rcm-tools-toggle');
+  const rcmToolsLabel = document.getElementById('rcm-tools-label');
+  function updateRcmToolsUI() {
+    if (!rcmToolsLabel) return;
+    rcmToolsLabel.textContent = rcmToolsEnabled ? '工具:开' : '工具:关';
+    if (rcmToolsBtn) {
+      rcmToolsBtn.style.borderColor = rcmToolsEnabled ? '#4f46e5' : 'var(--border,#444)';
+      rcmToolsBtn.style.color = rcmToolsEnabled ? '#4f46e5' : 'var(--text-muted,#909088)';
+    }
+    try { localStorage.setItem('bolloon.rcmToolsEnabled', rcmToolsEnabled ? '1' : '0'); } catch { /* */ }
+  }
+  if (rcmToolsBtn) {
+    rcmToolsBtn.onclick = () => {
+      rcmToolsEnabled = !rcmToolsEnabled;
+      updateRcmToolsUI();
+    };
+    updateRcmToolsUI();
+  }
+
+  // ============ 2026-08-02: 远端对话本地缓存 (不每次拉远程) ============
+  // 按 peerPublicKey+channelId 存 localStorage, 打开 modal 先渲染本地缓存, 后台静默拉远程合并
+  const rcmCacheKey = `bolloon.rcmCache.${peerPublicKey}.${channelId}`;
+  const MAX_CACHE_MSGS = 200;
+
+  function readRcmCache() {
+    try {
+      const raw = localStorage.getItem(rcmCacheKey);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch { return []; }
+  }
+
+  function writeRcmCache(msgs) {
+    try {
+      const trimmed = Array.isArray(msgs) ? msgs.slice(-MAX_CACHE_MSGS) : [];
+      localStorage.setItem(rcmCacheKey, JSON.stringify(trimmed));
+    } catch { /* 容量满/隐私模式静默 */ }
+  }
+
+  /** 追加一条消息到本地缓存 (去重: 同 type+content+timestamp 跳过) */
+  function cacheRemoteMessage(pk, chId, msg) {
+    const key = `bolloon.rcmCache.${pk}.${chId}`;
+    let arr = [];
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) arr = JSON.parse(raw);
+    } catch { arr = []; }
+    if (!Array.isArray(arr)) arr = [];
+    const dup = arr.some(m => m.type === msg.type && m.content === msg.content && m.timestamp === msg.timestamp);
+    if (!dup) {
+      arr.push(msg);
+      try { localStorage.setItem(key, JSON.stringify(arr.slice(-MAX_CACHE_MSGS))); } catch { /* */ }
+    }
+  }
+
+  // 打开时: 先渲染本地缓存 (立即可见, 不依赖远程), 再拉远程合并
+  const cached = readRcmCache();
+  if (cached.length > 0) {
+    log.innerHTML = '';
+    for (const m of cached) {
+      const type = m.type === 'user' ? 'user' : 'ai';
+      let prefix = '';
+      if (m.type === 'user') {
+        prefix = m.source === 'remote' ? `🌐 远端访客\n\n` : '';
+      } else {
+        prefix = m.source === 'remote' ? `🤖 远端 LLM\n\n` : '';
+      }
+      addMessage(prefix + (m.content || ''), type, false, log, [], m.timestamp);
+    }
+    thinkingEl.style.display = 'none';
+    // 后台静默合并远程历史 (有更新才重渲染)
+    loadHistory(true);
+    log.scrollTop = log.scrollHeight;
+  } else {
+    // 无本地缓存 → 正常拉远程
+    loadHistory(false);
+  }
 
   // 每 15 秒自动静默刷新, 同步远端 owner 或其他访客的新消息
   historyRefreshTimer = setInterval(() => loadHistory(true), 15000);
