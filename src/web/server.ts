@@ -1494,6 +1494,51 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
   // 初始化 LLM（从配置文件读取 MiniMax 配置）
   initMinimax();
 
+  // 2026-08-02 fix: 启动自愈 — 从 agents.json 恢复 channels.json 缺失的 channel.
+  //   背景: UI 创建 channel 偶发不落盘 / 历史并发覆盖丢 channel, 但 agents.json 里
+  //   agent 的 channelId + name 还在 (session 文件也在) → 启动时自动恢复, 智能体不再"消失".
+  try {
+    const { existsSync } = await import('fs');
+    const { readFile } = await import('fs/promises');
+    const agentsFile = `${process.env.HOME || '/tmp'}/.bolloon/agents/agents.json`;
+    const sessionsDir = `${process.env.HOME || '/tmp'}/.bolloon/sessions/cache`;
+    if (existsSync(agentsFile)) {
+      const agentsRaw = await readFile(agentsFile, 'utf-8');
+      const agentsArr = JSON.parse(agentsRaw);
+      const arr = Array.isArray(agentsArr) ? agentsArr : [];
+      const chs = await loadChannels();
+      const knownIds = new Set(chs.map((c: any) => c.id));
+      let healed = 0;
+      for (const a of arr) {
+        const cid = a && a.channelId;
+        if (!cid || knownIds.has(cid)) continue;
+        // 有 session 文件才算可恢复 (说明确实创建过)
+        const hasSession = existsSync(`${sessionsDir}/${cid}:default.json`) || existsSync(`${sessionsDir}/${cid}.json`);
+        if (!hasSession) continue;
+        const restored = {
+          id: cid,
+          name: a.name || `Agent-${String(cid).slice(-6)}`,
+          agentId: a.id,
+          createdAt: a.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          currentSessionId: 'default',
+          sessions: [{ id: 'default', name: 'Default', createdAt: new Date().toISOString(), messageCount: 0, preview: '' }],
+          did: a.did || undefined,
+        };
+        await updateChannels((all) => {
+          if (!all.some((c: any) => c.id === cid)) all.push(restored as any);
+          return all;
+        });
+        knownIds.add(cid);
+        healed++;
+        console.log(`[自愈] 恢复 channel: ${cid} (${restored.name}, agent=${a.id})`);
+      }
+      if (healed > 0) console.log(`[自愈] 共恢复 ${healed} 个丢失的 channel`);
+    }
+  } catch (healErr: any) {
+    console.warn('[自愈] channel 恢复失败 (非致命):', healErr?.message?.slice(0, 120));
+  }
+
   // ==================== P2P DIAP 身份初始化 ====================
   let p2pIdentity = {
     did: '',
@@ -3921,6 +3966,22 @@ app.get('/channels', async (_req, res) => {
           });
           await fs.writeFile(agentsPath, JSON.stringify(arr, null, 2), 'utf-8');
           console.log(`[创建频道] agent 写进 agents.json: name=${name} id=${agentId}`);
+        } else {
+          // 2026-08-02 fix: agent 已存在时更新 channelId + name — 之前 exists 直接跳过,
+          //   用户复用同一 agentId 新建 channel 时, agents.json 的 channelId 仍指向旧 channel
+          //   (可能已删除), P2P manifest / 恢复逻辑拿到的关联是错的 → "智能体消失"
+          const existing = arr.find(a => a && a.id === agentId);
+          const oldCid = existing?.channelId;
+          let changed = false;
+          if (existing) {
+            if (existing.channelId !== id) { existing.channelId = id; changed = true; }
+            if (existing.name !== name) { existing.name = name; changed = true; }
+            existing.lastActive = new Date().toISOString();
+          }
+          if (changed) {
+            await fs.writeFile(agentsPath, JSON.stringify(arr, null, 2), 'utf-8');
+            console.log(`[创建频道] agent ${agentId} channelId 更新: ${oldCid} → ${id} (name=${name})`);
+          }
         }
       } catch (e: any) {
         console.warn('[创建频道] 写 agents.json 失败 (非致命):', e?.message?.slice(0, 120));
@@ -4118,6 +4179,9 @@ app.get('/channels', async (_req, res) => {
       //   之前 v0.3.6 (Bug 6) 创建频道时同步往 agents.json append, 删频道却没删回来
       //   → agents.json 里残留孤儿 agent, 重启后 loadLocalSubAgents 还能读到这些 — 看起来像"删不掉"
       //   修法: 用 channel.agentId 找, 同步从 agents.json 删一条
+      // 2026-08-02 二次修: 只在没有其他 channel 复用该 agentId 时才删 agent —
+      //   之前无条件 filter(a.id === channel.agentId), 多个 channel 共享 agentId (用户复用"智能体" id)
+      //   时, 删一个 channel 把 agent 也清了 → 其他 channel 变孤儿 → "智能体消失"
       try {
         const agentsPath = path.join(process.env.HOME || '/tmp', '.bolloon', 'agents', 'agents.json');
         const raw = await fs.readFile(agentsPath, 'utf-8').catch(() => '');
@@ -4125,11 +4189,23 @@ app.get('/channels', async (_req, res) => {
           let arr: any[] = [];
           try { arr = JSON.parse(raw); } catch {}
           if (!Array.isArray(arr)) arr = [];
+          // 检查是否有其他 channel 还引用这个 agentId (含刚删的这条: 用删除后的 channels 判断)
+          const remainingChannels = await loadChannels();
+          const agentIdStillUsed = remainingChannels.some((c: any) =>
+            c.id !== channelId && c.agentId === channel.agentId
+          );
           const before = arr.length;
-          arr = arr.filter(a => !(a && (a.id === channel.agentId || a.channelId === channelId)));
+          // 只删: ① channelId 精确匹配的 agent 条目 ② 该 agentId 无其他 channel 使用时才按 agentId 删
+          arr = arr.filter(a => {
+            if (!a) return false;
+            if (a.channelId === channelId) return false;              // 精确指向被删 channel
+            if (a.id === channel.agentId && agentIdStillUsed) return true; // 共享中, 保留
+            if (a.id === channel.agentId && !agentIdStillUsed) return false; // 无引用, 删
+            return true;
+          });
           if (arr.length !== before) {
             await fs.writeFile(agentsPath, JSON.stringify(arr, null, 2), 'utf-8');
-            console.log(`[删除频道] agents.json 清掉 ${before - arr.length} 条 orphan agent (channel=${channelId})`);
+            console.log(`[删除频道] agents.json 清掉 ${before - arr.length} 条 agent (channel=${channelId}, agentId=${channel.agentId}, 仍被使用=${agentIdStillUsed})`);
           }
         }
       } catch (e: any) {

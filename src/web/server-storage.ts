@@ -38,13 +38,20 @@ export function getLastChannelsWriteAt(): number {
 
 /** 对 channels 执行原子化的 read-modify-write, 自带互斥锁 */
 export async function updateChannels(fn: (channels: Channel[]) => Channel[]): Promise<Channel[]> {
-  channelsLock = channelsLock.then(async () => {
+  const run = channelsLock.then(async () => {
     const chs = await rawLoadChannels();
     const result = fn(chs);
     await rawSaveChannels(result);
     return result;
   });
-  return channelsLock;
+  // 2026-08-02 fix: 失败不毒化锁链 — 之前 channelsLock = channelsLock.then(...),
+  //   某次 fn 抛错 → 整个链变 rejected → 之后所有 updateChannels 直接 reject,
+  //   fn 不再执行 → UI 创建 channel 偶发"不落盘" (静默丢失).
+  channelsLock = run.catch((e) => {
+    console.error('[updateChannels] 失败 (已隔离, 不影响后续操作):', e?.message || e);
+    return undefined;
+  });
+  return run;
 }
 
 async function rawLoadChannels(): Promise<Channel[]> {
