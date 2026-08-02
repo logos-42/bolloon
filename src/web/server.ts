@@ -348,6 +348,43 @@ const v3PendingHistoryGets: Map<string, { resolve: (data: any) => void; reject: 
 let channelSessions: Map<string, AgentSession> = new Map(); // key: channelId
 let sessionMessages: Map<string, any[]> = new Map(); // key: channelId + sessionId
 
+// ============ 2026-08-02: 远端对话本地镜像 (替代 localStorage 缓存) ============
+// 问题: localStorage 5MB 上限 + 同步阻塞 + 每浏览器独立; 且对方离线时 chat-history RPC 拉不到.
+// 方案: 服务端磁盘镜像 ~/.bolloon/remote-chat-logs/<peerPk>__<channelId>.json —
+//   · 本地 @ 发出 (remote-chat-sent) → 写镜像 (source: local-sent)
+//   · 收到回复 (chat.reply) → 写镜像 (source: remote-reply)
+//   · chat-history API 先读镜像 (立即返回, 离线可读), 后台 RPC 增量合并对端历史
+const REMOTE_CHAT_LOG_DIR = `${process.env.HOME || '/tmp'}/.bolloon/remote-chat-logs`;
+
+async function readRemoteChatLog(peerPk: string, channelId: string): Promise<any[]> {
+  try {
+    const { readFile } = await import('fs/promises');
+    const p = `${REMOTE_CHAT_LOG_DIR}/${peerPk}__${channelId}.json`;
+    const raw = await readFile(p, 'utf-8');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+
+async function appendRemoteChatLog(peerPk: string, channelId: string, entry: any): Promise<void> {
+  try {
+    const { mkdir, readFile, writeFile } = await import('fs/promises');
+    await mkdir(REMOTE_CHAT_LOG_DIR, { recursive: true });
+    const p = `${REMOTE_CHAT_LOG_DIR}/${peerPk}__${channelId}.json`;
+    let arr: any[] = [];
+    try { arr = JSON.parse(await readFile(p, 'utf-8')); } catch {}
+    if (!Array.isArray(arr)) arr = [];
+    // 去重: 同 source + content + timestamp 跳过
+    const dup = arr.some(m => m.source === entry.source && m.content === entry.content && m.timestamp === entry.timestamp);
+    if (!dup) {
+      arr.push(entry);
+      // 防无限增长: 保留最近 500 条
+      if (arr.length > 500) arr = arr.slice(-500);
+      await writeFile(p, JSON.stringify(arr, null, 2), 'utf-8');
+    }
+  } catch { /* 镜像失败不阻塞 */ }
+}
+
 /**
  * v3 重做: 构造 channel 的两路 judgment prompt 片段
  *   路 1: 用户在盾牌里手动绑定的 judgment (channel.bound_judgment_ids)
@@ -509,6 +546,10 @@ async function routeMentionsInReply(
             peerName: remoteTarget.name,
             sent: true,
           });
+          // 写本地镜像 (替代 localStorage) — 对方离线时对话记录也可读
+          appendRemoteChatLog(ownerPk, remoteTarget.id, {
+            type: 'user', content: text, timestamp: new Date().toISOString(), source: 'local-sent',
+          }).catch(() => {});
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'sent' });
         } else if (r === 'QUEUED') {
           console.log(`[v3-cross] (${originChannelName}) @${targetName} → 远端 peer ${ownerPk.substring(0,12)}... 已入队 (对方不在线)`);
@@ -530,6 +571,10 @@ async function routeMentionsInReply(
             sent: false,
             queued: true,
           });
+          // 写本地镜像 (入队也记录)
+          appendRemoteChatLog(ownerPk, remoteTarget.id, {
+            type: 'user', content: text, timestamp: new Date().toISOString(), source: 'local-sent',
+          }).catch(() => {});
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'queued' });
         } else {
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'failed' });
@@ -1845,6 +1890,10 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                     session.lastUpdated = new Date().toISOString();
                     await saveSession(session);
                     console.log(`[v3] chat.reply 已持久化到 session (${replyChannelId}): ${replyText.substring(0, 40)}...`);
+                    // 2026-08-02: 写本地镜像 (替代 localStorage) — 离线也能看到对方回复
+                    appendRemoteChatLog(evt.fromPublicKey, replyChannelId, {
+                      type: 'ai', content: replyText, timestamp: new Date().toISOString(), source: 'remote-reply',
+                    }).catch(() => {});
                   } catch (e: any) {
                     console.warn('[v3] chat.reply 持久化失败:', e?.message?.substring(0, 100));
                   }
@@ -5302,45 +5351,67 @@ app.get('/channels', async (_req, res) => {
   // 实现: B → POST 给 A 一个 agent.history.get RPC → A 把 session 返回 → B 渲染
   app.get('/api/remote-channels/chat-history', async (req, res) => {
     try {
-      if (!v3P2PRef) {
-        return res.status(503).json({ error: 'P2PDirect not started' });
-      }
       const targetPublicKey = String(req.query.targetPublicKey || '');
       const channelId = String(req.query.channelId || '');
       if (!targetPublicKey || !channelId) {
         return res.status(400).json({ error: 'targetPublicKey, channelId required' });
       }
 
-      // 通过 RPC 拉 A 的 session — A 端收到后异步回复
-      const fromPk = v3P2PRef.getPublicKey();
-      const rpcId = `hist-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const msg = JSON.stringify({
-        v: 3,
-        op: 'agent.history.get',
-        payload: { rpcId, channelId, fromPublicKey: fromPk }
-      });
-      const ok = v3P2PRef.sendTo(targetPublicKey, msg);
-      if (!ok) {
-        return res.status(502).json({ error: 'peer not connected' });
+      // 2026-08-02: 本地镜像优先 — 立即返回本地记录 (对方离线也有), 不用等 RPC
+      const mirror = await readRemoteChatLog(targetPublicKey, channelId);
+      if (mirror.length > 0 && !v3P2PRef) {
+        return res.json({ messages: mirror, source: 'mirror', judgments: { bound: [], candidates: [] } });
       }
 
-      // 等待 A 异步回复 (15s timeout) — 用一个 Promise 等
-      const result = await new Promise<any>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          v3PendingHistoryGets.delete(rpcId);
-          reject(new Error('A 端 15s 内未回复, 可能未分享该 channel'));
-        }, 15000);
-        v3PendingHistoryGets.set(rpcId, {
-          resolve: (data) => { clearTimeout(timer); resolve(data); },
-          reject: (err) => { clearTimeout(timer); reject(err); }
+      // 有 P2P: 后台 RPC 拉对端合并 (不阻塞响应 — 镜像先返回, RPC 结果下次刷新拿到)
+      if (v3P2PRef) {
+        const fromPk = v3P2PRef.getPublicKey();
+        const rpcId = `hist-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const msg = JSON.stringify({
+          v: 3,
+          op: 'agent.history.get',
+          payload: { rpcId, channelId, fromPublicKey: fromPk }
         });
-      });
-
-      console.log(`[v3] chat-history 从 ${targetPublicKey.substring(0,12)}... 拉到 ${(result.messages || []).length} 条`);
-      res.json(result);
+        const ok = v3P2PRef.sendTo(targetPublicKey, msg);
+        if (!ok && mirror.length === 0) {
+          return res.status(502).json({ error: 'peer not connected (本地也无缓存)' });
+        }
+        if (ok && mirror.length === 0) {
+          // 无本地镜像 → 等 RPC (15s)
+          try {
+            const result = await new Promise<any>((resolve, reject) => {
+              const timer = setTimeout(() => {
+                v3PendingHistoryGets.delete(rpcId);
+                reject(new Error('A 端 15s 内未回复'));
+              }, 15000);
+              v3PendingHistoryGets.set(rpcId, {
+                resolve: (data) => { clearTimeout(timer); resolve(data); },
+                reject: (err) => { clearTimeout(timer); reject(err); }
+              });
+            });
+            // 把对端历史写进本地镜像 (增量缓存)
+            const remoteMsgs = result.messages || [];
+            for (const m of remoteMsgs) {
+              await appendRemoteChatLog(targetPublicKey, channelId, {
+                type: m.type === 'user' ? 'user' : 'ai',
+                content: m.content || '',
+                timestamp: m.timestamp || new Date().toISOString(),
+                source: m.source || 'remote',
+              });
+            }
+            return res.json({ ...result, messages: remoteMsgs, source: 'rpc' });
+          } catch (err: any) {
+            return res.status(504).json({ error: err.message });
+          }
+        }
+        // 有本地镜像 + 有 P2P: 返回镜像 (RPC 结果由前端 15s 刷新轮询拿)
+        return res.json({ messages: mirror, source: 'mirror', judgments: { bound: [], candidates: [] } });
+      }
+      // 无 P2P
+      return res.json({ messages: mirror, source: 'mirror', judgments: { bound: [], candidates: [] } });
     } catch (err: any) {
       console.error('[v3] chat-history 失败:', err.message);
-      res.status(504).json({ error: err.message });
+      res.status(500).json({ error: err.message });
     }
   });
 
