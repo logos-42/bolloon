@@ -3809,6 +3809,14 @@ app.get('/channels', async (_req, res) => {
         return res.status(400).json({ error: 'name and agentId required' });
       }
       const channels = await loadChannels();
+      // 2026-08-02 fix: 同 agentId 下禁止重名 — 之前用户连点两次"新建智能体"生成两个同名
+      //   "智能体" channel, UI 无法区分 (分享栏名字对不上 id). 同 agentId 同名直接拒绝.
+      const dupName = channels.find(c => c.agentId === agentId && c.name === name.trim());
+      if (dupName) {
+        return res.status(400).json({
+          error: `同名智能体已存在 (${dupName.name}, id=${dupName.id}), 请换一个名字`
+        });
+      }
       const id = `ch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
       // 校验钱包地址格式 (粗校验: 0x + 40 hex / Solana base58 / Sui 0x+64)
@@ -4214,11 +4222,24 @@ app.get('/channels', async (_req, res) => {
         console.log(`[Channel ${channelId}] 自动生成 share_id: ${channel.share_id}`);
       }
       channel.updatedAt = new Date().toISOString();
-      // 2026-08-02 fix: 原子写入
+      // 2026-08-02 fix: 原子写入 — 之前回调只写 shared_with_peers/share_id, name 等字段
+      //   只改了外层内存对象, 磁盘没落 → 改名后重启名字回退 / 与 UI 显示不一致 ("改名没修好")
       await updateChannels((chs) => {
         const c = chs.find(x => x.id === channelId);
         if (c) {
-          if (shared_with_peers !== undefined) c.shared_with_peers = shared_with_peers;
+          if (typeof name === 'string' && name.trim()) c.name = name.trim();
+          if (persona !== undefined) {
+            if (persona === null) c.persona = undefined;
+            else if (typeof persona === 'object') c.persona = channel.persona;
+          }
+          if (Array.isArray(linkedDocumentIds)) c.linkedDocumentIds = channel.linkedDocumentIds;
+          if (walletAddress !== undefined) {
+            c.walletAddress = channel.walletAddress;
+            c.walletRegisteredAt = channel.walletRegisteredAt;
+          }
+          if (typeof autoInvokeTools === 'boolean') c.autoInvokeTools = channel.autoInvokeTools;
+          if (bound_judgment_ids !== undefined) c.bound_judgment_ids = channel.bound_judgment_ids;
+          if (shared_with_peers !== undefined) c.shared_with_peers = channel.shared_with_peers;
           if (!c.share_id) c.share_id = channel.share_id;
           c.updatedAt = new Date().toISOString();
         }

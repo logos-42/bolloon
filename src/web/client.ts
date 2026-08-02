@@ -5365,7 +5365,11 @@ if (agentAddConfirmBtn) {
             autoInvokeTools
           })
         });
-        if (!res.ok) throw new Error('create failed');
+        if (!res.ok) {
+          // 2026-08-02: 透出 server 错误 (如同名智能体已存在)
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `HTTP ${res.status}`);
+        }
         const channel = await res.json();
         channels.push(channel);
         renderChannels();
