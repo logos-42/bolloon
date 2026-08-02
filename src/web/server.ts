@@ -447,9 +447,12 @@ async function routeMentionsInReply(
   remoteChannels: any[]
 ): Promise<Array<{ targetName: string; targetId: string; source: 'local' | 'remote'; text: string; status: 'sent' | 'failed' }>> {
   const results: any[] = [];
-  // 解析: 匹配 @渠道名 后面跟一段文字 (到下一个 @ 或 行尾)
+  // 解析: 匹配 @渠道名 后面跟一段文字 (到行尾 / 下一个 @ / 结束)
   // 渠道名: 中文/英文/数字/下划线/连字符, 1-30 字符
-  const regex = /@([一-龥A-Za-z0-9_\-]{1,30})\s+([^\n@]+?)(?=(?:\s*@[一-龥A-Za-z0-9_\-]{1,30}\s)|$)/g;
+  // 2026-08-02 fix: 文字部分 [^\n]+? 不跨行 + lookahead 支持 \n 边界 —
+  //   原来 lookahead 只认 @ 或 $, AI 回复里 "@渠道名 消息\n\n（解释...）" 尾随说明行
+  //   会导致匹配失败, @ 转发静默失效
+  const regex = /@([一-龥A-Za-z0-9_\-]{1,30})\s+([^\n]+?)(?=\n|\s*@[一-龥A-Za-z0-9_\-]{1,30}\s|$)/g;
   const matches = [...replyText.matchAll(regex)];
 
   if (matches.length === 0) return results;
@@ -3117,6 +3120,25 @@ ${goalDesc}
             error: event.error,
             args: event.args,
           }, channelId);
+          // 2026-08-02: 对称显示 — 本地智能体 @ 远端时, 本地工具调用过程也推给 P2P 对话框
+          //   (rcm-log): remote-chat-step 事件带 remoteChannelId, 前端按对话框匹配显示
+          try {
+            const rs = channelRunState.get(channelId);
+            if (rs?.remoteFollowup?.remoteChannelId) {
+              broadcast({
+                type: 'remote-chat-step',
+                channelId: rs.remoteFollowup.remoteChannelId,
+                stepType: event.type,
+                tool: event.tool,
+                content: event.content,
+                success: event.success,
+                output: event.output,
+                error: event.error,
+                args: event.args,
+                localStep: true, // 标记: 这是本地智能体的工具过程 (区别于对方转发的)
+              });
+            }
+          } catch { /* 非致命 */ }
           // 2026-06-16: 累积 step 到 runState, 供 /api/loop/inspect 读取
           try {
             if (event.type === 'step_done' || event.type === 'step_error') {

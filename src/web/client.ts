@@ -291,6 +291,31 @@ function startV3GlobalSSE() {
             log.appendChild(qEl);
           }
           log.scrollTop = log.scrollHeight;
+        } else if (msg.type === 'remote-chat-step') {
+          // 2026-08-02: 本地智能体 @ 远端时的工具调用过程 (对称显示)
+          //   rcm-log 显示"🔧 本地工具: xxx", 与对方转发的 step (phase=step) 对应
+          const log = document.getElementById('rcm-log');
+          if (!log) return;
+          const modal = document.getElementById('remote-chat-modal');
+          const openChannelId = modal ? modal.dataset.channelId : null;
+          if (openChannelId && openChannelId !== msg.channelId) return;
+          // 显示在 thinking 区块 (复用 rcm-thinking-live 或新建)
+          let liveEl = document.getElementById('rcm-thinking-live-local');
+          if (!liveEl) {
+            liveEl = document.createElement('div');
+            liveEl.id = 'rcm-thinking-live-local';
+            liveEl.className = 'remote-chat-sysmsg remote-chat-sysmsg-info';
+            log.appendChild(liveEl);
+          }
+          if (msg.stepType === 'step_start') {
+            liveEl.textContent = `🔧 本地智能体正在调用工具: ${msg.tool || '...'}`;
+          } else if (msg.stepType === 'step_done') {
+            liveEl.textContent = `✅ 本地工具调用完成: ${msg.tool || ''}`;
+          } else if (msg.stepType === 'step_error') {
+            liveEl.textContent = `❌ 本地工具调用失败: ${msg.tool || ''}`;
+            liveEl.className = 'remote-chat-sysmsg remote-chat-sysmsg-error';
+          }
+          log.scrollTop = log.scrollHeight;
         } else if (msg.type === 'remote-chat-reply') {
           // 2026-06-10: 复用本地 addMessage 渲染 — 自动 marked + 剥 think/env + 主题样式
           // 之前是 textContent 硬编码灰底, 跟 Step 3 重写的 modal 风格不一致,
@@ -4356,13 +4381,21 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
         const type = m.type === 'user' ? 'user' : 'ai';
         let prefix = '';
         if (m.type === 'user') {
-          if (m.source === 'remote') {
+          if (m.source === 'local-sent') {
+            // 2026-08-02: 本地 @ 发出的消息 (服务端镜像) — "我 → 远端"
+            prefix = `👤 我 → 远端\n\n`;
+          } else if (m.source === 'remote') {
             prefix = `🌐 远端访客${m.fromPublicKey ? ' (' + m.fromPublicKey.substring(0, 8) + '…)' : ''}\n\n`;
           } else {
             prefix = `👤 A (内部 owner)\n\n`;
           }
         } else {
-          prefix = `🤖 A 的 LLM\n\n`;
+          if (m.source === 'remote-reply') {
+            // 2026-08-02: 对方回复 (服务端镜像)
+            prefix = `🤖 远端回复\n\n`;
+          } else {
+            prefix = `🤖 A 的 LLM\n\n`;
+          }
         }
         addMessage(prefix + (m.content || ''), type, false, log);
       }
