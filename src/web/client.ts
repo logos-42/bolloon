@@ -4145,6 +4145,9 @@ function showAddFriendModal() {
           <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-secondary);">申请消息（可选）</label>
           <input id="afm-msg" type="text" value="想加你为 P2P 好友, 共享 channel 协作"
                  style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-main);color:var(--text);font-family:inherit;font-size:13px;box-sizing:border-box;margin-bottom:12px;">
+          <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-secondary);">备注（自我介绍/来源, 对方接受时会看到, 便于分辨）</label>
+          <textarea id="afm-note" rows="2" placeholder="如: 我是小剑的 Bolloon, 来自杭州, 想一起做 P2P 智能体协作测试"
+                    style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-main);color:var(--text);font-family:inherit;font-size:13px;box-sizing:border-box;resize:vertical;margin-bottom:12px;"></textarea>
           <div id="afm-status" style="display:none;font-size:12px;margin-bottom:8px;"></div>
           <p style="margin:0;color:var(--text-muted);font-size:11px;">对方需已启动 Bolloon 并在线. 接受后双方互加好友, 对方分享的 channel 会自动出现.</p>
         </div>
@@ -4169,6 +4172,7 @@ function showAddFriendModal() {
     const name = document.getElementById('afm-name').value.trim();
     const publicKey = document.getElementById('afm-pk').value.trim();
     const message = document.getElementById('afm-msg').value.trim();
+    const note = document.getElementById('afm-note')?.value.trim() || '';
     if (!publicKey) { setStatus('请粘贴对方的 publicKey', '#b91c1c'); return; }
     if (publicKey.length !== 64) { setStatus('publicKey 长度不对, 应该是 64 字符 hex', '#b91c1c'); return; }
     const sendBtn = document.getElementById('afm-send');
@@ -4178,7 +4182,7 @@ function showAddFriendModal() {
       const res = await fetch('/api/friend-request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetPublicKey: publicKey, name: name || undefined, message: message || undefined })
+        body: JSON.stringify({ targetPublicKey: publicKey, name: name || undefined, message: message || undefined, note: note || undefined })
       });
       const data = await res.json();
       if (res.status === 502) {
@@ -4217,6 +4221,8 @@ function showFriendRequestModal(req) {
   // 移除已有 modal
   document.getElementById('friend-request-modal')?.remove();
   // 2026-06-10: 同 Step 3 远端 chat modal 一样, 改用 class + CSS 变量, 跟本地风格统一
+  // 2026-08-02: 显示申请备注 (note) — 对方填的自我介绍/来源, 便于判断是否通过
+  const reqNote = req.note || req.message || '';
   const html = `
     <div id="friend-request-modal" class="friend-req-overlay">
       <div class="friend-req-shell">
@@ -4228,12 +4234,12 @@ function showFriendRequestModal(req) {
           </div>
         </div>
         <div class="friend-req-body">
-          <p style="margin:0 0 8px;">${escapeHtml(req.message || '想加你为 P2P 好友')}</p>
+          ${reqNote ? `<div style="margin:0 0 10px;padding:8px 10px;background:var(--bg-active);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--text);white-space:pre-wrap;word-break:break-word;">💬 ${escapeHtml(reqNote)}</div>` : ''}
           <p style="margin:0;color:var(--text-muted);font-size:11px;">接受后: 双方互加好友, 对方分享的 channel 会自动出现在 P2P 好友区.</p>
         </div>
         <div class="friend-req-actions">
           <button id="frm-deny" class="friend-req-btn-deny">拒绝</button>
-          <button id="frm-accept" class="friend-req-btn-accept">接受</button>
+          <button id="frm-accept" class="friend-req-btn-accept" style="font-weight:700;">✅ 一键通过</button>
         </div>
       </div>
     </div>
@@ -4247,7 +4253,7 @@ function showFriendRequestModal(req) {
       const res = await fetch('/api/friend-accept', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fromPublicKey: req.fromPublicKey, name: req.fromName })
+        body: JSON.stringify({ fromPublicKey: req.fromPublicKey, name: req.fromName, requestId: req.requestId })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'accept failed');

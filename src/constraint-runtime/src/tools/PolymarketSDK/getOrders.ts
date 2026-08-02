@@ -1,4 +1,4 @@
-import { buildClobClient } from './clobShared';
+import { buildClobClient } from './clobShared.js';
 
 export interface GetOrdersParams {
   /** 查询订单的钱包私钥 (用于派生 API key 鉴权) */

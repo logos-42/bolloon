@@ -1,4 +1,4 @@
-import { buildClobClient } from './clobShared';
+import { buildClobClient } from './clobShared.js';
 
 export interface CancelOrderParams {
   /** 取消订单的钱包私钥 (用于派生 API key 鉴权) */

@@ -1,4 +1,4 @@
-import { OrderType, Side, buildClobClient, fetchMarketMeta, resolveTokenId } from './clobShared';
+import { OrderType, Side, buildClobClient, fetchMarketMeta, resolveTokenId } from './clobShared.js';
 
 export interface CreateOrderParams {
   /** 下单钱包私钥 (0x...), 用于 EIP-712 订单签名 + 派生 API key */

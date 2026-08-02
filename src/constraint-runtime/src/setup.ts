@@ -1,4 +1,4 @@
-import * as platform from 'platform';
+import platform from 'platform';
 import * as path from 'path';
 import { runDeferredInit, DeferredInitResult } from './deferred_init.js';
 import { startMdmRawRead, startKeychainPrefetch, startProjectScan, PrefetchResult } from './prefetch.js';

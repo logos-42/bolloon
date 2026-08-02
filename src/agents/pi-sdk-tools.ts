@@ -301,16 +301,18 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   // add_friend_by_id — 通过 Hyperswarm publicKey 添加 P2P 好友
   ctx.tools.set('add_friend_by_id', {
     name: 'add_friend_by_id',
-    description: '通过 Hyperswarm P2P publicKey (64 字符 hex) 添加好友. 对方在线时会收到好友申请弹窗, 接受后自动分享 channel.',
+    description: '通过 Hyperswarm P2P publicKey (64 字符 hex) 添加好友. 对方在线时会收到好友申请弹窗, 接受后自动分享 channel. 强烈建议填 note 备注 (自我介绍/来源), 对方才能分辨你是谁.',
     parameters: {
       publicKey: '64 字符 hex publicKey (必填)',
       name: '可选, 给好友的备注名 (如: 同事-张磊)',
-      message: '可选, 附加的好友申请消息'
+      message: '可选, 附加的好友申请消息',
+      note: '可选, 备注 (自我介绍/来源), 对方接受时会看到. 如 "我是[姓名]的 Bolloon agent[name], 来自[来源], 想加你为好友共享 channel 协作,技能: [技能列表]"'
     },
     execute: async (args) => {
       const publicKey = String(args.publicKey || '').trim();
       const name = String(args.name || '').trim();
       const message = String(args.message || '想加你为 P2P 好友, 共享 channel 协作').trim();
+      const note = String(args.note || '').trim();
       if (!publicKey || publicKey.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(publicKey)) {
         return { success: false, error: 'publicKey 必须是 64 字符 hex 格式' };
       }
@@ -319,7 +321,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         const res = await fetch(`http://127.0.0.1:${port}/api/friend-request`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ targetPublicKey: publicKey, name: name || undefined, message })
+          body: JSON.stringify({ targetPublicKey: publicKey, name: name || undefined, message, note: note || undefined })
         });
         const data = await res.json();
         if (!res.ok) {
@@ -329,6 +331,93 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         return { success: true, output: `✅ 好友申请已发送给 ${data.persistedAs || name || publicKey.substring(0, 12)}...\n对方接受后会自动出现在 P2P 好友列表.` };
       } catch (e: any) {
         return { success: false, error: `添加好友失败: ${String(e.message || e)}` };
+      }
+    }
+  });
+
+  // list_pending_friend_requests — 查看待处理的好友申请 (智能体侧处理入口)
+  ctx.tools.set('list_pending_friend_requests', {
+    name: 'list_pending_friend_requests',
+    description: '查看当前待处理的好友申请列表 (对方想加你为好友但还没接受). 每个申请带 fromName / note 备注 (自我介绍/来源), 便于判断是否接受. 用 accept_friend_request 接受, 或 ignore_friend_request 忽略.',
+    parameters: {},
+    execute: async () => {
+      try {
+        const port = process.env.PORT || '54188';
+        const res = await fetch(`http://127.0.0.1:${port}/api/friend-requests`);
+        const data = await res.json();
+        if (!res.ok) return { success: false, error: data.error || '查询失败' };
+        if (data.count === 0) {
+          return { success: true, output: '当前没有待处理的好友申请。' };
+        }
+        const lines = data.requests.map((r: any, i: number) =>
+          `${i + 1}. ${r.fromName} (publicKey=${r.fromPublicKey.substring(0, 16)}...)\n   备注: ${r.note || r.message || '(无)'}\n   requestId: ${r.requestId}`
+        );
+        return { success: true, output: `待处理好友申请 ${data.count} 个:\n${lines.join('\n')}\n\n用 accept_friend_request 接受, 或 ignore_friend_request 忽略.` };
+      } catch (e: any) {
+        return { success: false, error: `查询好友申请失败: ${String(e.message || e)}` };
+      }
+    }
+  });
+
+  // accept_friend_request — 接受一个待处理的好友申请 (智能体侧一键通过)
+  ctx.tools.set('accept_friend_request', {
+    name: 'accept_friend_request',
+    description: '接受一个待处理的好友申请. 对方会出现在你的 P2P 好友列表, 对方分享的 channel 自动可见. 参数 requestId 来自 list_pending_friend_requests 的返回.',
+    parameters: {
+      requestId: '待处理申请的 requestId (必填, 来自 list_pending_friend_requests)',
+      name: '可选, 给这个新好友的备注名 (默认用对方自称的名字)'
+    },
+    execute: async (args) => {
+      const requestId = String(args.requestId || '').trim();
+      if (!requestId) {
+        return { success: false, error: 'requestId 必填 (先调 list_pending_friend_requests 获取)' };
+      }
+      try {
+        const port = process.env.PORT || '54188';
+        // 先查 pending 拿到 fromPublicKey / fromName
+        const q = await fetch(`http://127.0.0.1:${port}/api/friend-requests`);
+        const qd = await q.json();
+        const req = (qd.requests || []).find((r: any) => r.requestId === requestId);
+        if (!req) {
+          return { success: false, error: `未找到 requestId=${requestId} 的申请 (可能已被处理或过期)` };
+        }
+        const acceptName = String(args.name || '').trim() || req.fromName;
+        const res = await fetch(`http://127.0.0.1:${port}/api/friend-accept`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fromPublicKey: req.fromPublicKey, name: acceptName, requestId })
+        });
+        const data = await res.json();
+        if (!res.ok) return { success: false, error: data.error || '接受失败' };
+        return { success: true, output: `✅ 已接受 ${req.fromName} 的好友申请 (备注: ${req.note || req.message || '(无)'}), 已加为好友: ${data.persistedAs || acceptName}` };
+      } catch (e: any) {
+        return { success: false, error: `接受好友申请失败: ${String(e.message || e)}` };
+      }
+    }
+  });
+
+  // ignore_friend_request — 忽略一个待处理的好友申请
+  ctx.tools.set('ignore_friend_request', {
+    name: 'ignore_friend_request',
+    description: '忽略 (拒绝) 一个待处理的好友申请, 不加入好友. 参数 requestId 来自 list_pending_friend_requests 的返回.',
+    parameters: {
+      requestId: '待处理申请的 requestId (必填, 来自 list_pending_friend_requests)'
+    },
+    execute: async (args) => {
+      const requestId = String(args.requestId || '').trim();
+      if (!requestId) return { success: false, error: 'requestId 必填' };
+      try {
+        const port = process.env.PORT || '54188';
+        const res = await fetch(`http://127.0.0.1:${port}/api/friend-requests/ignore`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requestId })
+        });
+        const data = await res.json();
+        if (!res.ok) return { success: false, error: data.error || '忽略失败' };
+        return { success: true, output: `已忽略好友申请 ${requestId.substring(0, 8)}...` };
+      } catch (e: any) {
+        return { success: false, error: `忽略好友申请失败: ${String(e.message || e)}` };
       }
     }
   });

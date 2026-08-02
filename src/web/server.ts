@@ -216,6 +216,18 @@ let sseClients: Set<SSEClient> = new Set();
 // in-memory only, 进程重启清空 (judgment 内容永远不在这里)
 let remoteChannelCache: Map<string, Array<Record<string, unknown>>> = new Map();
 
+// 2026-08-02: 待处理好友申请 (pending friend requests) — 收到 agent.friend.request 时暂存,
+//   人类通过 UI 处理, 智能体通过工具 list_pending_friend_requests / accept_friend_request 处理。
+//   key: requestId, value: 申请详情 (含 fromPublicKey / name / message / 备注)
+const pendingFriendRequests: Map<string, {
+  requestId: string;
+  fromPublicKey: string;
+  fromName: string;
+  message: string;
+  note?: string;         // 2026-08-02: 申请方填的备注 (自我介绍 / 来源)
+  receivedAt: number;
+}> = new Map();
+
 // 2026-07-05: 一次性 prompt 附加块 — key: channelId, value: 下一次 LLM prompt 时 prepend 的内容
 //   用于 manifest-loader 加载对方能力后, 仅影响本次对话, 不污染主 prompt
 const nextPromptHints: Map<string, string> = new Map();
@@ -280,6 +292,46 @@ async function persistRemoteChannelCache(): Promise<void> {
 }
 // 启动时立即同步读一次 (异步, 不阻塞)
 loadRemoteChannelCacheFromDisk();
+
+// 2026-08-02: pending 好友申请持久化 — 重启后智能体/人类仍能看到未处理的申请
+const PENDING_FRIEND_REQ_FILE = `${process.env.HOME || '/tmp'}/.bolloon/pending-friend-requests.json`;
+async function loadPendingFriendRequestsFromDisk(): Promise<void> {
+  try {
+    const { readFile } = await import('fs/promises');
+    const { existsSync } = await import('fs');
+    if (!existsSync(PENDING_FRIEND_REQ_FILE)) return;
+    const raw = await readFile(PENDING_FRIEND_REQ_FILE, 'utf-8');
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === 'object') {
+      for (const [reqId, r] of Object.entries(obj)) {
+        if (r && typeof r === 'object' && (r as any).fromPublicKey) {
+          pendingFriendRequests.set(reqId, r as any);
+        }
+      }
+      console.log(`[v3-friend] 从磁盘恢复 ${pendingFriendRequests.size} 个待处理好友申请`);
+    }
+  } catch (err) {
+    console.warn('[v3-friend] 恢复 pending 好友申请失败 (非致命):', (err as Error).message);
+  }
+}
+async function persistPendingFriendRequests(): Promise<void> {
+  try {
+    const { writeFile, mkdir } = await import('fs/promises');
+    const { existsSync } = await import('fs');
+    if (!existsSync(`${process.env.HOME || '/tmp'}/.bolloon`)) {
+      await mkdir(`${process.env.HOME || '/tmp'}/.bolloon`, { recursive: true });
+    }
+    const obj: Record<string, unknown> = {};
+    for (const [reqId, r] of pendingFriendRequests.entries()) {
+      obj[reqId] = r;
+    }
+    await writeFile(PENDING_FRIEND_REQ_FILE, JSON.stringify(obj, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('[v3-friend] 持久化 pending 好友申请失败 (非致命):', (err as Error).message);
+  }
+}
+// 启动时恢复 (异步, 不阻塞主流程)
+loadPendingFriendRequestsFromDisk();
 // v3: P2PDirect 引用 (Hyperswarm 薄包装) - 模块级, 因为 web server 闭包里不可用
 let v3P2PRef: import('../network/p2p-direct.js').P2PDirect | null = null;
 // 2026-07-21: 智能体社交心跳实例 (beacon + 自主决策发起对话), data 事件处理器会引用它
@@ -1655,11 +1707,27 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
             // v3 新增: 好友申请 RPC — 任何对端可以发, 推到前端 UI 让用户接受
             if (parsed.op === 'agent.friend.request') {
               console.log(`[v3-friend] 收到 ${evt.fromPublicKey.substring(0,12)}... 的好友申请: ${parsed.payload?.name || '(无名字)'}`);
+              const reqFromName = parsed.payload?.name || ('peer-' + evt.fromPublicKey.substring(0, 8));
+              const reqMessage = parsed.payload?.message || '想加你为 P2P 好友';
+              // 2026-08-02: 备注 = 申请消息或显式 note 字段 (自我介绍 / 来源), 存 pending 供智能体工具查询
+              const reqNote = parsed.payload?.note || reqMessage;
+              if (parsed.payload?.requestId) {
+                pendingFriendRequests.set(parsed.payload.requestId, {
+                  requestId: parsed.payload.requestId,
+                  fromPublicKey: evt.fromPublicKey,
+                  fromName: reqFromName,
+                  message: reqMessage,
+                  note: reqNote,
+                  receivedAt: Date.now(),
+                });
+                persistPendingFriendRequests();  // 2026-08-02: 落盘, 重启不丢
+              }
               broadcast({
                 type: 'friend-request',
                 fromPublicKey: evt.fromPublicKey,
-                fromName: parsed.payload?.name || ('peer-' + evt.fromPublicKey.substring(0, 8)),
-                message: parsed.payload?.message || '想加你为 P2P 好友',
+                fromName: reqFromName,
+                message: reqMessage,
+                note: reqNote,                     // 2026-08-02: 透传备注给 UI
                 requestId: parsed.payload?.requestId,    // 2026-06-10: 透传 requestId 给前端
                 timestamp: Date.now()
               }, 'p2p-global');
@@ -4499,7 +4567,7 @@ app.get('/channels', async (_req, res) => {
       if (!v3P2PRef) {
         return res.status(503).json({ ok: false, code: 'P2P_NOT_STARTED', error: 'P2PDirect not started' });
       }
-      const { targetPublicKey, name, message } = req.body || {};
+      const { targetPublicKey, name, message, note } = req.body || {};
       if (!targetPublicKey || typeof targetPublicKey !== 'string' || targetPublicKey.length !== 64) {
         return res.status(400).json({ ok: false, code: 'BAD_REQUEST', error: 'targetPublicKey (64 hex) required' });
       }
@@ -4523,7 +4591,8 @@ app.get('/channels', async (_req, res) => {
           requestId,                  // 2026-06-10: 加 requestId, ack 时回带
           fromPublicKey: myPk,
           name: peerName,
-          message: message || '想加你为 P2P 好友, 共享 channel 协作'
+          message: message || '想加你为 P2P 好友, 共享 channel 协作',
+          note: note || message || undefined,   // 2026-08-02: 备注 (自我介绍/来源), 优先显式 note
         }
       });
       // 2026-06-10: 用 sendToWithWait, 等 conn 真就绪后再发, 默认 5s 超时
@@ -4546,16 +4615,53 @@ app.get('/channels', async (_req, res) => {
     }
   });
 
+  // v3: 待处理好友申请查询 (智能体工具 list_pending_friend_requests 用)
+  // 用法: GET /api/friend-requests
+  app.get('/api/friend-requests', async (_req, res) => {
+    const list = Array.from(pendingFriendRequests.values()).map(r => ({
+      requestId: r.requestId,
+      fromPublicKey: r.fromPublicKey,
+      fromName: r.fromName,
+      message: r.message,
+      note: r.note || '',
+      receivedAt: r.receivedAt,
+    }));
+    res.json({ count: list.length, requests: list });
+  });
+
+  // v3: 忽略/拒绝一个待处理好友申请 (智能体工具 ignore_friend_request 用)
+  // 用法: POST /api/friend-requests/ignore { requestId }
+  app.post('/api/friend-requests/ignore', async (req, res) => {
+    try {
+      const { requestId } = req.body || {};
+      if (!requestId || !pendingFriendRequests.has(requestId)) {
+        return res.status(404).json({ error: `未找到 requestId=${requestId} 的申请` });
+      }
+      const r = pendingFriendRequests.get(requestId)!;
+      pendingFriendRequests.delete(requestId);
+      persistPendingFriendRequests();  // 2026-08-02: 落盘
+      console.log(`[v3-friend] 忽略好友申请: ${r.fromName} (${r.fromPublicKey.substring(0, 12)}...)`);
+      res.json({ ok: true, ignored: r.fromName });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // v3: 接受对方的好友申请 — 把对方加为 known_peers, 立即推我的 channel 列表给 ta
-  // 用法: POST /api/friend-accept { fromPublicKey, name }
+  // 用法: POST /api/friend-accept { fromPublicKey, name, requestId? }
   app.post('/api/friend-accept', async (req, res) => {
     try {
       if (!v3P2PRef) {
         return res.status(503).json({ error: 'P2PDirect not started' });
       }
-      const { fromPublicKey, name } = req.body || {};
+      const { fromPublicKey, name, requestId } = req.body || {};
       if (!fromPublicKey || typeof fromPublicKey !== 'string' || fromPublicKey.length !== 64) {
         return res.status(400).json({ error: 'fromPublicKey (64 hex) required' });
+      }
+      // 2026-08-02: 接受后清掉 pending 条目 (若带了 requestId)
+      if (requestId) {
+        pendingFriendRequests.delete(requestId);
+        persistPendingFriendRequests();
       }
       // 持久化
       const { addOrUpdatePeer, findNameByPublicKey } = await import('../network/known-peers.js');
