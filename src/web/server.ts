@@ -2913,6 +2913,32 @@ ${goalDesc}
         contextHint += `[系统上下文] 自动工具调用已关闭: 每次执行工具前必须先与用户确认。\n`;
       }
 
+      // 2026-08-02 fix: 本地路径注入远端 channel 目录 (dirHint) — 之前只有远端路径 (agent.chat.send)
+      //   有 dirHint, 本地智能体对话时看不到远端 channel 列表 → 无法 @ 远程智能体交流.
+      //   现在注入: 可用渠道列表 (本地 + 远端), 让 LLM 知道 @ 谁、发什么.
+      try {
+        const localChs = await loadChannels();
+        const remoteForDir: any[] = [];
+        for (const [peerPk, list] of remoteChannelCache.entries()) {
+          for (const ch of list) {
+            remoteForDir.push({ ...ch, _ownerPublicKey: peerPk });
+          }
+        }
+        if (localChs.length > 0 || remoteForDir.length > 0) {
+          contextHint += '[系统上下文] 可用渠道 (你可以在回复中写 "@渠道名 消息内容" 给它们发消息, 消息会持久化到目标 channel 的 session):\n';
+          for (const c of localChs) {
+            if (c.id === channelId) continue; // 跳过自己
+            contextHint += `  - [本地] @${c.name} (id=${c.id})\n`;
+          }
+          for (const c of remoteForDir) {
+            contextHint += `  - [远端, owner=${(c._ownerPublicKey || '').substring(0, 8)}…] @${c.name} (id=${c.id})\n`;
+          }
+          contextHint += '语法: 在回复中写 "@渠道名 我要说的话" 即可, 系统会自动转发。\n\n';
+        }
+      } catch (dirErr) {
+        // 静默 — dirHint 不是核心
+      }
+
       // v3: 注入 channel 绑定的判断力 (judgment_ids)
       // 这是 v3 的核心 — channel 跑 LLM 时, 它的判断力 = 绑定的 judgment 列表
       const judgmentHint = await buildJudgmentHint(channelForJudgment, channelId);

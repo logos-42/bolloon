@@ -422,6 +422,79 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     }
   });
 
+  // 2026-08-02: 远端 channel 工具 — 让本地智能体能获取远端 channel 列表 + 发送消息到远端
+  //   (之前本地智能体看不到远端 channel, 无法 @ 远程智能体交流 — "工具没有给到位")
+  ctx.tools.set('list_remote_channels', {
+    name: 'list_remote_channels',
+    description: '列出 P2P 好友节点分享给你的远端 channel (远程智能体会话). 每个远端 channel 属于某个 peer, 你可以在回复中写 "@渠道名 消息内容" 或调用 send_to_remote_channel 给它们发消息.',
+    parameters: {},
+    execute: async () => {
+      try {
+        const port = process.env.PORT || '54188';
+        const res = await fetch(`http://127.0.0.1:${port}/api/remote-channels`);
+        if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+        const data = await res.json();
+        const peers = data?.peers || [];
+        const lines: string[] = [];
+        let total = 0;
+        for (const p of peers) {
+          const chs = p.channels || [];
+          total += chs.length;
+          if (chs.length === 0) continue;
+          lines.push(`👤 ${p.peerName || ('peer-' + String(p.peerId).substring(0, 8))} (${String(p.peerId).substring(0, 16)}…):`);
+          for (const c of chs) {
+            lines.push(`  - @${c.name} (id=${c.id})`);
+          }
+        }
+        if (total === 0) {
+          return { success: true, output: '📭 当前没有远端 channel (没有好友分享 channel 给你, 或对方不在线). 可先用 add_friend_by_id 添加好友.' };
+        }
+        return { success: true, output: `🌐 ${total} 个远端 channel:\n${lines.join('\n')}\n\n在回复中写 "@渠道名 消息内容" 即可发送 (系统自动转发到对方节点).` };
+      } catch (e: any) {
+        return { success: false, error: `获取远端 channel 失败: ${String(e.message || e)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('send_to_remote_channel', {
+    name: 'send_to_remote_channel',
+    description: '发送消息到远端 channel (远程智能体会话, 属于某个 P2P 好友节点). 对方节点会在该 channel 上跑 LLM 处理你的消息并回复. 用 list_remote_channels 查看可用 channel 和 owner.',
+    parameters: {
+      targetPublicKey: '远端节点 publicKey (64 hex, 用 list_remote_channels 看 owner)',
+      channelId: '远端 channel id (用 list_remote_channels 查看)',
+      text: '消息内容 (必填)',
+      autoInvokeTools: '可选, 是否允许对方调用工具 (true/false, 默认 true)'
+    },
+    execute: async (args) => {
+      const targetPublicKey = String(args.targetPublicKey || '').trim();
+      const channelId = String(args.channelId || '').trim();
+      const text = String(args.text || '').trim();
+      if (!targetPublicKey || !channelId || !text) {
+        return { success: false, error: 'targetPublicKey, channelId, text 必填 (用 list_remote_channels 查)' };
+      }
+      try {
+        const port = process.env.PORT || '54188';
+        const res = await fetch(`http://127.0.0.1:${port}/api/remote-channels/chat-send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            targetPublicKey,
+            channelId,
+            text,
+            ...(typeof args.autoInvokeTools === 'boolean' ? { autoInvokeTools: args.autoInvokeTools } : {}),
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          return { success: false, error: `发送失败: ${data.error || `HTTP ${res.status}`}` };
+        }
+        return { success: true, output: `📨 消息已发送到远端 channel ${channelId} (${data.sent ? '已送达' : data.queued ? '对方不在线, 已入队, 上线后自动送达' : '未知状态'}). 对方智能体会回复, 可用 check_inbox 或稍后查看.` };
+      } catch (e: any) {
+        return { success: false, error: `发送失败: ${String(e.message || e)}` };
+      }
+    }
+  });
+
   // delegate_to_engine — 把编码任务委派给本机已安装的其他 AI 编码智能体 CLI
   // (codex / claude-code / opencode / openclaw / hermes). 它们必须已安装且可达 PATH.
   // 实验 API 引擎 (experiment:xxx) 是供应商不是 CLI, 不支持委派, 工具会提示改用 import.

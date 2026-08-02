@@ -71,6 +71,8 @@ const TOOL_WHITELIST = new Set<string>([
   'create_skill', 'update_skill', 'list_skill_candidates', 'promote_skill',
   // 2026-08-02: plan/todo/review 工具 (plan-store.ts)
   'create_plan', 'update_plan', 'review_plan', 'list_plans',
+  // 2026-08-02: 远端 channel 工具 (本地智能体 @ 远程交流)
+  'list_remote_channels', 'send_to_remote_channel',
 ]);
 
 export const gateWhitelist: GateResult = { gate: 'whitelist', allowed: true };
