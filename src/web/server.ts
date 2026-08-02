@@ -1702,12 +1702,16 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
   // 2026-08-02 fix: 启动自愈 — 从 agents.json 恢复 channels.json 缺失的 channel.
   //   背景: UI 创建 channel 偶发不落盘 / 历史并发覆盖丢 channel, 但 agents.json 里
   //   agent 的 channelId + name 还在 (session 文件也在) → 启动时自动恢复, 智能体不再"消失".
-  try {
-    const { existsSync } = await import('fs');
-    const { readFile } = await import('fs/promises');
-    const agentsFile = `${process.env.HOME || '/tmp'}/.bolloon/agents/agents.json`;
-    const sessionsDir = `${process.env.HOME || '/tmp'}/.bolloon/sessions/cache`;
-    if (existsSync(agentsFile)) {
+  // 2026-08-02 v2: 抽成函数 healMissingChannels() — 启动 + GET /channels 时都调用.
+  //   之前只启动时跑一次: 启动时 channel 还在 → 跳过, 之后运行中丢失 → 永远不恢复
+  //   (用户报告"每次刷新和 build 都会消失" — 刷新后 GET /channels 触发恢复即可自愈).
+  async function healMissingChannels(): Promise<number> {
+    try {
+      const { existsSync } = await import('fs');
+      const { readFile } = await import('fs/promises');
+      const agentsFile = `${process.env.HOME || '/tmp'}/.bolloon/agents/agents.json`;
+      const sessionsDir = `${process.env.HOME || '/tmp'}/.bolloon/sessions/cache`;
+      if (!existsSync(agentsFile)) return 0;
       const agentsRaw = await readFile(agentsFile, 'utf-8');
       const agentsArr = JSON.parse(agentsRaw);
       const arr = Array.isArray(agentsArr) ? agentsArr : [];
@@ -1739,10 +1743,16 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         console.log(`[自愈] 恢复 channel: ${cid} (${restored.name}, agent=${a.id})`);
       }
       if (healed > 0) console.log(`[自愈] 共恢复 ${healed} 个丢失的 channel`);
+      return healed;
+    } catch (healErr: any) {
+      console.warn('[自愈] channel 恢复失败 (非致命):', healErr?.message?.slice(0, 120));
+      return 0;
     }
-  } catch (healErr: any) {
-    console.warn('[自愈] channel 恢复失败 (非致命):', healErr?.message?.slice(0, 120));
   }
+  // 启动时自愈一次
+  await healMissingChannels().catch(() => {});
+  // 2026-08-02: GET /channels 运行中自愈的节流时间戳
+  let lastHealAt = 0;
 
   // ==================== P2P DIAP 身份初始化 ====================
   let p2pIdentity = {
@@ -4001,6 +4011,14 @@ ${goalDesc}
 
 app.get('/channels', async (_req, res) => {
   try {
+    // 2026-08-02 fix: 运行中自愈 — 每次拉取前检查丢失的 channel (从 agents.json 恢复).
+    //   解决"刷新/build 后 channel 消失": 刷新即触发 GET /channels → 丢失的自动回来
+    //   节流: 5s 内只跑一次 (heal 内部有文件 IO)
+    const nowMs = Date.now();
+    if (nowMs - (lastHealAt || 0) > 5000) {
+      lastHealAt = nowMs;
+      await healMissingChannels().catch(() => {});
+    }
     // 2026-06-17: 缓存命中 → 0 行;未命中 → 1 行 summary (上面 console.log proxy 已吃掉 [API] /channels 等旧日志)
     const t0 = Date.now();
     const now = t0;
