@@ -258,6 +258,24 @@ function startV3GlobalSSE() {
         if (msg.type === 'remote-chat-sent') {
           // 2026-08-02: @ 命令发出去的消息 — 在 P2P 对话框 (rcm-log) 显示"我 → 远端"
           //   之前只显示对方回复, 自己 @ 发出去的看不到
+          console.log('[v3] 收到 remote-chat-sent:', msg.channelId, '|', String(msg.text || '').slice(0, 30));
+          // 写本地缓存 (source=local-sent) — loadHistory 重绘后仍能显示
+          try {
+            const pk = msg.fromPublicKey;
+            const cid = msg.channelId;
+            if (pk && cid && msg.text) {
+              const key = `bolloon.rcmCache.${pk}.${cid}`;
+              let arr = [];
+              try { const raw = localStorage.getItem(key); if (raw) arr = JSON.parse(raw); } catch { arr = []; }
+              if (!Array.isArray(arr)) arr = [];
+              const entry = { type: 'user', content: msg.text, timestamp: new Date().toISOString(), source: 'local-sent' };
+              const dup = arr.some(m => m.type === 'user' && m.content === entry.content && m.source === 'local-sent');
+              if (!dup) {
+                arr.push(entry);
+                try { localStorage.setItem(key, JSON.stringify(arr.slice(-200))); } catch { /* */ }
+              }
+            }
+          } catch { /* 缓存失败不阻塞 */ }
           const log = document.getElementById('rcm-log');
           if (!log) return;
           // 只显示匹配当前打开的远端 channel 对话框
@@ -4360,14 +4378,34 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
       }));
       writeRcmCache(cacheMsgs);
     } catch { /* 缓存失败不阻塞 */ }
+
+    // 2026-08-02 fix: 合并显示"本地 @ 发出去的远端消息" (remote-chat-sent 写进缓存的 local-sent)
+    //   否则 loadHistory 15s 定时刷新会用对端历史覆盖掉本地实时显示的 user 消息
+    try {
+      const cachedAll = readRcmCache();
+      const localSent = cachedAll.filter((m: any) => m.source === 'local-sent');
+      if (localSent.length > 0) {
+        const remoteContents = new Set(msgs.map((m: any) => m.content));
+        for (const m of localSent) {
+          if (remoteContents.has(m.content)) continue; // 对端历史里已有 (对方 echo 回来了)
+          const dup = Array.from(log.querySelectorAll('.message-user')).some(el =>
+            (el.textContent || '').includes(m.content)
+          );
+          if (dup) continue;
+          addMessage(`👤 我 → 远端\n\n${m.content}`, 'user', false, log);
+        }
+        setTimeout(() => { log.scrollTop = log.scrollHeight; }, 50);
+      }
+    } catch { /* 合并失败不阻塞 */ }
   }
 
   const doSend = async () => {
     const text = inputEl.value.trim();
     if (!text) return;
     append(text, 'user');
-    // 2026-08-02: 发送后立即写本地缓存 (不依赖远程拉取)
-    cacheRemoteMessage(peerPublicKey, channelId, { type: 'user', content: text, timestamp: new Date().toISOString() });
+    // 2026-08-02: 发送后立即写本地缓存 (不依赖远程拉取) — local-sent 标记"我 → 远端",
+    //   loadHistory 重绘后仍能显示 (与 remote-chat-sent 缓存一致)
+    cacheRemoteMessage(peerPublicKey, channelId, { type: 'user', content: text, timestamp: new Date().toISOString(), source: 'local-sent' });
     inputEl.value = '';
     sendBtn.disabled = true;
     sendBtn.textContent = '...';

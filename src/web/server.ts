@@ -498,6 +498,7 @@ async function routeMentionsInReply(
           }
           // 2026-08-02: @ 消息也要显示在 P2P 对话框 — broadcast remote-chat-sent,
           //   前端 rcm-log 打开且匹配 channelId 时显示"我 → 远端"这条消息
+          //   注意: 不能传 'p2p-global' 第二参 — broadcast 会用第二参覆盖 payload.channelId
           broadcast({
             type: 'remote-chat-sent',
             channelId: remoteTarget.id,
@@ -507,7 +508,7 @@ async function routeMentionsInReply(
             originChannelName,
             peerName: remoteTarget.name,
             sent: true,
-          }, 'p2p-global');
+          });
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'sent' });
         } else if (r === 'QUEUED') {
           console.log(`[v3-cross] (${originChannelName}) @${targetName} → 远端 peer ${ownerPk.substring(0,12)}... 已入队 (对方不在线)`);
@@ -528,7 +529,7 @@ async function routeMentionsInReply(
             peerName: remoteTarget.name,
             sent: false,
             queued: true,
-          }, 'p2p-global');
+          });
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'queued' });
         } else {
           results.push({ targetName, targetId: remoteTarget.id, source: 'remote', text, status: 'failed' });
@@ -6776,7 +6777,11 @@ function broadcast(data: { type: string; [key: string]: unknown }, channelId?: s
   const msgId = (data.type === 'ai' || data.type === 'user')
     ? nextMsgId(channelId)
     : `evt_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-  const envelope = { ...data, channelId, seq, msgId };
+  // 2026-08-02 fix: 第二参 channelId 为 undefined 时, 不要用 undefined 覆盖 data.channelId —
+  //   否则 payload 自带的 channelId (如 remote-chat-sent 的远端 channel id) 会丢, 前端无法匹配对话框
+  const envelope = channelId !== undefined
+    ? { ...data, channelId, seq, msgId }
+    : { ...data, seq, msgId };
   const message = `data: ${JSON.stringify(envelope)}\n\n`;
   console.log(`[broadcast] type=${data.type}, channelId=${channelId}, seq=${seq}, msgId=${msgId}, clients=${sseClients.size}`);
   for (const client of sseClients) {
