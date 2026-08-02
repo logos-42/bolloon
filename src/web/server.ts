@@ -2907,6 +2907,19 @@ ${goalDesc}
       } catch (memErr) {
         // 静默失败 — memory 回读不是核心, 失败不阻塞
       }
+      // 2026-08-02: plan 回读 — 把进行中的计划注入 contextHint (在 memory 之后)
+      //   配合 create_plan / update_plan / review_plan 工具, 让 LLM 每次对话都能看到
+      //   未完成的计划并继续推进.
+      try {
+        const { listActivePlans, planToContext } = await import('../agents/plan-store.js');
+        const plans = await listActivePlans();
+        if (plans.length > 0) {
+          const plansBlock = plans.slice(0, 3).map(p => planToContext(p)).join('\n\n');
+          contextHint += `[系统上下文] 进行中的计划 (来自 plan-store, 执行中每完成一步调 update_plan 勾选):\n${plansBlock}\n\n`;
+        }
+      } catch (planErr) {
+        // 静默失败
+      }
       const linkedIds = channelForJudgment?.linkedDocumentIds;
       if (Array.isArray(linkedIds) && linkedIds.length > 0) {
         try {

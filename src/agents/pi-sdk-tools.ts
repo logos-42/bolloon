@@ -1292,6 +1292,115 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       }
     }
   });
+
+  // ============================================================
+  // plan / todo / review 工具 (2026-08-02) — 显式执行闭环
+  // create_plan / update_plan / review_plan / list_plans
+  // 实现: plan-store.ts (~/.bolloon/plans/<planId>.json)
+  // ============================================================
+  ctx.tools.set('create_plan', {
+    name: 'create_plan',
+    description: '执行复杂任务前先显式列计划: 拆成 3-8 个可执行步骤. 之后每完成一步调 update_plan 勾选, 全部完成调 review_plan 总结. 落盘 ~/.bolloon/plans/.',
+    parameters: {
+      goal: '一句话目标 (必填)',
+      steps: '步骤数组 JSON (必填, e.g. ["读需求", "写代码", "测试"])',
+    },
+    execute: async (args) => {
+      try {
+        const { createPlan, planToContext } = await import('./plan-store.js');
+        const goal = String(args.goal || '').trim();
+        let steps: string[] = [];
+        try {
+          const s = JSON.parse(String(args.steps || '[]'));
+          if (Array.isArray(s)) steps = s.map(String);
+        } catch { /* steps 解析失败 */ }
+        const r = await createPlan({ goal, steps, createdBy: 'agent', originChannel: (ctx as any).channelId || '' });
+        if (!r.ok || !r.plan) return { success: false, error: r.error };
+        return { success: true, output: `✅ 计划已创建 ${r.plan.planId}\n\n${planToContext(r.plan)}` };
+      } catch (e) {
+        return { success: false, error: `create_plan 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('update_plan', {
+    name: 'update_plan',
+    description: '更新计划: 勾选某步完成/阻塞 (step_id + status), 或追加新步骤 (append_steps), 或整体结束 (finish=true). 执行中每完成一步必调.',
+    parameters: {
+      plan_id: '计划 ID (必填, create_plan 返回)',
+      step_id: '步骤 ID (可选, e.g. step_1)',
+      status: '步骤新状态: done / blocked (可选)',
+      note: '完成/阻塞备注 (可选)',
+      append_steps: '追加步骤数组 JSON (可选)',
+      finish: 'true 表示整个计划结束 (可选)',
+    },
+    execute: async (args) => {
+      try {
+        const { updatePlan, planToContext } = await import('./plan-store.js');
+        const planId = String(args.plan_id || '').trim();
+        if (!planId) return { success: false, error: 'plan_id 必填' };
+        let appendSteps: string[] | undefined;
+        try {
+          const s = JSON.parse(String(args.append_steps || '[]'));
+          if (Array.isArray(s)) appendSteps = s.map(String);
+        } catch { /* 忽略 */ }
+        const r = await updatePlan(planId, {
+          stepId: args.step_id ? String(args.step_id) : undefined,
+          status: (args.status === 'done' || args.status === 'blocked') ? args.status : undefined,
+          note: args.note ? String(args.note) : undefined,
+          appendSteps,
+          finish: String(args.finish) === 'true',
+        });
+        if (!r.ok || !r.plan) return { success: false, error: r.error };
+        return { success: true, output: `✅ 计划已更新\n\n${planToContext(r.plan)}` };
+      } catch (e) {
+        return { success: false, error: `update_plan 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('review_plan', {
+    name: 'review_plan',
+    description: '计划全部执行完后审查: 总结完成度 + 产出结论. 完成后 plan 标记 done.',
+    parameters: {
+      plan_id: '计划 ID (必填)',
+      summary: '审查总结 (必填, 说明完成了什么/卡在哪/下一步)',
+    },
+    execute: async (args) => {
+      try {
+        const { reviewPlan } = await import('./plan-store.js');
+        const planId = String(args.plan_id || '').trim();
+        if (!planId) return { success: false, error: 'plan_id 必填' };
+        const summary = String(args.summary || '').trim();
+        if (!summary) return { success: false, error: 'summary 必填' };
+        const r = await reviewPlan(planId, summary);
+        if (!r.ok || !r.plan) return { success: false, error: r.error };
+        return {
+          success: true,
+          output: `✅ 计划审查完成: ${r.plan.review!.completedSteps}/${r.plan.review!.totalSteps} 步\n📝 ${summary}`,
+        };
+      } catch (e) {
+        return { success: false, error: `review_plan 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('list_plans', {
+    name: 'list_plans',
+    description: '列出所有进行中的计划 (active). 用于恢复上下文/继续未完成的计划.',
+    parameters: {},
+    execute: async () => {
+      try {
+        const { listActivePlans, planToContext } = await import('./plan-store.js');
+        const plans = await listActivePlans();
+        if (plans.length === 0) return { success: true, output: '暂无进行中的计划.' };
+        const text = plans.map(p => planToContext(p)).join('\n\n');
+        return { success: true, output: `📋 ${plans.length} 个进行中的计划:\n\n${text}` };
+      } catch (e) {
+        return { success: false, error: `list_plans 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
 }
 
 /**
