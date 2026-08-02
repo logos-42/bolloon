@@ -394,7 +394,11 @@
 
       <div class="input-area">
         <div class="input-wrapper">
-          <input type="text" id="input" placeholder="输入消息..." autocomplete="off">
+          <button id="send-tools-toggle" class="send-tools-toggle" title="本次发送是否允许工具调用 (点击切换)"
+                  style="display:flex;align-items:center;gap:4px;background:transparent;border:1px solid var(--border);color:var(--text-muted);border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;white-space:nowrap;flex-shrink:0;">
+            🔧 <span id="send-tools-label">工具:开</span>
+          </button>
+          <input type="text" id="input" placeholder="输入消息... (/ 命令 · @ 提及)" autocomplete="off">
           <button id="send" class="send-btn" data-state="idle" title="发送 (Enter)">
             <!-- 2026-06-15: 状态机 — 流式期间切到 abort 模式 (▢ 图标 + 红色边框) -->
             <svg class="send-icon" data-mode="send" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

@@ -1562,7 +1562,6 @@ function connect(channelId) {
 async function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
-
   // 2026-07-06: 第一行就切 abort 模式 — 用户期望按钮按完"立刻"变 abort icon
   //   之前延迟是因为后面 addMessage + scrollTop 后才 setSendMode, 感官上有滞后
   setSendMode('abort');
@@ -1608,6 +1607,7 @@ async function sendMessage() {
         channelId: currentChannelId,
         channelDid,
         attachments: attachmentsForSend, // 后端解析为 LLM contextHint
+        autoInvokeTools: sendToolsEnabled, // 2026-08-02: 发送默认配置 — 本次是否允许工具调用
       })
     });
 
@@ -1620,6 +1620,30 @@ async function sendMessage() {
     console.error('Send error', err);
     setSendMode('idle');
   }
+}
+
+// 2026-08-02: 发送默认配置 — 工具调用 toggle (记忆上次选择, localStorage)
+let sendToolsEnabled = true;
+try {
+  const saved = localStorage.getItem('bolloon.sendToolsEnabled');
+  if (saved !== null) sendToolsEnabled = saved === '1';
+} catch { /* localStorage 不可用 */ }
+const sendToolsToggleBtn = document.getElementById('send-tools-toggle');
+const sendToolsLabel = document.getElementById('send-tools-label');
+function updateSendToolsToggleUI() {
+  if (!sendToolsToggleBtn || !sendToolsLabel) return;
+  sendToolsLabel.textContent = sendToolsEnabled ? '工具:开' : '工具:关';
+  sendToolsToggleBtn.style.borderColor = sendToolsEnabled ? 'var(--accent, #4f46e5)' : 'var(--border)';
+  sendToolsToggleBtn.style.color = sendToolsEnabled ? 'var(--accent, #4f46e5)' : 'var(--text-muted)';
+  try { localStorage.setItem('bolloon.sendToolsEnabled', sendToolsEnabled ? '1' : '0'); } catch { /* */ }
+}
+if (sendToolsToggleBtn) {
+  sendToolsToggleBtn.onclick = () => {
+    sendToolsEnabled = !sendToolsEnabled;
+    updateSendToolsToggleUI();
+    if (typeof showSimpleToast === 'function') showSimpleToast(sendToolsEnabled ? '🔧 本次发送将启用工具调用' : '🔧 本次发送将禁用工具调用');
+  };
+  updateSendToolsToggleUI();
 }
 
 // 主动落盘: 把当前 channelId/sessionId 最后一条消息 PATCH 到 server
@@ -1861,6 +1885,148 @@ setInterval(refreshMentionChannels, 5000);
 // 远端 channel 列表变化时也刷新 (loadRemoteChannels 是 function declaration, 不能重新赋值)
 // 用 setInterval 兜底: 每 5s 刷一次 (已经有定时器, 这里不重复)
 // 实际上 refreshMentionChannels() 已经在 setInterval 里跑了
+
+// ============ 2026-08-02: / 斜杠命令菜单 (插入执行命令) ============
+// 输入 / 弹出命令列表, 选中后把 /命令 插入输入框 (可继续编辑参数), 发送时由 server 端
+// 把命令路由到对应工具 (plan/task/goal/skill/p2p). 与 @-mention 共用 dropdown 视觉.
+const SLASH_COMMANDS = [
+  { cmd: 'plan', desc: '创建执行计划 (create_plan)', args: '目标; 步骤1,步骤2...' },
+  { cmd: 'todo', desc: '勾选计划步骤完成 (update_plan)', args: '计划ID; 步骤ID; done/blocked' },
+  { cmd: 'review', desc: '审查计划完成度 (review_plan)', args: '计划ID; 总结' },
+  { cmd: 'task', desc: '创建任务 (create_task)', args: '描述' },
+  { cmd: 'goal', desc: '暂停目标 (park_goal)', args: '目标ID; 原因' },
+  { cmd: 'skill', desc: '沉淀技能 (create_skill)', args: '技能名; 描述; 步骤' },
+  { cmd: 'add-friend', desc: '添加 P2P 好友', args: '公钥; 备注' },
+  { cmd: 'help', desc: '显示可用命令', args: '' },
+];
+let slashDropdownEl = null;
+let slashHighlightIdx = 0;
+let slashAnchor = -1;        // / 的绝对位置
+let slashBlockEnd = -1;      // 命令块结束位置
+
+function getCurrentSlashQuery() {
+  const pos = input.selectionStart || input.value.length;
+  const before = input.value.slice(0, pos);
+  const m = before.match(/\/([A-Za-z-]{0,20})$/);
+  return m ? { query: m[1], anchor: pos - m[0].length } : null;
+}
+
+function closeSlashDropdown() {
+  if (slashDropdownEl) { slashDropdownEl.remove(); slashDropdownEl = null; }
+  slashHighlightIdx = 0;
+  slashAnchor = -1;
+  slashBlockEnd = -1;
+}
+
+function applySlashCommand(cmdObj) {
+  const anchor = slashAnchor;
+  const blockEnd = slashBlockEnd >= 0 ? slashBlockEnd : (anchor + 1 + (getCurrentSlashQuery()?.query || '').length);
+  if (anchor < 0 || anchor > input.value.length || input.value[anchor] !== '/') {
+    closeSlashDropdown();
+    return;
+  }
+  const before = input.value.slice(0, anchor);
+  const after = input.value.slice(blockEnd);
+  const insert = `/${cmdObj.cmd} `;
+  input.value = before + insert + after;
+  const newPos = before.length + insert.length;
+  input.focus();
+  input.setSelectionRange(newPos, newPos);
+  closeSlashDropdown();
+  // 提示参数格式
+  if (cmdObj.args && typeof showSimpleToast === 'function') {
+    showSimpleToast(`💡 /${cmdObj.cmd} 用法: ${cmdObj.args}`);
+  }
+}
+
+function renderSlashDropdown(items) {
+  if (!slashDropdownEl) {
+    slashDropdownEl = document.createElement('div');
+    slashDropdownEl.id = 'slash-dropdown';
+    slashDropdownEl.style.cssText = 'position:fixed;background:#fff;border:1px solid #d1d5db;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.15);max-height:240px;overflow-y:auto;z-index:10000;font-size:13px;min-width:280px;';
+    document.body.appendChild(slashDropdownEl);
+  }
+  const rect = input.getBoundingClientRect();
+  slashDropdownEl.style.left = rect.left + 'px';
+  slashDropdownEl.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+
+  const headerHtml = `<div style="padding:6px 10px;background:#f9fafb;border-bottom:1px solid #e5e7eb;font-size:11px;color:#6b7280;display:flex;justify-content:space-between;align-items:center;">
+    <span>⚡ 命令 (回车选中 → 插入输入框)</span>
+    <span style="color:#9ca3af;">↑↓ 移动 · Esc 关闭</span>
+  </div>`;
+
+  if (items.length === 0) {
+    slashDropdownEl.innerHTML = headerHtml + '<div style="padding:10px 12px;color:#6b7280;font-size:12px;">没有匹配的命令</div>';
+  } else {
+    const rows = items.map((c, i) => {
+      const bg = i === slashHighlightIdx ? '#eff6ff' : '#fff';
+      const borderLeft = i === slashHighlightIdx ? '3px solid #93c5fd' : '3px solid transparent';
+      return `<div class="slash-item" data-idx="${i}" style="padding:8px 12px;cursor:pointer;background:${bg};border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:8px;border-left:${borderLeft};">
+        <span style="font-weight:600;color:#4f46e5;min-width:70px;">/${c.cmd}</span>
+        <span style="flex:1;color:#374151;">${c.desc}</span>
+      </div>`;
+    }).join('');
+    slashDropdownEl.innerHTML = headerHtml + rows;
+    // 点击选中
+    slashDropdownEl.querySelectorAll('.slash-item').forEach((el, i) => {
+      el.onclick = () => applySlashCommand(items[i]);
+    });
+  }
+}
+
+function updateSlashDropdown() {
+  const m = getCurrentSlashQuery();
+  if (!m) { closeSlashDropdown(); return; }
+  // 只在刚输入 / 时设置 anchor
+  if (slashAnchor === -1) slashAnchor = m.anchor;
+  slashBlockEnd = m.anchor + 1 + m.query.length;
+  const q = m.query.toLowerCase();
+  const filtered = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q)).slice(0, 8);
+  if (slashHighlightIdx >= filtered.length) slashHighlightIdx = 0;
+  renderSlashDropdown(filtered);
+}
+
+// 主输入框: / 触发 slash 菜单 (input 事件里跟 @ 一起判断)
+const _origInputHandler = input.oninput;
+input.addEventListener('input', () => {
+  const pos = input.selectionStart || input.value.length;
+  const before = input.value.slice(0, pos);
+  if (before.endsWith('/') || (slashDropdownEl && getCurrentSlashQuery())) {
+    updateSlashDropdown();
+  } else if (!getCurrentMentionQuery()) {
+    // 没有 @ 查询且没有 / 查询时关闭 slash
+    closeSlashDropdown();
+  }
+});
+
+// 主输入框 keydown: slash 菜单导航 (capture phase, 与 mention 一起)
+input.addEventListener('keydown', (e) => {
+  if (!slashDropdownEl) return;
+  const items = slashDropdownEl.querySelectorAll('.slash-item');
+  if (e.key === 'ArrowDown') {
+    e.preventDefault(); e.stopPropagation();
+    if (items.length === 0) return;
+    slashHighlightIdx = (slashHighlightIdx + 1) % items.length;
+    const q = (getCurrentSlashQuery()?.query || '').toLowerCase();
+    updateSlashDropdown();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault(); e.stopPropagation();
+    if (items.length === 0) return;
+    slashHighlightIdx = (slashHighlightIdx - 1 + items.length) % items.length;
+    updateSlashDropdown();
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    if (items.length > 0) {
+      e.preventDefault(); e.stopPropagation();
+      const q = (getCurrentSlashQuery()?.query || '').toLowerCase();
+      const filtered = SLASH_COMMANDS.filter(c => c.cmd.startsWith(q)).slice(0, 8);
+      const cur = filtered[slashHighlightIdx];
+      if (cur) applySlashCommand(cur);
+    }
+  } else if (e.key === 'Escape') {
+    e.preventDefault(); e.stopPropagation();
+    closeSlashDropdown();
+  }
+}, true);
 
 // v3 新增: 通用版 @-autocomplete (任意 input 元素都能挂, 比如 B 端的 #rcm-input)
 function setupMentionAutocomplete(inputEl) {

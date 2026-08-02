@@ -2628,6 +2628,33 @@ ${goalDesc}
       return res.status(400).json({ error: 'No text provided' });
     }
 
+    // 2026-08-02: / 斜杠命令路由 — 用户输入 /plan /todo /task 等快捷命令时,
+    //   直接把命令转成结构化指令注入 contextHint, 引导 LLM 调用对应工具.
+    //   前端 / 菜单插入的是 "/plan 目标; 步骤" 这类文本, 这里解析成提示.
+    let slashCommandHint = '';
+    try {
+      const slashMatch = String(text).match(/^\/([a-z-]+)\s*(.*)$/is);
+      if (slashMatch) {
+        const [, cmdRaw, cmdArgs] = slashMatch;
+        const cmd = cmdRaw.toLowerCase();
+        const argText = String(cmdArgs || '').trim();
+        const hints: Record<string, string> = {
+          plan: `用户输入了 /plan 命令, 参数: "${argText}". 请调用 create_plan 工具: goal=参数中 ";" 前的部分 (或整句), steps=";" 后的步骤列表 (逗号分隔). 若参数为空, 先向用户确认目标和步骤.`,
+          todo: `用户输入了 /todo 命令, 参数: "${argText}". 请调用 update_plan 勾选步骤状态: 格式 "计划ID; 步骤ID; done|blocked". 参数不完整就向用户要.`,
+          review: `用户输入了 /review 命令, 参数: "${argText}". 请调用 review_plan: 格式 "计划ID; 审查总结". 参数不完整就向用户要.`,
+          task: `用户输入了 /task 命令, 参数: "${argText}". 请调用 create_task 创建任务.`,
+          goal: `用户输入了 /goal 命令, 参数: "${argText}". 请调用 park_goal 暂停目标.`,
+          skill: `用户输入了 /skill 命令, 参数: "${argText}". 请调用 create_skill 沉淀技能.`,
+          'add-friend': `用户输入了 /add-friend 命令, 参数: "${argText}". 请调用 add_friend_by_id 添加好友 (参数: 64位 hex 公钥 + 可选备注).`,
+          help: `用户输入了 /help. 请简要列出可用命令: /plan /todo /review /task /goal /skill /add-friend, 各一句话说明.`,
+        };
+        if (hints[cmd]) {
+          slashCommandHint = `[系统上下文] 快捷命令路由:\n${hints[cmd]}\n\n`;
+          console.log(`[slash] 命令 /${cmd} 参数="${argText.slice(0, 80)}"`);
+        }
+      }
+    } catch { /* 命令解析失败忽略 */ }
+
     // 2026-07-15 修 Bug 3: 拖拽附件 — LLM 在 contextHint 里看到文件清单, 用户文本保持可读
     //   替代方案: 把 [attachment:id] 标记塞 text 里, 这里解析回 attachments 数组
     let parsedAttachments: Array<{ attachmentId: string; filename?: string; mimeType?: string; size?: number }> = [];
@@ -2679,7 +2706,11 @@ ${goalDesc}
     // 提前捕获 wallet/autoTools 到本地变量, 避免下面 try 块内的 inner const channel
     // (line ~638) 与这里外层的 const channel 形成 shadowing 让 TS 误报"使用前未声明"
     const boundWalletAddress = channel?.walletAddress;
-    const autoToolsEnabled = channel?.autoInvokeTools !== false; // 默认开启
+    // 2026-08-02: 支持 per-message 覆盖 — 前端"发送默认配置"toggle 传 autoInvokeTools,
+    //   有则用消息级设置, 没有则回落到 channel 配置 (默认开启)
+    const autoToolsEnabled = typeof (req.body as any)?.autoInvokeTools === 'boolean'
+      ? (req.body as any).autoInvokeTools
+      : channel?.autoInvokeTools !== false;
     // 捕获外层 channel 到独立变量, 避免被 try 块内 (line 740+) 的 const channel 遮蔽
     const channelForJudgment = channel;
 
@@ -2797,6 +2828,8 @@ ${goalDesc}
 
       // 将真实 DID 作为上下文前缀，让 AI 使用真实的 DID 而不是自己编造的
       let contextHint = '';
+      // 2026-08-02: slash 命令提示 (在 /message 开头解析, 这里注入)
+      if (slashCommandHint) contextHint += slashCommandHint;
       if (realChannelDid) contextHint += `[系统上下文] 当前频道名称: ${realChannelName}, 你的真实 DID: ${realChannelDid}\n`;
       // v3 新增: 标识发送方 — 让 AI 分清内部 owner vs 远端访客
       contextHint += `[系统上下文] 消息来源: 本地 (channel 内部 owner / 此机器上的用户). 称呼对方时用 "你" 或 "用户" 即可.\n`;
