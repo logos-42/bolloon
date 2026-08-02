@@ -2428,6 +2428,25 @@ ${goalDesc}
     res.json(identity);
   });
 
+  // 2026-08-02: 修改左下角用户名 (写回 ~/.bolloon/identity/user.json)
+  app.put('/api/user/identity', async (req, res) => {
+    try {
+      const { name } = req.body || {};
+      const newName = String(name || '').trim().slice(0, 40);
+      if (!newName) return res.status(400).json({ error: 'name 必填' });
+      const identity = await loadOrCreateUserIdentity();
+      identity.name = newName;
+      userIdentityCache = identity;
+      const { mkdirSync, writeFileSync } = await import('fs');
+      mkdirSync(IDENTITY_DIR, { recursive: true });
+      writeFileSync(`${IDENTITY_DIR}/user.json`, JSON.stringify(identity, null, 2), { mode: 0o600 });
+      console.log(`[user-identity] 名字已更新: ${newName}`);
+      res.json(identity);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // 2026-07-01 (v0.2.6): 前后端分离核心 — 后端切 LLM 输出为结构化 segments
   //   - POST /api/segment-reply { reply, knownTools }
   //   - 返回 ChatSegment[] (think / text / env_details / tool_call / final)
@@ -5552,6 +5571,11 @@ app.get('/channels', async (_req, res) => {
       if (s?.abortController) {
         s.abortController.abort();
         console.log(`[abort] user aborted channel=${channelId}`);
+        // 2026-08-02 fix: abort 后立即广播 done — 之前前端靠 1.5s 兜底 setTimeout 切回 idle,
+        //   视觉上"点了没反应". 这里主动推 done, 前端 finalizeTimelineAsMessage + setSendMode('idle') 立刻生效.
+        try {
+          broadcast({ type: 'done' }, channelId);
+        } catch { /* 广播失败不影响 abort 主流程 */ }
         return res.json({ ok: true, aborted: true });
       }
       res.json({ ok: true, aborted: false });

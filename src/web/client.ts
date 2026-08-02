@@ -2421,6 +2421,49 @@ async function loadUserIdentity() {
     if (nameEl) nameEl.textContent = identity.name || '匿名';
     if (didEl) didEl.textContent = identity.didShort ? `did:key:${identity.didShort}` : '';
     if (letterEl) letterEl.textContent = letter;
+
+    // 2026-08-02: 点击名字 → 内联编辑 (PUT /api/user/identity)
+    if (nameEl) {
+      nameEl.onclick = () => {
+        const current = nameEl.textContent || '';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = current;
+        input.maxLength = 40;
+        input.style.cssText = 'width:100%;background:var(--bg);border:1px solid var(--accent);border-radius:4px;color:var(--text);font-size:12px;padding:2px 6px;';
+        nameEl.replaceWith(input);
+        input.focus();
+        input.select();
+        const commit = async (save) => {
+          const newName = input.value.trim();
+          if (save && newName && newName !== current) {
+            try {
+              const r = await fetch('/api/user/identity', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: newName }),
+              });
+              if (r.ok) {
+                const updated = await r.json();
+                nameEl.textContent = updated.name || newName;
+                const letterEl2 = document.getElementById('avatar-letter');
+                if (letterEl2) letterEl2.textContent = (updated.name || '?').charAt(0).toUpperCase();
+                if (typeof showSimpleToast === 'function') showSimpleToast('✓ 名字已更新');
+              }
+            } catch (e) { /* 静默 */ }
+          }
+          // 恢复 span (无论保存与否)
+          if (!input.isConnected) return;
+          nameEl.textContent = input.value.trim() || current;
+          input.replaceWith(nameEl);
+        };
+        input.onblur = () => commit(true);
+        input.onkeydown = (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+          if (e.key === 'Escape') { input.blur(); commit(false); }
+        };
+      };
+    }
   } catch (e) {
     // 静默失败 — 不影响主聊天
   }
