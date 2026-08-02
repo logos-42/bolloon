@@ -165,6 +165,16 @@
 - **验证**: tsc 0 错; vitest 993/993 (新增 plan-store 7 + skill-writer 7); npm run build 全绿; 端到端 `/plan 写一个 P2P 模块; 读需求, 写代码, 测试` → LLM 调 create_plan → plan JSON 落盘 ✓
 - **文件**: `src/agents/plan-store.ts`(新) / `skill-writer.ts`(新) / `src/agents/pi-sdk-tools.ts` / `src/security/tool-gate.ts` / `src/web/server.ts` / `src/web/client.ts` / `src/web/index.html` / `src/test/{plan-store,skill-writer}.test.ts`(新)
 
+### [2026-08-02] feat | 渲染去重 + P2P 工具开关 + 远端对话本地缓存 + 远端 channel 删除
+
+- **回复重复渲染修复** (根因): loadSession 用 save=false 渲染历史 → `lastAiContent` 不更新 → SSE resume 补包 (save=true) 时去重失效 → 同一条 AI 消息渲染两次. 修复: message-renderer 新增 `seedDedupState()`, loadSession 渲染后 seed 去重状态. 实测 3 条 AI 消息全部唯一 (adjacentDupes: 0)
+- **工具开关只针对远程**: ① 本地 sendMessage 不再传 autoInvokeTools (走 channel 配置); ② P2P chat-send 透传 autoInvokeTools → agent.chat.send RPC → 对端处理时 false 注入"禁止调用任何工具"指令; ③ 🔧 toggle 只在远端 channel 显示, P2P 对话框 (rcm-tools-toggle) 也有
+- **远端工具调用过程转发**: server 端 agent.chat.send 的 streamCallback 之前只转 token, 现在转发 step_start/step_done/step_error (phase=step); B 端收到 → handleStepEvent → step-timeline + thinking 区块显示 🔧/✅/❌
+- **远端对话本地缓存**: localStorage 按 `peerPublicKey::channelId` 存 (bolloon.rcmCache.*), 发送/收到回复/拉历史都写缓存; 打开 P2P 对话框先渲染本地 (立即可见, 不依赖远程), 后台静默拉远程合并; 去重: 同 type+content+timestamp 跳过
+- **远端 channel 删除不干净修复**: 前端维护 `bolloon.removedRemoteChannels` ignore 集合 (localStorage, `peerId::channelId`), remote-channel-update 覆盖前 + renderRemoteChannels 渲染时都过滤; 每个远端 channel 加 🗑️ 删除按钮. 实测删除布露 (ch_1785146677431) → localStorage 记录 → 对端再广播被过滤
+- **P2P 对话框点外部关闭**: overlay mousedown 关闭 (点 shell 内部不关)
+- **验证**: tsc 0 错; vitest 993/993; npm run build 全绿; 浏览器实测: 远端 channel 删除按钮 + 点外部关闭 + 工具开关按钮全部生效
+
 ### [2026-07-22] feat | 判断力负向回收 + 上下文废气涡轮增压 (设计 A/B/C)
 
 - **触发**: 用户问"上下文废料和判断力废料有没有再利用环节". 调研发现 Bolloon 是"正向沉淀"架构 (summary 回注 / judgment 注入 / crystallized-claims 全是赢家通吃), 两类废料 (被丢弃原文 / 被否决判断) 没被再利用. 用户要求: 负向设计 + Web 判断力页面简化为正向/负向两类 + 上下文废气隐式设计, 锚点=涡轮增压.
