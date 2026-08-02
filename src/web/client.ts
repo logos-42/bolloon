@@ -427,15 +427,26 @@ function startV3GlobalSSE() {
         } else if (msg.type === 'cross-mention-received') {
           // v3 新增: A 节点上, 某个 channel 的 LLM @-mention 了另一个 channel, SSE 推过来
           // 在所有打开的 chat modal 上显示"AI 跨渠道 @-mention" 提示
+          // 2026-08-02 fix: 同时在匹配的 rcm-log 显示完整消息 (对方能看到完整交流, 不只 toast)
+          const log = document.getElementById('rcm-log');
+          const rcmModal = document.getElementById('remote-chat-modal');
+          const rcmOpenId = rcmModal ? rcmModal.dataset.channelId : null;
+          if (log && (!msg.targetChannelId || !rcmOpenId || rcmOpenId === msg.targetChannelId)) {
+            const fromTxt = msg.source === 'ai-mention-remote'
+              ? `远端智能体 ${msg.originChannelName ? `(${msg.originChannelName})` : ''}`
+              : `${msg.originChannelName} (本地)`;
+            addMessage(`📡 ${fromTxt}\n\n${msg.text || ''}`, 'ai', false, log);
+            log.scrollTop = log.scrollHeight;
+          }
           const allModals = document.querySelectorAll('.rcm-mention-toast, [id^="rcm-log"]');
-          for (const log of allModals) {
-            if (!log.id) continue;
+          for (const logEl of allModals) {
+            if (!logEl.id) continue;
             const toast = document.createElement('div');
             toast.style.cssText = 'margin:6px 0;padding:8px 10px;background:#fce7f3;border-left:3px solid #ec4899;border-radius:4px;font-size:12px;color:#831843;';
             const fromTxt = msg.source === 'ai-mention-remote' ? `远端节点 ${(msg.fromPublicKey || '').substring(0, 8)}… 的 ${msg.originChannelName}` : `${msg.originChannelName} (本地)`;
             toast.innerHTML = `📡 <b>${fromTxt}</b> @-mention → 当前 channel: <i>${escapeHtml((msg.text || '').slice(0, 100))}</i>${msg.text && msg.text.length > 100 ? '…' : ''}`;
-            log.appendChild(toast);
-            log.scrollTop = log.scrollHeight;
+            logEl.appendChild(toast);
+            logEl.scrollTop = logEl.scrollHeight;
           }
         } else if (msg.type === 'remote-channel-update') {
           // v3 新增: 远端节点发来新分享 / 删除 / 改名, 立即更新本地 cache
@@ -4393,6 +4404,9 @@ function openRemoteChannelChat(peerPublicKey, channelId, channelName) {
           if (m.source === 'remote-reply') {
             // 2026-08-02: 对方回复 (服务端镜像)
             prefix = `🤖 远端回复\n\n`;
+          } else if (m.source === 'ai-mention-remote') {
+            // 2026-08-02 fix: 远端节点 @ 过来的消息 — 显示为"远端智能体", 不是"本地 LLM"
+            prefix = `📡 远端智能体 ${m.originChannelName ? `(${m.originChannelName})` : ''}\n\n`;
           } else {
             prefix = `🤖 A 的 LLM\n\n`;
           }

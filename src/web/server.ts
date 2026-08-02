@@ -3119,6 +3119,22 @@ ${goalDesc}
           broadcast({ type: 'status', tool: event.tool, content: event.content }, channelId);
           broadcast({ type: 'workflow_step', step: event.tool || '系统', content: event.content }, channelId);
           console.log(`[SSE 广播] workflow_step: step=${event.tool}, content="${event.content?.substring(0, 80)}..."`);
+          // 2026-08-02: 本地 @ 远端时, 工作流步骤也推给 P2P 对话框 (rcm-log)
+          //   — 用户报告"进程看不到": 本地智能体执行过程 (即使没调工具, 只有 status/tool 事件)
+          //   也要在 P2P 对话框显示, 让用户看到"进程"
+          try {
+            const rs = channelRunState.get(channelId);
+            if (rs?.remoteFollowup?.remoteChannelId) {
+              broadcast({
+                type: 'remote-chat-step',
+                channelId: rs.remoteFollowup.remoteChannelId,
+                stepType: 'step_start',
+                tool: event.tool || '工作流',
+                content: event.content,
+                localStep: true,
+              });
+            }
+          } catch { /* 非致命 */ }
         } else if (event.type === 'step_start' || event.type === 'step_done' || event.type === 'step_error') {
           // 2026-06-15: 步骤状态机事件 — 原样转发 (前端 step-timeline 组件订阅)
           broadcast({
@@ -3170,6 +3186,29 @@ ${goalDesc}
       };
 
       console.log(`[消息处理] 开始处理用户消息, channelId: ${channelId}, sessionId: ${currentSessionId}`);
+
+      // 2026-08-02 fix: 预激活远端协作续看 — 用户消息含 @远端 时立即激活 remoteFollowup.
+      //   之前只在 routeMentionsInReply (AI 回复后) 激活 → 首次 @ 时本地智能体的工具调用
+      //   (step 事件) 发生在激活前, P2P 对话框看不到本地工具过程 (用户报告"进程看不到").
+      //   现在收到消息即激活 → promptStream 期间的工具 step 也能 broadcast remote-chat-step.
+      try {
+        const mentionMatch = /@([一-龥A-Za-z0-9_\-]{1,30})/.exec(text);
+        if (mentionMatch && remoteChannelCache.size > 0) {
+          const targetName = mentionMatch[1];
+          let hitRemoteId: string | null = null;
+          for (const list of remoteChannelCache.values()) {
+            const rc = list.find((c: any) => c.name === targetName);
+            if (rc) { hitRemoteId = String(rc.id); break; }
+          }
+          if (hitRemoteId) {
+            const rs = channelRunState.get(channelId);
+            if (rs && !rs.remoteFollowup) {
+              rs.remoteFollowup = { rounds: 0, maxRounds: 3, remoteChannelId: hitRemoteId };
+              console.log(`[v3-followup] ${channelId} 预激活远端协作续看 → ${hitRemoteId} (消息含 @${targetName})`);
+            }
+          }
+        }
+      } catch { /* 预激活失败不阻塞 */ }
 
       // 将真实 DID 作为上下文前缀，让 AI 使用真实的 DID 而不是自己编造的
       let contextHint = '';
