@@ -2865,6 +2865,47 @@ ${goalDesc}
         }
         contextHint += '回复时应自然体现这个角色 (不要硬搬原文, 像这个角色说话即可).\n\n';
       }
+      // 2026-08-02: memory 回读 — 把本 channel 的历史记忆摘要注入 contextHint.
+      //   memory-compressor 每次 /message 后把增量摘要 append 到
+      //   ~/.bolloon/memory/<agentId>/sessions/<safe-channel>__<safe-session>.summary.md,
+      //   但之前只写不读, 对话完全无记忆. 这里取尾部最近 3 段增量摘要回灌给 LLM.
+      try {
+        const { getSessionSummaryPath, getMemoryDir, sanitizeAgentId } = await import('../bootstrap/memory-compressor.js');
+        const { readFile, readdir } = await import('fs/promises');
+        const { join } = await import('path');
+        const agentId = channelForJudgment?.agentId;
+        if (agentId) {
+          // 优先读当前 channel 的 summary (如果有)
+          const currentSummary = getSessionSummaryPath(agentId, channelId, currentSessionId);
+          const summariesToRead: string[] = [];
+          try {
+            const raw = await readFile(currentSummary, 'utf-8');
+            if (raw.trim()) summariesToRead.push(raw);
+          } catch { /* 当前 channel 还没有摘要 */ }
+          // 再兜底读同 agent 其他 channel 的最近摘要 (跨 channel 记忆)
+          if (summariesToRead.length === 0) {
+            try {
+              const sessionsDir = join(getMemoryDir(agentId), 'sessions');
+              const files = (await readdir(sessionsDir)).filter(f => f.endsWith('.summary.md'));
+              // 按文件名排序取最近 2 个 (文件名含时间戳, 近似排序)
+              const recent = files.sort().slice(-2);
+              for (const f of recent) {
+                if (f.includes(sanitizeAgentId(channelId))) continue; // 跳过已读的当前 channel
+                try {
+                  const raw = await readFile(join(sessionsDir, f), 'utf-8');
+                  if (raw.trim()) summariesToRead.push(raw);
+                } catch { /* 单个摘要读失败跳过 */ }
+              }
+            } catch { /* 无 sessions 目录 */ }
+          }
+          if (summariesToRead.length > 0) {
+            const memBlock = summariesToRead.map(s => s.trim().slice(-1500)).join('\n\n---\n\n');
+            contextHint += `[系统上下文] 本 channel 的历史记忆 (来自 memory-compressor 摘要, 帮助你延续之前的对话, 引用而非复述):\n${memBlock.slice(-2500)}\n\n`;
+          }
+        }
+      } catch (memErr) {
+        // 静默失败 — memory 回读不是核心, 失败不阻塞
+      }
       const linkedIds = channelForJudgment?.linkedDocumentIds;
       if (Array.isArray(linkedIds) && linkedIds.length > 0) {
         try {
@@ -3221,6 +3262,34 @@ ${goalDesc}
           console.warn(`[web] saveCurrentSession failed (non-fatal): ${saveErr.message?.slice(0, 100)}`);
         }
       }
+
+      // 2026-08-02: run-end skill 候选扫描 (fire-and-forget, 不阻塞 finally)
+      //   从本轮 lastSteps 提取连续成功的工具调用模式, 写入 ~/.bolloon/skill-candidates/.
+      //   agent 之后可调 list_skill_candidates / promote_skill 决定是否转正.
+      try {
+        const steps = runState.lastSteps || [];
+        const okTools = steps.filter(s => s.status === 'ok' && s.name && s.name !== 'system');
+        if (okTools.length >= 2) {
+          setImmediate(async () => {
+            try {
+              const { writeSkillCandidate } = await import('../agents/skill-writer.js');
+              const toolNames = okTools.map(s => s.name).slice(0, 5).join(', ');
+              const body = `## 背景\n本轮对话连续成功调用了 ${okTools.length} 个工具: ${toolNames}.\n\n## 流程\n${okTools.map(s => `1. 调用 ${s.name}${s.output ? ': ' + String(s.output).slice(0, 120) : ''}`).join('\n')}\n\n## 注意事项\n- 工具名以 list_skills / get_operation_logs 的实际注册名为准\n- 沉淀为正式 skill 前请人工确认流程可复用\n`;
+              const candName = `auto-${okTools[0].name}-${Date.now().toString(36)}`;
+              const file = await writeSkillCandidate({
+                name: candName,
+                description: `自动候选: ${okTools.length} 个工具连续成功 (${toolNames})`,
+                body,
+                source: `channel:${channelId}`,
+                timestamp: new Date().toISOString(),
+              });
+              console.log(`[skill-candidates] 写入候选 ${file} (${okTools.length} tools)`);
+            } catch (candErr: any) {
+              console.warn('[skill-candidates] 写入失败 (non-fatal):', candErr?.message?.slice(0, 150));
+            }
+          });
+        }
+      } catch { /* 非致命 */ }
     }
   });
 

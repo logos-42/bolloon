@@ -1181,6 +1181,117 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       }
     }
   });
+
+  // ============================================================
+  // skill 写工具 (2026-08-02) — 让 agent 从成功经验沉淀技能
+  // create_skill / update_skill / list_skill_candidates / promote_skill
+  // 实现: skill-writer.ts (写 ~/.bolloon/skills/<name>/SKILL.md)
+  // ============================================================
+  ctx.tools.set('create_skill', {
+    name: 'create_skill',
+    description: '创建/覆盖一个 skill (SKILL.md). 当你学会一个可复用的做事方法 (成功流程/命令组合/踩坑教训) 时调用, 沉淀成技能供以后复用. 写 ~/.bolloon/skills/<name>/SKILL.md. 只读技能请用 update_skill 追加.',
+    parameters: {
+      name: 'skill 名 (必填, 小写字母数字连字符, e.g. "p2p-debug")',
+      description: '一句话描述这个 skill 什么时候用 (必填)',
+      body: 'Markdown 正文 (必填): 步骤 / 命令 / 注意事项',
+      scope: '可选: user (默认, ~/.bolloon/skills) 或 project (.bolloon/skills)',
+      triggers: '可选: 触发条件数组 (JSON 字符串数组, e.g. ["p2p", "连接失败"])',
+    },
+    execute: async (args) => {
+      try {
+        const { createSkill } = await import('./skill-writer.js');
+        const name = String(args.name || '').trim();
+        if (!name) return { success: false, error: 'name 必填' };
+        const body = String(args.body || '').trim();
+        if (!body) return { success: false, error: 'body 必填' };
+        let triggers: string[] | undefined;
+        try {
+          const t = JSON.parse(String(args.triggers || '[]'));
+          if (Array.isArray(t)) triggers = t.map(String);
+        } catch { /* triggers 解析失败忽略 */ }
+        const r = await createSkill(name, String(args.description || ''), body, {
+          scope: args.scope === 'project' ? 'project' : 'user',
+          triggers,
+        });
+        return r.ok
+          ? { success: true, output: `✅ skill '${name}' 已写入 ${r.path}` }
+          : { success: false, error: r.error };
+      } catch (e) {
+        return { success: false, error: `create_skill 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('update_skill', {
+    name: 'update_skill',
+    description: '更新已有 skill: 追加新经验 (append_body) 或整体替换 (body), 或改描述/触发条件. skill 不存在时用 create_skill.',
+    parameters: {
+      name: 'skill 名 (必填)',
+      append_body: '追加到正文尾部的增量经验 (可选)',
+      body: '整体替换正文 (可选, 与 append_body 二选一)',
+      description: '新描述 (可选)',
+      triggers: '新触发条件数组 JSON (可选)',
+    },
+    execute: async (args) => {
+      try {
+        const { updateSkill } = await import('./skill-writer.js');
+        const name = String(args.name || '').trim();
+        if (!name) return { success: false, error: 'name 必填' };
+        let triggers: string[] | undefined;
+        try {
+          const t = JSON.parse(String(args.triggers || '[]'));
+          if (Array.isArray(t)) triggers = t.map(String);
+        } catch { /* 忽略 */ }
+        const r = await updateSkill(name, {
+          description: args.description ? String(args.description) : undefined,
+          appendBody: args.append_body ? String(args.append_body) : undefined,
+          body: args.body ? String(args.body) : undefined,
+          triggers,
+        });
+        return r.ok
+          ? { success: true, output: `✅ skill '${name}' 已更新 ${r.path}` }
+          : { success: false, error: r.error };
+      } catch (e) {
+        return { success: false, error: `update_skill 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('list_skill_candidates', {
+    name: 'list_skill_candidates',
+    description: '查看待沉淀的 skill 候选 (后台任务从成功的工具调用模式生成的候选). 返回候选列表, 可用 promote_skill 转正.',
+    parameters: {},
+    execute: async () => {
+      try {
+        const { listSkillCandidates } = await import('./skill-writer.js');
+        const cands = await listSkillCandidates();
+        if (cands.length === 0) return { success: true, output: '暂无待沉淀的 skill 候选.' };
+        const lines = cands.map(c => `- ${c.name}: ${c.description} [来源 ${c.source}]`).join('\n');
+        return { success: true, output: `📋 ${cands.length} 个 skill 候选:\n${lines}` };
+      } catch (e) {
+        return { success: false, error: `list_skill_candidates 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('promote_skill', {
+    name: 'promote_skill',
+    description: '把 skill 候选转正为正式 skill. 转正后候选文件自动清理.',
+    parameters: { name: '候选名 (必填, 见 list_skill_candidates)' },
+    execute: async (args) => {
+      try {
+        const { promoteCandidate } = await import('./skill-writer.js');
+        const name = String(args.name || '').trim();
+        if (!name) return { success: false, error: 'name 必填' };
+        const r = await promoteCandidate(name);
+        return r.ok
+          ? { success: true, output: `✅ 候选 '${name}' 已转正 → ${r.path}` }
+          : { success: false, error: r.error };
+      } catch (e) {
+        return { success: false, error: `promote_skill 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
 }
 
 /**

@@ -67,6 +67,8 @@ const TOOL_WHITELIST = new Set<string>([
   'read_directory', 'add_friend_by_id', 'delegate_to_engine',
   'set_persona', 'get_operation_logs', 'park_goal',
   'list_channels', 'list_local_channels',
+  // 2026-08-02: skill 沉淀工具 (skill-writer.ts)
+  'create_skill', 'update_skill', 'list_skill_candidates', 'promote_skill',
 ]);
 
 export const gateWhitelist: GateResult = { gate: 'whitelist', allowed: true };
