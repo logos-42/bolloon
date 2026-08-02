@@ -96,6 +96,14 @@ function render(timelineEl: HTMLElement): void {
   if (!state) return;
   const { steps, expanded, showAll } = state;
 
+  // 2026-08-02: 无 step 数据 → 整条 timeline 隐藏 (避免空"执行步骤"占位
+  //   出现在每条 AI 消息底部, 用户误以为是底部独立面板)
+  if (steps.length === 0) {
+    timelineEl.style.display = 'none';
+    return;
+  }
+  timelineEl.style.display = '';
+
   const titleEl = timelineEl.querySelector('[data-current-tool]') as HTMLElement | null;
   if (titleEl) titleEl.textContent = computeTitle(steps);
 

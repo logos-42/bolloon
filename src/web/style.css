@@ -1004,7 +1004,7 @@ body {
   padding: 24px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 10px;  /* 2026-08-02: 20px → 10px, 气泡间隔收窄 */
 }
 
 .messages::-webkit-scrollbar {
@@ -1223,7 +1223,7 @@ body {
 .time {
   font-size: 11px;
   color: var(--text-muted);
-  margin-top: 6px;
+  margin-top: 3px;  /* 2026-08-02: 6px → 3px, 收窄消息底部间隔 */
   padding: 0 4px;
 }
 
@@ -1235,7 +1235,7 @@ body {
 .message-actions {
   display: flex;
   gap: 6px;
-  margin-top: 8px;
+  margin-top: 5px;  /* 2026-08-02: 8px → 5px, 收窄按钮与气泡间隔 */
   padding: 0 4px;
 }
 
@@ -1290,8 +1290,8 @@ body {
 
 /* Markdown Styles */
 .bubble h1, .bubble h2, .bubble h3, .bubble h4, .bubble h5, .bubble h6 {
-  margin-top: 16px;
-  margin-bottom: 8px;
+  margin-top: 12px;  /* 2026-08-02: 16px → 12px */
+  margin-bottom: 6px;
   font-weight: 600;
 }
 
@@ -1300,11 +1300,11 @@ body {
 .bubble h3 { font-size: 1.15em; }
 
 .bubble p {
-  margin: 8px 0;
+  margin: 6px 0;  /* 2026-08-02: 8px → 6px, markdown 段落紧凑化 */
 }
 
 .bubble ul, .bubble ol {
-  margin: 8px 0;
+  margin: 6px 0;
   padding-left: 24px;
 }
 
@@ -1343,7 +1343,7 @@ body {
 
 .bubble table {
   border-collapse: collapse;
-  margin: 10px 0;
+  margin: 8px 0;  /* 2026-08-02: 10px → 8px */
   width: 100%;
 }
 
@@ -4719,7 +4719,7 @@ body:has(> .api-config-page) {
  * ========================================================================== */
 
 .step-timeline {
-  margin: 8px 0 4px 0;
+  margin: 6px 0 3px 0;  /* 2026-08-02: 8px 4px → 6px 3px */
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-hover);

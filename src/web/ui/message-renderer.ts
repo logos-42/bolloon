@@ -388,13 +388,53 @@ function buildEnvContainer(envDetails: string): HTMLElement {
 // ---------------------------------------------------------------------------
 // 私有: 气泡 (marked.parse 渲染)
 // ---------------------------------------------------------------------------
+/**
+ * 2026-08-02: marked v15 表格解析严格 — 表格块后若无空行, 后续段落文字会被
+ *   吞进表格最后一行单元格 (LLM 常输出 "| 1 | x |\n结论文字" 不带空行).
+ *   渲染前给表格块 (含表头分隔行) 后补空行, 把表格与后续文字切开.
+ *   只处理行首是 | 或 |- 的连续块, 不破坏 code block 内的表格.
+ */
+function normalizeMarkdownTables(text: string): string {
+  if (!text || !text.includes('|')) return text;
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let inTable = false;
+  let inCode = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    // code fence 状态跟踪 (``` 开头/结束)
+    if (/^\s*```/.test(line)) {
+      inCode = !inCode;
+      out.push(line);
+      inTable = false;
+      continue;
+    }
+    if (inCode) { out.push(line); continue; }
+    // 表格行: 以 | 开头, 或分隔行 (| --- |)
+    if (trimmed.startsWith('|') || /^\|?\s*:?-{2,}\s*(\|\s*:?-{2,}\s*)*\|?\s*$/.test(trimmed)) {
+      out.push(line);
+      inTable = true;
+    } else {
+      // 表格结束: 下一行非表格行 → 在表格块后插入空行 (若上一行不是空行)
+      if (inTable && out.length > 0 && out[out.length - 1].trim() !== '') {
+        out.push('');
+      }
+      inTable = false;
+      out.push(line);
+    }
+  }
+  return out.join('\n');
+}
+
 function buildBubble(text: string, type: MessageType): HTMLElement {
   const bubble = document.createElement('div');
   bubble.className = `bubble bubble-${type}`;
   // 安全降级: CDN 加载失败时 marked 是 escape 版本, 这里不需要二次 escape
   // window.marked 在 ts 类型上不一定有, 用 any 兜底
   const marked = (window as any).marked;
-  bubble.innerHTML = marked ? marked.parse(text) : escapeHtml(text);
+  const normalized = marked ? normalizeMarkdownTables(text) : text;
+  bubble.innerHTML = marked ? marked.parse(normalized) : escapeHtml(text);
   return bubble;
 }
 
