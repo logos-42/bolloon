@@ -1575,7 +1575,11 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
             if (parsed.op === 'agent.heartbeat') {
               agentHeartbeat?.handleIncoming('agent.heartbeat', parsed.payload, evt.fromPublicKey);
               // 2026-07-29: 收到心跳也记录交互 (Dunbar 自动归类)
-              recordInteraction(evt.fromPublicKey).catch(() => {});
+              // 2026-08-02 fix: 之前不传 text → inferOpponentMove('') = defect,
+              //   heartbeat 被误判为背叛 → trustScore 持续下跌 → peer 跌入 blocked,
+              //   导致对端消息被拒 (❌ 您已被本地系统加入通信黑名单)。
+              //   改为传存活信号文本, 让机器协议消息判为 cooperate (在线维持连接 = 合作)。
+              recordInteraction(evt.fromPublicKey, 'heartbeat 存活信号(自动)').catch(() => {});
               return;
             }
             // v3 新增: B 端收到 A 的 thinking (开始 + 流式 token)

@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|| 2026-08-02 | fix | 邓巴 heartbeat 误判 blocked: server.ts:1578 收到 agent.heartbeat 时 recordInteraction 不传 text → inferOpponentMove('')=defect → 每次心跳 -5 → trustScore 跌至 -36 → peer 自动降级 blocked → 对端消息被拒 (❌ 您已被本地系统加入通信黑名单). 修复: 传 'heartbeat 存活信号(自动)' 让机器协议消息判为 cooperate; 手动解除已 blocked peer (friends + manualOverride). 跨机 P2P 通信恢复验证通过 (智能体小红回复正常). tsc 0 错, vitest 978/978 pass | [server.ts:1575](../../src/web/server.ts) / [dunbar-tier.ts](../../src/social/dunbar-tier.ts) |
 || 2026-07-29 | feat | CLI 工具调用改为增量列表 (🔧 + 工具名, 无 ✓⟳✗, 无 header, 有 ╰── footer, diff 着色); loading spinner 换颜文字序列 (｀・ω・´)→(´･_･`)→(｡•́︿•̀｡)→ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ→(◕‿◕)→ヽ(´▽｀)/; TUI step-timeline 步数上限 8→20, 详情区高度 320px→520px; tsc 0 错, vitest 978/978 pass | [loading-tui.ts](../../src/cli/loading-tui.ts) / [index.ts](../../src/index.ts) / [step-timeline.ts](../../src/web/ui/step-timeline.ts) / [style.css](../../src/web/style.css) |
 | 2026-07-25 | feat | 添加好友三入口: agent 工具 `add_friend_by_id` + Web UI modal + CLI `add_friend`; 发布 v0.3.15 | [pi-sdk-tools.ts:301](../../src/agents/pi-sdk-tools.ts) / [client.ts:4071](../../src/web/client.ts) / [index.ts:570](../../src/index.ts) |
 | 2026-07-22 | feat | 判断力负向回收 + 上下文废气涡轮增压 (设计 A/B/C) — Web 判断力页面简化为正向/负向两类 (替换 6 个 status tab); injectNegativeGuard 以"避免清单"注入 prompt (maxChars=300, 显式); exhaust-scrubber 涡轮采样废气调参 (不进 prompt, 隐式); 背压→judgment 注入 maxChars(1800/1500/800)+检索 top-k(8/5/3); 落 log+memory; vitest 959/959 pass (+17) | [设计文档](../plans/2026-07-22-negative-exhaust-design.md) |
@@ -549,3 +550,48 @@
 |- **wiki writeback**: current-status.md 已支持表 "Polymarket 查询" → "Polymarket 查询 + 支付" (并删去未支持 STUB 行); log.md 本行 + 详细段.
 || 2026-07-29 | fix | 修复 buildMessages tool_calls 配对 400 错误; 移除 whitelist 检查 (工具由 OpenAI tools 参数控制); 移除 tool-manifest/ 废弃代码 (728 行); idempotent/total-call 限制改为注入 hint 而非硬断; final gen 后加质量门控; 发布 v0.3.23 | [pi-sdk.ts](../../src/agents/pi-sdk.ts) / [tool-gate.ts](../../src/security/tool-gate.ts) / [pi-ai.ts](../../src/llm/pi-ai.ts) / [server.ts](../../src/web/server.ts) |
 | 2026-07-29 | v0.3.24 | feat | 替换 readline CLI 为 Ink (React for CLI) 渲染引擎 — 内容置顶、状态栏、全宽分界线、思考颜文字动画、console.log 静音 | @leo |
+## [2026-08-02] fix | 邓巴 heartbeat 误判 blocked — 跨机 P2P 通信被拒
+
+### 触发
+
+- 双机 Bolloon P2P 连接正常 (DHT topic 自动发现 + manifest 交换 + 消息透传均 OK)
+- 但对方发消息过来时, 本地回复 "❌ 您已被本地系统加入通信黑名单"
+- 排查发现 `~/.bolloon/peers/<pk>/dunbar-tier.json` 中对方 tier 已变为 `blocked`, trustScore=-36
+
+### 根因
+
+- `src/web/server.ts:1578` (2026-07-29 邓巴集成时新增):
+  ```typescript
+  // 收到心跳也记录交互 (Dunbar 自动归类)
+  recordInteraction(evt.fromPublicKey).catch(() => {});
+  ```
+- `recordInteraction` 不传 text → `inferOpponentMove('')` 走 `if (!text || text.trim().length === 0) return 'defect'` → 空消息 = 背叛
+- 每次 heartbeat (30s 一次) 都被判为 defect: 我 cooperate/对方 defect → tfttPayoff = -5
+- trustScore 一路下跌 → 跌破 DOWNGRADE_THRESHOLD=-20 → ACQUAINTANCE 降级 BLOCKED (computeTierFromScore)
+- 此后 server.ts:545 `if (tierState.tier === 'blocked')` 拦截所有来自该 peer 的 agent.chat.send → 回 "❌ 您已被本地系统加入通信黑名单"
+- 10 次 heartbeat ≈ 5 分钟就把正常对端送进黑名单
+
+### 修复
+
+1. **代码**: server.ts:1575 改为传存活信号文本, 让机器协议消息判为 cooperate (在线维持连接 = 合作):
+   ```typescript
+   recordInteraction(evt.fromPublicKey, 'heartbeat 存活信号(自动)').catch(() => {});
+   ```
+   `semanticAnalyze('heartbeat 存活信号(自动)')` → 无正负关键词, 长度>15 → score 0 → `inferOpponentMove` 返回 cooperate → 双方合作 +3
+
+2. **数据**: 手动修复已 blocked 的 peer (解除黑名单 + 防止再降级):
+   ```json
+   { "tier": "friends", "trustScore": 25, "manualOverride": true }
+   ```
+
+### 验证
+
+- 重启后 heartbeat 全部判为 cooperate, trustScore 从 25 回升 (26→29)
+- 跨机发消息 → 智能体小红正常回复 "跨机通信恢复正常! 🎉"
+- `npx tsc --noEmit` 0 错
+- `npx vitest run --bail=1` 978/978 pass
+
+### 教训
+
+- 机器协议消息 (heartbeat/beacon) 不应进入"对话语义"博弈 — 空文本被 inferOpponentMove 判为背叛是设计盲区
+- 需要 peer 状态可视化 + 手动解除 blocked 的 API (当前只能手改文件)
