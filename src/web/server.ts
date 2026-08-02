@@ -199,6 +199,7 @@ import {
   loadTheme as _loadTheme,
   saveTheme as _saveTheme,
   getLastChannelsWriteAt,
+  updateChannels,
 } from './server-storage.js';
 
 // 包装成闭包内可用的形式, 保持 createWebServer 内代码不用改
@@ -3170,7 +3171,12 @@ ${goalDesc}
       // 现在改名逻辑挪到 /api/agent-rename 端点, 用户主动触发才跑
       if (channel) {
         channel.updatedAt = new Date().toISOString();
-        await saveChannels(channels);
+        // 2026-08-02 fix: 原子写入, 防并发覆盖丢 channel
+        await updateChannels((chs) => {
+          const c = chs.find(x => x.id === channelId);
+          if (c) c.updatedAt = channel.updatedAt;
+          return chs;
+        });
       }
 
       broadcast({ type: 'done' }, channelId);
@@ -3520,7 +3526,19 @@ ${goalDesc}
     } catch {
       // IPFS 不可用, 跳过 — 下次再试
     }
-    await saveChannels(channels);
+    // 2026-08-02 fix: 原子写入 — DID 修复是异步队列, 与创建/改名的裸 saveChannels
+    //   并发时用旧数组覆盖 (lost update), 这是"重启后 channel 消失"的根因之一.
+    await updateChannels((chs) => {
+      const c = chs.find(x => x.id === channelId);
+      if (c) {
+        c.did = channel.did;
+        c.publicKey = channel.publicKey;
+        c.cid = channel.cid;
+        c.didDocRef = channel.didDocRef;
+        c.updatedAt = new Date().toISOString();
+      }
+      return chs;
+    });
   }
 
   // 频道列表响应缓存: 短时间内重复请求走缓存, 避免每次重读 + 重序列化 channels.json
@@ -3769,8 +3787,13 @@ app.get('/channels', async (_req, res) => {
       };
 
       console.log(`[创建频道] 先保存频道 ID: ${id}`);
-      channels.push(channel);
-      await saveChannels(channels);
+      // 2026-08-02 fix: 用 updateChannels 原子写入 — 之前 channels.push + saveChannels(channels)
+      //   是裸 read-modify-write, 与 /message updatedAt 保存等并发时会互相覆盖 (lost update),
+      //   新 channel 可能被旧数组冲掉 → 重启后只剩一个 channel 的 bug.
+      await updateChannels((chs) => {
+        chs.push(channel);
+        return chs;
+      });
       await saveSession({ channelId: id, sessionId: 'default', messages: [], lastUpdated: new Date().toISOString() });
 
       // 2026-07-15 修 Bug 6: 同步把 agent 定义写进 ~/.bolloon/agents/agents.json
@@ -3841,7 +3864,17 @@ app.get('/channels', async (_req, res) => {
       channel.currentSessionId = sessionId;
       channel.updatedAt = new Date().toISOString();
 
-      await saveChannels(channels);
+      // 2026-08-02 fix: 原子写入
+      await updateChannels((chs) => {
+        const c = chs.find(x => x.id === channelId);
+        if (c) {
+          if (!c.sessions) c.sessions = [];
+          c.sessions.push(session);
+          c.currentSessionId = sessionId;
+          c.updatedAt = new Date().toISOString();
+        }
+        return chs;
+      });
       await saveSession({ channelId, sessionId, messages: [], lastUpdated: new Date().toISOString() });
 
       res.json({ session, currentSessionId: sessionId });
@@ -3885,7 +3918,12 @@ app.get('/channels', async (_req, res) => {
 
       channel.currentSessionId = sessionId;
       channel.updatedAt = new Date().toISOString();
-      await saveChannels(channels);
+      // 2026-08-02 fix: 原子写入
+      await updateChannels((chs) => {
+        const c = chs.find(x => x.id === channelId);
+        if (c) { c.currentSessionId = sessionId; c.updatedAt = new Date().toISOString(); }
+        return chs;
+      });
 
       res.json({ ok: true, currentSessionId: sessionId });
     } catch (err: any) {
@@ -3924,7 +3962,19 @@ app.get('/channels', async (_req, res) => {
       }
 
       channel.updatedAt = new Date().toISOString();
-      await saveChannels(channels);
+      // 2026-08-02 fix: 原子写入
+      await updateChannels((chs) => {
+        const c = chs.find(x => x.id === channelId);
+        if (c && c.sessions) {
+          const idx = c.sessions.findIndex(s => s.id === sessionId);
+          if (idx >= 0) c.sessions.splice(idx, 1);
+          if (c.currentSessionId === sessionId && c.sessions[0]) {
+            c.currentSessionId = c.sessions[0].id;
+          }
+          c.updatedAt = new Date().toISOString();
+        }
+        return chs;
+      });
 
       // 删除 session 文件
       try {
@@ -3947,8 +3997,12 @@ app.get('/channels', async (_req, res) => {
         return res.status(404).json({ error: 'Channel not found' });
       }
       const channel = channels[index];
-      channels.splice(index, 1);
-      await saveChannels(channels);
+      // 2026-08-02 fix: 原子写入
+      await updateChannels((chs) => {
+        const idx = chs.findIndex(c => c.id === channelId);
+        if (idx >= 0) chs.splice(idx, 1);
+        return chs;
+      });
 
       // 清理该 channel 名下所有的 session 文件 + 默认 session 文件
       const candidates = new Set<string>([`${channelId}.json`]);
@@ -4069,7 +4123,16 @@ app.get('/channels', async (_req, res) => {
         console.log(`[Channel ${channelId}] 自动生成 share_id: ${channel.share_id}`);
       }
       channel.updatedAt = new Date().toISOString();
-      await saveChannels(channels);
+      // 2026-08-02 fix: 原子写入
+      await updateChannels((chs) => {
+        const c = chs.find(x => x.id === channelId);
+        if (c) {
+          if (shared_with_peers !== undefined) c.shared_with_peers = shared_with_peers;
+          if (!c.share_id) c.share_id = channel.share_id;
+          c.updatedAt = new Date().toISOString();
+        }
+        return chs;
+      });
       // v3 修复: 分享变更后立即广播给所有 peer, 不用等对方手动刷新
       if (shared_with_peers !== undefined) {
         v3BroadcastOwn().catch(err => console.error('[v3] broadcast after share update failed:', err));
@@ -4132,7 +4195,17 @@ app.get('/channels', async (_req, res) => {
         channel.autoInvokeTools = autoInvokeTools;
       }
       channel.updatedAt = new Date().toISOString();
-      await saveChannels(channels);
+      // 2026-08-02 fix: 原子写入
+      await updateChannels((chs) => {
+        const c = chs.find(x => x.id === channelId);
+        if (c) {
+          c.walletAddress = walletAddress;
+          c.walletRegisteredAt = new Date().toISOString();
+          if (typeof autoInvokeTools === 'boolean') c.autoInvokeTools = autoInvokeTools;
+          c.updatedAt = new Date().toISOString();
+        }
+        return chs;
+      });
       console.log(`[Wallet] channel ${channelId} 绑定钱包 ${channel.walletAddress} 到 DID ${did}`);
       res.json(channel);
     } catch (err: any) {
@@ -4160,7 +4233,17 @@ app.get('/channels', async (_req, res) => {
         channel.autoPayEnabled = autoPayEnabled;
       }
       channel.updatedAt = new Date().toISOString();
-      await saveChannels(channels);
+      // 2026-08-02 fix: 原子写入
+      await updateChannels((chs) => {
+        const c = chs.find(x => x.id === channelId);
+        if (c) {
+          c.encryptedPrivateKey = encryptedPrivateKey;
+          c.encryptedPrivateKeyIv = encryptedPrivateKeyIv;
+          if (typeof autoPayEnabled === 'boolean') c.autoPayEnabled = autoPayEnabled;
+          c.updatedAt = new Date().toISOString();
+        }
+        return chs;
+      });
       console.log(`[Wallet] channel ${channelId} 已存储加密私钥 (autoPay=${channel.autoPayEnabled})`);
       res.json(channel);
     } catch (err: any) {
@@ -4179,7 +4262,17 @@ app.get('/channels', async (_req, res) => {
       channel.encryptedPrivateKeyIv = undefined;
       channel.autoPayEnabled = false;
       channel.updatedAt = new Date().toISOString();
-      await saveChannels(channels);
+      // 2026-08-02 fix: 原子写入
+      await updateChannels((chs) => {
+        const c = chs.find(x => x.id === channelId);
+        if (c) {
+          c.encryptedPrivateKey = undefined;
+          c.encryptedPrivateKeyIv = undefined;
+          c.autoPayEnabled = false;
+          c.updatedAt = new Date().toISOString();
+        }
+        return chs;
+      });
       console.log(`[Wallet] channel ${channelId} 已清除加密私钥`);
       res.json(channel);
     } catch (err: any) {
@@ -4200,7 +4293,12 @@ app.get('/channels', async (_req, res) => {
       if (!channel) return res.status(404).json({ error: 'Channel not found' });
       channel.autoPayEnabled = autoPayEnabled;
       channel.updatedAt = new Date().toISOString();
-      await saveChannels(channels);
+      // 2026-08-02 fix: 原子写入
+      await updateChannels((chs) => {
+        const c = chs.find(x => x.id === channelId);
+        if (c) { c.autoPayEnabled = autoPayEnabled; c.updatedAt = new Date().toISOString(); }
+        return chs;
+      });
       console.log(`[Wallet] channel ${channelId} autoPay → ${autoPayEnabled}`);
       res.json(channel);
     } catch (err: any) {
