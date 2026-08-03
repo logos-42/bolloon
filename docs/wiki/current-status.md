@@ -2,14 +2,14 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-08-02
+last_confirmed: 2026-08-03
 schema_version: 2
 audience: self
 stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror]
+tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing]
 compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ---
 
@@ -67,6 +67,7 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 || **执行闭环: plan/todo/review + skill 沉淀 + memory 回读** (2026-08-02) | `src/agents/plan-store.ts`(新) + `src/agents/skill-writer.ts`(新) + `src/web/server.ts` | ① plan-store: create_plan/update_plan/review_plan/list_plans 落盘 ~/.bolloon/plans/, 对话时注入 active plans (plan 回读); ② skill-writer: create_skill/update_skill/list_skill_candidates/promote_skill 写 ~/.bolloon/skills/ (双 frontmatter 兼容), run-end 自动扫描成功工具调用生成候选; ③ memory 回读: 每次 /message 注入历史摘要到 contextHint (之前只写不读). 端到端: `/plan 写一个 P2P 模块; 读需求, 写代码, 测试` → LLM 调 create_plan → JSON 落盘 ✓. tsc 0 错, vitest 993/993 | [plan-store.ts](../../src/agents/plan-store.ts) |
 || **channel 丢失 bug 修复 (并发覆盖)** (2026-08-02) | `src/web/server.ts` + `src/web/server-storage.ts` | 根因: 12 处裸 loadChannels→modify→saveChannels 是 read-modify-write 竞态, 并发时旧数组覆盖新 channel (DID 修复队列 vs 创建 vs /message updatedAt) → "重启后 channel 只剩一个". 全部改 updateChannels(fn) (server-storage.ts 2026-07-24 就写好互斥锁但从未使用). 并发创建 5 个 channel 测试 5/5 保留, 重启持久化验证通过. tsc 0 错, vitest 993/993 | [server.ts](../../src/web/server.ts) |
 || **本地@远端交流完善 + 运行中自愈 + 服务端镜像** (2026-08-02) | `src/web/server.ts` + `src/web/client.ts` | ① @ 转发 regex 修复 (尾随解释行导致静默失效 — 本地无法 @ 远端的真凶); ② 预激活 remoteFollowup: 消息含 @远端 立即激活 → 本地思考运行的完整进程实时显示在 P2P 对话框 (remote-chat-step, 实测 18 个事件: 任务复杂度/循环/工具调用); ③ workflow_step 也转发 rcm-log; ④ 对端 cross-mention-received 显示完整消息 + ai-mention-remote 前缀 "📡 远端智能体"; ⑤ 运行中自愈 healMissingChannels (启动 + GET /channels 节流) — 解决"刷新/build 后 channel 消失"; ⑥ 远端对话服务端镜像 ~/.bolloon/remote-chat-logs/ 替代 localStorage (磁盘无限/异步/离线可读), chat-history 镜像优先立即返回. tsc 0 错, vitest 993/993 | [server.ts](../../src/web/server.ts) |
+||| **Context OS 默认判断力上下文系统 P0-P5** (2026-08-03) | `src/bootstrap/context-os.ts`(新) + `src/bootstrap/persona-loader.ts` + `src/bootstrap/lifecycle-hooks.ts` + `src/bootstrap/memory-compressor.ts` + `src/agents/decision-store.ts` + `src/agents/pi-sdk-tools.ts` + `src/security/tool-gate.ts` + `src/web/server.ts` | Ziye-Context-OS 四层架构融合: ① P1 persona 6 文件 frontmatter 判断力声明 (judgment_style/stakes_default/revisable) + INJECT 工作纪律段 — 入口层 ↔ judgeness 5 维对应; ② P2 contextHint 装配重组: memory 回读=动态状态层·chat-worksite, plan 回读=动态状态层·focus; ③ P3 decision-store 9 要素决策协议 (~/.bolloon/decisions/, create_decision/decide_decision/rollback_decision/list_decisions) — 决策确认自动 reflect 到 judgeness (approve + locked/private=阶段0), 回滚自动入库 reject 教训; ④ P4 memory 摘要价值点段 (decision/lesson/knowledge/insight) 自动分类路由 → human-values + judgeness (幂等去重); ⑤ P5 资产层 12+3 文件夹体系 (~/.bolloon/context-os/, 01-Me~12-Analysis+output/research/tmp, 每层 README 职责边界+价值判断标准) + 3 工具 list_context_layers/write_context_asset/read_context_assets + contextHint 资产层目录注入 (任务按层路由不全仓扫描) + 价值点唯一落点 (knowledge→07, insight→08, lesson→12). 设计文档: docs/plans/2026-08-03-context-os-judgeness-design.md. tsc 0 错, vitest 1015/1015 通过 | [design](../../docs/plans/2026-08-03-context-os-judgeness-design.md) / [context-os.ts](../../src/bootstrap/context-os.ts) / [decision-store.ts](../../src/agents/decision-store.ts) |
 
 ## 未支持 (❌ 或 ⚠️ 部分)
 

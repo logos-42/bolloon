@@ -10,6 +10,9 @@ import {
   loadPersonaDocs,
   formatPersonaForSystemPrompt,
   sanitizeAgentId,
+  parseSimpleFrontmatter,
+  loadPersonaJudgmentDeclaration,
+  formatJudgmentDeclaration,
   type PersonaDocs,
 } from '../bootstrap/persona-loader.js';
 
@@ -136,9 +139,12 @@ describe('formatPersonaForSystemPrompt', () => {
     expect(out).toContain('## Identity');
   });
 
-  it('全部字段空 → 返回空字符串', () => {
+  it('全部字段空 → 仍返回 INJECT 工作纪律段 (2026-08-03 语义变更: 纪律是默认约束)', () => {
     const empty: PersonaDocs = { agentId: 'x', soul: '', identity: '', project: '', user: '', agent: '', wiki: '' };
-    expect(formatPersonaForSystemPrompt(empty)).toBe('');
+    const out = formatPersonaForSystemPrompt(empty);
+    expect(out).toContain('## 工作纪律 (INJECT)');
+    expect(out).toContain('不读到的内容不假装知道');
+    expect(out).not.toContain('## Soul');
   });
 
   it('maxChars 限制: 输出 ≤ maxChars 字符', () => {
@@ -151,5 +157,59 @@ describe('formatPersonaForSystemPrompt', () => {
     const longDocs: PersonaDocs = { ...baseDocs, wiki: 'x'.repeat(10000) };
     const out = formatPersonaForSystemPrompt(longDocs);
     expect(out.length).toBeLessThanOrEqual(4000);
+  });
+});
+
+// ============================================================
+// 2026-08-03 (Context OS P1): 判断力声明 (judgment frontmatter)
+// ============================================================
+
+describe('parseSimpleFrontmatter', () => {
+  it('解析 key: value 单行字段', () => {
+    const fm = parseSimpleFrontmatter('---\njudgment_style: 证据驱动\nstakes_default: high\nrevisable: false\n---\n# body');
+    expect(fm['judgment_style']).toBe('证据驱动');
+    expect(fm['stakes_default']).toBe('high');
+    expect(fm['revisable']).toBe('false');
+  });
+
+  it('无 frontmatter → 空对象', () => {
+    expect(parseSimpleFrontmatter('# 纯 body')).toEqual({});
+    expect(parseSimpleFrontmatter('')).toEqual({});
+  });
+});
+
+describe('loadPersonaJudgmentDeclaration', () => {
+  const JUDGE_AGENT = 'judge_agent';
+
+  beforeAll(async () => {
+    const dir = path.join(TEST_DIR, '.bolloon', 'persona', JUDGE_AGENT);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, 'soul.md'),
+      '---\njudgment_style: 先列出假设再下结论\nstakes_default: high\nrevisable: true\n---\n# Soul\n本地优先'
+    );
+  });
+
+  it('聚合 persona frontmatter 判断力声明', async () => {
+    const decl = await loadPersonaJudgmentDeclaration(JUDGE_AGENT, TEST_DIR);
+    expect(decl.judgmentStyle).toBe('先列出假设再下结论');
+    expect(decl.stakesDefault).toBe('high');
+    expect(decl.revisable).toBe(true);
+    expect(decl.raw['revisable']).toBe('true');
+  });
+
+  it('无 persona 文件 → 全部空值, 不抛错', async () => {
+    const decl = await loadPersonaJudgmentDeclaration('no_such_agent', TEST_DIR);
+    expect(decl.judgmentStyle).toBe('');
+    expect(decl.stakesDefault).toBe('');
+  });
+
+  it('formatJudgmentDeclaration 输出可注入段', async () => {
+    const decl = await loadPersonaJudgmentDeclaration(JUDGE_AGENT, TEST_DIR);
+    const text = formatJudgmentDeclaration(decl);
+    expect(text).toContain('判断风格声明');
+    expect(text).toContain('先列出假设再下结论');
+    expect(text).toContain('默认风险等级: high');
+    expect(formatJudgmentDeclaration({ judgmentStyle: '', stakesDefault: '', revisable: true, raw: {} })).toBe('');
   });
 });

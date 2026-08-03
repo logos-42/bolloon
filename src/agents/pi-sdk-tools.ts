@@ -1474,6 +1474,221 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       }
     }
   });
+
+  // ============================================================
+  // 决策协议工具 (2026-08-03, Context OS §7) — 可回滚的推理链
+  // create_decision / decide_decision / rollback_decision / list_decisions
+  // 实现: decision-store.ts (~/.bolloon/decisions/<id>.json)
+  // 9 要素: 问题/选项(含不做)/成本/收益/风险/信息缺口/推荐/时机/回滚
+  // 决策确认 (decide_decision) 自动 reflect 到 judgeness (HumanJudgment + JudgenessDescription)
+  // ============================================================
+  ctx.tools.set('create_decision', {
+    name: 'create_decision',
+    description: '重大决策前先写推理链 (Context OS 9 要素): problem 问题是什么, options 选项数组 (含"不做"), info_gaps 信息缺口, recommendation 推荐方案, timing 为什么是现在, rollback 失败时回滚条件. 之后用 decide_decision 确认.',
+    parameters: {
+      problem: '问题到底是什么 (必填)',
+      options: '选项数组 JSON (必填, e.g. [{"label":"方案A","costs":"成本","benefits":"收益","risks":"风险"},{"label":"什么都不做","includeDoNothing":true}])',
+      info_gaps: '当前信息缺口 (可选)',
+      recommendation: '推荐方案 (可选, 确认时必填)',
+      timing: '为什么是现在 (可选)',
+      rollback: '失败时的回滚条件 (可选)',
+      stakes: '风险等级: low / medium / high / critical (可选)',
+      domain: '领域 (可选)',
+    },
+    execute: async (args) => {
+      try {
+        const { createDecision, decisionToContext } = await import('./decision-store.js');
+        const problem = String(args.problem || '').trim();
+        if (!problem) return { success: false, error: 'problem 必填' };
+        let options: any[] = [];
+        try {
+          const s = JSON.parse(String(args.options || '[]'));
+          if (Array.isArray(s)) options = s;
+        } catch { /* options 解析失败 */ }
+        const rawStakes = String(args.stakes || 'medium');
+        const stakes: 'low' | 'medium' | 'high' | 'critical' =
+          rawStakes === 'low' || rawStakes === 'high' || rawStakes === 'critical' ? rawStakes : 'medium';
+        const r = await createDecision({
+          problem,
+          options,
+          infoGaps: args.info_gaps ? String(args.info_gaps) : undefined,
+          recommendation: args.recommendation ? String(args.recommendation) : undefined,
+          timing: args.timing ? String(args.timing) : undefined,
+          rollback: args.rollback ? String(args.rollback) : undefined,
+          stakes,
+          domain: args.domain ? String(args.domain) : undefined,
+          by: 'agent',
+          originChannel: (ctx as any).channelId || '',
+        });
+        if (!r.ok || !r.decision) return { success: false, error: r.error };
+        return { success: true, output: `✅ 决策推理链已创建 ${r.decision.decisionId}\n\n${decisionToContext(r.decision)}` };
+      } catch (e) {
+        return { success: false, error: `create_decision 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('decide_decision', {
+    name: 'decide_decision',
+    description: '确认一个决策 (必须已有 recommendation). 确认后自动把该决策入库 judgeness (HumanJudgment + 5 维描述, 阶段0 临时价值点). 决策确认后状态 → decided.',
+    parameters: {
+      decision_id: '决策 ID (必填, create_decision 返回)',
+      recommendation: '最终推荐方案 (必填, 若创建时未填)',
+    },
+    execute: async (args) => {
+      try {
+        const { updateDecisionStatus } = await import('./decision-store.js');
+        const decisionId = String(args.decision_id || '').trim();
+        if (!decisionId) return { success: false, error: 'decision_id 必填' };
+        const r = await updateDecisionStatus(
+          decisionId,
+          { decide: true, recommendation: args.recommendation ? String(args.recommendation) : undefined },
+          { byAgentId: (ctx as any).agentId || '' }
+        );
+        if (!r.ok || !r.decision) return { success: false, error: r.error };
+        const refl = r.decision.reflection ? ` (已入库 judgeness: hv=${r.decision.reflection.hvId})` : '';
+        return { success: true, output: `✅ 决策已确认: ${r.decision.problem} → ${r.decision.recommendation}${refl}` };
+      } catch (e) {
+        return { success: false, error: `decide_decision 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('rollback_decision', {
+    name: 'rollback_decision',
+    description: '决策失败触发回滚条件时调用: 标记 rolled-back + 记录教训 (reject 语义入库 judgeness, 防止重复踩坑).',
+    parameters: {
+      decision_id: '决策 ID (必填)',
+      reason: '失败/回滚原因 (必填, 将作为教训入库)',
+    },
+    execute: async (args) => {
+      try {
+        const { updateDecisionStatus } = await import('./decision-store.js');
+        const decisionId = String(args.decision_id || '').trim();
+        if (!decisionId) return { success: false, error: 'decision_id 必填' };
+        const reason = String(args.reason || '').trim();
+        if (!reason) return { success: false, error: 'reason 必填 (回滚原因)' };
+        const r = await updateDecisionStatus(decisionId, { rollback: true, reason }, { byAgentId: (ctx as any).agentId || '' });
+        if (!r.ok || !r.decision) return { success: false, error: r.error };
+        return { success: true, output: `↩️ 决策已回滚: ${r.decision.problem}\n教训已入库 judgeness (reject 语义): ${reason.slice(0, 120)}` };
+      } catch (e) {
+        return { success: false, error: `rollback_decision 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('list_decisions', {
+    name: 'list_decisions',
+    description: '列出全部决策 (按创建时间倒序). 可选 status 过滤: draft / decided / implemented / abandoned / rolled-back. 用于恢复决策上下文.',
+    parameters: {
+      status: '可选过滤: draft / decided / implemented / abandoned / rolled-back',
+    },
+    execute: async (args) => {
+      try {
+        const { listDecisions, decisionToContext } = await import('./decision-store.js');
+        const status = ['draft', 'decided', 'implemented', 'abandoned', 'rolled-back'].includes(args.status) ? args.status : undefined;
+        const decisions = await listDecisions(status as any);
+        if (decisions.length === 0) return { success: true, output: '暂无决策记录.' };
+        const text = decisions.slice(0, 8).map(d => decisionToContext(d)).join('\n\n');
+        return { success: true, output: `🧭 ${decisions.length} 条决策 (9 要素推理链可追溯):\n\n${text}` };
+      } catch (e) {
+        return { success: false, error: `list_decisions 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  // ============================================================
+  // Context OS 资产层工具 (2026-08-03, P5) — 12+3 层文件夹体系
+  // list_context_layers / write_context_asset / read_context_assets
+  // 实现: src/bootstrap/context-os.ts (~/.bolloon/context-os/)
+  // 价值判断: 写入前回答"未来哪个具体场景会用到它?" — 回答不出进 tmp/
+  // ============================================================
+  ctx.tools.set('list_context_layers', {
+    name: 'list_context_layers',
+    description: '列出 Context OS 资产层 (12+3 层: 01-Me 我是谁 / 02-Network 我认识谁 / 03-Current 我在做什么 / 04-Projects 项目 / 05-Prompts 提示词 / 06-Protocols 协议 / 07-Knowledge 知识 / 08-Insights 洞察 / 09-Tools 工具 / 10-Skills 技能 / 11-Write 写作 / 12-Analysis 决策复盘 / output / research / tmp) + 每层资产数. 任务前先看目录, 再按任务路由读取对应层.',
+    parameters: {},
+    execute: async () => {
+      try {
+        const { readContextAssets, formatLayerListing } = await import('../bootstrap/context-os.js');
+        const listings = await readContextAssets();
+        const total = listings.reduce((s, l) => s + l.fileCount, 0);
+        if (total === 0) return { success: true, output: '📂 Context OS 资产层已就绪 (12+3 层), 当前暂无资产. 有价值的内容用 write_context_asset 写入对应层.' };
+        return { success: true, output: `📂 Context OS 资产层共 ${total} 篇资产:\n\n${formatLayerListing(listings)}` };
+      } catch (e) {
+        return { success: false, error: `list_context_layers 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('write_context_asset', {
+    name: 'write_context_asset',
+    description: '把已验证的价值写入 Context OS 资产层 (唯一落点, 不制造重复文件). 写入前先自检: 未来哪个具体场景会用到它? 回答不出 → 写 tmp/ 或放弃. layer 可选: 01-Me 原则边界 / 02-Network 人脉 / 03-Current 当前状态 / 04-Projects 项目 / 05-Prompts 已验证提示词 / 06-Protocols 规则 / 07-Knowledge 跨项目知识 / 08-Insights 已验证洞察/教训 / 09-Tools 工具经验 / 10-Skills 可验证能力 / 11-Write 成熟表达 / 12-Analysis 决策复盘 / output 对外交付 / research 中间成果 / tmp 一次性草稿.',
+    parameters: {
+      layer: '层 key (必填, 见 description 列表)',
+      title: '资产标题 (必填, 一句话)',
+      content: '资产正文 markdown (必填)',
+      tags: '可选 tags 数组 JSON',
+      domain: '可选领域',
+    },
+    execute: async (args) => {
+      try {
+        const { writeContextAsset } = await import('../bootstrap/context-os.js');
+        const layer = String(args.layer || '').trim();
+        const title = String(args.title || '').trim();
+        const content = String(args.content || '').trim();
+        if (!layer) return { success: false, error: 'layer 必填 (如 07-Knowledge)' };
+        if (!title) return { success: false, error: 'title 必填' };
+        if (!content) return { success: false, error: 'content 必填' };
+        let tags: string[] = [];
+        try {
+          const t = JSON.parse(String(args.tags || '[]'));
+          if (Array.isArray(t)) tags = t.map(String);
+        } catch { /* tags 解析失败 */ }
+        const r = await writeContextAsset({ layer, title, content, tags, domain: args.domain ? String(args.domain) : undefined });
+        if (!r.ok) return { success: false, error: r.error };
+        if (r.skipped) return { success: true, output: `⏭️ ${r.error}` };
+        return { success: true, output: `📥 已写入资产层 ${r.asset!.layer}: ${r.asset!.title} (stage0 临时价值点, 待验证后固化)\n路径: ${r.asset!.path}` };
+      } catch (e) {
+        return { success: false, error: `write_context_asset 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('read_context_assets', {
+    name: 'read_context_assets',
+    description: '读取 Context OS 资产层内容. layer 可选 (空 = 全层汇总); keyword 可选 (标题/内容过滤). 做项目前先读 04-Projects 对应项目, 重大决策前读 08-Insights + 12-Analysis, 学技术读 07-Knowledge + 09-Tools.',
+    parameters: {
+      layer: '可选层 key (如 07-Knowledge), 空 = 全部',
+      keyword: '可选关键词过滤',
+    },
+    execute: async (args) => {
+      try {
+        const { readContextAssets, formatLayerListing } = await import('../bootstrap/context-os.js');
+        const layer = args.layer ? String(args.layer) : undefined;
+        const kw = args.keyword ? String(args.keyword) : undefined;
+        const listings = await readContextAssets(layer, kw);
+        if (listings.every((l) => l.fileCount === 0)) {
+          return { success: true, output: layer ? `📂 资产层 ${layer} 暂无资产` : '📂 资产层暂无资产' };
+        }
+        // 单层且有 keyword → 输出完整正文
+        if (layer && kw) {
+          const found = listings[0]?.files || [];
+          const { readAssetBody } = await import('../bootstrap/context-os.js');
+          const bodies: string[] = [];
+          for (const f of found.slice(0, 5)) {
+            try {
+              const r = await readAssetBody(layer, f.file);
+              if (r.ok && r.body) bodies.push(`--- ${f.title} ---\n${r.body.slice(0, 2000)}\n--- 结束 ---`);
+            } catch { /* 跳过 */ }
+          }
+          return { success: true, output: bodies.length > 0 ? bodies.join('\n\n') : '未找到匹配资产' };
+        }
+        return { success: true, output: formatLayerListing(listings) };
+      } catch (e) {
+        return { success: false, error: `read_context_assets 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
 }
 
 /**

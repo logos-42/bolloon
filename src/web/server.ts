@@ -1692,6 +1692,15 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     console.warn('[createWebServer] bootstrap 失败 (非致命):', err);
   }
 
+  // 2026-08-03 (Context OS P5): 初始化资产层 12+3 目录 (幂等, 每层 README 声明职责边界)
+  try {
+    const { ensureContextOsDirs } = await import('../bootstrap/context-os.js');
+    await ensureContextOsDirs();
+    console.log('[createWebServer] Context OS 资产层就绪 (~/.bolloon/context-os/, 12+3 层)');
+  } catch (err) {
+    console.warn('[createWebServer] Context OS 资产层初始化失败 (非致命):', err);
+  }
+
   // 重置旧的 agent session，确保使用新的 LLM 配置
   const { resetAgentSession } = await import('../agents/pi-sdk.js');
   resetAgentSession();
@@ -3363,7 +3372,7 @@ ${goalDesc}
           }
           if (summariesToRead.length > 0) {
             const memBlock = summariesToRead.map(s => s.trim().slice(-1500)).join('\n\n---\n\n');
-            contextHint += `[系统上下文] 本 channel 的历史记忆 (来自 memory-compressor 摘要, 帮助你延续之前的对话, 引用而非复述):\n${memBlock.slice(-2500)}\n\n`;
+            contextHint += `[系统上下文] 动态状态层 · chat-worksite (上次做到哪 — 本 channel 历史记忆, 来自 memory-compressor 摘要, 引用而非复述):\n${memBlock.slice(-2500)}\n\n`;
           }
         }
       } catch (memErr) {
@@ -3377,9 +3386,21 @@ ${goalDesc}
         const plans = await listActivePlans();
         if (plans.length > 0) {
           const plansBlock = plans.slice(0, 3).map(p => planToContext(p)).join('\n\n');
-          contextHint += `[系统上下文] 进行中的计划 (来自 plan-store, 执行中每完成一步调 update_plan 勾选):\n${plansBlock}\n\n`;
+          contextHint += `[系统上下文] 动态状态层 · focus (此刻优先级与时间边界 — 进行中的计划, 来自 plan-store, 执行中每完成一步调 update_plan 勾选):\n${plansBlock}\n\n`;
         }
       } catch (planErr) {
+        // 静默失败
+      }
+      // 2026-08-03 (Context OS P5): 资产层目录注入 — LLM 知道有 12+3 层资产,
+      //   需要细节时用 read_context_assets 按层路由读取, 不全仓扫描 (Context OS §4).
+      try {
+        const { readContextAssets, formatLayerListing } = await import('../bootstrap/context-os.js');
+        const listings = await readContextAssets();
+        const total = listings.reduce((s, l) => s + l.fileCount, 0);
+        if (total > 0) {
+          contextHint += `[系统上下文] 资产层 (Context OS 12+3 层, ${total} 篇资产 — 任务需要细节时用 read_context_assets 按层读取, 不要假装知道没读过的内容):\n${formatLayerListing(listings)}`;
+        }
+      } catch (ctxErr) {
         // 静默失败
       }
       const linkedIds = channelForJudgment?.linkedDocumentIds;

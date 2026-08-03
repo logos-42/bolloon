@@ -10,7 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { getCachedBolloonContext, clearBolloonContextCache } from './context-collector.js';
 import { formatContextForSystemPrompt } from './project-context.js';
-import { loadPersonaDocs, formatPersonaForSystemPrompt } from './persona-loader.js';
+import { loadPersonaDocs, formatPersonaForSystemPrompt, loadPersonaJudgmentDeclaration, formatJudgmentDeclaration } from './persona-loader.js';
 
 // ============================================================
 // SessionStart
@@ -63,7 +63,12 @@ export async function onSessionStart(opts: SessionStartOptions = {}): Promise<Se
     if (opts.agentId) {
       try {
         const docs = await loadPersonaDocs(opts.agentId);
-        const personaText = formatPersonaForSystemPrompt(docs);
+        let personaText = formatPersonaForSystemPrompt(docs);
+        // 2026-08-03 (Context OS P1): 追加 persona frontmatter 里的判断力声明
+        //   (judgment_style / stakes_default / revisable) — 与 judgeness 5 维对应
+        const decl = await loadPersonaJudgmentDeclaration(opts.agentId);
+        const declText = formatJudgmentDeclaration(decl);
+        if (declText) personaText = personaText ? `${personaText}\n\n${declText}` : declText;
         if (personaText) {
           systemAddition = personaText + '\n\n' + systemAddition;
         }
