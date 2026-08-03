@@ -75,6 +75,10 @@ const TOOL_WHITELIST = new Set<string>([
   'create_decision', 'decide_decision', 'rollback_decision', 'list_decisions',
   // 2026-08-03: Context OS 资产层工具 (context-os.ts, 12+3 层文件夹体系)
   'list_context_layers', 'write_context_asset', 'read_context_assets',
+  // 2026-08-03: MCP 工具 (pi-ecosystem-mcp, 真实 stdio JSON-RPC)
+  'mcp_list_tools', 'mcp_tool',
+  // 2026-08-03: DID 发布到 IPFS+IPNS (自动安装 Kubo)
+  'publish_did',
   // 2026-08-02: 远端 channel 工具 (本地智能体 @ 远程交流)
   'list_remote_channels', 'send_to_remote_channel',
 ]);

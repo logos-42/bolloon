@@ -1689,6 +1689,118 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       }
     }
   });
+
+  // ============================================================
+  // MCP 工具 (2026-08-03) — 外部 MCP server 接入 agent 工具系统
+  // 配置: ~/.mcp.json (mcpServers), 启动时 initializeMcpAdapter 自动握手发现工具
+  // mcp_list_tools: 列出已发现的 MCP 工具
+  // mcp_tool: 调用任意 MCP 工具 (真实 stdio JSON-RPC)
+  // ============================================================
+  ctx.tools.set('mcp_list_tools', {
+    name: 'mcp_list_tools',
+    description: '列出通过 MCP 协议连接的可用外部工具 (来自 ~/.mcp.json 配置的 MCP servers). 调用 MCP 工具前先列一次, 拿准确工具名和参数.',
+    parameters: {},
+    execute: async () => {
+      try {
+        const mcp = await import('../pi-ecosystem-mcp/index.js');
+        await mcp.initializeMcpAdapter().catch(() => {});
+        const tools = mcp.listTools();
+        if (tools.length === 0) {
+          return { success: true, output: '未发现 MCP 工具. 配置 ~/.mcp.json (mcpServers: {name: {command, args}}), 重启后自动连接.' };
+        }
+        const lines = tools.map((t) => `  - ${t.name} (${t.serverName}): ${t.description?.slice(0, 80) || '无描述'}`);
+        return { success: true, output: `🔌 ${tools.length} 个 MCP 工具可用:\n${lines.join('\n')}\n\n调用用 mcp_tool (tool=工具名, arguments=参数 JSON)` };
+      } catch (e) {
+        return { success: false, error: `mcp_list_tools 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('mcp_tool', {
+    name: 'mcp_tool',
+    description: '调用外部 MCP 工具 (真实 stdio JSON-RPC 通信). tool = 工具名 (先用 mcp_list_tools 查看), arguments = 参数 JSON 对象.',
+    parameters: {
+      tool: 'MCP 工具名 (必填)',
+      arguments: '参数 JSON 对象 (必填, e.g. {"text":"hello"})',
+    },
+    execute: async (args) => {
+      try {
+        const mcp = await import('../pi-ecosystem-mcp/index.js');
+        const tool = String(args.tool || '').trim();
+        if (!tool) return { success: false, error: 'tool 必填' };
+        let argumentsObj: Record<string, unknown> = {};
+        try {
+          const a = JSON.parse(String(args.arguments || '{}'));
+          if (a && typeof a === 'object') argumentsObj = a;
+        } catch {
+          return { success: false, error: 'arguments 必须是 JSON 对象' };
+        }
+        const r = await mcp.executeTool(tool, argumentsObj);
+        if (!r.success) return { success: false, error: r.error || 'MCP 调用失败' };
+        const text = Array.isArray(r.content)
+          ? r.content.map((c: any) => c?.text ?? '').filter(Boolean).join('\n')
+          : JSON.stringify(r.content);
+        return { success: true, output: `🔧 MCP ${tool}:\n${text.slice(0, 4000)}` };
+      } catch (e) {
+        return { success: false, error: `mcp_tool 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  // ============================================================
+  // publish_did (2026-08-03) — 把当前 agent 的 DID 发布到 IPFS + IPNS
+  // 全自动: 自动安装/启动本地 Kubo → 上传 DID 文档 → 发布 IPNS name
+  // 实现: @diap/sdk (AgentAuthManager + publishAfterUpload)
+  // ============================================================
+  ctx.tools.set('publish_did', {
+    name: 'publish_did',
+    description: '把当前 agent 的 DID 身份发布到本地 IPFS + IPNS (自动安装启动 Kubo). 返回 DID + CID (IPFS 内容地址) + IPNS name (稳定可解析标识). 跨节点发现和身份解析依赖它.',
+    parameters: {
+      name: '可选: 发布显示名 (默认 agentId)',
+    },
+    execute: async (args) => {
+      try {
+        const agentId = String((ctx as any).agentId || '').trim();
+        const { loadOrCreateAgentIdentity } = await import('./agent-identity.js');
+        const identity = loadOrCreateAgentIdentity(agentId || 'default-agent');
+        const { KeyManager } = await import('@diap/sdk');
+        const kp = KeyManager.fromPrivateKey(Buffer.from(identity.privateKey, 'hex'));
+        const displayName = args.name ? String(args.name) : agentId || 'bolloon-agent';
+
+        // 1. 确保本地 Kubo (自动安装 + 启动)
+        const sdk = await import('@diap/sdk');
+        const checkKuboSetup = (sdk as any).checkKuboSetup;
+        if (typeof checkKuboSetup === 'function') {
+          const setup = await checkKuboSetup(true, true);
+          if (!setup?.ready || !setup?.daemonRunning) {
+            return { success: false, error: '本地 Kubo 不可用 (自动安装失败), 无法发布到 IPFS' };
+          }
+        }
+
+        // 2. 注册 agent → 上传 DID 文档 → CID
+        const { AgentAuthManager } = await import('@diap/sdk');
+        const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+        const result = await auth.registerAgent({ name: displayName, services: [] }, kp, '');
+        const cid = (result as any).cid || (result as any).didDocCid;
+        if (!cid) return { success: false, error: 'DID 上传成功但未拿到 CID' };
+
+        // 3. 发布 IPNS name (稳定标识)
+        let ipnsName = '';
+        try {
+          const ipfs = await (sdk as any).IpfsClient.newWithRemoteNode('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+          const pub = await ipfs.publishAfterUpload?.(cid, kp);
+          ipnsName = pub?.name || pub?.ipnsName || '';
+        } catch { /* IPNS 失败不致命, CID 仍可用 */ }
+
+        return {
+          success: true,
+          output: `✅ DID 已发布到 IPFS:\n  DID: ${identity.did}\n  CID: ${cid}\n  IPNS: ${ipnsName || '(发布失败, CID 仍可用)'}\n  读回验证: curl -X POST "http://127.0.0.1:5001/api/v0/cat?arg=${cid}"`,
+        };
+      } catch (e) {
+        return { success: false, error: `publish_did 失败: ${String(e).slice(0, 200)}` };
+      }
+    }
+  });
 }
 
 /**

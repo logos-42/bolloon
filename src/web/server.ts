@@ -1701,6 +1701,36 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     console.warn('[createWebServer] Context OS 资产层初始化失败 (非致命):', err);
   }
 
+  // 2026-08-03: 后台自动安装/启动本地 Kubo (IPFS+IPNS 发布用, 全自动零手动).
+  //   fire-and-forget, 不阻塞 server 启动; 首次下载 ~100MB 需 1-2 分钟.
+  //   装好后 publish_did / DID 发布自动走 IPFS+IPNS; 没装好则降级本地模式.
+  (async () => {
+    try {
+      const sdk = await import('@diap/sdk');
+      const checkKuboSetup = (sdk as any).checkKuboSetup;
+      if (typeof checkKuboSetup !== 'function') return;
+      const setup = await checkKuboSetup(true, true);
+      if (setup?.ready && setup?.daemonRunning) {
+        console.log('[ipfs] 本地 Kubo 就绪 (自动安装/启动) → DID 发布支持 IPFS+IPNS');
+      } else {
+        console.log('[ipfs] Kubo 不可用, DID 发布降级本地模式 (可用 publish_did 工具重试)');
+      }
+    } catch (e) {
+      console.warn('[ipfs] Kubo 自动安装失败 (非致命):', (e as Error)?.message?.slice(0, 120));
+    }
+  })();
+
+  // 2026-08-03: 初始化 MCP 适配器 (读 ~/.mcp.json, 自动握手发现工具).
+  //   后台异步: 不阻塞启动, 失败静默 (agent 调 mcp_list_tools 时再触发).
+  (async () => {
+    try {
+      const { initializeMcpAdapter } = await import('../pi-ecosystem-mcp/index.js');
+      await initializeMcpAdapter();
+    } catch (e) {
+      console.warn('[mcp] 初始化失败 (非致命):', (e as Error)?.message?.slice(0, 120));
+    }
+  })();
+
   // 重置旧的 agent session，确保使用新的 LLM 配置
   const { resetAgentSession } = await import('../agents/pi-sdk.js');
   resetAgentSession();

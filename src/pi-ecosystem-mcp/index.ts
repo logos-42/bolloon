@@ -4,16 +4,17 @@
  * Bridges MCP (Model Context Protocol) servers with Bolloon's tool system.
  * Based on the pi-mcp-adapter philosophy: on-demand tool loading with minimal token overhead.
  *
- * Key differences from Claude Code MCP:
- * - White-box design: every schema, parameter, and return value is visible
- * - Minimal primitives: only read, write, edit, bash under the hood
- * - No schema validation black boxes - interfaces are simple by design
+ * 2026-08-03 (验证修复): sendMcpRequest 从 simulated 占位 → 真实 stdio JSON-RPC 通信.
+ *   - 协议: initialize → notifications/initialized → tools/list → tools/call
+ *   - 请求/响应按 id 配对, 30s 超时, server 崩溃时 pending 全部 reject
+ *   - discoverMcpServers 修复重复读 mcpServers 键 (同一个键被读两遍)
  */
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
+import * as readline from 'readline';
 
 // MCP server configuration
 export interface McpServerConfig {
@@ -55,15 +56,26 @@ export interface McpToolCall {
   arguments: Record<string, unknown>;
 }
 
+interface McpServerState {
+  config: McpServerConfig;
+  process: ChildProcess | null;
+  running: boolean;
+  /** 按 id 挂起的请求 (响应配对) */
+  pending: Map<string | number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>;
+}
+
 // MCP adapter state
 let tools: Map<string, McpTool> = new Map();
-let servers: Map<string, { config: McpServerConfig; process: ChildProcess | null; running: boolean }> = new Map();
+let servers: Map<string, McpServerState> = new Map();
 let initialized = false;
 let toolCallLog: Array<{ timestamp: string; tool: string; args: unknown; result: unknown }> = [];
 
 // Event emitter for MCP events
 class McpEventEmitter extends EventEmitter {}
 const mcpEvents = new McpEventEmitter();
+
+const MCP_REQUEST_TIMEOUT_MS = 30_000;
+let mcpRequestSeq = 1;
 
 /**
  * Discover MCP servers from standard config locations
@@ -83,26 +95,17 @@ export async function discoverMcpServers(): Promise<McpServerConfig[]> {
       const content = await fs.readFile(loc, 'utf-8');
       const mcpJson = JSON.parse(content);
 
-      if (mcpJson.mcpServers) {
-        for (const [name, config] of Object.entries(mcpJson.mcpServers)) {
+      // 2026-08-03 fix: mcpServers 只读一次 (之前 if + if['mcpServers'] 重复读同一键)
+      const serversConfig = (mcpJson.mcpServers ?? mcpJson['mcpServers']) as Record<string, unknown> | undefined;
+      if (serversConfig && typeof serversConfig === 'object') {
+        for (const [name, config] of Object.entries(serversConfig)) {
           const serverConfig = config as Record<string, unknown>;
+          if (!serverConfig || typeof serverConfig.command !== 'string') continue;
           configs.push({
             name,
-            command: serverConfig.command as string,
-            args: serverConfig.args as string[],
-            env: serverConfig.env as Record<string, string>,
-          });
-        }
-      }
-
-      if (mcpJson['mcpServers']) {
-        for (const [name, config] of Object.entries(mcpJson['mcpServers'])) {
-          const serverConfig = config as Record<string, unknown>;
-          configs.push({
-            name,
-            command: serverConfig.command as string,
-            args: serverConfig.args as string[],
-            env: serverConfig.env as Record<string, string>,
+            command: serverConfig.command,
+            args: Array.isArray(serverConfig.args) ? (serverConfig.args as string[]) : undefined,
+            env: serverConfig.env as Record<string, string> | undefined,
           });
         }
       }
@@ -111,7 +114,14 @@ export async function discoverMcpServers(): Promise<McpServerConfig[]> {
     }
   }
 
-  return configs;
+  // 去重 (同 name 同 command)
+  const seen = new Set<string>();
+  return configs.filter((c) => {
+    const key = `${c.name}::${c.command}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /**
@@ -125,6 +135,10 @@ export async function initializeMcpAdapter(): Promise<void> {
 
   for (const server of discoveredServers) {
     registerServer(server);
+    // 2026-08-03: 启动后立即握手 + 发现工具 (真实 stdio 协议)
+    await connectAndDiscover(server.name).catch((e) => {
+      console.warn(`[McpAdapter] connect ${server.name} 失败:`, e?.message?.slice(0, 120));
+    });
   }
 
   initialized = true;
@@ -132,10 +146,52 @@ export async function initializeMcpAdapter(): Promise<void> {
 }
 
 /**
+ * 连接 MCP server + 握手 + 发现并注册工具 (2026-08-03)
+ * 协议序: startServer → initialize → notifications/initialized → tools/list
+ */
+export async function connectAndDiscover(serverName: string): Promise<McpTool[]> {
+  const server = servers.get(serverName);
+  if (!server) return [];
+
+  if (!server.running || !server.process) {
+    const started = await startServer(serverName);
+    if (!started) return [];
+    // 等 server 就绪
+    await new Promise((r) => setTimeout(r, 400));
+  }
+
+  await sendMcpRequest(serverName, 'initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'bolloon', version: '0.3.27' },
+  });
+  await sendMcpRequest(serverName, 'notifications/initialized');
+
+  const result = await sendMcpRequest(serverName, 'tools/list');
+  const toolsList = Array.isArray((result as any)?.tools) ? (result as any).tools : [];
+
+  const discovered: McpTool[] = [];
+  for (const t of toolsList) {
+    const tool: McpTool = {
+      name: String(t.name || ''),
+      description: String(t.description || ''),
+      inputSchema: (t.inputSchema as Record<string, unknown>) || {},
+      serverName,
+    };
+    if (!tool.name) continue;
+    discovered.push(tool);
+    registerTool(tool);
+  }
+  console.log(`[McpAdapter] ${serverName}: 发现 ${discovered.length} 个工具 (${discovered.map((t) => t.name).join(', ')})`);
+  return discovered;
+}
+
+/**
  * Register an MCP server configuration
  */
 export function registerServer(config: McpServerConfig): void {
-  servers.set(config.name, { config, process: null, running: false });
+  if (servers.has(config.name)) return;
+  servers.set(config.name, { config, process: null, running: false, pending: new Map() });
   console.log(`[McpAdapter] Registered server: ${config.name}`);
 }
 
@@ -224,10 +280,12 @@ export async function executeTool(
     }
 
     if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>)) {
-      return {
-        success: true,
-        content: (result as { content: unknown[] }).content,
-      };
+      // 2026-08-03: 提取 content 数组里的文本 (agent 直接可用)
+      const content = (result as { content: Array<{ type?: string; text?: string }> }).content;
+      const text = Array.isArray(content)
+        ? content.map((c) => c?.text ?? '').filter(Boolean).join('\n')
+        : JSON.stringify(result);
+      return { success: true, content: [{ type: 'text', text }] };
     }
 
     return { success: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
@@ -239,7 +297,9 @@ export async function executeTool(
 }
 
 /**
- * Send MCP request to a server (simplified - uses stdin/stdout JSON-RPC)
+ * Send MCP request to a server via real stdio JSON-RPC (2026-08-03).
+ * - 写 JSON-RPC 行到 server stdin, 从 stdout 按 id 配对响应
+ * - 30s 超时; server 进程退出时挂起请求全部 reject
  */
 async function sendMcpRequest(
   serverName: string,
@@ -251,19 +311,69 @@ async function sendMcpRequest(
     throw new Error(`Server not registered: ${serverName}`);
   }
 
-  // For now, return a placeholder - real implementation would use MCP protocol
-  // The actual protocol typically uses stdio or HTTP+streamableHTTP
-  console.log(`[McpAdapter] Would send ${method} to ${serverName}:`, params);
+  // 确保 server 进程在跑
+  if (!server.running || !server.process || !server.process.stdin?.writable) {
+    const started = await startServer(serverName);
+    if (!started) throw new Error(`无法启动 MCP server: ${serverName}`);
+    // 等 500ms 让 server 就绪
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  const child = server.process!;
+  if (!child.stdin?.writable) throw new Error(`MCP server stdin 不可写: ${serverName}`);
 
-  // Simulate successful response for development
-  return {
-    content: [
-      {
-        type: 'text',
-        text: `[Simulated] Tool ${method} executed with params: ${JSON.stringify(params)}`,
-      },
-    ],
-  };
+  const id = mcpRequestSeq++;
+  const isNotification = method.startsWith('notifications/');
+  // 通知 (notifications/*) 是 fire-and-forget: 无 id, server 不响应
+  const line = JSON.stringify(
+    isNotification
+      ? { jsonrpc: '2.0', method, params: params ?? {} }
+      : { jsonrpc: '2.0', id, method, params: params ?? {} }
+  );
+
+  if (isNotification) {
+    child.stdin!.write(line + '\n');
+    return undefined;
+  }
+
+  return new Promise<unknown>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      server.pending.delete(id);
+      reject(new Error(`MCP request timeout (${MCP_REQUEST_TIMEOUT_MS}ms): ${method}`));
+    }, MCP_REQUEST_TIMEOUT_MS);
+
+    server.pending.set(id, { resolve, reject, timer });
+    child.stdin!.write(line + '\n');
+  });
+}
+
+/** 挂上 stdout 行读取器 (按 id 分发响应) */
+function attachStdoutReader(serverName: string, child: ChildProcess): void {
+  const server = servers.get(serverName);
+  if (!server) return;
+
+  const rl = readline.createInterface({ input: child.stdout! });
+  rl.on('line', (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let msg: McpResponse;
+    try {
+      msg = JSON.parse(trimmed);
+    } catch {
+      console.log(`[McpAdapter][${serverName}] non-JSON stdout:`, trimmed.slice(0, 200));
+      return;
+    }
+    // 服务端主动推送 (无 id) → 忽略
+    if (msg.id === undefined || msg.id === null) return;
+    const entry = server.pending.get(msg.id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    server.pending.delete(msg.id);
+    if (msg.error) {
+      entry.reject(new Error(`MCP error ${msg.error.code}: ${msg.error.message}`));
+    } else {
+      entry.resolve(msg.result);
+    }
+  });
 }
 
 /**
@@ -296,24 +406,37 @@ export async function startServer(serverName: string): Promise<boolean> {
 
     child.on('error', (err) => {
       console.error(`[McpAdapter][${serverName}] error:`, err);
+      rejectAllPending(server, `MCP server process error: ${err.message}`);
       server.running = false;
       server.process = null;
     });
 
     child.on('exit', (code) => {
       console.log(`[McpAdapter][${serverName}] exited with code:`, code);
+      rejectAllPending(server, `MCP server exited with code ${code}`);
       server.running = false;
       server.process = null;
     });
 
     server.process = child;
     server.running = true;
+    // 2026-08-03: 挂 stdout 行读取器, 按 id 分发 JSON-RPC 响应
+    attachStdoutReader(serverName, child);
     console.log(`[McpAdapter] Started server: ${serverName}`);
     return true;
   } catch (e) {
     console.error(`[McpAdapter] Failed to start ${serverName}:`, e);
     return false;
   }
+}
+
+/** server 退出时把挂起请求全部 reject, 避免调用方永远等待 */
+function rejectAllPending(server: McpServerState, reason: string): void {
+  for (const [, entry] of server.pending) {
+    clearTimeout(entry.timer);
+    entry.reject(new Error(reason));
+  }
+  server.pending.clear();
 }
 
 /**
