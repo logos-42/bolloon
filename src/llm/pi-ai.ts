@@ -352,15 +352,32 @@ export class PiAIModel {
     const _t0 = Date.now();
     for (let attempt = 0; attempt < 3; attempt++) {
       const _tFetch = Date.now();
-      const response = await fetch(`${this.getBaseUrl()}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(requestBody),
-        signal: this.combinedSignal(signal),
-      });
+      let response: Response;
+      try {
+        response = await fetch(`${this.getBaseUrl()}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(requestBody),
+          signal: this.combinedSignal(signal),
+        });
+      } catch (err: any) {
+        // 2026-08-04: 网络层瞬时错误 (undici "terminated" / ECONNRESET / socket hang up / fetch failed 等)
+        //   退避重试最多 2 次 — 之前直接抛给 chat() 变成 "[AI 服务调用失败] terminated" 打断 agent 流程.
+        //   abort (用户主动 / 120s 超时) 不重试, 原样抛出.
+        if (err?.name === 'AbortError' || signal?.aborted) throw err;
+        const netMsg = String(err?.message || err?.cause?.message || '');
+        const isNetworkErr = /terminated|ECONNRESET|socket hang up|fetch failed|network|ETIMEDOUT|ECONNREFUSED|UND_ERR/i.test(netMsg);
+        if (attempt < 2 && isNetworkErr) {
+          const backoff = 1500 * (attempt + 1);
+          console.warn(`[pi-ai] 网络错误 attempt ${attempt + 1}/3: ${netMsg.slice(0, 120)}, 退避 ${backoff}ms 重试`);
+          await new Promise<void>(resolve => setTimeout(resolve, backoff));
+          continue;
+        }
+        throw err;
+      }
       const _tResp = Date.now();
       if (!response.ok) {
         const errBody = await response.text().catch(() => '(no body)');

@@ -3,7 +3,7 @@
  *
  * 覆盖:
  * 1. 4 个 builtin-guards: secret leak / process escape / network leak / recursive tool
- * 2. 8-gate: whitelist / schema / channel / rate / inject / chain / blacklist (+ output post)
+ * 2. 7-gate: whitelist / schema / channel / rate / inject / blacklist (+ output post) — chain 已于 2026-08-04 移除
  * 3. react-harness: preToolCall / postToolCall / onSessionStart / onSessionEnd
  * 4. 集成: fail-open 行为 (任何 gate 自身抛错 = 放行)
  */
@@ -26,7 +26,6 @@ import {
   checkChannel,
   checkRate,
   checkInject,
-  checkChain,
   checkBlacklist,
   checkOutput,
 } from '../security/tool-gate.js';
@@ -217,18 +216,6 @@ describe('checkInject', () => {
   });
 });
 
-describe('checkChain', () => {
-  it('toolCallCountInTurn < 5 时通过', () => {
-    const r = checkChain({ tool: 'shell', args: {}, toolCallCountInTurn: 3 });
-    expect(r.allowed).toBe(true);
-  });
-
-  it('toolCallCountInTurn >= 5 时拒绝', () => {
-    const r = checkChain({ tool: 'shell', args: {}, toolCallCountInTurn: 5 });
-    expect(r.allowed).toBe(false);
-  });
-});
-
 describe('checkBlacklist (危险命令)', () => {
   const BAD_CASES = [
     { tool: 'shell', cmd: 'rm -rf /', reason: '递归删除根目录' },
@@ -291,12 +278,6 @@ describe('runToolGates (聚合: 7-gate, output gate 单独)', () => {
   it('不在白名单的 tool 应不再被 whitelist 拦 (白名单已废弃, 工具由 tools 参数控制)', () => {
     const r = runToolGates({ tool: '__malicious__', args: {} });
     expect(r.allowed).toBe(true);  // whitelist 不再检查, 其他 gate 通过
-  });
-
-  it('链式调用超 5 次应被 chain 拦', () => {
-    const r = runToolGates({ tool: 'shell', args: {}, toolCallCountInTurn: 6 });
-    expect(r.allowed).toBe(false);
-    expect(r.rejectedBy).toBe('chain');
   });
 });
 

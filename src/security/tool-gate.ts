@@ -13,7 +13,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import { runBuiltinGuards, auditToolOutput, type GuardHit, type GuardSeverity } from './builtin-guards.js';
 
-export type GateId = 'whitelist' | 'schema' | 'channel' | 'rate' | 'inject' | 'output' | 'chain' | 'blacklist';
+export type GateId = 'whitelist' | 'schema' | 'channel' | 'rate' | 'inject' | 'output' | 'blacklist';
 
 export interface GateResult {
   gate: GateId;
@@ -242,26 +242,7 @@ export function checkOutput(output: string): GateResult {
 }
 
 // ============================================================
-// Gate 7: 链式调用限制 (单轮最多 5 个 tool, 防 agent 循环)
-// ============================================================
-
-const MAX_TOOL_CALLS_PER_TURN = 5;
-
-export function checkChain(ctx: GateContext): GateResult {
-  const count = ctx.toolCallCountInTurn ?? 0;
-  if (count >= MAX_TOOL_CALLS_PER_TURN) {
-    return {
-      gate: 'chain',
-      allowed: false,
-      reason: `单轮已调 ${count} 个 tool (上限 ${MAX_TOOL_CALLS_PER_TURN})`,
-      evidence: `当前轮 tool 调用次数: ${count}`,
-    };
-  }
-  return { gate: 'chain', allowed: true };
-}
-
-// ============================================================
-// Gate 8: 黑名单 (复用 PreToolUse hook 已有 6 条规则, 重新实现于此)
+// Gate 7: 黑名单 (复用 PreToolUse hook 已有 6 条规则, 重新实现于此)
 // ============================================================
 
 const DANGEROUS_CMD_PATTERNS: Array<{ re: RegExp; reason: string }> = [
@@ -303,7 +284,7 @@ const TOOL_GATES: Array<(ctx: GateContext) => GateResult> = [
   checkChannel,
   checkRate,
   checkInject,
-  checkChain,  // 链式限制前置 (chain)
+  // 2026-08-04: 移除 checkChain — 单轮 5 工具上限会打断 agent 长流程 (MCP 多步测试被反复拦), 用户要求去掉
   checkBlacklist,
   // checkOutput 不在 tool.execute 前
 ];
