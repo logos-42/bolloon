@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { Agent } from 'undici';
+import { request, Agent } from 'undici';
 
 export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'local';
 
@@ -353,14 +353,17 @@ export class PiAIModel {
 
     let lastFinishReason = '';
     const _t0 = Date.now();
-    // 2026-08-04: 网络错误重试用全新 undici Agent (新连接池) — undici 无视 Connection: close 头,
-    //   复用被服务端关闭的 keep-alive 连接会持续抛 "terminated"; 新 Agent 保证每次重试都是全新 TCP 连接.
+    // 2026-08-04 (二修): 弃用全局 fetch — node 内置 fetch 的 keep-alive 连接池会积累"僵尸连接"
+    //   (被对端关闭后仍留在池里), 后续请求复用即 "other side closed"; 且 node 内置 fetch
+    //   会静默忽略 npm undici Agent 的 dispatcher (实测 localPort 不变), 导致重试仍在复用坏连接.
+    //   改用 npm undici 的 request(): 独立连接池 + 重试传 dispatcher 真正生效 (新 TCP 连接).
     let retryAgent: Agent | null = null;
     for (let attempt = 0; attempt < 4; attempt++) {
       const _tFetch = Date.now();
-      let response: Response;
+      let statusCode = 0;
+      let body: any;
       try {
-        const fetchInit: any = {
+        const reqInit: any = {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -369,16 +372,18 @@ export class PiAIModel {
           body: JSON.stringify(requestBody),
           signal: this.combinedSignal(signal),
         };
-        if (retryAgent) fetchInit.dispatcher = retryAgent;
-        response = await fetch(`${this.getBaseUrl()}/chat/completions`, fetchInit);
+        if (retryAgent) reqInit.dispatcher = retryAgent;
+        const res = await request(`${this.getBaseUrl()}/chat/completions`, reqInit);
+        statusCode = res.statusCode;
+        body = res.body;
       } catch (err: any) {
-        // 网络层瞬时错误 (undici "terminated" / ECONNRESET / socket hang up / fetch failed 等)
+        // 网络层瞬时错误 (undici "terminated" / "other side closed" / ECONNRESET / socket hang up / fetch failed 等)
         //   退避重试最多 3 次 (1s/2s/4s), 每次用全新 Agent 新连接 — 之前直接抛给 chat()
         //   变成 "[AI 服务调用失败] terminated" 打断 agent 流程.
         //   abort (用户主动 / 120s 超时) 不重试, 原样抛出.
         if (err?.name === 'AbortError' || signal?.aborted) throw err;
         const netMsg = String(err?.message || err?.cause?.message || '');
-        const isNetworkErr = /terminated|ECONNRESET|socket hang up|fetch failed|network|ETIMEDOUT|ECONNREFUSED|UND_ERR/i.test(netMsg);
+        const isNetworkErr = /terminated|other side closed|ECONNRESET|socket hang up|fetch failed|network|ETIMEDOUT|ECONNREFUSED|UND_ERR/i.test(netMsg);
         if (attempt < 3 && isNetworkErr) {
           const backoff = 1000 * (2 ** attempt);
           console.warn(`[pi-ai] 网络错误 attempt ${attempt + 1}/4: ${netMsg.slice(0, 120)}, 退避 ${backoff}ms 重试 (新连接)`);
@@ -390,15 +395,15 @@ export class PiAIModel {
         throw err;
       }
       const _tResp = Date.now();
-      if (!response.ok) {
-        const errBody = await response.text().catch(() => '(no body)');
-        console.log(`[pi-ai DEBUG] OpenAI 错误 ${response.status}: ${errBody.slice(0, 500)}`);
+      if (statusCode < 200 || statusCode >= 300) {
+        const errBody = await body.text().catch(() => '(no body)');
+        console.log(`[pi-ai DEBUG] OpenAI 错误 ${statusCode}: ${String(errBody).slice(0, 500)}`);
         console.log(`[pi-ai DEBUG] 请求体: model=${requestBody.model}, messages=${requestBody.messages?.length}, max_tokens=${requestBody.max_tokens}, baseUrl=${this.getBaseUrl()}`);
         retryAgent?.destroy().catch(() => {});
-        throw new Error(`OpenAI API error: ${response.status} ${errBody.slice(0, 300)}`);
+        throw new Error(`OpenAI API error: ${statusCode} ${String(errBody).slice(0, 300)}`);
       }
 
-      const data = await response.json() as {
+      const data = await body.json() as {
         choices?: { message?: { content?: string; tool_calls?: any[] }; finish_reason?: string; index?: number }[];
       };
       const _tParse = Date.now();
