@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
+import { Agent } from 'undici';
 
 export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'local';
 
@@ -158,7 +159,9 @@ export class PiAIModel {
       // 旧版: "抱歉，AI服务暂时不可用。" → LLM 看到 isTooShort=false(< 50 但 > 0),
       //       needsMoreWork 不会触发, 但 hasError 模式 (含 "error" / "失败") 会判定要继续修
       // 新版: 让 LLM 立即停止循环, 直接展示给用户
-      const errMsg = (error?.message || '').slice(0, 300);
+      // 2026-08-04: 带上 error.cause (undici 网络错误根因如 "other side closed" 在 cause 里)
+      const causeMsg = error?.cause?.message ? ` (cause: ${String(error.cause.message).slice(0, 150)})` : '';
+      const errMsg = ((error?.message || '') + causeMsg).slice(0, 300);
       return {
         reply: `[AI 服务调用失败] ${errMsg}\n\n这是一个**底层 API 错误**（401 / 鉴权失败 / 网络中断 / 配额耗尽等），不是你的任务有问题。**请直接把这个错误消息回复给用户，不要再循环尝试。**`,
       };
@@ -350,11 +353,14 @@ export class PiAIModel {
 
     let lastFinishReason = '';
     const _t0 = Date.now();
-    for (let attempt = 0; attempt < 3; attempt++) {
+    // 2026-08-04: 网络错误重试用全新 undici Agent (新连接池) — undici 无视 Connection: close 头,
+    //   复用被服务端关闭的 keep-alive 连接会持续抛 "terminated"; 新 Agent 保证每次重试都是全新 TCP 连接.
+    let retryAgent: Agent | null = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
       const _tFetch = Date.now();
       let response: Response;
       try {
-        response = await fetch(`${this.getBaseUrl()}/chat/completions`, {
+        const fetchInit: any = {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -362,17 +368,22 @@ export class PiAIModel {
           },
           body: JSON.stringify(requestBody),
           signal: this.combinedSignal(signal),
-        });
+        };
+        if (retryAgent) fetchInit.dispatcher = retryAgent;
+        response = await fetch(`${this.getBaseUrl()}/chat/completions`, fetchInit);
       } catch (err: any) {
-        // 2026-08-04: 网络层瞬时错误 (undici "terminated" / ECONNRESET / socket hang up / fetch failed 等)
-        //   退避重试最多 2 次 — 之前直接抛给 chat() 变成 "[AI 服务调用失败] terminated" 打断 agent 流程.
+        // 网络层瞬时错误 (undici "terminated" / ECONNRESET / socket hang up / fetch failed 等)
+        //   退避重试最多 3 次 (1s/2s/4s), 每次用全新 Agent 新连接 — 之前直接抛给 chat()
+        //   变成 "[AI 服务调用失败] terminated" 打断 agent 流程.
         //   abort (用户主动 / 120s 超时) 不重试, 原样抛出.
         if (err?.name === 'AbortError' || signal?.aborted) throw err;
         const netMsg = String(err?.message || err?.cause?.message || '');
         const isNetworkErr = /terminated|ECONNRESET|socket hang up|fetch failed|network|ETIMEDOUT|ECONNREFUSED|UND_ERR/i.test(netMsg);
-        if (attempt < 2 && isNetworkErr) {
-          const backoff = 1500 * (attempt + 1);
-          console.warn(`[pi-ai] 网络错误 attempt ${attempt + 1}/3: ${netMsg.slice(0, 120)}, 退避 ${backoff}ms 重试`);
+        if (attempt < 3 && isNetworkErr) {
+          const backoff = 1000 * (2 ** attempt);
+          console.warn(`[pi-ai] 网络错误 attempt ${attempt + 1}/4: ${netMsg.slice(0, 120)}, 退避 ${backoff}ms 重试 (新连接)`);
+          retryAgent?.destroy().catch(() => {});
+          retryAgent = new Agent({ connect: { timeout: 30_000 } });
           await new Promise<void>(resolve => setTimeout(resolve, backoff));
           continue;
         }
@@ -383,6 +394,7 @@ export class PiAIModel {
         const errBody = await response.text().catch(() => '(no body)');
         console.log(`[pi-ai DEBUG] OpenAI 错误 ${response.status}: ${errBody.slice(0, 500)}`);
         console.log(`[pi-ai DEBUG] 请求体: model=${requestBody.model}, messages=${requestBody.messages?.length}, max_tokens=${requestBody.max_tokens}, baseUrl=${this.getBaseUrl()}`);
+        retryAgent?.destroy().catch(() => {});
         throw new Error(`OpenAI API error: ${response.status} ${errBody.slice(0, 300)}`);
       }
 
@@ -402,6 +414,7 @@ export class PiAIModel {
         const _tAfter = Date.now();
         const promptBytes = JSON.stringify(messages).length;
         console.log(`[pi-ai timing] total=${_tAfter - _t0}ms attempt=${attempt + 1} fetch=${_tResp - _tFetch}ms parse=${_tParse - _tResp}ms reply=${content.length}B toolCalls=${toolCalls?.length ?? 0} model=${this.mapModel()} prompt=${promptBytes}B`);
+        retryAgent?.destroy().catch(() => {});
         return { reply: content, toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined };
       }
       console.warn(`[pi-ai] attempt ${attempt + 1}/3: 空 content (finish_reason=${lastFinishReason}), 退避 1.5s 重试`);
@@ -410,6 +423,7 @@ export class PiAIModel {
       console.log(`[pi-ai timing] attempt=${attempt + 1} empty; backoff=${Date.now() - _tSleep}ms; total=${Date.now() - _t0}ms so far`);
     }
     console.warn(`[pi-ai] 3 次重试都返回空 content (finish_reason=${lastFinishReason})`);
+    retryAgent?.destroy().catch(() => {});
     return { reply: '' };
   }
 

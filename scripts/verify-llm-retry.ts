@@ -1,6 +1,6 @@
 /**
- * 验证 pi-ai callOpenAI 网络错误重试 (2026-08-04):
- * mock fetch 第一次抛 "terminated", 第二次成功 → 应重试后返回正常结果
+ * 验证 pi-ai callOpenAI 网络错误重试 (2026-08-04 加固):
+ * mock fetch 前 2 次抛 "terminated" (模拟复用坏连接), 第 3 次成功 → 应重试后返回正常结果
  */
 import { PiAIModel } from '../src/llm/pi-ai.js';
 
@@ -11,7 +11,7 @@ async function main() {
   // @ts-ignore 模拟 undici terminated 错误
   globalThis.fetch = async () => {
     calls++;
-    if (calls === 1) {
+    if (calls <= 2) {
       const err: any = new Error('terminated');
       err.name = 'TypeError';
       throw err;
@@ -32,11 +32,11 @@ async function main() {
   } as any);
 
   const r = await model.chat('hi', 'test system');
-  console.log(`fetch 调用次数: ${calls} (期望 2, 1 次失败 + 1 次重试成功)`);
+  console.log(`fetch 调用次数: ${calls} (期望 3, 2 次失败 + 1 次重试成功)`);
   console.log(`回复: ${r.reply}`);
-  if (calls !== 2) { console.log('FAIL: 未按预期重试'); process.exit(1); }
+  if (calls !== 3) { console.log('FAIL: 未按预期重试'); process.exit(1); }
   if (!r.reply.includes('重试成功')) { console.log('FAIL: 回复不对'); process.exit(1); }
-  console.log('✅ 网络错误重试验证通过');
+  console.log('✅ 网络错误多重试验证通过');
   globalThis.fetch = origFetch;
   process.exit(0);
 }
