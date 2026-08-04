@@ -10,6 +10,7 @@ import {
   writeSkillCandidate,
   listSkillCandidates,
   promoteCandidate,
+  writeRunEndSkillCandidates,
 } from '../agents/skill-writer.js';
 
 // 用临时目录测, 不污染真实 ~/.bolloon
@@ -92,5 +93,42 @@ describe('skill-writer', () => {
   it('deleteSkill 删除', async () => {
     const r = await deleteSkill('test-skill');
     expect(r.ok).toBe(true);
+  });
+
+  it('writeRunEndSkillCandidates ≥2 连续成功工具写候选', async () => {
+    const r = await writeRunEndSkillCandidates([
+      { status: 'ok', name: 'read_file', output: '...' },
+      { status: 'ok', name: 'grep_files', output: 'match' },
+      { status: 'error', name: 'write_file' },
+      { status: 'ok', name: 'system' }, // 内部步骤, 不算
+    ], 'test:cli');
+    expect(r.wrote).toBe(true);
+    expect(r.count).toBe(2);
+    expect(r.names).toContain('read_file');
+    expect(r.file).toContain('skill-candidates');
+    const cands = await listSkillCandidates();
+    const mine = cands.find(c => c.name.startsWith('auto-read_file-'));
+    expect(mine).toBeDefined();
+    expect(mine!.body).toContain('grep_files');
+    expect(mine!.source).toBe('test:cli');
+  });
+
+  it('writeRunEndSkillCandidates 不足 2 个不写', async () => {
+    const before = (await listSkillCandidates()).length;
+    const r = await writeRunEndSkillCandidates(
+      [{ status: 'ok', name: 'read_file' }],
+      'test:cli'
+    );
+    expect(r.wrote).toBe(false);
+    expect(r.reason).toContain('不足');
+    expect((await listSkillCandidates()).length).toBe(before);
+  });
+
+  it('writeRunEndSkillCandidates 全失败步骤不写', async () => {
+    const r = await writeRunEndSkillCandidates(
+      [{ status: 'error', name: 'write_file' }],
+      'test:cli'
+    );
+    expect(r.wrote).toBe(false);
   });
 });

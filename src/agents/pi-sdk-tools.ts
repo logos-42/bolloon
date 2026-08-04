@@ -1801,6 +1801,143 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       }
     }
   });
+
+  // ============================================================
+  // IPFS / IPNS 通用工具 (2026-08-04) — 查询 + 发布给 agent
+  // 依赖本地 Kubo (自动安装/启动), 复用 publish_did 的 checkKuboSetup
+  // ============================================================
+  ctx.tools.set('ipfs_add', {
+    name: 'ipfs_add',
+    description: '上传文本内容到本地 IPFS (Kubo), 返回 CID. 适合把任意内容/笔记/数据发布到去中心化网络, 之后可用 ipfs_cat 读回、ipns_publish 绑定稳定标识. 自动安装/启动本地 Kubo.',
+    parameters: { content: '要上传的内容 (必填)', name: '可选: 文件名/标签' },
+    execute: async (args) => {
+      try {
+        const content = String(args.content ?? '').trim();
+        if (!content) return { success: false, error: 'content 必填' };
+        await ensureKuboReady();
+        const sdk = await import('@diap/sdk');
+        const ipfs = await (sdk as any).IpfsClient.newWithRemoteNode('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+        const r = await ipfs.upload(content, args.name ? String(args.name) : 'data');
+        return { success: true, output: `✅ 已上传到 IPFS:\n  CID: ${r.cid}\n  size: ${r.size} bytes\n  读回: ipfs_cat(cid="${r.cid}")\n  绑定稳定标识: ipns_publish(cid="${r.cid}")` };
+      } catch (e: any) {
+        return { success: false, error: `ipfs_add 失败: ${String(e.message || e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('ipfs_cat', {
+    name: 'ipfs_cat',
+    description: '按 CID 从本地 IPFS (Kubo) 读取内容. 参数 cid 可以是 ipfs_add 的返回 CID, 也可以是 ipns_resolve 解析出的 CID.',
+    parameters: { cid: 'IPFS CID (必填)' },
+    execute: async (args) => {
+      try {
+        const cid = String(args.cid || '').trim();
+        if (!cid) return { success: false, error: 'cid 必填' };
+        await ensureKuboReady();
+        const text = await kuboApi(`/api/v0/cat?arg=${encodeURIComponent(cid)}`);
+        const s = String(text ?? '');
+        return { success: true, output: `📄 ${cid} (${s.length} 字符):\n${s.slice(0, 4000)}${s.length > 4000 ? '\n...(截断)' : ''}` };
+      } catch (e: any) {
+        return { success: false, error: `ipfs_cat 失败: ${String(e.message || e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('ipfs_ls', {
+    name: 'ipfs_ls',
+    description: '列出 IPFS CID 下的目录内容 (Kubo). 适用于 CID 指向目录 (如 ipfs_add 上传带 name 或 DID 文档目录) 时查看子项.',
+    parameters: { cid: 'IPFS CID (必填)' },
+    execute: async (args) => {
+      try {
+        const cid = String(args.cid || '').trim();
+        if (!cid) return { success: false, error: 'cid 必填' };
+        await ensureKuboReady();
+        const r = await kuboApi(`/api/v0/ls?arg=${encodeURIComponent(cid)}`);
+        const objs = (r as any)?.Objects || [];
+        const obj = objs[0];
+        const links = obj?.Links || [];
+        if (links.length === 0 && obj?.Type === 2) {
+          return { success: true, output: `📄 ${cid} 是单个文件 (${obj.Size ?? '?'} bytes), 不是目录` };
+        }
+        const lines = links.map((l: any) => `  ${l.Type === 1 ? '📁' : '📄'} ${l.Name}  ${l.Size} bytes  ${l.Hash}`);
+        return { success: true, output: `📂 ${cid} (${links.length} 项):\n${lines.join('\n') || '  (空目录)'}` };
+      } catch (e: any) {
+        return { success: false, error: `ipfs_ls 失败: ${String(e.message || e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('ipns_publish', {
+    name: 'ipns_publish',
+    description: '把 IPFS CID 发布为 IPNS name (稳定标识, 内容更新后 name 不变). 默认用 self key (agent 身份), 可指定已有 key. 发布后任何节点可用 ipns_resolve 解析该 name 得到 CID.',
+    parameters: { cid: 'IPFS CID (必填, 通常是 ipfs_add 的返回)', keyName: '可选: Kubo key 名 (默认 self)' },
+    execute: async (args) => {
+      try {
+        const cid = String(args.cid || '').trim();
+        if (!cid) return { success: false, error: 'cid 必填' };
+        await ensureKuboReady();
+        const sdk = await import('@diap/sdk');
+        const ipfs = await (sdk as any).IpfsClient.newWithRemoteNode('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+        const keyName = String(args.keyName || 'self').trim() || 'self';
+        await ipfs.ensureKeyExists(keyName);
+        const r = await ipfs.publishIpns(cid, keyName, '8760h', '1h');
+        return { success: true, output: `✅ IPNS 已发布:\n  name: ${r.name}\n  value: ${r.value}\n  解析: ipns_resolve(name="${r.name}")\n  公网访问: https://ipfs.io/ipns/${r.name}` };
+      } catch (e: any) {
+        return { success: false, error: `ipns_publish 失败: ${String(e.message || e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('ipns_resolve', {
+    name: 'ipns_resolve',
+    description: '解析 IPNS name 得到 IPFS CID (Kubo). name 通常是 ipns_publish 返回的 name 或 k51... 形式的 IPNS 标识, 也可以是完整 /ipns/<name> 路径. 注意: 首次解析需查 DHT, 最长约 60 秒; 同一 name 重发布后本地缓存可能返回旧 CID, 等待传播后重试.',
+    parameters: { name: 'IPNS name (必填, 如 k51qzi5uqu5d... 或 /ipns/k51...)' },
+    execute: async (args) => {
+      try {
+        const name = String(args.name || '').trim();
+        if (!name) return { success: false, error: 'name 必填' };
+        await ensureKuboReady();
+        const r = await kuboApi(`/api/v0/name/resolve?arg=${encodeURIComponent(name)}`, undefined, 60000);
+        const path = typeof r === 'object' && r !== null ? (r as any).Path : String(r);
+        const cid = String(path).replace(/^\/ipfs\//, '').trim();
+        return { success: true, output: `🔗 ${name} → ${path}\n  CID: ${cid}` };
+      } catch (e: any) {
+        return { success: false, error: `ipns_resolve 失败: ${String(e.message || e).slice(0, 200)}` };
+      }
+    }
+  });
+}
+
+// ─── IPFS/IPNS 通用 helper (2026-08-04) ─────────────────────────────────────
+// 复用 publish_did 的 checkKuboSetup 自动安装/启动本地 Kubo (darwin-arm64 v0.28.0)
+
+async function ensureKuboReady(): Promise<void> {
+  const sdk = await import('@diap/sdk');
+  const checkKuboSetup = (sdk as any).checkKuboSetup;
+  if (typeof checkKuboSetup === 'function') {
+    const setup = await checkKuboSetup(true, true);
+    if (!setup?.ready || !setup?.daemonRunning) {
+      throw new Error('本地 Kubo 不可用 (自动安装失败), 无法访问 IPFS');
+    }
+  }
+}
+
+async function kuboApi(pathAndQuery: string, init?: RequestInit, timeoutMs = 30000): Promise<any> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const url = `http://127.0.0.1:5001${pathAndQuery}`;
+    const resp = await fetch(url, { method: 'POST', signal: controller.signal, ...(init || {}) });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Kubo API ${pathAndQuery.split('?')[0]} 失败: ${resp.status} ${text.slice(0, 200)}`);
+    }
+    const ct = resp.headers.get('content-type') || '';
+    if (ct.includes('application/json')) return resp.json();
+    return resp.text();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

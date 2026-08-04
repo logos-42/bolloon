@@ -499,11 +499,17 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
     initialStatus,
     getStatus,
   );
-  // Wait on a promise that resolves on Ctrl+C
-  await new Promise<void>(() => {});
+  // Wait on a promise that resolves on Ctrl+C / 双击 Esc
+  // (ink-app 的 requestExit 调 __inkRequestExit → resolve, 清理后 process.exit)
+  let cliExitResolve: () => void = () => {};
+  const exitPromise = new Promise<void>(resolve => { cliExitResolve = resolve; });
+  (globalThis as any).__inkRequestExit = () => { cliExitResolve(); };
+  await exitPromise;
+  delete (globalThis as any).__inkRequestExit;
   stopInk();
   appendLine(`\n${CYAN}👋 再见！${RESET}`);
   comm.stop();
+  process.exit(0);
 }
 
 async function processInput(input: string, comm: HyperswarmCommunicator): Promise<void> {
@@ -511,6 +517,8 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
   // TUI tool call state (local to this invocation)
   const tuiToolCalls: Array<{ tool: string; args: any; _t: number }> = [];
   let tuiToolCounter = 0;
+  // run-end 经验整理: 收集本轮连续成功的工具 (≥2 个自动写候选, 颜文字加载)
+  const runEndOkSteps: Array<{ status: string; name: string; output?: string }> = [];
   // each iteration
   let lastToolEvent: { tool: string; args: any } | null = null;
 
@@ -567,6 +575,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     appendLine(`  ${C_ACCENT}peers${RESET}   查看 P2P 节点`);
     appendLine(`  ${C_ACCENT}iroh${RESET}    查看 iroh 状态`);
     appendLine(`  ${C_ACCENT}add_friend${RESET} 添加好友`);
+    appendLine(`  ${C_ACCENT}Esc 双击${RESET}  退出当前进程`);
     appendLine(`  ${C_ACCENT}exit${RESET}    退出`);
     return;
   }
@@ -657,6 +666,12 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
             error: e.error,
             durationMs: p ? Date.now() - p._t : undefined,
           };
+          if (e.type === 'step_done') {
+            const t = e.tool ?? p?.tool;
+            if (t && t !== 'system' && t !== '?') {
+              runEndOkSteps.push({ status: 'ok', name: t, output: e.output });
+            }
+          }
           appendLine(renderToolCallListItem(doneItem, tuiToolCalls.length + 1, tuiToolCounter));
         }
       }
@@ -665,6 +680,19 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     appendLine(renderAgentMessage(response));
     // 停止思考动画
     inkSetThinking(false);
+    // 2026-08-04: run-end 经验整理 — 连续成功工具 ≥2 自动写 skill 候选 (颜文字加载)
+    if (runEndOkSteps.length >= 2) {
+      appendLine(`${C_DIM}(｀・ω・´) 整理本轮经验中... ${runEndOkSteps.length} 个工具调用${RESET}`);
+      setImmediate(async () => {
+        try {
+          const { writeRunEndSkillCandidates } = await import('./agents/skill-writer.js');
+          const r = await writeRunEndSkillCandidates(runEndOkSteps, 'cli:interactive');
+          if (r.wrote) {
+            appendLine(`${C_OK}✨ (◕‿◕) 经验候选已写入: ${r.names}${RESET}`);
+          }
+        } catch { /* 非致命, 静默 */ }
+      });
+    }
     // 更新状态栏: 上下文进度
     try {
       const msgLen = JSON.stringify((a as any).messageHistory ?? []).length;

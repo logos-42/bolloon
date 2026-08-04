@@ -56,6 +56,10 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const [thinking, setThinking] = useState(false);
   const thinkingIdx = useRef(0);
 
+  // 双击 Esc 退出当前进程 (500ms 窗口内第二次按下)
+  const lastEscRef = useRef(0);
+  const C_WARN_ANSI = '\x1b[38;2;245;158;11m'; // #f59e0b
+
   // 全局: 思考动画控制
   useEffect(() => {
     (globalThis as any).__inkSetThinking = (v: boolean) => setThinking(v);
@@ -81,8 +85,28 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, [onPrompt]);
 
   useInput((_input, key) => {
-    if (key.ctrl && _input === 'c') exit();
-    // TextInput handles actual input; useInput only for Ctrl+C
+    // 退出请求: 通知 startCLI resolve → 走清理 → process.exit (带兜底)
+    const requestExit = () => {
+      (globalThis as any).__inkRequestExit?.();
+      exit();
+      // 兜底: 清理路径挂住时 2s 后强制退出
+      setTimeout(() => process.exit(0), 2000);
+    };
+    if (key.ctrl && _input === 'c') {
+      requestExit();
+      return;
+    }
+    // 双击 Esc 退出当前进程: 第一击提示, 500ms 内第二击退出
+    if (key.escape) {
+      const now = Date.now();
+      if (now - lastEscRef.current < 500) {
+        requestExit();
+      } else {
+        lastEscRef.current = now;
+        inkAppendLine(`${C_WARN_ANSI}⚠ 再按一次 Esc 退出当前进程\x1b[0m`);
+      }
+    }
+    // TextInput handles actual input; useInput only for Ctrl+C / Esc
   });
 
   // 自动更新状态栏 (每秒)
@@ -139,7 +163,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
           value={input}
           onChange={setInput}
           onSubmit={onSubmit}
-          placeholder="输入消息..."
+          placeholder="输入消息...  Esc 双击退出 · /queue 排队 · !终端命令"
         />
       </Box>
 

@@ -239,3 +239,50 @@ export async function promoteCandidate(
   }
   return r;
 }
+
+/**
+ * run-end 经验整理 (2026-08-04): 从一轮运行的步骤里提取"连续成功的工具调用模式",
+ * 写成候选 JSON 到 ~/.bolloon/skill-candidates/ (Web server 与 CLI 共用).
+ * 只写候选, 不自动转正 — 由 agent 调 list_skill_candidates / promote_skill 决定.
+ */
+export interface RunStepLike {
+  status?: string;
+  name?: string;
+  tool?: string;
+  output?: string;
+}
+
+export interface RunEndCandidateResult {
+  wrote: boolean;
+  file?: string;
+  count?: number;
+  names?: string;
+  reason?: string;
+}
+
+export async function writeRunEndSkillCandidates(
+  steps: RunStepLike[],
+  source: string,
+  minOk = 2
+): Promise<RunEndCandidateResult> {
+  const okSteps = (steps || []).filter(
+    (s) => s.status === 'ok' && s.name && s.name !== 'system' && s.name !== '?'
+  );
+  if (okSteps.length < minOk) {
+    return { wrote: false, reason: `成功工具不足 (${okSteps.length} < ${minOk})` };
+  }
+  const toolNames = okSteps.map((s) => s.name).slice(0, 5).join(', ');
+  const body =
+    `## 背景\n本轮对话连续成功调用了 ${okSteps.length} 个工具: ${toolNames}.\n\n` +
+    `## 流程\n${okSteps.map((s) => `1. 调用 ${s.name}${s.output ? ': ' + String(s.output).slice(0, 120) : ''}`).join('\n')}\n\n` +
+    `## 注意事项\n- 工具名以 list_skills / get_operation_logs 的实际注册名为准\n- 沉淀为正式 skill 前请人工确认流程可复用\n`;
+  const candName = `auto-${okSteps[0].name}-${Date.now().toString(36)}`;
+  const file = await writeSkillCandidate({
+    name: candName,
+    description: `自动候选: ${okSteps.length} 个工具连续成功 (${toolNames})`,
+    body,
+    source,
+    timestamp: new Date().toISOString(),
+  });
+  return { wrote: true, file, count: okSteps.length, names: toolNames };
+}

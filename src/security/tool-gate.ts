@@ -79,6 +79,8 @@ const TOOL_WHITELIST = new Set<string>([
   'mcp_list_tools', 'mcp_tool',
   // 2026-08-03: DID 发布到 IPFS+IPNS (自动安装 Kubo)
   'publish_did',
+  // 2026-08-04: IPFS/IPNS 通用查询 + 发布 (pi-sdk-tools.ts)
+  'ipfs_add', 'ipfs_cat', 'ipfs_ls', 'ipns_publish', 'ipns_resolve',
   // 2026-08-02: 远端 channel 工具 (本地智能体 @ 远程交流)
   'list_remote_channels', 'send_to_remote_channel',
 ]);

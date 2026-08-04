@@ -3798,24 +3798,16 @@ ${goalDesc}
       // 2026-08-02: run-end skill 候选扫描 (fire-and-forget, 不阻塞 finally)
       //   从本轮 lastSteps 提取连续成功的工具调用模式, 写入 ~/.bolloon/skill-candidates/.
       //   agent 之后可调 list_skill_candidates / promote_skill 决定是否转正.
+      // 2026-08-04: 抽公共函数 writeRunEndSkillCandidates (Web server 与 CLI 共用)
       try {
-        const steps = runState.lastSteps || [];
+        const steps: any[] = runState.lastSteps || [];
         const okTools = steps.filter(s => s.status === 'ok' && s.name && s.name !== 'system');
         if (okTools.length >= 2) {
           setImmediate(async () => {
             try {
-              const { writeSkillCandidate } = await import('../agents/skill-writer.js');
-              const toolNames = okTools.map(s => s.name).slice(0, 5).join(', ');
-              const body = `## 背景\n本轮对话连续成功调用了 ${okTools.length} 个工具: ${toolNames}.\n\n## 流程\n${okTools.map(s => `1. 调用 ${s.name}${s.output ? ': ' + String(s.output).slice(0, 120) : ''}`).join('\n')}\n\n## 注意事项\n- 工具名以 list_skills / get_operation_logs 的实际注册名为准\n- 沉淀为正式 skill 前请人工确认流程可复用\n`;
-              const candName = `auto-${okTools[0].name}-${Date.now().toString(36)}`;
-              const file = await writeSkillCandidate({
-                name: candName,
-                description: `自动候选: ${okTools.length} 个工具连续成功 (${toolNames})`,
-                body,
-                source: `channel:${channelId}`,
-                timestamp: new Date().toISOString(),
-              });
-              console.log(`[skill-candidates] 写入候选 ${file} (${okTools.length} tools)`);
+              const { writeRunEndSkillCandidates } = await import('../agents/skill-writer.js');
+              const r = await writeRunEndSkillCandidates(steps, `channel:${channelId}`);
+              if (r.wrote) console.log(`[skill-candidates] 写入候选 ${r.file} (${r.count} tools)`);
             } catch (candErr: any) {
               console.warn('[skill-candidates] 写入失败 (non-fatal):', candErr?.message?.slice(0, 150));
             }
