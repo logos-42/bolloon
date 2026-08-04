@@ -1,18 +1,17 @@
 /**
- * Polymarket CLOB 下单/查单/撤单 共享依赖
+ * Polymarket 下单/查单/撤单 共享依赖
  *
- * 真实实现基于 @polymarket/clob-client (ClobClient):
- *   - 签名用 viem WalletClient (privateKeyToAccount + polygon + http transport)
- *   - 下单前需 ApiKeyCreds (key/secret/passphrase), 由 createOrDeriveApiKey() 从签名派生
- *   - tokenID / tickSize / negRisk 来自 Gamma 市场元数据 (https://gamma-api.polymarket.com/markets/:id)
+ * 2026-08-04: 迁移到官方统一 SDK @polymarket/client (替代已弃用的 @polymarket/clob-client + polymarket-sdk)
+ *   - 公开数据: createPublicClient() → listMarkets / fetchMarket / fetchOrderBook
+ *   - 交易: createSecureClient({ signer: privateKey(pk) }) → placeLimitOrder / cancelOrder / listOpenOrders
+ *   - 签名走 SDK 内部 (EIP-712), 无需手动派生 API key
  *
  * chainId = 137 (Polygon), host = https://clob.polymarket.com
  */
 
-import { ClobClient, OrderType, Side, ApiKeyCreds } from '@polymarket/clob-client';
-import { createWalletClient, http } from 'viem';
+import { createSecureClient, OrderSide } from '@polymarket/client';
+import { privateKey } from '@polymarket/client/viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { polygon } from 'viem/chains';
 
 export const CLOB_HOST = 'https://clob.polymarket.com';
 export const CHAIN_ID = 137;
@@ -50,33 +49,19 @@ function safeParseArray(v: any): string[] {
 
 /**
  * 从 Gamma 取市场元数据: clobTokenIds / outcomes / tickSize / negRisk.
- * 优先用 Gamma 路径端点 (带 tickSize/negRisk), 失败回退 polymarket-sdk listMarkets({id}).
  */
 export async function fetchMarketMeta(marketId: string): Promise<MarketMeta> {
-  try {
-    const res = await fetch(`https://gamma-api.polymarket.com/markets/${encodeURIComponent(marketId)}`);
-    if (res.ok) {
-      const m = await res.json();
-      return {
-        clobTokenIds: safeParseArray(m.clobTokenIds),
-        outcomes: safeParseArray(m.outcomes),
-        tickSize: typeof m.tickSize === 'string' ? m.tickSize : '0.01',
-        negRisk: !!m.negRisk,
-      };
-    }
-  } catch {
-    // fall through to sdk
+  const res = await fetch(`https://gamma-api.polymarket.com/markets/${encodeURIComponent(marketId)}`);
+  if (res.ok) {
+    const m = await res.json();
+    return {
+      clobTokenIds: safeParseArray(m.clobTokenIds),
+      outcomes: safeParseArray(m.outcomes),
+      tickSize: typeof m.tickSize === 'string' ? m.tickSize : '0.01',
+      negRisk: !!m.negRisk,
+    };
   }
-  const { listMarkets } = await import('polymarket-sdk').catch(() => ({ listMarkets: async () => [] }));
-  const ms = await listMarkets({ id: marketId });
-  const m = ms?.[0];
-  if (!m) throw new Error(`未找到市场: ${marketId}`);
-  return {
-    clobTokenIds: safeParseArray(m.clobTokenIds),
-    outcomes: safeParseArray(m.outcomes),
-    tickSize: '0.01',
-    negRisk: false,
-  };
+  throw new Error(`Gamma 市场元数据获取失败 (HTTP ${res.status}): ${marketId}`);
 }
 
 /**
@@ -99,26 +84,17 @@ export interface BuildClientParams {
 }
 
 /**
- * 构造已鉴权的 ClobClient.
- *  - 若提供完整 apiKey/apiSecret/apiPassphrase → 直接用
- *  - 否则用签名派生 ApiKey (createOrDeriveApiKey, 需联网)
- * signatureType = 0 (EOA / 浏览器钱包, 对应原始私钥签名)
+ * 构造已鉴权的 SecureClient (@polymarket/client 统一 SDK).
+ * 签名/鉴权全在 SDK 内部处理, creds (旧式 API key) 参数保留兼容但不再需要.
  */
-export async function buildClobClient(params: BuildClientParams): Promise<{ client: ClobClient; address: string }> {
-  const account = privateKeyToAccount(normalizePrivateKey(params.privateKey));
-  const signer = createWalletClient({ account, chain: polygon, transport: http() });
-  const address = account.address;
-
-  let creds: ApiKeyCreds | undefined;
-  if (params.creds?.apiKey && params.creds?.apiSecret && params.creds?.apiPassphrase) {
-    creds = { key: params.creds.apiKey, secret: params.creds.apiSecret, passphrase: params.creds.apiPassphrase };
-  }
-  if (!creds) {
-    const tmp = new ClobClient(CLOB_HOST, CHAIN_ID, signer);
-    creds = await tmp.createOrDeriveApiKey();
-  }
-  const client = new ClobClient(CLOB_HOST, CHAIN_ID, signer, creds, 0, params.funder ?? address);
-  return { client, address };
+export async function buildSecureClient(params: BuildClientParams): Promise<{ client: any; address: string }> {
+  const pk = normalizePrivateKey(params.privateKey);
+  const account = privateKeyToAccount(pk);
+  const client = await createSecureClient({ signer: privateKey(pk) });
+  return { client, address: account.address };
 }
 
-export { OrderType, Side };
+/** 兼容旧名 (老调用方) */
+export const buildClobClient = buildSecureClient;
+
+export { OrderSide };

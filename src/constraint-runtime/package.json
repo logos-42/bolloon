@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@jackwener/opencli": "^1.7.22",
+    "@polymarket/client": "^0.2.0",
     "@polymarket/clob-client": "^5.8.1",
     "@safe-global/api-kit": "^5.0.1",
     "@safe-global/protocol-kit": "^8.0.4",

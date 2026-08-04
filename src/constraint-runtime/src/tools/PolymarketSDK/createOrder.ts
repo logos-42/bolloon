@@ -1,7 +1,7 @@
-import { OrderType, Side, buildClobClient, fetchMarketMeta, resolveTokenId } from './clobShared.js';
+import { OrderSide, buildSecureClient, fetchMarketMeta, resolveTokenId } from './clobShared.js';
 
 export interface CreateOrderParams {
-  /** 下单钱包私钥 (0x...), 用于 EIP-712 订单签名 + 派生 API key */
+  /** 下单钱包私钥 (0x...), 用于 EIP-712 订单签名 */
   privateKey: string;
   /** 市场 ID (condition id) */
   marketId: string;
@@ -14,7 +14,7 @@ export interface CreateOrderParams {
   tokenId?: string;
   /** outcome: "Yes"/"No" 或索引 0/1, 默认取第一个 (通常是 Yes) */
   outcome?: string | number;
-  /** 已存在的 API key (与 secret/passphrase 一起) */
+  /** 已存在的 API key (兼容保留, 新 SDK 不需要) */
   apiKey?: string;
   apiSecret?: string;
   apiPassphrase?: string;
@@ -31,6 +31,7 @@ export interface CreateOrderResult {
   raw?: any;
 }
 
+/** 限价单下单 (@polymarket/client 统一 SDK placeLimitOrder, 2026-08-04 迁移). */
 export async function createOrder(params: CreateOrderParams): Promise<CreateOrderResult> {
   if (!params.privateKey) {
     return { success: false, message: '下单需要提供钱包私钥 privateKey (用于 EIP-712 订单签名)' };
@@ -44,25 +45,17 @@ export async function createOrder(params: CreateOrderParams): Promise<CreateOrde
     if (!tokenID) {
       return { success: false, message: '无法解析 tokenID (outcome 不匹配或市场无 clobTokenIds)' };
     }
-    const { client } = await buildClobClient({
-      privateKey: params.privateKey,
-      creds: { apiKey: params.apiKey, apiSecret: params.apiSecret, apiPassphrase: params.apiPassphrase },
-      funder: params.funder,
+    const { client } = await buildSecureClient({ privateKey: params.privateKey, funder: params.funder });
+    const resp: any = await client.placeLimitOrder({
+      tokenId: tokenID,
+      price: Number(params.price),
+      size: Number(params.size),
+      side: params.side === 'SELL' ? OrderSide.SELL : OrderSide.BUY,
     });
-    const resp: any = await client.createAndPostOrder(
-      {
-        tokenID,
-        price: Number(params.price),
-        size: Number(params.size),
-        side: params.side as Side,
-      },
-      { tickSize: meta.tickSize as any, negRisk: meta.negRisk },
-      (params.orderType ?? 'GTC') as OrderType.GTC | OrderType.GTD
-    );
     return {
       success: true,
-      orderId: resp?.orderID ?? resp?.id,
-      status: resp?.status,
+      orderId: resp?.orderId ?? resp?.id,
+      status: resp?.status ?? resp?.orderStatus,
       raw: resp,
     };
   } catch (e: any) {

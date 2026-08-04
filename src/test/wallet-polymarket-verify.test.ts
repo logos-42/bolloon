@@ -13,9 +13,9 @@
  *   - 纯密码学操作 (create/import/sign) 不依赖网络, 硬断言真实行为 → 证明"支付能力"存在
  *   - 依赖网络的操作 (get_balance / list_markets / get_market) 容忍网络不可达:
  *       若成功 → 断言真实数据结构; 若失败 → 断言不是代码/接线错误 (模块缺失等), 证明代码路径已正确接线
- *   - 支付 (create_order / get_orders / cancel_order) 已用 @polymarket/clob-client 真实实现:
- *       用 mock ClobClient + mock Gamma fetch 断言编排逻辑正确 (tokenID/tickSize/negRisk 解析 + 调用参数),
- *       并对缺私钥/缺 marketId 等做真实入参校验; 真实上链需 funded 私钥 + 联网派生 API key
+ *   - 支付 (create_order / get_orders / cancel_order) 已用 @polymarket/client 统一 SDK 真实实现 (2026-08-04 迁移):
+ *       用 mock @polymarket/client 断言编排逻辑正确 (tokenID/outcome 解析 + 调用参数),
+ *       并对缺私钥/缺 marketId 等做真实入参校验; 真实上链需 funded 私钥
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
@@ -29,35 +29,33 @@ import { cancelOrder } from '../constraint-runtime/src/tools/PolymarketSDK/cance
 import { listMarkets } from '../constraint-runtime/src/tools/PolymarketSDK/listMarkets';
 import { getMarket } from '../constraint-runtime/src/tools/PolymarketSDK/getMarket';
 import { fetchMarketMeta } from '../constraint-runtime/src/tools/PolymarketSDK/clobShared';
-import * as clobMod from '@polymarket/clob-client';
+import * as clobMod from '@polymarket/client';
 
-// mock ClobClient: 记录调用, 返回假响应 (离线确定性验证编排逻辑)
-vi.mock('@polymarket/clob-client', () => {
-  const OrderType = { GTC: 'GTC', GTD: 'GTD', FOK: 'FOK', FAK: 'FAK' } as any;
-  const Side = { BUY: 'BUY', SELL: 'SELL' } as any;
-  const __calls = { posted: [] as any[], open: [] as any[], cancelled: [] as any[] };
+// mock @polymarket/client: 记录调用, 返回假响应 (离线确定性验证编排逻辑)
+vi.mock('@polymarket/client', () => {
+  const OrderSide = { BUY: 'BUY', SELL: 'SELL' } as any;
+  const __calls = { placed: [] as any[], open: [] as any[], cancelled: [] as any[] };
   return {
-    OrderType,
-    Side,
+    OrderSide,
     __calls,
-    ClobClient: class {
-      constructor(public host: any, public chainId: any, public signer: any, public creds?: any, public sigType?: any, public funder?: any) {}
-      async createOrDeriveApiKey() {
-        return { key: 'k', secret: 's', passphrase: 'p' };
-      }
-      async createAndPostOrder(userOrder: any, options: any, orderType: any) {
-        __calls.posted.push({ userOrder, options, orderType });
-        return { orderID: '0xORDER1', status: 'live', ...userOrder };
-      }
-      async getOpenOrders(params: any) {
-        __calls.open.push(params);
-        return { orders: [{ id: '0xORDER1', status: 'live', side: 'BUY', price: '0.5', size: '10' }], count: 1 };
-      }
-      async cancelOrder(payload: any) {
-        __calls.cancelled.push(payload);
-        return { success: true, orderID: payload.orderID };
-      }
-    },
+    createPublicClient: () => ({
+      listMarkets: () => ({ firstPage: async () => ({ items: [] }) }),
+      fetchMarket: async () => null,
+    }),
+    createSecureClient: async () => ({
+      placeLimitOrder: async (req: any) => {
+        __calls.placed.push(req);
+        return { orderId: '0xORDER1', status: 'live' };
+      },
+      listOpenOrders: (req?: any) => {
+        __calls.open.push(req ?? {});
+        return { firstPage: async () => ({ items: [{ orderId: '0xORDER1', status: 'live', side: 'BUY', price: '0.5', size: '10' }] }) };
+      },
+      cancelOrder: async (req: any) => {
+        __calls.cancelled.push(req);
+        return { success: true };
+      },
+    }),
   };
 });
 
@@ -157,7 +155,7 @@ describe('Polymarket 查询验证 (PolymarketSDK — 真实 SDK)', () => {
   });
 });
 
-describe('Polymarket 支付验证 (真实实现: @polymarket/clob-client)', () => {
+describe('Polymarket 支付验证 (真实实现: @polymarket/client 统一 SDK)', () => {
   const realFetch = global.fetch;
   beforeAll(() => {
     // mock Gamma 市场元数据端点 (离线确定性)
@@ -200,23 +198,20 @@ describe('Polymarket 支付验证 (真实实现: @polymarket/clob-client)', () =
     });
     expect(r.success).toBe(true);
     expect(r.orderId).toBe('0xORDER1');
-    const posted = clobCalls.posted[clobCalls.posted.length - 1];
-    expect(posted.userOrder.tokenID).toBe('0xtokYES'); // outcome Yes -> index 0
-    expect(posted.userOrder.side).toBe('BUY');
-    expect(posted.userOrder.price).toBe(0.5);
-    expect(posted.userOrder.size).toBe(10);
-    expect(posted.options.tickSize).toBe('0.01');
-    expect(posted.options.negRisk).toBe(false);
-    expect(posted.orderType).toBe('GTC');
-    console.log(`  [OK] createOrder → orderId=${r.orderId}, tokenID=${posted.userOrder.tokenID}`);
+    const placed = clobCalls.placed[clobCalls.placed.length - 1];
+    expect(placed.tokenId).toBe('0xtokYES'); // outcome Yes -> index 0
+    expect(placed.side).toBe('BUY');
+    expect(placed.price).toBe(0.5);
+    expect(placed.size).toBe(10);
+    console.log(`  [OK] createOrder → orderId=${r.orderId}, tokenID=${placed.tokenId}`);
   });
 
   it('polymarket_create_order: outcome=No 解析到第二个 token', async () => {
     await createOrder({ privateKey: '0x' + '2'.repeat(64), marketId: '0xMKT', side: 'SELL', price: 0.4, size: 5, outcome: 'No' });
-    const posted = clobCalls.posted[clobCalls.posted.length - 1];
-    expect(posted.userOrder.tokenID).toBe('0xtokNO');
-    expect(posted.userOrder.side).toBe('SELL');
-    console.log(`  [OK] outcome=No → ${posted.userOrder.tokenID}`);
+    const placed = clobCalls.placed[clobCalls.placed.length - 1];
+    expect(placed.tokenId).toBe('0xtokNO');
+    expect(placed.side).toBe('SELL');
+    console.log(`  [OK] outcome=No → ${placed.tokenId}`);
   });
 
   it('polymarket_get_orders: 缺私钥 → 返回空列表+提示', async () => {
@@ -229,7 +224,7 @@ describe('Polymarket 支付验证 (真实实现: @polymarket/clob-client)', () =
   it('polymarket_get_orders: 真实查询编排 (按市场过滤)', async () => {
     const r = await getOrders({ privateKey: '0x' + '3'.repeat(64), marketId: '0xMKT' });
     expect(r.orders.length).toBe(1);
-    expect(clobCalls.open[clobCalls.open.length - 1]).toEqual({ market: '0xMKT' });
+    expect(clobCalls.open[clobCalls.open.length - 1]).toEqual({ marketId: '0xMKT' });
     console.log(`  [OK] getOrders → ${r.orders.length} 个订单`);
   });
 
@@ -243,7 +238,7 @@ describe('Polymarket 支付验证 (真实实现: @polymarket/clob-client)', () =
   it('polymarket_cancel_order: 真实取消编排', async () => {
     const r = await cancelOrder({ privateKey: '0x' + '4'.repeat(64), orderId: '0xC1' });
     expect(r.success).toBe(true);
-    expect(clobCalls.cancelled[clobCalls.cancelled.length - 1]).toEqual({ orderID: '0xC1' });
+    expect(clobCalls.cancelled[clobCalls.cancelled.length - 1]).toEqual({ orderId: '0xC1' });
     console.log(`  [OK] cancelOrder → ${r.message}`);
   });
 

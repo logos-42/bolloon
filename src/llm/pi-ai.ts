@@ -315,14 +315,14 @@ export class PiAIModel {
 
   private mapModel(): string {
     // 2026-08-04: 型号全面更新 (官方文档确认):
-    //   OpenAI gpt-5.6 (alias→Sol) / Anthropic claude-sonnet-5 / Gemini gemini-3.1-pro (pro 线最新, 3.5 仅 flash)
+    //   OpenAI gpt-5.6 (alias→Sol) / Anthropic claude-sonnet-5 / Gemini gemini-3.5-flash (pro 线最新, 3.5 仅 flash)
     //   Grok grok-4.5 / Kimi kimi-k3 / GLM glm-5.2 / Qwen qwen3-max
     const modelMap: Record<ModelProvider, string> = {
       openai: this.config.model || process.env.OPENAI_MODEL || 'gpt-5.6',
       anthropic: this.config.model || process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
       ollama: this.config.model || 'llama4',
       openrouter: this.config.model || process.env.OPENROUTER_MODEL || 'anthropic/claude-sonnet-5',
-      gemini: this.config.model || process.env.GEMINI_MODEL || 'gemini-3.1-pro',
+      gemini: this.config.model || process.env.GEMINI_MODEL || 'gemini-3.5-flash',
       minimax: this.config.model || process.env.MINIMAX_MODEL || 'MiniMax-M3',
       // 2026-07-17: deepseek-chat (V3) 官方已下线, 迁 deepseek-v4-flash
       deepseek: this.config.model || process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash',
@@ -738,7 +738,7 @@ function detectModel(provider: ModelProvider): string {
     anthropic: 'claude-sonnet-5',
     ollama: 'llama4',
     openrouter: 'anthropic/claude-sonnet-5',
-    gemini: 'gemini-3.1-pro',
+    gemini: 'gemini-3.5-flash',
     minimax: 'MiniMax-M3',
     // 2026-07-17: V3 官方下线, 迁 V4
     deepseek: 'deepseek-v4-flash',

@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.3.30",
+  "version": "0.3.31",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli-entry.js",
@@ -26,7 +26,7 @@
   },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "build:main": "tsc",
+    "build:main": "tsc && node scripts/copy-constraint-runtime.mjs",
     "build:cli": "node scripts/build-cli.js",
     "build:web": "npx tsx scripts/build-web.ts",
     "build:electron": "tsc -p tsconfig.electron.json",
@@ -68,6 +68,7 @@
     "@libp2p/upnp-nat": "^4.0.20",
     "@multiformats/multiaddr": "^13.0.3",
     "@noble/hashes": "^1.3.0",
+    "@polymarket/client": "^0.2.0",
     "@rayhanadev/iroh": "^0.1.1",
     "@x402/aptos": "^2.20.0",
     "@x402/avm": "^2.20.0",

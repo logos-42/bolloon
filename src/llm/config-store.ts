@@ -6,7 +6,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'local';
+export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'grok' | 'local';
 
 export interface ProviderConfig {
   enabled: boolean;
@@ -32,46 +32,46 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-5.5',
+    model: 'gpt-5.6',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: true
+    requiresApiKey: true,
   },
   anthropic: {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://api.anthropic.com/v1',
-    model: 'claude-sonnet-4-5-20250929',
+    model: 'claude-sonnet-5',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: true
+    requiresApiKey: true,
   },
   openrouter: {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://openrouter.ai/api/v1',
-    model: 'anthropic/claude-sonnet-4.5',
+    model: 'anthropic/claude-sonnet-5',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: true
+    requiresApiKey: true,
   },
   gemini: {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    model: 'gemini-2.5-pro',
+    model: 'gemini-3.5-flash',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: true
+    requiresApiKey: true,
   },
   ollama: {
     enabled: true,
     apiKey: '',
     baseUrl: 'http://localhost:11434',
-    model: 'llama3.2',
+    model: 'llama4',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: false
+    requiresApiKey: true,
   },
   minimax: {
     enabled: false,
@@ -80,7 +80,7 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     model: 'MiniMax-M3',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: true
+    requiresApiKey: true,
   },
   deepseek: {
     enabled: false,
@@ -91,34 +91,34 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     model: 'deepseek-v4-flash',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: true
+    requiresApiKey: true,
   },
   kimi: {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://api.moonshot.cn/v1',
-    model: 'moonshot-v1-8k',
+    model: 'kimi-k3',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: true
+    requiresApiKey: true,
   },
   glm: {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    model: 'glm-4-flash',
+    model: 'glm-5.2',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: true
+    requiresApiKey: true,
   },
   qwen: {
     enabled: false,
     apiKey: '',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    model: 'qwen-plus',
+    model: 'qwen3-max',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: true
+    requiresApiKey: true,
   },
   // 小米 MiMo (openai 兼容) — 默认 base URL https://api.xiaomi.com/v1
   mimo: {
@@ -128,30 +128,40 @@ export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
     model: 'mimo-v2.5-pro',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: true
+    requiresApiKey: true,
   },
   local: {
     enabled: false,
     apiKey: '',
     baseUrl: 'http://localhost:11434',
-    model: 'llama3.2',
+    model: 'llama4',
     temperature: 0.7,
     maxTokens: 4096,
-    requiresApiKey: false
+    requiresApiKey: false,
+  },
+  // xAI Grok (openai 兼容) — 2026-08-04 新增
+  grok: {
+    enabled: false,
+    apiKey: '',
+    baseUrl: 'https://api.x.ai/v1',
+    model: 'grok-4.5',
+    temperature: 0.7,
+    maxTokens: 4096,
+    requiresApiKey: true
   }
 };
 
 export const PROVIDER_INFO: Record<ModelProvider, { name: string; description: string; requiresApiKey: boolean; models?: string[] }> = {
-  openai: { name: 'OpenAI', description: 'GPT-4, GPT-3.5 等模型', requiresApiKey: true, models: ['gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
-  anthropic: { name: 'Anthropic', description: 'Claude 3.5+ 系列模型', requiresApiKey: true, models: ['claude-sonnet-4-5-20250929', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
-  openrouter: { name: 'OpenRouter', description: '聚合多个 AI 供应商', requiresApiKey: true, models: ['anthropic/claude-sonnet-4.5', 'anthropic/claude-3.5-sonnet'] },
+  openai: { name: 'OpenAI', description: 'GPT 系列模型', requiresApiKey: true, models: ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-4.1', 'gpt-4o'] },
+  anthropic: { name: 'Anthropic', description: 'Claude 5 系列模型', requiresApiKey: true, models: ['claude-sonnet-5', 'claude-opus-5', 'claude-fable-5', 'claude-haiku-4.5', 'claude-sonnet-4-5-20250929'] },
+  openrouter: { name: 'OpenRouter', description: '聚合多个 AI 供应商', requiresApiKey: true, models: ['anthropic/claude-sonnet-5', 'openai/gpt-5.6', 'google/gemini-3.5-flash', 'x-ai/grok-4.5'] },
   gemini: { name: 'Google Gemini', description: 'Gemini 系列模型', requiresApiKey: true, models: [
     'gemini-3.5-flash',     // 2026-06 官方推荐 stable 旗舰 (https://ai.google.dev/gemini-api/docs/models)
     'gemini-2.5-pro',       // 高级推理, 仍为 GA
     'gemini-3.1-flash-lite',// 成本敏感场景
     'gemini-flash-latest',  // 滚动 alias → 当前 stable Flash
   ] },
-  ollama: { name: 'Ollama', description: '本地 LLM 运行框架', requiresApiKey: false },
+  ollama: { name: 'Ollama', description: '本地 LLM 运行框架', requiresApiKey: false, },
   minimax: {
     name: 'MiniMax',
     description: '国产大模型服务',
@@ -160,10 +170,11 @@ export const PROVIDER_INFO: Record<ModelProvider, { name: string; description: s
   },
   // 2026-07-17: V3 系列 (deepseek-chat / deepseek-reasoner) 官方已下线, 改 V4
   deepseek: { name: 'DeepSeek', description: '深度求索大模型 (V4)', requiresApiKey: true, models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
-  kimi: { name: 'Kimi (月之暗面)', description: 'Moonshot 长上下文模型', requiresApiKey: true, models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'] },
-  glm: { name: 'GLM (智谱)', description: '智谱 ChatGLM 系列模型', requiresApiKey: true, models: ['glm-4-flash', 'glm-4', 'glm-4-plus', 'glm-4-air', 'glm-4-airx'] },
-  qwen: { name: 'Qwen (通义千问)', description: '阿里云通义千问系列', requiresApiKey: true, models: ['qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen-long'] },
+  kimi: { name: 'Kimi (月之暗面)', description: 'Moonshot Kimi K 系列模型', requiresApiKey: true, models: ['kimi-k3', 'kimi-k2-0905', 'moonshot-v1-128k', 'moonshot-v1-32k'] },
+  glm: { name: 'GLM (智谱)', description: '智谱 GLM 系列模型', requiresApiKey: true, models: ['glm-5.2', 'glm-4.6', 'glm-4.5', 'glm-4-flash', 'glm-4'] },
+  qwen: { name: 'Qwen (通义千问)', description: '阿里云通义千问系列', requiresApiKey: true, models: ['qwen3-max', 'qwen-max', 'qwen-plus', 'qwen-turbo'] },
   mimo: { name: 'MiMo (小米)', description: '小米 MiMo V2 系列 (openai 兼容)', requiresApiKey: true, models: ['mimo-v2.5-pro', 'mimo-v2-pro', 'mimo-v2-omni', 'mimo-v2-flash', 'mimo-v2.5-pro-ultraspeed'] },
+  grok: { name: 'Grok (xAI)', description: 'xAI Grok 系列模型 (openai 兼容)', requiresApiKey: true, models: ['grok-4.5', 'grok-4', 'grok-4-fast'] },
   local: { name: '本地模型', description: '本地部署的模型服务', requiresApiKey: false }
 };
 
