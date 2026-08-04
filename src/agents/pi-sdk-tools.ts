@@ -949,6 +949,127 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     }
   });
 
+  // ============================================================
+  // Web 上网工具 (2026-08-04) — fetch_url + web_search
+  // 用 undici request (独立连接池, 与 pi-ai 一致, 避开全局 fetch 僵尸连接问题)
+  // ============================================================
+  ctx.tools.set('fetch_url', {
+    name: 'fetch_url',
+    description: '抓取一个 URL 的网页内容并转成纯文本. 适合查文档/新闻/API 页面. 返回前 4000 字符. HTML 自动去标签, JSON/文本原样返回. (走 curl, 兼容 TLS 指纹风控)',
+    parameters: { url: '完整 URL (必填, 含 https://)' },
+    execute: async (args) => {
+      try {
+        const url = String(args.url || '').trim();
+        if (!url) return { success: false, error: 'url 必填' };
+        if (!/^https?:\/\//i.test(url)) return { success: false, error: 'url 必须以 http(s):// 开头' };
+        const { execFile } = await import('child_process');
+        const { promisify } = await import('util');
+        const pExecFile = promisify(execFile);
+        const { stdout, stderr } = await pExecFile('curl', [
+          '-sL', '--max-time', '25',
+          '-A', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+          '-H', 'Accept-Language: zh-CN,zh;q=0.9,en;q=0.8',
+          url,
+        ], { maxBuffer: 2 * 1024 * 1024, timeout: 30_000 });
+        if (!stdout && stderr) return { success: false, error: `fetch_url 失败: ${String(stderr).slice(0, 200)}` };
+        const raw = stdout.slice(0, 60_000);
+        const trimmed = raw.trimStart();
+        let text: string;
+        if (trimmed.startsWith('<!doctype') || trimmed.startsWith('<html') || /^<\?xml/i.test(trimmed)) {
+          text = raw
+            .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+            .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+            .replace(/\s+/g, ' ')
+            .trim();
+        } else {
+          text = raw;
+        }
+        const out = text.slice(0, 4000);
+        return { success: true, output: `🌐 ${url} (${raw.length} bytes):\n${out}${text.length > 4000 ? '\n...(截断, 共 ' + text.length + ' 字符)' : ''}` };
+      } catch (e: any) {
+        return { success: false, error: `fetch_url 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('web_search', {
+    name: 'web_search',
+    description: '网页搜索. 无 key 时走 DuckDuckGo Instant Answer API + Wikipedia (知识/资讯查询可靠); 配置 TAVILY_API_KEY 时走 Tavily 完整搜索 (更全). 返回前 8 条标题+URL+摘要.',
+    parameters: { query: '搜索词 (必填)' },
+    execute: async (args) => {
+      try {
+        const query = String(args.query || '').trim();
+        if (!query) return { success: false, error: 'query 必填' };
+        const { execFile } = await import('child_process');
+        const { promisify } = await import('util');
+        const pExecFile = promisify(execFile);
+        const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
+        const curlJson = async (url: string): Promise<any> => {
+          const r = await pExecFile('curl', ['-s', '--max-time', '15', '-A', UA, url], { maxBuffer: 4 * 1024 * 1024, timeout: 20_000 });
+          return JSON.parse(r.stdout);
+        };
+
+        // 引擎 0: Tavily (配了 TAVILY_API_KEY 时最完整)
+        const tavilyKey = process.env.TAVILY_API_KEY || '';
+        if (tavilyKey) {
+          const r = await pExecFile('curl', [
+            '-s', '--max-time', '20', '-A', UA,
+            '-X', 'POST', 'https://api.tavily.com/search',
+            '-H', 'Content-Type: application/json',
+            '-d', JSON.stringify({ api_key: tavilyKey, query, max_results: 8, include_answer: true }),
+          ], { maxBuffer: 4 * 1024 * 1024, timeout: 25_000 });
+          const d = JSON.parse(r.stdout);
+          const results: any[] = d.results || [];
+          if (results.length > 0) {
+            const lines = results.slice(0, 8).map((x, i) => `${i + 1}. ${x.title}\n  ${x.url}${x.content ? '\n   ' + String(x.content).replace(/\s+/g, ' ').slice(0, 150) : ''}`);
+            const answer = d.answer ? `\n📌 ${d.answer}\n` : '';
+            return { success: true, output: `🔎 "${query}" 结果 ${results.length} 条 (Tavily):${answer}\n\n${lines.join('\n\n')}` };
+          }
+        }
+
+        // 引擎 1: DuckDuckGo Instant Answer API (摘要 + 相关主题)
+        try {
+          const ia = await curlJson(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`);
+          const out: string[] = [];
+          if (ia.AbstractText && ia.AbstractURL) {
+            out.push(`📖 ${ia.AbstractText.slice(0, 400)}\n  ${ia.AbstractURL}`);
+          }
+          const topics: any[] = Array.isArray(ia.RelatedTopics) ? ia.RelatedTopics : [];
+          for (const t of topics) {
+            if (out.length >= 8) break;
+            if (t.Topics) { // 分类组
+              for (const sub of t.Topics) {
+                if (out.length >= 8) break;
+                if (sub.Text && sub.FirstURL) out.push(`${out.length + 1}. ${sub.Text.slice(0, 200)}\n  ${sub.FirstURL}`);
+              }
+            } else if (t.Text && t.FirstURL) {
+              out.push(`${out.length + 1}. ${t.Text.slice(0, 200)}\n  ${t.FirstURL}`);
+            }
+          }
+          if (out.length > 0) {
+            return { success: true, output: `🔎 "${query}" (DuckDuckGo):\n\n${out.join('\n\n')}` };
+          }
+        } catch { /* fallback */ }
+
+        // 引擎 2: Wikipedia 搜索 API
+        try {
+          const wiki = await curlJson(`https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=5`);
+          const hits: any[] = wiki?.query?.search || [];
+          if (hits.length > 0) {
+            const lines = hits.map((h, i) => `${i + 1}. ${h.title}\n  https://zh.wikipedia.org/wiki/${encodeURIComponent(h.title.replace(/ /g, '_'))}\n   ${String(h.snippet || '').replace(/<[^>]+>/g, '').slice(0, 120)}`);
+            return { success: true, output: `🔎 "${query}" (维基百科 ${hits.length} 条):\n\n${lines.join('\n\n')}` };
+          }
+        } catch { /* fallback */ }
+
+        return { success: true, output: `🔎 "${query}" 无结果 (免费引擎无匹配, 可配 TAVILY_API_KEY 提升覆盖)` };
+      } catch (e: any) {
+        return { success: false, error: `web_search 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    }
+  });
+
   ctx.tools.set('git_log', {
     name: 'git_log',
     description: '查看 git log. 默认 --oneline -10. 支持过滤和范围.',

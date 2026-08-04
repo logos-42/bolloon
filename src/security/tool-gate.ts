@@ -81,6 +81,8 @@ const TOOL_WHITELIST = new Set<string>([
   'publish_did',
   // 2026-08-04: IPFS/IPNS 通用查询 + 发布 (pi-sdk-tools.ts)
   'ipfs_add', 'ipfs_cat', 'ipfs_ls', 'ipns_publish', 'ipns_resolve',
+  // 2026-08-04: Web 上网工具 (pi-sdk-tools.ts)
+  'fetch_url', 'web_search',
   // 2026-08-02: 远端 channel 工具 (本地智能体 @ 远程交流)
   'list_remote_channels', 'send_to_remote_channel',
 ]);

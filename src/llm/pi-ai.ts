@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { request, Agent } from 'undici';
 
-export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'local';
+export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'grok' | 'local';
 
 export interface ModelConfig {
   provider: ModelProvider;
@@ -247,6 +247,7 @@ export class PiAIModel {
       case 'glm':
       case 'qwen':
       case 'mimo':
+      case 'grok':
         return this.callOpenAI(finalMessages, temperature, maxTokens, signal, openaiTools);
       case 'anthropic':
         return this.callAnthropic(finalMessages, temperature, maxTokens, signal);
@@ -280,6 +281,7 @@ export class PiAIModel {
       glm: process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY || '',
       qwen: process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '',
       mimo: process.env.MIMO_API_KEY || '',
+      grok: process.env.XAI_API_KEY || '',
       local: ''
     };
     return envVars[this.provider] || '';
@@ -304,6 +306,7 @@ export class PiAIModel {
       qwen: process.env.QWEN_BASE_URL || process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       // 小米 MiMo: 走 OpenAI 兼容 API, 官方 endpoint
       mimo: process.env.MIMO_BASE_URL || 'https://api.xiaomi.com/v1',
+      grok: process.env.XAI_BASE_URL || 'https://api.x.ai/v1',
       local: 'http://localhost:11434'
     };
 
@@ -311,23 +314,25 @@ export class PiAIModel {
   }
 
   private mapModel(): string {
+    // 2026-08-04: 型号全面更新 (官方文档确认):
+    //   OpenAI gpt-5.6 (alias→Sol) / Anthropic claude-sonnet-5 / Gemini gemini-3.1-pro (pro 线最新, 3.5 仅 flash)
+    //   Grok grok-4.5 / Kimi kimi-k3 / GLM glm-5.2 / Qwen qwen3-max
     const modelMap: Record<ModelProvider, string> = {
-      openai: this.config.model || process.env.OPENAI_MODEL || 'gpt-4.1',
-      anthropic: this.config.model || 'claude-sonnet-4-5-20250929',
-      ollama: this.config.model || 'llama3.2',
-      openrouter: this.config.model || 'anthropic/claude-sonnet-4.5',
-      // Pinned to 2.5-pro: the only `-pro` model that is GA per Google docs.
-      // The 3.x line ships as `-flash` only — there is no `gemini-3.x-pro`.
-      gemini: this.config.model || 'gemini-2.5-pro',
+      openai: this.config.model || process.env.OPENAI_MODEL || 'gpt-5.6',
+      anthropic: this.config.model || process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
+      ollama: this.config.model || 'llama4',
+      openrouter: this.config.model || process.env.OPENROUTER_MODEL || 'anthropic/claude-sonnet-5',
+      gemini: this.config.model || process.env.GEMINI_MODEL || 'gemini-3.1-pro',
       minimax: this.config.model || process.env.MINIMAX_MODEL || 'MiniMax-M3',
       // 2026-07-17: deepseek-chat (V3) 官方已下线, 迁 deepseek-v4-flash
       deepseek: this.config.model || process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash',
-      kimi: this.config.model || process.env.KIMI_MODEL || process.env.MOONSHOT_MODEL || 'moonshot-v1-8k',
-      glm: this.config.model || process.env.GLM_MODEL || process.env.ZHIPU_MODEL || 'glm-4-flash',
-      qwen: this.config.model || process.env.QWEN_MODEL || process.env.DASHSCOPE_MODEL || 'qwen-plus',
+      kimi: this.config.model || process.env.KIMI_MODEL || process.env.MOONSHOT_MODEL || 'kimi-k3',
+      glm: this.config.model || process.env.GLM_MODEL || process.env.ZHIPU_MODEL || 'glm-5.2',
+      qwen: this.config.model || process.env.QWEN_MODEL || process.env.DASHSCOPE_MODEL || 'qwen3-max',
       // 小米 MiMo (openai 兼容) — env override 优先, 默认 mimo-v2.5-pro
       mimo: this.config.model || process.env.MIMO_MODEL || 'mimo-v2.5-pro',
-      local: this.config.model || 'llama3.2'
+      grok: this.config.model || process.env.XAI_MODEL || 'grok-4.5',
+      local: this.config.model || 'llama4'
     };
     return modelMap[this.provider];
   }
@@ -722,26 +727,28 @@ function detectProvider(): ModelProvider {
   if (process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY) return 'glm';
   if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) return 'qwen';
   if (process.env.MIMO_API_KEY) return 'mimo';
+  if (process.env.XAI_API_KEY) return 'grok';
 
   return 'openai';
 }
 
 function detectModel(provider: ModelProvider): string {
   const defaults: Record<ModelProvider, string> = {
-    openai: 'gpt-4.1',
-    anthropic: 'claude-sonnet-4-5-20250929',
-    ollama: 'llama3.2',
-    openrouter: 'anthropic/claude-sonnet-4.5',
-    gemini: 'gemini-2.5-pro',
+    openai: 'gpt-5.6',
+    anthropic: 'claude-sonnet-5',
+    ollama: 'llama4',
+    openrouter: 'anthropic/claude-sonnet-5',
+    gemini: 'gemini-3.1-pro',
     minimax: 'MiniMax-M3',
     // 2026-07-17: V3 官方下线, 迁 V4
     deepseek: 'deepseek-v4-flash',
-    kimi: 'moonshot-v1-8k',
-    glm: 'glm-4-flash',
-    qwen: 'qwen-plus',
+    kimi: 'kimi-k3',
+    glm: 'glm-5.2',
+    qwen: 'qwen3-max',
     // 小米 MiMo 默认走最新旗舰版 (v2.5-Pro); 2026-06 当前公开版
     mimo: 'mimo-v2.5-pro',
-    local: 'llama3.2'
+    grok: 'grok-4.5',
+    local: 'llama4'
   };
   return defaults[provider];
 }
