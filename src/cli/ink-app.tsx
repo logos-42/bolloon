@@ -184,7 +184,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     return items.filter(it => it.label.toLowerCase().includes(q));
   }, [items, mention]);
 
-  const popupOpen = !!(mention && filtered.length > 0 && dismissed !== mentionKey);
+  const popupOpen = !!(mention && dismissed !== mentionKey);
   const safeSel = Math.min(sel, Math.max(0, filtered.length - 1));
 
   const popupTitle = mention?.kind === 'agent' ? '@ 智能体'
@@ -235,6 +235,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, [onPrompt]);
 
   useInput((_input, key) => {
+    (globalThis as any).__inkOnKey?.({ input: _input, codes: Array.from(_input).map(c => c.charCodeAt(0)), backspace: key.backspace, del: key.delete, tab: key.tab, ret: key.return, esc: key.escape, name: (key as any).name });
     // 退出请求: 通知 startCLI resolve → 走清理 → process.exit (带兜底)
     const requestExit = () => {
       (globalThis as any).__inkRequestExit?.();
@@ -248,10 +249,10 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     }
 
     // ── 弹出窗打开: 全键接管 (TextInput focus=false 不处理) ──
-    if (popupOpen && mention && filtered.length > 0) {
+    if (popupOpen && mention) {
       if (key.upArrow) { setSel(s => Math.max(0, s - 1)); return; }
       if (key.downArrow) { setSel(s => Math.min(filtered.length - 1, s + 1)); return; }
-      if (key.tab || key.return) {
+      if ((key.tab || key.return) && filtered.length > 0) {
         const it = filtered[safeSel];
         if (it) acceptMention(it);
         return;
@@ -279,6 +280,10 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         inkAppendLine(`${C_WARN_ANSI}⚠ 再按一次 Esc 退出当前进程\x1b[0m`);
       }
     }
+    // 防御: 控制字符 chunk (TextInput 会把整 chunk 当字符追加, 2026-08-05 实测)
+    //   \x7f×N → 删 N 个真实字符; 其他控制 chunk → 撤销 TextInput 的垃圾追加
+    if (/^\x7f+$/.test(_input)) { setInput(input.slice(0, -_input.length)); return; }
+    if (/[\x00-\x1f\x7f]/.test(_input)) { setInput(input); return; }
     // TextInput handles actual input; useInput only for Ctrl+C / Esc
   });
 
