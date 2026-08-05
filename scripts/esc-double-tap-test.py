@@ -37,11 +37,11 @@ def log(msg):
 
 ok = True
 try:
-    if not read_until("输入消息...  Esc 双击退出 · /queue 排队", 45):
+    if not read_until("输入消息... @智能体 /命令 #文件", 45):
         log("FAIL: 未等到输入框 placeholder")
         ok = False
     else:
-        log("PASS: placeholder 含 'Esc 双击退出 · /queue 排队 · !终端命令'")
+        log("PASS: placeholder 含 '@智能体 /命令 #文件 · Esc 双击退出 · /queue 排队 · !终端命令'")
 
     # 第一次 ESC
     log("按下第一次 ESC")
