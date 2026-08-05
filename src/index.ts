@@ -488,11 +488,10 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
   // 进入 Ink TUI 输入循环
   const initialStatus = `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ 0s`;
   const getStatus = () => {
-    const dur = Math.floor((Date.now() - cliStartTime) / 1000);
     const barLen = 12;
     const filled = Math.round((cliContextPct / 100) * barLen);
     const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
-    return `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ ${dur}s\x1b[90m │\x1b[0m ${bar} ${cliContextPct}%`;
+    return `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ ${fmtDuration(Date.now() - cliStartTime)}\x1b[90m │\x1b[0m ${bar} ${cliContextPct}%`;
   };
   startInk(
     (text: string) => { processInput(text, comm); },
@@ -572,6 +571,9 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     appendLine(`  ${C_ACCENT}!<cmd>${RESET}  执行终端命令  ${C_DIM}如 !ls -la${RESET}`);
     appendLine(`  ${C_ACCENT}/queue${RESET}  切换队列模式  ${C_DIM}输入排队, 当前结束后自动执行${RESET}`);
     appendLine(`  ${C_ACCENT}/dequeue${RESET} 出队一条`);
+    appendLine(`  ${C_ACCENT}@名字${RESET}     @ 命中智能体  ${C_DIM}弹出窗选择后发送给智能体${RESET}`);
+    appendLine(`  ${C_ACCENT}/名字${RESET}     / 命中命令/技能/插件  ${C_DIM}输入 / 自动弹出${RESET}`);
+    appendLine(`  ${C_ACCENT}#路径${RESET}     # 命中文件  ${C_DIM}输入 # 自动弹出文件列表${RESET}`);
     appendLine(`  ${C_ACCENT}peers${RESET}   查看 P2P 节点`);
     appendLine(`  ${C_ACCENT}iroh${RESET}    查看 iroh 状态`);
     appendLine(`  ${C_ACCENT}add_friend${RESET} 添加好友`);
@@ -697,11 +699,10 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     try {
       const msgLen = JSON.stringify((a as any).messageHistory ?? []).length;
       cliContextPct = Math.min(100, Math.round((msgLen / 240_000) * 100));
-      const dur = Math.floor((Date.now() - cliStartTime) / 1000);
       const barLen = 12;
       const filled = Math.round((cliContextPct / 100) * barLen);
       const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
-      const statusText = `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ ${dur}s \x1b[90m│\x1b[0m ${msgLen.toLocaleString()}B/240K │ ${bar} ${cliContextPct}%`;
+      const statusText = `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ ${fmtDuration(Date.now() - cliStartTime)} \x1b[90m│\x1b[0m ${msgLen.toLocaleString()}B/240K │ ${bar} ${cliContextPct}%`;
       inkSetStatus(statusText);
     } catch { /* 降级容忍 */ }
     // 自动消费队列
