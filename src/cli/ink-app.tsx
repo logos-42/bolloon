@@ -194,23 +194,25 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     : '/ 命令 · 技能 · 插件';
 
   // 接受当前选中项 → 替换 token 插入输入
+  // 函数式更新 + 从最新 state 重新推导 mention (useInput 闭包可能陈旧, 2026-08-05)
   const acceptMention = useCallback((it: MentionItem) => {
-    if (!mention) return;
-    let insertText: string;
-    if (it.kind === 'agent') insertText = '@' + it.insert + ' ';
-    else if (it.kind === 'file') insertText = '#' + it.insert + ' ';
-    else if (it.kind === 'skill') insertText = 'use_skill ' + it.insert + ' ';
-    else insertText = '/' + it.insert + ' ';
-    setInput(input.slice(0, mention.start) + insertText);
+    setInput(cur => {
+      const m = getMention(cur);
+      if (!m) return cur;
+      let insertText: string;
+      if (it.kind === 'agent') insertText = '@' + it.insert + ' ';
+      else if (it.kind === 'file') insertText = '#' + it.insert + ' ';
+      else if (it.kind === 'skill') insertText = 'use_skill ' + it.insert + ' ';
+      else insertText = '/' + it.insert + ' ';
+      return cur.slice(0, m.start) + insertText;
+    });
+    // TextInput 内部 cursorOffset 在值被重写后不重置 (2026-08-05 实测),
+    // 接受插入后强制重挂载让光标回到末尾; 仅此一处重挂载, 避免输入丢失窗口
+    setTiKey(k => k + 1);
     setDismissed(null);
-  }, [input, mention]);
+  }, []);
 
-  // TextInput 内部 cursorOffset 在 focus 切换时不重置 (2026-08-05 实测),
-  // 弹出窗关闭后继续输入会插到旧光标位置 → 用 key 强制重挂载
   const [tiKey, setTiKey] = useState(0);
-  useEffect(() => {
-    if (!popupOpen) setTiKey(k => k + 1);
-  }, [popupOpen]);
 
   // 全局: 思考动画控制
   useEffect(() => {
@@ -260,14 +262,28 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         return;
       }
       if (key.escape) { setDismissed(mentionKey); return; }
-      if (key.backspace || key.delete) { setInput(input.slice(0, -1)); return; }
+      if (key.backspace || key.delete) { setInput(cur => cur.slice(0, -1)); return; }
       // 粘贴/连发 chunk: Ink 把一次 stdin read 当单个 keypress (2026-08-05 实测)
       //   ① 连续退格 (\x7f×N) → 删 N 个字符
-      //   ② 控制字符 chunk → 忽略 (TextInput 时代同样的坑, 这里防御)
+      //   ② 混合 chunk (退格+控制符, 含 ESC 序列) → 退格部分生效, ESC 序列忽略
       //   ③ 可打印 chunk (CJK/粘贴) → 整串追加
-      if (/^\x7f+$/.test(_input)) { setInput(input.slice(0, -_input.length)); return; }
-      if (/[\x00-\x1f\x7f]/.test(_input)) return;
-      if (_input && !key.ctrl && !key.meta) { setInput(input + _input); return; }
+      // 全部用函数式更新 — useInput 闭包可能陈旧 (实测), 函数式取最新 state
+      if (/^\x7f+$/.test(_input)) { setInput(cur => cur.slice(0, Math.max(0, cur.length - _input.length))); return; }
+      if (/[\x00-\x1f\x7f]/.test(_input)) {
+        // 混合 chunk (退格+可打印): 逐字符处理; 含 ESC 序列 → 忽略整块 (箭头等由 TextInput 处理)
+        if (_input.includes('\u001b')) return;
+        setInput(cur => {
+          let out = cur;
+          for (const ch of _input) {
+            if (ch === '\x7f') out = out.slice(0, -1);
+            else if (/[\x00-\x1f]/.test(ch)) continue;
+            else out += ch;
+          }
+          return out;
+        });
+        return;
+      }
+      if (_input && !key.ctrl && !key.meta) { setInput(cur => cur + _input); return; }
       return; // 其余键忽略
     }
 
@@ -283,9 +299,20 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       }
     }
     // 防御: 控制字符 chunk (TextInput 会把整 chunk 当字符追加, 2026-08-05 实测)
-    //   \x7f×N → 删 N 个真实字符; 其他控制 chunk → 撤销 TextInput 的垃圾追加
-    if (/^\x7f+$/.test(_input)) { setInput(input.slice(0, -_input.length)); return; }
-    if (/[\x00-\x1f\x7f]/.test(_input)) { setInput(input); return; }
+    //   setTimeout(0) 保证我们的纠正落在 TextInput 的 onChange 之后 (无论监听器顺序)
+    //   \x7f×N → 先剥掉 TextInput 追加的垃圾, 再删 N 个真实字符
+    if (/^\x7f+$/.test(_input)) {
+      const n = _input.length;
+      setTimeout(() => setInput(cur => {
+        const cleaned = cur.replace(/[\x00-\x1f\x7f]+$/, '');
+        return cleaned.slice(0, Math.max(0, cleaned.length - n));
+      }), 0);
+      return;
+    }
+    if (/[\x00-\x1f\x7f]/.test(_input)) {
+      setTimeout(() => setInput(cur => cur.replace(/[\x00-\x1f\x7f]+$/, '')), 0);
+      return;
+    }
     // TextInput handles actual input; useInput only for Ctrl+C / Esc
   });
 
