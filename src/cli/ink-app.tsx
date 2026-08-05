@@ -69,6 +69,8 @@ const MentionPopup: React.FC<MentionPopupProps> = ({ title, items, sel, width, l
       <Text color="cyan" bold>{`╭─ ${title} ${'─'.repeat(Math.max(2, innerW - dispWidth(title) - 4))}╮`}</Text>
       {loading && items.length === 0 ? (
         <Text color="dim">│ 扫描中...</Text>
+      ) : !loading && items.length === 0 ? (
+        <Text color="dim">│ 无匹配</Text>
       ) : (
         shown.map((it, i) => {
           const active = i === sel;
@@ -235,7 +237,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, [onPrompt]);
 
   useInput((_input, key) => {
-    (globalThis as any).__inkOnKey?.({ input: _input, codes: Array.from(_input).map(c => c.charCodeAt(0)), backspace: key.backspace, del: key.delete, tab: key.tab, ret: key.return, esc: key.escape, name: (key as any).name });
+    (globalThis as any).__inkOnKey?.({ input: _input, closureInput: input, backspace: key.backspace, del: key.delete, tab: key.tab, ret: key.return, esc: key.escape });
     // 退出请求: 通知 startCLI resolve → 走清理 → process.exit (带兜底)
     const requestExit = () => {
       (globalThis as any).__inkRequestExit?.();
