@@ -167,16 +167,19 @@ const SKIP_DIRS = new Set([
   '.bolloon', '.boll', '.turbo', '.idea', '.vscode', 'bin', 'lib', 'assets',
 ]);
 
-/** cwd 有限深度 BFS, 只收文件, 上限 cap 个, 排序稳定 */
+/** cwd 有限深度 BFS, 只收文件, 上限 cap 个, 排序稳定; 超时兜底 (冷缓存 fs.readdir 偶发挂起, 2026-08-05) */
 export async function loadFiles(
   _query: string,
   base: string = process.cwd(),
   maxDepth = 3,
   cap = 400,
+  timeoutMs = 5000,
 ): Promise<MentionItem[]> {
   const out: MentionItem[] = [];
+  const deadline = Date.now() + timeoutMs;
   const stack: Array<{ dir: string; depth: number }> = [{ dir: base, depth: 0 }];
   while (stack.length > 0 && out.length < cap) {
+    if (Date.now() > deadline) break; // 超时返回已收集部分, 弹窗不卡"扫描中"
     const { dir, depth } = stack.pop()!;
     let entries: import('fs').Dirent[];
     try {

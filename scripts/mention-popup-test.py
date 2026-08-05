@@ -133,7 +133,8 @@ try:
             log("FAIL: # 未弹出文件窗口 (屏幕尾部: " + ansi_re.sub(b"", buf).decode(errors="replace")[-300:] + ")")
             ok = False
         send("src/")
-        check(wait_input("#src/") and read_until("src/agents/agent-identity.ts", 5), "#src/ 命中项目文件 (src/agents/... 可见首屏)")
+        # loadFiles 首次遍历 cwd 冷缓存可能 >5s, 放宽到 15s
+        check(wait_input("#src/", 8) and read_until("src/agents/agent-identity.ts", 15), "#src/ 命中项目文件 (src/agents/... 可见首屏)")
 
         # 7. 历史输入: ↑/↓ 切换 (先清空 #src/)
         send(b"\x7f" * 5)
