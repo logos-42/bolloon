@@ -239,7 +239,6 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, [onPrompt]);
 
   useInput((_input, key) => {
-    (globalThis as any).__inkOnKey?.({ input: _input, closureInput: input, backspace: key.backspace, del: key.delete, tab: key.tab, ret: key.return, esc: key.escape });
     // 退出请求: 通知 startCLI resolve → 走清理 → process.exit (带兜底)
     const requestExit = () => {
       (globalThis as any).__inkRequestExit?.();

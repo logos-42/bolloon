@@ -2,14 +2,14 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-08-03
+last_confirmed: 2026-08-05
 schema_version: 2
 audience: self
 stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup]
+tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup]
 compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ---
 
@@ -72,6 +72,8 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ||| **IPFS/IPNS agent 工具** (2026-08-04) | `src/agents/pi-sdk-tools.ts` + `src/security/tool-gate.ts` | agent 新增 5 个通用工具: `ipfs_add` (上传文本→CID) / `ipfs_cat` (CID 读回) / `ipfs_ls` (列目录, 单文件识别) / `ipns_publish` (CID→IPNS name, 默认 self key, 自动 ensureKeyExists) / `ipns_resolve` (name→CID, 60s 超时) + kuboApi helper (AbortController 30s 超时). 复用 checkKuboSetup 自动安装/启动 Kubo. 端到端实测 add→cat→ls→publish→resolve 全链路通过; IPNS 同 key 重发布缓存延迟 (DHT 特性) 已写入 description. tsc 0 错, vitest 1019/1019 | [pi-sdk-tools.ts](../../src/agents/pi-sdk-tools.ts) / [verify-ipfs-tools.ts](../../scripts/verify-ipfs-tools.ts) |
 ||| **CLI 输入框提示 + 双击 Esc 退出** (2026-08-04) | `src/cli/ink-app.tsx` + `src/index.ts` | 输入框 placeholder 加中断/队列提示: `输入消息... Esc 双击退出 · /queue 排队 · !终端命令` (`!` 前缀执行终端命令, 如 !ls -la); /help 补 `Esc 双击` 行. 双击 Esc 退出当前进程: 根因 Ink exit() 只 unmount 不退出进程 + startCLI await 永不 resolve → __inkRequestExit 打通 promise → 清理 comm.stop() → process.exit(0), 2s 兜底; 第一击提示 "再按一次 Esc", 500ms 内第二击退出 (pty 实测 40ms 内退出). tsc 0 错, vitest 1019/1019 | [ink-app.tsx](../../src/cli/ink-app.tsx) / [esc-double-tap-test.py](../../scripts/esc-double-tap-test.py) |
 ||| **run-end 经验整理 (Web+CLI 统一, 颜文字加载)** (2026-08-04) | `src/agents/skill-writer.ts` + `src/web/server.ts` + `src/index.ts` | 每轮运行结束自动整理经验: 提取连续成功工具 (≥2, 过滤 system/?/error) → 写候选到 ~/.bolloon/skill-candidates/ (只写候选, agent 用 list_skill_candidates/promote_skill 转正). 公共函数 writeRunEndSkillCandidates 供 Web server (原内联逻辑抽出, 行为不变) 与 CLI (新增, 之前 CLI 缺失) 共用. CLI 显示颜文字加载: `(｀・ω・´) 整理本轮经验中... N 个工具调用` → `✨ (◕‿◕) 经验候选已写入: <工具名>`. tsc 0 错, vitest 1022/1022 | [skill-writer.ts](../../src/agents/skill-writer.ts) / [skill-writer.test.ts](../../src/test/skill-writer.test.ts) |
+
+|||| **CLI @ / # 弹出选择窗** (2026-08-05) | `src/cli/ink-app.tsx` + `src/cli/mention-data.ts`(新) + `src/index.ts` | 输入 @ 弹窗命中智能体 (本地 channels.json + 远端 remote-channels-cache.json), / 弹窗命中 14 个内置命令 + 技能 (3 个 skill 目录) + MCP 插件 (~/.mcp.json mcpServers), # 弹窗命中 cwd 文件 (深度 3, 跳过 node_modules/.git/dist, 上限 400). ↑/↓ 导航, Tab/Enter 选中插入 (@名 / /命令 / use_skill 技能 / #路径), Esc 关闭. 修 3 个 Ink 输入坑: ① useInput 闭包陈旧 → 全部改函数式 setInput; ② Ink 把一次 stdin read 当单个 keypress (CJK 粘贴/退格连发 chunk) → 逐字符处理 + 正常模式 setTimeout(0) 纠正 TextInput 垃圾追加; ③ TextInput focus 切换后 cursorOffset 不重置 → accept 后 key 重挂载. 状态栏计时改 h/m/s 进位 (fmtDuration). placeholder 加 @/命令/#文件 提示, /help 同步. tsc 0 错, vitest 1027/1027 (+8 mention-data 单测), pty 实测 12/12 (scripts/mention-popup-test.py) | [mention-data.ts](../../src/cli/mention-data.ts) / [ink-app.tsx](../../src/cli/ink-app.tsx) / [mention-popup-test.py](../../scripts/mention-popup-test.py) |
 
 ## 未支持 (❌ 或 ⚠️ 部分)
 

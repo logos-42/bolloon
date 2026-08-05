@@ -17,9 +17,6 @@ import { InkApp } from '../src/cli/ink-app.js';
 (globalThis as any).__inkOnPopup = (p: any) => {
   process.stderr.write(`\n[POPUP] ${JSON.stringify(p)}\n`);
 };
-(globalThis as any).__inkOnKey = (k: any) => {
-  process.stderr.write(`\n[KEY] ${JSON.stringify(k)}\n`);
-};
 
 render(
   <InkApp
