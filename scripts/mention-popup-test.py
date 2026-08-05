@@ -46,8 +46,8 @@ def read_until(needle, timeout=10):
     return False
 
 def wait_input(value, timeout=5):
-    """等最近的 [INPUT] "<value>" 钩子 (只看尾部 ~600B, 防旧钩子误匹配)"""
-    global buf
+    """等 [INPUT] "<value>" 钩子 — 只匹配本次调用之后出现的新数据 (防旧钩子误匹配)"""
+    global buf, _search_from
     needle = '[INPUT] "%s"' % value
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -60,9 +60,13 @@ def wait_input(value, timeout=5):
             if not data:
                 return False
             buf += data
-            if needle.encode() in buf[-600:]:
+            hit = buf.find(needle.encode(), _search_from)
+            if hit >= 0:
+                _search_from = hit + len(needle)
                 return True
     return False
+
+_search_from = 0
 
 t0 = time.time()
 def log(msg):
@@ -131,7 +135,43 @@ try:
         send("src/")
         check(wait_input("#src/") and read_until("src/agents/agent-identity.ts", 5), "#src/ 命中项目文件 (src/agents/... 可见首屏)")
 
-        # 7. Ctrl+C 退出
+        # 7. 历史输入: ↑/↓ 切换 (先清空 #src/)
+        send(b"\x7f" * 5)
+        step_ok = wait_input("", 3)
+        send("hello")
+        if wait_input("hello", 3): send("\r"); time.sleep(0.3)
+        else: step_ok = False
+        send("你好世界")
+        if wait_input("你好世界", 3): send("\r"); time.sleep(0.3)
+        else: step_ok = False
+        send("\x1b[A")  # ↑ → 最近一条 你好世界
+        if not wait_input("你好世界", 3): step_ok = False
+        send("\x1b[A")  # ↑ → hello
+        if not wait_input("hello", 3): step_ok = False
+        send("\x1b[B")  # ↓ → 你好世界
+        if not wait_input("你好世界", 3): step_ok = False
+        send("\x1b[B")  # ↓ → 草稿
+        if not wait_input("", 3): step_ok = False
+        check(step_ok, "↑/↓ 切换历史输入 (最近→更早→草稿)")
+
+        # 8. Tab 命令补齐
+        send("que")
+        if wait_input("que", 3):
+            send("\t")
+            check(wait_input("/queue ", 3), "Tab 补齐 que → /queue ")
+        else:
+            check(False, "输入 que 失败")
+        send(b"\x7f" * 7)
+        step_ok = wait_input("", 3)
+        time.sleep(0.4)  # 等 burst 处理完 (避免 Tab 与退格 coalesce)
+        send("\t")
+        if not read_until("Tab 补齐", 3):
+            step_ok = False
+        check(step_ok, "空 token + Tab 弹出 'Tab 补齐' 窗")
+        send("\x1b")  # Esc 关闭补齐窗
+        time.sleep(0.3)
+
+        # 9. Ctrl+C 退出
         send("\x03")
         deadline = time.time() + 5
         exited = False

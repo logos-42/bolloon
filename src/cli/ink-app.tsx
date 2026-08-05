@@ -126,12 +126,21 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const [sel, setSel] = useState(0);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [loadingFiles, setLoadingFiles] = useState(false);
+  // Tab 补齐弹窗 (非 @ / # 触发的普通 token 补齐): { start, items }
+  const [tabState, setTabState] = useState<{ start: number; items: MentionItem[] } | null>(null);
   const agentCache = useRef<MentionItem[] | null>(null);
   const skillCache = useRef<MentionItem[] | null>(null);
   const pluginCache = useRef<MentionItem[] | null>(null);
+  const fileCache = useRef<MentionItem[] | null>(null);
+
+  // ── 输入历史 (↑/↓ 切换) ───────────────────────────────────────────────────
+  const historyRef = useRef<string[]>([]);
+  const historyIdxRef = useRef(-1); // -1 = 正在编辑新草稿
+  const draftRef = useRef('');
 
   // 加载当前 mention 的候选 (agent/command 缓存一次; file 每次打开重扫)
   useEffect(() => {
+    if (tabState) { setItems(tabState.items); setSel(0); return; }
     if (!mention || !mentionKey) { setItems([]); return; }
     if (dismissed === mentionKey) { setItems([]); return; }
     let cancelled = false;
@@ -166,15 +175,16 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       // file: 每次打开重扫 (cwd 可能变化)
       setLoadingFiles(true);
       loadFiles(mention.query)
-        .then(list => { if (!cancelled) { setItems(list); setLoadingFiles(false); } })
+        .then(list => { if (!cancelled) { fileCache.current = list; setItems(list); setLoadingFiles(false); } })
         .catch(() => { if (!cancelled) { setItems([]); setLoadingFiles(false); } });
     }
     setSel(0);
     return () => { cancelled = true; };
-  }, [mentionKey, dismissed]);
+  }, [mentionKey, dismissed, tabState]);
 
   // 按查询过滤 + 排序
   const filtered = useMemo(() => {
+    if (tabState) return items; // Tab 补齐: 已按前缀过滤好
     if (!mention) return [];
     const q = mention.query.toLowerCase();
     if (!q) return items;
@@ -184,18 +194,36 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         .sort((a, b) => matchFileScore(a.label.toLowerCase(), q) - matchFileScore(b.label.toLowerCase(), q));
     }
     return items.filter(it => it.label.toLowerCase().includes(q));
-  }, [items, mention]);
+  }, [items, mention, tabState]);
 
-  const popupOpen = !!(mention && dismissed !== mentionKey);
+  const popupOpen = !!(tabState || (mention && dismissed !== mentionKey));
   const safeSel = Math.min(sel, Math.max(0, filtered.length - 1));
 
-  const popupTitle = mention?.kind === 'agent' ? '@ 智能体'
+  const popupTitle = tabState ? 'Tab 补齐'
+    : mention?.kind === 'agent' ? '@ 智能体'
     : mention?.kind === 'file' ? '# 文件'
     : '/ 命令 · 技能 · 插件';
+
+  // 在指定 start 位置插入补齐文本 (函数式更新, 闭包安全)
+  const insertAt = useCallback((start: number, it: MentionItem) => {
+    setInput(cur => {
+      if (start > cur.length) return cur;
+      let insertText: string;
+      if (it.kind === 'agent') insertText = '@' + it.insert + ' ';
+      else if (it.kind === 'file') insertText = '#' + it.insert + ' ';
+      else if (it.kind === 'skill') insertText = 'use_skill ' + it.insert + ' ';
+      else insertText = '/' + it.insert + ' ';
+      return cur.slice(0, start) + insertText;
+    });
+    // TextInput 内部 cursorOffset 在值被重写后不重置 (2026-08-05 实测),
+    // 插入后强制重挂载让光标回到末尾; 仅此一处重挂载, 避免输入丢失窗口
+    setTiKey(k => k + 1);
+  }, []);
 
   // 接受当前选中项 → 替换 token 插入输入
   // 函数式更新 + 从最新 state 重新推导 mention (useInput 闭包可能陈旧, 2026-08-05)
   const acceptMention = useCallback((it: MentionItem) => {
+    if (tabState) { insertAt(tabState.start, it); setTabState(null); setDismissed(null); return; }
     setInput(cur => {
       const m = getMention(cur);
       if (!m) return cur;
@@ -206,11 +234,44 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       else insertText = '/' + it.insert + ' ';
       return cur.slice(0, m.start) + insertText;
     });
-    // TextInput 内部 cursorOffset 在值被重写后不重置 (2026-08-05 实测),
-    // 接受插入后强制重挂载让光标回到末尾; 仅此一处重挂载, 避免输入丢失窗口
     setTiKey(k => k + 1);
     setDismissed(null);
-  }, []);
+  }, [tabState, insertAt]);
+
+  // Tab 命令补齐: 无触发符的普通 token 也补 (命令/技能/插件/智能体/文件)
+  const doTabCompletion = useCallback(() => {
+    const m = input.match(/(^|\s)([^\s]*)$/);
+    if (!m) return;
+    const [, pre, token] = m;
+    const start = (m.index || 0) + pre.length;
+    const q = token.toLowerCase();
+    const items: MentionItem[] = [];
+    const add = (list: MentionItem[]) => {
+      for (const it of list) {
+        if (items.some(x => x.kind === it.kind && x.label === it.label)) continue;
+        if (it.label.toLowerCase().startsWith(q)) items.push(it);
+      }
+    };
+    if (q) {
+      add(loadCommands());
+      if (skillCache.current) add(skillCache.current);
+      if (pluginCache.current) add(pluginCache.current);
+      if (agentCache.current) add(agentCache.current);
+      if (fileCache.current) add(fileCache.current);
+    } else {
+      // 空 token: 命令 + 技能 + 插件
+      add(loadCommands());
+      if (skillCache.current) add(skillCache.current);
+      if (pluginCache.current) add(pluginCache.current);
+    }
+    if (items.length === 1) {
+      insertAt(start, items[0]);
+      setTabState(null);
+    } else if (items.length > 1) {
+      setTabState({ start, items });
+      setSel(0);
+    }
+  }, [input, insertAt]);
 
   const [tiKey, setTiKey] = useState(0);
 
@@ -233,6 +294,12 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const onSubmit = useCallback((value: string) => {
     const trimmed = value.trim();
     if (!trimmed) return;
+    // 入历史 (去重最近一条, 上限 100)
+    const hist = historyRef.current;
+    if (hist[hist.length - 1] !== trimmed) hist.push(trimmed);
+    if (hist.length > 100) hist.shift();
+    historyIdxRef.current = -1;
+    draftRef.current = '';
     setInput('');
     // 用户消息由 processInput 统一通过 appendLine(renderUserMessage) 显示
     onPrompt(trimmed);
@@ -252,7 +319,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     }
 
     // ── 弹出窗打开: 全键接管 (TextInput focus=false 不处理) ──
-    if (popupOpen && mention) {
+    if (popupOpen) {
       if (key.upArrow) { setSel(s => Math.max(0, s - 1)); return; }
       if (key.downArrow) { setSel(s => Math.min(filtered.length - 1, s + 1)); return; }
       if ((key.tab || key.return) && filtered.length > 0) {
@@ -260,7 +327,11 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         if (it) acceptMention(it);
         return;
       }
-      if (key.escape) { setDismissed(mentionKey); return; }
+      if (key.escape) {
+        if (tabState) setTabState(null);
+        else setDismissed(mentionKey);
+        return;
+      }
       if (key.backspace || key.delete) { setInput(cur => cur.slice(0, -1)); return; }
       // 粘贴/连发 chunk: Ink 把一次 stdin read 当单个 keypress (2026-08-05 实测)
       //   ① 连续退格 (\x7f×N) → 删 N 个字符
@@ -287,6 +358,28 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     }
 
     // ── 正常模式 ──
+    // Tab 命令补齐 (无触发符的普通 token 也补)
+    if (key.tab) { doTabCompletion(); return; }
+    // ↑/↓ 切换输入历史 (TextInput 本身忽略 up/down, 无冲突)
+    if (key.upArrow) {
+      const hist = historyRef.current;
+      if (hist.length === 0) return;
+      if (historyIdxRef.current === -1) draftRef.current = input;
+      if (historyIdxRef.current < hist.length - 1) {
+        historyIdxRef.current += 1;
+        setInput(hist[hist.length - 1 - historyIdxRef.current]);
+        setTiKey(k => k + 1);
+      }
+      return;
+    }
+    if (key.downArrow) {
+      if (historyIdxRef.current === -1) return;
+      historyIdxRef.current -= 1;
+      if (historyIdxRef.current === -1) setInput(draftRef.current);
+      else setInput(historyRef.current[historyRef.current.length - 1 - historyIdxRef.current]);
+      setTiKey(k => k + 1);
+      return;
+    }
     // 双击 Esc 退出当前进程: 第一击提示, 500ms 内第二击退出
     if (key.escape) {
       const now = Date.now();
@@ -378,7 +471,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       </Box>
 
       {/* 弹出选择窗 (输入栏上方, 弹出页) */}
-      {popupOpen && mention && (
+      {popupOpen && (tabState || mention) && (
         <MentionPopup
           title={popupTitle}
           items={filtered}

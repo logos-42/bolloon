@@ -574,6 +574,8 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     appendLine(`  ${C_ACCENT}@名字${RESET}     @ 命中智能体  ${C_DIM}弹出窗选择后发送给智能体${RESET}`);
     appendLine(`  ${C_ACCENT}/名字${RESET}     / 命中命令/技能/插件  ${C_DIM}输入 / 自动弹出${RESET}`);
     appendLine(`  ${C_ACCENT}#路径${RESET}     # 命中文件  ${C_DIM}输入 # 自动弹出文件列表${RESET}`);
+    appendLine(`  ${C_ACCENT}Tab${RESET}       补齐命令  ${C_DIM}普通输入也能 Tab 补 /命令 use_skill 技能 @智能体 #文件${RESET}`);
+    appendLine(`  ${C_ACCENT}↑/↓${RESET}       切换历史输入  ${C_DIM}↑ 翻上一条, ↓ 回下一条/草稿${RESET}`);
     appendLine(`  ${C_ACCENT}peers${RESET}   查看 P2P 节点`);
     appendLine(`  ${C_ACCENT}iroh${RESET}    查看 iroh 状态`);
     appendLine(`  ${C_ACCENT}add_friend${RESET} 添加好友`);
