@@ -4116,6 +4116,48 @@ app.get('/channels', async (_req, res) => {
   }
 });
 
+// 2026-08-06: active channel (统一 Agent Identity) — CLI /channel 与 Web UI 共用
+//   active-channel.json 是唯一持久化点: CLI 切换写, Web 读同一文件 → 两边一致
+const ACTIVE_CHANNEL_FILE = `${process.env.HOME || '/tmp'}/.bolloon/active-channel.json`;
+const CHANNELS_JSON = `${process.env.HOME || '/tmp'}/.bolloon/sessions/channels.json`;
+
+async function readActiveChannel(): Promise<{ channelId: string | null; identity?: { id: string; name: string; channelId?: string } }> {
+  try {
+    const a = JSON.parse(await fs.readFile(ACTIVE_CHANNEL_FILE, 'utf-8'));
+    if (!a || typeof a.channelId !== 'string') return { channelId: null };
+    // 解析 identity name (persona.name 优先)
+    let channels: any[] = [];
+    try { channels = JSON.parse(await fs.readFile(CHANNELS_JSON, 'utf-8')); } catch { /* */ }
+    const ch = channels.find((c: any) => c?.id === a.channelId);
+    const name = ch?.persona?.name?.trim() || ch?.name || ch?.agentId || 'agent';
+    return { channelId: a.channelId, identity: { id: a.channelId, name, channelId: a.channelId } };
+  } catch {
+    return { channelId: null };
+  }
+}
+
+app.get('/active-channel', async (_req, res) => {
+  try {
+    const a = await readActiveChannel();
+    res.json(a);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/active-channel', async (req, res) => {
+  try {
+    const channelId = String(req.body?.channelId || '').trim();
+    if (!channelId) return res.status(400).json({ error: 'channelId 必填' });
+    await fs.mkdir(path.dirname(ACTIVE_CHANNEL_FILE), { recursive: true });
+    await fs.writeFile(ACTIVE_CHANNEL_FILE, JSON.stringify({ channelId, updatedAt: Date.now() }, null, 2), 'utf-8');
+    const a = await readActiveChannel();
+    res.json(a);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
   // v3: 列出本节点缓存的远端 channel (按 peerId 分组)
   app.get('/api/remote-channels', async (_req, res) => {
     try {

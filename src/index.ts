@@ -432,14 +432,24 @@ const pendingQueue: string[] = [];
 let cliStartTime = 0;
 let cliModelName = '…';
 let cliAgentName = '…';
+let cliActiveChannelId: string | null = null;
 
 function fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
   const h = Math.floor(m / 60);
-  if (h > 0) return `${h}h${m % 60}m`;
-  if (m > 0) return `${m}m${s % 60}s`;
-  return `${s}s`;
+  return `${h}h ${m % 60}m`;
+}
+
+/** 状态栏: 模型 │ 当前智能体 (含 channel) │ ⏱ 时间 │ 上下文进度条 (模块级, CLI/Web 共用) */
+function getStatus(): string {
+  const barLen = 12;
+  const filled = Math.round((cliContextPct / 100) * barLen);
+  const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
+  const agentPart = cliActiveChannelId ? `${cliAgentName} ${C_DIM}(ch:${cliActiveChannelId.slice(0, 10)})${RESET}` : cliAgentName;
+  return `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${agentPart} \x1b[90m│\x1b[0m ⏱ ${fmtDuration(Date.now() - cliStartTime)}\x1b[90m │\x1b[0m ${bar} ${cliContextPct}%`;
 }
 
 function statusBarLine(): string {
@@ -485,14 +495,22 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
   cliAgentName = agentIdentity?.name || 'bolloon';
   cliStartTime = Date.now();
 
+  // 恢复上次 active channel (session 恢复: CLI 与 Web 共用 active-channel.json)
+  try {
+    const { getIdentityStore } = await import('./agents/agent-identity-store.js');
+    const store = getIdentityStore();
+    await store.load();
+    const active = await store.getActive();
+    if (active) {
+      cliAgentName = active.name;
+      cliActiveChannelId = active.channelId ?? null;
+    }
+  } catch {
+    /* 无 channels/active 记录时保持默认 */
+  }
+
   // 进入 Ink TUI 输入循环
   const initialStatus = `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ 0s`;
-  const getStatus = () => {
-    const barLen = 12;
-    const filled = Math.round((cliContextPct / 100) * barLen);
-    const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
-    return `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ ${fmtDuration(Date.now() - cliStartTime)}\x1b[90m │\x1b[0m ${bar} ${cliContextPct}%`;
-  };
   startInk(
     (text: string) => { processInput(text, comm); },
     initialStatus,
@@ -537,6 +555,47 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     return;
   }
 
+  // /channel — 切换当前智能体 (agent channel), 参数 name/id/number 自动解析
+  if (trimmed.toLowerCase().startsWith('/channel')) {
+    process.stderr.write(`\n[DBG-CHANNEL] input=${JSON.stringify(trimmed)}\n`);
+    const q = trimmed.slice('/channel'.length).trim();
+    try {
+      const { getIdentityStore } = await import('./agents/agent-identity-store.js');
+      const store = getIdentityStore();
+      await store.load();
+      if (!q) {
+        // 无参: 列出所有 channel + active
+        const list = await store.listForDisplay();
+        const active = await store.getActive();
+        if (list.length === 0) { appendLine(`${C_DIM}暂无智能体 channel (channels.json 为空)${RESET}`); return; }
+        appendLine(`${C_ACCENT}智能体列表:${RESET} (${active ? `当前: ${active.name}` : ''})`);
+        for (const { index, identity, active: isActive } of list) {
+          const mark = isActive ? '●' : '○';
+          appendLine(`  ${mark} ${index}. ${identity.name}  ${C_DIM}${identity.id.slice(0, 24)}${RESET}`);
+        }
+        appendLine(`${C_DIM}用法: /channel <名字|id|序号>${RESET}`);
+        return;
+      }
+      const r = await store.resolve(q);
+      if (!r) {
+        appendLine(`${C_ERROR}未找到智能体: '${q}'${RESET} (可用 /channel 查看列表)`);
+        return;
+      }
+      const prev = await store.getActive();
+      await store.setActive(r.channel.id);
+      cliAgentName = r.identity.name;
+      cliActiveChannelId = r.channel.id;
+      inkSetStatus(getStatus()); // 触发状态栏立即重绘 (无需等 1s 定时器)
+      const extra = prev && prev.name !== r.identity.name ? ` (从 ${prev.name} 切换)` : '';
+      appendLine(`${C_ACCENT}→ 当前智能体: ${r.identity.name}${RESET}${extra}`);
+      appendLine(`${C_DIM}  channel: ${r.channel.id}  [${r.match}]${RESET}`);
+      appendLine(`${C_DIM}  persona: ${r.channel.persona?.description || r.channel.persona?.personality || '无'}${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/channel 失败: ${String(e.message || e).slice(0, 200)}${RESET}`);
+    }
+    return;
+  }
+
   // /queue — 切换队列模式
   if (trimmed.toLowerCase() === '/queue') {
     queueMode = !queueMode;
@@ -571,6 +630,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     appendLine(`  ${C_ACCENT}!<cmd>${RESET}  执行终端命令  ${C_DIM}如 !ls -la${RESET}`);
     appendLine(`  ${C_ACCENT}/queue${RESET}  切换队列模式  ${C_DIM}输入排队, 当前结束后自动执行${RESET}`);
     appendLine(`  ${C_ACCENT}/dequeue${RESET} 出队一条`);
+    appendLine(`  ${C_ACCENT}/channel [名字|id|序号]${RESET} 切换当前智能体  ${C_DIM}无参列出所有; 支持名字/ID/序号三种解析${RESET}`);
     appendLine(`  ${C_ACCENT}@名字${RESET}     @ 命中智能体  ${C_DIM}弹出窗选择后发送给智能体${RESET}`);
     appendLine(`  ${C_ACCENT}/名字${RESET}     / 命中命令/技能/插件  ${C_DIM}输入 / 自动弹出${RESET}`);
     appendLine(`  ${C_ACCENT}#路径${RESET}     # 命中文件  ${C_DIM}输入 # 自动弹出文件列表${RESET}`);

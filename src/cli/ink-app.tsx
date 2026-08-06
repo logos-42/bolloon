@@ -277,6 +277,13 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
   // 全局: 思考动画控制
   useEffect(() => {
+    // 2026-08-06: 防御 — 某些环境 (tsx/完整 CLI 初始化) 下 stdin 会处于 paused,
+    // 不恢复则 useInput 收不到任何输入 (实测 isPaused=true, listeners=0)
+    if ((process.stdin as any).isPaused()) (process.stdin as any).resume();
+    // 临时: 原始 stdin 字节钩子 (幽灵 m 排查)
+    const rawHook = (d: Buffer) => { process.stderr.write(`\n[DBG-RAW] ${JSON.stringify(d.toString('latin1'))}\n`); };
+    (process.stdin as any).on('data', rawHook);
+    (globalThis as any).__rawHookCleanup = () => (process.stdin as any).off('data', rawHook);
     (globalThis as any).__inkSetThinking = (v: boolean) => setThinking(v);
     (globalThis as any).__inkAppend = (line: string) => {
       setMsgs(prev => [...prev, line]);
@@ -292,6 +299,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, []);
 
   const onSubmit = useCallback((value: string) => {
+    process.stderr.write(`\n[DBG-SUBMIT] value=${JSON.stringify(value)}\n`);
     const trimmed = value.trim();
     if (!trimmed) return;
     // 入历史 (去重最近一条, 上限 100)
@@ -306,6 +314,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, [onPrompt]);
 
   useInput((_input, key) => {
+    process.stderr.write(`\n[DBG-IN] ${JSON.stringify(String(_input))} ret=${key.return} name=${(key as any).name}\n`);
     // 退出请求: 通知 startCLI resolve → 走清理 → process.exit (带兜底)
     const requestExit = () => {
       (globalThis as any).__inkRequestExit?.();
@@ -353,8 +362,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         });
         return;
       }
-      if (_input && !key.ctrl && !key.meta) { setInput(cur => cur + _input); return; }
-      return; // 其余键忽略
+      if (_input && !key.ctrl && !key.meta && !key.return) { setInput(cur => cur + _input); return; }
+      return; // 其余键忽略 (return/tab/esc 等由 TextInput 或上层处理)
     }
 
     // ── 正常模式 ──

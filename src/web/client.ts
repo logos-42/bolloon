@@ -100,6 +100,7 @@ const channelNameEl = document.getElementById('channel-name');
 
 let eventSources = new Map(); // channelId -> EventSource
 let currentChannelId = null;
+let activeChannelId = null; // 2026-08-06: 统一 Agent Identity 的 active channel (active-channel.json)
 let currentAgentId = '';
 let channels = [];
 let remoteChannels = []; // v3: 远端 channel UI 元数据 (按 peer 分组)
@@ -238,6 +239,20 @@ async function loadChannels() {
     channels.forEach((ch, i) => {
       console.log(`  [${i}] ${ch.name} - did: "${ch.did}"`);
     });
+    // 2026-08-06: 读 active channel (统一 Agent Identity) — CLI /channel 切换后 Web 刷新即同步
+    try {
+      const ar = await fetch('/active-channel');
+      const a = await ar.json();
+      if (a && a.channelId) {
+        activeChannelId = a.channelId;
+        // 首次加载/刷新: 默认选中 active channel (与 CLI 状态栏一致); 用户已手动切过则不覆盖
+        if (!currentChannelId) currentChannelId = a.channelId;
+        document.title = `Bolloon · ${a.identity?.name || a.channelId}`;
+        console.log('[加载频道] active channel:', a.channelId, '→', a.identity?.name);
+      }
+    } catch (e) {
+      console.warn('[加载频道] 读 active channel 失败 (非致命):', e);
+    }
     // 2026-06-11: 全部默认不展开 (用户需要手动点 caret 展开 session 列表)
     // 之前默认展开第一个会喧宾夺主, 用户看不到完整 channel 列表
     renderChannels();

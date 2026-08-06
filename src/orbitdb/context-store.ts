@@ -16,6 +16,14 @@ import {
   type CIDRecord,
 } from './cid-database.js';
 import { readContextAssets } from '../bootstrap/context-os.js';
+import type { AgentIdentity } from '../agents/agent-identity-store.js';
+
+/** Context OS 需要的当前 agent 上下文 (P6: 快照保存 identity, memory 绑定 identity) */
+export interface AgentContext {
+  agentId: string;
+  channelId?: string;
+  identity?: AgentIdentity;
+}
 
 export interface ContextSnapshot {
   agentId: string;
@@ -23,6 +31,10 @@ export interface ContextSnapshot {
   memorySummary?: string;
   focus?: string;
   capturedAt: number;
+  /** 2026-08-06: 快照保存 agent identity (统一身份源) */
+  identity?: AgentIdentity;
+  /** 当前 channel (切换后快照能反映归属) */
+  channelId?: string;
 }
 
 /** 快照 → 可用于恢复的上下文文本 (注入 prompt 用) */
@@ -39,8 +51,12 @@ export function formatSnapshot(s: ContextSnapshot): string {
 export class ContextStore {
   constructor(private db: CIDDatabase = getCIDDatabase()) {}
 
-  /** 抓取当前 Context OS 资产层 → 快照 (与现有 readContextAssets 打通) */
-  async captureCurrentContext(agentId: string, extra?: { memorySummary?: string; focus?: string }): Promise<ContextSnapshot> {
+  /** 抓取当前 Context OS 资产层 → 快照 (与现有 readContextAssets 打通; ctx 可带 identity/channel) */
+  async captureCurrentContext(
+    agentId: string,
+    extra?: { memorySummary?: string; focus?: string },
+    ctx?: AgentContext,
+  ): Promise<ContextSnapshot> {
     const layers: Record<string, string[]> = {};
     try {
       const listings = await readContextAssets();
@@ -56,6 +72,8 @@ export class ContextStore {
       memorySummary: extra?.memorySummary,
       focus: extra?.focus,
       capturedAt: Date.now(),
+      identity: ctx?.identity,
+      channelId: ctx?.channelId,
     };
   }
 
