@@ -2,14 +2,14 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-08-05
+last_confirmed: 2026-08-06
 schema_version: 2
 audience: self
 stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup]
+tags: [status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer]
 compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ---
 
@@ -74,6 +74,8 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ||| **run-end 经验整理 (Web+CLI 统一, 颜文字加载)** (2026-08-04) | `src/agents/skill-writer.ts` + `src/web/server.ts` + `src/index.ts` | 每轮运行结束自动整理经验: 提取连续成功工具 (≥2, 过滤 system/?/error) → 写候选到 ~/.bolloon/skill-candidates/ (只写候选, agent 用 list_skill_candidates/promote_skill 转正). 公共函数 writeRunEndSkillCandidates 供 Web server (原内联逻辑抽出, 行为不变) 与 CLI (新增, 之前 CLI 缺失) 共用. CLI 显示颜文字加载: `(｀・ω・´) 整理本轮经验中... N 个工具调用` → `✨ (◕‿◕) 经验候选已写入: <工具名>`. tsc 0 错, vitest 1022/1022 | [skill-writer.ts](../../src/agents/skill-writer.ts) / [skill-writer.test.ts](../../src/test/skill-writer.test.ts) |
 
 |||| **CLI @ / # 弹出选择窗 + 输入历史 + Tab 补齐** (2026-08-05) | `src/cli/ink-app.tsx` + `src/cli/mention-data.ts`(新) + `src/index.ts` | ① 输入 @ 弹窗命中智能体 (本地 channels.json + 远端 remote-channels-cache.json), / 弹窗命中 14 个内置命令 + 技能 (3 个 skill 目录) + MCP 插件 (~/.mcp.json mcpServers), # 弹窗命中 cwd 文件 (深度 3, 跳过 node_modules/.git/dist, 上限 400). ↑/↓ 导航, Tab/Enter 选中插入 (@名 / /命令 / use_skill 技能 / #路径), Esc 关闭. ② ↑/↓ 切换输入历史 (最近→更早→草稿, 去重上限 100). ③ 普通输入 Tab 命令补齐: 唯一候选直接补 /命令, 多候选弹 'Tab 补齐' 窗. 修 3 个 Ink 输入坑: ① useInput 闭包陈旧 → 全部改函数式 setInput; ② Ink 把一次 stdin read 当单个 keypress (CJK 粘贴/退格连发 chunk) → 逐字符处理 + 正常模式 setTimeout(0) 纠正 TextInput 垃圾追加; ③ TextInput focus 切换后 cursorOffset 不重置 → accept 后 key 重挂载. 状态栏计时改 h/m/s 进位 (fmtDuration). placeholder 加 @/命令/#文件 提示, /help 同步. tsc 0 错, vitest 1027/1027 (+8 mention-data 单测), pty 实测 15/15 (scripts/mention-popup-test.py) | [mention-data.ts](../../src/cli/mention-data.ts) / [ink-app.tsx](../../src/cli/ink-app.tsx) / [mention-popup-test.py](../../scripts/mention-popup-test.py) |
+
+|||| **OrbitDB + UI CID 数据层** (2026-08-06) | `src/orbitdb/` (ipfs-node/cid-database/context-store/ui-cid/agent-tools) + `src/agents/pi-sdk-tools.ts` + `src/security/tool-gate.ts` | 集成 @orbitdb/core@4.0.0 + helia@7.1.3 去中心化数据库层: ① CIDDatabase 接口 + OrbitDBAdapter (keyvalue store bolloon-cid-store, 内容寻址 CID = dag-cbor+sha2-256, save/load/update/version链/list/share); ② Context Store: Context OS 资产层 CID 化快照 (captureCurrentContext/saveSnapshot/restoreContext/contextVersions) + 多 agent 共享记忆; ③ UI CID: 组件 CID 化 (saveComponent/loadComponent/versionComponent + React 动态构造加载); ④ 10 个 agent 工具 (cid_save/load/update/version/list/share + context_save_snapshot/restore + ui_save_component/load) + TOOL_WHITELIST. 依赖坑: helia 7 createHelia 内置 withLibp2p 但不传 opts (配置被丢) → 用 createHeliaLight + withLibp2p 手动装配; services 浅合并要显式列全; 必须加 gossipsub({emitSelf:true}) (OrbitDB 单机 publish 否则 NoPeersSubscribedToTopic); dag-cbor codec 必须注册; OrbitDB keyvalue.all() 返回 [{key,value,hash}] 数组; put 前 JSON 清洗 (dag-cbor 不支持 undefined). npm 无标准 UI-CID 库 → 自研轻量层 (减法哲学). tsc 0 错, vitest 1027/1027, verify-cid-db 12/12 + verify-orbitdb-stack 27/27 | [cid-database.ts](../../src/orbitdb/cid-database.ts) / [ipfs-node.ts](../../src/orbitdb/ipfs-node.ts) / [agent-tools.ts](../../src/orbitdb/agent-tools.ts) / [verify-orbitdb-stack.ts](../../scripts/verify-orbitdb-stack.ts) |
 
 ## 未支持 (❌ 或 ⚠️ 部分)
 

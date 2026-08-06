@@ -85,6 +85,10 @@ const TOOL_WHITELIST = new Set<string>([
   'fetch_url', 'web_search',
   // 2026-08-02: 远端 channel 工具 (本地智能体 @ 远程交流)
   'list_remote_channels', 'send_to_remote_channel',
+  // 2026-08-06: OrbitDB/CID 数据层工具 (src/orbitdb/agent-tools.ts)
+  'cid_save', 'cid_load', 'cid_update', 'cid_version', 'cid_list', 'cid_share',
+  'context_save_snapshot', 'context_restore',
+  'ui_save_component', 'ui_load_component',
 ]);
 
 export const gateWhitelist: GateResult = { gate: 'whitelist', allowed: true };

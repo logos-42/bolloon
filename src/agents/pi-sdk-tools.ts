@@ -2510,6 +2510,17 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
   } catch (lspErr) {
     console.warn('[registerTools] LSP 工具注册失败 (非致命):', lspErr);
   }
+
+  // 2026-08-06: 注册 OrbitDB/CID 数据层工具 (cid_save/load/update/version/list/share + context 快照 + UI CID)
+  try {
+    import('../orbitdb/agent-tools.js').then(({ registerOrbitdbTools }) => {
+      registerOrbitdbTools(ctx);
+    }).catch((e) => {
+      console.warn('[registerTools] OrbitDB 工具注册失败 (非致命):', e);
+    });
+  } catch (odbErr) {
+    console.warn('[registerTools] OrbitDB 工具注册失败 (非致命):', odbErr);
+  }
 }
 
 /**
