@@ -18,9 +18,11 @@ findings.md
 progress.md
 task_plan.md
 .spec-workflow
+.lsp.json
 .port_sessions
 minimax-proxy
 .bolloon-logs
+test-results
 Dive-into-Claude-Code/
 Dive-into/
 
@@ -38,3 +40,6 @@ bolloon_raw/
 # wiki 命令在 v2.5+ 用 scratch 目录
 .wiki-scratch/
 
+.codex/
+.crush/
+.claude/
