@@ -77,50 +77,59 @@ export function snipHistory(
     return m;
   });
 
-  // Step 2: Snip — 超过 maxMessages 时裁最老的
-  if (budgeted.length <= maxMessages) return budgeted;
+  // Step 3 (提前): 窗口内也截断过长 tool 结果 — 2026-08-06 fix: 原来在 Step 2 return 之后,
+  //   窗口内消息永远走不到 tool 截断 (budgeted.length <= maxMessages 时提前返回).
+  //   originalLength 保留最早值 (budget-reduce 已记录原始长度, 不覆盖).
+  const trimToolResults = (list: CollapsedMessage[], boundaryProtected = false): CollapsedMessage[] =>
+    list.map(m => {
+      if (m.role === 'tool' && m.content.length > maxToolResultChars && m.transform !== 'snip') {
+        return {
+          ...m,
+          content: m.content.slice(0, maxToolResultChars) + `\n[...工具结果截断]`,
+          originalLength: m.originalLength ?? m.content.length,
+          transform: m.transform || 'snip-tool',
+        };
+      }
+      return m;
+    });
 
-  // 工具调用链保护: 从尾部往前数, 保留最近的 assistant+tool 对
+  // Step 2: Snip — 超过 maxMessages 时裁最老的
+  if (budgeted.length <= maxMessages) return trimToolResults(budgeted);
+
   const keepCount = maxMessages;
-  const result: CollapsedMessage[] = [];
   const toRemove = budgeted.length - keepCount;
 
-  // 策略: 从最老的开始裁, 但要保证不会裁掉未配对的 assistant (tool_calls)
-  // 遍历时追踪 "悬空的 tool 消息" 保护
-  let removed = 0;
-  let protectedToolChain = 0;  // 从尾部连续 tool 消息不裁
-  for (let i = budgeted.length - 1; i >= 0; i--) {
-    const m = budgeted[i];
-    if (m.role === 'tool' && protectedToolChain < 5) {
-      protectedToolChain++;
-    } else if (m.role === 'assistant' && protectedToolChain > 0) {
-      // 遇到 assistant 代表这个工具链结束了
+  // 2026-08-06 重写: 原实现 protectedToolChain 计数逻辑混乱 (assistant 分支不重置,
+  //   条件 `budgeted.length - i > protectedToolChain` 语义错误), 且占位符路径只在
+  //   removed<=toRemove 时生效导致被裁消息数与实际不符.
+  //   新语义:
+  //     - 从头部裁 toRemove 条 (最老历史), 占位区间 = [0, removedIndex)
+  //     - 裁剪边界保护: 若保留区第一条是 tool 且前一条是 assistant, assistant 天然在
+  //       移除区 → 它变成占位符, 保持 [assistant占位, tool] 相邻, 不产生悬空 tool
+  //       (原生 tool_calls 路径要求 assistant→tool 相邻; 占位保留 role 序列形状)
+  //     - 被裁消息 → '[已裁减, Snip]' 占位符 (保留 role 顺序, 防配对错乱)
+  const result: CollapsedMessage[] = [];
+  const removedIndex = budgeted.length - keepCount;  // 保留区起点 (含)
+
+  // 边界保护 (2026-08-06 fix): 只验证不改变 cutAt —
+  //   之前 `cutAt -= 1` 把占位区间缩窄, 导致边界 assistant 反而保留 (悬空 tool 依旧).
+  //   assistant 本来就在移除区 [0, removedIndex), 转占位后 tool 前紧邻占位 assistant, 配对形状保持.
+  const firstKept = budgeted[removedIndex];
+  const before = removedIndex > 0 ? budgeted[removedIndex - 1] : undefined;
+  // boundaryProtected 仅语义标记 (测试/日志用), 占位区间不变
+  const boundaryProtected = firstKept.role === 'tool' && before?.role === 'assistant';
+  if (boundaryProtected) { /* 保护生效: tool 前紧邻占位 assistant */ }
+
+  for (let i = 0; i < budgeted.length; i++) {
+    if (i < removedIndex) {
+      result.push({ ...budgeted[i], content: '[已裁减, Snip]', originalLength: budgeted[i].content.length, transform: 'snip' });
     } else {
-      protectedToolChain = 0;
+      result.push(budgeted[i]);
     }
-    // 如果在保护区内, 不裁
-    if (i < budgeted.length - keepCount && budgeted.length - i > protectedToolChain) {
-      removed++;
-      if (removed <= toRemove) {
-        result.unshift({ ...m, content: '[已裁减, Snip]', transform: 'snip' });
-        continue;
-      }
-    }
-    result.unshift(m);
   }
 
   // Step 3: 如果 tool result 仍然太长, 进一步截断
-  return result.map(m => {
-    if (m.role === 'tool' && m.content.length > maxToolResultChars) {
-      return {
-        ...m,
-        content: m.content.slice(0, maxToolResultChars) + `\n[...工具结果截断]`,
-        originalLength: m.content.length,
-        transform: m.transform || 'snip-tool',
-      };
-    }
-    return m;
-  });
+  return trimToolResults(result);
 }
 
 /**

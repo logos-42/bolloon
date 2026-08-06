@@ -1720,6 +1720,19 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     }
   })();
 
+  // 2026-08-06: ContextManager 事件 → SSE broadcast (CLI/Web 状态栏实时同步)
+  try {
+    const { getContextManager } = await import('../bootstrap/context-manager.js');
+    getContextManager().onEvent((evt) => {
+      try {
+        broadcast({ type: 'context_event', evt } as any, undefined);
+      } catch { /* 广播失败静默 */ }
+    });
+    console.log('[context] ContextManager 事件已接入 SSE (context_event)');
+  } catch (e) {
+    console.warn('[context] ContextManager 事件接入失败 (非致命):', (e as Error)?.message?.slice(0, 120));
+  }
+
   // 2026-08-03: 初始化 MCP 适配器 (读 ~/.mcp.json, 自动握手发现工具).
   //   后台异步: 不阻塞启动, 失败静默 (agent 调 mcp_list_tools 时再触发).
   (async () => {
@@ -5811,6 +5824,18 @@ app.post('/active-channel', async (req, res) => {
       const { getBackpressure } = await import('../bootstrap/exhaust-scrubber.js');
       const snap = getBackpressure();
       res.json({ ok: true, ...snap });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 2026-08-06: Context OS 资源管理 API — 上下文用量 + 最近一次压缩快照 (Web UI 同步)
+  app.get('/api/context/usage', async (_req, res) => {
+    try {
+      const { getContextManager, loadLatestSnapshot } = await import('../bootstrap/context-manager.js');
+      const usage = getContextManager().getUsage();
+      const latest = await loadLatestSnapshot();
+      res.json({ ok: true, usage, latestSnapshot: latest });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

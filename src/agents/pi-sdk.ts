@@ -14,6 +14,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { getContextManager } from '../bootstrap/context-manager.js';
 import { documentReader, DocumentContent } from '../documents/reader.js';
 import { getMinimax } from '../constraints/index.js';
 import { p2pNetwork } from '../network/p2p.js';
@@ -140,8 +141,21 @@ export class PiAgentSession implements AgentSession {
   private readonly MAX_REACT_ITERATIONS = 10_000;
   private readonly MAX_REFINE_ATTEMPTS = 3;
   private readonly QUALITY_THRESHOLD = 0.6;
-  /** P1: 上下文溢出阈值 (单轮估算 token 数, 超过则强制终止防止 prompt-too-long) */
-  private readonly MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD = 60_000;  // 60K tokens 上限
+  /** P1: 上下文溢出阈值 (单轮估算 token 数, 超过则强制终止防止 prompt-too-long)
+   *  2026-08-06: 从 ContextManager 动态读 (默认 1M, env MAX_CONTEXT_TOKENS 可调).
+   *  保留字段仅作降级兜底 (ContextManager 初始化失败时用 60K 老行为). */
+  private readonly MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD = 60_000;  // fallback 60K tokens
+
+  /** 2026-08-06: 上下文窗口 (tokens) — 统一走 ContextManager 配置 (1M 默认). */
+  private maxContextTokens(): number {
+    try {
+      const { getContextManager } = require('../bootstrap/context-manager.js');
+      const n = getContextManager().getConfig().maxTokens;
+      return Number.isFinite(n) && n > 0 ? n : this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD;
+    } catch {
+      return this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD;
+    }
+  }
   /** 2026-06-16 新增: 累计错误总数兜底 (不管是否同工具, 累计 N 次就强制退出)
    *  防 LLM 轮换工具名绕开 MAX_SAME_TOOL_FAILURES 的死循环攻击 */
   private readonly MAX_TOTAL_ERRORS = 20;
@@ -1203,8 +1217,10 @@ ${this.getToolDefinitions()}
       // 2026-06-16 新增: loop 内自动压缩 — token 超 80% 阈值时跑一次
       // compact 失败走 C 路径: 不强行 break, 让现有 60K 阈值兜底 (后面有检查)
       //   2026-07-01 (v0.2.4 子任务 1): 触发判定走 shouldCompactBeforeIteration 纯函数
-      const compactThreshold = this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD * this.LOOP_COMPACT_RATIO;
+      const compactThreshold = this.maxContextTokens() * this.LOOP_COMPACT_RATIO;
       const estimatedTokensBefore = this.estimateHistoryTokens();
+      // 2026-08-06: 每轮上报 usage 到 ContextManager (CLI/Web 状态栏数据源, warning 事件触发点)
+      getContextManager().updateUsage(estimatedTokensBefore);
       if (shouldCompactBeforeIteration(estimatedTokensBefore, compactThreshold)) {
         const tokensBeforeCompact = estimatedTokensBefore;
         console.log(`[PiAgent] loop 入口 token ${tokensBeforeCompact} > ${compactThreshold}, 触发自动压缩`);
@@ -1220,10 +1236,10 @@ ${this.getToolDefinitions()}
       // 停止条件 3: context overflow (compact 后还超, 强制终止)
       //   2026-07-01 (v0.2.4 子任务 1): 委托给 react-loop.decideContextOverflow 纯函数
       const estimatedTokens = this.estimateHistoryTokens();
-      const overflowDecision = decideContextOverflow(estimatedTokens, this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD);
+      const overflowDecision = decideContextOverflow(estimatedTokens, this.maxContextTokens());
       if (overflowDecision.shouldExit) {
-        console.warn(`[PiAgent] context overflow (${estimatedTokens} tokens > ${this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD})`);
-        onStream?.({ type: 'error', content: `⏹️ 上下文溢出 (${estimatedTokens} tokens, 阈值 ${this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD})`, tool: 'loop' });
+        console.warn(`[PiAgent] context overflow (${estimatedTokens} tokens > ${this.maxContextTokens()})`);
+        onStream?.({ type: 'error', content: `⏹️ 上下文溢出 (${estimatedTokens} tokens, 阈值 ${this.maxContextTokens()})`, tool: 'loop' });
         finalResponse = finalResponse || overflowDecision.finalAnswer;
         break;
       }
@@ -1847,9 +1863,41 @@ ${toolDefs}
    */
   private buildMessages(): Array<{ role: string; content: string }> {
     try {
-      // 直接取 history 最后 15 条, tool 结果转 user role, 避免 tool_calls 配对
-      const slice = this.messageHistory.slice(-15);
+      // 2026-08-06: 来源优先用 projectedHistory (Context Collapse 投影, 非破坏) —
+      //   与 buildContext 一致; 之前只让字符串路径用投影, messages 数组路径被跳过,
+      //   导致 LLM 实际看到的还是未压缩的历史.
+      const source = this.projectedHistory ?? this.messageHistory;
+      const WINDOW = 15;
       const out: Array<{ role: string; content: string }> = [];
+
+      // 早期历史压缩: 超过窗口时, 不直接丢弃 — 提取前段用户意图摘要注入 (同步, 无 LLM).
+      // 结构对齐 Context OS: System Prompt(persona) + 压缩摘要 + 最近消息.
+      if (source.length > WINDOW) {
+        const early = source.slice(0, source.length - WINDOW);
+        const slice = source.slice(-WINDOW);
+        const earlyUsers = early.filter(m => m.role === 'user' && (m.content || '').trim());
+        const earlyTools = early.filter(m => m.role === 'tool').length;
+        const earlyAssist = early.filter(m => m.role === 'assistant' && (m.content || '').trim()).length;
+        const snippet = earlyUsers.slice(-5).map(m => `- ${(m.content || '').slice(0, 120).replace(/\n/g, ' ')}`).join('\n') || '- (早期对话无用户文本)';
+        out.push({
+          role: 'system',
+          content: `[上下文压缩] 早期 ${early.length} 条消息已压缩 (用户 ${earlyUsers.length} 条 / AI ${earlyAssist} 条 / 工具结果 ${earlyTools} 条). 关键用户意图摘要:\n${snippet}\n[压缩结束] 以下是最近消息:`,
+        });
+        for (const m of slice) {
+          const r = m.role;
+          if (r === 'tool') {
+            out.push({ role: 'user', content: `[工具结果]\n${(m.content || '').slice(0, 2000)}` });
+            continue;
+          }
+          if (r === 'assistant') { out.push({ role: 'assistant', content: (m.content || '').slice(0, 4000) }); continue; }
+          if (r === 'user') { out.push({ role: 'user', content: (m.content || '').slice(0, 2000) }); continue; }
+          if (r === 'system') { out.push({ role: 'system', content: (m.content || '').slice(0, 2000) }); }
+        }
+        return out;
+      }
+
+      // 窗口内: 原逻辑 (tool 转 user role, 避免 tool_calls 配对)
+      const slice = source.slice(-WINDOW);
       for (const m of slice) {
         const r = m.role;
         if (r === 'tool') {
@@ -1902,13 +1950,13 @@ ${toolDefs}
   ): Promise<{ reply: string; toolCalls?: any[] }> {
     // Reactive compaction 预检: 估算 token 超 80% 阈值, 跑一次
     const estimated = this.estimateHistoryTokens();
-    if (estimated > this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD * 0.8) {
+    if (estimated > this.maxContextTokens() * 0.8) {
       console.warn(`[PiAgent] reactive compaction pre-check (${estimated} tokens > 80% threshold)`);
       onStream?.({ type: 'status', content: '⚠️ reactive compaction 预检触发', tool: 'recovery' });
       try {
         const compacted = this.compressHistorySync(this.messageHistory);
         this.messageHistory = compacted;
-        if (this.estimateHistoryTokens() > this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD * 0.8) {
+        if (this.estimateHistoryTokens() > this.maxContextTokens() * 0.8) {
           await this.maybeAutoCompact(onStream, signal);
         }
       } catch (err) {
@@ -2064,9 +2112,16 @@ ${toolDefs}
       return r.reply;
     };
 
+    // 2026-08-06: 预算 = ContextManager 配置 (1M * 55% ≈ 550K), 不再写死 8000.
+    //   之前 8000 与 48K 触发阈值矛盾: 一触发就一路跑到 LLM 摘要 (贵), 且 8000 远小于实际窗口.
+    const cm = getContextManager();
+    const cfg = cm.getConfig();
+    const maxTokens = Math.max(4000, Math.round(cfg.maxTokens * cfg.compressionThreshold));
+    const beforeTokens = this.estimateHistoryTokens();
+
     const { compactPipeline, isContextCollapseEnabled } = await import('../context-compaction/index.js');
     const result = await compactPipeline(this.messageHistory as any, {
-      maxTokens: 8000,
+      maxTokens,
       llmChat,
       collapseLlmChat: llmChat,  // P1.2: Context Collapse 投影也用同一 LLM
       cacheScope: this.currentChannelId || 'default',
@@ -2075,9 +2130,12 @@ ${toolDefs}
     if (result.compacted && result.history.length < this.messageHistory.length) {
       const saved = this.messageHistory.length - result.history.length;
       const stagesApplied = result.stages.filter((s) => s.applied).map((s) => s.stage).join(' → ');
+      const afterTokens = this.estimateHistoryTokens();
+      const savedTokens = Math.max(0, beforeTokens - afterTokens);
+      cm.markCompressStart(beforeTokens);
       onStream?.({
         type: 'status',
-        content: `🗜️ 上下文压缩: ${stagesApplied || 'no-op'} | 节省 ${saved} 条 (剩余 ${result.history.length}, collapse=${isContextCollapseEnabled() ? 'on' : 'off'})`,
+        content: `🗜️ 上下文压缩: ${stagesApplied || 'no-op'} | 节省 ${saved} 条 / ${savedTokens.toLocaleString()} tokens (剩余 ${result.history.length}, collapse=${isContextCollapseEnabled() ? 'on' : 'off'})`,
         tool: 'compactor',
       });
       // 关键: 第 4 层 (Context Collapse) 是读时投影 (非破坏)
@@ -2090,6 +2148,27 @@ ${toolDefs}
         this.messageHistory = result.history as Message[];  // 真破坏性更新
         this.projectedHistory = null;
       }
+      // 2026-08-06: snapshot 记录 before/after + 摘要 (供恢复/调试/UI), 事件广播
+      try {
+        const summaryLine = result.stages.map((s) => `${s.stage}(${s.before}→${s.after})`).join(' ');
+        const snap = cm.makeSnapshot({
+          beforeTokens,
+          afterTokens,
+          summary: `压缩管道: ${summaryLine}; 节省 ${savedTokens} tokens / ${saved} 条消息`,
+          preservedMemory: [
+            ...this.messageHistory.filter(m => m.role === 'user').slice(-3).map(m => (m.content || '').slice(0, 80)),
+          ],
+          agentId: this.currentAgentId,
+          channelId: this.currentChannelId,
+        });
+        cm.markCompressComplete(snap);
+      } catch (snapErr) {
+        // snapshot 失败不阻塞主流程
+      }
+      cm.updateUsage(afterTokens);
+    } else {
+      // 没压成也更新 usage (数据源保持新鲜)
+      cm.updateUsage(beforeTokens);
     }
   }
   private isFinalResponse(content: string): boolean {

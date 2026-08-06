@@ -426,7 +426,6 @@ function rpcErr(code: string, msg: string): string {
 // 2026-07-28: 改用 readline.createInterface + replReadline 循环
 
 let isRunning = false;
-let cliContextPct = 0;
 let queueMode = false;
 const pendingQueue: string[] = [];
 let cliStartTime = 0;
@@ -443,21 +442,52 @@ function fmtDuration(ms: number): string {
   return `${h}h ${m % 60}m`;
 }
 
-/** 状态栏: 模型 │ 当前智能体 (含 channel) │ ⏱ 时间 │ 上下文进度条 (模块级, CLI/Web 共用) */
+/** 2026-08-06: 从 ContextManager 读上下文用量 (CLI 状态栏数据源, 失败退化 0/1M) */
+function getCliCtxUsage(): { pct: number; usedTokens: number; maxTokens: number; stage: string } {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const cm = require('./bootstrap/context-manager.js').getContextManager();
+    const u = cm.getUsage();
+    return {
+      // 保留浮点 (0-100), 由 buildContextBar 格式化 — round 会让 <0.5% 全变 0, 状态栏像死代码
+      pct: Math.min(100, u.pct * 100),
+      usedTokens: u.usedTokens,
+      maxTokens: u.maxTokens,
+      stage: u.stage,
+    };
+  } catch {
+    return { pct: 0, usedTokens: 0, maxTokens: 1_000_000, stage: 'normal' };
+  }
+}
+
+/** 上下文进度条: 320k/1M │ [██████░░░░] 32% (bolloon 色系: #c4d640 主色) */
+function buildContextBar(usage: { pct: number; usedTokens: number; maxTokens: number; stage: string }): string {
+  const barLen = 10;
+  const filled = Math.min(barLen, Math.max(0, Math.round((usage.pct / 100) * barLen)));
+  const barColor = usage.stage === 'warning' || usage.stage === 'compressing' ? C_WARN : C_ACCENT;
+  const bar = `${C_DIM}[${RESET}${barColor}${'█'.repeat(filled)}${RESET}${C_DIM}${'░'.repeat(barLen - filled)}${RESET}${C_DIM}]${RESET}`;
+  const fmtK = (n: number) => (n >= 1_000_000 ? (n % 1_000_000 === 0 ? `${n / 1_000_000}M` : `${(n / 1_000_000).toFixed(1)}M`) : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+  const usageTxt = `${C_TEXT}${fmtK(usage.usedTokens)}/${fmtK(usage.maxTokens)}${RESET}`;
+  // 百分比: >=10% 整数, >=1% 一位小数, <1% 两位小数 (1M 窗口下小 token 数也可见变化)
+  const pctTxt = usage.pct >= 10 ? `${Math.round(usage.pct)}%` : usage.pct >= 1 ? `${usage.pct.toFixed(1)}%` : `${usage.pct.toFixed(2)}%`;
+  let suffix = '';
+  if (usage.stage === 'warning') suffix = ` ${C_WARN}⚠ 即将压缩${RESET}`;
+  else if (usage.stage === 'compressing') suffix = ` ${C_WARN}🗜️ 压缩中...${RESET}`;
+  else if (usage.stage === 'compressed') suffix = ` ${C_OK}✓ 已压缩${RESET}`;
+  return `${usageTxt} ${C_DIM}│${RESET} ${bar} ${barColor}${pctTxt}${RESET}${suffix}`;
+}
+
+/** 状态栏: 模型 │ 当前智能体 (含 channel) │ ⏱ 时间 │ 320k/1M │ [██████░░░░] 32% (bolloon 色系) */
 function getStatus(): string {
-  const barLen = 12;
-  const filled = Math.round((cliContextPct / 100) * barLen);
-  const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
+  const usage = getCliCtxUsage();
   const agentPart = cliActiveChannelId ? `${cliAgentName} ${C_DIM}(ch:${cliActiveChannelId.slice(0, 10)})${RESET}` : cliAgentName;
-  return `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${agentPart} \x1b[90m│\x1b[0m ⏱ ${fmtDuration(Date.now() - cliStartTime)}\x1b[90m │\x1b[0m ${bar} ${cliContextPct}%`;
+  return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${agentPart} ${C_DIM}│${RESET} ⏱ ${C_TEXT}${fmtDuration(Date.now() - cliStartTime)}${RESET}${C_DIM} │${RESET} ${buildContextBar(usage)}`;
 }
 
 function statusBarLine(): string {
   const dur = cliStartTime ? fmtDuration(Date.now() - cliStartTime) : '0s';
-  const barLen = 12;
-  const filled = Math.round((cliContextPct / 100) * barLen);
-  const bar = C_OK + '█'.repeat(filled) + C_DIM + '░'.repeat(barLen - filled) + RESET;
-  return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${bar} ${C_DIM}${cliContextPct}%${RESET}`;
+  const usage = getCliCtxUsage();
+  return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${buildContextBar(usage)}`;
 }
 
 async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
@@ -510,7 +540,8 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
   }
 
   // 进入 Ink TUI 输入循环
-  const initialStatus = `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ 0s`;
+  // 2026-08-06: 初始状态栏也带上下文显示 (0/1M │ [░░░░░░░░░░] 0%)
+  const initialStatus = `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ 0s${C_DIM} │${RESET} ${buildContextBar(getCliCtxUsage())}`;
   startInk(
     (text: string) => { processInput(text, comm); },
     initialStatus,
@@ -756,14 +787,30 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
         } catch { /* 非致命, 静默 */ }
       });
     }
-    // 更新状态栏: 上下文进度
+    // 更新状态栏: 上下文进度 (2026-08-06: 每轮按当前 messageHistory 重算并写回 ContextManager,
+    //   保证状态栏按需更新 — 不依赖 pi-sdk loop 内部上报, 1s 定时器读到的一定是最新值)
     try {
-      const msgLen = JSON.stringify((a as any).messageHistory ?? []).length;
-      cliContextPct = Math.min(100, Math.round((msgLen / 240_000) * 100));
-      const barLen = 12;
-      const filled = Math.round((cliContextPct / 100) * barLen);
-      const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
-      const statusText = `${C_ACCENT}${cliModelName}\x1b[0m\x1b[90m  │\x1b[0m ${cliAgentName} \x1b[90m│\x1b[0m ⏱ ${fmtDuration(Date.now() - cliStartTime)} \x1b[90m│\x1b[0m ${msgLen.toLocaleString()}B/240K │ ${bar} ${cliContextPct}%`;
+      const { getContextManager } = await import('./bootstrap/context-manager.js');
+      const cm = getContextManager();
+      // 用 context-compaction 的估算器 (与 pi-sdk estimateHistoryTokens 同源: 4 字符 ≈ 1 token)
+      const history = (a as any).messageHistory ?? [];
+      let usedTokens = 0;
+      try {
+        const { estimateTokens } = require('./context-compaction/index.js');
+        usedTokens = estimateTokens(history);
+      } catch {
+        usedTokens = Math.max(0, Math.round(JSON.stringify(history).length / 4));
+      }
+      // 写回数据源 — 状态栏/Web/任何订阅方都拿到新鲜值
+      const usage = cm.updateUsage(usedTokens);
+      const usageView = {
+        // 保留浮点 (0-100), buildContextBar 内部格式化
+        pct: Math.min(100, (usage.usedTokens / Math.max(1, usage.maxTokens)) * 100),
+        usedTokens: usage.usedTokens,
+        maxTokens: usage.maxTokens,
+        stage: usage.stage,
+      };
+      const statusText = `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${fmtDuration(Date.now() - cliStartTime)}${C_DIM} │${RESET} ${buildContextBar(usageView)}`;
       inkSetStatus(statusText);
     } catch { /* 降级容忍 */ }
     // 自动消费队列

@@ -513,6 +513,19 @@ function startV3GlobalSSE() {
             // 简短 toast (右下角), 不阻塞
             showSimpleToast(`📬 ${name} 已收到你的好友申请, 等对方接受`);
           }
+        } else if (msg.type === 'context_event') {
+          // 2026-08-06: Context OS 资源管理事件 — 压缩状态实时同步 (warning/start/complete)
+          try {
+            const evt = msg.evt || {};
+            if (evt.type === 'context.warning') {
+              showSimpleToast(`⚠️ 上下文使用率 ${Math.round((evt.usage?.pct || 0) * 100)}%, 即将自动压缩`);
+            } else if (evt.type === 'context.compress.start') {
+              showSimpleToast(`🗜️ 上下文压缩开始 (${(evt.beforeTokens || 0).toLocaleString()} tokens)`);
+            } else if (evt.type === 'context.compress.complete') {
+              const s = evt.snapshot || {};
+              showSimpleToast(`✓ 上下文已压缩: ${((s.beforeTokens || 0) / 1000).toFixed(0)}k → ${((s.afterTokens || 0) / 1000).toFixed(0)}k tokens`);
+            }
+          } catch (ctxErr) { /* toast 失败静默 */ }
         }
       } catch (err) {
         console.error('[v3] 全局 SSE 解析失败:', err);

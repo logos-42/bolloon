@@ -1909,13 +1909,28 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         let ipnsName = '';
         try {
           const ipfs = await (sdk as any).IpfsClient.newWithRemoteNode('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
-          const pub = await ipfs.publishAfterUpload?.(cid, kp);
+          // 2026-08-06 fix: 之前传 kp (KeyPair 对象) 当 keyName → ensureKeyExists 拿对象比
+          //   字符串永远 false → key/gen 自动生成名为 "[object Object]" 的 key.
+          //   改用确定性 key 名 (与 did-builder.ts 一致: did-<did 冒号转横线>).
+          const keyName = `did-${String(identity.did || '').replace(':', '-').replace(' ', '')}` || 'self';
+          const pub = await ipfs.publishAfterUpload?.(cid, keyName);
           ipnsName = pub?.name || pub?.ipnsName || '';
         } catch { /* IPNS 失败不致命, CID 仍可用 */ }
 
+        // 2026-08-06: 发布诊断 — 节点地址 + 公网可达性提示 (IPNS 记录进 DHT 但内容拉取依赖源节点可达)
+        let diag = '';
+        try {
+          const id = await kuboApi('/api/v0/id');
+          const addrs = (id as any)?.Addresses || [];
+          const pubAddrs = addrs.filter((a: string) => !/127\.0\.0\.1|::1|10\.|100\.|192\.168|172\.(1[6-9]|2\d|3[01])\./.test(a));
+          const peers = await kuboApi('/api/v0/swarm/peers');
+          const peerCount = (peers as any)?.Peers?.length || 0;
+          diag = `\n  [诊断] 节点在线, ${peerCount} peers; 公网可达地址 ${pubAddrs.length} 个${pubAddrs.length === 0 ? ' ⚠️ 无公网地址 (NAT 后), 公网用户只能解析 IPNS 但拉不到内容, 建议 pin 到公共服务或配置端口映射' : ''}`;
+        } catch { /* 诊断失败静默 */ }
+
         return {
           success: true,
-          output: `✅ DID 已发布到 IPFS:\n  DID: ${identity.did}\n  CID: ${cid}\n  IPNS: ${ipnsName || '(发布失败, CID 仍可用)'}\n  读回验证: curl -X POST "http://127.0.0.1:5001/api/v0/cat?arg=${cid}"`,
+          output: `✅ DID 已发布到 IPFS:\n  DID: ${identity.did}\n  CID: ${cid}\n  IPNS: ${ipnsName || '(发布失败, CID 仍可用)'}\n  读回验证: curl -X POST "http://127.0.0.1:5001/api/v0/cat?arg=${cid}"${diag}`,
         };
       } catch (e) {
         return { success: false, error: `publish_did 失败: ${String(e).slice(0, 200)}` };
@@ -2002,7 +2017,17 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         const keyName = String(args.keyName || 'self').trim() || 'self';
         await ipfs.ensureKeyExists(keyName);
         const r = await ipfs.publishIpns(cid, keyName, '8760h', '1h');
-        return { success: true, output: `✅ IPNS 已发布:\n  name: ${r.name}\n  value: ${r.value}\n  解析: ipns_resolve(name="${r.name}")\n  公网访问: https://ipfs.io/ipns/${r.name}` };
+        // 2026-08-06: 诊断 — 公网可达性提示 (IPNS 记录进 DHT, 内容拉取依赖源节点公网可达)
+        let diag = '';
+        try {
+          const id = await kuboApi('/api/v0/id');
+          const addrs = (id as any)?.Addresses || [];
+          const pubAddrs = addrs.filter((a: string) => !/127\.0\.0\.1|::1|10\.|100\.|192\.168|172\.(1[6-9]|2\d|3[01])\./.test(a));
+          if (pubAddrs.length === 0) {
+            diag = '\n  ⚠️ [诊断] 本机无公网可达地址 (NAT 后): 其他节点能解析 IPNS 但拉不到内容. 公网访问需 pin 到公共服务 (web3.storage/Pinata) 或给本机配置公网端口映射.';
+          }
+        } catch { /* 诊断失败静默 */ }
+        return { success: true, output: `✅ IPNS 已发布:\n  name: ${r.name}\n  value: ${r.value}\n  解析: ipns_resolve(name="${r.name}")\n  公网访问: https://ipfs.io/ipns/${r.name}${diag}` };
       } catch (e: any) {
         return { success: false, error: `ipns_publish 失败: ${String(e.message || e).slice(0, 200)}` };
       }
@@ -2018,7 +2043,9 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         const name = String(args.name || '').trim();
         if (!name) return { success: false, error: 'name 必填' };
         await ensureKuboReady();
-        const r = await kuboApi(`/api/v0/name/resolve?arg=${encodeURIComponent(name)}`, undefined, 60000);
+        // 2026-08-06 fix: 加 recursive+nocache — 之前不带 nocache, 同一 key 重发布后
+        //   Kubo 返回本地缓存旧 CID (TTL 1h), 实测新内容发布后 resolve 到旧值.
+        const r = await kuboApi(`/api/v0/name/resolve?arg=${encodeURIComponent(name)}&recursive=true&nocache=true`, undefined, 60000);
         const path = typeof r === 'object' && r !== null ? (r as any).Path : String(r);
         const cid = String(path).replace(/^\/ipfs\//, '').trim();
         return { success: true, output: `🔗 ${name} → ${path}\n  CID: ${cid}` };

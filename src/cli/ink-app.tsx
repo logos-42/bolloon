@@ -465,9 +465,9 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         )}
       </Box>
 
-      {/* 分隔线 (全宽) */}
+      {/* 分隔线 (全宽, bolloon 色系 #c4d640) */}
       <Box>
-        <Text bold color="white">{'─'.repeat(terminalW)}</Text>
+        <Text bold color="#c4d640">{'─'.repeat(terminalW)}</Text>
       </Box>
 
       {/* 状态栏 */}
@@ -475,9 +475,9 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         <Text>{status}</Text>
       </Box>
 
-      {/* 输入栏分隔线 (全宽) */}
+      {/* 输入栏分隔线 (全宽, bolloon 色系 #c4d640) */}
       <Box>
-        <Text bold color="white">{'─'.repeat(terminalW)}</Text>
+        <Text bold color="#c4d640">{'─'.repeat(terminalW)}</Text>
       </Box>
 
       {/* 弹出选择窗 (输入栏上方, 弹出页) */}
@@ -493,7 +493,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
       {/* 输入栏 */}
       <Box>
-        <Text bold color="green">❯ </Text>
+        <Text bold color="#c4d640">❯ </Text>
         <TextInput
           key={tiKey}
           value={input}
@@ -504,9 +504,9 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         />
       </Box>
 
-      {/* 底部分界线 (全宽) */}
+      {/* 底部分界线 (全宽, bolloon 色系 #c4d640) */}
       <Box>
-        <Text bold color="white">{'─'.repeat(terminalW)}</Text>
+        <Text bold color="#c4d640">{'─'.repeat(terminalW)}</Text>
       </Box>
     </Box>
   );

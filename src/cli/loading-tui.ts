@@ -341,9 +341,10 @@ export function renderMessageBox(opts: MessageBoxOpts): string {
   const inner = Math.max(20, dispWidth(title) + 4, maxLine);
   const width = Math.min(termWidth() - 2, opts.width ?? inner + 4);
   const lines: string[] = [];
-  lines.push(boxTop(`${color}${title}${RESET}`, width, RD));
-  for (const l of wrapText(opts.body, width - 4)) lines.push(boxRow(l, width, 'left', RD));
-  lines.push(boxBottom(width, RD));
+  // 2026-08-06: 边框改 bolloon 色系 (C_BORDER #3a3a36 暗色描边, 标题色不变)
+  lines.push(`${C_BORDER}${boxTop(`${color}${title}${RESET}`, width, RD)}${RESET}`);
+  for (const l of wrapText(opts.body, width - 4)) lines.push(`${C_BORDER}${boxRow(l, width, 'left', RD)}${RESET}`);
+  lines.push(`${C_BORDER}${boxBottom(width, RD)}${RESET}`);
   return lines.join('\n');
 }
 

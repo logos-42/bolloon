@@ -35,9 +35,23 @@ export interface MemoryCompressResult {
 }
 
 export interface SessionMessageLite {
+  /** 'user' | 'ai' — 兼容读取: SessionStore 存的是 role ('user'/'assistant'), 老格式是 type */
   type: 'user' | 'ai' | string;
   content: string;
   timestamp?: string;
+}
+
+/** 统一消息字段: SessionStore (session-store.ts) 用 role, 老 cache 格式用 type. 读成 SessionMessageLite. */
+function toLite(m: any): SessionMessageLite {
+  const raw = m && typeof m === 'object' ? m : { content: String(m ?? '') };
+  let type: string = raw.type ?? raw.role ?? '';
+  if (type === 'assistant') type = 'ai';
+  if (type === 'system' || type === 'tool') type = 'system';
+  return {
+    type: type || 'unknown',
+    content: typeof raw.content === 'string' ? raw.content : JSON.stringify(raw.content ?? ''),
+    timestamp: raw.timestamp || raw.createdAt,
+  };
 }
 
 export function sanitizeAgentId(id: string): string {
@@ -97,9 +111,9 @@ async function readSessionMessages(sessionCacheFile: string): Promise<SessionMes
   try {
     const raw = await fs.readFile(sessionCacheFile, 'utf-8');
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed;
-    if (Array.isArray(parsed.messages)) return parsed.messages;
-    return [];
+    const list: any[] = Array.isArray(parsed) ? parsed : Array.isArray(parsed.messages) ? parsed.messages : [];
+    // 2026-08-06: 统一 role/type 字段 (SessionStore 写 role, 老格式写 type), 过滤空壳消息
+    return list.map((m) => toLite(m)).filter(m => m.type !== 'unknown' && m.content);
   } catch {
     return [];
   }
@@ -137,21 +151,18 @@ ${aiSnippet || '  (无)'}
 /**
  * 尝试调 LLM 生成更精炼的中文摘要. 失败 → 抛错, 由 caller fallback.
  *
+ * 2026-08-06 修复: 之前调用不存在的 pi-ai.generateText → 100% 抛错 → 永远模板 fallback.
+ * 改用真实接口 getMinimax().chat(userMsg, systemPrompt) (pi-ai.ts 导出的 PiAIModel).
  * 用动态 import + 失败静默 — 不引入 pi-ai 强依赖 (避免循环).
  */
 async function tryLlmSummary(systemPrompt: string, userPrompt: string): Promise<string> {
   try {
     const piAi = await import('../llm/pi-ai.js');
-    const generateText = (piAi as any).generateText;
-    if (typeof generateText !== 'function') throw new Error('generateText not exported');
-    const result = await generateText({
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.2,
-      maxTokens: 800,
-    });
+    const getMinimax = (piAi as any).getMinimax;
+    if (typeof getMinimax !== 'function') throw new Error('getMinimax not exported');
+    const llm = getMinimax();
+    if (!llm || typeof llm.chat !== 'function') throw new Error('LLM chat not available');
+    const result = await llm.chat(userPrompt, systemPrompt);
     const text = (result as any)?.reply || (result as any)?.text || '';
     if (typeof text !== 'string' || text.length < 20) throw new Error('LLM returned too-short text');
     return text;
