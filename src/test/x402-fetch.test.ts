@@ -25,6 +25,8 @@ describe('x402 fetch', () => {
   });
 
   it('uses the official x402 payment wrapper to retry with a payment header', async () => {
+    // 2026-08-06: createX402PaymentFetch 走真实 RPC (base-sepolia 余额查询), 并发下 5s 默认超时
+    //   flaky — 加 30s (与 workflow-pivot 测试超时先例一致)
     const paymentRequired = {
       x402Version: 2,
       resource: { url: 'https://example.test/paid', description: 'paid test' },
@@ -67,7 +69,7 @@ describe('x402 fetch', () => {
     expect(seenHeaders).toHaveLength(2);
     expect(seenHeaders[0]['payment-signature']).toBeUndefined();
     expect(seenHeaders[1]['payment-signature']).toBeTruthy();
-  });
+  }, 30000);  // 2026-08-06: RPC 网络依赖, 并发下 5s 默认超时 flaky → 30s
 
   it('rejects unsupported balance networks before calling RPC', async () => {
     const result = await x402CheckBalance({
