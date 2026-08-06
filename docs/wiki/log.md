@@ -728,3 +728,35 @@
 - 字段名兼容 (role vs type) 是数据层最常见的静默杀手 — 统一归一化层
 - IPFS/IPNS 发布链最后一步 (公网拉内容) 依赖源节点可达性, 与发布逻辑无关 — 诊断要区分"发布成功"和"用户可访问"
 - 1M 窗口下状态栏百分比必须保留小数位, 否则 round 后永远 0% 像死代码
+
+## [2026-08-06] feat | CLI 子命令 update/model — 去 -- 前缀, 修复 update 不生效 + 新增模型供应商切换
+
+### 触发
+
+- 用户反馈: `bolloon --update` 等命令应去掉 `--` 前缀; update 命令不起作用; `bolloon model` 无此命令, 无法更换模型供应商.
+
+### 根因
+
+1. 没有 `--update` / `update` 命令 — 只有 `--update-check` / `--update-now` (index.ts 2122-2134 有解析 + 1439-1468 有实现, 但命令名不符用户预期).
+2. `model` 命令完全不存在 — `--model` 只是 prompt 的模型 flag, 不是供应商切换; llm-config-store 已有完整 API (setActiveProvider/updateProvider/PROVIDER_INFO 13 供应商), 未暴露 CLI.
+
+### 修改 (src/cli-entry.ts)
+
+- parseArgs 新增子命令: `update` / `model` / `read` / `summarize` / `improve` (read/summarize/improve 映射回 --flag 兼容 index.ts 现有实现)
+- `handleUpdateCommand`: `bolloon update` = 检查更新 (auto-update.checkForUpdates, 复用 index.ts 逻辑); `bolloon update --now|now [packages]` = 立即更新 (performUpdate)
+- `handleModelCommand`: `bolloon model` = 列出 13 供应商 (active ●/○ + 🔑 key 状态 + model); `bolloon model <name>` = 切换 (setActiveProvider, 无 key 供应商拦截); `bolloon model <name> <model>` = 切换 + 指定模型 (updateProvider)
+- printHelp 更新子命令风格; main() dispatch 接入
+
+### 验证
+
+- `bolloon model`: 列出 13 供应商, 当前 deepseek ● ✓
+- `bolloon model minimax` → 切换成功; `bolloon model deepseek deepseek-v4-flash` → 切换+模型 ✓
+- `bolloon model badname` → 未知供应商错误 + 可用列表 ✓; `bolloon model openai` → 无 key 拦截提示 ✓
+- `bolloon update` → 发现 0.3.34 → 0.3.35 ✓
+- 测试后恢复用户原配置 (deepseek-chat)
+- tsc 0 错, vitest 1063/1063
+
+### 教训
+
+- 命令存在感 = 用户能发现的名字 (update 而不是 update-check) — 语义命名比内部函数名重要
+- 已有完整 API (config-store 13 供应商切换) 但没 CLI 暴露 = 功能"不存在"

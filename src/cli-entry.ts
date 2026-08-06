@@ -68,17 +68,24 @@ ${BOLD}选项:${RESET}
   --help, -h          显示帮助信息
 
 ${BOLD}命令:${RESET}
-  bolloon --read <file>           读取文档
-  bolloon --summarize <file>      总结文档
-  bolloon --improve <file> <req>  改进文档
-  bolloon x402 fetch <url>        x402 自动支付 HTTP 请求
-  bolloon x402 balance <address>  查询 x402 钱包余额
+  bolloon update [--now]            检查更新 / 立即更新 (bolloon update --now)
+  bolloon model [name] [model]      列出 / 切换模型供应商 (如: bolloon model deepseek deepseek-v4-flash)
+  bolloon read <file>               读取文档
+  bolloon summarize <file>          总结文档
+  bolloon improve <file> <req>      改进文档
+  bolloon engine list               列出外部编码智能体
+  bolloon engine run <prompt>       委派任务给智能体
+  bolloon x402 fetch <url>          x402 自动支付 HTTP 请求
+  bolloon x402 balance <address>    查询 x402 钱包余额
 
 ${BOLD}示例:${RESET}
   bolloon                    # 启动图形界面
   bolloon --web              # 启动 Web UI
-  bolloon --read 想法.md     # 读取文档
   bolloon --cli              # 命令行模式
+  bolloon model              # 查看当前模型供应商
+  bolloon model minimax      # 切换到 MiniMax
+  bolloon update             # 检查更新
+  bolloon update --now       # 立即更新
 
 ${BOLD}环境变量:${RESET}
   MINIMAX_API_KEY           MiniMax API 密钥
@@ -154,6 +161,16 @@ function parseArgs(): { mode: string; args: string[] } {
       return { mode: 'engine', args: args.slice(1) };
     case 'x402':
       return { mode: 'x402', args: args.slice(1) };
+    // 2026-08-06: 子命令形式 (去掉 -- 前缀)
+    case 'update':
+      return { mode: 'update', args: args.slice(1) };
+    case 'model':
+      return { mode: 'model', args: args.slice(1) };
+    case 'read':
+    case 'summarize':
+    case 'improve':
+      // 映射回旧 --flag 格式传给主程序 (保留 index.ts 现有实现)
+      return { mode: 'passthrough', args: [`--${mode}`, ...args.slice(1)] };
     default:
       // 传递所有参数给主程序
       return { mode: 'passthrough', args };
@@ -270,6 +287,92 @@ async function handleX402Command(x402Args: string[]): Promise<void> {
 
   console.error(`未知 x402 子命令: ${sub}`);
   process.exit(1);
+}
+
+/** update 子命令: 检查 / 执行更新 (bolloon update [--now|now] [packages]) */
+async function handleUpdateCommand(updateArgs: string[]): Promise<void> {
+  const { checkForUpdates, performUpdate } = await import('./utils/auto-update.js');
+
+  // bolloon update --now / bolloon update now [packages] — 立即更新
+  if (updateArgs[0] === '--now' || updateArgs[0] === 'now') {
+    const packages = updateArgs.slice(1).filter(a => !a.startsWith('-'));
+    console.log('🔄 正在检查并更新...');
+    const result = await performUpdate(packages.length > 0 ? packages : undefined);
+    if (result.success) {
+      console.log(`${GREEN}✅ 更新成功${result.updatedPackages ? `: ${result.updatedPackages.join(', ')}` : ''}${RESET}`);
+      if (result.updated) console.log(`${YELLOW}  请重新启动应用以使用新版本${RESET}`);
+    } else {
+      console.error(`${MAGENTA}❌ 更新失败: ${result.error}${RESET}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // 默认: 检查更新
+  console.log('🔄 正在检查更新...');
+  const info = await checkForUpdates();
+  if (info && info.outdated) {
+    console.log(`${CYAN}📦 发现更新可用:${RESET}\n`);
+    console.log(`  当前版本: ${info.version}`);
+    console.log(`  最新版本: ${info.latest}\n`);
+    console.log(`  待更新包:`);
+    for (const p of info.packages) console.log(`    - ${p.name}: ${p.current} → ${p.latest}`);
+    console.log(`\n  运行 ${GREEN}bolloon update --now${RESET} 执行更新`);
+  } else {
+    console.log(`${GREEN}✅ 已是最新版本${RESET} (${info?.version || 'unknown'})`);
+  }
+}
+
+/** model 子命令: 列出 / 切换模型供应商 (bolloon model [name] [model]) */
+async function handleModelCommand(modelArgs: string[]): Promise<void> {
+  const { llmConfigStore, PROVIDER_INFO } = await import('./llm/config-store.js');
+  await llmConfigStore.initialize();
+
+  // 无参: 列出所有供应商 + 当前 active
+  if (modelArgs.length === 0) {
+    const config = await llmConfigStore.getConfig();
+    console.log(`\n${BOLD}模型供应商${RESET} (当前: ${config.activeProvider})\n`);
+    console.log('─'.repeat(58));
+    for (const [name, p] of Object.entries(config.providers)) {
+      const info = (PROVIDER_INFO as any)[name] || {};
+      const active = name === config.activeProvider ? '●' : '○';
+      const keyState = p.apiKey ? '🔑' : p.requiresApiKey ? '⚠ 无 key' : '';
+      const model = p.model || (info.models && info.models[0]) || '';
+      console.log(`  ${active} ${name.padEnd(10)} ${String(info.name || '').padEnd(16)} ${keyState.padEnd(8)} model: ${model}`);
+    }
+    console.log(`\n${BOLD}用法:${RESET}`);
+    console.log(`  bolloon model <name>             # 切换到该供应商`);
+    console.log(`  bolloon model <name> <model>     # 切换并指定模型`);
+    console.log(`  示例: bolloon model deepseek deepseek-v4-flash`);
+    return;
+  }
+
+  // 切换供应商
+  const name = modelArgs[0].toLowerCase();
+  const config = await llmConfigStore.getConfig();
+  const providers = config.providers as unknown as Record<string, { enabled: boolean; apiKey?: string; baseUrl: string; model: string; requiresApiKey?: boolean }>;
+  if (!providers[name]) {
+    console.error(`${MAGENTA}❌ 未知供应商: ${name}${RESET}`);
+    console.error(`   可用: ${Object.keys(providers).join(', ')}`);
+    process.exit(1);
+  }
+  const provider = providers[name];
+  if (provider.requiresApiKey && !provider.apiKey) {
+    console.error(`${MAGENTA}❌ ${name} 需要 API key (当前未配置)${RESET}`);
+    console.error(`   配置方式: ① Web UI API 配置页  ② 环境变量 (如 DEEPSEEK_API_KEY)`);
+    process.exit(1);
+  }
+
+  await llmConfigStore.setActiveProvider(name as any);
+  let modelNote = '';
+  if (modelArgs[1]) {
+    await llmConfigStore.updateProvider(name as any, { model: modelArgs[1] });
+    modelNote = `, model=${modelArgs[1]}`;
+  }
+  const info = (PROVIDER_INFO as any)[name] || {};
+  console.log(`${GREEN}✅ 已切换到 ${name}${RESET} (${info.name || ''})${modelNote}`);
+  console.log(`   当前模型: ${modelArgs[1] || provider.model || (info.models && info.models[0]) || '默认'}`);
+  console.log(`   配置已持久化: ~/.bolloon/llm-config.json`);
 }
 
 /** 引擎子命令: list / run */
@@ -498,6 +601,15 @@ async function main() {
 
     case 'x402':
       await handleX402Command(args);
+      break;
+
+    // 2026-08-06: 子命令 (bolloon update / bolloon model)
+    case 'update':
+      await handleUpdateCommand(args);
+      break;
+
+    case 'model':
+      await handleModelCommand(args);
       break;
 
     case 'passthrough':
