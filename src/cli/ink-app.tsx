@@ -280,10 +280,6 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     // 2026-08-06: 防御 — 某些环境 (tsx/完整 CLI 初始化) 下 stdin 会处于 paused,
     // 不恢复则 useInput 收不到任何输入 (实测 isPaused=true, listeners=0)
     if ((process.stdin as any).isPaused()) (process.stdin as any).resume();
-    // 临时: 原始 stdin 字节钩子 (幽灵 m 排查)
-    const rawHook = (d: Buffer) => { process.stderr.write(`\n[DBG-RAW] ${JSON.stringify(d.toString('latin1'))}\n`); };
-    (process.stdin as any).on('data', rawHook);
-    (globalThis as any).__rawHookCleanup = () => (process.stdin as any).off('data', rawHook);
     (globalThis as any).__inkSetThinking = (v: boolean) => setThinking(v);
     (globalThis as any).__inkAppend = (line: string) => {
       setMsgs(prev => [...prev, line]);
@@ -299,7 +295,6 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, []);
 
   const onSubmit = useCallback((value: string) => {
-    process.stderr.write(`\n[DBG-SUBMIT] value=${JSON.stringify(value)}\n`);
     const trimmed = value.trim();
     if (!trimmed) return;
     // 入历史 (去重最近一条, 上限 100)
@@ -314,7 +309,6 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, [onPrompt]);
 
   useInput((_input, key) => {
-    process.stderr.write(`\n[DBG-IN] ${JSON.stringify(String(_input))} ret=${key.return} name=${(key as any).name}\n`);
     // 退出请求: 通知 startCLI resolve → 走清理 → process.exit (带兜底)
     const requestExit = () => {
       (globalThis as any).__inkRequestExit?.();
@@ -334,6 +328,13 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       if ((key.tab || key.return) && filtered.length > 0) {
         const it = filtered[safeSel];
         if (it) acceptMention(it);
+        return;
+      }
+      if (key.return && filtered.length === 0) {
+        // 弹窗无匹配项: Enter = 提交当前输入 (否则 /channel 无参 + Enter 永远提交不了 — 2026-08-06)
+        const v = input.trim();
+        if (v) onSubmit(v);
+        else setDismissed(mentionKey);
         return;
       }
       if (key.escape) {

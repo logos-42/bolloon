@@ -557,7 +557,6 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
 
   // /channel — 切换当前智能体 (agent channel), 参数 name/id/number 自动解析
   if (trimmed.toLowerCase().startsWith('/channel')) {
-    process.stderr.write(`\n[DBG-CHANNEL] input=${JSON.stringify(trimmed)}\n`);
     const q = trimmed.slice('/channel'.length).trim();
     try {
       const { getIdentityStore } = await import('./agents/agent-identity-store.js');

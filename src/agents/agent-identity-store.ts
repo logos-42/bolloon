@@ -169,7 +169,6 @@ export class AgentIdentityStore {
 
   /** 切换 active channel + 持久化 (CLI /channel 与 Web POST /active-channel 共用) */
   async setActive(channelId: string): Promise<AgentIdentity | null> {
-    process.stderr.write(`\n[DBG-SETACTIVE] called channelId=${channelId}\n`);
     if (!this.loaded) await this.load();
     const ch = this.channels.find(c => c.id === channelId);
     if (!ch) return null;
@@ -178,7 +177,6 @@ export class AgentIdentityStore {
       await fs.mkdir(path.dirname(activeChannelFile(this.home)), { recursive: true });
       await fs.writeFile(activeChannelFile(this.home), JSON.stringify({ channelId, updatedAt: Date.now() }, null, 2), 'utf-8');
     } catch (e: any) {
-      process.stderr.write(`\n[DBG-SETACTIVE] 写文件失败: ${e?.message}\n`);
       console.warn(`[identity-store] 持久化 active channel 失败 (非致命): ${e?.message}`);
     }
     return this.toIdentity(ch);

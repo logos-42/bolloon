@@ -57,13 +57,15 @@ def send(s):
     os.write(fd, s if isinstance(s, bytes) else s.encode())
 
 def send_cmd(text):
-    """模拟真实打字: 发文本 → 等输入框显示 → 再发 Enter。
-    (Ink 把整 chunk 当一次 keypress, 混入的回车不被识别为 return;
-    pty 会把连续 write 合并, 必须等 UI 反馈后再发 \r — 2026-08-06 实测)"""
+    """模拟真实打字: 发文本 → 等输入框显示 → 发 Enter → 等提交生效。
+    提交等待用固定间隔 (placeholder 含 ANSI 反显, read_until 匹配不了 "输入消息");
+    不等待的话 \r 会与下一条命令在 pty 缓冲合并 (如 "\\r/channel\\r"),
+    parseKeypress 把 \r 开头 chunk 当 ctrl+letter → \r+96='m' 幽灵字符 (2026-08-06 实测)"""
     os.write(fd, text.encode())
     read_until("❯ " + text, 8)
     time.sleep(0.3)
     os.write(fd, b"\r")
+    time.sleep(0.8)  # 等提交处理完成 (避免 \r 与下条命令合并)
 
 def check(name, ok, extra=''):
     global passed, failed
@@ -78,9 +80,9 @@ def check(name, ok, extra=''):
             print(f"     screen tail: {tail[-300:]!r}")
 
 def status_contains(text):
-    """状态栏行含 text (剥色后最后 6 行里找)"""
+    """状态栏行含 text (剥色后最后 40 行里找 — 状态栏在屏幕中部, 不在尾部)"""
     clean = ansi_re.sub(b'', buf).decode('utf-8', 'replace')
-    for line in clean.splitlines()[-6:]:
+    for line in clean.splitlines()[-40:]:
         if text in line:
             return True
     return False
@@ -116,12 +118,16 @@ send_cmd("/channel ch-research")
 ok = read_until("当前智能体: ResearchAgent", 20, 'case3')
 check("Case3: /channel ch-research → ResearchAgent (id 解析)", ok)
 
-# 无参列表 — 不能用 read_until("❯ /channel") (消息行 "❯ /channel xxx" 会污染),
-# 直接 sleep 等输入渲染后发 Enter
+# 无参列表 — send_cmd 的 read_until("❯ /channel") 会被消息行 "❯ /channel xxx" 污染,
+# 用 sleep + 重试兜底
 os.write(fd, b"/channel")
-time.sleep(0.6)
+time.sleep(0.8)
 os.write(fd, b"\r")
 ok = read_until("智能体列表", 20, 'list')
+if not ok:
+    time.sleep(0.4)
+    os.write(fd, b"\r")
+    ok = read_until("智能体列表", 10, 'list-retry')
 check("Case3.5: /channel 无参 → 列表", ok)
 ok = read_until("ResearchAgent", 5, 'list-name')
 check("Case3.5: 列表含 ResearchAgent", ok)
@@ -179,11 +185,6 @@ try:
     os.close(fd2)
 except Exception:
     pass
-
-# 调试: dump pty buf 里的 DBG 行 (setActive 是否被调)
-import re as _re
-for m in _re.finditer(rb'\[DBG-[A-Z]+\][^\n]*', buf):
-    print('DBG:', m.group(0).decode('utf-8', 'replace').strip())
 
 print(f"\n结果: {passed} 通过, {failed} 失败")
 shutil.rmtree(TMP, ignore_errors=True)
