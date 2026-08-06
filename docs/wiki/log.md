@@ -671,3 +671,60 @@
 
 - 机器协议消息 (heartbeat/beacon) 不应进入"对话语义"博弈 — 空文本被 inferOpponentMove 判为背叛是设计盲区
 - 需要 peer 状态可视化 + 手动解除 blocked 的 API (当前只能手改文件)
+
+## [2026-08-06] fix | 上下文压缩系统化修复 + 1M Context Window 资源管理 + IPNS 发布管道验证
+
+### 触发
+
+- 用户报告两个问题: ① Context OS 上下文压缩异常; ② IPFS 发布成功但 IPNS 访问无内容.
+- 用户随后升级需求: 1M Context Window + 50%/55% 阈值自动压缩 + CLI 状态栏实时显示 + 完整发布链验证 (CID → IPNS → Gateway → HTML → Assets → React Mount).
+
+### 根因 (全部实测验证)
+
+**Context 压缩**:
+1. memory-compressor `tryLlmSummary` 调用不存在的 `pi-ai.generateText` → 100% 抛错 → 永远模板 fallback (实测 summary.md 全 "LLM 调用失败 fallback", user=0/ai=0).
+2. 消息字段不兼容: SessionStore 存 `role` ('user'/'assistant'), compressor 读 `type` ('user'/'ai') → 统计全 0, 摘要无价值, 价值点路由 (judgeness) 从不触发.
+3. `src/bootstrap/snip-collapse.ts` (2026-07-29 声称的"预模型管道") 全项目零引用 — 孤儿代码, buildMessages 实际只 `slice(-15)` 裸截断.
+4. maybeAutoCompact 写死 `maxTokens: 8000`, 与 48K 触发阈值 (60K×0.8) 矛盾 — 一触发就一路跑到 LLM 摘要.
+5. buildMessages 跳过 projectedHistory 投影, 压缩结果 (collapse off 时) 只改内存不落盘, 重启丢失.
+
+**IPNS 空内容**:
+1. 根因: 本机 Kubo 在 NAT 后 (Tailscale 100.x + 公网 UDP 高位端口不可达), provider 记录广播 127.0.0.1/内网地址 → 独立节点验证: DHT resolve 成功 (记录已广播) 但 cat 超时 (内容块拉不到).
+2. `ipns_resolve` 工具缺 `nocache=true` → 同一 key 重发布后返回缓存旧 CID (实测).
+3. publish_did 把 KeyPair 对象当 keyName 传给 publishAfterUpload → Kubo 生成名为 "[object Object]" 的 key (实测).
+4. index.html 静态资源全绝对路径 (`/style.css` 等) → IPNS 发布后 gateway 下 404 (发布可用性 bug).
+
+### 修改
+
+| 文件 | 改动 |
+|---|---|
+| `src/bootstrap/context-manager.ts` (新) | Context OS 资源管理器: ContextConfig (maxTokens=1M/compression=0.55/warning=0.5, env 覆盖) + usage 阶段机 (normal/warning/compressing/compressed) + 事件系统 (context.warning/compress.start/compress.complete/snapshot.created) + ContextSnapshot (before/afterTokens/summary/preservedMemory + 磁盘持久化 ~/.bolloon/context-os/snapshots/) |
+| `src/bootstrap/memory-compressor.ts` | tryLlmSummary 改用 `getMinimax().chat` (真实接口); 消息字段 role/type 统一归一化 (toLite); 空壳消息过滤 |
+| `src/bootstrap/snip-collapse.ts` | snipHistory 重写: 修复 protectedToolChain 计数 bug (assistant 不重置) + 占位符数量错 + 窗口内 tool 截断被 return 短路 (提前 trimToolResults) + originalLength 保留最早值 |
+| `src/agents/pi-sdk.ts` | 60K 硬编码 → ContextManager 动态 1M 窗口; maybeAutoCompact maxTokens 8000 → maxTokens×0.55; 压缩前后 snapshot + 事件广播 + usage 上报 (loop 入口); buildMessages 重构: projectedHistory 优先 + 早期历史压缩为 system 摘要注入 (用户意图保留) + 单条 budget-reduce |
+| `src/agents/pi-sdk-tools.ts` | ipns_resolve 加 `recursive=true&nocache=true`; publish_did keyName 用确定性 `did-<did>` (不再传对象); publish_did/ipns_publish 加公网可达性诊断 (节点地址 + peers + NAT 提示) |
+| `src/index.ts` | CLI 状态栏: `320k/1M │ [██████░░░░] 32%` 格式 (bolloon 色系 #c4d640), 每轮对话结束强制重算 messageHistory tokens 写回 ContextManager (按需更新, 非死值), <1% 显示两位小数 (小 token 数也可见变化), 删除 cliContextPct 死变量 |
+| `src/cli/ink-app.tsx` | 3 条分界线 white → bolloon 绿 #c4d640; 输入提示符 ❯ 同步 |
+| `src/cli/loading-tui.ts` | 对话框边框包 C_BORDER 暗色描边 (bolloon 色系) |
+| `src/web/server.ts` | /api/context/usage 端点 (usage + 最近 snapshot); ContextManager 事件 → SSE broadcast (context_event) |
+| `src/web/client.ts` | context_event SSE toast (压缩状态); IPFS 静态模式检测 (非 JSON /api 响应 → 提示条 "IPFS 静态模式, 完整功能需 bolloon --web") |
+| `src/web/index.html` | 静态资源绝对路径 → 相对路径 (./icons/ 等, IPFS 发布必需) |
+| `scripts/verify-ipns-pipeline.ts` (新) | 发布管道最后一公里验证: CID → IPNS resolve → index.html → 相对路径 → assets → gateway render, 6 项检查 |
+| `scripts/verify-ipns-fix.ts` (新) | IPNS 修复验证 (nocache + 确定性 key + 内容回读) |
+| 测试 +5 文件 | context-manager (7) / memory-compressor-fix (7) / snip-collapse (7) / context-status-bar (5) 共 36 新测试 |
+
+### 验证
+
+- tsc 0 错; **vitest 全量 1063/1063 pass** (含 36 新测试)
+- build:web / build:main 通过
+- verify:ipns 6/6: resolve → CID → index.html → 相对路径 → assets → gateway HTTP 200
+- 浏览器实测: 本地 gateway 打开 `/ipns/<ui-deploy>/` → Bolloon UI 完整渲染 (侧边栏/标题/输入框), js_errors=0
+- CLI pty 实测: 状态栏 `DeepSeek │ real test msg │ ⏱ 14s │ 0/1M │ [░░░░░░░░░░] 0.00%`
+- IPNS 内容公网可达是 NAT 环境问题 (非代码): 代码已加诊断提示; 公网访问需 pin 到公共服务或配置端口映射
+
+### 教训
+
+- 声称"已接入"的功能必须验证调用点 — snip-collapse 写了实现没接 wiring, 两年后才发现
+- 字段名兼容 (role vs type) 是数据层最常见的静默杀手 — 统一归一化层
+- IPFS/IPNS 发布链最后一步 (公网拉内容) 依赖源节点可达性, 与发布逻辑无关 — 诊断要区分"发布成功"和"用户可访问"
+- 1M 窗口下状态栏百分比必须保留小数位, 否则 round 后永远 0% 像死代码

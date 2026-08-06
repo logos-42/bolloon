@@ -6,20 +6,20 @@
   <title>Bolloon Agent</title>
 
   <!-- Favicon -->
-  <link rel="icon" type="image/x-icon" href="/icons/favicon.ico">
-  <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16x16.png">
+  <link rel="icon" type="image/x-icon" href="./icons/favicon.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="./icons/favicon-16x16.png">
 
   <!-- Apple Touch Icon -->
-  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
 
   <!-- PWA Manifest -->
-  <link rel="manifest" href="/manifest.json">
+  <link rel="manifest" href="./manifest.json">
 
   <!-- 2026-06-11: 移除 Google Fonts + jsdelivr 外部 CDN 阻塞 — 在大陆/跨公网 timeout 拖慢首屏/返回主页
        字体: style.css 只用字面量 'JetBrains Mono', 系统有就用, 没有自动 fall back monospace
        marked/qrcode: 改 async 不阻塞 (下载失败时本地降级到 escape 文本, 不影响主聊天) -->
-  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="./style.css">
   <script async src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script async src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
@@ -414,11 +414,11 @@
     </main>
   </div>
 
-  <script type="module" src="/components/wallet-viem.mjs"></script>
-  <script type="module" src="/components/p2p/index.js"></script>
-  <script type="module" src="/ui/step-timeline.js"></script>
-  <script type="module" src="/ui/message-renderer.js"></script>
+  <script type="module" src="./components/wallet-viem.mjs"></script>
+  <script type="module" src="./components/p2p/index.js"></script>
+  <script type="module" src="./ui/step-timeline.js"></script>
+  <script type="module" src="./ui/message-renderer.js"></script>
   <!-- 2026-07-06: client.js 含 import 语句 (safeChannelName 兜底), 必须 type="module" -->
-  <script type="module" src="/client.js"></script>
+  <script type="module" src="./client.js"></script>
 </body>
 </html>

@@ -46,7 +46,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:pi-sdk": "tsx src/test/pi-sdk.test.ts",
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "verify:ipns": "tsx scripts/verify-ipns-pipeline.ts"
   },
   "workspaces": [
     "src/constraint-runtime"

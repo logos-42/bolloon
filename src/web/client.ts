@@ -234,6 +234,16 @@ function expandSidebar() {
 async function loadChannels() {
   try {
     const res = await fetch('/channels');
+    const ct = res.headers.get('content-type') || '';
+    // 2026-08-06: IPFS/IPNS 静态模式检测 — 纯静态发布无后端, /api 返回 gateway HTML (非 JSON)
+    if (!ct.includes('application/json')) {
+      const text = await res.text().catch(() => '');
+      if (!text.trim().startsWith('[') && !text.trim().startsWith('{')) {
+        console.warn('[加载频道] 检测到 IPFS 静态模式 (无后端 server), 功能受限');
+        showStaticModeNotice();
+        return;
+      }
+    }
     channels = await res.json();
     console.log('[加载频道] 从服务器获取到', channels.length, '个频道');
     channels.forEach((ch, i) => {
@@ -259,6 +269,17 @@ async function loadChannels() {
   } catch (err) {
     console.error('[加载频道] 失败:', err);
   }
+}
+
+/** 2026-08-06: IPFS 静态模式提示条 — 页面来自 IPFS/IPNS, 无后端 API, 显示功能说明 */
+function showStaticModeNotice(): void {
+  if (document.getElementById('ipfs-static-notice')) return;
+  const notice = document.createElement('div');
+  notice.id = 'ipfs-static-notice';
+  notice.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);z-index:9999;background:#1a1a18;border:1px solid #c4d640;color:#d8d8c8;padding:10px 16px;border-radius:8px;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,.5);max-width:560px;text-align:center;';
+  notice.innerHTML = `📡 <b style="color:#c4d640">IPFS 静态模式</b> — 此页面通过 IPNS 从去中心化网络加载.<br>完整功能 (对话/工具/判断力) 需连接本地 Bolloon server: <code style="color:#c4d640">bolloon --web</code>`;
+  document.body.appendChild(notice);
+  setTimeout(() => { notice.remove(); }, 15000);
 }
 
 // v3: 全局 SSE 监听 (p2p-global channel) - 接收远端 chat.reply 等事件
