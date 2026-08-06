@@ -133,6 +133,22 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const pluginCache = useRef<MentionItem[] | null>(null);
   const fileCache = useRef<MentionItem[] | null>(null);
 
+  // ── 程序化选择器 (2026-08-06: /login /model 等命令触发, 复用 MentionPopup 渲染) ──
+  const [picker, setPicker] = useState<{ title: string; items: MentionItem[]; sel: number } | null>(null);
+  const pickerCb = useRef<((item: MentionItem) => void) | null>(null);
+  const pickerSelRef = useRef(0);
+  // 全局钩子: index.ts 命令打开/关闭选择器
+  useEffect(() => {
+    (globalThis as any).__inkOpenPicker = (itemsArg: MentionItem[], title: string, onPick: (item: MentionItem) => void) => {
+      pickerSelRef.current = 0;
+      pickerCb.current = onPick;
+      setPicker({ title: title || '选择', items: itemsArg, sel: 0 });
+      setInput('');
+    };
+    (globalThis as any).__inkClosePicker = () => { pickerCb.current = null; setPicker(null); };
+    return () => { delete (globalThis as any).__inkOpenPicker; delete (globalThis as any).__inkClosePicker; };
+  }, []);
+
   // ── 输入历史 (↑/↓ 切换) ───────────────────────────────────────────────────
   const historyRef = useRef<string[]>([]);
   const historyIdxRef = useRef(-1); // -1 = 正在编辑新草稿
@@ -321,6 +337,23 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       return;
     }
 
+    // ── 程序化选择器: 全键接管 (↑↓ 选择, Enter 确认, Esc 关闭) ──
+    if (picker) {
+      const itemsArg = picker.items;
+      if (key.upArrow) { pickerSelRef.current = Math.max(0, pickerSelRef.current - 1); setPicker({ ...picker, sel: pickerSelRef.current }); return; }
+      if (key.downArrow) { pickerSelRef.current = Math.min(itemsArg.length - 1, pickerSelRef.current + 1); setPicker({ ...picker, sel: pickerSelRef.current }); return; }
+      if ((key.return || key.tab) && itemsArg.length > 0) {
+        const it = itemsArg[Math.min(pickerSelRef.current, itemsArg.length - 1)];
+        const cb = pickerCb.current;
+        pickerCb.current = null;
+        setPicker(null);
+        cb?.(it);
+        return;
+      }
+      if (key.escape) { pickerCb.current = null; setPicker(null); return; }
+      return; // 其余键忽略
+    }
+
     // ── 弹出窗打开: 全键接管 (TextInput focus=false 不处理) ──
     if (popupOpen) {
       if (key.upArrow) { setSel(s => Math.max(0, s - 1)); return; }
@@ -491,6 +524,16 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         />
       )}
 
+      {/* 程序化选择器 (2026-08-06: /login /model 等命令触发) — 复用 MentionPopup 渲染 */}
+      {picker && (
+        <MentionPopup
+          title={picker.title}
+          items={picker.items}
+          sel={Math.min(picker.sel, picker.items.length - 1)}
+          width={terminalW}
+        />
+      )}
+
       {/* 输入栏 */}
       <Box>
         <Text bold color="#c4d640">❯ </Text>
@@ -499,7 +542,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
           value={input}
           onChange={setInput}
           onSubmit={onSubmit}
-          focus={!popupOpen}
+          focus={!popupOpen && !picker}
           placeholder="输入消息... @智能体 /命令 #文件 · Esc 双击退出 · /queue 排队 · !终端命令"
         />
       </Box>

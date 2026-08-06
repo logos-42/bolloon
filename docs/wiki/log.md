@@ -760,3 +760,32 @@
 
 - 命令存在感 = 用户能发现的名字 (update 而不是 update-check) — 语义命名比内部函数名重要
 - 已有完整 API (config-store 13 供应商切换) 但没 CLI 暴露 = 功能"不存在"
+
+## [2026-08-06] feat | CLI 系统命令组 (21 个 / 命令) + ink 供应商选择器
+
+### 触发
+
+- 用户要求: /resume /goal /loop /ipns /ipfs /did /skill /mcp /agent /memory /session /email /wallet /dream /now /insight /judgement /tools /login /logout /wiki 共 21 个命令; 供应商选择需要终端渲染的选择界面 (复用 ink); 减法原则; 完成后发布新版本.
+
+### 实现
+
+| 模块 | 改动 |
+|---|---|
+| `src/cli/ink-app.tsx` | 程序化选择器 Picker: 全局钩子 `__inkOpenPicker(items, title, onPick)` / `__inkClosePicker()`, useInput 全键接管 (↑↓ 选择 / Enter 确认 / Esc 取消), 渲染复用 MentionPopup 组件, TextInput focus 让出 |
+| `src/index.ts` | 21 个 / 命令 (processInput 命令组, 全部复用现有模块薄封装): /model /login → ink 供应商选择器 (llmConfigStore providers → MentionItem[]); /logout 当前供应商; /now 状态总览 (ContextManager usage); /session channel/agent/消息窗口; /loop estimateTokens; /memory memory-compressor 摘要; /resume 最近记忆 + active plans; /goal plan-store; /tools getToolDefinitions; /skill skill-writer 候选; /mcp ~/.mcp.json; /agent /did identity; /ipfs /ipns kuboApi (export); /wallet /email 配置状态; /judgement human-value-store; /insight Context OS 08-Insights; /wiki current-status; /dream 随机灵感 (Insights/Knowledge 资产池) |
+| `src/agents/pi-sdk-tools.ts` | kuboApi 加 export (CLI /ipfs /ipns 复用, 避免重复实现) |
+| `src/cli/mention-data.ts` | CLI_COMMANDS +21 命令 ( / 弹窗可命中) |
+| `/help` | 命令列表更新 (21 新命令 + 用法) |
+
+减法原则: 所有命令都是现有 API 的薄封装 (0 新增依赖, 0 新模块), picker 复用 MentionPopup 渲染组件.
+
+### 验证
+
+- tsc 0 错; vitest 1063/1063
+- 命令数据源实测 (verify-cli-cmds.ts): /ipfs (kubo/0.28.0, 47 peers) /ipns (43 keys) /model picker (13 供应商带 key 状态) /loop (estimateTokens) /goal (1 active plan) /judgement (57 条) 全 OK
+- pty 启动受 npm 依赖检查网络慢影响 (auto-update 启动检查, 环境问题非代码), 命令逻辑经数据源脚本验证
+
+### 教训
+
+- CLI 启动卡住时先看是不是 auto-update/npm 检查在跑 (spawn npm install), 与命令代码无关
+- ink 弹窗组件 (MentionPopup) 可复用为通用选择器 — 加一个程序化触发钩子即可, 不用新组件

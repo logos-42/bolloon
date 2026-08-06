@@ -655,12 +655,406 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     return;
   }
 
+  // ==================== 2026-08-06: 系统命令组 (/model /now /ipfs /memory ...) ====================
+  const cmd = trimmed.toLowerCase();
+
+  // /model /login — 模型供应商选择器 (ink 交互渲染, 复用 MentionPopup)
+  if (cmd === '/model' || cmd === '/login') {
+    try {
+      const { llmConfigStore, PROVIDER_INFO } = await import('./llm/config-store.js');
+      await llmConfigStore.initialize();
+      const config = await llmConfigStore.getConfig();
+      const items = Object.entries(config.providers).map(([name, p]) => ({
+        kind: 'command' as const,
+        label: name,
+        hint: `${String((PROVIDER_INFO as any)[name]?.name || '').padEnd(14)} ${p.apiKey ? '🔑' : p.requiresApiKey ? '⚠ 无key' : ''}  ${p.model || ''}`,
+        insert: name,
+      }));
+      (globalThis as any).__inkOpenPicker?.(items, '选择模型供应商 (↑↓ 选择 · Enter 确认 · Esc 取消)', async (it: any) => {
+        try {
+          await llmConfigStore.setActiveProvider(it.label as any);
+          const active = await llmConfigStore.getActiveProvider();
+          appendLine(`${C_OK}✓ 已切换到 ${it.label} (${String((PROVIDER_INFO as any)[it.label]?.name || '')})${RESET}`);
+          appendLine(`${C_DIM}  当前模型: ${config.providers[it.label as keyof typeof config.providers]?.model || '默认'}${RESET}`);
+        } catch (e: any) {
+          appendLine(`${C_ERROR}✗ 切换失败: ${String(e.message || e).slice(0, 150)}${RESET}`);
+        }
+      });
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/model 失败: ${String(e.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
+
+  // /logout — 显示当前供应商 (减法: 登出 = 查看当前, 切换走 /model)
+  if (cmd === '/logout') {
+    try {
+      const { llmConfigStore, PROVIDER_INFO } = await import('./llm/config-store.js');
+      await llmConfigStore.initialize();
+      const active = await llmConfigStore.getActiveProvider();
+      const cfg = await llmConfigStore.getActiveProviderConfig();
+      appendLine(`${C_DIM}当前供应商:${RESET} ${C_ACCENT}${active}${RESET} (${String((PROVIDER_INFO as any)[active]?.name || '')})`);
+      appendLine(`${C_DIM}  模型: ${cfg?.model || '默认'}${RESET}`);
+      appendLine(`${C_DIM}  切换: /model 打开选择器${RESET}`);
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /now — 当前状态总览
+  if (cmd === '/now') {
+    try {
+      const cm = require('./bootstrap/context-manager.js').getContextManager();
+      const usage = cm.getUsage();
+      appendLine(`${C_ACCENT}● 当前状态${RESET}`);
+      appendLine(`  ${C_DIM}智能体:${RESET} ${cliAgentName} ${cliActiveChannelId ? `(${C_DIM}ch:${cliActiveChannelId.slice(0, 12)}${RESET})` : ''}`);
+      appendLine(`  ${C_DIM}运行:${RESET} ${fmtDuration(Date.now() - cliStartTime)}`);
+      appendLine(`  ${C_DIM}上下文:${RESET} ${(usage.usedTokens / 1000).toFixed(0)}k / ${(usage.maxTokens / 1000).toFixed(0)}k tokens (${Math.round(usage.pct * 100)}%)${usage.stage === 'warning' ? ` ${C_WARN}⚠ 即将压缩${RESET}` : ''}`);
+      const a = await getAgent();
+      appendLine(`  ${C_DIM}消息:${RESET} ${(a as any).messageHistory?.length ?? 0} 条`);
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /tools — 可用工具列表
+  if (cmd === '/tools') {
+    try {
+      const a = await getAgent();
+      const defs = ((a as any).getToolDefinitions?.() ?? []) as any[];
+      const names = Array.isArray(defs) ? defs.map((d: any) => d.name || d.function?.name).filter(Boolean) : Object.keys(defs || {});
+      appendLine(`${C_ACCENT}可用工具 (${names.length}):${RESET}`);
+      for (const n of names.slice(0, 40)) appendLine(`  ${C_DIM}·${RESET} ${n}`);
+      if (names.length > 40) appendLine(`  ${C_DIM}... 共 ${names.length} 个${RESET}`);
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /session — 当前会话信息
+  if (cmd === '/session') {
+    try {
+      const a = await getAgent();
+      const h = (a as any).messageHistory ?? [];
+      appendLine(`${C_ACCENT}会话:${RESET}`);
+      appendLine(`  ${C_DIM}channel:${RESET} ${(a as any).currentChannelId || '—'}`);
+      appendLine(`  ${C_DIM}agent:${RESET} ${(a as any).currentAgentId || '—'}`);
+      appendLine(`  ${C_DIM}消息:${RESET} ${h.length} 条 (${h.length > 15 ? `${h.length - 15} 条已压缩` : '窗口内'})`);
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /memory — 记忆摘要 (memory-compressor 落盘文件)
+  if (cmd === '/memory') {
+    try {
+      const { getMemoryDir } = await import('./bootstrap/memory-compressor.js');
+      const { readdir, readFile } = await import('fs/promises');
+      const { join } = await import('path');
+      const dir = getMemoryDir(cliAgentName === 'bolloon' ? 'agent' : cliAgentName);
+      const files = (await readdir(join(dir, 'sessions')).catch(() => [])).filter((f: string) => f.endsWith('.summary.md'));
+      appendLine(`${C_ACCENT}记忆摘要 (${files.length} 个 session):${RESET}`);
+      for (const f of files.slice(-5)) {
+        try {
+          const raw = await readFile(join(dir, 'sessions', f), 'utf-8');
+          const tail = raw.trim().split('\n').slice(-6).join(' ').slice(0, 180);
+          appendLine(`  ${C_DIM}·${RESET} ${f.replace('.summary.md', '').slice(-30)}`);
+          appendLine(`    ${C_DIM}${tail}${RESET}`);
+        } catch { /* 跳过 */ }
+      }
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /resume — 恢复: 最近记忆摘要 + 进行中计划
+  if (cmd === '/resume' || cmd.startsWith('/resume ')) {
+    try {
+      const { getMemoryDir, getSessionSummaryPath } = await import('./bootstrap/memory-compressor.js');
+      const { readFile, readdir } = await import('fs/promises');
+      const { join } = await import('path');
+      const dir = getMemoryDir(cliAgentName === 'bolloon' ? 'agent' : cliAgentName);
+      const files = (await readdir(join(dir, 'sessions')).catch(() => [])).filter((f: string) => f.endsWith('.summary.md'));
+      appendLine(`${C_ACCENT}↻ 恢复上下文:${RESET}`);
+      if (files.length > 0) {
+        const f = files[files.length - 1];
+        const raw = await readFile(join(dir, 'sessions', f), 'utf-8');
+        const block = raw.trim().split('\n').slice(-12).join('\n').slice(-1200);
+        appendLine(`  ${C_DIM}最近记忆 (${f.slice(0, 24)}...):${RESET}`);
+        for (const line of block.split('\n').slice(-8)) appendLine(`  ${C_DIM}${line.slice(0, 100)}${RESET}`);
+      } else {
+        appendLine(`  ${C_DIM}暂无记忆摘要${RESET}`);
+      }
+      const { listActivePlans } = await import('./agents/plan-store.js');
+      const plans = await listActivePlans();
+      if (plans.length > 0) {
+        appendLine(`  ${C_DIM}进行中计划 (${plans.length}):${RESET}`);
+        for (const p of plans.slice(0, 3)) appendLine(`  ${C_ACCENT}·${RESET} ${(p as any).goal || (p as any).planId} ${C_DIM}${(p as any).status || ''}${RESET}`);
+      }
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /goal — 进行中的目标/计划
+  if (cmd === '/goal') {
+    try {
+      const { listActivePlans, planToContext } = await import('./agents/plan-store.js');
+      const plans = await listActivePlans();
+      appendLine(`${C_ACCENT}目标 (${plans.length} 个进行中):${RESET}`);
+      if (plans.length === 0) { appendLine(`  ${C_DIM}无进行中计划 — 可用 /plan 创建${RESET}`); }
+      for (const p of plans.slice(0, 5)) {
+        appendLine(`  ${C_ACCENT}●${RESET} ${(p as any).goal || (p as any).planId} ${C_DIM}[${(p as any).status || 'active'}]${RESET}`);
+        const steps = Array.isArray((p as any).steps) ? (p as any).steps : [];
+        const done = steps.filter((s: any) => s.done || s.status === 'done').length;
+        if (steps.length > 0) appendLine(`    ${C_DIM}${done}/${steps.length} 步完成${RESET}`);
+      }
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /skill — 技能候选 (skill-writer 落盘)
+  if (cmd === '/skill') {
+    try {
+      const { listSkillCandidates } = await import('./agents/skill-writer.js');
+      const cands = await listSkillCandidates();
+      appendLine(`${C_ACCENT}技能候选 (${cands.length}):${RESET}`);
+      if (cands.length === 0) { appendLine(`  ${C_DIM}无候选 — 连续成功工具调用 ≥2 自动生成${RESET}`); }
+      for (const c of cands.slice(0, 8)) {
+        appendLine(`  ${C_DIM}·${RESET} ${c.name || '?'} ${C_DIM}(${c.source || ''})${RESET}`);
+      }
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /mcp — MCP 插件/工具列表
+  if (cmd === '/mcp') {
+    try {
+      const { readFile } = await import('fs/promises');
+      const { join } = await import('path');
+      let servers: Record<string, any> = {};
+      try { servers = JSON.parse(await readFile(join(process.env.HOME || '/tmp', '.mcp.json'), 'utf-8')).mcpServers || {}; } catch { /* 无 */ }
+      appendLine(`${C_ACCENT}MCP 服务器 (${Object.keys(servers).length}):${RESET}`);
+      if (Object.keys(servers).length === 0) { appendLine(`  ${C_DIM}无 (~/.mcp.json 未配置)${RESET}`); }
+      for (const [name, s] of Object.entries(servers)) {
+        const cmdStr = (s as any)?.command || '';
+        appendLine(`  ${C_DIM}·${RESET} ${name} ${C_DIM}(${String(cmdStr).slice(0, 40)})${RESET}`);
+      }
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /agent — 当前智能体身份
+  if (cmd === '/agent') {
+    try {
+      const a = await getAgent();
+      appendLine(`${C_ACCENT}智能体:${RESET}`);
+      appendLine(`  ${C_DIM}名称:${RESET} ${cliAgentName}`);
+      appendLine(`  ${C_DIM}agentId:${RESET} ${(a as any).currentAgentId || '—'}`);
+      appendLine(`  ${C_DIM}channel:${RESET} ${cliActiveChannelId || '—'}`);
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /did — DID 身份
+  if (cmd === '/did') {
+    try {
+      const { loadOrCreateAgentIdentity } = await import('./agents/agent-identity.js');
+      const identity = loadOrCreateAgentIdentity(cliAgentName === 'bolloon' ? 'default-agent' : cliAgentName);
+      appendLine(`${C_ACCENT}DID 身份:${RESET}`);
+      appendLine(`  ${C_DIM}did:${RESET} ${identity.did}`);
+      appendLine(`  ${C_DIM}publicKey:${RESET} ${identity.publicKey?.slice(0, 32) || '—'}...`);
+      appendLine(`  ${C_DIM}发布:${RESET} 可用 publish_did 工具发布到 IPFS+IPNS`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/did 失败: ${String(e.message || e).slice(0, 120)}${RESET}`);
+    }
+    return;
+  }
+
+  // /ipfs — Kubo 状态
+  if (cmd === '/ipfs') {
+    try {
+      const { kuboApi } = await import('./agents/pi-sdk-tools.js');
+      const id = await kuboApi('/api/v0/id');
+      const peers = await kuboApi('/api/v0/swarm/peers');
+      const pins = await kuboApi('/api/v0/pin/ls?type=recursive');
+      appendLine(`${C_ACCENT}IPFS (Kubo):${RESET}`);
+      appendLine(`  ${C_DIM}节点:${RESET} ${String((id as any).ID || '').slice(0, 24)}...`);
+      appendLine(`  ${C_DIM}版本:${RESET} ${(id as any).AgentVersion || ''}`);
+      appendLine(`  ${C_DIM}peers:${RESET} ${(peers as any)?.Peers?.length ?? 0}`);
+      appendLine(`  ${C_DIM}pins:${RESET} ${(pins as any)?.Keys ? Object.keys((pins as any).Keys).length : 0}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/ipfs 失败: ${String(e.message || e).slice(0, 120)}${RESET}`);
+    }
+    return;
+  }
+
+  // /ipns — IPNS 状态 (keys + self 解析)
+  if (cmd === '/ipns') {
+    try {
+      const { kuboApi } = await import('./agents/pi-sdk-tools.js');
+      const keys = await kuboApi('/api/v0/key/list');
+      const keyList = (keys as any)?.Keys || [];
+      appendLine(`${C_ACCENT}IPNS keys (${keyList.length}):${RESET}`);
+      for (const k of keyList.slice(0, 10)) {
+        appendLine(`  ${C_DIM}·${RESET} ${k.Name} ${C_DIM}${String(k.Id).slice(0, 20)}...${RESET}`);
+      }
+      try {
+        const r = await kuboApi('/api/v0/name/resolve?arg=ui-deploy&recursive=true&nocache=true', undefined, 15000);
+        appendLine(`  ${C_DIM}ui-deploy →${RESET} ${(r as any).Path || ''}`);
+      } catch { /* 无 ui-deploy */ }
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/ipns 失败: ${String(e.message || e).slice(0, 120)}${RESET}`);
+    }
+    return;
+  }
+
+  // /wallet — 钱包状态
+  if (cmd === '/wallet') {
+    try {
+      const { readFile } = await import('fs/promises');
+      const { join } = await import('path');
+      let wallets: any[] = [];
+      try { wallets = JSON.parse(await readFile(join(process.env.HOME || '/tmp', '.bolloon', 'wallets.json'), 'utf-8')); } catch { /* 无 */ }
+      appendLine(`${C_ACCENT}钱包 (${Array.isArray(wallets) ? wallets.length : 0}):${RESET}`);
+      if (!Array.isArray(wallets) || wallets.length === 0) {
+        appendLine(`  ${C_DIM}无 — 可用 wallet_create 工具创建 EVM 钱包${RESET}`);
+      }
+      for (const w of (Array.isArray(wallets) ? wallets : []).slice(0, 5)) {
+        appendLine(`  ${C_DIM}·${RESET} ${(w as any).name || (w as any).address?.slice(0, 12) || '?'} ${C_DIM}${String((w as any).address || '').slice(0, 16)}...${RESET}`);
+      }
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /email — 邮件配置状态
+  if (cmd === '/email') {
+    try {
+      const { readFile } = await import('fs/promises');
+      const { join } = await import('path');
+      let cfg: any = null;
+      try { cfg = JSON.parse(await readFile(join(process.env.HOME || '/tmp', '.bolloon', 'smtp.json'), 'utf-8')); } catch { /* 无 */ }
+      appendLine(`${C_ACCENT}邮件 (SMTP):${RESET}`);
+      if (!cfg) { appendLine(`  ${C_DIM}未配置 smtp.json — 发件人: 天墟星剑 <2844169590@qq.com>${RESET}`); }
+      else {
+        appendLine(`  ${C_DIM}host:${RESET} ${cfg.host || 'smtp.qq.com'}`);
+        appendLine(`  ${C_DIM}发件人:${RESET} ${cfg.from || cfg.user || '—'}`);
+      }
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /loop — 当前循环状态 (消息数 + token 估算)
+  if (cmd === '/loop') {
+    try {
+      const a = await getAgent();
+      const h = (a as any).messageHistory ?? [];
+      let tokens = 0;
+      try {
+        const { estimateTokens } = require('./context-compaction/index.js');
+        tokens = estimateTokens(h);
+      } catch { tokens = Math.round(JSON.stringify(h).length / 4); }
+      appendLine(`${C_ACCENT}Loop 状态:${RESET}`);
+      appendLine(`  ${C_DIM}消息:${RESET} ${h.length} 条 (窗口 15, ${Math.max(0, h.length - 15)} 条早期压缩)`);
+      appendLine(`  ${C_DIM}token:${RESET} ${(tokens / 1000).toFixed(1)}k / 1M (${((tokens / 1_000_000) * 100).toFixed(2)}%)`);
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /judgement — 判断力列表
+  if (cmd === '/judgement' || cmd === '/judgments') {
+    try {
+      const { loadAllJudgments } = await import('./pi-ecosystem-judgment/human-value-store.js');
+      const all = await loadAllJudgments().catch(() => []);
+      appendLine(`${C_ACCENT}判断力 (${all.length} 条):${RESET}`);
+      for (const j of all.slice(0, 8)) {
+        appendLine(`  ${C_DIM}·${RESET} ${String((j as any).decision || '').slice(0, 70)}`);
+      }
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /insight — Context OS 08-Insights 资产
+  if (cmd === '/insight') {
+    try {
+      const { readContextAssets, readAssetBody } = await import('./bootstrap/context-os.js');
+      const listings = await readContextAssets('08-Insights');
+      const files = listings[0]?.files || [];
+      appendLine(`${C_ACCENT}洞察 (${files.length} 篇):${RESET}`);
+      if (files.length === 0) { appendLine(`  ${C_DIM}无 — 价值点路由自动沉淀 insight 到 08-Insights${RESET}`); }
+      for (const f of files.slice(0, 6)) {
+        const body = await readAssetBody('08-Insights', f.file).catch(() => null);
+        const firstLine = (body?.body || '').split('\n').filter(l => l.trim() && !l.startsWith('---')).slice(0, 2).join(' ').slice(0, 90);
+        appendLine(`  ${C_ACCENT}·${RESET} ${f.title} ${C_DIM}${firstLine ? '— ' + firstLine : ''}${RESET}`);
+      }
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /wiki — wiki 状态
+  if (cmd === '/wiki') {
+    try {
+      const { readFile } = await import('fs/promises');
+      const { join } = await import('path');
+      const root = process.cwd();
+      const statusPath = join(root, 'docs', 'wiki', 'current-status.md');
+      const raw = await readFile(statusPath, 'utf-8');
+      const title = raw.match(/^title:\s*(.+)$/m)?.[1] || 'current-status';
+      const confirmed = raw.match(/^last_confirmed:\s*(.+)$/m)?.[1] || '?';
+      const supported = (raw.match(/\|\|+/g) || []).length;
+      appendLine(`${C_ACCENT}Wiki:${RESET} ${title}`);
+      appendLine(`  ${C_DIM}last_confirmed:${RESET} ${confirmed}`);
+      appendLine(`  ${C_DIM}已支持条目:${RESET} ${supported}`);
+      appendLine(`  ${C_DIM}位置:${RESET} docs/wiki/ (wiki-first 范式)`);
+    } catch { /* 静默 */ }
+    return;
+  }
+
+  // /dream — 随机灵感 (从 Insights + Knowledge 资产随机取一条)
+  if (cmd === '/dream') {
+    try {
+      const { readContextAssets, readAssetBody } = await import('./bootstrap/context-os.js');
+      const layers = ['08-Insights', '07-Knowledge', '12-Analysis'];
+      const pool: string[] = [];
+      for (const layer of layers) {
+        const listings = await readContextAssets(layer);
+        for (const f of (listings[0]?.files || []).slice(0, 5)) {
+          const body = await readAssetBody(layer, f.file).catch(() => null);
+          const lines = (body?.body || '').split('\n').filter(l => l.trim() && !l.startsWith('---') && !l.startsWith('#') && !l.startsWith('>') && !l.startsWith('未来'));
+          if (lines[0]) pool.push(lines[0].trim().slice(0, 100));
+        }
+      }
+      if (pool.length === 0) {
+        appendLine(`${C_DIM}🌙 梦境空空 — 多对话让记忆沉淀出洞察后, /dream 就有素材了${RESET}`);
+      } else {
+        const pick = pool[Math.floor(Math.random() * pool.length)];
+        appendLine(`${C_DIM}🌙 ${pick}${RESET}`);
+      }
+    } catch { /* 静默 */ }
+    return;
+  }
+
   if (trimmed.toLowerCase() === '/help' || trimmed === 'help') {
     appendLine(`${C_DIM}命令:${RESET}`);
     appendLine(`  ${C_ACCENT}!<cmd>${RESET}  执行终端命令  ${C_DIM}如 !ls -la${RESET}`);
     appendLine(`  ${C_ACCENT}/queue${RESET}  切换队列模式  ${C_DIM}输入排队, 当前结束后自动执行${RESET}`);
     appendLine(`  ${C_ACCENT}/dequeue${RESET} 出队一条`);
     appendLine(`  ${C_ACCENT}/channel [名字|id|序号]${RESET} 切换当前智能体  ${C_DIM}无参列出所有; 支持名字/ID/序号三种解析${RESET}`);
+    appendLine(`  ${C_ACCENT}/model${RESET} / ${C_ACCENT}/login${RESET}  模型供应商选择器  ${C_DIM}↑↓ 选择 · Enter 确认 · Esc 取消${RESET}`);
+    appendLine(`  ${C_ACCENT}/logout${RESET}  查看当前供应商`);
+    appendLine(`  ${C_ACCENT}/now${RESET}    当前状态总览  ${C_DIM}智能体/运行时间/上下文 tokens/消息数${RESET}`);
+    appendLine(`  ${C_ACCENT}/session${RESET} 当前会话信息  ${C_DIM}channel/agent/消息窗口${RESET}`);
+    appendLine(`  ${C_ACCENT}/loop${RESET}   循环状态  ${C_DIM}消息数 + token 估算${RESET}`);
+    appendLine(`  ${C_ACCENT}/memory${RESET} 记忆摘要  ${C_DIM}memory-compressor 落盘摘要${RESET}`);
+    appendLine(`  ${C_ACCENT}/resume${RESET} 恢复上下文  ${C_DIM}最近记忆 + 进行中计划${RESET}`);
+    appendLine(`  ${C_ACCENT}/goal${RESET}   进行中目标  ${C_DIM}plan-store active plans${RESET}`);
+    appendLine(`  ${C_ACCENT}/tools${RESET}  可用工具列表`);
+    appendLine(`  ${C_ACCENT}/skill${RESET}  技能候选  ${C_DIM}skill-writer 沉淀候选${RESET}`);
+    appendLine(`  ${C_ACCENT}/mcp${RESET}    MCP 服务器列表`);
+    appendLine(`  ${C_ACCENT}/agent${RESET}  当前智能体身份`);
+    appendLine(`  ${C_ACCENT}/did${RESET}    DID 身份`);
+    appendLine(`  ${C_ACCENT}/ipfs${RESET}   Kubo 状态  ${C_DIM}节点/peers/pins${RESET}`);
+    appendLine(`  ${C_ACCENT}/ipns${RESET}   IPNS keys + resolve`);
+    appendLine(`  ${C_ACCENT}/wallet${RESET} 钱包状态`);
+    appendLine(`  ${C_ACCENT}/email${RESET}  邮件配置`);
+    appendLine(`  ${C_ACCENT}/judgement${RESET} 判断力列表`);
+    appendLine(`  ${C_ACCENT}/insight${RESET} Context OS 洞察 (08-Insights)`);
+    appendLine(`  ${C_ACCENT}/wiki${RESET}   wiki 状态`);
+    appendLine(`  ${C_ACCENT}/dream${RESET}  随机灵感`);
     appendLine(`  ${C_ACCENT}@名字${RESET}     @ 命中智能体  ${C_DIM}弹出窗选择后发送给智能体${RESET}`);
     appendLine(`  ${C_ACCENT}/名字${RESET}     / 命中命令/技能/插件  ${C_DIM}输入 / 自动弹出${RESET}`);
     appendLine(`  ${C_ACCENT}#路径${RESET}     # 命中文件  ${C_DIM}输入 # 自动弹出文件列表${RESET}`);

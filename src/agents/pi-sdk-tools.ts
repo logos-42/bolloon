@@ -2070,7 +2070,8 @@ async function ensureKuboReady(): Promise<void> {
   }
 }
 
-async function kuboApi(pathAndQuery: string, init?: RequestInit, timeoutMs = 30000): Promise<any> {
+/** Kubo HTTP API helper (POST only, 2026-08-03 实测 Kubo 只接受 POST). 2026-08-06 export 供 CLI /ipfs /ipns 命令用. */
+export async function kuboApi(pathAndQuery: string, init?: RequestInit, timeoutMs = 30000): Promise<any> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
