@@ -789,3 +789,26 @@
 
 - CLI 启动卡住时先看是不是 auto-update/npm 检查在跑 (spawn npm install), 与命令代码无关
 - ink 弹窗组件 (MentionPopup) 可复用为通用选择器 — 加一个程序化触发钩子即可, 不用新组件
+
+## [2026-08-06] fix | build:all 污染 dist ESM 产物 — electron CJS 编译覆盖 auto-update.js
+
+### 触发
+
+- 本机安装 0.3.36 后 `bolloon update` 崩溃: `ReferenceError: exports is not defined in ES module scope`.
+
+### 根因
+
+- `tsconfig.electron.json` 是 `module: CommonJS` 且 `outDir: "dist"`; `src/electron/main.ts:15` import auto-update → tsc 编译依赖链 → `dist/utils/auto-update.js` 被覆盖成 CJS.
+- package.json `"type": "module"` 下 Node 把 .js 当 ESM 跑 → `exports` 未定义崩溃.
+- 单独编译验证: 主 tsconfig (ESNext) 输出 ESM 正确; 只有 build:electron 的 CJS 覆盖是元凶.
+
+### 修复
+
+- `tsconfig.electron.json`: `outDir: "dist"` → `"dist/electron-build"` (electron CJS 产物独立目录)
+- `package.json`: electron:start 用 `dist/electron-build/electron.js`; electron-builder files 加 `dist/electron-build/**/*`; extraMetadata.main 同步
+- 验证: build:all 后 `dist/utils/auto-update.js` exports 计数 0 (ESM 干净), `dist/electron-build/` 独立; `bolloon update` 正常检查
+
+### 教训
+
+- 多 tsconfig 共享 outDir 是定时炸弹 — ESM/CJS 产物互相覆盖, 症状只在发布后暴露
+- prepublishOnly 的 build:all 要按 覆盖方向 排序 (或隔离输出目录)

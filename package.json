@@ -35,7 +35,7 @@
     "dev": "tsx -r dotenv/config src/index.ts",
     "dev:web": "npm run build:web && tsx -r dotenv/config src/index.ts --web",
     "dev:electron": "npm run build:electron && npm run electron:start",
-    "electron:start": "NODE_ENV=development electron dist/electron.js",
+    "electron:start": "NODE_ENV=development electron dist/electron-build/electron.js",
     "electron:dev": "concurrently \"npm run dev:web\" \"npm run electron:start\"",
     "electron:build": "npm run build:electron && electron-builder",
     "electron:pack": "electron-builder --dir",
@@ -133,7 +133,8 @@
     "files": [
       "dist/**/*",
       "bin/**/*",
-      "package.json"
+      "package.json",
+      "dist/electron-build/**/*"
     ],
     "npmRebuild": false,
     "buildDependenciesFromSource": false,
@@ -147,7 +148,7 @@
       }
     ],
     "extraMetadata": {
-      "main": "dist/electron.js",
+      "main": "dist/electron-build/electron.js",
       "type": "commonjs"
     },
     "win": {
