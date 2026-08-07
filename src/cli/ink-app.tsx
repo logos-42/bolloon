@@ -109,6 +109,7 @@ interface InkAppProps {
 }
 
 const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdate, terminalW, terminalH }) => {
+  try { _req('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] InkApp render mountStatus="${(initialStatus||'').slice(0,50)}" statusFn=${typeof getStatusUpdate}\n`); } catch {}
   const [input, setInput] = useState('');
   // 2026-08-07: inputRef 同步镜像 input — useInput 回调拿最新值 (闭包里的 input 是陈旧的)
   const inputRef = useRef('');
@@ -480,8 +481,13 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   // 自动更新状态栏 (每秒)
   useEffect(() => {
     const timer = setInterval(() => {
-      const s = getStatusUpdate();
-      if (s) setStatus(s);
+      try {
+        const s = getStatusUpdate();
+        try { _req('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] ticker status="${(s||'').slice(0,60)}" len=${(s||'').length}\n`); } catch {}
+        if (s) setStatus(s);
+      } catch (e: any) {
+        try { _req('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] ticker ERROR ${e.message}\n`); } catch {}
+      }
     }, 1000);
     return () => clearInterval(timer);
   }, [getStatusUpdate]);

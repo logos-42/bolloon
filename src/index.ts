@@ -454,10 +454,13 @@ function fmtDuration(ms: number): string {
 }
 
 /** 2026-08-06: 从 ContextManager 读上下文用量 (CLI 状态栏数据源, 失败退化 0/1M) */
+// 2026-08-07: 不能用 require 加载 ESM 模块 (ERR_REQUIRE_ESM) → startCLI 里 await import 一次缓存引用,
+//   同步函数 getCliCtxUsage/getStatus 复用 — 之前裸 require 与 _require 都抛错被 catch → 状态栏恒 0/1M
+let _ctxManagerRef: { getContextManager: () => any } | null = null;
 function getCliCtxUsage(): { pct: number; usedTokens: number; maxTokens: number; stage: string } {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const cm = require('./bootstrap/context-manager.js').getContextManager();
+    const cm = _ctxManagerRef?.getContextManager();
+    if (!cm) return { pct: 0, usedTokens: 0, maxTokens: 1_000_000, stage: 'normal' };
     const u = cm.getUsage();
     return {
       // 保留浮点 (0-100), 由 buildContextBar 格式化 — round 会让 <0.5% 全变 0, 状态栏像死代码
@@ -490,7 +493,14 @@ function buildContextBar(usage: { pct: number; usedTokens: number; maxTokens: nu
 
 /** 状态栏: 模型 │ 当前智能体 (含 channel) │ ⏱ 时间 │ 320k/1M │ [██████░░░░] 32% (bolloon 色系) */
 function getStatus(): string {
-  const usage = getCliCtxUsage();
+  let usage: any;
+  try {
+    usage = getCliCtxUsage();
+  } catch (e: any) {
+    try { _require('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] getStatus usage ERR ${e.message}\n`); } catch {}
+    usage = { pct: 0, usedTokens: 0, maxTokens: 1_000_000, stage: 'normal' };
+  }
+  try { _require('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] getStatus used=${usage?.usedTokens} ref=${!!_ctxManagerRef}\n`); } catch {}
   const agentPart = cliActiveChannelId ? `${cliAgentName} ${C_DIM}(ch:${cliActiveChannelId.slice(0, 10)})${RESET}` : cliAgentName;
   return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${agentPart} ${C_DIM}│${RESET} ⏱ ${C_TEXT}${fmtDuration(Date.now() - cliStartTime)}${RESET}${C_DIM} │${RESET} ${buildContextBar(usage)}`;
 }
@@ -566,6 +576,10 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
 
   // 进入 Ink TUI 输入循环
   // 2026-08-06: 初始状态栏也带上下文显示 (0/1M │ [░░░░░░░░░░] 0%)
+  // 2026-08-07: 缓存 ContextManager 引用 (require 加载 ESM 抛 ERR_REQUIRE_ESM, 状态栏恒 0 根因)
+  try {
+    _ctxManagerRef = await import('./bootstrap/context-manager.js');
+  } catch { /* 降级: getCliCtxUsage 返回 0/1M */ }
   const initialStatus = `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ 0s${C_DIM} │${RESET} ${buildContextBar(getCliCtxUsage())}`;
   startInk(
     (text: string) => { processInput(text, comm); },
