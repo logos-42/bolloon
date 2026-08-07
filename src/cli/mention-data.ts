@@ -217,7 +217,8 @@ export async function loadFiles(
       if (e.isDirectory()) {
         if (depth < maxDepth && !SKIP_DIRS.has(e.name)) dirs.push({ dir: full, depth: depth + 1 });
       } else if (e.isFile()) {
-        const rel = path.relative(base, full);
+        // label/insert 统一用 `/` 分隔 (展示 + matchFileScore split + 弹窗插入一致), 跨平台
+        const rel = path.relative(base, full).split(path.sep).join('/');
         out.push({ kind: 'file', label: rel, hint: '', insert: rel });
       }
     }

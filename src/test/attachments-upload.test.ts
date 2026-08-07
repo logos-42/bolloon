@@ -79,6 +79,6 @@ describe('attachment: 月份目录命名', () => {
     const home = '/Users/test';
     const month = '2026-07';
     const dir = path.join(home, '.bolloon', 'attachments', month);
-    expect(dir).toBe('/Users/test/.bolloon/attachments/2026-07');
+    expect(dir).toBe(path.join('/Users/test', '.bolloon', 'attachments', '2026-07'));
   });
 });

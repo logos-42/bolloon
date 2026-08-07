@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import * as path from 'path';
 import {
   resolveProvider,
   parseExperimentFile,
@@ -145,8 +146,9 @@ describe('discoverEngines (注入 deps)', () => {
 
   it('experiment 目录扫描出声明的 API', async () => {
     const expJson = JSON.stringify({ providers: [{ name: 'exp1', provider: 'deepseek', apiKey: 'sk-d' }] });
+    const sep = path.sep;
     const deps = fakeDeps({
-      readdir: async (dir) => (dir.endsWith('.bolloon/experiments') ? ['a.json'] : undefined),
+      readdir: async (dir) => (dir.endsWith(sep + '.bolloon' + sep + 'experiments') ? ['a.json'] : undefined),
       readFile: async (p) => (p.endsWith('a.json') ? expJson : undefined),
     });
     const engines = await discoverEngines(deps);

@@ -18,12 +18,15 @@ let oldHome = '';
 describe('context-os 资产层 (Context OS 12+3 层文件夹体系)', () => {
   beforeAll(async () => {
     oldHome = process.env.HOME || '';
+    // Node os.homedir() 在 Windows 读 USERPROFILE, 需一起切到临时目录
     process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
     await fs.mkdir(tmpHome, { recursive: true });
   });
 
   afterAll(async () => {
     process.env.HOME = oldHome;
+    process.env.USERPROFILE = oldHome;
     await fs.rm(tmpHome, { recursive: true, force: true });
   });
 

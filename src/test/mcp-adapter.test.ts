@@ -54,9 +54,11 @@ describe('mcp-adapter (真实 stdio JSON-RPC, 2026-08-03 修复后)', () => {
     await fs.mkdir(tmpHome, { recursive: true });
     await fs.writeFile(serverPath, ECHO_SERVER, 'utf-8');
     // 写 ~/.mcp.json (故意重复 mcpServers 键值, 验证去重)
+    // Windows 无 python3 (WindowsApps 存根 9009), 用跨平台探测
+    const pyCmd = process.platform === 'win32' ? 'python' : 'python3';
     const mcpJson = {
       mcpServers: {
-        'echo-mcp': { command: 'python3', args: [serverPath] },
+        'echo-mcp': { command: pyCmd, args: [serverPath] },
       },
     };
     await fs.writeFile(path.join(tmpHome, '.mcp.json'), JSON.stringify(mcpJson), 'utf-8');
@@ -71,7 +73,7 @@ describe('mcp-adapter (真实 stdio JSON-RPC, 2026-08-03 修复后)', () => {
     const servers = await discoverMcpServers();
     expect(servers.length).toBe(1);
     expect(servers[0].name).toBe('echo-mcp');
-    expect(servers[0].command).toBe('python3');
+    expect(servers[0].command).toBe(process.platform === 'win32' ? 'python' : 'python3');
   });
 
   it('initializeMcpAdapter → 握手 + 发现工具 (echo/add)', async () => {

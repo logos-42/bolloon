@@ -20,12 +20,15 @@ let oldHome = '';
 describe('skill-writer', () => {
   beforeAll(async () => {
     oldHome = process.env.HOME || '';
+    // Node os.homedir() 在 Windows 优先读 USERPROFILE (不走 HOME), 需一起切到临时目录
     process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
     await fs.mkdir(path.join(tmpHome, '.bolloon'), { recursive: true });
   });
 
   afterAll(async () => {
     process.env.HOME = oldHome;
+    process.env.USERPROFILE = oldHome;
     await fs.rm(tmpHome, { recursive: true, force: true });
   });
 

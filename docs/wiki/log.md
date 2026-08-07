@@ -4,6 +4,8 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|| 2026-08-07 | fix | Windows 路径分隔符 + 测试隔离修复: ① 生产代码 `mention-data.ts` loadFiles label/insert 用 `path.relative(...).split(path.sep).join('/')` 统一 `/` 分隔 (展示/matchFileScore/弹窗插入跨平台一致); ② 测试: external-engines experiment mock 用 path.sep 匹配、attachments-upload 断言改 path.join 平台无关、context-os/skill-writer 补 USERPROFILE (Node os.homedir() 在 Windows 读 USERPROFILE 不走 HOME, 原隔离失效)、mcp-adapter python3→跨平台探测 (Windows python3 是 WindowsApps 存根 9009); ③ 新增 ink-smoke.test.ts 用 renderToString 锁定 ink7+react19 渲染. tsc 0 错, vitest 1064/1064 (+1) | [mention-data.ts](../../src/cli/mention-data.ts) / [ink-smoke.test.ts](../../src/test/ink-smoke.test.ts) |
+
 || 2026-08-07 | chore | 依赖升级 react 18→19.2.8 (react-dom 19.2.8, @types/react 19.2.18 / @types/react-dom 19.2.4) + ink 4.4→7.1.1 + ink-text-input 5→6.0.0, 满足 @x402/*@2.20.0 硬性 peer react^19. 代码 API 兼容: ink 7 render()/useInput/useApp/Box/Text + render 返回 .unmount()/.clear() 签名不变 (ink-app.tsx), react-dom createRoot (P2PModal) 不变, 无需改代码. 验证: tsc 0 错, vitest react 相关全 PASS (仅 3 个既有 Windows 路径断言失败与本升级无关), 实测 ink 7.1.1/react 19.2.8. 之后普通 npm install 不再需 --legacy-peer-deps | [ink-app.tsx](../../src/cli/ink-app.tsx) / [current-status.md](./current-status.md) |
 
 || 2026-08-06 | feat | 统一 Agent Identity: AgentIdentityStore (channels.json → identity + active-channel.json 持久化, CLI/Web 共用); /channel [名字|id|序号] 命令 (number>id>name 解析, 无参列表, 切换即刷新状态栏); CLI 状态栏显示 agent + channel 并重启恢复; Web GET/POST /active-channel + 默认选中; Context 快照绑 identity; 修 Ink 弹窗 Enter 拦截 + stdin paused 防御. tsc 0 错, vitest 1035/1035, pty 13/13 | [agent-identity-store.ts](../../src/agents/agent-identity-store.ts) |
