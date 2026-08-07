@@ -704,14 +704,27 @@ export interface PiAIConfig {
   model?: string;
 }
 
+/** 2026-08-07: bolloon-config.json 优先, 旧 llm-config.json 兜底 (迁移期兼容) */
+function resolveConfigPath(): string | null {
+  const home = process.env.HOME || '/tmp';
+  const base = path.join(home, '.bolloon');
+  for (const name of ['bolloon-config.json', 'llm-config.json']) {
+    const p = path.join(base, name);
+    try { if (fs.existsSync(p)) return p; } catch { /* continue */ }
+  }
+  return null;
+}
+
 function detectProvider(): ModelProvider {
   // 首先检查配置文件（优先级最高）
   try {
-    const configPath = path.join(process.env.HOME || '/tmp', '.bolloon', 'llm-config.json');
-    const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    if (configData.activeProvider && configData.providers[configData.activeProvider]) {
-      console.log('[PiAIModel] Detected provider from config:', configData.activeProvider);
-      return configData.activeProvider;
+    const configPath = resolveConfigPath();
+    if (configPath) {
+      const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      if (configData.activeProvider && configData.providers[configData.activeProvider]) {
+        console.log('[PiAIModel] Detected provider from config:', configData.activeProvider);
+        return configData.activeProvider;
+      }
     }
   } catch {}
 
@@ -763,12 +776,14 @@ export function initPiAI(config: PiAIConfig = {}): PiAIModel {
   let apiKey = config.apiKey;
   if (!apiKey) {
     try {
-      const configPath = path.join(process.env.HOME || '/tmp', '.bolloon', 'llm-config.json');
-      const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      const providerConfig = configData.providers[provider];
-      if (providerConfig?.apiKey) {
-        apiKey = providerConfig.apiKey;
-        console.log('[PiAIModel] Loaded apiKey from config for', provider);
+      const configPath = resolveConfigPath();
+      if (configPath) {
+        const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        const providerConfig = configData.providers[provider];
+        if (providerConfig?.apiKey) {
+          apiKey = providerConfig.apiKey;
+          console.log('[PiAIModel] Loaded apiKey from config for', provider);
+        }
       }
     } catch (e) {
       console.log('[PiAIModel] Error reading apiKey from config:', e);

@@ -2054,6 +2054,101 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       }
     }
   });
+
+  // ============================================================
+  // bolloon_config_get / bolloon_config_set (2026-08-07)
+  // Bolloon 自己读写 ~/.bolloon/bolloon-config.json — 统一配置文件,
+  // 让 agent 有修改自身配置的权限 (模型/供应商/温度等), 不再只能靠用户手改.
+  // ============================================================
+  ctx.tools.set('bolloon_config_get', {
+    name: 'bolloon_config_get',
+    description: '读取 Bolloon 自身配置 (~/.bolloon/bolloon-config.json): 当前激活供应商 + 各供应商 API 配置 (baseUrl/model/温度). 注意: 不输出 apiKey 明文 (脱敏), 只显示是否已配置.',
+    parameters: {},
+    execute: async () => {
+      try {
+        const { llmConfigStore } = await import('../llm/config-store.js');
+        await llmConfigStore.initialize();
+        const cfg = await llmConfigStore.getConfig();
+        const active = cfg.activeProvider;
+        const lines: string[] = [`📋 Bolloon 配置 (${active} 激活):`];
+        for (const [name, p] of Object.entries(cfg.providers || {})) {
+          const pc = p as any;
+          if (!pc) continue;
+          const mark = name === active ? '●' : '○';
+          const key = pc.apiKey ? '🔑' : pc.requiresApiKey ? '✗ 无key' : '无key需求';
+          lines.push(`  ${mark} ${name}: ${key} · model=${pc.model || '?'} · baseUrl=${pc.baseUrl || '?'}${pc.temperature ? ` · temp=${pc.temperature}` : ''}`);
+        }
+        return { success: true, output: lines.join('\n') };
+      } catch (e: any) {
+        return { success: false, error: `bolloon_config_get 失败: ${String(e.message || e).slice(0, 200)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('bolloon_config_set', {
+    name: 'bolloon_config_set',
+    description: '修改 Bolloon 自身配置 (~/.bolloon/bolloon-config.json). 可切换激活供应商 (provider) 或改某供应商的 model/baseUrl/temperature/enabled. 修改立即生效 (下次 LLM 调用使用新配置). 例: provider=deepseek; provider=minimax, model=MiniMax-M3; deepseek.temperature=0.3',
+    parameters: {
+      provider: '可选: 切换激活供应商 (如 deepseek / minimax / openai / anthropic / ollama)',
+      'provider.key': '可选: 修改指定供应商字段, 格式 <供应商>.<字段>=<值>, 如 minimax.model=MiniMax-M3',
+      model: '可选: 同时设置激活供应商的 model',
+      temperature: '可选: 同时设置激活供应商的 temperature (0-2)',
+    },
+    execute: async (args) => {
+      try {
+        const { llmConfigStore } = await import('../llm/config-store.js');
+        await llmConfigStore.initialize();
+        const changes: string[] = [];
+
+        // 1. 切换激活供应商
+        if (args.provider) {
+          const name = String(args.provider).trim().toLowerCase();
+          const known = ['openai', 'anthropic', 'ollama', 'openrouter', 'gemini', 'minimax', 'deepseek', 'kimi', 'glm', 'qwen', 'mimo', 'grok', 'local'];
+          if (!known.includes(name)) return { success: false, error: `未知供应商: ${name}. 可用: ${known.join(', ')}` };
+          await llmConfigStore.setActiveProvider(name as any);
+          changes.push(`activeProvider=${name}`);
+        }
+        // 2. 修改指定供应商字段 (provider.key=value)
+        for (const [k, v] of Object.entries(args)) {
+          if (k === 'provider' || k === 'model' || k === 'temperature') continue;
+          if (!k.includes('.')) continue;
+          const [prov, field] = k.split('.');
+          const val = String(v);
+          if (field === 'temperature' || field === 'maxTokens') {
+            const num = Number(val);
+            if (Number.isNaN(num)) return { success: false, error: `${k}=${val} 不是数字` };
+            await llmConfigStore.updateProvider(prov as any, { [field]: num } as any);
+          } else if (field === 'enabled') {
+            await llmConfigStore.updateProvider(prov as any, { enabled: val === 'true' || val === '1' } as any);
+          } else if (field === 'apiKey') {
+            await llmConfigStore.updateProvider(prov as any, { apiKey: val } as any);
+          } else {
+            await llmConfigStore.updateProvider(prov as any, { [field]: val } as any);
+          }
+          changes.push(`${prov}.${field}=${field === 'apiKey' ? '***' : val}`);
+        }
+        // 3. 激活供应商的 model / temperature
+        if (args.model || args.temperature) {
+          const active = await llmConfigStore.getActiveProvider();
+          const patch: any = {};
+          if (args.model) patch.model = String(args.model);
+          if (args.temperature) {
+            const t = Number(args.temperature);
+            if (Number.isNaN(t)) return { success: false, error: `temperature=${args.temperature} 不是数字` };
+            patch.temperature = t;
+          }
+          await llmConfigStore.updateProvider(active, patch);
+          if (args.model) changes.push(`${active}.model=${args.model}`);
+          if (args.temperature) changes.push(`${active}.temperature=${args.temperature}`);
+        }
+        if (changes.length === 0) return { success: false, error: '没有要修改的配置项. 例: provider=deepseek 或 minimax.model=MiniMax-M3' };
+        const cfg = await llmConfigStore.getConfig();
+        return { success: true, output: `✅ 配置已更新: ${changes.join(', ')}\n  当前激活: ${cfg.activeProvider}` };
+      } catch (e: any) {
+        return { success: false, error: `bolloon_config_set 失败: ${String(e.message || e).slice(0, 200)}` };
+      }
+    }
+  });
 }
 
 // ─── IPFS/IPNS 通用 helper (2026-08-04) ─────────────────────────────────────

@@ -237,7 +237,10 @@ function collectEnv(): BolloonContext['env'] {
   let llmProvider = 'unknown';
   try {
     const home = process.env.HOME || os.homedir() || '/tmp';
-    const cfg = require(path.join(home, '.bolloon', 'llm-config.json'));
+    // 2026-08-07: bolloon-config.json 优先, 旧 llm-config.json 兜底
+    let cfgPath = path.join(home, '.bolloon', 'bolloon-config.json');
+    if (!require('fs').existsSync(cfgPath)) cfgPath = path.join(home, '.bolloon', 'llm-config.json');
+    const cfg = require(cfgPath);
     if (cfg && typeof cfg === 'object' && 'provider' in cfg) {
       llmProvider = String(cfg.provider);
     }

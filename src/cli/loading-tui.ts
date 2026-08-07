@@ -27,12 +27,14 @@ function bg(r: number, g: number, b: number): string { return `\x1b[48;2;${r};${
 const C_ACCENT    = fg(0xc4, 0xd6, 0x40);  // #c4d640
 const C_ACCENT_BG = bg(0xc4, 0xd6, 0x40);
 const C_TEXT      = fg(0xd8, 0xd8, 0xc8);  // #d8d8c8
+const C_WHITE     = fg(0xff, 0xff, 0xff);  // #ffffff 纯白 (2026-08-07: 用户要求回复字体白色显眼)
 const C_DIM       = fg(0x90, 0x90, 0x88);  // #909088
 const C_MUTED     = fg(0x60, 0x60, 0x58);  // #606058
 const C_OK        = fg(0x22, 0xc5, 0x5e);  // #22c55e
 const C_ERROR     = fg(0xef, 0x44, 0x44);  // #ef4444
 const C_WARN      = fg(0xf5, 0x9e, 0x0b);  // #f59e0b
-const C_BORDER    = fg(0x3a, 0x3a, 0x36);  // #3a3a36
+const C_BORDER    = fg(0x3a, 0x3a, 0x36);  // #3a3a36 (暗描边)
+const C_BORDER_BRIGHT = fg(0x8a, 0x8a, 0x7e);  // #8a8a7e (2026-08-07: 对话框边框提亮, 告别灰白)
 
 const HIDE = '\x1b[?25l';
 const SHOW = '\x1b[?25h';
@@ -341,10 +343,10 @@ export function renderMessageBox(opts: MessageBoxOpts): string {
   const inner = Math.max(20, dispWidth(title) + 4, maxLine);
   const width = Math.min(termWidth() - 2, opts.width ?? inner + 4);
   const lines: string[] = [];
-  // 2026-08-06: 边框改 bolloon 色系 (C_BORDER #3a3a36 暗色描边, 标题色不变)
-  lines.push(`${C_BORDER}${boxTop(`${color}${title}${RESET}`, width, RD)}${RESET}`);
-  for (const l of wrapText(opts.body, width - 4)) lines.push(`${C_BORDER}${boxRow(l, width, 'left', RD)}${RESET}`);
-  lines.push(`${C_BORDER}${boxBottom(width, RD)}${RESET}`);
+  // 2026-08-07: 边框提亮 (C_BORDER_BRIGHT), 正文纯白 (C_WHITE) — 告别灰白内容
+  lines.push(`${C_BORDER_BRIGHT}${boxTop(`${color}${title}${RESET}`, width, RD)}${RESET}`);
+  for (const l of wrapText(opts.body, width - 4)) lines.push(`${C_BORDER_BRIGHT}${boxRow(`${C_WHITE}${l}${RESET}`, width, 'left', RD)}${RESET}`);
+  lines.push(`${C_BORDER_BRIGHT}${boxBottom(width, RD)}${RESET}`);
   return lines.join('\n');
 }
 

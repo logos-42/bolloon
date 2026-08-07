@@ -53,9 +53,9 @@ beforeAll(async () => {
     }),
     'utf-8'
   );
-  // llm-config
+  // bolloon-config (2026-08-07: llm-config.json → bolloon-config.json)
   await fs.writeFile(
-    path.join(TEST_DIR, '.bolloon', 'llm-config.json'),
+    path.join(TEST_DIR, '.bolloon', 'bolloon-config.json'),
     JSON.stringify({ provider: 'openai' }),
     'utf-8'
   );
@@ -109,7 +109,7 @@ describe('collectBolloonContext', () => {
     });
   });
 
-  it('env.llmProvider 应从 llm-config.json 读', async () => {
+  it('env.llmProvider 应从 bolloon-config.json 读', async () => {
     const ctx = await collectBolloonContext({ cwd: TEST_DIR });
     expect(ctx.env.llmProvider).toBe('openai');
   });

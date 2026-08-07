@@ -25,7 +25,10 @@ export interface LLMConfig {
 }
 
 const CONFIG_DIR = path.join(process.env.HOME || '/tmp', '.bolloon');
-const CONFIG_PATH = path.join(CONFIG_DIR, 'llm-config.json');
+// 2026-08-07: llm-config.json → bolloon-config.json (统一配置文件名, Bolloon 自己有写权限)
+//   initialize() 会做一次迁移: 旧文件存在且新文件不存在 → 复制旧内容, 之后统一读写新文件
+const CONFIG_PATH = path.join(CONFIG_DIR, 'bolloon-config.json');
+const LEGACY_CONFIG_PATH = path.join(CONFIG_DIR, 'llm-config.json');
 
 export const DEFAULT_PROVIDER_CONFIGS: Record<ModelProvider, ProviderConfig> = {
   openai: {
@@ -264,6 +267,16 @@ class LLMConfigStore {
 
     try {
       await fs.mkdir(CONFIG_DIR, { recursive: true });
+      // 2026-08-07: 迁移 — 旧 llm-config.json 存在且新 bolloon-config.json 不存在时复制旧内容
+      try {
+        await fs.access(CONFIG_PATH);
+      } catch {
+        try {
+          const legacy = await fs.readFile(LEGACY_CONFIG_PATH, 'utf-8');
+          await fs.writeFile(CONFIG_PATH, legacy, { mode: 0o600 });
+          console.log('[config-store] 已迁移 llm-config.json → bolloon-config.json');
+        } catch { /* 旧文件也不存在 → 走默认配置 */ }
+      }
       const data = await fs.readFile(CONFIG_PATH, 'utf-8');
       const loadedConfig = JSON.parse(data);
 
@@ -293,7 +306,8 @@ class LLMConfigStore {
   private async save(): Promise<void> {
     if (!this.config) return;
     this.config.updatedAt = new Date().toISOString();
-    await fs.writeFile(CONFIG_PATH, JSON.stringify(this.config, null, 2));
+    // 2026-08-07: mode 0o600 — 仅当前用户可读写 (含 API key 的敏感配置); Bolloon 自身进程可写
+    await fs.writeFile(CONFIG_PATH, JSON.stringify(this.config, null, 2), { mode: 0o600 });
   }
 
   async getConfig(): Promise<LLMConfig> {

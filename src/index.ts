@@ -509,7 +509,8 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
   let peerCount = 0;
   try { peerCount = comm.getConnections().length; } catch { /* */ }
   
-  // 读取 LLM 模型名
+  // 读取 LLM 模型名 — 优先 bolloon-config.json (activeProvider), 再退 env (2026-08-07:
+  //   之前只读 env → 用户配了配置文件但状态栏显示"未配置")
   const providerNames: [string, string][] = [
     ['OPENAI_API_KEY', 'OpenAI'],
     ['ANTHROPIC_API_KEY', 'Anthropic'],
@@ -520,8 +521,21 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
     ['XAI_API_KEY', 'xAI'],
     ['TOGETHER_API_KEY', 'Together'],
   ];
-  const foundProvider = providerNames.find(([k]) => process.env[k]);
+  let foundProvider = providerNames.find(([k]) => process.env[k]);
   cliModelName = foundProvider ? foundProvider[1] : '未配置';
+  // bolloon-config.json activeProvider 优先 (用户真实配置来源)
+  try {
+    const { llmConfigStore } = await import('./llm/config-store.js');
+    await llmConfigStore.initialize();
+    const active = await llmConfigStore.getActiveProvider();
+    if (active) {
+      const label = String(active).trim();
+      cliModelName = label || cliModelName;
+      const cfg = await llmConfigStore.getActiveProviderConfig().catch(() => null);
+      const model = cfg?.model;
+      if (model) cliModelName = `${label} · ${model}`;
+    }
+  } catch { /* config-store 失败静默, 用 env 结果 */ }
   cliAgentName = agentIdentity?.name || 'bolloon';
   cliStartTime = Date.now();
 
@@ -562,6 +576,8 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
 
 async function processInput(input: string, comm: HyperswarmCommunicator): Promise<void> {
   const trimmed = input.trim();
+  // DEBUG 2026-08-07: 定位消息提交链路
+  try { require('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] processInput: "${trimmed}" queueMode=${queueMode} pendingQueue=${pendingQueue.length}\n`); } catch {}
   // TUI tool call state (local to this invocation)
   const tuiToolCalls: Array<{ tool: string; args: any; _t: number }> = [];
   let tuiToolCounter = 0;
@@ -1139,9 +1155,33 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     const boxW = Math.min(termWidth() - 2, 76);
     // 工具调用显示由 tui-shell 的 onStream handler 处理
 
+    try { require('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] calling a.prompt...\n`); } catch {}
+
     const response = await a.prompt(trimmed, {
       onStream: (e) => {
-        if (e.type === 'step_start') {
+        // 2026-08-07: 中间思考/状态显示 — 之前只显示工具步骤, LLM 的思考过程
+        //   (thinking / status / phase / Reflection) 全被丢弃 → 用户只能看到输入和最终输出
+        if (e.type === 'thinking' && e.content) {
+          appendLine(`${C_DIM}🤔 ${String(e.content).slice(0, 300)}${RESET}`);
+        } else if ((e as any).phase && !e.type) {
+          const ph = String((e as any).phase);
+          const detail = (e as any).detail ? ` (${String((e as any).detail).slice(0, 60)})` : '';
+          const phLabel: Record<string, string> = {
+            intent_classified: '意图识别',
+            tool_selected: '工具选择',
+            reflection: '反思',
+            planning: '规划',
+          };
+          appendLine(`${C_WARN}◈ ${phLabel[ph] || ph}${detail}${RESET}`);
+        } else if (e.type === 'status' && e.content) {
+          const content = String(e.content);
+          // Reflection / 反思 用警告色突出, 其余中间状态用暗色
+          if (content.includes('Reflection') || content.includes('反思') || content.includes('💡')) {
+            appendLine(`${C_WARN}💡 ${content.replace(/^💡\s*/, '')}${RESET}`);
+          } else if (!content.includes('🔄 循环') && !content.includes('📋 参数')) {
+            appendLine(`${C_DIM}${content}${RESET}`);
+          }
+        } else if (e.type === 'step_start') {
           tuiToolCounter++;
           tuiToolCalls.push({ tool: e.tool || '?', args: e.args, _t: Date.now() });
         } else if (e.type === 'step_done' || e.type === 'step_error') {

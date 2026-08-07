@@ -372,7 +372,7 @@ async function handleModelCommand(modelArgs: string[]): Promise<void> {
   const info = (PROVIDER_INFO as any)[name] || {};
   console.log(`${GREEN}✅ 已切换到 ${name}${RESET} (${info.name || ''})${modelNote}`);
   console.log(`   当前模型: ${modelArgs[1] || provider.model || (info.models && info.models[0]) || '默认'}`);
-  console.log(`   配置已持久化: ~/.bolloon/llm-config.json`);
+  console.log(`   配置已持久化: ~/.bolloon/bolloon-config.json`);
 }
 
 /** 引擎子命令: list / run */

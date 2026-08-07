@@ -89,6 +89,8 @@ const TOOL_WHITELIST = new Set<string>([
   'cid_save', 'cid_load', 'cid_update', 'cid_version', 'cid_list', 'cid_share',
   'context_save_snapshot', 'context_restore',
   'ui_save_component', 'ui_load_component',
+  // 2026-08-07: Bolloon 自身配置读写 (bolloon-config.json, agent 有修改自身配置权限)
+  'bolloon_config_get', 'bolloon_config_set',
 ]);
 
 export const gateWhitelist: GateResult = { gate: 'whitelist', allowed: true };

@@ -59,7 +59,7 @@
     "@capacitor/ios": "^8.4.2",
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
-    "@diap/sdk": "^0.2.1",
+    "@diap/sdk": "^0.2.2",
     "@libp2p/autonat": "^3.0.25",
     "@libp2p/circuit-relay-v2": "^4.2.9",
     "@libp2p/dcutr": "^3.0.20",
