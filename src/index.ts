@@ -493,14 +493,7 @@ function buildContextBar(usage: { pct: number; usedTokens: number; maxTokens: nu
 
 /** 状态栏: 模型 │ 当前智能体 (含 channel) │ ⏱ 时间 │ 320k/1M │ [██████░░░░] 32% (bolloon 色系) */
 function getStatus(): string {
-  let usage: any;
-  try {
-    usage = getCliCtxUsage();
-  } catch (e: any) {
-    try { _require('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] getStatus usage ERR ${e.message}\n`); } catch {}
-    usage = { pct: 0, usedTokens: 0, maxTokens: 1_000_000, stage: 'normal' };
-  }
-  try { _require('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] getStatus used=${usage?.usedTokens} ref=${!!_ctxManagerRef}\n`); } catch {}
+  const usage = getCliCtxUsage();
   const agentPart = cliActiveChannelId ? `${cliAgentName} ${C_DIM}(ch:${cliActiveChannelId.slice(0, 10)})${RESET}` : cliAgentName;
   return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${agentPart} ${C_DIM}│${RESET} ⏱ ${C_TEXT}${fmtDuration(Date.now() - cliStartTime)}${RESET}${C_DIM} │${RESET} ${buildContextBar(usage)}`;
 }
@@ -601,8 +594,6 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
 
 async function processInput(input: string, comm: HyperswarmCommunicator): Promise<void> {
   const trimmed = input.trim();
-  // DEBUG 2026-08-07: 定位消息提交链路
-  try { dbgFs.appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] processInput: "${trimmed}" queueMode=${queueMode} pendingQueue=${pendingQueue.length}\n`); } catch (e: any) { try { dbgFs.appendFileSync('/tmp/bolloon-cli-debug.log', `dbg err: ${e.message}\n`); } catch {} }
   // TUI tool call state (local to this invocation)
   const tuiToolCalls: Array<{ tool: string; args: any; _t: number }> = [];
   let tuiToolCounter = 0;
@@ -1179,8 +1170,6 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     const a = await getAgent();
     const boxW = Math.min(termWidth() - 2, 76);
     // 工具调用显示由 tui-shell 的 onStream handler 处理
-
-    try { dbgFs.appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] calling a.prompt...\n`); } catch {}
 
     const response = await a.prompt(trimmed, {
       onStream: (e) => {
@@ -2803,7 +2792,13 @@ async function main() {
   if (isCLIInteractive) {
     console.log = () => {};
     console.info = () => {};
-    process.stdout.write = () => true as any;
+    // 2026-08-07: 只吞 SDK 结构化日志 (2026-...T 前缀直接写 stdout 的), 其余 (Ink ANSI 渲染) 走原始 write
+    //   不能整体 no-op — Ink 渲染依赖 write callback, 且 pty/管道缓冲满时 no-op 会掩盖真实写状态
+    process.stdout.write = ((chunk: any, ...rest: any[]) => {
+      const s = String(chunk);
+      if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return true; // SDK 结构化日志 → 吞
+      return (originalStdoutWrite as any)(chunk, ...rest);
+    }) as any;
     // 2026-08-07: 交互模式静音 auto-update 后台通知 (stderr), 避免 "🔍 检查更新" 污染 TUI
     void import('./utils/auto-update.js').then(({ setNotifyQuiet }) => setNotifyQuiet(true)).catch(() => {});
   }
@@ -2847,10 +2842,27 @@ async function main() {
   const { keypair, did, name } = await bootstrapIdentity();
   agentIdentity = { did, name, publicKey: Buffer.from(keypair.publicKey).toString('hex') };
 
-  publishDID(name, keypair).then(({ cid, ipnsName }) => {
-    if (cid) agentIdentity!.cid = cid;
-    if (ipnsName) agentIdentity!.ipnsName = ipnsName;
-  }).catch(() => {});
+  // 2026-08-07: CLI 模式后台自动安装/启动本地 Kubo (web 模式 server.ts 已有, CLI 缺 → IPNS 发布后无法解析的根因)
+  //   fire-and-forget, 不阻塞启动; Kubo 就绪后才发布 DID (避免 registerAgent 在 Kubo 未启动时 30s 超时)
+  //   装好后 /ipfs /ipns /ipfs_add /ipns_publish 工具可用
+  void (async () => {
+    let kuboReady = false;
+    try {
+      const sdk = await import('@diap/sdk');
+      const checkKuboSetup = (sdk as any).checkKuboSetup;
+      if (typeof checkKuboSetup === 'function') {
+        const setup = await checkKuboSetup(true, true);
+        kuboReady = !!(setup?.ready && setup?.daemonRunning);
+        s.info(kuboReady ? 'IPFS 本地 Kubo 就绪 → IPNS 发布/解析可用' : 'Kubo 不可用, IPFS 降级本地模式');
+      }
+    } catch (e: any) {
+      s.warn(`Kubo 自动安装失败 (非致命): ${String(e?.message || e).slice(0, 120)}`);
+    }
+    publishDID(name, keypair).then(({ cid, ipnsName }) => {
+      if (cid) agentIdentity!.cid = cid;
+      if (ipnsName) agentIdentity!.ipnsName = ipnsName;
+    }).catch(() => {});
+  })();
 
   
 

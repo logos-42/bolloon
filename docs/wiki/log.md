@@ -812,3 +812,78 @@
 
 - 多 tsconfig 共享 outDir 是定时炸弹 — ESM/CJS 产物互相覆盖, 症状只在发布后暴露
 - prepublishOnly 的 build:all 要按 覆盖方向 排序 (或隔离输出目录)
+
+
+## [2026-08-07] feat | CLI 收尾修复: Enter 提交 / 启动超时门 / 状态栏进度 / 思考框渲染
+
+### 触发
+
+- 用户反馈 4 个 CLI 问题: ① 消息发不出去 (Enter 提交失效, 只有输入和最终输出); ② CLI 启动卡死 (90s+ 无响应); ③ 上下文状态栏进度恒 0.00% (1M 窗口下看起来像死代码); ④ 中间思考过程不显示, 要求 "思考用框表示, 和回复一样的路径, 颜文字动画表示运行过程".
+
+### 根因 (每个问题)
+
+| 问题 | 根因 |
+|---|---|
+| Enter 提交失效 | pty/管道下 termios 把 \r 转 \n (实测 tty=true raw=true 转换仍发生), 且 node 把整 chunk 当一次 keypress (in="hi\nok") → key.return 恒 false → TextInput onSubmit 永不触发 |
+| 启动卡死 | bootstrapP2P (hyperswarm DHT start/joinTopic) / iroh / bootstrapBolloon 无超时, 弱网下无限挂起 |
+| 状态栏恒 0 | 5 层根因叠加: (a) index.ts 用 (a as any).messageHistory 重算 — 私有字段拿不到恒 [] 且覆盖 pi-sdk 上报的真实值; (b) pi-sdk.ts 裸 require 加载 ESM 抛错被 catch 吞 → estimateHistoryTokens 恒 0; (c) getCliCtxUsage 用 require 加载 ESM 抛 ERR_REQUIRE_ESM → 恒 0/1M; (d) ink-app ticker effect 依赖 [getStatusUpdate] 渲染间引用变化 → effect 每次渲染 cleanup+setup → setInterval 刚建立就被清除 → 永不 tick; (e) process.stdout.write no-op 破坏 Ink write callback → 渲染死锁 |
+| auto-update 污染 | 后台检查走 stderr notify, 交互模式静音 stdout 挡不住 |
+
+### 实现
+
+| 模块 | 改动 |
+|---|---|
+| `src/cli/ink-app.tsx` | ① 
+/\r 兜底: 正常模式 + 弹窗分支把含 
+/\r 的 chunk 一律视为 Enter (取 
+ 前内容 + inputRef 最新值提交), inputRef 同步镜像 input 解决 useInput 闭包陈旧; lastSubmitRef 防重 (InkApp 兜底与 TextInput 双触发); ② ticker effect 依赖改空数组 [] (getStatusUpdate 是 startInk 传入的稳定函数引用); ③ 挂载时同步刷新一次状态栏 |
+| `src/index.ts` | ① 启动超时门 withTimeout: bootstrapP2P 20s (超时降级无 P2P) / bootstrapIroh 15s / bootstrapBolloon 20s; ② 状态栏数据源改读 ContextManager 现值 (pi-sdk 每轮已上报), 不再用 messageHistory 重算覆盖; ③ getCliCtxUsage 用 _ctxManagerRef 模块引用缓存 (startCLI await import 一次), 替代裸 require/ERR_REQUIRE_ESM; ④ stdout.write 只吞 SDK 时间戳日志 (2026-...T 前缀), 放行 Ink ANSI 渲染走原始 write (保存的 originalStdoutWrite 绑定); ⑤ 清理全部 fs debug 钩子 |
+| `src/agents/pi-sdk.ts` | ① 裸 require → createRequire (_piRequire), estimateHistoryTokens/maxContextTokens 恢复真实计算; ② reportUsageToContextManager(): prompt/promptStream 全部出口 (fallback/pivot/react) finally 统一上报 usage — 之前只有 runReActLoop 迭代内上报, chitchat/fallback/pivot 路径状态栏恒 0 |
+| `src/utils/auto-update.ts` | setNotifyQuiet + notifyQuiet 全局开关, CLI 交互模式静音后台检查通知 |
+| `scripts/verify-cli-msg5-pty.py` | send_cmd 改 chunk 模式 ("text\r" 一次发送) — pty 下单独 \r 被 cooked 行规程消费丢失, chunk 里 \r 以 \n 到达 Ink 由兜底分支提交 |
+
+### 验证
+
+- tsc 0 错
+- pty 端到端 (verify-cli-msg5-pty.py): 已发送框 ✓ 思考动画 ✓ 弹窗误开 ✗ 回复框 ✓ (完整链路 useInput("hi\n") → onSubmit → processInput → a.prompt)
+- pty 状态栏 (probe 脚本持续读 fd): `10s │ 172/1M │ [░░░░░░░░░░] 0.02%` — 时间戳 + usage 真实值都在动
+- pty 启动: 90s+ 卡死 → ~13s ready (超时门降级路径)
+- **重大教训: pty 测试脚本 sleep 期间不读 fd → pty 缓冲满 → 子进程 stdout 写阻塞 → timers 停摆 → 误判"状态栏冻结/interval 不 tick"。真实终端自己读 stdout 无此问题。验证 timers 必须持续读 fd (后台 reader 线程) + 用独特标记 (如 [T]/[H]) 而非单字母**
+
+### 教训
+
+- Ink 的 useInput 回调执行 ≠ effect 全量执行 — 调试要逐 effect 加 setup 标记区分
+- 不要整体 no-op process.stdout.write — Ink 渲染依赖 write callback 链, no-op 不调 callback 会渲染死锁; 要按 chunk 内容选择性拦截
+- React effect 依赖数组引用不稳定会导致 setInterval 被反复 cleanup 永不 tick — 用稳定引用或空依赖
+- ESM 下裸 require 抛错被 catch 吞 = 功能静默失效 (estimateTokens 恒 0 这类), 排查"数据一直是默认值"先查 require
+
+
+## [2026-08-07] fix | IPNS 发布后无法加载页面 — 排查 + CLI Kubo 自动拉起
+
+### 触发
+
+- 用户反馈: "ipns 可以发布, 但是发布后的 ipns 无法加载页面", 怀疑 3 个可能: ① DHT 没传过来 ② IPFS 版本不是最新 ③ 不是使用 html/react 支持的 UI-CID 传输. 要求先排查确认再给 bolloon 安装.
+
+### 排查结论 (3 个怀疑全部排除)
+
+| 怀疑 | 排查结果 |
+|---|---|
+| DHT 没传过来 | ❌ 排除 — Kubo 启动后 67 peers, `name/resolve` 成功 (k51qzi5... → QmbtXWj...) |
+| IPFS 版本不是最新 | ❌ 排除 — 实测 kubo/0.43.0 (比旧记录 0.28.0 新) |
+| 不是用 html/react UI-CID 传输 | ❌ 排除 — 静态发布: index.html 21831 字符 + 11 个相对资源引用 + style.css 94526B + client.js 286295B 都在 CID, gateway 渲染 HTTP 200 |
+
+**真实根因: Kubo daemon 没在运行** — 发布时拉起, 之后 daemon 退出/未启动 → resolve 失败. web 模式 (server.ts:1707) 有后台自动拉起, **CLI 模式没有** → CLI 里 IPNS 发布/解析不可用.
+
+### 验证
+
+- `scripts/verify-ipns-pipeline.ts` 6/6: resolve ✓ CID+index.html ✓ 相对路径 11 引用 ✓ style.css ✓ client.js ✓ gateway 200 ✓
+- 公网传播限制 (已有记录): NAT 环境需 pin 公共服务或端口映射; IPNS 同 key 重发布有 DHT 缓存延迟
+
+### 修复
+
+- `src/index.ts`: CLI 启动路径加 fire-and-forget `checkKuboSetup(true, true)` 后台拉起 (与 server.ts 一致); **publishDID 移到 Kubo 就绪后执行** (避免 registerAgent 在 Kubo 未启动时 30s 超时 TimeoutError)
+
+### 教训
+
+- "能发布但解析不了" 先查 daemon 存活 (`/api/v0/id` POST), 不是查发布逻辑
+- 功能只在 web 模式初始化 = CLI 模式该功能"不存在" — 启动路径要按模式补齐 (与 21 系统命令的减法教训同源)

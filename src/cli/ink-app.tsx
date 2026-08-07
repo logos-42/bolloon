@@ -10,8 +10,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp } from 'ink';
 import TextInput from 'ink-text-input';
-import { createRequire } from 'module';
-const _req = createRequire(import.meta.url);
 import { brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
 import {
@@ -109,7 +107,6 @@ interface InkAppProps {
 }
 
 const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdate, terminalW, terminalH }) => {
-  try { _req('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] InkApp render mountStatus="${(initialStatus||'').slice(0,50)}" statusFn=${typeof getStatusUpdate}\n`); } catch {}
   const [input, setInput] = useState('');
   // 2026-08-07: inputRef 同步镜像 input — useInput 回调拿最新值 (闭包里的 input 是陈旧的)
   const inputRef = useRef('');
@@ -326,7 +323,6 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     const now = Date.now();
     if (lastSubmitRef.current.v === trimmed && now - lastSubmitRef.current.t < 1500) return;
     lastSubmitRef.current = { t: now, v: trimmed };
-    try { _req('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] onSubmit: "${value}" popupOpen=${popupOpen} picker=${!!picker}\n`); } catch {}
     if (!trimmed) return;
     // 入历史 (去重最近一条, 上限 100)
     const hist = historyRef.current;
@@ -340,8 +336,6 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, [onPrompt]);
 
   useInput((_input, key) => {
-    try { _req('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] useInput: in=${JSON.stringify(_input)} ret=${key.return} ctrl=${key.ctrl} popup=${popupOpen} picker=${!!picker} tty=${(process.stdin as any).isTTY} raw=${(process.stdin as any).isRaw}\n`); } catch {}
-    // 2026-08-07 收尾: 请勿移除
     // 退出请求: 通知 startCLI resolve → 走清理 → process.exit (带兜底)
     const requestExit = () => {
       (globalThis as any).__inkRequestExit?.();
@@ -479,18 +473,24 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   });
 
   // 自动更新状态栏 (每秒)
+  // 2026-08-07 修复: 依赖必须为空 [] — [getStatusUpdate] 在渲染间引用变化 (Ink 内部元素重建),
+  //   effect 每次渲染 cleanup+setup → setInterval 刚建立就被清除 → 永不 tick → 状态栏恒初始值.
+  //   getStatusUpdate 是 startInk 传入的模块级函数 (引用稳定), 空依赖首渲染捕获即可, 内部实时读.
   useEffect(() => {
+    // 挂载时立即同步刷新一次状态栏 (不等 1s 后第一个 tick)
+    try {
+      const s0 = getStatusUpdate();
+      if (s0) setStatus(s0);
+    } catch { /* 状态栏更新失败不致命 */ }
     const timer = setInterval(() => {
       try {
         const s = getStatusUpdate();
-        try { _req('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] ticker status="${(s||'').slice(0,60)}" len=${(s||'').length}\n`); } catch {}
         if (s) setStatus(s);
-      } catch (e: any) {
-        try { _req('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] ticker ERROR ${e.message}\n`); } catch {}
-      }
+      } catch { /* 状态栏更新失败不致命 */ }
     }, 1000);
     return () => clearInterval(timer);
-  }, [getStatusUpdate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 调试/测试钩子: 输入变化时通知外部 (pty 测试用)
   useEffect(() => {
@@ -613,7 +613,7 @@ export function startInk(
       stdout: process.stdout,
       stdin: process.stdin,
       exitOnCtrlC: false,
-      patchConsole: false, // 关键: 阻止 Ink 劫持 console.log
+      patchConsole: false, // 重要: 阻止 Ink 劫持 console.log
     }
   );
 }
