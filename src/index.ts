@@ -25,7 +25,7 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
-import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
+import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
 import { startInk, stopInk, inkAppendLine as appendLine, inkSetStatus, inkSetThinking } from './cli/ink-app.js';
 import * as dbgFs from 'fs';
@@ -282,6 +282,16 @@ async function bootstrapP2P(
 // ---------------------------------------------------------------------------
 // iroh/Hybrid P2P 初始化
 // ---------------------------------------------------------------------------
+
+/** 启动路径网络操作超时门: 超时 reject (由调用方 catch 降级) — 防止弱网下 CLI 卡死在启动 (2026-08-07) */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} 超时 (${ms}ms)`)), ms)
+    ),
+  ]);
+}
 
 async function bootstrapIroh(keypair: any, name: string): Promise<void> {
   s.step(4, 5, '启动 iroh P2P', 'loading');
@@ -1162,8 +1172,11 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       onStream: (e) => {
         // 2026-08-07: 中间思考/状态显示 — 之前只显示工具步骤, LLM 的思考过程
         //   (thinking / status / phase / Reflection) 全被丢弃 → 用户只能看到输入和最终输出
+        // 用户偏好 (2026-08-07): 思考过程 = 圆角框渲染 (和回复同路径 renderMessageBox),
+        //   颜文字动画 (inkSetThinking) 只表示"正在运行", 不承载思考内容
         if (e.type === 'thinking' && e.content) {
-          appendLine(`${C_DIM}🤔 ${String(e.content).slice(0, 300)}${RESET}`);
+          // thinking 事件只有 "🤔 开始思考..." 占位 → 不 appendLine, 运行过程由动画表示;
+          //   真正思考内容在 status 的 Reflection/💡 事件 → 下方框渲染
         } else if ((e as any).phase && !e.type) {
           const ph = String((e as any).phase);
           const detail = (e as any).detail ? ` (${String((e as any).detail).slice(0, 60)})` : '';
@@ -1176,9 +1189,10 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
           appendLine(`${C_WARN}◈ ${phLabel[ph] || ph}${detail}${RESET}`);
         } else if (e.type === 'status' && e.content) {
           const content = String(e.content);
-          // Reflection / 反思 用警告色突出, 其余中间状态用暗色
+          // Reflection / 反思 / 💡 → 圆角思考框 (和回复一样走 renderMessageBox, 白字+亮边框)
           if (content.includes('Reflection') || content.includes('反思') || content.includes('💡')) {
-            appendLine(`${C_WARN}💡 ${content.replace(/^💡\s*/, '')}${RESET}`);
+            const body = content.replace(/^💡\s*/, '').slice(0, 1500);
+            if (body.trim()) appendLine(renderMessageBox({ title: '💡 反思', body, color: C_WARN }));
           } else if (!content.includes('🔄 循环') && !content.includes('📋 参数')) {
             appendLine(`${C_DIM}${content}${RESET}`);
           }
@@ -2771,6 +2785,8 @@ async function main() {
     console.log = () => {};
     console.info = () => {};
     process.stdout.write = () => true as any;
+    // 2026-08-07: 交互模式静音 auto-update 后台通知 (stderr), 避免 "🔍 检查更新" 污染 TUI
+    void import('./utils/auto-update.js').then(({ setNotifyQuiet }) => setNotifyQuiet(true)).catch(() => {});
   }
 
   if (isNonInteractive) {
@@ -2836,11 +2852,18 @@ async function main() {
         s.warn(`P2P Web 模式启动失败: ${err.message}`);
       });
     } else {
-      comm = await bootstrapP2P(verifier);
-      const connections = comm.getConnections();
-      if (connections.length > 0) {
-        agentIdentity.peerId = connections[0].publicKey;
-        agentIdentity.p2pChannel = 'bolloon-agent-harness';
+      // 2026-08-07: 弱网下 hyperswarm DHT start/joinTopic 可能无限挂起 → 20s 超时门, 超时降级无 P2P 模式
+      comm = await withTimeout(bootstrapP2P(verifier), 20_000, 'P2P 网络初始化')
+        .catch((err: Error) => {
+          s.warn(`P2P 初始化超时/失败, 降级无 P2P 模式: ${err.message}`);
+          return null;
+        });
+      if (comm) {
+        const connections = comm.getConnections();
+        if (connections.length > 0) {
+          agentIdentity.peerId = connections[0].publicKey;
+          agentIdentity.p2pChannel = 'bolloon-agent-harness';
+        }
       }
     }
   } catch (err: any) {
@@ -2848,14 +2871,15 @@ async function main() {
     s.warn('将使用无 P2P 模式运行');
   }
 
-  await bootstrapIroh(keypair, name);
+  await withTimeout(bootstrapIroh(keypair, name), 15_000, 'iroh P2P 初始化')
+    .catch((err: Error) => s.warn(`iroh 初始化超时, 继续使用 Hyperswarm P2P: ${err.message}`));
 
   // Bolloon Bootstrap: 启动扫描 + Context 收集 + 挂定时任务
   // 失败静默 (主流程不被阻塞)
   try {
     const { bootstrapBolloon } = await import('./pi-ecosystem-judgment/human-value-pipeline.js');
     s.info('正在 bootstrap bolloon 上下文...');
-    const bs = await bootstrapBolloon({ cwd: process.cwd() });
+    const bs = await withTimeout(bootstrapBolloon({ cwd: process.cwd() }), 20_000, 'Bolloon 上下文扫描');
     s.info(`Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
   } catch (err: any) {
     s.warn(`Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);

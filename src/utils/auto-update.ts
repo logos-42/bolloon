@@ -56,10 +56,17 @@ interface UpdateResult {
   error?: string;
 }
 
+/** 2026-08-07: CLI 交互模式下静音自动更新通知 (避免后台检查污染 TUI 屏幕) */
+let notifyQuiet = false;
+export function setNotifyQuiet(v: boolean): void {
+  notifyQuiet = v;
+}
+
 /**
  * 通知用户。使用 stderr，避免在交互式 CLI 模式下 stdout 被吞掉。
  */
 function notify(msg: string, color: string = RESET) {
+  if (notifyQuiet) return;
   process.stderr.write(`${color}${msg}${RESET}`);
 }
 
