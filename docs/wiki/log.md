@@ -4,6 +4,8 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|| 2026-08-07 | chore | 依赖升级 react 18→19.2.8 (react-dom 19.2.8, @types/react 19.2.18 / @types/react-dom 19.2.4) + ink 4.4→7.1.1 + ink-text-input 5→6.0.0, 满足 @x402/*@2.20.0 硬性 peer react^19. 代码 API 兼容: ink 7 render()/useInput/useApp/Box/Text + render 返回 .unmount()/.clear() 签名不变 (ink-app.tsx), react-dom createRoot (P2PModal) 不变, 无需改代码. 验证: tsc 0 错, vitest react 相关全 PASS (仅 3 个既有 Windows 路径断言失败与本升级无关), 实测 ink 7.1.1/react 19.2.8. 之后普通 npm install 不再需 --legacy-peer-deps | [ink-app.tsx](../../src/cli/ink-app.tsx) / [current-status.md](./current-status.md) |
+
 || 2026-08-06 | feat | 统一 Agent Identity: AgentIdentityStore (channels.json → identity + active-channel.json 持久化, CLI/Web 共用); /channel [名字|id|序号] 命令 (number>id>name 解析, 无参列表, 切换即刷新状态栏); CLI 状态栏显示 agent + channel 并重启恢复; Web GET/POST /active-channel + 默认选中; Context 快照绑 identity; 修 Ink 弹窗 Enter 拦截 + stdin paused 防御. tsc 0 错, vitest 1035/1035, pty 13/13 | [agent-identity-store.ts](../../src/agents/agent-identity-store.ts) |
 
 || 2026-08-06 | feat | OrbitDB + UI CID 数据层: @orbitdb/core@4.0.0 + helia@7.1.3 去中心化存储 (src/orbitdb/ 5 模块): ① CIDDatabase+OrbitDBAdapter (内容寻址 CID, save/load/update/version/list/share); ② Context Store (资产层快照/恢复/版本 + 多 agent 共享记忆); ③ UI CID (组件 CID 化 + React 动态构造); ④ 10 个 agent 工具 + TOOL_WHITELIST. helia 7 配置坑: createHelia 不传 withLibp2p opts / services 浅合并 / gossipsub emitSelf / dag-cbor codec / all() 返回对象数组 / dag-cbor 禁 undefined. tsc 0 错, vitest 1027/1027, 全栈验证 27/27 | [orbitdb](../../src/orbitdb) / [verify-orbitdb-stack.ts](../../scripts/verify-orbitdb-stack.ts) |
