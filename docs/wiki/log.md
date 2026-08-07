@@ -887,3 +887,13 @@
 
 - "能发布但解析不了" 先查 daemon 存活 (`/api/v0/id` POST), 不是查发布逻辑
 - 功能只在 web 模式初始化 = CLI 模式该功能"不存在" — 启动路径要按模式补齐 (与 21 系统命令的减法教训同源)
+
+
+## [2026-08-07] chore | 发布 v0.3.38 — CLI 收尾修复版
+
+- 内容: Enter 提交修复 (\n/\r 兜底) + 启动超时门 + 状态栏进度 5 层根因 + 思考框渲染 + auto-update 静音 + CLI 自动拉起 Kubo (IPNS 发布/解析)
+- 版本: 0.3.37 → 0.3.38 (npm version patch, 不建 tag — 与 0.3.36/37 一致)
+- 发布: `npm publish` (prepublishOnly: build:all + smoke:esm 通过, 3.7MB / 612 files)
+- 线上验证: registry versions 含 0.3.38, `npm view @bolloon/bolloon-agent@0.3.38` 可查
+- 本机: `npm install -g @bolloon/bolloon-agent@latest` (全局包更新)
+- commits: 70e6ff7 (fix) + e8bd341 (chore release) 已 push
