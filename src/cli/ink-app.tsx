@@ -10,6 +10,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp } from 'ink';
 import TextInput from 'ink-text-input';
+import { createRequire } from 'module';
+const _req = createRequire(import.meta.url);
 import { brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
 import {
@@ -312,6 +314,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
   const onSubmit = useCallback((value: string) => {
     const trimmed = value.trim();
+    try { _req('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] onSubmit: "${value}" popupOpen=${popupOpen} picker=${!!picker}\n`); } catch {}
     if (!trimmed) return;
     // 入历史 (去重最近一条, 上限 100)
     const hist = historyRef.current;

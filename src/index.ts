@@ -28,6 +28,7 @@ import * as readline from 'readline';
 import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
 import { startInk, stopInk, inkAppendLine as appendLine, inkSetStatus, inkSetThinking } from './cli/ink-app.js';
+import * as dbgFs from 'fs';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
 
@@ -577,7 +578,7 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
 async function processInput(input: string, comm: HyperswarmCommunicator): Promise<void> {
   const trimmed = input.trim();
   // DEBUG 2026-08-07: 定位消息提交链路
-  try { require('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] processInput: "${trimmed}" queueMode=${queueMode} pendingQueue=${pendingQueue.length}\n`); } catch {}
+  try { dbgFs.appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] processInput: "${trimmed}" queueMode=${queueMode} pendingQueue=${pendingQueue.length}\n`); } catch (e: any) { try { dbgFs.appendFileSync('/tmp/bolloon-cli-debug.log', `dbg err: ${e.message}\n`); } catch {} }
   // TUI tool call state (local to this invocation)
   const tuiToolCalls: Array<{ tool: string; args: any; _t: number }> = [];
   let tuiToolCounter = 0;
@@ -1155,7 +1156,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     const boxW = Math.min(termWidth() - 2, 76);
     // 工具调用显示由 tui-shell 的 onStream handler 处理
 
-    try { require('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] calling a.prompt...\n`); } catch {}
+    try { dbgFs.appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] calling a.prompt...\n`); } catch {}
 
     const response = await a.prompt(trimmed, {
       onStream: (e) => {
