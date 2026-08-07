@@ -1238,20 +1238,25 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     }
     // 更新状态栏: 上下文进度 (2026-08-06: 每轮按当前 messageHistory 重算并写回 ContextManager,
     //   保证状态栏按需更新 — 不依赖 pi-sdk loop 内部上报, 1s 定时器读到的一定是最新值)
+    // 2026-08-07 修复: pi-sdk loop 每轮已用 estimateHistoryTokens() 上报 ContextManager (pi-sdk.ts:1223),
+    //   这里直接读现值 — 之前用 (a as any).messageHistory 重算, 私有字段拿不到恒为 [] → 0,
+    //   还把 pi-sdk 上报的真实值覆盖成 0 (状态栏永远 0.00% 的根因)
     try {
       const { getContextManager } = await import('./bootstrap/context-manager.js');
       const cm = getContextManager();
-      // 用 context-compaction 的估算器 (与 pi-sdk estimateHistoryTokens 同源: 4 字符 ≈ 1 token)
-      const history = (a as any).messageHistory ?? [];
-      let usedTokens = 0;
-      try {
-        const { estimateTokens } = require('./context-compaction/index.js');
-        usedTokens = estimateTokens(history);
-      } catch {
-        usedTokens = Math.max(0, Math.round(JSON.stringify(history).length / 4));
+      let usage = cm.getUsage();
+      if (!usage || usage.usedTokens <= 0) {
+        // fallback: 非交互/异常路径 pi-sdk 未上报时兜底估算 (4 字符 ≈ 1 token)
+        const hist = (a as any)?.agent?.messageHistory ?? (a as any)?.piAgent?.messageHistory ?? [];
+        let t = 0;
+        try {
+          const { estimateTokens } = _require('./context-compaction/index.js');
+          t = estimateTokens(hist);
+        } catch {
+          t = Math.max(0, Math.round(JSON.stringify(hist).length / 4));
+        }
+        usage = cm.updateUsage(Math.max(t, usage?.usedTokens ?? 0));
       }
-      // 写回数据源 — 状态栏/Web/任何订阅方都拿到新鲜值
-      const usage = cm.updateUsage(usedTokens);
       const usageView = {
         // 保留浮点 (0-100), buildContextBar 内部格式化
         pct: Math.min(100, (usage.usedTokens / Math.max(1, usage.maxTokens)) * 100),

@@ -110,6 +110,13 @@ interface InkAppProps {
 
 const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdate, terminalW, terminalH }) => {
   const [input, setInput] = useState('');
+  // 2026-08-07: inputRef 同步镜像 input — useInput 回调拿最新值 (闭包里的 input 是陈旧的)
+  const inputRef = useRef('');
+  useEffect(() => {
+    inputRef.current = input;
+  }, [input]);
+  // 2026-08-07: 提交防重 (InkApp \n/\r 兜底 + TextInput 双触发场景)
+  const lastSubmitRef = useRef({ t: 0, v: '' });
   const [msgs, setMsgs] = useState<string[]>([]);
   const [status, setStatus] = useState(initialStatus);
   const { exit } = useApp();
@@ -314,6 +321,10 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
   const onSubmit = useCallback((value: string) => {
     const trimmed = value.trim();
+    // 2026-08-07: 防重 — \n/\r 兜底分支与 TextInput 可能都触发提交, 1.5s 内同值只提交一次
+    const now = Date.now();
+    if (lastSubmitRef.current.v === trimmed && now - lastSubmitRef.current.t < 1500) return;
+    lastSubmitRef.current = { t: now, v: trimmed };
     try { _req('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] onSubmit: "${value}" popupOpen=${popupOpen} picker=${!!picker}\n`); } catch {}
     if (!trimmed) return;
     // 入历史 (去重最近一条, 上限 100)
@@ -328,6 +339,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, [onPrompt]);
 
   useInput((_input, key) => {
+    try { _req('fs').appendFileSync('/tmp/bolloon-cli-debug.log', `[${new Date().toISOString()}] useInput: in=${JSON.stringify(_input)} ret=${key.return} ctrl=${key.ctrl} popup=${popupOpen} picker=${!!picker} tty=${(process.stdin as any).isTTY} raw=${(process.stdin as any).isRaw}\n`); } catch {}
+    // 2026-08-07 收尾: 请勿移除
     // 退出请求: 通知 startCLI resolve → 走清理 → process.exit (带兜底)
     const requestExit = () => {
       (globalThis as any).__inkRequestExit?.();
@@ -361,12 +374,12 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     if (popupOpen) {
       if (key.upArrow) { setSel(s => Math.max(0, s - 1)); return; }
       if (key.downArrow) { setSel(s => Math.min(filtered.length - 1, s + 1)); return; }
-      if ((key.tab || key.return) && filtered.length > 0) {
+      if ((key.tab || key.return || /[\n\r]/.test(_input)) && filtered.length > 0) {
         const it = filtered[safeSel];
         if (it) acceptMention(it);
         return;
       }
-      if (key.return && filtered.length === 0) {
+      if ((key.return || /[\n\r]/.test(_input)) && filtered.length === 0) {
         // 弹窗无匹配项: Enter = 提交当前输入 (否则 /channel 无参 + Enter 永远提交不了 — 2026-08-06)
         const v = input.trim();
         if (v) onSubmit(v);
@@ -404,7 +417,17 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     }
 
     // ── 正常模式 ──
-    // Tab 命令补齐 (无触发符的普通 token 也补)
+    // 2026-08-07: Enter 兜底 — pty/管道下 termios 可能把 \r 转 \n 且 node 把整 chunk
+    //   当一次 keypress (key.return=false), TextInput 的 onSubmit 永不触发 → 消息发不出去.
+    //   应用层把 \n/\r 一律视为提交 (兼容 raw/cooked 两种模式, 不依赖 termios).
+    if (/[\n\r]/.test(_input)) {
+      const before = String(_input).split(/[\n\r]/)[0];
+      const val = inputRef.current + before;
+      if (val.trim()) onSubmit(val);
+      else setInput('');
+      return;
+    }
+    // Tab 命令补齐 (匹配触发符后的 token 再补)
     if (key.tab) { doTabCompletion(); return; }
     // ↑/↓ 切换输入历史 (TextInput 本身忽略 up/down, 无冲突)
     if (key.upArrow) {

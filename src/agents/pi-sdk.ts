@@ -15,6 +15,10 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { getContextManager } from '../bootstrap/context-manager.js';
+import { createRequire } from 'module';
+// 2026-08-07: ESM 下裸 require 抛错被 catch 吞掉 → estimateHistoryTokens/maxContextTokens 静默失效
+//   (状态栏恒 0 的第二层根因). 统一用 createRequire 加载 CJS 模块.
+const _piRequire = createRequire(import.meta.url);
 import { documentReader, DocumentContent } from '../documents/reader.js';
 import { getMinimax } from '../constraints/index.js';
 import { p2pNetwork } from '../network/p2p.js';
@@ -149,7 +153,7 @@ export class PiAgentSession implements AgentSession {
   /** 2026-08-06: 上下文窗口 (tokens) — 统一走 ContextManager 配置 (1M 默认). */
   private maxContextTokens(): number {
     try {
-      const { getContextManager } = require('../bootstrap/context-manager.js');
+      const { getContextManager } = _piRequire('../bootstrap/context-manager.js');
       const n = getContextManager().getConfig().maxTokens;
       return Number.isFinite(n) && n > 0 ? n : this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD;
     } catch {
@@ -656,6 +660,14 @@ export class PiAgentSession implements AgentSession {
     }
   }
 
+  /** 2026-08-07: prompt 出口统一上报 token 用量到 ContextManager (fallback/pivot/react 全路径覆盖) —
+   *   之前只有 runReActLoop 迭代内上报, chitchat/fallback/pivot 路径状态栏恒 0 */
+  private reportUsageToContextManager(): void {
+    try {
+      getContextManager().updateUsage(this.estimateHistoryTokens());
+    } catch { /* 非致命 */ }
+  }
+
   async prompt(input: string, options?: { onStream?: StreamCallback; signal?: AbortSignal; channelId?: string }): Promise<string> {
     this.minimaxAvailable = this.checkMinimax();
     this.currentChannelId = options?.channelId ?? this.currentChannelId;
@@ -668,6 +680,7 @@ export class PiAgentSession implements AgentSession {
     if (!this.minimaxAvailable) {
       const response = await this.handleFallback(input);
       this.messageHistory.push({ role: 'assistant', content: response });
+      this.reportUsageToContextManager();
       return response;
     }
 
@@ -711,6 +724,7 @@ export class PiAgentSession implements AgentSession {
         this.clearJudgmentGate();
         this.currentSignal = null;
         this.currentOnStream = null;
+        this.reportUsageToContextManager();
       }
     }
 
@@ -732,6 +746,7 @@ export class PiAgentSession implements AgentSession {
       this.clearJudgmentGate();
       this.currentSignal = null;
       this.currentOnStream = null;
+      this.reportUsageToContextManager();
     }
   }
 
@@ -763,6 +778,7 @@ export class PiAgentSession implements AgentSession {
       const response = await this.handleFallback(userText);
       this.messageHistory.push({ role: 'assistant', content: response });
       onStream({ type: 'done', content: '' });
+      this.reportUsageToContextManager();
       return response;
     }
 
@@ -902,6 +918,7 @@ export class PiAgentSession implements AgentSession {
         this.bootstrapAddition = '';
         this.contextHintAddition = '';
         this.promptStartTime = 0;
+        this.reportUsageToContextManager();
       }
       return pivotResult;
     }
@@ -990,6 +1007,7 @@ export class PiAgentSession implements AgentSession {
     // 用完即清, 避免污染下一轮
     this.clearJudgmentGate();
     this.currentOnStream = null;
+    this.reportUsageToContextManager();
     this.currentSignal = null;
     this.bootstrapAddition = '';
     this.promptStartTime = 0;
@@ -1925,7 +1943,7 @@ ${toolDefs}
    */
   private estimateHistoryTokens(): number {
     try {
-      const { estimateTokens } = require('../context-compaction/index.js') as typeof import('../context-compaction/index.js');
+      const { estimateTokens } = _piRequire('../context-compaction/index.js') as typeof import('../context-compaction/index.js');
       return estimateTokens(this.messageHistory as any);
     } catch {
       return 0;
