@@ -186,6 +186,12 @@ export interface SkillCandidate {
   body: string;
   source: string;   // 触发来源 (e.g. channel id / tool name)
   timestamp: string;
+  /** 2026-08-08: 工具签名 (去重合并依据) — 同一套工具只允许一个候选 */
+  signature?: string;
+  /** 已累积的运行次数 (>=2 表明可复用, 提示转正) */
+  runs?: number;
+  /** 落盘文件 (listSkillCandidates 回填) */
+  file?: string;
 }
 
 export function getCandidateDir(home: string = os.homedir()): string {
@@ -196,8 +202,24 @@ export async function writeSkillCandidate(c: SkillCandidate): Promise<string> {
   const dir = getCandidateDir();
   await fs.mkdir(dir, { recursive: true });
   const safeName = sanitizeSkillName(c.name);
-  const file = path.join(dir, `${safeName}-${Date.now()}.json`);
-  await fs.writeFile(file, JSON.stringify(c, null, 2), 'utf-8');
+  // 2026-08-08: 有 signature 的候选用固定文件名 (合并更新同一个), 无 signature 才带时间戳
+  const file = c.signature
+    ? path.join(dir, `${safeName}.json`)
+    : path.join(dir, `${safeName}-${Date.now()}.json`);
+  // 追加式合并: 若同 signature 已存在, 累积 runs + 追加 body
+  let runs = c.runs ?? 1;
+  let body = c.body;
+  try {
+    const prev = JSON.parse(await fs.readFile(file, 'utf-8')) as SkillCandidate;
+    if (prev && prev.runs) runs = prev.runs + 1;
+    if (prev && prev.body && body !== prev.body && c.signature) {
+      // 同一 signature 重复运行 → 追加一条经验 (去重, 避免 body 膨胀)
+      const line = `- ${new Date().toISOString().slice(0, 16)} ${c.source}: ${c.description}`;
+      body = `${prev.body}\n${line}`;
+    }
+  } catch { /* 新文件 */ }
+  const merged: SkillCandidate = { ...c, runs, body, timestamp: c.timestamp || new Date().toISOString() };
+  await fs.writeFile(file, JSON.stringify(merged, null, 2), 'utf-8');
   return file;
 }
 
@@ -212,10 +234,25 @@ export async function listSkillCandidates(home: string = os.homedir()): Promise<
     try {
       const raw = await fs.readFile(path.join(dir, f), 'utf-8');
       const c = JSON.parse(raw) as SkillCandidate;
-      if (c.name && c.body) out.push(c);
+      if (c.name && c.body) out.push({ ...c, file: path.join(dir, f) });
     } catch { /* 坏文件跳过 */ }
   }
   return out;
+}
+
+/** 按名字删除所有同名候选文件 (名可能与文件名前缀不完全一致) */
+async function removeCandidateFiles(name: string, home: string): Promise<void> {
+  const safe = sanitizeSkillName(name);
+  const dir = getCandidateDir(home);
+  let files: string[];
+  try { files = await fs.readdir(dir); } catch { return; }
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    try {
+      const c = JSON.parse(await fs.readFile(path.join(dir, f), 'utf-8')) as SkillCandidate;
+      if (sanitizeSkillName(c.name) === safe) await fs.rm(path.join(dir, f), { force: true });
+    } catch { if (f.startsWith(safe)) await fs.rm(path.join(dir, f), { force: true }); }
+  }
 }
 
 /** 把候选转正为正式 skill (可选: 转正后删除候选文件) */
@@ -229,13 +266,8 @@ export async function promoteCandidate(
   if (!c) return { ok: false, path: '', error: `候选 '${name}' 不存在` };
   const r = await createSkill(c.name, c.description, c.body, opts);
   if (r.ok) {
-    // 清理已转正的候选文件
-    try {
-      const dir = getCandidateDir(home);
-      for (const f of (await fs.readdir(dir))) {
-        if (f.startsWith(sanitizeSkillName(c.name) + '-')) await fs.rm(path.join(dir, f), { force: true });
-      }
-    } catch { /* 清理失败不阻塞 */ }
+    // 清理已转正的候选文件: 同 name 的所有候选
+    await removeCandidateFiles(c.name, home);
   }
   return r;
 }
@@ -258,6 +290,22 @@ export interface RunEndCandidateResult {
   count?: number;
   names?: string;
   reason?: string;
+  /** 2026-08-08: 是否合并进已有候选 (同一 signature 重复运行) */
+  merged?: boolean;
+  runs?: number;
+}
+
+/**
+ * 从一轮成功的工具调用生成稳定签名 — 同一套工具序列 (有序去重, 最多 4 个) 视为同一经验.
+ * 用于跨运行合并: 第二次跑同样的工具 → 更新同一个候选, 而不是新建一个.
+ */
+export function toolSignature(okSteps: RunStepLike[]): string {
+  const seq: string[] = [];
+  for (const s of (okSteps || [])) {
+    if (s.name && !seq.includes(s.name)) seq.push(s.name);
+    if (seq.length >= 4) break;
+  }
+  return seq.join('_');
 }
 
 export async function writeRunEndSkillCandidates(
@@ -276,13 +324,22 @@ export async function writeRunEndSkillCandidates(
     `## 背景\n本轮对话连续成功调用了 ${okSteps.length} 个工具: ${toolNames}.\n\n` +
     `## 流程\n${okSteps.map((s) => `1. 调用 ${s.name}${s.output ? ': ' + String(s.output).slice(0, 120) : ''}`).join('\n')}\n\n` +
     `## 注意事项\n- 工具名以 list_skills / get_operation_logs 的实际注册名为准\n- 沉淀为正式 skill 前请人工确认流程可复用\n`;
-  const candName = `auto-${okSteps[0].name}-${Date.now().toString(36)}`;
+
+  // 2026-08-08: 稳定签名 + 固定文件名 → 同一套工具反复跑时合并更新到同一个候选 (runs++)
+  const signature = toolSignature(okSteps);
+  const candName = `auto-${signature}`;
+  const existing = (await listSkillCandidates()).find(
+    (x) => x.signature === signature || sanitizeSkillName(x.name) === sanitizeSkillName(candName)
+  );
   const file = await writeSkillCandidate({
     name: candName,
     description: `自动候选: ${okSteps.length} 个工具连续成功 (${toolNames})`,
     body,
     source,
     timestamp: new Date().toISOString(),
+    signature,
   });
-  return { wrote: true, file, count: okSteps.length, names: toolNames };
+  const merged = !!existing;
+  const runs = (existing?.runs ?? 0) + 1;
+  return { wrote: true, file, count: okSteps.length, names: toolNames, merged, runs };
 }

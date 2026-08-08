@@ -110,10 +110,26 @@ describe('skill-writer', () => {
     expect(r.names).toContain('read_file');
     expect(r.file).toContain('skill-candidates');
     const cands = await listSkillCandidates();
-    const mine = cands.find(c => c.name.startsWith('auto-read_file-'));
+    // 稳定签名名 auto-read_file_grep_files (无时间戳)
+    const mine = cands.find(c => c.name === 'auto-read_file_grep_files');
     expect(mine).toBeDefined();
     expect(mine!.body).toContain('grep_files');
     expect(mine!.source).toBe('test:cli');
+    expect(mine!.runs).toBe(1);
+  });
+
+  it('writeRunEndSkillCandidates 同一套工具再次运行 → 合并到同一个候选 (runs++)', async () => {
+    const r2 = await writeRunEndSkillCandidates([
+      { status: 'ok', name: 'read_file' },
+      { status: 'ok', name: 'grep_files' },
+    ], 'test:cli');
+    expect(r2.wrote).toBe(true);
+    expect(r2.merged).toBe(true);
+    expect(r2.runs).toBe(2);
+    const cands = await listSkillCandidates();
+    const mine = cands.filter(c => c.name === 'auto-read_file_grep_files');
+    expect(mine.length).toBe(1); // 不产生第二个文件
+    expect(mine[0].runs).toBe(2);
   });
 
   it('writeRunEndSkillCandidates 不足 2 个不写', async () => {
