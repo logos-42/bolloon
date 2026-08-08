@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|| 2026-08-08 | fix | smoke:esm Windows ESM import bug: probe 用 `\`${cwd}/${rel}\`` 拼绝对路径, Windows 上得 `D:\...` raw path → Node ESM loader 报 "Only URLs with a scheme in file/data/node are supported" → prepublishOnly 失败. 改用 `pathToFileURL(path.resolve(cwd,rel)).href` 转 `file://` URL, 跨平台可导入. 实测 smoke:esm PASS (467 syntax + 1 import). 阻塞 v0.3.39 发布的非本任务 bug, 已修 | [smoke-esm.mjs](../../scripts/smoke-esm.mjs) |
 || 2026-08-08 | feat | 外部智能体 (OpenClaw/Hermes) 数据无缝迁移 + ReAct loop 收尾 review 续跑: ① 新增 `migration/external-agent-migrator.ts`: 启动时隐式扫描 `~/.openclaw`(~/.hermes 亦支持) 的 workspace, 按 Bolloon 既有格式迁移 — `{SOUL,IDENTITY,USER,AGENTS,TOOLS,MEMORY}.md`→persona 6 文件, `workspace/skills/<name>/`→~/.bolloon/skills/, `workspace/memory/*.md`→memory/<agent>/sessions, 其它 .md→context-os/04-Projects/<source>-docs; 幂等 (sha1 manifest ~/.bolloon/migration/<source>.json 未变化跳过), 不复制 secret/credential 文件; `migrateAllExternalAgents` 在 bootstrapBolloon 静默跑, 结果由 `formatMigrationNotices` 通告。本机实测: 性格6份+技能66个+记忆1条+文档10份 并落盘, 二次幂等跳过 0/0。② 新增 `agents/loop-review.ts` 纯函数 + pi-sdk runReActLoop final 分支接入: LLM 想输出 `<final gen>` 时先跑 1-2 次「目标对齐+需求深挖」review (上限 DEFAULT_MAX_REVIEWS=2), 前完成工具去重登记, 达上限或无用户意图才真正放行结束 (以用户需求为准不过度深挖, 不潦草收尾). tsc 0 错, vitest 1082/1082 (+18: 迁移10 + review8) | [external-agent-migrator.ts](../../src/migration/external-agent-migrator.ts) / [loop-review.ts](../../src/agents/loop-review.ts) / [pi-sdk.ts](../../src/agents/pi-sdk.ts) |
 || 2026-08-07 | fix | Windows 路径分隔符 + 测试隔离修复: ① 生产代码 `mention-data.ts` loadFiles label/insert 用 `path.relative(...).split(path.sep).join('/')` 统一 `/` 分隔 (展示/matchFileScore/弹窗插入跨平台一致); ② 测试: external-engines experiment mock 用 path.sep 匹配、attachments-upload 断言改 path.join 平台无关、context-os/skill-writer 补 USERPROFILE (Node os.homedir() 在 Windows 读 USERPROFILE 不走 HOME, 原隔离失效)、mcp-adapter python3→跨平台探测 (Windows python3 是 WindowsApps 存根 9009); ③ 新增 ink-smoke.test.ts 用 renderToString 锁定 ink7+react19 渲染. tsc 0 错, vitest 1064/1064 (+1) | [mention-data.ts](../../src/cli/mention-data.ts) / [ink-smoke.test.ts](../../src/test/ink-smoke.test.ts) |
 
@@ -943,7 +944,15 @@
 - `npx vitest run`: 1082/1082 pass (原 1064 + 迁移 10 + review 8)
 - 真实迁移 `scripts/mig-check.ts`: openclaw 迁移成功 + 幂等验证
 
+### 修复 (v0.3.39 发布阻塞 bug)
+
+- `scripts/smoke-esm.mjs`: probe 用 `${cwd}/${rel}` 拼绝对路径 → Windows `D:\...` raw path 被 ESM loader
+  拒绝 ("Only URLs with a scheme in file/data/node...") → prepublishOnly FAILED. 改 `pathToFileURL()` 转 `file://`.
+
 ### 发布
 
 - 版本: 0.3.38 → 0.3.39
+- `npm publish` (prepublishOnly: build:all + smoke:esm 通过, 3.6MB / 626 files)
+- 线上验证: `npm view @bolloon/bolloon-agent@0.3.39` → 0.3.39
+- commits: 2ec687b (feat) + ebd39b0 (fix smoke-esm Windows) 已 push
 
