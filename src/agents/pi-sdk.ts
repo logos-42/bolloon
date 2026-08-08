@@ -679,9 +679,55 @@ export class PiAgentSession implements AgentSession {
     } catch { /* 非致命 */ }
   }
 
+  // ============================================================
+  // 2026-08-08: 运行轨迹采集 (trajectory) — 每轮运行 → 落盘 + OrbitDB, 失败静默
+  // ============================================================
+  private async createTrajectoryRecorder(input: string, channelId?: string): Promise<any> {
+    try {
+      const { TrajectoryRecorder } = await import('../orbitdb/trajectory-store.js');
+      const { resolveUserDid } = await import('../storage/did-catalog-bridge.js');
+      const did = await resolveUserDid();
+      const model = (this as any).llmConfig?.model || (this as any).model || '';
+      return new TrajectoryRecorder({
+        agentId: this.currentAgentId || 'default',
+        input,
+        channelId: channelId || this.currentChannelId,
+        did: did || undefined,
+        model: typeof model === 'string' && model ? model : undefined,
+      });
+    } catch {
+      return null; // 轨迹采集失败静默 (增强层)
+    }
+  }
+
+  private wrapTrajectoryStream(onStream: StreamCallback, rec: any): StreamCallback {
+    return (ev) => {
+      try { rec?.recordStep?.(ev); } catch { /* 记录失败不影响转发 */ }
+      onStream(ev);
+    };
+  }
+
+  private finishTrajectory(rec: any, reply: string, status: 'ok' | 'error' | 'aborted' = 'ok'): void {
+    if (!rec) return;
+    // fire-and-forget: 不阻塞回复返回
+    (async () => {
+      try {
+        const { recordTrajectory } = await import('../orbitdb/trajectory-store.js');
+        const run = rec.endRun(reply, status);
+        await recordTrajectory(run, {});
+      } catch { /* 静默 */ }
+    })();
+  }
+
   async prompt(input: string, options?: { onStream?: StreamCallback; signal?: AbortSignal; channelId?: string }): Promise<string> {
     this.minimaxAvailable = this.checkMinimax();
     this.currentChannelId = options?.channelId ?? this.currentChannelId;
+
+    // 2026-08-08: 运行轨迹采集 (落盘 + OrbitDB, 失败静默) — 包裹 onStream 收集步骤事件
+    const trajRec = await this.createTrajectoryRecorder(input, options?.channelId);
+    if (trajRec && options?.onStream) {
+      options = { ...options, onStream: this.wrapTrajectoryStream(options.onStream, trajRec) };
+    }
 
     this.messageHistory.push({
       role: 'user',
@@ -692,6 +738,7 @@ export class PiAgentSession implements AgentSession {
       const response = await this.handleFallback(input);
       this.messageHistory.push({ role: 'assistant', content: response });
       this.reportUsageToContextManager();
+      this.finishTrajectory(trajRec, response);
       return response;
     }
 
@@ -725,6 +772,7 @@ export class PiAgentSession implements AgentSession {
     if (this.usePivotLoop) {
       try {
         const lr = await this.promptWithPivotLoop(input, undefined, options?.channelId);
+        this.finishTrajectory(trajRec, lr.response || '');
         return lr.response || '';
       } finally {
         if (this.judgmentGateUsedIds.length > 0) {
@@ -742,6 +790,7 @@ export class PiAgentSession implements AgentSession {
     try {
       // 2026-06-16: runReActLoop 现在返回 { reply, aiFailed, aiFailureReason } — 这里只需 reply 字符串
       const loopResult = await this.runReActLoop(this.currentOnStream ?? undefined, options?.signal);
+      this.finishTrajectory(trajRec, loopResult.reply, loopResult.aiFailed ? 'error' : 'ok');
       return loopResult.reply;
     } finally {
       if (this.judgmentGateUsedIds.length > 0) {
@@ -767,6 +816,10 @@ export class PiAgentSession implements AgentSession {
     console.log(`[PiAgent.promptStream] minimaxAvailable=${this.minimaxAvailable}`);
     this.currentChannelId = channelId ?? this.currentChannelId;
 
+    // 2026-08-08: 运行轨迹采集 (落盘 + OrbitDB, 失败静默) — 包裹 onStream 收集步骤事件
+    const trajRec = await this.createTrajectoryRecorder(input, channelId);
+    if (trajRec) onStream = this.wrapTrajectoryStream(onStream, trajRec);
+
     // 2026-06-18 (supervisor): web server 把 46K markedPrompt 喂过来
     //   (【本轮用户请求】\n<text>\n【请求结束】\n\n<contextHint>).
     //   整个 input 走下游, pivot loop 之前拿 47K buildContext 当 user message 发出去,
@@ -790,6 +843,7 @@ export class PiAgentSession implements AgentSession {
       this.messageHistory.push({ role: 'assistant', content: response });
       onStream({ type: 'done', content: '' });
       this.reportUsageToContextManager();
+      this.finishTrajectory(trajRec, response);
       return response;
     }
 
@@ -931,6 +985,7 @@ export class PiAgentSession implements AgentSession {
         this.promptStartTime = 0;
         this.reportUsageToContextManager();
       }
+      this.finishTrajectory(trajRec, pivotResult);
       return pivotResult;
     }
 
@@ -1022,6 +1077,9 @@ export class PiAgentSession implements AgentSession {
     this.currentSignal = null;
     this.bootstrapAddition = '';
     this.promptStartTime = 0;
+
+    // 2026-08-08: 轨迹收尾 — 落盘 + OrbitDB (失败静默, 不阻塞回复)
+    this.finishTrajectory(trajRec, result);
 
     return result;
   }

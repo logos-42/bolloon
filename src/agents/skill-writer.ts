@@ -92,6 +92,8 @@ export async function createSkill(
   try {
     await fs.mkdir(skillDir, { recursive: true });
     await fs.writeFile(file, content, 'utf-8');
+    // 2026-08-08 (DID 目录写穿): skill 落盘同步进 DID 目录 skills 表 (失败静默)
+    catalogSkillUpsert(`skill/${safeName}`, { name: safeName, kind: 'skill', description, file, size: content.length, updatedAt: Date.now() });
     return { ok: true, path: file };
   } catch (e: any) {
     return { ok: false, path: file, error: `写入失败: ${e?.message || String(e)}` };
@@ -152,6 +154,8 @@ export async function updateSkill(name: string, opts: UpdateSkillOptions): Promi
     const content = '---\n' + fmLines.join('\n') + '\n---\n\n' + body + '\n';
 
     await fs.writeFile(file, content, 'utf-8');
+    // 2026-08-08 (DID 目录写穿): skill 更新同步进 DID 目录 skills 表 (失败静默)
+    catalogSkillUpsert(`skill/${safeName}`, { name: safeName, kind: 'skill', description: String(opts.description || ''), file, size: content.length, updatedAt: Date.now() });
     return { ok: true, path: file };
   } catch (e: any) {
     return { ok: false, path: file, error: `更新失败: ${e?.message || String(e)}` };
@@ -220,7 +224,22 @@ export async function writeSkillCandidate(c: SkillCandidate): Promise<string> {
   } catch { /* 新文件 */ }
   const merged: SkillCandidate = { ...c, runs, body, timestamp: c.timestamp || new Date().toISOString() };
   await fs.writeFile(file, JSON.stringify(merged, null, 2), 'utf-8');
+  // 2026-08-08 (DID 目录写穿): 候选同步进 DID 目录 skills 表 (失败静默)
+  catalogSkillUpsert(`candidate/${safeName}`, {
+    name: safeName, kind: 'candidate', description: c.description,
+    file, runs, signature: c.signature, size: merged.body.length, updatedAt: Date.now(),
+  });
   return file;
+}
+
+/** 2026-08-08: skill 写入 → DID 目录 skills 表写穿 (WAL 事件 → 多设备同步/OrbitDB 复制). 失败静默. */
+function catalogSkillUpsert(key: string, data: Record<string, unknown>): void {
+  (async () => {
+    try {
+      const { catalogUpsertQuiet } = await import('../storage/did-catalog-bridge.js');
+      await catalogUpsertQuiet('skills', key, data);
+    } catch { /* 静默 */ }
+  })();
 }
 
 export async function listSkillCandidates(home: string = os.homedir()): Promise<SkillCandidate[]> {

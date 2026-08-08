@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import React from 'react';
-import { renderToString } from 'ink';
+// ink 7 不再导出 renderToString (ink 4 API) → 用 react-dom/server 渲染组件树
+//   (ink 组件本质是 React 组件, SSR 渲染 ink-box 标记 + 文本, 足够锁定渲染不崩 + 关键文案)
+import { renderToString } from 'react-dom/server';
 import { InkApp } from '../cli/ink-app.js';
 
 describe('ink7 + react19 smoke', () => {

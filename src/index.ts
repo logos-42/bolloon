@@ -1164,7 +1164,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       let cfg: any = null;
       try { cfg = JSON.parse(await readFile(p, 'utf-8')); } catch { /* 无 */ }
       appendLine(`${C_ACCENT}邮件 (SMTP):${RESET}`);
-      if (!cfg) { appendLine(`  ${C_DIM}未配置 smtp.json — 发件人: 天墟星剑 <2844169590@qq.com>${RESET}`); }
+      if (!cfg) { appendLine(`  ${C_DIM}未配置 smtp.json — 发件人: Leo <2844169590@qq.com>${RESET}`); }
       else {
         appendLine(`  ${C_DIM}host:${RESET} ${cfg.host || 'smtp.qq.com'}`);
         appendLine(`  ${C_DIM}发件人:${RESET} ${cfg.from || cfg.user || '—'}`);

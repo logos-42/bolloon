@@ -214,6 +214,22 @@ export async function compressSessionToMemory(opts: MemoryCompressOptions): Prom
   await fs.appendFile(summaryPath, block, 'utf-8');
   await writeCursor(cursorPath, allMessages.length);
 
+  // 2026-08-08 (DID 目录写穿): 摘要同步进 DID 目录 memory 表 — WAL 事件 → 多设备同步/OrbitDB 复制.
+  //   失败静默: 目录不可用不影响原磁盘写入.
+  try {
+    const { catalogUpsertQuiet } = await import('../storage/did-catalog-bridge.js');
+    await catalogUpsertQuiet('memory', `sessions/${agentId}/${path.basename(summaryPath)}`, {
+      agentId,
+      channelId: opts.channelId,
+      sessionId: opts.sessionId,
+      kind: 'summary',
+      file: path.basename(summaryPath),
+      summary: summaryBody.slice(0, 4000),
+      size: summaryBody.length,
+      updatedAt: Date.now(),
+    }, { home: opts.home });
+  } catch { /* 静默 */ }
+
   // 2026-08-03 (Context OS P4): 价值点分类路由 — 把摘要里的 decision/lesson/knowledge/insight
   //   自动写入 human-values + judgeness (Context OS §6 对话收尾: 价值不流失).
   //   失败静默, 不阻塞主对话. 幂等: 相同 decision 文本跳过.

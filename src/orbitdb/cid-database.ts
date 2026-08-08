@@ -62,10 +62,31 @@ export interface CIDDatabase {
   list(filter?: { agentId?: string; type?: CIDRecordType }): Promise<CIDRecord[]>;
   /** 分享: 把记录块放入 helia blockstore (可被网络拉取), 返回可分享标识 */
   share(cid: string): Promise<string>;
+  /**
+   * 2026-08-08: 在同一 OrbitDB 实例上打开附加 store (事件流 / 轨迹库等)。
+   * 与 bolloon-cid-store 共享同一 helia 节点 + OrbitDB 实例 (单例, 不重复建节点)。
+   * type: 'keyvalue' | 'events' — events 是 append-only 事件流 (WAL 复制用).
+   */
+  openStore(name: string, type?: 'keyvalue' | 'events'): Promise<OrbitDBStore>;
   /** 关闭数据库 */
   close(): Promise<void>;
   /** 底层 OrbitDB 实例 (调试/高级用) */
   readonly orbitdb?: OrbitDB;
+}
+
+/** 打开的附加 store 的通用最小接口 (keyvalue / events 共用) */
+export interface OrbitDBStore {
+  readonly address: string;
+  /** keyvalue: put; events: add(值) — 统一写入口 */
+  put(key: string, value: unknown): Promise<void>;
+  /** events: append 一个值 (key 参数忽略) */
+  add(value: unknown): Promise<void>;
+  /** 全量读取: [{key, value}] (events 的 key=hash, value=payload) */
+  all(): Promise<Array<{ key: string; value: unknown }>>;
+  /** keyvalue: 读单键 */
+  get(key: string): Promise<unknown>;
+  /** 订阅底层变更 (join/write/replicate), 返回退订函数 */
+  onChange(fn: () => void): () => void;
 }
 
 /** 内容 → CID (dag-cbor, sha2-256, codec 0x71); 先 JSON 清洗 (dag-cbor 不支持 undefined) */
@@ -190,6 +211,44 @@ export class OrbitDBAdapter implements CIDDatabase {
     // 把记录块写入 helia blockstore, 供网络 peers 通过 DHT 拉取
     await this.node!.helia.blockstore.put(CID.parse(rec.id), dagCbor.encode(rec));
     return `bolloon-cid://${rec.id}`;
+  }
+
+  /**
+   * 2026-08-08: 在同一 OrbitDB 实例上打开附加 store。
+   * events 类型 = append-only 事件流 (WAL 复制 / 轨迹流用).
+   * 返回的 store 是通用适配 (put=keyvalue / add=events).
+   */
+  async openStore(name: string, type: 'keyvalue' | 'events' = 'keyvalue'): Promise<OrbitDBStore> {
+    await this.ensure();
+    const raw = (await this._orbitdb!.open(name, { type })) as any;
+    const store: OrbitDBStore = {
+      address: raw.address,
+      put: async (key, value) => { await raw.put(key, JSON.parse(JSON.stringify(value))); },
+      add: async (value) => { await raw.add(JSON.parse(JSON.stringify(value))); },
+      all: async () => {
+        const entries = (await raw.all()) as Array<Record<string, unknown>>;
+        // events store 的 all() 返回 { hash, payload } — 统一成 { key, value }
+        return entries.map(e => ({
+          key: String(e.key ?? e.hash ?? ''),
+          value: e.payload !== undefined ? e.payload : e.value,
+        }));
+      },
+      get: async (key) => { return (await raw.get(key)) as unknown; },
+      onChange: (fn) => {
+        const on = () => { try { fn(); } catch { /* 回调异常忽略 */ } };
+        (raw.events as any)?.on?.('join', on);
+        (raw.events as any)?.on?.('write', on);
+        (raw.events as any)?.on?.('replicate', on);
+        return () => {
+          try {
+            (raw.events as any)?.off?.('join', on);
+            (raw.events as any)?.off?.('write', on);
+            (raw.events as any)?.off?.('replicate', on);
+          } catch { /* 忽略 */ }
+        };
+      },
+    };
+    return store;
   }
 
   async close(): Promise<void> {

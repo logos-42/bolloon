@@ -1744,6 +1744,39 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     }
   })();
 
+  // 2026-08-08: DID 目录启动接入 — 回填既有磁盘数据 + 启动 OrbitDB 自动复制.
+  //   fire-and-forget: 不阻塞启动; 失败静默 (catalog 是增强层, 原磁盘路径永远可用).
+  (async () => {
+    try {
+      const { openUserCatalog, backfillDidCatalog } = await import('../storage/did-catalog-bridge.js');
+      const cat = await openUserCatalog();
+      if (!cat) {
+        console.log('[did-catalog] 未生成用户 DID, 跳过回填 (首次启动会由 /api/user/identity 生成)');
+        return;
+      }
+      const r = await backfillDidCatalog(cat);
+      const total = r.reduce((a, x) => a + x.added, 0);
+      console.log(`[did-catalog] 启动回填完成: ${total} 行新写入 (${r.map(x => `${x.table}=${x.added}+${x.skipped}跳过`).join(', ')})`);
+    } catch (e) {
+      console.warn('[did-catalog] 启动回填失败 (非致命):', (e as Error)?.message?.slice(0, 120));
+    }
+  })();
+
+  // 2026-08-08: DID 目录 → OrbitDB 自动复制 (WAL 事件流驱动跨设备合并).
+  //   懒启动: 等 identity 就绪后再开; 失败静默 (离线时 catalog 照常工作).
+  (async () => {
+    try {
+      const identity = await loadOrCreateUserIdentity();
+      if (!identity.did) return;
+      const { startDidCatalogReplication } = await import('../orbitdb/did-catalog-replication.js');
+      const rep = await startDidCatalogReplication(identity.did, { intervalMs: 30_000 });
+      console.log(`[did-catalog] OrbitDB 自动复制已启动: store=${rep.storeName} address=${String(rep.storeAddress).slice(0, 48)}...`);
+      (globalThis as any).__didCatalogReplication = rep;
+    } catch (e) {
+      console.warn('[did-catalog] OrbitDB 复制启动失败 (非致命, 稍后可用 API 重试):', (e as Error)?.message?.slice(0, 120));
+    }
+  })();
+
   // 重置旧的 agent session，确保使用新的 LLM 配置
   const { resetAgentSession } = await import('../agents/pi-sdk.js');
   resetAgentSession();
@@ -2879,6 +2912,96 @@ ${goalDesc}
     }
   });
 
+  // 手动触发启动回填 (既有磁盘数据 → DID 目录表, 幂等)
+  app.post('/api/did-catalog/backfill', async (_req: any, res: any) => {
+    try {
+      const identity = await loadOrCreateUserIdentity();
+      if (!identity.did) return res.status(404).json({ error: '未生成用户 DID' });
+      const { openUserCatalog, backfillDidCatalog } = await import('../storage/did-catalog-bridge.js');
+      const cat = await openUserCatalog();
+      if (!cat) return res.status(404).json({ error: '目录未打开' });
+      const r = await backfillDidCatalog(cat);
+      res.json({ ok: true, did: identity.did, tables: r });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // OrbitDB 复制状态 / 启动 (自动复制失败后的手动入口)
+  app.get('/api/did-catalog/replication', async (_req: any, res: any) => {
+    try {
+      const identity = await loadOrCreateUserIdentity();
+      if (!identity.did) return res.status(404).json({ error: '未生成用户 DID' });
+      const rep = (globalThis as any).__didCatalogReplication;
+      if (!rep) return res.json({ ok: false, did: identity.did, running: false });
+      const { publishPending, syncNow } = rep;
+      const published = await publishPending();
+      const synced = await syncNow();
+      res.json({
+        ok: true, did: identity.did, running: true,
+        storeName: rep.storeName, storeAddress: rep.storeAddress,
+        stats: rep.stats, publishedNow: published, syncedNow: synced,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/did-catalog/replication/start', async (_req: any, res: any) => {
+    try {
+      const identity = await loadOrCreateUserIdentity();
+      if (!identity.did) return res.status(404).json({ error: '未生成用户 DID' });
+      if ((globalThis as any).__didCatalogReplication) {
+        return res.json({ ok: true, did: identity.did, running: true, storeAddress: (globalThis as any).__didCatalogReplication.storeAddress });
+      }
+      const { startDidCatalogReplication } = await import('../orbitdb/did-catalog-replication.js');
+      const rep = await startDidCatalogReplication(identity.did, { intervalMs: 30_000 });
+      (globalThis as any).__didCatalogReplication = rep;
+      res.json({ ok: true, did: identity.did, running: true, storeName: rep.storeName, storeAddress: rep.storeAddress });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 智能体运行轨迹 (trajectory): 列表 + 单条 (落盘 ~/.bolloon/trajectories/)
+  app.get('/api/trajectories', async (_req: any, res: any) => {
+    try {
+      const { listTrajectories } = await import('../orbitdb/trajectory-store.js');
+      const list = await listTrajectories();
+      const summary = [];
+      for (const { runId, file } of list) {
+        try {
+          const { loadTrajectory } = await import('../orbitdb/trajectory-store.js');
+          const run = await loadTrajectory(runId);
+          summary.push({
+            runId, file,
+            agentId: run?.agentId, channelId: run?.channelId,
+            startedAt: run?.startedAt, endedAt: run?.endedAt,
+            durationMs: run?.durationMs, status: run?.status,
+            input: run?.input?.slice(0, 120), reply: run?.reply?.slice(0, 120),
+            steps: run?.steps?.length ?? 0,
+          });
+        } catch { /* 单条失败跳过 */ }
+      }
+      res.json({ ok: true, count: list.length, runs: summary });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/trajectories/:runId', async (req: any, res: any) => {
+    try {
+      const { loadTrajectory } = await import('../orbitdb/trajectory-store.js');
+      const runId = String(req.params.runId || '');
+      if (!runId) return res.status(400).json({ error: 'runId 必填' });
+      const run = await loadTrajectory(runId);
+      if (!run) return res.status(404).json({ error: `轨迹不存在: ${runId}` });
+      res.json({ ok: true, run });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
 
   // 2026-07-01 (v0.2.6): 前后端分离核心 — 后端切 LLM 输出为结构化 segments
   //   - POST /api/segment-reply { reply, knownTools }
@@ -3471,6 +3594,24 @@ ${goalDesc}
           if (summariesToRead.length > 0) {
             const memBlock = summariesToRead.map(s => s.trim().slice(-1500)).join('\n\n---\n\n');
             contextHint += `[系统上下文] 动态状态层 · chat-worksite (上次做到哪 — 本 channel 历史记忆, 来自 memory-compressor 摘要, 引用而非复述):\n${memBlock.slice(-2500)}\n\n`;
+          } else {
+            // 2026-08-08 (DID 目录读侧): 磁盘无摘要时, 回退读 DID 目录 memory 表 (跨设备同步来的记忆)
+            try {
+              const { openUserCatalog, catalogMemoryRows } = await import('../storage/did-catalog-bridge.js');
+              const cat = await openUserCatalog();
+              if (cat) {
+                const rows = catalogMemoryRows(cat, agentId);
+                if (rows.length > 0) {
+                  const memBlock = rows.slice(0, 2)
+                    .map(({ row }) => String((row.data as Record<string, unknown>).summary || '').slice(-1500))
+                    .filter(Boolean)
+                    .join('\n\n---\n\n');
+                  if (memBlock) {
+                    contextHint += `[系统上下文] 动态状态层 · chat-worksite (DID 目录同步记忆, 引用而非复述):\n${memBlock.slice(-2500)}\n\n`;
+                  }
+                }
+              }
+            } catch { /* 目录读失败静默 */ }
           }
         }
       } catch (memErr) {
