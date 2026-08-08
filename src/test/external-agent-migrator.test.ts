@@ -9,6 +9,7 @@ import {
   sourceRootCandidates,
   workspacePath,
   sha1,
+  redactSecrets,
   formatMigrationNotices,
   detectSource,
 } from '../migration/external-agent-migrator.js';
@@ -37,9 +38,10 @@ function write(p: string, content: string): void {
 }
 
 /** 基于 tmp 目录构建真实 deps (只隔离 home, 其余真 IO) */
-function deps(opts?: { localAppData?: string }): MigratorDeps {
+function deps(opts?: { localAppData?: string; platform?: string }): MigratorDeps {
   return {
     home,
+    platform: opts?.platform ?? 'linux',
     ...(opts?.localAppData ? { localAppData: opts.localAppData } : {}),
     readFile: async (p) => {
       try { return fs.readFileSync(p, 'utf-8'); } catch { return undefined; }
@@ -169,15 +171,15 @@ describe('external-agent-migrator', () => {
   it('hermes 候选根优先 LOCALAPPDATA', async () => {
     const la = path.join(tmp, 'local');
     fs.mkdirSync(path.join(la, 'hermes'), { recursive: true });
-    const cands = sourceRootCandidates('hermes', deps({ localAppData: la }));
+    const cands = sourceRootCandidates('hermes', deps({ localAppData: la, platform: 'win32' }));
     expect(cands[0]).toBe(path.join(la, 'hermes'));
-    expect(await detectSource(deps({ localAppData: la }), 'hermes')).toBe(path.join(la, 'hermes'));
+    expect(await detectSource(deps({ localAppData: la, platform: 'win32' }), 'hermes')).toBe(path.join(la, 'hermes'));
   });
 
   it('hermes 未安装在 LOCALAPPDATA 但兜底 ~/.hermes 可检测', async () => {
     write(path.join(home, '.hermes', 'SOUL.md'), '# soul');
     const la = path.join(tmp, 'empty-local');
-    const got = await detectSource(deps({ localAppData: la }), 'hermes');
+    const got = await detectSource(deps({ localAppData: la, platform: 'win32' }), 'hermes');
     expect(got).toBe(path.join(home, '.hermes'));
   });
 
@@ -189,7 +191,7 @@ describe('external-agent-migrator', () => {
     write(path.join(hw, 'memories', 'MEMORY.md'), '# mem');
     void hermesRoot;
 
-    const r = await migrateExternalAgent('hermes', deps({ localAppData: la }));
+    const r = await migrateExternalAgent('hermes', deps({ localAppData: la, platform: 'win32' }));
     expect(r.migrated).toBe(true);
     expect(r.persona).toEqual(expect.arrayContaining(['soul.md', 'user.md', 'wiki.md']));
     const personaDir = path.join(bolloon, 'persona', r.personaAgentId);
@@ -206,11 +208,68 @@ describe('external-agent-migrator', () => {
     write(path.join(hw, 'skills', 'devops', 'windows-background-jobs', 'references', 'r.md'), 'ref');
     write(path.join(hw, 'skills', 'research', 'web-search', 'SKILL.md'), '---\nname: ws\n---\n\nsearch');
 
-    const r = await migrateExternalAgent('hermes', deps({ localAppData: la }));
+    const r = await migrateExternalAgent('hermes', deps({ localAppData: la, platform: 'win32' }));
     expect(r.skillsCopied).toContain('devops-windows-background-jobs');
     expect(r.skillsCopied).toContain('research-web-search');
     const dest = path.join(bolloon, 'skills', 'devops-windows-background-jobs');
     expect(fs.existsSync(path.join(dest, 'SKILL.md'))).toBe(true);
     expect(fs.existsSync(path.join(dest, 'references', 'r.md'))).toBe(true);
+  });
+
+  it('hermes Linux 候选: .local/share/hermes → .config/hermes → ~/.hermes', async () => {
+    const c1 = sourceRootCandidates('hermes', deps({ platform: 'linux' }));
+    expect(c1[0]).toBe(path.join(home, '.local', 'share', 'hermes'));
+    expect(c1[1]).toBe(path.join(home, '.config', 'hermes'));
+    expect(c1[2]).toBe(path.join(home, '.hermes'));
+
+    // linux 下 .config/hermes 存在则应优先于 ~/.hermes
+    write(path.join(home, '.config', 'hermes', 'SOUL.md'), '# soul');
+    const got = await detectSource(deps({ platform: 'linux' }), 'hermes');
+    expect(got).toBe(path.join(home, '.config', 'hermes'));
+  });
+
+  it('hermes macOS 候选: Library/Application Support/hermes → ~/.hermes', async () => {
+    const c = sourceRootCandidates('hermes', deps({ platform: 'darwin' }));
+    expect(c[0]).toBe(path.join(home, 'Library', 'Application Support', 'hermes'));
+    expect(c[1]).toBe(path.join(home, '.hermes'));
+  });
+
+  it('openclaw 候选: ~/.openclaw → ~/.config/openclaw', async () => {
+    const c = sourceRootCandidates('openclaw', deps());
+    expect(c[0]).toBe(path.join(home, '.openclaw'));
+    expect(c[1]).toBe(path.join(home, '.config', 'openclaw'));
+  });
+
+  it('redactSecrets 挡主凭据: Bearer token / sk- / api key / MT5 data', () => {
+    const out = redactSecrets(
+      'MCP 127.0.0.1:22346 Bearer GzVbAW8YFbM+Q3sMi+Dqnt+NEJafcpbDBtbx8PTHm0. ' +
+      'MT5 data: D0E8209F77C8CF37AD8BF550E51FF075. sk-ant-api03-abcdefghijklmnop ' +
+      'OPENAI_API_KEY=sk-AbCdEfGh2000000000000000000'
+    );
+    expect(out).not.toContain('GzVbAW8YFbM');
+    expect(out).not.toContain('D0E8209F77C8');
+    expect(out).not.toContain('abcdefghijklmnop');
+    expect(out).not.toContain('AxonCdEfGh200000');
+    expect(out).toContain('MCP 127.0.0.1:22346');
+    expect(out).toContain('MT5 data');
+  });
+
+  it('redactSecrets 不误伤业务: URL / 路径 / 中文 / 正常参数保留', () => {
+    const out = redactSecrets(
+      'EA at D:/AI/MT5/MT5-hibs/ 编译优先于 F7. MT5 tester logs 在 Tester 目录. ' +
+      '依赖 https://api.deepseek.com/v1 与 MA_fast=40, ATR=2.5, H1Confirmation=true.'
+    );
+    expect(out).toContain('D:/AI/MT5/MT5-hibs/');
+    expect(out).toContain('https://api.deepseek.com');
+    expect(out).toContain('MA_fast=40');
+    expect(out).toContain('ATR=2.5');
+    expect(out).toContain('H1Confirmation=true');
+    expect(out).toContain('MT5 tester');
+  });
+
+  it('redactSecrets 幂等: 二次调用结果不变', () => {
+    const raw = 'Bearer AbCdefGhIjKlMnOpQrStUvWxYz0123456789abcdefghij';
+    const once = redactSecrets(raw);
+    expect(redactSecrets(once)).toBe(once);
   });
 });

@@ -64,6 +64,8 @@ export interface MigratorDeps {
   home: string;
   /** Windows 的 %LOCALAPPDATA%; hermes 用它定位 (缺省兜底 home/.hermes) */
   localAppData?: string;
+  /** 平台标签 (默认 os.platform(): win32/darwin/linux) — 决定跨平台候选路径 */
+  platform?: string;
   readFile: (p: string) => Promise<string | undefined>;
   readdir: (dir: string) => Promise<string[] | undefined>;
   stat: (p: string) => Promise<{ isDirectory: boolean; isFile: boolean; mtimeMs: number } | undefined>;
@@ -94,6 +96,7 @@ export function defaultDeps(): MigratorDeps {
   const home = os.homedir();
   return {
     home,
+    platform: os.platform(),
     localAppData:
       (typeof process !== 'undefined' && process.env && (process.env.LOCALAPPDATA || process.env.ProgramData))
         ? (process.env.LOCALAPPDATA || process.env.ProgramData) as string
@@ -119,15 +122,37 @@ export function sourceRootPath(source: ExternalAgentSource, home: string): strin
     : path.join(home, '.hermes');
 }
 
-/** 各源全部候选根 (按优先级). hermes 首选 %LOCALAPPDATA%\hermes. */
+/**
+ * 各源全部候选根路径 (按优先级, 遍历时取第一个存在者).
+ *
+ * 覆盖三大平台的实际安装位置:
+ *   OpenClaw: 主目录 ~/.openclaw (三平台一致), 兜底 ~/.config/openclaw
+ *   Hermes :
+ *     - win32   %LOCALAPPDATA%\hermes  → ~/.hermes
+ *     - darwin  ~/Library/Application Support/hermes  → ~/.hermes
+ *     - linux   ~/.local/share/hermes  → ~/.config/hermes  → ~/.hermes
+ */
 export function sourceRootCandidates(source: ExternalAgentSource, deps: MigratorDeps): string[] {
+  const home = deps.home;
+  const platform = deps.platform || 'linux';
+
   if (source === 'openclaw') {
-    return [sourceRootPath('openclaw', deps.home)];
+    return [
+      path.join(home, '.openclaw'),
+      path.join(home, '.config', 'openclaw'),
+    ];
   }
-  const local = deps.localAppData ? path.join(deps.localAppData, 'hermes') : null;
+
   const candidates: string[] = [];
-  if (local) candidates.push(local);
-  candidates.push(sourceRootPath('hermes', deps.home));
+  if (platform === 'win32') {
+    if (deps.localAppData) candidates.push(path.join(deps.localAppData, 'hermes'));
+  } else if (platform === 'darwin') {
+    candidates.push(path.join(home, 'Library', 'Application Support', 'hermes'));
+  } else {
+    candidates.push(path.join(home, '.local', 'share', 'hermes'));
+    candidates.push(path.join(home, '.config', 'hermes'));
+  }
+  candidates.push(path.join(home, '.hermes'));
   return candidates;
 }
 
@@ -141,6 +166,61 @@ export function workspacePath(source: ExternalAgentSource, sourceRoot: string): 
 /** 计算文件内容 hash (幂等用) */
 export function sha1(content: string): string {
   return crypto.createHash('sha1').update(content).digest('hex');
+}
+
+/**
+ * 内容级脱敏: 抹掉明敏凭据, 防止迁移产物把真实的 Bearer token / API key /
+ * MT5 会话标识 / 长随机串 带进 Bolloon 落盘. 迁移只搬运"知识", 不搬运"秘密".
+ *
+ * 处理模式:
+ *   - Authorization / Bearer <token>
+ *   - token: / api_key: / access_token: / secret: 等 key 声明后的随机串
+ *   - 形如 sk-... / ghp_... / AKIA... 的 platform token
+ *   - 一行冒号后跟 20+ 位 base64/hex 随机串 ("MT5 data: D0E8...", "token: Ab...")
+ *
+ * 保留中文句子与结构说明, 只替换被判定为凭据的 token 片段.
+ */
+export function redactSecrets(text: string): string {
+  const REDACTED = '***REDACTED***';
+  let out = text;
+
+  // 0. Bearer <JWT/base64> / Authorization: Bearer ... — 最优先, 连同包头一起抹
+  out = out.replace(
+    /\bBearer\s+[A-Za-z0-9_./\-=+]{12,}/gi,
+    REDACTED,
+  );
+  out = out.replace(
+    /\bAuthorization\s*[:=]\s*(?:Bearer\s+)?[A-Za-z0-9_./\-=+]{12,}/gi,
+    REDACTED,
+  );
+
+  // 1. explicit key=value 声明 (token/apiKey/access_token/key/secret/password)
+  out = out.replace(
+    /\b(token|api[_-]?key|access[_-]?token|secret|password)\b\s*[:=]\s*["']?[A-Za-z0-9_./+\-]{8,}["']?/gi,
+    (_m, k) => `${k}: ${REDACTED}`,
+  );
+
+  // 2. platform 前缀 token (sk- / sk-proj- / sk-ant- / ghp_ / AKIA / xoxb-)
+  out = out.replace(
+    /\b(sk-[A-Za-z0-9_]{8,}|sk-proj-[A-Za-z0-9_-]{8,}|sk-ant-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[bp]-[A-Za-z0-9-]{8,})\b/g,
+    REDACTED,
+  );
+
+  // 3. "标签: <20+位随机串>" 结构 — 冒号后跟长的 alnum token (MT5 data: D0E8...).
+  //    保守: 只匹配不含 `/`(避开 URL/路径) 且不含域名点 的纯 token 骨架.
+  out = out.replace(
+    /([A-Za-z][A-Za-z0-9 _-]{0,20})\s*[:：]\s*([A-Za-z0-9_+\-]{20,})\b(?![A-Za-z0-9])/g,
+    (_m, name) => `${name}: ${REDACTED}`,
+  );
+
+  // 4. 宽松: 独立长串 24+ (base64) — 前后为空白/标点/行首行尾, 避开 URL 与中文段.
+  //    保守: 不含 `/` 与 `.`, 防误伤 URL/域名/路径.
+  out = out.replace(
+    /(^|[\s(（[:：\]）])[A-Za-z0-9_+=]{22,}(?=[\s)）\].,，。；;:：§]|$)/gm,
+    (_m, prefix) => `${prefix}${REDACTED}`,
+  );
+
+  return out;
 }
 
 /** bolloon 目标根 (默认 ~/.bolloon, 可注入 override) */
@@ -157,13 +237,15 @@ async function copyIfNeeded(
   from: string,
   to: string,
   manifest: Map<string, string>,
+  redact = false,
 ): Promise<boolean> {
   const content = await deps.readFile(from);
   if (content === undefined) return false;
-  const hash = sha1(content);
+  const contentOut = redact ? redactSecrets(content) : content;
+  const hash = sha1(contentOut);
   if (manifest.get(to) === hash) return false; // 未变化, 跳过
   await deps.mkdir(path.dirname(to));
-  await deps.writeFile(to, content);
+  await deps.writeFile(to, contentOut);
   manifest.set(to, hash);
   return true;
 }
@@ -286,12 +368,12 @@ export async function migrateExternalAgent(
 
     await deps.mkdir(path.join(bRoot, 'migration'));
 
-    // 1. persona (per-source spec)
+    // 1. persona (per-source spec) — 含敏感 token, 内容级脱敏后写入
     const personaSpec = source === 'openclaw' ? OPENCLAW_PERSONA : HERMES_PERSONA;
     for (const { src, toName } of personaSpec) {
       const from = path.join(ws, src);
       const to = path.join(personaDir, toName);
-      if (await copyIfNeeded(deps, from, to, manifest)) {
+      if (await copyIfNeeded(deps, from, to, manifest, true)) {
         report.persona.push(toName);
         report.entries.push({ from, to, kind: 'persona' });
       }
@@ -351,7 +433,7 @@ export async function migrateExternalAgent(
         if (!f.endsWith('.md')) continue;
         const from = path.join(memSrc, f);
         const to = path.join(memoryRoot, `${idx + 1}-${f}`);
-        if (await copyIfNeeded(deps, from, to, manifest)) {
+        if (await copyIfNeeded(deps, from, to, manifest, true)) {
           report.memoryCopied.push(f);
           report.entries.push({ from, to, kind: 'memory' });
         }

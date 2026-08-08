@@ -43,3 +43,6 @@ bolloon_raw/
 .codex/
 .crush/
 .claude/
+
+# bolloon runtime data (本地运行态, 不入库; 技能/迁移/日志都在此)
+.bolloon/
