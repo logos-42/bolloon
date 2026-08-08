@@ -658,6 +658,87 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     return;
   }
 
+  // /new agent <名字> — 创建新智能体 channel (2026-08-08)
+  if (trimmed.toLowerCase().startsWith('/new agent')) {
+    const q = trimmed.slice('/new agent'.length).trim();
+    if (!q) {
+      appendLine(`${C_DIM}用法: /new agent <名字> — 新建一个智能体 channel 并切换过去${RESET}`);
+      return;
+    }
+    try {
+      const [name, ...rest] = q.split(/\s+/);
+      const personaHint = rest.join(' ').trim();
+      const { getIdentityStore } = await import('./agents/agent-identity-store.js');
+      const store = getIdentityStore();
+      await store.load();
+      const { readFile, writeFile, mkdir } = await import('fs/promises');
+      const { join } = await import('path');
+      const home = process.env.HOME || '/tmp';
+      const channelsPath = join(home, '.bolloon', 'sessions', 'channels.json');
+      let channels: any[] = [];
+      try {
+        const parsed = JSON.parse(await readFile(channelsPath, 'utf-8'));
+        channels = Array.isArray(parsed) ? parsed : parsed?.channels || [];
+      } catch { /* 首次无文件 */ }
+      const dupName = channels.find((c: any) => c.name === name.trim());
+      if (dupName) {
+        appendLine(`${C_ERROR}同名智能体已存在: '${dupName.name}' (id=${dupName.id})${RESET}`);
+        return;
+      }
+      const id = `ch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const ch: any = {
+        id,
+        name: name.trim(),
+        agentId: `agent-${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        currentSessionId: 'default',
+      };
+      if (personaHint) ch.persona = { name: name.trim(), description: personaHint };
+      channels.push(ch);
+      await mkdir(join(home, '.bolloon', 'sessions'), { recursive: true });
+      await writeFile(channelsPath, JSON.stringify(channels, null, 2), 'utf-8');
+      await store.setActive(id);
+      cliAgentName = name.trim();
+      cliActiveChannelId = id;
+      inkSetStatus(getStatus());
+      appendLine(`${C_OK}✓ 已创建智能体 channel: ${name.trim()}${RESET} (${C_DIM}${id}${RESET})${personaHint ? `\n  ${C_DIM}persona: ${personaHint}${RESET}` : ''}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/new agent 失败: ${String(e.message || e).slice(0, 200)}${RESET}`);
+    }
+    return;
+  }
+
+  // /new session — 当前 channel 开新会话 (2026-08-08)
+  if (trimmed.toLowerCase() === '/new session') {
+    try {
+      const { readFile, writeFile } = await import('fs/promises');
+      const { join } = await import('path');
+      const home = process.env.HOME || '/tmp';
+      const channelsPath = join(home, '.bolloon', 'sessions', 'channels.json');
+      const newSessionId = `sess_${Date.now()}`;
+      let saved = false;
+      try {
+        const parsed = JSON.parse(await readFile(channelsPath, 'utf-8'));
+        const channels: any[] = Array.isArray(parsed) ? parsed : parsed?.channels || [];
+        for (const c of channels) {
+          if (cliActiveChannelId && c.id === cliActiveChannelId) { c.currentSessionId = newSessionId; saved = true; }
+          else if (!cliActiveChannelId && c.id === channels[0]?.id) { c.currentSessionId = newSessionId; saved = true; }
+        }
+        await writeFile(channelsPath, JSON.stringify(Array.isArray(parsed) ? channels : { ...parsed, channels }, null, 2), 'utf-8');
+      } catch { /* 无 channels.json → 仅提示 */ }
+      // 重置 agent 消息历史 (新会话空窗口)
+      try {
+        const a = await getAgent();
+        if (a && (a as any).messageHistory) (a as any).messageHistory = [];
+      } catch { /* 非致命 */ }
+      appendLine(`${C_OK}✓ 已新建会话${RESET} session=${C_DIM}${newSessionId}${RESET}${saved ? ` (channel: ${cliActiveChannelId || 'default'})` : ''}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/new session 失败: ${String(e.message || e).slice(0, 200)}${RESET}`);
+    }
+    return;
+  }
+
   // /queue — 切换队列模式
   if (trimmed.toLowerCase() === '/queue') {
     queueMode = !queueMode;
@@ -690,8 +771,8 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
   // ==================== 2026-08-06: 系统命令组 (/model /now /ipfs /memory ...) ====================
   const cmd = trimmed.toLowerCase();
 
-  // /model /login — 模型供应商选择器 (ink 交互渲染, 复用 MentionPopup)
-  if (cmd === '/model' || cmd === '/login') {
+  // /model — 模型供应商选择器 (ink 交互渲染, 复用 MentionPopup)
+  if (cmd === '/model') {
     try {
       const { llmConfigStore, PROVIDER_INFO } = await import('./llm/config-store.js');
       await llmConfigStore.initialize();
@@ -714,6 +795,47 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       });
     } catch (e: any) {
       appendLine(`${C_ERROR}/model 失败: ${String(e.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
+
+  // /login — GitHub / Google 账号登录骨架 (2026-08-08, 无真实 OAuth, 先做选择 + 记录)
+  if (cmd === '/login') {
+    try {
+      const { readFile, writeFile, mkdir } = await import('fs/promises');
+      const { join } = await import('path');
+      const home = process.env.HOME || '/tmp';
+      const accPath = join(home, '.bolloon', 'accounts.json');
+      let accs: any[] = [];
+      try { const parsed = JSON.parse(await readFile(accPath, 'utf-8')); accs = Array.isArray(parsed) ? parsed : []; } catch { /* 无 */ }
+      const gh = accs.filter((a: any) => a.provider === 'github');
+      const gg = accs.filter((a: any) => a.provider === 'google');
+      const items = [
+        { kind: 'command' as const, label: 'GitHub', hint: gh.length ? `已登录 ${gh.length} 个账号` : '未登录', insert: 'GitHub' },
+        { kind: 'command' as const, label: 'Google', hint: gg.length ? `已登录 ${gg.length} 个账号` : '未登录', insert: 'Google' },
+      ];
+      (globalThis as any).__inkOpenPicker?.(items, '登录账号 (骨架) · 选择服务 · Esc 取消', async (it: any) => {
+        const provider = it.label.toLowerCase();
+        try {
+          const existing = accs.find((a: any) => a.provider === provider);
+          if (existing) {
+            appendLine(`${C_OK}✓ ${it.label}: 已登录${RESET} 账号=${existing.username || existing.email || '?'} (${existing.loggedAt || ''})`);
+            appendLine(`  ${C_DIM}token: ${existing.token ? '已保存' : '无'} (未做真实 OAuth, 仅骨架)${RESET}`);
+            return;
+          }
+          // 骨架: 记录一个占位账号 (真实 OAuth 后续接入, 在此扩展)
+          const entry = { provider, username: `user-${provider}`, email: '', token: '', loggedAt: new Date().toISOString(), skeleton: true };
+          accs.push(entry);
+          await mkdir(join(home, '.bolloon'), { recursive: true });
+          await writeFile(accPath, JSON.stringify(accs, null, 2), 'utf-8');
+          appendLine(`${C_OK}✓ ${it.label} 登录骨架已记录 (未做真实 OAuth)${RESET}`);
+          appendLine(`  ${C_DIM}后续接入: 这里会打开浏览器授权并交换 token${RESET}`);
+        } catch (e: any) {
+          appendLine(`${C_ERROR}✗ /login 失败: ${String(e.message || e).slice(0, 150)}${RESET}`);
+        }
+      });
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/login 失败: ${String(e.message || e).slice(0, 150)}${RESET}`);
     }
     return;
   }
@@ -747,15 +869,19 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     return;
   }
 
-  // /tools — 可用工具列表
+  // /tools — 可用工具列表 (2026-08-08: 读 getToolList, 显示名 + 参数)
   if (cmd === '/tools') {
     try {
       const a = await getAgent();
-      const defs = ((a as any).getToolDefinitions?.() ?? []) as any[];
-      const names = Array.isArray(defs) ? defs.map((d: any) => d.name || d.function?.name).filter(Boolean) : Object.keys(defs || {});
-      appendLine(`${C_ACCENT}可用工具 (${names.length}):${RESET}`);
-      for (const n of names.slice(0, 40)) appendLine(`  ${C_DIM}·${RESET} ${n}`);
-      if (names.length > 40) appendLine(`  ${C_DIM}... 共 ${names.length} 个${RESET}`);
+      const list = (a as any).getToolList?.() ?? [];
+      appendLine(`${C_ACCENT}可用工具 (${list.length}):${RESET}`);
+      if (list.length === 0) { appendLine(`  ${C_DIM}无 (agent 未初始化工具列表)${RESET}`); }
+      for (const t of list.slice(0, 40)) {
+        const params = Array.isArray(t.parameters) && t.parameters.length > 0 ? `(${t.parameters.join(',')})` : '';
+        const desc = t.description ? `  ${C_DIM}${String(t.description).split('\n')[0].slice(0, 40)}${RESET}` : '';
+        appendLine(`  ${C_DIM}·${RESET} ${t.name}${params}${desc}`);
+      }
+      if (list.length > 40) appendLine(`  ${C_DIM}... 共 ${list.length} 个${RESET}`);
     } catch { /* 静默 */ }
     return;
   }
@@ -822,13 +948,13 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     return;
   }
 
-  // /goal — 进行中的目标/计划
+  // /goal — 进行中的目标/计划; /goal <文本> 设定新目标并触发循环 (2026-08-08)
   if (cmd === '/goal') {
     try {
-      const { listActivePlans, planToContext } = await import('./agents/plan-store.js');
+      const { listActivePlans } = await import('./agents/plan-store.js');
       const plans = await listActivePlans();
       appendLine(`${C_ACCENT}目标 (${plans.length} 个进行中):${RESET}`);
-      if (plans.length === 0) { appendLine(`  ${C_DIM}无进行中计划 — 可用 /plan 创建${RESET}`); }
+      if (plans.length === 0) { appendLine(`  ${C_DIM}无进行中计划 — 可用 /goal <目标> 设定 或 /plan 创建${RESET}`); }
       for (const p of plans.slice(0, 5)) {
         appendLine(`  ${C_ACCENT}●${RESET} ${(p as any).goal || (p as any).planId} ${C_DIM}[${(p as any).status || 'active'}]${RESET}`);
         const steps = Array.isArray((p as any).steps) ? (p as any).steps : [];
@@ -836,6 +962,82 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
         if (steps.length > 0) appendLine(`    ${C_DIM}${done}/${steps.length} 步完成${RESET}`);
       }
     } catch { /* 静默 */ }
+    return;
+  }
+  if (cmd.startsWith('/goal ')) {
+    const q = trimmed.slice('/goal '.length).trim();
+    try {
+      const { createPlan } = await import('./agents/plan-store.js');
+      const r = await createPlan({ goal: q, steps: [q], createdBy: 'user', originChannel: cliActiveChannelId || 'cli' });
+      if (!r.ok || !r.plan) { appendLine(`${C_ERROR}/goal 设定失败: ${r.error || '未知'}${RESET}`); return; }
+      appendLine(`${C_OK}✓ 目标已设定: ${C_ACCENT}${q}${RESET} (${C_DIM}plan ${r.plan.planId}${RESET})`);
+      // 触发自我改进循环 (沙箱分支, 输出供用户审)
+      const { runSelfImproveLoop } = await import('./agents/pi-sdk-session-factory.js');
+      const loop = await runSelfImproveLoop(q).catch(() => ({ success: false, error: '未启动' }));
+      if (loop.success) appendLine(`  ${C_DIM}${(loop as any).output}${RESET}`);
+      else appendLine(`  ${C_WARN}⚠ 循环未启动: ${loop.error}${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/goal 失败: ${String(e.message || e).slice(0, 200)}${RESET}`);
+    }
+    return;
+  }
+
+  // /plan — 循环过程工具: 创建/查看计划 (2026-08-08)
+  //   /plan <目标> :: <步骤1> | <步骤2> ...  创建
+  //   /plan                         查看进行中
+  if (cmd.startsWith('/plan ')) {
+    const q = trimmed.slice('/plan '.length).trim();
+    const [goalText, ...rest] = q.split('::');
+    const stepsFlat = rest.length > 0 ? rest[0] : '';
+    const steps = stepsFlat ? stepsFlat.split(/\s*[|｜]\s*/).map(s => s.trim()).filter(Boolean) : [goalText].filter(Boolean);
+    try {
+      const { createPlan } = await import('./agents/plan-store.js');
+      const r = await createPlan({ goal: goalText || q, steps: steps.length ? steps : [goalText], createdBy: 'user', originChannel: cliActiveChannelId || 'cli' });
+      if (!r.ok || !r.plan) { appendLine(`${C_ERROR}/plan 创建失败: ${r.error || '未知'}${RESET}`); return; }
+      appendLine(`${C_OK}✓ 计划已创建: ${C_ACCENT}${r.plan.goal}${RESET} (${C_DIM}${r.plan.planId} · ${r.plan.steps.length} 步${RESET})`);
+      for (const s of r.plan.steps) appendLine(`  ${C_DIM}· ${s.description}${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/plan 失败: ${String(e.message || e).slice(0, 200)}${RESET}`);
+    }
+    return;
+  }
+
+  // /todo — 循环过程工具: 查看/勾选步骤 (2026-08-08)
+  if (cmd === '/todo') {
+    try {
+      const { listActivePlans } = await import('./agents/plan-store.js');
+      const plans = await listActivePlans();
+      if (plans.length === 0) { appendLine(`${C_DIM}无进行中计划 — 可用 /plan <目标> 创建${RESET}`); return; }
+      for (const p of plans.slice(0, 3)) {
+        appendLine(`${C_ACCENT}● ${p.goal}${RESET} ${C_DIM}[${p.status || 'active'}]${RESET}`);
+        const steps = Array.isArray(p.steps) ? p.steps : [];
+        for (let i = 0; i < steps.length; i++) {
+          const s = steps[i];
+          const done = (s as any).status === 'done' || (s as any).done;
+          appendLine(`  ${done ? '✓' : '○'} ${i + 1}. ${(s as any).description || ''}${done ? '' : `  ${C_DIM}/todo ${p.planId} ${i + 1} 勾选${RESET}`}`);
+        }
+      }
+    } catch { /* 静默 */ }
+    return;
+  }
+  if (/^\/todo\s+\S+\s+\d+/.test(trimmed.toLowerCase())) {
+    const parts = trimmed.split(/\s+/);
+    const planId = parts[1];
+    const idx = parseInt(parts.slice(2).join(' ').trim(), 10) - 1 || 0;
+    try {
+      const { loadPlan, updatePlan } = await import('./agents/plan-store.js');
+      const plan = await loadPlan(planId);
+      if (!plan) { appendLine(`${C_ERROR}/todo 失败: plan '${planId}' 不存在${RESET}`); return; }
+      const step = plan.steps[idx];
+      if (!step) { appendLine(`${C_ERROR}/todo 失败: 无第 ${idx + 1} 步${RESET}`); return; }
+      await updatePlan(planId, { stepId: step.id, status: 'done' });
+      const done = plan.steps.filter(s => s.status === 'done' || (s as any).done).length + 1;
+      const total = plan.steps.length;
+      const allDone = done >= total;
+      appendLine(`${C_OK}✓ 勾选 ${idx + 1}. ${(step as any).description}${RESET} (${done}/${total})${allDone ? `\n  ${C_ACCENT}🎯 循环达到完成标准, 可以 review 结束: /review ${planId}${RESET}` : ''}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/todo 失败: ${String(e.message || e).slice(0, 150)}${RESET}`);
+    }
     return;
   }
 
@@ -953,24 +1155,65 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     return;
   }
 
-  // /email — 邮件配置状态
+  // /email — 邮件配置管理; /email <host:port:user:from> 设置 / /email clear 清除 (2026-08-08)
   if (cmd === '/email') {
     try {
-      const { readFile } = await import('fs/promises');
+      const { readFile, writeFile, mkdir } = await import('fs/promises');
       const { join } = await import('path');
+      const p = join(process.env.HOME || '/tmp', '.bolloon', 'smtp.json');
       let cfg: any = null;
-      try { cfg = JSON.parse(await readFile(join(process.env.HOME || '/tmp', '.bolloon', 'smtp.json'), 'utf-8')); } catch { /* 无 */ }
+      try { cfg = JSON.parse(await readFile(p, 'utf-8')); } catch { /* 无 */ }
       appendLine(`${C_ACCENT}邮件 (SMTP):${RESET}`);
       if (!cfg) { appendLine(`  ${C_DIM}未配置 smtp.json — 发件人: 天墟星剑 <2844169590@qq.com>${RESET}`); }
       else {
         appendLine(`  ${C_DIM}host:${RESET} ${cfg.host || 'smtp.qq.com'}`);
         appendLine(`  ${C_DIM}发件人:${RESET} ${cfg.from || cfg.user || '—'}`);
       }
+      appendLine(`  ${C_DIM}用法: /email <host:port:user:from> 设置 · /email clear 清除 · /email pass <授权码> 设密码${RESET}`);
     } catch { /* 静默 */ }
     return;
   }
+  if (cmd === '/email clear') {
+    try {
+      const { writeFile, mkdir } = await import('fs/promises');
+      const { join } = await import('path');
+      const p = join(process.env.HOME || '/tmp', '.bolloon', 'smtp.json');
+      await mkdir(join(process.env.HOME || '/tmp', '.bolloon'), { recursive: true });
+      await writeFile(p, '{}', 'utf-8');
+      appendLine(`${C_OK}✓ smtp 配置已清除${RESET}`);
+    } catch { appendLine(`${C_ERROR}/email clear 失败${RESET}`); }
+    return;
+  }
+  if (cmd.startsWith('/email ')) {
+    const q = trimmed.slice('/email '.length).trim();
+    try {
+      const { writeFile, mkdir } = await import('fs/promises');
+      const { join } = await import('path');
+      const p = join(process.env.HOME || '/tmp', '.bolloon', 'smtp.json');
+      await mkdir(join(process.env.HOME || '/tmp', '.bolloon'), { recursive: true });
+      let cfg: any = {};
+      try { cfg = JSON.parse(await import('fs/promises').then(m => m.readFile(p, 'utf-8'))); } catch { /* 无 */ }
+      if (cmd.startsWith('/email pass')) {
+        cfg.pass = q;
+        await writeFile(p, JSON.stringify(cfg, null, 2), 'utf-8');
+        appendLine(`${C_OK}✓ SMTP 授权码已保存${RESET}`);
+        return;
+      }
+      const parts = q.split(':');
+      if (parts.length >= 3) {
+        cfg = { host: parts[0], port: parseInt(parts[1], 10) || 465, user: parts[2], from: parts[3] || parts[2], pass: cfg.pass };
+        await writeFile(p, JSON.stringify(cfg, null, 2), 'utf-8');
+        appendLine(`${C_OK}✓ SMTP 已设置: ${cfg.host}:${cfg.port} (发件人 ${cfg.from})${RESET}`);
+      } else {
+        appendLine(`${C_DIM}格式不对: /email <host:port:user:from> 或 /email clear 或 /email pass <授权码>${RESET}`);
+      }
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/email 设置失败: ${String(e.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
 
-  // /loop — 当前循环状态 (消息数 + token 估算)
+  // /loop — 当前循环状态; /loop <目标> <完成标准> 设目标+标准并启动循环 (2026-08-08)
   if (cmd === '/loop') {
     try {
       const a = await getAgent();
@@ -983,7 +1226,33 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       appendLine(`${C_ACCENT}Loop 状态:${RESET}`);
       appendLine(`  ${C_DIM}消息:${RESET} ${h.length} 条 (窗口 15, ${Math.max(0, h.length - 15)} 条早期压缩)`);
       appendLine(`  ${C_DIM}token:${RESET} ${(tokens / 1000).toFixed(1)}k / 1M (${((tokens / 1_000_000) * 100).toFixed(2)}%)`);
+      appendLine(`  ${C_DIM}用法: /loop <目标> (| <完成标准>) — 设目标并循环, 达到标准自动结束${RESET}`);
     } catch { /* 静默 */ }
+    return;
+  }
+  if (cmd.startsWith('/loop ')) {
+    const q = trimmed.slice('/loop '.length).trim();
+    const [goalText, criteriaText] = q.split(/\s*[|｜]\s*/).map(s => s.trim());
+    try {
+      const { createPlan } = await import('./agents/plan-store.js');
+      const criterion = criteriaText ? `达到标准: ${criteriaText}` : '';
+      const r = await createPlan({
+        goal: goalText || q,
+        steps: [goalText || q, criterion].filter(Boolean),
+        createdBy: 'user',
+        originChannel: cliActiveChannelId || 'cli',
+      });
+      if (!r.ok || !r.plan) { appendLine(`${C_ERROR}/loop 启动失败: ${r.error || '未知'}${RESET}`); return; }
+      appendLine(`${C_OK}✓ 循环已启动: ${C_ACCENT}${goalText}${RESET}${criteriaText ? `\n  ${C_DIM}完成标准: ${criteriaText}${RESET}` : ''} (${C_DIM}plan ${r.plan.planId}${RESET})`);
+      appendLine(`  ${C_DIM}当标准达成时用 /todo 勾选最后一步 / 或 review 后自动结束循环${RESET}`);
+      // 启动自我改进循环
+      const { runSelfImproveLoop } = await import('./agents/pi-sdk-session-factory.js');
+      const loop = await runSelfImproveLoop(goalText).catch(() => ({ success: false, error: '未启动' }));
+      if (loop.success) appendLine(`  ${C_DIM}${(loop as any).output}${RESET}`);
+      else appendLine(`  ${C_WARN}⚠ 循环未启动: ${loop.error}${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/loop 失败: ${String(e.message || e).slice(0, 200)}${RESET}`);
+    }
     return;
   }
 
@@ -1036,7 +1305,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     return;
   }
 
-  // /dream — 随机灵感 (从 Insights + Knowledge 资产随机取一条)
+  // /dream — 随机灵感; /dream <主题> 把用户主题落盘到梦想文档并触发循环 (2026-08-08)
   if (cmd === '/dream') {
     try {
       const { readContextAssets, readAssetBody } = await import('./bootstrap/context-os.js');
@@ -1056,7 +1325,36 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
         const pick = pool[Math.floor(Math.random() * pool.length)];
         appendLine(`${C_DIM}🌙 ${pick}${RESET}`);
       }
+      appendLine(`  ${C_DIM}用法: /dream <主题> — 把主题写入梦想文档并启动循环${RESET}`);
     } catch { /* 静默 */ }
+    return;
+  }
+  if (cmd.startsWith('/dream ')) {
+    const topic = trimmed.slice('/dream '.length).trim();
+    try {
+      const { writeFile, mkdir } = await import('fs/promises');
+      const { join } = await import('path');
+      const home = process.env.HOME || '/tmp';
+      const dreamDir = join(home, '.bolloon', 'dreams');
+      await mkdir(dreamDir, { recursive: true });
+      // 梦想文档路径: 用户名 + 主题 → 文件名 (用户信息集成进路径)
+      const userTag = (cliAgentName || 'user').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const safeTopic = topic.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-').slice(0, 40);
+      const dreamPath = join(dreamDir, `${new Date().toISOString().slice(0, 10)}-${userTag}-${safeTopic}.md`);
+      const doc = `# 🌙 Dream: ${topic}\n\ndate: ${new Date().toISOString()}\nuser: ${cliAgentName || 'user'}\nchannel: ${cliActiveChannelId || 'cli'}\n\n> 自动生成于 /dream, 触发循环去探索这个主题。\n`;
+      await writeFile(dreamPath, doc, 'utf-8');
+      appendLine(`${C_OK}✓ 梦想文档已写入: ${C_DIM}${dreamPath}${RESET}`);
+      // 触发循环
+      const { createPlan } = await import('./agents/plan-store.js');
+      const r = await createPlan({ goal: `探索主题: ${topic}`, steps: [`研读 ${topic}`, '产出洞察'], createdBy: 'user', originChannel: cliActiveChannelId || 'cli' });
+      if (r.ok) appendLine(`  ${C_DIM}循环已关联 plan ${r.plan?.planId}${RESET}`);
+      const { runSelfImproveLoop } = await import('./agents/pi-sdk-session-factory.js');
+      const loop = await runSelfImproveLoop(`探索主题: ${topic}`).catch(() => ({ success: false, error: '未启动' }));
+      if (loop.success) appendLine(`  ${C_DIM}${(loop as any).output}${RESET}`);
+      else appendLine(`  ${C_WARN}⚠ 循环未启动: ${loop.error}${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/dream 失败: ${String(e.message || e).slice(0, 200)}${RESET}`);
+    }
     return;
   }
 
@@ -1066,15 +1364,20 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     appendLine(`  ${C_ACCENT}/queue${RESET}  切换队列模式  ${C_DIM}输入排队, 当前结束后自动执行${RESET}`);
     appendLine(`  ${C_ACCENT}/dequeue${RESET} 出队一条`);
     appendLine(`  ${C_ACCENT}/channel [名字|id|序号]${RESET} 切换当前智能体  ${C_DIM}无参列出所有; 支持名字/ID/序号三种解析${RESET}`);
-    appendLine(`  ${C_ACCENT}/model${RESET} / ${C_ACCENT}/login${RESET}  模型供应商选择器  ${C_DIM}↑↓ 选择 · Enter 确认 · Esc 取消${RESET}`);
+    appendLine(`  ${C_ACCENT}/model${RESET}    模型供应商选择器  ${C_DIM}↑↓ 选择 · Enter 确认 · Esc 取消${RESET}`);
+    appendLine(`  ${C_ACCENT}/login${RESET}    登录 GitHub/Google 账号 (骨架)  ${C_DIM}暂无真实 OAuth${RESET}`);
     appendLine(`  ${C_ACCENT}/logout${RESET}  查看当前供应商`);
+    appendLine(`  ${C_ACCENT}/new agent${RESET}  创建新智能体 channel  ${C_DIM}/new agent <名字>${RESET}`);
+    appendLine(`  ${C_ACCENT}/new session${RESET}  开新会话  ${C_DIM}清空当前 channel 消息窗口${RESET}`);
     appendLine(`  ${C_ACCENT}/now${RESET}    当前状态总览  ${C_DIM}智能体/运行时间/上下文 tokens/消息数${RESET}`);
     appendLine(`  ${C_ACCENT}/session${RESET} 当前会话信息  ${C_DIM}channel/agent/消息窗口${RESET}`);
-    appendLine(`  ${C_ACCENT}/loop${RESET}   循环状态  ${C_DIM}消息数 + token 估算${RESET}`);
+    appendLine(`  ${C_ACCENT}/loop${RESET}   循环状态/启动  ${C_DIM}/loop <目标> (| <完成标准>)${RESET}`);
     appendLine(`  ${C_ACCENT}/memory${RESET} 记忆摘要  ${C_DIM}memory-compressor 落盘摘要${RESET}`);
     appendLine(`  ${C_ACCENT}/resume${RESET} 恢复上下文  ${C_DIM}最近记忆 + 进行中计划${RESET}`);
-    appendLine(`  ${C_ACCENT}/goal${RESET}   进行中目标  ${C_DIM}plan-store active plans${RESET}`);
-    appendLine(`  ${C_ACCENT}/tools${RESET}  可用工具列表`);
+    appendLine(`  ${C_ACCENT}/goal${RESET}   查看/设定目标  ${C_DIM}/goal 查看 · /goal <目标> 设定+循环${RESET}`);
+    appendLine(`  ${C_ACCENT}/plan${RESET}   创建计划  ${C_DIM}/plan <目标> :: <步骤1>|<步骤2>${RESET}`);
+    appendLine(`  ${C_ACCENT}/todo${RESET}   查看/勾选循环步骤  ${C_DIM}/todo <planId> <序号>${RESET}`);
+    appendLine(`  ${C_ACCENT}/tools${RESET}  可用工具列表 (名/参数/简介)`);
     appendLine(`  ${C_ACCENT}/skill${RESET}  技能候选  ${C_DIM}skill-writer 沉淀候选${RESET}`);
     appendLine(`  ${C_ACCENT}/mcp${RESET}    MCP 服务器列表`);
     appendLine(`  ${C_ACCENT}/agent${RESET}  当前智能体身份`);
@@ -1082,11 +1385,11 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     appendLine(`  ${C_ACCENT}/ipfs${RESET}   Kubo 状态  ${C_DIM}节点/peers/pins${RESET}`);
     appendLine(`  ${C_ACCENT}/ipns${RESET}   IPNS keys + resolve`);
     appendLine(`  ${C_ACCENT}/wallet${RESET} 钱包状态`);
-    appendLine(`  ${C_ACCENT}/email${RESET}  邮件配置`);
+    appendLine(`  ${C_ACCENT}/email${RESET}  邮件配置管理  ${C_DIM}/email 查看 · <host:port:user:from> 设置 · clear 清除${RESET}`);
     appendLine(`  ${C_ACCENT}/judgement${RESET} 判断力列表`);
     appendLine(`  ${C_ACCENT}/insight${RESET} Context OS 洞察 (08-Insights)`);
     appendLine(`  ${C_ACCENT}/wiki${RESET}   wiki 状态`);
-    appendLine(`  ${C_ACCENT}/dream${RESET}  随机灵感`);
+    appendLine(`  ${C_ACCENT}/dream${RESET}  随机灵感  ${C_DIM}/dream <主题> 写入梦想文档并触发循环${RESET}`);
     appendLine(`  ${C_ACCENT}@名字${RESET}     @ 命中智能体  ${C_DIM}弹出窗选择后发送给智能体${RESET}`);
     appendLine(`  ${C_ACCENT}/名字${RESET}     / 命中命令/技能/插件  ${C_DIM}输入 / 自动弹出${RESET}`);
     appendLine(`  ${C_ACCENT}#路径${RESET}     # 命中文件  ${C_DIM}输入 # 自动弹出文件列表${RESET}`);

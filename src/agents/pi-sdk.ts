@@ -231,6 +231,16 @@ export class PiAgentSession implements AgentSession {
     })();
   }
 
+  /** 2026-08-08: 公开可用工具列表 (name + description + 参数名) 供 /tools 显示 */
+  getToolList(): Array<{ name: string; description: string; parameters: string[] }> {
+    const out: Array<{ name: string; description: string; parameters: string[] }> = [];
+    for (const tool of this.allowedTools()) {
+      const paramNames = tool.parameters ? Object.keys(tool.parameters) : [];
+      out.push({ name: tool.name, description: tool.description || '', parameters: paramNames });
+    }
+    return out;
+  }
+
   /**
    * Judgment 注入门临时结果: 在 prompt / promptStream / promptWithPivotLoop 入口算一次, 拼到本轮 systemPrompt 末尾
    * 每次调用都会重置 (避免上一轮遗留)

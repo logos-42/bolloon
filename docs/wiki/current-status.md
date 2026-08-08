@@ -2,7 +2,7 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-08-07
+last_confirmed: 2026-08-08
 schema_version: 2
 audience: self
 stage: current
@@ -47,6 +47,7 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 || **外部编码智能体 发现+配置+委派** (2026-07-22) | `src/external-engines/*` + `src/web/routes-external-engines.ts` + `src/agents/pi-sdk-tools.ts` + `src/web/api-config.html` + `src/web/style.css` | 自动发现本机已装 AI 编码工具: codex / claude-code / opencode / openclaw / hermes (扫 CLI + 配置文件 + 环境变量里的 API key) + 实验目录声明的 API (`BOLLOON_EXPERIMENT_API_DIR`, 默认 `~/.bolloon/experiments/*.json`). 3 个能力: (1) `GET /api/external-engines` 发现并脱敏展示; (2) `POST /api/external-engines/import` 把发现到的 API 写进 Bolloon LLM provider 体系当成普通供应商启用 (把别的工具的 api 当供应商, 无需重复填 key; 支持 model/provider 覆盖); (3) `POST /api/external-engines/run` / agent 工具 `delegate_to_engine` 把编码任务委派给引擎 CLI 当子智能体执行 (shell:false, 单参数, 120s 超时可配). API 配置页新增「外部智能体」tab + 可筛选模型下拉 (opencode/openclaw/hermes 用跨供应商宽模型列表, codex 用 openai 列表, claude-code 用 anthropic 列表). tsc 0 错, 16 单测 pass | [discovery.ts](../../src/external-engines/discovery.ts) |
 || **OpenCLI engine 发现扩展** (2026-07-28) | `src/external-engines/discovery.ts` | OpenCLI 引擎加入自动发现: 扫描 `~/.opencli/config.json` 提取 apiKey/baseUrl/model; 支持 model/provider 覆盖导入; 映射 provider 到 openai 兼容. 委派模板与 opencode 共享 `run` + `--format json` + `-m model` 模式. tsc 0 错 | [discovery.ts](../../src/external-engines/discovery.ts) |
 || **LSP 模块 (6 个代码智能工具)** (2026-07-28) | `src/lsp/lsp-manager.ts` + `src/lsp/lsp-tools.ts` | `src/lsp/lsp-manager.ts` (11093B) 管理 LSP 服务器生命周期 (启动/关闭/检测); `src/lsp/lsp-tools.ts` (9591B) 注册 6 个 agent 工具: `go_to_definition` / `find_references` / `hover_info` / `code_completion` / `diagnostics` / `workspace_symbol`. 每个工具通过 stdio LSP 协议与本机 Language Server (ts/vs code 的 tsServerPath 检测) 通信. tsc 0 错 | [lsp-manager.ts](../../src/lsp/lsp-manager.ts) |
+|| **CLI 斜杠命令扩展 + popup 滚窗修复** (2026-08-08, v0.3.42) | `src/cli/ink-app.tsx` + `src/cli/mention-data.ts` + `src/agents/pi-sdk.ts` + `src/index.ts` | ① popup 滚窗修复: MentionPopup 选超顶窗不再无高亮, 滑动窗口以 sel 为中心 + footer 显示区间; ② `/new agent <名>` 建 channel + 切换, `/new session` 开新会话; ③ `/tools` 经新公共 `getToolList()` 显示名/参数/简介; ④ `/login` 拆出改 GitHub/Google 账号骨架 (accounts.json); ⑤ `/goal` `/loop` `/plan` `/todo` 设定目标/标准并触发自改循环; ⑥ `/dream <主题>` 写梦想文档 + 触发循环; ⑦ `/email` 升级为管理. tsc 0 错, vitest 1092/1092 | [ink-app.tsx](../../src/cli/ink-app.tsx) / [index.ts](../../src/index.ts) / [pi-sdk.ts](../../src/agents/pi-sdk.ts) |
 || **CLI 底部双行状态栏** (2026-07-28) | `src/index.ts` + `src/cli/interface.ts` | 底部渲染 2 行状态栏: 第 1 行=模型名/通道名/运行时间; 第 2 行=上下文 token 进度条 (当前消耗/上限, 百分比配色). 每 tick 重绘, 跟随 LLM 调用后刷新. 输入行从底部 2 行上方开始, 避免与状态栏重叠. tsc 0 错 | [index.ts](../../src/index.ts) |
 || **CLI 底部输入行 UI (双横线包裹)** (2026-07-28) | `src/cli/interface.ts` + `src/index.ts` | 双横线 `──` 包裹输入行, 上下分隔状态栏与用户输入; `clearPromptLine` 清 4 行 (状态栏×2 + 输入行×1 + 空行×1) 防残留. 光标定位精确, 输入时按 `Enter` 只清输入行, 状态栏保持刷新. tsc 0 错 | [interface.ts](../../src/cli/interface.ts) |
 || **CLI 品牌艺术字启动框** (2026-07-28) | `src/cli/loading-tui.ts` + `src/index.ts` | 启动时打印带品牌色 (#c4d640) 的 `BOLLOON` ASCII art + 版本号 + 编译时间. 使用 `dispWidth` 计算中英文混排实际显示宽度, 39 列对齐. `brand: false` 时跳过; TUI 配色统一为 Web UI truecolor (`#c4d640`, `#1a1a18`, `#d8d8c8`). tsc 0 错 | [loading-tui.ts](../../src/cli/loading-tui.ts) |

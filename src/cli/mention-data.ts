@@ -37,7 +37,7 @@ const CLI_COMMANDS: MentionItem[] = [
   { kind: 'command', label: 'add_friend', hint: '添加好友 <64位hex公钥>', insert: 'add_friend' },
   // 2026-08-06: 系统命令组
   { kind: 'command', label: 'model', hint: '模型供应商选择器 (↑↓ 选择)', insert: 'model' },
-  { kind: 'command', label: 'login', hint: '登录模型供应商 (选择器)', insert: 'login' },
+  { kind: 'command', label: 'login', hint: '登录 GitHub + Google 账号 (骨架)', insert: 'login' },
   { kind: 'command', label: 'logout', hint: '查看当前供应商', insert: 'logout' },
   { kind: 'command', label: 'now', hint: '当前状态总览', insert: 'now' },
   { kind: 'command', label: 'session', hint: '当前会话信息', insert: 'session' },
@@ -58,15 +58,16 @@ const CLI_COMMANDS: MentionItem[] = [
   { kind: 'command', label: 'insight', hint: '洞察 (08-Insights)', insert: 'insight' },
   { kind: 'command', label: 'wiki', hint: 'wiki 状态', insert: 'wiki' },
   { kind: 'command', label: 'dream', hint: '随机灵感', insert: 'dream' },
+  { kind: 'command', label: 'new agent', hint: '创建新智能体 channel', insert: 'new agent' },
+  { kind: 'command', label: 'new session', hint: '创建新会话', insert: 'new session' },
+  { kind: 'command', label: 'plan', hint: '循环计划 (创建/查看)', insert: 'plan' },
+  { kind: 'command', label: 'todo', hint: '勾选步骤 (循环过程)', insert: 'todo' },
 ];
 
 /** Web 端斜杠命令 (server /message 路由 → LLM 工具) */
 const WEB_COMMANDS: MentionItem[] = [
-  { kind: 'command', label: 'plan', hint: '创建计划', insert: 'plan' },
-  { kind: 'command', label: 'todo', hint: '勾选步骤', insert: 'todo' },
   { kind: 'command', label: 'review', hint: '审查计划', insert: 'review' },
   { kind: 'command', label: 'task', hint: '创建任务', insert: 'task' },
-  { kind: 'command', label: 'goal', hint: '暂停目标', insert: 'goal' },
   { kind: 'command', label: 'skill', hint: '沉淀技能', insert: 'skill' },
   { kind: 'command', label: 'add-friend', hint: '添加好友 (智能体工具)', insert: 'add-friend' },
 ];

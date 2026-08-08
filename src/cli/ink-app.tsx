@@ -62,7 +62,9 @@ interface MentionPopupProps {
 
 const MentionPopup: React.FC<MentionPopupProps> = ({ title, items, sel, width, loading }) => {
   const MAX_ROWS = 8;
-  const shown = items.slice(0, MAX_ROWS);
+  // 2026-08-08: 滑动窗口 — 选中项始终可见 (原实现 fix 屏幕顶部, sel 超窗口时无高亮行)
+  const offset = Math.max(0, Math.min(sel - Math.floor(MAX_ROWS / 2), Math.max(0, items.length - MAX_ROWS)));
+  const shown = items.slice(offset, offset + MAX_ROWS);
   const innerW = Math.max(width - 2, 10);
   return (
     <Box flexDirection="column" width={width}>
@@ -89,7 +91,7 @@ const MentionPopup: React.FC<MentionPopupProps> = ({ title, items, sel, width, l
         })
       )}
       {items.length > MAX_ROWS && (
-        <Text color="dim">│ 还有 {items.length - MAX_ROWS} 项...</Text>
+        <Text color="dim">│ {offset + 1}-{offset + shown.length}/{items.length} · 还有 {items.length - (offset + shown.length)} 项...</Text>
       )}
       <Text color="cyan">{`╰${'─'.repeat(innerW)}╯`}</Text>
     </Box>
