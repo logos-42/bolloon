@@ -158,12 +158,14 @@ console.log(`[smoke:esm] gemini model-ID check OK (${geminiHits.length} literal(
 // Layer 2: dynamic-import each pure-functional target in a child node so a
 // ReferenceError / import-time exception fails the gate fast.
 const probe = `
+  import { pathToFileURL } from 'node:url';
+  import path from 'node:path';
   const targets = ${JSON.stringify(PURE_TARGETS)};
   const errors = [];
   for (const rel of targets) {
-    const abs = \`\${process.cwd()}/\${rel}\`;
+    const abs = path.resolve(process.cwd(), rel);
     try {
-      const mod = await import(abs);
+      const mod = await import(pathToFileURL(abs).href);
       if (!mod) {
         errors.push(\`\${rel}: imported module is null\`);
       }
