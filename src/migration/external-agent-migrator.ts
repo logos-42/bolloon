@@ -9,16 +9,12 @@
  *     这样 Bolloon 能直接加载同一套性格 / 记忆 / 技能, 无缝兼容.
  *   - 隐式处理: 启动时静默跑, 失败不影响主流程; 完成后通告给用户 (见 report).
  *
- * 源 → 目标映射 (OpenClaw workspace 布局):
- *   - workspace/SOUL.md      → persona/<agent>/soul.md
- *   - workspace/IDENTITY.md  → persona/<agent>/identity.md
- *   - workspace/USER.md      → persona/<agent>/user.md
- *   - workspace/AGENTS.md    → persona/<agent>/agent.md
- *   - workspace/TOOLS.md     → persona/<agent>/project.md
- *   - workspace/MEMORY.md    → persona/<agent>/wiki.md
- *   - workspace/skills/<name>/SKILL.md → ~/.bolloon/skills/<name>/ (整目录复制)
- *   - workspace/memory/*.md  → ~/.bolloon/memory/<agent>/sessions/<n>.summary.md
- *   - workspace/*.md (其它)  → ~/.bolloon/context-os/04-Projects/<agent>-docs/
+ * 异构布局 (2026-08-08 v0.3.40):
+ *   - OpenClaw 平铺在 ~/.openclaw/workspace/ (SOUL/IDENTITY/USER/AGENTS/TOOLS/MEMORY.md +
+ *     skills/<name>/ + memory/*.md)
+ *   - Hermes 根在 %LOCALAPPDATA%\hermes (Windows, 兜底 ~/.hermes), persona 分布在
+ *     SOUL.md(根) + memories/{USER,MEMORY}.md, skills 是 skills/<分类>/<技能>/SKILL.md
+ *     两级嵌套 (235 个). 迁移时展平并以 <分类>-<技能> 命名避免重名冲突.
  *
  * 幂等: 每个源落一份 manifest (~/.bolloon/migration/<source>.json),
  *   记录已迁移的文件 hash; 未变化则跳过, 已存在则覆盖源文档 (文档允许演进),
@@ -66,6 +62,8 @@ export interface MigrationReport {
 /** 可注入依赖 (单测时用 tmp 目录) */
 export interface MigratorDeps {
   home: string;
+  /** Windows 的 %LOCALAPPDATA%; hermes 用它定位 (缺省兜底 home/.hermes) */
+  localAppData?: string;
   readFile: (p: string) => Promise<string | undefined>;
   readdir: (dir: string) => Promise<string[] | undefined>;
   stat: (p: string) => Promise<{ isDirectory: boolean; isFile: boolean; mtimeMs: number } | undefined>;
@@ -93,8 +91,13 @@ function realExists(p: string): Promise<boolean> {
 }
 
 export function defaultDeps(): MigratorDeps {
+  const home = os.homedir();
   return {
-    home: os.homedir(),
+    home,
+    localAppData:
+      (typeof process !== 'undefined' && process.env && (process.env.LOCALAPPDATA || process.env.ProgramData))
+        ? (process.env.LOCALAPPDATA || process.env.ProgramData) as string
+        : path.join(home, 'AppData', 'Local'),
     readFile: realReadFile,
     readdir: realReaddir,
     stat: realStat,
@@ -109,14 +112,26 @@ export function defaultDeps(): MigratorDeps {
 // 纯函数: 目录布局 + hash
 // ============================================================
 
-/** 各源的根目录 (相对 home) */
+/** 各源默认根目录: openclaw 在 home/.openclaw; hermes 兜底 home/.hermes (真实见 candidates) */
 export function sourceRootPath(source: ExternalAgentSource, home: string): string {
   return source === 'openclaw'
     ? path.join(home, '.openclaw')
     : path.join(home, '.hermes');
 }
 
-/** workspace 路径 (openclaw 用 workspace/, hermes 假设平铺在根) */
+/** 各源全部候选根 (按优先级). hermes 首选 %LOCALAPPDATA%\hermes. */
+export function sourceRootCandidates(source: ExternalAgentSource, deps: MigratorDeps): string[] {
+  if (source === 'openclaw') {
+    return [sourceRootPath('openclaw', deps.home)];
+  }
+  const local = deps.localAppData ? path.join(deps.localAppData, 'hermes') : null;
+  const candidates: string[] = [];
+  if (local) candidates.push(local);
+  candidates.push(sourceRootPath('hermes', deps.home));
+  return candidates;
+}
+
+/** workspace 路径 (openclaw 用 workspace/, hermes 平铺在根) */
 export function workspacePath(source: ExternalAgentSource, sourceRoot: string): string {
   return source === 'openclaw'
     ? path.join(sourceRoot, 'workspace')
@@ -180,13 +195,32 @@ async function copyDirIfNeeded(
 // 主迁移
 // ============================================================
 
-/** 探测某个源是否安装 (根目录存在) */
+/** 探测某源是否安装: 返回选中的根目录 or null. */
 export async function detectSource(deps: MigratorDeps, source: ExternalAgentSource): Promise<string | null> {
-  const root = sourceRootPath(source, deps.home);
-  const st = await deps.stat(root);
-  if (st?.isDirectory) return root;
+  for (const root of sourceRootCandidates(source, deps)) {
+    const st = await deps.stat(root);
+    if (st?.isDirectory) return root;
+  }
   return null;
 }
+
+/** persona 源文件映射 (相对 workspace; 分组按源). */
+type PersonaSpec = Array<{ src: string; toName: string }>;
+
+const OPENCLAW_PERSONA: PersonaSpec = [
+  { src: 'SOUL.md', toName: 'soul.md' },
+  { src: 'IDENTITY.md', toName: 'identity.md' },
+  { src: 'USER.md', toName: 'user.md' },
+  { src: 'AGENTS.md', toName: 'agent.md' },
+  { src: 'TOOLS.md', toName: 'project.md' },
+  { src: 'MEMORY.md', toName: 'wiki.md' },
+];
+
+const HERMES_PERSONA: PersonaSpec = [
+  { src: 'SOUL.md', toName: 'soul.md' },
+  { src: 'memories/USER.md', toName: 'user.md' },
+  { src: 'memories/MEMORY.md', toName: 'wiki.md' },
+];
 
 /**
  * 迁移单个源的全部数据到 Bolloon.
@@ -216,6 +250,7 @@ export async function migrateExternalAgent(
       report.migrated = false;
       return report; // 未安装, 静默
     }
+    report.sourceRoot = root;
 
     const ws = workspacePath(source, root);
     const wsStat = await deps.stat(ws);
@@ -251,17 +286,10 @@ export async function migrateExternalAgent(
 
     await deps.mkdir(path.join(bRoot, 'migration'));
 
-    // 1. persona 6 文件映射
-    const personaMap: Array<[string, string]> = [
-      ['SOUL.md', 'soul.md'],
-      ['IDENTITY.md', 'identity.md'],
-      ['USER.md', 'user.md'],
-      ['AGENTS.md', 'agent.md'],
-      ['TOOLS.md', 'project.md'],
-      ['MEMORY.md', 'wiki.md'],
-    ];
-    for (const [fromName, toName] of personaMap) {
-      const from = path.join(ws, fromName);
+    // 1. persona (per-source spec)
+    const personaSpec = source === 'openclaw' ? OPENCLAW_PERSONA : HERMES_PERSONA;
+    for (const { src, toName } of personaSpec) {
+      const from = path.join(ws, src);
       const to = path.join(personaDir, toName);
       if (await copyIfNeeded(deps, from, to, manifest)) {
         report.persona.push(toName);
@@ -269,25 +297,52 @@ export async function migrateExternalAgent(
       }
     }
 
-    // 2. skills: workspace/skills/*/ → ~/.bolloon/skills/<name>/
+    // 2. skills → ~/.bolloon/skills/<name>/
     const skillsSrc = path.join(ws, 'skills');
     const skillDirs = await deps.readdir(skillsSrc);
     if (skillDirs) {
-      for (const dirName of skillDirs) {
-        const srcDir = path.join(skillsSrc, dirName);
-        const st = await deps.stat(srcDir);
+      // OpenClaw: skills/<name>/SKILL.md 一层, 直接落盘 <name>.
+      // Hermes: skills/<分类>/<技能>/SKILL.md 两层, 逐 <技能> 递归找 SKILL.md,
+      //   落盘 <分类>-<技能> 展平, 避免跨分类重名.
+      for (const entryName of skillDirs) {
+        if (entryName.startsWith('.')) continue;
+        const entry = path.join(skillsSrc, entryName);
+        const st = await deps.stat(entry);
         if (!st?.isDirectory) continue;
-        if (dirName.startsWith('.')) continue;
-        const destDir = path.join(skillsRoot, dirName);
-        const copied = await copyDirIfNeeded(deps, srcDir, destDir, manifest);
-        if (copied.length > 0) {
-          report.skillsCopied.push(dirName);
-          report.entries.push({ from: srcDir, to: destDir, kind: 'skill' });
+
+        if (source === 'hermes') {
+          // 分类下的每个技能目录 → 目标 <分类>-<技能>
+          const cat = entryName;
+          const subDirs = await deps.readdir(entry);
+          if (!subDirs) continue;
+          for (const skillName of subDirs) {
+            if (skillName.startsWith('.')) continue;
+            const skillDir = path.join(entry, skillName);
+            const sst = await deps.stat(skillDir);
+            if (!sst?.isDirectory) continue;
+            // 该分类下菊 不一定有 SKILL.md → 跳过
+            const hasSkill = await deps.exists(path.join(skillDir, 'SKILL.md'));
+            if (!hasSkill) continue;
+            const targetName = `${cat}-${skillName}`;
+            const destDir = path.join(skillsRoot, targetName);
+            const copied = await copyDirIfNeeded(deps, skillDir, destDir, manifest);
+            if (copied.length > 0) {
+              report.skillsCopied.push(targetName);
+              report.entries.push({ from: skillDir, to: destDir, kind: 'skill' });
+            }
+          }
+        } else {
+          const destDir = path.join(skillsRoot, entryName);
+          const copied = await copyDirIfNeeded(deps, entry, destDir, manifest);
+          if (copied.length > 0) {
+            report.skillsCopied.push(entryName);
+            report.entries.push({ from: entry, to: destDir, kind: 'skill' });
+          }
         }
       }
     }
 
-    // 3. memory: workspace/memory/*.md → memory/<agent>/sessions/
+    // 3. memory: openclaw workspace/memory/*.md → sessions/; hermes 无独立 memory 目录
     const memSrc = path.join(ws, 'memory');
     const memFiles = await deps.readdir(memSrc);
     if (memFiles) {
@@ -307,10 +362,10 @@ export async function migrateExternalAgent(
     // 4. docs: workspace 根其他 .md → context-os/04-Projects/<source>-docs/
     const wsFiles = await deps.readdir(ws);
     if (wsFiles) {
-      const excluded = new Set(['SOUL.md', 'IDENTITY.md', 'USER.md', 'AGENTS.md', 'TOOLS.md', 'MEMORY.md']);
+      const excluded = personaSpec.map((p) => p.toName);
       for (const f of wsFiles) {
         if (!f.endsWith('.md')) continue;
-        if (excluded.has(f)) continue;
+        if (excluded.includes(f)) continue;
         const from = path.join(ws, f);
         const st = await deps.stat(from);
         if (!st?.isFile) continue;

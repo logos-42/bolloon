@@ -12,7 +12,7 @@
 import { runAdaptiveScan, logEvolution } from '../pi-ecosystem-judgment/adaptive-scan.js';
 import { collectBolloonContext, type BolloonContext } from './context-collector.js';
 import type { AdaptiveScanResult } from '../pi-ecosystem-judgment/adaptive-scan.js';
-import { migrateAllExternalAgents, formatMigrationNotices, type MigrationReport } from '../migration/external-agent-migrator.js';
+import { migrateAllExternalAgents, defaultDeps, formatMigrationNotices, type MigrationReport } from '../migration/external-agent-migrator.js';
 
 export interface BootstrapResult {
   context: BolloonContext;
@@ -27,14 +27,23 @@ export interface BootstrapResult {
 /**
  * 入口: web server / CLI 启动时调一次
  */
-export async function bootstrapBolloon(opts: { cwd?: string } = {}): Promise<BootstrapResult> {
+export async function bootstrapBolloon(opts: {
+  cwd?: string;
+  /** 迁移用家目录 (默认 os.homedir; 测试注入 tmp 隔离) */
+  home?: string;
+  /** hermes 所在 LOCALAPPDATA (默认自动探测) */
+  localAppData?: string;
+} = {}): Promise<BootstrapResult> {
   const start = Date.now();
   const errors: string[] = [];
 
   // 0. 外部智能体 (openclaw/hermes) 数据迁移 — 隐式处理, 静默跑, 结果通告用户
   let externalAgentMigrations: MigrationReport[] = [];
   try {
-    externalAgentMigrations = await migrateAllExternalAgents();
+    const depsM = defaultDeps();
+    if (opts.home) depsM.home = opts.home;
+    if (opts.localAppData) depsM.localAppData = opts.localAppData;
+    externalAgentMigrations = await migrateAllExternalAgents(depsM);
     for (const line of formatMigrationNotices(externalAgentMigrations)) {
       console.log(`[bootstrap] ${line}`);
     }

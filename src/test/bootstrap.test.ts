@@ -305,7 +305,7 @@ describe('bootstrapBolloon', () => {
       await fs.unlink(path.join(TEST_DIR, '.bolloon', 'human-values', 'evolution.jsonl'));
     } catch {}
 
-    const r = await bootstrapBolloon({ cwd: TEST_DIR });
+    const r = await bootstrapBolloon({ cwd: TEST_DIR, home: TEST_DIR, localAppData: path.join(TEST_DIR, 'local') });
     expect(r.context).toBeTruthy();
     expect(r.scanResult).toBeTruthy();
     expect(r.durationMs).toBeGreaterThan(0);
@@ -322,7 +322,7 @@ describe('bootstrapBolloon', () => {
 
   it('失败静默: 任何步骤失败不应抛错', async () => {
     // 用不存在的 cwd 试 (不抛错应 OK, 收集器会返空)
-    const r = await bootstrapBolloon({ cwd: '/nonexistent/path/abc' });
+    const r = await bootstrapBolloon({ cwd: '/nonexistent/path/abc', home: TEST_DIR, localAppData: path.join(TEST_DIR, 'local') });
     expect(r).toBeTruthy();
     // errors 数组应存在 (可能非空)
     expect(Array.isArray(r.errors)).toBe(true);

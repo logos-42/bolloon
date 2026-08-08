@@ -6,9 +6,11 @@ import {
   migrateExternalAgent,
   migrateAllExternalAgents,
   sourceRootPath,
+  sourceRootCandidates,
   workspacePath,
   sha1,
   formatMigrationNotices,
+  detectSource,
 } from '../migration/external-agent-migrator.js';
 import type { MigratorDeps } from '../migration/external-agent-migrator.js';
 
@@ -22,6 +24,12 @@ function openclawRoot(): string {
 function ws(): string {
   return path.join(openclawRoot(), 'workspace');
 }
+function hermesRoot(la?: string): string {
+  return path.join(la ?? path.join(home, 'AppData', 'Local'), 'hermes');
+}
+function hermesWs(la?: string): string {
+  return hermesRoot(la);
+}
 
 function write(p: string, content: string): void {
   fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -29,9 +37,10 @@ function write(p: string, content: string): void {
 }
 
 /** 基于 tmp 目录构建真实 deps (只隔离 home, 其余真 IO) */
-function deps(): MigratorDeps {
+function deps(opts?: { localAppData?: string }): MigratorDeps {
   return {
     home,
+    ...(opts?.localAppData ? { localAppData: opts.localAppData } : {}),
     readFile: async (p) => {
       try { return fs.readFileSync(p, 'utf-8'); } catch { return undefined; }
     },
@@ -155,5 +164,53 @@ describe('external-agent-migrator', () => {
     expect(sourceRootPath('hermes', '/h')).toBe(path.join('/h', '.hermes'));
     expect(workspacePath('openclaw', '/h/.openclaw')).toBe(path.join('/h/.openclaw', 'workspace'));
     expect(workspacePath('hermes', '/h/.hermes')).toBe('/h/.hermes');
+  });
+
+  it('hermes 候选根优先 LOCALAPPDATA', async () => {
+    const la = path.join(tmp, 'local');
+    fs.mkdirSync(path.join(la, 'hermes'), { recursive: true });
+    const cands = sourceRootCandidates('hermes', deps({ localAppData: la }));
+    expect(cands[0]).toBe(path.join(la, 'hermes'));
+    expect(await detectSource(deps({ localAppData: la }), 'hermes')).toBe(path.join(la, 'hermes'));
+  });
+
+  it('hermes 未安装在 LOCALAPPDATA 但兜底 ~/.hermes 可检测', async () => {
+    write(path.join(home, '.hermes', 'SOUL.md'), '# soul');
+    const la = path.join(tmp, 'empty-local');
+    const got = await detectSource(deps({ localAppData: la }), 'hermes');
+    expect(got).toBe(path.join(home, '.hermes'));
+  });
+
+  it('hermes persona 从 SOUL.md + memories/ 映射', async () => {
+    const la = path.join(tmp, 'local');
+    const hw = hermesWs(la);
+    write(path.join(hw, 'SOUL.md'), '# soul');
+    write(path.join(hw, 'memories', 'USER.md'), '# user');
+    write(path.join(hw, 'memories', 'MEMORY.md'), '# mem');
+    void hermesRoot;
+
+    const r = await migrateExternalAgent('hermes', deps({ localAppData: la }));
+    expect(r.migrated).toBe(true);
+    expect(r.persona).toEqual(expect.arrayContaining(['soul.md', 'user.md', 'wiki.md']));
+    const personaDir = path.join(bolloon, 'persona', r.personaAgentId);
+    expect(fs.readFileSync(path.join(personaDir, 'soul.md'), 'utf-8')).toBe('# soul');
+    expect(fs.readFileSync(path.join(personaDir, 'wiki.md'), 'utf-8')).toBe('# mem');
+  });
+
+  it('hermes 分类 skills 展平为 <分类>-<技能>', async () => {
+    const la = path.join(tmp, 'local');
+    const hw = hermesWs(la);
+    write(path.join(hw, 'SOUL.md'), '# soul');
+    // devops/windows-background-jobs/SKILL.md + references
+    write(path.join(hw, 'skills', 'devops', 'windows-background-jobs', 'SKILL.md'), '---\nname: wbj\n---\n\nbody');
+    write(path.join(hw, 'skills', 'devops', 'windows-background-jobs', 'references', 'r.md'), 'ref');
+    write(path.join(hw, 'skills', 'research', 'web-search', 'SKILL.md'), '---\nname: ws\n---\n\nsearch');
+
+    const r = await migrateExternalAgent('hermes', deps({ localAppData: la }));
+    expect(r.skillsCopied).toContain('devops-windows-background-jobs');
+    expect(r.skillsCopied).toContain('research-web-search');
+    const dest = path.join(bolloon, 'skills', 'devops-windows-background-jobs');
+    expect(fs.existsSync(path.join(dest, 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(dest, 'references', 'r.md'))).toBe(true);
   });
 });
