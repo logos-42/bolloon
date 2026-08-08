@@ -2825,6 +2825,61 @@ ${goalDesc}
     }
   });
 
+  // 2026-08-08: DID 目录 (Postgres 式) — 以用户 DID 为主键, 绑定 memory/persona/skills/on_policy/context_os 等表
+  app.get('/api/did-catalog/:table', async (req: any, res: any) => {
+    try {
+      const table = String(req.params.table || '');
+      const { registryOpen, ALL_TABLES } = await import('../storage/did-catalog.js');
+      if (!(ALL_TABLES as string[]).includes(table)) {
+        return res.status(400).json({ error: `未知表: ${table}`, tables: ALL_TABLES });
+      }
+      const identity = await loadOrCreateUserIdentity();
+      if (!identity.did) return res.status(404).json({ error: '未生成用户 DID' });
+      const cat = await registryOpen(identity.did);
+      const rows = cat.all(table as any).map(({ key, row }) => ({ key, data: row.data, updatedAt: row.updatedAt, deviceId: row.deviceId }));
+      res.json({ did: identity.did, table, rows, deviceId: cat.deviceId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 写入 DID 目录单行 (以用户 DID 为分区主键) — 供插件/工具把各类数据绑定到用户
+  app.post('/api/did-catalog/:table', async (req: any, res: any) => {
+    try {
+      const table = String(req.params.table || '');
+      const { key, data } = req.body || {};
+      const { registryOpen, ALL_TABLES } = await import('../storage/did-catalog.js');
+      if (!(ALL_TABLES as string[]).includes(table)) {
+        return res.status(400).json({ error: `未知表: ${table}`, tables: ALL_TABLES });
+      }
+      if (!key) return res.status(400).json({ error: 'key 必填' });
+      const identity = await loadOrCreateUserIdentity();
+      if (!identity.did) return res.status(404).json({ error: '未生成用户 DID' });
+      const cat = await registryOpen(identity.did);
+      const ev = await cat.upsert(table as any, String(key), (data && typeof data === 'object' ? data : {}) as Record<string, unknown>);
+      res.json({ ok: true, did: identity.did, table, key, seq: ev.seq, deviceId: cat.deviceId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 拉取某台的 WAL → 多设备同步合并
+  app.post('/api/did-catalog/sync', async (req: any, res: any) => {
+    try {
+      const { events } = req.body || {};
+      if (!Array.isArray(events)) return res.status(400).json({ error: 'events 必填数组' });
+      const identity = await loadOrCreateUserIdentity();
+      if (!identity.did) return res.status(404).json({ error: '未生成用户 DID' });
+      const { registryOpen } = await import('../storage/did-catalog.js');
+      const cat = await registryOpen(identity.did);
+      const r = cat.syncRemote(events);
+      res.json({ ok: true, did: identity.did, applied: r.applied, merged: r.merged });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+
   // 2026-07-01 (v0.2.6): 前后端分离核心 — 后端切 LLM 输出为结构化 segments
   //   - POST /api/segment-reply { reply, knownTools }
   //   - 返回 ChatSegment[] (think / text / env_details / tool_call / final)
@@ -6699,6 +6754,19 @@ app.post('/active-channel', async (req, res) => {
       const success = writePolicy(newPolicy);
       if (success) {
         auditShellCall('allowed', 'api:PUT:/api/self-improve/policy', [], `人类用户更新策略`);
+        // 2026-08-08: 策略版本写入 DID 目录 (on-policy 以用户 did 绑定)
+        try {
+          const identity = await loadOrCreateUserIdentity();
+          if (identity.did) {
+            const { registryOpen } = await import('../storage/did-catalog.js');
+            const cat = await registryOpen(identity.did);
+            await cat.upsert('on_policy', `pol-${newPolicy.version || 0}`, {
+              version: newPolicy.version || 0,
+              policy: JSON.parse(JSON.stringify(newPolicy)),
+              updatedAt: Date.now(),
+            });
+          }
+        } catch (e: any) { console.warn('[did-catalog] 记录 on-policy 失败(非致命):', e?.message); }
         res.json({ ok: true, message: '策略已更新, 60 秒内生效' });
       } else {
         res.status(500).json({ error: '写入策略文件失败' });
