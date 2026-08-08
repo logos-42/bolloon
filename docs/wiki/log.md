@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|| 2026-08-08 | feat | 外部智能体 (OpenClaw/Hermes) 数据无缝迁移 + ReAct loop 收尾 review 续跑: ① 新增 `migration/external-agent-migrator.ts`: 启动时隐式扫描 `~/.openclaw`(~/.hermes 亦支持) 的 workspace, 按 Bolloon 既有格式迁移 — `{SOUL,IDENTITY,USER,AGENTS,TOOLS,MEMORY}.md`→persona 6 文件, `workspace/skills/<name>/`→~/.bolloon/skills/, `workspace/memory/*.md`→memory/<agent>/sessions, 其它 .md→context-os/04-Projects/<source>-docs; 幂等 (sha1 manifest ~/.bolloon/migration/<source>.json 未变化跳过), 不复制 secret/credential 文件; `migrateAllExternalAgents` 在 bootstrapBolloon 静默跑, 结果由 `formatMigrationNotices` 通告。本机实测: 性格6份+技能66个+记忆1条+文档10份 并落盘, 二次幂等跳过 0/0。② 新增 `agents/loop-review.ts` 纯函数 + pi-sdk runReActLoop final 分支接入: LLM 想输出 `<final gen>` 时先跑 1-2 次「目标对齐+需求深挖」review (上限 DEFAULT_MAX_REVIEWS=2), 前完成工具去重登记, 达上限或无用户意图才真正放行结束 (以用户需求为准不过度深挖, 不潦草收尾). tsc 0 错, vitest 1082/1082 (+18: 迁移10 + review8) | [external-agent-migrator.ts](../../src/migration/external-agent-migrator.ts) / [loop-review.ts](../../src/agents/loop-review.ts) / [pi-sdk.ts](../../src/agents/pi-sdk.ts) |
 || 2026-08-07 | fix | Windows 路径分隔符 + 测试隔离修复: ① 生产代码 `mention-data.ts` loadFiles label/insert 用 `path.relative(...).split(path.sep).join('/')` 统一 `/` 分隔 (展示/matchFileScore/弹窗插入跨平台一致); ② 测试: external-engines experiment mock 用 path.sep 匹配、attachments-upload 断言改 path.join 平台无关、context-os/skill-writer 补 USERPROFILE (Node os.homedir() 在 Windows 读 USERPROFILE 不走 HOME, 原隔离失效)、mcp-adapter python3→跨平台探测 (Windows python3 是 WindowsApps 存根 9009); ③ 新增 ink-smoke.test.ts 用 renderToString 锁定 ink7+react19 渲染. tsc 0 错, vitest 1064/1064 (+1) | [mention-data.ts](../../src/cli/mention-data.ts) / [ink-smoke.test.ts](../../src/test/ink-smoke.test.ts) |
 
 || 2026-08-07 | chore | 依赖升级 react 18→19.2.8 (react-dom 19.2.8, @types/react 19.2.18 / @types/react-dom 19.2.4) + ink 4.4→7.1.1 + ink-text-input 5→6.0.0, 满足 @x402/*@2.20.0 硬性 peer react^19. 代码 API 兼容: ink 7 render()/useInput/useApp/Box/Text + render 返回 .unmount()/.clear() 签名不变 (ink-app.tsx), react-dom createRoot (P2PModal) 不变, 无需改代码. 验证: tsc 0 错, vitest react 相关全 PASS (仅 3 个既有 Windows 路径断言失败与本升级无关), 实测 ink 7.1.1/react 19.2.8. 之后普通 npm install 不再需 --legacy-peer-deps | [ink-app.tsx](../../src/cli/ink-app.tsx) / [current-status.md](./current-status.md) |
@@ -901,3 +902,48 @@
 - 线上验证: registry versions 含 0.3.38, `npm view @bolloon/bolloon-agent@0.3.38` 可查
 - 本机: `npm install -g @bolloon/bolloon-agent@latest` (全局包更新)
 - commits: 70e6ff7 (fix) + e8bd341 (chore release) 已 push
+
+## [2026-08-08] feat | 外部智能体数据无缝迁移 + ReAct loop 收尾 review 续跑 (v0.3.39)
+
+### 背景
+
+- 用户在本机用 OpenClaw (及 Hermes, 本机未装) 设计了智能体 (人格文档 + 66 个技能 + 记忆 + 文档)。
+- 要求: Bolloon 初始化加载时把这些"外部系统"的数据按 Bolloon 既有格式整理进系统路径,
+  能直接加载同一套性格/记忆/技能, 无缝兼容; 隐式处理 + 完成通告用户。
+- 同时要求: ReAct loop 每次结束前先跑 1-2 次「目标对齐+需求深挖」, 吐出阶段性成果后
+  review 判断是否还能续跑, 不潦草收尾; 结束以用户需求为准不过度深挖; 工具次数不限。
+
+### 外部智能体迁移 (`src/migration/external-agent-migrator.ts`, 新)
+
+- 探测 `~/.openclaw` (openclaw 用 `workspace/`, hermes 假设平铺根目录), 存在才迁移, 缺失静默。
+- 源→目标映射:
+  - `workspace/{SOUL,IDENTITY,USER,AGENTS,TOOLS,MEMORY}.md` → `~/.bolloon/persona/<ext-agent>/` 6 文件
+  - `workspace/skills/<name>/` → `~/.bolloon/skills/<name>/` (整目录复制, 与 skill-loader 兼容)
+  - `workspace/memory/*.md` → `~/.bolloon/memory/<agent>/sessions/`
+  - 其它 `.md` → `~/.bolloon/context-os/04-Projects/<source>-docs/`
+- 幂等: sha1 manifest (`~/.bolloon/migration/<source>.json`), 内容未变跳过, 变化则覆盖。
+- 安全: 不复制 secret/credential 类文件 (不碰 models.json 里的 API key / auth)。
+- 接入: `bootstrapBolloon` 启动静默跑 `migrateAllExternalAgents()`, `formatMigrationNotices` 通告。
+- 实测: 性格 6 份 + 技能 66 个 + 记忆 1 条 + 文档 10 份 落盘; 二次幂等跳过 0/0。
+- 单测 `external-agent-migrator.test.ts` 10 个 (可注入 tmp 目录 deps)。
+
+### ReAct loop 收尾 review 续跑 (`src/agents/loop-review.ts`, 新)
+
+- 纯函数 `decideAfterReview({reviewsDone, userIntent, completedTools})`:
+  - 无用户意图 → finish (不过度深挖); 达上限 (DEFAULT_MAX_REVIEWS=2) → finish;
+  - 否则 → continue-review + `buildReviewHint` (对齐需求深挖提示)。
+- 接入 `pi-sdk.ts` runReActLoop final 分支 (质量门之后): LLM 想 `<final gen>` 时先跑 review,
+  `loopReviewCount` 递增, 前成功工具登记 `loopReviewCompletedTools`, 续跑 `continue` 让 LLM 深挖。
+- 结束指标以用户需求为准; 达 2 次上限即放行 (不过度深挖, 不无限续跑)。
+- 单测 `loop-review.test.ts` 8 个。
+
+### 验证
+
+- `npx tsc --noEmit`: 0 错
+- `npx vitest run`: 1082/1082 pass (原 1064 + 迁移 10 + review 8)
+- 真实迁移 `scripts/mig-check.ts`: openclaw 迁移成功 + 幂等验证
+
+### 发布
+
+- 版本: 0.3.38 → 0.3.39
+

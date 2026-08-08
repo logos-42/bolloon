@@ -12,6 +12,7 @@
 import { runAdaptiveScan, logEvolution } from '../pi-ecosystem-judgment/adaptive-scan.js';
 import { collectBolloonContext, type BolloonContext } from './context-collector.js';
 import type { AdaptiveScanResult } from '../pi-ecosystem-judgment/adaptive-scan.js';
+import { migrateAllExternalAgents, formatMigrationNotices, type MigrationReport } from '../migration/external-agent-migrator.js';
 
 export interface BootstrapResult {
   context: BolloonContext;
@@ -19,6 +20,8 @@ export interface BootstrapResult {
   durationMs: number;
   // 失败的部分不影响主流程
   errors: string[];
+  // 2026-08-08: 外部智能体 (openclaw/hermes) 数据迁移结果, 通告给用户
+  externalAgentMigrations: MigrationReport[];
 }
 
 /**
@@ -27,6 +30,18 @@ export interface BootstrapResult {
 export async function bootstrapBolloon(opts: { cwd?: string } = {}): Promise<BootstrapResult> {
   const start = Date.now();
   const errors: string[] = [];
+
+  // 0. 外部智能体 (openclaw/hermes) 数据迁移 — 隐式处理, 静默跑, 结果通告用户
+  let externalAgentMigrations: MigrationReport[] = [];
+  try {
+    externalAgentMigrations = await migrateAllExternalAgents();
+    for (const line of formatMigrationNotices(externalAgentMigrations)) {
+      console.log(`[bootstrap] ${line}`);
+    }
+  } catch (err) {
+    errors.push(`external-migration: ${(err as Error).message}`);
+    console.warn('[bootstrap] 外部智能体迁移失败 (非致命):', err);
+  }
 
   // 1. 类 B 启动扫描
   let scanResult: AdaptiveScanResult = {
@@ -93,7 +108,7 @@ export async function bootstrapBolloon(opts: { cwd?: string } = {}): Promise<Boo
   const durationMs = Date.now() - start;
   console.log(`[bootstrap] 完成 (${durationMs}ms, ${errors.length} 个错误)`);
 
-  return { context, scanResult, durationMs, errors };
+  return { context, scanResult, durationMs, errors, externalAgentMigrations };
 }
 
 // ============================================================

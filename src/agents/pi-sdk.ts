@@ -109,6 +109,7 @@ import { buildObservation, buildReflection, formatObservationWithReflection, cla
 import { sessionStore as defaultSessionStore, type SessionStore, type PersistedMessage } from './session-store.js';
 import { ToolRegistry } from './tool-registry.js';
 import { decideMaxIterations, decideContextOverflow, shouldCompactBeforeIteration } from './react-loop.js';
+import { decideAfterReview, DEFAULT_MAX_REVIEWS } from './loop-review.js';
 
 // PiSessionManager 已抽到 ./pi-sdk-session-manager.ts (2026-07-06)
 // Tool / ToolResult / Message / StreamCallback / StreamEvent / HeartbeatConfig / AgentSession / TOOL_DEFINITIONS
@@ -1162,6 +1163,12 @@ ${this.getToolDefinitions()}
     let totalToolCallsThisLoop = 0;
     const lastNTools: string[] = []; // 最近 MAX_IDEMPOTENT_TOOL 次工具名, 检测重复
 
+    // 2026-08-08: final 前 review 续跑 — 目标对齐 + 需求深挖 (见 loop-review.ts)
+    //   不潦草收尾: LLM 想 <final gen> 时先跑 1-2 次 review, 达成用户需求才放行.
+    //   上限=2 次 (用户要求"运行一两次"), 结束后按用户需求为准.
+    let loopReviewCount = 0;
+    const loopReviewCompletedTools = new Set<string>();
+
     // 发送循环开始的事件
     if (onStream) {
       onStream({ type: 'status', content: '🔄 开始 ReAct 循环...', tool: 'system' });
@@ -1643,6 +1650,7 @@ ${toolDefs}
             if (lastNTools.length > MAX_IDEMPOTENT_TOOL) lastNTools.shift();
             if (result.output) { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: result.output.substring(0, 200) + (result.output.length > 200 ? '...' : '') }); }
             else { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: '(无输出)' }); }
+            loopReviewCompletedTools.add(toolCall.name);
             lastQualityScore = this.estimateToolResultQuality(result);
             if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) { refineAttempts++; }
             if (onStream) { onStream({ type: 'status', content: `🔄 工具执行完成，继续循环...`, tool: 'loop' }); }
@@ -1725,13 +1733,31 @@ ${toolDefs}
             }
             continue;
           }
-          lastQualityScore = this.estimateResponseQuality(reply);
+lastQualityScore = this.estimateResponseQuality(reply);
           // 2026-07-29: 质量门 — 即使 LLM 声称完成, 质量太低也继续
           if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) {
             console.log(`[PiAgent] final gen 质量 ${lastQualityScore.toFixed(2)} < ${this.QUALITY_THRESHOLD}, 注入 refine hint`);
             this.messageHistory.push({ role: 'system', content: `[质量检查] 你的回答质量评分为 ${(lastQualityScore * 10).toFixed(1)}/10, 低于 ${(this.QUALITY_THRESHOLD * 10).toFixed(1)}/10 阈值。请提供更完整、详细的回答, 包含工具调用获取到的具体信息, 末尾加 <final gen>。` });
             refineAttempts++;
             continue;
+          }
+
+          // 2026-08-08: final 前目标对齐 review — 不潦草收尾 (见 loop-review.ts)
+          //   LLM 想 <final gen> 时, 先跑 1-2 次「目标对齐 + 需求深挖」review;
+          //   达成用户需求才放行真正结束. 达上限或无需深挖则以用户需求为准结束.
+          const reviewDecision = decideAfterReview({
+            reviewsDone: loopReviewCount,
+            userIntent: this.currentIntentHint,
+            completedTools: Array.from(loopReviewCompletedTools),
+          }, DEFAULT_MAX_REVIEWS);
+          if (reviewDecision.kind === 'continue-review') {
+            loopReviewCount++;
+            console.log(`[PiAgent] review ${loopReviewCount}/${DEFAULT_MAX_REVIEWS}: LLM 想 final 但先对齐需求深挖一次`);
+            this.messageHistory.push({ role: 'system', content: reviewDecision.hint });
+            if (onStream) {
+              onStream({ type: 'status', content: `🔄 目标对齐 review ${loopReviewCount}/${DEFAULT_MAX_REVIEWS}: 深挖续跑`, tool: 'system' });
+            }
+            continue; // 让 LLM 看到 hint, 深挖或确认完成后再次 final
           }
           finalResponse = this.extractFinalAnswer(reply);
           break;
