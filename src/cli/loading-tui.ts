@@ -51,14 +51,21 @@ function getPackageVersion(): string {
 }
 const BOLLOON_VERSION = getPackageVersion();
 
-// ── 品牌图标: 顶部带圆标注的 0 (气球) ──────────────
+// ── 品牌图标: 笑脸机器人 (2026-08-09, bolloon 色系填充) ──────
+//   头: 主色边框 + 亮绿填充 (C_ACCENT_BG); 眼睛 ◉ / 嘴 ◡ 用亮色填充;
+//   末行 BOLLOON 主色艺术字 (仅 printBanner 用, brandArtLines 会裁掉避免双 logo).
+const ROBOT_HEAD = [
+  `${C_ACCENT}   ╭──────╮${RESET}`,
+  `${C_ACCENT} ╭─╯${C_ACCENT_BG}  ${C_WHITE}◉${C_ACCENT_BG} ${C_WHITE}◉${C_ACCENT_BG}  ${RESET}${C_ACCENT}╰─╮${RESET}`,
+  `${C_ACCENT} │${C_ACCENT_BG}     ${C_WHITE}◡${C_ACCENT_BG}     ${RESET}${C_ACCENT}│${RESET}`,
+  `${C_ACCENT} ╰─╮${C_ACCENT_BG}       ${RESET}${C_ACCENT}╭─╯${RESET}`,
+  `${C_ACCENT}   ╰───┬───╯${RESET}`,
+  `${C_ACCENT}       │${RESET}`,
+];
+
 export const BOLLOON_ICON = [
-  `${C_ACCENT}        ✦${RESET}`,
-  `${C_ACCENT}      ╱ ╲${RESET}`,
-  `${C_ACCENT}  ════◆════${RESET}`,
-  `${C_ACCENT}      ╲ ╱${RESET}`,
-  `${C_ACCENT}       ╲${RESET}`,
-  `${C_ACCENT}    ✦  ╲${RESET}`,
+  ...ROBOT_HEAD,
+  `${C_ACCENT}${BOLD}     BOLLOON${RESET}`,
 ].join('\n');
 
 // ── 艺术字: BOLLOON (box 字体) + Bolloon Agent 副标题 ──
@@ -72,9 +79,10 @@ export const BOLLOON_BANNER = [
   `${C_DIM}Bolloon Agent v${BOLLOON_VERSION}${RESET}`,
 ].join('\n');
 
-/** 艺术字全部行 (图标在左, BOLLOON 艺术字在右), 供框内渲染 */
+/** 艺术字全部行 (机器人头在左, BOLLOON 艺术字在右), 供框内渲染 */
 export function brandArtLines(): string[] {
-  const icon = BOLLOON_ICON.split('\n');
+  // 2026-08-09: icon 只取机器人头 (裁掉末行 BOLLOON 文字), 避免和右侧 banner 双 logo
+  const icon = ROBOT_HEAD;
   const banner = BOLLOON_BANNER.split('\n');
   const gap = 2;
   const iconW = Math.max(1, ...icon.map(l => dispWidth(l)));
@@ -90,8 +98,9 @@ export function brandArtLines(): string[] {
 }
 
 export function printBanner(version?: string): void {
+  // 2026-08-09: 新品牌 logo = 笑脸机器人 (BOLLOON_ICON 自带 BOLLOON 文字),
+  //   不再叠加旧 box 字体 banner (避免双 logo)
   console.log(BOLLOON_ICON);
-  console.log(BOLLOON_BANNER);
   if (version) console.log(`${C_DIM}  Bolloon Agent v${version}${RESET}`);
   console.log(`${C_DIM}  P2P AI Agent · 文档智能体${RESET}`);
   console.log('');
