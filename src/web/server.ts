@@ -1940,6 +1940,11 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     // 尝试发布 DID 到 IPFS
     try {
       const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+      // 2026-08-09: 归属用户 DID — 智能体身份归属用户唯一身份 (DID 文档带 controller+alsoKnownAs)
+      try {
+        const owner = await loadOrCreateUserIdentity();
+        if (owner?.did) auth.setOwnerDid(owner.did);
+      } catch { /* 归属设置失败不阻塞 */ }
       await auth.registerAgent({ name, services: [] }, kp, '');
       console.log('P2P DID 已发布到 IPFS');
     } catch (e) {
@@ -2853,6 +2858,117 @@ ${goalDesc}
       writeFileSync(`${IDENTITY_DIR}/user.json`, JSON.stringify(identity, null, 2), { mode: 0o600 });
       console.log(`[user-identity] 名字已更新: ${newName}`);
       res.json(identity);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ========== 登录框架 (2026-08-09) — GitHub/Google/邮箱/手机号, 仅骨架 ==========
+  // 所有登录方式最终都归属到用户 DID (右下角唯一身份).
+  // 真实 OAuth / 验证码后续接入, 这里先做: 记录账号 + 绑定用户 DID + 提供状态查询.
+  const ACCOUNTS_FILE = `${process.env.HOME || '/tmp'}/.bolloon/accounts.json`;
+
+  async function loadAccounts(): Promise<any[]> {
+    try {
+      const { readFile } = await import('fs/promises');
+      const parsed = JSON.parse(await readFile(ACCOUNTS_FILE, 'utf-8'));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function saveAccounts(accs: any[]): Promise<void> {
+    const { mkdir, writeFile } = await import('fs/promises');
+    await mkdir(`${process.env.HOME || '/tmp'}/.bolloon`, { recursive: true });
+    await writeFile(ACCOUNTS_FILE, JSON.stringify(accs, null, 2), { mode: 0o600 });
+  }
+
+  // GET /api/auth/status — 当前用户 DID + 已绑定账号列表
+  app.get('/api/auth/status', async (_req, res) => {
+    try {
+      const identity = await loadOrCreateUserIdentity();
+      const accs = await loadAccounts();
+      res.json({
+        did: identity.did,
+        didShort: identity.didShort,
+        name: identity.name,
+        // 只返回脱敏视图 (不含 token)
+        accounts: accs.map((a: any) => ({
+          provider: a.provider,
+          identifier: a.identifier || a.email || a.username || '',
+          loggedAt: a.loggedAt,
+          skeleton: !!a.skeleton,
+        })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/auth/login — 登录骨架 (记录账号 + 绑定用户 DID)
+  // body: { provider: 'github'|'google'|'email'|'phone', identifier?: string }
+  app.post('/api/auth/login', async (req: any, res: any) => {
+    try {
+      const { provider, identifier } = req.body || {};
+      const prov = String(provider || '').trim().toLowerCase();
+      const VALID = ['github', 'google', 'email', 'phone'];
+      if (!VALID.includes(prov)) {
+        return res.status(400).json({ error: `provider 必须是 ${VALID.join('/')}` });
+      }
+      // 邮箱/手机号必填 identifier
+      if ((prov === 'email' || prov === 'phone') && !String(identifier || '').trim()) {
+        return res.status(400).json({ error: `${prov === 'email' ? '邮箱' : '手机号'}必填` });
+      }
+      const identity = await loadOrCreateUserIdentity();
+      const accs = await loadAccounts();
+      const idStr = String(identifier || '').trim();
+      const existing = accs.find((a: any) => a.provider === prov && (!idStr || a.identifier === idStr || a.email === idStr));
+      const now = new Date().toISOString();
+      if (existing) {
+        // 已绑定 → 更新归属 DID + 时间
+        existing.ownerDid = identity.did;
+        existing.loggedAt = now;
+        existing.skeleton = true;
+      } else {
+        accs.push({
+          provider: prov,
+          identifier: idStr || '',
+          email: prov === 'email' ? idStr : '',
+          phone: prov === 'phone' ? idStr : '',
+          username: idStr || '',
+          token: '', // 真实 OAuth 后填
+          ownerDid: identity.did, // 归属用户唯一 DID
+          loggedAt: now,
+          skeleton: true, // 骨架标记: 未做真实 OAuth/验证码
+        });
+      }
+      await saveAccounts(accs);
+      console.log(`[auth] 登录骨架: ${prov}${idStr ? ' ' + idStr : ''} → 归属 DID ${identity.did.substring(0, 20)}...`);
+      res.json({
+        ok: true,
+        provider: prov,
+        identifier: idStr,
+        ownerDid: identity.did,
+        skeleton: true,
+        message: `${prov} 登录骨架已记录 (归属用户 DID), 真实 OAuth/验证码后续接入`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/auth/logout — 解除某个 provider 的绑定 (骨架)
+  app.post('/api/auth/logout', async (req: any, res: any) => {
+    try {
+      const { provider } = req.body || {};
+      const prov = String(provider || '').trim().toLowerCase();
+      const accs = await loadAccounts();
+      const before = accs.length;
+      const remaining = accs.filter((a: any) => a.provider !== prov);
+      if (remaining.length === before) return res.status(404).json({ error: `未绑定 ${prov} 账号` });
+      await saveAccounts(remaining);
+      res.json({ ok: true, provider: prov });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -4243,6 +4359,11 @@ ${goalDesc}
       const pkBytes = Buffer.from(channel.publicKey, 'hex');
       const kp = { privateKey: new Uint8Array(32), publicKey: pkBytes, did: channel.did };
       const auth = await AgentAuthManager.newWithRemoteIpfs('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
+      // 2026-08-09: 归属用户 DID — 子智能体身份归属用户唯一身份
+      try {
+        const owner = await loadOrCreateUserIdentity();
+        if (owner?.did) auth.setOwnerDid(owner.did);
+      } catch { /* 归属设置失败不阻塞 */ }
       const result = await auth.registerAgent({ name: channel.name, services: [] }, kp, '');
       channel.cid = result.cid || channel.cid;
       // 关键: 不再保存整份 didDocument, 只留 cid/ipnsName 两个引用字段

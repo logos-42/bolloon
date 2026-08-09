@@ -2781,6 +2781,13 @@ async function loadUserIdentity() {
     if (didEl) didEl.textContent = identity.didShort ? `did:key:${identity.didShort}` : '';
     if (letterEl) letterEl.textContent = letter;
 
+    // 2026-08-09: 点击左下角 avatar → 打开登录 modal (GitHub/Google/邮箱/手机号骨架)
+    const avatarEl = document.getElementById('user-avatar');
+    if (avatarEl) {
+      avatarEl.style.cursor = 'pointer';
+      avatarEl.onclick = () => { openAuthModal(); };
+    }
+
     // 2026-08-02: 点击名字 → 内联编辑 (PUT /api/user/identity)
     if (nameEl) {
       nameEl.onclick = () => {
@@ -2825,6 +2832,131 @@ async function loadUserIdentity() {
     }
   } catch (e) {
     // 静默失败 — 不影响主聊天
+  }
+}
+
+// ========== 登录 Modal (2026-08-09) — GitHub/Google/邮箱/手机号, 仅骨架 ==========
+function getEl(id: string): HTMLElement | null { return document.getElementById(id); }
+
+function showAuthMsg(text: string, isError = false) {
+  const msg = getEl('auth-msg');
+  if (!msg) return;
+  msg.textContent = text;
+  msg.style.display = 'block';
+  msg.style.color = isError ? '#ef4444' : '#22c55e';
+}
+
+async function refreshAuthAccounts() {
+  try {
+    const res = await fetch('/api/auth/status');
+    if (!res.ok) return;
+    const data = await res.json();
+    const statusLine = getEl('auth-status-line');
+    if (statusLine) {
+      statusLine.innerHTML = `当前用户 DID: <code style="font-size:11px;">${escapeHtml(data.did || '')}</code>` +
+        `<br><span style="color:var(--text-muted);">所有登录账号与 DIAP 智能体身份均归属此 DID。</span>`;
+    }
+    const listEl = getEl('auth-accounts-list');
+    if (listEl) {
+      const accs: any[] = data.accounts || [];
+      if (accs.length === 0) {
+        listEl.innerHTML = '<div class="form-info" style="margin-top:4px;color:var(--text-muted);">尚未绑定任何账号</div>';
+      } else {
+        listEl.innerHTML = '<div class="form-info" style="margin-bottom:4px;"><b>已绑定账号</b></div>' + accs.map((a: any) =>
+          `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;font-size:12px;">
+            <span>${escapeHtml(a.provider)}${a.identifier ? ' · ' + escapeHtml(a.identifier) : ''}${a.skeleton ? ' <span style="color:#f59e0b;">(骨架)</span>' : ''}</span>
+            <button class="btn-secondary btn-sm auth-unbind-btn" data-provider="${escapeHtml(a.provider)}" style="padding:1px 8px;font-size:11px;">解绑</button>
+          </div>`).join('');
+        listEl.querySelectorAll('.auth-unbind-btn').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const provider = (btn as HTMLElement).dataset.provider || '';
+            try {
+              const r = await fetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider }) });
+              if (r.ok) { showAuthMsg(`✓ 已解绑 ${provider}`); refreshAuthAccounts(); }
+              else { showAuthMsg(`解绑失败: ${(await r.json()).error || ''}`, true); }
+            } catch { showAuthMsg('解绑失败', true); }
+          });
+        });
+      }
+    }
+  } catch { /* 静默 */ }
+}
+
+async function openAuthModal() {
+  const modal = getEl('auth-modal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  const msg = getEl('auth-msg');
+  if (msg) msg.style.display = 'none';
+  const emailEl = getEl('auth-email') as HTMLInputElement | null;
+  const phoneEl = getEl('auth-phone') as HTMLInputElement | null;
+  if (emailEl) emailEl.value = '';
+  if (phoneEl) phoneEl.value = '';
+  await refreshAuthAccounts();
+}
+
+function closeAuthModal() {
+  const modal = getEl('auth-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function authLogin(provider: string, identifier?: string) {
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, identifier }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showAuthMsg(data.error || '登录失败', true); return; }
+    showAuthMsg(`✓ ${data.message || '已绑定'}`);
+    await refreshAuthAccounts();
+    // 刷新左下角名字 (若登录后 server 更新了名字)
+    loadUserIdentity();
+  } catch { showAuthMsg('登录请求失败', true); }
+}
+
+function bindAuthModalEvents() {
+  const closeBtn = getEl('auth-modal-close');
+  if (closeBtn) closeBtn.onclick = closeAuthModal;
+  // OAuth 骨架按钮
+  document.querySelectorAll('.auth-oauth-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const provider = (btn as HTMLElement).dataset.provider || '';
+      authLogin(provider);
+    });
+  });
+  // 邮箱 / 手机号
+  const emailBtn = getEl('auth-email-btn');
+  if (emailBtn) emailBtn.onclick = () => {
+    const emailEl = getEl('auth-email') as HTMLInputElement | null;
+    const val = emailEl?.value?.trim() || '';
+    if (!val) { showAuthMsg('请填写邮箱', true); return; }
+    authLogin('email', val);
+  };
+  const phoneBtn = getEl('auth-phone-btn');
+  if (phoneBtn) phoneBtn.onclick = () => {
+    const phoneEl = getEl('auth-phone') as HTMLInputElement | null;
+    const val = phoneEl?.value?.trim() || '';
+    if (!val) { showAuthMsg('请填写手机号', true); return; }
+    authLogin('phone', val);
+  };
+  // Enter 提交
+  const emailInput = getEl('auth-email');
+  if (emailInput) emailInput.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') (getEl('auth-email-btn') as HTMLButtonElement)?.click(); });
+  const phoneInput = getEl('auth-phone');
+  if (phoneInput) phoneInput.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') (getEl('auth-phone-btn') as HTMLButtonElement)?.click(); });
+  // 点击遮罩关闭
+  const modal = getEl('auth-modal');
+  if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) closeAuthModal(); });
+}
+
+// 初始化 auth modal (DOM ready 后)
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bindAuthModalEvents);
+  } else {
+    bindAuthModalEvents();
   }
 }
 

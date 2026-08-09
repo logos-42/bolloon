@@ -20,6 +20,18 @@ import { KeyManager } from '@diap/sdk';
 
 const AGENT_KEYS_DIR = path.join(os.homedir(), '.bolloon', 'agent-keys');
 
+/** 读取用户唯一 DID (与 server loadOrCreateUserIdentity 同源, 归属字段用) */
+export function getUserOwnerDid(): string {
+  try {
+    const f = path.join(os.homedir(), '.bolloon', 'identity', 'user.json');
+    if (fs.existsSync(f)) {
+      const j = JSON.parse(fs.readFileSync(f, 'utf-8'));
+      if (j.did) return j.did;
+    }
+  } catch { /* 无 user.json → 无归属 */ }
+  return '';
+}
+
 export interface AgentIdentity {
   /** 32 字节 Ed25519 私钥 hex */
   privateKey: string;
@@ -31,6 +43,11 @@ export interface AgentIdentity {
   createdAt: string;
   /** 是否为新创建的 (用于日志区分 "复用" / "新建") */
   reused: boolean;
+  /**
+   * 2026-08-09: 归属的用户 DID — 所有 DIAP 智能体身份都归属于用户唯一身份
+   * (~/.bolloon/identity/user.json 的 did). 空 = 未生成用户身份 (不影响功能).
+   */
+  ownerDid?: string;
 }
 
 /**
@@ -62,6 +79,7 @@ export function loadOrCreateAgentIdentity(agentId: string): AgentIdentity {
             did: kp.did,
             createdAt: j.createdAt || 'unknown',
             reused: true,
+            ownerDid: j.ownerDid || getUserOwnerDid(),
           };
         }
       }
@@ -90,6 +108,8 @@ export function loadOrCreateAgentIdentity(agentId: string): AgentIdentity {
     lastUsedAt: createdAt,
     agentId,
     version: '1.0',
+    // 2026-08-09: 归属用户唯一 DID — DIAP 智能体身份全部归到用户身份下
+    ownerDid: getUserOwnerDid(),
   };
 
   fs.writeFileSync(fp, JSON.stringify(data, null, 2), { mode: 0o600 });
@@ -103,6 +123,7 @@ export function loadOrCreateAgentIdentity(agentId: string): AgentIdentity {
     did: kp.did,
     createdAt,
     reused: false,
+    ownerDid: data.ownerDid,
   };
 }
 

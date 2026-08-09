@@ -346,7 +346,7 @@ export class WorkflowPivotLoop {
         const reply = (llmResponse.reply || '').trim();
         this.vlog(`[pivot] iter=${this.state.iteration} LLM took=${Date.now() - t0}ms reply=${reply.length} nativeToolCalls=${llmResponse.toolCalls?.length ?? 0} head=${reply.substring(0, 80).replace(/\n/g, ' ')}`);
 
-        this.emit({ type: 'token', content: reply.substring(0, 100) });
+        this.emit({ type: 'token', content: reply });
         // 2026-07-06: 把完整 reply 推给前端 — 前端按需更新临时气泡
         //   之前只 emit token(100B 截断), 前端拿到 100B 看不清. 现在 emit preview 带完整 content.
         //   折叠 / 清洗交给前端的 message-renderer.addMessage (类型 ai 入口统一 strip).

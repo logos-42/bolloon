@@ -121,12 +121,14 @@ function getMainScript(): string {
   throw new Error('找不到入口脚本，请确保已执行 npm run build');
 }
 
-function getElectronPath(): string {
+function getElectronPath(): string | null {
   // ESM 兼容: use _require (createRequire) instead of raw require
+  // 2026-08-09: electron 在 devDependencies, 全局安装不装 → require 失败返回 null
+  // (上层 startElectron 收到 null 后降级为 Web 模式, 不再返回裸字符串 'electron' 导致 ENOENT)
   try {
     return _require('electron');
   } catch {
-    return 'electron';
+    return null;
   }
 }
 
@@ -484,6 +486,16 @@ async function runNodeScript(scriptPath: string, additionalArgs: string[]) {
 // 启动 Electron
 async function startElectron(additionalArgs: string[]) {
   const electronPath = getElectronPath();
+
+  // 2026-08-09: electron 是 devDependency, 全局安装不包含 → 降级为 Web 模式
+  // (浏览器打开 Web UI, 功能等价, 避免 spawn electron ENOENT 直接退出)
+  if (!electronPath) {
+    log('未检测到 Electron 桌面运行时 (全局安装不含 devDependencies)', YELLOW);
+    log('自动降级为 Web 模式 — 浏览器打开 Web UI...', CYAN);
+    await startWebServer(additionalArgs);
+    return;
+  }
+
   const distDir = getDistDir();
 
   // 确定主进程入口

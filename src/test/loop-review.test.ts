@@ -69,6 +69,22 @@ describe('loop-review (final 前目标对齐)', () => {
   it('hint 不引用已执行的重复动作 (提醒不再重复)', () => {
     const h = buildReviewHint(state({ completedTools: ['read_file'] }));
     expect(h).toContain('read_file');
-    expect(h).toContain('不要再重复已完成的动作');
+    expect(h).toContain('不要重复执行');
+  });
+
+  it('actionLog 逐条注入 (带结果摘要, 供 LLM 对照目标核查)', () => {
+    const h = buildReviewHint(state({
+      completedTools: ['read_file', 'write_file'],
+      actionLog: [
+        { tool: 'read_file', argsPreview: '{path:"a.ts"}', resultPreview: '内容 abc', success: true },
+        { tool: 'write_file', argsPreview: '{path:"b.ts"}', resultPreview: '写入成功', success: false },
+      ],
+    }));
+    expect(h).toContain('本轮已执行动作 (逐条)');
+    expect(h).toContain('read_file');
+    expect(h).toContain('✓ 内容 abc');
+    expect(h).toContain('write_file');
+    expect(h).toContain('✗ 写入成功');
+    expect(h).toContain('逐条对照「用户需求」');
   });
 });

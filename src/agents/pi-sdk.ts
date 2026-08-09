@@ -1236,6 +1236,10 @@ ${this.getToolDefinitions()}
     //   上限=2 次 (用户要求"运行一两次"), 结束后按用户需求为准.
     let loopReviewCount = 0;
     const loopReviewCompletedTools = new Set<string>();
+    // 2026-08-09: 本轮行动日志 — 每轮工具执行都记录 (args + 结果摘要),
+    //   final 前 review 用逐条核查目标; 也注入 system prompt 让 LLM 看到连续进度
+    //   (防"每轮都像重启" — 之前 LLM 看不到自己已完成什么, 容易重复 react)
+    const loopActionLog: { tool: string; argsPreview: string; resultPreview: string; success: boolean }[] = [];
 
     // 发送循环开始的事件
     if (onStream) {
@@ -1371,11 +1375,27 @@ ${this.getToolDefinitions()}
       }
       const personaSection = this.cachedPersonaSection;
 
+      // 2026-08-09: 循环进度段 — 让 LLM 看到本轮已完成的动作 (连续进度, 不重启)
+      //   Hermes 式 Agent Runtime: 循环是状态机, LLM 每次看到的是"第 N 步 + 已完成 X"
+      //   (之前每轮都是全新上下文, LLM 不知道做过什么 → 重复 react / 衔接差)
+      let loopProgressSection = '';
+      if (loopActionLog.length > 0) {
+        const actionLines = loopActionLog
+          .map((a, i) => {
+            const args = a.argsPreview ? `(${a.argsPreview.slice(0, 60)})` : '';
+            const res = a.success ? '✓' : '✗';
+            return `  ${i + 1}. ${res} ${a.tool}${args}`;
+          })
+          .join('\n');
+        loopProgressSection = `\n【本轮循环进度】你已完成以下 ${loopActionLog.length} 个动作, 这是连续执行的同一轮任务:\n${actionLines}\n请基于已有结果继续推进, 不要重复执行上面已成功的动作. 全部完成后用 <final gen> 结束.\n`;
+      }
+
       const systemPrompt = `${this.bootstrapAddition}你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
 当前工作目录: ${this.cwd}
 当前身份: ${this.identity.name} (${this.identity.did})
 ${refineContext}
 ${this.currentIntentHint}
+${loopProgressSection}
 
 ${toolDefs}
 
@@ -1487,9 +1507,10 @@ ${toolDefs}
       console.log(`[PiAgent] LLM 回复长度: ${reply.length}, 内容预览: "${reply.substring(0, 80)}..."`);
       console.log(`[PiAgent] LLM 完整回复:\n${reply}`);
 
-      // 通知前端：收到 LLM 回复
+      // 通知前端：收到 LLM 回复 (2026-08-09: 不再截断 100 字符 — 前端流式渲染完整内容,
+      //   配合 Hermes 式回复框: 加载中显示完整文本, 完成后封闭底框)
       if (onStream) {
-        onStream({ type: 'token', content: reply.substring(0, 100) });
+        onStream({ type: 'token', content: reply });
       }
 
       // 2026-06-19 架构 fix: parseToolCall 优先于 isFinalResponse
@@ -1546,9 +1567,10 @@ ${toolDefs}
           toolCalls: toolCalls.length > 1 ? toolCalls : [toolCalls[0]],
         });
 
-        // 顺序执行每个工具
-        for (let ti = 0; ti < toolCalls.length; ti++) {
-        const toolCall = toolCalls[ti];
+        // 2026-08-09: 并发执行本轮所有工具 (Hermes 式 Agent Runtime: 一轮内多工具并行,
+        //   一轮没跑完之前不中断 — 工具执行不检查 abort, 全部完成才 continue 下一轮)
+        //   旧实现顺序 for 循环, 一个工具等一个, 慢; 且多工具时 LLM 要等全部串完才能看到结果.
+        await Promise.all(toolCalls.map(async (toolCall, ti) => {
         const isMulti = toolCalls.length > 1;
 
         // 通知前端
@@ -1582,7 +1604,7 @@ ${toolDefs}
           const denyResultMsg: ToolResult = { success: false, error: `拒绝: [${denyResult.source}] ${denyResult.reason}` };
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(denyResultMsg), toolResult: denyResultMsg });
           this.logToHarness(toolCall.name, toolCall.args, denyResultMsg);
-          continue;
+          return;
         }
         if (denyResult.systemAddition) {
           this.contextHintAddition += '\n' + denyResult.systemAddition;
@@ -1601,7 +1623,7 @@ ${toolDefs}
           this.messageHistory.push({ role: 'system', content: formatObservationWithReflection(obs, ref) });
           if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary}`, tool: 'system' });
           console.warn(`[PiAgent] 未知工具: ${toolCall.name} (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS})，跳过并继续`);
-          continue;
+          return;
         }
 
         // Bootstrap PreToolUse hook: 调工具前校验 (危险命令拦截)
@@ -1638,7 +1660,7 @@ ${toolDefs}
               this.messageHistory.push({ role: 'system', content: `[注意] 连续 ${consecutiveErrors} 次工具调用被系统拒绝. 请换其他工具或直接回答用户, 末尾加 <final gen>.` });
               consecutiveErrors = 0;
             }
-            continue;
+            return;
           }
         } catch (err) {
           console.warn('[PiAgent] onPreToolUse failed (non-fatal, allowing):', err);
@@ -1666,7 +1688,7 @@ ${toolDefs}
               this.messageHistory.push({ role: 'system', content: `[注意] 连续 ${consecutiveErrors} 次工具调用被 Harness 拒绝. 请换其他工具或直接回答.` });
               consecutiveErrors = 0;
             }
-            continue;
+            return;
           }
         } catch (err) {
           console.warn('[PiAgent] reactHarness.preToolCall failed (non-fatal, allowing):', err);
@@ -1698,6 +1720,23 @@ ${toolDefs}
 
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result, toolCallId: (toolCall as any).id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` });
           this.logToHarness(toolCall.name, toolCall.args, result);
+
+          // 2026-08-09: 记录到本轮行动日志 (循环进度 + final 前目标核查用)
+          //   去重: 同一工具同 args 连续成功只记一次 (防 LLM 重复 react 刷屏)
+          const argsPreview = JSON.stringify(toolCall.args || {}).slice(0, 120);
+          const isDup = loopActionLog.some(
+            (a) => a.tool === toolCall.name && a.argsPreview === argsPreview && a.success === !!result.success
+          );
+          if (!isDup) {
+            loopActionLog.push({
+              tool: toolCall.name,
+              argsPreview,
+              resultPreview: result.success
+                ? String(result.output || '(无输出)').slice(0, 200)
+                : String(result.error || 'failed').slice(0, 200),
+              success: !!result.success,
+            });
+          }
 
           if (onStream) {
             if (result.success) {
@@ -1736,7 +1775,7 @@ ${toolDefs}
             if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
               this.messageHistory.push({ role: 'system', content: `[注意] 工具 ${toolCall.name} 在这个上下文中不可用 (连续 ${MAX_SAME_TOOL_FAILURES} 次失败: ${result.error}). 请不要再次调用它, 直接用你已知的信息回答用户, 并在回答开头标记 <final gen>.` });
               lastFailedTool = ''; lastFailedToolCount = 0; consecutiveErrors = 0;
-              continue;
+              return;
             }
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
               this.messageHistory.push({ role: 'system', content: `[注意] 前面的工具调用连续失败。请尝试其他工具或换一种方式完成用户请求, 或用 <final gen> 给出最终回答.` });
@@ -1755,7 +1794,7 @@ ${toolDefs}
           if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary}`, tool: 'system' });
           console.error(`[PiAgent] 工具执行异常 (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS}): ${execError}`);
         }
-        } // end for (ti)
+        })); // end Promise.all(toolCalls.map(async ...))
         // 所有工具执行完毕后, continue while 循环, 让 LLM 看到结果
         continue;
         } else {
@@ -1765,9 +1804,9 @@ ${toolDefs}
           content: reply
         });
 
-        // 通知前端收到非工具调用回复
+        // 通知前端收到非工具调用回复 (2026-08-09: 完整内容, 不再截断 150)
         if (onStream) {
-          onStream({ type: 'token', content: reply.substring(0, 150) });
+          onStream({ type: 'token', content: reply });
         }
 
         // 2026-06-19 架构 fix: 只有 strip <think> 后才检查 isFinalResponse
@@ -1817,6 +1856,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
             reviewsDone: loopReviewCount,
             userIntent: this.currentIntentHint,
             completedTools: Array.from(loopReviewCompletedTools),
+            actionLog: loopActionLog,
           }, DEFAULT_MAX_REVIEWS);
           if (reviewDecision.kind === 'continue-review') {
             loopReviewCount++;

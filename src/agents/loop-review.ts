@@ -25,6 +25,12 @@ export interface ReviewState {
   userIntent: string;
   /** 本轮已成功执行过的工具名 (去重), 用于提示"已做到哪些" */
   completedTools: string[];
+  /**
+   * 2026-08-09: 本轮行动日志 — 比 completedTools 更细, 带结果摘要.
+   * 注入 final 前的自查提示, 让 LLM 对照"已完成动作"逐条核查目标,
+   * 而不是凭记忆猜 (旧版只有工具名, LLM 容易潦草自查通过).
+   */
+  actionLog?: { tool: string; argsPreview: string; resultPreview: string; success: boolean }[];
 }
 
 /** review 决策结果 */
@@ -64,12 +70,28 @@ export function decideAfterReview(state: ReviewState, maxReviews: number = DEFAU
 export function buildReviewHint(state: ReviewState, maxReviews: number = DEFAULT_MAX_REVIEWS): string {
   const intent = (state.userIntent || '').trim() || '(无)';
   const tools = state.completedTools.length ? state.completedTools.join(', ') : '(尚未执行工具)';
+  // 2026-08-09: 行动日志 — 逐条列出已完成动作 + 结果摘要, 让 LLM 对照目标核查
+  //   (旧版只有工具名, LLM 容易潦草自查; 带结果才能判断"这一步到底做完了没")
+  let actionLines = '';
+  if (state.actionLog && state.actionLog.length > 0) {
+    actionLines = '\n本轮已执行动作 (逐条):\n' + state.actionLog
+      .map((a, i) => {
+        const args = a.argsPreview ? `(${a.argsPreview.slice(0, 80)})` : '';
+        const res = a.success
+          ? `✓ ${(a.resultPreview || 'ok').slice(0, 120)}`
+          : `✗ ${(a.resultPreview || 'failed').slice(0, 120)}`;
+        return `  ${i + 1}. ${a.tool}${args} → ${res}`;
+      })
+      .join('\n');
+  }
   return (
-    `[目标对齐 review ${state.reviewsDone + 1}/${maxReviews}]\n` +
-    `用户需求: ${intent.slice(0, 300)}\n` +
-    `本轮已完成工具: ${tools}\n` +
-    `请对照需求自查: 是否还有未完成/可深挖的子目标? 若有 → 继续调用工具推进; ` +
-    `若已满足用户原始需求 → 直接输出 <final gen> 结束. 不要再重复已完成的动作.`
+    `[目标对齐 review ${state.reviewsDone + 1}/${maxReviews}]` +
+    `\n用户需求: ${intent.slice(0, 300)}` +
+    actionLines +
+    `\n已完成工具: ${tools}` +
+    `\n请对照需求逐条自查: 上面每一条动作是否真正完成了对应的子目标? 还有未完成/可深挖的子目标 → 继续调用工具推进 (注意: 同一动作已完成就不要重复执行, 直接基于已有结果推进下一步); ` +
+    `若已满足用户原始需求 → 直接输出 <final gen> 结束.` +
+    `\n[重要] 如果你要结束, 请先逐条对照「用户需求」确认每一项都已完成, 不要因为做了一部分就潦草收尾.`
   );
 }
 

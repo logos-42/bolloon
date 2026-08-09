@@ -414,6 +414,54 @@
     </main>
   </div>
 
+  <!-- ========== 登录 Modal (2026-08-09) — GitHub/Google/邮箱/手机号, 仅骨架 ========== -->
+  <div id="auth-modal" class="modal" style="display:none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>登录 · 账号绑定</h2>
+        <button id="auth-modal-close" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="auth-status-line" class="form-info" style="margin-bottom:12px;font-size:12px;"></div>
+
+        <!-- OAuth 骨架按钮 -->
+        <div class="form-group">
+          <label>第三方账号</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn-secondary auth-oauth-btn" data-provider="github" style="flex:1;min-width:120px;">GitHub</button>
+            <button type="button" class="btn-secondary auth-oauth-btn" data-provider="google" style="flex:1;min-width:120px;">Google</button>
+          </div>
+          <small class="form-hint" id="auth-oauth-hint">骨架: 点击后记录账号归属当前 DID, 真实 OAuth 授权页后续接入。</small>
+        </div>
+
+        <!-- 邮箱登录骨架 -->
+        <div class="form-group">
+          <label for="auth-email">邮箱登录</label>
+          <div style="display:flex;gap:8px;">
+            <input type="email" id="auth-email" placeholder="you@example.com" style="flex:1;">
+            <button type="button" class="btn-secondary" id="auth-email-btn">绑定</button>
+          </div>
+          <small class="form-hint">骨架: 记录邮箱归属当前 DID, 验证码发送后续接入。</small>
+        </div>
+
+        <!-- 手机号登录骨架 -->
+        <div class="form-group">
+          <label for="auth-phone">手机号登录</label>
+          <div style="display:flex;gap:8px;">
+            <input type="tel" id="auth-phone" placeholder="+86 138... " style="flex:1;">
+            <button type="button" class="btn-secondary" id="auth-phone-btn">绑定</button>
+          </div>
+          <small class="form-hint">骨架: 记录手机号归属当前 DID, 短信验证码后续接入。</small>
+        </div>
+
+        <!-- 已绑定列表 -->
+        <div id="auth-accounts-list" style="margin-top:8px;"></div>
+
+        <div id="auth-msg" class="form-info" style="display:none;margin-top:8px;"></div>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="./components/wallet-viem.mjs"></script>
   <script type="module" src="./components/p2p/index.js"></script>
   <script type="module" src="./ui/step-timeline.js"></script>

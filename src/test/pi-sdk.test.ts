@@ -33,7 +33,7 @@ async function isMinimaxReachable(): Promise<boolean> {
 }
 
 ( SKIP_PI_SDK_E2E ? describe.skip : describe )('Pi SDK', () => {
-  it('basic agent session', { timeout: 5000 }, async () => {
+  it('basic agent session', { timeout: 30000 }, async () => {
     const session = await createAgentSession({ cwd: process.cwd() });
     const result = await session.prompt('简单问候');
     expect(result).toContain('我是一个判断力处理智能体');
