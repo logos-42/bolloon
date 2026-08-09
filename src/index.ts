@@ -335,6 +335,8 @@ async function bootstrapIroh(keypair: any, name: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 let agent: Awaited<ReturnType<typeof createAgentSession>> | null = null;
+/** 2026-08-09: agent 当前绑定的 channel id (null = 默认 harness 身份) — 切换时据此重建 */
+let agentBoundChannelId: string | null = null;
 let harness: BollharnessIntegration | null = null;
 let hybridMessenger: HybridMessenger | null = null;
 let agentIdentity: {
@@ -349,8 +351,36 @@ let agentIdentity: {
 } | null = null;
 
 async function getAgent() {
-  if (!agent) {
-    const identityDoc = agentIdentity ? {
+  // 2026-08-09: agent 身份绑定当前 active channel — 切换 / 新建 channel 后重建.
+  //   旧实现: agent 全局单例 + peerId:'harness' 固定, 切 channel 身份不变 (bug).
+  //   新实现: channel 有 agentId/did/publicKey/persona 时按 channel 建 session,
+  //   agentIdentity 同步更新, loadSessionKey 回灌该 channel 的历史.
+  const targetChannelId = cliActiveChannelId || null;
+  if (agent && agentBoundChannelId === targetChannelId) return agent;
+
+  // 读取当前 active channel 的持久身份
+  let chIdentity: { agentId?: string; did?: string; publicKey?: string; name?: string; persona?: any; currentSessionId?: string } | null = null;
+  if (targetChannelId) {
+    try {
+      const { getIdentityStore } = await import('./agents/agent-identity-store.js');
+      const store = getIdentityStore();
+      await store.load();
+      const ch = store.rawChannels.find((c: any) => c.id === targetChannelId);
+      if (ch) chIdentity = ch as any;
+    } catch { /* 读不到就退默认 */ }
+  }
+
+  let identityDoc: any;
+  if (chIdentity?.did && chIdentity.publicKey) {
+    // channel 已有持久 DID → 用 channel 身份
+    identityDoc = {
+      did: chIdentity.did,
+      name: chIdentity.persona?.name || chIdentity.name || 'agent',
+      publicKey: chIdentity.publicKey,
+      createdAt: Date.now(),
+    };
+  } else if (agentIdentity) {
+    identityDoc = {
       did: agentIdentity.did,
       name: agentIdentity.name,
       publicKey: agentIdentity.publicKey,
@@ -359,14 +389,41 @@ async function getAgent() {
       p2pChannel: agentIdentity.p2pChannel,
       cid: agentIdentity.cid,
       ipnsName: agentIdentity.ipnsName
-    } : undefined;
-    agent = await createAgentSession({
-      cwd: process.cwd(),
-      peerId: 'harness',
-      identityDoc
-    });
+    };
+  } else {
+    identityDoc = undefined;
+  }
+
+  const loadSessionKey = targetChannelId
+    ? `${targetChannelId}:${chIdentity?.currentSessionId || 'default'}`
+    : undefined;
+
+  agent = await createAgentSession({
+    cwd: process.cwd(),
+    peerId: targetChannelId ?? 'harness',
+    identityDoc,
+    // 2026-08-09: 透传 channel.agentId → persona docs 按 agent 加载 (身份真正变化)
+    agentId: chIdentity?.agentId || (targetChannelId ? undefined : agentIdentity?.name),
+    loadSessionKey,
+  });
+  agentBoundChannelId = targetChannelId;
+
+  // 同步 agentIdentity (状态栏 / 身份引用)
+  if (chIdentity) {
+    agentIdentity = {
+      did: chIdentity.did || agentIdentity?.did || '',
+      name: chIdentity.persona?.name || chIdentity.name || 'agent',
+      publicKey: chIdentity.publicKey || agentIdentity?.publicKey || '',
+      peerId: targetChannelId ?? undefined,
+    };
   }
   return agent;
+}
+
+/** 强制重建 agent (切 channel / 新建 agent 后调用) */
+function invalidateAgent(): void {
+  agent = null;
+  agentBoundChannelId = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -647,6 +704,10 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       await store.setActive(r.channel.id);
       cliAgentName = r.identity.name;
       cliActiveChannelId = r.channel.id;
+      // 2026-08-09: 切 channel 必须重建 agent session — 否则身份/记忆停留在旧 channel (bug 修复)
+      invalidateAgent();
+      // 立即重建 (提前建好, 避免下次输入才卡顿; 失败不阻塞切换)
+      try { await getAgent(); } catch { /* 非致命, 下次输入时再试 */ }
       inkSetStatus(getStatus()); // 触发状态栏立即重绘 (无需等 1s 定时器)
       const extra = prev && prev.name !== r.identity.name ? ` (从 ${prev.name} 切换)` : '';
       appendLine(`${C_ACCENT}→ 当前智能体: ${r.identity.name}${RESET}${extra}`);
@@ -671,36 +732,42 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       const { getIdentityStore } = await import('./agents/agent-identity-store.js');
       const store = getIdentityStore();
       await store.load();
-      const { readFile, writeFile, mkdir } = await import('fs/promises');
-      const { join } = await import('path');
-      const home = process.env.HOME || '/tmp';
-      const channelsPath = join(home, '.bolloon', 'sessions', 'channels.json');
-      let channels: any[] = [];
-      try {
-        const parsed = JSON.parse(await readFile(channelsPath, 'utf-8'));
-        channels = Array.isArray(parsed) ? parsed : parsed?.channels || [];
-      } catch { /* 首次无文件 */ }
-      const dupName = channels.find((c: any) => c.name === name.trim());
+      // 2026-08-09: 复用 server-storage updateChannels 原子写 (互斥锁) — 旧实现裸 readFile→push→writeFile
+      //   与 Web server 并发写 channels.json 互相覆盖 → 创建的 agent 重启后丢失 (bug 修复)
+      const { updateChannels } = await import('./web/server-storage.js');
+      const dupName = store.rawChannels.find((c: any) => c.name === name.trim());
       if (dupName) {
         appendLine(`${C_ERROR}同名智能体已存在: '${dupName.name}' (id=${dupName.id})${RESET}`);
         return;
       }
       const id = `ch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const agentId = `agent-${name.trim().toLowerCase().replace(/\s+/g, '-')}`;
       const ch: any = {
         id,
         name: name.trim(),
-        agentId: `agent-${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
+        agentId,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         currentSessionId: 'default',
       };
       if (personaHint) ch.persona = { name: name.trim(), description: personaHint };
-      channels.push(ch);
-      await mkdir(join(home, '.bolloon', 'sessions'), { recursive: true });
-      await writeFile(channelsPath, JSON.stringify(channels, null, 2), 'utf-8');
+      // 2026-08-09: 立即生成该 agent 的持久 DID 身份 (agent-keys/<agentId>.json) —
+      //   与 server fixOneChannelDID 对齐, 保证 CLI 新建的 agent 身份稳定且归属用户 DID
+      try {
+        const { loadOrCreateAgentIdentity } = await import('./agents/agent-identity.js');
+        const idt = loadOrCreateAgentIdentity(agentId);
+        ch.did = idt.did;
+        ch.publicKey = idt.publicKey;
+      } catch { /* DID 生成失败不阻塞创建 */ }
+      const channels = await updateChannels((chs) => [...chs, ch]);
+      // 刷新 store 缓存 (updateChannels 走了 server-storage, store 内存还是旧的)
+      await store.load();
       await store.setActive(id);
       cliAgentName = name.trim();
       cliActiveChannelId = id;
+      // 2026-08-09: 新建 agent 后立即重建 session — 否则新 agent 身份不加载 (bug 修复)
+      invalidateAgent();
+      try { await getAgent(); } catch { /* 非致命 */ }
       inkSetStatus(getStatus());
       appendLine(`${C_OK}✓ 已创建智能体 channel: ${name.trim()}${RESET} (${C_DIM}${id}${RESET})${personaHint ? `\n  ${C_DIM}persona: ${personaHint}${RESET}` : ''}`);
     } catch (e: any) {

@@ -1731,7 +1731,8 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     execute: async () => {
       try {
         const { readContextAssets, formatLayerListing } = await import('../bootstrap/context-os.js');
-        const listings = await readContextAssets();
+        // 2026-08-09: 按 agentId 分区读取 (每个智能体独立 Context OS)
+        const listings = await readContextAssets(undefined, undefined, undefined, (ctx as any).agentId || '');
         const total = listings.reduce((s, l) => s + l.fileCount, 0);
         if (total === 0) return { success: true, output: '📂 Context OS 资产层已就绪 (12+3 层), 当前暂无资产. 有价值的内容用 write_context_asset 写入对应层.' };
         return { success: true, output: `📂 Context OS 资产层共 ${total} 篇资产:\n\n${formatLayerListing(listings)}` };
@@ -1765,7 +1766,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
           const t = JSON.parse(String(args.tags || '[]'));
           if (Array.isArray(t)) tags = t.map(String);
         } catch { /* tags 解析失败 */ }
-        const r = await writeContextAsset({ layer, title, content, tags, domain: args.domain ? String(args.domain) : undefined });
+        const r = await writeContextAsset({ layer, title, content, tags, domain: args.domain ? String(args.domain) : undefined }, undefined, (ctx as any).agentId || '');
         if (!r.ok) return { success: false, error: r.error };
         if (r.skipped) return { success: true, output: `⏭️ ${r.error}` };
         return { success: true, output: `📥 已写入资产层 ${r.asset!.layer}: ${r.asset!.title} (stage0 临时价值点, 待验证后固化)\n路径: ${r.asset!.path}` };
@@ -1787,7 +1788,8 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         const { readContextAssets, formatLayerListing } = await import('../bootstrap/context-os.js');
         const layer = args.layer ? String(args.layer) : undefined;
         const kw = args.keyword ? String(args.keyword) : undefined;
-        const listings = await readContextAssets(layer, kw);
+        // 2026-08-09: 按 agentId 分区读取 (每个智能体独立 Context OS)
+        const listings = await readContextAssets(layer, kw, undefined, (ctx as any).agentId || '');
         if (listings.every((l) => l.fileCount === 0)) {
           return { success: true, output: layer ? `📂 资产层 ${layer} 暂无资产` : '📂 资产层暂无资产' };
         }

@@ -55,7 +55,7 @@ const BOLLOON_VERSION = getPackageVersion();
 //   头: 主色边框 + 亮绿填充 (C_ACCENT_BG); 眼睛 ◉ / 嘴 ◡ 用亮色填充;
 //   末行 BOLLOON 主色艺术字 (仅 printBanner 用, brandArtLines 会裁掉避免双 logo).
 const ROBOT_HEAD = [
-  `${C_ACCENT}   ╭──────╮${RESET}`,
+  `${C_ACCENT}   ╭───────╮${RESET}`,
   `${C_ACCENT} ╭─╯${C_ACCENT_BG}  ${C_WHITE}◉${C_ACCENT_BG} ${C_WHITE}◉${C_ACCENT_BG}  ${RESET}${C_ACCENT}╰─╮${RESET}`,
   `${C_ACCENT} │${C_ACCENT_BG}     ${C_WHITE}◡${C_ACCENT_BG}     ${RESET}${C_ACCENT}│${RESET}`,
   `${C_ACCENT} ╰─╮${C_ACCENT_BG}       ${RESET}${C_ACCENT}╭─╯${RESET}`,

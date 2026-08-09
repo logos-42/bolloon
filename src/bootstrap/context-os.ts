@@ -71,7 +71,16 @@ export function getContextOsRoot(home: string = os.homedir()): string {
   return path.join(home, '.bolloon', 'context-os');
 }
 
-export function getLayerDir(layer: string, home: string = os.homedir()): string {
+/**
+ * 2026-08-09: 层目录 — 支持按 agentId 分区 (每个智能体独立 Context OS).
+ *   agentId 有值 → ~/.bolloon/context-os/<sanitizeAgentId>/<layer>
+ *   agentId 空   → ~/.bolloon/context-os/<layer> (旧全局路径, 兼容)
+ */
+export function getLayerDir(layer: string, home: string = os.homedir(), agentId?: string): string {
+  const safeId = String(agentId || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+  if (safeId) {
+    return path.join(getContextOsRoot(home), safeId, layer);
+  }
   return path.join(getContextOsRoot(home), layer);
 }
 
@@ -114,11 +123,11 @@ ${l.usage}
 `;
 }
 
-export async function ensureContextOsDirs(home?: string): Promise<void> {
+export async function ensureContextOsDirs(home?: string, agentId?: string): Promise<void> {
   const root = getContextOsRoot(home);
   await fs.mkdir(root, { recursive: true });
   for (const l of CONTEXT_OS_LAYERS) {
-    const dir = getLayerDir(l.key, home);
+    const dir = getLayerDir(l.key, home, agentId);
     await fs.mkdir(dir, { recursive: true });
     const readmePath = path.join(dir, 'README.md');
     try {
@@ -162,7 +171,8 @@ export interface ContextAsset {
  */
 export async function writeContextAsset(
   input: WriteContextAssetInput,
-  home?: string
+  home?: string,
+  agentId?: string
 ): Promise<{ ok: boolean; asset?: ContextAsset; error?: string; skipped?: boolean }> {
   const layer = resolveLayer(input.layer);
   if (!layer) {
@@ -173,17 +183,17 @@ export async function writeContextAsset(
   const content = String(input.content || '').trim();
   if (!content) return { ok: false, error: 'content 必填' };
 
-  await ensureContextOsDirs(home);
+  await ensureContextOsDirs(home, agentId);
 
   const now = new Date().toISOString();
   const ts = Date.now();
   const slug = slugify(title);
   const fileName = `${ts}-${slug}.md`;
-  const filePath = path.join(getLayerDir(layer.key, home), fileName);
+  const filePath = path.join(getLayerDir(layer.key, home, agentId), fileName);
 
   // 幂等: 同 slug 已存在 → 跳过
   try {
-    const files = await fs.readdir(getLayerDir(layer.key, home));
+    const files = await fs.readdir(getLayerDir(layer.key, home, agentId));
     if (files.some((f) => f.endsWith(`-${slug}.md`))) {
       return { ok: true, skipped: true, error: `同标题资产已存在 (${slug}.md), 未重复写入` };
     }
@@ -226,7 +236,8 @@ export interface ContextLayerListing {
 export async function readContextAssets(
   layer?: string,
   keyword?: string,
-  home?: string
+  home?: string,
+  agentId?: string
 ): Promise<ContextLayerListing[]> {
   const root = getContextOsRoot(home);
   const kw = String(keyword || '').trim().toLowerCase();
@@ -236,11 +247,11 @@ export async function readContextAssets(
   for (const key of wanted) {
     const l = resolveLayer(key)!;
     try {
-      const files = (await fs.readdir(getLayerDir(key, home))).filter((f) => f.endsWith('.md') && f !== 'README.md');
+      const files = (await fs.readdir(getLayerDir(key, home, agentId))).filter((f) => f.endsWith('.md') && f !== 'README.md');
       const entries: Array<{ file: string; title: string; createdAt: string }> = [];
       for (const f of files) {
         try {
-          const raw = await fs.readFile(path.join(getLayerDir(key, home), f), 'utf-8');
+          const raw = await fs.readFile(path.join(getLayerDir(key, home, agentId), f), 'utf-8');
           const titleM = raw.match(/^title:\s*(.+)$/m);
           const createdM = raw.match(/^created:\s*(.+)$/m);
           const title = titleM ? titleM[1].trim() : f.replace(/\.md$/, '');
