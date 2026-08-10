@@ -74,11 +74,18 @@ print('[1] 启动完成:', ok)
 drain(10)
 
 screen = get_screen()
-print('[2] 检查 🧹 遗留 skills 提示...')
-if '发现 1 个遗留 skills' in screen:
+print('[2] 检查 🧹 遗留 skills 提示 (艺术字框内)...')
+if '遗留 skills (1):' in screen:
     print('  ✓ 遗留提示出现')
 else:
     fails.append('遗留提示未出现')
+    print('  ✗ 未找到; 屏幕尾部:', screen[-500:])
+
+print('[2b] 检查自动整理艺术字框标题...')
+if '自动整理完成' in screen:
+    print('  ✓ 艺术字框出现')
+else:
+    fails.append('艺术字框未出现')
     print('  ✗ 未找到; 屏幕尾部:', screen[-500:])
 
 print('[3] 检查 🧠 知识整理汇总...')

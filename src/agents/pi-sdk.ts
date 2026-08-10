@@ -53,6 +53,12 @@ import {
 import { Session, SkillRegistry, saveSession, loadSession, type Skill, type StoredSession } from '@bolloon/constraint-runtime';
 import { loadSkillsFromPaths, defaultSkillPaths, describeSkill } from './skill-loader.js';
 
+/** 2026-08-10: unreported 逃生门判定 — LLM 反复不把工具结果写进回复时, 超过上限强制收尾 (防死循环) */
+export function decideUnreported(unreported: number, retries: number, max: number): 'retry' | 'force-final' | 'none' {
+  if (unreported <= 0) return 'none';
+  return retries < max ? 'retry' : 'force-final';
+}
+
 // 拆分后的子模块 — 重新导出保 backward compat
 export {
   type AgentSessionConfig,
@@ -1230,6 +1236,11 @@ ${this.getToolDefinitions()}
     const MAX_TOOL_CALLS_PER_LOOP = 25; // 单轮循环总工具调用上限 → 注入 hint
     let totalToolCallsThisLoop = 0;
     const lastNTools: string[] = []; // 最近 MAX_IDEMPOTENT_TOOL 次工具名, 检测重复
+    // 2026-08-10: unreported 循环逃生门 — LLM 反复不把工具结果写进回复时, 3 次后强制 final (不死板)
+    const MAX_UNREPORTED_RETRIES = 3;
+    let unreportedRetries = 0;
+    // 2026-08-10: 工具失败时的终端逃生引导 (shell_exec 白名单命令可诊断环境/推进任务)
+    const SHELL_ESCAPE_HINT = ' [逃生] 若工具无法响应/报错, 可用 shell_exec 跑终端命令诊断 (白名单: ls/cat/head/tail/pwd/git status/npm run test 等), 或调整参数换一种方式完成; 不要重复调用同一失败工具.';
 
     // 2026-08-08: final 前 review 续跑 — 目标对齐 + 需求深挖 (见 loop-review.ts)
     //   不潦草收尾: LLM 想 <final gen> 时先跑 1-2 次 review, 达成用户需求才放行.
@@ -1770,7 +1781,7 @@ ${toolDefs}
             // 2026-07-28: 注入 Observation + Reflection 替代旧 hardcode 提示
             const obs = buildObservation(toolCall.name, toolCall.args, { success: false, error: result.error });
             const ref = buildReflection(toolCall.name, result.error, totalErrors, lastFailedToolCount);
-            this.messageHistory.push({ role: 'system', content: formatObservationWithReflection(obs, ref) });
+            this.messageHistory.push({ role: 'system', content: formatObservationWithReflection(obs, ref) + SHELL_ESCAPE_HINT });
             if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary} → ${ref[0]?.action || '放弃'}`, tool: 'system' });
             if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
               this.messageHistory.push({ role: 'system', content: `[注意] 工具 ${toolCall.name} 在这个上下文中不可用 (连续 ${MAX_SAME_TOOL_FAILURES} 次失败: ${result.error}). 请不要再次调用它, 直接用你已知的信息回答用户, 并在回答开头标记 <final gen>.` });
@@ -1790,7 +1801,7 @@ ${toolDefs}
           this.logToHarness(toolCall.name, toolCall.args, errorResult);
           const obs = buildObservation(toolCall.name, toolCall.args, errorResult);
           const ref = buildReflection(toolCall.name, errorResult.error, totalErrors, lastFailedToolCount);
-          this.messageHistory.push({ role: 'system', content: formatObservationWithReflection(obs, ref) });
+          this.messageHistory.push({ role: 'system', content: formatObservationWithReflection(obs, ref) + SHELL_ESCAPE_HINT });
           if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary}`, tool: 'system' });
           console.error(`[PiAgent] 工具执行异常 (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS}): ${execError}`);
         }
@@ -1828,17 +1839,31 @@ ${toolDefs}
             this.successfulToolResults = [];
           }
           
-          if (this.successfulToolResults.length > 0 && iteration < this.MAX_REACT_ITERATIONS) {
+          // 2026-08-10: 逃生门 — decideUnreported: 未达上限 → 再提示一次; 超限 → 清空积压强制 final (防死循环)
+          const unreportedDecision = decideUnreported(this.successfulToolResults.length, unreportedRetries, MAX_UNREPORTED_RETRIES);
+          if (unreportedDecision === 'retry' && iteration < this.MAX_REACT_ITERATIONS) {
+            unreportedRetries++;
             const unreported = this.successfulToolResults.length;
-            console.log(`[PiAgent] LLM 想 final_gen 但还有 ${unreported} 个工具结果未汇报, push hint 让其继续`);
+            console.log(`[PiAgent] LLM 想 final_gen 但还有 ${unreported} 个工具结果未汇报 (${unreportedRetries}/${MAX_UNREPORTED_RETRIES}), push hint 让其继续`);
             this.messageHistory.push({
               role: 'system',
               content: `[dive-into stop condition] 你之前已成功执行了 ${unreported} 个工具, 但当前回复里没把它们的结果告诉用户. 请基于已有的工具结果 (在 history 里) 写一个完整总结回复给用户, 用 <final gen> 结尾. 不要再调工具.`
             });
             if (onStream) {
-              onStream({ type: 'status', content: `🔄 还有 ${unreported} 个工具结果未汇报, 让 LLM 继续总结`, tool: 'system' });
+              onStream({ type: 'status', content: `🔄 还有 ${unreported} 个工具结果未汇报, 让 LLM 继续总结 (${unreportedRetries}/${MAX_UNREPORTED_RETRIES})`, tool: 'system' });
             }
             continue;
+          } else if (unreportedDecision === 'force-final') {
+            // 反复提示仍未汇报超过上限 → 清空积压强制 final, 不再死循环
+            console.log(`[PiAgent] unreported 循环超限 (${unreportedRetries} 次), 清空积压强制 final`);
+            this.successfulToolResults = [];
+            this.messageHistory.push({
+              role: 'system',
+              content: `[dive-into stop condition] 已多次提示汇报工具结果仍未完成 (超过 ${MAX_UNREPORTED_RETRIES} 次). 现在直接基于你已知的信息写最终回复给用户, 用 <final gen> 结尾, 不要再调任何工具.`
+            });
+            if (onStream) {
+              onStream({ type: 'status', content: `🔄 工具结果汇报超限, 强制收尾`, tool: 'system' });
+            }
           }
 lastQualityScore = this.estimateResponseQuality(reply);
           // 2026-07-29: 质量门 — 即使 LLM 声称完成, 质量太低也继续

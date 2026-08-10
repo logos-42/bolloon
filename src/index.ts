@@ -650,16 +650,21 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
       onStart: () => inkSetTransient(`${C_DIM}(｀・ω・´) 自动整理经验中...${RESET}`),
       onEnd: (r) => {
         inkSetTransient(null); // 结束后去除显示效果 (显示为空)
+        // 2026-08-10: 整理结果统一进 bolloon 艺术字框 (renderMessageBox 圆角框, 与反思框同款)
+        const boxLines: string[] = [];
         if (r && r.leftovers.length > 0) {
-          appendLine(`${C_DIM}🧹 发现 ${r.leftovers.length} 个遗留 skills: ${r.leftovers.slice(0, 5).map(l => l.name).join(', ')}${RESET}`);
+          boxLines.push(`🧹 遗留 skills (${r.leftovers.length}): ${r.leftovers.slice(0, 8).map(l => l.name).join(', ')}${r.leftovers.length > 8 ? ' ...' : ''}`);
         }
         if (r && r.evolved.length > 0) {
-          appendLine(`${C_OK}✨ 经验进化: ${r.evolved.join(', ')}${RESET}`);
+          boxLines.push(`✨ 经验进化: ${r.evolved.join(', ')}`);
         }
-        // 2026-08-10: 知识层整理汇总 (Context OS/社交/智能体/judgeness/项目/画像/日志/目标)
+        // 知识层整理汇总 (Context OS/社交/智能体/judgeness/项目/画像/日志/目标)
         const kSections = (r?.knowledge?.sections || []).filter(s => s.handled > 0 || s.error);
         if (kSections.length > 0) {
-          appendLine(`${C_DIM}🧠 知识整理: ${kSections.map(s => s.error ? `${s.label}✗` : `${s.label}✓`).join(' ')}${RESET}`);
+          boxLines.push(`🧠 知识整理: ${kSections.map(s => s.error ? `${s.label}✗` : `${s.label}✓`).join(' ')}`);
+        }
+        if (boxLines.length > 0) {
+          appendLine(renderMessageBox({ title: '自动整理完成', body: boxLines.join('\n'), color: C_ACCENT, maxLines: 10 }));
         }
       },
       onError: () => inkSetTransient(null),

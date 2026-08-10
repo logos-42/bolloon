@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|||| 2026-08-10 | feat | 自动整理结果进艺术字框 + 循环逃生门 (v0.3.49): ① 自动整理汇总 (🧹 遗留/✨ 进化/🧠 知识) 统一进 renderMessageBox 圆角框 "自动整理完成"; ② unreported 循环逃生门 — decideUnreported 纯函数 (默认 3 次提示后清空积压强制 final, 状态栏显示 N/M), 修用户实测 11 次 "🔄 还有 1 个工具结果未汇报" 死循环; ③ 工具失败追加 SHELL_ESCAPE_HINT 引导 LLM 用 shell_exec 开终端跑命令诊断. tsc 0 错, vitest 1149/1149 (+4), pty PASS, 已发布 npm 0.3.49 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-10 | feat | 自动整理心跳 (v0.3.48): 心跳循环扩展 — 不再只有社交心跳, 新增自动整理心跳 (与社交独立): AgentHeartbeat organize tick + skill-organizer (遗留 skills 扫描: 迁移残留/占位/archived/重复; 经验进化: LLM 把工具调用记录扩写成完整 SKILL.md 背景/触发/流程/注意事项/验证) + knowledge-organizer 9 类知识整理 (Context OS 归档/外部社交关系/外部与内部智能体描述/judgeness 维护/项目目录理解/用户画像理解/最近日志归档/用户长短期目标维护) + CLI transient 颜文字行 (触发时显示, 结束后清空显示为空, run-end 整理不再残留 ✨ 行) + server 接 organize 回调. tsc 0 错, vitest 1145/1145 (+27), pty 端到端 PASS (verify-organize-pty.py), 已发布 npm 0.3.48 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-09 | chore | 发布 v0.3.47: CLI 切 channel 身份重建 + Context OS 按 agent 分区 + /new agent 原子写防丢失 + 新 logo. build:all + smoke:esm PASS, npm dist-tags.latest=0.3.47 确认, 全局包 dist 已同步 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-09 | fix | CLI 切 channel 后 agent 身份不更新/新建 agent 丢失: ① getAgent 按 active channel 重建 session (peerId=channelId + agentId 透传 → persona/ME 文档按 agent 加载, loadSessionKey 回灌历史) ② /channel 切换 + /new agent 创建后 invalidateAgent 立即重建 ③ /new agent 改用 updateChannels 原子写 (修与 Web server 并发覆盖丢 agent) + 创建时即生成 agent DID 归属用户 ④ Context OS 资产按 agentId 分区 (context-os/<agentId>/01-Me 独立, 旧全局路径兼容). 验证: verify-cli-agent-channel.ts 8/8 + verify-agent-persona.ts 12/12 + vitest 1118/1118 | [index.ts](../../src/index.ts) [context-os.ts](../../src/bootstrap/context-os.ts) |
@@ -1025,4 +1026,37 @@
 - 版本: 0.3.47 → 0.3.48
 - `npm publish` (prepublishOnly: build:all + smoke:esm 通过)
 - 线上验证: `npm view @bolloon/bolloon-agent@0.3.48`
+- 全局包 dist 同步
+
+## [2026-08-10] feat | 自动整理结果进艺术字框 + 循环逃生门 (v0.3.49)
+
+### 背景
+
+用户实测反馈: ① 自动整理结果 (🧹 遗留 / 🧠 知识整理) 应放进 bolloon 艺术字框里显示; ② 工具出现无法响应/错误时循环太死板 (实测 `🔄 还有 1 个工具结果未汇报, 让 LLM 继续总结` 重复 11 次), 应让 AI 能开终端自己输入命令.
+
+### 改动
+
+1. **整理结果进艺术字框** (`src/index.ts` onEnd):
+   - 🧹 遗留 skills / ✨ 经验进化 / 🧠 知识整理 不再裸 appendLine, 统一进 `renderMessageBox` 圆角框
+   - 标题 `自动整理完成`, 与反思框同款 (白字亮边框, maxLines 10 超高截断)
+
+2. **unreported 循环逃生门** (`src/agents/pi-sdk.ts`):
+   - 根因: `successfulToolResults` 积压时 LLM 反复不把结果写进回复, 旧逻辑无上限 (MAX_REACT_ITERATIONS=10000) → 死循环
+   - 新增导出纯函数 `decideUnreported(unreported, retries, max)`: 未达上限 (默认 3) → retry (状态栏显示 N/M); 超限 → force-final (清空积压 + 注入强制 final 提示 + `🔄 工具结果汇报超限, 强制收尾`)
+
+3. **工具失败终端逃生引导** (`src/agents/pi-sdk.ts`):
+   - 工具失败/异常两条路径的 Observation+Reflection system 消息追加 `SHELL_ESCAPE_HINT`
+   - 引导 LLM 用已有 `shell_exec` 工具 (白名单 ls/cat/git/npm 等) 开终端跑命令诊断环境/推进任务, 不要重复调用同一失败工具
+
+### 验证
+
+- `npx tsc --noEmit`: 0 错
+- `npx vitest run`: 1149/1149 pass (原 1145 + unreported-escape 4)
+- pty 端到端 `scripts/verify-organize-pty.py`: 新增"自动整理完成"艺术字框标题断言, 全 PASS
+
+### 发布
+
+- 版本: 0.3.48 → 0.3.49
+- `npm publish` (prepublishOnly: build:all + smoke:esm 通过)
+- 线上验证: `npm view @bolloon/bolloon-agent@0.3.49`
 - 全局包 dist 同步
