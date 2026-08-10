@@ -1030,6 +1030,21 @@
 - 线上验证: `npm view @bolloon/bolloon-agent@0.3.48`
 - 全局包 dist 同步
 
+## [2026-08-10] feat | Rokid 双端适配与独立 npm SDK
+
+### 内容
+
+- 新增外置 npm SDK：`/Users/apple/Downloads/rokid/`，包含稳定协议、`RokidDeviceClient`、Mock Transport、Node 示例和手机—眼镜回环测试。
+- 新增 Bolloon Android 手机端：`rokid/android/`，Capacitor `RokidBridge` 插件，默认 Mock 模式。
+- 新增 Rokid Glass 眼镜端：`rokid/glass/`，Kotlin `RokidGlassesAdapter`、大字号消息页、连接状态和语音 Mock。
+- `src/web/client.ts` 增加可选 Rokid 桥：检测到原生插件时转发用户消息和 AI 回复；没有插件时保持原行为。
+- `capacitor.config.ts`、`package.json`、`docs/BUILD.md` 和 wiki 状态同步更新。
+
+### 边界
+
+- 未把 Rokid 私有 SDK、AAR/JAR、授权文件或密钥写入仓库。
+- 真实设备接入待官方 SDK 材料到位后实现 Vendor Adapter，公共 npm 协议不变。
+
 ## [2026-08-10] feat | 自动整理结果进艺术字框 + 循环逃生门 (v0.3.49)
 
 ### 背景

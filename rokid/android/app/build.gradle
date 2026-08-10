@@ -1,0 +1,40 @@
+plugins {
+    id 'com.android.application'
+}
+
+def rokidSdkMode = providers.gradleProperty('rokidSdkMode').getOrElse('mock')
+
+android {
+    namespace 'com.bolloon.agent.rokid'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.bolloon.agent.rokid'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    buildFeatures { buildConfig true }
+
+    // 真实 Rokid AAR/JAR 到位后，以 -ProkidSdkMode=vendor 启用 Vendor Adapter。
+    buildTypes.configureEach {
+        buildConfigField 'String', 'ROKID_SDK_MODE', '"' + rokidSdkMode + '"'
+    }
+}
+
+dependencies {
+    implementation 'com.capacitorjs:capacitor-android:8.4.1'
+    // 官方 SDK 不在仓库内，不能在没有授权材料时伪造坐标。
+    if (rokidSdkMode == 'vendor') {
+        // implementation(name: 'rokid-phone-sdk', ext: 'aar')
+    }
+}

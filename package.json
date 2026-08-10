@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.3.51",
+  "version": "0.3.52",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli-entry.js",
@@ -29,6 +29,8 @@
     "build:main": "tsc && node scripts/copy-constraint-runtime.mjs",
     "build:cli": "node scripts/build-cli.js",
     "build:web": "npx tsx scripts/build-web.ts",
+    "build:rokid-sdk": "npm --prefix ../rokid run build",
+    "test:rokid-sdk": "npm --prefix ../rokid test",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build:all": "npm run build:main && npm run build:web && npm run build:electron && npm run build:cli",
     "start": "node dist/index.js",
@@ -55,6 +57,7 @@
   "dependencies": {
     "@bolloon/bolloon-agent": "^0.3.22",
     "@bolloon/constraint-runtime": "0.1.0",
+    "@capacitor/android": "^8.4.1",
     "@capacitor/core": "^8.4.1",
     "@capacitor/ios": "^8.4.2",
     "@chainsafe/libp2p-noise": "^17.0.0",

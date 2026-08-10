@@ -1,5 +1,5 @@
 /**
- * Capacitor 配置 — Bolloon Agent iOS 包
+ * Capacitor 配置 — Bolloon Agent iOS / Android 包
  *
  * webDir: 'dist/web' → `npx cap sync ios` 会把 dist/web/* 拷到 ios/App/App/public/
  * server.url: dev 时用本地 server, prod (Capacitor 打包) 时清空走 webDir
@@ -24,7 +24,8 @@ const config: CapacitorConfig = {
     backgroundColor: '#ffffff',
   },
   android: {
-    // 暂不实现 Android, 留空
+    // Rokid Android 手机端工程在 rokid/android/，这里保持 Capacitor Android 的基础配置。
+    backgroundColor: '#111318',
   },
   server: {
     // dev 用: 在 macOS 跑 `npm run dev:web` 然后 `npx cap run ios --livereload --external`

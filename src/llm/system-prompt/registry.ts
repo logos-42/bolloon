@@ -237,6 +237,15 @@ export interface AssembleContext {
  */
 const TOTAL_BUDGET = 8000;
 
+/** 2026-08-10: dynamic resolver 超时保护 — 单个 resolver 卡住/变慢 (如项目扫描) 时降级为空,
+ *  不让 assembleSystemPrompt 整体超时 (实测 project-context 扫描 8.7s > 测试 5s 超时). */
+function withResolverTimeout(p: string | Promise<string>, ms = 3000): Promise<string> {
+  return Promise.race([
+    Promise.resolve(p),
+    new Promise<string>((resolve) => setTimeout(() => resolve(''), ms)),
+  ]);
+}
+
 export async function assembleSystemPrompt(ctx: AssembleContext): Promise<{
   text: string;
   layerIds: string[];
@@ -275,7 +284,7 @@ export async function assembleSystemPrompt(ctx: AssembleContext): Promise<{
     let content = '';
     if (layer.source === 'function' && layer.resolver) {
       try {
-        content = await layer.resolver();
+        content = await withResolverTimeout(layer.resolver());
       } catch {
         content = '';
       }

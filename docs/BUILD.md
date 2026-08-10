@@ -83,6 +83,28 @@ CI 跑 `ios-build` job 需要在 repo settings 加 secrets:
 
 不配 secrets → CI 出 unsigned .xcarchive, dev 本地自己 archive.
 
+## Rokid Android 手机端
+
+Rokid 手机伴侣工程位于 `rokid/android/`，默认使用 Mock 适配器，不需要 Rokid 私有 SDK：
+
+```bash
+cd rokid/android
+gradle :app:assembleDebug
+```
+
+如果本机没有 Android SDK 或 Gradle，请用 Android Studio 打开 `rokid/android/`。拿到官方 SDK 后，保持私有材料在 `/Users/apple/Downloads/rokid/vendor/`，通过 `ROKID_SDK_DIR` 和 `-ProkidSdkMode=vendor` 注入，禁止将 AAR/JAR、授权文件或密钥提交到仓库。
+
+## Rokid Glass 眼镜端
+
+眼镜端是独立的 Android 工程，位于 `rokid/glass/`：
+
+```bash
+cd rokid/glass
+gradle :app:assembleDebug
+```
+
+默认页面使用 `MockRokidGlassesAdapter`，用于验证大字号消息、连接状态和语音结果；官方 SDK 到位后只替换 Vendor Adapter。
+
 ---
 
 ## CI / Release
@@ -123,7 +145,7 @@ git push origin v0.2.1
 ## 已知未实现
 
 - [ ] **electron-updater** — 当前 CLI 用 `src/utils/auto-update.ts` (npm global) 更新; desktop/iOS 走 App Store / Mac App Store 自动更新, 暂无独立 OTA
-- [ ] **Android** — Capacitor 加了 `@capacitor/ios` 没用 android, 后面要做就 `npm i @capacitor/android && npx cap add android`
+- [x] **Android / Rokid Mock** — `rokid/android/` 手机端 + `rokid/glass/` 眼镜端工程已建立；真实 Rokid SDK 等待官方材料
 - [ ] **macOS 公证 (Notarization)** — 没配 Apple ID 账号, CI 出来的 .dmg 没 notarize, 用户首次开要手动允许
 - [ ] **Code signing certificate** — 没放, 配 secrets 后走 CI 自动签名
 - [ ] **Auto-publish to GitHub Releases** — release job 已经做了, 但 publish config (`package.json` build.publish) 还是 placeholder `REPLACE_WITH_OWNER/REPO`

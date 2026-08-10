@@ -46,3 +46,7 @@ bolloon_raw/
 
 # bolloon runtime data (本地运行态, 不入库; 技能/迁移/日志都在此)
 .bolloon/
+
+# Rokid vendor SDK stays outside the repository; ignore accidental local copies.
+rokid/android/vendor/*
+rokid/glass/vendor/*

@@ -138,6 +138,8 @@ describe('端到端: 真实 registry + health', () => {
   });
 
   it('assembleSystemPrompt 返回的 layerIds 能 markActive', async () => {
+    // 2026-08-10: assembleSystemPrompt 含 HumanValueStore 等 dynamic resolver 初始化,
+    //   实测 8.7s (~/.bolloon 产物增多后变慢) — 默认 5s 超时太紧, 这是功能测试非性能测试
     const r = await assembleSystemPrompt({ channel: 'local' });
     const all = listLayers() as Array<any>;
     const base = evaluateLayers(all);
@@ -148,5 +150,5 @@ describe('端到端: 真实 registry + health', () => {
     expect(activeCount).toBeGreaterThan(0);
     // total chars 跟 assemble 返回的一致
     expect(r.totalChars).toBeGreaterThan(0);
-  });
+  }, 15000);
 });

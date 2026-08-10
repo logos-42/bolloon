@@ -98,6 +98,64 @@ const newChannelBtn = document.getElementById('new-channel-btn');
 const newChannelInput = document.getElementById('new-channel-input');
 const channelNameEl = document.getElementById('channel-name');
 
+// Rokid 适配是可选的：Capacitor Android 注入 RokidBridge 时启用，纯 Web/iOS/桌面模式静默跳过。
+let rokidBridge = null;
+let rokidBridgeStatus = 'unavailable';
+
+function getRokidBridge() {
+  if (typeof window === 'undefined') return null;
+  return window.Capacitor?.Plugins?.RokidBridge || null;
+}
+
+function publishRokidStatus(status, detail = {}) {
+  rokidBridgeStatus = status;
+  if (typeof window !== 'undefined') {
+    window.__bolloonRokidStatus = { status, ...detail };
+    window.dispatchEvent(new CustomEvent('bolloon:rokid-status', { detail: window.__bolloonRokidStatus }));
+  }
+}
+
+async function initRokidBridge() {
+  const bridge = getRokidBridge();
+  if (!bridge) {
+    publishRokidStatus('unavailable');
+    return;
+  }
+  rokidBridge = bridge;
+  try {
+    await bridge.addListener?.('rokidEvent', (event) => {
+      if (event?.type === 'connected') publishRokidStatus('connected', { device: event.device });
+      else if (event?.type === 'disconnected') publishRokidStatus('disconnected', { reason: event.reason });
+      else if (event?.type === 'error') publishRokidStatus('error', { error: event.error || event.message });
+      window.dispatchEvent(new CustomEvent('bolloon:rokid-event', { detail: event }));
+    });
+    const result = await bridge.connect?.();
+    publishRokidStatus('connected', { deviceId: result?.deviceId, mode: result?.mode });
+  } catch (error) {
+    publishRokidStatus('error', { error: error?.message || String(error) });
+    console.warn('[Rokid] bridge unavailable:', error);
+  }
+}
+
+function sendRokidText(text, metadata = {}) {
+  if (!rokidBridge || !text) return;
+  Promise.resolve(rokidBridge.sendMessage?.({
+    text,
+    channelId: currentChannelId || undefined,
+    metadata,
+  })).catch((error) => {
+    publishRokidStatus('error', { error: error?.message || String(error) });
+  });
+}
+
+if (typeof window !== 'undefined') {
+  window.BolloonRokid = {
+    connect: initRokidBridge,
+    sendMessage: sendRokidText,
+    getStatus: () => ({ status: rokidBridgeStatus }),
+  };
+}
+
 let eventSources = new Map(); // channelId -> EventSource
 let currentChannelId = null;
 let activeChannelId = null; // 2026-08-06: 统一 Agent Identity 的 active channel (active-channel.json)
@@ -1639,6 +1697,7 @@ function connect(channelId) {
           MR_replaceStreamingText?.(data.content || '');
           MR_finalizeTimelineAsMessage(getRendererCtx());
         }
+        sendRokidText(data.content || '', { source: 'ai' });
       } else if (data.type === 'reply-preview') {
         // 2026-07-06: pivot loop 每 iter 推 preview — 用户要求"后端只要在跑就要看到内容, 不是 '任务处理超时'"
         //   2026-07-15 修 Bug 5: 之前每次 preview 新建气泡, pivot 多 iter → 屏幕上叠 3-5 个 R1/R2/R3 气泡, 看起来像"重复"
@@ -1754,6 +1813,7 @@ async function sendMessage() {
   // 现在: sendMessage 自己上屏, SSE `user` 回调来时因为 lastUserCommand 已匹配, 自动跳过 → 不重复
   const container = messagesContainers.get(currentChannelId) || messagesEl;
   addMessage(text, 'user', true, container);
+  sendRokidText(text, { source: 'user' });
   // 滚动到底
   if (container) container.scrollTop = container.scrollHeight;
 
@@ -2961,6 +3021,7 @@ if (typeof document !== 'undefined') {
 }
 
 async function init() {
+  void initRokidBridge();
   const themeData = await loadTheme();
   currentAgentId = themeData.agentId || `agent_${generateId().substring(0, 8)}`;
 

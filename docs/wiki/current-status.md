@@ -2,7 +2,7 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-08-09
+last_confirmed: 2026-08-10
 schema_version: 2
 audience: self
 stage: current
@@ -168,3 +168,11 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 | P2 | 补 `docs/wiki/skills-index.md` (skill 系统索引) | ✅ 35 个全局 skill + 触发词映射已写 |
 | P2 | 把 2 个 opencode skill 接入 bolloon, 验证 use_skill 协议端到端 | ✅ 2026-07-04 复制 + ablation v0.2.8 D3.1 真实加载 |
 | P3 | 把 `scripts/ablation/run-long-loop.ts` 接入 vitest pre-commit | 待做 (跟 v0.2.7 runner 一样) |
+
+## Rokid 双端适配 (2026-08-10)
+
+- ✅ 独立 npm SDK：`/Users/apple/Downloads/rokid/`，提供 `RokidDeviceClient`、协议类型、Mock Transport 和手机—眼镜回环测试。
+- ✅ Android 手机端：`rokid/android/`，Capacitor `RokidBridge` 插件，默认 Mock 模式。
+- ✅ Glass 眼镜端：`rokid/glass/`，Kotlin `RokidGlassesAdapter` 与大字号 Mock UI。
+- ✅ Web 端可选桥：`src/web/client.ts` 仅在检测到 Capacitor `RokidBridge` 时发送用户消息和 AI 回复；纯 Web/iOS/桌面保持静默。
+- ⚠️ 真实设备适配待官方 SDK/AAR/JAR 与授权材料；私有材料只允许放 `/Users/apple/Downloads/rokid/vendor/`，不进 Git。
