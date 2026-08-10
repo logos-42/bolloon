@@ -234,4 +234,113 @@ describe('AgentHeartbeat', () => {
     expect(hb.getLifecycle().started).toBe(false);
     expect(hb.getLifecycle().phase).toBe('PAUSED');
   });
+
+  // === 2026-08-10: 自动整理心跳 (与社交并列的第三条心跳) ===
+  it('organize: tickOrganize 调 organize 回调 + start/end 事件', async () => {
+    const events: Array<{ phase: string; summary?: string }> = [];
+    const organize = vi.fn(async (): Promise<{ done: boolean; summary: string }> => {
+      return { done: true, summary: '进化 1 个 skill' };
+    });
+    const hb = new AgentHeartbeat({
+      self: () => SELF,
+      getPeers: () => [PEER_B],
+      transport: makeTransport().transport,
+      organizeEnabled: true,
+      organize,
+      onOrganizeEvent: (evt) => events.push(evt),
+    });
+    await hb.tickOrganize();
+    expect(organize).toHaveBeenCalledTimes(1);
+    expect(events[0].phase).toBe('start');
+    expect(events[1].phase).toBe('end');
+    expect(events[1].summary).toContain('进化 1 个 skill');
+    expect(hb.isOrganizeEnabled()).toBe(true);
+  });
+
+  it('organize: 无 organize 回调 → isOrganizeEnabled=false, tick 不跑', async () => {
+    const hb = new AgentHeartbeat({
+      self: () => SELF,
+      getPeers: () => [PEER_B],
+      transport: makeTransport().transport,
+    });
+    expect(hb.isOrganizeEnabled()).toBe(false);
+    const r = await hb.tickOrganize();
+    expect(r).toBeUndefined();
+  });
+
+  it('organize: organizeEnabled=false → 不跑整理 (即使有回调)', async () => {
+    const organize = vi.fn(async () => ({ done: true }));
+    const hb = new AgentHeartbeat({
+      self: () => SELF,
+      getPeers: () => [PEER_B],
+      transport: makeTransport().transport,
+      organizeEnabled: false,
+      organize,
+    });
+    expect(hb.isOrganizeEnabled()).toBe(false);
+    await hb.tickOrganize();
+    expect(organize).not.toHaveBeenCalled();
+  });
+
+  it('organize: 回调抛错 → onOrganizeEvent error + 异常上抛, 重入锁释放', async () => {
+    const events: Array<{ phase: string; error?: string }> = [];
+    const hb = new AgentHeartbeat({
+      self: () => SELF,
+      getPeers: () => [PEER_B],
+      transport: makeTransport().transport,
+      organizeEnabled: true,
+      organize: async () => {
+        throw new Error('organize boom');
+      },
+      onOrganizeEvent: (evt) => events.push(evt),
+    });
+    await expect(hb.tickOrganize()).rejects.toThrow('organize boom');
+    expect(events[0].phase).toBe('start');
+    expect(events[1].phase).toBe('error');
+    expect(events[1].error).toContain('organize boom');
+    // 锁已释放 → 再跑一次 (这次换正常回调)
+    const hb2 = new AgentHeartbeat({
+      self: () => SELF,
+      getPeers: () => [PEER_B],
+      transport: makeTransport().transport,
+      organizeEnabled: true,
+      organize: async () => ({ done: true }),
+    });
+    await expect(hb2.tickOrganize()).resolves.toBeDefined();
+  });
+
+  it('organize: 重入锁 — 并发 tickOrganize 只跑一次', async () => {
+    let runs = 0;
+    const hb = new AgentHeartbeat({
+      self: () => SELF,
+      getPeers: () => [PEER_B],
+      transport: makeTransport().transport,
+      organizeEnabled: true,
+      organize: async () => {
+        runs++;
+        await new Promise((r) => setTimeout(r, 10));
+        return { done: true };
+      },
+    });
+    await Promise.all([hb.tickOrganize(), hb.tickOrganize()]);
+    expect(runs).toBe(1);
+  });
+
+  it('organize: start() 启动定时 + stop() 清理 (organize=关闭时 start 日志无 organize)', async () => {
+    const organize = vi.fn(async () => ({ done: true }));
+    const hb = new AgentHeartbeat({
+      self: () => SELF,
+      getPeers: () => [PEER_B],
+      transport: makeTransport().transport,
+      organizeEnabled: true,
+      organize,
+      beaconIntervalMs: 50,
+      socialIntervalMs: 50,
+      socialEnabled: false,
+    });
+    hb.start();
+    expect(hb.isOrganizeEnabled()).toBe(true);
+    hb.stop();
+    expect(hb.getLifecycle().started).toBe(false);
+  });
 });

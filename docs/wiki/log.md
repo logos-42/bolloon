@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|||| 2026-08-10 | feat | 自动整理心跳 (v0.3.48): 心跳循环扩展 — 不再只有社交心跳, 新增自动整理心跳 (与社交独立): AgentHeartbeat organize tick + skill-organizer (遗留 skills 扫描: 迁移残留/占位/archived/重复; 经验进化: LLM 把工具调用记录扩写成完整 SKILL.md 背景/触发/流程/注意事项/验证) + knowledge-organizer 9 类知识整理 (Context OS 归档/外部社交关系/外部与内部智能体描述/judgeness 维护/项目目录理解/用户画像理解/最近日志归档/用户长短期目标维护) + CLI transient 颜文字行 (触发时显示, 结束后清空显示为空, run-end 整理不再残留 ✨ 行) + server 接 organize 回调. tsc 0 错, vitest 1145/1145 (+27), pty 端到端 PASS (verify-organize-pty.py), 已发布 npm 0.3.48 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-09 | chore | 发布 v0.3.47: CLI 切 channel 身份重建 + Context OS 按 agent 分区 + /new agent 原子写防丢失 + 新 logo. build:all + smoke:esm PASS, npm dist-tags.latest=0.3.47 确认, 全局包 dist 已同步 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-09 | fix | CLI 切 channel 后 agent 身份不更新/新建 agent 丢失: ① getAgent 按 active channel 重建 session (peerId=channelId + agentId 透传 → persona/ME 文档按 agent 加载, loadSessionKey 回灌历史) ② /channel 切换 + /new agent 创建后 invalidateAgent 立即重建 ③ /new agent 改用 updateChannels 原子写 (修与 Web server 并发覆盖丢 agent) + 创建时即生成 agent DID 归属用户 ④ Context OS 资产按 agentId 分区 (context-os/<agentId>/01-Me 独立, 旧全局路径兼容). 验证: verify-cli-agent-channel.ts 8/8 + verify-agent-persona.ts 12/12 + vitest 1118/1118 | [index.ts](../../src/index.ts) [context-os.ts](../../src/bootstrap/context-os.ts) |
 |||| 2026-08-09 | feat | 终端新 logo: 笑脸机器人 (bolloon 色系) — `loading-tui.ts` BOLLOON_ICON 从旧"气球 ✦"改为机器人头 (主色边框 + 亮绿填充 C_ACCENT_BG + 白色眼睛 ◉◉ / 嘴 ◡) + 下方 BOLLOON 主色文字; printBanner 不再叠加旧 box 字体 banner (避免双 logo); brandArtLines 框内并排用机器人头 + BOLLOON 艺术字 (裁掉 icon 末行文字). tsc 0 错, vitest 1118/1118, 全局 dist 已同步 | [loading-tui.ts](../../src/cli/loading-tui.ts) |
@@ -969,3 +970,59 @@
 - 线上验证: `npm view @bolloon/bolloon-agent@0.3.39` → 0.3.39
 - commits: 2ec687b (feat) + ebd39b0 (fix smoke-esm Windows) 已 push
 
+
+## [2026-08-10] feat | 自动整理心跳 (v0.3.48)
+
+### 背景
+
+用户要求: 心跳循环扩展 — 不再只有社交心跳, 还要有自动整理心跳. 触发循环, 但显示结果在 CLI 原来的颜文字那一行, 结束后显示为空; 现有 skills 整理结束后也要去除显示效果; 每次打开后固定看 skills view 有没有遗留的 skills 指导; skills 进化隐式触发, 不再只是记录使用什么工具, 而是完整总结经验.
+
+### 自动整理心跳 (AgentHeartbeat organize tick, `src/social/agent-heartbeat.ts`)
+
+- 心跳循环从 2 条扩展为 3 条: beacon (30s) + social (120s) + **organize (30min)**.
+- 新增选项: `organizeEnabled` (默认 true) / `organizeIntervalMs` (默认 30min, env `BOLLOON_ORGANIZE_HEARTBEAT_MS`) / `organize` 回调 / `onOrganizeEvent` (start/end/error).
+- `scheduleOrganize()` + `tickOrganize()`: 与社交生命周期完全独立 — 社交关闭/退避 RESTING 不影响整理照跑; 重入锁 (上一轮没跑完不重复触发); `stop()` 清理 organize timer.
+- server.ts 接入: AgentHeartbeat 传 organize 回调 → `runAutoOrganize` (第一 channel agent 的 LLM 做经验进化, 拿不到 agent 8s 超时降级仅扫描), 事件打日志 + 喂 watchdog.
+
+### skill-organizer.ts (新, `src/agents/skill-organizer.ts`)
+
+- `scanLeftoverSkills`: 每次打开后固定看 skills view (~/.bolloon/skills + <cwd>/.bolloon/skills) — 判定遗留: ① 迁移残留 (外部智能体分类前缀 apple-*/creative-*/autonomous-ai-agents-* 等 15 类) ② 无 description ③ 正文过短 (<50 字符占位) ④ status=archived 归档残留 ⑤ 跨目录同名重复.
+- `evolveCandidates`: **完整总结经验, 不再只是记录工具** — LLM 把候选的工具调用记录扩写成完整 SKILL.md (背景/触发条件/流程/注意事项/验证), JSON 容错解析 (剥 markdown 代码块), 转正为正式 skill + 清理候选文件; LLM 输出不可用则保留候选.
+- `startOrganizeHeartbeat`: 统一心跳壳 (interval + 重入锁 + onStart/onEnd/onError), CLI/server 共用.
+- `runAutoOrganize`: 总入口 = skills 整理 (遗留扫描 + 经验进化) + 知识层整理.
+
+### knowledge-organizer.ts (新, `src/agents/knowledge-organizer.ts`) — 9 类知识整理
+
+| key | 整理器 | 内容 |
+|-----|--------|------|
+| context-os | archiveContextOs | 12 层资产统计 + 快照 manifest 落盘 + 过期 (>1 天) tmp 草稿归档 |
+| social | tidySocialRelations | known_peers 活跃/失联 (30 天) 统计 + dunbar tier 分布 |
+| agents-ext | tidyExternalAgents | peers/<pk>/agents/ 远端 agent manifest 统计 |
+| agents-int | tidyInternalAgents | channels.json (sessions/ 主路径 + 旧路径 fallback, 数组/对象兼容) persona 统计 + persona 目录文档 |
+| judgeness | maintainJudgeness | descriptions 统计 + >30 天旧描述归档 |
+| projects | understandProjects | 扫 home 项目 manifest (package.json/pyproject.toml/go.mod/Cargo.toml) → 04-Projects/项目理解.md, LLM 可选一句话理解 |
+| user | understandUserProfile | persona user.md + 01-Me 资产 → 用户画像快照.md, LLM 可选提炼要点 |
+| logs | archiveRecentLogs | >30 天旧 jsonl 归档 (保护 goals/event.jsonl — goal-resume 依赖) |
+| goals | maintainGoals | goals queue + 03-Current → 目标摘要.md, LLM 可选长期/短期分层 |
+
+每个整理器纯函数 + 独立 try/catch (单失败不阻塞其他), 默认无 LLM.
+
+### CLI 显示 (transient 颜文字行)
+
+- ink-app.tsx 新增 `transient` state + `inkSetTransient(v)` (global `__inkSetTransient`): 渲染在思考动画 (颜文字) 同一位置, 传 null 清空 (显示为空).
+- run-end 整理 (index.ts): `(｀・ω・´) 整理本轮经验中...` 走 transient — 触发时显示, **结束后 inkSetTransient(null) 清空, 不再追加 `✨ 经验候选已写入` 消息行**.
+- 自动整理心跳: 启动 3s 后立即跑一轮 (每次打开后固定看 skills view — 无 LLM 快速扫描, 延迟等 Ink 挂载完成), 周期轮 (30min) 才取 agent LLM 完整进化 (getAgent 在无 LLM 环境挂起 → 8s 超时降级仅扫描); onStart 显示 `(｀・ω・´) 自动整理经验中...`, onEnd 清空 + 显示 `🧹 遗留 skills` / `✨ 经验进化` / `🧠 知识整理` 汇总行.
+
+### 验证
+
+- `npx tsc --noEmit`: 0 错
+- `npx vitest run`: 1145/1145 pass (原 1118 + skill-organizer 9 + knowledge-organizer 12 + agent-heartbeat organize 6)
+- 真实环境扫描 (evolve=false 只读): 45 候选 / 20 遗留 (迁移 skills) / 9 类知识整理全跑通
+- pty 端到端 `scripts/verify-organize-pty.py`: 🧹 遗留提示 ✓ + 🧠 知识整理汇总 ✓ + transient 清空 ✓
+
+### 发布
+
+- 版本: 0.3.47 → 0.3.48
+- `npm publish` (prepublishOnly: build:all + smoke:esm 通过)
+- 线上验证: `npm view @bolloon/bolloon-agent@0.3.48`
+- 全局包 dist 同步

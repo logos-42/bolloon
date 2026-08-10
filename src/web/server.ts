@@ -2392,6 +2392,43 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
               ts: Date.now(),
             }, 'p2p-global');
           },
+          // === 2026-08-10: 自动整理心跳 (与社交并列) ===
+          // 周期性: ① 扫描 skills view 找遗留 skills ② 候选经验 LLM 完整进化 (不再只是记录工具).
+          // 与社交生命周期独立 — 社交关闭 (BOLLOON_AGENT_HEARTBEAT_SOCIAL=0) 整理仍照跑.
+          organizeEnabled: true,
+          organizeIntervalMs: Number(process.env.BOLLOON_ORGANIZE_HEARTBEAT_MS) || 30 * 60_000,
+          organize: async () => {
+            try { watchdogRef?.recordActivity?.('agent-organize'); } catch {}
+            const { runAutoOrganize } = await import('../agents/skill-organizer.js');
+            // 用第一个本地 channel 的 agent 做 LLM 完整经验进化 (拿不到则仅扫描)
+            // 2026-08-10: getAgentForChannel 初始化可能挂起 → 8s 超时降级
+            let llm: ((p: string) => Promise<string>) | undefined;
+            try {
+              const channels = await loadChannels();
+              const local = channels[0];
+              if (local) {
+                const agent = await Promise.race([
+                  getAgentForChannel(local.id, local.did || '', local.name, local.didDocRef).catch(() => null),
+                  new Promise<null>((res) => setTimeout(() => res(null), 8000)),
+                ]);
+                if (agent && typeof (agent as any).promptStream === 'function') {
+                  llm = (p: string) => (agent as any).promptStream(p, () => {}, undefined, local.id);
+                }
+              }
+            } catch { /* 无 agent → 仅扫描 */ }
+            const r = await runAutoOrganize({ llm, source: 'server:organize-heartbeat', evolve: !!llm });
+            const kTotal = r.knowledge?.totalHandled ?? 0;
+            return { done: true, summary: `进化 ${r.evolved.length} 个 skill, 遗留 ${r.leftovers.length} 个, 知识层 ${kTotal} 项` };
+          },
+          onOrganizeEvent: (evt: any) => {
+            if (evt?.phase === 'start') {
+              console.log('[heartbeat] 自动整理开始 (skills 遗留扫描 + 经验进化)');
+            } else if (evt?.phase === 'end') {
+              console.log(`[heartbeat] 自动整理完成${evt.summary ? `: ${evt.summary}` : ''}`);
+            } else if (evt?.phase === 'error') {
+              console.warn(`[heartbeat] 自动整理失败 (non-fatal): ${evt?.error || ''}`);
+            }
+          },
         });
         agentHeartbeat.start();
         // 注册到全局, 让 24h HealthMonitor.checkHeartbeat 能观测到本智能体 (getDiscoveredAgents/isAntColonyEnabled)

@@ -93,6 +93,21 @@ export interface HeartbeatTransport {
   send(publicKey: string, op: string, payload: any): Promise<SendOutcome>;
 }
 
+/** 自动整理一轮的结果 (CLI/日志展示用) */
+export interface OrganizeOutcome {
+  /** 是否完成 */
+  done?: boolean;
+  /** 人类可读摘要 */
+  summary?: string;
+}
+
+/** 自动整理事件 (CLI 经此把显示接到颜文字行: start 显示 / end 清空) */
+export interface OrganizeEvent {
+  phase: 'start' | 'end' | 'error';
+  summary?: string;
+  error?: string;
+}
+
 /** 目标运行期状态 (内部) */
 interface GoalRuntime {
   goal: AgentGoal;
@@ -143,6 +158,14 @@ export interface AgentHeartbeatOptions {
   onActivity?: () => void;
   /** 生命周期阶段变化时回调 (生产: 推 SSE `agent-lifecycle` 给前端) */
   onLifecycleChange?: (phase: LifecyclePhase, snapshot: LifecycleSnapshot) => void;
+  /** 2026-08-10: 自动整理心跳开关 (独立于社交, 默认 true) — 周期性整理 skills 经验/遗留 */
+  organizeEnabled?: boolean;
+  /** 2026-08-10: 自动整理周期 (默认 30min) */
+  organizeIntervalMs?: number;
+  /** 2026-08-10: 自动整理内容 (生产: runSkillOrganize 包装; 不提供则不跑整理) */
+  organize?: (ctx: { self: SelfInfo }) => Promise<OrganizeOutcome | void>;
+  /** 2026-08-10: 整理事件回调 (CLI 经此把显示接到颜文字行, 结束后清空) */
+  onOrganizeEvent?: (evt: OrganizeEvent) => void;
   beaconIntervalMs?: number;
   socialIntervalMs?: number;
   /** 同一 peer 两次主动发起之间的最小间隔 */
@@ -178,6 +201,8 @@ const DEFAULTS = {
   backoffFactor: 2,
   maxSocialIntervalMs: 30 * 60_000,
   goalReevalMs: 60 * 60_000,
+  // 2026-08-10: 自动整理心跳
+  organizeIntervalMs: 30 * 60_000,
 };
 
 const MAX_BACKOFF_LEVEL = 6;
@@ -194,6 +219,10 @@ export class AgentHeartbeat {
     onPeerAlive?: (peer: PeerInfo) => void;
     onActivity?: () => void;
     onLifecycleChange?: (phase: LifecyclePhase, snapshot: LifecycleSnapshot) => void;
+    organizeEnabled: boolean;
+    organizeIntervalMs: number;
+    organize?: (ctx: { self: SelfInfo }) => Promise<OrganizeOutcome | void>;
+    onOrganizeEvent?: (evt: OrganizeEvent) => void;
     beaconIntervalMs: number;
     socialIntervalMs: number;
     cooldownMs: number;
@@ -212,6 +241,9 @@ export class AgentHeartbeat {
   private lastInitiated = new Map<string, number>();
   private beaconTimer: ReturnType<typeof setInterval> | null = null;
   private socialTimer: ReturnType<typeof setTimeout> | null = null;
+  // 2026-08-10: 自动整理心跳 timer + 重入锁 (上一轮没跑完不重复触发)
+  private organizeTimer: ReturnType<typeof setTimeout> | null = null;
+  private organizeRunning = false;
   private started = false;
 
   // === 生命周期状态 ===
@@ -234,6 +266,10 @@ export class AgentHeartbeat {
       onPeerAlive: options.onPeerAlive,
       onActivity: options.onActivity,
       onLifecycleChange: options.onLifecycleChange,
+      organizeEnabled: options.organizeEnabled ?? true,
+      organizeIntervalMs: options.organizeIntervalMs ?? DEFAULTS.organizeIntervalMs,
+      organize: options.organize,
+      onOrganizeEvent: options.onOrganizeEvent,
       beaconIntervalMs: options.beaconIntervalMs ?? DEFAULTS.beaconIntervalMs,
       socialIntervalMs: options.socialIntervalMs ?? DEFAULTS.socialIntervalMs,
       cooldownMs: options.cooldownMs ?? DEFAULTS.cooldownMs,
@@ -269,11 +305,16 @@ export class AgentHeartbeat {
     if (this.isSocialEnabled()) {
       this.scheduleSocial();
     }
+    // 2026-08-10: 自动整理心跳 — 与社交独立, 社交关闭也照跑
+    if (this.opts.organizeEnabled && this.opts.organize) {
+      this.scheduleOrganize();
+    }
     // 立即发一次 beacon, 让对端尽快看到自己
     this.tickBeacon().catch(() => {});
     console.log(
       `[heartbeat] 社交心跳已启动 (beacon=${this.opts.beaconIntervalMs}ms` +
-      `${this.isSocialEnabled() ? `, social=${this.opts.socialIntervalMs}ms, cooldown=${this.opts.cooldownMs}ms` : ', social=关闭'} )`
+      `${this.isSocialEnabled() ? `, social=${this.opts.socialIntervalMs}ms, cooldown=${this.opts.cooldownMs}ms` : ', social=关闭'}` +
+      `${this.opts.organizeEnabled && this.opts.organize ? `, organize=${this.opts.organizeIntervalMs}ms` : ', organize=关闭'} )`
     );
   }
 
@@ -281,8 +322,10 @@ export class AgentHeartbeat {
   stop(): void {
     if (this.beaconTimer) clearInterval(this.beaconTimer);
     if (this.socialTimer) clearTimeout(this.socialTimer);
+    if (this.organizeTimer) clearTimeout(this.organizeTimer);
     this.beaconTimer = null;
     this.socialTimer = null;
+    this.organizeTimer = null;
     this.started = false;
     this.setPhase('PAUSED');
     console.log('[heartbeat] 社交心跳已停止 (定时器已清理)');
@@ -351,6 +394,50 @@ export class AgentHeartbeat {
           if (this.started && this.phase !== 'PAUSED') this.scheduleSocial();
         });
     }, this.currentSocialInterval());
+  }
+
+  // ===================== 自动整理心跳 (2026-08-10) =====================
+  // 与社交心跳并列的第三条心跳: 周期性整理 skills 经验 (候选进化) + 扫描遗留 skills.
+  // 与社交生命周期完全独立 — 社交关闭/退避 RESTING 不影响整理照跑.
+
+  /** 是否启用了自动整理 */
+  isOrganizeEnabled(): boolean {
+    return this.opts.enabled && this.opts.organizeEnabled && !!this.opts.organize;
+  }
+
+  private scheduleOrganize(): void {
+    if (!this.started || !this.isOrganizeEnabled()) {
+      this.organizeTimer = null;
+      return;
+    }
+    this.organizeTimer = setTimeout(() => {
+      this.tickOrganize()
+        .catch((e) => console.warn('[heartbeat] organize tick 失败:', (e as Error)?.message))
+        .finally(() => {
+          if (this.started && this.isOrganizeEnabled()) this.scheduleOrganize();
+        });
+    }, this.opts.organizeIntervalMs);
+  }
+
+  /** 跑一轮自动整理 (导出供测试/启动即跑: 每次打开后固定看一下 skills view) */
+  async tickOrganize(): Promise<OrganizeOutcome | void> {
+    if (!this.isOrganizeEnabled() || this.organizeRunning) return;
+    this.organizeRunning = true;
+    this.opts.onOrganizeEvent?.({ phase: 'start' });
+    try {
+      const self = await this.opts.self();
+      const r = await this.opts.organize!({ self });
+      this.opts.onOrganizeEvent?.({
+        phase: 'end',
+        summary: (r as OrganizeOutcome)?.summary || ((r as OrganizeOutcome)?.done ? '完成' : ''),
+      });
+      return r;
+    } catch (e: any) {
+      this.opts.onOrganizeEvent?.({ phase: 'error', error: e?.message || String(e) });
+      throw e;
+    } finally {
+      this.organizeRunning = false;
+    }
   }
 
   /** 社交决策 tick: 先评估生命周期, 再决定是否对存活 peer 发起对话 */

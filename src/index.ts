@@ -27,7 +27,7 @@ import { BollharnessIntegration, createBollharnessIntegration } from './bollharn
 import * as readline from 'readline';
 import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
-import { startInk, stopInk, inkAppendLine as appendLine, inkSetStatus, inkSetThinking } from './cli/ink-app.js';
+import { startInk, stopInk, inkAppendLine as appendLine, inkSetStatus, inkSetThinking, inkSetTransient } from './cli/ink-app.js';
 import * as dbgFs from 'fs';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
@@ -500,6 +500,8 @@ let cliStartTime = 0;
 let cliModelName = '…';
 let cliAgentName = '…';
 let cliActiveChannelId: string | null = null;
+// 2026-08-10: CLI 自动整理心跳 (与社交心跳并列, 独立于 server) — 退出时 stop
+let cliOrganizeHeartbeat: { stop(): void; runOnce(): Promise<unknown> } | null = null;
 
 function fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -636,6 +638,58 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
     initialStatus,
     getStatus,
   );
+
+  // 2026-08-10: 自动整理心跳 (CLI 侧, 与社交心跳并列) — 启动后立即"固定看一下 skills view"
+  //   (扫描遗留 skills), 之后按周期 (默认 30min, env BOLLOON_ORGANIZE_HEARTBEAT_MS) 完整进化经验.
+  //   显示走 transient 颜文字行: 触发时显示, 结束后清空 (显示为空).
+  try {
+    const { startOrganizeHeartbeat } = await import('./agents/skill-organizer.js');
+    let firstOrganizeScan = true; // 启动第一轮只做快速遗留扫描 (无 LLM), 不阻塞启动
+    cliOrganizeHeartbeat = startOrganizeHeartbeat({
+      intervalMs: Number(process.env.BOLLOON_ORGANIZE_HEARTBEAT_MS) || 30 * 60_000,
+      onStart: () => inkSetTransient(`${C_DIM}(｀・ω・´) 自动整理经验中...${RESET}`),
+      onEnd: (r) => {
+        inkSetTransient(null); // 结束后去除显示效果 (显示为空)
+        if (r && r.leftovers.length > 0) {
+          appendLine(`${C_DIM}🧹 发现 ${r.leftovers.length} 个遗留 skills: ${r.leftovers.slice(0, 5).map(l => l.name).join(', ')}${RESET}`);
+        }
+        if (r && r.evolved.length > 0) {
+          appendLine(`${C_OK}✨ 经验进化: ${r.evolved.join(', ')}${RESET}`);
+        }
+        // 2026-08-10: 知识层整理汇总 (Context OS/社交/智能体/judgeness/项目/画像/日志/目标)
+        const kSections = (r?.knowledge?.sections || []).filter(s => s.handled > 0 || s.error);
+        if (kSections.length > 0) {
+          appendLine(`${C_DIM}🧠 知识整理: ${kSections.map(s => s.error ? `${s.label}✗` : `${s.label}✓`).join(' ')}${RESET}`);
+        }
+      },
+      onError: () => inkSetTransient(null),
+      run: async () => {
+        // 启动第一轮 (firstOrganizeScan=true) 只做快速扫描 — 不拿 LLM, 立即执行.
+        // 后续周期轮才取 agent LLM 做完整经验进化 (2026-08-10: getAgent 在无 LLM 环境可能
+        //   长时间挂起 → 8s 超时降级为仅扫描)
+        let llm: ((p: string) => Promise<string>) | undefined;
+        const needEvolve = !firstOrganizeScan;
+        if (needEvolve) {
+          try {
+            const a = await Promise.race([
+              getAgent().catch(() => null),
+              new Promise<null>((res) => setTimeout(() => res(null), 8000)),
+            ]);
+            if (a && typeof (a as any).promptStream === 'function') {
+              llm = (p: string) => (a as any).promptStream(p, () => {}, undefined, cliActiveChannelId || undefined);
+            }
+          } catch { /* 无 agent → 仅扫描 */ }
+        }
+        const { runAutoOrganize } = await import('./agents/skill-organizer.js');
+        const evolve = needEvolve && !!llm;
+        firstOrganizeScan = false;
+        return runAutoOrganize({ llm, source: 'cli:organize-heartbeat', evolve });
+      },
+    });
+    // 启动即跑一轮: 每次打开后固定看一下 skills view (遗留扫描, 快, 不阻塞)
+    // 延迟 3s 等 Ink 挂载完成 (global __inkAppend/__inkSetTransient 注册) — 否则首轮显示丢失
+    setTimeout(() => { cliOrganizeHeartbeat?.runOnce().catch(() => {}); }, 3000);
+  } catch { /* 自动整理启动失败不阻塞 CLI */ }
   // Wait on a promise that resolves on Ctrl+C / 双击 Esc
   // (ink-app 的 requestExit 调 __inkRequestExit → resolve, 清理后 process.exit)
   let cliExitResolve: () => void = () => {};
@@ -645,6 +699,7 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
   delete (globalThis as any).__inkRequestExit;
   stopInk();
   appendLine(`\n${CYAN}👋 再见！${RESET}`);
+  try { cliOrganizeHeartbeat?.stop(); } catch { /* 非致命 */ }
   comm.stop();
   process.exit(0);
 }
@@ -1596,17 +1651,19 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     appendLine(renderAgentMessage(response));
     // 停止思考动画
     inkSetThinking(false);
-    // 2026-08-04: run-end 经验整理 — 连续成功工具 ≥2 自动写 skill 候选 (颜文字加载)
+    // 2026-08-04: run-end 经验整理 — 连续成功工具 ≥2 自动写 skill 候选
+    // 2026-08-10: 显示改走 transient 行 (颜文字位置): 开始时显示, 结束后清空 (显示为空),
+    //   不再追加 ✨ 消息行 → 不残留显示效果
     if (runEndOkSteps.length >= 2) {
-      appendLine(`${C_DIM}(｀・ω・´) 整理本轮经验中... ${runEndOkSteps.length} 个工具调用${RESET}`);
+      inkSetTransient(`${C_DIM}(｀・ω・´) 整理本轮经验中... ${runEndOkSteps.length} 个工具调用${RESET}`);
       setImmediate(async () => {
         try {
           const { writeRunEndSkillCandidates } = await import('./agents/skill-writer.js');
-          const r = await writeRunEndSkillCandidates(runEndOkSteps, 'cli:interactive');
-          if (r.wrote) {
-            appendLine(`${C_OK}✨ (◕‿◕) 经验候选已写入: ${r.names}${RESET}`);
-          }
+          await writeRunEndSkillCandidates(runEndOkSteps, 'cli:interactive');
         } catch { /* 非致命, 静默 */ }
+        finally {
+          inkSetTransient(null); // 结束后去除显示效果 (显示为空)
+        }
       });
     }
     // 更新状态栏: 上下文进度 (2026-08-06: 每轮按当前 messageHistory 重算并写回 ContextManager,

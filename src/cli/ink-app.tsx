@@ -122,6 +122,9 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const { exit } = useApp();
 
   const [thinking, setThinking] = useState(false);
+  // 2026-08-10: 临时状态行 (自动整理心跳/run-end 经验整理用) — 显示在颜文字行位置,
+  //   结束后设 null 即清空 (显示为空). 不进入消息历史, 不会残留显示效果.
+  const [transient, setTransient] = useState<string | null>(null);
   const thinkingIdx = useRef(0);
 
   // 双击 Esc 退出当前进程 (500ms 窗口内第二次按下)
@@ -312,10 +315,15 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     (globalThis as any).__inkSetStatus = (s: string) => {
       setStatus(s);
     };
+    // 2026-08-10: 临时状态行 (自动整理/经验整理): 传字符串显示, 传 null 清空 (显示为空)
+    (globalThis as any).__inkSetTransient = (v: string | null) => {
+      setTransient(v === undefined ? null : v);
+    };
     return () => {
       delete (globalThis as any).__inkAppend;
       delete (globalThis as any).__inkSetStatus;
       delete (globalThis as any).__inkSetThinking;
+      delete (globalThis as any).__inkSetTransient;
     };
   }, []);
 
@@ -530,6 +538,12 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
             <Text color="yellow">{KAOMOJI[thinkingIdx.current]} 思考中...</Text>
           </Box>
         )}
+        {/* 2026-08-10: 临时状态行 — 复用颜文字行位置 (自动整理/经验整理), 结束后 null 即消失 */}
+        {transient && (
+          <Box>
+            <Text>{transient}</Text>
+          </Box>
+        )}
       </Box>
 
       {/* 分隔线 (全宽, bolloon 色系 #c4d640) */}
@@ -640,5 +654,11 @@ export function inkSetStatus(s: string): void {
 
 export function inkSetThinking(v: boolean): void {
   const fn = (globalThis as any).__inkSetThinking;
+  if (fn) fn(v);
+}
+
+/** 2026-08-10: 设置/清除临时状态行 (自动整理/经验整理). 传 null 清空 → 显示为空 */
+export function inkSetTransient(v: string | null): void {
+  const fn = (globalThis as any).__inkSetTransient;
   if (fn) fn(v);
 }
