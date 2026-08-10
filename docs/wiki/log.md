@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|||| 2026-08-10 | feat | 循环智能化 (v0.3.50): ① final 前总是 LLM 完成度自查 (decideAfterReview 重构 — 结束权交给 LLM, 不再因 intent 空直接 finish, 修"发布 ipfs 网站" 1 次循环就结束); ② default 权限放开 write_file/edit_file/delete_file (写路径白名单兜底, 保留 shell/git 禁); ③ CLI 启动自动拉起 Kubo (checkKuboSetup fire-and-forget, BOLLOON_SKIP_KUBO=1 可禁). tsc 0 错, vitest 1149/1149, pty PASS, Kubo 上传/读回链路实测 OK, 已发布 npm 0.3.50 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-10 | feat | 自动整理结果进艺术字框 + 循环逃生门 (v0.3.49): ① 自动整理汇总 (🧹 遗留/✨ 进化/🧠 知识) 统一进 renderMessageBox 圆角框 "自动整理完成"; ② unreported 循环逃生门 — decideUnreported 纯函数 (默认 3 次提示后清空积压强制 final, 状态栏显示 N/M), 修用户实测 11 次 "🔄 还有 1 个工具结果未汇报" 死循环; ③ 工具失败追加 SHELL_ESCAPE_HINT 引导 LLM 用 shell_exec 开终端跑命令诊断. tsc 0 错, vitest 1149/1149 (+4), pty PASS, 已发布 npm 0.3.49 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-10 | feat | 自动整理心跳 (v0.3.48): 心跳循环扩展 — 不再只有社交心跳, 新增自动整理心跳 (与社交独立): AgentHeartbeat organize tick + skill-organizer (遗留 skills 扫描: 迁移残留/占位/archived/重复; 经验进化: LLM 把工具调用记录扩写成完整 SKILL.md 背景/触发/流程/注意事项/验证) + knowledge-organizer 9 类知识整理 (Context OS 归档/外部社交关系/外部与内部智能体描述/judgeness 维护/项目目录理解/用户画像理解/最近日志归档/用户长短期目标维护) + CLI transient 颜文字行 (触发时显示, 结束后清空显示为空, run-end 整理不再残留 ✨ 行) + server 接 organize 回调. tsc 0 错, vitest 1145/1145 (+27), pty 端到端 PASS (verify-organize-pty.py), 已发布 npm 0.3.48 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-09 | chore | 发布 v0.3.47: CLI 切 channel 身份重建 + Context OS 按 agent 分区 + /new agent 原子写防丢失 + 新 logo. build:all + smoke:esm PASS, npm dist-tags.latest=0.3.47 确认, 全局包 dist 已同步 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
@@ -1059,4 +1060,37 @@
 - 版本: 0.3.48 → 0.3.49
 - `npm publish` (prepublishOnly: build:all + smoke:esm 通过)
 - 线上验证: `npm view @bolloon/bolloon-agent@0.3.49`
+- 全局包 dist 同步
+
+## [2026-08-10] feat | 循环智能化 (v0.3.50)
+
+### 背景
+
+实测 CLI 日志暴露 3 个问题:
+1. **循环不够智能, 没自动触发后续**: "发布一个 ipfs 网站, 发到 ipns..." 被 classifyIntent 误判 chitchat → intentHint 空 → loop-review 无 intent 直接 finish → 1 次循环就 <final gen> (任务没做就结束).
+2. **工具被拦**: default permission 模式禁 write_file/edit_file/delete_file → "write_file 被权限拦了" → LLM 只能绕道, 任务无法推进.
+3. **IPFS 无法加载**: ipfs_add 报 "发送上传请求失败: http://127.0.0.1:5001" — Kubo daemon 没起, CLI 启动路径从不调 checkKuboSetup (只有 Web server 调).
+
+### 修复 (用户纠正: 不要硬编码词表, 循环要智能, 自动触发后续)
+
+1. **loop-review.ts decideAfterReview 重构** — final 前总是让 LLM 完成度自查:
+   - 旧: 无 intent → 直接 finish (硬编码判定导致任务没做就结束)
+   - 新: **结束权完全交给 LLM** — 达上限 (2 次) 才放行; review hint 对照用户需求逐条自查, "未完成/有自然衔接的后续步骤 → 继续调用工具 (自动触发后续), 全部完成才 <final gen>"
+   - userIntent 改传**用户原始输入** (pi-sdk currentUserInput) — LLM 对照原文而非派生 intentHint
+   - 撤回第一版硬编码任务动词词表方案 (用户明确反对)
+2. **deny-pipeline.ts**: default 模式放开 write_file/edit_file/delete_file (有 checkWritePath 写入白名单兜底), 保留 shell_exec/git_* 禁用.
+3. **index.ts startCLI**: 启动后台 fire-and-forget `checkKuboSetup(true, true)` 自动装/起 Kubo; `BOLLOON_SKIP_KUBO=1` 可禁用 (pty 测试临时 HOME 避免拉起指向临时 repo 的 daemon 污染真实 5001 — 实测坑: 测试 CLI 用临时 HOME 起的 ipfs daemon 在临时目录删除后仍占 5001, repo 损坏).
+
+### 验证
+
+- `npx tsc --noEmit`: 0 错
+- `npx vitest run`: 1149/1149 pass (loop-review 测试更新为新语义)
+- pty 端到端 `scripts/verify-organize-pty.py`: PASS (BOLLOON_SKIP_KUBO=1)
+- Kubo 真实链路: daemon 0.43.0 在 5001, 上传返回 CID + ipfs_cat 读回内容 ✓
+
+### 发布
+
+- 版本: 0.3.49 → 0.3.50
+- `npm publish` (prepublishOnly: build:all + smoke:esm 通过)
+- 线上验证: `npm view @bolloon/bolloon-agent@0.3.50`
 - 全局包 dist 同步

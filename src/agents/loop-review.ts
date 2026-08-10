@@ -21,7 +21,7 @@
 export interface ReviewState {
   /** 该次 final 请求前, 已经触发的 review 次数 (0/1/2...) */
   reviewsDone: number;
-  /** 用户本轮需求 (最后一条 user intent), 用于目标对齐 */
+  /** 用户本轮需求 (2026-08-10: 传原始输入, 供 LLM 对照自查 — 派生 hint 不如原文准) */
   userIntent: string;
   /** 本轮已成功执行过的工具名 (去重), 用于提示"已做到哪些" */
   completedTools: string[];
@@ -44,24 +44,21 @@ export const DEFAULT_MAX_REVIEWS = 2;
 /**
  * 判定: LLM 想 <final gen> 时, 该续跑一次 review 还是真正结束.
  *
- * 结束条件 (以下任一 → finish):
- *   - 没有明确用户需求 (无深挖对象, 不硬挖)
- *   - 已触发 maxReviews 次 review 续跑 (# 不无限续)
- * 否则 → 续跑一次 (提示 LLM 对齐需求深挖).
- *
- * 注意: 续跑不是无限. 达上限即结束, 保证"不过度深挖".
+ * 2026-08-10 重构 (用户纠正: 不要硬编码词表, 循环要智能, 自动触发后续):
+ *   - 旧逻辑: 无 intent → 直接 finish. 但"发布一个 ipfs 网站..." 被 classifyIntent 误判
+ *     chitchat → intentHint 空 → 1 次循环直接 <final gen> (任务没做就结束).
+ *   - 新逻辑: **final 前总是让 LLM 自查** (是否完成用户需求/是否还有后续步骤) — 结束权
+ *     完全交给 LLM 判断, 规则只做上限兜底 (maxReviews). 达上限才放行, 保证不过度深挖.
+ *   - 效果: 任务场景 LLM 自查发现"还没发布" → 自动继续调工具 (自动触发后续);
+ *     闲聊场景 LLM 快速确认完成, 2 次自查后放行.
  */
 export function decideAfterReview(state: ReviewState, maxReviews: number = DEFAULT_MAX_REVIEWS): ReviewDecision {
-  const intent = (state.userIntent || '').trim();
-  if (!intent) {
-    return { kind: 'finish', reason: 'no-user-intent' };
-  }
   if (state.reviewsDone >= maxReviews) {
     return { kind: 'finish', reason: `max-reviews-${maxReviews}` };
   }
   return {
     kind: 'continue-review',
-    reason: `${state.reviewsDone + 1}/${maxReviews} 目标对齐`,
+    reason: `${state.reviewsDone + 1}/${maxReviews} 完成度自查`,
     hint: buildReviewHint(state, maxReviews),
   };
 }
@@ -85,13 +82,13 @@ export function buildReviewHint(state: ReviewState, maxReviews: number = DEFAULT
       .join('\n');
   }
   return (
-    `[目标对齐 review ${state.reviewsDone + 1}/${maxReviews}]` +
+    `[完成度自查 ${state.reviewsDone + 1}/${maxReviews}]` +
     `\n用户需求: ${intent.slice(0, 300)}` +
     actionLines +
     `\n已完成工具: ${tools}` +
-    `\n请对照需求逐条自查: 上面每一条动作是否真正完成了对应的子目标? 还有未完成/可深挖的子目标 → 继续调用工具推进 (注意: 同一动作已完成就不要重复执行, 直接基于已有结果推进下一步); ` +
-    `若已满足用户原始需求 → 直接输出 <final gen> 结束.` +
-    `\n[重要] 如果你要结束, 请先逐条对照「用户需求」确认每一项都已完成, 不要因为做了一部分就潦草收尾.`
+    `\n请对照需求逐条自查: 用户需求是否每一项都真正完成了? 如果还有未完成的子目标或自然衔接的后续步骤 → 继续调用工具推进 (已完成动作不要重复, 直接基于已有结果做下一步); ` +
+    `如果用户需求已全部满足 → 直接输出 <final gen> 结束.` +
+    `\n[重要] 不要因为做了一部分就提前结束 — 结束前逐条对照「用户需求」确认每一项都完成.`
   );
 }
 

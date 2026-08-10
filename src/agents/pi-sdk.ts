@@ -276,6 +276,8 @@ export class PiAgentSession implements AgentSession {
 
   /** M2.2 (2026-06-17): 当前轮的用户请求 intent, runReActLoop 拼 systemPrompt 时会读这个 */
   private currentIntent: 'question' | 'code_edit' | 'multi_step' | 'chitchat' | 'document' = 'chitchat';
+  /** 2026-08-10: 本轮用户原始输入 (loop-review 任务动词兜底检测用) */
+  private currentUserInput: string = '';
   private currentIntentHint: string = '';
 
   /**
@@ -758,6 +760,7 @@ export class PiAgentSession implements AgentSession {
       const { classifyIntent, intentHint } = await import('./intent-classifier.js');
       this.currentIntent = classifyIntent(input);
       this.currentIntentHint = intentHint(this.currentIntent);
+      this.currentUserInput = input;
     } catch (err) {
       console.warn('[PiAgent] classifyIntent in prompt() failed:', err);
       this.currentIntent = 'chitchat';
@@ -863,6 +866,7 @@ export class PiAgentSession implements AgentSession {
       const { classifyIntent, intentHint } = await import('./intent-classifier.js');
       this.currentIntent = classifyIntent(userText);
       this.currentIntentHint = intentHint(this.currentIntent);
+      this.currentUserInput = userText;
       if (this.currentIntent !== 'chitchat') {
         onStream({ type: 'phase', phase: 'intent_classified', detail: this.currentIntent, content: '' } as any);
       }
@@ -1129,6 +1133,7 @@ export class PiAgentSession implements AgentSession {
       const { classifyIntent, intentHint } = await import('./intent-classifier.js');
       this.currentIntent = classifyIntent(input);
       this.currentIntentHint = intentHint(this.currentIntent);
+      this.currentUserInput = input;
     } catch (err) {
       console.warn('[PiAgent] classifyIntent in pivot failed:', err);
     }
@@ -1879,7 +1884,9 @@ lastQualityScore = this.estimateResponseQuality(reply);
           //   达成用户需求才放行真正结束. 达上限或无需深挖则以用户需求为准结束.
           const reviewDecision = decideAfterReview({
             reviewsDone: loopReviewCount,
-            userIntent: this.currentIntentHint,
+            // 2026-08-10: 传用户原始输入 (不是派生 intentHint) — LLM 对照原文自查完成度,
+            //   未完成 → 自动继续调工具 (自动触发后续步骤)
+            userIntent: this.currentUserInput,
             completedTools: Array.from(loopReviewCompletedTools),
             actionLog: loopActionLog,
           }, DEFAULT_MAX_REVIEWS);

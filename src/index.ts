@@ -612,6 +612,22 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
   cliAgentName = agentIdentity?.name || 'bolloon';
   cliStartTime = Date.now();
 
+  // 2026-08-10: 启动后台拉起本地 Kubo (IPFS) — fire-and-forget, 失败静默 (ipfs 工具内会再尝试).
+  //   背景: 实测日志 ipfs_add 失败 "发送上传请求失败: http://127.0.0.1:5001/api/v0/add" —
+  //   Kubo daemon 没起, 而 CLI 启动路径 (startCLI) 之前从不调 checkKuboSetup (只有 Web server 调).
+  //   BOLLOON_SKIP_KUBO=1 可禁用 (pty 测试用临时 HOME 时避免拉起指向临时 repo 的 daemon 污染 5001)
+  if (process.env.BOLLOON_SKIP_KUBO !== '1') {
+    void (async () => {
+      try {
+        const sdk = await import('@diap/sdk');
+        const checkKuboSetup = (sdk as any).checkKuboSetup;
+        if (typeof checkKuboSetup === 'function') {
+          await checkKuboSetup(true, true);
+        }
+      } catch { /* Kubo 拉起失败静默 — ipfs 工具内 ensureKuboReady 会再尝试 */ }
+    })();
+  }
+
   // 恢复上次 active channel (session 恢复: CLI 与 Web 共用 active-channel.json)
   try {
     const { getIdentityStore } = await import('./agents/agent-identity-store.js');

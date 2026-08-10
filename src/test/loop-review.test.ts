@@ -21,17 +21,19 @@ describe('loop-review (final 前目标对齐)', () => {
     expect(DEFAULT_MAX_REVIEWS).toBe(2);
   });
 
-  it('无用户需求 → 直接 finish, 不过度深挖', () => {
+  it('无用户需求也 review (final 前总是 LLM 自查, 规则只做上限兜底 — 2026-08-10)', () => {
+    // 旧逻辑: 无 intent → 直接 finish (导致"发布 ipfs 网站"被误判 chitchat 后 1 次循环就结束)
+    // 新逻辑: 结束权交给 LLM, 达上限才放行
     const d = decideAfterReview(state({ userIntent: '' }));
-    expect(d.kind).toBe('finish');
-    if (d.kind === 'finish') expect(d.reason).toBe('no-user-intent');
+    expect(d.kind).toBe('continue-review');
+    if (d.kind === 'continue-review') expect(d.hint).toContain('用户需求');
   });
 
   it('未达上限且有待对齐需求 → continue-review (续跑深挖)', () => {
     const r = decideAfterReview(state({ reviewsDone: 0 }));
     expect(r.kind).toBe('continue-review');
     if (r.kind === 'continue-review') {
-      expect(r.reason).toContain('目标对齐');
+      expect(r.reason).toContain('完成度自查');
       expect(r.hint).toContain('用户需求: 完成迁移模块');
       expect(r.hint).toContain('<final gen>');
     }
@@ -58,7 +60,7 @@ describe('loop-review (final 前目标对齐)', () => {
   it('shouldReviewAgain 布尔门一致', () => {
     expect(shouldReviewAgain(state({ reviewsDone: 0 }))).toBe(true);
     expect(shouldReviewAgain(state({ reviewsDone: 2, userIntent: 'x' }))).toBe(false);
-    expect(shouldReviewAgain(state({ userIntent: '' }))).toBe(false);
+    expect(shouldReviewAgain(state({ userIntent: '' }))).toBe(true); // 无需求也自查 (达上限才停)
   });
 
   it('completedTools 为空时 hint 说明尚未执行工具', () => {
@@ -69,7 +71,7 @@ describe('loop-review (final 前目标对齐)', () => {
   it('hint 不引用已执行的重复动作 (提醒不再重复)', () => {
     const h = buildReviewHint(state({ completedTools: ['read_file'] }));
     expect(h).toContain('read_file');
-    expect(h).toContain('不要重复执行');
+    expect(h).toContain('不要重复');
   });
 
   it('actionLog 逐条注入 (带结果摘要, 供 LLM 对照目标核查)', () => {

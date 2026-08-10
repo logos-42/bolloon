@@ -21,6 +21,7 @@ with open(os.path.join(TMP, '.bolloon', 'context-os', '01-Me', '个人档案.md'
 
 ENV = {**os.environ, 'HOME': TMP,
        'BOLLOON_SKIP_UPDATE': '1', 'BOLLOON_AGENT_HEARTBEAT_SOCIAL': '0',
+       'BOLLOON_SKIP_KUBO': '1',  # 临时 HOME 不拉 Kubo (避免指向临时 repo 的 daemon 污染真实 5001)
        'BOLLOON_ORGANIZE_HEARTBEAT_MS': '60000'}  # 60s: drain 期间只有启动 runOnce 一轮
 ansi_re = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]")
 
