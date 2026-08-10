@@ -397,6 +397,46 @@ export const SELF_IMPROVE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 export const SHELL_SANDBOX_CWD = path.resolve(process.cwd(), '.bolloon-shell-sandbox');
 
 // ============================================================================
+// terminal 工具宽松护栏 (2026-08-10) — denylist-only, 不碰核心即可
+// 与 checkCommand 的区别: 不查命令白名单/参数 allowlist — 完整 shell 命令字符串放行,
+//   只挡"高危破坏/碰核心数据"模式. 用户明确: 灵活一点, 少围栏, 核心的东西不碰不搞乱.
+// ============================================================================
+
+const TERMINAL_DENY_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bsudo\b/,                          // 提权
+  /\bsu\b/,
+  /\bmkfs\b/,                          // 格式化
+  /\bshred\b/,                         // 擦除
+  /\bdd\s+.*of=\/dev\//,               // 写设备
+  /\brm\s+-(rf|fr)\b/,                 // 递归删除 (rm 单个文件允许)
+  /\bchmod\s+-R\s+777\b/,              // 全权限
+  /\bcurl\b[^|]*\|\s*(sh|bash)\b/,     // curl|sh 远程执行
+  /\bwget\b[^|]*\|\s*(sh|bash)\b/,
+  /\b:\(\)\s*\{[^}]*\}\s*;\s*:/,       // fork bomb
+  /\b(>|>>)\s*(\/etc\/|\/usr\/|\/System\/|\/bin\/|\/sbin\/)/, // 写系统目录
+  /[\/\s]\.bolloon\b/,                  // Bolloon 数据 (sessions/persona/keys; 覆盖 ~/.bolloon, $HOME/.bolloon, 空格.bolloon)
+  /[\/\s]\.(diap|hermes|openclaw)\b/,   // 其他 agent 数据
+  /\brm\s+-rf\s+(\/|~|\*|\.|\$HOME)\b/,  // 删根/家/通配
+  /\bgit\s+push\b[^|]*\s+(-f|--force)/,  // 强推
+  /\bgit\s+reset\s+--hard\b/,
+  /\bkill\s+-9\s+\d+\b/,               // 杀进程 (保留给用户)
+];
+
+/** 检查完整 shell 命令 (terminal 工具用). denylist-only: 命中高危模式即拒, 否则放行. */
+export function checkTerminalCommand(rawCmd: string): ShellCheckResult {
+  const cmd = (rawCmd || '').trim();
+  if (!cmd) return { allowed: false, reason: '命令为空', matchedBy: 'fallback-deny' };
+  for (const pattern of TERMINAL_DENY_PATTERNS) {
+    if (pattern.test(cmd)) {
+      auditShellCall('denied', cmd, [], `terminal 高危模式 ${pattern}`);
+      return { allowed: false, reason: `命令命中高危护栏 ${pattern} (核心不碰: 提权/格式化/删根/.bolloon 数据). 换一条安全命令.`, matchedBy: 'arg-denylist' };
+    }
+  }
+  auditShellCall('allowed', cmd, []);
+  return { allowed: true };
+}
+
+// ============================================================================
 // 写策略 / 审计路径 (供 API 端点用)
 // ============================================================================
 

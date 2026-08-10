@@ -115,17 +115,17 @@ export class DenyPipeline {
 
   /**
    * 构建 permission-mode checker.
-   * default 模式: 禁用 shell_exec / git_commit / git_push 等危险工具
+   * default 模式: 禁用 git 写操作 (commit/push/branch — "不搞乱")
    * bypassPermissions: 放行所有
    *
-   * 2026-08-10: write_file/edit_file/delete_file 移出 default 禁列表 — 它们已有
-   *   checkWritePath 写入白名单兜底 (self-improve-policy.json), 正常任务 (如写 HTML 发布
-   *   IPFS 网站) 不该被 permission 层拦截; 实测日志: "write_file 被权限拦了" → LLM 只能
-   *   绕道, 任务无法推进.
+   * 2026-08-10: shell_exec / write_file / edit_file / delete_file / terminal 移出 default
+   *   禁列表 — 它们已有各自护栏 (shell_exec 命令白名单 / terminal denylist-only /
+   *   write_file checkWritePath), 用户明确"灵活一点, 少围栏, 核心的东西不碰不搞乱就行";
+   *   实测日志 "write_file 被权限拦了" → LLM 只能绕道, 任务无法推进.
    */
   static permissionChecker(): DenyChecker {
     const DEFAULT_DENY_TOOLS = new Set<string>([
-      'shell_exec', 'git_commit', 'git_push', 'git_branch',
+      'git_commit', 'git_push', 'git_branch',
     ]);
     return (ctx: DenyContext) => {
       if (ctx.permissionMode === 'bypassPermissions') {

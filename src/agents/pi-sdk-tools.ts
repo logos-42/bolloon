@@ -674,6 +674,41 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     }
   });
 
+  // 2026-08-10: terminal — 灵活终端写命令 (用户要求: bolloon 自己写命令进 terminal, 少围栏).
+  //   与 shell_exec 的区别: 接受**完整 shell 命令字符串** (管道/重定向/写文件都行),
+  //   护栏只挡高危破坏模式 (checkTerminalCommand: 提权/格式化/删根/.bolloon 数据), 其余放行.
+  ctx.tools.set('terminal', {
+    name: 'terminal',
+    description: '执行完整 shell 命令 (支持管道/重定向/写文件/跑脚本). 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据), 其余灵活放行. 适合: 写 HTML 文件、跑 python/node 脚本、查系统状态、装依赖.',
+    parameters: { command: '完整 shell 命令 (必填, 如: echo "<html>" > /tmp/site/index.html && ls /tmp/site)', timeoutMs: '超时毫秒, 默认 30000' },
+    execute: async (args) => {
+      const raw = String(args.command || '').trim();
+      if (!raw) return { success: false, error: 'command 必填' };
+      const { checkTerminalCommand } = await import('./shell-guard.js');
+      const guard = checkTerminalCommand(raw);
+      if (!guard.allowed) {
+        return { success: false, error: `[terminal-guard] ${guard.reason}`, deniedByGuard: true };
+      }
+      const { exec } = await import('child_process');
+      const timeoutMs = Number(args.timeoutMs) || 30000;
+      return new Promise((resolve) => {
+        exec(raw, {
+          cwd: process.cwd(),
+          timeout: timeoutMs,
+          maxBuffer: 8 * 1024 * 1024,
+          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        }, (err, stdout, stderr) => {
+          const output = ((stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '')).trim().slice(0, 8000);
+          if (err) {
+            resolve({ success: false, error: `exit ${err.code ?? '?'}: ${String(err.message || '').slice(0, 200)}`, output: output || undefined });
+          } else {
+            resolve({ success: true, output: output || '(无输出)' });
+          }
+        });
+      });
+    }
+  });
+
   // self_improve
   ctx.tools.set('self_improve', {
     name: 'self_improve',

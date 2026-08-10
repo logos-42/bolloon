@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+|||| 2026-08-10 | feat | terminal 工具 (v0.3.51): bolloon 自己写命令进终端 — 新 agent 工具接受完整 shell 命令字符串 (管道/重定向/写文件), denylist-only 护栏只挡高危 (sudo/格式化/rm -rf 根·家/写 ~/.bolloon 数据), default 权限只剩 git_* 禁. tsc 0 错, vitest 1152/1152 (+3), 真实执行链路验证 OK, 已发布 npm 0.3.51 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-10 | feat | 循环智能化 (v0.3.50): ① final 前总是 LLM 完成度自查 (decideAfterReview 重构 — 结束权交给 LLM, 不再因 intent 空直接 finish, 修"发布 ipfs 网站" 1 次循环就结束); ② default 权限放开 write_file/edit_file/delete_file (写路径白名单兜底, 保留 shell/git 禁); ③ CLI 启动自动拉起 Kubo (checkKuboSetup fire-and-forget, BOLLOON_SKIP_KUBO=1 可禁). tsc 0 错, vitest 1149/1149, pty PASS, Kubo 上传/读回链路实测 OK, 已发布 npm 0.3.50 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-10 | feat | 自动整理结果进艺术字框 + 循环逃生门 (v0.3.49): ① 自动整理汇总 (🧹 遗留/✨ 进化/🧠 知识) 统一进 renderMessageBox 圆角框 "自动整理完成"; ② unreported 循环逃生门 — decideUnreported 纯函数 (默认 3 次提示后清空积压强制 final, 状态栏显示 N/M), 修用户实测 11 次 "🔄 还有 1 个工具结果未汇报" 死循环; ③ 工具失败追加 SHELL_ESCAPE_HINT 引导 LLM 用 shell_exec 开终端跑命令诊断. tsc 0 错, vitest 1149/1149 (+4), pty PASS, 已发布 npm 0.3.49 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-10 | feat | 自动整理心跳 (v0.3.48): 心跳循环扩展 — 不再只有社交心跳, 新增自动整理心跳 (与社交独立): AgentHeartbeat organize tick + skill-organizer (遗留 skills 扫描: 迁移残留/占位/archived/重复; 经验进化: LLM 把工具调用记录扩写成完整 SKILL.md 背景/触发/流程/注意事项/验证) + knowledge-organizer 9 类知识整理 (Context OS 归档/外部社交关系/外部与内部智能体描述/judgeness 维护/项目目录理解/用户画像理解/最近日志归档/用户长短期目标维护) + CLI transient 颜文字行 (触发时显示, 结束后清空显示为空, run-end 整理不再残留 ✨ 行) + server 接 organize 回调. tsc 0 错, vitest 1145/1145 (+27), pty 端到端 PASS (verify-organize-pty.py), 已发布 npm 0.3.48 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
@@ -1093,4 +1094,40 @@
 - 版本: 0.3.49 → 0.3.50
 - `npm publish` (prepublishOnly: build:all + smoke:esm 通过)
 - 线上验证: `npm view @bolloon/bolloon-agent@0.3.50`
+- 全局包 dist 同步
+
+## [2026-08-10] feat | terminal 工具: bolloon 自己写命令进终端 (v0.3.51)
+
+### 背景
+
+用户要求: "bolloon 自己写命令到 terminal, 灵活一点, 少围栏, 核心的东西不碰不搞乱".
+现状: shell_exec 是命令白名单 (git/npm/cat/ls...), 禁管道/重定向/shell 元字符 → 写文件/复杂命令做不了;
+default permission 还禁 shell_exec.
+
+### 改动
+
+1. **新 agent 工具 `terminal`** (pi-sdk-tools.ts):
+   - 接受**完整 shell 命令字符串** (管道/重定向/写文件/跑脚本全支持)
+   - /bin/sh -c 执行, 30s 超时, 8MB 缓冲, 输出截断 8000
+2. **新护栏 `checkTerminalCommand`** (shell-guard.ts, denylist-only):
+   - 只挡高危破坏: sudo/su / 格式化 (mkfs/shred/dd 写设备) / rm -rf 根·家·通配 /
+     写系统目录 (/etc /usr /System) / chmod -R 777 / curl|sh / fork bomb /
+     git push --force / git reset --hard / kill -9 / 写 ~/.bolloon 等 agent 数据
+   - 写 /tmp、写任意目录、管道、重定向全放行
+   - 修 `\b~` 正则边界 bug: `~` 非单词字符无边界 → `[\/\s]\.bolloon\b`
+3. **default permission 再收窄** (deny-pipeline.ts): DEFAULT_DENY_TOOLS 只剩
+   {git_commit, git_push, git_branch} — shell_exec 也放行 (有命令白名单兜底)
+
+### 验证
+
+- `npx tsc --noEmit`: 0 错
+- `npx vitest run`: 1152/1152 pass (+3 terminal-tool 护栏测试)
+- 真实执行链路: 护栏放行 `mkdir+echo>写 HTML` → ls → cat 读回 ✓; 管道 `echo|tr|wc -l` ✓; sudo 拒绝 ✓
+- pty 端到端 PASS
+
+### 发布
+
+- 版本: 0.3.50 → 0.3.51
+- `npm publish` (prepublishOnly: build:all + smoke:esm 通过)
+- 线上验证: `npm view @bolloon/bolloon-agent@0.3.51`
 - 全局包 dist 同步
