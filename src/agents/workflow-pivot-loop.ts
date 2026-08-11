@@ -53,6 +53,16 @@ export function canonicalizeToolCallArguments(argStr: unknown): Record<string, u
   return {};
 }
 
+/** 2026-08-11 (Hermes build_worker_context 全限幅): 工具输出进 LLM 上下文的上限 */
+export const TOOL_RESULT_MAX_CHARS = 12_000;
+
+/** 截断工具输出 (纯函数, 可单测): 超限 → 保留前 max + 可见省略标记 */
+export function truncateToolOutput(output: string | undefined, max: number = TOOL_RESULT_MAX_CHARS): string {
+  const s = output ?? '';
+  if (s.length <= max) return s;
+  return s.slice(0, max) + `\n… [truncated, ${s.length - max} chars omitted]`;
+}
+
 export interface PivotLoopConfig {
   maxIterations: number;
   minIterations?: number;
@@ -597,7 +607,11 @@ export class WorkflowPivotLoop {
               role: 'assistant',
               content: reply,
               toolCall,
-              toolResult: result
+              // 2026-08-11 (Hermes 全限幅): 存进 LLM 上下文的工具输出截断到 12K,
+              //   前端 step_done emit 仍用完整 output (不影响 UI)
+              toolResult: outLen > TOOL_RESULT_MAX_CHARS
+                ? { ...result, output: truncateToolOutput(result.output) }
+                : result
             });
             
             // Record quality from tool result

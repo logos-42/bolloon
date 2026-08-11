@@ -272,7 +272,9 @@ export async function readContextAssets(
           const raw = await fs.readFile(path.join(getLayerDir(key, home, agentId), f), 'utf-8');
           const titleM = raw.match(/^title:\s*(.+)$/m);
           const createdM = raw.match(/^created:\s*(.+)$/m);
-          const title = titleM ? titleM[1].trim() : f.replace(/\.md$/, '');
+          // 2026-08-11 (Hermes 全限幅): 标题截断到 80 字符, 防单条超长标题霸占 listing
+          const rawTitle = titleM ? titleM[1].trim() : f.replace(/\.md$/, '');
+          const title = rawTitle.length > 80 ? rawTitle.slice(0, 80) + '…' : rawTitle;
           if (kw && !(title.toLowerCase().includes(kw) || raw.toLowerCase().includes(kw))) continue;
           entries.push({ file: f, title, createdAt: createdM ? createdM[1].trim() : '' });
         } catch { /* 单文件损坏跳过 */ }
