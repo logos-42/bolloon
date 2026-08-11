@@ -154,6 +154,14 @@ export class PiAIModel {
       if (signal?.aborted || error?.name === 'AbortError') {
         throw error; // 上层 try/catch 处理
       }
+      // 2026-08-11 (Hermes error_classifier + 会话级教训): 分类错误 + 同类只学一次
+      //   429/5xx → 退避重试; context overflow → 上层 compact 后重试; network → 重试 1 次;
+      //   auth → 不重试 (报错给用户). console 只 warn 一次新教训.
+      const { ErrorLessonStore } = await import('./error-lessons.js');
+      const lesson = (chatErrorLessons ??= new ErrorLessonStore()).learn(error);
+      if (lesson.isNewLesson) {
+        console.warn(`[llm-lesson] 新错误教训: ${lesson.classified.category} (${lesson.classified.pattern}) → ${lesson.classified.recovery}`);
+      }
       console.error('PiAI chat error:', error);
       // 2026-06-15: 真实 error 信息 + 明确告诉 LLM "这是 API 错, 不要 retry"
       // 旧版: "抱歉，AI服务暂时不可用。" → LLM 看到 isTooShort=false(< 50 但 > 0),
@@ -818,6 +826,13 @@ export function getMinimax(): PiAIModel {
 
 export function initMinimax(config: PiAIConfig = {}): PiAIModel {
   return initPiAI(config);
+}
+
+/** 2026-08-11: 会话级 LLM 错误教训存储 (Hermes error_classifier 模式) — 同类错误只学一次 */
+let chatErrorLessons: import('./error-lessons.js').ErrorLessonStore | null = null;
+
+export function getChatErrorLessons(): import('./error-lessons.js').ErrorLessonStore | null {
+  return chatErrorLessons;
 }
 
 export { PiAIModel as MinimaxLLM };
