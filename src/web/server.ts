@@ -7344,19 +7344,33 @@ app.post('/active-channel', async (req, res) => {
             });
           }, 60_000);
         })();
-        // 2026-06-16: ping 改为 data: {"type":"ping"} — 之前是 SSE 注释格式 (: ping\n\n),
-        //   浏览器 EventSource 不触发 onmessage, 客户端 60s 阈值 (现已 30s) 误判死链.
-        //   改后前端 onmessage 收到 ping 就重置 lastEventTime, 真死链才 30s 后重建.
-        setInterval(() => {
-          for (const client of sseClients) {
-            try {
-              client.res.write('data: {"type":"ping"}\n\n');
-            } catch (err) {
-              // socket 已断, 跳过 — client 端 onerror 会触发重连
-              console.warn('[SSE ping] write 失败, 跳过该客户端:', (err as Error).message);
+        // 2026-08-11 (Hermes delivery_ledger + channel_directory 模式): SSE 投递账本 —
+        //   ping/广播写账本 (attempting→delivered/failed), 同类错误窗口内只 warn 一次 (防刷屏)
+        void (async () => {
+          const { DeliveryLedger } = await import('./delivery-ledger.js');
+          const deliveryLedger = new DeliveryLedger();
+          // 2026-06-16: ping 改为 data: {"type":"ping"} — 之前是 SSE 注释格式 (: ping\n\n),
+          //   浏览器 EventSource 不触发 onmessage, 客户端 60s 阈值 (现已 30s) 误判死链.
+          //   改后前端 onmessage 收到 ping 就重置 lastEventTime, 真死链才 30s 后重建.
+          setInterval(() => {
+            for (const client of sseClients) {
+              const clientId = String(client.channelId ?? 'anon');
+              deliveryLedger.markAttempting(clientId);
+              try {
+                client.res.write('data: {"type":"ping"}\n\n');
+                deliveryLedger.markDelivered(clientId);
+              } catch (err) {
+                // socket 已断, 跳过 — client 端 onerror 会触发重连; 同类错误节流后只 warn 一次
+                const shouldWarn = deliveryLedger.markFailed(clientId, err);
+                if (shouldWarn) {
+                  console.warn(`[SSE ping] write 失败 (${deliveryLedger.get(clientId)?.consecutiveFailures} 连败), 跳过该客户端:`, (err as Error).message);
+                }
+              }
             }
-          }
-        }, 30000);
+            const s = deliveryLedger.stats();
+            if (s.dead > 0) console.warn(`[SSE ledger] ${s.dead} 个客户端判定死亡 (待重连), 存活 ${s.delivered}`);
+          }, 30000);
+        })();
         // 2026-06-16: 全局捕获 socket error 事件, 避免未处理 EPIPE/ETIMEDOUT 让进程崩
 currentServer.on('clientError', (err, socket) => {
            console.warn('[server] clientError:', (err as any).code, err.message);
