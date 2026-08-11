@@ -10,6 +10,7 @@ import { type Task } from './server-types.js';
 import { loadTaskQueue, saveTaskQueue, isTaskExecuting } from './server-storage.js';
 import { documentReader } from '../documents/reader.js';
 import { applyCancelRequest, shouldFinalizeAsCancelled } from './task-cancel.js';
+import { applyReviewRequest, applyReviewApprove, applyReviewReject } from './task-review.js';
 
 type BroadcastFn = (event: any, channelId?: string) => void;
 type GetAgentFn = (channelId: string) => Promise<{ prompt: (text: string) => Promise<string> }>;
@@ -218,6 +219,86 @@ export function registerTaskRoutes(
       res.status(500).json({ error: err.message });
     }
   });
+
+  // ==================== review 审批通道 (2026-08-11, Hermes request_review 模式) ====================
+  // running/pending → review (挂起等人工/审查者) → approve (review→completed) / reject (review→pending 退回队列)
+
+  // 请求审批
+  app.post('/api/tasks/:taskId/review', async (req, res) => {
+    try {
+      const { taskId } = req.params;
+      const { channelId } = req.body || {};
+      const tasks = await loadTaskQueue();
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+      const t = applyReviewRequest(task.status);
+      if (t.phase === 'not-reviewable') {
+        return res.status(409).json({ error: `Task not reviewable (status=${task.status})` });
+      }
+      task.status = t.status;
+      task.updatedAt = new Date().toISOString();
+      await saveTaskQueue(tasks);
+      broadcast({ type: 'task_status', taskId: task.id, status: t.status }, channelId);
+      return res.json({ ok: true, taskId: task.id, status: t.status, phase: t.phase });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 审批通过 (放行完成)
+  app.post('/api/tasks/:taskId/approve', async (req, res) => {
+    try {
+      const { taskId } = req.params;
+      const { channelId } = req.body || {};
+      const tasks = await loadTaskQueue();
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+      const t = applyReviewApprove(task.status);
+      if (t.phase === 'not-reviewable') {
+        return res.status(409).json({ error: `Task not in review (status=${task.status})` });
+      }
+      task.status = t.status;
+      task.progress = 100;
+      task.updatedAt = new Date().toISOString();
+      await saveTaskQueue(tasks);
+      broadcast({ type: 'task_status', taskId: task.id, status: t.status, progress: 100 }, channelId);
+      broadcast({ type: 'status', content: `任务审批通过: ${task.title}` }, channelId);
+      return res.json({ ok: true, taskId: task.id, status: t.status, phase: t.phase });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 审批驳回 (退回队列)
+  app.post('/api/tasks/:taskId/reject', async (req, res) => {
+    try {
+      const { taskId } = req.params;
+      const { channelId } = req.body || {};
+      const tasks = await loadTaskQueue();
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+      const t = applyReviewReject(task.status);
+      if (t.phase === 'not-reviewable') {
+        return res.status(409).json({ error: `Task not in review (status=${task.status})` });
+      }
+      task.status = t.status;
+      task.progress = 0;
+      task.result = undefined;
+      task.updatedAt = new Date().toISOString();
+      await saveTaskQueue(tasks);
+      broadcast({ type: 'task_status', taskId: task.id, status: t.status, progress: 0 }, channelId);
+      broadcast({ type: 'status', content: `任务审批驳回, 退回队列: ${task.title}` }, channelId);
+      return res.json({ ok: true, taskId: task.id, status: t.status, phase: t.phase });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 }
 
 // ==================== Task Execution ====================
@@ -288,6 +369,17 @@ async function executeTask(
       await saveTaskQueue(tasksAfter);
       broadcast({ type: 'task_status', taskId: task.id, status: 'cancelled', progress: tasksAfter[idxAfter].progress }, channelId);
       broadcast({ type: 'status', content: `任务已取消: ${task.title}` }, channelId);
+      return;
+    }
+
+    // 2026-08-11 (Hermes request_review 模式): 执行完成但任务已挂入 review 审批通道 →
+    //   只落结果, 不覆盖成 completed; 等 approve 路由放行 (review → completed)
+    if (idxAfter >= 0 && tasksAfter[idxAfter].status === 'review') {
+      tasksAfter[idxAfter].result = result;
+      tasksAfter[idxAfter].updatedAt = new Date().toISOString();
+      await saveTaskQueue(tasksAfter);
+      broadcast({ type: 'task_status', taskId: task.id, status: 'review', progress: tasksAfter[idxAfter].progress }, channelId);
+      broadcast({ type: 'status', content: `任务执行完成, 待审批: ${task.title}` }, channelId);
       return;
     }
 

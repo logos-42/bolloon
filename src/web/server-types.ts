@@ -97,7 +97,7 @@ export interface Task {
   type: 'read' | 'summarize' | 'improve' | 'chat';
   title: string;
   description?: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'paused' | 'cancel-requested' | 'cancelled';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'paused' | 'cancel-requested' | 'cancelled' | 'review';
   progress: number;
   result?: string;
   error?: string;

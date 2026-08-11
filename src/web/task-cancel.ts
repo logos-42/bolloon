@@ -12,7 +12,8 @@ export type TaskCancelableStatus =
   | 'failed'
   | 'paused'
   | 'cancel-requested'
-  | 'cancelled';
+  | 'cancelled'
+  | 'review';
 
 export interface CancelTransition {
   /** 取消后应落到的状态 */
