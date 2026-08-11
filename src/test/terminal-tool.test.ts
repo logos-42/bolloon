@@ -37,4 +37,29 @@ describe('checkTerminalCommand (宽松护栏, denylist-only)', () => {
     expect(r.allowed).toBe(false);
     expect(r.reason).toContain('核心不碰');
   });
+
+  it('拒绝: 自生命周期命令 (Hermes lifecycle_guard 模式 — 防复活循环)', () => {
+    expect(checkTerminalCommand('bolloon restart').allowed).toBe(false);
+    expect(checkTerminalCommand('bolloon stop').allowed).toBe(false);
+    expect(checkTerminalCommand('bolloon-agent-service restart').allowed).toBe(false);
+    expect(checkTerminalCommand('pm2 restart bolloon').allowed).toBe(false);
+    expect(checkTerminalCommand('pm2 kill bolloon-agent').allowed).toBe(false);
+    expect(checkTerminalCommand('systemctl restart bolloon').allowed).toBe(false);
+    expect(checkTerminalCommand('service bolloon stop').allowed).toBe(false);
+    expect(checkTerminalCommand('pkill -f bolloon').allowed).toBe(false);
+    expect(checkTerminalCommand('pkill bolloon').allowed).toBe(false);
+    expect(checkTerminalCommand('taskkill /IM bolloon.exe /F').allowed).toBe(false);
+    expect(checkTerminalCommand('taskkill /FI "IMAGENAME eq bolloon*" /F').allowed).toBe(false);
+  });
+
+  it('放行: 不是自生命周期的普通命令 (命令形状锚定, 不误伤)', () => {
+    expect(checkTerminalCommand('bolloon --version').allowed).toBe(true);
+    expect(checkTerminalCommand('pm2 list').allowed).toBe(true);
+    expect(checkTerminalCommand('pm2 logs bolloon').allowed).toBe(true);
+    expect(checkTerminalCommand('systemctl status bolloon').allowed).toBe(true);
+    // 散文 (无命令形状) 不匹配; 含字面命令形状的字符串保守拦截
+    expect(checkTerminalCommand('echo "重启服务很危险" > /tmp/note.txt').allowed).toBe(true);
+    expect(checkTerminalCommand('curl -sS https://example.com/bolloon').allowed).toBe(true);
+    expect(checkTerminalCommand('echo "bolloon restart is bad" > /tmp/note.txt').allowed).toBe(false); // 含字面命令形状 → 保守拦截
+  });
 });

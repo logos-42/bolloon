@@ -420,6 +420,15 @@ const TERMINAL_DENY_PATTERNS: ReadonlyArray<RegExp> = [
   /\bgit\s+push\b[^|]*\s+(-f|--force)/,  // 强推
   /\bgit\s+reset\s+--hard\b/,
   /\bkill\s+-9\s+\d+\b/,               // 杀进程 (保留给用户)
+  // 2026-08-11 (Hermes cron/lifecycle_guard 模式): 自生命周期命令 — agent 通过 terminal
+  // 重启/杀掉自己宿主服务 (bolloon) 会形成复活循环: 服务死 → supervisor 复活 → 自动 resume
+  // → 同一命令再自杀. 策略: 命令形状锚定 (只匹配真实命令标识符, 不匹配散文, 误报率低).
+  /\b(bolloon|bolloon-agent|bolloon-agent-service)\s+(restart|stop|kill|quit|shutdown)\b/i,
+  /\bpm2\s+(restart|stop|delete|kill)\s+[\w./-]*bolloon\b/i,
+  /\b(systemctl|service)\s+(restart|stop|kill)\s+[\w.-]*bolloon\b/i,
+  /\bpkill\s+(-[a-z]+\s+)*(-f\s+)?[\w./-]*bolloon\b/i,
+  /\btaskkill\s+[^|]*\/IM\s+[\w-]*bolloon\b/i,
+  /\btaskkill\s+[^|]*\/FI\s+"?[^"]*bolloon/i,
 ];
 
 /** 检查完整 shell 命令 (terminal 工具用). denylist-only: 命中高危模式即拒, 否则放行. */
