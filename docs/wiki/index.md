@@ -18,6 +18,7 @@
 || [bolloon-md-template.md](./bolloon-md-template.md) | v2 | 4 级 Bolloon.md 模板 (双栖 agent 网络对外协作偏好) |
 || [bolloon-bug-report-20260716.md](./bolloon-bug-report-20260716.md) | v2 | 10 个历史 Bug 状态一览 (2026-07-16 报告) |
 || [claude-code-design-parallels.md](./claude-code-design-parallels.md) | v2 | Claude Code 架构对照 Bolloon 参考 |
+| [hermes-agent-architecture.md](./hermes-agent-architecture.md) | v2 | Hermes Agent 架构借鉴 (多智能体协作/生命周期/工具循环/状态语义/workspace kinds) |
 || [log.md](./log.md) | (none) | session-by-session 变更日志 |
 
 ## 读者向页面 (docs/, audience=reader)
