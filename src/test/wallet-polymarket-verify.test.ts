@@ -110,7 +110,7 @@ describe('钱包支付能力验证 (WalletTools)', () => {
     console.log(`  [OK] signMessage → ${r.signature.slice(0, 20)}...`);
   });
 
-  it('wallet_get_balance: ethers+RPC 路径接线正确 (真实查询或 RPC 不可用均算通过)', async () => {
+  it('wallet_get_balance: ethers+RPC 路径接线正确 (真实查询或 RPC 不可用均算通过)', { timeout: 25000 }, async () => {
     try {
       const r = await withTimeout(getBalance({ address: VITALIK }), 15000);
       expect(r.address.toLowerCase()).toBe(VITALIK.toLowerCase());
@@ -125,7 +125,7 @@ describe('钱包支付能力验证 (WalletTools)', () => {
 });
 
 describe('Polymarket 查询验证 (PolymarketSDK — 真实 SDK)', () => {
-  it('polymarket_list_markets: 调用真实 polymarket-sdk', async () => {
+  it('polymarket_list_markets: 调用真实 polymarket-sdk', { timeout: 25000 }, async () => {
     try {
       const markets = await withTimeout(listMarkets({ limit: 5 }), 20000);
       expect(Array.isArray(markets)).toBe(true);
@@ -137,7 +137,7 @@ describe('Polymarket 查询验证 (PolymarketSDK — 真实 SDK)', () => {
     }
   });
 
-  it('polymarket_get_market: 用真实 id 查询市场 (端到端)', async () => {
+  it('polymarket_get_market: 用真实 id 查询市场 (端到端)', { timeout: 25000 }, async () => {
     try {
       const markets = await withTimeout(listMarkets({ limit: 1 }), 20000);
       expect(Array.isArray(markets)).toBe(true);
