@@ -24,6 +24,7 @@ import {
   type Task,
 } from './server-types.js';
 import { saveWindow as saveSessionWindow, loadWindow as loadSessionWindow } from '../bootstrap/session-window.js';
+import { parentsSatisfied } from './task-deps.js';
 
 // 写盘去重: 上次写盘内容, 用于跳过幂等调用
 let lastChannelsJson = '';
@@ -220,9 +221,12 @@ function withTaskQueueLock<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-export type ClaimResult = 'claimed' | 'not-pending' | 'busy';
+export type ClaimResult = 'claimed' | 'not-pending' | 'busy' | 'parents-undone';
 
-/** CAS 认领指定任务: 只有 status==='pending' 才能认领成功 (原子翻成 running) */
+/**
+ * CAS 认领指定任务: 只有 status==='pending' 才能认领成功 (原子翻成 running).
+ * 认领点强制父依赖不变式 (Hermes kanban): 任一父未 completed/cancelled → 不认领, 返回 'parents-undone'.
+ */
 export async function claimTaskForExecution(taskId: string): Promise<ClaimResult> {
   if (isExecutingTask) return 'busy';
   return withTaskQueueLock(async () => {
@@ -230,6 +234,8 @@ export async function claimTaskForExecution(taskId: string): Promise<ClaimResult
     const tasks = await loadTaskQueue();
     const t = tasks.find((x) => x.id === taskId);
     if (!t || t.status !== 'pending') return 'not-pending';
+    // 父依赖不变式: 父未完成 → 拒绝认领 (依赖悬空时任务不可执行)
+    if (!parentsSatisfied(t, tasks)) return 'parents-undone';
     t.status = 'running';
     t.updatedAt = new Date().toISOString();
     await saveTaskQueue(tasks);
@@ -239,13 +245,16 @@ export async function claimTaskForExecution(taskId: string): Promise<ClaimResult
   });
 }
 
-/** CAS 认领下一个 pending 任务; 无任务/已被认领 → null (输家不重试) */
+/**
+ * CAS 认领下一个 pending 任务; 无任务/已被认领 → null (输家不重试).
+ * 只认领父依赖满足的 pending — 父未完成的任务跳过 (等父 done 后可被认领), 不阻塞队列.
+ */
 export async function claimNextPendingTask(): Promise<Task | null> {
   if (isExecutingTask) return null;
   return withTaskQueueLock(async () => {
     if (isExecutingTask) return null;
     const tasks = await loadTaskQueue();
-    const t = tasks.find((x) => x.status === 'pending');
+    const t = tasks.find((x) => x.status === 'pending' && parentsSatisfied(x, tasks));
     if (!t) return null;
     t.status = 'running';
     t.updatedAt = new Date().toISOString();

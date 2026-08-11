@@ -37,9 +37,19 @@ export function registerTaskRoutes(
   // 创建新任务
   app.post('/api/tasks', async (req, res) => {
     try {
-      const { type, title, description, steps } = req.body;
+      const { type, title, description, steps, parentIds } = req.body;
       if (!type || !title) {
         return res.status(400).json({ error: 'type and title required' });
+      }
+
+      // 2026-08-11 (Hermes 父依赖): parentIds 必须是已存在的任务 id
+      if (parentIds !== undefined) {
+        const tasks0 = await loadTaskQueue();
+        const known = new Set(tasks0.map((t) => t.id));
+        const unknown = (Array.isArray(parentIds) ? parentIds : []).filter((id: string) => !known.has(id));
+        if (unknown.length > 0) {
+          return res.status(400).json({ error: `Unknown parent task ids: ${unknown.join(', ')}` });
+        }
       }
 
       const tasks = await loadTaskQueue();
@@ -52,6 +62,7 @@ export function registerTaskRoutes(
         progress: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        parentIds: Array.isArray(parentIds) && parentIds.length > 0 ? parentIds : undefined,
         steps: steps?.map((s: string, i: number) => ({
           id: `step_${i}`,
           name: s,
@@ -141,6 +152,11 @@ export function registerTaskRoutes(
         const tasks = await loadTaskQueue();
         const task = tasks.find(t => t.id === taskId);
         return res.status(409).json({ error: `Task not claimable (status=${task?.status ?? 'missing'})` });
+      }
+      if (claim === 'parents-undone') {
+        const tasks = await loadTaskQueue();
+        const task = tasks.find(t => t.id === taskId);
+        return res.status(409).json({ error: `Task parents not done (${(task?.parentIds || []).join(', ')}) — 父任务完成后才能执行` });
       }
 
       const tasks = await loadTaskQueue();

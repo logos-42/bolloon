@@ -103,6 +103,8 @@ export interface Task {
   error?: string;
   createdAt: string;
   updatedAt: string;
+  /** 2026-08-11: 父任务依赖 (认领点强制校验, Hermes kanban 模式) */
+  parentIds?: string[];
   steps?: any[];
   currentStep?: number;
 }
