@@ -711,6 +711,37 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
     // 延迟 3s 等 Ink 挂载完成 (global __inkAppend/__inkSetTransient 注册) — 否则首轮显示丢失
     setTimeout(() => { cliOrganizeHeartbeat?.runOnce().catch(() => {}); }, 3000);
   } catch { /* 自动整理启动失败不阻塞 CLI */ }
+
+  // ==================== 2026-08-11: cron 调度心跳 (借鉴 Hermes cron/scheduler.py) ====================
+  // 轻量定时任务: 每隔一段时间扫一次 due 的 job, 把 job.prompt 投给 agent 执行.
+  // 不阻塞启动, 失败不崩溃 (各自 try/catch), 继承 organize heartbeat 的"静默降级"心智.
+  let cliCronTimer: NodeJS.Timeout | null = null;
+  try {
+    const { Scheduler } = await import('./cron/scheduler.js');
+    const cronScheduler = new Scheduler({
+      now: () => new Date(),
+      exec: async (job) => {
+        // 借 agent 执行任务 prompt (脱壳为 text 提示). 无 agent / 超时 / 失败 → 抛出交给 scheduler 记录失败
+        const a = await Promise.race([
+          await getAgent().catch(() => null),
+          new Promise<null>((res) => setTimeout(() => res(null), 8000)),
+        ]).catch(() => null);
+        if (!a || typeof (a as any).promptStream !== 'function') {
+          throw new Error('无可用 agent, 跳过调度任务');
+        }
+        await (a as any).promptStream?.(`[cron] ${job.name}: ${job.prompt}`, () => {}, undefined, cliActiveChannelId || undefined);
+      },
+    });
+    const cronIntervalMs = Number(process.env.BOLLOON_CRON_HEARTBEAT_MS) || 60_000;
+    cliCronTimer = setInterval(() => {
+      cronScheduler.tick().catch((e: any) => {
+        console.error('[cron] 调度心跳失败 (不影响主流程):', e?.message ?? e);
+      });
+    }, cronIntervalMs);
+    // 启动延迟一轮, 避开启动峰值
+    setTimeout(() => { cronScheduler.tick().catch(() => {}); }, 15_000);
+  } catch { /* cron 调度启动失败不阻塞 CLI */ }
+
   // Wait on a promise that resolves on Ctrl+C / 双击 Esc
   // (ink-app 的 requestExit 调 __inkRequestExit → resolve, 清理后 process.exit)
   let cliExitResolve: () => void = () => {};
@@ -721,6 +752,7 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
   stopInk();
   appendLine(`\n${CYAN}👋 再见！${RESET}`);
   try { cliOrganizeHeartbeat?.stop(); } catch { /* 非致命 */ }
+  if (cliCronTimer) clearInterval(cliCronTimer);
   comm.stop();
   process.exit(0);
 }
@@ -1026,6 +1058,67 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       }
       if (list.length > 40) appendLine(`  ${C_DIM}... 共 ${list.length} 个${RESET}`);
     } catch { /* 静默 */ }
+    return;
+  }
+
+  // /suggestions — 建议队列 (/suggestions [list|accept <n>|dismiss <n>|clear|catalog|install <key>])
+  // 借鉴 Hermes cron/suggestions.py: 有界待办建议, dedup + 用户消费
+  if (cmd === '/suggestions' || cmd.startsWith('/suggestions ')) {
+    try {
+      const { handleSuggestionsCommand } = await import('./cron/suggestions-command.js');
+      const res = await handleSuggestionsCommand(trimmed.slice('/suggestions'.length));
+      appendLine(`${C_ACCENT}◎ 建议${RESET}`);
+      appendLine(res.text);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}✗ /suggestions 失败: ${String(e.message || e).slice(0, 200)}${RESET}`);
+    }
+    return;
+  }
+
+  // /cron — 定时任务 (/cron list | add <name> <schedule> <prompt> | rm <id> | on/off <id>)
+  // 借鉴 Hermes cron/scheduler.py: 轻量单文件定时任务 + 调度 tick
+  if (cmd === '/cron' || cmd.startsWith('/cron ')) {
+    const { listJobs, addJob, removeJob, setEnabled } = await import('./cron/jobs-store.js');
+    const { parseSchedule } = await import('./cron/cron-parser.js');
+    const parts = trimmed.slice('/cron'.length).trim().split(/\s+/).filter(Boolean);
+    const action = parts[0]?.toLowerCase() ?? 'list';
+    try {
+      if (action === 'list') {
+        const jobs = await listJobs();
+        if (jobs.length === 0) {
+          appendLine(`${C_ACCENT}⏱ 定时任务${RESET}${C_DIM} 空 — 用 /cron add <名称> '<schedule>' <prompt> 添加${RESET}`);
+          appendLine(`${C_DIM}  示例: /cron add 每日复盘 '0 18 * * *' 总结今天工作并写进 wiki${RESET}`);
+        } else {
+          appendLine(`${C_ACCENT}⏱ 定时任务 (${jobs.length}):${RESET}`);
+          for (const j of jobs) {
+            const next = (() => { try { return parseSchedule(j.schedule)?.next.toISOString(); } catch { return null; } })();
+            appendLine(`  ${j.enabled ? C_ACCENT + '●' + RESET : C_DIM + '○' + RESET} [${C_DIM}${j.id.slice(0, 8)}${RESET}] ${j.name} ${C_DIM}· ${j.schedule}${RESET}`);
+            appendLine(`    ${C_DIM}prompt: ${j.prompt.slice(0, 60)}${RESET}`);
+            if (next) appendLine(`    ${C_DIM}下次: ${next} · 已跑 ${j.runCount} 次${RESET}`);
+          }
+        }
+      } else if (action === 'add') {
+        // 参数: <name> <schedule> <prompt...> — name 可能带空格, 用引号/斜杠分隔
+        const m = trimmed.slice('/cron'.length).trim().match(/^add\s+(.*?)\s+'([^']+)'?\s+(.*)$/);
+        if (!m || !parseSchedule(m[2])) {
+          appendLine(`${C_WARN}用法: /cron add <名称> '<schedule>' <prompt>${RESET}`);
+        } else {
+          const job = await addJob({ name: m[1], schedule: m[2], prompt: m[3] }, os.homedir());
+          appendLine(`${C_OK}✓ 已创建任务 ${job.name} (${job.schedule})${RESET}`);
+        }
+      } else if (action === 'rm') {
+        const ok = await removeJob(parts[1], os.homedir());
+        appendLine(`${ok ? C_OK + '✓' + RESET + ' 已删除' : C_ERROR + '✗ 未找到' + RESET} 任务 ${parts[1] ?? ''}`);
+      } else if (action === 'on' || action === 'off') {
+        const en = action === 'on';
+        const j = await setEnabled(parts[1], en, os.homedir());
+        appendLine(j ? `${C_OK}✓ ${en ? '启用' : '停用'} ${j.name}${RESET}` : `${C_ERROR}✗ 未找到 ${parts[1]}${RESET}`);
+      } else {
+        appendLine(`${C_DIM}用法: /cron list | add | rm <id> | on/off <id>${RESET}`);
+      }
+    } catch (e: any) {
+      appendLine(`${C_ERROR}✗ /cron 失败: ${String(e.message || e).slice(0, 200)}${RESET}`);
+    }
     return;
   }
 
@@ -1532,6 +1625,8 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     appendLine(`  ${C_ACCENT}/judgement${RESET} 判断力列表`);
     appendLine(`  ${C_ACCENT}/insight${RESET} Context OS 洞察 (08-Insights)`);
     appendLine(`  ${C_ACCENT}/wiki${RESET}   wiki 状态`);
+    appendLine(`  ${C_ACCENT}/suggestions${RESET} 建议队列  ${C_DIM}list · accept <n> · dismiss <n> · clear · catalog · install${RESET}`);
+    appendLine(`  ${C_ACCENT}/cron${RESET}   定时任务  ${C_DIM}list · add <名> '<schedule>' <prompt> · rm/on/off <id>${RESET}`);
     appendLine(`  ${C_ACCENT}/dream${RESET}  随机灵感  ${C_DIM}/dream <主题> 写入梦想文档并触发循环${RESET}`);
     appendLine(`  ${C_ACCENT}@名字${RESET}     @ 命中智能体  ${C_DIM}弹出窗选择后发送给智能体${RESET}`);
     appendLine(`  ${C_ACCENT}/名字${RESET}     / 命中命令/技能/插件  ${C_DIM}输入 / 自动弹出${RESET}`);
