@@ -113,6 +113,8 @@ export interface Task {
   failureLimit?: number;
   /** 最近一次失败的错误摘要 */
   lastFailureError?: string;
+  /** 2026-08-11: 完成防幻觉校验的 advisory warning 列表 (Hermes suspected_hallucinated_references) */
+  warnings?: string[];
   steps?: any[];
   currentStep?: number;
 }

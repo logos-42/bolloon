@@ -420,6 +420,29 @@ async function executeTask(
     broadcast({ type: 'task_status', taskId: task.id, status: 'completed', progress: 100, result }, channelId);
     broadcast({ type: 'ai', content: result }, channelId);
 
+    // 2026-08-11 (Hermes 完成防幻觉, advisory): 异步校验 result 里的任务/文件引用,
+    //   幽灵引用 → 存 task.warnings + broadcast warning (不阻塞完成 — 单次同步执行无法返工)
+    void (async () => {
+      try {
+        const { verifyTaskResult } = await import('./task-verify.js');
+        const allTasks = await loadTaskQueue();
+        const v = await verifyTaskResult(result, { knownTaskIds: allTasks.map((t) => t.id) });
+        if (v.warnings.length > 0) {
+          const q = await loadTaskQueue();
+          const vi = q.findIndex((t) => t.id === task.id);
+          if (vi >= 0) {
+            q[vi].warnings = v.warnings;
+            await saveTaskQueue(q);
+          }
+          for (const w of v.warnings) {
+            broadcast({ type: 'error', content: `⚠ ${w}` }, channelId);
+          }
+        }
+      } catch {
+        // 校验失败不阻塞完成
+      }
+    })();
+
   } catch (error: any) {
     const tasks = await loadTaskQueue();
     const idx = tasks.findIndex(t => t.id === task.id);
