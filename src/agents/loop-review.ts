@@ -86,6 +86,7 @@ export function buildReviewHint(state: ReviewState, maxReviews: number = DEFAULT
     `\n用户需求: ${intent.slice(0, 300)}` +
     actionLines +
     `\n已完成工具: ${tools}` +
+    `\n[完成契约] 宣布 <final gen> 前必须展示具体证据 (命令输出 / 文件内容 / 测试结果), 只写结论不算完成.` +
     `\n请对照需求逐条自查: 用户需求是否每一项都真正完成了? 如果还有未完成的子目标或自然衔接的后续步骤 → 继续调用工具推进 (已完成动作不要重复, 直接基于已有结果做下一步); ` +
     `如果用户需求已全部满足 → 直接输出 <final gen> 结束.` +
     `\n[重要] 不要因为做了一部分就提前结束 — 结束前逐条对照「用户需求」确认每一项都完成.`
@@ -95,4 +96,36 @@ export function buildReviewHint(state: ReviewState, maxReviews: number = DEFAULT
 /** 布尔门: 是否该继续 review (测试/消融快速断言) */
 export function shouldReviewAgain(state: ReviewState, maxReviews: number = DEFAULT_MAX_REVIEWS): boolean {
   return decideAfterReview(state, maxReviews).kind === 'continue-review';
+}
+
+// ==================== 循环工作流检测 (2026-08-11, Hermes wedged-loop 思想) ====================
+// Hermes 心跳陈旧兜底: "进程活着但 last_heartbeat_at 陈旧 = 卡在逻辑循环, 即使 PID 存活也回收".
+// Bolloon 对应: 有工具调用活动但连续 N 次完全相同 (name+argsHash) = 有活动无进展 → 判循环.
+
+export interface ToolCallRecord {
+  name: string;
+  argsHash: string;
+}
+
+/** 判定连续 window 次完全相同的工具调用 (循环签名) */
+export function detectRepeatingCalls(
+  recent: ToolCallRecord[],
+  window: number = 3
+): { repeating: boolean; name?: string } {
+  if (recent.length < window) return { repeating: false };
+  const tail = recent.slice(-window);
+  const first = tail[0];
+  const same = tail.every((c) => c.name === first.name && c.argsHash === first.argsHash);
+  return same ? { repeating: true, name: first.name } : { repeating: false };
+}
+
+/** 工具调用参数稳定哈希 (排序键, 顺序无关) */
+export function toolCallArgsHash(args: unknown): string {
+  try {
+    const obj = (args ?? {}) as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    return JSON.stringify(keys.map((k) => [k, obj[k]]));
+  } catch {
+    return String(args ?? {});
+  }
 }

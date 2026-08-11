@@ -14,6 +14,7 @@
  */
 
 import type { Tool, ToolResult, StreamCallback, StreamEvent } from './pi-sdk.js';
+import { detectRepeatingCalls, toolCallArgsHash } from './loop-review.js';
 
 /**
  * 2026-08-11 (借鉴 Hermes `_canonicalize_tool_call_arguments`): 工具参数规范化 —
@@ -205,6 +206,8 @@ export class WorkflowPivotLoop {
   // 2026-08-11 (Hermes `_get_continuation_prompt` 模式): 本轮工具执行的结构性问题
   // (未知工具被跳过/输出过大) → 下轮注入显式续跑提示, LLM 不会静默忽略.
   private continuationHints: string[] = [];
+  // 2026-08-11 (循环工作流检测): 最近工具调用记录 (name+argsHash), 连续相同 = 有活动无进展
+  private recentToolCalls: Array<{ name: string; argsHash: string }> = [];
   
   constructor(config: PivotLoopConfig) {
     this.tools = new Map();
@@ -576,6 +579,22 @@ export class WorkflowPivotLoop {
           });
 
           try {
+            // 2026-08-11 (Hermes wedged-loop 检测): 连续 3 次相同工具+相同参数 = 疑似循环工作流 —
+            //   计入 no-progress (达到上限由 determineExitReason 中断), 注入续跑提示让 LLM 换策略
+            const argsHash = toolCallArgsHash(toolCall.args);
+            this.recentToolCalls.push({ name: toolCall.name, argsHash });
+            if (this.recentToolCalls.length > 8) this.recentToolCalls.shift();
+            const rep = detectRepeatingCalls(this.recentToolCalls);
+            if (rep.repeating) {
+              this.state.consecutiveNoProgress++;
+              this.pushContinuationHint(`检测到重复工具调用 ${rep.name} (连续 ${this.recentToolCalls.slice(-3).length} 次相同参数) — 疑似循环, 请换一种策略或缩小范围, 不要重复同一调用`);
+              this.emit({
+                type: 'error',
+                content: `⚠ 检测到重复工具调用 ${rep.name} (连续 3 次相同参数) — 疑似循环工作流, 已计入无进展`,
+                tool: 'loop-guard',
+              });
+            }
+
             const result = await tool.execute(toolCall.args ?? {});
 
             // 2026-08-11: 输出过大 → 续跑提示 (Hermes dropped-tools continuation 模式),
