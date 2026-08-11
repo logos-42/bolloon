@@ -1,13 +1,15 @@
 # lefthook.yml — 仅保留 pre-commit 快速检查, 去掉 pre-push 拦截
+# 2026-08-11: parallel: false — tsc + vitest 并行时 CPU 争抢导致 vitest worker 起不来
+#   (Failed to start forks worker / 5s 测试误超时). 串行: tsc 先 (快), vitest 后 (独占 CPU).
 pre-commit:
-  parallel: true
+  parallel: false
   commands:
-    vitest-bail:
-      glob: "src/**/*.{ts,tsx,js}"
-      run: sh scripts/lefthook-helper.sh commit-vitest-bail
     tsc-check:
       glob: "src/**/*.{ts,tsx}"
       run: sh scripts/lefthook-helper.sh commit-tsc-check
+    vitest-bail:
+      glob: "src/**/*.{ts,tsx,js}"
+      run: sh scripts/lefthook-helper.sh commit-vitest-bail
     validate-prompt-layers:
       glob: "src/llm/system-prompt/layers/**/*.md"
       run: npx tsx -r dotenv/config scripts/validate-system-prompt.ts

@@ -9,6 +9,7 @@ import type { Express } from 'express';
 import { type Task } from './server-types.js';
 import { loadTaskQueue, saveTaskQueue, isTaskExecuting } from './server-storage.js';
 import { documentReader } from '../documents/reader.js';
+import { applyCancelRequest, shouldFinalizeAsCancelled } from './task-cancel.js';
 
 type BroadcastFn = (event: any, channelId?: string) => void;
 type GetAgentFn = (channelId: string) => Promise<{ prompt: (text: string) => Promise<string> }>;
@@ -175,6 +176,46 @@ export function registerTaskRoutes(
       res.status(500).json({ error: err.message });
     }
   });
+
+  // 取消任务 (2026-08-11, Hermes 两段式: cancel-requested → cancelled)
+  //   - pending 任务: 从未开始, 直接终态 cancelled (请求即完成, 不会卡在中间态)
+  //   - running 任务: 先置 cancel-requested (第一段: 请求已受理), executor 观测到后置 cancelled (第二段: 实际停止)
+  app.post('/api/tasks/:taskId/cancel', async (req, res) => {
+    try {
+      const { taskId } = req.params;
+      const { channelId } = req.body || {};
+      const tasks = await loadTaskQueue();
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+
+      switch (task.status) {
+        case 'pending': {
+          const t = applyCancelRequest(task.status);
+          task.status = t.status;
+          task.updatedAt = new Date().toISOString();
+          await saveTaskQueue(tasks);
+          broadcast({ type: 'task_status', taskId: task.id, status: t.status, progress: task.progress }, channelId);
+          return res.json({ ok: true, taskId: task.id, status: t.status, phase: t.phase });
+        }
+        case 'running': {
+          const t = applyCancelRequest(task.status);
+          task.status = t.status;
+          task.updatedAt = new Date().toISOString();
+          await saveTaskQueue(tasks);
+          broadcast({ type: 'task_status', taskId: task.id, status: t.status }, channelId);
+          return res.json({ ok: true, taskId: task.id, status: t.status, phase: t.phase });
+        }
+        case 'cancel-requested':
+          return res.json({ ok: true, taskId: task.id, status: 'cancel-requested', phase: 'already-requested' });
+        default:
+          return res.status(409).json({ error: `Task already terminal (${task.status})` });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 }
 
 // ==================== Task Execution ====================
@@ -234,6 +275,20 @@ async function executeTask(
         result = '未知任务类型';
     }
 
+    // 2026-08-11 (Hermes 两段式): executor 观测到 cancel-requested → 落终态 cancelled (第二段)
+    // 运行中被请求取消 → 不执行正常完成路径, 直接标记取消
+    const tasksAfter = await loadTaskQueue();
+    const idxAfter = tasksAfter.findIndex(t => t.id === task.id);
+    if (idxAfter >= 0 && shouldFinalizeAsCancelled(tasksAfter[idxAfter].status)) {
+      tasksAfter[idxAfter].status = 'cancelled';
+      tasksAfter[idxAfter].result = '任务已取消';
+      tasksAfter[idxAfter].updatedAt = new Date().toISOString();
+      await saveTaskQueue(tasksAfter);
+      broadcast({ type: 'task_status', taskId: task.id, status: 'cancelled', progress: tasksAfter[idxAfter].progress }, channelId);
+      broadcast({ type: 'status', content: `任务已取消: ${task.title}` }, channelId);
+      return;
+    }
+
     // 更新任务状态
     const tasks = await loadTaskQueue();
     const idx = tasks.findIndex(t => t.id === task.id);
@@ -252,7 +307,8 @@ async function executeTask(
     const tasks = await loadTaskQueue();
     const idx = tasks.findIndex(t => t.id === task.id);
     if (idx >= 0) {
-      tasks[idx].status = 'failed';
+      // 取消请求在先 → 异常属于取消副作用, 落 cancelled 而非 failed (Hermes 两段式)
+      tasks[idx].status = tasks[idx].status === 'cancel-requested' ? 'cancelled' : 'failed';
       tasks[idx].error = error.message;
       tasks[idx].updatedAt = new Date().toISOString();
       await saveTaskQueue(tasks);
