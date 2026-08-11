@@ -12,7 +12,10 @@ bin/
 release/
 .playwright-mcp
 py-bolloon/
-
+.codex/
+.vscode
+.claude/
+.idea/
 .kilo/
 findings.md
 progress.md
@@ -48,5 +51,5 @@ bolloon_raw/
 .bolloon/
 
 # Rokid vendor SDK stays outside the repository; ignore accidental local copies.
-rokid/android/vendor/*
+android/vendor/*
 rokid/glass/vendor/*

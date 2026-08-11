@@ -24,7 +24,7 @@ const config: CapacitorConfig = {
     backgroundColor: '#ffffff',
   },
   android: {
-    // Rokid Android 手机端工程在 rokid/android/，这里保持 Capacitor Android 的基础配置。
+    // Rokid Android 手机端工程在 android/（与 ios/ 同级），这里保持 Capacitor Android 的基础配置。
     backgroundColor: '#111318',
   },
   server: {

@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-11 | feat | Android 手机端独立工程 (`android/`, 与 ios 同级): 官方 CXR-M SDK `com.rokid.cxr:client-m:1.2.2` 真实接入去 Mock — CXRServiceBridge + CxrController 蓝牙通道, assembleDebug 出 APK 16.2MB (compileSdk 36 / targetSdk 35 / JDK 21), dist/web 打包独立 APP 渲染, 修复 capacitor 模块 4 坑; 顺带 @diap/sdk 0.2.4 修复 tsc setOwnerDid | [android/](../../android/) |
 |||| 2026-08-10 | feat | terminal 工具 (v0.3.51): bolloon 自己写命令进终端 — 新 agent 工具接受完整 shell 命令字符串 (管道/重定向/写文件), denylist-only 护栏只挡高危 (sudo/格式化/rm -rf 根·家/写 ~/.bolloon 数据), default 权限只剩 git_* 禁. tsc 0 错, vitest 1152/1152 (+3), 真实执行链路验证 OK, 已发布 npm 0.3.51 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-10 | feat | 循环智能化 (v0.3.50): ① final 前总是 LLM 完成度自查 (decideAfterReview 重构 — 结束权交给 LLM, 不再因 intent 空直接 finish, 修"发布 ipfs 网站" 1 次循环就结束); ② default 权限放开 write_file/edit_file/delete_file (写路径白名单兜底, 保留 shell/git 禁); ③ CLI 启动自动拉起 Kubo (checkKuboSetup fire-and-forget, BOLLOON_SKIP_KUBO=1 可禁). tsc 0 错, vitest 1149/1149, pty PASS, Kubo 上传/读回链路实测 OK, 已发布 npm 0.3.50 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-10 | feat | 自动整理结果进艺术字框 + 循环逃生门 (v0.3.49): ① 自动整理汇总 (🧹 遗留/✨ 进化/🧠 知识) 统一进 renderMessageBox 圆角框 "自动整理完成"; ② unreported 循环逃生门 — decideUnreported 纯函数 (默认 3 次提示后清空积压强制 final, 状态栏显示 N/M), 修用户实测 11 次 "🔄 还有 1 个工具结果未汇报" 死循环; ③ 工具失败追加 SHELL_ESCAPE_HINT 引导 LLM 用 shell_exec 开终端跑命令诊断. tsc 0 错, vitest 1149/1149 (+4), pty PASS, 已发布 npm 0.3.49 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
@@ -1146,3 +1147,27 @@ default permission 还禁 shell_exec.
 - `npm publish` (prepublishOnly: build:all + smoke:esm 通过)
 - 线上验证: `npm view @bolloon/bolloon-agent@0.3.51`
 - 全局包 dist 同步
+
+## [2026-08-11] feat | Android 手机端独立工程 (android/) + CXR-M SDK 真实接入 + 独立 APP 渲染
+
+### 内容
+
+- **目录重构**: `rokid/android/` → `android/`（与 `ios/` 同级；`rokid/` 保留为眼镜端）— git mv 保留历史；settings.gradle capacitor 路径修正（`../node_modules`）；根 .gitignore + `android/.gitignore`（build/.gradle/local.properties/签名/vendor/.idea）+ README/docs/BUILD.md/capacitor.config.ts 引用全量更新。
+- **官方 CXR-M SDK 真实接入**: `com.rokid.cxr:client-m:1.2.2`（maven.rokid.com 公开坐标, 官方 latest）— 131 个 com.rokid.cxr 类 + arm64-v8a/armeabi-v7a JNI .so 打进 APK classes.dex；AAR 镜像 `android/vendor/client-m-1.2.2.aar`（gitignored, manifest 登记 `rokid-cxr-client-m-1.2.2`）。
+- **去掉 Mock 真实使用**: RokidBridgePlugin 重写为 RealRokidAdapter — `CXRServiceBridge`（消息 pub/sub, Bolloon 协议 topic `bolloon.message` / `bolloon.notification`）+ `CxrController` 蓝牙门面（initBluetooth/connectBluetooth, 从已配对设备自动找 Rokid 眼镜）+ Capacitor 运行时权限（BLUETOOTH_CONNECT/SCAN + 定位）；`MockRokidAdapter` 从 dex 彻底移除（0 残留, dexcheck 验证）。
+- **CXR AAR 缺陷补丁 `com.rokid.cxr.ReplyImpl`**: 官方 client-m 所有版本 (1.2.0~1.2.2 实测) 的 libcxr-bridge-jni.so 在 JNI_OnLoad 里 FindClass("com/rokid/cxr/ReplyImpl") 并注册 nativeEnd/nativeReleaseData, 但 classes.jar 不含该类（R8 混淆发布事故）→ ART 直接 JNI abort (SIGABRT)。app 内补该类（实现 CXRServiceBridge.Reply + native 方法声明, 签名按 .so 字符串表 + 崩溃消息迭代确定: `nativeEnd(JLcom/rokid/cxr/Caps;)V` + `nativeReleaseData(J)V`）。官方修复后删文件即可。
+- **构建链**: gradle wrapper 8.14.3 + AGP 8.13.0；JDK 21（Android Studio JBR, capacitor 8.4.1 编译要求）；compileSdk 36（capacitor 8.4.1 的 androidx 1.17 AAR metadata 强制）+ targetSdk 35（platform-35 适配, 设备行为 = Android 15）。修复 4 个坑: ① capacitor 模块 projectDir 路径（node_modules 少一级 `..`）② `FAIL_ON_PROJECT_REPOS` → `PREFER_SETTINGS`（capacitor npm 模块自带 repositories 块会抛错）③ appcompat + annotation 显式依赖（capacitor 用 implementation 不透出, MainActivity 父类链/RokidBridgePlugin 的 @Nullable 需要）④ compileSdk 36。
+- **独立 APP 渲染**: `dist/web` 全量拷贝进 `app/src/main/assets/public`（Capacitor 本地 WebView 加载, 相对路径引用无外部 CDN 依赖）。
+- **顺带修复**: node_modules 里 @diap/sdk 陈旧 0.2.2 → 0.2.4（committed lockfile 已是 0.2.4; 在线 registry 不可达, 从 npm 本地缓存按 integrity 提取 tarball 安装）— tsc `setOwnerDid` 2 错消失, package.json/lock 未动。
+
+### 验证
+
+- `./gradlew :app:assembleDebug` BUILD SUCCESSFUL → `app/build/outputs/apk/debug/app-debug.apk` 16.2MB
+- dexcheck.py: CXR SDK（classes.dex）+ Capacitor BridgeActivity（classes3）+ RokidBridgePlugin×18（classes6）, MockRokidAdapter 0 残留
+- `npx tsc --noEmit` 0 错（@diap/sdk 0.2.4 修复后）; `npx vitest run` 1152/1152
+- **模拟器独立 APP 渲染 ✓**: android-36.1 google_apis_playstore x86_64 镜像 + AVD `Medium_Phone_API_36.1` (WHPX, 冷启动 110s) → adb install → am start → uiautomator 抓到完整 Bolloon UI 文本（"Bolloon Agent / 收起侧边栏 / 智能体 / 新建智能体 / P2P 好友 / 我的 ID / 加载中... / 已连接"）+ 截图主色 #1a1a18 暗主题 + #c4d640 品牌绿 (captures/app-render.png)
+- 真机注意: 模拟器 Play 镜像带 Berberis (ARM→x86 翻译) — CXR arm64 .so 能加载, 但 JNI_OnLoad 缺 ReplyImpl 直接 SIGABRT（已补丁解决）; 真机 arm64 同样需要该补丁
+
+### 边界
+
+- 真机联调待 Rokid 授权材料与眼镜设备；消息 topic 为 Bolloon 自有协议层（眼镜端 app 订阅同一 topic 即通）

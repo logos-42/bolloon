@@ -1,0 +1,32 @@
+# ── Android 手机端 (Bolloon) ──────────────────────────────
+# 构建产物 (gradle 每次可重建)
+build/
+.gradle/
+*.apk
+*.aab
+
+# 本机 SDK 路径 (机器相关, 永不入库)
+local.properties
+
+# IDE / 编辑器
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 签名 (密钥永不入库)
+*.jks
+*.keystore
+keystore.properties
+
+# Rokid CXR-M SDK 本地镜像 (maven.rokid.com 公开坐标已可在线解析;
+# 此目录仅作离线重构建用, 已登记 manifests/raw_sources.csv)
+vendor/
+
+# Web assets (dist/web 的拷贝, 与 ios/App/App/public 同模式 — 构建前 cp -r dist/web/. 生成)
+app/src/main/assets/public/
+
+# JVM crash dumps
+hs_err_pid*.log
+replay_pid*.log

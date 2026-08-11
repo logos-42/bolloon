@@ -1,0 +1,42 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.bolloon.agent.rokid'
+    // compileSdk 36: capacitor-android 8.4.1 的 androidx 1.17 (activity/core/webkit) AAR metadata
+    // 强制要求 compileSdk >= 36; targetSdk 仍 35 (platform-35 适配, 设备行为 = Android 15)。
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.bolloon.agent.rokid'
+        minSdk 28
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    buildFeatures { buildConfig true }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+    // capacitor-android 把 androidx 声明为 implementation (不透出), app 直接引用
+    // AppCompatActivity (MainActivity 父类链) + androidx.annotation (RokidBridgePlugin), 需显式声明。
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'androidx.annotation:annotation:1.9.1'
+    // Rokid CXR-M 手机端 SDK：官方 Maven 公开坐标 (maven.rokid.com)，真实通道 (非 mock)。
+    implementation 'com.rokid.cxr:client-m:1.2.2'
+}

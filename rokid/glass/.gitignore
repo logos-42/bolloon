@@ -1,0 +1,16 @@
+# Rokid 眼镜端 (Kotlin)
+build/
+.gradle/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Rokid vendor SDK local mirror
+vendor/
+
+# JVM crash dumps
+hs_err_pid*.log
+replay_pid*.log

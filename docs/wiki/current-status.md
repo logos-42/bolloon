@@ -169,10 +169,10 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 | P2 | 把 2 个 opencode skill 接入 bolloon, 验证 use_skill 协议端到端 | ✅ 2026-07-04 复制 + ablation v0.2.8 D3.1 真实加载 |
 | P3 | 把 `scripts/ablation/run-long-loop.ts` 接入 vitest pre-commit | 待做 (跟 v0.2.7 runner 一样) |
 
-## Rokid 双端适配 (2026-08-10)
+## 手机端 + 眼镜端双端适配 (2026-08-10 → 2026-08-11)
 
 - ✅ 独立 npm SDK：`/Users/apple/Downloads/rokid/`，提供 `RokidDeviceClient`、协议类型、Mock Transport 和手机—眼镜回环测试。
-- ✅ Android 手机端：`rokid/android/`，Capacitor `RokidBridge` 插件，默认 Mock 模式。
-- ✅ Glass 眼镜端：`rokid/glass/`，Kotlin `RokidGlassesAdapter` 与大字号 Mock UI。
+- ✅ **Android 手机端独立工程**：`android/`（与 `ios/` 同级；`rokid/` 是眼镜端），Capacitor `RokidBridge` 插件已接入官方 **CXR-M SDK** (`com.rokid.cxr:client-m:1.2.2`, maven.rokid.com 公开坐标)，真实通道无 Mock；`dist/web` 打包进 `assets/public` 独立 APP 渲染；`assembleDebug` 出 APK 16.2MB (compileSdk 36 / targetSdk 35 / JDK 21)。**模拟器渲染验证 ✓** (AVD Medium_Phone_API_36.1: 完整 Bolloon UI 文本 + 暗主题 #1a1a18 + 品牌绿 #c4d640)。**补丁**: 官方 AAR 缺 `com.rokid.cxr.ReplyImpl` (R8 发布事故, JNI_OnLoad 直接 SIGABRT) → app 内补齐。
+- ✅ Rokid 眼镜端：`rokid/glass/`，Kotlin `RokidGlassesAdapter` 与大字号 Mock UI。
 - ✅ Web 端可选桥：`src/web/client.ts` 仅在检测到 Capacitor `RokidBridge` 时发送用户消息和 AI 回复；纯 Web/iOS/桌面保持静默。
-- ⚠️ 真实设备适配待官方 SDK/AAR/JAR 与授权材料；私有材料只允许放 `/Users/apple/Downloads/rokid/vendor/`，不进 Git。
+- ⚠️ 真机联调待 Rokid 授权材料与眼镜设备；CXR JNI 只发 arm .so（x86_64 模拟器靠 Play 镜像 Berberis 翻译可加载, 无该功能时 connect() 会报 native 不可用, UI 渲染不受影响）；私有材料只允许放 `android/vendor/`（gitignored），不进 Git。

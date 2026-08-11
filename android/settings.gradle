@@ -1,0 +1,32 @@
+import org.gradle.api.initialization.resolve.RepositoriesMode
+
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    // PREFER_SETTINGS (Gradle 默认): capacitor-android npm 模块自带 repositories 块,
+    // FAIL_ON_PROJECT_REPOS 会在其解析依赖时抛错; PREFER_SETTINGS 下统一用 settings 仓库。
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        google()
+        mavenCentral()
+        // Rokid 官方仓库：仅在拿到对应 SDK 后启用实际依赖。
+        maven { url = uri("https://maven.rokid.com/repository/maven-public/") }
+        def rokidSdkDir = System.getenv("ROKID_SDK_DIR")
+        if (rokidSdkDir != null && !rokidSdkDir.isBlank()) {
+            flatDir { dirs("$rokidSdkDir/vendor") }
+        }
+    }
+}
+
+rootProject.name = "BolloonRokidAndroid"
+include(":app")
+// Capacitor Android 官方是 npm 模块: node_modules/@capacitor/android/capacitor (非公开 maven 坐标)。
+// 注意: 相对 rootDir (android/) 到仓库根的 node_modules 需要一级 `..`。
+include(":capacitor-android")
+project(":capacitor-android").projectDir = new File(rootDir, "../node_modules/@capacitor/android/capacitor")
