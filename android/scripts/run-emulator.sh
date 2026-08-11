@@ -1,8 +1,9 @@
 #!/bin/bash
 # 启动 AVD → 安装 APK → 启动 MainActivity → 截图 (Bolloon Android 独立 APP 渲染验证)
+# 注意: adb.exe 是 Windows 二进制, 路径参数必须用 Windows 风格 (D:/...), MSYS /d/... 会 stat 失败。
 set -x
 SDK=/c/tools/android-sdk
-APK=/d/AI/bolloon/android/app/build/outputs/apk/debug/app-debug.apk
+APK='D:/AI/bolloon/android/app/build/outputs/apk/debug/app-debug.apk'
 OUT=/d/AI/bolloon/android/captures
 mkdir -p "$OUT"
 
