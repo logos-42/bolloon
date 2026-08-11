@@ -15,6 +15,44 @@
 
 import type { Tool, ToolResult, StreamCallback, StreamEvent } from './pi-sdk.js';
 
+/**
+ * 2026-08-11 (借鉴 Hermes `_canonicalize_tool_call_arguments`): 工具参数规范化 —
+ * LLM 返回的 arguments 常带尾随散文/尾逗号/代码围栏, 直接 JSON.parse 失败会丢整个工具调用.
+ * 策略: 直接解析 → 截到最后一个闭合 } → 去代码围栏, 逐级降级; 结果必须是非数组对象.
+ */
+export function canonicalizeToolCallArguments(argStr: unknown): Record<string, unknown> {
+  if (typeof argStr !== 'string') return {};
+  const s = argStr.trim();
+  if (!s) return {};
+
+  const tryParse = (text: string): Record<string, unknown> | null => {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch { /* 下一级 */ }
+    return null;
+  };
+
+  const direct = tryParse(s);
+  if (direct) return direct;
+
+  // LLM 在 JSON 后追加散文 — 截到最后一个闭合 } 再试
+  const lastClose = s.lastIndexOf('}');
+  if (lastClose > 0) {
+    const truncated = tryParse(s.slice(0, lastClose + 1));
+    if (truncated) return truncated;
+  }
+
+  // 代码围栏包裹
+  const fenced = s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  if (fenced && fenced !== s) {
+    const unfenced = tryParse(fenced);
+    if (unfenced) return unfenced;
+  }
+
+  return {};
+}
+
 export interface PivotLoopConfig {
   maxIterations: number;
   minIterations?: number;
@@ -144,6 +182,9 @@ export class WorkflowPivotLoop {
   // 2026-07-06: pivot 想看内部明细设 BOLLOON_VERBOSE=1 — 默认只保留 status 事件给 UI
   private verbose = typeof process !== 'undefined' && process.env?.BOLLOON_VERBOSE === '1';
   private vlog(msg: string) { if (this.verbose) console.log(msg); }
+  private pushContinuationHint(hint: string) {
+    if (!this.continuationHints.includes(hint)) this.continuationHints.push(hint);
+  }
   private onApproachingTokenBudget?: () => Promise<void>;
   private compactedThisRun = false;  // 防止 pivot 单次 execute 反复触发 compact
   // 2026-07-06: iter ≥ 2 时用简短 systemHeader 替代完整 systemPrompt
@@ -151,6 +192,9 @@ export class WorkflowPivotLoop {
   //   (pi-ai.ts buildSystemPromptAsync 重复读 .md) — 真没必要. 第一轮装全, 后续用锚句占位.
   //   compactor 触发后 (旧 systemHeader 代表性弱化) 再重新装一次全量.
   private continuationSystemHeader: string | null = null;
+  // 2026-08-11 (Hermes `_get_continuation_prompt` 模式): 本轮工具执行的结构性问题
+  // (未知工具被跳过/输出过大) → 下轮注入显式续跑提示, LLM 不会静默忽略.
+  private continuationHints: string[] = [];
   
   constructor(config: PivotLoopConfig) {
     this.tools = new Map();
@@ -237,13 +281,11 @@ export class WorkflowPivotLoop {
       const fn = tc?.function;
       if (!fn || !fn.name) continue;
       const name = fn.name;
-      if (!this.tools.has(name)) continue;
-      let args: Record<string, string> = {};
-      try {
-        const parsed = JSON.parse(fn.arguments || '{}');
-        if (parsed && typeof parsed === 'object') args = parsed;
-      } catch { /* args 保持空 */ }
-      out.push({ name, args: this.normalizeArgs(args), description: '', parameters: {} });
+      if (!this.tools.has(name)) {
+        this.pushContinuationHint(`工具 ${name} 未注册/不存在, 调用已跳过 — 请换用已提供的工具`);
+        continue;
+      }
+      out.push({ name, args: this.normalizeArgs(canonicalizeToolCallArguments(fn.arguments)), description: '', parameters: {} });
     }
     return out;
   }
@@ -322,7 +364,13 @@ export class WorkflowPivotLoop {
       });
 
       // Build context for LLM
-      const context = this.buildContext();
+      let context = this.buildContext();
+      // 2026-08-11: 注入工具续跑提示 (Hermes continuation prompt 模式) — 结构性问题显式告知,
+      //   用完即清 (只对下一轮 LLM 可见一次)
+      if (this.continuationHints.length > 0) {
+        context += `\n\n【工具续跑提示】\n${this.continuationHints.map((h) => `- ${h}`).join('\n')}\n请基于以上信息继续推进任务, 不要重复已失败的调用。`;
+        this.continuationHints = [];
+      }
       const fullPrompt = `${systemPrompt}\n\n${context}`;
       // 2026-07-06: iter ≥ 2 改用 continuationHeader — messageHistory 已经载过全 persona/tools,
       //   重装 11K + 25 layer 是浪费, 同时让 pi-ai.chat 走 < 2000 分支 (不重新装 system prompt).
@@ -520,6 +568,13 @@ export class WorkflowPivotLoop {
           try {
             const result = await tool.execute(toolCall.args ?? {});
 
+            // 2026-08-11: 输出过大 → 续跑提示 (Hermes dropped-tools continuation 模式),
+            //   上下文后续可能被压缩, 提醒 LLM 需要精确数据时缩小范围重查
+            const outLen = (result.output || '').length;
+            if (outLen > 12_000) {
+              this.pushContinuationHint(`工具 ${toolCall.name} 输出过长 (${outLen} 字符), 上下文后续可能被压缩 — 如需精确数据请缩小范围重查`);
+            }
+
             // 2026-06-15: step-timeline — 关闭节点 (success / error)
             this.emit({
               type: result.success ? 'step_done' : 'step_error',
@@ -638,8 +693,10 @@ export class WorkflowPivotLoop {
       try {
         const obj = JSON.parse(match[1]);
         if (obj && obj.name && this.tools.has(obj.name)) {
-          const args = this.normalizeArgs(obj.arguments || {});
+          const args = this.normalizeArgs(canonicalizeToolCallArguments(obj.arguments));
           pending.push({ name: obj.name, args, description: '', parameters: {} });
+        } else if (obj && obj.name && !this.tools.has(obj.name)) {
+          this.pushContinuationHint(`工具 ${obj.name} 未注册/不存在, 调用已跳过 — 请换用已提供的工具`);
         }
       } catch (e) {
         // JSON 解析失败, 继续下一 match
