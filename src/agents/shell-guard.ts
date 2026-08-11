@@ -45,7 +45,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-
+import { t as i18nT } from '../web/i18n.js';
 // ============================================================================
 // 硬编码兜底 (策略文件读不到时, 用这套)
 // 这是**最后一道防线** - AI 即便能改 ~/.bolloon/ 也没法删这个常量
@@ -438,7 +438,17 @@ export function checkTerminalCommand(rawCmd: string): ShellCheckResult {
   for (const pattern of TERMINAL_DENY_PATTERNS) {
     if (pattern.test(cmd)) {
       auditShellCall('denied', cmd, [], `terminal 高危模式 ${pattern}`);
-      return { allowed: false, reason: `命令命中高危护栏 ${pattern} (核心不碰: 提权/格式化/删根/.bolloon 数据). 换一条安全命令.`, matchedBy: 'arg-denylist' };
+      // 2026-08-11: 用户可见静态文案走 i18n 目录 (Hermes locales 模式); 目录不可用时中文直出
+      let reason: string;
+      try {
+        const isSelfLifecycle = /(bolloon|pm2|systemctl|service|pkill|taskkill)/.test(pattern.source);
+        reason = isSelfLifecycle
+          ? i18nT('guard.self_lifecycle_reason', undefined, { pattern: String(pattern) })
+          : i18nT('guard.deny_reason', undefined, { pattern: String(pattern) });
+      } catch {
+        reason = `命令命中高危护栏 ${pattern} (核心不碰: 提权/格式化/删根/.bolloon 数据). 换一条安全命令.`;
+      }
+      return { allowed: false, reason, matchedBy: 'arg-denylist' };
     }
   }
   auditShellCall('allowed', cmd, []);
