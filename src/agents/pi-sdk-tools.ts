@@ -514,13 +514,25 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         if (!prompt) return { success: false, error: 'prompt 必填' };
         const cwd = args.cwd ? String(args.cwd).trim() : undefined;
         const model = args.model ? String(args.model).trim() : undefined;
-        const result = await delegateToEngine(engine, prompt, { cwd: cwd || undefined, ...(model ? { model } : {}) });
+        // 2026-08-11: 委派句柄 — ownerDid 绑当前 agent DID (防跨 channel 使用),
+        // correlationId 幂等去重 (同一 agent 重复 correlation 只应出现一次)
+        const ownerDid = ctx.identity?.did || 'unknown';
+        const correlationId = `delegate:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+        const result = await delegateToEngine(engine, prompt, {
+          cwd: cwd || undefined,
+          ...(model ? { model } : {}),
+          ownerDid,
+          correlationId,
+        });
       if (!result.success) {
         return { success: false, error: result.error, output: result.output };
       }
+      const handleLine = result.handle
+        ? `\n[delegate handle] contractVersion=${result.handle.contractVersion} delegateId=${result.handle.delegateId} ownerDid=${result.handle.ownerDid} correlationId=${result.handle.correlationId ?? '-'} capability=${result.handle.capability.slice(0, 16)}...`
+        : '';
       return {
         success: true,
-        output: `🤖 ${engine} 执行结果 (exitCode=${result.exitCode}):\n${result.output || '(无输出)'}`
+        output: `🤖 ${engine} 执行结果 (exitCode=${result.exitCode}):\n${result.output || '(无输出)'}${handleLine}`
       };
     }
   });

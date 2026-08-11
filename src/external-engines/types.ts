@@ -65,4 +65,6 @@ export interface DelegateResult {
   exitCode?: number | null;
   /** 引擎未安装 / 不可用, 不应重试 */
   unavailable?: boolean;
+  /** HMAC 签名委派句柄 (ownerDid 传入时生成; 可验证记录真实性) */
+  handle?: import('./delegate-handle.js').DelegateHandle;
 }

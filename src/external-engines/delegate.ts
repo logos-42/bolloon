@@ -15,6 +15,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { discoverEngines, buildDelegateArgs } from './discovery.js';
+import { createDelegateHandle, verifyDelegateHandle } from './delegate-handle.js';
+import type { DelegateHandle } from './delegate-handle.js';
 import type { DelegateResult, EngineId } from './types.js';
 
 export interface DelegateOptions {
@@ -24,6 +26,10 @@ export interface DelegateOptions {
   model?: string;
   /** 超时毫秒, 默认 120000 (env BOLLOON_ENGINE_DELEGATE_TIMEOUT_MS 可覆盖) */
   timeoutMs?: number;
+  /** 父 agent DID — 生成 HMAC 签名委派句柄 (防伪造/防跨 channel 使用) */
+  ownerDid?: string;
+  /** 幂等去重键 (同一 owner 的 correlation 只应出现一次) */
+  correlationId?: string;
 }
 
 function delegateTimeoutMs(): number {
@@ -76,6 +82,16 @@ export async function delegateToEngine(
 
   const cwd = opts.cwd || process.cwd();
   const timeoutMs = opts.timeoutMs || delegateTimeoutMs();
+
+  // Hermes 模式: 委派句柄 — HMAC 签名, 随 sidechain 落盘, 返回给调用方供事后验证
+  const handle: DelegateHandle | undefined = opts.ownerDid
+    ? createDelegateHandle({
+        ownerDid: opts.ownerDid,
+        engineId: trimmedId,
+        correlationId: opts.correlationId,
+        model: opts.model,
+      })
+    : undefined;
 
   return new Promise<DelegateResult>((resolve) => {
     let stdout = '';
@@ -152,6 +168,7 @@ export async function delegateToEngine(
         killTree();
         const combined = (stdout + (stderr ? `\n[stderr]\n${stderr}` : '')).trim();
         // 2026-07-29: Sidechain transcript — 保存委派完整记录
+        // 2026-08-11: 记录带 HMAC 签名 handle (contract_version + capability), 可事后验真
         try {
           const sidechainDir = path.join(os.homedir(), '.bolloon', 'sidechains');
           fs.mkdir(sidechainDir, { recursive: true });
@@ -162,16 +179,26 @@ export async function delegateToEngine(
             stdout: stdout.slice(0, 100_000),
             stderr: stderr.slice(0, 10_000),
             exitCode: code, duration: Date.now() - ts, model: opts.model || null,
+            handle: handle ? {
+              contractVersion: handle.contractVersion,
+              delegateId: handle.delegateId,
+              ownerDid: handle.ownerDid,
+              correlationId: handle.correlationId ?? null,
+              createdAt: handle.createdAt,
+              engineId: handle.engineId,
+              model: handle.model ?? null,
+              capability: handle.capability,
+            } : null,
           }) + '\n';
           // fire-and-forget, 不阻塞主流程
           fs.appendFile(filePath, entry, 'utf-8').catch(() => {});
         } catch { /* sidechain 写入失败静默 */ }
         if (code === 0) {
-          resolve({ success: true, output: combined || '(无输出)', exitCode: code });
+          resolve({ success: true, output: combined || '(无输出)', exitCode: code, handle });
         } else if (signal) {
-          resolve({ success: false, output: combined || '(无输出)', error: `${trimmedId} 被信号 ${signal} 终止`, exitCode: null });
+          resolve({ success: false, output: combined || '(无输出)', error: `${trimmedId} 被信号 ${signal} 终止`, exitCode: null, handle });
         } else {
-          resolve({ success: false, output: combined || '(无输出)', error: `${trimmedId} 退出码 ${code}`, exitCode: code });
+          resolve({ success: false, output: combined || '(无输出)', error: `${trimmedId} 退出码 ${code}`, exitCode: code, handle });
         }
       });
     });
