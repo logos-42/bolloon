@@ -223,9 +223,16 @@ function withTaskQueueLock<T>(fn: () => Promise<T>): Promise<T> {
 
 export type ClaimResult = 'claimed' | 'not-pending' | 'busy' | 'parents-undone';
 
+/** 认领 TTL 默认 15min (BOLLOON_CLAIM_TTL_SECONDS 可调) — Hermes DEFAULT_CLAIM_TTL_SECONDS=15*60 */
+export function claimTtlSeconds(): number {
+  const v = Number(process.env.BOLLOON_CLAIM_TTL_SECONDS || '');
+  return v > 0 ? v : 15 * 60;
+}
+
 /**
  * CAS 认领指定任务: 只有 status==='pending' 才能认领成功 (原子翻成 running).
  * 认领点强制父依赖不变式 (Hermes kanban): 任一父未 completed/cancelled → 不认领, 返回 'parents-undone'.
+ * 认领写 claim_expires (TTL) — 崩溃/卡死后由 releaseStaleClaims 释放, 锁不泄漏.
  */
 export async function claimTaskForExecution(taskId: string): Promise<ClaimResult> {
   if (isExecutingTask) return 'busy';
@@ -237,6 +244,7 @@ export async function claimTaskForExecution(taskId: string): Promise<ClaimResult
     // 父依赖不变式: 父未完成 → 拒绝认领 (依赖悬空时任务不可执行)
     if (!parentsSatisfied(t, tasks)) return 'parents-undone';
     t.status = 'running';
+    t.claimExpires = Date.now() + claimTtlSeconds() * 1000;
     t.updatedAt = new Date().toISOString();
     await saveTaskQueue(tasks);
     isExecutingTask = true;
@@ -257,11 +265,55 @@ export async function claimNextPendingTask(): Promise<Task | null> {
     const t = tasks.find((x) => x.status === 'pending' && parentsSatisfied(x, tasks));
     if (!t) return null;
     t.status = 'running';
+    t.claimExpires = Date.now() + claimTtlSeconds() * 1000;
     t.updatedAt = new Date().toISOString();
     await saveTaskQueue(tasks);
     isExecutingTask = true;
     executionTaskId = t.id;
     return t;
+  });
+}
+
+/**
+ * 心跳续期 (Hermes kanban_heartbeat): 执行中有实质进展时调用, 把 claim_expires 推到 now+TTL.
+ * CAS: 只续期当前执行中的任务 (executionTaskId 匹配 + status==='running').
+ */
+export async function heartbeatTaskExecution(taskId: string): Promise<boolean> {
+  return withTaskQueueLock(async () => {
+    if (executionTaskId !== taskId) return false;
+    const tasks = await loadTaskQueue();
+    const t = tasks.find((x) => x.id === taskId);
+    if (!t || t.status !== 'running') return false;
+    t.claimExpires = Date.now() + claimTtlSeconds() * 1000;
+    t.updatedAt = new Date().toISOString();
+    await saveTaskQueue(tasks);
+    return true;
+  });
+}
+
+/**
+ * 释放过期认领 (Hermes release_stale_claims): 扫所有 running 且 claim_expires 已过期的任务
+ * → 释放 in-memory 锁 + 任务回 pending (可重新认领执行). 防 executeTask 卡死/崩溃后锁泄漏.
+ * 返回释放数量. 安全可频繁调用.
+ */
+export async function releaseStaleClaims(): Promise<number> {
+  return withTaskQueueLock(async () => {
+    const now = Date.now();
+    const tasks = await loadTaskQueue();
+    const stale = tasks.filter((t) => t.status === 'running' && t.claimExpires !== undefined && t.claimExpires < now);
+    if (stale.length === 0) return 0;
+    for (const t of stale) {
+      t.status = 'pending';
+      t.claimExpires = undefined;
+      t.updatedAt = new Date().toISOString();
+    }
+    await saveTaskQueue(tasks);
+    // 当前执行锁指向过期任务 → 一并释放 (卡死的 executeTask 其锁也失效)
+    if (executionTaskId && stale.some((t) => t.id === executionTaskId)) {
+      isExecutingTask = false;
+      executionTaskId = null;
+    }
+    return stale.length;
   });
 }
 

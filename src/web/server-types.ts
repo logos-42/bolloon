@@ -105,6 +105,14 @@ export interface Task {
   updatedAt: string;
   /** 2026-08-11: 父任务依赖 (认领点强制校验, Hermes kanban 模式) */
   parentIds?: string[];
+  /** 2026-08-11: 认领过期时间戳 (ms epoch) — 心跳续期, TTL 过期自动释放 (Hermes claim_expires) */
+  claimExpires?: number;
+  /** 2026-08-11: 连续失败计数 (熔断器, Hermes consecutive_failures) — 失败递增, 成功清零 */
+  consecutiveFailures?: number;
+  /** 2026-08-11: 熔断阈值 (per-task 覆盖, 默认 BOLLOON_FAILURE_LIMIT=3) */
+  failureLimit?: number;
+  /** 最近一次失败的错误摘要 */
+  lastFailureError?: string;
   steps?: any[];
   currentStep?: number;
 }

@@ -327,7 +327,10 @@ async function executeTask(
 ): Promise<void> {
   // 2026-08-11: 认领已由 claimTaskForExecution/claimNextPendingTask (CAS) 完成并持锁,
   //   这里不再重复 startTaskExecution (会因 isExecutingTask=true 返回 false 导致提前 return).
-  const { endTaskExecution } = await import('./server-storage.js');
+  const { endTaskExecution, heartbeatTaskExecution } = await import('./server-storage.js');
+
+  // 2026-08-11 (Hermes 心跳): 开始执行先续期一次 — 认领后到首个 await 之间有调度延迟
+  await heartbeatTaskExecution(task.id).catch(() => {});
 
   const agent = await getAgentForChannel(channelId);
   const tasks = await loadTaskQueue();
@@ -406,6 +409,10 @@ async function executeTask(
       tasks[idx].status = 'completed';
       tasks[idx].progress = 100;
       tasks[idx].result = result;
+      // 2026-08-11 (熔断器): 成功完成 → 连续失败计数清零
+      tasks[idx].consecutiveFailures = 0;
+      tasks[idx].lastFailureError = undefined;
+      tasks[idx].claimExpires = undefined;
       tasks[idx].updatedAt = new Date().toISOString();
       await saveTaskQueue(tasks);
     }
@@ -417,16 +424,41 @@ async function executeTask(
     const tasks = await loadTaskQueue();
     const idx = tasks.findIndex(t => t.id === task.id);
     if (idx >= 0) {
+      const t = tasks[idx];
       // 取消请求在先 → 异常属于取消副作用, 落 cancelled 而非 failed (Hermes 两段式)
-      tasks[idx].status = tasks[idx].status === 'cancel-requested' ? 'cancelled' : 'failed';
-      tasks[idx].error = error.message;
-      tasks[idx].updatedAt = new Date().toISOString();
-      await saveTaskQueue(tasks);
+      if (t.status === 'cancel-requested') {
+        t.status = 'cancelled';
+        t.error = error.message;
+        t.updatedAt = new Date().toISOString();
+        await saveTaskQueue(tasks);
+      } else {
+        // 2026-08-11 (Hermes consecutive_failures 熔断器): 失败计数 +1;
+        //   达到阈值 → failed 终态 (熔断, 不再自动重试)
+        //   未达阈值 → 回 pending 可重新认领 (execute-next 自动重试), 防一次性小错卡死队列
+        const { recordTaskFailure } = await import('./task-breaker.js');
+        const envLimit = Number(process.env.BOLLOON_FAILURE_LIMIT || '');
+        const f = recordTaskFailure(t, envLimit > 0 ? envLimit : undefined);
+        t.consecutiveFailures = f.consecutiveFailures;
+        t.lastFailureError = String(error.message || error).slice(0, 300);
+        t.claimExpires = undefined;
+        if (f.tripped) {
+          t.status = 'failed';
+          t.error = `连续失败 ${f.consecutiveFailures} 次, 熔断 (不再自动重试): ${String(error.message || error).slice(0, 200)}`;
+        } else {
+          t.status = 'pending';
+          t.error = `失败 ${f.consecutiveFailures} 次 (自动重试): ${String(error.message || error).slice(0, 200)}`;
+        }
+        t.updatedAt = new Date().toISOString();
+        await saveTaskQueue(tasks);
+      }
     }
 
-    broadcast({ type: 'task_status', taskId: task.id, status: 'failed', error: error.message }, channelId);
-    broadcast({ type: 'error', content: `任务执行失败: ${error.message}` }, channelId);
+    // 读取实际落态 (failed 熔断 / pending 自动重试 / cancelled)
+    const tasksNow = await loadTaskQueue();
+    const taskNow = tasksNow.find(t => t.id === task.id);
+    const finalStatus = taskNow?.status ?? 'failed';
+    broadcast({ type: 'task_status', taskId: task.id, status: finalStatus, error: error.message }, channelId);
+    broadcast({ type: 'error', content: `任务执行失败: ${error.message}${finalStatus === 'pending' ? ' (自动重试)' : ''}` }, channelId);
   }
-
   endTaskExecution();
 }

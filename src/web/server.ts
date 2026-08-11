@@ -7332,6 +7332,18 @@ app.post('/active-channel', async (req, res) => {
         console.log('服务器已监听');
         // 安装 chat bus -> SSE 桥 (供前端 inbox UI 实时刷新)
         void installChatBusHook();
+        // 2026-08-11 (Hermes release_stale_claims): 任务认领 TTL 过期释放 —
+        //   60s 周期清扫 + 启动即清一次 (重启后进程内锁已丢, 磁盘上 running+过期的任务要回收)
+        void (async () => {
+          const { releaseStaleClaims } = await import('./server-storage.js');
+          const n0 = await releaseStaleClaims();
+          if (n0 > 0) console.warn(`[task-claim] 启动回收 ${n0} 个过期认领任务`);
+          setInterval(() => {
+            void releaseStaleClaims().then((n) => {
+              if (n > 0) console.warn(`[task-claim] 定时回收 ${n} 个过期认领任务`);
+            });
+          }, 60_000);
+        })();
         // 2026-06-16: ping 改为 data: {"type":"ping"} — 之前是 SSE 注释格式 (: ping\n\n),
         //   浏览器 EventSource 不触发 onmessage, 客户端 60s 阈值 (现已 30s) 误判死链.
         //   改后前端 onmessage 收到 ping 就重置 lastEventTime, 真死链才 30s 后重建.

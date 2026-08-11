@@ -13,6 +13,8 @@ const {
   claimTaskForExecution,
   claimNextPendingTask,
   endTaskExecution,
+  heartbeatTaskExecution,
+  releaseStaleClaims,
   loadTaskQueue,
   saveTaskQueue,
 } = await import('../web/server-storage.js');
@@ -74,6 +76,64 @@ describe('任务认领 CAS (Hermes kanban compare-and-swap 模式)', () => {
     const t = await claimNextPendingTask();
     expect(t?.id).toBe('y');
     expect(await claimNextPendingTask()).toBeNull();
+    endTaskExecution();
+  });
+
+  it('认领写 claim_expires (TTL)', async () => {
+    endTaskExecution();
+    await saveTaskQueue([makeTask('a')]);
+    expect(await claimTaskForExecution('a')).toBe('claimed');
+    const tasks = await loadTaskQueue();
+    const t = tasks.find((x) => x.id === 'a');
+    expect(t?.claimExpires).toBeGreaterThan(Date.now());
+    expect(t?.claimExpires).toBeLessThanOrEqual(Date.now() + 16 * 60 * 1000);
+    endTaskExecution();
+  });
+
+  it('heartbeat 续期: 当前执行任务 claim_expires 后移; 非执行中 → false', async () => {
+    endTaskExecution();
+    await saveTaskQueue([makeTask('a')]);
+    await claimTaskForExecution('a');
+    const before = (await loadTaskQueue()).find((x) => x.id === 'a')!.claimExpires!;
+    // 模拟时间流逝后心跳 → 续期
+    const patched = await loadTaskQueue();
+    const t = patched.find((x) => x.id === 'a')!;
+    t.claimExpires = Date.now() + 60_000;
+    await saveTaskQueue(patched);
+    expect(await heartbeatTaskExecution('a')).toBe(true);
+    const after = (await loadTaskQueue()).find((x) => x.id === 'a')!.claimExpires!;
+    expect(after).toBeGreaterThan(before);
+    endTaskExecution();
+    // 未执行中 → false
+    expect(await heartbeatTaskExecution('a')).toBe(false);
+  });
+
+  it('releaseStaleClaims: 过期 running → 回 pending + 解锁; 未过期 → 不动', async () => {
+    endTaskExecution();
+    // 过期任务 (直接写 claimExpires 为过去)
+    await saveTaskQueue([makeTask('stale'), makeTask('fresh')]);
+    await claimTaskForExecution('stale');
+    const tasks1 = await loadTaskQueue();
+    const s = tasks1.find((x) => x.id === 'stale')!;
+    s.claimExpires = Date.now() - 1000;
+    await saveTaskQueue(tasks1);
+    // fresh 未过期
+    expect(await claimTaskForExecution('fresh')).toBe('busy'); // stale 持锁
+    const n = await releaseStaleClaims();
+    expect(n).toBe(1);
+    const tasks2 = await loadTaskQueue();
+    expect(tasks2.find((x) => x.id === 'stale')?.status).toBe('pending');
+    expect(tasks2.find((x) => x.id === 'stale')?.claimExpires).toBeUndefined();
+    expect(tasks2.find((x) => x.id === 'fresh')?.status).toBe('pending');
+    // 锁已释放 → 可重新认领
+    expect(await claimTaskForExecution('fresh')).toBe('claimed');
+    endTaskExecution();
+  });
+
+  it('releaseStaleClaims: 无过期 → 0', async () => {
+    endTaskExecution();
+    await saveTaskQueue([makeTask('a')]);
+    expect(await releaseStaleClaims()).toBe(0);
     endTaskExecution();
   });
 });
