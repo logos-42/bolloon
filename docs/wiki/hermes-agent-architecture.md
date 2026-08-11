@@ -94,6 +94,26 @@ compiled_from: [hermes-agent-repo]
 
 顺带修复: minimax flaky (AbortController 装饰性 bug → boundedCall 限时静默跳过) + lefthook 并行→串行 (vitest worker 不再被 tsc 饿死) — 同 b66eecc。
 
+## 落地状态更新 (2026-08-11 晚, 基础建设 + 研究系列)
+
+| # | 落地内容 | commit |
+|---|---------|--------|
+| B1 | review 审批通道 (request/approve/reject + review 态) | a6abe58 |
+| B2 | 父依赖 + 认领点强制 (parentIds + claim 校验) | eb3d3bb |
+| B3 | 认领 TTL + 心跳续期 + 过期释放 (重启锁不泄漏) | e58896c |
+| B4 | 连续失败熔断器 (成功清零/熔断不再重试) | 3a1c231 |
+| B5 | 完成防幻觉校验 (幽灵任务/文件引用 advisory) | 1370439 |
+| B6 | context 全限幅 (工具输出 12K 截断 + 标题 80 cap) | 0f61059 |
+| B7 | 循环工作流检测 + 完成契约 (长期运行核心) | 2088861 |
+| C2 | SSE 投递账本 + 同类错误节流 (gateway delivery_ledger/channel_directory) | 8ff636f |
+| C4 | verify_project 工具 (agent/verify recipes — 完成契约证据) | dc900a3 |
+| C6 | i18n 文案目录 (locales en/zh + parity) | b87ed99 |
+| C7 | optional MCP 目录 (mcp-catalog.json + mcp_list_catalog) | a18f239 |
+| C8 | optional-skills 目录 (mt5-backtest + hermes-borrow) | aba69d4 |
+| C10 | LLM 错误分类 + 会话级教训学习 (error_classifier) | ee66d16 |
+
+研究记录 (未落地, 见深读 3): LSP 基线差集 / gateway 其余 / cron scheduler / ACP / hermes-cli 迁移阶梯·backup·bundles / learn_prompt
+
 ## 深读 2: kanban 状态机 / 原子认领 / context 加载 / session 管理 (2026-08-11)
 
 源码: `hermes_cli/kanban_db.py` (11320 行) / `gateway/session.py` + `docs/session-lifecycle.md` / `agent/agent_init.py`。
@@ -158,3 +178,53 @@ Agent 侧 (agent_init.py:578): SOUL.md / .hermes.md / AGENTS.md / CLAUDE.md / .c
 | completed 防幻觉 (created_cards 校验) | 无 | 任务完成时校验声称产物 |
 | build_worker_context 全限幅 | context-os 资产注入无硬 cap | 单字段 cap + 折叠 |
 | SessionSource 全描述 + suspended/resume_pending | channelId 单键 | 会话来源建模 + 软/硬恢复 |
+
+## 深读 3: 其余高价值机制 (2026-08-11)
+
+### LSP 管理器 (agent/lsp/manager.py)
+
+- 诊断**快照基线**: 写入前 `snapshot_baseline()` 抓当前诊断, 写入后 `get_diagnostics_sync(delta=true)` 只返回**本次编辑引入的新错误** (基线集合差集) — 防预存错误干扰编辑验证
+- line_shift 重映射: 编辑增删行后, 基线诊断按行偏移重映射再做差集
+- **坏服务器标记**: 外圈超时 > 内圈预算 → 标记 (server_id, workspace) broken, 后续编辑瞬间跳过不再付超时成本 (同类教训只学一次变体)
+- 结论: bolloon 无 IDE 场景 (read_document + terminal), LSP 集成价值有限 — 但"基线差集"思想可用于 bolloon 的 task-verify (已完成) 与 verify_project (已完成)
+
+### gateway 全貌 (51 py)
+
+- **delivery_ledger** — outbox 三态 (pending/attempting/delivered/failed) + 崩溃语义: pending=没发过直接重发; attempting=发送中崩溃, 平台可能已有 → **带可见标记重发** (诚实的 at-least-once, 不静默重复); failed=明确拒绝, 重启是天然重试边界 ✅ 已落地 (bolloon SSE 投递账本, 8ff636f)
+- **channel_directory** — 频道目录定时重建 + **同类错误节流** (同 (team, error) 窗口只 warn 一次) ✅ 已落地 (DeliveryLedger.shouldWarn)
+- **drain_control** — marker 文件跨进程契约 (.drain_request.json): dashboard 写, gateway watcher 读 — presence-based, 双方永不分歧
+- authz_mixin / code_skew / dead_targets / agent_cache_pressure — 授权/版本漂移检测/死目标清理/缓存压力
+
+### cron 全貌 (scheduler/jobs/executions/monitor)
+
+- scheduler: 60s tick 后台线程, **文件锁 ~/.hermes/cron/.tick.lock** 防多进程重叠 tick
+- executions: 执行记录 (幂等)
+- lifecycle_guard ✅ 已落地 (B 系列 #3, 45433bf)
+- monitor: 看门狗
+- 结论: bolloon 单进程 (无多进程重叠问题), scheduler 骨架价值有限; lifecycle_guard 已是最有价值部分
+
+### ACP 适配 (acp_adapter/, Agent Client Protocol)
+
+- JSON-RPC over stdio, stdout 保留给协议 (entry.py 注释: 日志全走 stderr)
+- AgentCapabilities: prompt_capabilities (image) / session_capabilities (window/tools) — 能力协商
+- 用途: 把 agent 暴露给任何 ACP client (IDE/工具链)
+- 结论: bolloon 已有 web UI + terminal + 各引擎 delegate; ACP server 暴露 bolloon 是未来集成面 (IDE 插件等), 当前无迫切消费方 — 记录备选
+
+### hermes-cli 亮点
+
+- **config_migrations**: 逐版本迁移阶梯 (每步一个函数 _migrate_to_N, 严格升序驱动) — 取代 768 行 if 阶梯; bolloon 的 ~/.bolloon 配置演进可照此做版本迁移骨架
+- **backup/import**: 整个 HERMES_HOME zip 备份 + 恢复覆盖
+- **checkpoints**: 文件系统检查点存储管理 (status/list/清理)
+- **bundles**: 技能包 YAML (一组技能一个 slash 命令) — bolloon optional-skills 可加 bundle 概念
+- **_early_recovery**: 主入口 import 第三方包会崩时, early-recovery 仍能启动做修复
+- **approval_mode**: profile-scoped 配置 (改配置立即生效, 不重建 agent, 保留 prompt-cache 前缀) — bolloon 的护栏配置热更新可参考
+- **error_classifier** ✅ 已落地 (C10, ee66d16): 模式库分类 + 会话级教训去重 + 恢复动作
+- **learn_prompt / learning_graph**: /learn 把用户描述转 skill (用现有工具集, 无独立蒸馏引擎); 知识图谱节点化 skills+memories
+
+### i18n (locales/*.yaml + agent/i18n.py) ✅ 已落地 (C6, b87ed99)
+
+范围纪律 (只翻用户可见静态文案) / 嵌套 YAML 扁平化 dotted keys / {placeholder} / env>config>default / en 回退 / parity 测试 (键+占位符一致)
+
+### optional-mcps / optional-skills ✅ 已落地 (C7 a18f239 / C8 aba69d4)
+
+目录存在=审核/实测可用, 默认禁用, 显式安装; manifest pin 精确版本; 保持默认精简

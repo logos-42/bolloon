@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-11 | docs | Hermes 架构深读 3: LSP 基线差集 / gateway delivery_ledger·channel_directory·drain_control / cron scheduler / ACP / hermes-cli 迁移阶梯·backup·bundles·early_recovery / error_classifier·learn_prompt — 13 项落地状态表 (B1-B7 + C2/C4/C6/C7/C8/C10) | [hermes-agent-architecture.md](./hermes-agent-architecture.md) |
 | 2026-08-11 | docs | Hermes 架构深读 2: kanban 9 态 (triage/todo/scheduled/ready/running/blocked/review/done/archived) + 原子认领 CAS (父依赖不变式/TTL 续期活 PID 不回收/心跳陈旧 1h 兜底/熔断器/完成防幻觉) + build_worker_context 全限幅 + SessionSource/suspended-vs-resume_pending | [hermes-agent-architecture.md](./hermes-agent-architecture.md) |
 | 2026-08-11 | feat | Hermes 架构 5 条借鉴全部落地 (一次一 commit): ① 委派句柄 HMAC 签名 (84fe3b1) ② 取消两段式 CANCEL_REQUESTED→CANCELLED (b66eecc, 顺带修 minimax flaky + lefthook 串行化) ③ terminal 护栏自生命周期命令拒绝 (45433bf) ④ 工具参数 canonicalize + 续跑提示 (97d35dc) ⑤ Context OS workspace kind + 任务认领 CAS (3ae042b) | [hermes-agent-architecture.md](./hermes-agent-architecture.md) |
 | 2026-08-11 | feat | Android 手机端独立工程 (`android/`, 与 ios 同级): 官方 CXR-M SDK `com.rokid.cxr:client-m:1.2.2` 真实接入去 Mock — CXRServiceBridge + CxrController 蓝牙通道, assembleDebug 出 APK 16.2MB (compileSdk 36 / targetSdk 35 / JDK 21), dist/web 打包独立 APP 渲染, 修复 capacitor 模块 4 坑; 顺带 @diap/sdk 0.2.4 修复 tsc setOwnerDid | [android/](../../android/) |
