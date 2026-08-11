@@ -111,6 +111,8 @@ compiled_from: [hermes-agent-repo]
 | C7 | optional MCP 目录 (mcp-catalog.json + mcp_list_catalog) | a18f239 |
 | C8 | optional-skills 目录 (mt5-backtest + hermes-borrow) | aba69d4 |
 | C10 | LLM 错误分类 + 会话级教训学习 (error_classifier) | ee66d16 |
+| C11 | 错误恢复执行器 (recovery hints → 退避/重试, planRecovery 接 ErrorLessonStore) | fbcefc9后 |
+| C12 | 良性拆除噪音抑制 (loop_noise → SSE broadcast write 过滤 + 同类节流) | fbcefc9后 |
 
 研究记录 (未落地, 见深读 3): LSP 基线差集 / gateway 其余 / cron scheduler / ACP / hermes-cli 迁移阶梯·backup·bundles / learn_prompt
 

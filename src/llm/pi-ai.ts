@@ -154,13 +154,36 @@ export class PiAIModel {
       if (signal?.aborted || error?.name === 'AbortError') {
         throw error; // 上层 try/catch 处理
       }
-      // 2026-08-11 (Hermes error_classifier + 会话级教训): 分类错误 + 同类只学一次
-      //   429/5xx → 退避重试; context overflow → 上层 compact 后重试; network → 重试 1 次;
-      //   auth → 不重试 (报错给用户). console 只 warn 一次新教训.
-      const { ErrorLessonStore } = await import('./error-lessons.js');
-      const lesson = (chatErrorLessons ??= new ErrorLessonStore()).learn(error);
-      if (lesson.isNewLesson) {
-        console.warn(`[llm-lesson] 新错误教训: ${lesson.classified.category} (${lesson.classified.pattern}) → ${lesson.classified.recovery}`);
+      const { ErrorLessonStore, planRecovery, MAX_RECOVERY_ATTEMPTS, classifyApiError } = await import('./error-lessons.js');
+      const store = (chatErrorLessons ??= new ErrorLessonStore());
+      const baseLesson = store.learn(error);
+      if (baseLesson.isNewLesson) {
+        console.warn(`[llm-lesson] 新错误教训: ${baseLesson.classified.category} (${baseLesson.classified.pattern}) → ${baseLesson.classified.recovery}`);
+      }
+
+      // 2026-08-11 (Hermes error_classifier + recovery hints): 分类后真正执行恢复动作 —
+      //   429/5xx → 退避重试; network → 重试 1 次; context overflow → 上层 compact (标注);
+      //   auth → 不重试 (报错给用户). 之前只学习教训不重试, HTTP 429/5xx 直接失败返回.
+      for (let attempt = 0; attempt < MAX_RECOVERY_ATTEMPTS; attempt++) {
+        const classified = classifyApiError(error);
+        const plan = planRecovery(classified, attempt);
+        if (!plan.shouldRetry) break; // 不可恢复 / 已到 retry-once 上限
+        const backoffMs = plan.backoffMs;
+        console.warn(`[llm-recovery] ${classified.category} attempt ${attempt + 1}/${MAX_RECOVERY_ATTEMPTS}, 退避 ${backoffMs}ms 重试`);
+        await new Promise<void>((r) => setTimeout(r, backoffMs));
+        try {
+          const response = await this.generateText({
+            messages,
+            temperature: 0.8,
+            maxTokens: 16384,
+            signal,
+            tools,
+          });
+          return { reply: response.reply, toolCalls: response.toolCalls };
+        } catch (retryErr: any) {
+          if (signal?.aborted || retryErr?.name === 'AbortError') throw retryErr;
+          error = retryErr; // 记录最后一次错误, 循环继续重试 (backoff 递增)
+        }
       }
       console.error('PiAI chat error:', error);
       // 2026-06-15: 真实 error 信息 + 明确告诉 LLM "这是 API 错, 不要 retry"

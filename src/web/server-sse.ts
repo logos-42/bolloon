@@ -13,6 +13,7 @@
 
 import * as crypto from 'crypto';
 import type { SSEClient } from './server-types.js';
+import { guardClientWriteNoise } from './loop-noise.js';
 
 const sseClients: Set<SSEClient> = new Set();
 
@@ -66,11 +67,19 @@ export function broadcast(data: { type: string; [key: string]: unknown }, channe
   console.log(`[broadcast] type=${data.type}, channelId=${channelId}, seq=${seq}, msgId=${msgId}, clients=${sseClients.size}`);
   for (const client of sseClients) {
     if (!channelId || client.channelId === channelId) {
-      try {
-        client.res.write(message);
-      } catch (e: unknown) {
-        console.error(`[broadcast] 写入失败:`, (e as Error).message);
-      }
+      // 2026-08-11 (Hermes loop_noise): 客户端在写 drain 前断开 → 每次广播对已关闭 res
+      //   write 都会抛 "write EPIPE / write after end / 连接已关闭"。这是预期副作用, 不是
+      //   bug — guardClientWriteNoise 把同类错误折叠成一行 (节流), 不打印每条刷屏。
+      void guardClientWriteNoise(
+        () => {
+          client.res.write(message);
+          return Promise.resolve();
+        },
+        {
+          label: `sse-broadcast:${data.type}`,
+          onError: (e) => console.error(`[broadcast] 写入失败 (非良性): ${(e as Error).message}`),
+        },
+      );
     }
   }
 }
