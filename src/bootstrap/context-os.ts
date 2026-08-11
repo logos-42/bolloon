@@ -41,24 +41,32 @@ export interface ContextOsLayer {
   notStore: string;
   /** 典型用途 */
   usage: string;
+  /**
+   * 2026-08-11 (借鉴 Hermes kanban `workspace_kind` {scratch, worktree, dir}):
+   * 层的工作区类别 — 把"协调"和生命周期解耦:
+   *   stable  = 持久原则层 (01-12), 不可随便删, 跨 session 复用
+   *   work    = 工作成果层 (output/research), 有明确生命周期, 交付/定型后归档
+   *   scratch = 一次性层 (tmp), 定期 prune
+   */
+  kind: 'stable' | 'work' | 'scratch';
 }
 
 export const CONTEXT_OS_LAYERS: ContextOsLayer[] = [
-  { key: '01-Me', name: '我是谁', store: '经过验证的原则、不可碰的边界、稳定偏好', notStore: '临时情绪、未经验证的念头', usage: '防止 AI 用错误的方式帮助你' },
-  { key: '02-Network', name: '我认识谁', store: '有真实关系、能力可定位、能在具体问题上调用的人', notStore: '只看过主页的陌生人', usage: '需要咨询、合作、求证时找到正确的人' },
-  { key: '03-Current', name: '我现在在做什么', store: '今天/本周的现实状态、工作现场、阻塞项', notStore: '长期知识、项目历史全文', usage: '防止 AI 按过期状态给建议' },
-  { key: '04-Projects', name: '我正在推进什么', store: '有明确交付、真实进度、可验证证据的项目', notStore: '只有想法的脑暴', usage: '让 AI 按项目真实边界推进' },
-  { key: '05-Prompts', name: '已验证可复用的提示词', store: '至少复用过、效果稳定的 Prompt', notStore: '一次性调试 Prompt', usage: '跨项目、跨工具复用工作方法' },
-  { key: '06-Protocols', name: 'AI 和系统该如何工作', store: '为防止真实错误而产生、被重复调用的规则', notStore: '纯理论流程', usage: '把"知道"变成"每次都会做"' },
-  { key: '07-Knowledge', name: '哪些领域知识未来复用', store: '未来至少三个项目可能复用的领域理解', notStore: '随手可搜的常识', usage: '技术/行业问题的长期积累' },
-  { key: '08-Insights', name: '哪些已验证的判断改变决策', store: '能改变决策、产品方向或自我认知的已验证判断', notStore: '情绪碎片、未经验证的直觉', usage: '防止重复踩同一种坑' },
-  { key: '09-Tools', name: '哪些工具和脚本省时间', store: '实际用过、能节约时间、包含回退方案的工具经验', notStore: '只安装未使用的软件', usage: '提升执行效率，避免重复试错' },
-  { key: '10-Skills', name: '哪些能力可验证交付', store: '可外部验证、能交付、有作品支撑的能力', notStore: '"我想学"的愿望', usage: '简历、分工、能力缺口识别' },
-  { key: '11-Write', name: '哪些写作可复用', store: '可以引用、改写、发布的成熟表达', notStore: '未整理草稿', usage: '保持跨场景表达一致' },
-  { key: '12-Analysis', name: '决策过程与复盘', store: '有推理链、可事后复盘的研究与决策', notStore: '只有结论的事后合理化', usage: '重要决策可追溯、可修正' },
-  { key: 'output', name: '对外交付物', store: '给外部的人看的最终交付物', notStore: '内部草稿', usage: '可直接分享给他人' },
-  { key: 'research', name: '研究中间成果', store: '研究中的中间成果', notStore: '结论已定型的资产', usage: '未完成研究的暂存' },
-  { key: 'tmp', name: '一次性草稿', store: '一次性草稿与临时文件', notStore: '任何未来要复用的东西', usage: '定期清理' },
+  { key: '01-Me', kind: 'stable', name: '我是谁', store: '经过验证的原则、不可碰的边界、稳定偏好', notStore: '临时情绪、未经验证的念头', usage: '防止 AI 用错误的方式帮助你' },
+  { key: '02-Network', kind: 'stable', name: '我认识谁', store: '有真实关系、能力可定位、能在具体问题上调用的人', notStore: '只看过主页的陌生人', usage: '需要咨询、合作、求证时找到正确的人' },
+  { key: '03-Current', kind: 'stable', name: '我现在在做什么', store: '今天/本周的现实状态、工作现场、阻塞项', notStore: '长期知识、项目历史全文', usage: '防止 AI 按过期状态给建议' },
+  { key: '04-Projects', kind: 'stable', name: '我正在推进什么', store: '有明确交付、真实进度、可验证证据的项目', notStore: '只有想法的脑暴', usage: '让 AI 按项目真实边界推进' },
+  { key: '05-Prompts', kind: 'stable', name: '已验证可复用的提示词', store: '至少复用过、效果稳定的 Prompt', notStore: '一次性调试 Prompt', usage: '跨项目、跨工具复用工作方法' },
+  { key: '06-Protocols', kind: 'stable', name: 'AI 和系统该如何工作', store: '为防止真实错误而产生、被重复调用的规则', notStore: '纯理论流程', usage: '把"知道"变成"每次都会做"' },
+  { key: '07-Knowledge', kind: 'stable', name: '哪些领域知识未来复用', store: '未来至少三个项目可能复用的领域理解', notStore: '随手可搜的常识', usage: '技术/行业问题的长期积累' },
+  { key: '08-Insights', kind: 'stable', name: '哪些已验证的判断改变决策', store: '能改变决策、产品方向或自我认知的已验证判断', notStore: '情绪碎片、未经验证的直觉', usage: '防止重复踩同一种坑' },
+  { key: '09-Tools', kind: 'stable', name: '哪些工具和脚本省时间', store: '实际用过、能节约时间、包含回退方案的工具经验', notStore: '只安装未使用的软件', usage: '提升执行效率，避免重复试错' },
+  { key: '10-Skills', kind: 'stable', name: '哪些能力可验证交付', store: '可外部验证、能交付、有作品支撑的能力', notStore: '"我想学"的愿望', usage: '简历、分工、能力缺口识别' },
+  { key: '11-Write', kind: 'stable', name: '哪些写作可复用', store: '可以引用、改写、发布的成熟表达', notStore: '未整理草稿', usage: '保持跨场景表达一致' },
+  { key: '12-Analysis', kind: 'stable', name: '决策过程与复盘', store: '有推理链、可事后复盘的研究与决策', notStore: '只有结论的事后合理化', usage: '重要决策可追溯、可修正' },
+  { key: 'output', kind: 'work', name: '对外交付物', store: '给外部的人看的最终交付物', notStore: '内部草稿', usage: '可直接分享给他人' },
+  { key: 'research', kind: 'work', name: '研究中间成果', store: '研究中的中间成果', notStore: '结论已定型的资产', usage: '未完成研究的暂存' },
+  { key: 'tmp', kind: 'scratch', name: '一次性草稿', store: '一次性草稿与临时文件', notStore: '任何未来要复用的东西', usage: '定期清理' },
 ];
 
 const LAYER_KEYS = new Set(CONTEXT_OS_LAYERS.map((l) => l.key));
@@ -99,7 +107,15 @@ function slugify(s: string): string {
 // ============================================================
 
 function layerReadme(l: ContextOsLayer): string {
+  const kindNote = {
+    stable: '持久原则层 — 跨 session 复用, 不随便删',
+    work: '工作成果层 — 有明确生命周期, 交付/定型后归档',
+    scratch: '一次性层 — 定期 prune, 不承诺保留',
+  }[l.kind];
   return `# ${l.key} — ${l.name}
+
+## 工作区类别 (workspace kind)
+${kindNote}
 
 ## 这一层回答的问题
 ${l.name}
@@ -228,6 +244,8 @@ export async function writeContextAsset(
 export interface ContextLayerListing {
   layer: string;
   name: string;
+  /** 2026-08-11: 层的工作区类别 (Hermes workspace_kind 模式) */
+  kind?: 'stable' | 'work' | 'scratch';
   fileCount: number;
   files: Array<{ file: string; title: string; createdAt: string }>;
 }
@@ -260,9 +278,9 @@ export async function readContextAssets(
         } catch { /* 单文件损坏跳过 */ }
       }
       entries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      out.push({ layer: key, name: l.name, fileCount: entries.length, files: entries.slice(0, 20) });
+      out.push({ layer: key, name: l.name, kind: l.kind, fileCount: entries.length, files: entries.slice(0, 20) });
     } catch {
-      out.push({ layer: key, name: l.name, fileCount: 0, files: [] });
+      out.push({ layer: key, name: l.name, kind: l.kind, fileCount: 0, files: [] });
     }
   }
   return out;
@@ -290,7 +308,7 @@ export async function readAssetBody(
 export function formatLayerListing(listings: ContextLayerListing[]): string {
   if (listings.length === 0) return '';
   const lines = listings.map(
-    (l) => `  - ${l.layer} (${l.name}): ${l.fileCount} 篇` + (l.files.length > 0 ? ` — ${l.files.slice(0, 3).map((f) => f.title).join(' / ')}` : '')
+    (l) => `  - ${l.layer} (${l.name})${l.kind ? ` [${l.kind}]` : ''}: ${l.fileCount} 篇` + (l.files.length > 0 ? ` — ${l.files.slice(0, 3).map((f) => f.title).join(' / ')}` : '')
   );
   return `[系统上下文] 资产层 (Context OS 12+3 层, 先看 03-Current 再按任务路由):\n${lines.join('\n')}\n\n`;
 }

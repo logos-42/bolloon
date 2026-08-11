@@ -130,20 +130,25 @@ export function registerTaskRoutes(
         return res.status(400).json({ error: 'channelId required' });
       }
 
-      const tasks = await loadTaskQueue();
-      const task = tasks.find(t => t.id === taskId);
-      if (!task) {
-        return res.status(404).json({ error: 'Task not found' });
-      }
-
-      if (isTaskExecuting()) {
+      // 2026-08-11: CAS 认领 — 只有 pending 能认领成功, 输家不重试
+      const { claimTaskForExecution } = await import('./server-storage.js');
+      const claim = await claimTaskForExecution(taskId);
+      if (claim === 'busy') {
         return res.status(409).json({ error: 'Another task is currently executing' });
       }
+      if (claim === 'not-pending') {
+        const tasks = await loadTaskQueue();
+        const task = tasks.find(t => t.id === taskId);
+        return res.status(409).json({ error: `Task not claimable (status=${task?.status ?? 'missing'})` });
+      }
+
+      const tasks = await loadTaskQueue();
+      const task = tasks.find(t => t.id === taskId);
 
       // 异步执行任务
-      executeTask(task, channelId, getAgentForChannel, broadcast);
+      executeTask(task!, channelId, getAgentForChannel, broadcast);
 
-      res.json({ ok: true, taskId: task.id });
+      res.json({ ok: true, taskId: task!.id });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -157,15 +162,12 @@ export function registerTaskRoutes(
         return res.status(400).json({ error: 'channelId required' });
       }
 
-      const tasks = await loadTaskQueue();
-      const nextTask = tasks.find(t => t.status === 'pending');
+      // 2026-08-11: CAS 认领下一个 pending — 输家 (无任务/已被认领/忙) 返回, 不重试
+      const { claimNextPendingTask } = await import('./server-storage.js');
+      const nextTask = await claimNextPendingTask();
 
       if (!nextTask) {
-        return res.json({ ok: false, message: 'No pending tasks' });
-      }
-
-      if (isTaskExecuting()) {
-        return res.status(409).json({ error: 'Another task is currently executing' });
+        return res.json({ ok: false, message: 'No pending tasks or another task is executing' });
       }
 
       // 异步执行任务
@@ -226,9 +228,9 @@ async function executeTask(
   getAgentForChannel: GetAgentFn,
   broadcast: BroadcastFn
 ): Promise<void> {
-  // 使用 server-storage 的 startTaskExecution 做锁
-  const { startTaskExecution, endTaskExecution } = await import('./server-storage.js');
-  if (!startTaskExecution(task.id)) return;
+  // 2026-08-11: 认领已由 claimTaskForExecution/claimNextPendingTask (CAS) 完成并持锁,
+  //   这里不再重复 startTaskExecution (会因 isExecutingTask=true 返回 false 导致提前 return).
+  const { endTaskExecution } = await import('./server-storage.js');
 
   const agent = await getAgentForChannel(channelId);
   const tasks = await loadTaskQueue();

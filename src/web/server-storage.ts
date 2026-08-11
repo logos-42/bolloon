@@ -206,6 +206,56 @@ export async function saveTaskQueue(tasks: Task[]): Promise<void> {
   await fs.writeFile(TASK_QUEUE_PATH, JSON.stringify(tasks, null, 2));
 }
 
+// ==================== 任务认领 CAS (2026-08-11, Hermes kanban 模式) ====================
+// kanban_db.py: "WAL + BEGIN IMMEDIATE + compare-and-swap on tasks.status/claim_lock —
+//   至多一个 worker 能认领任务, 输家看到 0 行受影响就退出, 无重试循环, 无分布式锁."
+// Bolloon 对应: 任务队列是 JSON 文件, 用进程内互斥链 (withTaskQueueLock) 序列化
+//   load→CAS(status==='pending'→'running')→save, 输家返回 null/not-pending, 不重试.
+
+let taskQueueLock: Promise<void> = Promise.resolve();
+
+function withTaskQueueLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = taskQueueLock.then(fn);
+  taskQueueLock = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+export type ClaimResult = 'claimed' | 'not-pending' | 'busy';
+
+/** CAS 认领指定任务: 只有 status==='pending' 才能认领成功 (原子翻成 running) */
+export async function claimTaskForExecution(taskId: string): Promise<ClaimResult> {
+  if (isExecutingTask) return 'busy';
+  return withTaskQueueLock(async () => {
+    if (isExecutingTask) return 'busy';
+    const tasks = await loadTaskQueue();
+    const t = tasks.find((x) => x.id === taskId);
+    if (!t || t.status !== 'pending') return 'not-pending';
+    t.status = 'running';
+    t.updatedAt = new Date().toISOString();
+    await saveTaskQueue(tasks);
+    isExecutingTask = true;
+    executionTaskId = taskId;
+    return 'claimed';
+  });
+}
+
+/** CAS 认领下一个 pending 任务; 无任务/已被认领 → null (输家不重试) */
+export async function claimNextPendingTask(): Promise<Task | null> {
+  if (isExecutingTask) return null;
+  return withTaskQueueLock(async () => {
+    if (isExecutingTask) return null;
+    const tasks = await loadTaskQueue();
+    const t = tasks.find((x) => x.status === 'pending');
+    if (!t) return null;
+    t.status = 'running';
+    t.updatedAt = new Date().toISOString();
+    await saveTaskQueue(tasks);
+    isExecutingTask = true;
+    executionTaskId = t.id;
+    return t;
+  });
+}
+
 /** 执行 task 的 helper 标记 (server.ts 内部 still 持有 lock) */
 export function startTaskExecution(taskId: string): boolean {
   if (isExecutingTask) return false;
