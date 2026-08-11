@@ -1886,6 +1886,50 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     }
   });
 
+  // ============================================================
+  // verify_project (2026-08-11, Hermes agent/verify recipes 模式)
+  // 从项目 package.json scripts 提取验证命令依序执行 (build→typecheck→test→check→lint)
+  // 完成契约 (B7) 的证据工具: 宣布完成前跑一遍, 输出命令/exit code/耗时
+  // ============================================================
+  ctx.tools.set('verify_project', {
+    name: 'verify_project',
+    description: '运行项目验证配方 (Hermes verify recipes 模式): 从 package.json scripts 自动提取 build/typecheck/test/check/lint 依序执行, 返回每步命令+exit code+耗时+输出尾部. 修改代码后、宣布完成前调用 — 提供完成契约要求的证据. cwd 选项目根 (默认当前工作目录).',
+    parameters: {
+      cwd: '项目根目录 (可选, 默认当前 cwd)',
+    },
+    execute: async (args) => {
+      try {
+        const { readFileSync, readdirSync } = await import('fs');
+        const { extractVerifyCommands, detectPackageManager, runVerifyCommands } = await import('./verify-recipe.js');
+        const cwd = String(args.cwd || process.cwd()).trim() || process.cwd();
+        let pkg: Record<string, unknown> = {};
+        try {
+          pkg = JSON.parse(readFileSync(`${cwd}/package.json`, 'utf-8'));
+        } catch {
+          return { success: false, error: `${cwd}/package.json 不存在或非法 — verify_project 只支持 npm/pnpm/yarn/bun 项目` };
+        }
+        const scripts = (pkg.scripts ?? {}) as Record<string, string>;
+        const pm = detectPackageManager(readdirSync(cwd).map((f) => f.toLowerCase()));
+        const commands = extractVerifyCommands(scripts, pm);
+        if (commands.length === 0) {
+          return { success: false, error: 'package.json scripts 里没有 build/typecheck/test/check/lint 任何一步 — 无可验证' };
+        }
+        const r = await runVerifyCommands({ cwd, commands });
+        const lines = r.steps.map((s) =>
+          `  ${s.exitCode === 0 ? '✅' : '❌'} ${s.name} (${s.command}) → exit ${s.exitCode ?? 'ERR'} ${s.durationMs}ms${s.timedOut ? ' [超时]' : ''}`
+        );
+        const failedStep = r.steps.find((s) => s.exitCode !== 0 || s.timedOut);
+        return {
+          success: r.allPassed,
+          output: `${r.allPassed ? '✅ 验证全部通过' : '❌ 验证失败'} (${r.steps.filter((s) => s.exitCode === 0).length}/${r.steps.length} 步):\n${lines.join('\n')}${failedStep ? `\n\n失败输出尾部:\n${failedStep.outputTail.slice(-1500)}` : ''}`,
+          ...(r.allPassed ? {} : { error: `验证失败于 ${failedStep?.name} (exit ${failedStep?.exitCode})` }),
+        };
+      } catch (e) {
+        return { success: false, error: `verify_project 失败: ${String(e).slice(0, 200)}` };
+      }
+    },
+  });
+
   ctx.tools.set('mcp_list_catalog', {
     name: 'mcp_list_catalog',
     description: '列出 Bolloon 审核过的可选 MCP 目录 (Hermes optional-mcps 模式: 默认禁用, 显式安装才生效). 想看"有哪些外部工具可以接"时用这个; 已接入的看 mcp_list_tools.',
