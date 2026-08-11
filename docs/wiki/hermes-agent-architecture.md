@@ -81,3 +81,15 @@ compiled_from: [hermes-agent-repo]
 3. terminal 护栏加"cron/任务里重启自身服务"命令形状拒绝 (lifecycle_guard 模式)
 4. 工具循环加参数 canonicalize 防御 + 截断/丢工具显式 continuation prompt
 5. workspace/context-os 层加 kind 建模 + 认领用 CAS
+
+## 落地状态 (2026-08-11 全部完成, 一次一 commit)
+
+| # | 落地内容 | commit |
+|---|---------|--------|
+| 1 | `src/external-engines/delegate-handle.ts` — DELEGATE_CONTRACT_VERSION=1 + DelegateHandle (delegateId/ownerDid/correlationId/createdAt/capability), HMAC-SHA256 签名 + timingSafeEqual + ownerDid 强制匹配; delegate_to_engine 工具带 handle, sidechain 记录验真; 7 测试 | 84fe3b1 |
+| 2 | `src/web/task-cancel.ts` 纯函数状态机 + `POST /api/tasks/:taskId/cancel` (pending→cancelled direct / running→cancel-requested→executor 观测落 cancelled); Task.status + 两态; 5 测试 | b66eecc |
+| 3 | `checkTerminalCommand` 新增 6 条自生命周期命令模式 (bolloon restart / pm2 / systemctl / pkill / taskkill), 命令形状锚定不误伤散文; 测试 11 拒 7 放 | 45433bf |
+| 4 | `canonicalizeToolCallArguments` 三级降级 (直接→截尾→去围栏) + continuationHints 续跑提示 (未知工具/输出>12K 注入【工具续跑提示】); 7 测试 | 97d35dc |
+| 5 | Context OS 层 kind 建模 (12 stable / output·research work / tmp scratch) + 任务认领 CAS (withTaskQueueLock 互斥链 + claimTaskForExecution/claimNextPendingTask, 输家不重试); 8 测试 | 3ae042b |
+
+顺带修复: minimax flaky (AbortController 装饰性 bug → boundedCall 限时静默跳过) + lefthook 并行→串行 (vitest worker 不再被 tsc 饿死) — 同 b66eecc。

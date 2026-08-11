@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-11 | feat | Hermes 架构 5 条借鉴全部落地 (一次一 commit): ① 委派句柄 HMAC 签名 (84fe3b1) ② 取消两段式 CANCEL_REQUESTED→CANCELLED (b66eecc, 顺带修 minimax flaky + lefthook 串行化) ③ terminal 护栏自生命周期命令拒绝 (45433bf) ④ 工具参数 canonicalize + 续跑提示 (97d35dc) ⑤ Context OS workspace kind + 任务认领 CAS (3ae042b) | [hermes-agent-architecture.md](./hermes-agent-architecture.md) |
 | 2026-08-11 | feat | Android 手机端独立工程 (`android/`, 与 ios 同级): 官方 CXR-M SDK `com.rokid.cxr:client-m:1.2.2` 真实接入去 Mock — CXRServiceBridge + CxrController 蓝牙通道, assembleDebug 出 APK 16.2MB (compileSdk 36 / targetSdk 35 / JDK 21), dist/web 打包独立 APP 渲染, 修复 capacitor 模块 4 坑; 顺带 @diap/sdk 0.2.4 修复 tsc setOwnerDid | [android/](../../android/) |
 |||| 2026-08-10 | feat | terminal 工具 (v0.3.51): bolloon 自己写命令进终端 — 新 agent 工具接受完整 shell 命令字符串 (管道/重定向/写文件), denylist-only 护栏只挡高危 (sudo/格式化/rm -rf 根·家/写 ~/.bolloon 数据), default 权限只剩 git_* 禁. tsc 0 错, vitest 1152/1152 (+3), 真实执行链路验证 OK, 已发布 npm 0.3.51 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 |||| 2026-08-10 | feat | 循环智能化 (v0.3.50): ① final 前总是 LLM 完成度自查 (decideAfterReview 重构 — 结束权交给 LLM, 不再因 intent 空直接 finish, 修"发布 ipfs 网站" 1 次循环就结束); ② default 权限放开 write_file/edit_file/delete_file (写路径白名单兜底, 保留 shell/git 禁); ③ CLI 启动自动拉起 Kubo (checkKuboSetup fire-and-forget, BOLLOON_SKIP_KUBO=1 可禁). tsc 0 错, vitest 1149/1149, pty PASS, Kubo 上传/读回链路实测 OK, 已发布 npm 0.3.50 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
@@ -1171,3 +1172,27 @@ default permission 还禁 shell_exec.
 ### 边界
 
 - 真机联调待 Rokid 授权材料与眼镜设备；消息 topic 为 Bolloon 自有协议层（眼镜端 app 订阅同一 topic 即通）
+
+## [2026-08-11] feat | Hermes 架构 5 条借鉴全部落地 (一次一 commit) + minimax/lefthook flaky 修复
+
+### 背景
+
+用户指定学习 D:\AI\hermes-agent 架构 (docs/wiki/hermes-agent-architecture.md), 提出 5 条可落地借鉴, 要求"全部落地, 完成一个 commit 一次"。
+
+### 落地 (5 commit)
+
+1. **84fe3b1** — 委派句柄 HMAC 签名 (Hermes subagent_lifecycle 模式): `delegate-handle.ts` (contract_version + capability=HMAC(delegateId|ownerDid|createdAt) + timingSafeEqual + ownerDid 强制匹配防跨 channel), delegate_to_engine 工具带 handle, sidechain 记录可验真; 7 测试。
+2. **b66eecc** — 取消两段式 (CANCEL_REQUESTED→CANCELLED): `task-cancel.ts` 纯函数状态机 + POST /api/tasks/:taskId/cancel (pending→cancelled direct / running→cancel-requested→executor 观测落 cancelled), Task.status + 两态; 5 测试。**同 commit 顺带修 flaky**: pi-sdk.test.ts isMinimaxReachable 的 AbortController 是装饰性的 (从没传给网络调用) → boundedCall 限时 (45s) 超时静默跳过; lefthook.yml parallel→串行 (tsc+vitest 并行时 vitest worker 起不来)。
+3. **45433bf** — terminal 护栏自生命周期命令拒绝 (lifecycle_guard 模式): checkTerminalCommand 新增 6 条模式 (bolloon restart/stop / pm2 / systemctl|service / pkill / taskkill), 命令形状锚定不误伤散文; 11 拒 7 放。
+4. **97d35dc** — 工具参数 canonicalize + 续跑提示: `canonicalizeToolCallArguments` 三级降级 (直接→截尾→去围栏), nativeToolCallsToDefinitions/extractPendingToolUses 接入; continuationHints (未知工具跳过/输出>12K → 下轮注入【工具续跑提示】); 7 测试。
+5. **3ae042b** — Context OS workspace kind + 任务认领 CAS (kanban 模式): 层加 kind (12 stable / output·research work / tmp scratch) + README/listing 带徽标; server-storage withTaskQueueLock 互斥链 + claimTaskForExecution/claimNextPendingTask (CAS pending→running, 输家不重试), execute/execute-next 接入; 8 测试。
+
+### 验证
+
+- 每 commit 前: `npx tsc --noEmit` 0 错 + 新增测试全过 (lefthook 串行后 pre-commit 一次过)
+- 全量验证见当前 status: vitest 全绿 (minimax 不再 flaky)
+
+### 关联
+
+- 架构分析: docs/wiki/hermes-agent-architecture.md (含落地状态表)
+- 借鉴源: D:\AI\hermes-agent (agent/subagent_lifecycle.py, cron/lifecycle_guard.py, agent/conversation_loop.py, hermes_cli/kanban_db.py)
