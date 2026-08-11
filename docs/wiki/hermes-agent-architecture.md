@@ -93,3 +93,68 @@ compiled_from: [hermes-agent-repo]
 | 5 | Context OS 层 kind 建模 (12 stable / output·research work / tmp scratch) + 任务认领 CAS (withTaskQueueLock 互斥链 + claimTaskForExecution/claimNextPendingTask, 输家不重试); 8 测试 | 3ae042b |
 
 顺带修复: minimax flaky (AbortController 装饰性 bug → boundedCall 限时静默跳过) + lefthook 并行→串行 (vitest worker 不再被 tsc 饿死) — 同 b66eecc。
+
+## 深读 2: kanban 状态机 / 原子认领 / context 加载 / session 管理 (2026-08-11)
+
+源码: `hermes_cli/kanban_db.py` (11320 行) / `gateway/session.py` + `docs/session-lifecycle.md` / `agent/agent_init.py`。
+
+### 1. 任务 9 态 (比预想丰富)
+
+`VALID_STATUSES = {triage, todo, scheduled, ready, running, blocked, review, done, archived}`
+
+- triage → todo → (父全部 done) → ready → running → done/archived
+- scheduled: 定时任务 (schedule_task, 时间到才晋升)
+- review: request_review 挂起等人工审批, complete_task 接受 review→done
+- blocked: 分两种 — worker 主动 kanban_block (sticky, 必须显式 unblock) vs 父依赖未完成 (自动解)
+- archived: 终态归档
+
+### 2. 原子认领 (claim_task, kanban_db.py:4355)
+
+- CAS 核心: `UPDATE tasks SET status='running', claim_lock=?, claim_expires=? WHERE id=? AND status='ready' AND claim_lock IS NULL`; `rowcount != 1` → 输家返回 None, 无重试循环
+- **父依赖不变式** (单一强制点): 认领时若任一父未 done/archived → 降回 todo + `claim_rejected(parents_not_done)` 事件; 任何写入路径把任务置 ready 都可能被这里纠正
+- 泄漏 run 回收: current_run_id 有残留 → 关成 `reclaimed` 再认领
+- 每次认领 INSERT task_runs (run 历史: profile/step_key/claim_lock/claim_expires/max_runtime_seconds) + current_run_id 指针 + `claimed` 事件
+
+### 3. TTL 过期续期 vs 回收 (release_stale_claims:4683)
+
+- 认领默认 TTL 15min (HERMES_KANBAN_CLAIM_TTL_SECONDS 可调)
+- 过期 + PID 存活 + 心跳新鲜 → **续期** (不回收! 防慢模型单次无工具 LLM 调用 >15min 被误回收 → spawn-后-立即-reclaim 循环, #23025)
+- 过期 + PID 存活 + 心跳陈旧 >1h → **仍回收** (卡在逻辑循环的 wedged worker, #29747)
+- 续期也是 CAS: `UPDATE ... WHERE claim_lock IS ? AND claim_expires < now`, rowcount!=1 跳过
+
+### 4. 熔断器 (consecutive_failures)
+
+- 任务级 `consecutive_failures` 连续失败计数: spawn 失败/超时/崩溃递增, 成功完成才清零
+- 超过 failure_limit (per-task max_retries → dispatcher config → DEFAULT) → 熔断
+- recompute_ready 不会把熔断任务自动解除 blocked (防无限重试循环 #35072)
+
+### 5. 完成防幻觉 (complete_task:5069)
+
+- 声称创建的卡 (created_cards): 逐 id 验证存在 + created_by 匹配 → 幽灵卡 → **HallucinatedCardsError 阻止完成** + completion_blocked_hallucination 事件 (可审计)
+- 完成文本里的散文引用 (t_deadbeefcafe 不存在的 id) → suspected_hallucinated_references 事件 (advisory 不阻塞)
+- summary/metadata (structured handoff facts) 落 run, 供子任务 build_worker_context 消费
+
+### 6. context 加载 (build_worker_context:10287)
+
+层级固定 + 全限幅: 标题 → body (8KB) → 本任务历史尝试 (最近 N 条, 更旧折叠成一行) → **父任务 done 的 handoff** (summary/metadata, 单字段 cap) → assignee 跨任务角色历史 (最近 5 次) → 评论 (最近 N 条, 更旧折叠)。per-field cap 防止单条 1MB summary 霸占上下文。
+
+Agent 侧 (agent_init.py:578): SOUL.md / .hermes.md / AGENTS.md / CLAUDE.md / .cursorrules 自动注入 system prompt (cwd/HERMES_HOME 扫描); skip_context_files 批量处理时关。
+
+### 7. session 管理 (gateway/session.py + session-lifecycle.md)
+
+- SessionSource: 不可变来源描述 (platform/chat_id/chat_type∈{dm,group,channel,thread}/user_id/thread_id/guild_id/message_id/is_bot...) — 每个消息都带, 用于路由/隔离/上下文注入
+- SessionEntry 状态机 flags: suspended (硬重置, /stop 或 3 次重启失败) vs resume_pending (软恢复, 保留 session_id 续同一 transcript) vs was_auto_reset (idle/daily 策略过期) vs is_fresh_reset (/new)
+- get_or_create_session 优先级: suspended→强刷 / resume_pending→保留 / 策略过期(idle/daily)→自动重置 / 否则 bump updated_at
+- session_key 确定性生成: DM/群/channel/thread 不同规则, 多用户会话按 user_id 隔离 (is_shared_multi_user_session)
+
+### 可借鉴 (对应 Bolloon)
+
+| Hermes | Bolloon 现状 | 差距 |
+|---|---|---|
+| 9 态 + review/scheduled/triage | 7 态 (无 triage/scheduled/review) | 补 review 审批通道即可闭环 |
+| 父依赖不变式在认领点强制 | 无依赖链 (任务扁平) | 任务可加 parentId + 认领时校验 |
+| TTL 续期 (活 PID 不回收) | 无心跳/TTL (锁只靠 endTaskExecution 释放) | 加 claim_expires + 心跳续期, 崩溃不泄漏 |
+| consecutive_failures 熔断 | 无 | 失败计数 + 熔断阻止无限重试 |
+| completed 防幻觉 (created_cards 校验) | 无 | 任务完成时校验声称产物 |
+| build_worker_context 全限幅 | context-os 资产注入无硬 cap | 单字段 cap + 折叠 |
+| SessionSource 全描述 + suspended/resume_pending | channelId 单键 | 会话来源建模 + 软/硬恢复 |

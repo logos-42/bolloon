@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-11 | docs | Hermes 架构深读 2: kanban 9 态 (triage/todo/scheduled/ready/running/blocked/review/done/archived) + 原子认领 CAS (父依赖不变式/TTL 续期活 PID 不回收/心跳陈旧 1h 兜底/熔断器/完成防幻觉) + build_worker_context 全限幅 + SessionSource/suspended-vs-resume_pending | [hermes-agent-architecture.md](./hermes-agent-architecture.md) |
 | 2026-08-11 | feat | Hermes 架构 5 条借鉴全部落地 (一次一 commit): ① 委派句柄 HMAC 签名 (84fe3b1) ② 取消两段式 CANCEL_REQUESTED→CANCELLED (b66eecc, 顺带修 minimax flaky + lefthook 串行化) ③ terminal 护栏自生命周期命令拒绝 (45433bf) ④ 工具参数 canonicalize + 续跑提示 (97d35dc) ⑤ Context OS workspace kind + 任务认领 CAS (3ae042b) | [hermes-agent-architecture.md](./hermes-agent-architecture.md) |
 | 2026-08-11 | feat | Android 手机端独立工程 (`android/`, 与 ios 同级): 官方 CXR-M SDK `com.rokid.cxr:client-m:1.2.2` 真实接入去 Mock — CXRServiceBridge + CxrController 蓝牙通道, assembleDebug 出 APK 16.2MB (compileSdk 36 / targetSdk 35 / JDK 21), dist/web 打包独立 APP 渲染, 修复 capacitor 模块 4 坑; 顺带 @diap/sdk 0.2.4 修复 tsc setOwnerDid | [android/](../../android/) |
 |||| 2026-08-10 | feat | terminal 工具 (v0.3.51): bolloon 自己写命令进终端 — 新 agent 工具接受完整 shell 命令字符串 (管道/重定向/写文件), denylist-only 护栏只挡高危 (sudo/格式化/rm -rf 根·家/写 ~/.bolloon 数据), default 权限只剩 git_* 禁. tsc 0 错, vitest 1152/1152 (+3), 真实执行链路验证 OK, 已发布 npm 0.3.51 | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
