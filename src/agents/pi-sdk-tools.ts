@@ -1886,6 +1886,39 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     }
   });
 
+  ctx.tools.set('mcp_list_catalog', {
+    name: 'mcp_list_catalog',
+    description: '列出 Bolloon 审核过的可选 MCP 目录 (Hermes optional-mcps 模式: 默认禁用, 显式安装才生效). 想看"有哪些外部工具可以接"时用这个; 已接入的看 mcp_list_tools.',
+    parameters: {},
+    execute: async () => {
+      try {
+        // fs 读 manifests/mcp-catalog.json — 构建后 dist/agents/../../manifests = 仓库根/manifests
+        const { readFileSync } = await import('fs');
+        const raw = readFileSync(new URL('../../manifests/mcp-catalog.json', import.meta.url), 'utf-8');
+        const catalog = JSON.parse(raw);
+        const entries = (catalog?.entries ?? []) as Array<{
+          name: string;
+          description: string;
+          transport?: { type: string; url?: string; command?: string };
+        }>;
+        if (entries.length === 0) {
+          return { success: true, output: '📦 MCP 目录为空. 新增条目: manifests/mcp-catalog.json (实测可用才收录).' };
+        }
+        const lines = entries.map((e) => {
+          const t = e.transport?.type ?? 'unknown';
+          const addr = e.transport?.url ?? e.transport?.command ?? '';
+          return `  - ${e.name} [${t}] ${addr ? '(' + addr + ')' : ''}: ${e.description?.slice(0, 70) || ''}`;
+        });
+        return {
+          success: true,
+          output: `📦 可选 MCP 目录 (${entries.length} 条, 默认禁用):\n${lines.join('\n')}\n\n安装: 把条目按 mcpServers 格式写进 ~/.mcp.json, 重启后 mcp_list_tools 可见. 版本必须精确 pin (Hermes 纪律).`,
+        };
+      } catch (e) {
+        return { success: false, error: `mcp_list_catalog 失败: ${String(e).slice(0, 200)}` };
+      }
+    },
+  });
+
   ctx.tools.set('mcp_tool', {
     name: 'mcp_tool',
     description: '调用外部 MCP 工具 (真实 stdio JSON-RPC 通信). tool = 工具名 (先用 mcp_list_tools 查看), arguments = 参数 JSON 对象.',

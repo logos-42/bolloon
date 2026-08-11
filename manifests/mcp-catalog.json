@@ -1,0 +1,30 @@
+{
+  "manifest_version": 1,
+  "policy": "目录存在 = Bolloon 实测可用 (本地验证过才收录). 条目默认禁用, 需显式装进 ~/.mcp.json 才生效. 版本 pin 纪律: 命令启动器必须精确版本 (npx pkg@X / uvx pkg==X), git 安装必须完整 commit SHA. 永不自动更新.",
+  "entries": [
+    {
+      "name": "mt5-terminal",
+      "description": "MetaTrader 5 终端 MCP — 账户信息/行情/K线/订单操作 (Bolloon 本地实测, DooTechnology-Demo).",
+      "source": "https://github.com/logos-42/MT5-hibs (本地 mcp server)",
+      "transport": { "type": "http", "url": "http://127.0.0.1:22346", "auth": "bearer" },
+      "auth": { "type": "bearer", "note": "Bearer token 在 ~/.bolloon/llm-config.json 同源保管, 不入 git" },
+      "post_install": "MCP server 由 MT5 端常驻进程提供; 装进 ~/.mcp.json 前确认 22346 端口可达 (curl http://127.0.0.1:22346 应返回 MCP 握手)."
+    },
+    {
+      "name": "mt5-metaeditor",
+      "description": "MetaTrader 5 MetaEditor MCP — EA 编译 (compile_file) / workspace 信息, 优先于 F7 手动编译.",
+      "source": "https://github.com/logos-42/MT5-hibs (本地 mcp server)",
+      "transport": { "type": "http", "url": "http://127.0.0.1:22345", "auth": "bearer" },
+      "auth": { "type": "bearer", "note": "与 mt5-terminal 同 Bearer token; 无 token 时返回空 body 看似宕机, 实为鉴权缺口" },
+      "post_install": "编译后 EA 会从图表移除, 需重新拖回 — 已知行为."
+    },
+    {
+      "name": "roki-rokid-cxr",
+      "description": "Rokid CXR-M 眼镜 SDK 桥 (android/ 手机端真实通道, com.rokid.cxr:client-m:1.2.2).",
+      "source": "https://maven.rokid.com/repository/maven-public/ (官方坐标, 本机已装 AAR 副本 android/vendor/)",
+      "transport": { "type": "in-process", "note": "非独立 server — Capacitor RokidBridge 插件进程内提供, 真机联调待授权材料与眼镜设备" },
+      "auth": { "type": "none" },
+      "post_install": "见 android/README.md — 当前模拟器仅验证加载不验证真实蓝牙链路."
+    }
+  ]
+}
