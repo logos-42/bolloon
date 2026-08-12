@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "@bolloon/bolloon-agent",
   "version": "0.4.3",
   "type": "module",
@@ -122,7 +122,7 @@
     "lefthook": "^2.1.9",
     "playwright": "^1.62.1",
     "tsx": "^4.23.12",
-    "typescript": "^5.0.0",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.6"
   },
   "build": {
