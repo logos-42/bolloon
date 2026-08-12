@@ -347,8 +347,14 @@ export async function writeRunEndSkillCandidates(
   const body =
     `## 适用场景\n用户请求需要连续执行工具序列: ${toolNames}.\n\n` +
     `## 调用链\n${stepLines}\n\n` +
-    `## 流程要点\n${okSteps.map((s) => `- 调用 ${s.name} 获取下一步输入`).join('\n')}\n\n` +
-    `## 注意事项\n- 工具名以 list_skills / get_operation_logs 的实际注册名为准\n- 沉淀为正式 skill 前请人工确认流程可复用\n`;
+    `## 流程要点\n${okSteps.map((s, i) => {
+      // 2026-08-12 (Task5 优化): 用真实输出提炼每步作用, 避免千篇一律的"调用 X 获取下一步输入".
+      const out = s.output ? String(s.output).replace(/\s+/g, ' ').trim() : '';
+      const clue = out && out.length > 30 ? out.slice(0, 60) + '…' : (out || '完成');
+      return `- 第 ${i + 1} 步 ${s.name}: ${clue}`;
+    }).join('\n')}\n\n` +
+    `## 如何验证\n- 涉及改代码: 跑 tsc + vitest 确认无错; 涉及写文件: read_file 读回校验.\n` +
+    `- 沉淀为正式 skill 前请人工确认流程可复用, 再 list_skill_candidates / promote_skill 转正\n`;
 
   // 2026-08-08: 稳定签名 + 固定文件名 → 同一套工具反复跑时合并更新到同一个候选 (runs++)
   const signature = toolSignature(okSteps);
