@@ -53,3 +53,11 @@ bolloon_raw/
 # Rokid vendor SDK stays outside the repository; ignore accidental local copies.
 android/vendor/*
 rokid/glass/vendor/*
+
+# wrangler / Cloudflare Workers 本地生成物 (含本地 KV/D1 状态)
+.wrangler/
+src/web/workers/**/.wrangler/
+workers/.dev.vars
+**/.dev.vars
+# 登录配置不在仓库: 本机 accounts.json fallback (home 下, 此处兜底)
+accounts.json

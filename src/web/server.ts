@@ -2902,41 +2902,30 @@ ${goalDesc}
 
   // ========== 登录框架 (2026-08-09) — GitHub/Google/邮箱/手机号, 仅骨架 ==========
   // 所有登录方式最终都归属到用户 DID (右下角唯一身份).
+  // 2026-08-12: 登录配置托管到 Cloudflare 边缘 (Workers+KV), 本地 accounts.json 仅作降级 fallback.
   // 真实 OAuth / 验证码后续接入, 这里先做: 记录账号 + 绑定用户 DID + 提供状态查询.
   const ACCOUNTS_FILE = `${process.env.HOME || '/tmp'}/.bolloon/accounts.json`;
-
-  async function loadAccounts(): Promise<any[]> {
-    try {
-      const { readFile } = await import('fs/promises');
-      const parsed = JSON.parse(await readFile(ACCOUNTS_FILE, 'utf-8'));
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }
-
-  async function saveAccounts(accs: any[]): Promise<void> {
-    const { mkdir, writeFile } = await import('fs/promises');
-    await mkdir(`${process.env.HOME || '/tmp'}/.bolloon`, { recursive: true });
-    await writeFile(ACCOUNTS_FILE, JSON.stringify(accs, null, 2), { mode: 0o600 });
-  }
+  const EDGE_AUTH_URL = process.env.BOLLOON_EDGE_AUTH_URL || 'http://127.0.0.1:8788';
+  const { EdgeAuthClient } = await import('./edge-auth-client.js');
+  const edgeAuth = new EdgeAuthClient({
+    baseUrl: EDGE_AUTH_URL,
+    timeoutMs: 4000,
+    fallbackFile: ACCOUNTS_FILE,
+    log: (m) => { try { console.log(m); } catch { /* noop */ } },
+  });
+  async function loadAccounts(): Promise<any[]> { return edgeAuth.loadAccounts(); }
 
   // GET /api/auth/status — 当前用户 DID + 已绑定账号列表
   app.get('/api/auth/status', async (_req, res) => {
     try {
       const identity = await loadOrCreateUserIdentity();
-      const accs = await loadAccounts();
+      const accounts = await loadAccounts();
       res.json({
         did: identity.did,
         didShort: identity.didShort,
         name: identity.name,
-        // 只返回脱敏视图 (不含 token)
-        accounts: accs.map((a: any) => ({
-          provider: a.provider,
-          identifier: a.identifier || a.email || a.username || '',
-          loggedAt: a.loggedAt,
-          skeleton: !!a.skeleton,
-        })),
+        // 只返回脱敏视图 (不含 token), 来源: 边缘 KV (worker 不可达时本地 fallback)
+        accounts,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -2958,30 +2947,9 @@ ${goalDesc}
         return res.status(400).json({ error: `${prov === 'email' ? '邮箱' : '手机号'}必填` });
       }
       const identity = await loadOrCreateUserIdentity();
-      const accs = await loadAccounts();
       const idStr = String(identifier || '').trim();
-      const existing = accs.find((a: any) => a.provider === prov && (!idStr || a.identifier === idStr || a.email === idStr));
-      const now = new Date().toISOString();
-      if (existing) {
-        // 已绑定 → 更新归属 DID + 时间
-        existing.ownerDid = identity.did;
-        existing.loggedAt = now;
-        existing.skeleton = true;
-      } else {
-        accs.push({
-          provider: prov,
-          identifier: idStr || '',
-          email: prov === 'email' ? idStr : '',
-          phone: prov === 'phone' ? idStr : '',
-          username: idStr || '',
-          token: '', // 真实 OAuth 后填
-          ownerDid: identity.did, // 归属用户唯一 DID
-          loggedAt: now,
-          skeleton: true, // 骨架标记: 未做真实 OAuth/验证码
-        });
-      }
-      await saveAccounts(accs);
-      console.log(`[auth] 登录骨架: ${prov}${idStr ? ' ' + idStr : ''} → 归属 DID ${identity.did.substring(0, 20)}...`);
+      const result = await edgeAuth.login({ provider: prov, identifier: idStr, ownerDid: identity.did });
+      console.log(`[auth] 登录骨架: ${prov}${idStr ? ' ' + idStr : ''} → 归属 DID ${identity.did.substring(0, 20)}...${result.degraded ? ' (本地 fallback)' : ' (边缘)'}`);
       res.json({
         ok: true,
         provider: prov,
@@ -2989,6 +2957,7 @@ ${goalDesc}
         ownerDid: identity.did,
         skeleton: true,
         message: `${prov} 登录骨架已记录 (归属用户 DID), 真实 OAuth/验证码后续接入`,
+        storage: result.degraded ? 'local' : 'edge',
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -3000,12 +2969,8 @@ ${goalDesc}
     try {
       const { provider } = req.body || {};
       const prov = String(provider || '').trim().toLowerCase();
-      const accs = await loadAccounts();
-      const before = accs.length;
-      const remaining = accs.filter((a: any) => a.provider !== prov);
-      if (remaining.length === before) return res.status(404).json({ error: `未绑定 ${prov} 账号` });
-      await saveAccounts(remaining);
-      res.json({ ok: true, provider: prov });
+      const result = await edgeAuth.logout({ provider: prov });
+      res.json({ ok: true, provider: prov, storage: result.degraded ? 'local' : 'edge' });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

@@ -14,5 +14,5 @@
     "jsxImportSource": "react"
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "src/bollharness/node_modules", "src/test", "src/**/__tests__", "src/constraint-runtime"]
+  "exclude": ["node_modules", "src/bollharness/node_modules", "src/test", "src/**/__tests__", "src/constraint-runtime", "src/web/workers"]
 }
