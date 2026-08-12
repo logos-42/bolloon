@@ -52,6 +52,93 @@ export interface RunTerminalOptions {
   /** 2026-08-12 (TaskD): background=true 后台执行 (立即返回 session_id, 不阻塞). 用 process 工具 poll/wait/kill. */
   background?: boolean;
 }
+
+/** 2026-08-12 (TaskA): 探测可用的命令 (跨平台: Windows 无 python3, 有 python). 返回 [cmd, ...] 或 null. */
+async function detectRunner(candidates: string[]): Promise<string[] | null> {
+  const { spawn } = await import('child_process');
+  for (const c of candidates) {
+    try {
+      const ok = await new Promise<boolean>((resolve) => {
+        const p = spawn(c, ['--version'], { stdio: 'ignore', windowsHide: true });
+        p.on('close', (code) => resolve(code === 0));
+        p.on('error', () => resolve(false));
+      });
+      if (ok) return [c];
+    } catch { /* 下一个 */ }
+  }
+  return null;
+}
+
+/**
+ * 2026-08-12 (TaskA): 自动识别代码块并在终端执行 — 便捷代码运行能力.
+ * 接受 {code, language} → 写临时脚本文件 → 用对应解释器执行 (带超时/输出截断).
+ * 语言映射: python/python3→python3/python, js/javascript/node→node, ts/typescript→tsx, shell/bash/sh→shell, 其他默认按文本.
+ * 依赖注入: 写脚本目录 (默认 os.tmpdir), 便于测试.
+ */
+export interface RunCodeOptions {
+  code: string;
+  language?: string;
+  timeoutMs?: number;
+  cwd?: string;
+  tmpDir?: string;
+}
+export async function runCodeSnippet(opts: RunCodeOptions): Promise<any> {
+  const code = String(opts.code ?? '').trim();
+  if (!code) return { success: false, error: 'code 必填' };
+  const lang = String(opts.language || '').trim().toLowerCase();
+  // 语言 → (扩展名, 解释器命令)
+  const ext = lang === 'python' || lang === 'py' ? 'py'
+    : lang === 'javascript' || lang === 'js' || lang === 'node' ? 'js'
+    : lang === 'typescript' || lang === 'ts' ? 'ts'
+    : lang === 'shell' || lang === 'bash' || lang === 'sh' ? 'sh'
+    : lang === 'html' ? 'html'
+    : 'txt';
+  const runner = lang === 'python' || lang === 'py' ? await detectRunner(['python3', 'python'])
+    : lang === 'javascript' || lang === 'js' || lang === 'node' ? await detectRunner(['node'])
+    : lang === 'typescript' || lang === 'ts' ? ['npx', 'tsx']
+    : lang === 'shell' || lang === 'bash' || lang === 'sh' ? ['bash']
+    : null;
+  if (!runner) {
+    if (['python', 'py', 'js', 'javascript', 'node', 'ts', 'typescript', 'shell', 'bash', 'sh'].includes(lang)) {
+      return { success: false, error: `解释器未找到 (${lang}), 请装对应运行时或改用 command` };
+    }
+    return { success: false, error: `不支持的语言 '${lang}', 支持: python/js/ts/shell/html` };
+  }
+  const { tmpdir } = await import('os');
+  const tmpDir = opts.tmpDir ?? tmpdir();
+  const file = `${tmpDir}/bolloon-code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const fsMod = await import('fs/promises');
+  await fsMod.writeFile(file, code, 'utf-8');
+  try {
+    const { spawn } = await import('child_process');
+    const timeoutMs = opts.timeoutMs ?? 30000;
+    const result = await new Promise<any>((resolve) => {
+      const proc = spawn(runner[0], [...runner.slice(1), file], {
+        cwd: opts.cwd ?? process.cwd(),
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        windowsHide: true,
+      });
+      let stdout = '';
+      let stderr = '';
+      const timer = setTimeout(() => {
+        try { proc.kill('SIGKILL'); } catch { /* 忽略 */ }
+        resolve({ success: false, error: `代码执行超时 (>${timeoutMs}ms)`, output: (stdout + (stderr ? `\n[stderr]\n${stderr}` : '')).trim().slice(0, 8000) });
+      }, timeoutMs);
+      proc.stdout.on('data', (d) => { stdout += d.toString(); });
+      proc.stderr.on('data', (d) => { stderr += d.toString(); });
+      proc.on('error', (e) => { clearTimeout(timer); resolve({ success: false, error: `启动失败: ${e.message}` }); });
+      proc.on('close', (code) => {
+        clearTimeout(timer);
+        const output = (stdout + (stderr ? `\n[stderr]\n${stderr}` : '')).trim().slice(0, 8000) || '(无输出)';
+        resolve({ success: code === 0, output, exitCode: code, language: lang, script: file });
+      });
+    });
+    return result;
+  } finally {
+    await fsMod.rm(file, { force: true }).catch(() => {});
+  }
+}
+
 export async function runTerminalCommand(raw: string, opts: RunTerminalOptions = {}): Promise<any> {
   const { checkTerminalCommand } = await import('./shell-guard.js');
   const timeoutMs = opts.timeoutMs ?? 30000;
@@ -752,13 +839,19 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   //   与 shell_exec 的区别: 直接接受完整 shell 命令字符串, 更适合模型自主写命令.
   ctx.tools.set('terminal', {
     name: 'terminal',
-    description: '执行完整 shell 命令 (支持管道/重定向/写文件/跑脚本). 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据), 其余灵活放行. 适合: 写 HTML 文件、跑 python/node 脚本、查系统状态、装依赖. 多条命令用 commands 数组并行执行. 长命令 (服务器/构建/后台任务) 设 background=true 后台执行不阻塞对话.',
-    parameters: { command: '完整 shell 命令 (必填, 如: echo "<html>" > /tmp/site/index.html && ls /tmp/site)', commands: '可选: 多条命令数组 (并行执行), 每条独立字符串', timeoutMs: '超时毫秒, 默认 30000', background: '可选: true 后台执行, 立即返回 session_id (用 process 工具 poll/wait/kill)' },
+    description: '执行完整 shell 命令 (支持管道/重定向/写文件/跑脚本). 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据), 其余灵活放行. 适合: 写 HTML 文件、跑 python/node 脚本、查系统状态、装依赖. 多条命令用 commands 数组并行执行. 长命令 (服务器/构建/后台任务) 设 background=true 后台执行不阻塞对话. 也可直接传 code+language 自动写脚本执行 (便捷代码运行: python/js/ts/shell/html).',
+    parameters: { command: '完整 shell 命令 (可选, 如: echo "<html>" > /tmp/site/index.html && ls /tmp/site)', commands: '可选: 多条命令数组 (并行执行), 每条独立字符串', code: '可选: 一段代码, 传 code+language 时自动写脚本执行 (便捷代码运行)', language: '可选: code 的语言 (python/js/ts/shell/html), 默认自动', timeoutMs: '超时毫秒, 默认 30000', background: '可选: true 后台执行, 立即返回 session_id (用 process 工具 poll/wait/kill)' },
     execute: async (args) => {
+      const timeoutMs = Number(args.timeoutMs) || 30000;
+      // 便捷代码运行: 传 code → 自动写脚本执行
+      const code = String(args.code ?? '').trim();
+      if (code) {
+        const lang = String(args.language || '').trim().toLowerCase();
+        return await runCodeSnippet({ code, language: lang, timeoutMs, cwd: ctx.cwd });
+      }
       const raw = String(args.command || '').trim();
       const commands = Array.isArray(args.commands) ? args.commands.map((c: any) => String(c || '').trim()).filter(Boolean) : [];
-      if (!raw && commands.length === 0) return { success: false, error: 'command 或 commands 必填' };
-      const timeoutMs = Number(args.timeoutMs) || 30000;
+      if (!raw && commands.length === 0) return { success: false, error: 'command/code/commands 至少一个必填' };
       return await runTerminalCommand(raw, { timeoutMs, cwd: ctx.cwd, commands: commands.length > 0 ? commands : undefined, background: String(args.background).toLowerCase() === 'true' });
     }
   });
