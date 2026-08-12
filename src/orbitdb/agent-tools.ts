@@ -40,6 +40,118 @@ async function uiStore(): Promise<import('./ui-cid.js').UICidStore> {
 
 const fmt = (o: unknown): string => JSON.stringify(o, null, 2).slice(0, 3000);
 
+/** 2026-08-12 (Task5): Kanban 看板工具 (Hermes kanban_db → OrbitDB). 见 kanban-store.ts. */
+async function kanbanBoard(boardId: string): Promise<import('./kanban-store.js').KanbanBoard> {
+  const { openKanbanBoard } = await import('./kanban-store.js');
+  return openKanbanBoard(boardId);
+}
+type KanbanStatus = import('./kanban-store.js').KanbanStatus;
+const fmtRows = (tasks: Array<{ id: string; title: string; status: string; assignee: string }>): string =>
+  tasks.length === 0 ? '📭 无任务' : tasks.map(t => `  [${t.status}] ${t.id} ${t.title}${t.assignee ? ` (${t.assignee})` : ''}`).join('\n');
+
+export function registerKanbanTools(ctx: ToolRegistryContext): void {
+  ctx.tools.set('kanban_create', {
+    name: 'kanban_create',
+    description: '在看板上创建任务 (OrbitDB 持久化, 跨设备同步). 状态从 triage 开始.', 
+    parameters: { boardId: '看板 id (必填, 默认用 agentId)', title: '任务标题 (必填)', body: '任务详情 (可选)', parentIds: '父任务 id 数组 (可选, 全部 done 才可执行)', createdBy: '创建者 (可选)', dueAt: '计划时间戳 (可选)' },
+    execute: async (args) => {
+      try {
+        const boardId = String(args.boardId || args.agentId || '').trim() || 'default';
+        const title = String(args.title || '').trim();
+        if (!title) return { success: false, error: 'title 必填' };
+        const parentIds = Array.isArray(args.parentIds) ? args.parentIds.map(String) : [];
+        const dueAt = typeof args.dueAt === 'number' ? args.dueAt : null;
+        const task = await (await kanbanBoard(boardId)).createTask({ boardId, title, body: String(args.body || '').trim(), parentIds, createdBy: String(args.createdBy || '').trim() || undefined, dueAt });
+        return { success: true, output: `📌 已创建任务 (${boardId}):\n  id: ${task.id}\n  状态: ${task.status}\n  推进: kanban_claim(id="${task.id}") → kanban_complete(...)` };
+      } catch (e: any) { return { success: false, error: `kanban_create 失败: ${String(e.message || e).slice(0, 200)}` }; }
+    }
+  });
+
+  ctx.tools.set('kanban_list', {
+    name: 'kanban_list',
+    description: '列出看板任务 (可按状态过滤). 状态: triage/todo/scheduled/ready/running/blocked/review/done/archived.',
+    parameters: { boardId: '看板 id (必填)', status: '可选: 按状态过滤' },
+    execute: async (args) => {
+      try {
+        const boardId = String(args.boardId || '').trim() || 'default';
+        const status = String(args.status || '').trim() as any || undefined;
+        const tasks = await (await kanbanBoard(boardId)).listTasks(status);
+        return { success: true, output: `🗂 ${boardId} ${status ? `[${status}]` : '全部'} ${tasks.length} 个任务:\n${fmtRows(tasks)}` };
+      } catch (e: any) { return { success: false, error: `kanban_list 失败: ${String(e.message || e).slice(0, 200)}` }; }
+    }
+  });
+
+  ctx.tools.set('kanban_get', {
+    name: 'kanban_get',
+    description: '查看单个任务详情 (含 parentIds/认领人/失败计数/createdRefs).',
+    parameters: { boardId: '看板 id (必填)', id: '任务 id (必填)' },
+    execute: async (args) => {
+      try {
+        const boardId = String(args.boardId || '').trim() || 'default';
+        const id = String(args.id || '').trim();
+        if (!id) return { success: false, error: 'id 必填' };
+        const t = await (await kanbanBoard(boardId)).getTask(id);
+        if (!t) return { success: false, error: `任务不存在: ${id}` };
+        return { success: true, output: `📄 ${t.id} [${t.status}]\n  标题: ${t.title}\n  详情: ${t.body || '—'}\n  父任务: ${t.parentIds.length ? t.parentIds.join(', ') : '无'}\n  认领人: ${t.assignee || t.claimLock || '未认领'}\n  失败计数: ${t.consecutiveFailures}\n  引用: ${t.createdRefs.length ? t.createdRefs.join(', ') : '无'}\n  备注: ${t.reason || '—'}` };
+      } catch (e: any) { return { success: false, error: `kanban_get 失败: ${String(e.message || e).slice(0, 200)}` }; }
+    }
+  });
+
+  ctx.tools.set('kanban_claim', {
+    name: 'kanban_claim',
+    description: '原子认领一个 ready 任务 (CAS, 至多一个 worker 成功). 认领后状态 → running.',
+    parameters: { boardId: '看板 id (必填)', id: '任务 id (必填)', worker: '认领者标识 (默认当前 agentId)' },
+    execute: async (args) => {
+      try {
+        const boardId = String(args.boardId || '').trim() || 'default';
+        const id = String(args.id || '').trim();
+        const worker = String(args.worker || '').trim() || 'agent';
+        if (!id) return { success: false, error: 'id 必填' };
+        const r = await (await kanbanBoard(boardId)).claimTask(id, worker);
+        if (!r.ok) return { success: false, error: `认领失败: ${r.reason}` };
+        return { success: true, output: `✅ 已认领 ${id} (worker=${worker})\n  完成: kanban_complete(id="${id}", worker="${worker}")` };
+      } catch (e: any) { return { success: false, error: `kanban_claim 失败: ${String(e.message || e).slice(0, 200)}` }; }
+    }
+  });
+
+  ctx.tools.set('kanban_complete', {
+    name: 'kanban_complete',
+    description: '完成一个 running 任务 → done (自动释放认领锁, 父任务完成时自动解子任务). createdRefs 声称的引用会做防幻觉校验.',
+    parameters: { boardId: '看板 id (必填)', id: '任务 id (必填)', worker: '认领者 (默认当前 agentId)', createdRefs: '可选: 声称创建的任务/资源引用数组' },
+    execute: async (args) => {
+      try {
+        const boardId = String(args.boardId || '').trim() || 'default';
+        const id = String(args.id || '').trim();
+        const worker = String(args.worker || '').trim() || 'agent';
+        if (!id) return { success: false, error: 'id 必填' };
+        const refs = Array.isArray(args.createdRefs) ? args.createdRefs.map(String) : [];
+        const t = await (await kanbanBoard(boardId)).completeTask(id, worker, refs);
+        if (!t) return { success: false, error: `无法完成 ${id} (不存在 或 非本 worker 认领)` };
+        return { success: true, output: `🏁 已完成 ${id} [done]${t.reason ? `\n  提醒: ${t.reason}` : ''}` };
+      } catch (e: any) { return { success: false, error: `kanban_complete 失败: ${String(e.message || e).slice(0, 200)}` }; }
+    }
+  });
+
+  ctx.tools.set('kanban_status', {
+    name: 'kanban_status',
+    description: '手动推进任务状态 (review/done/blocked/archived/ready 等合法迁移). blocked 需带 reason; archived 为终态.',
+    parameters: { boardId: '看板 id (必填)', id: '任务 id (必填)', status: '目标状态 (必填)', reason: 'blocked/review 时必填备注' },
+    execute: async (args) => {
+      try {
+        const boardId = String(args.boardId || '').trim() || 'default';
+        const id = String(args.id || '').trim();
+        const status = String(args.status || '').trim();
+        if (!id || !status) return { success: false, error: 'id 和 status 必填' };
+        let t: any = null;
+        if (status === 'review') t = await (await kanbanBoard(boardId)).requestReview(id, String(args.reason || '').trim());
+        else t = await (await kanbanBoard(boardId)).setStatus(id, status as KanbanStatus, String(args.reason || '').trim());
+        if (!t) return { success: false, error: `状态迁移失败 (非法迁移或任务不存在): ${id} → ${status}` };
+        return { success: true, output: `↻ ${id} → [${t.status}]${t.reason ? ` (${t.reason})` : ''}` };
+      } catch (e: any) { return { success: false, error: `kanban_status 失败: ${String(e.message || e).slice(0, 200)}` }; }
+    }
+  });
+}
+
 export function registerOrbitdbTools(ctx: ToolRegistryContext): void {
   ctx.tools.set('cid_save', {
     name: 'cid_save',
@@ -222,4 +334,11 @@ export function registerOrbitdbTools(ctx: ToolRegistryContext): void {
       }
     }
   });
+
+  // 2026-08-12 (Task5): Kanban 看板工具 (Hermes kanban_db → OrbitDB)
+  try {
+    registerKanbanTools(ctx);
+  } catch (odbErr) {
+    console.warn('[registerTools] Kanban 工具注册失败 (非致命):', odbErr);
+  }
 }
