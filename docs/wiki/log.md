@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-12 | feat | WebUI 登录配置托管 Cloudflare 边缘 (Workers+KV, 本地 fallback) + 7 项工程 (agent 路径 bug / terminal 统一+多命令并行 / 认知卸载+usage hint / CLI 循环显示+命令加载态 / /skills view / Task 队列 OrbitDB 主存储 / Kanban 看板 OrbitDB) — 每项一次 commit+push | [edge-auth-client.ts](../../src/web/edge-auth-client.ts) / [task-store.ts](../../src/orbitdb/task-store.ts) / [kanban-store.ts](../../src/orbitdb/kanban-store.ts) |
 | 2026-08-12 | chore | 发布 v0.4.5: MCP HTTP transport (streamable HTTP + SSE) + Cloudflare MCP 全局接入 + SSE 流式读取修复 (tools/call 连接不关闭不挂起). prepublishOnly (build:all + smoke:esm) PASS, registry dist-tags.latest=0.4.5 确认, git tag v0.4.5, 全局包同步 v0.4.5 (符号链接本地) | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 | 2026-08-12 | fix | **MCP HTTP 流式读取修复** (真实 Cloudflare 实测): tools/call 返回 SSE 后服务器**不关闭连接** → `res.text()` 等 EOF 永远挂起 (initialize/tools-list 响应会收尾 + 单测 mock 用 res.end() 都掩盖了此坑). 修复: `readHttpBodyUntilResponse` 流式读 body, `extractSseResponse` 按空行分块解析 data: 行, 拿到完整 JSON-RPC 响应立即 `reader.cancel()` 不等断开. 单测 mock 改 tools/call 不 end() 回归锁定 + 8s 兜底. 真实验证 ALL_HTTP_MCP_VERIFY_PASSED: docs 工具搜 "R2 bucket creation" 返回真实文档 (<url>developers.cloudflare.com/r2/...), 3 工具发现 + 调用日志 1 条 | [index.ts](../../src/pi-ecosystem-mcp/index.ts) / [mcp-http.test.ts](../../src/test/mcp-http.test.ts) / [verify-mcp-http-cloudflare.ts](../../scripts/verify-mcp-http-cloudflare.ts) |
 | 2026-08-12 | feat | **MCP 适配器支持 HTTP transport** (streamable HTTP + SSE): 配置格式扩展 `type:"http" + url + headers` (`~/.mcp.json` 全局生效). 实现 `sendHttpMcpRequest` — POST JSON-RPC, 默认带**浏览器 UA** (实测 Cloudflare MCP 1010 风控拒 node fetch 默认 UA, curl+浏览器 UA 才通), 响应兼容 application/json + text/event-stream (SSE 解析), Mcp-Session-Id 透传, notifications/* fire-and-forget (Cloudflare 返回 202 空体). 全局接入 **Cloudflare 官方 MCP** (mcp.cloudflare.com/mcp, Bearer 用 `~/.cloudflare/r2-bolloon.json` 的 cfat_ token): tools/list 实测 3 工具 (docs/search/execute, execute 自动绑定账号 a13e8fd1b7246c7105fbbab04f5d9b8d). 单测 mcp-http.test.ts 4/4 (本地 mock SSE server: 解析/握手/真实 fetch/UA+Authorization). **R2 验证结论**: API token 真实有效 (KV namespaces 200, bolloon=fbc76854... 与 wrangler.toml 一致), 但 **R2 账号未启用** (403/10042 "Please enable R2") + 无 S3 Access Key/Secret → 决策: 暂不启用, 现有 KV 链路够用; 之后 Dashboard 启用 R2 后可走 REST 建桶 + wrangler r2_buckets 绑定. 依赖坑: node_modules 多处 ENOTEMPTY 损坏 (cross-dirname/electron-builder-squirrel-windows) + pdf-parse 声明 ^2.4.5 实装 1.1.4 → 全删重装 npm install --legacy-peer-deps 修复 | [index.ts](../../src/pi-ecosystem-mcp/index.ts) / [mcp-http.test.ts](../../src/test/mcp-http.test.ts) / [verify-mcp-http-cloudflare.ts](../../scripts/verify-mcp-http-cloudflare.ts) |
@@ -1207,3 +1208,41 @@ default permission 还禁 shell_exec.
 
 - 架构分析: docs/wiki/hermes-agent-architecture.md (含落地状态表)
 - 借鉴源: D:\AI\hermes-agent (agent/subagent_lifecycle.py, cron/lifecycle_guard.py, agent/conversation_loop.py, hermes_cli/kanban_db.py)
+
+## [2026-08-12] feat | WebUI 登录配置托管 Cloudflare 边缘 + 7 项工程 (每项一次 commit+push)
+
+### 背景
+
+用户要求: ① 把 WebUI 登录配置托管到 Cloudflare 边缘服务器 (Worker + KV); ② 随后按顺序完成 7 个工程 task, 每 task 一次 commit+push, 走 wiki-first, 全部完成后发布新版本.
+
+### Cloudflare 边缘登录托管
+
+- OAuth 登录成功 (yuanjieliu65@gmail.com, Account a13e8fd1b7246c7105fbbab04f5d9b8d), wrangler 4.121.0.
+- Worker `bolloon` 部署到 https://bolloon.yuanjieliu65.workers.dev, 绑定 KV `bolloon` (fbc76854820d426bbfbd57506909e172).
+- Worker 实现 4 端点: GET /api/auth/status / POST login / POST logout / OPTIONS CORS; 单 key `accounts` 存数组.
+- `src/web/edge-auth-client.ts`: 优先边缘 Worker, 超时/不可达降级本地 accounts.json; server.ts auth 三端点切到 EdgeAuthClient (BOLLOON_EDGE_AUTH_URL env).
+- commit 83767b9 (f7db404 前) 已含, 独立于 7 task.
+
+### 7 项工程 (一次一 commit + push)
+
+| # | 内容 | commit |
+|---|------|--------|
+| 1 | agent 路径 bug: CLI /memory /resume /did 用 cliAgentName (display name) 拼路径, 而 memory 按 agentId 存 → 读不到. 修复: 新增 cliAgentId (从 active channel 的 agentId), getCliAgentId() 统一读路径. | f7db404 |
+| 2 | terminal 工具统一: 移除 shell_exec 窄白名单, shell_exec 与 terminal 统一走 runTerminalCommand (宽松护栏 denylist-only); terminal 支持 commands 数组并行执行; 5 新测试. | 4c798c2 |
+| 3 | 认知卸载: system prompt 注入【工具选择与认知卸载指南】(写/改文件用 write_file/edit_file, 任务过大委派 delegate_to_engine); buildOpenAITools 给核心工具加 usage hint 前缀提升触发率. | 5d99c44 |
+| 4 | CLI 循环显示: 隐藏过程噪音 (🔍 任务复杂度/⚙️ 动态配置/🔄 循环/◈ phase); step_start 显示加载态, step_done 原地替换 (inkReplaceLastLine); ! 命令支持 && / ; 多命令顺序执行. | 60eea6f |
+| 5 | run-end skill 归档 + view: 新增 /skills 命令 (列正式技能 + 详情, 运行时开始前 view); writeRunEndSkillCandidates body 结构化 (适用场景/调用链/流程要点). | 11f2fa2 + 62a3f60 |
+| 6 | Task 队列 OrbitDB 主存储: src/orbitdb/task-store.ts (keyvalue 主存储 + 本地 fallback, server 启动 warm, 测试自动 fallback); + Kanban 看板 src/orbitdb/kanban-store.ts (9 态 + CAS 认领 + 防幻觉 + agent 工具) | a39bd86 + d095296 |
+
+### 验证
+
+- 每个 commit 前: `npx tsc --noEmit` 0 错 + `npx vitest run --bail=1` 全绿 (最新 112 文件 1305 测试).
+- lefthook pre-commit/pre-push 自动跑 tsc-check + vitest-bail, 全部通过.
+- 边缘 Worker 远程 4 端点实测通过 (login → status 可见 → logout 清空).
+
+### 关联
+
+- Cloudflare Worker: src/web/workers/auth/ (wrangler.toml + src/index.ts)
+- 边缘客户端: src/web/edge-auth-client.ts
+- Task/Kanban: src/orbitdb/task-store.ts + src/orbitdb/kanban-store.ts
+- 借鉴源: D:\AI\hermes-agent\hermes_cli\kanban_db.py
