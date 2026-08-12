@@ -2839,6 +2839,18 @@ ${goalDesc}
     }
   });
 
+  // 2026-08-12: MCP 工具列表 (MCP 前端支持 — 手机端/桌面 UI 展示可用 MCP 工具)
+  app.get('/api/mcp/tools', async (_req, res) => {
+    try {
+      const mcp = await import('../pi-ecosystem-mcp/index.js');
+      await mcp.initializeMcpAdapter().catch(() => {});
+      const tools = mcp.listTools().map((t: any) => ({ name: t.name, description: t.description || '' }));
+      res.json({ tools });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
   app.get('/api/health', (_req, res) => {
     res.json(healthCheck(getPackageVersion()));
   });

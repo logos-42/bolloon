@@ -71,6 +71,13 @@ body {
 .list-item span:nth-child(2) { flex: 1; }
 .list-arrow { color: var(--text-muted); }
 
+/* 分组标签 */
+.section-label {
+  padding: 12px 16px 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* 会话 / 联系人条目 */
 .conv-item {
   display: flex; align-items: center; gap: 12px;
