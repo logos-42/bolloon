@@ -5,6 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Bolloon Agent</title>
 
+  <!-- 2026-08-12: 手机端 (Capacitor webview / 移动浏览器) 跳转专门的手机端 UI (mobile.html, 微信风格) -->
+  <script>
+    (function () {
+      try {
+        var isCapacitor = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+        var isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        if ((isCapacitor || isMobile) && !location.pathname.endsWith('/mobile.html')) {
+          location.replace('./mobile.html');
+        }
+      } catch (e) { /* 跳转失败静默, 继续桌面 UI */ }
+    })();
+  </script>
+
   <!-- Favicon -->
   <link rel="icon" type="image/x-icon" href="./icons/favicon.ico">
   <link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon-32x32.png">

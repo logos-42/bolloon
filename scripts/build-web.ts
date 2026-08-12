@@ -14,7 +14,7 @@ async function main() {
 
   // 重要: 不能 rm -rf 整个 dist/web/, 否则会删掉 build:main 编译出来的
   // dist/web/server.js. 只清理 web 静态资源, 保留 server.js.
-  for (const f of ['index.html', 'api-config.html', 'style.css', 'client.js', 'components']) {
+  for (const f of ['index.html', 'api-config.html', 'style.css', 'client.js', 'mobile.html', 'mobile.css', 'mobile.js', 'components']) {
     await fs.rm(path.join(DIST_WEB, f), { recursive: true, force: true });
   }
   await fs.mkdir(DIST_WEB, { recursive: true });
@@ -96,6 +96,10 @@ async function main() {
   await fs.copyFile(path.join(ROOT, 'src/web/index.html'), path.join(DIST_WEB, 'index.html'));
   await fs.copyFile(path.join(ROOT, 'src/web/api-config.html'), path.join(DIST_WEB, 'api-config.html'));
   await fs.copyFile(path.join(ROOT, 'src/web/style.css'), path.join(DIST_WEB, 'style.css'));
+  // 2026-08-12: 手机端 UI (微信风格, Capacitor webview 加载) — 纯静态复制
+  await fs.copyFile(path.join(ROOT, 'src/web/mobile.html'), path.join(DIST_WEB, 'mobile.html'));
+  await fs.copyFile(path.join(ROOT, 'src/web/mobile.css'), path.join(DIST_WEB, 'mobile.css'));
+  await fs.copyFile(path.join(ROOT, 'src/web/mobile.js'), path.join(DIST_WEB, 'mobile.js'));
   // 复制 PWA manifest (index.html 里有 <link rel="manifest">, 否则浏览器会 404)
   await fs.copyFile(path.join(ROOT, 'src/web/manifest.json'), path.join(DIST_WEB, 'manifest.json'));
   // 复制 icons 目录 (manifest.json 里引用了 favicon 等)

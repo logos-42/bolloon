@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Bolloon 手机端</title>
+<link rel="stylesheet" href="./mobile.css">
+</head>
+<body>
+<div id="app" class="app">
+  <!-- 顶部导航 -->
+  <header class="topbar">
+    <div class="topbar-title" id="topbar-title">微信</div>
+    <div class="topbar-actions">
+      <button class="icon-btn" id="btn-add" title="添加好友">＋</button>
+    </div>
+  </header>
+
+  <!-- 页面容器 (切换 4 个 tab) -->
+  <main class="page-container">
+    <!-- 微信 tab: 会话列表 -->
+    <section class="page" id="page-wechat" data-tab="wechat">
+      <div class="list" id="conversation-list"></div>
+    </section>
+
+    <!-- 通讯录 tab -->
+    <section class="page" id="page-contacts" data-tab="contacts" hidden>
+      <div class="list" id="contacts-list"></div>
+    </section>
+
+    <!-- 发现 tab -->
+    <section class="page" id="page-discover" data-tab="discover" hidden>
+      <div class="list">
+        <div class="list-item" id="item-p2p"><span class="list-icon">🌐</span><span>P2P 好友</span></div>
+        <div class="list-item" id="item-p2p-id"><span class="list-icon">🪪</span><span>我的 P2P ID</span></div>
+      </div>
+    </section>
+
+    <!-- 我 tab -->
+    <section class="page" id="page-me" data-tab="me" hidden>
+      <div class="profile-card" id="profile-card">
+        <div class="avatar" id="me-avatar">?</div>
+        <div class="profile-info">
+          <div class="profile-name" id="me-name">未登录</div>
+          <div class="profile-did" id="me-did"></div>
+        </div>
+      </div>
+      <div class="list">
+        <div class="list-item" id="item-settings"><span class="list-icon">⚙️</span><span>设置</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-wallet"><span class="list-icon">👛</span><span>钱包</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-judgments"><span class="list-icon">🧠</span><span>判断力 API</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-did"><span class="list-icon">🪪</span><span>DID 身份</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-login"><span class="list-icon">🔐</span><span id="login-label">登录</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-logout"><span class="list-icon">🚪</span><span>注销</span></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 底部 tab -->
+  <nav class="tabbar">
+    <button class="tab active" data-tab="wechat"><span class="tab-icon">💬</span><span>微信</span></button>
+    <button class="tab" data-tab="contacts"><span class="tab-icon">📇</span><span>通讯录</span></button>
+    <button class="tab" data-tab="discover"><span class="tab-icon">🧭</span><span>发现</span></button>
+    <button class="tab" data-tab="me"><span class="tab-icon">🙂</span><span>我</span></button>
+  </nav>
+</div>
+
+<script src="./mobile.js"></script>
+</body>
+</html>
