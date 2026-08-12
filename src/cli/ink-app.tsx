@@ -319,11 +319,22 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     (globalThis as any).__inkSetTransient = (v: string | null) => {
       setTransient(v === undefined ? null : v);
     };
+    // 2026-08-12 (Task4): 原地替换最后一条消息 (命令加载态 → 完成态用).
+    //   不命中则追加 (兼容旧逻辑).
+    (globalThis as any).__inkReplaceLast = (line: string) => {
+      setMsgs(prev => {
+        if (prev.length === 0) return [...prev, line];
+        const next = prev.slice();
+        next[next.length - 1] = line;
+        return next;
+      });
+    };
     return () => {
       delete (globalThis as any).__inkAppend;
       delete (globalThis as any).__inkSetStatus;
       delete (globalThis as any).__inkSetThinking;
       delete (globalThis as any).__inkSetTransient;
+      delete (globalThis as any).__inkReplaceLast;
     };
   }, []);
 
@@ -644,6 +655,12 @@ export function stopInk(): void {
 
 export function inkAppendLine(line: string): void {
   const fn = (globalThis as any).__inkAppend;
+  if (fn) fn(line);
+}
+
+/** 2026-08-12 (Task4): 原地替换最后一条消息 (命令加载态 → 完成态). 无消息时追加. */
+export function inkReplaceLastLine(line: string): void {
+  const fn = (globalThis as any).__inkReplaceLast;
   if (fn) fn(line);
 }
 

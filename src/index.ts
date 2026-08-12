@@ -27,7 +27,7 @@ import { BollharnessIntegration, createBollharnessIntegration } from './bollharn
 import * as readline from 'readline';
 import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
-import { startInk, stopInk, inkAppendLine as appendLine, inkSetStatus, inkSetThinking, inkSetTransient } from './cli/ink-app.js';
+import { startInk, stopInk, inkAppendLine as appendLine, inkReplaceLastLine as replaceLastLine, inkSetStatus, inkSetThinking, inkSetTransient } from './cli/ink-app.js';
 import * as dbgFs from 'fs';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
@@ -780,19 +780,31 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
   // each iteration
   let lastToolEvent: { tool: string; args: any } | null = null;
 
-  // !command — 直接执行终端命令
+  // !command — 直接执行终端命令. 2026-08-12 (Task4): 支持多命令 (&& / ;) 逐段顺序执行 + 加载显示.
   if (trimmed.startsWith('!')) {
     const cmd = trimmed.slice(1).trim();
-    if (!cmd) { appendLine(`${C_DIM}!<命令> 执行终端命令, 如 !ls -la${RESET}`); return; }
-    appendLine(`${C_DIM}── $ ${cmd}${RESET}`);
+    if (!cmd) { appendLine(`${C_DIM}!<命令> 执行终端命令 (支持 && 串联多命令), 如 !ls -la${RESET}`); return; }
+    const { execSync } = await import('child_process');
+    // 拆成多段: && 逻辑与 (前失败则停) / ; 无条件顺序. 保留每段顺序执行, 显示加载态.
+    const segments = cmd.split(/\s*;\s*/).filter(Boolean);
     try {
-      const { execSync } = await import('child_process');
-      const out = execSync(cmd, { timeout: 30000, encoding: 'utf-8', cwd: process.cwd() });
-      appendLine(`${C_DIM}${out || '(无输出)'}${RESET}`);
-    } catch (e: any) {
-      appendLine(`${C_ERROR}${e.stderr || e.message}${RESET}`);
+      for (const seg of segments) {
+        const segCmds = seg.split(/\s*&&\s*/).filter(Boolean);
+        for (const c of segCmds) {
+          appendLine(`${C_DIM}── $ ${c}${RESET}`);
+          try {
+            const out = execSync(c, { timeout: 30000, encoding: 'utf-8', cwd: process.cwd() });
+            appendLine(`${C_DIM}${out || '(无输出)'}${RESET}`);
+          } catch (e: any) {
+            appendLine(`${C_ERROR}${e.stderr || e.message}${RESET}`);
+            // && 逻辑与: 某段失败则中止后续 && 段
+            break;
+          }
+        }
+      }
+    } finally {
+      appendLine(`${C_DIM}──${RESET}`);
     }
-    appendLine(`${C_DIM}──${RESET}`);
     return;
   }
 
@@ -1737,27 +1749,28 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
           // thinking 事件只有 "🤔 开始思考..." 占位 → 不 appendLine, 运行过程由动画表示;
           //   真正思考内容在 status 的 Reflection/💡 事件 → 下方框渲染
         } else if ((e as any).phase && !e.type) {
-          const ph = String((e as any).phase);
-          const detail = (e as any).detail ? ` (${String((e as any).detail).slice(0, 60)})` : '';
-          const phLabel: Record<string, string> = {
-            intent_classified: '意图识别',
-            tool_selected: '工具选择',
-            reflection: '反思',
-            planning: '规划',
-          };
-          appendLine(`${C_WARN}◈ ${phLabel[ph] || ph}${detail}${RESET}`);
+          // 2026-08-12 (Task4): phase (意图识别/工具选择/规划) 是模型内部规划过程,
+          //   用户偏好"中间过程不显示" → 静默丢弃, 不污染终端. (仅 Reflection 框保留, 走 status 分支)
         } else if (e.type === 'status' && e.content) {
           const content = String(e.content);
           // Reflection / 反思 / 💡 → 圆角思考框 (和回复一样走 renderMessageBox, 白字+亮边框)
           if (content.includes('Reflection') || content.includes('反思') || content.includes('💡')) {
             const body = content.replace(/^💡\s*/, '').slice(0, 1500);
             if (body.trim()) appendLine(renderMessageBox({ title: '💡 反思', body, color: C_WARN }));
-          } else if (!content.includes('🔄 循环') && !content.includes('📋 参数')) {
+          } else if (!content.includes('🔄 循环') && !content.includes('📋 参数')
+              && !content.includes('🔍 任务复杂度') && !content.includes('⚙️ 动态配置')
+              && !content.includes('⏹️ pivot loop')) {
             appendLine(`${C_DIM}${content}${RESET}`);
           }
         } else if (e.type === 'step_start') {
           tuiToolCounter++;
-          tuiToolCalls.push({ tool: e.tool || '?', args: e.args, _t: Date.now() });
+          const toolName = e.tool || '?';
+          tuiToolCalls.push({ tool: toolName, args: e.args, _t: Date.now() });
+          // 2026-08-12 (Task4): 命令/工具调用显示加载态 — 追加一行 "运行中", done 时原地替换.
+          //   system/loop 这类内部步骤不显示, 只显示真实工具/命令调用.
+          if (toolName !== 'system' && toolName !== 'loop' && toolName !== '?') {
+            appendLine(`  ${C_DIM}🔧 ${toolName} 运行中...${RESET}`);
+          }
         } else if (e.type === 'step_done' || e.type === 'step_error') {
           const p = tuiToolCalls.shift();
           const doneItem: ToolCallListItem = {
@@ -1774,7 +1787,13 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
               runEndOkSteps.push({ status: 'ok', name: t, output: e.output });
             }
           }
-          appendLine(renderToolCallListItem(doneItem, tuiToolCalls.length + 1, tuiToolCounter));
+          // 2026-08-12 (Task4): done/error 原地替换 step_start 的加载行 (若 tool 非内部).
+          const doneTool = e.tool ?? p?.tool;
+          if (doneTool !== 'system' && doneTool !== 'loop' && doneTool !== '?') {
+            replaceLastLine(renderToolCallListItem(doneItem, tuiToolCalls.length + 1, tuiToolCounter));
+          } else {
+            appendLine(renderToolCallListItem(doneItem, tuiToolCalls.length + 1, tuiToolCounter));
+          }
         }
       }
     });
