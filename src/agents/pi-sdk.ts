@@ -854,6 +854,16 @@ export class PiAgentSession implements AgentSession {
     // 2026-06-18: web server 喂的 markedPrompt 外的 contextHint 拼到 system 末尾 (而不是当 user message)
     this.contextHintAddition = contextHint;
 
+    // 2026-08-12 (TaskM1, hermes prefetch 模式): 运行时按用户消息召回历史记忆, 注入 system prompt.
+    //   让 agent 能"回忆起"之前 session 的记忆 (自动获取之前 session), 而非只靠启动时批量压缩.
+    try {
+      const { recallMemory } = await import('./memory-recall.js');
+      const recalled = await recallMemory({ query: userText, agentId: this.currentAgentId || this.peerId || '' });
+      if (recalled) {
+        this.contextHintAddition = [this.contextHintAddition, recalled].filter(Boolean).join('\n\n');
+      }
+    } catch { /* 记忆召回失败静默 (增强层) */ }
+
     onStream({ type: 'thinking', content: '🤔 开始思考...' });
 
     if (!this.minimaxAvailable) {
