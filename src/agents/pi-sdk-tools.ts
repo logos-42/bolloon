@@ -779,6 +779,12 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       }
       try {
         const absPath = path.resolve(ctx.cwd, relPath);
+        // 2026-08-12 (TaskC): 写前暂存 (准备阶段) — 记录变更前快照, 支持审计/撤销. 失败静默.
+        let before = '';
+        try { before = await fs.readFile(absPath, 'utf-8'); } catch { /* 新文件 */ }
+        const action = before.length > 0 ? 'overwrite' : 'create';
+        const { stageWrite } = await import('./write-staging.js');
+        await stageWrite(relPath, before, content, action, ctx.cwd).catch(() => {});
         await fs.mkdir(path.dirname(absPath), { recursive: true });
         await fs.writeFile(absPath, content, 'utf-8');
         return { success: true, output: `✅ wrote ${relPath} (${content.length} bytes)` };
@@ -809,6 +815,9 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
           return { success: false, error: `old_text 在 ${relPath} 中未找到, 拒绝静默写入. 请先用 read_document 读最新内容.` };
         }
         const updated = original.replace(oldText, newText);
+        // 2026-08-12 (TaskC): 写前暂存 (准备阶段) — 记录变更前快照, 支持审计/撤销. 失败静默.
+        const { stageWrite } = await import('./write-staging.js');
+        await stageWrite(relPath, original, updated, 'edit', ctx.cwd).catch(() => {});
         await fs.writeFile(absPath, updated, 'utf-8');
         return { success: true, output: `✅ edited ${relPath} (${oldText.length} → ${newText.length} 字节)` };
       } catch (e) {
