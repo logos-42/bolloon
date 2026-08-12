@@ -1861,6 +1861,30 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
         }
       });
     }
+    // 2026-08-12 (TaskM2, hermes sync 模式): CLI 对话结束后同步记忆 — 每轮 compressSessionToMemory
+    //   把本会话消息压缩成摘要 (≥4 新消息触发), 供后续运行时 recallMemory 自动召回 (跨 session 记忆).
+    //   Web 模式 server.ts 已有, CLI 之前缺失 → CLI 下无摘要可召回. 失败静默, 不阻塞对话.
+    if (cliActiveChannelId) {
+      setImmediate(async () => {
+        try {
+          const { compressSessionToMemory } = await import('./bootstrap/memory-compressor.js');
+          const channelForMem = String(cliActiveChannelId || '');
+          let sessionId = 'default';
+          try {
+            const { getIdentityStore } = await import('./agents/agent-identity-store.js');
+            const store = getIdentityStore();
+            await store.load();
+            const ch = store.rawChannels.find((c: any) => c.id === channelForMem);
+            if (ch && (ch as any).currentSessionId) sessionId = String((ch as any).currentSessionId);
+          } catch { /* 读 sessionId 失败用 default */ }
+          await compressSessionToMemory({
+            agentId: getCliAgentId(),
+            channelId: channelForMem,
+            sessionId,
+          });
+        } catch { /* 记忆压缩失败静默 */ }
+      });
+    }
     // 更新状态栏: 上下文进度 (2026-08-06: 每轮按当前 messageHistory 重算并写回 ContextManager,
     //   保证状态栏按需更新 — 不依赖 pi-sdk loop 内部上报, 1s 定时器读到的一定是最新值)
     // 2026-08-07 修复: pi-sdk loop 每轮已用 estimateHistoryTokens() 上报 ContextManager (pi-sdk.ts:1223),
