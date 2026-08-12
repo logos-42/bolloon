@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-12 | feat | 运行时记忆循环 (hermes prefetch+sync 模式): 每轮按用户消息召回历史摘要注入 system prompt (memory-recall) + CLI 对话后同步记忆 (compressSessionToMemory) | [memory-recall.ts](../../src/agents/memory-recall.ts) / [index.ts](../../src/index.ts) |
 | 2026-08-12 | feat | 工程打磨 4 项 (工具命中干净 / 认知卸载验证 / 写操作准备阶段 staging / 长期运行不阻塞 background+process) — 一次一 commit+push | [write-staging.ts](../../src/agents/write-staging.ts) / [process-runner.ts](../../src/agents/process-runner.ts) |
 | 2026-08-12 | feat | WebUI 登录配置托管 Cloudflare 边缘 (Workers+KV, 本地 fallback) + 7 项工程 (agent 路径 bug / terminal 统一+多命令并行 / 认知卸载+usage hint / CLI 循环显示+命令加载态 / /skills view / Task 队列 OrbitDB 主存储 / Kanban 看板 OrbitDB) — 每项一次 commit+push | [edge-auth-client.ts](../../src/web/edge-auth-client.ts) / [task-store.ts](../../src/orbitdb/task-store.ts) / [kanban-store.ts](../../src/orbitdb/kanban-store.ts) |
 | 2026-08-12 | chore | 发布 v0.4.5: MCP HTTP transport (streamable HTTP + SSE) + Cloudflare MCP 全局接入 + SSE 流式读取修复 (tools/call 连接不关闭不挂起). prepublishOnly (build:all + smoke:esm) PASS, registry dist-tags.latest=0.4.5 确认, git tag v0.4.5, 全局包同步 v0.4.5 (符号链接本地) | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
@@ -1274,3 +1275,32 @@ default permission 还禁 shell_exec.
 - 写准备: src/agents/write-staging.ts + src/test/write-staging.test.ts
 - 后台进程: src/agents/process-runner.ts + src/test/process-runner.test.ts
 - 借鉴源: D:\AI\hermes-agent\tools\write_approval.py + tools\terminal_tool.py
+
+## [2026-08-12] feat | 运行时记忆循环 (hermes prefetch + sync 模式)
+
+### 背景
+
+用户问: 运行过程中有无维护记忆功能 + 自动获取之前 session 记忆的能力, 学习 hermes 值得学的部分学过来.
+
+### 现状 vs hermes 差距
+
+- hermes `MemoryManager`: 每轮对话前 `prefetch_all(user_message)` 按用户消息召回记忆注入 system prompt (带 `<memory-context>` 围栏 + sanitize), 每轮结束 `sync_all(user, assistant)` 写入记忆, `queue_prefetch_all` 后台预取下一轮.
+- bolloon 现状: memory-compressor 是**批量压缩** (≥4 条消息才 LLM 摘要, 且只在 Web server 触发); 无运行时召回, CLI 模式连压缩都缺失.
+
+### 落地 (2 commit)
+
+| # | 内容 | commit |
+|---|------|--------|
+| M1 | 运行时记忆召回 (hermes prefetch 模式): 新 src/agents/memory-recall.ts — 每轮按用户消息 (tokenizeQuery + BM25 打分) 从 memory 摘要检索相关历史, 拼成 `<memory-context>` 围栏块注入 system prompt; 接入 pi-sdk promptStream; 6 测试 | 3823ba7 |
+| M2 | CLI 对话结束后同步记忆 (hermes sync 模式): index.ts 每轮 compressSessionToMemory 压缩摘要 (≥4 新消息), 补齐 Web 外 CLI 的记忆维护 → 供 M1 召回; 失败静默 | f88aa37 |
+
+### 验证
+
+- 每 commit 前: `npx tsc --noEmit` 0 错 + `npx vitest run --bail=1` 全绿 (115 文件 1323 测试).
+- memory-recall 测试: 中英文关键词提取 / 打分 / 按消息召回相关摘要 (无关不召回) / 无记忆返回空 / limit 限制.
+
+### 关联
+
+- 召回: src/agents/memory-recall.ts + src/test/memory-recall.test.ts
+- 同步: src/index.ts (CLI) + src/bootstrap/memory-compressor.ts (既有)
+- 借鉴源: D:\AI\hermes-agent\agent\memory_manager.py (prefetch_all / sync_all / queue_prefetch_all)
