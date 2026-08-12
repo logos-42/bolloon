@@ -52,7 +52,11 @@ function startMockHttpMcp(): Promise<{ port: number; close: () => Promise<void>;
       } else if (method === 'tools/call') {
         const p = msg.params || {};
         const text = (p.arguments || {}).text || '';
-        send({ jsonrpc: '2.0', id: mid, result: { content: [{ type: 'text', text: `http-echo: ${text}` }] } });
+        // 2026-08-12: 模拟真实 streamable HTTP 行为 — SSE 发完 **不关闭连接** (res.text() 会挂起)
+        const sse = `event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: mid, result: { content: [{ type: 'text', text: `http-echo: ${text}` }] } })}\n\n`;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write(sse);
+        // 不 res.end() — 保持连接 (客户端必须主动 cancel 流, 否则挂起)
       } else {
         send({ jsonrpc: '2.0', id: mid, error: { code: -32601, message: 'unknown method' } });
       }
@@ -122,11 +126,12 @@ describe('mcp-adapter HTTP transport (streamable HTTP + SSE, 2026-08-12)', () =>
     expect(names).toContain('httpecho');
   });
 
-  it('executeTool 走 HTTP JSON-RPC (真实 fetch)', async () => {
+  it('executeTool 走 HTTP JSON-RPC (真实 fetch, SSE 不关连接也不挂起)', async () => {
+    // 8s 兜底: 修复前 res.text() 等 EOF 永远挂起 → 此测试会超时失败
     const r = await executeTool('httpecho', { text: 'over-http' });
     expect(r.success).toBe(true);
     expect(JSON.stringify(r.content || '')).toContain('http-echo: over-http');
-  });
+  }, 8000);
 
   it('请求带浏览器 UA (1010 风控) + 配置的 Authorization header', () => {
     expect(mock.seenUAs.length).toBeGreaterThan(0);

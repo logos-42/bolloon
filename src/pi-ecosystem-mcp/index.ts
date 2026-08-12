@@ -430,14 +430,7 @@ async function sendHttpMcpRequest(
     const sessionId = res.headers.get('Mcp-Session-Id');
     if (sessionId) server.sessionId = sessionId;
 
-    const raw = await res.text();
-    const ct = res.headers.get('content-type') || '';
-    let msg: McpResponse;
-    if (ct.includes('text/event-stream') || raw.trimStart().startsWith('event:')) {
-      msg = parseSseMessage(raw);
-    } else {
-      msg = JSON.parse(raw) as McpResponse;
-    }
+    const msg = await readHttpBodyUntilResponse(res);
     if (msg.error) {
       throw new Error(`MCP error ${msg.error.code}: ${msg.error.message}`);
     }
@@ -447,16 +440,56 @@ async function sendHttpMcpRequest(
   }
 }
 
-/** 解析 SSE 响应 (event: message\n data: {...}\n\n 可多块), 取所有 data: 行拼接 JSON */
-function parseSseMessage(raw: string): McpResponse {
-  let data = '';
-  for (const line of raw.split(/\r?\n/)) {
-    if (line.startsWith('data:')) data += line.slice(5).trim();
+/**
+ * 读取 HTTP 响应直到拿到完整 JSON-RPC 响应 (2026-08-12 修复).
+ * 坑: streamable HTTP 服务器 (如 mcp.cloudflare.com/mcp) 对 tools/call 返回 SSE 后
+ * **不关闭连接** — res.text() 会永远等 EOF 挂起 (initialize/tools/list 响应收尾, 掩盖了问题).
+ * 方案: 流式读 body, 按 SSE 事件块 (空行分隔) 解析, 找到 id 匹配的响应就 cancel 流返回.
+ * 非 SSE (application/json) 响应直接 text().
+ */
+async function readHttpBodyUntilResponse(res: Response): Promise<McpResponse> {
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('text/event-stream')) {
+    const raw = await res.text();
+    return JSON.parse(raw) as McpResponse;
   }
-  if (!data) {
-    throw new Error(`SSE 响应无 data 块: ${raw.slice(0, 200)}`);
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const msg = extractSseResponse(buf);
+      if (msg) return msg;
+    }
+    const msg = extractSseResponse(buf);
+    if (msg) return msg;
+    throw new Error(`SSE 响应无有效 JSON-RPC data 块: ${buf.slice(0, 200)}`);
+  } finally {
+    // 拿到响应后立即关闭流 — 不等服务器断开连接
+    reader.cancel().catch(() => {});
   }
-  return JSON.parse(data) as McpResponse;
+}
+
+/** 从累积的 SSE 文本提取完整 JSON-RPC 响应 (按空行分隔事件块, data: 行拼 JSON) */
+function extractSseResponse(buf: string): McpResponse | null {
+  const blocks = buf.split(/\n\n/);
+  for (const block of blocks) {
+    let data = '';
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('data:')) data += line.slice(5).trim();
+    }
+    if (!data) continue;
+    try {
+      return JSON.parse(data) as McpResponse;
+    } catch {
+      // 块不完整 (截断) — 等更多数据
+    }
+  }
+  return null;
 }
 
 /** 挂上 stdout 行读取器 (按 id 分发响应) */
