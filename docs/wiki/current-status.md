@@ -17,6 +17,7 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 
 | 功能 | 路径 | 验证 |
 |------|------|------|
+|| **MCP HTTP transport (streamable HTTP + SSE)** (2026-08-12) | `src/pi-ecosystem-mcp/index.ts` + `~/.mcp.json` (`type:"http" + url + headers`) | 远程 MCP server 支持: POST JSON-RPC + 浏览器 UA (Cloudflare 1010 风控) + SSE/JSON 双响应 + Mcp-Session-Id 透传 + 通知 202 fire-and-forget. 全局已接入 Cloudflare 官方 MCP (mcp.cloudflare.com/mcp, docs/search/execute 3 工具, execute 绑账号 a13e8fd1...). 单测 mcp-http.test.ts 4/4 | [index.ts](../../src/pi-ecosystem-mcp/index.ts) / [mcp-http.test.ts](../../src/test/mcp-http.test.ts) |
 | **@safe-global 升级 (v0.4.4)** (2026-08-12) | `src/constraint-runtime/package.json` | protocol-kit 8.0.5 + api-kit 5.0.2 (safe-modules-deployments 3.0.9). relay-kit 保持 6.0.4 (6.0.5 自带 workspace:^ 协议 bug 无法安装, 依赖自动 dedupe 到 8.0.5). 传递依赖无 API 破坏. tsc 0 错 + vitest 1282/1282 + build:all + smoke:esm PASS | [package.json](../../src/constraint-runtime/package.json) |
 | **TypeScript 7 (Go 编译器)** (2026-08-12) | `package.json` + `tsconfig.electron.json` + `scripts/build-web.ts` | `typescript ^7.0.2` (--legacy-peer-deps 绕 iroh peer ^5). 适配: electron config moduleResolution `node`→`bundler` (node10 移除), build-web inline tsc 加 `--ignoreConfig` (TS7 对 file args+存在 tsconfig 报 TS5112). 主 tsconfig 无需改. tsc 0 错 + vitest 1282/1282 + build:all PASS. tsconfig.cli.json 为未用残留 (import.meta+CommonJS 本就冲突) 保持不动 | [package.json](../../package.json) / [tsconfig.electron.json](../../tsconfig.electron.json) |
 | 文档加载 | `src/documents/reader.ts` + `src/llm/system-prompt/layers/*.md` | ablation-v0.2.7 C1-C3 全 pass: Bolloon.md 8197B, 15 layers 完整, 缺 frontmatter 仍能装配 4743 字符 system prompt |
@@ -106,6 +107,7 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 
 | 功能 | 状态 | 影响 |
 |------|------|------|
+| **R2 对象存储** | ⚠️ (2026-08-12) Cloudflare 账号未启用 R2 (403/10042) + 无 S3 Access Key/Secret; 决策暂不接入, 现有 KV 链路够用 | 边缘登录/当前功能不受影响; 之后要大对象存储 (附件/归档) 时先 Dashboard 启用 R2 + 生成 S3 凭证, 再走 REST 建桶 + wrangler r2_buckets 绑定 |
 | **iroh `discovery.update` 接口** | ✅ (2026-07-04 降级) @diap/sdk 上游 bug, server.ts 包 try/catch, 已知错误转 warn | 不影响 v3 主路径; 噪音日志已拦截 |
 | **iroh `/api/iroh/info` 返回 `nodeId: null`** | ✅ (2026-07-04 降级) 端点加 v3 P2PDirect publicKey fallback, `irohNodeIdSource` 标识来源 | 客户端始终拿到有效 peer id |
 | **`saveCurrentSession` rename 失败** | ✅ (2026-07-04) SessionStore filenameEscape `:` → `__`, 跨 Windows/Linux/macOS | 会话存档不再 EINVAL, vitest 711/711 pass |

@@ -447,7 +447,7 @@ export async function findRecentSimilarDecisions(
   const out: RecentSimilar[] = [];
   for (const j of judgments) {
     if (statusFilter !== 'all' && (j.status ?? 'active') !== statusFilter) continue;
-    if (new Date(j.timestamp).getTime() < cutoff) continue;
+    if (new Date(j.timestamp).getTime() <= cutoff) continue;
     if (wantChannel) {
       const jChannel = (j.context as { domain?: string } | undefined)?.domain;
       if (jChannel !== wantChannel) continue;

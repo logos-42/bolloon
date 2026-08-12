@@ -22,7 +22,17 @@ export interface McpServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  /** 传输类型: stdio (默认, command 启动子进程) | http (远程 streamable HTTP) */
+  type?: 'stdio' | 'http';
+  /** http 类型必填: MCP 端点 URL */
+  url?: string;
+  /** http 类型可选: 每次请求携带的 headers (如 Authorization: Bearer xxx) */
+  headers?: Record<string, string>;
 }
+
+/** streamable HTTP 传输的浏览器 UA — Cloudflare MCP 等端点有 1010 风控, node fetch 默认 UA 会被拒 */
+const MCP_BROWSER_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
 // Discovered MCP tool
 export interface McpTool {
@@ -60,6 +70,8 @@ interface McpServerState {
   config: McpServerConfig;
   process: ChildProcess | null;
   running: boolean;
+  /** http 传输的会话 id (服务器返回 Mcp-Session-Id 时记录, 后续请求携带) */
+  sessionId?: string;
   /** 按 id 挂起的请求 (响应配对) */
   pending: Map<string | number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>;
 }
@@ -100,7 +112,21 @@ export async function discoverMcpServers(): Promise<McpServerConfig[]> {
       if (serversConfig && typeof serversConfig === 'object') {
         for (const [name, config] of Object.entries(serversConfig)) {
           const serverConfig = config as Record<string, unknown>;
-          if (!serverConfig || typeof serverConfig.command !== 'string') continue;
+          if (!serverConfig || typeof serverConfig !== 'object') continue;
+          // 2026-08-12: 支持 HTTP transport (type: "http" + url + headers), 如 Cloudflare MCP
+          const isHttp = serverConfig.type === 'http' || (typeof serverConfig.url === 'string' && typeof serverConfig.command !== 'string');
+          if (isHttp) {
+            if (typeof serverConfig.url !== 'string' || !serverConfig.url) continue;
+            configs.push({
+              name,
+              type: 'http',
+              url: serverConfig.url,
+              command: '',
+              headers: serverConfig.headers as Record<string, string> | undefined,
+            });
+            continue;
+          }
+          if (typeof serverConfig.command !== 'string') continue;
           configs.push({
             name,
             command: serverConfig.command,
@@ -114,10 +140,10 @@ export async function discoverMcpServers(): Promise<McpServerConfig[]> {
     }
   }
 
-  // 去重 (同 name 同 command)
+  // 去重 (同 name 同 command/url)
   const seen = new Set<string>();
   return configs.filter((c) => {
-    const key = `${c.name}::${c.command}`;
+    const key = `${c.name}::${c.type === 'http' ? c.url : c.command}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -156,8 +182,10 @@ export async function connectAndDiscover(serverName: string): Promise<McpTool[]>
   if (!server.running || !server.process) {
     const started = await startServer(serverName);
     if (!started) return [];
-    // 等 server 就绪
-    await new Promise((r) => setTimeout(r, 400));
+    // http 传输无进程, 无需等待就绪; stdio 等 server 启动
+    if (server.config.type !== 'http') {
+      await new Promise((r) => setTimeout(r, 400));
+    }
   }
 
   await sendMcpRequest(serverName, 'initialize', {
@@ -311,6 +339,11 @@ async function sendMcpRequest(
     throw new Error(`Server not registered: ${serverName}`);
   }
 
+  // 2026-08-12: http 传输走 fetch JSON-RPC (streamable HTTP)
+  if (server.config.type === 'http') {
+    return sendHttpMcpRequest(serverName, method, params);
+  }
+
   // 确保 server 进程在跑
   if (!server.running || !server.process || !server.process.stdin?.writable) {
     const started = await startServer(serverName);
@@ -344,6 +377,86 @@ async function sendMcpRequest(
     server.pending.set(id, { resolve, reject, timer });
     child.stdin!.write(line + '\n');
   });
+}
+
+/**
+ * Send MCP request to a remote server via streamable HTTP (2026-08-12).
+ * - POST JSON-RPC 到 url, 携带 Authorization 等配置 headers
+ * - 默认带浏览器 UA (Cloudflare MCP 1010 风控, node fetch 默认 UA 被拒)
+ * - 响应支持 application/json 与 text/event-stream (SSE) 两种格式
+ * - 服务器返回 Mcp-Session-Id 时记录, 后续请求自动携带
+ * - 通知 (notifications/*) fire-and-forget: 不等待响应体 (Cloudflare 返回 202)
+ */
+async function sendHttpMcpRequest(
+  serverName: string,
+  method: string,
+  params?: Record<string, unknown>
+): Promise<unknown> {
+  const server = servers.get(serverName);
+  if (!server) throw new Error(`Server not registered: ${serverName}`);
+  if (!server.config.url) throw new Error(`MCP http server 缺 url: ${serverName}`);
+
+  const id = mcpRequestSeq++;
+  const isNotification = method.startsWith('notifications/');
+  const payload = isNotification
+    ? { jsonrpc: '2.0' as const, method, params: params ?? {} }
+    : { jsonrpc: '2.0' as const, id, method, params: params ?? {} };
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json, text/event-stream',
+    ...(server.config.headers ?? {}),
+  };
+  // 1010 风控: 默认浏览器 UA, 用户 headers 可覆盖
+  if (!headers['User-Agent']) headers['User-Agent'] = MCP_BROWSER_UA;
+  if (server.sessionId) headers['Mcp-Session-Id'] = server.sessionId;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), MCP_REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(server.config.url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+
+    if (isNotification) {
+      // fire-and-forget: 不等 body (Cloudflare 返回 202 空体)
+      res.body?.cancel().catch(() => {});
+      return undefined;
+    }
+
+    const sessionId = res.headers.get('Mcp-Session-Id');
+    if (sessionId) server.sessionId = sessionId;
+
+    const raw = await res.text();
+    const ct = res.headers.get('content-type') || '';
+    let msg: McpResponse;
+    if (ct.includes('text/event-stream') || raw.trimStart().startsWith('event:')) {
+      msg = parseSseMessage(raw);
+    } else {
+      msg = JSON.parse(raw) as McpResponse;
+    }
+    if (msg.error) {
+      throw new Error(`MCP error ${msg.error.code}: ${msg.error.message}`);
+    }
+    return msg.result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 解析 SSE 响应 (event: message\n data: {...}\n\n 可多块), 取所有 data: 行拼接 JSON */
+function parseSseMessage(raw: string): McpResponse {
+  let data = '';
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.startsWith('data:')) data += line.slice(5).trim();
+  }
+  if (!data) {
+    throw new Error(`SSE 响应无 data 块: ${raw.slice(0, 200)}`);
+  }
+  return JSON.parse(data) as McpResponse;
 }
 
 /** 挂上 stdout 行读取器 (按 id 分发响应) */
@@ -387,6 +500,12 @@ export async function startServer(serverName: string): Promise<boolean> {
   }
 
   if (server.running && server.process) {
+    return true;
+  }
+
+  // 2026-08-12: http 传输无子进程 — 虚拟 running, 请求走 sendHttpMcpRequest
+  if (server.config.type === 'http') {
+    server.running = true;
     return true;
   }
 
