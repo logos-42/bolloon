@@ -500,6 +500,9 @@ let cliStartTime = 0;
 let cliModelName = '…';
 let cliAgentName = '…';
 let cliActiveChannelId: string | null = null;
+// 2026-08-12: 当前 active channel 的 agentId (如 agent-alice). memory 落盘按 agentId 存,
+//   /memory /resume /did 读路径必须用 agentId 而非 display name (cliAgentName), 否则路径不一致读不到.
+let cliAgentId: string | null = null;
 // 2026-08-10: CLI 自动整理心跳 (与社交心跳并列, 独立于 server) — 退出时 stop
 let cliOrganizeHeartbeat: { stop(): void; runOnce(): Promise<unknown> } | null = null;
 
@@ -510,6 +513,13 @@ function fmtDuration(ms: number): string {
   if (m < 60) return `${m}m ${s % 60}s`;
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60}m`;
+}
+
+/** 2026-08-12: 返回当前 agentId (memory 路径用). 优先 cliAgentId, fallback cliAgentName. */
+function getCliAgentId(): string {
+  if (cliAgentId) return cliAgentId;
+  // 无显式 agentId 时退到 cliAgentName (harness 默认 'agent', 其余用名字)
+  return cliAgentName === 'bolloon' ? 'agent' : (cliAgentName || 'agent');
 }
 
 /** 2026-08-06: 从 ContextManager 读上下文用量 (CLI 状态栏数据源, 失败退化 0/1M) */
@@ -637,6 +647,9 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
     if (active) {
       cliAgentName = active.name;
       cliActiveChannelId = active.channelId ?? null;
+      // 2026-08-12: 同步 agentId (memory 路径一致) — 从 rawChannels 按 channelId 取 agentId
+      const raw = active.channelId ? store.rawChannels.find((c: any) => c.id === active.channelId) : undefined;
+      cliAgentId = raw?.agentId || null;
     }
   } catch {
     /* 无 channels/active 记录时保持默认 */
@@ -812,6 +825,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       await store.setActive(r.channel.id);
       cliAgentName = r.identity.name;
       cliActiveChannelId = r.channel.id;
+      cliAgentId = r.channel.agentId || null; // 2026-08-12: memory 路径一致
       // 2026-08-09: 切 channel 必须重建 agent session — 否则身份/记忆停留在旧 channel (bug 修复)
       invalidateAgent();
       // 立即重建 (提前建好, 避免下次输入才卡顿; 失败不阻塞切换)
@@ -873,6 +887,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       await store.setActive(id);
       cliAgentName = name.trim();
       cliActiveChannelId = id;
+      cliAgentId = agentId; // 2026-08-12: memory 路径一致
       // 2026-08-09: 新建 agent 后立即重建 session — 否则新 agent 身份不加载 (bug 修复)
       invalidateAgent();
       try { await getAgent(); } catch { /* 非致命 */ }
@@ -1141,7 +1156,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
       const { getMemoryDir } = await import('./bootstrap/memory-compressor.js');
       const { readdir, readFile } = await import('fs/promises');
       const { join } = await import('path');
-      const dir = getMemoryDir(cliAgentName === 'bolloon' ? 'agent' : cliAgentName);
+      const dir = getMemoryDir(getCliAgentId());
       const files = (await readdir(join(dir, 'sessions')).catch(() => [])).filter((f: string) => f.endsWith('.summary.md'));
       appendLine(`${C_ACCENT}记忆摘要 (${files.length} 个 session):${RESET}`);
       for (const f of files.slice(-5)) {
@@ -1159,10 +1174,10 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
   // /resume — 恢复: 最近记忆摘要 + 进行中计划
   if (cmd === '/resume' || cmd.startsWith('/resume ')) {
     try {
-      const { getMemoryDir, getSessionSummaryPath } = await import('./bootstrap/memory-compressor.js');
+      const { getMemoryDir } = await import('./bootstrap/memory-compressor.js');
       const { readFile, readdir } = await import('fs/promises');
       const { join } = await import('path');
-      const dir = getMemoryDir(cliAgentName === 'bolloon' ? 'agent' : cliAgentName);
+      const dir = getMemoryDir(getCliAgentId());
       const files = (await readdir(join(dir, 'sessions')).catch(() => [])).filter((f: string) => f.endsWith('.summary.md'));
       appendLine(`${C_ACCENT}↻ 恢复上下文:${RESET}`);
       if (files.length > 0) {
@@ -1324,7 +1339,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
   if (cmd === '/did') {
     try {
       const { loadOrCreateAgentIdentity } = await import('./agents/agent-identity.js');
-      const identity = loadOrCreateAgentIdentity(cliAgentName === 'bolloon' ? 'default-agent' : cliAgentName);
+      const identity = loadOrCreateAgentIdentity(getCliAgentId());
       appendLine(`${C_ACCENT}DID 身份:${RESET}`);
       appendLine(`  ${C_DIM}did:${RESET} ${identity.did}`);
       appendLine(`  ${C_DIM}publicKey:${RESET} ${identity.publicKey?.slice(0, 32) || '—'}...`);
