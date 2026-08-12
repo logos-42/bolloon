@@ -370,5 +370,26 @@ describe('PiSDK PivotLoop Integration', () => {
       // 不在 usage hint 里的工具 description 不加强 (只保留原描述)
       expect(timeDef.function.description).toBe('获取时间');
     });
+
+    it('认知卸载 usage hint 干净: 所有核心编码工具都带唯一 hint, 非核心不加前缀', () => {
+      const loop = new WorkflowPivotLoop({ maxIterations: 3 });
+      const CORE = ['write_file', 'edit_file', 'read_file', 'read_directory', 'list_files', 'terminal', 'delegate_to_engine'];
+      const OTHER = ['get_time', 'send_message', 'list_peers', 'p2p_broadcast', 'get_identity'];
+      const tools: any[] = [
+        ...CORE.map(n => ({ name: n, description: `desc_${n}`, parameters: {} })),
+        ...OTHER.map(n => ({ name: n, description: `desc_${n}`, parameters: {} })),
+      ];
+      for (const t of tools) loop.registerTools([t as any]);
+      const defs = (loop as any).buildOpenAITools() as any[];
+      for (const n of CORE) {
+        const d = defs.find(x => x.function.name === n);
+        expect(d, `core tool ${n} should exist`).toBeDefined();
+        expect(d.function.description.length, `core tool ${n} hint present`).toBeGreaterThan(`desc_${n}`.length);
+      }
+      for (const n of OTHER) {
+        const d = defs.find(x => x.function.name === n);
+        expect(d.function.description).toBe(`desc_${n}`);
+      }
+    });
   });
 });
