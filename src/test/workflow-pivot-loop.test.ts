@@ -350,4 +350,25 @@ describe('PiSDK PivotLoop Integration', () => {
     expect(result).toBeDefined();
     expect(result.exitReason).toBeDefined();
   });
+
+  describe('Task3 认知卸载: 工具选择 usage hint', () => {
+    it('buildOpenAITools 给核心工具 description 加"何时使用"前缀', () => {
+      const loop = new WorkflowPivotLoop({ maxIterations: 3 });
+      // 核心编码工具 (含 list_files) → 应带 usage hint 前缀
+      const tools: any[] = [
+        { name: 'list_files', description: '列出文件', parameters: {} },
+        { name: 'write_file', description: '写入文件', parameters: { path: '路径' } },
+        { name: 'get_time', description: '获取时间', parameters: {} },
+      ];
+      for (const t of tools) loop.registerTools([t as any]);
+      const defs = (loop as any).buildOpenAITools() as any[];
+      const listDef = defs.find(d => d.function.name === 'list_files');
+      const writeDef = defs.find(d => d.function.name === 'write_file');
+      const timeDef = defs.find(d => d.function.name === 'get_time');
+      expect(listDef.function.description).toContain('列出文件');
+      expect(writeDef.function.description).toContain('写/创建文件用此工具');
+      // 不在 usage hint 里的工具 description 不加强 (只保留原描述)
+      expect(timeDef.function.description).toBe('获取时间');
+    });
+  });
 });

@@ -263,6 +263,16 @@ export class WorkflowPivotLoop {
    *   传原生 tools + tool_choice auto → LLM 返回结构化 tool_calls.
    */
   private buildOpenAITools(): any[] {
+    // 2026-08-12 (Task3 认知卸载): 核心编码工具加强 description, 提升模型触发率.
+    const USAGE_HINT: Record<string, string> = {
+      write_file: '写/创建文件用此工具 (改代码首选). ',
+      edit_file: '修改文件指定内容用此工具 (改代码首选). ',
+      read_file: '读取文件内容用此工具. ',
+      read_directory: '列目录用此工具. ',
+      list_files: '列出文件用此工具. ',
+      terminal: '跑 shell 命令/脚本/装依赖/查状态用此工具 (不要用它写文件). ',
+      delegate_to_engine: '任务过大或复杂时委派给外部编码引擎 (认知卸载). ',
+    };
     const out: any[] = [];
     for (const [name, tool] of this.tools) {
       const params = (tool as any).parameters || {};
@@ -276,7 +286,7 @@ export class WorkflowPivotLoop {
         type: 'function',
         function: {
           name,
-          description: (tool as any).description || name,
+          description: (USAGE_HINT[name] || '') + ((tool as any).description || name),
           parameters: { type: 'object', properties, required },
         },
       });

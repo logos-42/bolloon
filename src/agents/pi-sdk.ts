@@ -267,6 +267,15 @@ export class PiAgentSession implements AgentSession {
   private currentSignal: AbortSignal | null = null;
   /** Bootstrap SessionStart 拼的 system prompt 片段 (用完即清) */
   private bootstrapAddition: string = '';
+  /** 2026-08-12 (Task3 认知卸载): 工具选择与认知卸载指南 — 注入 system prompt, 降低"模型不触发 write/edit/read"率. */
+  private static readonly TOOL_SELECTION_GUIDE = `【工具选择与认知卸载指南 (严格遵循)】
+- 写/改文件: 必须用 write_file / edit_file (不要用 terminal 拼字符串写文件).
+- 读文件: 用 read_file / read_directory / list_files.
+- 跑命令/查状态/装依赖/跑脚本: 用 terminal.
+- 执行 git 操作: 用 git_* 专用工具 (git_diff/git_commit/git_push/git_branch/git_log).
+- 查看/调用技能: 用 list_skills / use_skill.
+- 认知卸载: 当任务对你过大或反复失败时, 不要死磕 — 用 delegate_to_engine 把编码/复杂任务委派给外部引擎 (codex/claude-code/opencode), 或把目标拆小分步完成.
+- 每步只选一个最合适的工具, 先读后写, 写完验证 (跑 tsc/vitest 或读回文件).`;
   /** 当前 prompt 开始时间 (供 Stop hook 计算 durationMs) */
   private promptStartTime: number = 0;
   /** 当前 channel id (由 getAgentForChannel / prompt 4 参注入, 供 hook / log 使用) */
@@ -1154,6 +1163,8 @@ ${this.currentIntentHint}
 
 ${this.getToolDefinitions()}
 
+${PiAgentSession.TOOL_SELECTION_GUIDE}
+
 工作模式:
 1. 理解用户自然语言请求
 2. 分析需要哪些工具来完成
@@ -1414,6 +1425,8 @@ ${this.currentIntentHint}
 ${loopProgressSection}
 
 ${toolDefs}
+
+${PiAgentSession.TOOL_SELECTION_GUIDE}
 
 工作模式:
 1. 理解用户自然语言请求
