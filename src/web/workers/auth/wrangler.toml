@@ -1,11 +1,7 @@
-name = "bolloon-auth-edge"
+name = "bolloon"
 main = "src/index.ts"
 compatibility_date = "2026-08-11"
 
 [[kv_namespaces]]
 binding = "KV_BINDING"
 id = "fbc76854820d426bbfbd57506909e172"
-
-# 部署到边缘 worker 的配置
-[env.production]
-workers_dev = true
