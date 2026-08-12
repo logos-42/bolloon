@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-12 | fix | 重启后智能体消失: CLI /new agent 不同步 agents.json + heal 要求 session 文件才恢复 → CLI 创建的 agent 重启无法恢复. 修复: CLI 同步 agents.json 关联 channelId + heal 放宽 (channelId 非空即恢复) | [index.ts](../../src/index.ts) / [server.ts](../../src/web/server.ts) |
 | 2026-08-12 | feat | 运行时记忆循环 (hermes prefetch+sync 模式): 每轮按用户消息召回历史摘要注入 system prompt (memory-recall) + CLI 对话后同步记忆 (compressSessionToMemory) | [memory-recall.ts](../../src/agents/memory-recall.ts) / [index.ts](../../src/index.ts) |
 | 2026-08-12 | feat | 工程打磨 4 项 (工具命中干净 / 认知卸载验证 / 写操作准备阶段 staging / 长期运行不阻塞 background+process) — 一次一 commit+push | [write-staging.ts](../../src/agents/write-staging.ts) / [process-runner.ts](../../src/agents/process-runner.ts) |
 | 2026-08-12 | feat | WebUI 登录配置托管 Cloudflare 边缘 (Workers+KV, 本地 fallback) + 7 项工程 (agent 路径 bug / terminal 统一+多命令并行 / 认知卸载+usage hint / CLI 循环显示+命令加载态 / /skills view / Task 队列 OrbitDB 主存储 / Kanban 看板 OrbitDB) — 每项一次 commit+push | [edge-auth-client.ts](../../src/web/edge-auth-client.ts) / [task-store.ts](../../src/orbitdb/task-store.ts) / [kanban-store.ts](../../src/orbitdb/kanban-store.ts) |
@@ -1304,3 +1305,30 @@ default permission 还禁 shell_exec.
 - 召回: src/agents/memory-recall.ts + src/test/memory-recall.test.ts
 - 同步: src/index.ts (CLI) + src/bootstrap/memory-compressor.ts (既有)
 - 借鉴源: D:\AI\hermes-agent\agent\memory_manager.py (prefetch_all / sync_all / queue_prefetch_all)
+
+## [2026-08-12] fix | 重启后智能体消失 (channel 切换/加载不一致)
+
+### 症状
+
+用户报告: 重启后之前创建的智能体 (channel) 消失; session/channel 与加载默认 channel 智能体不一致.
+
+### 根因 (排查实际数据)
+
+- `agents.json` 有 7 个 agent, 但 `channels.json` 只有 1 个 channel — 大量 channel 记录丢失.
+- cache 目录有 45 个 session 文件 (含 channelId), 但 channels.json 只剩 1 个 channel → 大量 channel 从 channels.json 丢失.
+- ① **CLI `/new agent` 只写 channels.json, 不同步 agents.json** (server 创建 channel 有同步 agents.json + 关联 channelId, CLI 缺失) → CLI 创建的 agent 重启后 heal 从 agents.json 找不到 → 永远消失.
+- ② **healMissingChannels 要求 session cache 文件存在才恢复** → 刚创建还没对话的 agent (无 session 文件) 永不恢复.
+
+### 修复 (bee8def)
+
+1. CLI `/new agent`: 同步写 agents.json (关联 channelId = 新 channel id), 与 server 对齐.
+2. healMissingChannels: 放宽恢复条件 — agents.json 里 channelId 非空且 channels.json 缺失该 channel 即恢复 stub (不再强制要求 session 文件). 空 channelId 的旧数据仍跳过 (避免乱建 channel).
+
+### 验证
+
+- `npx tsc --noEmit` 0 错 + `npx vitest run --bail=1` 全绿 (115 文件 1323 测试).
+
+### 关联
+
+- CLI: src/index.ts (/new agent)
+- 自愈: src/web/server.ts (healMissingChannels)
