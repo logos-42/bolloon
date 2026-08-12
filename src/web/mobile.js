@@ -307,10 +307,36 @@
     // 预留: 触控事件上报/控制
   };
 
+  // === MCP 驱动前端 UI (2026-08-12): 订阅 /events, 收到 {type:'ui'} 指令执行组件动作 ===
+  function setupUiControl() {
+    try {
+      const es = new EventSource('/events');
+      es.onmessage = (e) => {
+        if (!e.data) return;
+        let msg;
+        try { msg = JSON.parse(e.data); } catch { return; }
+        if (msg.type !== 'ui' || !msg.action) return;
+        const d = msg.data || {};
+        switch (msg.action) {
+          case 'switchTab': if (d.tab && ['wechat', 'contacts', 'discover', 'me'].includes(d.tab)) switchTab(d.tab); break;
+          case 'openSettings': openSettings(); break;
+          case 'openWallet': alert('钱包管理 (桌面 Web UI 提供)'); break;
+          case 'openAddFriend': alert('添加好友: 在桌面 Web UI 的 P2P 好友中添加'); break;
+          case 'showToast': alert(d.message || ''); break;
+          case 'goBack': { const p = $('#chat-page'); if (p) closeChat(); else openSettings(); break; }
+          default: break;
+        }
+        window.__mobileTouch?.('ui', msg.action);
+      };
+      es.onerror = () => { /* SSE 断线静默重连 */ };
+    } catch (e) { /* 忽略 */ }
+  }
+
   function init() {
     bindMenu();
     applyTheme(localStorage.getItem('bolloon_theme') || 'dark');
     switchTab('wechat');
+    setupUiControl();
     loadConversations();
     loadContacts();
     loadMe();

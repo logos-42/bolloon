@@ -2851,6 +2851,17 @@ ${goalDesc}
     }
   });
 
+  // 2026-08-12: MCP 驱动前端 UI — 把 broadcast 注入 ui-tools, agent 调 UI 工具时广播 {type:'ui'} 给前端 SSE
+  (async () => {
+    try {
+      const { setUiBroadcast, registerUiControlTools } = await import('../pi-ecosystem-mcp/ui-tools.js');
+      setUiBroadcast(broadcast);
+      registerUiControlTools();
+    } catch (e: any) {
+      console.warn('[ui-tools] UI 广播注入失败 (非致命):', e?.message?.slice(0, 120));
+    }
+  })();
+
   app.get('/api/health', (_req, res) => {
     res.json(healthCheck(getPackageVersion()));
   });

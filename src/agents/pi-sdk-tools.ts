@@ -2175,6 +2175,35 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     }
   });
 
+  // 2026-08-12: MCP 驱动前端 UI 工具 — agent 理解用户意图后调用, 通过 SSE 广播驱动前端组件.
+  //   复用 ui-tools (dispatchUiAction → broadcast {type:'ui'}), 前端订阅 /events 执行.
+  const registerUiAgentTools = async () => {
+    const ui = await import('../pi-ecosystem-mcp/ui-tools.js');
+    // 注册到 MCP 系统 (供 mcp_list_tools 可见) + 注册为 agent 工具
+    ui.registerUiControlTools();
+    const uiTools: Array<{ name: string; description: string; params: Record<string, string>; map: (args: any) => any }> = [
+      { name: 'ui_switch_tab', description: '驱动前端切换底部 tab (微信/通讯录/发现/我). 用户想"去通讯录/去设置/去我的"时调用.', params: { tab: 'wechat|contacts|discover|me (必填)' }, map: (a) => ({ action: 'switchTab', data: { tab: String(a.tab || '') } }) },
+      { name: 'ui_open_chat', description: '驱动前端打开某个智能体聊天页. 用户想"打开和 X 的聊天"时调用.', params: { channelId: '目标 channel id (必填)' }, map: (a) => ({ action: 'openChat', data: { channelId: String(a.channelId || '') } }) },
+      { name: 'ui_open_settings', description: '驱动前端打开设置页.', params: {}, map: () => ({ action: 'openSettings', data: {} }) },
+      { name: 'ui_open_wallet', description: '驱动前端打开钱包.', params: {}, map: () => ({ action: 'openWallet', data: {} }) },
+      { name: 'ui_open_add_friend', description: '驱动前端打开添加好友.', params: {}, map: () => ({ action: 'openAddFriend', data: {} }) },
+      { name: 'ui_show_toast', description: '驱动前端顶部显示提示 (toast).', params: { message: '提示内容 (必填)' }, map: (a) => ({ action: 'showToast', data: { message: String(a.message || '') } }) },
+      { name: 'ui_go_back', description: '驱动前端返回上一页.', params: {}, map: () => ({ action: 'goBack', data: {} }) },
+    ];
+    for (const t of uiTools) {
+      ctx.tools.set(t.name, {
+        name: t.name,
+        description: t.description,
+        parameters: t.params,
+        execute: async (args) => {
+          const r = ui.dispatchUiAction(t.map(args));
+          return r.success ? { success: true, output: r.output } : { success: false, error: r.output };
+        },
+      });
+    }
+  };
+  registerUiAgentTools().catch(() => {});
+
   // ============================================================
   // publish_did (2026-08-03) — 把当前 agent 的 DID 发布到 IPFS + IPNS
   // 全自动: 自动安装/启动本地 Kubo → 上传 DID 文档 → 发布 IPNS name
