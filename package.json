@@ -55,7 +55,6 @@
     "src/constraint-runtime"
   ],
   "dependencies": {
-    "@bolloon/bolloon-agent": "^0.3.22",
     "@bolloon/constraint-runtime": "0.1.0",
     "@capacitor/android": "^8.5.0",
     "@capacitor/core": "^8.5.0",
