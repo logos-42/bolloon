@@ -1805,7 +1805,6 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       const { existsSync } = await import('fs');
       const { readFile } = await import('fs/promises');
       const agentsFile = `${process.env.HOME || '/tmp'}/.bolloon/agents/agents.json`;
-      const sessionsDir = `${process.env.HOME || '/tmp'}/.bolloon/sessions/cache`;
       if (!existsSync(agentsFile)) return 0;
       const agentsRaw = await readFile(agentsFile, 'utf-8');
       const agentsArr = JSON.parse(agentsRaw);
@@ -1816,13 +1815,11 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       for (const a of arr) {
         const cid = a && a.channelId;
         if (!cid || knownIds.has(cid)) continue;
-        // 有 session 文件才算可恢复 (说明确实创建过)
-        // 2026-08-12 fix: SessionStore 保存到 cache/<channelId>__default.json (冒号被 filenameEscape 成 __),
-        //   之前用 `${sessionsDir}/${cid}:default.json` (未 escape + 硬拼冒号) 查不到 → 会话已存在也被判为
-        //   "无 session" 永不恢复, 即 session/channel 路径与创建智能体 channel 的路径不一致 (bug 修复)
-        const { getSessionCacheFile } = await import('../bootstrap/memory-compressor.js');
-        const hasSession = existsSync(getSessionCacheFile(cid, 'default')) || existsSync(`${sessionsDir}/${cid}.json`);
-        if (!hasSession) continue;
+        // 2026-08-12 (TaskFix): 放宽恢复条件 — 只要 agents.json 里 agent 关联了 channelId (非空),
+        //   且 channels.json 缺失该 channel, 就恢复 channel stub.
+        //   之前强制要求 session cache 文件存在, 导致"刚创建还没对话"的 agent (CLI /new agent 同步 agents.json 后)
+        //   重启时 session 文件不存在 → 永不恢复 → "以前创建的智能体消失" bug.
+        //   空 channelId (旧数据无关联 channel) 仍跳过, 避免给无关 agent 乱建 channel.
         const restored = {
           id: cid,
           name: a.name || `Agent-${String(cid).slice(-6)}`,

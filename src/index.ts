@@ -894,6 +894,35 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
         ch.publicKey = idt.publicKey;
       } catch { /* DID 生成失败不阻塞创建 */ }
       const channels = await updateChannels((chs) => [...chs, ch]);
+      // 2026-08-12 (TaskFix): CLI 创建的 agent 同步写 agents.json + 关联 channelId —
+      //   与 server 创建 channel 逻辑对齐. 否则 CLI 创建的 agent 不在 agents.json,
+      //   重启后 server 的 healMissingChannels 只能从 agents.json 恢复 → 该 agent 永远消失.
+      try {
+        const agentsPath = path.join(process.env.HOME || '/tmp', '.bolloon', 'agents', 'agents.json');
+        await fs.mkdir(path.dirname(agentsPath), { recursive: true });
+        let arr: any[] = [];
+        try { arr = JSON.parse(await fs.readFile(agentsPath, 'utf-8')); } catch {}
+        if (!Array.isArray(arr)) arr = [];
+        const exists = arr.find((a: any) => a && a.id === agentId);
+        if (exists) {
+          exists.channelId = id;
+          exists.name = name.trim();
+          exists.lastActive = new Date().toISOString();
+        } else {
+          arr.push({
+            id: agentId,
+            name: name.trim(),
+            did: `did:local:${id}`,
+            description: `Agent ${name} (auto-registered from channel ${id})`,
+            status: 'active',
+            createdAt: new Date().toISOString(),
+            lastActive: new Date().toISOString(),
+            channelId: id,
+          });
+        }
+        await fs.writeFile(agentsPath, JSON.stringify(arr, null, 2), 'utf-8');
+        console.log(`[创建频道] agent 同步进 agents.json: ${agentId} → channel ${id}`);
+      } catch { /* agents.json 写失败不阻塞创建 */ }
       // 刷新 store 缓存 (updateChannels 走了 server-storage, store 内存还是旧的)
       await store.load();
       await store.setActive(id);
