@@ -36,7 +36,7 @@ import { delegateToEngine } from '../external-engines/delegate.js';
 
 export const SIDE_EFFECT_TOOLS = new Set([
   'write_file', 'edit_file', 'shell_exec', 'git_commit', 'git_push', 'git_branch',
-  'create_task', 'update_task',
+  'create_task', 'update_task', 'terminal', 'process',
 ]);
 
 /**
@@ -49,6 +49,8 @@ export interface RunTerminalOptions {
   timeoutMs?: number;
   /** 多条命令 (并行执行), 每条独立字符串. 优先于 raw. */
   commands?: string[];
+  /** 2026-08-12 (TaskD): background=true 后台执行 (立即返回 session_id, 不阻塞). 用 process 工具 poll/wait/kill. */
+  background?: boolean;
 }
 export async function runTerminalCommand(raw: string, opts: RunTerminalOptions = {}): Promise<any> {
   const { checkTerminalCommand } = await import('./shell-guard.js');
@@ -59,6 +61,19 @@ export async function runTerminalCommand(raw: string, opts: RunTerminalOptions =
     if (!guard.allowed) {
       return { success: false, error: `[terminal-guard] ${guard.reason}`, deniedByGuard: true };
     }
+  }
+  // 2026-08-12 (TaskD): 后台执行 — 长命令不阻塞对话.
+  if (opts.background) {
+    const cmdStr = list.join(' && ');
+    const { spawnBackground } = await import('./process-runner.js');
+    const session = spawnBackground(cmdStr, opts.cwd ?? process.cwd());
+    return {
+      success: true,
+      background: true,
+      sessionId: session.id,
+      cmd: cmdStr.slice(0, 200),
+      message: `已在后台启动 (${session.id}). 用 process 工具轮询/等待: process(session_id="${session.id}", action="poll"|"wait"|"kill")`,
+    };
   }
   const { exec } = await import('child_process');
   const runOne = (cmdStr: string): Promise<any> => new Promise((resolve) => {
@@ -737,14 +752,51 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   //   与 shell_exec 的区别: 直接接受完整 shell 命令字符串, 更适合模型自主写命令.
   ctx.tools.set('terminal', {
     name: 'terminal',
-    description: '执行完整 shell 命令 (支持管道/重定向/写文件/跑脚本). 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据), 其余灵活放行. 适合: 写 HTML 文件、跑 python/node 脚本、查系统状态、装依赖. 多条命令用 commands 数组并行执行.',
-    parameters: { command: '完整 shell 命令 (必填, 如: echo "<html>" > /tmp/site/index.html && ls /tmp/site)', commands: '可选: 多条命令数组 (并行执行), 每条独立字符串', timeoutMs: '超时毫秒, 默认 30000' },
+    description: '执行完整 shell 命令 (支持管道/重定向/写文件/跑脚本). 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据), 其余灵活放行. 适合: 写 HTML 文件、跑 python/node 脚本、查系统状态、装依赖. 多条命令用 commands 数组并行执行. 长命令 (服务器/构建/后台任务) 设 background=true 后台执行不阻塞对话.',
+    parameters: { command: '完整 shell 命令 (必填, 如: echo "<html>" > /tmp/site/index.html && ls /tmp/site)', commands: '可选: 多条命令数组 (并行执行), 每条独立字符串', timeoutMs: '超时毫秒, 默认 30000', background: '可选: true 后台执行, 立即返回 session_id (用 process 工具 poll/wait/kill)' },
     execute: async (args) => {
       const raw = String(args.command || '').trim();
       const commands = Array.isArray(args.commands) ? args.commands.map((c: any) => String(c || '').trim()).filter(Boolean) : [];
       if (!raw && commands.length === 0) return { success: false, error: 'command 或 commands 必填' };
       const timeoutMs = Number(args.timeoutMs) || 30000;
-      return await runTerminalCommand(raw, { timeoutMs, cwd: ctx.cwd, commands: commands.length > 0 ? commands : undefined });
+      return await runTerminalCommand(raw, { timeoutMs, cwd: ctx.cwd, commands: commands.length > 0 ? commands : undefined, background: String(args.background).toLowerCase() === 'true' });
+    }
+  });
+
+  // 2026-08-12 (TaskD): process — 后台进程管理 (学 hermes terminal background session + poll/wait/kill).
+  //   长命令不阻塞对话: terminal(background=true) 启动 → process 工具轮询/等待/终止.
+  ctx.tools.set('process', {
+    name: 'process',
+    description: '管理后台进程 (terminal background=true 启动的). action: poll(查状态, 不阻塞) / wait(等结束, 最多 timeoutMs) / kill(终止) / list(列全部). 长期运行命令的阻塞问题用它解决.',
+    parameters: { session_id: '后台进程 session_id (必填, poll/wait/kill 用)', action: 'poll | wait | kill | list (默认 poll)', timeoutMs: 'wait 模式等待上限毫秒, 默认 30000' },
+    execute: async (args) => {
+      const action = String(args.action || 'poll').trim().toLowerCase();
+      try {
+        const { pollSession, waitSession, killSession, listSessions, isValidSessionId } = await import('./process-runner.js');
+        if (action === 'list') {
+          const all = listSessions();
+          return { success: true, output: all.length === 0 ? '(无后台进程)' : all.map((s) => `  [${s.status}] ${s.id} ${s.cmd}`).join('\n') };
+        }
+        const sid = String(args.session_id || '').trim();
+        if (!sid) return { success: false, error: 'session_id 必填' };
+        if (!isValidSessionId(sid)) return { success: false, error: 'session_id 非法' };
+        if (action === 'kill') {
+          const r = killSession(sid);
+          return { success: r.ok, output: r.reason ?? `已终止 ${sid}` };
+        }
+        if (action === 'wait') {
+          const t = Number(args.timeoutMs) || 30000;
+          const r = await waitSession(sid, t);
+          return { success: r.ok, output: r.session ? `${r.session.status} exit=${r.session.exitCode}${r.session.timedOut ? ' (超时)' : ''}\n${r.session.output || '(无输出)'}` : '未知 session' };
+        }
+        // poll
+        const r = pollSession(sid);
+        if (!r.ok || !r.session) return { success: false, error: `未知 session ${sid}` };
+        const s = r.session;
+        return { success: true, output: `[${s.status}] exit=${s.exitCode}${s.status === 'running' ? ' (运行中)' : ''}\n${s.output || '(无输出)'}` };
+      } catch (e: any) {
+        return { success: false, error: `process ${action} 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
     }
   });
 
