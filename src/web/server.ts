@@ -1772,6 +1772,16 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       const rep = await startDidCatalogReplication(identity.did, { intervalMs: 30_000 });
       console.log(`[did-catalog] OrbitDB 自动复制已启动: store=${rep.storeName} address=${String(rep.storeAddress).slice(0, 48)}...`);
       (globalThis as any).__didCatalogReplication = rep;
+      // 2026-08-12 (Task6): 预热任务 OrbitDB 存储 (task 队列去中心化主存储). warm 成功才启用.
+      try {
+        const { warmTaskOrbitStore, taskStoreName } = await import('../orbitdb/task-store.js');
+        const { markTaskOrbitReady } = await import('./server-storage.js');
+        const ok = await warmTaskOrbitStore(identity.did);
+        if (ok) markTaskOrbitReady();
+        console.log(`[task-store] OrbitDB 任务存储 ${ok ? '已启用' : '未启用 (回退本地)'} (store=${taskStoreName(identity.did)})`);
+      } catch (e) {
+        console.warn('[task-store] 任务 OrbitDB 预热失败 (非致命):', (e as Error)?.message?.slice(0, 120));
+      }
     } catch (e) {
       console.warn('[did-catalog] OrbitDB 复制启动失败 (非致命, 稍后可用 API 重试):', (e as Error)?.message?.slice(0, 120));
     }

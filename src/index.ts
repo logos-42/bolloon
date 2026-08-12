@@ -1792,7 +1792,10 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
             if (body.trim()) appendLine(renderMessageBox({ title: '💡 反思', body, color: C_WARN }));
           } else if (!content.includes('🔄 循环') && !content.includes('📋 参数')
               && !content.includes('🔍 任务复杂度') && !content.includes('⚙️ 动态配置')
-              && !content.includes('⏹️ pivot loop')) {
+              && !content.includes('⏹️ pivot loop')
+              // 2026-08-12 (Task4): 循环过渡噪音 — "工具执行完成继续循环"/"继续总结" 是内部推进过程,
+              //   不是给用户看的内容, 一律静默丢弃 (用户抱怨"每次显示触发下一轮循环"的真凶).
+              && !content.includes('继续循环') && !content.includes('继续总结')) {
             appendLine(`${C_DIM}${content}${RESET}`);
           }
         } else if (e.type === 'step_start') {

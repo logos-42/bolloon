@@ -194,7 +194,28 @@ export function getExecutingTaskId(): string | null {
   return executionTaskId;
 }
 
+// ==================== 任务队列 ====================
+// 2026-08-12 (Task6): 任务队列以 OrbitDB 为主存储 (去中心化/跨设备同步), 本地文件作 fallback.
+//   orbit 由 server 启动时 warmTaskOrbitStore() 预热成功后调 markTaskOrbitReady() 置位;
+//   未置位 (测试/离线) 自动回退本地文件.
+let _taskOrbitReady = false;
+
+/** server 启动 warm 成功后调用, 启用 orbitdb 主存储 (测试可调用 disableTaskOrbitStore 关闭) */
+export function markTaskOrbitReady(): void { _taskOrbitReady = true; }
+/** 禁用 orbitdb 任务存储 (测试隔离用) */
+export function disableTaskOrbitStore(): void { _taskOrbitReady = false; }
+
+function taskOrbitReady(): boolean { return _taskOrbitReady; }
+
 export async function loadTaskQueue(): Promise<Task[]> {
+  // OrbitDB 主存储优先
+  if (taskOrbitReady()) {
+    try {
+      const { getTaskOrbitStore } = await import('../orbitdb/task-store.js');
+      const tasks = await getTaskOrbitStore().loadTasks();
+      if (Array.isArray(tasks)) return tasks as Task[];
+    } catch { /* orbit 读失败 → fallback 本地 */ }
+  }
   try {
     const data = await fs.readFile(TASK_QUEUE_PATH, 'utf-8');
     return JSON.parse(data);
@@ -204,7 +225,15 @@ export async function loadTaskQueue(): Promise<Task[]> {
 }
 
 export async function saveTaskQueue(tasks: Task[]): Promise<void> {
+  // 本地双写 (备份 + fallback 源)
   await fs.writeFile(TASK_QUEUE_PATH, JSON.stringify(tasks, null, 2));
+  // OrbitDB 主存储同步 (尽力而为)
+  if (taskOrbitReady()) {
+    try {
+      const { getTaskOrbitStore } = await import('../orbitdb/task-store.js');
+      await getTaskOrbitStore().saveTasks(tasks);
+    } catch { /* orbit 写失败静默, 本地已备份 */ }
+  }
 }
 
 // ==================== 任务认领 CAS (2026-08-11, Hermes kanban 模式) ====================
