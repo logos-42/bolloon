@@ -36,7 +36,7 @@ import { delegateToEngine } from '../external-engines/delegate.js';
 
 export const SIDE_EFFECT_TOOLS = new Set([
   'write_file', 'edit_file', 'shell_exec', 'git_commit', 'git_push', 'git_branch',
-  'create_task', 'update_task', 'terminal', 'process',
+  'create_task', 'update_task', 'terminal', 'process', 'python_execute',
 ]);
 
 /**
@@ -797,6 +797,24 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       } catch (e: any) {
         return { success: false, error: `process ${action} 失败: ${String(e?.message || e).slice(0, 200)}` };
       }
+    }
+  });
+
+  // 2026-08-12 (TaskP, hermes code_execution 模式): python_execute — 让 agent 输入 Python 代码运行操作.
+  //   写临时文件 + python3 子进程隔离执行, 带超时/kill + 输出截断. 适合数据处理/文件操作/算法验证.
+  ctx.tools.set('python_execute', {
+    name: 'python_execute',
+    description: '执行一段 Python 代码 (隔离子进程, 不污染主进程). 适合: 数据处理、文件读写、算法验证、批量操作. 带超时自动终止 + 输出截断. 需要本机装 python3/python.',
+    parameters: { code: 'Python 代码 (必填)', timeoutMs: '超时毫秒, 默认 30000' },
+    execute: async (args) => {
+      const code = String(args.code ?? '').trim();
+      if (!code) return { success: false, error: 'code 必填' };
+      const timeoutMs = Number(args.timeoutMs) || 30000;
+      const { executePython } = await import('./python-exec.js');
+      const r = await executePython({ code, timeoutMs, cwd: ctx.cwd });
+      if (r.deniedByGuard) return { success: false, error: r.error, deniedByGuard: true };
+      if (!r.success) return { success: false, error: r.error, output: r.output };
+      return { success: true, output: r.output };
     }
   });
 
