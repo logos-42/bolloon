@@ -17,6 +17,7 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 
 | 功能 | 路径 | 验证 |
 |------|------|------|
+| **MCP 驱动前端 UI** (2026-08-12) | `src/pi-ecosystem-mcp/ui-tools.ts` | bolloon 作为 MCP server 暴露 UI 控制工具 (switchTab/openChat/openSettings 等); agent 理解意图后调用, SSE 广播 {type:ui} 驱动前端 (web/手机端); 5 测试 | [ui-tools.ts](../../src/pi-ecosystem-mcp/ui-tools.ts) |
 | **重启后智能体不消失** (2026-08-12) | `src/index.ts` + `src/web/server.ts` | CLI /new agent 同步 agents.json 关联 channelId (对齐 server); healMissingChannels 放宽为 channelId 非空即恢复 (不再要求 session 文件) | [index.ts](../../src/index.ts) / [server.ts](../../src/web/server.ts) |
 | **运行时记忆循环** (2026-08-12) | `src/agents/memory-recall.ts` + `src/index.ts` | hermes prefetch+sync 模式: 每轮按用户消息召回历史摘要注入 system prompt (memory-recall, `<memory-context>` 围栏); CLI 对话后 compressSessionToMemory 同步记忆; 6 测试 | [memory-recall.ts](../../src/agents/memory-recall.ts) |
 | **写操作准备阶段适配** (2026-08-12) | `src/agents/write-staging.ts` | write_file/edit_file 写盘前记录变更前快照 (hermes write_approval staging gate), 支持审计 + undoLastWrite 撤销; 5 测试 | [write-staging.ts](../../src/agents/write-staging.ts) |

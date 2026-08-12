@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-12 | feat | MCP 驱动前端 UI: bolloon 作为 MCP server 暴露 UI 控制工具 (switchTab/openChat/openSettings), agent 理解意图后调用, SSE 广播驱动前端 (web/手机端) | [ui-tools.ts](../../src/pi-ecosystem-mcp/ui-tools.ts) |
 | 2026-08-12 | fix | 重启后智能体消失: CLI /new agent 不同步 agents.json + heal 要求 session 文件才恢复 → CLI 创建的 agent 重启无法恢复. 修复: CLI 同步 agents.json 关联 channelId + heal 放宽 (channelId 非空即恢复) | [index.ts](../../src/index.ts) / [server.ts](../../src/web/server.ts) |
 | 2026-08-12 | feat | 运行时记忆循环 (hermes prefetch+sync 模式): 每轮按用户消息召回历史摘要注入 system prompt (memory-recall) + CLI 对话后同步记忆 (compressSessionToMemory) | [memory-recall.ts](../../src/agents/memory-recall.ts) / [index.ts](../../src/index.ts) |
 | 2026-08-12 | feat | 工程打磨 4 项 (工具命中干净 / 认知卸载验证 / 写操作准备阶段 staging / 长期运行不阻塞 background+process) — 一次一 commit+push | [write-staging.ts](../../src/agents/write-staging.ts) / [process-runner.ts](../../src/agents/process-runner.ts) |
@@ -1332,3 +1333,29 @@ default permission 还禁 shell_exec.
 
 - CLI: src/index.ts (/new agent)
 - 自愈: src/web/server.ts (healMissingChannels)
+
+## [2026-08-12] feat | MCP 驱动前端 UI (agent 理解意图 → 调 UI 工具 → SSE 驱动前端)
+
+### 背景
+
+用户要求: 用 MCP 驱动前端 UI (类似 MCP UI 组件), bolloon 作为 MCP server 暴露 UI 控制工具, agent 理解用户意图后通过 MCP 调用驱动前端组件. 其他功能不变.
+
+### 机制
+
+- bolloon 作为 MCP server 暴露一组 **UI 控制工具** (`src/pi-ecosystem-mcp/ui-tools.ts`): ui_switch_tab / ui_open_chat / ui_open_settings / ui_open_wallet / ui_open_add_friend / ui_send_message / ui_show_toast / ui_go_back.
+- agent 注册这些工具 (pi-sdk-tools), 工具 description 含"用户想 X 时调用"的意图触发指引 → agent 理解意图后调用.
+- 工具 execute → `dispatchUiAction` → `broadcast({type:'ui', action, data})` (复用 SSE `/events`).
+- 前端 (web client / 手机端 mobile.js) 订阅 `/events`, 收到 `{type:'ui'}` 执行对应组件 (切换 tab / 打开聊天 / 打开设置等).
+- server 启动时 `setUiBroadcast(broadcast)` 注入 + `registerUiControlTools()` 注册.
+
+### 验证
+
+- `npx tsc --noEmit` 0 错 + `npx vitest run --bail=1` 全绿 (117 文件 1333 测试).
+- ui-tools.test 5 测试: 工具注册幂等 / 广播 {type:ui} / 无注入返回 false / 缺 action 失败 / 工具名映射.
+
+### 关联
+
+- UI 工具: src/pi-ecosystem-mcp/ui-tools.ts + src/test/ui-tools.test.ts
+- agent 注册: src/agents/pi-sdk-tools.ts
+- server 注入: src/web/server.ts (setUiBroadcast)
+- 前端订阅: src/web/mobile.js (setupUiControl)
