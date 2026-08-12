@@ -2,7 +2,7 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-08-10
+last_confirmed: 2026-08-12
 schema_version: 2
 audience: self
 stage: current
@@ -17,6 +17,7 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 
 | 功能 | 路径 | 验证 |
 |------|------|------|
+| **TypeScript 7 (Go 编译器)** (2026-08-12) | `package.json` + `tsconfig.electron.json` + `scripts/build-web.ts` | `typescript ^7.0.2` (--legacy-peer-deps 绕 iroh peer ^5). 适配: electron config moduleResolution `node`→`bundler` (node10 移除), build-web inline tsc 加 `--ignoreConfig` (TS7 对 file args+存在 tsconfig 报 TS5112). 主 tsconfig 无需改. tsc 0 错 + vitest 1282/1282 + build:all PASS. tsconfig.cli.json 为未用残留 (import.meta+CommonJS 本就冲突) 保持不动 | [package.json](../../package.json) / [tsconfig.electron.json](../../tsconfig.electron.json) |
 | 文档加载 | `src/documents/reader.ts` + `src/llm/system-prompt/layers/*.md` | ablation-v0.2.7 C1-C3 全 pass: Bolloon.md 8197B, 15 layers 完整, 缺 frontmatter 仍能装配 4743 字符 system prompt |
 | 技能加载 | `src/agents/skill-loader.ts` | ablation C1-C3 pass: 不存在目录 → `[]`, 创建测试 skill 加载成功, 坏 SKILL.md 被 skip |
 | 工具调用循环 | `src/agents/pi-sdk.ts` + `src/agents/react-loop.ts` + SSE | ablation C2 跑 3 次独立, 3/3 都有 `toolSeen=true` + 300+ 字符 tokenText, 事件链完整 (`stream:thinking → status:tool → stream:token → ai → done`) |
