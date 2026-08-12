@@ -27,7 +27,7 @@ import { BollharnessIntegration, createBollharnessIntegration } from './bollharn
 import * as readline from 'readline';
 import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
-import { startInk, stopInk, inkAppendLine as appendLine, inkReplaceLastLine as replaceLastLine, inkSetStatus, inkSetThinking, inkSetTransient } from './cli/ink-app.js';
+import { startInk, stopInk, inkAppendLine as appendLine, inkSetStatus, inkSetThinking, inkSetTransient } from './cli/ink-app.js';
 import * as dbgFs from 'fs';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
@@ -1802,10 +1802,12 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
           tuiToolCounter++;
           const toolName = e.tool || '?';
           tuiToolCalls.push({ tool: toolName, args: e.args, _t: Date.now() });
-          // 2026-08-12 (Task4): 命令/工具调用显示加载态 — 追加一行 "运行中", done 时原地替换.
-          //   system/loop 这类内部步骤不显示, 只显示真实工具/命令调用.
+          // 2026-08-12 (TaskA): 工具命中要干净 — step_start 不 appendLine 到消息流 (避免重复),
+          //   改用 transient 行显示"正在执行"(消息流只在 done 时出现一次完成行).
           if (toolName !== 'system' && toolName !== 'loop' && toolName !== '?') {
-            appendLine(`  ${C_DIM}🔧 ${toolName} 运行中...${RESET}`);
+            const activeNames = tuiToolCalls.map(c => c.tool).filter(t => t !== 'system' && t !== 'loop' && t !== '?');
+            const label = activeNames.length > 1 ? `执行 ${activeNames.length} 个工具: ${activeNames.join(', ')}` : `🔧 ${toolName}`;
+            inkSetTransient(`${C_DIM}${label} 运行中...${RESET}`);
           }
         } else if (e.type === 'step_done' || e.type === 'step_error') {
           const p = tuiToolCalls.shift();
@@ -1823,12 +1825,19 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
               runEndOkSteps.push({ status: 'ok', name: t, output: e.output });
             }
           }
-          // 2026-08-12 (Task4): done/error 原地替换 step_start 的加载行 (若 tool 非内部).
+          // 2026-08-12 (TaskA): 每个工具只在消息流出现一次 (done 时 appendLine 完成行).
+          //   不 replaceLastLine (并行/thinking 交错会替换错行); 完成行固定追加.
           const doneTool = e.tool ?? p?.tool;
           if (doneTool !== 'system' && doneTool !== 'loop' && doneTool !== '?') {
-            replaceLastLine(renderToolCallListItem(doneItem, tuiToolCalls.length + 1, tuiToolCounter));
-          } else {
             appendLine(renderToolCallListItem(doneItem, tuiToolCalls.length + 1, tuiToolCounter));
+          }
+          // 更新 transient: 还有进行中的工具 → 显示下一个; 否则清空 (交回 thinking 动画)
+          const remaining = tuiToolCalls.filter(c => c.tool !== 'system' && c.tool !== 'loop' && c.tool !== '?');
+          if (remaining.length > 0) {
+            const label = remaining.length > 1 ? `执行 ${remaining.length} 个工具: ${remaining.map(c => c.tool).join(', ')}` : `🔧 ${remaining[0].tool}`;
+            inkSetTransient(`${C_DIM}${label} 运行中...${RESET}`);
+          } else {
+            inkSetTransient(null);
           }
         }
       }
