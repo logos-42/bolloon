@@ -85,7 +85,7 @@ export function getSessionCursorPath(agentId: string, channelId: string, session
 /**
  * Session 缓存文件路径 (跟 server.ts:1806 sessionKey 规则一致)
  */
-function getSessionCacheFile(channelId: string, sessionId: string, home?: string): string {
+export function getSessionCacheFile(channelId: string, sessionId: string, home?: string): string {
   const root = path.join(home || os.homedir(), '.bolloon', 'sessions', 'cache');
   const safeChannel = sanitizeKey(channelId);
   const safeSession = sanitizeKey(sessionId).replace(/:/g, '__');

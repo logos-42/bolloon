@@ -1807,7 +1807,11 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
         const cid = a && a.channelId;
         if (!cid || knownIds.has(cid)) continue;
         // 有 session 文件才算可恢复 (说明确实创建过)
-        const hasSession = existsSync(`${sessionsDir}/${cid}:default.json`) || existsSync(`${sessionsDir}/${cid}.json`);
+        // 2026-08-12 fix: SessionStore 保存到 cache/<channelId>__default.json (冒号被 filenameEscape 成 __),
+        //   之前用 `${sessionsDir}/${cid}:default.json` (未 escape + 硬拼冒号) 查不到 → 会话已存在也被判为
+        //   "无 session" 永不恢复, 即 session/channel 路径与创建智能体 channel 的路径不一致 (bug 修复)
+        const { getSessionCacheFile } = await import('../bootstrap/memory-compressor.js');
+        const hasSession = existsSync(getSessionCacheFile(cid, 'default')) || existsSync(`${sessionsDir}/${cid}.json`);
         if (!hasSession) continue;
         const restored = {
           id: cid,
