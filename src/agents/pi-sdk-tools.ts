@@ -40,6 +40,53 @@ export const SIDE_EFFECT_TOOLS = new Set([
 ]);
 
 /**
+ * 2026-08-12 (Task2): 统一终端执行入口 — shell_exec 与 terminal 共用.
+ * 输入可以是单条命令字符串 (raw) 或命令数组 (commands, 并行执行).
+ * 护栏 checkTerminalCommand (denylist-only): 只挡高危破坏模式, 其余灵活放行.
+ */
+export interface RunTerminalOptions {
+  cwd?: string;
+  timeoutMs?: number;
+  /** 多条命令 (并行执行), 每条独立字符串. 优先于 raw. */
+  commands?: string[];
+}
+export async function runTerminalCommand(raw: string, opts: RunTerminalOptions = {}): Promise<any> {
+  const { checkTerminalCommand } = await import('./shell-guard.js');
+  const timeoutMs = opts.timeoutMs ?? 30000;
+  const list = (opts.commands && opts.commands.length > 0) ? opts.commands : [raw];
+  for (const c of list) {
+    const guard = checkTerminalCommand(String(c || '').trim());
+    if (!guard.allowed) {
+      return { success: false, error: `[terminal-guard] ${guard.reason}`, deniedByGuard: true };
+    }
+  }
+  const { exec } = await import('child_process');
+  const runOne = (cmdStr: string): Promise<any> => new Promise((resolve) => {
+    exec(cmdStr, {
+      cwd: opts.cwd ?? process.cwd(),
+      timeout: timeoutMs,
+      maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    }, (err, stdout, stderr) => {
+      const output = ((stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '')).trim().slice(0, 8000);
+      if (err) {
+        resolve({ success: false, cmd: cmdStr.slice(0, 120), error: `exit ${err.code ?? '?'}: ${String(err.message || '').slice(0, 200)}`, output: output || undefined });
+      } else {
+        resolve({ success: true, cmd: cmdStr.slice(0, 120), output: output || '(无输出)' });
+      }
+    });
+  });
+  if (list.length === 1) return runOne(list[0]);
+  const results = await Promise.all(list.map((c) => runOne(c)));
+  const failed = results.filter((r) => !r.success);
+  const allOutput = results.map((r) => `${r.cmd}\n${r.output || r.error || ''}`).join('\n\n---\n\n');
+  if (failed.length > 0) {
+    return { success: false, error: `${failed.length}/${list.length} 条命令失败: ${failed[0].error}`, output: allOutput, partial: results };
+  }
+  return { success: true, output: allOutput, count: list.length, parallel: true };
+}
+
+/**
  * 注册内置工具 (不含 wallet 工具). 返回 Tool 数组 (wallet 工具单独注册).
  * 接收外部 this.tools Map 以便填充, 但为了避免循环依赖, 这里返回 tools 数组 + handlers.
  *
@@ -648,16 +695,22 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     ctx.tools.set(tool.name, tool);
   }
 
-  // shell_exec
+  // 2026-08-12 (Task2): shell_exec / terminal 统一走模块级 runTerminalCommand (宽松护栏 + 多命令并行).
+
+  // shell_exec — 2026-08-12 (Task2): 与 terminal 统一走宽松护栏 (denylist-only).
+  //   兼容旧格式 (command + args 数组), 内部转成完整命令字符串交给 runTerminal,
+  //   不再用窄白名单 → 模型不会因 "command 不在白名单" 报错.
   ctx.tools.set('shell_exec', {
     name: 'shell_exec',
-    description: '在 cwd 跑 shell 命令. 仅支持白名单内命令: git, npm, npx, tsx, tsc, vitest, cat, head, tail, ls, wc, echo, pwd, date, mkdir, touch. 禁止管道/重定向/rm -rf/sudo. 命中护栏黑名单会被拒.',
-    parameters: { command: '可执行文件 (必填, 必须在白名单)', args: '参数数组, 逗号分隔', timeoutMs: '超时毫秒, 默认 30000' },
+    description: '执行 shell 命令 (兼容模式, 参数数组或命令字符串均可). 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据). 推荐直接用 terminal 传完整命令字符串.',
+    parameters: { command: '可执行文件 或 完整命令 (必填)', args: '参数数组, 逗号分隔 (可选)', timeoutMs: '超时毫秒, 默认 30000' },
     execute: async (args) => {
       const cmd = String(args.command || '').trim();
       if (!cmd) return { success: false, error: 'command 必填' };
-      let argList: string[] = [];
+      // 兼容参数数组 → 拼成命令字符串
+      let full = cmd;
       const rawArgs = args.args;
+      let argList: string[] = [];
       if (Array.isArray(rawArgs)) {
         argList = rawArgs.map((s: any) => String(s).trim()).filter(Boolean);
       } else if (typeof rawArgs === 'string') {
@@ -665,59 +718,33 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
           try {
             const parsed = JSON.parse(trimmed);
-            if (Array.isArray(parsed)) {
-              argList = parsed.map((s: any) => String(s).trim()).filter(Boolean);
-            }
-          } catch { /* fall through to comma split */ }
+            if (Array.isArray(parsed)) argList = parsed.map((s: any) => String(s).trim()).filter(Boolean);
+          } catch { /* 非 JSON 数组 */ }
         }
-        if (argList.length === 0) {
-          argList = trimmed.split(',').map(s => s.trim()).filter(Boolean);
-        }
+        if (argList.length === 0) argList = trimmed.split(',').map(s => s.trim()).filter(Boolean);
+      }
+      // 若 command 只是可执行文件名且带 args → 拼成 "cmd arg1 arg2"; 否则原样
+      if (argList.length > 0 && !/\s/.test(cmd) && !cmd.includes('&&') && !cmd.includes(';') && !cmd.includes('|')) {
+        full = `${cmd} ${argList.map(a => (/[\s"&|<>^()%!`]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a)).join(' ')}`;
       }
       const timeoutMs = Number(args.timeoutMs) || 30000;
-      const result = await shellExec(cmd, argList, { timeoutMs });
-      if (result.deniedByGuard) {
-        return { success: false, error: result.error };
-      }
-      if (!result.success) {
-        return { success: false, error: result.error, output: result.output };
-      }
-      return { success: true, output: result.output };
+      return await runTerminalCommand(full, { timeoutMs, cwd: ctx.cwd });
     }
   });
 
   // 2026-08-10: terminal — 灵活终端写命令 (用户要求: bolloon 自己写命令进 terminal, 少围栏).
-  //   与 shell_exec 的区别: 接受**完整 shell 命令字符串** (管道/重定向/写文件都行),
-  //   护栏只挡高危破坏模式 (checkTerminalCommand: 提权/格式化/删根/.bolloon 数据), 其余放行.
+  //   2026-08-12 (Task2): 支持 commands 数组并行执行; 与 shell_exec 统一走 runTerminalCommand.
+  //   与 shell_exec 的区别: 直接接受完整 shell 命令字符串, 更适合模型自主写命令.
   ctx.tools.set('terminal', {
     name: 'terminal',
-    description: '执行完整 shell 命令 (支持管道/重定向/写文件/跑脚本). 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据), 其余灵活放行. 适合: 写 HTML 文件、跑 python/node 脚本、查系统状态、装依赖.',
-    parameters: { command: '完整 shell 命令 (必填, 如: echo "<html>" > /tmp/site/index.html && ls /tmp/site)', timeoutMs: '超时毫秒, 默认 30000' },
+    description: '执行完整 shell 命令 (支持管道/重定向/写文件/跑脚本). 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据), 其余灵活放行. 适合: 写 HTML 文件、跑 python/node 脚本、查系统状态、装依赖. 多条命令用 commands 数组并行执行.',
+    parameters: { command: '完整 shell 命令 (必填, 如: echo "<html>" > /tmp/site/index.html && ls /tmp/site)', commands: '可选: 多条命令数组 (并行执行), 每条独立字符串', timeoutMs: '超时毫秒, 默认 30000' },
     execute: async (args) => {
       const raw = String(args.command || '').trim();
-      if (!raw) return { success: false, error: 'command 必填' };
-      const { checkTerminalCommand } = await import('./shell-guard.js');
-      const guard = checkTerminalCommand(raw);
-      if (!guard.allowed) {
-        return { success: false, error: `[terminal-guard] ${guard.reason}`, deniedByGuard: true };
-      }
-      const { exec } = await import('child_process');
+      const commands = Array.isArray(args.commands) ? args.commands.map((c: any) => String(c || '').trim()).filter(Boolean) : [];
+      if (!raw && commands.length === 0) return { success: false, error: 'command 或 commands 必填' };
       const timeoutMs = Number(args.timeoutMs) || 30000;
-      return new Promise((resolve) => {
-        exec(raw, {
-          cwd: process.cwd(),
-          timeout: timeoutMs,
-          maxBuffer: 8 * 1024 * 1024,
-          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-        }, (err, stdout, stderr) => {
-          const output = ((stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '')).trim().slice(0, 8000);
-          if (err) {
-            resolve({ success: false, error: `exit ${err.code ?? '?'}: ${String(err.message || '').slice(0, 200)}`, output: output || undefined });
-          } else {
-            resolve({ success: true, output: output || '(无输出)' });
-          }
-        });
-      });
+      return await runTerminalCommand(raw, { timeoutMs, cwd: ctx.cwd, commands: commands.length > 0 ? commands : undefined });
     }
   });
 
