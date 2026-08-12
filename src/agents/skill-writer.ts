@@ -339,9 +339,15 @@ export async function writeRunEndSkillCandidates(
     return { wrote: false, reason: `成功工具不足 (${okSteps.length} < ${minOk})` };
   }
   const toolNames = okSteps.map((s) => s.name).slice(0, 5).join(', ');
+  // 2026-08-12 (Task5): 让 run-end 候选 body 更可复用 — 结构化呈现调用链 + 每步作用 + 适用场景.
+  const stepLines = okSteps.map((s, i) => {
+    const out = s.output ? String(s.output).replace(/\s+/g, ' ').slice(0, 140) : '';
+    return `${i + 1}. **${s.name}**${out ? ` — ${out}` : ''}`;
+  }).join('\n');
   const body =
-    `## 背景\n本轮对话连续成功调用了 ${okSteps.length} 个工具: ${toolNames}.\n\n` +
-    `## 流程\n${okSteps.map((s) => `1. 调用 ${s.name}${s.output ? ': ' + String(s.output).slice(0, 120) : ''}`).join('\n')}\n\n` +
+    `## 适用场景\n用户请求需要连续执行工具序列: ${toolNames}.\n\n` +
+    `## 调用链\n${stepLines}\n\n` +
+    `## 流程要点\n${okSteps.map((s) => `- 调用 ${s.name} 获取下一步输入`).join('\n')}\n\n` +
     `## 注意事项\n- 工具名以 list_skills / get_operation_logs 的实际注册名为准\n- 沉淀为正式 skill 前请人工确认流程可复用\n`;
 
   // 2026-08-08: 稳定签名 + 固定文件名 → 同一套工具反复跑时合并更新到同一个候选 (runs++)

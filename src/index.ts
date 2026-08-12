@@ -1318,6 +1318,38 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     return;
   }
 
+  // /skills [名] — 查看正式技能 (2026-08-12 Task5): 无参列全部, 带名看详情. 运行时开始前的技能 view.
+  if (cmd === '/skills' || cmd.startsWith('/skills ')) {
+    try {
+      const { defaultSkillPaths, loadSkillsDir } = await import('./agents/skill-loader.js');
+      const dirs = defaultSkillPaths();
+      const metas: Array<{ name: string; description: string; status: string; triggers: string[]; body: string }> = [];
+      for (const d of dirs) {
+        const m = await loadSkillsDir(d);
+        for (const s of m) if (s.status === 'active' && !metas.some(x => x.name === s.name)) metas.push(s as any);
+      }
+      const q = cmd.startsWith('/skills ') ? cmd.slice('/skills '.length).trim().toLowerCase() : '';
+      if (!q) {
+        appendLine(`${C_ACCENT}技能 (${metas.length}):${RESET}`);
+        if (metas.length === 0) appendLine(`  ${C_DIM}暂无正式技能 — run-end 经验可沉淀为 skill${RESET}`);
+        for (const s of metas.slice(0, 20)) {
+          const desc = (s.description || '').slice(0, 60);
+          appendLine(`  ${C_DIM}·${RESET} ${C_ACCENT}${s.name}${RESET}${desc ? `  ${C_DIM}${desc}${RESET}` : ''}`);
+        }
+        appendLine(`${C_DIM}用法: /skills <名> 查看详情${RESET}`);
+      } else {
+        const hit = metas.find(s => s.name.toLowerCase() === q || s.name.toLowerCase().includes(q));
+        if (!hit) { appendLine(`${C_WARN}未找到技能: '${q}'${RESET}`); return; }
+        appendLine(`${C_ACCENT}═ ${hit.name} ═${RESET}`);
+        if (hit.description) appendLine(`  ${C_DIM}描述:${RESET} ${hit.description}`);
+        if (hit.triggers && hit.triggers.length > 0) appendLine(`  ${C_DIM}触发:${RESET} ${hit.triggers.join(', ')}`);
+        const body = (hit.body || '').trim().slice(0, 1200);
+        if (body) appendLine(`  ${C_DIM}---${RESET}\n${body}`);
+      }
+    } catch (e: any) { appendLine(`${C_ERROR}/skills 失败: ${String(e?.message || e).slice(0, 120)}${RESET}`); }
+    return;
+  }
+
   // /mcp — MCP 插件/工具列表
   if (cmd === '/mcp') {
     try {
@@ -1642,6 +1674,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     appendLine(`  ${C_ACCENT}/todo${RESET}   查看/勾选循环步骤  ${C_DIM}/todo <planId> <序号>${RESET}`);
     appendLine(`  ${C_ACCENT}/tools${RESET}  可用工具列表 (名/参数/简介)`);
     appendLine(`  ${C_ACCENT}/skill${RESET}  技能候选  ${C_DIM}skill-writer 沉淀候选${RESET}`);
+    appendLine(`  ${C_ACCENT}/skills${RESET} 查看正式技能  ${C_DIM}/skills <名> 看详情 (运行时开始前 view)${RESET}`);
     appendLine(`  ${C_ACCENT}/mcp${RESET}    MCP 服务器列表`);
     appendLine(`  ${C_ACCENT}/agent${RESET}  当前智能体身份`);
     appendLine(`  ${C_ACCENT}/did${RESET}    DID 身份`);
