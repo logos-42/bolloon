@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-12 | feat | 工程打磨 4 项 (工具命中干净 / 认知卸载验证 / 写操作准备阶段 staging / 长期运行不阻塞 background+process) — 一次一 commit+push | [write-staging.ts](../../src/agents/write-staging.ts) / [process-runner.ts](../../src/agents/process-runner.ts) |
 | 2026-08-12 | feat | WebUI 登录配置托管 Cloudflare 边缘 (Workers+KV, 本地 fallback) + 7 项工程 (agent 路径 bug / terminal 统一+多命令并行 / 认知卸载+usage hint / CLI 循环显示+命令加载态 / /skills view / Task 队列 OrbitDB 主存储 / Kanban 看板 OrbitDB) — 每项一次 commit+push | [edge-auth-client.ts](../../src/web/edge-auth-client.ts) / [task-store.ts](../../src/orbitdb/task-store.ts) / [kanban-store.ts](../../src/orbitdb/kanban-store.ts) |
 | 2026-08-12 | chore | 发布 v0.4.5: MCP HTTP transport (streamable HTTP + SSE) + Cloudflare MCP 全局接入 + SSE 流式读取修复 (tools/call 连接不关闭不挂起). prepublishOnly (build:all + smoke:esm) PASS, registry dist-tags.latest=0.4.5 确认, git tag v0.4.5, 全局包同步 v0.4.5 (符号链接本地) | [npm](https://registry.npmjs.org/@bolloon/bolloon-agent) |
 | 2026-08-12 | fix | **MCP HTTP 流式读取修复** (真实 Cloudflare 实测): tools/call 返回 SSE 后服务器**不关闭连接** → `res.text()` 等 EOF 永远挂起 (initialize/tools-list 响应会收尾 + 单测 mock 用 res.end() 都掩盖了此坑). 修复: `readHttpBodyUntilResponse` 流式读 body, `extractSseResponse` 按空行分块解析 data: 行, 拿到完整 JSON-RPC 响应立即 `reader.cancel()` 不等断开. 单测 mock 改 tools/call 不 end() 回归锁定 + 8s 兜底. 真实验证 ALL_HTTP_MCP_VERIFY_PASSED: docs 工具搜 "R2 bucket creation" 返回真实文档 (<url>developers.cloudflare.com/r2/...), 3 工具发现 + 调用日志 1 条 | [index.ts](../../src/pi-ecosystem-mcp/index.ts) / [mcp-http.test.ts](../../src/test/mcp-http.test.ts) / [verify-mcp-http-cloudflare.ts](../../scripts/verify-mcp-http-cloudflare.ts) |
@@ -1246,3 +1247,30 @@ default permission 还禁 shell_exec.
 - 边缘客户端: src/web/edge-auth-client.ts
 - Task/Kanban: src/orbitdb/task-store.ts + src/orbitdb/kanban-store.ts
 - 借鉴源: D:\AI\hermes-agent\hermes_cli\kanban_db.py
+
+## [2026-08-12] feat | 工程打磨 4 项 (工具命中干净 / 认知卸载验证 / 写准备阶段 / 长期运行不阻塞)
+
+### 背景
+
+用户继续打磨: ① CLI/TUI 工具命中要干净、每个工具只显示一次; ② 工具认知卸载要验证干净; ③ 准备阶段适配 (学 hermes write_approval staging gate); ④ 长期运行 block 问题 (学 hermes terminal background + poll/wait/kill). 一次一 commit + push.
+
+### 落地 (4 commit)
+
+| # | 内容 | commit |
+|---|------|--------|
+| A | CLI/TUI 工具命中干净: step_start 不再 appendLine 到消息流 (避免重复/并行替换错行), 改用 transient 行显示"正在执行"; 每个工具只在消息流出现一次 (done 时 appendLine 完成行); 移除 replaceLastLine | 218429b |
+| B | 工具认知卸载验证干净: 新增测试覆盖全部核心工具 (write_file/edit_file/read_file/read_directory/list_files/terminal/delegate_to_engine) 都有唯一 usage hint, 非核心工具无前缀 | affa834 |
+| C | 写操作准备阶段适配 (hermes write_approval staging gate): 新 src/agents/write-staging.ts — write_file/edit_file 写盘前记录变更前快照 (action/before/after), 支持审计 + undoLastWrite 撤销; 5 测试 | 1e856f1 |
+| D | 长期运行 block 问题 (hermes terminal background session): 新 src/agents/process-runner.ts — spawnBackground 后台执行立即返回 session_id, process 工具 (poll/wait/kill/list) 管理; runTerminalCommand 加 background 选项; 6 测试 | 6aba1c1 |
+
+### 验证
+
+- 每 commit 前: `npx tsc --noEmit` 0 错 + `npx vitest run --bail=1` 全绿 (最终 114 文件 1317 测试).
+- lefthook pre-commit/pre-push 自动跑 tsc-check + vitest-bail 全过.
+- 后台进程测试 (spawn/wait/poll/kill/list) 跨平台 (Windows ping / POSIX sleep).
+
+### 关联
+
+- 写准备: src/agents/write-staging.ts + src/test/write-staging.test.ts
+- 后台进程: src/agents/process-runner.ts + src/test/process-runner.test.ts
+- 借鉴源: D:\AI\hermes-agent\tools\write_approval.py + tools\terminal_tool.py

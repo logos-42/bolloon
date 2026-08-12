@@ -17,6 +17,9 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 
 | 功能 | 路径 | 验证 |
 |------|------|------|
+| **写操作准备阶段适配** (2026-08-12) | `src/agents/write-staging.ts` | write_file/edit_file 写盘前记录变更前快照 (hermes write_approval staging gate), 支持审计 + undoLastWrite 撤销; 5 测试 | [write-staging.ts](../../src/agents/write-staging.ts) |
+| **后台进程管理** (2026-08-12) | `src/agents/process-runner.ts` | 长期运行命令不阻塞: terminal(background=true) 后台执行返回 session_id, process 工具 poll/wait/kill/list; 6 测试 | [process-runner.ts](../../src/agents/process-runner.ts) |
+| **CLI 工具命中干净** (2026-08-12) | `src/index.ts` | step_start 走 transient 加载 (不污染消息流), 每工具只在消息流出现一次 (done 时完成行) | [index.ts](../../src/index.ts) |
 | **WebUI 登录配置托管 Cloudflare 边缘** (2026-08-12) | `src/web/edge-auth-client.ts` + `src/web/workers/auth/` | 边缘 Worker `bolloon` (https://bolloon.yuanjieliu65.workers.dev) 绑定 KV, 4 端点 status/login/logout/CORS; 优先边缘, 不可达降级本地 accounts.json; server auth 三端点切到 EdgeAuthClient | [edge-auth-client.ts](../../src/web/edge-auth-client.ts) |
 | **Task 队列 OrbitDB 主存储** (2026-08-12) | `src/orbitdb/task-store.ts` + `src/web/server-storage.ts` | 任务队列以 OrbitDB keyvalue store 为主存储 (去中心化/跨设备同步), 本地文件 fallback; server 启动 warmTaskOrbitStore 预热; 测试环境自动回退本地 | [task-store.ts](../../src/orbitdb/task-store.ts) |
 | **Kanban 看板 OrbitDB** (2026-08-12) | `src/orbitdb/kanban-store.ts` + `src/orbitdb/agent-tools.ts` | Hermes kanban 9 态 + CAS 原子认领 + 防幻觉完成落地 OrbitDB; agent 6 工具 kanban_create/list/get/claim/complete/status; 9 测试 | [kanban-store.ts](../../src/orbitdb/kanban-store.ts) |
