@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-13 | feat | Android Agent Runtime Phase 1-3 落地 (Accessibility 8工具 + Shizuku 系统级 + ModelRuntime 本地/远程) + Phase 4 架构文档 | [android-agent-runtime.md](./android-agent-runtime.md) |
 | 2026-08-12 | feat | A2UI (Agent to UI) 集成: bolloon agent 生成 createSurface/updateComponents 经 SSE 广播, 前端 @a2ui/react renderer 渲染 (手机端发现页接入) | [a2ui/index.ts](../../src/pi-ecosystem-a2ui/index.ts) / [a2ui-client.tsx](../../src/web/a2ui-client.tsx) |
 | 2026-08-12 | feat | MCP 驱动前端 UI: bolloon 作为 MCP server 暴露 UI 控制工具 (switchTab/openChat/openSettings), agent 理解意图后调用, SSE 广播驱动前端 (web/手机端) | [ui-tools.ts](../../src/pi-ecosystem-mcp/ui-tools.ts) |
 | 2026-08-12 | fix | 重启后智能体消失: CLI /new agent 不同步 agents.json + heal 要求 session 文件才恢复 → CLI 创建的 agent 重启无法恢复. 修复: CLI 同步 agents.json 关联 channelId + heal 放宽 (channelId 非空即恢复) | [index.ts](../../src/index.ts) / [server.ts](../../src/web/server.ts) |
