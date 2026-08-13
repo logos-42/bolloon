@@ -67,6 +67,50 @@ class BolloonAccessibilityService : AccessibilityService() {
         return texts.joinToString(" ")
     }
 
+    /**
+     * 2026-08-13 (借鉴 Ghost get_interactive_elements):
+     * 只提取"可交互/有标签"的元素 (点击/滚动/文本/描述), 带 center 坐标.
+     * 比全树更省 token, LLM 直接拿到可点目标.
+     * 返回 JSON 数组: [{text, desc, center:{x,y}, clickable, scrollable}]
+     */
+    fun getInteractiveElements(): JSONArray {
+        val root = rootInActiveWindow ?: return JSONArray()
+        val out = JSONArray()
+        walkInteractive(root, out)
+        return out
+    }
+
+    private fun walkInteractive(node: AccessibilityNodeInfo, out: JSONArray) {
+        if (out.length() >= MAX_NODES) return
+        val text = node.text?.toString() ?: ""
+        val desc = node.contentDescription?.toString() ?: ""
+        val clickable = node.isClickable
+        val scrollable = node.isScrollable
+        // 只保留可交互或有标签的元素 (Ghost: interactive_only)
+        if (!clickable && !scrollable && text.isBlank() && desc.isBlank()) {
+            // 仍遍历子节点 (有用节点可能在容器内)
+            val count = node.childCount
+            for (i in 0 until count) node.getChild(i)?.let { walkInteractive(it, out) }
+            return
+        }
+        val b = Rect()
+        node.getBoundsInScreen(b)
+        if (b.isEmpty) return
+        val obj = JSONObject()
+        if (text.isNotBlank()) obj.put("text", text)
+        if (desc.isNotBlank()) obj.put("desc", desc)
+        if (clickable) obj.put("clickable", true)
+        if (scrollable) obj.put("scrollable", true)
+        obj.put("center", JSONArray().apply {
+            put((b.left + b.right) / 2)
+            put((b.top + b.bottom) / 2)
+        })
+        out.put(obj)
+        // 继续遍历 (子节点可能有独立可交互元素)
+        val count = node.childCount
+        for (i in 0 until count) node.getChild(i)?.let { walkInteractive(it, out) }
+    }
+
     private fun walkNode(node: AccessibilityNodeInfo, out: JSONArray, depth: Int) {
         if (depth > 30 || out.length() >= MAX_NODES) return
         val obj = JSONObject()
@@ -100,6 +144,73 @@ class BolloonAccessibilityService : AccessibilityService() {
         val childCount = node.childCount
         for (i in 0 until childCount) {
             node.getChild(i)?.let { collectTexts(it, out) }
+        }
+    }
+
+    /**
+     * 2026-08-13 (借鉴 Ghost get_screen_tree):
+     * LLM 友好的缩进 UI 树: [idx] Class "label" [clickable,scrollable] [x1,y1][x2,y2]
+     * 跳过纯布局容器 (无标签不可交互). 返回字符串.
+     */
+    fun getScreenTree(maxNodes: Int = 60): String {
+        val root = rootInActiveWindow ?: return "(empty screen)"
+        val lines = mutableListOf<String>()
+        walkTree(root, lines, 0, 0, maxNodes)
+        return lines.joinToString("\n")
+    }
+
+    private fun walkTree(node: AccessibilityNodeInfo, out: MutableList<String>, depth: Int, idxRef: Int, max: Int): Int {
+        var idx = idxRef
+        if (out.size >= max) return idx
+        val text = node.text?.toString() ?: ""
+        val desc = node.contentDescription?.toString() ?: ""
+        val cls = node.className?.toString()?.substringAfterLast('.') ?: "Node"
+        val clickable = node.isClickable
+        val scrollable = node.isScrollable
+        val b = Rect()
+        node.getBoundsInScreen(b)
+        val label = text.ifBlank { desc }
+        val isUseful = label.isNotBlank() || clickable || scrollable
+        if (!isUseful) {
+            // 跳容器但仍遍历子节点
+            val c = node.childCount
+            for (i in 0 until c) node.getChild(i)?.let { idx = walkTree(it, out, depth, idx, max) }
+            return idx
+        }
+        idx++
+        val indent = "  ".repeat(minOf(depth, 6))
+        val flags = buildList {
+            if (clickable) add("clickable")
+            if (scrollable) add("scrollable")
+        }
+        val flagStr = if (flags.isEmpty()) "" else " [${flags.joinToString(",")}]"
+        val labelStr = if (label.isNotBlank()) " \"${label.take(60)}\"" else ""
+        val boundsStr = if (!b.isEmpty) " [${b.left},${b.top}][${b.right},${b.bottom}]" else ""
+        out.add("$indent[$idx] $cls$labelStr$flagStr$boundsStr")
+        val c = node.childCount
+        for (i in 0 until c) node.getChild(i)?.let { idx = walkTree(it, out, depth + 1, idx, max) }
+        return idx
+    }
+
+    /**
+     * 2026-08-13 (借鉴 Ghost classify_screen):
+     * 启发式识别屏幕类型: home / search / dialog / error / loading / other
+     */
+    fun classifyScreen(): String {
+        val text = getScreenText().lowercase()
+        val tree = getScreenTree(40)
+        val hasEdit = tree.contains("EditText")
+        val hasDialog = tree.contains("Dialog") || text.contains("dialog")
+        val hasLoading = text.contains("loading") || text.contains("加载") || tree.contains("ProgressBar")
+        val hasError = text.contains("error") || text.contains("错误") || text.contains("失败") || text.contains("not found")
+        val isHome = tree.lines().count() <= 3 && text.isBlank()
+        return when {
+            hasError -> "error"
+            hasDialog -> "dialog"
+            hasLoading -> "loading"
+            hasEdit -> "search"
+            isHome -> "home"
+            else -> "other"
         }
     }
 

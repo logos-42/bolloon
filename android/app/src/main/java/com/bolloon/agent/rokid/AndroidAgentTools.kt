@@ -36,7 +36,12 @@ class AndroidAgentTools(private val service: BolloonAccessibilityService, privat
                 "shell" -> shell(args)
                 "get_device_info" -> deviceInfo()
                 "list_packages" -> listPackages(args)
-                else -> err("未知工具: $tool (可用: observe_screen/get_ui_tree/tap/swipe/type/back/home/launch_app/shell/get_device_info/list_packages)")
+                // 2026-08-13 (借鉴 Ghost): 增强 observe
+                "get_interactive_elements" -> getInteractiveElements()
+                "get_screen_tree" -> getScreenTree()
+                "classify_screen" -> classifyScreen()
+                "build_llm_context" -> buildLlmContext()
+                else -> err("未知工具: $tool (可用: observe_screen/get_ui_tree/tap/swipe/type/back/home/launch_app/shell/get_device_info/list_packages/get_interactive_elements/get_screen_tree/classify_screen/build_llm_context)")
             }
         } catch (e: Exception) {
             err("工具 $tool 执行异常: ${e.message}")
@@ -143,6 +148,35 @@ class AndroidAgentTools(private val service: BolloonAccessibilityService, privat
         val filter = args["filter"] as? String ?: ""
         val out = ShizukuManager.listPackages(filter)
         return ok(JSONObject().put("packages", out))
+    }
+
+    // ============ 2026-08-13 (借鉴 Ghost): 增强 observe ============
+
+    /** 只提取可交互元素 (省 token) */
+    private fun getInteractiveElements(): String {
+        val arr = service.getInteractiveElements()
+        val obj = JSONObject().put("count", arr.length()).put("elements", arr)
+        return ok(obj)
+    }
+
+    /** LLM 友好缩进树 */
+    private fun getScreenTree(): String {
+        return ok(JSONObject().put("tree", service.getScreenTree(60)))
+    }
+
+    /** 屏幕分类 */
+    private fun classifyScreen(): String {
+        return ok(JSONObject().put("screen_type", service.classifyScreen()))
+    }
+
+    /** all-in-one 观察快照 (Ghost build_llm_context) — AgentLoop 每步用 */
+    private fun buildLlmContext(): String {
+        val obj = JSONObject()
+        obj.put("screen_type", service.classifyScreen())
+        obj.put("screen_text", service.getScreenText().take(1500))
+        obj.put("interactive_elements", service.getInteractiveElements())
+        obj.put("tree", service.getScreenTree(50))
+        return ok(obj)
     }
 
     // ============ helpers ============

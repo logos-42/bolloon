@@ -61,8 +61,8 @@ class AgentLoop(
             stepCount++
             onStep?.invoke("Step $stepCount: observe...")
 
-            // 1. observe
-            val observation = tools.execute("observe_screen", emptyMap())
+            // 1. observe (借鉴 Ghost build_llm_context: all-in-one 快照)
+            val observation = tools.execute("build_llm_context", emptyMap())
             onStep?.invoke("观察完成 (${observation.take(80)}...)")
 
             // 2. build context (最近历史 + 观察)
@@ -116,8 +116,10 @@ class AgentLoop(
         return """
             你是运行在 Android 手机上的 Agent。你通过无障碍服务控制手机完成用户任务。
             可用工具 (每次输出一个 JSON 工具调用):
-            - observe_screen: 读取当前屏幕文本 (观察)
-            - get_ui_tree: 读取 UI 树 JSON
+            - build_llm_context: 获取当前屏幕快照 (分类+文本+可交互元素+树) — 每步先用它观察
+            - get_interactive_elements: 只取可交互元素 (点击目标)
+            - get_screen_tree: LLM 友好 UI 树
+            - classify_screen: 屏幕类型 (home/search/dialog/error/loading)
             - tap: {"x":530,"y":1140} 点击坐标
             - swipe: {"x1":..,"y1":..,"x2":..,"y2":..,"duration":200} 滑动
             - type: {"text":"..."} 输入文本 (需先 tap 聚焦输入框)
