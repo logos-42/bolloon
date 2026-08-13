@@ -2223,6 +2223,67 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     } catch { /* A2UI 工具注册失败静默 */ }
   })();
 
+  // 2026-08-13 (Phase E1): Agent 服务 Registry — 注册/发现服务 (Agent Economic Network Discovery 层)
+  (async () => {
+    try {
+      const registry = await import('../agents/agent-registry.js');
+      // 注册自己为服务提供者
+      ctx.tools.set('registry_register', {
+        name: 'registry_register',
+        description: '在 Agent 服务注册表注册自己的服务 (定价/能力/钱包). 让其他 Agent 能发现并调用你. 参数: service_name(如 research), description, price_amount, price_currency(USDC), price_per(如 query), capabilities(数组), wallet(收款地址)',
+        parameters: {
+          service_name: '服务名 (必填, 如 research/coding/data)',
+          description: '服务描述 (必填)',
+          price_amount: '单价金额 (必填, 如 0.05)',
+          price_currency: '计价币种 (默认 USDC)',
+          price_per: '计价单位 (默认 query)',
+          capabilities: '能力数组 (可选)',
+          wallet: '收款钱包地址 (必填)',
+        },
+        execute: async (args) => {
+          const serviceName = String(args.service_name || '').trim();
+          const wallet = String(args.wallet || '').trim();
+          if (!serviceName || !wallet) return { success: false, error: 'service_name 和 wallet 必填' };
+          const reg = registry.getAgentRegistry();
+          const r = await reg.register({
+            agentId: ctx.identity?.did || `did:local:${ctx.identity?.name || 'agent'}`,
+            name: ctx.identity?.name || 'agent',
+            wallet,
+            service: {
+              name: serviceName,
+              description: String(args.description || `${serviceName} 服务`).trim(),
+              price: {
+                amount: String(args.price_amount || '0'),
+                currency: String(args.price_currency || 'USDC').toUpperCase(),
+                per: String(args.price_per || 'query'),
+              },
+            },
+            capabilities: Array.isArray(args.capabilities) ? args.capabilities.map(String) : [serviceName],
+          });
+          return r.ok
+            ? { success: true, output: `✅ 已注册服务: ${serviceName} (${args.price_amount || 0} ${String(args.price_currency || 'USDC').toUpperCase()}/${args.price_per || 'query'}) wallet=${wallet.slice(0, 10)}...` }
+            : { success: false, error: r.error };
+        },
+      });
+      // 发现可用的 Agent 服务
+      ctx.tools.set('registry_discover', {
+        name: 'registry_discover',
+        description: '在 Agent 服务注册表发现服务 (按名称/能力/描述). 找到服务后可用 x402 支付调用. query: 搜索词 (如 research/compute/data).',
+        parameters: { query: '搜索词 (可选, 空=列出全部)' },
+        execute: async (args) => {
+          const q = String(args.query || '').trim();
+          const reg = registry.getAgentRegistry();
+          const services = await reg.discover(q);
+          if (services.length === 0) return { success: true, output: '(注册表无匹配服务)' };
+          const lines = services.slice(0, 20).map((s) =>
+            `  [${s.service.name}] ${s.name} (${s.service.price.amount} ${s.service.price.currency}/${s.service.price.per}) wallet=${String(s.wallet).slice(0, 12)}... agent=${s.agentId.slice(0, 24)}...`
+          );
+          return { success: true, output: `发现 ${services.length} 个服务:\n${lines.join('\n')}` };
+        },
+      });
+    } catch { /* registry 工具注册失败静默 */ }
+  })();
+
   // ============================================================
   // publish_did (2026-08-03) — 把当前 agent 的 DID 发布到 IPFS + IPNS
   // 全自动: 自动安装/启动本地 Kubo → 上传 DID 文档 → 发布 IPNS name

@@ -2839,6 +2839,31 @@ ${goalDesc}
     }
   });
 
+  // 2026-08-13 (Phase E1): Agent 服务 Registry — 发现层 (OrbitDB 去中心化 + 本地 fallback)
+  app.get('/api/registry', async (_req, res) => {
+    try {
+      const { getAgentRegistry } = await import('../agents/agent-registry.js');
+      const q = String((_req.query as any)?.q || '').trim();
+      const registry = getAgentRegistry();
+      const services = q ? await registry.discover(q) : await registry.list();
+      res.json({ services, count: services.length, ready: registry.ready });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.post('/api/registry/register', async (req: any, res: any) => {
+    try {
+      const { getAgentRegistry } = await import('../agents/agent-registry.js');
+      const registry = getAgentRegistry();
+      const r = await registry.register(req.body || {});
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      res.json({ ok: true, registered: req.body?.agentId, ready: registry.ready });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
   // 2026-08-12: MCP 工具列表 (MCP 前端支持 — 手机端/桌面 UI 展示可用 MCP 工具)
   app.get('/api/mcp/tools', async (_req, res) => {
     try {
@@ -2869,6 +2894,17 @@ ${goalDesc}
       setA2uiBroadcast(broadcast);
     } catch (e: any) {
       console.warn('[a2ui] 广播注入失败 (非致命):', e?.message?.slice(0, 120));
+    }
+  })();
+
+  // 2026-08-13 (Phase E1): 预热 Agent 服务 Registry (OrbitDB 去中心化)
+  (async () => {
+    try {
+      const { warmAgentRegistry } = await import('../agents/agent-registry.js');
+      const ok = await warmAgentRegistry();
+      console.log(`[agent-registry] OrbitDB 服务注册表 ${ok ? '已启用' : '未启用 (回退本地)'}`);
+    } catch (e: any) {
+      console.warn('[agent-registry] 预热失败 (非致命):', e?.message?.slice(0, 120));
     }
   })();
 
