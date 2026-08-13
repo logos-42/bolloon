@@ -392,4 +392,60 @@ public class RokidBridgePlugin extends Plugin {
             return event;
         }
     }
+
+    // ============ Android Agent Runtime (Phase 1) ============
+    // 2026-08-12: 暴露给 webview UI — runAgent(goal) 执行 Agent 任务 (Observe→Think→Act)
+
+    /** 查询 Agent 状态 (无障碍服务是否连接 / LLM 配置) */
+    @PluginMethod
+    public void agentStatus(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("accessibilityReady", AgentRuntimeHolder.INSTANCE.isAccessibilityReady());
+        r.put("model", AgentRuntimeHolder.INSTANCE.getLlmConfig().getModel());
+        r.put("baseUrl", AgentRuntimeHolder.INSTANCE.getLlmConfig().getBaseUrl());
+        call.resolve(r);
+    }
+
+    /** 配置 LLM (baseUrl/apiKey/model) */
+    @PluginMethod
+    public void agentConfigure(PluginCall call) {
+        String baseUrl = call.getString("baseUrl");
+        String apiKey = call.getString("apiKey");
+        String model = call.getString("model");
+        AgentLlmConfig cfg = new AgentLlmConfig(
+            baseUrl != null && !baseUrl.isEmpty() ? baseUrl : "https://api.deepseek.com/v1",
+            apiKey != null ? apiKey : "",
+            model != null && !model.isEmpty() ? model : "deepseek-chat",
+            4096
+        );
+        AgentRuntimeHolder.INSTANCE.configureLlm(cfg);
+        call.resolve(new JSObject().put("ok", true));
+    }
+
+    /** 运行 Agent 任务: goal 用户目标, onStep 每步回调 (SSE 事件给 webview), onDone 完成 */
+    @PluginMethod
+    public void runAgent(PluginCall call) {
+        String goal = call.getString("goal");
+        if (goal == null || goal.trim().isEmpty()) {
+            call.reject("goal 必填");
+            return;
+        }
+        call.setKeepAlive(true);
+        final PluginCall finalCall = call;
+        AgentRuntimeHolder.INSTANCE.runAgent(goal.trim(),
+            (String step) -> {
+                JSObject ev = new JSObject();
+                ev.put("type", "agent-step");
+                ev.put("step", step);
+                notifyListeners("agent-step", ev);
+                return kotlin.Unit.INSTANCE;
+            },
+            (String done) -> {
+                JSObject r = new JSObject();
+                r.put("result", done);
+                finalCall.resolve(r);
+                return kotlin.Unit.INSTANCE;
+            }
+        );
+    }
 }
