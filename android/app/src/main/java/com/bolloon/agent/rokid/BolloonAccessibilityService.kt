@@ -117,6 +117,21 @@ class BolloonAccessibilityService : AccessibilityService() {
         )
     }
 
+    /** 全局滑动 (供 Tools 层调用) */
+    fun performGlobalSwipe(x1: Int, y1: Int, x2: Int, y2: Int, duration: Long): Boolean {
+        val path = android.graphics.Path().apply { moveTo(x1.toFloat(), y1.toFloat()); lineTo(x2.toFloat(), y2.toFloat()) }
+        return dispatchGesture(
+            android.accessibilityservice.GestureDescription.Builder()
+                .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, duration))
+                .build(),
+            null,
+            null
+        )
+    }
+
+    /** 当前活动窗口根节点 (供 Tools 层访问) */
+    fun rootNode(): AccessibilityNodeInfo? = rootInActiveWindow
+
     /** 全局返回 */
     fun performGlobalBack(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)
 

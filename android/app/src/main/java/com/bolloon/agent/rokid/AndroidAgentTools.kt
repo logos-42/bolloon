@@ -1,0 +1,140 @@
+package com.bolloon.agent.rokid
+
+import android.accessibilityservice.AccessibilityService
+import android.content.Context
+import android.content.Intent
+import android.graphics.Path
+import android.graphics.Rect
+import android.view.accessibility.AccessibilityNodeInfo
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * AndroidAgentTools — Android Agent 的 Tool Layer (Phase 1)
+ *
+ * 8 个工具, 通过 AccessibilityService 执行 (无 root):
+ *   observe_screen / get_ui_tree / tap / swipe / type / back / home / launch_app
+ *
+ * 工具返回 JSON (Agent Loop 消费):
+ *   { success, output, error? }
+ */
+class AndroidAgentTools(private val service: BolloonAccessibilityService, private val context: Context) {
+
+    /** 分发一个工具调用, 返回 JSON 字符串 (Agent Loop 解析) */
+    fun execute(tool: String, args: Map<String, Any>): String {
+        return try {
+            when (tool) {
+                "observe_screen" -> observeScreen()
+                "get_ui_tree" -> getUiTree()
+                "tap" -> tap(args)
+                "swipe" -> swipe(args)
+                "type" -> type(args)
+                "back" -> back()
+                "home" -> home()
+                "launch_app" -> launchApp(args)
+                else -> err("未知工具: $tool (可用: observe_screen/get_ui_tree/tap/swipe/type/back/home/launch_app)")
+            }
+        } catch (e: Exception) {
+            err("工具 $tool 执行异常: ${e.message}")
+        }
+    }
+
+    // ============ observe ============
+
+    private fun observeScreen(): String {
+        val text = service.getScreenText()
+        val tree = service.getUiTree()
+        val out = JSONObject()
+        out.put("screen_text", text)
+        out.put("node_count", tree.length())
+        return ok(out)
+    }
+
+    private fun getUiTree(): String {
+        return ok(service.getUiTree())
+    }
+
+    // ============ interact ============
+
+    private fun tap(args: Map<String, Any>): String {
+        val x = (args["x"] as? Number)?.toInt() ?: return err("tap 需要 x 坐标")
+        val y = (args["y"] as? Number)?.toInt() ?: return err("tap 需要 y 坐标")
+        val ok = service.performGlobalTap(x, y)
+        return if (ok) ok(JSONObject().put("tapped", "$x,$y")) else err("tap 失败 (无障碍手势未执行)")
+    }
+
+    private fun swipe(args: Map<String, Any>): String {
+        val x1 = (args["x1"] as? Number)?.toInt() ?: return err("swipe 需要 x1")
+        val y1 = (args["y1"] as? Number)?.toInt() ?: return err("swipe 需要 y1")
+        val x2 = (args["x2"] as? Number)?.toInt() ?: return err("swipe 需要 x2")
+        val y2 = (args["y2"] as? Number)?.toInt() ?: return err("swipe 需要 y2")
+        val duration = (args["duration"] as? Number)?.toLong() ?: 200L
+        val ok = service.performGlobalSwipe(x1, y1, x2, y2, duration)
+        return if (ok) ok(JSONObject().put("swiped", "$x1,$y1 -> $x2,$y2")) else err("swipe 失败")
+    }
+
+    private fun type(args: Map<String, Any>): String {
+        val text = args["text"] as? String ?: return err("type 需要 text")
+        val root = service.rootNode() ?: return err("type 失败: 无活动窗口")
+        // 找到聚焦或可编辑节点, 用 ACTION_SET_TEXT 输入
+        val editable = findEditableNode(root)
+        if (editable == null) {
+            // 无可编辑节点 → 尝试全局粘贴 (Phase 1 简化: 报告需要聚焦输入框)
+            return err("未找到可输入节点, 请先 tap 聚焦输入框")
+        }
+        val bundle = android.os.Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
+        val ok = editable.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
+        return if (ok) ok(JSONObject().put("typed", text)) else err("type 失败 (ACTION_SET_TEXT 未执行)")
+    }
+
+    private fun findEditableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isEditable || node.className?.toString()?.contains("EditText") == true) return node
+        val count = node.childCount
+        for (i in 0 until count) {
+            val child = node.getChild(i) ?: continue
+            val found = findEditableNode(child)
+            if (found != null) return found
+        }
+        return null
+    }
+
+    // ============ navigation ============
+
+    private fun back(): String {
+        val ok = service.performGlobalBack()
+        return if (ok) ok(JSONObject().put("action", "back")) else err("back 失败")
+    }
+
+    private fun home(): String {
+        val ok = service.performGlobalHome()
+        return if (ok) ok(JSONObject().put("action", "home")) else err("home 失败")
+    }
+
+    private fun launchApp(args: Map<String, Any>): String {
+        val pkg = args["package"] as? String ?: return err("launch_app 需要 package (如 com.tencent.mm)")
+        try {
+            val intent = context.packageManager.getLaunchIntentForPackage(pkg)
+                ?: return err("未找到应用: $pkg")
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            return ok(JSONObject().put("launched", pkg))
+        } catch (e: Exception) {
+            return err("launch_app 失败: ${e.message}")
+        }
+    }
+
+    // ============ helpers ============
+
+    private fun ok(data: Any): String {
+        val obj = if (data is JSONObject) data else JSONObject().put("output", data)
+        obj.put("success", true)
+        return obj.toString()
+    }
+
+    private fun err(message: String): String {
+        return JSONObject().apply {
+            put("success", false)
+            put("error", message)
+        }.toString()
+    }
+}
