@@ -32,7 +32,11 @@ class AndroidAgentTools(private val service: BolloonAccessibilityService, privat
                 "back" -> back()
                 "home" -> home()
                 "launch_app" -> launchApp(args)
-                else -> err("未知工具: $tool (可用: observe_screen/get_ui_tree/tap/swipe/type/back/home/launch_app)")
+                // Phase 2: Shizuku 系统级工具
+                "shell" -> shell(args)
+                "get_device_info" -> deviceInfo()
+                "list_packages" -> listPackages(args)
+                else -> err("未知工具: $tool (可用: observe_screen/get_ui_tree/tap/swipe/type/back/home/launch_app/shell/get_device_info/list_packages)")
             }
         } catch (e: Exception) {
             err("工具 $tool 执行异常: ${e.message}")
@@ -121,6 +125,24 @@ class AndroidAgentTools(private val service: BolloonAccessibilityService, privat
         } catch (e: Exception) {
             return err("launch_app 失败: ${e.message}")
         }
+    }
+
+    // ============ Phase 2: Shizuku 系统级工具 ============
+
+    private fun shell(args: Map<String, Any>): String {
+        val command = args["command"] as? String ?: return err("shell 需要 command")
+        val out = ShizukuManager.shell(command)
+        return ok(JSONObject().put("output", out))
+    }
+
+    private fun deviceInfo(): String {
+        return ok(ShizukuManager.deviceInfo())
+    }
+
+    private fun listPackages(args: Map<String, Any>): String {
+        val filter = args["filter"] as? String ?: ""
+        val out = ShizukuManager.listPackages(filter)
+        return ok(JSONObject().put("packages", out))
     }
 
     // ============ helpers ============

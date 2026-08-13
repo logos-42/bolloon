@@ -102,6 +102,9 @@ class AgentLoop(
             - back: 返回
             - home: 回主页
             - launch_app: {"package":"com.tencent.mm"} 打开应用
+            - shell: {"command":"pm list packages"} 系统 shell (只读/管理, 危险命令被拒)
+            - get_device_info: 设备信息
+            - list_packages: {"filter":"wechat"} 已安装应用列表
             - done: {"summary":"..."} 任务完成
             
             输出格式 (严格 JSON, 不要输出其他文字):

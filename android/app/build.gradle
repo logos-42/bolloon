@@ -41,6 +41,9 @@ dependencies {
     implementation project(':capacitor-android')
     // 2026-08-12 (Phase 1): Kotlin stdlib — Android Agent Runtime
     implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.1.20'
+    // 2026-08-12 (Phase 2): Shizuku — 系统级 API (shell/pm/设备信息), 普通 App 借 adb/root 身份
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
     // capacitor-android 把 androidx 声明为 implementation (不透出), app 直接引用
     // AppCompatActivity (MainActivity 父类链) + androidx.annotation (RokidBridgePlugin), 需显式声明。
     implementation 'androidx.appcompat:appcompat:1.7.1'
