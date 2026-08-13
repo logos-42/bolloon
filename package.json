@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/bolloon-agent",
-  "version": "0.4.10",
+  "version": "0.4.11",
   "type": "module",
   "description": "P2P AI Document Agent - 全局安装后执行 `bolloon` 启动产品",
   "main": "dist/cli-entry.js",
