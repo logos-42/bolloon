@@ -50,6 +50,9 @@ object ShizukuManager {
     fun shell(command: String): String {
         val check = checkCommand(command)
         if (!check.first) return "[shell-guard] ${check.second}"
+        // Phase 4: LifecycleGuard 防自杀 (Hermes 模式) — 杀自身/停无障碍/卸载/重启 拒绝
+        val guard = LifecycleGuard.check(command)
+        if (guard != null) return "[lifecycle-guard] $guard"
 
         return try {
             val process = ProcessBuilder("sh", "-c", command).start()

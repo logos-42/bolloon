@@ -25,6 +25,13 @@ object AgentRuntimeHolder {
     var modelRuntime: ModelRuntime? = null
         private set
 
+    /** Phase 4: Agent 生命周期管理 (Hermes subagent_lifecycle 模式) */
+    val lifecycle = AgentLifecycleManager()
+
+    /** Phase 4: 审计日志 */
+    @Volatile
+    var audit: AgentAuditLog? = null
+
     /** 无障碍服务是否已连接 */
     val isAccessibilityReady: Boolean
         get() = BolloonAccessibilityService.instance != null
@@ -36,6 +43,9 @@ object AgentRuntimeHolder {
                 RemoteLlmBackend(llmConfig),
                 LocalLlm(), // Phase 3: 模型路径后接
             )
+        }
+        if (audit == null) {
+            audit = AgentAuditLog(context)
         }
     }
 
@@ -63,14 +73,32 @@ object AgentRuntimeHolder {
                     ?: run { onStep("[错误] 无障碍服务未连接, 请先在系统设置中开启 Bolloon 无障碍服务"); return@Thread }
                 val t = tools ?: AndroidAgentTools(service, service.applicationContext).also { tools = it }
                 val backend = modelRuntime ?: ModelRuntime(RemoteLlmBackend(llmConfig), LocalLlm()).also { modelRuntime = it }
-                val l = loop ?: AgentLoop(t, backend).also { loop = it }
+                // Phase 4: 生命周期开始 (STARTING → RUNNING)
+                val agentId = lifecycle.start(goal)
+                lifecycle.markRunning()
+                // 每次新建 AgentLoop (history 隔离, 不跨任务串)
+                val l = AgentLoop(t, backend)
+                loop = l
+                l.lifecycle = lifecycle
+                l.audit = audit
+                l.agentId = agentId
                 l.onStep = { onStep(it) }
                 val result = l.run(goal)
                 onDone(result)
             } catch (e: Exception) {
+                lifecycle.fail(e.message ?: "unknown")
                 onDone("[Agent 异常] ${e.message}")
             }
         }.start()
+    }
+
+    /** 请求取消当前 Agent 任务 (两段式: CANCEL_REQUESTED) */
+    fun cancelAgent(reason: String = "用户取消"): Boolean = lifecycle.requestCancel(reason)
+
+    /** Agent 状态 (供 UI) */
+    fun agentStatusJson(): String {
+        val rec = lifecycle.currentRecord()
+        return "{\"state\":\"${lifecycle.state()}\",\"agentId\":\"${rec?.id ?: ""}\",\"goal\":\"${rec?.goal ?: ""}\",\"terminal\":${lifecycle.state().isTerminal}}"
     }
 
     /** 重置 (配置变化时) */

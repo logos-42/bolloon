@@ -396,14 +396,27 @@ public class RokidBridgePlugin extends Plugin {
     // ============ Android Agent Runtime (Phase 1) ============
     // 2026-08-12: 暴露给 webview UI — runAgent(goal) 执行 Agent 任务 (Observe→Think→Act)
 
-    /** 查询 Agent 状态 (无障碍服务是否连接 / LLM 配置) */
+    /** 查询 Agent 状态 (无障碍服务是否连接 / LLM 配置 / 生命周期状态) */
     @PluginMethod
     public void agentStatus(PluginCall call) {
         JSObject r = new JSObject();
         r.put("accessibilityReady", AgentRuntimeHolder.INSTANCE.isAccessibilityReady());
         r.put("model", AgentRuntimeHolder.INSTANCE.getLlmConfig().getModel());
         r.put("baseUrl", AgentRuntimeHolder.INSTANCE.getLlmConfig().getBaseUrl());
+        // Phase 4: 生命周期状态
+        try {
+            r.put("lifecycle", new JSObject(AgentRuntimeHolder.INSTANCE.agentStatusJson()));
+        } catch (Exception e) {
+            r.put("lifecycle", "parse-error");
+        }
         call.resolve(r);
+    }
+
+    /** Phase 4: 请求取消当前 Agent 任务 (两段式取消) */
+    @PluginMethod
+    public void cancelAgent(PluginCall call) {
+        boolean ok = AgentRuntimeHolder.INSTANCE.cancelAgent("user cancel");
+        call.resolve(new JSObject().put("cancelRequested", ok));
     }
 
     /** 配置 LLM (baseUrl/apiKey/model) */

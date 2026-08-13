@@ -32,6 +32,15 @@ class AgentLoop(
     /** 回调: 每步通知 UI (status 文本) */
     var onStep: ((String) -> Unit)? = null
 
+    /** Phase 4: 生命周期管理器 (每步检查取消请求) */
+    var lifecycle: AgentLifecycleManager? = null
+
+    /** Phase 4: 审计日志 (每步记录) */
+    var audit: AgentAuditLog? = null
+
+    /** Phase 4: 当前 agentId (审计用) */
+    var agentId: String = "agent"
+
     /** 执行一个目标 (在后台线程调用) */
     fun run(goal: String): String {
         stepCount = 0
@@ -42,6 +51,13 @@ class AgentLoop(
         val log = StringBuilder()
 
         while (stepCount < maxSteps) {
+            // Phase 4: 两段式取消检查 — CANCEL_REQUESTED 时停止
+            if (lifecycle?.isCancelRequested() == true) {
+                lifecycle?.confirmCancelled()
+                onStep?.invoke("已取消")
+                audit?.append(agentId, stepCount, "cancel", "user requested cancel")
+                return "CANCELLED"
+            }
             stepCount++
             onStep?.invoke("Step $stepCount: observe...")
 
@@ -66,6 +82,8 @@ class AgentLoop(
                 val summary = parsed.optString("summary", "任务完成")
                 history.add("assistant" to decision)
                 onStep?.invoke("任务完成: $summary")
+                lifecycle?.succeed(summary)
+                audit?.append(agentId, stepCount, "done", summary)
                 return "DONE: $summary (steps=$stepCount)"
             }
 
@@ -76,6 +94,8 @@ class AgentLoop(
             onStep?.invoke("执行工具: $toolName ${args}")
             val result = tools.execute(toolName, args)
             log.append("Step $stepCount: $toolName → ${result.take(200)}\n")
+            // Phase 4: 审计每条工具动作
+            audit?.append(agentId, stepCount, toolName, args.toString(), result.take(150))
 
             // 6. memory append
             history.add("assistant" to decision)
@@ -83,9 +103,11 @@ class AgentLoop(
 
             if (stepCount >= maxSteps) {
                 onStep?.invoke("达到最大步数 ($maxSteps), 停止")
+                lifecycle?.interrupt("max steps")
                 return "MAX_STEPS: $log"
             }
         }
+        lifecycle?.interrupt("stopped")
         return "STOPPED: $log"
     }
 
