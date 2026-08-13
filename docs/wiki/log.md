@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-12 | feat | A2UI (Agent to UI) 集成: bolloon agent 生成 createSurface/updateComponents 经 SSE 广播, 前端 @a2ui/react renderer 渲染 (手机端发现页接入) | [a2ui/index.ts](../../src/pi-ecosystem-a2ui/index.ts) / [a2ui-client.tsx](../../src/web/a2ui-client.tsx) |
 | 2026-08-12 | feat | MCP 驱动前端 UI: bolloon 作为 MCP server 暴露 UI 控制工具 (switchTab/openChat/openSettings), agent 理解意图后调用, SSE 广播驱动前端 (web/手机端) | [ui-tools.ts](../../src/pi-ecosystem-mcp/ui-tools.ts) |
 | 2026-08-12 | fix | 重启后智能体消失: CLI /new agent 不同步 agents.json + heal 要求 session 文件才恢复 → CLI 创建的 agent 重启无法恢复. 修复: CLI 同步 agents.json 关联 channelId + heal 放宽 (channelId 非空即恢复) | [index.ts](../../src/index.ts) / [server.ts](../../src/web/server.ts) |
 | 2026-08-12 | feat | 运行时记忆循环 (hermes prefetch+sync 模式): 每轮按用户消息召回历史摘要注入 system prompt (memory-recall) + CLI 对话后同步记忆 (compressSessionToMemory) | [memory-recall.ts](../../src/agents/memory-recall.ts) / [index.ts](../../src/index.ts) |
@@ -1359,3 +1360,35 @@ default permission 还禁 shell_exec.
 - agent 注册: src/agents/pi-sdk-tools.ts
 - server 注入: src/web/server.ts (setUiBroadcast)
 - 前端订阅: src/web/mobile.js (setupUiControl)
+
+## [2026-08-12] feat | A2UI (Agent to UI) 集成 (替代 MCP UI 方案)
+
+### 背景
+
+用户改主意: 不要 MCP UI, 改用 A2UI 逻辑 (https://a2ui.org/specification/v1.0-a2ui/ + D:\AI\A2UI 本地 spec).
+方案: 复用 A2UI 现成 renderer (@a2ui/react npm 包), bolloon agent 生成 A2UI 消息 (createSurface/updateComponents) 经 SSE 广播, 手机端 Capacitor webview 用 renderer 渲染.
+
+### A2UI 核心机制
+
+- 4 种消息: createSurface / updateComponents / updateDataModel / deleteSurface (JSON 流, 传输无关).
+- 组件树 + 数据模型分离, 渐进渲染; 用户交互 action 事件回传 agent.
+
+### 落地 (2 commit)
+
+| # | 内容 | commit |
+|---|------|--------|
+| 1 | 后端: 新 src/pi-ecosystem-a2ui/ — 4 个 agent 工具 (a2ui_create_surface/update_components/update_data/delete_surface), execute 时 broadcast {type:'a2ui', message}; server 注入 setA2uiBroadcast; 6 测试 | 72b76cc |
+| 2 | 前端: 新 src/web/a2ui-client.tsx — @a2ui/web_core MessageProcessor + @a2ui/react A2uiSurface, 订阅 /events 渲染; build-web esbuild 打包 a2ui-client.js (1.4MB, react+@a2ui 全打进); mobile.html 发现页加 #a2ui-root | b0ee7f5 |
+
+### 验证
+
+- `npx tsc --noEmit` 0 错 + `npx vitest run --bail=1` 全绿 (118 文件 1339 测试).
+- build:web 成功生成 dist/web/a2ui-client.js; cap sync 同步到 android assets.
+- a2ui.test 6 测试: 工具定义 / 广播 createSurface / type/surfaceId 校验 / components JSON 解析.
+
+### 关联
+
+- 后端: src/pi-ecosystem-a2ui/index.ts + src/test/a2ui.test.ts
+- 前端: src/web/a2ui-client.tsx + scripts/build-web.ts (esbuild)
+- 依赖: @a2ui/react 0.10.2 + @a2ui/web_core 0.10.6 (公开 npm, --legacy-peer-deps 装因 iroh peer 冲突)
+- 参考: https://a2ui.org/specification/v1.0-a2ui/ + D:\AI\A2UI
