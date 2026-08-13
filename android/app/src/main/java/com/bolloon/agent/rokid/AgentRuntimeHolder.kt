@@ -32,6 +32,11 @@ object AgentRuntimeHolder {
     @Volatile
     var audit: AgentAuditLog? = null
 
+    /** 2026-08-13 (借鉴 Ghost): 宏录制/重放 */
+    @Volatile
+    var macro: MacroRecorder? = null
+        private set
+
     /** 无障碍服务是否已连接 */
     val isAccessibilityReady: Boolean
         get() = BolloonAccessibilityService.instance != null
@@ -104,5 +109,14 @@ object AgentRuntimeHolder {
     /** 重置 (配置变化时) */
     fun reset() {
         loop = null
+    }
+
+    /** 获取宏录制器 (service 连接后可用; 懒建) */
+    fun macroRecorder(): MacroRecorder? {
+        val service = BolloonAccessibilityService.instance ?: return null
+        if (macro == null) {
+            macro = MacroRecorder(AndroidAgentTools(service, service.applicationContext))
+        }
+        return macro
     }
 }

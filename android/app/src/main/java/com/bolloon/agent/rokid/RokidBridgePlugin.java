@@ -419,6 +419,43 @@ public class RokidBridgePlugin extends Plugin {
         call.resolve(new JSObject().put("cancelRequested", ok));
     }
 
+    // ============ 宏录制/重放 (2026-08-13, 借鉴 Ghost MacroRecorder) ============
+
+    /** 宏: action = start|stop|tap|swipe|type|back|home|wait|replay|to_json|from_json */
+    @PluginMethod
+    public void macro(PluginCall call) {
+        String action = call.getString("action");
+        if (action == null) { call.reject("action 必填 (start/stop/tap/swipe/type/back/home/wait/replay/to_json/from_json)"); return; }
+        MacroRecorder rec = AgentRuntimeHolder.INSTANCE.macroRecorder();
+        if (rec == null) { call.reject("无障碍服务未连接"); return; }
+        try {
+            switch (action) {
+                case "start": rec.start(); call.resolve(new JSObject().put("ok", true)); break;
+                case "stop": {
+                    MacroRecorder.Macro m = rec.stop();
+                    call.resolve(new JSObject().put("steps", m.getSteps().size()).put("duration", m.getDuration()));
+                    break;
+                }
+                case "tap": rec.tap(call.getInt("x", 0), call.getInt("y", 0)); call.resolve(new JSObject().put("ok", true)); break;
+                case "back": rec.back(); call.resolve(new JSObject().put("ok", true)); break;
+                case "home": rec.home(); call.resolve(new JSObject().put("ok", true)); break;
+                case "type": rec.type(call.getString("text", "")); call.resolve(new JSObject().put("ok", true)); break;
+                case "replay": {
+                    String json = call.getString("json");
+                    if (json == null || json.isEmpty()) { call.reject("replay 需要 json (宏 JSON)"); return; }
+                    MacroRecorder.Macro m = rec.fromJson(json);
+                    Double spd = call.getDouble("speed", 1.0);
+                    String log = rec.replay(m, spd.floatValue());
+                    call.resolve(new JSObject().put("log", log));
+                    break;
+                }
+                default: call.reject("未知 action: " + action);
+            }
+        } catch (Exception e) {
+            call.reject("macro 失败: " + e.getMessage());
+        }
+    }
+
     /** 配置 LLM (baseUrl/apiKey/model) */
     @PluginMethod
     public void agentConfigure(PluginCall call) {
