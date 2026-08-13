@@ -2862,6 +2862,16 @@ ${goalDesc}
     }
   })();
 
+  // 2026-08-12: A2UI (Agent to UI) — 把 broadcast 注入 a2ui 模块, agent 调 a2ui_* 工具时广播 {type:'a2ui'} 给前端 SSE
+  (async () => {
+    try {
+      const { setA2uiBroadcast } = await import('../pi-ecosystem-a2ui/index.js');
+      setA2uiBroadcast(broadcast);
+    } catch (e: any) {
+      console.warn('[a2ui] 广播注入失败 (非致命):', e?.message?.slice(0, 120));
+    }
+  })();
+
   app.get('/api/health', (_req, res) => {
     res.json(healthCheck(getPackageVersion()));
   });

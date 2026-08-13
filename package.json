@@ -55,6 +55,8 @@
     "src/constraint-runtime"
   ],
   "dependencies": {
+    "@a2ui/react": "^0.10.2",
+    "@a2ui/web_core": "^0.10.6",
     "@bolloon/constraint-runtime": "0.1.0",
     "@capacitor/android": "^8.5.0",
     "@capacitor/core": "^8.5.0",

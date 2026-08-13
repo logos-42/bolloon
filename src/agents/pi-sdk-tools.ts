@@ -2204,6 +2204,25 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   };
   registerUiAgentTools().catch(() => {});
 
+  // 2026-08-12: A2UI (Agent to UI) 工具 — agent 生成 A2UI 消息 (createSurface/updateComponents),
+  //   经 SSE 广播, 前端用 @a2ui/react renderer 渲染. 见 src/pi-ecosystem-a2ui/.
+  (async () => {
+    try {
+      const a2ui = await import('../pi-ecosystem-a2ui/index.js');
+      for (const t of a2ui.A2UI_TOOL_DEFS) {
+        ctx.tools.set(t.name, {
+          name: t.name,
+          description: t.description,
+          parameters: t.params,
+          execute: async (args) => {
+            const r = a2ui.dispatchA2uiMessage(t.build(args));
+            return r.success ? { success: true, output: r.output } : { success: false, error: r.output };
+          },
+        });
+      }
+    } catch { /* A2UI 工具注册失败静默 */ }
+  })();
+
   // ============================================================
   // publish_did (2026-08-03) — 把当前 agent 的 DID 发布到 IPFS + IPNS
   // 全自动: 自动安装/启动本地 Kubo → 上传 DID 文档 → 发布 IPNS name
