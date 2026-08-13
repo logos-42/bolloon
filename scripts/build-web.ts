@@ -91,6 +91,21 @@ async function main() {
     bundle: true,
   });
 
+  // 2026-08-12: 编译 A2UI 前端渲染器 (a2ui-client.tsx → a2ui-client.js)
+  //   react + @a2ui/react + @a2ui/web_core 全部打包进 bundle (手机端 webview 无 CDN)
+  console.log('[build-web] 编译 a2ui-client.tsx...');
+  await esbuild.build({
+    entryPoints: [path.join(ROOT, 'src/web/a2ui-client.tsx')],
+    outfile: path.join(DIST_WEB, 'a2ui-client.js'),
+    format: 'iife',
+    target: 'es2022',
+    platform: 'browser',
+    minify: false,
+    bundle: true,
+    jsx: 'automatic',
+    loader: { '.tsx': 'tsx' },
+  });
+
   // 复制静态文件
   console.log('[build-web] 复制静态文件...');
   await fs.copyFile(path.join(ROOT, 'src/web/index.html'), path.join(DIST_WEB, 'index.html'));
