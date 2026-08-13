@@ -1,9 +1,10 @@
-﻿# Wiki 日志
+# Wiki 日志
 
 > 每次 session 结束在这里追加一行, 格式 `## [YYYY-MM-DD] <phase> | <一句话>`.
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-13 | docs | README 中英文同步 + 引用 MIT 开源协议: 新增 LICENSE 文件 (MIT, Copyright yuanjie liu), README 中文加「开源协议」段 + 英文 License 段均链接 ./LICENSE | [README.md](../../README.md) / [LICENSE](../../LICENSE) |
 | 2026-08-13 | feat | Agent Economic Protocol 设计文档 (7 协议 + bolloon 映射 + Registry/x402/Policy MVP) — 智能体经济网络 | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | feat | Android Agent 借鉴 Ghost (D:\AI\Agent-andriod): 交互元素提取/LLM树/屏幕分类/build_llm_context + 宏录制重放 (省token观察 + 录一次重放N次) | [android-agent-runtime.md](./android-agent-runtime.md) |
 | 2026-08-13 | feat | Android Agent Runtime Phase 1-3 落地 (Accessibility 8工具 + Shizuku 系统级 + ModelRuntime 本地/远程) + Phase 4 架构文档 | [android-agent-runtime.md](./android-agent-runtime.md) |

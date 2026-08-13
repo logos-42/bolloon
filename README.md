@@ -102,6 +102,12 @@ npm start
 
 ---
 
+## 开源协议
+
+本项目基于 [MIT 开源协议](./LICENSE) 发布。你可以自由使用、修改、分发本项目，但需保留版权声明和许可声明。详见 [LICENSE](./LICENSE) 文件。
+
+---
+
 <a name="english"></a>
 
 ## English
@@ -132,4 +138,4 @@ Requires Node.js ≥ 18 and an LLM API key (`OPENAI_API_KEY` or `DEEPSEEK_API_KE
 
 ### License
 
-MIT
+This project is released under the [MIT License](./LICENSE). You are free to use, modify, and distribute this project, provided that you retain the copyright and permission notices. See the [LICENSE](./LICENSE) file for details.
