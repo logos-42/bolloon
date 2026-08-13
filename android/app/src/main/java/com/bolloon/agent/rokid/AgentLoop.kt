@@ -20,7 +20,7 @@ import org.json.JSONObject
  */
 class AgentLoop(
     private val tools: AndroidAgentTools,
-    private val llm: RemoteLlm,
+    private val llm: LlmBackend,
 ) {
     /** 循环历史 (发给 LLM 的对话) */
     private val history = mutableListOf<Pair<String, String>>()
