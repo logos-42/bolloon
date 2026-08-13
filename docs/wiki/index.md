@@ -20,6 +20,7 @@
 || [claude-code-design-parallels.md](./claude-code-design-parallels.md) | v2 | Claude Code 架构对照 Bolloon 参考 |
 | [hermes-agent-architecture.md](./hermes-agent-architecture.md) | v2 | Hermes Agent 架构借鉴 (多智能体协作/生命周期/工具循环/状态语义/workspace kinds) |
 | [android-agent-runtime.md](./android-agent-runtime.md) | v2 | Android Agent Runtime 架构 (Phase 1-4: Accessibility/Shizuku/本地LLM/Agent OS) |
+| [agent-economic-protocol.md](./agent-economic-protocol.md) | v2 | Agent Economic Protocol 设计 (7 协议 + bolloon 映射 + Registry/x402/Policy MVP) |
 || [log.md](./log.md) | (none) | session-by-session 变更日志 |
 
 ## 读者向页面 (docs/, audience=reader)

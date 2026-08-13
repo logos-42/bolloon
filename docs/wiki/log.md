@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-13 | feat | Agent Economic Protocol 设计文档 (7 协议 + bolloon 映射 + Registry/x402/Policy MVP) — 智能体经济网络 | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | feat | Android Agent 借鉴 Ghost (D:\AI\Agent-andriod): 交互元素提取/LLM树/屏幕分类/build_llm_context + 宏录制重放 (省token观察 + 录一次重放N次) | [android-agent-runtime.md](./android-agent-runtime.md) |
 | 2026-08-13 | feat | Android Agent Runtime Phase 1-3 落地 (Accessibility 8工具 + Shizuku 系统级 + ModelRuntime 本地/远程) + Phase 4 架构文档 | [android-agent-runtime.md](./android-agent-runtime.md) |
 | 2026-08-12 | feat | A2UI (Agent to UI) 集成: bolloon agent 生成 createSurface/updateComponents 经 SSE 广播, 前端 @a2ui/react renderer 渲染 (手机端发现页接入) | [a2ui/index.ts](../../src/pi-ecosystem-a2ui/index.ts) / [a2ui-client.tsx](../../src/web/a2ui-client.tsx) |
