@@ -2284,6 +2284,42 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     } catch { /* registry 工具注册失败静默 */ }
   })();
 
+  // 2026-08-13 (Phase E2): service_call — 调用 Agent 服务 (x402 402 自动支付闭环)
+  ctx.tools.set('service_call', {
+    name: 'service_call',
+    description: '调用注册表里的 Agent 服务 (x402 支付闭环). 从 registry_discover 找到服务名后调用. service_name: 服务名; args: 服务参数; 有钱包私钥时自动支付 402.',
+    parameters: {
+      service_name: '服务名 (必填, registry_discover 查到的)',
+      args: '服务参数 JSON (可选)',
+      max_payment_amount: '最大支付金额 (可选)',
+    },
+    execute: async (args) => {
+      const serviceName = String(args.service_name || '').trim();
+      if (!serviceName) return { success: false, error: 'service_name 必填 (先用 registry_discover 查)' };
+      try {
+        const { serviceCall } = await import('./agent-service-client.js');
+        // 尝试取 channel 钱包私钥 (autoPay)
+        let privateKey: string | undefined;
+        try {
+          const wallet = await ctx.getChannelWallet?.();
+          if (wallet?.encryptedPrivateKey) privateKey = wallet.encryptedPrivateKey;
+        } catch { /* 无钱包 */ }
+        let argsObj: Record<string, unknown> = {};
+        try { argsObj = JSON.parse(String(args.args || '{}')); } catch { argsObj = {}; }
+        const r = await serviceCall({
+          serviceName,
+          args: argsObj,
+          privateKey,
+          maxPaymentAmount: String(args.max_payment_amount || '').trim() || undefined,
+        });
+        if (!r.success) return { success: false, error: r.error, service: r.service?.service?.name };
+        return { success: true, output: r.output, paid: r.paid, txHash: r.txHash };
+      } catch (e: any) {
+        return { success: false, error: `service_call 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
+
   // ============================================================
   // publish_did (2026-08-03) — 把当前 agent 的 DID 发布到 IPFS + IPNS
   // 全自动: 自动安装/启动本地 Kubo → 上传 DID 文档 → 发布 IPNS name
