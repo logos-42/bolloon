@@ -2320,6 +2320,38 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     },
   });
 
+  // 2026-08-13 (Phase E3): Policy Engine — 预算/授权 (安全核心, 私钥不暴露给 LLM)
+  ctx.tools.set('policy_config', {
+    name: 'policy_config',
+    description: '查看/更新支付策略 (预算/白名单). LLM 只能查看预算与授权规则, 私钥由 Policy Engine 隔离保管. 查看: 无参数; 更新: 传要改的字段 (per_transaction_limit/daily_limit/allowed_recipients/allowed_services).',
+    parameters: {
+      per_transaction_limit: '可选: 单笔上限 (数字)',
+      daily_limit: '可选: 每日预算 (数字)',
+      allowed_recipients: '可选: 允许收款方数组',
+      allowed_services: '可选: 允许服务数组',
+    },
+    execute: async (args) => {
+      try {
+        const { getEconomicPolicy } = await import('./economic-policy.js');
+        const policy = getEconomicPolicy();
+        const patch: Record<string, unknown> = {};
+        if (args.per_transaction_limit !== undefined) patch.perTransactionLimit = Number(args.per_transaction_limit);
+        if (args.daily_limit !== undefined) patch.dailyLimit = Number(args.daily_limit);
+        if (Array.isArray(args.allowed_recipients)) patch.allowedRecipients = args.allowed_recipients.map(String);
+        if (Array.isArray(args.allowed_services)) patch.allowedServices = args.allowed_services.map(String);
+        if (Object.keys(patch).length > 0) policy.updateConfig(patch as any);
+        const spent = await policy.dailySpent();
+        const c = policy.config();
+        return {
+          success: true,
+          output: `支付策略:\n  单笔上限: $${c.perTransactionLimit}\n  每日预算: $${c.dailyLimit} (今日已用 $${spent})\n  允许收款方: ${c.allowedRecipients.length ? c.allowedRecipients.join(', ') : '(全部)'}\n  允许服务: ${c.allowedServices.length ? c.allowedServices.join(', ') : '(全部)'}\n  速率: ${c.rateLimitPerMinute}/min`,
+        };
+      } catch (e: any) {
+        return { success: false, error: `policy_config 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
+
   // ============================================================
   // publish_did (2026-08-03) — 把当前 agent 的 DID 发布到 IPFS + IPNS
   // 全自动: 自动安装/启动本地 Kubo → 上传 DID 文档 → 发布 IPNS name

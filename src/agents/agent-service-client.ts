@@ -60,12 +60,32 @@ export async function serviceCall(opts: ServiceCallOptions): Promise<ServiceCall
   // 3. 调服务 (x402 自动支付: 402 → 签名 → 重试)
   try {
     const { x402Fetch } = await import('./x402/x402Pay.js');
+    // Phase E3: Policy Engine 授权 (预算/白名单) — 通过才允许自动支付
+    let effectiveKey = privateKey;
+    if (privateKey) {
+      const { getEconomicPolicy } = await import('./economic-policy.js');
+      const policy = getEconomicPolicy();
+      const amount = parseFloat(service.service?.price?.amount || '0');
+      const decision = await policy.check({
+        payTo: service.wallet,
+        amount,
+        currency: service.service?.price?.currency,
+        service: service.service?.name,
+        timestamp: Date.now(),
+      });
+      if (!decision.allowed) {
+        return { success: false, error: `[policy] ${decision.reason}`, service };
+      }
+      effectiveKey = privateKey; // policy 通过 → 允许签名支付
+      // 记录花费 (结算后) — 预记, 实际结算在链上
+      await policy.recordSpend(amount).catch(() => {});
+    }
     const result = await x402Fetch({
       url: endpoint,
       method: 'POST',
       body: JSON.stringify(args || {}),
       headers: { 'Content-Type': 'application/json' },
-      privateKey,
+      privateKey: effectiveKey,
       maxPaymentAmount: maxPaymentAmount || service.service?.price?.amount,
     });
     if (!result.success) {
