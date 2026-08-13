@@ -30,7 +30,7 @@ app/src/main/assets/public/
 # Capacitor cap sync 生成物 (每次 npx cap sync android 自动重建, 不入库)
 app/capacitor.build.gradle
 capacitor.settings.gradle
-app/src/main/res/xml/
+app/src/main/res/xml/config.xml
 capacitor-cordova-android-plugins/
 app/src/main/assets/capacitor.config.json
 app/src/main/assets/capacitor.plugins.json

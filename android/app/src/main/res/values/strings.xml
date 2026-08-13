@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Bolloon Agent</string>
+    <string name="accessibility_service_description">Bolloon 无障碍服务: 用于 Android Agent 运行时读取屏幕 UI 树并执行点击/滑动等操作 (Observe→Think→Act)。</string>
+</resources>
