@@ -29,7 +29,14 @@ export interface AgentService {
   };
   capabilities?: string[];      // 能力声明
   endpoint?: string;            // 服务调用端点
-  reputation?: { tasks: number; success: number; score: number };
+  /** 2026-08-13 (M4): 信誉 — 服务结算后更新 */
+  reputation?: {
+    tasks: number;
+    success: number;
+    failed: number;
+    disputed: number;
+    score: number;              // success/tasks (0-1)
+  };
   registeredAt?: string;
   updatedAt?: string;
 }

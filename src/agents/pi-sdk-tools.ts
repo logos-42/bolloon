@@ -2352,6 +2352,45 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     },
   });
 
+  // 2026-08-13 (Phase M4): Reputation — 服务结果记录 + 信誉查询 (Agent Economic Protocol §7)
+  ctx.tools.set('reputation_update', {
+    name: 'reputation_update',
+    description: '记录一次服务结果, 更新服务提供者的信誉 (success/failed/disputed → score). 服务完成后调用. agent_id: 服务提供者 DID; service_name: 服务名; outcome: success|failed|disputed.',
+    parameters: { agent_id: '服务提供者 agent_id (必填)', service_name: '服务名 (必填)', outcome: '结果: success|failed|disputed (必填)' },
+    execute: async (args) => {
+      try {
+        const { recordServiceOutcome } = await import('./agent-reputation.js');
+        const agentId = String(args.agent_id || '').trim();
+        const serviceName = String(args.service_name || '').trim();
+        const outcome = String(args.outcome || '').trim() as any;
+        if (!agentId || !serviceName || !['success', 'failed', 'disputed'].includes(outcome)) {
+          return { success: false, error: 'agent_id/service_name/outcome(success|failed|disputed) 必填' };
+        }
+        const r = await recordServiceOutcome(agentId, serviceName, outcome);
+        if (!r.ok) return { success: false, error: r.error };
+        return { success: true, output: `✅ 已记录 ${outcome}: tasks=${r.reputation?.tasks}, score=${r.reputation?.score}` };
+      } catch (e: any) {
+        return { success: false, error: `reputation_update 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
+
+  ctx.tools.set('reputation_query', {
+    name: 'reputation_query',
+    description: '查询 Agent 的信誉 (成功率/任务数). agent_id: 服务提供者 DID; service_name: 可选. 选择服务前先查信誉.',
+    parameters: { agent_id: '服务提供者 agent_id (必填)', service_name: '服务名 (可选)' },
+    execute: async (args) => {
+      try {
+        const { queryReputation, formatReputation } = await import('./agent-reputation.js');
+        const r = await queryReputation(String(args.agent_id || '').trim(), String(args.service_name || '').trim() || undefined);
+        if (!r.ok) return { success: true, output: r.error || '(无信誉记录)' };
+        return { success: true, output: r.entries.map((e) => `  [${e.service}] ${formatReputation(e.reputation)}`).join('\n') };
+      } catch (e: any) {
+        return { success: false, error: `reputation_query 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
+
   // ============================================================
   // publish_did (2026-08-03) — 把当前 agent 的 DID 发布到 IPFS + IPNS
   // 全自动: 自动安装/启动本地 Kubo → 上传 DID 文档 → 发布 IPNS name
