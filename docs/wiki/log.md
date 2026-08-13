@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-13 | feat | Agent Economic Network M4 + 支付闭环验证: Reputation 整合 + 全链路验证脚本 (17/17) | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | feat | Agent Economic Network M1-M3 落地: 服务 Registry (OrbitDB) + x402 支付闭环 + Policy Engine (预算/签名隔离) | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | docs | README 中英文同步 + 引用 MIT 开源协议: 新增 LICENSE 文件 (MIT, Copyright yuanjie liu), README 中文加「开源协议」段 + 英文 License 段均链接 ./LICENSE | [README.md](../../README.md) / [LICENSE](../../LICENSE) |
 | 2026-08-13 | feat | Agent Economic Protocol 设计文档 (7 协议 + bolloon 映射 + Registry/x402/Policy MVP) — 智能体经济网络 | [agent-economic-protocol.md](./agent-economic-protocol.md) |
@@ -1421,3 +1422,22 @@ default permission 还禁 shell_exec.
 
 - 设计: docs/wiki/agent-economic-protocol.md
 - 代码: src/agents/agent-registry.ts + agent-service-client.ts + economic-policy.ts
+
+## [2026-08-13] feat | Agent Economic Network M4 + 支付闭环验证
+
+### 落地 (2 commit)
+
+| # | 内容 | commit |
+|---|------|--------|
+| M4 | Reputation 整合: src/agents/agent-reputation.ts — recordServiceOutcome (success/failed/disputed → tasks/success/score) 写回 Registry; queryReputation + formatReputation; agent 工具 reputation_update/reputation_query; 5 测试 | 8e085af |
+| M4v | 支付闭环全链路验证: scripts/verify-agent-economy.ts — Registry 注册/发现 → provider 402 生成 → service_call 402 检测 → Policy (预算/白名单/冻结) → Reputation → 持久化; 17/17 通过 | 3cdf93d |
+
+### 验证
+
+- `npx tsc --noEmit` 0 错 + `npx vitest run --bail=1` 全绿 (122 文件 1360 测试).
+- verify-agent-economy.ts 17/17: 注册/发现/402/策略/信誉/持久化 全链路.
+
+### 关联
+
+- 信誉: src/agents/agent-reputation.ts + src/test/agent-reputation.test.ts
+- 验证: scripts/verify-agent-economy.ts
