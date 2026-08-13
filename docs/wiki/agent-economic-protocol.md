@@ -138,10 +138,10 @@ Network Velocity = Agent GDP / Treasury Capital
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| M0 | 本设计文档 | 进行中 |
-| M1 | Agent 服务 Registry (E1) | 待做 |
-| M2 | x402 支付闭环 (E2) | 待做 |
-| M3 | Policy Engine (E3) | 待做 |
+| M0 | 本设计文档 | ✅ db4e753 |
+| M1 | Agent 服务 Registry (E1): OrbitDB+本地, registry_register/registry_discover, /api/registry | ✅ dcf8abd |
+| M2 | x402 支付闭环 (E2): service_call + 402 响应生成 (Registry 价格驱动) | ✅ 1de3bb3 |
+| M3 | Policy Engine (E3): 预算/白名单/速率/签名隔离 + policy_config 工具 | ✅ 7f7f6f5 |
 | M4 | Reputation 整合 (E4) | 待做 |
 | M5 | Treasury/Escrow 合约 | 后续 |
 

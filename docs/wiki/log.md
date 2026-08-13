@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-13 | feat | Agent Economic Network M1-M3 落地: 服务 Registry (OrbitDB) + x402 支付闭环 + Policy Engine (预算/签名隔离) | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | docs | README 中英文同步 + 引用 MIT 开源协议: 新增 LICENSE 文件 (MIT, Copyright yuanjie liu), README 中文加「开源协议」段 + 英文 License 段均链接 ./LICENSE | [README.md](../../README.md) / [LICENSE](../../LICENSE) |
 | 2026-08-13 | feat | Agent Economic Protocol 设计文档 (7 协议 + bolloon 映射 + Registry/x402/Policy MVP) — 智能体经济网络 | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | feat | Android Agent 借鉴 Ghost (D:\AI\Agent-andriod): 交互元素提取/LLM树/屏幕分类/build_llm_context + 宏录制重放 (省token观察 + 录一次重放N次) | [android-agent-runtime.md](./android-agent-runtime.md) |
@@ -1396,3 +1397,27 @@ default permission 还禁 shell_exec.
 - 前端: src/web/a2ui-client.tsx + scripts/build-web.ts (esbuild)
 - 依赖: @a2ui/react 0.10.2 + @a2ui/web_core 0.10.6 (公开 npm, --legacy-peer-deps 装因 iroh peer 冲突)
 - 参考: https://a2ui.org/specification/v1.0-a2ui/ + D:\AI\A2UI
+
+## [2026-08-13] feat | Agent Economic Network M1-M3 落地
+
+### 背景
+
+用户梦想: 自动化交流的智能体形成智能合约网络互相转钱支付。设计文档已编译 (agent-economic-protocol.md), 按"先做 Agent-to-Agent 服务市场, 不做复杂合约"推进。
+
+### 落地 (3 commit)
+
+| # | 内容 | commit |
+|---|------|--------|
+| M1 | Agent 服务 Registry: src/agents/agent-registry.ts — OrbitDB keyvalue 主存储 + 本地 fallback; 服务声明 (agentId/wallet/service/price/capabilities); server /api/registry + /api/registry/register; agent 工具 registry_register/registry_discover; 5 测试 | dcf8abd |
+| M2 | x402 支付闭环: src/agents/agent-service-client.ts — serviceCall (Registry 发现 → 402 → x402 自动支付 → 结果) + serviceRequestPayment/buildPaymentRequiredResponse (基于 Registry 价格生成 402); agent 工具 service_call; 5 测试 | 1de3bb3 |
+| M3 | Policy Engine: src/agents/economic-policy.ts — 单笔上限/收款方白名单/服务白名单/日预算/速率限制 + 持久化 (~/.bolloon/economic-policy.json); service_call 支付前过 policy; agent 工具 policy_config; 6 测试 | 7f7f6f5 |
+
+### 验证
+
+- 每 commit: `npx tsc --noEmit` 0 错 + `npx vitest run --bail=1` 全绿 (121 文件 1355 测试).
+- 测试: registry 注册/发现/warm 写穿; serviceCall 402 闭环; policy 预算/白名单/速率/持久化.
+
+### 关联
+
+- 设计: docs/wiki/agent-economic-protocol.md
+- 代码: src/agents/agent-registry.ts + agent-service-client.ts + economic-policy.ts
