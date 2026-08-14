@@ -1,0 +1,65 @@
+# ============================================================
+# Bolloon 支付验证流程 (Payment Verification Policy)
+# 2026-08-13 — 智能体支付不全部交给 AI, 由本 YAML 声明式规则驱动.
+# 加载: ~/.bolloon/payment-policy.yaml (首次启动复制此默认文件)
+# 验证链: 按顺序匹配第一条命中的规则 → decision: allow | confirm | deny
+#   - allow:   自动放行 (AI 直接执行)
+#   - confirm: 需要人工确认 (返回 pending, 等用户 approval)
+#   - deny:    拒绝 (不可覆盖)
+# ============================================================
+
+# 全局默认: 未命中任何规则时的兜底
+default_action: confirm   # allow | confirm | deny
+default_reason: "未命中任何支付规则, 需要人工确认"
+
+# 单笔/每日硬限制 (无论规则如何, 超限即 deny)
+limits:
+  max_per_transaction: 1.0     # USDC
+  max_daily_total: 10.0        # USDC
+
+# 验证规则 (顺序匹配第一条命中 — 黑名单优先, 防止被宽松规则先命中)
+rules:
+  # --- 拒绝 (优先): 黑名单服务/地址, 任何金额都拒 ---
+  - id: deny-gambling
+    action: deny
+    services: [gambling, casino]
+    reason: "禁止赌博类服务"
+
+  - id: deny-known-bad
+    action: deny
+    recipients:
+      - "0x0000000000000000000000000000000000000000"
+    reason: "零地址 (资金黑洞) 禁止支付"
+
+  - id: deny-contract-services
+    action: deny
+    services: [shell, admin, self-destruct]
+    reason: "禁止高危险服务支付"
+
+  # --- 自动放行: 小额 + 白名单服务 ---
+  - id: auto-research
+    action: allow
+    services: [research, data]
+    max_amount: 0.05
+    description: "研究/数据服务小额自动放行"
+
+  - id: auto-translation
+    action: allow
+    services: [translation]
+    max_amount: 0.01
+    description: "翻译服务小额自动放行"
+
+  # --- 需要人工确认: 中额 或 非白名单服务 ---
+  - id: confirm-medium
+    action: confirm
+    max_amount: 1.0
+    description: "中额支付需要人工确认"
+
+  - id: confirm-unknown-service
+    action: confirm
+    description: "未知服务需要人工确认"
+
+# 人工确认会话 (confirm 后等待审批)
+confirmation:
+  timeout_minutes: 60          # 确认超时
+  require_approver: true       # 必须有人工审批者

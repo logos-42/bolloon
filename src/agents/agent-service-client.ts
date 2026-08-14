@@ -34,6 +34,8 @@ export interface ServiceCallResult {
   txHash?: string;
   output?: string;
   error?: string;
+  /** YAML 验证门: confirm 时需人工审批 */
+  requiresApproval?: boolean;
 }
 
 /**
@@ -60,12 +62,22 @@ export async function serviceCall(opts: ServiceCallOptions): Promise<ServiceCall
   // 3. 调服务 (x402 自动支付: 402 → 签名 → 重试)
   try {
     const { x402Fetch } = await import('./x402/x402Pay.js');
+    // 2026-08-13: YAML 验证门 (不全部交给 AI) — 支付前先过 payment-policy.yaml 规则链
+    const { getPaymentGate } = await import('./payment-gate.js');
+    const gate = getPaymentGate();
+    const amount = parseFloat(service.service?.price?.amount || '0');
+    const gateVerdict = gate.evaluate({ service: service.service?.name, amount, recipient: service.wallet });
+    if (gateVerdict.decision === 'deny') {
+      return { success: false, error: `[payment-gate] ${gateVerdict.reason}`, service };
+    }
+    if (gateVerdict.decision === 'confirm') {
+      return { success: false, error: `[payment-gate] 需人工确认: ${gateVerdict.reason} (confirm 后重试)`, service, requiresApproval: true };
+    }
     // Phase E3: Policy Engine 授权 (预算/白名单) — 通过才允许自动支付
     let effectiveKey = privateKey;
     if (privateKey) {
       const { getEconomicPolicy } = await import('./economic-policy.js');
       const policy = getEconomicPolicy();
-      const amount = parseFloat(service.service?.price?.amount || '0');
       const decision = await policy.check({
         payTo: service.wallet,
         amount,

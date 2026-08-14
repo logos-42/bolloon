@@ -27,15 +27,17 @@ describe('treasury-bridge (Treasury × Agent 经济网络)', () => {
     expect(r.error).toContain('日预算超限');
   });
 
-  it('policy 放行 → 进入链上支付阶段 (policy 门通过)', async () => {
+  it('policy 放行 → 链上支付阶段 (dryRun, 不真实上链)', async () => {
     const r = await treasuryPay(cfg, {
       agentAddress: '0x' + '4'.repeat(40),
       amount: 0.05,
       service: 'research',
       policyCheck: async () => ({ allowed: true }),
+      dryRun: true,
     });
-    // 核心断言: policy 门放行 (链上是否成功取决于网络/合约部署)
     expect(r.checks?.policy?.allowed).toBe(true);
+    expect(r.success).toBe(true);
+    expect(r.txHash).toContain('dry-run');
   });
 
   it('treasuryStatus 未部署合约 → 返回错误', async () => {

@@ -34,6 +34,8 @@ export interface TreasuryPayOptions {
   service?: string;
   /** 注入 Policy 检查 (默认用全局 economic-policy) */
   policyCheck?: (intent: { payTo: string; amount: number; service?: string }) => Promise<{ allowed: boolean; reason?: string }>;
+  /** dryRun: 只做 policy 校验, 不真实上链 (测试用) */
+  dryRun?: boolean;
 }
 
 export interface TreasuryBridgeResult {
@@ -41,6 +43,8 @@ export interface TreasuryBridgeResult {
   txHash?: string;
   error?: string;
   checks?: { policy?: { allowed: boolean; reason?: string } };
+  /** dryRun 模式标记 (测试/预演) */
+  dryRun?: boolean;
 }
 
 /** Treasury 合约最小 ABI (payAgent/deposit/balance/dailySpend/frozen) */
@@ -109,7 +113,10 @@ export async function treasuryPay(config: TreasuryConfig, opts: TreasuryPayOptio
     } catch { /* policy 不可用放行 */ }
   }
 
-  // 2. 链上 payAgent
+  // 2. 链上 payAgent (dryRun: 只验证 policy 门, 不真实上链)
+  if (opts.dryRun) {
+    return { success: true, txHash: 'dry-run:0x0', checks: { policy: { allowed: true } }, dryRun: true };
+  }
   try {
     const { createWalletClient, http, parseUnits } = await import('viem');
     const { privateKeyToAccount } = await import('viem/accounts');
