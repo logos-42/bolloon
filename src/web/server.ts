@@ -811,6 +811,16 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
     // 2026-07-29: 语义分析 — 分析远端聊天内容, 隐式滑动 trustScore
     recordInteraction(senderKey, text).catch(() => {});
 
+    // 2026-08-14: 远端消息带 gateway 链接 → 自动加入 (幂等, fire-and-forget 不阻塞聊天)
+    import('../agents/gateway-network.js').then(({ maybeAutoJoinGateway }) =>
+      maybeAutoJoinGateway(String(text || '')).then((note) => {
+        if (note) {
+          console.log(`[agent-gateway] ${note}`);
+          try { broadcast({ type: 'gateway', content: note, channelId }, channelId); } catch { /* 广播失败忽略 */ }
+        }
+      }).catch(() => {})
+    ).catch(() => {});
+
     console.log(`[v3] 收到 ${senderKey.substring(0,12)}... (${tierLabel(tierState.tier)}) 对 channel ${channelId} 的 chat: "${text.substring(0, 40)}..."`);
 
     try {
@@ -2864,6 +2874,133 @@ ${goalDesc}
     }
   });
 
+  // 2026-08-14: Agent Gateway — 网络加入 / 分享链接 / 成员 / 状态 (入口要小: 一条链接)
+  app.post('/api/gateway/join', async (req: any, res: any) => {
+    try {
+      const { joinNetwork } = await import('../agents/gateway-network.js');
+      const link = String(req.body?.link || '').trim();
+      if (!link) return res.status(400).json({ error: 'link 必填 (orbitdb:// / ipns:// / https://.../registry)' });
+      const r = await joinNetwork(link);
+      res.json(r);
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.get('/api/gateway/link', async (req: any, res: any) => {
+    try {
+      const { shareNetworkLink } = await import('../agents/gateway-network.js');
+      const name = String(req.query?.name || '').trim() || undefined;
+      const r = await shareNetworkLink(name ? { name } : undefined);
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      res.json({ ok: true, link: r.link });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.get('/api/gateway/networks', async (_req, res) => {
+    try {
+      const { listJoinedNetworks } = await import('../agents/gateway-network.js');
+      res.json({ networks: await listJoinedNetworks() });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.get('/api/gateway/status', async (_req, res) => {
+    try {
+      const { gatewayStatus } = await import('../agents/agent-gateway.js');
+      const { getAgentRegistry } = await import('../agents/agent-registry.js');
+      const { listJoinedNetworks } = await import('../agents/gateway-network.js');
+      const registry = getAgentRegistry();
+      const services = await registry.list();
+      res.json({
+        ready: registry.ready,
+        count: services.length,
+        services,
+        networks: await listJoinedNetworks(),
+        summary: await gatewayStatus(),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  // ============ 2026-08-14: P2P 群组 (微信式群聊, OrbitDB events store) ============
+  app.post('/api/gateway/groups', async (req: any, res: any) => {
+    try {
+      const { createGroup } = await import('../agents/gateway-group.js');
+      const r = await createGroup(String(req.body?.name || '').trim(), {
+        from: String(req.body?.from || '').trim() || undefined,
+        hello: req.body?.hello ? String(req.body.hello) : undefined,
+      });
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      registerGroupSse(r.group!.id, r.group!.name);
+      res.json({ ok: true, group: r.group });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.post('/api/gateway/groups/join', async (req: any, res: any) => {
+    try {
+      const { joinGroup } = await import('../agents/gateway-group.js');
+      const link = String(req.body?.link || '').trim();
+      if (!link) return res.status(400).json({ error: 'link 必填 (orbitdb://...?type=group&name=...)' });
+      const r = await joinGroup(link);
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      if (r.group) registerGroupSse(r.group.id, r.group.name);
+      res.json(r);
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.get('/api/gateway/groups', async (_req, res) => {
+    try {
+      const { listGroups, groupInfo } = await import('../agents/gateway-group.js');
+      const groups = await listGroups();
+      const detailed = await Promise.all(groups.map((g) => groupInfo(g.id).catch(() => g)));
+      res.json({ groups: detailed });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.get('/api/gateway/groups/:id/messages', async (req: any, res: any) => {
+    try {
+      const { groupMessages } = await import('../agents/gateway-group.js');
+      const limit = Math.min(Number(req.query?.limit || 50), 200);
+      const msgs = await groupMessages(String(req.params.id), limit);
+      res.json({ messages: msgs });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.post('/api/gateway/groups/:id/message', async (req: any, res: any) => {
+    try {
+      const { groupSend } = await import('../agents/gateway-group.js');
+      const r = await groupSend(String(req.params.id), String(req.body?.text || ''), String(req.body?.from || 'web-user'));
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.get('/api/gateway/groups/:id/link', async (req: any, res: any) => {
+    try {
+      const { groupLink } = await import('../agents/gateway-group.js');
+      const link = await groupLink(String(req.params.id));
+      if (!link) return res.status(404).json({ error: '群组不存在' });
+      res.json({ ok: true, link });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
   // 2026-08-13: 人工支付审批 API — YAML 验证门 confirm 的支付请求
   app.get('/api/payments/pending', async (_req, res) => {
     try {
@@ -2960,10 +3097,33 @@ ${goalDesc}
       const { warmAgentRegistry } = await import('../agents/agent-registry.js');
       const ok = await warmAgentRegistry();
       console.log(`[agent-registry] OrbitDB 服务注册表 ${ok ? '已启用' : '未启用 (回退本地)'}`);
+      // 2026-08-14: 恢复已加入的 Agent 网络 (重启后仍是家庭成员, 失败静默保留记录)
+      const { restoreJoinedNetworks } = await import('../agents/gateway-network.js');
+      restoreJoinedNetworks().then((r) => {
+        if (r.total > 0) console.log(`[agent-gateway] 恢复 ${r.restored}/${r.total} 个已加入网络 (失败 ${r.failed}, 记录保留)`);
+      }).catch(() => {});
+      // 2026-08-14: 恢复已加入的群组 (重开 store + 注册 SSE 广播)
+      const { restoreGroups, listGroups } = await import('../agents/gateway-group.js');
+      restoreGroups().then((r) => {
+        if (r.total > 0) console.log(`[agent-gateway] 恢复 ${r.restored}/${r.total} 个群组 (失败 ${r.failed})`);
+        listGroups().then((gs) => { for (const g of gs) registerGroupSse(g.id, g.name); }).catch(() => {});
+      }).catch(() => {});
     } catch (e: any) {
       console.warn('[agent-registry] 预热失败 (非致命):', e?.message?.slice(0, 120));
     }
   })();
+
+  // 2026-08-14: 群组消息 → SSE 广播 (手机端/Web 实时收到群聊)
+  const groupSseRegistered = new Set<string>();
+  function registerGroupSse(groupId: string, groupName: string): void {
+    if (groupSseRegistered.has(groupId)) return;
+    groupSseRegistered.add(groupId);
+    import('../agents/gateway-group.js').then(({ onGroupMessage }) =>
+      onGroupMessage(groupId, (msg) => {
+        try { broadcast({ type: 'group-message', groupId, groupName, message: msg }, 'p2p-global'); } catch { /* 忽略 */ }
+      })
+    ).catch(() => {});
+  }
 
   app.get('/api/health', (_req, res) => {
     res.json(healthCheck(getPackageVersion()));
@@ -3697,6 +3857,15 @@ ${goalDesc}
 
       // 将真实 DID 作为上下文前缀，让 AI 使用真实的 DID 而不是自己编造的
       let contextHint = '';
+      // 2026-08-14: 本地消息带 gateway 链接 → 自动加入, 结果注入 agent 上下文 (5s 上限, 不阻塞 LLM)
+      try {
+        const { maybeAutoJoinGateway } = await import('../agents/gateway-network.js');
+        const gwNote = await Promise.race([
+          maybeAutoJoinGateway(text),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+        ]);
+        if (gwNote) contextHint += `[系统上下文] ${gwNote}\n`;
+      } catch { /* 自动加入失败不阻塞 */ }
       // 2026-08-02: slash 命令提示 (在 /message 开头解析, 这里注入)
       if (slashCommandHint) contextHint += slashCommandHint;
       if (realChannelDid) contextHint += `[系统上下文] 当前频道名称: ${realChannelName}, 你的真实 DID: ${realChannelDid}\n`;

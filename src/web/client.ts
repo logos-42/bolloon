@@ -341,6 +341,260 @@ function showStaticModeNotice(): void {
 }
 
 // v3: 全局 SSE 监听 (p2p-global channel) - 接收远端 chat.reply 等事件
+// ============================================================
+// 2026-08-14: Agent 网络 (Gateway) UI — 群组群聊 + 服务网络 (手机端/Web 共用)
+// 微信式: 群组 = OrbitDB 共享 events store, 链接即进群, 消息全网实时同步.
+// ============================================================
+let gwGroups: any[] = [];
+let gwNetworks: any[] = [];
+let gwActiveChat: { id: string; name: string } | null = null;
+const gwMsgCache = new Map<string, any[]>(); // groupId -> messages
+
+function gwToast(text: string): void {
+  try { (window as any).showToast?.(text); } catch { /* 忽略 */ }
+  console.log('[gateway]', text);
+}
+
+function gwEsc(s: unknown): string {
+  try { return escapeHtml(String(s ?? '')); } catch { return String(s ?? ''); }
+}
+
+/** 通用 modal (原生 DOM, 轻量) */
+function gwModal(html: string): { root: HTMLElement; close: () => void } {
+  const overlay = document.createElement('div');
+  overlay.className = 'gw-modal-overlay';
+  overlay.innerHTML = `<div class="gw-modal">${html}<div class="gw-modal-close" title="关闭">✕</div></div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector('.gw-modal-close')?.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  return { root: overlay, close };
+}
+
+async function loadGatewaySidebar(): Promise<void> {
+  try {
+    const [g, n] = await Promise.all([
+      fetch('/api/gateway/groups').then((r) => r.json()).catch(() => ({ groups: [] })),
+      fetch('/api/gateway/status').then((r) => r.json()).catch(() => ({ networks: [] })),
+    ]);
+    gwGroups = Array.isArray(g.groups) ? g.groups : [];
+    gwNetworks = Array.isArray(n.networks) ? n.networks : [];
+    renderGatewaySidebar();
+  } catch { /* 忽略 */ }
+}
+
+function renderGatewaySidebar(): void {
+  const list = document.getElementById('gateway-list');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const grp of gwGroups) {
+    const li = document.createElement('li');
+    li.className = 'gateway-item';
+    li.innerHTML = `<span class="gateway-item-icon">👥</span>
+      <span class="gateway-item-main">
+        <span class="gateway-item-name">${gwEsc(grp.name || '群组')}</span>
+        <span class="gateway-item-sub">${grp.memberCount ?? 0} 成员 · ${grp.messageCount ?? 0} 条消息</span>
+      </span>`;
+    li.title = '打开群聊';
+    li.onclick = () => openGroupChat(grp.id, grp.name || grp.id);
+    list.appendChild(li);
+  }
+  for (const net of gwNetworks) {
+    const li = document.createElement('li');
+    li.className = 'gateway-item gateway-item-net';
+    li.innerHTML = `<span class="gateway-item-icon">🌐</span>
+      <span class="gateway-item-main">
+        <span class="gateway-item-name">${gwEsc(net.name || String(net.link || '').slice(0, 24) || '网络')}</span>
+        <span class="gateway-item-sub">${net.serviceCount ?? 0} 个服务</span>
+      </span>`;
+    li.title = `服务网络: ${net.link || ''}`;
+    list.appendChild(li);
+  }
+  if (!gwGroups.length && !gwNetworks.length) {
+    list.innerHTML = '<li class="sidebar-empty-hint">(暂无网络, 点 + 加入)</li>';
+  }
+}
+
+/** 加入 modal: 粘贴链接 (自动识别服务网络 / 群组) */
+function openGatewayJoinModal(): void {
+  const { root, close } = gwModal(`
+    <div class="gw-join">
+      <h3>加入 Agent 网络 / 群组</h3>
+      <p class="gw-hint">粘贴邀请链接 (orbitdb://...), 自动识别服务网络或群组.</p>
+      <input class="gw-join-input" placeholder="orbitdb:///orbitdb/...?type=group&name=..." />
+      <div class="gw-join-actions">
+        <button class="gw-join-go">加入</button>
+        <button class="gw-join-my">🔗 我的网络链接</button>
+      </div>
+      <div class="gw-join-result"></div>
+    </div>`);
+  const input = root.querySelector('.gw-join-input') as HTMLInputElement;
+  const go = root.querySelector('.gw-join-go') as HTMLButtonElement;
+  const my = root.querySelector('.gw-join-my') as HTMLButtonElement;
+  const result = root.querySelector('.gw-join-result') as HTMLElement;
+  go.onclick = async () => {
+    const link = String(input.value || '').trim();
+    if (!link) { result.textContent = '请输入链接'; return; }
+    if (link.includes('type=group')) {
+      const r = await fetch('/api/gateway/groups/join', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ link }),
+      }).then((x) => x.json()).catch(() => ({ ok: false, error: '请求失败' }));
+      if (r.ok) {
+        result.textContent = r.already ? '已在该群组中 ✓' : `✅ 已加入群组「${r.group?.name || ''}」`;
+        close(); loadGatewaySidebar();
+      } else result.textContent = `❌ ${r.error || '加入失败'}`;
+    } else {
+      const r = await fetch('/api/gateway/join', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ link }),
+      }).then((x) => x.json()).catch(() => ({ ok: false, error: '请求失败' }));
+      if (r.ok) {
+        result.textContent = r.already ? '已在该网络中 ✓' : `✅ 已加入网络 (${r.total} 服务, 新增 ${r.joined})`;
+        close(); loadGatewaySidebar();
+      } else result.textContent = `❌ ${r.error || '加入失败'}`;
+    }
+  };
+  my.onclick = async () => {
+    const r = await fetch('/api/gateway/link').then((x) => x.json()).catch(() => null);
+    if (r?.link) {
+      try { await navigator.clipboard.writeText(r.link); } catch { /* 剪贴板不可用 */ }
+      result.innerHTML = `我的网络邀请链接已复制:<br><code>${gwEsc(r.link)}</code>`;
+    } else result.textContent = '❌ 生成链接失败 (OrbitDB 未就绪)';
+  };
+}
+
+/** 创建群组 modal */
+function openGatewayNewGroupModal(): void {
+  const { root, close } = gwModal(`
+    <div class="gw-join">
+      <h3>创建群组</h3>
+      <p class="gw-hint">群组 = 微信式群聊, 分享链接邀请其他 Agent / Bolloon 加入.</p>
+      <input class="gw-join-input" placeholder="群组名 (如: 研究协作组)" />
+      <div class="gw-join-actions"><button class="gw-join-go">创建</button></div>
+      <div class="gw-join-result"></div>
+    </div>`);
+  const input = root.querySelector('.gw-join-input') as HTMLInputElement;
+  const go = root.querySelector('.gw-join-go') as HTMLButtonElement;
+  const result = root.querySelector('.gw-join-result') as HTMLElement;
+  go.onclick = async () => {
+    const name = String(input.value || '').trim();
+    if (!name) { result.textContent = '请输入群组名'; return; }
+    const r = await fetch('/api/gateway/groups', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, from: 'web-user' }),
+    }).then((x) => x.json()).catch(() => ({ ok: false, error: '请求失败' }));
+    if (r.ok) {
+      result.innerHTML = `✅ 群组已创建.<br><b>邀请链接:</b><br><code>${gwEsc(r.group?.link)}</code><br>复制分享给其他 Bolloon/Agent.`;
+      loadGatewaySidebar();
+    } else result.textContent = `❌ ${r.error || '创建失败'}`;
+  };
+}
+
+/** 群聊 modal (微信式聊天室) */
+function openGroupChat(id: string, name: string): void {
+  gwActiveChat = { id, name };
+  const { root, close } = gwModal(`
+    <div class="gw-chat">
+      <div class="gw-chat-header">
+        <b>👥 ${gwEsc(name)}</b>
+        <span class="gw-chat-actions">
+          <button class="gw-chat-invite" title="复制群邀请链接">🔗 邀请</button>
+        </span>
+      </div>
+      <div class="gw-chat-msgs" id="gw-msgs-${id}"><div class="gw-msg-empty">加载中...</div></div>
+      <div class="gw-chat-input-row">
+        <input class="gw-chat-input" id="gw-input-${id}" placeholder="发消息给群成员... (Enter 发送)" />
+        <button class="gw-chat-send">发送</button>
+      </div>
+    </div>`);
+  root.querySelector('.gw-chat-invite')?.addEventListener('click', async () => {
+    const r = await fetch(`/api/gateway/groups/${id}/link`).then((x) => x.json()).catch(() => null);
+    if (r?.link) {
+      try { await navigator.clipboard.writeText(r.link); } catch { /* 忽略 */ }
+      gwToast('群邀请链接已复制, 分享给其他 Agent');
+    } else gwToast('获取链接失败');
+  });
+  const sendBtn = root.querySelector('.gw-chat-send') as HTMLButtonElement;
+  const input = root.querySelector('.gw-chat-input') as HTMLInputElement;
+  sendBtn.onclick = () => { void sendGroupMessage(id); };
+  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); void sendGroupMessage(id); } };
+  void loadGroupMessages(id);
+}
+
+async function loadGroupMessages(id: string): Promise<void> {
+  const box = document.getElementById(`gw-msgs-${id}`);
+  if (!box) return;
+  const r = await fetch(`/api/gateway/groups/${id}/messages?limit=50`).then((x) => x.json()).catch(() => ({ messages: [] }));
+  gwMsgCache.set(id, Array.isArray(r.messages) ? r.messages : []);
+  renderGroupMessages(id);
+}
+
+function renderGroupMessages(id: string): void {
+  const box = document.getElementById(`gw-msgs-${id}`) as HTMLElement | null;
+  if (!box) return;
+  const msgs = gwMsgCache.get(id) || [];
+  const myName = (document.getElementById('user-name')?.textContent || 'web-user').trim();
+  box.innerHTML = msgs.map((m: any) => {
+    const mine = m.from === myName || m.from === 'web-user' || m.from === 'me';
+    const t = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return `<div class="gw-msg ${mine ? 'gw-msg-mine' : ''}">
+      <div class="gw-msg-meta"><b>${gwEsc(String(m.from).slice(0, 24))}</b> · ${t}</div>
+      <div class="gw-msg-text">${gwEsc(String(m.text))}</div>
+    </div>`;
+  }).join('') || '<div class="gw-msg-empty">群还没有消息, 说点什么吧 👋</div>';
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendGroupMessage(id: string): Promise<void> {
+  const input = document.getElementById(`gw-input-${id}`) as HTMLInputElement | null;
+  const text = input?.value?.trim();
+  if (!text) return;
+  const myName = (document.getElementById('user-name')?.textContent || 'web-user').trim();
+  const r = await fetch(`/api/gateway/groups/${id}/message`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, from: myName }),
+  }).then((x) => x.json()).catch(() => ({ ok: false, error: '请求失败' }));
+  if (r.ok) {
+    if (input) input.value = '';
+    void loadGroupMessages(id);
+  } else gwToast(r.error || '发送失败');
+}
+
+/** SSE: 群组新消息 (全成员实时同步) */
+function handleGroupMessage(msg: any): void {
+  const { groupId, message, groupName } = msg || {};
+  if (!groupId || !message) return;
+  const cur = gwActiveChat;
+  if (cur && cur.id === groupId) {
+    const cache = gwMsgCache.get(groupId) || [];
+    cache.push(message);
+    gwMsgCache.set(groupId, cache.slice(-100));
+    renderGroupMessages(groupId);
+  } else {
+    gwToast(`📢 ${groupName || '群组'} 新消息: ${String(message.text || '').slice(0, 40)}`);
+  }
+  void loadGatewaySidebar(); // 消息数/成员数刷新
+}
+
+// 事件绑定 + 初始加载 (DOMContentLoaded 已注册过其它监听, 这里独立再挂)
+document.addEventListener('DOMContentLoaded', () => {
+  const addBtn = document.getElementById('gateway-add-btn');
+  if (addBtn) addBtn.onclick = openGatewayJoinModal;
+  const ngBtn = document.getElementById('gateway-new-group-btn');
+  if (ngBtn) ngBtn.onclick = openGatewayNewGroupModal;
+  const gHeader = document.getElementById('gateway-header');
+  if (gHeader) gHeader.onclick = () => {
+    const t = document.getElementById('gateway-toggle');
+    const list = document.getElementById('gateway-list');
+    if (t && list) {
+      const open = t.textContent === '▼';
+      t.textContent = open ? '▶' : '▼';
+      list.style.display = open ? 'none' : '';
+    }
+  };
+  void loadGatewaySidebar();
+  setInterval(() => { void loadGatewaySidebar(); }, 30000);
+});
+
 let v3GlobalEventSource = null;
 function startV3GlobalSSE() {
   if (v3GlobalEventSource) return;
@@ -349,6 +603,7 @@ function startV3GlobalSSE() {
     v3GlobalEventSource.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
+        if (msg.type === 'group-message') { handleGroupMessage(msg); return; }
         if (msg.type === 'remote-chat-sent') {
           // 2026-08-02: @ 命令发出去的消息 — 在 P2P 对话框 (rcm-log) 显示"我 → 远端"
           //   之前只显示对方回复, 自己 @ 发出去的看不到

@@ -2448,6 +2448,122 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     },
   });
 
+  // 2026-08-14: Agent Gateway — 经济协调层统一入口 (注册/调用/加入网络/状态)
+  ctx.tools.set('gateway_register', {
+    name: 'gateway_register',
+    description: '把本 Agent 注册为服务提供者 (Agent Gateway 入口). capability: 能力名 (research/coding/data...); price: 价格; per: 计价单位; wallet: 收款地址. 注册后其他 Agent 能发现并调用你.',
+    parameters: {
+      capability: '能力名 (必填, research/coding/data/compute...)',
+      price: '价格 (必填, 如 0.05)',
+      currency: '币种 (默认 USDC)',
+      per: '计价单位 (默认 query)',
+      description: '服务描述 (可选)',
+      wallet: '收款钱包地址 (可选)',
+    },
+    execute: async (args) => {
+      const { gatewayRegisterAgent } = await import('./agent-gateway.js');
+      const r = await gatewayRegisterAgent(
+        {
+          capability: String(args.capability || '').trim(),
+          price: String(args.price || '').trim(),
+          currency: String(args.currency || 'USDC'),
+          per: String(args.per || 'query'),
+          description: String(args.description || '').trim() || undefined,
+          wallet: String(args.wallet || '').trim() || undefined,
+        },
+        { did: ctx.identity?.did || '', name: ctx.identity?.name || 'agent', wallet: String(args.wallet || '') },
+      );
+      return r.ok
+        ? { success: true, output: `✅ 已加入 Agent 网络: ${args.capability} @ ${args.price} ${args.currency}/${args.per}` }
+        : { success: false, error: r.error };
+    },
+  });
+
+  ctx.tools.set('gateway_call', {
+    name: 'gateway_call',
+    description: '通过 Agent Gateway 调用服务 (自动闭环: 发现→预算→验证门→执行→信誉). task: 任务描述; budget: 预算 (USDC); capability: 需要的能力. 需人工确认的支付会返回 approval 待审批.',
+    parameters: {
+      task: '任务描述 (必填)',
+      budget: '预算 USDC (必填)',
+      capability: '需要的能力 (可选, 如 research)',
+      url: '服务端点 URL (可选)',
+    },
+    execute: async (args) => {
+      const task = String(args.task || '').trim();
+      const budget = Number(args.budget);
+      if (!task || !budget || budget <= 0) return { success: false, error: 'task 和 budget(>0) 必填' };
+      try {
+        const { gatewayCallAgent } = await import('./agent-gateway.js');
+        const r = await gatewayCallAgent({
+          task,
+          budget,
+          capability: String(args.capability || '').trim() || undefined,
+          url: String(args.url || '').trim() || undefined,
+        });
+        if (r.success) return { success: true, output: `✅ ${r.provider}: ${r.output}` };
+        return { success: false, error: r.error, requiresApproval: r.requiresApproval, approvalId: r.approvalId, provider: r.provider };
+      } catch (e: any) {
+        return { success: false, error: `gateway_call 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
+
+  ctx.tools.set('gateway_join', {
+    name: 'gateway_join',
+    description: '通过链接加入共享 Agent 网络 (拉取远端服务合并到本地 registry). link: ipns://<name> 或 orbitdb://<address> 或 https://.../registry. 加入后可用 gateway_call 调用网络里的服务.',
+    parameters: { link: '网络链接 (必填, ipns:// / orbitdb:// / https://)' },
+    execute: async (args) => {
+      const link = String(args.link || '').trim();
+      if (!link) return { success: false, error: 'link 必填 (ipns:// / orbitdb:// / https://)' };
+      try {
+        const { joinNetwork } = await import('./gateway-network.js');
+        const r = await joinNetwork(link);
+        if (!r.ok) return { success: false, error: r.error };
+        return { success: true, output: `✅ 已加入 Agent 网络: 拉取 ${r.total} 个服务, 新增 ${r.joined} 个 (${r.linkKind})` };
+      } catch (e: any) {
+        return { success: false, error: `gateway_join 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
+
+  ctx.tools.set('gateway_status', {
+    name: 'gateway_status',
+    description: '查看 Agent 网络状态 (已注册服务 + 信誉 + 已加入的网络).',
+    parameters: {},
+    execute: async () => {
+      try {
+        const { gatewayStatus } = await import('./agent-gateway.js');
+        const { listJoinedNetworks } = await import('./gateway-network.js');
+        const nets = await listJoinedNetworks();
+        const netLine = nets.length
+          ? `\n已加入网络 (${nets.length}):\n` + nets.slice(0, 10).map((n) => `  [${n.kind}] ${n.name || n.link.slice(0, 48)} (${n.serviceCount} 服务, ${n.joinedAt.slice(0, 10)})`).join('\n')
+          : '\n(未加入任何网络, 收到 orbitdb:// 链接会自动加入, 或用 gateway_join)';
+        return { success: true, output: (await gatewayStatus()) + netLine };
+      } catch (e: any) {
+        return { success: false, error: `gateway_status 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
+
+  ctx.tools.set('gateway_share', {
+    name: 'gateway_share',
+    description: '生成本 Agent 网络的分享链接 (orbitdb://...). 把链接发给其他 Bolloon/Agent, 对方收到后会自动加入你的网络并发现你注册的服务.',
+    parameters: {
+      name: '网络名 (可选, 默认 registry 名)',
+    },
+    execute: async (args) => {
+      try {
+        const { shareNetworkLink } = await import('./gateway-network.js');
+        const name = String(args.name || '').trim() || undefined;
+        const r = await shareNetworkLink(name ? { name } : undefined);
+        if (!r.ok) return { success: false, error: r.error };
+        return { success: true, output: `🔗 Agent 网络分享链接 (对方收到后自动加入):\n${r.link}` };
+      } catch (e: any) {
+        return { success: false, error: `gateway_share 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
+
   // ============================================================
   // publish_did (2026-08-03) — 把当前 agent 的 DID 发布到 IPFS + IPNS
   // 全自动: 自动安装/启动本地 Kubo → 上传 DID 文档 → 发布 IPNS name

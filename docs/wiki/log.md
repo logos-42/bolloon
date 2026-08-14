@@ -4,6 +4,8 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-14 | feat | Agent Gateway P2P 群组 (微信式群聊): OrbitDB events store write:'*' 成员可写广播 + 群聊 UI (侧边栏 Agent 网络 + 加入/创建/邀请/群聊 modal) + 群组 API (create/join/send/messages) + SSE 实时 | [agent-economic-protocol.md](./agent-economic-protocol.md) |
+| 2026-08-14 | feat | Agent Gateway 落地: 链接即入口 — 消息自动加入 (本地/P2P 双挂点) + orbitdb:// 真实复制 (openStoreByAddress) + 成员身份持久化/重启恢复 + gateway_share 分享链接 + HTTP API (join/link/status) | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | feat | 人工支付审批闭环: YAML 验证门 confirm → CLI/手机端审批 → 批准自动执行 + Treasury 打通 | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | feat | Agent Economic Network M4 + 支付闭环验证: Reputation 整合 + 全链路验证脚本 (17/17) | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | feat | Agent Economic Network M1-M3 落地: 服务 Registry (OrbitDB) + x402 支付闭环 + Policy Engine (预算/签名隔离) | [agent-economic-protocol.md](./agent-economic-protocol.md) |
@@ -1467,3 +1469,91 @@ default permission 还禁 shell_exec.
 
 - 支付安全链: src/agents/payment-policy.yaml + payment-gate.ts + payment-approval.ts + economic-policy.ts + treasury-bridge.ts
 - 合约: contracts/evm + contracts/solana + src/constraint-runtime/.../PolymarketSDK/econ-integration.ts
+
+## [2026-08-14] feat | Agent Gateway 落地: 链接即入口 (自动加入大家庭)
+
+用户设计: Agent Gateway = Agent Economy 的"入口层 + 协调层 + 安全边界", 定位为人类世界和 Agent 世界之间的经济路由器 (支付宝 + DNS + Kubernetes + OAuth + API Gateway)。基础设施 (Registry/x402/Policy/Reputation/YAML 验证门/人工审批/Treasury) 8-13 已就绪, 本次补上"收到链接 → 自动加入"链路。
+
+### 核心设计: 入口 = 一条链接
+
+- `orbitdb://<storeAddress>` 主链路 (registry 本身是 OrbitDB keyvalue store, storeAddress 天然可分享, OrbitDB 复制 = 网络实时同步); `ipns://` 静态快照 (DHT 发布延迟); `https://.../registry` 兼容层。
+- **加入是自由的, 支付是受控的**: 自动加入只拉服务列表, gateway_call 花钱仍走 payment-gate (allow/confirm/deny) + 人工审批。
+- **成员身份持久化**: `~/.bolloon/gateway-networks.json`, 重启后自动恢复 (restoreJoinedNetworks) → "以后 bolloon 自动加入大家庭"的持久语义。
+
+### 落地
+
+| # | 内容 | 文件 |
+|---|------|------|
+| 1 | `CIDDatabase.openStoreByAddress(address, type)` — OrbitDB 原生 open 远端 store (replica 只读, 不污染他人数据); 抽 `wrapStore` 复用 | src/orbitdb/cid-database.ts |
+| 2 | gateway-network v2: 修 orbitdb:// 路径 (原 openStoreByAddress 不存在静默失败) + 幂等 (linkKey 按 kind+地址, 忽略 ?name) + 持久化 + restoreJoinedNetworks + shareNetworkLink (生成本机分享链接) + detectGatewayLink/maybeAutoJoinGateway (消息自动加入触发器) | src/agents/gateway-network.ts |
+| 3 | 自动加入双挂点: 本地 /message (contextHint 注入, 5s race 不阻塞 LLM) + P2P agent.chat.send (fire-and-forget + SSE 广播 {type:gateway}) | src/web/server.ts |
+| 4 | HTTP API: POST /api/gateway/join + GET /api/gateway/link + GET /api/gateway/networks + GET /api/gateway/status; 启动恢复挂 warmAgentRegistry 后 | src/web/server.ts |
+| 5 | gatewayRegisterAgent 先 warm OrbitDB (修复: 注册发生在 warm 前 → 只落本地, 分享链接指向的 store 是空的); 5 agent 工具 gateway_register/call/join/share/status | src/agents/agent-gateway.ts + pi-sdk-tools.ts |
+
+### 验证
+
+- `npx tsc --noEmit` 0 错 + `npx vitest run` 全绿 (1393/1393, +14 agent-gateway 单测: 链接解析/检测/幂等/持久化/自动加入/分享/重启恢复, HOME 隔离 + fake registry 注入).
+- `scripts/verify-agent-gateway.ts` 真实链路 20/20: 注册 → OrbitDB ready → shareNetworkLink → parse/detect → joinNetwork(orbitdb://) 真实复制 → 幂等 → 消息自动加入 (静默/通知) → 多网络成员 → 重启恢复.
+- build:main + build:web 通过.
+
+### 使用方法 (入口要小)
+
+```bash
+# 1. 注册自己的服务 (agent 工具或 API)
+curl -X POST http://127.0.0.1:54188/api/registry/register -d '{"agentId":"did:diap:x","name":"X","wallet":"0x..","service":{"name":"research","description":"研究","price":{"amount":"0.05","currency":"USDC","per":"query"}}}'
+
+# 2. 生成分享链接 (发给其他 Bolloon)
+curl http://127.0.0.1:54188/api/gateway/link   # → {"ok":true,"link":"orbitdb:///orbitdb/zdpu...?name=..."}
+
+# 3. 对方收到链接 → 自动加入 (聊天里粘贴 / P2P 消息 / 或显式)
+curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orbitdb/zdpu..."}'
+
+# 4. 调用网络服务
+# agent 工具: gateway_call {task, budget, capability}
+# 或: gateway_status 查看网络
+```
+
+### 关联
+
+- 协调层: src/agents/agent-gateway.ts (register/call/status)
+- 网络: src/agents/gateway-network.ts (join/share/restore/autojoin)
+- Registry: src/agents/agent-registry.ts (OrbitDB keyvalue 主存储 + 本地 fallback)
+- 验证: scripts/verify-agent-gateway.ts
+
+## [2026-08-14] feat | Agent Gateway P2P 群组 (微信式群聊)
+
+用户需求: ① 手机端怎么操作 gateway 才符合用户习惯; ② gateway 需要支持 P2P 群组。
+
+### 设计: 群组 = OrbitDB 共享 events store (write:'*')
+
+- 技术验证: OrbitDB 4.0 events store + accessController `{write:['*']}` + 用地址可写打开 (成员可广播) + 同 store 全量读回 → 跨节点靠 pubsub 复制实时同步 (验证通过).
+- **群组 = 微信群**: 链接 `orbitdb://<addr>?type=group&name=<群名>` 即进群, 发消息 = store.add 广播, 全成员实时收到 (onChange → SSE).
+- **网络 vs 群组**: registry keyvalue store (服务市场) vs events store (群聊) — link 带 `type=group` 区分, join 时自动识别.
+- 手机端操作 (符合微信习惯): 侧边栏「Agent 网络」section → 群组列表 (成员数/消息数) → 点进群聊 modal (消息气泡 + 输入框 Enter 发送) → 🔗 邀请复制链接; + 群组创建 / + 加入粘贴链接 (自动识别网络或群组); 30s 轮询刷新列表.
+
+### 落地
+
+| # | 内容 | 文件 |
+|---|------|------|
+| 1 | openStore 透传 accessController (群组 write:'*'); openStoreByAddress 加 replica 参数 (默认 true 只读, false 可写群组) | src/orbitdb/cid-database.ts |
+| 2 | gateway-group.ts: createGroup (欢迎消息+持久化) / joinGroup (幂等按地址) / groupSend / groupMessages (ts 排序取最近 N) / groupMembers (from 去重) / groupInfo / restoreGroups (重启恢复) + store 缓存 + onGroupMessage 订阅回调 + 测试注入 (setGroupTestDb/resetGroupState) | src/agents/gateway-group.ts |
+| 3 | 群组 HTTP API: POST /api/gateway/groups (创建) + /join (链接加入) + GET /groups + /groups/:id/messages + POST /groups/:id/message + GET /groups/:id/link; SSE 广播 {type:group-message} (registerGroupSse 幂等注册) + 启动 restoreGroups | src/web/server.ts |
+| 4 | Web/手机端 UI: 侧边栏 Agent 网络 section (index.html) + 群聊 modal/加入/创建/邀请/SSE 实时 (client.ts 原生 DOM 模块) + 品牌色样式 (style.css) | src/web/index.html + client.ts + style.css |
+
+### 验证
+
+- `npx tsc --noEmit` 0 错 + `npx vitest run` 全绿 (1404/1404, +11 gateway-group 单测: 链接解析/创建/加入幂等/消息/成员/恢复, fake CIDDatabase 注入).
+- `scripts/verify-agent-gateway.ts` 真实链路 29/29 (新增 [8] 群组 9 项: 创建→发消息→读回→幂等→成员→信息→列表→恢复).
+
+### 手机端操作路径 (符合用户习惯)
+
+1. 侧边栏「Agent 网络」→「+ 群组」输入群名 → 创建 → 复制邀请链接发给好友
+2. 好友收到 `orbitdb://...?type=group` 链接 (聊天里/粘贴) → 自动识别进群
+3. 点群组 → 微信式群聊界面: 消息实时同步 (SSE), Enter 发送
+4. 🔗 邀请按钮随时复制链接拉新成员; 网络 (服务市场) 同样支持链接加入
+
+### 关联
+
+- 群组: src/agents/gateway-group.ts / src/test/gateway-group.test.ts
+- 验证: scripts/verify-agent-gateway.ts (29/29)
+- 上一条: Agent Gateway 链接即入口 (2026-08-14)

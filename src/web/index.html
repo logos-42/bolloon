@@ -90,6 +90,23 @@
         </ul>
       </div>
 
+      <!-- 2026-08-14: Agent 网络 (Gateway) — 群组群聊 + 服务网络 -->
+      <div class="sidebar-section" id="gateway-section">
+        <div class="section-header is-compact is-clickable" id="gateway-header">
+          <span class="section-header-row">
+            <span id="gateway-toggle">▼</span>
+            <span class="section-title">Agent 网络</span>
+          </span>
+          <span class="section-header-actions">
+            <button id="gateway-new-group-btn" class="sidebar-mini-btn" title="创建群组 (微信群聊式)">+ 群组</button>
+            <button id="gateway-add-btn" class="sidebar-mini-btn" title="粘贴链接加入网络/群组 (orbitdb://...)">+ 加入</button>
+          </span>
+        </div>
+        <ul class="channel-list" id="gateway-list">
+          <li class="sidebar-empty-hint">(暂无网络, 点 + 加入)</li>
+        </ul>
+      </div>
+
       <div class="sidebar-footer">
         <div class="user-avatar" id="user-avatar" title="点击查看 DID 身份">
           <span class="avatar-letter" id="avatar-letter">?</span>

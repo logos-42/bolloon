@@ -67,7 +67,14 @@ export interface CIDDatabase {
    * 与 bolloon-cid-store 共享同一 helia 节点 + OrbitDB 实例 (单例, 不重复建节点)。
    * type: 'keyvalue' | 'events' — events 是 append-only 事件流 (WAL 复制用).
    */
-  openStore(name: string, type?: 'keyvalue' | 'events'): Promise<OrbitDBStore>;
+  openStore(name: string, type?: 'keyvalue' | 'events', opts?: { accessController?: { write: string[] } }): Promise<OrbitDBStore>;
+  /**
+   * 2026-08-14: 按地址打开远端 store (共享网络 / 复制副本 / 群组)。
+   * replica=true (默认): 只读副本, 不写回远端 store (自动加入网络不污染他人数据)。
+   * replica=false: 可写打开 (群组用 — events store 配 write:'*' 时成员可广播消息)。
+   * 失败返回 null (网络不可达 / store 不存在)。
+   */
+  openStoreByAddress(address: string, type?: 'keyvalue' | 'events', opts?: { replica?: boolean; accessController?: { write: string[] } }): Promise<OrbitDBStore | null>;
   /** 关闭数据库 */
   close(): Promise<void>;
   /** 底层 OrbitDB 实例 (调试/高级用) */
@@ -213,15 +220,9 @@ export class OrbitDBAdapter implements CIDDatabase {
     return `bolloon-cid://${rec.id}`;
   }
 
-  /**
-   * 2026-08-08: 在同一 OrbitDB 实例上打开附加 store。
-   * events 类型 = append-only 事件流 (WAL 复制 / 轨迹流用).
-   * 返回的 store 是通用适配 (put=keyvalue / add=events).
-   */
-  async openStore(name: string, type: 'keyvalue' | 'events' = 'keyvalue'): Promise<OrbitDBStore> {
-    await this.ensure();
-    const raw = (await this._orbitdb!.open(name, { type })) as any;
-    const store: OrbitDBStore = {
+  /** 打开 store 的通用适配 (keyvalue/events 统一成 OrbitDBStore) */
+  private wrapStore(raw: any): OrbitDBStore {
+    return {
       address: raw.address,
       put: async (key, value) => { await raw.put(key, JSON.parse(JSON.stringify(value))); },
       add: async (value) => { await raw.add(JSON.parse(JSON.stringify(value))); },
@@ -248,7 +249,39 @@ export class OrbitDBAdapter implements CIDDatabase {
         };
       },
     };
-    return store;
+  }
+
+  /**
+   * 2026-08-08: 在同一 OrbitDB 实例上打开附加 store。
+   * events 类型 = append-only 事件流 (WAL 复制 / 轨迹流用).
+   * opts.accessController: 群组用 write:['*'] (任何人可写).
+   */
+  async openStore(name: string, type: 'keyvalue' | 'events' = 'keyvalue', opts?: { accessController?: { write: string[] } }): Promise<OrbitDBStore> {
+    await this.ensure();
+    const options: any = { type };
+    if (opts?.accessController) options.accessController = opts.accessController;
+    const raw = (await this._orbitdb!.open(name, options)) as any;
+    return this.wrapStore(raw);
+  }
+
+  /**
+   * 2026-08-14: 按地址打开远端 store (Agent Gateway 共享网络 / 群组)。
+   * replica=true → 只读副本: 拉取复制但不写回 (自动加入网络不污染他人 registry)。
+   * replica=false → 可写 (群组: events store 配 write:'*' 时成员可广播)。
+   */
+  async openStoreByAddress(address: string, type: 'keyvalue' | 'events' = 'keyvalue', opts?: { replica?: boolean; accessController?: { write: string[] } }): Promise<OrbitDBStore | null> {
+    await this.ensure();
+    try {
+      const options: any = { type };
+      if (opts?.replica === false) options.replica = false;
+      else options.replica = true;
+      if (opts?.accessController) options.accessController = opts.accessController;
+      const raw = (await this._orbitdb!.open(address, options)) as any;
+      return this.wrapStore(raw);
+    } catch (err) {
+      console.warn(`[orbitdb] openStoreByAddress 失败: ${String((err as Error)?.message || err).slice(0, 160)}`);
+      return null;
+    }
   }
 
   async close(): Promise<void> {

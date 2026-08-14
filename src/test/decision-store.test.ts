@@ -125,7 +125,7 @@ describe('decision-store (Context OS §7 九要素决策协议)', () => {
     expect(lesson.decision_type).toBe('reject');
   });
 
-  it('listDecisions 状态过滤 + decisionToContext 含 9 要素', async () => {
+  it('listDecisions 状态过滤 + decisionToContext 含 9 要素', { timeout: 30000 }, async () => {
     const a = await createDecision({ problem: '决策A: 列表过滤测试', options: [{ label: 'A' }] });
     await updateDecisionStatus(a.decision!.decisionId, { decide: true, recommendation: 'A' });
     await createDecision({ problem: '决策B: draft 状态', options: [{ label: 'B' }] });

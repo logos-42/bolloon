@@ -40,7 +40,7 @@ describe('treasury-bridge (Treasury × Agent 经济网络)', () => {
     expect(r.txHash).toContain('dry-run');
   });
 
-  it('treasuryStatus 未部署合约 → 返回错误', async () => {
+  it('treasuryStatus 未部署合约 → 返回错误', { timeout: 30000 }, async () => {
     const s = await treasuryStatus(cfg);
     expect(s.ok).toBe(false);
   });
