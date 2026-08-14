@@ -2864,6 +2864,63 @@ ${goalDesc}
     }
   });
 
+  // 2026-08-13: 人工支付审批 API — YAML 验证门 confirm 的支付请求
+  app.get('/api/payments/pending', async (_req, res) => {
+    try {
+      const { getApprovalStore } = await import('../agents/payment-approval.js');
+      const approvals = await getApprovalStore().pending();
+      res.json({ approvals });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.get('/api/payments', async (_req, res) => {
+    try {
+      const { getApprovalStore } = await import('../agents/payment-approval.js');
+      const approvals = await getApprovalStore().list();
+      res.json({ approvals });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.post('/api/payments/:id/approve', async (req: any, res: any) => {
+    try {
+      const { getApprovalStore, setApprovalExecutor } = await import('../agents/payment-approval.js');
+      const store = getApprovalStore();
+      // 批准后执行: 重试 serviceCall (带 retryPayload)
+      setApprovalExecutor(async (approval) => {
+        const payload = approval.retryPayload as any;
+        if (!payload) return { ok: false, error: '无重试载荷' };
+        const { serviceCall } = await import('../agents/agent-service-client.js');
+        const r = await serviceCall({
+          serviceName: payload.serviceName,
+          args: payload.args,
+          privateKey: payload.privateKey,
+          maxPaymentAmount: payload.maxPaymentAmount,
+        });
+        return { ok: r.success, result: r.output, error: r.error };
+      });
+      const r = await store.approve(String(req.params.id));
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      res.json({ ok: true, approval: r.approval });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  app.post('/api/payments/:id/reject', async (req: any, res: any) => {
+    try {
+      const { getApprovalStore } = await import('../agents/payment-approval.js');
+      const r = await getApprovalStore().reject(String(req.params.id));
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      res.json({ ok: true, approval: r.approval });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
   // 2026-08-12: MCP 工具列表 (MCP 前端支持 — 手机端/桌面 UI 展示可用 MCP 工具)
   app.get('/api/mcp/tools', async (_req, res) => {
     try {

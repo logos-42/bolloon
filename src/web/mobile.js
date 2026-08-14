@@ -44,7 +44,7 @@
     $$('.page').forEach((p) => { p.hidden = p.dataset.tab !== tab; });
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
     $('#topbar-title').textContent = TITLES[tab] || '微信';
-    if (tab === 'discover') loadMcpTools();
+    if (tab === 'discover') { loadMcpTools(); loadApprovals(); }
     window.__mobileTouch?.('tab', tab);
   }
   $$('.tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
@@ -306,6 +306,43 @@
   window.__mobileTouch = (type, data) => {
     // 预留: 触控事件上报/控制
   };
+
+  // === 人工支付审批 (2026-08-13): YAML 验证门 confirm 的支付请求 → 人工批准/拒绝 ===
+  async function loadApprovals() {
+    const box = $('#approval-list');
+    if (!box) return;
+    try {
+      const r = await api.get('/api/payments/pending');
+      const approvals = r.approvals || [];
+      box.innerHTML = '';
+      if (approvals.length === 0) {
+        box.innerHTML = '<div style="padding:10px 16px;color:var(--text-muted)">无待审批支付</div>';
+        return;
+      }
+      approvals.forEach((a) => {
+        const el = document.createElement('div');
+        el.className = 'conv-item';
+        el.style.flexDirection = 'column';
+        el.style.alignItems = 'flex-start';
+        el.innerHTML = `
+          <div style="width:100%"><b>${escapeHtml(a.service)}</b> $${a.amount} → ${escapeHtml(String(a.recipient).slice(0, 14))}...</div>
+          <div style="color:var(--text-muted);font-size:12px">${escapeHtml(a.reason)}</div>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <button class="approve-btn" data-id="${escapeHtml(a.id)}" style="background:var(--success,#22c55e);border:none;border-radius:6px;padding:4px 14px;color:#fff">批准</button>
+            <button class="reject-btn" data-id="${escapeHtml(a.id)}" style="background:var(--error,#ef4444);border:none;border-radius:6px;padding:4px 14px;color:#fff">拒绝</button>
+          </div>`;
+        el.querySelector('.approve-btn').addEventListener('click', async () => {
+          await api.post(`/api/payments/${a.id}/approve`, {}).catch(() => {});
+          loadApprovals();
+        });
+        el.querySelector('.reject-btn').addEventListener('click', async () => {
+          await api.post(`/api/payments/${a.id}/reject`, {}).catch(() => {});
+          loadApprovals();
+        });
+        box.appendChild(el);
+      });
+    } catch (e) { box.innerHTML = '<div style="padding:10px;color:var(--error)">审批加载失败</div>'; }
+  }
 
   // === MCP 驱动前端 UI (2026-08-12): 订阅 /events, 收到 {type:'ui'} 指令执行组件动作 ===
   function setupUiControl() {

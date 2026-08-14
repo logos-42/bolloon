@@ -1333,6 +1333,40 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
     return;
   }
 
+  // /payments [/approve <id> /reject <id>] — 人工支付审批 (2026-08-13)
+  //   YAML 验证门判定 confirm 的支付请求 → 这里人工批准/拒绝
+  if (cmd === '/payments' || cmd.startsWith('/payments ') || cmd.startsWith('/approve ') || cmd.startsWith('/reject ')) {
+    try {
+      const { getApprovalStore } = await import('./agents/payment-approval.js');
+      const store = getApprovalStore();
+      if (cmd.startsWith('/approve ')) {
+        const id = cmd.slice('/approve '.length).trim();
+        const r = await store.approve(id);
+        if (!r.ok) { appendLine(`${C_ERROR}${r.error}${RESET}`); return; }
+        appendLine(`${C_OK}✓ 已批准 ${id} → ${r.approval?.status}${r.approval?.result ? ` (${String(r.approval.result).slice(0, 80)})` : ''}${RESET}`);
+        return;
+      }
+      if (cmd.startsWith('/reject ')) {
+        const id = cmd.slice('/reject '.length).trim();
+        const r = await store.reject(id);
+        if (!r.ok) { appendLine(`${C_ERROR}${r.error}${RESET}`); return; }
+        appendLine(`${C_WARN}✗ 已拒绝 ${id}${RESET}`);
+        return;
+      }
+      const approvals = await store.pending();
+      appendLine(`${C_ACCENT}待人工审批支付 (${approvals.length}):${RESET}`);
+      if (approvals.length === 0) { appendLine(`  ${C_DIM}无待审批 — YAML 验证门 allow/deny 已自动处理${RESET}`); }
+      for (const a of approvals) {
+        appendLine(`  ${C_WARN}⏳${RESET} ${C_ACCENT}${a.id}${RESET} ${a.service} $${a.amount} → ${String(a.recipient).slice(0, 12)}...`);
+        appendLine(`    ${C_DIM}${a.reason}${RESET}`);
+        appendLine(`    ${C_DIM}/approve ${a.id} | /reject ${a.id}${RESET}`);
+      }
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/payments 失败: ${String(e?.message || e).slice(0, 120)}${RESET}`);
+    }
+    return;
+  }
+
   // /skill — 技能候选 (skill-writer 落盘)
   if (cmd === '/skill') {
     try {

@@ -36,6 +36,8 @@ export interface ServiceCallResult {
   error?: string;
   /** YAML 验证门: confirm 时需人工审批 */
   requiresApproval?: boolean;
+  /** 审批请求 id (批准后自动执行) */
+  approvalId?: string;
 }
 
 /**
@@ -71,7 +73,23 @@ export async function serviceCall(opts: ServiceCallOptions): Promise<ServiceCall
       return { success: false, error: `[payment-gate] ${gateVerdict.reason}`, service };
     }
     if (gateVerdict.decision === 'confirm') {
-      return { success: false, error: `[payment-gate] 需人工确认: ${gateVerdict.reason} (confirm 后重试)`, service, requiresApproval: true };
+      // 2026-08-13: 人工审批 — 创建 pending 审批请求 (不自动执行), UI/CLI 批准后重试
+      const { getApprovalStore } = await import('./payment-approval.js');
+      const store = getApprovalStore();
+      const approval = await store.create({
+        service: service.service?.name || serviceName,
+        amount,
+        recipient: service.wallet,
+        reason: gateVerdict.reason,
+        retryPayload: { serviceName, args, privateKey, maxPaymentAmount: maxPaymentAmount || service.service?.price?.amount },
+      });
+      return {
+        success: false,
+        error: `[payment-gate] 需人工确认: ${gateVerdict.reason} (approval=${approval.id}, 批准后自动执行)`,
+        service,
+        requiresApproval: true,
+        approvalId: approval.id as any,
+      };
     }
     // Phase E3: Policy Engine 授权 (预算/白名单) — 通过才允许自动支付
     let effectiveKey = privateKey;
