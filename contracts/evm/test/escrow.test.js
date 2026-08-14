@@ -2,9 +2,11 @@ const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
 describe("AgentEscrow — Agent 服务托管", function () {
-  let token, escrow, owner, buyer, agent;
+  let token, escrow, owner, buyer, agent, snapshotId;
 
   beforeEach(async function () {
+    // 快照隔离: evm_increaseTime 跨测试污染 (block.timestamp / day 计算)
+    snapshotId = await ethers.provider.send("evm_snapshot", []);
     [owner, buyer, agent] = await ethers.getSigners();
     const MockERC20 = await ethers.getContractFactory("contracts/mocks/MockERC20.sol:MockERC20");
     token = await MockERC20.deploy("USDC", 6);
@@ -12,10 +14,14 @@ describe("AgentEscrow — Agent 服务托管", function () {
     await token.mint(buyer.address, ethers.parseUnits("10000", 6));
 
     const Escrow = await ethers.getContractFactory("AgentEscrow");
-    escrow = await Escrow.deploy(await token.getAddress());
+    escrow = await Escrow.deploy(await token.getAddress(), 7 * 86400); // releaseTimeout = 7 days
     await escrow.waitForDeployment();
 
     await token.connect(buyer).approve(await escrow.getAddress(), ethers.parseUnits("10000", 6));
+  });
+
+  afterEach(async function () {
+    await ethers.provider.send("evm_revert", [snapshotId]);
   });
 
   const taskId = "task-abc-123";
@@ -66,5 +72,52 @@ describe("AgentEscrow — Agent 服务托管", function () {
     await escrow.connect(buyer).dispute(id);
     await escrow.releaseAfterArbitration(id);
     expect(await token.balanceOf(agent.address)).to.equal(amount);
+  });
+
+  // ============ 完备性: 漏洞修复验证 (E1/E2/E3) ============
+
+  it("E2: agent 地址为 0 拒绝创建 (防资金黑洞)", async function () {
+    await expect(escrow.connect(buyer).createEscrow(ethers.ZeroAddress, amount, "task-zero-agent"))
+      .to.be.revertedWith("agent cannot be zero");
+  });
+
+  it("amount=0 拒绝创建", async function () {
+    await expect(escrow.connect(buyer).createEscrow(agent.address, 0, "task-zero-amt"))
+      .to.be.revertedWith("amount must be > 0");
+  });
+
+  it("E3: proofHash=0 拒绝提交 (0 不是有效证明)", async function () {
+    await escrow.connect(buyer).createEscrow(agent.address, amount, "task-proof0");
+    const id = ethers.keccak256(ethers.toUtf8Bytes("task-proof0"));
+    await expect(escrow.connect(agent).submitProof(id, ethers.ZeroHash))
+      .to.be.revertedWith("invalid proof");
+  });
+
+  it("E1: 超时前 agent 不能 claim", async function () {
+    await escrow.connect(buyer).createEscrow(agent.address, amount, "task-timeout1");
+    const id = ethers.keccak256(ethers.toUtf8Bytes("task-timeout1"));
+    await expect(escrow.connect(agent).claimAfterTimeout(id))
+      .to.be.revertedWith("timeout not reached");
+  });
+
+  it("E1: 超时后 agent 可 claim (防资金永久锁定)", async function () {
+    await escrow.connect(buyer).createEscrow(agent.address, amount, "task-timeout2");
+    const id = ethers.keccak256(ethers.toUtf8Bytes("task-timeout2"));
+    // 快进 8 天
+    await ethers.provider.send("evm_increaseTime", [8 * 86400]);
+    await ethers.provider.send("evm_mine", []);
+    await escrow.connect(agent).claimAfterTimeout(id);
+    expect(await token.balanceOf(agent.address)).to.equal(amount);
+  });
+
+  it("E1: dispute 后不可 claim (争议优先)", async function () {
+    await escrow.connect(buyer).createEscrow(agent.address, amount, "task-dispute-timeout");
+    const id = ethers.keccak256(ethers.toUtf8Bytes("task-dispute-timeout"));
+    await escrow.connect(agent).submitProof(id, proofHash);
+    await escrow.connect(buyer).dispute(id);
+    await ethers.provider.send("evm_increaseTime", [8 * 86400]);
+    await ethers.provider.send("evm_mine", []);
+    await expect(escrow.connect(agent).claimAfterTimeout(id))
+      .to.be.revertedWith("not active");
   });
 });

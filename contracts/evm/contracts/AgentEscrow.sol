@@ -41,16 +41,23 @@ contract AgentEscrow {
     event Released(bytes32 indexed taskId, address agent, uint256 amount);
     event Disputed(bytes32 indexed taskId);
     event Refunded(bytes32 indexed taskId, address buyer, uint256 amount);
+    event ClaimedAfterTimeout(bytes32 indexed taskId, address agent, uint256 amount);
+
+    /** 超时释放: buyer 超时不确认, agent 可 claim (防资金永久锁定 E1) */
+    uint256 public releaseTimeout;
 
     modifier onlyOwner() { require(msg.sender == owner, "not owner"); _; }
 
-    constructor(address _token) {
+    constructor(address _token, uint256 _releaseTimeout) {
         token = IERC20(_token);
         owner = msg.sender;
+        releaseTimeout = _releaseTimeout; // e.g. 7 days
     }
 
     /** buyer 创建托管 (存款 USDC) */
     function createEscrow(address agent, uint256 amount, string calldata taskId) external {
+        require(agent != address(0), "agent cannot be zero"); // E2: 防资金黑洞
+        require(amount > 0, "amount must be > 0");
         bytes32 id = _taskHash(taskId);
         require(escrows[id].buyer == address(0), "task exists");
         require(token.transferFrom(msg.sender, address(this), amount), "deposit failed");
@@ -61,6 +68,7 @@ contract AgentEscrow {
 
     /** agent 提交完成证明 (proofHash = 结果 CID hash) */
     function submitProof(bytes32 taskId, bytes32 proofHash) external {
+        require(proofHash != bytes32(0), "invalid proof"); // E3: 0 不是有效证明
         Escrow storage e = escrows[taskId];
         require(e.state == EscrowState.ACTIVE, "not active");
         require(msg.sender == e.agent, "only agent");
@@ -77,6 +85,20 @@ contract AgentEscrow {
         e.state = EscrowState.RELEASED;
         require(token.transfer(e.agent, e.amount), "release failed");
         emit Released(taskId, e.agent, e.amount);
+    }
+
+    /**
+     * E1 修复: 超时 claim — buyer 超时不确认/不 dispute 时, agent 可主动领取.
+     * 防止 buyer 恶意/丢失导致资金永久锁定.
+     */
+    function claimAfterTimeout(bytes32 taskId) external {
+        Escrow storage e = escrows[taskId];
+        require(e.state == EscrowState.ACTIVE, "not active");
+        require(msg.sender == e.agent, "only agent");
+        require(block.timestamp >= e.createdAt + releaseTimeout, "timeout not reached");
+        e.state = EscrowState.RELEASED;
+        require(token.transfer(e.agent, e.amount), "claim failed");
+        emit ClaimedAfterTimeout(taskId, e.agent, e.amount);
     }
 
     /** 争议: 冻结资金 (买方/agent 均可发起) */
