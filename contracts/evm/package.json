@@ -1,0 +1,14 @@
+{
+  "name": "@bolloon/contracts-evm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Economic Network — EVM 合约 (Treasury + Escrow)",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.0"
+  }
+}
