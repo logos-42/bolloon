@@ -2391,6 +2391,63 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     },
   });
 
+  // 2026-08-13: Treasury 桥 — 链下结算 (Policy/Registry) 驱动链上 Treasury.payAgent
+  //   配置: BOLLOON_TREASURY_RPC / BOLLOON_TREASURY_ADDRESS / BOLLOON_TREASURY_KEY / BOLLOON_TREASURY_TOKEN
+  const treasuryConfigFromEnv = () => {
+    const rpcUrl = process.env.BOLLOON_TREASURY_RPC || '';
+    const treasuryAddress = process.env.BOLLOON_TREASURY_ADDRESS || '';
+    const tokenAddress = process.env.BOLLOON_TREASURY_TOKEN || '';
+    const privateKey = process.env.BOLLOON_TREASURY_KEY || '';
+    return { rpcUrl, treasuryAddress, tokenAddress, privateKey };
+  };
+
+  ctx.tools.set('treasury_pay', {
+    name: 'treasury_pay',
+    description: '从 Treasury 支付给 Agent (链上 AgentTreasury.payAgent). 自动过 Policy 预算校验 + 信誉门槛 (链上). agent_address: 收款 Agent 地址; amount: 金额 (USDC). 需配置 BOLLOON_TREASURY_* 环境变量 (RPC/合约/私钥).',
+    parameters: { agent_address: '收款 Agent 钱包地址 (必填)', amount: '金额 USDC (必填)', service: '服务名 (可选, Policy 校验用)' },
+    execute: async (args) => {
+      const cfg = treasuryConfigFromEnv();
+      if (!cfg.rpcUrl || !cfg.treasuryAddress || !cfg.privateKey) {
+        return { success: false, error: '未配置 Treasury (BOLLOON_TREASURY_RPC/ADDRESS/KEY/TOKEN)' };
+      }
+      const agentAddress = String(args.agent_address || '').trim();
+      const amount = Number(args.amount);
+      if (!agentAddress || !amount || amount <= 0) return { success: false, error: 'agent_address 和 amount(>0) 必填' };
+      try {
+        const { treasuryPay } = await import('./treasury-bridge.js');
+        const r = await treasuryPay(cfg as any, {
+          agentAddress,
+          amount,
+          service: String(args.service || '').trim() || undefined,
+        });
+        if (!r.success) return { success: false, error: r.error };
+        return { success: true, output: `✅ Treasury 已支付 ${amount} USDC → ${agentAddress.slice(0, 10)}... tx=${r.txHash}` };
+      } catch (e: any) {
+        return { success: false, error: `treasury_pay 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
+
+  ctx.tools.set('treasury_status', {
+    name: 'treasury_status',
+    description: '查询 Treasury 状态 (余额/日限/冻结). 需配置 BOLLOON_TREASURY_* 环境变量.',
+    parameters: {},
+    execute: async () => {
+      const cfg = treasuryConfigFromEnv();
+      if (!cfg.rpcUrl || !cfg.treasuryAddress) {
+        return { success: false, error: '未配置 Treasury (BOLLOON_TREASURY_RPC/ADDRESS)' };
+      }
+      try {
+        const { treasuryStatus } = await import('./treasury-bridge.js');
+        const s = await treasuryStatus(cfg as any);
+        if (!s.ok) return { success: false, error: s.error };
+        return { success: true, output: `Treasury:\n  余额: ${s.balance} USDC\n  日限: ${s.dailyLimit} USDC\n  冻结: ${s.frozen ? '是' : '否'}` };
+      } catch (e: any) {
+        return { success: false, error: `treasury_status 失败: ${String(e?.message || e).slice(0, 200)}` };
+      }
+    },
+  });
+
   // ============================================================
   // publish_did (2026-08-03) — 把当前 agent 的 DID 发布到 IPFS + IPNS
   // 全自动: 自动安装/启动本地 Kubo → 上传 DID 文档 → 发布 IPNS name
