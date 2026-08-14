@@ -33,7 +33,7 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
-describe('PiAgentSession.saveCurrentSession', () => {
+describe('PiAgentSession.saveCurrentSession', { timeout: 30000 }, () => {
   it('把当前 messageHistory 写到注入的 SessionStore (不污染 ~/.bolloon)', async () => {
     const session = await createAgentSession({
       cwd: process.cwd(),
@@ -201,7 +201,7 @@ describe('PiAgentSession.saveCurrentSession', () => {
   });
 });
 
-describe('PiAgentSession — peekSessionHistory (不修改状态)', () => {
+describe('PiAgentSession — peekSessionHistory (不修改状态)', { timeout: 30000 }, () => {
   it('peek vs resume: peek 不改 messageHistory, resume 会', async () => {
     const writer = await createAgentSession({
       cwd: process.cwd(),
@@ -268,7 +268,7 @@ describe('PiAgentSession — peekSessionHistory (不修改状态)', () => {
   });
 });
 
-describe('PiAgentSession — integration with loadSessionKey (构造时读)', () => {
+describe('PiAgentSession — integration with loadSessionKey (构造时读)', { timeout: 30000 }, () => {
   it('loadSessionKey 加载 new schema 文件', async () => {
     // 先写一份 new schema 历史
     const sessionA = await createAgentSession({

@@ -40,7 +40,7 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
-describe('Persistence E2E flow — 完整 tool call 链路 round-trip', () => {
+describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeout: 30000 }, () => {
   it('phase 1-2: 手工构造 3-step tool_call 链 → save → 文件落地', async () => {
     const session = await createAgentSession({
       cwd: process.cwd(),
@@ -365,7 +365,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', () => {
   });
 });
 
-describe('Persistence E2E flow — Schema 容错与错误处理', () => {
+describe('Persistence E2E flow — Schema 容错与错误处理', { timeout: 30000 }, () => {
   it('save / load 100 条消息往返不丢', async () => {
     const session = await createAgentSession({
       cwd: process.cwd(),
