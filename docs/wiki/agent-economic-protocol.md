@@ -125,6 +125,27 @@ LLM
 - 私钥隔离: LLM 只见 Payment Intent, 不见私钥; Policy Engine 是唯一签名入口。
 - 预算冻结: daily_spending > limit → freeze (判断力负向回收模式可复用)。
 
+### 完整支付安全链 (2026-08-13, 不全部交给 AI)
+
+```text
+service_call → YAML 验证门 (payment-policy.yaml)
+  ├─ allow  → 自动执行
+  ├─ deny   → 拒绝 (不可覆盖)
+  └─ confirm → 人工审批 (payment-approval.ts)
+                ├─ /approve / 手机端"批准" → 自动重试支付
+                └─ /reject  → 终止
+     → Policy Engine (预算/白名单/速率, 私钥隔离)
+     → 链上 Treasury (信誉 ≥60 / 日预算 / 冻结)
+```
+
+| 层 | 组件 | 说明 |
+|----|------|------|
+| 规则层 | payment-policy.yaml + payment-gate.ts | 声明式规则 (allow/confirm/deny), 黑名单优先, 非 AI 决策 |
+| 审批层 | payment-approval.ts | pending 持久化 + 批准自动执行 + 超时自动拒绝 |
+| 预算层 | economic-policy.ts | 单笔/日限/白名单/速率 + 持久化 |
+| 链上层 | AgentTreasury (合约) | 信誉门槛/日预算/冻结/紧急提款/所有权 |
+| 交互层 | CLI /payments / Web / 手机端审批 UI | 人工确认入口 |
+
 ## 六、指标 (Agent GDP)
 
 ```text

@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-13 | feat | 人工支付审批闭环: YAML 验证门 confirm → CLI/手机端审批 → 批准自动执行 + Treasury 打通 | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | feat | Agent Economic Network M4 + 支付闭环验证: Reputation 整合 + 全链路验证脚本 (17/17) | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | feat | Agent Economic Network M1-M3 落地: 服务 Registry (OrbitDB) + x402 支付闭环 + Policy Engine (预算/签名隔离) | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | docs | README 中英文同步 + 引用 MIT 开源协议: 新增 LICENSE 文件 (MIT, Copyright yuanjie liu), README 中文加「开源协议」段 + 英文 License 段均链接 ./LICENSE | [README.md](../../README.md) / [LICENSE](../../LICENSE) |
@@ -1441,3 +1442,28 @@ default permission 还禁 shell_exec.
 
 - 信誉: src/agents/agent-reputation.ts + src/test/agent-reputation.test.ts
 - 验证: scripts/verify-agent-economy.ts
+
+## [2026-08-13] feat | 人工支付审批闭环 + Treasury 打通 + 合约构造
+
+### 背景
+
+用户要求: 智能体支付不能全部交给 AI → YAML 验证流程 + 人工审批 (CLI/Web/手机端); 随后构造主流链合约 (ETH/Solana/Polymarket), 并打通 Treasury.
+
+### 落地 (4 commit)
+
+| # | 内容 | commit |
+|---|------|--------|
+| 1 | YAML 支付验证门: payment-policy.yaml (allow/confirm/deny 规则链, 黑名单优先) + payment-gate.ts; service_call 接入; 6 测试 | 67bcefb |
+| 2 | 人工审批: payment-approval.ts (pending 持久化 + 批准自动执行 + 超时拒绝) + CLI /payments /approve /reject + 手机端审批 UI + server API; 6 测试 | 7e88185 |
+| 3 | Treasury × 经济网络打通: treasury-bridge.ts (Policy 校验 → 链上 payAgent, viem) + 工具; 3 测试 | 2343488 |
+| 4 | 合约构造: EVM Treasury+Escrow (20 测试, 安全完备性修复) + Solana Anchor 程序 (cargo check) + Polymarket 集成 (4 测试) | 28c5702/b472585/d07dd2e/37ecc8b |
+
+### 验证
+
+- `npx tsc --noEmit` 0 错 + `npx vitest run` 全绿 (1379 测试).
+- hardhat 合约测试 20/20; 经济闭环验证脚本 17/17.
+
+### 关联
+
+- 支付安全链: src/agents/payment-policy.yaml + payment-gate.ts + payment-approval.ts + economic-policy.ts + treasury-bridge.ts
+- 合约: contracts/evm + contracts/solana + src/constraint-runtime/.../PolymarketSDK/econ-integration.ts
