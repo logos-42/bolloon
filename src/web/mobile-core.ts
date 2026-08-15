@@ -113,6 +113,16 @@ export const core = {
         dataLayer.setDataTransport((type, payload, peerId) => sendViaP2P(type, payload, peerId));
         agentLayer.setAgentTransport((type, payload, peerId) => sendViaP2P(type, payload, peerId), id.did);
 
+        // 入站对端 chat → 数据层写入对端消息 + 事件广播 (对端 on-device 消息同步)
+        agentLayer.onInboundChat((text, channelId, fromPeer) => {
+          dataLayer.appendMessage(channelId, { role: 'ai', content: text, ts: Date.now(), from: fromPeer })
+            .then(() => {
+              busBroadcast({ type: 'ai', channelId, content: text, role: 'ai', from: fromPeer });
+              busBroadcast({ type: 'done', channelId });
+            })
+            .catch(() => {});
+        });
+
         // P2P 入站消息 → 路由 (data.* / agent.* 分开处理)
         onMobileP2PMessage((payload, fromPeer) => {
           routeIncomingMessage(payload, fromPeer).catch(() => {});
@@ -228,32 +238,22 @@ export const core = {
     async send({ text, channelId }: { text: string; channelId: string }): Promise<{ ok: boolean; error?: string }> {
       if (!text || !channelId) return { ok: false, error: 'text 和 channelId 必填' };
       const dataLayer = await import('./mobile-data.js');
+      const agentLayer = await import('./mobile-agent.js');
 
       // 1. 数据层: 记录用户消息 (独立副本)
       await dataLayer.appendMessage(channelId, { role: 'user', content: text, ts: Date.now() });
       busBroadcast({ type: 'user', channelId, content: text });
       busBroadcast({ type: 'done', channelId });
 
-      // 2. Agent 层: 主动调用远端 agent (若有已连接 peer), 等回复
+      // 2. 通知其他节点 (各自 on-device 处理, 不等回复; 失败静默单机)
       try {
-        const agentLayer = await import('./mobile-agent.js');
-        const { getMobileP2PState } = await import('./mobile-p2p.js');
-        const st = getMobileP2PState();
-        const firstPeer = (st.peerIds || [])[0];
-        if (firstPeer) {
-          const r = await agentLayer.callRemoteAgent(firstPeer, text, channelId, 30000);
-          if (r.ok && r.reply) {
-            await dataLayer.appendMessage(channelId, { role: 'ai', content: r.reply, ts: Date.now() });
-            busBroadcast({ type: 'ai', channelId, content: r.reply, role: 'ai' });
-            busBroadcast({ type: 'done', channelId });
-            return { ok: true };
-          }
-        }
-      } catch { /* P2P 不可用则本地执行 */ }
+        const { sendMobileP2PMessage } = await import('./mobile-p2p.js');
+        const id = await agentLayer.ensureIdentity();
+        sendMobileP2PMessage('*', 'agent.chat.send', JSON.stringify({ text, channelId, fromPublicKey: id.did }), id.did).catch(() => {});
+      } catch { /* P2P 未就绪则单机 */ }
 
-      // 3. Agent 层: 本地执行 (Kotlin AgentRuntime / 内置规则)
+      // 3. Agent 层: 手机 on-device 执行 (Kotlin AgentRuntime, 离线内置规则) — 执行主体是手机本身
       try {
-        const agentLayer = await import('./mobile-agent.js');
         const reply = await agentLayer.runLocalAgent(text);
         await dataLayer.appendMessage(channelId, { role: 'ai', content: reply, ts: Date.now() });
         busBroadcast({ type: 'ai', channelId, content: reply, role: 'ai' });

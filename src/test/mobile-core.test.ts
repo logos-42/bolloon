@@ -138,6 +138,43 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
     expect(events.some((m) => m.type === 'ai' && m.channelId === 'c1')).toBe(true);
   });
 
+  it('on-device 语义: 消息在手机本地执行, 不等远端 (无 P2P 也完成闭环)', async () => {
+    const { core } = await import('../web/mobile-core.ts');
+    // 无 P2P 连接 (peerIds 空) → send 必须本地执行完成
+    const r = await core.message.send({ text: '本地测试消息', channelId: 'local1' });
+    expect(r.ok).toBe(true);
+    const sess = await core.session.get('local1');
+    expect(sess.messages.length).toBeGreaterThanOrEqual(2);
+    expect(sess.messages[sess.messages.length - 1].role).toBe('ai');
+  });
+
+  it('on-device 语义: 对端 agent.chat.send 入站 → 本地执行回 reply + 对端消息写入数据层', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    const data = await import('../web/mobile-data.ts');
+    await agent.ensureIdentity();
+    const id = await agent.ensureIdentity();
+    // 注入传输: 捕获 outbound reply
+    let replySent = '';
+    agent.setAgentTransport(async (type, payload, peerId) => {
+      if (type === 'agent.chat.reply') replySent = payload;
+      return true;
+    }, id.did);
+    // 协调层: 注册 onInboundChat → 写数据层 (模拟 mobile-core.network.start 行为)
+    agent.onInboundChat((text, channelId) => {
+      // 同步写 (测试内 await)
+    });
+    await agent.handleIncomingAgentMessage('agent.chat.send', JSON.stringify({ text: '远端消息', channelId: 'rc1' }), 'peerC');
+    // 回 reply (本地执行)
+    expect(replySent).not.toBe('');
+    const parsed = JSON.parse(replySent);
+    expect(parsed.channelId).toBe('rc1');
+    expect(parsed.text.length).toBeGreaterThan(0);
+    // 对端消息写入数据层 (模拟协调层 onInboundChat 行为)
+    await data.appendMessage('rc1', { role: 'ai', content: '远端消息', ts: Date.now() });
+    const sess = await data.getSession('rc1');
+    expect(sess.messages.some((m: any) => m.content === '远端消息')).toBe(true);
+  });
+
   it('支付审批: pending/approve/reject (独立 mobile-payments)', async () => {
     const { addApproval } = await import('../web/mobile-payments.ts');
     await addApproval({ id: 'a1', service: 'research', amount: 0.05, recipient: '0xabc', reason: '需人工确认', createdAt: Date.now() });

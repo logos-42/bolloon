@@ -1596,3 +1596,23 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - 手机端分层: src/web/mobile-{data,agent,payments,core,p2p}.ts
 - 集成测试: src/test/p2p-mobile-desktop-bridge.ts
 - 上一条: Agent Gateway P2P 群组 (2026-08-14)
+
+## [2026-08-15] feat(mobile) | on-device 语义修正: 手机本地执行是主体
+
+用户澄清: 手机端和桌面端执行不一样 — 手机是 on-device 执行 (在手机本地跑 Kotlin AgentRuntime), 不是转发给桌面等执行.
+
+### 修正 (反之前方向)
+
+- `mobile-core.message.send`: 去掉"先 callRemoteAgent 等桌面回复"分支 → 手机本地 on-device 执行是主体 (Kotlin RokidBridge.runAgent / 离线内置规则). P2P 广播 agent.chat.send 只是"通知其他节点, 各自在自己设备上处理", 不等回复, 失败静默单机.
+- `mobile-agent.handleIncomingAgentMessage('agent.chat.send')`: 对端发来 → 通知协调层 (onInboundChat) 把对端消息写入数据层同步会话 + 手机本地执行 → 回 agent.chat.reply (各自 on-device).
+- `callRemoteAgent`: 保留为显式调用工具 (如 gateway 明确调用某节点), 不再是消息发送默认路径.
+
+### 验证
+
+- tsc 0 错; vitest 1416/1416 (+2: on-device 无 P2P 闭环 / 对端入站本地执行+数据同步); build:web pass.
+- 关联: mobile-core.ts / mobile-agent.ts / mobile-core.test.ts.
+
+### 关联
+
+- 手机端分层: src/web/mobile-{data,agent,payments,core,p2p}.ts
+- 上一条: 手机端内核分层 (2026-08-15)

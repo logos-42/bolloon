@@ -137,6 +137,18 @@ export function notifyAgentReply(replyPayload: string, fromPeer: string): void {
   for (const h of replyHandlers) { try { h(replyPayload, fromPeer); } catch { /* 忽略 */ } }
 }
 
+/** 入站 chat 通知: 对端 agent.chat.send 到达时回调 (mobile-core 用于写入数据层同步会话) */
+type OnInboundChatFn = (text: string, channelId: string, fromPeer: string) => void;
+const inboundChatHandlers = new Set<OnInboundChatFn>();
+
+export function onInboundChat(fn: OnInboundChatFn): void {
+  inboundChatHandlers.add(fn);
+}
+
+function notifyInboundChat(text: string, channelId: string, fromPeer: string): void {
+  for (const h of inboundChatHandlers) { try { h(text, channelId, fromPeer); } catch { /* 忽略 */ } }
+}
+
 /** 主动调用远端 agent: 发 agent.chat.send, 等待 agent.chat.reply */
 export async function callRemoteAgent(peerId: string, text: string, channelId: string, timeoutMs = 30000): Promise<{ ok: boolean; reply?: string; error?: string }> {
   if (!_send) return { ok: false, error: 'P2P 未就绪' };
@@ -183,10 +195,12 @@ export async function callRemoteAgent(peerId: string, text: string, channelId: s
 export async function handleIncomingAgentMessage(type: string, payload: string, fromPeer: string): Promise<void> {
   switch (type) {
     case 'agent.chat.send': {
-      // 对端调用本机: 本地执行 → 回 agent.chat.reply
+      // 对端调用本机: 手机 on-device 本地执行 → 回 agent.chat.reply
+      // 并通知协调层把对端消息写入数据层 (同步会话)
       if (!_send) return;
       try {
         const { text, channelId } = JSON.parse(payload);
+        notifyInboundChat(text || '', channelId || '', fromPeer);
         const reply = await runLocalAgent(text || '');
         await _send('agent.chat.reply', JSON.stringify({ channelId, text: reply, fromPublicKey: _ownDid }), fromPeer);
       } catch { /* 解析/执行失败则不回 */ }
@@ -207,4 +221,4 @@ export async function handleIncomingAgentMessage(type: string, payload: string, 
   }
 }
 
-export default { ensureIdentity, runLocalAgent, setAgentTransport, onAgentReply, callRemoteAgent, handleIncomingAgentMessage, notifyAgentReply };
+export default { ensureIdentity, runLocalAgent, setAgentTransport, onAgentReply, callRemoteAgent, handleIncomingAgentMessage, notifyAgentReply, onInboundChat };
