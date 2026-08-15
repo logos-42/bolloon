@@ -9,7 +9,7 @@ stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [android-agent, accessibility, shizuku, llamacpp, aohp, agent-os, phase-1, phase-2, phase-3, phase-4, on-device-verified, ghost, hermes, phone-control]
+tags: [android-agent, accessibility, shizuku, llamacpp, aohp, agent-os, phase-1, phase-2, phase-3, phase-4, on-device-verified, ghost, hermes, phone-control, harness-replication]
 ---
 
 # Android Agent Runtime 架构 (Phase 1-4)
@@ -136,7 +136,30 @@ mobile-agent.ts runLocalAgent(goal)
 
 1. **手机端 LLM 配置从桌面同步** ✅ 2026-08-15: `data.*` 同步协议新增 `data.llm-config` 类型 — 桌面 P2PNetwork `registerDataProvider('data.llm-config')` 返回 `~/.bolloon/llm-config.json` 内容, 手机 IndexedDB 保存 → `onLlmConfig` 注入 agent 层 (`setLlmConfig`) → runAgent 前 `agentConfigure`; 未同步默认手机端本机配置。已验证 (p2p-mobile-desktop-bridge.ts PASS)。
 2. **Phone API→AgentRuntime 端到端验证** ✅ 2026-08-15: 手机自治控制双面已实现并验证 — P2P 控制面 (`phone.*` 协议) + 本地 HTTP API (`mobile-http-api.ts`, /api/phone/agent/run) 均可触发手机独立 AgentLoop 执行, 手机**不需要经过电脑同意** (verify-phone-agent-api.ts PASS, fallback 模式; 真机 Kotlin AgentRuntime 待 arm64 设备)。
-3. **Hermes + Ghost harness 组合**: Hermes (生命周期/工具循环/审计) + Ghost (观察/宏/屏幕分类) 已有基础, 继续组合出手机端完整功能
+3. **Hermes + Ghost harness 组合** ✅ 2026-08-15: Hermes (生命周期/工具循环/审计) + Ghost (观察/宏/屏幕分类) + **bolloon 核心 harness 复刻进手机 AgentLoop** — 见下节。
+
+## Bolloon 核心 harness 复刻 (2026-08-15, 手机 AgentLoop 对齐桌面)
+
+手机 `AgentLoop.kt` 原来只支持单一 JSON `{"tool":"...","args":{...}}` 解析, 与桌面核心 harness (react-loop.ts 决策表 + parse-tool-call.ts 多格式解析) 能力不对齐。本次复刻:
+
+| 桌面 harness | 手机复刻 | 说明 |
+|-------------|---------|------|
+| `parse-tool-call.ts` (多格式: JSON/XML/TOOL_CALL/自闭合/中文/对象字面量) | 新 `ToolCallParser.kt` | JSON(name/tool+arguments/args/input)、`<invoke>`/`<function_calls>` XML、`[TOOL_CALL]`、自闭合标签、`调用工具：x(...)`、`tool => "x"`、`tool_name {json}`、think 块剥离 |
+| `parse-tool-call.ts` autoSplitCommand | `ToolCallParser.autoSplitCommand` | `command:"pm list packages"` → `command=pm, args="list packages"` |
+| `parse-tool-call.ts` alias resolve | `ToolCallParser.ALIASES` | bash→shell, click→tap, input→type, open_app→launch_app 等手机别名表 |
+| `react-loop.ts` decideNext case 1 (AI failure sentinel → continue) | `AgentLoop.run` 哨兵分支 | `[AI 服务调用失败]`/`[LLM 调用失败]`/`[错误:` → push 错误进 history 让 LLM 反思; 累计错误达上限 force-exit |
+| `react-loop.ts` decideNext case 3 (`<final gen>` → final) | `AgentLoop.run` final 分支 | 含 `<final gen>` 且无可解析工具 → 提取最终答案终止 (替代硬编码 done) |
+| `react-loop.ts` decideNext case 4 (unknown tool → continue) | `AgentLoop.run` 未知工具分支 | 提示可用工具集, 让 LLM 换工具 (不再硬 execute 报错) |
+| `react-loop.ts` shouldHintToStopSameTool | `AgentLoop.run` 同工具连续失败 | 连续失败 ≥3 次提示换方案 (提示后重置计数) |
+| `react-loop.ts` decideContextOverflow / shouldCompactBeforeIteration | `AgentLoop.compactHistory` | 估算 token 超阈值 (maxHistoryTokens=60000) 截断早期历史 |
+| `react-loop.ts` shouldForceExit | `AgentLoop.shouldForceExit` | 累计错误 ≥ maxTotalErrors 强制终止 |
+
+兼容性: 旧 `{"tool":"done","summary":...}` 格式仍支持 (`done` 工具与 `<final gen>` 等价)。
+
+验证:
+- Kotlin 编译: `gradlew :app:compileDebugKotlin` PASS
+- 决策语义镜像测试: `src/test/tool-call-parser-mirror.test.ts` (12 条, 以桌面 parseToolCall 为参考锚点, 对齐手机工具集解析边界) PASS
+- 全量: tsc 0 错, vitest 1428/1428, build:web OK
 
 ## 自治控制面 (2026-08-15, 手机是独立 Agent 节点)
 
