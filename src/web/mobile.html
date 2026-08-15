@@ -10,7 +10,7 @@
 <div id="app" class="app">
   <!-- 顶部导航 -->
   <header class="topbar">
-    <div class="topbar-title" id="topbar-title">微信</div>
+    <div class="topbar-title" id="topbar-title">炁球</div>
     <div class="topbar-actions">
       <button class="icon-btn" id="btn-add" title="添加好友">＋</button>
     </div>
@@ -18,7 +18,7 @@
 
   <!-- 页面容器 (切换 4 个 tab) -->
   <main class="page-container">
-    <!-- 微信 tab: 会话列表 -->
+    <!-- 炁球 tab: 会话列表 -->
     <section class="page" id="page-wechat" data-tab="wechat">
       <div class="list" id="conversation-list"></div>
     </section>
@@ -64,13 +64,15 @@
 
   <!-- 底部 tab -->
   <nav class="tabbar">
-    <button class="tab active" data-tab="wechat"><span class="tab-icon">💬</span><span>微信</span></button>
+    <button class="tab active" data-tab="wechat"><span class="tab-icon">💬</span><span>炁球</span></button>
     <button class="tab" data-tab="contacts"><span class="tab-icon">📇</span><span>通讯录</span></button>
     <button class="tab" data-tab="discover"><span class="tab-icon">🧭</span><span>发现</span></button>
     <button class="tab" data-tab="me"><span class="tab-icon">🙂</span><span>我</span></button>
   </nav>
 </div>
 
+<!-- 2026-08-14: 手机端内化内核 (IndexedDB 数据 + 本地身份 + 支付审批 + Agent). 必须最先加载 -->
+<script src="./mobile-core.js"></script>
 <script src="./mobile.js"></script>
 <!-- 2026-08-12: A2UI 渲染器 (智能体生成动态 UI, 挂载 #a2ui-root) -->
 <script src="./a2ui-client.js"></script>

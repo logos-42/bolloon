@@ -14,7 +14,7 @@ async function main() {
 
   // 重要: 不能 rm -rf 整个 dist/web/, 否则会删掉 build:main 编译出来的
   // dist/web/server.js. 只清理 web 静态资源, 保留 server.js.
-  for (const f of ['index.html', 'api-config.html', 'style.css', 'client.js', 'mobile.html', 'mobile.css', 'mobile.js', 'components']) {
+  for (const f of ['index.html', 'api-config.html', 'style.css', 'client.js', 'mobile.html', 'mobile.css', 'mobile.js', 'mobile-core.js', 'components']) {
     await fs.rm(path.join(DIST_WEB, f), { recursive: true, force: true });
   }
   await fs.mkdir(DIST_WEB, { recursive: true });
@@ -84,6 +84,19 @@ async function main() {
   await esbuild.build({
     entryPoints: [path.join(ROOT, 'src/web/client.ts')],
     outfile: path.join(DIST_WEB, 'client.js'),
+    format: 'iife',
+    target: 'es2022',
+    platform: 'browser',
+    minify: false,
+    bundle: true,
+  });
+
+  // 2026-08-14: 编译 mobile-core.ts (手机端内化内核 → mobile-core.js)
+  //   IIFE + bundle: WebView 无 module 解析, 必须全内联 (IndexedDB/WebCrypto 为浏览器原生, 无需 polyfill)
+  console.log('[build-web] 编译 mobile-core.ts...');
+  await esbuild.build({
+    entryPoints: [path.join(ROOT, 'src/web/mobile-core.ts')],
+    outfile: path.join(DIST_WEB, 'mobile-core.js'),
     format: 'iife',
     target: 'es2022',
     platform: 'browser',

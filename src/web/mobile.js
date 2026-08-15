@@ -9,11 +9,16 @@
 
   const api = {
     async get(path) {
+      // 2026-08-14: 优先本地内核 (BolloonCore), fallback 桌面 HTTP API
+      const coreApi = window.BolloonCore?.resolve?.(path);
+      if (coreApi) return coreApi();
       const r = await fetch(path);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
     async post(path, body) {
+      const coreApi = window.BolloonCore?.resolvePost?.(path, body);
+      if (coreApi) return coreApi();
       const r = await fetch(path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -179,9 +184,34 @@
   }
 
   function openChatSse() {
-    if (chatEventSource) chatEventSource.close();
+    if (chatEventSource) { chatEventSource.close(); chatEventSource = null; }
     if (!activeChannel) return;
-    // 订阅全局事件流, 过滤当前 channel 的 AI 流式回复 (step/token/ai)
+    // 2026-08-14: 优先本地内核事件总线, fallback 桌面 SSE
+    if (window.BolloonCore?.events?.subscribe) {
+      chatEventSource = { close() {} }; // 占位, 关闭时解除订阅
+      const unsub = window.BolloonCore.events.subscribe((msg) => {
+        if (!activeChannel || !msg) return;
+        const box = $('#chat-messages');
+        if (!box) return;
+        if (msg.type === 'ai' || msg.type === 'token' || msg.role === 'ai') {
+          const content = msg.content || msg.text || '';
+          if (msg.channelId && msg.channelId !== activeChannel.id) return;
+          if (!streamingBubble || !streamingBubble.isConnected) {
+            streamingBubble = document.createElement('div');
+            streamingBubble.className = 'bubble ai';
+            box.appendChild(streamingBubble);
+          }
+          streamingBubble.textContent += content;
+          box.scrollTop = box.scrollHeight;
+        } else if (msg.type === 'done') {
+          streamingBubble = null;
+          setTimeout(loadMessages, 300);
+        }
+      });
+      chatEventSource.close = unsub;
+      return;
+    }
+    // 桌面 fallback: SSE
     try {
       chatEventSource = new EventSource('/events');
       chatEventSource.onmessage = (e) => {
@@ -346,6 +376,24 @@
 
   // === MCP 驱动前端 UI (2026-08-12): 订阅 /events, 收到 {type:'ui'} 指令执行组件动作 ===
   function setupUiControl() {
+    // 2026-08-14: 优先本地内核事件总线, fallback 桌面 SSE
+    if (window.BolloonCore?.events?.subscribe) {
+      window.BolloonCore.events.subscribe((msg) => {
+        if (!msg || msg.type !== 'ui' || !msg.action) return;
+        const d = msg.data || {};
+        switch (msg.action) {
+          case 'switchTab': if (d.tab && ['wechat', 'contacts', 'discover', 'me'].includes(d.tab)) switchTab(d.tab); break;
+          case 'openSettings': openSettings(); break;
+          case 'openWallet': alert('钱包管理 (本地内核 Phase 2)'); break;
+          case 'openAddFriend': alert('添加好友 (本地内核 Phase 2: P2P 浏览器传输)'); break;
+          case 'showToast': alert(d.message || ''); break;
+          case 'goBack': { const p = $('#chat-page'); if (p) closeChat(); else openSettings(); break; }
+          default: break;
+        }
+        window.__mobileTouch?.('ui', msg.action);
+      });
+      return;
+    }
     try {
       const es = new EventSource('/events');
       es.onmessage = (e) => {
