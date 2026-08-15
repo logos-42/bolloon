@@ -42,20 +42,32 @@ async function sendViaP2P(type: string, payload: string, peerId?: string): Promi
 /** 入站 P2P 消息路由 (由 network.start 的 onMobileP2PMessage 调用) */
 async function routeIncomingMessage(payload: string, fromPeer: string): Promise<void> {
   try {
-    const colonIdx = payload.indexOf(':');
-    const type = colonIdx > 0 ? payload.substring(0, colonIdx) : payload;
-    const body = colonIdx > 0 ? payload.substring(colonIdx + 1) : '';
+    // 格式: DID:<did>|type:payload  或  type:payload
+    let body = payload;
+    if (body.startsWith('DID:')) {
+      const sep = body.indexOf('|');
+      if (sep > 0) body = body.substring(sep + 1);
+    }
+    const colonIdx = body.indexOf(':');
+    const type = colonIdx > 0 ? body.substring(0, colonIdx) : body;
+    const msgBody = colonIdx > 0 ? body.substring(colonIdx + 1) : '';
 
     // data.* → 数据同步层
     if (type.startsWith('data.')) {
       const dataLayer = await import('./mobile-data.js');
-      await dataLayer.handleIncomingDataMessage(type, body, fromPeer);
+      await dataLayer.handleIncomingDataMessage(type, msgBody, fromPeer);
       return;
     }
     // agent.* → Agent 功能层
     if (type.startsWith('agent.')) {
       const agentLayer = await import('./mobile-agent.js');
-      await agentLayer.handleIncomingAgentMessage(type, body, fromPeer);
+      await agentLayer.handleIncomingAgentMessage(type, msgBody, fromPeer);
+      return;
+    }
+    // phone.* → 手机自治控制面 (独立于桌面 AgentLoop)
+    if (type.startsWith('phone.')) {
+      const agentLayer = await import('./mobile-agent.js');
+      await agentLayer.handleIncomingPhoneMessage(type, msgBody, fromPeer);
       return;
     }
   } catch { /* 路由失败静默 */ }
@@ -87,6 +99,22 @@ export const core = {
       return () => core.message.send({ text: b.text, channelId: b.channelId });
     }
     if (p === '/api/auth/logout') return () => core.identity.logout();
+    if (p === '/api/phone/agent/run') {
+      const b = body || {};
+      const agentLayer = () => import('./mobile-agent.js');
+      return async () => {
+        const a = await agentLayer();
+        return a.runPhoneAgent(String(b.goal || ''));
+      };
+    }
+    if (p === '/api/phone/agent/cancel') {
+      const b = body || {};
+      const agentLayer = () => import('./mobile-agent.js');
+      return async () => {
+        const a = await agentLayer();
+        return a.cancelPhoneAgent(String(b.reason || '本地取消'));
+      };
+    }
     if (p.startsWith('/api/payments/') && p.endsWith('/approve')) {
       const id = p.slice('/api/payments/'.length, -'/approve'.length);
       return () => core.payments.approve(id);
@@ -113,6 +141,13 @@ export const core = {
         dataLayer.setDataTransport((type, payload, peerId) => sendViaP2P(type, payload, peerId));
         agentLayer.setAgentTransport((type, payload, peerId) => sendViaP2P(type, payload, peerId), id.did);
 
+        // LLM 配置同步: 桌面 data.llm-config.reply 到达 → 提取 active provider 注入 agent 层
+        dataLayer.onLlmConfig(async (cfg) => {
+          const active = dataLayer.activeProviderConfig(cfg);
+          agentLayer.setLlmConfig(active);
+          busBroadcast({ type: 'llm-config-synced', provider: cfg.activeProvider, model: active.model || '' });
+        });
+
         // 入站对端 chat → 数据层写入对端消息 + 事件广播 (对端 on-device 消息同步)
         agentLayer.onInboundChat((text, channelId, fromPeer) => {
           dataLayer.appendMessage(channelId, { role: 'ai', content: text, ts: Date.now(), from: fromPeer })
@@ -128,13 +163,15 @@ export const core = {
           routeIncomingMessage(payload, fromPeer).catch(() => {});
         });
 
-        // 连上种子后尝试同步一次 (data 层)
+        // 连上种子后尝试同步一次 (data 层) + 请求桌面 LLM 配置
         st.peerIds?.slice(0, 1).forEach((pid: string) => {
           dataLayer.syncFromPeer(pid).then((s) => {
             if (s.mode === 'online') {
               busBroadcast({ type: 'data-synced', mergedChannels: s.mergedChannels, mergedSessions: s.mergedSessions });
             }
           }).catch(() => {});
+          // LLM 配置: 请求桌面同步 (未同步时默认手机端, 由 mobile-agent 内置处理)
+          dataLayer.requestLlmConfigFromPeer(pid).catch(() => {});
         });
 
         return getMobileP2PState();
@@ -163,6 +200,8 @@ export const core = {
     async snapshot() { const d = await import('./mobile-data.js'); return d.snapshot(); },
     async syncFromPeer(peerId: string) { const d = await import('./mobile-data.js'); return d.syncFromPeer(peerId); },
     async pushLocal() { const d = await import('./mobile-data.js'); return d.pushLocal(); },
+    async getLlmConfig() { const d = await import('./mobile-data.js'); return d.getLlmConfig(); },
+    async saveLlmConfig(cfg: any) { const d = await import('./mobile-data.js'); await d.saveLlmConfig(cfg); },
     status() { const d = Promise.resolve(import('./mobile-data.js')); return d; },
   },
 
@@ -263,6 +302,21 @@ export const core = {
         busBroadcast({ type: 'done', channelId });
       }
       return { ok: true };
+    },
+  },
+
+  phone: {
+    async run(goal: string) {
+      const a = await import('./mobile-agent.js');
+      return a.runPhoneAgent(goal);
+    },
+    async status() {
+      const a = await import('./mobile-agent.js');
+      return a.phoneStatus();
+    },
+    async cancel(reason?: string) {
+      const a = await import('./mobile-agent.js');
+      return a.cancelPhoneAgent(reason);
     },
   },
 

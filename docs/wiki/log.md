@@ -4,6 +4,19 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-15 | feat | 手机端自治控制双面落地: ① P2P 控制面 (phone.* 协议: run/status/cancel → result/status.reply/cancel.reply, 桌面触发→手机独立 AgentLoop 执行, 不经电脑); ② 本地 HTTP API (mobile-http-api.ts: /api/phone/agent/run|status|cancel, Node server + handleHttpRequest); ③ LLM 配置同步 data.llm-config → data.llm-config.reply (桌面 registerDataProvider → 手机 IndexedDB → setLlmConfig → agentConfigure, 未同步默认手机端); ④ 修 libp2p 3.x dialProtocol `{stream}` 解构 bug (sendRawMessage/sendMessageDirect → Stream 本体). 验证: verify-phone-agent-api.ts PASS (P2P+HTTP 双面) + p2p-mobile-desktop-bridge.ts PASS (LLM 同步) + tsc 0 错 + vitest 1416/1416 + build:web; wiki/current-status/log 更新 | [android-agent-runtime.md](./android-agent-runtime.md) / [mobile-http-api.ts](../../src/web/mobile-http-api.ts) / [verify-phone-agent-api.ts](../../src/test/verify-phone-agent-api.ts) / [p2p.ts](../../src/network/p2p.ts) |
+
+**2026-08-15 详细 — 手机端自治控制双面 (Phone API→AgentRuntime):**
+- 背景: 上一 session 已确认 on-device 执行链路全通 (JS→Capacitor→AgentRuntimeHolder→AgentLoop→AndroidAgentTools, 对照 Open-AutoGLM 路径), 并登记漏登 raw (D:\AI\Agent-andriod Ghost codebase)。本次按计划落地"手机是自治节点"——控制面与执行循环独立, 信息可同步但执行不经电脑。
+- 实现:
+  1. `mobile-agent.ts`: `runPhoneAgent` (native: Capacitor RokidBridge.runAgent→Kotlin AgentLoop; fallback: 内置规则, 无 LLM/无障碍也自治可用) + `phoneStatus` + `cancelPhoneAgent` + `handleIncomingPhoneMessage` (phone.agent.run/status/cancel)
+  2. `mobile-core.ts`: 路由 phone.* → agent 层; resolvePost 加 /api/phone/agent/run|cancel; core.phone 面 (run/status/cancel)
+  3. `mobile-http-api.ts` (新): handleHttpRequest (fetch 风格, 供原生 HTTP server) + startLocalHttpServer (Node, 127.0.0.1:7788)
+  4. `p2p.ts`: registerDataProvider + data.* provider 分支 (回 `<type>.reply`); **修复 libp2p 3.x dialProtocol 返回 Stream 本体** — 之前 `const {stream} = await dialProtocol(...)` 解构得 undefined, 桌面→手机 reply 永远发不出 (bridge 测试 LLM 配置同步 FAIL 的根因)
+  5. `mobile-data.ts` 已有 data.llm-config 协议 (上一 session), 本次接线验证
+- 验证: `npx tsx src/test/verify-phone-agent-api.ts` — P2P 面: 桌面 sendMessage(phone.agent.run) → 手机 fallback 执行 → 回 phone.agent.result {ok, mode:fallback} + status.reply ✅; HTTP 面: 起 127.0.0.1:7791 → /health + /api/phone/status + POST /api/phone/agent/run (fallback 返回) ✅; 全 PASS。`npx tsx src/test/p2p-mobile-desktop-bridge.ts` — data.llm-config 同步 ✅ (apiKey sk-test-desktop 匹配)。tsc 0 错 + vitest 1416/1416 + build:web 通过 + wiki 4 校验全 OK。
+- 真机 (arm64 + 无障碍服务开启 + LLM apiKey 注入) 仍待验 (adb 未识别设备)。
+- 下一步: Hermes + Ghost harness 组合 (Hermes: 生命周期/工具循环/审计; Ghost: 观察/宏/屏幕分类) 组合出手机端完整功能。
 | 2026-08-14 | feat | Agent Gateway P2P 群组 (微信式群聊): OrbitDB events store write:'*' 成员可写广播 + 群聊 UI (侧边栏 Agent 网络 + 加入/创建/邀请/群聊 modal) + 群组 API (create/join/send/messages) + SSE 实时 | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-14 | feat | Agent Gateway 落地: 链接即入口 — 消息自动加入 (本地/P2P 双挂点) + orbitdb:// 真实复制 (openStoreByAddress) + 成员身份持久化/重启恢复 + gateway_share 分享链接 + HTTP API (join/link/status) | [agent-economic-protocol.md](./agent-economic-protocol.md) |
 | 2026-08-13 | feat | 人工支付审批闭环: YAML 验证门 confirm → CLI/手机端审批 → 批准自动执行 + Treasury 打通 | [agent-economic-protocol.md](./agent-economic-protocol.md) |

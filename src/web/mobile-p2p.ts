@@ -68,6 +68,7 @@ export async function startMobileP2P(cfg: MobileP2PConfig = {}): Promise<MobileP
       for (const c of chunks) { data.set(c, off); off += c.length; }
       const text = new TextDecoder().decode(data);
       const fromPeer = connection.remotePeer.toString();
+      console.log(`[mobile-p2p] 入站消息 ${text.slice(0, 60)} from ${fromPeer.slice(0, 10)}`);
       for (const h of msgHandlers) { try { h(text, fromPeer); } catch {} }
     });
 

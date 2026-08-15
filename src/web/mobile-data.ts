@@ -10,7 +10,9 @@
  *       data.channels  : channels 列表 (增量更新)
  *       data.session   : 单个 session (增量更新, 合并去重)
  *       data.pull      : 拉取指定 channelId 的 session → 响应 data.session
- *   - 与 agent 功能无关: 本层只做数据一致, 不跑 LLM.
+ *       data.llm-config      : 请求 LLM 配置 (桌面 llm-config.json 同步) → 响应 data.llm-config.reply
+ *       data.llm-config.reply: 收到远端 LLM 配置 → 保存 + 通知 agent 层注入
+ *   - 与 agent 功能无关: 本层只做数据一致, 不跑 LLM. LLM 配置同步是"数据"不是"智能".
  *
  * 离线: 读写本地 IndexedDB, 静默.
  * 在线: 通过 mobile-p2p 与 peer 同步, 冲突按 ts 最新合并.
@@ -105,6 +107,39 @@ export interface DataSnapshot {
   syncedAt: number;
 }
 
+/** LLM 配置快照 (桌面 llm-config.json 同步到手机, 供 agent 层 bridge agentConfigure 注入) */
+export interface LlmConfigSnapshot {
+  activeProvider: string;
+  providers: Record<string, {
+    enabled?: boolean;
+    apiKey?: string;
+    baseUrl?: string;
+    model?: string;
+    temperature?: number;
+    maxTokens?: number;
+    requiresApiKey?: boolean;
+  }>;
+  updatedAt?: number;
+}
+
+/** 手机端默认 LLM 配置 (未同步时用, 对应 Kotlin AgentLlmConfig 默认 deepseek) */
+export function defaultLlmConfig(): LlmConfigSnapshot {
+  return {
+    activeProvider: 'deepseek',
+    providers: {
+      deepseek: { enabled: true, apiKey: '', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', temperature: 0.7, maxTokens: 4096, requiresApiKey: true },
+    },
+  };
+}
+
+/** 从 LlmConfigSnapshot 提取对 agent 层最有用的单 provider 配置 (activeProvider 优先) */
+export function activeProviderConfig(cfg: LlmConfigSnapshot | null): { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number } {
+  if (!cfg) return {};
+  const name = cfg.activeProvider || 'deepseek';
+  const p = cfg.providers?.[name] || cfg.providers?.deepseek;
+  return { baseUrl: p?.baseUrl, apiKey: p?.apiKey, model: p?.model, maxTokens: p?.maxTokens };
+}
+
 // ============ 本地存储 API (手机独立副本) ============
 
 /** 读取 channels (本地) */
@@ -155,6 +190,46 @@ export async function snapshot(): Promise<DataSnapshot> {
     sessions: await listSessions(),
     syncedAt: Date.now(),
   };
+}
+
+// ============ LLM 配置存储 (桌面同步 / 手机默认) ============
+
+/** 读取本地 LLM 配置, 无则返回默认 (手机端) */
+export async function getLlmConfig(): Promise<LlmConfigSnapshot> {
+  const c = await idbGet('llm-config');
+  return c || defaultLlmConfig();
+}
+
+/** 保存本地 LLM 配置 */
+export async function saveLlmConfig(cfg: LlmConfigSnapshot): Promise<void> {
+  const merged = { ...defaultLlmConfig(), ...cfg, updatedAt: cfg.updatedAt || Date.now() };
+  await idbSet('llm-config', merged);
+}
+
+/** 是否有过桌面同步的 LLM 配置 (未同步时 mobile-agent 用手机默认) */
+export async function hasSyncedLlmConfig(): Promise<boolean> {
+  const c = await idbGet('llm-config');
+  return !!(c && (c.updatedAt || c.providers));
+}
+
+/** 配置变更通知 (mobile-core 注册 → 转发给 agent 层注入 bridge) */
+type LlmConfigListener = (cfg: LlmConfigSnapshot) => void;
+const llmConfigListeners = new Set<LlmConfigListener>();
+
+/** 注册 LLM 配置变更回调 */
+export function onLlmConfig(fn: LlmConfigListener): void {
+  llmConfigListeners.add(fn);
+}
+
+function notifyLlmConfig(cfg: LlmConfigSnapshot): void {
+  for (const fn of llmConfigListeners) { try { fn(cfg); } catch { /* 忽略 */ } }
+}
+
+/** 向 peer 请求 LLM 配置 (data.llm-config → data.llm-config.reply) */
+export async function requestLlmConfigFromPeer(peerId: string): Promise<boolean> {
+  const send = getSend();
+  if (!send) return false;
+  return await send('data.llm-config', JSON.stringify({}), peerId);
 }
 
 /** 列出所有 session (遍历 kv) */
@@ -300,6 +375,27 @@ export async function handleIncomingDataMessage(type: string, payload: string, f
       }
       break;
     }
+    case 'data.llm-config': {
+      // 远端请求本机 LLM 配置 → 回 data.llm-config.reply
+      if (send) {
+        try {
+          const cfg = await getLlmConfig();
+          await send('data.llm-config.reply', JSON.stringify(cfg), fromPeer);
+        } catch { /* 忽略 */ }
+      }
+      break;
+    }
+    case 'data.llm-config.reply': {
+      // 收到远端 LLM 配置 → 保存 + 通知 agent 层注入 bridge
+      try {
+        const cfg: LlmConfigSnapshot = JSON.parse(payload);
+        if (cfg && (cfg.providers || cfg.activeProvider)) {
+          await saveLlmConfig(cfg);
+          notifyLlmConfig(await getLlmConfig());
+        }
+      } catch { /* 解析失败忽略 */ }
+      break;
+    }
     default:
       break;
   }
@@ -317,4 +413,4 @@ export async function pushLocal(toPeer?: string): Promise<void> {
   }
 }
 
-export default { getChannels, saveChannels, getSession, saveSession, appendMessage, snapshot, mergeSnapshot, syncFromPeer, pushLocal, syncStatus, handleIncomingDataMessage, setDataTransport };
+export default { getChannels, saveChannels, getSession, saveSession, appendMessage, snapshot, mergeSnapshot, syncFromPeer, pushLocal, syncStatus, handleIncomingDataMessage, setDataTransport, getLlmConfig, saveLlmConfig, hasSyncedLlmConfig, onLlmConfig, requestLlmConfigFromPeer, defaultLlmConfig, activeProviderConfig };

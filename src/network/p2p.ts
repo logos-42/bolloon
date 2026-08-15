@@ -173,8 +173,19 @@ export class P2PNetwork {
   private messageStore: any = null;
   private offlineDeliveryInterval: ReturnType<typeof setInterval> | null = null;
 
+  // 2026-08-15: 手机 data.* 同步提供者 (如 LLM 配置)。由上层 (server/测试) 注入, 网络层不 import config-store.
+  private dataProviders: Map<string, (payload: string, fromPeerId: string, did?: string) => Promise<string | null>> = new Map();
+
   constructor() {
     this.peerStorePath = PEER_STORE_PATH;
+  }
+
+  /**
+   * 注册 data.* 协议提供者 (手机同步请求 → 返回 payload 字符串, null = 不响应)。
+   * 例: registerDataProvider('data.llm-config', async () => JSON.stringify(llmConfig))
+   */
+  registerDataProvider(type: string, fn: (payload: string, fromPeerId: string, did?: string) => Promise<string | null>): void {
+    this.dataProviders.set(type, fn);
   }
 
   async enablePersistence(): Promise<void> {
@@ -228,7 +239,8 @@ export class P2PNetwork {
         : payload;
 
       const ma = createMultiaddr(`/p2p/${peerId}`);
-      const { stream } = await this.node.dialProtocol(ma, '/agent/message');
+      // libp2p 3.x: dialProtocol 返回 Stream 本体 (非 {stream})
+      const stream = await this.node.dialProtocol(ma, '/agent/message');
       stream.send(data);
       return true;
     } catch {
@@ -676,6 +688,21 @@ export class P2PNetwork {
         const handler = network.messageHandlers.get(type);
         if (handler) {
           handler(data, fromPeerId, did);
+        } else if (type.startsWith('data.') && network.dataProviders.has(type)) {
+          // 2026-08-15: data.* 提供者 (如 data.llm-config) — 由上层注册, 返回 payload 回给请求方
+          try {
+            const provider = network.dataProviders.get(type)!;
+            const replyPayload = await provider(payload, fromPeerId, did);
+            if (replyPayload != null) {
+              // 回 data.llm-config.reply 语义: <type>.reply (不带 DID 前缀, 手机端解析按 type:payload 兼容)
+              const replyType = type + '.reply';
+              const encoded = new TextEncoder().encode(`${replyType}:${replyPayload}`);
+              console.log(`[P2P] data provider ${type} → reply ${replyType} (${replyPayload.length}B) to ${fromPeerId.slice(0, 10)}`);
+              await network.sendRawMessage(fromPeerId, encoded);
+            }
+          } catch (e) {
+            console.error(`[P2P] data provider ${type} error:`, e);
+          }
         } else if (type === 'RESP' && requestId) {
           // Handle response message - resolve the pending request
           const pending = network.pendingResponses.get(requestId);
@@ -701,8 +728,21 @@ export class P2PNetwork {
   private async sendRawMessage(peerId: string, data: Uint8Array): Promise<void> {
     if (!this.node) throw new Error('Node not initialized');
 
+    // libp2p 3.x: 优先复用已建立连接 (手机经 ws 连接, 不能反向 tcp dial)
+    const conns = this.node.getConnections?.() || [];
+    for (const c of conns) {
+      if (c.remotePeer.toString() === peerId) {
+        // dialProtocol 返回 Stream 本体 (非 {stream})
+        const stream = await this.node.dialProtocol(c.remotePeer, '/agent/message');
+        stream.send(data);
+        await stream.close().catch(() => {});
+        return;
+      }
+    }
+
     const ma = createMultiaddr(`/p2p/${peerId}`);
-    const { stream } = await this.node.dialProtocol(ma, '/agent/message');
+    // libp2p 3.x: dialProtocol 返回 Stream 本体 (非 {stream})
+    const stream = await this.node.dialProtocol(ma, '/agent/message');
     stream.send(data);
   }
 

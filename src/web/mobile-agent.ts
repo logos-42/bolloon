@@ -87,6 +87,36 @@ export async function ensureIdentity(): Promise<{ did: string; name: string; cre
   }
 }
 
+// ============ LLM 配置 (桌面同步注入 / 手机默认) ============
+
+let _llmConfig: { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number } | null = null;
+
+/** 注入 LLM 配置 (由 mobile-core 在 data.llm-config.reply 同步后调用) */
+export function setLlmConfig(cfg: { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number } | null): void {
+  _llmConfig = cfg;
+}
+
+/** 当前 LLM 配置 (未同步则为 null → 手机默认) */
+export function getLlmConfig(): { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number } | null {
+  return _llmConfig;
+}
+
+/** 把配置注入 Capacitor RokidBridge (agentConfigure), 让 Kotlin AgentRuntime 用同步来的 LLM */
+async function applyLlmConfigToBridge(): Promise<void> {
+  if (!_llmConfig) return;
+  const win = typeof window !== 'undefined' ? (window as any) : null;
+  const cap = win?.Capacitor;
+  const bridge = cap && cap.Plugins && cap.Plugins.RokidBridge;
+  if (!bridge || !cap.isNativePlatform?.()) return;
+  const payload: any = {};
+  if (_llmConfig.baseUrl) payload.baseUrl = _llmConfig.baseUrl;
+  if (_llmConfig.apiKey) payload.apiKey = _llmConfig.apiKey;
+  if (_llmConfig.model) payload.model = _llmConfig.model;
+  try {
+    await bridge.agentConfigure?.(payload);
+  } catch { /* 注入失败不阻塞本地执行 */ }
+}
+
 // ============ 本地执行 (Kotlin AgentRuntime / 内置规则) ============
 
 /** 手机端本地 agent 执行 (优先 Kotlin, 离线内置规则) */
@@ -96,6 +126,7 @@ export async function runLocalAgent(goal: string): Promise<string> {
   const bridge = cap && cap.Plugins && cap.Plugins.RokidBridge;
   if (bridge && cap.isNativePlatform?.()) {
     try {
+      await applyLlmConfigToBridge();
       const r = await bridge.runAgent({ goal });
       return r?.result || '（无返回）';
     } catch (e: any) {
@@ -221,4 +252,121 @@ export async function handleIncomingAgentMessage(type: string, payload: string, 
   }
 }
 
-export default { ensureIdentity, runLocalAgent, setAgentTransport, onAgentReply, callRemoteAgent, handleIncomingAgentMessage, notifyAgentReply, onInboundChat };
+// ============ P2P 控制面 (phone.* 协议, 2026-08-15) ============
+// 手机是自治节点: 桌面/其他节点经 P2P 发指令, 手机端独立 AgentLoop 执行, 不需要电脑同意.
+
+export interface PhoneControlResult {
+  ok: boolean;
+  goal?: string;
+  result?: string;
+  error?: string;
+  agentId?: string;
+  stepCount?: number;
+  did?: string;
+  mode: 'native' | 'fallback';
+}
+
+/** 手机端执行控制指令 (phone.agent.run) — 手机自治执行, 不经电脑 */
+export async function runPhoneAgent(goal: string): Promise<PhoneControlResult> {
+  const win = typeof window !== 'undefined' ? (window as any) : null;
+  const cap = win?.Capacitor;
+  const bridge = cap && cap.Plugins && cap.Plugins.RokidBridge;
+  const native = !!(bridge && cap.isNativePlatform?.());
+  const id = await ensureIdentity();
+  try {
+    if (native) {
+      await applyLlmConfigToBridge();
+      const r = await bridge.runAgent({ goal });
+      const result = r?.result || '（无返回）';
+      const isDone = /^DONE:/.test(result) || /^CANCELLED/.test(result) || !/^(MAX_STEPS|STOPPED|\[Agent 异常)/.test(result);
+      return {
+        ok: !/^\[Agent 异常|^STOPPED|^MAX_STEPS/.test(result),
+        goal,
+        result,
+        did: id.did,
+        mode: 'native',
+        agentId: r?.agentId,
+        stepCount: r?.stepCount,
+      };
+    }
+    // 离线 fallback: 内置规则 (不依赖 LLM/无障碍, 手机仍自治可用)
+    const reply = await runLocalAgent(goal);
+    return { ok: true, goal, result: reply, did: id.did, mode: 'fallback' };
+  } catch (e: any) {
+    return { ok: false, goal, error: String(e?.message || e).slice(0, 100), did: id.did, mode: native ? 'native' : 'fallback' };
+  }
+}
+
+/** 手机端 Agent 状态 (phone.agent.status) */
+export async function phoneStatus(): Promise<{ ok: boolean; did: string; mode: 'native' | 'fallback'; llm?: { baseUrl?: string; model?: string }; capabilities: string[] }> {
+  const win = typeof window !== 'undefined' ? (window as any) : null;
+  const cap = win?.Capacitor;
+  const bridge = cap && cap.Plugins && cap.Plugins.RokidBridge;
+  const native = !!(bridge && cap.isNativePlatform?.());
+  const id = await ensureIdentity();
+  let accReady = false;
+  let llm: { baseUrl?: string; model?: string } | undefined;
+  if (native && bridge) {
+    try {
+      const st = await bridge.agentStatus?.();
+      accReady = !!st?.accessibilityReady;
+      if (st?.baseUrl || st?.model) llm = { baseUrl: st.baseUrl, model: st.model };
+    } catch { /* 忽略 */ }
+  }
+  return {
+    ok: true,
+    did: id.did,
+    mode: native ? 'native' : 'fallback',
+    llm,
+    capabilities: ['chat', 'local-agent', 'phone-control'],
+  };
+}
+
+/** 取消当前手机 Agent 任务 (phone.agent.cancel) */
+export async function cancelPhoneAgent(reason = '远端取消'): Promise<{ ok: boolean; cancelRequested?: boolean }> {
+  const win = typeof window !== 'undefined' ? (window as any) : null;
+  const cap = win?.Capacitor;
+  const bridge = cap && cap.Plugins && cap.Plugins.RokidBridge;
+  if (bridge && cap.isNativePlatform?.()) {
+    try {
+      const r = await bridge.cancelAgent?.({ reason });
+      return { ok: true, cancelRequested: !!r?.cancelRequested };
+    } catch (e: any) {
+      return { ok: false };
+    }
+  }
+  return { ok: false };
+}
+
+/** 处理入站 phone.* 控制消息 (mobile-core 的 P2P 路由调用) */
+export async function handleIncomingPhoneMessage(type: string, payload: string, fromPeer: string): Promise<void> {
+  if (!_send) return;
+  try {
+    switch (type) {
+      case 'phone.agent.run': {
+        // 桌面/其他节点指令 → 手机自治执行 → 回 phone.agent.result
+        const req = JSON.parse(payload);
+        const goal = (req.goal || '').toString();
+        const reqId = req.requestId || '';
+        const result = await runPhoneAgent(goal);
+        await _send('phone.agent.result', JSON.stringify({ ...result, requestId: reqId, fromPublicKey: _ownDid }), fromPeer);
+        break;
+      }
+      case 'phone.agent.status': {
+        const st = await phoneStatus();
+        await _send('phone.agent.status.reply', JSON.stringify({ ...st, fromPublicKey: _ownDid }), fromPeer);
+        break;
+      }
+      case 'phone.agent.cancel': {
+        const req = JSON.parse(payload);
+        const r = await cancelPhoneAgent(req.reason || '远端取消');
+        await _send('phone.agent.cancel.reply', JSON.stringify({ ...r, fromPublicKey: _ownDid }), fromPeer);
+        break;
+      }
+      default:
+        break;
+    }
+  } catch { /* 控制消息处理失败静默 */ }
+}
+
+export default { ensureIdentity, runLocalAgent, setAgentTransport, onAgentReply, callRemoteAgent, handleIncomingAgentMessage, notifyAgentReply, onInboundChat, setLlmConfig, getLlmConfig, runPhoneAgent, phoneStatus, cancelPhoneAgent, handleIncomingPhoneMessage };

@@ -2,14 +2,14 @@
 title: Android Agent Runtime 架构 (Phase 1-4 路线图)
 source: session + AOHP arXiv 调研
 created: 2026-08-13
-last_confirmed: 2026-08-13
+last_confirmed: 2026-08-15
 schema_version: 2
 audience: self
 stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [android-agent, accessibility, shizuku, llamacpp, aohp, agent-os, phase-1, phase-2, phase-3, phase-4]
+tags: [android-agent, accessibility, shizuku, llamacpp, aohp, agent-os, phase-1, phase-2, phase-3, phase-4, on-device-verified, ghost, hermes, phone-control]
 ---
 
 # Android Agent Runtime 架构 (Phase 1-4)
@@ -98,6 +98,74 @@ Android Agent 通过 Accessibility Tree / 屏幕文字获取环境时, 恶意 Ap
 | 编译 | ✅ | ✅ | ✅ | ✅ |
 | APK | ✅ 16MB | ✅ | ✅ 25.4MB | 🔲 |
 | 真机 | 待测 | 待测 | 待测 | 🔲 |
+
+## 链路验证结论 (2026-08-15, 对照主流 on-device 方案)
+
+**结论: on-device 执行链路已全通并接线, 对照 Open-AutoGLM/AppAgent 主流路径确认是正确路线。**
+
+完整链路 (JS → Kotlin → 设备操作):
+
+```text
+mobile-agent.ts runLocalAgent(goal)
+ → Capacitor RokidBridge.runAgent({goal})           # RokidBridgePlugin.java:477
+ → AgentRuntimeHolder.runAgent (后台线程)            # AgentRuntimeHolder.kt:74
+ → AgentLoop.run — ReAct 循环 (observe→think→act)   # AgentLoop.kt:45
+     ├─ 观察: AndroidAgentTools.build_llm_context     # 无障碍读 UI 树/交互元素/屏幕分类
+     ├─ 决策: LlmBackend → RemoteLlm                  # OpenAI 兼容 API (默认 DeepSeek)
+     └─ 执行: tap/swipe/type/back/home/launch_app      # AccessibilityService dispatchGesture / ACTION_SET_TEXT
+              shell/get_device_info/list_packages      # ShizukuManager + LifecycleGuard
+```
+
+路径对照 (2026-08-15 websearch):
+
+| 主流方案 | 设备控制路径 | Bolloon 对应 |
+|---------|-------------|-------------|
+| AutoGLM/Open-AutoGLM | AccessibilityService (UI 树 + dispatchGesture 注入) | ✅ 同路径 (BolloonAccessibilityService) |
+| AppAgent/Mobile-Agent | ADB `shell input` 注入触摸事件 | 部分 (Shizuku shell 兜底) |
+| GPT-4o phone / 厂商助手 | 云端截图 + VLM 规划 + 回传指令 | 无 (走本地 ReAct, 不依赖云端规划) |
+| 安全研究 (arXiv:2608.08939) | Accessibility 树可被恶意 App 提示注入劫持 | 已内建防护: 用户 Goal → Policy → 工具白名单 → Verification (Phase 4) |
+
+**关键 caveat (2026-08-15 确认):**
+1. **无障碍服务需用户手动开启** (`isAccessibilityReady` 是 runAgent 前置, 否则返回 "[错误] 无障碍服务未连接")
+2. **LLM apiKey 不在代码里** — 运行时通过 bridge `agentConfigure` 注入 (JS 可调用); 桌面 `~/.bolloon/llm-config.json` 是桌面侧
+3. **LocalLlm (GGUF) 是骨架** — on-device 推理未接 llama.cpp JNI (Phase 3 后接)
+4. **需 arm64 真机** — x86_64 模拟器 CXR native 库加载失败 (但 Agent 部分不依赖 CXR, 只看无障碍服务)
+5. Shizuku-API 13.x 无公开 newProcess → shell 走普通 ProcessBuilder (高特权命令需 UserService 模式)
+
+## 计划 (2026-08-15)
+
+1. **手机端 LLM 配置从桌面同步** ✅ 2026-08-15: `data.*` 同步协议新增 `data.llm-config` 类型 — 桌面 P2PNetwork `registerDataProvider('data.llm-config')` 返回 `~/.bolloon/llm-config.json` 内容, 手机 IndexedDB 保存 → `onLlmConfig` 注入 agent 层 (`setLlmConfig`) → runAgent 前 `agentConfigure`; 未同步默认手机端本机配置。已验证 (p2p-mobile-desktop-bridge.ts PASS)。
+2. **Phone API→AgentRuntime 端到端验证** ✅ 2026-08-15: 手机自治控制双面已实现并验证 — P2P 控制面 (`phone.*` 协议) + 本地 HTTP API (`mobile-http-api.ts`, /api/phone/agent/run) 均可触发手机独立 AgentLoop 执行, 手机**不需要经过电脑同意** (verify-phone-agent-api.ts PASS, fallback 模式; 真机 Kotlin AgentRuntime 待 arm64 设备)。
+3. **Hermes + Ghost harness 组合**: Hermes (生命周期/工具循环/审计) + Ghost (观察/宏/屏幕分类) 已有基础, 继续组合出手机端完整功能
+
+## 自治控制面 (2026-08-15, 手机是独立 Agent 节点)
+
+手机端拥有自己的控制 API, 与桌面 AgentLoop 不同; 信息可以同步 (data.*), 但执行循环是独立的。
+
+```text
+P2P 控制面 (phone.* 协议)                    本地 HTTP API (mobile-http-api.ts)
+桌面 sendMessage(peer, 'phone.agent.run')   POST /api/phone/agent/run {goal}
+    ↓ 经 P2PNetwork /agent/message              ↓ localhost server (Node/真机原生)
+mobile-core 路由 phone.* → mobile-agent    core.phone.run(goal)
+    ↓                                       ↓
+runPhoneAgent(goal): 手机自治执行, 不经电脑
+    ├─ native (Capacitor + arm64): bridge.runAgent → Kotlin AgentLoop + AndroidAgentTools
+    └─ fallback: runLocalAgent 内置规则 (无 LLM/无障碍也自治可用)
+    ↓ 回执
+phone.agent.result → 请求方; HTTP 200 {ok,result,mode}
+```
+
+协议消息:
+- `phone.agent.run` `{goal, requestId?}` → `phone.agent.result` `{ok, goal, result, mode: 'native'|'fallback', did, agentId?, stepCount?}`
+- `phone.agent.status` → `phone.agent.status.reply` `{ok, did, mode, llm?, capabilities}`
+- `phone.agent.cancel` `{reason?}` → `phone.agent.cancel.reply` `{ok, cancelRequested}`
+
+设计要点:
+- **执行循环独立**: 手机端 AgentLoop (Kotlin) / runLocalAgent (fallback) 是手机自己的, 桌面/其他节点只能触发, 不能代执行
+- **信息同步**: LLM 配置/会话经 data.* 同步, 与控制执行分离
+- **默认自治**: 未同步 LLM 配置时手机用本机默认 (deepseek), 无依赖也可用 fallback 规则
+
+验证: `npx tsx src/test/verify-phone-agent-api.ts` (P2P + HTTP 双面) + `npx tsx src/test/p2p-mobile-desktop-bridge.ts` (LLM 配置同步)。真机 (arm64 + 无障碍) 待验。
 
 ## Ghost 借鉴 (2026-08-13, D:\AI\Agent-andriod = Ghost in the Droid)
 

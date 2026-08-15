@@ -2,9 +2,11 @@
  * p2p-mobile-desktop-bridge.ts — 2026-08-15 (tsx 集成测试, 不走 vitest)
  *
  * 验证 Phase 2: 手机端浏览器 libp2p 节点 (websockets) 能连桌面节点 (tcp+ws) 并互通 /agent/message.
+ * 2026-08-15 扩展: 验证 data.llm-config 同步 — 桌面注册 data provider, 手机请求 → 收到 reply 并保存.
  *
  * 跑: npx tsx src/test/p2p-mobile-desktop-bridge.ts
  */
+import 'fake-indexeddb/auto';
 import { P2PNetwork } from '../network/p2p.js';
 
 async function main() {
@@ -27,10 +29,23 @@ async function main() {
   const mhKeys = Array.from((desktop as any).messageHandlers?.keys?.() || []);
   console.log('[test] 桌面 messageHandlers:', mhKeys.join(','));
 
-  console.log('[test] 2. 启动手机端节点 (websockets)...');
+  // 2026-08-15: 桌面注册 data.llm-config 提供者 (模拟桌面 llm-config.json 内容)
+  desktop.registerDataProvider('data.llm-config', async () => {
+    return JSON.stringify({
+      activeProvider: 'deepseek',
+      providers: {
+        deepseek: { enabled: true, apiKey: 'sk-test-desktop', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', temperature: 0.7, maxTokens: 4096, requiresApiKey: true },
+      },
+      updatedAt: Date.now(),
+    });
+  });
+  console.log('[test] 桌面已注册 data.llm-config provider');
+
+  console.log('[test] 2. 启动手机端节点 (websockets, 经 mobile-core.network.start 注入 transport + 路由)...');
+  const { core } = await import('../web/mobile-core.js');
   const { startMobileP2P, sendMobileP2PMessage, onMobileP2PMessage, getMobileP2PState, getMobileP2PConnections } = await import('../web/mobile-p2p.js');
-  const mobileState = await startMobileP2P({ seedAddrs: [wsAddr] });
-  console.log('[test] 手机节点状态:', JSON.stringify(mobileState));
+  const netState = await core.network.start([wsAddr]);
+  console.log('[test] mobile-core network 状态:', JSON.stringify(netState));
 
   const mobileGot: string[] = [];
   onMobileP2PMessage((payload, from) => {
@@ -54,8 +69,17 @@ async function main() {
   console.log('[test] 桌面收到数:', desktopGot.length);
   console.log('[test] 手机收到数:', mobileGot.length);
 
-  const pass = desktopGot.length >= 1;
-  console.log(pass ? '\n✅ PASS: 手机 websockets 节点 ↔ 桌面节点 互通' : '\n❌ FAIL: 未互通');
+  // 2026-08-15: 手机请求桌面 LLM 配置 → 期望收到 data.llm-config.reply (经 core 路由到 data 层)
+  const dataLayer = await import('../web/mobile-data.js');
+  const reqOk = await dataLayer.requestLlmConfigFromPeer(dInfo.peerId);
+  console.log('[test] 手机请求 LLM 配置成功:', reqOk);
+  await new Promise((r) => setTimeout(r, 1500));
+  const llmCfg = await dataLayer.getLlmConfig();
+  const synced = llmCfg.providers?.deepseek?.apiKey === 'sk-test-desktop';
+  console.log('[test] 手机同步到的 LLM 配置 provider:', llmCfg.activeProvider, 'apiKey 匹配:', synced);
+
+  const pass = desktopGot.length >= 1 && synced;
+  console.log(pass ? '\n✅ PASS: 手机 websockets 节点 ↔ 桌面节点 互通 + data.llm-config 同步' : '\n❌ FAIL: 未互通或 LLM 配置未同步');
   process.exit(pass ? 0 : 1);
 }
 
