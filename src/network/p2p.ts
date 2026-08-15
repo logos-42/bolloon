@@ -1,5 +1,6 @@
 import { createLibp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
+import { webSockets } from '@libp2p/websockets';
 import { multiaddr as createMultiaddr } from '@multiformats/multiaddr';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { autoNAT } from '@libp2p/autonat';
@@ -249,7 +250,37 @@ export class P2PNetwork {
     const enableUPnP = config?.enableUPnP ?? true;
 
     const transports = [tcp()];
+    // 2026-08-15: 加 websockets 传输 — 让手机端 (WebView) 能通过 wss/ws 连桌面节点
+    try {
+      transports.push(webSockets() as any);
+    } catch (e) {
+      console.warn(`[P2P] Failed to add websockets transport:`, e);
+    }
     const services: any = {};
+
+    // 2026-08-15: relay 传输需要 identify 服务 (libp2p 3.x 依赖检查)
+    try {
+      const { identify } = await import('@libp2p/identify');
+      services.identify = identify();
+    } catch (e) {
+      console.warn(`[P2P] Failed to setup identify:`, e);
+    }
+
+    // 2026-08-15: 加密 + 多路复用 (与手机端 websockets 节点互通必需)
+    let connectionEncrypters: any[] = [];
+    let streamMuxers: any[] = [];
+    try {
+      const { noise } = await import('@chainsafe/libp2p-noise');
+      connectionEncrypters = [noise()];
+    } catch (e) {
+      console.warn(`[P2P] Failed to setup noise encrypter:`, e);
+    }
+    try {
+      const { yamux } = await import('@chainsafe/libp2p-yamux');
+      streamMuxers = [yamux()];
+    } catch (e) {
+      console.warn(`[P2P] Failed to setup yamux muxer:`, e);
+    }
 
     if (enableRelay) {
       try {
@@ -278,9 +309,11 @@ export class P2PNetwork {
 
     this.node = await createLibp2p({
       addresses: {
-        listen: ['/ip4/0.0.0.0/tcp/0']
+        listen: ['/ip4/0.0.0.0/tcp/0', '/ip4/0.0.0.0/tcp/0/ws']
       },
       transports,
+      connectionEncrypters,
+      streamMuxers,
       services
     });
 
@@ -527,7 +560,7 @@ export class P2PNetwork {
 
     const network = this;
 
-    this.node.handle('/agent/message', async ({ stream, connection }: any) => {
+    this.node.handle('/agent/message', async (stream: any, connection: any) => {
       try {
         const chunks: Uint8Array[] = [];
         for await (const chunk of stream) {

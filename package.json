@@ -72,6 +72,7 @@
     "@libp2p/kad-dht": "^16.2.6",
     "@libp2p/tcp": "^11.0.20",
     "@libp2p/upnp-nat": "^4.0.20",
+    "@libp2p/websockets": "^10.1.19",
     "@multiformats/multiaddr": "^13.0.3",
     "@noble/hashes": "^2.3.0",
     "@orbitdb/core": "^4.0.0",

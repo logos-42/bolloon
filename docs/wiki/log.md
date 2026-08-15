@@ -1557,3 +1557,42 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - 群组: src/agents/gateway-group.ts / src/test/gateway-group.test.ts
 - 验证: scripts/verify-agent-gateway.ts (29/29)
 - 上一条: Agent Gateway 链接即入口 (2026-08-14)
+
+## [2026-08-15] feat(mobile) | 手机端内核分层: 数据同步 ≠ agent 功能
+
+用户明确: 手机端是"独立逻辑", 数据同步和 agent 功能不是一个事情. 此前 mobile-core.ts 把两者搅在一起 (任何带 text+channelId 的入站 P2P 消息都当 AI 回复追加, 发送时"记录本地+P2P广播+本地agent执行"全塞一个函数).
+
+### 架构: 手机 = 两块独立子系统 + 协调层
+
+| 层 | 文件 | 职责 | 协议 |
+|----|------|------|------|
+| 数据同步层 | mobile-data.ts | IndexedDB 独立副本 (channels/session/messages); 双向增量合并 (按 ts 最新, 消息按 role+content+ts 去重) | data.sync / data.snapshot / data.channels / data.session / data.pull |
+| Agent 功能层 | mobile-agent.ts | 独立 DID (WebCrypto, 持久化 bolloon-mobile); 本地执行 (Kotlin RokidBridge.runAgent 优先 / 内置规则离线); 主动调用远端 agent 等 reply | agent.chat.send / agent.chat.reply / agent.info |
+| 支付审批 | mobile-payments.ts | 独立 IDB (bolloon-mobile-payments), 与 data/agent 并列 | — |
+| 协调层 | mobile-core.ts | resolve/resolvePost 路由到两层 + 事件总线 (替代 SSE); P2P 入站消息按 type 前缀路由 (data.* → data层, agent.* → agent层) | — |
+| P2P 传输 | mobile-p2p.ts | 浏览器 libp2p websockets 节点 | `/agent/message` 流, `DID:<did>\|type:payload` |
+
+### P2P 传输打通 (关键修复)
+
+手机连桌面 libp2p ws 的 4 个坑:
+1. **桌面缺 identify/noise/yamux**: circuitRelayTransport 需 identify; websockets 加密需 noise. 桌面 createNode 从未配 connectionEncrypters/streamMuxers → 手机 dial 报 `could not negotiate /noise`. 补齐.
+2. **libp2p 3.x handler 签名**: 是 `(stream, connection)`, 不是 `({stream, connection})` (connection.js middleware 里 `handler(stream, connection)`). 两处 `node.handle('/agent/message')` 都改.
+3. **dialProtocol 返回 Stream 本体**: 不是 `{stream}` (connection.js `return stream`). 解构导致 stream undefined.
+4. **dial 传 multiaddr 对象**: libp2p get-peer.js 对字符串调用 `getComponents()` 崩溃; 须 `createMultiaddr()` 转换. 另加 `*` 广播 (遍历活跃连接).
+
+### 验证
+
+- tsc 0 错; vitest 1414/1414 (+5: 数据合并/agent 收发/callRemoteAgent mock/消息闭环/支付隔离)
+- 端到端集成测试 `src/test/p2p-mobile-desktop-bridge.ts` (tsx): 手机 websockets 节点 ↔ 桌面节点互连 + `DID:...|agent.chat.send` 消息互通 ✅
+- build:web 通过, dist/web/mobile-core.js 内联 mobile-data/agent/payments
+
+### 已知缺口 (下一步)
+
+- 桌面主程序实际消息总线是 irohTransport (非 P2PNetwork /agent/message); 手机发的 agent.chat.send 到桌面 P2PNetwork 只 storeOfflineMessage, 尚未接入桌面主程序 handler. 需桥接或复用 iroh 通道.
+- 关联: 数据同步层合并测试见 mobile-core.test.ts.
+
+### 关联
+
+- 手机端分层: src/web/mobile-{data,agent,payments,core,p2p}.ts
+- 集成测试: src/test/p2p-mobile-desktop-bridge.ts
+- 上一条: Agent Gateway P2P 群组 (2026-08-14)
