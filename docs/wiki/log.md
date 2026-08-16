@@ -4,7 +4,20 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-08-16 | feat | 手机端 UI 去微信化 + 编译链路修复: ① 打包链路缺 build:web+cap sync → APK 打了旧产物 (assets mobile-core.js 8.8KB 空内核 vs dist 2.4MB), 修复标准链 build:web → cap sync → assembleDebug; ② UI 去微信 (page-wechat→page-chat, tab "炁球"→"会话", 微信式4-tab→3-tab 会话/网络/我, 去 PingFang/YaHei 微信字体→Noto Sans SC); ③ 逻辑默认本地只留一个桌面入口 — mobile.js 去桌面 HTTP/SSE fallback 全走 BolloonCore 本地内核, 唯一桌面入口 = core.network.start() P2P 同步 (数据+LLM配置). 验证: node --check PASS + tsc 0 错 + vitest 1428/1428 + build:web + cap sync assets 确认 (mobile-core.js 2.4MB) | [android-agent-runtime.md](./android-agent-runtime.md) / [mobile.js](../../src/web/mobile.js) / [mobile.html](../../src/web/mobile.html) |
 | 2026-08-15 | feat | bolloon 核心 harness 复刻进手机 AgentLoop: ① 新 ToolCallParser.kt (复刻 parse-tool-call.ts 多格式解析: JSON name/tool+arguments/args/input、invoke/function_calls XML、TOOL_CALL、自闭合、中文调用、对象字面量、think 剥离 + autoSplitCommand + 手机别名表 bash→shell/click→tap); ② AgentLoop.kt 复刻 react-loop.ts 决策表 (AI failure sentinel→continue 反思+累计错误 force-exit、<final gen>→final 显式终止替代硬编码 done、unknown tool→提示换工具、同工具连续失败≥3 提示换方案、上下文溢出截断 maxHistoryTokens=60000; 旧 {"tool":"done"} 兼容). 验证: gradlew compileDebugKotlin PASS + 镜像测试 tool-call-parser-mirror.test.ts 12 条 PASS (桌面 parseToolCall 为参考锚点) + tsc 0 错 + vitest 1428/1428 + build:web; wiki/current-status/log 更新 | [android-agent-runtime.md](./android-agent-runtime.md) / [ToolCallParser.kt](../../android/app/src/main/java/com/bolloon/agent/rokid/ToolCallParser.kt) / [AgentLoop.kt](../../android/app/src/main/java/com/bolloon/agent/rokid/AgentLoop.kt) / [tool-call-parser-mirror.test.ts](../../src/test/tool-call-parser-mirror.test.ts) |
+
+**2026-08-16 详细 — 手机端 UI 去微信化 + 编译链路修复:**
+- 背景: 用户反馈 (1) 手机端"还没实现编译", (2) UI 布局没改掉 / 微信字体还在, (3) 运行逻辑还会走到桌面版。诊断发现三个根因:
+  1. **编译链路缺环**: APK 里 `assets/public/mobile-core.js` 是 8.8KB 旧版 (空内核), 而 `dist/web/mobile-core.js` 是 2.4MB 新版 (含完整 data/agent/phone 内核)。根因是打包 APK 前只跑了 assembleDebug, 没跑 `build:web` + `cap sync`。修复标准链: `npm run build:web → npx cap sync android → gradlew assembleDebug`。
+  2. **微信 UI 残留**: `page-wechat` / tab "炁球" / `TITLES={wechat:'微信'}` / 微信式 4-tab (会话/通讯录/发现/我) / mobile.css 注释"微信风格" + `PingFang SC/Microsoft YaHei` 微信字体。
+  3. **逻辑走桌面版**: mobile.js `api.get/post` fallback 桌面 HTTP `fetch('/api/...')`, `openChatSse`/`setupUiControl` fallback 桌面 SSE `EventSource('/events')`, 多个 alert"桌面 Web UI 提供", `openUrl('/api-config')` 跳桌面配置。
+- 实现:
+  1. `mobile.html`: `page-wechat`→`page-chat`, tab "炁球"→"会话", 微信式 4-tab→3-tab (会话/网络/我), 通讯录+发现合并为"网络" tab (含 P2P 好友列表 + MCP + 审批 + A2UI)
+  2. `mobile.css`: 注释去"微信风格"→"bolloon 品牌风格", 字体 `PingFang SC/Microsoft YaHei`→`Noto Sans SC` (对齐桌面)
+  3. `mobile.js`: `api.get/post` 去掉桌面 HTTP fallback 全走 `window.BolloonCore`; `openChatSse`/`setupUiControl` 去掉桌面 SSE 全走本地事件总线; "桌面 Web UI 提供" alert→本地提示; `openUrl`/`api-config` 移除; **唯一桌面入口 = init 调 `core.network.start()` P2P 同步 (数据 + LLM 配置)**
+- 验证: `node --check mobile.js` PASS + tsc 0 错 + vitest 1428/1428 + `build:web` + `cap sync android` 后 assets 确认 (mobile-core.js 2.4MB, mobile.js 16.4KB) + wiki 4 检查 OK
+- 下步: 重新打包 APK (命名 bolloon-0.4.14.apk), 真机 (arm64 + 无障碍) 验证。
 
 **2026-08-15 详细 — bolloon 核心 harness 复刻进手机 AgentLoop:**
 - 背景: 用户指令"继续 Hermes + Ghost harness 组合分析完善手机端逻辑, 都需要真机实现功能, bolloon 的核心 harness 需要复刻进去"。Hermes (生命周期/审计/取消) + Ghost (观察/宏/屏幕分类) 已落地, 差距在手机 AgentLoop 决策层: 原来只支持单一 JSON `{"tool":"...","args":{...}}`, 与桌面核心 harness (react-loop.ts 决策表 + parse-tool-call.ts 多格式解析 + tool-registry.ts 别名) 能力不对齐。

@@ -2,14 +2,14 @@
 title: Android Agent Runtime 架构 (Phase 1-4 路线图)
 source: session + AOHP arXiv 调研
 created: 2026-08-13
-last_confirmed: 2026-08-15
+last_confirmed: 2026-08-16
 schema_version: 2
 audience: self
 stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [android-agent, accessibility, shizuku, llamacpp, aohp, agent-os, phase-1, phase-2, phase-3, phase-4, on-device-verified, ghost, hermes, phone-control, harness-replication]
+tags: [android-agent, accessibility, shizuku, llamacpp, aohp, agent-os, phase-1, phase-2, phase-3, phase-4, on-device-verified, ghost, hermes, phone-control, harness-replication, mobile-ui, build-link]
 ---
 
 # Android Agent Runtime 架构 (Phase 1-4)
@@ -139,7 +139,6 @@ mobile-agent.ts runLocalAgent(goal)
 3. **Hermes + Ghost harness 组合** ✅ 2026-08-15: Hermes (生命周期/工具循环/审计) + Ghost (观察/宏/屏幕分类) + **bolloon 核心 harness 复刻进手机 AgentLoop** — 见下节。
 
 ## Bolloon 核心 harness 复刻 (2026-08-15, 手机 AgentLoop 对齐桌面)
-
 手机 `AgentLoop.kt` 原来只支持单一 JSON `{"tool":"...","args":{...}}` 解析, 与桌面核心 harness (react-loop.ts 决策表 + parse-tool-call.ts 多格式解析) 能力不对齐。本次复刻:
 
 | 桌面 harness | 手机复刻 | 说明 |
@@ -160,6 +159,42 @@ mobile-agent.ts runLocalAgent(goal)
 - Kotlin 编译: `gradlew :app:compileDebugKotlin` PASS
 - 决策语义镜像测试: `src/test/tool-call-parser-mirror.test.ts` (12 条, 以桌面 parseToolCall 为参考锚点, 对齐手机工具集解析边界) PASS
 - 全量: tsc 0 错, vitest 1428/1428, build:web OK
+
+## 手机端 UI 去微信化 + 编译链路修复 (2026-08-16)
+
+### 1. 编译链路 (根因修复)
+
+**问题**: APK 里 `assets/public/mobile-core.js` 是 **8.8KB 旧版**(空内核), 而 `dist/web/mobile-core.js` 是 **2.4MB 新版**(含完整 data/agent/phone 内核)。原因: 打包 APK 前没跑 `npm run build:web` + `cap sync`。
+
+**修复流程** (标准打包链):
+```bash
+npm run build:web          # 编译 mobile-core.ts + 复制 mobile.html/css/js → dist/web
+npx cap sync android       # dist/web → android/app/src/main/assets/public
+gradlew :app:assembleDebug # 打包 APK
+```
+
+### 2. UI 去微信化 (mobile.html / mobile.css / mobile.js)
+
+| 残留 | 修改 |
+|------|------|
+| `page-wechat` / tab "炁球" / `TITLES={wechat:'微信'}` | → `page-chat` / tab "会话" / `TITLES={chat:'会话',network:'网络',me:'我'}` |
+| 微信式 4-tab (会话/通讯录/发现/我) | → 3-tab (会话/网络/我), 通讯录+发现合并为"网络" |
+| `mobile.css` 注释"微信风格" + 字体栈 `PingFang SC/Microsoft YaHei` | → "bolloon 品牌风格" + `Noto Sans SC` (对齐桌面) |
+
+### 3. 逻辑默认本地 (mobile.js)
+
+**核心原则: 桌面版逻辑入口只保留一个 (P2P 网络同步), 其余全部默认本地运行。**
+
+| 原来 (fallback 桌面) | 现在 (全本地) |
+|---------------------|--------------|
+| `api.get/post`: 本地内核 → **fallback `fetch('/api/...')` 桌面 HTTP** | 只走 `window.BolloonCore`, 无桌面 fallback |
+| `openChatSse`: 本地事件 → **fallback `EventSource('/events')` 桌面 SSE** | 只走本地事件总线 |
+| `setupUiControl`: 本地事件 → **fallback 桌面 SSE** | 只走本地事件总线 |
+| alert "桌面 Web UI 提供" (钱包/判断力/添加好友/我的 P2P ID) | → 本地提示 (本地内核) |
+| `openUrl('/api-config')` 跳桌面配置页 | → 移除 (改为本地网络设置) |
+| init 不启动 P2P | init 调 `core.network.start()` — **唯一桌面入口 (同步数据 + LLM 配置)** |
+
+验证: `node --check mobile.js` PASS + tsc 0 错 + vitest 1428/1428 + build:web OK + cap sync 后 assets 确认最新 (mobile-core.js 2.4MB)。
 
 ## 自治控制面 (2026-08-15, 手机是独立 Agent 节点)
 

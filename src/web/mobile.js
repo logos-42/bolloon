@@ -1,31 +1,25 @@
 /**
- * mobile.js — 手机端 UI 交互 (微信风格, Capacitor webview)
- * bolloon WebUI 主题配色. 数据来自 bolloon server HTTP API + SSE 流式聊天.
+ * mobile.js — 手机端 UI 交互 (bolloon 品牌, Capacitor webview)
+ * bolloon WebUI 主题配色. 数据全部来自本地内核 (window.BolloonCore, IndexedDB),
+ * 唯一桌面入口是 P2P 网络同步 (network.start 连桌面同步数据 + LLM 配置).
  * 触控组件: tab 切换 / 列表点击 / 聊天输入 / 设置 / MCP 工具调用.
  */
 (function () {
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+  // === 本地内核 API (唯一数据来源, 不 fallback 桌面 HTTP) ===
+  const core = window.BolloonCore;
   const api = {
     async get(path) {
-      // 2026-08-14: 优先本地内核 (BolloonCore), fallback 桌面 HTTP API
-      const coreApi = window.BolloonCore?.resolve?.(path);
-      if (coreApi) return coreApi();
-      const r = await fetch(path);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r.json();
+      const fn = core?.resolve?.(path);
+      if (fn) return fn();
+      throw new Error(`本地内核无此路径: ${path}`);
     },
     async post(path, body) {
-      const coreApi = window.BolloonCore?.resolvePost?.(path, body);
-      if (coreApi) return coreApi();
-      const r = await fetch(path, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r.json();
+      const fn = core?.resolvePost?.(path, body);
+      if (fn) return fn();
+      throw new Error(`本地内核无此路径: ${path}`);
     },
   };
 
@@ -44,12 +38,12 @@
   }
 
   // === tab 切换 ===
-  const TITLES = { wechat: '微信', contacts: '通讯录', discover: '发现', me: '我' };
+  const TITLES = { chat: '会话', network: '网络', me: '我' };
   function switchTab(tab) {
     $$('.page').forEach((p) => { p.hidden = p.dataset.tab !== tab; });
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
-    $('#topbar-title').textContent = TITLES[tab] || '微信';
-    if (tab === 'discover') { loadMcpTools(); loadApprovals(); }
+    $('#topbar-title').textContent = TITLES[tab] || '会话';
+    if (tab === 'network') { loadContacts(); loadMcpTools(); loadApprovals(); }
     window.__mobileTouch?.('tab', tab);
   }
   $$('.tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
@@ -186,58 +180,29 @@
   function openChatSse() {
     if (chatEventSource) { chatEventSource.close(); chatEventSource = null; }
     if (!activeChannel) return;
-    // 2026-08-14: 优先本地内核事件总线, fallback 桌面 SSE
-    if (window.BolloonCore?.events?.subscribe) {
-      chatEventSource = { close() {} }; // 占位, 关闭时解除订阅
-      const unsub = window.BolloonCore.events.subscribe((msg) => {
-        if (!activeChannel || !msg) return;
-        const box = $('#chat-messages');
-        if (!box) return;
-        if (msg.type === 'ai' || msg.type === 'token' || msg.role === 'ai') {
-          const content = msg.content || msg.text || '';
-          if (msg.channelId && msg.channelId !== activeChannel.id) return;
-          if (!streamingBubble || !streamingBubble.isConnected) {
-            streamingBubble = document.createElement('div');
-            streamingBubble.className = 'bubble ai';
-            box.appendChild(streamingBubble);
-          }
-          streamingBubble.textContent += content;
-          box.scrollTop = box.scrollHeight;
-        } else if (msg.type === 'done') {
-          streamingBubble = null;
-          setTimeout(loadMessages, 300);
+    // 本地内核事件总线 (唯一来源, 无桌面 SSE)
+    if (!core?.events?.subscribe) return;
+    chatEventSource = { close() {} }; // 占位, 关闭时解除订阅
+    const unsub = core.events.subscribe((msg) => {
+      if (!activeChannel || !msg) return;
+      const box = $('#chat-messages');
+      if (!box) return;
+      if (msg.type === 'ai' || msg.type === 'token' || msg.role === 'ai') {
+        const content = msg.content || msg.text || '';
+        if (msg.channelId && msg.channelId !== activeChannel.id) return;
+        if (!streamingBubble || !streamingBubble.isConnected) {
+          streamingBubble = document.createElement('div');
+          streamingBubble.className = 'bubble ai';
+          box.appendChild(streamingBubble);
         }
-      });
-      chatEventSource.close = unsub;
-      return;
-    }
-    // 桌面 fallback: SSE
-    try {
-      chatEventSource = new EventSource('/events');
-      chatEventSource.onmessage = (e) => {
-        if (!activeChannel || !e.data) return;
-        let msg;
-        try { msg = JSON.parse(e.data); } catch { return; }
-        const box = $('#chat-messages');
-        if (!box) return;
-        // AI 消息 / token 流 → 流式气泡
-        if (msg.type === 'ai' || msg.type === 'token' || msg.role === 'ai') {
-          const content = msg.content || msg.text || '';
-          if (msg.channelId && msg.channelId !== activeChannel.id) return;
-          if (!streamingBubble || !streamingBubble.isConnected) {
-            streamingBubble = document.createElement('div');
-            streamingBubble.className = 'bubble ai';
-            box.appendChild(streamingBubble);
-          }
-          streamingBubble.textContent += content;
-          box.scrollTop = box.scrollHeight;
-        } else if (msg.type === 'done') {
-          streamingBubble = null;
-          setTimeout(loadMessages, 300);
-        }
-      };
-      chatEventSource.onerror = () => { /* SSE 断线静默重连 */ };
-    } catch (e) { /* SSE 不支持则退回轮询 */ }
+        streamingBubble.textContent += content;
+        box.scrollTop = box.scrollHeight;
+      } else if (msg.type === 'done') {
+        streamingBubble = null;
+        setTimeout(loadMessages, 300);
+      }
+    });
+    chatEventSource.close = unsub;
   }
 
   async function loadMessages() {
@@ -293,9 +258,7 @@
       </div>
       <div style="padding:12px">
         <div class="conv-item" id="theme-toggle">🌙 深色</div>
-        <div class="conv-item" id="settings-api"><span class="list-icon">🔧</span><span>API 配置</span><span class="list-arrow">›</span></div>
-        <div class="conv-item" id="settings-wallet"><span class="list-icon">👛</span><span>钱包</span><span class="list-arrow">›</span></div>
-        <div class="conv-item" id="settings-judgments"><span class="list-icon">🧠</span><span>判断力 API</span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="settings-network"><span class="list-icon">🌐</span><span>网络与同步</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-did">🪪 DID</div>
         <div class="conv-item" id="settings-login-state">🔐 登录状态</div>
       </div>`;
@@ -304,28 +267,21 @@
     applyTheme(theme);
     $('#settings-back').addEventListener('click', () => page.remove());
     $('#theme-toggle').addEventListener('click', () => applyTheme(localStorage.getItem('bolloon_theme') === 'dark' ? 'light' : 'dark'));
-    $('#settings-api').addEventListener('click', () => openUrl('/api-config'));
-    $('#settings-wallet').addEventListener('click', () => alert('钱包管理 (桌面 Web UI 提供)'));
-    $('#settings-judgments').addEventListener('click', () => alert('判断力 API (桌面 Web UI 提供)'));
+    $('#settings-network').addEventListener('click', () => switchTab('network'));
     $('#settings-did').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('DID: ' + (s.did || '未生成'))); });
   }
 
   // === 菜单绑定 ===
   function bindMenu() {
     $('#item-settings').addEventListener('click', openSettings);
-    $('#item-wallet').addEventListener('click', () => { alert('钱包管理 (桌面 Web UI 提供)'); });
-    $('#item-judgments').addEventListener('click', () => { alert('判断力 API (桌面 Web UI 提供)'); });
+    $('#item-wallet').addEventListener('click', () => { alert('钱包管理 (本地内核)'); });
+    $('#item-judgments').addEventListener('click', () => { alert('判断力 API (本地内核)'); });
     $('#item-did').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('DID: ' + (s.did || '未生成'))); });
-    $('#item-login').addEventListener('click', () => { openUrl('/api-config'); });
+    $('#item-login').addEventListener('click', () => { switchTab('network'); });
     $('#item-logout').addEventListener('click', () => { api.post('/api/auth/logout', { provider: 'github' }).then(() => loadMe()); });
-    $('#btn-add').addEventListener('click', () => { alert('添加好友: 在桌面 Web UI 的 P2P 好友中添加'); });
-    $('#item-p2p').addEventListener('click', () => { switchTab('contacts'); });
-    $('#item-p2p-id').addEventListener('click', () => { alert('我的 P2P ID 见桌面 Web UI'); });
-  }
-
-  function openUrl(url) {
-    if (window.Capacitor && window.Capacitor.isNativePlatform?.()) location.href = url;
-    else window.open(url, '_blank');
+    $('#btn-add').addEventListener('click', () => { alert('添加会话: 在本地内核中新建会话'); });
+    $('#item-p2p').addEventListener('click', () => { switchTab('network'); });
+    $('#item-p2p-id').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('我的 P2P ID: ' + (s.did || '未生成'))); });
   }
 
   function escapeHtml(s) {
@@ -374,57 +330,37 @@
     } catch (e) { box.innerHTML = '<div style="padding:10px;color:var(--error)">审批加载失败</div>'; }
   }
 
-  // === MCP 驱动前端 UI (2026-08-12): 订阅 /events, 收到 {type:'ui'} 指令执行组件动作 ===
+  // === MCP 驱动前端 UI (2026-08-12): 订阅本地内核事件, 收到 {type:'ui'} 指令执行组件动作 ===
   function setupUiControl() {
-    // 2026-08-14: 优先本地内核事件总线, fallback 桌面 SSE
-    if (window.BolloonCore?.events?.subscribe) {
-      window.BolloonCore.events.subscribe((msg) => {
-        if (!msg || msg.type !== 'ui' || !msg.action) return;
-        const d = msg.data || {};
-        switch (msg.action) {
-          case 'switchTab': if (d.tab && ['wechat', 'contacts', 'discover', 'me'].includes(d.tab)) switchTab(d.tab); break;
-          case 'openSettings': openSettings(); break;
-          case 'openWallet': alert('钱包管理 (本地内核 Phase 2)'); break;
-          case 'openAddFriend': alert('添加好友 (本地内核 Phase 2: P2P 浏览器传输)'); break;
-          case 'showToast': alert(d.message || ''); break;
-          case 'goBack': { const p = $('#chat-page'); if (p) closeChat(); else openSettings(); break; }
-          default: break;
-        }
-        window.__mobileTouch?.('ui', msg.action);
-      });
-      return;
-    }
-    try {
-      const es = new EventSource('/events');
-      es.onmessage = (e) => {
-        if (!e.data) return;
-        let msg;
-        try { msg = JSON.parse(e.data); } catch { return; }
-        if (msg.type !== 'ui' || !msg.action) return;
-        const d = msg.data || {};
-        switch (msg.action) {
-          case 'switchTab': if (d.tab && ['wechat', 'contacts', 'discover', 'me'].includes(d.tab)) switchTab(d.tab); break;
-          case 'openSettings': openSettings(); break;
-          case 'openWallet': alert('钱包管理 (桌面 Web UI 提供)'); break;
-          case 'openAddFriend': alert('添加好友: 在桌面 Web UI 的 P2P 好友中添加'); break;
-          case 'showToast': alert(d.message || ''); break;
-          case 'goBack': { const p = $('#chat-page'); if (p) closeChat(); else openSettings(); break; }
-          default: break;
-        }
-        window.__mobileTouch?.('ui', msg.action);
-      };
-      es.onerror = () => { /* SSE 断线静默重连 */ };
-    } catch (e) { /* 忽略 */ }
+    if (!core?.events?.subscribe) return;
+    core.events.subscribe((msg) => {
+      if (!msg || msg.type !== 'ui' || !msg.action) return;
+      const d = msg.data || {};
+      switch (msg.action) {
+        case 'switchTab': if (d.tab && ['chat', 'network', 'me'].includes(d.tab)) switchTab(d.tab); break;
+        case 'openSettings': openSettings(); break;
+        case 'openWallet': alert('钱包管理 (本地内核)'); break;
+        case 'openAddFriend': alert('添加好友 (本地内核 P2P 传输)'); break;
+        case 'showToast': alert(d.message || ''); break;
+        case 'goBack': { const p = $('#chat-page'); if (p) closeChat(); else openSettings(); break; }
+        default: break;
+      }
+      window.__mobileTouch?.('ui', msg.action);
+    });
   }
 
   function init() {
     bindMenu();
     applyTheme(localStorage.getItem('bolloon_theme') || 'dark');
-    switchTab('wechat');
+    switchTab('chat');
     setupUiControl();
     loadConversations();
     loadContacts();
     loadMe();
+    // 唯一桌面入口: P2P 网络同步 (连桌面同步数据 + LLM 配置). 其余全部本地.
+    if (core?.network?.start) {
+      core.network.start().catch(() => {});
+    }
   }
   document.addEventListener('DOMContentLoaded', init);
   if (document.readyState !== 'loading') init();

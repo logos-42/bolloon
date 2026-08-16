@@ -1,4 +1,4 @@
-/* 手机端 UI — 微信风格 + bolloon WebUI 主题 (配色不变) */
+/* 手机端 UI — bolloon 品牌风格 (暗色 + 品牌绿) */
 :root {
   --bg: #1a1a18;
   --bg-card: #222220;
@@ -19,7 +19,7 @@ html, body { height: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   overflow: hidden;
   touch-action: manipulation;
 }
