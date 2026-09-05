@@ -20,18 +20,32 @@
     dark: { '--bg': '#1a1a18', '--bg-card': '#222220', '--bg-hover': '#2a2a26', '--text': '#d8d8c8', '--text-secondary': '#909088', '--accent': '#c4d640', '--border': '#3a3a36' },
     light: { '--bg': '#f5f5f0', '--bg-card': '#ffffff', '--bg-hover': '#eeeeea', '--text': '#1a1a18', '--text-secondary': '#606058', '--accent': '#8a9430', '--border': '#d0d0c8' },
   };
-  function applyTheme(name) {
-    const t = THEMES[name] || THEMES.dark;
+  function systemTheme() {
+    try { return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; }
+    catch { return 'dark'; }
+  }
+  function resolveTheme() {
+    try { return localStorage.getItem('bolloon_theme') || systemTheme(); }
+    catch { return systemTheme(); }
+  }
+  let currentTheme = 'dark';
+  function applyTheme(name, persist = true) {
+    const n = name === 'light' ? 'light' : 'dark';
+    currentTheme = n;
+    const t = THEMES[n];
     const root = document.documentElement;
     Object.entries(t).forEach(([k, v]) => root.style.setProperty(k, v));
-    localStorage.setItem('bolloon_theme', name);
+    if (persist) localStorage.setItem('bolloon_theme', n);
   }
 
-  const TITLES = { main: '智能体封面', network: '网络', me: '我' };
+  const TITLES = { main: '首页', network: '网络', me: '我' };
+  let currentTab = 'main';
   function switchTab(tab) {
-    $$('.page').forEach((p) => { p.hidden = p.dataset.tab !== tab; });
+    currentTab = tab;
+    $$('.page, .page-container').forEach((p) => { p.hidden = p.dataset.tab !== tab; });
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
     $('#topbar-title').textContent = TITLES[tab] || '会话';
+    const cs = $('#btn-create-session'); if (cs) cs.hidden = tab !== 'main';
     if (tab === 'network') { loadContacts(); loadMcpTools(); loadApprovals(); }
     if (tab === 'main') { loadAgentCovers(); }
     window.__mobileTouch?.('tab', tab);
@@ -168,7 +182,7 @@
   async function loadAgentCovers() {
     const track = $('#card-track');
     if (!track) return;
-    track.innerHTML = '<div class="card-loading">加载智能体封面...</div>';
+    track.innerHTML = '<div class="card-loading">加载智能体卡片...</div>';
     try {
       const [channels, peers] = await Promise.all([
         api.get('/channels').catch(() => []),
@@ -177,7 +191,24 @@
       const channelList = Array.isArray(channels) ? channels : [];
       const peerList = Array.isArray(peers) ? peers : [];
 
-      allAgentCards = channelList.map((ch, i) => {
+      // 本机智能体卡片: 任何情况下都先显示自己, 保证首页不空 (无同步/无好友也可见)
+      allAgentCards = [];
+      try {
+        const self = await core.identity?.status?.();
+        if (self && self.did) {
+          allAgentCards.push({
+            id: self.did, agentId: self.did,
+            name: self.name || '本机智能体',
+            desc: '本机 Agent (手机端自治执行)',
+            avatar: null, peer: null,
+            status: 'online', lastActive: '刚刚',
+            capabilities: ['chat', 'local-agent'],
+            deletable: false,
+          });
+        }
+      } catch {}
+
+      allAgentCards = allAgentCards.concat(channelList.map((ch, i) => {
         const peer = peerList.find((p) => p.id === ch.agentId || p.publicKey?.slice(0, 12) === ch.agentId?.slice(0, 12));
         return {
           id: ch.id,
@@ -189,8 +220,9 @@
           status: 'online',
           lastActive: ch.ts ? new Date(ch.ts).toLocaleDateString() : '未知',
           capabilities: ['chat', 'local-agent'],
+          deletable: true,
         };
-      });
+      }));
 
       peerList.forEach((p) => {
         const exists = allAgentCards.some((c) => c.peer?.name === p.name);
@@ -205,6 +237,7 @@
             status: p.online ? 'online' : 'offline',
             lastActive: '刚刚',
             capabilities: ['chat'],
+            deletable: false,
           });
         }
       });
@@ -212,7 +245,7 @@
       renderCardTrack();
       setupCardSwipe();
     } catch (e) {
-      track.innerHTML = `<div class="card-empty">封面加载失败</div>`;
+      track.innerHTML = `<div class="card-empty">智能体卡片加载失败</div>`;
     }
   }
 
@@ -222,34 +255,37 @@
     if (!track || !indicator) return;
 
     if (allAgentCards.length === 0) {
-      track.innerHTML = '<div class="card-empty">暂无智能体封面</div>';
+      track.innerHTML = '<div class="card-empty">暂无智能体卡片</div>';
       indicator.innerHTML = '';
       return;
     }
 
     track.innerHTML = allAgentCards.map((card, i) => `
-      <div class="agent-card ${i === 0 ? 'active-card' : ''}" data-index="${i}">
-        <div class="card-cover">
-          <div class="card-cover-placeholder">${escapeHtml(card.name.charAt(0))}</div>
-          <div class="card-cover-info">
-            <div class="card-cover-name">${escapeHtml(card.name)}</div>
-            <div class="card-cover-desc">${escapeHtml(card.desc)}</div>
+      <div class="card-wrap" data-index="${i}">
+        ${card.deletable ? `<button class="card-delete" data-index="${i}">删除</button>` : ''}
+        <div class="agent-card ${i === 0 ? 'active-card' : ''}" data-index="${i}">
+          <div class="card-cover">
+            <div class="card-cover-placeholder">${escapeHtml(card.name.charAt(0))}</div>
+            <div class="card-cover-info">
+              <div class="card-cover-name">${escapeHtml(card.name)}</div>
+              <div class="card-cover-desc">${escapeHtml(card.desc)}</div>
+            </div>
           </div>
-        </div>
-        <div class="card-body">
-          <div class="card-body-row">
-            <span class="card-body-label">状态</span>
-            <span class="card-body-value" style="color:${card.status === 'online' ? 'var(--accent)' : 'var(--text-muted)'}">${card.status === 'online' ? '在线' : '离线'}</span>
+          <div class="card-body">
+            <div class="card-body-row">
+              <span class="card-body-label">状态</span>
+              <span class="card-body-value" style="color:${card.status === 'online' ? 'var(--accent)' : 'var(--text-muted)'}">${card.status === 'online' ? '在线' : '离线'}</span>
+            </div>
+            <div class="card-body-row">
+              <span class="card-body-label">好友</span>
+              <span class="card-body-value">${card.peer ? escapeHtml(card.peer.name) : '—'}</span>
+            </div>
+            <div class="card-body-row">
+              <span class="card-body-label">活跃度</span>
+              <span class="card-body-value">${escapeHtml(card.lastActive)}</span>
+            </div>
+            <button class="card-action-btn" data-index="${i}">开始对话</button>
           </div>
-          <div class="card-body-row">
-            <span class="card-body-label">好友</span>
-            <span class="card-body-value">${card.peer ? escapeHtml(card.peer.name) : '—'}</span>
-          </div>
-          <div class="card-body-row">
-            <span class="card-body-label">活跃度</span>
-            <span class="card-body-value">${escapeHtml(card.lastActive)}</span>
-          </div>
-          <button class="card-action-btn" data-index="${i}">开始对话</button>
         </div>
       </div>
     `).join('');
@@ -273,6 +309,21 @@
       });
     });
 
+    track.querySelectorAll('.card-delete').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.index);
+        const card = allAgentCards[idx];
+        if (!card || card.deletable === false) return;
+        try {
+          await api.post('/api/channels/delete', { id: card.id });
+          loadAgentCovers();
+        } catch (err) {
+          alert('删除失败: ' + (err.message || err));
+        }
+      });
+    });
+
     indicator.querySelectorAll('.card-dot').forEach((dot) => {
       dot.addEventListener('click', () => {
         const idx = parseInt(dot.dataset.index);
@@ -284,11 +335,28 @@
     updateCardIndicator();
   }
 
+  function closeCardReveals() {
+    $$('.card-wrap .agent-card.reveal-delete').forEach((c) => c.classList.remove('reveal-delete'));
+  }
+
   function setupCardSwipe() {
     const track = $('#card-track');
     if (!track) return;
 
     let startX = 0, startY = 0, isDragging = false;
+
+    function revealAt(x, y, reveal) {
+      const el = document.elementFromPoint(x, y);
+      const wrap = el && el.closest ? el.closest('.card-wrap') : null;
+      if (!wrap) return;
+      const card = wrap.querySelector('.agent-card');
+      const idx = parseInt(wrap.dataset.index);
+      const c = allAgentCards[idx];
+      if (!card) return;
+      if (reveal && c && c.deletable === false) { closeCardReveals(); return; }
+      if (reveal) closeCardReveals();
+      card.classList.toggle('reveal-delete', !!reveal);
+    }
 
     track.addEventListener('touchstart', (e) => {
       startX = e.touches[0].clientX;
@@ -304,12 +372,17 @@
 
     track.addEventListener('touchend', (e) => {
       if (!isDragging) return;
-      const endX = e.changedTouches[0].clientX;
-      const diff = endX - startX;
+      const t = e.changedTouches[0];
+      const diff = t.clientX - startX;
       const cardW = track.querySelector('.agent-card')?.offsetWidth || window.innerWidth * 0.85;
       if (Math.abs(diff) > cardW * 0.3) {
+        closeCardReveals();
         if (diff < 0 && currentCardIndex < allAgentCards.length - 1) scrollToCard(currentCardIndex + 1);
         else if (diff > 0 && currentCardIndex > 0) scrollToCard(currentCardIndex - 1);
+      } else if (diff < -30) {
+        revealAt(t.clientX, t.clientY, true);   // 轻微左滑 → 显示删除
+      } else if (diff > 30) {
+        revealAt(t.clientX, t.clientY, false);  // 右滑 → 收起删除
       }
     });
 
@@ -323,9 +396,16 @@
       const onUp = (ev) => {
         const diff = ev.clientX - mouseStartX;
         const cardW = track.querySelector('.agent-card')?.offsetWidth || window.innerWidth * 0.85;
-        if (isDragging && Math.abs(diff) > cardW * 0.3) {
-          if (diff < 0 && currentCardIndex < allAgentCards.length - 1) scrollToCard(currentCardIndex + 1);
-          else if (diff > 0 && currentCardIndex > 0) scrollToCard(currentCardIndex - 1);
+        if (isDragging) {
+          if (Math.abs(diff) > cardW * 0.3) {
+            closeCardReveals();
+            if (diff < 0 && currentCardIndex < allAgentCards.length - 1) scrollToCard(currentCardIndex + 1);
+            else if (diff > 0 && currentCardIndex > 0) scrollToCard(currentCardIndex - 1);
+          } else if (diff < -30) {
+            revealAt(ev.clientX, ev.clientY, true);
+          } else if (diff > 30) {
+            revealAt(ev.clientX, ev.clientY, false);
+          }
         }
         track.removeEventListener('mousemove', onMove);
         track.removeEventListener('mouseup', onUp);
@@ -540,20 +620,119 @@
         <div style="flex:1;font-weight:600">设置</div>
       </div>
       <div style="padding:12px">
+        <div class="conv-item" id="api-config-item"><span class="list-icon">🤖</span><span>API 配置</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="theme-toggle">🌙 深色</div>
         <div class="conv-item" id="settings-network"><span class="list-icon">🌐</span><span>网络与同步</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-did">🪪 DID</div>
       </div>`;
     document.body.appendChild(page);
-    const theme = localStorage.getItem('bolloon_theme') || 'dark';
-    applyTheme(theme);
+    applyTheme(resolveTheme(), false);
     $('#settings-back').addEventListener('click', () => page.remove());
+    $('#api-config-item').addEventListener('click', openApiConfig);
     $('#theme-toggle').addEventListener('click', () => {
-      const next = localStorage.getItem('bolloon_theme') === 'dark' ? 'light' : 'dark';
-      applyTheme(next);
+      applyTheme(currentTheme === 'dark' ? 'light' : 'dark', true);
     });
     $('#settings-network').addEventListener('click', () => switchTab('network'));
     $('#settings-did').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('DID: ' + (s.did || '未生成'))); });
+  }
+
+  // === API 配置 (LLM 供应商) ===
+  const LLM_PROVIDERS = ['deepseek', 'openai', 'anthropic', 'minimax', 'openrouter', '自定义'];
+  const LLM_DEFAULTS = {
+    deepseek: { baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+    openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+    anthropic: { baseUrl: 'https://api.anthropic.com/v1', model: 'claude-3-5-sonnet-latest' },
+    minimax: { baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-M2.7' },
+    openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
+  };
+  async function openApiConfig() {
+    let cfg;
+    try { cfg = await api.get('/api/llm-config'); } catch { cfg = null; }
+    if (!cfg || !cfg.providers) cfg = { activeProvider: 'deepseek', providers: {}, updatedAt: Date.now() };
+    const page = document.createElement('div');
+    page.className = 'chat-page';
+    page.id = 'api-config-page';
+    const provider = cfg.activeProvider || 'deepseek';
+    const pc = cfg.providers?.[provider] || {};
+    page.innerHTML = `
+      <div class="chat-topbar">
+        <button class="icon-btn" id="api-config-back">←</button>
+        <div style="flex:1;font-weight:600">API 配置</div>
+      </div>
+      <div style="padding:12px;display:flex;flex-direction:column;gap:12px">
+        <label style="font-size:13px;color:var(--text-secondary)">供应商</label>
+        <select id="api-provider" style="padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)">
+          ${LLM_PROVIDERS.map((p) => `<option value="${p}" ${p === provider ? 'selected' : ''}>${p}</option>`).join('')}
+        </select>
+        <label style="font-size:13px;color:var(--text-secondary)">Base URL</label>
+        <input id="api-baseurl" placeholder="https://api.xxx.com/v1" value="${escapeHtml(pc.baseUrl || '')}" style="padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)">
+        <label style="font-size:13px;color:var(--text-secondary)">API Key</label>
+        <input id="api-key" type="password" placeholder="sk-..." value="${escapeHtml(pc.apiKey || '')}" style="padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)">
+        <label style="font-size:13px;color:var(--text-secondary)">模型</label>
+        <input id="api-model" placeholder="模型名" value="${escapeHtml(pc.model || '')}" style="padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)">
+        <button id="api-save" style="padding:12px;border:none;border-radius:10px;background:var(--accent);color:var(--bg);font-weight:700">保存配置</button>
+      </div>`;
+    document.body.appendChild(page);
+    $('#api-config-back').addEventListener('click', () => page.remove());
+    const provSel = $('#api-provider');
+    provSel.addEventListener('change', () => {
+      const p = provSel.value;
+      const d = LLM_DEFAULTS[p];
+      if (d) { $('#api-baseurl').value = d.baseUrl; $('#api-model').value = d.model; }
+      if (p === '自定义') { $('#api-baseurl').value = ''; $('#api-model').value = ''; $('#api-key').value = ''; }
+    });
+    $('#api-save').addEventListener('click', async () => {
+      const p = provSel.value === '自定义' ? 'custom' : provSel.value;
+      const next = (cfg && cfg.providers) ? cfg : { activeProvider: cfg.activeProvider, providers: {}, updatedAt: Date.now() };
+      next.activeProvider = p;
+      next.providers[p] = Object.assign({}, (next.providers[p] || {}), {
+        enabled: true, apiKey: $('#api-key').value.trim(), baseUrl: $('#api-baseurl').value.trim(),
+        model: $('#api-model').value.trim(), temperature: 0.7, maxTokens: 4096, requiresApiKey: true,
+      });
+      try {
+        await api.post('/api/llm-config', next);
+        alert('已保存 LLM 配置');
+        page.remove();
+      } catch (e) { alert('保存失败: ' + (e.message || e)); }
+    });
+  }
+
+  // === 创建新会话 / 添加 P2P 好友 ===
+  function showSheet(id) { const s = $(id); if (s) s.hidden = false; }
+  function hideSheet(id) { const s = $(id); if (s) s.hidden = true; }
+
+  // 创建智能体: 无输入框, 底部滑入加载 sheet, 完成后滑出
+  async function createSession() {
+    showSheet('#create-sheet');
+    try {
+      await api.post('/api/channels/create', {});
+      await new Promise((r) => setTimeout(r, 700));
+      switchTab('main');
+      loadAgentCovers();
+    } catch (e) {
+      alert('创建失败: ' + (e.message || e));
+    } finally {
+      hideSheet('#create-sheet');
+    }
+  }
+
+  // 添加好友: 弹出选择 sheet (扫码 / 手动)
+  function addFriend() { showSheet('#addfriend-sheet'); }
+  async function addFriendManual() {
+    hideSheet('#addfriend-sheet');
+    const addr = prompt('输入好友地址 (multiaddr, 如 /ip4/10.0.2.2/tcp/54188/ws)', '');
+    if (!addr) return;
+    try {
+      const r = await api.post('/api/peers/add', { addr });
+      alert(r && r.ok ? (r.connected ? '已连接好友' : '已记录好友地址, 连接中...') : ((r && r.error) || '添加失败'));
+      if (currentTab === 'network') loadContacts();
+    } catch (e) {
+      alert('添加失败: ' + (e.message || e));
+    }
+  }
+  function addFriendScan() {
+    hideSheet('#addfriend-sheet');
+    alert('扫码添加 (真机可用相机扫码)');
   }
 
   // === 菜单 ===
@@ -562,9 +741,19 @@
     $('#item-wallet').addEventListener('click', () => { alert('钱包管理'); });
     $('#item-judgments').addEventListener('click', () => { alert('判断力 API'); });
     $('#item-did').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('DID: ' + (s.did || '未生成'))); });
-    $('#item-login').addEventListener('click', () => { switchTab('network'); });
+    $('#item-login').addEventListener('click', async () => {
+      try {
+        const s = await api.get('/api/auth/status');
+        const did = (s && (s.did || s.didShort)) || '未生成';
+        alert('本机 DID: ' + did + '\n\nOrbitDB 身份同步（待接入）：手机生成 DID 后经 P2P 推给桌面 publish。');
+      } catch (e) { alert('DID: 获取失败'); }
+    });
     $('#item-logout').addEventListener('click', () => { api.post('/api/auth/logout', {}).then(() => loadMe()); });
-    $('#btn-add').addEventListener('click', () => { alert('添加会话'); });
+    $('#btn-add').addEventListener('click', addFriend);
+    const cs = $('#btn-create-session'); if (cs) cs.addEventListener('click', createSession);
+    const csScan = $('#choice-scan'); if (csScan) csScan.addEventListener('click', addFriendScan);
+    const csMan = $('#choice-manual'); if (csMan) csMan.addEventListener('click', addFriendManual);
+    const csCan = $('#choice-cancel'); if (csCan) csCan.addEventListener('click', () => hideSheet('#addfriend-sheet'));
     $('#item-p2p').addEventListener('click', () => { switchTab('network'); });
     $('#item-p2p-id').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('P2P ID: ' + (s.did || '未生成'))); });
   }
@@ -592,7 +781,7 @@
 
   function init() {
     bindMenu();
-    applyTheme(localStorage.getItem('bolloon_theme') || 'dark');
+    applyTheme(resolveTheme(), false);
     switchTab('main');
     setupUiControl();
     loadAgentCovers();

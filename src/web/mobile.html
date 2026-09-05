@@ -4,13 +4,26 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Bolloon 手机端</title>
+<script>
+/* 启动页即时主题: 内部已选主题 > 系统主题 > 默认暗色. 在 CSS/JS 加载前先渲染, 避免白闪 */
+(function () {
+  var saved = null; try { saved = localStorage.getItem('bolloon_theme'); } catch (e) {}
+  var sysLight = false; try { sysLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches; } catch (e) {}
+  var light = saved ? saved === 'light' : sysLight;   // 内部优先级
+  var root = document.documentElement;
+  var t = light
+    ? { '--bg': '#f5f5f0', '--bg-card': '#ffffff', '--bg-hover': '#eeeeea', '--text': '#1a1a18', '--text-secondary': '#606058', '--text-muted': '#909088', '--accent': '#8a9430', '--border': '#d0d0c8', 'bg': '#f5f5f0', 'fg': '#1a1a18' }
+    : { '--bg': '#1a1a18', '--bg-card': '#222220', '--bg-hover': '#2a2a26', '--text': '#d8d8c8', '--text-secondary': '#909088', '--text-muted': '#606058', '--accent': '#c4d640', '--border': '#3a3a36', 'bg': '#1a1a18', 'fg': '#d8d8c8' };
+  Object.keys(t).forEach(function (k) { if (k === 'bg') root.style.background = t[k]; else if (k === 'fg') root.style.color = t[k]; else root.style.setProperty(k, t[k]); });
+})();
+</script>
 <link rel="stylesheet" href="./mobile.css">
 </head>
 <body>
 <div id="app" class="app">
   <!-- 顶部导航 -->
   <header class="topbar">
-    <div class="topbar-title" id="topbar-title">智能体封面</div>
+    <div class="topbar-title" id="topbar-title">首页</div>
     <div class="topbar-actions">
       <button class="icon-btn" id="btn-refresh" title="刷新">⟳</button>
       <button class="icon-btn" id="btn-add" title="添加会话">＋</button>
@@ -75,10 +88,31 @@
 
 <!-- 底部 tab -->
 <nav class="tabbar" id="tabbar">
-  <button class="tab active" data-tab="main"><span class="tab-icon">⊞</span><span>封面</span></button>
+  <button class="tab active" data-tab="main"><span class="tab-icon">⊞</span><span>首页</span></button>
   <button class="tab" data-tab="network"><span class="tab-icon">📡</span><span>网络</span></button>
   <button class="tab" data-tab="me"><span class="tab-icon">🙂</span><span>我</span></button>
 </nav>
+
+<!-- 首页: 创建新会话栏 (底部中央, tab 上方) -->
+<button class="create-session-btn" id="btn-create-session" hidden>＋ 创建新会话</button>
+
+<!-- 创建智能体: 底部滑入加载 sheet -->
+<div class="sheet" id="create-sheet" hidden>
+  <div class="sheet-inner">
+    <div class="spinner"></div>
+    <div class="sheet-text">正在创建智能体...</div>
+  </div>
+</div>
+
+<!-- 添加好友: 底部滑出选择 sheet -->
+<div class="sheet" id="addfriend-sheet" hidden>
+  <div class="sheet-inner sheet-inner-choices">
+    <div class="sheet-title">添加 P2P 好友</div>
+    <button class="sheet-choice" id="choice-scan">📷 扫码添加</button>
+    <button class="sheet-choice" id="choice-manual">🔗 手动输入地址</button>
+    <button class="sheet-choice sheet-cancel" id="choice-cancel">取消</button>
+  </div>
+</div>
 </div>
 
 <!-- 2026-08-14: 手机端内化内核 (IndexedDB 数据 + 本地身份 + 支付审批 + Agent). 必须最先加载 -->

@@ -53,8 +53,8 @@ body {
 }
 
 /* 页面容器 */
-.page-container { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-.page { min-height: 100%; }
+.page-container { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.page { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 
 /* 列表 */
 .list { padding: 8px 0; }
@@ -133,6 +133,61 @@ body {
 }
 .tab.active { color: var(--accent); }
 .tab-icon { font-size: 20px; }
+
+/* 首页创建新会话栏 (底部中央, tab 上方, 悬浮) */
+.create-session-btn {
+  position: fixed;
+  bottom: calc(var(--tabbar-h) + 14px + env(safe-area-inset-bottom));
+  left: 50%; transform: translateX(-50%);
+  z-index: 20;
+  padding: 12px 22px;
+  border: none; border-radius: 30px;
+  background: var(--accent); color: var(--bg);
+  font-size: 15px; font-weight: 700;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+  cursor: pointer;
+}
+.create-session-btn:active { transform: translateX(-50%) scale(0.97); }
+
+/* 底部滑入/滑出 sheet */
+.sheet {
+  position: fixed; inset: 0;
+  z-index: 30;
+  display: flex; align-items: flex-end; justify-content: center;
+  background: rgba(0,0,0,0.45);
+  transition: opacity .25s;
+}
+.sheet[hidden] { display: none !important; }
+.sheet-inner {
+  width: 100%; max-width: 480px;
+  background: var(--bg-card);
+  border-top-left-radius: 18px; border-top-right-radius: 18px;
+  border: 1px solid var(--border); border-bottom: none;
+  padding: 20px 20px calc(20px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  animation: sheetUp .28s ease;
+}
+@keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+.sheet-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.sheet-text { font-size: 14px; color: var(--text-secondary); }
+.spinner {
+  width: 44px; height: 44px;
+  border: 4px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.sheet-choice {
+  width: 100%; padding: 14px;
+  border: none; border-radius: 12px;
+  background: var(--bg-hover); color: var(--text);
+  font-size: 15px; font-weight: 600;
+  text-align: center; cursor: pointer;
+}
+.sheet-choice:active { background: var(--border); }
+.sheet-choice.sheet-cancel { background: transparent; color: var(--text-secondary); }
+.sheet-inner-choices { gap: 10px; }
 
 /* 聊天页 */
 .chat-page {
@@ -237,25 +292,45 @@ body {
   scroll-behavior: smooth;
   height: 100%;
   align-items: stretch;
+  touch-action: pan-y;   /* 横向交给 JS 做 reveal/navigate, 不吞手势 */
 }
 
 .card-track::-webkit-scrollbar { display: none; }
 
-.agent-card {
+/* 每张卡片外层: flex 单元 + 删除位 */
+.card-wrap {
   flex: 0 0 85vw;
   scroll-snap-align: center;
+  position: relative;
+  border-radius: 16px;
+  overflow: hidden;
+}
+.card-delete {
+  position: absolute; right: 0; top: 0; bottom: 0;
+  width: 88px;
+  background: #e5484d; color: #fff;
+  border: none; font-size: 15px; font-weight: 700;
+  z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+
+.agent-card {
+  position: relative; z-index: 2;
+  flex: none; width: 100%; height: 100%;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 16px;
   overflow: hidden;
   cursor: grab;
-  touch-action: pan-x pan-y;
+  touch-action: pan-y;   /* 横向交给 JS */
   display: flex;
   flex-direction: column;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
   user-select: none;
   -webkit-user-select: none;
 }
+.agent-card.reveal-delete { transform: translateX(-88px); box-shadow: none; }
 
 .agent-card:active { cursor: grabbing; }
 .agent-card:hover { transform: translateY(-2px); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }

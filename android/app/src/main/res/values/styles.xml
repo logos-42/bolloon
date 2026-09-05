@@ -2,8 +2,9 @@
 <resources>
     <style name="Theme.BolloonRokid" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#6C63FF</item>
-        <item name="android:navigationBarColor">#111318</item>
-        <item name="android:statusBarColor">#111318</item>
+        <item name="android:colorAccent">#c4d640</item>
+        <item name="android:navigationBarColor">#1a1a18</item>
+        <item name="android:statusBarColor">#1a1a18</item>
+        <item name="android:windowBackground">#1a1a18</item>
     </style>
 </resources>

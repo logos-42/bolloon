@@ -84,6 +84,7 @@ export const core = {
     if (p === '/api/mcp/tools') return () => core.mcp.tools();
     if (p === '/api/auth/status') return () => core.identity.status();
     if (p === '/api/payments/pending') return () => core.payments.pending();
+    if (p === '/api/llm-config') return () => core.data.getLlmConfig();
     if (p.startsWith('/sessions/')) {
       const cid = decodeURIComponent(p.slice('/sessions/'.length));
       return () => core.session.get(cid);
@@ -122,6 +123,30 @@ export const core = {
     if (p.startsWith('/api/payments/') && p.endsWith('/reject')) {
       const id = p.slice('/api/payments/'.length, -'/reject'.length);
       return () => core.payments.reject(id);
+    }
+    if (p === '/api/peers/add') {
+      const b = body || {};
+      return () => core.peers.add(String(b.addr || b.address || ''));
+    }
+    if (p === '/api/channels/create') {
+      const b = body || {};
+      return () => core.channels.createLocalAgent(String(b.name || ''));
+    }
+    if (p === '/api/channels/delete') {
+      const b = body || {};
+      return () => core.channels.delete(String(b.id || ''));
+    }
+    if (p === '/api/llm-config') {
+      const b = body || {};
+      return async () => {
+        await core.data.saveLlmConfig(b);
+        const a = await import('./mobile-agent.js');
+        const d = await import('./mobile-data.js');
+        const active = d.activeProviderConfig(b);
+        a.setLlmConfig(active);
+        busBroadcast({ type: 'llm-config-synced', provider: b.activeProvider, model: active.model || '' });
+        return { ok: true };
+      };
     }
     return null;
   },
@@ -215,6 +240,33 @@ export const core = {
       await d.saveChannels(channels);
       busBroadcast({ type: 'channels-updated', count: channels.length });
     },
+    async createLocalAgent(name?: string): Promise<any> {
+      const d = await import('./mobile-data.js');
+      const a = await import('./mobile-agent.js');
+      const id = await a.ensureIdentity();
+      const existing = await d.getChannels();
+      const label = (name || '').trim() || ('本地智能体 ' + (existing.length + 1));
+      const ch = {
+        id: 'local-' + Date.now(),
+        name: label,
+        persona: { name: label },
+        agentId: id.did,
+        preview: '本地新智能体',
+        ts: Date.now(),
+      };
+      const next = [...existing, ch];
+      await d.saveChannels(next);
+      busBroadcast({ type: 'channels-updated', count: next.length });
+      return ch;
+    },
+    async delete(id: string): Promise<{ ok: boolean }> {
+      const d = await import('./mobile-data.js');
+      const existing = await d.getChannels();
+      const next = existing.filter((c: any) => c.id !== id);
+      await d.saveChannels(next);
+      busBroadcast({ type: 'channels-updated', count: next.length });
+      return { ok: true };
+    },
   },
 
   session: {
@@ -259,6 +311,10 @@ export const core = {
     },
     async save(peers: any[]): Promise<void> {
       // 通讯录暂存 (可选持久化)
+    },
+    async add(addr: string): Promise<any> {
+      const p = await import('./mobile-p2p.js');
+      return p.addMobilePeer(String(addr || ''));
     },
   },
 

@@ -41,6 +41,16 @@ let node: any = null;
 let state: MobileP2PState = { connected: false, peerCount: 0, peerIds: [] };
 const msgHandlers: Array<(payload: string, fromPeer: string) => void> = [];
 
+/** 持久化好友地址 (localStorage), 供 addMobilePeer 写入 + startMobileP2P 自动重连 */
+let peerAddrs: string[] = [];
+function loadPeerAddrs(): void {
+  try { peerAddrs = JSON.parse(localStorage.getItem('bolloon_mobile_peers') || '[]'); } catch { peerAddrs = []; }
+}
+function savePeerAddrs(): void {
+  try { localStorage.setItem('bolloon_mobile_peers', JSON.stringify(peerAddrs)); } catch {}
+}
+loadPeerAddrs();
+
 /** 创建浏览器 libp2p 节点 (websockets) */
 export async function startMobileP2P(cfg: MobileP2PConfig = {}): Promise<MobileP2PState> {
   if (node) return state;
@@ -90,6 +100,15 @@ export async function startMobileP2P(cfg: MobileP2PConfig = {}): Promise<MobileP
         console.log(`[mobile-p2p] connected to ${addr}`);
       } catch (e) {
         console.warn(`[mobile-p2p] failed to dial ${addr}:`, String(e).slice(0, 100));
+      }
+    }
+    // 连接已保存的好友地址 (上次 addMobilePeer 记录)
+    for (const addr of peerAddrs) {
+      try {
+        await node.dial(createMultiaddr(addr));
+        console.log(`[mobile-p2p] connected to saved peer ${addr}`);
+      } catch (e) {
+        console.warn(`[mobile-p2p] failed to dial saved ${addr}:`, String(e).slice(0, 100));
       }
     }
     refreshState();
@@ -193,6 +212,39 @@ export function getMobileP2PConnections(): { peer: string; addr?: string }[] {
     }));
   } catch {
     return [];
+  }
+}
+
+/** 已保存的好友地址 */
+export function listMobilePeerAddrs(): string[] {
+  return [...peerAddrs];
+}
+
+/**
+ * 添加 P2P 好友 (按 multiaddr 地址 dial 连接)。
+ * 校验 → 记录到 localStorage (startMobileP2P 会自动重连) → 若节点已启动则立即 dial。
+ */
+export async function addMobilePeer(addr: string): Promise<{ ok: boolean; connected?: boolean; peerId?: string; error?: string }> {
+  const normalized = (addr || '').trim();
+  if (!normalized) return { ok: false, error: '地址不能为空' };
+  try {
+    createMultiaddr(normalized);
+  } catch (e) {
+    return { ok: false, error: '非法 multiaddr: ' + String((e as any)?.message || e) };
+  }
+  if (!peerAddrs.includes(normalized)) {
+    peerAddrs.push(normalized);
+    savePeerAddrs();
+  }
+  if (!node || !node.isStarted()) {
+    return { ok: true, connected: false, error: '已记录好友地址, P2P 启动后自动连接' };
+  }
+  try {
+    await node.dial(createMultiaddr(normalized));
+    refreshState();
+    return { ok: true, connected: true };
+  } catch (e) {
+    return { ok: false, error: '连接失败: ' + String((e as any)?.message || e).slice(0, 120) };
   }
 }
 
