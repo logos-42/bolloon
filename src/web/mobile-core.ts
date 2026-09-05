@@ -281,6 +281,7 @@ export const core = {
 
       // 1. 数据层: 记录用户消息 (独立副本)
       await dataLayer.appendMessage(channelId, { role: 'user', content: text, ts: Date.now() });
+      busBroadcast({ type: 'loop-status', status: 'loading', message: '智能体开始工作...' });
       busBroadcast({ type: 'user', channelId, content: text });
       busBroadcast({ type: 'done', channelId });
 
@@ -291,13 +292,16 @@ export const core = {
         sendMobileP2PMessage('*', 'agent.chat.send', JSON.stringify({ text, channelId, fromPublicKey: id.did }), id.did).catch(() => {});
       } catch { /* P2P 未就绪则单机 */ }
 
-      // 3. Agent 层: 手机 on-device 执行 (Kotlin AgentRuntime, 离线内置规则) — 执行主体是手机本身
+      // 3. Agent 层: 手机 on-device 执行 (Kotlin AgentRuntime, 离线内置规则)
       try {
+        busBroadcast({ type: 'loop-status', status: 'loading', message: '正在调用 AgentRuntime...' });
         const reply = await agentLayer.runLocalAgent(text);
         await dataLayer.appendMessage(channelId, { role: 'ai', content: reply, ts: Date.now() });
+        busBroadcast({ type: 'loop-status', status: 'done', message: '执行完成' });
         busBroadcast({ type: 'ai', channelId, content: reply, role: 'ai' });
         busBroadcast({ type: 'done', channelId });
       } catch (e: any) {
+        busBroadcast({ type: 'loop-status', status: 'done', message: '执行失败: ' + (e?.message || '').slice(0, 80) });
         busBroadcast({ type: 'ai', channelId, content: '（本地 Agent 未就绪: ' + String(e?.message || e).slice(0, 80) + '）', role: 'ai' });
         busBroadcast({ type: 'done', channelId });
       }

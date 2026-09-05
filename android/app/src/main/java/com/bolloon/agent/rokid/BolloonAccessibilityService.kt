@@ -2,10 +2,13 @@ package com.bolloon.agent.rokid
 
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Rect
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.CountDownLatch
 
 /**
  * BolloonAccessibilityService — Android Agent Runtime 的"眼睛和手" (Phase 1)
@@ -28,9 +31,14 @@ class BolloonAccessibilityService : AccessibilityService() {
         const val MAX_NODES = 800
     }
 
+    /** 主线程 Handler: 无障碍手势/UI 树读取必须在主线程执行 (Android 限制) */
+    @Volatile
+    private var mainHandler: Handler? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        mainHandler = Handler(Looper.getMainLooper())
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -46,13 +54,50 @@ class BolloonAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
+    /**
+     * 在主线程同步执行 [block]。
+     * Android 无障碍规定: dispatchGesture / rootInActiveWindow / performAction
+     * 必须在 AccessibilityService 所在的主线程(Looper)调用, 从后台线程调用会失败或抛异常。
+     * AgentLoop 在后台 Thread 中运行, 所有无障碍读写必须经此包装。
+     * @return block 的返回值; block 在主线程抛异常时此方法原样重抛。
+     */
+    fun <T> runOnMainThread(block: () -> T): T {
+        val h = mainHandler ?: Handler(Looper.getMainLooper()).also { mainHandler = it }
+        // 已在主线程 → 直接执行
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return block()
+        }
+        var result: T? = null
+        var error: Throwable? = null
+        val latch = CountDownLatch(1)
+        h.post {
+            try {
+                result = block()
+            } catch (t: Throwable) {
+                error = t
+            } finally {
+                latch.countDown()
+            }
+        }
+        try {
+            latch.await()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        error?.let { throw (it as? RuntimeException) ?: RuntimeException(it) }
+        @Suppress("UNCHECKED_CAST")
+        return result as T
+    }
+
     // ============ observe: UI 树 ============
 
     /**
      * 读取当前窗口 UI 树 (递归), 返回 JSON 数组。
      * 节点: {type, text, bounds, clickable, scrollable, children}
      */
-    fun getUiTree(): JSONArray {
+    fun getUiTree(): JSONArray = runOnMainThread { getUiTree0() }
+
+    private fun getUiTree0(): JSONArray {
         val root = rootInActiveWindow ?: return JSONArray()
         val arr = JSONArray()
         walkNode(root, arr, 0)
@@ -60,7 +105,9 @@ class BolloonAccessibilityService : AccessibilityService() {
     }
 
     /** 当前窗口可见文本 (简化 observe) */
-    fun getScreenText(): String {
+    fun getScreenText(): String = runOnMainThread { getScreenText0() }
+
+    private fun getScreenText0(): String {
         val root = rootInActiveWindow ?: return ""
         val texts = mutableListOf<String>()
         collectTexts(root, texts)
@@ -73,7 +120,9 @@ class BolloonAccessibilityService : AccessibilityService() {
      * 比全树更省 token, LLM 直接拿到可点目标.
      * 返回 JSON 数组: [{text, desc, center:{x,y}, clickable, scrollable}]
      */
-    fun getInteractiveElements(): JSONArray {
+    fun getInteractiveElements(): JSONArray = runOnMainThread { getInteractiveElements0() }
+
+    private fun getInteractiveElements0(): JSONArray {
         val root = rootInActiveWindow ?: return JSONArray()
         val out = JSONArray()
         walkInteractive(root, out)
@@ -152,11 +201,11 @@ class BolloonAccessibilityService : AccessibilityService() {
      * LLM 友好的缩进 UI 树: [idx] Class "label" [clickable,scrollable] [x1,y1][x2,y2]
      * 跳过纯布局容器 (无标签不可交互). 返回字符串.
      */
-    fun getScreenTree(maxNodes: Int = 60): String {
-        val root = rootInActiveWindow ?: return "(empty screen)"
+    fun getScreenTree(maxNodes: Int = 60): String = runOnMainThread {
+        val root = rootInActiveWindow ?: return@runOnMainThread "(empty screen)"
         val lines = mutableListOf<String>()
         walkTree(root, lines, 0, 0, maxNodes)
-        return lines.joinToString("\n")
+        lines.joinToString("\n")
     }
 
     private fun walkTree(node: AccessibilityNodeInfo, out: MutableList<String>, depth: Int, idxRef: Int, max: Int): Int {
@@ -216,36 +265,77 @@ class BolloonAccessibilityService : AccessibilityService() {
 
     // ============ interact: 全局操作 ============
 
-    /** 全局点击坐标 (x, y) */
+    /** 全局点击坐标 (x, y) — 必须在主线程调用 dispatchGesture, 阻塞到手势完成 */
     fun performGlobalTap(x: Int, y: Int): Boolean {
-        return dispatchGesture(
-            android.accessibilityservice.GestureDescription.Builder()
+        val done = CountDownLatch(1)
+        val result = runOnMainThread {
+            val gesture = android.accessibilityservice.GestureDescription.Builder()
                 .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(
                     android.graphics.Path().apply { moveTo(x.toFloat(), y.toFloat()) }, 0, 80))
-                .build(),
-            null,
-            null
-        )
+                .build()
+            val ok = dispatchGesture(
+                gesture,
+                object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
+                    override fun onCompleted(gesture: android.accessibilityservice.GestureDescription?) {
+                        done.countDown()
+                    }
+
+                    override fun onCancelled(gesture: android.accessibilityservice.GestureDescription?) {
+                        done.countDown()
+                    }
+                },
+                null
+            )
+            if (!ok) done.countDown()
+            ok
+        }
+        // 等待手势真正完成 (异步), 让 Agent 下一步 observe 读到新屏幕
+        try {
+            done.await(2, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        return result
     }
 
-    /** 全局滑动 (供 Tools 层调用) */
+    /** 全局滑动 (供 Tools 层调用) — 必须在主线程调用 dispatchGesture, 阻塞到手势完成 */
     fun performGlobalSwipe(x1: Int, y1: Int, x2: Int, y2: Int, duration: Long): Boolean {
-        val path = android.graphics.Path().apply { moveTo(x1.toFloat(), y1.toFloat()); lineTo(x2.toFloat(), y2.toFloat()) }
-        return dispatchGesture(
-            android.accessibilityservice.GestureDescription.Builder()
+        val done = CountDownLatch(1)
+        val result = runOnMainThread {
+            val path = android.graphics.Path().apply { moveTo(x1.toFloat(), y1.toFloat()); lineTo(x2.toFloat(), y2.toFloat()) }
+            val gesture = android.accessibilityservice.GestureDescription.Builder()
                 .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, duration))
-                .build(),
-            null,
-            null
-        )
+                .build()
+            val ok = dispatchGesture(
+                gesture,
+                object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
+                    override fun onCompleted(gesture: android.accessibilityservice.GestureDescription?) {
+                        done.countDown()
+                    }
+
+                    override fun onCancelled(gesture: android.accessibilityservice.GestureDescription?) {
+                        done.countDown()
+                    }
+                },
+                null
+            )
+            if (!ok) done.countDown()
+            ok
+        }
+        try {
+            done.await(2, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        return result
     }
 
-    /** 当前活动窗口根节点 (供 Tools 层访问) */
-    fun rootNode(): AccessibilityNodeInfo? = rootInActiveWindow
+    /** 当前活动窗口根节点 (供 Tools 层访问) — rootInActiveWindow 须在主线程 */
+    fun rootNode(): AccessibilityNodeInfo? = runOnMainThread { rootInActiveWindow }
 
-    /** 全局返回 */
-    fun performGlobalBack(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)
+    /** 全局返回 — performGlobalAction 须在主线程 */
+    fun performGlobalBack(): Boolean = runOnMainThread { performGlobalAction(GLOBAL_ACTION_BACK) }
 
-    /** 全局主页 */
-    fun performGlobalHome(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)
+    /** 全局主页 — performGlobalAction 须在主线程 */
+    fun performGlobalHome(): Boolean = runOnMainThread { performGlobalAction(GLOBAL_ACTION_HOME) }
 }

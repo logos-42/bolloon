@@ -10,61 +10,75 @@
 <div id="app" class="app">
   <!-- 顶部导航 -->
   <header class="topbar">
-    <div class="topbar-title" id="topbar-title">会话</div>
+    <div class="topbar-title" id="topbar-title">智能体封面</div>
     <div class="topbar-actions">
+      <button class="icon-btn" id="btn-refresh" title="刷新">⟳</button>
       <button class="icon-btn" id="btn-add" title="添加会话">＋</button>
     </div>
   </header>
 
-  <!-- 页面容器 (切换 4 个 tab) -->
-  <main class="page-container">
-    <!-- 会话 tab: 会话列表 -->
-    <section class="page" id="page-chat" data-tab="chat">
-      <div class="list" id="conversation-list"></div>
-    </section>
-
-    <!-- 网络 tab -->
-    <section class="page" id="page-network" data-tab="network" hidden>
-      <div class="list">
-        <div class="list-item" id="item-p2p"><span class="list-icon">🌐</span><span>P2P 好友</span></div>
-        <div class="list-item" id="item-p2p-id"><span class="list-icon">🪪</span><span>我的 P2P ID</span></div>
+  <!-- 主页面: 双频滑动卡片 -->
+  <main class="page-container" id="page-main" data-tab="main">
+    <!-- 水平滑动卡片轨道 -->
+    <div class="card-carousel" id="card-carousel">
+      <div class="card-track" id="card-track">
+        <!-- 卡片由 JS 动态加载 -->
       </div>
-      <div class="section-label">P2P 好友列表</div>
-      <div class="list" id="contacts-list"></div>
-      <div class="section-label">MCP 工具 (触控调用)</div>
-      <div class="list" id="mcp-tools"></div>
-      <div class="section-label">待人工审批支付</div>
-      <div class="list" id="approval-list"></div>
-      <div class="section-label">A2UI 动态面板 (智能体生成)</div>
-      <div id="a2ui-root"></div>
-    </section>
-
-    <!-- 我 tab -->
-    <section class="page" id="page-me" data-tab="me" hidden>
-      <div class="profile-card" id="profile-card">
-        <div class="avatar" id="me-avatar">?</div>
-        <div class="profile-info">
-          <div class="profile-name" id="me-name">未登录</div>
-          <div class="profile-did" id="me-did"></div>
-        </div>
+    </div>
+    <!-- 卡片指示器 -->
+    <div class="card-indicator" id="card-indicator"></div>
+    <!-- 卡片详情浮层 (垂直展开) -->
+    <div class="card-detail" id="card-detail" hidden>
+      <div class="detail-header">
+        <button class="icon-btn" id="detail-back">←</button>
+        <h2 id="detail-name"></h2>
       </div>
-      <div class="list">
-        <div class="list-item" id="item-settings"><span class="list-icon">⚙️</span><span>设置</span><span class="list-arrow">›</span></div>
-        <div class="list-item" id="item-wallet"><span class="list-icon">👛</span><span>钱包</span><span class="list-arrow">›</span></div>
-        <div class="list-item" id="item-judgments"><span class="list-icon">🧠</span><span>判断力 API</span><span class="list-arrow">›</span></div>
-        <div class="list-item" id="item-did"><span class="list-icon">🪪</span><span>DID 身份</span><span class="list-arrow">›</span></div>
-        <div class="list-item" id="item-login"><span class="list-icon">🔐</span><span id="login-label">登录</span><span class="list-arrow">›</span></div>
-        <div class="list-item" id="item-logout"><span class="list-icon">🚪</span><span>注销</span></div>
-      </div>
-    </section>
+      <div class="detail-body" id="detail-body"></div>
+    </div>
   </main>
 
-  <!-- 底部 tab -->
-  <nav class="tabbar">
-    <button class="tab active" data-tab="chat"><span class="tab-icon">💬</span><span>会话</span></button>
-    <button class="tab" data-tab="network"><span class="tab-icon">📡</span><span>网络</span></button>
-    <button class="tab" data-tab="me"><span class="tab-icon">🙂</span><span>我</span></button>
-  </nav>
+  <!-- 网络 tab -->
+  <section class="page" id="page-network" data-tab="network" hidden>
+    <div class="list">
+      <div class="list-item" id="item-p2p"><span class="list-icon">🌐</span><span>P2P 好友</span></div>
+      <div class="list-item" id="item-p2p-id"><span class="list-icon">🪪</span><span>我的 P2P ID</span></div>
+    </div>
+    <div class="section-label">P2P 好友列表</div>
+    <div class="list" id="contacts-list"></div>
+    <div class="section-label">MCP 工具 (触控调用)</div>
+    <div class="list" id="mcp-tools"></div>
+    <div class="section-label">待人工审批支付</div>
+    <div class="list" id="approval-list"></div>
+    <div class="section-label">A2UI 动态面板 (智能体生成)</div>
+    <div id="a2ui-root"></div>
+  </section>
+
+  <!-- 我 tab -->
+  <section class="page" id="page-me" data-tab="me" hidden>
+    <div class="profile-card" id="profile-card">
+      <div class="avatar" id="me-avatar">?</div>
+      <div class="profile-info">
+        <div class="profile-name" id="me-name">未登录</div>
+        <div class="profile-did" id="me-did"></div>
+      </div>
+    </div>
+    <div class="list">
+      <div class="list-item" id="item-settings"><span class="list-icon">⚙️</span><span>设置</span><span class="list-arrow">›</span></div>
+      <div class="list-item" id="item-wallet"><span class="list-icon">👛</span><span>钱包</span><span class="list-arrow">›</span></div>
+      <div class="list-item" id="item-judgments"><span class="list-icon">🧠</span><span>判断力 API</span><span class="list-arrow">›</span></div>
+      <div class="list-item" id="item-did"><span class="list-icon">🪪</span><span>DID 身份</span><span class="list-arrow">›</span></div>
+      <div class="list-item" id="item-login"><span class="list-icon">🔐</span><span id="login-label">登录</span><span class="list-arrow">›</span></div>
+      <div class="list-item" id="item-logout"><span class="list-icon">🚪</span><span>注销</span></div>
+    </div>
+  </section>
+</main>
+
+<!-- 底部 tab -->
+<nav class="tabbar" id="tabbar">
+  <button class="tab active" data-tab="main"><span class="tab-icon">⊞</span><span>封面</span></button>
+  <button class="tab" data-tab="network"><span class="tab-icon">📡</span><span>网络</span></button>
+  <button class="tab" data-tab="me"><span class="tab-icon">🙂</span><span>我</span></button>
+</nav>
 </div>
 
 <!-- 2026-08-14: 手机端内化内核 (IndexedDB 数据 + 本地身份 + 支付审批 + Agent). 必须最先加载 -->

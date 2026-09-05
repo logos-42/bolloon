@@ -66,18 +66,18 @@ class AndroidAgentTools(private val service: BolloonAccessibilityService, privat
     // ============ interact ============
 
     private fun tap(args: Map<String, Any>): String {
-        val x = (args["x"] as? Number)?.toInt() ?: return err("tap 需要 x 坐标")
-        val y = (args["y"] as? Number)?.toInt() ?: return err("tap 需要 y 坐标")
+        val x = argInt(args["x"]) ?: return err("tap 需要 x 坐标 (数字)")
+        val y = argInt(args["y"]) ?: return err("tap 需要 y 坐标 (数字)")
         val ok = service.performGlobalTap(x, y)
         return if (ok) ok(JSONObject().put("tapped", "$x,$y")) else err("tap 失败 (无障碍手势未执行)")
     }
 
     private fun swipe(args: Map<String, Any>): String {
-        val x1 = (args["x1"] as? Number)?.toInt() ?: return err("swipe 需要 x1")
-        val y1 = (args["y1"] as? Number)?.toInt() ?: return err("swipe 需要 y1")
-        val x2 = (args["x2"] as? Number)?.toInt() ?: return err("swipe 需要 x2")
-        val y2 = (args["y2"] as? Number)?.toInt() ?: return err("swipe 需要 y2")
-        val duration = (args["duration"] as? Number)?.toLong() ?: 200L
+        val x1 = argInt(args["x1"]) ?: return err("swipe 需要 x1")
+        val y1 = argInt(args["y1"]) ?: return err("swipe 需要 y1")
+        val x2 = argInt(args["x2"]) ?: return err("swipe 需要 x2")
+        val y2 = argInt(args["y2"]) ?: return err("swipe 需要 y2")
+        val duration = argLong(args["duration"]) ?: 200L
         val ok = service.performGlobalSwipe(x1, y1, x2, y2, duration)
         return if (ok) ok(JSONObject().put("swiped", "$x1,$y1 -> $x2,$y2")) else err("swipe 失败")
     }
@@ -85,15 +85,17 @@ class AndroidAgentTools(private val service: BolloonAccessibilityService, privat
     private fun type(args: Map<String, Any>): String {
         val text = args["text"] as? String ?: return err("type 需要 text")
         val root = service.rootNode() ?: return err("type 失败: 无活动窗口")
-        // 找到聚焦或可编辑节点, 用 ACTION_SET_TEXT 输入
-        val editable = findEditableNode(root)
-        if (editable == null) {
-            // 无可编辑节点 → 尝试全局粘贴 (Phase 1 简化: 报告需要聚焦输入框)
-            return err("未找到可输入节点, 请先 tap 聚焦输入框")
+        return service.runOnMainThread {
+            // 找到聚焦或可编辑节点, 用 ACTION_SET_TEXT 输入 (节点操作须在主线程)
+            val editable = findEditableNode(root)
+            if (editable == null) {
+                // 无可编辑节点 → 尝试全局粘贴 (Phase 1 简化: 报告需要聚焦输入框)
+                return@runOnMainThread err("未找到可输入节点, 请先 tap 聚焦输入框")
+            }
+            val bundle = android.os.Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
+            val ok = editable.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
+            if (ok) ok(JSONObject().put("typed", text)) else err("type 失败 (ACTION_SET_TEXT 未执行)")
         }
-        val bundle = android.os.Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
-        val ok = editable.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
-        return if (ok) ok(JSONObject().put("typed", text)) else err("type 失败 (ACTION_SET_TEXT 未执行)")
     }
 
     private fun findEditableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -192,5 +194,22 @@ class AndroidAgentTools(private val service: BolloonAccessibilityService, privat
             put("success", false)
             put("error", message)
         }.toString()
+    }
+
+    /**
+     * 从参数取整数。ToolCallParser 把所有值序列化成 String (如 "530"),
+     * 需兼容 Number 与数字字符串两种形态。
+     */
+    private fun argInt(v: Any?): Int? = when (v) {
+        is Number -> v.toInt()
+        is String -> v.trim().toIntOrNull()
+        else -> null
+    }
+
+    /** 从参数取 Long, 兼容 Number 与数字字符串. 失败返 null. */
+    private fun argLong(v: Any?): Long? = when (v) {
+        is Number -> v.toLong()
+        is String -> v.trim().toLongOrNull()
+        else -> null
     }
 }
