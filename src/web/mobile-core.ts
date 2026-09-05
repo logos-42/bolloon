@@ -398,6 +398,9 @@ export const core = {
         busBroadcast({ type: 'loop-status', status: 'done', message: '执行完成' });
         busBroadcast({ type: 'ai', channelId, content: reply, role: 'ai' });
         busBroadcast({ type: 'done', channelId });
+        // 执行过程摘要 (每步 onStep) → 工作记录 UI
+        const wl = (agentLayer.getLastWorklog && agentLayer.getLastWorklog()) || [];
+        if (wl.length) busBroadcast({ type: 'agent-worklog', lines: wl });
       } catch (e: any) {
         busBroadcast({ type: 'loop-status', status: 'done', message: '执行失败: ' + (e?.message || '').slice(0, 80) });
         busBroadcast({ type: 'ai', channelId, content: '（本地 Agent 未就绪: ' + String(e?.message || e).slice(0, 80) + '）', role: 'ai' });

@@ -61,3 +61,5 @@ workers/.dev.vars
 **/.dev.vars
 # 登录配置不在仓库: 本机 accounts.json fallback (home 下, 此处兜底)
 accounts.json
+buildlog.txt
+hs_err_pid*.log

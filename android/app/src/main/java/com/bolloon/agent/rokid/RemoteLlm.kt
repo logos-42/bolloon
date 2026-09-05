@@ -33,7 +33,7 @@ class RemoteLlm(private val config: AgentLlmConfig) {
             conn.setRequestProperty("Authorization", "Bearer ${config.apiKey}")
             conn.doOutput = true
             conn.connectTimeout = 15000
-            conn.readTimeout = 120000
+            conn.readTimeout = 40000
 
             val msgs = JSONArray()
             msgs.put(JSONObject().put("role", "system").put("content", system))

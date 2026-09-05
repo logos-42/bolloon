@@ -269,6 +269,24 @@ body {
 .bubble.user { margin-left: auto; background: var(--accent); color: var(--bg); }
 .bubble.ai { background: var(--bg-card); color: var(--text); }
 
+/* ============ 回复气泡操作栏 (复制/点踩/分享/刷新/分支) ============ */
+.reply-actions {
+  display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;
+}
+.reply-actions .ra-btn {
+  font-size: 12px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  line-height: 1.2;
+}
+.reply-actions .ra-btn:active { background: var(--bg-card); }
+.reply-actions .ra-vote-like { color: #4caf50; border-color: #4caf50; }
+.reply-actions .ra-vote-dis { color: #e5484d; border-color: #e5484d; }
+
 /* ============ Agent Loop 循环状态 ============ */
 .loop-status-bar {
   display: flex;
@@ -313,6 +331,27 @@ body {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+/* ============ Agent 工作记录 = 执行轨迹 (放在回复区, 不折叠) ============ */
+.agent-trace {
+  margin: 6px 0 6px 4px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--bg-card);
+  border-radius: 8px;
+  max-height: 34vh;
+  overflow-y: auto;
+}
+.agent-trace-line {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  word-break: break-word;
+  white-space: pre-wrap;
+  padding: 1px 0;
+}
+.agent-trace-line:first-child { color: var(--text); }
 
 /* ============ 双频滑动卡片 (主页面) ============ */
 

@@ -91,6 +91,10 @@ export async function ensureIdentity(): Promise<{ did: string; name: string; cre
 
 let _llmConfig: { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number } | null = null;
 
+/** 最近一次 runLocalAgent 的执行过程摘要 (每步 onStep 文本), 由 message.send 广播给工作记录 UI */
+let _lastWorklog: string[] = [];
+export function getLastWorklog(): string[] { return _lastWorklog; }
+
 /** 注入 LLM 配置 (由 mobile-core 在 data.llm-config.reply 同步后调用) */
 export function setLlmConfig(cfg: { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number } | null): void {
   _llmConfig = cfg;
@@ -130,6 +134,7 @@ export async function runLocalAgent(goal: string): Promise<string> {
     try {
       await applyLlmConfigToBridge();
       const r = await bridge.runAgent({ goal });
+      _lastWorklog = (r && Array.isArray(r.worklog)) ? r.worklog.map((x: any) => String(x)) : [];
       return r?.result || '（无返回）';
     } catch (e: any) {
       throw new Error('AgentRuntime: ' + String(e?.message || e).slice(0, 60));

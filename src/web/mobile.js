@@ -605,6 +605,7 @@
   // === 聊天 ===
   let activeChannel = null;
   let chatEventSource = null;
+  let chatStepCancel = null;
   let streamingBubble = null;
 
    function openChat(ch) {
@@ -628,18 +629,119 @@
          <input id="chat-input" placeholder="输入消息...">
          <button id="chat-send">发送</button>
        </div>`;
-     document.body.appendChild(page);
-     $('#chat-back').addEventListener('click', closeChat);
-     $('#chat-manage').addEventListener('click', openChatManage);
-     $('#chat-send').addEventListener('click', sendChat);
-     $('#chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
-     loadMessages();
-     openChatSse();
-     window.__mobileTouch?.('chat', ch.id);
-   }
+       document.body.appendChild(page);
+       if (chatStepCancel) { chatStepCancel.cancel?.(); chatStepCancel = null; }
+       $('#chat-back').addEventListener('click', closeChat);
+       $('#chat-manage').addEventListener('click', openChatManage);
+       $('#chat-send').addEventListener('click', sendChat);
+       $('#chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+       attachStepListener();
+       loadMessages();
+       openChatSse();
+       window.__mobileTouch?.('chat', ch.id);
+       }
+
+       /** 监听 native AgentLoop 的 agent-step 事件 → 工作记录 */
+       function attachStepListener() {
+       const cap = window.Capacitor;
+       const bridge = cap && cap.Plugins && cap.Plugins.RokidBridge;
+       if (!bridge || !bridge.addListener) return;
+       try {
+       chatStepCancel = bridge.addListener('agent-step', (ev) => {
+         const txt = (ev && (ev.step || ev.message)) || '';
+         if (!txt) return;
+         appendWorkLog(txt);
+         const st = $('#loop-status-text'); if (st) st.textContent = txt;
+       });
+       } catch (e) { /* 监听失败不阻塞 */ }
+       }
+
+       let traceBody = null;
+       let lastUserPrompt = '';
+       function appendWorkLog(txt) {
+         const box = $('#chat-messages');
+         if (!box) return;
+         if (!traceBody || !traceBody.isConnected) {
+           traceBody = document.createElement('div');
+           traceBody.className = 'agent-trace';
+           box.appendChild(traceBody);
+         }
+         const line = document.createElement('div');
+         line.className = 'agent-trace-line';
+         line.textContent = txt;
+         traceBody.appendChild(line);
+         box.scrollTop = box.scrollHeight;
+       }
+
+       // 回复气泡操作栏: 复制 / 点踩合一 / 分享 / 刷新重新来 / 分支fork
+       function addReplyActions(container, text) {
+         if (!container) return;
+         const bar = document.createElement('div');
+         bar.className = 'reply-actions';
+         const t = text || '';
+
+         // 复制
+         const copyBtn = document.createElement('button'); copyBtn.className='ra-btn'; copyBtn.textContent='复制';
+         copyBtn.addEventListener('click', async () => {
+           try { await navigator.clipboard.writeText(t); copyBtn.textContent='✓已复制'; setTimeout(()=>copyBtn.textContent='复制',1500); }
+           catch (e) { copyBtn.textContent='复制失败'; setTimeout(()=>copyBtn.textContent='复制',1500); }
+         });
+         bar.appendChild(copyBtn);
+
+         // 点踩合一 (单个按钮循环: 中性 → 点赞 → 点踩)
+         const voteBtn = document.createElement('button'); voteBtn.className='ra-btn ra-vote'; voteBtn.textContent='👍🏻';
+         let voteState = 0;
+         voteBtn.addEventListener('click', () => {
+           voteState = (voteState + 1) % 3;
+           voteBtn.textContent = voteState===0 ? '👍🏻' : (voteState===1 ? '👍' : '👎');
+           voteBtn.classList.toggle('ra-vote-like', voteState===1);
+           voteBtn.classList.toggle('ra-vote-dis', voteState===2);
+         });
+         bar.appendChild(voteBtn);
+
+         // 分享 (Web Share 优先, 否则复制文本)
+         const shareBtn = document.createElement('button'); shareBtn.className='ra-btn'; shareBtn.textContent='分享';
+         shareBtn.addEventListener('click', async () => {
+           if (navigator.share) { try { await navigator.share({ title: 'Bolloon 对话', text: t }); return; } catch (e) {} }
+           try { await navigator.clipboard.writeText(t); shareBtn.textContent='✓已复制'; setTimeout(()=>shareBtn.textContent='分享',1500); } catch (e) {}
+         });
+         bar.appendChild(shareBtn);
+
+         // 刷新重新来 (用同一 prompt 重新跑 Agent)
+         const refreshBtn = document.createElement('button'); refreshBtn.className='ra-btn'; refreshBtn.textContent='刷新';
+         refreshBtn.addEventListener('click', () => {
+           const prompt = lastUserPrompt; if (!prompt) return;
+           refreshBtn.textContent='重新生成…';
+           const inp = $('#chat-input'); if (inp) inp.value = prompt;
+           // 用直接触发 sendChat 的方式重新发起
+           if (typeof sendChat === 'function') sendChat();
+         });
+         bar.appendChild(refreshBtn);
+
+         // 分支 fork (新建本地智能体分支, 继承本回复上下文做起点)
+         const forkBtn = document.createElement('button'); forkBtn.className='ra-btn'; forkBtn.textContent='分支';
+         forkBtn.addEventListener('click', async () => {
+           forkBtn.textContent='建立中…';
+           try {
+             const r = await api.post('/api/channels/create', { name: '分支' });
+             const id = r && r.id;
+             if (!id) { forkBtn.textContent='分支失败'; setTimeout(()=>forkBtn.textContent='分支',1500); return; }
+             closeChat();
+             loadAgentCovers();
+             setTimeout(() => {
+               const c = allAgentCards.find((x) => x.id === id);
+               if (c) openChat(c);
+             }, 600);
+           } catch (e) { forkBtn.textContent='分支失败'; setTimeout(()=>forkBtn.textContent='分支',1500); }
+         });
+         bar.appendChild(forkBtn);
+
+         container.appendChild(bar);
+       }
 
   function closeChat() {
     if (chatEventSource) { chatEventSource.close(); chatEventSource = null; }
+    if (chatStepCancel) { chatStepCancel.cancel?.(); chatStepCancel = null; }
     ['#chat-page', '#chat-manage-sheet', '#session-history', '#agent-cover'].forEach((sel) => {
       const el = $(sel); if (el) el.remove();
     });
@@ -743,6 +845,12 @@
          return;
        }
 
+       // Agent 执行过程摘要 (每步 onStep) → 工作记录
+       if (msg.type === 'agent-worklog' && Array.isArray(msg.lines)) {
+         msg.lines.forEach((line) => appendWorkLog(String(line)));
+         return;
+       }
+
        if (msg.type === 'ai' || msg.type === 'token' || msg.role === 'ai') {
          if (msg.channelId && msg.channelId !== activeChannel.id) return;
          if (!streamingBubble || !streamingBubble.isConnected) {
@@ -764,6 +872,7 @@
     if (!activeChannel) return;
     const box = $('#chat-messages');
     if (!box) return;
+    const traceHTML = (traceBody && traceBody.isConnected) ? traceBody.outerHTML : '';
     try {
       const data = await api.get(`/sessions/${encodeURIComponent(activeChannel.id)}`);
       const msgs = data?.messages || [];
@@ -774,7 +883,9 @@
         d.className = 'bubble ' + role;
         d.textContent = m.content || '';
         box.appendChild(d);
+        if (role === 'ai') addReplyActions(d, m.content || '');
       });
+      if (traceHTML) { traceBody = document.createElement('div'); traceBody.innerHTML = traceHTML; traceBody = traceBody.firstChild; box.appendChild(traceBody); }
       box.scrollTop = box.scrollHeight;
     } catch (e) { box.innerHTML = '<div style="color:var(--text-muted)">暂无历史消息</div>'; }
   }
@@ -785,6 +896,7 @@
     const text = input.value.trim();
     if (!text || !activeChannel) return;
     input.value = '';
+    lastUserPrompt = text;
     const box = $('#chat-messages');
     if (!box) return;
     const userBubble = document.createElement('div');
@@ -792,6 +904,7 @@
     userBubble.textContent = text;
     box.appendChild(userBubble);
     box.scrollTop = box.scrollHeight;
+    traceBody = null;   // 新消息 → 重置执行轨迹 (每条回复独立工作记录)
     try {
       await api.post('/message', { text, channelId: activeChannel.id });
       setTimeout(() => { if (!streamingBubble) loadMessages(); }, 1500);

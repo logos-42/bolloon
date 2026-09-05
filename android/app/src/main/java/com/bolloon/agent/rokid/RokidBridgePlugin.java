@@ -10,6 +10,7 @@ import android.util.Log;
 
 import androidx.annotation.Nullable;
 
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -482,17 +483,23 @@ public class RokidBridgePlugin extends Plugin {
         }
         call.setKeepAlive(true);
         final PluginCall finalCall = call;
+        final java.util.List<String> steps = new java.util.ArrayList<>();
         AgentRuntimeHolder.INSTANCE.runAgent(goal.trim(),
             (String step) -> {
+                steps.add(step);
                 JSObject ev = new JSObject();
                 ev.put("type", "agent-step");
                 ev.put("step", step);
-                notifyListeners("agent-step", ev);
+                // notifyListeners 需在主线程投递, 否则 JS addListener 收不到 (AgentLoop 在后台线程跑)
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> notifyListeners("agent-step", ev));
                 return kotlin.Unit.INSTANCE;
             },
             (String done) -> {
                 JSObject r = new JSObject();
                 r.put("result", done);
+                JSArray wl = new JSArray();
+                for (String s : steps) { try { wl.put(s); } catch (Exception ex) { /* 忽略单行 */ } }
+                r.put("worklog", wl);   // 执行过程摘要 (每步 onStep 文本)
                 finalCall.resolve(r);
                 return kotlin.Unit.INSTANCE;
             }
