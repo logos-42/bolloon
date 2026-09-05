@@ -165,14 +165,140 @@
   }
 
   async function loadMe() {
+    const avatarEl = $('#me-avatar');
+    const av = localStorage.getItem('bolloon_avatar');
+    if (avatarEl) {
+      if (av) { avatarEl.style.backgroundImage = 'url(' + av + ')'; avatarEl.style.backgroundSize = 'cover'; avatarEl.style.backgroundPosition = 'center'; avatarEl.textContent = ''; }
+      else { avatarEl.style.backgroundImage = 'none'; }
+    }
     try {
       const s = await api.get('/api/auth/status');
-      $('#me-avatar').textContent = (s.name || 'U').charAt(0);
       $('#me-name').textContent = s.name || '未登录';
-      $('#me-did').textContent = s.didShort || s.did || '';
+      $('#me-did').textContent = s.did ? ('DID: ' + (s.didShort || s.did)) : '';
+      if (avatarEl && !av) avatarEl.textContent = (s.name || 'U').charAt(0);
       const hasAccount = (s.accounts && s.accounts.length > 0);
       $('#login-label').textContent = hasAccount ? '已登录账号' : '登录';
     } catch (e) { /* 默认 */ }
+    // P2P ID = 通信ID, 与 DID 不同 (libp2p nodeId)
+    try {
+      const net = await api.get('/api/network/status');
+      const p2p = net && net.nodeId;
+      $('#me-p2p').textContent = p2p ? ('P2P: ' + p2p.slice(0, 14) + '…') : '';
+    } catch (e) { /* 未连接 */ }
+  }
+
+  // === 身份介绍页 ===
+  function openIdentityPage() {
+    const page = document.createElement('div');
+    page.className = 'identity-page';
+    page.id = 'identity-page';
+    page.innerHTML = `
+      <div class="identity-header">
+        <button class="icon-btn" id="identity-back">←</button>
+        <div style="flex:1;font-weight:600">身份介绍</div>
+      </div>
+      <div class="identity-body" id="identity-body">加载中...</div>`;
+    document.body.appendChild(page);
+    $('#identity-back').addEventListener('click', () => page.remove());
+    (async () => {
+      const body = page.querySelector('#identity-body');
+      let name = '未登录', did = '', p2p = '', created = '';
+      try { const s = await api.get('/api/auth/status'); name = s.name || '未登录'; did = s.did || ''; created = (s.createdAt ? new Date(s.createdAt).toLocaleString() : ''); } catch {}
+      try { const net = await api.get('/api/network/status'); p2p = (net && net.nodeId) || ''; } catch {}
+      body.innerHTML = `
+        <div style="display:flex;align-items:center;gap:14px">
+          <div class="avatar" id="identity-avatar" style="width:72px;height:72px"></div>
+          <div><div class="profile-name">${escapeHtml(name)}</div><div style="font-size:12px;color:var(--text-muted)">人类认证身份</div></div>
+        </div>
+        <div class="identity-row"><div class="k">DID 身份 (全局唯一)</div><div class="v">${escapeHtml(did || '未生成')}</div></div>
+        <div class="identity-row"><div class="k">P2P ID (通信 ID)</div><div class="v">${escapeHtml(p2p || '未连接')}</div></div>
+        <div class="identity-row"><div class="k">创建时间</div><div class="v">${escapeHtml(created || '未知')}</div></div>
+        <div class="identity-row"><div class="k">说明</div><div class="v">DID 是全局唯一的人类认证身份; P2P ID 只是本机 libp2p 通信节点号, 两者不同。</div></div>`;
+      const av = localStorage.getItem('bolloon_avatar');
+      const ia = body.querySelector('#identity-avatar');
+      if (ia) { if (av) { ia.style.backgroundImage = 'url(' + av + ')'; ia.style.backgroundSize = 'cover'; ia.textContent = ''; } else ia.textContent = (name || 'U').charAt(0); }
+    })();
+  }
+
+  // === 头像: 相册选图 + 裁剪 ===
+  function pickAvatar() { const input = $('#avatar-input'); if (input) input.click(); }
+  function bindAvatarInput() {
+    const input = $('#avatar-input');
+    if (!input) return;
+    input.addEventListener('change', () => {
+      const f = input.files && input.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => openCropModal(String(reader.result));
+      reader.readAsDataURL(f);
+      input.value = '';
+    });
+  }
+  function openCropModal(dataUrl) {
+    const modal = document.createElement('div');
+    modal.className = 'crop-modal';
+    modal.id = 'crop-modal';
+    modal.innerHTML = `
+      <div class="crop-stage" id="crop-stage">
+        <img class="crop-img" id="crop-img" src="${dataUrl}" alt="">
+        <div class="crop-box" id="crop-box"></div>
+      </div>
+      <div class="crop-zoom-row">
+        <span style="color:#fff;font-size:13px">缩放</span>
+        <input type="range" id="crop-zoom" min="1" max="3" step="0.01" value="1">
+      </div>
+      <div class="crop-actions">
+        <button class="crop-cancel" id="crop-cancel">取消</button>
+        <button class="crop-confirm" id="crop-confirm">完成</button>
+      </div>`;
+    document.body.appendChild(modal);
+    const stage = modal.querySelector('#crop-stage');
+    const img = modal.querySelector('#crop-img');
+    const box = modal.querySelector('#crop-box');
+    let zoom = 1, dx = 0, dy = 0, startX = 0, startY = 0;
+    const stageRect = () => stage.getBoundingClientRect();
+    const boxSize = () => Math.min(box.getBoundingClientRect().width, box.getBoundingClientRect().height);
+    function layout() {
+      const sr = stageRect(); const bs = boxSize();
+      const nw = img.naturalWidth || 1, nh = img.naturalHeight || 1;
+      const base = Math.max(bs / nw, bs / nh);
+      const w = nw * base * zoom, h = nh * base * zoom;
+      img.style.width = w + 'px'; img.style.height = h + 'px';
+      img.style.transform = `translate(${-w / 2 + dx}px, ${-h / 2 + dy}px)`;
+    }
+    img.onload = layout; layout();
+    let dragging = false;
+    stage.addEventListener('touchstart', (e) => { dragging = true; startX = e.touches[0].clientX; startY = e.touches[0].clientY; }, { passive: true });
+    stage.addEventListener('touchmove', (e) => { if (!dragging) return; dx += e.touches[0].clientX - startX; dy += e.touches[0].clientY - startY; startX = e.touches[0].clientX; startY = e.touches[0].clientY; layout(); }, { passive: true });
+    stage.addEventListener('touchend', () => { dragging = false; }, { passive: true });
+    stage.addEventListener('mousedown', (e) => {
+      dragging = true; startX = e.clientX; startY = e.clientY;
+      const mv = (ev) => { dx += ev.clientX - startX; dy += ev.clientY - startY; startX = ev.clientX; startY = ev.clientY; layout(); };
+      const up = () => { dragging = false; stage.removeEventListener('mousemove', mv); stage.removeEventListener('mouseup', up); };
+      stage.addEventListener('mousemove', mv); stage.addEventListener('mouseup', up);
+    });
+    $('#crop-zoom').addEventListener('input', (e) => { zoom = parseFloat(e.target.value); layout(); });
+    $('#crop-cancel').addEventListener('click', () => modal.remove());
+    $('#crop-confirm').addEventListener('click', () => {
+      const sr = stageRect(); const bs = boxSize();
+      const nw = img.naturalWidth || 1, nh = img.naturalHeight || 1;
+      const base = Math.max(bs / nw, bs / nh);
+      const w = nw * base * zoom, h = nh * base * zoom;
+      const imgLeft = sr.left + sr.width / 2 - w / 2 + dx;
+      const imgTop = sr.top + sr.height / 2 - h / 2 + dy;
+      const boxLeft = sr.left + sr.width / 2 - bs / 2;
+      const boxTop = sr.top + sr.height / 2 - bs / 2;
+      const scaleX = w / nw, scaleY = h / nh;
+      const srcX = (boxLeft - imgLeft) / scaleX;
+      const srcY = (boxTop - imgTop) / scaleY;
+      const srcW = bs / scaleX, srcH = bs / scaleY;
+      const canvas = document.createElement('canvas');
+      canvas.width = 256; canvas.height = 256;
+      canvas.getContext('2d').drawImage(img, Math.max(0, srcX), Math.max(0, srcY), Math.max(0, Math.min(srcW, nw - srcX)), Math.max(0, Math.min(srcH, nh - srcY)), 0, 0, 256, 256);
+      localStorage.setItem('bolloon_avatar', canvas.toDataURL('image/jpeg', 0.85));
+      modal.remove();
+      loadMe();
+    });
   }
 
   // === 双频滑动卡片 ===
@@ -297,7 +423,8 @@
     track.querySelectorAll('.agent-card').forEach((el) => {
       el.addEventListener('click', () => {
         const idx = parseInt(el.dataset.index);
-        if (!isNaN(idx)) openCardDetail(idx);
+        // 点击卡片 → 直接进入对话 (卡片介绍页是遗留 bug, 不再导航)
+        if (!isNaN(idx) && allAgentCards[idx]) openChat(allAgentCards[idx]);
       });
     });
 
@@ -336,77 +463,69 @@
   }
 
   function closeCardReveals() {
-    $$('.card-wrap .agent-card.reveal-delete').forEach((c) => c.classList.remove('reveal-delete'));
+    $$('.card-wrap.reveal-delete').forEach((w) => w.classList.remove('reveal-delete'));
   }
 
   function setupCardSwipe() {
     const track = $('#card-track');
     if (!track) return;
 
-    let startX = 0, startY = 0, isDragging = false;
+    let startX = 0, startY = 0, isDragging = false, startWrap = null;
 
-    function revealAt(x, y, reveal) {
-      const el = document.elementFromPoint(x, y);
-      const wrap = el && el.closest ? el.closest('.card-wrap') : null;
+    function revealWrap(wrap, reveal) {
       if (!wrap) return;
-      const card = wrap.querySelector('.agent-card');
       const idx = parseInt(wrap.dataset.index);
       const c = allAgentCards[idx];
-      if (!card) return;
       if (reveal && c && c.deletable === false) { closeCardReveals(); return; }
       if (reveal) closeCardReveals();
-      card.classList.toggle('reveal-delete', !!reveal);
+      wrap.classList.toggle('reveal-delete', !!reveal);
     }
 
     track.addEventListener('touchstart', (e) => {
       startX = e.touches[0].clientX;
       startY = e.touches[0].clientY;
       isDragging = false;
+      const t = e.target;
+      startWrap = (t && t.closest) ? t.closest('.card-wrap') : null;
     }, { passive: true });
 
     track.addEventListener('touchmove', (e) => {
       const dx = Math.abs(e.touches[0].clientX - startX);
       const dy = Math.abs(e.touches[0].clientY - startY);
-      if (dx > dy && dx > 10) isDragging = true;
+      if (Math.max(dx, dy) > 10) isDragging = true;
     }, { passive: true });
 
+    // 垂直翻卡走原生 scroll-snap; 这里只处理水平滑动 → 删除 reveal
     track.addEventListener('touchend', (e) => {
       if (!isDragging) return;
       const t = e.changedTouches[0];
-      const diff = t.clientX - startX;
-      const cardW = track.querySelector('.agent-card')?.offsetWidth || window.innerWidth * 0.85;
-      if (Math.abs(diff) > cardW * 0.3) {
-        closeCardReveals();
-        if (diff < 0 && currentCardIndex < allAgentCards.length - 1) scrollToCard(currentCardIndex + 1);
-        else if (diff > 0 && currentCardIndex > 0) scrollToCard(currentCardIndex - 1);
-      } else if (diff < -30) {
-        revealAt(t.clientX, t.clientY, true);   // 轻微左滑 → 显示删除
-      } else if (diff > 30) {
-        revealAt(t.clientX, t.clientY, false);  // 右滑 → 收起删除
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        if (dx < -30) revealWrap(startWrap, true);     // 左滑 → 显示删除
+        else if (dx > 30) revealWrap(startWrap, false); // 右滑 → 收起删除
       }
+      startWrap = null;
     });
 
-    let mouseStartX = 0;
+    let mouseStartX = 0, mouseStartY = 0;
     track.addEventListener('mousedown', (e) => {
-      mouseStartX = e.clientX;
+      mouseStartX = e.clientX; mouseStartY = e.clientY;
       isDragging = false;
+      const t = e.target;
+      startWrap = (t && t.closest) ? t.closest('.card-wrap') : null;
       const onMove = (ev) => {
-        if (Math.abs(ev.clientX - mouseStartX) > 10) isDragging = true;
+        if (Math.max(Math.abs(ev.clientX - mouseStartX), Math.abs(ev.clientY - mouseStartY)) > 10) isDragging = true;
       };
       const onUp = (ev) => {
-        const diff = ev.clientX - mouseStartX;
-        const cardW = track.querySelector('.agent-card')?.offsetWidth || window.innerWidth * 0.85;
         if (isDragging) {
-          if (Math.abs(diff) > cardW * 0.3) {
-            closeCardReveals();
-            if (diff < 0 && currentCardIndex < allAgentCards.length - 1) scrollToCard(currentCardIndex + 1);
-            else if (diff > 0 && currentCardIndex > 0) scrollToCard(currentCardIndex - 1);
-          } else if (diff < -30) {
-            revealAt(ev.clientX, ev.clientY, true);
-          } else if (diff > 30) {
-            revealAt(ev.clientX, ev.clientY, false);
+          const dx = ev.clientX - mouseStartX;
+          if (Math.abs(dx) > 30) {
+            if (dx < 0) revealWrap(startWrap, true);
+            else revealWrap(startWrap, false);
           }
         }
+        startWrap = null;
         track.removeEventListener('mousemove', onMove);
         track.removeEventListener('mouseup', onUp);
       };
@@ -415,26 +534,28 @@
     });
 
     track.addEventListener('scroll', () => {
-      const cards = track.querySelectorAll('.agent-card');
+      const cards = track.querySelectorAll('.card-wrap');
+      const trackRect = track.getBoundingClientRect();
+      let best = -1, bestDist = Infinity;
       cards.forEach((card, i) => {
-        const rect = card.getBoundingClientRect();
-        const trackRect = track.getBoundingClientRect();
-        if (Math.abs(rect.left + rect.width / 2 - (trackRect.left + trackRect.width / 2)) < rect.width / 2) {
-          currentCardIndex = i;
-          updateCardIndicator();
-        }
+        const r = card.getBoundingClientRect();
+        const center = r.top + r.height / 2;
+        const trackCenter = trackRect.top + trackRect.height / 2;
+        const dist = Math.abs(center - trackCenter);
+        if (dist < bestDist) { bestDist = dist; best = i; }
       });
+      if (best >= 0) { currentCardIndex = best; updateCardIndicator(); }
     });
   }
 
   function scrollToCard(index) {
     const track = $('#card-track');
     if (!track) return;
-    const cards = track.querySelectorAll('.agent-card');
+    const cards = track.querySelectorAll('.card-wrap');
     if (cards[index]) {
-      cards[index].scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+      cards[index].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
       currentCardIndex = index;
-      cards.forEach((c, i) => c.classList.toggle('active-card', i === index));
+      track.querySelectorAll('.agent-card').forEach((c, i) => c.classList.toggle('active-card', i === index));
       updateCardIndicator();
     }
   }
@@ -496,6 +617,7 @@
        <div class="chat-topbar">
          <button class="icon-btn" id="chat-back">←</button>
          <div style="flex:1;font-weight:600">${escapeHtml(name)}</div>
+         <button class="icon-btn" id="chat-manage" title="管理会话">⋮</button>
        </div>
        <div class="loop-status-bar" id="loop-status-bar" hidden>
          <div class="loop-status-spinner"></div>
@@ -508,6 +630,7 @@
        </div>`;
      document.body.appendChild(page);
      $('#chat-back').addEventListener('click', closeChat);
+     $('#chat-manage').addEventListener('click', openChatManage);
      $('#chat-send').addEventListener('click', sendChat);
      $('#chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
      loadMessages();
@@ -517,9 +640,80 @@
 
   function closeChat() {
     if (chatEventSource) { chatEventSource.close(); chatEventSource = null; }
-    const p = $('#chat-page');
-    if (p) p.remove();
+    ['#chat-page', '#chat-manage-sheet', '#session-history', '#agent-cover'].forEach((sel) => {
+      const el = $(sel); if (el) el.remove();
+    });
     activeChannel = null;
+  }
+
+  // === 聊天页右上角管理: 会话历史 / 智能体封面 / 删除 ===
+  function openChatManage() {
+    if (!activeChannel) return;
+    const sheet = document.createElement('div');
+    sheet.className = 'sheet';
+    sheet.id = 'chat-manage-sheet';
+    sheet.innerHTML = `
+      <div class="sheet-inner sheet-inner-choices">
+        <div class="sheet-title">智能体设置 · ${escapeHtml(activeChannel.name || '')}</div>
+        <button class="sheet-choice" id="cm-history">📜 会话历史</button>
+        <button class="sheet-choice" id="cm-cover">🖼 智能体封面</button>
+        <button class="sheet-choice sheet-cancel" id="cm-delete" style="color:#e5484d">🗑 删除智能体</button>
+        <button class="sheet-choice sheet-cancel" id="cm-close">取消</button>
+      </div>`;
+    document.body.appendChild(sheet);
+    // 点遮罩任意空白处关闭
+    sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.remove(); });
+    $('#cm-close').addEventListener('click', (e) => { e.stopPropagation(); sheet.remove(); });
+    $('#cm-history').addEventListener('click', (e) => { e.stopPropagation(); sheet.remove(); openSessionHistory(); });
+    $('#cm-cover').addEventListener('click', (e) => { e.stopPropagation(); sheet.remove(); openAgentCover(); });
+    $('#cm-delete').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      sheet.remove();
+      if (!activeChannel) return;
+      if (!confirm('删除该智能体?')) return;
+      try {
+        await api.post('/api/channels/delete', { id: activeChannel.id });   // 删除 agent = 删除 channel
+        closeChat();
+        loadAgentCovers();
+      } catch (err) { alert('删除失败: ' + (err.message || err)); }
+    });
+  }
+
+  async function openSessionHistory() {
+    if (!activeChannel) return;
+    const page = document.createElement('div');
+    page.className = 'identity-page';
+    page.id = 'session-history';
+    page.innerHTML = `<div class="identity-header"><button class="icon-btn" id="sh-back">←</button><div style="flex:1;font-weight:600">会话历史</div></div><div class="identity-body" id="sh-body">加载中...</div>`;
+    document.body.appendChild(page);
+    $('#sh-back').addEventListener('click', () => page.remove());
+    try {
+      const s = await api.get('/sessions/' + encodeURIComponent(activeChannel.id));
+      const msgs = (s && s.messages) || [];
+      page.querySelector('#sh-body').innerHTML = msgs.length === 0
+        ? '<div style="color:var(--text-secondary)">暂无消息</div>'
+        : msgs.map((m) => `<div style="margin-bottom:8px;padding:8px 10px;border-radius:10px;background:var(--bg-card);border:1px solid var(--border)"><div style="font-size:11px;color:var(--text-muted)">${m.role === 'user' ? '你' : '智能体'} · ${new Date(m.ts).toLocaleTimeString()}</div><div style="font-size:14px;color:var(--text);white-space:pre-wrap">${escapeHtml(m.content)}</div></div>`).join('');
+    } catch (e) { page.querySelector('#sh-body').innerHTML = '加载失败'; }
+  }
+
+  function openAgentCover() {
+    if (!activeChannel) return;
+    const card = allAgentCards.find((c) => c.id === activeChannel.id) || activeChannel;
+    const page = document.createElement('div');
+    page.className = 'identity-page';
+    page.id = 'agent-cover';
+    page.innerHTML = `<div class="identity-header"><button class="icon-btn" id="ac-back">←</button><div style="flex:1;font-weight:600">智能体封面</div></div><div class="identity-body" id="ac-body"></div>`;
+    document.body.appendChild(page);
+    $('#ac-back').addEventListener('click', () => page.remove());
+    page.querySelector('#ac-body').innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:center;gap:14px">
+          <div class="avatar" style="width:72px;height:72px">${escapeHtml((card.name || 'A').charAt(0))}</div>
+          <div><div class="profile-name">${escapeHtml(card.name || '')}</div><div style="font-size:12px;color:var(--text-muted)">${escapeHtml(card.desc || '')}</div></div>
+        </div>
+        <div class="identity-row"><div class="k">智能体ID</div><div class="v">${escapeHtml(card.agentId || '')}</div></div>
+        <div class="identity-row"><div class="k">状态</div><div class="v">${card.status === 'online' ? '在线' : '离线'}</div></div>
+      </div>`;
   }
 
    function openChatSse() {
@@ -697,7 +891,137 @@
     });
   }
 
-  // === 创建新会话 / 添加 P2P 好友 ===
+  // === 加密钱包 (只读 MVP) ===
+  async function openWallet() {
+    const page = document.createElement('div');
+    page.className = 'chat-page';
+    page.id = 'wallet-page';
+    page.innerHTML = `
+      <div class="chat-topbar">
+        <button class="icon-btn" id="wallet-back">←</button>
+        <div style="flex:1;font-weight:600">加密钱包</div>
+        <button class="icon-btn" id="wallet-new" title="新建钱包">＋</button>
+      </div>
+      <div id="wallet-body" style="padding:12px;display:flex;flex-direction:column;gap:12px">加载中...</div>`;
+    document.body.appendChild(page);
+    $('#wallet-back').addEventListener('click', () => page.remove());
+    $('#wallet-new').addEventListener('click', () => openWalletForm(page, 'create'));
+    await renderWalletList(page);
+  }
+
+  const _walletInput = 'padding:11px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)';
+  const _walletBtn = 'padding:13px;border:none;border-radius:10px;background:var(--accent);color:var(--bg);font-weight:700';
+
+  async function renderWalletList(page) {
+    const body = page.querySelector('#wallet-body');
+    if (!body) return;
+    let st;
+    try { st = await api.get('/api/wallet/status'); }
+    catch (e) { body.innerHTML = '<div>读取失败: ' + (e.message || e) + '</div>'; return; }
+    const wallets = (st && st.wallets) || [];
+    if (wallets.length === 0) {
+      body.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:24px 0">还没有加密钱包</div>' +
+        '<button id="wallet-first" style="' + _walletBtn + '">＋ 新建钱包</button>' +
+        '<button id="wallet-import-first" style="padding:12px;border:none;background:var(--bg-hover);color:var(--text-secondary);border-radius:10px">导入钱包</button>';
+      $('#wallet-first').addEventListener('click', () => openWalletForm(page, 'create'));
+      $('#wallet-import-first').addEventListener('click', () => openWalletForm(page, 'import'));
+      return;
+    }
+    body.innerHTML = wallets.map((w) => `
+      <div class="wallet-card" style="padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--bg-card);display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-weight:700">${escapeHtml(w.name)} <span style="font-size:11px;color:var(--text-muted)">${w.mode === 'auto' ? '🔓自动加载' : (w.mode === 'passphrase' ? '🔐口令' : '')}</span></span>
+          <span style="font-size:12px;color:${w.unlocked ? 'var(--accent)' : 'var(--text-muted)'}">${w.unlocked ? '已解锁' : '已锁定'}</span>
+        </div>
+        <div class="wallet-addr">${escapeHtml(w.address)}</div>
+        <div style="font-size:12px;color:var(--text-secondary)">授权智能体: ${(w.allowedAgents || []).length} 个</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${w.unlocked ? `<button data-wl="lock" data-id="${w.id}" style="flex:1;${_walletBtn}">锁定</button>` : (w.mode === 'passphrase' ? `<button data-wl="unlock" data-id="${w.id}" style="flex:1;${_walletBtn}">解锁</button>` : '')}
+          ${w.unlocked ? `<button data-wl="bal" data-id="${w.id}" style="flex:1;${_walletBtn}">余额</button>` : ''}
+          <button data-wl="grant" data-id="${w.id}" style="flex:1;${_walletBtn}">授权</button>
+        </div>
+        <div data-bal="${w.id}" style="font-size:13px;color:var(--accent)"></div>
+      </div>`).join('');
+    body.querySelectorAll('[data-wl]').forEach((btn) => btn.addEventListener('click', async () => {
+      const act = btn.dataset.wl, id = btn.dataset.id;
+      if (act === 'lock') { await api.post('/api/wallet/lock', { id }); renderWalletList(page); }
+      else if (act === 'unlock') { promptWalletPass(page, id); }
+      else if (act === 'bal') {
+        try { const b = await api.post('/api/wallet/balance', { id }); const el = body.querySelector('[data-bal="' + id + '"]'); if (el) el.textContent = b; }
+        catch (e) { alert(e.message || '余额查询失败'); }
+      }
+      else if (act === 'grant') { grantWalletUI(page, id); }
+    }));
+  }
+
+  function openWalletForm(page, which) {
+    const body = page.querySelector('#wallet-body');
+    const isCreate = which === 'create';
+    body.innerHTML = `
+      <div style="font-weight:700">${isCreate ? '新建钱包' : '导入钱包'}</div>
+      <input id="wlf-name" placeholder="钱包名称 (留空默认)" style="${_walletInput}">
+      <label style="font-size:12px;color:var(--text-secondary)">解锁方式</label>
+      <div style="display:flex;gap:10px">
+        <label style="display:flex;align-items:center;gap:6px;flex:1"><input type="radio" name="wlf-mode" value="auto" checked> 自动加载(无口令)</label>
+        <label style="display:flex;align-items:center;gap:6px;flex:1"><input type="radio" name="wlf-mode" value="passphrase"> 口令解锁</label>
+      </div>
+      <input id="wlf-pass" type="password" placeholder="口令 (口令模式必填)" style="${_walletInput}">
+      ${isCreate ? '' : '<textarea id="wlf-input" placeholder="12 词助记词 或 64 位 hex 私钥" style="' + _walletInput + ';min-height:70px"></textarea>'}
+      <button id="wlf-submit" style="${_walletBtn}">${isCreate ? '创建' : '导入'}</button>
+      <button id="wlf-cancel" style="padding:12px;border:none;background:var(--bg-hover);color:var(--text-secondary);border-radius:10px">返回</button>`;
+    $('#wlf-cancel').addEventListener('click', () => renderWalletList(page));
+    $('#wlf-submit').addEventListener('click', async () => {
+      const name = $('#wlf-name').value.trim();
+      const mode = document.querySelector('input[name="wlf-mode"]:checked')?.value || 'auto';
+      const pass = $('#wlf-pass').value || '';
+      if (mode === 'passphrase' && !pass) { alert('口令模式需要口令'); return; }
+      try {
+        const r = isCreate
+          ? await api.post('/api/wallet/create', { name, mode, pass })
+          : await api.post('/api/wallet/import', { name, mode, pass, input: $('#wlf-input').value });
+        if (r && r.mnemonic) {
+          body.innerHTML = `<div style="background:#3a2a1a;border:1px solid var(--accent);border-radius:10px;padding:14px;font-size:13px"><div style="font-weight:700;color:var(--accent);margin-bottom:6px">⚠ 抄写并离线保存助记词</div><div style="word-break:break-all">${escapeHtml(r.mnemonic)}</div></div><div class="wallet-addr">${escapeHtml(r.address)}</div><button id="wlf-ok" style="${_walletBtn}">我已保存</button>`;
+          $('#wlf-ok').addEventListener('click', () => renderWalletList(page));
+        } else renderWalletList(page);
+      } catch (e) { alert((isCreate ? '创建' : '导入') + '失败: ' + (e.message || e)); }
+    });
+  }
+
+  function promptWalletPass(page, id) {
+    const body = page.querySelector('#wallet-body');
+    body.innerHTML = '<div style="font-weight:700">输入口令解锁</div><input id="wlf-pass" type="password" placeholder="口令" style="' + _walletInput + '">' +
+      '<button id="wlf-submit2" style="' + _walletBtn + '">解锁</button><button id="wlf-cancel2" style="padding:12px;border:none;background:var(--bg-hover);color:var(--text-secondary);border-radius:10px">返回</button>';
+    $('#wlf-cancel2').addEventListener('click', () => renderWalletList(page));
+    $('#wlf-submit2').addEventListener('click', async () => {
+      try { await api.post('/api/wallet/unlock', { id, pass: $('#wlf-pass').value }); renderWalletList(page); }
+      catch (e) { alert('解锁失败: ' + (e.message || e)); }
+    });
+  }
+
+  async function grantWalletUI(page, walletId) {
+    const body = page.querySelector('#wallet-body');
+    let channels = [];
+    try { const chs = await api.get('/channels'); channels = Array.isArray(chs) ? chs : []; } catch {}
+    const agents = channels.map((c) => ({ agentId: c.agentId || c.id, name: c.persona?.name || c.name || c.agentId || '智能体' }));
+    let st; try { st = await api.get('/api/wallet/status'); } catch {}
+    const wallet = (st && st.wallets || []).find((w) => w.id === walletId);
+    const allowed = new Set((wallet && wallet.allowedAgents) || []);
+    body.innerHTML = '<div style="font-weight:700">授权钱包给智能体</div>' +
+      (agents.length === 0
+        ? '<div style="color:var(--text-secondary);font-size:13px">没有本地智能体 (先创建新会话)</div>'
+        : agents.map((a) => `
+            <label style="display:flex;align-items:center;gap:8px;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--bg-card)">
+              <input type="checkbox" data-aid="${escapeHtml(a.agentId)}" ${allowed.has(a.agentId) ? 'checked' : ''}> <span style="flex:1">${escapeHtml(a.name)}</span>
+            </label>`).join('')) +
+      '<button id="wl-grant-save" style="' + _walletBtn + '">保存授权</button><button id="wl-grant-back" style="padding:12px;border:none;background:var(--bg-hover);color:var(--text-secondary);border-radius:10px">返回</button>';
+    $('#wl-grant-back').addEventListener('click', () => renderWalletList(page));
+    $('#wl-grant-save').addEventListener('click', async () => {
+      const list = Array.from(body.querySelectorAll('input[data-aid]'));
+      for (const cb of list) { await api.post('/api/wallet/grant', { id: walletId, agentId: cb.dataset.aid, allow: cb.checked }); }
+      renderWalletList(page);
+    });
+  }
+
   function showSheet(id) { const s = $(id); if (s) s.hidden = false; }
   function hideSheet(id) { const s = $(id); if (s) s.hidden = true; }
 
@@ -738,9 +1062,12 @@
   // === 菜单 ===
   function bindMenu() {
     $('#item-settings').addEventListener('click', openSettings);
-    $('#item-wallet').addEventListener('click', () => { alert('钱包管理'); });
+    $('#item-wallet').addEventListener('click', () => { openWallet(); });
     $('#item-judgments').addEventListener('click', () => { alert('判断力 API'); });
-    $('#item-did').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('DID: ' + (s.did || '未生成'))); });
+    // 头顶身份栏: 头像可改, 右侧卡片开身份介绍页; DID 不再作为标签按钮
+    $('#me-avatar').addEventListener('click', pickAvatar);
+    $('#profile-info').addEventListener('click', openIdentityPage);
+    bindAvatarInput();
     $('#item-login').addEventListener('click', async () => {
       try {
         const s = await api.get('/api/auth/status');
@@ -755,7 +1082,10 @@
     const csMan = $('#choice-manual'); if (csMan) csMan.addEventListener('click', addFriendManual);
     const csCan = $('#choice-cancel'); if (csCan) csCan.addEventListener('click', () => hideSheet('#addfriend-sheet'));
     $('#item-p2p').addEventListener('click', () => { switchTab('network'); });
-    $('#item-p2p-id').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('P2P ID: ' + (s.did || '未生成'))); });
+    $('#item-p2p-id').addEventListener('click', async () => {
+      try { const net = await api.get('/api/network/status'); const p2p = net && net.nodeId; alert('P2P ID (通信ID, ≠ DID):\n' + (p2p || '未连接')); }
+      catch (e) { alert('P2P ID: 获取失败'); }
+    });
   }
 
   function escapeHtml(s) {

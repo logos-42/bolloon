@@ -69,17 +69,20 @@
   <!-- 我 tab -->
   <section class="page" id="page-me" data-tab="me" hidden>
     <div class="profile-card" id="profile-card">
-      <div class="avatar" id="me-avatar">?</div>
-      <div class="profile-info">
+      <div class="avatar" id="me-avatar" title="点击修改头像">?</div>
+      <div class="profile-info" id="profile-info">
         <div class="profile-name" id="me-name">未登录</div>
         <div class="profile-did" id="me-did"></div>
+        <div class="profile-p2p" id="me-p2p"></div>
       </div>
+      <span class="profile-chevron">›</span>
     </div>
+    <!-- 相册选图 + 裁剪 -->
+    <input type="file" id="avatar-input" accept="image/*" hidden>
     <div class="list">
       <div class="list-item" id="item-settings"><span class="list-icon">⚙️</span><span>设置</span><span class="list-arrow">›</span></div>
       <div class="list-item" id="item-wallet"><span class="list-icon">👛</span><span>钱包</span><span class="list-arrow">›</span></div>
       <div class="list-item" id="item-judgments"><span class="list-icon">🧠</span><span>判断力 API</span><span class="list-arrow">›</span></div>
-      <div class="list-item" id="item-did"><span class="list-icon">🪪</span><span>DID 身份</span><span class="list-arrow">›</span></div>
       <div class="list-item" id="item-login"><span class="list-icon">🔐</span><span id="login-label">登录</span><span class="list-arrow">›</span></div>
       <div class="list-item" id="item-logout"><span class="list-icon">🚪</span><span>注销</span></div>
     </div>

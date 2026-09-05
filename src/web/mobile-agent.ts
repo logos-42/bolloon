@@ -94,6 +94,8 @@ let _llmConfig: { baseUrl?: string; apiKey?: string; model?: string; maxTokens?:
 /** 注入 LLM 配置 (由 mobile-core 在 data.llm-config.reply 同步后调用) */
 export function setLlmConfig(cfg: { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number } | null): void {
   _llmConfig = cfg;
+  // 立即注入 native bridge (agentConfigure), 让 AgentRuntime 马上可用, 不必等下次 runLocalAgent
+  applyLlmConfigToBridge().catch(() => {});
 }
 
 /** 当前 LLM 配置 (未同步则为 null → 手机默认) */
@@ -139,6 +141,22 @@ export async function runLocalAgent(goal: string): Promise<string> {
   if (t.includes('身份') || t.includes('did')) {
     const id = await ensureIdentity();
     return `我的本地 DID: ${id.did.slice(0, 12)}... (手机端独立生成)`;
+  }
+  if (t.includes('余额') || t.includes('钱包') || /balance/i.test(t)) {
+    try {
+      const id = await ensureIdentity();
+      const w = await import('./mobile-wallet.js');
+      const info = await w.walletForAgent(id.did);
+      if (!info.exists) return '本机没有授权给当前智能体的钱包 (我 → 设置 → 钱包 可创建/授权)。';
+      const w0 = info.wallets[0];
+      let s = `钱包: ${w0.name || w0.id}`;
+      s += `\n地址: ${w0.address}${w0.unlocked ? ' (已解锁)' : ' (未解锁)'}`;
+      if (w0.unlocked) { try { s += `\n余额: ${await w.walletBalance(w0.id)}`; } catch { s += '\n余额: 查询失败'; } }
+      else s += '\n解锁后可见余额。';
+      return s;
+    } catch (e: any) {
+      return '钱包查询失败: ' + String(e?.message || e).slice(0, 80);
+    }
   }
   return `已收到: "${(goal || '').slice(0, 40)}"。这是手机端 Agent 功能层的本地执行 (数据同步与 agent 功能已分离)。`;
 }

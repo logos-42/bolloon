@@ -85,6 +85,9 @@ export const core = {
     if (p === '/api/auth/status') return () => core.identity.status();
     if (p === '/api/payments/pending') return () => core.payments.pending();
     if (p === '/api/llm-config') return () => core.data.getLlmConfig();
+    if (p === '/api/network/status') return () => core.network.status();
+    if (p === '/api/wallet/status') return () => core.wallet.status();
+    if (p === '/api/wallet/balance') return () => core.wallet.balance();
     if (p.startsWith('/sessions/')) {
       const cid = decodeURIComponent(p.slice('/sessions/'.length));
       return () => core.session.get(cid);
@@ -147,6 +150,34 @@ export const core = {
         busBroadcast({ type: 'llm-config-synced', provider: b.activeProvider, model: active.model || '' });
         return { ok: true };
       };
+    }
+    if (p === '/api/wallet/create') {
+      const b = body || {};
+      return () => core.wallet.create(String(b.name || ''), String(b.mode || 'auto'), b.pass ? String(b.pass) : undefined);
+    }
+    if (p === '/api/wallet/import') {
+      const b = body || {};
+      return () => core.wallet.import(String(b.input || ''), String(b.name || ''), String(b.mode || 'auto'), b.pass ? String(b.pass) : undefined);
+    }
+    if (p === '/api/wallet/unlock') {
+      const b = body || {};
+      return () => core.wallet.unlock(String(b.id || ''), String(b.pass || ''));
+    }
+    if (p === '/api/wallet/lock') {
+      const b = body || {};
+      return () => core.wallet.lock(String(b.id || ''));
+    }
+    if (p === '/api/wallet/grant') {
+      const b = body || {};
+      return () => core.wallet.grant(String(b.id || ''), String(b.agentId || ''), !!b.allow);
+    }
+    if (p === '/api/wallet/balance') {
+      const b = body || {};
+      return () => core.wallet.balance(b.id ? String(b.id) : undefined);
+    }
+    if (p === '/api/wallet/agent') {
+      const b = body || {};
+      return () => core.wallet.forAgent(String(b.agentId || ''));
     }
     return null;
   },
@@ -316,6 +347,17 @@ export const core = {
       const p = await import('./mobile-p2p.js');
       return p.addMobilePeer(String(addr || ''));
     },
+  },
+
+  wallet: {
+    async status(): Promise<any> { const w = await import('./mobile-wallet.js'); return w.listWallets(); },
+    async create(name: string, mode: string, pass?: string): Promise<any> { const w = await import('./mobile-wallet.js'); return w.createWallet(name, mode as any, pass); },
+    async import(input: string, name: string, mode: string, pass?: string): Promise<any> { const w = await import('./mobile-wallet.js'); return w.importWallet(input, name, mode as any, pass); },
+    async unlock(id: string, pass: string): Promise<any> { const w = await import('./mobile-wallet.js'); return w.unlockWallet(id, pass); },
+    async lock(id: string): Promise<any> { const w = await import('./mobile-wallet.js'); w.lockWallet(id); return { ok: true }; },
+    async grant(id: string, agentId: string, allow: boolean): Promise<any> { const w = await import('./mobile-wallet.js'); return w.grantWallet(id, agentId, allow); },
+    async forAgent(agentId: string): Promise<any> { const w = await import('./mobile-wallet.js'); return w.walletForAgent(agentId); },
+    async balance(id?: string): Promise<any> { const w = await import('./mobile-wallet.js'); return w.walletBalance(id); },
   },
 
   mcp: {

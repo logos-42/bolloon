@@ -75,7 +75,17 @@ object AgentRuntimeHolder {
         Thread {
             try {
                 val service = BolloonAccessibilityService.instance
-                    ?: run { onStep("[错误] 无障碍服务未连接, 请先在系统设置中开启 Bolloon 无障碍服务"); return@Thread }
+                    ?: run {
+                        val m = "[错误] 无障碍服务未连接, 请先在系统设置中开启 Bolloon 无障碍服务"
+                        onStep(m); onDone(m)  // 必须调用 onDone, 否则 JS runAgent 的 promise 永不 resolve → 一直转圈
+                        return@Thread
+                    }
+                // 2026-09-05: 未配置 LLM API → 提示, 不空转 (否则 RemoteLlm 发空 Bearer → 401 → 哨兵未命中 → 死循环)
+                if (llmConfig.apiKey.isBlank() || llmConfig.baseUrl.isBlank()) {
+                    onStep("[提示] 未配置 LLM API, 无法执行 Agent")
+                    onDone("[未配置 LLM API] 请到「我 → 设置 → API 配置」填入供应商 baseUrl/apiKey, 或从桌面同步 LLM 配置后重试。")
+                    return@Thread
+                }
                 val t = tools ?: AndroidAgentTools(service, service.applicationContext).also { tools = it }
                 val backend = modelRuntime ?: ModelRuntime(RemoteLlmBackend(llmConfig), LocalLlm()).also { modelRuntime = it }
                 // Phase 4: 生命周期开始 (STARTING → RUNNING)
