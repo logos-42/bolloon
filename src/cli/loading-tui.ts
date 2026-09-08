@@ -15,6 +15,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { mdInline } from './markdown.js';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -394,12 +395,12 @@ function renderReference(opts: {
 
 /** 已发送消息框 (用户输入) */
 export function renderUserMessage(body: string): string {
-  return renderMessageBox({ title: '✓ 已发送', body, color: C_OK, maxLines: DEFAULT_MAX_LINES });
+  return renderMessageBox({ title: '✓ 已发送', body: mdInline(body), color: C_OK, maxLines: DEFAULT_MAX_LINES });
 }
 
 /** 智能体回复框 (不压缩, 用户需要看到完整回复) */
 export function renderAgentMessage(body: string): string {
-  return renderMessageBox({ title: '◉ Bolloon Agent', body, color: C_ACCENT, maxLines: 0 });
+  return renderMessageBox({ title: '◉ Bolloon Agent', body: mdInline(body), color: C_ACCENT, maxLines: 0 });
 }
 
 // ── 工具调用显示 (圆角框 + ╼╾ 连接) ────────────────
