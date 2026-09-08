@@ -15,6 +15,7 @@ import type { ToolCallListItem } from './loading-tui.js';
 import { THEME, fg } from './theme.js';
 import { COMPOSER_PLACEHOLDER, CHAR_EXIT_HINT, POPUP_TITLE_TAB, POPUP_TITLE_AGENT, POPUP_TITLE_FILE, POPUP_TITLE_COMMAND } from './content.js';
 import { DOUBLE_ESC_MS, STATUS_TICK_MS, THINK_FRAME_MS } from './timing.js';
+import { resolveNormalKey, applyScroll } from './keymap.js';
 import { useStore, transcriptStore, uiStore, appendMsg, replaceLastMsg, replaceMarkerMsg, setUiStatus, setUiThinking, setUiTransient } from './stores.js';
 import {
   loadAgents,
@@ -440,25 +441,17 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     }
 
     // ── 正常模式 ──
-    // 虚拟化滚动 (仅当消息超出可视区; Ctrl+U/D 翻页, Home/End 顶/底)
+    // #7 输入层: 滚动键走数据化 keymap (Ctrl+U/D / PgUp/PgDn / Home-End / Alt+↑↓ / Ctrl+Home-End)
     if (totalLines > availH) {
       const pg = Math.max(6, availH - 2);
       const maxT = Math.max(0, totalLines - availH);
-      if ((key.ctrl && _input.toLowerCase() === 'u') || (key as any).pageUp) {
-        stickRef.current = false;
-        setScrollTop(s => Math.max(0, Math.min((s || 0) - pg, maxT)));
+      const act = resolveNormalKey(key as any, { scrollable: true, input: _input });
+      if (act !== 'none') {
+        const r = applyScroll(act, stickRef.current ? maxT : (scrollTop || 0), pg, maxT);
+        stickRef.current = r.stick;
+        setScrollTop(r.next);
         return;
       }
-      if ((key.ctrl && _input.toLowerCase() === 'd') || (key as any).pageDown) {
-        setScrollTop(s => {
-          const nx = Math.min((s || 0) + pg, maxT);
-          if (nx >= maxT) stickRef.current = true;
-          return nx;
-        });
-        return;
-      }
-      if ((key as any).home) { stickRef.current = false; setScrollTop(0); return; }
-      if ((key as any).end) { stickRef.current = true; setScrollTop(maxT); return; }
     }
     // 2026-08-07: Enter 兜底 — pty/管道下 termios 可能把 \r 转 \n 且 node 把整 chunk
     //   当一次 keypress (key.return=false), TextInput 的 onSubmit 永不触发 → 消息发不出去.
