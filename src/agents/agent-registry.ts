@@ -16,6 +16,8 @@ import { getCIDDatabase, type CIDDatabase, type OrbitDBStore } from '../orbitdb/
 const home = (): string => process.env.HOME || os.homedir() || '/tmp';
 
 export const REGISTRY_ORBIT_KEY = 'services';
+/** 网络启动包 meta 键 (networkId/name/version/capacityOfMembers/sharedContextCid) */
+export const REGISTRY_ORBIT_META_KEY = 'meta';
 
 /** Agent 服务声明 (Agent Economic Protocol §2 Discovery) */
 export interface AgentService {
@@ -61,6 +63,10 @@ export interface AgentRegistry {
   discover(query: string): Promise<AgentService[]>;
   /** 读取本地 fallback 列表 */
   loadLocal(): Promise<AgentService[]>;
+  /** ② 网络启动包 meta 写入 (供 shareNetworkLink 把全量信息写进共享 store) */
+  writeMeta?(meta: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
+  /** 读网络启动包 meta */
+  readMeta?(): Promise<Record<string, unknown> | null>;
 }
 
 /** 真实实现 (OrbitDB + 本地 fallback). 单例: 共享 CID 数据库单例. */
@@ -155,6 +161,26 @@ export class OrbitDBAgentRegistry implements AgentRegistry {
     const orbit = await this.orbitList();
     if (orbit !== null) return orbit;
     return this.loadLocalFromDisk();
+  }
+
+  async writeMeta(meta: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
+    if (!this.ready || !this._store) return { ok: false, error: 'registry store 未就绪 (离线模式)' };
+    try {
+      await this._store.put(REGISTRY_ORBIT_META_KEY, meta);
+      return { ok: true };
+    } catch (e: any) {
+      return { ok: false, error: String(e?.message || e).slice(0, 120) };
+    }
+  }
+
+  async readMeta(): Promise<Record<string, unknown> | null> {
+    if (!this.ready || !this._store) return null;
+    try {
+      const v = await this._store.get(REGISTRY_ORBIT_META_KEY);
+      return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
   }
 
   async discover(query: string): Promise<AgentService[]> {

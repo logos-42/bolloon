@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // 网络启动包 / 画像 / merge — 纯函数单测 (入网链接 = 全量引导)
-import { buildNetworkBootstrap, mergeRemoteServices, parseNetworkLink } from '../agents/gateway-network.js';
+import { buildNetworkBootstrap, mergeRemoteServices, parseNetworkLink, shareNetworkLink } from '../agents/gateway-network.js';
 import type { AgentService } from '../agents/agent-registry.js';
 
 const svc = (agentId: string, name: string): AgentService => ({
@@ -56,5 +56,45 @@ describe('parseNetworkLink (#0 链接解析)', () => {
   });
   it('垃圾 → null', () => {
     expect(parseNetworkLink('随便')).toBeNull();
+  });
+});
+
+describe('shareNetworkLink (#1 全量启动包)', () => {
+  it('写 meta 并生成 orbitdb://?name= 链接', async () => {
+    let wrote: any = null;
+    const fake: any = {
+      ready: true,
+      storeAddress: '/orbitdb/Qmaddr',
+      storeName: 'bolloon-agent-registry-local',
+      list: async () => [],
+      register: async () => ({ ok: true }),
+      discover: async () => [],
+      loadLocal: async () => [],
+      writeMeta: async (m: any) => { wrote = m; return { ok: true }; },
+      readMeta: async () => null,
+    };
+    const r = await shareNetworkLink({
+      name: 'my-net',
+      meta: { networkId: 'n1', version: 'v3', capacityOfMembers: 4, sharedContextCid: 'Qmctx' },
+      registry: fake,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.link).toContain('orbitdb:///orbitdb/Qmaddr');
+    expect(r.link).toContain('?name=my-net');
+    expect(wrote.networkId).toBe('n1');
+    expect(wrote.capacityOfMembers).toBe(4);
+    expect(wrote.sharedContextCid).toBe('Qmctx');
+  });
+
+  it('meta 写失败 → 仍分享并返回 note', async () => {
+    const fake: any = {
+      ready: true, storeAddress: '/orbitdb/QmB', storeName: 'n2',
+      list: async () => [], register: async () => ({ ok: true }), discover: async () => [], loadLocal: async () => [],
+      writeMeta: async () => ({ ok: false, error: 'read-only' }),
+    };
+    const r = await shareNetworkLink({ registry: fake });
+    expect(r.ok).toBe(true);
+    expect(r.link).toContain('?name=');
+    expect(r.note).toContain('meta 写共享库失败');
   });
 });

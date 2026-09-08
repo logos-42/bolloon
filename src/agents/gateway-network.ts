@@ -408,7 +408,7 @@ export async function pullNetworkSharedContext(cid: string): Promise<string | nu
  * 对方收到链接 → 自动 joinNetwork → 拉取本机注册的服务.
  * opts.registry 可注入 (测试用), 默认单例.
  */
-export async function shareNetworkLink(opts?: { name?: string; registry?: AgentRegistry }): Promise<{ ok: boolean; link?: string; error?: string }> {
+export async function shareNetworkLink(opts?: { name?: string; meta?: NetworkBootstrap; registry?: AgentRegistry }): Promise<{ ok: boolean; link?: string; error?: string; note?: string }> {
   try {
     let registry = opts?.registry;
     if (!registry) {
@@ -418,8 +418,23 @@ export async function shareNetworkLink(opts?: { name?: string; registry?: AgentR
     if (!registry.ready || !registry.storeAddress) {
       return { ok: false, error: 'OrbitDB registry 未就绪 (离线模式). 备选: 把 registry 列表发布成 https://.../registry 端点分享' };
     }
-    const name = encodeURIComponent(String(opts?.name || registry.storeName || 'bolloon-network'));
-    return { ok: true, link: `orbitdb://${registry.storeAddress}?name=${name}` };
+    // ① 全量启动包: 把 networkId/名称/版本/容量/共享context CID 写进共享 store (尽力而为, 失败仍分享)
+    const networkId = opts?.meta?.networkId || registry.storeName;
+    const name = String(opts?.name || opts?.meta?.name || registry.storeName || 'bolloon-network');
+    const metaObj: NetworkBootstrap = {
+      networkId,
+      name,
+      version: opts?.meta?.version,
+      capacityOfMembers: opts?.meta?.capacityOfMembers,
+      sharedContextCid: opts?.meta?.sharedContextCid,
+    };
+    let note: string | undefined;
+    if (registry.writeMeta) {
+      const w = await registry.writeMeta(metaObj as Record<string, unknown>).catch(() => ({ ok: false, error: 'writeMeta 异常' }));
+      if (!w.ok) note = `meta 写共享库失败 (${w.error || '未知'}) — 读方仍可拉到服务, 但拿不到启动包`;
+    }
+    const encodedName = encodeURIComponent(name);
+    return { ok: true, link: `orbitdb://${registry.storeAddress}?name=${encodedName}`, note };
   } catch (e: any) {
     return { ok: false, error: `生成分享链接失败: ${String(e?.message || e).slice(0, 160)}` };
   }
