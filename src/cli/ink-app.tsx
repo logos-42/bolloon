@@ -317,12 +317,21 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const { stdout } = useStdout();
   const [termSize, setTermSize] = useState({ w: terminalW, h: terminalH });
   useEffect(() => {
+    // resizeCoalescer (#9): 拖拽终端时会连发 resize — 聚合到 80ms 空闲后一次性应用, 避免中间态跳帧
+    let raf: ReturnType<typeof setTimeout> | null = null;
+    let pending: { w: number; h: number } | null = null;
+    const apply = () => {
+      if (pending) { const p = pending; pending = null; setTermSize(p); }
+      raf = null;
+    };
     const update = () => {
-      setTermSize({ w: stdout?.columns || terminalW, h: stdout?.rows || terminalH });
+      pending = { w: stdout?.columns || terminalW, h: stdout?.rows || terminalH };
+      if (raf) clearTimeout(raf);
+      raf = setTimeout(apply, 80);
     };
     update();
     stdout?.on?.('resize', update);
-    return () => { stdout?.removeListener?.('resize', update); };
+    return () => { stdout?.removeListener?.('resize', update); if (raf) clearTimeout(raf); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stdout]);
   const W = termSize.w;
