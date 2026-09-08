@@ -16,7 +16,7 @@ import { sha512 } from '@noble/hashes/sha2.js';
 import * as fs from 'fs/promises';
 import { existsSync, mkdirSync } from 'fs';
 import * as path from 'path';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import * as os from 'os';
 import { documentReader } from './documents/reader.js';
 import { initMinimax } from './constraints/index.js';
@@ -573,6 +573,105 @@ function statusBarLine(): string {
   return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${buildContextBar(usage)}`;
 }
 
+// Hermes 类别集合 (用于从 bolloon 平铺目录名 `<category>-<skill>` 解析出类别, 最长前缀优先)
+const KNOWN_SKILL_CATS = new Set([
+  'apple', 'autonomous-ai-agents', 'creative', 'data-science', 'devops', 'email', 'general',
+  'github', 'hardware-design', 'math', 'media', 'mlops', 'network', 'note-taking',
+  'openclaw-imports', 'productivity', 'research', 'smart-home', 'social-media',
+  'software-development', 'web', 'turnstile-spin', 'web-perf', 'workers-best-practices',
+  'wrangler', 'yuanbao', 'paragraph-cli', 'bolloon-p2p-deployment', '维基 llm',
+]);
+function skillCatOf(name: string, firstFreq?: Map<string, number>): string {
+  const segs = name.split('-');
+  for (let k = Math.min(4, segs.length); k >= 1; k--) {
+    const cand = segs.slice(0, k).join('-');
+    if (KNOWN_SKILL_CATS.has(cand)) return cand;
+  }
+  const first = segs[0] || 'other';
+  // 主导前缀: 同一首 token 出现 >=5 次 → 视为真实类别 (自动发现 agent/python/github 等大类别)
+  if (firstFreq && (firstFreq.get(first) || 0) >= 5) return first;
+  return first;
+}
+
+/** 2026-09-08 (Hermes TUI 学习 + leo 规格): 启动会话面板 — 按 Hermes 样式展示 bolloon 启动加载的
+ *  skills (平铺 `<category>-<skill>` 目录): 每类别一行 (名称摘要 + '+N more'), 结尾 totals.
+ *  skills/tools 并行 (tools 2.5s 预算); 任一项失败静默省略. */
+async function bootPanel(): Promise<string[]> {
+  const lines: string[] = [];
+  const catNames = new Map<string, string[]>();
+
+  await Promise.all([
+    (async () => {
+      try {
+        const { loadSkillsDir, defaultSkillPaths } = await import('./agents/skill-loader.js');
+        const allNames: string[] = [];
+        for (const root of defaultSkillPaths()) {
+          const metas = await loadSkillsDir(root);
+          for (const m of metas) if (m.status !== 'archived') allNames.push(m.name);
+        }
+        // 首 token 频率 → 主导前缀当类别 (自动发现 agent/python/github 等)
+        const firstFreq = new Map<string, number>();
+        for (const n of allNames) {
+          const first = n.split('-')[0] || 'other';
+          firstFreq.set(first, (firstFreq.get(first) || 0) + 1);
+        }
+        for (const n of allNames) {
+          const cat = skillCatOf(n, firstFreq);
+          const arr = catNames.get(cat) || [];
+          if (!arr.includes(n)) arr.push(n);
+          catNames.set(cat, arr);
+        }
+      } catch { /* 省略 */ }
+    })(),
+    (async () => {
+      try {
+        const a = await Promise.race([
+          getAgent().catch(() => null),
+          new Promise<null>((res) => setTimeout(() => res(null), 2500)),
+        ]);
+        const tools = a && typeof (a as any).getToolList === 'function' ? (a as any).getToolList() : null;
+        if (tools && tools.length > 0) lines.push(`🔧 ${tools.length} tools`);
+      } catch { /* 省略 */ }
+    })(),
+    (async () => {
+      try {
+        const { getAdapterStatus } = await import('./pi-ecosystem-mcp/index.js');
+        const st = getAdapterStatus();
+        if (st.initialized && st.serverCount > 0) lines.push(`🔌 MCP ${st.serverCount} 服务器 · ${st.toolCount} tools`);
+      } catch { /* 省略 */ }
+    })(),
+  ]);
+
+  // 类别行 (Hermes 样式): `cat: name1, name2, name3, +N more` (每类最多列 6 名)
+  //   单实例类别并入 "other" — 避免成百"类"(只含 1 个 skill 的前缀碎片)
+  const normalized = new Map<string, string[]>();
+  for (const [cat, arr] of catNames) {
+    if (arr.length === 1) {
+      const o = normalized.get('other') || [];
+      o.push(arr[0]);
+      normalized.set('other', o);
+    } else {
+      normalized.set(cat, (normalized.get(cat) || []).concat(arr));
+    }
+  }
+  const sorted = [...normalized.entries()].sort((a, b) => b[1].length - a[1].length);
+  const total = sorted.reduce((s, [, arr]) => s + arr.length, 0);
+  for (const [cat, arr] of sorted.slice(0, 6)) {
+    const shown = arr.slice(0, 6);
+    const more = arr.length > shown.length ? `, +${arr.length - shown.length} more` : '';
+    lines.push(`${cat}: ${shown.join(', ')}${more}`);
+  }
+  if (sorted.length > 6) lines.push(`… 共 ${sorted.length} 类 (其余类别见 /skills)`);
+  lines.push(`⚡ ${total} skills · ${sorted.length} 类`, '');
+
+  try {
+    const branch = execSync('git rev-parse --abbrev-ref HEAD 2>/dev/null', { encoding: 'utf8', timeout: 1500 }).trim();
+    if (branch) lines.push(`⎇ ${branch}`);
+  } catch { /* 非 git 目录省略 */ }
+  try { lines.push(new Date().toLocaleTimeString('zh-CN', { hour12: false })); } catch { /* 忽略 */ }
+  return lines;
+}
+
 async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Promise<void> {
   isRunning = true;
 
@@ -667,10 +766,22 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
     _ctxManagerRef = await import('./bootstrap/context-manager.js');
   } catch { /* 降级: getCliCtxUsage 返回 0/1M */ }
   const initialStatus = `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ 0s${C_DIM} │${RESET} ${buildContextBar(getCliCtxUsage())}`;
+  // 2026-09-08 (leo 规格): 图标下元信息层数据 — 目录(home→~) / 模型 / Session id (Hermes 风格: YYYYMMDD_HHMMSS_xxxx)
+  const bootDirShort = process.cwd().replace(os.homedir(), '~');
+  const bootSessionId = (() => {
+    const d = new Date(cliStartTime);
+    const p = (n: number, l = 2) => String(n).padStart(l, '0');
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_${Math.random().toString(16).slice(2, 8)}`;
+  })();
   startInk(
     (text: string) => { processInput(text, comm); },
     initialStatus,
     getStatus,
+    {
+      bootDir: bootDirShort,
+      bootModel: cliModelName && cliModelName !== '…' ? cliModelName : undefined,
+      bootSession: bootSessionId,
+    },
   );
 
   // 2026-08-10: 自动整理心跳 (CLI 侧, 与社交心跳并列) — 启动后立即"固定看一下 skills view"
@@ -759,6 +870,9 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
     // 启动延迟一轮, 避开启动峰值
     setTimeout(() => { cronScheduler.tick().catch(() => {}); }, 15_000);
   } catch { /* cron 调度启动失败不阻塞 CLI */ }
+
+  // 2026-09-08 (Hermes TUI 学习): 启动会话面板 — skills 类别 / tools / MCP / 分支 / 时间 (异步, 不阻塞)
+  void bootPanel().then((ls) => { for (const l of ls) appendLine(l); }).catch(() => {});
 
   // Wait on a promise that resolves on Ctrl+C / 双击 Esc
   // (ink-app 的 requestExit 调 __inkRequestExit → resolve, 清理后 process.exit)

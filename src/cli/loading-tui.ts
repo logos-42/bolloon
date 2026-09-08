@@ -522,7 +522,9 @@ export interface LoadingStep {
   status: LoadingStepStatus;
 }
 
-const FRAMES = ['(｀・ω・´)', '(´･_･`)', '(｡•́︿•̀｡)', 'ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ', '(◕‿◕)', 'ヽ(´▽｀)/'];
+// 2026-09-08 (Hermes TUI 学习): 帧序列单一来源 — loading-tui 导出, ink-app 思考动画复用,
+//   原来两份拷贝 (FRAMES / KAOMOJI) 会漂移.
+export const LOADING_FRAMES = ['(｀・ω・´)', '(´･_･`)', '(｡•́︿•̀｡)', 'ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ', '(◕‿◕)', 'ヽ(´▽｀)/'];
 
 export class LoadingTUI {
   private write: (chunk: any, ...args: any[]) => boolean;
@@ -532,7 +534,6 @@ export class LoadingTUI {
   private currentLabel = 'Bolloon loading...';
   private finished = false;
   private ok = true;
-  private width = 0;
 
   constructor() {
     this.write = process.stdout.write.bind(process.stdout);
@@ -557,7 +558,9 @@ export class LoadingTUI {
   }
 
   private draw(showSpinner: boolean): void {
-    const w = this.width || (this.width = this.computeWidth());
+    // 2026-09-08 (Hermes TUI 学习): 每次 draw 实时算宽度 — 原首次缓存 (this.width),
+    //   启动过程中 resize 终端 → 仪表盘整框错位; computeWidth 每次成本可忽略
+    const w = this.computeWidth();
     const out: string[] = [];
     out.push(boxTop('Bolloon Agent · 启动仪表盘', w));
     for (const l of brandArtLines()) out.push(boxRow(l, w, 'center'));
@@ -565,7 +568,7 @@ export class LoadingTUI {
       out.push(boxRow(`${STATUS_SYMBOL[step.status]} ${step.label}`, w));
     }
     if (showSpinner) {
-      const sp = C_WARN + FRAMES[this.frameIdx % FRAMES.length] + RESET;
+      const sp = C_WARN + LOADING_FRAMES[this.frameIdx % LOADING_FRAMES.length] + RESET;
       out.push(boxRow(`${sp} ${this.currentLabel}`, w));
     } else {
       out.push(boxRow(`${STATUS_SYMBOL.ok} Bolloon ready`, w));
@@ -578,7 +581,6 @@ export class LoadingTUI {
 
   setSteps(steps: string[]) {
     this.steps = steps.map(label => ({ label, status: 'pending' as LoadingStepStatus }));
-    this.width = 0;
     if (this.timer) this.draw(true);
   }
 

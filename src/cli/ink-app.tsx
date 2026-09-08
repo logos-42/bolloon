@@ -10,7 +10,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
-import { brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './loading-tui.js';
+import { brandArtLines, boxTop, boxRow, boxBottom, dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
 import {
   loadAgents,
@@ -109,9 +109,13 @@ interface InkAppProps {
   getStatusUpdate: () => string;
   terminalW: number;
   terminalH: number;
+  // 2026-09-08: 图标下元信息层 (leo 规格: 目录位置 + 模型名 + 会话, 暗层次; 模型名 bolloon 亮色)
+  bootDir?: string;
+  bootModel?: string;
+  bootSession?: string;
 }
 
-const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdate, terminalW, terminalH }) => {
+const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdate, terminalW, terminalH, bootDir, bootModel, bootSession }) => {
   const [input, setInput] = useState('');
   // 2026-08-07: inputRef 同步镜像 input — useInput 回调拿最新值 (闭包里的 input 是陈旧的)
   const inputRef = useRef('');
@@ -547,8 +551,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     });
   }, [popupOpen, mentionKey, filtered]);
 
-  // 思考动画 — kaomoji 旋转
-  const KAOMOJI = ['(｀・ω・´)', '(´･_･`)', '(｡•́︿•̀｡)', 'ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ', '(◕‿◕)'];
+  // 思考动画 — kaomoji 旋转 (帧序列单一来源: loading-tui LOADING_FRAMES, 2026-09-08)
   useEffect(() => {
     if (!thinking) return;
     const timer = setInterval(() => {
@@ -562,6 +565,19 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       {/* 内容区: 置顶 */}
       <Box flexGrow={1} flexDirection="column" justifyContent="flex-start">
         <LogoBox width={W} />
+        {/* 2026-09-08 (leo 规格): 图标下元信息层 — 目录位置 + 模型名 + 会话号, 暗层次;
+            模型名用 bolloon 亮色 #c4d640 (次要层不抢首屏, 信息可扫读) */}
+        {(bootDir || bootModel || bootSession) && (
+          <Box>
+            <Text color="#606058">
+              {bootDir ? `📁 ${bootDir} · ` : ''}
+            </Text>
+            {bootModel ? <Text bold color="#c4d640">{bootModel}</Text> : null}
+            <Text color="#606058">
+              {bootSession ? ` · Session: ${bootSession}` : ''}
+            </Text>
+          </Box>
+        )}
         <Messages msgs={msgs} />
         {thinking && (
           <Box>
@@ -643,6 +659,7 @@ export function startInk(
   onPrompt: (text: string) => void,
   initialStatus: string,
   getStatusUpdate: () => string,
+  meta?: { bootDir?: string; bootModel?: string; bootSession?: string },
 ): void {
   const tw = process.stdout.columns || 80;
   const th = process.stdout.rows || 24;
@@ -654,6 +671,9 @@ export function startInk(
       getStatusUpdate={getStatusUpdate}
       terminalW={tw}
       terminalH={th}
+      bootDir={meta?.bootDir}
+      bootModel={meta?.bootModel}
+      bootSession={meta?.bootSession}
     />,
     {
       stdout: process.stdout,
