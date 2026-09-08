@@ -63,3 +63,7 @@ workers/.dev.vars
 accounts.json
 buildlog.txt
 hs_err_pid*.log
+
+# Foundry (ResourceERC721 contract tests)
+contracts/out/
+contracts/cache/

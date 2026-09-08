@@ -102,9 +102,10 @@ contract ResourceERC721Test is Test {
 
     function testTransferNotFromReverts() public {
         erc.mint(alice, 1, "a");
-        vm.prank(bob);
+        // from != 当前 owner → 第一个 require 失败 "not from"
+        vm.prank(alice);
         vm.expectRevert(bytes("not from"));
-        erc.safeTransferFrom(alice, bob, 1);
+        erc.safeTransferFrom(bob, carol, 1);
     }
 
     function testTransferUnauthorizedReverts() public {
@@ -131,7 +132,7 @@ contract ResourceERC721Test is Test {
         erc.mint(alice, 1, "cid-x");
         vm.prank(alice);
         erc.safeTransferFrom(alice, bob, 1);
-        assertEq(erc.tokenURI(1), "cid-x", "CID 随 token 流转, 不可变");
+        assertEq(erc.tokenURI(1), "cid-x", "CID persists across transfer, immutable");
     }
 
     // ── 事件 ──────────────────────────────────────────────
