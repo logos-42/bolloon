@@ -15,6 +15,7 @@ import type { ToolCallListItem } from './loading-tui.js';
 import { THEME, fg } from './theme.js';
 import { COMPOSER_PLACEHOLDER, CHAR_EXIT_HINT, POPUP_TITLE_TAB, POPUP_TITLE_AGENT, POPUP_TITLE_FILE, POPUP_TITLE_COMMAND } from './content.js';
 import { DOUBLE_ESC_MS, STATUS_TICK_MS, THINK_FRAME_MS } from './timing.js';
+import { useStore, transcriptStore, uiStore, appendMsg, replaceLastMsg, replaceMarkerMsg, setUiStatus, setUiThinking, setUiTransient } from './stores.js';
 import {
   loadAgents,
   loadCommands,
@@ -116,14 +117,13 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, [input]);
   // 2026-08-07: 提交防重 (InkApp \n/\r 兜底 + TextInput 双触发场景)
   const lastSubmitRef = useRef({ t: 0, v: '' });
-  const [msgs, setMsgs] = useState<string[]>([]);
-  const [status, setStatus] = useState(initialStatus);
+  const msgs = useStore(transcriptStore);        // #2 状态外置: transcript 来自外部 store
+  const ui = useStore(uiStore);                  // #2 status/thinking/transient 外置
+  const status = ui.status || initialStatus;
+  const thinking = ui.thinking;
+  const transient = ui.transient;
   const { exit } = useApp();
 
-  const [thinking, setThinking] = useState(false);
-  // 2026-08-10: 临时状态行 (自动整理心跳/run-end 经验整理用) — 显示在颜文字行位置,
-  //   结束后设 null 即清空 (显示为空). 不进入消息历史, 不会残留显示效果.
-  const [transient, setTransient] = useState<string | null>(null);
   // 虚拟化滚动: 行窗口 top + 是否跟随底部 (用户上滚后自动跟随关闭, End 恢复)
   const [scrollTop, setScrollTop] = useState(0);
   const stickRef = useRef(true);
@@ -326,38 +326,16 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     // 2026-08-06: 防御 — 某些环境 (tsx/完整 CLI 初始化) 下 stdin 会处于 paused,
     // 不恢复则 useInput 收不到任何输入 (实测 isPaused=true, listeners=0)
     if ((process.stdin as any).isPaused()) (process.stdin as any).resume();
-    (globalThis as any).__inkSetThinking = (v: boolean) => setThinking(v);
-    (globalThis as any).__inkAppend = (line: string) => {
-      setMsgs(prev => [...prev, line]);
-    };
-    (globalThis as any).__inkSetStatus = (s: string) => {
-      setStatus(s);
-    };
+    (globalThis as any).__inkSetThinking = (v: boolean) => setUiThinking(v);
+    (globalThis as any).__inkAppend = (line: string) => appendMsg(line);
+    (globalThis as any).__inkSetStatus = (s: string) => setUiStatus(s);
     // 2026-08-10: 临时状态行 (自动整理/经验整理): 传字符串显示, 传 null 清空 (显示为空)
-    (globalThis as any).__inkSetTransient = (v: string | null) => {
-      setTransient(v === undefined ? null : v);
-    };
-    // 2026-08-12 (Task4): 原地替换最后一条消息 (命令加载态 → 完成态用).
-    //   不命中则追加 (兼容旧逻辑).
-    (globalThis as any).__inkReplaceLast = (line: string) => {
-      setMsgs(prev => {
-        if (prev.length === 0) return [...prev, line];
-        const next = prev.slice();
-        next[next.length - 1] = line;
-        return next;
-      });
-    };
+    (globalThis as any).__inkSetTransient = (v: string | null) => setUiTransient(v);
+    // 2026-08-12 (Task4): 原地替换最后一条消息 (命令加载态 → 完成态用). 不命中则追加.
+    (globalThis as any).__inkReplaceLast = (line: string) => replaceLastMsg(line);
     // 2026-09-08: 按内容匹配替换 — 占位框可能在 P2P/连接消息之后才被替换,
     //   __inkReplaceLast 会覆盖错一条; 用字符串标记精确定位要替换的消息.
-    (globalThis as any).__inkReplaceMatching = (marker: string, line: string) => {
-      setMsgs(prev => {
-        const i = prev.indexOf(marker);
-        if (i < 0) return prev;
-        const next = prev.slice();
-        next[i] = line;
-        return next;
-      });
-    };
+    (globalThis as any).__inkReplaceMatching = (marker: string, line: string) => replaceMarkerMsg(marker, line);
     return () => {
       delete (globalThis as any).__inkAppend;
       delete (globalThis as any).__inkSetStatus;
@@ -550,12 +528,12 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     // 挂载时立即同步刷新一次状态栏 (不等 1s 后第一个 tick)
     try {
       const s0 = getStatusUpdate();
-      if (s0) setStatus(s0);
+      if (s0) setUiStatus(s0);
     } catch { /* 状态栏更新失败不致命 */ }
     const timer = setInterval(() => {
       try {
         const s = getStatusUpdate();
-        if (s) setStatus(s);
+        if (s) setUiStatus(s);
       } catch { /* 状态栏更新失败不致命 */ }
     }, STATUS_TICK_MS);
     return () => clearInterval(timer);
@@ -728,20 +706,17 @@ export function stopInk(): void {
 }
 
 export function inkAppendLine(line: string): void {
-  const fn = (globalThis as any).__inkAppend;
-  if (fn) fn(line);
+  appendMsg(line);
 }
 
 /** 2026-08-12 (Task4): 原地替换最后一条消息 (命令加载态 → 完成态). 无消息时追加. */
 export function inkReplaceLastLine(line: string): void {
-  const fn = (globalThis as any).__inkReplaceLast;
-  if (fn) fn(line);
+  replaceLastMsg(line);
 }
 
 /** 2026-09-08: 按内容标记原地替换一条消息 (占位框 → 启动面板完整内容). */
 export function inkReplaceMatchingLine(marker: string, line: string): void {
-  const fn = (globalThis as any).__inkReplaceMatching;
-  if (fn) fn(marker, line);
+  replaceMarkerMsg(marker, line);
 }
 
 export function inkSetStatus(s: string): void {
@@ -750,12 +725,10 @@ export function inkSetStatus(s: string): void {
 }
 
 export function inkSetThinking(v: boolean): void {
-  const fn = (globalThis as any).__inkSetThinking;
-  if (fn) fn(v);
+  setUiThinking(v);
 }
 
 /** 2026-08-10: 设置/清除临时状态行 (自动整理/经验整理). 传 null 清空 → 显示为空 */
 export function inkSetTransient(v: string | null): void {
-  const fn = (globalThis as any).__inkSetTransient;
-  if (fn) fn(v);
+  setUiTransient(v);
 }
