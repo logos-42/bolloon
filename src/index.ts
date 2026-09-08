@@ -25,9 +25,9 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
-import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
+import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, ROBOT_HEAD, BOLLOON_BANNER, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
-import { startInk, stopInk, inkAppendLine as appendLine, inkSetStatus, inkSetThinking, inkSetTransient } from './cli/ink-app.js';
+import { startInk, stopInk, inkAppendLine as appendLine, inkReplaceMatchingLine, inkSetStatus, inkSetThinking, inkSetTransient } from './cli/ink-app.js';
 import * as dbgFs from 'fs';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
@@ -577,8 +577,27 @@ function statusBarLine(): string {
  * 启动会话面板 — 按类别展示启动加载的 skills (真实类别 = 目录名去掉 frontmatter.name 后缀),
  * 每类一行 (前 6 名 + '+N more'), 结尾 totals; skills/tools 并行 (各 2.5s 预算), 失败静默.
  */
+/** 启动面板框: BOLLOON 字标 logo 顶部居中 → 下方两栏 = face 艺术字(左) + 加载内容(右) */
+function buildBootBox(face: string[], banner: string[], rest: string[]): string {
+  const faceW = Math.max(1, ...face.map((l) => dispWidth(l)));
+  const bannerMax = Math.max(1, ...banner.map((l) => dispWidth(l)));
+  const restMax = Math.max(1, ...rest.map((l) => dispWidth(l)));
+  const gap = 4;
+  const twoColW = faceW + gap + restMax;
+  const contentW = Math.max(bannerMax + 8, twoColW);
+  const center = (rows: string[]) => rows.map((l) => ' '.repeat(Math.max(0, Math.floor((contentW - dispWidth(l)) / 2))) + l);
+  const n = rest.length;
+  const fStart = Math.max(0, Math.floor((n - face.length) / 2)); // face 列对内容垂直居中 = 等高
+  const twoCol = rest.map((r, i) => {
+    const f = (i >= fStart && i < fStart + face.length) ? face[i - fStart] : null;
+    const fpart = f ? `${f}${' '.repeat(Math.max(0, faceW - dispWidth(f)) + gap)}` : ' '.repeat(faceW + gap);
+    return fpart + r;
+  });
+  const body = [...center(banner), '', ...twoCol];
+  return renderMessageBox({ title: '🚀 Bolloon · 启动面板', body: body.join('\n'), color: C_ACCENT, maxLines: 0 });
+}
+
 async function bootPanel(boot: { dir?: string; model?: string; session?: string }): Promise<string | null> {
-  const lines: string[] = [];
   const sub: string[] = []; // tools / MCP (Promise.all 里填充, 最后统一排到类别下方)
   const catNames = new Map<string, string[]>();
 
@@ -628,11 +647,16 @@ async function bootPanel(boot: { dir?: string; model?: string; session?: string 
     })(),
   ]);
 
+  // 栈式布局: face 艺术字居中 → BOLLOON 字标 logo 在其下 → 内容左对齐
+  const art = ROBOT_HEAD;
+  const banner = BOLLOON_BANNER.split('\n');
+
   // 头: 目录 / 模型 / Session (预先加载信息)
-  if (boot.dir) lines.push(`📁 ${boot.dir}`);
-  if (boot.model) lines.push(`模型 ${boot.model}`);
-  if (boot.session) lines.push(`Session: ${boot.session}`);
-  lines.push('');
+  const rest: string[] = [];
+  if (boot.dir) rest.push(`📁 ${boot.dir}`);
+  if (boot.model) rest.push(`模型 ${boot.model}`);
+  if (boot.session) rest.push(`Session: ${boot.session}`);
+  rest.push('');
 
   // 类别行 (全部展开, 不截断类别; 每类列前 8 名 + '+N more') — 单一实例归 other
   const normalized = new Map<string, string[]>();
@@ -650,19 +674,22 @@ async function bootPanel(boot: { dir?: string; model?: string; session?: string 
   for (const [cat, arr] of sorted) {
     const shown = arr.slice(0, 8);
     const more = arr.length > shown.length ? `, +${arr.length - shown.length} more` : '';
-    lines.push(`${cat}: ${shown.join(', ')}${more}`);
+    rest.push(`${cat}: ${shown.join(', ')}${more}`);
   }
-  lines.push(`⚡ ${total} skills · ${sorted.length} 类`, '');
-  if (sub.length) lines.push(...sub, '');
+  rest.push(`⚡ ${total} skills · ${sorted.length} 类`, '');
+  if (sub.length) rest.push(...sub, '');
+  // 自动整理 (经验/技能整理心跳) 模式并入面板
+  rest.push(`🧹 经验自动整理: 启动后每 30min 一次`);
 
   try {
     const branch = execSync('git rev-parse --abbrev-ref HEAD 2>/dev/null', { encoding: 'utf8', timeout: 1500 }).trim();
-    if (branch) lines.push(`⎇ ${branch}`);
+    if (branch) rest.push(`⎇ ${branch}`);
   } catch { /* 非 git 目录省略 */ }
-  try { lines.push(new Date().toLocaleTimeString('zh-CN', { hour12: false })); } catch { /* 忽略 */ }
-  if (lines.length <= 3) return null;
-  // 大框 (Hermes 会话面板样式): 标题 + 全部内容, 不截断 (maxLines=0)
-  return renderMessageBox({ title: '🚀 Bolloon · 启动面板', body: `${lines.join('\n')}`, color: C_ACCENT, maxLines: 0 });
+  try { rest.push(new Date().toLocaleTimeString('zh-CN', { hour12: false })); } catch { /* 忽略 */ }
+  if (rest.length <= 3) return null;
+
+  // 启动面板框: BOLLOON 字标 logo 顶部居中 → 下方两栏 = face 艺术字(左) + skills/信息(右)
+  return buildBootBox(art, banner, rest);
 }
 
 async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Promise<void> {
@@ -673,18 +700,29 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
   let comm: HyperswarmCommunicator | null = null as HyperswarmCommunicator | null;
   commReady.then((c) => { comm = c; }).catch(() => {});
 
-  // CLI 模式下静音所有 console.log/warn
-  // (Ink 用自己的 render 引擎, console.log 输出会污染终端)
+  // CLI 模式下静音所有 console.log/warn/info/debug
+  // (Ink 用自己的 render 引擎, console 输出会污染终端)
   console.log = () => {};
   console.warn = () => {};
-  // 同时过滤 process.stdout.write — 阻止 [xxx] 前缀的输出
+  console.info = () => {};
+  console.debug = () => {};
+  // 过滤 process.stdout/stderr.write — 丢弃启动期 SDK/后台日志
+  //   (ISO 时间戳前缀如 `2026-09-08T...Z [info]:` 或被 [info]/[warn]/[error] 标记的行)
   const _origStdout = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((chunk: any, ...rest: any[]) => {
+  const _origStderr = process.stderr.write.bind(process.stderr);
+  const isLogLine = (line: string) => {
+    const t = line.trimStart();
+    return t.startsWith('[') || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(t) || /\[\s*(info|warn|error|debug|log)\s*\]/.test(t);
+  };
+  const wrap = (orig: (b: any, ...r: any[]) => boolean) => (chunk: any, ...rest: any[]) => {
     const s = typeof chunk === 'string' ? chunk : String(chunk);
-    // 过滤以 [ 开头的行 (agent 内部日志)
-    if (s.trimStart().startsWith('[')) return true;
-    return _origStdout(chunk, ...rest);
-  }) as any;
+    if (!isLogLine(s)) return orig(chunk, ...rest);
+    const keep = s.split('\n').filter((l) => !isLogLine(l)).join('\n');
+    if (keep) orig(keep, ...rest);
+    return true;
+  };
+  process.stdout.write = wrap(_origStdout) as any;
+  process.stderr.write = wrap(_origStderr) as any;
 
   let peerCount = 0;
   void commReady.then((c) => { try { if (c) peerCount = c.getConnections().length; } catch { /* */ } });
@@ -770,11 +808,6 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
     (text: string) => { processInput(text, comm); },
     initialStatus,
     getStatus,
-    {
-      bootDir: bootDirShort,
-      bootModel: cliModelName && cliModelName !== '…' ? cliModelName : undefined,
-      bootSession: bootSessionId,
-    },
   );
 
   // 2026-08-10: 自动整理心跳 (CLI 侧, 与社交心跳并列) — 启动后立即"固定看一下 skills view"
@@ -864,9 +897,17 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
     setTimeout(() => { cronScheduler.tick().catch(() => {}); }, 15_000);
   } catch { /* cron 调度启动失败不阻塞 CLI */ }
 
-  // 启动会话面板 (大框): 预先加载内容 — skills 全类别 / tools / MCP / 模型 / 目录 / Session / 分支 / 时间
+  // 启动会话面板 (大框): 栈式 = face 艺术字居中 + BOLLOON 字标 logo 在其下 + 预设信息(skills/工具/模型/目录/Session/分支/时间)
+  //   先立即渲染「艺术字 + logo + 正在加载...」, bootPanel 就绪后 inkReplaceMatchingLine 按标记原位替换为完整内容
+  //   (用匹配替换而非 replaceLast — P2P/连接消息可能先于 bootPanel 追加, replaceLast 会覆盖错一条)
+  const bootBox = buildBootBox(ROBOT_HEAD, BOLLOON_BANNER.split('\n'), [
+    `${bootDirShort}  ·  ${(cliModelName && cliModelName !== '…') ? cliModelName : ''}  ·  Session: ${bootSessionId}`,
+    '',
+    '⟳ 正在加载技能 / 工具...',
+  ]);
+  appendLine(bootBox);
   void bootPanel({ dir: bootDirShort, model: (cliModelName && cliModelName !== '…') ? cliModelName : undefined, session: bootSessionId })
-    .then((box) => { if (box) appendLine(box); }).catch(() => {});
+    .then((box) => { if (box) inkReplaceMatchingLine(bootBox, box); }).catch(() => {});
 
   // Wait on a promise that resolves on Ctrl+C / 双击 Esc
   // (ink-app 的 requestExit 调 __inkRequestExit → resolve, 清理后 process.exit)

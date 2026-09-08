@@ -10,7 +10,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
-import { brandArtLines, boxTop, boxRow, boxBottom, dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
+import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
 import { THEME, fg } from './theme.js';
 import { COMPOSER_PLACEHOLDER, CHAR_EXIT_HINT, POPUP_TITLE_TAB, POPUP_TITLE_AGENT, POPUP_TITLE_FILE, POPUP_TITLE_COMMAND } from './content.js';
@@ -25,22 +25,6 @@ import {
   matchFileScore,
   type MentionItem,
 } from './mention-data.js';
-
-// ─── 组件: Logo Box ──────────────────────────────────────────────────────────
-
-const LogoBox: React.FC<{ width: number }> = ({ width }) => {
-  const art = brandArtLines();
-  const mw = Math.max(40, ...art.map(l => dispWidth(l))) + 4;
-  const bw = Math.min(width - 2, mw);
-  const rows: string[] = [boxTop('Bolloon Agent', bw)];
-  for (const l of art) rows.push(boxRow(l, bw, 'center'));
-  rows.push(boxBottom(bw));
-  return (
-    <Box flexDirection="column">
-      {rows.map((r, i) => <Text key={i}>{r}</Text>)}
-    </Box>
-  );
-};
 
 // ─── 组件: 消息列表 ──────────────────────────────────────────────────────────
 
@@ -121,13 +105,9 @@ interface InkAppProps {
   getStatusUpdate: () => string;
   terminalW: number;
   terminalH: number;
-  // 2026-09-08: 图标下元信息层 (leo 规格: 目录位置 + 模型名 + 会话, 暗层次; 模型名 bolloon 亮色)
-  bootDir?: string;
-  bootModel?: string;
-  bootSession?: string;
 }
 
-const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdate, terminalW, terminalH, bootDir, bootModel, bootSession }) => {
+const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdate, terminalW, terminalH }) => {
   const [input, setInput] = useState('');
   // 2026-08-07: inputRef 同步镜像 input — useInput 回调拿最新值 (闭包里的 input 是陈旧的)
   const inputRef = useRef('');
@@ -367,6 +347,17 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         return next;
       });
     };
+    // 2026-09-08: 按内容匹配替换 — 占位框可能在 P2P/连接消息之后才被替换,
+    //   __inkReplaceLast 会覆盖错一条; 用字符串标记精确定位要替换的消息.
+    (globalThis as any).__inkReplaceMatching = (marker: string, line: string) => {
+      setMsgs(prev => {
+        const i = prev.indexOf(marker);
+        if (i < 0) return prev;
+        const next = prev.slice();
+        next[i] = line;
+        return next;
+      });
+    };
     return () => {
       delete (globalThis as any).__inkAppend;
       delete (globalThis as any).__inkSetStatus;
@@ -596,10 +587,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, [thinking]);
 
   // ── 虚拟化 transcript (消息级窗口 + 自动跟随底部) ───────────────────────────
-  // chrome 预留行 = 分隔线×3 + 状态栏 + 输入栏 + logo(boxTop/艺术字/boxBottom) + 元信息行
-  const logoRows = brandArtLines().length + 2;
-  const metaRows = (bootDir || bootModel || bootSession) ? 1 : 0;
-  const availH = Math.max(6, termSize.h - (5 + logoRows + metaRows));
+  // chrome 预留行 = 分隔线×3 + 状态栏 + 输入栏 (艺术字/元信息已并入启动面板框, 不再占顶行)
+  const availH = Math.max(6, termSize.h - 5);
   const heights = useMemo(() => msgs.map(m => msgVisualLines(m, W)), [msgs, W]);
   const cumulative = useMemo(() => {
     const c = [0];
@@ -619,21 +608,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
   return (
     <Box flexDirection="column" height="100%">
-      {/* 内容区: 置顶 */}
+      {/* 内容区: 置顶 (艺术字+元信息已合并进启动面板框, 即 msgs 首条) */}
       <Box flexGrow={1} flexDirection="column" justifyContent="flex-start">
-        <LogoBox width={W} />
-        {/* 2026-09-08 (leo 规格): 图标下元信息层 — 目录位置 + 模型名 + 会话号, 暗层次;
-            模型名用 bolloon 亮色 #c4d640 (次要层不抢首屏, 信息可扫读) */}
-        {(bootDir || bootModel || bootSession) && (
-          <Box>
-            {/* 单 Text 内嵌套着色 — 避免兄弟元素间的空白文本节点 (Ink reconciler 会抛) */}
-            <Text color={THEME.muted}>
-              {bootDir ? `📁 ${bootDir} · ` : ''}
-              {bootModel ? <Text bold color={THEME.accent}>{bootModel}</Text> : null}
-              {bootSession ? ` · Session: ${bootSession}` : ''}
-            </Text>
-          </Box>
-        )}
         <Messages msgs={visible} />
         {scrolledOut && (
           <Text color={THEME.muted}>
@@ -720,7 +696,6 @@ export function startInk(
   onPrompt: (text: string) => void,
   initialStatus: string,
   getStatusUpdate: () => string,
-  meta?: { bootDir?: string; bootModel?: string; bootSession?: string },
 ): void {
   const tw = process.stdout.columns || 80;
   const th = process.stdout.rows || 24;
@@ -732,9 +707,6 @@ export function startInk(
       getStatusUpdate={getStatusUpdate}
       terminalW={tw}
       terminalH={th}
-      bootDir={meta?.bootDir}
-      bootModel={meta?.bootModel}
-      bootSession={meta?.bootSession}
     />,
     {
       stdout: process.stdout,
@@ -762,6 +734,12 @@ export function inkAppendLine(line: string): void {
 export function inkReplaceLastLine(line: string): void {
   const fn = (globalThis as any).__inkReplaceLast;
   if (fn) fn(line);
+}
+
+/** 2026-09-08: 按内容标记原地替换一条消息 (占位框 → 启动面板完整内容). */
+export function inkReplaceMatchingLine(marker: string, line: string): void {
+  const fn = (globalThis as any).__inkReplaceMatching;
+  if (fn) fn(marker, line);
 }
 
 export function inkSetStatus(s: string): void {

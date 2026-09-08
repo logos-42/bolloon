@@ -17,7 +17,8 @@ describe('ink7 + react19 smoke', () => {
       })
     );
     expect(out).toContain('test-status');
-    expect(out).toContain('Bolloon Agent');
+    // 2026-09-08: LogoBox 已移除 (艺术字并入启动面板框, 由 index 侧 appendLine 追加) — 断言分隔线替代
+    expect(out).toContain('─');
     expect(out).toContain('输入消息');
     expect(out).toBeTruthy();
   });
