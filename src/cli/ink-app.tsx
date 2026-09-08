@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { render, Box, Text, useInput, useApp } from 'ink';
+import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import { brandArtLines, boxTop, boxRow, boxBottom, dispWidth } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
@@ -41,14 +41,17 @@ const LogoBox: React.FC<{ width: number }> = ({ width }) => {
 
 // ─── 组件: 消息列表 ──────────────────────────────────────────────────────────
 
-const Messages: React.FC<{ msgs: string[] }> = ({ msgs }) => (
+// 2026-09-08 (Hermes TUI 学习落地): React.memo — msgs 引用不变时跳过重渲染。
+//   之前状态栏每秒 tick (setStatus) 会让整个消息列表每帧重绘, 长会话明显掉帧;
+//   append 只改 msgs 引用, memo 后仅新增行渲染。
+const Messages: React.FC<{ msgs: string[] }> = React.memo(({ msgs }) => (
   <Box flexDirection="column" flexGrow={1} justifyContent="flex-start">
     {msgs.map((m, i) => {
       const clean = m.replace(/\x1b\[[0-9;]*m/g, '');
       return clean.trim() ? <Text key={i}>{clean ? m : ''}</Text> : null;
     })}
   </Box>
-);
+));
 
 // ─── 组件: 弹出选择窗 ────────────────────────────────────────────────────────
 
@@ -303,6 +306,22 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
   const [tiKey, setTiKey] = useState(0);
 
+  // 2026-09-08 (Hermes TUI 学习落地): 实时终端尺寸 — 原来 terminalW/H 在 mount 时冻结,
+  //   终端 resize 后分隔线/logo 宽度全错位 (Hermes 用 resizeCoalescer + 实时 layout)。
+  //   订阅 stdout resize, 每次渲染用最新列数。
+  const { stdout } = useStdout();
+  const [termSize, setTermSize] = useState({ w: terminalW, h: terminalH });
+  useEffect(() => {
+    const update = () => {
+      setTermSize({ w: stdout?.columns || terminalW, h: stdout?.rows || terminalH });
+    };
+    update();
+    stdout?.on?.('resize', update);
+    return () => { stdout?.removeListener?.('resize', update); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stdout]);
+  const W = termSize.w;
+
   // 全局: 思考动画控制
   useEffect(() => {
     // 2026-08-06: 防御 — 某些环境 (tsx/完整 CLI 初始化) 下 stdin 会处于 paused,
@@ -542,7 +561,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     <Box flexDirection="column" height="100%">
       {/* 内容区: 置顶 */}
       <Box flexGrow={1} flexDirection="column" justifyContent="flex-start">
-        <LogoBox width={terminalW} />
+        <LogoBox width={W} />
         <Messages msgs={msgs} />
         {thinking && (
           <Box>
@@ -559,7 +578,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
       {/* 分隔线 (全宽, bolloon 色系 #c4d640) */}
       <Box>
-        <Text bold color="#c4d640">{'─'.repeat(terminalW)}</Text>
+        <Text bold color="#c4d640">{'─'.repeat(W)}</Text>
       </Box>
 
       {/* 状态栏 */}
@@ -569,7 +588,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
       {/* 输入栏分隔线 (全宽, bolloon 色系 #c4d640) */}
       <Box>
-        <Text bold color="#c4d640">{'─'.repeat(terminalW)}</Text>
+        <Text bold color="#c4d640">{'─'.repeat(W)}</Text>
       </Box>
 
       {/* 弹出选择窗 (输入栏上方, 弹出页) */}
@@ -578,7 +597,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
           title={popupTitle}
           items={filtered}
           sel={safeSel}
-          width={terminalW}
+          width={W}
           loading={loadingFiles}
         />
       )}
@@ -589,7 +608,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
           title={picker.title}
           items={picker.items}
           sel={Math.min(picker.sel, picker.items.length - 1)}
-          width={terminalW}
+          width={W}
         />
       )}
 
@@ -608,7 +627,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
       {/* 底部分界线 (全宽, bolloon 色系 #c4d640) */}
       <Box>
-        <Text bold color="#c4d640">{'─'.repeat(terminalW)}</Text>
+        <Text bold color="#c4d640">{'─'.repeat(W)}</Text>
       </Box>
     </Box>
   );

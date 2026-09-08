@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-08 | docs | Hermes TUI 设计学习 → bolloon 落地两项: ① React.memo(Messages) — 状态栏每秒 tick 不再触发整条消息列表重绘 (长会话掉帧源); ② 实时终端尺寸 (useStdout + resize 订阅, 原 mount 冻结导致 resize 后分隔线/logo 错位). 路线图见回复: 虚拟化 transcript / theme token 化 / 状态 store 化 / markdown 流式 | [ink-app.tsx](../../src/cli/ink-app.tsx) |
 | 2026-09-08 | chore | 发布 v0.4.17 (npm): CLI 启动加速 (交互模式 P2P/iroh/bootstrap 全后台, UI 直接渲染, 首帧 ~4.7s vs 旧 15-55s) + 0-warning 依赖手术闭环 (@x402 15 死依赖剪除 v0.4.16 + @diap/sdk@0.2.5 + constraint-runtime@0.1.1) — 消费者全新安装实测 warnings=0 | [index.ts](../../src/index.ts) / [package.json](../../package.json) |
 | 2026-09-08 | chore | 发布 v0.4.16 (npm): 移除 @x402/* 15 个死依赖 (代码仅用 core/evm/fetch) → 安装 ERESOLVE/EBADENGINE/wallet 系 deprecated 全消失 | [package.json](../../package.json) |
 | 2026-09-08 | chore | 发布 v0.4.15 (npm): 含 js-yaml@5 ESM default-import 修复 + 全量依赖升级 (vitest5/electron44/@x402 2.25 等) + smoke 防回归; 服务器 `npm i -g @bolloon/bolloon-agent@0.4.15` 即修复 CLI 启动崩溃 | [package.json](../../package.json) |
