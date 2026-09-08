@@ -316,6 +316,10 @@ export async function createX402PaymentFetch(params: {
     client.register(info.caip2 as any, new ExactEvmScheme(signer));
     client.registerV1(info.v1, new ExactEvmScheme(signer));
   }
+  // @x402 2.25+ 新增 spendControls 默认白名单 (只放行各网络 default asset), 会拒掉
+  // USDC 等非默认代币的支付要求 → 关掉资产门禁, 恢复 2.21 语义 (额度上限仍由
+  // 上面的 registerPolicy / maxPaymentAmount 控制, 资产种类信任服务端 402 头声明)
+  client.setSpendControls(false);
 
   return wrapFetchWithPayment(params.fetchImpl || fetch, client);
 }
