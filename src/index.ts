@@ -712,7 +712,9 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
   const _origStderr = process.stderr.write.bind(process.stderr);
   const isLogLine = (line: string) => {
     const t = line.trimStart();
-    return t.startsWith('[') || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(t) || /\[\s*(info|warn|error|debug|log)\s*\]/.test(t);
+    return t.startsWith('[') || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(t) || /\[\s*(info|warn|error|debug|log)\s*\]/.test(t)
+      // Kubo/ipfs 启动噪声: "Use 'ipfs init --help'..." / "ipfs daemon is running..." 提示行无时间戳, 一并丢弃
+      || /ipfs init --help|ipfs daemon is running|please stop it to run this command/i.test(t);
   };
   const wrap = (orig: (b: any, ...r: any[]) => boolean) => (chunk: any, ...rest: any[]) => {
     const s = typeof chunk === 'string' ? chunk : String(chunk);

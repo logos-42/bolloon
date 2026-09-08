@@ -15,14 +15,20 @@ export interface Widget {
 }
 
 let widgets = new Map<string, Widget>();
+let cache: Record<string, string> | null = null; // getSnapshot 必须缓存同引用, 否则 useSyncExternalStore 无限重渲
 const subs = new Set<() => void>();
 
-function emit() { subs.forEach((cb) => cb()); }
-
-export function getWidgets(): Record<string, string> {
+function rebuild(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, w] of widgets) out[name] = w.text;
+  cache = out;
   return out;
+}
+function emit() { cache = null; subs.forEach((cb) => cb()); }
+
+export function getWidgets(): Record<string, string> {
+  if (!cache) rebuild();
+  return cache!;
 }
 
 /** 4 触点之一: 注册 (render 在注册时立即执行一次, 得 text) */
