@@ -587,7 +587,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   }, [thinking]);
 
   // ── 虚拟化 transcript (消息级窗口 + 自动跟随底部) ───────────────────────────
-  // chrome 预留行 = 分隔线×3 + 状态栏 + 输入栏 (艺术字/元信息已并入启动面板框, 不再占顶行)
+  // #1 分区预留: chrome 固定行 = 分隔线×3 + 状态栏 + 输入栏 = 5; transcript 严格不超区
+  //   (content Box flexGrow=1 但内容超宽会把 status/composer 挤走 → 可见窗口行数钳制 ≤ availH)
   const availH = Math.max(6, termSize.h - 5);
   const heights = useMemo(() => msgs.map(m => msgVisualLines(m, W)), [msgs, W]);
   const cumulative = useMemo(() => {
@@ -602,7 +603,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   let start = 0;
   while (start < msgs.length && cumulative[start + 1] <= top + 0.5) start++;
   let end = start;
-  while (end < msgs.length && cumulative[end + 1] < top + availH + 0.5) end++;
+  // 严格钳制: 端界不越过 availH, 保证 transcript 内容行数 ≤ 分区高度 (互不覆盖)
+  while (end + 1 < msgs.length && cumulative[end + 1] <= top + availH) end++;
   const visible = useMemo(() => msgs.slice(start, end + 1), [msgs, start, end]);
   const scrolledOut = maxTop > 0 && !sticky;
 
