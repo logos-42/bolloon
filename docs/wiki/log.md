@@ -1812,3 +1812,28 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 ### 关联
 
 - 复用: cid_database(内容寻址→tokenURI), agent-registry/gateway(跨机可见), resource-store(资源层); 见 contracts/ + resource-token.ts.
+
+---
+
+## 资源级 x402 钱包自动配置 (2026-09-08)
+
+### 目标
+
+- 免手动配置: 智能体注册资源/交易/铸造时自动管理 x402 EVM 钱包 (生成/持久化/绑定).
+
+### 变更
+
+- **`src/agents/resource-wallet.ts`**: `loadOrCreateWallet` — 首次用 **viem/accounts** `generatePrivateKey`+`privateKeyToAccount` 自动生成 EVM 钱包(私钥+0x 地址), 持久化 `~/.bolloon/wallet.json` (mode 0600), 之后**幂等加载**同一钱包; 损坏数据自动重建; 存储注入可测.
+- **`pi-sdk-tools.ts` 接线**:
+  - `resource_register`: 资源无 wallet → **自动绑本机钱包地址** (卖家收款).
+  - `resource_purchase`: 付款执行器**自动用钱包私钥**签 x402 (替代手工 `__bolloonPayPrivateKey`).
+  - `resource_mint`: 资源无 wallet → **自动用本机钱包作接收地址**铸造.
+
+### 验证
+
+- tsc 0 错; resource-wallet 4 单测 (首次生成+持久化 / 幂等复用不重建 / 损坏重建 / walletAddress); vitest 全量 + lefthook (write-staging 一次 flake, 重跑 recover).
+- 资金: 自动配置=密钥/绑定, 充值仍由用户向 address 打款 (x402 不代发币).
+
+### 关联
+
+- 复用 viem(零新依赖) + x402Pay; 见 resource-wallet.ts / pi-sdk-tools.ts.
