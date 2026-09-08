@@ -1694,3 +1694,42 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 
 - 手机端分层: src/web/mobile-{data,agent,payments,core,p2p}.ts
 - 上一条: 手机端内核分层 (2026-08-15)
+
+---
+
+## Agent Gateway 全量引导 + 手机端扫码入网 (2026-09-08)
+
+### 背景
+
+- leo 目标: 智能体"连接/阅读后自动了解所有信息, 加入智能体网络", 手机与 PC 同一协议, 初次同步扫码更符合习惯.
+- 现状缺口: `joinNetwork` 只拉远端服务并入本地, 不做网络启动包/on-join 广播/成员自描述统一 schema; 手机端 gateway 工具只列名未接执行.
+
+### 变更 (src/agents/gateway-network.ts 等)
+
+- **① 入网链接 = 全量引导**: `NetworkBootstrap`(networkId/name/version/capacityOfMembers/sharedContextCid) + `buildNetworkBootstrap`; `joinNetwork` 启动包写入成员持久化 `gateway-networks.json`; `fetchNetworkMeta`(orbitdb 'meta' 键 / ipns network.json / http doc.meta).
+- **② on-join 广播**: `maybeAutoJoinGateway` 支持 `deps.self`, 入网成功自动 `networkShareSelf` 写回共享 store (orbitdb 可写时; ipns/http 本地登记 note; 只读 replica 非致命); 通知带 net 与共享 ctx.
+- **③ 成员自描述同 schema**: 统一 `AgentService`(agentId=did/name/service/capabilities/reputation), 新增 `mergeRemoteServices`(按 agentId+service.name 去重)+ `pullNetworkProfile`(画像: 谁在/会什么/报价).
+- **共享 context (近期上下文同步)**: `publishNetworkSharedContext(text)`→OrbitDB CID, `pullNetworkSharedContext(cid)`(IPFS 网关), 手机 `mobilePullSharedContext`.
+- **shareNetworkLink 写全量启动包 (#1)**: registry 增 `writeMeta/readMeta` + `REGISTRY_ORBIT_META_KEY`, 分享时写 networkId/version/容量/ctxCID 进 'meta'.
+
+### 手机端 (src/web/mobile-*.ts)
+
+- `mobile-gateway.ts`: browser-safe 入网 — http registry 直接 fetch, orbitdb/ipns 经 `desktopBaseUrl` 转发桌面 `/api/gateway/join` (无则提示); `mobileJoinNetwork/mobileRegister/mobileNetworkStatus/mobilePullSharedContext/mobileAutoJoinGateway` + `mobileGatewayTool` 统一分派(join/status/register/context); `get/setDesktopBaseUrl`(localStorage 持久化).
+- `mobile-core.ts`: `gateway.{join,status,register,autoJoin,setDesktopBaseUrl}` + `qr.decode`(jsQR) 暴露给 `window.BolloonCore`.
+- `mobile-agent.ts`: `agent.chat.send` 收到含网络链接消息自动 join (不阻塞回复).
+- `mobile.html/mobile.js`: 网络 tab 极简按钮 — **🛜 加入网络**(粘贴链接) + **📷 扫码入网**(`<input capture>` 拍照 → jsQR 解码 → join) + Agent 网络成员列表.
+
+### 扫码入网 + CLI
+
+- `src/web/qr.ts`: `buildQrPayload`(链接+`?name=&ctx=&v=`) / `encodeQrTerminal`(qrcode ASCII) / `encodeQrDataUrl` / `decodeQrImageData`(jsQR). 依赖 `qrcode@1.5.4` + `jsqr@1.4.0`(纯 JS, 免原生插件).
+- CLI `src/index.ts`: **`/net`** 快捷命令 — `join`(入网+画像+共享ctx+广播本机) / `status` / `ctx <文本>`(发布共享context) / `qr`(出二维码面板).
+- 早期 `src/agents/network-link.ts`: `parseNetworkLink/detectGatewayLink` 抽成无依赖纯函数, 桌面/手机共用.
+
+### 验证
+
+- tsc 0 错; gateway-network 9 + mobile-gateway 9 + qr 3 单测全过; vitest 全量 137 文件 / 1466 测试; build:web pass (mobile-core.js 3.03MB 内联 jsQR+qr+mobile-gateway).
+- 每提交过 lefthook (tsc-check + vitest-bail).
+
+### 关联
+
+- 上一条: 手机端内核分层 (2026-08-15); 系统命令组 /net 在 src/index.ts; registry 见 agent-registry.ts.
