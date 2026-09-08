@@ -2042,6 +2042,88 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   });
 
   // ============================================================
+  // 数字资源资产化 (Stage 1 轻版): 注册→发现→访问, 注册/运营/交易/清算 经济循环的资源层
+  // ============================================================
+  ctx.tools.set('resource_register', {
+    name: 'resource_register',
+    description: '注册一个数字资源上链 (A 轻版: 内容CID寻址 + 元数据; 预留 chain=evm 可升级 tokenURI). type: data|art_product|product_image|tx_link; 内容寻址存 content, 定价/授权/交易链接进资源记录, 供网络内智能体 resource_discover/access 发现并访问.',
+    parameters: {
+      type: 'data | art_product | product_image | tx_link',
+      title: '资源标题',
+      content: '资源内容 (文本/JSON; 图片 base64 dataURL)',
+      price: '可选 {amount,currency:USDC|token,token?,per?}',
+      license: '可选授权 (personal/commercial)',
+      txLink: '可选交易链接',
+      chain: '可选 none|evm (预留升级)',
+      tokenUriTemplate: '可选 evm 时 tokenURI 模板, 如 {base}/{id}',
+    },
+    execute: async (args) => {
+      try {
+        const { getCIDDatabase } = await import('../orbitdb/cid-database.js');
+        const db = getCIDDatabase();
+        const cidd = {
+          save: async (t: string) => (await db.save({ agentId: String((ctx as any).agentId || ''), type: 'knowledge', content: t })).id,
+          load: async (c: string) => { const rec = await db.load(c); return rec ? String((rec as any).content ?? '') : null; },
+        };
+        const { registerResource } = await import('./resource-store.js');
+        let price: any;
+        if (args.price) { try { price = typeof args.price === 'string' ? JSON.parse(args.price) : args.price; } catch { price = undefined; } }
+        const r = await registerResource({
+          ownerDid: String((ctx as any).agentId || ''),
+          type: String(args.type || '') as any,
+          title: String(args.title || ''),
+          content: String(args.content || ''),
+          price,
+          license: args.license ? String(args.license) : undefined,
+          txLink: args.txLink ? String(args.txLink) : undefined,
+          chain: args.chain as any,
+          tokenUriTemplate: args.tokenUriTemplate ? String(args.tokenUriTemplate) : undefined,
+        }, { cid: cidd });
+        if (!r.ok) return { success: false, error: r.error };
+        const res = r.resource!;
+        return { success: true, output: `✅ 资源已注册 (A 轻版上链): ${res.resourceId}\n  ${res.title} · ${res.type} · CID: ${res.contentCid}${res.price ? ` · 价格 ${res.price.amount} ${res.price.currency}${res.price.token ? `(${res.price.token})` : ''}` : ''}${res.license ? ` · ${res.license}` : ''}${res.txLink ? ` · 交易:${res.txLink}` : ''}${res.chain === 'evm' ? ` · ${res.chain}` : ''}\n网络内智能体可用 resource_discover 找到它, resource_access 访问内容。` };
+      } catch (e) { return { success: false, error: `resource_register 失败: ${String(e).slice(0, 200)}` }; }
+    },
+  });
+
+  ctx.tools.set('resource_discover', {
+    name: 'resource_discover',
+    description: '发现数字资源: 按 type 或 owner 列出网络内注册的资源 (谁注册了什么, 定价/授权/交易链接), 供分配/交易决策.',
+    parameters: { type: '可选过滤 type', owner: '可选过滤 owner DID' },
+    execute: async (args) => {
+      try {
+        const { listResources } = await import('./resource-store.js');
+        const list = listResources({
+          type: args.type ? String(args.type) as any : undefined,
+          owner: args.owner ? String(args.owner) : undefined,
+        });
+        if (!list.length) return { success: true, output: '暂无资源 (用 resource_register 注册)' };
+        return { success: true, output: list.map((r) => `${r.resourceId} · ${r.title} · ${r.type}${r.price ? ` · ${r.price.amount} ${r.price.currency}${r.price.token ? `(${r.price.token})` : ''}${r.price.per ? `/${r.price.per}` : ''}` : ''}${r.license ? ` · ${r.license}` : ''}${r.txLink ? ` · 🔗${r.txLink}` : ''}${r.chain === 'evm' ? ' · evm' : ''}`).join('\n') + '\n（resource_access <id> 访问内容）' };
+      } catch (e) { return { success: false, error: `resource_discover 失败: ${String(e).slice(0, 200)}` }; }
+    },
+  });
+
+  ctx.tools.set('resource_access', {
+    name: 'resource_access',
+    description: '访问资源内容: 按 resourceId 取回 content (内容寻址 CID). 付费资源需先经 x402 授权.',
+    parameters: { resourceId: '资源 id' },
+    execute: async (args) => {
+      try {
+        const { getCIDDatabase } = await import('../orbitdb/cid-database.js');
+        const db = getCIDDatabase();
+        const cidd = {
+          save: async (t: string) => (await db.save({ agentId: String((ctx as any).agentId || ''), type: 'knowledge', content: t })).id,
+          load: async (c: string) => { const rec = await db.load(c); return rec ? String((rec as any).content ?? '') : null; },
+        };
+        const { accessResource } = await import('./resource-store.js');
+        const r = await accessResource(String(args.resourceId || ''), { cid: cidd });
+        if (!r.ok) return { success: false, error: r.error };
+        return { success: true, output: `📄 ${r.resource!.title} (${r.resource!.type} · ${r.resource!.contentCid})\n${String(r.content).slice(0, 3000)}` };
+      } catch (e) { return { success: false, error: `resource_access 失败: ${String(e).slice(0, 200)}` }; }
+    },
+  });
+
+  // ============================================================
   // MCP 工具 (2026-08-03) — 外部 MCP server 接入 agent 工具系统
   // 配置: ~/.mcp.json (mcpServers), 启动时 initializeMcpAdapter 自动握手发现工具
   // mcp_list_tools: 列出已发现的 MCP 工具
