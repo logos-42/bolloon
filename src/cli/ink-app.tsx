@@ -12,6 +12,9 @@ import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import { brandArtLines, boxTop, boxRow, boxBottom, dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
+import { THEME, fg } from './theme.js';
+import { COMPOSER_PLACEHOLDER, CHAR_EXIT_HINT, POPUP_TITLE_TAB, POPUP_TITLE_AGENT, POPUP_TITLE_FILE, POPUP_TITLE_COMMAND } from './content.js';
+import { DOUBLE_ESC_MS, STATUS_TICK_MS, THINK_FRAME_MS } from './timing.js';
 import {
   loadAgents,
   loadCommands,
@@ -71,7 +74,7 @@ const MentionPopup: React.FC<MentionPopupProps> = ({ title, items, sel, width, l
   const innerW = Math.max(width - 2, 10);
   return (
     <Box flexDirection="column" width={width}>
-      <Text color="cyan" bold>{`╭─ ${title} ${'─'.repeat(Math.max(2, innerW - dispWidth(title) - 4))}╮`}</Text>
+      <Text color={THEME.accent} bold>{`╭─ ${title} ${'─'.repeat(Math.max(2, innerW - dispWidth(title) - 4))}╮`}</Text>
       {loading && items.length === 0 ? (
         <Text color="dim">│ 扫描中...</Text>
       ) : !loading && items.length === 0 ? (
@@ -96,7 +99,7 @@ const MentionPopup: React.FC<MentionPopupProps> = ({ title, items, sel, width, l
       {items.length > MAX_ROWS && (
         <Text color="dim">│ {offset + 1}-{offset + shown.length}/{items.length} · 还有 {items.length - (offset + shown.length)} 项...</Text>
       )}
-      <Text color="cyan">{`╰${'─'.repeat(innerW)}╯`}</Text>
+      <Text color={THEME.accent}>{`╰${'─'.repeat(innerW)}╯`}</Text>
     </Box>
   );
 };
@@ -136,7 +139,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
   // 双击 Esc 退出当前进程 (500ms 窗口内第二次按下)
   const lastEscRef = useRef(0);
-  const C_WARN_ANSI = '\x1b[38;2;245;158;11m'; // #f59e0b
+  const C_WARN_ANSI = fg(THEME.warn); // #f59e0b
 
   // ── @ / # 弹出窗状态 ──────────────────────────────────────────────────────
   const mention = useMemo(() => getMention(input), [input]);
@@ -234,10 +237,10 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const popupOpen = !!(tabState || (mention && dismissed !== mentionKey));
   const safeSel = Math.min(sel, Math.max(0, filtered.length - 1));
 
-  const popupTitle = tabState ? 'Tab 补齐'
-    : mention?.kind === 'agent' ? '@ 智能体'
-    : mention?.kind === 'file' ? '# 文件'
-    : '/ 命令 · 技能 · 插件';
+  const popupTitle = tabState ? POPUP_TITLE_TAB
+    : mention?.kind === 'agent' ? POPUP_TITLE_AGENT
+    : mention?.kind === 'file' ? POPUP_TITLE_FILE
+    : POPUP_TITLE_COMMAND;
 
   // 在指定 start 位置插入补齐文本 (函数式更新, 闭包安全)
   const insertAt = useCallback((start: number, it: MentionItem) => {
@@ -491,7 +494,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     // 双击 Esc 退出当前进程: 第一击提示, 500ms 内第二击退出
     if (key.escape) {
       const now = Date.now();
-      if (now - lastEscRef.current < 500) {
+      if (now - lastEscRef.current < DOUBLE_ESC_MS) {
         requestExit();
       } else {
         lastEscRef.current = now;
@@ -531,7 +534,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         const s = getStatusUpdate();
         if (s) setStatus(s);
       } catch { /* 状态栏更新失败不致命 */ }
-    }, 1000);
+    }, STATUS_TICK_MS);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -556,7 +559,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     if (!thinking) return;
     const timer = setInterval(() => {
       thinkingIdx.current = (thinkingIdx.current + 1) % KAOMOJI.length;
-    }, 600);
+    }, THINK_FRAME_MS);
     return () => clearInterval(timer);
   }, [thinking]);
 
@@ -569,11 +572,11 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
             模型名用 bolloon 亮色 #c4d640 (次要层不抢首屏, 信息可扫读) */}
         {(bootDir || bootModel || bootSession) && (
           <Box>
-            <Text color="#606058">
+            <Text color={THEME.muted}>
               {bootDir ? `📁 ${bootDir} · ` : ''}
             </Text>
-            {bootModel ? <Text bold color="#c4d640">{bootModel}</Text> : null}
-            <Text color="#606058">
+            {bootModel ? <Text bold color={THEME.accent}>{bootModel}</Text> : null}
+            <Text color={THEME.muted}>
               {bootSession ? ` · Session: ${bootSession}` : ''}
             </Text>
           </Box>
@@ -594,7 +597,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
       {/* 分隔线 (全宽, bolloon 色系 #c4d640) */}
       <Box>
-        <Text bold color="#c4d640">{'─'.repeat(W)}</Text>
+        <Text bold color={THEME.accent}>{'─'.repeat(W)}</Text>
       </Box>
 
       {/* 状态栏 */}
@@ -604,7 +607,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
       {/* 输入栏分隔线 (全宽, bolloon 色系 #c4d640) */}
       <Box>
-        <Text bold color="#c4d640">{'─'.repeat(W)}</Text>
+        <Text bold color={THEME.accent}>{'─'.repeat(W)}</Text>
       </Box>
 
       {/* 弹出选择窗 (输入栏上方, 弹出页) */}
@@ -630,20 +633,20 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
       {/* 输入栏 */}
       <Box>
-        <Text bold color="#c4d640">❯ </Text>
+        <Text bold color={THEME.accent}>❯ </Text>
         <TextInput
           key={tiKey}
           value={input}
           onChange={setInput}
           onSubmit={onSubmit}
           focus={!popupOpen && !picker}
-          placeholder="输入消息... @智能体 /命令 #文件 · Esc 双击退出 · /queue 排队 · !终端命令"
+          placeholder={COMPOSER_PLACEHOLDER}
         />
       </Box>
 
       {/* 底部分界线 (全宽, bolloon 色系 #c4d640) */}
       <Box>
-        <Text bold color="#c4d640">{'─'.repeat(W)}</Text>
+        <Text bold color={THEME.accent}>{'─'.repeat(W)}</Text>
       </Box>
     </Box>
   );

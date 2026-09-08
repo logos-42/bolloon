@@ -573,29 +573,10 @@ function statusBarLine(): string {
   return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${buildContextBar(usage)}`;
 }
 
-// Hermes 类别集合 (用于从 bolloon 平铺目录名 `<category>-<skill>` 解析出类别, 最长前缀优先)
-const KNOWN_SKILL_CATS = new Set([
-  'apple', 'autonomous-ai-agents', 'creative', 'data-science', 'devops', 'email', 'general',
-  'github', 'hardware-design', 'math', 'media', 'mlops', 'network', 'note-taking',
-  'openclaw-imports', 'productivity', 'research', 'smart-home', 'social-media',
-  'software-development', 'web', 'turnstile-spin', 'web-perf', 'workers-best-practices',
-  'wrangler', 'yuanbao', 'paragraph-cli', 'bolloon-p2p-deployment', '维基 llm',
-]);
-function skillCatOf(name: string, firstFreq?: Map<string, number>): string {
-  const segs = name.split('-');
-  for (let k = Math.min(4, segs.length); k >= 1; k--) {
-    const cand = segs.slice(0, k).join('-');
-    if (KNOWN_SKILL_CATS.has(cand)) return cand;
-  }
-  const first = segs[0] || 'other';
-  // 主导前缀: 同一首 token 出现 >=5 次 → 视为真实类别 (自动发现 agent/python/github 等大类别)
-  if (firstFreq && (firstFreq.get(first) || 0) >= 5) return first;
-  return first;
-}
-
-/** 2026-09-08 (Hermes TUI 学习 + leo 规格): 启动会话面板 — 按 Hermes 样式展示 bolloon 启动加载的
- *  skills (平铺 `<category>-<skill>` 目录): 每类别一行 (名称摘要 + '+N more'), 结尾 totals.
- *  skills/tools 并行 (tools 2.5s 预算); 任一项失败静默省略. */
+/**
+ * 启动会话面板 — 按类别展示启动加载的 skills (真实类别 = 目录名去掉 frontmatter.name 后缀),
+ * 每类一行 (前 6 名 + '+N more'), 结尾 totals; skills/tools 并行 (各 2.5s 预算), 失败静默.
+ */
 async function bootPanel(): Promise<string[]> {
   const lines: string[] = [];
   const catNames = new Map<string, string[]>();
@@ -603,23 +584,27 @@ async function bootPanel(): Promise<string[]> {
   await Promise.all([
     (async () => {
       try {
+        // 真实类别 = 目录名前缀去掉技能名后缀 (SKILL.md 无 category 字段, 但 frontmatter.name 是真名:
+        //   software-development-bolloon-development / name=bolloon-development → software-development)
         const { loadSkillsDir, defaultSkillPaths } = await import('./agents/skill-loader.js');
-        const allNames: string[] = [];
+        const pushCat = (cat: string, name: string) => {
+          const arr = catNames.get(cat) || [];
+          if (!arr.includes(name)) arr.push(name);
+          catNames.set(cat, arr);
+        };
         for (const root of defaultSkillPaths()) {
           const metas = await loadSkillsDir(root);
-          for (const m of metas) if (m.status !== 'archived') allNames.push(m.name);
-        }
-        // 首 token 频率 → 主导前缀当类别 (自动发现 agent/python/github 等)
-        const firstFreq = new Map<string, number>();
-        for (const n of allNames) {
-          const first = n.split('-')[0] || 'other';
-          firstFreq.set(first, (firstFreq.get(first) || 0) + 1);
-        }
-        for (const n of allNames) {
-          const cat = skillCatOf(n, firstFreq);
-          const arr = catNames.get(cat) || [];
-          if (!arr.includes(n)) arr.push(n);
-          catNames.set(cat, arr);
+          for (const m of metas) {
+            if (m.status === 'archived') continue;
+            const dir = m.sourcePath ? path.basename(path.dirname(m.sourcePath)) : '';
+            const nm = m.name || '';
+            let cat = dir;
+            if (dir && nm && dir.endsWith(nm)) {
+              const pre = dir.slice(0, dir.length - nm.length).replace(/-+$/, '');
+              if (pre) cat = pre;
+            }
+            pushCat(cat || 'other', nm || dir);
+          }
         }
       } catch { /* 省略 */ }
     })(),
