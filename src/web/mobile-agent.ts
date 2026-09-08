@@ -16,6 +16,9 @@
 const IDENTITY_DB = 'bolloon-mobile';
 let _identity: { did: string; name: string; createdAt: number } | null = null;
 
+// #2 手机自动入网 (browser-safe gateway, 与桌面同一协议): 检测到链接自动 join
+import { mobileAutoJoinGateway } from './mobile-gateway.js';
+
 async function generateDID(): Promise<string> {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -255,6 +258,10 @@ export async function handleIncomingAgentMessage(type: string, payload: string, 
       try {
         const { text, channelId } = JSON.parse(payload);
         notifyInboundChat(text || '', channelId || '', fromPeer);
+        // #2 手机自动入网: 消息里带 network 链接 → 自动 join (browser-safe, 不阻塞回复)
+        if (text && /orbitdb:\/\/|ipns:\/\/|https?:\/\/[^\s]*\/registry/.test(text)) {
+          void mobileAutoJoinGateway(text).catch(() => {});
+        }
         const reply = await runLocalAgent(text || '');
         await _send('agent.chat.reply', JSON.stringify({ channelId, text: reply, fromPublicKey: _ownDid }), fromPeer);
       } catch { /* 解析/执行失败则不回 */ }
