@@ -2070,12 +2070,15 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         const { registerResource } = await import('./resource-store.js');
         let price: any;
         if (args.price) { try { price = typeof args.price === 'string' ? JSON.parse(args.price) : args.price; } catch { price = undefined; } }
+        const { loadOrCreateWallet } = await import('./resource-wallet.js');
+        const nw = await loadOrCreateWallet().catch(() => null);
+        const walletAddr = nw?.address || '';
         const r = await registerResource({
           ownerDid: String((ctx as any).agentId || ''),
           type: String(args.type || '') as any,
           title: String(args.title || ''),
           content: String(args.content || ''),
-          wallet: args.wallet ? String(args.wallet) : undefined,
+          wallet: args.wallet ? String(args.wallet) : walletAddr || undefined,
           price,
           license: args.license ? String(args.license) : undefined,
           txLink: args.txLink ? String(args.txLink) : undefined,
@@ -2147,9 +2150,10 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         const pay = async (spec: any) => {
           try {
             const { x402Pay } = await import('./x402/x402Pay.js');
-            const key = (globalThis as any).__bolloonPayPrivateKey || '';
-            if (!key) return { success: false, error: '需配置节点付款钱包私钥 (__bolloonPayPrivateKey) 才能购买付费资源' };
-            const r = await x402Pay({ privateKey: key, amount: String(spec.amount), to: spec.recipient, currency: spec.currency === 'USDC' ? 'USDC' : 'ETH', memo: spec.memo });
+            const { loadOrCreateWallet } = await import('./resource-wallet.js');
+            const w = await loadOrCreateWallet().catch(() => null);
+            if (!w?.privateKey) return { success: false, error: '需自动生成 x402 钱包 (~/.bolloon/wallet.json) 才能购买付费资源' };
+            const r = await x402Pay({ privateKey: w.privateKey, amount: String(spec.amount), to: spec.recipient, currency: spec.currency === 'USDC' ? 'USDC' : 'ETH', memo: spec.memo });
             return { success: r.success, txHash: r.txHash, error: r.error };
           } catch (e) { return { success: false, error: `x402 支付失败: ${String((e as any)?.message || e).slice(0, 120)}` }; }
         };
@@ -2197,7 +2201,11 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         if (!r) return { success: false, error: '资源不存在' };
         const evm = (globalThis as any).__bolloonEvmExecutor;
         if (!evm) return { success: false, error: '需配置 EVM executor (__bolloonEvmExecutor) 才能铸造. 部署 contracts/ResourceERC721.sol + 配置 ~/.bolloon/evm-config.json / ethers.' };
-        const m = await mintResourceToken({ resourceId: r.resourceId, ownerDid: r.ownerDid, contentCid: r.contentCid, wallet: r.wallet, title: r.title }, { evm });
+        const { walletAddress } = await import('./resource-wallet.js');
+        const naddr = await walletAddress().catch(() => '');
+        const to = r.wallet || naddr;
+        if (!to) return { success: false, error: '无收款钱包 (部署后设 __bolloonEvmExecutor + 资源 wallet)' };
+        const m = await mintResourceToken({ resourceId: r.resourceId, ownerDid: r.ownerDid, contentCid: r.contentCid, wallet: to, title: r.title }, { evm });
         if (!m.ok) return { success: false, error: m.error || (m.needConfig ? '需配置 EVM' : '铸造失败') };
         return { success: true, output: `✅ 已铸造 tokenId=${m.tokenId} · tokenURI=ipfs://${r.contentCid} · 资源 ${r.resourceId}\n(resource_transfer <tokenId> <to> 流转 · resource_token <tokenId> 查询)` };
       } catch (e) { return { success: false, error: `resource_mint 失败: ${String(e).slice(0, 200)}` }; }
