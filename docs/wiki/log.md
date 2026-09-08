@@ -1733,3 +1733,27 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 ### 关联
 
 - 上一条: 手机端内核分层 (2026-08-15); 系统命令组 /net 在 src/index.ts; registry 见 agent-registry.ts.
+
+---
+
+## 数字资源资产化 Stage 1 (2026-09-08)
+
+### 背景
+
+- leo 目标: 智能体从"注册资源→运营资源→交易资源→清算资源"经济循环运作, 资源=数字资源(本地数据/艺术AI产品/商品图/交易链接), 注册到链上被智能体原生转发访问.
+- 决策: 上链深度**先 A 轻版**(CID 内容寻址 + 链上/网络指针 + DID 签名, 预留 B 的 evm tokenURI 升级接口); 币种**USDC 默认 + 可选 token**; 首发**四类统一 schema 再逐类发**.
+
+### 变更 (src/agents/resource-store.ts + pi-sdk-tools.ts)
+
+- `DigitalResource` schema: resourceId/ownerDid/type(data|art_product|product_image|tx_link)/contentCid/price(USDC|token+token)/license/txLink/meta, 预留 chain('none'|'evm')+tokenUriTemplate.
+- `registerResource` (内容寻址存 content→CID, 建资源入索引, onRegister 回调可同步网络 registry)/`listResources`(type/owner 过滤)/`getResource`/`accessResource`(按 CID 取回内容); 注入 cid+store 可测.
+- 智能体原生工具(pi-sdk-tools ctx.tools.set): `resource_register`(四类+定价/授权/交易链接+evm tokenURI) / `resource_discover` / `resource_access` — 复用 cid_database 内容寻址.
+
+### 验证
+
+- tsc 0 错; resource-store 5 单测(四类/发现过滤/access/token 币种/tokenURI 预留/非法入参) + gateway-network 全过; vitest 全量 + lefthook.
+- 待续: Stage 2 运营(网络可见/自动分配), Stage 3 交易(x402 授权), Stage 4 清算(reputation), Stage 1-B evm 资产合约(tokenURI 已预留).
+
+### 关联
+
+- 复用: agent-gateway(注册/发现/定价), cid_database(内容寻址), x402(交易), reputation(清算); type 见 resource-store.ts.
