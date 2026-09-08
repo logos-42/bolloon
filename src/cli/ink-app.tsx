@@ -16,6 +16,7 @@ import { THEME, fg } from './theme.js';
 import { COMPOSER_PLACEHOLDER, CHAR_EXIT_HINT, POPUP_TITLE_TAB, POPUP_TITLE_AGENT, POPUP_TITLE_FILE, POPUP_TITLE_COMMAND } from './content.js';
 import { DOUBLE_ESC_MS, STATUS_TICK_MS, THINK_FRAME_MS } from './timing.js';
 import { resolveNormalKey, applyScroll } from './keymap.js';
+import { useWidgets } from './widget-host.js';
 import { useStore, transcriptStore, uiStore, appendMsg, replaceLastMsg, replaceMarkerMsg, setUiStatus, setUiThinking, setUiTransient } from './stores.js';
 import {
   loadAgents,
@@ -123,6 +124,10 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const status = ui.status || initialStatus;
   const thinking = ui.thinking;
   const transient = ui.transient;
+  // #8 占用槽: 右侧 rails (有 widget 占宽, 无则布局不变)
+  const widgets = useWidgets();
+  const railNames = Object.keys(widgets);
+  const hasRails = railNames.length > 0;
   const { exit } = useApp();
 
   // 虚拟化滚动: 行窗口 top + 是否跟随底部 (用户上滚后自动跟随关闭, End 恢复)
@@ -582,7 +587,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   return (
     <Box flexDirection="column" height="100%">
       {/* 内容区: 置顶 (艺术字+元信息已合并进启动面板框, 即 msgs 首条) */}
-      <Box flexGrow={1} flexDirection="column" justifyContent="flex-start">
+      <Box flexGrow={1} flexDirection={hasRails ? 'row' : 'column'}>
+        <Box flexGrow={1} flexDirection="column" justifyContent="flex-start">
         <Messages msgs={visible} />
         {scrolledOut && (
           <Text color={THEME.muted}>
@@ -598,6 +604,12 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         {transient && (
           <Box>
             <Text>{transient}</Text>
+          </Box>
+        )}
+        </Box>
+        {hasRails && (
+          <Box width={36} marginLeft={1} flexDirection="column" justifyContent="flex-start">
+            {railNames.map((n) => <Text key={n} color={THEME.muted}>{n}\n{widgets[n]}</Text>)}
           </Box>
         )}
       </Box>
