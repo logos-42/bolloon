@@ -1806,7 +1806,7 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 
 - **solc 编译 PASS** (ABI: mint/ownerOf/safeTransferFrom/approve/balanceOf/tokenURI + Transfer/Approval 事件).
 - **TS 单测 13 过** (resource-token 4: CID-tokenURI/needConfig/transfer/query; resource-store 9 维持).
-- **Foundry `forge test`**: 测试套件完备, 本机因 forge 二进制硬依赖 libusb(Homebrew 未装)暂未运行 → `brew install libusb` 后 `forge test` 即跑全量.
+- **Foundry `forge test` 本机 18/18 全绿** (2026-09-08): 套件完备, `contracts/foundry.toml`(0.8.24) + forge-std 收录; 本机因用户无 sudo 装不了 Homebrew, 用**免 sudo libusb 本地化**——下载 Homebrew libusb 瓶 dylib 到 ~/.local/lib + `install_name_tool -change` 把 forge 指向本地 dylib (forge 1.8.1 即可跑). 普通环境 `brew install libusb` 后 `cd contracts && forge test` 即出绿.
 - 真实链上铸造流转需: 部署 ResourceERC721.sol + 配 `__bolloonEvmExecutor`/`~/.bolloon/evm-config.json`(合约地址/RPC/chainId).
 
 ### 关联
