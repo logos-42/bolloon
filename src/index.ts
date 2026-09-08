@@ -1191,6 +1191,20 @@ async function processInput(input: string, comm: HyperswarmCommunicator | null):
         : `${C_DIM}未加入任何网络 — /net join <链接>${RESET}`);
       return;
     }
+    if (arg.toLowerCase() === 'qr') {
+      const { shareNetworkLink } = await import('./agents/gateway-network.js');
+      const sh = await shareNetworkLink({ name: cliAgentName || 'bolloon' });
+      if (!sh.link) { appendLine(`${C_ERROR}生成链接失败: ${sh.error}${RESET}`); return; }
+      const { buildQrPayload, encodeQrTerminal } = await import('./web/qr.js');
+      const payload = buildQrPayload({ link: sh.link, version: '1' });
+      const qr = await encodeQrTerminal(payload);
+      if (qr) {
+        appendLine(renderMessageBox({ title: '📷 扫码入网', body: `${qr}\n\n${C_DIM}链接 (手机粘贴也可): ${payload}${RESET}`, color: C_ACCENT, maxLines: 0 }));
+      } else {
+        appendLine(`${C_ERROR}二维码生成失败 — 链接: ${payload}${RESET}`);
+      }
+      return;
+    }
     if (arg.toLowerCase().startsWith('ctx ')) {
       const text = arg.slice(4).trim();
       const { publishNetworkSharedContext } = await import('./agents/gateway-network.js');

@@ -465,6 +465,13 @@ export const core = {
       void import('./mobile-gateway.js').then((m) => m.setDesktopBaseUrl(url));
     },
   },
+  // #3 扫码入网: 解码二维码图片 (PC /net qr 出码 → 手机拍照解码 → gateway.join)
+  qr: {
+    async decode(data: Uint8ClampedArray, w: number, h: number): Promise<string | null> {
+      const { decodeQrImageData } = await import('./qr.js');
+      return decodeQrImageData(data, w, h);
+    },
+  },
 };
 
 // 全局暴露给 mobile.js

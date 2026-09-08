@@ -1210,6 +1210,35 @@
       } catch (e) { alert('加入失败: ' + String((e && e.message) || e).slice(0, 120)); }
       loadNetMembers();
     });
+    // #3 扫码入网: 拍照/选图 → BolloonCore.qr.decode(jsQR) → gateway.join (免原生插件)
+    const scanBtn = $('#item-scan-net');
+    const scanInput = $('#qr-scan-input');
+    if (scanBtn && scanInput) scanBtn.addEventListener('click', () => scanInput.click());
+    if (scanInput) scanInput.addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      scanInput.value = '';
+      const img = new Image();
+      const url = URL.createObjectURL(f);
+      img.onload = async () => {
+        try {
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
+          const c2 = c.getContext('2d');
+          if (!c2) return alert('画布不可用');
+          c2.drawImage(img, 0, 0);
+          const id = c2.getImageData(0, 0, c.width, c.height);
+          const text = await (window.BolloonCore && window.BolloonCore.qr && window.BolloonCore.qr.decode(id.data, id.width, id.height));
+          if (!text) { alert('未识别到二维码 (试试 /net qr 重新出码)'); return; }
+          const r = await (window.BolloonCore && window.BolloonCore.gateway && window.BolloonCore.gateway.join(text));
+          alert(r ? (r.output || '已入网') : 'gateway.join 不可用');
+          loadNetMembers();
+        } catch (err) { alert('解码失败: ' + String((err && err.message) || err).slice(0, 120)); }
+        finally { URL.revokeObjectURL(url); }
+      };
+      img.onerror = () => { alert('图片读取失败'); URL.revokeObjectURL(url); };
+      img.src = url;
+    });
   }
 
   async function loadNetMembers() {
