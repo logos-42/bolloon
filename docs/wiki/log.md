@@ -1757,3 +1757,31 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 ### 关联
 
 - 复用: agent-gateway(注册/发现/定价), cid_database(内容寻址), x402(交易), reputation(清算); type 见 resource-store.ts.
+
+---
+
+## 数字资源资产化 Stage 2/3/4 (2026-09-08)
+
+### 目标
+
+- 完成"注册→运营→交易→清算"完整经济循环 (Stage1 已做资源注册/发现/访问).
+
+### 变更 (src/agents/resource-store.ts + pi-sdk-tools.ts)
+
+- **Stage 2 运营**: `serializeForRegistry`/`syncResourceToRegistry`(注册时同步成网络 registry 可发现条目 AgentService: name=resource:type, price, capabilities 含 resourceId) → 跨机可见; `listResources`(本机 + **网络 registry 合并**, 按 resourceId 去重); `matchResources`(自动分配匹配: 标题/类型/授权关键词打分 + 提供者信誉加权排序).
+- **Stage 3 交易**: `purchaseResource`(付费档走注入 pay/x402 → 解锁内容, 免费直接访问; 缺 wallet/pay → needPay); 工具 `resource_purchase`.
+- **Stage 4 清算**: 成交后 `onSettle` → `recordServiceOutcome` 信誉积分; 工具 `resource_reputation`(queryReputation); 信誉分反哺 matchResources 加权.
+- 工具: `resource_register`(加 wallet + 网络同步) / `resource_discover`(async 合并网络) / `resource_match` / `resource_purchase` / `resource_reputation`. accessResource 保留(免费/预览).
+
+### 依赖注入 (可测)
+
+- registry/pay/repQuery/onSettle 全注入; 真实 x402 经 `x402Pay`(需 `__bolloonPayPrivateKey` 节点付款钱包), 信誉经 `queryReputation/recordServiceOutcome`.
+
+### 验证
+
+- tsc 0 错; resource-store 9 单测 (四类/发现过滤/access/注册同步 registry/匹配加权/免费直接/付费成功解锁+onSettle/付费失败 needPay/信誉查询/serializeForRegistry); vitest 全量 + lefthook.
+- 待续: Stage 1-B 真 EVM 资产合约 (chain='evm'+tokenUriTemplate 已预留); 真 x402 支付需配置节点付款钱包.
+
+### 关联
+
+- 复用: agent-gateway(注册/发现/定价), cid_database(内容寻址), x402(交易), agent-reputation(清算); 见 resource-store.ts / pi-sdk-tools.ts.
