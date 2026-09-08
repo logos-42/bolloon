@@ -577,8 +577,9 @@ function statusBarLine(): string {
  * 启动会话面板 — 按类别展示启动加载的 skills (真实类别 = 目录名去掉 frontmatter.name 后缀),
  * 每类一行 (前 6 名 + '+N more'), 结尾 totals; skills/tools 并行 (各 2.5s 预算), 失败静默.
  */
-async function bootPanel(): Promise<string[]> {
+async function bootPanel(boot: { dir?: string; model?: string; session?: string }): Promise<string | null> {
   const lines: string[] = [];
+  const sub: string[] = []; // tools / MCP (Promise.all 里填充, 最后统一排到类别下方)
   const catNames = new Map<string, string[]>();
 
   await Promise.all([
@@ -615,25 +616,30 @@ async function bootPanel(): Promise<string[]> {
           new Promise<null>((res) => setTimeout(() => res(null), 2500)),
         ]);
         const tools = a && typeof (a as any).getToolList === 'function' ? (a as any).getToolList() : null;
-        if (tools && tools.length > 0) lines.push(`🔧 ${tools.length} tools`);
+        if (tools && tools.length > 0) sub.push(`🔧 ${tools.length} tools`);
       } catch { /* 省略 */ }
     })(),
     (async () => {
       try {
         const { getAdapterStatus } = await import('./pi-ecosystem-mcp/index.js');
         const st = getAdapterStatus();
-        if (st.initialized && st.serverCount > 0) lines.push(`🔌 MCP ${st.serverCount} 服务器 · ${st.toolCount} tools`);
+        if (st.initialized && st.serverCount > 0) sub.push(`🔌 MCP ${st.serverCount} 服务器 · ${st.toolCount} tools`);
       } catch { /* 省略 */ }
     })(),
   ]);
 
-  // 类别行 (Hermes 样式): `cat: name1, name2, name3, +N more` (每类最多列 6 名)
-  //   单实例类别并入 "other" — 避免成百"类"(只含 1 个 skill 的前缀碎片)
+  // 头: 目录 / 模型 / Session (预先加载信息)
+  if (boot.dir) lines.push(`📁 ${boot.dir}`);
+  if (boot.model) lines.push(`模型 ${boot.model}`);
+  if (boot.session) lines.push(`Session: ${boot.session}`);
+  lines.push('');
+
+  // 类别行 (全部展开, 不截断类别; 每类列前 8 名 + '+N more') — 单一实例归 other
   const normalized = new Map<string, string[]>();
   for (const [cat, arr] of catNames) {
     if (arr.length === 1) {
       const o = normalized.get('other') || [];
-      o.push(arr[0]);
+      o.push(...arr);
       normalized.set('other', o);
     } else {
       normalized.set(cat, (normalized.get(cat) || []).concat(arr));
@@ -641,20 +647,22 @@ async function bootPanel(): Promise<string[]> {
   }
   const sorted = [...normalized.entries()].sort((a, b) => b[1].length - a[1].length);
   const total = sorted.reduce((s, [, arr]) => s + arr.length, 0);
-  for (const [cat, arr] of sorted.slice(0, 6)) {
-    const shown = arr.slice(0, 6);
+  for (const [cat, arr] of sorted) {
+    const shown = arr.slice(0, 8);
     const more = arr.length > shown.length ? `, +${arr.length - shown.length} more` : '';
     lines.push(`${cat}: ${shown.join(', ')}${more}`);
   }
-  if (sorted.length > 6) lines.push(`… 共 ${sorted.length} 类 (其余类别见 /skills)`);
   lines.push(`⚡ ${total} skills · ${sorted.length} 类`, '');
+  if (sub.length) lines.push(...sub, '');
 
   try {
     const branch = execSync('git rev-parse --abbrev-ref HEAD 2>/dev/null', { encoding: 'utf8', timeout: 1500 }).trim();
     if (branch) lines.push(`⎇ ${branch}`);
   } catch { /* 非 git 目录省略 */ }
   try { lines.push(new Date().toLocaleTimeString('zh-CN', { hour12: false })); } catch { /* 忽略 */ }
-  return lines;
+  if (lines.length <= 3) return null;
+  // 大框 (Hermes 会话面板样式): 标题 + 全部内容, 不截断 (maxLines=0)
+  return renderMessageBox({ title: '🚀 Bolloon · 启动面板', body: `${lines.join('\n')}`, color: C_ACCENT, maxLines: 0 });
 }
 
 async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Promise<void> {
@@ -856,8 +864,9 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
     setTimeout(() => { cronScheduler.tick().catch(() => {}); }, 15_000);
   } catch { /* cron 调度启动失败不阻塞 CLI */ }
 
-  // 2026-09-08 (Hermes TUI 学习): 启动会话面板 — skills 类别 / tools / MCP / 分支 / 时间 (异步, 不阻塞)
-  void bootPanel().then((ls) => { for (const l of ls) appendLine(l); }).catch(() => {});
+  // 启动会话面板 (大框): 预先加载内容 — skills 全类别 / tools / MCP / 模型 / 目录 / Session / 分支 / 时间
+  void bootPanel({ dir: bootDirShort, model: (cliModelName && cliModelName !== '…') ? cliModelName : undefined, session: bootSessionId })
+    .then((box) => { if (box) appendLine(box); }).catch(() => {});
 
   // Wait on a promise that resolves on Ctrl+C / 双击 Esc
   // (ink-app 的 requestExit 调 __inkRequestExit → resolve, 清理后 process.exit)

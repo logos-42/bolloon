@@ -44,9 +44,18 @@ const LogoBox: React.FC<{ width: number }> = ({ width }) => {
 
 // ─── 组件: 消息列表 ──────────────────────────────────────────────────────────
 
-// 2026-09-08 (Hermes TUI 学习落地): React.memo — msgs 引用不变时跳过重渲染。
-//   之前状态栏每秒 tick (setStatus) 会让整个消息列表每帧重绘, 长会话明显掉帧;
-//   append 只改 msgs 引用, memo 后仅新增行渲染。
+/** 消息显示行数 (ANSI 剥离后按宽度 wrap 估行; 与 Ink 按父宽 wrap 近似一致) */
+function msgVisualLines(text: string, width: number): number {
+  let n = 0;
+  const clean = text.replace(/\x1b\[[0-9;]*m/g, '');
+  for (const line of clean.split('\n')) {
+    const w = dispWidth(line);
+    n += Math.max(1, Math.ceil(w / Math.max(10, width - 1)));
+  }
+  return n;
+}
+
+// 2026-09-08: React.memo — msgs 引用不变时跳过重渲染 (配合虚拟化 slice, status tick 不再整表重绘)
 const Messages: React.FC<{ msgs: string[] }> = React.memo(({ msgs }) => (
   <Box flexDirection="column" flexGrow={1} justifyContent="flex-start">
     {msgs.map((m, i) => {
@@ -135,6 +144,9 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   // 2026-08-10: 临时状态行 (自动整理心跳/run-end 经验整理用) — 显示在颜文字行位置,
   //   结束后设 null 即清空 (显示为空). 不进入消息历史, 不会残留显示效果.
   const [transient, setTransient] = useState<string | null>(null);
+  // 虚拟化滚动: 行窗口 top + 是否跟随底部 (用户上滚后自动跟随关闭, End 恢复)
+  const [scrollTop, setScrollTop] = useState(0);
+  const stickRef = useRef(true);
   const thinkingIdx = useRef(0);
 
   // 双击 Esc 退出当前进程 (500ms 窗口内第二次按下)
@@ -459,6 +471,26 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     }
 
     // ── 正常模式 ──
+    // 虚拟化滚动 (仅当消息超出可视区; Ctrl+U/D 翻页, Home/End 顶/底)
+    if (totalLines > availH) {
+      const pg = Math.max(6, availH - 2);
+      const maxT = Math.max(0, totalLines - availH);
+      if ((key.ctrl && _input.toLowerCase() === 'u') || (key as any).pageUp) {
+        stickRef.current = false;
+        setScrollTop(s => Math.max(0, Math.min((s || 0) - pg, maxT)));
+        return;
+      }
+      if ((key.ctrl && _input.toLowerCase() === 'd') || (key as any).pageDown) {
+        setScrollTop(s => {
+          const nx = Math.min((s || 0) + pg, maxT);
+          if (nx >= maxT) stickRef.current = true;
+          return nx;
+        });
+        return;
+      }
+      if ((key as any).home) { stickRef.current = false; setScrollTop(0); return; }
+      if ((key as any).end) { stickRef.current = true; setScrollTop(maxT); return; }
+    }
     // 2026-08-07: Enter 兜底 — pty/管道下 termios 可能把 \r 转 \n 且 node 把整 chunk
     //   当一次 keypress (key.return=false), TextInput 的 onSubmit 永不触发 → 消息发不出去.
     //   应用层把 \n/\r 一律视为提交 (兼容 raw/cooked 两种模式, 不依赖 termios).
@@ -563,6 +595,28 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     return () => clearInterval(timer);
   }, [thinking]);
 
+  // ── 虚拟化 transcript (消息级窗口 + 自动跟随底部) ───────────────────────────
+  // chrome 预留行 = 分隔线×3 + 状态栏 + 输入栏 + logo(boxTop/艺术字/boxBottom) + 元信息行
+  const logoRows = brandArtLines().length + 2;
+  const metaRows = (bootDir || bootModel || bootSession) ? 1 : 0;
+  const availH = Math.max(6, termSize.h - (5 + logoRows + metaRows));
+  const heights = useMemo(() => msgs.map(m => msgVisualLines(m, W)), [msgs, W]);
+  const cumulative = useMemo(() => {
+    const c = [0];
+    for (const h of heights) c.push(c[c.length - 1] + h);
+    return c;
+  }, [heights]);
+  const totalLines = cumulative[cumulative.length - 1] || 0;
+  const maxTop = Math.max(0, totalLines - availH);
+  const sticky = stickRef.current;
+  const top = sticky ? maxTop : Math.min(scrollTop, maxTop);
+  let start = 0;
+  while (start < msgs.length && cumulative[start + 1] <= top + 0.5) start++;
+  let end = start;
+  while (end < msgs.length && cumulative[end + 1] < top + availH + 0.5) end++;
+  const visible = useMemo(() => msgs.slice(start, end + 1), [msgs, start, end]);
+  const scrolledOut = maxTop > 0 && !sticky;
+
   return (
     <Box flexDirection="column" height="100%">
       {/* 内容区: 置顶 */}
@@ -572,16 +626,20 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
             模型名用 bolloon 亮色 #c4d640 (次要层不抢首屏, 信息可扫读) */}
         {(bootDir || bootModel || bootSession) && (
           <Box>
+            {/* 单 Text 内嵌套着色 — 避免兄弟元素间的空白文本节点 (Ink reconciler 会抛) */}
             <Text color={THEME.muted}>
               {bootDir ? `📁 ${bootDir} · ` : ''}
-            </Text>
-            {bootModel ? <Text bold color={THEME.accent}>{bootModel}</Text> : null}
-            <Text color={THEME.muted}>
+              {bootModel ? <Text bold color={THEME.accent}>{bootModel}</Text> : null}
               {bootSession ? ` · Session: ${bootSession}` : ''}
             </Text>
           </Box>
         )}
-        <Messages msgs={msgs} />
+        <Messages msgs={visible} />
+        {scrolledOut && (
+          <Text color={THEME.muted}>
+            ▾ 上滚 {top} 行 · Ctrl+U/D 翻页 · Home 顶 · End 回底
+          </Text>
+        )}
         {thinking && (
           <Box>
             <Text color="yellow">{KAOMOJI[thinkingIdx.current]} 思考中...</Text>
