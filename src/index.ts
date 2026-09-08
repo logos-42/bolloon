@@ -1158,6 +1158,50 @@ async function processInput(input: string, comm: HyperswarmCommunicator | null):
   // ==================== 2026-08-06: 系统命令组 (/model /now /ipfs /memory ...) ====================
   const cmd = trimmed.toLowerCase();
 
+  // /net — Agent 网络快捷命令 (join/status/ctx, 2026-09-08)
+  if (cmd === '/net' || cmd.startsWith('/net ')) {
+    const arg = trimmed.slice(4).trim();
+    if (arg.toLowerCase().startsWith('join ')) {
+      const link = arg.slice(5).trim();
+      const { joinNetwork, pullNetworkProfile, pullNetworkSharedContext, networkShareSelf } = await import('./agents/gateway-network.js');
+      const r = await joinNetwork(link);
+      if (!r.ok) { appendLine(`${C_ERROR}加入失败: ${r.error}${RESET}`); return; }
+      appendLine(r.already ? `${C_DIM}已在网络 (${r.linkKind})${RESET}` : `${C_OK}已加入${RESET} (${r.linkKind}) · ${r.total} 服务 · 新增 ${r.joined}${r.networkId ? ` · ${C_DIM}net=${String(r.networkId).slice(0, 16)}${RESET}` : ''}`);
+      const profile = await pullNetworkProfile(link).catch(() => null);
+      if (profile?.members?.length) {
+        appendLine(`${C_ACCENT}网络画像:${RESET}`);
+        for (const m of profile.members.slice(0, 8)) appendLine(`  ${m.name} ${C_DIM}(${String(m.agentId).slice(0, 16)}…) · ${m.service?.name || ''}${RESET}`);
+      }
+      if (profile?.bootstrap?.sharedContextCid) {
+        const ctx = await pullNetworkSharedContext(profile.bootstrap.sharedContextCid).catch(() => null);
+        if (ctx) appendLine(`${C_DIM}📡 共享context: ${ctx.slice(0, 140).replace(/\n/g, ' ')}${RESET}`);
+      }
+      try {
+        const self = { agentId: cliAgentId || 'cli-agent', name: cliAgentName || 'bolloon', wallet: '0x0', service: { name: 'agent', description: 'bolloon cli node', price: { amount: '0', currency: 'USDC', per: 'query' } } };
+        const s = await networkShareSelf(link, [self]);
+        if (s?.ok && s.note) appendLine(`${C_DIM}${s.note}${RESET}`);
+      } catch { /* 广播失败不致命 */ }
+      return;
+    }
+    if (arg.toLowerCase() === 'status' || arg === '') {
+      const { listJoinedNetworks } = await import('./agents/gateway-network.js');
+      const nets = await listJoinedNetworks();
+      appendLine(nets.length
+        ? `🔗 ${C_ACCENT}已加入网络:${RESET}\n` + nets.map((n) => `  ${n.name || n.kind} ${C_DIM}(${n.serviceCount}S${n.networkId ? ` · ${String(n.networkId).slice(0, 16)}` : ''})${RESET}`).join('\n')
+        : `${C_DIM}未加入任何网络 — /net join <链接>${RESET}`);
+      return;
+    }
+    if (arg.toLowerCase().startsWith('ctx ')) {
+      const text = arg.slice(4).trim();
+      const { publishNetworkSharedContext } = await import('./agents/gateway-network.js');
+      const p = await publishNetworkSharedContext(text);
+      appendLine(p.ok ? `${C_OK}共享context已发布:${RESET} ${p.cid}` : `${C_ERROR}发布失败: ${p.error}${RESET}`);
+      return;
+    }
+    appendLine(`${C_DIM}用法: /net join <链接> | /net status | /net ctx <文本>${RESET}`);
+    return;
+  }
+
   // /model — 模型供应商选择器 (ink 交互渲染, 复用 MentionPopup)
   if (cmd === '/model') {
     try {

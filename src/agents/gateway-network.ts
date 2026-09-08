@@ -401,6 +401,23 @@ export async function pullNetworkSharedContext(cid: string): Promise<string | nu
   }
 }
 
+/**
+ * ① 发布共享 context 到 OrbitDB (内容寻址), 返回 CID — 供 shareNetworkLink 的 sharedContextCid,
+ *   手机/PC 入网后拉取即"近期上下文同步". opts.share=true 时把块放入 helia blockstore 供网络拉取.
+ */
+export async function publishNetworkSharedContext(text: string, opts?: { agentId?: string; share?: boolean }): Promise<{ ok: boolean; cid?: string; error?: string }> {
+  try {
+    const { getCIDDatabase } = await import('../orbitdb/cid-database.js');
+    const db = getCIDDatabase();
+    const rec = await db.save({ agentId: opts?.agentId || 'bolloon-network', type: 'context', content: text });
+    let cid = rec.id;
+    if (opts?.share !== false) { try { cid = await db.share(cid); } catch { /* 分享失败仍可用 CID 读 */ } }
+    return { ok: true, cid };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e).slice(0, 140) };
+  }
+}
+
 // ============ 分享链接 ============
 
 /**
