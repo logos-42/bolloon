@@ -1785,3 +1785,30 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 ### 关联
 
 - 复用: agent-gateway(注册/发现/定价), cid_database(内容寻址), x402(交易), agent-reputation(清算); 见 resource-store.ts / pi-sdk-tools.ts.
+
+---
+
+## 数字资源资产化 Stage 1-B: EVM 资产合约 (2026-09-08)
+
+### 目标
+
+- 真 EVM 资产合约 (ERC-721, **内容 CID 作 tokenURI**), 铸造 on-chain token 可流转.
+
+### 变更
+
+- **`contracts/ResourceERC721.sol`**: 极简 ERC-721 (无 OZ 依赖), `mint(to,id,tokenUri)` 铸币(tokenUri=CID 指针, 不可变随 token 流转) / `ownerOf` / `balanceOf` / `tokenURI` / `approve` / `safeTransferFrom`; 便于 forge/remix 直接编译部署.
+- **`contracts/test/ResourceERC721.t.sol`**: **Foundry 完备性测试** — mint 成功/重复 mint revert/零地址 revert; ownerOf 未铸 revert; approve 仅 owner; safeTransferFrom 成功/非 owner/未授权/零地址/授权被清除; tokenURI 跨流转不可变; Transfer 事件断言 (20+ 用例).
+- **`src/agents/resource-token.ts`**: `mintResourceToken`(CID→tokenURI 铸币, 记 token 账本) / `transferResourceToken` / `queryResourceToken` / `listResourceTokens`; EVM executor 注入可测; `loadEvmConfig`(~/.bolloon/evm-config.json).
+- **工具 `resource_mint` / `resource_transfer` / `resource_token`**: 铸造/流转/查询; 复用 resource-store 取资源, `__bolloonEvmExecutor`(ethers/viem 或注入).
+- **`scripts/solc-compile.mjs`** + `npm run check:token`: solc 编译合约门禁 (已挂).
+
+### 验证
+
+- **solc 编译 PASS** (ABI: mint/ownerOf/safeTransferFrom/approve/balanceOf/tokenURI + Transfer/Approval 事件).
+- **TS 单测 13 过** (resource-token 4: CID-tokenURI/needConfig/transfer/query; resource-store 9 维持).
+- **Foundry `forge test`**: 测试套件完备, 本机因 forge 二进制硬依赖 libusb(Homebrew 未装)暂未运行 → `brew install libusb` 后 `forge test` 即跑全量.
+- 真实链上铸造流转需: 部署 ResourceERC721.sol + 配 `__bolloonEvmExecutor`/`~/.bolloon/evm-config.json`(合约地址/RPC/chainId).
+
+### 关联
+
+- 复用: cid_database(内容寻址→tokenURI), agent-registry/gateway(跨机可见), resource-store(资源层); 见 contracts/ + resource-token.ts.
