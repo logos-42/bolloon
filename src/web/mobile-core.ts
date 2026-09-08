@@ -443,6 +443,28 @@ export const core = {
       busBroadcast({ type: 'payment-rejected', id });
     },
   },
+  // #2 手机入网 (极简按钮入口): 懒加载 browser-safe mobile-gateway
+  gateway: {
+    async join(link: string): Promise<{ ok: boolean; output: string }> {
+      const { mobileGatewayTool } = await import('./mobile-gateway.js');
+      return mobileGatewayTool('gateway_join', { link });
+    },
+    async status(): Promise<{ ok: boolean; output: string }> {
+      const { mobileGatewayTool } = await import('./mobile-gateway.js');
+      return mobileGatewayTool('gateway_status', {});
+    },
+    async register(self: any): Promise<{ ok: boolean; output: string }> {
+      const { mobileGatewayTool } = await import('./mobile-gateway.js');
+      return mobileGatewayTool('gateway_register', { self });
+    },
+    async autoJoin(text: string): Promise<string | null> {
+      const { mobileAutoJoinGateway } = await import('./mobile-gateway.js');
+      return mobileAutoJoinGateway(text);
+    },
+    setDesktopBaseUrl(url: string): void {
+      void import('./mobile-gateway.js').then((m) => m.setDesktopBaseUrl(url));
+    },
+  },
 };
 
 // 全局暴露给 mobile.js

@@ -24,6 +24,16 @@ export interface MobileGatewayOpts {
 }
 
 const MEMBERS_KEY = 'bolloon_mobile_net_members';
+const DESKTOP_URL_KEY = 'bolloon_desktop_base_url';
+
+/** 手机侧持久化的桌面节点 API 基址 (设置页填; localStorage) */
+export function getDesktopBaseUrl(): string {
+  try { return typeof localStorage !== 'undefined' ? (localStorage.getItem(DESKTOP_URL_KEY) || '') : ''; }
+  catch { return ''; }
+}
+export function setDesktopBaseUrl(url: string): void {
+  try { if (typeof localStorage !== 'undefined') localStorage.setItem(DESKTOP_URL_KEY, String(url || '')); } catch { /* 忽略 */ }
+}
 
 function defaultStorage(): { get(): MobileMember[]; set(m: MobileMember[]): void } {
   let mem: MobileMember[] = [];
@@ -92,11 +102,12 @@ export async function mobileJoinNetwork(link: string, opts: MobileGatewayOpts = 
     st.set(merged);
     return { ok: true, joined, total: r.services.length, networkName: parsed.networkName, meta: r.meta };
   }
-  // orbitdb/ipns → 桌面转发
-  if (opts.desktopBaseUrl) {
+  // orbitdb/ipns → 桌面转发 (默认用设置页持久化的 desktopBaseUrl)
+  const desktopBaseUrl = opts.desktopBaseUrl || getDesktopBaseUrl();
+  if (desktopBaseUrl) {
     try {
       const f = afetch(opts);
-      const r = await f(`${String(opts.desktopBaseUrl).replace(/\/$/, '')}/api/gateway/join`, {
+      const r = await f(`${String(desktopBaseUrl).replace(/\/$/, '')}/api/gateway/join`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ link }),
       });
       const j: any = r.ok ? await r.json() : null;
@@ -144,4 +155,39 @@ export async function mobileAutoJoinGateway(text: string, opts: MobileGatewayOpt
     return `🆕 已加入 Agent 网络${r.networkName ? `「${r.networkName}」` : ''}${r.viaDesktop ? '(经桌面)' : ''}: 拉取 ${r.total ?? 0} 个成员, 新增 ${r.joined ?? 0} 个。`;
   }
   return `⚠️ 检测到网络链接但加入失败: ${r.error}`;
+}
+
+/**
+ * 手机端 gateway 工具统一分派 (供 Kotlin AgentRuntime 或 JS 路由调用):
+ *   gateway_join(link) / gateway_status() / gateway_register(self) / gateway_context(cid)
+ * 返回 {ok, output} 给 agent 作为工具结果文本.
+ */
+export async function mobileGatewayTool(name: string, args: any, opts: MobileGatewayOpts = {}): Promise<{ ok: boolean; output: string }> {
+  const n = String(name || '').trim();
+  if (n === 'gateway_join') {
+    const link = String(args?.link || args?.url || args?.value || '');
+    if (!link) return { ok: false, output: 'gateway_join 需要 link 参数 (orbitdb:// / ipns:// / https://.../registry)' };
+    const r = await mobileJoinNetwork(link, opts);
+    return r.ok
+      ? { ok: true, output: `已加入 Agent 网络${r.networkName ? `「${r.networkName}」` : ''}: ${r.total ?? 0} 成员, 新增 ${r.joined ?? 0}` }
+      : { ok: false, output: `加入失败: ${r.error}` };
+  }
+  if (n === 'gateway_status') {
+    const m = mobileNetworkStatus(opts);
+    return m.length
+      ? { ok: true, output: m.map((x) => `${x.name} (${String(x.agentId).slice(0, 12)}…) ${x.service?.name || ''}`).join('\n') }
+      : { ok: true, output: '（网络为空: 先 gateway_join 或设置 desktopBaseUrl）' };
+  }
+  if (n === 'gateway_register') {
+    const self = args?.self || args;
+    if (self?.agentId) { mobileRegister(self as MobileMember, opts); return { ok: true, output: '已注册本机声明' }; }
+    return { ok: false, output: 'gateway_register 需要 self{agentId,name,service?}' };
+  }
+  if (n === 'gateway_context') {
+    const cid = String(args?.cid || '');
+    if (!cid) return { ok: false, output: 'gateway_context 需要 cid' };
+    const t = await mobilePullSharedContext(cid, opts);
+    return t ? { ok: true, output: t.slice(0, 400) } : { ok: false, output: '共享 context 拉取失败' };
+  }
+  return { ok: false, output: `未知 gateway 工具: ${n}` };
 }

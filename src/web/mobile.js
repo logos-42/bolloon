@@ -46,7 +46,7 @@
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
     $('#topbar-title').textContent = TITLES[tab] || '会话';
     const cs = $('#btn-create-session'); if (cs) cs.hidden = tab !== 'main';
-    if (tab === 'network') { loadContacts(); loadMcpTools(); loadApprovals(); }
+    if (tab === 'network') { loadContacts(); loadMcpTools(); loadApprovals(); loadNetMembers(); }
     if (tab === 'main') { loadAgentCovers(); }
     window.__mobileTouch?.('tab', tab);
   }
@@ -1199,6 +1199,28 @@
       try { const net = await api.get('/api/network/status'); const p2p = net && net.nodeId; alert('P2P ID (通信ID, ≠ DID):\n' + (p2p || '未连接')); }
       catch (e) { alert('P2P ID: 获取失败'); }
     });
+    // #2 极简入网按钮: 粘贴/输入链接 → BolloonCore.gateway.join (懒加载 mobile-gateway)
+    const joinNetBtn = $('#item-join-net');
+    if (joinNetBtn) joinNetBtn.addEventListener('click', async () => {
+      const link = (window.prompt && window.prompt('粘贴网络链接\n(orbitdb://  ipns://  https://.../registry)') || '').trim();
+      if (!link) return;
+      try {
+        const r = await (window.BolloonCore && window.BolloonCore.gateway && window.BolloonCore.gateway.join(link));
+        alert(r ? (r.output || '已处理') : 'BolloonCore.gateway 不可用');
+      } catch (e) { alert('加入失败: ' + String((e && e.message) || e).slice(0, 120)); }
+      loadNetMembers();
+    });
+  }
+
+  async function loadNetMembers() {
+    const el = $('#net-members');
+    if (!el) return;
+    try {
+      const r = await (window.BolloonCore && window.BolloonCore.gateway && window.BolloonCore.gateway.status());
+      if (r && r.output) {
+        el.innerHTML = r.output.split('\n').filter(Boolean).map((l) => `<div class="list-item">${escapeHtml(l)}</div>`).join('');
+      } else el.innerHTML = '<div class="list-item">（网络为空）</div>';
+    } catch (e) { el.innerHTML = '<div class="list-item">网络状态获取失败</div>'; }
   }
 
   function escapeHtml(s) {

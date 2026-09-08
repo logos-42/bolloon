@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 // 手机端 browser-safe gateway 单测 (注入 fetch/storage, 不依赖浏览器)
 import { parseNetworkLink, detectGatewayLink } from '../agents/network-link.js';
-import { mobileJoinNetwork, mobileRegister, mobileNetworkStatus, mobileAutoJoinGateway } from '../web/mobile-gateway.js';
+import { mobileJoinNetwork, mobileRegister, mobileNetworkStatus, mobileAutoJoinGateway, mobileGatewayTool, getDesktopBaseUrl, setDesktopBaseUrl } from '../web/mobile-gateway.js';
 import type { MobileGatewayOpts } from '../web/mobile-gateway.js';
 
 function memStore() {
@@ -73,5 +73,28 @@ describe('mobile-gateway (#2 手机入网)', () => {
     expect(note).toContain('已加入');
     expect(note).toContain('alpha');
     expect(storage.get().length).toBe(1);
+  });
+
+  it('mobileGatewayTool 分派: join/status/register', async () => {
+    const storage = memStore();
+    const opts: MobileGatewayOpts = {
+      fetch: fetchRes(fetchOk({ services: [{ agentId: 'did:z', service: { name: 'coding' } }], meta: { networkId: 'n9' } })),
+      storage,
+    };
+    const j = await mobileGatewayTool('gateway_join', { link: 'https://x.com/registry?name=netX' }, opts);
+    expect(j.ok).toBe(true);
+    expect(j.output).toContain('netX');
+    const s = await mobileGatewayTool('gateway_status', {}, opts);
+    expect(s.ok).toBe(true);
+    expect(s.output).toContain('did:z');
+    const r = await mobileGatewayTool('gateway_register', { self: { agentId: 'did:me', name: 'me', service: { name: 'research' } } }, opts);
+    expect(r.ok).toBe(true);
+    expect(mobileNetworkStatus({ storage }).some((m) => m.agentId === 'did:me')).toBe(true);
+    expect((await mobileGatewayTool('gateway_join', {}, opts)).ok).toBe(false); // 缺 link
+  });
+
+  it('desktopBaseUrl 配置持久化 (node 无 localStorage → 不抛)', () => {
+    setDesktopBaseUrl('http://192.168.1.5:54188');
+    expect(typeof getDesktopBaseUrl()).toBe('string'); // 无 localStorage 返回 ''
   });
 });
