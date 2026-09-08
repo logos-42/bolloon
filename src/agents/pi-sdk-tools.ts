@@ -2042,16 +2042,17 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   });
 
   // ============================================================
-  // 数字资源资产化 (Stage 1 轻版): 注册→发现→访问, 注册/运营/交易/清算 经济循环的资源层
+  // 数字资源资产化 (Stage 1-4): 注册→运营(发现/匹配)→交易(x402)→清算(信誉)
   // ============================================================
   ctx.tools.set('resource_register', {
     name: 'resource_register',
-    description: '注册一个数字资源上链 (A 轻版: 内容CID寻址 + 元数据; 预留 chain=evm 可升级 tokenURI). type: data|art_product|product_image|tx_link; 内容寻址存 content, 定价/授权/交易链接进资源记录, 供网络内智能体 resource_discover/access 发现并访问.',
+    description: '注册一个数字资源 (A 轻版: 内容CID寻址 + 元数据同步网络 registry; 预留 chain=evm 可升级 tokenURI). type: data|art_product|product_image|tx_link; 内容寻址存 content, 定价/授权/交易链接/收款钱包进资源记录, 供网络内智能体 resource_discover/match/purchase 发现并交易.',
     parameters: {
       type: 'data | art_product | product_image | tx_link',
       title: '资源标题',
       content: '资源内容 (文本/JSON; 图片 base64 dataURL)',
-      price: '可选 {amount,currency:USDC|token,token?,per?}',
+      wallet: '可选收款钱包地址 (Stage 3 交易用)',
+      price: '可选 {amount,currency:USDC|token,token?,per?} 字符串或JSON',
       license: '可选授权 (personal/commercial)',
       txLink: '可选交易链接',
       chain: '可选 none|evm (预留升级)',
@@ -2065,6 +2066,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
           save: async (t: string) => (await db.save({ agentId: String((ctx as any).agentId || ''), type: 'knowledge', content: t })).id,
           load: async (c: string) => { const rec = await db.load(c); return rec ? String((rec as any).content ?? '') : null; },
         };
+        const { getAgentRegistry } = await import('./agent-registry.js');
         const { registerResource } = await import('./resource-store.js');
         let price: any;
         if (args.price) { try { price = typeof args.price === 'string' ? JSON.parse(args.price) : args.price; } catch { price = undefined; } }
@@ -2073,39 +2075,62 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
           type: String(args.type || '') as any,
           title: String(args.title || ''),
           content: String(args.content || ''),
+          wallet: args.wallet ? String(args.wallet) : undefined,
           price,
           license: args.license ? String(args.license) : undefined,
           txLink: args.txLink ? String(args.txLink) : undefined,
           chain: args.chain as any,
           tokenUriTemplate: args.tokenUriTemplate ? String(args.tokenUriTemplate) : undefined,
-        }, { cid: cidd });
+        }, { cid: cidd, registry: getAgentRegistry() });
         if (!r.ok) return { success: false, error: r.error };
         const res = r.resource!;
-        return { success: true, output: `✅ 资源已注册 (A 轻版上链): ${res.resourceId}\n  ${res.title} · ${res.type} · CID: ${res.contentCid}${res.price ? ` · 价格 ${res.price.amount} ${res.price.currency}${res.price.token ? `(${res.price.token})` : ''}` : ''}${res.license ? ` · ${res.license}` : ''}${res.txLink ? ` · 交易:${res.txLink}` : ''}${res.chain === 'evm' ? ` · ${res.chain}` : ''}\n网络内智能体可用 resource_discover 找到它, resource_access 访问内容。` };
+        return { success: true, output: `✅ 资源已注册 (A 轻版上链): ${res.resourceId}\n  ${res.title} · ${res.type} · CID: ${res.contentCid}${res.wallet ? ` · 钱包 ${res.wallet}` : ''}${res.price ? ` · 价格 ${res.price.amount} ${res.price.currency}${res.price.token ? `(${res.price.token})` : ''}` : ''}${res.license ? ` · ${res.license}` : ''}${res.txLink ? ` · 交易:${res.txLink}` : ''}${res.chain === 'evm' ? ` · ${res.chain}` : ''}\n已同步网络 registry: 智能体可用 resource_discover/match 找到, resource_purchase 交易/访问。` };
       } catch (e) { return { success: false, error: `resource_register 失败: ${String(e).slice(0, 200)}` }; }
     },
   });
 
   ctx.tools.set('resource_discover', {
     name: 'resource_discover',
-    description: '发现数字资源: 按 type 或 owner 列出网络内注册的资源 (谁注册了什么, 定价/授权/交易链接), 供分配/交易决策.',
+    description: '发现数字资源 (本机 + 网络 registry): 按 type 或 owner 列出 (谁注册了什么, 定价/授权/交易链接), 供分配/交易决策.',
     parameters: { type: '可选过滤 type', owner: '可选过滤 owner DID' },
     execute: async (args) => {
       try {
+        const { getAgentRegistry } = await import('./agent-registry.js');
         const { listResources } = await import('./resource-store.js');
-        const list = listResources({
+        const list = await listResources({
           type: args.type ? String(args.type) as any : undefined,
           owner: args.owner ? String(args.owner) : undefined,
-        });
+        }, { registry: getAgentRegistry() });
         if (!list.length) return { success: true, output: '暂无资源 (用 resource_register 注册)' };
-        return { success: true, output: list.map((r) => `${r.resourceId} · ${r.title} · ${r.type}${r.price ? ` · ${r.price.amount} ${r.price.currency}${r.price.token ? `(${r.price.token})` : ''}${r.price.per ? `/${r.price.per}` : ''}` : ''}${r.license ? ` · ${r.license}` : ''}${r.txLink ? ` · 🔗${r.txLink}` : ''}${r.chain === 'evm' ? ' · evm' : ''}`).join('\n') + '\n（resource_access <id> 访问内容）' };
+        return { success: true, output: list.map((r) => `${r.resourceId} · ${r.title} · ${r.type}${r.price ? ` · ${r.price.amount} ${r.price.currency}${r.price.token ? `(${r.price.token})` : ''}${r.price.per ? `/${r.price.per}` : ''}` : ''}${r.license ? ` · ${r.license}` : ''}${r.txLink ? ` · 🔗${r.txLink}` : ''}${r.wallet ? ` · 钱包 ${String(r.wallet).slice(0, 10)}…` : ''}${r.chain === 'evm' ? ' · evm' : ''}`).join('\n') + '\n（resource_purchase <id> 交易/访问）' };
       } catch (e) { return { success: false, error: `resource_discover 失败: ${String(e).slice(0, 200)}` }; }
     },
   });
 
-  ctx.tools.set('resource_access', {
-    name: 'resource_access',
-    description: '访问资源内容: 按 resourceId 取回 content (内容寻址 CID). 付费资源需先经 x402 授权.',
+  ctx.tools.set('resource_match', {
+    name: 'resource_match',
+    description: '自动分配匹配: 按需求关键词对资源打分 (标题/类型/授权 + 提供者信誉加权), 返回推荐排序. 用于智能体自动分配资源.',
+    parameters: { query: '需求关键词' },
+    execute: async (args) => {
+      try {
+        const { getAgentRegistry } = await import('./agent-registry.js');
+        const { queryReputation } = await import('./agent-reputation.js');
+        const registry = getAgentRegistry();
+        const { matchResources } = await import('./resource-store.js');
+        const repQuery = async (owner: string, type?: string) => {
+          try { const q = await queryReputation(owner, type, registry); const e = q.entries?.[0]; return { score: e?.reputation?.score ?? 0, tasks: e?.reputation?.tasks ?? 0, success: e?.reputation?.success ?? 0, failed: e?.reputation?.failed ?? 0 }; }
+          catch { return { score: 0, tasks: 0, success: 0, failed: 0 }; }
+        };
+        const scored = await matchResources(String(args.query || ''), { registry, repQuery });
+        if (!scored.length) return { success: true, output: '无匹配资源' };
+        return { success: true, output: scored.map((s) => `${s.resource.resourceId} · ${s.resource.title} · ${s.resource.type} · 得分 ${Math.round(s.score * 10) / 10}${s.resource.license ? ` · ${s.resource.license}` : ''}`).join('\n') };
+      } catch (e) { return { success: false, error: `resource_match 失败: ${String(e).slice(0, 200)}` }; }
+    },
+  });
+
+  ctx.tools.set('resource_purchase', {
+    name: 'resource_purchase',
+    description: '交易/访问资源: 付费资源走 x402 支付后解锁内容 (结算更新提供者信誉), 免费资源直接取回内容.',
     parameters: { resourceId: '资源 id' },
     execute: async (args) => {
       try {
@@ -2115,11 +2140,47 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
           save: async (t: string) => (await db.save({ agentId: String((ctx as any).agentId || ''), type: 'knowledge', content: t })).id,
           load: async (c: string) => { const rec = await db.load(c); return rec ? String((rec as any).content ?? '') : null; },
         };
-        const { accessResource } = await import('./resource-store.js');
-        const r = await accessResource(String(args.resourceId || ''), { cid: cidd });
-        if (!r.ok) return { success: false, error: r.error };
-        return { success: true, output: `📄 ${r.resource!.title} (${r.resource!.type} · ${r.resource!.contentCid})\n${String(r.content).slice(0, 3000)}` };
-      } catch (e) { return { success: false, error: `resource_access 失败: ${String(e).slice(0, 200)}` }; }
+        const { getAgentRegistry } = await import('./agent-registry.js');
+        const { queryReputation } = await import('./agent-reputation.js');
+        const registry = getAgentRegistry();
+        const { purchaseResource } = await import('./resource-store.js');
+        const pay = async (spec: any) => {
+          try {
+            const { x402Pay } = await import('./x402/x402Pay.js');
+            const key = (globalThis as any).__bolloonPayPrivateKey || '';
+            if (!key) return { success: false, error: '需配置节点付款钱包私钥 (__bolloonPayPrivateKey) 才能购买付费资源' };
+            const r = await x402Pay({ privateKey: key, amount: String(spec.amount), to: spec.recipient, currency: spec.currency === 'USDC' ? 'USDC' : 'ETH', memo: spec.memo });
+            return { success: r.success, txHash: r.txHash, error: r.error };
+          } catch (e) { return { success: false, error: `x402 支付失败: ${String((e as any)?.message || e).slice(0, 120)}` }; }
+        };
+        const repQuery = async (owner: string, type?: string) => {
+          try { const q = await queryReputation(owner, type, registry); const e = q.entries?.[0]; return { score: e?.reputation?.score ?? 0, tasks: e?.reputation?.tasks ?? 0, success: e?.reputation?.success ?? 0, failed: e?.reputation?.failed ?? 0 }; }
+          catch { return { score: 0, tasks: 0, success: 0, failed: 0 }; }
+        };
+        const onSettle = (outcome: 'success' | 'failed', resource: any) => {
+          void import('./agent-reputation.js').then((m) => m.recordServiceOutcome(resource.ownerDid, `resource:${resource.type}`, outcome, registry)).catch(() => {});
+        };
+        const r = await purchaseResource(String(args.resourceId || ''), { cid: cidd, pay, repQuery, onSettle });
+        if (!r.ok) return { success: false, error: r.error || (r.needPay ? '需要支付' : '失败') };
+        return { success: true, output: `${r.txHash ? `💰 已支付 (tx ${String(r.txHash).slice(0, 16)}…) · ` : ''}📄 ${r.resource!.title} (${r.resource!.type})\n${String(r.content || '').slice(0, 3000)}` };
+      } catch (e) { return { success: false, error: `resource_purchase 失败: ${String(e).slice(0, 200)}` }; }
+    },
+  });
+
+  ctx.tools.set('resource_reputation', {
+    name: 'resource_reputation',
+    description: '清算/信誉: 查资源提供者信誉 (成交记录+score), 供自动分配加权决策.',
+    parameters: { owner: 'owner DID (缺省=本机)' },
+    execute: async (args) => {
+      try {
+        const { getAgentRegistry } = await import('./agent-registry.js');
+        const { queryReputation } = await import('./agent-reputation.js');
+        const registry = getAgentRegistry();
+        const owner = String(args.owner || (ctx as any).agentId || '');
+        const q = await queryReputation(owner, undefined, registry);
+        if (!q.entries?.length) return { success: true, output: `${owner.slice(0, 16)}… 暂无信誉记录` };
+        return { success: true, output: q.entries.map((e) => `  ${e.service} · ${e.reputation.score} (${e.reputation.success}/${e.reputation.tasks} 成交)`).join('\n') };
+      } catch (e) { return { success: false, error: `resource_reputation 失败: ${String(e).slice(0, 200)}` }; }
     },
   });
 
