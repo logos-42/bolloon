@@ -2184,6 +2184,58 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     },
   });
 
+  // ── Stage 1-B: EVM 资产合约 (ERC-721, CID 作 tokenURI) 铸造/流转/查询 ──
+  ctx.tools.set('resource_mint', {
+    name: 'resource_mint',
+    description: '把已注册数字资源铸成 ERC-721 token (内容 CID 作 tokenURI, 不可变随 token 流转). 需配置 EVM executor (部署 contracts/ResourceERC721.sol + 设 __bolloonEvmExecutor 或用 ethers/viem).',
+    parameters: { resourceId: '资源 id' },
+    execute: async (args) => {
+      try {
+        const { getResource } = await import('./resource-store.js');
+        const { mintResourceToken } = await import('./resource-token.js');
+        const r = await getResource(String(args.resourceId || ''));
+        if (!r) return { success: false, error: '资源不存在' };
+        const evm = (globalThis as any).__bolloonEvmExecutor;
+        if (!evm) return { success: false, error: '需配置 EVM executor (__bolloonEvmExecutor) 才能铸造. 部署 contracts/ResourceERC721.sol + 配置 ~/.bolloon/evm-config.json / ethers.' };
+        const m = await mintResourceToken({ resourceId: r.resourceId, ownerDid: r.ownerDid, contentCid: r.contentCid, wallet: r.wallet, title: r.title }, { evm });
+        if (!m.ok) return { success: false, error: m.error || (m.needConfig ? '需配置 EVM' : '铸造失败') };
+        return { success: true, output: `✅ 已铸造 tokenId=${m.tokenId} · tokenURI=ipfs://${r.contentCid} · 资源 ${r.resourceId}\n(resource_transfer <tokenId> <to> 流转 · resource_token <tokenId> 查询)` };
+      } catch (e) { return { success: false, error: `resource_mint 失败: ${String(e).slice(0, 200)}` }; }
+    },
+  });
+
+  ctx.tools.set('resource_transfer', {
+    name: 'resource_transfer',
+    description: '流转 ERC-721 token 所有权 (safeTransferFrom) 到新地址.',
+    parameters: { tokenId: 'token id', to: '接收 EVM 地址' },
+    execute: async (args) => {
+      try {
+        const { transferResourceToken } = await import('./resource-token.js');
+        const evm = (globalThis as any).__bolloonEvmExecutor;
+        if (!evm) return { success: false, error: '需配置 EVM executor (__bolloonEvmExecutor)' };
+        const r = await transferResourceToken(String(args.tokenId || ''), String(args.to || ''), { evm });
+        if (!r.ok) return { success: false, error: r.error || '流转失败' };
+        return { success: true, output: `✅ 已流转 token ${r.tokenId} → ${args.to}` };
+      } catch (e) { return { success: false, error: `resource_transfer 失败: ${String(e).slice(0, 200)}` }; }
+    },
+  });
+
+  ctx.tools.set('resource_token', {
+    name: 'resource_token',
+    description: '查询 ERC-721 token: owner + tokenURI (内容 CID).',
+    parameters: { tokenId: 'token id' },
+    execute: async (args) => {
+      try {
+        const { queryResourceToken } = await import('./resource-token.js');
+        const evm = (globalThis as any).__bolloonEvmExecutor;
+        if (!evm) return { success: false, error: '需配置 EVM executor (__bolloonEvmExecutor)' };
+        const r = await queryResourceToken(String(args.tokenId || ''), { evm });
+        if (!r.ok) return { success: false, error: r.error || '查询失败' };
+        return { success: true, output: `🔎 token ${args.tokenId}\n  owner: ${r.owner || 'n/a'}\n  tokenURI: ${r.tokenUri || 'n/a'}` };
+      } catch (e) { return { success: false, error: `resource_token 失败: ${String(e).slice(0, 200)}` }; }
+    },
+  });
+
   // ============================================================
   // MCP 工具 (2026-08-03) — 外部 MCP server 接入 agent 工具系统
   // 配置: ~/.mcp.json (mcpServers), 启动时 initializeMcpAdapter 自动握手发现工具
