@@ -131,6 +131,11 @@ export interface JoinedNetwork {
   joinedAt: string;
   serviceCount: number;   // 上次同步时的服务数
   lastSyncAt?: string;
+  // ① 网络启动包 (meta) — 加入时拉取的网络声明 (2026-09-08)
+  networkId?: string;
+  version?: string;
+  capacityOfMembers?: number;
+  sharedContextCid?: string;
 }
 
 const networksFile = (): string => path.join(os.homedir() || '/tmp', '.bolloon', 'gateway-networks.json');
@@ -168,6 +173,8 @@ export interface JoinNetworkResult {
   error?: string;
   linkKind?: string;
   networkName?: string;
+  networkId?: string;
+  sharedContextCid?: string;
 }
 
 /**
@@ -208,30 +215,36 @@ export async function joinNetwork(link: string, deps?: { registry?: AgentRegistr
   // 合并到本地 registry (按 agentId + service.name 去重)
   const registry = deps?.registry ?? getAgentRegistry();
   const local = await registry.list();
-  let joined = 0;
-  for (const svc of remote) {
-    if (!svc?.agentId || !svc?.service?.name) continue;
-    const exists = local.some((l) => l.agentId === svc.agentId && l.service?.name === svc.service?.name);
-    if (!exists) {
-      await registry.register(svc as AgentService).catch(() => {});
-      joined++;
+  const remoteServices: AgentService[] = Array.isArray(remote) ? (remote as AgentService[]) : [];
+  const { merged, joined } = mergeRemoteServices(remoteServices, local);
+  for (const svc of merged) {
+    if (!local.some((l) => l.agentId === svc.agentId && l.service?.name === svc.service?.name)) {
+      await registry.register(svc).catch(() => {});
     }
   }
 
-  // 记录成员身份 (持久化 → 重启后自动恢复)
+  // ① 网络启动包 (meta): 拉网络声明 (networkId/名称/版本/容量/共享context CID), 尽力而为
+  const meta = await fetchNetworkMeta(parsed).catch(() => null);
+  const bootstrap = buildNetworkBootstrap(meta);
+
+  // 记录成员身份 (持久化 → 重启后自动恢复) + 网络启动包信息
   await saveNetworks([
     ...existing,
     {
       link: norm,
       linkKey: identityKey,
       kind: parsed.kind,
-      name: parsed.networkName,
+      name: bootstrap.name || parsed.networkName,
       joinedAt: new Date().toISOString(),
-      serviceCount: remote.length,
+      serviceCount: remoteServices.length,
       lastSyncAt: new Date().toISOString(),
+      networkId: bootstrap.networkId,
+      version: bootstrap.version,
+      capacityOfMembers: bootstrap.capacityOfMembers,
+      sharedContextCid: bootstrap.sharedContextCid,
     },
   ]);
-  return { ok: true, joined, total: remote.length, linkKind: parsed.kind, networkName: parsed.networkName };
+  return { ok: true, joined, total: remoteServices.length, linkKind: parsed.kind, networkName: bootstrap.name || parsed.networkName, networkId: bootstrap.networkId, sharedContextCid: bootstrap.sharedContextCid };
 }
 
 /** 启动恢复: 重拉所有已加入网络 (失败静默, 保留记录). 返回恢复统计. */
@@ -253,6 +266,139 @@ export async function restoreJoinedNetworks(): Promise<{ restored: number; faile
     }
   }
   return { restored, failed, total: nets.length };
+}
+
+// ============ 网络启动包 / 画像 / 自广播 (2026-09-08: 连接即全量引导) ============
+
+/** ① 网络启动包: 网络级声明 (从 registry 文档 / OrbitDB store 的 meta 键 / network.json 读取) */
+export interface NetworkBootstrap {
+  networkId?: string;
+  name?: string;
+  version?: string;
+  capacityOfMembers?: number;
+  sharedContextCid?: string;
+}
+
+/** 把任意 meta 对象规整成 NetworkBootstrap (纯函数, 容错) */
+export function buildNetworkBootstrap(meta?: any): NetworkBootstrap {
+  const m = meta && typeof meta === 'object' ? meta : {};
+  const str = (v: any) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  return {
+    networkId: str(m.networkId),
+    name: str(m.name),
+    version: str(m.version),
+    capacityOfMembers: typeof m.capacityOfMembers === 'number' ? m.capacityOfMembers : undefined,
+    sharedContextCid: str(m.sharedContextCid),
+  };
+}
+
+/** 拉取网络 meta (尽力而为, 失败返回 null): orbitdb('meta' 键) / ipns(network.json) / http(doc.meta) */
+async function fetchNetworkMeta(parsed: ParsedLink): Promise<any | null> {
+  try {
+    if (parsed.kind === 'http') {
+      const r = await fetch(parsed.url, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) return null;
+      const d: any = await r.json();
+      return d?.meta ?? null;
+    }
+    if (parsed.kind === 'ipns') {
+      const r = await fetch(`http://127.0.0.1:8080/ipns/${parsed.name}/network.json`, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) return null;
+      const d: any = await r.json();
+      return d?.meta ?? d;
+    }
+    if (parsed.kind === 'orbitdb') {
+      const { getCIDDatabase } = await import('../orbitdb/cid-database.js');
+      const db = getCIDDatabase();
+      const store = await db.openStoreByAddress(parsed.address, 'keyvalue');
+      if (!store) return null;
+      const v = await store.get('meta').catch(() => null);
+      return v ?? null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** 纯函数: 远端服务并入本地 (按 agentId + service.name 去重), 返回合并结果 + 新增数 */
+export function mergeRemoteServices(remote: any[], local: AgentService[]): { merged: AgentService[]; joined: number } {
+  const out: AgentService[] = local.slice();
+  let joined = 0;
+  for (const svc of remote) {
+    if (!svc?.agentId || !svc?.service?.name) continue;
+    const exists = out.some((l) => l.agentId === svc.agentId && l.service?.name === svc.service?.name);
+    if (!exists) { out.push(svc as AgentService); joined++; }
+  }
+  return { merged: out, joined };
+}
+
+/** 网络画像: 启动包 + 当前成员列表 (谁在、会什么、报价多少) */
+export interface NetworkProfile {
+  bootstrap: NetworkBootstrap;
+  members: AgentService[];
+}
+
+/** ② 拉取网络画像 (只读, 不落盘): 供 on-join 告知 agent "网络里有什么" */
+export async function pullNetworkProfile(link: string): Promise<NetworkProfile | null> {
+  const parsed = parseNetworkLink(link);
+  if (!parsed) return null;
+  let services: any[] | null = null;
+  if (parsed.kind === 'http') services = await fetchRemoteRegistry(parsed.url);
+  else if (parsed.kind === 'ipns') services = await fetchIpnsRegistry(parsed.name);
+  else if (parsed.kind === 'orbitdb') services = await fetchOrbitdbRegistry(parsed.address);
+  const meta = await fetchNetworkMeta(parsed).catch(() => null);
+  if (!services || services.length === 0) return null;
+  return { bootstrap: buildNetworkBootstrap(meta), members: services as AgentService[] };
+}
+
+/**
+ * ③ 成员自描述广播: 把本机服务声明(list .agentId 匹配 self)写回共享网络 store ('services' 合并 self).
+ *   ① ipns/http 无回写 → 只本地登记 (返回 note); ② orbitdb replica 只读时写穿失败 → 非致命 (返回 note).
+ *   opts.members: 本机要广播的成员声明 (通常 = 自己注册的 AgentService 列表).
+ */
+export async function networkShareSelf(
+  link: string,
+  members: AgentService[],
+  opts?: { registry?: AgentRegistry },
+): Promise<{ ok: boolean; error?: string; note?: string }> {
+  if (!members || members.length === 0) return { ok: true, note: '无本机成员声明可广播' };
+  const parsed = parseNetworkLink(link);
+  if (!parsed) return { ok: false, error: '链接无法解析' };
+  if (parsed.kind !== 'orbitdb') {
+    return { ok: true, note: `${parsed.kind} 无回写能力, 已本地登记 (发起方自托管 registry 应含本机)` };
+  }
+  try {
+    const { getCIDDatabase } = await import('../orbitdb/cid-database.js');
+    const db = getCIDDatabase();
+    const store = await db.openStoreByAddress(parsed.address, 'keyvalue');
+    if (!store) return { ok: false, error: '网络 store 不可达' };
+    const cur = (await store.get('services').catch(() => null)) as AgentService[] | null;
+    const arr = Array.isArray(cur) ? cur.slice() : [];
+    for (const m of members) {
+      const i = arr.findIndex((s) => s.agentId === m.agentId && s.service?.name === m.service?.name);
+      const entry: AgentService = { ...m, updatedAt: new Date().toISOString(), registeredAt: m.registeredAt || new Date().toISOString() };
+      if (i >= 0) arr[i] = entry; else arr.push(entry);
+    }
+    await store.put('services', arr);
+    return { ok: true, note: `已广播 ${members.length} 条本机声明到网络` };
+  } catch (e: any) {
+    return { ok: false, error: `写穿失败(疑似只读 replica): ${String(e?.message || e).slice(0, 120)}`, note: '已在本地登记, 可在你的分享链接中带上本机' };
+  }
+}
+
+/**
+ * ① 拉取共享 context (由启动包 sharedContextCid 指向): 从本地 IPFS 网关读文本返回,
+ *   调用方负责注入本地 context (了解"所有信息"的最后一段).
+ */
+export async function pullNetworkSharedContext(cid: string): Promise<string | null> {
+  try {
+    const r = await fetch(`http://127.0.0.1:8080/ipfs/${cid}`, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) return null;
+    return await r.text();
+  } catch {
+    return null;
+  }
 }
 
 // ============ 分享链接 ============
@@ -287,7 +433,7 @@ export async function shareNetworkLink(opts?: { name?: string; registry?: AgentR
  * 设计: 加入是自由的 (只拉服务列表, 不花钱), 支付仍走 payment-gate 安全链.
  * deps.registry 可注入 (测试用), 默认单例.
  */
-export async function maybeAutoJoinGateway(text: string, deps?: { registry?: AgentRegistry }): Promise<string | null> {
+export async function maybeAutoJoinGateway(text: string, deps?: { registry?: AgentRegistry; self?: AgentService[] }): Promise<string | null> {
   const link = detectGatewayLink(text);
   if (!link) return null;
   try {
@@ -295,7 +441,15 @@ export async function maybeAutoJoinGateway(text: string, deps?: { registry?: Age
     if (r.ok && r.already) return null; // 已在网络, 静默
     if (r.ok) {
       const netName = r.networkName ? `「${r.networkName}」` : ''; // URLSearchParams 已 decode
-      return `🆕 已自动加入 Agent 网络${netName} (${r.linkKind}): 拉取 ${r.total} 个服务, 新增 ${r.joined} 个。用 gateway_status 查看, gateway_call 调用网络里的服务。`;
+      // ② on-join 广播: 写入自己的服务声明 (orbitdb 可回写时), 非致命
+      let selfNote = '';
+      if (deps?.self && deps.self.length > 0) {
+        const s = await networkShareSelf(link, deps.self, deps).catch(() => null);
+        selfNote = s?.ok ? ' · 已广播本机声明' : (s?.note ? ` · ${s.note}` : ' · 本机声明广播失败');
+      }
+      const bootPart = r.networkId ? ` (net=${String(r.networkId).slice(0, 16)})` : '';
+      const ctxPart = r.sharedContextCid ? ` · 共享ctx:${String(r.sharedContextCid).slice(0, 12)}` : '';
+      return `🆕 已自动加入 Agent 网络${netName}${bootPart} (${r.linkKind}): 拉取 ${r.total} 个服务, 新增 ${r.joined} 个${ctxPart}${selfNote}。用 gateway_status 查看, gateway_call 调用网络里的服务。`;
     }
     return `⚠️ 检测到 Agent 网络链接 (${r.linkKind || 'unknown'}) 但加入失败: ${r.error}`;
   } catch (e: any) {
