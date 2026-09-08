@@ -36,6 +36,12 @@ const repoRoot = path.resolve(__dirname, '..');
 // Add new entry points to this list when a new ESM subtree needs guarding.
 const PURE_TARGETS = [
   'dist/bollharness/src/scripts/context_router.js',
+  // pi-ecosystem-judgment: eagerly loaded by `bolloon --cli` before the first
+  // prompt. It once default-imported js-yaml@5, whose ESM build exports no
+  // `default`, so CLI startup died with "The requested module 'js-yaml' does
+  // not provide an export named 'default'". `node --check` (layer 1) cannot
+  // catch export-resolution failures -- only the dynamic-import layer below can.
+  'dist/pi-ecosystem-judgment/index.js',
 ];
 
 const missing = PURE_TARGETS.filter((p) => !existsSync(path.join(repoRoot, p)));

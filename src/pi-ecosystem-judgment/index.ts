@@ -17,7 +17,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 export type JudgmentType = 'rule' | 'preference' | 'trajectory' | 'reward';
 export type JudgmentSource = 'human' | 'agent' | 'collaboration';
