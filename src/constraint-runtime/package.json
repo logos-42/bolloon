@@ -1,6 +1,6 @@
 {
   "name": "@bolloon/constraint-runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Constraint-based AI agent runtime with workflow orchestration",
   "author": "Bolloon Team",
@@ -27,9 +27,6 @@
     "@jackwener/opencli": "^1.8.7",
     "@polymarket/client": "^0.9.0",
     "@polymarket/clob-client": "^5.8.1",
-    "@safe-global/api-kit": "^5.0.3",
-    "@safe-global/protocol-kit": "^8.0.6",
-    "@safe-global/relay-kit": "^6.1.0",
     "ethers": "^6.17.0",
     "platform": "^1.3.6",
     "polymarket-sdk": "^1.0.2",

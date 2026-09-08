@@ -573,8 +573,13 @@ function statusBarLine(): string {
   return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${buildContextBar(usage)}`;
 }
 
-async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
+async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Promise<void> {
   isRunning = true;
+
+  // 2026-09-08 加速启动: P2P 后台就绪, UI 直接渲染不阻塞 — comm 就绪前为 null,
+  // 内部用法全空安全 (P2P 功能自动降级, 就绪后立即可用)
+  let comm: HyperswarmCommunicator | null = null as HyperswarmCommunicator | null;
+  commReady.then((c) => { comm = c; }).catch(() => {});
 
   // CLI 模式下静音所有 console.log/warn
   // (Ink 用自己的 render 引擎, console.log 输出会污染终端)
@@ -590,7 +595,7 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
   }) as any;
 
   let peerCount = 0;
-  try { peerCount = comm.getConnections().length; } catch { /* */ }
+  void commReady.then((c) => { try { if (c) peerCount = c.getConnections().length; } catch { /* */ } });
   
   // 读取 LLM 模型名 — 优先 bolloon-config.json (activeProvider), 再退 env (2026-08-07:
   //   之前只读 env → 用户配了配置文件但状态栏显示"未配置")
@@ -766,11 +771,11 @@ async function startCLI(comm: HyperswarmCommunicator): Promise<void> {
   appendLine(`\n${CYAN}👋 再见！${RESET}`);
   try { cliOrganizeHeartbeat?.stop(); } catch { /* 非致命 */ }
   if (cliCronTimer) clearInterval(cliCronTimer);
-  comm.stop();
+  comm?.stop();
   process.exit(0);
 }
 
-async function processInput(input: string, comm: HyperswarmCommunicator): Promise<void> {
+async function processInput(input: string, comm: HyperswarmCommunicator | null): Promise<void> {
   const trimmed = input.trim();
   // TUI tool call state (local to this invocation)
   const tuiToolCalls: Array<{ tool: string; args: any; _t: number }> = [];
@@ -1771,7 +1776,7 @@ async function processInput(input: string, comm: HyperswarmCommunicator): Promis
   }
 
   if (trimmed.toLowerCase() === 'peers') {
-    const peers = comm.getConnections();
+    const peers = comm?.getConnections() || [];
     appendLine(`${GRAY}已连接节点: ${peers.length}${RESET}`);
     for (const c of peers) {
       appendLine(`  ${GRAY}·${RESET} ${c.publicKey.substring(0, 16)}...`);
@@ -3577,6 +3582,7 @@ async function main() {
 
   const verifier = createVerificationManager();
   let comm: HyperswarmCommunicator | null = null;
+  let commReady: Promise<HyperswarmCommunicator | null> | null = null;
 
   try {
     if (mode === 'web') {
@@ -3591,6 +3597,23 @@ async function main() {
   
         s.warn(`P2P Web 模式启动失败: ${err.message}`);
       });
+    } else if (isCLIInteractive) {
+      // 2026-09-08 加速启动: 交互 CLI 不阻塞等 P2P — 后台 20s 超时门, 就绪后自动挂上;
+      // startCLI 收 Promise, 内部空安全 (P2P 功能就绪前自动降级, 一般 1-3s 内可用)
+      commReady = withTimeout(bootstrapP2P(verifier), 20_000, 'P2P 网络初始化')
+        .catch((err: Error) => {
+          s.warn(`P2P 初始化超时/失败, 降级无 P2P 模式: ${err.message}`);
+          return null;
+        });
+      void commReady.then((c) => {
+        if (c) {
+          const connections = c.getConnections();
+          if (connections.length > 0) {
+            agentIdentity!.peerId = connections[0].publicKey;
+            agentIdentity!.p2pChannel = 'bolloon-agent-harness';
+          }
+        }
+      }).catch(() => {});
     } else {
       // 2026-08-07: 弱网下 hyperswarm DHT start/joinTopic 可能无限挂起 → 20s 超时门, 超时降级无 P2P 模式
       comm = await withTimeout(bootstrapP2P(verifier), 20_000, 'P2P 网络初始化')
@@ -3611,18 +3634,33 @@ async function main() {
     s.warn('将使用无 P2P 模式运行');
   }
 
-  await withTimeout(bootstrapIroh(keypair, name), 15_000, 'iroh P2P 初始化')
-    .catch((err: Error) => s.warn(`iroh 初始化超时, 继续使用 Hyperswarm P2P: ${err.message}`));
+  if (isCLIInteractive) {
+    // 2026-09-08 加速启动: iroh + Bolloon bootstrap 也全部后台, 不阻塞 UI 首帧
+    void withTimeout(bootstrapIroh(keypair, name), 15_000, 'iroh P2P 初始化')
+      .catch((err: Error) => s.warn(`iroh 初始化超时, 继续使用 Hyperswarm P2P: ${err.message}`));
+    void (async () => {
+      try {
+        const { bootstrapBolloon } = await import('./pi-ecosystem-judgment/human-value-pipeline.js');
+        const bs = await withTimeout(bootstrapBolloon({ cwd: process.cwd() }), 20_000, 'Bolloon 上下文扫描');
+        s.info(`Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
+      } catch (err: any) {
+        s.warn(`Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);
+      }
+    })();
+  } else {
+    await withTimeout(bootstrapIroh(keypair, name), 15_000, 'iroh P2P 初始化')
+      .catch((err: Error) => s.warn(`iroh 初始化超时, 继续使用 Hyperswarm P2P: ${err.message}`));
 
-  // Bolloon Bootstrap: 启动扫描 + Context 收集 + 挂定时任务
-  // 失败静默 (主流程不被阻塞)
-  try {
-    const { bootstrapBolloon } = await import('./pi-ecosystem-judgment/human-value-pipeline.js');
-    s.info('正在 bootstrap bolloon 上下文...');
-    const bs = await withTimeout(bootstrapBolloon({ cwd: process.cwd() }), 20_000, 'Bolloon 上下文扫描');
-    s.info(`Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
-  } catch (err: any) {
-    s.warn(`Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);
+    // Bolloon Bootstrap: 启动扫描 + Context 收集 + 挂定时任务
+    // 失败静默 (主流程不被阻塞)
+    try {
+      const { bootstrapBolloon } = await import('./pi-ecosystem-judgment/human-value-pipeline.js');
+      s.info('正在 bootstrap bolloon 上下文...');
+      const bs = await withTimeout(bootstrapBolloon({ cwd: process.cwd() }), 20_000, 'Bolloon 上下文扫描');
+      s.info(`Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
+    } catch (err: any) {
+      s.warn(`Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);
+    }
   }
 
   if (mode === 'web') {
@@ -3659,7 +3697,7 @@ async function main() {
     console.info = originalInfo;
     process.stdout.write = originalStdoutWrite;
 
-    await startCLI(comm!);
+    await startCLI(commReady ?? Promise.resolve(null));
   }
   } catch (e) {
     throw e;
