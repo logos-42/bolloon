@@ -1902,3 +1902,10 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - **修复**: `.page-container` 加 `display:flex; flex-direction:column`; `.card-carousel` 加 `min-height:0`.
 - 修复后实测: `.card-carousel ch=699`(受约束) / `.card-track ch=699 sh=1382`(**683px 可滚 → 纵向翻卡恢复**) / `.card-wrap ch=667`(≈一屏一卡).
 - 另一处白屏根因(已修): 模拟器用 `CODE_SIGNING_ALLOWED=NO` 致 App 未签名 → `container_...: NOT_CODESIGNED`, WKWebView 加载本地文件失败 → 白屏; 改 ad-hoc 签名 `CODE_SIGN_IDENTITY=-` 解决.
+
+### 追加 (2026-09-08): 修「切 tab 时首页占半屏」
+
+- 现象: 切到 网络/我 时, 两页各占 flex:1 平分屏幕 (首页没被隐藏).
+- 根因: `switchTab()` 用 `el.hidden = ...` 隐藏页面; `hidden` 靠 UA 的 `[hidden]{display:none}` 生效, 但上一处修复给 `.page-container` 设了 `display:flex`, **优先级盖过 UA 规则** → 首页仍显示.
+- 修复: 补 `[hidden] { display: none !important; }` (文件内其他元素原本各自写了该规则, 这两个页面因新加 display 而漏掉).
+- 验证(探针实测): 切网络后 `.page-container display=none h=0` / `#page-network display=block h=732` / `#page-me display=none` → 网络页整屏, 不再平分.

@@ -53,6 +53,9 @@ body {
 }
 
 /* 页面容器 */
+/* hidden 必须真正隐藏: 下面给 .page-container/.page 设了 display(flex),
+   CSS 优先级高于 UA 的 [hidden]{display:none}, 会盖掉 hidden → 切 tab 时旧页不隐藏, 两页各占 flex:1 平分屏幕. */
+[hidden] { display: none !important; }
 /* 注意: 必须 display:flex + flex-direction:column, 否则子元素 .card-carousel{flex:1} 失效,
    轮播会撑到内容高度(>视口)溢出 → 纵向翻卡/滚动失效. */
 .page-container { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
