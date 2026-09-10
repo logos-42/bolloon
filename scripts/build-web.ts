@@ -132,6 +132,8 @@ async function main() {
   await fs.copyFile(path.join(ROOT, 'src/web/manifest.json'), path.join(DIST_WEB, 'manifest.json'));
   // Service Worker (手机端"添加到主屏幕"独立运行)
   await fs.copyFile(path.join(ROOT, 'src/web/sw.js'), path.join(DIST_WEB, 'sw.js'));
+  // 复制智能体卡片封面 (docs/fig 导出, 卡片按 agent 唯一分配)
+  await fs.cp(path.join(ROOT, 'src/web/covers'), path.join(DIST_WEB, 'covers'), { recursive: true });
   // 复制 icons 目录 (manifest.json 里引用了 favicon 等)
   await fs.cp(path.join(ROOT, 'src/web/icons'), path.join(DIST_WEB, 'icons'), { recursive: true });
 

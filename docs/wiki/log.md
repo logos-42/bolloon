@@ -1949,3 +1949,11 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
   - 钱包列表(unlocked)加「导出私钥」→ 导出面板(地址+私钥 hex + 复制地址/复制私钥); `mobile-wallet.ts` 新增 `exportWallet(id)`(需已解锁), `mobile-core.ts` 加 `wallet.export` + `POST /api/wallet/export`.
   - 注: 助记词仅在创建时显示一次(不落库), 故导出面板只提供私钥.
 - 验证(截图): 登录页渲染(rect 393x852) / 登录后 我页显示昵称+已登录 / 注销后回未登录 / 助记词屏有复制按钮 / 导出面板有复制地址+复制私钥.
+
+### 追加 (2026-09-08): 卡片封面从 fig 素材加载 (每 agent 唯一) + 与 bolloon-UI 同步图库
+
+- **卡片封面**: 原为"首字母占位"(所有卡片一样). 新增 `src/web/covers/`(从 `docs/fig` 脚本化派生, ≤800px q80) + `index.json`; `build-web.ts` 拷到 dist; `mobile.js` 加 `loadCovers()`/`coverFor()`: 按 **`c.id`**(唯一: self=did, 频道=ch.id) 取图 + localStorage 持久映射 + 同键加序号兜底 → **同一图不被两卡共用**.
+- **修 init 崩溃**: `init()` 里仍调旧名 `resolveTheme()`(三档主题时只改了 openSettings 那处) → ReferenceError, init 中断 → 首页卡片区空白. 已改 `resolveThemePref()`.
+- **图库同步**: `docs/fig`(72) 与 `~/Downloads/bolloon-UI/fig`(8) 原**无重名** → 双向补齐为**两边同一套 80 张**; covers 重新生成 80.
+- raw 登记: `fig`/`covers` 加入 `untracked_raw_check.py` 的 SKIP_DIRS (资产目录, 非知识 raw; 与 icons/Assets.xcassets 同例).
+- 验证: 截图 `卡片数=4 / 卡0..3=thumbnail_26,17,18,28 / 不同封面数=4 ✔ 不重复`.

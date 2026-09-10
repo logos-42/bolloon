@@ -333,9 +333,33 @@
   let currentCardIndex = 0;
   let allAgentCards = [];
 
+  // === 卡片封面 (docs/fig 导出 → src/web/covers, 每个 agent 唯一不重复) ===
+  let _coverList = null;
+  async function loadCovers() {
+    if (_coverList) return _coverList;
+    try { const r = await fetch('./covers/index.json'); _coverList = await r.json(); }
+    catch (e) { _coverList = []; }
+    return _coverList;
+  }
+  const COVER_MAP_KEY = 'bolloon_cover_map';
+  function coverFor(key, idx) {
+    const list = _coverList || [];
+    if (!list.length) return '';
+    let map = {};
+    try { map = JSON.parse(localStorage.getItem(COVER_MAP_KEY) || '{}') || {}; } catch (e) { map = {}; }
+    if (map[key] && list.indexOf(map[key]) >= 0) return './covers/' + map[key];
+    const used = {}; Object.keys(map).forEach((k) => { used[map[k]] = 1; });
+    let pick = list.filter((c) => !used[c])[0];
+    if (!pick) pick = list[idx % list.length];     // 图用完才回绕
+    map[key] = pick;
+    try { localStorage.setItem(COVER_MAP_KEY, JSON.stringify(map)); } catch (e) {}
+    return './covers/' + pick;
+  }
+
   async function loadAgentCovers() {
     const track = $('#card-track');
     if (!track) return;
+    await loadCovers();
     track.innerHTML = '<div class="card-loading">加载智能体卡片...</div>';
     try {
       const [channels, peers] = await Promise.all([
@@ -407,6 +431,14 @@
     const track = $('#card-track');
     const indicator = $('#card-indicator');
     if (!track || !indicator) return;
+    // 每个 agent 分配唯一封面 (持久化映射 → 不重复)
+    const _seen = {};
+    allAgentCards.forEach((c, i) => {
+      let key = String(c.id || c.agentId || ('card' + i));   // c.id 每张唯一(self=did, 频道=ch.id)
+      if (_seen[key]) key = key + '#' + i;                   // 兜底: 同键也不重复
+      _seen[key] = 1;
+      c.cover = coverFor(key, i);
+    });
 
     if (allAgentCards.length === 0) {
       track.innerHTML = '<div class="card-empty">暂无智能体卡片</div>';
@@ -419,7 +451,7 @@
         ${card.deletable ? `<button class="card-delete" data-index="${i}">删除</button>` : ''}
         <div class="agent-card ${i === 0 ? 'active-card' : ''}" data-index="${i}">
           <div class="card-cover">
-            <div class="card-cover-placeholder">${escapeHtml(card.name.charAt(0))}</div>
+            ${card.cover ? `<img src="${escapeHtml(card.cover)}" alt="">` : `<div class="card-cover-placeholder">${escapeHtml(card.name.charAt(0))}</div>`}
             <div class="card-cover-info">
               <div class="card-cover-name">${escapeHtml(card.name)}</div>
               <div class="card-cover-desc">${escapeHtml(card.desc)}</div>
@@ -1369,7 +1401,7 @@
 
   function init() {
     bindMenu();
-    applyTheme(resolveTheme(), false);
+    applyTheme(resolveThemePref(), false);
     switchTab('main');
     setupUiControl();
     loadAgentCovers();

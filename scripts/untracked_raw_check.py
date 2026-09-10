@@ -28,6 +28,8 @@ SKIP_DIRS = {
     # 构建产物 / 资产目录（不属 raw material）
     "Assets.xcassets",  # iOS Xcode asset catalog
     "icons",            # web 图标 (build:web 注入)
+    "fig",              # 设计素材批次 (卡片封面/页面配图, 非知识性 raw)
+    "covers",           # 卡片封面 (build:web 从 docs/fig 派生注入)
     # git submodule (引用资料, 不是 raw 输入)
     "bollharness",
 }
