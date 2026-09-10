@@ -19,7 +19,9 @@ const config: CapacitorConfig = {
   // dev 时在终端用 `npx cap run ios --livereload --external` 走 livereload
   bundledWebRuntime: false,
   ios: {
-    contentInset: 'automatic',
+    // 必须 'never': 'automatic' 会让 WKWebView 加内容内边距 → 可视区比屏幕矮,
+    // 底部 tab/悬浮按钮贴不到物理底边 (浮高). 安全区已由 CSS env(safe-area-inset-*) 处理.
+    contentInset: 'never',
     // iOS 17+ WKWebView 限制 HTTP 明文, 需要 App Transport Security 放行 loopback
     // (我们在 ios/App/App/Info.plist 里加 NSAppTransportSecurity)
     backgroundColor: '#ffffff',

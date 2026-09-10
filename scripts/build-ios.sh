@@ -38,9 +38,12 @@ PROJ="ios/App/App.xcodeproj"; SCHEME="App"
 
 case "$MODE" in
   --sim)
-    echo "④ 模拟器 Debug 构建 (免签名)"
+    echo "④ 模拟器 Debug 构建 (ad-hoc 签名, 无需 Apple ID/Team)"
+    # 注意: 不能用 CODE_SIGNING_ALLOWED=NO — 那样 App 未签名, 模拟器里容器/权限失败, WKWebView 白屏.
+    # 模拟器用 ad-hoc 签名 (CODE_SIGN_IDENTITY=-) 即可, 不需要开发者账号.
     xcodebuild -project "$PROJ" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator \
-      -destination 'generic/platform=iOS Simulator' -derivedDataPath build/dd build CODE_SIGNING_ALLOWED=NO | tail -3
+      -destination 'generic/platform=iOS Simulator' -derivedDataPath build/dd build \
+      CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO | tail -3
     echo "✅ 模拟器 App: build/dd/Build/Products/Debug-iphonesimulator/App.app"
     echo "   运行: xcrun simctl install booted <app> && xcrun simctl launch booted com.bolloon.agent"
     ;;
