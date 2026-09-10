@@ -1837,3 +1837,38 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 ### 关联
 
 - 复用 viem(零新依赖) + x402Pay; 见 resource-wallet.ts / pi-sdk-tools.ts.
+
+---
+
+## 苹果手机端 (iOS) 全流程 + PWA 可安装 (2026-09-08)
+
+### 背景
+
+- leo: bolloon 安装包还没有苹果手机版, 要全流程做完; 本机无 Xcode.
+
+### 现状盘点
+
+- `ios/` 工程已存在 (Capacitor 8.5.1, **SPM 无 CocoaPods**), Info.plist 已含 ATS/相机/相册/麦克风/局域网/Bonjour; 缺: 移动端 webDir 入口, PWA 元信息, 出包脚本.
+- 本机仅 Command Line Tools, **无完整 Xcode** (无 iphoneos SDK) → 无法编译 .ipa.
+
+### 变更
+
+- **PWA (今天即可装到 iPhone)**: `src/web/sw.js`(app-shell SW) + `manifest.json`(start_url=mobile.html/standalone/4 图标/maskable) + `mobile.html` head 加 `rel=manifest`/theme-color/`apple-touch-icon`/`apple-mobile-web-app-capable`/`apple-mobile-web-app-title`/`apple-mobile-web-app-status-bar-style` + SW 注册; `scripts/build-web.ts` 增拷 sw.js.
+- **iOS 出包流水线**: `scripts/build-ios-web.mjs`(dist/web→dist/ios, mobile.html→index.html) + `capacitor.config.ts` webDir 支持 `CAP_WEB_DIR` env + `scripts/build-ios.sh`(①build:web ②assemble ③`CAP_WEB_DIR=dist/ios npx cap sync ios` ④xcodebuild archive; 无 Xcode 时打印安装指引) + package scripts `build:ios-web`/`ios:sync`/`ios:build`.
+- **Info.plist**: 加 `ITSAppUsesNonExemptEncryption=false`(上架免出口合规问答).
+
+### 验证
+
+- `npm run build:web` → dist/web 含 sw.js/manifest.json; 静态伺服实测: `/mobile.html` 含 manifest+apple 标签+SW 注册, `/manifest.json`(start_url=./mobile.html, display=standalone, 4 icons), `/sw.js` HTTP 200.
+- `CAP_WEB_DIR=dist/ios npx cap sync ios` 成功: ios/App/App/public/index.html = 手机端, 并含 sw.js/manifest.json.
+- `bash scripts/build-ios.sh` 跑到 ③ 成功, ④ 因无 Xcode 正确报错并给指引.
+- tsc 0; vitest-bail 过.
+
+### 阻塞 (需 Apple ID, 无法免交互)
+
+- 出真机 .ipa 需**完整 Xcode**(App Store, 需 Apple ID) + 真机签名(Apple Developer) ; 装完 Xcode 后 `npm run ios:build` 即可 archive → Organizer 导出 ipa. 模拟器构建无需签名.
+- 无 Xcode 时 iPhone 交付路径 = **PWA**: iPhone Safari 打开 bolloon web 的 `/mobile.html` → 分享 → 添加到主屏幕 (独立运行).
+
+### 关联
+
+- Capacitor 8 (SPM) + src/web/{sw.js,manifest.json,mobile.html} + scripts/build-ios*.{mjs,sh}.
