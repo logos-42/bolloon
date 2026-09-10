@@ -1894,3 +1894,11 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - **白屏** → 模拟器构建原用 `CODE_SIGNING_ALLOWED=NO`(App 未签名) → 日志 `container_..._for_identifier: NOT_CODESIGNED`, WKWebView 加载不了本地文件 → 白屏. 改成 **ad-hoc 签名** `CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO` (模拟器无需 Apple ID), 界面正常渲染.
 - **底部 tab 浮高** → `capacitor.config.ts` 的 `ios.contentInset: 'automatic'` 让 WKWebView 加内容内边距, 可视区比屏幕矮 → `position`/流式底部 tab 贴不到物理底边. 改 **`contentInset: 'never'`** (Capacitor 默认; 安全区由 CSS `env(safe-area-inset-*)` 处理) → tab 紧贴底部 (home indicator 上方).
 - 验证: `xcrun simctl` 装启动 + 截图确认 (界面: 首页 / blln-mobile 卡片 / 开始对话 / 创建新会话 / 首页·网络·我 三 tab 贴底).
+
+### 追加 (2026-09-08): 修复「页面无上下滑动」
+
+- 探针实测(注入 App 内 index.html 读 clientHeight/scrollHeight): 修复前 `.card-carousel ch=1144`(>视口852) 且 `.card-track ch=1144 sh=1144` → **轨道内容正好等于自身高度, 无任何可滚**, 纵向翻卡失效; `.page-container` 只能滚 445.
+- **根因**: `.page-container` 未设 `display:flex`, 其子元素 `.card-carousel{flex:1}` 完全失效 → 轮播退化为块级、高度=内容(1144)溢出被裁.
+- **修复**: `.page-container` 加 `display:flex; flex-direction:column`; `.card-carousel` 加 `min-height:0`.
+- 修复后实测: `.card-carousel ch=699`(受约束) / `.card-track ch=699 sh=1382`(**683px 可滚 → 纵向翻卡恢复**) / `.card-wrap ch=667`(≈一屏一卡).
+- 另一处白屏根因(已修): 模拟器用 `CODE_SIGNING_ALLOWED=NO` 致 App 未签名 → `container_...: NOT_CODESIGNED`, WKWebView 加载本地文件失败 → 白屏; 改 ad-hoc 签名 `CODE_SIGN_IDENTITY=-` 解决.

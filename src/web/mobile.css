@@ -53,7 +53,9 @@ body {
 }
 
 /* 页面容器 */
-.page-container { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+/* 注意: 必须 display:flex + flex-direction:column, 否则子元素 .card-carousel{flex:1} 失效,
+   轮播会撑到内容高度(>视口)溢出 → 纵向翻卡/滚动失效. */
+.page-container { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .page { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 
 /* 列表 */
@@ -357,6 +359,7 @@ body {
 
 .card-carousel {
   flex: 1;
+  min-height: 0;   /* 关键: flex 子项默认 min-height:auto 不收缩 → 会撑到内容高度(>视口)溢出, 纵向翻卡失效 */
   overflow: hidden;
   position: relative;
   touch-action: pan-x pan-y;
