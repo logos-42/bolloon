@@ -1983,3 +1983,15 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
   - 恢复入口: 设置页新增「显示本机卡片: 开/关」.
 - **新: 智能体封面可手动改名** — 封面页新增「名称(可手动输入修改)」输入框 + 保存名称: 本机卡片 → 改本机身份昵称(`/api/auth/login {name}`); 普通卡片 → 新增 `POST /api/channels/rename`(core `channels.rename` 改 channel.name + persona.name).
 - **实测**(模拟器): 卡片删除 → 卡片数 3→2 (hide=1); 设置恢复 → 2→3 (hide=0); 聊天页管理删除 → 同样生效; 封面页把本机卡片改名为「觉者的小手机」→ 卡片标题同步更新.
+
+### 追加 (2026-09-08): iOS 出包发布链路 (归档→导出 ipa→Release 资产→bolloon-UI OTA 安装页)
+
+- **新增 `scripts/ios-release.sh`** (+ `npm run ios:release`): 一条命令完成 web 产物 → 归档(自动签名+自动登记已连接设备) → 导出 .ipa → 上传 `logos-42/bolloon-UI` 的 GitHub Release 资产 → 更新 bolloon-UI 的 `ios/manifest.plist` 与 `install.html` 版本 → push (Pages 从 main 自动发布). 支持 `SKIP_BUILD/SKIP_PUBLISH/METHOD=adhoc`.
+- `ios/ExportOptions.plist`: method=**development** (免费 Personal Team 只有 Apple Development 证书, 做不了 ad-hoc); 预留 METHOD=adhoc 供付费账号给他人分发.
+- **bolloon-UI**: `install.html` 新增「手机 · iOS」栏目 (itms-services → `https://logos-42.github.io/bolloon-UI/ios/manifest.plist`); 新增 `ios/manifest.plist` (bundle com.bolloon.agent, IPA 走 Release 资产 URL). 本地已提交 `e725c8b`, **未推送** (等 IPA 就绪由脚本一并推).
+- iOS `MARKETING_VERSION` 1.0 → **0.4.20** (与 npm 包版本对齐).
+- **签名/分发约束 (实测确认)**:
+  - Apple ID `guxing0829@qq.com` = **免费 Personal Team** (`teamID 4H9BX87VAC`, isFreeProvisioningTeam=1); 钥匙串 0 张证书, 团队 0 台设备.
+  - 免费账号**没有已登记设备就无法生成描述文件** → 归档报 `Your team has no devices from which to generate a provisioning profile`. 必须先 USB 连 iPhone 并在 Xcode 登记 (脚本带 `-allowProvisioningDeviceRegistration`).
+  - 免费账号 = 描述文件 **7 天**过期, 只能装自己团队登记的设备 → 给朋友装需 **$99/年** (Ad Hoc 最多 100 台/年, 朋友须提供 UDID) 或 TestFlight.
+  - **TestFlight/App Store 在本机做不到**: 上传强制 Xcode 16+/iOS 18 SDK (2025-04-24 起), 而 macOS 13.7.8 上限 Xcode 15.2.

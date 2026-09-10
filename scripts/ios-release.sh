@@ -6,6 +6,7 @@
 #          BOLLOON_UI_DIR=~/Downloads/bolloon-UI
 #          SKIP_BUILD=1  仅归档导出 (跳过 web 构建)
 #          SKIP_PUBLISH=1 只出包不上传/不改站点
+#          METHOD=adhoc  付费账号时给他人装 (朋友需先提供 UDID 登记)
 #
 #   前置: 免费 Personal Team 无法在"没有已登记设备"时生成描述文件 →
 #         先把 iPhone 用 USB 连上 Mac 并在设备上点「信任」, 再跑本脚本
@@ -65,9 +66,16 @@ fi
 echo "   归档 OK: build/App.xcarchive"
 
 # ---- ③ 导出 .ipa ----
-echo "③ 导出 .ipa…"
+# METHOD=development (免费个人账号, 仅自己登记的设备) | adhoc (付费账号, 最多 100 台设备, 朋友需提供 UDID)
+METHOD="${METHOD:-development}"
+OPTS="$ROOT/ios/ExportOptions.plist"
+if [ "$METHOD" = "adhoc" ]; then
+  OPTS="$ROOT/build/ExportOptions.adhoc.plist"
+  sed 's|<string>development</string>|<string>ad-hoc</string>|' "$ROOT/ios/ExportOptions.plist" > "$OPTS"
+fi
+echo "③ 导出 .ipa (method=$METHOD)…"
 xcodebuild -exportArchive -archivePath "$ROOT/build/App.xcarchive" \
-  -exportOptionsPlist "$ROOT/ios/ExportOptions.plist" \
+  -exportOptionsPlist "$OPTS" \
   -exportPath "$ROOT/build/ipa" -allowProvisioningUpdates > /tmp/bolloon-export.log 2>&1 || {
     tail -20 /tmp/bolloon-export.log; echo "❌ 导出失败"; exit 1; }
 IPA="$(ls "$ROOT"/build/ipa/*.ipa 2>/dev/null | head -1 || true)"
