@@ -1880,3 +1880,11 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - 安装路径: developer.apple.com/download/all/ (免费 Apple ID) → Xcode_15.2.xip → `xip --expand` → /Applications → `DEVELOPER_DIR` 免 sudo 指向.
 - 上架限制: App Store 提交需 iOS 18 SDK (Xcode 16+, 要求 macOS 14.5+) → Ventura 只能本地构建/真机安装(免费 Apple ID 7 天/付费 1 年), 上架需先升级 macOS.
 - `scripts/build-ios.sh` 已适配: 自动用 /Applications/Xcode.app (DEVELOPER_DIR), 无 Xcode 时打印上述精确指引.
+
+### 追加 (2026-09-08): iOS 构建**已跑通** (Xcode 15.2 已于本机可用)
+
+- 用户本机 `~/Downloads/Xcode.app` 即可用 Xcode 15.2 (Build 15C500b, iOS SDK 17.2 真机+模拟器); 免 sudo 用 `DEVELOPER_DIR` 指向.
+- **修编译失败**: `ios/App/App/AppDelegate.swift` 是旧版模板, `application(_:continue:restorationHandler:)` 调用 `ApplicationDelegateProxy` — 该方法在 Capacitor 8.5.1 的 binary interface 里被包在 `#if compiler(>=5.3) && $NonescapableTypes` 中, 该特性在 Xcode 15.2(Swift 5.9) 为**假** → 方法不可见 (官方 SPM 模板亦不含它, 改用 SceneDelegate; 本工程为窗口版无 scene manifest). 处置: 移除该方法(保留 `open url` 重载), 注释说明原因.
+- **验证**: `npm run ios:sim` → 模拟器 Debug **BUILD SUCCEEDED**; 真机 Release (iphoneos arm64, CODE_SIGNING_ALLOWED=NO) **BUILD SUCCEEDED**; `xcrun simctl` 安装启动成功, 截图确认渲染出手机端 UI (首页/blln-mobile 卡片/开始对话/首页·网络·我 三 tab).
+- 脚本增强: `build-ios.sh` 自动定位 Xcode (/Applications, ~/Downloads, ~/Applications) + `--sim`/`--verify` 模式; package 增 `ios:sim`/`ios:verify`.
+- 余下唯一人工步骤 = **签名** (Xcode 里选 Development Team, 免费 Apple ID 可装自己 iPhone 7 天) → `npm run ios:build` 出 .xcarchive/ipa. App Store 上架仍需 Xcode 16+(iOS 18 SDK), 须先升 macOS.
