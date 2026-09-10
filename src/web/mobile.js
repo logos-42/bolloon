@@ -74,6 +74,7 @@
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
     $('#topbar-title').textContent = TITLES[tab] || '会话';
     const cs = $('#btn-create-session'); if (cs) cs.hidden = tab !== 'main';
+    const ta = $('#topbar-actions'); if (ta) ta.hidden = tab === 'me';   // 我 页不显示 加号/刷新
     if (tab === 'network') { loadContacts(); loadMcpTools(); loadApprovals(); loadNetMembers(); }
     if (tab === 'main') { loadAgentCovers(); }
     window.__mobileTouch?.('tab', tab);

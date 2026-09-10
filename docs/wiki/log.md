@@ -1924,3 +1924,9 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - 实测(探针): 初始 null → 点1次 ls=light data-theme=light → 点2次 ls=dark data-theme=dark --bg=#1a1a18; 跨 App 重启保留.
 - **App 图标**: `AppIcon.appiconset/AppIcon-512@2x.png` 原为 Xcode 占位图 → 用 PIL 从 `src/web/icons/icon.png`(1254²) 生成 1024² RGB 无 alpha (黄底 b 字标).
 - **图标统一**: 新增 `ICONS` 线性图标集(24x24, currentColor 描边); 设置页(chip/主题/globe/idcard)、网络页(wifi/scan/globe/idcard)、卡片菜单(clock/image/trash)、MCP 工具(`.conv-avatar` 里 🔌→插头 SVG) 全部替换 emoji. 注意: 设置页/菜单在模板字符串内 → 必须 `${ICONS.x}` 而非 `'+ICONS.x+'`(曾致字面文本).
+
+### 追加 (2026-09-08): 顶栏按钮按页显隐 + 顶栏图标线性化
+
+- 「我」页隐藏右上角按钮: `.topbar-actions` 加 `id`, `switchTab()` 里 `ta.hidden = (tab === 'me')`; 首页/网络仍显示. (依赖已修的全局 `[hidden]{display:none!important}`)
+- 顶栏两个按钮 `⟳`/`＋` 文字符号 → 换成线性 SVG (刷新/加号), 加 `.icon-btn .ico{width:20px;height:20px}`.
+- 验证: 截图确认 我页右上角空白 / 首页·网络 右上角两个线性按钮.

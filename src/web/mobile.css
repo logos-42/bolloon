@@ -661,3 +661,5 @@ body {
 .ico { width: 22px; height: 22px; display: block; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .tab-icon .ico { width: 22px; height: 22px; }
 .list-icon .ico { width: 21px; height: 21px; }
+
+.icon-btn .ico { width: 20px; height: 20px; }
