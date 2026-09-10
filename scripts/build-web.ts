@@ -130,6 +130,8 @@ async function main() {
   await fs.copyFile(path.join(ROOT, 'src/web/mobile.js'), path.join(DIST_WEB, 'mobile.js'));
   // 复制 PWA manifest (index.html 里有 <link rel="manifest">, 否则浏览器会 404)
   await fs.copyFile(path.join(ROOT, 'src/web/manifest.json'), path.join(DIST_WEB, 'manifest.json'));
+  // Service Worker (手机端"添加到主屏幕"独立运行)
+  await fs.copyFile(path.join(ROOT, 'src/web/sw.js'), path.join(DIST_WEB, 'sw.js'));
   // 复制 icons 目录 (manifest.json 里引用了 favicon 等)
   await fs.cp(path.join(ROOT, 'src/web/icons'), path.join(DIST_WEB, 'icons'), { recursive: true });
 

@@ -13,7 +13,8 @@ import type { CapacitorConfig } from '@capacitor/cli';
 const config: CapacitorConfig = {
   appId: 'com.bolloon.agent',
   appName: 'Bolloon Agent',
-  webDir: 'dist/web',
+  // iOS 包用 dist/ios (mobile.html 作入口): CAP_WEB_DIR=dist/ios npx cap sync ios
+  webDir: process.env.CAP_WEB_DIR || 'dist/web',
   // 不配 server.url → prod build 用 webDir 本地资源 (相对路径 fetch)
   // dev 时在终端用 `npx cap run ios --livereload --external` 走 livereload
   bundledWebRuntime: false,

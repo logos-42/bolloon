@@ -84,5 +84,7 @@
 	<array>
 		<string>_bolloon._tcp</string>
 	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>

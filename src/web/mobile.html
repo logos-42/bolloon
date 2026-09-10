@@ -18,6 +18,14 @@
 })();
 </script>
 <link rel="stylesheet" href="./mobile.css">
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#1a1a18">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Bolloon">
+<meta name="format-detection" content="telephone=no">
 </head>
 <body>
 <div id="app" class="app">
@@ -130,5 +138,13 @@
 <script src="./mobile.js"></script>
 <!-- 2026-08-12: A2UI 渲染器 (智能体生成动态 UI, 挂载 #a2ui-root) -->
 <script src="./a2ui-client.js"></script>
+<script>
+/* 注册 Service Worker → iPhone "添加到主屏幕" 独立运行 (app-shell 缓存) */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').catch(function () {});
+  });
+}
+</script>
 </body>
 </html>
