@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- 免费 Personal Team 只能用 development 方式导出 (ad-hoc 需要 iOS Distribution 证书, 免费账号没有) -->
+  <key>method</key>
+  <string>development</string>
+  <key>teamID</key>
+  <string>4H9BX87VAC</string>
+  <key>signingStyle</key>
+  <string>automatic</string>
+  <key>compileBitcode</key>
+  <false/>
+  <key>stripSwiftSymbols</key>
+  <true/>
+  <key>destination</key>
+  <string>export</string>
+</dict>
+</plist>
