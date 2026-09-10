@@ -1957,3 +1957,14 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - **图库同步**: `docs/fig`(72) 与 `~/Downloads/bolloon-UI/fig`(8) 原**无重名** → 双向补齐为**两边同一套 80 张**; covers 重新生成 80.
 - raw 登记: `fig`/`covers` 加入 `untracked_raw_check.py` 的 SKIP_DIRS (资产目录, 非知识 raw; 与 icons/Assets.xcassets 同例).
 - 验证: 截图 `卡片数=4 / 卡0..3=thumbnail_26,17,18,28 / 不同封面数=4 ✔ 不重复`.
+
+### 追加 (2026-09-08): 手机端 ⇄ 电脑端数据同步 + 判断力 API 落地 + 钱包授权去重
+
+- **桌面端新增 `GET /api/mobile/snapshot`** (server.ts): 一次返回电脑端全部数据 = 活跃身份 + channels(会话) + judgments(判断力库) + services(Agent Registry) + resources(数字资源) + networks(已加入网络) + counts. CORS 已开 (`Access-Control-Allow-Origin: *`), 手机端跨源可拉.
+  - 前提: 电脑端需 `BOLLOON_HOST=0.0.0.0` 启动 (默认只绑 127.0.0.1, 手机连不上), 端口见启动日志 `BOLLOON_PORT=xxxx`.
+- **手机端新增 `src/web/mobile-sync.ts`**: `syncFromDesktop()` 拉快照 → 落 localStorage (快照 + 判断力缓存), 幂等; 未配地址/网络失败 → 明确报错且**保留上一次快照**. 地址复用 `bolloon_desktop_base_url` (与 mobile-gateway 同一 key).
+- **路由**: `/api/desktop/sync`(GET+POST)、`/api/desktop/url`(GET/POST)、`/api/desktop/status`(GET)、`/api/judgments/cached`(GET); core 增 `desktop` 命名空间.
+- **UI**: ①「设置 → 电脑端同步」页 (地址输入 + 立即同步 + 同步状态); ② **登录后自动同步** (`autoSyncDesktop`, 未配地址静默跳过, 完成弹 toast); ③「判断力 API」页 — 原为 `alert('判断力 API')` 占位, 现为真实页面: 同步源/最近同步/已同步统计 + 判断力条目列表 (内容 · 类型 · 置信) + 右上角 ↻ 从电脑端刷新.
+- **钱包授权修复**: ① 去重 — 原来按 channel 列出, 4 个渠道同属一个 agentId → 显示 4 条重复项; 现按 `agentId` 去重 (身份唯一); ② 兜底 — 无渠道时至少可授权给本机 Agent (DID); ③ 保存后弹 toast「已授权 N 个智能体」(原来无任何反馈, 看着像没生效).
+- **实测** (模拟器 + 真实桌面端 server 端口 54188): 快照 HTTP 200 / counts `{channels:2, judgments:2}`; 手机端同步后「最近同步 9/10/2026 2:46:34 PM」+「已同步 channels 2 · judgments 2」; 判断力页列出真实条目「不要使用 var，优先用 const」(rule · 0.95); 钱包授权页去重为 1 条「本地智能体 1」, 保存后 toast「已授权 1 个智能体」.
+- 测试: `src/test/mobile-sync.test.ts` 6 项 (未配地址/成功落地/末尾斜杠归一/网络异常保留旧快照/非200/ok:false), 连同 mobile-core、mobile-gateway 共 27 项通过; tsc 0.

@@ -88,6 +88,11 @@ export const core = {
     if (p === '/api/network/status') return () => core.network.status();
     if (p === '/api/wallet/status') return () => core.wallet.status();
     if (p === '/api/wallet/balance') return () => core.wallet.balance();
+    // 电脑端数据同步 (登录后/手动): 快照 + 状态 + 判断力缓存
+    if (p === '/api/desktop/status') return () => core.desktop.status();
+    if (p === '/api/desktop/url') return () => core.desktop.url();
+    if (p === '/api/desktop/sync') return () => core.desktop.sync();
+    if (p === '/api/judgments/cached') return () => core.desktop.judgments();
     if (p.startsWith('/sessions/')) {
       const cid = decodeURIComponent(p.slice('/sessions/'.length));
       return () => core.session.get(cid);
@@ -173,6 +178,11 @@ export const core = {
       const b = body || {};
       return () => core.wallet.grant(String(b.id || ''), String(b.agentId || ''), !!b.allow);
     }
+    if (p === '/api/desktop/url') {
+      const b = body || {};
+      return () => core.desktop.setUrl(String(b.url || ''));
+    }
+    if (p === '/api/desktop/sync') return () => core.desktop.sync();
     if (p === '/api/wallet/balance') {
       const b = body || {};
       return () => core.wallet.balance(b.id ? String(b.id) : undefined);
@@ -356,6 +366,15 @@ export const core = {
     async forAgent(agentId: string): Promise<any> { const w = await import('./mobile-wallet.js'); return w.walletForAgent(agentId); },
     async balance(id?: string): Promise<any> { const w = await import('./mobile-wallet.js'); return w.walletBalance(id); },
     async export(id: string): Promise<any> { const w = await import('./mobile-wallet.js'); return w.exportWallet(id); },
+  },
+
+  // 电脑端数据同步: 登录后拉取电脑端 bolloon 全部数据 (快照 → 本地)
+  desktop: {
+    async url(): Promise<any> { const s = await import('./mobile-sync.js'); return { url: s.getDesktopUrl() }; },
+    async setUrl(url: string): Promise<any> { const s = await import('./mobile-sync.js'); s.setDesktopUrl(url); return { ok: true, url: s.getDesktopUrl() }; },
+    async sync(): Promise<any> { const s = await import('./mobile-sync.js'); return s.syncFromDesktop(); },
+    async status(): Promise<any> { const s = await import('./mobile-sync.js'); return s.getSyncStatus(); },
+    async judgments(): Promise<any> { const s = await import('./mobile-sync.js'); return { judgments: s.getCachedJudgments() }; },
   },
 
   mcp: {

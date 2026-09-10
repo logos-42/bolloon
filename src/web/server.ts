@@ -2874,6 +2874,50 @@ ${goalDesc}
     }
   });
 
+  // 2026-09-08: 手机端数据同步 — 一次拉取电脑端全部数据 (登录后手机端同步用; CORS 已在中间件开启)
+  app.get('/api/mobile/snapshot', async (_req, res) => {
+    try {
+      const HOME = process.env.HOME || '/tmp';
+      const out: any = { ok: true, ts: Date.now(), source: 'desktop' };
+      // 活跃身份 / 会话 (channels.json 是唯一持久化点)
+      try { out.active = JSON.parse(await fs.readFile(`${HOME}/.bolloon/active-channel.json`, 'utf-8')); } catch { out.active = null; }
+      try {
+        const chs = JSON.parse(await fs.readFile(`${HOME}/.bolloon/sessions/channels.json`, 'utf-8'));
+        out.channels = Array.isArray(chs) ? chs : [];
+      } catch { out.channels = []; }
+      // 判断力库
+      try {
+        const j = await import('../pi-ecosystem-judgment/index.js');
+        out.judgments = await j.getAllJudgments();
+      } catch (e: any) { out.judgments = []; out.judgmentsError = e?.message; }
+      // Agent 服务 Registry (发现层)
+      try {
+        const { getAgentRegistry } = await import('../agents/agent-registry.js');
+        out.services = await getAgentRegistry().list();
+      } catch { out.services = []; }
+      // 数字资源
+      try {
+        const rs = await import('../agents/resource-store.js');
+        out.resources = await rs.listResources({});
+      } catch { out.resources = []; }
+      // 已加入网络
+      try {
+        const { listJoinedNetworks } = await import('../agents/gateway-network.js');
+        out.networks = await listJoinedNetworks();
+      } catch { out.networks = []; }
+      out.counts = {
+        channels: (out.channels || []).length,
+        judgments: (out.judgments || []).length,
+        services: (out.services || []).length,
+        resources: (out.resources || []).length,
+        networks: (out.networks || []).length,
+      };
+      res.json(out);
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e?.message });
+    }
+  });
+
   // 2026-08-14: Agent Gateway — 网络加入 / 分享链接 / 成员 / 状态 (入口要小: 一条链接)
   app.post('/api/gateway/join', async (req: any, res: any) => {
     try {

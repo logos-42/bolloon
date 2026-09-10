@@ -977,6 +977,116 @@
   }
 
   // === 设置 ===
+  // 轻提示 (1.6s 自动消失) — 授权/同步这类操作要有明确反馈
+  function showToast(msg) {
+    const t = document.createElement('div');
+    t.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom));z-index:99999;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px 16px;font-size:13px;max-width:86vw;text-align:center;box-shadow:0 6px 20px rgba(0,0,0,.35)';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 1600);
+  }
+
+  // === 判断力 API (电脑端同步下来的判断库) ===
+  async function openJudgments() {
+    const page = document.createElement('div');
+    page.className = 'chat-page';
+    page.id = 'judgments-page';
+    page.innerHTML = `
+      <div class="chat-topbar">
+        <button class="icon-btn" id="jg-back">←</button>
+        <div style="flex:1;font-weight:600">判断力 API</div>
+        <button class="icon-btn" id="jg-refresh">↻</button>
+      </div>
+      <div id="jg-body" style="padding:12px;padding-bottom:calc(24px + env(safe-area-inset-bottom))"></div>`;
+    document.body.appendChild(page);
+    $('#jg-back').addEventListener('click', () => page.remove());
+    $('#jg-refresh').addEventListener('click', () => drawJudgments(page, true));
+    await drawJudgments(page, false);
+  }
+
+  async function drawJudgments(page, refresh) {
+    const body = page.querySelector('#jg-body');
+    body.innerHTML = `<div style="color:var(--text-secondary);font-size:13px">${refresh ? '正在从电脑端同步…' : '加载中…'}</div>`;
+    if (refresh) {
+      const r = await api.post('/api/desktop/sync', {}).catch((e) => ({ ok: false, error: e.message || String(e) }));
+      if (!r || !r.ok) {
+        body.innerHTML = `<div style="padding:12px;border:1px solid var(--border);border-radius:10px;color:var(--text-secondary);font-size:13px;line-height:1.6">同步失败: ${escapeHtml((r && r.error) || '未知错误')}<br>电脑端地址在「设置 → 电脑端同步」配置 (需同一局域网, 电脑端以 BOLLOON_HOST=0.0.0.0 启动)。</div>`;
+        return;
+      }
+    }
+    let st = { url: '', lastTs: 0, counts: {} };
+    try { st = await api.get('/api/desktop/status'); } catch { /* 忽略 */ }
+    let list = [];
+    try { const j = await api.get('/api/judgments/cached'); list = (j && j.judgments) || []; } catch { /* 忽略 */ }
+    const when = st.lastTs ? new Date(st.lastTs).toLocaleString() : '尚未同步';
+    const cnt = st.counts && Object.keys(st.counts).length ? Object.entries(st.counts).map(([k, v]) => k + ' ' + v).join(' · ') : '';
+    const head = `<div style="font-size:12px;color:var(--text-secondary);line-height:1.7;margin-bottom:10px">同步源: ${escapeHtml(st.url || '未配置')}<br>最近同步: ${escapeHtml(when)}${cnt ? '<br>已同步: ' + escapeHtml(cnt) : ''}</div>`;
+    if (!list.length) {
+      body.innerHTML = head + '<div style="padding:12px;border:1px solid var(--border);border-radius:10px;color:var(--text-secondary);font-size:13px;line-height:1.6">本机暂无判断力数据。点右上角 ↻ 从电脑端同步。</div>';
+      return;
+    }
+    body.innerHTML = head + list.map((j) => `
+      <div style="padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-card);margin-bottom:8px">
+        <div style="font-size:13px;line-height:1.5">${escapeHtml(String(j.content || '').slice(0, 220))}</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">${escapeHtml(String(j.type || ''))} · 置信 ${escapeHtml(String(typeof j.confidence === 'number' ? j.confidence.toFixed(2) : (j.confidence || '-')))}</div>
+      </div>`).join('');
+  }
+
+  // === 电脑端同步 (登录后自动 + 手动) ===
+  async function openDesktopSync() {
+    const page = document.createElement('div');
+    page.className = 'chat-page';
+    page.id = 'desktop-sync-page';
+    page.innerHTML = `
+      <div class="chat-topbar"><button class="icon-btn" id="ds-back">←</button><div style="flex:1;font-weight:600">电脑端同步</div></div>
+      <div style="padding:12px;display:flex;flex-direction:column;gap:12px">
+        <div style="font-size:13px;color:var(--text-secondary);line-height:1.7">填电脑端 bolloon 地址 (同一局域网, 如 http://192.168.1.5:7788)。登录后手机端自动同步电脑端全部数据 (会话/判断力/服务/资源)。<br>电脑端需以 BOLLOON_HOST=0.0.0.0 启动, 端口见启动日志 BOLLOON_PORT=xxxx。</div>
+        <input id="ds-url" placeholder="http://192.168.1.5:7788" style="${_walletInput}">
+        <button id="ds-save" style="${_walletBtn}">保存地址</button>
+        <button id="ds-sync" style="${_walletBtn}">立即同步</button>
+        <div id="ds-status" style="font-size:13px;color:var(--text-secondary);line-height:1.8"></div>
+      </div>`;
+    document.body.appendChild(page);
+    $('#ds-back').addEventListener('click', () => page.remove());
+    const drawStatus = async () => {
+      let st = { url: '', lastTs: 0, counts: {} };
+      try { st = await api.get('/api/desktop/status'); } catch { /* 忽略 */ }
+      const when = st.lastTs ? new Date(st.lastTs).toLocaleString() : '尚未同步';
+      const cnt = st.counts && Object.keys(st.counts).length ? Object.entries(st.counts).map(([k, v]) => k + ' ' + v).join(' · ') : '—';
+      page.querySelector('#ds-status').innerHTML = `地址: ${escapeHtml(st.url || '未配置')}<br>最近同步: ${escapeHtml(when)}<br>数据: ${escapeHtml(cnt)}`;
+    };
+    try { const u = await api.get('/api/desktop/url'); page.querySelector('#ds-url').value = (u && u.url) || ''; } catch { /* 忽略 */ }
+    await drawStatus();
+    $('#ds-save').addEventListener('click', async () => {
+      const url = (page.querySelector('#ds-url').value || '').trim();
+      try { await api.post('/api/desktop/url', { url }); showToast('地址已保存'); }
+      catch (e) { showToast('保存失败: ' + (e.message || e)); }
+      await drawStatus();
+    });
+    $('#ds-sync').addEventListener('click', async () => {
+      showToast('正在同步…');
+      const r = await api.post('/api/desktop/sync', {}).catch((e) => ({ ok: false, error: e.message || String(e) }));
+      if (r && r.ok) {
+        const c = r.counts || {};
+        showToast('已同步: ' + Object.entries(c).map(([k, v]) => k + ' ' + v).join(' · '));
+      } else showToast('同步失败: ' + ((r && r.error) || '未知错误'));
+      await drawStatus();
+    });
+  }
+
+  /** 登录后自动同步电脑端 (未配置地址则静默跳过) */
+  async function autoSyncDesktop() {
+    let u = '';
+    try { const r = await api.get('/api/desktop/url'); u = (r && r.url) || ''; } catch { /* 忽略 */ }
+    if (!u) return null;
+    const r = await api.post('/api/desktop/sync', {}).catch((e) => ({ ok: false, error: e.message || String(e) }));
+    if (r && r.ok) {
+      const c = r.counts || {};
+      showToast('已同步电脑端: ' + Object.entries(c).map(([k, v]) => k + ' ' + v).join(' · '));
+    } else showToast('电脑端同步失败: ' + ((r && r.error) || '未知错误'));
+    return r;
+  }
+
   function openSettings() {
     const page = document.createElement('div');
     page.className = 'chat-page';
@@ -990,6 +1100,7 @@
         <div class="conv-item" id="api-config-item"><span class="list-icon">${ICONS.chip}</span><span>API 配置</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="theme-toggle"><span class="list-icon" id="theme-icon">${ICONS.themeAuto}</span><span id="theme-text">跟随系统</span></div>
         <div class="conv-item" id="settings-network"><span class="list-icon">${ICONS.globe}</span><span>网络与同步</span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="settings-desktop"><span class="list-icon">${ICONS.globe}</span><span>电脑端同步</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-did"><span class="list-icon">${ICONS.idcard}</span><span>DID</span></div>
       </div>`;
     document.body.appendChild(page);
@@ -1001,6 +1112,7 @@
       applyTheme(next, true);
     });
     $('#settings-network').addEventListener('click', () => switchTab('network'));
+    $('#settings-desktop').addEventListener('click', openDesktopSync);
     $('#settings-did').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('DID: ' + (s.did || '未生成'))); });
   }
 
@@ -1198,7 +1310,25 @@
     const body = page.querySelector('#wallet-body');
     let channels = [];
     try { const chs = await api.get('/channels'); channels = Array.isArray(chs) ? chs : []; } catch {}
-    const agents = channels.map((c) => ({ agentId: c.agentId || c.id, name: c.persona?.name || c.name || c.agentId || '智能体' }));
+    const agents = (() => {
+      // 去重: agentId 才是身份 (多个频道可能同属一个身份) → 每个身份只列一条
+      const seen = new Set();
+      const out = [];
+      for (const c of channels) {
+        const aid = c.agentId || c.id;
+        if (!aid || seen.has(aid)) continue;
+        seen.add(aid);
+        out.push({ agentId: aid, name: c.persona?.name || c.name || '本机 Agent' });
+      }
+      return out;
+    })();
+    // 兜底: 没有渠道时至少能授权给本机 Agent (DID 由本机生成, 始终存在)
+    if (agents.length === 0) {
+      try {
+        const me = await api.get('/api/auth/status');
+        if (me && me.did) agents.push({ agentId: me.did, name: '本机 Agent' });
+      } catch { /* 忽略 */ }
+    }
     let st; try { st = await api.get('/api/wallet/status'); } catch {}
     const wallet = (st && st.wallets || []).find((w) => w.id === walletId);
     const allowed = new Set((wallet && wallet.allowedAgents) || []);
@@ -1213,7 +1343,14 @@
     $('#wl-grant-back').addEventListener('click', () => renderWalletList(page));
     $('#wl-grant-save').addEventListener('click', async () => {
       const list = Array.from(body.querySelectorAll('input[data-aid]'));
-      for (const cb of list) { await api.post('/api/wallet/grant', { id: walletId, agentId: cb.dataset.aid, allow: cb.checked }); }
+      let n = 0;
+      try {
+        for (const cb of list) {
+          await api.post('/api/wallet/grant', { id: walletId, agentId: cb.dataset.aid, allow: cb.checked });
+          if (cb.checked) n++;
+        }
+        showToast('已授权 ' + n + ' 个智能体');
+      } catch (e) { showToast('授权失败: ' + (e.message || e)); }
       renderWalletList(page);
     });
   }
@@ -1296,8 +1433,14 @@
     $('#login-back').addEventListener('click', () => page.remove());
     $('#login-submit').addEventListener('click', async () => {
       const name = (($('#login-name') || {}).value || '').trim();
-      try { await api.post('/api/auth/login', { name }); page.remove(); await loadMe(); switchTab('me'); }
-      catch (e) { alert('登录失败: ' + (e.message || e)); }
+      try {
+        await api.post('/api/auth/login', { name });
+        page.remove();
+        await loadMe();
+        switchTab('me');
+        // 登录后自动同步电脑端 (未配置地址则静默跳过)
+        await autoSyncDesktop();
+      } catch (e) { alert('登录失败: ' + (e.message || e)); }
     });
   }
 
@@ -1305,7 +1448,7 @@
   function bindMenu() {
     $('#item-settings').addEventListener('click', openSettings);
     $('#item-wallet').addEventListener('click', () => { openWallet(); });
-    $('#item-judgments').addEventListener('click', () => { alert('判断力 API'); });
+    $('#item-judgments').addEventListener('click', () => { openJudgments(); });
     // 头顶身份栏: 头像可改, 右侧卡片开身份介绍页; DID 不再作为标签按钮
     $('#me-avatar').addEventListener('click', pickAvatar);
     $('#profile-info').addEventListener('click', openIdentityPage);
