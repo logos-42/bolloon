@@ -1909,3 +1909,11 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - 根因: `switchTab()` 用 `el.hidden = ...` 隐藏页面; `hidden` 靠 UA 的 `[hidden]{display:none}` 生效, 但上一处修复给 `.page-container` 设了 `display:flex`, **优先级盖过 UA 规则** → 首页仍显示.
 - 修复: 补 `[hidden] { display: none !important; }` (文件内其他元素原本各自写了该规则, 这两个页面因新加 display 而漏掉).
 - 验证(探针实测): 切网络后 `.page-container display=none h=0` / `#page-network display=block h=732` / `#page-me display=none` → 网络页整屏, 不再平分.
+
+### 追加 (2026-09-08): 顶栏安全区 + 图标统一
+
+- **顶栏/底栏被压扁裁切**: `height: var(--topbar-h)` 与 `padding-top: env(safe-area-inset-top)` 同用, `box-sizing: border-box` 下 padding 吃掉高度 → 顶栏 box=60 但内容区≈1px(标题被裁), tabbar 内容区仅 26px(图标压扁). 实测 safeTop=59/safeBottom=34(env 生效). 修: 高度改 `calc(var(--topbar-h) + env(safe-area-inset-top))` 等 (topbar/tabbar/identity-header/chat-topbar).
+- **去掉左上角标题**: `.topbar-title { display: none }` (元素保留, JS 仍写 textContent).
+- **图标统一为线性 SVG**: 底部 tab 首页(网格)/网络(地球)/我(人像) + 「我」页 设置(sliders)/钱包/判断力(sparkle)/登录(lock)/注销(logout) 全换 inline SVG; `.ico` 用 `currentColor` 描边 → 自动跟随主题/高亮色; 替代原先 emoji+⊞ 混排.
+- 验证: 三个 tab 截图确认 (无左上角黑体标题, 顶栏按钮不再压状态栏, 图标风格统一).
+- 待办: 网络页列表图标(🛜📷🌐🪪) 与 MCP 工具图标仍为 emoji, 未换.
