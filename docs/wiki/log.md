@@ -1917,3 +1917,10 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - **图标统一为线性 SVG**: 底部 tab 首页(网格)/网络(地球)/我(人像) + 「我」页 设置(sliders)/钱包/判断力(sparkle)/登录(lock)/注销(logout) 全换 inline SVG; `.ico` 用 `currentColor` 描边 → 自动跟随主题/高亮色; 替代原先 emoji+⊞ 混排.
 - 验证: 三个 tab 截图确认 (无左上角黑体标题, 顶栏按钮不再压状态栏, 图标风格统一).
 - 待办: 网络页列表图标(🛜📷🌐🪪) 与 MCP 工具图标仍为 emoji, 未换.
+
+### 追加 (2026-09-08): 主题三档 + App 图标 + 图标全量统一
+
+- **主题**: 原只有 light/dark 且一旦存过值就永久固定(不跟随系统). 改为三档 `auto(跟随系统)/light/dark`: `applyTheme` 存偏好而非最终色, `effectiveTheme()` 求值, `matchMedia(prefers-color-scheme)` change 监听 → auto 时实时跟随; 设置页主题项循环 auto→light→dark 并显示当前档(半圆/太阳/月亮图标); 启动头部脚本同步支持 auto; 设 `data-theme` + `color-scheme` 让系统控件跟随.
+- 实测(探针): 初始 null → 点1次 ls=light data-theme=light → 点2次 ls=dark data-theme=dark --bg=#1a1a18; 跨 App 重启保留.
+- **App 图标**: `AppIcon.appiconset/AppIcon-512@2x.png` 原为 Xcode 占位图 → 用 PIL 从 `src/web/icons/icon.png`(1254²) 生成 1024² RGB 无 alpha (黄底 b 字标).
+- **图标统一**: 新增 `ICONS` 线性图标集(24x24, currentColor 描边); 设置页(chip/主题/globe/idcard)、网络页(wifi/scan/globe/idcard)、卡片菜单(clock/image/trash)、MCP 工具(`.conv-avatar` 里 🔌→插头 SVG) 全部替换 emoji. 注意: 设置页/菜单在模板字符串内 → 必须 `${ICONS.x}` 而非 `'+ICONS.x+'`(曾致字面文本).

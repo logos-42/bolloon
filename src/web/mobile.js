@@ -24,19 +24,47 @@
     try { return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; }
     catch { return 'dark'; }
   }
-  function resolveTheme() {
-    try { return localStorage.getItem('bolloon_theme') || systemTheme(); }
-    catch { return systemTheme(); }
+  // 统一线性图标 (与底部 tab 同风格; currentColor 描边)
+  const ICONS = {
+    themeAuto: '<svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 0 0 17z" fill="currentColor" stroke="none"/></svg>',
+    sun: '<svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></svg>',
+    moon: '<svg class="ico" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>',
+    chip: '<svg class="ico" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3.5v3M14 3.5v3M10 17.5v3M14 17.5v3M3.5 10h3M3.5 14h3M17.5 10h3M17.5 14h3"/></svg>',
+    globe: '<svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.3 2.3 3.5 5.3 3.5 8.5s-1.2 6.2-3.5 8.5c-2.3-2.3-3.5-5.3-3.5-8.5S9.7 5.8 12 3.5z"/></svg>',
+    idcard: '<svg class="ico" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><circle cx="8.5" cy="11" r="2"/><path d="M5.6 15.8a3.2 3.2 0 0 1 5.8 0M13.5 10h5M13.5 13.5h5"/></svg>',
+    clock: '<svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
+    image: '<svg class="ico" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="9" cy="10.5" r="1.8"/><path d="M4 17l4.5-4.5 3.5 3.5 3-3L20 16"/></svg>',
+    trash: '<svg class="ico" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7M6.5 7l1 12.5A1.5 1.5 0 0 0 9 21h6a1.5 1.5 0 0 0 1.5-1.5L17.5 7"/></svg>',
+  };
+  // 主题三档: auto(跟随系统) / light / dark. 存的是"偏好", 不是最终色.
+  const THEME_MODES = ['auto', 'light', 'dark'];
+  function resolveThemePref() {
+    try { const v = localStorage.getItem('bolloon_theme'); return THEME_MODES.includes(v) ? v : 'auto'; }
+    catch { return 'auto'; }
   }
-  let currentTheme = 'dark';
+  function effectiveTheme(pref) { return pref === 'light' || pref === 'dark' ? pref : systemTheme(); }
+  let currentTheme = 'auto';        // 偏好
   function applyTheme(name, persist = true) {
-    const n = name === 'light' ? 'light' : 'dark';
-    currentTheme = n;
-    const t = THEMES[n];
+    const pref = THEME_MODES.includes(name) ? name : 'auto';
+    currentTheme = pref;
+    const eff = effectiveTheme(pref);
+    const t = THEMES[eff];
     const root = document.documentElement;
     Object.entries(t).forEach(([k, v]) => root.style.setProperty(k, v));
-    if (persist) localStorage.setItem('bolloon_theme', n);
+    root.setAttribute('data-theme', eff);
+    root.style.colorScheme = eff;          // 系统控件/滚动条/状态栏跟随
+    if (persist) { try { localStorage.setItem('bolloon_theme', pref); } catch (e) {} }
+    const txt = document.getElementById('theme-text');
+    if (txt) txt.textContent = pref === 'auto' ? '跟随系统' : (pref === 'light' ? '浅色' : '深色');
+    const ico = document.getElementById('theme-icon');
+    if (ico) ico.innerHTML = pref === 'auto' ? ICONS.themeAuto : (pref === 'light' ? ICONS.sun : ICONS.moon);
   }
+  // 系统外观变化 → 处于 auto 时立即跟随
+  try {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if (currentTheme === 'auto') applyTheme('auto', false);
+    });
+  } catch (e) {}
 
   const TITLES = { main: '首页', network: '网络', me: '我' };
   let currentTab = 'main';
@@ -119,7 +147,7 @@
         const desc = t.description || t.function?.description || '';
         const el = document.createElement('div');
         el.className = 'conv-item';
-        el.innerHTML = `<div class="conv-avatar">🔌</div>
+        el.innerHTML = `<div class="conv-avatar"><svg class="ico" viewBox="0 0 24 24"><path d="M9 3.5v4.5M15 3.5v4.5"/><path d="M6.5 8h11v3.2a5.5 5.5 0 0 1-11 0z"/><path d="M12 16.7V20.5"/></svg></div>
           <div class="conv-body"><div class="conv-name">${escapeHtml(name)}</div>
           <div class="conv-preview">${escapeHtml(desc)}</div></div>`;
         el.addEventListener('click', () => { window.__mobileTouch?.('mcp', name); });
@@ -757,9 +785,9 @@
     sheet.innerHTML = `
       <div class="sheet-inner sheet-inner-choices">
         <div class="sheet-title">智能体设置 · ${escapeHtml(activeChannel.name || '')}</div>
-        <button class="sheet-choice" id="cm-history">📜 会话历史</button>
-        <button class="sheet-choice" id="cm-cover">🖼 智能体封面</button>
-        <button class="sheet-choice sheet-cancel" id="cm-delete" style="color:#e5484d">🗑 删除智能体</button>
+        <button class="sheet-choice" id="cm-history">${ICONS.clock} 会话历史</button>
+        <button class="sheet-choice" id="cm-cover">${ICONS.image} 智能体封面</button>
+        <button class="sheet-choice sheet-cancel" id="cm-delete" style="color:#e5484d">${ICONS.trash} 删除智能体</button>
         <button class="sheet-choice sheet-cancel" id="cm-close">取消</button>
       </div>`;
     document.body.appendChild(sheet);
@@ -927,17 +955,18 @@
         <div style="flex:1;font-weight:600">设置</div>
       </div>
       <div style="padding:12px">
-        <div class="conv-item" id="api-config-item"><span class="list-icon">🤖</span><span>API 配置</span><span class="list-arrow">›</span></div>
-        <div class="conv-item" id="theme-toggle">🌙 深色</div>
-        <div class="conv-item" id="settings-network"><span class="list-icon">🌐</span><span>网络与同步</span><span class="list-arrow">›</span></div>
-        <div class="conv-item" id="settings-did">🪪 DID</div>
+        <div class="conv-item" id="api-config-item"><span class="list-icon">${ICONS.chip}</span><span>API 配置</span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="theme-toggle"><span class="list-icon" id="theme-icon">${ICONS.themeAuto}</span><span id="theme-text">跟随系统</span></div>
+        <div class="conv-item" id="settings-network"><span class="list-icon">${ICONS.globe}</span><span>网络与同步</span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="settings-did"><span class="list-icon">${ICONS.idcard}</span><span>DID</span></div>
       </div>`;
     document.body.appendChild(page);
-    applyTheme(resolveTheme(), false);
+    applyTheme(resolveThemePref(), false);
     $('#settings-back').addEventListener('click', () => page.remove());
     $('#api-config-item').addEventListener('click', openApiConfig);
     $('#theme-toggle').addEventListener('click', () => {
-      applyTheme(currentTheme === 'dark' ? 'light' : 'dark', true);
+      const next = currentTheme === 'auto' ? 'light' : (currentTheme === 'light' ? 'dark' : 'auto');
+      applyTheme(next, true);
     });
     $('#settings-network').addEventListener('click', () => switchTab('network'));
     $('#settings-did').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('DID: ' + (s.did || '未生成'))); });

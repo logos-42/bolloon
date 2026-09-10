@@ -218,7 +218,7 @@ body {
   background: var(--bg-hover); color: var(--text);
   font-size: 15px; font-weight: 600;
   text-align: center; cursor: pointer;
-}
+  display: flex; align-items: center; justify-content: center; gap: 8px;}
 .sheet-choice:active { background: var(--border); }
 .sheet-choice.sheet-cancel { background: transparent; color: var(--text-secondary); }
 .sheet-inner-choices { gap: 10px; }
