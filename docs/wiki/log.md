@@ -1888,3 +1888,9 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - **验证**: `npm run ios:sim` → 模拟器 Debug **BUILD SUCCEEDED**; 真机 Release (iphoneos arm64, CODE_SIGNING_ALLOWED=NO) **BUILD SUCCEEDED**; `xcrun simctl` 安装启动成功, 截图确认渲染出手机端 UI (首页/blln-mobile 卡片/开始对话/首页·网络·我 三 tab).
 - 脚本增强: `build-ios.sh` 自动定位 Xcode (/Applications, ~/Downloads, ~/Applications) + `--sim`/`--verify` 模式; package 增 `ios:sim`/`ios:verify`.
 - 余下唯一人工步骤 = **签名** (Xcode 里选 Development Team, 免费 Apple ID 可装自己 iPhone 7 天) → `npm run ios:build` 出 .xcarchive/ipa. App Store 上架仍需 Xcode 16+(iOS 18 SDK), 须先升 macOS.
+
+### 追加 (2026-09-08): 模拟器运行两处修复
+
+- **白屏** → 模拟器构建原用 `CODE_SIGNING_ALLOWED=NO`(App 未签名) → 日志 `container_..._for_identifier: NOT_CODESIGNED`, WKWebView 加载不了本地文件 → 白屏. 改成 **ad-hoc 签名** `CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO` (模拟器无需 Apple ID), 界面正常渲染.
+- **底部 tab 浮高** → `capacitor.config.ts` 的 `ios.contentInset: 'automatic'` 让 WKWebView 加内容内边距, 可视区比屏幕矮 → `position`/流式底部 tab 贴不到物理底边. 改 **`contentInset: 'never'`** (Capacitor 默认; 安全区由 CSS `env(safe-area-inset-*)` 处理) → tab 紧贴底部 (home indicator 上方).
+- 验证: `xcrun simctl` 装启动 + 截图确认 (界面: 首页 / blln-mobile 卡片 / 开始对话 / 创建新会话 / 首页·网络·我 三 tab 贴底).
