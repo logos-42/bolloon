@@ -160,6 +160,35 @@ mobile-agent.ts runLocalAgent(goal)
 - 决策语义镜像测试: `src/test/tool-call-parser-mirror.test.ts` (12 条, 以桌面 parseToolCall 为参考锚点, 对齐手机工具集解析边界) PASS
 - 全量: tsc 0 错, vitest 1428/1428, build:web OK
 
+## 重新打包 (2026-09-10, 0.4.20) — 打包前必查 + 验证脚本
+
+### 打包链 (标准, 顺序不可省)
+
+```bash
+npm run build:web                                          # mobile-core.js 3.05MB (含 jsQR 内联)
+npx cap sync android                                       # dist/web → android/app/src/main/assets/public
+cd android && export JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'   # JDK 21, Windows 反斜杠路径
+./gradlew :app:assembleDebug --console=plain               # → app/build/outputs/apk/debug/app-debug.apk
+cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/bolloon-<npm版本>.apk
+```
+
+**版本同步**: `android/app/build.gradle` 的 `versionCode`/`versionName` 要跟 npm `package.json` 对齐 (0.4.20 → versionCode 20), 产物按 `bolloon-<version>.apk` 命名。
+
+**打包前必查 (踩过两次)**:
+1. `node_modules` 与 `package-lock.json` 一致性。2026-09-10 实测: `jsqr@^1.4.0` 在 package.json/lock 里齐全但 `node_modules/jsqr` 目录不存在 (上一轮全量 `npm install` 后残留) → `npm run build:web` 第一步即 `Could not resolve "jsqr"` (src/web/qr.ts:5 扫码解码) 直接失败。修法: `npm install jsqr@^1.4.0 --legacy-peer-deps --no-audit --no-fund` (lock 零 diff, 只是把已声明包落到磁盘)。**不要**改源码绕开。
+2. APK 内 assets 大小与 `dist/web` 逐一对齐 (旧坑: 打成 8.8KB 空内核): `unzip -l app-debug.apk | grep assets/public/mobile-core.js` → 应为 ~3MB。
+
+### 验证 (真证据, 两把工具)
+
+```bash
+bash android/scripts/verify-apk-emulator.sh          # 起 AVD → install -r → am start → 前台 activity → uiautomator → crash buffer → 截图
+node android/scripts/cdp-probe.cjs                   # 先 adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>
+```
+
+- `verify-apk-emulator.sh` 输出判据: `topResumedActivity=com.bolloon.agent.rokid/.MainActivity` + 进程存活 + crash buffer 空。冷启动约 70s。
+- `cdp-probe.cjs` 判据: WebView 目标 url 必须是 `https://localhost/mobile.html` (index.html 里的 Capacitor 检测会 `location.replace` 到手机端 UI), `window.BolloonCore` 键列表能反映新内核 (0.4.20 实测 18 键, 含 `orbit`/`gateway`/`qr` — `qr` = jsQR 真的进包), `document.body.innerText` 含 DID/P2P/三 tab。
+- 三个坑: ① `adb pull` 目标路径必须 Windows 风格 (`D:/...`), MSYS `/d/...` 会静默失败 (文件不存在); ② Node `ws` 连 CDP **不要**传 `origin` 头 → 否则 Chrome 403 (`Rejected an incoming WebSocket connection from the http://127.0.0.1:9222 origin`), 且 CDP 探针必须注册 `ws.on('message')` 才会收到响应; ③ swiftshader 模拟器常弹 "System UI isn't responding" 盖住 uiautomator dump (dump 只有 dialog 文本) → `adb shell settings put global hide_error_dialogs 1` + tap "Wait", 或直接 CDP 读 DOM。
+
 ## 手机端 UI 去微信化 + 编译链路修复 (2026-08-16)
 
 ### 1. 编译链路 (根因修复)

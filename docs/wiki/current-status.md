@@ -207,3 +207,4 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 - ✅ Rokid 眼镜端：`rokid/glass/`，Kotlin `RokidGlassesAdapter` 与大字号 Mock UI。
 - ✅ Web 端可选桥：`src/web/client.ts` 仅在检测到 Capacitor `RokidBridge` 时发送用户消息和 AI 回复；纯 Web/iOS/桌面保持静默。
 - ⚠️ 真机联调待 Rokid 授权材料与眼镜设备；CXR JNI 只发 arm .so（x86_64 模拟器靠 Play 镜像 Berberis 翻译可加载, 无该功能时 connect() 会报 native 不可用, UI 渲染不受影响）；私有材料只允许放 `android/vendor/`（gitignored），不进 Git。
+- ✅ **重新打包 APK 0.4.20 (2026-09-10)**: `android/app/build/outputs/apk/debug/bolloon-0.4.20.apk` (versionCode 20, 21MB, npm 版本对齐), 标准链 `build:web → cap sync android → assembleDebug` (JDK 21)。模拟器验证: MainActivity 前台 + crash buffer 空 + CDP 实测 WebView 加载 `mobile.html` 且 `window.BolloonCore` 18 键 (含 orbit/gateway/qr = 新内核真进包)。打包前必查与验证脚本见 [android-agent-runtime.md](./android-agent-runtime.md) §重新打包; 打包受阻根因 = `node_modules/jsqr` 缺失 (lock 有, 磁盘无) → `npm install jsqr --legacy-peer-deps` (lock 零 diff) 修好。
