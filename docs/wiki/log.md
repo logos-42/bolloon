@@ -1995,3 +1995,16 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
   - 免费账号**没有已登记设备就无法生成描述文件** → 归档报 `Your team has no devices from which to generate a provisioning profile`. 必须先 USB 连 iPhone 并在 Xcode 登记 (脚本带 `-allowProvisioningDeviceRegistration`).
   - 免费账号 = 描述文件 **7 天**过期, 只能装自己团队登记的设备 → 给朋友装需 **$99/年** (Ad Hoc 最多 100 台/年, 朋友须提供 UDID) 或 TestFlight.
   - **TestFlight/App Store 在本机做不到**: 上传强制 Xcode 16+/iOS 18 SDK (2025-04-24 起), 而 macOS 13.7.8 上限 Xcode 15.2.
+
+### 追加 (2026-09-08): iOS 打出未签名 ipa + 安装页上线"用户自助安装"三路线
+
+- **产出**: `build/ipa/Bolloon-unsigned.ipa` (9.1 MB, bundle com.bolloon.agent, 版本 0.4.20, arm64 设备版, **未签名**).
+  已作为 Release 资产发布: `https://github.com/logos-42/bolloon-UI/releases/download/ios-v0.4.20-unsigned/Bolloon-unsigned.ipa` (实测 302→200 可下载).
+- **新增 `scripts/ios-unsigned-ipa.sh`**: 无需 Apple 账号/无需设备 → web 产物 → `xcodebuild ... CODE_SIGNING_ALLOWED=NO` → `Payload/App.app` 封 zip 成 ipa. 供 AltStore/SideStore 用**用户自己的 Apple ID**签名安装.
+- **bolloon-UI 安装页 iOS 栏目改为三方式** (已推 main, Pages 已生效):
+  ① 自助签名安装 (下载未签名 ipa → AltStore/SideStore 签名; 免费 Apple ID 7 天, 付费 1 年; 不需把 UDID 交给任何人) —— 这是"用户自己下载自己装"的正路
+  ② 自己编译 (`git clone` + `npm run ios:build`, 有 Mac 时全程本地)
+  ③ 一键 OTA (签名版发布后由 `scripts/ios-release.sh` 自动显示按钮)
+- **结论 (签名不可绕过)**: iOS 签名链是硬性的 —— 无有效签名/描述文件的 ipa 在未越狱设备上装不了. "任意用户自助安装"的合法路径只有: 用户自己签名 (AltStore/SideStore/自编译) 或 付费账号的 Ad Hoc/TestFlight/App Store. 共享企业证书/破解工具属灰产 (随时吊销+安全风险), 不接入站点.
+- **给朋友装**: Ad Hoc 只需**收 UDID 字符串**登记 (不需实体设备在手), ≤100 台/年, 用 `METHOD=adhoc bash scripts/ios-release.sh`; TestFlight 需 Xcode 26+iOS 26 SDK (2026-04-28 起强制) → 本机 macOS 13.7.8 做不到, 需升 macOS 或云 Mac 构建.
+- **git 坑**: bolloon-UI 推送报 `unexpected disconnect while reading sideband packet` → `git config http.version HTTP/1.1` 后推送成功.
