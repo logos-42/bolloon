@@ -58,6 +58,43 @@ export async function resetAgentDb(): Promise<void> {
   });
 }
 
+async function _kvGet(key: string): Promise<any> {
+  try {
+    const db = _identityDb || (await openIdentityDb()); _identityDb = db;
+    return await new Promise((res) => { const t = db.transaction('kv', 'readonly'); const r = t.objectStore('kv').get(key); r.onsuccess = () => res(r.result ?? null); r.onerror = () => res(null); });
+  } catch { return null; }
+}
+async function _kvPut(key: string, val: any): Promise<void> {
+  try {
+    const db = _identityDb || (await openIdentityDb()); _identityDb = db;
+    await new Promise<void>((res) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(val, key); t.oncomplete = () => res(); t.onerror = () => res(); });
+  } catch { /* IDB 不可用则仅内存态 */ }
+}
+
+/** 登录: 设置本机身份昵称 (无身份则新建) + 标记已登录 */
+export async function loginIdentity(name: string): Promise<{ did: string; name: string; createdAt: number; loggedIn: boolean }> {
+  const id = await ensureIdentity();
+  const nm = String(name || '').trim() || 'blln-mobile';
+  const next = { ...id, name: nm };
+  await _kvPut('identity', next);
+  await _kvPut('loggedIn', true);
+  _identity = next;
+  return { ...next, loggedIn: true };
+}
+
+/** 注销: 清除登录态 (保留设备 DID, 不影响 P2P/频道) */
+export async function logoutIdentity(): Promise<{ ok: boolean }> {
+  await _kvPut('loggedIn', false);
+  return { ok: true };
+}
+
+/** 身份状态 (含登录态; 未登录时 name 置空) */
+export async function identityStatus(): Promise<any> {
+  const id = await ensureIdentity();
+  const loggedIn = (await _kvGet('loggedIn')) === true;
+  return { did: id.did, didShort: id.did ? id.did.slice(0, 12) : '', name: loggedIn ? id.name : '', createdAt: id.createdAt, loggedIn };
+}
+
 /** 获取本机 DID (首次生成并持久化) */
 export async function ensureIdentity(): Promise<{ did: string; name: string; createdAt: number }> {
   if (_identity) return _identity;
@@ -399,4 +436,4 @@ export async function handleIncomingPhoneMessage(type: string, payload: string, 
   } catch { /* 控制消息处理失败静默 */ }
 }
 
-export default { ensureIdentity, runLocalAgent, setAgentTransport, onAgentReply, callRemoteAgent, handleIncomingAgentMessage, notifyAgentReply, onInboundChat, setLlmConfig, getLlmConfig, runPhoneAgent, phoneStatus, cancelPhoneAgent, handleIncomingPhoneMessage };
+export default { ensureIdentity, loginIdentity, logoutIdentity, identityStatus, runLocalAgent, setAgentTransport, onAgentReply, callRemoteAgent, handleIncomingAgentMessage, notifyAgentReply, onInboundChat, setLlmConfig, getLlmConfig, runPhoneAgent, phoneStatus, cancelPhoneAgent, handleIncomingPhoneMessage };

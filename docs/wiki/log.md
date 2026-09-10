@@ -1937,3 +1937,15 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - **卡片不满屏**: `.card-wrap` 由 `flex:0 0 100%` 改 `flex:0 0 auto; height:80%; scroll-snap-align:start` → 露出下一张卡片位置.
 - **卡片描述压缩**: `.card-cover` 40vh→30vh(min 200→150), `.card-body` padding 16→12/16, `.card-body-row` padding 10→6, `.card-cover-info` padding 16→12, 按钮 margin-top 12→8; 「开始对话」按钮保留.
 - 验证: 截图确认 (右上角两按钮 / 卡片下方露出下一张 / 卡片内容完整不裁切).
+
+### 追加 (2026-09-08): 登录/注销 实装 + 钱包助记词/私钥 快捷复制
+
+- **登录/注销 原先未实现**: `identity.logout()` 是空实现, `login` 不存在, 点登录只弹 DID 提示.
+  - `mobile-agent.ts`: 新增 `loginIdentity(name)`(设昵称+标记已登录, 无身份则新建) / `logoutIdentity()`(清登录态, 保留设备 DID 不影响 P2P/频道) / `identityStatus()`(带 loggedIn) + kv 读写helper.
+  - `mobile-core.ts`: `identity.login/status`; 路由 `POST /api/auth/login`.
+  - `mobile.js`: 登录页(昵称输入+登录按钮) ; 注销改为 confirm + POST logout + loadMe; 我页按 `loggedIn` 显示 已登录/登录.
+- **钱包复制**: 新增全局 `[data-copy]` 委托 + `copyText()`(clipboard API, 失败回退 execCommand, 切换"已复制✓").
+  - 创建钱包后的助记词屏: 加「复制助记词」「复制地址」.
+  - 钱包列表(unlocked)加「导出私钥」→ 导出面板(地址+私钥 hex + 复制地址/复制私钥); `mobile-wallet.ts` 新增 `exportWallet(id)`(需已解锁), `mobile-core.ts` 加 `wallet.export` + `POST /api/wallet/export`.
+  - 注: 助记词仅在创建时显示一次(不落库), 故导出面板只提供私钥.
+- 验证(截图): 登录页渲染(rect 393x852) / 登录后 我页显示昵称+已登录 / 注销后回未登录 / 助记词屏有复制按钮 / 导出面板有复制地址+复制私钥.

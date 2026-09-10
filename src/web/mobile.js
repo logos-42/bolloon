@@ -202,11 +202,10 @@
     }
     try {
       const s = await api.get('/api/auth/status');
-      $('#me-name').textContent = s.name || '未登录';
+      $('#me-name').textContent = s.loggedIn ? (s.name || '未登录') : '未登录';
       $('#me-did').textContent = s.did ? ('DID: ' + (s.didShort || s.did)) : '';
-      if (avatarEl && !av) avatarEl.textContent = (s.name || 'U').charAt(0);
-      const hasAccount = (s.accounts && s.accounts.length > 0);
-      $('#login-label').textContent = hasAccount ? '已登录账号' : '登录';
+      if (avatarEl && !av) avatarEl.textContent = (s.loggedIn && s.name ? s.name : 'U').charAt(0);
+      $('#login-label').textContent = s.loggedIn ? '已登录' : '登录';
     } catch (e) { /* 默认 */ }
     // P2P ID = 通信ID, 与 DID 不同 (libp2p nodeId)
     try {
@@ -1082,6 +1081,7 @@
           ${w.unlocked ? `<button data-wl="lock" data-id="${w.id}" style="flex:1;${_walletBtn}">锁定</button>` : (w.mode === 'passphrase' ? `<button data-wl="unlock" data-id="${w.id}" style="flex:1;${_walletBtn}">解锁</button>` : '')}
           ${w.unlocked ? `<button data-wl="bal" data-id="${w.id}" style="flex:1;${_walletBtn}">余额</button>` : ''}
           <button data-wl="grant" data-id="${w.id}" style="flex:1;${_walletBtn}">授权</button>
+          ${w.unlocked ? `<button data-wl="export" data-id="${w.id}" style="flex:1;${_walletBtn}">导出私钥</button>` : ''}
         </div>
         <div data-bal="${w.id}" style="font-size:13px;color:var(--accent)"></div>
       </div>`).join('');
@@ -1094,7 +1094,27 @@
         catch (e) { alert(e.message || '余额查询失败'); }
       }
       else if (act === 'grant') { grantWalletUI(page, id); }
+      else if (act === 'export') { showWalletExport(page, id); }
     }));
+  }
+
+  async function showWalletExport(page, id) {
+    const body = page.querySelector('#wallet-body');
+    const _cp = 'padding:10px;border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:8px;font-weight:600;width:100%';
+    try {
+      const r = await api.post('/api/wallet/export', { id });
+      body.innerHTML = `
+        <div style="font-weight:700">导出钱包</div>
+        <div style="font-size:12px;color:var(--text-secondary)">⚠ 私钥=资产控制权, 切勿截图/外发。助记词仅在创建时显示一次, 不再存储。</div>
+        <div style="font-weight:600;font-size:13px">地址</div>
+        <div class="wallet-addr" style="word-break:break-all">${escapeHtml(r.address)}</div>
+        <button data-copy="${escapeHtml(r.address)}" style="${_cp}">复制地址</button>
+        <div style="font-weight:600;font-size:13px;margin-top:4px">私钥 (hex)</div>
+        <div class="wallet-addr" style="word-break:break-all">${escapeHtml(r.privateKey)}</div>
+        <button data-copy="${escapeHtml(r.privateKey)}" style="${_cp}">复制私钥</button>
+        <button id="wl-exp-back" style="padding:12px;border:none;background:var(--bg-hover);color:var(--text-secondary);border-radius:10px">返回</button>`;
+      $('#wl-exp-back').addEventListener('click', () => renderWalletList(page));
+    } catch (e) { alert(e.message || '导出失败'); }
   }
 
   function openWalletForm(page, which) {
@@ -1123,7 +1143,8 @@
           ? await api.post('/api/wallet/create', { name, mode, pass })
           : await api.post('/api/wallet/import', { name, mode, pass, input: $('#wlf-input').value });
         if (r && r.mnemonic) {
-          body.innerHTML = `<div style="background:#3a2a1a;border:1px solid var(--accent);border-radius:10px;padding:14px;font-size:13px"><div style="font-weight:700;color:var(--accent);margin-bottom:6px">⚠ 抄写并离线保存助记词</div><div style="word-break:break-all">${escapeHtml(r.mnemonic)}</div></div><div class="wallet-addr">${escapeHtml(r.address)}</div><button id="wlf-ok" style="${_walletBtn}">我已保存</button>`;
+          const _cp = 'padding:10px;border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:8px;font-weight:600';
+          body.innerHTML = `<div style="background:#3a2a1a;border:1px solid var(--accent);border-radius:10px;padding:14px;font-size:13px"><div style="font-weight:700;color:var(--accent);margin-bottom:6px">⚠ 抄写并离线保存助记词</div><div style="word-break:break-all">${escapeHtml(r.mnemonic)}</div><button data-copy="${escapeHtml(r.mnemonic)}" style="${_cp};margin-top:10px;width:100%">复制助记词</button></div><div class="wallet-addr" style="word-break:break-all;font-size:12px">${escapeHtml(r.address)}</div><button data-copy="${escapeHtml(r.address)}" style="${_cp};width:100%">复制地址</button><button id="wlf-ok" style="${_walletBtn}">我已保存</button>`;
           $('#wlf-ok').addEventListener('click', () => renderWalletList(page));
         } else renderWalletList(page);
       } catch (e) { alert((isCreate ? '创建' : '导入') + '失败: ' + (e.message || e)); }
@@ -1202,6 +1223,52 @@
     alert('扫码添加 (真机可用相机扫码)');
   }
 
+  // === 复制 (助记词/私钥/地址 快捷复制; 全局委托 [data-copy]) ===
+  async function copyText(t) {
+    const txt = String(t || '');
+    try { await navigator.clipboard.writeText(txt); return true; }
+    catch (e) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = txt; ta.style.cssText = 'position:fixed;top:-9999px;opacity:0';
+        document.body.appendChild(ta); ta.select();
+        const ok = document.execCommand('copy'); ta.remove(); return ok;
+      } catch (e2) { return false; }
+    }
+  }
+  document.addEventListener('click', async (ev) => {
+    const b = ev.target && ev.target.closest ? ev.target.closest('[data-copy]') : null;
+    if (!b) return;
+    const ok = await copyText(b.getAttribute('data-copy'));
+    const old = b.textContent;
+    b.textContent = ok ? '已复制 ✓' : '复制失败';
+    setTimeout(() => { b.textContent = old; }, 1200);
+  });
+
+  // === 登录页 (设置本机身份昵称) ===
+  function openLoginPage() {
+    const page = document.createElement('div');
+    page.className = 'chat-page';
+    page.id = 'login-page';
+    page.innerHTML = `
+      <div class="chat-topbar">
+        <button class="icon-btn" id="login-back">←</button>
+        <div style="flex:1;font-weight:600">登录</div>
+      </div>
+      <div style="padding:12px;display:flex;flex-direction:column;gap:12px">
+        <div style="font-size:13px;color:var(--text-secondary)">登录 = 在本机创建/启用身份并设置昵称。DID 由本机生成, 不上传服务器。</div>
+        <input id="login-name" placeholder="昵称 (如 觉者)" style="${_walletInput}">
+        <button id="login-submit" style="${_walletBtn}">登录</button>
+      </div>`;
+    document.body.appendChild(page);
+    $('#login-back').addEventListener('click', () => page.remove());
+    $('#login-submit').addEventListener('click', async () => {
+      const name = (($('#login-name') || {}).value || '').trim();
+      try { await api.post('/api/auth/login', { name }); page.remove(); await loadMe(); switchTab('me'); }
+      catch (e) { alert('登录失败: ' + (e.message || e)); }
+    });
+  }
+
   // === 菜单 ===
   function bindMenu() {
     $('#item-settings').addEventListener('click', openSettings);
@@ -1211,14 +1278,11 @@
     $('#me-avatar').addEventListener('click', pickAvatar);
     $('#profile-info').addEventListener('click', openIdentityPage);
     bindAvatarInput();
-    $('#item-login').addEventListener('click', async () => {
-      try {
-        const s = await api.get('/api/auth/status');
-        const did = (s && (s.did || s.didShort)) || '未生成';
-        alert('本机 DID: ' + did + '\n\nOrbitDB 身份同步（待接入）：手机生成 DID 后经 P2P 推给桌面 publish。');
-      } catch (e) { alert('DID: 获取失败'); }
+    $('#item-login').addEventListener('click', () => { openLoginPage(); });
+    $('#item-logout').addEventListener('click', async () => {
+      if (!confirm('确定注销? 将清除本机登录态 (DID 保留, 不影响频道/P2P)。')) return;
+      try { await api.post('/api/auth/logout', {}); await loadMe(); } catch (e) { alert('注销失败: ' + (e.message || e)); }
     });
-    $('#item-logout').addEventListener('click', () => { api.post('/api/auth/logout', {}).then(() => loadMe()); });
     $('#btn-add').addEventListener('click', addFriend);
     const cs = $('#btn-create-session'); if (cs) cs.addEventListener('click', createSession);
     const csScan = $('#choice-scan'); if (csScan) csScan.addEventListener('click', addFriendScan);

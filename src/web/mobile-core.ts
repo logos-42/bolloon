@@ -103,6 +103,8 @@ export const core = {
       return () => core.message.send({ text: b.text, channelId: b.channelId });
     }
     if (p === '/api/auth/logout') return () => core.identity.logout();
+    if (p === '/api/auth/login') { const b = body || {}; return () => core.identity.login(String(b.name || '')); }
+    if (p === '/api/wallet/export') { const b = body || {}; return () => core.wallet.export(String(b.id || '')); }
     if (p === '/api/phone/agent/run') {
       const b = body || {};
       const agentLayer = () => import('./mobile-agent.js');
@@ -313,14 +315,9 @@ export const core = {
   },
 
   identity: {
-    async status(): Promise<any> {
-      const a = await import('./mobile-agent.js');
-      const id = await a.ensureIdentity();
-      return { ...id, didShort: id.did?.slice(0, 12) };
-    },
-    async logout(): Promise<void> {
-      // 手机端身份本地化, logout 只清 accounts 语义 (无 accounts 时 no-op)
-    },
+    async status(): Promise<any> { const a = await import('./mobile-agent.js'); return a.identityStatus(); },
+    async login(name: string): Promise<any> { const a = await import('./mobile-agent.js'); return a.loginIdentity(name); },
+    async logout(): Promise<any> { const a = await import('./mobile-agent.js'); return a.logoutIdentity(); },
   },
 
   peers: {
@@ -358,6 +355,7 @@ export const core = {
     async grant(id: string, agentId: string, allow: boolean): Promise<any> { const w = await import('./mobile-wallet.js'); return w.grantWallet(id, agentId, allow); },
     async forAgent(agentId: string): Promise<any> { const w = await import('./mobile-wallet.js'); return w.walletForAgent(agentId); },
     async balance(id?: string): Promise<any> { const w = await import('./mobile-wallet.js'); return w.walletBalance(id); },
+    async export(id: string): Promise<any> { const w = await import('./mobile-wallet.js'); return w.exportWallet(id); },
   },
 
   mcp: {

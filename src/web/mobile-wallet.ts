@@ -202,6 +202,16 @@ export async function unlockWallet(id: string, pass: string): Promise<{ address:
 
 export function lockWallet(id: string): void { unlockedKeys.delete(id); }
 
+/** 导出钱包 (需已解锁): 地址 + 私钥 hex */
+export async function exportWallet(id: string): Promise<{ address: string; privateKey: string }> {
+  const list = await loadWallets();
+  const rec = list.find((w) => w.id === id);
+  if (!rec) throw new Error('钱包不存在');
+  const priv = unlockedKeys.get(id);
+  if (!priv) throw new Error('钱包已锁定, 请先解锁');
+  return { address: rec.address, privateKey: '0x' + bytesToHex(priv) };
+}
+
 export async function grantWallet(id: string, agentId: string, allow: boolean): Promise<{ ok: boolean; allowedAgents: string[] }> {
   const list = await loadWallets();
   const w = list.find((x) => x.id === id);
