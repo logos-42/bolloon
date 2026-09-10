@@ -1930,3 +1930,10 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - 「我」页隐藏右上角按钮: `.topbar-actions` 加 `id`, `switchTab()` 里 `ta.hidden = (tab === 'me')`; 首页/网络仍显示. (依赖已修的全局 `[hidden]{display:none!important}`)
 - 顶栏两个按钮 `⟳`/`＋` 文字符号 → 换成线性 SVG (刷新/加号), 加 `.icon-btn .ico{width:20px;height:20px}`.
 - 验证: 截图确认 我页右上角空白 / 首页·网络 右上角两个线性按钮.
+
+### 追加 (2026-09-08): 卡片高度/紧凑度 + 顶栏按钮靠右
+
+- **顶栏按钮跑到左边**: `.topbar-title` 设为 `display:none` 后, `.topbar{justify-content:space-between}` 只剩一个子元素 → 靠左. 修: `.topbar-actions { margin-left: auto }`.
+- **卡片不满屏**: `.card-wrap` 由 `flex:0 0 100%` 改 `flex:0 0 auto; height:80%; scroll-snap-align:start` → 露出下一张卡片位置.
+- **卡片描述压缩**: `.card-cover` 40vh→30vh(min 200→150), `.card-body` padding 16→12/16, `.card-body-row` padding 10→6, `.card-cover-info` padding 16→12, 按钮 margin-top 12→8; 「开始对话」按钮保留.
+- 验证: 截图确认 (右上角两按钮 / 卡片下方露出下一张 / 卡片内容完整不裁切).

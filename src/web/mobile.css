@@ -43,7 +43,7 @@ body {
 }
 /* 用户要求去掉左上角标题 (元素保留, JS 仍写 textContent) */
 .topbar-title { display: none; }
-.topbar-actions { display: flex; gap: 12px; }
+.topbar-actions { display: flex; gap: 12px; margin-left: auto; /* 标题已隐藏, space-between 会把按钮推到左边 → 强制靠右 */ }
 .icon-btn {
   width: 36px; height: 36px;
   border: none; border-radius: 8px;
@@ -388,8 +388,9 @@ body {
 
 /* 每张卡片外层: 纵向单元 + 删除位 */
 .card-wrap {
-  flex: 0 0 100%;
-  scroll-snap-align: center;
+  flex: 0 0 auto;
+  height: 80%;              /* 不满屏: 露出下一张卡片的位置 */
+  scroll-snap-align: start;
   position: relative;
   border-radius: 16px;
   overflow: hidden;
@@ -436,8 +437,8 @@ body {
 /* 卡片封面区域 (水平频) */
 .card-cover {
   position: relative;
-  height: 40vh;
-  min-height: 200px;
+  height: 30vh;
+  min-height: 150px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -466,7 +467,7 @@ body {
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 16px;
+  padding: 12px;
   background: linear-gradient(transparent, rgba(0,0,0,0.8));
   color: #fff;
 }
@@ -487,14 +488,14 @@ body {
   flex: 1;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 16px;
+  padding: 12px 16px;
 }
 
 .card-body-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 0;
+  padding: 6px 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -522,7 +523,7 @@ body {
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  margin-top: 12px;
+  margin-top: 8px;
   transition: background 0.2s;
 }
 
