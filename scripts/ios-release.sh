@@ -117,6 +117,8 @@ h = ip.read_text(encoding='utf-8')
 h = re.sub(r'(<span class="intro-note" id="ios-note">)[^<]*(</span>)',
            r'\g<1>开发版签名 · 需已登记设备 · v%s\g<2>' % ver, h)
 h = re.sub(r'(id="ios-version"[^>]*>)', r'\g<1>当前版本 v%s · 发布 %s' % (ver, tag), h)
+# 签名版发布后 → 显示一键 OTA 安装按钮
+h = re.sub(r'(id="ios-ota-wrap")\s+hidden', r'\g<1>', h)
 ip.write_text(h, encoding='utf-8')
 print('   manifest.plist + install.html 已更新')
 PY
