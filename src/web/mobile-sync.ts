@@ -32,7 +32,11 @@ export interface SyncResult {
   counts?: Record<string, number>;
   ts?: number;
   error?: string;
+  /** OrbitDB 库级复制结果 (本地副本 ↔ 电脑端 store) */
+  orbit?: { ok: boolean; stores: number; pulled: number; pushed: number; entries: number; error?: string };
 }
+
+const ORBIT_KEY = 'bolloon_orbit_status';
 
 function ls(): Storage | null {
   try { return typeof localStorage !== 'undefined' ? localStorage : null; } catch { return null; }
@@ -56,9 +60,26 @@ export function getCachedJudgments(): any[] {
   try { const s = ls()?.getItem(JUDGE_KEY); const a = s ? JSON.parse(s) : []; return Array.isArray(a) ? a : []; } catch { return []; }
 }
 
-export function getSyncStatus(): { url: string; lastTs: number; counts: Record<string, number> } {
+export function getSyncStatus(): { url: string; lastTs: number; counts: Record<string, number>; orbit: any } {
   const snap = getLastSnapshot();
-  return { url: getDesktopUrl(), lastTs: (snap && snap.ts) || 0, counts: (snap && snap.counts) || {} };
+  let orbit: any = null;
+  try { const s = ls()?.getItem(ORBIT_KEY); orbit = s ? JSON.parse(s) : null; } catch { orbit = null; }
+  return { url: getDesktopUrl(), lastTs: (snap && snap.ts) || 0, counts: (snap && snap.counts) || {}, orbit };
+}
+
+/** OrbitDB 库级复制: 本地副本 ↔ 电脑端 store (双向 merge). 独立入口, 便于本地写后立即推回. */
+export async function replicateOrbit(opts: { fetchImpl?: typeof fetch } = {}): Promise<SyncResult['orbit']> {
+  try {
+    const o = await import('./mobile-orbit.js');
+    const r = await o.replicateAll({ baseUrl: getDesktopUrl(), fetchImpl: opts.fetchImpl });
+    const out = { ok: r.ok, stores: r.stores, pulled: r.pulled, pushed: r.pushed, entries: r.entries, error: r.error };
+    try { ls()?.setItem(ORBIT_KEY, JSON.stringify(out)); } catch { /* 忽略 */ }
+    return out;
+  } catch (e: any) {
+    const out = { ok: false, stores: 0, pulled: 0, pushed: 0, entries: 0, error: e?.message || String(e) };
+    try { ls()?.setItem(ORBIT_KEY, JSON.stringify(out)); } catch { /* 忽略 */ }
+    return out;
+  }
 }
 
 /**
@@ -80,7 +101,17 @@ export async function syncFromDesktop(baseUrl?: string, opts: { fetchImpl?: type
     if (Array.isArray(snap.judgments)) {
       try { ls()?.setItem(JUDGE_KEY, JSON.stringify(snap.judgments)); } catch { /* 忽略 */ }
     }
-    return { ok: true, counts: snap.counts || {}, ts: snap.ts };
+    // 顺手做 OrbitDB 库级复制 (手机端本地副本 ↔ 电脑端 store, 双向 merge); 失败不影响快照结果
+    let orbit: SyncResult['orbit'];
+    try {
+      const o = await import('./mobile-orbit.js');
+      const r = await o.replicateAll({ baseUrl: base, fetchImpl: opts.fetchImpl });
+      orbit = { ok: r.ok, stores: r.stores, pulled: r.pulled, pushed: r.pushed, entries: r.entries, error: r.error };
+      try { ls()?.setItem(ORBIT_KEY, JSON.stringify(orbit)); } catch { /* 忽略 */ }
+    } catch (e: any) {
+      orbit = { ok: false, stores: 0, pulled: 0, pushed: 0, entries: 0, error: e?.message || String(e) };
+    }
+    return { ok: true, counts: snap.counts || {}, ts: snap.ts, orbit };
   } catch (e: any) {
     return { ok: false, error: e?.message || String(e) };
   }

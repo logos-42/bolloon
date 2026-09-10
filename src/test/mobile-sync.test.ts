@@ -54,14 +54,18 @@ describe('mobile-sync (手机端拉电脑端全量数据)', () => {
     expect(getSyncStatus().lastTs).toBe(1757300000000);
   });
 
-  it('地址末尾斜杠被归一 (避免拼出 //api)', async () => {
+  it('地址末尾斜杠被归一 (避免拼出 //api) + 顺带做 OrbitDB 复制', async () => {
     setDesktopUrl('http://10.0.0.9:7788///');
     expect(getDesktopUrl()).toBe('http://10.0.0.9:7788');
-    let called = '';
-    const f: any = async (url: string) => { called = url; return { ok: true, status: 200, json: async () => snapBody() }; };
+    const urls: string[] = [];
+    const f: any = async (url: string) => { urls.push(url); return { ok: true, status: 200, json: async () => snapBody() }; };
     const r = await syncFromDesktop(undefined, { fetchImpl: f });
     expect(r.ok).toBe(true);
-    expect(called).toBe('http://10.0.0.9:7788/api/mobile/snapshot');
+    expect(urls[0]).toBe('http://10.0.0.9:7788/api/mobile/snapshot');
+    // 快照之后自动跟随 OrbitDB 库级复制 (不再拼出 //api)
+    expect(urls.some((u) => u.startsWith('http://10.0.0.9:7788/api/orbitdb/'))).toBe(true);
+    expect(urls.every((u) => !u.includes('7788//'))).toBe(true);
+    expect(r.orbit).toBeDefined();
   });
 
   it('网络异常 → ok:false 且保留上一次快照 (不清空本地)', async () => {

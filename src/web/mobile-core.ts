@@ -93,6 +93,9 @@ export const core = {
     if (p === '/api/desktop/url') return () => core.desktop.url();
     if (p === '/api/desktop/sync') return () => core.desktop.sync();
     if (p === '/api/judgments/cached') return () => core.desktop.judgments();
+    // OrbitDB 本地副本 (库级复制)
+    if (p === '/api/orbit/status') return () => core.orbit.status();
+    if (p === '/api/orbit/replica') return () => core.orbit.replica();
     if (p.startsWith('/sessions/')) {
       const cid = decodeURIComponent(p.slice('/sessions/'.length));
       return () => core.session.get(cid);
@@ -146,6 +149,10 @@ export const core = {
       const b = body || {};
       return () => core.channels.delete(String(b.id || ''));
     }
+    if (p === '/api/channels/rename') {
+      const b = body || {};
+      return () => core.channels.rename(String(b.id || ''), String(b.name || ''));
+    }
     if (p === '/api/llm-config') {
       const b = body || {};
       return async () => {
@@ -183,6 +190,11 @@ export const core = {
       return () => core.desktop.setUrl(String(b.url || ''));
     }
     if (p === '/api/desktop/sync') return () => core.desktop.sync();
+    if (p === '/api/orbit/put') {
+      const b = body || {};
+      return () => core.orbit.put(String(b.name || ''), String(b.key || ''), b.value);
+    }
+    if (p === '/api/orbit/replicate') return () => core.orbit.replicate();
     if (p === '/api/wallet/balance') {
       const b = body || {};
       return () => core.wallet.balance(b.id ? String(b.id) : undefined);
@@ -302,13 +314,27 @@ export const core = {
       busBroadcast({ type: 'channels-updated', count: next.length });
       return ch;
     },
-    async delete(id: string): Promise<{ ok: boolean }> {
+    async delete(id: string): Promise<{ ok: boolean; deleted?: number; error?: string }> {
       const d = await import('./mobile-data.js');
       const existing = await d.getChannels();
       const next = existing.filter((c: any) => c.id !== id);
+      const deleted = existing.length - next.length;
+      // 找不到 → 明确报告 (原实现在这里静默返回 ok, 导致"点了删除没反应也没报错")
+      if (deleted === 0) return { ok: false, deleted: 0, error: '本机卡片不是会话 (请用"移除卡片")' };
       await d.saveChannels(next);
       busBroadcast({ type: 'channels-updated', count: next.length });
-      return { ok: true };
+      return { ok: true, deleted };
+    },
+    async rename(id: string, name: string): Promise<{ ok: boolean; name?: string; error?: string }> {
+      const d = await import('./mobile-data.js');
+      const list = await d.getChannels();
+      const ch: any = list.find((c: any) => c.id === id);
+      if (!ch) return { ok: false, error: '本机卡片不是会话 (改名请改本机身份昵称)' };
+      ch.name = name;
+      if (ch.persona && typeof ch.persona === 'object') ch.persona.name = name;
+      await d.saveChannels(list);
+      busBroadcast({ type: 'channels-updated', count: list.length });
+      return { ok: true, name };
     },
   },
 
@@ -375,6 +401,25 @@ export const core = {
     async sync(): Promise<any> { const s = await import('./mobile-sync.js'); return s.syncFromDesktop(); },
     async status(): Promise<any> { const s = await import('./mobile-sync.js'); return s.getSyncStatus(); },
     async judgments(): Promise<any> { const s = await import('./mobile-sync.js'); return { judgments: s.getCachedJudgments() }; },
+  },
+
+  // OrbitDB 本地副本 (库级复制): 手机端持有与电脑端同地址 store 的副本, 离线可读
+  orbit: {
+    async status(): Promise<any> { const o = await import('./mobile-orbit.js'); return o.replicaStats(); },
+    async replica(): Promise<any> {
+      const o = await import('./mobile-orbit.js');
+      const stores = o.replicaNames().map((n) => {
+        const r = o.getReplica(n);
+        return { name: n, address: r.address, count: Object.keys(r.entries).length, entries: o.replicaAll(n) };
+      });
+      return { stats: o.replicaStats(), stores };
+    },
+    async put(name: string, key: string, value: any): Promise<any> {
+      const o = await import('./mobile-orbit.js');
+      o.replicaPut(name, key, value);
+      return { ok: true, stats: o.replicaStats() };
+    },
+    async replicate(): Promise<any> { const s = await import('./mobile-sync.js'); return s.replicateOrbit(); },
   },
 
   mcp: {

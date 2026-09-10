@@ -342,6 +342,7 @@
     return _coverList;
   }
   const COVER_MAP_KEY = 'bolloon_cover_map';
+  const SELF_CARD_HIDDEN_KEY = 'bolloon_hide_self_card';   // 首页本机卡片是否已移除
   function coverFor(key, idx) {
     const list = _coverList || [];
     if (!list.length) return '';
@@ -370,10 +371,12 @@
       const peerList = Array.isArray(peers) ? peers : [];
 
       // 本机智能体卡片: 任何情况下都先显示自己, 保证首页不空 (无同步/无好友也可见)
+      //   2026-09-08: 本机卡片也可移除 (原硬编码 deletable:false → 首页第一张卡删不掉); 移除后记 localStorage, 设置里可恢复
       allAgentCards = [];
+      const selfHidden = (() => { try { return localStorage.getItem(SELF_CARD_HIDDEN_KEY) === '1'; } catch { return false; } })();
       try {
         const self = await core.identity?.status?.();
-        if (self && self.did) {
+        if (self && self.did && !selfHidden) {
           allAgentCards.push({
             id: self.did, agentId: self.did,
             name: self.name || '本机智能体',
@@ -381,7 +384,7 @@
             avatar: null, peer: null,
             status: 'online', lastActive: '刚刚',
             capabilities: ['chat', 'local-agent'],
-            deletable: false,
+            deletable: true, self: true,
           });
         }
       } catch {}
@@ -501,9 +504,20 @@
         e.stopPropagation();
         const idx = parseInt(btn.dataset.index);
         const card = allAgentCards[idx];
-        if (!card || card.deletable === false) return;
+        if (!card) return;
+        // 本机卡片: 不是 channel → 记"已移除"标记并重绘 (设置里可恢复)
+        if (card.self) {
+          if (!confirm('从首页移除本机卡片? (设置里可恢复)')) return;
+          try { localStorage.setItem(SELF_CARD_HIDDEN_KEY, '1'); } catch (e) {}
+          showToast('已从首页移除本机卡片');
+          loadAgentCovers();
+          return;
+        }
+        if (card.deletable === false) return;
+        if (!confirm('删除该智能体?')) return;
         try {
           await api.post('/api/channels/delete', { id: card.id });
+          showToast('已删除智能体');
           loadAgentCovers();
         } catch (err) {
           alert('删除失败: ' + (err.message || err));
@@ -808,6 +822,20 @@
     activeChannel = null;
   }
 
+  /** 本机卡片判定 (blln-mobile): 不是会话 channel, 删除=移除卡片, 改名=改本机昵称 */
+  async function isSelfAgent(ch) {
+    if (!ch) return false;
+    if (ch.self) return true;
+    try { const s = await core.identity?.status?.(); return !!(s && s.did && String(ch.id) === String(s.did)); } catch { return false; }
+  }
+
+  /** 本机卡片: 从首页移除 (设置里可恢复) */
+  function hideSelfCard() {
+    try { localStorage.setItem(SELF_CARD_HIDDEN_KEY, '1'); } catch (e) {}
+    showToast('已从首页移除本机卡片 (设置里可恢复)');
+    loadAgentCovers();
+  }
+
   // === 聊天页右上角管理: 会话历史 / 智能体封面 / 删除 ===
   function openChatManage() {
     if (!activeChannel) return;
@@ -832,10 +860,19 @@
       e.stopPropagation();
       sheet.remove();
       if (!activeChannel) return;
+      // 本机卡片 (blln-mobile): 不是会话 → 移除卡片 (原实现拿 DID 去 /api/channels/delete, 静默失败)
+      if (await isSelfAgent(activeChannel)) {
+        if (!confirm('从首页移除本机卡片? (设置里可恢复)')) return;
+        closeChat();
+        hideSelfCard();
+        return;
+      }
       if (!confirm('删除该智能体?')) return;
       try {
-        await api.post('/api/channels/delete', { id: activeChannel.id });   // 删除 agent = 删除 channel
+        const r = await api.post('/api/channels/delete', { id: activeChannel.id });
+        if (r && r.ok === false) { alert('删除失败: ' + (r.error || '未知错误')); return; }
         closeChat();
+        showToast('已删除智能体');
         loadAgentCovers();
       } catch (err) { alert('删除失败: ' + (err.message || err)); }
     });
@@ -867,15 +904,40 @@
     page.innerHTML = `<div class="identity-header"><button class="icon-btn" id="ac-back">←</button><div style="flex:1;font-weight:600">智能体封面</div></div><div class="identity-body" id="ac-body"></div>`;
     document.body.appendChild(page);
     $('#ac-back').addEventListener('click', () => page.remove());
+    const isSelf = !!card.self;
+    const desc = isSelf ? '本机 Agent (手机端自治执行)' : (card.desc || '');
     page.querySelector('#ac-body').innerHTML = `
       <div style="display:flex;flex-direction:column;gap:14px">
         <div style="display:flex;align-items:center;gap:14px">
           <div class="avatar" style="width:72px;height:72px">${escapeHtml((card.name || 'A').charAt(0))}</div>
-          <div><div class="profile-name">${escapeHtml(card.name || '')}</div><div style="font-size:12px;color:var(--text-muted)">${escapeHtml(card.desc || '')}</div></div>
+          <div><div class="profile-name" id="ac-cur">${escapeHtml(card.name || '')}</div><div style="font-size:12px;color:var(--text-muted)">${escapeHtml(desc)}</div></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:13px;color:var(--text-secondary)">名称 (可手动输入修改)</div>
+          <input id="ac-name" value="${escapeHtml(card.name || '')}" placeholder="输入名称" style="${_walletInput}">
+          <button id="ac-save" style="${_walletBtn}">保存名称</button>
         </div>
         <div class="identity-row"><div class="k">智能体ID</div><div class="v">${escapeHtml(card.agentId || '')}</div></div>
         <div class="identity-row"><div class="k">状态</div><div class="v">${card.status === 'online' ? '在线' : '离线'}</div></div>
       </div>`;
+    $('#ac-save').addEventListener('click', async () => {
+      const name = (page.querySelector('#ac-name').value || '').trim();
+      if (!name) { showToast('名称不能为空'); return; }
+      try {
+        if (isSelf) {
+          await api.post('/api/auth/login', { name });          // 本机卡片: 改本机身份昵称
+        } else {
+          const r = await api.post('/api/channels/rename', { id: card.id, name });
+          if (r && r.ok === false) { showToast('改名失败: ' + (r.error || '未知错误')); return; }
+        }
+        card.name = name;
+        if (activeChannel) activeChannel.name = name;
+        const cur = page.querySelector('#ac-cur'); if (cur) cur.textContent = name;
+        const av = page.querySelector('.avatar'); if (av) av.textContent = name.charAt(0);
+        showToast('名称已更新');
+        loadAgentCovers();
+      } catch (e) { showToast('改名失败: ' + (e.message || e)); }
+    });
   }
 
    function openChatSse() {
@@ -1053,7 +1115,9 @@
       try { st = await api.get('/api/desktop/status'); } catch { /* 忽略 */ }
       const when = st.lastTs ? new Date(st.lastTs).toLocaleString() : '尚未同步';
       const cnt = st.counts && Object.keys(st.counts).length ? Object.entries(st.counts).map(([k, v]) => k + ' ' + v).join(' · ') : '—';
-      page.querySelector('#ds-status').innerHTML = `地址: ${escapeHtml(st.url || '未配置')}<br>最近同步: ${escapeHtml(when)}<br>数据: ${escapeHtml(cnt)}`;
+      const o = st.orbit;
+      const orbitLine = o ? `${o.stores} store · ${o.entries} 条目 (拉 ${o.pulled} / 推 ${o.pushed})` : '未同步';
+      page.querySelector('#ds-status').innerHTML = `地址: ${escapeHtml(st.url || '未配置')}<br>最近同步: ${escapeHtml(when)}<br>数据: ${escapeHtml(cnt)}<br>OrbitDB 副本: ${escapeHtml(orbitLine)}`;
     };
     try { const u = await api.get('/api/desktop/url'); page.querySelector('#ds-url').value = (u && u.url) || ''; } catch { /* 忽略 */ }
     await drawStatus();
@@ -1068,7 +1132,8 @@
       const r = await api.post('/api/desktop/sync', {}).catch((e) => ({ ok: false, error: e.message || String(e) }));
       if (r && r.ok) {
         const c = r.counts || {};
-        showToast('已同步: ' + Object.entries(c).map(([k, v]) => k + ' ' + v).join(' · '));
+        const orb = r.orbit && r.orbit.ok ? ' · OrbitDB 副本 ' + r.orbit.stores + ' store/' + r.orbit.entries + ' 条' : '';
+        showToast('已同步: ' + Object.entries(c).map(([k, v]) => k + ' ' + v).join(' · ') + orb);
       } else showToast('同步失败: ' + ((r && r.error) || '未知错误'));
       await drawStatus();
     });
@@ -1082,7 +1147,8 @@
     const r = await api.post('/api/desktop/sync', {}).catch((e) => ({ ok: false, error: e.message || String(e) }));
     if (r && r.ok) {
       const c = r.counts || {};
-      showToast('已同步电脑端: ' + Object.entries(c).map(([k, v]) => k + ' ' + v).join(' · '));
+      const orb = r.orbit && r.orbit.ok ? ' · OrbitDB 副本 ' + r.orbit.stores + ' store/' + r.orbit.entries + ' 条' : '';
+      showToast('已同步电脑端: ' + Object.entries(c).map(([k, v]) => k + ' ' + v).join(' · ') + orb);
     } else showToast('电脑端同步失败: ' + ((r && r.error) || '未知错误'));
     return r;
   }
@@ -1101,6 +1167,7 @@
         <div class="conv-item" id="theme-toggle"><span class="list-icon" id="theme-icon">${ICONS.themeAuto}</span><span id="theme-text">跟随系统</span></div>
         <div class="conv-item" id="settings-network"><span class="list-icon">${ICONS.globe}</span><span>网络与同步</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-desktop"><span class="list-icon">${ICONS.globe}</span><span>电脑端同步</span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="settings-selfcard"><span class="list-icon">${ICONS.chip}</span><span id="selfcard-text">显示本机卡片: 开</span></div>
         <div class="conv-item" id="settings-did"><span class="list-icon">${ICONS.idcard}</span><span>DID</span></div>
       </div>`;
     document.body.appendChild(page);
@@ -1113,6 +1180,20 @@
     });
     $('#settings-network').addEventListener('click', () => switchTab('network'));
     $('#settings-desktop').addEventListener('click', openDesktopSync);
+    // 本机卡片显示开关 (移除后从这里恢复)
+    const drawSelfCardToggle = () => {
+      const on = (() => { try { return localStorage.getItem(SELF_CARD_HIDDEN_KEY) !== '1'; } catch { return true; } })();
+      const el = $('#selfcard-text');
+      if (el) el.textContent = '显示本机卡片: ' + (on ? '开' : '关');
+    };
+    drawSelfCardToggle();
+    $('#settings-selfcard').addEventListener('click', () => {
+      const hidden = (() => { try { return localStorage.getItem(SELF_CARD_HIDDEN_KEY) === '1'; } catch { return false; } })();
+      try { localStorage.setItem(SELF_CARD_HIDDEN_KEY, hidden ? '0' : '1'); } catch (e) {}
+      drawSelfCardToggle();
+      loadAgentCovers();
+      showToast(hidden ? '已显示本机卡片' : '已隐藏本机卡片');
+    });
     $('#settings-did').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('DID: ' + (s.did || '未生成'))); });
   }
 

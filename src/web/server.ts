@@ -2918,6 +2918,54 @@ ${goalDesc}
     }
   });
 
+  // 2026-09-08: 手机端 OrbitDB 库级复制 — 列可复制 store / 读全量条目 / 合并写回
+  app.get('/api/orbitdb/stores', async (_req, res) => {
+    try {
+      const out: Array<{ name: string; address?: string; type: string }> = [{ name: 'bolloon-cid-store', type: 'keyvalue' }];
+      try {
+        const { getAgentRegistry } = await import('../agents/agent-registry.js');
+        const reg: any = getAgentRegistry();
+        if (reg && typeof reg.warm === 'function') await reg.warm();
+        if (reg?.storeName) out.push({ name: String(reg.storeName), type: 'keyvalue', address: reg.storeAddress || undefined });
+      } catch { /* registry 未就绪 → 只给 cid store */ }
+      res.json({ ok: true, stores: out });
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e?.message });
+    }
+  });
+
+  app.get('/api/orbitdb/entries', async (req: any, res) => {
+    try {
+      const name = String(req.query?.name || '').trim();
+      if (!name) return res.status(400).json({ ok: false, error: 'name 必填' });
+      const { getCIDDatabase } = await import('../orbitdb/cid-database.js');
+      const store = await getCIDDatabase().openStore(name, 'keyvalue');
+      const all = await store.all();
+      res.json({ ok: true, name, address: store.address, entries: all, count: all.length });
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e?.message });
+    }
+  });
+
+  app.post('/api/orbitdb/merge', async (req: any, res) => {
+    try {
+      const name = String(req.body?.name || '').trim();
+      const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+      if (!name) return res.status(400).json({ ok: false, error: 'name 必填' });
+      const { getCIDDatabase } = await import('../orbitdb/cid-database.js');
+      const store = await getCIDDatabase().openStore(name, 'keyvalue');
+      let written = 0;
+      for (const e of entries) {
+        if (!e || typeof e.key !== 'string') continue;
+        await store.put(e.key, e.value);
+        written++;
+      }
+      res.json({ ok: true, name, address: store.address, written });
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e?.message });
+    }
+  });
+
   // 2026-08-14: Agent Gateway — 网络加入 / 分享链接 / 成员 / 状态 (入口要小: 一条链接)
   app.post('/api/gateway/join', async (req: any, res: any) => {
     try {

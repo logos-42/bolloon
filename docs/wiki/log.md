@@ -1968,3 +1968,18 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - **钱包授权修复**: ① 去重 — 原来按 channel 列出, 4 个渠道同属一个 agentId → 显示 4 条重复项; 现按 `agentId` 去重 (身份唯一); ② 兜底 — 无渠道时至少可授权给本机 Agent (DID); ③ 保存后弹 toast「已授权 N 个智能体」(原来无任何反馈, 看着像没生效).
 - **实测** (模拟器 + 真实桌面端 server 端口 54188): 快照 HTTP 200 / counts `{channels:2, judgments:2}`; 手机端同步后「最近同步 9/10/2026 2:46:34 PM」+「已同步 channels 2 · judgments 2」; 判断力页列出真实条目「不要使用 var，优先用 const」(rule · 0.95); 钱包授权页去重为 1 条「本地智能体 1」, 保存后 toast「已授权 1 个智能体」.
 - 测试: `src/test/mobile-sync.test.ts` 6 项 (未配地址/成功落地/末尾斜杠归一/网络异常保留旧快照/非200/ok:false), 连同 mobile-core、mobile-gateway 共 27 项通过; tsc 0.
+
+### 追加 (2026-09-08): 手机端 OrbitDB 库级复制 (本地副本+双向 merge) + 修本机卡片删不掉 + 智能体改名
+
+- **OrbitDB 库级复制** (手机端跑不了完整 libp2p → 用"本地副本 + 双向 merge"实现)：
+  - 桌面端新增 `GET /api/orbitdb/stores`(列可复制 store: bolloon-cid-store + registry store)、`GET /api/orbitdb/entries?name=`(读全量 `[{key,value}]`)、`POST /api/orbitdb/merge`(写回 → `openStore(name).put()` → 交给 OrbitDB 的 op-log LWW 跨设备传播).
+  - 手机端新增 `src/web/mobile-orbit.ts`: 本地副本落 localStorage (`bolloon_orbit_replica:<store>`), 离线可读写 (`replicaPut/replicaAll/replicaGet`); 复制 = 拉 → 按**确定性 LWW 合并** → 本地独有/胜出条目推回.
+  - **合并规则**(两端各自算必得同一结果 → 收敛): ①内容哈希相同则跳过; ②值内时间戳(updatedAt/timestamp/ts/createdAt 或 ISO 串)大者胜; ③同时间戳 → 内容哈希字典序大者胜. 哈希用稳定 JSON(键序无关)+djb2.
+  - 接入: `syncFromDesktop` 快照后自动跑 `replicateAll`; 设置页同步状态与 toast 显示「OrbitDB 副本 N store · M 条目 (拉 X / 推 Y)」; 路由 `/api/orbit/status|replica|put|replicate` + core `orbit` 命名空间.
+  - 测试 `src/test/mobile-orbit.test.ts` 11 项 (稳定哈希/时间戳识别/空本地落地/时间戳胜出/**收敛性(含冲突与同时间戳)**/幂等/推回/多 store/未配地址).
+- **修: 本机卡片(blln-mobile)删不掉** — 两条路径都修:
+  - 卡片上的删除按钮: 本机卡片原硬编码 `deletable:false`(不渲染按钮 + 左滑也被拦) → 改为可移除.
+  - 聊天页「管理 → 删除智能体」(**用户实际走的路径**): 原拿本机 DID 去 `/api/channels/delete`, 而 `channels.delete` 找不到时**静默返回 ok** → 既不报错也不生效 → 现改为: 本机卡片 → 移除卡片(记 `bolloon_hide_self_card`); 且 `channels.delete` 找不到时明确返回 `{ok:false,error}`, UI 弹提示.
+  - 恢复入口: 设置页新增「显示本机卡片: 开/关」.
+- **新: 智能体封面可手动改名** — 封面页新增「名称(可手动输入修改)」输入框 + 保存名称: 本机卡片 → 改本机身份昵称(`/api/auth/login {name}`); 普通卡片 → 新增 `POST /api/channels/rename`(core `channels.rename` 改 channel.name + persona.name).
+- **实测**(模拟器): 卡片删除 → 卡片数 3→2 (hide=1); 设置恢复 → 2→3 (hide=0); 聊天页管理删除 → 同样生效; 封面页把本机卡片改名为「觉者的小手机」→ 卡片标题同步更新.
