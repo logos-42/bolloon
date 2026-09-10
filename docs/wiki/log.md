@@ -1872,3 +1872,11 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 ### 关联
 
 - Capacitor 8 (SPM) + src/web/{sw.js,manifest.json,mobile.html} + scripts/build-ios*.{mjs,sh}.
+
+### 追加 (2026-09-08): macOS 13.7.8 的 Xcode 版本结论
+
+- 用户 App Store 装 Xcode 报 "需要 macOS v15 或更高版本" → **App Store 只给最新 Xcode**.
+- 查证: **Xcode 15.2 是支持 Ventura 13.5+ 的最后一版**; 15.3+ 要求 Sonoma 14+. 故 Ventura 13.7.8 上限 = Xcode 15.2.
+- 安装路径: developer.apple.com/download/all/ (免费 Apple ID) → Xcode_15.2.xip → `xip --expand` → /Applications → `DEVELOPER_DIR` 免 sudo 指向.
+- 上架限制: App Store 提交需 iOS 18 SDK (Xcode 16+, 要求 macOS 14.5+) → Ventura 只能本地构建/真机安装(免费 Apple ID 7 天/付费 1 年), 上架需先升级 macOS.
+- `scripts/build-ios.sh` 已适配: 自动用 /Applications/Xcode.app (DEVELOPER_DIR), 无 Xcode 时打印上述精确指引.
