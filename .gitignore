@@ -67,3 +67,6 @@ hs_err_pid*.log
 # Foundry (ResourceERC721 contract tests)
 contracts/out/
 contracts/cache/
+
+# iOS/Xcode 构建产物
+build/

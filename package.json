@@ -48,6 +48,8 @@
     "build:ios-web": "node scripts/build-ios-web.mjs",
     "ios:sync": "CAP_WEB_DIR=dist/ios npx cap sync ios",
     "ios:build": "bash scripts/build-ios.sh",
+    "ios:sim": "bash scripts/build-ios.sh --sim",
+    "ios:verify": "bash scripts/build-ios.sh --verify",
     "prepublishOnly": "npm run build:all && npm run smoke:esm",
     "test": "vitest run",
     "test:watch": "vitest",
