@@ -2039,3 +2039,15 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - **实测(模拟器)**: 网络页 Agent 服务列表已出现本机广播的声明 `local-agent / 手机端本地 Agent 执行（离线可用）/ 0 USDC`; 「资源交易」页正常渲染 (服务/价格/收款方/调用按钮/记录入口 ✓). 探针: `agent-services=true, item-trade=true, 交易页=true, 调用按钮=true, 历史按钮=true`.
 - 测试: 两模块共 **40 项** (social 18 + trade 22) 全绿; tsc 0.
 - 待办: 真实 402 闭环需电脑端在跑 (桌面 M2 已实现) + 手机钱包已解锁; 链上注册 (M5 Treasury/Escrow + ERC721) 待定。
+
+### 追加 (2026-09-08): 手机端「独立运行」—— 自己签 x402 支付 + 自己上链 + 独立入网
+
+- **新模块 `src/web/mobile-chain.ts`** (纯浏览器: 只 import viem / viem/accounts, 0 个 node 内置; esbuild --platform=browser 打包验证通过):
+  - 配置: `getChainConfig/setChainConfig` (默认 Base 8453 + https://mainnet.base.org + USDC) · `rpcRequest` (JSON-RPC over 可注入 fetch) · `accountFromPrivateKey`.
+  - **x402 独立支付**: `signX402Authorization()` → EIP-712 / EIP-3009 `TransferWithAuthorization` (domain {name,version,chainId,verifyingContract}, validAfter/validBefore/nonce=32B, USDC 6 位小数) → `header` = base64(JSON), 与 @x402 一致。**付款方不需要 gas** (由收款方/facilitator 提交), 所以手机端可完全独立支付。
+  - **自己发交易**: `erc20Transfer()` (eth_getTransactionCount → gasPrice → estimateGas+20% → viem signTransaction(eip1559) → eth_sendRawTransaction) · `mintResourceToken()` (calldata selector `0xd3fc9864` = mint(address,uint256,string), tokenUri=`ipfs://<CID>`) · `registerServiceOnChain()` (把服务/资源按 agentId+serviceName 派生 tokenId 注册上链). 全部失败返回 {ok:false,error} 不抛.
+- **接线 (mobile-core.ts)**: 路由 `GET/POST /api/chain/config`、`POST /api/chain/x402-sign|transfer|register`; `core.chain` 命名空间; 模块级 `phonePrivateKey()` **私钥隔离** (只取已解锁钱包的私钥, 不返回给调用方/LLM). `trade.callService` 的默认 `payFn` 改为**手机端自签 x402** (不再依赖电脑端 x402Pay).
+- **手机端 UI**: 设置页新增「链上配置 (RPC/网络)」页 (RPC/chainId/network 三输入 + 保存, 默认 Base 主网; 说明 x402 不需 gas / 自铸 NFT 需少量 gas).
+- **P2P 独立入网**: 网络页 P2P 卡新增「添加节点地址 (独立入网)」— 电脑端变**可选**, 手机拨通任意可拨节点即可进网; 文案说明"拨入连接是双向的, 别人也能调用本机服务".
+- **实测**: 链上模块 18 项测试 + 全量 70 项(chain/trade/social/core) 全绿, tsc 0; 模拟器「链上配置」页渲染正常 (rpc=https://mainnet.base.org, chain=8453, network=base, 探针全 true).
+- 待办: IPFS 模块 (`mobile-ipfs.ts`, 本地 CID + DIAP IpfsClient + 网关回退) 编写中; 真实 402/上链端到端仍需真机 + 真 RPC 验证。

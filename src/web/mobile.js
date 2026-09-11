@@ -1129,6 +1129,35 @@
     </div>`).join('');
   }
 
+  // === 链上配置 (手机端独立支付/上链用的 RPC 与网络) ===
+  async function openChainConfig() {
+    let cfg = {};
+    try { cfg = await api.get('/api/chain/config'); } catch (e) {}
+    const page = document.createElement('div');
+    page.className = 'chat-page'; page.id = 'chain-config-page';
+    page.innerHTML = `
+      <div class="chat-topbar"><button class="icon-btn" id="cc-back">←</button><div style="flex:1;font-weight:600">链上配置</div></div>
+      <div style="padding:12px;display:flex;flex-direction:column;gap:12px">
+        <div style="font-size:13px;color:var(--text-secondary);line-height:1.7">手机端自己签名/发交易用这个 RPC（默认 Base 主网）。x402 支付由收款方/facilitator 提交，不需要你付 gas；自己上链注册（铸 NFT）则需要该账户有一点 gas。</div>
+        <input id="cc-rpc" placeholder="https://mainnet.base.org" value="${escapeHtml(String(cfg.rpcUrl || ''))}" style="${_walletInput}">
+        <input id="cc-chain" placeholder="8453" value="${escapeHtml(String(cfg.chainId || ''))}" style="${_walletInput}">
+        <input id="cc-network" placeholder="base / base-sepolia / mainnet / sepolia" value="${escapeHtml(String(cfg.network || ''))}" style="${_walletInput}">
+        <button id="cc-save" style="${_walletBtn}">保存</button>
+        <div id="cc-out" style="font-size:13px;color:var(--text-secondary);line-height:1.7"></div>
+      </div>`;
+    document.body.appendChild(page);
+    $('#cc-back').addEventListener('click', () => page.remove());
+    $('#cc-save').addEventListener('click', async () => {
+      const body = {
+        rpcUrl: (page.querySelector('#cc-rpc').value || '').trim(),
+        chainId: Number((page.querySelector('#cc-chain').value || '').trim()) || undefined,
+        network: (page.querySelector('#cc-network').value || '').trim() || undefined,
+      };
+      try { const r = await api.post('/api/chain/config', body); page.querySelector('#cc-out').textContent = '已保存: ' + JSON.stringify(r || {}); showToast('链上配置已保存'); }
+      catch (e) { page.querySelector('#cc-out').textContent = '保存失败: ' + ((e && e.message) || e); }
+    });
+  }
+
   // === P2P 连接状态 (手机 WebView 不能 listen → 必须主动拨入电脑端) ===
   async function loadP2PStatus() {
     const box = $('#p2p-status');
@@ -1298,6 +1327,7 @@
         <div class="conv-item" id="theme-toggle"><span class="list-icon" id="theme-icon">${ICONS.themeAuto}</span><span id="theme-text">跟随系统</span></div>
         <div class="conv-item" id="settings-network"><span class="list-icon">${ICONS.globe}</span><span>网络与同步</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-desktop"><span class="list-icon">${ICONS.globe}</span><span>电脑端同步</span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="settings-chain"><span class="list-icon">${ICONS.chip}</span><span>链上配置 (RPC/网络)</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-selfcard"><span class="list-icon">${ICONS.chip}</span><span id="selfcard-text">显示本机卡片: 开</span></div>
         <div class="conv-item" id="settings-did"><span class="list-icon">${ICONS.idcard}</span><span>DID</span></div>
       </div>`;
@@ -1318,6 +1348,8 @@
       if (el) el.textContent = '显示本机卡片: ' + (on ? '开' : '关');
     };
     drawSelfCardToggle();
+    const sc = $('#settings-chain');
+    if (sc) sc.addEventListener('click', openChainConfig);
     $('#settings-selfcard').addEventListener('click', () => {
       const hidden = (() => { try { return localStorage.getItem(SELF_CARD_HIDDEN_KEY) === '1'; } catch { return false; } })();
       try { localStorage.setItem(SELF_CARD_HIDDEN_KEY, hidden ? '0' : '1'); } catch (e) {}

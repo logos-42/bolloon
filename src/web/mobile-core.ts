@@ -25,6 +25,22 @@ function busSubscribe(fn: BusHandler): () => void {
   return () => busHandlers.delete(fn);
 }
 
+/**
+ * 手机端已解锁钱包的私钥 —— 私钥隔离: 只在内部签名处读取, 绝不返回给调用方/LLM.
+ * 未解锁或没有钱包 → null (调用方给出人话提示).
+ */
+async function phonePrivateKey(walletId?: string): Promise<string | null> {
+  try {
+    const w: any = await import('./mobile-wallet.js');
+    const st: any = await w.listWallets();
+    const list: any[] = (st && st.wallets) || [];
+    const target = walletId ? list.find((x) => x.id === walletId) : list.find((x) => x.unlocked);
+    if (!target || !target.unlocked) return null;
+    const r: any = await w.exportWallet(target.id);
+    return (r && (r.privateKey || r.priv)) || null;
+  } catch { return null; }
+}
+
 // ============ P2P 消息路由: 数据同步 (data.*) vs Agent 功能 (agent.*) ============
 
 /** 统一发送封装 (mobile-p2p), 供 data/agent 层注入 */
@@ -98,6 +114,7 @@ export const core = {
     if (p === '/api/network/status') return () => core.network.status();
     if (p === '/api/network/desktop-addrs') return () => core.network.desktopAddrs();
     if (p === '/api/social/discover') return () => core.social.discover();
+    if (p === '/api/chain/config') return () => core.chain.config();
     if (p === '/api/social/status') return () => core.social.status();
     if (p === '/api/trade/trades') return () => core.trade.trades();
     if (p === '/api/wallet/status') return () => core.wallet.status();
@@ -205,6 +222,10 @@ export const core = {
     }
     if (p === '/api/network/connect') return () => core.network.connect();
     if (p === '/api/social/announce') return () => core.social.announce();
+    if (p === '/api/chain/config') { const b = body || {}; return () => core.chain.config(b); }
+    if (p === '/api/chain/x402-sign') { const b = body || {}; return () => core.chain.signX402(b); }
+    if (p === '/api/chain/transfer') { const b = body || {}; return () => core.chain.transfer(b); }
+    if (p === '/api/chain/register') { const b = body || {}; return () => core.chain.register(b); }
     if (p === '/api/trade/call') {
       const b = body || {};
       return async () => {
@@ -217,7 +238,21 @@ export const core = {
             fetchImpl: fetch,
             walletForAgent: (aid: string) => w.walletForAgent(aid),
             getPrivateKey: async (id: string) => { const r: any = await w.exportWallet(id); return r && (r.privateKey || r.priv); },
-            x402Pay: async (opts: any) => { const m: any = await import('../agents/x402/x402Pay.js'); return m.x402Pay(opts); },
+            // 手机端独立支付: 自己签 x402 授权 (EIP-712/EIP-3009, 无需 gas 无需电脑端)
+            payFn: async (spec: any) => {
+              const pk = await phonePrivateKey(b.walletId);
+              if (!pk) return { success: false, error: '手机钱包未解锁 (我 → 钱包 → 解锁后重试)' };
+              const c: any = await import('./mobile-chain.js');
+              const sig: any = await c.signX402Authorization({
+                privateKey: pk,
+                to: spec.to || spec.payTo,
+                amount: String(spec.amount ?? ''),
+                currency: spec.currency,
+                network: spec.network,
+              });
+              if (!sig || sig.ok === false) return { success: false, error: (sig && sig.error) || 'x402 签名失败' };
+              return { success: true, header: sig.header, signature: sig.signature, authorization: sig.authorization };
+            },
             policy: b.policy,
           },
         });
@@ -493,6 +528,33 @@ export const core = {
     async status(): Promise<any> {
       const s = await import('./mobile-social.js');
       return s.getHeartbeatState(s.createLocalStorageStore());
+    },
+  },
+
+  // 手机端独立链上能力 (自己签名/发交易, 不需要电脑端; 需在设置里配 RPC)
+  chain: {
+    async config(cfg?: any): Promise<any> {
+      const c: any = await import('./mobile-chain.js');
+      return cfg ? c.setChainConfig(cfg) : c.getChainConfig();
+    },
+    async signX402(opts: any): Promise<any> {
+      const pk = await phonePrivateKey(opts.walletId);
+      if (!pk) return { ok: false, error: '手机钱包未解锁' };
+      const c: any = await import('./mobile-chain.js');
+      const r = await c.signX402Authorization({ ...opts, privateKey: pk });
+      return r && r.ok ? { ok: true, header: r.header, authorization: r.authorization } : { ok: false, error: r && r.error };
+    },
+    async transfer(opts: any): Promise<any> {
+      const pk = await phonePrivateKey(opts.walletId);
+      if (!pk) return { ok: false, error: '手机钱包未解锁' };
+      const c: any = await import('./mobile-chain.js');
+      return c.erc20Transfer({ ...opts, privateKey: pk });
+    },
+    async register(opts: any): Promise<any> {
+      const pk = await phonePrivateKey(opts.walletId);
+      if (!pk) return { ok: false, error: '手机钱包未解锁' };
+      const c: any = await import('./mobile-chain.js');
+      return c.registerServiceOnChain({ ...opts, privateKey: pk });
     },
   },
 
