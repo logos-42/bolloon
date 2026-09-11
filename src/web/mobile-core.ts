@@ -99,6 +99,54 @@ async function routeIncomingMessage(payload: string, fromPeer: string): Promise<
   } catch { /* 路由失败静默 */ }
 }
 
+// ============ 深链 (bolloon://) — iOS 系统入口 (Siri / 快捷指令 / Spotlight) ============
+// 协议与 ios/App/App/BolloonIntents.swift 一一对应:
+//   bolloon://agent/run?name=<name>[&goal=<text>]   运行智能体
+//   bolloon://agent/status?name=<name>              查看智能体状态
+// 这里只做**纯解析** (不抛异常, 非法就 ok:false);
+// 具体打开哪个页面由 mobile.js 的 handleDeepLinkUrl() 决定 (它在 window 上监听原生事件).
+
+export interface DeepLinkResult {
+  ok: boolean;
+  action?: 'run' | 'status';
+  name?: string;
+  goal?: string;
+  error?: string;
+}
+
+/** 解析 bolloon:// 深链; 非法/不认识的 URL → {ok:false,error}, 绝不抛。 */
+export function handleDeepLink(rawUrl: unknown): DeepLinkResult {
+  try {
+    const raw = String(rawUrl ?? '').trim();
+    if (!raw) return { ok: false, error: '空链接' };
+    const m = /^bolloon:\/\/([^/?#]*)(\/[^?#]*)?(?:\?([^#]*))?/i.exec(raw);
+    if (!m) return { ok: false, error: '不是 bolloon:// 链接' };
+    const host = (m[1] || '').toLowerCase();
+    const pathSeg = (m[2] || '').replace(/^\/+/, '').split('/')[0].toLowerCase();
+    const actionRaw = pathSeg || host;
+    if (actionRaw !== 'run' && actionRaw !== 'status') {
+      return { ok: false, error: '不认识的 action: ' + (actionRaw || '(空)') };
+    }
+    if (pathSeg && host !== 'agent') return { ok: false, error: '不认识的 host: ' + host };
+    const action = actionRaw as 'run' | 'status';
+    let name = '';
+    let goal = '';
+    for (const pair of (m[3] || '').split('&')) {
+      if (!pair) continue;
+      const eq = pair.indexOf('=');
+      const k = decodeURIComponent((eq >= 0 ? pair.slice(0, eq) : pair).replace(/\+/g, ' '));
+      const v = (eq >= 0 ? pair.slice(eq + 1) : '').replace(/\+/g, ' ');
+      if (k === 'name') name = decodeURIComponent(v);
+      else if (k === 'goal') goal = decodeURIComponent(v);
+    }
+    const out: DeepLinkResult = { ok: true, action, name };
+    if (goal) out.goal = goal;
+    return out;
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
+
 // ============ 内核 API (mobile.js 对接面, 路由到 data/agent 层) ============
 
 export const core = {
@@ -116,6 +164,19 @@ export const core = {
     if (p === '/api/social/discover') return () => core.social.discover();
     if (p === '/api/chain/config') return () => core.chain.config();
     if (p === '/api/ipfs/config') return () => core.ipfs.config();
+    // 深链探针: GET /api/deeplink?url=<encodeURIComponent(bolloon://...)> → DeepLinkResult
+    if (p === '/api/deeplink' || p.startsWith('/api/deeplink?')) {
+      const q = p.indexOf('?');
+      let urlParam = '';
+      for (const pair of (q >= 0 ? p.slice(q + 1) : '').split('&')) {
+        if (!pair) continue;
+        const eq = pair.indexOf('=');
+        if ((eq >= 0 ? pair.slice(0, eq) : pair) !== 'url') continue;
+        const v = eq >= 0 ? pair.slice(eq + 1) : '';
+        try { urlParam = decodeURIComponent(v.replace(/\+/g, ' ')); } catch { urlParam = v; }
+      }
+      return () => Promise.resolve(handleDeepLink(urlParam));
+    }
     if (p === '/api/helia/status') return () => core.helia.status();
     if (p === '/api/social/status') return () => core.social.status();
     if (p === '/api/trade/trades') return () => core.trade.trades();
@@ -744,6 +805,8 @@ export const core = {
       return decodeQrImageData(data, w, h);
     },
   },
+  // 深链解析 (bolloon://) — iOS 系统入口 (Siri / 快捷指令 / Spotlight) 走这条 (2026-09-11)
+  handleDeepLink,
 };
 
 // 全局暴露给 mobile.js

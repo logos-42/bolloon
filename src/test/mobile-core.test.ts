@@ -193,4 +193,38 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
     const tools = await core.mcp.tools();
     expect(tools.some((t: any) => t.name === 'gateway_status')).toBe(true);
   });
+
+  // iOS 系统入口 (Siri / 快捷指令 / Spotlight) 深链: bolloon://agent/run|status?name= (2026-09-11)
+  it('handleDeepLink: bolloon:// 深链解析 (非法输入不抛, 返回 ok:false)', async () => {
+    const { core, handleDeepLink } = await import('../web/mobile-core.ts');
+
+    // 正常: run / status
+    expect(handleDeepLink('bolloon://agent/run?name=abc')).toEqual({ ok: true, action: 'run', name: 'abc' });
+    expect(handleDeepLink('bolloon://agent/status?name=' + encodeURIComponent('本机智能体')))
+      .toEqual({ ok: true, action: 'status', name: '本机智能体' });
+    // 可选 goal
+    expect(handleDeepLink('bolloon://agent/run?name=a&goal=' + encodeURIComponent('写周报')))
+      .toEqual({ ok: true, action: 'run', name: 'a', goal: '写周报' });
+    // 简写 (只有 host) / 无名
+    expect(handleDeepLink('bolloon://run?name=x')).toEqual({ ok: true, action: 'run', name: 'x' });
+    expect(handleDeepLink('bolloon://agent/status')).toEqual({ ok: true, action: 'status', name: '' });
+
+    // 非法 → ok:false, 不抛
+    expect(handleDeepLink('https://example.com/x').ok).toBe(false);
+    expect(handleDeepLink('bolloon://agent/unknown?name=x').ok).toBe(false);
+    expect(handleDeepLink('bolloon://other/run?name=x').ok).toBe(false);
+    expect(handleDeepLink('').ok).toBe(false);
+    expect(handleDeepLink(null).ok).toBe(false);
+    expect(handleDeepLink(undefined).ok).toBe(false);
+    expect(typeof handleDeepLink('%').error).toBe('string');
+
+    // 路由 + 暴露面: GET /api/deeplink?url= 与 core.handleDeepLink 结果一致
+    expect(core.handleDeepLink).toBeTypeOf('function');
+    expect(core.resolve('/nonexistent')).toBeNull();
+    const fn = core.resolve('/api/deeplink?url=' + encodeURIComponent('bolloon://agent/run?name=abc'));
+    expect(fn).toBeTypeOf('function');
+    expect(await fn!()).toEqual({ ok: true, action: 'run', name: 'abc' });
+    const fn2 = core.resolve('/api/deeplink?url=' + encodeURIComponent('nope://x'));
+    expect((await fn2!()).ok).toBe(false);
+  });
 });

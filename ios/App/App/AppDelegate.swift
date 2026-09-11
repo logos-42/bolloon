@@ -8,6 +8,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Override point for customization after application launch.
+        // 深链: 启动即安装 inbox —— 否则冷启动走 simctl openurl / 系统 scheme 打开时,
+        // URL 只会把 App 拉到前台, 内容送不进 WebView (Swift 无 +load, 不能懒安装)。
+        BolloonURLInbox.shared.install()
+        // 冷启动关键一步: 未运行时被 URL Scheme 拉起, 系统只把 URL 放在 launchOptions[.url],
+        // **不会**走 application(_:open:options:) —— Capacitor 的 ApplicationDelegateProxy 不记录它。
+        // 必须显式交给 inbox, 否则 URL 内容永远进不了 WebView (只能拉前台)。
+        if let url = launchOptions?[.url] as? URL {
+            BolloonURLInbox.shared.handleColdLaunch(url: url)
+        }
         return true
     }
 
@@ -36,6 +45,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
         // Called when the app was launched with a url. Feel free to add additional processing here,
         // but if you want the App API to support tracking app url opens, make sure to keep this call
+        // 热启动: 同时交给 inbox (立即注入), 再转发给 Capacitor proxy (保留其跟踪能力)
+        BolloonURLInbox.shared.handleIncomingURL(url)
         return ApplicationDelegateProxy.shared.application(app, open: url, options: options)
     }
 

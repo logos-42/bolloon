@@ -21,6 +21,24 @@
       "source_file": "docs/wiki/SCHEMA.md"
     },
     {
+      "id": "agent-economic-protocol.md",
+      "type": "protocol",
+      "label": "Agent Economic Protocol 设计 (智能体经济网络)",
+      "tags": "[agent-economy, x402, registry, policy-engine, treasury, reputation, escaprow, agent-gdp, protocol]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/agent-economic-protocol.md"
+    },
+    {
+      "id": "android-agent-runtime.md",
+      "type": "chapter",
+      "label": "Android Agent Runtime 架构 (Phase 1-4 路线图)",
+      "tags": "[android-agent, accessibility, shizuku, llamacpp, aohp, agent-os, phase-1, phase-2, phase-3, phase-4, on-device-verified, ghost, hermes, phone-control, harness-replication, mobile-ui, build-link]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/android-agent-runtime.md"
+    },
+    {
       "id": "bolloon-bug-report-20260716.md",
       "type": "chapter",
       "label": "Bolloon Bug Report Summary 2026-07-16",
@@ -60,7 +78,7 @@
       "id": "current-status.md",
       "type": "chapter",
       "label": "Bolloon 当前状态",
-      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize]",
+      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink]",
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/current-status.md"
@@ -73,6 +91,15 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/github-and-raw-strategy.md"
+    },
+    {
+      "id": "hermes-agent-architecture.md",
+      "type": "chapter",
+      "label": "Hermes Agent 架构借鉴 (多智能体协作/生命周期/工具循环/状态语义/workspace kinds)",
+      "tags": "[hermes, architecture, multi-agent, subagent-lifecycle, tool-loop, status-semantics, workspace-kinds, kanban, borrow]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/hermes-agent-architecture.md"
     },
     {
       "id": "index.md",
@@ -141,6 +168,11 @@
   "edges": [
     {
       "from": "current-status.md",
+      "to": "android-agent-runtime.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
       "to": "log.md",
       "type": "references"
     },
@@ -206,12 +238,42 @@
     },
     {
       "from": "index.md",
+      "to": "hermes-agent-architecture.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "android-agent-runtime.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "agent-economic-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "log.md",
       "type": "references"
     },
     {
       "from": "index.md",
       "to": "q1-q5-report-2026-07-07.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "android-agent-runtime.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "agent-economic-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "hermes-agent-architecture.md",
       "type": "references"
     },
     {
@@ -251,15 +313,16 @@
     }
   ],
   "stats": {
-    "node_count": 15,
-    "edge_count": 22,
+    "node_count": 18,
+    "edge_count": 29,
     "node_types": {
       "meta": 7,
-      "chapter": 7,
+      "protocol": 1,
+      "chapter": 9,
       "claim": 1
     },
     "edge_types": {
-      "references": 22
+      "references": 29
     }
   }
 }

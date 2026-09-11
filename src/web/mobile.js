@@ -1910,11 +1910,89 @@
     });
   }
 
+  // === 深链 (bolloon://) — iOS 系统入口 (Siri / 快捷指令 / Spotlight) 驱动智能体 (2026-09-11) ===
+  // 协议: bolloon://agent/run|status?name=<name>[&goal=<text>]
+  // 三条投递路径, 任意一条通就够, 互不依赖 (缺的自动跳过, 不报错):
+  //   1. @capacitor/app 的 appUrlOpen —— 该插件**当前没装** (package.json 无 @capacitor/app);
+  //      装上以后下面这段自动生效, 不需要再改这里。
+  //   2. Swift 侧 (ios/App/App/BolloonIntents.swift) 往 WKWebView 注入 window.__bolloonPendingDeepLink
+  //      并派发 'bolloon:deeplink' 事件 —— 不走插件, 现在就能用。
+  //   3. 纯浏览器回退: 页面 URL 自身就是 bolloon:// (手动粘贴测试用)。
+  let _lastDeepLinkKey = '';
+  function handleDeepLinkUrl(rawUrl) {
+    const c = window.BolloonCore;
+    let res;
+    try {
+      res = c && c.handleDeepLink
+        ? c.handleDeepLink(String(rawUrl || ''))
+        : { ok: false, error: 'BolloonCore.handleDeepLink 不可用' };
+    } catch (e) { res = { ok: false, error: (e && e.message) || String(e) }; }
+    if (!res || res.ok !== true) {
+      showToast('这个链接没认出来: ' + ((res && res.error) || String(rawUrl || '')));
+      return res;
+    }
+    const key = res.action + '|' + res.name + '|' + (res.goal || '');
+    if (key === _lastDeepLinkKey) return res;      // 同一链接被两条路径重复投递 → 只处理一次
+    _lastDeepLinkKey = key;
+    openDeepLinkTarget(res).catch(() => {});
+    return res;
+  }
+
+  async function openDeepLinkTarget(res) {
+    switchTab('main');
+    let cards = Array.isArray(allAgentCards) ? allAgentCards : [];
+    if (!cards.length) { try { await loadAgentCovers(); } catch (e) {} cards = Array.isArray(allAgentCards) ? allAgentCards : []; }
+    const want = String(res.name || '').trim();
+    const card = want
+      ? cards.find((x) => x && (x.name === want || String(x.name || '').includes(want)))
+      : cards[0];
+    if (!card) { showToast('没找到叫「' + (want || '(空)') + '」的智能体'); return; }
+    if (res.action === 'status') {
+      const idx = cards.indexOf(card);
+      if (idx >= 0) openCardDetail(idx);
+      showToast('智能体「' + card.name + '」: ' + (card.status === 'online' ? '在线' : '离线'));
+      return;
+    }
+    // action === 'run': 打开它的对话页 (带 goal 就直接发一条)
+    openChat(card);
+    if (res.goal) {
+      try { await api.post('/message', { text: String(res.goal), channelId: card.id }); }
+      catch (e) { showToast('发送失败: ' + ((e && e.message) || e)); }
+    }
+  }
+
+  function installDeepLinkListeners() {
+    // 2. Swift 注入的 pending (冷启动时原生先注入, 这里读到)
+    try {
+      if (window.__bolloonPendingDeepLink) handleDeepLinkUrl(window.__bolloonPendingDeepLink);
+    } catch (e) {}
+    window.addEventListener('bolloon:deeplink', (ev) => {
+      const u = (ev && ev.detail) || window.__bolloonPendingDeepLink || '';
+      if (u) handleDeepLinkUrl(u);
+    });
+    // 1. @capacitor/app (未安装 → 直接跳过)
+    try {
+      const AppPlugin = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+      if (AppPlugin && typeof AppPlugin.addListener === 'function') {
+        AppPlugin.addListener('appUrlOpen', (e) => { if (e && e.url) handleDeepLinkUrl(e.url); });
+        if (typeof AppPlugin.getLaunchUrl === 'function') {
+          AppPlugin.getLaunchUrl().then((r) => { if (r && r.url) handleDeepLinkUrl(r.url); }).catch(() => {});
+        }
+      }
+    } catch (e) {}
+    // 3. 纯浏览器回退
+    try {
+      const href = String((window.location && window.location.href) || '');
+      if (/^bolloon:\/\//i.test(href)) handleDeepLinkUrl(href);
+    } catch (e) {}
+  }
+
   function init() {
     bindMenu();
     applyTheme(resolveThemePref(), false);
     switchTab('main');
     setupUiControl();
+    installDeepLinkListeners();
     loadAgentCovers();
     loadMe();
     if (core?.network?.start) core.network.start().catch(() => {});
