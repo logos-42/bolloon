@@ -2065,3 +2065,14 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
   - 复验: 手机端 App 内重新计算 → `bafyreig5…` 与桌面**逐字符一致** ✅ (三端: 桌面 contentToCid = 手机模块 computeCid = 模拟器 App 实测).
 - 依赖: `multiformats@^14.0.5` + `@ipld/dag-cbor@^9.2.7` 显式写入 package.json (原先只作为传递依赖存在, 属隐性风险).
 - 测试: ipfs 16 项 + 全量 (chain/trade/social/core/ipfs) 全绿; tsc 0.
+
+### 追加 (2026-09-08): 手机端内置真 IPFS 节点 (Helia + js-libp2p) — 本地块存取已跑通, libp2p 启动待修
+
+- **可行性实测 (先验证再动手)**: `esbuild --bundle --platform=browser` 把 `createHelia` + `webSockets()` + `circuitRelayTransport()` 打成 **2.68MB / 0 个 node 内置引用** → **手机 WebView 内跑真 IPFS 节点成立**。(`gomobile-ipfs` 已归档, Helia 是正路)
+- **新模块 `src/web/mobile-helia.ts`** (纯浏览器, 0 node 内置; 单文件 bundle 3.73MB): `createMobileHeliaNode/startMobileHelia/stopMobileHelia`(幂等) · `heliaAddJson`(用 `computeCid` 算 dag-cbor CID → blockstore.put) · `heliaGetJson`(本地 → 网络, 返回 from) · `heliaStatus`(peerId/peers/blockCount) · `heliaEnabled/setHeliaEnabled`. 全部失败返回 {ok:false,error} 不抛.
+- **接线**: `/api/helia/status|start|stop|enabled|add|get` + `core.helia`; 设置页新增「本机 IPFS 节点」页 (开关 + 状态: 状态/PeerID/对端数/块数 + 「测试：把一个对象存进本机节点」); App 启动时若已启用则自动拉起. `mobile-core.js` bundle: 3.4MB → **4.9MB**.
+- **实测结果 (模拟器, 分两部分如实记录)**:
+  - ✅ **本地块存取真的能跑**: 存 `{hello:'bolloon-mobile-node',ts:…}` → `CID: bafyreifLwcvx…` (CIDv1+dag-cbor+sha256), 取回 `来源: local`, 内容原样 `{"ts":…,"hello":"bolloon-mobile-node"}`.
+  - ❌ **libp2p 节点没真正起来**: `start` 返回 `ok=true` 但 `peerId` 为空, `status` 报 `running=false / err=Not started`. 定位在 `doStart()` 把底层启动异常**吞掉了**(返回 ok 却无 peerId) → 待修: 透出真实错误 + 确保 libp2p 真正 start.
+- 约束 (已写进模块注释与 UI 文案): WebView 不能 listen(只能拨出, 拨出连接双向可服务块); iOS 进后台被挂起 → 节点只在前台在线, 不做 24/7.
+- 测试: mobile-helia 13 项全绿; tsc 0.

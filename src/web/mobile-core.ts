@@ -116,6 +116,7 @@ export const core = {
     if (p === '/api/social/discover') return () => core.social.discover();
     if (p === '/api/chain/config') return () => core.chain.config();
     if (p === '/api/ipfs/config') return () => core.ipfs.config();
+    if (p === '/api/helia/status') return () => core.helia.status();
     if (p === '/api/social/status') return () => core.social.status();
     if (p === '/api/trade/trades') return () => core.trade.trades();
     if (p === '/api/wallet/status') return () => core.wallet.status();
@@ -225,6 +226,11 @@ export const core = {
     if (p === '/api/social/announce') return () => core.social.announce();
     if (p === '/api/chain/config') { const b = body || {}; return () => core.chain.config(b); }
     if (p === '/api/ipfs/config') { const b = body || {}; return () => core.ipfs.setConfig(b); }
+    if (p === '/api/helia/enabled') { const b = body || {}; return () => core.helia.setEnabled(!!b.enabled); }
+    if (p === '/api/helia/add') { const b = body || {}; return () => core.helia.add(b.value); }
+    if (p === '/api/helia/get') { const b = body || {}; return () => core.helia.get(String(b.cid || '')); }
+    if (p === '/api/helia/start') return () => core.helia.start();
+    if (p === '/api/helia/stop') return () => core.helia.stop();
     if (p === '/api/ipfs/upload') { const b = body || {}; return () => core.ipfs.upload(String(b.content ?? ''), b.name ? String(b.name) : undefined); }
     if (p === '/api/ipfs/fetch') { const b = body || {}; return () => core.ipfs.fetch(String(b.cid || '')); }
     if (p === '/api/ipfs/cid') { const b = body || {}; return () => core.ipfs.cid(b.value); }
@@ -571,6 +577,25 @@ export const core = {
       if (!pk) return { ok: false, error: '手机钱包未解锁' };
       const c: any = await import('./mobile-chain.js');
       return c.registerServiceOnChain({ ...opts, privateKey: pk });
+    },
+  },
+
+  // 本机 IPFS 节点 (Helia + js-libp2p, 真节点: PeerID/blockstore/bitswap)
+  //   注意: WebView 不能 listen → 只能拨出; iOS 后台会挂起 → 只在前台在线
+  helia: {
+    async status(): Promise<any> {
+      const h: any = await import('./mobile-helia.js');
+      const st = await h.heliaStatus();
+      return { ...(st || {}), enabled: h.heliaEnabled() };
+    },
+    async add(value: any): Promise<any> { const h: any = await import('./mobile-helia.js'); return h.heliaAddJson(value); },
+    async get(cid: string): Promise<any> { const h: any = await import('./mobile-helia.js'); return h.heliaGetJson(cid); },
+    async start(): Promise<any> { const h: any = await import('./mobile-helia.js'); const r = await h.startMobileHelia(); if (r && r.ok) h.setHeliaEnabled(true); return r; },
+    async stop(): Promise<any> { const h: any = await import('./mobile-helia.js'); const r = await h.stopMobileHelia(); h.setHeliaEnabled(false); return r; },
+    async setEnabled(enabled: boolean): Promise<any> {
+      const h: any = await import('./mobile-helia.js');
+      h.setHeliaEnabled(enabled);
+      return enabled ? h.startMobileHelia() : h.stopMobileHelia();
     },
   },
 

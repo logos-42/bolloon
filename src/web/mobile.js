@@ -1134,6 +1134,55 @@
     </div>`).join('');
   }
 
+  // === 本机 IPFS 节点 (Helia 真节点: 前台在线, 可收发块) ===
+  async function openHeliaPage() {
+    const page = document.createElement('div');
+    page.className = 'chat-page'; page.id = 'helia-page';
+    page.innerHTML = `
+      <div class="chat-topbar"><button class="icon-btn" id="hl-back">←</button><div style="flex:1;font-weight:600">本机 IPFS 节点</div></div>
+      <div style="padding:12px;display:flex;flex-direction:column;gap:12px">
+        <div style="font-size:13px;color:var(--text-secondary);line-height:1.7">在手机上跑一个真的 IPFS 节点（Helia + libp2p）：有 PeerID、本地块存储、能通过拨出的连接收发块。<br>限制：手机不能监听端口（只能主动连对端）；iOS 进后台会被系统挂起，所以节点只在前台在线 —— 这不是 bug，是系统限制。</div>
+        <button id="hl-toggle" style="${_walletBtn}">…</button>
+        <button id="hl-test" style="padding:12px;border:none;background:var(--bg-hover);color:var(--text);border-radius:10px">测试：把一个对象存进本机节点</button>
+        <div id="hl-status" style="font-size:13px;line-height:1.8;color:var(--text-secondary);word-break:break-all"></div>
+      </div>`;
+    document.body.appendChild(page);
+    $('#hl-back').addEventListener('click', () => page.remove());
+    const draw = async () => {
+      let st = {};
+      try { st = await api.get('/api/helia/status'); } catch (e) { st = { error: (e && e.message) || String(e) }; }
+      const on = !!(st && st.running);
+      const btn = page.querySelector('#hl-toggle');
+      btn.textContent = on ? '停止节点' : '启动节点';
+      page.querySelector('#hl-status').innerHTML = [
+        '状态: ' + (on ? '运行中' : (st && st.enabled ? '已启用但未运行' : '已停止')),
+        st && st.peerId ? 'PeerID: ' + escapeHtml(String(st.peerId)) : '',
+        '已连对端: ' + (((st && st.peers) || []).length) + ' 个',
+        st && typeof st.blockCount === 'number' ? '本地块数: ' + st.blockCount : '',
+        st && st.error ? '错误: ' + escapeHtml(String(st.error)) : '',
+      ].filter(Boolean).join('<br>');
+      return st;
+    };
+    await draw();
+    page.querySelector('#hl-toggle').addEventListener('click', async () => {
+      const st = await draw();
+      const on = !!(st && st.running);
+      showToast(on ? '正在停止节点…' : '正在启动节点…');
+      try { await api.post('/api/helia/enabled', { enabled: !on }); showToast(on ? '节点已停止' : '节点已启动'); }
+      catch (e) { showToast('操作失败: ' + ((e && e.message) || e)); }
+      await draw();
+    });
+    page.querySelector('#hl-test').addEventListener('click', async () => {
+      const out = page.querySelector('#hl-status');
+      out.textContent = '写入中…';
+      try {
+        const r = await api.post('/api/helia/add', { value: { hello: 'bolloon-mobile-node', ts: Date.now() } });
+        const g = r && r.cid ? await api.post('/api/helia/get', { cid: r.cid }) : null;
+        out.innerHTML = 'CID: ' + escapeHtml(String((r && r.cid) || '')) + '<br>取回来源: ' + escapeHtml(String((r && g && g.from) || '-')) + '<br>' + escapeHtml(JSON.stringify((g && g.value) || {}).slice(0, 200));
+      } catch (e) { out.textContent = '失败: ' + ((e && e.message) || e); }
+    });
+  }
+
   // === IPFS 存储配置 (本地算 CID 恒定可用; 上传/取回按此配置) ===
   async function openIpfsConfig() {
     let cfg = {};
@@ -1374,6 +1423,7 @@
         <div class="conv-item" id="settings-desktop"><span class="list-icon">${ICONS.globe}</span><span>电脑端同步</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-chain"><span class="list-icon">${ICONS.chip}</span><span>链上配置 (RPC/网络)</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-ipfs"><span class="list-icon">${ICONS.chip}</span><span>IPFS 存储</span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="settings-helia"><span class="list-icon">${ICONS.globe}</span><span>本机 IPFS 节点</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-selfcard"><span class="list-icon">${ICONS.chip}</span><span id="selfcard-text">显示本机卡片: 开</span></div>
         <div class="conv-item" id="settings-did"><span class="list-icon">${ICONS.idcard}</span><span>DID</span></div>
       </div>`;
@@ -1398,6 +1448,8 @@
     if (sc) sc.addEventListener('click', openChainConfig);
     const si = $('#settings-ipfs');
     if (si) si.addEventListener('click', openIpfsConfig);
+    const sh = $('#settings-helia');
+    if (sh) sh.addEventListener('click', openHeliaPage);
     $('#settings-selfcard').addEventListener('click', () => {
       const hidden = (() => { try { return localStorage.getItem(SELF_CARD_HIDDEN_KEY) === '1'; } catch { return false; } })();
       try { localStorage.setItem(SELF_CARD_HIDDEN_KEY, hidden ? '0' : '1'); } catch (e) {}
@@ -1866,6 +1918,8 @@
     loadAgentCovers();
     loadMe();
     if (core?.network?.start) core.network.start().catch(() => {});
+    // 本机 IPFS 节点: 若已启用则在启动时拉起 (iOS 回前台也走这里)
+    api.get('/api/helia/status').then((st) => { if (st && st.enabled && !st.running) api.post('/api/helia/start', {}).catch(() => {}); }).catch(() => {});
   }
   document.addEventListener('DOMContentLoaded', init);
   if (document.readyState !== 'loading') init();
