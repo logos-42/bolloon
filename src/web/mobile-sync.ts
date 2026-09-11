@@ -122,7 +122,17 @@ export async function syncFromDesktop(baseUrl?: string, opts: { fetchImpl?: type
  *   手机(WebView)不能 listen → 只能主动拨入桌面节点; 桌面 listen 在 0.0.0.0:<随机端口>/ws,
  *   所以要把 0.0.0.0/127.0.0.1 改写成手机实际访问的桌面主机(端口保持桌面真实端口)。
  */
-export async function desktopP2PAddrs(opts: { fetchImpl?: typeof fetch } = {}): Promise<{ ok: boolean; peerId?: string; addrs: string[]; error?: string }> {
+export async function desktopP2PAddrs(opts: { fetchImpl?: typeof fetch } = {}): Promise<{
+  ok: boolean;
+  peerId?: string;
+  addrs: string[];
+  /** 2026-09-11: 这些地址含中继服务 (手机 dial 后可预约 /p2p-circuit) */
+  isRelay?: boolean;
+  /** 中继地址 (带 /p2p/<桌面PeerId>), 用于预约 —— 语义上「这是中继, 不是普通对端」 */
+  relayAddrs?: string[];
+  relayProtocol?: string;
+  error?: string;
+}> {
   const base = getDesktopUrl();
   if (!base) return { ok: false, addrs: [], error: '未配置电脑端地址 (设置 → 电脑端同步)' };
   const f = opts.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
@@ -134,13 +144,21 @@ export async function desktopP2PAddrs(opts: { fetchImpl?: typeof fetch } = {}): 
     if (!r.ok) return { ok: false, addrs: [], error: `电脑端返回 ${r.status}` };
     const j: any = await r.json();
     const raw: string[] = Array.isArray(j?.wsAddrs) ? j.wsAddrs : [];
-    const addrs = raw.map((a) => {
+    const rewrite = (a: string): string => {
       let out = a;
       if (host) out = out.replace(/\/ip4\/(0\.0\.0\.0|127\.0\.0\.1)\//, `/ip4/${host}/`);
       out = out.replace(/\/ip6\/::1\//, `/ip4/${host || '127.0.0.1'}/`);
       return out;
-    }).filter((a) => ip4Of(a) && !/\/ip4\/(0\.0\.0\.0|127\.0\.0\.1)\//.test(a));
-    return { ok: j?.ok !== false, peerId: j?.peerId || '', addrs: Array.from(new Set(addrs)) };
+    };
+    const keep = (a: string) => ip4Of(a) && !/\/ip4\/(0\.0\.0\.0|127\.0\.0\.1)\//.test(a);
+    const addrs = raw.map(rewrite).filter(keep);
+    const relayRaw: string[] = Array.isArray(j?.relayAddrs) ? j.relayAddrs : [];
+    const relayAddrs = relayRaw.map(rewrite).filter(keep);
+    const out: any = { ok: j?.ok !== false, peerId: j?.peerId || '', addrs: Array.from(new Set(addrs)) };
+    if (j?.isRelay === true) out.isRelay = true;
+    if (relayAddrs.length) out.relayAddrs = Array.from(new Set(relayAddrs));
+    if (typeof j?.relayProtocol === 'string') out.relayProtocol = j.relayProtocol;
+    return out;
   } catch (e: any) {
     return { ok: false, addrs: [], error: e?.message || String(e) };
   }

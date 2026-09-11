@@ -1261,10 +1261,19 @@
     try { const u = await api.get('/api/desktop/url'); url = (u && u.url) || ''; } catch (e) {}
     let d = { ok: false, addrs: [], error: '' };
     try { d = await api.get('/api/network/desktop-addrs'); } catch (e) {}
+    // 2026-09-11: 可拨入地址 (/p2p-circuit) —— 手机在 WebView 里不能 listen,
+    // 向中继预约是它唯一能被别人拨入的途径。两个节点 (P2P / Helia) 都看一眼。
+    let helia = {};
+    try { helia = await api.get('/api/helia/status'); } catch (e) {}
     const conn = !!(net && net.connected);
     const peers = ((net && net.peerIds) || []).length;
     const nodeId = (net && net.nodeId) || '';
     const addrs = (d && d.addrs) || [];
+    const circuitAddrs = ((net && net.circuitAddrs) || []).length
+      ? net.circuitAddrs
+      : (((helia && helia.circuitAddrs) || []));
+    const relays = ((net && net.relays) || []).length ? net.relays : (((helia && helia.relays) || []));
+    const relayRes = ((net && net.relayReservations) || []).find((r) => r && !r.ok);
     const row = (k, v, small) => `<div class="list-item"><span style="flex:1">${k}</span><span style="font-size:${small ? 11 : 13}px;color:var(--text-secondary);text-align:right;word-break:break-all;max-width:60%">${escapeHtml(v)}</span></div>`;
     let html = '';
     html += row('状态', conn ? '已启动' : '未启动');
@@ -1272,7 +1281,27 @@
     html += row('已连对端', peers + ' 个');
     html += row('电脑端', url || '未配置', true);
     if (addrs.length) html += row('可拨地址', addrs[0], true);
+    // 可拨入地址: 没有就是「暂时不能被别人拨入」, 用大白话说清原因, 不假装成功
+    html += circuitAddrs.length
+      ? row('可拨入地址', circuitAddrs[0], true)
+      : row('可拨入地址', relayRes ? ('预约失败: ' + String(relayRes.error || '').slice(0, 60)) : '无 (没有可用中继 / 还没预约上)', true);
+    if (relays.length) html += row('已预约中继', relays.length + ' 个', true);
     box.innerHTML = html;
+    // 有可拨入地址 → 给一个复制入口 (别人要用它拨你)
+    if (circuitAddrs.length) {
+      const cp = document.createElement('div');
+      cp.className = 'list-item';
+      cp.id = 'p2p-copy-circuit';
+      cp.innerHTML = `<span class="list-icon">${ICONS.globe}</span><span style="flex:1">复制可拨入地址</span>`;
+      cp.addEventListener('click', async () => {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(circuitAddrs[0]);
+          else throw new Error('无剪贴板权限');
+          showToast('已复制可拨入地址');
+        } catch (e) { showToast('复制失败: ' + ((e && e.message) || e)); }
+      });
+      box.appendChild(cp);
+    }
     // 连接/重连按钮 + 人话提示
     const btn = document.createElement('div');
     btn.className = 'list-item';
@@ -1299,6 +1328,9 @@
     hint.textContent = !url && !addrs.length
       ? '手机在 WebView 里不能自己监听端口 → 需要「拨入」至少一个节点才能进网。电脑端是**可选**的：点「添加节点地址」填任意可拨节点的 multiaddr (如 /ip4/1.2.3.4/tcp/4001/ws)，手机就能独立入网并从该节点收发服务请求。'
       : (conn ? (peers ? '已连上 ' + peers + ' 个对端，可收发消息/服务请求（手机拨入的连接是双向的，所以别人也能调用你的服务）。' : '已连上节点，等待其他对端…') : ('未连接：' + ((d && d.error) || '点「连接电脑端」或「添加节点地址」')));
+    if (conn && !circuitAddrs.length) {
+      hint.textContent += '\n「可拨入地址」还是空的 —— 手机自己不能被别人拨入，必须成功预约到中继才有。确认电脑端已开启中继 (电脑端 /api/p2p/mobile-connect 里 isRelay=true)，再点「重新连接电脑端」。';
+    }
     box.appendChild(hint);
   }
 

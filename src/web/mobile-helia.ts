@@ -126,6 +126,8 @@ export interface MobileLibp2p {
   /** 真 libp2p 有 status: 'stopped' | 'starting' | 'started' | 'stopping' */
   status?: string;
   dial?(addr: unknown, opts?: unknown): Promise<unknown>;
+  /** 2026-09-11: 可拨入地址来源 (只 listen /p2p-circuit 时, 有中继才非空) */
+  getMultiaddrs?(): Array<{ toString(): string }>;
 }
 
 /** 手机 Helia 节点 (真 Helia 与测试假节点都满足此结构) */
@@ -184,6 +186,15 @@ export interface HeliaStatusResult {
   libp2pStatus?: string;
   /** 最近一次启动**真实**失败原因 (message/stack); 成功过则为空 */
   lastError?: string;
+  /**
+   * 2026-09-11: 本机**可拨入地址** = libp2p.getMultiaddrs() 里带 `/p2p-circuit` 的项。
+   * 形如 `/ip4/<桌面IP>/tcp/<端口>/ws/p2p/<中继PeerId>/p2p-circuit/p2p/<本机PeerId>`。
+   * 手机在 WebView 里不能 listen 公网地址 → 这是它唯一能被别人拨入的地址;
+   * **没有可用中继时是 `[]` (正常, 不是失败)**。
+   */
+  circuitAddrs?: string[];
+  /** 已经预约上的中继 peerId 列表 (从 circuitAddrs 解析; 空 = 还没预约上) */
+  relays?: string[];
 }
 
 export interface StartMobileHeliaConfig {
@@ -284,6 +295,42 @@ function libp2pStatusOf(node: MobileHeliaNode | null | undefined): string {
     return 'unknown';
   } catch (err) {
     return `error:${errMsg(err)}`;
+  }
+}
+
+/** 从 /p2p-circuit 地址里解析出中继 peerId (地址形如 <relayAddr>/p2p/<relay>/p2p-circuit/p2p/<self>) */
+function relaysFromCircuitAddrs(circuitAddrs: string[]): string[] {
+  const out: string[] = [];
+  for (const a of circuitAddrs) {
+    const head = a.split('/p2p-circuit')[0] || '';
+    const ids = head.match(/\/p2p\/([^/]+)/g) || [];
+    const last = ids[ids.length - 1];
+    const relay = last ? last.slice('/p2p/'.length) : '';
+    if (relay && !out.includes(relay)) out.push(relay);
+  }
+  return out;
+}
+
+/**
+ * 本机 libp2p 的可拨入地址 (`/p2p-circuit`) + 已预约中继。永不抛。
+ * 手机只 listen /p2p-circuit → 没有可用中继时必然为空, 这是正常状态 (不是错误)。
+ * ws/wss 地址排前面 (WebView 只能拨 ws/wss, 拨不了裸 tcp)。
+ */
+function circuitInfoOf(libp2p: MobileLibp2p | undefined): { circuitAddrs: string[]; relays: string[] } {
+  try {
+    const all = (libp2p?.getMultiaddrs?.() || []).map((a) =>
+      a && typeof a.toString === 'function' ? a.toString() : String(a)
+    );
+    const isWs = (a: string) => {
+      const parts = a.split('/');
+      return parts.includes('ws') || parts.includes('wss');
+    };
+    const circuitAddrs = all
+      .filter((a) => a.includes('/p2p-circuit'))
+      .sort((a, b) => (isWs(a) ? 0 : 1) - (isWs(b) ? 0 : 1));
+    return { circuitAddrs, relays: relaysFromCircuitAddrs(circuitAddrs) };
+  } catch {
+    return { circuitAddrs: [], relays: [] };
   }
 }
 
@@ -668,6 +715,8 @@ export async function heliaStatus(): Promise<HeliaStatusResult> {
       running: false,
       peers: [],
       libp2pStatus: 'not-created',
+      circuitAddrs: [],
+      relays: [],
     };
     if (lastStartError) out.lastError = lastStartError;
     return out;
@@ -678,6 +727,9 @@ export async function heliaStatus(): Promise<HeliaStatusResult> {
     const peerId = currentPeerId ?? peerIdOf(node);
     // 有 libp2p → 以它的状态为准; 没有 libp2p (纯本地块/假节点) → 看 node.status
     const running = libp2pError ? false : libp2p ? libp2pStatus === 'started' : node.status === 'started';
+
+    // 2026-09-11: 可拨入地址 (/p2p-circuit) + 已预约中继 —— 手机能不能被拨入就看这两个
+    const { circuitAddrs, relays } = circuitInfoOf(libp2p);
 
     let peers: string[] = [];
     try {
@@ -698,7 +750,7 @@ export async function heliaStatus(): Promise<HeliaStatusResult> {
       }
     }
 
-    const out: HeliaStatusResult = { ok: true, running, peers, libp2pStatus };
+    const out: HeliaStatusResult = { ok: true, running, peers, libp2pStatus, circuitAddrs, relays };
     if (peerId) out.peerId = peerId;
     if (blockCount !== undefined) out.blockCount = blockCount;
     if (lastStartError) out.lastError = lastStartError;
@@ -711,6 +763,8 @@ export async function heliaStatus(): Promise<HeliaStatusResult> {
       running: false,
       peers: [],
       libp2pStatus: libp2pStatusOf(node),
+      circuitAddrs: [],
+      relays: [],
       error: errDetail(err),
     };
     if (lastStartError) out.lastError = lastStartError;

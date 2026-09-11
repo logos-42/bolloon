@@ -380,15 +380,18 @@ export const core = {
         const id = await agentLayer.ensureIdentity();
         // 手机(WebView)不能 listen → 没有种子时必须向电脑端要可拨地址, 否则节点起来了也没有任何连接
         let seeds = seedAddrs && seedAddrs.length ? seedAddrs : undefined;
+        let relayAddrs: string[] | undefined;
         let desktopPeer = '';
         if (!seeds) {
           try {
             const sync = await import('./mobile-sync.js');
             const d = await sync.desktopP2PAddrs();
             if (d.ok && d.addrs.length) { seeds = d.addrs; desktopPeer = d.peerId || ''; }
+            // 2026-09-11: 电脑端是中继 → 拿 relayAddrs 显式预约, 手机才有可拨入地址
+            if (d.ok && Array.isArray(d.relayAddrs) && d.relayAddrs.length) relayAddrs = d.relayAddrs;
           } catch { /* 电脑端不可达 → 单机模式 */ }
         }
-        const st = await startMobileP2P({ seedAddrs: seeds, ownDid: id.did });
+        const st = await startMobileP2P({ seedAddrs: seeds, ownDid: id.did, relayAddrs });
         if (desktopPeer) busBroadcast({ type: 'p2p-desktop', peerId: desktopPeer, addrs: seeds || [] });
         // 自动社交 (E1 DISCOVERY): 广播自身服务声明 + 欢迎已连对端 + 心跳 (协议 5 分钟)
         try {

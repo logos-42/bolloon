@@ -2923,11 +2923,25 @@ ${goalDesc}
     try {
       const { p2pNetwork } = await import('../network/p2p.js');
       const wsAddrs = p2pNetwork.getWsMultiaddrs();
+      // 2026-09-11: 中继语义 — 这些 /ws 地址同时是 circuit relay v2 中继地址。
+      // 手机 dial 它之后即可预约, 拿到 <relay>/p2p-circuit/p2p/<手机PeerId> 这个「可拨入地址」。
+      const relay = p2pNetwork.getRelayServiceInfo();
+      const relayAddrs = relay.enabled ? p2pNetwork.getRelayAddrs() : [];
       res.json({
         ok: true,
         peerId: p2pNetwork.getNodePeerId(),
         wsAddrs,
-        hint: wsAddrs.length ? '手机端 dial 这些地址即可连上桌面 P2P' : '桌面 P2P 未启动或未监听 ws',
+        // 单独字段: 明确「这是中继, 不是普通对端」(手机端看到 relayAddrs 就该去预约, 而不是只当 bootstrap)
+        isRelay: relay.enabled,
+        relayAddrs,
+        relayProtocol: relay.protocol,
+        relayReservations: relay.reservations,
+        relayMaxReservations: relay.maxReservations,
+        hint: wsAddrs.length
+          ? (relay.enabled
+              ? '拨 relayAddrs 里的任意地址 → 手机会自动预约中继并拿到 /p2p-circuit 可拨入地址'
+              : '桌面 P2P 在跑, 但中继服务未启用 (中继地址暂不可用; 手机只连不预约)')
+          : '桌面 P2P 未启动或未监听 ws',
       });
     } catch (e: any) {
       res.status(500).json({ ok: false, error: e?.message });

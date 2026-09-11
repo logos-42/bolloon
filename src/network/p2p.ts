@@ -2,7 +2,7 @@ import { createLibp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
 import { multiaddr as createMultiaddr } from '@multiformats/multiaddr';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
+import { circuitRelayTransport, circuitRelayServer, RELAY_V2_HOP_CODEC } from '@libp2p/circuit-relay-v2';
 import { autoNAT } from '@libp2p/autonat';
 import { uPnPNAT } from '@libp2p/upnp-nat';
 import * as fs from 'fs/promises';
@@ -11,6 +11,26 @@ import * as path from 'path';
 const PEER_STORE_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'peer-store.json');
 const RECONNECT_DELAY_MS = 5000;
 const MAX_RECONNECT_ATTEMPTS = 3;
+
+/**
+ * 2026-09-11: 桌面端当 circuit relay v2 服务器 (relay v2 server)。
+ *
+ * 为什么必须: 手机在 iOS WKWebView 里**不能 listen 任何公网/局域网地址** ——
+ * 它唯一能被别人拨入的途径就是「向中继预约 → 拿到 <relay>/p2p-circuit/p2p/<手机> 地址」。
+ * 没有中继时手机 getMultiaddrs() 为空 (只能拨出, 不能被拨)。
+ *
+ * 协议常量 = identify 会广播的服务协议 (手机端 topology 看到它就发起预约)。
+ */
+export const CIRCUIT_RELAY_HOP_PROTOCOL = RELAY_V2_HOP_CODEC;
+/** 允许的中继预约数 (每个预约 = 一台像手机这样的「不能 listen 的对等端」) */
+const RELAY_MAX_RESERVATIONS = 64;
+/**
+ * 预约有效期 (单位 **毫秒**; @libp2p/circuit-relay-v2 v4 的 reservations.reservationTtl
+ * 是 number, 不是 '2H' 这种字符串 —— 传字符串会让 new Date(Date.now()+NaN) 直接失效)。
+ */
+const RELAY_RESERVATION_TTL_MS = 2 * 60 * 60 * 1000;
+/** 过期预约清理间隔 (默认 5 分钟) */
+const RELAY_RESERVATION_CLEAR_INTERVAL_MS = 5 * 60 * 1000;
 
 export interface PersistentPeerInfo {
   peerId: string;
@@ -27,6 +47,19 @@ export interface P2PNode {
   peerId: string;
   multiaddrs: string[];
   relayAddr?: string;
+  /** 2026-09-11: 桌面中继服务状态 (手机靠它判断能不能预约 /p2p-circuit) */
+  relay?: RelayServiceInfo;
+}
+
+/** relay v2 服务器 (中继) 的运行时状态 */
+export interface RelayServiceInfo {
+  /** 中继服务真的起来了 (identify 在广播 hop 协议) */
+  enabled: boolean;
+  /** '/libp2p/circuit/relay/0.2.0/hop' */
+  protocol: string;
+  /** 当前被预约的数量 (每台手机占 1) */
+  reservations: number;
+  maxReservations: number;
 }
 
 export interface NatStatus {
@@ -164,6 +197,9 @@ export class P2PNetwork {
   private peerStorePath: string;
   private natStatus: NatStatus = { reachable: false };
   private relayServerAddr: string | null = null;
+  /** 2026-09-11: 中继服务是否真的起来 (identify 在广播 hop 协议) */
+  private relayServerEnabled = false;
+  private relayMaxReservations = RELAY_MAX_RESERVATIONS;
   private requestResponseManager: RequestResponseManager = new RequestResponseManager();
   private pendingResponseHandlers: Map<string, (response: string, from: string) => void> = new Map();
   private pendingRequests: Map<string, PendingRequestInfo> = new Map();
@@ -252,12 +288,14 @@ export class P2PNetwork {
     bootstrapPeers?: string[];
     ownDid?: string;
     enableRelay?: boolean;
+    enableRelayServer?: boolean;
     enableAutoNat?: boolean;
     enableUPnP?: boolean;
     relayPeers?: string[];
   }): Promise<P2PNode> {
     this.ownDid = config?.ownDid || null;
     const enableRelay = config?.enableRelay ?? true;
+    const enableRelayServer = config?.enableRelayServer ?? true;
     const enableAutoNat = config?.enableAutoNat ?? true;
     const enableUPnP = config?.enableUPnP ?? true;
 
@@ -303,6 +341,34 @@ export class P2PNetwork {
       }
     }
 
+    // 2026-09-11: 中继服务器 (relay v2 server) —— 手机(WebView)唯一的入站途径。
+    // 注意: relay v2 服务器必须 **不是** relayed 连接上的对端才有意义, 且需要 identify 广播 hop 协议。
+    this.relayMaxReservations = RELAY_MAX_RESERVATIONS;
+    if (enableRelayServer) {
+      try {
+        services.circuitRelay = circuitRelayServer({
+          reservations: {
+            maxReservations: RELAY_MAX_RESERVATIONS,
+            reservationTtl: RELAY_RESERVATION_TTL_MS,
+            reservationClearInterval: RELAY_RESERVATION_CLEAR_INTERVAL_MS,
+            // 不套用默认 data/duration 上限 (默认仅 128KB / 2min) —— 那会把手机的
+            // bitswap/大消息一次性掐断; 个人自建中继不需要这层限流。
+            applyDefaultLimit: false,
+          },
+          hopTimeout: 30_000,
+          maxInboundHopStreams: 64,
+          maxOutboundHopStreams: 64,
+          maxOutboundStopStreams: 128,
+        });
+        console.log(
+          `[P2P] Circuit relay server: maxReservations=${RELAY_MAX_RESERVATIONS} ` +
+            `reservationTtl=${RELAY_RESERVATION_TTL_MS}ms applyDefaultLimit=false protocol=${RELAY_V2_HOP_CODEC}`
+        );
+      } catch (e) {
+        console.warn(`[P2P] Failed to setup circuit relay server:`, e);
+      }
+    }
+
     if (enableAutoNat) {
       try {
         services.autonat = autoNAT();
@@ -336,7 +402,23 @@ export class P2PNetwork {
       }
     });
 
+    // 中继事件日志: 谁预约上了 / 预约过期 —— 手机连不上时一眼看出问题在哪
+    try {
+      const relaySvc = this.getRelayService();
+      relaySvc?.addEventListener?.('relay:reservation', (evt: any) => {
+        console.log(`[P2P] Relay reservation taken by ${evt?.detail?.addr?.toString?.() ?? 'unknown'}`);
+      });
+      relaySvc?.addEventListener?.('relay:advert:error', (evt: any) => {
+        console.warn(`[P2P] Relay advert error: ${evt?.detail?.message ?? evt?.detail}`);
+      });
+    } catch (e) {
+      console.warn(`[P2P] Failed to attach relay event listeners:`, e);
+    }
+
     await this.node.start();
+
+    // ★ 复验: 中继服务真的起来了吗 —— 唯一判据是 identify 会广播的协议表里有 hop 协议
+    this.verifyRelayService(enableRelayServer);
 
     const peerId = this.node.peerId.toString();
     const multiaddrs = this.node.getMultiaddrs().map((addr: any) => addr.toString());
@@ -368,13 +450,73 @@ export class P2PNetwork {
     return {
       peerId,
       multiaddrs,
-      relayAddr: this.relayServerAddr || undefined
+      relayAddr: this.relayServerAddr || undefined,
+      relay: this.getRelayServiceInfo(),
+    };
+  }
+
+  /** 中继服务实例 (libp2p 的 services 是普通对象, key = createNode 里 services.circuitRelay) */
+  private getRelayService(): any {
+    const s = (this.node as any)?.services;
+    if (!s) return null;
+    return s.circuitRelay ?? s['circuit-relay'] ?? s['circuitRelayServer'] ?? null;
+  }
+
+  /**
+   * 复验中继服务: 只认「identify 在广播的协议表里有 hop 协议」——
+   * 手机端的 relay discovery 拓扑就是靠 identify 里的这个协议发现中继并预约的。
+   * 不在 → 中继对手机**不可用**, 必须出声 (别静默假装成功)。
+   */
+  private verifyRelayService(requested: boolean): void {
+    let protocols: string[] = [];
+    try {
+      protocols = this.node?.getProtocols?.() ?? [];
+    } catch { /* 忽略 */ }
+    const hasHop = protocols.includes(RELAY_V2_HOP_CODEC);
+    const svc = this.getRelayService();
+    this.relayServerEnabled = !!svc && hasHop;
+    if (this.relayServerEnabled) {
+      console.log(
+        `[P2P] Circuit relay server ACTIVE — identify 广播 ${RELAY_V2_HOP_CODEC} ` +
+          `(services.circuitRelay=${!!svc}, protocols=${protocols.length}) → 手机可向本节点预约 /p2p-circuit`
+      );
+    } else if (requested) {
+      console.warn(
+        `[P2P] Circuit relay server NOT active — hop 协议未注册 (services.circuitRelay=${!!svc}, ` +
+          `hasHop=${hasHop}) → 手机将拿不到 /p2p-circuit 地址`
+      );
+    }
+  }
+
+  /** 中继服务运行时状态 (供 /api/p2p/mobile-connect 与诊断用) */
+  getRelayServiceInfo(): RelayServiceInfo {
+    const svc = this.getRelayService();
+    let protocols: string[] = [];
+    try {
+      protocols = this.node?.getProtocols?.() ?? [];
+    } catch { /* 忽略 */ }
+    const hasHop = protocols.includes(RELAY_V2_HOP_CODEC);
+    let reservations = 0;
+    try {
+      reservations = svc?.reservations?.size ?? 0;
+    } catch { reservations = 0; }
+    return {
+      enabled: !!svc && hasHop,
+      protocol: RELAY_V2_HOP_CODEC,
+      reservations,
+      maxReservations: this.relayMaxReservations,
     };
   }
 
   /**
    * 手机端(WebView)连桌面用的 ws 多地址 —— 手机不能 listen, 只能主动拨入,
    * 所以必须把桌面的 /ws 地址给手机 (WebSocket 传输, 见 start() 的 listen)。
+   *
+   * 注意 (2026-09-11 修): 不能再用 `endsWith('/ws')` —— libp2p 的
+   * `getMultiaddrs()` 会在末尾追加 `/p2p/<PeerId>`, 实际形态是
+   * `/ip4/192.168.1.5/tcp/8765/ws/p2p/12D3Koo…`, 用 endsWith 永远筛出空数组
+   * (→ /api/p2p/mobile-connect 返回空 wsAddrs → 手机拿不到任何可拨地址)。
+   * 正确做法: 看 multiaddr 组件里有没有 ws/wss 段。
    */
   getWsMultiaddrs(): string[] {
     if (!this.node) return [];
@@ -382,7 +524,10 @@ export class P2PNetwork {
       return this.node
         .getMultiaddrs()
         .map((a: any) => a.toString())
-        .filter((a: string) => a.endsWith('/ws'));
+        .filter((a: string) => {
+          const parts = a.split('/');
+          return parts.includes('ws') || parts.includes('wss');
+        });
     } catch {
       return [];
     }
@@ -391,6 +536,17 @@ export class P2PNetwork {
   /** 桌面 P2P 节点 ID (手机端识别对端) */
   getNodePeerId(): string {
     try { return this.node ? this.node.peerId.toString() : ''; } catch { return ''; }
+  }
+
+  /**
+   * 2026-09-11: 手机可用来「预约中继」的 ws 地址 —— 就是 /ws listen 地址, 但**保证带
+   * `/p2p/<桌面PeerId>`** (circuit-relay 预约必须知道中继的 PeerID, 否则手机没法
+   * listen `<relay>/p2p-circuit`)。
+   */
+  getRelayAddrs(): string[] {
+    const peerId = this.getNodePeerId();
+    if (!peerId) return this.getWsMultiaddrs();
+    return this.getWsMultiaddrs().map((a) => (a.includes('/p2p/') ? a : `${a}/p2p/${peerId}`));
   }
 
   private async checkNatStatus(): Promise<void> {
