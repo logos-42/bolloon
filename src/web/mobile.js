@@ -1106,7 +1106,12 @@
         const r = await api.post('/api/trade/call', { service: svc, request: { text: req } });
         const map = { denied: '⛔ 被策略拦截：', needsApproval: '⏸ 需要人工确认：', replayed: '🔁 重复请求被拒：', failed: '❌ 调用失败：' };
         if (r && r.status && map[r.status]) out.textContent = map[r.status] + (r.reason || '');
-        else if (r && r.ok) out.textContent = '✅ 成功' + (r.txHash ? '（tx ' + String(r.txHash).slice(0, 14) + '…）' : '') + '\n' + (typeof r.result === 'string' ? r.result : JSON.stringify(r.result || {}).slice(0, 400));
+        else if (r && r.ok) {
+          const cid = r.resultCid || (r.proof && r.proof.cid) || '';
+          out.textContent = '✅ 成功' + (r.txHash ? '（tx ' + String(r.txHash).slice(0, 14) + '…）' : '') + '\n'
+            + (typeof r.result === 'string' ? r.result : JSON.stringify(r.result || {}).slice(0, 400))
+            + (cid ? '\n结果 CID: ' + cid + (r.proof && r.proof.provider ? '（' + r.proof.provider + '）' : '（仅本地计算）') : '');
+        }
         else out.textContent = (r && (r.error || r.reason)) || '未知结果';
       } catch (e) { out.textContent = '调用失败: ' + ((e && e.message) || e); }
     });
@@ -1127,6 +1132,46 @@
       <div style="font-size:11px">${escapeHtml(String(t.status || ''))}${t.txHash ? ' · tx ' + escapeHtml(String(t.txHash).slice(0, 12)) + '…' : ''} · ${new Date(t.ts || Date.now()).toLocaleString()}</div>
       ${t.reason ? '<div style="font-size:11px">' + escapeHtml(String(t.reason)) + '</div>' : ''}
     </div>`).join('');
+  }
+
+  // === IPFS 存储配置 (本地算 CID 恒定可用; 上传/取回按此配置) ===
+  async function openIpfsConfig() {
+    let cfg = {};
+    try { cfg = await api.get('/api/ipfs/config'); } catch (e) {}
+    const page = document.createElement('div');
+    page.className = 'chat-page'; page.id = 'ipfs-config-page';
+    page.innerHTML = `
+      <div class="chat-topbar"><button class="icon-btn" id="ic-back">←</button><div style="flex:1;font-weight:600">IPFS 存储</div></div>
+      <div style="padding:12px;display:flex;flex-direction:column;gap:10px">
+        <div style="font-size:13px;color:var(--text-secondary);line-height:1.7">本地算 CID / 校验 CID 永远可用（离线）。上传/取回按下面配置：public=只走公共网关（只读为主）；remote=自建/远程 IPFS 节点；pinata=用 Pinata 上传+固定。</div>
+        <input id="ic-mode" placeholder="public / remote / pinata" value="${escapeHtml(String(cfg.mode || 'public'))}" style="${_walletInput}">
+        <input id="ic-api" placeholder="远程节点 API (http://host:5001)" value="${escapeHtml(String(cfg.apiUrl || ''))}" style="${_walletInput}">
+        <input id="ic-gw" placeholder="网关 (https://ipfs.io)" value="${escapeHtml(String(cfg.gatewayUrl || ''))}" style="${_walletInput}">
+        <input id="ic-pk" placeholder="Pinata API Key" value="${escapeHtml(String(cfg.pinataKey || ''))}" style="${_walletInput}">
+        <input id="ic-ps" placeholder="Pinata Secret" value="${escapeHtml(String(cfg.pinataSecret || ''))}" style="${_walletInput}">
+        <button id="ic-save" style="${_walletBtn}">保存</button>
+        <button id="ic-test" style="padding:12px;border:none;background:var(--bg-hover);color:var(--text);border-radius:10px">测试：算一个 CID</button>
+        <div id="ic-out" style="font-size:12px;color:var(--text-secondary);line-height:1.7;word-break:break-all"></div>
+      </div>`;
+    document.body.appendChild(page);
+    $('#ic-back').addEventListener('click', () => page.remove());
+    $('#ic-save').addEventListener('click', async () => {
+      const body = {
+        mode: (page.querySelector('#ic-mode').value || 'public').trim(),
+        apiUrl: (page.querySelector('#ic-api').value || '').trim(),
+        gatewayUrl: (page.querySelector('#ic-gw').value || '').trim(),
+        pinataKey: (page.querySelector('#ic-pk').value || '').trim(),
+        pinataSecret: (page.querySelector('#ic-ps').value || '').trim(),
+      };
+      try { const r = await api.post('/api/ipfs/config', body); page.querySelector('#ic-out').textContent = r && r.ok === false ? ('保存失败: ' + (r.error || '')) : '已保存'; showToast('IPFS 配置已保存'); }
+      catch (e) { page.querySelector('#ic-out').textContent = '保存失败: ' + ((e && e.message) || e); }
+    });
+    $('#ic-test').addEventListener('click', async () => {
+      const out = page.querySelector('#ic-out');
+      out.textContent = '计算中…';
+      try { const r = await api.post('/api/ipfs/cid', { value: { hello: 'bolloon', ts: 1 } }); out.textContent = 'CID: ' + ((r && r.cid) || JSON.stringify(r)); }
+      catch (e) { out.textContent = '失败: ' + ((e && e.message) || e); }
+    });
   }
 
   // === 链上配置 (手机端独立支付/上链用的 RPC 与网络) ===
@@ -1328,6 +1373,7 @@
         <div class="conv-item" id="settings-network"><span class="list-icon">${ICONS.globe}</span><span>网络与同步</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-desktop"><span class="list-icon">${ICONS.globe}</span><span>电脑端同步</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-chain"><span class="list-icon">${ICONS.chip}</span><span>链上配置 (RPC/网络)</span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="settings-ipfs"><span class="list-icon">${ICONS.chip}</span><span>IPFS 存储</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-selfcard"><span class="list-icon">${ICONS.chip}</span><span id="selfcard-text">显示本机卡片: 开</span></div>
         <div class="conv-item" id="settings-did"><span class="list-icon">${ICONS.idcard}</span><span>DID</span></div>
       </div>`;
@@ -1350,6 +1396,8 @@
     drawSelfCardToggle();
     const sc = $('#settings-chain');
     if (sc) sc.addEventListener('click', openChainConfig);
+    const si = $('#settings-ipfs');
+    if (si) si.addEventListener('click', openIpfsConfig);
     $('#settings-selfcard').addEventListener('click', () => {
       const hidden = (() => { try { return localStorage.getItem(SELF_CARD_HIDDEN_KEY) === '1'; } catch { return false; } })();
       try { localStorage.setItem(SELF_CARD_HIDDEN_KEY, hidden ? '0' : '1'); } catch (e) {}

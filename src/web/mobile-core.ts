@@ -115,6 +115,7 @@ export const core = {
     if (p === '/api/network/desktop-addrs') return () => core.network.desktopAddrs();
     if (p === '/api/social/discover') return () => core.social.discover();
     if (p === '/api/chain/config') return () => core.chain.config();
+    if (p === '/api/ipfs/config') return () => core.ipfs.config();
     if (p === '/api/social/status') return () => core.social.status();
     if (p === '/api/trade/trades') return () => core.trade.trades();
     if (p === '/api/wallet/status') return () => core.wallet.status();
@@ -223,6 +224,10 @@ export const core = {
     if (p === '/api/network/connect') return () => core.network.connect();
     if (p === '/api/social/announce') return () => core.social.announce();
     if (p === '/api/chain/config') { const b = body || {}; return () => core.chain.config(b); }
+    if (p === '/api/ipfs/config') { const b = body || {}; return () => core.ipfs.setConfig(b); }
+    if (p === '/api/ipfs/upload') { const b = body || {}; return () => core.ipfs.upload(String(b.content ?? ''), b.name ? String(b.name) : undefined); }
+    if (p === '/api/ipfs/fetch') { const b = body || {}; return () => core.ipfs.fetch(String(b.cid || '')); }
+    if (p === '/api/ipfs/cid') { const b = body || {}; return () => core.ipfs.cid(b.value); }
     if (p === '/api/chain/x402-sign') { const b = body || {}; return () => core.chain.signX402(b); }
     if (p === '/api/chain/transfer') { const b = body || {}; return () => core.chain.transfer(b); }
     if (p === '/api/chain/register') { const b = body || {}; return () => core.chain.register(b); }
@@ -231,7 +236,7 @@ export const core = {
       return async () => {
         const t = await import('./mobile-trade.js');
         const w = await import('./mobile-wallet.js');
-        return t.callService({
+        const out: any = await t.callService({
           service: b.service,
           request: b.request || {},
           deps: {
@@ -256,6 +261,17 @@ export const core = {
             policy: b.policy,
           },
         });
+        // PROOF 阶段 (协议): 结果算 CID + 尽力上远端 IPFS, 便于别人按 CID 取且可校验
+        if (out && out.ok) {
+          try {
+            const i: any = await import('./mobile-ipfs.js');
+            const cid = await i.resultCid(out.result);
+            out.resultCid = cid;
+            const up: any = await i.ipfsUpload(JSON.stringify(out.result ?? null), 'bolloon-result');
+            out.proof = up && up.ok ? { cid: up.cid, provider: up.provider } : { cid, local: true };
+          } catch { /* PROOF 失败不影响交易结果 */ }
+        }
+        return out;
       };
     }
     if (p === '/api/trade/settle') {
@@ -556,6 +572,15 @@ export const core = {
       const c: any = await import('./mobile-chain.js');
       return c.registerServiceOnChain({ ...opts, privateKey: pk });
     },
+  },
+
+  // IPFS (协议 PROOF/资源存储): 本地算验 CID + 远端读写 + 网关回退
+  ipfs: {
+    async config(cfg?: any): Promise<any> { const i: any = await import('./mobile-ipfs.js'); return cfg ? i.setIpfsConfig(cfg) : i.getIpfsConfig(); },
+    async setConfig(cfg: any): Promise<any> { const i: any = await import('./mobile-ipfs.js'); return i.setIpfsConfig(cfg); },
+    async upload(content: string, name?: string): Promise<any> { const i: any = await import('./mobile-ipfs.js'); return i.ipfsUpload(content, name); },
+    async fetch(cid: string): Promise<any> { const i: any = await import('./mobile-ipfs.js'); return i.ipfsFetch(cid); },
+    async cid(value: any): Promise<any> { const i: any = await import('./mobile-ipfs.js'); return { ok: true, cid: await i.computeCid(value) }; },
   },
 
   // 资源交易 (E2/E3/E4): 402 → 策略 → 支付 → 结果 → 信誉

@@ -2051,3 +2051,17 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - **P2P 独立入网**: 网络页 P2P 卡新增「添加节点地址 (独立入网)」— 电脑端变**可选**, 手机拨通任意可拨节点即可进网; 文案说明"拨入连接是双向的, 别人也能调用本机服务".
 - **实测**: 链上模块 18 项测试 + 全量 70 项(chain/trade/social/core) 全绿, tsc 0; 模拟器「链上配置」页渲染正常 (rpc=https://mainnet.base.org, chain=8453, network=base, 探针全 true).
 - 待办: IPFS 模块 (`mobile-ipfs.ts`, 本地 CID + DIAP IpfsClient + 网关回退) 编写中; 真实 402/上链端到端仍需真机 + 真 RPC 验证。
+
+### 追加 (2026-09-08): 手机端 IPFS (独立算/验 CID + 远端存取) + 修跨端 CID 不一致的隐蔽 bug
+
+- **新模块 `src/web/mobile-ipfs.ts`** (纯浏览器, 0 node 内置; esbuild --platform=browser 验证通过):
+  - 本地: `computeCid(obj)` (dag-cbor + sha256 + CIDv1, 键序无关, 与桌面 `contentToCid()` 一致) · `cidFromText` · `verifyContent(cid, content)` · `resultCid(result)` (协议 **PROOF** 阶段用).
+  - 远端: `ipfsUpload/ipfsFetch` + `createIpfsClient` — 三种模式 `public`(公共网关只读为主) / `remote`(自建/远程节点 HTTP API) / `pinata`(上传+固定); 网关回退 `DEFAULT_GATEWAYS=[ipfs.io, dweb.link, cloudflare-ipfs.com]`; 本地缓存 (50 条/2MB LRU, 命中不发网络).
+  - **重要实测结论**: `@diap/sdk` 的 `IpfsClient` **无法在浏览器打包** (它把 key-manager/config-manager/libp2p/logger 一起拉进来 → `fs`/`path`/`node:crypto`/`winston`→`os`/`util`). 故模块内自实现等价 HTTP 客户端并**保持 SDK 签名** (`newPublicOnly/newWithRemoteNode/newWithPinata/upload/get`); 若要换回真 SDK, 把实例作为 `client` 参数传入即可 (已测该路径).
+- **接线**: `GET/POST /api/ipfs/config|upload|fetch|cid` + `core.ipfs`; **交易 PROOF 阶段**: `trade.callService` 成功后自动 `resultCid(结果)` 并尽力上远端 IPFS, 返回里带 `resultCid` / `proof{cid,provider}`; 交易页显示"结果 CID". 设置页新增「IPFS 存储」(模式/远程API/网关/Pinata key+secret + 测试按钮).
+- **修隐蔽 bug (跨端 CID 不一致)**: 模拟器实测手机算出的 CID 与桌面**不同** (`bafyreiq5…` vs `bafyreig5…`, 仅第 8 位差)。
+  - 根因: `node_modules` 里有**两个 `@ipld/dag-cbor`** — 顶层 `9.2.7`(桌面用) 与 `helia/node_modules` 内嵌 `10.0.2`; `dist/web/mobile-core.js` 是单文件 bundle, 解析到了 10.0.2 → 同一内容不同编码 → 不同 CID。这类差异会**静默破坏**跨端校验、PROOF、以及 CID 作 `tokenURI` 的上链一致性。
+  - 修法: `scripts/build-web.ts` 里给 mobile-core 的 esbuild 加 `alias: { '@ipld/dag-cbor': node_modules/@ipld/dag-cbor/index.js }` 锁到顶层版本 (**alias 必须指向文件, 指目录会 Could not resolve 导致构建失败**)。
+  - 复验: 手机端 App 内重新计算 → `bafyreig5…` 与桌面**逐字符一致** ✅ (三端: 桌面 contentToCid = 手机模块 computeCid = 模拟器 App 实测).
+- 依赖: `multiformats@^14.0.5` + `@ipld/dag-cbor@^9.2.7` 显式写入 package.json (原先只作为传递依赖存在, 属隐性风险).
+- 测试: ipfs 16 项 + 全量 (chain/trade/social/core/ipfs) 全绿; tsc 0.
