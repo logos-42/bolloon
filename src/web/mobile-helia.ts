@@ -25,10 +25,31 @@
  *   实测 0 个 node 内置引用 (见交付说明)。
  *   测试用 createMobileHeliaNode({ node: fakeNode }) 注入假节点, **不会** import helia。
  *
+ * ────────────────── Helia 7 启动语义 (2026-09-11 修, 血的教训) ──────────────────
+ *   `createHelia()` 在 Helia 7 里是**同步函数**: 它同步返回一个 status='stopped' 的
+ *   节点 —— **libp2p 还没建, 更没 start**。此时读 `helia.libp2p` 会抛 NotStartedError
+ *   ('Not started')。必须先 `await helia.start()`: libp2p 的 mixin 在 helia.start()
+ *   内部才 `createLibp2p(opts)` 并 `libp2p.start()`。
+ *   旧代码只 `await createHelia({libp2p:{...}})` (await 一个同步值等于没 await) 就返回
+ *   ok:true → peerId 为空、status 报 'Not started'、底层错误被吞。
+ *   本模块现在: 建 → **await helia.start()** → 校验 `libp2p.status === 'started'` 且
+ *   peerId 非空 → 才算 ok:true; 任一步失败返回真实 message/stack。
+ *   (实测: 把已建好的 libp2p **实例**塞给 createHelia({libp2p: instance}) 会抛
+ *    `TypeError: createService is not a function` —— Helia 7 只接受 libp2p **配置**,
+ *    不接受实例。所以走「配置 + helia.start()」这条路。)
+ *
+ * ───────────────────────── 已知限制 (WebView 环境) ─────────────────────────
+ *   1) WebView 里 libp2p 若起不来 (例如 WKWebView 缺 WebSocket/缺 crypto 随机源、
+ *      circuit-relay 传输初始化失败), start 返回 **ok:false + 真实 error**, 但节点仍
+ *      会被装上 (currentNode 非空) —— **本地块能力 (heliaAddJson/heliaGetJson 的
+ *      blockstore 路径) 不受影响, 继续可用**。状态里看 `libp2pStatus` / `lastError`。
+ *   2) 手机只 listen `/p2p-circuit` (需公网中继才能拿到地址); 没有中继时 getMultiaddrs
+ *      为空是**正常**的, 不代表失败 —— 失败以 peerId 为空为准。
+ *   3) iOS 挂起后台 WebView 会掐断连接; 回前台重新 startMobileHelia()。
+ *
  * 全部导出函数**失败一律返回 { ok:false, error }**, 永不抛。
  */
 
-import type { Helia } from 'helia';
 import { CID } from 'multiformats/cid';
 import * as dagCbor from '@ipld/dag-cbor';
 import { computeCid, jsonClean, normalizeCid, defaultStorage, type IpfsStorage } from './mobile-ipfs.js';
@@ -42,6 +63,33 @@ const errMsg = (err: unknown): string => {
     return JSON.stringify(err);
   } catch {
     return String(err);
+  }
+};
+
+/**
+ * 比 errMsg 更"真"的错误串: `Name: message @ frame1 <- frame2 <- frame3`。
+ * libp2p/helia 的启动错误常常 message 为空或只有一句, stack 才有信息量 —— 透出到 UI/探针。
+ */
+const errDetail = (err: unknown): string => {
+  if (err instanceof Error) {
+    const head = err.name && err.message ? `${err.name}: ${err.message}` : err.name || err.message || 'Error';
+    const frames = (err.stack || '')
+      .split('\n')
+      .slice(1, 4)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return frames.length ? `${head} @ ${frames.join(' <- ')}` : head;
+  }
+  return errMsg(err);
+};
+
+/** 运行环境摘要 (只读、不抛) —— 启动失败时附在 error 里, 便于在 WebView 日志里定位环境差异 */
+const envHint = (): string => {
+  try {
+    const g = globalThis as any;
+    return `env{WebSocket:${typeof g.WebSocket},protocol:${g.location?.protocol ?? 'n/a'},crypto:${typeof g.crypto?.getRandomValues === 'function'}}`;
+  } catch {
+    return 'env{unknown}';
   }
 };
 
@@ -59,6 +107,8 @@ export interface MobileLibp2p {
   peerId?: { toString(): string };
   getPeers?(): Array<{ toString(): string }>;
   isStarted?(): boolean;
+  /** 真 libp2p 有 status: 'stopped' | 'starting' | 'started' | 'stopping' */
+  status?: string;
   dial?(addr: unknown, opts?: unknown): Promise<unknown>;
 }
 
@@ -110,6 +160,14 @@ export interface HeliaStatusResult {
   peers: string[];
   blockCount?: number;
   error?: string;
+  /**
+   * libp2p 真实状态字符串: 'started' / 'stopped' / 'starting' / 'stopping' /
+   * 'none'(节点没有 libp2p) / 'not-created'(libp2p 还没建, 读它会抛 NotStartedError) /
+   * `error: <msg>` (读属性就抛错时)。
+   */
+  libp2pStatus?: string;
+  /** 最近一次启动**真实**失败原因 (message/stack); 成功过则为空 */
+  lastError?: string;
 }
 
 export interface StartMobileHeliaConfig {
@@ -133,6 +191,31 @@ export interface SetEnabledResult extends OpResult {
 // ─────────────────────────── 常量 ───────────────────────────
 
 /** localStorage 开关 key (供设置页 UI 控) */
+// ---------------------------------------------------------------------------
+// 运行时垫片: iOS WebKit 缺失的 ES2024+ API (必须在 import('helia'/'@libp2p/*') 之前跑)
+//   实测证据 (模拟器 iPhone 15, 2026-09-11): libp2p 启动直接抛
+//     TypeError: Promise.withResolvers is not a function
+//   → libp2p 根本起不来 (status: not-created)。Helia 7 的 createHelia 是同步的,
+//   必须 await helia.start(), 而 start() 内部就走到了这个 API。
+//   本模块在 bundle 里是顶层语句, 加载即执行 → 保证早于任何动态 import。
+// ---------------------------------------------------------------------------
+(() => {
+  const P = Promise as any;
+  if (typeof P.withResolvers !== 'function') {
+    P.withResolvers = function withResolvers<T>() {
+      let resolve!: (value: T | PromiseLike<T>) => void;
+      let reject!: (reason?: unknown) => void;
+      const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+      return { promise, resolve, reject };
+    };
+  }
+  if (typeof P.try !== 'function') {
+    P.try = function promiseTry<T>(fn: (...a: any[]) => T, ...args: any[]) {
+      return new Promise<T>((res, rej) => { try { res(fn(...args)); } catch (e) { rej(e); } });
+    };
+  }
+})();
+
 export const HELIA_ENABLED_KEY = 'bolloon_helia_enabled';
 
 /** 手机只支持 websockets 传输: 地址必须带 /ws 或 /wss */
@@ -143,10 +226,12 @@ export const isWsCapableAddr = (addr: string): boolean =>
 
 let currentNode: MobileHeliaNode | null = null;
 let currentPeerId: string | null = null;
+/** 最近一次启动失败的真实原因 (给 UI/探针看) */
+let lastStartError: string | null = null;
 /** 并发 start 去重 (两次 startMobileHelia 同时进来只建一次) */
 let startPromise: Promise<CreateMobileHeliaResult> | null = null;
 
-/** 从节点上读 PeerID 字符串 (失败 undefined) */
+/** 从节点上读 PeerID 字符串 (失败 undefined)。真 helia 未 start 时读 libp2p 会抛 NotStartedError → undefined */
 function peerIdOf(node: MobileHeliaNode | null | undefined): string | undefined {
   try {
     const s = node?.libp2p?.peerId?.toString?.();
@@ -154,6 +239,51 @@ function peerIdOf(node: MobileHeliaNode | null | undefined): string | undefined 
   } catch {
     return undefined;
   }
+}
+
+/**
+ * 安全取 libp2p: 真 helia 在 helia.start() 之前 `helia.libp2p` 的 getter 会抛
+ * NotStartedError('Not started') —— 这里吞成 error 串而不是让整个流程炸掉。
+ */
+function libp2pOf(node: MobileHeliaNode | null | undefined): { libp2p?: MobileLibp2p; error?: string } {
+  try {
+    const l = node?.libp2p as MobileLibp2p | undefined;
+    return l ? { libp2p: l } : { error: 'libp2p 不存在' };
+  } catch (err) {
+    return { error: errMsg(err) };
+  }
+}
+
+/** libp2p 状态字符串 (永不抛) —— 供 heliaStatus / 启动校验使用 */
+function libp2pStatusOf(node: MobileHeliaNode | null | undefined): string {
+  const { libp2p, error } = libp2pOf(node);
+  if (!libp2p) return error ? `not-created(${error})` : 'none';
+  try {
+    if (typeof libp2p.status === 'string') return libp2p.status;
+    if (typeof libp2p.isStarted === 'function') return libp2p.isStarted() ? 'started' : 'stopped';
+    return 'unknown';
+  } catch (err) {
+    return `error:${errMsg(err)}`;
+  }
+}
+
+/**
+ * 启动后校验 (唯一"算成功"的标准): peerId 非空 **且** libp2p 真的 started。
+ * 不满足 → 返回真实原因 (message/stack + libp2p 状态), 交给调用方返回 ok:false。
+ */
+function verifyStarted(node: MobileHeliaNode): { peerId?: string; error?: string } {
+  const peerId = peerIdOf(node);
+  const lps = libp2pStatusOf(node);
+  if (!peerId) {
+    const { error } = libp2pOf(node);
+    return {
+      error: `libp2p 未就绪: PeerID 为空 (libp2pStatus=${lps}${error ? `, ${error}` : ''}, heliaStatus=${String((node as any).status ?? 'n/a')})`,
+    };
+  }
+  if (lps !== 'started' && lps !== 'unknown' && lps !== 'none') {
+    return { error: `libp2p 未启动: status=${lps} (PeerID=${peerId})` };
+  }
+  return { peerId };
 }
 
 /** 从 mobile-p2p 读已保存地址 (惰性 import, 避免无谓加载 libp2p); 失败返回 [] */
@@ -167,10 +297,11 @@ async function readSavedPeerAddrs(): Promise<string[]> {
   }
 }
 
-/** 拨种子地址 (逐个, 单个失败跳过)。假节点没有 libp2p.dial → 直接跳过。 */
+/** 拨种子地址 (逐个, 单个失败跳过)。假节点/未启动的 libp2p 没有可用的 dial → 直接跳过。 */
 async function dialSeeds(node: MobileHeliaNode, addrs: string[]): Promise<void> {
   if (!addrs.length) return;
-  const libp2p = node.libp2p;
+  // 用安全 getter: 真 helia 未 start 时读 node.libp2p 会抛 NotStartedError (旧代码就是在这里炸的)
+  const { libp2p } = libp2pOf(node);
   if (!libp2p || typeof libp2p.dial !== 'function') return;
   let multiaddr: ((s: string) => unknown) | null = null;
   try {
@@ -194,17 +325,38 @@ async function dialSeeds(node: MobileHeliaNode, addrs: string[]): Promise<void> 
  * 创建并 start 一个 Helia 节点 (transports: webSockets + circuitRelay; 无 tcp)。
  * 传 opts.node → 用注入节点 (测试); 否则动态 import('helia') 建真节点。
  * 失败**不抛**, 返回 { ok:false, error }。
+ *
+ * 成功标准 (严格): 节点真的 start 了 **且** peerId 非空。注意 Helia 7 的
+ * createHelia() 是同步的、返回未启动节点 —— 必须显式 `await helia.start()`,
+ * 否则 libp2p 根本不会被创建 (读 node.libp2p 直接抛 NotStartedError)。
+ * libp2p 起不来时仍把 node 返回给调用方 (本地块能力不受影响), 但 ok:false。
  */
 export async function createMobileHeliaNode(opts: CreateMobileHeliaOpts = {}): Promise<CreateMobileHeliaResult> {
   try {
     // 1) 注入节点 (测试 / 外部已建好的节点)
     if (opts.node) {
       const node = opts.node;
+      // 单独 try: start 失败也要把 node 交回去, 保住本地块能力
+      let startErr: unknown;
       if (typeof node.start === 'function' && node.status !== 'started') {
-        await node.start();
+        try {
+          await node.start();
+        } catch (err) {
+          startErr = err;
+        }
       }
+      // 即使 peerId 缺失也先拨种子 (拿不到 dial 会跳过), 再把真实结论返回
       await dialSeeds(node, (opts.seedAddrs || []).filter(isWsCapableAddr));
-      return { ok: true, node, peerId: peerIdOf(node) };
+      if (startErr !== undefined) {
+        return {
+          ok: false,
+          node,
+          error: `节点 start() 失败: ${errDetail(startErr)} (libp2pStatus=${libp2pStatusOf(node)})`,
+        };
+      }
+      const v = verifyStarted(node);
+      if (v.error) return { ok: false, node, error: v.error };
+      return { ok: true, node, peerId: v.peerId };
     }
 
     // 2) 真节点: 惰性加载 helia + 各 libp2p 插件
@@ -223,7 +375,9 @@ export async function createMobileHeliaNode(opts: CreateMobileHeliaOpts = {}): P
     }
 
     // 浏览器无 tcp → 只挂 webSockets + circuit-relay。blockstore 不传 → helia 默认内存。
+    // 手机不能 listen 公网地址: 只 listen /p2p-circuit (有中继才有地址, 没中继就是空 —— 正常)。
     const libp2pOptions: any = {
+      addresses: { listen: ['/p2p-circuit'] },
       transports: [webSockets(), circuitRelayTransport()],
       connectionEncrypters: [noise()],
       streamMuxers: [yamux()],
@@ -231,19 +385,59 @@ export async function createMobileHeliaNode(opts: CreateMobileHeliaOpts = {}): P
       ...(opts.libp2pOptions || {}),
     };
 
-    const helia: Helia = await heliaMod.createHelia({ libp2p: libp2pOptions } as any);
+    // Helia 7: createHelia 同步返回 status='stopped' 的节点 (libp2p 尚未创建)。
+    // 兼容旧版 (返回 Promise) —— await 一个非 Promise 值是安全的。
+    const helia: any = await (heliaMod.createHelia as any)({ libp2p: libp2pOptions });
     const node = helia as unknown as MobileHeliaNode;
 
+    // ★ 关键: 必须显式 start —— libp2p 的 mixin 在 helia.start() 内部才 createLibp2p + start。
+    //   这里单独 try 是为了不丢 node (start 失败也要保留本地块能力)。
+    let startErr: unknown;
+    if (typeof helia.start === 'function' && helia.status !== 'started') {
+      try {
+        await helia.start();
+      } catch (err) {
+        startErr = err;
+      }
+    }
+
+    if (startErr !== undefined) {
+      return {
+        ok: false,
+        node,
+        error: `helia.start()/libp2p 启动失败: ${errDetail(startErr)} (libp2pStatus=${libp2pStatusOf(node)}) ${envHint()}`,
+      };
+    }
+
+    // ★ 校验: peerId 必须有, libp2p 必须真 started —— 否则不算成功 (旧代码就是漏了这步)
+    const v = verifyStarted(node);
+    if (v.error) {
+      return { ok: false, node, error: `${v.error} ${envHint()}` };
+    }
+
     await dialSeeds(node, (opts.seedAddrs || []).filter(isWsCapableAddr));
-    return { ok: true, node, peerId: peerIdOf(node) };
+    return { ok: true, node, peerId: v.peerId };
   } catch (err) {
-    return { ok: false, error: errMsg(err) };
+    // 建节点/加载依赖阶段的真实错误 (message + stack)
+    return { ok: false, error: `建 Helia 节点失败: ${errDetail(err)} ${envHint()}` };
   }
 }
 
 // ─────────────────────────── 生命周期 (幂等) ───────────────────────────
 
 async function doStart(cfg: StartMobileHeliaConfig): Promise<CreateMobileHeliaResult> {
+  // 上一次没起来的半成品节点先清掉, 避免重复 start 时泄漏一个 live libp2p/datastore。
+  // (注入节点路径不清 —— 由调用方/测试自己管)
+  if (currentNode && !cfg.node) {
+    try {
+      await currentNode.stop?.();
+    } catch {
+      /* 半成品停不掉也不影响重建 */
+    }
+    currentNode = null;
+    currentPeerId = null;
+  }
+
   let seedAddrs = cfg.seedAddrs;
   if (seedAddrs === undefined) {
     // 没给种子 → 从 mobile-p2p 读已保存节点地址, 过滤掉 /ws 不支持的项
@@ -259,21 +453,35 @@ async function doStart(cfg: StartMobileHeliaConfig): Promise<CreateMobileHeliaRe
     node: cfg.node,
     dhtClient: cfg.dhtClient,
   });
-  if (!res.ok || !res.node) return res;
 
-  currentNode = res.node;
-  currentPeerId = res.peerId ?? null;
-  return { ok: true, node: res.node, peerId: currentPeerId ?? undefined };
+  // ★ 只要拿到了节点就先装上 —— libp2p 起不来也要保住本地块能力 (add/get 走 blockstore)。
+  if (res.node) {
+    currentNode = res.node;
+    currentPeerId = res.peerId ?? peerIdOf(res.node) ?? null;
+  }
+
+  // ★ 但只有「peerId 非空 + libp2p 真 started」才算成功, 否则透出真实错误。
+  if (!res.ok || !res.peerId) {
+    const error =
+      res.error ??
+      `libp2p 未就绪: PeerID 为空 (libp2pStatus=${libp2pStatusOf(res.node ?? currentNode)}) ${envHint()}`;
+    lastStartError = error;
+    return { ok: false, node: res.node, error };
+  }
+
+  lastStartError = null;
+  return { ok: true, node: res.node, peerId: res.peerId };
 }
 
 /**
- * 启动手机 Helia 节点。**幂等**: 已在运行直接返回现有节点, 不重建。
+ * 启动手机 Helia 节点。**幂等**: 已「真起来」(peerId 非空) 直接返回现有节点, 不重建。
+ * 半启动 (有节点没 peerId) 时会重试一次启动 (先停掉半成品)。
  * 无 seedAddrs → 自动用 mobile-p2p 已保存地址 (过滤非 /ws); 允许空列表启动
  * (能启动, 只是暂时没有对端)。
  */
 export async function startMobileHelia(cfg: StartMobileHeliaConfig = {}): Promise<CreateMobileHeliaResult> {
-  if (currentNode) {
-    return { ok: true, node: currentNode, peerId: currentPeerId ?? peerIdOf(currentNode) };
+  if (currentNode && currentPeerId) {
+    return { ok: true, node: currentNode, peerId: currentPeerId };
   }
   if (startPromise) return startPromise;
   startPromise = doStart(cfg);
@@ -289,6 +497,7 @@ export async function stopMobileHelia(): Promise<OpResult> {
   const node = currentNode;
   currentNode = null;
   currentPeerId = null;
+  lastStartError = null;
   if (!node) return { ok: true };
   try {
     if (typeof node.stop === 'function') await node.stop();
@@ -382,17 +591,33 @@ export async function heliaGetJson(cid: string): Promise<GetJsonResult> {
 
 // ─────────────────────────── 状态 ───────────────────────────
 
-/** 节点状态: running / PeerID / 已连接 peers / blockstore 块数。失败不抛。 */
+/**
+ * 节点状态: running / PeerID / 已连接 peers / blockstore 块数 / libp2p 真实状态 / 最近启动错误。
+ * 失败不抛。`running` 以 libp2p 真实状态为准 (有 libp2p 就必须 started); 没有 libp2p 的
+ * 纯本地块节点才退回看 node.status。
+ */
 export async function heliaStatus(): Promise<HeliaStatusResult> {
   const node = currentNode;
-  if (!node) return { ok: true, running: false, peers: [] };
+  if (!node) {
+    const out: HeliaStatusResult = {
+      ok: true,
+      running: false,
+      peers: [],
+      libp2pStatus: 'not-created',
+    };
+    if (lastStartError) out.lastError = lastStartError;
+    return out;
+  }
   try {
-    const running = node.status === 'started' || node.libp2p?.isStarted?.() === true;
+    const { libp2p, error: libp2pError } = libp2pOf(node);
+    const libp2pStatus = libp2pStatusOf(node);
     const peerId = currentPeerId ?? peerIdOf(node);
+    // 有 libp2p → 以它的状态为准; 没有 libp2p (纯本地块/假节点) → 看 node.status
+    const running = libp2pError ? false : libp2p ? libp2pStatus === 'started' : node.status === 'started';
 
     let peers: string[] = [];
     try {
-      const list = node.libp2p?.getPeers?.() || [];
+      const list = libp2p?.getPeers?.() || [];
       peers = list.map((p) => (p && typeof p.toString === 'function' ? p.toString() : String(p)));
     } catch {
       peers = [];
@@ -409,12 +634,23 @@ export async function heliaStatus(): Promise<HeliaStatusResult> {
       }
     }
 
-    const out: HeliaStatusResult = { ok: true, running, peers };
+    const out: HeliaStatusResult = { ok: true, running, peers, libp2pStatus };
     if (peerId) out.peerId = peerId;
     if (blockCount !== undefined) out.blockCount = blockCount;
+    if (lastStartError) out.lastError = lastStartError;
+    // 能拿到 libp2p 但状态异常时, 也把原因写进 error 供 UI 直接显示
+    if (!peerId && libp2pError) out.error = `libp2p 未就绪: ${libp2pError}`;
     return out;
   } catch (err) {
-    return { ok: false, running: false, peers: [], error: errMsg(err) };
+    const out: HeliaStatusResult = {
+      ok: false,
+      running: false,
+      peers: [],
+      libp2pStatus: libp2pStatusOf(node),
+      error: errDetail(err),
+    };
+    if (lastStartError) out.lastError = lastStartError;
+    return out;
   }
 }
 

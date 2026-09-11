@@ -8,6 +8,9 @@
  *       ④addJson 失败不抛 ⑤getJson 本地命中 from='local' ⑥本地无 → 走网络
  *       ⑦网络也取不到 → ok:false ⑧status 返回 peers/blockCount ⑨stop 后 running=false
  *       ⑩enabled 开关持久化 (+ 非 /ws 地址过滤 / 非法 cid 拒绝)
+ *       ⑪libp2p 启动失败 → ok:false + 真实 error (本地块能力不回退)   ← 回归 bug
+ *       ⑫无 peerId 不算成功 ⑬heliaStatus 透出 libp2pStatus/lastError
+ *       ⑭真 helia 未 start 语义 (libp2p getter 抛 NotStartedError) 被明确透出
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -307,5 +310,145 @@ describe('heliaEnabled 开关与地址过滤', () => {
     expect(isWsCapableAddr('/ip4/192.168.1.5/tcp/4001')).toBe(false);
     expect(isWsCapableAddr('/ip4/1.2.3.4/udp/4001/quic-v1')).toBe(false);
     expect(isWsCapableAddr('')).toBe(false);
+  });
+});
+
+// ─────────── ⑪⑫⑬⑭ libp2p 真启动校验 (回归: start 返回 ok=true 但 peerId 为空) ───────────
+
+/** 只有本地 blockstore 的骨架节点 (可选注入 libp2p / start) */
+function makeBlockOnlyNode(extra: Partial<MobileHeliaNode> = {}): {
+  node: MobileHeliaNode;
+  local: Map<string, Uint8Array>;
+} {
+  const local = new Map<string, Uint8Array>();
+  const node: MobileHeliaNode = {
+    status: 'stopped',
+    blockstore: {
+      put: async (cid: unknown, bytes: Uint8Array) => {
+        local.set(String(cid), bytes);
+        return cid;
+      },
+      has: async (cid: unknown) => local.has(String(cid)),
+      get: (cid: unknown) =>
+        (async function* () {
+          const k = String(cid);
+          if (!local.has(k)) throw new Error('block not found (local only)');
+          yield local.get(k) as Uint8Array;
+        })(),
+      getAll: async function* () {
+        for (const [c] of local) yield { cid: c };
+      },
+    },
+    ...extra,
+  } as MobileHeliaNode;
+  return { node, local };
+}
+
+describe('libp2p 真启动校验 (透出真实错误 / peerId 必需)', () => {
+  it('⑪ libp2p 启动失败 → ok:false + 真实 error, 且本地块能力不回退', async () => {
+    const { node } = makeBlockOnlyNode({
+      libp2p: {
+        peerId: { toString: () => '12D3KooShouldNotCount' },
+        status: 'stopped',
+        isStarted: () => false,
+        getPeers: () => [],
+      },
+      start: async () => {
+        throw new Error('libp2p start 失败: WebSocket is not defined');
+      },
+    });
+
+    const res = await startMobileHelia({ seedAddrs: [], node });
+    expect(res.ok).toBe(false);
+    expect(res.error).toBeTruthy();
+    // 真实 message 必须透出 (旧代码被 doStart 吞掉)
+    expect(res.error).toMatch(/WebSocket is not defined/);
+    expect(res.peerId).toBeUndefined();
+
+    // 需求 5: libp2p 起不来 → 明确报错, 但本地块能力继续工作
+    const add = await heliaAddJson({ still: 'local' });
+    expect(add.ok).toBe(true);
+    const got = await heliaGetJson(add.cid as string);
+    expect(got.ok).toBe(true);
+    expect(got.from).toBe('local');
+    expect(got.value).toEqual({ still: 'local' });
+
+    const st = await heliaStatus();
+    expect(st.running).toBe(false);
+    expect(st.lastError).toMatch(/WebSocket is not defined/);
+  });
+
+  it('⑫ 无 peerId 不算成功 (node.status=started 也不行), 本地能力保留', async () => {
+    const { node } = makeBlockOnlyNode({
+      status: 'started',
+      // libp2p 存在且 started, 但**没有 peerId** —— 旧代码会返回 ok:true
+      libp2p: { status: 'started', isStarted: () => true, getPeers: () => [] },
+    });
+
+    const res = await startMobileHelia({ seedAddrs: [], node });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/PeerID 为空/);
+    expect(res.peerId).toBeUndefined();
+
+    const add = await heliaAddJson({ x: 1 });
+    expect(add.ok).toBe(true);
+    expect((await heliaGetJson(add.cid as string)).ok).toBe(true);
+  });
+
+  it('⑬ heliaStatus 透出 libp2pStatus / lastError', async () => {
+    // 成功启动 → libp2pStatus='started', 没有 lastError
+    const fake = makeFakeNode();
+    const ok = await startMobileHelia({ seedAddrs: [], node: fake.node });
+    expect(ok.ok).toBe(true);
+
+    const good = await heliaStatus();
+    expect(good.libp2pStatus).toBe('started');
+    expect(good.lastError).toBeUndefined();
+
+    // 起不来的节点 → lastError 是真实原因, libp2pStatus 反映真实状态
+    await stopMobileHelia();
+    const { node } = makeBlockOnlyNode({
+      libp2p: {
+        peerId: { toString: () => '12D3KooBroken' },
+        status: 'stopped',
+        isStarted: () => false,
+        getPeers: () => [],
+      },
+      start: async () => {
+        throw new Error('relay transport init failed');
+      },
+    });
+    const bad = await startMobileHelia({ seedAddrs: [], node });
+    expect(bad.ok).toBe(false);
+
+    const st = await heliaStatus();
+    expect(st.ok).toBe(true);
+    expect(st.running).toBe(false);
+    expect(st.libp2pStatus).toBe('stopped');
+    expect(st.lastError).toMatch(/relay transport init failed/);
+  });
+
+  it('⑭ 真 helia 未 start 语义: libp2p getter 抛 NotStartedError → 明确错误, 不再静默 ok:true', async () => {
+    // 复刻 Helia 7 未 start 节点的真实行为: 读 node.libp2p 直接抛 (消息就是 'Not started')
+    const { node } = makeBlockOnlyNode({});
+    Object.defineProperty(node, 'libp2p', {
+      configurable: true,
+      get() {
+        throw new Error('Not started');
+      },
+    });
+
+    const res = await startMobileHelia({ seedAddrs: [], node });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/Not started/);
+
+    const st = await heliaStatus();
+    expect(st.running).toBe(false);
+    expect(st.libp2pStatus).toMatch(/Not started/);
+    expect(st.error).toMatch(/Not started/);
+
+    // 本地块能力照样在
+    const add = await heliaAddJson({ after: 'not-started' });
+    expect(add.ok).toBe(true);
   });
 });

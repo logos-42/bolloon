@@ -2076,3 +2076,22 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
   - ❌ **libp2p 节点没真正起来**: `start` 返回 `ok=true` 但 `peerId` 为空, `status` 报 `running=false / err=Not started`. 定位在 `doStart()` 把底层启动异常**吞掉了**(返回 ok 却无 peerId) → 待修: 透出真实错误 + 确保 libp2p 真正 start.
 - 约束 (已写进模块注释与 UI 文案): WebView 不能 listen(只能拨出, 拨出连接双向可服务块); iOS 进后台被挂起 → 节点只在前台在线, 不做 24/7.
 - 测试: mobile-helia 13 项全绿; tsc 0.
+
+### 追加 (2026-09-08): 手机端真 IPFS 节点跑通 ✅ — 真因是 iOS WebKit 缺 ES2024 API (影响面比 IPFS 大)
+
+**最终实测 (模拟器 iPhone 15, 探针直调 core)**:
+```
+start: ok=true   peerId=12D3KooWETWrwiEr2r9wp57Y7tJvxRtdHP81MrgQVkZ3TYUiqo9X
+status: running=true   libp2p=started   peers=3   blocks=0   lastErr=-
+```
+→ 手机 WebView 内**真的起了 IPFS/libp2p 节点**: 有自己的 PeerID、libp2p 已 start、**已连上 3 个对端**。之前已验证的本地块存取 (CID bafyreif…, from=local) 继续可用。
+
+**两个真因 (都不是猜的, 逐层剥出来的)**:
+1. **Helia 7 的 `createHelia()` 是同步函数**, 返回 `status='stopped'` 的节点, **不会创建 libp2p**; 此时读 `helia.libp2p` 直接抛 `NotStartedError: 'Not started'`. 必须 `await helia.start()`. 旧代码 `await createHelia(...)` (await 同步值) → 返回 ok:true 但 peerId 空。已在 Node 里用旧文件逐字复现该输出。
+2. **`Promise.withResolvers is not a function`** —— ES2024 API, **本机 iOS(WKWebView)里没有** → `helia.start()` 内部走到它直接 TypeError → libp2p `not-created`. 修法: 模块顶层加运行时垫片 (`Promise.withResolvers` + `Promise.try`), 因模块在 bundle 里是顶层语句, **加载即执行, 早于任何动态 import**。
+
+**影响面 (重要)**: 第 2 条不只是 IPFS 的问题 —— 手机上任何走 libp2p 的能力 (含 `mobile-p2p` 的 P2P 入网/自动社交) 都可能因为同一 API 缺失而从未真正启动过。垫片放在 `mobile-helia.ts` 顶层、与 `mobile-p2p` 同处一个 IIFE bundle → 一并覆盖。**此前 wiki 里"P2P 真拨通未验证"的 blocker, 真因大概率就是这条**。
+
+**Node 侧交叉验证 (同一份真实模块)**: `startMobileHelia → {ok:true, peerId:'12D3KooWSRSP6ThzkeBetszAAQLCPi8jnMD8KFmAy7LpQwBnvWxq'}`, `helaStatus.running=true`, add/get 正常 → 代码路径本身正确, 差异全在 WebView 环境。
+
+**模块变化**: `mobile-helia.ts` 440→651 行 (+垫片), 关键点: 错误不再吞 (失败 `{ok:false,error:真实message+栈+env}`)、成功标准=peerId 非空且 libp2p started、`heliaStatus` 增加 `libp2pStatus`/`lastError` 便于真机诊断、libp2p 启动失败时**本地块能力不回退**。测试 mobile-helia **17/17** (原 13 未破 + 新 4), tsc 0, 浏览器 bundle 0 node 内置。
