@@ -1164,11 +1164,18 @@
       loadP2PStatus();
     });
     box.appendChild(btn);
+    // 独立入网: 手机可拨任意可拨节点 (不必非电脑端)
+    const addNode = document.createElement('div');
+    addNode.className = 'list-item';
+    addNode.id = 'p2p-add-node';
+    addNode.innerHTML = `<span class="list-icon">${ICONS.globe}</span><span style="flex:1">添加节点地址 (独立入网)</span>`;
+    addNode.addEventListener('click', () => addFriendManual());
+    box.appendChild(addNode);
     const hint = document.createElement('div');
     hint.style.cssText = 'padding:10px 12px;font-size:12px;color:var(--text-secondary);line-height:1.6';
-    hint.textContent = !url
-      ? '未配置电脑端地址 → 设置 → 电脑端同步。手机端在 WebView 里不能自己监听端口，必须拨入电脑端节点（或中继）才能加入 P2P 网络。'
-      : (conn ? (peers ? '已连上 ' + peers + ' 个对端，可以收发消息。' : '已连上电脑端节点，等待其他对端…') : ('未连接：' + ((d && d.error) || '点上面按钮连接电脑端')));
+    hint.textContent = !url && !addrs.length
+      ? '手机在 WebView 里不能自己监听端口 → 需要「拨入」至少一个节点才能进网。电脑端是**可选**的：点「添加节点地址」填任意可拨节点的 multiaddr (如 /ip4/1.2.3.4/tcp/4001/ws)，手机就能独立入网并从该节点收发服务请求。'
+      : (conn ? (peers ? '已连上 ' + peers + ' 个对端，可收发消息/服务请求（手机拨入的连接是双向的，所以别人也能调用你的服务）。' : '已连上节点，等待其他对端…') : ('未连接：' + ((d && d.error) || '点「连接电脑端」或「添加节点地址」')));
     box.appendChild(hint);
   }
 
