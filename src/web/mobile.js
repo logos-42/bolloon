@@ -75,7 +75,7 @@
     $('#topbar-title').textContent = TITLES[tab] || '会话';
     const cs = $('#btn-create-session'); if (cs) cs.hidden = tab !== 'main';
     const ta = $('#topbar-actions'); if (ta) ta.hidden = tab === 'me';   // 我 页不显示 加号/刷新
-    if (tab === 'network') { loadContacts(); loadMcpTools(); loadApprovals(); loadNetMembers(); }
+    if (tab === 'network') { loadContacts(); loadMcpTools(); loadApprovals(); loadNetMembers(); loadP2PStatus(); }
     if (tab === 'main') { loadAgentCovers(); }
     window.__mobileTouch?.('tab', tab);
   }
@@ -1048,6 +1048,49 @@
     setTimeout(() => t.remove(), 1600);
   }
 
+  // === P2P 连接状态 (手机 WebView 不能 listen → 必须主动拨入电脑端) ===
+  async function loadP2PStatus() {
+    const box = $('#p2p-status');
+    if (!box) return;
+    let net = {}; let url = '';
+    try { net = await api.get('/api/network/status'); } catch (e) {}
+    try { const u = await api.get('/api/desktop/url'); url = (u && u.url) || ''; } catch (e) {}
+    let d = { ok: false, addrs: [], error: '' };
+    try { d = await api.get('/api/network/desktop-addrs'); } catch (e) {}
+    const conn = !!(net && net.connected);
+    const peers = ((net && net.peerIds) || []).length;
+    const nodeId = (net && net.nodeId) || '';
+    const addrs = (d && d.addrs) || [];
+    const row = (k, v, small) => `<div class="list-item"><span style="flex:1">${k}</span><span style="font-size:${small ? 11 : 13}px;color:var(--text-secondary);text-align:right;word-break:break-all;max-width:60%">${escapeHtml(v)}</span></div>`;
+    let html = '';
+    html += row('状态', conn ? '已启动' : '未启动');
+    if (nodeId) html += row('本机节点', nodeId.slice(0, 20) + '…', true);
+    html += row('已连对端', peers + ' 个');
+    html += row('电脑端', url || '未配置', true);
+    if (addrs.length) html += row('可拨地址', addrs[0], true);
+    box.innerHTML = html;
+    // 连接/重连按钮 + 人话提示
+    const btn = document.createElement('div');
+    btn.className = 'list-item';
+    btn.id = 'p2p-connect';
+    btn.innerHTML = `<span class="list-icon">${ICONS.globe}</span><span style="flex:1">${conn ? '重新连接电脑端' : '连接电脑端'}</span>`;
+    btn.addEventListener('click', async () => {
+      showToast('正在连接电脑端…');
+      try {
+        const r = await api.post('/api/network/connect', {});
+        showToast(r && r.connected ? 'P2P 已启动' : '没能连上：确认电脑端在运行、同网段、且以 BOLLOON_HOST=0.0.0.0 启动');
+      } catch (e) { showToast('连接失败: ' + (e.message || e)); }
+      loadP2PStatus();
+    });
+    box.appendChild(btn);
+    const hint = document.createElement('div');
+    hint.style.cssText = 'padding:10px 12px;font-size:12px;color:var(--text-secondary);line-height:1.6';
+    hint.textContent = !url
+      ? '未配置电脑端地址 → 设置 → 电脑端同步。手机端在 WebView 里不能自己监听端口，必须拨入电脑端节点（或中继）才能加入 P2P 网络。'
+      : (conn ? (peers ? '已连上 ' + peers + ' 个对端，可以收发消息。' : '已连上电脑端节点，等待其他对端…') : ('未连接：' + ((d && d.error) || '点上面按钮连接电脑端')));
+    box.appendChild(hint);
+  }
+
   // === 判断力 API (电脑端同步下来的判断库) ===
   async function openJudgments() {
     const page = document.createElement('div');
@@ -1468,9 +1511,14 @@
       alert('添加失败: ' + (e.message || e));
     }
   }
+  // 扫码统一入口: 真机用「拍照/选图」走 jsQR 管线 (免原生插件, iOS 也可用)
+  let _qrMode = 'join';   // 'join' = 入网 | 'friend' = 加好友
   function addFriendScan() {
     hideSheet('#addfriend-sheet');
-    alert('扫码添加 (真机可用相机扫码)');
+    _qrMode = 'friend';
+    const inp = $('#qr-scan-input');
+    if (!inp) { alert('此设备不支持扫码'); return; }
+    inp.click();
   }
 
   // === 复制 (助记词/私钥/地址 快捷复制; 全局委托 [data-copy]) ===
@@ -1580,6 +1628,19 @@
           const id = c2.getImageData(0, 0, c.width, c.height);
           const text = await (window.BolloonCore && window.BolloonCore.qr && window.BolloonCore.qr.decode(id.data, id.width, id.height));
           if (!text) { alert('未识别到二维码 (试试 /net qr 重新出码)'); return; }
+          // 加好友模式: multiaddr → peers/add; 其他内容(入网链接) → gateway.join
+          if (_qrMode === 'friend') {
+            _qrMode = 'join';
+            if (/^\/(ip4|ip6|dns|dns4|dns6|p2p)\//.test(String(text).trim())) {
+              const r = await api.post('/api/peers/add', { addr: String(text).trim() });
+              alert(r && r.ok ? (r.connected ? '已连接好友' : '已记录好友地址, 连接中…') : ((r && r.error) || '添加失败'));
+            } else {
+              const r2 = await (window.BolloonCore && window.BolloonCore.gateway && window.BolloonCore.gateway.join(text));
+              alert(r2 ? (r2.output || '已处理') : '这个二维码不是好友地址 (也不是入网链接)');
+            }
+            if (currentTab === 'network') { loadContacts(); loadP2PStatus(); }
+            return;
+          }
           const r = await (window.BolloonCore && window.BolloonCore.gateway && window.BolloonCore.gateway.join(text));
           alert(r ? (r.output || '已入网') : 'gateway.join 不可用');
           loadNetMembers();

@@ -372,6 +372,27 @@ export class P2PNetwork {
     };
   }
 
+  /**
+   * 手机端(WebView)连桌面用的 ws 多地址 —— 手机不能 listen, 只能主动拨入,
+   * 所以必须把桌面的 /ws 地址给手机 (WebSocket 传输, 见 start() 的 listen)。
+   */
+  getWsMultiaddrs(): string[] {
+    if (!this.node) return [];
+    try {
+      return this.node
+        .getMultiaddrs()
+        .map((a: any) => a.toString())
+        .filter((a: string) => a.endsWith('/ws'));
+    } catch {
+      return [];
+    }
+  }
+
+  /** 桌面 P2P 节点 ID (手机端识别对端) */
+  getNodePeerId(): string {
+    try { return this.node ? this.node.peerId.toString() : ''; } catch { return ''; }
+  }
+
   private async checkNatStatus(): Promise<void> {
     if (!this.node) return;
 

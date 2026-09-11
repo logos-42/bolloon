@@ -117,4 +117,39 @@ export async function syncFromDesktop(baseUrl?: string, opts: { fetchImpl?: type
   }
 }
 
-export default { getDesktopUrl, setDesktopUrl, getLastSnapshot, getCachedJudgments, getSyncStatus, syncFromDesktop };
+/**
+ * 电脑端可拨的 P2P ws 地址。
+ *   手机(WebView)不能 listen → 只能主动拨入桌面节点; 桌面 listen 在 0.0.0.0:<随机端口>/ws,
+ *   所以要把 0.0.0.0/127.0.0.1 改写成手机实际访问的桌面主机(端口保持桌面真实端口)。
+ */
+export async function desktopP2PAddrs(opts: { fetchImpl?: typeof fetch } = {}): Promise<{ ok: boolean; peerId?: string; addrs: string[]; error?: string }> {
+  const base = getDesktopUrl();
+  if (!base) return { ok: false, addrs: [], error: '未配置电脑端地址 (设置 → 电脑端同步)' };
+  const f = opts.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+  if (!f) return { ok: false, addrs: [], error: '当前环境无 fetch' };
+  try {
+    let host = '';
+    try { host = new URL(base).hostname; } catch { /* 忽略 */ }
+    const r = await f(`${base.replace(/\/+$/, '')}/api/p2p/mobile-connect`);
+    if (!r.ok) return { ok: false, addrs: [], error: `电脑端返回 ${r.status}` };
+    const j: any = await r.json();
+    const raw: string[] = Array.isArray(j?.wsAddrs) ? j.wsAddrs : [];
+    const addrs = raw.map((a) => {
+      let out = a;
+      if (host) out = out.replace(/\/ip4\/(0\.0\.0\.0|127\.0\.0\.1)\//, `/ip4/${host}/`);
+      out = out.replace(/\/ip6\/::1\//, `/ip4/${host || '127.0.0.1'}/`);
+      return out;
+    }).filter((a) => ip4Of(a) && !/\/ip4\/(0\.0\.0\.0|127\.0\.0\.1)\//.test(a));
+    return { ok: j?.ok !== false, peerId: j?.peerId || '', addrs: Array.from(new Set(addrs)) };
+  } catch (e: any) {
+    return { ok: false, addrs: [], error: e?.message || String(e) };
+  }
+}
+
+/** 取多地址里的 ip4 (无则空串) */
+function ip4Of(addr: string): string {
+  const m = /\/ip4\/([^/]+)\//.exec(String(addr || ''));
+  return m ? m[1] : '';
+}
+
+export default { getDesktopUrl, setDesktopUrl, getLastSnapshot, getCachedJudgments, getSyncStatus, syncFromDesktop, replicateOrbit, desktopP2PAddrs };

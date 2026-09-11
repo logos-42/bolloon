@@ -2019,3 +2019,12 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - **结论 (签名不可绕过)**: iOS 签名链是硬性的 —— 无有效签名/描述文件的 ipa 在未越狱设备上装不了. "任意用户自助安装"的合法路径只有: 用户自己签名 (AltStore/SideStore/自编译) 或 付费账号的 Ad Hoc/TestFlight/App Store. 共享企业证书/破解工具属灰产 (随时吊销+安全风险), 不接入站点.
 - **给朋友装**: Ad Hoc 只需**收 UDID 字符串**登记 (不需实体设备在手), ≤100 台/年, 用 `METHOD=adhoc bash scripts/ios-release.sh`; TestFlight 需 Xcode 26+iOS 26 SDK (2026-04-28 起强制) → 本机 macOS 13.7.8 做不到, 需升 macOS 或云 Mac 构建.
 - **git 坑**: bolloon-UI 推送报 `unexpected disconnect while reading sideband packet` → `git config http.version HTTP/1.1` 后推送成功.
+
+### 追加 (2026-09-08): 手机端接入 P2P 智能体协议 (修三个 blocker) + 协议路线澄清
+
+- **手机端 P2P 连不上 (真因)**: 手机在 WebView 里**不能 listen**, 只能主动拨入; 而桌面 libp2p 虽已开 websockets 传输 (`src/network/p2p.ts` listen `/ip4/0.0.0.0/tcp/0/ws`), **端口随机且没告诉手机** → 手机节点起来也永远没有连接.
+  - 修: ① 桌面 `P2PNetwork.getWsMultiaddrs()/getNodePeerId()` + 新接口 `GET /api/p2p/mobile-connect` (返回可拨的 /ws 地址) ② 手机 `mobile-sync.desktopP2PAddrs()` 拉取并把 `0.0.0.0/127.0.0.1` 改写成手机实际访问的桌面主机 (**端口保持桌面真实随机端口**) ③ `core.network.start()` 无种子时自动向电脑端要地址 ④ 网络页新增「P2P 连接」区块: 状态/本机节点/已连对端/电脑端/可拨地址 + 「连接电脑端」按钮 + 人话提示.
+- **真机扫码没接入 (真因)**: `addFriendScan()` 原来只是 `alert('扫码添加 (真机可用相机扫码)')` 空壳 (入网扫码是真的). 修: 与入网扫码合成一条 jsQR 管线 (拍照/选图 → canvas → BolloonCore.qr.decode), 按模式分流: multiaddr → `/api/peers/add`; 入网链接 → `gateway.join`.
+- **"看不懂的提示"**: `PhoneControlResult` 增 `hint` 字段, 用大白话说明为什么是本地规则模式/失败原因与下一步 (①电脑端没运行/不同网段 ②没配 LLM API ③这台手机没接原生执行能力: iOS 不支持原生操控, Android 需无障碍服务).
+- **协议路线澄清 (用户明确)**: 要按**自己的协议**实现, 不是照搬 x402/AP2. 权威文档 = `docs/wiki/agent-economic-protocol.md` (Agent Economic Loop: IDENTITY→DISCOVERY→NEGOTIATION→EXECUTION→PROOF→PAYMENT→REPUTATION; E1 Registry / E2 x402 闭环 / E3 Policy Engine / E4 Reputation; M1-M4 桌面端已实现 ✅) + DIAP (@diap/sdk = Decentralized Intelligent Agent Protocol, 身份/ZKP/libp2p 层) + `docs/agent-communication.md`.
+- 待接: 手机端按协议补「自动社交」(服务注册+心跳+发现) 与「资源交易工作流」(402→策略→支付→结果→信誉), 模块交由子智能体编写后统一接线.

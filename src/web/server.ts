@@ -2918,6 +2918,22 @@ ${goalDesc}
     }
   });
 
+  // 2026-09-08: 手机端 P2P 拨入信息 — 手机(WebView)不能 listen, 只能主动拨桌面的 /ws 地址
+  app.get('/api/p2p/mobile-connect', async (_req, res) => {
+    try {
+      const { p2pNetwork } = await import('../network/p2p.js');
+      const wsAddrs = p2pNetwork.getWsMultiaddrs();
+      res.json({
+        ok: true,
+        peerId: p2pNetwork.getNodePeerId(),
+        wsAddrs,
+        hint: wsAddrs.length ? '手机端 dial 这些地址即可连上桌面 P2P' : '桌面 P2P 未启动或未监听 ws',
+      });
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e?.message });
+    }
+  });
+
   // 2026-09-08: 手机端 OrbitDB 库级复制 — 列可复制 store / 读全量条目 / 合并写回
   app.get('/api/orbitdb/stores', async (_req, res) => {
     try {

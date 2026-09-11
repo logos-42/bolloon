@@ -331,6 +331,8 @@ export interface PhoneControlResult {
   stepCount?: number;
   did?: string;
   mode: 'native' | 'fallback';
+  /** 人话说明: 为什么是这种执行方式 / 下一步该做什么 (避免用户看到技术词) */
+  hint?: string;
 }
 
 /** 手机端执行控制指令 (phone.agent.run) — 手机自治执行, 不经电脑 */
@@ -356,11 +358,17 @@ export async function runPhoneAgent(goal: string): Promise<PhoneControlResult> {
         stepCount: r?.stepCount,
       };
     }
-    // 离线 fallback: 内置规则 (不依赖 LLM/无障碍, 手机仍自治可用)
+    // 离线 fallback: 内置规则 (不依赖 LLM/原生执行能力, 手机仍自治可用)
     const reply = await runLocalAgent(goal);
-    return { ok: true, goal, result: reply, did: id.did, mode: 'fallback' };
+    return {
+      ok: true, goal, result: reply, did: id.did, mode: 'fallback',
+      hint: '当前是「手机本地规则」模式：这台手机上还没接原生执行能力 (iOS 暂不支持原生操控 App; Android 需开无障碍服务)，所以只能用内置规则回复。连上电脑端后，任务可以交给电脑端 Agent 真正执行。',
+    };
   } catch (e: any) {
-    return { ok: false, goal, error: String(e?.message || e).slice(0, 100), did: id.did, mode: native ? 'native' : 'fallback' };
+    return {
+      ok: false, goal, error: String(e?.message || e).slice(0, 100), did: id.did, mode: native ? 'native' : 'fallback',
+      hint: '任务没跑起来。常见原因：① 电脑端没在运行或不同网段 (设置 → 电脑端同步 里配置/测试) ② 没配 LLM API (设置 → API 配置) ③ 这台手机没接原生执行能力 (iOS 不支持原生操控, Android 需无障碍服务)。',
+    };
   }
 }
 

@@ -86,6 +86,7 @@ export const core = {
     if (p === '/api/payments/pending') return () => core.payments.pending();
     if (p === '/api/llm-config') return () => core.data.getLlmConfig();
     if (p === '/api/network/status') return () => core.network.status();
+    if (p === '/api/network/desktop-addrs') return () => core.network.desktopAddrs();
     if (p === '/api/wallet/status') return () => core.wallet.status();
     if (p === '/api/wallet/balance') return () => core.wallet.balance();
     // 电脑端数据同步 (登录后/手动): 快照 + 状态 + 判断力缓存
@@ -189,6 +190,7 @@ export const core = {
       const b = body || {};
       return () => core.desktop.setUrl(String(b.url || ''));
     }
+    if (p === '/api/network/connect') return () => core.network.connect();
     if (p === '/api/desktop/sync') return () => core.desktop.sync();
     if (p === '/api/orbit/put') {
       const b = body || {};
@@ -208,6 +210,10 @@ export const core = {
 
   /** P2P 网络 — 启动浏览器 libp2p 节点, 并注入 data/agent 两层传输 */
   network: {
+    /** 电脑端可拨的 P2P ws 地址 (手机不能 listen, 展示+连接用) */
+    async desktopAddrs(): Promise<any> { const s = await import('./mobile-sync.js'); return s.desktopP2PAddrs(); },
+    /** 连接: start() 内部会自动向电脑端要地址 (无种子时) */
+    async connect(): Promise<any> { return core.network.start(); },
     async start(seedAddrs?: string[]): Promise<any> {
       try {
         const { startMobileP2P, getMobileP2PState, onMobileP2PMessage } = await import('./mobile-p2p.js');
@@ -215,7 +221,18 @@ export const core = {
         const dataLayer = await import('./mobile-data.js');
 
         const id = await agentLayer.ensureIdentity();
-        const st = await startMobileP2P({ seedAddrs, ownDid: id.did });
+        // 手机(WebView)不能 listen → 没有种子时必须向电脑端要可拨地址, 否则节点起来了也没有任何连接
+        let seeds = seedAddrs && seedAddrs.length ? seedAddrs : undefined;
+        let desktopPeer = '';
+        if (!seeds) {
+          try {
+            const sync = await import('./mobile-sync.js');
+            const d = await sync.desktopP2PAddrs();
+            if (d.ok && d.addrs.length) { seeds = d.addrs; desktopPeer = d.peerId || ''; }
+          } catch { /* 电脑端不可达 → 单机模式 */ }
+        }
+        const st = await startMobileP2P({ seedAddrs: seeds, ownDid: id.did });
+        if (desktopPeer) busBroadcast({ type: 'p2p-desktop', peerId: desktopPeer, addrs: seeds || [] });
 
         // 注入传输: data/agent 两层用同一发送通道
         dataLayer.setDataTransport((type, payload, peerId) => sendViaP2P(type, payload, peerId));
