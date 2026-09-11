@@ -2124,3 +2124,12 @@ status: running=true   libp2p=started   peers=3   blocks=0   lastErr=-
 - **但 WebView 里挂**: 探针实测 `start ok=false  err=SDK Helia 启动失败: NotStartedError: Not started @get@mobile-core.js <- HeliaIpfsClient`, `status run=false libp2p=not-created`, `add cid=-`, `get from=network` —— 即 SDK 的 `HeliaIpfsClient` **在 `await helia.start()` 之前就读 `helia.libp2p`/peerId 的 getter** (与我们在 bolloon 自实现里修过的 `NotStartedError` 同一类错), 且把原本可用的本地块存取也带崩。同时 SDK 工厂栈缺 circuit-relay/`listen:/p2p-circuit`(手机唯一入站途径)。
 - **处置**: 回滚这 4 个文件到上一版(`mobile-ipfs.ts` / `mobile-helia.ts` / `mobile-ipfs.test.ts` / `package.json`+lock), 移除新增 `promise-shim.ts`。回滚后复验通过: `start ok=true peerId=12D3KooWLDfVp4aFFKz3tMrZuhu55HEtg7TtK5u6iSCoURiXfm79`, `libp2p=started`, `add cid=bafyreig5my…5mnka`(与桌面逐字节一致), `get from=local`; 网络页 P2P `已启动`。
 - **教训**: Node 侧全绿**不能**推出 WebView 可用 —— 必须真机探针验证; 而且改依赖前先确认新路径的能力面(中继/入站地址)不回退。
+
+**C. iOS 冷启动深链修通 (`simctl openurl bolloon://...` 内容真正进 WebView)** (2026-09-11)
+- **症状**: App 先 `terminate` 再 `openurl`, App 被拉前台且不崩, 但探针 `pending=(空)`、无 `[收到事件]` —— 深链内容根本没进 WebView。
+- **两个根因**: ① 冷启动时系统只把 URL 放进 `launchOptions[.url]`, **不走** `application(_:open:options:)`, Capacitor 的 `ApplicationDelegateProxy.shared.lastURL` 不记录它 → `drainLastURL()` 拿不到; ② 即便投递, 冷启动时 WKWebView 还没建好 / 页面导航会冲掉注入的 `window.__bolloonPendingDeepLink`。
+- **修复 (Swift only, 未动 WebView 路由/JS)**:
+  - `AppDelegate.application(_:didFinishLaunchingWithOptions:)`: 读 `launchOptions[.url]` → `BolloonURLInbox.shared.handleColdLaunch(url:)`; `application(_:open:options:)` 里加 `handleIncomingURL(url)` (热启动, 仍转发 Capacitor proxy)。
+  - `BolloonURLInbox`: 统一入口 `receive(raw)` + `scheduleRetries(raw)` 按 0/0.5/2/5/8s 反复注入 (mobile.js 的 `bolloon:deeplink` 监听器在 init 时已装, 重试能打中); `didBecomeActive` 时补投一次; `inject` 同时向 window 与 document 派发事件。
+- **探针实证 (模拟器探针 + 截图)**: `openurl bolloon://agent/status?name=no-such-agent-xyz` → 探针 `pending=bolloon://agent/status?name=no-such-agent-xyz` + `[收到事件] "bolloon://..."` + `[TOAST] 没找到叫「no-such-agent-xyz」的智能体`, 底部 tab 停在「首页」。真实名 `本机智能体`: status → `[TOAST] 智能体「本机智能体」：在线` 且 `[视图] 详情页`(打开详情页); run → **对话页**(`输入消息` + `发送`)。`tsc` 0 错 / `npm run ios:sim` BUILD SUCCEEDED。
+- **注**: 探针只注入构建产物 `build/dd/.../App.app/public/index.html`, 仓库 `ios/App/App/public/` 与 `dist/ios/` 未被污染。
