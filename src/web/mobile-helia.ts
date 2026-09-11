@@ -4,6 +4,20 @@
  * 目标: 让手机 App (Capacitor iOS WebView) 里**真的跑一个 IPFS 节点** ——
  *   有 PeerID、有 blockstore、有 bitswap。不是只调网关。
  *
+ * ─────────────────── 真节点来源: @diap/sdk/helia (2026-09-11 重接) ───────────────────
+ * 上次直接 import `@diap/sdk` 在 WebView 挂了并回滚 (HeliaIpfsClient 在 `await helia.start()`
+ * 之前读 `helia.libp2p` getter → NotStartedError)。SDK 0.2.7 已修, 并新增 `@diap/sdk/helia`
+ * 子路径, 所以真节点现在一律经它创建:
+ *   - 无种子 → `HeliaIpfsClient.newPublicOnly()`; 有种子 → `newWithRemoteNode(seedAddrs)`
+ *     (工厂自带 `addresses.listen=['/p2p-circuit']` + `circuitRelayTransport()` → 中继能力已保)。
+ *   - 传了 `dhtClient` / `libp2pOptions` 的高级路径 → 自建 helia 配置后 `fromHelia()` 包一层,
+ *     再 `await client.start()` (SDK 内部先 `await helia.start()` 再读 getter, 顺序有保证)。
+ *   - **唯一成功判据**: `client.getStartResult().ok === true` (SDK 内部已校验 peerId 非空 +
+ *     `libp2p.status==='started'`)。
+ *   - `heliaAddJson`/`heliaGetJson` 在有 SDK 客户端时走 `upload(JSON.stringify(...))` / `get(cid)`
+ *     (SDK 的 upload **只收字符串**; get 回来的 `content` 可能是 JSON 字符串 → 解析回对象),
+ *     没有客户端 (注入假节点 / 真节点起不来) 时退回本地 blockstore + computeCid, 保住本地块能力。
+ *
  * ───────────────────────── 设计要点 ─────────────────────────
  * 1) 复用 mobile-ipfs.computeCid() 算 CID (硬要求):
  *      内容 → jsonClean → @ipld/dag-cbor encode → sha2-256 → CIDv1(0x71)
@@ -50,6 +64,8 @@
  * 全部导出函数**失败一律返回 { ok:false, error }**, 永不抛。
  */
 
+// 只作类型 (import type 编译期即被擦除, 不会在任何动态 import 之前加载 helia/libp2p)
+import type { HeliaIpfsClient as SdkHeliaIpfsClient } from '@diap/sdk/helia';
 import { CID } from 'multiformats/cid';
 import * as dagCbor from '@ipld/dag-cbor';
 import { computeCid, jsonClean, normalizeCid, defaultStorage, type IpfsStorage } from './mobile-ipfs.js';
@@ -226,6 +242,10 @@ export const isWsCapableAddr = (addr: string): boolean =>
 
 let currentNode: MobileHeliaNode | null = null;
 let currentPeerId: string | null = null;
+/** 真节点 → SDK HeliaIpfsClient (WeakMap: 节点释放即回收; 不用全局可变客户端, 避免和注入节点串味) */
+const nodeClients = new WeakMap<object, SdkHeliaIpfsClient>();
+/** 传给 SDK 工厂的超时 (秒) */
+const SDK_TIMEOUT_SEC = 30;
 /** 最近一次启动失败的真实原因 (给 UI/探针看) */
 let lastStartError: string | null = null;
 /** 并发 start 去重 (两次 startMobileHelia 同时进来只建一次) */
@@ -322,6 +342,40 @@ async function dialSeeds(node: MobileHeliaNode, addrs: string[]): Promise<void> 
 // ─────────────────────────── 建节点 ───────────────────────────
 
 /**
+ * 高级路径专用: 自建一个 Helia 节点 (带 dhtClient / 自定义 libp2pOptions)。
+ * 浏览器无 tcp → 只挂 webSockets + circuit-relay; 手机不能 listen 公网地址 → 只 listen
+ * /p2p-circuit (有中继才有地址, 没中继就是空 —— 正常)。blockstore 不传 → helia 默认内存。
+ * **只创建, 不 start、不读任何 getter** —— 启动/校验交给 SDK 的 HeliaIpfsClient。
+ */
+async function buildCustomHelia(opts: CreateMobileHeliaOpts): Promise<unknown> {
+  const heliaMod = await import('helia');
+  const { webSockets } = await import('@libp2p/websockets');
+  const { circuitRelayTransport } = await import('@libp2p/circuit-relay-v2');
+  const { noise } = await import('@chainsafe/libp2p-noise');
+  const { yamux } = await import('@chainsafe/libp2p-yamux');
+  const { identify } = await import('@libp2p/identify');
+  const { ping } = await import('@libp2p/ping');
+
+  const services: Record<string, unknown> = { identify: identify(), ping: ping() };
+  if (opts.dhtClient) {
+    const { kadDHT } = await import('@libp2p/kad-dht');
+    services.dht = kadDHT({ clientMode: true });
+  }
+
+  const libp2pOptions: any = {
+    addresses: { listen: ['/p2p-circuit'] },
+    transports: [webSockets(), circuitRelayTransport()],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()],
+    services,
+    ...(opts.libp2pOptions || {}),
+  };
+
+  // Helia 7: createHelia 同步返回 status='stopped' 的节点 (libp2p 尚未创建)。兼容旧版返回 Promise。
+  return await (heliaMod.createHelia as any)({ libp2p: libp2pOptions });
+}
+
+/**
  * 创建并 start 一个 Helia 节点 (transports: webSockets + circuitRelay; 无 tcp)。
  * 传 opts.node → 用注入节点 (测试); 否则动态 import('helia') 建真节点。
  * 失败**不抛**, 返回 { ok:false, error }。
@@ -359,64 +413,46 @@ export async function createMobileHeliaNode(opts: CreateMobileHeliaOpts = {}): P
       return { ok: true, node, peerId: v.peerId };
     }
 
-    // 2) 真节点: 惰性加载 helia + 各 libp2p 插件
-    const heliaMod = await import('helia');
-    const { webSockets } = await import('@libp2p/websockets');
-    const { circuitRelayTransport } = await import('@libp2p/circuit-relay-v2');
-    const { noise } = await import('@chainsafe/libp2p-noise');
-    const { yamux } = await import('@chainsafe/libp2p-yamux');
-    const { identify } = await import('@libp2p/identify');
-    const { ping } = await import('@libp2p/ping');
+    // 2) 真节点: 经 @diap/sdk/helia 的 HeliaIpfsClient 创建 (0.2.7 已修 "未 start 就读 getter" 的坑)
+    //    必须用**动态** import —— iOS 的 ES2024 垫片是本模块顶层语句; 静态 import 会在模块体
+    //    之前求值, 垫片就晚了 (上次 WebView 挂掉的根因之一)。
+    const sdk = await import('@diap/sdk/helia');
+    const seedAddrs = (opts.seedAddrs || []).filter(isWsCapableAddr);
 
-    const services: Record<string, unknown> = { identify: identify(), ping: ping() };
-    if (opts.dhtClient) {
-      const { kadDHT } = await import('@libp2p/kad-dht');
-      services.dht = kadDHT({ clientMode: true });
+    let client: SdkHeliaIpfsClient;
+    if (opts.dhtClient || opts.libp2pOptions) {
+      // 高级路径: 自建 helia 配置, 用 fromHelia 包成 SDK 客户端。
+      // fromHelia 不读任何 libp2p getter; 随后的 start() 内部先 await helia.start() 再校验。
+      const helia = await buildCustomHelia(opts);
+      client = sdk.HeliaIpfsClient.fromHelia(helia as any);
+    } else if (seedAddrs.length > 0) {
+      // 有种子 → SDK 工厂: 自带 circuitRelayTransport + listen /p2p-circuit, start 成功后才拨种子
+      client = await sdk.HeliaIpfsClient.newWithRemoteNode(seedAddrs, null, SDK_TIMEOUT_SEC);
+    } else {
+      client = await sdk.HeliaIpfsClient.newPublicOnly(SDK_TIMEOUT_SEC);
     }
 
-    // 浏览器无 tcp → 只挂 webSockets + circuit-relay。blockstore 不传 → helia 默认内存。
-    // 手机不能 listen 公网地址: 只 listen /p2p-circuit (有中继才有地址, 没中继就是空 —— 正常)。
-    const libp2pOptions: any = {
-      addresses: { listen: ['/p2p-circuit'] },
-      transports: [webSockets(), circuitRelayTransport()],
-      connectionEncrypters: [noise()],
-      streamMuxers: [yamux()],
-      services,
-      ...(opts.libp2pOptions || {}),
-    };
-
-    // Helia 7: createHelia 同步返回 status='stopped' 的节点 (libp2p 尚未创建)。
-    // 兼容旧版 (返回 Promise) —— await 一个非 Promise 值是安全的。
-    const helia: any = await (heliaMod.createHelia as any)({ libp2p: libp2pOptions });
-    const node = helia as unknown as MobileHeliaNode;
-
-    // ★ 关键: 必须显式 start —— libp2p 的 mixin 在 helia.start() 内部才 createLibp2p + start。
-    //   这里单独 try 是为了不丢 node (start 失败也要保留本地块能力)。
-    let startErr: unknown;
-    if (typeof helia.start === 'function' && helia.status !== 'started') {
-      try {
-        await helia.start();
-      } catch (err) {
-        startErr = err;
-      }
-    }
-
-    if (startErr !== undefined) {
+    // ★ 唯一成功判据: SDK 硬化校验 `getStartResult().ok === true`
+    //   (SDK 内部已确认 peerId 非空 **且** libp2p.status === 'started', 且读 getter 全在 start 之后)
+    const started = client.getStartResult() ?? (await client.start());
+    const node = (client.getHelia() as unknown as MobileHeliaNode | null) ?? undefined;
+    if (!started.ok) {
       return {
         ok: false,
         node,
-        error: `helia.start()/libp2p 启动失败: ${errDetail(startErr)} (libp2pStatus=${libp2pStatusOf(node)}) ${envHint()}`,
+        error: `${started.error ?? 'libp2p 未就绪'} (libp2pStatus=${String(started.libp2pStatus)}) ${envHint()}`,
+      };
+    }
+    if (!node) {
+      return {
+        ok: false,
+        error: `Helia 已启动但没有节点实例 (libp2pStatus=${String(started.libp2pStatus)}) ${envHint()}`,
       };
     }
 
-    // ★ 校验: peerId 必须有, libp2p 必须真 started —— 否则不算成功 (旧代码就是漏了这步)
-    const v = verifyStarted(node);
-    if (v.error) {
-      return { ok: false, node, error: `${v.error} ${envHint()}` };
-    }
-
-    await dialSeeds(node, (opts.seedAddrs || []).filter(isWsCapableAddr));
-    return { ok: true, node, peerId: v.peerId };
+    // 记下 节点 → SDK 客户端, 供 heliaAddJson / heliaGetJson 走 SDK 的 upload/get
+    nodeClients.set(node as object, client);
+    return { ok: true, node, peerId: started.peerId ?? peerIdOf(node) };
   } catch (err) {
     // 建节点/加载依赖阶段的真实错误 (message + stack)
     return { ok: false, error: `建 Helia 节点失败: ${errDetail(err)} ${envHint()}` };
@@ -511,14 +547,25 @@ export async function stopMobileHelia(): Promise<OpResult> {
 
 /**
  * 把 JSON 对象写入手机节点 blockstore。
- * CID 用 mobile-ipfs.computeCid() 算 (dag-cbor + sha2-256 + CIDv1) —— 与桌面端逐字一致;
- * 写入的字节就是同一份 dag-cbor 编码, 因此块能重新哈希出该 CID。
+ * 真节点 (有 SDK 客户端) → 走 `HeliaIpfsClient.upload(JSON.stringify(...))`:
+ *   SDK 的 upload **只接受字符串**, 且内部会把字符串 JSON.parse 回对象再做 dag-cbor 编码,
+ *   CID 与 computeCid() 完全一致 (已实测同值)。SDK 失败(不抛)时退回本地块路径。
+ * 注入假节点 / 真节点起不来 → 走本地: CID 用 mobile-ipfs.computeCid() 算
+ *   (dag-cbor + sha2-256 + CIDv1, 与桌面端逐字一致), 写入的字节就是同一份 dag-cbor 编码。
  * 失败不抛。
  */
 export async function heliaAddJson(obj: unknown): Promise<AddJsonResult> {
   try {
     const node = currentNode;
     if (!node) return { ok: false, error: 'Helia 节点未启动 (请先 startMobileHelia)' };
+
+    const client = nodeClients.get(node as object);
+    if (client) {
+      const r = await client.upload(JSON.stringify(jsonClean(obj)));
+      if (r.ok && r.cid) return { ok: true, cid: r.cid };
+      // 不 ok 也不抛 —— 落到本地块路径, 保住"本地块能力不受 libp2p 影响"的不变式
+    }
+
     const cidStr = await computeCid(obj); // 跨端一致的 CID
     const bytes = dagCbor.encode(jsonClean(obj) as Record<string, unknown>);
     await node.blockstore.put(CID.parse(cidStr), bytes);
@@ -580,12 +627,29 @@ export async function heliaGetJson(cid: string): Promise<GetJsonResult> {
     local = false;
   }
 
+  const from: 'local' | 'network' = local ? 'local' : 'network';
+
+  // 真节点: 走 SDK 客户端的 get (blockstore → 网络 → 网关, 且网关字节会做 multihash 校验)。
+  // SDK 的 content 对非字符串值会 JSON.stringify → 这里尝试解析回对象, 解析不了就当字符串。
+  const client = nodeClients.get(node as object);
+  if (client) {
+    const r = await client.get(parsed.toString());
+    if (!r.ok) return { ok: false, from, error: r.error ?? '读取失败' };
+    let value: unknown = r.content;
+    try {
+      value = JSON.parse(r.content);
+    } catch {
+      value = r.content;
+    }
+    return { ok: true, value, from: local || r.source === 'blockstore' ? 'local' : 'network' };
+  }
+
   try {
     const bytes = await collectBytes(node.blockstore.get(parsed));
     const value = dagCbor.decode(bytes);
-    return { ok: true, value, from: local ? 'local' : 'network' };
+    return { ok: true, value, from };
   } catch (err) {
-    return { ok: false, from: local ? 'local' : 'network', error: errMsg(err) };
+    return { ok: false, from, error: errMsg(err) };
   }
 }
 

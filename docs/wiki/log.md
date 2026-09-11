@@ -2133,3 +2133,10 @@ status: running=true   libp2p=started   peers=3   blocks=0   lastErr=-
   - `BolloonURLInbox`: 统一入口 `receive(raw)` + `scheduleRetries(raw)` 按 0/0.5/2/5/8s 反复注入 (mobile.js 的 `bolloon:deeplink` 监听器在 init 时已装, 重试能打中); `didBecomeActive` 时补投一次; `inject` 同时向 window 与 document 派发事件。
 - **探针实证 (模拟器探针 + 截图)**: `openurl bolloon://agent/status?name=no-such-agent-xyz` → 探针 `pending=bolloon://agent/status?name=no-such-agent-xyz` + `[收到事件] "bolloon://..."` + `[TOAST] 没找到叫「no-such-agent-xyz」的智能体`, 底部 tab 停在「首页」。真实名 `本机智能体`: status → `[TOAST] 智能体「本机智能体」：在线` 且 `[视图] 详情页`(打开详情页); run → **对话页**(`输入消息` + `发送`)。`tsc` 0 错 / `npm run ios:sim` BUILD SUCCEEDED。
 - **注**: 探针只注入构建产物 `build/dd/.../App.app/public/index.html`, 仓库 `ios/App/App/public/` 与 `dist/ios/` 未被污染。
+
+### 追加 (2026-09-08): 手机端 IPFS 接上 @diap/sdk@0.2.7 官方入口 ✅ (WebView 内实测通过)
+
+- **SDK 侧修复并发布 0.2.7**: `HeliaIpfsClient` 构造期不再读 libp2p getter(修 NotStartedError, 已在 Node 里用旧文件复现); 新增 `start()/getStartResult()/getLibp2pStatus()`, 成功判据硬化=peerId 非空 + `libp2p.status==='started'`; 工厂栈补 `circuitRelayTransport` + `addresses.listen=['/p2p-circuit']`(手机唯一入站途径); `upload(content)` 只收字符串/字节(传对象报 `content must be a string`)。31/31 测试。
+- **bolloon 侧**: `@diap/sdk` ^0.2.5→^0.2.7; `mobile-ipfs.ts` 的 `BolloonIpfsClient` 改为 extends SDK 的 `IpfsClient`; `mobile-helia.ts` 内部改用 SDK 的 `HeliaIpfsClient`(newPublicOnly/newWithRemoteNode/自建+fromHelia); **导出 API 逐字不变**(39/21 个); iOS 垫片保留在模块顶层且严格早于任何 libp2p 加载(esbuild 产物核对: helia 只被函数体内动态 import 触发)。
+- **模拟器实测 (我跑, 探针直调 core)**: `start ok=true peerId=12D3KooWFVsAamdRwPi6kKPq5r…`, `status run=true libp2p=started peers=3`, `add cid=bafyreig5my…5mnka` **CID_MATCH=true**, `get ok=true from=local`。tsc 0 / 33 项 + 全量 147 文件 1592 测试全绿 / 浏览器打包 0 node 内置。
+- **教训沉淀**: 上一次同一改造 Node 全绿但 WebView 挂(NotStartedError) —— Node 测试不能替代真机验收; 已在 `capacitor-ios-build` 技能写入"换依赖五条验收清单"。

@@ -7,24 +7,18 @@
  *   3) 公共网关回退 (多网关逐个尝试) → 资源读取阶段的可用性兜底
  *   4) 本地缓存 (网关首次拉取后落本地) → 二次读取零网络, 离线可读
  *
- * ─────────────────── 为什么没有直接 import @diap/sdk 的 IpfsClient ───────────────────
- * 任务要求优先用用户自己的协议 SDK。实测 (2026-09-11, esbuild --platform=browser):
- *   - `import { IpfsClient } from '@diap/sdk'` → 6/34 errors:
- *       dist/key-manager.js import 'fs' / 'path'
- *       dist/config-manager.js import 'fs'
- *       dist/libp2p/encrypted-peer-id.js import 'node:crypto'
- *       dist/ipfs-setup.js 动态 import('fs') / ('path')
- *     → barrel 整条链都是 node-only, 浏览器 bundle 直接报 "Could not resolve \"fs\""。
- *   - 退一步只 import 子路径 `@diap/sdk/dist/ipfs-client.js` **同样失败**:
- *       ipfs-client.js → ./utils/logger.js → winston
- *       而 winston 的 browser 字段 (./dist/winston) 里 dist/winston/transports/console.js 仍
- *       require('os'), winston-transport 仍 require('util') → 4 个 "Could not resolve" 错误。
- * 结论: 在手机端 bundle 里 import IpfsClient 必然拖进 node 内置模块。
- * 因此本模块 **自实现等价 HTTP 调用** (IPFS HTTP API POST /api/v0/add 上传 + 网关 GET /ipfs/<cid> 读取),
- * 并把类签名 **与 SDK 的 IpfsClient 对齐**: newPublicOnly / newWithRemoteNode / newWithPinata /
- * upload / get / getApiUrl / getGatewayUrl —— 便于在能加载 SDK 的环境 (Node / Electron / 服务端)
- * 一键换回真 SDK: ipfsUpload / ipfsFetch 的可选 `client` 参数直接传 `new IpfsClient(...)` 实例
- * (此时 provider / from 记为 'diap-sdk'), 本模块代码零改动。
+ * ─────────────────── IPFS 客户端来源: @diap/sdk/browser (2026-09-11 重接) ───────────────────
+ * 任务要求用用户自己的协议 SDK。上次直接 import `@diap/sdk` barrel 在 WebView 挂了并回滚
+ * (barrel 链里带 fs / path / node:crypto)。SDK 0.2.7 起有了**浏览器安全子路径**
+ * `@diap/sdk/browser`, 所以本模块现在直接用它:
+ *   - `BolloonIpfsClient` **继承** SDK 的 `IpfsClient` —— newPublicOnly / newWithRemoteNode /
+ *     newWithPinata / upload / get / getApiUrl / getGatewayUrl / pin / publishIpns 全部来自 SDK。
+ *   - 唯一差异: 调用方**显式注入** fetchImpl (测试 / 代理) 时, upload/get 走本模块的可注入
+ *     网络实现 (语义与 SDK 一致, 但不碰全局 fetch); 未注入时一律委托 super ——
+ *     即手机端真实运行的就是 SDK 的 IpfsClient 代码。
+ *   - 实测 esbuild --platform=browser 打包本模块 0 个 node 内置引用 (browser 子路径无 fs/path)。
+ *   - CID 计算**不变**: 仍走 multiformats + @ipld/dag-cbor + sha2-256 (与桌面端 contentToCid()
+ *     逐字节一致); 实测 SDK 的 computeDagCborCid 得出同一 CID。
  *
  * 浏览器安全: 不 import 任何 node 内置模块 (fs/path/os/crypto/stream 全无)。
  *   网络走可注入 fetchImpl (默认 globalThis.fetch);
@@ -34,6 +28,7 @@
  * 全部导出函数失败一律返回 `{ ok:false, error }`, 永不抛。
  */
 
+import { IpfsClient as SdkIpfsClient } from '@diap/sdk/browser';
 import { CID } from 'multiformats/cid';
 import * as dagCbor from '@ipld/dag-cbor';
 import { sha256 } from 'multiformats/hashes/sha2';
@@ -440,22 +435,25 @@ const timeoutSignal = (ms: number, outer?: unknown): { signal: AbortSignal | und
 };
 
 /**
- * 浏览器安全的 IPFS HTTP 客户端 —— 签名对齐 @diap/sdk 的 IpfsClient:
- *   IpfsClient.newPublicOnly(timeoutSec)                     / newWithRemoteNode(apiUrl, gatewayUrl, timeoutSec)
- *   IpfsClient.newWithPinata(apiKey, apiSecret, timeoutSec)  / upload(content, name) / get(cid)
- * 与 SDK 的差异: 多一个可选 fetchImpl (网络可注入, 测试/代理需要), 且不打印 winston 日志。
- * 上传: POST {apiUrl}/api/v0/add?pin=true (multipart) 或 Pinata pinJSONToIPFS。
- * 读取: GET {gateway}/ipfs/{cid}, 配置网关失败后依次试公共网关。
- * 该类的方法会 throw (与 SDK 一致), 公开导出函数 (ipfsUpload/ipfsFetch) 会捕获它, 对外永不抛。
+ * 手机端 IPFS 客户端 —— **继承 @diap/sdk/browser 的 IpfsClient** (2026-09-11 重接)。
+ *
+ * 来自 SDK (真实现, 不再自写): newPublicOnly / newWithRemoteNode / newWithPinata / upload /
+ * get / getApiUrl / getGatewayUrl / pin / ensureKeyExists / publishIpns / ... 全量继承。
+ * 本子类只加一件事: **可注入 fetchImpl** (测试 / 代理用)。
+ *   - 未注入 fetchImpl → upload/get 一律 `super.*`, 手机端真实跑的就是 SDK 代码 (全局 fetch)。
+ *   - 注入 fetchImpl → 走本模块的等价实现 (multipart / Pinata / 网关回退, 语义同 SDK),
+ *     这样测试与代理能在不碰全局 fetch 的前提下驱动网络。
+ * 两者都会 throw (与 SDK 一致), 公开导出函数 (ipfsUpload/ipfsFetch) 捕获它, 对外永不抛。
  */
-export class BolloonIpfsClient implements IpfsClientLike {
-  private readonly apiUrl: string | null;
-  private readonly gatewayUrl: string | null;
-  private readonly pinataKey: string | null;
-  private readonly pinataSecret: string | null;
-  private readonly timeout: number;
-  private readonly publicGateways: string[];
-  private readonly fetchImpl: FetchLike | null;
+export class BolloonIpfsClient extends SdkIpfsClient implements IpfsClientLike {
+  private readonly pApiUrl: string | null;
+  private readonly pGatewayUrl: string | null;
+  private readonly pPinataKey: string | null;
+  private readonly pPinataSecret: string | null;
+  private readonly pTimeout: number;
+  private readonly pPublicGateways: string[];
+  /** 仅当调用方**显式注入** fetchImpl 时非空; null 表示「委托 SDK 真实现」 */
+  private readonly pFetchImpl: FetchLike | null;
 
   constructor(
     apiUrl?: string | null,
@@ -466,21 +464,22 @@ export class BolloonIpfsClient implements IpfsClientLike {
     fetchImpl?: FetchLike,
     publicGateways: string[] = [...DEFAULT_GATEWAYS],
   ) {
-    this.apiUrl = apiUrl || null;
-    this.gatewayUrl = gatewayUrl || null;
-    this.pinataKey = pinataApiKey || null;
-    this.pinataSecret = pinataApiSecret || null;
-    this.timeout = Math.max(1, timeoutSeconds) * 1000;
-    this.publicGateways = publicGateways.length > 0 ? publicGateways : [...DEFAULT_GATEWAYS];
-    this.fetchImpl = fetchImpl ?? (typeof fetch !== 'undefined' ? (fetch as unknown as FetchLike) : null);
+    super(apiUrl ?? null, gatewayUrl ?? null, pinataApiKey ?? null, pinataApiSecret ?? null, timeoutSeconds);
+    this.pApiUrl = apiUrl || null;
+    this.pGatewayUrl = gatewayUrl || null;
+    this.pPinataKey = pinataApiKey || null;
+    this.pPinataSecret = pinataApiSecret || null;
+    this.pTimeout = Math.max(1, timeoutSeconds) * 1000;
+    this.pPublicGateways = publicGateways.length > 0 ? publicGateways : [...DEFAULT_GATEWAYS];
+    this.pFetchImpl = fetchImpl ?? null;
   }
 
-  /** 只用公共网关 (读为主) — 与 SDK 同名同参 */
+  /** 只用公共网关 (读为主) — 与 SDK 同名同参, 额外允许注入 fetchImpl */
   static async newPublicOnly(timeoutSeconds = 30, fetchImpl?: FetchLike): Promise<BolloonIpfsClient> {
     return new BolloonIpfsClient(null, null, null, null, timeoutSeconds, fetchImpl);
   }
 
-  /** 用远端 IPFS HTTP API — 与 SDK 同名同参 */
+  /** 用远端 IPFS HTTP API — 与 SDK 同名同参, 额外允许注入 fetchImpl */
   static async newWithRemoteNode(
     apiUrl: string,
     gatewayUrl: string,
@@ -490,7 +489,7 @@ export class BolloonIpfsClient implements IpfsClientLike {
     return new BolloonIpfsClient(apiUrl, gatewayUrl, null, null, timeoutSeconds, fetchImpl);
   }
 
-  /** 用 Pinata 托管 — 与 SDK 同名同参 */
+  /** 用 Pinata 托管 — 与 SDK 同名同参, 额外允许注入 fetchImpl */
   static async newWithPinata(
     apiKey: string,
     apiSecret: string,
@@ -501,24 +500,25 @@ export class BolloonIpfsClient implements IpfsClientLike {
   }
 
   getApiUrl(): string | null {
-    return this.apiUrl;
+    return this.pApiUrl;
   }
 
   getGatewayUrl(): string | null {
-    return this.gatewayUrl;
+    return this.pGatewayUrl;
   }
 
-  /** 上传内容 (资源存储阶段)。无可用通道时 throw (由上层包装成 {ok:false})。 */
+  /** 上传内容 (资源存储阶段)。未注入 fetchImpl → 委托 SDK; 注入了 → 本模块可注入实现。 */
   async upload(content: string, name = 'data'): Promise<IpfsUploadResult> {
-    if (this.apiUrl) return this.uploadToRemoteApi(content, name);
-    if (this.pinataKey && this.pinataSecret) return this.uploadToPinata(content, name);
+    if (!this.pFetchImpl) return super.upload(content, name);
+    if (this.pApiUrl) return this.uploadToRemoteApiViaFetch(content, name);
+    if (this.pPinataKey && this.pPinataSecret) return this.uploadToPinataViaFetch(content, name);
     throw new Error('未配置任何 IPFS 上传方式: 缺少远程 API 地址或 Pinata 凭据');
   }
 
-  private async uploadToRemoteApi(content: string, name: string): Promise<IpfsUploadResult> {
-    if (!this.fetchImpl) throw new Error('当前环境没有 fetch, 无法上传 (请注入 fetchImpl)');
-    const url = `${this.apiUrl}/api/v0/add?pin=true`;
-    const { signal, done } = timeoutSignal(this.timeout);
+  private async uploadToRemoteApiViaFetch(content: string, name: string): Promise<IpfsUploadResult> {
+    const doFetch = this.pFetchImpl as FetchLike;
+    const url = `${this.pApiUrl}/api/v0/add?pin=true`;
+    const { signal, done } = timeoutSignal(this.pTimeout);
     try {
       // 优先 multipart (与 SDK 一致); 环境无 FormData/Blob 时退化为原始 body
       let body: unknown = content;
@@ -530,7 +530,7 @@ export class BolloonIpfsClient implements IpfsClientLike {
       } else {
         headers['Content-Type'] = 'application/json';
       }
-      const res = await this.fetchImpl(url, { method: 'POST', body, headers, signal });
+      const res = await doFetch(url, { method: 'POST', body, headers, signal });
       if (!res.ok) {
         const errText = await res.text().catch(() => '');
         throw new Error(`上传失败: ${res.status ?? '?'} - ${String(errText).slice(0, 200)}`);
@@ -549,8 +549,8 @@ export class BolloonIpfsClient implements IpfsClientLike {
     }
   }
 
-  private async uploadToPinata(content: string, name: string): Promise<IpfsUploadResult> {
-    if (!this.fetchImpl) throw new Error('当前环境没有 fetch, 无法上传 (请注入 fetchImpl)');
+  private async uploadToPinataViaFetch(content: string, name: string): Promise<IpfsUploadResult> {
+    const doFetch = this.pFetchImpl as FetchLike;
     let jsonContent: unknown;
     try {
       jsonContent = JSON.parse(content);
@@ -561,14 +561,14 @@ export class BolloonIpfsClient implements IpfsClientLike {
       pinataContent: jsonContent,
       pinataMetadata: { name, keyvalues: { type: 'bolloon-agent-result', uploaded_by: 'bolloon-mobile-ipfs' } },
     });
-    const { signal, done } = timeoutSignal(this.timeout);
+    const { signal, done } = timeoutSignal(this.pTimeout);
     try {
-      const res = await this.fetchImpl(PINATA_PIN_URL, {
+      const res = await doFetch(PINATA_PIN_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          pinata_api_key: this.pinataKey as string,
-          pinata_secret_api_key: this.pinataSecret as string,
+          pinata_api_key: this.pPinataKey as string,
+          pinata_secret_api_key: this.pPinataSecret as string,
         },
         body,
         signal,
@@ -593,15 +593,17 @@ export class BolloonIpfsClient implements IpfsClientLike {
     }
   }
 
-  /** 读取内容 (资源读取阶段): 配置网关 → 公共网关依次回退, 全失败 throw。 */
+  /** 读取内容 (资源读取阶段)。未注入 fetchImpl → 委托 SDK; 注入了 → 本模块网关回退实现。 */
   async get(cid: string): Promise<string> {
+    if (!this.pFetchImpl) return super.get(cid);
+    const doFetch = this.pFetchImpl as FetchLike;
     const key = normalizeCid(cid);
     if (!key) throw new Error('cid 不能为空');
     const tried: string[] = [];
-    const candidates = [...(this.gatewayUrl ? [this.gatewayUrl] : []), ...this.publicGateways];
+    const candidates = [...(this.pGatewayUrl ? [this.pGatewayUrl] : []), ...this.pPublicGateways];
     for (const gw of candidates) {
       try {
-        return await this.getFromGateway(gw, key);
+        return await this.getFromGatewayViaFetch(doFetch, gw, key);
       } catch (err) {
         tried.push(`${gw}: ${errMsg(err)}`);
       }
@@ -609,12 +611,11 @@ export class BolloonIpfsClient implements IpfsClientLike {
     throw new Error(`无法从任何网关获取内容 (${tried.join(' | ')})`);
   }
 
-  private async getFromGateway(gatewayUrl: string, cid: string): Promise<string> {
-    if (!this.fetchImpl) throw new Error('当前环境没有 fetch, 无法读取 (请注入 fetchImpl)');
+  private async getFromGatewayViaFetch(doFetch: FetchLike, gatewayUrl: string, cid: string): Promise<string> {
     const url = `${gatewayUrl.replace(/\/+$/, '')}/ipfs/${cid}`;
-    const { signal, done } = timeoutSignal(this.timeout);
+    const { signal, done } = timeoutSignal(this.pTimeout);
     try {
-      const res = await this.fetchImpl(url, { method: 'GET', headers: { 'User-Agent': 'bolloon-mobile-ipfs/1.0' }, signal });
+      const res = await doFetch(url, { method: 'GET', headers: { 'User-Agent': 'bolloon-mobile-ipfs/1.0' }, signal });
       if (!res.ok) throw new Error(`网关返回错误: ${res.status ?? '?'}`);
       return await res.text();
     } finally {
