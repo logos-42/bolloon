@@ -2028,3 +2028,14 @@ curl -X POST http://127.0.0.1:54188/api/gateway/join -d '{"link":"orbitdb:///orb
 - **"看不懂的提示"**: `PhoneControlResult` 增 `hint` 字段, 用大白话说明为什么是本地规则模式/失败原因与下一步 (①电脑端没运行/不同网段 ②没配 LLM API ③这台手机没接原生执行能力: iOS 不支持原生操控, Android 需无障碍服务).
 - **协议路线澄清 (用户明确)**: 要按**自己的协议**实现, 不是照搬 x402/AP2. 权威文档 = `docs/wiki/agent-economic-protocol.md` (Agent Economic Loop: IDENTITY→DISCOVERY→NEGOTIATION→EXECUTION→PROOF→PAYMENT→REPUTATION; E1 Registry / E2 x402 闭环 / E3 Policy Engine / E4 Reputation; M1-M4 桌面端已实现 ✅) + DIAP (@diap/sdk = Decentralized Intelligent Agent Protocol, 身份/ZKP/libp2p 层) + `docs/agent-communication.md`.
 - 待接: 手机端按协议补「自动社交」(服务注册+心跳+发现) 与「资源交易工作流」(402→策略→支付→结果→信誉), 模块交由子智能体编写后统一接线.
+
+### 追加 (2026-09-08): 手机端按协议接入「自动社交 + 资源交易」(E1/E2/E3/E4) 并接线
+
+- **新模块 (按 docs/wiki/agent-economic-protocol.md 实现, 子智能体编写 + 我核验接线)**:
+  - `src/web/mobile-social.ts` (E1 DISCOVERY): `buildServiceDeclaration`(规范字段 agent_id/wallet/service{name,description,price{amount,currency,per},endpoint}/capabilities/reputation) · `toRegistryEntry`(兼容桌面 M1 AgentService) · `announceSelf`(P2P `registry.register` + HTTP `/api/registry/register` 双通道, 幂等) · `discoverAgents`(HTTP registry + P2P + 缓存合并去重) · `shouldHeartbeat`/`heartbeat`(节流, 默认 `DEFAULT_HEARTBEAT_MS`=5 分钟, 与 agent-communication.md 一致) · `onPeerConnected`(同一 peer 只欢迎一次) · `handleSocialMessage`(入站 registry.*/agent.hello 路由). 消息类型: `registry.register|.reply` / `registry.discover|.reply` / `agent.hello`. 全部依赖可注入(fetch/send/store/now), 失败返回 {ok:false,error} 不抛.
+  - `src/web/mobile-trade.ts` (E2/E3/E4): `evaluatePolicy`(纯函数非 AI: 单笔→白名单→服务白名单→信誉阈值→日累计→confirm 软阈值) · `quoteService`(报价+价格结构校验+防重放指纹 requestId|service|amount|currency|ts) · `callService`(402→策略门→支付→200; 策略 deny/confirm 时**零网络调用**; 402 价格被篡改→denied) · `settleAndRate`(tasks++/success|failed|disputed → score=success/tasks) · `appendTrade/listTrades/isReplayed`. **私钥隔离**: 调用方只传 Payment Intent, 私钥只在内部签名字段读取.
+- **接线 (mobile-core.ts)**: `network.start` 成功后自动 `announceSelf` + 对每个已连对端 `onPeerConnected` + 按 `DEFAULT_HEARTBEAT_MS` 起心跳; 入站 `registry.*`/`agent.hello` 转 `handleSocialMessage`; 新增路由 `/api/social/discover|status|announce`、`/api/trade/call|settle|trades` (call 注入 walletForAgent/getPrivateKey(经 exportWallet)/x402Pay); core 增 `social`/`trade` 命名空间.
+- **UI (mobile.html/mobile.js)**: 网络页新增「Agent 服务 (协议自动发现)」列表 (点服务 → 报价页) + 「资源交易」入口; 新增 `openTradeCall`(服务/价格/收款方 + 请求输入 + 「调用服务 (402 → 策略 → 支付)」按钮, 结果按 denied/needsApproval/replayed/failed/ok 人话展示) 与 `openTradeHistory`(交易记录倒序).
+- **实测(模拟器)**: 网络页 Agent 服务列表已出现本机广播的声明 `local-agent / 手机端本地 Agent 执行（离线可用）/ 0 USDC`; 「资源交易」页正常渲染 (服务/价格/收款方/调用按钮/记录入口 ✓). 探针: `agent-services=true, item-trade=true, 交易页=true, 调用按钮=true, 历史按钮=true`.
+- 测试: 两模块共 **40 项** (social 18 + trade 22) 全绿; tsc 0.
+- 待办: 真实 402 闭环需电脑端在跑 (桌面 M2 已实现) + 手机钱包已解锁; 链上注册 (M5 Treasury/Escrow + ERC721) 待定。

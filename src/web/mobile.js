@@ -75,7 +75,7 @@
     $('#topbar-title').textContent = TITLES[tab] || '会话';
     const cs = $('#btn-create-session'); if (cs) cs.hidden = tab !== 'main';
     const ta = $('#topbar-actions'); if (ta) ta.hidden = tab === 'me';   // 我 页不显示 加号/刷新
-    if (tab === 'network') { loadContacts(); loadMcpTools(); loadApprovals(); loadNetMembers(); loadP2PStatus(); }
+    if (tab === 'network') { loadContacts(); loadMcpTools(); loadApprovals(); loadNetMembers(); loadP2PStatus(); loadAgentServices(); }
     if (tab === 'main') { loadAgentCovers(); }
     window.__mobileTouch?.('tab', tab);
   }
@@ -1048,6 +1048,87 @@
     setTimeout(() => t.remove(), 1600);
   }
 
+  // === Agent 服务 (E1 自动发现) + 资源交易 (E2/E3/E4) ===
+  let _svcCache = [];
+  async function loadAgentServices() {
+    const box = $('#agent-services');
+    if (!box) return;
+    box.innerHTML = '<div class="list-item"><span style="color:var(--text-secondary);font-size:13px">正在发现…</span></div>';
+    let r = { services: [], error: '' };
+    try { r = await api.get('/api/social/discover'); } catch (e) { r = { services: [], error: (e && e.message) || String(e) }; }
+    const list = (r && r.services) || [];
+    _svcCache = list;
+    if (!list.length) {
+      box.innerHTML = `<div class="list-item"><span style="font-size:12px;color:var(--text-secondary);line-height:1.6">暂未发现其他智能体${r && r.error ? '（' + escapeHtml(r.error) + '）' : ''}<br>连上电脑端或对端节点后会自动出现</span></div>`;
+      return;
+    }
+    box.innerHTML = list.map((s, i) => {
+      const pr = (s.service && s.service.price) || s.price || {};
+      const amount = (pr && pr.amount) || (typeof pr === 'string' ? pr : '') || '';
+      const cur = (pr && pr.currency) || '';
+      const name = (s.service && s.service.name) || s.serviceName || s.name || s.agentId || 'agent';
+      const desc = (s.service && s.service.description) || s.description || '';
+      const score = (s.reputation && (s.reputation.score ?? s.reputation)) ?? '';
+      return `<div class="list-item" data-i="${i}"><span style="flex:1;min-width:0"><div style="font-size:14px">${escapeHtml(String(name))}</div><div style="font-size:11px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(String(desc))}</div></span><span style="font-size:11px;color:var(--text-secondary);text-align:right">${escapeHtml(String(amount ? amount + ' ' + cur : '未定价'))}${score !== '' ? '<br>信誉 ' + escapeHtml(String(score)) : ''}</span></div>`;
+    }).join('');
+    box.querySelectorAll('[data-i]').forEach((el) => el.addEventListener('click', () => openTradeCall(_svcCache[Number(el.dataset.i)])));
+  }
+
+  async function openTradeCall(entry) {
+    const svc = {
+      name: (entry.service && entry.service.name) || entry.serviceName || entry.name || 'service',
+      agentId: entry.agent_id || entry.agentId,
+      payTo: entry.wallet || (entry.service && entry.service.payTo),
+      price: (entry.service && entry.service.price) || entry.price || { amount: '0', currency: 'USDC' },
+      endpoint: (entry.service && entry.service.endpoint) || entry.endpoint,
+      reputation: (entry.reputation && (entry.reputation.score ?? entry.reputation)) ?? entry.reputation,
+    };
+    const page = document.createElement('div');
+    page.className = 'chat-page'; page.id = 'trade-page';
+    page.innerHTML = `
+      <div class="chat-topbar"><button class="icon-btn" id="td-back">←</button><div style="flex:1;font-weight:600">资源交易</div><button class="icon-btn" id="td-hist">≡</button></div>
+      <div style="padding:12px;display:flex;flex-direction:column;gap:10px" id="td-body">
+        <div class="identity-row"><div class="k">服务</div><div class="v">${escapeHtml(svc.name)}</div></div>
+        <div class="identity-row"><div class="k">价格</div><div class="v">${escapeHtml(String((svc.price && svc.price.amount) || '') + ' ' + String((svc.price && svc.price.currency) || ''))}</div></div>
+        <div class="identity-row"><div class="k">收款方</div><div class="v" style="word-break:break-all">${escapeHtml(svc.payTo || '—')}</div></div>
+        <input id="td-req" placeholder="请求内容 (如: 帮我查一条链上数据)" style="${_walletInput}">
+        <button id="td-call" style="${_walletBtn}">调用服务 (402 → 策略 → 支付)</button>
+        <div id="td-out" style="font-size:13px;line-height:1.7;color:var(--text-secondary)"></div>
+      </div>`;
+    document.body.appendChild(page);
+    $('#td-back').addEventListener('click', () => page.remove());
+    $('#td-hist').addEventListener('click', () => openTradeHistory());
+    $('#td-call').addEventListener('click', async () => {
+      const req = (page.querySelector('#td-req').value || '').trim();
+      const out = page.querySelector('#td-out');
+      out.textContent = '调用中…';
+      try {
+        const r = await api.post('/api/trade/call', { service: svc, request: { text: req } });
+        const map = { denied: '⛔ 被策略拦截：', needsApproval: '⏸ 需要人工确认：', replayed: '🔁 重复请求被拒：', failed: '❌ 调用失败：' };
+        if (r && r.status && map[r.status]) out.textContent = map[r.status] + (r.reason || '');
+        else if (r && r.ok) out.textContent = '✅ 成功' + (r.txHash ? '（tx ' + String(r.txHash).slice(0, 14) + '…）' : '') + '\n' + (typeof r.result === 'string' ? r.result : JSON.stringify(r.result || {}).slice(0, 400));
+        else out.textContent = (r && (r.error || r.reason)) || '未知结果';
+      } catch (e) { out.textContent = '调用失败: ' + ((e && e.message) || e); }
+    });
+  }
+
+  async function openTradeHistory() {
+    const page = document.createElement('div');
+    page.className = 'chat-page'; page.id = 'trade-hist';
+    page.innerHTML = `<div class="chat-topbar"><button class="icon-btn" id="th-back">←</button><div style="flex:1;font-weight:600">交易记录</div></div><div id="th-body" style="padding:12px;font-size:13px;line-height:1.8;color:var(--text-secondary)">加载中…</div>`;
+    document.body.appendChild(page);
+    $('#th-back').addEventListener('click', () => page.remove());
+    let list = [];
+    try { const r = await api.get('/api/trade/trades'); list = (r && r.trades) || []; } catch (e) {}
+    const body = page.querySelector('#th-body');
+    if (!list.length) { body.textContent = '暂无交易记录。'; return; }
+    body.innerHTML = list.map((t) => `<div style="padding:8px 10px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;background:var(--bg-card)">
+      <div style="color:var(--text)">${escapeHtml(String(t.service || ''))} · ${escapeHtml(String(t.amount || ''))} ${escapeHtml(String(t.currency || ''))}</div>
+      <div style="font-size:11px">${escapeHtml(String(t.status || ''))}${t.txHash ? ' · tx ' + escapeHtml(String(t.txHash).slice(0, 12)) + '…' : ''} · ${new Date(t.ts || Date.now()).toLocaleString()}</div>
+      ${t.reason ? '<div style="font-size:11px">' + escapeHtml(String(t.reason)) + '</div>' : ''}
+    </div>`).join('');
+  }
+
   // === P2P 连接状态 (手机 WebView 不能 listen → 必须主动拨入电脑端) ===
   async function loadP2PStatus() {
     const box = $('#p2p-status');
@@ -1593,6 +1674,12 @@
     const csMan = $('#choice-manual'); if (csMan) csMan.addEventListener('click', addFriendManual);
     const csCan = $('#choice-cancel'); if (csCan) csCan.addEventListener('click', () => hideSheet('#addfriend-sheet'));
     $('#item-p2p').addEventListener('click', () => { switchTab('network'); });
+    const itTrade = $('#item-trade');
+    if (itTrade) itTrade.addEventListener('click', async () => {
+      await loadAgentServices();
+      const first = _svcCache[0];
+      if (first) openTradeCall(first); else openTradeHistory();
+    });
     $('#item-p2p-id').addEventListener('click', async () => {
       try { const net = await api.get('/api/network/status'); const p2p = net && net.nodeId; alert('P2P ID (通信ID, ≠ DID):\n' + (p2p || '未连接')); }
       catch (e) { alert('P2P ID: 获取失败'); }

@@ -58,6 +58,16 @@ async function routeIncomingMessage(payload: string, fromPeer: string): Promise<
       await dataLayer.handleIncomingDataMessage(type, msgBody, fromPeer);
       return;
     }
+    // 社交/服务注册协议 → 自动社交层
+    if (/^(registry\.|agent\.hello)/.test(type)) {
+      try {
+        const social = await import('./mobile-social.js');
+        const ag = await import('./mobile-agent.js');
+        const id = await ag.ensureIdentity();
+        await social.handleSocialMessage(type, msgBody, fromPeer, { ownDid: id.did, send: sendViaP2P, store: social.getDefaultSocialStore() });
+      } catch { /* 社交消息失败不影响其它路由 */ }
+      return;
+    }
     // agent.* → Agent 功能层
     if (type.startsWith('agent.')) {
       const agentLayer = await import('./mobile-agent.js');
@@ -87,6 +97,9 @@ export const core = {
     if (p === '/api/llm-config') return () => core.data.getLlmConfig();
     if (p === '/api/network/status') return () => core.network.status();
     if (p === '/api/network/desktop-addrs') return () => core.network.desktopAddrs();
+    if (p === '/api/social/discover') return () => core.social.discover();
+    if (p === '/api/social/status') return () => core.social.status();
+    if (p === '/api/trade/trades') return () => core.trade.trades();
     if (p === '/api/wallet/status') return () => core.wallet.status();
     if (p === '/api/wallet/balance') return () => core.wallet.balance();
     // 电脑端数据同步 (登录后/手动): 快照 + 状态 + 判断力缓存
@@ -191,6 +204,32 @@ export const core = {
       return () => core.desktop.setUrl(String(b.url || ''));
     }
     if (p === '/api/network/connect') return () => core.network.connect();
+    if (p === '/api/social/announce') return () => core.social.announce();
+    if (p === '/api/trade/call') {
+      const b = body || {};
+      return async () => {
+        const t = await import('./mobile-trade.js');
+        const w = await import('./mobile-wallet.js');
+        return t.callService({
+          service: b.service,
+          request: b.request || {},
+          deps: {
+            fetchImpl: fetch,
+            walletForAgent: (aid: string) => w.walletForAgent(aid),
+            getPrivateKey: async (id: string) => { const r: any = await w.exportWallet(id); return r && (r.privateKey || r.priv); },
+            x402Pay: async (opts: any) => { const m: any = await import('../agents/x402/x402Pay.js'); return m.x402Pay(opts); },
+            policy: b.policy,
+          },
+        });
+      };
+    }
+    if (p === '/api/trade/settle') {
+      const b = body || {};
+      return async () => {
+        const t = await import('./mobile-trade.js');
+        return t.settleAndRate({ ok: b.ok, service: b.service });
+      };
+    }
     if (p === '/api/desktop/sync') return () => core.desktop.sync();
     if (p === '/api/orbit/put') {
       const b = body || {};
@@ -233,6 +272,21 @@ export const core = {
         }
         const st = await startMobileP2P({ seedAddrs: seeds, ownDid: id.did });
         if (desktopPeer) busBroadcast({ type: 'p2p-desktop', peerId: desktopPeer, addrs: seeds || [] });
+        // 自动社交 (E1 DISCOVERY): 广播自身服务声明 + 欢迎已连对端 + 心跳 (协议 5 分钟)
+        try {
+          const social = await import('./mobile-social.js');
+          const syncMod = await import('./mobile-sync.js');
+          const sStore = social.createLocalStorageStore();
+          const desktopUrl = syncMod.getDesktopUrl();
+          social.announceSelf({ ownDid: id.did, ownName: id.name, send: sendViaP2P, peerId: desktopPeer || '*', desktopUrl, fetchImpl: fetch, store: sStore }).catch(() => {});
+          for (const pid of (st.peerIds || [])) {
+            social.onPeerConnected(pid, { ownDid: id.did, send: sendViaP2P, store: sStore }).catch(() => {});
+          }
+          setInterval(() => {
+            social.heartbeat({ ownDid: id.did, send: sendViaP2P, peerId: desktopPeer || '*', desktopUrl, fetchImpl: fetch, store: sStore }).catch(() => {});
+          }, social.DEFAULT_HEARTBEAT_MS);
+          busBroadcast({ type: 'social-started' });
+        } catch { /* 社交层不可用不影响基础连接 */ }
 
         // 注入传输: data/agent 两层用同一发送通道
         dataLayer.setDataTransport((type, payload, peerId) => sendViaP2P(type, payload, peerId));
@@ -418,6 +472,33 @@ export const core = {
     async sync(): Promise<any> { const s = await import('./mobile-sync.js'); return s.syncFromDesktop(); },
     async status(): Promise<any> { const s = await import('./mobile-sync.js'); return s.getSyncStatus(); },
     async judgments(): Promise<any> { const s = await import('./mobile-sync.js'); return { judgments: s.getCachedJudgments() }; },
+  },
+
+  // 自动社交 (E1): 服务声明广播 / 发现 / 心跳 — 协议见 docs/wiki/agent-economic-protocol.md
+  social: {
+    async announce(): Promise<any> {
+      const s = await import('./mobile-social.js');
+      const ag = await import('./mobile-agent.js');
+      const syncMod = await import('./mobile-sync.js');
+      const id = await ag.ensureIdentity();
+      return s.announceSelf({ ownDid: id.did, ownName: id.name, send: sendViaP2P, peerId: '*', desktopUrl: syncMod.getDesktopUrl(), fetchImpl: fetch, store: s.createLocalStorageStore(), force: true });
+    },
+    async discover(query?: string): Promise<any> {
+      const s = await import('./mobile-social.js');
+      const ag = await import('./mobile-agent.js');
+      const syncMod = await import('./mobile-sync.js');
+      const id = await ag.ensureIdentity();
+      return s.discoverAgents({ ownDid: id.did, ownName: id.name, query, send: sendViaP2P, desktopUrl: syncMod.getDesktopUrl(), fetchImpl: fetch, store: s.createLocalStorageStore() });
+    },
+    async status(): Promise<any> {
+      const s = await import('./mobile-social.js');
+      return s.getHeartbeatState(s.createLocalStorageStore());
+    },
+  },
+
+  // 资源交易 (E2/E3/E4): 402 → 策略 → 支付 → 结果 → 信誉
+  trade: {
+    async trades(limit?: number): Promise<any> { const t = await import('./mobile-trade.js'); return { trades: t.listTrades(undefined, limit ? { limit } : undefined) }; },
   },
 
   // OrbitDB 本地副本 (库级复制): 手机端持有与电脑端同地址 store 的副本, 离线可读
