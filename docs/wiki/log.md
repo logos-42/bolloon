@@ -2964,3 +2964,10 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **`src/agents/network-pulse.ts`**: 加 `PUBLIC_MAINNET_CHAIN_ID=8453` 进 `CHAIN_LABELS`, 并修 note 让它点名「行里真出现过的」公网链 —— 否则快照会出现「上表 3 行来自 8453(Base 主网)」却写「这不是公网活动」的自相矛盾。`tsc` 0 错 · 脉冲单测 **59/59** · `build:main` 已跑。
 - **快照真数据**: `activity_chain_id=8453` · `is_public_network=true` · `public_network_rows=3` · 3 行全 8453 · 全 `finalized` · `consistency=OK`。
 - **索引**: `index rebuild` 到 Base 8453 身份(escrow `0x4e68…f7aE` / 部署块 51640073)→ entries 3 / tasks 1 / created 1 / proof 1 / released 1 / suspects 0;旧 31337 索引(144 条)备份留档。
+
+## [2026-09-22] release | npm @bolloon/bolloon-agent 0.4.31 → **0.4.32** 已上线
+
+- 内容: 本日链上化收口(P6b MCP 写 tool + 索引身份概念 + 索引 `rebuild` 命令 + Base 主网真链活动进快照 + 官方 Base USDC 主网部署)。
+- 发布判据(**不看日志自述**): `npm publish` EXIT=0 且打印 `+ @bolloon/bolloon-agent@0.4.32`,随后
+  **直连 packument 复核** —— 发布后约 4~5 分钟 `dist-tags.latest` 翻到 **0.4.32**(期间版本直连 404、`npm@12 stage list` 回 "No staged packages found" 均属**18.5MB/1482 文件大包的已知慢放行现象**,未据此误判失败、未改版本号重发)。
+- 包: 18.5 MB / 1482 文件 / shasum `dd6b94cc…`。
