@@ -2843,3 +2843,12 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **凭证纪律**: 私钥只从本机文件 `~/.hermes/wallets/base-sepolia.json`(0600)读入**进程环境变量**;部署后**自动断言**: 输出中私钥形态 0 次、`privateKey` 0 次。⚠️ 该私钥曾被 leo 在聊天里粘贴 → 按标准处置**视为已泄露**(仅测试网可容忍, **绝不可用于任何有价值网络**)。
 - **E2E 未执行(如实, 脚本主动判失败)**: 买家 USDC 余额 = 0 → 输出「E2E 无法继续: buyer 的 token 余额不足 — **不伪造通过结果**」, `exit 1`, `tradeLoop.skipped=true / skippedReason=insufficient_external_token_balance`。
 - **仓库卫生**: 提交前撞上 `f.txt` 幽灵索引条目(blob 在对象库中不存在)→ 修法: `rm -f .git/index && git reset`(索引重建 1767 文件), 之后提交恢复正常。
+
+## [2026-09-22] feat(chain) | P4 任务交易闭环 (链上托管接进任务链路) — 我复跑 75/75
+
+- **新增**: `src/agents/chain/onchain-trade.ts`(链上闭环 + 验真门 + 重启恢复; 每一步链上判定都调 P3 的 `verifyPaymentOnChain`, **未新写判定**)· `src/agents/task/task-onchain-runner.ts`(任务级入口 `runTaskOnchain`: M1 预算闸 → 荐资源 → 交易记录 → 托管闭环 → 验真门 → 报告卡)· `scripts/verify-onchain-trade-loop.ts` · `scripts/verify-base-sepolia-readonly.ts` · `src/web/routes-onchain-trade.ts`(只读: `GET /api/chain/trade/{state,recovery,budget}`)· `src/test/onchain-trade.test.ts`(31 用例)· `transaction-protocol.ts` 的 `PaymentMode` 加 `'escrow'`(链上托管不冒名 facilitator)。
+- **我复跑证据**: `tsc` **0 错** · P4 单测 **31/31** · P4 真链 e2e(anvil 31337)**75 passed / 0 failed**(含 create/submitProof/release 真交易、`anvil_rollback` 真重组 → `reorged`+suspect+needs_human 且零重发、强制广播 receipt `status=0` → `reverted`、确认数 500 门槛 → `pending` 不 verified、taskKey 不匹配 → `event_mismatch`、local-dev 到不了 `fully_settled`)· Base Sepolia **只读**实测 **15/15** · P3 链桥 50/0 · 七条验收 60/68/51/44/57/36/50 全 0 failed。
+- **子智能体跑出并修掉的两个真 bug**: ① 恢复重对账时对 create/proof 这类**历史**交易再要求「合约当前状态是 ACTIVE」→ 释放后状态本就是 RELEASED → 会造出**假 `event_mismatch`**; ② `updateTransaction` 拒绝「同一次写 chainSettled=true + status=verified」→ 验真门改为**先写链上事实/结算事实、再单独写 verified**(两笔都在门内, 不绕闸)。
+- **路由接线(由我完成)**: `src/web/server.ts` 加 `import { registerOnchainTradeRoutes }` + `registerOnchainTradeRoutes(app)`(挂在 `registerX402InfoRoutes(app)` 之后)。
+- **⚠️ 诚实记录(我的操作失误)**: 提交 `97d8d70`(标为 P3)因 `git add -- src/agents/chain` 把**当时 P4/P5 正在写的文件一并纳入**(`onchain-trade.ts` · `escrow-client.ts`/`index.ts` 的 P4 改动 · P5 的 `chain-indexer.ts`/`chain-index-query.ts`)。子智能体确认**内容与工作区零 diff、无数据丢失**, 但**提交信息归错了阶段** —— 教训: **绝不按目录 add 正在被并行智能体写入的目录**, 必须逐个文件显式列出。
+- **真网未跑闭环(如实)**: 买家 `0x5Ca9fb35…` 在 Base Sepolia 的 USDC = 0、allowance = 0 → `eth_call` 模拟 `createEscrowV2` 真 revert `ERC20: transfer amount exceeds allowance`; 本环境**没有 Base Sepolia 签名钱包用于自发交易**(子智能体没有拿开发密钥去签真链, 这是对的)。补齐「转入 ≥0.02 USDC + approve」后即可走完。

@@ -51,7 +51,7 @@ export const TRANSACTION_STATUSES = [
 ] as const;
 export type TransactionStatus = typeof TRANSACTION_STATUSES[number];
 
-export type PaymentMode = 'facilitator' | 'local-dev' | 'none';
+export type PaymentMode = 'facilitator' | 'local-dev' | 'none' | 'escrow';
 /** 与 paid-info-protocol 的验真分档一致 */
 export type TrustLevel = 'verified' | 'self-attested' | 'content-only' | 'unverified';
 

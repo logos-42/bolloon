@@ -23,6 +23,7 @@ import { registerContactRoutes } from './routes-contacts.js';
 import { registerX402InfoRoutes } from './routes-x402-info.js';
 import { loadPeerTier, recordInteraction, recordViolation, checkToolAccess, tierLabel } from '../social/dunbar-tier.js';
 import { registerHearthRoutes } from './routes-hearth.js';
+import { registerOnchainTradeRoutes } from './routes-onchain-trade.js';
 import { loadOrCreateAgentIdentity } from '../agents/agent-identity.js';
 
 // 2026-07-06: 类型抽到 ./server-types.ts (channel / session / task / sse client / iroh info / paths)
@@ -6699,6 +6700,7 @@ app.post('/active-channel', async (req, res) => {
 
   // 2026-09-13: 微支付信息服务 (x402) — 发布 / 402 收款 / 买方代付 / 验真
   registerX402InfoRoutes(app);
+  registerOnchainTradeRoutes(app);
 
   // 2026-07-06: LLM/Video/Audio 配置路由抽到 ./routes-llm-config.ts
   registerLlmConfigRoutes(app);
