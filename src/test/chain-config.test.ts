@@ -2,7 +2,10 @@
  * chain-config.test.ts — 链配置 / 确认数配置 / 密钥读取优先级 (P3)
  *
  * 覆盖:
- *   · 读取优先级: 环境变量 → 本地安全配置 → 报错 (绝不猜地址, 绝不硬编码密钥)
+ *   · 读取优先级: 环境变量 → 本地安全配置 → **仓库部署 manifest** → 报错 (绝不猜地址, 绝不硬编码密钥)
+ *   · 第 ③ 层 manifest: 按锚 (chainId / networkName / rpcUrl / escrowAddress) 匹配 · 没有锚不选 ·
+ *     多份匹配不选 · 跨 chainId 不取地址 · .token / .externalToken 两个字段都认 ·
+ *     requireToken (真写拿不到 token → 可操作的报错)
  *   · 确认数 confirmed=1 / finalized=12 是**配置** (可覆盖, 非法值不静默降级)
  *   · 拒绝读取别的 agent 的钱包目录 (~/.hermes/wallets)
  *   · 钱包私钥只能从 env 或 ~/.bolloon/wallet.json 来
@@ -14,12 +17,16 @@ import * as path from 'path';
 import {
   loadChainConfig, ChainConfigError, DEFAULT_CONFIRMATIONS, DEFAULT_TOKEN_DECIMALS,
   meetsConfirmations, chainConfigPath, readWalletPrivateKey, walletAvailable, assertNotForeignWalletPath,
+  listDeploymentManifests, selectDeploymentManifest, deploymentsDir, DEPLOYMENTS_DIR_ENV,
   LOCAL_DEV_CHAIN_ID,
 } from '../agents/chain/chain-config.js';
 
 let HOME: string;
 beforeEach(() => { HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-chaincfg-')); });
 afterEach(() => { fs.rmSync(HOME, { recursive: true, force: true }); });
+
+/** 一个**空**的 manifest 目录: 用来表达"三层都拿不到" (而不是靠"恰好匹配不上") */
+const EMPTY_DEPLOYMENTS = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-no-deployments-'));
 
 const ADDR = '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512';
 const TOKEN = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
@@ -53,7 +60,7 @@ describe('loadChainConfig — 读取优先级', () => {
 
   it('都没有 → 抛错并列出缺什么 (不猜合约地址)', () => {
     let err: any = null;
-    try { loadChainConfig({ home: HOME, env: {} as any }); } catch (e) { err = e; }
+    try { loadChainConfig({ home: HOME, env: { BOLLOON_DEPLOYMENTS_DIR: EMPTY_DEPLOYMENTS } as any }); } catch (e) { err = e; }
     expect(err).toBeInstanceOf(ChainConfigError);
     expect(err.missing).toEqual(expect.arrayContaining(['rpcUrl', 'chainId', 'escrowAddress']));
     expect(err.message).toContain('链配置缺失');
@@ -62,7 +69,7 @@ describe('loadChainConfig — 读取优先级', () => {
   it('只缺 escrow 地址也要报错 (RPC 够但没合约 → 不能瞎连)', () => {
     let err: any = null;
     try {
-      loadChainConfig({ home: HOME, env: { BOLLOON_CHAIN_RPC_URL: 'http://x:8545', BOLLOON_CHAIN_ID: '31337' } as any });
+      loadChainConfig({ home: HOME, env: { BOLLOON_CHAIN_RPC_URL: 'http://x:8545', BOLLOON_CHAIN_ID: '31337', BOLLOON_DEPLOYMENTS_DIR: EMPTY_DEPLOYMENTS } as any });
     } catch (e) { err = e; }
     expect(err?.missing).toEqual(['escrowAddress']);
   });
@@ -75,9 +82,165 @@ describe('loadChainConfig — 读取优先级', () => {
 
   it('token 未配置 → null + 明确来源说明 (不冒充有 token)', () => {
     writeChainJson({ rpcUrl: 'http://f:1', chainId: 31337, escrowAddress: ADDR });
-    const cfg = loadChainConfig({ home: HOME, env: {} as any });
+    const cfg = loadChainConfig({ home: HOME, env: { BOLLOON_DEPLOYMENTS_DIR: EMPTY_DEPLOYMENTS } as any });
     expect(cfg.tokenAddress).toBeNull();
     expect(cfg.sources.tokenAddress).toContain('未配置');
+  });
+});
+
+describe('第 ③ 层: 仓库部署 manifest (env → chain.json → manifest → 报错)', () => {
+  let DEPLOY_DIR: string;
+  beforeEach(() => { DEPLOY_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-deployments-')); });
+  afterEach(() => { fs.rmSync(DEPLOY_DIR, { recursive: true, force: true }); });
+
+  const mEscrow = '0x' + 'aa'.repeat(20);
+  const mToken = '0x' + 'bb'.repeat(20);
+  const writeManifest = (name: string, obj: any) => fs.writeFileSync(path.join(DEPLOY_DIR, name), JSON.stringify(obj));
+  const localhostManifest = (over: any = {}) => ({
+    chainId: 31337, networkName: 'localhost', rpcUrl: 'http://127.0.0.1:8545',
+    contracts: [{ name: 'AgentEscrow', address: mEscrow, blockNumber: 2 }],
+    token: { address: mToken, decimals: 6 },
+    ...over,
+  });
+
+  it('目录口径: env BOLLOON_DEPLOYMENTS_DIR 优先, 其余从 cwd 往上找 contracts/deployments', () => {
+    expect(deploymentsDir({ [DEPLOYMENTS_DIR_ENV]: DEPLOY_DIR } as any)).toBe(DEPLOY_DIR);
+    expect(deploymentsDir({} as any)).toBe(path.resolve(process.cwd(), 'contracts', 'deployments'));
+  });
+
+  it('只给锚 (chainId + networkName) → escrow / token / decimals 从 manifest 解析, 并如实标来源', () => {
+    writeManifest('localhost.json', localhostManifest());
+    const cfg = loadChainConfig({
+      home: HOME,
+      env: { BOLLOON_CHAIN_RPC_URL: 'http://127.0.0.1:8545', BOLLOON_CHAIN_ID: '31337', BOLLOON_NETWORK_NAME: 'localhost', BOLLOON_DEPLOYMENTS_DIR: DEPLOY_DIR } as any,
+    });
+    expect(cfg.escrowAddress).toBe(mEscrow);
+    expect(cfg.tokenAddress).toBe(mToken);
+    expect(cfg.tokenDecimals).toBe(6);
+    expect(cfg.chainId).toBe(31337);
+    expect(cfg.sources.escrowAddress).toContain('manifest');
+    expect(cfg.sources.tokenAddress).toContain('manifest');
+    expect(cfg.sources.deploymentManifest).toContain('localhost.json');
+  });
+
+  it('★ .externalToken 回退: manifest 只记外部真 token 也认 (本地 mock 记 .token, 真链记 .externalToken)', () => {
+    writeManifest('localhost.json', localhostManifest({ token: undefined, externalToken: { address: mToken, decimals: 6 }, tokenSource: 'external' }));
+    const cfg = loadChainConfig({
+      home: HOME,
+      env: { BOLLOON_CHAIN_RPC_URL: 'http://x:1', BOLLOON_CHAIN_ID: '31337', BOLLOON_NETWORK_NAME: 'localhost', BOLLOON_DEPLOYMENTS_DIR: DEPLOY_DIR } as any,
+    });
+    expect(cfg.tokenAddress).toBe(mToken);
+    expect(cfg.sources.tokenAddress).toContain('externalToken');
+  });
+
+  it('env 优先: env 给了 escrow / token → manifest 只补空位 (优先级不可颠倒)', () => {
+    writeManifest('localhost.json', localhostManifest());
+    const cfg = loadChainConfig({
+      home: HOME,
+      env: { BOLLOON_CHAIN_RPC_URL: 'http://x:1', BOLLOON_CHAIN_ID: '31337', BOLLOON_NETWORK_NAME: 'localhost', BOLLOON_ESCROW_ADDRESS: ADDR, BOLLOON_TOKEN_ADDRESS: TOKEN, BOLLOON_DEPLOYMENTS_DIR: DEPLOY_DIR } as any,
+    });
+    expect(cfg.escrowAddress).toBe(ADDR);
+    expect(cfg.tokenAddress).toBe(TOKEN);
+    expect(cfg.sources.escrowAddress).toContain('env');
+    expect(cfg.escrowAddress).not.toBe(mEscrow);
+  });
+
+  it('★ token 来自 env 但没给精度 → 不拿 manifest 里**另一个** token 的 decimals (不张冠李戴)', () => {
+    writeManifest('localhost.json', localhostManifest({ token: { address: mToken, decimals: 18 } }));
+    const cfg = loadChainConfig({
+      home: HOME,
+      env: { BOLLOON_CHAIN_RPC_URL: 'http://x:1', BOLLOON_CHAIN_ID: '31337', BOLLOON_NETWORK_NAME: 'localhost', BOLLOON_ESCROW_ADDRESS: ADDR, BOLLOON_TOKEN_ADDRESS: TOKEN, BOLLOON_DEPLOYMENTS_DIR: DEPLOY_DIR } as any,
+    });
+    expect(cfg.tokenAddress).toBe(TOKEN);
+    expect(cfg.tokenDecimals).toBe(DEFAULT_TOKEN_DECIMALS);
+  });
+
+  it('chainId 与 manifest 不符 → 拒绝跨链取地址 (报错, 不静默换链)', () => {
+    writeManifest('localhost.json', localhostManifest());   // chainId 31337
+    let err: any = null;
+    try {
+      loadChainConfig({ home: HOME, env: { BOLLOON_CHAIN_RPC_URL: 'http://x:1', BOLLOON_CHAIN_ID: '84532', BOLLOON_DEPLOYMENTS_DIR: DEPLOY_DIR } as any });
+    } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(ChainConfigError);
+    expect(err.missing).toContain('escrowAddress');
+    expect(err.message).toContain('匹配不上');
+  });
+
+  it('★ 歧义: 两份同 chainId 的 manifest 且只给 chainId → 报错并列出候选 (不猜是哪份)', () => {
+    writeManifest('localhost.json', localhostManifest());
+    writeManifest('localhost-external.json', localhostManifest({ networkName: 'localhost-external', contracts: [{ name: 'AgentEscrow', address: '0x' + 'cc'.repeat(20), blockNumber: 134 }] }));
+    let err: any = null;
+    try {
+      // 只给 chainId 一个锚 (不给 rpcUrl/networkName) → 两份 localhost 变体都匹配
+      loadChainConfig({ home: HOME, env: { BOLLOON_CHAIN_ID: '31337', BOLLOON_DEPLOYMENTS_DIR: DEPLOY_DIR } as any });
+    } catch (e) { err = e; }
+    expect(err?.message).toContain('歧义');
+    expect(err?.message).toContain('localhost-external.json');
+    expect(err?.missing).toContain('escrowAddress');
+  });
+
+  it('★ 没有锚 → 目录里只有一份 manifest 也不选 (说不出是哪条链的部署)', () => {
+    writeManifest('localhost.json', localhostManifest());
+    let err: any = null;
+    try { loadChainConfig({ home: HOME, env: { BOLLOON_DEPLOYMENTS_DIR: DEPLOY_DIR } as any }); } catch (e) { err = e; }
+    expect(err?.message).toContain('没有锚');
+    expect(err?.missing).toEqual(expect.arrayContaining(['rpcUrl', 'chainId', 'escrowAddress']));
+  });
+
+  it('文件名 <networkName>.json 优先: 两份同 chainId 时按网络名选中正确的一份', () => {
+    writeManifest('localhost.json', localhostManifest());
+    writeManifest('localhost-external.json', localhostManifest({ networkName: 'localhost-external', contracts: [{ name: 'AgentEscrow', address: '0x' + 'cc'.repeat(20), blockNumber: 134 }] }));
+    const cfg = loadChainConfig({
+      home: HOME,
+      env: { BOLLOON_CHAIN_RPC_URL: 'http://x:1', BOLLOON_CHAIN_ID: '31337', BOLLOON_NETWORK_NAME: 'localhost-external', BOLLOON_DEPLOYMENTS_DIR: DEPLOY_DIR } as any,
+    });
+    expect(cfg.escrowAddress).toBe('0x' + 'cc'.repeat(20));
+    expect(cfg.networkName).toBe('localhost-external');
+  });
+
+  it('★ requireToken: 真写而三层都拿不到 token → 抛可操作的错 (点名三层 + 怎么修)', () => {
+    writeManifest('localhost.json', localhostManifest({ token: undefined }));
+    let err: any = null;
+    try {
+      loadChainConfig({
+        home: HOME, requireToken: true,
+        env: { BOLLOON_CHAIN_RPC_URL: 'http://x:1', BOLLOON_CHAIN_ID: '31337', BOLLOON_NETWORK_NAME: 'localhost', BOLLOON_DEPLOYMENTS_DIR: DEPLOY_DIR } as any,
+      });
+    } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(ChainConfigError);
+    expect(err.missing).toEqual(['tokenAddress']);
+    expect(err.message).toContain('BOLLOON_TOKEN_ADDRESS');
+    expect(err.message).toContain('chain.json');
+    expect(err.message).toContain('manifest');
+  });
+
+  it('requireToken 而 token 拿得到 → 不抛 (只拦真缺的)', () => {
+    writeManifest('localhost.json', localhostManifest());
+    const cfg = loadChainConfig({
+      home: HOME, requireToken: true,
+      env: { BOLLOON_CHAIN_RPC_URL: 'http://x:1', BOLLOON_CHAIN_ID: '31337', BOLLOON_NETWORK_NAME: 'localhost', BOLLOON_DEPLOYMENTS_DIR: DEPLOY_DIR } as any,
+    });
+    expect(cfg.tokenAddress).toBe(mToken);
+  });
+
+  it('selectDeploymentManifest 直接调用也守规矩 (没锚 → null + 说明原因)', () => {
+    writeManifest('localhost.json', localhostManifest());
+    const sel = selectDeploymentManifest({ deploymentsDir: DEPLOY_DIR });
+    expect(sel.manifest).toBeNull();
+    expect(sel.reason).toContain('没有锚');
+    expect(sel.candidates.length).toBe(1);
+    const hit = selectDeploymentManifest({ chainId: 31337, escrowAddress: mEscrow, deploymentsDir: DEPLOY_DIR });
+    expect(hit.manifest?.escrowAddress).toBe(mEscrow);
+  });
+
+  it('listDeploymentManifests 跳过坏文件 / 没有 AgentEscrow 的 manifest (不静默当空)', () => {
+    writeManifest('localhost.json', localhostManifest());
+    writeManifest('broken.json', { chainId: 31337, contracts: [] });
+    fs.writeFileSync(path.join(DEPLOY_DIR, 'notjson.json'), '{oops');
+    const list = listDeploymentManifests({ deploymentsDir: DEPLOY_DIR });
+    expect(list.map((m) => path.basename(m.path))).toEqual(['localhost.json']);
+    expect(list[0].tokenAddress).toBe(mToken);
+    expect(list[0].escrowBlockNumber).toBe(2);
   });
 });
 

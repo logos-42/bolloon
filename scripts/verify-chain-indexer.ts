@@ -34,6 +34,7 @@ import * as path from 'path';
 import { HDNodeWallet, Mnemonic, Wallet, Contract, JsonRpcProvider, formatUnits } from 'ethers';
 
 const CHAIN = await import('../src/agents/chain/index.js');
+const { parseDeploymentManifest } = await import('../src/agents/chain/chain-config.js');
 const {
   ChainIndexer, INDEX_IFACE, resolveDeploymentInfo, compareIndexes,
   getIndexStatus, getIndexStats, getEscrowTimeline, fetchIndexSince,
@@ -62,19 +63,34 @@ const DEV_MNEMONIC = 'test test test test test test test test test test test jun
 const ERC20_ABI = [
   'function decimals() view returns (uint8)', 'function symbol() view returns (string)',
   'function balanceOf(address) view returns (uint256)', 'function approve(address,uint256) returns (bool)',
-  'function allowance(address,address) view returns (uint256)',
+  'function allowance(address,address) view returns (uint256)', 'function mint(address,uint256)',
 ];
 const WRITE_ABI = [...(AGENT_ESCROW_V2_ABI as unknown as string[]), 'function expireV2(bytes32 taskKey)'];
 
 const LOCAL_RPC = process.env.BOLLOON_CHAIN_RPC_URL || process.env.BOLLOON_RPC_URL || process.env.RPC_URL || 'http://127.0.0.1:8545';
 const ONLY_LOCAL = process.argv.includes('--local-only');
 
-/** 从 manifest 解析某条链的部署信息 (绝不硬编码地址/块号) */
+/**
+ * 从 manifest 解析某条链的部署信息 (绝不硬编码地址/块号)。
+ * ★ 解析走 chain-config 的 `parseDeploymentManifest` —— 与生产同一份代码:
+ *   token 地址可能记在 `.token.address` (自部署替身) 或 `.externalToken.address` (外部真 token),
+ *   手写一遍 `m.externalToken?.address` 就会在本地 mock 部署上拿到 undefined
+ *   (2026-09-22 实测: 本脚本就是在这里 `new Contract(undefined)` 炸的)。
+ */
 function manifestDeployment(networkName: string): any {
   const p = path.resolve(process.cwd(), `contracts/deployments/${networkName}.json`);
   const m = JSON.parse(fs.readFileSync(p, 'utf8'));
-  const escrow = (m.contracts || []).find((c: any) => c.name === 'AgentEscrow');
-  return { manifest: m, escrowAddress: escrow.address, rpcUrl: m.rpcUrl, chainId: Number(m.chainId), tokenAddress: m.externalToken?.address };
+  const man = parseDeploymentManifest(p, m);
+  if (!man) throw new Error(`${p} 里没有可认的 AgentEscrow 部署事实 (不猜地址, 也不硬编码)`);
+  return {
+    manifest: m, man,
+    escrowAddress: man.escrowAddress,
+    rpcUrl: man.rpcUrl,
+    chainId: man.chainId,
+    tokenAddress: man.tokenAddress,
+    tokenDecimals: man.tokenDecimals,
+    deploymentBlock: man.escrowBlockNumber,
+  };
 }
 
 const contentHashOf = (s: string) => CHAIN.computeResultHashOffChain(`sha256:${s}`);
@@ -173,8 +189,27 @@ async function main() {
     return { taskId, taskKey, ...out };
   };
 
+  // ★ 资金前提由**本脚本自己**保证, 不靠别人留下的链上状态:
+  //   共享 anvil 上别的验收跑一趟就会把 allowance 花掉 → 老断言"不需要新增 approve 也能发真交易"
+  //   是"环境巧合才绿"的典型 (2026-09-22 实测: allowance 只剩 0.18 USDC → 直接炸在 create 上)。
+  //   这里先按本脚本实际要用的量补齐 (本地 MockERC20 的 mint/approve 是公开的), 再断言补完够用。
+  const NEED_ALLOWANCE = AMOUNT * 6n;   // 本脚本最多造 6 个 escrow (A/B/C/D/E/F)
+  const bal0 = await token.balanceOf(buyer.address);
+  const allow0 = await token.allowance(buyer.address, local.escrowAddress);
+  const topUp: string[] = [];
+  if (bal0 < NEED_ALLOWANCE) {
+    const r = await (await token.connect(buyer).mint(buyer.address, NEED_ALLOWANCE * 2n)).wait();
+    topUp.push(`mint ${formatUnits(NEED_ALLOWANCE * 2n, decimals)} (tx ${r!.hash})`);
+  }
+  if (allow0 < NEED_ALLOWANCE) {
+    const r = await (await token.connect(buyer).approve(local.escrowAddress, NEED_ALLOWANCE * 10n)).wait();
+    topUp.push(`approve ${formatUnits(NEED_ALLOWANCE * 10n, decimals)} (tx ${r!.hash})`);
+  }
+  const balance = await token.balanceOf(buyer.address);
   const allowance = await token.allowance(buyer.address, local.escrowAddress);
-  check('buyer 对 escrow 的 allowance 足够 (不需要新增 approve 也能发真交易)', allowance >= AMOUNT * 6n, `allowance=${allowance}`);
+  console.log(`  buyer 资金前提: 余额=${formatUnits(balance, decimals)} · allowance=${formatUnits(allowance, decimals)}${topUp.length ? ` ← 本脚本自己补的: ${topUp.join(' · ')}` : ' (链上本来就有)'}`);
+  check('buyer 余额 + allowance ≥ 本脚本要用的量 (不足时自己 mint/approve, 不靠别人留下的状态)',
+    balance >= NEED_ALLOWANCE && allowance >= NEED_ALLOWANCE, { balance: balance.toString(), allowance: allowance.toString(), need: NEED_ALLOWANCE.toString(), topUp });
 
   // ═══════════════════════════════════════════════════════════════════════
   section('② 造真事件 (A: createEscrowV2 → submitProofV2 → releaseV2)');

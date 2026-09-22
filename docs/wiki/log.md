@@ -2906,3 +2906,12 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **顺带发现**: `verify-onchain-trade-loop.ts` **同样脆弱**(忙链 70/5, 安静链 75/0) —— 三处同修(N2 门槛推导 / R1 改判"我们账户 nonce 没动" / R4 快照回退 + 按 head 算深度)。
 - **我独立复跑**: `npx tsc --noEmit` **0 错** · **P3 门 59 passed / 0 failed** · P4 闭环 **75 passed / 0 failed** · **全量 vitest 197 文件 / 2570 测试全过** · 关键单测(chain-state-store + mcp-server)64/64。子智能体另给出**忙链下 3/3**(期间别人出 2991/2832/3158 块)与**忙链+共享模式 3/3**(期间别人出 5019/5503/5158 块)的真实行。
 - **如实残留(未修, 已记录)**: 隔离链用 fork 而非 `--load-state` 全链快照(上游涨到几十万块时 `dumpState` >2GB → OOM);**共享模式下仍无法 100% 确定**(§⑦ 回退与别人出块天然赛跑;若他人用同一批 dev 账户 0/1 会有 nonce 竞争) —— 靠默认隔离链规避;`verify-chain-indexer.ts` 另有两处"安静链"假设未动(超出本次范围);wiki 回写由我完成。
+
+## [2026-09-22] fix(chain) | 链配置加第③层(deployment manifest) + P6 门密闭化 — **含两条未决(如实记录)**
+
+- **根因(一个而不是八个)**: `resolveDeployment()` 读 `manifest.externalToken?.address`, 而本地 mock 部署记的是 `.token.address` → token=null → CLI 落到含糊的 `INVALID_ARGUMENT 缺少 --asset` → create/proof/release/chain-state/suspect/MCP 写 **连锁全红**(8 条)。修后 8 条逐条真绿(真 txHash `0x9c6ccd47…`、receipt 链上复核、`escrow 余额 10020000→10040000`、`seller 110100000→110120000`)。
+- **链配置三层**: `env → ~/.bolloon/chain.json → contracts/deployments/<network>.json(按 chainId/networkName/rpcUrl/escrowAddress 锚匹配) → 报错`;③ 只填 ①② 没给的字段; **无锚/多份匹配/跨 chainId 一律拒绝猜**并列出候选;真写需要 token 而三层都拿不到时报 `CHAIN_NOT_CONFIGURED` + `data.missing` + `howToFix` 四条(不再伪装成参数错)。`BOLLOON_DEPLOYMENTS_DIR` 可覆盖;`chain-indexer.defaultDeploymentsDir()` 共用同一实现。
+- **门密闭化**: 私有 fork 链(只回滚自己)+ 子进程 env 按 `BOLLOON_*|RPC_URL|*_PRIVATE_KEY` 清洗后注入 + 各角色临时 HOME 的 chain.json 由 manifest 现写; **负控制**: 部署目录为空 → `拿不到部署事实, 门不跑 … 那才是会撒谎的门`(不静默跳过)。
+- **我独立复跑**: `tsc --noEmit` **0 错** · `verify-chain-bridge` **59/0** · `verify-onchain-trade-loop` **75/0** · `verify-chain-indexer` **69/0**(改前是 EXIT=1, 崩在 `new Contract(undefined)`) · 负控制有效。
+- **⚠️ 未决 ①(我的复验发现, 子智能体声称全绿)**: `src/test/chain-paid-info-f5.test.ts > 旧调用方签名兼容: 不传 chainSettlement 也能拿到结果 (不炸)` **确定性红**(单跑 1 failed / 32 passed;全量里也红)—— 真回归, 待修。
+- **⚠️ 未决 ②**: 门启动隔离链时**子进程 env 清洗丢掉了 `DYLD_LIBRARY_PATH`** → 本机 anvil `Library not loaded: libusb-1.0.0.dylib`/SIGABRT → 隔离链起不来(我已 export 也无效, 说明是 spawn 重建 env 所致)。需把 `DYLD_LIBRARY_PATH` 列入透传白名单。

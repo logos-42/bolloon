@@ -10,6 +10,8 @@
  *   · `chain timeline`: 真事件顺序还原 create→proof→release; 空 → ESCROW_NOT_FOUND; 有回退记录 → REORG_SUSPECTED
  *   · `chain trade create`: 参数/预算门 (BUDGET_EXCEEDED) / 未授权 (NOT_AUTHORIZED) / 余额不足
  *     (INSUFFICIENT_FUNDS) / 广播前回滚 (CHAIN_TX_REVERTED) / 结论未定 (CHAIN_UNCERTAIN) / 成立 (OK)
+ *   · 链上写操作的**授权意图** (`--payment-mode` / `--request-id`): 非法值拒 · manual/policy 被闸拒 ·
+ *     声明的 requestId 进放行闸派生且写审计 (不记私钥/正文) · 同一声明重复 → notDuplicate 拒
  *   · `chain trade recover`: 纯读盘 → done / verify_only→reconcile / suspect→REORG_SUSPECTED
  *
  * 真链 (真签名/真 receipt/真事件/真重组) 在 `scripts/verify-chain-cli.ts` 里跑。
@@ -28,6 +30,7 @@ import { SERVICE_GROUPS, GROUP_COMMANDS, isServiceGroup } from '../cli/commands/
 import { setChainIndexPathForTesting } from '../agents/chain/chain-index-query.js';
 import { upsertChainTx, markSuspect, chainStatePath } from '../agents/chain/chain-state-store.js';
 import { onchainTaskKey } from '../agents/chain/onchain-trade.js';
+import { chainRequestIdOf } from '../agents/chain/chain-wallet.js';
 import { clientWith, fakeProvider, fakeSigner, escrowTuple, ESCROW_ADDR } from './chain-test-helpers.js';
 
 const TEST_KEY = '0x' + '11'.repeat(32);
@@ -42,7 +45,11 @@ const savedEnv: Record<string, string | undefined> = {};
 const ENV_KEYS = [
   'HOME', 'BOLLOON_CHAIN_RPC_URL', 'BOLLOON_CHAIN_ID', 'BOLLOON_ESCROW_ADDRESS',
   'BOLLOON_TOKEN_ADDRESS', 'BOLLOON_AGENT_AUTHORIZED', 'BOLLOON_WALLET_PRIVATE_KEY',
+  'BOLLOON_DEPLOYMENTS_DIR',
 ];
+
+/** 空的 manifest 目录: 表达"三层都拿不到" (而不是靠"恰好匹配不上") */
+const EMPTY_DEPLOYMENTS = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-no-deployments-'));
 
 beforeEach(() => {
   HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-chain-cli-'));
@@ -335,6 +342,28 @@ describe('chain trade create', () => {
     expect((await run('chain', 'trade', 'create', '--task-id', TASK_ID, '--amount', '0.0.1', '--agent', AGENT)).code).toBe('INVALID_ARGUMENT');
   });
 
+  it('★ 真写拿不到 token → CHAIN_NOT_CONFIGURED + 可操作的修法 (不是含糊的 INVALID_ARGUMENT)', async () => {
+    // 链配齐 (RPC/chainId/escrow), 但三层都没有 token 地址: env 没给、chain.json 没写、
+    // 仓库 manifest 目录是空的 (模拟"这条部署不在本仓库里")
+    process.env.BOLLOON_CHAIN_RPC_URL = 'http://127.0.0.1:8545';
+    process.env.BOLLOON_CHAIN_ID = '31337';
+    process.env.BOLLOON_ESCROW_ADDRESS = ESCROW_ADDR;
+    delete process.env.BOLLOON_TOKEN_ADDRESS;
+    process.env.BOLLOON_DEPLOYMENTS_DIR = EMPTY_DEPLOYMENTS;
+    const env = await run('chain', 'trade', 'create', '--task-id', `${TASK_ID}-notoken`, '--amount', '0.02', '--agent', AGENT);
+    expect(env.ok).toBe(false);
+    expect(env.code).toBe('CHAIN_NOT_CONFIGURED');
+    expect(env.data.missing).toEqual(['tokenAddress']);
+    // 报错必须**可操作**: 点名三层来源 + 给出修法 (机器可读的 howToFix)
+    expect(String(env.message)).toContain('BOLLOON_TOKEN_ADDRESS');
+    expect(String(env.message)).toContain('chain.json');
+    expect(String(env.message)).toContain('manifest');
+    expect(Array.isArray(env.data.howToFix)).toBe(true);
+    expect((env.data.howToFix as string[]).length).toBeGreaterThanOrEqual(3);
+    // 读路径不受影响 (只拦真写)
+    expect((await run('chain', 'status')).ok).toBe(true);
+  });
+
   it('金额超 M1 单次上限 → BUDGET_EXCEEDED 并指明哪一层 (根本不发交易)', async () => {
     chainConfigured();
     authorized();
@@ -567,5 +596,76 @@ describe('chain trade recover', () => {
     const env = await run('chain', 'trade', 'recover', '--task-key', TASK_KEY);
     expect(env.data.taskKey).toBe(TASK_KEY);
     expect(env.ok).toBe(true);
+  });
+});
+
+// ── 链上**写**操作的授权意图 (--payment-mode / --request-id) ───────────────────
+// MCP 写 tool 会强制显式携带这两个参数; CLI 侧它们是可选的, 但一旦给了就必须照办
+// (非法值拒绝 / 只能收紧 / 进放行闸的 requestId 派生 → 同一声明只签一次)。
+
+describe('chain trade 写操作的授权意图 (--payment-mode / --request-id)', () => {
+  it('--payment-mode 非法 → INVALID_ARGUMENT (不静默退回默认口径)', async () => {
+    chainConfigured();
+    authorized();
+    const env = await run('chain', 'trade', 'create', '--task-id', `${TASK_ID}-badmode`, '--agent', AGENT, '--amount', '0.02', '--payment-mode', 'auto-pilot');
+    expect(env.ok).toBe(false);
+    expect(env.code).toBe('INVALID_ARGUMENT');
+    expect(env.data.accepted).toContain('agent-authorized');
+  });
+
+  it('★ 声明 manual / policy (非自主模式) → 放行闸按 modeIsAutonomous 拒 (NOT_AUTHORIZED, 没发交易)', async () => {
+    chainConfigured();
+    authorized();
+    setChainCommandDepsForTesting({ client: () => outcomeClient(txOutcome()) });
+    for (const mode of ['manual', 'policy']) {
+      const env = await run('chain', 'trade', 'create', '--task-id', `${TASK_ID}-${mode}`, '--agent', AGENT, '--amount', '0.02', '--payment-mode', mode);
+      expect(env.ok, mode).toBe(false);
+      expect(env.code, mode).toBe('NOT_AUTHORIZED');
+      expect(env.data.authorized, mode).toBe(false);
+      expect(env.data.txHash, mode).toBeNull();
+      // 声明被如实回显 (没有替调用方改口径)
+      expect((env.data.authIntent as any).paymentMode, mode).toBe(mode);
+      expect((env.data.authIntent as any).note, mode).toContain('声明 ≠ 授权');
+    }
+  });
+
+  it('★ 声明 agent-authorized + requestId → 真签放行, 且审计里按声明派生 requestId (同一声明只签一次)', async () => {
+    chainConfigured();
+    authorized();
+    setChainCommandDepsForTesting({
+      client: () => outcomeClient(txOutcome()),
+      verifyOnChain: async () => verdict({
+        chainSettled: true, status: 'confirmed', reason: 'ok', confirmations: 2, blockNumber: 130,
+        eventMatched: true, matchedEvent: 'EscrowCreatedV2', escrowState: 'ACTIVE', rpcAvailable: true,
+      }),
+    });
+    const taskId = `${TASK_ID}-intent`;
+    const rid = 'mcp-intent-rid-unit-1';
+    const env = await run('chain', 'trade', 'create', '--task-id', taskId, '--agent', AGENT, '--amount', '0.02', '--payment-mode', 'agent-authorized', '--request-id', rid);
+    expect(env.ok).toBe(true);
+    expect(env.data.txHash).toBe(TXH);
+    expect((env.data.authIntent as any).paymentMode).toBe('agent-authorized');
+    expect((env.data.authIntent as any).declaredRequestId).toBe(rid);
+
+    // 审计 (~/.bolloon/wallet-signatures.jsonl): 只记摘要, 不记私钥/任务正文
+    const auditPath = path.join(HOME, '.bolloon', 'wallet-signatures.jsonl');
+    expect(fs.existsSync(auditPath)).toBe(true);
+    const rows = fs.readFileSync(auditPath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const row = rows[rows.length - 1];
+    const expectedRequestId = chainRequestIdOf({ method: 'createEscrowV2', taskKey: onchainTaskKey(taskId), amountAtomic: '20000', intentNonce: rid } as any, 31337);
+    expect(row.requestId).toBe(expectedRequestId);          // 声明的 requestId 真进了放行闸派生
+    expect(row.mode).toBe('agent-authorized');
+    expect(row.taskId).toBe(taskId);
+    expect(JSON.stringify(row)).not.toContain(TEST_KEY);    // 私钥绝不进审计
+    for (const k of ['privateKey', 'secret', 'instruction', 'taskText', 'mnemonic', 'seed']) {
+      expect(JSON.stringify(row)).not.toContain(`"${k}"`);
+    }
+
+    // ★ 同一个 requestId 重复声明 → 闸按 notDuplicate 拒 (同一次意图只签一次)
+    const again = await run('chain', 'trade', 'create', '--task-id', taskId, '--agent', AGENT, '--amount', '0.02', '--payment-mode', 'agent-authorized', '--request-id', rid);
+    expect(again.ok).toBe(false);
+    expect(again.code).toBe('NOT_AUTHORIZED');
+    expect(String((again.data as any).authReason)).toContain('notDuplicate');
+    expect(again.data.txHash).toBeNull();
   });
 });

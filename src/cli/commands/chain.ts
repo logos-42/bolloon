@@ -30,6 +30,7 @@ import {
   type CliFlags, type CommandResult, type Envelope, type Code, type NextAction,
   okEnvelope, failEnvelope, line, title, hint, plain, opt,
 } from '../protocol-envelope.js';
+import { isPaymentMode, PAYMENT_MODES, type PaymentMode } from '../../agents/task-contract.js';
 
 const home = (): string => os.homedir();
 
@@ -56,6 +57,14 @@ ${title('bolloon chain')}
 选项: --json · --quiet · --request-id <id> · --timeout <ms> · --task-key <hex>
 判据永远是信封里的 ok/code; 失败码见 skills/bolloon-network/SKILL.md「链上能力」一节。
 链上写操作的签名走 P3 放行闸 (fail-closed): 未授权 → NOT_AUTHORIZED, 且**不发交易、不碰私钥**。
+
+链上**写**操作 (create|submit-proof|release) 的**授权意图**:
+  --payment-mode <manual|policy|autonomous|agent-authorized>   声明"在何种支付模式下签这笔链上写"
+  --request-id <id>                                            显式幂等/授权键 (参与放行闸 requestId 的确定性派生)
+  两个都是**可选**(CLI 缺省沿用历史口径 agent-authorized / 确定性派生), 但 **MCP 写 tool 强制显式携带**;
+  声明本身**不授权** —— 最终还是看本机放行闸 (authorizeWalletSignature, fail-closed)。
+--payment-mode manual|policy 会被放行闸直接拒 (modeIsAutonomous): 它只能**收紧**, 不可能放权。
+chain trade expire 不存在 (仓库没实现) —— 需要它请先实现合约侧子命令再暴露, 不许在 MCP 层假装。
 `;
 
 // ── 测试注入 (生产不设; 生产唯一构造入口仍是 EscrowClient({ config })) ──────────
@@ -114,18 +123,36 @@ function taskKeyArg(flags: CliFlags): string | null {
 }
 
 /** 链配置 (缺 → CHAIN_NOT_CONFIGURED, 列出缺哪些; 绝不猜地址) */
-async function loadCfg(): Promise<{ ok: true; cfg: any } | { ok: false; envelope: Envelope }> {
+async function loadCfg(opts: { requireToken?: boolean } = {}): Promise<{ ok: true; cfg: any } | { ok: false; envelope: Envelope }> {
   const CFG: any = await import('../../agents/chain/chain-config.js');
   try {
-    return { ok: true, cfg: CFG.loadChainConfig({ home: home() }) };
+    // requireToken: 真写 (createEscrow) 必须知道**付哪个 token** —— 拿不到就给可操作的错
+    // (三层来源逐个点名 + 怎么修), 而不是让下游报含糊的"缺少参数"。
+    return { ok: true, cfg: CFG.loadChainConfig({ home: home(), requireToken: opts.requireToken === true }) };
   } catch (e: any) {
     const missing = Array.isArray(e?.missing) ? e.missing : [];
+    const tokenGap = missing.includes('tokenAddress');
     return {
       ok: false,
       envelope: failEnvelope(
         'CHAIN_NOT_CONFIGURED',
         String(e?.message || e).slice(0, 400),
-        { missing, home: home(), configPath: CFG.chainConfigPath(home()) },
+        {
+          missing,
+          home: home(),
+          configPath: CFG.chainConfigPath(home()),
+          deploymentsDir: CFG.deploymentsDir(process.env),
+          // ★ 缺"付款资产"时把修法一并放进信封 (机器可执行, 不用去猜) —— 见 chain-config.tokenAddressGuidance
+          ...(tokenGap ? {
+            tokenAddress: null,
+            howToFix: [
+              'export BOLLOON_TOKEN_ADDRESS=0x… (真 USDC 或本地 MockERC20)',
+              `在 ${CFG.chainConfigPath(home())} 写 {"tokenAddress":"0x…","tokenDecimals":6}`,
+              '让部署 manifest 记 token 地址, 并给出能唯一定位它的锚 (BOLLOON_CHAIN_ID / BOLLOON_NETWORK_NAME)',
+              '本次显式传 --asset 0x… (只影响这一次调用)',
+            ],
+          } : {}),
+        },
         [],
         'needs_human',
       ),
@@ -594,12 +621,22 @@ async function defaultDeadline(client: any, windowSec = 3600): Promise<bigint> {
 }
 
 /** 组装一条链上交易意图 (摘要口径与 task-onchain-runner 完全一致: 均由 taskId 确定性派生) */
-async function buildTradeRequest(flags: CliFlags, cfg: any, client: any): Promise<{ ok: true; req: any; taskId: string; taskKey: string; decimals: number; amountUsdc: string | null } | { ok: false; envelope: Envelope }> {
+async function buildTradeRequest(flags: CliFlags, cfg: any, client: any): Promise<{ ok: true; req: any; taskId: string; taskKey: string; decimals: number; amountUsdc: string | null; paymentMode: PaymentMode | null } | { ok: false; envelope: Envelope }> {
   const OT: any = await import('../../agents/chain/onchain-trade.js');
   const taskId = opt(flags, '--task-id') || flags.requestId || '';
   if (!taskId) {
     return { ok: false, envelope: failEnvelope('INVALID_ARGUMENT', '缺少 --task-id (链上 taskKey 由它确定性派生)', { usage: plain(CHAIN_USAGE.trim()) }, [], 'needs_human') };
   }
+  // ★ 授权意图 (链上写操作): 只**翻译**成放行闸能看的两个字段, 不在这里判"能不能签"。
+  //    给了就必须是冻结词表里的值 (非法值拒绝, 不静默退回); 没给 = 沿用历史口径 (CLI 老用法不变)。
+  const modeRaw = opt(flags, '--payment-mode');
+  if (modeRaw !== undefined && !isPaymentMode(modeRaw)) {
+    return {
+      ok: false,
+      envelope: failEnvelope('INVALID_ARGUMENT', `--payment-mode 非法: ${String(modeRaw).slice(0, 40)} (要 ${PAYMENT_MODES.join('|')})`, { paymentMode: String(modeRaw).slice(0, 40), accepted: [...PAYMENT_MODES] }, [], 'needs_human'),
+    };
+  }
+  const paymentMode: PaymentMode | undefined = isPaymentMode(modeRaw) ? modeRaw : undefined;
   const decimals = Number(cfg.tokenDecimals || 6);
   const amountUsdc = opt(flags, '--amount') ?? null;
 
@@ -610,7 +647,32 @@ async function buildTradeRequest(flags: CliFlags, cfg: any, client: any): Promis
   }
   const paymentAsset = opt(flags, '--asset') || cfg.tokenAddress;
   if (!paymentAsset) {
-    return { ok: false, envelope: failEnvelope('INVALID_ARGUMENT', '缺少 --asset (且链配置里没有 tokenAddress)', { tokenAddress: cfg.tokenAddress }, [], 'needs_human') };
+    // ★ 可操作的错: 真写需要**付款资产**地址, 但三层 (env / chain.json / 仓库 manifest) 都拿不到。
+    //   报 CHAIN_NOT_CONFIGURED (不是含糊的 INVALID_ARGUMENT) + 明说怎么修。
+    const CFG: any = await import('../../agents/chain/chain-config.js');
+    return {
+      ok: false,
+      envelope: failEnvelope(
+        'CHAIN_NOT_CONFIGURED',
+        CFG.tokenAddressGuidance({ home: home(), networkName: cfg.networkName, env: process.env }),
+        {
+          missing: ['tokenAddress'],
+          tokenAddress: cfg.tokenAddress ?? null,
+          networkName: cfg.networkName,
+          configPath: CFG.chainConfigPath(home()),
+          deploymentsDir: CFG.deploymentsDir(process.env),
+          manifestSource: cfg.sources?.deploymentManifest ?? null,
+          howToFix: [
+            'export BOLLOON_TOKEN_ADDRESS=0x… (真 USDC 或本地 MockERC20)',
+            `在 ${CFG.chainConfigPath(home())} 写 {"tokenAddress":"0x…","tokenDecimals":6}`,
+            '让部署 manifest 记 token 地址, 并给锚 (BOLLOON_CHAIN_ID / BOLLOON_NETWORK_NAME) 让它唯一可选中',
+            '本次显式传 --asset 0x… (只影响这一次调用)',
+          ],
+        },
+        [],
+        'needs_human',
+      ),
+    };
   }
   if (!ADDR_RE.test(String(paymentAsset))) {
     return { ok: false, envelope: failEnvelope('INVALID_ARGUMENT', `--asset 不是合法地址: ${paymentAsset}`, {}, [], 'needs_human') };
@@ -647,9 +709,12 @@ async function buildTradeRequest(flags: CliFlags, cfg: any, client: any): Promis
     tokenDecimals: decimals,
     gate,
     env: process.env,
+    // ★ 授权意图 (只往下传, 不在这里判定): 模式 + 显式幂等/授权键
+    ...(paymentMode ? { paymentMode } : {}),
+    ...(flags.requestId ? { intentNonce: flags.requestId } : {}),
   };
   if (deps?.verifyOnChain) req.verifyOnChain = deps.verifyOnChain;
-  return { ok: true, req, taskId, taskKey: OT.onchainTaskKey(taskId), decimals, amountUsdc };
+  return { ok: true, req, taskId, taskKey: OT.onchainTaskKey(taskId), decimals, amountUsdc, paymentMode: paymentMode ?? null };
 }
 
 async function chainTrade(flags: CliFlags): Promise<CommandResult> {
@@ -663,7 +728,9 @@ async function chainTrade(flags: CliFlags): Promise<CommandResult> {
   // recover 是**纯读盘** (不联网/不发交易) → 不需要链客户端, 也**不要求链配置**
   if (sub === 'recover') return chainTradeRecover(flags);
 
-  const loaded = await loadCfg();
+  // create 是**真写** (真移钱) → 必须有付款资产地址; 拿不到就报可操作的 CHAIN_NOT_CONFIGURED
+  // (submit-proof / release 不在这里拦: 它们的资产字段是"声明口径", 由 buildTradeRequest 兜底)
+  const loaded = await loadCfg({ requireToken: sub === 'create' });
   if (!loaded.ok) return { envelope: loaded.envelope, human: humanFail('bolloon chain trade', loaded.envelope) };
   const cfg = loaded.cfg;
 
@@ -674,8 +741,18 @@ async function chainTrade(flags: CliFlags): Promise<CommandResult> {
 
   const built = await buildTradeRequest(flags, cfg, client);
   if (!built.ok) return { envelope: built.envelope, human: humanFail('bolloon chain trade', built.envelope) };
-  const { req, taskKey, decimals, amountUsdc } = built;
+  const { req, taskKey, decimals, amountUsdc, paymentMode } = built;
   const OT: any = await import('../../agents/chain/onchain-trade.js');
+  /**
+   * 回显调用方的**授权意图声明** (不是授权结论)。
+   * ★ 口径: `paymentMode` 是"我按什么模式声明的", `declaredRequestId` 是"我为哪次请求声明"——
+   *   真正放不放行仍由本机放行闸 (`authorizeWalletSignature`, fail-closed) 决定, 这里不替它表态。
+   */
+  const authIntent = {
+    paymentMode: paymentMode ?? 'agent-authorized',
+    declaredRequestId: flags.requestId ?? null,
+    note: '声明 ≠ 授权: 是否真签名由本机放行闸决定 (未授权 / 重复 requestId / 超额 一律拒)',
+  };
 
   if (sub === 'create') {
     if (!amountUsdc) {
@@ -687,11 +764,11 @@ async function chainTrade(flags: CliFlags): Promise<CommandResult> {
     // M1 预算闸 (P4 checkOnchainAmount 是唯一预算判定; 本命令组不另立一条)
     const budget = OT.checkOnchainAmount({ amountAtomic: req.amountAtomic, decimals });
     if (!budget.ok) {
-      const env = failEnvelope('BUDGET_EXCEEDED', `预算门拒绝 (${budget.layer || 'budget'}): ${budget.reason}`, { layer: budget.layer ?? null, amountUsdc: budget.amountUsdc, budget: budget.budget, why: budget.why }, [], 'raise_budget');
+      const env = failEnvelope('BUDGET_EXCEEDED', `预算门拒绝 (${budget.layer || 'budget'}): ${budget.reason}`, { layer: budget.layer ?? null, amountUsdc: budget.amountUsdc, budget: budget.budget, why: budget.why, authIntent }, [], 'raise_budget');
       return { envelope: env, human: humanFail('bolloon chain trade create', env) };
     }
     const step: Step = await OT.createEscrowStep(req);
-    const env = stepEnvelope('create', step, { taskId: req.taskId, taskKey, amountAtomic: req.amountAtomic.toString(), amountUsdc: budget.amountUsdc, escrowAddress: cfg.escrowAddress });
+    const env = stepEnvelope('create', step, { taskId: req.taskId, taskKey, amountAtomic: req.amountAtomic.toString(), amountUsdc: budget.amountUsdc, escrowAddress: cfg.escrowAddress, authIntent });
     return { envelope: env, human: humanStep('create', env) };
   }
 
@@ -706,13 +783,14 @@ async function chainTrade(flags: CliFlags): Promise<CommandResult> {
     const env = stepEnvelope('proof', step, {
       taskId: req.taskId, taskKey, resultDigest,
       onchainResultHash: OT.chainHashOf(resultDigest),
+      authIntent,
     });
     return { envelope: env, human: humanStep('submit-proof', env) };
   }
 
   // release
   const step: Step = await OT.releaseStep(req);
-  const env = stepEnvelope('release', step, { taskId: req.taskId, taskKey });
+  const env = stepEnvelope('release', step, { taskId: req.taskId, taskKey, authIntent });
   return { envelope: env, human: humanStep('release', env) };
 }
 

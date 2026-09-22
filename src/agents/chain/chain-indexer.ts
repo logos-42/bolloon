@@ -39,6 +39,7 @@ import {
 import {
   DEFAULT_CONFIRMATIONS,
   bolloonHome,
+  deploymentsDir,
   type ChainConfirmations,
   type ChainConfig,
 } from './chain-config.js';
@@ -229,7 +230,9 @@ const NO_RPC: IndexRpcProvider = {
 };
 
 export function defaultDeploymentsDir(): string {
-  return process.env.BOLLOON_DEPLOYMENTS_DIR || path.resolve(process.cwd(), 'contracts/deployments');
+  // 与 chain-config 的 manifest 层**同一份**目录口径 (env BOLLOON_DEPLOYMENTS_DIR 优先,
+  // 其次从 cwd 往上找 contracts/deployments) —— 两处各写一遍就会给出两个答案。
+  return deploymentsDir(process.env);
 }
 
 /**

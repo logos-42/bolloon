@@ -7,7 +7,13 @@
  * 读取优先级 (不可颠倒; 这是硬规则):
  *   ① 环境变量            — 进程显式给的最优先
  *   ② 本地安全配置文件     — `~/.bolloon/chain.json` (0600, 只放公开事实 + 可选 RPC/地址)
- *   ③ 报错                — 取不到就抛错, 不许猜、不许 fallback 到某个内置地址
+ *   ③ 仓库部署 manifest    — `contracts/deployments/<network>.json` (按 chainId / networkName
+ *                            等**锚**匹配; 详见下面「第 ③ 层」一节), 只填 ①② 没给的字段
+ *   ④ 报错                — 取不到就抛错, 不许猜、不许 fallback 到某个内置地址
+ *
+ * 第 ③ 层不是"猜地址": manifest 是部署脚本写进仓库的**部署事实** (chainId + 地址 +
+ * 部署块 + bytecodeHash)。它让"换个 HOME / CI 上跑"也能拿到同一台机器刚部署的合约,
+ * 而不是把「本机没写 chain.json」错报成「链没配置」。选中它必须有**锚**, 有歧义就报错。
  *
  * 钱包私钥单独一条链 (同样 ①②③), 且**显式拒绝**任何看起来像别的 agent 的钱包目录
  * (例如 `~/.hermes/wallets/...`) —— 那不属于本进程, 读了就是越权。
@@ -126,6 +132,201 @@ export function isAddress(v: unknown): v is string {
   return typeof v === 'string' && ADDR_RE.test(v);
 }
 
+// ── 第 ③ 层: 仓库里的部署 manifest ──────────────────────────────────────────
+//
+// 为什么有这一层 (2026-09-22 修「靠环境巧合才绿的门」):
+//   链上地址是**部署事实**, 已经逐字写在仓库的 `contracts/deployments/*.json` 里
+//   (部署脚本自己写的: chainId / 合约地址 / 部署块 / bytecodeHash / 构造参数)。
+//   只认 env 与 `~/.bolloon/chain.json` 的后果是: 换个 HOME (CI、别的机器、验收用的
+//   临时 HOME) 就没有链配置 → `chain status` 报 CHAIN_NOT_CONFIGURED, 而**同一份仓库里
+//   刚刚部署出的合约地址其实就在手边**。那不是"链没配置", 是"配置读的层太少"。
+//
+// 口径 (与 chain-indexer 解析 deployment block 同源, 不另立第二套):
+//   ① env (`BOLLOON_*`) → ② `~/.bolloon/chain.json` → ③ 仓库 manifest → ④ 报错
+//   ③ 必须**有锚**才允许被选中: 锚 = ① ② 里已知的 chainId / networkName / rpcUrl /
+//     escrowAddress 任一。没有锚就说不出"这是哪条链的部署" → 一律不选 (**不猜**)。
+//   多份 manifest 同时匹配 → 歧义 → 不选 (报错里列出候选, 让人说清是哪份)。
+//   文件名 `<networkName>.json` 与已知 networkName 一致时**优先** (仓库约定: 一个网络一份)。
+//   ③ 只能**填 ① ② 没给的字段** —— 优先级不可颠倒。
+//   合约地址在 manifest 里可能记在两处: `.token.address` (自部署替身) 或
+//   `.externalToken.address` (外部真 token, 如 USDC) —— 两个都认, 后者是回退。
+
+export const DEPLOYMENTS_DIR_ENV = 'BOLLOON_DEPLOYMENTS_DIR';
+
+/** 部署 manifest 目录: env → 从 cwd 往上找 `contracts/deployments` → cwd 下的默认位置 */
+export function deploymentsDir(env: NodeJS.ProcessEnv = process.env): string {
+  const fromEnv = env[DEPLOYMENTS_DIR_ENV];
+  if (fromEnv) return path.resolve(String(fromEnv));
+  let dir = path.resolve(process.cwd());
+  for (let i = 0; i < 8; i++) {
+    const candidate = path.join(dir, 'contracts', 'deployments');
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return path.resolve(process.cwd(), 'contracts', 'deployments');
+}
+
+export interface DeploymentManifest {
+  /** 文件绝对路径 */
+  path: string;
+  /** 展示用 (相对 cwd; 不在 cwd 下则给绝对路径) */
+  label: string;
+  chainId: number | null;
+  networkName: string | null;
+  rpcUrl: string | null;
+  escrowAddress: string;
+  escrowBlockNumber: number | null;
+  tokenAddress: string | null;
+  tokenDecimals: number | null;
+  /** token 记在哪: '.token' (自部署) / '.externalToken' (外部真 token) */
+  tokenField: '.token' | '.externalToken' | null;
+}
+
+/** 解析一份 manifest (形状不对 → null; 绝不猜)。**只读**, 不含任何密钥。 */
+export function parseDeploymentManifest(file: string, raw: any): DeploymentManifest | null {
+  const escrow = (raw?.contracts || []).find((c: any) => c?.name === 'AgentEscrow');
+  if (!escrow || !isAddress(escrow.address)) return null;
+  const tokenField: DeploymentManifest['tokenField'] = isAddress(raw?.token?.address)
+    ? '.token'
+    : (isAddress(raw?.externalToken?.address) ? '.externalToken' : null);
+  const tokenRaw = tokenField ? raw[tokenField.slice(1)] : null;
+  const blk = Number(escrow.blockNumber);
+  const rel = path.relative(process.cwd(), file);
+  return {
+    path: file,
+    label: rel && !rel.startsWith('..') ? rel : file,
+    chainId: posInt(raw?.chainId),
+    networkName: typeof raw?.networkName === 'string' && raw.networkName ? String(raw.networkName) : null,
+    rpcUrl: typeof raw?.rpcUrl === 'string' && raw.rpcUrl ? String(raw.rpcUrl) : null,
+    escrowAddress: String(escrow.address),
+    escrowBlockNumber: Number.isInteger(blk) && blk >= 0 ? blk : null,
+    tokenAddress: tokenField ? String(tokenRaw.address) : null,
+    tokenDecimals: posInt(tokenRaw?.decimals),
+    tokenField,
+  };
+}
+
+/** 列出目录里所有能认的 manifest (读不了 / 形状不对的一律跳过, 不静默当空) */
+export function listDeploymentManifests(opts: { deploymentsDir?: string } = {}): DeploymentManifest[] {
+  const dir = opts.deploymentsDir || deploymentsDir();
+  let files: string[] = [];
+  try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')); } catch { return []; }
+  const out: DeploymentManifest[] = [];
+  for (const f of files.sort()) {
+    const p = path.join(dir, f);
+    try {
+      const man = parseDeploymentManifest(p, JSON.parse(fs.readFileSync(p, 'utf8')));
+      if (man) out.push(man);
+    } catch { /* 坏文件跳过 */ }
+  }
+  return out;
+}
+
+export interface DeploymentManifestSelection {
+  manifest: DeploymentManifest | null;
+  /** 目录里所有候选 (报错信息要能列出它们) */
+  candidates: DeploymentManifest[];
+  /** 为什么选中 / 为什么不选 (可直接进 sources 与报错文案) */
+  reason: string;
+  deploymentsDir: string;
+}
+
+/** 归一化比较用的 rpcUrl (去尾斜杠 + 小写 host 部分原样) */
+function normRpc(u: string | null | undefined): string | null {
+  if (!u) return null;
+  return String(u).trim().replace(/\/+$/, '').toLowerCase();
+}
+
+/**
+ * 按**已知的锚**从 manifest 目录里选一份部署事实。
+ *
+ * 锚 = chainId / networkName / rpcUrl / escrowAddress (调用方给的都算"必须匹配")。
+ * 没有锚 → 不选 (说不出是哪条链); 多份匹配 → 不选 (歧义)。**任何情况下都不猜。**
+ */
+export function selectDeploymentManifest(opts: {
+  chainId?: number | null;
+  networkName?: string | null;
+  rpcUrl?: string | null;
+  escrowAddress?: string | null;
+  deploymentsDir?: string;
+} = {}): DeploymentManifestSelection {
+  const dir = opts.deploymentsDir || deploymentsDir();
+  const candidates = listDeploymentManifests({ deploymentsDir: dir });
+  const wantChain = opts.chainId ?? null;
+  const wantName = opts.networkName && opts.networkName !== 'unknown' ? String(opts.networkName) : null;
+  const wantRpc = normRpc(opts.rpcUrl);
+  const wantEscrow = isAddress(opts.escrowAddress) ? String(opts.escrowAddress).toLowerCase() : null;
+
+  const anchors = [
+    wantChain !== null ? `chainId=${wantChain}` : null,
+    wantName ? `networkName=${wantName}` : null,
+    wantRpc ? `rpcUrl=${wantRpc}` : null,
+    wantEscrow ? `escrowAddress=${wantEscrow}` : null,
+  ].filter((x): x is string => !!x);
+
+  const hits = (m: DeploymentManifest): boolean =>
+    (wantChain === null || m.chainId === wantChain) &&
+    (wantName === null || m.networkName === wantName) &&
+    (wantRpc === null || normRpc(m.rpcUrl) === wantRpc) &&
+    (wantEscrow === null || m.escrowAddress.toLowerCase() === wantEscrow);
+
+  if (!anchors.length) {
+    return {
+      manifest: null, candidates, deploymentsDir: dir,
+      reason: `没有锚 (chainId / networkName / rpcUrl / escrowAddress 一个都没有) → 说不出是哪条链的部署, 不选${candidates.length ? ` (目录里有 ${candidates.length} 份候选: ${candidates.map((c) => path.basename(c.path)).join(', ')})` : ` (目录 ${dir} 里没有可认的 manifest)`}`,
+    };
+  }
+
+  // ① 文件名约定优先: <networkName>.json (一个网络一份 manifest)
+  if (wantName) {
+    const byFile = candidates.filter((m) => path.basename(m.path) === `${wantName}.json`);
+    if (byFile.length === 1) {
+      const m = byFile[0];
+      if (wantChain !== null && m.chainId !== null && m.chainId !== wantChain) {
+        return { manifest: null, candidates, deploymentsDir: dir, reason: `文件名 ${path.basename(m.path)} 是 networkName=${wantName} 的部署, 但它记的 chainId=${m.chainId} ≠ 你要的 ${wantChain} → 拒绝跨链取地址` };
+      }
+      return { manifest: m, candidates, deploymentsDir: dir, reason: `networkName=${wantName} → 文件名 ${path.basename(m.path)} (锚: ${anchors.join(', ')})` };
+    }
+  }
+
+  // ② 所有给出的锚都必须匹配同一份
+  const matched = candidates.filter(hits);
+  if (matched.length === 1) {
+    return { manifest: matched[0], candidates, deploymentsDir: dir, reason: `锚 ${anchors.join(', ')} 唯一匹配 ${path.basename(matched[0].path)}` };
+  }
+  if (matched.length === 0) {
+    return {
+      manifest: null, candidates, deploymentsDir: dir,
+      reason: `锚 ${anchors.join(', ')} 在 ${dir} 里一份都匹配不上${candidates.length ? ` (候选: ${candidates.map((c) => `${path.basename(c.path)}(chainId=${c.chainId}, network=${c.networkName}, escrow=${c.escrowAddress})`).join(', ')})` : ' (目录里没有可认的 manifest)'} → 拒绝猜`,
+    };
+  }
+  return {
+    manifest: null, candidates, deploymentsDir: dir,
+    reason: `锚 ${anchors.join(', ')} 同时匹配 ${matched.length} 份 manifest (${matched.map((c) => path.basename(c.path)).join(', ')}) → 歧义, 拒绝猜; 请用 BOLLOON_NETWORK_NAME 或 BOLLOON_ESCROW_ADDRESS 说清是哪一份, 或用 BOLLOON_DEPLOYMENTS_DIR 指向只放一份 manifest 的目录`,
+  };
+}
+
+/**
+ * 「拿不到 token 地址」的可操作报错文案 (真写 createEscrow 必须有它)。
+ * 只说**怎么修**, 不含任何密钥; 三层来源逐个点名。
+ */
+export function tokenAddressGuidance(opts: { home?: string; networkName?: string | null; env?: NodeJS.ProcessEnv } = {}): string {
+  const env = opts.env || process.env;
+  const dir = deploymentsDir(env);
+  return (
+    `真写 (createEscrow) 需要**付款资产** (token) 地址, 但三层都拿不到:` +
+    ` ① env BOLLOON_TOKEN_ADDRESS(未设)` +
+    ` ② ${chainConfigPath(opts.home)}(无 tokenAddress)` +
+    ` ③ 仓库部署 manifest ${dir} 里 networkName=${opts.networkName || 'unknown'} 那份的 .token.address / .externalToken.address` +
+    `。怎么修: (a) export BOLLOON_TOKEN_ADDRESS=0x…(真 USDC 或本地 MockERC20);` +
+    ` (b) 或在 ${chainConfigPath(opts.home)} 写 {"tokenAddress":"0x…","tokenDecimals":6};` +
+    ` (c) 或让部署 manifest 记录 token 地址 (并给出能唯一定位它的锚: BOLLOON_CHAIN_ID / BOLLOON_NETWORK_NAME);` +
+    ` (d) 本次只调用也可以显式传 --asset 0x…。本模块**不猜** token 地址 —— 猜错资产地址比报错危险得多。`
+  );
+}
+
 // ── 主入口 ──────────────────────────────────────────────────────────────────
 
 export interface LoadChainConfigOptions {
@@ -133,6 +334,12 @@ export interface LoadChainConfigOptions {
   /** 显式覆盖 (测试用; 优先级最高) */
   overrides?: Partial<ChainConfig>;
   env?: NodeJS.ProcessEnv;
+  /**
+   * 调用方**需要真写** (createEscrow) 时为 true: 拿不到 token 地址 → 抛可操作的
+   * `ChainConfigError` (missing=['tokenAddress'] + 三层来源 + 怎么修), 而不是让下游
+   * 报一个含糊的"缺少参数"。只做读 / 只做 escrow 操作时保持默认 false。
+   */
+  requireToken?: boolean;
 }
 
 /**
@@ -205,16 +412,77 @@ export function loadChainConfig(opts: LoadChainConfigOptions = {}): ChainConfig 
 
   // ⑦ networkName
   let networkName = 'unknown';
-  if (env.BOLLOON_NETWORK_NAME) { networkName = String(env.BOLLOON_NETWORK_NAME); sources.networkName = 'env BOLLOON_NETWORK_NAME'; }
-  else if (file?.networkName) { networkName = String(file.networkName); sources.networkName = `${chainConfigPath(home)} .networkName`; }
+  let networkNameUpper: string | null = null;
+  if (env.BOLLOON_NETWORK_NAME) { networkNameUpper = String(env.BOLLOON_NETWORK_NAME); sources.networkName = 'env BOLLOON_NETWORK_NAME'; }
+  else if (file?.networkName) { networkNameUpper = String(file.networkName); sources.networkName = `${chainConfigPath(home)} .networkName`; }
   else sources.networkName = '默认 unknown';
+  if (networkNameUpper) networkName = networkNameUpper;
 
-  if (missing.length) {
+  // ⑧ ★ 第 ③ 层: 仓库里的部署 manifest —— 只在 ①② 拿不全时读,
+  //    且**只填 ①② 没给的字段** (优先级不可颠倒)。选不中就说清为什么 (不猜)。
+  let manSel: DeploymentManifestSelection | null = null;
+  const needManifest = !rpcUrl || chainId === null || !escrowAddress || !tokenAddress || !networkNameUpper;
+  if (needManifest) {
+    manSel = selectDeploymentManifest({
+      chainId, networkName: networkNameUpper, rpcUrl, escrowAddress,
+      deploymentsDir: env[DEPLOYMENTS_DIR_ENV],
+    });
+    const man = manSel.manifest;
+    if (man) {
+      if (!escrowAddress) {
+        escrowAddress = man.escrowAddress;
+        sources.escrowAddress = `manifest ${man.label} .contracts[AgentEscrow].address`;
+      }
+      if (chainId === null && man.chainId !== null) {
+        chainId = man.chainId;
+        sources.chainId = `manifest ${man.label} .chainId`;
+      }
+      if (!rpcUrl && man.rpcUrl) {
+        rpcUrl = man.rpcUrl;
+        sources.rpcUrl = `manifest ${man.label} .rpcUrl (部署时记下的 RPC)`;
+      }
+      if (!tokenAddress && man.tokenAddress) {
+        tokenAddress = man.tokenAddress;
+        sources.tokenAddress = `manifest ${man.label} ${man.tokenField}.address`;
+      }
+      // ★ decimals 只在"token 也是从这份 manifest 来的"时才跟着它走 ——
+      //   否则会拿 A token 的精度去解释 B token 的金额 (env 给了 token 但没给精度时尤其危险)。
+      const tokenFromManifest = !!man.tokenAddress && tokenAddress === man.tokenAddress;
+      if (tokenFromManifest && man.tokenDecimals !== null && sources.tokenDecimals === '默认 (USDC=6)') {
+        tokenDecimals = man.tokenDecimals;
+        sources.tokenDecimals = `manifest ${man.label} ${man.tokenField}.decimals`;
+      }
+      if (!networkNameUpper && man.networkName) {
+        networkName = man.networkName;
+        sources.networkName = `manifest ${man.label} .networkName`;
+      }
+    }
+  }
+  sources.deploymentManifest = manSel
+    ? (manSel.manifest ? `${manSel.manifest.label} — ${manSel.reason}` : `未选中 — ${manSel.reason}`)
+    : '未读 (①② 已给全必需字段)';
+  sources.deploymentsDir = manSel?.deploymentsDir ?? deploymentsDir(env);
+
+  // ★ 重算「还缺什么」—— 第 ③ 层可能刚把 ①② 没给的字段补齐了。
+  //   missing 是各 pass 里 push 的"上层缺口", 到这里必须按**最终值**过滤一遍,
+  //   否则会把"manifest 已经补上了"错报成"缺配置"。
+  const missingFinal = missing.filter((k) =>
+    (k === 'rpcUrl' && !rpcUrl) || (k === 'chainId' && chainId === null) || (k === 'escrowAddress' && !escrowAddress));
+
+  if (missingFinal.length) {
     throw new ChainConfigError(
-      `链配置缺失: ${missing.join(', ')}。读取优先级 = 环境变量 → ${chainConfigPath(home)} → 报错; ` +
-      `本模块不猜合约地址。缺 RPC 时设 BOLLOON_CHAIN_RPC_URL; 缺 escrow 时设 BOLLOON_ESCROW_ADDRESS。`,
-      missing,
+      `链配置缺失: ${missingFinal.join(', ')}。读取优先级 = 环境变量 → ${chainConfigPath(home)} → 仓库部署 manifest → 报错; ` +
+      `本模块不猜合约地址。manifest 层: ${manSel ? manSel.reason : `未读 (缺的字段: ${missingFinal.join(', ')})`}。` +
+      `怎么修: ① 设 BOLLOON_CHAIN_RPC_URL / BOLLOON_CHAIN_ID / BOLLOON_ESCROW_ADDRESS; ` +
+      `② 或写 ${chainConfigPath(home)} (rpcUrl / chainId / escrowAddress / tokenAddress / tokenDecimals); ` +
+      `③ 或给出能**唯一定位** manifest 的锚 (BOLLOON_CHAIN_ID 或 BOLLOON_NETWORK_NAME, 也可用 ${DEPLOYMENTS_DIR_ENV} 指向只放一份 manifest 的目录)。`,
+      missingFinal,
     );
+  }
+
+  // ★ 真写需要付款资产: 拿不到就报**可操作**的错, 而不是让调用方看到含糊的"缺少参数"
+  if (opts.requireToken && !tokenAddress) {
+    throw new ChainConfigError(tokenAddressGuidance({ home, networkName, env }), ['tokenAddress']);
   }
 
   const cfg: ChainConfig = {
