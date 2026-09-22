@@ -2,10 +2,21 @@
 /**
  * Bolloon — EVM 本地部署 + 部署清单 + 链上真读数验证 + 真交易闭环
  * =========================================================================
- * 用途: 在本地开发链 (anvil / hardhat node, chainId 31337) 上真部署
- *   MockERC20 (USDC 替身, decimals = 6) + AgentEscrow (v2) + AgentTreasury,
- *   生成 deployment manifest, 用链上真读数验证, 并跑 createEscrowV2 →
- *   submitProofV2 → releaseV2 的真交易闭环 + F2 门槛断言。
+ * 用途: 在本地开发链 (anvil / hardhat node, chainId 31337) 或 (显式放行时) 测试网上真部署
+ *   AgentEscrow (v2) + AgentTreasury, 生成 deployment manifest, 用链上真读数验证, 并跑
+ *   createEscrowV2 → submitProofV2 → releaseV2 的真交易闭环 + F2 门槛断言。
+ *
+ * 两种 token 模式 (escrow/treasury 的 paymentAsset):
+ *   - **mock 模式** (默认): 自己部署一个 MockERC20 (USDC 替身, decimals = 6),
+ *     mint 给 deployer, 写进 manifest + ABI 目录。
+ *   - **external 模式** (`TOKEN_ADDRESS` 已设置): **不部署 MockERC20**, 直接用该地址
+ *     作为 paymentAsset —— 真网官方 USDC (base-sepolia
+ *     `0x036CbD53842c5426634e7929541eC2318f3dCF7e`, decimals 6) 就靠这个入口。
+ *     规则: 链上真读 decimals()/symbol()/name(); decimals ≠ 6 直接**大声拒编**;
+ *     **不 mint、不改它的任何状态**(唯一例外: E2E 需要 buyer 授权时才会发 approve,
+ *     且 allowance 已足够时连 approve 都不发); manifest 里不出现 MockERC20,
+ *     改记 `externalToken` 块 (address/decimals/symbol/source="external");
+ *     ABI 目录也不写 MockERC20.json。
  *
  * 设计约束 (为什么长这样):
  *   - **零真实钱包**: 默认部署账户从 anvil 的公开开发助记符派生
@@ -15,8 +26,10 @@
  *     ALLOW_NON_LOCAL=1, 脚本对非 31337 的 chainId 直接拒绝执行。
  *   - **幂等 / 可重入**: manifest 落在 contracts/deployments/<network>.json。
  *     重跑时若 chainId 一致 + 每个合约地址上 eth_getCode 非空 +
+ *     **当前编译产物的 creation bytecode (immutable 占位槽清零后) 的 keccak256
+ *     与 manifest 记录的 creationBytecodeHash 逐字一致** +
  *     链上 runtime bytecode 的 keccak256 与 manifest 记录一致 +
- *     构造参数一致 → 复用地址, 不重复部署; 否则只重部署失效的那个。
+ *     构造参数一致 → 复用地址; 否则只重部署失效的那个 (并打印原因)。
  *     FORCE_REDEPLOY=1 强制全部重部署。
  *     闭环测试用「每次运行唯一」的 taskKey, 所以重跑不会撞 "task exists"。
  *
@@ -25,6 +38,7 @@
  *   DEPLOYER_PRIVATE_KEY   默认 = anvil 开发账户 #0 (派生自公开助记符)
  *   AGENT_PRIVATE_KEY      默认 = anvil 开发账户 #1
  *   NETWORK_NAME           默认 localhost
+ *   TOKEN_ADDRESS          已设置 = external 模式: 用它当 paymentAsset, 不部署 MockERC20
  *   FORCE_REDEPLOY         1 = 忽略已有 manifest 全部重部署
  *   ALLOW_NON_LOCAL        1 = 允许非 31337 chainId (默认禁止, 防误连主网)
  *   SKIP_E2E               1 = 跳过真交易闭环
@@ -32,8 +46,12 @@
  * 用法:
  *   # 终端 A (macOS 上 foundry 缺 libusb 时要带 DYLD_LIBRARY_PATH)
  *   DYLD_LIBRARY_PATH=~/.local/lib ~/.foundry/bin/anvil --chain-id 31337
- *   # 终端 B
+ *   # 终端 B (mock 模式)
  *   cd contracts/evm && npx hardhat compile && node scripts/deploy.js
+ *   # 终端 B (external 模式: 用已有 USDC 地址)
+ *   cd contracts/evm && npx hardhat compile && \
+ *     TOKEN_ADDRESS=0x036CbD53842c5426634e7929541eC2318f3dCF7e NETWORK_NAME=base-sepolia \
+ *     RPC_URL=https://sepolia.base.org ALLOW_NON_LOCAL=1 node scripts/deploy.js
  *
  * 产出:
  *   contracts/deployments/<network>.json      deployment manifest
@@ -58,10 +76,23 @@ const LOCAL_CHAIN_ID = 31337n;
 
 // ── 部署参数 ───────────────────────────────────────────────────────────────
 const TOKEN_NAME = "USDC"; // MockERC20 的 name/symbol 都用这个
-const TOKEN_DECIMALS = 6; // USDC 替身必须 6 位
+const TOKEN_DECIMALS = 6; // USDC 替身必须 6 位 (external 模式下: 外部 token 必须 6 位, 否则拒编)
 const RELEASE_TIMEOUT = 7 * 86400; // AgentEscrow 构造参数
 const TREASURY_DAILY_LIMIT = ethers.parseUnits("100000", 6); // AgentTreasury 构造参数
-const TOKEN_SUPPLY = ethers.parseUnits("10000000", 6); // mint 给 deployer 的初始量
+const TOKEN_SUPPLY = ethers.parseUnits("10000000", 6); // mint 给 deployer 的初始量 (仅 mock 模式)
+
+// external 模式用的最小 ERC20 ABI —— **故意不含 mint**: 外部 token 不许被本脚本改状态,
+// 万一有人误调 mint 会直接 "no matching function" 抛错, 而不是发出去一笔真交易。
+const EXTERNAL_ERC20_ABI = [
+  "function name() view returns (string)",
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)",
+  "function totalSupply() view returns (uint256)",
+  "function balanceOf(address) view returns (uint256)",
+  "function allowance(address,address) view returns (uint256)",
+  "function approve(address,uint256) returns (bool)",
+  "function transfer(address,uint256) returns (bool)",
+];
 
 // ── 冻结 hash 口径 (与 AgentEscrow.sol / MODEL_FREEZE.md §4 逐字一致) ──────
 const TAG_TASK = ethers.encodeBytes32String("bolloon.task.v1");
@@ -70,6 +101,18 @@ const ABICODER = ethers.AbiCoder.defaultAbiCoder();
 const log = (...a) => console.log(...a);
 const hr = (t) => log(`\n${"─".repeat(72)}\n${t}\n${"─".repeat(72)}`);
 const ok = (b) => (b ? "✅" : "❌");
+
+/** 大声拒编: 打印一眼能看到的错误块 + 可行提示, 然后中止 (exit 1) */
+function fatal(msg, hints = []) {
+  log(`\n${"█".repeat(72)}`);
+  log(`❌ 中止 (拒编): ${msg}`);
+  for (const h of hints) log(`   → ${h}`);
+  log("█".repeat(72));
+  const e = new Error(msg);
+  e.loud = true;
+  e.hints = hints;
+  throw e;
+}
 
 // ══════════════════════════════════════════════════════════════════════════
 // 小工具
@@ -88,16 +131,18 @@ function loadArtifact(contractFileRelPath, name) {
 }
 
 /**
- * build-info 里才有 solc 的 immutableReferences (hardhat 的 artifact JSON 不带这个字段)。
- * 没有它就无法把 chain 上的 runtime code 和编译产物对齐 —— 因为 immutable
- * (AgentEscrow/AgentTreasury 的 `token`) 的 32 字节槽在 artifact 里是全零,
- * 在链上却是真地址。返回 { immutables, solidity }。
+ * build-info 索引 + 按 artifact 逐字匹配。
+ *
+ * hardhat 的 artifact JSON 不带 solc 的 immutableReferences, 只有 build-info 里有。
+ * 但 artifacts/build-info/ 下**会同时留着多次编译** (源码一改就多一份), 它们的
+ * immutable 槽位偏移完全不同: 用错那份会把真实字节当槽位清零 → keccak 假不符 →
+ * 无谓重部署, 甚至假相符。所以这里不"读到哪份算哪份", 而是拿 artifact 的
+ * creation/runtime bytecode 去 build-info 里逐字匹配, 挑出真正产出它的那一份。
  */
 function loadBuildInfo() {
   const dir = path.join(EVM_DIR, "artifacts", "build-info");
-  const immutables = {};
-  let solidity = null;
-  if (!fs.existsSync(dir)) return { immutables, solidity };
+  const entries = [];
+  if (!fs.existsSync(dir)) return entries;
   for (const f of fs.readdirSync(dir)) {
     if (!f.endsWith(".json")) continue;
     let j;
@@ -106,23 +151,41 @@ function loadBuildInfo() {
     } catch {
       continue;
     }
-    const contracts = j.output && j.output.contracts;
-    if (!contracts) continue;
-    solidity = {
-      solcLongVersion: j.solcLongVersion,
-      optimizer: j.input && j.input.settings && j.input.settings.optimizer,
-      evmVersion: j.input && j.input.settings && j.input.settings.evmVersion,
-    };
-    for (const src of Object.keys(contracts)) {
-      for (const cn of Object.keys(contracts[src])) {
-        const c = contracts[src][cn];
-        const refs =
-          c.evm && c.evm.deployedBytecode && c.evm.deployedBytecode.immutableReferences;
-        if (refs && Object.keys(refs).length) immutables[cn] = refs;
-      }
+    if (!j.output || !j.output.contracts) continue;
+    entries.push({ file: f, json: j });
+  }
+  return entries;
+}
+
+const hex0x = (h) => (h ? (h.startsWith("0x") ? h : "0x" + h).toLowerCase() : null);
+
+/** 找出真正产出这个 artifact 的 build-info 条目 (含该合约的 immutableReferences) */
+function buildInfoFor(entries, name, artifact) {
+  const wantCreation = hex0x(artifact.bytecode);
+  const wantRuntime = hex0x(artifact.deployedBytecode);
+  let fallback = null;
+  for (const e of entries) {
+    const cs = e.json.output.contracts || {};
+    for (const src of Object.keys(cs)) {
+      const c = cs[src][name];
+      if (!c || !c.evm) continue;
+      const hit = {
+        file: e.file,
+        source: src,
+        creation: hex0x(c.evm.bytecode && c.evm.bytecode.object),
+        runtime: hex0x(c.evm.deployedBytecode && c.evm.deployedBytecode.object),
+        immutables: (c.evm.deployedBytecode && c.evm.deployedBytecode.immutableReferences) || {},
+        build: {
+          solcLongVersion: e.json.solcLongVersion,
+          optimizer: (e.json.input && e.json.input.settings && e.json.input.settings.optimizer) || null,
+          evmVersion: (e.json.input && e.json.input.settings && e.json.input.settings.evmVersion) || null,
+        },
+      };
+      if (hit.creation === wantCreation || hit.runtime === wantRuntime) return hit;
+      if (!fallback) fallback = hit;
     }
   }
-  return { immutables, solidity };
+  return fallback; // 一份都对不上 (artifact 被手改?) — 退回第一份, 调用方打告警
 }
 
 /** 部署后: 把 immutable 占位槽清零, 好和链上真实 code 逐字节对比 */
@@ -141,6 +204,59 @@ function neutralizeImmutables(code, immutableReferences) {
     }
   }
   return { code: "0x" + buf.toString("hex"), zeroed, slots };
+}
+
+/**
+ * 计算「当前编译产物」的 creation bytecode 规范化 keccak256 —— 幂等复用判定的证据。
+ *
+ * 为什么需要规范化: solc 把 immutable 值写进的是「create 字节码末尾嵌着的那段
+ * runtime」, 所以 artifact 的 creation bytecode 里这些槽位应当是零 —— 但"应当是"
+ * 不是证据。这里显式定位嵌入的 runtime 段 (长度 = cb.length - rb.length, 首字节起
+ * 逐字相等), 把对应字节清零后再取 hash; 定位不到就退回原样 hash 并标注 normalized=false,
+ * 绝不用"猜"的位置去改字节。
+ *
+ * 幂等判定只比 artifact↔artifact (编译↔编译), 不比链上 —— 链上 runtime hash 与
+ * manifest 记录一致是自证的 (manifest 记的就是链上读到的值), 永远发现不了"源码改了"。
+ */
+function creationBytecodeHash(artifact, immutableReferences) {
+  const creation = artifact.bytecode;
+  const plainHash = ethers.keccak256(creation);
+  const refs = immutableReferences || {};
+  const keys = Object.keys(refs);
+  if (keys.length === 0) {
+    return {
+      hash: plainHash,
+      normalized: false,
+      note: "该合约无 immutable 槽, 无需规范化",
+      embeddedRuntimeOffset: null,
+    };
+  }
+  const { code: runtimeZeroed } = neutralizeImmutables(artifact.deployedBytecode, refs);
+  const cb = Buffer.from(creation.slice(2), "hex");
+  const rb = Buffer.from(runtimeZeroed.slice(2), "hex");
+  const tail = cb.length - rb.length;
+  const embeddedRuntimeOffset = tail >= 0 && cb.subarray(tail).equals(rb) ? tail : null;
+  if (embeddedRuntimeOffset === null) {
+    return {
+      hash: plainHash,
+      normalized: false,
+      note: "creation 里定位不到嵌入的 runtime 段 → 退回原样 hash (未改任何字节)",
+      embeddedRuntimeOffset: null,
+    };
+  }
+  let zeroed = 0;
+  for (const k of keys) {
+    for (const r of refs[k]) {
+      cb.fill(0, embeddedRuntimeOffset + r.start, embeddedRuntimeOffset + r.start + r.length);
+      zeroed += r.length;
+    }
+  }
+  return {
+    hash: ethers.keccak256("0x" + cb.toString("hex")),
+    normalized: true,
+    note: `creation 内嵌 runtime @offset=${embeddedRuntimeOffset}, 清零 ${zeroed} 字节`,
+    embeddedRuntimeOffset,
+  };
 }
 
 /** JSON 安全化: BigInt → 十进制字符串 (manifest 要能被人和别的工具读) */
@@ -196,6 +312,10 @@ async function main() {
   const NETWORK_NAME = process.env.NETWORK_NAME || "localhost";
   const MANIFEST_PATH = path.join(DEPLOYMENTS_DIR, `${NETWORK_NAME}.json`);
 
+  // ── token 模式: TOKEN_ADDRESS 已设置 → external (不部署 MockERC20) ─────────
+  const TOKEN_ADDRESS_RAW = (process.env.TOKEN_ADDRESS || "").trim();
+  const externalMode = TOKEN_ADDRESS_RAW !== "";
+
   // ── 账户 (默认 anvil 开发账户, 非真实钱包) ────────────────────────────────
   const mnemonic = ethers.Mnemonic.fromPhrase(DEV_MNEMONIC);
   const dflt0 = ethers.HDNodeWallet.fromMnemonic(mnemonic, "m/44'/60'/0'/0/0");
@@ -238,29 +358,64 @@ async function main() {
   if (bal === 0n) throw new Error("deployer 余额为 0, 无法付 gas");
 
   // ── artifact ─────────────────────────────────────────────────────────────
+  // external 模式不部署 MockERC20 → 也不加载它的 artifact (缺了不该让它挡住部署)
   const art = {
-    MockERC20: loadArtifact(path.join("mocks", "MockERC20.sol"), "MockERC20"),
     AgentEscrow: loadArtifact("AgentEscrow.sol", "AgentEscrow"),
     AgentTreasury: loadArtifact("AgentTreasury.sol", "AgentTreasury"),
+    ...(externalMode
+      ? {}
+      : { MockERC20: loadArtifact(path.join("mocks", "MockERC20.sol"), "MockERC20") }),
   };
-  const { immutables, solidity } = loadBuildInfo();
+
+  // build-info: 按 artifact 逐字匹配 (仓库里会堆多次编译的 build-info, 槽位偏移不同)
+  const buildInfos = loadBuildInfo();
+  const compiled = {}; // name → { refs, creation, build, buildInfoFile, artifactMatched }
+  for (const k of Object.keys(art)) {
+    const bi = buildInfoFor(buildInfos, k, art[k]);
+    const refs = bi ? bi.immutables : {};
+    compiled[k] = {
+      refs,
+      creation: creationBytecodeHash(art[k], refs),
+      build: bi ? bi.build : null,
+      buildInfoFile: bi ? bi.file : null,
+      artifactMatched: !!bi && bi.creation === hex0x(art[k].bytecode),
+    };
+  }
+  const solidity = compiled.AgentEscrow.build; // manifest.build 的溯源口径 (主合约)
   log(
     `  编译产物 : solc ${solidity?.solcLongVersion}  optimizer=${JSON.stringify(solidity?.optimizer)}  evm=${solidity?.evmVersion}`
   );
-  log(
-    `  immutable 槽位 (build-info): ` +
-      Object.entries(immutables)
-        .map(([k, v]) => `${k}=${Object.values(v).flat().length}×32B`)
-        .join("  ")
-  );
+  log(`  token 模式: ${externalMode ? `external (TOKEN_ADDRESS=${TOKEN_ADDRESS_RAW})` : "mock (自部署 MockERC20)"}`);
+  for (const k of Object.keys(compiled)) {
+    const c = compiled[k];
+    const slots = Object.values(c.refs).flat().length;
+    log(
+      `  ${k.padEnd(14)} creationBytecodeHash=${c.creation.hash.slice(0, 18)}…  ` +
+        `immutable 槽=${slots}×32B  build-info=${c.buildInfoFile || "n/a"}`
+    );
+    log(`                 ↳ ${c.creation.note}`);
+    if (!c.artifactMatched) {
+      log(
+        `                 ⚠ build-info 里没有与该 artifact 逐字匹配的编译输出 ` +
+          `(artifact 被手改过?) — immutable 槽位偏移不可信, hash 比对可能假不符`
+      );
+    }
+  }
 
   // ── 已有 manifest? (幂等判断依据) ────────────────────────────────────────
   const prev = process.env.FORCE_REDEPLOY === "1" ? null : readJsonSafe(MANIFEST_PATH);
 
   /**
-   * 判断能否复用 manifest 里的记录:
-   *   chainId 一致 + 地址上有 code + runtime code keccak256 与记录一致
-   *   (+ 若给了 expectedArgs 则构造参数也要一致)
+   * 判断能否复用 manifest 里的记录 —— 三道都要过:
+   *   (1) chainId 一致
+   *   (2) **编译产物一致性**: 当前 artifact 的 creation bytecode (immutable 占位槽
+   *       清零后) 的 keccak256 与 manifest 记录的 creationBytecodeHash 逐字一致。
+   *       这一条是唯一能发现「源码改了/重新编译了」的检查: manifest 里的
+   *       bytecodeHash 记的是链上 runtime code —— 拿它去比链上, 是自证 (manifest
+   *       记的就是那次从链上读到的值), 永远发现不了源码已改, 于是会一边报「复用」
+   *       一边让 provenance 说谎。
+   *   (3) 地址上有 code + 链上 runtime code 的 keccak256 与 manifest 记录一致
+   *       (地址被换掉 / 链被 reset 的情况) + 构造参数一致 (若给了 expectedArgs)
    */
   async function reusable(name, expectedArgs) {
     if (!prev || !prev.contracts) return null;
@@ -268,6 +423,23 @@ async function main() {
     const rec = prev.contracts.find?.((c) => c.name === name) ||
       (prev.contracts[name] ? { ...prev.contracts[name], name } : null);
     if (!rec || !rec.address) return null;
+
+    // (2) 编译产物 ↔ manifest 的逐字比对
+    const curCreation = compiled[name].creation.hash;
+    const recCreation =
+      typeof rec.creationBytecodeHash === "string" ? rec.creationBytecodeHash.toLowerCase() : null;
+    if (!recCreation) {
+      log(`  ↻ ${name}: manifest 里没有 creationBytecodeHash, 无法证明复用安全 → 重部署`);
+      return null;
+    }
+    if (curCreation.toLowerCase() !== recCreation) {
+      log(`  ↻ bytecodeHash 不符 → 重部署 ${name}`);
+      log(`      当前编译产物 (creation, immutable 槽清零): ${curCreation}`);
+      log(`      manifest 记录                            : ${recCreation}`);
+      return null;
+    }
+
+    // (3) 构造参数
     if (expectedArgs) {
       const a = JSON.stringify(rec.constructorArgs ?? null);
       const b = JSON.stringify(plain(expectedArgs)); // BigInt-safe (treasury dailyLimit 是 BigInt)
@@ -276,6 +448,8 @@ async function main() {
         return null;
       }
     }
+
+    // (3) 链上地址与 runtime code
     let code;
     try {
       code = await provider.getCode(rec.address);
@@ -288,6 +462,18 @@ async function main() {
       log(`  ↻ ${name}: 链上 code hash 与 manifest 不符 → 重部署`);
       return null;
     }
+    // 复用前必须能对上「复用的一定是当前编译产物」这个事实
+    const { code: normalized, slots } = neutralizeImmutables(code, compiled[name].refs);
+    const liveNormalized = ethers.keccak256(normalized).toLowerCase();
+    const artNormalized = ethers.keccak256(art[name].deployedBytecode).toLowerCase();
+    if (liveNormalized !== artNormalized) {
+      log(`  ↻ ${name}: 链上 runtime code 与当前编译产物不符 (immutable 清零后) → 重部署`);
+      return null;
+    }
+    log(
+      `  ✓ ${name}: creationBytecodeHash 一致 (${curCreation.slice(0, 18)}…)` +
+        ` + 链上 runtime code 与编译产物一致 (清零 ${slots} 个 immutable 槽)`
+    );
     return rec;
   }
 
@@ -305,7 +491,8 @@ async function main() {
         txHash: reuse.txHash,
         blockNumber: reuse.blockNumber,
         bytecodeHash: ethers.keccak256(code),
-        creationBytecodeHash: reuse.creationBytecodeHash,
+        creationBytecodeHash: compiled[key].creation.hash,
+        creationBytecodeHashNormalized: compiled[key].creation.normalized,
         constructorArgs: ctorArgs,
         contractVersion: reuse.contractVersion ?? version,
         reused: true,
@@ -321,7 +508,8 @@ async function main() {
     const code = await provider.getCode(address);
     log(
       `  + ${key} 部署完成\n      address  : ${address}\n      txHash   : ${tx.hash}\n` +
-        `      block    : ${rc.blockNumber}\n      gasUsed  : ${rc.gasUsed}`
+        `      block    : ${rc.blockNumber}\n      gasUsed  : ${rc.gasUsed}\n` +
+        `      creationBytecodeHash: ${compiled[key].creation.hash}`
     );
     deployed.push({
       name: key,
@@ -330,7 +518,9 @@ async function main() {
       blockNumber: rc.blockNumber,
       gasUsed: rc.gasUsed.toString(),
       bytecodeHash: ethers.keccak256(code), // 链上 runtime code 的 keccak256
-      creationBytecodeHash: ethers.keccak256(art[key].bytecode), // 部署字节码
+      // 部署字节码: immutable 占位槽清零后的 creation bytecode (幂等复用就比这个)
+      creationBytecodeHash: compiled[key].creation.hash,
+      creationBytecodeHashNormalized: compiled[key].creation.normalized,
       constructorArgs: ctorArgs,
       contractVersion: version,
       reused: false,
@@ -340,15 +530,89 @@ async function main() {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  hr("② 真部署 (MockERC20 / AgentEscrow v2 / AgentTreasury)");
+  hr(
+    `② 真部署 (${externalMode ? "AgentEscrow v2 / AgentTreasury; token = 外部已有地址" : "MockERC20 / AgentEscrow v2 / AgentTreasury"})`
+  );
   // ══════════════════════════════════════════════════════════════════════
 
-  const tokenArtifactPath = "contracts/mocks/MockERC20.sol:MockERC20";
-  const token = await deployOrReuse("MockERC20", [TOKEN_NAME, TOKEN_DECIMALS], "mock-erc20-v1", {
-    sourcePath: tokenArtifactPath,
-    role: "USDC 替身 (decimals=6)",
-  });
-  const tokenAddr = await token.getAddress();
+  let token;
+  let tokenAddr;
+  let tokenMeta; // manifest 里的 token 口径 (mock 或 external)
+  const externalTokenWrites = []; // 对外部 token 的状态写入台账 (正常情况下为空; E2E approve 会追加)
+
+  if (externalMode) {
+    // ── external 模式: 用链上已有的 token; 不部署 MockERC20, 不 mint, 不改它的状态 ──
+    try {
+      tokenAddr = ethers.getAddress(TOKEN_ADDRESS_RAW);
+    } catch {
+      fatal(`TOKEN_ADDRESS 不是合法地址: ${TOKEN_ADDRESS_RAW}`, [
+        "形如 0x + 40 位十六进制",
+        "base-sepolia 官方 USDC: 0x036CbD53842c5426634e7929541eC2318f3dCF7e (decimals 6)",
+      ]);
+    }
+    const extCode = await provider.getCode(tokenAddr);
+    if (extCode === "0x" || extCode === "0x0") {
+      fatal(`TOKEN_ADDRESS=${tokenAddr} 在 chainId=${chainId} (${RPC_URL}) 上没有合约代码`, [
+        "确认地址与链匹配 — USDC 在 base-sepolia 与 base 主网是两个不同地址",
+        "确认 RPC_URL 指向的就是你以为是的那条链",
+      ]);
+    }
+    token = new ethers.Contract(tokenAddr, EXTERNAL_ERC20_ABI, deployer);
+    let decimals;
+    let symbol;
+    let name;
+    try {
+      [decimals, symbol, name] = await Promise.all([
+        token.decimals(),
+        token.symbol(),
+        token.name(),
+      ]);
+    } catch (e) {
+      fatal(
+        `读 ${tokenAddr} 的 decimals()/symbol()/name() 失败: ${e.shortMessage || e.message}`,
+        [
+          "该地址可能不是标准 ERC20 (方法缺失或返回类型不同)",
+          "这三次都是 eth_call 只读调用, 脚本没有向它发任何交易",
+        ]
+      );
+    }
+    log(`  外部 token (链上真读, 未发任何交易): ${tokenAddr}`);
+    log(
+      `    codeLength=${(extCode.length - 2) / 2} bytes  decimals=${decimals}  ` +
+        `symbol="${symbol}"  name="${name}"`
+    );
+    if (Number(decimals) !== TOKEN_DECIMALS) {
+      fatal(
+        `外部 token decimals = ${decimals}, ≠ ${TOKEN_DECIMALS} — 冻结口径要求 6 位 USDC, 拒绝继续`,
+        [
+          `地址 ${tokenAddr} (symbol="${symbol}") 的 decimals=${decimals}`,
+          "AgentEscrow/AgentTreasury 的金额口径按 6 位定 (MODEL_FREEZE.md: token = USDC, decimals = 6)",
+          "要支持非 6 位 token 必须先改冻结口径, 不在这里静默接受",
+        ]
+      );
+    }
+    tokenMeta = {
+      address: tokenAddr,
+      decimals: Number(decimals),
+      symbol: String(symbol),
+      name: String(name),
+      source: "external",
+    };
+  } else {
+    const tokenArtifactPath = "contracts/mocks/MockERC20.sol:MockERC20";
+    token = await deployOrReuse("MockERC20", [TOKEN_NAME, TOKEN_DECIMALS], "mock-erc20-v1", {
+      sourcePath: tokenArtifactPath,
+      role: "USDC 替身 (decimals=6)",
+    });
+    tokenAddr = await token.getAddress();
+    tokenMeta = {
+      address: tokenAddr,
+      decimals: Number(await token.decimals()),
+      symbol: String(await token.symbol()),
+      name: String(await token.name()),
+      source: "mock",
+    };
+  }
 
   const escrow = await deployOrReuse("AgentEscrow", [tokenAddr, RELEASE_TIMEOUT], "1", {
     sourcePath: "contracts/AgentEscrow.sol:AgentEscrow",
@@ -376,7 +640,7 @@ async function main() {
     const nonEmpty = code !== "0x" && code.length > 2;
     // 与编译产物比对: immutable 占位槽清零后应逐字节一致
     const a = art[rec.name];
-    const { code: normalized, slots } = neutralizeImmutables(code, immutables[rec.name]);
+    const { code: normalized, slots } = neutralizeImmutables(code, compiled[rec.name].refs);
     const liveHash = ethers.keccak256(normalized);
     const artHash = ethers.keccak256(a.deployedBytecode);
     const matches = liveHash.toLowerCase() === artHash.toLowerCase();
@@ -401,10 +665,29 @@ async function main() {
     assert("部署区块上已存在 code", c !== "0x", `blockNumber=${rec.blockNumber}`);
   }
 
+  // ── token: 一律以链上真读为准 (两种模式都读, 不信常量) ─────────────────────
   const tokenCode = await provider.getCode(tokenAddr);
-  assert("\n  token decimals() == 6", (await token.decimals()) === 6n, `decimals=${await token.decimals()}`);
-  log(`  token symbol/name: ${await token.symbol()} / ${await token.name()}`);
+  const tokenDecimals = await token.decimals();
+  const tokenSymbol = await token.symbol();
+  const tokenName = await token.name();
+  log(`\n  token @ ${tokenAddr}  (source=${tokenMeta.source})`);
+  log(`    symbol=${tokenSymbol}  name=${tokenName}`);
   assert("token eth_getCode 非空", tokenCode !== "0x", `codeLength=${(tokenCode.length - 2) / 2} bytes`);
+  assert("token decimals() == 6", tokenDecimals === 6n, `decimals=${tokenDecimals}`);
+  assert(
+    `manifest token 口径与链上一致 (decimals/symbol/name)`,
+    tokenMeta.decimals === Number(tokenDecimals) &&
+      tokenMeta.symbol === String(tokenSymbol) &&
+      tokenMeta.name === String(tokenName),
+    `manifest: ${tokenMeta.decimals}/${tokenMeta.symbol}/${tokenMeta.name}`
+  );
+  if (externalMode) {
+    assert(
+      "external 模式: 部署阶段对外部 token 零状态写入 (未 mint / 未 approve)",
+      externalTokenWrites.length === 0,
+      `writes=[${externalTokenWrites.join(", ")}]`
+    );
+  }
 
   // ── 关键函数选择器 ───────────────────────────────────────────────────────
   const V2_FUNCS = [
@@ -453,14 +736,53 @@ async function main() {
 
   fs.mkdirSync(ABIS_DIR, { recursive: true });
   const abiPaths = {};
-  for (const k of ["MockERC20", "AgentEscrow", "AgentTreasury"]) {
+  // 只写本次真正用到的合约 ABI —— external 模式没有 MockERC20, 就不写它
+  for (const k of Object.keys(art)) {
     const p = path.join(ABIS_DIR, `${k}.json`);
     writeJson(p, art[k].abi);
     abiPaths[k] = path.relative(DEPLOYMENTS_DIR, p); // 相对 contracts/deployments/
     log(`  ABI → ${abiPaths[k]}`);
   }
+  if (externalMode && fs.existsSync(path.join(ABIS_DIR, "MockERC20.json"))) {
+    log(
+      "  (external 模式: 不写也不引用 MockERC20 ABI; abis/MockERC20.json 是此前 mock 模式的产物, 本次未触碰)"
+    );
+  }
 
   const escrowVersionOnChain = (await escrow.CONTRACT_VERSION()).toString();
+
+  // token 口径: mock 模式记 `token` (USDC 替身), external 模式记 `externalToken`
+  const tokenSection = externalMode
+    ? {
+        externalToken: {
+          address: tokenAddr,
+          decimals: tokenMeta.decimals,
+          symbol: tokenMeta.symbol,
+          name: tokenMeta.name,
+          source: "external",
+          addressFrom: "env TOKEN_ADDRESS",
+          decimalsOnChain: Number(tokenDecimals),
+          isMock: false,
+          codeLengthBytes: (tokenCode.length - 2) / 2,
+          note:
+            "外部已有 ERC20 — 本脚本不部署、不 mint、不改它的状态; decimals 由链上真读并在 ≠6 时拒编; " +
+            "唯一可能的状态写入是 E2E 需要 buyer 授权时的 approve (allowance 已足够则连 approve 都不发)",
+          stateWritesByThisScript: externalTokenWrites,
+        },
+      }
+    : {
+        token: {
+          name: tokenMeta.name,
+          symbol: tokenMeta.symbol,
+          address: tokenAddr,
+          decimals: tokenMeta.decimals,
+          decimalsOnChain: Number(tokenDecimals),
+          source: "mock",
+          isMock: true,
+          note: "MockERC20 — 本地 USDC 替身, 非真实 USDC",
+        },
+      };
+
   const manifest = {
     schemaVersion: 1,
     chainId: Number(chainId),
@@ -468,29 +790,24 @@ async function main() {
     deployedAt: new Date().toISOString(),
     rpcUrl: RPC_URL,
     deployerAddress: deployer.address,
+    tokenSource: tokenMeta.source, // "mock" = 本脚本部署 MockERC20; "external" = 用 TOKEN_ADDRESS
     contracts: deployed.map((r) => ({
       name: r.name,
       address: r.address,
       txHash: r.txHash,
       blockNumber: r.blockNumber,
       bytecodeHash: r.bytecodeHash, // keccak256(eth_getCode(addr))
-      creationBytecodeHash: r.creationBytecodeHash, // keccak256(部署字节码)
+      // keccak256(部署字节码, immutable 占位槽清零后) — 幂等复用判定就比这个
+      creationBytecodeHash: r.creationBytecodeHash,
+      creationBytecodeHashNormalized: !!r.creationBytecodeHashNormalized,
       constructorArgs: r.constructorArgs,
       contractVersion: r.contractVersion,
       sourcePath: r.sourcePath,
       role: r.role,
       reusedFromManifest: !!r.reused,
     })),
-    // token 便捷入口 (USDC 替身)
-    token: {
-      name: TOKEN_NAME,
-      symbol: TOKEN_NAME,
-      address: tokenAddr,
-      decimals: TOKEN_DECIMALS,
-      decimalsOnChain: Number(await token.decimals()),
-      isMock: true,
-      note: "MockERC20 — 本地 USDC 替身, 非真实 USDC",
-    },
+    // token 便捷入口: mock 模式是 USDC 替身; external 模式是 externalToken 块
+    ...tokenSection,
     // 本部署切片里各合约的版本口径
     contractVersions: {
       AgentEscrow: {
@@ -499,7 +816,7 @@ async function main() {
         modelFreezeRef: "MODEL_FREEZE.md §2.2/§3.2/§4/§5",
       },
       AgentTreasury: { semantic: "v1 (2026-08-13)" },
-      MockERC20: { semantic: "mock-erc20-v1 (USDC 替身)" },
+      ...(externalMode ? {} : { MockERC20: { semantic: "mock-erc20-v1 (USDC 替身)" } }),
     },
     // ABI 存放路径 (相对 contracts/deployments/)
     abiPaths,
@@ -508,8 +825,22 @@ async function main() {
       solcLongVersion: solidity?.solcLongVersion ?? null,
       optimizer: solidity?.optimizer ?? null,
       evmVersion: solidity?.evmVersion ?? null,
+      buildInfoFile: compiled.AgentEscrow.buildInfoFile,
       immutableSlots: Object.fromEntries(
-        Object.entries(immutables).map(([k, v]) => [k, Object.values(v).flat().length])
+        Object.keys(compiled).map((k) => [k, Object.values(compiled[k].refs).flat().length])
+      ),
+      creationBytecodeHashNormalization:
+        "creationBytecodeHash = keccak256(artifact creation bytecode, 其中嵌入的 runtime 段的 immutable 占位槽已显式清零)",
+      creationBytecodeNormalizationDetail: Object.fromEntries(
+        Object.keys(compiled).map((k) => [
+          k,
+          {
+            hash: compiled[k].creation.hash,
+            normalized: compiled[k].creation.normalized,
+            embeddedRuntimeOffset: compiled[k].creation.embeddedRuntimeOffset,
+            note: compiled[k].creation.note,
+          },
+        ])
       ),
       note: "bytecodeHash 已对 immutable 占位槽清零后与上述编译产物比对一致",
     },
@@ -521,31 +852,44 @@ async function main() {
     deploymentParams: {
       escrow_releaseTimeout: RELEASE_TIMEOUT.toString(),
       treasury_dailyLimit: TREASURY_DAILY_LIMIT.toString(),
-      token_initialMintToDeployer: TOKEN_SUPPLY.toString(),
+      token_initialMintToDeployer: externalMode ? null : TOKEN_SUPPLY.toString(),
+      token_mintPerformedByThisScript: !externalMode,
     },
     notes: [
       "本地零成本部署: 默认账户派生自 anvil 公开开发助记符, 未使用任何真实钱包",
       "bytecodeHash = keccak256(链上 eth_getCode 返回的 runtime bytecode)",
+      externalMode
+        ? `token 为外部已有 ERC20 (${tokenAddr}, symbol=${tokenMeta.symbol}, decimals=${tokenMeta.decimals}) — 本脚本未部署 MockERC20、未 mint、未改其状态`
+        : "token 为本脚本部署的 MockERC20 (USDC 替身)",
       "chainId 31337 = anvil/hardhat 默认本地链",
+      "刻意不加 verifiedAtRealRpc 字段: 本 manifest 的所有读数都来自 rpcUrl+chainId 那一条链, " +
+        "一个布尔既不比 rpcUrl 多任何信息, 又会诱导把「RPC 应答了」当成「链就是你以为的那条」(被代理/被劫持的 RPC 一样返回 true); " +
+        "要更强保证应做链身份绑定 (chainId 回读 + 块哈希 + 最终性深度), 不是加布尔。",
     ],
     reproduce: {
       step1_anvil:
         "DYLD_LIBRARY_PATH=~/.local/lib ~/.foundry/bin/anvil --chain-id 31337 --port 8545 --host 127.0.0.1",
-      step2_deploy: "cd contracts/evm && npx hardhat compile && node scripts/deploy.js",
+      step2_deploy: externalMode
+        ? `cd contracts/evm && npx hardhat compile && TOKEN_ADDRESS=${tokenAddr} NETWORK_NAME=${NETWORK_NAME} node scripts/deploy.js`
+        : "cd contracts/evm && npx hardhat compile && node scripts/deploy.js",
       anvilNote:
         "本机 anvil/cast 动态链接要 /usr/local/opt/libusb/lib/libusb-1.0.0.dylib, 该路径不存在; " +
         "~/.local/lib/libusb-1.0.0.dylib 存在, 所以必须带 DYLD_LIBRARY_PATH。forge 不依赖 libusb, 无需该变量。",
       env: {
         RPC_URL: RPC_URL,
         NETWORK_NAME: NETWORK_NAME,
+        TOKEN_ADDRESS: externalMode
+          ? `${tokenAddr} (external 模式: 用已有 token, 不部署 MockERC20)`
+          : "(未设置 → mock 模式: 自部署 MockERC20)",
         DEPLOYER_PRIVATE_KEY: "默认 = 由 anvil 公开开发助记符派生的账户 #0 (非真实钱包)",
         AGENT_PRIVATE_KEY: "默认 = 同一助记符的账户 #1",
         FORCE_REDEPLOY: "1 = 忽略已有 manifest 全部重部署",
         SKIP_E2E: "1 = 跳过真交易闭环与 F2 断言",
       },
       idempotency:
-        "重跑会复用 manifest 里的地址 (需 chainId 一致 + 链上 eth_getCode 的 keccak256 一致 + 构造参数一致), " +
-        "不重复部署; 只用 manifest 里记录的原始部署 txHash/blockNumber。",
+        "重跑会复用 manifest 里的地址 (需 chainId 一致 + 当前编译产物的 creationBytecodeHash 与 manifest 逐字一致 " +
+        "+ 链上 eth_getCode 的 keccak256 一致 + 构造参数一致), 不重复部署; " +
+        "只用 manifest 里记录的原始部署 txHash/blockNumber。bytecodeHash 不符会自动重部署并打印原因。",
       tradeLoopRerunSafety:
         "E2E 与 F2 断言使用每次运行唯一的 taskKey (taskId 带时间戳+随机数), 因此可反复执行不撞 'task exists'。",
     },
@@ -559,19 +903,61 @@ async function main() {
   let stateReport = null;
   let f2Report = null;
 
-  if (!SKIP_E2E) {
-    // ── token 分发 ─────────────────────────────────────────────────────────
-    hr("⑤ 真交易闭环: createEscrowV2 → submitProofV2 → releaseV2");
-    const buyer = deployer;
-    const agentSigner = agent;
-    const mintTx = await token.mint(buyer.address, TOKEN_SUPPLY);
-    await mintTx.wait();
-    const approveTx = await token.approve(escrowAddr, TOKEN_SUPPLY);
-    await approveTx.wait();
-    log(`  mint   tx: ${mintTx.hash}`);
-    log(`  approve tx: ${approveTx.hash}`);
+  // ── E2E 资金预检 (mock 模式先 mint; external 模式绝不 mint) ───────────────
+  // 闭环需要 buyer 付出 100 + 10 + 10 单位 (第三笔的 10 会释放给 agent)。
+  // 外部 token 模式下余额不够时**大声报错并给可行提示 + 退出码非 0**, 绝不假通过。
+  const buyer = deployer;
+  const agentSigner = agent;
+  const unit = tokenDecimals; // 链上真读的 decimals (external 模式前面已强制 == 6)
+  const amount = ethers.parseUnits("100", unit);
+  const amountB = ethers.parseUnits("10", unit);
+  const amountC = ethers.parseUnits("10", unit);
+  const e2eNeeded = amount + amountB + amountC;
+  let e2eSkipReason = null;
 
-    const amount = ethers.parseUnits("100", 6);
+  if (!SKIP_E2E) {
+    if (!externalMode) {
+      const mintTx = await token.mint(buyer.address, TOKEN_SUPPLY);
+      await mintTx.wait();
+      log(`\n  mint tx: ${mintTx.hash}  (mock 模式: 给 buyer 铸 ${TOKEN_SUPPLY} 单位, decimals=${unit})`);
+    } else {
+      log(`\n  外部 token 模式: 不 mint (脚本对外部 token 只做 eth_call 只读 + 必要 approve)`);
+    }
+    const balNow = await token.balanceOf(buyer.address);
+    log(`  buyer ${buyer.address} token 余额 = ${balNow}  (E2E 需要 ${e2eNeeded})`);
+    if (balNow < e2eNeeded) {
+      log(`\n  ❌ E2E 无法继续: buyer 的 token 余额不足 (${balNow} < ${e2eNeeded}) — 不伪造通过结果`);
+      const hints = [
+        `token (${tokenAddr}) 由 TOKEN_ADDRESS 指定, 是外部已有 ERC20 → 脚本不会 mint 它`,
+        `请先给 buyer ${buyer.address} 转入 ≥ ${e2eNeeded} 单位 (decimals=${unit})`,
+        `查余额: cast call ${tokenAddr} "balanceOf(address)(uint256)" ${buyer.address} --rpc-url ${RPC_URL}`,
+        `或改用持有该 token 的账户: DEPLOYER_PRIVATE_KEY=<该账户私钥> (私钥只经环境变量, 不会写进文件/日志)`,
+        `只想部署不跑闭环: SKIP_E2E=1`,
+      ];
+      for (const h of hints) log(`     → ${h}`);
+      failures.push("E2E: external token 余额不足 → 闭环未执行 (不是通过)");
+      e2eSkipReason = "insufficient_external_token_balance";
+    }
+  }
+
+  if (!SKIP_E2E && !e2eSkipReason) {
+    hr("⑤ 真交易闭环: createEscrowV2 → submitProofV2 → releaseV2");
+
+    // ── 授权 (allowance 足够就不发 approve —— external 模式下这可能是唯一的状态写入) ──
+    const allowance = await token.allowance(buyer.address, escrowAddr);
+    if (allowance < e2eNeeded) {
+      const approveTx = await token.approve(escrowAddr, e2eNeeded);
+      await approveTx.wait();
+      log(`  approve tx: ${approveTx.hash}  (allowance ${allowance} < 需要 ${e2eNeeded}, escrow=${escrowAddr})`);
+      if (externalMode) {
+        externalTokenWrites.push(
+          `approve(spender=${escrowAddr}, amount=${e2eNeeded}) by buyer — 外部 token 的唯一状态写入, 闭环必需`
+        );
+      }
+    } else {
+      log(`  approve 跳过: allowance(buyer, escrow) = ${allowance} >= 需要 ${e2eNeeded} (零状态写入)`);
+    }
+
     const now = BigInt((await provider.getBlock("latest")).timestamp);
     const blockNow = await provider.getBlockNumber();
 
@@ -728,9 +1114,9 @@ async function main() {
     const taskIdC = `bolloon-local-f2-withproof-${runId}`;
     const taskKeyC = ethers.keccak256(ABICODER.encode(["bytes32", "string"], [TAG_TASK, taskIdC]));
 
-    const mk = async (taskId, key, window) => {
+    const mk = async (taskId, key, window, amt) => {
       const t = await escrow.connect(buyer).createEscrowV2(
-        key, agentSigner.address, ethers.parseUnits("10", 6), tokenAddr,
+        key, agentSigner.address, amt, tokenAddr,
         contentHash(`terms:${taskId}`), contentHash(`quote:${taskId}`), contentHash(`input:${taskId}`),
         contentHash(`manifest:${taskId}`), BigInt((await provider.getBlock("latest")).timestamp) + 60n,
         window, PROOF_VERSION
@@ -738,8 +1124,8 @@ async function main() {
       return t.wait();
     };
 
-    const rcB = await mk(taskIdB, taskKeyB, 60);
-    const rcC = await mk(taskIdC, taskKeyC, 60);
+    const rcB = await mk(taskIdB, taskKeyB, 60, amountB);
+    const rcC = await mk(taskIdC, taskKeyC, 60, amountC);
     log(`  escrow B (无 proof): taskKey=${taskKeyB}  createBlock=${rcB.blockNumber}`);
     log(`  escrow C (有 proof): taskKey=${taskKeyC}  createBlock=${rcC.blockNumber}`);
 
@@ -844,7 +1230,7 @@ async function main() {
     );
     assert(
       "F2 (阳性对照): agent 收到超时释放的资金",
-      (await token.balanceOf(agentSigner.address)) - balBeforeClaimC === ethers.parseUnits("10", 6),
+      (await token.balanceOf(agentSigner.address)) - balBeforeClaimC === amountC,
       `delta=${(await token.balanceOf(agentSigner.address)) - balBeforeClaimC}`
     );
 
@@ -885,17 +1271,62 @@ async function main() {
     manifest.verification = {
       ethGetCodeNonEmpty: codeChecks.every((c) => c.nonEmpty),
       onChainCodeMatchesArtifact: codeChecks.every((c) => c.matchesArtifact),
-      tokenDecimalsIs6: Number(await token.decimals()) === 6,
+      tokenDecimalsIs6: Number(tokenDecimals) === 6,
+      tokenSource: tokenMeta.source,
+      tokenMetaReadOnChain: {
+        address: tokenAddr,
+        decimals: Number(tokenDecimals),
+        symbol: String(tokenSymbol),
+        name: String(tokenName),
+      },
+      mockTokenDeployedByThisScript: !externalMode,
+      externalTokenWritesByThisScript: externalMode ? [...externalTokenWrites] : [],
       blockNumbers: deployed.map((r) => ({ name: r.name, blockNumber: r.blockNumber })),
       selectorChecks: selectorReport,
       topic0Checks: topicReport,
       topicsObservedInRealReceipts: [...seenTopics],
     };
     manifest.verificationReport = stateReport;
+    if (externalMode) {
+      // 台账回填 (externalToken 块引用的就是同一个数组)
+      manifest.externalToken.untouchedBeforeE2E = true;
+      manifest.externalToken.stateWritesByThisScript = [...externalTokenWrites];
+    }
     writeJson(MANIFEST_PATH, manifest);
     log(`\n  manifest 已回填 verification + tradeLoop + f2Assertion → ${MANIFEST_PATH}`);
-  } else {
+  } else if (SKIP_E2E) {
     log("\n  (SKIP_E2E=1: 跳过真交易闭环与 F2 断言)");
+  } else {
+    // 外部 token 余额不足 → 明确记成「没跑」, 不是「通过」
+    log(`\n  (E2E 未执行: ${e2eSkipReason})`);
+    manifest.tradeLoop = {
+      ran: false,
+      skipped: true,
+      skippedReason: e2eSkipReason,
+      requiredBalance: e2eNeeded.toString(),
+      buyerAddress: buyer.address,
+      tokenAddress: tokenAddr,
+      actionable:
+        `给 buyer 转入 ≥ ${e2eNeeded} 单位 (decimals=${unit}) 后重跑, 或设置 SKIP_E2E=1 只做部署`,
+    };
+    manifest.verification = {
+      ethGetCodeNonEmpty: codeChecks.every((c) => c.nonEmpty),
+      onChainCodeMatchesArtifact: codeChecks.every((c) => c.matchesArtifact),
+      tokenDecimalsIs6: Number(tokenDecimals) === 6,
+      tokenSource: tokenMeta.source,
+      mockTokenDeployedByThisScript: !externalMode,
+      externalTokenWritesByThisScript: externalMode ? [...externalTokenWrites] : [],
+      blockNumbers: deployed.map((r) => ({ name: r.name, blockNumber: r.blockNumber })),
+      selectorChecks: selectorReport,
+      topic0Checks: topicReport,
+      tradeLoopRan: false,
+    };
+    if (externalMode) {
+      manifest.externalToken.untouchedBeforeE2E = true;
+      manifest.externalToken.stateWritesByThisScript = [...externalTokenWrites];
+    }
+    writeJson(MANIFEST_PATH, manifest);
+    log(`  manifest 已回填 verification + tradeLoop(未执行) → ${MANIFEST_PATH}`);
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -904,10 +1335,13 @@ async function main() {
   for (const r of deployed) {
     log(`  ${r.name.padEnd(14)} ${r.address}  tx ${r.txHash}  block ${r.blockNumber}${r.reused ? "  (复用)" : ""}`);
   }
-  log(`\n  token decimals on-chain : ${await token.decimals()}`);
+  log(`\n  token (${tokenMeta.source}) : ${tokenAddr}  symbol=${tokenSymbol} decimals=${tokenDecimals}`);
   log(`  escrow CONTRACT_VERSION : ${escrowVersionOnChain}`);
   log(`  manifest                : ${MANIFEST_PATH}`);
   log(`  ABI 目录                : ${path.relative(process.cwd(), ABIS_DIR)}/`);
+  if (externalMode) {
+    log(`  外部 token 状态写入台账 : ${externalTokenWrites.length ? externalTokenWrites.join("; ") : "无 (零写入)"}`);
+  }
 
   if (failures.length) {
     log(`\n  ❌ ${failures.length} 项断言失败:`);
@@ -919,7 +1353,12 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error("\n[deploy.js] 失败:", e.shortMessage || e.message || e);
+  if (e.hints && e.hints.length) {
+    // fatal() 已经把错误块和提示打出来了, 这里只补一行
+    console.error(`\n[deploy.js] 失败: ${e.message}`);
+  } else {
+    console.error("\n[deploy.js] 失败:", e.shortMessage || e.message || e);
+  }
   if (e.stack && process.env.DEBUG) console.error(e.stack);
   process.exit(1);
 });

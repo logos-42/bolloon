@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
   "chainId": 31337,
-  "networkName": "localhost",
-  "deployedAt": "2026-09-22T04:39:40.608Z",
+  "networkName": "localhost-external",
+  "deployedAt": "2026-09-22T04:39:06.016Z",
   "rpcUrl": "http://127.0.0.1:8545",
   "deployerAddress": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
   "tokenSource": "external",
   "contracts": [
     {
       "name": "AgentEscrow",
-      "address": "0x162A433068F51e18b7d13932F27e66a3f99E6890",
-      "txHash": "0x42f236d2958d60989556a103cafaeaaa5c5942629da0f3e2fdca83c690c1c080",
-      "blockNumber": 111,
+      "address": "0x8198f5d8F8CfFE8f9C413d98a0A55aEB8ab9FbB7",
+      "txHash": "0xcf598204d739b17111cd24ff3eb85ec1915f97d23c05c16fb1d7c785ddf0e562",
+      "blockNumber": 134,
       "bytecodeHash": "0xad5d65f86b39dd4bc0ff0163487a8a6cf47ce73bfca654335fec4ec75bef5ef6",
       "creationBytecodeHash": "0x606464a57882094fe10426860410dc8b70399e22cde1601f9cc0d6fdd3ccb357",
       "creationBytecodeHashNormalized": true,
@@ -26,9 +26,9 @@
     },
     {
       "name": "AgentTreasury",
-      "address": "0x809d550fca64d94Bd9F66E60752A544199cfAC3D",
-      "txHash": "0xed67a98ce7270671a8b24db3f7bda7db619e3318998ec38a96cc39f842b8ec64",
-      "blockNumber": 84,
+      "address": "0x0355B7B8cb128fA5692729Ab3AAa199C1753f726",
+      "txHash": "0xf2bc7239ced9bc694de1032c8dac163dacf4e15a97e48dedfb5d21e3a716f320",
+      "blockNumber": 135,
       "bytecodeHash": "0x2e55c06d2935b20958900b8e2a791df34bc87f6804318e96c1d9407e5a310beb",
       "creationBytecodeHash": "0x6ab25df33a45f706e8364079388490ee5f9ab7dd016ace815177841b3f80880b",
       "creationBytecodeHashNormalized": true,
@@ -54,7 +54,7 @@
     "codeLengthBytes": 1678,
     "note": "外部已有 ERC20 — 本脚本不部署、不 mint、不改它的状态; decimals 由链上真读并在 ≠6 时拒编; 唯一可能的状态写入是 E2E 需要 buyer 授权时的 approve (allowance 已足够则连 approve 都不发)",
     "stateWritesByThisScript": [
-      "approve(spender=0x162A433068F51e18b7d13932F27e66a3f99E6890, amount=120000000) by buyer — 外部 token 的唯一状态写入, 闭环必需"
+      "approve(spender=0x8198f5d8F8CfFE8f9C413d98a0A55aEB8ab9FbB7, amount=120000000) by buyer — 外部 token 的唯一状态写入, 闭环必需"
     ],
     "untouchedBeforeE2E": true
   },
@@ -176,11 +176,11 @@
   ],
   "reproduce": {
     "step1_anvil": "DYLD_LIBRARY_PATH=~/.local/lib ~/.foundry/bin/anvil --chain-id 31337 --port 8545 --host 127.0.0.1",
-    "step2_deploy": "cd contracts/evm && npx hardhat compile && TOKEN_ADDRESS=0x5eb3Bc0a489C5A8288765d2336659EbCA68FCd00 NETWORK_NAME=localhost node scripts/deploy.js",
+    "step2_deploy": "cd contracts/evm && npx hardhat compile && TOKEN_ADDRESS=0x5eb3Bc0a489C5A8288765d2336659EbCA68FCd00 NETWORK_NAME=localhost-external node scripts/deploy.js",
     "anvilNote": "本机 anvil/cast 动态链接要 /usr/local/opt/libusb/lib/libusb-1.0.0.dylib, 该路径不存在; ~/.local/lib/libusb-1.0.0.dylib 存在, 所以必须带 DYLD_LIBRARY_PATH。forge 不依赖 libusb, 无需该变量。",
     "env": {
       "RPC_URL": "http://127.0.0.1:8545",
-      "NETWORK_NAME": "localhost",
+      "NETWORK_NAME": "localhost-external",
       "TOKEN_ADDRESS": "0x5eb3Bc0a489C5A8288765d2336659EbCA68FCd00 (external 模式: 用已有 token, 不部署 MockERC20)",
       "DEPLOYER_PRIVATE_KEY": "默认 = 由 anvil 公开开发助记符派生的账户 #0 (非真实钱包)",
       "AGENT_PRIVATE_KEY": "默认 = 同一助记符的账户 #1",
@@ -192,36 +192,36 @@
   },
   "tradeLoop": {
     "ran": true,
-    "taskId": "bolloon-local-e2e-1790051980992-1c49f918",
-    "taskKey": "0x5496a852a743511c8c8026940ccae84fbbf403b8a9f64248b8176ff2ab574885",
+    "taskId": "bolloon-local-e2e-1790051946174-12d2de8f",
+    "taskKey": "0x34add69a1c430a9ec858b0d4f7ef6548d2d292939be9ea00b7f8a3b5fdac57af",
     "transactions": {
       "createEscrowV2": {
-        "txHash": "0x26cfe1e6b3b67adafe5d3235b59e70e9b8b551d51ab2e52b7df368dd91b680ad",
-        "blockNumber": 204,
-        "gasUsed": "352125"
+        "txHash": "0xa8f0738574689220b9c9f4b70cbe6bbabf1ea2d2cd15935d079c17b019d93adf",
+        "blockNumber": 183,
+        "gasUsed": "352113"
       },
       "submitProofV2": {
-        "txHash": "0x73ae7afa0f4fe6166c40d36241b6ea1889c87e1ecd5a08f763b6dda537a9c42d",
-        "blockNumber": 205,
-        "gasUsed": "80287"
+        "txHash": "0x54871dd820e47c7f8d540bccee1fadc19bc384ea2b42f1dc9bec00e80f4387f0",
+        "blockNumber": 184,
+        "gasUsed": "80275"
       },
       "releaseV2": {
-        "txHash": "0x4c880165e791df8379ce8d597a23c923117e14cf0f3e7cf66ff5cf3f617b67a4",
-        "blockNumber": 206,
-        "gasUsed": "73183"
+        "txHash": "0x25d02ae502ca9d3faa28c1aa281068244ed9020e42465ab987f8c31649b0db05",
+        "blockNumber": 185,
+        "gasUsed": "73171"
       }
     },
     "stateTransition": "ACTIVE→ACTIVE→ACTIVE→RELEASED",
     "buyerBalanceDelta": "-100000000",
     "agentBalanceDelta": "100000000",
-    "escrowBalanceAfter": "50000000"
+    "escrowBalanceAfter": "20000000"
   },
   "f2Assertion": {
     "gate": "claimAfterTimeoutV2 requires proofHash != 0",
     "heldOnRealChain": true,
     "evidence": {
       "staticCallRevertReason": "no proof submitted",
-      "realTxHash_status0": "0x256fe0ad9958196a1ecc77d90a3f2f6738a3512676de001e3866c89f0def7814",
+      "realTxHash_status0": "0x787a42c81ff830ed3955c8dd283c0f7d6f8f25393eadca621643e92fc24f8a15",
       "realTx_status": 0,
       "positiveControl_withProof_state": "RELEASED"
     }
@@ -239,16 +239,16 @@
     },
     "mockTokenDeployedByThisScript": false,
     "externalTokenWritesByThisScript": [
-      "approve(spender=0x162A433068F51e18b7d13932F27e66a3f99E6890, amount=120000000) by buyer — 外部 token 的唯一状态写入, 闭环必需"
+      "approve(spender=0x8198f5d8F8CfFE8f9C413d98a0A55aEB8ab9FbB7, amount=120000000) by buyer — 外部 token 的唯一状态写入, 闭环必需"
     ],
     "blockNumbers": [
       {
         "name": "AgentEscrow",
-        "blockNumber": 111
+        "blockNumber": 134
       },
       {
         "name": "AgentTreasury",
-        "blockNumber": 84
+        "blockNumber": 135
       }
     ],
     "selectorChecks": [
@@ -320,37 +320,37 @@
   },
   "verificationReport": {
     "escrowClosed": {
-      "taskKey": "0x5496a852a743511c8c8026940ccae84fbbf403b8a9f64248b8176ff2ab574885",
+      "taskKey": "0x34add69a1c430a9ec858b0d4f7ef6548d2d292939be9ea00b7f8a3b5fdac57af",
       "createEscrowV2": {
-        "txHash": "0x26cfe1e6b3b67adafe5d3235b59e70e9b8b551d51ab2e52b7df368dd91b680ad",
-        "blockNumber": 204,
-        "gasUsed": "352125"
+        "txHash": "0xa8f0738574689220b9c9f4b70cbe6bbabf1ea2d2cd15935d079c17b019d93adf",
+        "blockNumber": 183,
+        "gasUsed": "352113"
       },
       "submitProofV2": {
-        "txHash": "0x73ae7afa0f4fe6166c40d36241b6ea1889c87e1ecd5a08f763b6dda537a9c42d",
-        "blockNumber": 205,
-        "gasUsed": "80287"
+        "txHash": "0x54871dd820e47c7f8d540bccee1fadc19bc384ea2b42f1dc9bec00e80f4387f0",
+        "blockNumber": 184,
+        "gasUsed": "80275"
       },
       "releaseV2": {
-        "txHash": "0x4c880165e791df8379ce8d597a23c923117e14cf0f3e7cf66ff5cf3f617b67a4",
-        "blockNumber": 206,
-        "gasUsed": "73183"
+        "txHash": "0x25d02ae502ca9d3faa28c1aa281068244ed9020e42465ab987f8c31649b0db05",
+        "blockNumber": 185,
+        "gasUsed": "73171"
       },
       "stateTransition": "ACTIVE→ACTIVE→ACTIVE→RELEASED"
     },
     "escrowB_noProof": {
-      "taskKey": "0x2399779749cba3ca9834b9345207b490bd2ad51f27a1f9627412e58ab66db8cc",
-      "claimRevertedTxHash": "0x256fe0ad9958196a1ecc77d90a3f2f6738a3512676de001e3866c89f0def7814",
+      "taskKey": "0xb2f7b4c647294edb83f00ebb07ad09dce3334c5879c4de743f46d0ff67b9058c",
+      "claimRevertedTxHash": "0x787a42c81ff830ed3955c8dd283c0f7d6f8f25393eadca621643e92fc24f8a15",
       "claimRevertedStatus": 0,
-      "claimRevertedBlock": 210,
+      "claimRevertedBlock": 189,
       "staticRevertReason": "no proof submitted",
       "stateAfterFailedClaim": "ACTIVE"
     },
     "escrowC_withProof": {
-      "taskKey": "0x28296686d48ca208bf7c5a2121f44043617c9ae50e2e6b582f29e1926f765e05",
-      "submitProofTx": "0x213f4c08a31f1aaa415308ba9a0bd2463c0e69e07ac8adc6b4a19b5e425cf3ee",
-      "claimTx": "0x5d358c3f7311cfe97f76bac765d319256b02ca142c4904475c7f01120e839d0b",
-      "claimBlock": 212,
+      "taskKey": "0xb38e3d17fe23e8eca83576292b36c936c1a4fa0866278d6d83028cb0e5ac02f6",
+      "submitProofTx": "0xd46c860c949a3d4a708bc054ab13d5b20e49723d7420f2e29819ae78a731de0e",
+      "claimTx": "0x77ee82b569530079045fbf8a6d31c32860fe90cbb64d1d4bcf2337a0b61d1f95",
+      "claimBlock": 191,
       "releasedBy": 2,
       "state": "RELEASED"
     }
