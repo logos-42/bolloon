@@ -83,10 +83,12 @@ async function main() {
   }
 
   const t = finalSnap.totals || {};
+  const act = Array.isArray(finalSnap.confirmed_activity) ? finalSnap.confirmed_activity : [];
   console.error(
     `[export-pulse] status=${finalSnap.status} scope=${finalSnap.scope} ` +
     `nodes=${t.nodes} agents=${t.agents} active=${t.active_agents} 24h=${t.seen_last_24h} ` +
     `caps=${(finalSnap.capabilities || []).map((c: any) => `${c.key}:${c.count}`).join(',') || '(none)'} ` +
+    `confirmed_activity=${act.length}(${finalSnap.confirmed_activity_source}) ` +
     `signed=${!!finalSnap.signature} out=${out || '(stdout)'}`,
   );
 }

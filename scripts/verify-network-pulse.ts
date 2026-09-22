@@ -165,7 +165,70 @@ section('[6] 前端消费契约 (bolloon-UI 网关页需要什么这里就得有
   check('前端拿到的 JSON 里没有任务正文/指令类字段', !/"instruction"|"content"|"payload"/.test(json), json.slice(0, 120));
 }
 
+// ── [7] 冻结形状 confirmed_activity (真索引 → 真行; 索引坏 → 降级并标源) ──────
+section('[7] confirmed_activity 冻结形状 (链上索引 → 真活动行 · 降级标注 · 匿名)');
+{
+  const FROZEN = ['task', 'kind', 'state', 'chain_id', 'block', 'tx', 'confirmations', 'finality', 'at'];
+  const TASK = '0x' + 'ab'.repeat(32);
+  const chainDir = path.join(HOME, '.bolloon', 'chain');
+  const chainFile = path.join(chainDir, 'index.json');
+  const mkEntry = (i: number) => ({
+    key: `0x${String(i).padStart(2, '0').repeat(32)}:${i}`,
+    blockNumber: 400 + i, blockHash: '0x' + 'aa'.repeat(32),
+    txHash: `0x${String(i).padStart(2, '0').repeat(32)}`, txIndex: 0, logIndex: i,
+    address: '0x' + '11'.repeat(20),
+    eventName: i % 2 === 0 ? 'EscrowCreatedV2' : 'ReleasedV2',
+    taskKey: TASK, args: {}, confirmations: 0, finality: 'observed', suspect: false,
+    firstSeenAt: Date.UTC(2026, 8, 22, 5, 31, 0) + i * 1000, updatedAt: Date.now(), history: [],
+  });
+
+  // ① 没有链上索引 → 字段仍在, 空数组 + source=none (不编行)
+  const noIdx = await NP.getNetworkPulse({ home: HOME, force: true });
+  check('没有链上索引: confirmed_activity 仍在 (空数组) 且 source=none',
+    Array.isArray(noIdx.confirmed_activity) && noIdx.confirmed_activity.length === 0 && noIdx.confirmed_activity_source === 'none',
+    [noIdx.confirmed_activity_source, noIdx.confirmed_activity.length]);
+
+  // ② 真索引文件 (30 条, 故意超上限) → 25 行, 最新在前, 冻结形状逐字
+  fs.mkdirSync(chainDir, { recursive: true });
+  fs.writeFileSync(chainFile, JSON.stringify({
+    schemaVersion: 2, chainId: 84532, networkName: 'base-sepolia', escrowAddress: '0x' + '11'.repeat(20),
+    deploymentBlock: 47142222, deploymentSource: 'fixture', lastSyncedBlock: 47142250, lastSyncedAt: Date.now(),
+    headBlock: 47142250, headBlockHash: '0x' + 'bb'.repeat(32),
+    confirmations: { confirmed: 1, finalized: 12 }, pageSize: 2000, reorgDepth: 32,
+    entries: Array.from({ length: 30 }, (_, i) => mkEntry(i)), recentBlocks: [], runs: [], updatedAt: Date.now(),
+  }), 'utf8');
+  const snap = await NP.getNetworkPulse({ home: HOME, force: true });
+  const rows: any[] = snap.confirmed_activity;
+  check('真索引 → 快照列出真活动行 (source=chain-index)', snap.confirmed_activity_source === 'chain-index' && rows.length > 0, [snap.confirmed_activity_source, rows.length]);
+  check('上限 25 行', rows.length === 25, rows.length);
+  check('字段名与顺序逐字冻结', rows.every((r) => JSON.stringify(Object.keys(r)) === JSON.stringify(FROZEN)), Object.keys(rows[0]));
+  check('最新在前 (block 递减)', rows.every((r, i) => i === 0 || rows[i - 1].block > r.block), rows.slice(0, 3).map((r) => r.block));
+  check('state/kind 映射正确 (EscrowCreatedV2→active · ReleasedV2→released)',
+    rows.every((r) => (r.state === 'active' && r.kind === 'task_created') || (r.state === 'released' && r.kind === 'trade_settled')));
+  check('确认数按 1/12 门槛复算 (head 47142250 - block + 1)',
+    rows[0].confirmations === 47142250 - rows[0].block + 1 && ['observed', 'confirmed', 'finalized'].includes(rows[0].finality),
+    [rows[0].block, rows[0].confirmations, rows[0].finality]);
+  const rowsJson = JSON.stringify(rows);
+  check('任务/交易短写 (sha256:xxxxxxxx), 绝不出原文',
+    rows.every((r) => /^sha256:[0-9a-f]{8}$/.test(r.task) && /^sha256:[0-9a-f]{8}$/.test(r.tx))
+    && !rowsJson.includes(TASK) && !rowsJson.includes('0x') && !/0x[0-9a-fA-F]{8,}/.test(rowsJson),
+    rows[0]);
+  check('快照整体无私有字段', NP.assertNoPrivateFields(snap).length === 0, NP.assertNoPrivateFields(snap));
+
+  // ③ 索引坏掉 → 降级, 并在快照里标明来源
+  fs.writeFileSync(chainFile, '{ broken', 'utf8');
+  await NP.recordNetworkEvent({ type: 'task_posted', taskId: 'verify-task', did: DID_A }, HOME);
+  const degraded = await NP.getNetworkPulse({ home: HOME, force: true });
+  check('索引坏 → 降级到脉冲事件并标 source=pulse-events',
+    degraded.confirmed_activity_source === 'pulse-events' && degraded.confirmed_activity.length === 1, degraded.confirmed_activity_source);
+  check('降级行不冒充链上 (chain_id/block/confirmations=0 · finality=observed)',
+    degraded.confirmed_activity.every((r: any) => r.chain_id === 0 && r.block === 0 && r.confirmations === 0 && r.finality === 'observed'),
+    degraded.confirmed_activity[0]);
+  check('降级行也不出任务原文', !JSON.stringify(degraded.confirmed_activity).includes('verify-task'));
+  check('totals/recent_activity 等既有字段没被改动', !!degraded.totals && Array.isArray(degraded.recent_activity) && Array.isArray(degraded.capabilities));
+}
+
 console.log(`\n=== 结果: ${passed} passed, ${failed} failed ===`);
-console.log('覆盖: 双节点(发布→缓存→观察) · 匿名化(原始 DID/能力名不落盘) · 隐私阈值 · scope 可信边界 · live/stale/unavailable · malformed 安全 · 公开接口无认证+ETag+304 · 前端字段契约');
+console.log('覆盖: 双节点(发布→缓存→观察) · 匿名化(原始 DID/能力名不落盘) · 隐私阈值 · scope 可信边界 · live/stale/unavailable · malformed 安全 · 公开接口无认证+ETag+304 · 前端字段契约 · confirmed_activity 冻结形状(真索引→真行 · 上限/排序/门槛 · 降级标源 · 匿名)');
 try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch { /* noop */ }
 process.exit(failed === 0 ? 0 : 1);

@@ -10,6 +10,10 @@
  *   · 快照过期 → `stale` (不许伪装实时); 观察层不可用 → `unavailable`
  *   · 类别小于隐私阈值 → 合并进 other
  *   · 事件数 / 时间窗 / capability 数都有上限
+ *   · **冻结形状 `confirmed_activity`** (2026-09-22): 公开页面要能列出「哪个任务 · 什么状态 ·
+ *     哪个块 · 多少确认」, 而不是只有数字 —— 数据源优先 P5 链上索引, 不可用时退回脉冲事件并
+ *     用 `confirmed_activity_source` 标注; 标识一律 sha256 短写 (前 8 位), 绝不落 taskKey /
+ *     taskId / txHash 原文; 不够确认门槛的行只报 observed, 不冒充 confirmed。
  *
  * 借鉴 (只借产品与工程思想, 不借 Go/Postgres/API 项目):
  *   EigenFlux 的 "注册总量 / 当前活跃 / 最近出现" 时间窗统计、服务端生成匿名活动文本、
@@ -20,6 +24,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
+// 确认数门槛来自 chain-config (单一实现; 默认 confirmed=1 / finalized=12) —— 只借常量, 不借 RPC
+import { DEFAULT_CONFIRMATIONS } from './chain/chain-config.js';
 
 // ── 常量 (上限 + 时间边界) ─────────────────────────────────────────────────
 
@@ -40,6 +46,8 @@ export const PULSE_LIMITS = {
   snapshotTtlMs: 30 * 1000,
   /** 活动流最多几条 */
   maxActivity: 8,
+  /** confirmed_activity (冻结形状的真实活动行) 上限 */
+  maxConfirmedActivity: 25,
 } as const;
 
 /** 事件类型白名单 —— 只允许这些进统计 (其余一律丢弃) */
@@ -95,6 +103,14 @@ export interface NetworkPulseSnapshot {
   };
   capabilities: { key: string; count: number }[];
   recent_activity: { kind: NetworkEventType; at: number; text: { zh: string; en: string } }[];
+  /**
+   * ★ 冻结形状的真实活动行 (智能体任务 / 链上活动): 最新在前, 上限 25 行。
+   * 公开网页靠它列出「哪个任务 · 什么状态 · 哪个块 · 多少确认」, 而不是只有数字。
+   * 只有匿名短写 (sha256 前 8 位), 没有 taskKey / taskId / txHash 原文。
+   */
+  confirmed_activity: ConfirmedActivityRow[];
+  /** ★ 活动行来源: chain-index (真链上事实) · pulse-events (索引不可用时的降级, 非链上确认) · none */
+  confirmed_activity_source: ConfirmedActivitySource;
   /** 快照签名 (可选, 供公开观察入口校验) */
   signature?: string;
   signer_fingerprint?: string;
@@ -321,7 +337,315 @@ export async function emitTradePulse(before: any, after: any, h?: string): Promi
   }
 }
 
-export function computeSnapshot(events: NetworkPulseEvent[], opts: { now: number; unavailable?: boolean; signedNodes?: number }): NetworkPulseSnapshot {
+// ── 冻结形状: confirmed_activity (真实智能体任务 / 链上活动行) ────────────────
+//
+// 公开网页要能列出「哪个任务 · 什么状态 · 哪个块 · 多少确认」, 而不是只有数字。这块就是那批行。
+// 形状**冻结** (字段名与取值域不许改), 内容一律**匿名短写**:
+//   · task = `sha256:` + sha256(域标签|taskKey) 的前 8 位十六进制 —— 绝不落 taskKey / taskId 原文
+//   · tx   = `sha256:` + sha256(域标签|txHash)  的前 8 位十六进制 —— 绝不落 txHash 原文
+//   · 不出现 DID / peerId / IP / 完整钱包地址 / 任务正文 —— `assertNoPrivateFields` 兜底
+// 数据源优先级: ① P5 链上索引 (真链上事实) → ② 索引不可用 → 退回脉冲事件, 并在快照里用
+//   `confirmed_activity_source` 如实标注 (chain-index / pulse-events / none)。
+// 确认数口径走 chain-config 门槛 (默认 confirmed=1 / finalized=12): 够不着门槛的行只报
+//   `observed`, **绝不冒充** confirmed/finalized。
+
+/** 冻结形状: 活动行上限 */
+export const CONFIRMED_ACTIVITY_LIMIT = PULSE_LIMITS.maxConfirmedActivity;
+
+export type ConfirmedActivityKind = 'task_created' | 'task_accepted' | 'task_completed' | 'trade_settled' | 'trade_verified';
+export type ConfirmedActivityState = 'active' | 'released' | 'refunded' | 'expired' | 'disputed' | 'unknown';
+export type ConfirmedActivityFinality = 'observed' | 'confirmed' | 'finalized';
+export type ConfirmedActivitySource = 'chain-index' | 'pulse-events' | 'none';
+
+/** 冻结形状的一行 (字段名/顺序逐字固定 —— 老客户端不受影响, 新页面按它渲染) */
+export interface ConfirmedActivityRow {
+  /** 任务摘要: `sha256:<前 8 位十六进制>` (taskKey / taskId 的 sha256 短写, 不可逆) */
+  task: string;
+  kind: ConfirmedActivityKind;
+  state: ConfirmedActivityState;
+  /** 链 id (脉冲降级行没有链上事实 → 0) */
+  chain_id: number;
+  /** 区块号 (脉冲降级行 → 0) */
+  block: number;
+  /** 交易摘要: `sha256:<前 8 位十六进制>` (txHash 的 sha256 短写, 不可逆) */
+  tx: string;
+  /** 确认数 (脉冲降级行 → 0) */
+  confirmations: number;
+  finality: ConfirmedActivityFinality;
+  /**
+   * 时间 (ISO8601 UTC, 秒级, 如 `2026-09-22T05:31:00Z`)。
+   * 链上索引行 = 本节点**首次观察到该条链上事件**的时间 (索引不存区块时间戳 —— 不臆造);
+   * 脉冲降级行 = 事件发生时间。字段名冻结, 故不为"区块时间"另开字段。
+   */
+  at: string;
+}
+
+export interface ConfirmedActivityGates { confirmed: number; finalized: number }
+
+/**
+ * 链上 escrow 事件名 → (kind, state) 的**唯一**映射表 (改这里才对, 别在别处写 switch)。
+ *
+ * kind 只能取冻结枚举的 5 个值, 链上有 6 类事件 → 按「任务生命周期 / 托管资金路径」归并:
+ *   · EscrowCreatedV2  委托创建 + 资金入托管              → task_created   / active
+ *   · ProofSubmittedV2 交付物验真摘要落链 (= 该笔交付完成) → task_completed / active (托管仍 ACTIVE, 等结算)
+ *   · ReleasedV2       结算出金                            → trade_settled  / released
+ *   · RefundedV2       托管退款                            → trade_settled  / refunded
+ *   · ExpiredV2        托管到期                            → trade_settled  / expired
+ *   · DisputedV2       资金冻结进入争议 (托管资金路径)      → trade_settled  / disputed
+ * 真信号在 `state` (kind 只是粗桶); 事件名不在表里 → 该条**不成行** (不猜)。
+ */
+export const CHAIN_EVENT_ACTIVITY: Record<string, { kind: ConfirmedActivityKind; state: ConfirmedActivityState }> = {
+  EscrowCreatedV2: { kind: 'task_created', state: 'active' },
+  ProofSubmittedV2: { kind: 'task_completed', state: 'active' },
+  ReleasedV2: { kind: 'trade_settled', state: 'released' },
+  RefundedV2: { kind: 'trade_settled', state: 'refunded' },
+  ExpiredV2: { kind: 'trade_settled', state: 'expired' },
+  DisputedV2: { kind: 'trade_settled', state: 'disputed' },
+};
+
+/** 脉冲事件 → 冻结 kind 的映射 (索引不可用时的降级路径; 没有 taskProof 的事件不成行) */
+export const PULSE_EVENT_ACTIVITY: Partial<Record<NetworkEventType, ConfirmedActivityKind>> = {
+  task_posted: 'task_created',
+  task_accepted: 'task_accepted',
+  task_completed: 'task_completed',
+  trade_settled: 'trade_settled',
+  trade_verified: 'trade_verified',
+};
+
+/** 标识 → `sha256:<前 8 位十六进制>`。域标签隔离用途: 同一原值稳定 (可 join), 不同用途不串, 不可逆。 */
+export function anonShortRef(value: string, domain = 'id'): string {
+  return `sha256:${nodeDigest(`${domain}|${String(value)}`).slice(0, 8)}`;
+}
+
+/** ISO8601 UTC 秒级 (`2026-09-22T05:31:00Z`) —— 冻结形状里 `at` 的格式。非法时间 → null */
+export function isoSeconds(at: number): string | null {
+  const n = Number(at);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  try { return new Date(n).toISOString().replace(/\.\d{3}Z$/, 'Z'); } catch { return null; }
+}
+
+/** 确认门槛归一化: 缺/非法 → chain-config 默认 (1/12); finalized 不许低于 confirmed */
+export function normalizeActivityGates(g?: Partial<ConfirmedActivityGates> | null): ConfirmedActivityGates {
+  const c = Number(g?.confirmed);
+  const f = Number(g?.finalized);
+  const confirmed = Number.isInteger(c) && c > 0 ? c : DEFAULT_CONFIRMATIONS.confirmed;
+  const finalized = Number.isInteger(f) && f >= confirmed ? f : Math.max(confirmed, DEFAULT_CONFIRMATIONS.finalized);
+  return { confirmed, finalized };
+}
+
+/**
+ * finality **只按确认数复算** (单一实现): 够 finalized → finalized; 够 confirmed → confirmed;
+ * 不够 / 非法 / 被回退过 → observed。行里原本自报的 finality 一律不复用 —— 不满足就是 observed。
+ */
+export function finalityFromConfirmations(
+  confirmations: number,
+  gates?: Partial<ConfirmedActivityGates> | null,
+  opts: { suspect?: boolean } = {},
+): ConfirmedActivityFinality {
+  if (opts.suspect) return 'observed';
+  const g = normalizeActivityGates(gates);
+  const c = Number(confirmations);
+  if (!Number.isFinite(c) || c < g.confirmed) return 'observed';
+  return c >= g.finalized ? 'finalized' : 'confirmed';
+}
+
+function activityLimit(limit?: number): number {
+  const n = Math.floor(Number(limit));
+  if (!Number.isFinite(n)) return CONFIRMED_ACTIVITY_LIMIT;
+  return Math.max(0, Math.min(CONFIRMED_ACTIVITY_LIMIT, n));
+}
+
+/** 我们只用到链上索引条目的这几个字段 (结构类型 → 单测可直接喂夹具, 不必构造整个 indexer) */
+export interface ChainActivitySourceEntry {
+  blockNumber: number;
+  logIndex: number;
+  eventName: string;
+  taskKey: string;
+  txHash: string;
+  /** 同步当时的确认数 (给了 headBlock 时以 headBlock 复算为准) */
+  confirmations?: number;
+  /** 被回退 / 链上已消失 → 不成行 */
+  suspect?: boolean;
+  /** 本节点首次观察到该事件的时间 */
+  firstSeenAt?: number | null;
+}
+
+/**
+ * 链上索引条目 → 冻结活动行 (**纯函数**, 不读盘不发 RPC, 便于单测)。
+ *   · suspect (被回退 / 链上已消失) 的记录**不成行** —— 它已经不在规范链上, 不该当活动列出
+ *   · 不认识的事件名 / 非法 taskKey·txHash / 缺观察时间 → 跳过 (不猜、不臆造)
+ *   · confirmations: 有 headBlock → head - block + 1 复算 (无 RPC, 用索引快照里的 head); 否则用记录值
+ *   · finality: 按 chain-config 门槛复算 (不够 → observed)
+ *   · 最新在前 (blockNumber desc, logIndex desc), 上限 25 行
+ */
+export function buildConfirmedActivityFromIndex(
+  entries: ChainActivitySourceEntry[],
+  opts: { gates?: Partial<ConfirmedActivityGates> | null; headBlock?: number | null; chainId?: number; limit?: number } = {},
+): ConfirmedActivityRow[] {
+  const gates = normalizeActivityGates(opts.gates);
+  const limit = activityLimit(opts.limit);
+  const chainId = Number.isInteger(Number(opts.chainId)) && Number(opts.chainId) >= 0 ? Number(opts.chainId) : 0;
+  const head = Number.isInteger(Number(opts.headBlock)) && Number(opts.headBlock) >= 0 ? Number(opts.headBlock) : null;
+  const out: Array<{ row: ConfirmedActivityRow; block: number; logIndex: number }> = [];
+
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!e || e.suspect === true) continue;                       // 回退过的记录不在规范链上 → 不成行
+    const map = CHAIN_EVENT_ACTIVITY[String(e.eventName || '')];
+    if (!map) continue;                                          // 不认识的事件 → 跳过 (不猜)
+    const taskKey = String(e.taskKey || '').toLowerCase();
+    const txHash = String(e.txHash || '').toLowerCase();
+    if (!/^0x[0-9a-f]{64}$/.test(taskKey) || !/^0x[0-9a-f]{64}$/.test(txHash)) continue;
+    const block = Number(e.blockNumber);
+    const logIndex = Number(e.logIndex);
+    if (!Number.isInteger(block) || block < 0 || !Number.isInteger(logIndex) || logIndex < 0) continue;
+    const atMs = Number(e.firstSeenAt);
+    const at = isoSeconds(atMs);
+    if (!at) continue;                                           // 没观察时间 → 不臆造时间, 不成行
+    const confirmations = head == null ? Math.max(0, Number(e.confirmations) || 0) : Math.max(0, head - block + 1);
+    out.push({
+      block, logIndex,
+      row: {
+        task: anonShortRef(taskKey, 'task'),
+        kind: map.kind,
+        state: map.state,
+        chain_id: chainId,
+        block,
+        tx: anonShortRef(txHash, 'tx'),
+        confirmations,
+        finality: finalityFromConfirmations(confirmations, gates),
+        at,
+      },
+    });
+  }
+
+  out.sort((a, b) => b.block - a.block || b.logIndex - a.logIndex);
+  return out.slice(0, limit).map((x) => x.row);
+}
+
+/**
+ * 脉冲事件 → 冻结活动行 (**纯函数**, 索引不可用时的降级路径)。
+ *   · 只有带 taskProof 的经济事件成行; state 一律 `unknown` —— 脉冲事件不带 escrow 结局, 不推
+ *   · 没有链上事实: chain_id / block / confirmations = 0, finality = observed (绝不冒充已确认)
+ *   · tx = 事件摘要短写 (不是交易哈希 —— 降级行没有 txHash, 字段名冻结只能这样填)
+ *   · 同一 (task, kind) 只留最新一条; 最新在前, 上限 25 行
+ */
+export function buildConfirmedActivityFromEvents(
+  events: NetworkPulseEvent[],
+  opts: { limit?: number } = {},
+): ConfirmedActivityRow[] {
+  const limit = activityLimit(opts.limit);
+  if (limit <= 0) return [];
+  const all: Array<{ at: number; row: ConfirmedActivityRow }> = [];
+  for (const e of Array.isArray(events) ? events : []) {
+    if (!isValidEvent(e)) continue;
+    const kind = PULSE_EVENT_ACTIVITY[e.type];
+    if (!kind) continue;                                          // 非经济事件 (入网/能力/连接…) → 不成行
+    const proof = String((e as any).taskProof || '').toLowerCase();
+    if (!/^[0-9a-f]{16}$/.test(proof)) continue;                  // 没有任务摘要 → 不成行
+    const at = isoSeconds(e.occurredAt);
+    if (!at) continue;
+    all.push({
+      at: e.occurredAt,
+      row: {
+        task: `sha256:${proof.slice(0, 8)}`,
+        kind,
+        state: 'unknown',
+        chain_id: 0,
+        block: 0,
+        tx: anonShortRef(`pulse|${e.sourceProof}|${e.occurredAt}|${e.type}`, 'tx'),
+        confirmations: 0,
+        finality: 'observed',
+        at,
+      },
+    });
+  }
+  all.sort((a, b) => b.at - a.at);                                // 最新在前
+  const seen = new Set<string>();
+  const rows: ConfirmedActivityRow[] = [];
+  for (const x of all) {
+    const key = `${x.row.task}|${x.row.kind}`;
+    if (seen.has(key)) continue;                                  // 同一任务同一动作只留最新一条
+    seen.add(key);
+    rows.push(x.row);
+    if (rows.length >= limit) break;
+  }
+  return rows;
+}
+
+export interface ConfirmedActivityResult {
+  source: ConfirmedActivitySource;
+  rows: ConfirmedActivityRow[];
+  gates: ConfirmedActivityGates;
+}
+
+/** 纯函数降级: 直接从脉冲事件算活动行 (没有索引时用, source 如实写 pulse-events / none) */
+export function confirmedActivityFromEvents(events: NetworkPulseEvent[], limit?: number): ConfirmedActivityResult {
+  const rows = buildConfirmedActivityFromEvents(events, { limit });
+  return { source: rows.length ? 'pulse-events' : 'none', rows, gates: normalizeActivityGates(DEFAULT_CONFIRMATIONS) };
+}
+
+/** 惰性加载链上索引只读查询模块 (只读索引文件, 不发 RPC; 加载/读取失败 → 降级) */
+let chainQueryModule: { readIndexFile: (opts?: { home?: string }) => unknown } | null = null;
+async function readChainIndex(home?: string): Promise<unknown | null> {
+  try {
+    if (!chainQueryModule) chainQueryModule = (await import('./chain/chain-index-query.js')) as any;
+    return chainQueryModule!.readIndexFile({ home });
+  } catch {
+    return null;
+  }
+}
+
+export interface ConfirmedActivityQuery {
+  home?: string;
+  /** 脉冲事件 (降级路径用; 会在内部按 24h 窗口过滤) */
+  events: NetworkPulseEvent[];
+  now?: number;
+  limit?: number;
+  /** 单测注入: 读链上索引 (抛错 / 返回空 = 索引不可用 → 降级到脉冲事件) */
+  readIndex?: (home?: string) => unknown | Promise<unknown>;
+}
+
+/**
+ * 解析活动行 (唯一入口): **先链上索引, 再脉冲降级**, 并如实报出来源。
+ * 索引文件不存在/读不出/没有任何可用行 → 退回脉冲事件; 两边都没有 → none (不编行)。
+ */
+export async function resolveConfirmedActivity(q: ConfirmedActivityQuery): Promise<ConfirmedActivityResult> {
+  const now = Number(q.now ?? Date.now());
+  const limit = activityLimit(q.limit);
+  const windowed = (Array.isArray(q.events) ? q.events : [])
+    .filter((e) => isValidEvent(e) && e.occurredAt >= now - PULSE_LIMITS.windowMs);
+
+  // ① 链上索引优先 (真链上事实)
+  const reader = q.readIndex ?? readChainIndex;
+  try {
+    const file: any = await reader(q.home);
+    const entries: ChainActivitySourceEntry[] = Array.isArray(file?.entries) ? file.entries : [];
+    if (entries.length > 0) {
+      const gates = normalizeActivityGates(file?.confirmations);
+      const rows = buildConfirmedActivityFromIndex(entries, {
+        gates,
+        headBlock: file?.headBlock,
+        chainId: file?.chainId,
+        limit,
+      });
+      if (rows.length > 0) return { source: 'chain-index', rows, gates };
+    }
+  } catch { /* 索引不可用 → 降级 (来源会在快照里标明) */ }
+
+  // ② 降级: 脉冲事件
+  return confirmedActivityFromEvents(windowed, limit);
+}
+
+export function computeSnapshot(
+  events: NetworkPulseEvent[],
+  opts: {
+    now: number;
+    unavailable?: boolean;
+    signedNodes?: number;
+    /** 已解析好的活动行 (getNetworkPulse 注入真实链上索引结果); 不给 = 纯函数自己从事件降级算 */
+    confirmedActivity?: ConfirmedActivityResult;
+  },
+): NetworkPulseSnapshot {
   const now = opts.now;
   const fresh_until = now + PULSE_LIMITS.snapshotTtlMs;
   if (opts.unavailable) {
@@ -334,6 +658,8 @@ export function computeSnapshot(events: NetworkPulseEvent[], opts: { now: number
       totals: { nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0, tasks: 0, tasks_completed: 0, tasks_verified: 0, signatures: 0 },
       capabilities: [],
       recent_activity: [],
+      confirmed_activity: [],
+      confirmed_activity_source: 'none',
       notes: ['观察层暂不可用 — 这不是"网络为空"'],
     };
   }
@@ -393,6 +719,19 @@ export function computeSnapshot(events: NetworkPulseEvent[], opts: { now: number
   if (scope === 'observed') notes.push('单节点观察: 这是本节点能看到的部分网络, 不是全网精确总量');
   else notes.push(`多签名来源汇总 (${signedNodes} 个签名节点)`);
 
+  // 活动行来源如实标注 (chain-index = 真链上事实; pulse-events = 降级, 非链上确认)
+  const activity = opts.confirmedActivity ?? confirmedActivityFromEvents(window);
+  if (activity.source === 'chain-index') {
+    notes.push(
+      `confirmed_activity 来自链上索引 (chain-index): 最新在前, 上限 ${CONFIRMED_ACTIVITY_LIMIT} 行; ` +
+      `确认门槛 confirmed=${activity.gates.confirmed} · finalized=${activity.gates.finalized}`,
+    );
+  } else if (activity.source === 'pulse-events') {
+    notes.push(
+      'confirmed_activity 降级为脉冲事件 (pulse-events): 非链上确认 —— chain_id/block/confirmations=0 且 finality=observed',
+    );
+  }
+
   return {
     status: 'live',
     generated_at: now,
@@ -413,6 +752,8 @@ export function computeSnapshot(events: NetworkPulseEvent[], opts: { now: number
     },
     capabilities,
     recent_activity: recent,
+    confirmed_activity: activity.rows,
+    confirmed_activity_source: activity.source,
     notes,
   };
 }
@@ -424,7 +765,9 @@ export async function getNetworkPulse(opts: SnapshotOptions = {}): Promise<Netwo
   if (!opts.force) {
     try {
       const cached = JSON.parse(fs.readFileSync(snapshotFile(opts.home), 'utf-8')) as NetworkPulseSnapshot;
-      if (cached && Number.isFinite(cached.generated_at) && cached.generated_at + PULSE_LIMITS.snapshotTtlMs > now) return cached;
+      // 老版本写的缓存没有冻结字段 `confirmed_activity` → 视为**过期形状**, 重算 (不能把缺字段的快照发出去)
+      const shapeOk = Array.isArray((cached as any)?.confirmed_activity) && typeof (cached as any)?.confirmed_activity_source === 'string';
+      if (shapeOk && cached && Number.isFinite(cached.generated_at) && cached.generated_at + PULSE_LIMITS.snapshotTtlMs > now) return cached;
     } catch { /* 无缓存 */ }
   }
   let events: NetworkPulseEvent[] = [];
@@ -433,7 +776,9 @@ export async function getNetworkPulse(opts: SnapshotOptions = {}): Promise<Netwo
   } catch (e: any) {
     return computeSnapshot([], { now, unavailable: true });
   }
-  const snap = computeSnapshot(events, { now });
+  // 活动行优先取 P5 链上索引 (真链上事实); 索引不可用 → 退回脉冲事件, 并在快照里标出来源
+  const confirmedActivity = await resolveConfirmedActivity({ home: opts.home, events, now });
+  const snap = computeSnapshot(events, { now, confirmedActivity });
   try {
     fs.mkdirSync(pulseDir(opts.home), { recursive: true });
     fs.writeFileSync(snapshotFile(opts.home), JSON.stringify(snap), 'utf8');
