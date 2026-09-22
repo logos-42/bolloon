@@ -2931,3 +2931,18 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **`skills/bolloon-network/SKILL.md` → v1.2.0**: 新增 P6b 写 tool 说明 + 失败信封口径 + 审计台账位置;原「刻意不暴露 chain trade create|submit-proof|release」一条**按事实改写**(不再说不暴露)。
 - **⚠️ 历史(诚实记录)**: 这半此前被**扣住不提交** —— 因为 P6 门是**环境依赖的假绿**(删掉 `~/.bolloon/chain.json` 就红 8 项)。`91e2f47`(链配置加第③层 + 门密闭化: 私有 fork 链 · env 清洗 · 临时 HOME 现写 · 负控制不静默跳过)与 `939a54c`(env 白名单透传 + libusb 真候选探测)之后,**判据达成**: 干净 HOME 下 `verify-chain-cli` **133 passed / 0 failed / EXIT=0**, 断言只加不减。**至此才提交**。
 - **我独立复跑(含这 3 个写 tool 的工作树)**: `tsc --noEmit` **0 错** · 全量 vitest **199 文件 / 2610 测试全过** · 干净 HOME 下 P6 门 **133/133** · 三条链门 59/0 · 75/0 · 69/0 · mcp-server 单测 101 行新增后全过。
+
+## [2026-09-22] feat(chain) | **Base 主网真部署** (leo 授权) — 真钱、真链、已上链核验
+
+- **前置资金操作(leo 显式授权)**: 主网钱包 `0xb4e9dCF79055A8232670ebb1c8c664Dff4E70066` 的 ETH 原本**只在 Ethereum L1**(0.00123252 ETH), Base 主网上为 0。经授权用**官方桥**(OptimismPortal `0x49048044D57e1C92A77f79988d21Fa8fAF74E97e`)把 **0.0006 ETH** 从 L1 桥到 Base:L1 tx `0xf96eb0f1706e0afdd0ddb762e6bc0c008468cf8fb56e78f19993dd252a0f0a02`(block 26032116, gas 228649, 手续费 0.0000230 ETH) → Base 侧约 170 秒入账 ✓。
+- **桥地址的核实方式(不凭记忆)**: Base 官方文档列出 4 个 L1 地址 → 链上交叉核对: 门户 code 2096B(代理)· `version()=5.2.0` · `systemConfig()=0x73a79Fab…`(与文档一致)· L1 桥 `otherBridge()=0x4200…0010`(= Base L2 桥预部署,其 `version()=1.1.0`)· L1 信使 `otherMessenger()=0x4200…0007` · `estimateGas` 成功 = 该笔存款不会 revert。
+- **部署结果(真交易)**:
+  - `AgentEscrow` **`0x4e689F98b64AC5B8eA947AC2aA93708cDd30f7aE`** tx `0xb2335b53…` block **51640073** code **9894 bytes**
+  - `AgentTreasury` **`0x030e7275ff4c50735b8Fb674B8e333B626E9cbc9`** tx `0xbe39cb2d…` block **51640076** code **5545 bytes**
+  - token = **官方 Base USDC `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`**(external 模式, **零 mock**、**零状态写入**;链上实读 symbol=USDC decimals=6)
+  - manifest → `contracts/deployments/base.json`(chainId **8453** · networkName `base`)
+  - `SKIP_E2E=1`(**只部署**, 不跑闭环、不 approve —— leo 授权的范围就是"只部署两个合约, 不动任何 USDC")
+- **我自己独立上链核验(全部通过)**: 两合约 code 9894/5545 ✓ · `token()` = 官方 USDC ✓ · `expireGrace()` = 604800 秒(7 天)✓ · `CONTRACT_VERSION()` = 1 ✓ · `owner()` = 主网钱包 ✓ · 两笔收据 **status=1** ✓ · bytecode **含 `expireV2` 选择器 `02c58a63`**(确为 v2)✓。
+- **真钱账目**: L1 桥手续费 0.0000230 + 部署手续费(0.0000135672 + 0.0000085881 = 0.0000221553)≈ **0.000045 ETH**(约 $0.15)。余额: L1 0.0006095 · Base 0.0005778 ETH。
+- **两次被门拦住的记录(诚实)**: ① deploy.js 默认用 **anvil 开发助记符** —— 主网上绝不可, 故 `DEPLOYER_PRIVATE_KEY`/`AGENT_PRIVATE_KEY` 均设为主网钱包(密钥由脚本从文件读入环境变量, **不出现在命令行**);② 第一次我给的官方 USDC 地址 **EIP-55 校验和写错**(`…bda02913` 应为 `…bdA02913`)→ 脚本**拒编且不发交易**(一分钱没花), 用 `ethers.getAddress()` 纠正后重跑 ✓。
+- **私钥红线**: 部署输出经断言检查 —— 私钥原文/裸形出现 **0** 次、`privateKey` 字样 **0** 次。

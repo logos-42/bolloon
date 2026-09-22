@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "chainId": 8453,
+  "networkName": "base",
+  "deployedAt": "2026-09-22T09:31:42.109Z",
+  "rpcUrl": "https://mainnet.base.org",
+  "deployerAddress": "0xb4e9dCF79055A8232670ebb1c8c664Dff4E70066",
+  "tokenSource": "external",
+  "contracts": [
+    {
+      "name": "AgentEscrow",
+      "address": "0x4e689F98b64AC5B8eA947AC2aA93708cDd30f7aE",
+      "txHash": "0xb2335b533f40a8ef67b71baa915ac41397f3f9e90b39efe612e4b990e3de72cc",
+      "blockNumber": 51640073,
+      "bytecodeHash": "0x3b1075dbc888bd2de5329fc7318f2631dcd5069de0d3476f197f23d78a87fe7c",
+      "creationBytecodeHash": "0x606464a57882094fe10426860410dc8b70399e22cde1601f9cc0d6fdd3ccb357",
+      "creationBytecodeHashNormalized": true,
+      "constructorArgs": [
+        "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        604800
+      ],
+      "contractVersion": "1",
+      "sourcePath": "contracts/AgentEscrow.sol:AgentEscrow",
+      "role": "Agent 服务托管 / 链上结算 (v1 legacy + v2)",
+      "reusedFromManifest": false
+    },
+    {
+      "name": "AgentTreasury",
+      "address": "0x030e7275ff4c50735b8Fb674B8e333B626E9cbc9",
+      "txHash": "0xbe39cb2db796151d5dae7f7fe332a5de779f4ae009b78343a0e881517eb45940",
+      "blockNumber": 51640076,
+      "bytecodeHash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+      "creationBytecodeHash": "0x6ab25df33a45f706e8364079388490ee5f9ab7dd016ace815177841b3f80880b",
+      "creationBytecodeHashNormalized": true,
+      "constructorArgs": [
+        "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "100000000000"
+      ],
+      "contractVersion": "1",
+      "sourcePath": "contracts/AgentTreasury.sol:AgentTreasury",
+      "role": "协议资金池 (分配权重 / 日限额 / 两段式所有权)",
+      "reusedFromManifest": false
+    }
+  ],
+  "externalToken": {
+    "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "decimals": 6,
+    "symbol": "USDC",
+    "name": "USD Coin",
+    "source": "external",
+    "addressFrom": "env TOKEN_ADDRESS",
+    "decimalsOnChain": 6,
+    "isMock": false,
+    "codeLengthBytes": 1852,
+    "note": "外部已有 ERC20 — 本脚本不部署、不 mint、不改它的状态; decimals 由链上真读并在 ≠6 时拒编; 唯一可能的状态写入是 E2E 需要 buyer 授权时的 approve (allowance 已足够则连 approve 都不发)",
+    "stateWritesByThisScript": []
+  },
+  "contractVersions": {
+    "AgentEscrow": {
+      "declaredOnChain_CONTRACT_VERSION": "1",
+      "semantic": "v2 (含 createEscrowV2/submitProofV2/releaseV2/claimAfterTimeoutV2 + F1 12 字段 + F3 事件)",
+      "modelFreezeRef": "MODEL_FREEZE.md §2.2/§3.2/§4/§5"
+    },
+    "AgentTreasury": {
+      "semantic": "v1 (2026-08-13)"
+    }
+  },
+  "abiPaths": {
+    "AgentEscrow": "abis/AgentEscrow.json",
+    "AgentTreasury": "abis/AgentTreasury.json"
+  },
+  "build": {
+    "solcLongVersion": "0.8.24+commit.e11b9ed9",
+    "optimizer": {
+      "enabled": true,
+      "runs": 200
+    },
+    "evmVersion": "paris",
+    "buildInfoFile": "b9cf549cd015a15d147b1377a2dc2d9c.json",
+    "immutableSlots": {
+      "AgentEscrow": 8,
+      "AgentTreasury": 6
+    },
+    "creationBytecodeHashNormalization": "creationBytecodeHash = keccak256(artifact creation bytecode, 其中嵌入的 runtime 段的 immutable 占位槽已显式清零)",
+    "creationBytecodeNormalizationDetail": {
+      "AgentEscrow": {
+        "hash": "0x606464a57882094fe10426860410dc8b70399e22cde1601f9cc0d6fdd3ccb357",
+        "normalized": true,
+        "embeddedRuntimeOffset": 415,
+        "note": "creation 内嵌 runtime @offset=415, 清零 256 字节"
+      },
+      "AgentTreasury": {
+        "hash": "0x6ab25df33a45f706e8364079388490ee5f9ab7dd016ace815177841b3f80880b",
+        "normalized": true,
+        "embeddedRuntimeOffset": 299,
+        "note": "creation 内嵌 runtime @offset=299, 清零 192 字节"
+      }
+    },
+    "note": "bytecodeHash 已对 immutable 占位槽清零后与上述编译产物比对一致"
+  },
+  "agentEscrowV2Interface": {
+    "functions": [
+      {
+        "signature": "createEscrowV2(bytes32,address,uint256,address,bytes32,bytes32,bytes32,bytes32,uint64,uint32,uint16)",
+        "selector": "0x152215b8",
+        "inAbi": true,
+        "inOnChainBytecode": true
+      },
+      {
+        "signature": "submitProofV2(bytes32,bytes32,bytes32,uint16)",
+        "selector": "0x9037b29b",
+        "inAbi": true,
+        "inOnChainBytecode": true
+      },
+      {
+        "signature": "releaseV2(bytes32)",
+        "selector": "0xa7997ba4",
+        "inAbi": true,
+        "inOnChainBytecode": true
+      },
+      {
+        "signature": "claimAfterTimeoutV2(bytes32)",
+        "selector": "0xa53cf2b0",
+        "inAbi": true,
+        "inOnChainBytecode": true
+      }
+    ],
+    "events": [
+      {
+        "signature": "EscrowCreatedV2(bytes32,bytes32,address,address,address,uint256,uint256,uint32,uint16,uint32)",
+        "topic0": "0x048424d461a91a8484bd99f1889c08e656f61e055f494da311e157d80aab154a",
+        "inAbi": true,
+        "inOnChainBytecode": true
+      },
+      {
+        "signature": "ProofSubmittedV2(bytes32,bytes32,bytes32,bytes32,uint16)",
+        "topic0": "0x75a39a1b6a533e5798cdb60518a6f219c82b933257e41eab52412135c1ea191a",
+        "inAbi": true,
+        "inOnChainBytecode": true
+      },
+      {
+        "signature": "ReleasedV2(bytes32,address,uint256,uint8)",
+        "topic0": "0xa36deffda98c4c141ffb1a5e30799504534a73c91d4c864ceb78359b2d1a8105",
+        "inAbi": true,
+        "inOnChainBytecode": true
+      },
+      {
+        "signature": "RefundedV2(bytes32,address,uint256,bytes32)",
+        "topic0": "0x93d4ac3913d9665b663972988adb75dee323dda9657174e67720e16af43ee39f",
+        "inAbi": true,
+        "inOnChainBytecode": true
+      },
+      {
+        "signature": "DisputedV2(bytes32,address,bytes32)",
+        "topic0": "0x10b8570d3ae03e8371c162efa694dfbe094ee712c80402206c8e8f1d59f578e9",
+        "inAbi": true,
+        "inOnChainBytecode": true
+      }
+    ]
+  },
+  "deploymentParams": {
+    "escrow_releaseTimeout": "604800",
+    "treasury_dailyLimit": "100000000000",
+    "token_initialMintToDeployer": null,
+    "token_mintPerformedByThisScript": false
+  },
+  "notes": [
+    "本地零成本部署: 默认账户派生自 anvil 公开开发助记符, 未使用任何真实钱包",
+    "bytecodeHash = keccak256(链上 eth_getCode 返回的 runtime bytecode)",
+    "token 为外部已有 ERC20 (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913, symbol=USDC, decimals=6) — 本脚本未部署 MockERC20、未 mint、未改其状态",
+    "chainId 31337 = anvil/hardhat 默认本地链",
+    "刻意不加 verifiedAtRealRpc 字段: 本 manifest 的所有读数都来自 rpcUrl+chainId 那一条链, 一个布尔既不比 rpcUrl 多任何信息, 又会诱导把「RPC 应答了」当成「链就是你以为的那条」(被代理/被劫持的 RPC 一样返回 true); 要更强保证应做链身份绑定 (chainId 回读 + 块哈希 + 最终性深度), 不是加布尔。"
+  ],
+  "reproduce": {
+    "step1_anvil": "DYLD_LIBRARY_PATH=~/.local/lib ~/.foundry/bin/anvil --chain-id 31337 --port 8545 --host 127.0.0.1",
+    "step2_deploy": "cd contracts/evm && npx hardhat compile && TOKEN_ADDRESS=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 NETWORK_NAME=base node scripts/deploy.js",
+    "anvilNote": "本机 anvil/cast 动态链接要 /usr/local/opt/libusb/lib/libusb-1.0.0.dylib, 该路径不存在; ~/.local/lib/libusb-1.0.0.dylib 存在, 所以必须带 DYLD_LIBRARY_PATH。forge 不依赖 libusb, 无需该变量。",
+    "env": {
+      "RPC_URL": "https://mainnet.base.org",
+      "NETWORK_NAME": "base",
+      "TOKEN_ADDRESS": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (external 模式: 用已有 token, 不部署 MockERC20)",
+      "DEPLOYER_PRIVATE_KEY": "默认 = 由 anvil 公开开发助记符派生的账户 #0 (非真实钱包)",
+      "AGENT_PRIVATE_KEY": "默认 = 同一助记符的账户 #1",
+      "FORCE_REDEPLOY": "1 = 忽略已有 manifest 全部重部署",
+      "SKIP_E2E": "1 = 跳过真交易闭环与 F2 断言"
+    },
+    "idempotency": "重跑会复用 manifest 里的地址 (需 chainId 一致 + 当前编译产物的 creationBytecodeHash 与 manifest 逐字一致 + 链上 eth_getCode 的 keccak256 一致 + 构造参数一致), 不重复部署; 只用 manifest 里记录的原始部署 txHash/blockNumber。bytecodeHash 不符会自动重部署并打印原因。",
+    "tradeLoopRerunSafety": "E2E 与 F2 断言使用每次运行唯一的 taskKey (taskId 带时间戳+随机数), 因此可反复执行不撞 'task exists'。"
+  }
+}
