@@ -7,3 +7,7 @@ script = "script"
 remappings = ["forge-std/=lib/forge-std/src/"]
 solc_version = "0.8.24"
 optimizer = false
+# F0: src="." 会把 contracts/evm/node_modules/ 里的样板合约也拖进来编
+# (eth-gas-reporter 的 ^0.5.0 / hardhat sample-projects 的 ^0.8.28 与 solc 0.8.24 冲突)。
+# 合约真正住在 evm/contracts/ (Hardhat 子项目), 依赖目录必须跳过。
+skip = ["evm/node_modules/**"]
