@@ -2954,3 +2954,13 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **我诊断的对错(诚实记录)**: 我猜「`deploymentBlock` 解析被缓存」→ **我错**(解析每次都重读 manifest, 铁证 `runs[-1].scanFrom: 2`);真因是**落盘字段被旧文件覆盖**。我猜「扫描地址 ≠ 落盘地址 = 独立缺陷」→ **我对**, 已修。
 - **脏索引已真重建(迁移前快照留档 `index.mixed-identity-…json`)**: entries **451 → 144** · suspects **328 → 0** · 旧身份条目残留 **0** · 身份 = `0xe7f1725E…` / 部署块 **2**;真数字: 66 个任务 · created 66 / proof 35 / released 35 / expired 8 · finality confirmed 3 / finalized 141。
 - **我独立复跑**: `tsc --noEmit` **0 错** · 单测(chain-indexer 43 + chain-cli 45)**88/88** · **全量 vitest 199 文件 / 2624 测试全过**(基线 2610) · `verify-chain-indexer` 真链 **81 passed / 0 failed**(基线 69/0) · **直接读索引文件**确认三者一致且零旧身份残留 · CLI `chain index status|stats|sync|rebuild` 存在。
+
+## [2026-09-22] feat(chain) | **Base 主网真实闭环跑通** + 快照口径修正 (真钱 约 $0.9, 六笔全 status=1)
+
+- **leo 授权花真钱让 Bolloon 真用一次**, 结果: 买方 `0xb4e9dCF7…` 真付 USDC → 主网托管 → 卖方 `0x5Ca9fb35…` 真提交凭证 → 买方真释放 → 卖方真收款。taskKey `0x5a2da30e16ed89b02a4957e17b6d515ecab82dcdc3e4ae75a6f46ce23407f8b8`。
+- **六笔真交易(我逐笔上链核验: status=1 + from 正确)**: swap `0x4e13762f…`(block 51640437) · 充卖方 gas `0x9c7951d6…`(51640605) · approve `0x732ecc25…`(51640620) · createEscrowV2 `0x38d87bab…`(51640623) · **submitProofV2 `0x2334f0ec…`(51640636, from=卖方 ✓)** · releaseV2 `0xf7ec8776…`(51640672)。买方 USDC 0.685959→0.665959 · 卖方 +0.02 · allowance 残留 0 · 总花费 ETH 0.000274 + USDC 0.02 ≈ **$0.9**。
+- **金额是 0.02 而非 0.05**: M1 单次购买硬上限 `perPurchase=0.02` 不可绕过(先真跑预算闸得 `BUDGET_EXCEEDED (perPurchase)`, **未发任何交易**), 按 0.02 执行。**如实标注: 两个地址属同一主人 ⇒ 真链真钱真事件, 但不是真实双方交易。**
+- **真缺陷(原本跑不通)**: 卖方 0 ETH 而 `submitProofV2` 必须卖方签名付 gas ⇒ 若先 create 再补 gas 会把 0.05 USDC 锁死到 7 天 `expire`。修: **先给卖方充 0.00002 ETH 再 create**(授权范围内, 约 $0.07)。
+- **`src/agents/network-pulse.ts`**: 加 `PUBLIC_MAINNET_CHAIN_ID=8453` 进 `CHAIN_LABELS`, 并修 note 让它点名「行里真出现过的」公网链 —— 否则快照会出现「上表 3 行来自 8453(Base 主网)」却写「这不是公网活动」的自相矛盾。`tsc` 0 错 · 脉冲单测 **59/59** · `build:main` 已跑。
+- **快照真数据**: `activity_chain_id=8453` · `is_public_network=true` · `public_network_rows=3` · 3 行全 8453 · 全 `finalized` · `consistency=OK`。
+- **索引**: `index rebuild` 到 Base 8453 身份(escrow `0x4e68…f7aE` / 部署块 51640073)→ entries 3 / tasks 1 / created 1 / proof 1 / released 1 / suspects 0;旧 31337 索引(144 条)备份留档。

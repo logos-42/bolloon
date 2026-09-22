@@ -663,6 +663,9 @@ export async function resolveConfirmedActivity(q: ConfirmedActivityQuery): Promi
 /** 公网测试网 (Base Sepolia) chainId —— 只做**归属说明**, 不代表快照观察到了公网事件 */
 export const PUBLIC_TESTNET_CHAIN_ID = 84532;
 
+/** 公网主网 (Base) chainId —— 同上, 只做归属说明 */
+export const PUBLIC_MAINNET_CHAIN_ID = 8453;
+
 /**
  * chainId → 展示用网络名 (只回答"这一屏的行属于哪条链")。
  * 认不出的 chain id **不编名字** (chainLabelOf → null), 也不许算成公网。
@@ -670,6 +673,7 @@ export const PUBLIC_TESTNET_CHAIN_ID = 84532;
 export const CHAIN_LABELS: Record<number, { zh: string; en: string; publicNetwork: boolean }> = {
   [LOCAL_DEV_CHAIN_ID]: { zh: '本机隔离开发链', en: 'local isolated dev chain', publicNetwork: false },
   [PUBLIC_TESTNET_CHAIN_ID]: { zh: 'Base Sepolia 测试网', en: 'Base Sepolia testnet', publicNetwork: true },
+  [PUBLIC_MAINNET_CHAIN_ID]: { zh: 'Base 主网', en: 'Base mainnet', publicNetwork: true },
 };
 
 /** chainId 的展示名; 认不出的 chain id → null (不编名字) */
@@ -776,8 +780,17 @@ export function buildChainIdScope(rows: ConfirmedActivityRow[]): ChainIdScope {
     if (c > best) { best = c; primary = id; }
   }
   const label = chain_ids.length ? chainLabelOf(primary) : null;
-  const publicRows = chain_ids.reduce((n, id) => n + (isPublicChainId(id) ? (counts.get(id) || 0) : 0), 0);
+  const publicIds = chain_ids.filter(isPublicChainId);
+  const publicRows = publicIds.reduce((n, id) => n + (counts.get(id) || 0), 0);
   const pub = CHAIN_LABELS[PUBLIC_TESTNET_CHAIN_ID];
+  // 点名口径: 提示里写出的公网链必须是**行里真出现过的**; 一条都没有才退回对照链
+  // (否则会出现「上表 3 行来自 chainId 8453(Base 主网)」却说「公网链(Base Sepolia 84532) 3 行」的自相矛盾)
+  const pubZh = publicIds.length
+    ? publicIds.map((id) => `${CHAIN_LABELS[id].zh} ${id}`).join('、')
+    : `${pub.zh} ${PUBLIC_TESTNET_CHAIN_ID}`;
+  const pubEn = publicIds.length
+    ? publicIds.map((id) => `${CHAIN_LABELS[id].en} ${id}`).join(', ')
+    : `${pub.en} ${PUBLIC_TESTNET_CHAIN_ID}`;
   const rows_ = list.length;
   const multi = chain_ids.length > 1 ? `（上表共 ${chain_ids.length} 条链）` : '';
   const note = rows_ === 0
@@ -787,10 +800,10 @@ export function buildChainIdScope(rows: ConfirmedActivityRow[]): ChainIdScope {
       }
     : {
         zh: `chain_id 归属: 上表 ${rows_} 行来自 chainId ${primary}${label ? `（${label.zh}）` : ''}${multi} · ` +
-            `公网链（${pub.zh} ${PUBLIC_TESTNET_CHAIN_ID}）${publicRows} 行` +
+            `公网链（${pubZh}）${publicRows} 行` +
             `${publicRows === 0 ? ' —— 这不是公网活动' : ''}`,
         en: `chain_id scope: all ${rows_} rows above come from chainId ${primary}${label ? ` (${label.en})` : ''}${chain_ids.length > 1 ? ` (${chain_ids.length} chains in total)` : ''} · ` +
-            `public network (${pub.en} ${PUBLIC_TESTNET_CHAIN_ID}) rows: ${publicRows}` +
+            `public network (${pubEn}) rows: ${publicRows}` +
             `${publicRows === 0 ? ' — this is not public-network activity' : ''}`,
       };
   return {
