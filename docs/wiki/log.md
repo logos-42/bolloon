@@ -2729,3 +2729,17 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **六个阶段的判据(L1 账本 → L2 Merkle → L3 锚定 → L4 由链派生投影 → L5 前端跟区块 → L6 独立复算)** 与**六条诚实边界**(链只证明"某节点某时刻锚定过某个根", 不证明 P2P 活动本身为真; 明细可被选择性发布, 但跳号本身是可发现信号; 链上仍无 DID/正文/精确金额; 测试网 ≠ 价值证明; 超 gas 预算只写本地标 `unanchored`; `pending` 绝不说成最终) 都写进页面。
 - **与 EigenFlux 的定位差异**: 它用中心化服务 + Postgres 换"持续在线"; 本设计用**哈希链 + 链上锚定 + 公共 RPC** 换到同样体验, 但**不需要一台中心服务器**, 且数字**任何人可复算** —— 数据源不是我们的服务器, 所以没有"信我们"这一环。
 - **状态**: 设计稿, **尚未实现**(L1–L6 全未开工); 现有 `network-pulse.ts` 语义保留、`export-network-pulse.ts` 降级为兜底档、cron 保留但降频。
+
+## [2026-09-21] docs(design) | 编译「Bolloon Network Ledger」设计 (leo 590 行稿) — 取代快照式 Pulse 设计
+
+- **CREATE** `docs/wiki/network-ledger-design.md`(11,414 字节, status: draft, `supersedes: [./pulse-ledger-design.md]`) —— 旧页同步归档(`stage: archived` / `status: stale`)。
+- **定位改变(leo 原话)**: "Network Pulse 不再是独立快照, 而必须是从一条可验证、可追加、可同步的网络账本中实时重放出来的结果"; 快照**只能当加速缓存, 不能当事实来源**。
+- **核心**: 多节点**签名区块 DAG**(区块含 `parents[]`/`merkle_root`/`proposer_did`/`signature`, 只追加不覆盖, 允许离线出块, **冲突分支保留并标记**)· `bolloon-ledger/1` **22 类事件** · 公开 payload 白名单(capability 粗类别/任务状态/金额区间/结算网络/tx hash/内容哈希/结果 CID/证明状态)· **绝不含**私钥/完整任务正文/私有 Agent 名/精确身份关联/私有输入/私人交易上下文。
+- **Pulse 改定位**: `Ledger Blocks → Verifier → Event Reducer → Pulse Read Model`; 现有统计全保留但**必须能由账本重建**(`bolloon ledger replay --from genesis` + `bolloon network-pulse rebuild` 删缓存后结果相同); `/api/public/network/progress` 兼容保留但必须带 `source/head/height/finality/generated_from_events`, 且**只是派生视图**。
+- **三层最终性**: `observed`(单节点签名有效, 无他人确认)/`confirmed`(≥2 个独立签名节点 + 父区块完整)/`finalized`(witness quorum 或链上确认)—— 页面文案逐级对应"已观察到 / 网络已确认 / 链上已结算"。
+- **资金事实仍以链上为准**: `settlement.confirmed` **必须引用链上 tx hash**; `verified` 必须同时满足支付+交付+内容哈希+签名; `local-dev` 只能记为测试结算。
+- **加入网络 = 同步账本**(genesis_hash → bootstrap peers → heads → 缺失区块 → 验 parent/hash/signature → 本地存 → replay → 发自己的 member_joined/manifest); 浏览器 **cursor 增量加载**(第一版轮询, 以后 SSE/WS); **`stale` 语义改为「同步滞后」**。
+- **存储**: 内容寻址 `~/.bolloon/ledger/{blocks,events,heads.json}` 为事实源; 索引/缓存/Pulse/Web 状态全部可删可重建; OrbitDB/IPFS 只作复制层, **不能只用可变 KV 快照**。
+- **接入层扩展**: CLI `ledger init|join|status|heads|sync|verify|replay|tail|export`; `trade show/events/proof` 输出必须含所属区块/event ID/head hash/finality/支付证明/结果证明; MCP 增 `bolloon_ledger_*` + `bolloon://ledger/*`; 新 Skill `skills/bolloon-network-ledger/SKILL.md`(14 项, 核心规则 "*Never treat a progress snapshot as the source of truth*")。
+- **六阶段 + 13 条硬性验收** 全部写进页面(含"删掉所有快照后能从 genesis 重建页面状态""篡改区块/事件签名会被拒""多节点离线分支可合并""单节点事件只能显示为 observed""重启后不重复付款""页面加载增量区块而非全量快照")。
+- **状态**: 设计稿 **尚未实现**; 与现有 `network-pulse.ts`/`export-network-pulse.ts`/cron/`emitTradePulse`/`task-contract.ts`/P4 MCP 的处置关系已逐条写明。

@@ -5,8 +5,8 @@ created: 2026-09-21
 last_confirmed: 2026-09-21
 schema_version: 2
 audience: self
-stage: current
-status: draft
+stage: archived
+status: stale
 tags: [pulse, ledger, blockchain, anchor, merkle, design]
 ---
 
