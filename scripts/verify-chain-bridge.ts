@@ -4,13 +4,25 @@
  * 对着**正在运行的本地 anvil** (chainId 31337) 跑真链路:
  *   真签名 → 真发交易 (createEscrowV2 → submitProofV2 → releaseV2) → 真读 receipt 与 event
  *   → 确认数不足时不判 verified → 确认足够后判 verified
- *   → 真重组 (anvil_rollback) / 掉 RPC 时如实报未结算
+ *   → 真重组 (快照回退 evm_snapshot/revert, 退不到就 anvil_rollback) / 掉 RPC 时如实报未结算
  *
- * 跑法:
- *   # 终端 A
+ * 跑法 (默认 = 自建**隔离链**, 不碰别人正在用的 anvil):
+ *   # 终端 A (本地 dev 链; 只被本脚本 fork 一次状态, 不写不回滚)
  *   DYLD_LIBRARY_PATH=~/.local/lib ~/.foundry/bin/anvil --chain-id 31337 --port 8545 --host 127.0.0.1
  *   # 终端 B
  *   npx tsx scripts/verify-chain-bridge.ts
+ *   # → 脚本自己起一条私有 anvil (随机空闲端口, fork 上游状态), 跑完即关。
+ *
+ * 为什么默认自建隔离链 (2026-09-22 修「会撒谎的门」):
+ *   共享 anvil 上别的进程也在发交易 → 它们也在出块 → 确认数自己涨。
+ *   于是「这条记录现在有几个确认」在忙链上不可预测: 一条刚发出的交易可能在几毫秒内
+ *   攒够 12 个确认被写成 `finalized`, 而 `reconcileChainState` 默认 `skipFinalized`
+ *   会跳过它 → 报告里 `confirmed=0` → 「对账后仍然成立的那条保持已确认」偶发假失败。
+ *   隔离链让「确认数」只由本脚本的交易决定 (可预测), 别的进程再也影响不到断言。
+ *   ★ 断言标准一条都没放松: 该断的照断, 只是期望值从「当时真实链状态」推导, 不写死。
+ *
+ * 对着已有链直接跑 (不隔离, 共享链模式; 适合排查):
+ *   BOLLOON_CHAIN_RPC_URL=http://127.0.0.1:8545 npx tsx scripts/verify-chain-bridge.ts
  *
  * 地址解析 (绝不 hardcode 合约地址): 环境变量 → ~/.bolloon/chain.json → 部署 manifest
  *   (contracts/deployments/localhost.json)
@@ -33,8 +45,10 @@ const {
   EscrowClient, createJsonRpcProvider, verifyChainSettlement, createChainSettlementVerifier,
   sendChainTxGuarded, chainRequestIdOf, readChainSigningPolicy,
   recordVerdict, recoverChainState, loadChainState, markSuspect, chainStatePath, reconcileChainState,
+  reconciledSettledIds,
   computeTaskKeyOffChain, LOCAL_DEV_CHAIN_ID, DEFAULT_CONFIRMATIONS,
 } = CHAIN as any;
+const { startIsolatedDevChain } = await import('./lib/isolated-dev-chain.js');
 
 // ── 临时 HOME (不污染真实 ~/.bolloon) ────────────────────────────────────────
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-chainbridge-'));
@@ -130,7 +144,32 @@ const ERC20_ABI = [
 
 // ══════════════════════════════════════════════════════════════════════════
 async function main() {
-  const RPC_URL = process.env.BOLLOON_CHAIN_RPC_URL || process.env.BOLLOON_RPC_URL || process.env.RPC_URL || 'http://127.0.0.1:8545';
+  // ── ⓪ 链: 默认**自建隔离链**; 显式给了 RPC 才对着别人那条链跑 ──────────────
+  const explicitRpc = process.env.BOLLOON_CHAIN_RPC_URL || process.env.BOLLOON_RPC_URL || process.env.RPC_URL || null;
+  const upstreamRpc = process.env.BOLLOON_DEV_CHAIN_RPC_URL || 'http://127.0.0.1:8545';
+  section('⓪ 链来源 (默认隔离: 别人的块影响不到断言)');
+  let isolated: any = null;
+  let RPC_URL: string;
+  if (explicitRpc) {
+    RPC_URL = explicitRpc;
+    console.log(`  模式         : 共享链 (你显式给了 RPC, 不做隔离) → ${RPC_URL}`);
+    console.log(`  ⚠ 这条链上别的进程也在出块 → 确认数会自己涨; 本脚本的期望值全部从**当时的真实链状态**推导`);
+  } else {
+    try {
+      isolated = await startIsolatedDevChain({ upstreamRpc, chainId: LOCAL_DEV_CHAIN_ID });
+      RPC_URL = isolated.rpcUrl;
+      console.log(`  模式         : 隔离链 (一次性; fork 自 ${upstreamRpc}, 对上游只读)`);
+      console.log(`  私有 RPC     : ${RPC_URL}   chainId=${isolated.chainId}   fork 起点块=${isolated.forkedAtBlock}`);
+      console.log(`  隔离效果     : 独立 anvil 进程/端口; 只有本脚本发的交易才出块; 结束即关 (不动上游一个字节)`);
+      process.on('exit', () => { try { isolated?.stop(); } catch { /* noop */ } });
+    } catch (e: any) {
+      console.log(`  ❌ 起不了隔离链: ${String(e?.message || e).slice(0, 300)}`);
+      console.log(`\n  先起本地 dev 链 (它只会被本脚本读一次状态快照, 不会被写):`);
+      console.log(`    DYLD_LIBRARY_PATH=~/.local/lib ~/.foundry/bin/anvil --chain-id 31337 --port 8545 --host 127.0.0.1`);
+      console.log(`  若想直接对着已有链跑 (不隔离): BOLLOON_CHAIN_RPC_URL=<url> npx tsx scripts/verify-chain-bridge.ts`);
+      process.exit(1);
+    }
+  }
   const dep = resolveDeployment();
 
   section('① 接链 (真 JsonRpcProvider, cacheTimeout: -1)');
@@ -327,10 +366,16 @@ async function main() {
   const strict = await verifyChainSettlement(client, {
     txHash: relTx,
     expect: { kind: 'escrow', taskKey: taskKeyA, eventName: 'ReleasedV2', expectEscrowState: 'RELEASED' },
-    confirmations: { confirmed: 500, finalized: 1000 }, // 真链上此刻不可能有 500 个确认
+    // ★ 门槛必须**从当时的真实确认数推导**, 不能写死 500: 共享忙链上 head 可能已经涨过几万块,
+    //   写死的门槛会被真实链状态满足 → 断言反而假失败 (2026-09-22 实测: 8444 确认 > 500)。
+    //   取「现在确认数 + 1000」→ 两次读数之间不可能多出 1000 个块 (隔离链上更是 0), 于是
+    //   「确认数不足」是确定的事实, 而不是碰运气。
+    confirmations: { confirmed: (lowGate.confirmations ?? 0) + 1000, finalized: (lowGate.confirmations ?? 0) + 2000 },
   });
-  console.log(`  [抬高门槛 confirmed=500] status=${strict.status} confirmations=${strict.confirmations}/${strict.confirmationsRequired} chainSettled=${strict.chainSettled}`);
-  check('★ 确认数不足时不判 verified (pending, chainSettled=false)', strict.chainSettled === false && strict.status === 'pending', strict.reason);
+  console.log(`  [抬高门槛 confirmed=${(lowGate.confirmations ?? 0) + 1000} (当时确认数 ${lowGate.confirmations} + 1000)] status=${strict.status} confirmations=${strict.confirmations}/${strict.confirmationsRequired} chainSettled=${strict.chainSettled}`);
+  check('★ 确认数不足时不判 verified (pending, chainSettled=false)',
+    strict.chainSettled === false && strict.status === 'pending' && (strict.confirmations ?? 0) < (strict.confirmationsRequired ?? 0),
+    strict.reason);
 
   section('⑥ 反假阳性: 同一 txHash, 期望不符 → 绝不判已结算');
   const wrongKey = computeTaskKeyOffChain(`not-ours-${runId}`);
@@ -355,24 +400,33 @@ async function main() {
     termsHash: contentHashOf(`terms:${taskIdC}`), quoteHash: contentHashOf(`quote:${taskIdC}`),
     inputHash: contentHashOf(`input:${taskIdC}`), manifestHash: contentHashOf(`manifest:${taskIdC}`),
   };
+  const deadlineC = nowTsC + 600n; // ★ 余量给足 600s: 忙链上别人出的块会把链上时钟推到前面 (见下)
   const rC1 = await sendChainTxGuarded({
     client, intent: intentFor('createEscrowV2', taskKeyC, AMOUNT.toString()), home: HOME, env: process.env as any, signer: buyer,
     execute: (signer: any) => client.createEscrowV2({
       taskKey: taskKeyC, agent: agent.address, amount: AMOUNT, paymentAsset: tokenAddr,
-      // ★ 必须**当场**读块时间且留出余量: anvil 每个新块时间戳 = max(prev+1, 墙上时钟),
-      //   所以 deadline == prev 块时间戳 会立刻变成 "deadline in past"。这里 +10s, 下面再 warp 300s 越过窗口。
+      // ★ anvil 每个新块时间戳 = max(prev+1, 墙上时钟): 共享忙链上别人也在出块, 链上时钟会被推快,
+      //   余量太小 (比如 10s) 会让 createEscrowV2 变成 "deadline in past" 而造不出 escrow
+      //   (隔离链上只有本脚本出块, 余量永远是安全的)。
       termsHash: mkC.termsHash, quoteHash: mkC.quoteHash, inputHash: mkC.inputHash, manifestHash: mkC.manifestHash,
-      deadline: nowTsC + 10n, confirmationWindow: 60, proofVersion: 1,
+      deadline: deadlineC, confirmationWindow: 60, proofVersion: 1,
     }, signer),
   });
   check('escrow C: createEscrowV2 真上链', rC1.outcome?.status === 1, rC1.outcome?.txHash || rC1.outcome?.error || rC1.reason);
 
   // 时间旅行越过 deadline + confirmationWindow (anvil 支持)
+  // ★ 旅行距离**从链上真实时间推** (claimableAt - now + 60), 不写死 300s:
+  //   否则 deadline 余量一变 / 链上时钟被推快, 固定 300s 就可能不够, 后面的 revert 理由会变成
+  //   "还没到期" 而不是 "no proof submitted" → 断言假失败。
+  const claimableBefore = BigInt(await client.claimableAt(taskKeyC));
+  const nowBefore = BigInt((await provider.getBlock('latest'))!.timestamp);
+  const jump = Math.max(60, Number(claimableBefore - nowBefore) + 60);
   let warped = true;
-  try { await provider.send('evm_increaseTime', [300]); await provider.send('evm_mine', []); } catch { warped = false; }
+  try { await provider.send('evm_increaseTime', [jump]); await provider.send('evm_mine', []); } catch { warped = false; }
   const cState = await client.getEscrow(taskKeyC);
   const claimable = await client.claimableAt(taskKeyC);
   const nowTs = BigInt((await provider.getBlock('latest'))!.timestamp);
+  console.log(`  deadline=${deadlineC} 时间旅行 +${jump}s (当时还差 ${claimableBefore - nowBefore}s 到期)`);
   console.log(`  now=${nowTs} claimableAt(C)=${claimable} 已超时=${nowTs >= claimable} 状态=${cState?.stateName}`);
 
   // 静态调用先读 revert reason
@@ -405,9 +459,17 @@ async function main() {
   const cAfterClaim = await client.getEscrow(taskKeyC);
   check('★ revert 后资金未动: escrow C 仍 ACTIVE', cAfterClaim?.stateName === 'ACTIVE', cAfterClaim?.stateName);
 
-  section('⑦ 真重组 (anvil_rollback): 已上链的交易被回滚 → 必须判 reorged');
+  section('⑦ 真重组 (快照回退 / anvil_rollback): 已上链的交易被回滚 → 必须判 reorged');
   const taskIdB = `bolloon-chainbridge-B-${runId}`;
   const taskKeyB = computeTaskKeyOffChain(taskIdB);
+  // ★ 回退手段的选择 (两种都是**真**的历史回退, 交易真的从链上消失):
+  //   · 优先 `evm_snapshot` / `evm_revert`: fork 链上 anvil_rollback 不支持, 快照回退两种链都支持;
+  //   · 不支持时退回 `anvil_rollback`, 深度必须**从当时的真实 head 算** —— 共享忙链上别的进程也在出块,
+  //     写死 1 只会回退掉别人的空块, 我们这笔还在链上 → 后面所有重组断言假失败 (2026-09-22 实测)。
+  let snapshotId: string | null = null;
+  try { snapshotId = String(await provider.send('evm_snapshot', [])); } catch { snapshotId = null; }
+  console.log(`  回退手段     : ${snapshotId ? `evm_snapshot(${snapshotId}) → 之后 evm_revert` : 'evm_snapshot 不可用 → 用 anvil_rollback(按 head 算深度)'}`);
+  const deadlineB = BigInt((await provider.getBlock('latest'))!.timestamp) + 3600n; // ★ 当场读: 忙链上链上时钟会被推快, 早先算好的 deadline 可能已经过期
   const mkB = {
     termsHash: contentHashOf(`terms:${taskIdB}`), quoteHash: contentHashOf(`quote:${taskIdB}`),
     inputHash: contentHashOf(`input:${taskIdB}`), manifestHash: contentHashOf(`manifest:${taskIdB}`),
@@ -418,7 +480,7 @@ async function main() {
     execute: (signer: any) => client.createEscrowV2({
       taskKey: taskKeyB, agent: agent.address, amount: AMOUNT, paymentAsset: tokenAddr,
       termsHash: mkB.termsHash, quoteHash: mkB.quoteHash, inputHash: mkB.inputHash, manifestHash: mkB.manifestHash,
-      deadline, confirmationWindow: 3600, proofVersion: 1,
+      deadline: deadlineB, confirmationWindow: 3600, proofVersion: 1,
     }, signer),
   });
   const rB2 = await sendChainTxGuarded({
@@ -432,19 +494,46 @@ async function main() {
   const topTx = rB3.outcome;
   const topTxHash: string = topTx?.txHash || '';
   console.log(`  escrow B 三笔: create=${rB1.outcome?.txHash} proof=${rB2.outcome?.txHash} release=${topTxHash} (block ${topTx?.blockNumber})`);
+  check('escrow B: create/proof/release 三笔都真上链成功 (status=1)', [rB1, rB2, rB3].every((x: any) => x.outcome?.status === 1), [rB1.outcome?.status, rB2.outcome?.status, rB3.outcome?.status]);
   const beforeReorg = await verify({ txHash: topTxHash, expect: { kind: 'escrow', taskKey: taskKeyB, eventName: 'ReleasedV2' } });
   check('重组前: B 的 release 判已结算', beforeReorg.chainSettled === true, beforeReorg.status);
 
   let reorgSupported = true;
-  try {
-    await provider.send('anvil_rollback', [1]);
-  } catch (e: any) {
+  let rollbackDepth = 1;
+  let reorgMethod = 'none';
+  if (snapshotId) {
+    // ① 快照回退: 回到 escrow B 三笔交易之前的状态 (我们的交易真的从链上消失)
+    try {
+      await provider.send('evm_revert', [snapshotId]);
+      reorgMethod = `evm_revert(${snapshotId})`;
+    } catch (e: any) {
+      console.log(`  ⚠ evm_revert 失败 (${String(e?.message || e).slice(0, 80)}) → 改用 anvil_rollback`);
+      reorgSupported = false;
+    }
+  } else {
     reorgSupported = false;
-    console.log(`  ⚠ 该 RPC 不支持 anvil_rollback (${String(e?.message || e).slice(0, 80)}) → 改用注入式重组 (标注清楚)`);
+  }
+  if (!reorgSupported) {
+    // ② 退回 anvil_rollback: 深度按当时真实 head 算, 没盖住就重算重试 (共享忙链上 head 一直在动)
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const h = await provider.getBlockNumber();
+        rollbackDepth = Math.max(1, h - Number(topTx?.blockNumber ?? 0) + 1);
+        await provider.send('anvil_rollback', [rollbackDepth]);
+        const gone = (await provider.getTransactionReceipt(topTxHash)) === null;
+        console.log(`  anvil_rollback [${rollbackDepth}] (回退前 head=${h}) → 我们这笔的 receipt ${gone ? '已消失' : '还在'} (第 ${attempt} 次)`);
+        if (gone) { reorgSupported = true; reorgMethod = `anvil_rollback[${rollbackDepth}]`; break; }
+      }
+    } catch (e: any) {
+      console.log(`  ⚠ 两种回退手段都不可用 (${String(e?.message || e).slice(0, 80)}) → 改用注入式重组 (标注清楚)`);
+      reorgSupported = false;
+    }
   }
   const blockAfterReorg = await provider.getBlockNumber();
   console.log(`  回滚后 latestBlock=${blockAfterReorg}`);
   if (reorgSupported) {
+    const relGone = (await provider.getTransactionReceipt(topTxHash)) === null;
+    check(`★ 真回滚 (${reorgMethod}): 链上已经查不到这笔交易 (receipt=null, 不是"读不到")`, relGone, `手段=${reorgMethod} depth=${rollbackDepth}`);
     const afterReorg = await verifyChainSettlement(client, {
       txHash: topTxHash,
       expect: { kind: 'escrow', taskKey: taskKeyB, eventName: 'ReleasedV2' },
@@ -504,12 +593,45 @@ async function main() {
   console.log(`  重启恢复 (纯读盘): total=${rec1.total} settled=${rec1.settled.length} pending=${rec1.pending.length} reorged=${rec1.reorged.length} unknown=${rec1.unknown.length} suspect=${rec1.suspect.length}`);
   check('重启恢复能从持久记录重建 (2 条都先记为已确认)', rec1.total === 2 && rec1.settled.length === 2, `settled=${rec1.settled.length}`);
 
-  // ★ 真对账: 拿持久记录里的旧事实去链上复核 → B 的那笔已经被回滚, 必须翻成 reorged + 不可信
+  // ★ 真对账 (1): 默认模式 (skipFinalized 缺省 true)。这一轮要证明的是**报告不许撒谎**:
+  //   范围内的每条记录要么被本轮重算, 要么被**显式**列进"已 final 跳过" —— 不许静默消失。
   const rep = await reconcileChainState(client, { home: HOME });
-  console.log(`  对账 (reconcileChainState): scanned=${rep.scanned} confirmed=${rep.confirmed.length} reorged=${rep.reorged.length} pending=${rep.pending.length} unknown=${rep.unknown.length} newlySuspect=${JSON.stringify(rep.newlySuspect)}`);
-  check('★ 对账把被回滚的交易标为 reorged', rep.reorged.some((r: any) => r.taskKey === taskKeyB), `reorged=${rep.reorged.length}`);
-  check('★ 对账把这条标为不可信 (suspect)', rep.newlySuspect.includes(ridB) || getSuspect(ridB), `newlySuspect=${JSON.stringify(rep.newlySuspect)}`);
-  check('★ 对账后仍然成立的那条保持已确认', rep.confirmed.some((r: any) => r.taskKey === taskKeyA), `confirmed=${rep.confirmed.length}`);
+  console.log(`  对账 (reconcileChainState, 默认): considered=${rep.considered} scanned=${rep.scanned} confirmed=${rep.confirmed.length} skippedFinalized=${rep.skippedFinalized.length} reorged=${rep.reorged.length} pending=${rep.pending.length} unknown=${rep.unknown.length} newlySuspect=${JSON.stringify(rep.newlySuspect)}`);
+
+  // ★★ 期望值从**当时的真实链状态**推导, 不写死数字:
+  //    对账这一刻这笔交易有多少确认 → 决定它本轮走哪条路:
+  //      < finalized 门槛 → 必须**本轮重算** (进 confirmed)
+  //      ≥ finalized 门槛 → 记录处在"已最终确定"状态, 于是**按设计跳过** (进 skippedFinalized)
+  //    两条路都算「对账后仍然成立」, 但**绝不许两边都缺席** —— 那正是共享忙链上偶发假失败的形态
+  //    (旧代码在这里硬看 rep.confirmed, 一跳过就 confirmed=0 → 假红)。
+  const relNow = await verify({ txHash: relTx, expect: { kind: 'escrow', taskKey: taskKeyA, eventName: 'ReleasedV2' } });
+  const settledIds = reconciledSettledIds(rep);
+  const inConfirmed = rep.confirmed.some((r: any) => r.requestId === ridA);
+  const inSkipped = rep.skippedFinalized.some((r: any) => r.requestId === ridA);
+  const skippedEntry = rep.skippedFinalized.find((r: any) => r.requestId === ridA);
+  console.log(`  链上此刻: relTx 确认数=${relNow.confirmations} 判定=${relNow.status} (finalized 门槛=${DEFAULT_CONFIRMATIONS.finalized}) → A 这一轮: ${inConfirmed ? '重算 → confirmed' : inSkipped ? '已 finalized → skippedFinalized (按设计跳过)' : '两边都没有 = 缺陷'}`);
+  check('★ 报告不许静默丢记录: considered == scanned + skippedFinalized', rep.considered === rep.scanned + rep.skippedFinalized.length, `considered=${rep.considered} scanned=${rep.scanned} skippedFinalized=${rep.skippedFinalized.length}`);
+  check('★ A 的记录要么本轮重算, 要么显式进"已 final 跳过" (二选一, 不许都不说)', inConfirmed !== inSkipped, `confirmed=${inConfirmed} skippedFinalized=${inSkipped}`);
+  check('★ 对账后仍然成立的那条保持已结算 (confirmed ∪ skippedFinalized; 期望值由链上真实确认数决定)', settledIds.includes(ridA) && relNow.chainSettled === true, `confirmed=${rep.confirmed.length} skippedFinalized=${rep.skippedFinalized.length} 链上=${relNow.status}/${relNow.confirmations} 确认`);
+  check('★ 被"跳过"的那条必须是因为链上**确实**已过 finalized 门槛 (不是凭记录自说自话)',
+    !inSkipped || ((relNow.confirmations ?? 0) >= DEFAULT_CONFIRMATIONS.finalized && skippedEntry?.status === 'finalized' && (skippedEntry?.confirmations ?? 0) >= DEFAULT_CONFIRMATIONS.finalized),
+    `链上确认=${relNow.confirmations} 记录 status=${skippedEntry?.status} confirmations=${skippedEntry?.confirmations}`);
+  const recA = loadChainState(HOME).records[ridA];
+  check('★ A 落盘记录仍是已结算且未被标可疑', (recA?.status === 'confirmed' || recA?.status === 'finalized') && recA?.suspect === false, `${recA?.status} suspect=${recA?.suspect}`);
+  const bSkipped = rep.skippedFinalized.some((r: any) => r.requestId === ridB);
+  check('★ B 也要么被本轮重算 (那就必须已判 reorged), 要么显式列入"已 final 跳过" (不静默)',
+    bSkipped || rep.reorged.some((r: any) => r.requestId === ridB), `skipped=${bSkipped} reorged=${rep.reorged.length}`);
+
+  // ★ 真对账 (2): **全量重算** (skipFinalized:false)。重组检出必须真去链上复核 ——
+  //   默认模式下"已最终确定"的记录会被跳过 (那是省 RPC 的设计), 而"跳过"不可能检出重组。
+  //   这不是放松标准: 被断言的性质正是「复核之后**必须**检出被回滚的交易」,
+  //   只是用能检出它的模式去跑 (共享忙链上 B 的确认数会自己涨过 12 → 默认那一轮必然跳过它)。
+  const repFull = await reconcileChainState(client, { home: HOME, skipFinalized: false });
+  console.log(`  全量对账 (reconcileChainState, skipFinalized:false): considered=${repFull.considered} scanned=${repFull.scanned} confirmed=${repFull.confirmed.length} skippedFinalized=${repFull.skippedFinalized.length} reorged=${repFull.reorged.length} pending=${repFull.pending.length} unknown=${repFull.unknown.length} newlySuspect=${JSON.stringify(repFull.newlySuspect)}`);
+  check('★ 全量对账: 每条记录都真去链上复核过 (skippedFinalized=0, scanned=considered)', repFull.skippedFinalized.length === 0 && repFull.scanned === repFull.considered && repFull.considered === rep.considered, `scanned=${repFull.scanned}/${repFull.considered} skipped=${repFull.skippedFinalized.length}`);
+  check('★ 对账把被回滚的交易标为 reorged', repFull.reorged.some((r: any) => r.taskKey === taskKeyB), `reorged=${repFull.reorged.length}`);
+  check('★ 对账把这条标为不可信 (suspect)', getSuspect(ridB) || repFull.newlySuspect.includes(ridB), `newlySuspect=${JSON.stringify(repFull.newlySuspect)} getSuspect=${getSuspect(ridB)}`);
+  check('★ 全量对账后仍然成立的那条还是已结算, 且没被误标可疑', repFull.confirmed.some((r: any) => r.requestId === ridA) && getSuspect(ridA) === false, `confirmed=${repFull.confirmed.length} suspectA=${getSuspect(ridA)}`);
   const rec2 = recoverChainState(HOME);
   check('★ 被标重组的记录绝不算 settled', !rec2.settled.some((r: any) => r.taskKey === taskKeyB) && rec2.reorged.some((r: any) => r.taskKey === taskKeyB), `settled=${rec2.settled.length} reorged=${rec2.reorged.length}`);
   await markSuspect(ridB, '端到端验收: 重组复核', HOME);
@@ -548,6 +670,7 @@ async function main() {
   // 收尾: 摘监听 + 销毁 provider (否则事件轮询/网络重试会吊住进程)
   try { client.removeAllListeners(); } catch { /* noop */ }
   try { (provider as any).destroy?.(); } catch { /* noop */ }
+  try { isolated?.stop(); } catch { /* noop */ }   // ★ 隔离链结束即关 (不留给别人 / 不留孤儿进程)
   fs.rmSync(TMP, { recursive: true, force: true });
   process.exit(failed ? 1 : 0);
 }

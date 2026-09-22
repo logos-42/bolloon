@@ -74,9 +74,21 @@ export interface ChainStateFile {
 
 export interface ChainReconciliationReport {
   checkedAt: number;
+  /** 本次对账**范围内的记录总数** (不变式: considered === scanned + skippedFinalized.length) */
+  considered: number;
+  /** 真花了 RPC 去链上复核的记录数 */
   scanned: number;
   /** 现在链上已确认/最终确定的 */
   confirmed: Array<{ requestId: string; taskKey: string; txHash: string; status: ChainSettlementStatus; confirmations: number }>;
+  /**
+   * ★ 已最终确定 (finalized) 且未被标可疑 → 本轮**按设计跳过复核**的记录。
+   *
+   * 这不是「没对账」, 更不是「没结算」: 它们依然是已结算的, 只是这一轮没再花 RPC 复核一遍。
+   * 调用方必须把 `confirmed` 和 `skippedFinalized` **合起来**看 (见 `reconciledSettledIds`);
+   * 只看 `confirmed` 会把「已最终确定」误读成「链上什么都没有」——
+   * 这正是共享忙链上 `verify-chain-bridge` 偶发假失败的根因 (那条记录的确认数早过 finalized 门槛)。
+   */
+  skippedFinalized: Array<{ requestId: string; taskKey: string; txHash: string; status: ChainSettlementStatus; confirmations: number; reason: string }>;
   /** 还没到确认门槛 */
   pending: Array<{ requestId: string; taskKey: string; txHash: string; confirmations: number; required: number }>;
   /** 被重组的 (不可信) */
@@ -88,6 +100,21 @@ export interface ChainReconciliationReport {
   /** 本轮新标为不可信的 */
   newlySuspect: string[];
   rpcErrors: number;
+}
+
+/**
+ * ★ 对账之后「仍然已结算」的 requestId 集合 = 本轮重算为 confirmed/finalized 的
+ * **加上** 已 finalized 被按设计跳过的。
+ *
+ * 存在的理由: `skipFinalized` 是省 RPC 的优化, 但它的副作用是让 `confirmed` 少了人 ——
+ * 用它来判断「这条还没对账 / 没结算」就会得出**错的**结论。这个函数把两种事实合起来,
+ * 让「跳过」不可能被误读成「没结算」。
+ */
+export function reconciledSettledIds(report: ChainReconciliationReport): string[] {
+  return Array.from(new Set([
+    ...report.confirmed.map((r) => r.requestId),
+    ...report.skippedFinalized.map((r) => r.requestId),
+  ]));
 }
 
 export function chainStateDir(home?: string): string {
@@ -172,7 +199,10 @@ export async function recordVerdict(
     resultHash: base.resultHash ?? prev?.resultHash,
     confirmations: verdict.confirmations ?? 0,
     lastCheckedBlock: verdict.latestBlock ?? prev?.lastCheckedBlock ?? null,
-    blockNumber: verdict.blockNumber ?? null,
+    // ★ 新判定没带块号时, **保留旧事实里的块号** —— "这笔曾记在哪个块"是重组复核的唯一证据;
+    //   判定成 reorged 时判定器不带块号, 若这里覆盖成 null, 下一次对账就只能报 unknown
+    //   (说不出"它是被回滚的"), 重组证据被自己抹掉。
+    blockNumber: verdict.blockNumber ?? prev?.blockNumber ?? null,
     status: verdict.status,
     suspect,
     suspectReason: verdict.status === 'reorged' ? verdict.reason : prev?.suspectReason,
@@ -235,13 +265,22 @@ export interface ReconcileOptions {
   /** 只对账这些 requestId (缺省 = 全对账) */
   only?: string[];
   home?: string;
-  /** 已最终确定且未被标可疑的跳过 (省 RPC) */
+  /**
+   * 已最终确定 (finalized) 且未被标可疑的**跳过链上复核** (省 RPC; 缺省 true)。
+   *
+   * ★ 跳过的记录会**显式出现在报告的 `skippedFinalized` 里** —— 绝不静默消失,
+   *   因为「没出现在 confirmed 里」不等于「没结算」(见 reconciledSettledIds)。
+   *   要强制每条都真去链上重算 (例如深重组排查), 传 `skipFinalized: false`。
+   */
   skipFinalized?: boolean;
 }
 
 /**
  * ★ 对账: 把每条记录的**旧事实** (blockNumber/confirmations/eventMatched)
  * 交给唯一判定器重算一遍, 并按结果落盘。
+ *
+ * 报告**不许静默丢记录**: 范围内的每条记录要么进 `scanned` 的判定结果, 要么进
+ * `skippedFinalized` (不变式: `considered === scanned + skippedFinalized.length`)。
  *
  * 重组两条路径都在这里显式检出:
  *   · 块号变了 / 链上查不到了 → verdict.status = 'reorged' → suspect = true
@@ -253,15 +292,26 @@ export async function reconcileChainState(
 ): Promise<ChainReconciliationReport> {
   const state = loadChainState(opts.home);
   const report: ChainReconciliationReport = {
-    checkedAt: Date.now(), scanned: 0,
-    confirmed: [], pending: [], reorged: [], unknown: [], reverted: [], newlySuspect: [], rpcErrors: 0,
+    checkedAt: Date.now(), considered: 0, scanned: 0,
+    confirmed: [], skippedFinalized: [], pending: [], reorged: [], unknown: [], reverted: [], newlySuspect: [], rpcErrors: 0,
   };
   const gate = opts.gate || 'confirmed';
+  const shouldSkipFinalized = opts.skipFinalized !== false;
 
   for (const rec of Object.values(state.records)) {
     if (opts.only && !opts.only.includes(rec.requestId)) continue;
+    report.considered++;
     const isFinalized = rec.status === 'finalized' && !rec.suspect;
-    if (opts.skipFinalized !== false && isFinalized) continue;
+    if (shouldSkipFinalized && isFinalized) {
+      // ★ 显式记账: 「跳过」必须被说出来。否则报告会把「已最终确定」表达成「查不到这条」,
+      //   调用方 (账单/验收) 就会把已结算当成没对账 —— 那是会撒谎的门。
+      report.skippedFinalized.push({
+        requestId: rec.requestId, taskKey: rec.taskKey, txHash: rec.txHash,
+        status: rec.status, confirmations: rec.confirmations,
+        reason: `已是 finalized 且未被标可疑 → 按设计跳过复核 (skipFinalized=true)。它仍是已结算, 只是本轮没重算`,
+      });
+      continue;
+    }
     report.scanned++;
 
     const verdict = await verifyChainSettlement(client, {

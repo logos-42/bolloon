@@ -404,13 +404,17 @@ async function main() {
   }
 
   // N2 确认数不够: 用同一个真 release tx 抬高门槛
+  // ★ 门槛必须**从当时的真实确认数推导**, 不能写死 500: 共享忙链上 head 可能已经涨过几万块,
+  //   写死的门槛反而会被真实链状态满足 (2026-09-22 实测: 8444 确认 > 500 → 断言假失败)。
+  const liveNow = await verifyChainSettlement(client, { txHash: release.txHash, expect: { kind: 'escrow', taskKey } });
+  const unreachable = { confirmed: (liveNow.confirmations ?? 0) + 1000, finalized: (liveNow.confirmations ?? 0) + 2000 };
   const strict = await verifyChainSettlement(client, {
     txHash: release.txHash,
     expect: { kind: 'escrow', taskKey, eventName: 'ReleasedV2', expectEscrowState: 'RELEASED' },
-    confirmations: { confirmed: 500, finalized: 1000 },
+    confirmations: unreachable,
   });
-  console.log(`  N2 抬高门槛 confirmed=500 → status=${strict.status} confirmations=${strict.confirmations}/${strict.confirmationsRequired} chainSettled=${strict.chainSettled}`);
-  check('N2 ★ 确认数不够 → pending, chainSettled=false (不判已验证)', strict.chainSettled === false && strict.status === 'pending', strict.reason);
+  console.log(`  N2 抬高门槛 confirmed=${unreachable.confirmed} (当时确认数 ${liveNow.confirmations} + 1000) → status=${strict.status} confirmations=${strict.confirmations}/${strict.confirmationsRequired} chainSettled=${strict.chainSettled}`);
+  check('N2 ★ 确认数不够 → pending, chainSettled=false (不判已验证)', strict.chainSettled === false && strict.status === 'pending' && (strict.confirmations ?? 0) < (strict.confirmationsRequired ?? 0), strict.reason);
   const n2 = await TXS.beginTransaction({ requestId: `p4-n2-${runId}`, metadata: { itemId: SKILL, price: '0.02', currency: 'USDC' }, buyerDid: 'did:key:zTaskBuyer' }, HOME);
   await TXS.updateTransaction(n2.record.transactionId, { status: 'quoted' } as any, HOME);
   await TXS.updateTransaction(n2.record.transactionId, { status: 'paying', paymentMode: 'escrow', settlementFact: 'payment_submitted', txHash: release.txHash, contentHash, deliveryHash: contentHash, deliveryBytesHash: wr.hash, receiptHash: TP.computeReceiptHash('chain-release:' + release.txHash), protocolVerified: true, execution: { ok: true, tool: 'skill_exec', schemaOk: true }, goalCriteriaMet: true } as any, HOME);
@@ -450,9 +454,16 @@ async function main() {
   console.log(`  R1 重启恢复: nextAction=${r1Rec.nextAction} mustNotRepay=${r1Rec.mustNotRepay} verified=${r1Rec.verified}`);
   check('R1 ★ 重启后从 chain-state.json 重建: 待人工 (托管已注资, 没有可提交的结果)', r1Rec.nextAction === 'needs_human' && r1Rec.mustNotRepay === true && r1Rec.verified === false, r1Rec.reason);
   const r1BlockBefore = await provider.getBlockNumber();
+  // ★ "有没有重发交易" 的正确判据是**我们账户的 nonce 有没有动**, 不是"链 head 有没有动":
+  //   共享忙链上别的进程也在出块, 比 head 必然假失败 (2026-09-22 实测)。
+  const r1BuyerNonceBefore = await provider.getTransactionCount(buyer.address, 'pending');
+  const r1AgentNonceBefore = await provider.getTransactionCount(agent.address, 'pending');
   const r1Resumed = await OT.resumeOnchainTrade({ ...r1Req, dryRun: false });
   const r1BlockAfter = await provider.getBlockNumber();
-  check('R1 ★ 续跑没有发任何新交易 (不重付)', r1Resumed.steps.length === 0 && r1BlockAfter === r1BlockBefore, { steps: r1Resumed.steps.map((s: any) => s.method), blocks: `${r1BlockBefore}→${r1BlockAfter}` });
+  const r1BuyerNonceAfter = await provider.getTransactionCount(buyer.address, 'pending');
+  const r1AgentNonceAfter = await provider.getTransactionCount(agent.address, 'pending');
+  check('R1 ★ 续跑没有发任何新交易 (不重付; buyer/agent 的 nonce 都没动)', r1Resumed.steps.length === 0 && r1BuyerNonceAfter === r1BuyerNonceBefore && r1AgentNonceAfter === r1AgentNonceBefore,
+    { steps: r1Resumed.steps.map((s: any) => s.method), nonceBuyer: `${r1BuyerNonceBefore}→${r1BuyerNonceAfter}`, nonceAgent: `${r1AgentNonceBefore}→${r1AgentNonceAfter}`, head: `${r1BlockBefore}→${r1BlockAfter}` });
 
   // R2: submitProof 后 release 前崩溃 → 重启后继续
   const r2Id = `bolloon-p4-r2-${runId}`;
@@ -490,17 +501,35 @@ async function main() {
   check('R3 ★ 读数恢复后重新对账 → 链上释放成立 → verified', r3Resume.done === true && r3Resume.verified === true, r3Resume.reason);
   check('R3 续跑没有再发交易 (只重新判定了已有 tx)', r3Resume.steps.length === 0, r3Resume.steps.map((s: any) => s.method));
 
-  // R4: release 前真重组 (anvil_rollback)
+  // R4: release 后真重组 (快照回退优先; 退不到就 anvil_rollback, 深度按 head 算)
   const r4Id = `bolloon-p4-r4-${runId}`;
   const r4Req: any = { ...tradeReq, taskId: r4Id };
+  let r4Snapshot: string | null = null;
+  try { r4Snapshot = String(await provider.send('evm_snapshot', [])); } catch { r4Snapshot = null; }
   const r4Create = await OT.createEscrowStep(r4Req);
   const r4Proof = await OT.submitProofStep(r4Req, resultDigest, r4Req.manifestDigest);
   const r4Release = await OT.releaseStep(r4Req);
   const r4RecBefore = recoverOnchainTrade({ home: HOME, taskId: r4Id });
   check('R4 release 真上链且恢复判定 = done', r4Release.ok === true && r4RecBefore.nextAction === 'done' && r4RecBefore.verified === true, { c: r4Create.txHash, p: r4Proof.txHash, r: r4Release.txHash });
   let reorgSupported = true;
-  try { await provider.send('anvil_rollback', [1]); } catch (e: any) { reorgSupported = false; console.log(`  ⚠ 本 RPC 不支持 anvil_rollback (${String(e?.message || e).slice(0, 70)})`); }
+  let r4Method = 'none';
+  if (r4Snapshot) {
+    // ① 快照回退: 我们的交易真的从链上消失 (fork 链上 anvil_rollback 不支持, 快照回退两种链都支持)
+    try { await provider.send('evm_revert', [r4Snapshot]); r4Method = `evm_revert(${r4Snapshot})`; } catch { reorgSupported = false; }
+  } else { reorgSupported = false; }
+  if (!reorgSupported) {
+    // ② 退回 anvil_rollback: 深度按当时真实 head 算 (写死 1 在共享忙链上会回退掉别人的空块)
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const h = await provider.getBlockNumber();
+        const depth = Math.max(1, h - Number(r4Release.blockNumber ?? 0) + 1);
+        await provider.send('anvil_rollback', [depth]);
+        if ((await provider.getTransactionReceipt(r4Release.txHash)) === null) { reorgSupported = true; r4Method = `anvil_rollback[${depth}]`; break; }
+      }
+    } catch (e: any) { reorgSupported = false; console.log(`  ⚠ 两种回退手段都不可用 (${String(e?.message || e).slice(0, 70)})`); }
+  }
   if (reorgSupported) {
+    console.log(`  R4 回退手段: ${r4Method}`);
     const r4AfterReorg = await verifyChainSettlement(client, {
       txHash: r4Release.txHash, expect: { kind: 'escrow', taskKey: computeTaskKeyOffChain(r4Id), eventName: 'ReleasedV2' },
       recorded: { blockNumber: r4Release.blockNumber, confirmations: 1, status: 'confirmed' },
