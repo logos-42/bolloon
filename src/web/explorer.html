@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>链上浏览器 · Chain Explorer — Bolloon</title>
+  <meta name="description" content="Bolloon 链上托管事件浏览器 (只读索引: 高度 / 统计 / 时间线 / cursor 增量 / 最终性三档)">
+  <link rel="icon" href="./icons/favicon.ico">
+  <style>
+    /* 本页自带样式 (不动主界面 style.css): 全部 cx- 前缀, 避免污染 */
+    :root {
+      --cx-bg: #0d1117; --cx-panel: #161b22; --cx-panel2: #1c2230; --cx-fg: #e6edf3;
+      --cx-dim: #8b949e; --cx-line: #30363d; --cx-accent: #58a6ff;
+      --cx-ok: #3fb950; --cx-warn: #d29922; --cx-bad: #f85149;
+    }
+    @media (prefers-color-scheme: light) {
+      :root { --cx-bg:#f6f8fa; --cx-panel:#ffffff; --cx-panel2:#f0f3f6; --cx-fg:#1f2328; --cx-dim:#59636e; --cx-line:#d0d7de; --cx-accent:#0969da; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--cx-bg); color: var(--cx-fg); font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    a { color: var(--cx-accent); }
+    .cx-wrap { max-width: 1180px; margin: 0 auto; padding: 18px 16px 60px; }
+    .cx-top { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--cx-line); padding-bottom: 12px; }
+    .cx-top h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+    .cx-top .cx-sub { color: var(--cx-dim); font-size: 12.5px; margin-top: 2px; }
+    .cx-actions { display: flex; gap: 8px; align-items: center; }
+    button, .cx-btn { font: inherit; background: var(--cx-panel2); color: var(--cx-fg); border: 1px solid var(--cx-line); border-radius: 7px; padding: 6px 11px; cursor: pointer; }
+    button:hover { border-color: var(--cx-accent); }
+    button:disabled { opacity: .5; cursor: default; }
+    .cx-state { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; font-size: 13px; color: var(--cx-dim); }
+    .cx-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--cx-dim); display: inline-block; }
+    .cx-dot-live { background: var(--cx-ok); }
+    .cx-dot-degraded { background: var(--cx-bad); }
+    .cx-dot-loading { background: var(--cx-warn); animation: cx-pulse 1.2s ease-in-out infinite; }
+    @keyframes cx-pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
+    .cx-degraded { margin: 10px 0; border: 1px solid var(--cx-bad); background: rgba(248,81,73,.08); border-radius: 8px; padding: 10px 12px; }
+    .cx-degraded b { color: var(--cx-bad); }
+    .cx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 14px 0 6px; }
+    .cx-card { background: var(--cx-panel); border: 1px solid var(--cx-line); border-radius: 9px; padding: 10px 12px; }
+    .cx-card .cx-k { color: var(--cx-dim); font-size: 12px; display: block; }
+    .cx-card .cx-v { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .cx-card .cx-v-sm { font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; word-break: break-all; }
+    .cx-cats { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 16px; }
+    .cx-cat { background: var(--cx-panel); border: 1px solid var(--cx-line); border-radius: 20px; padding: 4px 11px; font-size: 12.5px; }
+    .cx-cat b { font-variant-numeric: tabular-nums; }
+    .cx-sec-title { font-size: 14px; font-weight: 650; margin: 20px 0 8px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+    .cx-sec-title .cx-hint { color: var(--cx-dim); font-weight: 400; font-size: 12.5px; }
+    .cx-legend { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+    .cx-final { border: 1px solid var(--cx-line); background: var(--cx-panel); border-radius: 7px; padding: 3px 10px; font-size: 12.5px; }
+    .cx-final b { font-variant-numeric: tabular-nums; }
+    ol.cx-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--cx-line); border-radius: 9px; overflow: hidden; background: var(--cx-panel); }
+    .cx-row { display: grid; grid-template-columns: 110px 110px 108px 1fr; gap: 4px 10px; padding: 9px 12px; border-bottom: 1px solid var(--cx-line); align-items: center; }
+    .cx-row:last-child { border-bottom: none; }
+    .cx-row:hover { background: var(--cx-panel2); }
+    .cx-block, .cx-tx, .cx-task, .cx-conf { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: var(--cx-dim); }
+    .cx-event { font-weight: 600; }
+    .cx-args { grid-column: 1 / -1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--cx-dim); word-break: break-all; }
+    .cx-badge { justify-self: start; font-size: 11.5px; border-radius: 20px; padding: 1px 9px; border: 1px solid var(--cx-line); }
+    .cx-badge-observed { color: var(--cx-warn); border-color: var(--cx-warn); }
+    .cx-badge-confirmed { color: var(--cx-accent); border-color: var(--cx-accent); }
+    .cx-badge-finalized { color: var(--cx-ok); border-color: var(--cx-ok); }
+    .cx-badge-unknown { color: var(--cx-dim); }
+    .cx-suspect { color: var(--cx-bad); font-size: 11.5px; }
+    .cx-link { padding: 2px 8px; font-size: 12px; border-radius: 20px; }
+    .cx-empty { padding: 14px 12px; color: var(--cx-dim); font-size: 13px; }
+    .cx-bar { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin: 10px 0; flex-wrap: wrap; }
+    .cx-form { display: flex; gap: 8px; flex-wrap: wrap; }
+    .cx-form input { font: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; background: var(--cx-panel); color: var(--cx-fg); border: 1px solid var(--cx-line); border-radius: 7px; padding: 6px 10px; min-width: 320px; }
+    .cx-note { color: var(--cx-dim); font-size: 12px; margin: 6px 0 0; }
+    @media (max-width: 720px) { .cx-row { grid-template-columns: 1fr 1fr; } .cx-args { grid-column: 1 / -1; } .cx-form input { min-width: 0; width: 100%; } }
+    /* 尊重系统设置: 关掉一切过渡/动画 */
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
+    .cx-reduce * { animation: none !important; transition: none !important; }
+  </style>
+</head>
+<body>
+  <div class="cx-wrap" id="chain-explorer-root" data-api-base="">
+    <div class="cx-top">
+      <div>
+        <h1 data-zh="链上浏览器 (只读)" data-en="Chain Explorer (read-only)">链上浏览器 (只读)</h1>
+        <div class="cx-sub" data-zh="数据来自本机链上索引 (P5) — 只读: 不发交易 · 不签名 · 不写盘" data-en="Data comes from the local chain index (P5) — read-only: no transactions, no signing, no writes">数据来自本机链上索引 (P5) — 只读: 不发交易 · 不签名 · 不写盘</div>
+      </div>
+      <div class="cx-actions">
+        <button type="button" id="cx-reload" data-zh="立即刷新" data-en="Refresh now">立即刷新</button>
+        <button type="button" id="cx-lang" data-zh="中文 / EN" data-en="EN / 中文">中文 / EN</button>
+        <a class="cx-btn" href="/" data-zh="← 回主界面" data-en="← Back to app">← 回主界面</a>
+      </div>
+    </div>
+
+    <div class="cx-state" role="status" aria-live="polite">
+      <span class="cx-dot cx-dot-loading" id="cx-state-dot" aria-hidden="true"></span>
+      <span id="cx-state" data-zh="加载中…" data-en="loading…">加载中…</span>
+    </div>
+
+    <div class="cx-degraded" id="cx-degraded" style="display:none">
+      <b data-zh="后端不可用 (降级态)" data-en="backend unavailable (degraded)">后端不可用 (降级态)</b>
+      <div class="cx-note" data-zh="数字一律显示为 “—” — 拿不到索引就绝不用 0 顶替 (0 会被误读成真值)。页面会自动按指数退避重试。" data-en="All numbers show “—” — when the index is unreachable we never substitute 0 (0 would read as a real value). The page retries with exponential backoff.">数字一律显示为 “—” — 拿不到索引就绝不用 0 顶替 (0 会被误读成真值)。页面会自动按指数退避重试。</div>
+      <div class="cx-note" id="cx-degraded-reason"></div>
+    </div>
+
+    <div class="cx-grid">
+      <div class="cx-card"><span class="cx-k" data-zh="索引高度 (lastSyncedBlock)" data-en="index height (lastSyncedBlock)">索引高度 (lastSyncedBlock)</span><span class="cx-v" id="cx-height">—</span></div>
+      <div class="cx-card"><span class="cx-k" data-zh="快照 head 区块" data-en="snapshot head block">快照 head 区块</span><span class="cx-v" id="cx-head">—</span></div>
+      <div class="cx-card"><span class="cx-k" data-zh="最后同步时间" data-en="last synced at">最后同步时间</span><span class="cx-v-sm" id="cx-lastsync">—</span></div>
+      <div class="cx-card"><span class="cx-k" data-zh="链 / 网络" data-en="chain / network">链 / 网络</span><span class="cx-v-sm" id="cx-chain">—</span></div>
+      <div class="cx-card"><span class="cx-k" data-zh="托管合约 (短写)" data-en="escrow contract (short)">托管合约 (短写)</span><span class="cx-v-sm" id="cx-escrow">—</span></div>
+    </div>
+
+    <div class="cx-sec-title"><span data-zh="事件总数与分类" data-en="total events &amp; categories">事件总数与分类</span></div>
+    <div class="cx-grid">
+      <div class="cx-card"><span class="cx-k" data-zh="事件总数 (含被回退)" data-en="total events (incl. reverted)">事件总数 (含被回退)</span><span class="cx-v" id="cx-entries">—</span></div>
+      <div class="cx-card"><span class="cx-k" data-zh="任务数 (唯一 taskKey)" data-en="tasks (unique taskKey)">任务数 (唯一 taskKey)</span><span class="cx-v" id="cx-tasks">—</span></div>
+      <div class="cx-card"><span class="cx-k" data-zh="被回退 (suspect)" data-en="reverted (suspect)">被回退 (suspect)</span><span class="cx-v" id="cx-suspects">—</span></div>
+    </div>
+    <div class="cx-cats">
+      <span class="cx-cat"><span data-zh="托管创建" data-en="escrow created">托管创建</span> <b id="cx-created">—</b></span>
+      <span class="cx-cat"><span data-zh="提交证明" data-en="proof submitted">提交证明</span> <b id="cx-proof">—</b></span>
+      <span class="cx-cat"><span data-zh="已放款" data-en="released">已放款</span> <b id="cx-released">—</b></span>
+      <span class="cx-cat"><span data-zh="已退款" data-en="refunded">已退款</span> <b id="cx-refunded">—</b></span>
+      <span class="cx-cat"><span data-zh="争议" data-en="disputed">争议</span> <b id="cx-disputed">—</b></span>
+      <span class="cx-cat"><span data-zh="已过期" data-en="expired">已过期</span> <b id="cx-expired">—</b></span>
+    </div>
+
+    <div class="cx-sec-title"><span data-zh="最终性三档 (1/12 确认门槛)" data-en="finality tiers (1/12 confirmations gate)">最终性三档 (1/12 确认门槛)</span></div>
+    <div class="cx-legend">
+      <span class="cx-final"><span data-zh="观测中 observed" data-en="observed">观测中 observed</span> <b id="cx-final-observed">—</b></span>
+      <span class="cx-final"><span data-zh="已确认 confirmed" data-en="confirmed">已确认 confirmed</span> <b id="cx-final-confirmed">—</b></span>
+      <span class="cx-final"><span data-zh="已最终 finalized" data-en="finalized">已最终 finalized</span> <b id="cx-final-finalized">—</b></span>
+    </div>
+
+    <div class="cx-sec-title">
+      <span data-zh="交易时间线" data-en="transaction timeline">交易时间线</span>
+      <span class="cx-hint" data-zh="按 (区块号, logIndex) 升序 · cursor 增量加载" data-en="sorted by (block, logIndex) · cursor incremental loading">按 (区块号, logIndex) 升序 · cursor 增量加载</span>
+      <span class="cx-hint" id="cx-timeline-count" role="status" aria-live="polite"></span>
+    </div>
+    <div class="cx-bar">
+      <span class="cx-hint" id="cx-timeline-lede" data-zh="首屏只拉一页; 向下点「加载更多」按 cursor 取下一段 (不整页重拉)" data-en="First paint loads one page; “load more” fetches the next segment by cursor (no full reload)">首屏只拉一页; 向下点「加载更多」按 cursor 取下一段 (不整页重拉)</span>
+      <span class="cx-hint" id="cx-remaining"></span>
+    </div>
+    <ol class="cx-list" id="cx-timeline-body" aria-label="chain timeline"></ol>
+    <div class="cx-bar">
+      <button type="button" id="cx-more" data-zh="加载更多 (按 cursor 取下一段)" data-en="load more (next cursor)">加载更多 (按 cursor 取下一段)</button>
+    </div>
+
+    <div class="cx-sec-title">
+      <span data-zh="单个 escrow 时间线" data-en="single escrow timeline">单个 escrow 时间线</span>
+      <span class="cx-hint" id="cx-task-title" role="status" aria-live="polite">(未选择)</span>
+    </div>
+    <form class="cx-form" id="cx-task-form">
+      <input type="text" id="cx-task-input" spellcheck="false" autocomplete="off" placeholder="0x… (64 hex taskKey)" aria-label="taskKey">
+      <button type="submit" data-zh="查这个 taskKey" data-en="look up this taskKey">查这个 taskKey</button>
+    </form>
+    <div class="cx-note" data-zh="create → proof → release / refund / expire / dispute (按事件推出的状态)" data-en="create → proof → release / refund / expire / dispute (state derived from events)">create → proof → release / refund / expire / dispute (按事件推出的状态)</div>
+    <ol class="cx-list" id="cx-task-body" aria-label="escrow timeline"></ol>
+
+    <div class="cx-note" data-zh="隐私: 地址/哈希一律短写 (0x12ab…9f0e); 页面不展示完整 DID / peerId / IP / 钱包地址。" data-en="Privacy: addresses/hashes are always shortened (0x12ab…9f0e); the page never shows full DID / peerId / IP / wallet addresses.">隐私: 地址/哈希一律短写 (0x12ab…9f0e); 页面不展示完整 DID / peerId / IP / 钱包地址。</div>
+  </div>
+
+  <script type="module" src="./chain-explorer.js"></script>
+</body>
+</html>

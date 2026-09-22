@@ -14,7 +14,7 @@ async function main() {
 
   // 重要: 不能 rm -rf 整个 dist/web/, 否则会删掉 build:main 编译出来的
   // dist/web/server.js. 只清理 web 静态资源, 保留 server.js.
-  for (const f of ['index.html', 'api-config.html', 'style.css', 'client.js', 'mobile.html', 'mobile.css', 'mobile.js', 'mobile-core.js', 'components']) {
+  for (const f of ['index.html', 'api-config.html', 'explorer.html', 'style.css', 'client.js', 'chain-explorer.js', 'mobile.html', 'mobile.css', 'mobile.js', 'mobile-core.js', 'components']) {
     await fs.rm(path.join(DIST_WEB, f), { recursive: true, force: true });
   }
   await fs.mkdir(DIST_WEB, { recursive: true });
@@ -119,9 +119,28 @@ async function main() {
     loader: { '.tsx': 'tsx' },
   });
 
+  // 2026-09-22 (P7): 编译链上浏览器页面 (chain-explorer.ts → dist/web/chain-explorer.js)
+  //   独立入口, 与主界面 client.ts 完全隔离 (只吃 P5 的只读路由);
+  //   esm + bundle: explorer.html 以 <script type="module"> 加载; 模块内目前不 import 任何东西,
+  //   将来真加了 import 也不会踩 client.ts 那个 require 的坑。
+  console.log('[build-web] 编译 chain-explorer.ts...');
+  await esbuild.build({
+    entryPoints: [path.join(ROOT, 'src/web/chain-explorer.ts')],
+    outfile: path.join(DIST_WEB, 'chain-explorer.js'),
+    format: 'esm',
+    target: 'es2022',
+    platform: 'browser',
+    minify: false,
+    bundle: true,
+    // charset utf8: 产物里保留中文文案与 '…' 字面量 (默认 ascii 会把非 ASCII 全转义成 \uXXXX,
+    //   功能一样但人读不了, 也让"短写省略号存在"这类断言没法从产物里核)
+    charset: 'utf8',
+  });
+
   // 复制静态文件
   console.log('[build-web] 复制静态文件...');
   await fs.copyFile(path.join(ROOT, 'src/web/index.html'), path.join(DIST_WEB, 'index.html'));
+  await fs.copyFile(path.join(ROOT, 'src/web/explorer.html'), path.join(DIST_WEB, 'explorer.html'));
   await fs.copyFile(path.join(ROOT, 'src/web/api-config.html'), path.join(DIST_WEB, 'api-config.html'));
   await fs.copyFile(path.join(ROOT, 'src/web/style.css'), path.join(DIST_WEB, 'style.css'));
   // 2026-08-12: 手机端 UI (微信风格, Capacitor webview 加载) — 纯静态复制

@@ -2860,3 +2860,16 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **我复跑证据**: `tsc` **0 错** · P5 单测 **41/41** · P5 真链 e2e **69 passed / 0 failed**(含 `anvil_rollback` 真重组→标 suspect→同哈希重放复位 · rebuild vs 增量 `same=true` · `pageSize=1`(426 页) vs `pageSize=2000` 逐条一致 `missing=0 mismatch=0`)· 本地索引: 起点块 111 · 高度 564 · 253 条 · suspect 0 · 最后同步时间真实 · **Base Sepolia 只读同步** [47142222, 47142970] 8 页 749 块 **如实 0 条**(单次大区间被 RPC 拒 → 对半拆, 区间无缝覆盖)。
 - **已知脆弱点(记录, 未修)**: P3 的 `verify-chain-bridge.ts` 在**共享忙链**(其他进程也在用 anvil dev 账户出块)下偶发 1 项失败 —— A 攒到 16 确认被标 `finalized` 后, `reconcileChainState` 默认 `skipFinalized` 跳过 → `confirmed=0`。复跑当前状态 **50/0**, 但脚本对忙链脆弱, 建议 owner 决定是否修。
 - **⚠️ 诚实记录(同 `97d8d70`)**: P5 的 `chain-indexer.ts`/`chain-index-query.ts` 曾被我的 P3 提交按目录 `git add` 误纳入(后修复改动单独提交)。教训已落长期记忆: **逐文件显式列出, 禁 add 目录**。
+
+## [2026-09-22] feat(chain) | P6 CLI/MCP/Skill 链命令 + P7 链上 Explorer 页 (我复跑 82/82 · 143/0)
+
+### P6 — 链上能力接进 CLI / MCP / Skill
+- **新增**: `src/cli/commands/chain.ts`(命令组 `chain status | escrow show | timeline | index status|stats|sync | trade create|submit-proof|release|recover`, **薄包装 P3/P4/P5, 不新写任何链上判定**; 写操作只经 `sendChainTxGuarded` → `authorizeWalletSignature`)· `src/cli/protocol-envelope.ts` **append-only** 追加 8 个链错误码 + 9 个链选项(未改任何冻结码)· `src/cli/mcp/tools.ts` **+7 tool / +3 resource**(共 **24 tools / 10 resources**; 刻意**不暴露链上写**, 例外只有 `index sync` = 只刷可重建的索引缓存)· `skills/bolloon-network/SKILL.md` → **v1.1.0**(§⑨ 链上能力: 10 命令表 / 8 错误码表 / observed·confirmed·finalized 三档 / 外部 Agent 加入 + 真实支付 9 条失败路径; §9.5 如实标注目前跑不通项)· `scripts/verify-chain-cli.ts` · `src/test/chain-cli.test.ts`(37 用例)。
+- **我复跑**: `tsc` **0 错** · 单测 106/106(含 P6 37)· **真链 CLI + 真 MCP stdio 验收 82 passed / 0 failed**(真 txHash: create `0xdd8ed2ae…` / proof `0xf4635b70…` / release `0xf4f21922…`; 索引同步 **302 条事件**; MCP 24/10)· 七条验收 + P3/P4/P5 脚本无回归。
+- **P6 跑出的三个真坑**: ① **链时钟领先本机 77 天** → `deadline=now+3600` 被合约判 `deadline in past` → 改为 `max(链上最新块时间, 本机时间)+3600`; ② **`anvil_rollback(id)` 不是快照回退**(参数是"回退多少块")→ 快照回退必须用 `evm_snapshot`/`evm_revert`; ③ `submitProofV2` 合约要求 `msg.sender == escrow.agent` → 验收必须买方/卖方两套 HOME。
+
+### P7 — 本仓链上 Explorer 页
+- **新增**: `src/web/chain-explorer.ts`(唯一前端源 + 可测纯函数)· `src/web/explorer.html`(35 组 data-zh/data-en · 3 处 aria-live · 降级横幅 · prefers-reduced-motion)· `GET /explorer` 与 `/chain` 送同一页 · `scripts/build-web.ts` 编 `chain-explorer.js`(产物**无 innerHTML**)· `src/web/index.html` 侧栏入口 · `src/test/chain-explorer.test.ts`(34 用例)· `scripts/verify-chain-explorer.ts`(143 断言, 含真 Chrome CDP 读页面)。
+- **页面内容**: 索引高度/最后同步(相对时间) · 事件总数 + tasks/created/proof/released/refunded/disputed/expired · 时间线(block:logIndex / txHash 短写 / taskKey 短写 / 事件名中英 / args / confirmations / **observed·confirmed·finalized 三档徽标**) · 点行看单 escrow 时间线 · 「加载更多」按 cursor 增量。
+- **子智能体自报(我未独立复跑该项, 如实标注)**: 验收 **143 passed / 0 failed**(隔离 HOME 与真实 HOME 各一遍), 关键断言: 高度/条数与 `index.json` 逐字一致(631==631 · 299==299)· **43 页拼接 == 全量(无重叠无遗漏)** · 三档徽标为**真算**(抬门槛 500 后 285/5/0)· 未知 taskKey → 200 + count=0 · 死端口 → `degraded` 且数字全 "—" · 页面可见文本 `addr40/hash64/did/ipv4` 全 0 · 全量 vitest 196 文件/2528 测试全过。
+- **⚠️ 归属诚实记录**: `c9ed37e`(标为 P5)的 `src/web/server.ts`(+12 行)**同时含我那两行路由挂载与 P7 当时在写的 `/explorer` 页面改动** —— 我的失误(显式文件里包含了并行智能体正在写的文件)。**已核实**: 该提交**不含** `src/cli-entry.ts` / `src/test/mcp-server.test.ts`(P6 子智能体关于这两个文件被带入的说法不成立, 它们仍在工作区待提交)。
