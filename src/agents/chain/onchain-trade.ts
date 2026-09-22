@@ -53,6 +53,7 @@ import {
   type ChainTxRecord,
 } from './chain-state-store.js';
 import { M1_BUDGET_LIMITS, resolveTaskBudget, checkPurchaseAllowed } from '../task/task-budget.js';
+import { isPaymentMode, type PaymentMode } from '../task-contract.js';
 import {
   evaluateVerifiedGate,
   canTransitionSettlement,
@@ -193,6 +194,18 @@ export interface OnchainTradeRequest {
   gate?: 'confirmed' | 'finalized';
   network?: string;
   tokenDecimals?: number;
+  /**
+   * 授权意图: 支付模式 (调用方显式声明)。缺省沿用历史口径 `agent-authorized`。
+   * ★ 它**只能收紧, 不可能放权**: 放行闸 `authorizeWalletSignature` 的 `modeIsAutonomous`
+   *   只认 `autonomous` / `agent-authorized` —— 声明 `manual` / `policy` 会被闸直接拒。
+   */
+  paymentMode?: PaymentMode;
+  /**
+   * 授权意图: 调用方显式给的幂等/授权键。它参与放行闸 requestId 的**确定性派生**
+   * (`chainRequestIdOf`), 于是「同一个声明只签一次」(重复 → `notDuplicate` 拒)。
+   * 不给 = 沿用原派生 (老行为不变)。
+   */
+  intentNonce?: string;
   buyerSigner?: Signer;
   sellerSigner?: Signer;
   env?: NodeJS.ProcessEnv;
@@ -235,8 +248,10 @@ function intentOf(req: OnchainTradeRequest, taskKey: string, method: ChainTxMeth
     amountAtomic,
     network: req.network || 'unknown',
     capability: 'chain.escrow',
-    mode: 'agent-authorized',
+    // 调用方显式声明才用它 (非法值不做任何解释, 直接退回历史口径 → 由放行闸判)
+    mode: isPaymentMode(req.paymentMode) ? req.paymentMode : 'agent-authorized',
     taskId: req.taskId,
+    ...(req.intentNonce ? { intentNonce: String(req.intentNonce) } : {}),
   };
 }
 

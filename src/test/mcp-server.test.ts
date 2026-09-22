@@ -19,7 +19,7 @@ import { PassThrough } from 'stream';
 import {
   handleMessage, serveStdio, DEFAULT_PROTOCOL_VERSION, JSONRPC, toolResult,
 } from '../cli/mcp/server.js';
-import { TOOLS, RESOURCES, NOT_EXPOSED } from '../cli/mcp/tools.js';
+import { TOOLS, RESOURCES, NOT_EXPOSED, TOOL_BY_NAME } from '../cli/mcp/tools.js';
 import { mcpSafeEnvelope } from '../cli/mcp/bridge.js';
 import { failEnvelope, okEnvelope } from '../cli/protocol-envelope.js';
 import { GROUP_COMMANDS } from '../cli/commands/index.js';
@@ -35,10 +35,13 @@ const REQUIRED_TOOLS = [
   'bolloon_wallet_status',
   'bolloon_payment_pending', 'bolloon_payment_approve', 'bolloon_payment_reject',
   'bolloon_trade_list', 'bolloon_trade_show', 'bolloon_trade_reconcile',
-  // P6: 链上能力 (全部薄包装 `bolloon chain ...`; 链上**写**操作刻意不暴露)
+  // P6: 链上能力 (全部薄包装 `bolloon chain ...`)
   'bolloon_chain_status', 'bolloon_chain_escrow_show', 'bolloon_chain_timeline',
   'bolloon_chain_index_status', 'bolloon_chain_index_stats', 'bolloon_chain_index_sync',
   'bolloon_chain_trade_recover',
+  // P6b: 链上**写** capability —— 真签名 + 真移钱, 但**必须显式携带授权意图** (paymentMode + requestId),
+  //      真签名仍只由本机唯一放行闸 authorizeWalletSignature 决定 (MCP 层无旁路)
+  'bolloon_chain_trade_create', 'bolloon_chain_trade_submit_proof', 'bolloon_chain_trade_release',
 ];
 
 const REQUIRED_RESOURCES = [
@@ -108,13 +111,19 @@ describe('P4 MCP — 协议握手与清单', () => {
     expect(resp.result.protocolVersion).toBe(DEFAULT_PROTOCOL_VERSION);
   });
 
-  it('tools/list: 恰好 24 个 (17 P4 + 7 链), 名字与任务书一致', async () => {
+  it('tools/list: 恰好 27 个 (17 P4 + 7 链只读 + 3 链写), 名字与任务书一致', async () => {
     const resp: any = await handleMessage({ jsonrpc: '2.0', id: 3, method: 'tools/list' });
     const names = resp.result.tools.map((t: any) => t.name).sort();
     expect(names).toEqual([...REQUIRED_TOOLS].sort());
-    expect(names.length).toBe(24);
+    expect(names.length).toBe(27);
     // 每个 tool 都有 inputSchema (MCP 客户端要靠它生成调用)
     for (const t of resp.result.tools) expect(t.inputSchema?.type).toBe('object');
+    // ★ 3 个链上写 tool 必须把授权意图参数写成**必填** (客户端看 schema 就知道不能裸调)
+    for (const n of ['bolloon_chain_trade_create', 'bolloon_chain_trade_submit_proof', 'bolloon_chain_trade_release']) {
+      const t = resp.result.tools.find((x: any) => x.name === n);
+      expect(t.inputSchema.required, `${n} 的 required`).toEqual(expect.arrayContaining(['paymentMode', 'requestId']));
+      expect(t.description).toContain('真签名');
+    }
   });
 
   it('未实现的子命令**不暴露**成 tool (暴露就得在 MCP 层假装成功)', () => {
@@ -123,6 +132,9 @@ describe('P4 MCP — 协议握手与清单', () => {
       expect(names.has(bad), `${bad} 不该被暴露`).toBe(false);
     }
     expect(NOT_EXPOSED.length).toBeGreaterThan(0);
+    // ★ 链上写**已**暴露 (但走显式授权意图); 仓库没实现的 `chain trade expire` 仍不许暴露
+    expect(names.has('bolloon_chain_trade_create')).toBe(true);
+    expect(NOT_EXPOSED.some((e) => e.command.includes('chain trade expire'))).toBe(true);
   });
 
   it('resources/list: 恰好 10 个 (7 P4 + 3 链), uri 与任务书一致', async () => {
@@ -416,7 +428,7 @@ describe('P4 MCP — stdio 事件循环 (真读真写流)', () => {
     expect(lines.map((l) => l.id)).toEqual([1, null, 2, 3, 4]);
     expect(lines[0].result.protocolVersion).toBe('2025-06-18');
     expect(lines[1].error.code).toBe(JSONRPC.PARSE_ERROR);
-    expect(lines[2].result.tools.length).toBe(24);
+    expect(lines[2].result.tools.length).toBe(27);
     expect(lines[3].result.isError).toBe(false);
     // ★ 失败调用: JSON-RPC 层成功返回 result, 但 isError=true + 信封 ok:false + code
     const failing = JSON.parse(lines[4].result.content[0].text);
@@ -429,5 +441,84 @@ describe('P4 MCP — stdio 事件循环 (真读真写流)', () => {
   it('toolResult: isError 严格等于信封 ok 的取反 (无中间态)', () => {
     expect(toolResult(okEnvelope('OK', 'ok')).isError).toBe(false);
     expect(toolResult(failEnvelope('NOT_FOUND', '没找到')).isError).toBe(true);
+  });
+});
+
+describe('P6b MCP — 链上写 tool (真签名 + 真移钱): 授权意图必填 / 薄适配 / 失败不变成功', () => {
+  const WRITE_TOOLS = ['bolloon_chain_trade_create', 'bolloon_chain_trade_submit_proof', 'bolloon_chain_trade_release'];
+  const AGENT = `0x${'11'.repeat(20)}`;
+
+  it('薄适配: 入参 → 等价 CLI argv + 声明的 requestId 进 P3 (不复制业务逻辑)', () => {
+    const built: any = TOOL_BY_NAME.get('bolloon_chain_trade_create')!.build({ taskId: 't-1', agent: AGENT, amount: '0.02', paymentMode: 'agent-authorized', requestId: 'rid-1' });
+    expect(built.ok).toBe(true);
+    expect(built.plan.group).toBe('chain');
+    expect(built.plan.argv).toEqual(['trade', 'create', '--task-id', 't-1', '--agent', AGENT, '--amount', '0.02', '--payment-mode', 'agent-authorized']);
+    expect(built.plan.opts.requestId).toBe('rid-1');
+  });
+
+  it('release / submit-proof 也都带 --payment-mode (三个写 tool 口径一致)', () => {
+    const rel: any = TOOL_BY_NAME.get('bolloon_chain_trade_release')!.build({ taskId: 't-1', paymentMode: 'autonomous', requestId: 'rid-r' });
+    expect(rel.ok).toBe(true);
+    expect(rel.plan.argv).toEqual(['trade', 'release', '--task-id', 't-1', '--payment-mode', 'autonomous']);
+    const pf: any = TOOL_BY_NAME.get('bolloon_chain_trade_submit_proof')!.build({ taskId: 't-1', result: 'sha256:' + 'ab'.repeat(32), paymentMode: 'agent-authorized', requestId: 'rid-p' });
+    expect(pf.ok).toBe(true);
+    expect(pf.plan.argv).toEqual(['trade', 'submit-proof', '--task-id', 't-1', '--result', `sha256:${'ab'.repeat(32)}`, '--payment-mode', 'agent-authorized']);
+  });
+
+  it('★ 缺 paymentMode → NOT_AUTHORIZED + isError:true (fail-closed, 不默认放行)', async () => {
+    const { result, envelope } = await call('bolloon_chain_trade_create', { taskId: 't-2', agent: AGENT, amount: '0.02', requestId: 'rid-2' });
+    expect(result.isError).toBe(true);
+    expect(envelope.ok).toBe(false);
+    expect(envelope.code).toBe('NOT_AUTHORIZED');
+    expect(envelope.data.missing).toContain('paymentMode');
+    expect(envelope.data.requiresExplicitAuthorization).toBe(true);
+    expect(envelope.next_action).toBe('needs_human');
+  });
+
+  it('★ 缺 requestId → NOT_AUTHORIZED (两个授权意图参数都是硬要求)', async () => {
+    const { result, envelope } = await call('bolloon_chain_trade_release', { taskId: 't-3', paymentMode: 'agent-authorized' });
+    expect(result.isError).toBe(true);
+    expect(envelope.ok).toBe(false);
+    expect(envelope.code).toBe('NOT_AUTHORIZED');
+    expect(envelope.data.missing).toContain('requestId');
+  });
+
+  it('paymentMode 不在冻结词表 → INVALID_ARGUMENT (不静默退回默认值)', async () => {
+    const { result, envelope } = await call('bolloon_chain_trade_create', { taskId: 't-4', agent: AGENT, amount: '0.02', paymentMode: 'auto-pilot', requestId: 'rid-4' });
+    expect(result.isError).toBe(true);
+    expect(envelope.ok).toBe(false);
+    expect(envelope.code).toBe('INVALID_ARGUMENT');
+    expect(envelope.data.accepted).toContain('agent-authorized');
+  });
+
+  it('写 tool 也不许注入命令行选项 (privateKey / --force 这类一律 INVALID_ARGUMENT)', async () => {
+    const { result, envelope } = await call('bolloon_chain_trade_create', { taskId: 't-5', agent: AGENT, amount: '0.02', paymentMode: 'agent-authorized', requestId: 'rid-5', privateKey: '0x' + 'ab'.repeat(32) });
+    expect(result.isError).toBe(true);
+    expect(envelope.code).toBe('INVALID_ARGUMENT');
+    expect(JSON.stringify(envelope)).not.toContain('ab'.repeat(32));
+  });
+
+  it('三个写 tool 缺授权意图时都拒 (schema.required 与运行时一致)', async () => {
+    for (const n of WRITE_TOOLS) {
+      const { result, envelope } = await call(n, { taskId: 't-6' });
+      expect(result.isError, `${n} 应 isError`).toBe(true);
+      expect(envelope.code, `${n} 应 NOT_AUTHORIZED`).toBe('NOT_AUTHORIZED');
+    }
+  });
+
+  it('声明合法但本机链未配置 → 服务层如实失败 (CHAIN_NOT_CONFIGURED, isError:true), 绝不变成成功', async () => {
+    const saved: Record<string, string | undefined> = {};
+    for (const k of ['BOLLOON_CHAIN_RPC_URL', 'BOLLOON_RPC_URL', 'RPC_URL', 'BOLLOON_CHAIN_ID', 'BOLLOON_ESCROW_ADDRESS', 'BOLLOON_TOKEN_ADDRESS']) {
+      saved[k] = process.env[k]; delete process.env[k];
+    }
+    try {
+      const { result, envelope } = await call('bolloon_chain_trade_create', { taskId: 't-7', agent: AGENT, amount: '0.02', paymentMode: 'agent-authorized', requestId: 'rid-7' });
+      expect(result.isError).toBe(true);
+      expect(envelope.ok).toBe(false);
+      expect(envelope.code).toBe('CHAIN_NOT_CONFIGURED');
+      expect(envelope.data.missing).toEqual(expect.arrayContaining(['rpcUrl', 'chainId', 'escrowAddress']));
+    } finally {
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
   });
 });

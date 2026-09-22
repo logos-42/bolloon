@@ -1,5 +1,5 @@
 /**
- * tools.ts — MCP 的 tools / resources 定义 (17 个 P4 tool + 7 个 P6 链 tool = 24; 7 + 3 = 10 resource)
+ * tools.ts — MCP 的 tools / resources 定义 (17 个 P4 tool + 7 个 P6 链只读 tool + 3 个 P6b 链写 tool = 27; 7 + 3 = 10 resource)
  *
  * 设计纪律 (P4 任务书 + `docs/wiki/agent-access-layer.md` §1):
  *   ① **一个 tool = 一条 P3 子命令**。这里只做两件事: 校验入参 (白名单 + 类型)、
@@ -7,9 +7,13 @@
  *   ② **客户端给的是具名参数, 不是 argv** —— 参数名走白名单, 未知参数一律 `INVALID_ARGUMENT`。
  *      由此它**不可能**注入 `--private-key` / `--mode` / `--force` 之类选项去绕过政策 (§六条禁止)。
  *   ③ 值里不许以 `-` 开头 (防"值 = 选项"注入)。
- *   ④ 没实现的 P3 子命令 (`task send|inbox|accept|reject|complete|cancel` · `network leave`)
+ *   ④ 没实现的 P3 子命令 (`task send|inbox|accept|reject|complete|cancel` · `network leave` ·
+ *      `chain trade expire`)
  *      **不暴露成 tool**: 暴露了就得在 MCP 层假装成功, 那正好违反"失败不得变成功"。
  *      需要它们的能力时, MCP 侧应直接读 P3 的 `C_NOT_IMPLEMENTED` 说明 (见 §NOT_EXPOSED)。
+ *   ⑤ ★ 链上**写** tool (`bolloon_chain_trade_create|submit_proof|release`) 是真签名 + 真移钱,
+ *      所以额外有两条: **授权意图参数必须显式携带** (缺 → `NOT_AUTHORIZED`, 见 `requireWriteIntent`),
+ *      以及**真签名只能由本机唯一放行闸 `authorizeWalletSignature` 产生** —— MCP 层不复制、不旁路。
  */
 
 import * as fs from 'fs';
@@ -19,6 +23,8 @@ import { failEnvelope, type Envelope } from '../protocol-envelope.js';
 import { currentPackageRoot } from '../../utils/version-info.js';
 import { callP3, type BridgeOptions } from './bridge.js';
 import type { ServiceGroup } from '../commands/index.js';
+// 授权意图词表**只有一份** (task-contract 的冻结口径) —— 这里 import 它, 不另抄一份
+import { PAYMENT_MODES, isPaymentMode } from '../../agents/task-contract.js';
 
 /** MCP tool 的入参 schema (JSON Schema 子集; 与 MCP spec 的 inputSchema 同形) */
 export interface ToolInputSchema {
@@ -82,8 +88,8 @@ class Params {
   }
 
   /** 正数 (金额/限额这类: 只收**字符串**形式的十进制, 与 P3 的原子单位口径一致) */
-  strNumber(key: string): string | undefined {
-    const v = this.str(key);
+  strNumber(key: string, opts: { required?: boolean } = {}): string | undefined {
+    const v = this.str(key, opts);
     if (v === undefined) return undefined;
     if (!/^\d+(\.\d+)?$/.test(v)) {
       this.bad.push(`参数 '${key}' 必须是正的十进制数字串 (如 "0.05"), 收到 ${JSON.stringify(v)}`);
@@ -99,6 +105,18 @@ class Params {
     if (v === undefined || v === null) return undefined;
     if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
       this.bad.push(`参数 '${key}' 必须是正整数 (毫秒)`);
+      return undefined;
+    }
+    return Math.floor(v);
+  }
+
+  /** 正整数 (秒/计数这类非毫秒的整数参数) */
+  intPos(key: string): number | undefined {
+    this.touch(key);
+    const v = this.args[key];
+    if (v === undefined || v === null) return undefined;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+      this.bad.push(`参数 '${key}' 必须是正整数`);
       return undefined;
     }
     return Math.floor(v);
@@ -190,6 +208,67 @@ function plan(p: Params, group: ServiceGroup, argv: string[]): BuildResult {
 
 const TIMEOUT_KEY = 'timeoutMs';
 const TIMEOUT_PROP = { type: 'integer', minimum: 1, description: '本次调用的硬超时 (毫秒); 超时返回 P3 信封 code=TIMEOUT (不是"打印一行错误就退出")' };
+
+// ── ★ 链上**写** tool 的授权意图 (硬要求 ②) ──────────────────────────────────
+
+const PAYMENT_MODE_LIST = PAYMENT_MODES.join(' | ');
+
+/**
+ * 写 tool (`bolloon_chain_trade_create|submit_proof|release`) 的**授权意图声明**校验。
+ *
+ * 硬要求: 调用方必须**显式**给出 `paymentMode` **与** `requestId`
+ *   · 缺任何一个 → `NOT_AUTHORIZED` (fail-closed, **绝不默认放行**, 也不替调用方猜)
+ *   · 给了但值非法 → `INVALID_ARGUMENT`
+ *
+ * ★ 为什么这不等于"在 MCP 层另开一道闸": 这里只校验"声明齐不齐 / 词表合不合法",
+ *   **不判**"能不能签"。`paymentMode` 只被翻译成 CLI 的 `--payment-mode`, 真正放不放行
+ *   仍由本机唯一放行闸 `authorizeWalletSignature` (fail-closed) 决定 ——
+ *   它的 `modeIsAutonomous` 只认 `autonomous` / `agent-authorized`, 所以声明
+ *   `manual` / `policy` 会被闸直接拒。即: 声明**只能收紧, 不可能放权**。
+ */
+function requireWriteIntent(args: Record<string, unknown>): { ok: true } | { ok: false; envelope: Envelope } {
+  const mode = args.paymentMode;
+  const rid = args.requestId;
+  const missing: string[] = [];
+  if (mode === undefined || mode === null || mode === '') missing.push('paymentMode');
+  if (rid === undefined || rid === null || rid === '') missing.push('requestId');
+  if (missing.length) {
+    return {
+      ok: false,
+      envelope: failEnvelope(
+        'NOT_AUTHORIZED',
+        `链上写操作必须显式声明授权意图, 缺: ${missing.join(' + ')}。MCP 层 fail-closed —— 声明缺失不默认放行。`,
+        {
+          missing,
+          requiresExplicitAuthorization: true,
+          acceptedPaymentModes: [...PAYMENT_MODES],
+          why: '链上写 = 真签名 + 真移钱: 调用方必须先自己确认本机钱包已授权按该意图签名; MCP 不代你假定已授权',
+        },
+        [],
+        'needs_human',
+      ),
+    };
+  }
+  if (typeof mode !== 'string' || !isPaymentMode(mode.trim())) {
+    return {
+      ok: false,
+      envelope: failEnvelope(
+        'INVALID_ARGUMENT',
+        `paymentMode 非法: ${JSON.stringify(mode).slice(0, 60)} (要 ${PAYMENT_MODE_LIST})`,
+        { paymentMode: typeof mode === 'string' ? mode.slice(0, 60) : typeof mode, accepted: [...PAYMENT_MODES] },
+        [],
+        'needs_human',
+      ),
+    };
+  }
+  return { ok: true };
+}
+
+/** 3 个链上写 tool 共用的参数说明 (口径一致, 不各写一套) */
+const WRITE_INTENT_PROPS = {
+  paymentMode: { type: 'string', enum: [...PAYMENT_MODES], description: `★ 必填: 授权意图 —— 声明按哪种支付模式签这笔链上写 (${PAYMENT_MODE_LIST})。缺它 → NOT_AUTHORIZED (fail-closed)。manual/policy 会被本机放行闸直接拒` },
+  requestId: { type: 'string', description: '★ 必填: 显式幂等/授权键 (本次声明的 id)。它参与放行闸 requestId 的确定性派生: 同一个 requestId 重复声明 → 闸按 notDuplicate 拒 (同一次意图只签一次)' },
+} as const;
 
 // ── 17 个 tool ──────────────────────────────────────────────────────────────
 
@@ -661,6 +740,130 @@ export const TOOLS: ToolDef[] = [
       return plan(p, 'chain', argv);
     },
   },
+
+  // ── P6b: 链上**写** tool (3 个) —— 与只读链 tool 的区别只有一个: 它们**真签名 + 真移钱** ──
+  // 薄包装同一批 P3/P4 服务函数 (`chain trade create|submit-proof|release` → onchain-trade 的
+  // createEscrowStep / submitProofStep / releaseStep), **不复制任何业务逻辑**;
+  // 授权意图 (`paymentMode` + `requestId`) 必须显式携带 (见 requireWriteIntent), 失败按信封原样返回。
+  {
+    name: 'bolloon_chain_trade_create',
+    title: '★ 真签名真移钱: 建链上 escrow (买方付款进托管)',
+    description:
+      '★★★ **这是真写操作: 会用本机钱包私钥真签名, 并把真 USDC 从买方打进链上 escrow 托管 (链上真 txHash)**。' +
+      '等价于 `bolloon chain trade create --task-id <id> --agent <addr> --amount <USDC> --payment-mode <mode> --request-id <rid>`。' +
+      '**调用方必须自己保证已授权** —— 本 tool 只声明意图, 不授予任何权限: 真签名只由本机唯一放行闸 ' +
+      '`authorizeWalletSignature` (fail-closed, 9 项) 决定, 私钥永不返回、永不打印。' +
+      '★ **必填** `paymentMode` 与 `requestId` (授权意图): 缺 → `NOT_AUTHORIZED`; 词表外的值 → `INVALID_ARGUMENT`; ' +
+      '`manual`/`policy` → 被放行闸拒 (modeIsAutonomous); 同一个 `requestId` 重复声明 → 被闸按 notDuplicate 拒。' +
+      '金额上限沿用 M1 硬约束 (单任务 0.05 / 单次购买 0.02 USDC, 与 economic-policy 三层取最小); 超了给 `BUDGET_EXCEEDED` 并指明哪一层, **不发交易**。' +
+      '失败按 P3 信封原样返回 (`isError=true`), 绝不变成 MCP 成功; 链上结论未定 → `CHAIN_UNCERTAIN` + reconcile, 不确定绝不报成功。',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['taskId', 'agent', 'amount', 'paymentMode', 'requestId'],
+      properties: {
+        taskId: { type: 'string', description: '任务 id —— 链上 taskKey 由它确定性派生 (keccak256 域标签 bolloon.task.v1)' },
+        agent: { type: 'string', description: '卖方收款地址 (0x + 40 hex), escrow 释放后钱真打到它' },
+        amount: { type: 'string', description: '托管金额 (十进制 USDC 串, 如 "0.02"); M1 单次购买上限 0.02' },
+        deadline: { type: 'number', description: '托管截止时间 (unix 秒); 不给 = max(链上最新块时间, 本机时间) + 确认窗口' },
+        confirmationWindow: { type: 'number', description: '买方确认窗口 (秒, 默认 3600); 过后卖方才能 claimAfterTimeout' },
+        proofVersion: { type: 'number', description: 'proof 版本 (默认 1, 参与 proofHash 口径)' },
+        ...WRITE_INTENT_PROPS,
+        timeoutMs: TIMEOUT_PROP,
+      },
+    },
+    build(args) {
+      const intent = requireWriteIntent(args);
+      if (!intent.ok) return { ok: false, envelope: intent.envelope };
+      const p = new Params(args, ['taskId', 'agent', 'amount', 'deadline', 'confirmationWindow', 'proofVersion', 'paymentMode', 'requestId', TIMEOUT_KEY]);
+      const taskId = p.str('taskId', { required: true, maxLen: 512 });
+      const agent = p.str('agent', { required: true, maxLen: 80 });
+      const amount = p.strNumber('amount', { required: true });
+      const paymentMode = p.str('paymentMode', { required: true, maxLen: 40 });
+      const argv = ['trade', 'create'];
+      if (taskId) argv.push('--task-id', taskId);
+      if (agent) argv.push('--agent', agent);
+      if (amount) argv.push('--amount', amount);
+      if (paymentMode) argv.push('--payment-mode', paymentMode);
+      const deadline = p.intPos('deadline');
+      if (deadline !== undefined) argv.push('--deadline', String(deadline));
+      const win = p.intPos('confirmationWindow');
+      if (win !== undefined) argv.push('--confirmation-window', String(win));
+      const pv = p.intPos('proofVersion');
+      if (pv !== undefined) argv.push('--proof-version', String(pv));
+      return plan(p, 'chain', argv);
+    },
+  },
+  {
+    name: 'bolloon_chain_trade_submit_proof',
+    title: '★ 真签名真上链: 提交交付证明 (seller 侧)',
+    description:
+      '★★★ **这是真写操作: 会用**本机钱包**私钥真签名, 把交付结果摘要 (`resultHash`) 真上链 (`submitProofV2`, 链上真 txHash)**。' +
+      '等价于 `bolloon chain trade submit-proof --task-id <id> --result <正文|sha256:hex> --payment-mode <mode> --request-id <rid>`。' +
+      '常由**卖方节点**执行 (合约要求 `msg.sender == escrow.agent`); 只有当调用方就是本机钱包持有人时才可能成功。' +
+      '**调用方必须自己保证已授权**; 缺 `paymentMode`/`requestId` → `NOT_AUTHORIZED`, 放行闸拒 → `NOT_AUTHORIZED` 且**不发交易、不碰私钥**。' +
+      '★ 这一步**不动钱** (escrow 仍在 ACTIVE) —— 别把它的成功读成"已结算"。' +
+      '失败按信封原样返回 (`isError=true`); 未定 → `CHAIN_UNCERTAIN` (不确定绝不报成功)。',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['taskId', 'result', 'paymentMode', 'requestId'],
+      properties: {
+        taskId: { type: 'string', description: '任务 id (与 create 时必须同一个; 派生 taskKey)' },
+        result: { type: 'string', description: '交付结果正文或 "sha256:<hex>" 摘要 (链上 resultHash 的来源, 只上链摘要不含正文)' },
+        manifestDigest: { type: 'string', description: '可选: manifest 摘要 (正文 或 "sha256:<hex>")' },
+        ...WRITE_INTENT_PROPS,
+        timeoutMs: TIMEOUT_PROP,
+      },
+    },
+    build(args) {
+      const intent = requireWriteIntent(args);
+      if (!intent.ok) return { ok: false, envelope: intent.envelope };
+      const p = new Params(args, ['taskId', 'result', 'manifestDigest', 'paymentMode', 'requestId', TIMEOUT_KEY]);
+      const taskId = p.str('taskId', { required: true, maxLen: 512 });
+      const result = p.str('result', { required: true, maxLen: MAX_LEN });
+      const paymentMode = p.str('paymentMode', { required: true, maxLen: 40 });
+      const argv = ['trade', 'submit-proof'];
+      if (taskId) argv.push('--task-id', taskId);
+      if (result) argv.push('--result', result);
+      const manifest = p.str('manifestDigest', { maxLen: MAX_LEN });
+      if (manifest) argv.push('--manifest-digest', manifest);
+      if (paymentMode) argv.push('--payment-mode', paymentMode);
+      return plan(p, 'chain', argv);
+    },
+  },
+  {
+    name: 'bolloon_chain_trade_release',
+    title: '★ 真签名真移钱: 释放托管 (钱真打到 seller)',
+    description:
+      '★★★ **这是真写操作: 会用本机钱包私钥真签名, 把 escrow 里的 USDC 真释放给 seller (`releaseV2`, 链上真 txHash, 钱真到账)**。' +
+      '等价于 `bolloon chain trade release --task-id <id> --payment-mode <mode> --request-id <rid>`。' +
+      '**调用方必须自己保证已授权** —— 声明只是声明, 真签名只由本机放行闸 `authorizeWalletSignature` (fail-closed) 决定; ' +
+      '缺 `paymentMode`/`requestId` → `NOT_AUTHORIZED` (不默认放行), 闸拒 → `NOT_AUTHORIZED` 且钱**没动**。' +
+      '★ 只有全过 (事件对上 + 合约 RELEASED + 确认数达标) 才 `grantsVerified=true`; 没过一律 `CHAIN_UNCERTAIN` (不许标 verified)。' +
+      '失败按信封原样返回 (`isError=true`), 绝不变成 MCP 成功。',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['taskId', 'paymentMode', 'requestId'],
+      properties: {
+        taskId: { type: 'string', description: '任务 id (与 create 时必须同一个; 派生 taskKey)' },
+        ...WRITE_INTENT_PROPS,
+        timeoutMs: TIMEOUT_PROP,
+      },
+    },
+    build(args) {
+      const intent = requireWriteIntent(args);
+      if (!intent.ok) return { ok: false, envelope: intent.envelope };
+      const p = new Params(args, ['taskId', 'paymentMode', 'requestId', TIMEOUT_KEY]);
+      const taskId = p.str('taskId', { required: true, maxLen: 512 });
+      const paymentMode = p.str('paymentMode', { required: true, maxLen: 40 });
+      const argv = ['trade', 'release'];
+      if (taskId) argv.push('--task-id', taskId);
+      if (paymentMode) argv.push('--payment-mode', paymentMode);
+      return plan(p, 'chain', argv);
+    },
+  },
 ];
 
 /** tool 名 → 定义 */
@@ -675,9 +878,17 @@ export const TOOL_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
  *   network init / peers · agent inspect · trade events · wallet policy(只读) / set-policy
  *     → 前几个是"本机节点生命周期/本地诊断", 不该给远端 Agent 调;
  *       **wallet set-policy 尤其不暴露** —— 让远端 Agent 改支付策略 = 绕过 payment policy (六条禁止之一)。
- *   ★ P6 追加: `bolloon chain trade create|submit-proof|release` **不暴露** ——
- *     它们是**链上写操作**(真签名 + 真移钱), 必须由本机持钱包的一方执行; 放行闸 (authorizeWalletSignature,
- *     fail-closed) 只在持钱包的进程里有效, 远端 Agent 无从授权。MCP 只给链上**只读**能力 + 本机索引缓存刷新。
+ *   ★ P6 追加: `bolloon chain trade create|submit-proof|release` 曾是「不暴露」——
+ *     现已改为**暴露为 MCP 写 tool (3 个)**, 但代价条件全部保留并加固 (2026-09-22 leo 拍板):
+ *       · 唯一放行闸不变: 仍然只走 `sendChainTxGuarded` → `authorizeWalletSignature` (fail-closed),
+ *         MCP 层**没有**任何旁路, 也不复制判钱/签发逻辑;
+ *       · 每个写 tool **强制显式携带授权意图** (`paymentMode` + `requestId`): 缺 → `NOT_AUTHORIZED`,
+ *         非法 → `INVALID_ARGUMENT` (绝不默认放行);
+ *       · 失败一律按 P3 信封原样返回 (`isError=true`), 不洗成 MCP 成功;
+ *       · 私钥/任务正文不打印、不落盘; 审计仍写 `~/.bolloon/wallet-signatures.jsonl`;
+ *       · 金额上限沿用 M1 硬约束 (0.05 / 0.02 / 0.10, 与 economic-policy 三层取最小)。
+ *   `bolloon chain trade expire` **不暴露**: 仓库里没有这条子命令 (合约侧有 expireV2, CLI 未接) ——
+ *     暴露了就得在 MCP 层假装成功。
  *   `bolloon chain index sync` 例外地暴露: 它只读链 (eth_getLogs) 并刷新本机**可删可重建**的索引缓存,
  *     不动钱、不碰私钥、不改交易记录/结算事实 —— 不构成"本机运维写动作"。
  */
@@ -689,7 +900,7 @@ export const NOT_EXPOSED: Array<{ command: string; reason: string }> = [
   { command: 'bolloon network init|peers', reason: '本机节点生命周期 / 本进程 peer 列表, 不是给远端 Agent 的能力' },
   { command: 'bolloon wallet set-policy', reason: '远端改支付策略 = 绕过 payment policy (六条禁止); 必须由本机用户执行' },
   { command: 'bolloon agent inspect / trade events', reason: '诊断/审计视角; 等有明确外部需求再按同一薄包装方式加' },
-  { command: 'bolloon chain trade create|submit-proof|release', reason: '链上**写**操作 (真签名 + 真移钱): 签名放行闸与钱包只在本机; 必须由持钱包的一方执行 (MCP 只给只读链视图 + recover 计划)' },
+  { command: 'bolloon chain trade expire', reason: '仓库里**没有**这条子命令 (合约侧有 permissionless expireV2, CLI 未接) —— 暴露会逼 MCP 层假装成功; 要暴露先把 CLI 子命令实现出来' },
 ];
 
 // ── 10 个 resource ──────────────────────────────────────────────────────────

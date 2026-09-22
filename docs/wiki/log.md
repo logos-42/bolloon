@@ -2922,3 +2922,12 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **未决① 已修(f5 确定性红)**: 定性 = **测试漏了前提, 不是实现缺陷**。`chain-paid-info-f5.test.ts:191-198` 只 `delete` 3 个 env 锚就认定"三层都拿不到", 但第②层是 `$HOME/.bolloon/chain.json`(`chain-config.ts:76`), 本机那份在 → 缺省验证器建 client 成功 → 查假 txHash → `status='unknown'`, 而断言要的是 `config_unavailable`。修前提不放宽断言: HOME 钉到新建空目录(`vi.stubEnv`)+ 删其它链锚, 并**加两条更严**断言(该 HOME 下无 `chain.json`; 理由必须点名 `/链配置/`)——**4 条原断言一条没减**。
 - **我独立复跑(核心判据)**: `tsc --noEmit` **0 错** · **干净 HOME 下 `HOME=/tmp/cleanhome-verify2 ANVIL_BIN=/Users/apple/.foundry/bin/anvil npx tsx scripts/verify-chain-cli.ts` → 133 passed / 0 failed**(隔离链 fork 起点块 170 · 私有 RPC :57529 · env 行显示 `PATH=透传` + `DYLD_LIBRARY_PATH=/Users/apple/.local/lib` 由真候选探测拼出 · 缺库 `/usr/local/opt/libusb/...` 由该目录提供) · 两条修过的单测 **29/29** · **全量 vitest 199 文件 / 2610 测试全过** · 三条链门 59/0 · 75/0 · 69/0。
 - **残留(无害, 未处理)**: `startIsolatedChain` 首次探测时 ethers 会打一行 `JsonRpcProvider failed to detect network… retry in 1s`(节点还没 listen 时的抖动, 修前就有)。
+
+## [2026-09-22] feat(mcp) | P6b — MCP 暴露链上**写**操作 (3 tool) + 授权意图声明; 门已密闭 (我复跑: 干净 HOME 133/133)
+
+- **新增 3 个写 tool**(薄适配 `bolloon chain trade create|submit-proof|release`, **不复制业务逻辑**): `bolloon_chain_trade_create` · `bolloon_chain_trade_submit_proof` · `bolloon_chain_trade_release`。失败一律按 P3 信封**原样**返回(`isError=true`), 不变成「MCP 成功」;每次**成功**写在 `~/.bolloon/wallet-signatures.jsonl` 留一行(不记密钥/任务正文)。
+- **授权意图参数(硬要求)**: 写 tool 必须显式携带 `paymentMode`(+ 可选 `intentNonce`), 缺失/非法则**拒**。实现上它**只能收紧、不可能放权** —— 放行闸 `authorizeWalletSignature` 的 `modeIsAutonomous` 只认 `autonomous`/`agent-authorized`, 声明 `manual`/`policy` 会被**直接拒**;`intentNonce` 参与 requestId 的确定性派生(`chainRequestIdOf`)⇒ **同一声明只签一次**(重复 → `notDuplicate` 拒)。
+- **`src/cli/protocol-envelope.ts`**: append-only 追加 `--payment-mode`(未改任何冻结错误码)。
+- **`skills/bolloon-network/SKILL.md` → v1.2.0**: 新增 P6b 写 tool 说明 + 失败信封口径 + 审计台账位置;原「刻意不暴露 chain trade create|submit-proof|release」一条**按事实改写**(不再说不暴露)。
+- **⚠️ 历史(诚实记录)**: 这半此前被**扣住不提交** —— 因为 P6 门是**环境依赖的假绿**(删掉 `~/.bolloon/chain.json` 就红 8 项)。`91e2f47`(链配置加第③层 + 门密闭化: 私有 fork 链 · env 清洗 · 临时 HOME 现写 · 负控制不静默跳过)与 `939a54c`(env 白名单透传 + libusb 真候选探测)之后,**判据达成**: 干净 HOME 下 `verify-chain-cli` **133 passed / 0 failed / EXIT=0**, 断言只加不减。**至此才提交**。
+- **我独立复跑(含这 3 个写 tool 的工作树)**: `tsc --noEmit` **0 错** · 全量 vitest **199 文件 / 2610 测试全过** · 干净 HOME 下 P6 门 **133/133** · 三条链门 59/0 · 75/0 · 69/0 · mcp-server 单测 101 行新增后全过。

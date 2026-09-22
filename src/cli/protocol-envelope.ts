@@ -95,6 +95,8 @@ const OPTIONS_WITH_VALUE = new Set([
   // 2026-09-22 (P6): `bolloon chain` 用的选项 (只加链命令组自己的名字, 不改既有布尔开关的解析)
   '--task-key', '--agent', '--asset', '--result', '--manifest-digest',
   '--confirmation-window', '--proof-version', '--from-block', '--gate',
+  // 2026-09-22 (P6b): 链上**写**操作的**授权意图**声明 (MCP 写 tool 必填; 只可能收紧, 不可能放权)
+  '--payment-mode',
 ]);
 
 export function parseFlags(args: string[]): CliFlags {

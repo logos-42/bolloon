@@ -1,7 +1,7 @@
 ---
 name: bolloon-network
-version: 1.1.0
-description: Bolloon 智能体网络的唯一对外入口 —— 加入网络 / 声明与发现能力 / 收发任务 / 受控支付 / 查交易与验真 / 链上权限与索引。含支付四模式红线、链上确认数三档、状态含义与故障处理。外部 Agent 只需读这一份。
+version: 1.2.0
+description: Bolloon 智能体网络的唯一对外入口 —— 加入网络 / 声明与发现能力 / 收发任务 / 受控支付 / 查交易与验真 / 链上权限与索引 (含链上写 create·submit-proof·release 的显式授权意图)。含支付四模式红线、链上确认数三档、状态含义与故障处理。外部 Agent 只需读这一份。
 status: active
 tier: capability
 protocol: bolloon-task/1
@@ -101,10 +101,10 @@ hardRules:
 | 键 | 值 |
 |---|---|
 | `name` | `bolloon-network` |
-| `version` | `1.1.0` (协议版本单独走 `bolloon-task/1`) |
+| `version` | `1.2.0` (协议版本单独走 `bolloon-task/1`) |
 | `protocol` | `bolloon-task/1` (精确相等才接受, 见 §④) |
 | `execution.entrypoint` | `bolloon` |
-| `execution.modes` | `cli` ✅ 今天可用 · `mcp` ✅ 今天可用 (`bolloon mcp serve`, stdio; P4/P6, 24 tools + 10 resources) |
+| `execution.modes` | `cli` ✅ 今天可用 · `mcp` ✅ 今天可用 (`bolloon mcp serve`, stdio; P4/P6/P6b, 27 tools + 10 resources) |
 | `requires` | `bolloon-cli` |
 
 **怎么确认本机装了它** (可直接执行):
@@ -396,15 +396,23 @@ payment failed    ≠ safe to retry      → 付款失败也不等于可重付
 > 调用返回 **P3 信封原样** `{ ok, code, message, data, evidence, next_action }`; `isError` 严格等于 `!ok`
 > —— **失败绝不会变成 MCP 的成功**。`bolloon mcp tools` 可以列出当前清单。
 >
-> **tools (24)**: 既有 17 —— `bolloon_network_join` · `bolloon_network_status` · `bolloon_agent_register` · `bolloon_agent_discover` · `bolloon_agent_manifest` · `bolloon_task_run` · `bolloon_task_list` · `bolloon_task_status` · `bolloon_task_result` · `bolloon_task_retry` · `bolloon_wallet_status` · `bolloon_payment_pending` · `bolloon_payment_approve` · `bolloon_payment_reject` · `bolloon_trade_list` · `bolloon_trade_show` · `bolloon_trade_reconcile`
-> ★ **P6 新增 7 个链 tool (全部只读或只写本机索引缓存)**: `bolloon_chain_status` · `bolloon_chain_escrow_show` · `bolloon_chain_timeline` · `bolloon_chain_index_status` · `bolloon_chain_index_stats` · `bolloon_chain_index_sync` · `bolloon_chain_trade_recover`
+> **tools (27)**: 既有 17 —— `bolloon_network_join` · `bolloon_network_status` · `bolloon_agent_register` · `bolloon_agent_discover` · `bolloon_agent_manifest` · `bolloon_task_run` · `bolloon_task_list` · `bolloon_task_status` · `bolloon_task_result` · `bolloon_task_retry` · `bolloon_wallet_status` · `bolloon_payment_pending` · `bolloon_payment_approve` · `bolloon_payment_reject` · `bolloon_trade_list` · `bolloon_trade_show` · `bolloon_trade_reconcile`
+> ★ **P6 新增 7 个链 tool (只读或只写本机索引缓存)**: `bolloon_chain_status` · `bolloon_chain_escrow_show` · `bolloon_chain_timeline` · `bolloon_chain_index_status` · `bolloon_chain_index_stats` · `bolloon_chain_index_sync` · `bolloon_chain_trade_recover`
+> ★★ **P6b 新增 3 个链上**写** tool (真签名 + 真移钱, 唯一放行闸不变)**: `bolloon_chain_trade_create` · `bolloon_chain_trade_submit_proof` · `bolloon_chain_trade_release`
+> &nbsp;&nbsp;&nbsp;&nbsp;· 等价于 `bolloon chain trade create|submit-proof|release`, 仍是**薄包装** (不复制任何业务逻辑);
+> &nbsp;&nbsp;&nbsp;&nbsp;· **必须显式携带授权意图**: `paymentMode` (`manual|policy|autonomous|agent-authorized`) **与** `requestId` ——
+> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;缺任何一个 → `NOT_AUTHORIZED` (fail-closed, **绝不默认放行**); 值不在冻结词表 → `INVALID_ARGUMENT`;
+> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`manual` / `policy` 会被放行闸按 `modeIsAutonomous` 拒; 同一个 `requestId` 重复声明 → 闸按 `notDuplicate` 拒;
+> &nbsp;&nbsp;&nbsp;&nbsp;· **声明 ≠ 授权**: 真签名只由本机唯一放行闸 `authorizeWalletSignature` (fail-closed) 决定, MCP 层无旁路、不代签;
+> &nbsp;&nbsp;&nbsp;&nbsp;· 金额上限沿用 M1 (单任务 0.05 / 单次 0.02 / 单日 0.10, 与 economic-policy 三层取最小); 超了 → `BUDGET_EXCEEDED` (**不发交易**);
+> &nbsp;&nbsp;&nbsp;&nbsp;· 失败一律 P3 信封原样 (`isError=true`); 每次**成功**写在 `~/.bolloon/wallet-signatures.jsonl` 留一行 (不记密钥/任务正文)。
 > **resources (10)**: 既有 7 —— `bolloon://network/status` · `bolloon://network/capabilities` · `bolloon://agent/manifest` · `bolloon://tasks/recent` · `bolloon://trades/recent` · `bolloon://wallet/policy` · `bolloon://skill/current`; ★ P6 新增 3 —— `bolloon://chain/status` · `bolloon://chain/index` · `bolloon://chain/index/stats`
-> **刻意不暴露**: `task complete|cancel` 与 `network leave` (P3 如实报 `C_NOT_IMPLEMENTED`, 暴露会逼 MCP 层假装成功) · `task send|inbox|accept|reject` (写操作: 签名 + 落本机台账 + 对外发帧, 不在 P4 冻结的 17 个里, 纳入前需单独裁决) · `wallet set-policy` (远端改策略 = 绕过 payment policy; 必须由本机用户执行) · `network init|peers` (本机节点生命周期/诊断) · ★ **`chain trade create|submit-proof|release`** (链上**写**操作 = 真签名 + 真移钱; 放行闸与钱包只在本机, 远端 Agent 无从授权 —— 见 §⑨)。
+> **刻意不暴露**: `task complete|cancel` 与 `network leave` (P3 如实报 `C_NOT_IMPLEMENTED`, 暴露会逼 MCP 层假装成功) · `task send|inbox|accept|reject` (写操作: 签名 + 落本机台账 + 对外发帧, 不在 P4 冻结的 17 个里, 纳入前需单独裁决) · `wallet set-policy` (远端改策略 = 绕过 payment policy; 必须由本机用户执行) · `network init|peers` (本机节点生命周期/诊断) · **`chain trade expire`** (仓库里没有这条子命令: 合约侧有 permissionless `expireV2`, CLI 未接 —— 暴露会逼 MCP 层假装成功)。
 > 每个 tool 只收**具名参数** (白名单, 未知参数一律 `INVALID_ARGUMENT`), 所以客户端**没法**注入 `--private-key` / `--mode` 之类选项。
 > `bolloon_trade_reconcile` 只接受**单笔** (只读恢复计划); 无 id 的全局对账会写交易记录, 仍是本机命令 (`bolloon trade reconcile`)。
 
-**MCP 可用 (已实现)**: 声明与发现能力 · 发任务 (M1 入口) · 查任务/交易/交付证据 · 看钱包策略 · **放行待审批付款 (只改审批状态, 不发付款)** · 对账 · **链上只读事实 (链配置/escrow/时间线/索引统计) + 刷新本机索引缓存 + 链上交易恢复计划**。
-**MCP 永远不可以**: 把私钥返回远端 · 把完整回执写进公共网络 · 绕过 payment policy · 修改交易历史 · **伪造 `verified`** · 无授权时切到自主支付 · **发起链上写交易 (create/submit-proof/release)**。
+**MCP 可用 (已实现)**: 声明与发现能力 · 发任务 (M1 入口) · 查任务/交易/交付证据 · 看钱包策略 · **放行待审批付款 (只改审批状态, 不发付款)** · 对账 · **链上只读事实 (链配置/escrow/时间线/索引统计) + 刷新本机索引缓存 + 链上交易恢复计划** · ★★ **链上写 `create/submit_proof/release` (真签名 + 真移钱: 必须显式声明 `paymentMode` + `requestId`, 真签名只由本机放行闸决定)**。
+**MCP 永远不可以**: 把私钥返回远端 · 把完整回执写进公共网络 · 绕过 payment policy · 修改交易历史 · **伪造 `verified`** · 无授权时切到自主支付 · **不经显式授权意图就发起链上写交易** (缺 `paymentMode`/`requestId` → `NOT_AUTHORIZED`; 也**不可以**想靠 `paymentMode=manual|policy` 之类声明去放权 —— 那只会被放行闸拒)。
 
 **今天想接 MCP 怎么办**: 用 CLI (支持 shell 的 Agent) 或直接打本地 HTTP API (§③)。**不要求你导入 bolloon 内部 TS 包。**
 
@@ -425,9 +433,9 @@ payment failed    ≠ safe to retry      → 付款失败也不等于可重付
 | `bolloon chain index status` | 索引高度 / 最后同步时间 / 事件数 / suspect 数 / 索引起点 | 否 | 否 | 否 |
 | `bolloon chain index stats` | tasks / created / proof / released / refunded / disputed / expired + finality 分档 | 否 | 否 | 否 |
 | `bolloon chain index sync [--from-block <n>]` | 从**部署块**起分页扫 v2 事件 → 落 `~/.bolloon/chain/index.json` (去重 + 重组回退) | 否 | 否 | 读 |
-| `bolloon chain trade create --task-id <id> --agent <addr> --amount <USDC> [--asset <token>] [--deadline <unix秒>] [--confirmation-window <秒>] [--proof-version <n>] [--gate confirmed\|finalized]` | 买方建托管 (`createEscrowV2`), 真签名/真交易/真 receipt | **是** | **是** | 写 |
-| `bolloon chain trade submit-proof --task-id <id> --result <正文\|sha256:hex> [--manifest-digest <…>]` | **卖方**上链提交结果承诺 (`submitProofV2`; 合约要求 `msg.sender == escrow.agent`) | **是** | **是** | 写 |
-| `bolloon chain trade release --task-id <id>` | 买方释放托管 (`releaseV2`) —— 只有这一步全过才 `grantsVerified:true` | **是** | **是** | 写 |
+| `bolloon chain trade create --task-id <id> --agent <addr> --amount <USDC> [--asset <token>] [--deadline <unix秒>] [--confirmation-window <秒>] [--proof-version <n>] [--gate confirmed\|finalized] [--payment-mode <mode>] [--request-id <id>]` | 买方建托管 (`createEscrowV2`), 真签名/真交易/真 receipt | **是** | **是** | 写 |
+| `bolloon chain trade submit-proof --task-id <id> --result <正文\|sha256:hex> [--manifest-digest <…>] [--payment-mode <mode>] [--request-id <id>]` | **卖方**上链提交结果承诺 (`submitProofV2`; 合约要求 `msg.sender == escrow.agent`) | **是** | **是** | 写 |
+| `bolloon chain trade release --task-id <id> [--payment-mode <mode>] [--request-id <id>]` | 买方释放托管 (`releaseV2`) —— 只有这一步全过才 `grantsVerified:true` | **是** | **是** | 写 |
 | `bolloon chain trade recover (--task-id <id> \| --task-key <hex>)` | **纯读盘**: 重建本机链上事实 → `nextAction` + `mustNotRepay` | 否 | 否 | 否 |
 
 **链配置从哪读** (取不到就报错, **绝不猜合约地址**): `BOLLOON_CHAIN_RPC_URL` → `~/.bolloon/chain.json` → 报错;
@@ -436,6 +444,18 @@ payment failed    ≠ safe to retry      → 付款失败也不等于可重付
 
 **taskKey 怎么来**: `taskKey = keccak256(abi.encode(bytes32("bolloon.task.v1"), taskId))`。链上命令只用 `--task-id`,
 自己派生 taskKey (也可以用 `--task-key` 直接给)。`create` 用**同一个 taskId** 才认得出是同一条托管。
+
+**链上写命令的授权意图** (P6b; 对 `create` / `submit-proof` / `release` 都适用):
+
+- `--payment-mode <manual|policy|autonomous|agent-authorized>` —— 声明「按哪种支付模式签这笔链上写」。
+  **它只能收紧, 不可能放权**: 放行闸的 `modeIsAutonomous` 只认 `autonomous` / `agent-authorized`,
+  声明 `manual` / `policy` 会被直接拒 (`NOT_AUTHORIZED`)。值不在词表里 → `INVALID_ARGUMENT` (不静默退回默认)。
+- `--request-id <id>` —— 显式幂等/授权键; 它参与放行闸 requestId 的**确定性派生**,
+  于是**同一个 requestId 重复声明会被闸按 `notDuplicate` 拒** (同一次意图只签一次)。
+- CLI 侧两者**可选** (缺省沿用历史口径 `agent-authorized` + 确定性派生); **MCP 写 tool 强制显式携带**
+  (`paymentMode` + `requestId`), 缺任何一个 → `NOT_AUTHORIZED` (fail-closed, 绝不默认放行)。
+- 每次**成功**写在 `~/.bolloon/wallet-signatures.jsonl` 留一行 (只记摘要: requestId/mode/taskId/金额/网络/`payloadDigest`;
+  **不记私钥、不记任务正文**)。未授权被拒的路由**不写审计**。
 
 ### 9.2 信封与失败码 (P6 新增 8 个; 全部 **append-only**, 不改任何冻结码)
 
@@ -449,7 +469,7 @@ payment failed    ≠ safe to retry      → 付款失败也不等于可重付
 | `CHAIN_TX_REVERTED` | 链上**明确回滚** (receipt.status=0) 或广播前被合约拒绝 (`deadline in past` / `not active` / `only agent` …) | false | 钱没动; 看 `data.reason` 修参数 (`needs_human`) |
 | `ESCROW_NOT_FOUND` | 链上/索引里没有这个 taskKey (buyer==0), 或时间线里什么都没有 | false | 确认 taskId/taskKey; 或先 `chain index sync` |
 | `INSUFFICIENT_FUNDS` | 余额/授权不足, 交易在广播前就被拒 (**钱没动**) | false | 充值 / `approve` escrow 后走同一 taskId; `next_action: raise_budget` |
-| `NOT_AUTHORIZED` | 签名放行闸 (fail-closed) 拒绝: 未授权 / 限额 / 重复签名 —— **不发交易、不取私钥** | false | 由本机用户授权 (`BOLLOON_AGENT_AUTHORIZED=1` 或 `~/.bolloon/signing-policy.json`) |
+| `NOT_AUTHORIZED` | 签名**放行闸** (fail-closed) 拒绝: 未授权 / 模式非自主 (`manual`·`policy`) / 限额 / **重复 requestId** / MCP 缺授权意图声明 —— **不发交易、不取私钥** | false | 由本机用户授权 (`BOLLOON_AGENT_AUTHORIZED=1` 或 `~/.bolloon/signing-policy.json`) · 换新的 `requestId` 或改 `--payment-mode` 声明 |
 | `REORG_SUSPECTED` | 有记录被标**不可信** (链回滚/事件消失/重组) —— 保留记录, 绝不当已结算 | false | `next_action: reconcile` / `needs_human`: 待人工对账, **不重付、不自动退款** |
 
 其它沿用冻结码: 参数错 `INVALID_ARGUMENT` · 超 `M1` 上限 `BUDGET_EXCEEDED` (带 `data.layer`) · 超时 `TIMEOUT`(带 `--timeout`) · 未实现 `C_NOT_IMPLEMENTED`。
@@ -564,7 +584,7 @@ bolloon chain timeline 0x<taskKey> --json     # 同一 taskKey 也 REORG_SUSPECT
 |---|---|---|
 | **Base Sepolia 真网买家支付** | ❌ **跑不通** | 真网买家地址没有测试 USDC (也没有 escrow 授权)。`chain status` / `escrow show` / `timeline` / `index *` 在真网**只读可用** (`scripts/verify-base-sepolia-readonly.ts`); `chain trade create/submit-proof/release` 需要你先在真网拿到 test USDC 并 `approve` escrow |
 | 真网地址 | 已部署, 只读可验 | `AgentEscrow` `0x30fd11a570549995E04aA929289c338D52226222` · `AgentTreasury` `0xf8aaF2136336F04A9f1E9dc7C7F15FD59959FDf5` · 官方 USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e` (chainId 84532) |
-| 远端 Agent 通过 MCP 发起链上写 | ❌ **刻意不做** | 链上写操作 = 真签名 + 真移钱, 放行闸与钱包只在本机 → MCP 只暴露**只读**链视图 + `index sync` + `trade recover` (见 §⑧) |
+| 远端 Agent 通过 MCP 发起链上写 | ✅ **可做, 但要显式授权意图** | 3 个写 tool (`bolloon_chain_trade_create|submit_proof|release`) 必须带 `paymentMode` + `requestId` (缺 → `NOT_AUTHORIZED`); 真签名仍只由本机唯一放行闸 `authorizeWalletSignature` 决定, MCP 层无旁路。失败按信封原样 (`isError=true`), 成功写在 `~/.bolloon/wallet-signatures.jsonl` 留行 (见 §⑧) |
 | escrow 里换别的支付资产 | ❌ 不支持 | 合约 token 是 immutable 的; `--asset` 必须等于该 token, 否则 `unsupported payment asset` |
 | 争议 / 退款 / 超时领取 (dispute/refund/claimAfterTimeout) | ❌ 没有 CLI | 合约 v2 有这些方法, 但 P6 只接了 create/submit-proof/release/recover; 争议仍走 `needs_human` |
 | `chain trade *` 没有 `--dry-run` | ❌ | 想只看事实用 `escrow show` / `timeline` / `recover` (都不发交易) |
@@ -620,8 +640,9 @@ bolloon chain timeline 0x<taskKey> --json     # 同一 taskKey 也 REORG_SUSPECT
 `bolloon chain status|escrow show|timeline|index status|stats|sync|trade create|submit-proof|release|recover` (**P6**)
 **仍如实报 `C_NOT_IMPLEMENTED` 的 3 个**: `task complete` · `task cancel` · `network leave` (见 §⑩; `task send|inbox|accept|reject` 已实现, 但**不进 MCP**)。
 全局选项 `--json` / `--quiet` / `--timeout` / `--request-id` · 统一 JSON 信封 (`code`/`message`/`evidence`/`next_action`)。
-**MCP (P4/P6 已实现)**: `bolloon mcp serve|tools` · **24 tools + 10 resources** —— 清单见 §⑧。
-**P6 仍缺的 (如实)**: 真网 (Base Sepolia) 买家支付 (没有测试 USDC) · 链上 dispute/refund/claimAfterTimeout 的 CLI ·
-`chain trade *` 的 `--dry-run` · 远端经 MCP 发起链上写 (刻意不做)。
+**MCP (P4/P6/P6b 已实现)**: `bolloon mcp serve|tools` · **27 tools + 10 resources** —— 清单见 §⑧
+(含 3 个链上**写** tool: 必须显式带 `paymentMode` + `requestId`, 真签名仍只由本机放行闸决定)。
+**P6/P6b 仍缺的 (如实)**: 真网 (Base Sepolia) 买家支付 (没有测试 USDC) · 链上 dispute/refund/claimAfterTimeout 的 CLI
+(含 `chain trade expire`: 合约侧有 `expireV2`, CLI 未接, 所以**不暴露** MCP tool) · `chain trade *` 的 `--dry-run`。
 
 **今天真能跑的**就是 §③ 那一屏命令 + §② 表里 ✅ 的接口 + §⑨ 的链上只读命令 (真网只读; 本地 anvil 可跑全闭环)。

@@ -106,7 +106,10 @@ export async function handleMessage(msg: unknown): Promise<JsonRpcResponse | nul
           'Bolloon 本机 Agent Runtime 的 MCP 入口。所有 tool 都是 `bolloon <命令组> <子命令>` 的薄包装, ' +
           '返回统一信封 { ok, code, message, data, evidence, next_action } —— **判据永远是 ok/code, 不是 MCP 的 isError 之外的任何东西**; ' +
           'ok:false 表示这次调用没有成功 (含"等人工放行"这类正常态, 例如 PAYMENT_REQUIRED + approve_payment)。' +
-          '本适配层不发付款、不改交易历史、不伪造 verified、不返回私钥; 付款不确定时先 reconcile (绝不重付)。',
+          '★★ 链上写 tool (bolloon_chain_trade_create / submit_proof / release) 是**真签名 + 真移钱**的写操作: ' +
+          '每个都必须显式携带授权意图 (paymentMode + requestId), 缺任何一个 → NOT_AUTHORIZED (fail-closed, 不默认放行); ' +
+          '真签名只由本机唯一放行闸 authorizeWalletSignature 决定, MCP 层既不放行也不旁路。调用方必须自己保证已授权。' +
+          '本适配层不代付款、不改交易历史、不伪造 verified、不返回私钥; 付款不确定时先 reconcile (绝不重付)。',
       });
     }
 
