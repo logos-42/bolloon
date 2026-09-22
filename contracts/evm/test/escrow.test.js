@@ -9,6 +9,11 @@ const { ethers } = require("hardhat");
  *   "E1: 超时后 agent 可 claim" 现在必须先 submitProof (见 F2 describe)。
  * v2 新增: F1 12 字段 / F3 事件 / 冻结 hash 切径 (链上 keccak256+abi.encode+域标签,
  *   链下 sha256:<hex>; proofHash = keccak256(abi.encode("bolloon.proof.v1", resultHash, proofVersion)))。
+ * F2b 新增 (permisssionless expire 逃生路径):
+ *   F2 修完之后留了一个对称缺口 —— agent 领钱必须有 proof, 而 refundV2 只在 DISPUTED 可用、
+ *   dispute 只能由 buyer/agent 自己发起 ⇒ agent 不交 proof 且 buyer 不 dispute 时资金永久锁死。
+ *   expireV2/expire 条件 = ACTIVE ∧ 无 proof ∧ now >= claimableAt + expireGrace (默认 7 天),
+ *   效果 = 全额退 buyer + 状态 EXPIRED, **任何人可调** (下面用无关的 third-party signer 验证)。
  */
 
 // ── 冻结 hash 切径: 链下独立复算 (不引用合约实现) ──
@@ -465,6 +470,199 @@ describe("AgentEscrow — Agent 服务托管 (v1 legacy + v2)", function () {
       await expect(escrow.refundV2(v2Key, ethers.ZeroHash)).to.be.revertedWith("not disputed");
       await expect(escrow.connect(buyer).releaseV2(v2Key)).to.be.revertedWith("no proof submitted");
       await expect(escrow.connect(other).releaseV2(v2Key)).to.be.revertedWith("only buyer");
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  describe("F2b: permissionless expire 逃生路径 (无 proof + 超期 → 任何人可把全额退给 buyer)", function () {
+    const EXPIRE_GRACE = 7 * 86400; // = 合约默认 expireGrace (DEFAULT_EXPIRE_GRACE)
+    const EXPIRED = 4;              // 枚举末尾追加, 旧值 0/1/2/3 不动
+
+    it("F2b: 无 proof + 过 grace → 第三个无关地址可调, buyer 收全额, 状态 EXPIRED", async function () {
+      const key = taskKeyOf("task-f2b-noproof");
+      await createV2({ taskKey: key }); // deadline = now+3600, window = 3600
+      const buyerBalBefore = await token.balanceOf(buyer.address);
+
+      // 口径: expireAt = claimableAt + expireGrace
+      expect(await escrow.expireGrace()).to.equal(BigInt(EXPIRE_GRACE));
+      expect(await escrow.DEFAULT_EXPIRE_GRACE()).to.equal(BigInt(EXPIRE_GRACE));
+      expect(await escrow.expireAt(key)).to.equal((await escrow.claimableAt(key)) + BigInt(EXPIRE_GRACE));
+      expect((await escrow.escrows(key)).proofHash).to.equal(ethers.ZeroHash);
+
+      // 超时点已过但 grace 未过 → 还不许 expire (agent 仍有 claim 窗口)
+      await warp(7201); // > deadline + confirmationWindow (7200)
+      await expect(escrow.connect(other).expireV2(key)).to.be.revertedWith("grace not elapsed");
+      expect((await escrow.escrows(key)).state).to.equal(0); // 仍 ACTIVE
+
+      // 越过 grace
+      await warp(EXPIRE_GRACE);
+      const tx = escrow.connect(other).expireV2(key); // other = 与 buyer/agent/owner 都无关
+      await expect(tx).to.emit(escrow, "ExpiredV2").withArgs(key, other.address, buyer.address, amount);
+      await tx;
+      await expect(escrow.connect(other).expireV2(key)).to.be.revertedWith("not active"); // 重复调用
+
+      expect(await token.balanceOf(buyer.address)).to.equal(buyerBalBefore + amount); // 全额退 buyer
+      expect(await token.balanceOf(agent.address)).to.equal(0);                        // agent 一分不得
+      expect(await escrow.balance()).to.equal(0);                                     // 余额守恒 (合约清零)
+      expect(await token.totalSupply()).to.equal(ethers.parseUnits("10000", 6));       // 总量守恒
+      expect((await escrow.escrows(key)).state).to.equal(EXPIRED);
+    });
+
+    it("F2b: 有 proof 时 expire 必须 revert (与 F2 互补, 走 claim 路径)", async function () {
+      const key = taskKeyOf("task-f2b-withproof");
+      await createV2({ taskKey: key, deadline: (await now()) + 60, confirmationWindow: 60 });
+      await escrow.connect(agent).submitProofV2(key, resultHash, manifestHash, PROOF_VERSION);
+
+      await warp(EXPIRE_GRACE + 600); // 即使远超 grace
+      await expect(escrow.connect(other).expireV2(key)).to.be.revertedWith("proof exists");
+      expect((await escrow.escrows(key)).state).to.equal(0); // 无副作用
+      expect(await token.balanceOf(buyer.address)).to.equal(ethers.parseUnits("9900", 6));
+      expect(await escrow.balance()).to.equal(amount);
+
+      // 有 proof 的合法出口: claimAfterTimeoutV2 (by=2 timeout)
+      await expect(escrow.connect(agent).claimAfterTimeoutV2(key))
+        .to.emit(escrow, "ReleasedV2").withArgs(key, agent.address, amount, 2);
+      expect((await escrow.escrows(key)).state).to.equal(1); // RELEASED
+      expect(await token.balanceOf(agent.address)).to.equal(amount);
+    });
+
+    it("F2b: 未超期 (含 grace 内最后一秒) 不能 expire", async function () {
+      const key = taskKeyOf("task-f2b-timing");
+      await createV2({ taskKey: key });
+
+      await expect(escrow.connect(other).expireV2(key)).to.be.revertedWith("grace not elapsed"); // 刚创建
+
+      const expAt = await escrow.expireAt(key);
+      await warp(Number(expAt) - (await now()) - 5); // 停在 grace 内
+      await expect(escrow.connect(other).expireV2(key)).to.be.revertedWith("grace not elapsed");
+
+      await warp(10); // 越过 expireAt
+      await escrow.connect(other).expireV2(key);
+      expect((await escrow.escrows(key)).state).to.equal(EXPIRED);
+    });
+
+    it("F2b: RELEASED / REFUNDED / DISPUTED 都不能 expire (状态优先)", async function () {
+      // RELEASED
+      const k1 = taskKeyOf("task-f2b-released");
+      await createV2({ taskKey: k1 });
+      await escrow.connect(agent).submitProofV2(k1, resultHash, manifestHash, PROOF_VERSION);
+      await escrow.connect(buyer).releaseV2(k1);
+      // REFUNDED
+      const k2 = taskKeyOf("task-f2b-refunded");
+      await createV2({ taskKey: k2 });
+      await escrow.connect(buyer).disputeV2(k2, ethers.keccak256(ethers.toUtf8Bytes("reason:x")));
+      await escrow.refundV2(k2, ethers.keccak256(ethers.toUtf8Bytes("reason:x")));
+      // DISPUTED
+      const k3 = taskKeyOf("task-f2b-disputed");
+      await createV2({ taskKey: k3 });
+      await escrow.connect(buyer).disputeV2(k3, ethers.ZeroHash);
+
+      expect((await escrow.escrows(k1)).state).to.equal(1); // RELEASED
+      expect((await escrow.escrows(k2)).state).to.equal(3); // REFUNDED
+      expect((await escrow.escrows(k3)).state).to.equal(2); // DISPUTED
+
+      await warp(EXPIRE_GRACE + 7200 + 600); // 时间对三个都足够
+      await expect(escrow.connect(other).expireV2(k1)).to.be.revertedWith("not active");
+      await expect(escrow.connect(other).expireV2(k2)).to.be.revertedWith("not active");
+      await expect(escrow.connect(other).expireV2(k3)).to.be.revertedWith("not active");
+    });
+
+    it("F2b: 未知 taskKey → unknown task (不写脏缺省记录, 不动资金)", async function () {
+      const key = taskKeyOf("never-created");
+      await warp(30 * 86400);
+      await expect(escrow.connect(other).expireV2(key)).to.be.revertedWith("unknown task");
+      expect((await escrow.escrows(key)).state).to.equal(0);
+      expect((await escrow.escrows(key)).buyer).to.equal(ethers.ZeroAddress);
+      expect(await escrow.balance()).to.equal(0);
+    });
+
+    it("F2b: expireGrace 默认 7 天且可配置 (onlyOwner / >0 / 上限), 生效值不是常量", async function () {
+      const key = taskKeyOf("task-f2b-grace");
+      await createV2({ taskKey: key });
+      const expAtDefault = await escrow.expireAt(key);
+
+      await expect(escrow.connect(other).setExpireGrace(3600)).to.be.revertedWith("not owner");
+      await expect(escrow.setExpireGrace(0)).to.be.revertedWith("expireGrace must be > 0");
+      await expect(escrow.setExpireGrace(2n ** 32n)).to.be.revertedWith("expireGrace too large");
+
+      await expect(escrow.setExpireGrace(3600)).to.emit(escrow, "ExpireGraceUpdated").withArgs(EXPIRE_GRACE, 3600);
+      expect(await escrow.expireGrace()).to.equal(3600n);
+      expect(await escrow.expireAt(key)).to.equal(expAtDefault - BigInt(EXPIRE_GRACE) + 3600n);
+    });
+
+    it("F2b: v1 路径 (expire) 同样能救出被锁的资金, 且未超期/重复调用照样拒", async function () {
+      await escrow.connect(buyer).createEscrow(agent.address, amount, "task-f2b-v1");
+      const id = legacyKeyOf("task-f2b-v1");
+      const claimAt = await escrow.claimableAt(id);
+      expect(claimAt).to.equal(BigInt((await escrow.escrows(id)).createdAt) + BigInt(RELEASE_TIMEOUT)); // v1 行为没变
+      expect(await escrow.expireAt(id)).to.equal(claimAt + BigInt(EXPIRE_GRACE));
+
+      await expect(escrow.connect(other).expire(id)).to.be.revertedWith("grace not elapsed");
+
+      // F2 之后 v1 无 proof 也不能 claim → 这就是"永久锁死"那条路
+      await warp(RELEASE_TIMEOUT + 1);
+      await expect(escrow.connect(agent).claimAfterTimeout(id)).to.be.revertedWith("no proof submitted");
+      expect(await token.balanceOf(agent.address)).to.equal(0);
+
+      await warp(EXPIRE_GRACE);
+      const tx = escrow.connect(other).expire(id);
+      await expect(tx).to.emit(escrow, "ExpiredV2").withArgs(id, other.address, buyer.address, amount);
+      await tx;
+      expect(await token.balanceOf(buyer.address)).to.equal(ethers.parseUnits("10000", 6)); // 全额退回
+      expect(await escrow.balance()).to.equal(0);
+      expect((await escrow.escrows(id)).state).to.equal(EXPIRED);
+      await expect(escrow.connect(other).expire(id)).to.be.revertedWith("not active"); // 重复调用
+    });
+
+    it("F2b: 枚举只在末尾追加 + 旧方法选择器一个不改 + 新选择器冻结", async function () {
+      // 枚举数值: 旧值 0..3 冻结, EXPIRED = 4 (由状态机用例实测: RELEASED=1/REFUNDED=3/DISPUTED=2/EXPIRED=4)
+      const frozen = {
+        "createEscrow(address,uint256,string)": "0xe334e8dd",
+        "submitProof(bytes32,bytes32)": "0x968e72bd",
+        "release(bytes32)": "0x67d42a8b",
+        "claimAfterTimeout(bytes32)": "0x22399f5d",
+        "dispute(bytes32)": "0xadd98c70",
+        "refund(bytes32)": "0x7249fbb6",
+        "releaseAfterArbitration(bytes32)": "0x8b15b891",
+        "createEscrowV2(bytes32,address,uint256,address,bytes32,bytes32,bytes32,bytes32,uint64,uint32,uint16)": "0x152215b8",
+        "submitProofV2(bytes32,bytes32,bytes32,uint16)": "0x9037b29b",
+        "releaseV2(bytes32)": "0xa7997ba4",
+        "claimAfterTimeoutV2(bytes32)": "0xa53cf2b0",
+        "disputeV2(bytes32,bytes32)": "0x484f5d07",
+        "refundV2(bytes32,bytes32)": "0xf32b1e51",
+        "releaseAfterArbitrationV2(bytes32)": "0x673765b0",
+        "computeTaskKey(string)": "0xfd48b732",
+        "computeLegacyTaskKey(string)": "0xc6921af6",
+        "computeResultHash(string)": "0xe4a30dda",
+        "computeProofHash(bytes32,uint16)": "0x70ee6f77",
+        "claimableAt(bytes32)": "0xc6e1c6d7",
+        "escrows(bytes32)": "0x2d83549c",
+        "balance()": "0xb69ef8a8",
+        // 本次新增
+        "expire(bytes32)": "0xc6441798",
+        "expireV2(bytes32)": "0x02c58a63",
+        "expireAt(bytes32)": "0x12d89732",
+        "setExpireGrace(uint256)": "0x5c9442f1",
+        "expireGrace()": "0x3a6ff880",
+        "DEFAULT_EXPIRE_GRACE()": "0x57500bdd",
+      };
+      for (const [sig, sel] of Object.entries(frozen)) {
+        expect(escrow.interface.getFunction(sig).selector, sig).to.equal(sel);
+      }
+      // 全 ABI 无选择器冲突 (新增 4 个函数没撞任何既有函数)
+      const selectors = escrow.interface.fragments
+        .filter((f) => f.type === "function")
+        .map((f) => f.selector);
+      expect(new Set(selectors).size).to.equal(selectors.length);
+      // 旧 7 个 v1 方法 + 旧 7 个 v2 方法全部还在 (没被删改)
+      const names = escrow.interface.fragments.filter((f) => f.type === "function").map((f) => f.name);
+      [
+        "createEscrow", "submitProof", "release", "claimAfterTimeout", "dispute", "refund", "releaseAfterArbitration",
+        "createEscrowV2", "submitProofV2", "releaseV2", "claimAfterTimeoutV2", "disputeV2", "refundV2", "releaseAfterArbitrationV2",
+        "expire", "expireV2",
+      ].forEach((n) => expect(names, n).to.include(n));
+      // struct 形状没变 (仍 19 个字段, 没为 grace 塞新字段)
+      expect(escrow.interface.getFunction("escrows").outputs[0].components).to.have.length(19);
     });
   });
 });

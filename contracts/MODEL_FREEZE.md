@@ -135,3 +135,16 @@ capabilityRoot = Merkle(capability 字典序排序, leaf_i = keccak256(abi.encod
 | **F4** | `Treasury.registerAgent/agentReputation` 与 `AgentDirectory` **职责二选一**(冻结: Directory 为对外真相源, Treasury 改读它或退役); 另: `Treasury.allocate` **只 emit 事件不转钱**(`AgentTreasury.sol:84-97`)—— 别把它当转账记录 |
 
 `AgentTreasury` 边界(冻结): `payAgent`(onlyOwner, `:100`)只用于**平台奖励/补贴/组织资金**; 普通任务交易**必须**走 `AgentEscrow`; `AgentPaid` 不含 `taskKey`(**结构性证据**: 走 Treasury 的任务款在链上无法对回任务)。
+
+## F2b (2026-09-22) — permissionless `expire` 逃生路径
+
+**背景**: F2 给 `claimAfterTimeout*` 加了 `proofHash != 0` 门槛后, 出现新锁定风险 —— agent 不交 proof 且 buyer 不 dispute 时资金永久锁死(`refund*` 仅 `onlyOwner` 且仅 `DISPUTED`)。leo 拍板补 permissionless 逃生口。
+
+- **新增**: `expireV2(bytes32 taskKey)` 与 v1 版 `expire(bytes32 taskId)`, 均 **permissionless(任何人可调)**。
+- **条件**: `ACTIVE` ∧ `proofHash == 0` ∧ `block.timestamp >= claimableAt(e) + expireGrace`; 效果 = **全额退回 buyer** → 状态 `EXPIRED`。
+- **enum**: `EscrowState { ACTIVE, RELEASED, DISPUTED, REFUNDED, EXPIRED }` —— `EXPIRED` **追加在末尾(=4)**, 旧值 0/1/2/3 不变。
+- **`expireGrace`**: public 状态变量, 构造时写 `DEFAULT_EXPIRE_GRACE = 7 days`, owner 可用 `setExpireGrace` 调(必须 >0 且 ≤ uint32)。**刻意不做成构造参数** —— 改构造签名会让已部署实例与 manifest 的 `constructorArgs` 失配。
+- **事件**: `ExpiredV2(bytes32 indexed taskKey, address indexed caller, address indexed refundedTo, uint256 amount)` + `ExpireGraceUpdated`。
+- **与 F2 互补**: 有 proof → `expire` revert `proof exists`(只能走 claim); 未过 grace → `grace not elapsed`; 非 ACTIVE/重复调用 → `not active`; 未知 key → `unknown task`(补的一道防线: mapping 缺省值恰为 `buyer=0,state=ACTIVE,amount=0`, 无此前置检查会让随机 key 在 grace 后"成功"写入幻觉状态)。
+- **新增接口**: `expire` `0xc6441798` · `expireV2` `0x02c58a63` · `expireAt` `0x12d89732` · `setExpireGrace` `0x5c9442f1` · `expireGrace()` `0x3a6ff880` · `DEFAULT_EXPIRE_GRACE()` `0x57500bdd` · `ExpiredV2` topic0 `0x517f3d5ae4ce226ad2ddd19ebb76fbf5446cc187b99bdb98e3442e21af73a7d5`。与 21 个既有选择器无冲突。
+- **真实输出(我复跑)**: `npx hardhat test` → **56 passing** · `forge test` → **50 passed/0 failed**(3224) · 真链 e2e(`scripts/e2e-expire.js`)4 笔真交易(其中 1 笔故意 status 0), 收尾托管余额 = 0。

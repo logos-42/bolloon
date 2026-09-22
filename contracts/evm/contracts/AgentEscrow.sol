@@ -28,6 +28,28 @@ pragma solidity ^0.8.24;
  *   现在 v1 `claimAfterTimeout` 与 v2 `claimAfterTimeoutV2` **都要求**
  *   `proofHash != bytes32(0)`。无证明的资金退出路径 = buyer 发 dispute → owner refund。
  *
+ * ══ F2b: F2 修出来的对称缺口 —— 永久锁死, 已用 permissionless `expire` 修 ══════
+ *   问题 (真实存在, 不是理论): F2 之后 agent 领钱必须有 proof, 而 `refundV2` 只在
+ *   `DISPUTED` 可用、`_dispute` 只允许 buyer/agent 自己发起 (owner 不能代替发起)。
+ *   ⇒ 若 **agent 不交 proof 且 buyer 也不 dispute** (buyer 丢钥匙 / 不活跃 / 懒得花 gas),
+ *     这笔钱没有任何人能取走 —— 资金**永久锁死**。
+ *   修法: 新增 permissionless `expireV2(bytes32)` / `expire(bytes32)`:
+ *     条件 = 状态 ACTIVE ∧ 无 proof (`proofHash == 0`) ∧
+ *            `block.timestamp >= claimableAt(e) + expireGrace`
+ *     效果 = **全额退回 buyer** (不是卖家), 状态 → EXPIRED, 发 `ExpiredV2`。
+ *   与 F2 互补、不冲突 (二者互斥, 有 proof 只能走 claim, 无 proof 只能走 expire):
+ *     · 有 proof          → expire revert "proof exists"        (走 claimAfterTimeout*)
+ *     · 未过 grace        → expire revert "grace not elapsed"   (agent 仍有 claim 机会)
+ *     · 非 ACTIVE         → expire revert "not active" (RELEASED/REFUNDED/DISPUTED/EXPIRED/重复调用)
+ *   调用者不受限 (**任何人可调**, 第三方也能把买家的钱救出来) → 摆脱"必须有一方作为"的死结。
+ *   为什么退 buyer 而不是卖家: 契约上无 proof = 交付未被证明, 无辜方是已经付了钱的 buyer。
+ *   注意: `expireGrace` 是**全局参数**, 对已存在的 ACTIVE escrow 立即生效 (不做 per-task 快照);
+ *   agent 的自我保护方式 = 在 grace 内提交 proof, 一旦上链就只能走 claim 路径。
+ *   v1 路径的判断 (为什么不盲目只修 v2): v1 **有同样的洞** ——
+ *   `claimAfterTimeout` 已被 F2 加了 proof 门槛, 而 v1 `refund` 同样 onlyOwner + 仅 DISPUTED,
+ *   且 owner 无法自己把 escrow 推进 DISPUTED。角色换成 buyer 一样会永久锁死,
+ *   所以 v1 也补 `expire(bytes32)` (签名与 v1 其余方法一致, 收 bytes32 键)。
+ *
  * ══ F3 v2 事件 (为什么必须补) ════════════════════════════════════════════════
  *   旧口径下 `release`(buyer 确认) 与 `releaseAfterArbitration`(仲裁) 共用 `Released`,
  *   事件里分不清是谁出的金; `Disputed` 无发起人/理由。
@@ -80,7 +102,12 @@ contract AgentEscrow {
     /// proofVersion = 0 保留给 legacy (未版本化) 证明, 链上不参与 "bolloon.proof.v1" 计算
     uint16 public constant PROOF_VERSION_LEGACY = 0;
 
-    enum EscrowState { ACTIVE, RELEASED, DISPUTED, REFUNDED } // 顺序冻结, 不在尾部追加以外的插入
+    /**
+     * 状态机。**数值顺序冻结**: 只在末尾追加, 绝不插入/重排
+     * (0 ACTIVE / 1 RELEASED / 2 DISPUTED / 3 REFUNDED 是已冻结口径, 链下按数值索引)。
+     * 4 EXPIRED = F2b 新增 (permissionless expire 的终态)。
+     */
+    enum EscrowState { ACTIVE, RELEASED, DISPUTED, REFUNDED, EXPIRED }
 
     /**
      * 单任务托管记录。
@@ -140,8 +167,27 @@ contract AgentEscrow {
     event RefundedV2(bytes32 indexed taskKey, address to, uint256 amount, bytes32 reasonHash);
     event DisputedV2(bytes32 indexed taskKey, address by, bytes32 reasonHash);
 
+    /// F2b: permissionless expire 的结算事件 (caller = 发起 expire 的任何人, refundedTo = buyer)
+    event ExpiredV2(bytes32 indexed taskKey, address indexed caller, address indexed refundedTo, uint256 amount);
+
+    /// F2b: expireGrace 变更 (配置变更必须留痕, 否则链上无法解释 expireAt 的漂移)
+    event ExpireGraceUpdated(uint256 previousGrace, uint256 newGrace);
+
     /** 超时释放的全局默认值: 只作用于 v1 `createEscrow(string)` 口径 (防资金永久锁定 E1) */
     uint256 public releaseTimeout;
+
+    /// F2b: expire 缓冲的默认值 (7 天)。只做"默认", 真正生效值读 `expireGrace`。
+    uint256 public constant DEFAULT_EXPIRE_GRACE = 7 days;
+
+    /**
+     * F2b: expire 可用时点 = `claimableAt(e)` + `expireGrace`。
+     * 为什么是可调状态变量而不是硬常量: 不同 paymentAsset/任务类型的"多久算彻底放弃"不同,
+     * 写死成常量会让未来的参数治理只能靠重部署。也不做构造参数 —— 改构造签名会让
+     * 已部署实例与 deployment manifest 的 constructorArgs 失配并逼迫重部署。
+     * 默认 7 天由构造函数写入, 之后由 owner 用 `setExpireGrace` 调整 (必须 > 0, 否则 expire 永不触发)。
+     * 全局口径: 调整对已存在的 ACTIVE escrow 立即生效 (不做 per-task 快照)。
+     */
+    uint256 public expireGrace;
 
     modifier onlyOwner() { require(msg.sender == owner, "not owner"); _; }
 
@@ -150,7 +196,19 @@ contract AgentEscrow {
         require(_releaseTimeout <= type(uint32).max, "releaseTimeout too large");
         token = IERC20(_token);
         owner = msg.sender;
-        releaseTimeout = _releaseTimeout; // e.g. 7 days
+        releaseTimeout = _releaseTimeout;                   // e.g. 7 days
+        expireGrace = DEFAULT_EXPIRE_GRACE;                 // F2b: 默认 7 天, 后可用 setExpireGrace 调
+    }
+
+    /**
+     * F2b: 调整 expire 缓冲 (owner)。要求 > 0 —— 0 会让 expire 在 claimableAt 就可用,
+     * 等于取消 agent 的超时 claim 窗口; 设 0 应被显式拒绝而不是静默生效。
+     */
+    function setExpireGrace(uint256 newGrace) external onlyOwner {
+        require(newGrace > 0, "expireGrace must be > 0");
+        require(newGrace <= type(uint32).max, "expireGrace too large");
+        emit ExpireGraceUpdated(expireGrace, newGrace);
+        expireGrace = newGrace;
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -228,6 +286,17 @@ contract AgentEscrow {
     /** 仲裁后释放给 agent (owner 仲裁: 任务确实完成), by = 1 */
     function releaseAfterArbitration(bytes32 taskId) external onlyOwner {
         _releaseDisputedToAgent(_escrows[taskId], BY_ARBITRATION);
+    }
+
+    /**
+     * F2b (v1 路径): permissionless 逃生出口 —— **任何人都可调**。
+     * 条件: ACTIVE ∧ 无 proof ∧ `block.timestamp >= claimableAt + expireGrace`。
+     * 效果: 全额退回 buyer, 状态 → EXPIRED, 发 `ExpiredV2` (caller 记进事件, 便于溯源谁触发的)。
+     * v1 有此洞: F2 之后 v1 claim 要有 proof, 而 v1 `refund` 只在 DISPUTED 且 onlyOwner,
+     * owner 又不能代替发起 dispute → agent 不交 proof + buyer 不 dispute = 永久锁死。
+     */
+    function expire(bytes32 taskId) external {
+        _expire(_escrows[taskId]);
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -320,6 +389,19 @@ contract AgentEscrow {
         _releaseDisputedToAgent(_escrows[taskKey], BY_ARBITRATION);
     }
 
+    /**
+     * F2b (v2 路径): permissionless 逃生出口 —— **任何人都可调**, 无需是 buyer/agent/owner。
+     * 条件: ACTIVE ∧ 无 proof (`proofHash == 0`) ∧ `block.timestamp >= expireAt(taskKey)`。
+     * 效果: 全额退回 **buyer** (不是卖家), 状态 → EXPIRED, 发 `ExpiredV2`。
+     * 与 F2 的分工: 有 proof → 本函数 revert "proof exists", 必须走 claimAfterTimeoutV2。
+     * 与 dispute 的分工: 已 DISPUTED → revert "not active", 走 owner 仲裁。
+     * 检查顺序与 `_claimAfterTimeout` 同构 (先状态, 再时序, 最后资格), 顺序固化以便测试/审计:
+     *   not active → grace not elapsed → proof exists
+     */
+    function expireV2(bytes32 taskKey) external {
+        _expire(_escrows[taskKey]);
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     //  hash 口径: 链上可复算入口 (与 MODEL_FREEZE.md §4 逐字一致)
     // ══════════════════════════════════════════════════════════════════════
@@ -353,6 +435,14 @@ contract AgentEscrow {
     /** 超时 claim 的可用时间戳 = deadline + confirmationWindow (0 = 未知任务/未设) */
     function claimableAt(bytes32 taskKey) external view returns (uint256) {
         return _claimableAt(_escrows[taskKey]);
+    }
+
+    /**
+     * F2b: permissionless expire 的可用时间戳 = deadline + confirmationWindow + expireGrace。
+     * 与 `claimableAt` 一样是只读复算入口 —— 任何人都能在链下核对"现在能不能 expire"。
+     */
+    function expireAt(bytes32 taskKey) external view returns (uint256) {
+        return _expireAt(_escrows[taskKey]);
     }
 
     /** 余额 (审计) */
@@ -446,6 +536,26 @@ contract AgentEscrow {
         emit ReleasedV2(e.taskKey, e.agent, e.amount, BY_TIMEOUT);
     }
 
+    /**
+     * F2b: permissionless expire 共用逻辑 (v1 `expire` / v2 `expireV2` 同一份, 避免两条路径漂移)。
+     * 顺序: unknown task → not active → grace not elapsed → proof exists
+     * (与 _claimAfterTimeout 同构, 只在最前面多一道"存在性"检查)。
+     * 为什么要先判存在: 没有 caller 门槛时, 未创建任务的记录是**缺省值**
+     * (buyer = 0, state = ACTIVE(0), amount = 0, deadline = 0) —— 不先判存在,
+     * 一个随机 taskKey 在 grace 后会"成功 expire"并把幻觉状态写成 EXPIRED (真 USDC 还会
+     * 因为 to == address(0) 回滚)。有 caller 门槛的旧方法天然不受影响 (e.buyer/e.agent 是 0 就 revert)。
+     * checks-effects-interactions: 先落状态再转账 (IERC20 有回调风险时不会重入重复出金)。
+     */
+    function _expire(Escrow storage e) private {
+        require(e.buyer != address(0), "unknown task");
+        require(e.state == EscrowState.ACTIVE, "not active");
+        require(block.timestamp >= _expireAt(e), "grace not elapsed");
+        require(e.proofHash == bytes32(0), "proof exists"); // 有 proof → 只能走 claim 路径 (F2 互补)
+        e.state = EscrowState.EXPIRED;
+        require(token.transfer(e.buyer, e.amount), "expire refund failed");
+        emit ExpiredV2(e.taskKey, msg.sender, e.buyer, e.amount);
+    }
+
     function _dispute(Escrow storage e, bytes32 reasonHash) private {
         require(e.state == EscrowState.ACTIVE, "not active");
         require(msg.sender == e.buyer || msg.sender == e.agent, "not party");
@@ -477,6 +587,11 @@ contract AgentEscrow {
 
     function _claimableAt(Escrow storage e) private view returns (uint256) {
         return uint256(e.deadline) + uint256(e.confirmationWindow);
+    }
+
+    /// F2b: expire 可用时点 = claimableAt + expireGrace (全局 grace, 见 expireGrace 注释)
+    function _expireAt(Escrow storage e) private view returns (uint256) {
+        return _claimableAt(e) + expireGrace;
     }
 
     /// v1 过渡兼容: keccak256(abi.encodePacked(taskIdString))

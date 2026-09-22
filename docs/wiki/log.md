@@ -2800,3 +2800,13 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **幂等**: 二次运行复用已有部署(前提: chainId + `eth_getCode` keccak + 构造参数三者一致),`FORCE_REDEPLOY=1`/`ALLOW_NON_LOCAL=1`(默认拒非 31337)/`SKIP_E2E=1` 可调。
 - **本机环境坑(两条, 值得复用)**: ① `~/.foundry/bin/{anvil,cast}` 直接跑会 dyld 报 `libusb-1.0.0.dylib` 缺失(`Abort trap: 6`)→ 加 `DYLD_LIBRARY_PATH=~/.local/lib` 即可(`forge` 不依赖 libusb);② ethers v6 provider 默认 250ms 缓存会缓存 `eth_getTransactionCount`,在瞬时出块的本地链上致第 2 笔 `nonce has already been used` → `new JsonRpcProvider(url, null, { cacheTimeout: -1 })`。
 - **如实未做**: Base Sepolia **真网部署未做** —— 测试钱包 `0x93a5A497774F4C00aD21085bDCf298FC63d346E5` 在 Base Sepolia 余额为 **0 ETH / 0 USDC**;同一套脚本改 `RPC_URL` 即可复跑, 等注资。
+
+## [2026-09-22] feat(chain) | F2b — permissionless `expire` 逃生路径 (leo 拍板)
+
+- **修的真实风险**: F2 之后 `claimAfterTimeout*` 要求有 proof, 而 `refund*` 仅 owner 且仅 `DISPUTED` → agent 不交 proof + buyer 不 dispute = **资金永久锁死** → 新增 permissionless `expireV2(bytes32 taskKey)` + v1 `expire(bytes32 taskId)`: `ACTIVE ∧ 无 proof ∧ 超 claimableAt+expireGrace(默认 7 天, owner 可调)` → **全额退回 buyer** → `EXPIRED`。
+- **enum** `EXPIRED` 追加末尾(=4), 旧值 0/1/2/3 不变; 事件 `ExpiredV2(taskKey, caller, refundedTo, amount)`。
+- **子智能体额外发现并补上的真缺口**: mapping 缺省值恰为 `buyer=0,state=ACTIVE,amount=0` → 无 `require(e.buyer != address(0), "unknown task")` 时, 随机 taskKey 过了 grace 会"成功 expire"并写入**幻觉状态**。已补 + 测试。
+- **我复跑验证**: `npx hardhat test` **56 passing**(48→56) · `forge test` **50 passed/0 failed**(42→50) · 我亲手跑 `node scripts/e2e-expire.js` **真链 4 笔交易全绿**(未过 grace→status 0 · claim→status 1 · expireV2→status 1 · v1 expire→status 1; 收尾**托管余额 = 0**)。
+- **我查出的一处不一致(诚实记录)**: `deploy.js` 的"幂等复用"**没有真正比对 bytecodeHash** —— 源码改了(490→605 行)它仍报「复用」, 于是本地 manifest 的 `bytecodeHash` 一度过期; 已用 `FORCE_REDEPLOY=1` 刷新。**待修**: 把复用判定加到"编译产物 hash 必须与 manifest 一致", 否则 manifest 的 provenance 会静默说谎。
+- **chain-config 确认数**: 按 leo 拍板 `confirmed=1 / finalized=12` 写入配置(不硬编码)。
+- **未做(如实)**: Base Sepolia 真网部署仍等测试币(faucet 需账号登录, 已交由 leo 在 ego-browser 里完成登录/领取)。

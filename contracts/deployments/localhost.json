@@ -2,15 +2,15 @@
   "schemaVersion": 1,
   "chainId": 31337,
   "networkName": "localhost",
-  "deployedAt": "2026-09-22T04:05:54.771Z",
+  "deployedAt": "2026-09-22T04:30:33.509Z",
   "rpcUrl": "http://127.0.0.1:8545",
   "deployerAddress": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
   "contracts": [
     {
       "name": "MockERC20",
-      "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-      "txHash": "0xa0c7611f7f4b562593cdcd8490c5701bdf6a8c289f08ca96732b9659da2dcb51",
-      "blockNumber": 1,
+      "address": "0x5eb3Bc0a489C5A8288765d2336659EbCA68FCd00",
+      "txHash": "0xd15b7eedb22b3356e07972a16a355a56060c190c10b9e93c02689858aaac58f5",
+      "blockNumber": 82,
       "bytecodeHash": "0x6d948a64d1b50fca491349c4f3d9a1def34cfc66bbd60f2f5b36d8bad893e125",
       "creationBytecodeHash": "0x7fc0ba02c1a95158c5c451972e32447f42554ed6123be35c3747dee49d7d356d",
       "constructorArgs": [
@@ -20,45 +20,45 @@
       "contractVersion": "mock-erc20-v1",
       "sourcePath": "contracts/mocks/MockERC20.sol:MockERC20",
       "role": "USDC 替身 (decimals=6)",
-      "reusedFromManifest": true
+      "reusedFromManifest": false
     },
     {
       "name": "AgentEscrow",
-      "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
-      "txHash": "0x399dfb2241203c5600a22413e7f608f4050a7e33af487bc66a49617801e5b103",
-      "blockNumber": 2,
-      "bytecodeHash": "0x51a98358c60d7e1cb384739c6c62f10cdf8395cef8e5268d5ceaa2b55603883f",
-      "creationBytecodeHash": "0xad8b2a5c57e88a9473d129928e2236aaa94cae20d569e343592da7a0c8be1625",
+      "address": "0x36C02dA8a0983159322a80FFE9F24b1acfF8B570",
+      "txHash": "0xa995f2cb4b197d48e4e82a50d0ba93d50dab2ffb4034b371d31dead7c8f1300d",
+      "blockNumber": 83,
+      "bytecodeHash": "0xad5d65f86b39dd4bc0ff0163487a8a6cf47ce73bfca654335fec4ec75bef5ef6",
+      "creationBytecodeHash": "0x606464a57882094fe10426860410dc8b70399e22cde1601f9cc0d6fdd3ccb357",
       "constructorArgs": [
-        "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        "0x5eb3Bc0a489C5A8288765d2336659EbCA68FCd00",
         604800
       ],
       "contractVersion": "1",
       "sourcePath": "contracts/AgentEscrow.sol:AgentEscrow",
       "role": "Agent 服务托管 / 链上结算 (v1 legacy + v2)",
-      "reusedFromManifest": true
+      "reusedFromManifest": false
     },
     {
       "name": "AgentTreasury",
-      "address": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
-      "txHash": "0x3aa53e25a0fb20f70a094004c4f5d3fa3aa3d2664796db0cda72c7550f7f5b14",
-      "blockNumber": 3,
-      "bytecodeHash": "0xfdae3b0f19686f3832489663a9c84f823fef7caff986969dacf3f2a7104a648d",
+      "address": "0x809d550fca64d94Bd9F66E60752A544199cfAC3D",
+      "txHash": "0xed67a98ce7270671a8b24db3f7bda7db619e3318998ec38a96cc39f842b8ec64",
+      "blockNumber": 84,
+      "bytecodeHash": "0x2e55c06d2935b20958900b8e2a791df34bc87f6804318e96c1d9407e5a310beb",
       "creationBytecodeHash": "0x6ab25df33a45f706e8364079388490ee5f9ab7dd016ace815177841b3f80880b",
       "constructorArgs": [
-        "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        "0x5eb3Bc0a489C5A8288765d2336659EbCA68FCd00",
         "100000000000"
       ],
       "contractVersion": "1",
       "sourcePath": "contracts/AgentTreasury.sol:AgentTreasury",
       "role": "协议资金池 (分配权重 / 日限额 / 两段式所有权)",
-      "reusedFromManifest": true
+      "reusedFromManifest": false
     }
   ],
   "token": {
     "name": "USDC",
     "symbol": "USDC",
-    "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "address": "0x5eb3Bc0a489C5A8288765d2336659EbCA68FCd00",
     "decimals": 6,
     "decimalsOnChain": 6,
     "isMock": true,
@@ -90,7 +90,7 @@
     },
     "evmVersion": "paris",
     "immutableSlots": {
-      "AgentEscrow": 7,
+      "AgentEscrow": 8,
       "AgentTreasury": 6
     },
     "note": "bytecodeHash 已对 immutable 占位槽清零后与上述编译产物比对一致"
@@ -182,36 +182,36 @@
   },
   "tradeLoop": {
     "ran": true,
-    "taskId": "bolloon-local-e2e-1790049955037-82a09212",
-    "taskKey": "0x8113a00cfacd3b14f286a23e9cb960e2065ad830b6612a6bd29b944ee8077081",
+    "taskId": "bolloon-local-e2e-1790051433743-8bea0231",
+    "taskKey": "0x5d0507c6bfb29cbb289990180e3b2663baf96d488b14eda68e56ff56a7d6115b",
     "transactions": {
       "createEscrowV2": {
-        "txHash": "0x4ba8bab30c2408498c7257da88b69e6da17497b935f80eca1c39ad863551fe5a",
-        "blockNumber": 17,
-        "gasUsed": "352093"
+        "txHash": "0xa460070c0b44abf54f8d59852ff127955827960d192dd8f3fd4f7f7c9055bf0b",
+        "blockNumber": 87,
+        "gasUsed": "386325"
       },
       "submitProofV2": {
-        "txHash": "0x377bfd31a8ed0a680527f1d3ff119a5b256f98d46f0cd2eb99710d6bd67966e9",
-        "blockNumber": 18,
-        "gasUsed": "80335"
+        "txHash": "0xc54f5e5edb0555de7d38b2a76a7832e33226c0bf5f2de644cbdf0f5af8891ec9",
+        "blockNumber": 88,
+        "gasUsed": "80287"
       },
       "releaseV2": {
-        "txHash": "0x0cb06a7950ddc8acc35cefad52d04e6a84f084291107d62324b04aa2d41a88f2",
-        "blockNumber": 19,
-        "gasUsed": "73142"
+        "txHash": "0xfc7583fba2172234f4846213fa6ab44afad9a4cf2dfb9e14e017b5fa2717f290",
+        "blockNumber": 89,
+        "gasUsed": "85483"
       }
     },
     "stateTransition": "ACTIVE→ACTIVE→ACTIVE→RELEASED",
     "buyerBalanceDelta": "-100000000",
     "agentBalanceDelta": "100000000",
-    "escrowBalanceAfter": "10000000"
+    "escrowBalanceAfter": "0"
   },
   "f2Assertion": {
     "gate": "claimAfterTimeoutV2 requires proofHash != 0",
     "heldOnRealChain": true,
     "evidence": {
       "staticCallRevertReason": "no proof submitted",
-      "realTxHash_status0": "0xc0e4114d511b8f4a60e7157a9c37eefc10749851628468cc0905639eb7829357",
+      "realTxHash_status0": "0xeb8e0aa894c9fb14d6f7d866767353a0a29b4fef0ab8838726a5687a6fd3cccc",
       "realTx_status": 0,
       "positiveControl_withProof_state": "RELEASED"
     }
@@ -223,15 +223,15 @@
     "blockNumbers": [
       {
         "name": "MockERC20",
-        "blockNumber": 1
+        "blockNumber": 82
       },
       {
         "name": "AgentEscrow",
-        "blockNumber": 2
+        "blockNumber": 83
       },
       {
         "name": "AgentTreasury",
-        "blockNumber": 3
+        "blockNumber": 84
       }
     ],
     "selectorChecks": [
@@ -303,37 +303,37 @@
   },
   "verificationReport": {
     "escrowClosed": {
-      "taskKey": "0x8113a00cfacd3b14f286a23e9cb960e2065ad830b6612a6bd29b944ee8077081",
+      "taskKey": "0x5d0507c6bfb29cbb289990180e3b2663baf96d488b14eda68e56ff56a7d6115b",
       "createEscrowV2": {
-        "txHash": "0x4ba8bab30c2408498c7257da88b69e6da17497b935f80eca1c39ad863551fe5a",
-        "blockNumber": 17,
-        "gasUsed": "352093"
+        "txHash": "0xa460070c0b44abf54f8d59852ff127955827960d192dd8f3fd4f7f7c9055bf0b",
+        "blockNumber": 87,
+        "gasUsed": "386325"
       },
       "submitProofV2": {
-        "txHash": "0x377bfd31a8ed0a680527f1d3ff119a5b256f98d46f0cd2eb99710d6bd67966e9",
-        "blockNumber": 18,
-        "gasUsed": "80335"
+        "txHash": "0xc54f5e5edb0555de7d38b2a76a7832e33226c0bf5f2de644cbdf0f5af8891ec9",
+        "blockNumber": 88,
+        "gasUsed": "80287"
       },
       "releaseV2": {
-        "txHash": "0x0cb06a7950ddc8acc35cefad52d04e6a84f084291107d62324b04aa2d41a88f2",
-        "blockNumber": 19,
-        "gasUsed": "73142"
+        "txHash": "0xfc7583fba2172234f4846213fa6ab44afad9a4cf2dfb9e14e017b5fa2717f290",
+        "blockNumber": 89,
+        "gasUsed": "85483"
       },
       "stateTransition": "ACTIVE→ACTIVE→ACTIVE→RELEASED"
     },
     "escrowB_noProof": {
-      "taskKey": "0xea47e94020a11f4d2ece661c0e420729cc5579e2bccdf24a5aa9f6db9dc61cf7",
-      "claimRevertedTxHash": "0xc0e4114d511b8f4a60e7157a9c37eefc10749851628468cc0905639eb7829357",
+      "taskKey": "0x2eecfe9cdc33b1f72c9ce03dd7e8487ab0f189762ba74c4d89c9bbab894e6e9b",
+      "claimRevertedTxHash": "0xeb8e0aa894c9fb14d6f7d866767353a0a29b4fef0ab8838726a5687a6fd3cccc",
       "claimRevertedStatus": 0,
-      "claimRevertedBlock": 23,
+      "claimRevertedBlock": 93,
       "staticRevertReason": "no proof submitted",
       "stateAfterFailedClaim": "ACTIVE"
     },
     "escrowC_withProof": {
-      "taskKey": "0x42162f1e0ef1a83596d8ba3df3f83e58f270a20042c79b77495e2f666ba14d3e",
-      "submitProofTx": "0x73b5c401630769c84b6b8905435893f654442774a14cb2790f864e666625c240",
-      "claimTx": "0x04cbf942b4a8529f0c7caa0c72e434c0ee86a6cdaa7b966c25edd6133c238bb7",
-      "claimBlock": 25,
+      "taskKey": "0x9b97038ef06228d8a28242c2f57f1c76033dfd3ba57fe2ffe1ff972042ff34e0",
+      "submitProofTx": "0x7b42ddf9450a9368ffc9c0b973d74d837e414f8ec9e2d845876a929eb8ed3902",
+      "claimTx": "0x0f53a63846bb2699e12f81ba83897f064547aa2a58d7b44e53d8d7ba84ddde90",
+      "claimBlock": 95,
       "releasedBy": 2,
       "state": "RELEASED"
     }
