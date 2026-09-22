@@ -25,6 +25,7 @@
 | [access-protocol-v1.md](./access-protocol-v1.md) | 外部接入协议 v1 (P1 冻结): 版本策略 + JSON 信封 + 错误码表 + 状态映射 + local-dev 红线 | current |
 | [agent-access-layer.md](./agent-access-layer.md) | Agent 接入层: CLI 为主协议 · MCP 为薄适配 · Skill 为使用说明 (含六阶段落地状态) | current |
 | [task-protocol.md](./task-protocol.md) | bolloon-task/1 任务协议: 14 态状态机 + 支付事实分离 + 受控自主签名闸 + 签名审计 + 公开投影 | current |
+| [chain-settlement-design.md](./chain-settlement-design.md) | **链上化设计 v2**(设计): 数据权威划分 + AgentEscrow 主路径 + AgentDirectory 注册承诺 + 连接层八模块 + 五条上链硬规则 | draft |
 | [network-ledger-design.md](./network-ledger-design.md) | **Bolloon Network Ledger**(设计): 签名区块 DAG + 三层最终性 + 账本重放派生 Pulse/任务/交易 + Explorer 增量加载 | draft |
 | [pulse-ledger-design.md](./pulse-ledger-design.md) | 链式活动账本 + 链上锚定 (设计计划): 哈希链/Merkle 根/最终性/由链派生的公开投影/跟区块头轮转 | proposed |
 | [network-pulse.md](./network-pulse.md) | v1 | **网络脉冲**: 匿名可验证的公开观察投影 (事件白名单 · 去重 · 隐私阈值 · live/stale/unavailable · `GET /api/public/network/progress` · 双节点真跑 36/0) |
