@@ -25,7 +25,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 // 确认数门槛来自 chain-config (单一实现; 默认 confirmed=1 / finalized=12) —— 只借常量, 不借 RPC
-import { DEFAULT_CONFIRMATIONS } from './chain/chain-config.js';
+import { DEFAULT_CONFIRMATIONS, LOCAL_DEV_CHAIN_ID } from './chain/chain-config.js';
 
 // ── 常量 (上限 + 时间边界) ─────────────────────────────────────────────────
 
@@ -89,6 +89,11 @@ export interface NetworkPulseSnapshot {
   /** observed = 当前节点观察到的; verified = 多签名来源汇总观察快照 (都不是"全网精确总量") */
   scope: 'observed' | 'verified';
   scope_label: { zh: string; en: string };
+  /**
+   * ★ 聚合计数 —— 口径 = **本节点 24h 观察窗口内的脉冲事件** (不是链上索引, 不是全网精确总量)。
+   * 老客户端一直读这块, 字段一个都没动; 与活动行同源的计数见 `activity_totals`,
+   * 口径差异写在 `totals_scope` + `notes` (两套数字同屏出现时**必须**有口径说明)。
+   */
   totals: {
     nodes: number;
     agents: number;
@@ -101,6 +106,8 @@ export interface NetworkPulseSnapshot {
     /** 钱包签名次数 (本机/网络里真实发生的签名, 只计数不给内容) */
     signatures: number;
   };
+  /** ★ totals.* 的口径说明 (24h 脉冲事件窗口) —— 与 activity_totals 口径不同, 不许"打架"不许不解释 */
+  totals_scope: TotalsScope;
   capabilities: { key: string; count: number }[];
   recent_activity: { kind: NetworkEventType; at: number; text: { zh: string; en: string } }[];
   /**
@@ -111,6 +118,13 @@ export interface NetworkPulseSnapshot {
   confirmed_activity: ConfirmedActivityRow[];
   /** ★ 活动行来源: chain-index (真链上事实) · pulse-events (索引不可用时的降级, 非链上确认) · none */
   confirmed_activity_source: ConfirmedActivitySource;
+  /**
+   * ★ 与 `confirmed_activity` **完全同源**的计数 (同一批行、同一时刻算出来的)。
+   * `rows` 恒等于 `confirmed_activity.length`; 公开页同时展示两套计数时靠它对齐口径。
+   */
+  activity_totals: ActivityTotals;
+  /** ★ 上表各行属于哪条链 (公开页不许把本机开发链的行读成公网活动) */
+  chain_id_scope: ChainIdScope;
   /** 快照签名 (可选, 供公开观察入口校验) */
   signature?: string;
   signer_fingerprint?: string;
@@ -636,6 +650,194 @@ export async function resolveConfirmedActivity(q: ConfirmedActivityQuery): Promi
   return confirmedActivityFromEvents(windowed, limit);
 }
 
+// ── 同源计数 · 口径说明 · 链归属 (2026-09-22: 公开页数字不许自相矛盾) ──────────
+//
+// 起因: 真快照里 `totals.tasks=0` 而 `confirmed_activity` 有 25 行真实任务 —— 两块数据来自
+// **两套口径** (totals = 24h 脉冲事件窗口; confirmed_activity = 链上索引全量), 但页面上它们同屏,
+// 读者只会读成"自相矛盾/在撒谎"。修法不是把数字改漂亮, 而是:
+//   ① `activity_totals` = 与 confirmed_activity **同源**的计数 (rows 恒等于该数组长度);
+//   ② `totals_scope`   = totals 的口径说明 + `differs_from_activity` 标记;
+//   ③ `chain_id_scope` = 上表各行属于哪条链 (本机 31337 ≠ 真网 Base Sepolia 84532);
+//   ④ `snapshotConsistencyIssues` = 导出前的自检 (两个数字打架就拒绝导出)。
+
+/** 公网测试网 (Base Sepolia) chainId —— 只做**归属说明**, 不代表快照观察到了公网事件 */
+export const PUBLIC_TESTNET_CHAIN_ID = 84532;
+
+/**
+ * chainId → 展示用网络名 (只回答"这一屏的行属于哪条链")。
+ * 认不出的 chain id **不编名字** (chainLabelOf → null), 也不许算成公网。
+ */
+export const CHAIN_LABELS: Record<number, { zh: string; en: string; publicNetwork: boolean }> = {
+  [LOCAL_DEV_CHAIN_ID]: { zh: '本机隔离开发链', en: 'local isolated dev chain', publicNetwork: false },
+  [PUBLIC_TESTNET_CHAIN_ID]: { zh: 'Base Sepolia 测试网', en: 'Base Sepolia testnet', publicNetwork: true },
+};
+
+/** chainId 的展示名; 认不出的 chain id → null (不编名字) */
+export function chainLabelOf(chainId: number): { zh: string; en: string; publicNetwork: boolean } | null {
+  const id = Number(chainId);
+  return Number.isInteger(id) ? CHAIN_LABELS[id] ?? null : null;
+}
+
+/** 是不是公网链 id (白名单; 认不出的一律**不算**公网 —— 不替读者认领归属) */
+export function isPublicChainId(chainId: number): boolean {
+  return chainLabelOf(chainId)?.publicNetwork === true;
+}
+
+/** totals.* 的口径说明 (唯一实现: 24h 观察窗口内的脉冲事件) */
+export interface TotalsScope {
+  source: 'pulse-events';
+  window_ms: number;
+  label: { zh: string; en: string };
+  /** totals 与 activity_totals 的数字是否不同 (不同就必须有口径说明 —— 不许"打架"而不解释) */
+  differs_from_activity: boolean;
+}
+
+/** 与 confirmed_activity **同源**的计数 (rows 恒等于该数组长度) */
+export interface ActivityTotals {
+  source: ConfirmedActivitySource;
+  rows: number;
+  /** 行里出现过的不同任务数 (按 `task` 短写去重 —— 同一任务的多个动作算一个任务) */
+  tasks: number;
+  /** 交付完成口径: kind = task_completed 的不同任务数 */
+  tasks_completed: number;
+  /** 托管结算口径: kind = trade_settled 的不同任务数 (released/refunded/expired/disputed) */
+  tasks_settled: number;
+  /** finality 三档分布 (三档之和 === rows, 没有第四条腿) */
+  by_finality: { observed: number; confirmed: number; finalized: number };
+  /** 与行里 finality 同一口径的确认门槛 */
+  gates: ConfirmedActivityGates;
+}
+
+/** 上表各行属于哪条链 (公开页不许把本机开发链的行读成公网活动) */
+export interface ChainIdScope {
+  /** 上表出现过的 chain id (升序去重); 空数组 = 这一屏没有链上事实 */
+  chain_ids: number[];
+  /** 行数最多的那条链 (并列取小); 没有行 → 0 */
+  activity_chain_id: number;
+  /** 上述链的展示名; 认不出的 chain id → null (不编名字) */
+  activity_chain_label: { zh: string; en: string } | null;
+  /** 是不是公网链 (本机隔离开发链 = false) */
+  is_public_network: boolean;
+  /** 上表里属于公网链的行数 —— 0 = 这一屏没有公网活动 */
+  public_network_rows: number;
+  /** 本快照拿来做归属对照的公网链 (只作提示, 不是说观察到了它的事件) */
+  public_network: { chain_id: number; label: { zh: string; en: string } };
+  note: { zh: string; en: string };
+}
+
+/**
+ * 活动行 → 同源计数 (**纯函数**; 输入就是 `confirmed_activity` 本身)。
+ * 存在的唯一理由: 公开页同时显示 totals 与本表行数, 两个数字肉眼可能"打架" ——
+ * 那就让它们同源可核: `activity_totals.rows` 恒等于 `confirmed_activity.length`。
+ */
+export function summarizeActivityRows(
+  rows: ConfirmedActivityRow[],
+  opts: { source: ConfirmedActivitySource; gates: ConfirmedActivityGates },
+): ActivityTotals {
+  const list = (Array.isArray(rows) ? rows : []).filter((r) => !!r);
+  const tasks = new Set<string>();
+  const completed = new Set<string>();
+  const settled = new Set<string>();
+  const by_finality = { observed: 0, confirmed: 0, finalized: 0 };
+  for (const r of list) {
+    const t = String(r.task || '');
+    if (t) tasks.add(t);
+    if (t && r.kind === 'task_completed') completed.add(t);
+    if (t && r.kind === 'trade_settled') settled.add(t);
+    if (r.finality === 'observed' || r.finality === 'confirmed' || r.finality === 'finalized') {
+      by_finality[r.finality] += 1;
+    }
+  }
+  return {
+    source: opts.source,
+    rows: list.length,
+    tasks: tasks.size,
+    tasks_completed: completed.size,
+    tasks_settled: settled.size,
+    by_finality,
+    gates: normalizeActivityGates(opts.gates),
+  };
+}
+
+/** 活动行 → 链归属 (**纯函数**)。所有结论都从行本身推, 不引用外部状态 → 不可能与行数打架。 */
+export function buildChainIdScope(rows: ConfirmedActivityRow[]): ChainIdScope {
+  const list = (Array.isArray(rows) ? rows : []).filter((r) => !!r);
+  const counts = new Map<number, number>();
+  for (const r of list) {
+    const id = Number(r.chain_id);
+    if (!Number.isInteger(id) || id < 0) continue;
+    counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  const chain_ids = Array.from(counts.keys()).sort((a, b) => a - b);
+  let primary = 0;
+  let best = 0;
+  for (const id of chain_ids) {                       // 升序遍历 + 严格大于 → 并列取小
+    const c = counts.get(id)!;
+    if (c > best) { best = c; primary = id; }
+  }
+  const label = chain_ids.length ? chainLabelOf(primary) : null;
+  const publicRows = chain_ids.reduce((n, id) => n + (isPublicChainId(id) ? (counts.get(id) || 0) : 0), 0);
+  const pub = CHAIN_LABELS[PUBLIC_TESTNET_CHAIN_ID];
+  const rows_ = list.length;
+  const multi = chain_ids.length > 1 ? `（上表共 ${chain_ids.length} 条链）` : '';
+  const note = rows_ === 0
+    ? {
+        zh: 'chain_id 归属: 本快照没有链上活动行 —— 不是"链上没事件", 而是这一轮没有可列出的行',
+        en: 'chain_id scope: no on-chain activity row in this snapshot — not "nothing happened on chain", just no listable row this round',
+      }
+    : {
+        zh: `chain_id 归属: 上表 ${rows_} 行来自 chainId ${primary}${label ? `（${label.zh}）` : ''}${multi} · ` +
+            `公网链（${pub.zh} ${PUBLIC_TESTNET_CHAIN_ID}）${publicRows} 行` +
+            `${publicRows === 0 ? ' —— 这不是公网活动' : ''}`,
+        en: `chain_id scope: all ${rows_} rows above come from chainId ${primary}${label ? ` (${label.en})` : ''}${chain_ids.length > 1 ? ` (${chain_ids.length} chains in total)` : ''} · ` +
+            `public network (${pub.en} ${PUBLIC_TESTNET_CHAIN_ID}) rows: ${publicRows}` +
+            `${publicRows === 0 ? ' — this is not public-network activity' : ''}`,
+      };
+  return {
+    chain_ids,
+    activity_chain_id: primary,
+    activity_chain_label: label ? { zh: label.zh, en: label.en } : null,
+    is_public_network: chain_ids.length > 0 ? isPublicChainId(primary) : false,
+    public_network_rows: publicRows,
+    public_network: { chain_id: PUBLIC_TESTNET_CHAIN_ID, label: { zh: pub.zh, en: pub.en } },
+    note,
+  };
+}
+
+/**
+ * 快照自检: 公开页会**同屏展示**的数字之间不许自相矛盾。返回问题清单 (空 = 通过)。
+ *   ① `activity_totals` 必须在 (与行同源的计数不能缺)
+ *   ② `activity_totals.rows` === `confirmed_activity.length`
+ *   ③ `by_finality` 三档之和 === 行数 (没有第四条腿)
+ *   ④ `activity_totals.source` === `confirmed_activity_source` (两块来源标注必须一致)
+ *   ⑤ 行里有任务 而 `totals.tasks === 0` 时, 必须有口径说明 note
+ *      (页面不许出现「0 个任务」与「N 行任务」并存而**不解释**)
+ */
+export function snapshotConsistencyIssues(snap: NetworkPulseSnapshot): string[] {
+  const issues: string[] = [];
+  const rows = Array.isArray(snap?.confirmed_activity) ? snap.confirmed_activity : [];
+  const at: any = (snap as any)?.activity_totals;
+  if (!at || typeof at !== 'object') {
+    return ['activity_totals 缺失 (与 confirmed_activity 同源的计数必须一起给)'];
+  }
+  if (Number(at.rows) !== rows.length) issues.push(`activity_totals.rows=${at.rows} ≠ confirmed_activity.length=${rows.length}`);
+  const bf = at.by_finality || {};
+  const sum = ['observed', 'confirmed', 'finalized'].reduce((n, k) => n + (Number(bf[k]) || 0), 0);
+  if (sum !== rows.length) issues.push(`by_finality 三档之和=${sum} ≠ 行数=${rows.length}`);
+  if (String(at.source || '') !== String((snap as any)?.confirmed_activity_source || '')) {
+    issues.push(`activity_totals.source=${at.source} ≠ confirmed_activity_source=${(snap as any)?.confirmed_activity_source}`);
+  }
+  const tasks = Number(at.tasks) || 0;
+  const pulseTasks = Number((snap as any)?.totals?.tasks) || 0;
+  if (rows.length > 0 && tasks > 0 && pulseTasks === 0) {
+    const notes = Array.isArray(snap.notes) ? snap.notes.join(' ') : '';
+    const explained = notes.includes('脉冲事件') && notes.includes(String(rows.length)) &&
+      (notes.includes('链上索引') || notes.includes('chain-index'));
+    if (!explained) issues.push(`totals.tasks=0 与 ${rows.length} 行任务并存, 却没有口径说明 note`);
+  }
+  return issues;
+}
+
 export function computeSnapshot(
   events: NetworkPulseEvent[],
   opts: {
@@ -649,6 +851,8 @@ export function computeSnapshot(
   const now = opts.now;
   const fresh_until = now + PULSE_LIMITS.snapshotTtlMs;
   if (opts.unavailable) {
+    const emptyRows: ConfirmedActivityRow[] = [];
+    const gates = normalizeActivityGates(DEFAULT_CONFIRMATIONS);
     return {
       status: 'unavailable',
       generated_at: now,
@@ -656,10 +860,20 @@ export function computeSnapshot(
       scope: 'observed',
       scope_label: { zh: '当前节点观察到', en: 'Observed by this node' },
       totals: { nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0, tasks: 0, tasks_completed: 0, tasks_verified: 0, signatures: 0 },
+      totals_scope: {
+        source: 'pulse-events', window_ms: PULSE_LIMITS.windowMs,
+        label: {
+          zh: `只统计本节点 ${PULSE_LIMITS.windowMs / 3600000}h 观察窗口内收到的脉冲事件 (本节点自己上报的)`,
+          en: `Only pulse events received by this node within the ${PULSE_LIMITS.windowMs / 3600000}h observation window (reported by this node itself)`,
+        },
+        differs_from_activity: false,
+      },
       capabilities: [],
       recent_activity: [],
-      confirmed_activity: [],
+      confirmed_activity: emptyRows,
       confirmed_activity_source: 'none',
+      activity_totals: summarizeActivityRows(emptyRows, { source: 'none', gates }),
+      chain_id_scope: buildChainIdScope(emptyRows),
       notes: ['观察层暂不可用 — 这不是"网络为空"'],
     };
   }
@@ -721,9 +935,24 @@ export function computeSnapshot(
 
   // 活动行来源如实标注 (chain-index = 真链上事实; pulse-events = 降级, 非链上确认)
   const activity = opts.confirmedActivity ?? confirmedActivityFromEvents(window);
+  // 同源计数 + 链归属: **输入就是上表那批行**, 所以不可能与行数/链 id 打架
+  const activity_totals = summarizeActivityRows(activity.rows, { source: activity.source, gates: activity.gates });
+  const chain_id_scope = buildChainIdScope(activity.rows);
+  const totals_scope: TotalsScope = {
+    source: 'pulse-events',
+    window_ms: PULSE_LIMITS.windowMs,
+    label: {
+      zh: `只统计本节点 ${PULSE_LIMITS.windowMs / 3600000}h 观察窗口内收到的脉冲事件 (本节点自己上报的)`,
+      en: `Only pulse events received by this node within the ${PULSE_LIMITS.windowMs / 3600000}h observation window (reported by this node itself)`,
+    },
+    differs_from_activity: activity_totals.rows > 0 &&
+      (tasks.size !== activity_totals.tasks || tasksCompleted.size !== activity_totals.tasks_completed),
+  };
   if (activity.source === 'chain-index') {
     notes.push(
-      `confirmed_activity 来自链上索引 (chain-index): 最新在前, 上限 ${CONFIRMED_ACTIVITY_LIMIT} 行; ` +
+      `confirmed_activity 来自链上索引 (chain-index): ${activity_totals.rows} 行 · ${activity_totals.tasks} 个不同任务 · ` +
+      `finality 分布 observed=${activity_totals.by_finality.observed} / confirmed=${activity_totals.by_finality.confirmed} / ` +
+      `finalized=${activity_totals.by_finality.finalized} (三档之和 = 行数); 最新在前, 上限 ${CONFIRMED_ACTIVITY_LIMIT} 行; ` +
       `确认门槛 confirmed=${activity.gates.confirmed} · finalized=${activity.gates.finalized}`,
     );
   } else if (activity.source === 'pulse-events') {
@@ -731,6 +960,16 @@ export function computeSnapshot(
       'confirmed_activity 降级为脉冲事件 (pulse-events): 非链上确认 —— chain_id/block/confirmations=0 且 finality=observed',
     );
   }
+  // 两套计数口径不同时**必须**解释 —— 页面不许出现「0 个任务」与「N 行任务」并存而不解释
+  if (totals_scope.differs_from_activity) {
+    notes.push(
+      `口径不同, 不是数据丢失: totals.tasks/tasks_completed/tasks_verified/signatures 只数本节点 ` +
+      `${PULSE_LIMITS.windowMs / 3600000}h 窗口内的脉冲事件 (本快照 tasks=${tasks.size} · tasks_completed=${tasksCompleted.size} · ` +
+      `tasks_verified=${tasksVerified.size} · signatures=${signatureKeys.size}); 上表 ${activity_totals.rows} 行来自链上索引 ` +
+      `(全量, 不是 ${PULSE_LIMITS.windowMs / 3600000}h 窗口) —— 同源计数见 activity_totals`,
+    );
+  }
+  if (activity_totals.rows > 0) notes.push(chain_id_scope.note.zh);
 
   return {
     status: 'live',
@@ -750,10 +989,13 @@ export function computeSnapshot(
       tasks_verified: tasksVerified.size,
       signatures: signatureKeys.size,  // 真实签名次数 (只计数)
     },
+    totals_scope,
     capabilities,
     recent_activity: recent,
     confirmed_activity: activity.rows,
     confirmed_activity_source: activity.source,
+    activity_totals,
+    chain_id_scope,
     notes,
   };
 }
@@ -765,8 +1007,14 @@ export async function getNetworkPulse(opts: SnapshotOptions = {}): Promise<Netwo
   if (!opts.force) {
     try {
       const cached = JSON.parse(fs.readFileSync(snapshotFile(opts.home), 'utf-8')) as NetworkPulseSnapshot;
-      // 老版本写的缓存没有冻结字段 `confirmed_activity` → 视为**过期形状**, 重算 (不能把缺字段的快照发出去)
-      const shapeOk = Array.isArray((cached as any)?.confirmed_activity) && typeof (cached as any)?.confirmed_activity_source === 'string';
+      // 老版本写的缓存缺冻结字段 `confirmed_activity` (或后来的 totals_scope / activity_totals /
+      // chain_id_scope) → 视为**过期形状**, 重算 (不能把缺字段的快照发出去 ——
+      // 缺 activity_totals 就会在页面上重新变成"两个数字打架"
+      const shapeOk = Array.isArray((cached as any)?.confirmed_activity)
+        && typeof (cached as any)?.confirmed_activity_source === 'string'
+        && !!(cached as any)?.totals_scope
+        && !!(cached as any)?.activity_totals
+        && !!(cached as any)?.chain_id_scope;
       if (shapeOk && cached && Number.isFinite(cached.generated_at) && cached.generated_at + PULSE_LIMITS.snapshotTtlMs > now) return cached;
     } catch { /* 无缓存 */ }
   }

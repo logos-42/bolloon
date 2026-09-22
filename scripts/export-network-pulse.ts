@@ -74,6 +74,13 @@ async function main() {
     process.exit(2);
   }
 
+  // 兜底: 公开页会**同屏展示**的数字之间不许自相矛盾 —— 自检不过就拒绝导出 (不把打架的快照发出去)
+  const issues = NP.snapshotConsistencyIssues(finalSnap as any);
+  if (issues.length) {
+    console.error(`[export-pulse] 拒绝导出: 快照内部自相矛盾 —— ${issues.join('; ')}`);
+    process.exit(3);
+  }
+
   const json = JSON.stringify(finalSnap, null, 2);
   if (out) {
     fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
@@ -83,13 +90,26 @@ async function main() {
   }
 
   const t = finalSnap.totals || {};
+  const at = finalSnap.activity_totals || {};
+  const cis = finalSnap.chain_id_scope || {};
   const act = Array.isArray(finalSnap.confirmed_activity) ? finalSnap.confirmed_activity : [];
   console.error(
     `[export-pulse] status=${finalSnap.status} scope=${finalSnap.scope} ` +
     `nodes=${t.nodes} agents=${t.agents} active=${t.active_agents} 24h=${t.seen_last_24h} ` +
     `caps=${(finalSnap.capabilities || []).map((c: any) => `${c.key}:${c.count}`).join(',') || '(none)'} ` +
-    `confirmed_activity=${act.length}(${finalSnap.confirmed_activity_source}) ` +
     `signed=${!!finalSnap.signature} out=${out || '(stdout)'}`,
+  );
+  // ★ 两套口径分开报: totals 是 24h 脉冲事件; activity_totals 与上表同源 (rows 必须 === 行数)
+  console.error(
+    `[export-pulse] totals(24h 脉冲事件口径)=tasks:${t.tasks}/tasks_completed:${t.tasks_completed}/tasks_verified:${t.tasks_verified}/signatures:${t.signatures} ` +
+    `activity_totals(${finalSnap.confirmed_activity_source} 同源)=rows:${at.rows}/tasks:${at.tasks}/tasks_completed:${at.tasks_completed}/` +
+    `tasks_settled:${at.tasks_settled}/finality:${JSON.stringify(at.by_finality)} ` +
+    `differs_from_activity=${!!(finalSnap.totals_scope || {}).differs_from_activity}`,
+  );
+  console.error(
+    `[export-pulse] confirmed_activity=${act.length} 行 · chain_ids=${JSON.stringify(cis.chain_ids)} ` +
+    `activity_chain_id=${cis.activity_chain_id}(${cis.is_public_network ? '公网' : '非公网'}) ` +
+    `public_network_rows=${cis.public_network_rows} · consistency=OK`,
   );
 }
 
