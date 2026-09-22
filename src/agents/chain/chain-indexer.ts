@@ -749,7 +749,19 @@ export class ChainIndexer {
       if (!dec) continue;
       const blockHash = String(raw?.blockHash || '');
       const prev = byKey.get(key);
-      if (prev && prev.blockHash === blockHash && raw?.removed !== true) { deduped++; continue; }
+      if (prev && prev.blockHash === blockHash && raw?.removed !== true) {
+        // 同块同哈希再次扫到: 正常情况是重复 → 去重; 但如果它被标过 suspect
+        // (回退时整块消失、之后链又回到了同一块 —— 真链上 anvil_rollback + 重放会复现完全相同的块哈希),
+        // 那就必须**复位 suspect**, 不能因为"哈希碰巧一样"就留着一个过期的可疑标记。
+        if (prev.suspect) {
+          prev.suspect = false;
+          prev.suspectReason = undefined;
+          prev.history.push({ at: Date.now(), note: `重新出现: 同块同哈希 (${blockNumber}/${blockHash.slice(0, 12)}…) 再次扫到 → 复位 suspect`, blockNumber, blockHash });
+          prev.updatedAt = Date.now();
+          restored++;
+        } else deduped++;
+        continue;
+      }
       if (prev && raw?.removed !== true) {
         // 同一 txHash:logIndex 出现在**新的块**上 (重组后重新打包) → 更新事实并复位 suspect
         prev.blockNumber = blockNumber;

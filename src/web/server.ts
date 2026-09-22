@@ -21,6 +21,8 @@ import { registerTaskRoutes } from './routes-tasks.js';
 import { registerContactRoutes } from './routes-contacts.js';
 // 2026-09-13: 微支付信息服务 (x402) 路由
 import { registerX402InfoRoutes } from './routes-x402-info.js';
+// 2026-09-22: P5 链上索引 (只读: status/stats/timeline/events 增量) 路由
+import { registerChainIndexRoutes } from './routes-chain-index.js';
 import { loadPeerTier, recordInteraction, recordViolation, checkToolAccess, tierLabel } from '../social/dunbar-tier.js';
 import { registerHearthRoutes } from './routes-hearth.js';
 import { registerOnchainTradeRoutes } from './routes-onchain-trade.js';
@@ -2958,6 +2960,16 @@ ${goalDesc}
 
   app.get('/', serveStaticHtml('index.html', 'index.html not found; please run `npm run build:web`', 'index'));
   app.get('/api-config', serveStaticHtml('api-config.html', 'api-config.html not found; please run `npm run build:web`', 'api-config'));
+
+  // 2026-09-22 (P7): 链上浏览器页面 (只读索引的网页入口)
+  //   /explorer 与 /chain 两个别名都指向同一个静态页 (explorer.html + chain-explorer.js);
+  //   页面只调 /api/chain/index/*, 不碰任何写接口。
+  {
+    const serveExplorer = serveStaticHtml('explorer.html', 'explorer.html not found; please run `npm run build:web`', 'explorer');
+    app.get('/explorer', serveExplorer);
+    app.get('/chain', serveExplorer);
+    registerChainIndexRoutes(app);
+  }
 
   // 2026-07-01 (v0.2.5): 输入验证 + 健康检查 API
   //   - POST /api/validate-input: 前端发送前预校验, 避免后端 reject

@@ -12,7 +12,7 @@
  * 真去读链会明确报 'chain_index_readonly' —— 不静默返回空。
  */
 
-import { ChainIndexer, chainIndexPath, chainIndexDir, deriveEscrowState, byBlockLogIndex, type ChainIndexEntry, type ChainIndexFile } from './chain-indexer.js';
+import { ChainIndexer, chainIndexPath, deriveEscrowState, byBlockLogIndex, type ChainIndexEntry, type ChainIndexFile } from './chain-indexer.js';
 import { DEFAULT_CONFIRMATIONS } from './chain-config.js';
 
 export interface IndexQueryOptions {
@@ -222,8 +222,6 @@ export function fetchIndexSince(cursor: IndexCursor | null, opts: IndexQueryOpti
   };
 }
 
-/** 索引目录 (备份/清理用) */
-export function indexDir(home?: string): string {
-  return chainIndexDir(home);
-}
-export { chainIndexPath };
+// 索引目录/路径的唯一出口在 chain-indexer.ts (chainIndexDir / chainIndexPath) —— 这里不重复导出,
+// 否则 index.ts 的 `export *` 会出现同名歧义 (ESM 下歧义名会被静默丢掉)。
+
