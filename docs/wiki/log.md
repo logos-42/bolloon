@@ -2753,3 +2753,18 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **五条上链硬规则**: 无交易哈希不能标 chain settlement · 无正确合约事件不能标 escrow created/released · 无足够确认数不能标 finalized · 无 proofHash/resultHash 不能标 verified · **local-dev 永不 fully_settled**。配套"四个不等于"与**必须通过 RPC 重读六项**(receipt · 合约事件 · 确认数 · 合约存储 · token 转账日志 · escrow 状态), **全匹配**才允许投影为 `chainSettled=true`。
 - **连接层**(建议新增 `src/agents/chain/` 八模块): `chain-config`(含确认区块数)· `contract-registry`(启动验地址/chainId/**bytecode 存在**/版本/ABI/decimals/frozen)· `escrow-client`(八步调用链)· `settlement-verifier`(**九项匹配**: 成功/方法/合约地址/token 地址/金额/buyer-agent/taskKey/proofHash/状态)· `chain-indexer`(八类事件 + 部署区块起扫 + **block 游标** + 缺失回补 + 重复去重 + **reorg 处理** + 按 txHash/blockHash/logIndex 去重) 等。
 - **§5–§11 目前只编译到章节骨架**(交易状态改造 · 自主支付 · Skill/CLI/MCP 的 11 步上链流程 · 网页读链公共/私有双视图 · Network Pulse 链上化 · 合约治理 v1/v2 · **五阶段实施**: 合约审计与链上模型冻结 → 部署清单与真实网络 → Bolloon 链桥 → 任务交易闭环 → 链上索引器), **逐节细节待补**——raw 稿已登记 manifest, 不丢。
+
+## [2026-09-21] plan | 链上化执行约定: 按计划跑完 Phase 1–7, **每个阶段完成即一次 commit + push**
+
+- **leo 指令原话**: "完整按计划来执行，需要完整的 evn 合约上链，已有合约代码，需要更新了，完成全部 p1-p6 之后结束，每完成一次p任务 就一次 commit，push。" → 计划实际列出 **7 个阶段**(`docs/wiki/chain-settlement-design.md` §11 + raw `/Users/apple/.hermes/pastes/paste_2_112614.txt` 行 560-631), 故执行 **P1–P7**。
+- **阶段清单(权威来源 = raw 稿行 562-630)**:
+  - **P1 合约审计与链上模型冻结** — 确认 AgentEscrow 主合约地位 · Treasury 边界 · 是否增设 Directory/TradeLedger · **冻结事件与字段** · 冻结 chainId/token/确认数/合约版本。
+  - **P2 部署清单与真实网络** — Foundry/Hardhat 本地测试 · Base Sepolia 部署 · deployment manifest · 验 bytecode/decimals/事件/部署区块 · 记录地址 · 公布 ABI 与网络配置。
+  - **P3 Bolloon 链桥** — escrow client · 链上验证 · 接入自主签名 · 接入 `trade.ts` · 接入 `transaction-store` 投影 · 接入重启恢复 · 接入链重组与对账。
+  - **P4 任务交易闭环** — 建任务 → 链上 createEscrow → 执行 → 提交 proof → buyer release → 索引 → 验真 → 网页显示。
+  - **P5 链上索引器** — 扫合约事件 · 增量同步 · 去重 · reorg 处理 · 从 deployment block 重建 · 生成网页读取接口。
+  - **P6 CLI/MCP/Skill** — 链命令 · 交易命令 · MCP 工具 · 更新 Skill · 外部 Agent 加入与真实支付示例。
+  - **P7 网页 Explorer** — 按区块加载 · event cursor 增量 · 交易时间线 · escrow 状态 · chain confirmations · Explorer 链接 · 区分 observed/confirmed/finalized。
+- **验收(计划 §12, 14 条)** 逐条执行, 重点: 删掉本地记录后能**从链上恢复** · 无 txHash 不得显示链上支付 · 错合约地址/token/金额/收款地址/taskKey/proofHash **必须被拒** · `local-dev` 永不 `fully_settled` · 重启不重复 createEscrow · reorg 后回退到正确事实 · 网页可通过 txHash 验证 · **Pulse 经济数据来自链上事件而非本地统计**。
+- **已盘点的现状**: `contracts/` = Foundry(solc 0.8.24, optimizer off), 内含 `ResourceERC721.sol`; `contracts/evm/` 另有 **Hardhat 子项目**(`hardhat.config.js`/`contracts/`/`test/`); 还有 `contracts/solana/`; `src/agents/chain/` **尚未创建**; `src/agents/x402/*` 仍以本地 JSON 为事实。
+- **P1 已开工**(子智能体: 完整盘点合约 + 冻结模型 → `docs/wiki/chain-model-freeze.md` + `contracts/MODEL_FREEZE.md` + 编译/测试真实输出 + 与 §3 五条硬规则的差距表)。
