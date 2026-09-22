@@ -95,7 +95,9 @@ section('[2] settle 成功但没有 txHash → 不能认定链上结算 (Phase 3
   const r: any = await settle('ok_without_hash');
   check('ok=true 但 txHash 缺失 (如实返回, 不编一个)', r.ok === true && !r.txHash, { ok: r.ok, txHash: r.txHash });
   const src = fs.readFileSync(path.resolve('src/agents/x402/paid-info-store.ts'), 'utf8');
-  check('代码里 chainSettled 由 txHash 决定 (不是"facilitator 说成功就算")', /chainSettled:\s*!!txHash/.test(src));
+  // ★ F5 (2026-09-22 链桥): `chainSettled = !!txHash` 是漏洞本身; 现在由真链验证结论决定
+  check('代码里 chainSettled 来自真链验证结论 (不再是 "有 txHash 就算结算")',
+    !/chainSettled:\s*!!txHash/.test(src) && /verifyPaymentOnChain/.test(src) && /chainSettled:\s*verdict\.chainSettled/.test(src));
 }
 
 // ── ③ verify 被拒 ────────────────────────────────────────────────────────

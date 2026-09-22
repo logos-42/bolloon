@@ -21,6 +21,10 @@ import {
   INFO_PROTOCOL, computeContentHash, sha256Hex,
   type PaidInfoItem, type InfoSource, type InfoCategory,
 } from './paid-info-protocol.js';
+// 只引类型 (编译期擦除): 别把 ethers 拖进 x402 模块图 —— 真链验证器是动态 import 的
+import type {
+  ChainSettlementVerifier, ChainSettlementExpect, ChainSettlementVerdict,
+} from '../chain/chain-settlement.js';
 
 // ---------------------------------------------------------------- 存储
 
@@ -318,6 +322,17 @@ export interface BuyInfoResult {
     settlementUncertain?: boolean;
     /** facilitator 明确拒绝 → 钱一定没动 */
     verifyRejected?: boolean;
+    /** ★ F5: 链上**真**验证结论 —— 拿到 txHash 不等于已验证; 只有 receipt.status=1 + 确认数够 + 事件对得上才 true */
+    chainSettled?: boolean;
+    /** 链上判定状态: confirmed/finalized/pending/unknown/reverted/event_mismatch/reorged/... */
+    chainSettlementStatus?: string;
+    /** 判定理由 (可读, 审计用) */
+    chainSettlementReason?: string;
+    /** 判定时的确认数 (与门槛一起看才有意义) */
+    confirmations?: number;
+    confirmationsRequired?: number;
+    /** RPC 能不能到 (false 时上面的 unknown 才解释得通) */
+    rpcAvailable?: boolean;
   };
   raw?: string;
   error?: string;
@@ -329,6 +344,58 @@ export interface BuyInfoResult {
  */
 function makeTracker(onEvent?: (e: { kind: string; detail?: string; patch?: Record<string, unknown> }) => Promise<void>) {
   return async (e: { kind: string; detail?: string; patch?: Record<string, unknown> }) => { if (onEvent) await onEvent(e).catch(() => null); };
+}
+
+// ── F5: 链上真验证接入 (拿 txHash ≠ 链上已验证) ──────────────────────────────
+
+export interface ChainSettlementOptions {
+  /** 注入验证器 (测试 / 自定义链); 缺省 = 用本机链配置做真链验证 */
+  verifier?: ChainSettlementVerifier;
+  /** 期望: escrow 模式要 taskKey/resultHash; erc20_transfer 模式要 token/收款方 */
+  expect?: ChainSettlementExpect;
+  /** 判定门槛 (缺省 'confirmed') */
+  gate?: 'confirmed' | 'finalized';
+  /** 持久记录里的旧事实 (给重组检测用) */
+  recorded?: { blockNumber?: number | null; confirmations?: number; status?: string };
+}
+
+/**
+ * ★ F5 修复点。
+ * 老代码: `chainSettled = !!txHash` —— 拿到 txHash 就宣称链上已验证 (从不读 receipt/事件/确认数)。
+ * 新逻辑:
+ *   · 没有 txHash              → `not_attempted`, chainSettled=false (没发过链上交易)
+ *   · 读不到 RPC / receipt     → `unknown`, chainSettled=false (不确定 ≠ 没付)
+ *   · receipt.status == 0      → `reverted`, chainSettled=false
+ *   · 确认数 < 门槛            → `pending`, chainSettled=false
+ *   · 事件(taskKey/resultHash)对不上 → `event_mismatch`, chainSettled=false
+ *   · 全过                     → `confirmed`/`finalized`, chainSettled=true
+ * 验证器本身抛错也**不会**炸付款路径: 一律降级成 `unknown` + chainSettled=false (fail-closed)。
+ */
+export async function verifyPaymentOnChain(args: {
+  txHash: string;
+  chainSettlement?: ChainSettlementOptions;
+}): Promise<ChainSettlementVerdict> {
+  const gate = args.chainSettlement?.gate || 'confirmed';
+  const txHash = String(args.txHash || '');
+  if (!txHash) {
+    return {
+      chainSettled: false, status: 'not_attempted',
+      reason: 'facilitator 说成功但没给 txHash: 没有链上交易可查, 不能认定链上结算完成',
+      confirmationsRequired: 0, requiredGate: gate, rpcAvailable: true, checkedAt: Date.now(), evidence: {},
+    };
+  }
+  try {
+    const verifier = args.chainSettlement?.verifier
+      ?? (await import('../chain/chain-settlement.js')).createDefaultChainSettlementVerifier({ gate });
+    return await verifier({ txHash, expect: args.chainSettlement?.expect, gate, recorded: args.chainSettlement?.recorded });
+  } catch (e: any) {
+    return {
+      chainSettled: false, status: 'unknown',
+      reason: `链上验证器抛错 → 不能判已结算: ${String(e?.message || e).slice(0, 200)}`,
+      txHash, confirmationsRequired: 0, requiredGate: gate, rpcAvailable: false,
+      checkedAt: Date.now(), evidence: { verifierError: String(e?.message || e).slice(0, 200) },
+    };
+  }
 }
 
 export async function buyInfo(params: {
@@ -345,6 +412,11 @@ export async function buyInfo(params: {
   prePayGuard?: (info: { requirements: any; url: string }) => Promise<{ ok: boolean; reason?: string }>;
   /** Phase 5 审计: 交易记录钩子 (每次状态推进都回调) */
   onEvent?: (e: { kind: string; detail?: string; patch?: Record<string, unknown> }) => Promise<void>;
+  /**
+   * ★ F5 (可选, 不传 = 用本机链配置做真链验证; 配置取不到则如实判"未结算/不确定"):
+   * 链上结算的真验证参数。老调用方不传这个字段也能跑 (签名兼容)。
+   */
+  chainSettlement?: ChainSettlementOptions;
 }): Promise<BuyInfoResult> {
   const { verifyEnvelope } = await import('./paid-info-protocol.js');
   const doFetch = params.fetchImpl ?? fetch;
@@ -402,25 +474,58 @@ export async function buyInfo(params: {
     const text = await retry.text();
     const parsed = safeJson(text);
     const receipt = retry.headers.get('x-payment-response') || parsed?.payment?.receipt || '';
+    // ★ 链上事实需要 txHash: facilitator 说成功但没有 txHash → 不能标 chainSettled (真跑抓到过这类"假结算")
+    const txHash = parsed?.payment?.txHash || retry.headers.get('x-payment-txhash') || parsed?.txHash || '';
     if (retry.status < 200 || retry.status >= 300) {
       // 付款这一步已经发出去了 (可能已上链), 只是拿资源失败 → 绝不许当"没付过钱"
+      // ★ F5: 有 txHash 就去链上真查一遍, 而不是"有 txHash 就算结算"
+      const v = await verifyPaymentOnChain({ txHash, chainSettlement: params.chainSettlement });
       return {
         ok: false, status: retry.status,
-        payment: { mode: 'facilitator', receipt: receipt || undefined, attempted: true, settled: true, settlementUncertain: !receipt },
+        payment: {
+          mode: 'facilitator', receipt: receipt || undefined, attempted: true, settled: true,
+          settlementUncertain: !receipt && !v.chainSettled,
+          chainSettled: v.chainSettled, chainSettlementStatus: v.status, chainSettlementReason: v.reason,
+          confirmations: v.confirmations, confirmationsRequired: v.confirmationsRequired, rpcAvailable: v.rpcAvailable,
+          ...(txHash ? { txHash } : {}),
+        },
         error: `付款后重试失败 ${retry.status}: ${text.slice(0, 200)}`,
       };
     }
     mode = 'facilitator';
-    // ★ 链上事实需要 txHash: facilitator 说成功但没有 txHash → 不能标 chainSettled (真跑抓到过这类"假结算")
-    const txHash = parsed?.payment?.txHash || retry.headers.get('x-payment-txhash') || parsed?.txHash || '';
+    // ★ F5 修复: 拿到 txHash ≠ 链上已验证。真验证 = receipt(status==1) + 确认数 + 事件(taskKey/resultHash) + 合约 escrow 状态。
+    const verdict = await verifyPaymentOnChain({ txHash, chainSettlement: params.chainSettlement });
     await trackEvent({
       kind: 'settled',
-      detail: `mode=facilitator receipt=${receipt.slice(0, 24)}… txHash=${txHash ? `${String(txHash).slice(0, 16)}…` : '(缺失: 不能认定链上结算完成)'}`,
-      patch: { paymentMode: 'facilitator', paymentReceipt: receipt, chainSettled: !!txHash, ...(txHash ? { txHash: String(txHash) } : {}) },
+      detail: `mode=facilitator receipt=${receipt.slice(0, 24)}… txHash=${txHash ? `${String(txHash).slice(0, 16)}…` : '(缺失: 不能认定链上结算完成)'} 链上判定=${verdict.status}` +
+        (verdict.confirmations != null ? ` 确认数=${verdict.confirmations}/${verdict.confirmationsRequired}` : ''),
+      patch: {
+        paymentMode: 'facilitator', paymentReceipt: receipt,
+        chainSettled: verdict.chainSettled,
+        chainSettlementStatus: verdict.status,
+        chainSettlementReason: verdict.reason,
+        ...(verdict.confirmations != null ? { chainConfirmations: verdict.confirmations } : {}),
+        ...(verdict.rpcAvailable ? {} : { chainRpcAvailable: false }),
+        ...(txHash ? { txHash: String(txHash) } : {}),
+      },
     });
     const report = parsed?.proof ? await verifyEnvelope(parsed, { resolveDid: params.resolveDid, expectItemId: params.expectItemId }) : undefined;
     if (report) await trackEvent({ kind: 'delivered', detail: `trust=${report.trust}`, patch: { verificationTrust: report.trust as any, contentHash: parsed?.contentHash, protocolVerified: report.trust === 'verified' } });
-    return { ok: true, status: retry.status, envelope: parsed, verify: report, payment: { mode, receipt }, metadata, raw: text };
+    return {
+      ok: true, status: retry.status, envelope: parsed, verify: report, metadata, raw: text,
+      payment: {
+        mode, receipt,
+        ...(txHash ? { txHash } : {}),
+        attempted: true, settled: true,
+        settlementUncertain: verdict.status === 'unknown' || verdict.status === 'config_unavailable' || !verdict.rpcAvailable,
+        chainSettled: verdict.chainSettled,
+        chainSettlementStatus: verdict.status,
+        chainSettlementReason: verdict.reason,
+        confirmations: verdict.confirmations,
+        confirmationsRequired: verdict.confirmationsRequired,
+        rpcAvailable: verdict.rpcAvailable,
+      },
+    };
   }
 
   if (!params.allowLocalDev) {

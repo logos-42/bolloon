@@ -184,7 +184,11 @@ section('[附加] ⑥ 支付状态未知 (有回执、无 txHash) → 先对账,
 section('[附加] ⑦ facilitator 返回成功但没有 txHash → 不能认定链上结算完成');
 {
   const src = fs.readFileSync(path.resolve('src/agents/x402/paid-info-store.ts'), 'utf8');
-  check('代码里 chainSettled 由 txHash 决定 (不是"facilitator 说成功就算")', /chainSettled:\s*!!txHash/.test(src), 'paid-info-store 的 facilitator 分支');
+  // ★ F5 (2026-09-22 链桥): 旧的 `chainSettled = !!txHash` 本身就是漏洞 ——
+  //   拿到 txHash 就宣称链上已验证, 从不读 receipt/确认数/事件。现在必须由**真链验证结论**决定。
+  check('代码里 chainSettled 来自真链验证结论 (不再是 "有 txHash 就算结算")',
+    !/chainSettled:\s*!!txHash/.test(src) && /verifyPaymentOnChain/.test(src) && /chainSettled:\s*verdict\.chainSettled/.test(src),
+    'paid-info-store 的 facilitator 分支');
   const { record } = await TXS.beginTransaction({ requestId: `no-txhash-${Date.now().toString(36)}`, metadata: { itemId: 'i' }, buyerDid: 'did:b', providerDid: 'did:p' }, HOME);
   const id = record.transactionId;
   await TXS.updateTransaction(id, { status: 'quoted', paymentMode: 'facilitator' }, HOME);
