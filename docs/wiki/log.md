@@ -2788,3 +2788,15 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **编译器硬约束(新)**: 19 字段 struct 的**自动 getter** 在 optimizer off 下直接 `Stack too deep` → `escrows` mapping 改 `internal` + 手写同名 getter(选择器 `escrows(bytes32)` 保留)。
 - **真实输出**: `npx hardhat test` → **48 passing**(改前 20) · `forge build`(不带 `--skip`)→ `Compiler run successful` · `forge test` → **42 passed, 0 failed**(18 ResourceERC721 + 24 AgentEscrow)。
 - **F2 引入的新尾部风险(已知未修)**: 无 proof 不能超时取款 + `refund` 只在 `DISPUTED` → agent 不交 proof 且 buyer 不 dispute 时资金永久锁死; 逃生口仅「buyer dispute → owner refund」。建议后续加 permissionless `expire`(会扩 admin 面, 需 leo 定)。
+
+## [2026-09-22] feat(chain) | P2 部署侧 — 本地 anvil 真部署 + deployment manifest + 真交易闭环
+
+- **新增**: `contracts/evm/scripts/deploy.js`(可重跑部署/验证/闭环一体脚本) · `contracts/deployments/localhost.json`(manifest) · `contracts/deployments/abis/{MockERC20,AgentEscrow,AgentTreasury}.json`。
+- **真部署(anvil chainId 31337)**: MockERC20(USDC 替身, decimals **6**) `0x5FbDB2315678afecb367f032d93F642f64180aa3` block 1 · AgentEscrow(v2) `0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512` block 2 · AgentTreasury `0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0` block 3;deployer = anvil 公开开发账户(**未使用 `~/.hermes/wallets/` 下任何真实钱包**)。
+- **manifest 字段**: chainId/networkName/deployedAt/deployerAddress/contracts[{name,address,txHash,blockNumber,bytecodeHash,creationBytecodeHash,constructorArgs,contractVersion,sourcePath}]/token{address,decimals}/contractVersions/abiPaths/build{solc,optimizer,evm,immutableSlots}/agentEscrowV2Interface/verification/tradeLoop/f2Assertion/reproduce。
+- **链上真读数(双工具链交叉验证)**: `eth_getCode` 1678/8830/5545 bytes;runtime bytecode 与编译产物**逐字节一致**(对 immutable 占位槽清零后 keccak 相同);`decimals()==6` · `symbol()=="USDC"` · `releaseTimeout()==604800` 上链核对一致;4 个 V2 选择器(`0x152215b8`/`0x9037b29b`/`0xa7997ba4`/`0xa53cf2b0`)与 5 个 v2 事件 topic0 均由 `cast` 独立复算并在链上 bytecode 命中。
+- **真交易闭环**: `createEscrowV2 → submitProofV2 → releaseV2`,`ACTIVE→ACTIVE→ACTIVE→RELEASED`,`ReleasedV2.by=0`(buyer);`proofHash` 链上值 == `keccak256(abi.encode("bolloon.proof.v1", resultHash, proofVersion))` 复算一致。
+- **F2 在真链复核(我复跑, 全新交易)**: 无 proof 时 `claimAfterTimeoutV2` 静态调用 revert `"no proof submitted"`;真交易 `0xc0e4114d…` block 23 **status 0**、logs 0、escrow 仍 ACTIVE、proofHash 全 0、agent 余额未增;**阳性对照** 先 `submitProofV2` 再超时 claim → `RELEASED`,`ReleasedV2.by=2`(BY_TIMEOUT),agent +1e7。
+- **幂等**: 二次运行复用已有部署(前提: chainId + `eth_getCode` keccak + 构造参数三者一致),`FORCE_REDEPLOY=1`/`ALLOW_NON_LOCAL=1`(默认拒非 31337)/`SKIP_E2E=1` 可调。
+- **本机环境坑(两条, 值得复用)**: ① `~/.foundry/bin/{anvil,cast}` 直接跑会 dyld 报 `libusb-1.0.0.dylib` 缺失(`Abort trap: 6`)→ 加 `DYLD_LIBRARY_PATH=~/.local/lib` 即可(`forge` 不依赖 libusb);② ethers v6 provider 默认 250ms 缓存会缓存 `eth_getTransactionCount`,在瞬时出块的本地链上致第 2 笔 `nonce has already been used` → `new JsonRpcProvider(url, null, { cacheTimeout: -1 })`。
+- **如实未做**: Base Sepolia **真网部署未做** —— 测试钱包 `0x93a5A497774F4C00aD21085bDCf298FC63d346E5` 在 Base Sepolia 余额为 **0 ETH / 0 USDC**;同一套脚本改 `RPC_URL` 即可复跑, 等注资。
