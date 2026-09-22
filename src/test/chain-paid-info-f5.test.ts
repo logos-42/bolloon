@@ -11,6 +11,9 @@
  *   · 旧调用方 (不传 chainSettlement) 签名兼容, 不炸
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 // facilitator 付款路径打桩: 真 createX402PaymentFetch 要连网, 这里换成假的
 const H = vi.hoisted(() => ({
@@ -188,14 +191,33 @@ describe('buyInfo — facilitator 路径真接链验证', () => {
   });
 
   it('旧调用方签名兼容: 不传 chainSettlement 也能拿到结果 (不炸)', async () => {
-    delete process.env.BOLLOON_CHAIN_RPC_URL;
-    delete process.env.BOLLOON_ESCROW_ADDRESS;
-    delete process.env.BOLLOON_CHAIN_ID;
-    const r = await run(undefined);
-    expect(r.ok).toBe(true);
-    expect(r.payment!.mode).toBe('facilitator');
-    expect(r.payment!.chainSettled).toBe(false);
-    expect(r.payment!.chainSettlementStatus).toBe('config_unavailable');
+    // ★ 定位 (2026-09-22, 这条原来是"确定性红"): 红的**不是实现, 是这条测试自己漏了前提**。
+    //   它删掉 3 个 env 锚就默认"链配置三层都拿不到" —— 但第 ② 层正是
+    //   `$HOME/.bolloon/chain.json` (chain-config.ts: bolloonHome() = home || process.env.HOME || os.homedir())。
+    //   开发机上那份文件是有的 (rpcUrl=127.0.0.1:8545 + escrow + token, 2026-09-22 16:17 写的) →
+    //   缺省验证器**建 client 成功** → 拿那个假 txHash 去 8545 查 → receipt 读不到 → status='unknown',
+    //   而断言要的是 'config_unavailable'。
+    //   实测依据: 完全同一份代码 `HOME=<空目录> npx vitest run <本文件>` → 15/15 全绿; 只差 HOME。
+    //   ⇒ 所以改**前提**, 不放宽断言: 把 HOME 钉到一个新建的空目录 (再删掉其它链锚), 让"三层都拿不到"真成立。
+    //     4 条断言一条没减, 并额外锁住"理由要点名链配置"—— 这条测试从此不依赖"这台机器恰好配了什么"。
+    const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-f5-nohome-'));
+    vi.stubEnv('HOME', emptyHome);
+    for (const k of [
+      'BOLLOON_CHAIN_RPC_URL', 'BOLLOON_ESCROW_ADDRESS', 'BOLLOON_CHAIN_ID',
+      'BOLLOON_RPC_URL', 'RPC_URL', 'BOLLOON_NETWORK_NAME', 'BOLLOON_TOKEN_ADDRESS',
+    ]) delete process.env[k];
+    try {
+      // 前提自证: 这个 HOME 下确实没有 chain.json (否则测的还是"环境巧合")
+      expect(fs.existsSync(path.join(emptyHome, '.bolloon', 'chain.json'))).toBe(false);
+      const r = await run(undefined);
+      expect(r.ok).toBe(true);
+      expect(r.payment!.mode).toBe('facilitator');
+      expect(r.payment!.chainSettled).toBe(false);
+      expect(r.payment!.chainSettlementStatus).toBe('config_unavailable');
+      expect(String(r.payment!.chainSettlementReason)).toMatch(/链配置/);   // 理由必须是"配置取不到", 不是含糊的 unknown
+    } finally {
+      fs.rmSync(emptyHome, { recursive: true, force: true });
+    }
   });
 
   it('local-dev 路径永远是 chainSettled=false (链上没动过钱)', async () => {

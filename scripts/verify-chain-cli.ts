@@ -47,7 +47,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { HDNodeWallet, Mnemonic, JsonRpcProvider, Contract, Wallet } from 'ethers';
-import { startIsolatedDevChain } from './lib/isolated-dev-chain.js';
+import { startIsolatedDevChain, probeMacosDylibs, buildAnvilChildEnv } from './lib/isolated-dev-chain.js';
 import {
   deploymentsDir, listDeploymentManifests, parseDeploymentManifest,
   chainConfigPath, type DeploymentManifest,
@@ -298,6 +298,20 @@ async function main() {
       process.exit(1);
     }
   }
+  // ★ anvil 子进程 env (2026-09-22 修): 白名单透传 + DYLD_LIBRARY_PATH 由**真实候选探测**拼出。
+  //   原来用 os.homedir() 拼 ~/.local/lib —— 干净/临时 HOME 下那是空目录 → anvil 链不到 libusb
+  //   → dyld: Library not loaded → SIGABRT → 上层只看到"隔离链没能在 30000ms 内就绪"。
+  const dylibProbe = probeMacosDylibs({});
+  const anvilChildEnv = buildAnvilChildEnv(dylibProbe);
+  console.log(`  anvil env   : PATH=${anvilChildEnv.PATH ? '透传' : '缺!'} HOME=${anvilChildEnv.HOME || '(缺!)'} ` +
+    `DYLD_LIBRARY_PATH=${dylibProbe.dyldLibraryPath ?? '(空 — anvil 不缺第三方库)'}`);
+  if (dylibProbe.missing.length) {
+    console.log(`  anvil 缺库  : ${dylibProbe.missing.join(', ')} → 由 ${dylibProbe.dirs.join(':') || '(探测不到!)'} 提供`);
+  }
+  check('anvil 子进程 env: 白名单透传 PATH/HOME, DYLD_LIBRARY_PATH 由真候选探测拼出 (不靠 $HOME)',
+    typeof anvilChildEnv.PATH === 'string' && !!anvilChildEnv.HOME && !dylibProbe.error
+    && (dylibProbe.dirs.length === 0 || String(anvilChildEnv.DYLD_LIBRARY_PATH).includes(dylibProbe.dirs[0])),
+    { dyld: anvilChildEnv.DYLD_LIBRARY_PATH ?? null, missing: dylibProbe.missing, dirs: dylibProbe.dirs });
   console.log(`  部署事实    : ${DEP.label}  chainId=${DEP.chainId}  escrow=${DEP.escrowAddress}`);
   console.log(`                token=${DEP.tokenAddress} · decimals=${DEP.tokenDecimals} · 部署块=${DEP.deploymentBlock} (来自仓库 manifest, 无硬编码)`);
   console.log(`  真实 HOME   : ${REAL_HOME} —— 本脚本不往那里写任何东西; 临时根目录 ${ROOT}`);
