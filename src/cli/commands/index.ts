@@ -55,7 +55,8 @@ export const GROUPS_HELP = `
 判据永远是 ok / code, **不是**退出码; 也不要把 paid / delivered 读成成功
 (local-dev 永远不是链上结算 —— 见 docs/wiki/access-protocol-v1.md §5)。
 链命令的失败码 (P6 新增, append-only): CHAIN_NOT_CONFIGURED · CHAIN_UNAVAILABLE · CHAIN_UNCERTAIN ·
-CHAIN_TX_REVERTED · ESCROW_NOT_FOUND · INSUFFICIENT_FUNDS · NOT_AUTHORIZED · REORG_SUSPECTED。
+CHAIN_TX_REVERTED · ESCROW_NOT_FOUND · INSUFFICIENT_FUNDS · NOT_AUTHORIZED · REORG_SUSPECTED ·
+INDEX_IDENTITY_CHANGED (换合约部署/换链实例 ⇒ 索引身份变了, **不是**重组; 修法 bolloon chain index rebuild)。
 `;
 
 /** 跑一个命令组, 返回进程退出码 (0=ok, 1=失败) */

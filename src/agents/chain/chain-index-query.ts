@@ -12,7 +12,7 @@
  * 真去读链会明确报 'chain_index_readonly' —— 不静默返回空。
  */
 
-import { ChainIndexer, chainIndexPath, deriveEscrowState, byBlockLogIndex, type ChainIndexEntry, type ChainIndexFile } from './chain-indexer.js';
+import { ChainIndexer, chainIndexPath, deriveEscrowState, byBlockLogIndex, type ChainIndexEntry, type ChainIndexFile, type ChainIndexIdentity } from './chain-indexer.js';
 import { DEFAULT_CONFIRMATIONS } from './chain-config.js';
 
 export interface IndexQueryOptions {
@@ -62,6 +62,8 @@ export interface IndexStatus {
   escrowAddress: string;
   deploymentBlock: number;
   deploymentSource: string;
+  /** ★ 落盘身份 (chainId + escrowAddress + deploymentBlock) —— 「这份索引属于哪次部署」的唯一口径 */
+  identity: ChainIndexIdentity;
   lastSyncedBlock: number;
   lastSyncedAt: number | null;
   lastSyncedAgoMs: number | null;
@@ -83,8 +85,9 @@ export function getIndexStatus(opts: IndexQueryOptions = {}): IndexStatus {
   const s = readIndexFile(opts);
   return {
     indexPath: currentIndexPath(opts.home),
-    chainId: s.chainId, networkName: s.networkName, escrowAddress: s.escrowAddress,
-    deploymentBlock: s.deploymentBlock, deploymentSource: s.deploymentSource,
+    chainId: s.chainId, networkName: s.networkName,
+    escrowAddress: s.escrowAddress, deploymentBlock: s.deploymentBlock, deploymentSource: s.deploymentSource,
+    identity: s.identity ?? { chainId: s.chainId, escrowAddress: s.escrowAddress.toLowerCase(), deploymentBlock: s.deploymentBlock },
     lastSyncedBlock: s.lastSyncedBlock, lastSyncedAt: s.lastSyncedAt,
     lastSyncedAgoMs: s.lastSyncedAt == null ? null : Date.now() - s.lastSyncedAt,
     headBlock: s.headBlock, headBlockHash: s.headBlockHash,

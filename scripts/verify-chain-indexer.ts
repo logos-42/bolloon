@@ -39,6 +39,7 @@ const {
   ChainIndexer, INDEX_IFACE, resolveDeploymentInfo, compareIndexes,
   getIndexStatus, getIndexStats, getEscrowTimeline, fetchIndexSince,
   createJsonRpcProvider, computeTaskKeyOffChain, LOCAL_DEV_CHAIN_ID,
+  INDEX_IDENTITY_CHANGED,
 } = CHAIN as any;
 const { AGENT_ESCROW_V2_ABI } = await import('../src/agents/chain/escrow-client.js');
 
@@ -450,6 +451,65 @@ async function main() {
   check('cursor 无新数据时返回空 (不重复吐)', fetchIndexSince({ blockNumber: stats.headBlock!, logIndex: 999 }, { home: HOME }).events.length === 0, `head=${stats.headBlock}`);
   const cursorTotal = (() => { let c: any = null, n = 0, guard = 0; for (;;) { const pg = fetchIndexSince(c, { home: HOME, limit: 7 }); n += pg.events.length; c = pg.nextCursor; if (!pg.hasMore || ++guard > 200) break; } return n; })();
   check('cursor 分页把所有条目拉完 (总数一致)', cursorTotal === stats.entries, `${cursorTotal}/${stats.entries}`);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  section('⑪b ★ 索引身份 (换合约部署 ≠ 重组): sync 拒绝混数据 / rebuild 干净重建');
+  const DEAD_ESCROW = '0x' + '9b'.repeat(20);      // 上一轮部署的 escrow (当前链上 eth_getCode = 0x)
+  const deadCode = await provider.getCode(DEAD_ESCROW);
+  const oldPath = path.join(TMP, 'index-old-deployment.json');
+  // 用**旧身份**在真节点上扫一次, 造出"上一轮部署留下的索引文件" (真文件, 真 lastSyncedAt)
+  const oldIdx = new ChainIndexer({
+    provider, escrowAddress: DEAD_ESCROW, chainId: LOCAL_DEV_CHAIN_ID, networkName: 'localhost',
+    deploymentBlock, home: HOME, indexPath: oldPath, pageSize: 200,
+  });
+  await oldIdx.syncFrom();
+  const oldRaw = JSON.parse(fs.readFileSync(oldPath, 'utf8'));
+  console.log(`  旧索引: identity=${j(oldRaw.identity)}  entries=${oldRaw.entries.length}  runs=${oldRaw.runs.length}`);
+  check('旧部署索引已落盘, 且写着**自己的**身份 (chainId + escrowAddress + 部署块)',
+    oldRaw.identity?.chainId === LOCAL_DEV_CHAIN_ID && oldRaw.identity?.escrowAddress === DEAD_ESCROW.toLowerCase() && oldRaw.identity?.deploymentBlock === deploymentBlock,
+    j(oldRaw.identity));
+  check('旧 escrow 在当前链上确实没有合约 (eth_getCode=0x) —— 身份变更的真实现场', deadCode === '0x', `code=${String(deadCode).slice(0, 12)}`);
+
+  // 同一条链 / 同一份索引文件, 换成**当前**身份 → sync 必须拒绝 (不扫、不写、不报重组)
+  const curIdx = new ChainIndexer({
+    provider, escrowAddress: local.escrowAddress, chainId: LOCAL_DEV_CHAIN_ID, networkName: 'localhost',
+    deploymentBlock, home: HOME, indexPath: oldPath, pageSize: 200,
+  });
+  const beforeTxt = fs.readFileSync(oldPath, 'utf8');
+  let idErr: any = null;
+  try { await curIdx.syncFrom(); } catch (e: any) { idErr = e; }
+  console.log(`  sync(当前身份) → ${idErr ? `${idErr.code} / next=${idErr.nextAction}` : '没报错 (❌ 该拒绝)'}`);
+  check('★ sync 遇身份变更 → 抛 INDEX_IDENTITY_CHANGED (不是 REORG_SUSPECTED), next_action=needs_human',
+    idErr?.code === INDEX_IDENTITY_CHANGED && idErr?.nextAction === 'needs_human', idErr?.code ?? '(无错)');
+  check('★ 拒绝时如实给出 old/new 身份 + 修法命令',
+    idErr?.oldIdentity?.escrowAddress === DEAD_ESCROW.toLowerCase() && idErr?.newIdentity?.escrowAddress === local.escrowAddress.toLowerCase() && String(idErr?.suggestedCommand).includes('chain index rebuild'),
+    j({ old: idErr?.oldIdentity, new: idErr?.newIdentity, fix: idErr?.suggestedCommand }));
+  check('★ 拒绝时索引文件**逐字节未变** (绝不把两个身份混在一起)', fs.readFileSync(oldPath, 'utf8') === beforeTxt, `${beforeTxt.length} bytes`);
+  check('★ 拒绝时没有追加 run 记录 (没扫、没写)', JSON.parse(fs.readFileSync(oldPath, 'utf8')).runs.length === oldRaw.runs.length);
+
+  // rebuild → 干净重建: 采用当前身份, 旧身份记录一条不留
+  const idRb = await curIdx.rebuild({ persist: true });
+  console.log(`  rebuild → identityChanged=${idRb.identityChanged} 丢弃=${idRb.discardedEntries} 条数=${idRb.entries} 起止=[${idRb.ranges[0].from}, ${idRb.ranges[0].to}]`);
+  check('★ rebuild 报 identityChanged=true + old/new 身份 + 丢弃条数 (不粉饰)',
+    idRb.identityChanged === true && idRb.oldIdentity?.escrowAddress === DEAD_ESCROW.toLowerCase() && idRb.newIdentity.escrowAddress === local.escrowAddress.toLowerCase() && idRb.discardedEntries === oldRaw.entries.length,
+    j({ changed: idRb.identityChanged, discarded: idRb.discardedEntries, old: idRb.oldIdentity }));
+  const newRaw = JSON.parse(fs.readFileSync(oldPath, 'utf8'));
+  check('★ 干净重建后索引身份 = 当前 (escrow/部署块都换成新值, 不再沿用旧文件的)',
+    newRaw.escrowAddress.toLowerCase() === local.escrowAddress.toLowerCase() && newRaw.deploymentBlock === deploymentBlock && newRaw.identity.escrowAddress === local.escrowAddress.toLowerCase(),
+    j({ escrowAddress: newRaw.escrowAddress, deploymentBlock: newRaw.deploymentBlock, identity: newRaw.identity }));
+  check('★ 重建后每一条记录都属于当前身份 (旧 escrow 一条不留, 也不是标 suspect)',
+    newRaw.entries.length === idRb.entries && newRaw.entries.every((e: any) => e.address.toLowerCase() === local.escrowAddress.toLowerCase())
+      && newRaw.entries.every((e: any) => e.blockNumber >= deploymentBlock),
+    `${newRaw.entries.length} 条, suspects=${newRaw.entries.filter((e: any) => e.suspect).length}`);
+  check('★ 干净重建重扫出的事件数 = 主索引的真实事件数 (数据没丢, 丢的只是旧身份)',
+    newRaw.entries.length === idx.load().entries.filter((e: any) => !e.suspect).length,
+    `${newRaw.entries.length} vs ${idx.load().entries.filter((e: any) => !e.suspect).length}`);
+  const afterFix = await curIdx.syncFrom();
+  check('★ 修完之后 sync 恢复正常 (身份已一致, 增量照常)', afterFix.lastSyncedBlock === afterFix.headBlock, `h=${afterFix.lastSyncedBlock}`);
+  const noChange = await idx.rebuild({ persist: true });
+  check('身份未变时 rebuild 行为与历史一致 (identityChanged=false, 不丢弃任何记录, 仍与增量逐条 same)',
+    noChange.identityChanged === false && noChange.discardedEntries === 0 && noChange.comparison.same === true,
+    j({ changed: noChange.identityChanged, discarded: noChange.discardedEntries, same: noChange.comparison.same }));
 
   // ═══════════════════════════════════════════════════════════════════════
   if (!ONLY_LOCAL) {

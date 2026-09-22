@@ -46,6 +46,55 @@ import {
 
 export const CHAIN_INDEX_SCHEMA_VERSION = 2;
 
+/**
+ * ★**索引身份** (index identity) —— 「这份索引到底是谁的」。
+ *
+ * 为什么必须有它: 换一次合约部署 (或 anvil 重启换了链实例) 之后, 配置里的
+ * `escrowAddress`/`deploymentBlock` 会变, 而旧 entries 在新链上**要么根本不存在,
+ * 要么是另一条链上同一块号的别的日志**。之前 `rebuild()` 无条件沿用旧索引的
+ * `escrowAddress`/`deploymentBlock`, 把两边的事件混进同一个文件 (实测 381 条旧 + 新链事件
+ * → 451 条, suspects 328, 而文件里写的地址还是已经死掉的旧 escrow)。
+ *
+ * 身份 = (**chainId, escrowAddress, deploymentBlock**) 三元组, 每次都随索引一并落盘 (`identity` 字段)。
+ *   · 身份未变 → 行为与历史**逐条等价** (不动任何数据面语义);
+ *   · 身份变了 → 只允许**干净重建** (丢弃旧身份的 entries, 采用当前身份写回), 不许混。
+ */
+export interface ChainIndexIdentity {
+  chainId: number;
+  /** 比较一律小写; 落盘时保留配置给的原始大小写 */
+  escrowAddress: string;
+  deploymentBlock: number;
+}
+
+export function identityOf(o: { chainId: number; escrowAddress: string; deploymentBlock: number }): ChainIndexIdentity {
+  return {
+    chainId: Number.isFinite(Number(o.chainId)) ? Number(o.chainId) : 0,
+    escrowAddress: String(o.escrowAddress || '').toLowerCase(),
+    deploymentBlock: Number.isInteger(o.deploymentBlock) ? Number(o.deploymentBlock) : -1,
+  };
+}
+
+export function identitiesEqual(a: ChainIndexIdentity | null | undefined, b: ChainIndexIdentity | null | undefined): boolean {
+  if (!a || !b) return false;
+  return a.chainId === b.chainId && a.escrowAddress === b.escrowAddress && a.deploymentBlock === b.deploymentBlock;
+}
+
+/** 从落盘 JSON 里读身份 (坏字段 → null, 由调用方按顶层字段回退推导) */
+export function readIndexIdentity(raw: any): ChainIndexIdentity | null {
+  const i = raw?.identity;
+  if (!i || typeof i !== 'object') return null;
+  const chainId = Number(i.chainId);
+  const deploymentBlock = Number(i.deploymentBlock);
+  const escrowAddress = String(i.escrowAddress || '');
+  if (!Number.isFinite(chainId) || !Number.isInteger(deploymentBlock) || !escrowAddress) return null;
+  return { chainId, escrowAddress: escrowAddress.toLowerCase(), deploymentBlock };
+}
+
+/** `sync` 遇身份变更报的码 (append-only, 不改 REORG_SUSPECTED 的含义 —— 那不是重组) */
+export const INDEX_IDENTITY_CHANGED = 'INDEX_IDENTITY_CHANGED';
+/** 身份变更后**唯一**该做的事 (只有它能既清掉旧身份记录、又不丢当前身份的事件) */
+export const INDEX_IDENTITY_REBUILD_COMMAND = 'bolloon chain index rebuild';
+
 /** 索引器认的 v2 事件 = P3 的 5 个 + F2b 新增的 ExpiredV2 (逐字对齐 contracts/deployments/abis/AgentEscrow.json) */
 export const EXPIRED_V2_EVENT_SIG =
   'event ExpiredV2(bytes32 indexed taskKey, address indexed caller, address indexed refundedTo, uint256 amount)';
@@ -114,6 +163,12 @@ export interface ChainIndexRun {
   headBlockHash: string;
   durationMs: number;
   note?: string;
+  /** ★ 身份变更 (换合约部署/换链实例) 触发的干净重建 */
+  identityChanged?: boolean;
+  oldIdentity?: ChainIndexIdentity | null;
+  newIdentity?: ChainIndexIdentity;
+  /** 干净重建时被**丢弃**的旧身份记录条数 (丢弃 ≠ 标 suspect) */
+  discardedEntries?: number;
 }
 
 export interface ChainIndexFile {
@@ -124,6 +179,12 @@ export interface ChainIndexFile {
   /** ★ manifest 里的部署区块 (索引起点) */
   deploymentBlock: number;
   deploymentSource: string;
+  /**
+   * ★**落盘身份** (chainId + escrowAddress + deploymentBlock)。
+   * 与顶层三个字段是同一份事实, 单独记一份是为了: ① 读文件的人一眼知道「这份索引属于哪次部署」;
+   * ② 顶层字段被手改/被旧版本写歪时, 身份仍是权威口径 (旧文件没有这个字段 → 按顶层字段推导)。
+   */
+  identity: ChainIndexIdentity;
   /** ★ 已完整扫过的高度; -1 = 从未同步 */
   lastSyncedBlock: number;
   lastSyncedAt: number | null;
@@ -162,6 +223,8 @@ export interface ChainSyncResult {
   entries: number;
   suspects: number;
   durationMs: number;
+  /** 扫这些日志时**实际用的**地址/链/起点 (落盘身份的同源口径) */
+  identity: ChainIndexIdentity;
   resynced: boolean;
 }
 
@@ -185,6 +248,15 @@ export interface ChainRebuildResult {
   comparison: IndexComparison;
   durationMs: number;
   persisted: boolean;
+  /** 本次重建**实际使用**的身份 (= 当前链配置) */
+  identity: ChainIndexIdentity;
+  /** ★ 索引文件里的旧身份 ≠ 当前身份 → 本次是干净重建 (旧身份 entries 全丢弃) */
+  identityChanged: boolean;
+  /** 索引文件里原来的身份 (从未绑定过 = null) */
+  oldIdentity: ChainIndexIdentity | null;
+  newIdentity: ChainIndexIdentity;
+  /** 被丢弃的旧身份记录条数 (identityChanged=false 时恒为 0; persist=false 时也没有丢弃) */
+  discardedEntries: number;
 }
 
 // ── 路径 ────────────────────────────────────────────────────────────────────
@@ -219,6 +291,34 @@ export class ChainIndexError extends Error {
   constructor(message: string, public readonly missing: string[] = []) {
     super(message);
     this.name = 'ChainIndexError';
+  }
+}
+
+/**
+ * ★**索引身份变更** (不是重组)。`sync` 一旦发现索引文件属于另一次部署 / 另一条链实例,
+ * 就**什么都不动**地拒绝 (在任何 RPC、任何写盘之前) —— 把两边的事件混进一个文件,
+ * 比报一个可操作的错糟得多 (实测: 混完 451 条 / 328 suspects, 而文件里写的还是已死掉的旧地址)。
+ *
+ * 修法只有一个: `bolloon chain index rebuild` —— 干净重建 (丢弃旧身份记录, 采用当前身份)。
+ */
+export class ChainIndexIdentityChangedError extends ChainIndexError {
+  readonly code = INDEX_IDENTITY_CHANGED;
+  readonly nextAction = 'needs_human';
+  readonly suggestedCommand = INDEX_IDENTITY_REBUILD_COMMAND;
+  constructor(
+    readonly oldIdentity: ChainIndexIdentity,
+    readonly newIdentity: ChainIndexIdentity,
+    readonly indexPath?: string,
+  ) {
+    super(
+      `索引身份变了 (**这不是重组**): 索引文件${indexPath ? ` ${indexPath}` : ''} 属于 ` +
+      `chainId=${oldIdentity.chainId} / escrow=${oldIdentity.escrowAddress} / deploymentBlock=${oldIdentity.deploymentBlock}, ` +
+      `而当前链是 chainId=${newIdentity.chainId} / escrow=${newIdentity.escrowAddress} / deploymentBlock=${newIdentity.deploymentBlock}。` +
+      `旧索引里的事件不属于当前合约/链实例 —— 拒绝把它们混进同一个索引 (这次一条都没扫、没写盘)。` +
+      `修法: ${INDEX_IDENTITY_REBUILD_COMMAND} (干净重建: 丢弃旧身份记录, 采用当前身份)。`,
+      ['indexIdentity'],
+    );
+    this.name = 'ChainIndexIdentityChangedError';
   }
 }
 
@@ -398,6 +498,31 @@ export class ChainIndexer {
     try { (this.provider as any).destroy?.(); } catch { /* noop */ }
   }
 
+  // ── 身份 ────────────────────────────────────────────────────────────────
+
+  /** 当前实例的身份 = 索引**应该**属于谁 (来自当前链配置/manifest, 不是从旧文件读的) */
+  identity(): ChainIndexIdentity {
+    return identityOf(this);
+  }
+
+  /**
+   * 索引文件里记的身份。「未绑定」= 文件里既没有 entries 也从没同步过 (空壳索引) → null:
+   * 这时谈不上「属于谁」, 直接采用当前身份即可, 不该报身份变更。
+   * 旧文件没有 `identity` 字段 → 按顶层 (chainId / escrowAddress / deploymentBlock) 推导。
+   */
+  boundIdentity(state: ChainIndexFile): ChainIndexIdentity | null {
+    const bound = state.entries.length > 0 || state.lastSyncedAt != null;
+    if (!bound) return null;
+    return state.identity ?? identityOf(state);
+  }
+
+  /** 身份变更检测 (只读盘, 不发 RPC、不写盘) */
+  detectIdentityChange(state: ChainIndexFile): { changed: boolean; old: ChainIndexIdentity | null; new: ChainIndexIdentity } {
+    const old = this.boundIdentity(state);
+    const neu = this.identity();
+    return { changed: old != null && !identitiesEqual(old, neu), old, new: neu };
+  }
+
   // ── 落盘 ────────────────────────────────────────────────────────────────
 
   emptyIndex(): ChainIndexFile {
@@ -408,6 +533,7 @@ export class ChainIndexer {
       escrowAddress: this.escrowAddress,
       deploymentBlock: this.deploymentBlock,
       deploymentSource: this.deploymentSource,
+      identity: this.identity(),
       lastSyncedBlock: this.deploymentBlock - 1,
       lastSyncedAt: null,
       headBlock: null,
@@ -438,13 +564,21 @@ export class ChainIndexer {
       entries.push(this.normalizeEntry(e));
     }
     entries.sort(byBlockLogIndex);
+    // 身份口径 (顶层三字段 + identity 字段共用同一组回退值, 不各写一遍)
+    const chainId = Number(raw.chainId) || base.chainId;
+    const networkName = String(raw.networkName || base.networkName);
+    const escrowAddress = String(raw.escrowAddress || base.escrowAddress);
+    const deploymentBlock = Number.isInteger(raw.deploymentBlock) ? Number(raw.deploymentBlock) : base.deploymentBlock;
     return {
       ...base,
-      chainId: Number(raw.chainId) || base.chainId,
-      networkName: String(raw.networkName || base.networkName),
-      escrowAddress: String(raw.escrowAddress || base.escrowAddress),
-      deploymentBlock: Number.isInteger(raw.deploymentBlock) ? Number(raw.deploymentBlock) : base.deploymentBlock,
+      chainId,
+      networkName,
+      escrowAddress,
+      deploymentBlock,
       deploymentSource: String(raw.deploymentSource || base.deploymentSource),
+      // 旧文件没有 identity 字段 → 按顶层字段推导 (不回退成"当前实例"的身份:
+      // 那样会把「旧文件属于谁」这件事实抹掉, 身份变更就检不出来了)
+      identity: readIndexIdentity(raw) ?? identityOf({ chainId, escrowAddress, deploymentBlock }),
       lastSyncedBlock: Number.isInteger(raw.lastSyncedBlock) ? Number(raw.lastSyncedBlock) : base.lastSyncedBlock,
       lastSyncedAt: raw.lastSyncedAt ?? null,
       headBlock: Number.isInteger(raw.headBlock) ? Number(raw.headBlock) : null,
@@ -493,6 +627,16 @@ export class ChainIndexer {
     await fsp.mkdir(path.dirname(p), { recursive: true });
     const tmp = `${p}.tmp`;
     state.entries.sort(byBlockLogIndex);
+    // ★ 落盘即写**真实身份**: 这份文件里的记录是**本实例**扫出来的 (扫描地址 = this.escrowAddress,
+    //   起点 = this.deploymentBlock)。历史缺陷: 落盘时沿用 load() 里的旧字段 →
+    //   扫描用新 escrow、文件里却写着旧地址, `chain index status` 报给用户的地址是假的。
+    //   (身份未变时这三个值与文件里的完全相同 —— 不改任何数据面语义)
+    const id = this.identity();
+    state.chainId = id.chainId;
+    state.escrowAddress = this.escrowAddress;   // 保留配置给的原始大小写; 比较一律走 identityOf (小写)
+    state.deploymentBlock = id.deploymentBlock;
+    state.deploymentSource = this.deploymentSource;
+    state.identity = id;
     state.updatedAt = Date.now();
     state.runs = state.runs.slice(-50);
     await fsp.writeFile(tmp, JSON.stringify(state, null, 2), 'utf8');
@@ -644,7 +788,10 @@ export class ChainIndexer {
       return { reorged: false, forkPoint: null, checked: 1 };
     }
     // 分歧: 往回走
-    const floor = Math.max(this.deploymentBlock - 1, probeTop - this.reorgDepth);
+    // ★ 回退**不得越过扫描下界** (deploymentBlock - 1): 比它还矮的块根本不在本索引的扫描范围内,
+    //   回退到那里等于在说"我索引了不属于我的块"。下界取 instance 与文件里身份的下界中更保守的那个
+    //   (身份已核对时两者相同; 不同时说明文件是旧的 —— 那种情况在 sync 的身份门就被拒了)。
+    const floor = Math.max(this.deploymentBlock - 1, state.deploymentBlock - 1, probeTop - this.reorgDepth);
     let checked = 0;
     for (let n = probeTop; n >= floor; n--) {
       checked++;
@@ -656,8 +803,8 @@ export class ChainIndexer {
     }
     return {
       reorged: true,
-      forkPoint: this.deploymentBlock - 1,
-      reason: `超过 reorgDepth=${this.reorgDepth} 仍找不到一致的块 → 从 deploymentBlock 重扫`,
+      forkPoint: floor,
+      reason: `超过 reorgDepth=${this.reorgDepth} 仍找不到一致的块: 已索引区间 [${Math.max(this.deploymentBlock, state.deploymentBlock)}, ${probeTop}] 整体对不上 → 按扫描下界 ${floor} 重扫 (若你最近换过链/换过部署, 那不是重组 —— 先 rebuild 让索引换成当前身份)`,
       checked,
     };
   }
@@ -671,6 +818,14 @@ export class ChainIndexer {
   async syncFrom(fromBlock?: number): Promise<ChainSyncResult> {
     const t0 = Date.now();
     const state = this.load();
+
+    // ⓪ ★身份门 (在任何 RPC、任何写盘之前): 索引文件不是当前这条链 / 这个合约的 →
+    //    一律拒绝同步, 报 INDEX_IDENTITY_CHANGED (不是 REORG_SUSPECTED —— 那会把人引到错的方向)。
+    const idChg = this.detectIdentityChange(state);
+    if (idChg.changed) {
+      throw new ChainIndexIdentityChangedError(idChg.old!, idChg.new, this.indexPath);
+    }
+
     const head = await this.head();
 
     // ① 重组检测 + 回退 (回退的记录**保留**, 标 suspect)
@@ -714,11 +869,11 @@ export class ChainIndexer {
       this.log(`  ⚠ 重组: ${re.reason}; 回退 ${affected.length} 条记录 (标 suspect, 不删除)`);
     }
 
-    // ② 决定起点
+    // ② 决定起点 (一律用**当前实例**的 deploymentBlock: 身份已核对一致, 且拒绝沿用旧文件里可能陈旧的起点)
     let scanFrom: number;
-    if (rewoundTo != null) scanFrom = Math.max(rewoundTo + 1, state.deploymentBlock);
-    else if (fromBlock != null) scanFrom = Math.max(fromBlock, state.deploymentBlock);
-    else scanFrom = Math.max(state.lastSyncedBlock + 1, state.deploymentBlock);
+    if (rewoundTo != null) scanFrom = Math.max(rewoundTo + 1, this.deploymentBlock);
+    else if (fromBlock != null) scanFrom = Math.max(fromBlock, this.deploymentBlock);
+    else scanFrom = Math.max(state.lastSyncedBlock + 1, this.deploymentBlock);
 
     const scanTo = head.number;
     const acc = { pages: 0, ranges: [] as Array<{ from: number; to: number }>, logs: [] as any[], halves: 0 };
@@ -861,6 +1016,7 @@ export class ChainIndexer {
       entries: state.entries.length,
       suspects: state.entries.filter((e) => e.suspect).length,
       durationMs: run.durationMs,
+      identity: this.identity(),
       resynced: rewoundTo != null || (fromBlock != null && fromBlock < state.lastSyncedBlock),
     };
   }
@@ -871,10 +1027,19 @@ export class ChainIndexer {
    * 无视 lastSyncedBlock, 从 deploymentBlock 全量重扫 (与增量走**同一条**扫码路径)。
    * 结果与现有增量索引逐条比对; `persist=true` 时用重建结果替换 entries
    * (已有的 suspect 记录若重建后仍不在链上 → 原样保留标 suspect, 不静默丢弃)。
+   *
+   * ★**身份变更** (索引文件属于另一次部署 / 另一条链实例) → 走**干净重建**:
+   *   旧身份的 entries **一律丢弃** (不是标 suspect —— 它们不属于当前身份, 标 suspect 会让人
+   *   以为「链上曾经有过」), 身份改用当前链配置写回, 并在结果/run 里如实报
+   *   `identityChanged: true` + `oldIdentity`/`newIdentity` + 丢了多少条。
+   *   身份未变时行为与历史**逐条等价** (旧的 suspect 记录照旧保留)。
    */
   async rebuild(opts: { persist?: boolean } = {}): Promise<ChainRebuildResult> {
     const t0 = Date.now();
     const state = this.load();
+    // ★ 身份判定必须在扫链**之前** (与 sync 同一口径): 它决定重建是"合并保留"还是"干净重建"。
+    const idChg = this.detectIdentityChange(state);
+    const newIdentity = this.identity();
     const head = await this.head();
     const acc = { pages: 0, ranges: [] as Array<{ from: number; to: number }>, logs: [] as any[], halves: 0 };
     await this.fetchLogsRange(this.deploymentBlock, head.number, acc);
@@ -908,44 +1073,82 @@ export class ChainIndexer {
     }
 
     const comparison = compareIndexes(state.entries, fresh);
+    let discardedEntries = 0;
 
     if (opts.persist) {
-      const rebuiltKeys = new Set(fresh.map((e) => e.key));
-      // 审计留存: 旧的 suspect 记录若重建后不在链上 → 保留 (标 suspect, 说明原因)
-      const carried = state.entries
-        .filter((e) => e.suspect && !rebuiltKeys.has(e.key))
-        .map((e) => ({
-          ...e,
-          suspect: true,
-          suspectReason: e.suspectReason || '重建后链上已无此日志',
-          history: [...e.history, { at: Date.now(), note: '全量重建: 链上已无此日志, 保留为 suspect 审计记录' }].slice(-20),
-          updatedAt: Date.now(),
-        }));
-      const after: ChainIndexFile = {
-        ...state,
-        entries: [...fresh, ...carried],
-        lastSyncedBlock: head.number,
-        lastSyncedAt: Date.now(),
-        headBlock: head.number,
-        headBlockHash: head.hash,
-        rebuiltAt: Date.now(),
-        confirmations: { ...this.confirmations },
-        pageSize: this.pageSize,
-        reorgDepth: this.reorgDepth,
-      };
-      after.recentBlocks = [];
-      await this.rememberBlockWindow(after, head);
-      this.refreshFinality(after, head.number);
-      after.runs.push({
-        at: Date.now(), mode: 'rebuild', requestedFrom: this.deploymentBlock,
-        scanFrom: this.deploymentBlock, scanTo: head.number, pages: acc.pages, ranges: acc.ranges,
-        blocksScanned: head.number - this.deploymentBlock + 1, logsFound: acc.logs.length,
-        inserted: fresh.length, deduped: acc.logs.length - fresh.length, restored: 0,
-        markedSuspect: carried.length, rewoundTo: null, headBlock: head.number, headBlockHash: head.hash,
-        durationMs: Date.now() - t0,
-        note: `全量重建; 与增量比对: same=${comparison.same} (差 ${comparison.missingInB.length + comparison.extraInB.length + comparison.mismatched.length} 处)`,
-      });
-      await this.save(after);
+      if (idChg.changed) {
+        // ── 干净重建 ────────────────────────────────────────────────────────
+        // 旧身份的记录**一条都不留** (也不标 suspect): 它们要么是另一条链上同一块号的别的日志,
+        // 要么属于已死掉的合约 —— 留在文件里就会污染 status/stats/timeline 的每一处读数。
+        discardedEntries = state.entries.length;
+        const after = this.emptyIndex();   // ← 身份/起点/来源全取**当前**实例 (换部署后必须采用新值)
+        after.entries = fresh;
+        after.lastSyncedBlock = head.number;
+        after.lastSyncedAt = Date.now();
+        after.headBlock = head.number;
+        after.headBlockHash = head.hash;
+        after.rebuiltAt = Date.now();
+        after.runs = state.runs.slice(-49); // 审计: 旧 run 记录是真的发生过, 保留 (它们自会写明自己的身份)
+        after.recentBlocks = [];
+        await this.rememberBlockWindow(after, head);
+        this.refreshFinality(after, head.number);
+        after.runs.push({
+          at: Date.now(), mode: 'rebuild', requestedFrom: this.deploymentBlock,
+          scanFrom: this.deploymentBlock, scanTo: head.number, pages: acc.pages, ranges: acc.ranges,
+          blocksScanned: head.number - this.deploymentBlock + 1, logsFound: acc.logs.length,
+          inserted: fresh.length, deduped: acc.logs.length - fresh.length, restored: 0,
+          markedSuspect: 0, rewoundTo: null, headBlock: head.number, headBlockHash: head.hash,
+          durationMs: Date.now() - t0,
+          identityChanged: true, oldIdentity: idChg.old, newIdentity, discardedEntries,
+          note: `身份变更 → 干净重建: 丢弃 ${discardedEntries} 条属于旧身份 (chainId=${idChg.old!.chainId} escrow=${idChg.old!.escrowAddress} deploymentBlock=${idChg.old!.deploymentBlock}) 的记录 (不标 suspect); ` +
+            `索引身份改为 (chainId=${newIdentity.chainId} escrow=${newIdentity.escrowAddress} deploymentBlock=${newIdentity.deploymentBlock}); 与重建前逐条比对: same=${comparison.same}`,
+        });
+        await this.save(after);
+      } else {
+        const rebuiltKeys = new Set(fresh.map((e) => e.key));
+        // 审计留存: 旧的 suspect 记录若重建后不在链上 → 保留 (标 suspect, 说明原因)
+        const carried = state.entries
+          .filter((e) => e.suspect && !rebuiltKeys.has(e.key))
+          .map((e) => ({
+            ...e,
+            suspect: true,
+            suspectReason: e.suspectReason || '重建后链上已无此日志',
+            history: [...e.history, { at: Date.now(), note: '全量重建: 链上已无此日志, 保留为 suspect 审计记录' }].slice(-20),
+            updatedAt: Date.now(),
+          }));
+        const after: ChainIndexFile = {
+          ...state,
+          entries: [...fresh, ...carried],
+          lastSyncedBlock: head.number,
+          lastSyncedAt: Date.now(),
+          headBlock: head.number,
+          headBlockHash: head.hash,
+          rebuiltAt: Date.now(),
+          // ★ 身份未变, 但仍显式写回当前实例的口径 (save() 也会兜底 stamp)
+          chainId: this.chainId,
+          escrowAddress: this.escrowAddress,
+          deploymentBlock: this.deploymentBlock,
+          deploymentSource: this.deploymentSource,
+          identity: newIdentity,
+          confirmations: { ...this.confirmations },
+          pageSize: this.pageSize,
+          reorgDepth: this.reorgDepth,
+        };
+        after.recentBlocks = [];
+        await this.rememberBlockWindow(after, head);
+        this.refreshFinality(after, head.number);
+        after.runs.push({
+          at: Date.now(), mode: 'rebuild', requestedFrom: this.deploymentBlock,
+          scanFrom: this.deploymentBlock, scanTo: head.number, pages: acc.pages, ranges: acc.ranges,
+          blocksScanned: head.number - this.deploymentBlock + 1, logsFound: acc.logs.length,
+          inserted: fresh.length, deduped: acc.logs.length - fresh.length, restored: 0,
+          markedSuspect: carried.length, rewoundTo: null, headBlock: head.number, headBlockHash: head.hash,
+          durationMs: Date.now() - t0,
+          identityChanged: false, oldIdentity: idChg.old, newIdentity, discardedEntries: 0,
+          note: `全量重建; 与增量比对: same=${comparison.same} (差 ${comparison.missingInB.length + comparison.extraInB.length + comparison.mismatched.length} 处)`,
+        });
+        await this.save(after);
+      }
     }
 
     return {
@@ -953,6 +1156,11 @@ export class ChainIndexer {
       blocksScanned: head.number - this.deploymentBlock + 1,
       logsFound: acc.logs.length, entries: fresh.length,
       headBlock: head.number, comparison, durationMs: Date.now() - t0, persisted: !!opts.persist,
+      identity: newIdentity,
+      identityChanged: idChg.changed,
+      oldIdentity: idChg.old,
+      newIdentity,
+      discardedEntries,
     };
   }
 

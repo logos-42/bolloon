@@ -28,6 +28,7 @@ import {
 } from '../cli/commands/chain.js';
 import { SERVICE_GROUPS, GROUP_COMMANDS, isServiceGroup } from '../cli/commands/index.js';
 import { setChainIndexPathForTesting } from '../agents/chain/chain-index-query.js';
+import { ChainIndexer } from '../agents/chain/chain-indexer.js';
 import { upsertChainTx, markSuspect, chainStatePath } from '../agents/chain/chain-state-store.js';
 import { onchainTaskKey } from '../agents/chain/onchain-trade.js';
 import { chainRequestIdOf } from '../agents/chain/chain-wallet.js';
@@ -103,14 +104,27 @@ function chainEntry(over: Record<string, unknown> = {}) {
   };
 }
 
-function writeIndex(entries: unknown[]): void {
+function writeIndex(entries: unknown[], over: Record<string, unknown> = {}): void {
   fs.mkdirSync(path.dirname(indexPath), { recursive: true });
   fs.writeFileSync(indexPath, JSON.stringify({
     schemaVersion: 2, chainId: 31337, networkName: 'localhost', escrowAddress: ESCROW_ADDR,
     deploymentBlock: 111, deploymentSource: 'test', lastSyncedBlock: 199, lastSyncedAt: Date.now(),
     headBlock: 200, headBlockHash: '0x' + 'dd'.repeat(32), confirmations: { confirmed: 1, finalized: 12 },
     pageSize: 2000, reorgDepth: 32, entries, recentBlocks: [], runs: [], updatedAt: Date.now(),
+    ...over,
   }));
+}
+
+/** 极小假链 (只够索引器扫链): head 固定, 无日志 (另有计数, 用来证明"没读链") */
+function rpcSpy(head = 20, logs: any[] = []) {
+  let calls = 0;
+  const hex = (n: number) => '0x' + n.toString(16).padStart(64, '0');
+  const provider = {
+    async getBlockNumber() { calls++; return head; },
+    async getBlock(n: number | string) { calls++; return { number: Number(n), hash: hex(Number(n)), parentHash: hex(Math.max(0, Number(n) - 1)) }; },
+    async getLogs() { calls++; return logs; },
+  };
+  return { provider, calls: () => calls };
 }
 
 // ── 命令组装配 ───────────────────────────────────────────────────────────────
@@ -268,6 +282,102 @@ describe('chain index', () => {
   it('未知 index 子命令 → INVALID_ARGUMENT', async () => {
     const env = await run('chain', 'index', 'wat');
     expect(env.code).toBe('INVALID_ARGUMENT');
+  });
+
+  it('usage 里写着的 rebuild 子命令**真的存在** (帮助文本不许提一个不存在的命令)', async () => {
+    expect(CHAIN_USAGE).toContain('chain index status|stats|sync|rebuild');
+    delete process.env.BOLLOON_CHAIN_RPC_URL; // 未配置链 → 配置类失败, 但**不是** INVALID_ARGUMENT(未实现)
+    const env = await run('chain', 'index', 'rebuild');
+    expect(env.code).not.toBe('INVALID_ARGUMENT');
+    expect(env.code).toBe('CHAIN_NOT_CONFIGURED');
+  });
+});
+
+// ── chain index 身份变更 (换合约部署 / anvil 重启换链实例) ───────────────────────
+
+describe('chain index 身份变更 (换合约部署 ≠ 重组)', () => {
+  const OLD_ADDR = '0x' + '9b'.repeat(20); // 上一轮部署的 escrow (与当前 ESCROW_ADDR 是不同合约)
+
+  /** 注入"当前链"上的索引器 (假链, 不联网) */
+  const injectIndexer = (opts: { provider: any; deploymentBlock?: number; escrowAddress?: string }) => (): unknown =>
+    new ChainIndexer({
+      provider: opts.provider, escrowAddress: opts.escrowAddress ?? ESCROW_ADDR, chainId: 31337,
+      networkName: 'localhost', deploymentBlock: opts.deploymentBlock ?? 10, home: HOME,
+      pageSize: 50, checkpointEvery: 1000,
+    });
+
+  it('★ sync 遇身份变更 → INDEX_IDENTITY_CHANGED + needs_human (绝不报 REORG_SUSPECTED), 且不读链、不写盘', async () => {
+    chainConfigured();
+    writeIndex([chainEntry({ blockNumber: 120 })], { escrowAddress: OLD_ADDR, deploymentBlock: 111 });
+    const before = fs.readFileSync(indexPath, 'utf8');
+    const spy = rpcSpy();
+    setChainCommandDepsForTesting({ indexer: injectIndexer({ provider: spy.provider }) });
+
+    const env = await run('chain', 'index', 'sync');
+    expect(env.ok).toBe(false);
+    expect(env.code).toBe('INDEX_IDENTITY_CHANGED');           // ★ 不是 REORG_SUSPECTED
+    expect(env.code).not.toBe('REORG_SUSPECTED');
+    expect(env.next_action).toBe('needs_human');
+    expect(env.data.identityChanged).toBe(true);
+    expect((env.data.oldIdentity as any).escrowAddress).toBe(OLD_ADDR.toLowerCase());
+    expect((env.data.oldIdentity as any).deploymentBlock).toBe(111);
+    expect((env.data.newIdentity as any).escrowAddress).toBe(ESCROW_ADDR.toLowerCase());
+    expect((env.data.newIdentity as any).deploymentBlock).toBe(10);
+    expect(String(env.data.suggestedCommand)).toContain('bolloon chain index rebuild');
+    expect(env.data.scanned).toBe(false);
+    expect(env.data.wroteIndex).toBe(false);
+    expect(spy.calls()).toBe(0);                                // 身份门在任何 RPC 之前
+    expect(fs.readFileSync(indexPath, 'utf8')).toBe(before);    // 一个字节都没动
+    expect(String(env.message)).toContain('这不是重组');
+  });
+
+  it('★ rebuild: 身份变更 → **干净重建** (ok:true + identityChanged, 丢弃旧身份记录, 文件身份改成当前)', async () => {
+    chainConfigured();
+    writeIndex(
+      [chainEntry({ blockNumber: 120 }), chainEntry({ blockNumber: 121, logIndex: 1, txHash: '0x' + 'cd'.repeat(32) })],
+      { escrowAddress: OLD_ADDR, deploymentBlock: 111 },
+    );
+    const spy = rpcSpy(20); // 当前链: head 20, 没有事件
+    setChainCommandDepsForTesting({ indexer: injectIndexer({ provider: spy.provider }) });
+
+    const env = await run('chain', 'index', 'rebuild');
+    expect(env.ok).toBe(true);                                  // 修完了 → 报成功 (但明说身份变了)
+    expect(env.data.identityChanged).toBe(true);
+    expect(env.data.persisted).toBe(true);
+    expect(env.data.discardedEntries).toBe(2);                  // 旧身份的两条被丢弃 (不是标 suspect)
+    expect((env.data.oldIdentity as any).deploymentBlock).toBe(111);
+    expect((env.data.newIdentity as any).escrowAddress).toBe(ESCROW_ADDR.toLowerCase());
+    expect(env.data.entries).toBe(0);                           // 当前链上没有日志
+    expect(String(env.data.note)).toContain('干净重建');
+    expect(spy.calls()).toBeGreaterThan(0);                     // 真扫了链 (head + 块)
+
+    const raw = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+    expect(raw.escrowAddress).toBe(ESCROW_ADDR);                // ★ 采用当前身份写回
+    expect(raw.deploymentBlock).toBe(10);
+    expect(raw.entries.length).toBe(0);
+    expect(raw.identity).toEqual({ chainId: 31337, escrowAddress: ESCROW_ADDR.toLowerCase(), deploymentBlock: 10 });
+
+    // 修完之后: status 报的就是**真身份**, 而 sync 不再被拒
+    const st = await run('chain', 'index', 'status');
+    expect(st.data.escrowAddress).toBe(ESCROW_ADDR);
+    expect(st.data.deploymentBlock).toBe(10);
+    const again = await run('chain', 'index', 'sync');
+    expect(again.ok).toBe(true);
+    expect(again.code).toBe('OK');
+  });
+
+  it('rebuild: 身份未变 → 行为与历史一致 (identityChanged=false, 不丢弃, 走原来的保留路径)', async () => {
+    chainConfigured();
+    writeIndex([chainEntry({ blockNumber: 12 })], { escrowAddress: ESCROW_ADDR, deploymentBlock: 10 });
+    const spy = rpcSpy(20);
+    setChainCommandDepsForTesting({ indexer: injectIndexer({ provider: spy.provider }) });
+
+    const env = await run('chain', 'index', 'rebuild');
+    expect(env.ok).toBe(true);
+    expect(env.data.identityChanged).toBe(false);
+    expect(env.data.discardedEntries).toBe(0);
+    expect((env.data.newIdentity as any)).toEqual((env.data.oldIdentity as any));
+    expect(String(env.data.note)).toContain('身份未变');
   });
 });
 

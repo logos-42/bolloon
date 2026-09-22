@@ -23,6 +23,7 @@
  * P6 新增错误码 (append-only, 不改任何冻结码含义):
  *   `CHAIN_NOT_CONFIGURED` · `CHAIN_UNAVAILABLE` · `CHAIN_UNCERTAIN` · `CHAIN_TX_REVERTED`
  *   `ESCROW_NOT_FOUND` · `INSUFFICIENT_FUNDS` · `NOT_AUTHORIZED` · `REORG_SUSPECTED`
+ *   `INDEX_IDENTITY_CHANGED` (2026-09-22 P5 修正: 换合约部署/换链实例 ⇒ 索引身份变了, **不是重组**)
  */
 
 import * as os from 'os';
@@ -45,8 +46,9 @@ ${title('bolloon chain')}
   bolloon chain timeline <taskKey> [--json]
       链上事件时间线 (索引里的真事件) + 本机视角 (chain-state.json 的 create/proof/release 记录)
 
-  bolloon chain index status|stats|sync [--from-block <n>] [--json]
-      索引高度/最后同步 / 全量统计 / 增量同步 (从 deployment block 起扫, 分页+去重+重组回退)
+  bolloon chain index status|stats|sync|rebuild [--from-block <n>] [--json]
+      索引高度/最后同步 / 全量统计 / 增量同步 (从 deployment block 起扫, 分页+去重+重组回退) /
+      全量重建 (换过合约部署 → **干净重建**: 丢弃旧身份的记录, 采用当前身份, 报 identityChanged)
 
   bolloon chain trade create --task-id <id> --agent <addr> --amount <USDC> [--asset <token>] \\
                             [--deadline <unix秒>] [--confirmation-window <秒>] [--proof-version <n>] [--gate confirmed|finalized]
@@ -65,6 +67,12 @@ ${title('bolloon chain')}
   声明本身**不授权** —— 最终还是看本机放行闸 (authorizeWalletSignature, fail-closed)。
 --payment-mode manual|policy 会被放行闸直接拒 (modeIsAutonomous): 它只能**收紧**, 不可能放权。
 chain trade expire 不存在 (仓库没实现) —— 需要它请先实现合约侧子命令再暴露, 不许在 MCP 层假装。
+
+索引身份 (identity = chainId + escrowAddress + 部署块) 随索引一并落盘 (identity 字段):
+  换过合约部署 / anvil 重启换了链实例 ⇒ 索引文件属于**另一次部署** —— chain index sync 一律拒绝,
+  报 **INDEX_IDENTITY_CHANGED** (next_action=needs_human, 这次不扫不写), **不是** REORG_SUSPECTED;
+  修法只有一个: bolloon chain index rebuild (干净重建: 丢弃旧身份的记录, 采用当前身份, 如实报丢弃条数)。
+chain index status 里的 escrow/部署块就是**这份索引**的身份 —— 它不该等于当前链配置时, 先 rebuild。
 `;
 
 // ── 测试注入 (生产不设; 生产唯一构造入口仍是 EscrowClient({ config })) ──────────
@@ -74,6 +82,8 @@ export interface ChainCommandDeps {
   client?: (cfg: unknown) => unknown;
   /** 注入链上判定器 (测试; 不给 = P3 的 verifyPaymentOnChain) */
   verifyOnChain?: unknown;
+  /** 注入索引器 (测试用假链; 不给 = new ChainIndexer({ config, home })) —— 只为单测不联网, 生产不给 */
+  indexer?: (cfg: unknown, home: string) => unknown;
 }
 let deps: ChainCommandDeps | null = null;
 export function setChainCommandDepsForTesting(d: ChainCommandDeps | null): void {
@@ -438,7 +448,23 @@ async function chainTimeline(flags: CliFlags): Promise<CommandResult> {
   return { envelope: okEnvelope('OK', `时间线 ${tl.count} 条事件 · 状态 ${tl.state ?? '(未定)'}`, data, evidence, null), human };
 }
 
-// ── chain index status|stats|sync ───────────────────────────────────────────
+// ── chain index status|stats|sync|rebuild ───────────────────────────────────
+
+/** 索引身份 → 一行人话 (chainId · escrow · 部署块) —— 读的人一眼看到这份索引是谁的 */
+function identityLine(i: any): string {
+  if (!i) return '(未知)';
+  return `chainId=${i.chainId} · escrow=${i.escrowAddress} · 部署块=${i.deploymentBlock}`;
+}
+
+/** 身份变更后唯一该做的事 (与 chain-indexer 的 INDEX_IDENTITY_REBUILD_COMMAND 同一句) */
+const IDENTITY_FIX = 'bolloon chain index rebuild';
+
+/** 造索引器 (测试可注入假链; 生产唯一构造入口仍是 new ChainIndexer({ config, home })) */
+async function makeIndexer(cfg: unknown): Promise<any> {
+  if (deps?.indexer) return deps.indexer(cfg, home());
+  const { ChainIndexer } = await import('../../agents/chain/chain-indexer.js');
+  return new ChainIndexer({ config: cfg as any, home: home() });
+}
 
 async function chainIndex(flags: CliFlags): Promise<CommandResult> {
   const sub = flags.positionals[1];
@@ -449,7 +475,7 @@ async function chainIndex(flags: CliFlags): Promise<CommandResult> {
     const data = { ...s, synced: !never, note: never ? '索引从未同步过 (本机没有任何链上事件记录)' : '读本机索引文件 (不发 RPC)' };
     return {
       envelope: okEnvelope('OK', never ? `索引从未同步 (文件 ${s.indexPath})` : `索引高度 ${s.lastSyncedBlock} · ${s.entries} 条事件 (suspect ${s.suspects})`, data, [s.indexPath], null),
-      human: [title('bolloon chain index status'), line('索引文件', s.indexPath), line('已同步到', never ? '(从未)' : `${s.lastSyncedBlock}`), line('事件数', `${s.entries} (suspect ${s.suspects})`), line('最后同步', s.lastSyncedAt ? new Date(s.lastSyncedAt).toISOString() : '(从未)'), line('部署块', `${s.deploymentBlock} (${s.deploymentSource})`), line('确认数门槛', `confirmed ≥ ${s.confirmations.confirmed} · finalized ≥ ${s.confirmations.finalized}`)].join('\n'),
+      human: [title('bolloon chain index status'), line('索引文件', s.indexPath), line('已同步到', never ? '(从未)' : `${s.lastSyncedBlock}`), line('事件数', `${s.entries} (suspect ${s.suspects})`), line('最后同步', s.lastSyncedAt ? new Date(s.lastSyncedAt).toISOString() : '(从未)'), line('部署块', `${s.deploymentBlock} (${s.deploymentSource})`), line('索引身份', identityLine(s.identity)), line('确认数门槛', `confirmed ≥ ${s.confirmations.confirmed} · finalized ≥ ${s.confirmations.finalized}`)].join('\n'),
     };
   }
   if (sub === 'stats') {
@@ -467,8 +493,7 @@ async function chainIndex(flags: CliFlags): Promise<CommandResult> {
     const from = optInt(flags, '--from-block', undefined);
     let idx: any;
     try {
-      const { ChainIndexer } = await import('../../agents/chain/chain-indexer.js');
-      idx = new ChainIndexer({ config: loaded.cfg, home: home() });
+      idx = await makeIndexer(loaded.cfg);
     } catch (e: any) {
       // 索引起点解析不到 (部署 manifest 缺) → 配置类失败, 不猜 0
       return {
@@ -480,6 +505,40 @@ async function chainIndex(flags: CliFlags): Promise<CommandResult> {
     try {
       r = await idx.syncFrom(from);
     } catch (e: any) {
+      // ★ 身份变更 ≠ 重组 (2026-09-22 P5 修正): 索引文件属于另一次部署/另一条链实例时,
+      //   indexer 在任何 RPC/写盘之前就拒了 —— 这里把它翻成一个**可操作**的新码,
+      //   绝不落进 CHAIN_UNAVAILABLE (看不到原因) 或 REORG_SUSPECTED (把人引去查分叉)。
+      if (e?.code === 'INDEX_IDENTITY_CHANGED' || e?.name === 'ChainIndexIdentityChangedError') {
+        const oldI = e?.oldIdentity ?? null;
+        const newI = e?.newIdentity ?? null;
+        return {
+          envelope: failEnvelope(
+            'INDEX_IDENTITY_CHANGED',
+            `索引身份变了 (**这不是重组**): 索引文件属于 ${identityLine(oldI)}, 当前链是 ${identityLine(newI)} —— 旧索引里的事件不属于当前合约/链实例。这次**没扫、没写盘**。修法: ${IDENTITY_FIX}`,
+            {
+              identityChanged: true, oldIdentity: oldI, newIdentity: newI,
+              indexPath: IQ.currentIndexPath(home()),
+              escrowAddress: loaded.cfg.escrowAddress, chainId: loaded.cfg.chainId,
+              scanned: false, wroteIndex: false,
+              suggestedCommand: IDENTITY_FIX,
+              howToFix: [
+                `${IDENTITY_FIX} --json   (干净重建: 丢弃旧身份的记录, 采用当前身份)`,
+                '想留旧部署的索引 → 把 BOLLOON_* 指回旧部署/旧链, 或用 BOLLOON_INDEX_* 给它单独一个索引文件 (别覆盖)',
+              ],
+              note: '换合约部署/anvil 重启会让索引文件属于另一次部署; 把两边的事件混在一个文件里会污染 status/stats/timeline 的每一处读数 —— 所以这里什么都不动',
+            },
+            [String(oldI?.escrowAddress ?? ''), String(newI?.escrowAddress ?? '')].filter(Boolean),
+            'needs_human',
+          ),
+          human: [
+            title(head),
+            '  ✗ 索引身份变了 (**这不是重组**) — 这次没扫、没写盘',
+            line('旧索引', identityLine(oldI)),
+            line('当前链', identityLine(newI)),
+            hint(`  下一步: ${IDENTITY_FIX} (干净重建: 丢弃旧身份记录, 采用当前身份)`),
+          ].join('\n'),
+        };
+      }
       return {
         envelope: failEnvelope('CHAIN_UNAVAILABLE', `同步失败 (RPC/读链): ${String(e?.shortMessage || e?.message || e).slice(0, 260)}`, { fromBlock: from ?? null, escrowAddress: loaded.cfg.escrowAddress }, [], 'reconcile'),
         human: humanFail(head, { code: 'CHAIN_UNAVAILABLE' as Code, message: '同步失败', next_action: 'reconcile' }),
@@ -493,24 +552,110 @@ async function chainIndex(flags: CliFlags): Promise<CommandResult> {
       markedSuspect: r.markedSuspect, rewoundTo: r.rewoundTo,
       headBlock: r.headBlock, headBlockHash: r.headBlockHash, lastSyncedBlock: r.lastSyncedBlock,
       entries: r.entries, suspects: r.suspects, durationMs: r.durationMs,
+      /** 扫这些日志时**实际用的**身份 (与落盘身份同源) */
+      identity: r.identity ?? null,
       indexPath: IQ.currentIndexPath(home()),
       writesMoney: false, writesKeys: false,
       note: '索引只是链上事件的本地缓存 (可删可重建); 它**不是**结算事实, 判据仍是 receipt/事件/确认数',
     };
     // 重组回退 → 有记录被标可疑 → 不报成功
     if ((r.markedSuspect ?? 0) > 0 || r.rewoundTo != null) {
+      const idData = r.identity ?? {};
+      // 回退点 = 扫描下界 (部署块 - 1) 时: 整个已索引区间都对不上 —— 说清楚这不是"某一块分叉",
+      // 并且**绝不**把回退点报到部署块以下 (回退不到那里: 那些块从来不在本索引的扫描范围内)。
+      const deepRewind = r.markedSuspect > 0 && r.rewoundTo != null
+        && r.rewoundTo <= Math.max(0, Number(idData.deploymentBlock ?? 0) - 1);
       return {
-        envelope: failEnvelope('REORG_SUSPECTED', `同步时检出重组: 回退到 ${r.rewoundTo}, 标可疑 ${r.markedSuspect} 条 (记录保留, 不当没发生)`, data, [String(r.headBlockHash)], 'reconcile'),
-        human: `${title(head)}\n  ✗ 检出重组: 标 suspect ${r.markedSuspect} 条, 回退到 ${r.rewoundTo}\n  ${hint('下一步: bolloon chain index stats 看 suspect, 再决定是否 rebuild')}`,
+        envelope: failEnvelope(
+          'REORG_SUSPECTED',
+          deepRewind
+            ? `同步时检出**整段**对不上: 回退到扫描下界 ${r.rewoundTo} (部署块 ${idData.deploymentBlock} - 1, 再往下不属于本索引的扫描范围), 标可疑 ${r.markedSuspect} 条 (记录保留, 不当没发生)。若你最近换过合约部署/换过链, 那不是重组 → 先 \`${IDENTITY_FIX}\``
+            : `同步时检出重组: 回退到 ${r.rewoundTo}, 标可疑 ${r.markedSuspect} 条 (记录保留, 不当没发生)`,
+          { ...data, deepRewind, rewoundToIsScanFloor: deepRewind, scanFloor: Math.max(0, Number(idData.deploymentBlock ?? 0) - 1) },
+          [String(r.headBlockHash)],
+          'reconcile',
+        ),
+        human: `${title(head)}\n  ✗ ${deepRewind ? `整段对不上: 回退到扫描下界 ${r.rewoundTo}` : `检出重组: 回退到 ${r.rewoundTo}`}, 标 suspect ${r.markedSuspect} 条\n  ${hint(deepRewind ? `若换过合约部署/换过链 → 先 ${IDENTITY_FIX} (身份变更不是重组)` : '下一步: bolloon chain index stats 看 suspect, 再决定是否 rebuild')}`,
       };
     }
     return {
       envelope: okEnvelope('OK', `同步完成: 新增 ${r.inserted} 条 (去重 ${r.deduped}), 共 ${r.entries} 条 · 扫到 ${r.scanTo}/${r.headBlock}`, data, [String(r.headBlockHash), String(r.headBlock)], null),
-      human: [title(head), line('扫描区间', `${r.scanFrom} → ${r.scanTo}`), line('本页/区块', `${r.pages} 页 / ${r.blocksScanned} 块`), line('新增/去重', `${r.inserted} / ${r.deduped}`), line('索引事件数', `${r.entries} (suspect ${r.suspects})`), line('已同步到', r.lastSyncedBlock), line('耗时', `${r.durationMs}ms`)].join('\n'),
+      human: [title(head), line('扫描区间', `${r.scanFrom} → ${r.scanTo}`), line('本页/区块', `${r.pages} 页 / ${r.blocksScanned} 块`), line('新增/去重', `${r.inserted} / ${r.deduped}`), line('索引事件数', `${r.entries} (suspect ${r.suspects})`), line('已同步到', r.lastSyncedBlock), line('索引身份', identityLine(r.identity)), line('耗时', `${r.durationMs}ms`)].join('\n'),
+    };
+  }
+  if (sub === 'rebuild') {
+    // ★ 薄包装 ChainIndexer.rebuild (本分支**不新写任何业务逻辑**): 全量重扫 → 身份变更时干净重建。
+    const head = 'bolloon chain index rebuild';
+    const loaded = await loadCfg();
+    if (!loaded.ok) return { envelope: loaded.envelope, human: humanFail(head, loaded.envelope) };
+    let idx: any;
+    try {
+      idx = await makeIndexer(loaded.cfg);
+    } catch (e: any) {
+      return {
+        envelope: failEnvelope('CHAIN_NOT_CONFIGURED', `索引起点解析失败 (部署 manifest / BOLLOON_ESCROW_DEPLOYMENT_BLOCK): ${String(e?.message || e).slice(0, 300)}`, { escrowAddress: loaded.cfg.escrowAddress, chainId: loaded.cfg.chainId }, [], 'needs_human'),
+        human: humanFail(head, { code: 'CHAIN_NOT_CONFIGURED' as Code, message: '索引起点解析失败', next_action: 'needs_human' }),
+      };
+    }
+    let r: any;
+    try {
+      r = await idx.rebuild({ persist: true });
+    } catch (e: any) {
+      return {
+        envelope: failEnvelope('CHAIN_UNAVAILABLE', `重建失败 (RPC/读链): ${String(e?.shortMessage || e?.message || e).slice(0, 260)}`, { escrowAddress: loaded.cfg.escrowAddress }, [], 'reconcile'),
+        human: humanFail(head, { code: 'CHAIN_UNAVAILABLE' as Code, message: '重建失败', next_action: 'reconcile' }),
+      };
+    } finally { try { idx.close(); } catch { /* noop */ } }
+
+    const data = {
+      mode: r.mode, identity: r.identity, identityChanged: r.identityChanged === true,
+      oldIdentity: r.oldIdentity ?? null, newIdentity: r.newIdentity ?? null,
+      discardedEntries: r.discardedEntries ?? 0,
+      scanFrom: r.identity?.deploymentBlock ?? null, scanTo: r.headBlock,
+      pages: r.pages, blocksScanned: r.blocksScanned, logsFound: r.logsFound,
+      entries: r.entries, headBlock: r.headBlock,
+      comparison: r.comparison, durationMs: r.durationMs, persisted: r.persisted === true,
+      indexPath: IQ.currentIndexPath(home()),
+      writesMoney: false, writesKeys: false,
+      note: r.identityChanged
+        ? '身份变更 → **干净重建**: 旧身份的记录被丢弃 (不是标 suspect), 索引现在只属于当前身份; 索引只是本地缓存, 不是结算事实'
+        : '全量重建 (身份未变): 与增量结果逐条比对, 旧的 suspect 记录照旧保留; 索引只是本地缓存, 不是结算事实',
+    };
+    const diff = r.comparison ? (r.comparison.missingInB.length + r.comparison.extraInB.length + r.comparison.mismatched.length) : 0;
+    if (r.identityChanged) {
+      return {
+        envelope: okEnvelope(
+          'OK',
+          `身份变更 → 干净重建完成: 丢弃 ${data.discardedEntries} 条属于旧身份 (${identityLine(data.oldIdentity)}) 的记录, 索引现在只属于 ${identityLine(data.newIdentity)} · ${r.entries} 条事件`,
+          data,
+          [String(r.newIdentity?.escrowAddress ?? ''), String(r.headBlock)].filter(Boolean),
+          null,
+        ),
+        human: [
+          title(head),
+          line('身份变更', '是 (换合约部署/换链实例) — 这是**干净重建**, 不是重组'),
+          line('旧身份 (已丢弃)', `${identityLine(data.oldIdentity)} · 丢弃 ${data.discardedEntries} 条记录 (不标 suspect)`),
+          line('新身份 (已采用)', identityLine(data.newIdentity)),
+          line('扫描区间', `${data.scanFrom} → ${data.scanTo}`),
+          line('重建结果', `${r.entries} 条事件 (与重建前逐条比对 same=${r.comparison?.same})`),
+          line('索引文件', String(data.indexPath)),
+        ].join('\n'),
+      };
+    }
+    return {
+      envelope: okEnvelope('OK', `全量重建完成: ${r.entries} 条事件 (身份未变; 与增量比对 same=${r.comparison?.same}, 差 ${diff} 处)`, data, [String(r.headBlockHash ?? ''), String(r.headBlock)].filter(Boolean), null),
+      human: [
+        title(head),
+        line('身份变更', '否 (索引身份与当前链一致)'),
+        line('索引身份', identityLine(data.newIdentity)),
+        line('扫描区间', `${data.scanFrom} → ${data.scanTo}`),
+        line('重建结果', `${r.entries} 条事件 · 与增量比对 same=${r.comparison?.same} (差 ${diff} 处)`),
+        line('索引文件', String(data.indexPath)),
+      ].join('\n'),
     };
   }
   return {
-    envelope: failEnvelope('INVALID_ARGUMENT', sub ? `未知 chain index 子命令: ${sub}` : '缺少 chain index 子命令 (status|stats|sync)', { usage: plain(CHAIN_USAGE.trim()) }, [], 'needs_human'),
+    envelope: failEnvelope('INVALID_ARGUMENT', sub ? `未知 chain index 子命令: ${sub}` : '缺少 chain index 子命令 (status|stats|sync|rebuild)', { usage: plain(CHAIN_USAGE.trim()) }, [], 'needs_human'),
     human: CHAIN_USAGE,
   };
 }

@@ -47,6 +47,9 @@ export const CLI_CODES = [
   //   配置/可达性/结论未定/链上回滚/找不到 escrow/资金不足/未授权/重组可疑
   'CHAIN_NOT_CONFIGURED', 'CHAIN_UNAVAILABLE', 'CHAIN_UNCERTAIN', 'CHAIN_TX_REVERTED',
   'ESCROW_NOT_FOUND', 'INSUFFICIENT_FUNDS', 'NOT_AUTHORIZED', 'REORG_SUSPECTED',
+  // 2026-09-22 (P5 修正): **索引身份变更** (换合约部署 / anvil 重启换链实例) —— 这**不是重组**,
+  //   混进 REORG_SUSPECTED 会把人引到错的方向 (去查分叉, 而真因是索引属于另一个合约/另一条链)。
+  'INDEX_IDENTITY_CHANGED',
   // 通用失败码
   'C_NOT_IMPLEMENTED', 'INVALID_ARGUMENT', 'NOT_FOUND', 'TIMEOUT', 'INTERNAL_ERROR',
 ] as const;

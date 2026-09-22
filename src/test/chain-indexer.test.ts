@@ -19,7 +19,8 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   ChainIndexer, INDEX_IFACE, INDEXED_EVENT_NAMES, chainIndexPath, resolveDeploymentInfo,
-  compareIndexes, deriveEscrowState, type IndexRpcProvider, type ChainIndexEntry,
+  compareIndexes, deriveEscrowState, identityOf, identitiesEqual, INDEX_IDENTITY_CHANGED,
+  type IndexRpcProvider, type ChainIndexEntry,
 } from '../agents/chain/chain-indexer.js';
 import {
   getIndexStatus, getIndexStats, getEscrowTimeline, fetchIndexSince,
@@ -733,5 +734,220 @@ describe('事件清单', () => {
       .toBe('0x048424d461a91a8484bd99f1889c08e656f61e055f494da311e157d80aab154a');
     expect(String(INDEX_IFACE.getEvent('ExpiredV2')!.topicHash).toLowerCase())
       .toBe('0x517f3d5ae4ce226ad2ddd19ebb76fbf5446cc187b99bdb98e3442e21af73a7d5');
+  });
+});
+
+// ── ⑩ 索引身份 (换合约部署 / anvil 重启换链实例) ─────────────────────────────
+
+const OLD_ESCROW = '0x' + '9b'.repeat(20); // 上一轮部署的 escrow (与当前 ESCROW 是**不同**的合约)
+
+/** 用**旧身份**在同一个索引文件里造一份"上一轮链实例"的索引 */
+async function seedOldIdentity(blocks: number, logBlock: number, opts: { escrow?: string; deploymentBlock?: number } = {}) {
+  const chain = fakeChain(blocks);
+  const log = chain.addLog('EscrowCreatedV2', createdArgs(TASK_A), logBlock, 0, 'ab01');
+  const escrow = opts.escrow ?? OLD_ESCROW;
+  (log as any).address = escrow; // 旧部署的日志由**旧 escrow 地址**发出 (假链按地址过滤, 必须对得上)
+  const idx = new ChainIndexer({
+    provider: chain.provider, escrowAddress: escrow, chainId: 31337,
+    deploymentBlock: opts.deploymentBlock ?? 111, home: HOME, pageSize: 50, checkpointEvery: 1000,
+  });
+  await idx.syncFrom();
+  expect(idx.load().entries.length).toBe(1); // 前提: 旧索引里真有条目 (才谈得上"属于谁")
+  return idx;
+}
+
+describe('索引身份 (chainId + escrowAddress + 部署块)', () => {
+  it('identityOf/identitiesEqual: 地址大小写不算差异, 部署块算', () => {
+    expect(identityOf({ chainId: 31337, escrowAddress: ESCROW, deploymentBlock: 10 }))
+      .toEqual(identityOf({ chainId: 31337, escrowAddress: ESCROW.toLowerCase(), deploymentBlock: 10 }));
+    expect(identitiesEqual(
+      identityOf({ chainId: 31337, escrowAddress: ESCROW, deploymentBlock: 10 }),
+      identityOf({ chainId: 31337, escrowAddress: ESCROW, deploymentBlock: 11 }),
+    )).toBe(false);
+    expect(identitiesEqual(null, identityOf({ chainId: 31337, escrowAddress: ESCROW, deploymentBlock: 10 }))).toBe(false);
+  });
+
+  it('落盘身份: sync 后索引文件写着自己的 identity, 且等于**扫描实际用的**地址/起点', async () => {
+    const chain = fakeChain(20);
+    chain.addLog('EscrowCreatedV2', createdArgs(TASK_A), 15);
+    const idx = mkIndexer(chain);
+    const r = await idx.syncFrom();
+    expect(r.identity).toEqual({ chainId: 31337, escrowAddress: ESCROW.toLowerCase(), deploymentBlock: 10 });
+    const raw = JSON.parse(fs.readFileSync(chainIndexPath(HOME), 'utf8'));
+    expect(raw.identity).toEqual({ chainId: 31337, escrowAddress: ESCROW.toLowerCase(), deploymentBlock: 10 });
+    expect(raw.escrowAddress).toBe(ESCROW);
+    expect(raw.deploymentBlock).toBe(10);
+    expect(getIndexStatus({ home: HOME }).identity.escrowAddress).toBe(ESCROW.toLowerCase());
+  });
+
+  it('身份未变 → rebuild 行为与历史**逐条等价** (identityChanged=false, 旧 suspect 记录照旧保留)', async () => {
+    const chain = fakeChain(30);
+    chain.addLog('EscrowCreatedV2', createdArgs(TASK_A), 20);
+    chain.addLog('ReleasedV2', releasedArgs(TASK_A), 28);
+    const idx = mkIndexer(chain);
+    await idx.syncFrom();
+    chain.reorgAt(27, 3);            // 28 块消失 → 一条 suspect
+    await idx.syncFrom();
+    const before = idx.load();
+    expect(before.entries.filter((e) => e.suspect).length).toBe(1);
+
+    const rb = await idx.rebuild({ persist: true });
+    expect(rb.identityChanged).toBe(false);
+    expect(rb.discardedEntries).toBe(0);
+    expect(rb.oldIdentity).toEqual(rb.newIdentity);
+    const after = idx.load();
+    expect(after.entries.length).toBe(before.entries.length);          // 一条不多一条不少
+    expect(after.entries.filter((e) => e.suspect).length).toBe(1);     // suspect 审计记录照旧保留
+    expect(after.identity.escrowAddress).toBe(ESCROW.toLowerCase());
+  });
+
+  it('★ 身份变更 → rebuild **干净重建**: 丢弃旧身份 entries (不是标 suspect) + 采用新身份 + 如实报 identityChanged', async () => {
+    await seedOldIdentity(120, 112); // 旧链实例: OLD_ESCROW @ 部署块 111, 1 条记录
+
+    // 新部署 (当前链): 新 escrow @ 部署块 10, 链上 2 条新事件
+    const chain = fakeChain(20);
+    chain.addLog('EscrowCreatedV2', createdArgs(TASK_B), 15, 0, 'be01');
+    chain.addLog('ReleasedV2', releasedArgs(TASK_B), 16, 0, 'be02');
+    const idx = mkIndexer(chain);
+
+    const rb = await idx.rebuild({ persist: true });
+    expect(rb.identityChanged).toBe(true);
+    expect(rb.oldIdentity).toEqual({ chainId: 31337, escrowAddress: OLD_ESCROW.toLowerCase(), deploymentBlock: 111 });
+    expect(rb.newIdentity).toEqual({ chainId: 31337, escrowAddress: ESCROW.toLowerCase(), deploymentBlock: 10 });
+    expect(rb.identity).toEqual(rb.newIdentity);
+    expect(rb.discardedEntries).toBe(1);     // 旧身份那条
+    expect(rb.entries).toBe(2);              // 只有当前身份的事件
+
+    const after = idx.load();
+    expect(after.escrowAddress).toBe(ESCROW);        // ★ 身份字段采用**新值** (不再沿用旧文件的)
+    expect(after.deploymentBlock).toBe(10);
+    expect(after.deploymentSource).toBe('显式传入');
+    expect(after.identity).toEqual({ chainId: 31337, escrowAddress: ESCROW.toLowerCase(), deploymentBlock: 10 });
+    expect(after.entries.length).toBe(2);
+    // ★ 旧身份的记录**一条都没有** (不是标 suspect —— 它们根本不属于这份索引)
+    expect(after.entries.some((e) => e.address.toLowerCase() === OLD_ESCROW.toLowerCase())).toBe(false);
+    expect(after.entries.every((e) => e.address.toLowerCase() === ESCROW.toLowerCase())).toBe(true);
+    expect(idx.stats().suspects).toBe(0);
+    // run 记录如实留痕
+    const run = after.runs[after.runs.length - 1];
+    expect(run.identityChanged).toBe(true);
+    expect(run.discardedEntries).toBe(1);
+    expect(String(run.note)).toContain('干净重建');
+    // 重建之后 index 已经是当前身份 → 增量同步照常
+    const r = await idx.syncFrom();
+    expect(r.scanFrom).toBe(21);
+    expect(r.entries).toBe(2);
+  });
+
+  it('★ 部署块变了 (同一 escrow) 也算身份变更 —— 身份是**三元组**, 不是只看地址', async () => {
+    await seedOldIdentity(120, 112, { escrow: ESCROW, deploymentBlock: 111 });
+    const chain = fakeChain(20);
+    chain.addLog('EscrowCreatedV2', createdArgs(TASK_A), 15);
+    const idx = mkIndexer(chain); // escrow 相同, 部署块 10 ≠ 111
+    const rb = await idx.rebuild({ persist: true });
+    expect(rb.identityChanged).toBe(true);
+    expect(rb.oldIdentity!.deploymentBlock).toBe(111);
+    expect(rb.newIdentity.deploymentBlock).toBe(10);
+    expect(idx.load().deploymentBlock).toBe(10);
+  });
+
+  it('★ sync 遇身份变更 → 抛 ChainIndexIdentityChangedError (INDEX_IDENTITY_CHANGED), 且**不读链、不写盘**', async () => {
+    await seedOldIdentity(120, 112);
+    const before = fs.readFileSync(chainIndexPath(HOME), 'utf8');
+
+    let rpcCalls = 0;
+    const boom: IndexRpcProvider = {
+      async getBlockNumber(): Promise<number> { rpcCalls++; throw new Error('身份门之前不该读链'); },
+      async getBlock(): Promise<null> { rpcCalls++; throw new Error('身份门之前不该读链'); },
+      async getLogs(): Promise<any[]> { rpcCalls++; throw new Error('身份门之前不该读链'); },
+    };
+    const idx = new ChainIndexer({ provider: boom, escrowAddress: ESCROW, chainId: 31337, deploymentBlock: 10, home: HOME });
+
+    let err: any = null;
+    try { await idx.syncFrom(); } catch (e: any) { err = e; }
+    expect(err).not.toBeNull();
+    expect(err.name).toBe('ChainIndexIdentityChangedError');
+    expect(err.code).toBe(INDEX_IDENTITY_CHANGED);
+    expect(err.nextAction).toBe('needs_human');
+    expect(err.suggestedCommand).toBe('bolloon chain index rebuild');
+    expect(err.oldIdentity.escrowAddress).toBe(OLD_ESCROW.toLowerCase());
+    expect(err.newIdentity.escrowAddress).toBe(ESCROW.toLowerCase());
+    expect(err.message).toContain('这不是重组');
+    expect(rpcCalls).toBe(0);                                        // 任何 RPC 之前就拒了
+    expect(fs.readFileSync(chainIndexPath(HOME), 'utf8')).toBe(before); // 一个字节都没动
+    expect(idx.load().entries.length).toBe(1);                       // 旧索引原样还在 (留给 rebuild 处理)
+  });
+
+  it('rebuild({persist:false}) 也如实报身份变更, 但不写盘 (先看再动)', async () => {
+    await seedOldIdentity(120, 112);
+    const before = fs.readFileSync(chainIndexPath(HOME), 'utf8');
+    const chain = fakeChain(20);
+    chain.addLog('EscrowCreatedV2', createdArgs(TASK_B), 15, 0, 'be03');
+    const idx = mkIndexer(chain);
+    const rb = await idx.rebuild({ persist: false });
+    expect(rb.persisted).toBe(false);
+    expect(rb.identityChanged).toBe(true);
+    expect(rb.discardedEntries).toBe(0);          // 没落盘 = 没丢弃
+    expect(rb.oldIdentity!.escrowAddress).toBe(OLD_ESCROW.toLowerCase());
+    expect(rb.entries).toBe(1);
+    expect(fs.readFileSync(chainIndexPath(HOME), 'utf8')).toBe(before);
+  });
+
+  it('空壳索引 (无 entries / 从未同步) 不算身份变更: sync 直接采用当前身份 (不沿用文件里的旧部署块)', async () => {
+    const f = chainIndexPath(HOME);
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, JSON.stringify({
+      schemaVersion: 2, chainId: 31337, networkName: 'fake', escrowAddress: OLD_ESCROW,
+      deploymentBlock: 111, deploymentSource: '旧部署残留', lastSyncedBlock: -1, lastSyncedAt: null,
+      headBlock: null, headBlockHash: null, confirmations: { confirmed: 1, finalized: 12 },
+      pageSize: 50, reorgDepth: 8, entries: [], recentBlocks: [], runs: [], updatedAt: 1,
+    }));
+    const chain = fakeChain(20);
+    chain.addLog('EscrowCreatedV2', createdArgs(TASK_A), 15);
+    const idx = mkIndexer(chain);
+    const r = await idx.syncFrom();               // 不抛
+    expect(r.scanFrom).toBe(10);                  // ★ 起点用当前身份, 不是文件里的 111
+    expect(r.inserted).toBe(1);
+    const after = idx.load();
+    expect(after.escrowAddress).toBe(ESCROW);
+    expect(after.deploymentBlock).toBe(10);
+    const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
+    expect(raw.deploymentBlock).toBe(10);         // 写回真实身份
+    expect(raw.identity).toEqual({ chainId: 31337, escrowAddress: ESCROW.toLowerCase(), deploymentBlock: 10 });
+  });
+
+  it('旧文件没有 identity 字段 (schema 升级前) → 按顶层字段推导, 身份一致就继续, 同步后补上字段', async () => {
+    const chain = fakeChain(20);
+    chain.addLog('EscrowCreatedV2', createdArgs(TASK_A), 15);
+    const a = mkIndexer(chain);
+    await a.syncFrom();
+    const f = chainIndexPath(HOME);
+    const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
+    delete raw.identity;                          // 模拟历史文件
+    fs.writeFileSync(f, JSON.stringify(raw), 'utf8');
+    expect(JSON.parse(fs.readFileSync(f, 'utf8')).identity).toBeUndefined();
+
+    const b = mkIndexer(chain);
+    const r = await b.syncFrom();                 // 推导出的身份 == 当前实例 → 不抛
+    expect(r.inserted).toBe(0);
+    const after = JSON.parse(fs.readFileSync(f, 'utf8'));
+    expect(after.identity).toEqual({ chainId: 31337, escrowAddress: ESCROW.toLowerCase(), deploymentBlock: 10 });
+    expect(b.load().identity.deploymentBlock).toBe(10);
+  });
+
+  it('回退不越过扫描下界: 整段对不上时 rewoundTo = 部署块 - 1 (不更低), 且方向提示 rebuild', async () => {
+    const chain = fakeChain(30);
+    chain.addLog('ReleasedV2', releasedArgs(TASK_A), 25);
+    const idx = mkIndexer(chain, { deploymentBlock: 20, reorgDepth: 32 }); // 部署块 20
+    await idx.syncFrom();
+    chain.reorgAt(5, 40);                                  // 链被整体重整: 20..30 全部换了哈希 (head 45 > 原 head)
+    const r = await idx.syncFrom();
+    expect(r.rewoundTo).toBe(19);                          // = 部署块 - 1, 绝不会更低
+    expect(r.rewoundTo).toBeGreaterThanOrEqual(r.scanFrom - 1);
+    expect(r.scanFrom).toBe(20);
+    expect(r.markedSuspect).toBe(1);
+    const st = idx.load();
+    expect(st.entries[0].suspect).toBe(true);
+    expect(String(st.entries[0].suspectReason)).toContain('扫描下界');
   });
 });

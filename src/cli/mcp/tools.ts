@@ -699,7 +699,9 @@ export const TOOLS: ToolDef[] = [
     description:
       '★ 只做一件事: 从**本机上次同步高度 +1** 到当前 head 用 `eth_getLogs` 分页扫 v2 事件, 落 `~/.bolloon/chain/index.json`。' +
       '**不动钱、不碰私钥、不改交易记录、不写结算事实** (索引是可删可重建的缓存, 不是事实源)。' +
-      '起点来自部署 manifest 的 deployment block (不猜 0); 检出重组 → 记录标 suspect 且 code=REORG_SUSPECTED (不静默丢弃)。',
+      '起点来自部署 manifest 的 deployment block (不猜 0); 检出重组 → 记录标 suspect 且 code=REORG_SUSPECTED (不静默丢弃)。' +
+      '★ 索引身份 (chainId + escrowAddress + 部署块) 与当前链不一致 (换过合约部署/anvil 重启) → **不扫不写**, ' +
+      '报 `INDEX_IDENTITY_CHANGED` + next_action=needs_human (这不是重组); 修法 `bolloon chain index rebuild` (干净重建)。',
     inputSchema: {
       type: 'object',
       additionalProperties: false,

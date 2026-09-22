@@ -2946,3 +2946,11 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - **真钱账目**: L1 桥手续费 0.0000230 + 部署手续费(0.0000135672 + 0.0000085881 = 0.0000221553)≈ **0.000045 ETH**(约 $0.15)。余额: L1 0.0006095 · Base 0.0005778 ETH。
 - **两次被门拦住的记录(诚实)**: ① deploy.js 默认用 **anvil 开发助记符** —— 主网上绝不可, 故 `DEPLOYER_PRIVATE_KEY`/`AGENT_PRIVATE_KEY` 均设为主网钱包(密钥由脚本从文件读入环境变量, **不出现在命令行**);② 第一次我给的官方 USDC 地址 **EIP-55 校验和写错**(`…bda02913` 应为 `…bdA02913`)→ 脚本**拒编且不发交易**(一分钱没花), 用 `ethers.getAddress()` 纠正后重跑 ✓。
 - **私钥红线**: 部署输出经断言检查 —— 私钥原文/裸形出现 **0** 次、`privateKey` 字样 **0** 次。
+
+## [2026-09-22] fix(chain) | 索引器加「身份」概念 — 修「换部署/重启链后 rebuild 把新链事件混进旧索引」(我复跑 81/0 · 2624 测试)
+
+- **怎么发现的**: leo 让我"试试真实使用"。跑 `chain index sync` 报 `REORG_SUSPECTED`, 而同一条报里 **回退到 block 1 却自称部署块 111**(自相矛盾)。查下去: 本机 anvil 重启过(链高 204 的新链), 而索引文件属于**已死掉的旧 escrow `0x162A4330…`**(在当前链上 `eth_getCode` = **0 bytes**), 顶层 `escrowAddress`/`deploymentBlock` 是陈旧字段 ⇒ `chain index status` **报给用户的地址是假的**。我手动 `rebuild` 后更糟: entries 381→451、suspects 328(把新链事件并进旧索引)。
+- **修复**: 新增 `ChainIndexIdentity = (chainId, escrowAddress, deploymentBlock)`;落盘写身份;`syncFrom()` **在任何 RPC/写盘之前**过身份门 → 身份变则抛 `INDEX_IDENTITY_CHANGED`(旧索引一个字节不动);`rebuild()` 身份变 → **干净重建**(空索引起步采用新身份、旧 entries 全丢弃**不标 suspect**、如实报 `discardedEntries`);`detectReorg` 回退地板 = `max(实例部署块, 文件部署块) - 1`(永不越过自己的扫描下界);`save()` 一律 stamp 真实身份。**补上 CLI 缺失的 `chain index rebuild`**(帮助文本早就提到它, 但命令不存在)。
+- **我诊断的对错(诚实记录)**: 我猜「`deploymentBlock` 解析被缓存」→ **我错**(解析每次都重读 manifest, 铁证 `runs[-1].scanFrom: 2`);真因是**落盘字段被旧文件覆盖**。我猜「扫描地址 ≠ 落盘地址 = 独立缺陷」→ **我对**, 已修。
+- **脏索引已真重建(迁移前快照留档 `index.mixed-identity-…json`)**: entries **451 → 144** · suspects **328 → 0** · 旧身份条目残留 **0** · 身份 = `0xe7f1725E…` / 部署块 **2**;真数字: 66 个任务 · created 66 / proof 35 / released 35 / expired 8 · finality confirmed 3 / finalized 141。
+- **我独立复跑**: `tsc --noEmit` **0 错** · 单测(chain-indexer 43 + chain-cli 45)**88/88** · **全量 vitest 199 文件 / 2624 测试全过**(基线 2610) · `verify-chain-indexer` 真链 **81 passed / 0 failed**(基线 69/0) · **直接读索引文件**确认三者一致且零旧身份残留 · CLI `chain index status|stats|sync|rebuild` 存在。
