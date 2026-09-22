@@ -13,9 +13,10 @@ import { taskCommand } from './tasks.js';
 import { walletCommand } from './wallet.js';
 import { paymentCommand } from './payment.js';
 import { tradeCommand } from './trade.js';
+import { chainCommand } from './chain.js';
 
-/** P3 命令组名 (cli-entry 的 parseArgs 也认这些) */
-export const SERVICE_GROUPS = ['network', 'agent', 'task', 'wallet', 'payment', 'trade'] as const;
+/** P3 命令组名 + P6 的 `chain` (cli-entry 的 parseArgs 也认这些) */
+export const SERVICE_GROUPS = ['network', 'agent', 'task', 'wallet', 'payment', 'trade', 'chain'] as const;
 export type ServiceGroup = (typeof SERVICE_GROUPS)[number];
 
 export function isServiceGroup(mode: string): mode is ServiceGroup {
@@ -30,6 +31,7 @@ export const GROUP_COMMANDS: Record<ServiceGroup, (f: CliFlags) => Promise<Comma
   wallet: walletCommand,
   payment: paymentCommand,
   trade: tradeCommand,
+  chain: chainCommand,
 };
 
 export const GROUPS_HELP = `
@@ -41,6 +43,8 @@ export const GROUPS_HELP = `
   bolloon wallet    status | policy | set-policy
   bolloon payment   pending | approve | reject
   bolloon trade     list | show | events | reconcile
+  bolloon chain     status | escrow show <taskKey> | timeline <taskKey> | index status|stats|sync
+                    | trade create|submit-proof|release|recover      (P6: 真链读写, 复用 P3/P4/P5)
 
 全局选项 (全命令组有效):
   --json                输出 §2 冻结信封 (失败也结构化: ok:false + code + next_action)
@@ -50,6 +54,8 @@ export const GROUPS_HELP = `
 
 判据永远是 ok / code, **不是**退出码; 也不要把 paid / delivered 读成成功
 (local-dev 永远不是链上结算 —— 见 docs/wiki/access-protocol-v1.md §5)。
+链命令的失败码 (P6 新增, append-only): CHAIN_NOT_CONFIGURED · CHAIN_UNAVAILABLE · CHAIN_UNCERTAIN ·
+CHAIN_TX_REVERTED · ESCROW_NOT_FOUND · INSUFFICIENT_FUNDS · NOT_AUTHORIZED · REORG_SUSPECTED。
 `;
 
 /** 跑一个命令组, 返回进程退出码 (0=ok, 1=失败) */
@@ -62,6 +68,7 @@ export async function runServiceGroup(mode: string, args: string[]): Promise<num
     case 'wallet': return runCommand(flags, walletCommand);
     case 'payment': return runCommand(flags, paymentCommand);
     case 'trade': return runCommand(flags, tradeCommand);
+    case 'chain': return runCommand(flags, chainCommand);
     default:
       console.log(GROUPS_HELP);
       return 1;

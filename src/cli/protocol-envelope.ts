@@ -43,6 +43,10 @@ export const CLI_CODES = [
   'TASK_REJECTED', 'TASK_FAILED', 'TASK_CANCELLED',
   // 传输层 (§1.3「新增错误码不 bump 版本」): 帧没送到 / 没有可用传输
   'TRANSPORT_UNAVAILABLE', 'TRANSPORT_FAILED',
+  // P6 链命令组的新增码 (append-only; 表里确实没有对应语义才加):
+  //   配置/可达性/结论未定/链上回滚/找不到 escrow/资金不足/未授权/重组可疑
+  'CHAIN_NOT_CONFIGURED', 'CHAIN_UNAVAILABLE', 'CHAIN_UNCERTAIN', 'CHAIN_TX_REVERTED',
+  'ESCROW_NOT_FOUND', 'INSUFFICIENT_FUNDS', 'NOT_AUTHORIZED', 'REORG_SUSPECTED',
   // 通用失败码
   'C_NOT_IMPLEMENTED', 'INVALID_ARGUMENT', 'NOT_FOUND', 'TIMEOUT', 'INTERNAL_ERROR',
 ] as const;
@@ -88,6 +92,9 @@ const OPTIONS_WITH_VALUE = new Set([
   // 2026-09-21 (P3 收尾): bolloon-task/1 真收发 + wallet sign 用到的选项
   '--payload', '--message', '--mode', '--task-id', '--deadline', '--salt', '--reply-to',
   '--peer', '--via', '--eta', '--deliver',
+  // 2026-09-22 (P6): `bolloon chain` 用的选项 (只加链命令组自己的名字, 不改既有布尔开关的解析)
+  '--task-key', '--agent', '--asset', '--result', '--manifest-digest',
+  '--confirmation-window', '--proof-version', '--from-block', '--gate',
 ]);
 
 export function parseFlags(args: string[]): CliFlags {

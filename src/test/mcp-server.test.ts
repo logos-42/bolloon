@@ -27,7 +27,7 @@ import { GROUP_COMMANDS } from '../cli/commands/index.js';
 const tmpHome = path.join(os.tmpdir(), `bolloon-p4-mcp-${Date.now()}`);
 let oldHome: string | undefined;
 
-/** 任务书里的 17 个 tool, 一个不多一个不少 */
+/** 任务书里的 17 个 tool (P4) + P6 追加的 7 个链 tool, 一个不多一个不少 */
 const REQUIRED_TOOLS = [
   'bolloon_network_join', 'bolloon_network_status',
   'bolloon_agent_register', 'bolloon_agent_discover', 'bolloon_agent_manifest',
@@ -35,11 +35,17 @@ const REQUIRED_TOOLS = [
   'bolloon_wallet_status',
   'bolloon_payment_pending', 'bolloon_payment_approve', 'bolloon_payment_reject',
   'bolloon_trade_list', 'bolloon_trade_show', 'bolloon_trade_reconcile',
+  // P6: 链上能力 (全部薄包装 `bolloon chain ...`; 链上**写**操作刻意不暴露)
+  'bolloon_chain_status', 'bolloon_chain_escrow_show', 'bolloon_chain_timeline',
+  'bolloon_chain_index_status', 'bolloon_chain_index_stats', 'bolloon_chain_index_sync',
+  'bolloon_chain_trade_recover',
 ];
 
 const REQUIRED_RESOURCES = [
   'bolloon://network/status', 'bolloon://network/capabilities', 'bolloon://agent/manifest',
   'bolloon://tasks/recent', 'bolloon://trades/recent', 'bolloon://wallet/policy', 'bolloon://skill/current',
+  // P6: 链上视图 (信封原样)
+  'bolloon://chain/status', 'bolloon://chain/index', 'bolloon://chain/index/stats',
 ];
 
 /** 一笔 fixture 交易 (可注入 privateKey 之类"绝不该出现"的字段, 验出口剥离) */
@@ -102,11 +108,11 @@ describe('P4 MCP — 协议握手与清单', () => {
     expect(resp.result.protocolVersion).toBe(DEFAULT_PROTOCOL_VERSION);
   });
 
-  it('tools/list: 恰好 17 个, 名字与任务书一致', async () => {
+  it('tools/list: 恰好 24 个 (17 P4 + 7 链), 名字与任务书一致', async () => {
     const resp: any = await handleMessage({ jsonrpc: '2.0', id: 3, method: 'tools/list' });
     const names = resp.result.tools.map((t: any) => t.name).sort();
     expect(names).toEqual([...REQUIRED_TOOLS].sort());
-    expect(names.length).toBe(17);
+    expect(names.length).toBe(24);
     // 每个 tool 都有 inputSchema (MCP 客户端要靠它生成调用)
     for (const t of resp.result.tools) expect(t.inputSchema?.type).toBe('object');
   });
@@ -119,10 +125,10 @@ describe('P4 MCP — 协议握手与清单', () => {
     expect(NOT_EXPOSED.length).toBeGreaterThan(0);
   });
 
-  it('resources/list: 恰好 7 个, uri 与任务书一致', async () => {
+  it('resources/list: 恰好 10 个 (7 P4 + 3 链), uri 与任务书一致', async () => {
     const resp: any = await handleMessage({ jsonrpc: '2.0', id: 4, method: 'resources/list' });
     expect(resp.result.resources.map((r: any) => r.uri).sort()).toEqual([...REQUIRED_RESOURCES].sort());
-    expect(RESOURCES.length).toBe(7);
+    expect(RESOURCES.length).toBe(10);
   });
 
   it('notification 不回响应; 未知 method 给 -32601 (不静默)', async () => {
@@ -410,7 +416,7 @@ describe('P4 MCP — stdio 事件循环 (真读真写流)', () => {
     expect(lines.map((l) => l.id)).toEqual([1, null, 2, 3, 4]);
     expect(lines[0].result.protocolVersion).toBe('2025-06-18');
     expect(lines[1].error.code).toBe(JSONRPC.PARSE_ERROR);
-    expect(lines[2].result.tools.length).toBe(17);
+    expect(lines[2].result.tools.length).toBe(24);
     expect(lines[3].result.isError).toBe(false);
     // ★ 失败调用: JSON-RPC 层成功返回 result, 但 isError=true + 信封 ok:false + code
     const failing = JSON.parse(lines[4].result.content[0].text);

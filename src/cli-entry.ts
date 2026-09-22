@@ -211,6 +211,9 @@ function parseArgs(): { mode: string; args: string[] } {
       return { mode: 'payment', args: args.slice(1) };
     case 'trade':
       return { mode: 'trade', args: args.slice(1) };
+    // 2026-09-22 (P6): 链命令组 (`bolloon chain status|escrow|timeline|index|trade`; 复用 P3/P4/P5)
+    case 'chain':
+      return { mode: 'chain', args: args.slice(1) };
     // 2026-09-21: P4 MCP 适配层 (`bolloon mcp serve` = stdio MCP server; 只调 P3 服务层)
     case 'mcp':
       return { mode: 'mcp', args: args.slice(1) };
@@ -905,11 +908,13 @@ async function main() {
       break;
 
     // 2026-09-21 (P3): 命令组 (network/agent/wallet/payment/trade) —— 统一信封 + 薄包装现有服务
+    // 2026-09-22 (P6): 追加 chain (链上能力: 状态/escrow/时间线/索引/交易)
     case 'network':
     case 'agent':
     case 'wallet':
     case 'payment':
     case 'trade':
+    case 'chain':
       process.exit(await runServiceGroup(mode, args));
       break;
 

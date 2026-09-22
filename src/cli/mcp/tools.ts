@@ -1,5 +1,5 @@
 /**
- * tools.ts — P4 MCP 的 tools / resources 定义 (17 tool + 7 resource)
+ * tools.ts — MCP 的 tools / resources 定义 (17 个 P4 tool + 7 个 P6 链 tool = 24; 7 + 3 = 10 resource)
  *
  * 设计纪律 (P4 任务书 + `docs/wiki/agent-access-layer.md` §1):
  *   ① **一个 tool = 一条 P3 子命令**。这里只做两件事: 校验入参 (白名单 + 类型)、
@@ -534,13 +534,140 @@ export const TOOLS: ToolDef[] = [
       return plan(p, 'trade', id ? ['reconcile', id] : ['reconcile']);
     },
   },
+
+  // ── P6: 链上能力 (7 个只读/本地缓存 tool; 全部薄包装 `bolloon chain ...`) ──────
+  {
+    name: 'bolloon_chain_status',
+    title: '链配置 + 可达性 + 钱包可用性 (只读)',
+    description:
+      '只读: chainId / RPC / escrow 与 token 地址 / 确认数门槛 (confirmed=1, finalized=12) / RPC 是否可达 / ' +
+      '合约 bytecode / 钱包是否可用 (只给**公开地址**与余额, 私钥永不返回、永不打印)。' +
+      '★ 链未配置 → code=CHAIN_NOT_CONFIGURED (列出缺哪些); RPC 不可达 → CHAIN_UNAVAILABLE (绝不报成 0 余额/空状态)。' +
+      '★ local-dev (chainId 31337) 永不产出 fully_settled。',
+    inputSchema: { type: 'object', additionalProperties: false, properties: { timeoutMs: TIMEOUT_PROP } },
+    build(args) {
+      const p = new Params(args, [TIMEOUT_KEY]);
+      return plan(p, 'chain', ['status']);
+    },
+  },
+  {
+    name: 'bolloon_chain_escrow_show',
+    title: '读链上 escrow (只读)',
+    description:
+      '只读: 按 taskKey 读 `AgentEscrow` 里的 escrow 19 字段 (state = ACTIVE|RELEASED|DISPUTED|REFUNDED, 金额, buyer/agent, ' +
+      '各 hash, deadline, proofVersion)。' +
+      '★ 「链上没有」(ESCROW_NOT_FOUND) 与「读不到」(CHAIN_UNAVAILABLE) 是两个码 —— 读不到绝不当成不存在。' +
+      '★ `state=RELEASED` 只是链上事实, 不等于本机已 verified (判据是 receipt + 事件 + 确认数)。',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['taskKey'],
+      properties: { taskKey: { type: 'string', description: '链上 taskKey (0x + 64 hex, keccak256 域标签派生)' }, timeoutMs: TIMEOUT_PROP },
+    },
+    build(args) {
+      const p = new Params(args, ['taskKey', TIMEOUT_KEY]);
+      const k = p.str('taskKey', { required: true, maxLen: 80 });
+      return plan(p, 'chain', k ? ['escrow', 'show', k] : ['escrow', 'show']);
+    },
+  },
+  {
+    name: 'bolloon_chain_timeline',
+    title: 'taskKey 链上时间线 (只读)',
+    description:
+      '只读: 本机索引里该 taskKey 的**链上事件时间线** (块号/logIndex 升序, 每条带 finality: ' +
+      'observed(确认数 < confirmed) / confirmed(≥1) / finalized(≥12)) + 本机视角 (chain-state.json 的 create/proof/release)。' +
+      '据此可重建 create → proof → release。' +
+      '★ 有被回退的记录 → code=REORG_SUSPECTED (绝不报成功); 索引里没有 → ESCROW_NOT_FOUND (先 `bolloon_chain_index_sync`)。',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['taskKey'],
+      properties: { taskKey: { type: 'string', description: '链上 taskKey (0x + 64 hex)' }, timeoutMs: TIMEOUT_PROP },
+    },
+    build(args) {
+      const p = new Params(args, ['taskKey', TIMEOUT_KEY]);
+      const k = p.str('taskKey', { required: true, maxLen: 80 });
+      return plan(p, 'chain', k ? ['timeline', k] : ['timeline']);
+    },
+  },
+  {
+    name: 'bolloon_chain_index_status',
+    title: '索引高度 / 最后同步 (只读)',
+    description:
+      '只读: 本机链上事件索引的高度 (lastSyncedBlock)、最后同步时间、事件数/suspect 数、索引起点 (部署块与来源)、' +
+      '确认数门槛、reorgDepth。**不发 RPC** (只读本机索引文件); 从未同步时 synced=false (不假装有数据)。',
+    inputSchema: { type: 'object', additionalProperties: false, properties: { timeoutMs: TIMEOUT_PROP } },
+    build(args) {
+      const p = new Params(args, [TIMEOUT_KEY]);
+      return plan(p, 'chain', ['index', 'status']);
+    },
+  },
+  {
+    name: 'bolloon_chain_index_stats',
+    title: '链上事件统计 (只读)',
+    description:
+      '只读: tasks / created / proof / released / refunded / disputed / expired 计数 + finality 分档 + 事件名直方图。' +
+      '★ suspect (被回退) 的记录**不计入**业务计数, 单独报出 —— 统计不是链上事实, 判据永远是 receipt/事件/确认数。',
+    inputSchema: { type: 'object', additionalProperties: false, properties: { timeoutMs: TIMEOUT_PROP } },
+    build(args) {
+      const p = new Params(args, [TIMEOUT_KEY]);
+      return plan(p, 'chain', ['index', 'stats']);
+    },
+  },
+  {
+    name: 'bolloon_chain_index_sync',
+    title: '增量同步链上事件到本机索引 (只写本地缓存)',
+    description:
+      '★ 只做一件事: 从**本机上次同步高度 +1** 到当前 head 用 `eth_getLogs` 分页扫 v2 事件, 落 `~/.bolloon/chain/index.json`。' +
+      '**不动钱、不碰私钥、不改交易记录、不写结算事实** (索引是可删可重建的缓存, 不是事实源)。' +
+      '起点来自部署 manifest 的 deployment block (不猜 0); 检出重组 → 记录标 suspect 且 code=REORG_SUSPECTED (不静默丢弃)。',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { fromBlock: { type: 'string', description: '可选: 从这一块起补扫 (十进制块号, 不给=增量)' }, timeoutMs: TIMEOUT_PROP },
+    },
+    build(args) {
+      const p = new Params(args, ['fromBlock', TIMEOUT_KEY]);
+      const argv = ['index', 'sync'];
+      const from = p.strNumber('fromBlock');
+      if (from) argv.push('--from-block', from);
+      return plan(p, 'chain', argv);
+    },
+  },
+  {
+    name: 'bolloon_chain_trade_recover',
+    title: '链上交易恢复状态 (只读, 不发交易)',
+    description:
+      '★ **纯读盘** (~/.bolloon/chain/chain-state.json): 按 taskId / taskKey 重建本机链上事实, 给出 nextAction ' +
+      '(create_escrow / submit_proof / release / verify_only / done / needs_human) 与 mustNotRepay。' +
+      '**不发交易、不重付、不自动退款、不碰私钥** (链上写操作一律必须由本机持钱包的一方执行)。' +
+      '★ 有被标可疑的记录 → REORG_SUSPECTED; 结论未定 → CHAIN_UNCERTAIN + next_action=reconcile (不确定绝不报成功)。',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        taskId: { type: 'string', description: '任务 id (与 create 时同一个; 派生 taskKey)' },
+        taskKey: { type: 'string', description: '或直接给链上 taskKey (0x + 64 hex)' },
+        timeoutMs: TIMEOUT_PROP,
+      },
+    },
+    build(args) {
+      const p = new Params(args, ['taskId', 'taskKey', TIMEOUT_KEY]);
+      const taskId = p.str('taskId', { maxLen: 512 });
+      const taskKey = p.str('taskKey', { maxLen: 80 });
+      const argv = ['trade', 'recover'];
+      if (taskId) argv.push('--task-id', taskId);
+      else if (taskKey) argv.push('--task-key', taskKey);
+      return plan(p, 'chain', argv);
+    },
+  },
 ];
 
 /** tool 名 → 定义 */
 export const TOOL_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 
 /**
- * **刻意不暴露**的 P3 子命令 (暴露 = 必须在 MCP 层假装成功, 违反"失败不得变成功"):
+ * **刻意不暴露**的 P3/P6 子命令 (暴露 = 必须在 MCP 层假装成功, 违反"失败不得变成功"):
  *   task complete · task cancel → P3 里如实报 `C_NOT_IMPLEMENTED` (没有可写的任务状态存储/交易层无 cancelled)
  *   task send · task inbox · task accept · task reject → **写操作** (DID 签名 + 落本机台账 + 对外发帧),
  *     不在本轮的 17 个冻结清单里; 要纳入 MCP 必须单独裁决 (它会改变本机对外承诺, 不是只读能力)
@@ -548,6 +675,11 @@ export const TOOL_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
  *   network init / peers · agent inspect · trade events · wallet policy(只读) / set-policy
  *     → 前几个是"本机节点生命周期/本地诊断", 不该给远端 Agent 调;
  *       **wallet set-policy 尤其不暴露** —— 让远端 Agent 改支付策略 = 绕过 payment policy (六条禁止之一)。
+ *   ★ P6 追加: `bolloon chain trade create|submit-proof|release` **不暴露** ——
+ *     它们是**链上写操作**(真签名 + 真移钱), 必须由本机持钱包的一方执行; 放行闸 (authorizeWalletSignature,
+ *     fail-closed) 只在持钱包的进程里有效, 远端 Agent 无从授权。MCP 只给链上**只读**能力 + 本机索引缓存刷新。
+ *   `bolloon chain index sync` 例外地暴露: 它只读链 (eth_getLogs) 并刷新本机**可删可重建**的索引缓存,
+ *     不动钱、不碰私钥、不改交易记录/结算事实 —— 不构成"本机运维写动作"。
  */
 export const NOT_EXPOSED: Array<{ command: string; reason: string }> = [
   { command: 'bolloon task complete|cancel', reason: 'P3 如实报 C_NOT_IMPLEMENTED (没有可写的任务状态存储 / 交易层无 cancelled); 暴露会逼 MCP 层假装成功' },
@@ -557,9 +689,10 @@ export const NOT_EXPOSED: Array<{ command: string; reason: string }> = [
   { command: 'bolloon network init|peers', reason: '本机节点生命周期 / 本进程 peer 列表, 不是给远端 Agent 的能力' },
   { command: 'bolloon wallet set-policy', reason: '远端改支付策略 = 绕过 payment policy (六条禁止); 必须由本机用户执行' },
   { command: 'bolloon agent inspect / trade events', reason: '诊断/审计视角; 等有明确外部需求再按同一薄包装方式加' },
+  { command: 'bolloon chain trade create|submit-proof|release', reason: '链上**写**操作 (真签名 + 真移钱): 签名放行闸与钱包只在本机; 必须由持钱包的一方执行 (MCP 只给只读链视图 + recover 计划)' },
 ];
 
-// ── 7 个 resource ───────────────────────────────────────────────────────────
+// ── 10 个 resource ──────────────────────────────────────────────────────────
 
 export interface ResourcePayload {
   uri: string;
@@ -644,6 +777,10 @@ export const RESOURCES: ResourceDef[] = [
   { uri: 'bolloon://tasks/recent', name: '最近任务/交易', description: '本地交易 + Goal (只给 id/状态/结算口径, 不含任务正文)', mimeType: 'application/json', load: () => envelopeResource('bolloon://tasks/recent', 'task', ['list']) },
   { uri: 'bolloon://trades/recent', name: '最近交易', description: '交易一览 (chain / local-dev / none 口径分开写)', mimeType: 'application/json', load: () => envelopeResource('bolloon://trades/recent', 'trade', ['list']) },
   { uri: 'bolloon://wallet/policy', name: '支付策略', description: '单笔/日限额 + 白名单 + 速率 + 今日已用 (只读, 无私钥)', mimeType: 'application/json', load: () => envelopeResource('bolloon://wallet/policy', 'wallet', ['policy']) },
+  // ── P6: 链上能力 (信封原样; 链未配置时信封里就是 CHAIN_NOT_CONFIGURED, 不当成 MCP 成功) ──
+  { uri: 'bolloon://chain/status', name: '链配置 + 可达性', description: 'chainId / RPC / 合约地址 / 确认数门槛 / 钱包可用性 (只给公开地址, 无私钥)', mimeType: 'application/json', load: () => envelopeResource('bolloon://chain/status', 'chain', ['status']) },
+  { uri: 'bolloon://chain/index', name: '链上索引高度', description: '索引高度 / 最后同步时间 / 事件数 / suspect 数 (只读本机索引文件, 不发 RPC)', mimeType: 'application/json', load: () => envelopeResource('bolloon://chain/index', 'chain', ['index', 'status']) },
+  { uri: 'bolloon://chain/index/stats', name: '链上事件统计', description: 'tasks/created/proof/released/refunded/disputed/expired + finality 分档 (suspect 不计入)', mimeType: 'application/json', load: () => envelopeResource('bolloon://chain/index/stats', 'chain', ['index', 'stats']) },
   { uri: 'bolloon://skill/current', name: 'bolloon-network Skill', description: 'skills/bolloon-network/SKILL.md 原文 (对外唯一入口说明)', mimeType: 'text/markdown', load: () => skillPayload('bolloon://skill/current') },
 ];
 
