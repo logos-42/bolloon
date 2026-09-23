@@ -192,6 +192,14 @@ export interface OnchainTradeRequest {
   budget?: Partial<OnchainTradeBudget>;
   /** 判定门槛 (缺省 confirmed=1) */
   gate?: 'confirmed' | 'finalized';
+  /**
+   * 刚 broadcast 完立刻判定时, 公共 RPC 的负载均衡后端可能给出**旧值**: eth_blockNumber 还停在前一个块
+   * (确认数数成 0 → pending), 或 eth_call 读回的合约状态落在写之前 (事件对得上但状态是旧的 → event_mismatch)。
+   * 这两种情况下钱/证明**已经上链**, 停在这里会把钱留在托管里。所以做**有界重读**
+   * (只重读, 绝不重发交易)。缺省 3 次 × 1500ms; 设 0 = 关掉 (测试注入固定判定器时用)。
+   */
+  settleRetryAttempts?: number;
+  settleRetryDelayMs?: number;
   network?: string;
   tokenDecimals?: number;
   /**
@@ -273,7 +281,7 @@ async function judge(
 ): Promise<ChainSettlementVerdict> {
   const gate = req.gate || 'confirmed';
   const verify = req.verifyOnChain || (await defaultVerifyPaymentOnChain());
-  return verify({
+  const run = () => verify({
     txHash,
     chainSettlement: {
       verifier: createChainSettlementVerifier(req.client, { gate }),
@@ -282,6 +290,20 @@ async function judge(
       recorded,
     },
   });
+  let v = await run();
+  // ★ 未定/读偏的有界重读: 交易已经发出去了 (钱/证明在链上), 一次读偏不该定案 —— 只重读, 不重发。
+  //   两种读偏形态都要覆盖:
+  //     · 'pending'        —— eth_blockNumber 还停在前一个块 → 确认数数成 0
+  //     · 'event_mismatch' —— 事件读到了 (receipt 按 txHash 取, 一定新), 但合约状态 eth_call 读回旧值
+  //   真 mismatch (event/taskKey 真对不上) 重读 3 次后结论不变 → 不会把错的判成对的。
+  const attempts = req.settleRetryAttempts ?? 3;
+  const delayMs = req.settleRetryDelayMs ?? 1500;
+  for (let i = 1; i <= attempts && !v.chainSettled && v.rpcAvailable !== false
+    && (v.status === 'pending' || v.status === 'event_mismatch'); i++) {
+    await new Promise((r) => setTimeout(r, delayMs));
+    v = await run();
+  }
+  return v;
 }
 
 /** 判定落盘 (P3 chain-state-store) */

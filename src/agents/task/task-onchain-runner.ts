@@ -27,7 +27,7 @@ import { adviseResource } from './resource-advisor.js';
 import { defaultRequestId, installBundle, deriveSkillInput, extractSources, extractConclusion } from './task-runner.js';
 import { buildReportCard, renderReportCard, type ReportCard } from './report-card.js';
 import {
-  loadResourceContract, executeContractSkill, validateResourceOutput, verifyInstallFidelity,
+  loadResourceContract, executeContractSkill, validateResourceOutput, validateResourceInput, verifyInstallFidelity,
 } from '../x402/resource-contract.js';
 import { beginTransaction, readTransaction, updateTransaction } from '../x402/transaction-store.js';
 import { writeDeliveryContent } from '../x402/settlement-state.js';
@@ -59,6 +59,9 @@ export interface RunTaskOnchainOptions {
   env?: NodeJS.ProcessEnv;
   persistState?: boolean;
   verifyOnChain?: OnchainPaymentVerifier;
+  /** 未定/读偏判定的有界重读 (公共 RPC 后端偶发旧值); 透传给链上交易链路 */
+  settleRetryAttempts?: number;
+  settleRetryDelayMs?: number;
   // ── 任务侧选项 ──
   buyerDid?: string;
   requestId?: string;
@@ -155,6 +158,24 @@ export async function runTaskOnchain(opts: RunTaskOnchainOptions): Promise<RunTa
   }
   mark('acquire', `选中 ${chosen.name} (${(chosen.why || []).slice(0, 2).join(' / ') || '名字匹配'})`);
 
+  // ②.5 输入预检 (不花钱的前置门): 输入建不出来/不合 inputSchema → **绝不先注资**
+  // 教训: 先注资再执行, 执行不达标 → 钱卡在托管里 (只能 dispute+refund 才拿得回)。
+  // 契约的 inputSchema 在这里就能判, 所以把这道门放在任何链上写操作之前。
+  const preContract = chosen.contract || (await loadResourceContract(chosen.dir)).contract;
+  const preInput = opts.input ?? deriveSkillInput(preContract, opts.task);
+  const preChk = preContract ? validateResourceInput(preContract, preInput) : { ok: true, issues: [] as string[] };
+  if (!preChk.ok) {
+    const blocker = `输入不符合 inputSchema (${preChk.issues[0] || '未知'}) → 未开托管, 没花钱`;
+    const card = buildReportCard({ task: opts.task, executed: false, paid: false, evidenceRef: {}, blocker });
+    mark('report', '输入不完整 → 不开托管, 不花钱 (给 --input 或把数字写进任务文本)');
+    return {
+      ok: false, taskKey, requestId, transactionId: '', card, text: renderReportCard(card), budget,
+      skill: { name: chosen.name, version: chosen.version, dir: chosen.dir },
+      chain: { verified: false, reason: blocker, statuses: [] }, outputIssues: [...preChk.issues, blocker],
+      recovery: recoverOnchainTrade({ home: opts.home, taskKey }), stages,
+    };
+  }
+
   // ③ 金额 = 单次购买上限 (与 M1 硬约束一致); 转原子单位
   const amountAtomic = BigInt(Math.round(budget.perPurchase * 10 ** decimals));
   const amountChk = checkOnchainAmount({ amountAtomic, decimals, budget: { taskBudget: budget.taskBudget, perPurchase: budget.perPurchase } });
@@ -192,6 +213,7 @@ export async function runTaskOnchain(opts: RunTaskOnchainOptions): Promise<RunTa
     network: opts.network || 'unknown', tokenDecimals: decimals,
     buyerSigner: opts.buyerSigner, sellerSigner: opts.sellerSigner,
     env: opts.env, persistState: opts.persistState, verifyOnChain: opts.verifyOnChain,
+    settleRetryAttempts: opts.settleRetryAttempts, settleRetryDelayMs: opts.settleRetryDelayMs,
   };
 
   // ⑤ 幂等/恢复: 已经链上走过的任务**不新开托管** (先读盘重建)

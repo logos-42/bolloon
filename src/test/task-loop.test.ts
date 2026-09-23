@@ -174,6 +174,25 @@ describe('输入推导 / 结论抽取 / 判据 / 幂等 id', () => {
     expect(deriveSkillInput(contract, '厨房用品进入日本').budgetUsd).toBeUndefined();
   });
 
+  it('数字字段不编造: 任务里无关的数字(如技术符号里的 0)不会被塞进数值字段', () => {
+    const fusion = {
+      inputSchema: {
+        type: 'object', required: ['field_T', 'tc_K'],
+        properties: { field_T: { type: 'number' }, tc_K: { type: 'number' }, factor: { type: 'number' }, relation: { type: 'string' } },
+      },
+    };
+    // 旧实现把「任务里第一个数字」塞给每个数值字段 → 命中符号 μ0H_P 里的 "0" → 全变 0
+    const task = '据 μ0H_P ≈ 1.84·T_c 这一关系, 判定 12.2 T ↔ 6.63 K 是否自洽';
+    expect(deriveSkillInput(fusion, task).field_T).toBeUndefined();
+    expect(deriveSkillInput(fusion, task).tc_K).toBeUndefined();
+    expect(deriveSkillInput(fusion, task).factor).toBeUndefined();
+    // 有锚点(字段名/别名紧邻数字)才填 → 调用方本来就能靠输入把数字说清楚
+    const anchored = deriveSkillInput(fusion, 'field_T=12.2, tc_K=6.63, factor=1.84');
+    expect(anchored.field_T).toBe(12.2);
+    expect(anchored.tc_K).toBe(6.63);
+    expect(anchored.factor).toBe(1.84);
+  });
+
   it('结论/来源抽取不猜语义', () => {
     expect(extractConclusion({ conclusion: '适合进入' }).conclusion).toBe('适合进入');
     expect(extractConclusion({ suitable: false }).conclusion).toBe('不适合');

@@ -332,14 +332,69 @@ describe('runOnchainTradeLoop / resumeOnchainTrade (假链脚本化判定)', () 
 
   it('create 没成功 → 不执行、不提交证明', async () => {
     let executed = false;
+    let createSends = 0;
     const r = await runOnchainTradeLoop(req({
-      verifyOnChain: async ({ txHash, chainSettlement }) => (chainSettlement?.expect?.eventName === 'EscrowCreatedV2'
-        ? verdict({ chainSettled: false, status: 'pending', txHash, reason: '确认数不足' })
-        : verdict({ chainSettled: true, status: 'confirmed', txHash })),
+      settleRetryAttempts: 0,   // 固定返回 pending 的假判定器: 关掉重读 (测分支, 不测网络抖动)
+      verifyOnChain: async ({ txHash, chainSettlement }) => {
+        if (chainSettlement?.expect?.eventName === 'EscrowCreatedV2') {
+          createSends++;
+          return verdict({ chainSettled: false, status: 'pending', txHash, reason: '确认数不足' });
+        }
+        return verdict({ chainSettled: true, status: 'confirmed', txHash });
+      },
     }), async () => { executed = true; return { ok: true, resultDigest: sha256Digest('r') }; });
     expect(r.create?.ok).toBe(false);
     expect(executed).toBe(false);
     expect(r.verified).toBe(false);
+    expect(createSends).toBe(1);            // 只判定一次 (重读被显式关掉了)
+  });
+
+  it('★ 刚 broadcast 后读到旧高度 (假 pending) → 只重读不定案, 绝不重发交易', async () => {
+    let judged = 0;
+    const base = req({
+      settleRetryDelayMs: 1,               // 别让测试真等
+      verifyOnChain: async ({ txHash }) => {
+        judged++;
+        // 第 1 次: 公共 RPC 的后端还停在前一个块 → 确认数 0 (钱其实已进托管)
+        if (judged === 1) {
+          return verdict({ chainSettled: false, status: 'pending', txHash, confirmations: 0, confirmationsRequired: 1, reason: '确认数 0 < 门槛 1 (confirmed) → 还没到可以判结算的程度' });
+        }
+        return verdict({ chainSettled: true, status: 'confirmed', txHash, eventMatched: true, matchedEvent: 'EscrowCreatedV2', escrowState: 'ACTIVE', confirmations: 1, confirmationsRequired: 1 });
+      },
+    });
+    const step = await createEscrowStep(base);
+    expect(step.ok).toBe(true);            // 重读之后判成 confirmed
+    expect(judged).toBe(2);                // 恰好重读一次
+    expect(step.txHash).not.toBe('');      // ★ 交易只发了一笔 (重读 ≠ 重发)
+    const recorded = recoverOnchainTrade({ home: HOME, taskId: TASK_ID });
+    expect(recorded.records.filter((x) => x.method === 'createEscrowV2').length).toBe(1);
+  });
+
+  it('★ 事件对得上但合约状态读回旧值 (event_mismatch) → 重读后判成已释放', async () => {
+    let judged = 0;
+    const step = await releaseStep(req({
+      settleRetryDelayMs: 1,
+      verifyOnChain: async ({ txHash }) => {
+        judged++;
+        // 第 1 次: receipt/事件都是新的, 但 eth_call 读回的 escrow 状态还停在 ACTIVE
+        if (judged === 1) {
+          return verdict({ chainSettled: false, status: 'event_mismatch', txHash, eventMatched: true, matchedEvent: 'ReleasedV2', escrowState: 'ACTIVE', reason: '事件对得上但合约状态是 ACTIVE, 期望 RELEASED' });
+        }
+        return verdict({ chainSettled: true, status: 'confirmed', txHash, eventMatched: true, matchedEvent: 'ReleasedV2', escrowState: 'RELEASED', confirmations: 1, confirmationsRequired: 1 });
+      },
+    }));
+    expect(step.ok).toBe(true);
+    expect(judged).toBe(2);
+  });
+
+  it('pending + RPC 读不到 (rpcAvailable=false) → 不重读, 如实停在未定', async () => {
+    let judged = 0;
+    const step = await releaseStep(req({
+      settleRetryDelayMs: 1,
+      verifyOnChain: async ({ txHash }) => { judged++; return verdict({ chainSettled: false, status: 'pending', txHash, rpcAvailable: false, reason: '读 receipt 失败' }); },
+    }));
+    expect(step.ok).toBe(false);
+    expect(judged).toBe(1);                // RPC 不可用 → 重读没意义, 一次就够
   });
 
   it('放行闸未授权 → 不发交易, 不写审计', async () => {
@@ -430,5 +485,30 @@ describe('任务链路入口 runTaskOnchain (预算闸/资源门的诚实出口)
     expect(r.transactionId).toBe('');
     expect(r.chain.verified).toBe(false);
     expect(r.chain.statuses).toEqual([]);
+  });
+
+  it('输入建不出来 (数值字段在任务里没有锚点) → 未开托管、没花钱 (不先注资)', async () => {
+    const { runTaskOnchain } = await TOR();
+    // 中性夹具: 两个必填数值字段, 任务文本里只有符号 μ0X_P 里的那个 0 (旧实现会把它编成数字)
+    const contract = {
+      name: 'neutral-consistency', version: '1.0.0',
+      inputSchema: {
+        type: 'object', required: ['field_A', 'field_B'],
+        properties: { field_A: { type: 'number' }, field_B: { type: 'number' }, relation: { type: 'string' } },
+      },
+      outputSchema: { type: 'object', required: [] },
+      verification: { requiredFields: [] },
+      execution: { entrypoint: 'noop.mjs' },
+    };
+    const r = await runTaskOnchain({
+      ...base(), budget: '0.05', perPurchase: '0.001',
+      task: '核对 记号 μ0X_P 下的两数是否自洽',
+      choose: async () => ({ name: 'neutral-consistency', version: '1.0.0', dir: '/nonexistent', contract }),
+    } as any);
+    expect(r.ok).toBe(false);
+    expect(r.transactionId).toBe('');            // ★ 链上写操作一次都没发生 (不会被卡在托管里)
+    expect(r.chain.verified).toBe(false);
+    expect(r.chain.statuses).toEqual([]);
+    expect(String(r.card.blocker)).toContain('输入');
   });
 });

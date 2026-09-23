@@ -101,6 +101,31 @@ function faultPoint(name: string): void {
   process.kill(process.pid, 'SIGKILL');
 }
 
+/**
+ * 数值字段的锚点词: 字段名本身 + 常见别名 —— 只有「锚点词紧邻数字」才算, 数字不搬家。
+ * 为什么需要: 早先的实现把「任务文本里第一个数字」塞给**每一个**数值字段。任务里出现
+ * 技术符号 (如 `μ0H_P`) 时第一个数字就是那个 `0` → field_T/tc_K/factor 全被编成 0 →
+ * 技能判「输入不合格→未知」→ 输出缺 required 字段 → 托管已注资但拿不到 proof (钱卡住)。
+ * 编造数字比缺输入更糟: 宁可让 inputSchema 报「缺字段」, 也不给一个看着像真值的假数字。
+ */
+const NUMBER_ANCHORS: Record<string, string[]> = {
+  budgetusd: ['预算', 'budget'], budget: ['预算', 'budget'],
+  price: ['价格', '单价', 'price'], amount: ['金额', 'amount'], usd: ['美元', 'usd'],
+  count: ['数量', 'count'], qty: ['数量', 'qty'], quantity: ['数量', 'quantity'],
+  tol: ['容差', 'tol'], tolerance: ['容差', 'tolerance'],
+};
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** 只在任务里该字段有明确锚点 (字段名/别名 后紧跟数字) 时才取数; 取不到 = 不填, 不编 */
+function anchoredNumber(task: string, key: string): number | undefined {
+  const anchors = [key, ...(NUMBER_ANCHORS[key.toLowerCase()] || [])].filter(Boolean);
+  for (const a of anchors) {
+    const m = task.match(new RegExp(`${escapeRe(a)}[^0-9\\n]{0,6}?(\\d+(?:\\.\\d+)?)`, 'i'));
+    if (m) return Number(m[1]);
+  }
+  return undefined;
+}
+
 /** 从任务文本 + 契约 inputSchema 推导输入 (确定性; M1 不做语义抽取, 用 --input 兜底) */
 export function deriveSkillInput(contract: any, task: string): Record<string, unknown> {
   const schema = contract?.inputSchema || {};
@@ -122,8 +147,8 @@ export function deriveSkillInput(contract: any, task: string): Record<string, un
     const isRequired = required.includes(key);
     const type = String(p.type || 'string');
     if (type === 'number' || type === 'integer') {
-      const n = task.match(/\d+(\.\d+)?/);
-      if (n) out[key] = Number(n[0]);            // 任务里真有数字才填 (可选字段也不硬塞)
+      const n = anchoredNumber(task, key);        // 任务里该字段有明确锚点才填 (可选字段也不硬塞)
+      if (n !== undefined) out[key] = n;
       continue;
     }
     if (/market|国家|市场|地区|country|region/i.test(key)) {
