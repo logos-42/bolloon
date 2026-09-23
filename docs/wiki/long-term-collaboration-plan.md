@@ -7,14 +7,15 @@ schema_version: 2
 audience: self
 stage: current
 status: draft
-tags: [collaboration, task-spec, deliverable, acceptance, settlement, escrow, intake-channel, hushfusion, research]
+tags: [collaboration, task-spec, deliverable, acceptance, settlement, escrow, intake-channel, group-chat, fusion, plasma, moire-graphene, phonon, lean4, projection-physics]
 ---
 
 # 长期合作方案 —— 用 Bolloon 托管"可核验的研究委托"
 
 > 状态: **草案 v0.1** (2026-09-23)
-> 委托方: leo / HUSHFUSION 消音计划 · 受托方: 外部合作者或智能体 · 托管与结算: Bolloon (Base 主网)
-> 本文只定义**怎么合作**;具体研究内容随每期任务书发放。
+> 委托方: leo / **ProjectionPhysics(HIBS 公理化涌现物理)** · 受托方: 外部合作者或智能体 · 托管与结算: Bolloon (Base 主网)
+> **课题(核心)**: 以 Lean 形式化项目的数据为基础, 为**可控核聚变方案**(魔角石墨烯场 / Cu 离子 / H 离子 / 声子)寻找**可验证**与**可优化**的路径。
+> 本文定义**怎么合作**;**每期任务书从课题锚点里切一个可判决的问题**发放(§9)。
 
 ---
 
@@ -83,7 +84,8 @@ tags: [collaboration, task-spec, deliverable, acceptance, settlement, escrow, in
 |---|---|---|
 | `textbook` | 教科书/标准手册里的公式或常数 | `μ0H_P ≈ 1.84·T_c` 这类换算 |
 | `measured` | 实测文献里的数据点(须给文献标识) | Nb₃Sn 的实测 T_c / H_c |
-| `derived` | 本次自算(须给**可复算的算式与输入**) | 由公式代入具体场强算出的 T_c |
+| `formalized` | **Lean 已证定理**(须给 `文件名:定理名`) | `PlasmaFusion.lean:confinement_iff_beta_le_one` |
+| `derived` | 本次自算(须给**可复算的算式与输入**) | 代入具体场强算出的 T_c |
 
 **硬规则**:凡 `derived` 必须**可复算**(给出算式 + 输入值 + 结果);凡引用必须**可定位**(到节/表/条目);**没有出处就不许写成结论** —— 只能写成 `gap`(缺口)。
 
@@ -135,7 +137,7 @@ tags: [collaboration, task-spec, deliverable, acceptance, settlement, escrow, in
 
 | 阶段 | 内容 | 花费 | 完成判据 |
 |---|---|---|---|
-| **P0 试单** | 以 HUSHFUSION `docs.html` 第 04 项「声子」为**唯一课题**,一份任务书 + 一份交付物,走完 立单→交付→初筛→终审→release | **0.02 USDC** | 链上 `releaseV2` 成功 + 你在页面上看到"已结算" |
+| **P0 试单** | 从 §9 的课题锚点里切**一个可判决的问题**(建议: 核聚变的 `confinement_iff_beta_le_one` / `required_field_for_confinement` 一条链上的**可算量**, 或路线图 §8 点名的「μ 主动产生机制 = 第二输入缺口」中一个可表述的子问题), 一份任务书 + 一份交付物, 走完 立单→交付→初筛→终审→release | **0.02 USDC** | 链上 `releaseV2` 成功 + 你在页面上看到"已结算" |
 | **P1 通道** | 补 §6 的 C1/C2/C5(任务书对外可见 / 接单登记 / 拒单超时) | 0 | 外部节点能拿到任务书并交回一份合格交付物(可用本机模拟对方节点验证) |
 | **P2 常态化** | 任务书模板化 + 初筛脚本固化 + 多期并行 | 按 M1 上限逐日放量 | 至少一期**由外部受托方**独立完成并结算 |
 
@@ -156,3 +158,39 @@ tags: [collaboration, task-spec, deliverable, acceptance, settlement, escrow, in
 
 - HUSHFUSION 站既有:逐条出处表(`docs/CONTENT-SOURCES.md`)、221 项验收门、`?v=` 同号门 → 本方案的"出处三级 + 机器初筛"**沿用同一纪律**,不另起一套
 - Bolloon 既有:链上托管 + 幂等键 + 隐私守卫 + "不确定绝不重发" → 本方案**只在其上做协议层**,不新造金融机制
+
+---
+
+## 9. 课题锚点(核聚变) —— 任务书从这里切
+
+**委托方项目**: `logos-42/Hibs-Physics`(本地副本 `~/Downloads/lean/ProjectionPhysics`)—— HIBS 三公理下"物理是代数的表示",Lean 4 形式化(不要 mathlib)。
+
+| 锚点 | 路径 | 用途 |
+|---|---|---|
+| **判决漏斗路线图** | `docs/wiki/fusion-program-roadmap.md`(「可控核聚变五年计划」) | §1 **三个判决量**(把"μ 存在"从信仰变成可测数) · §2 三层节律 + 八道门 · §3 μ 数量级阶梯 · §6 pre-mortem · **§8 诚实边界与缺口** · §9 文献 |
+| **聚变形式化** | `ProjectionPhysics/PlasmaFusion.lean` | 可引用定理: `mag_pressure_nonneg` · `confinement_iff_beta_le_one` · `beta_le_one_iff_pressure_bounded` · `required_field_for_confinement` · `force_grows_quadratic_in_B` · `hoopStress` · `radius_upper_bound_by_yield` · `radius_max_inverse_field_sq` |
+| **魔角场天花板** | `ProjectionPhysics/MoireField.lean` + `docs/wiki/moire-field-ceiling-plan.md` · `theory-moire-field-ceiling.md` | 魔角石墨烯场的上限与判据 |
+| **等离子体理论** | `docs/wiki/theory-plasma-fusion.md` · `theory-plasma-antigravity.md` · `theory-plasma-dynamics.md` | 反引力约束 / 动力学 |
+| **已知缺口(优先出题)** | 路线图 §8: ① **μ 主动产生机制 = 第二输入缺口**; 路线图 §6 M36: 产额不随约束提升 ⟹ **μ–⟨σv⟩ 耦合尚未建模** | 缺口 = 最值得外部独立复核的地方 |
+
+**出题规则**: 每期任务书只切**一个问题**,并且必须满足"可判决"—— 即答完能明确说"支持/否证/仍未知",而不是"更有道理了"。
+
+## 10. 群聊通道(C7) —— 协作发生在 Bolloon 群里
+
+Bolloon 已有群聊实现(`src/agents/gateway-group.ts`),把它作为**接单与交付过程的发生地**:
+
+| 环节 | 在群聊里做什么 | 不上链的东西 |
+|---|---|---|
+| 任务公开发布 | 任务书(题目/判据/预算)发进群 | 不出现地址/DID/IP/正文以外隐私 |
+| 接单与答疑 | 受托方声明接单、问澄清问题 | 意向与问答**不产生付款** |
+| 交付与初筛 | 交付 hash + 初筛逐条结果贴群 | 初筛**只报判据**,不改写内容 |
+| 终审与结算 | 委托方在群里宣布终审结论 → 链上 release | 争议期**不自动重付、不标 verified** |
+
+**纪律**: 群聊是**过程留痕**通道,**结算仍只在链上**;群里的承诺不替代 `releaseV2`;群聊内容同样受隐私红线约束(不展示钱包地址/DID/peerId/IP/任务正文)。
+
+---
+
+## 11. 与既有纪律的对应
+
+- **ProjectionPhysics**: 0 sorry / 0 warning 才算出货;缺口显式写作 `gap`;本方案的 `formalized` 级出处直接引用 `文件名:定理名`
+- **Bolloon**: 链上托管 + 幂等键 + 隐私守卫 + "不确定绝不重发" → 本方案只在其上做**协议层**
