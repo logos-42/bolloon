@@ -555,10 +555,53 @@ async function main() {
   const stateJson = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   const methods = Object.values(stateJson.records).map((r: any) => r.method);
   check('chain-state.json 记录了 create/proof/release 三类链上事实', methods.includes('createEscrowV2') && methods.includes('submitProofV2') && methods.includes('releaseV2'), { records: methods.length });
+  // ⑦c 标准路径的读取语义 (2026-09-23 修): 原来在**真实 HOME** 上断言 `realRead.found === fs.existsSync(realStatePath)`,
+  // 但这是**两个口径**: `found` = "这个 taskKey 有记录", `exists` = "文件在不在"。
+  // 于是只要真实 HOME 里存在一份 chain-state.json(哪怕与本次测试的 taskId 毫无关系 —— 例如真钱主网跑出来的),
+  // 这条就必然红: **门的红绿取决于本机残留文件, 而不取决于它声称验的"纯读语义"** (实测: 同一份代码 真实 HOME 74/1、干净 HOME 75/0;
+  // 且在改前的 5ca3f61 上同样 74/1 ⇒ 既有缺陷, 不是回归)。
+  // 改为两段, 各验各的:
+  //   ① 用门**自己的一次性 HOME + 门自己写的一份已知内容**验语义(含最要紧的那条: 文件在 ≠ 任务在)
+  //   ② 对真实 HOME 只断言「读它不写它」—— 本机有没有该文件都不影响判定(这才是"不写真实 HOME"的本意)
+  const semHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-state-semantics-'));
+  const semStatePath = chainStatePath(semHome);
+  fs.mkdirSync(path.dirname(semStatePath), { recursive: true });
+  const semProbeId = `${taskId}-semantics-probe`;
+  const semProbeKey = recoverOnchainTrade({ home: semHome, taskId: semProbeId }).taskKey;  // 借它算 taskKey, 不自造算法
+  fs.writeFileSync(semStatePath, JSON.stringify({ version: 1, records: {} }, null, 2));
+  const semEmpty = recoverOnchainTrade({ home: semHome, taskId: semProbeId });
+  fs.writeFileSync(semStatePath, JSON.stringify({
+    version: 1,
+    records: {
+      [semProbeKey]: {
+        requestId: semProbeKey, method: 'createEscrowV2', taskKey: semProbeKey,
+        escrowAddress: dep.escrowAddress, chainId: 31337, txHash: release.txHash,
+        status: 'confirmed', blockNumber: release.blockNumber, confirmations: 1,
+        firstSeenAt: Date.now(), updatedAt: Date.now(), history: [], suspect: false,
+      } as any,
+    },
+  }, null, 2));
+  const semBefore = fs.readFileSync(semStatePath, 'utf8');
+  const semKnown = recoverOnchainTrade({ home: semHome, taskId: semProbeId });
+  const semOther = recoverOnchainTrade({ home: semHome, taskId: `${semProbeId}-other` });
+  const semAfter = fs.readFileSync(semStatePath, 'utf8');
+  check('标准路径解析 + 纯读语义: 空文件→found=false / 已记录任务→found=true / 同一份文件里未记录任务→found=false (文件在 ≠ 任务在) / 读两次字节不变',
+    semEmpty.statePath === semStatePath && semEmpty.found === false &&
+    semKnown.found === true && semOther.found === false && semBefore === semAfter,
+    { empty: semEmpty.found, known: semKnown.found, other: semOther.found, path: semStatePath });
+
   const realStatePath = chainStatePath(REAL_HOME);
-  const realExists = fs.existsSync(realStatePath);
-  const realRead = recoverOnchainTrade({ home: REAL_HOME, taskId });   // 纯读盘, 不写不联网
-  check('标准路径 ~/.bolloon/chain/chain-state.json 的读取语义一致 (纯读, 不写真实 HOME)', realRead.statePath === realStatePath && realRead.found === realExists, { path: realStatePath, exists: realExists });
+  const realHad = fs.existsSync(realStatePath);
+  const realBeforeTxt = realHad ? fs.readFileSync(realStatePath, 'utf8') : null;
+  const realBeforeMtime = realHad ? fs.statSync(realStatePath).mtimeMs : null;
+  recoverOnchainTrade({ home: REAL_HOME, taskId });   // 纯读盘, 不写不联网
+  const realStill = fs.existsSync(realStatePath);
+  const realAfterTxt = realStill ? fs.readFileSync(realStatePath, 'utf8') : null;
+  const realAfterMtime = realStill ? fs.statSync(realStatePath).mtimeMs : null;
+  check('读真实 HOME 是纯读: 存在性不变 + 内容与 mtime 都没被动过 (本机有没有该文件都不影响判定)',
+    realStill === realHad && realAfterTxt === realBeforeTxt && realAfterMtime === realBeforeMtime,
+    { path: realStatePath, had: realHad, still: realStill });
+  fs.rmSync(semHome, { recursive: true, force: true });
 
   // ── 汇总 ──────────────────────────────────────────────────────────────────
   section('汇总 (真 txHash)');
