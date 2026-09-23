@@ -21,6 +21,24 @@
       "source_file": "docs/wiki/SCHEMA.md"
     },
     {
+      "id": "access-protocol-v1.md",
+      "type": "protocol",
+      "label": "外部接入协议 v1 (P1 冻结) — 版本策略 · 统一 JSON 信封 · 错误码表 · 状态映射 · 红线",
+      "tags": "[access-protocol, p1-frozen, envelope, error-codes, state-mapping, local-dev, bolloon-task-1]",
+      "stage": "current",
+      "audience": "public",
+      "source_file": "docs/wiki/access-protocol-v1.md"
+    },
+    {
+      "id": "agent-access-layer.md",
+      "type": "meta",
+      "label": "Agent 接入层 — CLI 为主协议 · MCP 为薄适配 · Skill 为使用说明",
+      "tags": "[access-layer, cli, mcp, skill, agent-interop, phase1]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/agent-access-layer.md"
+    },
+    {
       "id": "agent-economic-protocol.md",
       "type": "protocol",
       "label": "Agent Economic Protocol 设计 (智能体经济网络)",
@@ -66,6 +84,24 @@
       "source_file": "docs/wiki/bolloon-md-template.md"
     },
     {
+      "id": "chain-model-freeze.md",
+      "type": "protocol",
+      "label": "链上模型冻结 (Phase 1) — 合约盘点 / 职责边界 / 事件与字段 / §3 硬规则差距",
+      "tags": "[chain, escrow, treasury, directory, freeze, audit, phase1]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/chain-model-freeze.md"
+    },
+    {
+      "id": "chain-settlement-design.md",
+      "type": "meta",
+      "label": "Bolloon 链上化设计 (AgentEscrow 主路径 + 数据权威划分) — 设计计划 v2",
+      "tags": "[chain, escrow, directory, indexer, settlement, design]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/chain-settlement-design.md"
+    },
+    {
       "id": "claude-code-design-parallels.md",
       "type": "chapter",
       "label": "Claude Code Architecture — Bolloon 对照参考",
@@ -73,6 +109,15 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/claude-code-design-parallels.md"
+    },
+    {
+      "id": "contacts-protocol.md",
+      "type": "chapter",
+      "label": "联系方式与社交身份协议 (绑定 → 受约束调用 → 等待回复 → 唤醒任务 → 证据回放)",
+      "tags": "[contacts, social-identity, phone, email, otp, consent, secretref, contact-policy, batch-forbidden, awaiting-reply, supervisor, evidence, pairing, skills, smtp, http-webhook, local-sink, phase-0-9, acceptance-matrix]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/contacts-protocol.md"
     },
     {
       "id": "copyright-registration.md",
@@ -96,7 +141,7 @@
       "id": "current-status.md",
       "type": "chapter",
       "label": "Bolloon 当前状态",
-      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor]",
+      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor, open-tasks-public-projection, public-open-tasks-2026-09-23]",
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/current-status.md"
@@ -165,6 +210,15 @@
       "source_file": "docs/wiki/log.md"
     },
     {
+      "id": "long-term-collaboration-plan.md",
+      "type": "meta",
+      "label": "长期合作方案 — 用 Bolloon 托管\"可核验的研究委托\" (草案 v0.1)",
+      "tags": "[collaboration, task-spec, deliverable, acceptance, settlement, escrow, intake-channel, group-chat, fusion, plasma, moire-graphene, phonon, lean4, projection-physics]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/long-term-collaboration-plan.md"
+    },
+    {
       "id": "m1-m4-closure.md",
       "type": "chapter",
       "label": "M1–M4 收口验收口径 (Frozen Acceptance Contract)",
@@ -181,6 +235,24 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/milestone-dispute-responsibility.md"
+    },
+    {
+      "id": "network-ledger-design.md",
+      "type": "meta",
+      "label": "Bolloon Network Ledger — 区块链式网络账本 (设计计划)",
+      "tags": "[ledger, dag, finality, sync, pulse, design]",
+      "stage": "archived",
+      "audience": "self",
+      "source_file": "docs/wiki/network-ledger-design.md"
+    },
+    {
+      "id": "network-pulse.md",
+      "type": "chapter",
+      "label": "网络脉冲 (Network Pulse) — 匿名可验证的公开观察投影",
+      "tags": "[network-pulse, public-projection, privacy, gateway, bolloon-ui, observed, verified, stale, confirmed-activity, chain-index]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/network-pulse.md"
     },
     {
       "id": "payment-recovery-protocol.md",
@@ -208,6 +280,15 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/project-overview.md"
+    },
+    {
+      "id": "pulse-ledger-design.md",
+      "type": "meta",
+      "label": "链式活动账本与链上锚定 (Bolloon Activity Ledger) — 设计计划",
+      "tags": "[pulse, ledger, blockchain, anchor, merkle, design]",
+      "stage": "archived",
+      "audience": "self",
+      "source_file": "docs/wiki/pulse-ledger-design.md"
     },
     {
       "id": "q1-q5-report-2026-07-07.md",
@@ -264,6 +345,15 @@
       "source_file": "docs/wiki/sources-and-data.md"
     },
     {
+      "id": "task-protocol.md",
+      "type": "meta",
+      "label": "任务协议 (bolloon-task/1) — 统一任务生命周期 + 受控自主签名",
+      "tags": "[task-protocol, economy, payment, wallet, signature, phase1]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/task-protocol.md"
+    },
+    {
       "id": "transaction-two-layer-state.md",
       "type": "chapter",
       "label": "交易两层状态协议 (Two-Layer Transaction State)",
@@ -283,6 +373,56 @@
     }
   ],
   "edges": [
+    {
+      "from": "chain-model-freeze.md",
+      "to": "chain-settlement-design.md",
+      "type": "references"
+    },
+    {
+      "from": "chain-model-freeze.md",
+      "to": "network-ledger-design.md",
+      "type": "references"
+    },
+    {
+      "from": "chain-model-freeze.md",
+      "to": "transaction-two-layer-state.md",
+      "type": "references"
+    },
+    {
+      "from": "chain-model-freeze.md",
+      "to": "payment-recovery-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "chain-model-freeze.md",
+      "to": "milestone-dispute-responsibility.md",
+      "type": "references"
+    },
+    {
+      "from": "chain-settlement-design.md",
+      "to": "network-ledger-design.md",
+      "type": "supersedes"
+    },
+    {
+      "from": "current-status.md",
+      "to": "chain-model-freeze.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "network-pulse.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "contacts-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "log.md",
+      "type": "references"
+    },
     {
       "from": "current-status.md",
       "to": "runtime-bootstrap-protocol.md",
@@ -346,11 +486,6 @@
     {
       "from": "current-status.md",
       "to": "android-agent-runtime.md",
-      "type": "references"
-    },
-    {
-      "from": "current-status.md",
-      "to": "log.md",
       "type": "references"
     },
     {
@@ -435,6 +570,46 @@
     },
     {
       "from": "index.md",
+      "to": "access-protocol-v1.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "agent-access-layer.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "task-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "chain-settlement-design.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "chain-model-freeze.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "network-ledger-design.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "pulse-ledger-design.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "network-pulse.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "m1-m4-closure.md",
       "type": "references"
     },
@@ -480,6 +655,11 @@
     },
     {
       "from": "index.md",
+      "to": "contacts-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "update-protocol.md",
       "type": "references"
     },
@@ -505,7 +685,22 @@
     },
     {
       "from": "log.md",
+      "to": "network-pulse.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "contacts-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
       "to": "update-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "runtime-bootstrap-protocol.md",
       "type": "references"
     },
     {
@@ -569,6 +764,11 @@
       "type": "references"
     },
     {
+      "from": "network-ledger-design.md",
+      "to": "pulse-ledger-design.md",
+      "type": "supersedes"
+    },
+    {
       "from": "project-overview.md",
       "to": "current-status.md",
       "type": "references"
@@ -585,16 +785,17 @@
     }
   ],
   "stats": {
-    "node_count": 31,
-    "edge_count": 60,
+    "node_count": 41,
+    "edge_count": 82,
     "node_types": {
-      "meta": 7,
-      "protocol": 1,
-      "chapter": 22,
+      "meta": 13,
+      "protocol": 3,
+      "chapter": 24,
       "claim": 1
     },
     "edge_types": {
-      "references": 60
+      "references": 80,
+      "supersedes": 2
     }
   }
 }

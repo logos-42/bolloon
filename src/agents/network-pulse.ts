@@ -18,6 +18,11 @@
  *     escrow **合约**地址 (`contract`, 只给索引/诊断) 允许出现; 页面可点的只有**交易**链接 `explorer_tx`
  *     (仅当该链有已知公网浏览器)。EOA / 钱包地址 (买方·卖方)、taskKey 原文、taskId、args 里的地址、
  *     DID、peer IP/multiaddr、私钥 —— 仍然一个都不许出现; 老字段 `tx` (sha256 短写) 保留不删。
+ *   · **冻结形状 `open_tasks[]`** (2026-09-23): 公开页要能列「本节点公告板上哪些任务还没被接单」。
+ *     数据源 = `~/.bolloon/tasks/board/*.json` 里**未认领且未过期**的公告, 每行只含白名单 7 个字段:
+ *     `capability` / `budget`(原子单位) / `currency` / `network` / `deadline` / `claimed`(恒 false) /
+ *     `announcementId`(前 8 位)。**任务正文与它的摘要/预览、买方 DID 与公钥、认领者、公告签名
+ *     一律不进公开投影** —— 行由 `buildOpenTaskRow` 逐字段拷贝构造, 不做对象展平。
  *
  * 借鉴 (只借产品与工程思想, 不借 Go/Postgres/API 项目):
  *   EigenFlux 的 "注册总量 / 当前活跃 / 最近出现" 时间窗统计、服务端生成匿名活动文本、
@@ -32,6 +37,9 @@ import * as crypto from 'crypto';
 import { DEFAULT_CONFIRMATIONS, LOCAL_DEV_CHAIN_ID } from './chain/chain-config.js';
 // 区块浏览器映射 (chainId → 公网浏览器); 认不出的链没有链接 —— 宁缺勿错, 不编死链
 import { ADDRESS_RE, EXPLORER_URL_RE, TX_HASH_RE, explorerTxUrl } from './chain/explorer.js';
+// 「待接单任务」的数据源 = 本机公告板目录 (~/.bolloon/tasks/board)。只借**路径常量**,
+// 公告的解析/发布/接单一律留在 task-board.ts (这里不做第二套实现)。
+import { boardDir, REMOTE_CLAIMS_FILE } from './task-board.js';
 
 // ── 常量 (上限 + 时间边界) ─────────────────────────────────────────────────
 
@@ -133,6 +141,13 @@ export interface NetworkPulseSnapshot {
   activity_totals: ActivityTotals;
   /** ★ 上表各行属于哪条链 (公开页不许把本机开发链的行读成公网活动) */
   chain_id_scope: ChainIdScope;
+  /**
+   * ★ 本节点公告板上**未认领且未过期**的任务 (公开「待接单任务」)。
+   * 每行只有白名单 7 个字段 (capability/budget/currency/network/deadline/claimed/announcementId 前 8 位)
+   * —— **任务正文、正文摘要/预览、买方 DID/公钥、认领者、签名一律不在这里** (见 `OpenTaskRow`)。
+   * 空数组 = 本节点此刻没有待接单任务 (不是「没接入」—— 那个语义不写在这里)。
+   */
+  open_tasks: OpenTaskRow[];
   /** 快照签名 (可选, 供公开观察入口校验) */
   signature?: string;
   signer_fingerprint?: string;
@@ -331,6 +346,96 @@ export function readAgentSites(h?: string): AgentSite[] {
   } catch {
     return [];
   }
+}
+
+// ── 待接单任务 (公开投影) ───────────────────────────────────────────────────
+/**
+ * 公开「待接单任务」的一行 —— **白名单字段**, 只有这 7 个键, 别的键一个都不带出来。
+ *
+ * 数据源 = 本机公告板 `~/.bolloon/tasks/board/<announcementId>.json` (只读未认领且未过期的)。
+ * 绝不导出 (与任务正文/身份同级的私密事实):
+ *   · 任务正文 `instruction` · `instructionDigest` · `instructionPreview` (正文与它的摘要/预览)
+ *   · 买方 `buyerDid` · `buyerPublicKeyHex` · 任何钱包地址 / DID / peerId / IP / multiaddr
+ *   · 认领者 DID / 声明的价格 / 公告签名原文
+ * 这条白名单由 `buildOpenTaskRow` 手工逐个字段拷贝实现 (不做 `{...a}` 展平 —— 展平一次就把正文
+ * 带出去了), 并由 `snapshotConsistencyIssues` + 导出脚本的 `assertNoPrivateFields` 双重兜底。
+ */
+export interface OpenTaskRow {
+  /** 能力公开名 (与买方公告给注册表的那个同名 —— 它本来就是公开的发现键) */
+  capability: string;
+  /** 预算 (原子单位字符串; 公告没给预算 → null, 不替它猜) */
+  budget: string | null;
+  currency: string | null;
+  network: string | null;
+  /** 截止时间 (ms epoch; 已过期的公告根本不上这一行) */
+  deadline: number;
+  /**
+   * 是否已被认领 —— 本函数只导出**未认领**的公告, 所以恒为 false。
+   * 这个布尔不是装饰: 它把「筛选真的生效」当着读者/验收脚本的面写出来 (不需要信任筛选代码),
+   * 且由 `snapshotConsistencyIssues` 反向守着 (出现 true 就是筛选坏了 → 拒绝导出)。
+   */
+  claimed: boolean;
+  /** `announcementId` 的**前 8 位** (短引用; 原 id 不上公开页) */
+  announcementId: string;
+}
+
+/** 上限: 公开页最多列几条待接单任务 (超出按最近截止排序取前 N) */
+export const MAX_OPEN_TASKS = 25;
+
+/** 公开页只列这条公告的这 7 个字段; 其余(正文/买方/摘要/签名)一律不出这个函数 */
+function buildOpenTaskRow(a: any): OpenTaskRow | null {
+  const capability = String(a?.capability ?? '').trim();
+  const id = String(a?.announcementId ?? '').trim();
+  const deadline = Number(a?.deadline);
+  if (!capability || !id || !Number.isFinite(deadline) || deadline <= 0) return null;
+  const b = a?.budget && typeof a.budget === 'object' ? a.budget : null;
+  const maxAmount = b ? String(b.maxAmount ?? '').trim() : '';
+  const currency = b ? String(b.currency ?? '').trim() : '';
+  const network = b ? String(b.network ?? '').trim() : '';
+  return {
+    capability,
+    budget: maxAmount || null,
+    currency: currency || null,
+    network: network || null,
+    deadline,
+    claimed: (Array.isArray(a?.claims) ? a.claims.length : 0) > 0,
+    announcementId: id.slice(0, 8),      // 前 8 位 (按字面, 不重新格式化)
+  };
+}
+
+/**
+ * 读本节点公告板上**未认领且未过期**的公告, 投影成公开「待接单任务」行。
+ *
+ * 三条筛选 (缺一个都会把不该上的东西露出来):
+ *   · `protocol= bolloon-task/1` + `kind= task_announcement` (同目录还有 `remote-claims.json`,
+ *     它是个数组 —— 不按 kind 判会把认领台账当公告解析)
+ *   · `status === 'open'` (已认领 / 已取消 → 不是「待接单」)
+ *   · `deadline > now` (过期只是不能再接单, 文件不删 → 必须在这里判掉)
+ *
+ * 读不到目录 / 坏 JSON / 缺字段 → 该条跳过 (一条都不编); 整个目录不可读 → 空数组 + 不抛。
+ */
+export function readOpenTasks(h?: string, now = Date.now()): OpenTaskRow[] {
+  const out: OpenTaskRow[] = [];
+  try {
+    const dir = boardDir(h);
+    let names: string[];
+    try { names = fs.readdirSync(dir); } catch { return []; }
+    for (const name of names.slice().sort()) {
+      if (!name.endsWith('.json') || name === `${REMOTE_CLAIMS_FILE}`) continue;
+      let raw: any;
+      try { raw = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf-8')); } catch { continue; }
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;      // 认领台账是数组 → 这里就出局
+      if (raw.protocol !== 'bolloon-task/1' || raw.kind !== 'task_announcement') continue;
+      if (String(raw.status) !== 'open') continue;
+      const deadline = Number(raw.deadline);
+      if (!Number.isFinite(deadline) || deadline <= now) continue;
+      const row = buildOpenTaskRow(raw);
+      if (row) out.push(row);
+    }
+  } catch { return []; }
+  // 稳定排序: 快到期在前 (读者最需要知道的先看); 同截止按短 id 定序 (排序必须确定, 否则快照每次都"变")
+  out.sort((x, y) => (x.deadline - y.deadline) || (x.announcementId < y.announcementId ? -1 : x.announcementId > y.announcementId ? 1 : 0));
+  return out.slice(0, MAX_OPEN_TASKS);
 }
 
 /**
@@ -907,7 +1012,41 @@ export function snapshotConsistencyIssues(snap: NetworkPulseSnapshot): string[] 
     if (!explained) issues.push(`totals.tasks=0 与 ${rows.length} 行任务并存, 却没有口径说明 note`);
   }
   issues.push(...auditPublicHexLeaks(snap));      // ⑥ 0x 长 hex 越界 → 拒绝导出 (不静默放行)
+  issues.push(...openTasksIssues(snap));          // ⑦ 待接单任务的字段白名单与「只含未认领」不变式
   return issues;
+}
+
+/** open_tasks 行的字段白名单 (与 `OpenTaskRow` 逐字一致; 多一个键 = 可能把正文/身份带出去了) */
+export const OPEN_TASK_KEYS = ['capability', 'budget', 'currency', 'network', 'deadline', 'claimed', 'announcementId'] as const;
+
+/**
+ * 待接单任务行的自检 (空 = 通过)。这不是格式洁癖, 每条都对着一个真泄漏路径:
+ *   · 键集 ≠ 白名单 → 有人把 instruction / buyerDid / claims 之类**展平**进公开投影了;
+ *   · `claimed !== false` → 「只导出未认领」这个筛选坏了 (页面会把已接单的当待接单);
+ *   · `announcementId` 长于 8 位 → 短写丢了, 原始公告 id 上公开页 (页面上的 id 会被读者当完整 id 用);
+ *   · capability 空 / deadline 非正 → 页面上会出现一条说不出是什么、也不知道何时截止的行。
+ */
+export function openTasksIssues(snap: NetworkPulseSnapshot): string[] {
+  const out: string[] = [];
+  const rows = (snap as any)?.open_tasks;
+  if (!Array.isArray(rows)) return ['open_tasks 缺失 (公开「待接单任务」必须是数组, 没有就给空数组)'];
+  const allow = OPEN_TASK_KEYS as readonly string[];
+  rows.forEach((r: any, i: number) => {
+    const at = `open_tasks[${i}]`;
+    if (!r || typeof r !== 'object' || Array.isArray(r)) { out.push(`${at} 不是对象`); return; }
+    const extra = Object.keys(r).filter((k) => !allow.includes(k));
+    if (extra.length) out.push(`${at} 出现白名单外的键: ${extra.join(', ')} (公开投影只许 ${allow.join('/')})`);
+    if (typeof r.capability !== 'string' || !r.capability.trim()) out.push(`${at}.capability 缺失/为空`);
+    if (r.claimed !== false) out.push(`${at}.claimed=${JSON.stringify(r.claimed)} —— 公开页只许列**未认领**的公告`);
+    if (typeof r.announcementId !== 'string' || r.announcementId.length === 0 || r.announcementId.length > 8) {
+      out.push(`${at}.announcementId 必须是 announcementId 的**前 8 位**(1..8 字符), 实得 ${JSON.stringify(r.announcementId)}`);
+    }
+    if (!Number.isFinite(r.deadline) || r.deadline <= 0) out.push(`${at}.deadline 必须是正的 ms 时间戳`);
+    for (const k of ['budget', 'currency', 'network']) {
+      if (r[k] !== null && typeof r[k] !== 'string') out.push(`${at}.${k} 只许字符串或 null (不替公告猜值)`);
+    }
+  });
+  return out;
 }
 
 export function computeSnapshot(
@@ -918,6 +1057,8 @@ export function computeSnapshot(
     signedNodes?: number;
     /** 已解析好的活动行 (getNetworkPulse 注入真实链上索引结果); 不给 = 纯函数自己从事件降级算 */
     confirmedActivity?: ConfirmedActivityResult;
+    /** 已解析好的公开「待接单任务」行 (getNetworkPulse 注入读盘结果); 不给 = 空数组 (不猜) */
+    openTasks?: OpenTaskRow[];
   },
 ): NetworkPulseSnapshot {
   const now = opts.now;
@@ -946,6 +1087,9 @@ export function computeSnapshot(
       confirmed_activity_source: 'none',
       activity_totals: summarizeActivityRows(emptyRows, { source: 'none', gates }),
       chain_id_scope: buildChainIdScope(emptyRows),
+      // 观察层不可用 ≠ 公告板读不到: 这一支只说明「脉冲事件层」挂了, 待接单任务照实带出来
+      // (调用方没给就空数组 —— 不拿空数组冒充「板上没有」: 页面空态说的是「暂未观察到」)
+      open_tasks: Array.isArray(opts.openTasks) ? opts.openTasks : [],
       notes: ['观察层暂不可用 — 这不是"网络为空"'],
     };
   }
@@ -1068,6 +1212,7 @@ export function computeSnapshot(
     confirmed_activity_source: activity.source,
     activity_totals,
     chain_id_scope,
+    open_tasks: Array.isArray(opts.openTasks) ? opts.openTasks : [],
     notes,
   };
 }
@@ -1086,7 +1231,8 @@ export async function getNetworkPulse(opts: SnapshotOptions = {}): Promise<Netwo
         && typeof (cached as any)?.confirmed_activity_source === 'string'
         && !!(cached as any)?.totals_scope
         && !!(cached as any)?.activity_totals
-        && !!(cached as any)?.chain_id_scope;
+        && !!(cached as any)?.chain_id_scope
+        && Array.isArray((cached as any)?.open_tasks);        // 老缓存没有待接单任务 → 过期形状, 重算
       if (shapeOk && cached && Number.isFinite(cached.generated_at) && cached.generated_at + PULSE_LIMITS.snapshotTtlMs > now) return cached;
     } catch { /* 无缓存 */ }
   }
@@ -1098,7 +1244,8 @@ export async function getNetworkPulse(opts: SnapshotOptions = {}): Promise<Netwo
   }
   // 活动行优先取 P5 链上索引 (真链上事实); 索引不可用 → 退回脉冲事件, 并在快照里标出来源
   const confirmedActivity = await resolveConfirmedActivity({ home: opts.home, events, now });
-  const snap = computeSnapshot(events, { now, confirmedActivity });
+  // 待接单任务: 只读本机公告板目录 (未认领且未过期), 投影成白名单 7 字段 —— 与脉冲事件层无关
+  const snap = computeSnapshot(events, { now, confirmedActivity, openTasks: readOpenTasks(opts.home, now) });
   try {
     fs.mkdirSync(pulseDir(opts.home), { recursive: true });
     fs.writeFileSync(snapshotFile(opts.home), JSON.stringify(snap), 'utf8');

@@ -14,6 +14,10 @@
  *
  * 硬约束: 导出的文件只含**公开聚合**(机器数/agent 数/能力粗类别/金额无关的活动类型),
  * 绝不包含 DID / peerId / IP / 钱包 / 任务正文 —— 由 `assertNoPrivateFields` 兜底检查。
+ *   · `open_tasks[]` (2026-09-23) = 本机 `~/.bolloon/tasks/board/` 里**未认领且未过期**的公告,
+ *     每行只有 capability/budget/currency/network/deadline/claimed/announcementId(前 8 位) 七个键 ——
+ *     **任务正文、正文摘要/预览、买方 DID/公钥、认领者、公告签名一律不导出**
+ *     (由 `snapshotConsistencyIssues → openTasksIssues` 的键白名单兜底)。
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -101,11 +105,18 @@ async function main() {
   const at = finalSnap.activity_totals || {};
   const cis = finalSnap.chain_id_scope || {};
   const act = Array.isArray(finalSnap.confirmed_activity) ? finalSnap.confirmed_activity : [];
+  const openTasks = Array.isArray(finalSnap.open_tasks) ? finalSnap.open_tasks : [];
   console.error(
     `[export-pulse] status=${finalSnap.status} scope=${finalSnap.scope} ` +
     `nodes=${t.nodes} agents=${t.agents} active=${t.active_agents} 24h=${t.seen_last_24h} ` +
     `caps=${(finalSnap.capabilities || []).map((c: any) => `${c.key}:${c.count}`).join(',') || '(none)'} ` +
     `signed=${!!finalSnap.signature} out=${out || '(stdout)'}`,
+  );
+  // ★ 待接单任务: 只报「几条 · 什么能力 · 什么价」—— 正文/买方一律不打印 (连日志都不留)
+  console.error(
+    `[export-pulse] open_tasks=${openTasks.length} ` +
+    `(只含未认领且未过期; 字段白名单 ${NP.OPEN_TASK_KEYS.join('/')}) ` +
+    `${openTasks.map((r: any) => `${r.announcementId}:${r.capability}/${r.budget ?? '-'}${r.currency ?? ''}@${r.network ?? '-'}`).join(' · ') || '(none)'}`,
   );
   // ★ 两套口径分开报: totals 是 24h 脉冲事件; activity_totals 与上表同源 (rows 必须 === 行数)
   console.error(
