@@ -102,6 +102,8 @@ const OPTIONS_WITH_VALUE = new Set([
   '--payment-mode',
   // 2026-09-23 (C1): 任务公告板 `bolloon task publish|board|claim` 的显式公告号
   '--announcement-id',
+  // 2026-09-23 (C7): 群聊通道 `bolloon task announce|trail|post` 的群链接/groupId + 极短事实字段
+  '--group', '--round', '--criteria', '--kind', '--hash', '--bytes', '--checks', '--verdict', '--limit', '--from',
 ]);
 
 export function parseFlags(args: string[]): CliFlags {

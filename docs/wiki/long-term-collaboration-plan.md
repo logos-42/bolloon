@@ -128,6 +128,7 @@ tags: [collaboration, task-spec, deliverable, acceptance, settlement, escrow, in
 | C4 | **交付入口** | 交付物按内容寻址提交 + 校验 hash 与 `resultHash` 一致;失败**不静默**(报错给受托方) | 部分已有(x402) |
 | C5 | **拒单与超时** | 到 deadline 未交付 → 走超时分支(**不自动重付**);拒单要留原因 | 待做 |
 | C6 | **公示** | 公开页只显示"任务存在 / 已接单 / 已交付 / 已结算"四态(**不显示地址、DID、IP、正文**) | 部分已有(网关页四态) |
+| C7 | **群聊通道(过程留痕)** | 用 Bolloon 群聊承载协作过程: 公告入群 / 接单声明 / 交付 hash / 初筛逐条 / 终审结论;群消息只放**极短事实 + 短引用**(公告 id / 内容哈希 / 发送者假名),**群聊不可达就报错,不降级落本地** | **已做** (2026-09-23): `bolloon task announce|trail` + `task post --kind deliver\|screen\|final` + `task claim <id> --group …`; 见 `docs/wiki/log.md` 2026-09-23 条目与 `scripts/verify-task-group-bridge.ts` |
 
 **隐私红线(对外一律)**:不出现钱包地址、DID、peerId、IP、任务正文;**地址与哈希一律短写**;合约地址不上页面。
 
@@ -188,6 +189,26 @@ Bolloon 已实现群聊(`src/agents/gateway-group.ts`)。**真实接口 → 本�
 **纪律(不因通道变化而放松)**: 群聊只做**过程留痕**;**结算仍只在链上** —— 群里的承诺不替代 `releaseV2`;争议期**不自动重付、不标 verified、不静默关闭**;群聊内容同样受隐私红线约束(不展示钱包地址 / DID / peerId / IP / 任务正文)。
 
 **与隐私的关系**: 群聊是"**接单与交付的发生地**",但**课题本身不在群里公开分发** —— 任务书(含课题锚点)由委托方**私下发给已入群的受托方**,群里只贴"第 N 期任务书已发出 / 已交付 / 初筛结果 / 终审结论"这类**过程事实**。
+
+**已落地的命令(2026-09-23)**:
+
+| 命令 | 作用 |
+|---|---|
+| `bolloon task announce --group <群链接\|groupId> [--round N] [--criteria "…"] [--json]` | 把板上一条待接单公告压成**一行极短事实**发进群: `期号 · capability · 预算 · 验收判据摘要 · 公告 id`(任务正文不进群) |
+| `bolloon task trail --group <…> [--announcement-id <id>] [--json]` | 从群消息读回本期**过程留痕**并汇总成时间线(公告/接单/交付/初筛/终审),每条带时间 + 发送者假名 |
+| `bolloon task post --kind deliver\|screen\|final --group <…> --announcement-id <id>` | 交付(只贴内容哈希) / 初筛(**逐条结果**) / 终审结论 的群消息 |
+| `bolloon task claim <announcementId> --group <…> [--price …]` | 在原有认领语义上**只加**群聊分支: 认领成功 → 接单声明进群 |
+
+**桥接的实现纪律(不可回退)**:
+
+- 群消息里**只有**短引用: 公告 id(`ann-…`) / 内容哈希(`sha256:…`) / capability / 预算 / 时间 / 发送者假名 `agent-<8位>`;钱包地址 / DID / peerId / multiaddr / IP / 私钥形态 / URL / 邮箱 **命中即拒发**(发送侧)或**遮蔽**(读回侧)。
+- 缺 `--group` / 群链接非法 / 本机没加入这个群 → **拒绝执行并给原因**,**绝不静默降级成"只写本地"**(否则"过程留痕"就是假的)。
+- 群 store 不可达 → `TRANSPORT_FAILED`,如实报错,不落任何本地副本。
+- 时间线**只汇总真发过的事实**: 没发过「交付」就不会出现"已交付"条目(终审说 accept 但无交付痕迹时,显式标 `final-accept-without-delivery`)。
+- 接单痕迹只能由 `task claim --group` 产生(有真认领账才允许有接单声明);`task post --kind claim` 被拒。
+- **结算仍只在链上**: 群消息不替代 `releaseV2`;争议期不自动重付、不标 verified、不静默关闭。
+
+**没有验过的部分(显式列出)**: 两台机器经 OrbitDB 复制看到彼此的群消息(需第二个真实节点) · 多方并发接单/交付 · 终审结论触发链上 release · 任务书/正文经群聊分发(设计上**刻意不做**: 群是公开可读的 store)。
 
 ---
 

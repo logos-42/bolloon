@@ -3113,3 +3113,50 @@ run 的随机 taskId 不在其中, 就恒为 false ≠ true。**证据**: 在 `g
 | 2026-09-23 | chore | 《长期合作方案》§9 原来列明了委托方**路线图内部细节**(判决漏斗结构、已知缺口「μ 主动产生机制 = 第二输入缺口」、「μ–⟨σv⟩ 耦合尚未建模」、可引定理名清单);本仓 **public**,这些内容不应公开 | raw.githubusercontent.com 实测 **HTTP 200** 即可被任意人读到 |
 | 2026-09-23 | chore | §9 改为短桩(只留课题方向 + 出题规则 + "具体锚点私下发放"),完整内容移到私有目录 `~/.bolloon/tasks/p0/private-anchors.md` | 与任务书同处私有区,不进任何公开仓 |
 | 2026-09-23 | chore | 保留 §10 群聊通道 / §11 纪律对应(协议层, 不含内部研究细节) | 协议公开、课题私有 |
+
+## [2026-09-23] feat(task) | 群聊通道 C7 桥接 —— 发布/接单/交付/初筛/终审 在群里留过程痕迹, 且**抓修一个真隐私漏**(黏连标识符会漏进群)
+
+| 日期 | 阶段/类别 | 变更 | 提交 / 说明 |
+|------|-----------|------|-------------|
+| 2026-09-23 | feat | 新增 `src/agents/task-group.ts`(桥接核心): 隐私守卫(13 条规则) · 群/发送者解析 · 公告取数 · 消息构造/解析 · 时间线汇总 | 群聊侧**只读**复用 `gateway-group.ts`(未改其语义) |
+| 2026-09-23 | feat | `bolloon task announce --group <群链接\|groupId> [--round N] [--criteria "…"] [--json]`: 取一条待接单公告 → **一行极短事实**发进群 = `期号·capability·预算·判据摘要·公告 id` | **任务正文与预览都不进群**(正文只在本机 `~/.bolloon/tasks/board/`); `criteria` 没给 → 如实写 `judge=unstated;sha256=<任务书摘要前16位>`, 不替它编判据 |
+| 2026-09-23 | feat | `bolloon task trail --group <…> [--announcement-id <id>] [--json]`: 从群消息读回本期**过程留痕** → 时间线(公告/接单/交付/初筛/终审), 每条带时间 + 发送者假名 + `byKind` 计数 + 事实矛盾 | 只汇总**真发过**的事实; 群不可达 → 报错(不用本地缓存假装读过群) |
+| 2026-09-23 | feat | `bolloon task post --kind deliver\|screen\|final --group <…> --announcement-id <id>`: 交付(只贴内容哈希 sha256/CIDv1) · 初筛(**逐条结果**) · 终审结论 | 交付哈希闸: 钱包地址 / 0x 私钥 / CIDv0(与 peerId 同形) 一律拒; 初筛缺 `--checks` / 终审结论不在词表 → 拒(不替你翻译成 accept) |
+| 2026-09-23 | feat | `bolloon task claim <id> --group <…>`: 在**原有认领语义之上只加**群聊分支 | 群在**认领之前**定死: 群非法 → 整条命令拒绝且**认领根本没发生**; 群消息发失败 → 认领仍记账并如实标 `posted=false`(不互相冒充) |
+| 2026-09-23 | feat | `task post --kind claim` **被拒**并指路 `task claim` | 不允许出现"没有认领者却挂在群里的接单声明" |
+| 2026-09-23 | fix | **抓到真隐私漏并修**: 隐私正则原用 `\b` 当边界, 而消息把空白折成 `_`, 于是 `judge=判据见_0x1111…` 这种**黏连形态 `\b` 判不出来 → 钱包地址真会被发进群**; 全部规则改为对标识符字母表的 lookaround | 修复前 `verify-task-group-bridge.ts` 实测: `⑦ CLI 侧: 判据摘要里塞钱包地址` **红**且群消息里真读到 `0x…`; 修复后同一条转绿 |
+| 2026-09-23 | fix | **抓到并修第二处"缺字段变假事实"**: 交付痕迹未给 `--bytes` 时消息写成 `bytes=0`(**0 是事实断言** = 谎报"零字节交付")→ 改 `bytes=-`(未声明); 同类 `deadline/createdAt` 缺失也原会变 0(1970 年)→ 如实为 null | 由真 CLI 演示输出发现; 加 2 条单测 + 1 条真跑检查锁死 |
+| 2026-09-23 | test | 新增 `scripts/verify-task-group-bridge.ts`(**真 OrbitDB 群**): 缺群/非法链接/未入群 拒跑 · 公告进群后 `groupMessages` 真读回 + **正则断言群消息不含地址/DID/peerId/multiaddr/IP/私钥** · 时间线跨消息聚合 · 未交付不得出现"已交付" · 读路径遮蔽(别人绕过闸发的消息) · 发送闸逐条 · 哈希闸 | **121 passed / 0 failed / 4 skipped**; 含 9 条**黏连回归锁**(`_0x…`/`_did:…`/`peer_12D3Koo…`/`addr_/ip4/…`/`at_192.168…`/`fe80::1`)与 2 条**误拦控制**(本模块真发的消息不被误杀) |
+| 2026-09-23 | test | 新增 `src/test/task-group-bridge.test.ts`(纯函数 24 条, 不起 OrbitDB) | 13 条规则各有正样本(规则不是摆设) · 黏连回归 · 遮蔽记账 · 哈希/词表闸 · 时间线合并与矛盾判定 · 缺字段不变假事实 |
+| 2026-09-23 | docs | `docs/wiki/long-term-collaboration-plan.md` §6 加 **C7 行(已做)**; §10 补**已落地命令表 + 实现纪律 + 没验过的部分** | |
+| 2026-09-23 | docs | `current-status.md` 加 C7 行 + 待做表加 C7 遗留行 | |
+
+**隐私守卫(硬约束的实现口径)**:
+
+- 群消息里**只有短引用**: 公告 id(`ann-…`) / 内容哈希(`sha256:…`) / capability / 预算 / 时间 / 发送者假名 `agent-<8位>`(由本机 DID 派生, **原始 DID 永不进群**, 信封里 `didPrinted:false`)。
+- **命中即拒发**(发送侧 13 条规则): 钱包地址 `0x+40` · `0x+64`(私钥) · `0x`+十六进制块 · DID · peerId(`12D3Koo…`/`Qm…`) · multiaddr · OrbitDB 链接 · IPv4 · IPv6 · PEM · "私钥/助记词/密钥材料"字样 · http(s) URL · 邮箱。
+- **读回侧也守**: 别人绕过本模块发的带标识符消息, `trail` 把命中字段换成 `[已遮蔽:<规则>]` + 记 `redacted` + 标矛盾 `group-message-hit-privacy-rule`, **不回显原文**(读路径不能变成泄漏通道)。
+- 拒发时**如实报出命中的规则名与长度**, 只回显该标识符前 4 个字符(绝不复述完整值)。
+
+**纪律(不静默降级)**:
+
+- 缺 `--group` / 群链接非法(非 `orbitdb://…?type=group&name=…`) / 本机没加入这个群 → `INVALID_ARGUMENT` / `NETWORK_NOT_JOINED` / `NOT_FOUND` **并给可操作原因**(列出本机已加入的群 + 怎么入群), 信封里 `sent=false` / `localFallback=false`。
+- 群 store 不可达 → `TRANSPORT_FAILED`, **不落任何本地"影子痕迹"**(脚本断言 `~/.bolloon/tasks/` 内容前后不变)。
+- 时间线**只汇总真发过的事实**: 没交付就不会出现"已交付"条目; 没交付却终审 accept → 显式标 `final-accept-without-delivery`(人话输出也标, 不只藏在 JSON)。
+- 过程痕迹一律 `executed/paid/fundsMoved/verified=false` —— **群消息不替代链上 `releaseV2`**, 争议期不自动重付/不标 verified/不静默关闭。
+
+**真跑数字(本机 macOS, 隔离 HOME + 真身份 + 真 OrbitDB 群)**:
+
+- `npx tsc --noEmit` → **0 错**。
+- `npx vitest run --bail=1` → **202 文件 / 2685 测试全绿**(53.9s; 本批新增 1 文件, 24 条)。
+- `npx tsx scripts/verify-task-group-bridge.ts` → **121 passed / 0 failed / 4 skipped**, 退出码 0。
+- 三门禁: `wiki_check` OK · `wiki_lint --strict=v2` OK · `raw_manifest_check` OK。
+- 真 CLI 走通: 缺 `--group` 拒 → `http://` 拒 → 缺 `type=group` 拒 → 未入群拒 → 公告进群 → `trail` 读回 → 接单(`claim --group`) → 交付 → 初筛(逐条) → 终审 → `trail` 复看 5 条时间线。
+
+**没验过 / 刻意不做(显式列)**:
+
+- 两台机器经 OrbitDB 复制看到彼此的群消息(需第二个真实节点; 本脚本是**单机真群 store**)。
+- 多方同时接单/交付的并发语义(群消息本身没有互斥语义)。
+- 终审结论触发链上 release(属另一条链上命令组; 群里的话不替代链上结算)。
+- 任务书/交付**正文**经群聊分发 —— **设计上刻意不做**: 群是公开可读的 store, 正文仍走私聊/直连通道(群只贴哈希与过程事实)。
+- 用户指定的原始 `--group` 定位参数在仓库里此前没有消费方(选项名由本次新增并登记进 `protocol-envelope.ts` 的 `OPTIONS_WITH_VALUE`)。

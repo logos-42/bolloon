@@ -41,6 +41,7 @@ export const GROUPS_HELP = `
   bolloon agent     discover | register | manifest | inspect
   bolloon task      list | status | result | retry | run | send|inbox|accept|reject|complete|cancel(未实现)
                     publish|board|claim   (任务对外发布 + 接单: 公告板)
+                    announce|trail|post   (群聊通道 C7: 公告入群 / 过程留痕回看 / 交付·初筛·终审痕迹)
   bolloon wallet    status | policy | set-policy
   bolloon payment   pending | approve | reject
   bolloon trade     list | show | events | reconcile

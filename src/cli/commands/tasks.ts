@@ -56,14 +56,29 @@ ${title('bolloon task')}
       输出稳定 announcementId (同一 能力+正文+买方+预算 → 同一个 id, 重发幂等)
   bolloon task board [--json] [--capability <名>] [--open] [--local]
       板上可接单的任务: **本地公告 + 注册表发现的远端公告**, 按 announcementId 去重
-  bolloon task claim <announcementId> [--price 0.02]
+  bolloon task claim <announcementId> [--price 0.02] [--group <群链接|groupId>]
       provider 接单: 记认领者 DID + 时间 + 声明价格 (不执行、不付款、不标 verified);
-      重复认领 / 已取消 / 不存在的 id → 一律拒绝并给原因
+      重复认领 / 已取消 / 不存在的 id → 一律拒绝并给原因;
+      带 --group 时: 往群里发一条极短接单声明 (群非法 → 整条命令拒绝, 不静默降级)
+
+  ── 群聊通道 (C7, 2026-09-23: 过程留痕) ──
+  bolloon task announce --group <群链接|groupId> [--announcement-id <id>] [--capability <名>]
+      [--round <期号>] [--criteria "<验收判据摘要>"] [--from <短显示名>] [--json]
+      把板上**一条待接单公告**压成一行极短事实 (期号 · capability · 预算 · 判据摘要 · 公告 id) 发进群;
+      正文不进群; 缺 --group / 群非法 / 本机没这个群 → 拒绝执行 (绝不降级为只写本地)
+  bolloon task trail --group <群链接|groupId> [--announcement-id <id>] [--limit 300] [--json]
+      从群消息读回本期过程留痕 (公告/接单/交付/初筛/终审) → 按时间排序的时间线, 每条带时间 + 发送者标记
+  bolloon task post --kind deliver|screen|final --group <群链接|groupId> --announcement-id <id> \\
+      [--hash sha256:<hex>] [--bytes <n>] [--checks "渠道结构=pass,价格带=fail"] [--verdict accept|reject|unknown]
+      [--round <期号>] [--from <短显示名>] [--json]
+      交付只贴哈希 · 初筛逐条结果 · 终审结论; 群消息一律无钱包地址/DID/peerId/multiaddr/IP/私钥形态
+      (命中任一条 → 拒发并报出命中的规则)
 
 选项: --json · --quiet · --request-id <id> · --timeout <ms> · --resume <goalId> (同 bolloon task)
 说明: 收件箱落盘 ~/.bolloon/tasks/inbox/; 本机发出的任务台账 ~/.bolloon/tasks/local/;
       结果 ~/.bolloon/tasks/results/, 交付正文 ~/.bolloon/tasks/bodies/ (私有层, 不进 stdout);
-      任务公告 ~/.bolloon/tasks/board/ (正文只在本地, 注册表里只有 sha256 摘要 + 60 字预览)。
+      任务公告 ~/.bolloon/tasks/board/ (正文只在本地, 注册表里只有 sha256 摘要 + 60 字预览);
+      群里的过程痕迹**只在群里** (群消息就是留痕本体, 本机不留影子副本); 结算仍只在链上。
 `;
 
 type Rec = import('../../agents/x402/transaction-protocol.js').TransactionRecord;
@@ -162,6 +177,9 @@ export async function taskCommand(flags: CliFlags): Promise<CommandResult> {
     case 'publish': return taskPublish(flags);
     case 'board': return taskBoard(flags);
     case 'claim': return taskClaim(flags);
+    case 'announce': return taskAnnounce(flags);
+    case 'trail': return taskTrail(flags);
+    case 'post': return taskPost(flags);
     default:
       return {
         envelope: failEnvelope('INVALID_ARGUMENT', sub ? `未知 task 子命令: ${sub}` : '缺少 task 子命令', { usage: plain(TASK_USAGE.trim()) }, [], 'needs_human'),
@@ -1541,6 +1559,11 @@ async function taskClaim(flags: CliFlags): Promise<CommandResult> {
   if ('fail' in s) return s.fail;
   const signer = s.signer;
 
+  // ★ C7: 带 --group 时**在认领之前**把群定死 —— 群非法/没加入 → 整条命令拒绝 (绝不"认领落本地 + 悄悄不发群")
+  const wantsGroup = opt(flags, '--group') !== undefined;
+  const gctx = wantsGroup ? await requireGroup('bolloon task claim ' + id, flags) : null;
+  if (gctx && !gctx.ok) return gctx.result;
+
   // 声明价格 (可选): 不声明 → null, 不替它猜
   const priceHuman = opt(flags, '--price');
   const currency = String(opt(flags, '--currency') || 'USDC').toUpperCase();
@@ -1593,6 +1616,29 @@ async function taskClaim(flags: CliFlags): Promise<CommandResult> {
   }
 
   const c = r.claim!;
+  // ★ C7: 认领成功 → 往群里发一条极短接单声明 (群已在认领**之前**定死; 这里最坏也只是"发失败")
+  let groupPost: Record<string, unknown> | null = null;
+  if (gctx && gctx.ok) {
+    const TG: any = await import('../../agents/task-group.js');
+    const priceTok = c.priceAmountAtomic ? `${c.priceAmountAtomic}${String(c.currency || '').toUpperCase()}` : null;
+    const built = TG.buildPostMessage({ kind: 'claim', announcementId: id, price: priceTok });
+    const sent = built.ok
+      ? await TG.sendTrailMessage(gctx.group.groupId, built.text, gctx.fromTag)
+      : { ok: false, sent: false, error: built.message, violations: null };
+    groupPost = {
+      requested: true,
+      posted: sent.sent === true,
+      error: sent.sent ? null : (sent.error || '未知原因'),
+      message: built.ok ? built.text : null,
+      group: gctx.group.groupId,
+      senderTag: gctx.fromTag,
+      localFallback: false,
+      /** 群消息没发出去**不等于**认领没发生: 认领事实已写进本地账 (上面那步真写过了) */
+      claimStillRecorded: true,
+    };
+  } else if (!wantsGroup) {
+    groupPost = { requested: false, posted: false, reason: '没有 --group: 本命令原有语义不变 (只记本地认领账); 群里留痕要显式给 --group' };
+  }
   const data = {
     ...baseData,
     claim: {
@@ -1607,12 +1653,16 @@ async function taskClaim(flags: CliFlags): Promise<CommandResult> {
     status: r.status ?? null,
     file: r.file,
     priceNote: r.priceNote ?? null,
+    /** C7 群聊侧: 认领有没有在群里留下接单声明 (发失败也如实标; 认领事实不受影响) */
+    group: groupPost,
     honestyNote: r.remote
       ? '远端公告的认领只落本机台账 (**没有投递给买方**); 真交接走 bolloon task send → 对方 task accept'
       : '认领只是"我来做"的本地事实: 不执行任务、不付款、不标 verified (释放/验真另走裁决函数)',
   };
+  const groupNext: NextAction = groupPost && groupPost.requested === true && groupPost.posted !== true ? 'needs_human' : null;
   return {
-    envelope: okEnvelope('OK', r.message, data, [id], r.remote ? 'needs_human' : null),
+    envelope: okEnvelope('OK', `${r.message}${groupPost && groupPost.requested === true ? (groupPost.posted === true ? ' (接单声明已进群)' : ' (接单声明没发进群)') : ''}`,
+      data, [id], groupNext ?? (r.remote ? 'needs_human' : null)),
     human: [
       title('bolloon task claim ' + id),
       line('认领者', c.providerDid),
@@ -1620,9 +1670,287 @@ async function taskClaim(flags: CliFlags): Promise<CommandResult> {
       line('声明价格', c.priceAmountAtomic ? `${c.priceAmountAtomic} 原子 ${c.currency}` : '(没声明价)'),
       line('公告来源', r.remote ? '注册表 (远端)' : '本地公告文件'),
       line('投递给买方', r.deliveredToBuyer ? '已投递' : '**没有** (本版没有远端认领投递通道; 真交接走 task send/accept)'),
+      ...(groupPost ? [line('群聊留痕', groupPost.requested === true
+        ? (groupPost.posted === true ? `接单声明已进群 (发送者标记 ${String(groupPost.senderTag)})` : `**没发进群**: ${String(groupPost.error)} — 认领事实已记账, 但群里没有这条痕迹`)
+        : `没有 --group: 只记本地账 (${String(groupPost.reason)})`)] : []),
       line('本次执行', '没有 (接单不执行任务)'),
       line('本次付款', '没有 (接单不付款)'),
       r.remote ? `\n  ${hint('下一步: 让买方把任务发过来 (bolloon task send); 对方 accept 后才有执行/交付')}` : `\n  ${hint('下一步: 等买方的 task send/accept; 交付后用 decideAnnouncementRelease 判是否可释放 (未交付不得释放)')}`,
+    ].join('\n'),
+  };
+}
+
+// ── 群聊通道 (C7: announce / trail / post, 2026-09-23) ───────────────────────
+
+/** C7 群上下文: 群必须先定下来 (缺/非法/没加入 → 拒跑); 发送者标记只用短假名 */
+async function requireGroup(head: string, flags: CliFlags): Promise<
+  { ok: true; group: any; fromTag: string; fromSource: 'flag' | 'identity' } | { ok: false; result: CommandResult }
+> {
+  const TG: any = await import('../../agents/task-group.js');
+  const ref = opt(flags, '--group');
+  const g = await TG.resolveGroupRef(ref);
+  if (!g.ok) {
+    return {
+      ok: false,
+      result: {
+        envelope: failEnvelope(g.code, `${g.message}`,
+          { group: ref ?? null, ...g.detail, sent: false, localFallback: false, why: '缺群/群非法/群没加入一律拒绝执行: 本命令不做"只写本地"的降级' },
+          [], 'needs_human'),
+        human: [
+          title(head),
+          `  群没定下来: ${g.message}`,
+          '',
+          hint('群聊通道就是留痕的地方: 没有群就没有留痕 —— 这里不会静默降级成只写本地'),
+          ...(Array.isArray((g.detail as any).joined) && (g.detail as any).joined.length
+            ? [line('本机已加入的群', (g.detail as any).joined.map((x: any) => `${x.id}${x.name ? ` (${x.name})` : ''}`).join(' · '))]
+            : [line('本机已加入的群', '(没有)')]),
+        ].join('\n'),
+      },
+    };
+  }
+  const s = await TG.resolveSenderTag(opt(flags, '--from'));
+  if (!s.ok) {
+    return {
+      ok: false,
+      result: {
+        envelope: failEnvelope(s.code, `${s.message}`, { ...s.detail, group: g.group, sent: false, localFallback: false }, [], 'needs_human'),
+        human: `${title(head)}\n  发送者标记定不下来: ${s.message}\n\n${hint('群里只出现短假名 (agent-xxxxxxxx) 或 --from 给的短显示名; 原始 DID 永不进群')}`,
+      },
+    };
+  }
+  return { ok: true, group: g.group, fromTag: s.tag, fromSource: s.source };
+}
+
+/** 时间线条目 → 对外投影 (不含原消息文本; 字段已被遮蔽过) */
+function trailEntryView(e: any) {
+  return { kind: e.kind, at: e.at, atIso: e.at ? new Date(e.at).toISOString() : null, sender: e.sender, announcementId: e.announcementId, fields: e.fields };
+}
+
+/**
+ * `bolloon task announce --group <群链接|groupId>` —— 把板上一条待接单公告压成一行极短事实发进群。
+ * 内容只有: 期号 · capability · 预算 · 验收判据摘要 · 公告 id (任务正文不进群)。
+ */
+async function taskAnnounce(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task announce';
+  const ctx = await requireGroup(head, flags);
+  if (!ctx.ok) return ctx.result;
+  const TG: any = await import('../../agents/task-group.js');
+
+  const picked = TG.pickAnnouncement({ announcementId: opt(flags, '--announcement-id'), capability: opt(flags, '--capability') });
+  if (!picked.ok) {
+    return {
+      envelope: failEnvelope(picked.code, picked.message, { ...picked.detail, group: ctx.group, sent: false, localFallback: false }, [], 'needs_human'),
+      human: `${title(head)}\n  没得可发: ${picked.message}\n\n${hint('先看板: bolloon task board; 发公告: bolloon task publish --capability … --instruction "…" --budget 0.05')}`,
+    };
+  }
+  const a = picked.announcement;
+  const text = TG.buildAnnounceMessage(a, { round: opt(flags, '--round'), criteria: opt(flags, '--criteria') });
+  const sent = await TG.sendTrailMessage(ctx.group.groupId, text, ctx.fromTag);
+  if (!sent.ok) {
+    const violations = sent.violations || null;
+    return {
+      envelope: failEnvelope(violations ? 'POLICY_DENIED' : 'TRANSPORT_FAILED',
+        violations ? `公告命中隐私红线, 拒绝发进群: ${violations.map((v: any) => v.rule).join(', ')}` : `群消息没发出去: ${sent.error}`,
+        { announcementId: a.announcementId, group: ctx.group.groupId, message: text, sent: false, violations, localFallback: false, paid: false },
+        [a.announcementId], 'needs_human'),
+      human: [
+        title(head),
+        `  ${violations ? '命中隐私红线, 拒发' : '没发出去'}: ${sent.error}`,
+        ...(violations ? violations.map((v: any) => `    · ${v.rule} — ${v.why} (${v.masked}, ${v.chars} 字符)`) : []),
+        '',
+        hint(violations ? '把公告的预览/判据摘要改成不含标识符的短事实后重发 (本命令不静默脱敏: 脱敏后的公告不是你要发的那条)' : '群 store 不可达时不会落本地: 就是没发出去'),
+      ].join('\n'),
+    };
+  }
+  const data = {
+    announcementId: a.announcementId,
+    capability: a.capability,
+    budget: a.budget,
+    deadline: a.deadline,
+    round: opt(flags, '--round') || null,
+    judgeStated: !!opt(flags, '--criteria'),
+    message: sent.text,
+    group: { id: ctx.group.groupId, name: ctx.group.name, via: ctx.group.via },
+    sender: { tag: ctx.fromTag, source: ctx.fromSource, didPrinted: false },
+    /** 群里只有过程事实: 不执行、不付款、不标 verified */
+    executed: false,
+    paid: false,
+    fundsMoved: false,
+    localFallback: false,
+    note: '公告入群只发极短事实 (期号/capability/预算/判据摘要/公告 id): 任务正文不进群; 群里的话不替代链上 releaseV2',
+  };
+  return {
+    envelope: okEnvelope('OK', `已把公告 ${a.announcementId} 发进群 (${a.capability})`, data, [a.announcementId], null),
+    human: [
+      title(head),
+      line('公告号', a.announcementId),
+      line('capability', a.capability),
+      line('预算', a.budget ? `≤ ${a.budget.maxAmount} 原子 (${a.budget.currency} @ ${a.budget.network})` : '(无)'),
+      line('期号', opt(flags, '--round') || '(未标)'),
+      line('判据摘要', opt(flags, '--criteria') || `未声明 (只放任务书摘要 sha256:${String(a.instructionDigest || '').slice(0, 16)}…)`),
+      line('群', `${ctx.group.name || '(无名)'} · ${ctx.group.groupId}`),
+      line('发送者标记', `${ctx.fromTag} (${ctx.fromSource === 'identity' ? '本机身份派生假名' : '--from 显式'}; 原始 DID 未进群)`),
+      line('本次执行/付款', '没有 (公告入群只是过程留痕)'),
+      '',
+      hint(`下一步: 别人 bolloon task claim ${a.announcementId} --group <群链接>; 回看留痕: bolloon task trail --group <群链接>`),
+    ].join('\n'),
+  };
+}
+
+/** `bolloon task trail --group <群链接|groupId>` —— 从群消息读回本期过程痕迹并汇总成时间线 */
+async function taskTrail(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task trail';
+  const ctx = await requireGroup(head, flags);
+  if (!ctx.ok) return ctx.result;
+  const TG: any = await import('../../agents/task-group.js');
+
+  const limitRaw = opt(flags, '--limit');
+  const limit = limitRaw === undefined ? 300 : Number(limitRaw);
+  if (limitRaw !== undefined && (!Number.isFinite(limit) || limit < 1)) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', `--limit 必须是正数 (收到 ${limitRaw})`, { limit: limitRaw }, [], 'needs_human'),
+      human: TASK_USAGE,
+    };
+  }
+  let summary: any;
+  try {
+    summary = await TG.readTrail(ctx.group.groupId, { limit, announcementId: opt(flags, '--announcement-id') });
+  } catch (e: any) {
+    return {
+      envelope: failEnvelope('TRANSPORT_FAILED', `群消息读不出来: ${String(e?.message || e).slice(0, 160)}`,
+        { group: ctx.group.groupId, read: false, localFallback: false }, [], 'needs_human'),
+      human: `${title(head)}\n  群消息读不出来: ${String(e?.message || e).slice(0, 160)}\n\n${hint('群不可达时如实报错: 不用本地缓存假装读过群')}`,
+    };
+  }
+  const data = {
+    group: { id: ctx.group.groupId, name: ctx.group.name, via: ctx.group.via },
+    count: summary.count,
+    byKind: summary.byKind,
+    announcements: summary.announcements,
+    flags: summary.flags,
+    inconsistencies: summary.inconsistencies,
+    redacted: summary.redacted,
+    ignoredMessages: summary.ignoredMessages,
+    timeline: summary.entries.map(trailEntryView),
+    limit,
+    announcementFilter: opt(flags, '--announcement-id') || null,
+    readOnly: true,
+    localFallback: false,
+    note: '时间线只汇总群里真发过的事实 (公告/接单/交付/初筛/终审); 没发过的环节不会凭空出现; 发送者只显示短标记 (原始 DID 不在输出里)',
+  };
+  const label = (k: string) => `${TG.TRAIL_KIND_LABEL[k]}=${(summary.byKind as any)[k]}`;
+  const human = [
+    title(`${head} (${ctx.group.name || ctx.group.groupId})`),
+    line('条目', `${summary.count} 条 (${TG.TRAIL_KINDS.map(label).join(' · ')})`),
+    ...(summary.announcements.length ? [line('涉及公告', summary.announcements.join(' · '))] : []),
+    ...(summary.inconsistencies.length ? [line('事实矛盾/遮蔽', summary.inconsistencies.join(' · '))] : []),
+    ...(summary.redacted.length ? [line('被遮蔽的字段', summary.redacted.join(' · ') + ' (别人发的消息里含标识符形态, 读回时已遮蔽)')] : []),
+    '',
+    ...(summary.entries.length
+      ? summary.entries.map((e: any) => `  ${TG.formatTrailLine(e)}`)
+      : ['  (群里还没有本期的过程痕迹: 先用 bolloon task announce --group … 发公告)']),
+    '',
+    `  ${String(data.note)}`,
+  ].join('\n');
+  return {
+    envelope: okEnvelope('OK',
+      summary.count
+        ? `群里本期 ${summary.count} 条过程痕迹 (${summary.announcements.length} 个公告)`
+        : '群里本期没有过程痕迹 (群里真没有, 不是读失败)',
+      data, summary.announcements, null),
+    human,
+  };
+}
+
+/** `bolloon task post --kind deliver|screen|final --group <…> --announcement-id <id>` —— 交付/初筛/终审的群消息 */
+async function taskPost(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task post';
+  const kind = String(opt(flags, '--kind') || '').trim().toLowerCase();
+  if (!['deliver', 'screen', 'final'].includes(kind)) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', `--kind 必须是 deliver|screen|final (收到 ${kind || '(空)'})`,
+        {
+          accepted: ['--kind deliver --hash sha256:<hex>', '--kind screen --checks "渠道结构=pass,价格带=fail"', '--kind final --verdict accept'],
+          claimKindNote: kind === 'claim'
+            ? '接单痕迹不用 task post 发: 用 `bolloon task claim <announcementId> --group <群>` —— 这样"接单痕迹"必定对应一笔真认领账, 不会出现没有认领者却挂在群里的接单声明 (反过来也不会有认领了却没有任何群痕迹的静默)'
+            : null,
+          why: '群里只认这四种过程事实: 公告 / 交付 / 初筛 / 终审 (接单走 task claim)',
+        }, [], 'needs_human'),
+      human: TASK_USAGE,
+    };
+  }
+  const ctx = await requireGroup(head, flags);
+  if (!ctx.ok) return ctx.result;
+  const TG: any = await import('../../agents/task-group.js');
+
+  const bytesRaw = opt(flags, '--bytes');
+  const built = TG.buildPostMessage({
+    kind,
+    announcementId: opt(flags, '--announcement-id'),
+    round: opt(flags, '--round'),
+    price: opt(flags, '--price'),
+    hash: opt(flags, '--hash'),
+    bytes: bytesRaw === undefined ? null : Number(bytesRaw),
+    checksRaw: opt(flags, '--checks'),
+    verdict: opt(flags, '--verdict'),
+  });
+  if (!built.ok) {
+    return {
+      envelope: failEnvelope(built.code, built.message, { ...built.detail, kind, group: ctx.group, sent: false, localFallback: false }, [], 'needs_human'),
+      human: `${title(head)}\n  ${built.message}\n\n${TASK_USAGE.split('选项:')[0].trim().split('\n').slice(-6).join('\n')}`,
+    };
+  }
+  const sent = await TG.sendTrailMessage(ctx.group.groupId, built.text, ctx.fromTag);
+  if (!sent.ok) {
+    const violations = sent.violations || null;
+    return {
+      envelope: failEnvelope(violations ? 'POLICY_DENIED' : 'TRANSPORT_FAILED',
+        violations ? `过程痕迹命中隐私红线, 拒绝发进群: ${violations.map((v: any) => v.rule).join(', ')}` : `群消息没发出去: ${sent.error}`,
+        { kind, group: ctx.group.groupId, message: built.text, sent: false, violations, localFallback: false }, [], 'needs_human'),
+      human: [
+        title(head),
+        `  ${violations ? '命中隐私红线, 拒发' : '没发出去'}: ${sent.error}`,
+        ...(violations ? violations.map((v: any) => `    · ${v.rule} — ${v.why} (${v.masked}, ${v.chars} 字符)`) : []),
+        '',
+        hint('群里不放钱包地址/DID/peerId/multiaddr/IP/私钥形态; 换个不含标识符的短事实重发'),
+      ].join('\n'),
+    };
+  }
+  const onBoard = !!TG.readBoardAnnouncement(String(opt(flags, '--announcement-id') || ''));
+  const data = {
+    kind,
+    announcementId: opt(flags, '--announcement-id'),
+    message: sent.text,
+    checks: built.checks ? built.checks : null,
+    group: { id: ctx.group.groupId, name: ctx.group.name, via: ctx.group.via },
+    sender: { tag: ctx.fromTag, source: ctx.fromSource, didPrinted: false },
+    announcementOnLocalBoard: onBoard,
+    /** 群里只是留痕: 不执行、不付款、也不标 verified (终审结论不替代链上 release) */
+    executed: false,
+    paid: false,
+    fundsMoved: false,
+    verified: false,
+    localFallback: false,
+    note: kind === 'deliver'
+      ? '交付痕迹只贴内容哈希 (群里没有正文); 真交接仍走 bolloon task send → 对方 task accept'
+      : kind === 'screen'
+        ? '初筛通过 ≠ 已验收: 终审结论另发 (--kind final); 线上一分钱都没动'
+        : '终审结论只是过程事实: 结算仍只在链上 (群里的话不替代 releaseV2; 争议期不自动重付/不标 verified)',
+  };
+  return {
+    envelope: okEnvelope('OK', `已把${TG.TRAIL_KIND_LABEL[kind]}发进群 (${opt(flags, '--announcement-id')})`, data,
+      [String(opt(flags, '--announcement-id'))], null),
+    human: [
+      title(`${head} --kind ${kind}`),
+      line('公告号', String(opt(flags, '--announcement-id'))),
+      line('群消息', sent.text),
+      ...(built.checks ? [line('初筛逐条', built.checks.map((c: any) => `${c.name}=${c.result}`).join(' · '))] : []),
+      line('群', `${ctx.group.name || '(无名)'} · ${ctx.group.groupId}`),
+      line('发送者标记', `${ctx.fromTag} (原始 DID 未进群)`),
+      line('本地板上有这条公告吗', onBoard ? '有' : '没有 (本机不是买方; 只发痕迹不假装认识这条公告)'),
+      line('本次执行/付款/验真', '都没有 (群消息只是过程留痕)'),
+      '',
+      `  ${data.note}`,
     ].join('\n'),
   };
 }
