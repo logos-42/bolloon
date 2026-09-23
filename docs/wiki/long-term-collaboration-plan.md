@@ -1,3 +1,15 @@
+---
+title: 长期合作方案 — 用 Bolloon 托管"可核验的研究委托" (草案 v0.1)
+source: session (leo 2026-09-23 四项委托口径选择 + HUSHFUSION 站 docs.html 现状)
+created: 2026-09-23
+last_confirmed: 2026-09-23
+schema_version: 2
+audience: self
+stage: current
+status: draft
+tags: [collaboration, task-spec, deliverable, acceptance, settlement, escrow, intake-channel, hushfusion, research]
+---
+
 # 长期合作方案 —— 用 Bolloon 托管"可核验的研究委托"
 
 > 状态: **草案 v0.1** (2026-09-23)
