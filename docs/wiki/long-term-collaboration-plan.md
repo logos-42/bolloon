@@ -84,7 +84,7 @@ tags: [collaboration, task-spec, deliverable, acceptance, settlement, escrow, in
 |---|---|---|
 | `textbook` | 教科书/标准手册里的公式或常数 | `μ0H_P ≈ 1.84·T_c` 这类换算 |
 | `measured` | 实测文献里的数据点(须给文献标识) | Nb₃Sn 的实测 T_c / H_c |
-| `formalized` | **Lean 已证定理**(须给 `文件名:定理名`) | `PlasmaFusion.lean:confinement_iff_beta_le_one` |
+| `formalized` | **Lean 已证定理**(须给 `文件名:定理名`) | 例: `<Lean 文件>:<定理名>` |
 | `derived` | 本次自算(须给**可复算的算式与输入**) | 代入具体场强算出的 T_c |
 
 **硬规则**:凡 `derived` 必须**可复算**(给出算式 + 输入值 + 结果);凡引用必须**可定位**(到节/表/条目);**没有出处就不许写成结论** —— 只能写成 `gap`(缺口)。
@@ -137,7 +137,7 @@ tags: [collaboration, task-spec, deliverable, acceptance, settlement, escrow, in
 
 | 阶段 | 内容 | 花费 | 完成判据 |
 |---|---|---|---|
-| **P0 试单** | 从 §9 的课题锚点里切**一个可判决的问题**(建议: 核聚变的 `confinement_iff_beta_le_one` / `required_field_for_confinement` 一条链上的**可算量**, 或路线图 §8 点名的「μ 主动产生机制 = 第二输入缺口」中一个可表述的子问题), 一份任务书 + 一份交付物, 走完 立单→交付→初筛→终审→release | **0.02 USDC** | 链上 `releaseV2` 成功 + 你在页面上看到"已结算" |
+| **P0 试单** | 从 §9 的课题锚点里切**一个可判决的问题**(由委托方私下发放的课题锚点里切一个可算量), 一份任务书 + 一份交付物, 走完 立单→交付→初筛→终审→release | **0.02 USDC** | 链上 `releaseV2` 成功 + 你在页面上看到"已结算" |
 | **P1 通道** | 补 §6 的 C1/C2/C5(任务书对外可见 / 接单登记 / 拒单超时) | 0 | 外部节点能拿到任务书并交回一份合格交付物(可用本机模拟对方节点验证) |
 | **P2 常态化** | 任务书模板化 + 初筛脚本固化 + 多期并行 | 按 M1 上限逐日放量 | 至少一期**由外部受托方**独立完成并结算 |
 
