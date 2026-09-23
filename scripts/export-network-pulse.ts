@@ -36,7 +36,15 @@ async function main() {
 
   // 静态观察入口的「新鲜窗口」必须等于它的**发布周期**, 否则文件永远显示 stale。
   // 这是"定期发布"语义 (stale-while-revalidate), 不是假装实时 —— 页面同时显示快照时间与相对年龄。
-  const ttlSec = Number(arg('ttl', '7200'));
+  // 发布窗口 = 与**真实发布节奏**匹配 (2026-09-23 改): 这个站是"有变化才发布"(activity-driven),
+  // 不是定时发布。原来默认 2 小时(=定时发布的节奏)与真实节奏不符 ⇒ 内容没变时刷新脚本跳过发布,
+  // published_at 不前进 ⇒ 2 小时一到页面必然翻成 stale「快照已过期」, 而数据其实是完整的全量链上索引
+  // (读者会学会无视这个标记 = 诚实标记变噪音)。改为 7 天: 期间无发布一律视为新鲜, 只有超过 7 天没发布
+  // 才判过期(那本身才是真信号: 发布通道可能坏了)。
+  const ttlSec = Number(arg('ttl', '604800'));
+  if (!Number.isFinite(ttlSec) || ttlSec < 86400) {
+    throw new Error(`--ttl 至少要 86400 秒 (1 天): 本快照的发布节奏是"有变化才发", 窗口短于 1 天会与真实节奏不符, 让页面在数据完好时也报「快照已过期」 (拿到 ${ttlSec})`);
+  }
   const now = Date.now();
   snap.generated_at = snap.generated_at || now;
   snap.fresh_until = now + ttlSec * 1000;
