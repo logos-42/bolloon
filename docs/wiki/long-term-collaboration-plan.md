@@ -161,19 +161,15 @@ tags: [collaboration, task-spec, deliverable, acceptance, settlement, escrow, in
 
 ---
 
-## 9. 课题锚点(核聚变) —— 任务书从这里切
+## 9. 课题锚点(核聚变) —— 公开稿不列明
 
-**委托方项目**: `logos-42/Hibs-Physics`(本地副本 `~/Downloads/lean/ProjectionPhysics`)—— HIBS 三公理下"物理是代数的表示",Lean 4 形式化(不要 mathlib)。
+**课题方向**: 可控核聚变(魔角石墨烯场 / Cu 离子 / H 离子 / 声子),以委托方的 **Lean 形式化项目**数据为基础,寻找**可验证**与**可优化**的路径。
 
-| 锚点 | 路径 | 用途 |
-|---|---|---|
-| **判决漏斗路线图** | `docs/wiki/fusion-program-roadmap.md`(「可控核聚变五年计划」) | §1 **三个判决量**(把"μ 存在"从信仰变成可测数) · §2 三层节律 + 八道门 · §3 μ 数量级阶梯 · §6 pre-mortem · **§8 诚实边界与缺口** · §9 文献 |
-| **聚变形式化** | `ProjectionPhysics/PlasmaFusion.lean` | 可引用定理: `mag_pressure_nonneg` · `confinement_iff_beta_le_one` · `beta_le_one_iff_pressure_bounded` · `required_field_for_confinement` · `force_grows_quadratic_in_B` · `hoopStress` · `radius_upper_bound_by_yield` · `radius_max_inverse_field_sq` |
-| **魔角场天花板** | `ProjectionPhysics/MoireField.lean` + `docs/wiki/moire-field-ceiling-plan.md` · `theory-moire-field-ceiling.md` | 魔角石墨烯场的上限与判据 |
-| **等离子体理论** | `docs/wiki/theory-plasma-fusion.md` · `theory-plasma-antigravity.md` · `theory-plasma-dynamics.md` | 反引力约束 / 动力学 |
-| **已知缺口(优先出题)** | 路线图 §8: ① **μ 主动产生机制 = 第二输入缺口**; 路线图 §6 M36: 产额不随约束提升 ⟹ **μ–⟨σv⟩ 耦合尚未建模** | 缺口 = 最值得外部独立复核的地方 |
+**具体锚点(路线图的判决量、可引定理名、已知缺口)不在本公开仓列明** —— 它们与每期任务书一并**私下发放**给受托方:
+- 委托方私有目录:`~/.bolloon/tasks/p0/`(任务书 + 私有锚点,不进任何公开仓)
+- 本公开仓只保留**协议层**:怎么发题、怎么验收、怎么结算、怎么在群聊里协作
 
-**出题规则**: 每期任务书只切**一个问题**,并且必须满足"可判决"—— 即答完能明确说"支持/否证/仍未知",而不是"更有道理了"。
+**出题规则(公开)**: 每期任务书只切**一个问题**,且必须"**可判决**" —— 答完能明确说"**支持 / 否证 / 仍未知**",而不是"更有道理了"。
 
 ## 10. 群聊通道(C7) —— 协作发生在 Bolloon 群里
 
