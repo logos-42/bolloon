@@ -66,6 +66,8 @@ export const NETWORK_EVENT_TYPES = [
   // 经济事件 (P6 扩展; 原五类保持兼容, 老节点发来的事件仍被接受)
   'task_posted', 'task_accepted', 'task_completed', 'trade_settled', 'trade_verified',
   'wallet_signed',
+  // 2026-09-23 (C1): 任务对外发布 (公告板 publish) —— 只记"有节点公告了一个待接单任务", 正文/ID 原文不落盘
+  'task_announced',
 ] as const;
 export type NetworkEventType = (typeof NETWORK_EVENT_TYPES)[number];
 
@@ -269,6 +271,7 @@ export function renderActivityText(kind: NetworkEventType): { zh: string; en: st
     case 'capability_announced': return { zh: '有节点公开声明了新能力', en: 'A node announced a capability' };
     case 'peer_connected': return { zh: '两个节点建立了连接', en: 'Two nodes connected' };
     case 'delegation_completed': return { zh: '一次能力委派完成', en: 'A delegation completed' };
+    case 'task_announced': return { zh: '有节点公告了一个待接单任务', en: 'A node announced an open task' };
     default: return { zh: '网络有活动', en: 'Network activity' };
   }
 }

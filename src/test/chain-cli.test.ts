@@ -471,6 +471,9 @@ describe('chain trade create', () => {
     expect(Array.isArray(env.data.howToFix)).toBe(true);
     expect((env.data.howToFix as string[]).length).toBeGreaterThanOrEqual(3);
     // 读路径不受影响 (只拦真写)
+    // 密闭化: 读路径用假 client (不再依赖本机 8545 上是否真有节点 —— 否则这条测试只能在
+    // 起了 anvil 的机器上过, 断言意图 (读路径不被 token 缺失拦住) 反而看不清)
+    setChainCommandDepsForTesting({ client: () => clientWith(fakeProvider({ latestBlock: 131 })) });
     expect((await run('chain', 'status')).ok).toBe(true);
   });
 

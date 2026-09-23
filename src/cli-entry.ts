@@ -32,7 +32,7 @@ import { createRequire } from 'module';
 const _require = createRequire(import.meta.url);
 
 /** P3 `bolloon task <子命令>` 的已知子命令 —— 其它一律当 M1 任务正文 (既有体验不动) */
-const TASK_SUBCOMMANDS = new Set(['send', 'list', 'status', 'cancel', 'retry', 'result', 'inbox', 'accept', 'reject', 'run', 'complete']);
+const TASK_SUBCOMMANDS = new Set(['send', 'list', 'status', 'cancel', 'retry', 'result', 'inbox', 'accept', 'reject', 'run', 'complete', 'publish', 'board', 'claim']);
 
 
 const isWindows = process.platform === 'win32';

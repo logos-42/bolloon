@@ -48,9 +48,22 @@ ${title('bolloon task')}
   bolloon task reject <requestId|taskId> --reason "<原因>"
   bolloon task complete|cancel              仍未实现 → 如实报 C_NOT_IMPLEMENTED
 
+  ── 任务对外发布 + 接单 (C1/C2, 2026-09-23: 公告板) ──
+  bolloon task publish --capability research --instruction "调研 X" --budget 0.05 \\
+      [--currency USDC] [--network base-sepolia] [--deadline +24h] [--reply-to http://me:port]
+      发布一条**待接单**任务: 落盘 ~/.bolloon/tasks/board/<announcementId>.json +
+      向 agent-registry 公告 (service.name = task.announce) + 记脉冲事件 task_announced;
+      输出稳定 announcementId (同一 能力+正文+买方+预算 → 同一个 id, 重发幂等)
+  bolloon task board [--json] [--capability <名>] [--open] [--local]
+      板上可接单的任务: **本地公告 + 注册表发现的远端公告**, 按 announcementId 去重
+  bolloon task claim <announcementId> [--price 0.02]
+      provider 接单: 记认领者 DID + 时间 + 声明价格 (不执行、不付款、不标 verified);
+      重复认领 / 已取消 / 不存在的 id → 一律拒绝并给原因
+
 选项: --json · --quiet · --request-id <id> · --timeout <ms> · --resume <goalId> (同 bolloon task)
 说明: 收件箱落盘 ~/.bolloon/tasks/inbox/; 本机发出的任务台账 ~/.bolloon/tasks/local/;
-      结果 ~/.bolloon/tasks/results/, 交付正文 ~/.bolloon/tasks/bodies/ (私有层, 不进 stdout)。
+      结果 ~/.bolloon/tasks/results/, 交付正文 ~/.bolloon/tasks/bodies/ (私有层, 不进 stdout);
+      任务公告 ~/.bolloon/tasks/board/ (正文只在本地, 注册表里只有 sha256 摘要 + 60 字预览)。
 `;
 
 type Rec = import('../../agents/x402/transaction-protocol.js').TransactionRecord;
@@ -146,6 +159,9 @@ export async function taskCommand(flags: CliFlags): Promise<CommandResult> {
     case 'reject': return taskReject(flags);
     case 'complete': return taskComplete(flags);
     case 'cancel': return taskCancel(flags);
+    case 'publish': return taskPublish(flags);
+    case 'board': return taskBoard(flags);
+    case 'claim': return taskClaim(flags);
     default:
       return {
         envelope: failEnvelope('INVALID_ARGUMENT', sub ? `未知 task 子命令: ${sub}` : '缺少 task 子命令', { usage: plain(TASK_USAGE.trim()) }, [], 'needs_human'),
@@ -775,6 +791,31 @@ function transferView(t: any) {
 
 // ── send ────────────────────────────────────────────────────────────────────
 
+/**
+ * 没有匹配的 provider 时: 板上若有**可接单**的公告 → 给可操作提示 (指向 board/claim)。
+ * 拿不到板上的事实 → `hint:null` + 如实带 `boardError` (不猜、不假装有公告)。
+ */
+async function boardHintForCapability(capability: string): Promise<{ count: number; announcements: Array<Record<string, unknown>>; hint: string | null; boardError: string | null }> {
+  try {
+    const { findOpenAnnouncementsForCapability } = await import('../../agents/task-board.js');
+    const open = await findOpenAnnouncementsForCapability(capability);
+    if (!open.length) return { count: 0, announcements: [], hint: null, boardError: null };
+    const first = open[0];
+    return {
+      count: open.length,
+      announcements: open.slice(0, 5).map((a) => ({
+        announcementId: a.announcementId, capability: a.capability, status: a.status,
+        budget: a.budget, deadline: a.deadline, buyer: a.buyerShort, remote: a.remote,
+        signatureVerified: a.signatureVerified,
+      })),
+      hint: `板上有 ${open.length} 条可接单的 '${capability}' 任务: 先 bolloon task board 看全, 或直接 bolloon task claim ${first.announcementId}`,
+      boardError: null,
+    };
+  } catch (e: any) {
+    return { count: 0, announcements: [], hint: null, boardError: String(e?.message || e).slice(0, 160) };
+  }
+}
+
 async function taskSend(flags: CliFlags): Promise<CommandResult> {
   const instruction = opt(flags, '--instruction') || flags.positionals.slice(1).join(' ').trim();
   const capability = opt(flags, '--capability');
@@ -850,21 +891,33 @@ async function taskSend(flags: CliFlags): Promise<CommandResult> {
       transportKind = via === 'gateway' ? 'gateway' : resolved.target.kind;
       providerDid = providerDid || resolved.target.providerDid || '';
     } else if (via === 'gateway') {
+      const boardHint = await boardHintForCapability(capability);
       return {
-        envelope: failEnvelope('CAPABILITY_NOT_FOUND', `注册表里没有能力 '${capability}' 的 provider (registry ${resolved.registryReady ? '就绪' : '未就绪'}, ${resolved.candidates} 条候选)`,
-          { capability, registryReady: resolved.registryReady, candidates: resolved.candidates, via: 'gateway' }, [], 'redefine_capability'),
-        human: `${title('bolloon task send')}\n  注册表里没有这个能力的 provider, gateway 传输没有目标`,
+        envelope: failEnvelope('CAPABILITY_NOT_FOUND', `注册表里没有能力 '${capability}' 的 provider (registry ${resolved.registryReady ? '就绪' : '未就绪'}, ${resolved.candidates} 条候选)${boardHint.hint ? `；${boardHint.hint}` : ''}`,
+          { capability, registryReady: resolved.registryReady, candidates: resolved.candidates, via: 'gateway', board: boardHint },
+          [], 'redefine_capability'),
+        human: [
+          `${title('bolloon task send')}`,
+          `  注册表里没有这个能力的 provider, gateway 传输没有目标`,
+          ...(boardHint.hint ? [`\n  ${hint(boardHint.hint)}`] : []),
+        ].join('\n'),
       };
     } else {
       const joined = resolved.registryReady;
+      const boardHint = await boardHintForCapability(capability);
       return {
         envelope: failEnvelope(joined ? 'CAPABILITY_NOT_FOUND' : 'NETWORK_NOT_JOINED',
           joined
-            ? `注册表里没有能力 '${capability}' 的 provider (${resolved.candidates} 条候选, 且都没有 endpoint)`
-            : '本机 registry 未就绪 (没有入网/没拉过任何服务声明), 无法解析目标',
-          { capability, registryReady: joined, candidates: resolved.candidates, howTo: '用 --endpoint http://host:port 显式给目标, 或先 bolloon network join / bolloon agent register' },
+            ? `注册表里没有能力 '${capability}' 的 provider (${resolved.candidates} 条候选, 且都没有 endpoint)${boardHint.hint ? `；${boardHint.hint}` : ''}`
+            : `本机 registry 未就绪 (没有入网/没拉过任何服务声明), 无法解析目标`,
+          { capability, registryReady: joined, candidates: resolved.candidates, board: boardHint, howTo: '用 --endpoint http://host:port 显式给目标, 或先 bolloon network join / bolloon agent register' },
           [], joined ? 'redefine_capability' : 'rejoin_network'),
-        human: `${title('bolloon task send')}\n  ${joined ? '注册表里没有这个能力' : '本机还没入网, 也没有显式 --endpoint'}\n\n${hint('示例: bolloon task send --capability research --instruction "…" --endpoint http://127.0.0.1:54901')}`,
+        human: [
+          `${title('bolloon task send')}`,
+          `  ${joined ? '注册表里没有这个能力' : '本机还没入网, 也没有显式 --endpoint'}`,
+          ...(boardHint.hint ? [`\n  ${hint(boardHint.hint)}`] : []),
+          `\n${hint('示例: bolloon task send --capability research --instruction "…" --endpoint http://127.0.0.1:54901')}`,
+        ].join('\n'),
       };
     }
   }
@@ -1292,6 +1345,284 @@ async function taskReject(flags: CliFlags): Promise<CommandResult> {
       line('回执', reply.attempted ? (reply.ok ? `已送达 ${reply.target}` : `没送达: ${reply.error}`) : `没有回执通道 (${reply.error})`),
       line('本次执行', '没有'),
       line('本次付款', '没有'),
+    ].join('\n'),
+  };
+}
+
+// ── publish / board / claim (C1/C2 任务对外发布 + 接单, 2026-09-23) ──────────
+
+/** 板上一行的对外投影 (不含正文; 远端认领数的诚实标注) */
+function boardEntryView(e: any) {
+  return {
+    announcementId: e.announcementId,
+    capability: e.capability,
+    buyer: e.buyerShort,
+    status: e.status,
+    budget: e.budget,
+    deadline: e.deadline,
+    deadlineInMs: e.deadlineInMs,
+    claimCount: e.claimCount,
+    claimedBy: e.claimedBy,
+    claimedAt: e.claimedAt,
+    remote: e.remote,
+    source: e.source,
+    signatureVerified: e.signatureVerified,
+    claimable: e.claimable,
+    instructionDigest: e.instructionDigest,
+    instructionPreview: e.instructionPreview,
+  };
+}
+
+async function taskPublish(flags: CliFlags): Promise<CommandResult> {
+  const capability = opt(flags, '--capability');
+  const instruction = opt(flags, '--instruction') || flags.positionals.slice(1).join(' ').trim();
+  const budgetHuman = opt(flags, '--budget');
+  if (!capability || !instruction) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', '缺少 --capability 或 --instruction (公告必须有能力和任务正文)',
+        { usage: plain(TASK_USAGE.trim()), got: { capability: capability || null, instruction: !!instruction } }, [], 'needs_human'),
+      human: `${TASK_USAGE}\n${hint('示例: bolloon task publish --capability research --instruction "调研某类厨房用品的日本市场" --budget 0.05')}`,
+    };
+  }
+  const currency = String(opt(flags, '--currency') || 'USDC').toUpperCase();
+  if (currency !== 'USDC' && currency !== 'ETH') {
+    return { envelope: failEnvelope('INVALID_ARGUMENT', `--currency 只支持 USDC/ETH (收到 ${currency})`, { currency }, [], 'needs_human'), human: TASK_USAGE };
+  }
+  const network = opt(flags, '--network') || 'base-sepolia';
+  if (budgetHuman === undefined) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', '缺少 --budget (待接单的公告必须带预算: 没有预算就没有可核验的委托口径)',
+        { usage: plain(TASK_USAGE.trim()), accepted: ['--budget 0.05'] }, [], 'needs_human'),
+      human: `${TASK_USAGE}\n${hint('示例: bolloon task publish --capability research --instruction "…" --budget 0.05')}`,
+    };
+  }
+  const atomic = toAtomic(budgetHuman, currency === 'USDC' ? 6 : 18);
+  if (!atomic) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', `--budget 必须是正数 (收到 ${budgetHuman}); 原子单位串由本命令换算, 不接受 0/负/超精度`,
+        { budget: budgetHuman, currency, accepted: ['--budget 0.05'] }, [], 'needs_human'),
+      human: TASK_USAGE,
+    };
+  }
+  const modeRaw = opt(flags, '--mode') || 'policy';
+  const { isPaymentMode } = await import('../../agents/task-contract.js');
+  if (!isPaymentMode(modeRaw)) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', `--mode 非法: ${modeRaw} (要 manual|policy|autonomous|agent-authorized)`, { mode: modeRaw }, [], 'needs_human'),
+      human: TASK_USAGE,
+    };
+  }
+  const dl = parseDeadline(opt(flags, '--deadline'));
+  if (typeof dl === 'string') {
+    return { envelope: failEnvelope('INVALID_ARGUMENT', dl, { deadline: opt(flags, '--deadline') }, [], 'needs_human'), human: TASK_USAGE };
+  }
+
+  const s = await requireSigner('bolloon task publish');
+  if ('fail' in s) return s.fail;
+  const signer = s.signer;
+
+  const { publishAnnouncement } = await import('../../agents/task-board.js');
+  const r = await publishAnnouncement({
+    capability, instruction,
+    buyerDid: signer.did,
+    buyerPublicKeyHex: signer.publicKeyHex,
+    budget: { maxAmount: atomic, currency, network },
+    deadline: dl,
+    paymentMode: modeRaw,
+    replyTo: opt(flags, '--reply-to') || null,
+    signerKeypair: signer.keypair,
+  });
+  if (!r.ok || !r.announcement) {
+    return {
+      envelope: failEnvelope('INTERNAL_ERROR', `公告没发布成功: ${r.error || '未知原因'}`,
+        { capability, announcementId: null, paid: false, fundsMoved: false }, [], 'needs_human'),
+      human: `${title('bolloon task publish')}\n  没发布成功: ${r.error || '未知原因'}`,
+    };
+  }
+  const a = r.announcement;
+  const data = {
+    announcementId: a.announcementId,
+    capability: a.capability,
+    buyerDid: a.buyerDid,
+    status: a.status,
+    budget: a.budget,
+    deadline: a.deadline,
+    paymentMode: a.paymentMode,
+    instructionDigest: a.instructionDigest,
+    instructionPreview: a.instructionPreview,
+    signed: r.signed,
+    duplicate: r.dup,
+    registry: r.registry,
+    pulse: r.pulse,
+    file: r.file || `~/.bolloon/tasks/board/${a.announcementId}.json`,
+    registryService: 'task.announce (agent-registry; description 里只有摘要+预览, 没有正文)',
+    paid: false,
+    fundsMoved: false,
+    note: '公告只是"把待接单的任务放出去": 不执行、不付款、不产生交易; 接单: bolloon task claim <announcementId>',
+  };
+  const human = [
+    title('bolloon task publish'),
+    line('公告号', a.announcementId),
+    line('capability', a.capability),
+    line('预算', a.budget ? `≤ ${a.budget.maxAmount} 原子 (${a.budget.currency} @ ${a.budget.network})` : '(无)'),
+    line('截止时间', new Date(a.deadline).toISOString()),
+    line('签名', r.signed ? '已签名 (覆盖公开载荷: 能力/预算/截止/正文摘要)' : '**没有签名** (没有本机身份 → 接单会被拒)'),
+    line('注册表', r.registry.attempted ? (r.registry.announced ? `已公告 (${r.registry.entries} 条 capability)` : `没公告: ${r.registry.error || '未知'}`) : '没有尝试 (离线)'),
+    line('脉冲事件', r.pulse.attempted ? (r.pulse.ok ? 'task_announced 已记' : `没记: ${r.pulse.reason || '未知'}`) : '没有尝试 (离线)'),
+    r.dup ? line('重复发布', '同一 (能力+正文+买方+预算) → 复用既有公告 (幂等), 没覆盖既有认领') : '',
+    line('本次付款', '没有 (发布公告不付款)'),
+    `\n  ${hint('下一步: 别人看板 bolloon task board · 接单 bolloon task claim ' + a.announcementId)}`,
+  ].filter(Boolean).join('\n');
+  return {
+    envelope: okEnvelope('OK', `已发布待接单任务 ${a.announcementId} (${a.capability})${r.dup ? ' — 复用既有公告 (幂等)' : ''}`,
+      data, [a.announcementId], null),
+    human,
+  };
+}
+
+async function taskBoard(flags: CliFlags): Promise<CommandResult> {
+  const { listBoard } = await import('../../agents/task-board.js');
+  const capFilter = opt(flags, '--capability');
+  const openOnly = has(flags, '--open');
+  const localOnly = has(flags, '--local');
+  const view = await listBoard({ openOnly, localOnly });
+  const capLower = String(capFilter || '').trim().toLowerCase();
+  const entries = capLower ? view.entries.filter((e) => String(e.capability).trim().toLowerCase() === capLower) : view.entries;
+  const data = {
+    count: entries.length,
+    local: view.localCount,
+    remote: view.remoteCount,
+    duplicatesDeduped: view.duplicates,
+    filter: { capability: capFilter || null, openOnly, localOnly },
+    registryReady: view.registryReady,
+    registryError: view.registryError,
+    dir: '~/.bolloon/tasks/board',
+    entries: entries.map(boardEntryView),
+    notes: view.notes,
+    note: '板上只有摘要/预览: 任务正文只在买方本地; 接单: bolloon task claim <announcementId>',
+    next: entries.some((e) => e.claimable) ? `bolloon task claim ${entries.find((e) => e.claimable)!.announcementId}` : null,
+  };
+  const human = entries.length
+    ? entries.map((e) => [
+      `\n  ${e.announcementId}${e.remote ? ' (远端公告)' : ''}`,
+      `    capability ${e.capability}`,
+      `    买方       ${e.buyerShort || '(无)'}`,
+      `    状态       ${e.status}${e.claimable ? ' · 可接单' : e.status === 'open' ? ' · 已过期' : ''}`,
+      `    预算       ${e.budget ? `≤ ${e.budget.maxAmount} 原子 ${e.budget.currency} @ ${e.budget.network}` : '(无)'}`,
+      `    截止时间   ${e.deadline ? `${new Date(e.deadline).toISOString()}${e.deadlineInMs !== null ? ` (${e.deadlineInMs > 0 ? `还剩 ${Math.round(e.deadlineInMs / 1000)}s` : '已过期'})` : ''}` : '(无)'}`,
+      `    认领       ${e.claimCount === 0 ? '还没有人接' : `${e.claimCount} 人 (最近: ${String(e.claimedBy).slice(0, 24)})`}${e.remote ? ' · 远端的认领数本机看不到' : ''}`,
+      `    签名       ${e.signatureVerified === true ? '验签通过' : e.signatureVerified === false ? '**验签不过** (接不了单)' : '未验签(如实)'}`,
+      `    预览       ${e.instructionPreview || '(无)'}`,
+    ].join('\n')).join('')
+    : '\n  (板上没有可接单的任务)';
+  return {
+    envelope: okEnvelope('OK', `板上 ${entries.length} 条${openOnly ? '可接单' : ''}公告 (本地 ${view.localCount} · 远端 ${view.remoteCount})${capFilter ? ` [capability=${capFilter}]` : ''}`,
+      data, entries.map((e) => e.announcementId), null),
+    human: [
+      `${title('bolloon task board')}${human}`,
+      '',
+      `  ${String(data.note)}`,
+      view.registryError ? `  ${hint(`注册表读取失败 (远端公告可能不全): ${view.registryError}`)}` : '',
+      data.next ? `\n  ${hint('下一步: ' + data.next)}` : '',
+    ].filter(Boolean).join('\n'),
+  };
+}
+
+async function taskClaim(flags: CliFlags): Promise<CommandResult> {
+  const id = flags.positionals[1] || opt(flags, '--announcement-id') || flags.requestId;
+  if (!id) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', '缺少 announcementId (bolloon task claim <announcementId>)',
+        { usage: plain(TASK_USAGE.trim()) }, [], 'needs_human'),
+      human: `${TASK_USAGE}\n${hint('先看板: bolloon task board')}`,
+    };
+  }
+  const s = await requireSigner('bolloon task claim');
+  if ('fail' in s) return s.fail;
+  const signer = s.signer;
+
+  // 声明价格 (可选): 不声明 → null, 不替它猜
+  const priceHuman = opt(flags, '--price');
+  const currency = String(opt(flags, '--currency') || 'USDC').toUpperCase();
+  let priceAtomic: string | null = null;
+  if (priceHuman !== undefined) {
+    priceAtomic = toAtomic(priceHuman, currency === 'USDC' ? 6 : 18);
+    if (!priceAtomic) {
+      return {
+        envelope: failEnvelope('INVALID_ARGUMENT', `--price 必须是正数 (收到 ${priceHuman})`,
+          { price: priceHuman, currency, accepted: ['--price 0.02'] }, [], 'needs_human'),
+        human: TASK_USAGE,
+      };
+    }
+  }
+
+  const { claimAnnouncement } = await import('../../agents/task-board.js');
+  const r = await claimAnnouncement(id, {
+    providerDid: signer.did,
+    providerPublicKeyHex: signer.publicKeyHex,
+    priceAmountAtomic: priceAtomic,
+    currency,
+    network: opt(flags, '--network') || '',
+    signerKeypair: signer.keypair,
+  });
+
+  const baseData = {
+    announcementId: id,
+    reason: r.reason,
+    remote: r.remote,
+    // ★ 本命令任何路径都不动钱、不执行、不标 verified
+    executed: false,
+    paid: r.paid,
+    fundsMoved: r.fundsMoved,
+    verified: r.verified,
+    deliveredToBuyer: r.deliveredToBuyer,
+  };
+
+  if (!r.ok) {
+    const code: Code = r.reason === 'not_found' ? 'NOT_FOUND'
+      : r.reason === 'already_claimed' ? 'DUPLICATE_REQUEST'
+        : r.reason === 'cancelled' ? 'TASK_CANCELLED'
+          : r.reason === 'signature_invalid' || r.reason === 'instruction_digest_mismatch' ? 'SIGNATURE_INVALID'
+            : r.reason === 'deadline_expired' ? 'DEADLINE_EXPIRED'
+              : 'INVALID_ARGUMENT';
+    return {
+      envelope: failEnvelope(code, `没接成单: ${r.message}`,
+        { ...baseData, status: r.status ?? null, existingClaim: r.existingClaim ?? null }, [id], 'needs_human'),
+      human: `${title('bolloon task claim ' + id)}\n  ${r.message}\n${line('本次付款', '没有')}\n\n${hint('看板: bolloon task board')}`,
+    };
+  }
+
+  const c = r.claim!;
+  const data = {
+    ...baseData,
+    claim: {
+      providerDid: c.providerDid,
+      providerPublicKeyHex: c.providerPublicKeyHex ? `${String(c.providerPublicKeyHex).slice(0, 16)}…` : null,
+      claimedAt: c.claimedAt,
+      priceAmountAtomic: c.priceAmountAtomic,
+      currency: c.currency,
+      network: c.network,
+      signed: !!c.signature,
+    },
+    status: r.status ?? null,
+    file: r.file,
+    priceNote: r.priceNote ?? null,
+    honestyNote: r.remote
+      ? '远端公告的认领只落本机台账 (**没有投递给买方**); 真交接走 bolloon task send → 对方 task accept'
+      : '认领只是"我来做"的本地事实: 不执行任务、不付款、不标 verified (释放/验真另走裁决函数)',
+  };
+  return {
+    envelope: okEnvelope('OK', r.message, data, [id], r.remote ? 'needs_human' : null),
+    human: [
+      title('bolloon task claim ' + id),
+      line('认领者', c.providerDid),
+      line('认领时间', new Date(c.claimedAt).toISOString()),
+      line('声明价格', c.priceAmountAtomic ? `${c.priceAmountAtomic} 原子 ${c.currency}` : '(没声明价)'),
+      line('公告来源', r.remote ? '注册表 (远端)' : '本地公告文件'),
+      line('投递给买方', r.deliveredToBuyer ? '已投递' : '**没有** (本版没有远端认领投递通道; 真交接走 task send/accept)'),
+      line('本次执行', '没有 (接单不执行任务)'),
+      line('本次付款', '没有 (接单不付款)'),
+      r.remote ? `\n  ${hint('下一步: 让买方把任务发过来 (bolloon task send); 对方 accept 后才有执行/交付')}` : `\n  ${hint('下一步: 等买方的 task send/accept; 交付后用 decideAnnouncementRelease 判是否可释放 (未交付不得释放)')}`,
     ].join('\n'),
   };
 }

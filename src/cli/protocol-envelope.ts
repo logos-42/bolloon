@@ -100,6 +100,8 @@ const OPTIONS_WITH_VALUE = new Set([
   '--confirmation-window', '--proof-version', '--from-block', '--gate',
   // 2026-09-22 (P6b): 链上**写**操作的**授权意图**声明 (MCP 写 tool 必填; 只可能收紧, 不可能放权)
   '--payment-mode',
+  // 2026-09-23 (C1): 任务公告板 `bolloon task publish|board|claim` 的显式公告号
+  '--announcement-id',
 ]);
 
 export function parseFlags(args: string[]): CliFlags {
