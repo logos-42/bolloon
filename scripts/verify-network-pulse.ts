@@ -72,7 +72,10 @@ section('[2] 隐私阈值 + 可信文案 (observed / verified)');
   check('notes 明确"不是全网精确总量"', snap.notes.join(' ').includes('不是全网精确总量'), snap.notes);
   check('公开投影不含任何私有字段', NP.assertNoPrivateFields(snap).length === 0, NP.assertNoPrivateFields(snap));
   const json = JSON.stringify(snap);
-  check('响应 JSON 里没有 did/peerId/multiaddrs/钱包', !/did:key|peerId|multiaddrs|wallet|0x[0-9a-fA-F]{40}/.test(json), json.slice(0, 160));
+  // DID / peerId / multiaddr 字样一律不许出现; 0x 长 hex **只许**出现在白名单键 (tx_hash / contract /
+  // explorer_tx) 下 —— 越界即按泄露处理 (2026-09-23 精确化, 不是放松; 同日收窄: 合约地址不进页面)
+  check('响应 JSON 里没有 did/peerId/multiaddrs/wallet', !/did:key|peerId|multiaddrs|wallet/.test(json), json.slice(0, 160));
+  check('响应 JSON 里没有越界的 0x 长 hex (白名单键外一律算泄露)', NP.auditPublicHexLeaks(snap).length === 0, NP.auditPublicHexLeaks(snap));
 
   // 稀疏类别不单独暴露
   await NP.recordNetworkEvent({ type: 'capability_announced', capability: 'vision-ocr', did: DID_A, agentId: 'agent-a1' }, HOME);
@@ -169,7 +172,11 @@ section('[6] 前端消费契约 (bolloon-UI 网关页需要什么这里就得有
 section('[7] confirmed_activity 冻结形状 (链上索引 → 真活动行 · 降级标注 · 匿名)');
 {
   const FROZEN = ['task', 'kind', 'state', 'chain_id', 'block', 'tx', 'confirmations', 'finality', 'at'];
+  // 链上索引行的完整形状 (2026-09-23): 老 9 个 + 4 个可核验字段 (追加在尾部)
+  const CHAIN_FROZEN = [...FROZEN, 'tx_hash', 'contract', 'explorer_tx'];
   const TASK = '0x' + 'ab'.repeat(32);
+  /** 夹具里的 escrow **合约**地址 (索引文件顶层 escrowAddress === 条目 address 才有合约字段) */
+  const ESCROW = '0x' + '11'.repeat(20);
   const chainDir = path.join(HOME, '.bolloon', 'chain');
   const chainFile = path.join(chainDir, 'index.json');
   const mkEntry = (i: number) => ({
@@ -201,7 +208,7 @@ section('[7] confirmed_activity 冻结形状 (链上索引 → 真活动行 · �
   const rows: any[] = snap.confirmed_activity;
   check('真索引 → 快照列出真活动行 (source=chain-index)', snap.confirmed_activity_source === 'chain-index' && rows.length > 0, [snap.confirmed_activity_source, rows.length]);
   check('上限 25 行', rows.length === 25, rows.length);
-  check('字段名与顺序逐字冻结', rows.every((r) => JSON.stringify(Object.keys(r)) === JSON.stringify(FROZEN)), Object.keys(rows[0]));
+  check('字段名与顺序逐字冻结 (链上索引行 = 老 9 个 + 新增 3 个可核验字段)', rows.every((r) => JSON.stringify(Object.keys(r)) === JSON.stringify(CHAIN_FROZEN)), Object.keys(rows[0]));
   check('最新在前 (block 递减)', rows.every((r, i) => i === 0 || rows[i - 1].block > r.block), rows.slice(0, 3).map((r) => r.block));
   check('state/kind 映射正确 (EscrowCreatedV2→active · ReleasedV2→released)',
     rows.every((r) => (r.state === 'active' && r.kind === 'task_created') || (r.state === 'released' && r.kind === 'trade_settled')));
@@ -209,9 +216,17 @@ section('[7] confirmed_activity 冻结形状 (链上索引 → 真活动行 · �
     rows[0].confirmations === 47142250 - rows[0].block + 1 && ['observed', 'confirmed', 'finalized'].includes(rows[0].finality),
     [rows[0].block, rows[0].confirmations, rows[0].finality]);
   const rowsJson = JSON.stringify(rows);
-  check('任务/交易短写 (sha256:xxxxxxxx), 绝不出原文',
-    rows.every((r) => /^sha256:[0-9a-f]{8}$/.test(r.task) && /^sha256:[0-9a-f]{8}$/.test(r.tx))
-    && !rowsJson.includes(TASK) && !rowsJson.includes('0x') && !/0x[0-9a-fA-F]{8,}/.test(rowsJson),
+  const txOf = (i: number) => `0x${String(i).padStart(2, '0').repeat(32)}`;
+  check('任务标识仍是 sha256 短写 (taskKey 原文绝不出); 真 txHash / escrow 合约地址**只**出现在白名单键下',
+    rows.every((r: any) => /^sha256:[0-9a-f]{8}$/.test(r.task) && /^sha256:[0-9a-f]{8}$/.test(r.tx))
+    && !rowsJson.includes(TASK)
+    && rows.every((r: any) => r.tx_hash === txOf(r.block - 400))          // 真哈希, 逐行对得上夹具
+    && rows.every((r: any) => NP.anonShortRef(r.tx_hash, 'tx') === r.tx)  // 老短写与新哈希同源
+    && rows.every((r: any) => r.contract === ESCROW)                      // 合约 = 索引文件的 escrowAddress
+    && rows.every((r: any) => r.explorer_tx === `https://sepolia.basescan.org/tx/${r.tx_hash}`)
+    && rows.every((r: any) => !('explorer_contract' in r))                       // 合约链接不存在 (合约不上页面)
+    && rows.every((r: any) => !/\/address\//.test(JSON.stringify(r)))              // 行里也没有任何合约地址链接
+    && NP.auditPublicHexLeaks(rows).length === 0,                          // 白名单键外一个 0x 长 hex 都没有
     rows[0]);
   check('快照整体无私有字段', NP.assertNoPrivateFields(snap).length === 0, NP.assertNoPrivateFields(snap));
 

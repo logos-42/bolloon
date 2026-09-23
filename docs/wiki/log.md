@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-23 | feat | **公开快照加「可核验」链上字段 (交易标签可点跳浏览器): 链上索引行**追加** `tx_hash`(真交易哈希) + `explorer_tx`(basescan 交易链接) 两个字段; `contract`(escrow 地址)只作行内数据保留 —— **不生成 `explorer_contract`, 页面上没有合约地址也没有合约链接**(同日 leo 拍板收窄); 老 9 字段名序逐字不变, 匿名化 `tx`(`sha256:<8位>`)保留不删 (向后兼容); 只放行交易哈希/合约地址(公开链上事实), EOA/DID/peerID/multiaddr/taskKey 原文一律不导出; 只有已知公网浏览器(8453/84532/1/11155111)才有链接, 本机 31337 **字段不存在**(不是 null/空串) — tsc 0 错 · vitest 200 文件/2635 测试 · 门禁 59/0 · 74/1(既有环境项, HEAD 复现) · 81/0 · 快照真跑 3 行全带真 txHash+basescan | [network-pulse.ts](../../src/agents/network-pulse.ts) / [explorer.ts](../../src/agents/chain/explorer.ts) / [network-pulse-explorer.test.ts](../../src/test/network-pulse-explorer.test.ts) / [verify-network-pulse.ts](../../scripts/verify-network-pulse.ts) |
 | 2026-09-22 | fix | **公开快照内部口径收口 (leo: 不能有自相矛盾的展示): `totals`(24h 脉冲事件) 与 `confirmed_activity`(链上索引) 两套口径不再打架 —— 新增同源计数 `activity_totals` + 口径说明 `totals_scope` + 链归属 `chain_id_scope`(本机 31337 ≠ 真网 84532), 导出前自检不过就 exit 3; 真跑 49/0 · 单测 12/12 · tsc 0 错** | [network-pulse.ts](../../src/agents/network-pulse.ts) / [export-network-pulse.ts](../../scripts/export-network-pulse.ts) / [network-pulse-consistency.test.ts](../../src/test/network-pulse-consistency.test.ts) / [network-pulse.md](./network-pulse.md) |
 | 2026-09-22 | feat | **公开快照加「冻结形状」`confirmed_activity` (真实任务/链上活动行): 25 行真链上活动 + 来源标注 + sha256 短写 (真跑 49/0 · 单测 47/47)** | [network-pulse.ts](../../src/agents/network-pulse.ts) / [verify-network-pulse.ts](../../scripts/verify-network-pulse.ts) / [network-pulse-confirmed-activity.test.ts](../../src/test/network-pulse-confirmed-activity.test.ts) / [network-pulse.md](./network-pulse.md) |
 | 2026-09-22 | feat | **链上化 P3「Bolloon 链桥」: 链上真实结算接入 src/ (真跑 45/0 + 单测 112/112, 七条既有验收零回归)** | [escrow-client.ts](../../src/agents/chain/escrow-client.ts) / [chain-settlement.ts](../../src/agents/chain/chain-settlement.ts) / [verify-chain-bridge.ts](../../scripts/verify-chain-bridge.ts) |
@@ -2971,3 +2972,60 @@ Goal 进 `awaiting_external` 并写明等谁/等到何时 · 冒名回复不唤�
 - 发布判据(**不看日志自述**): `npm publish` EXIT=0 且打印 `+ @bolloon/bolloon-agent@0.4.32`,随后
   **直连 packument 复核** —— 发布后约 4~5 分钟 `dist-tags.latest` 翻到 **0.4.32**(期间版本直连 404、`npm@12 stage list` 回 "No staged packages found" 均属**18.5MB/1482 文件大包的已知慢放行现象**,未据此误判失败、未改版本号重发)。
 - 包: 18.5 MB / 1482 文件 / shasum `dd6b94cc…`。
+
+## [2026-09-23] feat | 公开快照加可核验链上字段 (真交易哈希 + 交易浏览器链接; 合约只留数据·不上页面 · 本机链绝不编链接)
+
+### 触发
+
+leo 要求: 网页表格的行要能**索引到链上合约**、快照里的**交易标签要能点开跳区块浏览器**。
+这与 `src/agents/network-pulse.ts` 顶部旧注释「绝不落 taskKey / txHash 原文」直接冲突 ——
+旧设计把真 txHash 匿名化成 `sha256:<8位>`。本次是**单向变更该决定**: 允许**交易哈希**与 **escrow 合约地址**
+(公开链上事实, 也恰恰是「可核验」的前提) 出现在快照里; **仍然禁止** EOA 钱包地址 / DID / peer ID / IP /
+multiaddr / taskKey 原文 / taskId / 任务正文 / args 里的地址。
+
+**同日收窄 (leo 二次拍板)**: 页面**只显示一样可点的东西 = 交易标签**。快照行因此**只加两个字段**
+`tx_hash` + `explorer_tx`; `contract` (escrow 地址) 作为**行内数据**保留(供索引/诊断用), 但**不生成 `explorer_contract`、
+页面上既没有合约地址也没有合约链接**。理由: 「这条交易确实发生在我们自己的 escrow 合约上」用不着把地址摊在页面上 ——
+少一个上页面的 0x, 就少一份可被拼接/误导的素材。宁缺勿错。
+
+### 改动 (主仓 7 文件)
+
+| 文件 | 改动 |
+|---|---|
+| `src/agents/chain/explorer.ts` (新, 64 行) | chainId → 公网浏览器映射 (`8453`→basescan · `84532`→sepolia.basescan · `1`→etherscan · `11155111`→sepolia.etherscan; 其余**无**) + `explorerTxUrl` (**只有交易链接**; 同日收窄时删掉了 `explorerAddressUrl` —— 合约链接这个入口不再存在); 导出 `EXPLORER_URL_RE` (只匹配 `/tx/`) |
+| `src/agents/chain/index.ts` | 导出 explorer 模块 |
+| `src/agents/network-pulse.ts` | `ConfirmedActivityRow` **追加** 3 字段 (老 9 字段名/顺序逐字冻结: `task,kind,state,chain_id,block,tx,confirmations,finality,at`); `buildConfirmedActivityFromIndex` 新增 `opts.escrowAddress` —— `tx_hash` 恒给(真索引行)、`contract` **仅当**索引条目 `address === 链配置 escrow` 才给(宁缺勿错)、`explorer_tx` 只在链有浏览器且形状精确时给; `contract` 只是数据 (页面不渲染); 新增 `auditPublicHexLeaks()` (0x 长 hex 只许出现在 `tx_hash`/`contract`/`explorer_tx` **3 个白名单键**下, 且键值形状必须精确 —— `explorer_contract` 不再在白名单里, 出现即拒) |
+| `src/test/network-pulse-explorer.test.ts` (新, 204 行) | ① 8453 行 `tx_hash`/`contract`/`explorer_tx` 齐 + URL 是 basescan 形状 + **任何行都不许有 `explorer_contract`** ② 31337 行 `'explorer_tx' in row === false` (用 in, 不是 undefined 判断) ③ 老 `tx` sha256 短写仍在 ④ 快照 JSON 全文不出现任何 EOA 形态(假地址注入) ⑤ 未知 chainId 不出链接 |
+| `src/test/network-pulse-confirmed-activity.test.ts` | 链上路径冻结键 = 老 9 + 新 3 (`tx_hash`,`contract`,`explorer_tx`); 全文字符串化审计改为 `auditPublicHexLeaks` |
+| `src/test/network-pulse-consistency.test.ts` | 两处「零 hex」断言改为白名单语义 (新字段合法, 其余位置仍禁) |
+| `scripts/verify-network-pulse.ts` | 字段名/顺序冻结断言扩到新 3 字段; 新增「真 txHash/escrow 只许在 3 个键下」+「快照全文不许出现 `/address/` 合约链接」断言 —— **真跑 50 passed / 0 failed** |
+
+### 真数据 (不是夹具)
+
+真跑 `npx tsx scripts/export-network-pulse.ts` (Base 主网 8453, escrow `0x4e689F98…f7aE`), 3 行真条目, 逐行带:
+`tx_hash=0xf7ec8776…4165` · `contract=0x4e689f98b64ac5b8ea947ac2aa93708cdd30f7ae` ·
+`explorer_tx=https://basescan.org/tx/0xf7ec8776…4165` (**没有** `explorer_contract`, 也没用 `/address/` 链接);
+全文 grep **无**买方/卖方 EOA。本机链 (31337) 侧用**真的**本机索引备份 (`~/.bolloon/chain/index.json.bak-local31337-…`, 144 条真条目)
+跑真构建函数: 行里 `tx_hash`/`contract` 都有, `'explorer_tx' in row === false` (字段**不存在**, 不是 null) —— 没有公网浏览器就不给链接。
+
+### 门禁 (全部真实输出)
+
+| 门 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | **0 错** (EXIT=0) |
+| `npx vitest run` | **200 文件 / 2635 测试 全过** (基线 199/2624; 只增) |
+| `npx tsx scripts/verify-chain-bridge.ts` | **59 passed / 0 failed** |
+| `npx tsx scripts/verify-onchain-trade-loop.ts` | **74 passed / 1 failed** ← 见下方诚实记录 |
+| `npx tsx scripts/verify-chain-indexer.ts` | **81 passed / 0 failed** |
+| `npx tsx scripts/verify-network-pulse.ts` | **50 passed / 0 failed** |
+| `npm run build:main` | EXIT=0 |
+
+### 诚实记录: 那 1 条红**不是本次改动引入的**
+
+失败项固定是「标准路径 `~/.bolloon/chain/chain-state.json` 的读取语义一致 (纯读, 不写真实 HOME)」:
+该断言比的是 `recoverOnchainTrade({home: REAL_HOME, taskId}).found === fs.existsSync(realStatePath)`,
+而 `found` 是「**这个 taskId** 有记录」、右式是「**文件存在**」—— 只要真实 HOME 里有 chain-state.json (2026-09-22 真主网交易产生) 而这次
+run 的随机 taskId 不在其中, 就恒为 false ≠ true。**证据**: 在 `git worktree`(HEAD=5ca3f61, 零本地改动) 跑同一个脚本 →
+**同样 74 passed / 1 failed, 同一条失败项** ⇒ 与本次改动无关 (改动只碰 network-pulse / explorer / 其测试与快照断言)。
+基线写的 75/0 应为该文件尚不存在时测得。**未修** (改它等于改这条门禁的语义, 应由 owner 决定 `found` 到底该表达哪个命题)。
+

@@ -148,9 +148,12 @@ describe('公开快照 · 同源计数与口径说明 (两个数字不许打架)
 
     // ④ 自检通过 (导出脚本用的就是它)
     expect(NP.snapshotConsistencyIssues(snap)).toEqual([]);
-    // ⑤ 匿名兜底没被破坏
+    // ⑤ 匿名兜底没被破坏 —— 2026-09-23 决定变更: 白名单键 (tx_hash/contract/explorer_*) 下的
+    //    真交易哈希与 escrow 合约地址是**允许**的公开链上事实; 越界的 0x 长 hex 仍一律算泄露
     expect(NP.assertNoPrivateFields(snap)).toEqual([]);
-    expect(JSON.stringify(snap)).not.toMatch(/0x[0-9a-fA-F]{8,}/);
+    expect(NP.auditPublicHexLeaks(snap)).toEqual([]);
+    expect(snap.confirmed_activity.every((r: any) => /^0x[0-9a-f]{64}$/.test(r.tx_hash || ''))).toBe(true);   // 真 txHash 真在
+    expect(JSON.stringify(snap)).not.toMatch(/0x[0-9a-fA-F]{64}[^"]/);   // 长 hex 只许作为整值出现, 不许被拼进别的字符串
   });
 
   it('自检能抓到矛盾 (反向验证: 坏快照必须报出来, 不是永远返回空)', async () => {
@@ -334,6 +337,10 @@ describe('真跑导出脚本: 导出的 JSON 里两个数字仍不打架', () =>
     // 导出脚本自己也会跑一遍自检 (不过就 exit 3) —— 这里再独立跑一次
     expect(NP.snapshotConsistencyIssues(snap)).toEqual([]);
     expect(NP.assertNoPrivateFields(snap)).toEqual([]);
-    expect(JSON.stringify(snap)).not.toMatch(/0x[0-9a-fA-F]{8,}/);
+    // 导出的 JSON 里: 真 txHash / escrow 合约地址只在白名单键下 (31337 没有公网浏览器 → 无 explorer 键)
+    expect(NP.auditPublicHexLeaks(snap)).toEqual([]);
+    expect(rows.every((r: any) => /^0x[0-9a-f]{64}$/.test(r.tx_hash || ''))).toBe(true);
+    expect(rows.every((r: any) => !('explorer_tx' in r) && !('explorer_contract' in r))).toBe(true);
+    expect(snap.confirmed_activity.every((r: any) => r.contract === '0x' + '11'.repeat(20))).toBe(true);
   }, 120_000);
 });

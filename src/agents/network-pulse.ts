@@ -10,10 +10,14 @@
  *   · 快照过期 → `stale` (不许伪装实时); 观察层不可用 → `unavailable`
  *   · 类别小于隐私阈值 → 合并进 other
  *   · 事件数 / 时间窗 / capability 数都有上限
- *   · **冻结形状 `confirmed_activity`** (2026-09-22): 公开页面要能列出「哪个任务 · 什么状态 ·
- *     哪个块 · 多少确认」, 而不是只有数字 —— 数据源优先 P5 链上索引, 不可用时退回脉冲事件并
- *     用 `confirmed_activity_source` 标注; 标识一律 sha256 短写 (前 8 位), 绝不落 taskKey /
- *     taskId / txHash 原文; 不够确认门槛的行只报 observed, 不冒充 confirmed。
+ *   · **冻结形状 `confirmed_activity`** (2026-09-22; 2026-09-23 加链上可核验字段): 公开页面要能列出
+ *     「哪个任务 · 什么状态 · 哪个块 · 多少确认」, 而不是只有数字 —— 数据源优先 P5 链上索引, 不可用时
+ *     退回脉冲事件并用 `confirmed_activity_source` 标注; 任务标识一律 sha256 短写 (前 8 位), 绝不落
+ *     taskKey / taskId 原文; 不够确认门槛的行只报 observed, 不冒充 confirmed。
+ *     2026-09-23 隐私决定**变更一处** (只放开公开链上事实, 别的一律不变): 交易哈希 (`tx_hash`) 与
+ *     escrow **合约**地址 (`contract`, 只给索引/诊断) 允许出现; 页面可点的只有**交易**链接 `explorer_tx`
+ *     (仅当该链有已知公网浏览器)。EOA / 钱包地址 (买方·卖方)、taskKey 原文、taskId、args 里的地址、
+ *     DID、peer IP/multiaddr、私钥 —— 仍然一个都不许出现; 老字段 `tx` (sha256 短写) 保留不删。
  *
  * 借鉴 (只借产品与工程思想, 不借 Go/Postgres/API 项目):
  *   EigenFlux 的 "注册总量 / 当前活跃 / 最近出现" 时间窗统计、服务端生成匿名活动文本、
@@ -26,6 +30,8 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 // 确认数门槛来自 chain-config (单一实现; 默认 confirmed=1 / finalized=12) —— 只借常量, 不借 RPC
 import { DEFAULT_CONFIRMATIONS, LOCAL_DEV_CHAIN_ID } from './chain/chain-config.js';
+// 区块浏览器映射 (chainId → 公网浏览器); 认不出的链没有链接 —— 宁缺勿错, 不编死链
+import { ADDRESS_RE, EXPLORER_URL_RE, TX_HASH_RE, explorerTxUrl } from './chain/explorer.js';
 
 // ── 常量 (上限 + 时间边界) ─────────────────────────────────────────────────
 
@@ -354,10 +360,18 @@ export async function emitTradePulse(before: any, after: any, h?: string): Promi
 // ── 冻结形状: confirmed_activity (真实智能体任务 / 链上活动行) ────────────────
 //
 // 公开网页要能列出「哪个任务 · 什么状态 · 哪个块 · 多少确认」, 而不是只有数字。这块就是那批行。
-// 形状**冻结** (字段名与取值域不许改), 内容一律**匿名短写**:
-//   · task = `sha256:` + sha256(域标签|taskKey) 的前 8 位十六进制 —— 绝不落 taskKey / taskId 原文
-//   · tx   = `sha256:` + sha256(域标签|txHash)  的前 8 位十六进制 —— 绝不落 txHash 原文
-//   · 不出现 DID / peerId / IP / 完整钱包地址 / 任务正文 —— `assertNoPrivateFields` 兜底
+// 形状**冻结** (老字段名与取值域不许改), 内容按用途分两类:
+//   · **匿名短写** (老口径, 保留不删): task = `sha256:` + sha256(域标签|taskKey) 的前 8 位;
+//     tx = `sha256:` + sha256(域标签|txHash) 的前 8 位 —— 绝不落 taskKey / taskId 原文
+//   · **公开链上事实** (2026-09-23 新增; 同日按 leo 拍板收窄): tx_hash (真交易哈希) /
+//     explorer_tx (交易浏览器链接, 仅当该链有已知公网浏览器) —— 网页上的行因此**可核验地**跳回区块
+//     浏览器; contract (escrow 合约地址) 仍保留在行里**供索引/诊断**, 但**不上页面、不生成合约链接**
+// 隐私红线 (违反即失败, **只放开上面那两种 0x 字符串**):
+//   · 允许: 交易哈希 (0x+64 hex) 与 escrow 合约地址 (0x+40 hex), 且只出现在 `tx_hash`/`contract`/`explorer_tx` 这 3 个键下
+//   · 禁止: EOA / 钱包地址 (买方/卖方/payTo)、taskKey 原文、taskId、args 里的地址、DID、peerId /
+//     IP / multiaddr、私钥 —— `assertNoPrivateFields`(键名) + `auditPublicHexLeaks`(越界 0x) 兜底
+//   · 拿不到链配置里的 escrow 地址, 或这条索引记录的 address 不是它 → **不填** contract
+//     (宁缺勿错: 宁可少一个字段, 也不把可能是别人的地址写成合约)
 // 数据源优先级: ① P5 链上索引 (真链上事实) → ② 索引不可用 → 退回脉冲事件, 并在快照里用
 //   `confirmed_activity_source` 如实标注 (chain-index / pulse-events / none)。
 // 确认数口径走 chain-config 门槛 (默认 confirmed=1 / finalized=12): 够不着门槛的行只报
@@ -371,7 +385,7 @@ export type ConfirmedActivityState = 'active' | 'released' | 'refunded' | 'expir
 export type ConfirmedActivityFinality = 'observed' | 'confirmed' | 'finalized';
 export type ConfirmedActivitySource = 'chain-index' | 'pulse-events' | 'none';
 
-/** 冻结形状的一行 (字段名/顺序逐字固定 —— 老客户端不受影响, 新页面按它渲染) */
+/** 冻结形状的一行 (老 9 个字段名/顺序逐字固定; 2026-09-23 起链上索引行**追加** 4 个可核验字段) */
 export interface ConfirmedActivityRow {
   /** 任务摘要: `sha256:<前 8 位十六进制>` (taskKey / taskId 的 sha256 短写, 不可逆) */
   task: string;
@@ -381,7 +395,7 @@ export interface ConfirmedActivityRow {
   chain_id: number;
   /** 区块号 (脉冲降级行 → 0) */
   block: number;
-  /** 交易摘要: `sha256:<前 8 位十六进制>` (txHash 的 sha256 短写, 不可逆) */
+  /** 交易摘要: `sha256:<前 8 位十六进制>` (txHash 的 sha256 短写, 不可逆; **保留**给老消费方) */
   tx: string;
   /** 确认数 (脉冲降级行 → 0) */
   confirmations: number;
@@ -392,6 +406,17 @@ export interface ConfirmedActivityRow {
    * 脉冲降级行 = 事件发生时间。字段名冻结, 故不为"区块时间"另开字段。
    */
   at: string;
+  // ── 2026-09-23 追加 (均为**可选**: 脉冲降级行没有链上事实 → 这些键整个不出现, 不是 null) ──
+  /** 真交易哈希 (小写 0x + 64 位十六进制) —— 公开链上事实, 可核验 */
+  tx_hash?: string;
+  /**
+   * escrow **合约**地址 (小写 0x + 40 位十六进制); 只在能确认它就是链配置里的 escrow 合约时才有。
+   * **只给索引/诊断用 —— 页面不渲染合约地址、也不生成合约链接** (2026-09-23 leo 拍板收窄;
+   * 行内唯一可点的东西是交易标签 → `explorer_tx`)。
+   */
+  contract?: string;
+  /** 区块浏览器**交易**链接; 该链**没有**已知公网浏览器 (如本机 31337) → 这个键整个不存在 */
+  explorer_tx?: string;
 }
 
 export interface ConfirmedActivityGates { confirmed: number; finalized: number }
@@ -476,6 +501,11 @@ export interface ChainActivitySourceEntry {
   eventName: string;
   taskKey: string;
   txHash: string;
+  /**
+   * 该条日志的**合约地址** (索引条目里就有)。只有它 === 链配置里的 escrow 合约地址时才用来填
+   * `contract`; 拿不到链配置 / 对不上 → 不填 (宁缺勿错)。
+   */
+  address?: string;
   /** 同步当时的确认数 (给了 headBlock 时以 headBlock 复算为准) */
   confirmations?: number;
   /** 被回退 / 链上已消失 → 不成行 */
@@ -490,16 +520,28 @@ export interface ChainActivitySourceEntry {
  *   · 不认识的事件名 / 非法 taskKey·txHash / 缺观察时间 → 跳过 (不猜、不臆造)
  *   · confirmations: 有 headBlock → head - block + 1 复算 (无 RPC, 用索引快照里的 head); 否则用记录值
  *   · finality: 按 chain-config 门槛复算 (不够 → observed)
+ *   · 新增: `tx_hash` (真交易哈希) 恒给; `contract` 仅当 opts.escrowAddress 合法且 === 本条 address;
+ *     `explorer_tx` 仅当该 chainId 有**已知公网浏览器** (否则键整个不存在, 不填 null)
  *   · 最新在前 (blockNumber desc, logIndex desc), 上限 25 行
  */
 export function buildConfirmedActivityFromIndex(
   entries: ChainActivitySourceEntry[],
-  opts: { gates?: Partial<ConfirmedActivityGates> | null; headBlock?: number | null; chainId?: number; limit?: number } = {},
+  opts: {
+    gates?: Partial<ConfirmedActivityGates> | null;
+    headBlock?: number | null;
+    chainId?: number;
+    limit?: number;
+    /** 链配置里的 escrow **合约**地址 (索引文件顶层字段); 缺/非法 → 不给合约链接 (宁缺勿错) */
+    escrowAddress?: string | null;
+  } = {},
 ): ConfirmedActivityRow[] {
   const gates = normalizeActivityGates(opts.gates);
   const limit = activityLimit(opts.limit);
   const chainId = Number.isInteger(Number(opts.chainId)) && Number(opts.chainId) >= 0 ? Number(opts.chainId) : 0;
   const head = Number.isInteger(Number(opts.headBlock)) && Number(opts.headBlock) >= 0 ? Number(opts.headBlock) : null;
+  // escrow 合约地址白名单 (唯一权威): 只有索引文件自己记的这个地址算数, 别的地址一律不当合约
+  const escrow = typeof opts.escrowAddress === 'string' ? opts.escrowAddress.toLowerCase() : '';
+  const escrowOk = ADDRESS_RE.test(escrow) ? escrow : '';
   const out: Array<{ row: ConfirmedActivityRow; block: number; logIndex: number }> = [];
 
   for (const e of Array.isArray(entries) ? entries : []) {
@@ -516,6 +558,12 @@ export function buildConfirmedActivityFromIndex(
     const at = isoSeconds(atMs);
     if (!at) continue;                                           // 没观察时间 → 不臆造时间, 不成行
     const confirmations = head == null ? Math.max(0, Number(e.confirmations) || 0) : Math.max(0, head - block + 1);
+    // 合约地址: 只有「本条记录的 address 就是链配置里的 escrow 地址」才填 (宁缺勿错)
+    const entryAddr = String((e as any).address || '').toLowerCase();
+    const contract = escrowOk && entryAddr === escrowOk ? escrowOk : '';
+    // 浏览器链接: 该链没有已知公网浏览器 → 返回 null → 键整个不出现 (不编 href="#")
+    // 只有**交易**链接 (explorer_tx); 合约地址只在数据里 (contract), 不生成链接 (2026-09-23 收窄)
+    const explorerTx = explorerTxUrl(chainId, txHash);
     out.push({
       block, logIndex,
       row: {
@@ -528,6 +576,10 @@ export function buildConfirmedActivityFromIndex(
         confirmations,
         finality: finalityFromConfirmations(confirmations, gates),
         at,
+        // 公开链上事实 (白名单键; 老字段 tx 已在上方保留)
+        tx_hash: txHash,
+        ...(contract ? { contract } : {}),
+        ...(explorerTx ? { explorer_tx: explorerTx } : {}),
       },
     });
   }
@@ -641,6 +693,7 @@ export async function resolveConfirmedActivity(q: ConfirmedActivityQuery): Promi
         headBlock: file?.headBlock,
         chainId: file?.chainId,
         limit,
+        escrowAddress: file?.escrowAddress,        // 合约地址白名单 = 索引文件自己的部署身份
       });
       if (rows.length > 0) return { source: 'chain-index', rows, gates };
     }
@@ -825,6 +878,8 @@ export function buildChainIdScope(rows: ConfirmedActivityRow[]): ChainIdScope {
  *   ④ `activity_totals.source` === `confirmed_activity_source` (两块来源标注必须一致)
  *   ⑤ 行里有任务 而 `totals.tasks === 0` 时, 必须有口径说明 note
  *      (页面不许出现「0 个任务」与「N 行任务」并存而**不解释**)
+ *   ⑥ 0x 长 hex 越界 (2026-09-23): 只许出现在 tx_hash/contract/explorer_* 四个白名单键下 ——
+ *      EOA 地址跑到别的键 (或白名单键形状不对) 就拒绝导出
  */
 export function snapshotConsistencyIssues(snap: NetworkPulseSnapshot): string[] {
   const issues: string[] = [];
@@ -848,6 +903,7 @@ export function snapshotConsistencyIssues(snap: NetworkPulseSnapshot): string[] 
       (notes.includes('链上索引') || notes.includes('chain-index'));
     if (!explained) issues.push(`totals.tasks=0 与 ${rows.length} 行任务并存, 却没有口径说明 note`);
   }
+  issues.push(...auditPublicHexLeaks(snap));      // ⑥ 0x 长 hex 越界 → 拒绝导出 (不静默放行)
   return issues;
 }
 
@@ -1126,6 +1182,48 @@ export function assertNoPrivateFields(value: unknown, at = '$'): string[] {
         walk(val, `${p}.${k}`);
       }
     }
+  };
+  walk(value, at);
+  return issues;
+}
+
+/**
+ * 允许出现 0x 长 hex 的键 (**唯一白名单**, 2026-09-23 leo 拍板; 同日收窄): 交易哈希 / escrow 合约地址 /
+ * 交易浏览器链接 —— 都是公开链上事实。除了这 3 个键, 别处出现 0x 长 hex (尤其 EOA 钱包地址) 一律算泄露。
+ * 注意 `contract` **只在数据里**(供索引/诊断), 页面不渲染合约地址也不给合约链接 ⇒ 没有 `explorer_contract` 这个键。
+ */
+export const PUBLIC_HEX_KEYS = ['tx_hash', 'contract', 'explorer_tx'] as const;
+
+/**
+ * 0x 长 hex 越界审计 (**粒度比 `assertNoPrivateFields` 更细**: 那个只看键名, 这个看值形态)。
+ *   · 白名单键下: 形状必须精确 —— `tx_hash` = 0x+64 hex; `contract` = 0x+40 hex;
+ *     `explorer_tx` = 我们造的**交易**浏览器链接形状 (`EXPLORER_URL_RE`)
+ *   · **其他任何键**的值里出现 `0x` + 40/64 位 hex → 报出来 (买方·卖方 EOA、taskKey 原文、
+ *     args 里的地址都属这一类); `explorer_contract` 之类不在白名单的键**同样**按泄露处理
+ * 返回越界说明列表 (空 = 干净)。这条尺子**只收紧不放松**: 老口径下「任何 0x 长 hex 都不许」
+ * 现在等价于「除了这 3 个白名单键, 任何 0x 长 hex 都不许」。
+ */
+export function auditPublicHexLeaks(value: unknown, at = '$'): string[] {
+  const issues: string[] = [];
+  const allow = PUBLIC_HEX_KEYS as readonly string[];
+  const walk = (v: any, p: string) => {
+    if (Array.isArray(v)) return v.forEach((x, i) => walk(x, `${p}[${i}]`));
+    if (v && typeof v === 'object') {
+      for (const [k, val] of Object.entries(v)) walk(val, `${p}.${k}`);
+      return;
+    }
+    if (typeof v !== 'string') return;
+    const s = v;
+    const key = p.slice(p.lastIndexOf('.') + 1);
+    // 白名单键: 形状必须精确 —— 不管值长短都查 (拿短串/怪串冒充同样拒绝)
+    if (allow.includes(key)) {
+      const ok = (key === 'tx_hash' && TX_HASH_RE.test(s))
+        || (key === 'contract' && ADDRESS_RE.test(s))
+        || (key === 'explorer_tx' && EXPLORER_URL_RE.test(s));
+      if (!ok) issues.push(`${p} = 白名单键 ${key} 下的形状不对 (只认精确形状, 不认"含 0x 就算")`);
+      return;
+    }
+    if (/0x[0-9a-fA-F]{40}/.test(s)) issues.push(`${p} = 0x 长 hex (只许出现在 ${allow.join('/')} 下) → 按泄露处理`);
   };
   walk(value, at);
   return issues;

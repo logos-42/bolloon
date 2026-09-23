@@ -27,15 +27,28 @@ const TASK_B = '0x' + '12'.repeat(32);
 const TX_A = '0x' + 'cd'.repeat(32);
 const TX_B = '0x' + '9f'.repeat(32);
 
-/** 冻结形状的字段名与顺序 (逐字) */
+/** 冻结形状的字段名与顺序 (逐字): 老 9 个 —— 脉冲降级行就是这 9 个, 一个新字段都不加 */
 const FROZEN_KEYS = ['task', 'kind', 'state', 'chain_id', 'block', 'tx', 'confirmations', 'finality', 'at'];
+/**
+ * 链上索引行的完整形状 (2026-09-23; 同日按 leo 拍板收窄): 老 9 个 + 3 个可核验字段,
+ * **追加在尾部** (老消费方按名取值不受影响)。
+ *   · `tx_hash` 真交易哈希 · `explorer_tx` 交易浏览器链接 (该链有公网浏览器才有)
+ *   · `contract` escrow 合约地址 —— **只在数据里**(索引/诊断), 页面不渲染、不生成合约链接
+ *   · 3 个字段都是可选的 (拿不到就不给), 这里按「全给」的夹具断言完整名单, 另有断言「缺则键不存在」
+ */
+const CHAIN_KEYS = [...FROZEN_KEYS, 'tx_hash', 'contract', 'explorer_tx'];
 const KINDS = ['task_created', 'task_accepted', 'task_completed', 'trade_settled', 'trade_verified'];
 const STATES = ['active', 'released', 'refunded', 'expired', 'disputed', 'unknown'];
 const FINALITIES = ['observed', 'confirmed', 'finalized'];
+/** 夹具用的 escrow **合约**地址 (小写 40 hex; 与索引文件顶层 escrowAddress 同值才有合约字段) */
+const ESCROW_X = '0x' + '11'.repeat(20);
+/** ★ 买方/卖方 EOA (假值, 真形态): 绝不许出现在任何公开输出里 */
+const BUYER_EOA = '0xb4e9dcf79055a8232670ebb1c8c664dff4e70066';
+const SELLER_EOA = '0x5ca9fb35d795b436f0ebddde7f25020c35ea8f9e';
 
 const entry = (over: Partial<NP.ChainActivitySourceEntry> = {}): NP.ChainActivitySourceEntry => ({
   blockNumber: 100, logIndex: 0, eventName: 'EscrowCreatedV2',
-  taskKey: TASK_A, txHash: TX_A, confirmations: 1, suspect: false, firstSeenAt: NOW,
+  taskKey: TASK_A, txHash: TX_A, address: ESCROW_X, confirmations: 1, suspect: false, firstSeenAt: NOW,
   ...over,
 });
 
@@ -50,10 +63,12 @@ beforeEach(() => { HOME = tmpHome(); });
 afterEach(() => { try { fs.rmSync(HOME, { recursive: true, force: true }); } catch { /* noop */ } });
 
 describe('confirmed_activity · 形状与匿名 (冻结字段逐字)', () => {
-  it('字段齐全且顺序冻结 (链上路径)', () => {
-    const rows = NP.buildConfirmedActivityFromIndex([entry()], { chainId: 84532, headBlock: 47142233 });
+  it('字段齐全且顺序冻结 (链上路径: 老 9 个 + 新增 4 个可核验字段)', () => {
+    const rows = NP.buildConfirmedActivityFromIndex([entry()], { chainId: 84532, headBlock: 47142233, escrowAddress: ESCROW_X });
     expect(rows).toHaveLength(1);
-    expect(Object.keys(rows[0])).toEqual(FROZEN_KEYS);
+    // 老 9 个必须还在原位; 新增的 4 个只许追加在尾部 (键序一并冻结)
+    expect(Object.keys(rows[0]).slice(0, 9)).toEqual(FROZEN_KEYS);
+    expect(Object.keys(rows[0])).toEqual(CHAIN_KEYS);
     const r = rows[0];
     expect(r.task).toMatch(/^sha256:[0-9a-f]{8}$/);
     expect(r.tx).toMatch(/^sha256:[0-9a-f]{8}$/);
@@ -65,9 +80,23 @@ describe('confirmed_activity · 形状与匿名 (冻结字段逐字)', () => {
     expect(r.confirmations).toBe(47142233 - 100 + 1);
     expect(r.at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);   // ISO8601 UTC 秒级
     expect(r.at).toBe('2026-09-22T05:31:00Z');
+    // 新增 3 个的取值: 真 txHash / escrow 合约地址 (数据) / sepolia.basescan **交易**链接
+    expect(r.tx_hash).toBe(TX_A);
+    expect(r.contract).toBe(ESCROW_X);
+    expect(r.explorer_tx).toBe(`https://sepolia.basescan.org/tx/${TX_A}`);
+    expect('explorer_contract' in r).toBe(false);      // 合约链接不存在 (合约不上页面)
   });
 
-  it('字段齐全且顺序冻结 (脉冲降级路径)', () => {
+  it('链上行的新增字段是「有才给」: 拿不到 escrow / 链没浏览器 → 键整个不存在 (不是 null)', () => {
+    const noEscrow = NP.buildConfirmedActivityFromIndex([entry()], { chainId: 84532, headBlock: 47142233 })[0] as any;
+    expect(Object.keys(noEscrow)).toEqual([...FROZEN_KEYS, 'tx_hash', 'explorer_tx']);   // 没有合约地址 → 不给合约字段
+    // 本机 31337: 没有公网浏览器 → explorer_tx 键**不存在** (页面据此保持纯文本, 不编死链)
+    const local = NP.buildConfirmedActivityFromIndex([entry()], { chainId: 31337, headBlock: 200, escrowAddress: ESCROW_X })[0] as any;
+    expect(Object.keys(local)).toEqual([...FROZEN_KEYS, 'tx_hash', 'contract']);
+    expect('explorer_tx' in local).toBe(false);
+  });
+
+  it('字段齐全且顺序冻结 (脉冲降级路径: 仍只有老 9 个字段)', () => {
     const rows = NP.buildConfirmedActivityFromEvents([{
       type: 'task_posted', bucket: '1', occurredAt: NOW, sourceProof: 'node-1', taskProof: 'abcdef0123456789',
     } as any]);
@@ -78,18 +107,26 @@ describe('confirmed_activity · 形状与匿名 (冻结字段逐字)', () => {
     expect(rows[0].task).toBe('sha256:abcdef01');
   });
 
-  it('task / tx 只出 sha256 短写 —— taskKey 与 txHash 原文一个都不出', () => {
+  it('任务标识只出 sha256 短写 (taskKey 原文一个都不出); txHash 只许出现在白名单键下, EOA 绝不出现', () => {
     const rows = NP.buildConfirmedActivityFromIndex([
       entry(), entry({ eventName: 'ReleasedV2', blockNumber: 101, logIndex: 2, taskKey: TASK_B, txHash: TX_B, firstSeenAt: NOW + 1000 }),
-    ], { chainId: 31337, headBlock: 200 });
+    ], { chainId: 31337, headBlock: 200, escrowAddress: ESCROW_X });
     const json = JSON.stringify(rows);
-    for (const raw of [TASK_A, TX_A, TASK_B, TX_B]) {
-      expect(json).not.toContain(raw);                       // 全长原文
-      expect(json).not.toContain(raw.slice(2, 10));          // 任一段也不行
+    for (const raw of [TASK_A, TASK_B]) {
+      expect(json).not.toContain(raw);                       // taskKey 原文: 一个都不出 (含片段)
+      expect(json).not.toContain(raw.slice(2, 10));
     }
-    expect(json).not.toMatch(/0x[0-9a-fA-F]{8,}/);           // 出现任何长 hex 都算泄露
+    // 2026-09-23 决定变更: txHash **允许**出现, 但只许在 tx_hash 键下 (老 `tx` 短写照旧保留)
+    expect(json).toContain(TX_A);
+    expect(json).toContain(TX_B);
+    // 短写照旧保留 (最新在前: 101 块那条 TX_B 排前)
+    expect(rows.map((r) => r.tx)).toEqual([NP.anonShortRef(TX_B, 'tx'), NP.anonShortRef(TX_A, 'tx')]);
+    expect(NP.auditPublicHexLeaks(rows)).toEqual([]);        // 新尺子: 白名单键外一律不许有 0x 长 hex
     expect(rows[0].task).not.toBe(rows[1].task);             // 不同任务 → 不同短写
     expect(NP.assertNoPrivateFields({ confirmed_activity: rows })).toEqual([]);
+    // 卖方 EOA 塞进 address 键 → 立刻被新尺子抓到 (反向验证, 不是永远返回空)
+    expect(NP.auditPublicHexLeaks({ confirmed_activity: [{ ...rows[0], address: SELLER_EOA }] }).join(' ')).toContain('泄露');
+    expect(NP.auditPublicHexLeaks({ confirmed_activity: [{ ...rows[0], task: BUYER_EOA }] }).length).toBe(1);
   });
 
   it('任务/交易短写稳定且域隔离 (同值同写; task 与 tx 不串)', () => {
@@ -368,10 +405,15 @@ describe('confirmed_activity · 端到端 (getNetworkPulse)', () => {
   });
 });
 
-/** 快照 JSON 里不许出现任何长 hex / 私有字段 (非匿名信息兜底) */
+/**
+ * 快照 JSON 里不许出现私有字段 / EOA 地址 / 越界的 0x 长 hex (非匿名信息兜底)。
+ * 2026-09-23 决定变更后: tx_hash / contract / explorer_* **四个白名单键下**的 0x 是合法的公开链上事实,
+ * 其余位置出现 0x 长 hex (含买方/卖方 EOA) 仍算泄露 —— 由 `auditPublicHexLeaks` 逐键判定。
+ */
 function np_jsonSafe(snap: NP.NetworkPulseSnapshot): boolean {
   const json = JSON.stringify(snap);
-  return !/0x[0-9a-fA-F]{8,}/.test(json)
+  return NP.auditPublicHexLeaks(snap).length === 0
     && !/did:key|peerId|multiaddrs|privateKey/.test(json)
+    && !json.includes(SELLER_EOA) && !json.includes(BUYER_EOA)
     && NP.assertNoPrivateFields(snap).length === 0;
 }

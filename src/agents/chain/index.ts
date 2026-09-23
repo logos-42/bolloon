@@ -9,6 +9,7 @@
  *   · chain-state-store   — 落盘 / 重启恢复 / 重组对账
  *   · chain-indexer       — P5: v2 事件索引器 (分页扫 / 增量 / 去重 / 重组回退 / 全量重建)
  *   · chain-index-query   — P5: 只读查询 (时间线 / cursor 增量 / 统计 / 索引高度)
+ *   · explorer            — chainId → 公网区块浏览器 (**只造交易链接**: 合约地址不页面化; 认不出的链不给链接)
  */
 
 export * from './chain-config.js';
@@ -19,3 +20,4 @@ export * from './chain-state-store.js';
 export * from './onchain-trade.js';
 export * from './chain-indexer.js';
 export * from './chain-index-query.js';
+export * from './explorer.js';
