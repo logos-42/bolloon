@@ -3029,3 +3029,13 @@ run 的随机 taskId 不在其中, 就恒为 false ≠ true。**证据**: 在 `g
 **同样 74 passed / 1 failed, 同一条失败项** ⇒ 与本次改动无关 (改动只碰 network-pulse / explorer / 其测试与快照断言)。
 基线写的 75/0 应为该文件尚不存在时测得。**未修** (改它等于改这条门禁的语义, 应由 owner 决定 `found` 到底该表达哪个命题)。
 
+## [2026-09-23] fix(verify) | 修一条**既有**的环境依赖门 — 读取语义断言两个口径混比 (真实 HOME 74/1 → 修后 76/0)
+
+- **现象**: `scripts/verify-onchain-trade-loop.ts` 在**真实 HOME** 下恒 **74 passed / 1 failed**, 红的是
+  `标准路径 ~/.bolloon/chain/chain-state.json 的读取语义一致 (纯读, 不写真实 HOME)`。
+- **真凶(两个口径混比)**: 断言写 `realRead.found === fs.existsSync(realStatePath)`, 而 `found` = 「**这个 taskKey** 有记录条数 > 0」(`onchain-trade.ts:632-644`)、`exists` = 「**文件**在不在」。
+  真实 HOME 里只要有一份 chain-state.json(哪怕与本次 taskId 无关 —— 例如真钱主网闭环留下的那份)就必然红:
+  **门的红绿取决于本机残留文件, 不取决于它声称验的「纯读语义」**。
+- **既有性(我独立复现, 不采信自述)**: 同一份代码 真实 HOME **74/1** · 干净 HOME **75/0**; 在**改前的 `5ca3f61`** 干净工作树(软链 node_modules 让它真跑)上跑同一个门 **同样 74/1、同一条断言** ⇒ 既有缺陷, 非本次回归。
+- **修法(1 条拆 2 条, 各验各的)**: ① 用门**自己的一次性 HOME + 门自己写的已知内容**验语义: 空文件→found=false / 已记录任务→found=true / **同一份文件里未记录任务→found=false(把「文件在 ≠ 任务在」显式锁住)** / 读两次字节不变; ② 对**真实 HOME** 只断言「读它不写它」: 存在性 + 内容 + mtime 均不变 —— 本机有无该文件都不影响判定。
+- **结果**: `tsc --noEmit` 0 错 · 真实 HOME **76/0** · 干净 HOME **76/0**(修前 74/1 与 75/0)。
