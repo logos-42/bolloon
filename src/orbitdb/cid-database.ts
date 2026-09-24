@@ -24,11 +24,41 @@ import * as dagCbor from '@ipld/dag-cbor';
 import { sha256 } from 'multiformats/hashes/sha2';
 import { concat as uint8Concat } from 'uint8arrays/concat';
 import { createOrbitDB, type OrbitDB, type KeyValue } from '@orbitdb/core';
+import * as orbitdbCoreNs from '@orbitdb/core';
+
+/**
+ * 运行时取 `IPFSAccessController` (2026-09-24)。
+ *
+ * 它在运行时是**真具名导出** (`@orbitdb/core` 4.0.0 `src/index.js:26`, 经
+ * `./access-controllers/index.js` 二级再导出), 但该包是**纯 JS 包**: `package.json`
+ * 既无 `types` 也无 `exports`、包内没有任何 `.d.ts` —— TS7 从 JS 推断导出集时看不见
+ * 这个二级再导出, `import { IPFSAccessController }` 直接 TS2305。
+ * 所以从命名空间按需取一次并显式收窄到已知形状; 不给整个模块上 `any`
+ * (createOrbitDB / OrbitDB / KeyValue 仍照旧受类型检查)。
+ */
+const IPFSAccessController = (orbitdbCoreNs as unknown as {
+  IPFSAccessController: (opts?: { write?: string[] }) => unknown;
+}).IPFSAccessController;
 import { createBolloonIpfs, type BolloonIpfs } from './ipfs-node.js';
 import * as path from 'path';
 import * as os from 'os';
 
 export type CIDRecordType = 'memory' | 'context' | 'state' | 'ui' | 'knowledge';
+
+/**
+ * store 打不开 (地址不可解析 / 区块不在本地且没有 block broker 能去网上取)。
+ *
+ * 2026-09-24: 原来 `openStoreByAddress` 失败返回 null, 上游 (gateway-group) 把它当"空群",
+ * 于是"读不到"被显示成"没有消息"。改成**抛**: 打不开 ≠ 没内容。
+ */
+export class OrbitDBStoreUnreachableError extends Error {
+  readonly code = 'STORE_UNREACHABLE';
+  constructor(readonly address: string, readonly cause?: unknown, readonly dataDir?: string) {
+    const why = String((cause as Error)?.message ?? cause ?? '未知原因').slice(0, 200);
+    super(`store 不可达 (${address}): ${why}`);
+    this.name = 'OrbitDBStoreUnreachableError';
+  }
+}
 
 export interface CIDRecord {
   id: string;            // CID (dag-cbor 内容寻址)
@@ -70,9 +100,21 @@ export interface CIDDatabase {
   openStore(name: string, type?: 'keyvalue' | 'events', opts?: { accessController?: { write: string[] } }): Promise<OrbitDBStore>;
   /**
    * 2026-08-14: 按地址打开远端 store (共享网络 / 复制副本 / 群组)。
-   * replica=true (默认): 只读副本, 不写回远端 store (自动加入网络不污染他人数据)。
-   * replica=false: 可写打开 (群组用 — events store 配 write:'*' 时成员可广播消息)。
-   * 失败返回 null (网络不可达 / store 不存在)。
+   *
+   * `replica` (2026-09-24 修正既有错述): **不是 OrbitDB 的选项**。
+   * `@orbitdb/core` 4.0.0 的 `open(address, {...})` 参数表里没有 `replica` (src/orbitdb.js:118),
+   * 传了会被丢 —— 旧注释写的"replica=true 只读副本不写回"从来不是它的行为。
+   * 真正的读/写闸门是 manifest 里的 ACL: `canAppend` 按 write 列表判定
+   * (access-controllers/ipfs.js:78-87), **只读调用方本来就不 `put`**。
+   * 参数保留 (gateway-group 等既有调用点仍传), 但不再冒充 OrbitDB 选项、不再往下传。
+   *
+   * `opts.accessController.write` **只对新建 store 生效**; 传的是**合法已存在地址**时
+   * `@orbitdb/core` 会从 manifest 里取回 ACL 并**覆盖**入参 (src/orbitdb.js:129-131)
+   * —— 即已有群的写权限是**建群时就烧进 manifest** 的, 事后改不了。
+   *
+   * 2026-09-24: 打开失败**抛 `OrbitDBStoreUnreachableError`** (不再返回 null)。
+   * 返回 null 会让上游把"打不开"当成"空群/空列表" —— 那是把"读不到"伪装成"没有内容"。
+   * (返回类型保留 `| null` 只为兼容测试替身; 真实现永不返回 null。)
    */
   openStoreByAddress(address: string, type?: 'keyvalue' | 'events', opts?: { replica?: boolean; accessController?: { write: string[] } }): Promise<OrbitDBStore | null>;
   /** 关闭数据库 */
@@ -107,6 +149,28 @@ export async function contentToCid(obj: unknown): Promise<string> {
 const home = (): string => process.env.HOME || os.homedir() || '/tmp';
 
 /**
+ * OrbitDB 身份在 keystore 里的槽名 (2026-09-24)。
+ * 固定槽名 = 同一 dataDir 下每个进程读到**同一对密钥 / 同一个身份**。
+ * 不固定 (@orbitdb/core 默认 createId() 随机 32 位) 会让每个进程变成新写入者,
+ * 于是 `canAppend` 拿新身份去比对老 manifest 的 write 列表 → 一律拒绝。
+ */
+const ORBITDB_IDENTITY_ID = 'bolloon';
+
+/**
+ * `opts.accessController.write` → OrbitDB v4 的大写 `AccessController` 工厂 (2026-09-24)。
+ *
+ * @orbitdb/core v4 的 `open(address, options)` **只认大写 `AccessController`** (一个构造函数),
+ * 小写 `accessController: { write: [...] }` 会被静默丢弃 → 新 store 落回默认策略
+ * (`IPFSAccessController`: `write = write || [创建者身份 id]`, 即创建者独占写)。
+ * 于是 gateway-group 一直传的 `write:['*']` (「群成员可广播」) **从来没生效过**。
+ * 这里把已成文的选项接上; 对已存在的地址, manifest 里的 AC 仍优先 (这里不改变既有群)。
+ */
+function accessControllerOption(opts?: { accessController?: { write: string[] } }): Record<string, unknown> {
+  const write = opts?.accessController?.write;
+  return Array.isArray(write) && write.length ? { AccessController: IPFSAccessController({ write }) } : {};
+}
+
+/**
  * OrbitDB 后端实现。单例: 同一进程只建一个 (helia/OrbitDB 都是重量级节点)。
  */
 export class OrbitDBAdapter implements CIDDatabase {
@@ -115,16 +179,31 @@ export class OrbitDBAdapter implements CIDDatabase {
   private _orbitdb: OrbitDB | null = null;
   readonly orbitdb: OrbitDB | undefined;
 
-  constructor(private dataDir: string = path.join(home(), '.bolloon', 'orbitdb')) {}
+  constructor(readonly dataDir: string = path.join(home(), '.bolloon', 'orbitdb')) {}
+
+  /** 落盘位置 (未初始化时 null; 诊断/验收用) */
+  get ipfsPaths(): BolloonIpfs['paths'] | null {
+    return this.node?.paths ?? null;
+  }
 
   /** 懒初始化: 首次使用时启动 helia + OrbitDB + 打开 keyvalue store */
   private async ensure(): Promise<void> {
     if (this.db) return;
     this.node = await createBolloonIpfs(path.join(this.dataDir, 'ipfs'));
-    this._orbitdb = await createOrbitDB({
+    // 2026-09-24: 身份必须**跨进程稳定**。不给 id 时 @orbitdb/core 用 createId()
+    // (32 位随机串) 当 keystore 槽名 (src/orbitdb.js:43 `id = id || await createId()`
+    // → :61 `createIdentity({ id })`) → 每个进程一对新密钥 → 新身份 → 写自己的 store
+    // 会被访问控制拒掉 ("Key … is not allowed to write to the log")。
+    // 给固定槽名后, 密钥从 <dataDir>/stores/keystore 读出复用 → 同 dataDir 同身份。
+    // 类型注: `id` 是 @orbitdb/core 的真选项 (src/orbitdb.js:33), 但 TS7 从 JS 推断出的
+    // 参数类型漏了它 → 显式取 Parameters<typeof createOrbitDB>[0] 再补 { id }
+    // (不裸 any 掉整个入参)。
+    const init: Parameters<typeof createOrbitDB>[0] & { id?: string } = {
       ipfs: this.node.helia as any,
       directory: path.join(this.dataDir, 'stores'),
-    });
+      id: ORBITDB_IDENTITY_ID,
+    };
+    this._orbitdb = await createOrbitDB(init);
     this.db = await this._orbitdb.open('bolloon-cid-store', { type: 'keyvalue' });
     // 共享底层实例 (只读暴露)
     (this as any).orbitdb = this._orbitdb;
@@ -258,29 +337,32 @@ export class OrbitDBAdapter implements CIDDatabase {
    */
   async openStore(name: string, type: 'keyvalue' | 'events' = 'keyvalue', opts?: { accessController?: { write: string[] } }): Promise<OrbitDBStore> {
     await this.ensure();
-    const options: any = { type };
-    if (opts?.accessController) options.accessController = opts.accessController;
+    const options: any = { type, ...accessControllerOption(opts) };
     const raw = (await this._orbitdb!.open(name, options)) as any;
     return this.wrapStore(raw);
   }
 
   /**
    * 2026-08-14: 按地址打开远端 store (Agent Gateway 共享网络 / 群组)。
-   * replica=true → 只读副本: 拉取复制但不写回 (自动加入网络不污染他人 registry)。
-   * replica=false → 可写 (群组: events store 配 write:'*' 时成员可广播)。
+   *
+   * 2026-09-24: 失败改为**抛 OrbitDBStoreUnreachableError** (含原始错误原因),
+   * 不再 `console.warn` + return null —— 那让"整个群读不到"在上层显示成"群里没有消息"。
+   *
+   * 2026-09-24 (修正既有错述): **不再往 OrbitDB 传 `replica`** ——
+   * `@orbitdb/core` 4.0.0 的 `open()` 参数表里没有它 (src/orbitdb.js:118), 传了也被丢,
+   * 之前的"replica=true 只读副本"是**不存在的语义**(等于什么都没做)。入参保留以兼容
+   * 既有调用点, 但不再冒充 OrbitDB 选项。可写与否由 manifest 里的 ACL + 调用方是否 `put` 决定。
+   * `opts.accessController` 在**打开既有地址**时同样不生效 (见接口注释: AC 由 manifest 决定)。
    */
   async openStoreByAddress(address: string, type: 'keyvalue' | 'events' = 'keyvalue', opts?: { replica?: boolean; accessController?: { write: string[] } }): Promise<OrbitDBStore | null> {
     await this.ensure();
     try {
-      const options: any = { type };
-      if (opts?.replica === false) options.replica = false;
-      else options.replica = true;
-      if (opts?.accessController) options.accessController = opts.accessController;
+      const options: any = { type, ...accessControllerOption(opts) };
       const raw = (await this._orbitdb!.open(address, options)) as any;
       return this.wrapStore(raw);
     } catch (err) {
-      console.warn(`[orbitdb] openStoreByAddress 失败: ${String((err as Error)?.message || err).slice(0, 160)}`);
-      return null;
+      // 大声失败: 带上地址 + 原始原因 (最常见: "No block brokers capable of retrieving blocks ...")
+      throw new OrbitDBStoreUnreachableError(address, err, this.dataDir);
     }
   }
 

@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-24 | fix | **OrbitDB 真落盘 —— `createBolloonIpfs(dataDir)` 的区块/datastore 真写文件, 群 store 跨进程用地址重开 (关掉同日「残留未修: 群 store 跨进程打不开」)**: 根因 = helia 从没拿到自定义 blockstore/datastore (实测 `~/.bolloon/orbitdb/` 只有 `stores/` 没有 `ipfs/`) → 补 `FsBlockstore`(`<dataDir>/ipfs/blocks`) + `FsDatastore`(`<dataDir>/ipfs/datastore`) 并挂进 `createHeliaLight`; 顺带修两个只在「换进程」时才炸的真缺陷: OrbitDB 身份槽固定为 `bolloon`(默认 `createId()` 每进程随机 → `canAppend` 拿新身份比对老 manifest 一律拒) + `open()` 只认**大写** `AccessController`(小写被静默忽略 → `write:['*']` 失效, 成员开得了却发不进去); 并把「store 打不开」与「群里没消息」**分开** —— `openStoreByAddress` 不再返回 null 而是抛 `STORE_UNREACHABLE`, CLI 退出码 1 + `read=false`/`localFallback=false`(**不再把读不到说成「群里本期没有过程痕迹」**)。**验收 = 真跨进程 6 段** (`scripts/verify-orbitdb-durable.ts`, **25 passed / 0 failed / 2 skipped**, 32.4s): ①进程A 建群+发2条→干净退出 ②进程B 用群链接重开 → 2 条**逐字一致** ③进程C 追加1条→进程D 读到3条 ③b 走 `task-group` 发送闸发真 `[bolloon-task]` 痕迹 ④**负控制**: 空 dataDir 开同一地址 → 模块层抛 + CLI 非0/`TRANSPORT_FAILED` 且 `localFallback=false`(正对照: 同一条 CLI 在同一 dataDir 成功 count=1) ⑤**脏进程负控制**: `kill -9` 后新进程**真读到**已写 2 条。真 CLI 走通用户原始失败命令: `task publish` → `task announce --group <链接>`(退出0) → 另一进程 `task trail` 读回。门禁: tsc 0 错 · vitest **204 文件/2706 测试全绿** · wiki_check/raw_manifest_check/wiki_lint --strict=v2/supersede_check 全 OK。**残留 (如实)**: 跨机同步仍需 peers + block broker(bitswap, 另一条线) · 同 store 多进程**并发**写未验 · 本次修复**之前**建的群区块已永久丢失 | [ipfs-node.ts](../../src/orbitdb/ipfs-node.ts) / [cid-database.ts](../../src/orbitdb/cid-database.ts) / [gateway-group.ts](../../src/agents/gateway-group.ts) / [verify-orbitdb-durable.ts](../../scripts/verify-orbitdb-durable.ts) |
 | 2026-09-23 | feat | **公开快照加 `open_tasks[]`「待接单任务」脱敏投影 (公告板 → 公开页)**: 从 `~/.bolloon/tasks/board/*.json` 只取**未认领且未过期**的公告, 每行**只有白名单 7 键** `capability/budget/currency/network/deadline/claimed/announcementId`(取前 8 位) —— 任务正文 · 正文摘要/预览 · 买方 DID 与公钥 · 认领者 · 公告签名**一个都不导出**, 且行的键集合超出一个就被 `openTasksIssues` 判不一致(导出脚本据此拒绝导出, 不静默放行); 老缓存缺该字段视为过期形状重算; 空数组语义 =「此刻没有待接单任务」(与「观察层暂不可用」显式分开) — tsc 0 错 · vitest 203 文件/2703 测试全绿(新单测 16/16) · 三门禁 OK · 真导出 1 行(ann-80c5 / fusion-conversion-consistency / 1000 USDC / base-sepolia, 与 board 文件逐字段核对); UI 侧同批展示 + 隐私守卫精确化(对照 19→29 全通过) + 站点断言 291→320(本地与真域名各 320/0/0) | [network-pulse.ts](../../src/agents/network-pulse.ts) / [export-network-pulse.ts](../../scripts/export-network-pulse.ts) / [network-pulse-open-tasks.test.ts](../../src/test/network-pulse-open-tasks.test.ts) |
 | 2026-09-23 | feat | **任务对外发布 + 接单最小通道 (C1/C2): 新增 `bolloon task publish` / `task board` / `task claim` 三个命令, 并用中性夹具端到端真跑** —— 补 M1 断点「买方要委托任务时对方不在自己注册表里就根本发不出去, 没有任何地方能把待接单任务公告出去」。① `publish --capability X --instruction "…" --budget 0.05`: 正文**只落本机** `~/.bolloon/tasks/board/<ann-id>.json`, 同时向 agent-registry 公告(同一买方一条 `task.announce` 服务条目, description 里只有结构化摘要 + **60 字预览**, **正文与公告 id 原文不进注册表**) + 脉冲事件 **`task_announced`**(新增类型, 只记"有节点公告了一个待接单任务", 匿名: 既无正文也无 id/DID 原文, 旧事件类型逐字不变); `announcementId` 由 (能力+正文摘要+买方+预算) 派生 → **稳定可复算**, deadline 不参与身份; 重发同一公告 = `dup=true` 且**不覆盖**既有事实(createdAt/deadline 原样)。② `board [--capability X] [--open] [--local] [--json]`: 列本地 + **注册表发现的远端公告**(按 id 去重, 被去掉的 id 显式进 `duplicates`), 本地胜出; **板上永远只有摘要与预览, 没有正文**; 远端行的认领数**看不到就如实写 0**(不编)。③ `claim <announcementId> [--price 0.031]`: 记**认领者 DID + 时间 + 声明价格**(给人话金额→原子单位串换算; 没声明就如实写"未声明价格", **不编价**), 落盘 + 脉冲复用 `task_accepted`; **一律拒并给原因**: 重复认领(同一/另一 provider 都拒, 带出先接的事实) · 已取消 · 不存在 · 非法 id(路径穿越) · 未签名 · 正文被改(摘要对不上) · 已过期 —— 每条负控制都断言"事实没被改"(claims 数不变、不凭空建文件)。**远端公告的认领只落本机台账**并**如实标 `deliveredToBuyer=false`**(本版没有投递通道, 不假装已交接)。④ `task send` 没有目标 provider 时: 失败信封里**带可操作提示**(板上有几条可接单的 → 指向 `board`/`claim`), **代码语义不变**(仍是 CAPABILITY_NOT_FOUND / NETWORK_NOT_JOINED, 不假装发出去、不付款); **拿不到板上的事实就 `hint=null` 不伪造**。⑤ 裁决层 `decideAnnouncementRelease`(纯函数): 未交付不得释放 · 未结算不得标 verified · `local-dev` **永不算链上** · 争议 → 拒 + `mustNotRepay`(不自动重付/不标 verified/不静默关闭) · 已释放 → 幂等拒 + `mustNotRepay` · **本模块任何路径一分钱都不动**(`fundsMoved` 恒 false) · 每条都带证据行可回放。**验证**: `tsc --noEmit` **0 错** · 全量 `vitest run` **201 文件 / 2662 测试全绿**(新增 `src/test/task-board.test.ts` 23 条) · 新验收脚本 `scripts/verify-task-board.ts` **94 passed / 0 failed / 4 skipped**(显式 skip 计数) · 三门禁 OK · 真 CLI 跑通(隔离 HOME): publish→board(本地+远端)→claim(带价/不带价)→重复认领拒→不存在拒→非法 id 拒→send 给板提示。**顺手把一条既有红修成密闭门**: `chain-cli.test.ts` 的「真写拿不到 token … 读路径不受影响」原依赖本机 8545 上有真节点(HEAD 复现 1 failed), 改为读路径注入假 client —— **断言一字未改**, 只拔掉环境依赖。**未做(如实标)**: 真跨机远端公告同步(本脚本用同机注册表条目模拟远端形状) · 真链上释放交易 · 远端认领投递给买方 · 公告到期清理与多轮竞价。 | [task-board.ts](../../src/agents/task-board.ts) / [tasks.ts](../../src/cli/commands/tasks.ts) / [network-pulse.ts](../../src/agents/network-pulse.ts) / [task-board.test.ts](../../src/test/task-board.test.ts) / [verify-task-board.ts](../../scripts/verify-task-board.ts) / [chain-cli.test.ts](../../src/test/chain-cli.test.ts) |
 | 2026-09-23 | feat | **公开快照加「可核验」链上字段 (交易标签可点跳浏览器): 链上索引行**追加** `tx_hash`(真交易哈希) + `explorer_tx`(basescan 交易链接) 两个字段; `contract`(escrow 地址)只作行内数据保留 —— **不生成 `explorer_contract`, 页面上没有合约地址也没有合约链接**(同日 leo 拍板收窄); 老 9 字段名序逐字不变, 匿名化 `tx`(`sha256:<8位>`)保留不删 (向后兼容); 只放行交易哈希/合约地址(公开链上事实), EOA/DID/peerID/multiaddr/taskKey 原文一律不导出; 只有已知公网浏览器(8453/84532/1/11155111)才有链接, 本机 31337 **字段不存在**(不是 null/空串) — tsc 0 错 · vitest 200 文件/2635 测试 · 门禁 59/0 · 74/1(既有环境项, HEAD 复现) · 81/0 · 快照真跑 3 行全带真 txHash+basescan | [network-pulse.ts](../../src/agents/network-pulse.ts) / [explorer.ts](../../src/agents/chain/explorer.ts) / [network-pulse-explorer.test.ts](../../src/test/network-pulse-explorer.test.ts) / [verify-network-pulse.ts](../../scripts/verify-network-pulse.ts) |
@@ -3216,4 +3217,88 @@ run 的随机 taskId 不在其中, 就恒为 false ≠ true。**证据**: 在 `g
 
 **为什么 C7 的 121 条验收没抓到**: 它的验收脚本走**模块调用路径**, 没走**真实 CLI 入口** —— 教训: 验收必须打在用户真用的那条路上。
 
-**残留 (未修)**: 群 store 目前**跨进程打不开** (`TRANSPORT_FAILED: No block brokers capable of retrieving blocks are configured`)。根因: `src/orbitdb/ipfs-node.ts` 的 `createBolloonIpfs(dataDir)` 没有把区块持久化 (实测 `~/.bolloon/orbitdb/` 下**只有 `stores/`, 没有 `ipfs/`**) → OrbitDB store 只在创建它的进程内可用。已派后续修复。
+**残留 (未修)**: 群 store 目前**跨进程打不开** (`TRANSPORT_FAILED: No block brokers capable of retrieving blocks are configured`)。根因: `src/orbitdb/ipfs-node.ts` 的 `createBolloonIpfs(dataDir)` 没有把区块持久化 (实测 `~/.bolloon/orbitdb/` 下**只有 `stores/`, 没有 `ipfs/`**) → OrbitDB store 只在创建它的进程内可用。已派后续修复。**✅ 已于同日修复: 见本文件末尾「2026-09-24 fix | OrbitDB 真落盘 —— `createBolloonIpfs(dataDir)` 的区块与 datastore 真写文件, 群 store 跨进程可重开」**(注意: 本句之前建的群其区块已永久丢失, 只能如实报不可达)。
+
+## 2026-09-24 fix | OrbitDB 真落盘: `createBolloonIpfs(dataDir)` 的区块与 datastore 真写文件, 群 store 跨进程可重开
+
+**这就是上一条「残留 (未修)」要修的那件事** —— 用户原始复现 (新进程):
+`bolloon task announce --group <群链接> --announcement-id <id>` → `没发出去: 群组 store 不可达` / `code=TRANSPORT_FAILED`。
+
+**根因 (四层; 前两层各自单独就足以让跨进程失败)**
+
+1. **区块/datastore 从没落过盘 (主因)**: `src/orbitdb/ipfs-node.ts` 的 `createBolloonIpfs(dataDir)` 收了目录却没用它 —— helia 的 blockstore/datastore 全在内存。证据: `~/.bolloon/orbitdb/` 下**只有 `stores/` (OrbitDB 自己的 oplog LevelDB), 没有 `ipfs/`**。于是 store 的 manifest 与条目区块只活在创建它的那个进程里; 新进程 `openStoreByAddress` 去 bitswap 找 → 无人应答 → 上面那条错。
+2. **两个只在「换进程」时才炸的 OrbitDB 选项缺陷** (所以之前的**单进程**验收全绿也没抓到, 正是「同进程自演不算数」的活样本):
+   - **身份槽没固定**: `@orbitdb/core` 默认 `createId()` 生成随机 32 位身份 → 每个新进程都是「另一个写入者」 → `canAppend` 拿新身份比对老 manifest 的 `write` 列表 → **一律拒绝**。修法: 固定槽名 `ORBITDB_IDENTITY_ID = 'bolloon'` (同一 dataDir 下每个进程读到**同一对密钥/同一身份**)。附带好处: store 地址变成**同 (dataDir, name) 确定性可复算**。
+   - **`AccessController` 大小写**: `@orbitdb/core` v4 的 `open(address, options)` **只认大写 `AccessController`(构造函数)**, 小写 `accessController` 被**静默忽略** → 群 events store 的 `write:['*']` 没生效 → 群成员开得了却**发不进去**。修法: `accessControllerOption()` 统一生成, 走 `IPFSAccessController`。
+3. **「打不开」被伪装成「没有消息」(诚实性缺陷, 独立于持久化)**: `openStoreByAddress` 原实现失败时**返回 null**, 上游当「空 store」处理 → CLI 输出「群里本期没有过程痕迹」这种**假空**。改法: 抛 `OrbitDBStoreUnreachableError`(带地址 + 原始原因), `gateway-group.ts` 按 groupId 记 `openFailures` 把**原始原因**带到用户面前; `exit code = 1` + 信封 `read=false` / `localFallback=false` / `next_action=needs_human`。
+4. 群消息的两类「空」从此分开: **本机没这个群** → `[]`(上游 `resolveGroupRef` 已拦成 `NOT_FOUND`); **群在列表里但 store 不可达** → **抛错**。`joinGroup`/`groupSend` 返回 `code:'STORE_UNREACHABLE'` + `unreachableReason()`。
+
+**改动文件**
+
+- `src/orbitdb/ipfs-node.ts`: 新增 `BolloonIpfsPaths{dataDir, blocksDir: FsBlockstore, datastoreDir: FsDatastore}` 并挂到 `createHeliaLight` 的 `blockstore`/`datastore`, 返回值上暴露 `paths`; 顶部注释记录坑: helia 7 的 `createHelia()` 内部会 withLibp2p 但**不传 opts**(`HeliaInit` 没有 `libp2p` 字段, 传了被丢) → 必须 `createHeliaLight` + 手动 `withLibp2p` 加 services。
+- `src/orbitdb/cid-database.ts`: `ORBITDB_IDENTITY_ID='bolloon'` · `accessControllerOption()` · `ensure()` 用 `<dataDir>/ipfs` 建 helia · `openStoreByAddress` 失败改为抛错 + `replica` 语义 (`true`(默认) = 只读副本不写回远端; `false` = 可写打开, 群用)。
+- `src/agents/gateway-group.ts`: `openFailures` Map + `unreachableReason()` + `GroupStoreUnreachableError` + `JoinGroupResult.code='STORE_UNREACHABLE'`; `resetGroupState()` 清 `openFailures`。
+- `scripts/verify-orbitdb-durable.ts` (**新增**): 跨进程验收脚本。
+- `package.json` / `package-lock.json`: 新增 `blockstore-fs@4.0.1` / `datastore-fs@12.0.1`。
+
+**新依赖为什么不伤浏览器入口 (实测, 不是推断)**: 两个包只在 `src/orbitdb/ipfs-node.ts` 里 import (Node 侧); `npm run build:web` 产物里 **50+ 个 `dist/web/*.js` 对这些 specifier 的引用数全为 0** (`client.js` / `mobile-core.js` / `a2ui-client.js` 均为 0); 唯一文本命中是 `mobile-helia.ts` 里那句「持久化需要额外包 (blockstore-fs / IndexedDB), 本轮不引入」的**注释**。**没做成 optional**: 主入口是真需要它们, 缺了就该**硬失败**; 做成 optional 会退化出「静默不落盘」的路径 —— 那正是本次要消灭的那类 bug。
+
+**验收 (真跨进程, 含负控制) — `scripts/verify-orbitdb-durable.ts` → 25 passed / 0 failed / 2 skipped (32.4s), 退出码 0**
+
+每个阶段都是**独立 node 进程** (`node --import tsx`, 用 `HOME`/`USERPROFILE` 隔离进程级状态):
+
+| 段 | 做什么 | 真输出 |
+| ① | 进程 A: 建群 + 发 2 条 → **干净退出** | `ok=true, total=3, texts=["群建好了","第一条: 区块落盘了吗","第二条: 新进程还读得到吗"]`; 退出后 `<dataDir>/ipfs` 下 **31 个文件 (blocks 8 / datastore 23)** |
+| ② | 进程 B: 用**群链接**重开 | `ok=true, already=true, count=3`, 与 ① 写的 2 条**逐字一致** |
+| ③ | 进程 C 追加 1 条 → 进程 D 读 | C `count=4`; D `count=4` 且 3 条显式消息**逐字一致** |
+| ③b | 又一新进程走 `task-group` 发送闸 | 真 `[bolloon-task] v=1 kind=deliver id=ann-verify-0001 hash=hex:aa… bytes=123` 发进群 |
+| ④ | **负控制**: 空 dataDir 开**同一地址** | 模块层 **抛** `OrbitDBStoreUnreachableError` / `code=STORE_UNREACHABLE` + 原始原因 `No block brokers capable of retrieving blocks…`; CLI `task trail` **退出码 1** / `ok=false` / `code=TRANSPORT_FAILED` / `read=false` / `localFallback=false` —— **没有**出现「群里本期没有过程痕迹」 |
+| ④ | 正对照 (证明不是 CLI 坏了) | 同一条 CLI 在同一 dataDir: 退出码 0, `ok=true`, `count=1` / `byKind.deliver=1`; 正/负 `code` 真的不同 (`OK` vs `TRANSPORT_FAILED`) |
+| ⑤ | **脏进程负控制**: 写入后 `kill -9` | marker 收到 `total=3` → 组内 SIGKILL (`signal=SIGKILL`) 且**真 worker pid 确认已死** → 新进程读到 3 条, 含 ①写的 2 条**逐字一致** |
+
+**真 CLI 走通 (用户原始失败命令, 默认 dataDir `~/.bolloon`)**: `task publish` → `task announce --group <链接> --announcement-id <id>` **退出码 0 且真发出去** (不再是 `TRANSPORT_FAILED`) → **另一个新进程** `task trail --group <链接> --json` 读回 `count=1 / byKind.deliver=1`。默认 dataDir 也从「只有 `stores/`」变成有 `~/.bolloon/orbitdb/ipfs/{blocks,datastore}`。
+
+**行为变更 (刻意的, 用户会看到)**: 既有老群 (`zdpuAnRwT4hCRCxxfXjEk8p4BvajuYogZmEix6Szt2akA9Z8c`) 现在**如实报不可达**: `ok=false / code=TRANSPORT_FAILED / read=false / localFallback=false / next_action=needs_human` (退出码 1), 而**不再**谎称「群里本期没有过程痕迹」。它的区块在本次修复前从未落盘 → **永久丢失, 不可恢复** —— 如实报错是唯一正确行为。
+
+**真跑逼出的一个夹具坑 (值得记住)**: 杀 `--stage hang` 子进程时, `node_modules/.bin/tsx` 是**包装器**, 它再 spawn 一个 node 跑脚本 —— `kill -9` 打在包装器上, 真正持有 store 的 LevelDB 锁的子进程被**孤儿化 (PPID 1) 继续活着**, 于是下一个进程开同一个 store 就撞 `Database failed to open`, 而 `exit.signal === 'SIGKILL'` 断言**照样通过**。修法: 用 `node --import tsx <file>`(**单进程, 无包装器**) + `detached` 起进程组后 `process.kill(-pid, 'SIGKILL')` + **杀完断言 worker pid 真的死了** (kill(pid,0) 抛 ESRCH)。教训: 「我把它杀了」必须是**关于真 worker 的断言**, 不是关于我 spawn 的那个壳。
+
+**门禁数字**: `npx tsc --noEmit` **0 错** · `npx vitest run --bail=1` **204 文件 / 2706 测试全绿** (99.6s; 群/网关相关 `gateway-group` + `task-group-bridge` + `task-subcommands` 定向复跑 38/38) · `wiki_check` OK · `raw_manifest_check` OK · `wiki_lint --strict=v2` OK · `supersede_check` OK。
+
+**同日二次修正 (把类型门当真跑一遍时, 逼出三处「我先前说错了」)**
+
+1. **`replica` 根本不是 OrbitDB 的选项 (既有错述, 非本次引入)**: `@orbitdb/core` 4.0.0 的
+   `open(address, {...})` 参数表里**没有** `replica` (`src/orbitdb.js:118`), 传了直接被丢 ——
+   旧注释「replica=true 只读副本, 不写回」**从来没有对应行为**。真正的读/写闸门是 manifest 里的 ACL:
+   `canAppend` 按 write 列表判定 (`access-controllers/ipfs.js:78-87`), 只读调用方本来就不 `put`。
+   处置: `openStoreByAddress` 与 `gateway-group` **不再往下传 `replica`** (入参保留以兼容既有调用点),
+   注释按事实重写。
+2. **打开既有地址时, `accessController` 入参会被 manifest 覆盖**: `open()` 在「地址合法」分支里
+   `AccessController = getAccessController(manifest.accessController...)` (`src/orbitdb.js:129-131`)
+   —— 群的写权限是**建群时就烧进 manifest** 的, 事后改不了。我原先在 `openStoreByAddress` 里传
+   `write:['*']` **对已有群是空操作**(只对新建 store 有效)。注释已按事实改写。
+3. **`write:['*']` 的机制确认 (这条方向是对的)**: `IPFSAccessController` 是**柯里化**的 ——
+   外层收 `{write, storage}`、内层才是工厂 (`access-controllers/ipfs.js:55-65`), `write` 被闭包捕获
+   (`write = write || [orbitdb.identity.id]`)。所以「大写 `AccessController` +
+   `IPFSAccessController({write})`」确实能让**新建** store 的 write 列表 = `['*']`;
+   小写 `accessController` 确实被静默丢弃 (v4 解构里没这个键)。**`'*'` ≠ 关掉验签**:
+   `canAppend` 在 `write.includes('*')` 分支里**仍然** `verifyIdentity(writerIdentity)`(:85-87)。
+4. **类型门是「真跑」才发现的**: `npx tsc --noEmit` 一开始报 **2 错** —— 该包是纯 JS 包
+   (`package.json` 无 `types`/`exports`、包内无 `.d.ts`), TS7 从 JS 推断时
+   ① 看不见二级再导出的 `IPFSAccessController` (TS2305) → 改为从命名空间按需取 + 显式收窄类型;
+   ② 推断出的 `createOrbitDB` 参数类型漏了 `id` (运行时是真选项, `src/orbitdb.js:33/43`)
+   → 用 `Parameters<typeof createOrbitDB>[0] & { id?: string }` 显式补, **不裸 any 掉整个入参**。
+   修完 0 错 (另带 `--incremental --tsBuildInfoFile /tmp/…` 复跑对照, 同为 0; 确认无
+   `tsbuildinfo` 缓存在替门「跳检」)。**教训**: 本 session 早先有一次把 `npx tsc --noEmit` 的退出码
+   读成了 0 (命令链里取错了那一个退出码), 差点把 2 个真错当成门已过 —— **退出码要单独跑、单独取**。
+5. **由此产生的残留 (本次不修, 如实记)**: 本修**之前**建的群, 其 manifest 里的 ACL 是
+   `write=[创建者 id]`(那时 `write:['*']` 没生效) → 那些老群**换身份**(别台机器 / 另一个 dataDir 的
+   身份)写不进去; 本修之后新建的群才是 `write:['*']`。叠加「区块从未落盘」→ 老群是**双重**不可用,
+   只能如实报不可达。
+
+**未做到 / 残留 (如实列)**
+
+- **两台机器之间**经 OrbitDB 复制看到彼此的群消息: **没验** —— 需要第二个真节点 + block broker (bitswap) 可达; 本任务只要求**同机跨进程**持久化, 那是另一条线。
+- **同一个 store 被多个进程同时写**的并发语义: **没验** (本脚本是顺序多进程); OrbitDB/mortice 的跨进程互斥不在本次范围。
+- **本次修复之前**创建的群: 区块从来没写过盘 → **永久丢失**, 只能如实报不可达。
+- 「写入瞬间即被 `kill -9`」(未 flush 的最后一笔) 的窗口: 没有专门构造用例; 本次实测的是「写完并收到 marker 之后」被 SIGKILL, 已写条目全在。
+- **手机端仍不落盘**: `src/web/mobile-helia.ts` 的「持久化需要额外包, 本轮不引入」保持原样, 本次只改 Node 侧。

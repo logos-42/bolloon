@@ -6,6 +6,14 @@
  *
  * 符合用户习惯: 群组 = 微信式群聊 — 加入链接即进群, 发消息全网同步.
  * 持久化: ~/.bolloon/gateway-groups.json (重启后仍是群成员, 自动重开 store).
+ *
+ * 2026-09-24 跨进程可重开:
+ *   · 群消息 (OrbitDB events store 的 oplog 条目 + manifest) 现在真落盘 ——
+ *     `createBolloonIpfs` 用 FsBlockstore/FsDatastore 写 ~/.bolloon/orbitdb/ipfs/{blocks,datastore},
+ *     所以"建群的那个进程退出后, 新进程用群链接重开还能读到既有消息"。
+ *     (修复前: 区块只在内存, 新进程一开就报 "No block brokers capable of retrieving blocks")
+ *   · 读不到必须报读不到: `groupMessages` 在 store 打不开时**抛 GroupStoreUnreachableError**,
+ *     不再返回 `[]`。把"读不到"显示成"群里没有消息"是骗人, 本条不可回退。
  */
 
 import * as os from 'os';
@@ -23,6 +31,7 @@ function getDb(): CIDDatabase { return _dbOverride ?? getCIDDatabase(); }
 export function resetGroupState(): void {
   storeCache.clear();
   onChangeCallbacks.clear();
+  openFailures.clear();
 }
 
 // ============ 类型 ============
@@ -49,6 +58,30 @@ export interface JoinGroupResult {
   group?: GroupInfo;
   already?: boolean;
   error?: string;
+  /** 失败码 (打不开 store 时 = 'STORE_UNREACHABLE'); 便于上游给结构化信封 */
+  code?: 'STORE_UNREACHABLE';
+}
+
+/**
+ * 群 store 打不开 (区块不在本机 / 地址不可解析)。
+ *
+ * 2026-09-24: 以前打不开 → `groupMessages` 返回 `[]`, 于是 CLI 把"整个群读不到"报成
+ * "群里本期没有过程痕迹 (群里真没有, 不是读失败)" —— 把"读不到"说成了"没有"。
+ * 现在读不到就抛: 上游 (task trail / API) 必须如实报 TRANSPORT_FAILED。
+ */
+export class GroupStoreUnreachableError extends Error {
+  readonly code = 'STORE_UNREACHABLE';
+  constructor(readonly groupId: string, readonly address: string, readonly cause?: unknown) {
+    const why = String((cause as Error)?.message ?? cause ?? '未知原因').slice(0, 160);
+    super(`群组 store 不可达 (${groupId}): ${why}`);
+    this.name = 'GroupStoreUnreachableError';
+  }
+}
+
+/** 打开失败的一句话原因 (给人类输出用; 没有失败记录时返回通用话术) */
+function unreachableReason(err: unknown): string {
+  const m = String((err as Error)?.message ?? err ?? '').trim();
+  return m ? m.slice(0, 160) : '区块不在本机且没有可用的 block broker (跨机同步仍是另一回事, 需 peers)';
 }
 
 // ============ 持久化 ============
@@ -103,6 +136,8 @@ export function detectGroupLink(text: string): string | null {
 const storeCache = new Map<string, OrbitDBStore>();
 /** 订阅回调注册 (server 层挂 SSE 广播) */
 const onChangeCallbacks = new Map<string, Set<(msg: GroupMessage) => void>>();
+/** store 打开失败的原始原因 (按 groupId) —— 用来把"打不开"和"没有消息"分开 */
+const openFailures = new Map<string, unknown>();
 
 function groupIdOf(address: string): string {
   // /orbitdb/zdpu... → zdpu... (地址后 12 位做短 id)
@@ -110,16 +145,33 @@ function groupIdOf(address: string): string {
   return m ? m[1] : address;
 }
 
-/** 打开群组 store (缓存) — 可写 (replica=false, write:'*') */
+/**
+ * 打开群组 store (缓存) — 可写 (replica=false, write:'*')。
+ * 打不开 → 记下原始原因 + 返回 null (不抛: 调用方各自决定用什么话术报)。
+ * 2026-09-24: 必须 try/catch —— openStoreByAddress 现在抛 OrbitDBStoreUnreachableError。
+ */
 async function openGroupStore(address: string): Promise<OrbitDBStore | null> {
   const id = groupIdOf(address);
   if (storeCache.has(id)) return storeCache.get(id)!;
   const db = getDb();
-  const store = await db.openStoreByAddress(address, 'events', {
-    replica: false,
-    accessController: { write: ['*'] },
-  });
-  if (!store) return null;
+  let store: OrbitDBStore | null = null;
+  try {
+    // 2026-09-24: 不再传 `replica` —— `@orbitdb/core` 4.0.0 的 open() 没有这个参数
+    // (src/orbitdb.js:118), 传了被丢; 之前那行是"不存在的语义"。
+    // 可写与否由 manifest 里的 ACL 决定, 且**打开既有地址时 ACL 从 manifest 取回、
+    // 入参 accessController 被覆盖** (src/orbitdb.js:129-131) —— 所以这里传什么都不改变权限。
+    store = await db.openStoreByAddress(address, 'events', {
+      accessController: { write: ['*'] },
+    });
+  } catch (e) {
+    openFailures.set(id, e);
+    return null;
+  }
+  if (!store) {
+    openFailures.set(id, new Error('openStoreByAddress 返回 null (没拿到 store, 也没给出原因)'));
+    return null;
+  }
+  openFailures.delete(id);
   storeCache.set(id, store);
   // 订阅: 新消息 → 通知回调 (server SSE)
   store.onChange(() => {
@@ -188,7 +240,11 @@ export async function joinGroup(link: string): Promise<JoinGroupResult> {
   }
   const store = await openGroupStore(parsed.address);
   if (!store) {
-    return { ok: false, error: '群组 store 不可达 (群主节点需在线), 稍后重试或让群主分享最新链接' };
+    return {
+      ok: false,
+      code: 'STORE_UNREACHABLE',
+      error: `群组 store 不可达: ${unreachableReason(openFailures.get(id))}`,
+    };
   }
   const name = parsed.name || id.slice(0, 12);
   const info: GroupInfo = {
@@ -206,7 +262,13 @@ export async function listGroups(): Promise<GroupInfo[]> {
   return loadGroups();
 }
 
-/** 获取群组 store 的最新消息 (ts 升序, 取最后 N 条) */
+/**
+ * 获取群组 store 的最新消息 (ts 升序, 取最后 N 条)。
+ *
+ * 两个"空"必须分开 (2026-09-24):
+ *   · 本机没这个群 (不在群列表里) → 返回 `[]` (上游 resolveGroupRef 已单独拦成 NOT_FOUND)
+ *   · 群在列表里但 store 打不开 → **抛 GroupStoreUnreachableError** (读不到 ≠ 没有消息)
+ */
 export async function groupMessages(groupId: string, limit = 50): Promise<GroupMessage[]> {
   let store: OrbitDBStore | null = storeCache.get(groupId) ?? null;
   if (!store) {
@@ -214,9 +276,9 @@ export async function groupMessages(groupId: string, limit = 50): Promise<GroupM
     const g = groups.find((x) => x.id === groupId);
     if (!g) return [];
     store = await openGroupStore(g.address);
-    if (!store) return [];
+    if (!store) throw new GroupStoreUnreachableError(groupId, g.address, openFailures.get(groupId));
   }
-  const all = await store.all().catch(() => [] as any[]);
+  const all = await store.all();
   const msgs: GroupMessage[] = [];
   for (const entry of all) {
     const v = entry.value as any;
@@ -244,7 +306,9 @@ export async function groupSend(groupId: string, text: string, from: string): Pr
     const g = groups.find((x) => x.id === groupId);
     if (!g) return { ok: false, error: '群组不存在 (先 joinGroup)' };
     store = await openGroupStore(g.address);
-    if (!store) return { ok: false, error: '群组 store 不可达' };
+    if (!store) {
+      return { ok: false, error: `群组 store 不可达: ${unreachableReason(openFailures.get(groupId))}` };
+    }
   }
   try {
     await store.add({ from: String(from || 'anonymous'), text: msg, ts: Date.now() });
