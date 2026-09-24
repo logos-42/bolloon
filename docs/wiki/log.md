@@ -3183,3 +3183,22 @@ run 的随机 taskId 不在其中, 就恒为 false ≠ true。**证据**: 在 `g
 - 终审结论触发链上 release(属另一条链上命令组; 群里的话不替代链上结算)。
 - 任务书/交付**正文**经群聊分发 —— **设计上刻意不做**: 群是公开可读的 store, 正文仍走私聊/直连通道(群只贴哈希与过程事实)。
 - 用户指定的原始 `--group` 定位参数在仓库里此前没有消费方(选项名由本次新增并登记进 `protocol-envelope.ts` 的 `OPTIONS_WITH_VALUE`)。
+
+## 2026-09-24 链索引停摆排查: `chain.json` 被本地口径覆盖 → `INDEX_IDENTITY_CHANGED` → 站点活动段陈旧
+
+**触发**: leo 报「网页端渲染的最新区块没有加载新任务/活动」。查证发现**不是网页 bug**: 站点活动段数据源 = 本机链索引, 它停在 `lastSyncedBlock=51640685`, 而链上已到 `51686160` (差约 4.6 万块)。
+
+**根因 (两层)**:
+
+1. **`~/.bolloon/chain.json` 被本地 anvil 口径覆盖** (`chainId=31337 · escrow=0xe7f1725e… · rpcUrl=http://127.0.0.1:8545`) → `chain index sync` 检出**索引身份变了** (`INDEX_IDENTITY_CHANGED`), **拒绝扫描、未写盘** (索引数据完好; 拒绝而非静默重建是正确行为)。
+2. **刷新链缺失「推进索引」这一步**: UI 仓 `refresh-pulse.sh` 原本只做「导出 → 守卫 → 部署」, 索引不前进就永远导出旧事件, 而页面徽章照旧显示「实时」—— 判据没覆盖「索引新鲜度」, 属于会撒谎的门。
+
+**处置**:
+
+- 恢复 `chain.json` 主网口径 (chainId 8453 · escrow `0x4e689F98…f7aE` · Base USDC `0x833589fC…` · decimals 6 · rpcUrl mainnet.base.org), 权威来源 `contracts/deployments/base.json`; 旧值备份 `~/.bolloon/chain.json.localhost-bak`。
+- `chain index sync`: 扫 `51640686 → 51713045` (37 页 / 72360 块 / 25.4s) → **新增 9 条, 索引 3 → 12 事件**; `stats`: 任务 4 · created 4 · proof 2 · released 2 · refunded 2 · disputed 2 · finalized 12。
+- UI 仓 `refresh-pulse.sh` 加固: 第 0 步先 `chain index sync`; 身份不匹配 → **中止 (exit 3)**, 不导出陈旧索引冒充最新。
+
+**⚠️ 危险建议 (写进这里防下次有人照做)**: `chain index sync` 在身份不匹配时会建议 `bolloon chain index rebuild`。**那条命令会丢弃现有索引记录、改用当前(可能是本地 anvil)身份重建** —— 在真链索引 + 本地测试口径并存时执行它 = 把真数据换成空。正确修法是**先把 `chain.json` 恢复成与索引同一条链**, 再 sync (身份一致即正常增量扫描)。
+
+**已知脆弱点 (未修)**: 多个测试文件 (`src/test/chain-config.test.ts` / `chain-cli.test.ts` / `chain-paid-info-f5.test.ts`) 与若干 verify 脚本会触碰 `chain.json`; 本地测试写 localhost 口径后若未还原, 就会再次出现本事件。建议后续给 `chain.json` 加「写入前备份 + 测试用临时 HOME」的约束。
