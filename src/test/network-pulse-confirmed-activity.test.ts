@@ -401,7 +401,10 @@ describe('confirmed_activity · 端到端 (getNetworkPulse)', () => {
     for (const k of ['status', 'generated_at', 'fresh_until', 'scope', 'scope_label', 'totals', 'capabilities', 'recent_activity']) {
       expect(Object.keys(snap)).toContain(k);
     }
-    expect(snap.totals).toEqual({ nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0, tasks: 0, tasks_completed: 0, tasks_verified: 0, signatures: 0 });
+    expect(snap.totals).toEqual({ nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0, tasks: 0, tasks_completed: 0, tasks_verified: 0, tasks_settled: 0, signatures: null });
+    // 每个数都带逐字段口径 (页面就地在数字旁标出; signatures 无源 → 未接入, 不是 0)
+    expect(Object.keys(snap.totals_scope.fields).sort()).toEqual([...NP.TOTALS_FIELD_KEYS].sort());
+    expect(snap.totals_scope.fields.signatures.short.zh).toBe('未接入');
   });
 });
 

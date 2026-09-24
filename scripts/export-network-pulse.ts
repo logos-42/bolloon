@@ -118,12 +118,20 @@ async function main() {
     `(只含未认领且未过期; 字段白名单 ${NP.OPEN_TASK_KEYS.join('/')}) ` +
     `${openTasks.map((r: any) => `${r.announcementId}:${r.capability}/${r.budget ?? '-'}${r.currency ?? ''}@${r.network ?? '-'}`).join(' · ') || '(none)'}`,
   );
-  // ★ 两套口径分开报: totals 是 24h 脉冲事件; activity_totals 与上表同源 (rows 必须 === 行数)
+  // ★ 顶部计数逐字段报 (2026-09-24): 任务类 = 链上索引同源值; 钱包签名 = 真源/未接入
+  const tsf = (finalSnap.totals_scope || {}).fields || {};
+  const fsrc = (k: string) => (tsf[k] && tsf[k].source) || '(none)';
   console.error(
-    `[export-pulse] totals(24h 脉冲事件口径)=tasks:${t.tasks}/tasks_completed:${t.tasks_completed}/tasks_verified:${t.tasks_verified}/signatures:${t.signatures} ` +
-    `activity_totals(${finalSnap.confirmed_activity_source} 同源)=rows:${at.rows}/tasks:${at.tasks}/tasks_completed:${at.tasks_completed}/` +
+    `[export-pulse] 顶部计数 (逐字段口径 ${JSON.stringify({ tasks: fsrc('tasks'), tasks_completed: fsrc('tasks_completed'), tasks_settled: fsrc('tasks_settled'), tasks_verified: fsrc('tasks_verified'), signatures: fsrc('signatures') })})=` +
+    `tasks:${t.tasks}/tasks_completed:${t.tasks_completed}/tasks_settled:${t.tasks_settled}/tasks_verified:${t.tasks_verified === null ? '未接入(null)' : t.tasks_verified}/signatures:${t.signatures === null ? '未接入(null)' : t.signatures}` +
+    `${t.tasks_verified === null ? ' · tasks_verified 无源 = 未接入 (不是 0)' : ''}` +
+    `${t.signatures === null ? ' · signatures 无源 = 未接入 (不是 0)' : ''}`,
+  );
+  console.error(
+    `[export-pulse] activity_totals(${finalSnap.confirmed_activity_source} 同源)=rows:${at.rows}/tasks:${at.tasks}/tasks_completed:${at.tasks_completed}/` +
     `tasks_settled:${at.tasks_settled}/finality:${JSON.stringify(at.by_finality)} ` +
-    `differs_from_activity=${!!(finalSnap.totals_scope || {}).differs_from_activity}`,
+    `differs_from_activity=${!!(finalSnap.totals_scope || {}).differs_from_activity}` +
+    ` · 顶部 tasks===at.tasks? ${t.tasks === at.tasks ? 'OK' : 'MISMATCH'}`,
   );
   console.error(
     `[export-pulse] confirmed_activity=${act.length} 行 · chain_ids=${JSON.stringify(cis.chain_ids)} ` +

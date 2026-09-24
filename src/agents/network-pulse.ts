@@ -98,6 +98,41 @@ export interface NetworkPulseEvent {
   integrity?: string;
 }
 
+/**
+ * ★ 顶部聚合计数 (2026-09-24 逐字段定源)。
+ *
+ * **为什么要逐字段定源**: 真快照里出现过「页面顶部写 0 个任务, 而同屏的链上活动表有 15 行任务」
+ * 这种并排矛盾 —— 根因是 `totals` 只数**本节点 24h 脉冲事件流**(那个流里可能一条经济事件都没有),
+ * 而表格来自**链上索引全量**。同一个概念两个数字并排出现而没人解释 = 读者只能读成"在撒谎"。
+ *
+ * 现在每个数的来源都写在 `totals_scope.fields[<字段>]` 里 (页面就地在数字旁标出):
+ *   · `nodes/agents/active_agents/seen_last_24h` = 本节点 24h 观察窗口内的脉冲事件;
+ *   · `tasks/tasks_completed/tasks_settled`      = **链上索引的同源计数** (`activity_totals`,
+ *     与下方活动表同源, 同源即恒等) —— 索引不可用才降级为脉冲口径并如实标出;
+ *   · `signatures`                               = 本机签名审计账 (`wallet-signatures.jsonl`) 窗口内条数。
+ *
+ * `null` 一律表示**没有可用源**(未接入): 页面必须写「未接入」, **绝不许拿 0 冒充「没发生过」**。
+ */
+export interface NetworkPulseTotals {
+  nodes: number;
+  agents: number;
+  active_agents: number;
+  seen_last_24h: number;
+  /** 有链上活动的不同任务数 (链上索引权威源); 索引不可用时降级为 24h 脉冲口径; 无源 → null */
+  tasks: number | null;
+  /** 交付完成 (链上 `ProofSubmittedV2` → `task_completed`) 的不同任务数 */
+  tasks_completed: number | null;
+  /**
+   * 「验真」口径: 链上索引里**没有**对应事件 (`CHAIN_EVENT_ACTIVITY` 里没有验真类事件) ——
+   * 链上索引口径下这里恒为 `null` (= 未接入), 不拿结算数冒充「已验证」。
+   */
+  tasks_verified: number | null;
+  /** 钱包签名 = 本机签名审计账窗口内条数 (真实条数, 只计数不给内容); 无源 → null */
+  signatures: number | null;
+  /** 托管结算口径 (released/refunded/expired/disputed) 的不同任务数 —— 链上索引权威值 */
+  tasks_settled: number | null;
+}
+
 export interface NetworkPulseSnapshot {
   status: 'live' | 'stale' | 'unavailable';
   generated_at: number;
@@ -106,23 +141,13 @@ export interface NetworkPulseSnapshot {
   scope: 'observed' | 'verified';
   scope_label: { zh: string; en: string };
   /**
-   * ★ 聚合计数 —— 口径 = **本节点 24h 观察窗口内的脉冲事件** (不是链上索引, 不是全网精确总量)。
-   * 老客户端一直读这块, 字段一个都没动; 与活动行同源的计数见 `activity_totals`,
-   * 口径差异写在 `totals_scope` + `notes` (两套数字同屏出现时**必须**有口径说明)。
+   * ★ 聚合计数 —— **口径逐字段写在 `totals_scope.fields` 里** (2026-09-24; 老字段名全部保留,
+   * 只是来源被钉死: 任务类计数改取链上索引的同源值, 与下方活动表**同一个概念同一个数**)。
+   * 与活动行同源的计数见 `activity_totals`; 每个数的来源/窗口见 `totals_scope.fields`。
+   * `null` = 没有可用源 (页面写「未接入」), 不是「没发生过」。
    */
-  totals: {
-    nodes: number;
-    agents: number;
-    active_agents: number;
-    seen_last_24h: number;
-    /** 观察到发起的任务数 (聚合计数, 无任务内容) */
-    tasks: number;
-    tasks_completed: number;
-    tasks_verified: number;
-    /** 钱包签名次数 (本机/网络里真实发生的签名, 只计数不给内容) */
-    signatures: number;
-  };
-  /** ★ totals.* 的口径说明 (24h 脉冲事件窗口) —— 与 activity_totals 口径不同, 不许"打架"不许不解释 */
+  totals: NetworkPulseTotals;
+  /** ★ totals.* 的逐字段口径 (含「未接入」语义) —— 页面就地在每个数旁标出, 不许只靠 notes 辩解 */
   totals_scope: TotalsScope;
   capabilities: { key: string; count: number }[];
   recent_activity: { kind: NetworkEventType; at: number; text: { zh: string; en: string } }[];
@@ -188,6 +213,44 @@ function writeEvents(list: NetworkPulseEvent[], h?: string): void {
 }
 
 // ── 匿名化 ──────────────────────────────────────────────────────────────────
+
+/**
+ * 本机**签名审计账** (`<home>/.bolloon/wallet-signatures.jsonl`, 由 `task-contract.recordSignatureAudit`
+ * 落盘) 的窗口内计数 —— 这是「钱包签名」这个数的**真实来源** (2026-09-24 接真源)。
+ *
+ * 为什么不用脉冲事件当唯一源: `recordSignatureAudit` 顺手发的 `wallet_signed` 脉冲事件是
+ * fire-and-forget (动态 import 失败 / 事件文件被重写都会丢) —— 实测真快照里 `wallet_signed`
+ * 事件 0 条而同一台机器的审计账里有 11 条真实签名 ⇒ 拿脉冲流当源会在页面上留下
+ * 「0 个钱包签名」这种**假零** (本机明明签过)。
+ *
+ * 只数条数, 不读内容 (不返回 kind / requestId / taskId / 金额 / 指纹), 快照里也不出现文件路径。
+ * 文件不存在 → `available: false` (调用方据此标「未接入」, **不许当成 0 条**)。
+ */
+export interface SignatureAuditTally {
+  available: boolean;
+  count: number;
+  window_ms: number;
+}
+
+export function tallySignatureAudit(h?: string, opts: { now?: number; windowMs?: number } = {}): SignatureAuditTally {
+  const now = opts.now ?? Date.now();
+  const windowMs = opts.windowMs ?? PULSE_LIMITS.windowMs;
+  const file = path.join(home(h), '.bolloon', 'wallet-signatures.jsonl');
+  if (!fs.existsSync(file)) return { available: false, count: 0, window_ms: windowMs };
+  let count = 0;
+  try {
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      let row: any = null;
+      try { row = JSON.parse(line); } catch { continue; }        // 坏行跳过, 不让一行坏数据毁掉整个计数
+      const at = Number(row?.at);
+      if (Number.isFinite(at) && at >= now - windowMs) count += 1;
+    }
+  } catch {
+    return { available: false, count: 0, window_ms: windowMs };
+  }
+  return { available: true, count, window_ms: windowMs };
+}
 
 /** 节点摘要: sha256(值) 前 16 位。不可逆, 不暴露原值。 */
 export function nodeDigest(value: string): string {
@@ -848,13 +911,39 @@ export function isPublicChainId(chainId: number): boolean {
   return chainLabelOf(chainId)?.publicNetwork === true;
 }
 
-/** totals.* 的口径说明 (唯一实现: 24h 观察窗口内的脉冲事件) */
+/** totals.* 的**逐字段**口径 (唯一实现: 每个数各自说清自己来自哪) */
+export type TotalsFieldSource = 'pulse-events' | 'chain-index' | 'signature-audit' | 'none';
+export type TotalsFieldWindow = 'window-24h' | 'full' | 'unknown';
+export type TotalsFieldKey =
+  | 'nodes' | 'agents' | 'active_agents' | 'seen_last_24h'
+  | 'tasks' | 'tasks_completed' | 'tasks_verified' | 'tasks_settled' | 'signatures';
+
+/**
+ * 某个顶部计数的口径 (2026-09-24)。
+ * 为什么需要: 原来一个 `totals_scope.label` 一句话统管 8 个数, 而实际上「节点数」与「任务数」
+ * 来自两套完全不同的源 —— 页面把两套口径的数字并排放在一行, 只靠一句总口径是**解释不了**的
+ * (真事: 顶部 0 个任务 vs 表格 15 行任务)。现在每个数自己带 `source`/`window`/`short`/`label`。
+ */
+export interface TotalsFieldScope {
+  source: TotalsFieldSource;
+  window: TotalsFieldWindow;
+  /** 页面上的**极短标记** (贴在该数字旁就地显示; 不写整句) */
+  short: { zh: string; en: string };
+  /** 完整口径 (门禁用 / notes / 诊断; 页面不必整句显示) */
+  label: { zh: string; en: string };
+  /** true = 这个数**没有可用源** (值必须是 null; 页面必须写「未接入」而不是 0) */
+  unavailable?: boolean;
+}
+
 export interface TotalsScope {
-  source: 'pulse-events';
+  /** 总口径: 纯脉冲事件 / 纯链上索引 / 混合 (节点类走脉冲、任务类走链上索引) */
+  source: 'pulse-events' | 'chain-index' | 'mixed';
   window_ms: number;
   label: { zh: string; en: string };
   /** totals 与 activity_totals 的数字是否不同 (不同就必须有口径说明 —— 不许"打架"而不解释) */
   differs_from_activity: boolean;
+  /** ★ 逐字段口径 (2026-09-24): 顶部每个数都能就地说明来自哪; 缺这块 = 只能靠 notes 辩解 */
+  fields: Record<TotalsFieldKey, TotalsFieldScope>;
 }
 
 /** 与 confirmed_activity **同源**的计数 (rows 恒等于该数组长度) */
@@ -988,6 +1077,8 @@ export function buildChainIdScope(rows: ConfirmedActivityRow[]): ChainIdScope {
  *      (页面不许出现「0 个任务」与「N 行任务」并存而**不解释**)
  *   ⑥ 0x 长 hex 越界 (2026-09-23): 只许出现在 tx_hash/contract/explorer_* 四个白名单键下 ——
  *      EOA 地址跑到别的键 (或白名单键形状不对) 就拒绝导出
+ *   ⑧ ★ **同一概念不许并排两个数** (2026-09-24, 见 `totalsScopeIssues`): 顶部计数与表格行数/
+ *      同源计数矛盾, 或者某个数没有来源却不标「未接入」→ 拒绝导出 (这道门在 UI 侧还有一份镜像)
  */
 export function snapshotConsistencyIssues(snap: NetworkPulseSnapshot): string[] {
   const issues: string[] = [];
@@ -1013,7 +1104,131 @@ export function snapshotConsistencyIssues(snap: NetworkPulseSnapshot): string[] 
   }
   issues.push(...auditPublicHexLeaks(snap));      // ⑥ 0x 长 hex 越界 → 拒绝导出 (不静默放行)
   issues.push(...openTasksIssues(snap));          // ⑦ 待接单任务的字段白名单与「只含未认领」不变式
+  issues.push(...totalsScopeIssues(snap));        // ⑧ ★ 同一概念不得并排两个数 (顶部 vs 表格)
   return issues;
+}
+
+/** 顶部逐字段口径的键 (与 `TotalsFieldKey` 逐字一致; 少一个 = 那个数没有来源说明) */
+export const TOTALS_FIELD_KEYS: readonly TotalsFieldKey[] = [
+  'nodes', 'agents', 'active_agents', 'seen_last_24h',
+  'tasks', 'tasks_completed', 'tasks_verified', 'tasks_settled', 'signatures',
+];
+const TOTALS_FIELD_SOURCES: readonly TotalsFieldSource[] = ['pulse-events', 'chain-index', 'signature-audit', 'none'];
+const TOTALS_FIELD_WINDOWS: readonly TotalsFieldWindow[] = ['window-24h', 'full', 'unknown'];
+/** 「未接入」类措辞 (无源时必须出现, 否则等于没说清为什么没有数) */
+const UNAVAILABLE_WORDS = /未接入|not connected|无可用源|no available source/;
+
+/**
+ * ★ 新不变量门 (2026-09-24 leo:「数量怎么对不上」): **同一概念不许并排两个数**。
+ *
+ * 检查的是「页面会把它们放在同一屏里」的那几个数 —— 它们的口径必须各自挂得住:
+ *   ① 逐字段口径 `totals_scope.fields` 九个键必须齐 (source/window/short/label 双语都在) ——
+ *      缺了就只能靠 notes 辩解, 而那正是当初「顶部 0 个任务 vs 表格 25 行」能上线的路径;
+ *   ② 值 `null` ⇔ 口径标 `none` + 明说「未接入」; **有源却不给数** 或 **无源却拿 0 冒充** 都算矛盾;
+ *   ③ 同一概念对账 (表里有 5 个任务而顶部写 0 任务 → 判红):
+ *        · 链上索引可用时, 顶部 tasks/tasks_completed/tasks_settled **必须逐字等于** activity_totals
+ *          的同名字段 (同源即恒等, 任何解释都救不了);
+ *        · 表格行数/同源计数非零而顶部为 0 或缺值 → 必须有口径说明 (note 里写清) 才放行;
+ *        · 顶部说有 N 个任务而表格一行都没有 (反向矛盾) → 同样判红。
+ *   `status === 'unavailable'` 的整份快照不发布任何计数 (页面整块显示「快照读不到」), 故只查形状。
+ */
+export function totalsScopeIssues(snap: NetworkPulseSnapshot): string[] {
+  const out: string[] = [];
+  const t: any = (snap as any)?.totals || {};
+  const ts: any = (snap as any)?.totals_scope;
+  const at: any = (snap as any)?.activity_totals || {};
+  const rows = Array.isArray(snap?.confirmed_activity) ? snap.confirmed_activity : [];
+  const unavailableSnap = String((snap as any)?.status || '') === 'unavailable';
+
+  if (!ts || typeof ts !== 'object') return ['totals_scope 缺失 (顶部计数的口径必须随快照一起给)'];
+  if (!ts.fields || typeof ts.fields !== 'object') {
+    return ['totals_scope.fields 缺失 (顶部每个数都要能就地说明来自哪 —— 不许只靠 notes 辩解)'];
+  }
+
+  // ① 形状: 九个键齐 + 每个键的 source/window/short/label 都合法
+  for (const k of TOTALS_FIELD_KEYS) {
+    const f: any = ts.fields[k];
+    if (!f || typeof f !== 'object') { out.push(`totals_scope.fields.${k} 缺失`); continue; }
+    if (!TOTALS_FIELD_SOURCES.includes(f.source)) out.push(`totals_scope.fields.${k}.source=${JSON.stringify(f.source)} 不在白名单`);
+    if (!TOTALS_FIELD_WINDOWS.includes(f.window)) out.push(`totals_scope.fields.${k}.window=${JSON.stringify(f.window)} 不在白名单`);
+    if (!f.label?.zh || !f.label?.en) out.push(`totals_scope.fields.${k}.label 必须双语都给`);
+    if (!f.short?.zh || !f.short?.en) out.push(`totals_scope.fields.${k}.short 必须双语都给 (页面要就地贴在数字旁)`);
+  }
+  if (out.length) return out;     // 形状都不对就不往下算数
+
+  if (!unavailableSnap) {
+    // ② 值 ⇔ 口径 (null = 未接入; 有源必须有数; 无源不许给 0)
+    for (const k of TOTALS_FIELD_KEYS) {
+      const f: any = ts.fields[k];
+      const v = t[k];
+      const isNull = v === null || v === undefined;
+      if (isNull) {
+        if (f.source !== 'none') {
+          out.push(`totals.${k} 没有值 (未接入) 却标了源 ${f.source} —— 有源就必须给真值, 没源就标 none`);
+        }
+        if (!UNAVAILABLE_WORDS.test(`${f.short?.zh}${f.short?.en}${f.label?.zh}${f.label?.en}`)) {
+          out.push(`totals.${k} 没有值却没有一句「未接入」说明 (读者会把空白读成 0)`);
+        }
+      } else {
+        if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+          out.push(`totals.${k}=${JSON.stringify(v)} 不是非负有限数`);
+        } else if (f.source === 'none') {
+          out.push(`totals.${k}=${v} 却标「无源」 —— 不许拿裸 0 冒充「没有接入」(那会被读成"没发生过")`);
+        }
+      }
+    }
+
+    // ③ 同一概念对账 (顶部计数 vs 表格行数/同源计数)
+    const notes = Array.isArray(snap.notes) ? snap.notes.join(' ') : '';
+    const pairs: Array<[TotalsFieldKey, any, any]> = [
+      ['tasks', t.tasks, at.tasks],
+      ['tasks_completed', t.tasks_completed, at.tasks_completed],
+      ['tasks_settled', t.tasks_settled, at.tasks_settled],
+    ];
+    const tableRows = Number(at.rows) || rows.length;
+    const sameSourceChain = String(at.source) === 'chain-index';
+    // ⑨ 声明与能力不符: 某字段自称「链上索引」口径, 而这一份快照的链上索引根本不可用 ——
+    //    那就是替一个不存在的源背书 (页面会写「链上索引·全量」, 而索引这一份没读出来)。
+    //    注: 本块必须放在 pairs / sameSourceChain 之后 (先声明后使用, 否则 TDZ 崩)。
+    if (!sameSourceChain) {
+      for (const [k] of pairs) {
+        const f: any = ts.fields[k];
+        if (f.source === 'chain-index') {
+          out.push(`totals_scope.fields.${k}.source='chain-index' 而这一份快照的链上索引不可用 ` +
+            `(activity_totals.source=${JSON.stringify(at.source)}) —— 声明与能力不符`);
+        }
+      }
+    }
+    for (const [k, top, src] of pairs) {
+      const n = Number(src) || 0;
+      const topN = (top === null || top === undefined) ? null : Number(top);
+      const topScope: any = ts.fields[k];
+      if (sameSourceChain && topScope.source === 'chain-index') {
+        // 同源: 必须逐字相等, 不需要任何"解释"
+        if (topN !== n) {
+          out.push(`同一概念两个数: 顶部 totals.${k}=${topN === null ? '未接入' : topN} ≠ 链上索引同源计数 activity_totals.${k}=${n}` +
+            ` (表格 ${tableRows} 行) —— 同源即恒等, 页面并排出现两个数就是矛盾`);
+        }
+        continue;
+      }
+      if (n > 0 && (topN === null || topN === 0)) {
+        const explained = notes.includes('口径') && notes.includes(String(tableRows)) && notes.includes('脉冲事件');
+        if (!explained) {
+          out.push(`顶部 totals.${k}=${topN === null ? '未接入' : 0} 与表格里的 ${n} 个同类 (${tableRows} 行) 矛盾, 且没有任何口径说明`);
+        }
+      }
+      if (topN !== null && n === 0 && tableRows === 0 && topN > 0) {
+        out.push(`顶部 totals.${k}=${topN} 而表格一行都没有 (${tableRows} 行) —— 反向矛盾: 数不出行却报了数`);
+      }
+    }
+  }
+
+  // ④ 明说"数字不一样"时必须有解释 (老规矩保留; 不许只靠一句 label)
+  if (ts.differs_from_activity === true) {
+    const notes = Array.isArray(snap.notes) ? snap.notes.join(' ') : '';
+    if (!notes.includes('口径')) out.push('totals_scope.differs_from_activity=true 但 notes 里没有任何口径说明');
+  }
+  return out;
 }
 
 /** open_tasks 行的字段白名单 (与 `OpenTaskRow` 逐字一致; 多一个键 = 可能把正文/身份带出去了) */
@@ -1049,6 +1264,61 @@ export function openTasksIssues(snap: NetworkPulseSnapshot): string[] {
   return out;
 }
 
+// ── 顶部计数的逐字段口径 (2026-09-24) ────────────────────────────────────────
+// 页面把 8~9 个数字并排放在**一行**里, 一行一个总口径是解释不了它们的 —— 每个数必须自带来源。
+
+const WINDOW_HOURS = Math.round(PULSE_LIMITS.windowMs / 3600000);
+
+/** 「本节点 N h 脉冲事件」口径 (节点/智能体类计数, 以及链上索引不可用时的降级口径) */
+function pulseField(what: { zh: string; en: string }): TotalsFieldScope {
+  return {
+    source: 'pulse-events',
+    window: 'window-24h',
+    short: { zh: `${WINDOW_HOURS}h 脉冲`, en: `${WINDOW_HOURS}h pulse` },
+    label: {
+      zh: `本节点 ${WINDOW_HOURS}h 观察窗口内收到的脉冲事件 · ${what.zh}`,
+      en: `pulse events received by this node within the ${WINDOW_HOURS}h window · ${what.en}`,
+    },
+  };
+}
+
+/** 「链上索引 · 全量」口径 (与下方活动表**同源**: 同源即恒等, 页面不许并排两个数) */
+function chainField(what: { zh: string; en: string }): TotalsFieldScope {
+  return {
+    source: 'chain-index',
+    window: 'full',
+    short: { zh: '链上索引·全量', en: 'chain index · whole' },
+    label: {
+      zh: `链上索引全量 (与下方活动表同源) · ${what.zh}`,
+      en: `chain index, whole (same source as the activity table below) · ${what.en}`,
+    },
+  };
+}
+
+/** 「本机签名审计账」口径 (真源: `<home>/.bolloon/wallet-signatures.jsonl` 窗口内条数) */
+function signatureAuditField(): TotalsFieldScope {
+  return {
+    source: 'signature-audit',
+    window: 'window-24h',
+    short: { zh: `${WINDOW_HOURS}h 签名审计`, en: `${WINDOW_HOURS}h signature audit` },
+    label: {
+      zh: `本机签名审计账 (wallet-signatures.jsonl) ${WINDOW_HOURS}h 内条数 —— 只数条数, 不含签名内容`,
+      en: `rows in this node's signature audit log (wallet-signatures.jsonl) within ${WINDOW_HOURS}h — count only, no content`,
+    },
+  };
+}
+
+/** 「没有可用源」= 未接入 (值必须是 null; 页面必须写「未接入」, 不许拿 0 冒充「没发生过」) */
+function noneField(why: { zh: string; en: string }): TotalsFieldScope {
+  return {
+    source: 'none',
+    window: 'unknown',
+    short: { zh: '未接入', en: 'not connected' },
+    label: { zh: `没有可用源 → 报「未接入」而不是 0 · ${why.zh}`, en: `no available source → reported as "not connected", not 0 · ${why.en}` },
+    unavailable: true,
+  };
+}
+
 export function computeSnapshot(
   events: NetworkPulseEvent[],
   opts: {
@@ -1059,6 +1329,11 @@ export function computeSnapshot(
     confirmedActivity?: ConfirmedActivityResult;
     /** 已解析好的公开「待接单任务」行 (getNetworkPulse 注入读盘结果); 不给 = 空数组 (不猜) */
     openTasks?: OpenTaskRow[];
+    /**
+     * 本机**签名审计账**的窗口内计数 (getNetworkPulse 注入; 真源 = `wallet-signatures.jsonl`)。
+     * 不给 = 没有源 → `totals.signatures` 记 `null` (未接入), **不拿 0 冒充「没发生过」**。
+     */
+    signatureAudit?: SignatureAuditTally | null;
   },
 ): NetworkPulseSnapshot {
   const now = opts.now;
@@ -1066,20 +1341,30 @@ export function computeSnapshot(
   if (opts.unavailable) {
     const emptyRows: ConfirmedActivityRow[] = [];
     const gates = normalizeActivityGates(DEFAULT_CONFIRMATIONS);
+    // 观察层不可用 = **没有数** (不是 0): 计数一律 null/0 占位由页面整块隐藏, 口径逐字段标「未接入」。
+    const downField = noneField({ zh: '观察层不可用', en: 'observation layer unavailable' });
     return {
       status: 'unavailable',
       generated_at: now,
       fresh_until,
       scope: 'observed',
       scope_label: { zh: '当前节点观察到', en: 'Observed by this node' },
-      totals: { nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0, tasks: 0, tasks_completed: 0, tasks_verified: 0, signatures: 0 },
+      totals: {
+        nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0,
+        tasks: null, tasks_completed: null, tasks_verified: null, signatures: null, tasks_settled: null,
+      },
       totals_scope: {
         source: 'pulse-events', window_ms: PULSE_LIMITS.windowMs,
         label: {
-          zh: `只统计本节点 ${PULSE_LIMITS.windowMs / 3600000}h 观察窗口内收到的脉冲事件 (本节点自己上报的)`,
-          en: `Only pulse events received by this node within the ${PULSE_LIMITS.windowMs / 3600000}h observation window (reported by this node itself)`,
+          zh: `本节点 ${WINDOW_HOURS}h 观察窗口的脉冲事件层不可用 → 没有数 (不是 0)`,
+          en: `This node's ${WINDOW_HOURS}h pulse layer is unavailable → no counts (not zero)`,
         },
         differs_from_activity: false,
+        fields: {
+          nodes: downField, agents: downField, active_agents: downField, seen_last_24h: downField,
+          tasks: downField, tasks_completed: downField, tasks_verified: downField,
+          tasks_settled: downField, signatures: downField,
+        },
       },
       capabilities: [],
       recent_activity: [],
@@ -1121,15 +1406,19 @@ export function computeSnapshot(
     capabilities.sort((a, b) => b.count - a.count || (a.key < b.key ? -1 : 1));
   }
 
-  // 经济计数: 按**不同任务**去重 (同一任务重复事件不虚增), 且只给聚合数不给内容
+  // 经济计数 (**脉冲口径**) —— 注意: 顶部「任务/已完成/已结算」的**权威源是链上索引**
+  // (见下面 chainAuthoritative 那一段), 脉冲口径只在索引不可用时才顶上去。
+  // 按**不同任务**去重 (同一任务重复事件不虚增), 且只给聚合数不给内容
   const tasks = new Set<string>();
   const tasksCompleted = new Set<string>();
   const tasksVerified = new Set<string>();
+  const tasksSettledPulse = new Set<string>();
   for (const e of window) {
     const t = (e as any).taskProof as string | undefined;
     if (!t) continue;
     if (e.type === 'task_posted' || e.type === 'task_accepted') tasks.add(t);
     if (e.type === 'task_completed' || e.type === 'trade_settled') tasksCompleted.add(t);
+    if (e.type === 'trade_settled') tasksSettledPulse.add(t);
     if (e.type === 'trade_verified') tasksVerified.add(t);
   }
 
@@ -1154,15 +1443,66 @@ export function computeSnapshot(
   // 同源计数 + 链归属: **输入就是上表那批行**, 所以不可能与行数/链 id 打架
   const activity_totals = summarizeActivityRows(activity.rows, { source: activity.source, gates: activity.gates });
   const chain_id_scope = buildChainIdScope(activity.rows);
+
+  // ★ 2026-09-24 (leo: 「数量怎么对不上, 尤其是后面的任务和钱包」):
+  //   顶部任务类计数的**权威源改成链上索引** —— 它与下面那张表**同源**, 同源即恒等,
+  //   从根上消灭「顶部 0 个任务 / 表格 15 行任务」这种并排矛盾 (不再靠 notes 辩解)。
+  //   链上索引不可用 (降级 pulse-events) 时才退回旧的脉冲口径, 并在 fields 里如实标出降级。
+  const chainAuthoritative = activity.source === 'chain-index';
+  const totalsTasks = chainAuthoritative ? activity_totals.tasks : tasks.size;
+  const totalsCompleted = chainAuthoritative ? activity_totals.tasks_completed : tasksCompleted.size;
+  const totalsSettled = chainAuthoritative ? activity_totals.tasks_settled : tasksSettledPulse.size;
+  // 「验真」在链上索引里**没有**对应事件 → 链上口径下这个数没有源 (null + 未接入), 不拿结算数冒充已验证
+  const totalsVerified: number | null = chainAuthoritative ? null : tasksVerified.size;
+
+  // 钱包签名: 真源 = 本机签名审计账 (窗口内条数, 只计数); 没有审计账 → 退回脉冲事件上报数;
+  // 两个都没有 → null (未接入)。**绝不**在没有源的时候报 0 (那是「没发生过」, 是另一句话)。
+  const sigTally = opts.signatureAudit ?? null;
+  const auditWired = !!sigTally && sigTally.available === true;
+  const totalsSignatures: number | null = auditWired
+    ? Number(sigTally!.count)
+    : (signatureKeys.size > 0 ? signatureKeys.size : null);
+
+  const fields: Record<TotalsFieldKey, TotalsFieldScope> = {
+    nodes: pulseField({ zh: '不同节点数', en: 'distinct nodes' }),
+    agents: pulseField({ zh: '不同 Agent 数', en: 'distinct agents' }),
+    active_agents: pulseField({ zh: '活跃 Agent 数', en: 'active agents' }),
+    seen_last_24h: pulseField({ zh: '24h 内出现过的不同 Agent', en: 'distinct agents seen within 24h' }),
+    tasks: chainAuthoritative
+      ? chainField({ zh: '有链上活动的不同任务', en: 'distinct tasks with on-chain activity' })
+      : pulseField({ zh: '观察到发起的任务', en: 'tasks observed as created' }),
+    tasks_completed: chainAuthoritative
+      ? chainField({ zh: '交付完成 (ProofSubmittedV2) 的不同任务', en: 'distinct tasks with ProofSubmittedV2' })
+      : pulseField({ zh: '交付完成的任务', en: 'tasks observed as completed' }),
+    tasks_settled: chainAuthoritative
+      ? chainField({ zh: '托管结算 (Released/Refunded/Expired/Disputed) 的不同任务', en: 'distinct tasks with an on-chain escrow settlement' })
+      : pulseField({ zh: '链上口径结算的任务', en: 'tasks with on-chain settlement' }),
+    tasks_verified: chainAuthoritative
+      ? noneField({ zh: '链上索引没有「验真」事件', en: 'the chain index has no verification event' })
+      : pulseField({ zh: '真验真 (trade_verified) 的任务', en: 'tasks truly verified (trade_verified)' }),
+    signatures: auditWired
+      ? signatureAuditField()
+      : (signatureKeys.size > 0
+        ? pulseField({ zh: '上报过的钱包签名 (按来源+时刻去重)', en: 'reported wallet signatures (deduped by source+time)' })
+        : noneField({ zh: '本节点既没有签名审计账, 也没有签名脉冲事件', en: 'this node has neither a signature audit log nor signature pulse events' })),
+  };
+
   const totals_scope: TotalsScope = {
-    source: 'pulse-events',
+    source: chainAuthoritative ? 'mixed' : 'pulse-events',
     window_ms: PULSE_LIMITS.windowMs,
     label: {
-      zh: `只统计本节点 ${PULSE_LIMITS.windowMs / 3600000}h 观察窗口内收到的脉冲事件 (本节点自己上报的)`,
-      en: `Only pulse events received by this node within the ${PULSE_LIMITS.windowMs / 3600000}h observation window (reported by this node itself)`,
+      zh: chainAuthoritative
+        ? `节点/智能体 = 本节点 ${WINDOW_HOURS}h 脉冲事件; 任务/已完成/已结算 = 链上索引全量 (与下表同源); 钱包签名 = 本机签名审计`
+        : `只统计本节点 ${WINDOW_HOURS}h 观察窗口内收到的脉冲事件 (本节点自己上报的)`,
+      en: chainAuthoritative
+        ? `nodes/agents = this node's ${WINDOW_HOURS}h pulse events; tasks/completed/settled = chain index, whole (same source as the table below); wallet signatures = this node's signature audit log`
+        : `Only pulse events received by this node within the ${WINDOW_HOURS}h observation window (reported by this node itself)`,
     },
     differs_from_activity: activity_totals.rows > 0 &&
-      (tasks.size !== activity_totals.tasks || tasksCompleted.size !== activity_totals.tasks_completed),
+      (totalsTasks !== activity_totals.tasks ||
+        totalsCompleted !== activity_totals.tasks_completed ||
+        totalsSettled !== activity_totals.tasks_settled),
+    fields,
   };
   if (activity.source === 'chain-index') {
     notes.push(
@@ -1179,10 +1519,21 @@ export function computeSnapshot(
   // 两套计数口径不同时**必须**解释 —— 页面不许出现「0 个任务」与「N 行任务」并存而不解释
   if (totals_scope.differs_from_activity) {
     notes.push(
-      `口径不同, 不是数据丢失: totals.tasks/tasks_completed/tasks_verified/signatures 只数本节点 ` +
-      `${PULSE_LIMITS.windowMs / 3600000}h 窗口内的脉冲事件 (本快照 tasks=${tasks.size} · tasks_completed=${tasksCompleted.size} · ` +
-      `tasks_verified=${tasksVerified.size} · signatures=${signatureKeys.size}); 上表 ${activity_totals.rows} 行来自链上索引 ` +
-      `(全量, 不是 ${PULSE_LIMITS.windowMs / 3600000}h 窗口) —— 同源计数见 activity_totals`,
+      `口径不同, 不是数据丢失: 链上索引不可用 → 顶部任务类计数**降级为脉冲口径** (本快照 tasks=${tasks.size} · ` +
+      `tasks_completed=${tasksCompleted.size} · tasks_verified=${tasksVerified.size} · tasks_settled=${tasksSettledPulse.size} · ` +
+      `signatures=${signatureKeys.size}); 上表 ${activity_totals.rows} 行来自脉冲事件 (同源计数见 activity_totals, ` +
+      `不是链上索引全量) —— 每个数的来源见 totals_scope.fields`,
+    );
+  }
+  if (chainAuthoritative) {
+    notes.push(
+      `顶部「任务/已完成/已结算」= 链上索引的**同源计数** (= activity_totals, 与下表同源, 同源即恒等): ` +
+      `tasks=${totalsTasks} · tasks_completed=${totalsCompleted} · tasks_settled=${totalsSettled}; ` +
+      `「节点/智能体」= 本节点 ${WINDOW_HOURS}h 脉冲事件; 「已验证」在链上索引里没有对应事件 → 不报 ` +
+      `(未接入, 不是 0); 「钱包签名」= ${auditWired
+        ? `本机签名审计账 ${totalsSignatures} 条 (${WINDOW_HOURS}h 窗口, 只计数)`
+        : (totalsSignatures === null ? '未接入 (本节点无可用源)' : `脉冲事件上报 ${totalsSignatures} 条`)} — ` +
+      `每个数的来源见 totals_scope.fields`,
     );
   }
   if (activity_totals.rows > 0) notes.push(chain_id_scope.note.zh);
@@ -1200,10 +1551,12 @@ export function computeSnapshot(
       agents: agents.size,
       active_agents: active.size,
       seen_last_24h: agents.size,     // 24h 窗口内的不同 Agent
-      tasks: tasks.size,              // 观察到发起的任务数 (聚合, 无内容)
-      tasks_completed: tasksCompleted.size,
-      tasks_verified: tasksVerified.size,
-      signatures: signatureKeys.size,  // 真实签名次数 (只计数)
+      // ★ 任务类计数 = 链上索引同源值 (与下表恒等); 索引不可用才退回脉冲口径 (见 fields.tasks)
+      tasks: totalsTasks,
+      tasks_completed: totalsCompleted,
+      tasks_verified: totalsVerified,        // 链上口径下 = null (未接入), 不冒充 0
+      signatures: totalsSignatures,          // 真源 = 本机签名审计账; 无源 = null (未接入)
+      tasks_settled: totalsSettled,          // 新增字段一律排最后 (老 8 个字段顺序逐字不变)
     },
     totals_scope,
     capabilities,
@@ -1230,6 +1583,7 @@ export async function getNetworkPulse(opts: SnapshotOptions = {}): Promise<Netwo
       const shapeOk = Array.isArray((cached as any)?.confirmed_activity)
         && typeof (cached as any)?.confirmed_activity_source === 'string'
         && !!(cached as any)?.totals_scope
+        && !!(cached as any)?.totals_scope?.fields          // 老缓存没有逐字段口径 → 过期形状, 重算
         && !!(cached as any)?.activity_totals
         && !!(cached as any)?.chain_id_scope
         && Array.isArray((cached as any)?.open_tasks);        // 老缓存没有待接单任务 → 过期形状, 重算
@@ -1244,8 +1598,11 @@ export async function getNetworkPulse(opts: SnapshotOptions = {}): Promise<Netwo
   }
   // 活动行优先取 P5 链上索引 (真链上事实); 索引不可用 → 退回脉冲事件, 并在快照里标出来源
   const confirmedActivity = await resolveConfirmedActivity({ home: opts.home, events, now });
+  // 钱包签名的**真源**: 本机签名审计账 (窗口内条数)。没有账 → 注入 available:false → 快照标「未接入」
+  // (不拿 0 冒充「没发生过」: 本机明明签过而脉冲事件丢了的那次真事故就是这么来的)
+  const signatureAudit = tallySignatureAudit(opts.home, { now, windowMs: PULSE_LIMITS.windowMs });
   // 待接单任务: 只读本机公告板目录 (未认领且未过期), 投影成白名单 7 字段 —— 与脉冲事件层无关
-  const snap = computeSnapshot(events, { now, confirmedActivity, openTasks: readOpenTasks(opts.home, now) });
+  const snap = computeSnapshot(events, { now, confirmedActivity, openTasks: readOpenTasks(opts.home, now), signatureAudit });
   try {
     fs.mkdirSync(pulseDir(opts.home), { recursive: true });
     fs.writeFileSync(snapshotFile(opts.home), JSON.stringify(snap), 'utf8');

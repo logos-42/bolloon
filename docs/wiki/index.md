@@ -30,7 +30,7 @@
 | [chain-model-freeze.md](./chain-model-freeze.md) | **链上模型冻结 (P1)**: 合约盘点(Foundry/Hardhat/Solana 三项目) + AgentEscrow 主合约缺口 11 字段 + Treasury onlyOwner 边界 + Directory 新增/Ledger 不新增 + 事件与 hash 切径冻结 + chainId/token/确认数 + §3 五条硬规则差距表 + 必须先改清单 | current |
 | [network-ledger-design.md](./network-ledger-design.md) | **Bolloon Network Ledger**(设计): 签名区块 DAG + 三层最终性 + 账本重放派生 Pulse/任务/交易 + Explorer 增量加载 | draft |
 | [pulse-ledger-design.md](./pulse-ledger-design.md) | 链式活动账本 + 链上锚定 (设计计划): 哈希链/Merkle 根/最终性/由链派生的公开投影/跟区块头轮转 | proposed |
-| [network-pulse.md](./network-pulse.md) | v1 (2026-09-22 加 `confirmed_activity`) | **网络脉冲**: 匿名可验证的公开观察投影 (事件白名单 · 去重 · 隐私阈值 · live/stale/unavailable · `GET /api/public/network/progress` · **冻结形状 `confirmed_activity` = 真实任务/链上活动行, 来源 chain-index/pulse-events/none**) |
+| [network-pulse.md](./network-pulse.md) | v1 (2026-09-22 加 `confirmed_activity`; **2026-09-24 顶部计数逐字段定源**) | **网络脉冲**: 匿名可验证的公开观察投影 (事件白名单 · 去重 · 隐私阈值 · live/stale/unavailable · `GET /api/public/network/progress` · **冻结形状 `confirmed_activity` = 真实任务/链上活动行, 来源 chain-index/pulse-events/none**) · **`totals_scope.fields` 逐字段口径 + 「无源 = null = 页面写未接入」+ 同一概念不变量门 (顶部计数 vs 表格)** |
 | [m1-m4-closure.md](./m1-m4-closure.md) | v1 | **M1–M4 收口验收口径**(冻结): 四个唯一事实来源 + 四条不可违反规则 + 5 个用户态口径 + 跨里程碑验收矩阵 + 失败→出口映射 |
 | [product-core-focus.md](./product-core-focus.md) | v1 | **产品核心收缩**: 一句话核心承诺 + 五步闭环 + 三问过滤器 + 冻结清单(不改代码) + M1-M4 路线图 + M1 真实差距 |
 | [facilitator-paths.md](./facilitator-paths.md) | v1 | facilitator 协议路径本地真跑 (verify/settle 四结果 + txHash 有无 + 报价自洽 + 凭据绑定; 真链部分明确未验) |

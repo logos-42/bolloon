@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-24 | fix | **修公开页「数量对不上」: 顶部计数逐字段定源 (任务类改取链上索引同源值) + 钱包签名接真源 + 新增「同一概念不许并排矛盾」不变量门 (带变异验证)**: leo 复看 bolloon.cn 网关页 —— 顶部写「0 任务 / 0 已完成 / 0 已验证 / 0 钱包签名」, 而同屏链上活动表里 **15 行 / 5 个任务**, 本机也确实签过名。根因 = `totals` 只数**本节点 24h 脉冲事件流**(那条流里一条经济事件都没有 → 四个数恒 0), 表却来自**链上索引全量**; 且一行里并排 9 个数, 一句总口径的 notes 解释不了。修法三条: ① **逐字段定源** `totals_scope.fields[<字段>] = {source, window, short, label, unavailable?}` (source ∈ `pulse-events`/`chain-index`/`signature-audit`/`none`), 页面**就地**把短标记贴在数字旁 (`data-pulse-scope-tag`), 老 8 字段名序逐字不变 (`tasks_settled` 排最后); ② 任务/已完成/已结算 = `activity_totals` **同源值**(同源即恒等, 从根上不可能再「顶部 0 / 表 15」), `tasks_verified` 链上索引没有「验真」类事件 → `null` + 页面写**「未接入」**(不拿 0 冒充「没验证过」), `signatures` 接**真源** `~/.bolloon/wallet-signatures.jsonl` 窗口内条数(**0 → 真 8**), 无源一律 `null` 不裸 0; ③ **新不变量门** `totalsScopeIssues`(并入 `snapshotConsistencyIssues`, 导出侧不过就 exit 3) + UI `verify-site.mjs` 的 `contradictionFindings`: 同源必须逐字相等 · 0 vs N 必须两处都有就地口径说明 · 反向(顶部报数却 0 行) · 无源不许裸 0 · 标了「未接入」必须真显示。**真跑**: `tsc --noEmit` 0 错 · 全量 vitest **205 文件 / 2731 测试全绿** (consistency 16/16, 含 12 条坏快照反向自检 + 规则⑨ 负控制) · 三门禁 OK · 真导出: 顶部 `tasks:5 / tasks_completed:3 / tasks_settled:5 / tasks_verified:null / signatures:8` (改前 `1/0/0/0/0`), `differs_from_activity=false`, `tasks===at.tasks` ✓ · UI 仓 `verify-site.mjs` 本机 **341 passed / 0 failed / 2 skipped** (基线 330, 断言只加不减) · `pulse-privacy-check.py` 通过 · `test-pulse-guard.sh` 29/0 · 真 DOM 拔值: 顶部 5/3/5/未接入/8 == 表格 15 行/5 任务/3 完成/5 结算。**变异验证(真判红)**: 把真快照改成 `tasks=0`(口径仍写链上索引) 服务给页面 → `同一概念两个数: 顶部「任务」=0 而表里 5 个 (15 行)`, **338 passed / 3 failed**; 恢复后 `sha256` 一致 → 341 passed / 0 failed。**未做/保留**: 未 push、未部署(真域名验收留主线) · 首页紧凑版不加逐字段标记(6 项占满一行, 第 7 项必换行) —— 首页靠同屏口径行同源承接 | [network-pulse.ts](../../src/agents/network-pulse.ts) / [export-network-pulse.ts](../../scripts/export-network-pulse.ts) / [network-pulse-consistency.test.ts](../../src/test/network-pulse-consistency.test.ts) / [network-pulse.md](./network-pulse.md) |
 | 2026-09-24 | feat | **补两条 CLI 真缺口 —— 外部接单者可自助入群 (`task group create\|join\|list\|link\|leave`) + 非交互建身份 (`identity init\|show`)**: 缺口 (A) `createGroup/joinGroup/listGroups` 一直只存在于 `src/agents/gateway-group.ts`, **CLI 里没有任何入口** → 外部接单者拿到群链接也进不来, 只能等对方转达; 补 5 个动作的薄包装 (不重实现存储) + 新增 `leaveGroup`; **两边都登记** (`tasks.ts` 的 case + `cli-entry.ts` 的 `TASK_SUBCOMMANDS`) —— 漏一个源级一致性门 `task-subcommands.test.ts` 就判红。脱敏口径: 输出过 `scanNodeIdentity` (原始 DID/钱包地址/peerId/节点 multiaddr/IP), `list` 连**群链接与 store 地址**都不出 (要链接走 `task group link <id>`), 群名也过闸; 顺手躲开一个真坑 —— 群 store 地址是 base58 CID, 里面**可能偶然出现 `Qm…`** 撞上 peerId 形状 (会**随机**把"建群成功"判成"输出泄密"), 所以对自己刚打印的那一个串做**精确串豁免**, 规则本身一个字没放宽。缺口 (B) `bolloon identity init` —— 以前建身份**只有** readline 交互向导 (`bolloon setup`), 无 TTY 环境 `readline was closed` (ERR_USE_AFTER_CLOSE) → 新机器/第二实例建不出身份; 复用 `KeyManager.generate/saveToFile` (**与 `src/index.ts:bootstrapIdentity` 同一条路**, 不新写密钥学), 字段逐字一致 (`createdAt/did/keyType='Ed25519'/privateKey/publicKey/version`), 文件 **0600**, **幂等** (重跑 sha 不变 + exit 0), 损坏文件**拒绝覆盖** (要 `--force` 且先备份 `.bak-<ts>`), 输出里连 `privateKey` 字样都不出现。**最关键验收 (真跑, 三项全钉住)**: ① **ACL 不拦** —— 新群 manifest `acl.write=["*"]` → 第二个身份 (DID 不同) `task post --kind deliver` **exit 0**; ② **同机读得回** —— B 与 A 共享同一份 OrbitDB store 目录时, A 用同一链接在**新进程** `task trail` **看得到** B 发的那条 (发送者 `agent-<8位>` 是 B 自己的假名) → 同机跨进程端到端成立; ③ **但同机共享 ≠ 两台独立节点** —— C 用自己的 log/keystore (只共享 blocks) 时写入**也被接受**, 可 A **读不到** C 那条 → 缺的是 log/块**复制** (bitswap/block broker), **不是权限** → **跨机仍不行** (真外机接单者发的消息传不回来)。门禁: `tsc --noEmit` **0 错** · 全量 vitest **205 文件 / 2727 测试全绿** · `wiki_check`/`wiki_lint --strict=v2`/`raw_manifest_check`/`supersede_check` 全 OK · 新增 `src/test/task-group-manage.test.ts` **21 条** (做了**变异验证**: list 偷加链接 / join 把 `STORE_UNREACHABLE` 当成功 / `identity init` 不再幂等 / create 用原始 DID 当发送者 —— **4 个变异全部判红**, 还原后全绿) · 新增 `scripts/verify-task-group-cli.ts` **39 passed / 0 failed / 0 skipped** (每一步都是**真 CLI 子进程**)。**残留 (如实)**: 跨机复制 (bitswap/block broker) 仍未接 · 真外机接单者未验 · `identity init` 只建 `identity.json` (模型供应商/API key 仍走 `bolloon setup`; 用户称呼仍写 `identity/user.json`) | [gateway-group.ts](../../src/agents/gateway-group.ts) / [tasks.ts](../../src/cli/commands/tasks.ts) / [identity-command.ts](../../src/cli/identity-command.ts) / [setup-wizard.ts](../../src/cli/setup-wizard.ts) / [cli-entry.ts](../../src/cli-entry.ts) / [task-group-manage.test.ts](../../src/test/task-group-manage.test.ts) / [verify-task-group-cli.ts](../../scripts/verify-task-group-cli.ts) |
 | 2026-09-24 | fix | **OrbitDB 真落盘 —— `createBolloonIpfs(dataDir)` 的区块/datastore 真写文件, 群 store 跨进程用地址重开 (关掉同日「残留未修: 群 store 跨进程打不开」)**: 根因 = helia 从没拿到自定义 blockstore/datastore (实测 `~/.bolloon/orbitdb/` 只有 `stores/` 没有 `ipfs/`) → 补 `FsBlockstore`(`<dataDir>/ipfs/blocks`) + `FsDatastore`(`<dataDir>/ipfs/datastore`) 并挂进 `createHeliaLight`; 顺带修两个只在「换进程」时才炸的真缺陷: OrbitDB 身份槽固定为 `bolloon`(默认 `createId()` 每进程随机 → `canAppend` 拿新身份比对老 manifest 一律拒) + `open()` 只认**大写** `AccessController`(小写被静默忽略 → `write:['*']` 失效, 成员开得了却发不进去); 并把「store 打不开」与「群里没消息」**分开** —— `openStoreByAddress` 不再返回 null 而是抛 `STORE_UNREACHABLE`, CLI 退出码 1 + `read=false`/`localFallback=false`(**不再把读不到说成「群里本期没有过程痕迹」**)。**验收 = 真跨进程 6 段** (`scripts/verify-orbitdb-durable.ts`, **25 passed / 0 failed / 2 skipped**, 32.4s): ①进程A 建群+发2条→干净退出 ②进程B 用群链接重开 → 2 条**逐字一致** ③进程C 追加1条→进程D 读到3条 ③b 走 `task-group` 发送闸发真 `[bolloon-task]` 痕迹 ④**负控制**: 空 dataDir 开同一地址 → 模块层抛 + CLI 非0/`TRANSPORT_FAILED` 且 `localFallback=false`(正对照: 同一条 CLI 在同一 dataDir 成功 count=1) ⑤**脏进程负控制**: `kill -9` 后新进程**真读到**已写 2 条。真 CLI 走通用户原始失败命令: `task publish` → `task announce --group <链接>`(退出0) → 另一进程 `task trail` 读回。门禁: tsc 0 错 · vitest **204 文件/2706 测试全绿** · wiki_check/raw_manifest_check/wiki_lint --strict=v2/supersede_check 全 OK。**残留 (如实)**: 跨机同步仍需 peers + block broker(bitswap, 另一条线) · 同 store 多进程**并发**写未验 · 本次修复**之前**建的群区块已永久丢失 | [ipfs-node.ts](../../src/orbitdb/ipfs-node.ts) / [cid-database.ts](../../src/orbitdb/cid-database.ts) / [gateway-group.ts](../../src/agents/gateway-group.ts) / [verify-orbitdb-durable.ts](../../scripts/verify-orbitdb-durable.ts) |
 | 2026-09-23 | feat | **公开快照加 `open_tasks[]`「待接单任务」脱敏投影 (公告板 → 公开页)**: 从 `~/.bolloon/tasks/board/*.json` 只取**未认领且未过期**的公告, 每行**只有白名单 7 键** `capability/budget/currency/network/deadline/claimed/announcementId`(取前 8 位) —— 任务正文 · 正文摘要/预览 · 买方 DID 与公钥 · 认领者 · 公告签名**一个都不导出**, 且行的键集合超出一个就被 `openTasksIssues` 判不一致(导出脚本据此拒绝导出, 不静默放行); 老缓存缺该字段视为过期形状重算; 空数组语义 =「此刻没有待接单任务」(与「观察层暂不可用」显式分开) — tsc 0 错 · vitest 203 文件/2703 测试全绿(新单测 16/16) · 三门禁 OK · 真导出 1 行(ann-80c5 / fusion-conversion-consistency / 1000 USDC / base-sepolia, 与 board 文件逐字段核对); UI 侧同批展示 + 隐私守卫精确化(对照 19→29 全通过) + 站点断言 291→320(本地与真域名各 320/0/0) | [network-pulse.ts](../../src/agents/network-pulse.ts) / [export-network-pulse.ts](../../scripts/export-network-pulse.ts) / [network-pulse-open-tasks.test.ts](../../src/test/network-pulse-open-tasks.test.ts) |
@@ -3327,3 +3328,80 @@ run 的随机 taskId 不在其中, 就恒为 false ≠ true。**证据**: 在 `g
 - **本次修复之前**创建的群: 区块从来没写过盘 → **永久丢失**, 只能如实报不可达。
 - 「写入瞬间即被 `kill -9`」(未 flush 的最后一笔) 的窗口: 没有专门构造用例; 本次实测的是「写完并收到 marker 之后」被 SIGKILL, 已写条目全在。
 - **手机端仍不落盘**: `src/web/mobile-helia.ts` 的「持久化需要额外包, 本轮不引入」保持原样, 本次只改 Node 侧。
+
+---
+
+## [2026-09-24] fix(pulse) | 公开页「数量对不上」——顶部计数逐字段定源 (任务类改取链上索引同源值) + 钱包签名接真源 + 新增「同一概念不许并排矛盾」不变量门 (带变异验证)
+
+**leo 原话**: 看着 bolloon.cn 页面「快照时间 · 2026-09-24 10:48:23 (31 分钟前) · 2 节点 · 3 智能体 · 0 任务 · 0 已完成 · 0 已验证 · 0 钱包签名」——「**数量怎么对不上，尤其是后面的任务和钱包**」。
+
+**根因 (快照里看得见, 不用猜)**: 线上 `network-pulse.json` 的 `totals` 是 `{nodes:2, agents:3, tasks:0, tasks_completed:0, tasks_verified:0, signatures:0}`,
+而同一份快照的 `activity_totals` 是 `{rows:15, tasks:5, tasks_completed:3, tasks_settled:5}` —— 顶部四个 0 来自
+`aggregate()` 只数**本节点 24h 脉冲事件流** (`kind` 映射: `EscrowCreatedV2→task_created`, `ProofSubmittedV2→task_completed`),
+而本机那条流里**只有 `capability_announced` 类事件** (快照 `recent_activity` 8 行全是它), 一条经济事件都没有 → 四个数恒 0;
+表格来自**链上索引全量**, 15 行一条都没喂进那个流。老代码 (`snapshotConsistencyIssues` 第三档) 虽然已经会为「两口径不一致」记账,
+但只能靠 `notes` 里一句总口径辩解 —— 而一行里并排 7~9 个数, 一句总口径解释不了每个数。
+
+**改法 (三条, 全部落在代码里, 不靠文案)**
+
+1. **逐字段定源**: 新增类型 `TotalsFieldSource = 'pulse-events' | 'chain-index' | 'signature-audit' | 'none'` +
+   `TotalsFieldWindow = 'window-24h' | 'full'` + `TotalsFieldScope{source, window, short{zh,en}, label{zh,en}, unavailable?}`;
+   快照新增 `totals_scope.fields[<字段>]`, 每个数字**各自**声明来源与窗口。UI 端 `app.js` 把 `short` 写进
+   `data-pulse-scope-tag` 贴在数字**就地** (完整口径进 `title`), 不再只靠 `notes`。
+   **老 8 字段名与顺序逐字不变** (`tasks_settled` 追加在最后), 老客户端读到的还是同样的键。
+2. **任务类计数改取权威源**: `totals.tasks / tasks_completed / tasks_settled` = `activity_totals` 的**同源值**
+   (同源即恒等 → 从根上不可能再出现「顶部 0 / 表 15」); 链上索引不可用时才降级脉冲口径, 并在 `notes` 写明降级与数字。
+   `totals.tasks_verified` 在链上口径下 = **`null`** (链上索引里没有「验真」类事件 → 页面写**「未接入」**,
+   **不拿 0 冒充「没有验证过」**)。`totals.signatures` 接**真源** `~/.bolloon/wallet-signatures.jsonl`
+   (由 `src/agents/task-contract.ts:recordSignatureAudit` 落盘) 窗口内条数 —— 本机 **0 → 真 8**;
+   无账退脉冲口径、两者都无 → `null`。**无源一律 `null`, 不裸 0**。
+3. **新不变量门「同一概念不许并排矛盾」**:
+   - 导出侧: 新增 `totalsScopeIssues(snap)` 并入 `snapshotConsistencyIssues` —— 同源计数与表格同概念数不相等判问题 ·
+     `source` 与有没有源不符判问题 · 0 vs N(顶部报 0 而表里有行)必须两处都有就地口径说明 · 字段缺键/多键判问题 ·
+     **规则⑨「声明与能力不符」**: 字段自称 `chain-index` 而这快照的链上索引根本不可用 → 判问题 (不许替不存在的源背书)。
+     门一旦判问题, `scripts/export-network-pulse.ts` **exit 3 拒绝导出**。
+   - 站点侧: `verify-site.mjs` 新增 `contradictionFindings` 段 —— 真快照上「顶部计数 == 表格同概念数」「每个数都有就地口径标记」
+     「无源项必须显示 `未接入`/`—` 而不是 0」; 并把**页面 DOM 真读到的值**与快照 `activity_totals` 逐项比对。
+   - **变异验证 (证明门不是「永远返回 []」)**: 单测里 12 份坏快照 (rows 对不上 / 三档之和不对 / source 不一致 / 缺口径说明 /
+     同源计数整块缺失 / 缺 `fields` / 字段缺键 / 有值却标无源 / 无值却标了源 / 同一概念两个数 / 反向矛盾 / 声明与能力不符)
+     **逐条断言判红**; 站点侧三份变异快照 (`tasks-zero` / `sig-bare-zero` / `sig-unavailable`) 走**真实渲染路径**断言判红。
+     **最强的证据是真快照变异**: 把真 `network-pulse.json` 改成 `tasks=0`(口径仍写「链上索引」) 服务给页面 →
+     门报 `同一概念两个数: 顶部「任务」=0 而表里 5 个 (15 行) —— 两处都标「链上索引 · 全量」却不相等`,
+     该轮 **338 passed / 3 failed**; 把快照恢复 (`sha256` 一致) 后 **341 passed / 0 failed**。
+
+**真跑数字 (改前 → 改后)**
+
+| 字段 | 改前 (线上真值) | 改后 (真源) | 来源 |
+| --- | --- | --- | --- |
+| 节点 / 智能体 | 2 / 3 | 3 / 3 | `pulse-events` · 观察窗口 24h (不变) |
+| 任务 | **0** | **5** | `chain-index` · 全量 (= `activity_totals.tasks`) |
+| 已完成 | **0** | **3** | `chain-index` · 全量 (= `activity_totals.tasks_completed`) |
+| 已结算 | (没有这一项) | **5** | `chain-index` · 全量 (= `activity_totals.tasks_settled`) |
+| 已验证 | **0** | **「未接入」(`null`)** | 链上索引无「验真」类事件 → 如实标无源 |
+| 钱包签名 | **0** | **8** | `signature-audit` · `~/.bolloon/wallet-signatures.jsonl` 窗口内条数 |
+
+`differs_from_activity=false` (两套口径同源) · 导出脚本自检 `tasks===at.tasks` ✓ · 口径行仍写「链上索引 · 全量 · 15 行 / 5 个不同任务」
+· 快照仍是**周期发布**(`freshness_semantics: periodic-publication`, 页面照旧显示快照时间与相对年龄, **不是实时**)。
+
+**真 DOM 拔值 (系统 Chrome headless 打开本地服务, 读渲染后的 DOM)**
+
+- 网关页顶部: `节点 3 / 智能体 3 / 任务 5 / 已完成 3 / 已结算 5 / 已验证 未接入 / 钱包签名 8`,
+  就地口径标记依次 `24h 脉冲` · `链上索引 · 全量` ×3 · `未接入` · `24h 签名审计`;
+- 同屏链上活动表: **15 行 / 5 个不同任务 / 3 完成 / 5 结算** → 顶部与表格**同概念同数**;
+- 首页紧凑版 (6 项, 不列「已验证」「钱包签名」—— 1440px 下 6 项正好一行, 第 7 项必换行): `任务 5 / 已完成 3` == 同屏口径行「链上索引 · 全量 · 15 行 / 5 个不同任务」。
+
+**门禁数字**: `npx tsc --noEmit` **0 错** · 全量 `npx vitest run --bail=1` **205 文件 / 2731 测试全绿**
+(一致性专测 **16/16**, 含 12 条坏快照反向自检与规则⑨ 负控制) · `wiki_check` OK · `wiki_lint --strict=v2` OK ·
+`raw_manifest_check` OK · UI 仓 `node scripts/verify-site.mjs` 本机 **341 passed / 0 failed / 2 skipped**(基线 330, **断言只加不减**) ·
+`python3 scripts/pulse-privacy-check.py` 通过 · `bash scripts/test-pulse-guard.sh` **29 通过 / 0 不符** ·
+6 个页面资源版本 `?v=26 → ?v=27`。
+
+**未做到 / 保留 (如实列)**
+
+- **没有 push、没有部署** (按纪律: 真域名验收由主线做) → 页面上的数字要等主线部署后才变。
+- **钱包签名这一项只能如实说它数的是「本机签名审计账的条数」**, 不是全网点签名数: 真源是**本机** `~/.bolloon/wallet-signatures.jsonl`
+  (由本节点的 `recordSignatureAudit` 落盘), 别的节点的签名本机看不到 → 该字段口径标 `signature-audit`, 页面不假装是全网数。
+  如果这个账文件不存在 (新机器), 该项显示**「未接入」**而不是 0。
+- **「已验证」在本机链上索引里没有对应事件** → 永久显示「未接入」直到有真实验真事件源; 这是**如实标注**, 不是修好了。
+- **首页紧凑版不加逐字段标记**: 6 项已占满一行 620px, 再加标记会挤成两行 → 首页靠同屏口径行承接, 一致性由同一道门钉住。
+- UI 仓那 2 条 `skipped` 是既有显式跳过 (任务正文样本串), 非本次引入。

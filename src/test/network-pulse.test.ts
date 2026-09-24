@@ -141,11 +141,16 @@ describe('状态: live / stale / unavailable / 空网络', () => {
     expect(down.notes.join(' ')).toContain('不是"网络为空"');
   });
 
-  it('空网络 → live 且全 0 (不报错)', async () => {
+  it('空网络 → live 且计数为 0 / 无源为 null (不报错)', async () => {
     const h = fs.mkdtempSync(path.join(os.tmpdir(), 'pulse-empty-'));
     const snap = await getNetworkPulse({ home: h, now, force: true });
     expect(snap.status).toBe('live');
-    expect(snap.totals).toEqual({ nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0, tasks: 0, tasks_completed: 0, tasks_verified: 0, signatures: 0 });
+    // tasks/tasks_completed/tasks_settled = 真 0 (没有链上索引 → 降级脉冲口径, 那里确实一条都没有);
+    // signatures 没有审计账也没有脉冲 → null (页面写「未接入」, 不写 0: 「没发生过」是另一句话)
+    expect(snap.totals).toEqual({ nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0, tasks: 0, tasks_completed: 0, tasks_verified: 0, tasks_settled: 0, signatures: null });
+    expect(snap.totals_scope.fields.signatures.source).toBe('none');
+    expect(snap.totals_scope.fields.signatures.short.zh).toBe('未接入');
+    expect(NP.snapshotConsistencyIssues(snap)).toEqual([]);
     expect(snap.capabilities).toEqual([]);
     expect(snap.recent_activity).toEqual([]);
     fs.rmSync(h, { recursive: true, force: true });
