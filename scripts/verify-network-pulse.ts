@@ -70,6 +70,9 @@ section('[2] 隐私阈值 + 可信文案 (observed / verified)');
   const snap = await NP.getNetworkPulse({ home: HOME, force: true });
   check('单/双来源未签名 → scope=observed (不说成全网)', snap.scope === 'observed' && snap.scope_label.zh.includes('当前节点观察到'), snap.scope_label);
   check('notes 明确"不是全网精确总量"', snap.notes.join(' ').includes('不是全网精确总量'), snap.notes);
+  // ★ 2026-09-24 (leo: 快照 notes 里那个词也去掉): 无源不再借「未接入」这个词, 改用等价说法。
+  check('notes 里不再出现「未接入」(无源改用「该口径无对应事件源, 不下发该字段」)',
+    !snap.notes.join(' ').includes('未接入'), snap.notes);
   check('公开投影不含任何私有字段', NP.assertNoPrivateFields(snap).length === 0, NP.assertNoPrivateFields(snap));
   const json = JSON.stringify(snap);
   // DID / peerId / multiaddr 字样一律不许出现; 0x 长 hex **只许**出现在白名单键 (tx_hash / contract /

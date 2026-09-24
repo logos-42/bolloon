@@ -1529,10 +1529,12 @@ export function computeSnapshot(
     notes.push(
       `顶部「任务/已完成/已结算」= 链上索引的**同源计数** (= activity_totals, 与下表同源, 同源即恒等): ` +
       `tasks=${totalsTasks} · tasks_completed=${totalsCompleted} · tasks_settled=${totalsSettled}; ` +
-      `「节点/智能体」= 本节点 ${WINDOW_HOURS}h 脉冲事件; 「已验证」在链上索引里没有对应事件 → 不报 ` +
-      `(未接入, 不是 0); 「钱包签名」= ${auditWired
+      `「节点/智能体」= 本节点 ${WINDOW_HOURS}h 脉冲事件; 「已验证」在链上索引里没有对应事件 → ` +
+      `该口径无对应事件源, 不下发该字段 (不是 0); 「钱包签名」= ${auditWired
         ? `本机签名审计账 ${totalsSignatures} 条 (${WINDOW_HOURS}h 窗口, 只计数)`
-        : (totalsSignatures === null ? '未接入 (本节点无可用源)' : `脉冲事件上报 ${totalsSignatures} 条`)} — ` +
+        : (totalsSignatures === null
+          ? '无可用源 (本节点既没有签名审计账, 也没有签名脉冲事件), 不下发该字段'
+          : `脉冲事件上报 ${totalsSignatures} 条`)} — ` +
       `每个数的来源见 totals_scope.fields`,
     );
   }

@@ -160,6 +160,13 @@ describe('公开快照 · 同源计数与口径说明 (两个数字不许打架)
     expect(notes).toContain('24h');                    // 口径名写清楚
     expect(notes).toContain(String(rows.length));      // 行数写清楚
     expect(notes).toContain('activity_totals');        // 指到同源计数
+    // ★ 2026-09-24 (leo: 快照 notes 里那个词也去掉): 无源不再借「未接入」这个词 ——
+    //   改用等价说法「该口径无对应事件源, 不下发该字段」/「无可用源 … 不下发该字段」。
+    //   字段本身一字未改 (值仍 null + source='none' + unavailable:true, 逐字段口径仍在)。
+    expect(notes).not.toContain('未接入');
+    expect(notes).not.toContain('not connected');
+    expect(notes).toContain('不下发该字段');            // 换了说法, 不是把说明删掉
+    expect(notes).toContain('该口径无对应事件源');        // 「已验证」缺的是什么源, 说清楚
 
     // ④ 自检通过 (导出脚本用的就是它)
     expect(NP.snapshotConsistencyIssues(snap)).toEqual([]);
@@ -430,6 +437,7 @@ describe('钱包签名接真源 + 「未接入」语义 (2026-09-24)', () => {
     expect(snap.totals_scope.fields.signatures.source).toBe('none');
     expect(snap.totals_scope.fields.signatures.unavailable).toBe(true);
     expect(`${snap.totals_scope.fields.signatures.short.zh}${snap.totals_scope.fields.signatures.label.zh}`).toContain('未接入');
+    expect(snap.notes.join(' ')).not.toContain('未接入');   // ★ notes 不再用那个词 (无源另有等价说法)
     expect(NP.snapshotConsistencyIssues(snap)).toEqual([]);
     // 变异: 把它改成裸 0 (没有源却报 0) → 新门必须判红
     const bad: any = { ...snap, totals: { ...snap.totals, signatures: 0 } };
@@ -478,6 +486,9 @@ describe('真跑导出脚本: 导出的 JSON 里两个数字仍不打架', () =>
     expect(snap.totals_scope.fields.tasks.source).toBe('chain-index');
     expect(snap.totals_scope.differs_from_activity).toBe(false);
     expect(snap.notes.join(' ')).toContain(String(rows.length));
+    // ★ 2026-09-24: 真导出脚本写出的 JSON 里, notes 也不再出现「未接入」(说明换成等价说法, 没删)
+    expect(snap.notes.join(' ')).not.toContain('未接入');
+    expect(snap.notes.join(' ')).toContain('不下发该字段');
     expect(snap.chain_id_scope.activity_chain_id).toBe(31337);
     expect(snap.chain_id_scope.public_network_rows).toBe(0);
     // 导出脚本自己也会跑一遍自检 (不过就 exit 3) —— 这里再独立跑一次
