@@ -27,12 +27,13 @@ import { collectVersionInfo } from './utils/version-info.js';
 import { runServiceGroup, GROUPS_HELP } from './cli/commands/index.js';
 // 2026-09-21 (P4): MCP 适配层 (`bolloon mcp serve` = stdio, 只调 P3 服务层)
 import { runMcpCommand } from './cli/commands/mcp.js';
-import { legacyJson, type Code, type NextAction } from './cli/protocol-envelope.js';
+import { legacyJson, parseFlags, runCommand, type Code, type NextAction } from './cli/protocol-envelope.js';
+import { identityCommand } from './cli/identity-command.js';
 import { createRequire } from 'module';
 const _require = createRequire(import.meta.url);
 
 /** P3 `bolloon task <子命令>` 的已知子命令 —— 其它一律当 M1 任务正文 (既有体验不动) */
-const TASK_SUBCOMMANDS = new Set(['send', 'list', 'status', 'cancel', 'retry', 'result', 'inbox', 'accept', 'reject', 'run', 'complete', 'publish', 'board', 'claim', 'announce', 'trail', 'post']);
+const TASK_SUBCOMMANDS = new Set(['send', 'list', 'status', 'cancel', 'retry', 'result', 'inbox', 'accept', 'reject', 'run', 'complete', 'publish', 'board', 'claim', 'announce', 'trail', 'post', 'group']);
 
 
 const isWindows = process.platform === 'win32';
@@ -71,6 +72,8 @@ ${BOLD}选项:${RESET}
 
 ${BOLD}命令:${RESET}
   bolloon setup                     初始化向导 (你的称呼 + 模型供应商 + API key + 连通性测试)
+  bolloon identity init             非交互建本机身份 (~/.bolloon/identity.json, 0600, 幂等; 新机器/第二实例用)
+  bolloon identity show             看本机身份 (只出 DID/指纹, 绝不打印私钥)
   bolloon update [plan|status|history|now]   检查更新 / 计划 / 状态 / 历史 / 执行 (默认只检查)
   bolloon doctor                    安装入口 + 版本事实 + 更新状态自洽性诊断
   bolloon runtime [plan|install]    运行时 (Node/npm/Git/Python) 检查与安装
@@ -221,6 +224,9 @@ function parseArgs(): { mode: string; args: string[] } {
     case 'setup':
     case 'init':
       return { mode: 'setup', args: args.slice(1) };
+    // 2026-09-24: 非交互建本机身份 (`bolloon identity init` → ~/.bolloon/identity.json)
+    case 'identity':
+      return { mode: 'identity', args: args.slice(1) };
     case 'read':
     case 'summarize':
     case 'improve':
@@ -926,6 +932,11 @@ async function main() {
     // 2026-09-13: bolloon setup — 首次运行初始化向导
     case 'setup':
       await handleSetupCommand(args);
+      break;
+
+    // 2026-09-24: bolloon identity — 非交互建/看本机身份 (新机器/第二实例用; 幂等, 不打印私钥)
+    case 'identity':
+      process.exit(await runCommand(parseFlags(args), identityCommand));
       break;
 
     case 'passthrough':

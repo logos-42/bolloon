@@ -74,6 +74,18 @@ ${title('bolloon task')}
       交付只贴哈希 · 初筛逐条结果 · 终审结论; 群消息一律无钱包地址/DID/peerId/multiaddr/IP/私钥形态
       (命中任一条 → 拒发并报出命中的规则)
 
+  ── 群管理 (2026-09-24: 外部接单者的自助入群入口) ──
+  bolloon task group create --name <群名> [--from <短显示名>] [--json]
+      建群 → 打印**邀请链接** (发给要入群的人) + groupId; 落 ~/.bolloon/gateway-groups.json
+      (ACL write:['*'] = 成员可广播, 建群时写进 store manifest)
+  bolloon task group join <群链接|groupId> [--json]
+      用**链接**自助入群 (幂等: 已在群里 → already=true, 仍 exit 0);
+      store 拿不到区块 → 大声失败 (TRANSPORT_FAILED + storeCode=STORE_UNREACHABLE), 绝不显示成空群
+  bolloon task group list [--json]         本机已加入的群 (groupId · 群名 · 加入时间); 没有群 → 空列表
+  bolloon task group link <groupId|群名>   显式取回邀请链接 (list 里不放链接)
+  bolloon task group leave <groupId|群名>  退群 (只摘本机记录)
+      群管理输出不含原始 DID/钱包地址/peerId/节点 multiaddr/IP (脱敏口径与群消息同源)
+
 选项: --json · --quiet · --request-id <id> · --timeout <ms> · --resume <goalId> (同 bolloon task)
 说明: 收件箱落盘 ~/.bolloon/tasks/inbox/; 本机发出的任务台账 ~/.bolloon/tasks/local/;
       结果 ~/.bolloon/tasks/results/, 交付正文 ~/.bolloon/tasks/bodies/ (私有层, 不进 stdout);
@@ -180,6 +192,8 @@ export async function taskCommand(flags: CliFlags): Promise<CommandResult> {
     case 'announce': return taskAnnounce(flags);
     case 'trail': return taskTrail(flags);
     case 'post': return taskPost(flags);
+    // 2026-09-24: 群管理 (create/join/list/link/leave) —— 外部接单者的自助入群入口
+    case 'group': return taskGroup(flags);
     default:
       return {
         envelope: failEnvelope('INVALID_ARGUMENT', sub ? `未知 task 子命令: ${sub}` : '缺少 task 子命令', { usage: plain(TASK_USAGE.trim()) }, [], 'needs_human'),
@@ -1951,6 +1965,372 @@ async function taskPost(flags: CliFlags): Promise<CommandResult> {
       line('本次执行/付款/验真', '都没有 (群消息只是过程留痕)'),
       '',
       `  ${data.note}`,
+    ].join('\n'),
+  };
+}
+
+// ── 群管理 (group create|join|list|link|leave, 2026-09-24) ────────────────────
+//
+// 为什么补这一段 (真缺口): `createGroup` / `joinGroup` / `listGroups` 一直只存在于
+// `src/agents/gateway-group.ts`, **CLI 里没有任何入口** —— 外部接单者拿到群链接后
+// 无法自助入群, 只能等对方把话转达。这里把它们接出来 (薄包装, 不重实现密钥学/存储),
+// 并补 `link` (取回邀请链接) 与 `leave` (退群)。
+//
+// 脱敏口径 (与群消息同一张表, 只去掉 orbitdb 那一档 —— 见 `TG.NODE_IDENTITY_RULES`):
+//   · 原始 DID · 钱包地址 · peerId · 节点 multiaddr (`/ip4` `/p2p` …) · IPv4/IPv6 · URL · 邮箱
+//     —— 一律不出现在群管理输出里;
+//   · 群 store 地址 (`/orbitdb/zdpu…`) 是**群自己的公开标识**, 邀请链接必须能打印
+//     → `list` 只出短事实 (groupId/群名/时间), 要链接就显式 `bolloon task group link <groupId>`。
+//   · `create` 的 `--name` 与 `list` 的**输出**都再过一遍 `scanNodeIdentity`: 命中 → 拒 (不静默脱敏)。
+
+const GROUP_ACTIONS = ['create', 'join', 'list', 'link', 'leave'] as const;
+
+const GROUP_USAGE = `
+${title('bolloon task group')}
+  bolloon task group create --name <群名> [--from <短显示名>] [--json]
+      建一个可被邀请的群 (OrbitDB events store, ACL write:['*'] = 成员可广播);
+      打印**邀请链接** (把它发给要入群的人) 与 groupId; 落 ~/.bolloon/gateway-groups.json (重启不忘)
+  bolloon task group join <群链接|groupId> [--json]
+      用链接自助入群 (幂等: 已在群里 → already=true, 仍然 exit 0);
+      拿不到区块时**大声失败** (TRANSPORT_FAILED + storeCode=STORE_UNREACHABLE), 绝不把"读不到"说成"群里没东西"
+  bolloon task group list [--json]
+      本机已加入的群 (groupId · 群名 · 加入时间); 没有群 → 空列表 (不是错误)
+  bolloon task group link <groupId|群名> [--json]
+      显式取回邀请链接 (list 里不放链接: 群 store 地址只在你要分享时打印)
+  bolloon task group leave <groupId|群名> [--json]
+      退群 (只摘本机记录; 群 store 是公共 append-only, 别人那边不会因为你退出而改)
+
+选项: --json · --quiet; --name/--from 见上
+说明: 群管理输出不含原始 DID / 钱包地址 / peerId / multiaddr / IP (脱敏口径与群消息同源);
+      跨机**互相看见消息**仍需区块/日志复制 (bitswap + block broker, 不在本命令范围);
+      本机跨进程重开同一群链接读回既有消息已支持。
+`;
+
+/**
+ * 群管理输出过一遍节点身份闸 (命中 → 拒输出并如实报, 不静默脱敏后再当成没事)。
+ *
+ * `allow` = 本命令**故意打印**的群自身标识 (store 地址 / 邀请链接): 扫之前按**精确串**摘掉。
+ * 为什么要摘 (2026-09-24 想清楚的一个真坑): 群 store 地址是 base58 的 CID (`zdpu…`), 而 base58
+ * 字母表里**同时有 `Q` 和 `m`** —— 几十位里偶然出现 `Qm`, 后面又跟够 30 个 base58 字符时,
+ * 就会撞上 `Qm…` 这个 peerId 形状 → 建群**随机**被判成"输出泄漏了 peerId"。
+ * 摘掉的是"我们自己刚给出的那一个串", **规则一个字没放宽**: 别处再出现任何
+ * DID / 钱包 / peerId / 节点 multiaddr / IP 形状, 照样命中。
+ */
+async function guardGroupOutput(payload: unknown, allow: string[] = []): Promise<
+  { ok: true; exempted: number } | { ok: false; hits: any[] }
+> {
+  const TG: any = await import('../../agents/task-group.js');
+  let text = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  const tokens = allow.filter((t) => typeof t === 'string' && t.length > 0);
+  for (const t of tokens) text = text.split(t).join('');
+  const hits = TG.scanNodeIdentity(text);
+  return hits.length ? { ok: false, hits } : { ok: true, exempted: tokens.length };
+}
+
+/** 群管理输出命中节点身份闸时的统一失败 (如实列出命中规则, 不回显被命中的原文) */
+function groupGuardFail(head: string, hits: any[], extra: Record<string, unknown> = {}): CommandResult {
+  return {
+    envelope: failEnvelope('POLICY_DENIED',
+      `本机群列表里含节点身份形态, 拒绝输出 (${hits.map((h: any) => h.rule).join(', ')}) —— 已遮住原文, 不把标识符打出来`,
+      { violations: hits, ...extra },
+      [], 'needs_human'),
+    human: [
+      title(head),
+      `  拒绝输出: 本机群记录里含 ${hits.map((h: any) => h.rule).join(', ')}`,
+      ...hits.map((h: any) => `    · ${h.rule} — ${h.why} (${h.masked}, ${h.chars} 字符)`),
+      '',
+      hint('群名/记录里被写进了标识符 → 改成不含标识符的名字 (本命令不静默脱敏: 脱敏后的群名不是你要看的那个)'),
+    ].join('\n'),
+  };
+}
+
+/** 群上下文解析: groupId 或群名 → 本机已加入的群 (都没有 → NOT_FOUND, 不猜) */
+async function resolveLocalGroup(raw: string): Promise<{ ok: true; group: any } | { ok: false; result: CommandResult }> {
+  const GG: any = await import('../../agents/gateway-group.js');
+  const groups: any[] = await GG.listGroups();
+  const s = String(raw || '').trim();
+  const hit = groups.find((g) => g.id === s) || groups.find((g) => g.name === s) || null;
+  if (hit) return { ok: true, group: hit };
+  return {
+    ok: false,
+    result: {
+      envelope: failEnvelope('NOT_FOUND',
+        `本机没有这个群: ${s ? `${s.slice(0, 24)}${s.length > 24 ? '…' : ''}` : '(空)'} (既不是已加入群的 groupId, 也不是群名)`,
+        {
+          joinedCount: groups.length,
+          howTo: '入群: bolloon task group join <群链接>; 看已加入的群: bolloon task group list',
+        }, [], 'needs_human'),
+      human: '',
+    },
+  };
+}
+
+async function taskGroup(flags: CliFlags): Promise<CommandResult> {
+  const action = String(flags.positionals[1] ?? '').trim();
+  // 用查表而不是 switch: `case 'create':` 这种字面量不属于 task 的**顶层**子命令,
+  // 免得将来有人把这段挪到 taskCommand 前面时被源级一致性门 (task-subcommands.test.ts) 误认。
+  const table: Record<string, (f: CliFlags) => Promise<CommandResult>> = {
+    create: taskGroupCreate,
+    join: taskGroupJoin,
+    list: taskGroupList,
+    link: taskGroupLink,
+    leave: taskGroupLeave,
+  };
+  const fn = table[action];
+  if (fn) return fn(flags);
+  return {
+    envelope: failEnvelope('INVALID_ARGUMENT',
+      action ? `未知 group 动作: ${action}` : '缺少 group 动作 (create | join | list | link | leave)',
+      { usage: plain(GROUP_USAGE.trim()), accepted: [...GROUP_ACTIONS] }, [], 'needs_human'),
+    human: GROUP_USAGE,
+  };
+}
+
+/** `task group create --name <群名>` —— 建群 + 打印邀请链接 */
+async function taskGroupCreate(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task group create';
+  const TG: any = await import('../../agents/task-group.js');
+  const GG: any = await import('../../agents/gateway-group.js');
+  const name = String(opt(flags, '--name') ?? '').trim();
+  if (!name) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', '缺少 --name (群名)', { accepted: ['--name 测试群'], usage: plain(GROUP_USAGE.trim()) }, [], 'needs_human'),
+      human: GROUP_USAGE,
+    };
+  }
+  // 群名会进群消息与 list 输出 → 先过节点身份闸 (标识符形状的名字一律拒, 不静默改名)
+  const nameHits = TG.scanNodeIdentity(name);
+  if (nameHits.length) {
+    return {
+      envelope: failEnvelope('POLICY_DENIED', `群名含节点身份形态, 拒绝建群 (${nameHits.map((h: any) => h.rule).join(', ')})`,
+        { violations: nameHits, accepted: ['--name 测试群'] }, [], 'needs_human'),
+      human: `${title(head)}\n  群名不能含 ${nameHits.map((h: any) => h.rule).join(', ')}\n\n${hint('群名是公开事实 (会进群消息与 list): 换个不含标识符的名字')}`,
+    };
+  }
+  const s = await TG.resolveSenderTag(opt(flags, '--from'));
+  if (!s.ok) {
+    return {
+      envelope: failEnvelope(s.code, s.message, { ...s.detail, group: { name }, created: false }, [], 'needs_human'),
+      human: `${title(head)}\n  群主标记定不下来: ${s.message}\n\n${hint('建群会写一条欢迎消息 (要一个诚实的发送者标记): 先 bolloon identity init 或 --from <短显示名>')}`,
+    };
+  }
+  const r = await GG.createGroup(name, { from: s.tag });
+  if (!r.ok || !r.group) {
+    return {
+      envelope: failEnvelope('TRANSPORT_FAILED', `建群失败: ${r.error ?? '未知原因'}`,
+        { group: { name }, created: false, storeReachable: false }, [], 'needs_human'),
+      human: `${title(head)}\n  建群失败: ${r.error ?? '未知原因'}\n\n${hint('建群要写 OrbitDB store: 落盘目录不可写 / store 打不开都会在这里如实失败')}`,
+    };
+  }
+  const data: Record<string, unknown> = {
+    group: { id: r.group.id, name: r.group.name, link: r.group.link, createdAt: r.group.createdAt },
+    sender: { tag: s.tag, source: s.source, didPrinted: false },
+    file: '~/.bolloon/gateway-groups.json',
+    acl: { write: ['*'], note: '成员可广播: 入群的人都能往群里发消息 (建群时写进 store manifest)' },
+    created: true,
+    executed: false,
+    paid: false,
+    localFallback: false,
+  };
+  const guard = await guardGroupOutput(data, [r.group.id, r.group.link]);
+  if (!guard.ok) return groupGuardFail(head, guard.hits, { group: { name }, created: true });
+  data.nodeIdentityGuard = { scanned: true, exemptedGroupTokens: guard.exempted };
+  return {
+    envelope: okEnvelope('OK', `已建群「${r.group.name}」(${r.group.id.slice(0, 12)}…)`, data, [r.group.id], null),
+    human: [
+      title(head),
+      line('群名', r.group.name),
+      line('groupId', r.group.id),
+      line('邀请链接', r.group.link),
+      line('群主标记', `${s.tag} (${s.source === 'identity' ? '本机身份派生假名' : '--from 显式'}; 原始 DID 未进群)`),
+      line('本机记录', '~/.bolloon/gateway-groups.json (重启后仍记得这个群)'),
+      '',
+      hint(`把链接发给要入群的人: bolloon task group join "<链接>"`),
+      hint(`回看过程痕迹: bolloon task trail --group <链接>  ·  取回链接: bolloon task group link ${r.group.id.slice(0, 12)}…`),
+      '',
+      '  跨机**互相看见消息**仍需区块/日志复制 (bitswap + block broker, 不在本命令范围);',
+      '  本机跨进程用同一链接重开读回既有消息已支持。',
+    ].join('\n'),
+  };
+}
+
+/** `task group join <群链接|groupId>` —— 自助入群 (幂等) */
+async function taskGroupJoin(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task group join';
+  const GG: any = await import('../../agents/gateway-group.js');
+  const raw = String(flags.positionals[2] ?? '').trim() || String(opt(flags, '--group') ?? '').trim();
+  if (!raw) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', '缺少群链接或 groupId',
+        { accepted: ['bolloon task group join orbitdb:///orbitdb/<store>?type=group&name=<群名>', 'bolloon task group join <groupId>'], usage: plain(GROUP_USAGE.trim()) }, [], 'needs_human'),
+      human: GROUP_USAGE,
+    };
+  }
+
+  // 链接 → 真入群 (打开 store); groupId/群名 → 必须已经在本地列表里 (不能凭 id 凭空入群)
+  if (!/^orbitdb:\/\//i.test(raw)) {
+    // 别的 scheme (`https://…` / `ipfs://…`): 这是**不是群链接**, 不是"本机没有这个群" —— 分开报
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+      return {
+        envelope: failEnvelope('INVALID_ARGUMENT',
+          `这不是群链接 (${raw.split(':')[0]}://…) —— 群链接形如 orbitdb:///orbitdb/<store>?type=group&name=<群名>`,
+          { scheme: raw.split(':')[0], accepted: ['bolloon task group join orbitdb:///orbitdb/<store>?type=group&name=<群名>'] }, [], 'needs_human'),
+        human: `${title(head)}\n  这不是群链接: ${raw.slice(0, 12)}…\n\n${hint('群邀请链接形如 orbitdb:///orbitdb/<store>?type=group&name=<群名> (bolloon task group create 会打印它)')}`,
+      };
+    }
+    const loc = await resolveLocalGroup(raw);
+    if (!loc.ok) {
+      return {
+        envelope: failEnvelope('NOT_FOUND',
+          `本机没有这个群: ${raw} —— 用 id/群名**不能**入群, 只有群链接才能入群`,
+          { accepted: 'bolloon task group join <群链接>', howTo: '拿到群链接后再试; 看已加入的群: bolloon task group list' }, [], 'needs_human'),
+        human: `${title(head)}\n  本机没有这个群: ${raw}\n\n${hint('id/群名只能引用**已加入**的群; 要入群请用邀请链接')}`,
+      };
+    }
+    const data = { group: { id: loc.group.id, name: loc.group.name }, already: true, joined: true, storeOpened: false };
+    return {
+      envelope: okEnvelope('OK', `已在群里「${loc.group.name}」(${loc.group.id.slice(0, 12)}…)`, data, [loc.group.id], null),
+      human: [title(head), line('群名', loc.group.name), line('groupId', loc.group.id), line('状态', 'already=true (早就加入过, 没有重复入群)')].join('\n'),
+    };
+  }
+
+  const r = await GG.joinGroup(raw);
+  if (!r.ok || !r.group) {
+    const unreachable = r.code === 'STORE_UNREACHABLE';
+    return {
+      envelope: failEnvelope(unreachable ? 'TRANSPORT_FAILED' : 'INVALID_ARGUMENT',
+        unreachable ? `群 store 不可达: ${r.error ?? '未知原因'}` : `不是有效的群链接: ${r.error ?? '未知原因'}`,
+        {
+          storeCode: r.code ?? null,
+          joined: false,
+          storeOpened: false,
+          localFallback: false,
+          why: unreachable
+            ? '链接能解析但区块不在本机且没有 block broker → 如实失败 (绝不把"读不到"说成"群里没东西")'
+            : '链接不是 orbitdb://…?type=group&name=… 形状 → 拒绝 (不猜你想进哪个群)',
+        }, [], 'needs_human'),
+      human: [
+        title(head),
+        `  ${unreachable ? '群 store 不可达' : '链接非法'}: ${r.error ?? ''}`,
+        '',
+        hint(unreachable
+          ? '区块不在本机: 跨机同步 (bitswap/block broker) 还没接; 同机请确认对方的区块目录可读'
+          : '群链接形如 orbitdb:///orbitdb/<store>?type=group&name=<群名>'),
+      ].join('\n'),
+    };
+  }
+  const data: Record<string, unknown> = {
+    group: { id: r.group.id, name: r.group.name },
+    already: !!r.already,
+    joined: true,
+    storeOpened: true,
+    linkKeptLocally: true,
+    note: '入群只改本机群列表 + 打开群 store: 不执行任务、不付款',
+  };
+  const guard = await guardGroupOutput(data, [r.group.id]);
+  if (!guard.ok) return groupGuardFail(head, guard.hits, { joined: true });
+  data.nodeIdentityGuard = { scanned: true, exemptedGroupTokens: guard.exempted };
+  return {
+    envelope: okEnvelope('OK',
+      r.already ? `已在群里「${r.group.name}」(${r.group.id.slice(0, 12)}…)` : `已入群「${r.group.name}」(${r.group.id.slice(0, 12)}…)`,
+      data, [r.group.id], null),
+    human: [
+      title(head),
+      line('群名', r.group.name),
+      line('groupId', r.group.id),
+      line('状态', r.already ? 'already=true (幂等: 早就加入过)' : '新加入'),
+      '',
+      hint(`现在可以: bolloon task trail --group ${r.group.id.slice(0, 12)}…  /  bolloon task claim <announcementId> --group <链接>`),
+    ].join('\n'),
+  };
+}
+
+/** `task group list [--json]` —— 本机已加入的群 (脱敏: 不出链接/地址/DID/peerId/IP) */
+async function taskGroupList(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task group list';
+  const GG: any = await import('../../agents/gateway-group.js');
+  const groups: any[] = await GG.listGroups();
+  const rows = groups.map((g) => ({ id: g.id, name: g.name, createdAt: g.createdAt ?? null }));
+  const data: Record<string, unknown> = {
+    count: rows.length,
+    groups: rows,
+    note: '只出群标识/群名/加入时间: 邀请链接与 store 地址不进 list (要链接用 bolloon task group link <groupId>); '
+      + '本输出不含原始 DID/钱包地址/peerId/节点 multiaddr/IP',
+  };
+  const guard = await guardGroupOutput(data, rows.map((r) => r.id));
+  if (!guard.ok) return groupGuardFail(head, guard.hits, { count: rows.length });
+  data.nodeIdentityGuard = { scanned: true, exemptedGroupTokens: guard.exempted };
+  return {
+    envelope: okEnvelope('OK',
+      rows.length ? `本机已加入 ${rows.length} 个群` : '本机还没有加入任何群 (空列表, 不是错误)',
+      data, rows.map((r) => r.id), null),
+    human: [
+      title(head),
+      ...(rows.length
+        ? rows.map((r) => `  ${String(r.id).slice(0, 12)}…  ${String(r.name ?? '(无名)').padEnd(20)}  ${r.createdAt ?? '(无时间)'}`)
+        : ['  (本机还没有加入任何群)']),
+      '',
+      hint('建群: bolloon task group create --name <群名>  ·  入群: bolloon task group join <群链接>  ·  取链接: bolloon task group link <groupId>'),
+    ].join('\n'),
+  };
+}
+
+/** `task group link <groupId|群名>` —— 显式取回邀请链接 */
+async function taskGroupLink(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task group link';
+  const raw = String(flags.positionals[2] ?? '').trim() || String(opt(flags, '--group') ?? '').trim();
+  if (!raw) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', '缺少 groupId (或群名)', { accepted: ['bolloon task group link <groupId>'], usage: plain(GROUP_USAGE.trim()) }, [], 'needs_human'),
+      human: GROUP_USAGE,
+    };
+  }
+  const loc = await resolveLocalGroup(raw);
+  if (!loc.ok) {
+    return {
+      envelope: failEnvelope('NOT_FOUND', `本机没有这个群: ${raw} (取不到链接)`,
+        { howTo: '看已加入的群: bolloon task group list' }, [], 'needs_human'),
+      human: `${title(head)}\n  本机没有这个群: ${raw}\n\n${hint('先 bolloon task group list 看有哪些群 (或 join 入群)')}`,
+    };
+  }
+  const data: Record<string, unknown> = { group: { id: loc.group.id, name: loc.group.name, link: loc.group.link } };
+  const guard = await guardGroupOutput(data, [loc.group.id, loc.group.link]);
+  if (!guard.ok) return groupGuardFail(head, guard.hits, { group: { name: loc.group.name } });
+  data.nodeIdentityGuard = { scanned: true, exemptedGroupTokens: guard.exempted };
+  return {
+    envelope: okEnvelope('OK', `群「${loc.group.name}」的邀请链接已取出`, data, [loc.group.id], null),
+    human: [title(head), line('群名', loc.group.name), line('groupId', loc.group.id), line('邀请链接', loc.group.link)].join('\n'),
+  };
+}
+
+/** `task group leave <groupId|群名>` —— 退群 (只摘本机记录) */
+async function taskGroupLeave(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task group leave';
+  const GG: any = await import('../../agents/gateway-group.js');
+  const raw = String(flags.positionals[2] ?? '').trim() || String(opt(flags, '--group') ?? '').trim();
+  if (!raw) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', '缺少 groupId (或群名)', { accepted: ['bolloon task group leave <groupId>'], usage: plain(GROUP_USAGE.trim()) }, [], 'needs_human'),
+      human: GROUP_USAGE,
+    };
+  }
+  const r = await GG.leaveGroup(raw);
+  if (!r.ok) {
+    return {
+      envelope: failEnvelope('NOT_FOUND', `退群失败: ${r.error ?? '未知原因'}`, { removed: false }, [], 'needs_human'),
+      human: `${title(head)}\n  ${r.error ?? '未知原因'}\n\n${hint('看已加入的群: bolloon task group list')}`,
+    };
+  }
+  return {
+    envelope: okEnvelope('OK', `已退出群 ${String(r.removed).slice(0, 12)}… (只摘本机记录)`,
+      { removed: true, groupId: r.removed, localOnly: true, note: '群 store 是公共 append-only: 别人那边不会因为你退出而改 (本命令没有踢人/解散权限, 也不假装有)' },
+      [String(r.removed)], null),
+    human: [
+      title(head),
+      line('已退出', `${String(r.removed).slice(0, 12)}…`),
+      line('范围', '只摘本机记录 (~/.bolloon/gateway-groups.json)'),
+      '',
+      `  群 store 是公共 append-only: 别人那边不会因为你退出而改 (本命令没有踢人/解散权限, 也不假装有)`,
     ].join('\n'),
   };
 }

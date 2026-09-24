@@ -130,6 +130,82 @@ export async function writeUserIdentity(
   return { identity, created, file };
 }
 
+// ---------------------------------------------------------------- 本机 DIAP 身份 (非交互)
+
+/** 本机 DIAP 身份文件 —— 与 index.ts `bootstrapIdentity()` / local-signer / network-pulse 同源 */
+export function getLocalIdentityFile(home: string = os.homedir()): string {
+  return path.join(home, '.bolloon', 'identity.json');
+}
+
+export interface LocalIdentityResult {
+  ok: boolean;
+  /** 'created' = 这次新建; 'reused' = 早就有了, 一个字没改 */
+  action: 'created' | 'reused' | 'refused';
+  file: string;
+  did?: string;
+  /** 文件权限 (八进制字符串, 例如 '600') */
+  mode?: string;
+  reason?: string;
+}
+
+/**
+ * **非交互**建本机 DIAP 身份 (2026-09-24)。给新机器 / 第二实例用 ——
+ * `bolloon setup` 是 readline 交互向导, 在没有 TTY 的环境里会 `readline was closed`
+ * (ERR_USE_AFTER_CLOSE), 于是自动化流程根本建不出身份。
+ *
+ * 三条硬纪律:
+ *   ① **复用现有生成逻辑**, 不新写一套密钥学 —— 走 `KeyManager.generate()` +
+ *      `KeyManager.saveToFile()` (与 `src/index.ts:bootstrapIdentity` 完全同一条路径),
+ *      落盘字段因此天然一致: `{ keyType:'Ed25519', privateKey, publicKey, did, createdAt, version }`,
+ *      文件模式 `0600`。
+ *   ② **幂等**: 已存在且能解析出 did → 不动、`action:'reused'` (调用方 exit 0)。
+ *      文件存在但**读不出 did** (损坏) → `action:'refused'` 并**拒绝覆盖** ——
+ *      静默盖掉一个可能还能救的身份是丢钥匙, 比失败糟得多; 要重来必须显式 `force`
+ *      (覆盖前先把老文件备份成 `identity.json.bak-<时间戳>`)。
+ *   ③ **绝不打印/返回私钥**: 返回体里只有 did / 文件路径 / 权限。
+ */
+export async function initLocalIdentity(home: string = os.homedir(), opts: { force?: boolean } = {}): Promise<LocalIdentityResult> {
+  const file = getLocalIdentityFile(home);
+  const readDid = async (): Promise<string | null> => {
+    try {
+      const j = JSON.parse(await fs.readFile(file, 'utf-8'));
+      return j && typeof j.did === 'string' && j.did ? j.did : null;
+    } catch { return null; }
+  };
+
+  const exists = await fs.stat(file).then(() => true).catch(() => false);
+  if (exists) {
+    const did = await readDid();
+    if (did && !opts.force) {
+      return { ok: true, action: 'reused', file, did, mode: await fileMode(file) };
+    }
+    if (!did && !opts.force) {
+      return {
+        ok: false, action: 'refused', file,
+        reason: `${file} 已存在但读不出 did (损坏?) → **不覆盖** (那可能是丢钥匙)。确认要重建再加 --force (会先备份成 .bak-<时间戳>)`,
+      };
+    }
+    // force: 先备份再重建 (备份失败 → 不重建)
+    try {
+      await fs.copyFile(file, `${file}.bak-${Date.now()}`);
+    } catch (e: any) {
+      return { ok: false, action: 'refused', file, reason: `--force 下备份老文件失败, 拒绝重建: ${String(e?.message || e).slice(0, 160)}` };
+    }
+  }
+
+  const { KeyManager } = await import('@diap/sdk');
+  const kp = KeyManager.generate();
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await (KeyManager as any).saveToFile(kp, file);   // 同 bootstrapIdentity: 0600 + 6 字段
+  try { await fs.chmod(file, 0o600); } catch { /* 某些平台/文件系统 no-op */ }
+  return { ok: true, action: 'created', file, did: String(kp.did || ''), mode: await fileMode(file) };
+}
+
+/** 文件权限 (八进制字符串; 读不到 → undefined) */
+async function fileMode(file: string): Promise<string | undefined> {
+  try { return ((await fs.stat(file)).mode & 0o777).toString(8); } catch { return undefined; }
+}
+
 // ---------------------------------------------------------------- 首次运行判断
 
 // providerUsable 只有一份实现 (setup-store)

@@ -263,6 +263,28 @@ export async function listGroups(): Promise<GroupInfo[]> {
 }
 
 /**
+ * 退群 (2026-09-24): 从本机群列表里摘掉 (撤销"我是成员"这条本地事实)。
+ *
+ * 只改**本机**记录: 群 store 本身是公共 append-only 的, 别人那边的成员表/消息
+ * 不会因为本机退出而改 (本模块没有"踢人/解散"的权限, 也不假装有)。
+ * 返回 `removed` = 被摘掉的 groupId (按 id 或群名匹配)。
+ *
+ * 注意: 底层 OrbitDB store 已在进程内打开的**不会**在这里关 (适配层没暴露 close);
+ * 对 `bolloon task group leave` 这种一次性进程无影响, 长驻进程里它活到进程结束。
+ */
+export async function leaveGroup(idOrName: string): Promise<{ ok: boolean; removed?: string; error?: string }> {
+  const raw = String(idOrName || '').trim();
+  if (!raw) return { ok: false, error: '缺少 groupId (或群名)' };
+  const groups = await loadGroups();
+  const hit = groups.find((g) => g.id === raw) || groups.find((g) => g.name === raw) || null;
+  if (!hit) return { ok: false, error: `本机没有这个群: ${raw} (既不是已加入群的 groupId, 也不是群名)` };
+  storeCache.delete(hit.id);
+  openFailures.delete(hit.id);
+  await saveGroups(groups.filter((g) => g.id !== hit.id));
+  return { ok: true, removed: hit.id };
+}
+
+/**
  * 获取群组 store 的最新消息 (ts 升序, 取最后 N 条)。
  *
  * 两个"空"必须分开 (2026-09-24):

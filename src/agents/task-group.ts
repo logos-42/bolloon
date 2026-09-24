@@ -135,6 +135,36 @@ export function requirePublicText(text: string): { ok: true } | { ok: false; vio
   return v.length === 0 ? { ok: true } : { ok: false, violations: v };
 }
 
+/**
+ * **节点身份**口径 (群管理命令 `task group create|join|list|link|leave` 的输出用, 2026-09-24):
+ * 与群消息同一张规则表, 但**去掉 orbitdb 那一档** ——
+ *   · `orbitdb-link` 整条去掉: 邀请链接是群唯一能让别人入群的东西, 必须能打印出来;
+ *   · `multiaddr` 规则里的 `orbitdb` 选项去掉 (只留节点地址 /ip4 /ip6 /dns /tcp /p2p …):
+ *     群 store 地址 (`/orbitdb/zdpu…`) 是**群自己的公开标识**, 不是节点地址。
+ * 仍然全拦: 原始 DID · 钱包地址 · peerId · 节点 multiaddr · IPv4/IPv6 · 私钥形态 · PEM · URL · 邮箱。
+ *
+ * 用法: 群管理**输出**再过一遍这道闸 (`scanNodeIdentity`)。命中 = 输出里真有节点身份/联系方式泄漏,
+ * 此时**拒输出并如实报**, 不静默脱敏掉再当成没事 (那样人看到的就不是事实了)。
+ */
+export const NODE_IDENTITY_RULES: PrivacyRule[] = PRIVACY_RULES
+  .filter((r) => r.rule !== 'orbitdb-link')
+  .map((r): PrivacyRule => (r.rule === 'multiaddr'
+    ? { ...r, re: /\/(ip4|ip6|dns|dns4|dns6|tcp|udp|ws|wss|quic|p2p|p2p-circuit|ipfs)(?![A-Za-z0-9])/i }
+    : r));
+
+/** 扫节点身份泄漏 (空数组 = 输出干净) */
+export function scanNodeIdentity(text: string): PrivacyViolation[] {
+  const t = String(text ?? '');
+  const out: PrivacyViolation[] = [];
+  for (const r of NODE_IDENTITY_RULES) {
+    const m = r.re.exec(t);
+    if (!m) continue;
+    out.push({ rule: r.rule, why: r.why, masked: mask(String(m[0])), chars: String(m[0]).length });
+  }
+  return out;
+}
+
+
 // ── 发送者标记 (稳定假名, 原始 DID 不入群) ──────────────────────────────────
 
 const sha256Hex = (s: string): string => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
@@ -180,7 +210,7 @@ export async function resolveSenderTag(explicit?: string | null): Promise<
   return {
     ok: false, code: 'INVALID_ARGUMENT',
     message: '没有本机身份 (~/.bolloon/identity.json) 也没有 --from → 给不出诚实的发送者标记 (拒, 不假造一个)',
-    detail: { identityFile: '~/.bolloon/identity.json', accepted: ['--from 委托方', 'bolloon setup'] },
+    detail: { identityFile: '~/.bolloon/identity.json', accepted: ['--from 委托方', 'bolloon identity init', 'bolloon setup'] },
   };
 }
 
