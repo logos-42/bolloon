@@ -3202,3 +3202,18 @@ run 的随机 taskId 不在其中, 就恒为 false ≠ true。**证据**: 在 `g
 **⚠️ 危险建议 (写进这里防下次有人照做)**: `chain index sync` 在身份不匹配时会建议 `bolloon chain index rebuild`。**那条命令会丢弃现有索引记录、改用当前(可能是本地 anvil)身份重建** —— 在真链索引 + 本地测试口径并存时执行它 = 把真数据换成空。正确修法是**先把 `chain.json` 恢复成与索引同一条链**, 再 sync (身份一致即正常增量扫描)。
 
 **已知脆弱点 (未修)**: 多个测试文件 (`src/test/chain-config.test.ts` / `chain-cli.test.ts` / `chain-paid-info-f5.test.ts`) 与若干 verify 脚本会触碰 `chain.json`; 本地测试写 localhost 口径后若未还原, 就会再次出现本事件。建议后续给 `chain.json` 加「写入前备份 + 测试用临时 HOME」的约束。
+
+## 2026-09-24 修 bug: `task announce|trail|post` 被当成 M1 任务正文跑 (入口白名单漏登记)
+
+**现象 (leo 要"把公告发进协作群"时实测)**: `bolloon task announce --group <链接> --announcement-id <id>` **没走群通道**, 而是被 `bolloon task "<任务正文>"` 的 M1 入口吞掉 —— 输出 `准备中 任务: announce orbitdb://… · 预算 0.05 USDC` → 顾问选技能 → 本机联调 402。**子命令字符串被当成任务描述去执行**(会买能力、会花钱), 而且表面看像正常执行。
+
+**根因**: C7 在 `src/cli/commands/tasks.ts` 里加了 `case 'announce'/'trail'/'post'` 与帮助文案, 但 `src/cli-entry.ts` 的 `TASK_SUBCOMMANDS`(决定"这是子命令还是 M1 自由文本")**漏登记这三项** → 三者落进 M1 路径。
+
+**修法**: `TASK_SUBCOMMANDS` 补 `'announce','trail','post'`。
+
+**焊门**: 新增 `src/test/task-subcommands.test.ts` —— **源级扫描**比对两侧 (tasks.ts 的 `case` 集合 ↔ cli-entry.ts 的白名单集合), 少一个(新子命令被 M1 吞)或多一个(白名单死条目)都判红; 并带"门自身不能空转"的断言(两侧解析为空即红)。
+**变异测试 (门真会红)**: 临时从白名单删掉 `'announce'` → `1 failed | 2 passed`, 断言原文点名 `没登记进 cli-entry.ts 的 TASK_SUBCOMMANDS: announce`; 恢复后 `3 passed`。
+
+**为什么 C7 的 121 条验收没抓到**: 它的验收脚本走**模块调用路径**, 没走**真实 CLI 入口** —— 教训: 验收必须打在用户真用的那条路上。
+
+**残留 (未修)**: 群 store 目前**跨进程打不开** (`TRANSPORT_FAILED: No block brokers capable of retrieving blocks are configured`)。根因: `src/orbitdb/ipfs-node.ts` 的 `createBolloonIpfs(dataDir)` 没有把区块持久化 (实测 `~/.bolloon/orbitdb/` 下**只有 `stores/`, 没有 `ipfs/`**) → OrbitDB store 只在创建它的进程内可用。已派后续修复。
