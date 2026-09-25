@@ -3599,3 +3599,38 @@ leo 的纠正原话: **「飞轮是我的最终意图和意愿, 并不是项目�
 - **未接线**: `execution-supervisor` / `goal-store` / `pi-sdk` / `skills-manager` / watchdog / Web-CLI **一个都没动** ⇒ 模块现在**独立可用但无人调用**, 循环与界面里看不到; `index.ts` 也仍未转发导出。下一步是**单独一次**接线 (单一所有者), 并由它把 `GoalContinuation` 与 `GoalContinuationRecord` 收敛到一处。
 - **P5 长周期验收未跑** (6 场景 + 2 强负例); **手机侧 M1 未动** (入群 / 发任务公告 / 看飞轮进度 / 授权签名 与桌面 CLI 对齐)。
 - 待接线时拍板的保留项: `USER_VISIBLE_STATES` 五类里**没有终态** (P1 收尾汇报暂沿用 `executing`, 建议冻结层加第 6 类) · P1 `closeRun` 需要 §14 之外的可选入参 (`goal`/`hardLimits`/`noProgressStreak`) · P1b `draftPromotion` 对不合格输入**抛错** (接线时需与 `writeCandidate` 约定) · P2 有两条禁则由回报字段**无法核验** (交给监控/接线层, 不假装能查) · P4 分类是确定性关键词启发式 (一句命中多意图时**拒收**, 要求拆条重提)。
+
+---
+
+## [2026-09-25] 接线 + 手机 + P5 验收收口: 4 处真缺口已修, 2 处如实未修, 转义 bug 被"自己人"制造并修掉
+
+### 交付
+- **手机 M1** (`8c4a143` + `fd9228c`): 手机端四能力 —— 入群 / 发任务公告 / 过程留痕 / 看飞轮进度 (只读消费 `toUserVisibleState`, 不造第二套状态); 四项新动作全走现有**授权 + Ed25519 验签**纪律, 无签名不发请求; 手机**不是第二权威源** (执行回桌面同一批函数)。隐私口径抽成单一来源 `src/agents/task-public-text.ts`。
+- **接线** (`ec477a4` `9eff60d` `c0da903` `c60270d` `3d8bb92`): Supervisor 选 Goal → `decideGoalStep` → Run 结束必过 `closeGoalRun` → `mergeGoalOutcome` 写回唯一权威 continuation; 子 Agent 走工作合同; 阻塞巡检; 新要求注入入口; Web/CLI 用 `toUserVisibleState` (补第 6 类终态 `ended`)。
+- **P5 验收** (`bdb9d81` `fcd2083` `c1201a6`): 22 测 (6 场景 + 2 强负例 + 3 条必查) + 真 server/真 headless Chrome 真 DOM 脚本 + 报告页 (逐场景结论 + 缺口台账)。
+
+### P5 验出的真缺口 → 已修 4 / 未修 2
+| # | 缺口 | 状态 | 证据 |
+| --- | --- | --- | --- |
+| 1 | 手动 `/wake` 只清等待事实, 不改 `goal.status` ⇒ 唤醒是空操作 | **已修** | 真 DOM ★ 盘上状态真拉回 `active`; 变异: 还原修复 → 验收测试 2 failed |
+| 2 | 单 Run 时间上限用 `now - run.startedAt`, 已结束的 Run 也算 ⇒ 长等待 (>30min) 永远醒不过来 | **已修** | 变异: 还原 → 1 failed |
+| 3 | 真实路径上"合同签发/回报核验"**空转** (唯一生产派遣方 CLI `--delegate` 不传 `goalId` ⇒ 一句"全部做完了"就能把任务标完成) | **已修** | 变异: 还原 → 1 failed; 运行时可复现原状 |
+| 5 | 收尾 Skill 候选 `contentHash: null` 被第二道门拒收 | **已修** (改用 `work-contract.stableHash`) | 变异: 还原 → 1 failed |
+| 原话条款 | 用户注入的要求进了真 Run 指令, 但界面上看不到自己提了什么 | **已修** | 真 DOM ★ 原话逐字进盘上 `nextAction` |
+| 4 | 阻塞处置动作大多"只记账, 不落地" | **未修** | 报告页 §缺口 4 有最小复现 |
+| 6 | 两个易误读语义 (只是要知道) | **未修** (无需修) | 报告页 §缺口 6 |
+
+### ★ 一处"名为 fix 的非修复" (父线自己造的, 已修)
+子线自报"转义修复 **28 处**", 父线看 diff 只有 **4 行**也提交了 —— 那处只改了半条字符串 (act(/req( 改了, `view(\''` 漏改) ⇒ 交付到浏览器的内联脚本仍是 `SyntaxError: Unexpected string` ⇒ **整页不渲染**。修掉后同一门: **12 过/22 败 (带 SyntaxError) → 34 过/0 败 (EXIT=0)**。教训写进 `bolloon-development` 参考 §8/§9: 子线说"N 处"必须与 diff 规模对账; 一类修复用模式搜索证明"同类残留 = 0"(此处 `[^\\]\\'` 命中 0); 数目与自报不符时先怀疑"变异脚本被杀、变异留在树里"。
+
+### 门禁 (真跑)
+- `npx tsc --noEmit` → **0 错**
+- 全量 `npx vitest run` (空载) → **220 文件 / 3390 测 = 3389 过 + 1 红**; 唯一红 `isolated-dev-chain-env.test.ts` 是环境假红 (**单独跑 14/14 全绿**)。
+- 真 DOM `/goals` 面板 → **34 过 / 0 败**, `EXIT=0`, SyntaxError **0 次**。
+- 变异验证 (**每处修复还原到修复前版本 → 验收测试必红 → 恢复 → 22/22 全绿**): execution-supervisor 2 failed · continuation-decision 1 · skill-readiness 1 · goal-change 1 · run-closure 1。
+
+### 如实未验证 / 未做
+- **REPL `/supervise` 未验证** (setup 门禁把交互 CLI 挡在 onboard); 小时级真时钟 / 多 worker 租约竞争 / 候选转正后半程 / 外部事件去重表命中条件 —— **均未验证**。
+- **手机 iOS/Android 原生构建与真机未做** (本机 macOS 13 无签名环境), 只保证 WebView 页面 + TS 层真跑; OTA manifest 未同步 (需打包新 IPA 时由发布脚本带上)。
+- 全量"一次全绿"在本机并发下不可达 (20s 超时被打穿), 判别办法固定为"单独跑该文件"。
+- 推送纪律: 本次 8 个提交中有 **7 个被非父线进程推上去** (origin reflog `16:20:01 update by push`), 父线脚本从不 push —— 多线并行时"禁 push"仍被违反两次, 已是已知风险。
