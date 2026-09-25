@@ -3566,3 +3566,36 @@ leo 的纠正原话: **「飞轮是我的最终意图和意愿, 并不是项目�
 - **没有新增意图层类型**, 也没有改 `src/agents/goal-flywheel/types.ts`; 6 条并行实现线的实际进度**没有**回写进本页 §13 (那是它们的边界, 我不动)。
 - 本轮**只改文档**: 没有实现代码, 没有接调用方, P5 长周期验收仍未跑。
 - 框架措辞是**读全页后逐处换的**, 不是全局替换 —— 状态机 / 类型清单 / 硬规则 / 验收场景 / 不做清单逐条保留原样, 只换外层口径。
+
+---
+
+## [2026-09-25] feat | 飞轮 P0–P4 落地为独立模块 (8 个提交): 6 条并行线各自 commit, **未接线**
+
+6 条并行实现线 (各自独占文件 · 冻结面只读 · 都不写本页 · 都只本地 commit) 全部交付:
+
+| 阶段 | 文件 | 行数 | 测试 |
+| --- | --- | --- | --- |
+| P0 节奏判定 | `src/agents/goal-flywheel/continuation-decision.ts` | 639 | 63 |
+| P1 收尾飞轮 | `run-closure.ts` | 950 | 38 |
+| P1b Memory 分层 | `memory-layers.ts` | — | 41 |
+| P1b Skill 候选 | `skill-candidate.ts` | — | 38 |
+| P2 工作合同 | `work-contract.ts` | 536 | 53 |
+| P3 阻塞监控 | `work-monitor.ts` | 514 | 55 |
+| P4 变更注入 | `goal-change.ts` | 715 | 51 |
+
+合计 **15 文件 / +8078 −4 行 / 339 条新测试**。
+
+### 硬门与复核 (我做的, 不采信子智能体自述)
+
+- `npx tsc --noEmit` → **0 错**
+- 空载全量 `npx vitest run` → **214 文件 / 3276 测试 = 3273 通过 + 3 红**; 3 条红全是 20s 默认超时被击穿 (`runtime-bootstrap`×2 实测 26s/35s · `update-system`×1 实测 62s), **这两文件单独跑 → 85/85 全绿**; 全量日志里 `goal-flywheel` 出现 **0 次**。
+- **结构性隔离 (不是"看起来无关")**: 引用新模块的文件**全部**在 `src/agents/goal-flywheel/*` 与 `src/test/goal-flywheel-*` 之内 —— 零生产调用方 ⇒ 结构上不可能影响别的测试。
+- **冻结面未动**: `types.ts` / `index.ts` 一行未改 (`git diff --name-only` 无命中)。
+- **唯一偏离 (已逐行审并接受)**: `3444ee7` 把冻结层的目录门从"目录只有两个文件" (P0 收工那一刻的时间快照, P1–P4 任何一条落地必误判红) 改成 §13 **名册白名单** —— 冻结面必须在 + **名册外的野文件仍判红** (阴性对照: 塞 `rogue-impl.ts` → 判红)。
+- 各阶段自带**变异验证** (改坏主不变量 → 判红 → 恢复): 步数冒充进展 → 1 红 · 完成门去掉证据要求 → 4 红 · 熔断 `>=`→`>` → 3 红 · `isWidening` 恒 false → 6 红 · 拿掉"confirmed 必须有来源" → 3 红。
+
+### 未做 / 如实
+
+- **未接线**: `execution-supervisor` / `goal-store` / `pi-sdk` / `skills-manager` / watchdog / Web-CLI **一个都没动** ⇒ 模块现在**独立可用但无人调用**, 循环与界面里看不到; `index.ts` 也仍未转发导出。下一步是**单独一次**接线 (单一所有者), 并由它把 `GoalContinuation` 与 `GoalContinuationRecord` 收敛到一处。
+- **P5 长周期验收未跑** (6 场景 + 2 强负例); **手机侧 M1 未动** (入群 / 发任务公告 / 看飞轮进度 / 授权签名 与桌面 CLI 对齐)。
+- 待接线时拍板的保留项: `USER_VISIBLE_STATES` 五类里**没有终态** (P1 收尾汇报暂沿用 `executing`, 建议冻结层加第 6 类) · P1 `closeRun` 需要 §14 之外的可选入参 (`goal`/`hardLimits`/`noProgressStreak`) · P1b `draftPromotion` 对不合格输入**抛错** (接线时需与 `writeCandidate` 约定) · P2 有两条禁则由回报字段**无法核验** (交给监控/接线层, 不假装能查) · P4 分类是确定性关键词启发式 (一句命中多意图时**拒收**, 要求拆条重提)。
