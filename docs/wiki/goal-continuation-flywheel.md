@@ -1,5 +1,5 @@
 ---
-title: Goal 长期执行飞轮 (接口冻结: 节奏由进展决定 → 强制收尾 → 阻塞监控 → 变更注入)
+title: Goal 长期执行飞轮 (意图 + 执行机制: 意图 → Goal → continuation → Run → Memory/Skill → 下一次执行)
 source: session (leo 2026-09-25 设计稿 + 现状盘点)
 created: 2026-09-25
 last_confirmed: 2026-09-25
@@ -9,15 +9,51 @@ stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [goal, continuation, flywheel, supervisor, memory, skill, work-contract, block-monitor, goal-change, interface-freeze, p0, p1, p2, p3, p4, p5]
+tags: [intent, goal, continuation, flywheel, supervisor, memory, skill, work-contract, block-monitor, goal-change, interface-freeze, p0, p1, p2, p3, p4, p5]
 ---
 
-# Goal 长期执行飞轮 (设计 + 接口冻结)
+# Goal 长期执行飞轮 (意图 + 执行机制)
 
-> 一句话: 把**已经有但没收敛**的能力收敛成一个**长期执行飞轮**, 而不是再造一个更大的 Agent 平台。
-> 本轮只做两件事: ① 把设计落进 wiki ② **冻结接口类型** (不接实现, 不改现有调用方)。
+> 一句话: 飞轮**不是给产品加的功能**, 而是把**人的长期意图**持续执行下去的**机制 (引擎)** ——
+> 把**已经有但没收敛**的能力收敛成这台引擎, 而不是再造一个更大的 Agent 平台。
+>
+> **意图是一等输入**: 人的意愿先于代码 (仓库原则 `Idea / Intent` 优先于 `Code`)。
+> **Goal 是意图的可执行投影** —— 意图由人写下、可更新、可撤销; Goal 是它落到可运行判据上的那一份。
+> 所以本页写的是「**意图 + 执行机制**」, **不是**产品功能清单, **也不是**产品路线图。
+> 本轮只做两件事: ① 把机制落进 wiki ② **冻结接口类型** (不接实现, 不改现有调用方)。
 
-## 1. 飞轮 (一轮目标的生命周期)
+## 意图的落位 (意图 → Goal → continuation → Run → Memory/Skill → 下一次执行)
+
+```
+意图 (Intent) → Goal → continuation → Run → Memory / Skill → 下一次执行
+ 人写, 可改可撤   投影     调度        执行      复用资产        下一次不再从零
+```
+
+| 层 | 是什么 | 谁能改 |
+| --- | --- | --- |
+| **意图 (Intent)** | 人的意愿本身 (要什么 / 为什么 / 到什么程度算成) 以及意愿的**变更与撤销** | **只有人**。Agent 只读, **不得自行改意图** |
+| **Goal** | 意图的**可执行投影**: 目标 + 完成判据 + 预算 + 权限 + 范围 | Agent 可提候选; 判据/预算/权限/范围的变更按 P4 规则走 (见 §9) |
+| **continuation** | 回答「下一步是什么 / 何时继续 / 为何继续 / 谁来继续」 | Agent 可自动写 (**不改意图, 不改完成判据**) |
+| **Run** | 一次有限执行片段 (有始有终; 不把长期意图做成一条超长 Run) | Agent 自主 |
+| **Memory / Skill** | 复用资产: 事实 / 教训 / Skill 改进候选 | 事实与教训可自动写; **正式 Skill 变更需批准** (见 §6) |
+| **下一次执行** | 下一次从 Memory/Skill 起步, 而不是从零 | —— |
+
+三条纪律:
+
+1. **意图可以更新, 也可以撤销**; 意图的变更**不等于** Goal 的变更。
+2. **意图级变更高于 Goal 级变更**: 现有 P4 的 `GoalChangeRequest` (见 §9) 只管 **Goal 级** (优先级 / 判据 / 预算 / 权限 / 范围 / 中止);
+   **意图级变更需要单独一层, 由人确认** —— Agent 不得自行改意图, 也不得把「执行起来方便」当成改意图的理由。
+3. **意图被撤销后 Goal 不许继续跑**: 落到 `abandoned` / `needs_human`, 且**不许悬空** (与 §9 的 `GoalContinuationEnvelope` 同一条纪律); 已发生的历史 Run 不被改写 (P4 规则 4)。
+
+一句话记住: **引擎执行意图, 不生产意图** —— 飞轮跑得再久, 也不许自己长出新的意图。
+
+> 本轮**不新增意图层的类型**: 先把落位写清; 意图层的类型等有真实需要时**单独一次提交**冻结 ——
+> 与 `types.ts` 改接口同样的纪律 (见 §13 补充规则)。
+
+## 1. 飞轮 (一轮执行的生命周期)
+
+下面是「意图的落位」那条链里 **Goal → continuation → Run → Memory/Skill → 下一次执行** 那一段怎么转起来
+(意图本身不在这一层被改写):
 
 ```
 目标 → 判断下一步 → 自主决定节奏 → 执行或派遣 → 监控阻塞 → 动态注入新要求
@@ -27,7 +63,7 @@ tags: [goal, continuation, flywheel, supervisor, memory, skill, work-contract, b
 飞轮的判据只有一条: **下一次是不是真的更容易/更省** (有没有 Memory 可复用、有没有 Skill 候选可晋升、
 有没有说清下一步是谁做什么)。**「继续运行」本身不算进展**。
 
-## 2. 现状: 已经有的能力 (收敛对象, 不是从零开始)
+## 2. 现状: 已经有的引擎零件 (收敛对象, 不是从零开始)
 
 | 能力 | 落在哪 |
 | --- | --- |
@@ -41,7 +77,7 @@ tags: [goal, continuation, flywheel, supervisor, memory, skill, work-contract, b
 | reviewFinal | `pi-harness.ts` 的 `sessionEnd` / `reviewFinal` |
 | Task group / 任务公告 | `task-group.ts` · `task-board.ts` |
 
-## 3. 四套**没收敛**的能力 (缺口)
+## 3. 四套**没收敛**的引擎能力 (缺口)
 
 | # | 缺口 | 现在的样子 |
 | --- | --- | --- |
@@ -196,6 +232,9 @@ Run 结束顺序**固定** (`RunClosureStep`):
 无限自主 Agent 群 · 自动生成大量子 Agent · 多级递归派遣 · Agent 自己管理 Agent 市场 ·
 自动把所有结果写成 Skill · 自动覆盖正式 Skill · 无证据的智能评分 · 复杂 PM 看板 ·
 多种任务数据库 · 另起 workflow engine · 以固定轮次伪装长期执行 · 用"继续运行"代替真实进展。
+
+另有一条**框架上的不做**: 不把飞轮排成**产品功能项 / 产品路线图** —— 它是服务意图的**引擎**,
+不按功能清单排期, 也不因为"能列进功能表"就去做 (见开头「意图的落位」)。
 
 ---
 

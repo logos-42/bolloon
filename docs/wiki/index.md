@@ -44,7 +44,7 @@
 | [update-protocol.md](./update-protocol.md) | v2 | **更新协议**: 版本身份唯一来源 + 安装方式/更新来源枚举 + 7 个检查结论 + 更新计划/风险检查 + 锁与回滚 + 更新后健康检查 + doctor + 发布硬门 + Phase 0-8 完成度台账 + 6 条行为变更 |
 | [setup-protocol.md](./setup-protocol.md) | v2 | 初始化协议 M0/M1/M4 (初始化状态机 + SetupStore 唯一事实 + 分层 readiness + 启动硬门禁 + M2–M6 计划) |
 | [copyright-registration.md](./copyright-registration.md) | v2 | 软著登记材料 (500 字主要功能 + 源程序前/后各 30 页 · 生成器/口径/自检/未闭合项) |
-| [goal-continuation-flywheel.md](./goal-continuation-flywheel.md) | v2 | **Goal 长期执行飞轮** (设计 + 接口冻结): 把已有能力收敛成一个飞轮 · P0 节奏由进展决定 (ContinuationDecision + 三类硬底线) · P1 强制收尾四类产物 · P1b Memory 分层 + Skill 更新流程 · P2 AgentWorkContract · P3 WorkMonitor 阻塞 · P4 GoalChangeRequest + 两份输出 · P5 验收 (含 2 条强负例) · 文件所有权划分 + 函数签名 |
+| [goal-continuation-flywheel.md](./goal-continuation-flywheel.md) | v2 | **Goal 长期执行飞轮 = 意图 + 执行机制** (leo: 飞轮是意图, **不是项目功能**): 意图是一等输入 · Goal 是意图的可执行投影 · **意图的落位** (意图 → Goal → continuation → Run → Memory/Skill → 下一次执行; 意图可改可撤, **意图级变更高于 Goal 级**) · 把已有能力收敛成一台引擎 · P0 节奏由进展决定 (ContinuationDecision + 三类硬底线) · P1 强制收尾四类产物 · P1b Memory 分层 + Skill 更新流程 · P2 AgentWorkContract · P3 WorkMonitor 阻塞 · P4 GoalChangeRequest + 两份输出 · P5 验收 (含 2 条强负例) · 文件所有权划分 + 函数签名 |
 
 || [log.md](./log.md) | (none) | session-by-session 变更日志 |
 

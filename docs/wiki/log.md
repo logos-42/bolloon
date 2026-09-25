@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-25 | docs | **框架改写 (只动文档): 把 `goal-continuation-flywheel.md` 从「项目功能 / 实施路线图」口径改成「意图 + 执行机制」** —— leo 纠正「**飞轮是我的最终意图和意愿, 并不是项目功能**」。① 开头框架: 飞轮**不是给产品加的功能**, 而是把**人的长期意图**持续执行下去的**机制 (引擎)**; **意图是一等输入**, **Goal 是意图的可执行投影** (仓库原则 `Idea / Intent` 优先于 `Code`); 显式写明本页**不是**产品功能清单、**也不是**产品路线图。② **新增一节「意图的落位」** (不编号, 插在 §1 之前, 既有编号一个没动): `意图 (Intent) → Goal → continuation → Run → Memory/Skill → 下一次执行` 六层逐层写清「是什么 / 谁能改」(意图**只有人能改**, Agent 只读; continuation 可自动写但**不改意图、不改完成判据**; 正式 Skill 变更需批准) + 三条纪律: **意图可更新可撤销** · **意图级变更高于 Goal 级** (现有 P4 `GoalChangeRequest` 只管 Goal 级, 意图级变更**需要单独一层由人确认**, Agent 不得自行改意图) · 意图撤销后 Goal 落 `abandoned`/`needs_human` 且不许悬空 (历史 Run 不被改写)。③ 措辞换框: §2「已经有的**引擎零件**」· §3「没收敛的**引擎能力**」· §11 补一条**框架上的不做** (不把飞轮排成产品功能项 / 产品路线图)。**技术事实一字未改**: 8 态状态机 · `ContinuationDecision` 12 字段 + 三类硬底线 · P1 固定收尾 9 步 + 四类产物 · Memory 5 层判别联合 · `SkillImprovementCandidate`/`SkillJunkReason`/`snapshotScope` · `AgentWorkContract` 16 字段 + `AgentWorkReport` + 5 条子禁项 · `BlockKind`(10)/`BlockRecord`/`BlockResolutionAction`/`UserVisibleState`(5) · `GoalChangeRequest` + `ChangeKind`(8) + 5 条规则 + 两份输出 · P5 验收 6 正例 + 2 强负例 · §15 门禁 · §11 不做清单 全部保留原样。**§13 所有权表与 §14 函数签名一个字未动** (从 `## 13.` 到文件末 `cmp` 逐字节相同, 87 行)。`src/**` **零改动**。**门禁**: `wiki_check` / `wiki_lint --strict=v2` / `raw_manifest_check` / `supersede_check` **四门 OK**; `git diff --stat` 只有 4 个 docs 文件。**未做(如实)**: **没有新增意图层类型** (落位先写清, 类型等有真实需要再**单独一次提交**冻结, 与 `types.ts` 改接口同样的纪律) · 6 条并行实现线仍在各自写 `src/agents/goal-flywheel/*.ts`, 本页 §13 未按任何一条的实际进度调整。 | [goal-continuation-flywheel.md](./goal-continuation-flywheel.md) / [index.md](./index.md) / [current-status.md](./current-status.md) |
 | 2026-09-25 | docs | **Goal 长期执行飞轮: 设计落 wiki + **全部接口冻结** (只定类型+文档, **不接实现 / 不改现有调用方**)**: 把已有能力 (Goal/Run/Checkpoint/Recovery · ExecutionSupervisor+lease · continuation/外部等待 · SkillsManager/skill-writer · memory recall · delegate 真执行 · Watchdog/心跳 · reviewFinal · task group/公告) **收敛成一个长期执行飞轮** (目标 → 判断下一步 → 自定节奏 → 执行或派遣 → 监控阻塞 → 注入新要求 → 汇总 → 写 Memory → Skill 候选 → 下次复用), 而不是再造一个更大的 Agent 平台。**记下四个真缺口**: ① Goal/Supervisor 节奏由**固定次数/retry 上限**控制 (不是进展) ② Run 收尾有 review+skill-writer 但**不是强制流水线** (失败/中断恢复时可不走) ③ Memory 能压能召回但**不是每次任务结束必经** ④ 子 Agent 能派遣但缺统一合同/心跳/阻塞上报/变更注入/最终汇报 (**只回一段文本也算数**)。**新增** `src/agents/goal-flywheel/{types.ts,index.ts}` (**零 import / 零 function 的纯类型层**) + `src/test/goal-flywheel-types.test.ts` (**201 条**不变式门: 枚举完备性 · 必备字段不许 optional · 与现有类型关系被精确钉住 · 冻结层纯度) + `docs/wiki/goal-continuation-flywheel.md` (设计 + P0–P5 实施顺序 + **P1–P4 文件所有权划分** + 逐条函数签名)。**与现有类型的关系是查出来的, 不是嘴上说的**: `goal-store.ts` 的 `GoalContinuation` 与新 `GoalContinuationRecord` **共享调度核心**且旧类型可整体读作新类型 (源级字段抽取) · `GoalStatus` ↔ `GoalLifecycleState` 差集**恰好是 `open`** · 与 `contacts/policy.ts` 的 `BlockKind` **同名不同域、取值完全不相交** · `skill-writer.ts` 的文本 `SkillCandidate` **不满足**晋升契约, 本模块**刻意不重名** (`SkillImprovementCandidate`)。**门禁(真跑)**: `npx tsc --noEmit` **0 错** · 全量 `npx vitest run --bail=1` **207 文件 / 2937 测试全绿** (本批 +1 文件 / +201 测试) · `wiki_check` / `wiki_lint --strict=v2` / `raw_manifest_check` / `supersede_check` **四门 OK** · **变异验证真判红** (wakeAt 改 optional → 点名 `ContinuationDecision.wakeAt` 判红; `BLOCK_KINDS` 撞 contacts 域 → 2 条判红; 恢复后全绿)。**未做(如实)**: 本阶段只做落 wiki + 冻结接口 —— **没有实现代码**, 没接 Supervisor/GoalStore/Run 收尾的调用方, P5 长周期验收未跑 | [goal-continuation-flywheel.md](./goal-continuation-flywheel.md) / [types.ts](../../src/agents/goal-flywheel/types.ts) / [goal-flywheel-types.test.ts](../../src/test/goal-flywheel-types.test.ts) / [index.md](./index.md) |
 | 2026-09-24 | docs | **对外 skill 文档对表 CLI 真命令面 (`bolloon-network` v1.2.0 → **1.3.0**): 补上公告板 (C1/C2 `publish\|board\|claim`) 与群聊留痕 (C7 `announce\|trail\|post` · `group create\|join\|list\|link\|leave`) 两族对外命令 + 「预算 = 正整数原子单位」纪律 + **发行版可用性边界**; 新增源级门 `skill-cli-parity.test.ts` 把「文档 ↔ 真命令面」双向钉死 (阴性对照: 换回升级前文档 → **4 红**且点名 7 个缺失子命令, 还原后 5/5 绿)** | [skills/bolloon-network/SKILL.md](../../skills/bolloon-network/SKILL.md) / [skill-cli-parity.test.ts](../../src/test/skill-cli-parity.test.ts) / [tasks.ts](../../src/cli/commands/tasks.ts) / [cli-entry.ts](../../src/cli-entry.ts) |
 | 2026-09-24 | chore | **核聚变口径复核任务真挂上公开通道 (open 待接单, 不自己接单)**: leo 要求「挂上去, 不用自己接单, 等别人接单就行」。上一版 `ann-b8f5037…`(base 主网) 被**自己**认领 (买方 DID == 认领者 DID); 已认领的公告按纪律不许取消、且不进公开投影 → **重发一条新的待接单公告**: `bolloon task publish --capability fusion-conversion-consistency --instruction "<任务书正文>" --budget 0.001 --currency USDC --network base --deadline +30d` → **`ann-3b7bf8db1afda8fd`** (`status=open` · 已签名 · ≤1000 原子 USDC @ base · 截止 `2026-10-24T07:15:11Z` · **认领数 0**)。三条通道同时挂上: ① 本机公告板 `~/.bolloon/tasks/board/ann-3b7bf8….json`(正文只在本机) ② agent-registry 的 `task.announce` 条目被刷成 `任务公告 (1)` —— 只剩这条 open(旧的自认领条不再出现在注册表里) ③ 公开页快照 `open_tasks[]` = **1 行**(`capability/budget=1000/currency/network/deadline/claimed:false/ann-3b7b`, 7 键白名单)。**另开群留痕**: `task group create --name "聚变口径复核 · 公开招募"` → `zdpuAvGE5p4n8QMdtHC8ZFkFWeXcDKMRYw9BJYBUUKps9J3w2`(+ 邀请链接); `task announce --group … --round 1 --criteria "关系式 mu0H_P≈1.84·T_c; 判 12.2T 与 6.63K 是否自洽; 逐步复算+容差0.01; 结论落 支持/否证/未知; 出处分级"` 发进群, 同群 `task trail` 读回**逐字一致**(发送者假名 `agent-8600c08e`, 原始 DID 未进群)。**验证(真跑)**: `task board` → `open · 可接单 · 认领 还没有人接 · 签名 验签通过` · 真导出快照 `open_tasks=1` · `test-pulse-guard.sh` **29/0** + `pulse-privacy-check.py` 通过 · UI 仓 `refresh-pulse.sh` 全链(chain index sync → 导出 → 隐私门 → CF Pages 部署) · 在**线上部署** `https://b9f48370.bolloon.pages.dev` 跑站点门 `verify-site.mjs` = **350 passed / 0 failed / 0 skipped**(网关页与首页序栏都真渲染出这条 chip 且与快照逐字相同; 页面不含公告正文/买方 DID/公钥/签名样本串)。**未做到(如实)**: 公告正文按设计**不出本机**(注册表只有 sha256 摘要 + 60 字预览, 公开页只有 7 个字段) → 外部接单者看得到「有这个活 + 能力/预算/截止」但看不到任务书全文, 真交接仍需买方 `task send` → 对方 `task accept`; 跨机群消息复制 (bitswap/block broker) 仍未接 → 外机发的痕迹传不回来(本机跨进程可读); 远端认领无投递通道(`deliveredToBuyer` 恒 false) → 别人认领了本机**不会自动知道**, 要看板/看群 | [tasks.ts](../../src/cli/commands/tasks.ts) / [task-board.ts](../../src/agents/task-board.ts) / [network-pulse.ts](../../src/agents/network-pulse.ts) / [network-pulse.md](./network-pulse.md) |
@@ -3518,3 +3519,50 @@ Task group/任务公告) 各自都能跑, 但**没连成一条线**。记下四�
 - **P5 长周期验收未跑** (按设计属后续阶段)。
 - 与现有类型是"**结构兼容 + 关系被钉住**", **不是**已经合并: 真正收敛 (把 `GoalContinuation` 与 `GoalContinuationRecord` 合成一处) 留给 P1 接线时做。
 - P1–P4 的**文件所有权划分** (`docs/wiki/goal-continuation-flywheel.md` §13): 各阶段只准新建自己的文件 + 自己的测试; `types.ts` 是冻结面只读; **接线 (改 `execution-supervisor.ts` / `goal-store.ts` / `pi-sdk.ts` / `skills-manager.ts`) 由 P1 独占且最后做** —— 四个阶段同时改这几个文件必冲突。
+
+---
+
+## [2026-09-25] docs | Goal 长期执行飞轮框架改写: 「项目功能 / 路线图」→「意图 + 执行机制」 (§13/§14 一字未动)
+
+leo 的纠正原话: **「飞轮是我的最终意图和意愿, 并不是项目功能」**, 并给了处理方式:
+**代码照建 (它是服务意图的引擎), 但框架从「项目功能 / 路线图」改成「意图 + 执行机制」, 不再当产品功能写**。
+本轮**只动文档**: `docs/wiki/{goal-continuation-flywheel.md, index.md, current-status.md, log.md}`,
+`src/**` 一个字都没碰 (6 条并行实现线正在各自写 `src/agents/goal-flywheel/*.ts`)。
+
+### 改了哪几处框架 (技术内容全部保留)
+
+| 位置 | 改前 | 改后 |
+| --- | --- | --- |
+| frontmatter `title` | `接口冻结: 节奏由进展决定 → 强制收尾 → 阻塞监控 → 变更注入` | `意图 + 执行机制: 意图 → Goal → continuation → Run → Memory/Skill → 下一次执行` (`tags` 加 `intent`) |
+| H1 | `(设计 + 接口冻结)` | `(意图 + 执行机制)` |
+| 开头框架 | 「把能力收敛成一个长期执行飞轮」 | 飞轮**不是给产品加的功能**, 是把**人的长期意图**持续执行下去的**机制 (引擎)**; **意图是一等输入** (仓库原则 `Idea / Intent` 优先于 `Code`), **Goal 是意图的可执行投影**; 显式写明**不是**产品功能清单、**也不是**产品路线图 |
+| **新增一节** | —— | **「意图的落位」** (不编号, 插在 §1 之前; 既有 §1–§15 编号一个没动) |
+| §1 标题 | 飞轮 (一轮目标的生命周期) | 飞轮 (一轮执行的生命周期) + 一句指向「意图的落位」那条链 (意图不在这层被改写) |
+| §2 / §3 标题 | 已经有的能力 / 四套没收敛的能力 | 已经有的**引擎零件** / 四套没收敛的**引擎能力** |
+| §11 不做 | 只有技术不做清单 | 补一条**框架上的不做**: 不把飞轮排成产品功能项 / 产品路线图 |
+| §13 / §14 | 所有权表 + 逐条函数签名 | **一字未动** (从 `## 13.` 到文件末 `cmp` 逐字节相同, 87 行) |
+
+### 「意图的落位」节要点
+
+- 链条: `意图 (Intent) → Goal → continuation → Run → Memory/Skill → 下一次执行`。
+- 六层逐层写清「是什么 / 谁能改」: 意图**只有人能改** (Agent 只读, **不得自行改意图**) · Goal 是意图的**可执行投影** (Agent 可提候选) · continuation 可自动写但**不改意图、不改完成判据** · Run 自主 · Memory/Skill: 事实与教训可自动写, **正式 Skill 变更需批准** · 下一次执行从复用资产起步, 不复用=白跑。
+- 三条纪律: ① **意图可更新可撤销**, 且意图变更 ≠ Goal 变更; ② **意图级变更高于 Goal 级** —— 现有 P4 `GoalChangeRequest` 只管 Goal 级 (优先级 / 判据 / 预算 / 权限 / 范围 / 中止), **意图级变更需要单独一层、由人确认**; ③ 意图被撤销后 Goal 不许继续跑 (落 `abandoned` / `needs_human`, 不许悬空, 历史 Run 不被改写)。
+- 一句话: **引擎执行意图, 不生产意图**。
+- 本轮**没有新增意图层类型**: 落位先写清; 意图层的类型等有真实需要时**单独一次提交**冻结 (与 `types.ts` 改接口同样的纪律, 见 §13 补充规则)。
+
+### 同步改动 (index / current-status)
+
+- `index.md` 索引行: 「**Goal 长期执行飞轮** (设计 + 接口冻结)」→「**Goal 长期执行飞轮 = 意图 + 执行机制** (leo: 飞轮是意图, **不是项目功能**)」+ 「意图的落位」与「意图级变更高于 Goal 级」写进摘要。
+- `current-status.md` 同一行: 加了「= 意图 + 执行机制 (不是产品功能)」, 正文改成「**意图是一等输入** … Goal 是意图的可执行投影」+ 结尾补一句**框架改写**说明 (§13/§14 一字未动, `src/**` 零改动)。
+
+### 门禁 (真跑)
+
+- `python scripts/wiki_check.py` **OK** · `python scripts/wiki_lint.py --strict=v2` **OK** · `python scripts/raw_manifest_check.py` **OK** · `python scripts/supersede_check.py` **OK**
+- **§13–§15 逐字节核对**: `git show HEAD:docs/wiki/goal-continuation-flywheel.md` 与改后文件从 `^## 13\.` 到文件末各切一段 → `cmp` → **相同 (87 行)**
+- `git diff --stat` → **只有 `docs/wiki/{goal-continuation-flywheel.md,index.md,current-status.md,log.md}`**, `src/**` 零改动
+
+### 未做 / 如实
+
+- **没有新增意图层类型**, 也没有改 `src/agents/goal-flywheel/types.ts`; 6 条并行实现线的实际进度**没有**回写进本页 §13 (那是它们的边界, 我不动)。
+- 本轮**只改文档**: 没有实现代码, 没有接调用方, P5 长周期验收仍未跑。
+- 框架措辞是**读全页后逐处换的**, 不是全局替换 —— 状态机 / 类型清单 / 硬规则 / 验收场景 / 不做清单逐条保留原样, 只换外层口径。
