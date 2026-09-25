@@ -43,7 +43,6 @@ afterEach(async () => {
 });
 
 function iso(ms: number): string { return new Date(ms).toISOString(); }
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function mods() {
   return {
@@ -53,10 +52,21 @@ async function mods() {
   };
 }
 
-function realRunner(rs: any, gs: any, calls: { n: number }, gate?: Promise<void>) {
+/**
+ * 假执行器。
+ *  `entered` 是**事件驱动**的同步点 (不用 sleep / 不用轮询预算): supervisor 是
+ *  **先 `claimGoal` 成功 (L473) 再调 runner (L700)** 的, 所以执行器一进来就说明
+ *  "这个 worker 已经把 lease 抢到手了"。测试可以据此确定性地断言, 不必猜"等多久算够"。
+ *  `gate` 再把执行器卡住 = 租约被持有的那段时间。
+ */
+function realRunner(
+  rs: any, gs: any, calls: { n: number },
+  opts: { gate?: Promise<void>; entered?: () => void } = {},
+) {
   return (async (req: any) => {
     calls.n += 1;
-    if (gate) await gate;                      // 卡住 = 租约被持有的那段时间
+    opts.entered?.();                          // 报"我已进执行器" (此时租约已在我手上)
+    if (opts.gate) await opts.gate;            // 卡住 = 租约被持有的那段时间
     const rec = await rs.startRun({ surface: 'cli', channelId: 'ch-p6', goalId: req.goal.goalId, goal: req.goal.objective });
     await rs.recordStep(rec.runId, { tool: 'shell_exec', ok: true, summary: 'worker 真跑了一步' });
     await rs.finishRun(rec.runId, { status: 'done' });
@@ -73,10 +83,14 @@ describe('P6-④ 两个 worker 抢同一个 Goal 的 lease: 只有一个认领�
 
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r as any; });
+    let enteredA!: () => void;
+    const aEnteredRunner = new Promise<void>((r) => { enteredA = r as any; });
     const callsA = { n: 0 };
     const callsB = { n: 0 };
     const supA = new m.sup.ExecutionSupervisor({
-      owner: 'worker-A', runner: realRunner(m.rs, m.gs, callsA, gate), maxPerTick: 5, maxRetries: 5, now: () => Date.now(),
+      owner: 'worker-A',
+      runner: realRunner(m.rs, m.gs, callsA, { gate, entered: enteredA }),
+      maxPerTick: 5, maxRetries: 5, now: () => Date.now(),
     });
     const supB = new m.sup.ExecutionSupervisor({
       owner: 'worker-B', runner: realRunner(m.rs, m.gs, callsB), maxPerTick: 5, maxRetries: 5, now: () => Date.now(),
@@ -84,8 +98,29 @@ describe('P6-④ 两个 worker 抢同一个 Goal 的 lease: 只有一个认领�
 
     // A 开始 tick (不 await): 它认领 lease 并进入执行器 (阻塞在 gate)
     const pA = supA.tickOnce();
-    let guard = 0;
-    while (callsA.n === 0 && guard < 200) { await sleep(10); guard++; }
+    // ★ 确定性同步点 (2026-09-26 修间歇竞态):
+    //   原来这里是**有 2s 预算的轮询** —— `while (callsA.n === 0 && guard < 200) await sleep(10)`。
+    //   但 `callsA.n` 只在执行器**被调用**时才涨, 而 supervisor 在 `claimGoal` 成功之后还要走
+    //   readGoal / 续跑计划 / 变更注入 / 工作合同摘要 / 技能就绪门禁 / 若干动态 import 才调到 runner ——
+    //   这一段时延**无上界且与机器负载相关**。负载一高就超预算, 于是断言在"租约其实早抢到手"的情况下
+    //   报 `expected +0 to be 1` (实测: 空载 10/10 绿, 4 并发同文件 8/8 红, 红时 5460–5678ms, 全部落在本行)。
+    //   现在改成**事件驱动**: 执行器被调用时自报 (`enteredA`), 而它必然发生在 `claimGoal` 之后 →
+    //   等待无预算、无 sleep、断言一条都没放宽。
+    //   若 A 的 tick 在进执行器之前就返回 (认领失败/让路/判停 —— 那是**真**回归), `pA` 先 settle,
+    //   下面那行立刻断言失败并说明原因, 不会退化成 20s 超时。
+    let aTickEndedEarly = false;
+    await Promise.race([
+      aEnteredRunner,
+      pA.then(() => { aTickEndedEarly = true; }, () => {}),
+    ]);
+    if (aTickEndedEarly) {
+      // 这条分支只有在 A 的 tick **没进执行器就结束**时才走到 (认领失败/让路/判停)。
+      // 那不是时序问题, 是真回归 —— 直接报清楚 + 附上 A 的 tick 报告, 不做任何"等一等再说"。
+      const rep = await pA;
+      throw new Error('A 的 tick 在进入执行器之前就结束了 (认领/让路/判停) → 真回归, 不是时序问题; '
+        + `claimed=${JSON.stringify(rep.claimed)} executed=${JSON.stringify(rep.executed)} `
+        + `skipped=${JSON.stringify(rep.skipped)} errors=${JSON.stringify(rep.errors)}`);
+    }
     expect(callsA.n).toBe(1);                                   // A 真的跑起来了 = 租约已被它持有
     const leaseWhileHeld = await m.gs.readLease(g.goalId);
     expect(leaseWhileHeld?.owner).toBe('worker-A');
