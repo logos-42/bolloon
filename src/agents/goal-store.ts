@@ -29,6 +29,11 @@ import * as crypto from 'crypto';
 //   避免 goal-store ←→ external-events 循环 import。
 export type GoalExternalSource = 'p2p' | 'delegate' | 'http' | 'contact' | 'any';
 
+// 2026-09-25 (飞轮接线): 类型**只读**引用冻结面 (types.ts 零 import, 因此不构成循环);
+//   用途: Goal.continuation 上与 GoalContinuationRecord 收敛的那几个字段 (见下)。
+import type { GoalChangeRequest, GoalContinuationRecord, GoalLifecycleState, PendingReport, UserVisibleState } from './goal-flywheel/types.js';
+import { toUserVisibleState } from './goal-flywheel/work-monitor.js';
+
 export type GoalStatus =
   | 'open' | 'active' | 'recovering' | 'retry_wait' | 'awaiting_external' | 'stalled'
   | 'paused' | 'needs_human' | 'completed' | 'failed' | 'abandoned';
@@ -77,6 +82,22 @@ export interface GoalContinuation {
   skillReadiness?: { ok: boolean; at: string; reason?: string; missing?: string[]; drift?: { name: string; expected?: string; actual: string }[]; degradations?: string[] };
   /** 外部等待超时的原因 (转人工时写) */
   lastExternalTimeout?: string;
+  // ───────────────────────────────────────────────────────────────────────────
+  // 2026-09-25 (飞轮接线): GoalContinuation 与冻结面 `GoalContinuationRecord` 收敛到一处 ——
+  //   下面几个字段就是 `GoalContinuationRecord` 里"旧类型没有"的那部分, 现在**写在同一个对象上**
+  //   (不再各存一套继续机制)。唯一写入者是 `goal-flywheel-wiring.ts` 的
+  //   `toGoalStoreContinuation()` (见该文件 §5)。
+  // ───────────────────────────────────────────────────────────────────────────
+  /** 当前长期生命周期状态 (与 goal.status 同域; `open` 读作 `active`) */
+  state?: GoalLifecycleState;
+  /** 最近一次继续决策 id (`decision:<goalId>:<runId>`, 决策记录可回放) */
+  lastDecisionId?: string;
+  /** 下一步由谁执行 (null = 本节点即可; delegate 决策会填能力名) */
+  requiredAgent?: string;
+  /** 仍未解决项 (飞轮收尾写入; 非空不许判完成) */
+  unresolvedItems?: string[];
+  /** 还没回报的子 Agent 工作 (P2 合同签发时写入, 回报被接受后移除) */
+  pendingReports?: PendingReport[];
   updatedAt?: string;
 }
 
@@ -130,6 +151,11 @@ export interface GoalRecord {
   resolution?: { reason: string; at: string };
   /** 长期执行调度元数据 (M2-A) */
   continuation?: GoalContinuation;
+  /**
+   * 2026-09-25 (飞轮接线 P4): 新要求注入的记录 —— **原话逐字** + 分诊 + 生效状态 + 判据版本。
+   * 只影响后续 Run (不改写已发生的历史); 由 `goal-flywheel-wiring.ingestGoalChange` 写入。
+   */
+  goalChanges?: GoalChangeRequest[];
   /** 执行权租约镜像 (真值在 <goalId>.lease 文件; 这里只为可读) */
   lease?: GoalLease;
 }
@@ -602,9 +628,17 @@ export async function listRunnableGoals(opts: { now?: number; owner?: string } =
 }
 
 /** CLI/Web 可见的长期执行诊断 (每个 Goal 为什么在/不在跑) */
-export async function wakeReport(now = Date.now()): Promise<{ goalId: string; status: GoalStatus; wake: string; autoContinue: boolean; lease?: string }[]> {
+export async function wakeReport(now = Date.now()): Promise<{
+  goalId: string; status: GoalStatus; wake: string; autoContinue: boolean; lease?: string;
+  /** 2026-09-25 (飞轮接线 P3): 用户可见六类之一 —— 界面只暴露这个, 不暴露内部状态 */
+  visible: UserVisibleState;
+  /** 下一步 (飞轮收尾写下的权威 nextAction; 没有则空串) */
+  nextAction: string;
+  /** 连续无进展轮数 (飞轮熔断依据) —— 只给诊断, 不是"第几轮" */
+  noProgressStreakNote?: string;
+}[]> {
   const goals = await listGoals({ limit: 50 });
-  const out: { goalId: string; status: GoalStatus; wake: string; autoContinue: boolean; lease?: string }[] = [];
+  const out: { goalId: string; status: GoalStatus; wake: string; autoContinue: boolean; lease?: string; visible: UserVisibleState; nextAction: string }[] = [];
   for (const g of goals) {
     const c = g.continuation;
     const lease = await readLease(g.goalId);
@@ -621,7 +655,30 @@ export async function wakeReport(now = Date.now()): Promise<{ goalId: string; st
       wake = `等外部事件${what ? ` (${what})` : ''}`;
     }
     else if (live) wake = `已被 ${lease!.owner} 认领`;
-    out.push({ goalId: g.goalId, status: g.status, wake, autoContinue: c?.autoContinue !== false, lease: live ? lease!.owner : undefined });
+    // 用户视野: 只经 toUserVisibleState 映射; 阻塞明细由飞轮接线层的 collectWorkBlocks 提供
+    //   (这里传空阻塞表: goal-store 不读子工作目录, 保持单一事实来源)。
+    const visible = toUserVisibleState(continuationView(c, g.status), [], null);
+    out.push({ goalId: g.goalId, status: g.status, wake, autoContinue: c?.autoContinue !== false, lease: live ? lease!.owner : undefined, visible, nextAction: c?.nextAction ?? '' });
   }
   return out;
+}
+
+/**
+ * 把 Goal 上收敛后的 continuation 读成冻结面 `GoalContinuationRecord`。
+ * 缺失字段按"没有"补默认值 —— 不许因为少一个字段就崩 (界面是只读视图)。
+ */
+function continuationView(c: GoalContinuation | undefined, status: GoalStatus): GoalContinuationRecord | null {
+  if (!c) return null;
+  return {
+    nextAction: c.nextAction ?? '',
+    wakeAt: c.wakeAt ?? null,
+    wakeReason: c.wakeReason ?? 'active',
+    autoContinue: c.autoContinue !== false,
+    requiredAgent: c.requiredAgent ?? null,
+    pendingReports: c.pendingReports ?? [],
+    unresolvedItems: c.unresolvedItems ?? [],
+    lastDecisionId: c.lastDecisionId ?? null,
+    state: c.state ?? (status === 'open' ? 'active' : status),
+    updatedAt: c.updatedAt ?? '',
+  };
 }
