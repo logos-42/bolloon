@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-25 | docs | **Goal 长期执行飞轮: 设计落 wiki + **全部接口冻结** (只定类型+文档, **不接实现 / 不改现有调用方**)**: 把已有能力 (Goal/Run/Checkpoint/Recovery · ExecutionSupervisor+lease · continuation/外部等待 · SkillsManager/skill-writer · memory recall · delegate 真执行 · Watchdog/心跳 · reviewFinal · task group/公告) **收敛成一个长期执行飞轮** (目标 → 判断下一步 → 自定节奏 → 执行或派遣 → 监控阻塞 → 注入新要求 → 汇总 → 写 Memory → Skill 候选 → 下次复用), 而不是再造一个更大的 Agent 平台。**记下四个真缺口**: ① Goal/Supervisor 节奏由**固定次数/retry 上限**控制 (不是进展) ② Run 收尾有 review+skill-writer 但**不是强制流水线** (失败/中断恢复时可不走) ③ Memory 能压能召回但**不是每次任务结束必经** ④ 子 Agent 能派遣但缺统一合同/心跳/阻塞上报/变更注入/最终汇报 (**只回一段文本也算数**)。**新增** `src/agents/goal-flywheel/{types.ts,index.ts}` (**零 import / 零 function 的纯类型层**) + `src/test/goal-flywheel-types.test.ts` (**201 条**不变式门: 枚举完备性 · 必备字段不许 optional · 与现有类型关系被精确钉住 · 冻结层纯度) + `docs/wiki/goal-continuation-flywheel.md` (设计 + P0–P5 实施顺序 + **P1–P4 文件所有权划分** + 逐条函数签名)。**与现有类型的关系是查出来的, 不是嘴上说的**: `goal-store.ts` 的 `GoalContinuation` 与新 `GoalContinuationRecord` **共享调度核心**且旧类型可整体读作新类型 (源级字段抽取) · `GoalStatus` ↔ `GoalLifecycleState` 差集**恰好是 `open`** · 与 `contacts/policy.ts` 的 `BlockKind` **同名不同域、取值完全不相交** · `skill-writer.ts` 的文本 `SkillCandidate` **不满足**晋升契约, 本模块**刻意不重名** (`SkillImprovementCandidate`)。**门禁(真跑)**: `npx tsc --noEmit` **0 错** · 全量 `npx vitest run --bail=1` **207 文件 / 2937 测试全绿** (本批 +1 文件 / +201 测试) · `wiki_check` / `wiki_lint --strict=v2` / `raw_manifest_check` / `supersede_check` **四门 OK** · **变异验证真判红** (wakeAt 改 optional → 点名 `ContinuationDecision.wakeAt` 判红; `BLOCK_KINDS` 撞 contacts 域 → 2 条判红; 恢复后全绿)。**未做(如实)**: 本阶段只做落 wiki + 冻结接口 —— **没有实现代码**, 没接 Supervisor/GoalStore/Run 收尾的调用方, P5 长周期验收未跑 | [goal-continuation-flywheel.md](./goal-continuation-flywheel.md) / [types.ts](../../src/agents/goal-flywheel/types.ts) / [goal-flywheel-types.test.ts](../../src/test/goal-flywheel-types.test.ts) / [index.md](./index.md) |
 | 2026-09-24 | docs | **对外 skill 文档对表 CLI 真命令面 (`bolloon-network` v1.2.0 → **1.3.0**): 补上公告板 (C1/C2 `publish\|board\|claim`) 与群聊留痕 (C7 `announce\|trail\|post` · `group create\|join\|list\|link\|leave`) 两族对外命令 + 「预算 = 正整数原子单位」纪律 + **发行版可用性边界**; 新增源级门 `skill-cli-parity.test.ts` 把「文档 ↔ 真命令面」双向钉死 (阴性对照: 换回升级前文档 → **4 红**且点名 7 个缺失子命令, 还原后 5/5 绿)** | [skills/bolloon-network/SKILL.md](../../skills/bolloon-network/SKILL.md) / [skill-cli-parity.test.ts](../../src/test/skill-cli-parity.test.ts) / [tasks.ts](../../src/cli/commands/tasks.ts) / [cli-entry.ts](../../src/cli-entry.ts) |
 | 2026-09-24 | chore | **核聚变口径复核任务真挂上公开通道 (open 待接单, 不自己接单)**: leo 要求「挂上去, 不用自己接单, 等别人接单就行」。上一版 `ann-b8f5037…`(base 主网) 被**自己**认领 (买方 DID == 认领者 DID); 已认领的公告按纪律不许取消、且不进公开投影 → **重发一条新的待接单公告**: `bolloon task publish --capability fusion-conversion-consistency --instruction "<任务书正文>" --budget 0.001 --currency USDC --network base --deadline +30d` → **`ann-3b7bf8db1afda8fd`** (`status=open` · 已签名 · ≤1000 原子 USDC @ base · 截止 `2026-10-24T07:15:11Z` · **认领数 0**)。三条通道同时挂上: ① 本机公告板 `~/.bolloon/tasks/board/ann-3b7bf8….json`(正文只在本机) ② agent-registry 的 `task.announce` 条目被刷成 `任务公告 (1)` —— 只剩这条 open(旧的自认领条不再出现在注册表里) ③ 公开页快照 `open_tasks[]` = **1 行**(`capability/budget=1000/currency/network/deadline/claimed:false/ann-3b7b`, 7 键白名单)。**另开群留痕**: `task group create --name "聚变口径复核 · 公开招募"` → `zdpuAvGE5p4n8QMdtHC8ZFkFWeXcDKMRYw9BJYBUUKps9J3w2`(+ 邀请链接); `task announce --group … --round 1 --criteria "关系式 mu0H_P≈1.84·T_c; 判 12.2T 与 6.63K 是否自洽; 逐步复算+容差0.01; 结论落 支持/否证/未知; 出处分级"` 发进群, 同群 `task trail` 读回**逐字一致**(发送者假名 `agent-8600c08e`, 原始 DID 未进群)。**验证(真跑)**: `task board` → `open · 可接单 · 认领 还没有人接 · 签名 验签通过` · 真导出快照 `open_tasks=1` · `test-pulse-guard.sh` **29/0** + `pulse-privacy-check.py` 通过 · UI 仓 `refresh-pulse.sh` 全链(chain index sync → 导出 → 隐私门 → CF Pages 部署) · 在**线上部署** `https://b9f48370.bolloon.pages.dev` 跑站点门 `verify-site.mjs` = **350 passed / 0 failed / 0 skipped**(网关页与首页序栏都真渲染出这条 chip 且与快照逐字相同; 页面不含公告正文/买方 DID/公钥/签名样本串)。**未做到(如实)**: 公告正文按设计**不出本机**(注册表只有 sha256 摘要 + 60 字预览, 公开页只有 7 个字段) → 外部接单者看得到「有这个活 + 能力/预算/截止」但看不到任务书全文, 真交接仍需买方 `task send` → 对方 `task accept`; 跨机群消息复制 (bitswap/block broker) 仍未接 → 外机发的痕迹传不回来(本机跨进程可读); 远端认领无投递通道(`deliveredToBuyer` 恒 false) → 别人认领了本机**不会自动知道**, 要看板/看群 | [tasks.ts](../../src/cli/commands/tasks.ts) / [task-board.ts](../../src/agents/task-board.ts) / [network-pulse.ts](../../src/agents/network-pulse.ts) / [network-pulse.md](./network-pulse.md) |
 | 2026-09-24 | fix | **快照 `notes` 去掉「未接入」这个词 (换等价说法「该口径无对应事件源, 不下发该字段」) —— 公开页全页可见文字里只剩「开发者说明」那一处**: leo 复查公开页, 可见文字里还有**两处**「未接入」不在刚刚下线的计数行: (a) 快照自己的 `notes` 原文 (服务端数据, 页面活动流下方照原文渲染) (b) 「开发者说明」卡片里描述表格区降级的那一句 (只在 `confirmed_activity_source='none'` 时才真出现在表下的示例文案)。leo 决定: **清 (a)、留 (b)** —— (b) 是卡片里对「降级标注长什么样」的举例, 不是行情数据。改法**只动** `src/agents/network-pulse.ts` chainAuthoritative 分支那一句 notes 的两个措辞: `→ 不报 (未接入, 不是 0)` → `→ 该口径无对应事件源, 不下发该字段 (不是 0)`; `'未接入 (本节点无可用源)'` → `'无可用源 (本节点既没有签名审计账, 也没有签名脉冲事件), 不下发该字段'`。**其余一律一字未改**: `totals.tasks_verified = null` · `totals_scope.fields[*]` (含 `source='none'` / `unavailable:true` / short「未接入」/ label) · 门 `UNAVAILABLE_WORDS` (**它只查逐字段口径的 short/label, 从不查 notes**) · UI 仓开发者说明卡片与门 `[6e★★★★]` 全部原样。**验证 (真跑)**: `tsc --noEmit` **0 错** · 全量 `vitest run` **205 文件 / 2731 测试全绿** (与改前同数) · `wiki_check` / `wiki_lint --strict=v2` / `raw_manifest_check` 三 OK · **断言只加不减**: `src/test/network-pulse-consistency.test.ts` 的 `expect(` **161 → 168** (新增 7 条, 全落在既有用例里: notes 不含「未接入」· 不含 `not connected` · 含「不下发该字段」· 含「该口径无对应事件源」(前 4 条在真索引用例), 签名 null 用例 1 条 notes 断言, 真跑导出用例 2 条) + `scripts/verify-network-pulse.ts` 加 1 条 notes 门; **无一条断言被删或放宽**(字段侧那两条「未接入」断言原样保留)。**真文本证据**: 真导出快照 `notes` 逐字对照 + 真 DOM 全页可见文字里「未接入」只剩开发者说明那 1 处 (UI 仓 `verify-site.mjs` 仍 348/0/2, 门 `[6e★★★★]` 管的是计数行)。**部署**: UI 仓 `scripts/refresh-pulse.sh` 重出快照 → CF Pages 新版本 + 备案主机同步 (机内验收) | [network-pulse.ts](../../src/agents/network-pulse.ts) / [network-pulse-consistency.test.ts](../../src/test/network-pulse-consistency.test.ts) / [verify-network-pulse.ts](../../scripts/verify-network-pulse.ts) / [network-pulse.md](./network-pulse.md) |
@@ -3443,3 +3444,77 @@ run 的随机 taskId 不在其中, 就恒为 false ≠ true。**证据**: 在 `g
 - **跨机群消息复制仍未接**(bitswap/block broker 属另一条线): 同机跨进程读回已验, 但**外机发出的痕迹本机读不回来** —— 所以群暂时只是本机留痕, 不能当跨机接单通道用。
 - **远端认领没有投递通道**(`deliveredToBuyer` 恒 false): 别人 claim 了, 本机**不会自动知道**, 需要自己看 `task board` / 看群。
 - 旧的 `ann-b8f5037…` 自认领条**仍在板上**(status=claimed): 按纪律不取消、不手改文件 —— 白名单公开投影与注册表都只认 open, 它不会污染对外视图。
+
+---
+
+## [2026-09-25] docs | Goal 长期执行飞轮: 设计落 wiki + 全部接口冻结 (本轮不接实现)
+
+**这一轮只做两件**: ① 把设计落进 wiki ② **冻结接口类型** (类型定义 + 文档注释, 不接实现, 不改现有调用方)。
+
+### 为什么是「收敛」而不是「再建一个更大的 Agent 平台」
+
+已经有的一堆能力 (Goal/Run/Checkpoint/Recovery · ExecutionSupervisor+lease · Goal continuation/外部等待 ·
+Skill Manager/skill-writer · memory compressor/recall · delegate 真执行 · Watchdog/heartbeat · reviewFinal ·
+Task group/任务公告) 各自都能跑, 但**没连成一条线**。记下四个真缺口:
+
+| # | 缺口 | 现状 |
+| --- | --- | --- |
+| ① | Goal/Supervisor 的**节奏** | 由**固定次数 / retry 上限**控制, 不是由进展控制 |
+| ② | Run 收尾 | 有 review + skill-writer, 但**不是强制流水线** (失败/中断恢复时可不走) |
+| ③ | Memory | 能压能召回, 但**不是每次任务结束的必经步骤** |
+| ④ | Subagent | 能派遣, 但缺**统一任务合同 / 心跳 / 阻塞上报 / 变更注入 / 最终汇报** —— 只回一段文本也算数 |
+
+### 飞轮 (设计)
+
+```
+目标 → 判断下一步 → 自主决定节奏 → 执行或派遣 → 监控阻塞 → 动态注入新要求
+     → 汇总结果 → 写入 Memory → 形成 Skill 改进候选 → 下一次直接复用
+```
+
+判据只有一条: **下一次是不是真的更容易/更省**。「继续运行」本身不算进展。
+
+### 冻结了什么 (P0–P5)
+
+| 阶段 | 冻结的核心 | 硬规则 |
+| --- | --- | --- |
+| **P0** 节奏由进展决定 | `ContinuationState`(8) · `ContinuationDecision`(decision/reason/nextAction/expectedOutcome/confidence/progressDelta/unresolvedItems/wakeAt/requiredCapability/riskLevel · state · stopReason · evidenceRefs) · `HardLimits` | 有进展→继续 · 等外部→事件或 `wakeAt` · 连续无新证据→`stalled`→`needs_human` · 无价值→交 `stop_reason`; **三类硬底线**(单 Run 时间 / 单 Goal 预算 / 无进展熔断)是安全线**不是节奏**; **不再以"第几轮"当继续依据** |
+| **P1** 强制收尾飞轮 | `RunClosureStep`(9 步固定顺序) · `ClosureArtifact`(事实/教训/Skill候选/下一步) | **成功 / 失败 / 中断恢复后的 Run 都必须走**同一条流水线 |
+| **P1b** Memory + Skill | `MemoryLayer` 5 层判别联合 · `SkillImprovementCandidate` · `SkillJunkReason`(7) · `SkillPromotionRecord` | `decision` 层**必留来源** · `run_fact` 必须分 confirmed/inferred · `skill_signal` 只生成候选 · **自动更新不得覆盖正在执行的 snapshot** (`snapshotScope='next_run_only'`) · 7 条"垃圾"理由命中即**不得**成 Skill |
+| **P2** 子 Agent 合同 | `AgentWorkContract`(16 字段) · `AgentWorkReport` · `ChildProhibition`(5) | 子**不能只回一段文本**; 父负责拆解/分配/合并/终判/汇报, 子不得改父 Goal 状态 / 自扩预算 / 派生无限子任务 / 标未验证为完成 / 私改判据 |
+| **P3** 阻塞监控 | `BlockKind`(10) · `BlockRecord` · `BlockResolutionAction`(8) · `UserVisibleState`(5) | Watchdog 只看进程存活, **不等于**看任务卡住; 子无心跳→**先查 lease** 再接管/上报; 报告不完整**不接受为完成**; 工具被阻**不自动绕过 Harness**; 用户只看到五类状态 |
+| **P4** 变更注入 | `GoalChangeRequest` · `ChangeKind`(8) · `ChangeRule`(5) · `UserReport` · `GoalContinuationRecord` · `GoalContinuationEnvelope` | 用户撤销最高 · 扩预算不得 Agent 自动批 · 改判据必增版本 · **当前 Run 历史不可被新要求改写** · 子须收到新版本; **Goal 不许悬空** (只有 completed/failed/abandoned/needs_human 可结束) |
+| **P5** 长周期验收 | `LongRunAcceptanceCase`(6 正例 + 2 强负例) | 后续阶段跑; 含两条强负例: 无证据的漂亮回报 → 父 Goal **不完成**; 一次偶然成功 → **不得**晋升正式 Skill |
+
+### 与现有类型的关系 (查出来的, 不是嘴上说"兼容")
+
+| 现有类型 | 关系 | 怎么钉住的 |
+| --- | --- | --- |
+| `goal-store.ts` `GoalContinuation` | 与新 `GoalContinuationRecord` **共享调度核心** (nextAction/wakeAt/wakeReason/autoContinue/updatedAt), 旧类型可**整体读作**新类型 | 类型级可赋值 + **源级字段抽取** (从 `goal-store.ts` 真读字段名) |
+| `goal-store.ts` `GoalStatus` | ↔ `GoalLifecycleState` 差集**恰好**是 `'open'` (还没起第一个 Run) | 源级抽 union 值 + 类型级差集断言 |
+| `contacts/policy.ts` `BlockKind` | **同名不同域**(联系方式策略 vs 长期执行阻塞), 取值**完全不相交** | 源级抽值求交集 = 空; 双向都不可赋值 |
+| `skill-writer.ts` `SkillCandidate` | 是 run-end **文本候选**, **不满足**晋升契约 → 本模块**刻意不重名** (`SkillImprovementCandidate`) | 源级抽字段名 + 类型级"不可赋值" |
+
+### 本轮新增文件
+
+| 文件 | 内容 |
+| --- | --- |
+| `src/agents/goal-flywheel/types.ts` | 全部冻结类型 + 文档注释 (**零 import / 零 function / 零 async**) |
+| `src/agents/goal-flywheel/index.ts` | 只做 `export * from './types.js'` |
+| `src/test/goal-flywheel-types.test.ts` | **201 条**不变式门 (枚举完备性 · 必备字段不许 optional · 与现有类型关系 · 冻结层纯度) |
+| `docs/wiki/goal-continuation-flywheel.md` | 设计 + P0–P5 + **P1–P4 文件所有权划分** + 逐条函数签名 |
+
+### 验证 (真跑)
+
+- `npx tsc --noEmit` **0 错**
+- 全量 `npx vitest run --bail=1` **207 文件 / 2937 测试全绿** (本批 **+1 文件 / +201 测试**; 本轮开工到结束 HEAD 未变 = `19b8c46`)
+- `wiki_check` **OK** (42 页 / index 41 链接) · `wiki_lint --strict=v2` **OK** · `raw_manifest_check` **OK** · `supersede_check` **OK** (38 页)
+- **变异验证真判红** (证明门不是空转): ① 把 `ContinuationDecision.wakeAt` 改成 `wakeAt?:` → 源级断言**点名** `ContinuationDecision.wakeAt` 判红 (1 failed) ② 给 `BLOCK_KINDS` 加一个与 contacts 域撞车的 `'not_found'` → 两条断言判红 (2 failed); 两处都恢复并复验全绿
+- 门自己的**阴性对照**: 源级抽取器给一个带 `?` 的合成 interface 必须抓得住 (内建断言)
+
+### 未做 / 如实 (本阶段边界)
+
+- **没有实现代码**: 飞轮 P0–P4 全是类型与文档, 没有任何运行时行为变化。
+- **没有接调用方**: Supervisor / GoalStore / Run 收尾 / pi-sdk / SkillsManager / Web·CLI 视图**一个字没改**。
+- **P5 长周期验收未跑** (按设计属后续阶段)。
+- 与现有类型是"**结构兼容 + 关系被钉住**", **不是**已经合并: 真正收敛 (把 `GoalContinuation` 与 `GoalContinuationRecord` 合成一处) 留给 P1 接线时做。
+- P1–P4 的**文件所有权划分** (`docs/wiki/goal-continuation-flywheel.md` §13): 各阶段只准新建自己的文件 + 自己的测试; `types.ts` 是冻结面只读; **接线 (改 `execution-supervisor.ts` / `goal-store.ts` / `pi-sdk.ts` / `skills-manager.ts`) 由 P1 独占且最后做** —— 四个阶段同时改这几个文件必冲突。
