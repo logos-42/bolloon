@@ -466,7 +466,7 @@ cross_check_mismatch    # stable 下 npm 与 GitHub 的记录指向不同版本 
 | **C** GitHub 限流 403 | 同一分类 `github_unavailable(rate_limited)` —— 首次匿名真跑时**真的被 api.github.com 限流打到 403** (60 次/小时), 分类与文案当场验证; 之后用 `GITHUB_TOKEN` (可选, 只进请求头, 永不打印/入库) 把配额提到 5000/h |
 | **D** 不存在的 commit / tag | 真 codeload **404** → `github_unavailable(not_found)`, 不装任何东西 |
 | **E** dev 真跑 | 真取 codeload master 快照 → 真 `npm run build` → 装出身份 `0.4.33+dev.d2148f3`; `update-state.json` 有 `devSha=d2148f3`/`devRef`; 真起装完的入口, 它**自报** `Bolloon Agent v0.4.33+dev.d2148f3` |
-| **F** 一键回 stable | 真 CLI 子进程 `update now --channel stable` → 退出码 0, 磁盘真变回 `0.4.33`, 状态改回 `stable`, 历史留 `+dev.d2148f3 → 0.4.33` |
+| **F** 一键回 stable | 真 CLI 子进程 `update now --channel stable` → 退出码 0, 磁盘真变回 `0.4.33`, 状态改回 `stable`, 历史留 `+dev.d2148f3 → 0.4.33`。**推送后复跑更强**: 这次 dev 快照来自带本特性的 master (`0.4.33+dev.17fb4ca`), **CLI 代码就是 GitHub 快照自带的, 没有任何覆盖**, 一键回 stable 仍是退出码 0 + 磁盘真变回 |
 | **G** 交叉校验 | 受控假 GitHub 说 `v9.9.9` → `cross_check_mismatch`, 退出码 2, **没有任何 `npm install` 被调用** |
 | **H** `update --status` 三态 | ① 只装 npm: `安装来源: stable (npm registry)` + `能切回: dev (github)` ② 装了 dev: `安装来源: dev (GitHub master 快照, ref refs/heads/master, commit d2148f3)` + `能切回: stable (npm @ 0.4.33) — 一键切: bolloon update now --channel stable` + 显式警告 ③ 刚切回: `安装来源: stable` + `上次 dev: commit d2148f3… (已切回 stable)` |
 

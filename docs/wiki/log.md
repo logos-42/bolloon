@@ -3935,7 +3935,7 @@ M5 长周期真跑(用真实长期目标当靶子) · M6 空闲反思(做梦) ·
 - 顺带两处小修: `doctor` 的「版本源可达」升为**双源** (npm + GitHub 各报各的, GitHub 坏了只 degraded, 因为 npm 仍是权威) +
   新增一项「安装来源 (双源)」(dev 时带 commit sha 与「一键回 stable」的提示); `status` 的「能切回」提示统一成 `bolloon update now --channel <源>`。
 
-### 四、真跑验收 (`npx tsx scripts/verify-dual-source.ts`) —— **63 PASS / 0 FAIL / 0 SKIP**
+### 四、真跑验收 (`npx tsx scripts/verify-dual-source.ts`) —— **63 PASS / 0 FAIL / 0 SKIP** (推送前后各真跑一次: `d2148f3` 与 `17fb4ca` 两次都是 63/0)
 
 真 npm registry + 真 api.github.com + **真 codeload 下载 21MB master 快照 + 真 `npm run build` + 真 `npm pack` + 真 `npm install -g`**,
 隔离 HOME / 隔离 npm prefix (**不碰本机全局安装**)。
@@ -3944,7 +3944,7 @@ M5 长周期真跑(用真实长期目标当靶子) · M6 空闲反思(做梦) ·
 | --- | --- |
 | A stable → dev | 装出 `0.4.33+dev.d2148f3`; 真起装完的入口, 它**自报** `Bolloon Agent v0.4.33+dev.d2148f3 / 安装方式: npm-global` |
 | B dev → stable | `check(stable)` 判 `update_available` 且理由写明「切回 stable 的 0.4.33」; 真换回 `0.4.33`; 历史留 `0.4.33+dev.d2148f3 → 0.4.33` |
-| C 一键回 stable | 真 CLI 子进程 `update now --channel stable` → **退出码 0**, 磁盘真变回 `0.4.33` |
+| C 一键回 stable | 真 CLI 子进程 `update now --channel stable` → **退出码 0**, 磁盘真变回 `0.4.33`, 状态改回 `stable`。**推送后复跑更强**: dev 快照来自带本特性的 master (`0.4.33+dev.17fb4ca`), **CLI 代码是 GitHub 快照自带的, 没有任何覆盖** —— 一键回 stable 仍退出码 0 + 磁盘真变回 |
 | D 源不可达 (假阳性检查) | dev + GitHub 不可达 → `github_unavailable(offline): releases: ECONNREFUSED`, 退出码 **2**, 输出**无**「已是最新」, `latestVersion=null`, **不回落 stable**; stable + npm 不可达 → `offline` 退出码 2, `npmCalled=0`, **磁盘版本未动** |
 | D 两源不一致 | 受控假源说 `v9.9.9` → `cross_check_mismatch`, 退出码 2, **没有任何 `npm install` 被调用** |
 | D commit 不存在 | 真 codeload **404** → `github_unavailable(not_found)`, 什么都没装 |
