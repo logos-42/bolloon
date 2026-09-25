@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-25 | test | **飞轮 M5 长周期真跑验收: 10 场景真跑全过 (191 过 / 0 败) + 挖出并修掉 7 个真系统缺陷 (最要紧的两个都是「界面撒谎 / 醒了没人管」类)** —— 场景 01 按进展跳 Run · 02 真 `kill -9` 后接续 · 03 子 Agent 卡死在 `tickOnce` 内被接管 · 04 父逐条拒收 · 05 外部等待+可信事件唤醒 · 06 注入新要求 · 07 结束自动出四类产物 · 08 下次相似任务复用 (**引用可指认 + 步骤数 3→2, 不用耗时**) · 09 没证据三层都挡 (**正向对照暴露主缺陷**) · 10 五种失败都给下一步。**⑦ 个真缺陷**: ① `goalStatusFromDecision` 缺 `wait` 分支 (等外部的 Goal 盘上是 `active`) ② 飞轮规则只看 Run 历史 ⇒ 醒了的 Goal 仍判「在等」 ③ `RUN_TRANSITIONS` 缺 `recovering` 入口 ⇒ `prepareResume` 对 paused/needs_human/awaiting_external 必失败 ④ 计龄把**等待**算成**超时** (只有 `queued/running` 该用 `now`) ⑤ 外部事件送达后只改 `wakeReason` 不改 `state`, 且一次真唤醒被报成「没唤醒」 ⑥ **(本轮主缺陷)** 完成那条路**不落盘收尾 continuation** (带 `wakeReason !== 'completed'` 守卫) → preflight 的整份覆盖写把旧 `state:'active'` 盖回来 ⇒ 已完成 Goal 的 `goalVisibleState` 回 `executing` (**界面比系统乐观**): 根因修 reducer 完成分支无条件落盘 + 投影层 `toUserVisibleState` 增 `goalStatus` 入参 (终态最高优先) 三处调用点跟着传 ⑦ 到点唤醒只清 `wakeAt` 不拉回 `goal.status` ⇒ 唤醒后真跑一轮有进展, 收尾却读到 stale `retry_wait` → 落成 `awaiting_external` (wakeAt 已空 ⇒ 只能靠事件唤醒) = **刚有进展的目标被挂起来没人跑** (P6-③ 时钟用例阴性对照真判红逼出): 新增 reducer 意图 `scheduled_wake` 走唯一漏斗。**门禁**: 全量 `vitest run` **233 文件 / 3640 测全绿** · `tsc --noEmit` **0 错** · 冻结门 **34/34** · 成本 **29 Run / 0 LLM 调用 / 场景墙钟 18.7s** (注入时钟, 每 tick 推 10 分钟) · 探针交付前全删 (`_probe-*` = 0) · `goal-flywheel/types.ts` 未动。**如实区分**: 07/10 两条断言**写错**(旧要求「三路径状态两两不同」「失败收尾 ≥3 种形态」)、08 夹具两个 bug(`requiredSkills` 误挡技能门禁 + `createGoal` 返回对象 `runs` 为空) —— 都不是系统缺陷; 未做到: 跨 Goal 试用仍不结算 (`trial_belongs_to_other_goal`)、收尾理由文本不区分失败种类、注入时钟非真时钟、未在真 DOM 上核界面 | [goal-flywheel-m5-acceptance-report.md](./goal-flywheel-m5-acceptance-report.md) / [goal-state-reducer.ts](../../src/agents/goal-state-reducer.ts) / [execution-supervisor.ts](../../src/agents/execution-supervisor.ts) / [work-monitor.ts](../../src/agents/goal-flywheel/work-monitor.ts) / [scenario-09-no-evidence.ts](../../scripts/acceptance/m5/scenario-09-no-evidence.ts) / [goal-flywheel-wiring-freeze.test.ts](../../src/test/goal-flywheel-wiring-freeze.test.ts) |
 | 2026-09-25 | feat | **M0 接线冻结: 把飞轮接成唯一责任链 + 删掉绕过 `closeRun` 的旧收尾路径 + 六条规则用**源码级门**钉死 (带变异验证) + 为 M1–M4 给出互不重叠的文件划分**: 链条 `Supervisor → Goal continuation → Runner/子 Agent → Run → closeRun → Memory + Skill 候选 → 下一次 continuation` 落地为**唯一入口** `closeRunOnce` (幂等)。① **删/改道 6 条旧旁路**: `pi-sdk.ts` 自己那套「读完证据 → `evaluateGoalCompletion` → `completeGoalIfEligible`/`setUnresolved`」Goal 侧收尾 (不收尾: 不写 Memory/不生成候选/不写权威 continuation) **删除**, 改走收尾漏斗 + Goal reducer; `pi-sdk` 的「LLM 不可用 → fallback」出口补收尾 (工具/权限失败也是终止路径); `task/task-runner.ts` 两处 `finishRun` 只结束不收尾 + 直接 `completeGoalIfEligible` → 改走 `closeTaskRun`; 全仓 6 处「各写一遍 `updateGoal(id,{status})`」(Supervisor 的判停/唤醒、接线层阻塞升级、contacts 撤权/等回话、`goal-criteria`、`skill-readiness`、`external-events` 到达/超时、`applyBlockHandling`) 全部收敛到新 `goal-state-reducer.ts` 的 **唯一漏斗** `reduceGoalState` (13 个 intent); `run-store` 新增 Run 终止回调注册点 → **崩溃恢复 (`reconcileOrphans`→interrupted) 与失速 (`superviseRuns`→stalled) 也进同一条链**。② **六条源码级门** (纯函数吃源码文本, 所以变异验证能把人为改坏的源码喂给同一份判据): 规则①只有 Supervisor 判继续 · ②只有 Goal reducer 改状态 (**按文件粒度**判: `patch.status='abandoned'` 与 `await updateGoal(...)` 分行写也必须抓到) · ③只有 `closeRun` 关 Run (含「新增一条 import」也算触碰) · ④**八类终止路径逐条登记** (`FUNNEL_CALL_RE` 带词界, 别名 `closeTaskRun` 必须真调 `closeRunOnce`) · ⑤子 Agent 不许写 Goal · ⑥Skill 不许绕过「验证+快照+可回退」通道 (**措辞是"不许绕过通道"不是"不许自动"** —— M6 允许自动晋升, 通道留出来)。③ **实证**: 新增 2 个测试文件 —— `goal-flywheel-wiring-freeze.test.ts` (34 条: 扫描面真读盘 · 条数下限只加不减 · **每条规则一个注入旧旁路→必须判红的变异** · 空文件列表→门拒跑) 与 `goal-flywheel-m0-chain.test.ts` (5 条**真跑整条链**: 跨 2 个 Run 且第 2 个 Run 的指令里真带上第 1 次收尾写下的 `nextAction` · 收尾幂等 + 事实读不回来如实说 · 崩溃恢复走同一链 · CLI 宿主同一条链)。**门禁**: `tsc --noEmit` **0 错** · 全量 `vitest run` **223 文件 / 3442 测 = 3440 过 + 2 红**, 2 红全在**另一条线**刚落地的 `goal-flywheel-p6-block-executor.test.ts` 且**单独跑 13/13 全绿**(本机并发打穿超时的已知现象) —— 本批新增的 39 条测试与既有 `goal-flywheel-*` 全绿。**未做(如实)**: 真 REPL/真 Web 界面上的 `/supervise` 未验 · 小时级真时钟与多 worker 租约竞争未验 · `block-executor.ts` 不在 M0 声明的扫描面里 (它由另一条线并发落地) | [goal-continuation-flywheel.md](./goal-continuation-flywheel.md) / [m1-m4-closure.md](./m1-m4-closure.md) / [seams.ts](../../src/agents/goal-flywheel/wiring/seams.ts) / [goal-state-reducer.ts](../../src/agents/goal-state-reducer.ts) / [goal-flywheel-wiring-freeze.test.ts](../../src/test/goal-flywheel-wiring-freeze.test.ts) / [goal-flywheel-m0-chain.test.ts](../../src/test/goal-flywheel-m0-chain.test.ts) |
 | 2026-09-25 | docs | **框架改写 (只动文档): 把 `goal-continuation-flywheel.md` 从「项目功能 / 实施路线图」口径改成「意图 + 执行机制」** —— leo 纠正「**飞轮是我的最终意图和意愿, 并不是项目功能**」。① 开头框架: 飞轮**不是给产品加的功能**, 而是把**人的长期意图**持续执行下去的**机制 (引擎)**; **意图是一等输入**, **Goal 是意图的可执行投影** (仓库原则 `Idea / Intent` 优先于 `Code`); 显式写明本页**不是**产品功能清单、**也不是**产品路线图。② **新增一节「意图的落位」** (不编号, 插在 §1 之前, 既有编号一个没动): `意图 (Intent) → Goal → continuation → Run → Memory/Skill → 下一次执行` 六层逐层写清「是什么 / 谁能改」(意图**只有人能改**, Agent 只读; continuation 可自动写但**不改意图、不改完成判据**; 正式 Skill 变更需批准) + 三条纪律: **意图可更新可撤销** · **意图级变更高于 Goal 级** (现有 P4 `GoalChangeRequest` 只管 Goal 级, 意图级变更**需要单独一层由人确认**, Agent 不得自行改意图) · 意图撤销后 Goal 落 `abandoned`/`needs_human` 且不许悬空 (历史 Run 不被改写)。③ 措辞换框: §2「已经有的**引擎零件**」· §3「没收敛的**引擎能力**」· §11 补一条**框架上的不做** (不把飞轮排成产品功能项 / 产品路线图)。**技术事实一字未改**: 8 态状态机 · `ContinuationDecision` 12 字段 + 三类硬底线 · P1 固定收尾 9 步 + 四类产物 · Memory 5 层判别联合 · `SkillImprovementCandidate`/`SkillJunkReason`/`snapshotScope` · `AgentWorkContract` 16 字段 + `AgentWorkReport` + 5 条子禁项 · `BlockKind`(10)/`BlockRecord`/`BlockResolutionAction`/`UserVisibleState`(5) · `GoalChangeRequest` + `ChangeKind`(8) + 5 条规则 + 两份输出 · P5 验收 6 正例 + 2 强负例 · §15 门禁 · §11 不做清单 全部保留原样。**§13 所有权表与 §14 函数签名一个字未动** (从 `## 13.` 到文件末 `cmp` 逐字节相同, 87 行)。`src/**` **零改动**。**门禁**: `wiki_check` / `wiki_lint --strict=v2` / `raw_manifest_check` / `supersede_check` **四门 OK**; `git diff --stat` 只有 4 个 docs 文件。**未做(如实)**: **没有新增意图层类型** (落位先写清, 类型等有真实需要再**单独一次提交**冻结, 与 `types.ts` 改接口同样的纪律) · 6 条并行实现线仍在各自写 `src/agents/goal-flywheel/*.ts`, 本页 §13 未按任何一条的实际进度调整。 | [goal-continuation-flywheel.md](./goal-continuation-flywheel.md) / [index.md](./index.md) / [current-status.md](./current-status.md) |
 | 2026-09-25 | docs | **Goal 长期执行飞轮: 设计落 wiki + **全部接口冻结** (只定类型+文档, **不接实现 / 不改现有调用方**)**: 把已有能力 (Goal/Run/Checkpoint/Recovery · ExecutionSupervisor+lease · continuation/外部等待 · SkillsManager/skill-writer · memory recall · delegate 真执行 · Watchdog/心跳 · reviewFinal · task group/公告) **收敛成一个长期执行飞轮** (目标 → 判断下一步 → 自定节奏 → 执行或派遣 → 监控阻塞 → 注入新要求 → 汇总 → 写 Memory → Skill 候选 → 下次复用), 而不是再造一个更大的 Agent 平台。**记下四个真缺口**: ① Goal/Supervisor 节奏由**固定次数/retry 上限**控制 (不是进展) ② Run 收尾有 review+skill-writer 但**不是强制流水线** (失败/中断恢复时可不走) ③ Memory 能压能召回但**不是每次任务结束必经** ④ 子 Agent 能派遣但缺统一合同/心跳/阻塞上报/变更注入/最终汇报 (**只回一段文本也算数**)。**新增** `src/agents/goal-flywheel/{types.ts,index.ts}` (**零 import / 零 function 的纯类型层**) + `src/test/goal-flywheel-types.test.ts` (**201 条**不变式门: 枚举完备性 · 必备字段不许 optional · 与现有类型关系被精确钉住 · 冻结层纯度) + `docs/wiki/goal-continuation-flywheel.md` (设计 + P0–P5 实施顺序 + **P1–P4 文件所有权划分** + 逐条函数签名)。**与现有类型的关系是查出来的, 不是嘴上说的**: `goal-store.ts` 的 `GoalContinuation` 与新 `GoalContinuationRecord` **共享调度核心**且旧类型可整体读作新类型 (源级字段抽取) · `GoalStatus` ↔ `GoalLifecycleState` 差集**恰好是 `open`** · 与 `contacts/policy.ts` 的 `BlockKind` **同名不同域、取值完全不相交** · `skill-writer.ts` 的文本 `SkillCandidate` **不满足**晋升契约, 本模块**刻意不重名** (`SkillImprovementCandidate`)。**门禁(真跑)**: `npx tsc --noEmit` **0 错** · 全量 `npx vitest run --bail=1` **207 文件 / 2937 测试全绿** (本批 +1 文件 / +201 测试) · `wiki_check` / `wiki_lint --strict=v2` / `raw_manifest_check` / `supersede_check` **四门 OK** · **变异验证真判红** (wakeAt 改 optional → 点名 `ContinuationDecision.wakeAt` 判红; `BLOCK_KINDS` 撞 contacts 域 → 2 条判红; 恢复后全绿)。**未做(如实)**: 本阶段只做落 wiki + 冻结接口 —— **没有实现代码**, 没接 Supervisor/GoalStore/Run 收尾的调用方, P5 长周期验收未跑 | [goal-continuation-flywheel.md](./goal-continuation-flywheel.md) / [types.ts](../../src/agents/goal-flywheel/types.ts) / [goal-flywheel-types.test.ts](../../src/test/goal-flywheel-types.test.ts) / [index.md](./index.md) |
@@ -3833,3 +3834,58 @@ M5 长周期真跑(用真实长期目标当靶子) · M6 空闲反思(做梦) ·
 **待办: 双源 → 发版** —— `bolloon update` 支持 **npm + GitHub 双源**, 且**双源先于发 npm 新包**;
 口径/命令面/错误分类 (`github_unavailable`)/dev 用 git ref + commit sha/一键回 stable/"源不可达必须拒绝不许静默装回旧版"
 已写进 [update-protocol.md §12](./update-protocol.md) (**本节只定口径, 未改任何现有代码**)。
+
+## [2026-09-25] test(goal) | 飞轮 M5 长周期真跑验收: 10 场景真跑 + 7 个真缺陷 (最要紧两个是「界面撒谎」与「醒了没人管」)
+
+**口径**: 真 Goal/Run Store + 每场景隔离 HOME + **注入时钟** (`clock: injected`, 每 tick 推 10 分钟, 不是真等)。
+10 个场景脚本在 `scripts/acceptance/m5/` (自带隔离与产物目录), 结果文件落 `results/scenario-XX.json` (逐条断言 + detail + cost)。
+报告页: [goal-flywheel-m5-acceptance-report.md](./goal-flywheel-m5-acceptance-report.md)。
+
+**结果**: 10/10 场景 · **191 过 / 0 败** · 29 真 Run · **0 次 LLM 调用** (脚本化确定性 runner) · 40 次 tick · 场景墙钟 **18.7s**。
+门禁: 全量 `vitest run` **233 文件 / 3640 测全绿** · `tsc --noEmit` **0 错** · 冻结门 **34/34** · `goal-flywheel/types.ts` **未动**。
+
+| # | 场景 | 断言 | 卡点 |
+| --- | --- | --- | --- |
+| 01 | 按进展跳 Run 自动完成 (+反事实 +紧预算) | 16/0 | — |
+| 02 | 真 `kill -9` 后接续 (无幽灵运行 · 不重做) | 17/0 | — |
+| 03 | 子 Agent 卡死 → `tickOnce` 内被接管 → 交人 | 12/0 | — |
+| 04 | 子 Agent 输出不完整 → 父逐条拒收 | 14/0 | — |
+| 05 | 外部等待 + 可信事件唤醒 (四道校验 · 停机交接 · wakeAt) | 26/0 | **ICP 备案号真实例不计入** (真外部事要几天) |
+| 06 | 运行中注入新要求 (历史不改写) | 18/0 | — |
+| 08 | 下次相似任务复用 (引用可指认 · 步骤数 3→2) | 11/0 | 夹具两处 bug 修掉后才真跑 |
+| 07 | 结束自动出 Memory/教训/候选/下一步 | 25/0 | 断言写错已改 (不是系统缺陷) |
+| 09 | 没证据不能显示完成 (三层都挡 + 正向对照) | 19/0 | **主缺陷 ⑥ 由这条挖出** |
+| 10 | 五种失败都给下一步 + 活跃 Run 无僵尸 | 33/0 | 断言写错已改 |
+
+### 挖出的真缺陷 (①–⑤ 接手前那条线已修, 本轮保留+复验; ⑥⑦ 本轮修)
+
+- **⑥ 已完成 Goal 被界面显示成「正在执行」** (界面比系统乐观)。盘上 `closure.state=completed` + `goal.status=completed`,
+  但 `goal.continuation` 是旧的 (`state:'active'` / `nextAction:'由这一步的结果决定…'` / `lastDecisionId` 指向 **preflight** 记录)。
+  **真写入者 = tick 内 preflight 的整份 continuation 覆盖写**; 它能盖是因为**完成那条路没写** —— `planGoalStateChange`
+  完成分支带 `wakeReason !== 'completed'` 守卫 → 跳过落盘。**修法两处** (根因 + 纵深): ① reducer 完成分支**无条件**落盘收尾
+  continuation; ② `toUserVisibleState` 增 `goalStatus` 入参 + `TERMINAL_GOAL_STATUSES`/`isTerminalGoalStatus` (终态**最高优先**),
+  `goal-flywheel-wiring.ts` 两处 + `web/server.ts` 一处调用点都传 Goal 本体 status。**双向验证**: 完成 Goal → `ended`;
+  没证据那轮 (`status=active`) → `executing` (不许把进行中说成结束); 人为把落后 `state:'active'` 写回已完成 Goal → **仍 `ended`**。
+- **⑦ 到点唤醒后 stale 状态把有进展的目标挂成「等外部」**。唤醒分支只清 continuation 的 `wakeAt/wakeReason`, `goal.status`
+  仍停在 `retry_wait` → 这一轮真跑出进展, 收尾却读到 stale `retry_wait` → 判 `wait` → 合并规则落成 `awaiting_external`
+  (wakeAt 已清空 ⇒ 只能靠事件唤醒) = **没人会再跑它**。**逼出方式**: 修 ⑥ 后跑聚焦回归, `goal-flywheel-p6-clock.test.ts`
+  的**阴性对照真判红** (`repFast.executed=0`, 期望 1), 临时探针复现 `goal.status=awaiting_external` + 下一 tick 跳过理由
+  `awaiting_external: 等外部事件, 不重复发送`。**修法**: 新增 reducer 意图 `scheduled_wake` (status→`active` + 清 `wakeAt` +
+  `continuation.state='active'`), `execution-supervisor.ts` 唤醒分支改走**唯一漏斗** `reduceGoalState` (不再裸 `setContinuation`)。
+- **①–⑤** (接手前): ① `goalStatusFromDecision` 缺 `wait` 分支 ② 飞轮「在等」只看 Run 历史 → 醒了的 Goal 仍判等
+  ③ `RUN_TRANSITIONS` 缺 `recovering` 入口 ④ 计龄把**等待**算成**超时** ⑤ 外部事件送达只改 `wakeReason` 不改 `state` + 真唤醒被报成没唤醒。
+
+### 如实区分: 夹具 / 断言写错 (不是系统缺陷)
+
+- **07**: 旧断言要求「三条终止路径 Goal 状态两两不同」—— 「失败交人」与「超时交人」同为 `needs_human` 合法 → 改为断言**理由互不相同**。
+- **10**: 旧断言要求失败收尾「≥3 种形态」—— 失败收尾本来只有两种 (`ask_human`/`wait`); 试过「理由两两不同」也不成立
+  (5 条里 3 条同一条「无进展」模板) → 改为断言 `(Run.status | errorClass | 收尾 state)` 三元组唯一。
+- **08 夹具**: ① 两个 Goal 带 `requiredSkills:['export_data']` → 被**本地技能就绪门禁**拦成 `needs_human`, 根本没跑 Run;
+  ② 用 `createGoal(...)` 返回对象的 `runs[0]` 做引用匹配 (那时 `runs` 为空) → 改 `readGoal()` 读回; 并把「相似任务 B」
+  移到**单独一个 tick** (旧写法三 Goal 同 tick 全跑完, `tickB/tickC` 是空 tick —— 「第一次/下一次」在时间上是假的)。
+
+### 未做到 / 保留 (如实)
+
+跨 Goal 的复用**不兑现 Skill 试用** (`trial_belongs_to_other_goal`, 候选停在 `trialing`, 需 leo 拍) · 收尾理由文本**不区分**
+失败种类 (3/5 同模板, 2/5 被 `classifyError` 归到 `auth`/`unknown`) · **注入时钟非真时钟** (小时级/跨进程长周期未验) ·
+场景 05 备案号真实例不计入 · **未在真 DOM** 上核界面投影 · 临时探针交付前已全删 (`_probe-*` = 0)。

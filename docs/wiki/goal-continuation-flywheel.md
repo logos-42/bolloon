@@ -227,6 +227,11 @@ Run 结束顺序**固定** (`RunClosureStep`):
 | **强负例 7** | 子 Agent 返回漂亮但**无证据**的结果 → 父 Goal **不完成** |
 | **强负例 8** | Skill Candidate 只有一次偶然成功 → **不得**自动晋升正式 Skill |
 
+> **M5 真跑验收 (2026-09-25 已完成)**: 上面这 8 条设计用例的**真跑版**落在 `scripts/acceptance/m5/` 的 10 个场景脚本里
+> (真 Goal/Run Store + 每场景隔离 HOME + **注入时钟**), 结果与 **7 个真缺陷台账** 见
+> [goal-flywheel-m5-acceptance-report.md](./goal-flywheel-m5-acceptance-report.md)。
+> **本节设计口径一字未改** —— M5 真跑是执行证据, 不是新的设计约定。
+
 ## 11. 不做 (`FlywheelNonGoal`)
 
 无限自主 Agent 群 · 自动生成大量子 Agent · 多级递归派遣 · Agent 自己管理 Agent 市场 ·
