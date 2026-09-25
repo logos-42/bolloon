@@ -646,8 +646,12 @@ const STATE_OK_FOR_DECISION: Record<ContinuationDecisionKind, ContinuationState[
   pause: ['needs_decision', 'blocked'],
 };
 
-/** decision → Goal 生命周期状态 (P1 自己拥有 GoalContinuationRecord) */
-const GOAL_STATE_FOR_DECISION: Record<ContinuationDecisionKind, GoalLifecycleState> = {
+/** decision → Goal 生命周期状态 (P1 自己拥有 GoalContinuationRecord)
+ *
+ * ★ 2026-09-26 (M2): 导出为**单一事实来源** —— 接线接缝 `wiring/closure.ts` 的收尾产物审计
+ *   要用它在"决策 ↔ continuation.state"之间对齐, 不在这里重抄一份映射 (两套映射 = 两套事实)。
+ */
+export const GOAL_STATE_FOR_DECISION: Record<ContinuationDecisionKind, GoalLifecycleState> = {
   continue: 'active',
   wait: 'awaiting_external',
   delegate: 'active',
@@ -961,6 +965,13 @@ export async function closeRun(input: CloseRunInput, deps: CloseRunDeps): Promis
   const { nextStep, note: nextNote } = nextStepOf(decision);
   if (nextNote) skipped.push({ step: 'continuation_decision', reason: nextNote });
 
+  // ── 收尾流水线自检 (M2): 固定 9 步 / 顺序固定 / 不重不漏 ──────────────────
+  //   `steps` 是"收尾走了哪几步"的唯一记录; 一旦它缺步或换序, 这条纪律就不再是一句没人验的话。
+  const stepAudit = auditClosureSteps(steps);
+  if (!stepAudit.ok) {
+    skipped.push({ step: 'run_ended', reason: `closure_step_order_violation: ${stepAudit.reason}` });
+  }
+
   const userReport = buildUserReport(input, decision, nextStep, facts, confirmedRefs, guarded.notes);
   const continuation = buildContinuation(input, decision, nextStep);
 
@@ -969,3 +980,26 @@ export async function closeRun(input: CloseRunInput, deps: CloseRunDeps): Promis
 
 /** 收尾步骤的固定顺序 (§5) —— 导出一份, 便于接线层与门核对 */
 export const CLOSURE_STEP_ORDER: readonly RunClosureStep[] = RUN_CLOSURE_STEPS;
+
+/**
+ * 收尾流水线自检 (M2): **步数固定 · 顺序固定 · 不重不漏**。
+ *
+ * 为什么需要它: "成功 / 失败 / 中断恢复后的 Run 都必须走完同一条流水线" 这句话, 之前只由
+ * `steps` 数组的**长度**间接体现 —— 少一步/换序都不会有人发现。把这个判据做成纯函数后,
+ * 收尾自己每次都会过它一遍 (违反就进 `skipped`), 测试也能把**人为改坏的步骤序列**喂给它。
+ */
+export function auditClosureSteps(steps: readonly RunClosureStep[]): { ok: boolean; reason: string } {
+  const missing = RUN_CLOSURE_STEPS.filter((s) => !steps.includes(s));
+  if (steps.length !== RUN_CLOSURE_STEPS.length || missing.length > 0) {
+    return {
+      ok: false,
+      reason: `步数不对: 走了 ${steps.length} 步, 冻结面是 ${RUN_CLOSURE_STEPS.length} 步 (缺: ${missing.join(',') || '无'})`,
+    };
+  }
+  for (const [i, expected] of RUN_CLOSURE_STEPS.entries()) {
+    if (steps[i] !== expected) {
+      return { ok: false, reason: `第 ${i + 1} 步是 ${String(steps[i])}, 冻结顺序要求 ${expected}` };
+    }
+  }
+  return { ok: true, reason: `ok: ${RUN_CLOSURE_STEPS.length} 步按 §5 顺序走完` };
+}
