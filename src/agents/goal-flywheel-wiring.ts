@@ -58,15 +58,44 @@ import { reduceGoalState } from './goal-state-reducer.js';
 
 // 接缝的拒绝类型与判别器一并从这里转发 (调用方不必再 import 接缝目录)
 export { isRefusal } from './goal-flywheel/wiring/index.js';
-export type { SeamRefusal, WiringCaller, SeamId, WiringStage } from './goal-flywheel/wiring/index.js';
-import { addRunEvidence, readRun, type RunRecord } from './run-store.js';
+export type {
+  SeamRefusal,
+  WiringCaller,
+  SeamId,
+  WiringStage,
+  // ★ 2026-09-25 (串行收口): 其余新成员也一并转发 —— 宿主 (Supervisor/CLI/Web) 要用的类型
+  //   不必再深入接缝目录自己 import (M3 报的"wiring/index 补导"同类问题在这一层也补上)
+  MonitorTickView,
+  MonitoredGoal,
+  BlockHandlingView,
+  VisibleStateView,
+  ContractSeam,
+  ChildDispatchPort,
+  DispatchReceipt,
+  DispatchOutcome,
+  ClosureTerminalKind,
+  ClosureReceipt,
+  RhythmFacts,
+  RhythmBasis,
+  SafetyCap,
+  ContinuationPreflight,
+  TrialOpeningView,
+} from './goal-flywheel/wiring/index.js';
+import { addRunEvidence, readRun, setRunStatus, type RunRecord } from './run-store.js';
 import { applyHardLimits, decideContinuation, isRunnable } from './goal-flywheel/continuation-decision.js';
 import { closeRun, CLOSURE_STEP_ORDER, type CloseRunInput, type CloseRunResult } from './goal-flywheel/run-closure.js';
 import { writeMemoryRecords } from './goal-flywheel/memory-layers.js';
-import { assessCandidate } from './goal-flywheel/skill-candidate.js';
+import {
+  assessCandidate,
+  openSkillTrial,
+  settleSkillTrial,
+  type SkillChannelAdmission,
+  type SkillTrialRecord,
+  type SkillTrialSettlement,
+} from './goal-flywheel/skill-candidate.js';
 import { acceptsAsComplete, issueWorkContract, stableHash, validateChildReport } from './goal-flywheel/work-contract.js';
 import { detectBlocks, planBlockHandling, toUserVisibleState } from './goal-flywheel/work-monitor.js';
-import { applyChange, classifyChange, ingestChange, nextStatusFor, shouldSupersedePending } from './goal-flywheel/goal-change.js';
+import { applyChange, classifyChange, ingestChange, isRunInFlight, nextStatusFor, shouldSupersedePending } from './goal-flywheel/goal-change.js';
 import type { ChangeApplication } from './goal-flywheel/goal-change.js';
 // 2026-09-25 (M0 接线冻结): 唯一责任链的五个接缝 (各阶段独占一个文件; 依赖在这里注入)
 import {
@@ -75,14 +104,23 @@ import {
   createContinuationSeam,
   createContractSeam,
   createMonitorSeam,
+  bindingCaps,
+  closureTerminalKindFor,
   isRefusal,
   type ChangeSeam,
+  type ChangeIngestView,
   type ClosureOutcomeView,
   type ClosureSeam,
   type CloseRunOnceResult,
+  type ClosureTerminalKind,
   type ContractSeam,
   type ContinuationSeam,
   type MonitorSeam,
+  type MonitorTickView,
+  type RhythmBasis,
+  type RhythmFacts,
+  type SafetyCap,
+  type TrialOpeningView,
   type SeamRefusal,
   type WiringCaller,
 } from './goal-flywheel/wiring/index.js';
@@ -478,6 +516,240 @@ export async function decideGoalStep(input: {
   };
 }
 
+// ============================================================================
+// §4.1 主循环走**规范节奏路径** (M1 接缝的 `readFacts` 钩子 + 回放记录)
+// ============================================================================
+
+/**
+ * `readFacts` 的读盘留痕 —— "主循环这一 tick 真的读了事实"要有**可核验的证据**,
+ * 而不是靠读代码相信接线接上了。
+ *
+ * 它记录的是**事实读**这件事本身 (谁/何时/读到哪条 Run), 不是判定结论 (结论在决策记录里)。
+ */
+export interface FactsReadNote {
+  goalId: string;
+  now: IsoTimestamp;
+  /** 这次事实读用的那条 Run (首个 Run 之前为 null) */
+  runId: string | null;
+  factsFound: boolean;
+  /** 读盘失败时的原文 (成功为 null) —— 不许静默把"读不到"当成"没有事实" */
+  error: string | null;
+  at: IsoTimestamp;
+}
+
+/** 留痕上限 (有界: 长跑进程不许攒一条无限长的数组) */
+export const FACTS_READ_NOTE_MAX = 50;
+let factsReadLog: FactsReadNote[] = [];
+
+/** 事实读留痕 (最近 FACTS_READ_NOTE_MAX 条, 最旧的在最前) */
+export function factsReadNotes(): readonly FactsReadNote[] {
+  return factsReadLog;
+}
+
+/** 测试用: 清空留痕 (不影响接缝实例) */
+export function resetFactsReadNotesForTest(): void {
+  factsReadLog = [];
+}
+
+function noteFactsRead(n: Omit<FactsReadNote, 'at'>): void {
+  factsReadLog.push({ ...n, at: new Date().toISOString() });
+  while (factsReadLog.length > FACTS_READ_NOTE_MAX) factsReadLog.shift();
+}
+
+/**
+ * `readFacts({goalId, now})` 的**真实现** —— 只读事实, 不判定 (`readRhythmFacts` 的名字在说这件事)。
+ *
+ * 读的是: Goal (权威 continuation / 判据 / 跑过几条 Run) + 最近一条 Run (证据 / 步骤) +
+ * 历史决策记录 (算进展增量与无进展连击)。判定交给 M1 接缝 (它用 P0 自己编), 本函数**不**碰决策。
+ *
+ * 返回 null 的两种情形**都如实留痕**, 且语义不同:
+ *   · `factsFound=false` + `error=null` = 还没有 Run 事实 (首个 Run 之前: 没有"上一轮"可读);
+ *   · `error!=null` = 读盘失败 (拿不到事实 ≠ 没有事实)。
+ * 两种情形下接缝都会走注入兜底 (结果为 `source='injected'`, 不假装是事实判的)。
+ */
+export async function readRhythmFacts(input: {
+  goalId: string;
+  now: IsoTimestamp;
+  home?: string;
+}): Promise<RhythmFacts | null> {
+  const home = input.home ?? bolloonHome();
+  try {
+    const goal = await readGoal(input.goalId);
+    if (!goal) {
+      noteFactsRead({ goalId: input.goalId, now: input.now, runId: null, factsFound: false, error: `goal 不存在: ${input.goalId}` });
+      return null;
+    }
+    const lastRunId = goal.currentRunId || goal.runs?.[goal.runs.length - 1];
+    const run = lastRunId ? await readRun(lastRunId).catch(() => null) : null;
+    if (!run) {
+      noteFactsRead({ goalId: goal.goalId, now: input.now, runId: null, factsFound: false, error: null });
+      return null; // 首个 Run 之前没有"上一轮"事实 —— 不编一条空 Run 出来
+    }
+    const records = await readDecisionRecords(goal.goalId, home);
+    const prevSnapshot = [...records].reverse().find((r) => r.phase === 'closure')?.goalSnapshot ?? null;
+    const progress = computeRunProgress(goal, run, prevSnapshot);
+    const noProgressStreak = await deriveNoProgressStreak(goal, run.runId, progress, records, home);
+    noteFactsRead({ goalId: goal.goalId, now: input.now, runId: run.runId, factsFound: true, error: null });
+    return { goal, run, now: input.now, progress, noProgressStreak };
+  } catch (e) {
+    noteFactsRead({ goalId: input.goalId, now: input.now, runId: null, factsFound: false, error: String((e as Error)?.message || e) });
+    return null;
+  }
+}
+
+/** 主循环拿到的节奏判定: `GoalStepDecision` + **这一步走的是哪条路** (可核验, 不靠读代码) */
+export interface SupervisorStepDecision extends GoalStepDecision {
+  /** `facts` = 走 M1 接缝的规范路径 (事实→P0); `injected` = 事实拿不到, 退回旧注入口径 */
+  source: 'facts' | 'injected';
+  /** 主节奏依据 (注入路径为 null: 那条路没有节奏归因, 如实留白) */
+  basis: RhythmBasis | null;
+  /** 这一步在说话的安全上限 (注入路径为空: 缺事实就核验不了) */
+  caps: SafetyCap[];
+  bindingCap: SafetyCap | null;
+}
+
+/**
+ * Supervisor **唯一**的节奏判定入口: 走 M1 接缝 (`flywheelSeams().continuation.preflight`)。
+ *
+ * 为什么还要经过接缝而不是直接 `decideGoalStep`: 接缝是**规范口径** (`readFacts` → P0 → 归因),
+ * 而 `decideGoalStep` 是"接线层自己再判一遍"的旧路。主循环走接缝 = 全仓只有一套节奏判定。
+ *
+ * 上限 (`limits`) 为什么由这里先算一次: M1 刻意**不许事实读夹带上限** (`RhythmFacts` 里没有
+ * `hardLimits`) —— 上限是宿主配置 (goal.budget / run.deadlineMs / `BOLLOON_GOAL_MAX_RUNS`),
+ * 必须由调用方经 `safetyCapsFrom()` 注入。所以这里先读一次 Goal/Run 算上限, 事实读本身由接缝
+ * 通过 `readRhythmFacts` 再做 (两次读都在同一次判定里, 且**上限只可能来自宿主配置**, 不会被
+ * 事实读改写)。
+ *
+ * 回放记录 (`writeRecord`): 接缝不写记录 (它不碰盘), 所以 preflight 记录由**这里**落盘 ——
+ * 与 `decideGoalStep` 写的是同一份形状 (事实 → 结论), 保证 `.bolloon/goal-decisions/` 的记录流不断。
+ */
+export async function preflightGoalStep(input: {
+  goalId: string;
+  now: IsoTimestamp;
+  maxRetries?: number;
+  maxRounds?: number;
+  maxRunDurationMs?: number;
+  writeRecord?: boolean;
+  home?: string;
+}): Promise<SupervisorStepDecision | SeamRefusal | null> {
+  const home = input.home ?? bolloonHome();
+  const goal = await readGoal(input.goalId);
+  if (!goal) return null;
+  const lastRunId = goal.currentRunId || goal.runs?.[goal.runs.length - 1];
+  const run = lastRunId ? await readRun(lastRunId).catch(() => null) : null;
+  const hardLimits = hardLimitsFor({ goal, run, maxRetries: input.maxRetries });
+
+  const pre = await flywheelSeams().continuation.preflight({
+    goalId: input.goalId,
+    caller: 'supervisor',
+    now: input.now,
+    maxRetries: input.maxRetries,
+    maxRounds: input.maxRounds,
+    maxRunDurationMs: input.maxRunDurationMs,
+    limits: hardLimits,
+    writeRecord: false, // 记录由本函数按**同一份事实**落盘 (见下), 不让接缝去写
+  });
+
+  if (pre && !isRefusal(pre) && pre.source === 'facts' && pre.facts) {
+    const facts = pre.facts;
+    const step: SupervisorStepDecision = {
+      goalId: facts.goal.goalId,
+      run: facts.run,
+      decision: pre.fullDecision,
+      runnable: pre.runnable,
+      reason: pre.reason,
+      noProgressStreak: pre.noProgressStreak,
+      progress: facts.progress,
+      hardLimits: pre.capsInEffect,
+      source: 'facts',
+      basis: pre.basis,
+      caps: pre.caps,
+      bindingCap: pre.bindingCap,
+    };
+    if (input.writeRecord) {
+      await writeDecisionRecord(
+        {
+          goalId: step.goalId,
+          runId: facts.run.runId,
+          phase: 'preflight',
+          decision: step.decision as ContinuationDecision,
+          runnable: step.runnable,
+          runnableReason: step.reason,
+          noProgressStreak: step.noProgressStreak,
+          hardLimits: step.hardLimits,
+          goalSnapshot: snapshotOf(goal),
+          recordedAt: input.now,
+        },
+        home,
+      ).catch(() => null);
+    }
+    return step;
+  }
+
+  // 事实拿不到 (还没有 Run 事实 / 读盘失败) 或接缝真拒 → 退回旧口径, 并**如实标 source='injected'**
+  const legacy = await decideGoalStep({
+    goalId: input.goalId,
+    now: input.now,
+    maxRetries: input.maxRetries,
+    home,
+    writeRecord: input.writeRecord,
+  });
+  if (!legacy) {
+    // 连旧口径都拿不到目标 → 接缝的拒绝原样上报 (有拒绝就是有拒绝), 否则如实返回 null
+    return pre && isRefusal(pre) ? pre : null;
+  }
+  return { ...legacy, source: 'injected', basis: null, caps: [], bindingCap: null };
+}
+
+/**
+ * 反事实归因: **这一步在说话的是哪条安全上限** (M1 `bindingCaps` 的真调用方, 2026-09-25 串行收口)。
+ *
+ * 判据是反事实, 不是把上限数字比一遍 (手算就是第二套事实): 把某条上限**连它的事实层来源**放宽 →
+ * 结论投影变了 ⟹ 是它在说话; 结论没变 ⟹ 这次停跟它无关。见 `continuation.ts` 的 `bindingCaps`。
+ *
+ * 事实不足时如实说: 还没有 Run 事实 (首个 Run 之前 / 读盘失败) → `factsFound=false` + `bindingCap=null`
+ * + `reason` 说清,**不猜**一条"最像的"上限出来。
+ *
+ * 上限来源与 `preflightGoalStep` 同一份推导 (`hardLimitsFor`: Goal 自报的 `budget` 优先于 env/默认)。
+ */
+export async function explainBindingCap(input: {
+  goalId: string;
+  now?: IsoTimestamp;
+  maxRetries?: number;
+  home?: string;
+}): Promise<{
+  goalId: string;
+  now: IsoTimestamp;
+  factsFound: boolean;
+  caps: SafetyCap[];
+  bindingCap: SafetyCap | null;
+  reason: string;
+}> {
+  const home = input.home ?? bolloonHome();
+  const now = input.now ?? new Date().toISOString();
+  const goal = await readGoal(input.goalId);
+  if (!goal) {
+    return { goalId: input.goalId, now, factsFound: false, caps: [], bindingCap: null, reason: `goal 不存在: ${input.goalId} → 没有事实就没有上限归因` };
+  }
+  const lastRunId = goal.currentRunId || goal.runs?.[goal.runs.length - 1];
+  const run = lastRunId ? await readRun(lastRunId).catch(() => null) : null;
+  const facts = await readRhythmFacts({ goalId: input.goalId, now, home });
+  if (!facts) {
+    return { goalId: input.goalId, now, factsFound: false, caps: [], bindingCap: null, reason: '读不到节奏事实 (还没有 Run / 读盘失败) → 上限无从核验, 不做归因' };
+  }
+  const caps = bindingCaps(facts, hardLimitsFor({ goal, run, maxRetries: input.maxRetries }));
+  return {
+    goalId: input.goalId,
+    now,
+    factsFound: true,
+    caps,
+    bindingCap: caps[0] ?? null,
+    reason: caps.length > 0
+      ? `在说话的安全上限 (反事实: 放宽它结论就变): ${caps.join(', ')}`
+      : '没有任何安全上限在说话 (这一步的结论不是被上限拦下的)',
+  };
+}
+
 export function snapshotOf(goal: GoalRecord): DecisionRecordSnapshot {
   return {
     status: goal.status,
@@ -541,13 +813,22 @@ export function candidateContentHash(c: SkillImprovementCandidate): string {
  */
 export async function writeSkillCandidate(
   c: SkillImprovementCandidate,
-  ctx: { home?: string; existing?: { name: string; contentHash: string; version: string }[]; now?: IsoTimestamp; runningSnapshotHash?: string | null } = {},
+  ctx: {
+    home?: string;
+    existing?: { name: string; contentHash: string; version: string }[];
+    now?: IsoTimestamp;
+    runningSnapshotHash?: string | null;
+    /** 通道 ①–⑤ 的准入结论 (候选产出处当场做); 缺了它候选文件里就没有"开过试用没有"这条事实 */
+    admission?: SkillChannelAdmission | null;
+  } = {},
 ): Promise<string | null> {
   const home = ctx.home ?? bolloonHome();
   const existing = ctx.existing ?? [];
   const assessment = assessCandidate(c, existing);
   if (assessment.junkReasons.length > 0) return null;
   const runningSnapshotHash = ctx.runningSnapshotHash ?? (await skillSnapshotHash(c.name, home));
+  const file = path.join(home, SKILL_CANDIDATES_ROOT, `${safeName(c.candidateId)}.json`);
+  const prev = await readJson<Record<string, unknown>>(file);
   const payload = {
     ...c,
     snapshotScope: 'next_run_only' as const,
@@ -557,9 +838,28 @@ export async function writeSkillCandidate(
     promotable: assessment.promotable,
     boundaryNote: SKILL_CANDIDATE_BOUNDARY_NOTE,
     recordedAt: ctx.now ?? new Date().toISOString(),
+    /**
+     * ★ 通道状态 (2026-09-25 串行收口): 候选文件是**这条候选唯一的事实落点** ——
+     * 准入 (①–⑤) 与试用记录写在这里, 结算 (⑥ 提升/回退) 也写回这里。
+     * 不新开目录/不新增存储: `trial` 就是"这份候选当前处在试用的哪一步"。
+     * 准入**不是**晋升 (`promotion` 在准入侧恒为 null, 由 `settleSkillTrial` 才能给出)。
+     */
+    channel: ctx.admission
+      ? {
+        ok: ctx.admission.ok,
+        stages: ctx.admission.stages,
+        refusal: ctx.admission.refusal,
+        note: '准入 ≠ 晋升: 提升的唯一出口是 settleSkillTrial (下一条 Run 成功复用并带证据)',
+      }
+      : null,
+    trial: ctx.admission?.trial ?? null,
+    /**
+     * 提升记录: 候选产出时**显式**写 `null` (不是省略这个键) ——
+     * 「键缺席」会被读成"没查过", `null` 才是"查过, 还没有"。已有记录一律保留 (提升过的不许被
+     * 一次重复收尾抹掉; 与下面那条"同一候选 id 不同内容不覆盖"的守卫同一方向)。
+     */
+    promotion: (prev?.promotion ?? null) as unknown,
   };
-  const file = path.join(home, SKILL_CANDIDATES_ROOT, `${safeName(c.candidateId)}.json`);
-  const prev = await readJson<Record<string, unknown>>(file);
   if (prev && JSON.stringify(prev) !== JSON.stringify(payload) && prev.runningSnapshotHash === runningSnapshotHash) {
     // 同一候选 id 已有不同内容 → 不覆盖 (候选是事实记录, 不是可变状态)
     return null;
@@ -574,10 +874,21 @@ export interface CloseGoalRunOutcome {
   written: string[];
   rejected: { memoryId: string; reason: string }[];
   candidatePaths: string[];
+  /** ★ 每条候选的通道准入结论 (开过试用 / 为什么没开) —— 候选产出处就是通道入口 (2026-09-25) */
+  trials: SkillTrialOpenView[];
   /** 每轮一份的**用户汇报** (P4b 第一份输出) */
   reportPath: string;
   decisionRecordPath: string;
   continuationPatch: Partial<GoalContinuation>;
+}
+
+/** 一条候选的通道准入结论 (给上层看"开过试用没有", 不只给个路径) */
+export interface SkillTrialOpenView {
+  candidateId: string;
+  skillName: string;
+  admission: SkillChannelAdmission;
+  /** 候选文件路径 (垃圾候选不落盘 → null) */
+  path: string | null;
 }
 
 /**
@@ -624,7 +935,16 @@ export async function closeGoalRun(input: {
     ]),
   };
   const existingSkills = (goal.skillSnapshot ?? []).map((s) => ({ name: s.name, contentHash: s.contentHash, version: s.version }));
+  // ★ 串行收口: 盘上**还挂在试用位**的候选也算"已有" —— 同一条要求被下一条 Run 又提一遍时,
+  //   那是 `duplicate_of_existing` (不需要新版本), 不该再写一份候选、更不该再开一次试用
+  //   (候选 id 带 Run, 所以"同名同内容"在这里是常态; 见 trialingSkillsOfGoal)。
+  for (const t of await trialingSkillsOfGoal(home, goal.runs ?? [])) {
+    if (!existingSkills.some((e) => e.name === t.name && e.contentHash === t.contentHash)) existingSkills.push(t);
+  }
   const candidatePaths: string[] = [];
+  const trialOpenings: SkillTrialOpenView[] = [];
+  /** 同一批里**排在前面**的候选 (批内去重: 同名第二次不许再开一次试用) */
+  const batchSiblings: SkillImprovementCandidate[] = [];
 
   const result = await closeRun(
     {
@@ -640,8 +960,24 @@ export async function closeGoalRun(input: {
     {
       writeMemory: (batch: MemoryRecord[], at: IsoTimestamp) => writeMemoryRecords(home, batch, at),
       writeCandidate: async (c: SkillImprovementCandidate) => {
-        const p = await writeSkillCandidate(c, { home, existing: existingSkills, now, });
-        if (p) candidatePaths.push(p);
+        // ★ 候选产出处 = 通道入口 (2026-09-25 串行收口): 候选**一被写出来**就过 ①–⑤ 准入。
+        //   准入不是晋升 (promotion 恒为 null), 但"开过试用没有"必须当场有结论 ——
+        //   否则下一条 Run 的复用确认 (settleSkillTrial) 根本没有试用记录可结算 (M2 报的钩子)。
+        //   试用记录写进**候选文件本身** (已有落点, 不新开目录/不新增存储)。
+        const admission = openSkillTrial({
+          candidate: c,
+          existing: existingSkills,
+          siblings: batchSiblings,
+          requestedBy: 'closure',
+          runningSnapshotHash: await skillSnapshotHash(c.name, home),
+          now,
+        });
+        const p = await writeSkillCandidate(c, { home, existing: existingSkills, now, admission });
+        if (p) {
+          candidatePaths.push(p);
+          batchSiblings.push(c);
+        }
+        trialOpenings.push({ candidateId: c.candidateId, skillName: c.name, admission, path: p });
         return p;
       },
       decide: (decisionInput) => applyHardLimits(decideContinuation(decisionInput), decisionInput.hardLimits),
@@ -681,10 +1017,196 @@ export async function closeGoalRun(input: {
     written: memoryFiles,
     rejected: [],
     candidatePaths,
+    trials: trialOpenings,
     reportPath,
     decisionRecordPath,
     continuationPatch: toGoalStoreContinuation(result.continuation),
   };
+}
+
+// ============================================================================
+// §6.1 Skill 试用结算 (通道 ⑥ 的真调用方: **下一条 Run 成功点**)
+// ============================================================================
+
+/** 一条候选的结算结论 (宿主用它记账/上报; 不提升时 `reason` 说清为什么) */
+export interface SkillTrialSettlementView {
+  candidateId: string;
+  skillName: string;
+  status: SkillTrialRecord['status'];
+  promoted: boolean;
+  toVersion: string | null;
+  reason: string;
+  /** 结算写回的候选文件 (读不到文件时为 null) */
+  path: string | null;
+}
+
+/** 盘上候选文件里本模块要读的字段 (其余原样保留: 草案内容不许被这里改) */
+interface CandidateFileShape {
+  candidateId?: string;
+  name?: string;
+  contentHash?: string;
+  trial?: SkillTrialRecord | null;
+  promotion?: unknown;
+  [k: string]: unknown;
+}
+
+/**
+ * 把通道状态写回候选文件 —— **只动 `trial` / `promotion` 两个键**, 草案内容一个字节都不改。
+ *
+ * 为什么绕过 `writeSkillCandidate` 的"同名不同内容不覆盖"守卫: 那条守卫保护的是**草案**
+ * (候选是事实记录), 而通道状态 (trialing → promoted / rolled_back) 本来就是会变的状态 ——
+ * 这是它唯一允许的写回点 (而且写回的就是"试用被兑现/回退"这个事实)。
+ */
+async function writeCandidateChannelState(
+  file: string,
+  patch: { trial: SkillTrialRecord; promotion?: unknown },
+): Promise<void> {
+  const cur = await readJson<CandidateFileShape>(file);
+  if (!cur) return;
+  await atomicWrite(file, JSON.stringify({
+    ...cur,
+    trial: patch.trial,
+    promotion: patch.promotion ?? cur.promotion ?? null,
+  }, null, 2));
+}
+
+/**
+ * `existing` 里要计入的**已挂试用**的 Skill 身份 (2026-09-25 串行收口)。
+ *
+ * 为什么必须有这一条: 候选 id 里带 Run (`cand:<runId>:<i>:<name>`), 所以同一条要求被**下一条 Run
+ * 又提一遍**时是一份**新候选** —— 盘上于是出现两份同名同内容的候选, 各开一次试用。而"同名同内容"
+ * 在冻结纪律里就是 `duplicate_of_existing` (不需要新版本): **已经挂在试用位 (还没提升) 的那一份
+ * 就是"已有"**。不认它, 一条变更会有两条提升记录, 且第二份候选永远等不到兑现。
+ *
+ * 归属只认**可核验的 Run 来源**: 候选的 `sourceRunIds` 里有一条属于本 Goal (`goal.runs`)。
+ * 读不到目录 = 没有候选 (不是"候选都通过了")。
+ */
+async function trialingSkillsOfGoal(
+  home: string,
+  goalRunIds: readonly string[],
+): Promise<{ name: string; contentHash: string; version: string }[]> {
+  const ids = new Set((goalRunIds ?? []).map((x) => String(x)));
+  const out: { name: string; contentHash: string; version: string }[] = [];
+  for (const { rec } of await listTrialingCandidates(home)) {
+    const trial = rec.trial as SkillTrialRecord;
+    const src = Array.isArray(rec.sourceRunIds) ? rec.sourceRunIds.map((x) => String(x)) : [];
+    if (!src.some((r) => ids.has(r))) continue;
+    out.push({
+      name: String(rec.name ?? trial.skillName),
+      contentHash: String(rec.contentHash ?? trial.contentHash),
+      version: String(trial.toVersion),
+    });
+  }
+  return out;
+}
+
+/**
+ * 盘上"还在试用位"的候选 (通道 ⑥ 的输入面)。
+ * 读不到目录 = 没有任何候选 (不是"候选都通过/都失败")。
+ */
+async function listTrialingCandidates(home: string): Promise<{ file: string; rec: CandidateFileShape }[]> {
+  const dir = path.join(home, SKILL_CANDIDATES_ROOT);
+  let files: string[] = [];
+  try {
+    files = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+  const out: { file: string; rec: CandidateFileShape }[] = [];
+  for (const f of files.filter((x) => x.endsWith('.json')).sort()) {
+    const file = path.join(dir, f);
+    const rec = await readJson<CandidateFileShape>(file);
+    if (rec?.trial && rec.trial.status === 'trialing') out.push({ file, rec });
+  }
+  return out;
+}
+
+/**
+ * ★ 通道 ⑥ 的真调用方 (2026-09-25 串行收口): **下一条 Run 的成功点**结算所有还挂在试用位上的候选。
+ *
+ * 判定纪律 (全部来自盘上事实, 不靠调用方"记得"):
+ *   · 兑现试用的 Run 必须**不是**开试用那条 (`settleSkillTrial` 会拒同一条 Run 自称成功);
+ *   · 兑现的 Run 必须属于**同一个 Goal** (读 `trial.startedByRunId` 那条 Run 的 goalId 对照) ——
+ *     别的 Goal 的成功不许把这份候选提升上去;
+ *   · **复用必须带可核验证据**: 该 Run 的证据面里出现这条 Skill 名字的行; 一条都没有 → 不算复用
+ *     (留在试用位, 与"无证据不许判目标完成"同一纪律);
+ *   · Run 没成功 (status !== 'done') → `rolled_back`, **不提升**。
+ *
+ * 只产生**记录**: `SkillPromotionRecord` (校验 + 快照 + 可回退版本), 永不写 `skills/` (冻结规则 ⑥)。
+ */
+export async function settleSkillTrialsForRun(input: {
+  goalId: string;
+  runId: string;
+  /** 这条 Run 的结局 (只有 'done' 算成功复用) */
+  runStatus: string;
+  /** 这条 Run 的证据面 (不给就从 Run 记录现读) */
+  evidenceRefs?: readonly string[];
+  now: IsoTimestamp;
+  /** 批准人 (提升是正式变更: 必须有人/主体批准); 默认 supervisor (触发方就是它) */
+  approvedBy?: string;
+  home?: string;
+}): Promise<SkillTrialSettlementView[]> {
+  const home = input.home ?? bolloonHome();
+  const run = await readRun(input.runId).catch(() => null);
+  const evidencePool = input.evidenceRefs
+    ? input.evidenceRefs.map((x) => String(x ?? ''))
+    : run ? runEvidenceOf(run) : [];
+  const succeeded = String(input.runStatus) === 'done';
+  const out: SkillTrialSettlementView[] = [];
+
+  for (const { file, rec } of await listTrialingCandidates(home)) {
+    const trial = rec.trial as SkillTrialRecord;
+    const candidateId = String(rec.candidateId ?? trial.candidateId ?? '');
+    const skillName = String(rec.name ?? trial.skillName ?? '');
+    const push = (v: Omit<SkillTrialSettlementView, 'candidateId' | 'skillName' | 'path'>): void => {
+      out.push({ candidateId, skillName, path: file, ...v });
+    };
+
+    if (trial.startedByRunId === input.runId) {
+      // 这份试用**就是本条 Run 开的** → 它不是"被本条 Run 结算"的对象 (试用的兑现窗口在它之后)。
+      // 所以这里**跳过**而不是记一条 `same_run_cannot_promote` 的"结算结论": 报告里的
+      // `skillTrials` 说的是"这一轮的结局对哪份试用做了裁决", 把刚开出的那份算进来会读成
+      // "结算过了但没提升" —— 事实是**还没到结算的时候** (候选文件原封不动, 下一条 Run 再结算)。
+      // (纯函数 `settleSkillTrial` 的同一守卫仍然在: 直连调用它的地方照样判红, 见 closure 测试。)
+      continue;
+    }
+    // 跨 Goal 保护: 读不到开试用那条 Run 就**不结算** (拿不到事实不下结论, 也不提升)
+    const fromRun = trial.startedByRunId ? await readRun(trial.startedByRunId).catch(() => null) : null;
+    if (!fromRun) {
+      push({ status: trial.status, promoted: false, toVersion: null, reason: `trial_origin_run_unreadable: 读不到开试用那条 Run (${trial.startedByRunId || '(空)'}) → 不结算 (拿不到事实就不提升)` });
+      continue;
+    }
+    if (String(fromRun.goalId ?? '') !== input.goalId) {
+      push({ status: trial.status, promoted: false, toVersion: null, reason: `trial_belongs_to_other_goal: 试用属于 ${fromRun.goalId} 的 Run, 与本 Goal (${input.goalId}) 不同 → 不结算` });
+      continue;
+    }
+
+    const reuseEvidence = succeeded
+      ? evidencePool.filter((e) => skillName && e.includes(skillName))
+      : [];
+    const settlement: SkillTrialSettlement = settleSkillTrial({
+      trial,
+      candidate: rec as unknown as SkillImprovementCandidate,
+      reuse: {
+        runId: input.runId,
+        succeeded,
+        evidenceRefs: reuseEvidence,
+        approvedBy: input.approvedBy ?? 'supervisor',
+        changeReason: succeeded
+          ? `复用确认: 下一条 Run (${input.runId}) 成功并带 ${reuseEvidence.length} 条点名「${skillName}」的证据`
+          : `下一条 Run (${input.runId}) 未成功 (status=${input.runStatus}) → 复用失败`,
+        now: input.now,
+      },
+    });
+    await writeCandidateChannelState(file, { trial: settlement.trial, promotion: settlement.promotion });
+    push({
+      status: settlement.status,
+      promoted: settlement.ok,
+      toVersion: settlement.promotion?.toVersion ?? null,
+      reason: settlement.reason,
+    });
+  }
+  return out;
 }
 
 /**
@@ -1299,21 +1821,38 @@ export interface FlywheelTickNote {
   noProgressStreak: number;
   visibleState: UserVisibleState;
   nextAction: string;
+  /**
+   * ★ 这一步的节奏结论**从哪来** (2026-09-25 串行收口): `facts` = 走 M1 接缝的事实路径
+   * (`readFacts` → P0 → 归因), `injected` = 事实拿不到时的旧注入口径。
+   * 放在报告里是为了让"主循环真的走了新路径"可核验, 而不是只能读代码相信。
+   */
+  source: 'facts' | 'injected';
+  /** 主节奏依据 (注入路径为 null) */
+  basis: RhythmBasis | null;
+  /** 在说话的安全上限 (注入路径为空) */
+  caps: SafetyCap[];
 }
 
 export async function flywheelTickNote(input: {
   goalId: string;
-  step: GoalStepDecision;
+  step: GoalStepDecision | SupervisorStepDecision;
   now?: IsoTimestamp;
   home?: string;
+  /**
+   * 这一 tick 里**统一巡检** (`monitor.sweepAll`) 已经查出来的阻塞 (没有才自己读)。
+   * 为什么要这个入口: 巡检一次就够了 —— 同一条 tick 里再读一遍盘等于两份口径,
+   * 而且「统一巡检」的意义就是**一次调用给全部结论**。
+   */
+  blocks?: BlockRecord[] | null;
 }): Promise<FlywheelTickNote> {
-  const blocks = await collectWorkBlocks({ goalId: input.goalId, now: input.now, home: input.home });
+  const blocks = input.blocks ?? await collectWorkBlocks({ goalId: input.goalId, now: input.now, home: input.home });
   const goal = await readGoal(input.goalId);
   const visible = toUserVisibleState(
-    goal?.continuation ? ({ ...goal.continuation } as GoalContinuationRecord) : null,
+    goal?.continuation ?? null,
     blocks,
     input.step.decision,
   );
+  const step = input.step as SupervisorStepDecision;
   return {
     goalId: input.goalId,
     decision: input.step.decision?.decision ?? 'first_run',
@@ -1323,6 +1862,10 @@ export async function flywheelTickNote(input: {
     noProgressStreak: input.step.noProgressStreak,
     visibleState: visible,
     nextAction: input.step.decision?.nextAction ?? '(首个 Run)',
+    // 旧口径 (`GoalStepDecision` 不含 source) 如实标 injected —— 不假装是事实判的
+    source: step.source ?? 'injected',
+    basis: step.basis ?? null,
+    caps: step.caps ?? [],
   };
 }
 
@@ -1369,12 +1912,113 @@ function toClosureView(outcome: CloseGoalRunOutcome, runStatus: string): Closure
     runStatus,
     memories: outcome.written.length,
     candidates: outcome.result.candidates.length,
+    // 候选产出处开出的试用: 只转发结构化结论 (准入的六阶段逐条裁决 + 卡在哪一步)
+    trials: (outcome.trials ?? []).map((t) => ({
+      candidateId: t.candidateId,
+      skillName: t.skillName,
+      ok: !!t.admission?.ok,
+      stages: (t.admission?.stages ?? []).map((s) => ({ stage: String(s.stage), status: String(s.status), reason: String(s.reason ?? '') })),
+      refusal: t.admission?.refusal ? { stage: String(t.admission.refusal.stage), reason: String(t.admission.refusal.reason ?? '') } : null,
+      path: t.path,
+    })),
     reportPath: outcome.reportPath,
     decisionRecordPath: outcome.decisionRecordPath,
   };
 }
 
 let seamsCache: FlywheelSeams | null = null;
+
+// ============================================================================
+// §11.1 非 web 宿主的接入面 (CLI / supervisor / 崩溃恢复)
+//   —— 与 web 路由走**同一份**接缝, 不再"只有 /api 那条路能停 Run"
+// ============================================================================
+
+/** Goal 上当前那条 Run 的记录 (currentRunId 优先; 否则 runs 列表末条 —— 与 decideGoalStep 同一口径) */
+async function readCurrentRunRecord(goalId: string): Promise<RunRecord | null> {
+  const g = await readGoal(goalId);
+  if (!g) return null;
+  const id = g.currentRunId || g.runs?.[g.runs.length - 1];
+  if (!id) return null;
+  return readRun(id).catch(() => null);
+}
+
+/**
+ * 在跑的 Run 的事实 (注入 change 接缝的 `runningRun` 端口)。
+ *
+ * `null` 的语义是**明确"当前没有在跑的 Run"** (目标上没挂 Run) —— 与 `undefined`(宿主不知道)
+ * 严格区分: 前者接缝可以断言"变更只影响后续 Run", 后者只能如实标 `factsMissing`。读盘失败时
+ * 抛错 (由接缝捕获 → 也是 factsMissing), 绝不谎报"没有在跑的 Run"。
+ */
+export async function readRunningRunFact(goalId: string): Promise<{ runId: string; status: string } | null> {
+  const run = await readCurrentRunRecord(goalId);
+  return run ? { runId: run.runId, status: String(run.status) } : null;
+}
+
+/**
+ * 停 Run 的执行器 (注入 change 接缝的 `stopRunningRun` 端口)。
+ *
+ * 真实现就是**既有外部控制面原语** `setRunStatus` —— 与 `/api/runs/:id/abort` 同一条路,
+ * 不新造停止通道; 写的是 Run 记录, 执行器下一轮读到就自行停下 (非法迁移会被 store 拒,
+ * 这时如实返回 `ok:false` + 原因, 不假装停过)。
+ */
+export async function stopRunByExternalControl(i: {
+  goalId: string;
+  runId: string;
+  runStatus: 'paused' | 'aborted';
+  reason: string;
+  now: IsoTimestamp;
+}): Promise<{ ok: boolean; reason: string }> {
+  const r = await setRunStatus(i.runId, i.runStatus, {
+    error: `变更注入 (${i.goalId}): ${String(i.reason).slice(0, 120)}`,
+  });
+  return { ok: !!r.ok, reason: r.reason || (r.ok ? `已写 ${i.runId} → ${i.runStatus} (at ${i.now})` : '') };
+}
+
+/**
+ * **非 web 宿主**提一条要求/撤销的唯一入口 (CLI / supervisor / 恢复脚本都走它)。
+ *
+ * 与 `/api/goals/:id/requirement` 的关系: **同一个接缝**, 同一份判定 (`planChangeInjection`),
+ * 同一个停止原语 (`setRunStatus`)。路由做的是"从 HTTP 读事实再注入", 这里做的是"宿主自己读事实"
+ * —— 事实来源相同 (`readRunningRunFact` / `pendingReports`), 所以两条路的结论一致。
+ *
+ * 返回 `SeamRefusal`/`null` 时**照原样**交给调用方 (拒绝了就是拒绝了, 不包装成 ok)。
+ */
+export async function ingestRequirementViaSeam(input: {
+  goalId: string;
+  instruction: string;
+  source?: ChangeSource;
+  recordedBy?: string;
+  caller?: WiringCaller;
+  now?: IsoTimestamp;
+  workId?: string | null;
+  liveWorkIds?: readonly string[];
+}): Promise<ChangeIngestView | SeamRefusal | null> {
+  const caller: WiringCaller = input.caller ?? 'human';
+  const now = input.now ?? new Date().toISOString();
+  const seam = flywheelSeams().change;
+  const view = await seam.ingestChange({
+    goalId: input.goalId,
+    instruction: input.instruction,
+    source: input.source ?? 'user',
+    recordedBy: input.recordedBy ?? `${caller}:${process.pid}`,
+    now,
+    caller,
+    workId: input.workId ?? null,
+    ...(input.liveWorkIds !== undefined ? { liveWorkIds: input.liveWorkIds } : {}),
+  });
+  if (isRefusal(view) || view === null) return view;
+  // 与 web 路由同一条兜底: 接缝自己没执行器 (老依赖注入下的形态) → 这里按计划把"停"落到真 Run 上。
+  // M0 已注入 stopRunningRun, 正常情况下 `stopped` 已经是 true, 这段不会重复动手 (见 runBoundary.stopped)。
+  if (view.runBoundary.action === 'stop_running_run' && !view.runBoundary.stopped) {
+    const boundary = await seam.applyRunBoundary({
+      plan: view.plan,
+      now,
+      stop: (i) => stopRunByExternalControl(i),
+    });
+    return { ...view, runBoundary: boundary };
+  }
+  return view;
+}
 
 export interface FlywheelSeams {
   continuation: ContinuationSeam;
@@ -1394,6 +2038,13 @@ export function flywheelSeams(): FlywheelSeams {
   if (seamsCache) return seamsCache;
   seamsCache = {
     continuation: createContinuationSeam({
+      /**
+       * ★ 规范路径 (2026-09-25 串行收口): 主循环的节奏判定**只读事实, 判定归接缝**。
+       * 以前这里注入的是 `decide` (整条判定结论) —— 于是"接线层又判了一遍", M1 的自适应节奏
+       * 在真路径上从未接管。现在 `readFacts` 是权威口径, `decide` 只作事实拿不到时的兜底
+       * (兜底结果会被接缝标成 `source='injected'`, 不假装是事实判的)。
+       */
+      readFacts: readRhythmFacts,
       decide: async (i) => {
         const step = await decideGoalStep({ goalId: i.goalId, now: i.now, maxRetries: i.maxRetries, writeRecord: i.writeRecord });
         if (!step) return null;
@@ -1466,6 +2117,13 @@ export function flywheelSeams(): FlywheelSeams {
       collect: (i) => collectWorkBlocks({ goalId: i.goalId, now: i.now, runnerAvailable: i.runnerAvailable }),
       handle: (i) => applyBlockHandling({ goalId: i.goalId, blocks: i.blocks, now: i.now }),
       goalsWithPendingWork: async (limit) => (await listGoalsWithPendingWork(limit)).map((g) => ({ goalId: g.goalId })),
+      /**
+       * ★ 用户可见面 (2026-09-25 串行收口): 注进去, `sweepAll` 才不是"半个人"
+       * —— 没有它每一格都会因可见态拒绝而记 error, 于是 `silentRisk=true` +
+       * `escalated` 里塞满"巡检未完成: <goalId>" (把"没注入探针"演成"巡检失败")。
+       * 走的是**同一份**判定 (`goalVisibleState` → `toUserVisibleState`), 界面不另拼一套状态。
+       */
+      visible: (i) => goalVisibleState({ goalId: i.goalId, blocks: i.blocks, now: i.now }),
     }),
     change: createChangeSeam({
       ingest: (i) => ingestGoalChange({
@@ -1485,6 +2143,20 @@ export function flywheelSeams(): FlywheelSeams {
       pending: async (goalId) => {
         const g = await readGoal(goalId);
         return (g?.goalChanges ?? []).filter((c) => c.status === 'needs_approval' || c.status === 'scheduled_next_run' || c.status === 'triaged');
+      },
+      /**
+       * ★ 在跑的 Run 的事实 (2026-09-25 串行收口): 以前**只有** web 路由按参数传,
+       * 于是任何非 web 宿主 (CLI / supervisor / 崩溃恢复脚本) 提撤销时, 接缝拿到的是
+       * `factsMissing=true` → 判定"不断言停不停" → **在跑的 Run 停不下来**。
+       * 现在把"读当前 Run 状态"这件事实注入接缝 (真实现 = 读 Goal 的 currentRunId → readRun)。
+       */
+      runningRun: (goalId) => readRunningRunFact(goalId),
+      /** ★ 停 Run 的执行器 = 既有的 `setRunStatus` 原语 (与 web 的 abort 路由同一个) */
+      stopRunningRun: (i) => stopRunByExternalControl(i),
+      /** ★ 在跑的子 Agent 工作 (规则 5 的下发对象): 从父 Goal 登记的 pendingReports 读 */
+      liveWorkIds: async (goalId) => {
+        const g = await readGoal(goalId);
+        return (g?.continuation?.pendingReports ?? []).map((p) => String(p?.workId ?? '')).filter(Boolean);
       },
     }),
   };
@@ -1512,6 +2184,15 @@ export async function closeRunOnce(input: {
   now?: IsoTimestamp;
   finalReview?: string;
   maxRetries?: number;
+  /**
+   * 宿主**申明**的终止原因 (冻结闭集见 `CLOSURE_TERMINAL_KINDS`)。
+   *
+   * 为什么必须能透传 (2026-09-25 串行收口): 收尾回执 (ClosureReceipt) 上"申明的原因"与
+   * "从 Run 状态推导的原因"是**两条事实**, 缺了申明就只有推导 —— 于是"超时 / 支付·权限·工具失败 /
+   * 子 Agent 被阻塞"这类**具体**原因在回执里看不到, 只剩一个笼统的 `failure`。
+   * 不给也不编: 不传就是"没有申明"(推导仍然在), 传了但与该 Run 状态不符时由接缝的审计标出来。
+   */
+  terminalKind?: ClosureTerminalKind;
 }): Promise<CloseRunOnceResult | SeamRefusal> {
   const seamResult = await flywheelSeams().closure.closeRunOnce({
     goalId: input.goalId,
@@ -1520,6 +2201,7 @@ export async function closeRunOnce(input: {
     now: input.now ?? new Date().toISOString(),
     finalReview: input.finalReview,
     maxRetries: input.maxRetries,
+    terminalKind: input.terminalKind,
   });
   if (isRefusal(seamResult)) return seamResult;
   if (!seamResult.alreadyClosed) return seamResult;
@@ -1535,7 +2217,68 @@ export async function closeRunOnce(input: {
 }
 
 /**
- * 一条已经收过尾的 Run: 把**那次收尾的事实读回来** (不重跑, 也不编)。
+ * 从 Run 的事实**推**一个宿主该申明的终止原因 (喂给 `closeRunOnce` 的 `terminalKind`)。
+ *
+ * 为什么不让调用方(或这里)随便编: 申明的种类必须与该 Run 状态**相容** (由 `terminalKindAccepts`
+ * 校验), 否则收尾审计会把它记成"申明与事实不符" —— 自己给自己造审计缺口。
+ * 所以这里只在事实**足够具体**时给出更细的原因:
+ *   · `failed` + 权限/支付类 errorClass → 权限·支付·工具失败 (最常被"重试掉"的三类);
+ *   · `failed` + 超时/预算类文本       → 超时·预算耗尽;
+ *   · `stalled` + 子 Agent 文本        → 子 Agent 被阻塞; 否则失速;
+ *   · 其余一律交回 `closureTerminalKindFor` 的推导 (退回一个**主归属**, 不硬编更细的类别)。
+ */
+export function claimedTerminalKindForRun(run: RunRecord | null): ClosureTerminalKind | undefined {
+  if (!run) return undefined;
+  const status = String(run.status ?? '');
+  const errorClass = String((run as { errorClass?: string }).errorClass ?? '');
+  const text = `${errorClass} ${String(run.error ?? '')} ${String(run.summary ?? '')}`;
+  if (status === 'failed' && (errorClass === 'auth' || errorClass === 'policy_denied')) {
+    return 'permission_or_payment_or_tool_failure';
+  }
+  if (status === 'failed' && /timeout|超时|deadline|budget|预算|quota/i.test(text)) return 'timeout';
+  if (status === 'stalled') return /子|child/i.test(text) ? 'child_agent_blocked' : 'stall';
+  const derived = closureTerminalKindFor(status);
+  return derived ? derived as ClosureTerminalKind : undefined;
+}
+
+/**
+ * 一条 Run **开出**的 Skill 试用 —— 从盘上候选文件读回来 (读回路径的 `trials`, 2026-09-25 串行收口)。
+ *
+ * 为什么不返回 `[]` 就算: 试用记录本来就写在**候选文件本身** (`trial.startedByRunId` = 提出候选的
+ * 那条 Run, 由 `run-closure.ts` 填成收尾的那条 Run), 所以"这条 Run 开过哪些试用"是**可读的事**。
+ * 返回空数组会被读成"这条 Run 没开过试用"—— 那是编态。读不到目录 = 真的一个候选都没有。
+ */
+async function trialsOfRun(runId: string, home: string): Promise<TrialOpeningView[]> {
+  const dir = path.join(home, SKILL_CANDIDATES_ROOT);
+  let files: string[] = [];
+  try {
+    files = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+  const out: TrialOpeningView[] = [];
+  for (const f of files.filter((x) => x.endsWith('.json')).sort()) {
+    const rec = await readJson<CandidateFileShape & { channel?: { ok?: unknown; stages?: unknown; refusal?: unknown } }>(path.join(dir, f));
+    const trial = (rec?.trial ?? null) as SkillTrialRecord | null;
+    if (!rec || String(trial?.startedByRunId ?? '') !== runId) continue;
+    const ch = rec.channel ?? null;
+    const stages = Array.isArray(ch?.stages) ? ch!.stages as { stage?: unknown; status?: unknown; reason?: unknown }[] : [];
+    const refusal = ch?.refusal && typeof ch.refusal === 'object' ? ch.refusal as { stage?: unknown; reason?: unknown } : null;
+    out.push({
+      candidateId: String(rec.candidateId ?? trial?.candidateId ?? ''),
+      skillName: String(rec.name ?? trial?.skillName ?? ''),
+      // 准入结论以**盘上记的那一份**为准; 没记过 (老候选) → false, 不假装开过试用
+      ok: ch?.ok === true,
+      stages: stages.map((s) => ({ stage: String(s.stage ?? ''), status: String(s.status ?? ''), reason: String(s.reason ?? '') })),
+      refusal: refusal ? { stage: String(refusal.stage ?? ''), reason: String(refusal.reason ?? '') } : null,
+      path: path.join(dir, f),
+    });
+  }
+  return out;
+}
+
+/**
+ * 一条**已经收过尾的 Run**: 把**那次收尾的事实读回来** (不重跑, 也不编)。
  *
  * 依据就是 `closeGoalRun` 自己写下的 closure 决策记录 (它自带 continuation 与用户汇报)。
  * 读不到就返回 null —— 调用方必须如实说"收过了但事实读不回来", 而不是当作没收过再收一遍。
@@ -1558,6 +2301,8 @@ export async function readClosureOutcome(goalId: string, runId: string, home = b
     runStatus: String(run?.status ?? ''),
     memories: 0,
     candidates: 0,
+    // 读回路径上的试用: 从候选文件本身读 (不是空数组 —— 见 trialsOfRun 的注释)
+    trials: await trialsOfRun(runId, home),
     reportPath,
     decisionRecordPath: decisionFilePath(goalId, runId, 'closure', home),
   };

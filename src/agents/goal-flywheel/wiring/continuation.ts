@@ -367,6 +367,14 @@ export interface ContinuationPreflight extends GoalStepOutcome {
   capsInEffect: HardLimits;
   /** 完整决策 (有事实时必有; 注入路径没有 —— 注入的是有损投影) */
   fullDecision: ContinuationDecision | null;
+  /**
+   * 这次判定用的**事实本体** (规范路径才有; 注入路径为 null)。
+   *
+   * 为什么把事实也返回出来: 判定结论是"事实的函数", 调用方要落**回放记录** (goalSnapshot /
+   * noProgressStreak / 用了哪条 Run) 时不必再读一次盘 —— 那会造出第二份可能不一致的事实。
+   * 注入路径为 null 是**如实**: 那条路径上根本没有可交还的事实。
+   */
+  facts: RhythmFacts | null;
   /** 这个"停"没有任何可核验的上限对应 (缺事实时如实标注, 不假装验过) */
   unattributableStop: boolean;
 }
@@ -468,6 +476,7 @@ export function judgeInjectedOutcome(
     bindingCap: caps_[0] ?? null,
     capsInEffect: caps,
     fullDecision: null,
+    facts: null,
     unattributableStop,
     reason: `${out.reason}${note}`,
   };
@@ -525,6 +534,7 @@ export function createContinuationSeam(deps: ContinuationSeamDeps): Continuation
             bindingCap: plan.bindingCap,
             capsInEffect,
             fullDecision: plan.decision,
+            facts,
             unattributableStop: false,
           };
         }

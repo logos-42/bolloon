@@ -450,6 +450,34 @@ function isTerminalGoalState(state: GoalLifecycleState): boolean {
 }
 
 /**
+ * 盘上的 continuation → 判定层能安全读的记录 (**唯一**归一化点, 2026-09-25 跨阶段修复)。
+ *
+ * 为什么要有它 (真问题, 不是防御性编程):
+ *   `goal-store.setContinuation()` 是**部分覆盖** —— 一次只写几个字段 (例如唤醒时只写
+ *   `{wakeReason:'active', wakeAt:undefined}`), 所以 `goal.continuation` 上
+ *   `pendingReports` / `unresolvedItems` 这类**列表字段在运行期确实可能缺席** (类型上也是 optional)。
+ *   而调用方直传 `{...goal.continuation}` 是**合法**的写法 (`goalVisibleState` / `/api/goals` 都在用),
+ *   于是判定层里那句 `c.pendingReports.length` 会直接抛 TypeError —— 表现为"界面拿不到状态",
+ *   而不是"少了一个字段"。
+ *
+ * 两条纪律:
+ *   · **缺的按"没有"补** (空数组), 与 `goal-store.continuationView` 同一口径 —— 不是编一个状态,
+ *     只是把"没记过"读成"没有";
+ *   · **不发明字段值**: `state` 缺就保持缺席, 由判定层当"没有终态声明"读 (绝不默认成某个终态/进行态)。
+ *     `isTerminalGoalState(undefined)` 天然为 false, 所以缺席不会被读成 `ended` 或 `executing`。
+ */
+export function normalizeContinuationRecord(
+  c: GoalContinuationRecord | Partial<GoalContinuationRecord> | null | undefined,
+): GoalContinuationRecord | null {
+  if (!c || typeof c !== 'object') return null;
+  return {
+    ...(c as GoalContinuationRecord),
+    pendingReports: Array.isArray(c.pendingReports) ? [...c.pendingReports] : [],
+    unresolvedItems: Array.isArray(c.unresolvedItems) ? [...c.unresolvedItems] : [],
+  };
+}
+
+/**
  * 内部状态 → 用户可见**六类** (其余内部状态一律不外露: lease · reducer · internal status · retry counter · worker owner)。
  *
  * 优先级 (确定性, 不随 blocks 数组顺序变化):
@@ -464,10 +492,13 @@ function isTerminalGoalState(state: GoalLifecycleState): boolean {
  *   ⑥ 默认 `executing` (没有已知阻塞/等待/无进展)
  */
 export function toUserVisibleState(
-  c: GoalContinuationRecord | null,
+  raw: GoalContinuationRecord | Partial<GoalContinuationRecord> | null,
   blocks: BlockRecord[],
   decision: ContinuationDecision | null,
 ): UserVisibleState {
+  // 归一化在这里做 (唯一入口) —— 见 normalizeContinuationRecord 的注释:
+  // 盘上的 continuation 允许缺字段, 判定函数不该把"少一个字段"变成抛错。
+  const c = normalizeContinuationRecord(raw);
   const unresolved = blocks.filter((b) => b.resolvedAt === null);
 
   // ① 需要人

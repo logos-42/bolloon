@@ -49,7 +49,7 @@ import type {
   UserVisibleState,
 } from '../types.js';
 // 自己那个阶段的实现模块 (P3, 纯函数): "用户该看到哪一类"的判定只有一份
-import { toUserVisibleState } from '../work-monitor.js';
+import { normalizeContinuationRecord, toUserVisibleState } from '../work-monitor.js';
 import { refuse, type SeamRefusal, type WiringCaller } from './seams.js';
 
 export const MONITOR_SEAM_ID = 'monitor' as const;
@@ -219,11 +219,10 @@ export function createMonitorSeam(deps: MonitorSeamDeps): MonitorSeam {
   const visiblePort = deps.visible ?? (deps.continuationOf
     ? async (input: { goalId: string; blocks?: BlockRecord[]; decision?: unknown }): Promise<UserVisibleState> => {
       const raw = await deps.continuationOf!(input.goalId);
-      // 盘上的 continuation 允许缺字段 (goal-store 的 `pendingReports?` 是 optional) ——
-      // 探针不许因为"少一个字段"就崩, 缺的按"没有"补 (与 goal-store 的 continuationView 同一口径)。
-      const continuation: GoalContinuationRecord | null = raw
-        ? { ...raw, pendingReports: raw.pendingReports ?? [], unresolvedItems: raw.unresolvedItems ?? [] }
-        : null;
+      // 盘上的 continuation 允许缺字段 (goal-store 的 `pendingReports?` 是 optional; `setContinuation`
+      // 又是部分覆盖) —— 归一化只有**一份**实现 (`work-monitor.normalizeContinuationRecord`),
+      // 判定层(`toUserVisibleState`)自己也调它; 这里用同一个函数是为了让"接缝这一路也没传半份记录"可读。
+      const continuation = normalizeContinuationRecord(raw);
       const decision = isDecisionLike(input.decision) ? input.decision as ContinuationDecision : null;
       return toUserVisibleState(continuation, input.blocks ?? [], decision);
     }

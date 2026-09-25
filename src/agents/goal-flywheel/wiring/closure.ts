@@ -327,6 +327,26 @@ export type ClosureArtifactKind = (typeof CLOSURE_ARTIFACT_KINDS)[number];
  * `UserReport`): 于是接缝不必 import 接线层的 `CloseRunResult`, 也不会有循环依赖,
  * 而调用方 (Supervisor) 依然拿得到"下一步是什么"的全量决策 —— 不做有损投影。
  */
+
+/**
+ * 候选产出处开出的 Skill 试用 (**只看结论**; 试用记录本体写在候选文件里, 不在这里再存一份)。
+ *
+ * 为什么形态是结构化的而不是直接转发 M2 的 `SkillChannelAdmission`: 接缝不 import 别的阶段
+ * 实现 (同一纪律见 `toClosureView` / run-closure 的文件头), 但调用方必须能核验
+ * "候选产出时到底开没开成试用、卡在哪一步" —— 于是这里固定一份最小的结构化面。
+ */
+export interface TrialOpeningView {
+  candidateId: string;
+  skillName: string;
+  /** 准入结论: 六个阶段全过 = true (未过 → false, 且 `refusal` 说清卡在哪一步) */
+  ok: boolean;
+  /** 六阶段逐条裁决 (含 `not_reached` —— 不许静默省略) */
+  stages: readonly { stage: string; status: string; reason: string }[];
+  refusal: { stage: string; reason: string } | null;
+  /** 候选文件落点 (垃圾候选不落盘 → null) */
+  path: string | null;
+}
+
 export interface ClosureOutcomeView {
   runId: string;
   goalId: string;
@@ -342,6 +362,11 @@ export interface ClosureOutcomeView {
   runStatus: WorkReportStatus | string;
   memories: number;
   candidates: number;
+  /**
+   * ★ 2026-09-25 (串行收口): 候选产出处**开出**的 Skill 试用 (每个候选一份)。
+   * 这是 M2 通道在真路径上的入口证据 —— 「候选写出来了但没开试用」在这里就能看见 (数组短了)。
+   */
+  trials: readonly TrialOpeningView[];
   reportPath: string;
   decisionRecordPath: string;
 }

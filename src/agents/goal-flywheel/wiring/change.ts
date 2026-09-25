@@ -152,11 +152,21 @@ export interface ChangeSeamDeps {
   pending: (goalId: string) => Promise<GoalChangeRequest[]>;
   /**
    * 在跑的 Run 的事实 (宿主注入)。没注入 → 接缝拿不到 → `plan.runBoundary.factsMissing = true`。
-   * 生产接线 (M0) 尚未注入: 见 `src/web/server.ts` 的 requirement 路由, 它读到事实后按参数传入。
+   * 2026-09-25 (串行收口): **M0 已注入** (`flywheelSeams()` 读 Goal 上当前在跑的 Run)。
+   * `src/web/server.ts` 的 requirement 路由仍按参数传入 (当场读到的事实优先, 见 `resolveRunningRun`)。
    */
   runningRun?: (goalId: string) => Promise<RunningRunFact | null>;
   /** 把"停"落到 Run 记录上的执行器 (没注入 → 接缝返回 stopped:false, 不假装停过) */
   stopRunningRun?: StopRunningRun;
+  /**
+   * 在跑的子 Agent 工作 (规则 5 的下发对象)。
+   *
+   * 没注入且调用方也没传 → `liveWorkIds` 为空 → 计划会说"没有在跑的子 Agent 需要下发"。
+   * **那是假结论**: 父 Goal 上明明登记着待回报的 workId。所以 M0 注入了这份事实
+   * (`goal.continuation.pendingReports`), 非 web 宿主 (CLI / supervisor / 恢复脚本) 不必自己记得传。
+   * 调用方当场传入的值优先 (与 `runningRun` 同一优先级规则)。
+   */
+  liveWorkIds?: (goalId: string) => Promise<readonly string[]>;
 }
 
 export interface ChangeSeam {
@@ -246,6 +256,27 @@ async function resolveRunningRun(
     return await deps.runningRun(input.goalId);
   } catch {
     // 探测失败 = 事实缺失 (不是"没有在跑的 Run"): 上层拿到 factsMissing 后不做任何断言
+    return undefined;
+  }
+}
+
+/**
+ * 在跑的子 Agent 工作的事实: 调用方当场传入 > 依赖注入 > 没给 (`undefined`)。
+ *
+ * `undefined` 的语义与"宿主没传这份事实"**完全一致** —— 接缝不在这里另立一套
+ * "事实缺失"标记 (`ChangeInjectionPlan` 没有这个字段, 那是 M4 纯函数的既定口径);
+ * 探针抛错 (读盘失败) 也按"没给"处理并返回 undefined, 绝不编出几个 workId 来。
+ */
+async function resolveLiveWorkIds(
+  deps: ChangeSeamDeps,
+  input: Pick<ChangeIngestInput, 'goalId' | 'liveWorkIds'>,
+): Promise<readonly string[] | undefined> {
+  if (input.liveWorkIds !== undefined) return input.liveWorkIds;
+  if (!deps.liveWorkIds) return undefined;
+  try {
+    const ids = await deps.liveWorkIds(input.goalId);
+    return Array.isArray(ids) ? ids : undefined;
+  } catch {
     return undefined;
   }
 }
@@ -365,11 +396,12 @@ export function createChangeSeam(deps: ChangeSeamDeps): ChangeSeam {
 
       // ⑤ 正在运行的 Goal: 拿事实 → 判定 (纯函数) → 按判定执行 (宿主注入的执行器)
       const runningRun = await resolveRunningRun(deps, input);
+      const liveWorkIds = await resolveLiveWorkIds(deps, input);
       const plan = planChangeInjection({
         request: out.request,
         application: out.application,
         runningRun,
-        liveWorkIds: input.liveWorkIds ?? [],
+        liveWorkIds,
       });
       const runBoundary = await applyRunBoundary({ plan, now: input.now });
 

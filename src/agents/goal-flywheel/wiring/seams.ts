@@ -490,7 +490,13 @@ export const TERMINAL_PATHS: readonly TerminalPath[] = [
   },
   {
     path: '子 Agent 被阻塞 (升级 / 接管)',
-    file: 'src/agents/execution-supervisor.ts',
+    // ★ 2026-09-25 (串行收口) 归属修正: 这条路径的终止动作原来是 Supervisor 自己拼的一条
+    //   `listGoalsWithPendingWork → collectWorkBlocks → applyBlockHandling` 循环 —— 那是第二套巡检
+    //   实现 (M3 的门面是 `sweepAll`)。现在统一巡检 (`flywheelSeams().monitor.sweepAll`) 在 Supervisor
+    //   的 tick 里被调用, 而**处置动作本体** (`applyBlockHandling`: 升级 → 交人 / 接管) 由接线层作为
+    //   接缝的 `handle` 端口注入执行 —— 所以这条路径的归属跟着动作走, 落在接线层。
+    //   marker/via 都没放松: 动作还是那个动作, 漏斗还是那个漏斗 (closeRunOnce 就定义在同一个文件里)。
+    file: 'src/agents/goal-flywheel-wiring.ts',
     marker: /applyBlockHandling\s*\(/,
     via: FUNNEL_CALL_RE,
   },

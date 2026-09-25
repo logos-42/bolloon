@@ -38,23 +38,33 @@ import {
 } from './run-store.js';
 // 2026-09-25 (飞轮接线): P0–P4 的七个模块经**唯一**适配层接进真实执行路径
 //   (节奏由进展决定 · Run 收尾必过 closeRun · 子 Agent 走工作合同 · 阻塞监控 · 变更注入 · 用户可见态)
+// 2026-09-25 (串行收口): 四条线各自报"只有主线能加"的钩子在这里补齐 ——
+//   ① 节奏判定走 **M1 接缝的事实路径** (`preflightGoalStep`, 不再直连 `decideGoalStep`);
+//   ② Skill 试用在**候选产出处**开 (`closeGoalRun` 内部) / 在**下一条 Run 成功点**结算;
+//   ③ 阻塞巡检走 **M3 的统一巡检** (`flywheelSeams().monitor.sweepAll`, 不再自己拼一条循环);
+//   ④ 撤销走 **M4 的 change 接缝** (`ingestRequirement`, 非 web 宿主也能真停住在跑的 Run)。
 import {
-  applyBlockHandling,
+  claimedTerminalKindForRun,
   closeRunOnce,
-  collectWorkBlocks,
-  decideGoalStep,
   dispatchChildWork,
+  flywheelSeams,
   flywheelTickNote,
+  ingestRequirementViaSeam,
   installRunTerminalHook,
   isRefusal,
-  listGoalsWithPendingWork,
   markChangesConsumed,
   mergeGoalOutcome,
   nextRunChangeDirective,
   pendingContractDigest,
+  preflightGoalStep,
+  settleSkillTrialsForRun,
   type FlywheelTickNote,
   type GoalStepDecision,
   type MergedGoalOutcome,
+  type MonitorTickView,
+  type TrialOpeningView,
+  type SkillTrialSettlementView,
+  type SupervisorStepDecision,
 } from './goal-flywheel-wiring.js';
 // 2026-09-25 (M0 接线冻结, 规则 ②): Goal 状态只有一个写入出口
 import { reduceGoalState } from './goal-state-reducer.js';
@@ -268,10 +278,28 @@ export interface TickReport {
   flywheel: FlywheelTickNote[];
   /** 2026-09-25 (飞轮接线 P3): 阻塞巡检结论 (不看进程存活, 看任务是否卡住) */
   blocks: { goalId: string; workId: string; kind: string; action: string; note: string }[];
+  /**
+   * ★ 2026-09-25 (串行收口): 这一 tick 的**统一巡检视图** (M3 `sweepAll` 的原样返回)。
+   *
+   * `null` = 这一轮没跑成统一巡检 (接缝拒绝 / 抛错, 原因在 `errors` 里) ——
+   * 绝不是"巡检过了, 没有问题"。`goals[]` 里每一格都带 block 数 / 处置 / 用户可见态 / 该格的错误,
+   * 所以"某个 Goal 巡检失败"不会静默消失。
+   */
+  monitor: MonitorTickView | null;
+  /** ★ 2026-09-25 (串行收口): 这一轮 Run 成功点上 Skill 试用的结算结论 (提升/回退/仍未兑现) */
+  skillTrials: (SkillTrialSettlementView & { runId: string })[];
+  /**
+   * ★ 2026-09-25 (串行收口): 本轮**候选产出处**开出的 Skill 试用 (通道入口证据)。
+   * 与 `skillTrials` 一进一出: 这里是"开出", 那里是"结算"。
+   */
+  skillTrialOpenings: (TrialOpeningView & { goalId: string; runId: string })[];
   /** 2026-09-25 (飞轮接线 P1): 每个 Run 的收尾流水线结论 (9 步 + 产物路径) */
   closures: {
     goalId: string; runId: string; steps: number; decision: string;
-    memories: number; candidates: number; reportPath: string; decisionRecordPath: string;
+    memories: number; candidates: number;
+    /** ★ 串行收口: 这次收尾开出的 Skill 试用 (结构化面; 空数组 = 这次收尾没有候选开成试用) */
+    trials: (TrialOpeningView & { goalId: string; runId: string })[];
+    reportPath: string; decisionRecordPath: string;
   }[];
   /** 2026-09-25 (飞轮接线 P2): 本轮签发的工作合同 (子 Agent 不是"派个任务", 是"管理一份合同") */
   workContracts: { goalId: string; workId: string; capability: string }[];
@@ -419,22 +447,46 @@ export class ExecutionSupervisor {
       report.skipped = skipped;
       const nowIso = new Date(this.now()).toISOString();
 
-      // 2.5 (2026-09-25, 飞轮接线 P3): 阻塞巡检 —— **不看进程存活, 看任务是否卡住**
-      //   只对"还有子 Agent 工作没回报"的 Goal 做 (有界), 由 detectBlocks + planBlockHandling 给结论;
-      //   接管 / 升级 / 要求补齐这些副作用在这里执行 (设计 §8)。
+      // 2.5 (2026-09-25, 飞轮接线 P3 + 串行收口): 阻塞巡检 —— **不看进程存活, 看任务是否卡住**
+      //   走 M3 的**统一巡检** (`flywheelSeams().monitor.sweepAll`): 一次调用 = 所有待回报 Goal 的
+      //   结论 (有界 + 失败留痕 + 每格带用户可见态)。之前 supervisor 自己拼了一条
+      //   `listGoalsWithPendingWork → collectWorkBlocks → applyBlockHandling` 的循环 —— 那是
+      //   第二套巡检实现 (`sweepAll` 才是 M3 的门面), 于是 M3 的"统一巡检"在真路径上从来没有调用方。
+      let monitorView: MonitorTickView | null = null;
       try {
-        for (const g of await listGoalsWithPendingWork()) {
-          const blocks = await collectWorkBlocks({ goalId: g.goalId, now: nowIso, runnerAvailable: this.canExecute });
-          if (blocks.length === 0) continue;
-          const handling = await applyBlockHandling({ goalId: g.goalId, blocks, now: nowIso });
-          for (const a of handling.actions) {
-            report.blocks.push({ goalId: g.goalId, workId: a.workId, kind: a.kind, action: a.action, note: a.note });
+        const view = await flywheelSeams().monitor.sweepAll({
+          caller: 'supervisor',
+          now: nowIso,
+          runnerAvailable: this.canExecute,
+        });
+        if (isRefusal(view)) {
+          // 拒绝不是"没有阻塞": 如实记进 errors, 不许静默当成巡检通过
+          report.errors.push(`阻塞巡检被拒: ${view.reason}`);
+        } else {
+          monitorView = view;
+          report.monitor = view;
+          for (const cell of view.goals) {
+            for (const a of cell.handling?.actions ?? []) {
+              report.blocks.push({ goalId: cell.goalId, workId: a.workId, kind: a.kind, action: a.action, note: a.note });
+            }
+            if (cell.error) report.errors.push(`阻塞巡检 goal=${cell.goalId}: ${cell.error}`);
           }
-          if (handling.actions.length) {
-            this.log(`[supervisor] goal=${g.goalId} 阻塞巡检: ${handling.actions.map((a) => `${a.kind}→${a.action}`).join(', ')}`);
+          const acted = view.goals.filter((c) => (c.handling?.actions.length ?? 0) > 0);
+          for (const c of acted) {
+            this.log(`[supervisor] goal=${c.goalId} 阻塞巡检: ${(c.handling?.actions ?? []).map((a) => `${a.kind}→${a.action}`).join(', ')}`);
           }
-          if (handling.escalated.length) this.emit({ kind: 'needs_human', goalId: g.goalId, message: `子 Agent 工作升级到人: ${handling.escalated.join(', ')}` });
-          if (handling.takeovers.length) this.log(`[supervisor] goal=${g.goalId} 父接管子工作 (无心跳 + 执行权空闲 + 合同允许): ${handling.takeovers.join(', ')}`);
+          const escalated = [...new Set(view.escalated)];
+          if (escalated.length) {
+            // 巡检未完成 (silentRisk) 与"交人"是两回事: 前者是巡检自身没查成, 后者是任务真的卡住
+            const why = view.silentRisk
+              ? `巡检未完成 (silentRisk=true, 一个 Goal 都没查成): ${escalated.join(', ')}`
+              : `子 Agent 工作升级到人: ${escalated.join(', ')}`;
+            this.emit({ kind: 'needs_human', goalId: view.goals[0]?.goalId, message: why });
+            this.log(`[supervisor] 阻塞巡检 → 交人: ${why}`);
+          }
+          if (view.takeovers.length) this.log(`[supervisor] 父接管子工作 (无心跳 + 执行权空闲 + 合同允许): ${view.takeovers.join(', ')}`);
+          if (view.requests.length) this.log(`[supervisor] 阻塞巡检要求补齐: ${view.requests.join(', ')}`);
+          if (view.errors.length && !escalated.length) report.errors.push(`阻塞巡检 (接缝自检): ${view.errors.join(' | ')}`);
         }
       } catch (err) {
         report.errors.push(`阻塞巡检: ${(err as Error)?.message || err}`);
@@ -442,16 +494,27 @@ export class ExecutionSupervisor {
 
       // 3. 逐个推进 (每个 Goal: 节奏判定 → 抢 lease → 执行 → 收尾 → 决策 → 释放 lease)
       for (const goal of runnable.slice(0, this.maxPerTick)) {
-        // 3.1 (P0) 节奏由进展决定: 读权威 continuation + 最近 Run 进展 → decideContinuation
-        //     + applyHardLimits + isRunnable。没进展就不开新轮 (硬底线只能收紧)。
-        let step: GoalStepDecision | null = null;
+        // 3.1 (P0 + M1 串行收口) 节奏由进展决定: 走 **M1 接缝的事实路径**
+        //     (`readFacts` 读 Goal/Run/进展/无进展连击 → 接缝用 P0 自己判 + 上限归因)。
+        //     事实拿不到时接缝内部才回落到旧注入口径, 并在 `step.source` 上如实标出来。
+        let step: SupervisorStepDecision | null = null;
         try {
-          step = await decideGoalStep({ goalId: goal.goalId, now: nowIso, maxRetries: this.maxRetries, writeRecord: true });
+          const pre = await preflightGoalStep({
+            goalId: goal.goalId, now: nowIso, maxRetries: this.maxRetries, writeRecord: true,
+          });
+          if (pre && isRefusal(pre)) {
+            // 接缝真拒 (caller 不是 supervisor / 没有 goalId) → 如实记, 不静默跳过
+            report.errors.push(`${goal.goalId}: 节奏判定被拒: ${pre.reason}`);
+          } else {
+            step = pre;
+          }
         } catch (err) {
           report.errors.push(`${goal.goalId}: 节奏判定失败 ${(err as Error)?.message || err}`);
         }
         if (step) {
-          report.flywheel.push(await flywheelTickNote({ goalId: goal.goalId, step, now: nowIso }).catch(() => ({
+          // 阻塞结论复用**同一 tick 的统一巡检**结果 (没有那一格才自己读): 一条 tick 里不查第二遍
+          const swept = monitorView?.goals.find((c) => c.goalId === goal.goalId)?.blocks ?? null;
+          report.flywheel.push(await flywheelTickNote({ goalId: goal.goalId, step, now: nowIso, blocks: swept }).catch(() => ({
             goalId: goal.goalId,
             decision: step!.decision?.decision ?? 'first_run',
             state: step!.decision?.state ?? 'progressing',
@@ -460,6 +523,9 @@ export class ExecutionSupervisor {
             noProgressStreak: step!.noProgressStreak,
             visibleState: 'executing' as const,
             nextAction: step!.decision?.nextAction ?? '(首个 Run)',
+            source: step!.source,
+            basis: step!.basis,
+            caps: step!.caps,
           })));
           if (!step.runnable) {
             report.skipped.push({ goalId: goal.goalId, reason: `飞轮: ${step.reason}` });
@@ -478,7 +544,7 @@ export class ExecutionSupervisor {
         report.claimed.push(goal.goalId);
         const leaseId = claimed.lease!.leaseId;
         try {
-          const res = await this.runGoal(goal, leaseId, report);
+          const res = await this.runGoal(goal, leaseId, report, step);
           report.executed.push(res);
         } catch (err) {
           report.errors.push(`${goal.goalId}: ${(err as Error)?.message || err}`);
@@ -503,7 +569,7 @@ export class ExecutionSupervisor {
     payments: { scanned: 0, reconciled: [], awaitingPayment: [], mustNotRepay: [], closed: [], goalsWoken: [], goalsFlagged: [], errors: [] },
       supervised: { stalled: [], failed: [] },
       claimed: [], executed: [], skipped: [], errors: [], dryRun: !this.runner,
-      flywheel: [], blocks: [], closures: [], workContracts: [],
+      flywheel: [], blocks: [], monitor: null, skillTrials: [], skillTrialOpenings: [], closures: [], workContracts: [],
     };
   }
 
@@ -548,7 +614,18 @@ export class ExecutionSupervisor {
   }
 
   /** 认领后执行一个 Goal: 决定 resume 还是开新 Run → 跑 → 决策 Goal 状态 */
-  private async runGoal(goal: GoalRecord, leaseId: string, report: TickReport): Promise<{ goalId: string; runId?: string; status?: string; error?: string }> {
+  private async runGoal(
+    goal: GoalRecord,
+    leaseId: string,
+    report: TickReport,
+    /**
+     * ★ 2026-09-25 (串行收口): 主循环**这一刻**已经落定的节奏判定 (3.1 的结果)。
+     * 传下来的理由: 「同一条 tick 里事实只读一次」。以前门禁自己又 `preflightGoalStep()` 了一遍,
+     * 于是同一次事实读留痕翻倍、而且门禁看到的是**另一个时刻**的事实 —— 与
+     * `flywheelTickNote` 复用统一巡检结论 (`blocks`) 是同一条纪律。
+     */
+    tickStep: SupervisorStepDecision | null = null,
+  ): Promise<{ goalId: string; runId?: string; status?: string; error?: string }> {
     // 乐观并发检查: 认领后重新读一次 —— 若这个 Goal 在我扫描之后已被别的 worker 推进
     //   (状态/当前 run/run 列表/continuation 变了), 就让路。否则同一个状态版本会被两个 worker 各跑一次。
     const freshGoal = await readGoal(goal.goalId);
@@ -650,14 +727,13 @@ export class ExecutionSupervisor {
     //   其余裁决 (continue/first_run/...) 照旧: 技能不就绪照样不启动 Run (门禁没有放松)。
     let flywheelDelegates = false;
     let flywheelCapability = '';
-    try {
-      const { decideGoalStep } = await import('./goal-flywheel-wiring.js');
-      const step = await decideGoalStep({
-        goalId: goal.goalId, now: new Date(this.now()).toISOString(), maxRetries: this.maxRetries, writeRecord: false,
-      });
-      flywheelDelegates = step?.decision?.decision === 'delegate';
-      flywheelCapability = step?.decision?.requiredCapability || '';
-    } catch { /* 决策层不可用 → 不改变门禁行为 (fail-closed, 照旧拦) */ }
+    // 与 3.1 **同一份**判定 (而且是**同一次**事实读): 主循环算好的 `tickStep` 直接沿用 ——
+    // 旧写法在这里又 `preflightGoalStep()` 了一遍 (判定口径同, 但事实读了两遍、时刻也不同)。
+    // `tickStep === null` (主循环没判成 / 门禁被单独调用) → 按"没有裁决"处理 (fail-closed, 照旧拦)。
+    {
+      flywheelDelegates = tickStep?.decision?.decision === 'delegate';
+      flywheelCapability = tickStep?.decision?.requiredCapability || '';
+    }
     try {
       const { ensureGoalSkillsReady, blockGoalOnSkills, recordSkillReadiness } = await import('./skill-readiness.js');
       const ready = await ensureGoalSkillsReady(goal);
@@ -754,6 +830,10 @@ export class ExecutionSupervisor {
           now: new Date(this.now()).toISOString(),
           finalReview: this.finalReviewText(finalRun, result),
           maxRetries: this.maxRetries,
+          // ★ 串行收口: 把**申明**的终止原因透传下去 (超时 / 权限·支付·工具失败 / 子阻塞 / 人工停)
+          //   —— 只由 Run 事实推导的话回执里只剩笼统的 failure。这里给的就是从该 Run 事实推出来的那一个
+          //   (`claimedTerminalKindForRun` 只在事实足够具体时给更细的类别, 且必须与该状态相容)。
+          terminalKind: claimedTerminalKindForRun(finalRun),
         });
         if (isRefusal(closureRes)) {
           // 说不清是哪条 Run 的收尾 → 如实记, 不当收过 (也不编一份产物)
@@ -779,9 +859,18 @@ export class ExecutionSupervisor {
             decision: view.decision.decision,
             memories: view.memories,
             candidates: view.candidates,
+            // ★ 串行收口 ②(入口): 这次收尾**开出**的 Skill 试用逐条登记 (结构化面, 与
+            //   `skillTrialOpenings` 同一份事实) —— 候选写出来了但没开试用, 这里就短一截, 一眼可见
+            trials: [...(view.trials ?? [])].map((t) => ({ ...t, goalId: goal.goalId, runId: finalRun.runId })),
             reportPath: view.reportPath,
             decisionRecordPath: view.decisionRecordPath,
           });
+          // ★ 串行收口 ②(入口): 候选产出处开出的试用 —— 逐个登记 (候选写了但没开试用 = 数组短了, 一眼可见)
+          for (const t of view.trials ?? []) {
+            report.skillTrialOpenings.push({ ...t, goalId: goal.goalId, runId: finalRun.runId });
+            if (t.ok) this.log(`[supervisor] goal=${goal.goalId} Skill 试用开出: ${t.skillName} (候选 ${t.candidateId})`);
+            else this.log(`[supervisor] goal=${goal.goalId} Skill 试用未开 (卡在 ${t.refusal?.stage ?? '?'}): ${t.skillName} — ${t.refusal?.reason ?? ''}`);
+          }
           this.emit({
             kind: 'run_closure',
             goalId: goal.goalId,
@@ -796,6 +885,34 @@ export class ExecutionSupervisor {
         report.errors.push(`${goal.goalId}: Run 收尾失败: ${(err as Error)?.message || err}`);
         this.emit({ kind: 'run_closure_failed', goalId: goal.goalId, runId: finalRun.runId, message: String((err as Error)?.message || err) });
       }
+      // ★ 串行收口 ②: **下一条 Run 的成功点**结算 Skill 试用 (通道 ⑥ 的真调用方)。
+      //   顺序在这里的理由: 试用的兑现证据 = "另一条 Run 成功 + 它的证据面点名了这个 Skill",
+      //   所以必须在这条 Run 的结局**已知**之后 (收尾写下的证据面正好是它的输入)。
+      //   不成功 → 回退 (rolled_back) 且**不提升**; 成功但证据面没点名 → 留在试用位 (无证据不算复用)。
+      //   只写记录 (校验+快照+可回退), 永不写 skills/ —— 见 settleSkillTrialsForRun 的纪律。
+      try {
+        const settled = await settleSkillTrialsForRun({
+          goalId: goal.goalId,
+          runId: finalRun.runId,
+          runStatus: String(finalRun.status ?? ''),
+          now: new Date(this.now()).toISOString(),
+          approvedBy: 'supervisor',
+        });
+        for (const s of settled) {
+          report.skillTrials.push({ ...s, runId: finalRun.runId });
+          if (s.promoted) {
+            this.log(`[supervisor] goal=${goal.goalId} Skill 试用提升: ${s.skillName} → ${s.toVersion} (候选 ${s.candidateId})`);
+            this.emit({ kind: 'skill_trial_promoted', goalId: goal.goalId, runId: finalRun.runId, message: s.reason });
+          } else if (s.status !== 'trialing') {
+            this.log(`[supervisor] goal=${goal.goalId} Skill 试用回退 (不提升): ${s.skillName} — ${s.reason}`);
+            this.emit({ kind: 'skill_trial_rolled_back', goalId: goal.goalId, runId: finalRun.runId, message: s.reason });
+          }
+        }
+      } catch (err) {
+        // 结算失败不掩盖 (也不影响 Run 的收口): 如实记进 errors
+        report.errors.push(`${goal.goalId}: Skill 试用结算失败: ${(err as Error)?.message || err}`);
+      }
+
       // P2: 飞轮说"这一步该派活" → **必发工作合同** (不是发一句话)
       //   能力来源 (权威顺序): ① 这次收尾决策点名的能力 ② continuation 上记的 requiredAgent
       //   ③ **本轮跑之前**飞轮裁决=delegate 时点名的能力 (且本地**仍然**缺它) ——
@@ -948,6 +1065,52 @@ export class ExecutionSupervisor {
     }
     await bumpContinuationAttempts(goalId); // 记一次唤醒 (可观测)
     return true;
+  }
+
+  /**
+   * ★ 2026-09-25 (串行收口 ④): **非 web 路径**提一条新要求/撤销 —— CLI 与宿主进程都走它。
+   *
+   * 为什么要挂在 Supervisor 上: 撤销 (用户说"别继续做了") 的语义是"停住在跑的 Run + 只影响后续 Run",
+   * 而这件事**只有一个正确做法** (M4 的 change 接缝: 判定 + 事实注入 + 停止原语)。以前只有
+   * `/api/goals/:id/requirement` 那条 HTTP 路由会走到它 —— 于是 CLI / 宿主直接调 `ingestGoalChange`
+   * 时, 在跑的 Run **停不下来** (接缝拿到的是 `factsMissing=true`, 只能如实说"不知道"）。
+   *
+   * 这里就是那个入口: 读事实 (`runningRun` / 在跑的子 Agent) → 接缝判定 → 真停 Run (`setRunStatus`)。
+   * 返回值原样透出接缝视图 (含 `runBoundary.stopped` 与逐 workId 的下发内容), 拒绝也原样透出。
+   */
+  async ingestRequirement(goalId: string, instruction: string, by = 'human'): Promise<
+    | { ok: true; kind: string; outcome: string; stopped: boolean; runId: string | null; visibleState: string | null; note: string }
+    | { ok: false; reason: string }
+  > {
+    const now = new Date(this.now()).toISOString();
+    const view = await ingestRequirementViaSeam({
+      goalId,
+      instruction,
+      source: 'user',
+      recordedBy: `cli:${by}`,
+      caller: 'human',      // 人提的变更: 只有人能提撤销/缩范围
+      now,
+    });
+    if (view === null) return { ok: false, reason: `变更无法入档 (goal=${goalId})` };
+    if (isRefusal(view)) return { ok: false, reason: view.reason };
+
+    const b = view.runBoundary;
+    const note = b.action === 'stop_running_run'
+      ? (b.stopped
+        ? `在跑的 Run ${b.runId} 已写 ${b.runStatus} (执行器下一轮自行停下)`
+        : `判定要停 Run ${b.runId}, 但停止动作没落到记录上: ${b.reason}`)
+      : b.reason;
+    this.emit({ kind: 'requirement_ingested', goalId, message: `${view.request.kind} (${view.plan.outcome}) — ${note}` });
+    this.log(`[supervisor] goal=${goalId} 变更入档: ${view.request.kind} → ${view.plan.outcome}; ${note}`);
+    return {
+      ok: true,
+      kind: view.request.kind,
+      outcome: view.plan.outcome,
+      stopped: b.stopped,
+      runId: b.runId,
+      visibleState: view.visibleState,
+      note,
+    };
   }
 }
 

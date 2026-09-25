@@ -3799,3 +3799,37 @@ closeTaskRun() (CLI 宿主)     → 与 Supervisor 同一条链, 同一份产物
 ### 未做
 
 M5 长周期真跑(用真实长期目标当靶子) · M6 空闲反思(做梦) · M7 bolloon 全局记忆(跨频道/session/项目/设备/工具)。
+
+## [2026-09-25] feat(goal) | 飞轮 M0 骨架钩子**串行收口** (M1–M4 的接线点) + 两个跨阶段真问题的根因修
+
+四线并行交付后,**四条线都改不了**的四个缺口 (共同骨架 `execution-supervisor.ts` / `goal-flywheel-wiring.ts` 无阶段独占) 在本轮串行补齐。
+改动全部落在骨架 + 接线面, **没有新增第四套存储/状态机**, `goal-flywheel/types.ts` 未动。
+
+| # | 缺口 (log 2026-09-25 待串行补齐) | 落点 | 真跑证据 (真 Goal/Run Store + 隔离 HOME) |
+| --- | --- | --- | --- |
+| 1 | M1 节奏真接管 | `flywheelSeams().continuation.readFacts` 注入 `readRhythmFacts({goalId,now})` (Goal+Run+progress+noProgressStreak) | 主循环 tick: 无 Run 事实时 `source='injected'` → 有事实后 `source='facts'` + `basis` 归因 + 文案带**真 runId**; 上限触顶 (Goal 自报 `budget.maxRuns` 与 env 缩到 1 的默认预算) 两条都真停成 `needs_human` |
+| 2 | M2 试用生命周期 | `closeGoalRun` 产出候选处 `openSkillTrial` · 下一条 Run 成功点 `settleSkillTrialsForRun` · `closeRunOnce` 透传 `terminalKind` (`claimedTerminalKindForRun` 从 Run 事实推导) | 一条**真提升**链 (`trial=trialing` → 下一 Run 成功且证据点名 → `promoted` + 版本号, `skills/` 目录仍空) + 两条负控制 (`rolled_back` 不提升 / `trialing` 原封不动); 收尾回执 `claimedTerminalKind='timeout'` + `terminalKindTruthful=true` |
+| 3 | M3 阻塞监控真会跑 (**最要紧**) | 宿主 tick (`ExecutionSupervisor.tickOnce`, 真定时器 `start()` 也是它) 里调 `monitor.sweepAll` | 时间线: 首 tick 无阻塞 → 时间推进后**同一 tick 周期**检出 `stalled` 子任务 → 上报 + `needs_human` 交人 (**不手动调 sweep**) |
+| 4 | M4 非 web 路径也能停 Run | `createChangeSeam` 补 `runningRun`/`stopRunningRun`/`liveWorkIds` (真值 = `readRunningRunFact` / `setRunStatus` / 父 Goal 的 `pendingReports`) | 不经 web 路由提撤销 → 在跑的 Run 真被写 `aborted`; 阴性对照: 没有在跑的 Run 时不许乱停 |
+| 5 | 真问题① `pendingReports` 必存 vs 部分覆盖 | `work-monitor.normalizeContinuationRecord` (`?? []` 归一化) —— 根因修, 不是各调用方自己兜 | 盘上 continuation 缺 `pendingReports` → 判定层不抛、`toUserVisibleState`/`changeVisibleState` 走同一段计算仍给**真态** (有待批准变更时 `needs_your_decision`, 不回落 catch 兜底) |
+| 6 | `wiring/index.ts` 补导 | 跨阶段纯函数面 re-export (`childMatchesContract`/`MonitorTickView`/`BlockHandlingView`/`visibleState*`/`planChangeInjection` 面) | 值级真 import + 阴性对照 (补导的名字必须真存在于对应接缝文件, 不许编同名的壳) |
+| 7 | 语义取舍: 上限接管 | `hardLimitsFor`: `maxGoalBudget` = **Goal 自报 `budget.maxRuns` (或 `budget.deadlineMs`) 优先**, 没有才用 env `BOLLOON_GOAL_MAX_RUNS` / 默认 **50**; 旧 `maxRounds`/`maxRetries` 降级为三类安全上限 (`maxRunDurationMs` / `maxGoalBudget` / `noProgressCircuitBreaker`) | 见 #1 —— **认这条取舍并写明理由**: 预算是"这个目标被允许跑多少轮", 由建目标的人声明, 通用默认只作没声明时的兜底。**代价与刹车**: 声明很大的目标会绕过 50 这个默认天花板 → 所以**预算不是唯一刹车**, `noProgressCircuitBreaker` (progress 不涨就停) 与 `maxRunDurationMs` 是**独立于声明**的两道; 三者在同一次判定里一起看 (`bindingCaps` 逐条反事实) |
+
+**门禁**: `goal-flywheel-wiring-freeze.test.ts` **34/34** · 串行收口验收 `goal-flywheel-m0-serial-hooks.test.ts` **14/14** · `tsc --noEmit` **0 错** ·
+跨阶段回归 `goal-flywheel-wiring*.test.ts` 9 文件 **236/236** + 飞轮/监督者相关 19 文件 **670/670** 全绿。
+
+**变异验证 (改坏新钩子 → 必须判红, 恢复后全绿)**: 8 次变异, **7 次判红** (readFacts 注入改名 → ①两测红; `runningRun` 读成 null → ④红; `liveWorkIds` 返回空 → ④红;
+巡检调用方摘掉 → ③红; 成功点结算摘掉 → ②三测红; 归一化改回"必存" → ⑤两测红; `bindingCaps` 改名 → ①(2) 红; `terminalKind` 透传摘掉 → ②(4) 红; `wiring/index` 补导改名 → ⑥两测红)。
+**1 次判绿, 如实说明**: 把 `stopRunningRun` 注入改名 → **绿** —— 因为 `ingestRequirementViaSeam` 里有一条**等价兜底**
+(接缝没给执行器时按计划把停落到真 Run 上), 能力不丢。所以 ④ 的"真能停住"是**结果级**证据, 不是"注入的键在不在"的证据;
+注入这条路径另有 `runningRun` / `liveWorkIds` 两个判红变异兜住 (真读事实坏了就红)。
+
+**未做 / 保留**:
+- 真 REPL `/supervise` 与真 Web 界面上的收尾/继续路径**仍无人机验收** (只到"真 Supervisor + 真 Store"层)。
+- 小时级真时钟 · 多 worker 租约竞争 · 外部事件去重表命中条件 —— 仍未验。
+- M5/M6/M7 未动 (见上一条 2026-09-25 段的未做清单)。
+- #3 的"宿主定时器"只证明 `tickOnce` 是**真调用方**且 `start()` 真起 `setInterval`; 长跑场景下巡检节奏与 Goal 节奏的相互影响**未测**。
+
+**待办: 双源 → 发版** —— `bolloon update` 支持 **npm + GitHub 双源**, 且**双源先于发 npm 新包**;
+口径/命令面/错误分类 (`github_unavailable`)/dev 用 git ref + commit sha/一键回 stable/"源不可达必须拒绝不许静默装回旧版"
+已写进 [update-protocol.md §12](./update-protocol.md) (**本节只定口径, 未改任何现有代码**)。
