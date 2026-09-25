@@ -14,9 +14,11 @@
 import * as os from 'os';
 import * as path from 'path';
 import {
-  readGoal, setContinuation, updateGoal, listGoals, addEvidence, type GoalRecord,
+  readGoal, setContinuation, listGoals, addEvidence, type GoalRecord,
   type GoalExternalSource,
 } from './goal-store.js';
+// 2026-09-25 (M0 接线冻结, 规则 ②): Goal 状态变更只有一个漏斗
+import { reduceGoalState } from './goal-state-reducer.js';
 
 // 2026-09-19: 新增 'contact' —— 联系方式(手机/邮箱)回复也是外部事件, 复用同一套等待/唤醒/过期/provenance 校验,
 //   不另造一套"等回信"机制 (correlation 由 requestId/continuationId 保证, 只唤醒对应 Goal)。
@@ -174,9 +176,15 @@ export async function deliverExternalEvent(event: ExternalEventInput, deps: Deli
   } as any);
 
   // 状态拉回 active (只有还在"等外部"的状态才动它) —— Supervisor 下一轮才会真的执行
+  // 规则 ②: 状态变更经 Goal reducer (单一漏斗; 它自己会跳过终态 Goal)
   try {
     if (['awaiting_external', 'retry_wait', 'recovering'].includes(String(goal.status))) {
-      await updateGoal(goal.goalId, { status: 'active' } as any);
+      await reduceGoalState({
+        goalId: goal.goalId,
+        intent: 'external_event_arrived',
+        now: new Date(now).toISOString(),
+        by: 'external-events',
+      });
     }
   } catch { /* 状态写失败 → 下一轮仍会跳过等待; 事件事实已写入, 不丢 */ }
 
@@ -207,9 +215,14 @@ export async function expireExternalWaits(opts: { now?: number; goalIds?: string
     if (Date.parse(w.expiresAt) > now) continue;
     const reason = `外部事件超时 (${w.expectedSource}${w.expectedEvent ? `:${w.expectedEvent}` : ''}, requestId=${w.requestId}, 过期于 ${w.expiresAt}) → 转人工`;
     out.push({ goalId: g.goalId, wait: w, reason });
-    await setContinuation(g.goalId, { external: undefined, wakeReason: 'needs_human', needsExternal: undefined, autoContinue: false, lastExternalTimeout: reason } as any);
-    await updateGoal(g.goalId, { status: 'needs_human' } as any).catch(() => { /* 状态写失败不影响把等待清掉 */ });
-    await addEvidence(g.goalId, [`外部事件超时: ${reason}`]).catch(() => {});
+    // 规则 ②: 撤等待 + 转人工 + 证据, 一次走 Goal reducer (旧写法是 setContinuation + updateGoal + addEvidence 三连)
+    await reduceGoalState({
+      goalId: g.goalId,
+      intent: 'external_wait_expired',
+      now: new Date(now).toISOString(),
+      by: 'external-events',
+      reason,
+    }).catch(() => { /* 状态写失败不影响把等待清掉 */ });
   }
   return out;
 }

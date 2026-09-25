@@ -22,7 +22,6 @@ import {
   setContinuation,
   bumpContinuationAttempts,
   evaluateGoalCompletion,
-  completeGoalIfEligible,
   addEvidence,
   type GoalRecord,
   type GoalContinuation,
@@ -41,12 +40,13 @@ import {
 //   (节奏由进展决定 · Run 收尾必过 closeRun · 子 Agent 走工作合同 · 阻塞监控 · 变更注入 · 用户可见态)
 import {
   applyBlockHandling,
-  closeGoalRun,
+  closeRunOnce,
   collectWorkBlocks,
   decideGoalStep,
   dispatchChildWork,
   flywheelTickNote,
-  lifecycleOf,
+  installRunTerminalHook,
+  isRefusal,
   listGoalsWithPendingWork,
   markChangesConsumed,
   mergeGoalOutcome,
@@ -56,6 +56,8 @@ import {
   type GoalStepDecision,
   type MergedGoalOutcome,
 } from './goal-flywheel-wiring.js';
+// 2026-09-25 (M0 接线冻结, 规则 ②): Goal 状态只有一个写入出口
+import { reduceGoalState } from './goal-state-reducer.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2-D: Run 结束 → Goal 状态决策 (确定性 reducer, 纯函数, 可单测)
@@ -360,6 +362,12 @@ export class ExecutionSupervisor {
     const report: TickReport = { ...this.emptyReport(), tick: this.tickCount };
 
     try {
+      // 0. (2026-09-25, M0 接线冻结) 把"Run 终止 → 唯一责任链"的钩子装上:
+      //    崩溃恢复 / 失速这两条终止路径由 run-store 判出, 由接线层收尾 (规则 ④)。
+      await installRunTerminalHook().catch((err) => {
+        report.errors.push(`Run 终止钩子安装失败: ${(err as Error)?.message || err}`);
+      });
+
       // 1. 对账孤儿 (进程死了的 run) —— 只在启动后第一次做, 之后靠 tick 的常规巡检
       if (!this.reconciledOnce) {
         report.reconciled = await reconcileOrphans();
@@ -511,7 +519,6 @@ export class ExecutionSupervisor {
   private async applyFlywheelStop(goalId: string, step: GoalStepDecision, now: string): Promise<void> {
     const d = step.decision;
     if (!d) return;
-    const { updateGoal } = await import('./goal-store.js');
     const hardLine = /硬底线/.test(step.reason);
     const stop = d.decision === 'fail'
       || d.decision === 'pause'
@@ -520,25 +527,24 @@ export class ExecutionSupervisor {
     if (!stop) return;
 
     const status: GoalStatus = d.decision === 'fail' ? 'failed' : d.decision === 'pause' ? 'paused' : 'needs_human';
-    const goal = await readGoal(goalId);
-    if (!goal) return;
-    if (goal.status !== status && !['completed', 'failed', 'abandoned'].includes(goal.status)) {
-      await updateGoal(goalId, status === 'failed'
-        ? { status, resolution: { reason: `飞轮判不可达: ${d.reason}`, at: now } }
-        : { status });
-    }
-    await setContinuation(goalId, {
-      state: lifecycleOf(status),
-      autoContinue: false,
-      wakeAt: undefined,
-      wakeReason: status === 'failed' ? 'failed' : status === 'paused' ? 'paused' : 'needs_human',
-      lastDecisionId: d.decisionId,
-      unresolvedItems: [...d.unresolvedItems],
+    // 规则 ②: 状态与 continuation 都经 Goal reducer 写 (终态保护 / 完成门也在这里, 不全仓各写一遍)
+    const applied = await reduceGoalState({
+      goalId,
+      intent: 'flywheel_stop',
+      now,
+      by: this.owner,
+      stopStatus: status,
+      reason: d.reason,
+      decisionId: d.decisionId,
       nextAction: d.nextAction,
-      updatedAt: now,
+      unresolvedItems: d.unresolvedItems,
     });
+    if (!applied.ok) {
+      this.log(`[supervisor] goal=${goalId} 飞轮判停写不进 Goal (不掩盖): ${applied.reason}`);
+    }
     this.emit({ kind: status === 'needs_human' ? 'needs_human' : status, goalId, message: d.reason });
-    this.log(`[supervisor] goal=${goalId} 飞轮判停 → ${status}: ${d.reason}`);
+    this.log(`[supervisor] goal=${goalId} 飞轮判停 → ${status}: ${d.reason}`
+      + `${applied.applied.length ? ` [${applied.applied.join(', ')}]` : ''}`);
   }
 
   /** 认领后执行一个 Goal: 决定 resume 还是开新 Run → 跑 → 决策 Goal 状态 */
@@ -741,18 +747,27 @@ export class ExecutionSupervisor {
     let capabilityWanted: string | null = null;
     if (finalRun) {
       try {
-        const closure = await closeGoalRun({
+        const closureRes = await closeRunOnce({
           goalId: goal.goalId,
           runId: finalRun.runId,
+          caller: 'supervisor',
           now: new Date(this.now()).toISOString(),
           finalReview: this.finalReviewText(finalRun, result),
           maxRetries: this.maxRetries,
         });
-        if (closure) {
-          closureDecision = closure.result.decision;
+        if (isRefusal(closureRes)) {
+          // 说不清是哪条 Run 的收尾 → 如实记, 不当收过 (也不编一份产物)
+          report.errors.push(`${goal.goalId}: 收尾被拒: ${closureRes.reason}`);
+          this.emit({ kind: 'run_closure_refused', goalId: goal.goalId, runId: finalRun.runId, message: closureRes.reason });
+        } else if (!closureRes.outcome) {
+          report.errors.push(`${goal.goalId}: ${closureRes.reason}`);
+          this.emit({ kind: 'run_closure_facts_missing', goalId: goal.goalId, runId: finalRun.runId, message: closureRes.reason });
+        } else {
+          const view = closureRes.outcome;
+          closureDecision = view.decision;
           merged = mergeGoalOutcome({
             legacy,
-            flywheel: closure.result,
+            flywheel: { decision: view.decision, continuation: view.continuation },
             run: finalRun,
             pendingReports: goalForDecision.continuation?.pendingReports ?? [],
             now: new Date(this.now()).toISOString(),
@@ -760,19 +775,20 @@ export class ExecutionSupervisor {
           report.closures.push({
             goalId: goal.goalId,
             runId: finalRun.runId,
-            steps: closure.result.steps.length,
-            decision: closure.result.decision.decision,
-            memories: closure.written.length,
-            candidates: closure.result.candidates.length,
-            reportPath: closure.reportPath,
-            decisionRecordPath: closure.decisionRecordPath,
+            steps: view.steps,
+            decision: view.decision.decision,
+            memories: view.memories,
+            candidates: view.candidates,
+            reportPath: view.reportPath,
+            decisionRecordPath: view.decisionRecordPath,
           });
           this.emit({
             kind: 'run_closure',
             goalId: goal.goalId,
             runId: finalRun.runId,
-            message: `收尾 ${closure.result.steps.length} 步 → ${closure.result.decision.decision}`
-              +` (memory ${closure.written.length} · skill 候选 ${closure.result.candidates.length} · 用户汇报 ${closure.result.userReport.visibleState})`,
+            message: `收尾 ${view.steps} 步 → ${view.decision.decision}`
+              + `${closureRes.alreadyClosed ? ' [幂等: 这次收尾由 Runner 先做, 事实读回]' : ''}`
+              + ` (memory ${view.memories} · skill 候选 ${view.candidates} · 用户汇报 ${view.userReport.visibleState})`,
           });
         }
       } catch (err) {
@@ -859,34 +875,39 @@ export class ExecutionSupervisor {
 
   /** 把决策写进 Goal (+ 证据同步 + 完成出口), 并写下一次唤醒信息 */
   private async applyDecision(goal: GoalRecord, decision: GoalDecision | MergedGoalOutcome, run: RunRecord | null): Promise<void> {
-    const { updateGoal } = await import('./goal-store.js');
-
     // 证据同步: Run 的成功步骤 → Goal 证据 (长期执行的判据要有据可依)
     if (run) {
       const ev = run.steps.filter((s) => s.ok).slice(-5).map((s) => `${run.runId}/${s.tool}: ${String(s.summary || '(完成)').slice(0, 120)}`);
       if (ev.length) await addEvidence(goal.goalId, ev).catch(() => null);
     }
 
-    // 唯一完成出口: 只有经 completeGoalIfEligible 才能把 Goal 判成 completed
-    if (decision.goalStatus === 'completed') {
-      // 完成门 (判据存在 + 已确认 + 全满足 + 有证据 + 无未解决项 + 最近 Run 健康)
-      const r = await completeGoalIfEligible(goal.goalId);
-      if (!r.ok) {
-        // 完成门拒绝 → 如实退回 active, 并保留原因 (不许装作完成)
-        await setContinuation(goal.goalId, { ...decision.continuation, wakeReason: 'active', autoContinue: true });
-        await updateGoal(goal.goalId, { status: 'active' });
-        this.log(`[supervisor] goal=${goal.goalId} 完成门拒绝: ${r.reason}`);
-        return;
-      }
-      if (decision.continuation.wakeReason !== 'completed') await setContinuation(goal.goalId, decision.continuation);
-      this.emit({ kind: 'goal_completed', goalId: goal.goalId, runId: run?.runId, message: decision.reason });
+    // 规则 ②: 唯一落盘出口。完成门 (completed 必须过 completeGoalIfEligible) 也在 reducer 里,
+    //   门拒绝 → 退回 active 并保留原因 (不许装作完成)。
+    const applied = await reduceGoalState({
+      goalId: goal.goalId,
+      intent: 'closure_outcome',
+      now: new Date(this.now()).toISOString(),
+      by: this.owner,
+      outcome: {
+        goalStatus: decision.goalStatus,
+        continuation: decision.continuation,
+        reason: decision.reason,
+      },
+      runId: run?.runId ?? null,
+    });
+
+    if (applied.gateRejected) {
+      this.log(`[supervisor] goal=${goal.goalId} 完成门拒绝: ${applied.gateRejected}`);
+    }
+    if (!applied.ok) {
+      this.log(`[supervisor] goal=${goal.goalId} 决策写不进 Goal (不掩盖): ${applied.reason}`);
       return;
     }
-
-    if (decision.goalStatus !== goal.status) await updateGoal(goal.goalId, { status: decision.goalStatus });
-    await setContinuation(goal.goalId, decision.continuation);
-
-    if (decision.continuation.wakeReason === 'needs_human') {
+    if (applied.status === 'completed') {
+      this.emit({ kind: 'goal_completed', goalId: goal.goalId, runId: run?.runId, message: applied.reason });
+      return;
+    }
+    if (decision.continuation.wakeReason === 'needs_human' || applied.status === 'needs_human') {
       this.emit({ kind: 'needs_human', goalId: goal.goalId, message: decision.reason });
     }
   }
@@ -916,8 +937,14 @@ export class ExecutionSupervisor {
       ...(wasWaiting ? { state: 'active' as const } : {}),
     });
     if (g.status === 'awaiting_external') {
-      const { updateGoal } = await import('./goal-store.js');
-      await updateGoal(goalId, { status: 'active' } as any).catch(() => { /* 状态写失败不影响把等待清掉 */ });
+      // 规则 ②: 唤醒也是一种 Goal 状态变更 → 走 Goal reducer, 不在调用方手写 updateGoal
+      await reduceGoalState({
+        goalId,
+        intent: 'manual_wake',
+        now: new Date().toISOString(),
+        by: 'human',
+        reason: '人工唤醒 (外部条件已满足)',
+      }).catch(() => null);
     }
     await bumpContinuationAttempts(goalId); // 记一次唤醒 (可观测)
     return true;

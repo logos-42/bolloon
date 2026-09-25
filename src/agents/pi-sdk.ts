@@ -32,7 +32,7 @@ import { WorkflowPivotLoop, createDefaultPivotConfig, type PivotLoopConfig, type
 import { p2pDocumentTools, initDocumentReceiver } from './p2p-document-tools.js';
 import { shellExec } from './shell-tool.js';
 import { startRun, recordStep, finishRun, readRun, budgetVerdict, recordDegradation, recordHarnessEvent, recordRecovery, setRunStatus, prepareResume, markRunRunning, buildResumeInstruction, argsDigestOf, repeatedFailureCount, classifyError as classifyRunError, type RunSurface, type RunStatus, type ResumePlan } from './run-store.js';
-import { createGoal, readGoal, attachRun, findActiveGoal, completeGoalIfEligible, setUnresolved, addEvidence, evaluateGoalCompletion } from './goal-store.js';
+import { createGoal, attachRun, findActiveGoal } from './goal-store.js';
 import { PiAgentHarness, type HarnessRunContext, type ToolDecision } from './pi-harness.js';
 import { getBranchPrefix, getCooldownMs, checkWritePath } from './shell-guard.js';
 import {
@@ -840,6 +840,30 @@ export class PiAgentSession implements AgentSession {
           status: 'needs_human',
           error: 'LLM 不可用: provider 未初始化或无 apiKey (fallback 不是执行结果, 需要配置或人工处理)',
         });
+        // ★ M0: "工具/权限不可用"也是一条终止路径 → 同样进收尾漏斗 (规则 ④)。
+        const wiring = await import('./goal-flywheel-wiring.js');
+        const closed = await wiring.closeRunOnce({
+          goalId: boundGoalId,
+          runId: rec.runId,
+          caller: 'runner',
+          now: new Date().toISOString(),
+          finalReview: `LLM 不可用 → fallback 收尾 (不是执行结果): ${response}`,
+        });
+        if (!wiring.isRefusal(closed) && closed.outcome) {
+          const { reduceGoalState } = await import('./goal-state-reducer.js');
+          await reduceGoalState({
+            goalId: boundGoalId,
+            intent: 'closure_outcome',
+            now: new Date().toISOString(),
+            by: 'runner',
+            outcome: {
+              goalStatus: wiring.goalStatusFromDecision(closed.outcome.decision),
+              continuation: wiring.toGoalStoreContinuation(closed.outcome.continuation),
+              reason: closed.outcome.decision.reason,
+            },
+            runId: rec.runId,
+          });
+        }
         console.log(`[PiAgent] LLM 不可用 → 本次仍落 Run ${rec.runId} (needs_human), 不伪装成正常执行`);
       } catch (err) {
         await recordDegradation({ kind: 'core', op: 'pi-sdk.fallbackRun', runId: this.lastRunId || '', message: String((err as Error)?.message || err).slice(0, 160) }).catch(() => {});
@@ -2461,27 +2485,58 @@ lastQualityScore = this.estimateResponseQuality(reply);
         onStream?.({ type: 'error', content: `⚠️ ${message}`, tool: 'harness' });
       }
 
-      // 2026-09-16 (M4): Goal 侧完成门 —— Run 结束 ≠ Goal 完成; 只有判据全满足 + 有证据 + 无未解决项才算
+      // ★ 2026-09-25 (M0 接线冻结, 规则 ③ + ④): Run 结束**必过收尾漏斗**。
+      //
+      // 旧写法在这里另起了一套 Goal 侧收尾 (读证据 → `evaluateGoalCompletion` →
+      // `completeGoalIfEligible` / `setUnresolved`): 它**不收尾** —— 不写 Memory、不生成 Skill 候选、
+      // 不写权威 continuation、不留决策记录。于是同一条 Run 在 Supervisor 那里还会再收一次 (或反过来
+      // 这条路径根本不收), 全仓就有了两套"这一轮跑完意味着什么"。那一套已删除。
+      //
+      // 现在: `closeRunOnce` (幂等) → 9 步收尾 → 产物落盘; 再由 Goal reducer 把"下一步是什么"
+      // 落进 Goal (没有 Supervisor 宿主时 Runner 也要留下 continuation, 否则下一次还是从零开始)。
       if (this.currentGoalId) {
         try {
-          const full = await readRun(this.currentRunId).catch(() => null);
-          const ev = (full?.evidence || []).slice(-10);
-          if (ev.length) await addEvidence(this.currentGoalId, ev);
-          const goal = await readGoal(this.currentGoalId);
-          if (goal) {
-            const verdict = evaluateGoalCompletion(goal);
-            if (verdict.complete) {
-              const done = await completeGoalIfEligible(this.currentGoalId);
-              onStream?.({ type: 'status', content: `🎯 目标已达成: ${done.reason} (goal=${this.currentGoalId})`, tool: 'harness' });
-            } else {
-              // 不静默: 未达成的目标留在 active, 未解决项写清楚 (下次 prompt 会继续这个 Goal)
-              const items = verdict.missing.length ? verdict.missing : [`run=${this.currentRunId} 结束但目标未达成: ${verdict.reason}`];
-              await setUnresolved(this.currentGoalId, items);
-              onStream?.({ type: 'status', content: `🎯 目标仍在进行 (未判完成): ${verdict.reason}`, tool: 'harness' });
-            }
+          const wiring = await import('./goal-flywheel-wiring.js');
+          const { reduceGoalState } = await import('./goal-state-reducer.js');
+          const nowIso = new Date().toISOString();
+          const closed = await wiring.closeRunOnce({
+            goalId: this.currentGoalId,
+            runId: this.currentRunId,
+            caller: 'runner',
+            now: nowIso,
+            finalReview: finalResponse ? String(finalResponse).slice(0, 2000) : '',
+          });
+          if (wiring.isRefusal(closed)) {
+            onStream?.({ type: 'status', content: `⚠️ 收尾被拒 (不当作收过): ${closed.reason}`, tool: 'harness' });
+          } else if (closed.outcome) {
+            const view = closed.outcome;
+            const applied = await reduceGoalState({
+              goalId: this.currentGoalId,
+              intent: 'closure_outcome',
+              now: nowIso,
+              by: 'runner',
+              outcome: {
+                goalStatus: wiring.goalStatusFromDecision(view.decision),
+                continuation: wiring.toGoalStoreContinuation(view.continuation),
+                reason: view.decision.reason,
+              },
+              runId: view.runId,
+            });
+            const line = view.decision.decision === 'complete'
+              ? `🎯 目标已达成 (仍要过完成门): ${view.decision.reason}`
+              : `🎯 目标仍在进行 (未判完成): ${view.decision.reason}`;
+            onStream?.({
+              type: 'status',
+              content: `${line}${applied.gateRejected ? ` [完成门拒绝: ${applied.gateRejected}]` : ''} `
+                + `(收尾 ${view.steps} 步 · memory ${view.memories} · skill 候选 ${view.candidates} · goal=${this.currentGoalId})`,
+              tool: 'harness',
+            });
+          } else {
+            // 幂等: 别处 (或上一次) 已经收过尾 —— 事实读不回来就如实说, 不重收也不假装
+            onStream?.({ type: 'status', content: `🎯 ${closed.reason}`, tool: 'harness' });
           }
         } catch (err) {
-          await recordDegradation({ kind: 'observational', op: 'pi-sdk.goalCompletion', runId: this.currentRunId, message: String((err as Error)?.message || err).slice(0, 160) }).catch(() => {});
+          await recordDegradation({ kind: 'observational', op: 'pi-sdk.runClosure', runId: this.currentRunId, message: String((err as Error)?.message || err).slice(0, 160) }).catch(() => {});
         }
       }
       this.currentRunId = '';

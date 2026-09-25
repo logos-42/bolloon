@@ -274,6 +274,16 @@ export async function listGoals(opts: { status?: GoalStatus | GoalStatus[]; limi
   return typeof opts.limit === 'number' ? out.slice(0, opts.limit) : out;
 }
 
+/**
+ * 低层写入原语: 把 patch 合并进 goal.json。
+ *
+ * ★ 2026-09-25 (M0 接线冻结, 规则 ②「只有 Goal reducer 能改 Goal 状态」):
+ *   改 `status` 的**唯一**合法调用方是 `goal-state-reducer.ts` 的 `reduceGoalState`。
+ *   其他任何模块想改状态, 都必须表达成一个 intent 交给 reducer (它负责: 终态保护 /
+ *   完成门 / continuation 的唤醒语义 / 审计痕迹)。直接在这里写 status 会被
+ *   `src/test/goal-flywheel-m0-freeze.test.ts` 的源码级门判红 (按**文件**粒度扫, 不按行)。
+ *   非状态字段 (evidence / criteria / title ...) 仍可直接调本函数。
+ */
 export async function updateGoal(goalId: string, patch: Partial<GoalRecord>): Promise<GoalRecord | null> {
   return withGoalLock(goalId, async () => {
     const rec = await readGoal(goalId);

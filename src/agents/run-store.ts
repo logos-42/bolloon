@@ -713,6 +713,28 @@ function pidAlive(pid: number): boolean {
 }
 
 /**
+ * Run 被底层状态机判成**终止**时的回调 (注册点)。
+ *
+ * ★ 2026-09-25 (M0 接线冻结, 规则 ④): 崩溃恢复 (`reconcileOrphans` → interrupted) 与
+ * 失速 (`superviseRuns` → stalled) 也是"Run 的终止", 因此必须能进唯一责任链
+ * (Run → closeRun → Memory/Skill → 下一次 continuation)。
+ *
+ * 为什么是注册点而不是直接 import 飞轮: `run-store` 是**事实层**, 它不认识 Goal, 也不该认识
+ * (那会造成 store↔flywheel 双向依赖)。接线层调 `setOnRunTerminal` 注册, 默认不装 → 行为不变。
+ */
+export type RunTerminalHook = (rec: RunRecord) => Promise<void> | void;
+
+let onRunTerminal: RunTerminalHook | null = null;
+
+export function setOnRunTerminal(hook: RunTerminalHook | null): void {
+  onRunTerminal = hook;
+}
+
+export function getOnRunTerminal(): RunTerminalHook | null {
+  return onRunTerminal;
+}
+
+/**
  * 孤儿对账: 启动时把 pid 已死的 running 记录改判 interrupted。
  * 不做这一层的话, 重载后 UI/CLI 会显示"还在跑"的幽灵运行 —— 那是最典型的假状态。
  * 单条写失败不影响其它记录 (但会留降级痕迹): 对账本身不能因为一条坏记录而整体放弃。
@@ -725,11 +747,13 @@ export async function reconcileOrphans(): Promise<{ interrupted: string[]; still
   for (const r of running) {
     if (pidAlive(r.pid)) { stillRunning.push(r.runId); continue; }
     try {
-      await finishRun(r.runId, {
+      const closed = await finishRun(r.runId, {
         status: 'interrupted',
         error: `进程 ${r.pid} 已不在 (刷新/重载/崩溃); 运行到此中断`,
       });
       interrupted.push(r.runId);
+      // 终止路径进唯一责任链 (拿不到 Goal 就不收, 不假装收过)
+      if (onRunTerminal) await Promise.resolve(onRunTerminal(closed || r)).catch(() => null);
     } catch (err) {
       failed.push(r.runId);
       await recordDegradation({ kind: 'core', op: 'reconcileOrphans', runId: r.runId, message: String((err as Error)?.message || err).slice(0, 200) });
@@ -751,11 +775,13 @@ export async function superviseRuns(now = Date.now()): Promise<{ stalled: string
     if (!pidAlive(r.pid)) continue; // 交给 reconcileOrphans
     if (now - Date.parse(r.updatedAt) > cfg.staleMs) {
       try {
-        await finishRun(r.runId, {
+        const closed = await finishRun(r.runId, {
           status: 'stalled',
           error: `超过 ${Math.round(cfg.staleMs / 1000)}s 没有新进展 (可能是工具卡住或模型长时间无响应)`,
         });
         stalled.push(r.runId);
+        // 同上: 失速也是一条终止路径
+        if (onRunTerminal) await Promise.resolve(onRunTerminal(closed || r)).catch(() => null);
       } catch (err) {
         failed.push(r.runId);
         await recordDegradation({ kind: 'core', op: 'superviseRuns', runId: r.runId, message: String((err as Error)?.message || err).slice(0, 200) });

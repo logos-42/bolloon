@@ -53,15 +53,39 @@ import {
   type GoalRecord,
   type GoalStatus,
 } from './goal-store.js';
-import { readRun, type RunRecord } from './run-store.js';
+// 2026-09-25 (M0 接线冻结, 规则 ②): Goal 状态只有一个写入出口
+import { reduceGoalState } from './goal-state-reducer.js';
+
+// 接缝的拒绝类型与判别器一并从这里转发 (调用方不必再 import 接缝目录)
+export { isRefusal } from './goal-flywheel/wiring/index.js';
+export type { SeamRefusal, WiringCaller, SeamId, WiringStage } from './goal-flywheel/wiring/index.js';
+import { addRunEvidence, readRun, type RunRecord } from './run-store.js';
 import { applyHardLimits, decideContinuation, isRunnable } from './goal-flywheel/continuation-decision.js';
-import { closeRun, type CloseRunInput, type CloseRunResult } from './goal-flywheel/run-closure.js';
+import { closeRun, CLOSURE_STEP_ORDER, type CloseRunInput, type CloseRunResult } from './goal-flywheel/run-closure.js';
 import { writeMemoryRecords } from './goal-flywheel/memory-layers.js';
 import { assessCandidate } from './goal-flywheel/skill-candidate.js';
 import { acceptsAsComplete, issueWorkContract, stableHash, validateChildReport } from './goal-flywheel/work-contract.js';
 import { detectBlocks, planBlockHandling, toUserVisibleState } from './goal-flywheel/work-monitor.js';
 import { applyChange, classifyChange, ingestChange, nextStatusFor, shouldSupersedePending } from './goal-flywheel/goal-change.js';
 import type { ChangeApplication } from './goal-flywheel/goal-change.js';
+// 2026-09-25 (M0 接线冻结): 唯一责任链的五个接缝 (各阶段独占一个文件; 依赖在这里注入)
+import {
+  createChangeSeam,
+  createClosureSeam,
+  createContinuationSeam,
+  createContractSeam,
+  createMonitorSeam,
+  isRefusal,
+  type ChangeSeam,
+  type ClosureOutcomeView,
+  type ClosureSeam,
+  type CloseRunOnceResult,
+  type ContractSeam,
+  type ContinuationSeam,
+  type MonitorSeam,
+  type SeamRefusal,
+  type WiringCaller,
+} from './goal-flywheel/wiring/index.js';
 import type {
   AgentWorkContract,
   AgentWorkReport,
@@ -78,6 +102,7 @@ import type {
   PendingReport,
   ProgressDelta,
   SkillImprovementCandidate,
+  UserReport,
   UserVisibleState,
   WorkBudget,
 } from './goal-flywheel/types.js';
@@ -221,6 +246,13 @@ export interface DecisionRecord {
   hardLimits: HardLimits;
   goalSnapshot: DecisionRecordSnapshot;
   recordedAt: IsoTimestamp;
+  /**
+   * closure 阶段额外落盘的**收尾产物本体** (2026-09-25, 收尾幂等):
+   * 「这条 Run 已经收过尾」的第二次调用要把同一份事实**读回来**, 而不是重跑一遍或编一份。
+   * 因此收尾记录必须自带 continuation 与用户汇报 —— 只存决策的话, 第二次调用只能拿到半个事实。
+   */
+  continuation?: GoalContinuationRecord;
+  userReport?: UserReport;
 }
 
 export function decisionFilePath(goalId: string, runId: string, phase: 'preflight' | 'closure', home = bolloonHome()): string {
@@ -623,7 +655,7 @@ export async function closeGoalRun(input: {
   const reportPath = path.join(home, GOAL_REPORTS_ROOT, `${safeName(goal.goalId)}--${safeName(run.runId)}.json`);
   await atomicWrite(reportPath, JSON.stringify(result.userReport, null, 2));
 
-  // 决策记录落盘 (closure 阶段 = 权威决策)
+  // 决策记录落盘 (closure 阶段 = 权威决策 + 收尾产物本体: 收尾幂等靠它读回事实)
   const decisionRecordPath = await writeDecisionRecord(
     {
       goalId: goal.goalId,
@@ -636,6 +668,8 @@ export async function closeGoalRun(input: {
       hardLimits,
       goalSnapshot: snapshotOf(goal),
       recordedAt: now,
+      continuation: result.continuation,
+      userReport: result.userReport,
     },
     home,
   );
@@ -732,7 +766,12 @@ export interface MergedGoalOutcome {
  */
 export function mergeGoalOutcome(input: {
   legacy: LegacyGoalDecision;
-  flywheel: CloseRunResult;
+  /**
+   * 飞轮侧的收尾结论。**只要求它回答"下一步是什么"** (decision + continuation) ——
+   * 刻意不绑 `CloseRunResult` 的整份形状: 收尾接缝 (M2 的 `wiring/closure.ts`) 传进来的
+   * 是同一份事实的投影, 两者必须能直接对接, 而不是靠中间再拼一份。
+   */
+  flywheel: { decision: ContinuationDecision; continuation: GoalContinuationRecord };
   run: RunRecord | null;
   pendingReports?: PendingReport[];
   /** 覆盖"轮次用尽"时要用它把 wakeAt 置成"现在" (空着 = 只能靠事件唤醒, 那等于没覆盖) */
@@ -1051,15 +1090,21 @@ export async function applyBlockHandling(input: {
   if (escalatedBlocks.length > 0) {
     const goal = await readGoal(input.goalId);
     if (goal && !['completed', 'failed', 'abandoned'].includes(goal.status)) {
-      await setContinuation(input.goalId, {
-        state: 'needs_human',
-        autoContinue: false,
-        wakeReason: 'needs_human',
-        needsExternal: escalatedBlocks.join(' | ').slice(0, 300),
-        unresolvedItems: uniqNonEmpty([...(goal.continuation?.unresolvedItems ?? []), ...escalatedBlocks.map((s) => s.slice(0, 200))]),
-        updatedAt: now,
+      // 规则 ②: 状态 + continuation 一起经 Goal reducer 写。
+      // 旧写法是 setContinuation(...) + updateGoal(status:'needs_human') 两连 —— 后者是绕过 reducer 的
+      // 状态写入 (被 M0 门禁按文件粒度判红后改道到这里)。语义不变: 交人 + 不再自动唤醒 + 记阻塞摘要。
+      await reduceGoalState({
+        goalId: input.goalId,
+        intent: 'block_escalated_human',
+        now,
+        by: 'supervisor',
+        reason: escalatedBlocks.join(' | '),
+        needsExternalText: escalatedBlocks.join(' | ').slice(0, 300),
+        unresolvedItems: uniqNonEmpty([
+          ...(goal.continuation?.unresolvedItems ?? []),
+          ...escalatedBlocks.map((s) => s.slice(0, 200)),
+        ]).slice(0, 30),
       });
-      await updateGoal(input.goalId, { status: 'needs_human', unresolvedItems: goal.unresolvedItems.slice(0, 30) });
     }
   }
   if (out.takeovers.length > 0) {
@@ -1179,10 +1224,19 @@ export async function ingestGoalChange(input: {
     patch.criteriaVersion = application.criteriaVersion;
     bumped = application.criteriaVersion;
   }
-  if (application.outcome === 'next_run' && classified.kind === 'abort') {
-    patch.status = 'abandoned';
-    patch.resolution = { reason: `用户明确撤销 (${classified.changeId}): ${classified.instruction.slice(0, 120)}`, at: now };
+  const revoked = application.outcome === 'next_run' && classified.kind === 'abort';
+  if (revoked) {
+    // 规则 ②: 状态只有 Goal reducer 能写。这里走的是"用户明确撤销"这一类 (只有人能提, 见 change 接缝)。
+    const applied = await reduceGoalState({
+      goalId: goal.goalId,
+      intent: 'user_revoked_goal',
+      now,
+      by: input.recordedBy ?? 'user',
+      reason: `用户明确撤销 (${classified.changeId}): ${classified.instruction.slice(0, 120)}`,
+    });
+    if (!applied.ok) throw new Error(`撤销状态写入失败 (不静默): ${applied.reason}`);
   }
+  // 这一条 updateGoal 只写"变更记录/判据版本", **不写状态** (状态已由 reducer 负责)
   await updateGoal(goal.goalId, patch);
 
   const nextRunDirective = application.outcome === 'rejected' ? null : application.nextRunDirective;
@@ -1190,8 +1244,8 @@ export async function ingestGoalChange(input: {
     await setContinuation(goal.goalId, {
       nextAction: nextRunDirective,
       wakeReason: 'active',
-      autoContinue: patch.status === 'abandoned' ? false : goal.continuation?.autoContinue !== false,
-      state: lifecycleOf(patch.status ?? goal.status),
+      autoContinue: revoked ? false : goal.continuation?.autoContinue !== false,
+      state: lifecycleOf(revoked ? 'abandoned' : goal.status),
       updatedAt: now,
     });
   }
@@ -1276,4 +1330,330 @@ export async function flywheelTickNote(input: {
 export async function listGoalsWithPendingWork(limit = 20): Promise<GoalRecord[]> {
   const goals = await listGoals({ limit: 200 });
   return goals.filter((g) => (g.continuation?.pendingReports?.length ?? 0) > 0).slice(0, limit);
+}
+
+// ============================================================================
+// §11. 唯一责任链的接线 (M0) —— 接缝实例 / 收尾函数 / Run 终止钩子
+// ============================================================================
+
+/**
+ * 收尾事实在 **Run 证据**里的锚点。
+ *
+ * 幂等判据为什么需要两个落点 (都是**已有**存储, 不新增):
+ *   · 落点一 = Goal 的 closure 决策记录 (`.bolloon/goal-decisions/<goal>--<run>--closure.json`);
+ *   · 落点二 = Run 自己的 evidence。
+ * 只认落点一的话: 那条记录一丢 (误删 / 目录被清 / 换机器只搬了 runs/), 下一次调用会**当作没收过
+ * 再收一遍** —— 于是第二条 Memory / 第二份 Skill 候选 / 第二条 closure 记录 = 又是两套事实。
+ * Run 记录是跟着 Run 走的, 它上面的锚点不会因为 Goal 目录被动而消失。
+ */
+export const CLOSURE_EVIDENCE_PREFIX = '收尾已执行 (closeRun 9 步队列)';
+
+/** 同一条 Run 是否已经收过尾 (两个已有落点的并集; 拿不到事实就返回 false = 会去收, 而不是假装收过) */
+export async function hasClosureRecord(goalId: string, runId: string, home = bolloonHome()): Promise<boolean> {
+  if (!goalId || !runId) return false;
+  const records = await readDecisionRecords(goalId, home).catch(() => [] as DecisionRecord[]);
+  if (records.some((r) => r.phase === 'closure' && r.runId === runId)) return true;
+  const run = await readRun(runId).catch(() => null);
+  return (run?.evidence || []).some((e) => String(e).includes(CLOSURE_EVIDENCE_PREFIX));
+}
+
+/** 把 CloseGoalRunOutcome 收成接缝视图 (接缝不 import 本文件的类型, 所以在这里做形状转换) */
+function toClosureView(outcome: CloseGoalRunOutcome, runStatus: string): ClosureOutcomeView {
+  return {
+    runId: outcome.result.decision.runId,
+    goalId: outcome.result.decision.goalId,
+    steps: outcome.result.steps.length,
+    decision: outcome.result.decision,
+    continuation: outcome.result.continuation,
+    userReport: outcome.result.userReport,
+    runStatus,
+    memories: outcome.written.length,
+    candidates: outcome.result.candidates.length,
+    reportPath: outcome.reportPath,
+    decisionRecordPath: outcome.decisionRecordPath,
+  };
+}
+
+let seamsCache: FlywheelSeams | null = null;
+
+export interface FlywheelSeams {
+  continuation: ContinuationSeam;
+  closure: ClosureSeam;
+  contract: ContractSeam;
+  monitor: MonitorSeam;
+  change: ChangeSeam;
+}
+
+/**
+ * 五个接缝的实例 (依赖在这里注入 —— 接缝文件自己不读盘)。
+ *
+ * 只构造一次 (memoize): 派生接缝与 Run 的事实面无关, 重建没有意义。
+ * 测试想换注入 (例如假的 purgeTemporary) 走 `resetFlywheelSeamsForTest()`。
+ */
+export function flywheelSeams(): FlywheelSeams {
+  if (seamsCache) return seamsCache;
+  seamsCache = {
+    continuation: createContinuationSeam({
+      decide: async (i) => {
+        const step = await decideGoalStep({ goalId: i.goalId, now: i.now, maxRetries: i.maxRetries, writeRecord: i.writeRecord });
+        if (!step) return null;
+        return {
+          goalId: step.goalId,
+          runnable: step.runnable,
+          reason: step.reason,
+          noProgressStreak: step.noProgressStreak,
+          decision: step.decision
+            ? {
+              decision: step.decision.decision,
+              state: step.decision.state,
+              nextAction: step.decision.nextAction,
+              requiredCapability: step.decision.requiredCapability,
+              decisionId: step.decision.decisionId,
+            }
+            : null,
+        };
+      },
+    }),
+    closure: createClosureSeam({
+      hasClosure: (goalId, runId) => hasClosureRecord(goalId, runId),
+      closeGoalRun: async (i) => {
+        // Run 的状态是收尾事实的一部分 (用户汇报 / 决策记录都要它) —— 在这里读一次并带进视图
+        const runBefore = await readRun(i.runId).catch(() => null);
+        const out = await closeGoalRun({ goalId: i.goalId, runId: i.runId, now: i.now, finalReview: i.finalReview, maxRetries: i.maxRetries });
+        // 幂等的第二锚点: 把"这条 Run 收过尾了"刻在 **Run 自己的证据**上 (见 CLOSURE_EVIDENCE_PREFIX)
+        if (out) {
+          await addRunEvidence(i.runId, [
+            `${CLOSURE_EVIDENCE_PREFIX} → ${out.result.decision.decision} (goal=${i.goalId}, at=${i.now})`,
+          ]).catch(() => null);
+        }
+        return out ? toClosureView(out, String(runBefore?.status ?? '')) : null;
+      },
+      purgeTemporary: async () => {
+        // P1b: temporary 层任务结束自动过期归档 (没有 temporary 记录时是 0)
+        const dir = path.join(bolloonHome(), '.bolloon', 'memory-layers', 'temporary');
+        let files: string[] = [];
+        try { files = await fs.readdir(dir); } catch { return 0; }
+        let archived = 0;
+        for (const f of files.filter((x) => x.endsWith('.json'))) {
+          const rec = await readJson<{ expiresAt?: string }>(path.join(dir, f));
+          if (!rec?.expiresAt) continue;
+          if (Date.parse(rec.expiresAt) > Date.now()) continue;
+          const dest = path.join(bolloonHome(), '.bolloon', 'memory-layers', 'archived');
+          await fs.mkdir(dest, { recursive: true }).catch(() => null);
+          await fs.rename(path.join(dir, f), path.join(dest, f)).then(() => { archived++; }).catch(() => null);
+        }
+        return archived;
+      },
+    }),
+    contract: createContractSeam({
+      issue: (i) => dispatchChildWork({
+        goalId: i.goalId,
+        parentRunId: i.parentRunId,
+        childAgentId: i.childAgentId,
+        capability: i.capability,
+        objective: i.objective,
+        inputs: i.inputs,
+        allowedTools: i.allowedTools,
+        budget: i.budget,
+        deadline: i.deadline,
+        successCriteria: i.successCriteria,
+        now: i.now,
+        issuedBy: i.issuedBy,
+      }),
+      accept: (i) => handleChildReport({ goalId: i.goalId, workId: i.workId, report: i.report, now: i.now }),
+    }),
+    monitor: createMonitorSeam({
+      collect: (i) => collectWorkBlocks({ goalId: i.goalId, now: i.now, runnerAvailable: i.runnerAvailable }),
+      handle: (i) => applyBlockHandling({ goalId: i.goalId, blocks: i.blocks, now: i.now }),
+      goalsWithPendingWork: async (limit) => (await listGoalsWithPendingWork(limit)).map((g) => ({ goalId: g.goalId })),
+    }),
+    change: createChangeSeam({
+      ingest: (i) => ingestGoalChange({
+        goalId: i.goalId,
+        instruction: i.instruction,
+        source: i.source,
+        recordedBy: i.recordedBy,
+        now: i.now,
+        scopeWorkIds: i.workId ? [i.workId] : undefined,
+      }).then((out) => {
+        if (!out) throw new Error(`变更无法入档 (goal=${i.goalId})`);
+        return { request: out.request, classification: out.application, application: out.application };
+      }),
+      nextRunDirective: (goalId) => nextRunChangeDirective(goalId),
+      markConsumed: (goalId, runIndex, now) => markChangesConsumed(goalId, runIndex, now),
+      visibleState: (i) => goalVisibleState({ goalId: i.goalId, now: i.now }),
+      pending: async (goalId) => {
+        const g = await readGoal(goalId);
+        return (g?.goalChanges ?? []).filter((c) => c.status === 'needs_approval' || c.status === 'scheduled_next_run' || c.status === 'triaged');
+      },
+    }),
+  };
+  return seamsCache;
+}
+
+/** 测试用: 丢掉接缝实例 (下次 `flywheelSeams()` 重新注入) */
+export function resetFlywheelSeamsForTest(): void {
+  seamsCache = null;
+}
+
+/**
+ * **收尾唯一入口** (规则 ③ + ④): 所有终止路径都调它, 它再调 `closeRun` (经 closure 接缝)。
+ *
+ * 幂等: 同一条 runId 只真收一次 (第二次 `alreadyClosed=true`)。因此
+ * "Runner 自己收 + Supervisor 又收"不会写出两套产物。
+ *
+ * 返回值刻意是 union (`CloseRunOnceResult | SeamRefusal`), 让调用方能如实区分
+ * "收过了 / 真收了 / 拒绝 (说不清是哪条 Run)" 三种情形, 而不是一个 boolean。
+ */
+export async function closeRunOnce(input: {
+  goalId: string;
+  runId: string;
+  caller?: WiringCaller;
+  now?: IsoTimestamp;
+  finalReview?: string;
+  maxRetries?: number;
+}): Promise<CloseRunOnceResult | SeamRefusal> {
+  const seamResult = await flywheelSeams().closure.closeRunOnce({
+    goalId: input.goalId,
+    runId: input.runId,
+    caller: input.caller ?? 'supervisor',
+    now: input.now ?? new Date().toISOString(),
+    finalReview: input.finalReview,
+    maxRetries: input.maxRetries,
+  });
+  if (isRefusal(seamResult)) return seamResult;
+  if (!seamResult.alreadyClosed) return seamResult;
+  // 已经收过尾 → 把**那次**的事实读回来 (幂等但不丢事实): 上层仍能拿到 continuation 与用户汇报
+  const back = await readClosureOutcome(input.goalId, input.runId);
+  return {
+    ...seamResult,
+    outcome: back,
+    reason: back
+      ? seamResult.reason
+      : `${seamResult.reason} —— 但收尾事实读不回来 (closure 决策记录缺 continuation/userReport): 上层必须如实记"收过了、事实缺失", 不许当没收过再收一遍`,
+  };
+}
+
+/**
+ * 一条已经收过尾的 Run: 把**那次收尾的事实读回来** (不重跑, 也不编)。
+ *
+ * 依据就是 `closeGoalRun` 自己写下的 closure 决策记录 (它自带 continuation 与用户汇报)。
+ * 读不到就返回 null —— 调用方必须如实说"收过了但事实读不回来", 而不是当作没收过再收一遍。
+ */
+export async function readClosureOutcome(goalId: string, runId: string, home = bolloonHome()): Promise<ClosureOutcomeView | null> {
+  const records = await readDecisionRecords(goalId, home).catch(() => [] as DecisionRecord[]);
+  const rec = records.find((r) => r.phase === 'closure' && r.runId === runId);
+  if (!rec) return null;
+  if (!rec.continuation || !rec.userReport) return null;
+  const run = await readRun(runId).catch(() => null);
+  const reportPath = path.join(home, GOAL_REPORTS_ROOT, `${safeName(goalId)}--${safeName(runId)}.json`);
+  return {
+    runId,
+    goalId,
+    // 步数是**冻结面**的收尾流水线长度: 收尾是固定 9 步, 不随读写路径变化
+    steps: CLOSURE_STEP_ORDER.length,
+    decision: rec.decision,
+    continuation: rec.continuation,
+    userReport: rec.userReport,
+    runStatus: String(run?.status ?? ''),
+    memories: 0,
+    candidates: 0,
+    reportPath,
+    decisionRecordPath: decisionFilePath(goalId, runId, 'closure', home),
+  };
+}
+
+/**
+ * 一次继续决策 → Goal 状态 (给**没有 Supervisor 宿主**的 Runner 用)。
+ *
+ * 只是把决策的语义翻译成 Goal 生命周期状态, **不做任何判定**:
+ *   complete → completed (仍要过完成门) · fail → failed · pause → paused ·
+ *   ask_human → needs_human · delegate → active (派活期间目标还在推进) ·
+ *   wait/continue → active。
+ */
+export function goalStatusFromDecision(d: ContinuationDecision): GoalStatus {
+  switch (d.decision) {
+    case 'complete': return 'completed';
+    case 'fail': return 'failed';
+    case 'pause': return 'paused';
+    case 'ask_human': return 'needs_human';
+    default: return 'active';
+  }
+}
+
+/**
+ * 把一条收尾结论经 **Goal reducer** 落进 Goal (唯一漏斗, 规则 ②)。
+ *
+ * 这是"链的下半段": 收尾写了产物 (上半段), 这一步写回"下一步是什么" —— 下一次 continuation。
+ * Supervisor 用它自己的运输层版本 (带退避), 非 Supervisor 宿主 (CLI / 崩溃恢复 / 失速) 用这一份。
+ */
+export async function applyClosureToGoal(
+  goalId: string,
+  view: ClosureOutcomeView,
+  by = 'system',
+  now = new Date().toISOString(),
+): Promise<{ status: string | null; gateRejected?: string }> {
+  const applied = await reduceGoalState({
+    goalId,
+    intent: 'closure_outcome',
+    now,
+    by,
+    outcome: {
+      goalStatus: goalStatusFromDecision(view.decision),
+      continuation: toGoalStoreContinuation(view.continuation),
+      reason: view.decision.reason,
+    },
+    runId: view.runId,
+  });
+  return { status: applied.status, gateRejected: applied.gateRejected };
+}
+
+/**
+ * Run 被**底层状态机**判成终止时 (崩溃恢复 → interrupted / 失速 → stalled) 的回调。
+ *
+ * `run-store` 不认识 Goal, 也不该认识 —— 所以它只暴露一个注册点; 由接线层注册本函数。
+ * 于是"崩溃恢复"与"失速"这两条终止路径也进了唯一责任链 (规则 ④):
+ * 拿到 Run 事实 → 找它的 Goal → 走 `closeRunOnce` → 把下一步经 reducer 写回 Goal。
+ */
+export async function onRunTerminal(input: { runId: string; status: string; goalId?: string | null }): Promise<{ closed: boolean; reason: string; applied: string | null }> {
+  const run = await readRun(input.runId).catch(() => null);
+  const goalId = input.goalId || run?.goalId || '';
+  if (!goalId) return { closed: false, reason: `Run ${input.runId} 没有绑 Goal → 无从收尾 (不假装收过)`, applied: null };
+  const out = await closeRunOnce({ goalId, runId: input.runId, caller: 'system', finalReview: `底层状态机判为 ${input.status}: ${run?.error || ''}`.trim() });
+  if (isRefusal(out)) return { closed: false, reason: out.reason, applied: null };
+  if (out.alreadyClosed) return { closed: false, reason: out.reason, applied: null };
+  if (!out.outcome) return { closed: true, reason: out.reason, applied: null };
+  // 收尾产物有了 → 立刻把"下一步"写回 Goal (否则崩溃恢复这一轮等于白收: 下次还得从零开始)
+  const applied = await applyClosureToGoal(goalId, out.outcome, 'system');
+  return { closed: true, reason: out.reason, applied: applied.status };
+}
+
+/** 把 Run 终止钩子装进 run-store (幂等; 谁宿主谁装) */
+export async function installRunTerminalHook(): Promise<void> {
+  const { setOnRunTerminal } = await import('./run-store.js');
+  setOnRunTerminal(async (rec) => {
+    await onRunTerminal({ runId: rec.runId, status: rec.status, goalId: rec.goalId }).catch(() => null);
+  });
+}
+
+/**
+ * 非 Supervisor 宿主 (CLI `bolloon task` / 独立进程) 的收尾入口。
+ *
+ * 做的事和 Supervisor 完全一样, 只是没有运输层的退避语义 —— 所以它：
+ *   ① `closeRunOnce` 收尾 (幂等); ② 把"下一步是什么"经 Goal reducer 落进 Goal。
+ * 于是"CLI 任务跑完"与"Supervisor 推进一轮"在**同一份事实**上收口, 不再各写一套。
+ */
+export async function closeTaskRun(
+  runId: string,
+  goalId: string,
+  note: string,
+  by = 'cli',
+): Promise<{ closed: boolean; reason: string; decision: string | null }> {
+  const now = new Date().toISOString();
+  const out = await closeRunOnce({ goalId, runId, caller: 'runner', now, finalReview: note });
+  if (isRefusal(out)) return { closed: false, reason: out.reason, decision: null };
+  if (!out.outcome) return { closed: false, reason: out.reason, decision: null };
+  const view = out.outcome;
+  await applyClosureToGoal(goalId, view, by, now);
+  return { closed: !out.alreadyClosed, reason: out.reason, decision: view.decision.decision };
 }

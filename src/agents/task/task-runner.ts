@@ -27,6 +27,8 @@ import { bridgeTransactionToRunGoal } from '../x402/goal-run-bridge.js';
 import { buyInfoAsTransaction } from '../x402/trade.js';
 import { publishInfo, listInfo } from '../x402/paid-info-store.js';
 import { planTransactionRecovery } from '../x402/payment-recovery.js';
+// 2026-09-25 (M0 接线冻结): CLI 的 Run 终止也必须过唯一责任链 (规则 ③④)
+import * as wiring from '../goal-flywheel-wiring.js';
 import { executeContractSkill, validateResourceOutput, verifyInstallFidelity, loadResourceContract } from '../x402/resource-contract.js';
 import { adviseResource } from './resource-advisor.js';
 import { resolveTaskBudget, checkPurchaseAllowed, previewPurchaseImpact, assertNoExpansion, type TaskBudgetPlan } from './task-budget.js';
@@ -357,6 +359,9 @@ export async function runTask(opts: RunTaskOptions): Promise<TaskRunResult> {
   const fail = async (stage: TaskStage, note: string, cardOpts: Parameters<typeof buildReportCard>[0], runStatus: 'needs_human' | 'failed' = 'needs_human') => {
     mark(stage, note);
     await finishRun(run.runId, { status: runStatus, summary: note.slice(0, 200) });
+    // ★ 2026-09-25 (M0 接线冻结, 规则 ④): CLI 任务的每条失败出口也是 Run 的终止 →
+    //   同样过收尾漏斗 (旧写法只 finishRun, 于是这条路径上没有 Memory / Skill 候选 / 权威 continuation)。
+    await wiring.closeTaskRun(run.runId, goal.goalId, note, 'cli');
     const card = buildReportCard({ ...cardOpts, evidenceRef: { goalId: goal.goalId, runId: run.runId, transactionId: cardOpts.evidenceRef?.transactionId }, budgetLines: [...budget.why, ...(cardOpts.budgetLines || [])] });
     return { ok: false, card, text: renderReportCard(card), goalId: goal.goalId, runId: run.runId, transactionId: card.evidenceRef.transactionId, stages, budget, outputIssues: cardOpts.blocker ? [cardOpts.blocker] : [] } as TaskRunResult;
   };
@@ -604,7 +609,9 @@ export async function runTask(opts: RunTaskOptions): Promise<TaskRunResult> {
     summary: evidenceOk ? `任务完成: ${concl.conclusion || '已产出'}` : '未达标 (证据/契约不完整)',
     evidence: [`bridge: step=${bridge.stepWritten} evidence=${bridge.evidenceWritten} goal=${bridge.goalEvidenceWritten}`],
   });
-  if (evidenceOk) await completeGoalIfEligible(goal.goalId);
+  // ★ M0 (规则 ③④): 成功出口也走同一个收尾漏斗 —— 完不完成由飞轮决策 + 完成门判,
+  //   不再在这里直接调 completeGoalIfEligible (那是一条绕过 closeRun 的旧收尾路径)。
+  await wiring.closeTaskRun(run.runId, goal.goalId, card.conclusion || card.status, 'cli');
 
   mark('report', card.status);
   return {

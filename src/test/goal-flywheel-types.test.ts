@@ -634,9 +634,17 @@ describe('④ 冻结层的纯度与所有权', () => {
       'work-contract.ts',         // P2 子 Agent 合同
       'work-monitor.ts',          // P3 阻塞监控
       'goal-change.ts',           // P4 新要求注入
+      // 2026-09-25: P3b「处置动作真执行」由**另一条线**落地 (block-executor.ts)。名册是白名单
+      // (不在名册上的野文件判红), 所以它必须在这里登记 —— 登记 ≠ 放行野文件, 只表示"这个文件是谁的"。
+      'block-executor.ts',        // P3b 阻塞处置真执行 (不属 M0 扫描面)
     ];
-    const rogue = files.filter((f) => f !== 'types.ts' && f !== 'index.ts' && !PHASE_FILES.includes(f));
+    // 2026-09-25 (M0 接线冻结): 新增 `wiring/` —— M1–M4 的**接缝目录**。这不是"放行一个野目录":
+    // 目录里有什么由下面那条断言逐个钉死 (放行目录 ≠ 放行野文件)。
+    const rogue = files.filter((f) => f !== 'types.ts' && f !== 'index.ts' && f !== 'wiring' && !PHASE_FILES.includes(f));
     expect(rogue).toEqual([]);
+    // M0: wiring/ 里只许有名册上那 5 个接缝 + 转发入口 + 接缝名册本体
+    const seamFiles = fs.readdirSync(path.join(root, 'src/agents/goal-flywheel/wiring')).sort();
+    expect(seamFiles).toEqual(['change.ts', 'closure.ts', 'continuation.ts', 'contract.ts', 'index.ts', 'monitor.ts', 'seams.ts']);
   });
 
   it('本轮没有把"不做"清单里的东西混进来 (门自身非空转)', () => {

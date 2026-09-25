@@ -14,8 +14,10 @@
 import * as os from 'os';
 import { SkillsManager } from './skills-manager.js';
 import {
-  readGoal, setContinuation, updateGoal, addEvidence, type GoalRecord,
+  readGoal, updateGoal, addEvidence, type GoalRecord,
 } from './goal-store.js';
+// 2026-09-25 (M0 接线冻结, 规则 ②): Goal 状态与 continuation 变更只有一个漏斗
+import { reduceGoalState } from './goal-state-reducer.js';
 import { recordDegradation } from './run-store.js';
 
 export interface SkillSnapshotEntry { name: string; version: string; contentHash: string; source?: string; resolvedAt: string }
@@ -112,12 +114,18 @@ export async function ensureGoalSkillsReady(goal: GoalRecord, opts: { home?: str
 /** 门禁不过 → 写清事实并把 Goal 交给人 (不启动 Run, 不伪造失败) */
 export async function blockGoalOnSkills(goalId: string, res: ReadinessResult): Promise<void> {
   const reason = res.reason || '技能未就绪';
-  await setContinuation(goalId, {
-    wakeReason: 'needs_human', autoContinue: false, needsExternal: undefined,
-    skillReadiness: { ok: false, at: new Date().toISOString(), reason, missing: res.missing, drift: res.drift, degradations: res.degradations },
-  } as any);
-  await updateGoal(goalId, { status: 'needs_human' } as any).catch(() => {});
-  await addEvidence(goalId, [`技能门禁拦截: ${reason}`]).catch(() => {});
+  // 规则 ②: 状态与 continuation 都经 Goal reducer 写 (单一漏斗)
+  await reduceGoalState({
+    goalId,
+    intent: 'skill_gate_block',
+    now: new Date().toISOString(),
+    by: 'skill-readiness',
+    reason,
+    skillReadiness: {
+      ok: false, at: new Date().toISOString(), reason,
+      missing: res.missing, drift: res.drift, degradations: res.degradations,
+    },
+  }).catch(() => null);
   for (const d of res.degradations) await recordDegradation({ kind: 'observational', op: 'skill-readiness', message: d }).catch(() => {});
 }
 
@@ -129,7 +137,12 @@ export async function blockGoalOnSkills(goalId: string, res: ReadinessResult): P
  *   可查 —— 原来只有 `blockGoalOnSkills` 写这个字段, 门禁一放行就没有任何记录了。
  */
 export async function recordSkillReadiness(goalId: string, res: ReadinessResult): Promise<void> {
-  await setContinuation(goalId, {
+  // 规则 ②: continuation 也经 Goal reducer 写 (只记事实, 不改状态)
+  await reduceGoalState({
+    goalId,
+    intent: 'skill_gate_record',
+    now: new Date().toISOString(),
+    by: 'skill-readiness',
     skillReadiness: {
       ok: res.ok,
       at: new Date().toISOString(),
@@ -138,7 +151,7 @@ export async function recordSkillReadiness(goalId: string, res: ReadinessResult)
       drift: res.drift,
       degradations: res.degradations,
     },
-  } as any);
+  }).catch(() => null);
 }
 
 /** 人工批准技能升级: 重新冻结快照 (显式动作, 不隐式切换) */
@@ -147,8 +160,18 @@ export async function approveSkillUpgrade(goalId: string, opts: { home?: string 
   if (!goal) return { ok: false, reason: 'Goal 不存在' };
   const frozen = await freezeGoalSkills(goal, { ...opts, force: true });
   if (!frozen.ok) return { ok: false, reason: frozen.reason };
-  await setContinuation(goalId, { skillReadiness: { ok: true, at: new Date().toISOString(), reason: '人工批准技能升级' }, wakeReason: 'active', autoContinue: true } as any);
-  await updateGoal(goalId, { status: 'active' } as any).catch(() => {});
-  await addEvidence(goalId, [`技能升级已被人工批准: ${(frozen.snapshot || []).map((s) => `${s.name}@${s.version}`).join(', ')}`]).catch(() => {});
+  // ★ 规则 ⑥ (Skill 不许绕过 验证+快照+可回退 通道): 批准是**人**的动作, 但必须留下通道证据 ——
+  //   快照 (skillSnapshot, 上面 freezeGoalSkills 已写) + 版本 + 变更原因 + 可回退 (fromVersion 仍在
+  //   Goal 上)。这里把"谁批的、为什么"连同新版本一起记进 Goal (走唯一漏斗, 规则 ②)。
+  const versions = (frozen.snapshot || []).map((s) => `${s.name}@${s.version}`);
+  const fromVersions = (goal.skillSnapshot || []).map((s) => `${s.name}@${s.version}`);
+  await reduceGoalState({
+    goalId,
+    intent: 'skill_upgrade_approved',
+    now: new Date().toISOString(),
+    by: 'human',
+    skillReadiness: { ok: true, at: new Date().toISOString(), reason: '人工批准技能升级' },
+    reason: `技能升级已被人工批准 (by=human; from=[${fromVersions.join(', ')}] → to=[${versions.join(', ')}]; 可回退: Goal.skillSnapshot 保留新版本快照, 内容哈希在 skills-manager 侧可核验)`,
+  }).catch(() => null);
   return { ok: true, snapshot: frozen.snapshot };
 }

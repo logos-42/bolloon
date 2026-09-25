@@ -12,6 +12,8 @@
 import {
   readGoal, setCriteria, addEvidence, setUnresolved, updateGoal, type GoalRecord,
 } from './goal-store.js';
+// 2026-09-25 (M0 接线冻结, 规则 ②): Goal 状态变更只有一个漏斗
+import { reduceGoalState } from './goal-state-reducer.js';
 import { readRun, type RunRecord } from './run-store.js';
 
 export interface CriteriaProposal {
@@ -63,9 +65,14 @@ export async function proposeForGoal(goalId: string): Promise<CriteriaProposal> 
   }
   const p = proposeCriteria(goal.objective);
   if (!p.ok) {
-    // 太模糊 → 明确交人, 不写假判据
-    await addEvidence(goalId, [`判据生成失败: ${p.reason}`]).catch(() => {});
-    await updateGoal(goalId, { status: 'needs_human' } as any).catch(() => {});
+    // 太模糊 → 明确交人, 不写假判据 (规则 ②: 状态经 Goal reducer 写; 它同时留一条可追溯证据)
+    await reduceGoalState({
+      goalId,
+      intent: 'criteria_needs_human',
+      now: new Date().toISOString(),
+      by: 'goal-criteria',
+      reason: p.reason,
+    }).catch(() => null);
     return p;
   }
   await setCriteria(goalId, { criteria: p.criteria, source: 'agent_proposed', confirm: false });

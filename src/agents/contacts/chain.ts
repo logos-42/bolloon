@@ -19,7 +19,9 @@
  *   - 同一 requestId 不重复发送 (policy 的 duplicate_request + sent.json)
  */
 
-import { addEvidence, readGoal, setContinuation, setUnresolved, updateGoal } from '../goal-store.js';
+import { addEvidence, readGoal, setContinuation, setUnresolved } from '../goal-store.js';
+// 2026-09-25 (M0 接线冻结, 规则 ②): Goal 状态变更只有一个漏斗
+import { reduceGoalState } from '../goal-state-reducer.js';
 import { addRunEvidence } from '../run-store.js';
 import { bindExternalWait, clearExternalWait, deliverExternalEvent, expireExternalWaits, newContinuationId, defaultWaitExpiry } from '../external-events.js';
 import { ContactsStore } from './store.js';
@@ -355,7 +357,14 @@ export class ContactChain {
         note: `等 ${contact.displayValue} 回复 (通道 ${contact.provider})`,
       };
       await bindExternalWait(opts.goalId, wait);
-      await updateGoal(opts.goalId, { status: 'awaiting_external' });
+      // 规则 ②: 进入"等外部"也是一种 Goal 状态变更 → 走 Goal reducer
+      await reduceGoalState({
+        goalId: opts.goalId,
+        intent: 'external_wait_enter',
+        now: new Date(this.now()).toISOString(),
+        by: 'contacts',
+        externalWait: `等 ${contact.displayValue} 回复 (通道 ${contact.provider})`,
+      });
       const g = await readGoal(opts.goalId);
       await this.ledger({
         activity: 'contact.authorization_requested', contactId: contact.contactId, goalId: opts.goalId, runId: opts.runId,
@@ -499,9 +508,14 @@ export class ContactChain {
       await clearExternalWait(s.goalId);
       const g = await readGoal(s.goalId);
       await setUnresolved(s.goalId, Array.from(new Set([...(g?.unresolvedItems || []), `联系方式授权 ${grantId} 已撤销, 该联系不可自动重试 (转人工)`])));
-      // 撤等待 + 转人工: 不再自动唤醒, 由人接手 (Supervisor 下一轮看到 needs_human)
-      await setContinuation(s.goalId, { wakeReason: 'needs_human', needsExternal: undefined, autoContinue: false } as any).catch(() => null);
-      await updateGoal(s.goalId, { status: 'needs_human' } as any).catch(() => null);
+      // 撤等待 + 转人工: 不再自动唤醒, 由人接手 (规则 ②: 状态经 Goal reducer 写, 单一漏斗)
+      await reduceGoalState({
+        goalId: s.goalId,
+        intent: 'contact_revoked_human',
+        now: new Date().toISOString(),
+        by: 'contacts',
+        revokeNote: `联系方式授权 ${grantId} 已撤销, 该联系不可自动重试`,
+      }).catch(() => null);
       affected.push(s.goalId);
     }
     return { ok: true, affectedGoals: affected };
@@ -597,8 +611,14 @@ export class ContactChain {
       await clearExternalWait(s.goalId);
       const g = await readGoal(s.goalId);
       await setUnresolved(s.goalId, Array.from(new Set([...(g?.unresolvedItems || []), `联系人 ${c.displayValue} 已撤销授权, 该联系不可重试`])));
-      await setContinuation(s.goalId, { wakeReason: 'needs_human', needsExternal: undefined, autoContinue: false } as any).catch(() => null);
-      await updateGoal(s.goalId, { status: 'needs_human' } as any).catch(() => null);
+      // 规则 ②: 经 Goal reducer 写 (单一漏斗)
+      await reduceGoalState({
+        goalId: s.goalId,
+        intent: 'contact_revoked_human',
+        now: new Date().toISOString(),
+        by: 'contacts',
+        revokeNote: `联系人 ${c.displayValue} 已撤销授权, 该联系不可重试`,
+      }).catch(() => null);
       affected.push(s.goalId);
     }
     return { ok: true, evidenceRef: ev.evidenceRef, affectedGoals: affected };
