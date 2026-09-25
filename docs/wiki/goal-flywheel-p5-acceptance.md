@@ -58,7 +58,7 @@ tags: [goal, continuation, flywheel, p5, acceptance, verification, supervisor, w
   (不空转、不烧轮次)。
 - **能独立重跑**: 是。
 
-### ③ 子 Agent 阻塞: 被发现 / 有处置 / 不越权接管 —— **通过** (注: 处置动作大多「只记账」= 缺口 4, **未修**)
+### ③ 子 Agent 阻塞: 被发现 / 有处置 / 不越权接管 —— **通过** (注: 处置动作大多「只记账」= 缺口 4, **逻辑已落地 (P6), 接线归 M3**)
 
 四种情形都在真 API 上跑过 (`dispatchChildWork` → 真合同 → `collectWorkBlocks` → `applyBlockHandling`):
 
@@ -222,6 +222,15 @@ tags: [goal, continuation, flywheel, p5, acceptance, verification, supervisor, w
 - `BOLLOON_RUN_FINAL_REVIEW` 这个注入通道**只被 Supervisor 读**; 直调 `closeGoalRun` 必须显式传 `finalReview`
   (否则走"散文评审"分支, 只记"非结构化")。
 - `replace_child` / `escalate_parent` 在 Goal 层都收敛到 `needs_human` (父=人) —— 这是当前接线的真实语义。
+
+### 缺口 7 (中, P6 发现) 外部事件去重表是**有界 20 条滑动窗口** ⇒ 超窗后旧事件会被当成新事件再次接受 —— **登记, 归 M3 / 后续修**
+
+- **现象 (实测)**: 连投 21 个不同 `eventId` 后, 最早那个 (`ev-1`) 掉出窗口 → 再投同一 id ⇒ **`delivered`** (当成新事件); 仍在窗内的 `ev-20` ⇒ `duplicate`。
+- **证据**: `src/test/goal-flywheel-p6-external-events.test.ts` (只读验证, **未改** `external-events.ts`)。
+- **含义**: 去重只保证"**最近 20 条**不重复", 不是"这个 id 见过就不算新的"。长时间运行 (唤醒循环本就长) 且事件量超过 20 时, 同一个外部事件 (同 `requestId` 的重复通知) 可能被再当新事件 ⇒ **重复唤醒 / 重复派遣**风险。
+- **建议修法 (需先定语义, 三选一)**: ① 窗口未命中时再查**持久层** (事件 id 落盘) ② 窗口按**时间**过期 (如 24h) 而非按条数 ③ 明说"只保证窗口内去重", 并在唤醒侧对同 `requestId` 做幂等。
+- **复跑**: `npx vitest run src/test/goal-flywheel-p6-external-events.test.ts`
+- **归属**: leo 2026-09-25 决定 —— **登记为缺口, 归 M3 / 后续修** ("超窗后旧事件不得被重新接受")。与 缺口 4 一样, 撞车点在 M3 的 `contract`+`monitor` 接缝邻近面。
 
 ## 2A. 修复台账 (2026-09-25 P5 收口线: 已修 / 未修 + 改前 → 改后 → 证据)
 
