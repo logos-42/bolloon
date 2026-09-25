@@ -25,8 +25,9 @@
  * ## 接入点 (接线 = 别人的文件, 本模块只写清"差哪一行")
  *
  * 真实 tick 里的接入点是 `src/agents/execution-supervisor.ts` 的 `tick()` 内、
- * 阻塞巡检那一段 (当前 ~L425–L438): 现在那里只调 `collectWorkBlocks` + `applyBlockHandling`,
- * 拿到 `handling.actions` 后仅写进 `report.blocks` 与 log。**差的就是一行**:
+ * 阻塞巡检那一段 (**当前 L423–L439**「2.5 阻塞巡检」, `applyBlockHandling` 在 **L429**): 现在那里只调
+ * `collectWorkBlocks` + `applyBlockHandling`, 拿到 `handling.actions` 后仅写进 `report.blocks` 与 log
+ * (`handling.takeovers` 也只打了一行"父接管子工作"的日志)。**差的就是一行**:
  *
  * ```ts
  * // execution-supervisor.ts, applyBlockHandling(...) 之后 (同一段 try 内)
@@ -37,7 +38,7 @@
  *   // 执行权: 本 tick 内该 Goal 的 lease **尚未**被本 worker 持有 (认领发生在第 3 步) →
  *   //   这里如实传 false; 真正的父侧接管应由"已持有 lease 的那条路径"调 (见下)
  *   authority: { leaseHeld: false, caller: 'supervisor', leaseOwner: null },
- *   ports: blockExecutorPorts({ home }),   // 接线层注入: 抢租约/换人/发指令/催报/改计划/升级
+ *   ports: blockExecutorPorts({ home }),   // ← 这个 helper **还没写**: 属接线层的活 (本模块是纯逻辑)
  * });
  * for (const a of execution.needsHuman) {
  *   this.emit({ kind: 'needs_human', goalId: g.goalId, message: `${a.blockId}: ${a.reason}` });
