@@ -1,6 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { AgentWorkContract, AgentWorkReport } from './goal-flywheel/types.js';
+// 2026-09-25 (M3 接缝): 换人必须重签合同的判据只有一份 (纯函数, 零 I/O)
+import { childMatchesContract } from './goal-flywheel/wiring/contract.js';
 
 export type SubAgentStatus = 'creating' | 'active' | 'idle' | 'busy' | 'terminated';
 export type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed';
@@ -68,6 +70,20 @@ export interface SubAgentTask {
    */
   goalId?: string;
   workId?: string;
+  /**
+   * 2026-09-25 (M3): **派前必须有工作合同** —— 目标语境下签不出合同时, 任务**不派出**,
+   * 原因记在这里 (而不是"记个 error 照样派出去")。有它 = 这条任务根本没派给任何子 Agent。
+   */
+  contractRefused?: { code: string; reason: string } | null;
+  /**
+   * 2026-09-25 (M3): 换了执行者但**没**重签合同 → 拒绝换人, 原因记在这里 (合同把执行者钉死了)。
+   * 有它 = 指派关系**没有**被改动。
+   */
+  reassignRefused?: { code: string; reason: string } | null;
+  /** 最近一次成功的子 Agent 心跳 (P3 阻塞巡检的输入面: "任务还活着吗") */
+  lastHeartbeatAt?: string | null;
+  /** 心跳写入失败的原因 (不覆盖 `error`; 心跳失败会让监控看到"无进展", 必须留痕) */
+  heartbeatError?: string | null;
 }
 
 export interface InterAgentMessage {
@@ -293,10 +309,36 @@ export class SubAgentManager {
   async assignTask(taskId: string, toAgentId: string): Promise<void> {
     const task = this.tasks.get(taskId);
     if (task) {
+      // 2026-09-25 (M3): 挂着工作合同的任务 **不许换人而不换合同**。
+      //   合同把 `childAgentId` 钉死了 (回报核验要求 report.childAgentId === contract.childAgentId),
+      //   把同一份合同指给另一个子 Agent ⇒ 新子的回报必然对不上合同, 合规判定整个失效。
+      //   换人的正确做法是**重新派遣** (父侧 signed 新合同) —— 本方法只维护指派关系, 无权签合同,
+      //   所以这里如实拒绝并留痕, 而不是"改了字段就当换成了"。
+      if (task.goalId && task.workId) {
+        const contract = (task.metadata?.workContract ?? null) as AgentWorkContract | null;
+        if (!contract) {
+          task.reassignRefused = {
+            code: 'contract_unreadable',
+            reason: `任务 ${taskId} 挂着 workId=${task.workId} 却读不到合同 → 无法判断新执行者是否与原合同一致, 拒绝换人 (先重签合同)`,
+          };
+          await this.saveTasks();
+          this.notifyTaskListeners(task);
+          return;
+        }
+        const same = childMatchesContract(contract, toAgentId);
+        if (!same.ok) {
+          task.reassignRefused = { code: 'requires_new_contract', reason: same.reason };
+          await this.saveTasks();
+          this.notifyTaskListeners(task);
+          return;
+        }
+        task.reassignRefused = null;
+      }
       task.assignedAgentId = toAgentId;
       task.toAgentId = toAgentId;
       task.status = 'assigned';
       task.assignedAt = new Date().toISOString();
+      await this.heartbeatContractedTask(task, task.assignedAt);
       await this.saveTasks();
 
       this.notifyTaskListeners(task);
@@ -306,10 +348,26 @@ export class SubAgentManager {
   async updateTaskStatus(taskId: string, status: TaskStatus, result?: string, error?: string): Promise<void> {
     const task = this.tasks.get(taskId);
     if (task) {
+      // 2026-09-25 (M3 接缝): 挂了合同的子任务, 任何状态更新都是"子还活着"的证据 → 记一次心跳。
+      //   这是"执行中统一监控"的输入面: 没有心跳, 阻塞巡检只能看见"卡住", 看不见"在动"。
+      await this.heartbeatContractedTask(task);
+
       // 2026-09-25 (飞轮接线 P2): 挂着工作合同的任务, "完成" 必须过回报核验 ——
       //   回一段漂亮话 (没有逐条判据证据) **不算完成**: 任务留在 in_progress, 原因写清楚,
       //   而 Goal 那边的 pendingReports 保持 (父仍然在等这份回报)。
-      if (status === 'completed' && task.workId && task.goalId) {
+      //
+      // 2026-09-25 (M3): 判据从 `task.workId && task.goalId` 收紧成 `task.goalId` ——
+      //   "派前必须有合同"的**反面**: 目标语境下的任务若**没有**合同 (签发失败 / 旧数据),
+      //   它同样不许自称完成 —— 没有合同的回报不核验也不接受 (handleChildReport 的 no_contract)。
+      if (status === 'completed' && task.goalId) {
+        if (!task.workId) {
+          task.status = 'in_progress';
+          task.error = '回报不接受为完成: 这条任务在目标语境下**没有工作合同** '
+            + '(签合同失败或任务早于合同接线) —— 没有合同就没有判据, 无法核验, 不许当完成记账';
+          await this.saveTasks();
+          this.notifyTaskListeners(task);
+          return;
+        }
         const verdict = await this.validateTaskReport(task, result ?? '');
         if (!verdict.accepted) {
           task.status = 'in_progress';
@@ -332,6 +390,31 @@ export class SubAgentManager {
       this.notifyTaskListeners(task);
     }
   }
+
+  /**
+   * 给挂着合同的任务记一次心跳 (P3 的输入面; 只有真写成盘才算数)。
+   *
+   * 为什么放在**真实派遣过程**里而不是让子 Agent 自己记得报: 心跳是"任务还活着"的事实,
+   * 而子 Agent 是最没有动力报心跳的一方 (它卡住了就不会报)。所以由派遣侧在每一次
+   * 真实状态变化 (派出去 / 换人 / 子更新状态) 时落一次 —— 没有这些落点, 阻塞巡检
+   * 只能看到"从来没心跳过", 分不清"卡住"与"刚派出"。
+   *
+   * 失败**不覆盖** `task.error` (那是子 Agent 的事实), 而是记进 `heartbeatError`:
+   * 心跳写不进去 = 监控会看到"无进展", 这件事必须留在任务上, 不许静默。
+   */
+  private async heartbeatContractedTask(task: SubAgentTask, at?: string): Promise<void> {
+    if (!task.goalId || !task.workId) return;
+    const now = at ?? new Date().toISOString();
+    try {
+      const { recordWorkHeartbeat } = await import('./goal-flywheel-wiring.js');
+      await recordWorkHeartbeat(task.goalId, task.workId, now);
+      task.lastHeartbeatAt = now;
+      task.heartbeatError = null;
+    } catch (e) {
+      task.heartbeatError = `心跳写入失败 (监控会看到"无进展"): ${String((e as Error)?.message || e).slice(0, 160)}`;
+    }
+  }
+
 
   async getTask(taskId: string): Promise<SubAgentTask | undefined> {
     return this.tasks.get(taskId);
@@ -503,6 +586,14 @@ export class SubAgentManager {
         input
       );
       const workContract = await this.issueWorkContractFor(fromAgentId, task, requiredCapabilities, contractOptions);
+      // 派前必须有工作合同 (M3): 目标语境下签不出合同 → **(没有收件人时本来也派不出去)**, 但要如实标注
+      if (!workContract && contractOptions?.goalId) {
+        this.refuseDispatchWithoutContract(task, contractOptions?.goalId);
+        await this.saveTasks();
+        return { task, agent: undefined, workContract: undefined };
+      }
+      if (workContract) await this.heartbeatContractedTask(task);
+      await this.saveTasks();
       return { task, agent: undefined, workContract };
     }
 
@@ -517,10 +608,47 @@ export class SubAgentManager {
     );
     // 2026-09-25 (P2): 派遣这件事**本身**就包含签合同 (不是事后再补一份文档);
     //   有没有空闲子 Agent 不影响合同签发 (合同锁的是能力与判据, 不是某个人)。
+    //
+    // 2026-09-25 (M3): 签不出合同 ⇒ **不派出**。旧形状是"记个 error 照样把任务交出去",
+    //   那等于"派前必须有的合同"在失败路径上直接不存在 (子拿到一段任务描述就开始干,
+    //   回来只有一段文本, 父连判据都没有)。现在: 任务退回 `pending`、不绑执行者、
+    //   返回 `agent: undefined`, 让调用方**没有**可派遣的对象。
     const workContract = await this.issueWorkContractFor(fromAgentId, task, requiredCapabilities, contractOptions);
+    if (!workContract && contractOptions?.goalId) {
+      this.refuseDispatchWithoutContract(task, contractOptions.goalId);
+      await this.saveTasks();
+      return { task, agent: undefined, workContract: undefined };
+    }
+    if (workContract) await this.heartbeatContractedTask(task);
+    await this.saveTasks();
 
     return { task, agent, workContract };
   }
+
+  /**
+   * 目标语境下没有合同 ⇒ **不派出** (M3 的"派前必须有合同")。
+   *
+   * 落成事实: 任务退回 `pending` 且**不绑执行者** (没有 `assignedAt`),
+   * `contractRefused` 记下原因。于是:
+   *   · 调用方拿到的 `agent` 是 `undefined` → 没有派遣对象;
+   *   · 任务不会出现在 `getActiveTasks()` 里 (它没被派出去);
+   *   · 原因留在任务上, 父能据此重签合同或交人 (不许静默当"没派过")。
+   */
+  private refuseDispatchWithoutContract(task: SubAgentTask, goalId?: string): void {
+    const reason = task.error
+      ? `派前必须有工作合同: 合同没签成 → 不派出 (${task.error})`
+      : '派前必须有工作合同: 合同没签成 → 不派出';
+    task.status = 'pending';
+    task.assignedAgentId = undefined;
+    task.toAgentId = undefined;
+    task.assignedAt = undefined;
+    // Goal 上下文要留在任务上: ① 它说明这次派遣是**为哪个目标**尝试的;
+    //   ② 于是完成门 (`updateTaskStatus` 的 `task.goalId` 判据) 也管得到这条没有合同的任务
+    //      —— 没有合同就不许自称完成, 不留 goalId 的话它就绕过了那道门。
+    if (goalId) task.goalId = goalId;
+    task.contractRefused = { code: 'contract_not_issued', reason };
+  }
+
 
   /**
    * 给这次派遣签工作合同 (P2)。只有调用方给了 `goalId` 才签 —— 没有长期目标就没有合同上下文,
