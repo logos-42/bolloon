@@ -329,15 +329,20 @@ export function decideContinuation(input: DecideContinuationInput): Continuation
 
   // ③ 三类硬底线 (安全线, 不是节奏): 命中即"必须停", 一律交人 ——— 不许自动开下一轮
   const breaker = isCount(hardLimits.noProgressCircuitBreaker) ? hardLimits.noProgressCircuitBreaker : 1;
-  // ★ 2026-09-25 (P5 验收修复): 「本轮跑了多久」必须用**这一段 Run 自己的时长** ——
-  //   已结束/已收干净的 Run 用它的最后一次写入 (`updatedAt` ≈ 结束时刻), **还在跑**的
-  //   (`queued`/`running`/`failed`/`interrupted`/`stalled` = 没给出结束结论的) 才用 now。
-  //   原来一律 `now - startedAt`: 只要上一次 Run 结束得早, 之后**任何一次等待**都会被算成
-  //   "本轮超时" (等 wakeAt / 等外部事件 > 30min 尤其明显) → 事件到了也开不了下一轮,
-  //   长等待永远醒不过来 (P5 ⑥ 实测)。安全线本身不动: **还在跑**的超长 Run 仍然照拦 (用 now 计龄)。
-  // 缺/坏时间戳时退回 now (= 旧行为, 门禁只会更严不会更松)
+  // ★ 2026-09-25 (P5 首修 + M5 真跑复修): 「本轮跑了多久」= **这一段 Run 自己的时长** ——
+  //   只有**真的还在跑** (`queued`/`running`) 才用 now 计龄; 其余状态 (done/failed/aborted/
+  //   interrupted/stalled/paused/awaiting_external/needs_human) 的 `updatedAt` 就是**状态机写它的
+  //   那一刻** (= 这一段的结束时刻), 用它算 = 这条 Run 实际跑了多久。
+  //   P5 首修只把"已结束/已收干净"的挪到 updatedAt, 把 failed/interrupted/stalled 仍留在 now 一档
+  //   (当时的顾虑: 它们的 updatedAt 会不会只是"最后一次心跳") —— M5 真跑证明这个顾虑不成立而代价很大:
+  //   ① Run 失败后等退避 > 30min → 下一轮被"单 Run 时间上限"拦下 (M5-① 反事实 · 无进展熔断那条);
+  //   ② Run 停在等外部 > 30min → 事件到达后开不了下一轮 (M5-⑤);
+  //   ③ 失败 + 等 wakeAt > 30min → 定时唤醒被硬底线吃掉 (M5-⑤ wakeAt 段)。
+  //   三处都是"**等待**被算成了**超时**": 安全线的语义是"这条 Run 跑了太久", 不是"这条 Run 停了太久"。
+  //   安全线本身不放松: 还在跑的 (queued/running) 超长 Run 仍然照拦 (用 now 计龄) —— P5 ⑥ 的阴性对照用例不变。
+  //   缺/坏时间戳时退回 now (= 旧行为, 门禁只会更严不会更松)。
   const runUpdatedMs = parseTs(run.updatedAt);
-  const runActive = runUnsettled || RUN_ACTIVE_STATUSES.includes(String(run.status));
+  const runActive = RUN_ACTIVE_STATUSES.includes(String(run.status));
   const runEndMs = runActive || !Number.isFinite(runUpdatedMs) ? nowMs : runUpdatedMs;
   const runElapsedMs = runEndMs - parseTs(run.startedAt);
   if (isPosFinite(hardLimits.maxRunDurationMs) && Number.isFinite(runElapsedMs) && runElapsedMs > hardLimits.maxRunDurationMs) {
@@ -439,9 +444,21 @@ export function decideContinuation(input: DecideContinuationInput): Continuation
   }
 
   // ⑥ 等外部 / 等时间 / 等子 Agent → wait (由事件或 wakeAt 唤醒)
+  // ★ M5-⑤ (2026-09-25) 修正: "在等" 是 **Goal 自己的事实** (status / wakeReason / external /
+  //   needsExternal), 不是那条 Run 的历史状态。Run 停在 `awaiting_external` 之后, 外部事件到了
+  //   (等待事实被清、`externalResult` 落盘) 或者人 `/wake` 了 → Goal 就该继续; 只认 `run.status`
+  //   会把**已经满足的等待**永远当成"还在等": 事件到了、Goal 也醒了, 下一轮却仍判 wait →
+  //   没人跑 (M5-⑤ 真跑复现的"醒了没人管"). 没有 Goal 事实可依时才退回看 Run (老数据/崩溃留下的半份记录)。
   const waitingOnDelegate = goal.continuation?.external?.expectedSource === 'delegate';
-  const waiting = run.status === 'awaiting_external'
-    || goal.status === 'awaiting_external'
+  // 但"等人/已定"的状态优先: needs_human (交人)、paused (等人 resume)、终态 —— 它们各自的规则在后面,
+  // 不能被"等外部事实"抢走 (否则"已交人等人确认"会被改成"在等外部", 界面跟着错)。
+  const goalStatusBlocksWait = ['needs_human', 'paused', 'completed', 'failed', 'abandoned'].includes(String(goal.status));
+  const waitByGoalFacts = !goalStatusBlocksWait && (goal.status === 'awaiting_external'
+    || goal.continuation?.wakeReason === 'awaiting_external'
+    || !!goal.continuation?.external
+    || !!goal.continuation?.needsExternal);
+  const waiting = waitByGoalFacts
+    || (run.status === 'awaiting_external' && !goal.continuation)   // 只有 Run 事实 (缺 Goal 记录) 时才认它
     || goal.status === 'retry_wait'
     || (run.status === 'failed' && errorClass === 'external_no_reply');
   if (waiting) {

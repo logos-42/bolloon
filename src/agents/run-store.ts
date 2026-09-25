@@ -47,14 +47,14 @@ export const RUN_TRANSITIONS: Record<RunStatus, RunStatus[]> = {
   queued: ['running', 'aborted', 'interrupted'],
   running: ['recovering', 'paused', 'awaiting_external', 'done', 'failed', 'aborted', 'interrupted', 'stalled', 'needs_human'],
   recovering: ['running', 'failed', 'aborted', 'needs_human', 'interrupted', 'stalled'],
-  paused: ['running', 'aborted', 'interrupted'],
-  awaiting_external: ['running', 'failed', 'aborted', 'interrupted', 'stalled'],
+  paused: ['running', 'aborted', 'interrupted', 'recovering'],
+  awaiting_external: ['running', 'failed', 'aborted', 'interrupted', 'stalled', 'recovering'],
   done: [],
   failed: [],
   aborted: [],
   interrupted: ['recovering', 'aborted'],   // 允许"从 checkpoint 恢复"
   stalled: ['recovering', 'aborted', 'needs_human'],
-  needs_human: ['running', 'aborted'],
+  needs_human: ['running', 'aborted', 'recovering'],
 };
 
 export function canTransition(from: RunStatus, to: RunStatus): boolean {

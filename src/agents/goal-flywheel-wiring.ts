@@ -1335,6 +1335,14 @@ export function mergeGoalOutcome(input: {
     goalStatus = run && run.status === 'failed' ? 'retry_wait' : 'active';
     roundsOverridden = true;
     reason = `飞轮覆盖轮次上限 (本轮有进展, 不是硬错误): ${fy.reason}`;
+  } else if (fy.decision === 'wait' && !hardError && legacy.goalStatus !== 'retry_wait') {
+    // ★ M5-⑤ (2026-09-25) 真跑发现的不一致: 飞轮说"等"的时候, Goal 状态**和**用户可见态也必须说"等"。
+    //   `lifecycleOf('active')` 会把 continuation.state 写成 `active` → `toUserVisibleState` 读出
+    //   "执行中", 而真相是"在等外部": 没有任何 Run 会再跑它 (等事件/等到点)。页面上的"在跑"是假的。
+    //   等外部/等子 Agent (没有到点时间) = `awaiting_external` (只能由事件唤醒);
+    //   有 `wakeAt` 的等待 = `retry_wait` (到点自动醒来跑下一轮)。
+    goalStatus = fy.wakeAt ? 'retry_wait' : 'awaiting_external';
+    reason = `飞轮: 在等 (${fy.state}): ${fy.reason}`;
   }
 
   const continuation: Partial<GoalContinuation> = flywheelStop
@@ -1681,7 +1689,14 @@ export async function goalVisibleState(input: {
   if (!goal) return 'needs_your_decision';
   const blocks = input.blocks ?? (await collectWorkBlocks({ goalId: input.goalId, now: input.now, home: input.home }));
   const decision = input.decision ?? null;
-  return toUserVisibleState(goal.continuation ? { ...goal.continuation } as GoalContinuationRecord : null, blocks, decision);
+  // ★ M5-⑥ (2026-09-25): 把 Goal **本体**的状态一起交给投影 —— 只喂 continuation 时, 一份落后的
+  //   派生记录就能把"已完成"说成"正在执行" (真跑复现: status=completed / visible=executing)。
+  return toUserVisibleState(
+    goal.continuation ? { ...goal.continuation } as GoalContinuationRecord : null,
+    blocks,
+    decision,
+    goal.status,
+  );
 }
 
 // ============================================================================
@@ -1851,6 +1866,9 @@ export async function flywheelTickNote(input: {
     goal?.continuation ?? null,
     blocks,
     input.step.decision,
+    // ★ M5-⑥: 调度报告里的用户可见态也必须认 Goal 本体的终态 —— 否则同一 tick 的报告中
+    //   一个已完成目标会显示"正在执行", 与盘上事实相反。
+    goal?.status ?? null,
   );
   const step = input.step as SupervisorStepDecision;
   return {
@@ -2322,6 +2340,10 @@ export function goalStatusFromDecision(d: ContinuationDecision): GoalStatus {
     case 'fail': return 'failed';
     case 'pause': return 'paused';
     case 'ask_human': return 'needs_human';
+    // ★ M5-⑤ (2026-09-25 真跑验收): decision='wait' 以前落进 default 的 'active' —— 于是
+    //   "Run 停在等外部"的 Goal 在盘上写着 active, 界面显示"执行中", 但飞轮判 runnable=false:
+    //   没有任何人会跑它, 直到可信事件到达。状态必须和等待同义 (客户看到的和系统认定的同一份)。
+    case 'wait': return d.state === 'waiting_external' ? 'awaiting_external' : 'retry_wait';
     default: return 'active';
   }
 }

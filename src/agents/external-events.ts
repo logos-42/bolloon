@@ -19,6 +19,7 @@ import {
 } from './goal-store.js';
 // 2026-09-25 (M0 接线冻结, 规则 ②): Goal 状态变更只有一个漏斗
 import { reduceGoalState } from './goal-state-reducer.js';
+import { readRun, setRunStatus } from './run-store.js';
 
 // 2026-09-19: 新增 'contact' —— 联系方式(手机/邮箱)回复也是外部事件, 复用同一套等待/唤醒/过期/provenance 校验,
 //   不另造一套"等回信"机制 (correlation 由 requestId/continuationId 保证, 只唤醒对应 Goal)。
@@ -165,6 +166,13 @@ export async function deliverExternalEvent(event: ExternalEventInput, deps: Deli
     `外部事件 (${event.source}${event.fromDid ? `, ${String(event.fromDid).slice(0, 16)}…` : ''}): ${event.eventName || '结果'} eventId=${event.eventId} requestId=${event.requestId || '-'} payload=${JSON.stringify(event.payload ?? null).slice(0, 300)}`,
   ]).catch(() => { /* 证据写失败不阻断唤醒; continuation 里仍有事实 */ });
 
+  // ★ 等待类的 continuation.state 也必须一起拉回 `active`:
+  //   飞轮的"等外部"判定读的是 continuation.state (`state=waiting_external` → wait), 而界面
+  //   (`toUserVisibleState`) 也只读 continuation —— 只改 wakeReason 不改 state 会留下
+  //   "wakeReason=active 但 state=awaiting_external" 的自相矛盾 (M5-⑤ 真跑复现: Goal 显示已醒,
+  //   下一轮却仍被判"在等外部", 永远没人跑)。
+  const wasWaiting = ['awaiting_external', 'retry_wait', 'recovering'].includes(String(goal.status))
+    || ['awaiting_external', 'retry_wait', 'recovering'].includes(String(goal.continuation?.state));
   await setContinuation(goal.goalId, {
     deliveredEventIds: [...seen, event.eventId].slice(-20),
     external: undefined,
@@ -173,6 +181,7 @@ export async function deliverExternalEvent(event: ExternalEventInput, deps: Deli
     needsExternal: undefined,
     autoContinue: true,
     wakeAt: undefined,
+    ...(wasWaiting ? { state: 'active' as const } : {}),
   } as any);
 
   // 状态拉回 active (只有还在"等外部"的状态才动它) —— Supervisor 下一轮才会真的执行
@@ -189,8 +198,18 @@ export async function deliverExternalEvent(event: ExternalEventInput, deps: Deli
   } catch { /* 状态写失败 → 下一轮仍会跳过等待; 事件事实已写入, 不丢 */ }
 
   // 唤醒 (由 Supervisor 下一轮真正执行)
+  // `woke` 的语义跟着**盘上事实**走, 不只看宿主回调的返回值: 上面已经把等待事实清掉、把
+  //   wakeReason/state 拉回 active 了 —— 宿主注入的 wake (= `Supervisor.notifyExternal`) 的
+  //   "还在等外部吗"前置条件此刻已不成立, 它会早退返回 false。若照抄它的返回值, 一次真唤醒会被
+  //   报成"没唤醒" (M5-⑤ 真跑就是这么读到的)。宿主回调仍然要调 (它有清等待/记次数的副作用)。
   let woke = false;
-  if (deps.wake) woke = await deps.wake(goal.goalId).catch(() => false);
+  if (deps.wake) await deps.wake(goal.goalId).catch(() => false);
+  const after = await readGoal(goal.goalId);
+  const stillWaiting = !!after && (
+    ['awaiting_external', 'retry_wait', 'recovering'].includes(String(after.status))
+    || after.continuation?.state === 'awaiting_external'
+  );
+  woke = !!after && !stillWaiting;
 
   return { ok: true, reason: 'delivered', goalId: goal.goalId, woke };
 }

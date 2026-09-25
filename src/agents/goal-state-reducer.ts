@@ -56,6 +56,7 @@ export const GOAL_STATE_INTENTS = [
   'criteria_needs_human',   // 判据提不出来 → 交人
   'block_escalated_human',  // 子 Agent 被阻塞且已升级 → 交人 (规则 ④ 的一条终止路径)
   'manual_wake',            // 人明确说"外部条件我已满足"
+  'scheduled_wake',         // 到点唤醒 (retry_wait 的 wakeAt 到了) → 回到可继续 (2026-09-25 M5 真跑)
 ] as const;
 export type GoalStateIntent = (typeof GOAL_STATE_INTENTS)[number];
 
@@ -330,6 +331,31 @@ export function planGoalStateChange(input: GoalStateChangeInput): GoalStatePlan 
       return p;
     }
 
+    /**
+     * 到点唤醒 (2026-09-25 M5 真跑补): `retry_wait` 的 `wakeAt` 到了 → 这个目标该跑了。
+     *
+     * 为什么必须**连状态一起写**: 旧写法 (Supervisor 的 `runGoal`) 只把 continuation 上的
+     * `wakeAt/wakeReason` 清掉, `goal.status` 仍停在 `retry_wait`。于是这条 Run 跑完、收尾判节奏时
+     * P0 读到的是**stale** 的 `goal.status=retry_wait` → 判 `wait`; 合并规则再把"等"落成
+     * `awaiting_external` (此时 wakeAt 已被清空 ⇒ 只能靠外部事件唤醒) —— 一个**刚跑出进展**的目标
+     * 就这样被挂起来, 界面显示"等待外部回复", 而没有任何人会再跑它。
+     * 真跑证据: P6-③ 时钟用例的阴性对照判红 (`repFast.executed=0`); 临时探针复现:
+     *   tick 后 `goal.status=awaiting_external / cont.state=awaiting_external / wakeAt=undefined`,
+     *   下一 tick 的跳过理由是 `awaiting_external: 等外部事件, 不重复发送`。
+     */
+    case 'scheduled_wake': {
+      const p = planBase(goalId, input.intent, input.reason ?? '到点唤醒 (wakeAt 已到) → 回到可继续');
+      p.status = 'active';
+      p.continuation = {
+        wakeReason: 'active',
+        wakeAt: undefined,
+        autoContinue: true,
+        state: 'active',
+        updatedAt: now,
+      } as Partial<GoalContinuation>;
+      return p;
+    }
+
     default: {
       // 穷举不完 = 有人加了 intent 忘了写计划 → 宁可拒绝也不静默
       const never: never = input.intent;
@@ -415,7 +441,18 @@ export async function applyGoalStatePlan(plan: GoalStatePlan): Promise<GoalState
     }
     applied.push('completion_gate:passed');
     res.status = (await readGoal(plan.goalId).catch(() => null))?.status ?? null;
-    if (plan.continuation && plan.continuation.wakeReason !== 'completed') {
+    // ★ M5-⑥ (2026-09-25 真跑验收): 完成这条路**必须**把收尾 continuation 落盘。
+    //   旧写法 `if (plan.continuation.wakeReason !== 'completed')` 只在**不是**完成时写 —— 而走到
+    //   这里 (completionGate 通过) 的场景**恰好**就是 `wakeReason='completed'`
+    //   (`decideGoalOutcome` 的完成分支 + `mergeGoalOutcome` 的 complete 分支都写 'completed'),
+    //   于是这个条件在唯一需要它的时刻恒假 ⇒ 完成时**一条 continuation 都不写**:
+    //   盘上留着上一条 Run 的收尾记录 (`state:'active'` + 旧 `lastDecisionId` + 旧 `nextAction`),
+    //   而 `toUserVisibleState` 只读 continuation ⇒ **已完成**的 Goal 在界面/CLI 上显示"正在执行"
+    //   (界面比系统更乐观)。真跑证据 (`_probe-completion-continuation.ts`, 修前):
+    //   goal.status=completed 而 applied=['completion_gate:passed'] (无 continuation 写入) →
+    //   goalVisibleState='executing' (M5-⑨ 正向对照)。
+    //   完成门已经在这一步通过 (status 已真写 completed), 所以这里写的是**通过之后**的权威 continuation。
+    if (plan.continuation) {
       await setContinuation(plan.goalId, plan.continuation).then(() => applied.push('continuation')).catch(() => null);
     }
     return res;

@@ -637,11 +637,21 @@ export class ExecutionSupervisor {
 
     // 到点唤醒 (2-C.3): 这条 Goal 之前是 retry_wait —— 现在唤醒它, 旧的 wakeAt/wakeReason 必须清掉,
     //   否则下一轮 tick 还会把它当"等时间"重复跳过 (或留下过期的等待事实)。
+    // ★ M5-⑦ (2026-09-25 真跑): **状态也要一起拉回 `active`** —— 旧写法只清 continuation, `goal.status`
+    //   仍停在 `retry_wait`; 这条 Run 跑完后的收尾判定读到 stale 的 `retry_wait` → 判 `wait`, 合并规则
+    //   再把"等"落成 `awaiting_external` (wakeAt 已清空 ⇒ 只能靠事件唤醒) ⇒ **刚有进展的目标被挂起来,
+    //   没人会再跑它** (P6-③ 时钟用例阴性对照判红 + 临时探针复现)。走唯一漏斗 (规则 ②)。
     if (goal.continuation?.wakeReason === 'retry_wait' || goal.status === 'retry_wait') {
-      await setContinuation(goal.goalId, { wakeReason: 'active', wakeAt: undefined });
+      await reduceGoalState({
+        goalId: goal.goalId,
+        intent: 'scheduled_wake',
+        now: new Date(this.now()).toISOString(),
+        by: this.owner,
+        reason: `到点唤醒 (wakeAt=${goal.continuation?.wakeAt ?? '-'} 已到) → 回到可继续, 清 wakeAt 并拉回 active`,
+      });
       report.skipped.push({ goalId: goal.goalId, reason: `到点唤醒: 已清 wakeAt (第 ${(goal.continuation?.attempts || 0) + 1} 次自动继续)` });
       this.emit({ kind: 'retry_woke', goalId: goal.goalId, message: `到点唤醒, 第 ${(goal.continuation?.attempts || 0) + 1} 次自动继续` });
-      this.log(`[supervisor] goal=${goal.goalId} retry_wait 到点 → 唤醒并清 wakeAt`);
+      this.log(`[supervisor] goal=${goal.goalId} retry_wait 到点 → 唤醒 (状态拉回 active) 并清 wakeAt`);
     }
 
     // ★ 2026-09-18 (M2 收口): `bolloon task` 建的目标走**同一个恢复决策函数**

@@ -3622,6 +3622,9 @@ fetchState();
             g.continuation ? ({ ...g.continuation } as any) : null,
             await collectWorkBlocks({ goalId: g.goalId }),
             null,
+            // ★ M5-⑥ (2026-09-25): 界面认 Goal **本体**的终态 —— 完不成这一步的话, 一份落后的
+            //   continuation 就能把"已完成"的目标显示成"正在执行" (界面比系统更乐观)。
+            String(g.status ?? '') || null,
           );
           // 这里 base 一定读得到 (读不到就是上面的 catch) → 覆盖结果为 null 时回落 base 本身
           // (不是编一个态: base 是这一步刚刚读出来的真态)

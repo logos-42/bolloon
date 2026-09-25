@@ -61,6 +61,23 @@ export const DEFAULT_ESCALATION_MS = 10 * 60 * 1000;
 /** 只有这几个目标状态是「已结束」 */
 export const TERMINAL_GOAL_STATES: readonly GoalLifecycleState[] = ['completed', 'failed', 'abandoned'];
 
+/**
+ * Goal **自己的** status 里属于"已结束"的那些。
+ * 与 `TERMINAL_GOAL_STATES` 同名同义 (同一批值), 这里是给"手上只有字符串"的调用方用的窄门:
+ * 视图层 (`toUserVisibleState`) 不该为了比一个 `goalStatus` 字符串去依赖 `GoalLifecycleState` 类型。
+ *
+ * 为什么在 continuation 之外还要看它: continuation 是**派生**记录 (收尾写下的那一份),
+ * 而 `goal.status` 是**Goal 本体**的事实。任何一次派生记录的落后 (旧版本写下的、崩溃在两步之间、
+ * 别的写入者覆盖了它) 都不该让界面把**已经结束**的目标说成"正在执行" —— 界面只能比系统更保守,
+ * 不许比系统更乐观。M5-⑥ 真跑就是这么读到的: `goal.status=completed` 而 `goalVisibleState=executing`。
+ */
+export const TERMINAL_GOAL_STATUSES: readonly string[] = [...TERMINAL_GOAL_STATES];
+
+/** Goal status 是否属于终态 (字符串口径, 与 TERMINAL_GOAL_STATES 同一批值) */
+export function isTerminalGoalStatus(s: unknown): boolean {
+  return TERMINAL_GOAL_STATUSES.includes(String(s ?? ''));
+}
+
 // ============================================================================
 // 规则表 (按 kind 的默认处理) —— 上下文可细化, 但绝不越过 Harness
 // ============================================================================
@@ -495,13 +512,25 @@ export function toUserVisibleState(
   raw: GoalContinuationRecord | Partial<GoalContinuationRecord> | null,
   blocks: BlockRecord[],
   decision: ContinuationDecision | null,
+  /**
+   * ★ M5-⑥ (2026-09-25): Goal **自己的** status (本体事实, 权威)。
+   * 给了它就把"已结束"钉死: 终态目标在任何情况下都不许投影成"正在执行" ——
+   * 哪怕 continuation 落后/缺失 (`goalVisibleState` / `/api/goals` 都能拿到这个字段, 就该传)。
+   * 不传 = 老行为 (只看 continuation + decision), 不影响既有调用方的口径。
+   */
+  goalStatus?: string | null,
 ): UserVisibleState {
   // 归一化在这里做 (唯一入口) —— 见 normalizeContinuationRecord 的注释:
   // 盘上的 continuation 允许缺字段, 判定函数不该把"少一个字段"变成抛错。
   const c = normalizeContinuationRecord(raw);
   const unresolved = blocks.filter((b) => b.resolvedAt === null);
 
-  // ① 需要人
+  // ① 已结束 (Goal 本体说结束了, 就是结束了)
+  //   放在最前: 终态是**最高优先**的事实 —— 派生记录 (continuation) 或历史阻塞清单都不许
+  //   把它改写成"正在执行"/"需要你决定"。第 6 类 `ended` 的存在意义就是这个。
+  if (isTerminalGoalStatus(goalStatus)) return 'ended';
+
+  // ② 需要人
   if (unresolved.some((b) => b.suggestedAction === 'needs_human')) return 'needs_your_decision';
   if (
     decision !== null &&
