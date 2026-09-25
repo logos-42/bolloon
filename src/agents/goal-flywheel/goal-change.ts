@@ -510,6 +510,20 @@ function childClause(r: GoalChangeRequest, v: number): string {
   return `[${RULES.children}] 下列子 Agent 必须**先确认收到**变更版本 (criteriaVersion=v${v}) 再${action}; 未确认前不得按旧版本继续: ${workIds.join(', ')}。`;
 }
 
+/**
+ * 原话条款 (P5 验收修复): 用户/外部**说的那句话本身**必须逐字进"下一 Run 的指令"。
+ *
+ * 原来只有 `parts` (由 kind 生成的摘要, 例如"补充说明: 只作为下一次 Run 的上下文…") 进指令 ——
+ * 人在界面上看不到自己提的要求, 只看到一句机器话 (`ingestGoalChange` 的返回与
+ * `continuation.nextAction` 都是这份指令, 网页"新要求"直接把返回打给人看)。
+ *
+ * 只对 `next_run` (真排入下一 Run) 的变更下发; 待批准/被拒的变更**不带**这条 ——
+ * 那两种情况下要求还没生效, 把它写进下一 Run 的指令会被执行器误读成"已批准"。
+ */
+function instructionClause(r: GoalChangeRequest): string {
+  return `原话 (逐字入档, 不许改写/总结; 来源=${r.source}, 变更=${r.changeId}): ${r.instruction}`;
+}
+
 function compose(
   r: GoalChangeRequest,
   outcome: ChangeApplication['outcome'],
@@ -518,7 +532,12 @@ function compose(
   reason: string,
   parts: string[],
 ): ChangeApplication {
-  const directive = [...parts, historyClause(criteriaVersion), childClause(r, criteriaVersion)].join('\n');
+  const directive = [
+    ...(outcome === 'next_run' ? [instructionClause(r)] : []),
+    ...parts,
+    historyClause(criteriaVersion),
+    childClause(r, criteriaVersion),
+  ].join('\n');
   return { outcome, requiresReplan, nextRunDirective: directive, criteriaVersion, reason };
 }
 

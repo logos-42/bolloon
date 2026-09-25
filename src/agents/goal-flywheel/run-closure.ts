@@ -105,6 +105,17 @@ export interface CloseRunDeps {
   writeCandidate: (c: SkillImprovementCandidate) => Promise<string | null>;
   /** 继续决策 (P0) */
   decide: ClosureDecider;
+  /**
+   * 候选草案的内容哈希 (冻结字段 `contentHash` 的唯一来源)。
+   *
+   * **注入而不是 import**: 本文件不 import 别的阶段实现 (见文件头边界) —— 生产路径由接线层
+   * (`goal-flywheel-wiring.closeGoalRun`) 注入用 `work-contract.stableHash` 算出的哈希。
+   *
+   * ★ 2026-09-25 (P5 验收修复): 原来是硬编码 `contentHash: null`, 于是**每一份**收尾候选都被
+   *   第二道门以 `unverifiable_result` 拒收 (`writeSkillCandidate` 返回 null) —— "Run 结束自动写
+   *   Skill 候选"在盘上等于零, 对人没有可审的产物。不注入时仍是 `null` (旧调用形行为不变)。
+   */
+  contentHashOf?: (candidate: SkillImprovementCandidate) => string | null;
 }
 
 export interface CloseRunInput {
@@ -582,18 +593,24 @@ function buildLesson(
 function buildCandidates(
   input: CloseRunInput,
   review: ParsedRunReview,
+  contentHashOf?: (candidate: SkillImprovementCandidate) => string | null,
 ): { candidates: SkillImprovementCandidate[]; reasons: string[] } {
   const reasons: string[] = [];
   const candidates: SkillImprovementCandidate[] = [];
   for (const [i, raw] of review.skills.entries()) {
     const { candidate } = gateClosureCandidate(raw);
-    const withRun: SkillImprovementCandidate = {
+    const base: SkillImprovementCandidate = {
       ...candidate,
       candidateId: `cand:${input.runId}:${i}:${raw.name}`,
       sourceRunIds: [input.runId],
       proposedAt: input.now,
       proposedByRunId: input.runId,
     };
+    // ★ 2026-09-25 (P5 验收修复): 冻结字段 contentHash 由注入的哈希器算 (缺注入 → 保持 null)。
+    //   哈希只覆盖**草案内容** (名字/用途/IO 契约/边界/证据面), 不含 candidateId/时间/Run 来源 ——
+    //   同一份内容来自不同 Run 必须得到同一个哈希 (否则"与已有 Skill 重复"永远判不出来)。
+    const hash = contentHashOf ? contentHashOf({ ...base, contentHash: null }) : null;
+    const withRun: SkillImprovementCandidate = { ...base, contentHash: hash ?? base.contentHash };
     candidates.push(withRun);
     if (withRun.junkReasons.length > 0) {
       reasons.push(`${withRun.candidateId}: ${withRun.junkReasons.join(',')}`);
@@ -841,7 +858,7 @@ export async function closeRun(input: CloseRunInput, deps: CloseRunDeps): Promis
   if (lessonReason) {
     skipped.push({ step: 'extract_facts_lessons_and_candidates', reason: `lesson_skipped: ${lessonReason}` });
   }
-  const { candidates, reasons: candidateReasons } = buildCandidates(input, review);
+  const { candidates, reasons: candidateReasons } = buildCandidates(input, review, deps.contentHashOf);
   if (facts.length === 0 && !lesson && candidates.length === 0) {
     skipped.push({
       step: 'extract_facts_lessons_and_candidates',
