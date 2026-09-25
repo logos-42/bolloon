@@ -1522,6 +1522,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     try {
       const { getSupervisor } = await import('./agents/execution-supervisor.js');
       const { wakeReport, listRunnableGoals, formatGoalLine } = await import('./agents/goal-store.js');
+      const { USER_VISIBLE_STATE_LABELS } = await import('./agents/goal-flywheel/types.js');
       const { runnable, skipped } = await listRunnableGoals({ now: Date.now() });
       const st = getSupervisor().status();
       appendLine(`${C_DIM}supervisor: owner=${st.owner} running=${st.running ? 'yes' : 'no'} tick=${st.tickIntervalMs}ms lease=${st.leaseTtlMs}ms dryRun=${st.dryRun ? 'yes' : 'no'} ticks=${st.ticks}${RESET}`);
@@ -1559,14 +1560,30 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         const sup = new ExecutionSupervisor({ runner: runner as any, maxPerTick: 1, log: (m) => appendLine(`${C_DIM}${m}${RESET}`) });
         const rep = await sup.tickOnce();
         appendLine(`${C_ACCENT}调度周期 #${rep.tick}${RESET}  认领 ${rep.claimed.length} · 执行 ${rep.executed.length}${rep.skipped.length ? ` · 跳过 ${rep.skipped.length}` : ''}`);
+        // 2026-09-25 (飞轮接线): 把飞轮的**判断**如实打出来 —— 为什么跑/为什么停, 用的是哪一类用户可见态
         for (const s of rep.skipped.slice(0, 6)) appendLine(`  ${C_DIM}跳过 ${s.goalId}: ${s.reason}${RESET}`);
         for (const e of rep.executed) appendLine(`  ▶ ${e.goalId} → run=${e.runId || '-'} ${e.status || ''}${e.error ? ` (${e.error})` : ''}`);
+        for (const f of rep.flywheel) {
+          const zh = USER_VISIBLE_STATE_LABELS[f.visibleState as keyof typeof USER_VISIBLE_STATE_LABELS]?.zh || f.visibleState;
+          appendLine(`  ${f.runnable ? C_DIM : C_WARN}飞轮 ${f.goalId}: ${f.decision}/${f.state} 无进展连续 ${f.noProgressStreak} 轮 · 用户可见态=${zh} · ${f.reason}${RESET}`);
+        }
+        for (const c of rep.closures) {
+          appendLine(`  ${C_DIM}收尾 ${c.goalId}/${c.runId}: ${c.steps} 步 → ${c.decision} (memory ${c.memories} · skill 候选 ${c.candidates})${RESET}`);
+          appendLine(`    ${C_DIM}用户汇报: ${c.reportPath}${RESET}`);
+        }
+        for (const b of rep.blocks) appendLine(`  ${C_WARN}阻塞 ${b.goalId}/${b.workId}: ${b.kind} → ${b.action} — ${b.note}${RESET}`);
+        for (const w of rep.workContracts) appendLine(`  ${C_DIM}工作合同已签发 ${w.goalId}: workId=${w.workId} 能力=${w.capability}${RESET}`);
         return;
       }
 
       const rows = await wakeReport();
       if (!rows.length) { appendLine(`${C_DIM}还没有目标。${RESET}`); return; }
-      for (const r of rows.slice(0, 12)) appendLine(`  ${r.goalId}  [${r.status}]  唤醒: ${r.wake}${r.lease ? `  (lease ${r.lease})` : ''}`);
+      // 界面只上屏**用户可见态** (六类); 内部状态缩到 dim 尾巴里, 只作为排障线索
+      for (const r of rows.slice(0, 12)) {
+        const zh = USER_VISIBLE_STATE_LABELS[r.visible]?.zh || r.visible || r.status;
+        appendLine(`  ${r.goalId}  [${zh}]  唤醒: ${r.wake}${r.nextAction ? `  下一步: ${String(r.nextAction).slice(0, 60)}` : ''}${r.lease ? `  (lease ${r.lease})` : ''}`);
+        appendLine(`${C_DIM}    (内部: status=${r.status} visible=${r.visible})${RESET}`);
+      }
       if (runnable.length) { appendLine(`${C_DIM}现在可推进:${RESET}`); for (const g of runnable.slice(0, 5)) appendLine(`  ${formatGoalLine(g)}`); }
       appendLine(`${C_DIM}/supervise tick 手动推进一个周期${RESET}`);
     } catch (e: any) { appendLine(`${C_ERROR}/supervise 失败: ${String(e?.message || e).slice(0, 200)}${RESET}`); }

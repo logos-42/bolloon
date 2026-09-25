@@ -19,6 +19,8 @@ import { registerExternalEngineRoutes } from './routes-external-engines.js';
 import { registerTaskRoutes } from './routes-tasks.js';
 // 2026-09-19: 联系方式 / 人工批准 / 手机—桌面配对 路由
 import { registerContactRoutes } from './routes-contacts.js';
+// 2026-09-25: 手机端「任务协作」(入群 / 发公告 / 看飞轮进度) 路由 —— 高风险动作由设备签名把关
+import { registerMobileTaskRoutes } from './routes-mobile-tasks.js';
 // 2026-09-13: 微支付信息服务 (x402) 路由
 import { registerX402InfoRoutes } from './routes-x402-info.js';
 // 2026-09-22: P5 链上索引 (只读: status/stats/timeline/events 增量) 路由
@@ -3125,6 +3127,12 @@ async function act(id, what){
   else if (what === 'abort') { const r = await fetch('/api/runs/'+id+'/abort',{method:'POST'}); log(await r.json()); }
   refresh();
 }
+async function req(id){
+  const text = prompt('新要求 (原话逐字入档; 只影响后续 Run, 不改写已发生的历史):');
+  if (!text) return;
+  const r = await fetch('/api/goals/'+id+'/requirement',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});
+  log(await r.json()); refresh();
+}
 async function refresh(){
   try {
     const sup = await j('/api/supervisor');
@@ -3132,14 +3140,18 @@ async function refresh(){
       ' <span class="dim">lease='+(sup.leaseTtlMs||'-')+'ms tick='+(sup.tickIntervalMs||'-')+'ms</span>';
   } catch(e){ document.getElementById('sup').textContent = 'supervisor 不可用: '+e; }
   const gs = await j('/api/goals');
+  const labels = gs.visibleLabels || {};
+  const visMap = {}; (gs.goals || []).forEach((g, i) => { visMap[g.goalId] = (gs.visible || [])[i]; });
   const gtb = document.querySelector('#goals tbody'); gtb.innerHTML = '';
   for (const g of (gs.goals || [])) {
     let crit = g.successCriteria?.length ? (g.completedCriteria?.length||0)+'/'+g.successCriteria.length : '<span class="bad">无判据</span>';
     const src = g.criteriaSource ? ' <span class="dim">('+g.criteriaSource+(g.criteriaConfirmed?'✓':'?')+')</span>' : '';
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td><code>'+g.goalId+'</code></td><td>'+g.status+'</td><td>'+crit+src+'</td><td class="dim">'+
+    const vis = (visMap[g.goalId]) || (g.continuation ? 'executing' : 'executing');
+    const visZh = (labels[vis] && labels[vis].zh) || vis;
+    tr.innerHTML = '<td><code>'+g.goalId+'</code></td><td>'+visZh+' <span class="dim">('+vis+')</span></td><td>'+crit+src+'</td><td class="dim">'+
       ((g.continuation&&(g.continuation.nextAction||g.continuation.wakeReason))||'-')+'</td><td>'+((g.runs||[]).length)+'</td>'+
-      '<td><button onclick="view(\''+g.goalId+'\')">详情</button><button onclick="act(\''+g.goalId+'\',\'confirm\')">确认判据</button><button onclick="act(\''+g.goalId+'\',\'propose\')">提候选</button><button onclick="act(\''+g.goalId+'\',\'wake\')">唤醒</button></td>';
+      '<td><button onclick="view(\''+g.goalId+'\')">详情</button><button onclick="act(\''+g.goalId+'\',\'confirm\')">确认判据</button><button onclick="act(\''+g.goalId+'\',\'propose\')">提候选</button><button onclick="act(\''+g.goalId+'\',\'wake\')">唤醒</button><button onclick="req(\''+g.goalId+'\')">新要求</button></td>';
     gtb.appendChild(tr);
   }
   const rs = await j('/api/runs');
@@ -3337,6 +3349,7 @@ fetchState();
       const { getSupervisor } = await import('../agents/execution-supervisor.js');
       const { readSupervisorState, supervisorStatePath } = await import('../agents/supervisor-host.js');
       const { wakeReport, listRunnableGoals } = await import('../agents/goal-store.js');
+      const { goalVisibleState } = await import('../agents/goal-flywheel-wiring.js');
       const { runnable, skipped } = await listRunnableGoals({ now: Date.now() });
       res.json({
         supervisor: getSupervisor().status(),
@@ -3344,6 +3357,11 @@ fetchState();
         host: await readSupervisorState(),
         hostStatePath: supervisorStatePath(),
         wake: await wakeReport(),
+        // 2026-09-25 (飞轮接线 §7): 用户可见态 (六类) —— 界面不得自己造第二套映射
+        wakeVisible: await Promise.all((await wakeReport()).map(async (r) => {
+          try { return { goalId: r.goalId, visible: await goalVisibleState({ goalId: r.goalId }) }; }
+          catch { return { goalId: r.goalId, visible: r.visible }; }
+        })),
         runnable: runnable.map((g) => ({ goalId: g.goalId, objective: g.objective, status: g.status })),
         skipped,
       });
@@ -3384,6 +3402,42 @@ fetchState();
         return;
       }
       res.json({ ok: true, goalId, woke: true, note: '已唤醒: 下一次 Supervisor tick 会推进它' });
+    } catch (err) {
+      res.status(500).json({ error: String((err as Error)?.message || err).slice(0, 200) });
+    }
+  });
+
+  // 2026-09-25 (飞轮接线 P4): 新要求注入 —— 原话逐字入档 + 分诊 + 版本; 只影响**后续** Run。
+  //   当前 Run 不被历史改写 (规则 4): 本路由只写 Goal 上的变更记录与下一 Run 的指令。
+  app.post('/api/goals/:goalId/requirement', async (req, res) => {
+    const goalId = String(req.params.goalId);
+    try {
+      const { ingestGoalChange } = await import('../agents/goal-flywheel-wiring.js');
+      const text = String(req.body?.text ?? '').trim();
+      if (!text) { res.status(400).json({ error: '缺少 text (新要求的原话)' }); return; }
+      const out = await ingestGoalChange({
+        goalId,
+        instruction: text,
+        source: 'user',
+        recordedBy: 'web',
+      });
+      if (!out) { res.status(404).json({ error: `goal 不存在: ${goalId}` }); return; }
+      res.json({
+        ok: true,
+        goalId,
+        changeId: out.request.changeId,
+        kind: out.request.kind,
+        outcome: out.application.outcome,
+        /** 只有"用户 + 改判据"才 +1 (规则 3) */
+        criteriaVersionBumpedTo: out.criteriaVersionBumpedTo,
+        /** 下一 Run 真的会读到的指令 (写进 continuation.nextAction) */
+        nextRunDirective: out.nextRunDirective,
+        status: out.request.status,
+        persistedPath: out.persistedPath,
+        note: out.application.outcome === 'rejected'
+          ? '未生效 (见 outcome): 已如实入档, 不会偷偷生效'
+          : '已生效: 只影响后续 Run, 已发生的 Run 记录不被改写',
+      });
     } catch (err) {
       res.status(500).json({ error: String((err as Error)?.message || err).slice(0, 200) });
     }
@@ -3485,7 +3539,24 @@ fetchState();
       const { listGoals, formatGoalLine } = await import('../agents/goal-store.js');
       const status = String((req.query as any)?.status || '').trim();
       const goals = await listGoals({ status: status ? (status as any) : undefined, limit: Number((req.query as any)?.limit || 30) });
-      res.json({ count: goals.length, goals, lines: goals.map(formatGoalLine) });
+      // 2026-09-25 (飞轮接线): 界面只认 `toUserVisibleState` 映射的**六类**用户可见态 ——
+      //   内部状态 (retry_wait / stalled / recovering) 不再直接上屏。
+      const { toUserVisibleState } = await import('../agents/goal-flywheel/work-monitor.js');
+      const { collectWorkBlocks } = await import('../agents/goal-flywheel-wiring.js');
+      const { USER_VISIBLE_STATE_LABELS } = await import('../agents/goal-flywheel/types.js');
+      const visible = await Promise.all(goals.map(async (g: any) => {
+        try {
+          return toUserVisibleState(
+            g.continuation ? ({ ...g.continuation } as any) : null,
+            await collectWorkBlocks({ goalId: g.goalId }),
+            null,
+          );
+        } catch { return 'executing' as const; }
+      }));
+      res.json({
+        count: goals.length, goals, lines: goals.map(formatGoalLine),
+        visible, visibleZh: visible.map((v) => USER_VISIBLE_STATE_LABELS[v]?.zh || v), visibleLabels: USER_VISIBLE_STATE_LABELS,
+      });
     } catch (err) {
       res.status(500).json({ error: String((err as Error)?.message || err).slice(0, 200) });
     }
@@ -6709,6 +6780,10 @@ app.post('/active-channel', async (req, res) => {
   // 2026-09-19: 社交身份 API (DID + 已验证联系方式 + 联系能力 + 权限 + 证据)
   //   只返回脱敏值; 明文联系方式不进 Run/prompt/Git
   registerContactRoutes(app, {});
+
+  // 2026-09-25: 手机端「任务协作」API (入群 / 发公告 / 看飞轮进度)
+  //   手机只做 输入·展示待发内容·设备签名; 执行回到桌面, 调用与 CLI 同一批函数 (同一份 store 与协议)
+  registerMobileTaskRoutes(app, {});
 
   // 2026-09-13: 微支付信息服务 (x402) — 发布 / 402 收款 / 买方代付 / 验真
   registerX402InfoRoutes(app);
