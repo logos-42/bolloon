@@ -396,3 +396,226 @@ tags: [goal, continuation, flywheel, p5, acceptance, verification, supervisor, w
 5. ~~缺口 5: 收尾候选的 `contentHash`~~ → 已修 (2A-4)。
 
 </details>
+
+## 7. P6 收口 (2026-09-26): 未闭合项逐条真证据
+
+> 本节由 P6 收口线追加。本线只动 `src/agents/goal-flywheel/` (除 `wiring/**`)、自己新建的测试、
+> 以及本页 —— 同仓另一条线 (飞轮接线 M0–M4) 并行在改 `execution-supervisor.ts` / `wiring/**` /
+> `goal-state-reducer.ts`, 本线**一个字节都没碰**它们 (自证: 收口前后对 11 个禁改文件做
+> `shasum -a 256` 快照比对 → IDENTICAL; 每条 commit 的 `--stat` 只含本线文件)。
+> 下面每一条都是**真跑**出来的命令 + 真实输出, 不是推断。commit 表见 §7.8。
+> 全量聚焦测试结果 (改完后, 在**别人已落地的工作区**上): `npx vitest run src/test/goal-flywheel-`
+> → **17 files / 637 tests passed**; `npx tsc --noEmit` → **0 错**。
+
+### 7.1 ① 缺口 4 的"执行器": `block-executor.ts` (496 行) — 差的就是一行
+
+**做了什么**: 新建 `src/agents/goal-flywheel/block-executor.ts` —— `planBlockHandling` 算出的
+7 类处置动作 (`takeover` / `replace_child` / `send_adjustment` / `request_report` / `change_plan` /
+`escalate_parent` / `needs_human`) 现在真的**变成一次带对象与参数的调用**, 结果分五类:
+`executed / refused / deferred / needsHuman / failed`。纯逻辑 + 端口全注入 (零 `fs`、零真实钟)。
+
+**四条纪律 (都被测试钉住, 见 `src/test/goal-flywheel-p6-block-executor.test.ts`, 13 tests)**:
+1. **越权硬拒**: `authority.leaseHeld !== true` → `takeover` 进 `refused`, 端口 `claimLease`
+   **零调用**; `caller === 'child'` → 一切改别人状态的动作全拒; `tool_blocked` 记录即使写着
+   `replace_child` 也硬拒 (不自动绕 Harness)。
+2. **做不了必须显式交人**: 端口缺失 / 端口抛错 / 越权被拒 → 必须出现在 `needsHuman[]` (带人可读原因),
+   不许静默。`silentRisk` 是这条保证的自检位 (无动作可做且无任何落地 → `silentRisk=true`)。
+3. **不吞异常**: `escalate` 端口抛 `SMTP 550 relay denied` → 该项记 `failed` + **错误原文**。
+4. **继续等是合法落地**: `deferred` 不算"没做" (不会误报 `silentRisk`)。
+
+**变异验证 (真红转绿)**: ① 把 `leaseHeld !== true` 改成 `=== true` (越权门反向) → 测试变红 → 恢复
+(shasum 校验一致); ② 拆掉 `tool_blocked` 的硬拒那层 (Harness 红线) → 变红 → 恢复。
+
+**接入点 (没有接进别人的文件, 只写清"差哪一行")**: `src/agents/execution-supervisor.ts`
+**L423–L439**「2.5 阻塞巡检」, `applyBlockHandling` 在 **L429**。现在那里拿到 `handling.actions`
+后只写 `report.blocks` + 一行 log (`handling.takeovers` 也只打了句"父接管子工作")。接法 = 在同一段
+`try` 里 `applyBlockHandling(...)` 之后加:
+
+```ts
+const execution = await executeBlockHandling({
+  goalId: g.goalId, blocks, now: nowIso,
+  authority: { leaseHeld: false, caller: 'supervisor', leaseOwner: null },  // 认领发生在本段之后的第 3 步
+  ports: blockExecutorPorts({ home }),   // ← 这个 helper 还没写, 属接线层的活
+});
+for (const a of execution.needsHuman) this.emit({ kind: 'needs_human', goalId: g.goalId, message: `${a.blockId}: ${a.reason}` });
+```
+
+模块 JSDoc 里另写了 7 个端口各自该实现成什么 (`claimLease → goal-store.claimGoal` +
+`heartbeatGoal` 续; `replaceChild → subagent-manager` 停旧 + 重派新合同; `sendAdjustment` /
+`requestReport` → 下发面; `changePlan` → 经 reducer 写计划; `escalate` → Goal reducer 的
+`block_escalated_human`; `record` → `addEvidence` 一类)。**`blockExecutorPorts` 这个 helper 尚不存在**
+—— 它是接线层 (别人的文件) 的活, 本线刻意不写、也不接。
+
+### 7.2 ② 候选转正后半程 + 强负例 + 变异 (3 tests, `goal-flywheel-p6-promotion.test.ts`)
+
+真链 (真 `run-closure` + 真 `skill-candidate` + 真 store, 无 fake): 收尾产生候选 → 候选**带真
+`contentHash`** → `assessCandidate` 不判垃圾 → `draftPromotion` 产出带 `approval` + `contentHash`
+的晋升记录 → `snapshotScope === 'next_run_only'` (正在执行的这轮继续用旧版本, 新版本只影响下一次 Run)。
+
+**强负例 (必须不转正)**: 只有一次偶然成功的候选 (证据只来自单次 Run / 无可复现证据) → 不得转正。
+**变异验证**: 对 `skill-candidate.ts` / `run-closure.ts` 共 3 处改坏 (含把 `next_run_only` 放宽成
+全局生效、把 contentHash 计算摘掉) → 每处都让测试真变红 → 逐处恢复。
+
+### 7.3 ③ 小时级真时钟 (注入 `now`, 不 sleep) (3 tests, `goal-flywheel-p6-clock.test.ts`)
+
+真 `ExecutionSupervisor` + 真 goal-store (临时 HOME), 时钟一律 `now: () => t` 注入:
+- **未到点不跑**: `wakeAt = t0+3h`, 逐小时 tick (t0 / +1h / +2h / +3h−1s) → `runner` 调用 **0 次**,
+  Run 记录 0 条, 每次 skip 原因写"retry_wait: 时间未到"。
+- **到点才跑**: `t = t0+3h` 时一次 tick → 恰好 `executed=1`, `runner` 调用 1 次, runs 1→2。
+- **跳多小时不补跑**: `wakeAt = t0+5h`, 一次性从 t0 跳到 `t0+11h` (跨 6 小时) → `runner` **只被调
+  1 次** (不是 6 次); 再 `wakeAt = t0+16h` 并逐小时 tick 4 次 → 0 次调用, 到 t0+16h 才再 1 次。
+  三个 Goal (`wakeAt` 分别为 +1h/+2h/+3h) 逐小时推进的对照: 每个 tick 的执行数 ≤ 3, 且"还没到点的
+  Goal"runs 数**不变** (到点前绝不被跑)。
+- **阴性对照 (证明上面的 0 是"时钟没到", 不是这目标本来就不可跑)**: 同一个 Goal、同一个 `t`, 只把
+  构造 supervisor 时的 `now` 拨到 `wakeAt` 之后 → 立刻跑 1 轮。
+- **变异验证缺口的诚实说明**: 承载这道门的只有 `goal-store.ts` 的 `listRunnableGoals` 的
+  `wakeAt` 判定与 `execution-supervisor.ts` 的 tick —— **两者都在本线禁改清单里**, 所以本项做不了
+  源码变异; 用上面的"拨时钟"阴性对照替代 (它同样能证伪"这个 0 不是因为时钟")。
+
+### 7.4 ④ 多 worker 租约竞争 (2 tests, `goal-flywheel-p6-lease.test.ts`)
+
+**造场景不需要改 `execution-supervisor.ts`** —— 它的构造参数已有 `owner` / `leaseTtlMs` / `maxPerTick`:
+1. **同进程真并发**: `Supervisor-A(owner=worker-A)` 的 runner 卡在一个 `Promise` 上 (真持有 lease),
+   同时 `Supervisor-B(owner=worker-B)` 对同一个 Goal 跑 `tickOnce()` → `B.claimed=[]`,
+   `B.executed=[]`, `B.skipped` 里带 "lease 被占用 (worker-A)" 原因, **B 的 runner 一次都没被调**;
+   放行 A → `A.executed=1`。⇒ 同一时刻只有一个认领成功, 另一个不重复跑。
+2. **认领点直击 + 快时钟穿透**: `B` 在自己的时钟里快进 2h (看 lease 已过期) → 通过扫描 → 走到
+   `claimGoal` (真钟) → 被拒 "lease 被占用" → tick 的 `claimed` 仍为空, runs 不变。
+3. **正向对照 (让路 ≠ 永远不动)**: 那张过期的 lease 被清后, B 立刻能跑 (`executed=1`)。
+4. 稳定复跑: 同一文件连跑 3 次, 每次 `Tests 2 passed (2)`。
+   证据面: 真 store + 真 lease 文件 (`readLease` 的 owner) + runs 目录条数 (不变 = 没重复跑)。
+
+### 7.5 ⑤ 外部事件去重表: **命中条件** (只读验证, 未改 `external-events.ts`) (3 tests)
+
+**命中 `duplicate` 的完整条件** (四条同时成立; `goal-flywheel-p6-external-events.test.ts`):
+1. 事件有 `eventId`; 2. 有候选 Goal 且在等 (`continuation.external` 存在 —— **第一次投递成功后
+`external` 会被清掉**, 所以"重复投递"要多一步: **重新绑定**同一 `requestId`/`continuationId`/`source`);
+3. 来源 / `requestId` / `continuationId` / 事件名全对得上; 4. **等待未过期** (过期判定在去重**之前**)。
+5. 且该 `eventId` 仍在**去重窗口内**。
+
+**不命中的条件 (各有穷尽对照)**: 等待已被清 → `no_match` (所以 P5 观察到的"重复投递返回
+`no_match` 而非 `duplicate`"得到解释: 不是去重表失效, 是**没有候选**了); 等待过期 → `expired`
+(即使 eventId 在表里也不按重复处理); 来源不符 → `source_mismatch`; 关联不符 → `correlation_mismatch`;
+事件名不符 → `event_mismatch`; **缺 `eventId` → 直接 `correlation_mismatch` (无 id 无法去重)**;
+`goalId` 指定但该 Goal 没在等 → `no_match` (不猜)。后四类**一律不写去重表**。
+
+**新发现 (P5 没写)**: 去重表是**有界 20 条滑动窗口** (`.slice(-20)`), 不是永久去重表。实测: 连续投递
+21 个不同 `eventId` 后, 表里只剩 `ev-2..ev-21` (length 20), 最早的 `ev-1` **掉出窗口**; 重绑等待后重投
+`ev-1` → `delivered` (**被再次接受**), 而仍在窗口内的 `ev-20` → `duplicate`。
+⇒ 语义边界: "同一个 `eventId` 在最近 20 条之内只算一次", 超出窗口的**极旧重放不会被挡**。
+被去重挡下的投递**不动任何事实** (不写 evidence、不清等待、不改状态)。
+
+### 7.6 ⑥ REPL `/supervise` 真跑 (逐字输出) + 种子配方
+
+**之前卡在哪**: 交互 CLI 的启动门禁是 `refreshSetupState({ light: true })`, 不 ready 就进 onboard。
+**破解 = 临时 HOME + 已 onboard 的种子状态** (真跑通过, 不需要人点 onboarding):
+
+1. `BOLLOON_HOME=$TMP/.bolloon` (隔离), 放三个文件:
+   - `user.json`: `{"did":"did:bolloon:p6seeded","name":"P6 验收种子"}`;
+   - `bolloon-config.json`: `{"activeProvider":"Ollama","providers":{"Ollama":{"enabled":true,"requiresApiKey":false,"model":"llama3.1"}}}`
+     (用**不需要 key** 的 provider → `credentialOk` 为真, 不用往盘里放假 key);
+   - `setup-state.json`: `stage:"ready"` + `checks` 里 `identity/providerSelected/providerUsable/modelPresent/
+     connectivityOk/connectivityAt(=now)/runtimeInitialized/harnessOk/skillsOk/runStoreOk/goalStoreOk/
+     leaseOk/supervisorResolvable` 全 true + `readiness:{basic:true,agent:true,durable:true}`。
+   - 用真 `createGoal` + `setContinuation` + `bindExternalWait` 种一个在等的 Goal (让输出有真数据)。
+   - 自检: `evaluateSetup({light:true}).gate` → 实测 **`gate = ready | stage = ready | readiness =
+     {"basic":true,"agent":true,"durable":true,"network":false}`**。
+2. `env HOME=$TMP BOLLOON_HOME=$TMP/.bolloon BOLLOON_SKIP_UPDATE=1 npx tsx src/index.ts` (pty), 输入 `/supervise`:
+
+```
+supervisor: owner=AppledeMacBook-Pro-2.local:58799 running=no tick=30000ms lease=90000ms dryRun=yes ticks=0
+  g-mugq3vbu-8e5cb2  [正在执行]  唤醒: 等外部事件 (等 P6 的 delegate 回包 (种子))
+    (内部: status=active visible=executing)
+现在可推进:
+  g-mugq3vbu-8e5cb2  [active   ] 判据  0/2  run=-  把 P6 验收的 REPL /supervise 真跑一遍 (长期执行目标)
+/supervise tick 手动推进一个周期
+```
+
+   再输入 `/supervise tick` (真推进一个周期, 逐字):
+
+```
+supervisor: owner=AppledeMacBook-Pro-2.local:58799 running=no tick=30000ms lease=90000ms dryRun=yes ticks=0
+[supervisor] goal=g-mugq3vbu-8e5cb2 run=mugq4o8q-449687 needs_human → goal=needs_human (auth 需要人工介入) 803ms
+调度周期 #1  认领 1 · 执行 1
+  ▶ g-mugq3vbu-8e5cb2 → run=mugq4o8q-449687 needs_human
+  飞轮 g-mugq3vbu-8e5cb2: first_run/progressing 无进展连续 0 轮 · 用户可见态=正在执行 · first_run: 还没有 Run 事实 ——
+首个 Run 直接开 (目标由人写, 不需要先自证进展)
+  收尾 g-mugq3vbu-8e5cb2/mugq4o8q-449687: 9 步 → ask_human (memory 0 · skill 候选 0)
+    用户汇报: /tmp/p6-repl/.bolloon/goal-reports/g-mugq3vbu-8e5cb2--mugq4o8q-449687.json
+```
+
+   **本轮 Run 为什么是 needs_human**: 环境里没有可用的 LLM 凭据 —— 真用户汇报文件的
+   `blockReasons[0]` 原文是 `Run 以 needs_human 结束: [AI 服务调用失败] OpenAI API error: 401
+   {"error":{"message":"Authentication Fails, Your api key: ****2d23 is invalid ...` (真调了一次模型,
+   被 401 拒)。**这不是 REPL 的问题**: 认领 / 预检 / 执行 / 收尾 / 决策 / 用户汇报整条链都真跑完了
+   (9 步 → `ask_human`), 缺的只是一把有效 key。
+   ⇒ 结论: ⑥ 从"未验证"改为**已验证 (命令能跑 + 输出为真)**; 唯一环境依赖是 LLM 凭据。
+
+### 7.7 ⑦ 手机原生构建: 能跑什么 / 到底卡在哪 (本机 macOS 13.6)
+
+| 命令 | 结果 | 真实输出/原因 |
+|---|---|---|
+| `npx cap doctor` (sync 前) | iOS ✅ / **Android ✗** | `[error] app/src/main/assets directory is missing in android` (这是**设计如此**: assets/public 由 sync/cp 生成, gitignored) |
+| `npx cap sync ios` | **exit 0** | `✔ Copying web assets from web to ios/App/App/public` → `Writing Package.swift` (Capacitor 8 走 **SPM**, 不需要 CocoaPods) |
+| `npx cap sync android` | **exit 0** | `✔ Copying web assets from web to android/app/src/main/assets/public` |
+| `npm run ios:sync` (= `CAP_WEB_DIR=dist/ios npx cap sync ios`) | **exit 0** | `✔ Copying web assets from ios to ios/App/App/public` |
+| `npx cap doctor` (sync 后) | **两端 ✅** | `[success] iOS looking great!` + `[success] Android looking great!` |
+| `npm run ios:verify` (免签名真机 Release 编译) | **exit 0 / `** BUILD SUCCEEDED **`** | 产物 `build/dd-dev/Build/Products/Release-iphoneos/App.app` (**19M**) |
+| `npm run ios:build` (真机 .xcarchive) | **exit 4** | `error: Signing for "App" requires a development team. Select a development team in the Signing & Capabilities editor. (in target 'App')` → `** ARCHIVE FAILED **` |
+| `cd android && ./gradlew --version` | **exit 1** | `The operation couldn't be completed. Unable to locate a Java Runtime.` |
+
+**精确缺口 (不是"应该可以", 是实测)**:
+1. **iOS 缺的不是 Xcode**: Xcode **15.2 (15C500b)** 真在 `~/Downloads/Xcode.app`
+   (`xcode-select` 的 active dir 却是 `/Library/Developer/CommandLineTools` → 裸 `xcodebuild` 报
+   "requires Xcode"); `scripts/build-ios.sh` 自己会 fallback 设 `DEVELOPER_DIR` → **编译真过了**。
+   模拟器也齐: iOS 17.2 的 iPhone 15 / SE3 / iPad 等 8 台 (`xcrun simctl list devices available`)。
+2. **iOS 出可安装包卡在签名**: `ios/App/App.xcodeproj/project.pbxproj` 只有 `CODE_SIGN_STYLE = Automatic`,
+   **没有 `DEVELOPMENT_TEAM`**; 本机没有该 Apple 账号的证书/私钥。`ios/ExportOptions.plist` 里已写好
+   `teamID = 4H9BX87VAC` + `method = development` (免费 Personal Team 只能 development 导出)。
+3. **Android 卡在两样**: **无 JDK** (无 `JAVA_HOME`, `./gradlew` 直接 1) + **无 Android SDK**
+   (`ANDROID_HOME`/`ANDROID_SDK_ROOT` 均未设, 无 `adb`/`sdkmanager`)。`android/README.md` 把构建前置
+   写成 **Windows** 机器 (`C:\tools\android-sdk` + JDK 21/Android Studio JBR), 并说明 web assets 要
+   `cp -r dist/web/. android/app/src/main/assets/public/` + `./gradlew :app:assembleDebug` 出 APK;
+   另有 CXR-M AAR (`android/vendor/client-m-1.2.2.aar`, gitignored) 与官方 AAR 缺陷的本地补丁。
+
+**在一台有 Xcode 的机器上该跑的命令 (按顺序, 全部有依据)**:
+```bash
+# 0) 一次性: 让命令行用上 Xcode (本机 Xcode 15.2 在 ~/Downloads)
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer   # 或 export DEVELOPER_DIR=~/Downloads/Xcode.app/Contents/Developer
+# 1) 免签名编译验证 (本机已实测 BUILD SUCCEEDED)
+npm run ios:verify
+# 2) 模拟器真跑 (免签名, ad-hoc 签名, 无需 Apple ID)
+npm run ios:sim          # 或 npx cap run ios --livereload --external (dev, 需先 npm run dev:web)
+# 3) 出可安装包: 先在 Xcode 里给 App target 选 Team (或给 pbxproj 加 DEVELOPMENT_TEAM=4H9BX87VAC), 然后
+npm run ios:build        # 出 .xcarchive
+npm run ios:release      # 导出 ipa (ExportOptions.plist 已配 development + teamID)
+# 4) Android (换一台有 JDK 21 + Android SDK 的机器): 
+export JAVA_HOME=<JDK21>; export ANDROID_HOME=<android-sdk>
+cp -r dist/web/. android/app/src/main/assets/public/ && (cd android && ./gradlew :app:assembleDebug)
+```
+手机工程文件本线**未改** (`ios/` `android/` 的工程文件一个字节没动; `cap sync` 只写 gitignored 的
+`public/` / `assets/`, 收尾时 `git status --porcelain` 为**空**)。
+
+### 7.8 commit 台账 / 仍未闭合
+
+| 项 | commit | 文件 |
+|---|---|---|
+| ① 执行器 + 测试 | `1be6ae8` | `src/agents/goal-flywheel/block-executor.ts` (496) · `src/test/goal-flywheel-p6-block-executor.test.ts` (13 tests) |
+| ① 接入点写精确 | `4c916b5` | `block-executor.ts` (JSDoc) |
+| ② 转正后半程 | `47361a1` | `src/test/goal-flywheel-p6-promotion.test.ts` (3 tests) |
+| ③ 小时级时钟 | `e15b71c` | `src/test/goal-flywheel-p6-clock.test.ts` (3 tests) |
+| ④ 租约竞争 | `c11fed6` | `src/test/goal-flywheel-p6-lease.test.ts` (2 tests) |
+| ⑤ 去重命中条件 | `033dd7e` | `src/test/goal-flywheel-p6-external-events.test.ts` (3 tests) |
+| ⑥⑦ 本节 | (本页) | `docs/wiki/goal-flywheel-p5-acceptance.md` |
+
+**仍未闭合 (诚实清单)**:
+1. **接线那一行**: `execution-supervisor.ts` L429 之后仍**没有**调 `executeBlockHandling`, 也还没有
+   `blockExecutorPorts` helper → 真跑时 `replace_child` / `send_adjustment` / `request_report` 依然
+   只记账不落地 (缺的是**接线层的实现**, 不是结论)。
+2. **`takeover` 在真合同路径上的可达性**: 真合同策略仍恒为 `'stall'`, 只有手工改策略才走到 (未变)。
+3. **③ 的源码变异未做**: 承载 `wakeAt` 判定的两个文件都在禁改清单 → 用"拨注入时钟"的阴性对照替代。
+4. **人批准 → 写正式 Skill** 那段仍属 `skills-manager` 职责, 本线未跑 (与 ② 的分界: ② 验到
+   `draftPromotion` 产出 `next_run_only` 的晋升记录为止)。
+5. **多 worker 竞争只验到同进程两个 Supervisor 实例** (同一 store, 不同 `owner`); **跨进程** 真竞争未造
+   (需要起两个 OS 进程, 本线未做 —— 但 lease 的实现是 `fs` 独占创建 + pid 存活判定, 同进程双实例已能
+   证伪"两人同时认领同一 Goal")。
