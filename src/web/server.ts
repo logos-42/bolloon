@@ -3151,7 +3151,7 @@ async function refresh(){
     const visZh = (labels[vis] && labels[vis].zh) || vis;
     tr.innerHTML = '<td><code>'+g.goalId+'</code></td><td>'+visZh+' <span class="dim">('+vis+')</span></td><td>'+crit+src+'</td><td class="dim">'+
       ((g.continuation&&(g.continuation.nextAction||g.continuation.wakeReason))||'-')+'</td><td>'+((g.runs||[]).length)+'</td>'+
-      '<td><button onclick="view(\''+g.goalId+'\')">详情</button><button onclick="act(\\''+g.goalId+'\\',\\'confirm\\')">确认判据</button><button onclick="act(\\''+g.goalId+'\\',\\'propose\\')">提候选</button><button onclick="act(\\''+g.goalId+'\\',\\'wake\\')">唤醒</button><button onclick="req(\\''+g.goalId+'\\')">新要求</button></td>';
+      '<td><button onclick="view(\\''+g.goalId+'\\')">详情</button><button onclick="act(\\''+g.goalId+'\\',\\'confirm\\')">确认判据</button><button onclick="act(\\''+g.goalId+'\\',\\'propose\\')">提候选</button><button onclick="act(\\''+g.goalId+'\\',\\'wake\\')">唤醒</button><button onclick="req(\\''+g.goalId+'\\')">新要求</button></td>';
     gtb.appendChild(tr);
   }
   const rs = await j('/api/runs');
