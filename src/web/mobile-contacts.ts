@@ -105,22 +105,55 @@ async function importPrivate(storage: StorageLike, c: Crypto): Promise<CryptoKey
 
 /** 用设备私钥签一条 Grant (核心: 手机确认 → 桌面才认) */
 export async function signGrantOnDevice(grant: SignableGrant, storage: StorageLike, c?: Crypto): Promise<GrantSignature> {
-  const cobj = cryptoOf(c)!;
-  const key = await importPrivate(storage, cobj);
-  const payload = canonicalGrantPayload(grant);
-  const sig = await cobj.subtle.sign({ name: 'Ed25519' } as any, key, bytesOf(payload) as any);
-  const dev = await loadOrCreateDeviceKey(storage, cobj);
-  return { deviceId: dev.deviceId, alg: 'ed25519', payloadHash: await sha256Hex(cobj, payload), sig: b64(sig) };
+  return signPayloadOnDevice(canonicalGrantPayload(grant), storage, c);
 }
 
 /** 撤销也要签名 (桌面拒收未登记设备的撤销) */
 export async function signRevocationOnDevice(rev: SignableRevocation, storage: StorageLike, c?: Crypto): Promise<GrantSignature> {
-  const cobj = cryptoOf(c)!;
-  const key = await importPrivate(storage, cobj);
-  const payload = canonicalRevocationPayload(rev);
-  const sig = await cobj.subtle.sign({ name: 'Ed25519' } as any, key, bytesOf(payload) as any);
-  const dev = await loadOrCreateDeviceKey(storage, cobj);
-  return { deviceId: dev.deviceId, alg: 'ed25519', payloadHash: await sha256Hex(cobj, payload), sig: b64(sig) };
+  return signPayloadOnDevice(canonicalRevocationPayload(rev), storage, c);
+}
+
+/**
+ * 通用: 用**同一把设备私钥**签任意规范载荷 (2026-09-25)。
+ *
+ * 抽出来的原因: 手机上所有"要桌面认账"的动作 (长期授权 · 撤销 · 高风险任务动作
+ * 入群/发公告/过程留痕) 必须是**同一把设备密钥 + 同一套验签纪律** ——
+ * 各写一份签名实现迟早出现"某条路径没签名也能过"的缝。
+ * 载荷的规范化由调用方提供 (grant-payload / mobile-task-actions), 本函数只管签。
+ */
+export async function signPayloadOnDevice(payload: string, storage: StorageLike, c?: Crypto): Promise<GrantSignature> {
+  const cobj = cryptoOf(c);
+  if (!cobj?.subtle) throw new Error('device_signing_unavailable: 本机没有 WebCrypto');
+  // 只加载一次设备材料: deviceId 与签名必须来自**同一份**密钥
+  // (2026-09-25 修: 之前在这里二次 loadOrCreateDeviceKey, storage 不持久化时会生成另一把密钥
+  //  → 桌面 device_mismatch 403。真机 localStorage 下看不出来, 但那是运气不是设计。)
+  const material = await loadOrCreateDeviceKey(storage, cobj);
+  const key = await cobj.subtle.importKey('jwk', material.privateKeyJwk, { name: 'Ed25519' } as any, false, ['sign']);
+  const bytes = bytesOf(String(payload ?? ''));
+  const sig = await cobj.subtle.sign({ name: 'Ed25519' } as any, key, bytes as any);
+  return { deviceId: material.deviceId, alg: 'ed25519', payloadHash: await sha256Hex(cobj, String(payload ?? '')), sig: b64(sig) };
+}
+
+/** sha256 hex (手机侧与桌面 Node 同值) —— 任务动作的内容摘要用它算 */
+export async function sha256HexOf(text: string, c?: Crypto): Promise<string> {
+  const cobj = cryptoOf(c);
+  if (!cobj?.subtle) throw new Error('device_signing_unavailable: 本机没有 WebCrypto');
+  return sha256Hex(cobj, String(text ?? ''));
+}
+
+/**
+ * 用**已经加载好的**设备材料签名 (调用方自己拿 deviceId)。
+ *
+ * 为什么留这个口: 高风险任务动作的载荷里含 deviceId, 签名必须与那个 deviceId 同源。
+ * 若"取 deviceId"与"签名"各调一次 loadOrCreateDeviceKey, 在 storage 不持久化的环境
+ * (隐私模式 / storage 被禁) 会拿到两把不同密钥 → 桌面 device_mismatch 403。
+ */
+export async function signPayloadWithMaterial(payload: string, material: DeviceKeyMaterial, c?: Crypto): Promise<GrantSignature> {
+  const cobj = cryptoOf(c);
+  if (!cobj?.subtle) throw new Error('device_signing_unavailable: 本机没有 WebCrypto');
+  const key = await cobj.subtle.importKey('jwk', material.privateKeyJwk, { name: 'Ed25519' } as any, false, ['sign']);
+  const sig = await cobj.subtle.sign({ name: 'Ed25519' } as any, key, bytesOf(String(payload ?? '')) as any);
+  return { deviceId: material.deviceId, alg: 'ed25519', payloadHash: await sha256Hex(cobj, String(payload ?? '')), sig: b64(sig) };
 }
 
 // ── 与桌面的 HTTP 交互 ──────────────────────────────────────────────────────

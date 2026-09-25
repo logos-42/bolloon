@@ -30,6 +30,13 @@ import {
 // 2026-09-19: 手机端联系方式与授权能力 (设备私钥签名, 只存 capability 副本)
 import * as mobileContacts from './mobile-contacts.js';
 
+// 2026-09-25: 手机端「任务协作」(入群 · 发公告 · 看飞轮进度) —— 高风险动作走设备签名
+import * as mobileTasks from './mobile-tasks.js';
+// 手机页面的视图投影 / 文案表 (纯函数; 与桌面 API 的投影同源, 页面不自己拼字符串)
+import * as mobileTaskViews from '../agents/mobile-task-views.js';
+// 公开文本红线 (与桌面 task-group 同一份规则表: 页面渲染前最后一道自检)
+import { scanPublicText } from '../agents/task-public-text.js';
+
 // ============ 事件总线 (替代 SSE) ============
 
 type BusHandler = (msg: any) => void;
@@ -874,6 +881,59 @@ export const core = {
       const snap: any = s.getLastSnapshot();
       return snap && Array.isArray(snap.skills) ? snap.skills : [];
     },
+  },
+
+  /**
+   * 任务协作 (2026-09-25) — 手机与桌面/CLI 共用同一套存储与协议:
+   *   入群 (`task group …`) · 发公告 (`task publish/announce/post`) · 看飞轮进度 (goal-flywheel 冻结类型, 只读)
+   * 四个高风险动作 (入群/退群/建群/发公告/留痕) 一律**先签设备名再由桌面验签执行** —— 手机不自己执行、不记账。
+   * 桌面不可达 → 明确失败 (任务动作**不进离线队列**: 几小时后突然生效的批准比失败更危险)。
+   */
+  tasks: {
+    /** 本机能不能签 (老 WebView 没 Ed25519 → 高风险动作一律拒, 不降级) */
+    deviceSigning(): boolean { return mobileContacts.ed25519Available(); },
+    /** 桌面基址 (拿不到 → null, 不猜) */
+    async desktopBase(): Promise<string | null> { return core.contacts.desktopBase(); },
+    deps() {
+      return { storage: core.contacts.storage(), ownerDid: undefined as string | undefined, grantedBy: 'leo' };
+    },
+    /** ① 群: 列本机已加入的群 (脱敏, 只给缩短 id/群名/时间) */
+    listGroups: () => mobileTasks.listGroups(core.tasks.deps()),
+    /** ① 入群 (高风险: 展示待发内容 → 设备签名 → 桌面验签执行) */
+    joinGroup: (link: string) => mobileTasks.joinGroup(link, core.tasks.deps()),
+    /** ① 退群 (高风险) */
+    leaveGroup: (ref: string) => mobileTasks.leaveGroup(ref, core.tasks.deps()),
+    /** ① 建群 (高风险; 建完自动入群) */
+    createGroup: (name: string) => mobileTasks.createGroup(name, core.tasks.deps()),
+    /** ② 看板 (只读; 与 CLI `task board` 同一份事实) */
+    loadBoard: () => mobileTasks.loadBoard(core.tasks.deps()),
+    /** ② 发布公告 (高风险) */
+    publishAnnouncement: (input: any) => mobileTasks.publishAnnouncement(input, core.tasks.deps()),
+    /** ② 把公告发进群 (高风险; 预览 → 确认 → 签名) */
+    announceIntoGroup: (input: any) => mobileTasks.announceIntoGroup(input, core.tasks.deps()),
+    /** ② 过程留痕 (高风险: claim/deliver/screen/final) */
+    postTrail: (input: any) => mobileTasks.postTrail(input, core.tasks.deps()),
+    /** ② 读群里的一期痕迹 (只读) */
+    loadTrail: (input: any) => mobileTasks.loadTrail(input, core.tasks.deps()),
+    /** 预览群消息那一行 (由桌面同一个构造器生成) */
+    previewGroupMessage: (req: any) => mobileTasks.previewGroupMessage(req, core.tasks.deps()),
+    /** ③ 飞轮进度 (只读消费 goal-flywheel 冻结类型; 投影在桌面做) */
+    loadFlywheel: () => mobileTasks.loadFlywheel(core.tasks.deps()),
+    /** 确认页文案 (展示待发内容) */
+    describeConfirm: (kind: string, req: any) => mobileTasks.describeTaskActionForConfirm(kind, req),
+    /** 直接执行一个已构造好的请求 (UI 的统一入口: 签名 → 桌面验签执行) */
+    execute: (req: any) => mobileTasks.executeTaskAction(req, core.tasks.deps()),
+    /** 相对时间人话 (毫秒差 → 双语; 只用于写文字节点) */
+    relative: (ms: number | null, lang: string) => mobileTaskViews.formatRelative(ms, lang === 'en' ? 'en' : 'zh'),
+    /** id 缩短 (页面上不出现原文) */
+    shorten: (id: unknown, n?: number) => mobileTaskViews.shortId(id, n),
+    /** 公开文本红线 (UI 最后一道自检: 渲染前扫一遍, 命中就不显示原文) */
+    scanText: (text: string) => scanPublicText(String(text ?? '')),
+    /** 构造一个空请求 (UI 填字段用) */
+    emptyRequest: (kind: any) => mobileTasks.emptyTaskActionRequest(kind),
+    /** 最近一条操作提示 */
+    hint(): string { return mobileTasks.getTaskHint(core.contacts.storage()); },
+    setHint(text: string): void { mobileTasks.setTaskHint(text, core.contacts.storage()); },
   },
 
   message: {

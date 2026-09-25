@@ -726,7 +726,7 @@ function parseInput(raw?: string): unknown {
 // ── bolloon-task/1 真收发: send / inbox / accept / reject ────────────────────
 
 /** 人类单位 → 原子单位正整数串 (拒绝 0 / 负 / 超精度; 浮点模糊一律拒) */
-function toAtomic(human: string, decimals: number): string | null {
+export function toAtomic(human: string, decimals: number): string | null {
   const s = String(human ?? '').trim();
   if (!/^[0-9]+(\.[0-9]+)?$/.test(s)) return null;
   const [i, f = ''] = s.split('.');
@@ -736,7 +736,7 @@ function toAtomic(human: string, decimals: number): string | null {
 }
 
 /** `--deadline +2h` / `+30m` / `+45s` / `+1d`, 或未来毫秒时间戳 */
-function parseDeadline(v: string | undefined, now = Date.now()): number | string {
+export function parseDeadline(v: string | undefined, now = Date.now()): number | string {
   if (v === undefined) return now + 24 * 60 * 60 * 1000;
   const m = /^\+(\d+)(s|m|h|d)$/.exec(String(v).trim());
   if (m) {

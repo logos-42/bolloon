@@ -703,3 +703,22 @@ body {
 .policy-body p { font-size: 13px; line-height: 1.75; color: var(--text-secondary); margin: 0 0 10px; }
 .policy-body a { color: var(--accent); word-break: break-all; }
 .policy-meta { font-size: 12px; color: var(--text-muted); }
+
+/* ============ 任务 tab (2026-09-25) ============ */
+/* 页面里的列表/按钮都复用既有 .list / .list-item / .sheet-choice;
+   这里只补两件事: 让长文本行不撑破卡片, 以及「减少动态效果」时把过渡/动画压到 0。 */
+#page-tasks .list-item { align-items: flex-start; word-break: break-word; }
+#page-tasks .list-item > div { min-width: 0; }
+#page-tasks .section-label { word-break: break-word; }
+#task-confirm-lines, #task-confirm-content { word-break: break-word; }
+/* 标记: 页面顶部的签名状态行 (不能签名时用警示色, 但仍然只是一行文字) */
+#tasks-signing[data-signing="no"] { color: #d08a2a; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

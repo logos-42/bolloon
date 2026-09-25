@@ -69,7 +69,7 @@
     });
   } catch (e) {}
 
-  const TITLES = { main: '首页', friends: '好友', network: '网络', me: '我' };
+  const TITLES = { main: '首页', friends: '好友', network: '网络', tasks: '任务', me: '我' };
   let currentTab = 'main';
   function switchTab(tab) {
     currentTab = tab;
@@ -3169,4 +3169,534 @@
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindEvents);
   else bindEvents();
+})();
+
+// ============ 任务协作: 入群 · 发公告 · 看飞轮进度 (2026-09-25) ============
+// 独立 IIFE (与联系方式面板同款): 只用 window.BolloonCore.tasks (编译进 mobile-core.js)。
+// 分工**不变**: 手机 = 输入 · 展示待发内容 · 设备签名; 桌面 = 落盘 · 执行 · 等待回复 · 证据。
+// 纪律:
+//   · 动态文本一律 textContent (本文件这一段**不用 innerHTML** 拼任何数据)
+//   · 渲染只取白名单字段 (视图对象里多出来的字段进不了 DOM)
+//   · 双语走 data-zh/data-en (切语言只重写文字节点, 不重建结构)
+//   · 相对时间只更新 .rel-time 文字节点 (不重渲染整页)
+(function () {
+  const $ = (sel) => document.querySelector(sel);
+  const T = () => (window.BolloonCore && window.BolloonCore.tasks) || null;
+
+  // ── 语言 (data-zh/data-en; 默认中文, 显式切 en 才英文) ──────────────────────
+  function lang() {
+    try { return localStorage.getItem('bolloon_lang') === 'en' ? 'en' : 'zh'; } catch (e) { return 'zh'; }
+  }
+  function bilingual(el, zh, en) {
+    if (!el) return el;
+    el.setAttribute('data-zh', String(zh));
+    el.setAttribute('data-en', String(en));
+    el.textContent = lang() === 'en' ? String(en) : String(zh);
+    return el;
+  }
+  function applyLang(root) {
+    const scope = root || document;
+    scope.querySelectorAll('[data-zh][data-en]').forEach((el) => {
+      el.textContent = lang() === 'en' ? el.getAttribute('data-en') : el.getAttribute('data-zh');
+    });
+  }
+  window.__mobileLang = {
+    get: lang,
+    set(v) {
+      try { localStorage.setItem('bolloon_lang', v === 'en' ? 'en' : 'zh'); } catch (e) {}
+      applyLang();
+      // 列表里的空态/描述是用 lang() 现拼的 → 切完语言重渲染一次, 免得留下上一语言的旧句子
+      try {
+        if (window.__mobileTasksUi && typeof window.__mobileTasksUi.refresh === 'function') window.__mobileTasksUi.refresh();
+      } catch (e) {}
+    },
+  };
+
+  // ── DOM 小工具 (全部 textContent) ─────────────────────────────────────────
+  function mk(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
+  function line(cls, text) { const e = mk('div', cls || 'sheet-text'); if (text !== undefined && text !== null) e.textContent = String(text); return e; }
+  function row(text, sub) {
+    const e = mk('div', 'list-item');
+    const box = mk('div');
+    box.style.flex = '1';
+    box.appendChild(line('', text));
+    if (sub !== undefined && sub !== null && String(sub) !== '') {
+      const s = line('', sub);
+      s.style.fontSize = '12px';
+      s.style.color = 'var(--text-secondary)';
+      box.appendChild(s);
+    }
+    e.appendChild(box);
+    return e;
+  }
+  /** 相对时间节点: 只改这一个文字节点 (data-at 记住基准) */
+  function relNode(atMs) {
+    const s = mk('span', 'rel-time');
+    s.setAttribute('data-at', String(Number(atMs) || 0));
+    s.textContent = relText(Number(atMs) || 0);
+    return s;
+  }
+  /** 相对时间节点 (输入是**毫秒差**, 例如 deadlineInMs / resumeInMs) —— 每 30s 只改这个文字节点 */
+  function relDeltaNode(deltaMs) {
+    const s = mk('span', 'rel-time');
+    s.setAttribute('data-delta', String(Number(deltaMs) || 0));
+    s.textContent = relDeltaText(Number(deltaMs) || 0);
+    return s;
+  }
+  function relDeltaText(deltaMs) {
+    const t = T();
+    if (!t || !t.relative) return '';
+    return t.relative(Number(deltaMs) || 0, lang()) || '';
+  }
+  function relText(atMs) {
+    const t = T();
+    if (!atMs) return '';
+    if (t && t.relative) return t.relative(Date.now() - Number(atMs), lang()) || '';
+    return '';
+  }
+  function shorten(v, n) { const t = T(); return t && t.shorten ? t.shorten(v, n) : String(v == null ? '' : v).slice(0, n || 12); }
+  /** 最后一道自检: 命中红线就不显示原文 (桌面已经挡过, 这里只兜底) */
+  function safeText(v) {
+    const s = String(v == null ? '' : v);
+    const t = T();
+    if (t && t.scanText) {
+      const hits = t.scanText(s);
+      if (hits && hits.length) return '[' + (lang() === 'en' ? 'redacted:' : '已遮蔽:') + hits[0].rule + ']';
+    }
+    return s;
+  }
+  function setText(sel, text) { const el = $(sel); if (el) el.textContent = text == null ? '' : String(text); }
+  /** 动态状态行: 带上 data-zh/data-en, 这样切语言时它也换 (applyLang 只管文字节点) */
+  function dynText(sel, zh, en) {
+    const el = $(sel);
+    if (!el) return;
+    el.setAttribute('data-zh', String(zh));
+    el.setAttribute('data-en', String(en));
+    el.textContent = lang() === 'en' ? String(en) : String(zh);
+  }
+  function clear(node) { if (node) while (node.firstChild) node.removeChild(node.firstChild); }
+  function openSheet() { const el = $('#task-confirm-sheet'); if (el) el.hidden = false; }
+  function closeSheet() { const el = $('#task-confirm-sheet'); if (el) el.hidden = true; }
+  function toast(msg) {
+    if (window.alert) window.alert(String(msg));
+  }
+
+  // ── 状态 (完整 id 只留在这段 JS 内存里, 不进 DOM 文本) ─────────────────────
+  const state = { groups: [], groupsView: [], board: null, flywheel: null, trail: null, selectedGroupRef: '', pending: null };
+
+  // ── 渲染: 群 ──────────────────────────────────────────────────────────────
+  function renderGroups() {
+    const list = $('#tasks-groups');
+    if (!list) return;
+    clear(list);
+    if (!state.groups.length) {
+      list.appendChild(line('sheet-text', lang() === 'en' ? 'No groups joined yet' : '还没有加入任何群'));
+      return;
+    }
+    state.groups.forEach((g, i) => {
+      const view = state.groupsView[i] || {};
+      const r = row(String(view.name || '') + '  ·  ' + String(view.idShort || ''), '');
+      const when = relNode(Date.parse(String(view.joinedAt || '')) || 0);
+      const sub = line('', '');
+      sub.style.fontSize = '12px';
+      sub.style.color = 'var(--text-secondary)';
+      sub.appendChild(document.createTextNode(lang() === 'en' ? 'joined ' : '加入于 '));
+      sub.appendChild(when);
+      r.firstChild.appendChild(sub);
+      const b = mk('button', 'sheet-choice');
+      b.style.flex = '0 0 auto';
+      bilingual(b, '退群', 'Leave');
+      b.setAttribute('data-group-leave', String(i));
+      b.addEventListener('click', () => askLeave(i));
+      r.appendChild(b);
+      list.appendChild(r);
+    });
+  }
+
+  // ── 渲染: 公告板 ──────────────────────────────────────────────────────────
+  function renderBoard() {
+    const list = $('#tasks-board');
+    if (!list) return;
+    clear(list);
+    const d = state.board || {};
+    const items = d.items || [];
+    if (!items.length) {
+      list.appendChild(line('sheet-text', lang() === 'en' ? 'Board is empty' : '板上暂时没有公告'));
+    }
+    items.forEach((it, i) => {
+      const r = row(
+        String(it.capability || '') + '  ·  ' + String(it.idShort || '') + '  ·  ' + String((it.statusLabel || {})[lang()] || ''),
+        '',
+      );
+      const sub = line('', '');
+      sub.style.fontSize = '12px';
+      sub.style.color = 'var(--text-secondary)';
+      sub.appendChild(document.createTextNode((lang() === 'en' ? 'budget ' : '预算 ') + safeText(it.budgetLabel || '—') + ' · '));
+      sub.appendChild(document.createTextNode(lang() === 'en' ? 'closes ' : '截止 '));
+      sub.appendChild(relDeltaNode(it.deadlineInMs));
+      r.firstChild.appendChild(sub);
+      if (it.claimable) {
+        const b = mk('button', 'sheet-choice');
+        b.style.flex = '0 0 auto';
+        bilingual(b, '发进群', 'Post to group');
+        b.setAttribute('data-announce', String(i));
+        b.addEventListener('click', () => askAnnounceToGroup(i));
+        r.appendChild(b);
+      }
+      list.appendChild(r);
+    });
+    const notes = Array.isArray(d.notes) ? d.notes : [];
+    if (notes.length) list.appendChild(line('sheet-text', notes.join(' · ')));
+  }
+
+  // ── 渲染: 飞轮进度 (只读; 状态来自 goal-flywheel 的五类用户可见状态) ────────
+  function renderFlywheel() {
+    const list = $('#tasks-flywheel');
+    if (!list) return;
+    clear(list);
+    const goals = (state.flywheel && state.flywheel.goals) || [];
+    if (!goals.length) {
+      list.appendChild(line('sheet-text', lang() === 'en' ? 'No goals yet' : '还没有目标'));
+      const hint = state.flywheel && state.flywheel.hint;
+      if (hint) list.appendChild(line('sheet-text', hint));
+      return;
+    }
+    const zh = lang() === 'zh';
+    goals.forEach((g) => {
+      const v = g.view || {};
+      const r = row(String(g.objectiveShort || '') + '  ·  ' + String((v.stateLabel || {})[lang()] || g.status || ''), '');
+      const box = r.firstChild;
+      const rep = v.report || {};
+      if (rep.nextStep) box.appendChild(line('sheet-text', (zh ? '下一步: ' : 'next step: ') + safeText(rep.nextStep)));
+      if (rep.conclusion) box.appendChild(line('sheet-text', (zh ? '结论: ' : 'conclusion: ') + safeText(rep.conclusion)));
+      if (Array.isArray(rep.remaining) && rep.remaining.length) {
+        box.appendChild(line('sheet-text', (zh ? '还剩: ' : 'remaining: ') + rep.remaining.map(safeText).join(' · ')));
+      }
+      if (Array.isArray(rep.blockReasons) && rep.blockReasons.length) {
+        box.appendChild(line('sheet-text', (zh ? '卡住原因: ' : 'blocked by: ') + rep.blockReasons.map(safeText).join(' · ')));
+      }
+      const sub = line('', '');
+      sub.style.fontSize = '12px';
+      sub.style.color = 'var(--text-secondary)';
+      if (v.resumeInMs !== null && v.resumeInMs !== undefined) {
+        sub.appendChild(document.createTextNode(zh ? '下次醒来 ' : 'wakes '));
+        sub.appendChild(relDeltaNode(v.resumeInMs));
+      }
+      sub.appendChild(document.createTextNode((zh ? ' · 会继续: ' : ' · will continue: ') + (rep.willContinue ? (zh ? '是' : 'yes') : (zh ? '否' : 'no'))));
+      box.appendChild(sub);
+      if (v.requiredAgent) box.appendChild(line('sheet-text', safeText(v.requiredAgent)));
+      if (v.riskLevel) box.appendChild(line('sheet-text', (zh ? '风险: ' : 'risk: ') + safeText(v.riskLevel)));
+      const blocks = Array.isArray(v.blocks) ? v.blocks : [];
+      blocks.forEach((b) => {
+        const label = [(b.kindLabel || {})[lang()], (b.ownerLabel || {})[lang()], (b.actionLabel || {})[lang()]].filter(Boolean).join(' · ');
+        const bl = line('sheet-text', safeText(label) + (b.note ? ' — ' + safeText(b.note) : ''));
+        box.appendChild(bl);
+        const bd = line('', '');
+        bd.style.fontSize = '12px';
+        bd.style.color = 'var(--text-secondary)';
+        bd.appendChild(document.createTextNode(zh ? '卡了 ' : 'blocked for '));
+        bd.appendChild(relDeltaNode(b.blockedForMs));
+        box.appendChild(bd);
+      });
+      list.appendChild(r);
+    });
+    const note = state.flywheel && state.flywheel.note;
+    if (note) list.appendChild(line('sheet-text', note));
+  }
+
+  // ── 渲染: 群痕迹 (只读) ───────────────────────────────────────────────────
+  function renderTrail() {
+    const list = $('#tasks-trail');
+    if (!list) return;
+    clear(list);
+    const t = state.trail;
+    if (!t) { list.appendChild(line('sheet-text', lang() === 'en' ? 'Pick a group first' : '先选一个群')); return; }
+    if (!t.entries.length) {
+      list.appendChild(line('sheet-text', lang() === 'en' ? 'No trail entries for this round' : '这一期还没有过程痕迹'));
+      return;
+    }
+    t.entries.forEach((e) => {
+      const label = (e.kindLabel || {})[lang()] || e.kind;
+      const r = row(String(label) + '  ·  ' + String(e.sender || ''), '');
+      const box = r.firstChild;
+      const sub = line('', '');
+      sub.style.fontSize = '12px';
+      sub.style.color = 'var(--text-secondary)';
+      sub.appendChild(relNode(e.atMs || 0));
+      box.appendChild(sub);
+      (e.facts || []).forEach((f) => box.appendChild(line('sheet-text', safeText(f.k) + '=' + safeText(f.v))));
+      list.appendChild(r);
+    });
+    if (t.privacyHits) list.appendChild(line('sheet-text', lang() === 'en' ? '⚠ some lines hit the privacy rules and were redacted' : '⚠ 有消息命中隐私红线, 已遮蔽'));
+    if (t.ignoredMessages) list.appendChild(line('sheet-text', (lang() === 'en' ? 'ignored messages: ' : '忽略消息: ') + String(t.ignoredMessages)));
+  }
+
+  // ── 确认页 (展示待发内容 → 确认 → 签名) ───────────────────────────────────
+  function renderConfirm() {
+    const t = T();
+    const p = state.pending;
+    if (!t || !p) return;
+    const d = t.describeConfirm(p.kind, p.req) || {};
+    const title = $('#task-confirm-title');
+    if (title) bilingual(title, d.titleZh || '确认这个动作', d.titleEn || 'Confirm this action');
+    const lines = $('#task-confirm-lines');
+    if (lines) {
+      clear(lines);
+      (d.lines || []).forEach((l) => lines.appendChild(line('sheet-text', (lang() === 'en' ? l.kEn : l.k) + ': ' + safeText(l.v))));
+    }
+    setText('#task-confirm-what', lang() === 'en'
+      ? 'This will be signed with this device key. The desktop verifies that signature before doing anything.'
+      : '这个动作会用本机设备密钥签名; 桌面验签通过后才会真正执行。');
+    // 群选择 (群消息类动作必须显式选群)
+    const wrap = $('#task-confirm-group-wrap');
+    const box = $('#task-confirm-group');
+    const needsGroup = p.needsGroup === true;
+    if (wrap) wrap.hidden = !needsGroup;
+    if (box && needsGroup) {
+      clear(box);
+      state.groups.forEach((g, i) => {
+        const view = state.groupsView[i] || {};
+        const b = mk('button', 'sheet-choice');
+        bilingual(b, String(view.name || ''), String(view.name || ''));
+        b.setAttribute('data-pick-group', String(i));
+        if (p.req.groupRef === g.id) b.style.borderColor = 'var(--accent)';
+        b.addEventListener('click', () => { p.req.groupRef = g.id; state.selectedGroupRef = g.id; renderConfirm(); refreshPreview(); });
+        box.appendChild(b);
+      });
+      if (!state.groups.length) box.appendChild(line('sheet-text', lang() === 'en' ? 'no groups' : '还没有群'));
+    }
+    // 群消息类: 预览按钮 + 原文区
+    const pv = $('#task-confirm-preview');
+    if (pv) pv.hidden = !p.showPreview;
+    const ct = $('#task-confirm-content-title');
+    const cc = $('#task-confirm-content');
+    if (ct) ct.hidden = !p.previewText;
+    if (cc) { cc.hidden = !p.previewText; cc.textContent = p.previewText || ''; }
+    const yes = $('#task-confirm-yes');
+    if (yes) {
+      const disabled = needsGroup && !p.req.groupRef;
+      yes.disabled = !!disabled;
+      yes.style.opacity = disabled ? '0.5' : '';
+    }
+  }
+
+  async function refreshPreview() {
+    const t = T();
+    const p = state.pending;
+    if (!t || !p || !p.showPreview) return;
+    if (!p.req.groupRef) { p.previewText = ''; renderConfirm(); return; }
+    const r = await t.previewGroupMessage(p.req);
+    if (r && r.ok) { p.previewText = (r.data && r.data.text) || ''; setText('#tasks-hint', ''); }
+    else { p.previewText = ''; setText('#tasks-hint', (lang() === 'en' ? 'preview failed: ' : '预览失败: ') + String((r && r.code) || '') + ' ' + String((r && r.error) || '')); }
+    renderConfirm();
+  }
+
+  function askConfirm(kind, req, opts) {
+    state.pending = Object.assign({ kind: kind, req: req, showPreview: false, previewText: '' }, opts || {});
+    renderConfirm();
+    openSheet();
+    if (state.pending.showPreview) refreshPreview();
+  }
+
+  function requireSigning() {
+    const t = T();
+    if (!t) { toast(lang() === 'en' ? 'phone kernel not ready' : '手机内核未就绪 (mobile-core 没加载)'); return null; }
+    if (!t.deviceSigning || !t.deviceSigning()) {
+      toast(lang() === 'en'
+        ? 'this WebView cannot do Ed25519 device signing — run it from the desktop instead'
+        : '本机 WebView 不支持 Ed25519 设备签名 —— 这个动作请在桌面端执行 (不降级, 不假装签了)');
+      return null;
+    }
+    return t;
+  }
+
+  // ── 四个能力的入口 ────────────────────────────────────────────────────────
+  function askJoin() {
+    const link = (($('#tasks-group-link') || {}).value || '').trim();
+    if (!link) { toast(lang() === 'en' ? 'paste the group invite link first' : '先粘贴群邀请链接'); return; }
+    if (!requireSigning()) return;
+    const req = T().emptyRequest('group_join');
+    req.groupRef = link;
+    askConfirm('group_join', req, {});
+  }
+  function askCreate() {
+    const name = (($('#tasks-group-name') || {}).value || '').trim();
+    if (!name) { toast(lang() === 'en' ? 'give the group a name first' : '先给群起个名字'); return; }
+    if (!requireSigning()) return;
+    const req = T().emptyRequest('group_create');
+    req.groupRef = name;
+    askConfirm('group_create', req, {});
+  }
+  function askLeave(i) {
+    if (!requireSigning()) return;
+    const g = state.groups[i];
+    if (!g) return;
+    const req = T().emptyRequest('group_leave');
+    req.groupRef = g.id;
+    askConfirm('group_leave', req, {});
+  }
+  function askPublish() {
+    if (!requireSigning()) return;
+    const cap = (($('#tasks-pub-capability') || {}).value || '').trim();
+    const ins = (($('#tasks-pub-instruction') || {}).value || '').trim();
+    const bud = (($('#tasks-pub-budget') || {}).value || '').trim();
+    const dl = (($('#tasks-pub-deadline') || {}).value || '').trim();
+    if (!cap || !ins || !bud) { toast(lang() === 'en' ? 'capability / instruction / budget are required' : '能力 / 任务正文 / 预算 都要填'); return; }
+    const req = T().emptyRequest('announce_publish');
+    req.capability = cap; req.instruction = ins; req.budgetHuman = bud; req.currency = 'USDC';
+    if (dl) req.deadline = dl;
+    askConfirm('announce_publish', req, {});
+  }
+  function askAnnounceToGroup(i) {
+    if (!requireSigning()) return;
+    const it = ((state.board || {}).items || [])[i];
+    if (!it) return;
+    const req = T().emptyRequest('announce_to_group');
+    req.announcementId = it.ref || '';
+    req.groupRef = state.selectedGroupRef || (state.groups[0] && state.groups[0].id) || '';
+    if (!req.announcementId) { toast(lang() === 'en' ? 'desktop did not give a usable announcement id' : '桌面没给出可用的公告号, 先刷新') ; return; }
+    askConfirm('announce_to_group', req, { needsGroup: true, showPreview: true });
+  }
+  function askTrail(kind) {
+    if (!requireSigning()) return;
+    const req = T().emptyRequest('trail_post');
+    req.groupRef = state.selectedGroupRef || (state.groups[0] && state.groups[0].id) || '';
+    req.trailKind = kind;
+    if (!req.groupRef) { toast(lang() === 'en' ? 'pick a group first' : '先选一个群'); return; }
+    askConfirm('trail_post', req, { needsGroup: true, showPreview: true });
+  }
+
+  async function doConfirmed() {
+    const t = T();
+    const p = state.pending;
+    if (!t || !p) return;
+    const yes = $('#task-confirm-yes');
+    if (yes) yes.disabled = true;
+    const r = await t.execute(p.req);
+    if (yes) yes.disabled = false;
+    closeSheet();
+    if (r && r.ok) {
+      const text = (r.data && r.data.text) || (lang() === 'en' ? 'done' : '已执行');
+      t.setHint ? t.setHint(safeText(text)) : null;
+      toast(safeText(text));
+    } else {
+      const code = String((r && r.code) || 'unknown');
+      const err = String((r && r.error) || '');
+      t.setHint ? t.setHint((lang() === 'en' ? 'failed: ' : '失败: ') + code) : null;
+      toast((lang() === 'en' ? 'not executed: ' : '没有执行: ') + code + (err ? '\n' + safeText(err) : ''));
+    }
+    state.pending = null;
+    state.selectedGroupRef = '';
+    await refreshAll();
+  }
+
+  // ── 刷新 ──────────────────────────────────────────────────────────────────
+  async function refreshAll() {
+    const t = T();
+    if (!t) {
+      dynText('#tasks-signing', '手机内核未就绪 (mobile-core 没加载)', 'phone kernel not ready');
+      return;
+    }
+    const canSign = !!t.deviceSigning();
+    const signingEl = $('#tasks-signing');
+    if (signingEl) signingEl.setAttribute('data-signing', canSign ? 'yes' : 'no');
+    setText('#tasks-hint', t.hint ? t.hint() : '');
+    dynText('#tasks-signing', canSign
+      ? '本机可做设备签名 (Ed25519) —— 高风险动作必须由它签名'
+      : '⚠ 本机 WebView 不支持签名 —— 高风险动作请在桌面端执行',
+    canSign
+      ? 'this device can sign (Ed25519) — risky actions need it'
+      : '⚠ this WebView cannot sign — run risky actions on the desktop');
+
+    const g = await t.listGroups();
+    state.groups = (g && g.ok && Array.isArray(g.data)) ? g.data.map((x) => ({ id: x.id, name: x.name })) : [];
+    state.groups.some((x) => x.id === state.selectedGroupRef) || (state.selectedGroupRef = state.groups[0] ? state.groups[0].id : '');
+    state.groupsView = (g && g.ok && Array.isArray(g.data)) ? g.data : [];
+    renderGroups();
+    renderTrailGroupPicker();
+
+    const b = await t.loadBoard();
+    state.board = b && b.ok ? b.data : {};
+    renderBoard();
+
+    const f = await t.loadFlywheel();
+    state.flywheel = f && f.ok ? f.data : {};
+    renderFlywheel();
+
+    if (state.selectedGroupRef) await loadTrailNow();
+  }
+
+  function renderTrailGroupPicker() {
+    const list = $('#tasks-trail-group-picker');
+    if (!list) return;
+    clear(list);
+    if (!state.groups.length) { list.appendChild(line('sheet-text', lang() === 'en' ? 'join a group to see its trail' : '入群后可以看群里这一期的痕迹')); return; }
+    state.groups.forEach((g, i) => {
+      const view = state.groupsView[i] || {};
+      const b = mk('button', 'sheet-choice');
+      bilingual(b, String(view.name || ''), String(view.name || ''));
+      b.setAttribute('data-pick-trail', String(i));
+      if (g.id === state.selectedGroupRef) b.style.borderColor = 'var(--accent)';
+      b.addEventListener('click', async () => {
+        state.selectedGroupRef = g.id;
+        renderTrailGroupPicker();
+        await loadTrailNow();
+      });
+      list.appendChild(b);
+    });
+  }
+
+  async function loadTrailNow() {
+    const t = T();
+    if (!t || !state.selectedGroupRef) return;
+    const r = await t.loadTrail({ groupRef: state.selectedGroupRef });
+    state.trail = (r && r.ok) ? r.data : null;
+    if (!r || !r.ok) setText('#tasks-hint', (lang() === 'en' ? 'trail read failed: ' : '读群痕迹失败: ') + String((r && r.code) || '') + ' ' + String((r && r.error) || ''));
+    renderTrail();
+  }
+
+  function bindEvents() {
+    const tab = document.querySelector('.tab[data-tab="tasks"]');
+    if (tab) tab.addEventListener('click', () => { applyLang(); refreshAll(); });
+    const r = $('#tasks-refresh');
+    if (r) r.addEventListener('click', refreshAll);
+    const j = $('#tasks-group-join');
+    if (j) j.addEventListener('click', askJoin);
+    const c = $('#tasks-group-create');
+    if (c) c.addEventListener('click', askCreate);
+    const p = $('#tasks-pub-submit');
+    if (p) p.addEventListener('click', askPublish);
+    const tr = $('#tasks-trail-refresh');
+    if (tr) tr.addEventListener('click', loadTrailNow);
+    const pv = $('#task-confirm-preview');
+    if (pv) pv.addEventListener('click', refreshPreview);
+    const yes = $('#task-confirm-yes');
+    if (yes) yes.addEventListener('click', doConfirmed);
+    const no = $('#task-confirm-no');
+    if (no) no.addEventListener('click', () => { state.pending = null; closeSheet(); });
+
+    // 相对时间: 每 30s 只改 .rel-time 文字节点 (不重渲染, 不动结构)
+    setInterval(() => {
+      document.querySelectorAll('.rel-time[data-at]').forEach((el) => {
+        const next = relText(Number(el.getAttribute('data-at')) || 0);
+        if (next && el.textContent !== next) el.textContent = next;
+      });
+      document.querySelectorAll('.rel-time[data-delta]').forEach((el) => {
+        const next = relDeltaText(Number(el.getAttribute('data-delta')) || 0);
+        if (next && el.textContent !== next) el.textContent = next;
+      });
+    }, 30000);
+
+    applyLang();
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindEvents);
+  else bindEvents();
+
+  // 供验收脚本驱动 (真 headless DOM 用): 只暴露行为入口, 不暴露数据
+  window.__mobileTasksUi = {
+    refresh: refreshAll, askJoin: askJoin, askCreate: askCreate, askPublish: askPublish,
+    askTrail: askTrail, askAnnounceToGroup: askAnnounceToGroup, confirm: doConfirmed,
+    preview: refreshPreview, lang: window.__mobileLang, state: state,
+  };
 })();
