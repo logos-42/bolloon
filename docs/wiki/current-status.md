@@ -244,7 +244,7 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 
 | 优先级 | 任务 | 关联 |
 |--------|------|------|
-| P0 | **Goal 长期执行飞轮 P0–P4 实现** (接口已冻结, 见 [goal-continuation-flywheel.md](./goal-continuation-flywheel.md)) | 先 P0 (节奏由进展决定) → P1 (强制收尾) → P1b (Memory/Skill) ; P2/P3/P4 可并行 (文件所有权 §13, 函数签名 §14); **接线 (改 Supervisor/GoalStore/pi-sdk) 由 P1 独占且最后做** |
+| P0 | **Goal 长期执行飞轮: M0 接线冻结已完成** → 下一步是 **M1–M4 四阶段并行** (接口已冻结, 见 [goal-continuation-flywheel.md](./goal-continuation-flywheel.md); 接线点划分与逐条文件清单见 [log.md 2026-09-25 M0 段](./log.md)) | **M0 (2026-09-25, 本轮)**: 唯一责任链 `Supervisor → continuation → Runner → Run → closeRun → Memory+Skill候选 → 下一次 continuation` 落地为唯一入口 `closeRunOnce`; 删/改道 6 条绕过旁路 (pi-sdk 自建 Goal 侧收尾 · task-runner 两处 · 6 处各自 `updateGoal(status)` · `reconcileOrphans`/`superviseRuns`) 全部收敛到 `goal-state-reducer.ts`; 六条规则由 `goal-flywheel/wiring/seams.ts` 的**源码级门**钉死 (含变异验证)。**M1–M4 并行划分** (由 `SEAM_ROSTER` 机器校验两两不相交): **M1** = `wiring/continuation.ts` + `goal-flywheel/continuation-decision.ts`; **M2** = `wiring/closure.ts` + `run-closure.ts` · `memory-layers.ts` · `skill-candidate.ts`; **M3** = `wiring/{contract,monitor}.ts` + `work-contract.ts` · `work-monitor.ts` · `subagent-manager.ts`; **M4** = `wiring/change.ts` + `goal-change.ts` · `web/server.ts`。**共同骨架 (`execution-supervisor.ts` / `goal-flywheel-wiring.ts` / `run-store.ts` / `goal-store.ts`) 无阶段独占** —— 要用新钩子必须回 M0 加接线点, 即"改骨架"本身串行 |
 | P0 | 修 iroh `discovery.update is not a function` | ✅ 2026-07-04 降级 (commit `0e0cf6b`) |
 | P0 | 修 iroh `/api/iroh/info` nodeId 暴露 | ✅ 2026-07-04 v3 fallback (commit `0e0cf6b`) |
 | P1 | 修 `saveCurrentSession` 文件名 `:` 非法 (Windows) | ✅ 2026-07-04 SessionStore escape (commit `a6113e9`) |
