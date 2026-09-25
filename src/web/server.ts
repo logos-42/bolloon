@@ -3128,7 +3128,7 @@ async function act(id, what){
   refresh();
 }
 async function req(id){
-  const text = prompt('新要求 (原话逐字入档; 只影响后续 Run, 不改写已发生的历史):');
+  const text = prompt('新要求 (原话逐字入档; 只影响后续 Run, 不改写已发生的历史。若说"撤销/别继续做了", 在跑的这一轮会在下一次循环停下):');
   if (!text) return;
   const r = await fetch('/api/goals/'+id+'/requirement',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});
   log(await r.json()); refresh();
@@ -3149,7 +3149,9 @@ async function refresh(){
     const tr = document.createElement('tr');
     const vis = (visMap[g.goalId]) || (g.continuation ? 'executing' : 'executing');
     const visZh = (labels[vis] && labels[vis].zh) || vis;
-    tr.innerHTML = '<td><code>'+g.goalId+'</code></td><td>'+visZh+' <span class="dim">('+vis+')</span></td><td>'+crit+src+'</td><td class="dim">'+
+    const pend = (gs.pendingChanges||[])[(gs.goals||[]).indexOf(g)];
+    const pendZh = pend ? ' <span class="bad">('+pend+' 条变更等你决定)</span>' : '';
+    tr.innerHTML = '<td><code>'+g.goalId+'</code></td><td>'+visZh+pendZh+' <span class="dim">('+vis+')</span></td><td>'+crit+src+'</td><td class="dim">'+
       ((g.continuation&&(g.continuation.nextAction||g.continuation.wakeReason))||'-')+'</td><td>'+((g.runs||[]).length)+'</td>'+
       '<td><button onclick="view(\\''+g.goalId+'\\')">详情</button><button onclick="act(\\''+g.goalId+'\\',\\'confirm\\')">确认判据</button><button onclick="act(\\''+g.goalId+'\\',\\'propose\\')">提候选</button><button onclick="act(\\''+g.goalId+'\\',\\'wake\\')">唤醒</button><button onclick="req(\\''+g.goalId+'\\')">新要求</button></td>';
     gtb.appendChild(tr);
@@ -3407,34 +3409,101 @@ fetchState();
     }
   });
 
-  // 2026-09-25 (飞轮接线 P4): 新要求注入 —— 原话逐字入档 + 分诊 + 版本; 只影响**后续** Run。
+  // 2026-09-25 (飞轮接线 P4 / M4 深化): 新要求注入 —— 原话逐字入档 + 分诊 + 版本; 只影响**后续** Run。
   //   当前 Run 不被历史改写 (规则 4): 本路由只写 Goal 上的变更记录与下一 Run 的指令。
+  //   ★ M4: 这里还要回答"**正在跑的 Goal** 会发生什么" —— 撤销 → 在跑的这一轮必须停
+  //     (走既有外部控制面原语 `setRunStatus`, 与 /api/runs/:id/abort 同一条路; 执行器只在需要时才注入,
+  //      判定本身在 change 接缝里, 本路由不自己判)。事实 (在跑的 Run / 在跑的子 Agent) 由本路由读出来喂进去。
   app.post('/api/goals/:goalId/requirement', async (req, res) => {
     const goalId = String(req.params.goalId);
     try {
-      const { ingestGoalChange } = await import('../agents/goal-flywheel-wiring.js');
+      const { readGoal } = await import('../agents/goal-store.js');
+      const { readRun } = await import('../agents/run-store.js');
+      const { flywheelSeams } = await import('../agents/goal-flywheel-wiring.js');
+      const { isRefusal } = await import('../agents/goal-flywheel/wiring/index.js');
+      const { USER_VISIBLE_STATE_LABELS } = await import('../agents/goal-flywheel/types.js');
       const text = String(req.body?.text ?? '').trim();
       if (!text) { res.status(400).json({ error: '缺少 text (新要求的原话)' }); return; }
-      const out = await ingestGoalChange({
+
+      const goal = await readGoal(goalId);
+      if (!goal) { res.status(404).json({ error: `goal 不存在: ${goalId}` }); return; }
+      // 在跑的 Run 的事实 (读不到记录 = 没有可停的对象; 绝不因为"读不到"去停一个不存在的 Run)
+      const runRec = goal.currentRunId ? await readRun(goal.currentRunId).catch(() => null) : null;
+      // 在跑的子 Agent = 已签合同还没回报的那些 (规则 5: 它们必须先收到变更版本)
+      const liveWorkIds = (goal.continuation?.pendingReports ?? []).map((p) => p.workId).filter(Boolean);
+
+      const now = new Date().toISOString();
+      const seam = flywheelSeams().change;
+      const view = await seam.ingestChange({
         goalId,
         instruction: text,
         source: 'user',
         recordedBy: 'web',
+        now,
+        runningRun: runRec ? { runId: runRec.runId, status: String(runRec.status) } : null,
+        liveWorkIds,
+        caller: 'human',
       });
-      if (!out) { res.status(404).json({ error: `goal 不存在: ${goalId}` }); return; }
+      if (isRefusal(view)) {
+        res.status(409).json({ ok: false, refused: true, rule: view.rule, reason: view.reason, goalId });
+        return;
+      }
+
+      // 计划说要停, 而接缝自己没执行器 (M0 尚未注入 stopRunningRun) → 入口按计划把停落到真 Run 上:
+      //   执行器 = 既有的 setRunStatus (与 /api/runs/:id/abort 同一个原语, 不新造停止通道)。
+      let boundary = view.runBoundary;
+      if (boundary.action === 'stop_running_run' && !boundary.stopped) {
+        const { setRunStatus } = await import('../agents/run-store.js');
+        boundary = await seam.applyRunBoundary({
+          plan: view.plan,
+          now,
+          stop: async (i) => {
+            const r = await setRunStatus(i.runId, i.runStatus, { error: `变更注入 (${i.goalId}): ${String(i.reason).slice(0, 120)}` });
+            return { ok: !!r.ok, reason: r.reason || '' };
+          },
+        });
+      }
+
+      const bumped = view.plan.outcome === 'next_run' && view.request.kind === 'success_criteria_change'
+        ? view.plan.criteriaVersion
+        : null;
       res.json({
         ok: true,
         goalId,
-        changeId: out.request.changeId,
-        kind: out.request.kind,
-        outcome: out.application.outcome,
-        /** 只有"用户 + 改判据"才 +1 (规则 3) */
-        criteriaVersionBumpedTo: out.criteriaVersionBumpedTo,
+        changeId: view.request.changeId,
+        kind: view.request.kind,
+        outcome: view.plan.outcome,
+        status: view.request.status,
+        /** 只有"用户 + 改判据"才 +1 (规则 3); 其余一律 null */
+        criteriaVersionBumpedTo: bumped,
+        criteriaVersion: view.plan.criteriaVersion,
         /** 下一 Run 真的会读到的指令 (写进 continuation.nextAction) */
-        nextRunDirective: out.nextRunDirective,
-        status: out.request.status,
-        persistedPath: out.persistedPath,
-        note: out.application.outcome === 'rejected'
+        nextRunDirective: view.plan.nextRunDirective,
+        /** ★ 正在运行的 Goal: 在跑的这一轮停不停 (停不了也会如实说) */
+        runBoundary: boundary,
+        appliesToFutureRunsOnly: view.plan.appliesToFutureRunsOnly,
+        /** 规则 5: 在跑的子 Agent 各拿一份下发内容, 且必须先 ack */
+        childDelivery: {
+          count: view.childDelivery.directives.length,
+          workIds: view.childDelivery.workIds,
+          mustAck: view.childDelivery.mustAck,
+          scopeMissing: view.childDelivery.scopeMissing,
+          blocked: view.childDelivery.blocked,
+          note: view.childDelivery.note,
+        },
+        /** 用户可见态 (六类之一): 有待拍板的变更 → "需要你决定"; null = 基础态读不到 (不编) */
+        visibleState: view.visibleState,
+        visibleZh: view.visibleState ? (USER_VISIBLE_STATE_LABELS[view.visibleState]?.zh || view.visibleState) : null,
+        visibleReason: view.visibleReason,
+        /** 一个 kind 装不下多个意图 → 已入档但不生效, 需拆开重提 */
+        needsDisambiguation: view.needsDisambiguation,
+        /** 流程留痕 (接收→记录→判影响→摘要→评估当前Run→必要时停→重规划→写入下一Run) */
+        steps: view.plan.steps,
+        changeArchive: {
+          authoritative: 'goal.goalChanges (Goal 记录 = 权威; 界面/下一次 Run 读它)',
+          mirror: '~/.bolloon/goal-changes/<goalId>.json (镜像, 由接线层写)',
+        },
+        note: view.plan.outcome === 'rejected'
           ? '未生效 (见 outcome): 已如实入档, 不会偷偷生效'
           : '已生效: 只影响后续 Run, 已发生的 Run 记录不被改写',
       });
@@ -3541,21 +3610,29 @@ fetchState();
       const goals = await listGoals({ status: status ? (status as any) : undefined, limit: Number((req.query as any)?.limit || 30) });
       // 2026-09-25 (飞轮接线): 界面只认 `toUserVisibleState` 映射的**六类**用户可见态 ——
       //   内部状态 (retry_wait / stalled / recovering) 不再直接上屏。
+      // ★ M4: 再过一遍**变更驱动**的覆盖 —— 有待拍板的新要求 (`needs_approval`) 时必须是
+      //   "需要你决定", 否则界面一直显示"正在执行", 没人知道有东西卡在等人 (只升不降)。
       const { toUserVisibleState } = await import('../agents/goal-flywheel/work-monitor.js');
+      const { changeVisibleState } = await import('../agents/goal-flywheel/wiring/change.js');
       const { collectWorkBlocks } = await import('../agents/goal-flywheel-wiring.js');
       const { USER_VISIBLE_STATE_LABELS } = await import('../agents/goal-flywheel/types.js');
       const visible = await Promise.all(goals.map(async (g: any) => {
         try {
-          return toUserVisibleState(
+          const base = toUserVisibleState(
             g.continuation ? ({ ...g.continuation } as any) : null,
             await collectWorkBlocks({ goalId: g.goalId }),
             null,
           );
+          // 这里 base 一定读得到 (读不到就是上面的 catch) → 覆盖结果为 null 时回落 base 本身
+          // (不是编一个态: base 是这一步刚刚读出来的真态)
+          return changeVisibleState({ base, changes: g.goalChanges ?? [] }).state ?? base;
         } catch { return 'executing' as const; }
       }));
       res.json({
         count: goals.length, goals, lines: goals.map(formatGoalLine),
         visible, visibleZh: visible.map((v) => USER_VISIBLE_STATE_LABELS[v]?.zh || v), visibleLabels: USER_VISIBLE_STATE_LABELS,
+        /** 待拍板的变更 (界面/CLI 用同一份事实说清"你在等什么") */
+        pendingChanges: goals.map((g: any) => (g.goalChanges ?? []).filter((c: any) => c.status === 'needs_approval' || c.status === 'triaged').length),
       });
     } catch (err) {
       res.status(500).json({ error: String((err as Error)?.message || err).slice(0, 200) });

@@ -732,3 +732,200 @@ export function childChangeDirective(r: GoalChangeRequest, applied: { criteriaVe
     : `[${RULES.children}] 变更 ${r.changeId} 没有受影响子 Agent (affectedWorkIds 为空): 若有在跑的子 Agent, 下发前必须先补全影响面。`;
   return { workIds, criteriaVersion: v, directive, mustAckBeforeNextStep: true, rewritesHistory: false };
 }
+
+// ============================================================================
+// §9. 把变更接进**正在运行的 Goal** (M4 接线用; 纯函数, 不读钟/不读盘)
+// ============================================================================
+//
+// 上面 §7 的 `applyChange` 只回答"这条要求排不排得进下一 Run"。但用户是在**目标跑着的时候**
+// 提要求的, 于是还差三个决定, 它们都属于同一个问题「变更对**正在跑的**这一轮意味着什么」:
+//
+//   ① 在跑的 Run 怎么办?        → `planChangeInjection().runBoundary`
+//   ② 在跑的子 Agent 怎么办?    → `planChangeInjection().childDirectives` (规则 5)
+//   ③ 这两件事的判定依据是什么? → 全部写死成规则, 不靠模型也不靠调用方记得
+//
+// 判定纪律 (接缝照此执行, 不另立一套):
+//   · **只有撤销会打断在跑的 Run**。其余变更 (判据/预算/权限/范围/优先级/补充说明) 一律
+//     `let_finish` —— 让这一轮跑完, 新要求从下一个 Run 起生效 (规则 4: 当前 Run 的历史
+//     不可被新要求改写; 中途换判据 = 把已发生的事实按新尺子重判, 正是要防的事)。
+//   · **没生效的变更不许影响在跑的 Run**: `pending_approval` / `rejected` 都 `let_finish` ——
+//     一条还没批的要求若把在跑的 Run 停下来, 等于 Agent 用自己的"待批准"替人按了暂停键。
+//   · **拿不到事实就说拿不到** (`factsMissing`): 不许把"宿主没告诉我"当成"没有在跑的 Run"。
+
+/** 在跑的 Run 状态 (只有这些会继续消耗预算/继续执行; 与执行器的运行态同域) */
+export const IN_FLIGHT_RUN_STATUSES = ['queued', 'running', 'recovering'] as const;
+
+/** 这个 Run 状态是否还在跑 (未知取值一律 false: 不认识的态不当"在跑") */
+export function isRunInFlight(status: unknown): boolean {
+  return (IN_FLIGHT_RUN_STATUSES as readonly string[]).includes(String(status ?? ''));
+}
+
+/** 当前 Run 的去留 (接缝拿它去执行; 执行本身由接线层做, 见 change 接缝) */
+export interface RunBoundaryPlan {
+  /** `let_finish` = 让在跑的 Run 跑完 (规则 4); `stop_running_run` = 现在就停 */
+  action: 'let_finish' | 'stop_running_run';
+  /** 要在 Run 记录上写的状态 (既有外部控制面语义: 执行器下一轮读到就自行停下); 无需动作时 null */
+  runStatus: 'paused' | 'aborted' | null;
+  runId: string | null;
+  reason: string;
+  /** 宿主没给"在跑 Run"的事实 → 判定是"不确定", 不许当成"没有" */
+  factsMissing: boolean;
+}
+
+/** 变更注入到正在运行的 Goal 的完整计划 (接缝把它给界面, 并按它执行副作用) */
+export interface ChangeInjectionPlan {
+  changeId: string;
+  goalId: string;
+  kind: ChangeKind;
+  outcome: ChangeApplication['outcome'];
+  /** 判定后的判据版本 (只有"用户 + 改判据"才 +1; 其余原值) */
+  criteriaVersion: number;
+  /** 类型级声明 (规则 4): 任何计划都只影响后续 Run */
+  appliesToFutureRunsOnly: true;
+  runBoundary: RunBoundaryPlan;
+  /** 规则 5: 逐 workId 的下发内容 (每个在跑的子 Agent 一份, 都要 ack) */
+  childDirectives: ChildChangeDirective[];
+  /** 有在跑的子 Agent, 但变更没点明影响面 → 下发前必须补全 (不许静默漏发) */
+  childScopeMissing: boolean;
+  liveWorkIds: string[];
+  /** 下一 Run 的指令 (未生效时是拒绝说明) */
+  nextRunDirective: string;
+  /** 流程留痕 (设计稿 §9 的步骤逐条; 哪一步没做在这里就看得见) */
+  steps: string[];
+}
+
+/**
+ * 逐 workId 的下发内容 (规则 5)。
+ *
+ * 为什么每个子单独一份而不是一份带全部 workId: 下发是**逐个**发生的事实 ——
+ * 一份合并的指令没法回答"3 号子 Agent 到底确认了没有", 于是 ack 变成集体背书。
+ */
+export function childrenForChange(
+  r: GoalChangeRequest,
+  liveWorkIds: readonly string[],
+  applied: { criteriaVersion: number },
+): ChildChangeDirective[] {
+  const ids = [...new Set((liveWorkIds ?? []).map((x) => String(x ?? '').trim()).filter(Boolean))];
+  return ids.map((id) => {
+    const scoped = scopeChangeToWork(r, [id]);
+    return childChangeDirective(scoped, applied);
+  });
+}
+
+/**
+ * 这句话是不是**只有人**能提的变更 (撤销 / 缩范围)? 返回命中的类别, 否则 null。
+ *
+ * 判据是**真实分诊** (`detectChangeIntents`), 不是关键词子串 —— 前者能认出
+ * "别继续做了 / abort this / 只做第一条", 后者只认得字面那几个词。
+ */
+export function userOnlyChangeKind(instruction: string): ChangeKind | null {
+  const intents = detectChangeIntents(instruction);
+  return intents.find((k) => k === 'abort' || k === 'scope_reduction') ?? null;
+}
+
+/**
+ * 「变更对**正在跑的这一轮**意味着什么」—— 唯一的判定处。
+ *
+ * @param runningRun `{ runId, status }` = 宿主读到的事实; `null` = 明确没有在跑的 Run;
+ *                   `undefined` = 宿主不知道 (会如实标 `factsMissing`, 不猜)
+ */
+export function planChangeInjection(input: {
+  request: GoalChangeRequest;
+  application: ChangeApplication;
+  runningRun?: { runId: string; status: string } | null;
+  liveWorkIds?: readonly string[];
+}): ChangeInjectionPlan {
+  const { request: r, application: a } = input;
+  const liveWorkIds = [...new Set((input.liveWorkIds ?? []).map((x) => String(x ?? '').trim()).filter(Boolean))];
+  const factsMissing = input.runningRun === undefined;
+  const run = input.runningRun ?? null;
+  const inFlight = !!run && isRunInFlight(run.status);
+  const childDirectives = childrenForChange(r, liveWorkIds, { criteriaVersion: a.criteriaVersion });
+  const childScopeMissing = liveWorkIds.length > 0 && (r.impact?.affectedWorkIds?.length ?? 0) === 0;
+
+  let runBoundary: RunBoundaryPlan;
+  if (factsMissing) {
+    runBoundary = {
+      action: 'let_finish',
+      runStatus: null,
+      runId: null,
+      factsMissing: true,
+      reason: '宿主没有提供"在跑的 Run"的事实 → 不断言它停或不停 (接缝不猜; 要拦住在跑的 Run 必须先把这份事实注入进来)',
+    };
+  } else if (!inFlight) {
+    runBoundary = {
+      action: 'let_finish',
+      runStatus: null,
+      runId: run ? run.runId : null,
+      factsMissing: false,
+      reason: run
+        ? `当前 Run ${run.runId} 状态=${run.status} (不在跑) → 没有需要打断的执行`
+        : '当前没有在跑的 Run → 变更只影响后续 Run',
+    };
+  } else if (a.outcome === 'next_run' && r.kind === 'abort') {
+    runBoundary = {
+      action: 'stop_running_run',
+      runStatus: 'aborted',
+      runId: run!.runId,
+      factsMissing: false,
+      reason: `[${RULES.revocation}] 用户明确撤销: 在跑的 Run ${run!.runId} 必须停 (写 'aborted' 后执行器下一轮自行停下; `
+        + '已发生的步骤/证据不改写 —— 停的是"继续", 不是"历史")',
+    };
+  } else if (a.outcome !== 'next_run') {
+    runBoundary = {
+      action: 'let_finish',
+      runStatus: null,
+      runId: run!.runId,
+      factsMissing: false,
+      reason: `变更 outcome=${a.outcome} (还没生效) → 不许用它打断在跑的 Run ${run!.runId}`
+        + ' (一条还没批准的要求把运行停下 = Agent 借"待批准"替人按暂停键)',
+    };
+  } else {
+    runBoundary = {
+      action: 'let_finish',
+      runStatus: null,
+      runId: run!.runId,
+      factsMissing: false,
+      reason: `[${RULES.history}] 规则 4: 新要求只影响后续 Run —— 让在跑的 Run ${run!.runId} 跑完`
+        + ' (它的历史/证据不被改写), 新要求从下一个 Run 起生效',
+    };
+  }
+
+  return {
+    changeId: r.changeId,
+    goalId: r.goalId,
+    kind: r.kind,
+    outcome: a.outcome,
+    criteriaVersion: a.criteriaVersion,
+    appliesToFutureRunsOnly: true,
+    runBoundary,
+    childDirectives,
+    childScopeMissing,
+    liveWorkIds,
+    nextRunDirective: a.nextRunDirective,
+    steps: changeFlowSteps({ request: r, application: a, liveWorkIds, childScopeMissing, runBoundary }),
+  };
+}
+
+/** 设计稿 §9 的流程逐条留痕 (接收→记录→判影响→摘要→评估当前 Run→必要时停→重规划→写入下一 Run) */
+function changeFlowSteps(input: {
+  request: GoalChangeRequest;
+  application: ChangeApplication;
+  liveWorkIds: string[];
+  childScopeMissing: boolean;
+  runBoundary: RunBoundaryPlan;
+}): string[] {
+  const { request: r, application: a, runBoundary } = input;
+  const impact = impactLabel(r.impact);
+  return [
+    `① 接收: 来源=${r.source} (原始原话逐字入档, ${r.instruction.length} 字)`,
+    `② 记录: ${r.changeId} 状态=${r.status} 优先级=${r.priority}`,
+    `③ 判影响面: ${impact}${a.requiresReplan ? ' → 需重规划' : ' → 不需重规划'}`,
+    `④ 生成变更摘要: ${r.interpreted ? '已生成 (interpreted 非空)' : '未生成 (未分诊 → 不许生效)'}`,
+    `⑤ 评估当前 Run: ${runBoundary.action === 'stop_running_run' ? `必须停 (${runBoundary.runId})` : '继续跑完 (不打断)'}`,
+    `⑥ 必要时暂停: ${runBoundary.action === 'stop_running_run' ? `写 Run 记录状态=${runBoundary.runStatus}` : '本轮不需要暂停动作'}`,
+    `⑦ 重规划: ${a.requiresReplan ? '下一个 Run 起重新规划' : '不需要 (不动计划)'}`,
+    `⑧ 写入下一 Run: outcome=${a.outcome}, criteriaVersion=v${a.criteriaVersion}; 在跑子 Agent ${input.liveWorkIds.length} 个`
+      + (input.childScopeMissing ? ' (影响面未点明 → 下发前必须补全)' : ''),
+  ];
+}
