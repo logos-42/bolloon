@@ -3,7 +3,7 @@
  *
  * 与 `verify-update-system.ts` 的分工: 那个脚本验收"下载→替换→验证→回滚"这条**单源**主干 (受控 fake registry);
  * 本脚本验收**双源**这条新主干, 并且刻意用**真源**:
- *   · 真 npm registry (registry.npmjs.org) —— 真下载已发布的 0.4.33 当 "from"
+ *   · 真 npm registry (registry.npmjs.org) —— 真下载已发布的 0.5.0 当 "from"
  *   · 真 GitHub API (api.github.com) —— 真读 tags / releases / refs/heads/master
  *   · 真 codeload 下载 master 快照 + 真 `npm run build:main` + 真 `npm pack` + 真 `npm install -g`
  *   · 全程隔离在临时 HOME / 临时 npm prefix —— **不碰本机全局安装, 不碰 ~/.bolloon**
@@ -31,7 +31,7 @@ import { renderStatusReport, renderCheckResult } from '../src/cli/update-command
 import type { InstallationInfo } from '../src/utils/version-info.js';
 
 const PKG = '@bolloon/bolloon-agent';
-const FROM_VERSION = '0.4.33';           // npm 上已发布的当 "from" 版本
+const FROM_VERSION = '0.5.0';           // npm 上已发布的当 "from" 版本 (2026-09-25 从 0.4.33 前移到 0.5.0 —— 本脚本的 from 必须等于**当前 latest**, 否则 dev 身份前缀断言必红)
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 
 let pass = 0; let fail = 0; let skipped = 0;
