@@ -188,7 +188,11 @@ tags: [goal, continuation, flywheel, p5, acceptance, verification, supervisor, w
 - **建议**: ① 让缺技能时的 `delegate` 决策能真的走到签发 (或明确"派遣需要人先批技能", 别让 `runnable=true` 骗人);
   ② CLI/网页的 delegate 入口把 `goalId` 传下去; ③ 否则 P2/P3 两层的自动化在真路径上等于零 —— 现在只有单测在证明它们。
 
-### 缺口 4 (中) 处置动作大多"只记账, 不落地" —— **未修**
+### 缺口 4 (中) 处置动作大多"只记账, 不落地" —— **逻辑已落地 (P6), 接线归 M3**
+
+**P6 (2026-09-25)**: 新建 `src/agents/goal-flywheel/block-executor.ts` (497 行, 纯逻辑 + 端口注入, 零 fs/零真钟) —— 7 类处置动作 (takeover / replace_child / send_adjustment / request_report / change_plan / escalate_parent / needs_human) 真变成**调用**, 结果分 `executed/refused/deferred/needsHuman/failed`; **越权硬拒** (`leaseHeld !== true` → `claimLease` 零调用); 端口抛错记 `failed` + 错误原文; 无动作可做必进 `needsHuman` (带 `silentRisk` 自检位)。2 处变异真红转绿。**接线点已写死在模块 JSDoc**: `execution-supervisor.ts` L423–L439「2.5 阻塞巡检」, `applyBlockHandling` 在 L429; 还差一个 `blockExecutorPorts` helper。
+
+**仍未闭合 (归 M3 的 monitor 接缝, 见 [log.md](./log.md) M0 冻结段)**: ① 上面那一行接线 ② `takeover` 的真合同路径仍不可达 (策略恒 `'stall'`) ③ 人批准 → 写正式 Skill 属 `skills-manager`。**这三条不在本页的收口范围**: M0 接线冻结已把 `contract`+`monitor` 两个接缝划给 **M3** 独占 (`wiring/contract.ts` · `wiring/monitor.ts`), 撞车即冲突。
 
 - **证据**: `applyBlockHandling` 只对 `needs_human` / `escalate_parent` / `change_plan` 真的改 Goal 状态
   (→ `needs_human`) 或清 `pendingReports` (takeover); 而
