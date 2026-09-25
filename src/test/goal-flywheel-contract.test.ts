@@ -548,12 +548,17 @@ describe('④ 纯函数纪律与所有权 (源级)', () => {
     expect(src).not.toMatch(/\bfetch\(/);
   });
 
-  it('没碰冻结面 (types.ts / index.ts 不被本阶段改动)', () => {
+  it('没碰冻结面 (types.ts 仍纯类型; 入口只做转发, 不夹带实现)', () => {
     const typesSrc = fs.readFileSync(path.join(root, 'src/agents/goal-flywheel/types.ts'), 'utf8');
     const indexSrc = fs.readFileSync(path.join(root, 'src/agents/goal-flywheel/index.ts'), 'utf8');
     expect(typesSrc).not.toMatch(/^import /m); // 冻结层仍是纯类型
     expect(typesSrc).not.toMatch(/^export function /m);
-    // 入口仍然只转发冻结类型 —— 没有把 P2 实现挂上去 (接线是单一所有者后续的事)
-    expect(indexSrc.split('\n').filter((l) => /^export /.test(l))).toEqual(["export * from './types.js';"]);
+    // 入口只允许 `export *` / `export {…} from` 这类转发 —— 不许夹带实现。
+    // (刻意**不**钉"只导出 types": 接线是单一所有者后续的事, 那时加转发不该把本品判红 ——
+    //  "P2 本轮没接线" 由上一组断言钉住: 本模块只 import ./types.js, 不 import 任何调用方。)
+    const exportLines = indexSrc.split('\n').filter((l) => /^export /.test(l));
+    expect(exportLines.length).toBeGreaterThan(0); // 门自身非空转
+    expect(exportLines.filter((l) => !/^export (\*|\{)/.test(l))).toEqual([]);
+    expect(indexSrc).not.toMatch(/\bfunction\b/);
   });
 });
