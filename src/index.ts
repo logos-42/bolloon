@@ -2886,13 +2886,63 @@ const AVAILABLE_TOOLS = [
   { name: 'update_now', description: '立即更新到最新版本', example: '--update-now [package]' },
 ];
 
+/**
+ * 给 `--delegate` 找长期目标上下文 (P5 验收修复)。
+ *
+ * `SubAgentManager.delegateTask` 只在拿到 `goalId` 时才签工作合同 (`issueWorkContractFor`:
+ * "没有长期目标就没有合同上下文"), 而合同是"回报必须带逐条证据"这道门的唯一凭据。
+ *
+ * ★ 之前 CLI 是唯一的生产派遣调用方, **不传 goalId** ⇒ 真路径上一条合同都不签:
+ *   运行时复现过"回一句『全部做完了』就把任务标成 completed, 父目标上什么都没留下"。
+ *
+ * 两种入口:
+ *   - `--goal <goalId>`: 用既有目标 (目标不存在 → 抛错, 让调用方如实报告"没签合同");
+ *   - 没给: 为这次委派**建一个目标** (`createdBy='cli:delegate'`) 并进"等外部回报"态 ——
+ *     委派总是有目标上下文, 合同门不再空转。
+ *
+ * 为什么是 `awaiting_external` + `autoContinue=false`: 这次委派的执行者是**子 Agent**, 不是本节点
+ *   harness。`awaiting_external` 会被 Supervisor 明确跳过 (`listRunnableGoals`: "等外部事件, 不重复
+ *   发送"), 因此不会出现"同一件事被 harness 和子 Agent 各跑一遍"; 同时"没拿到带证据的回报前不自动
+ *   继续"。
+ */
+async function ensureDelegateGoal(
+  explicitGoalId: string,
+  taskDesc: string,
+  caps: string[],
+): Promise<{ goalId: string; note: string }> {
+  const { createGoal, readGoal, setContinuation, updateGoal } = await import('./agents/goal-store.js');
+  if (explicitGoalId) {
+    const g = await readGoal(explicitGoalId);
+    if (!g) throw new Error(`--goal ${explicitGoalId} 不存在 (不签合同)`);
+    return { goalId: g.goalId, note: `合同签在既有目标 ${g.goalId} (状态 ${g.status}) 上` };
+  }
+  const g = await createGoal({
+    objective: `【委派】${taskDesc}`,
+    successCriteria: [taskDesc],
+    createdBy: 'cli:delegate',
+  });
+  await updateGoal(g.goalId, { status: 'awaiting_external' });
+  await setContinuation(g.goalId, {
+    state: 'awaiting_external',
+    wakeReason: 'awaiting_external',
+    autoContinue: false,
+    needsExternal: `等子 Agent 「${caps.join('/')}」交回带逐条证据的回报 (回报核验不过不算完成)`,
+  });
+  return {
+    goalId: g.goalId,
+    note: `已为本次委派建目标 ${g.goalId} (状态=等外部回复: 等子 Agent 的带证据回报)`,
+  };
+}
+
 async function runToolCommand(
   tool: string,
   args: string[],
   outputJson: boolean,
   comm: HyperswarmCommunicator,
   model?: string,
-  prompt?: string
+  prompt?: string,
+  /** `--goal <goalId>` (P5 验收修复: 给 `--delegate` 指目标上下文) */
+  goalFlag?: string
 ): Promise<void> {
   const a = await getAgent();
   const startTime = Date.now();
@@ -3370,21 +3420,44 @@ async function runToolCommand(
       case 'delegate': {
         const [taskDesc, ...requiredCaps] = args;
         if (!taskDesc) {
-          response = '用法: --delegate <任务描述> [能力要求1] [能力要求2] ...';
+          response = '用法: --delegate <任务描述> [能力要求1] [能力要求2] ... [--goal <goalId>]';
           error = response;
           break;
         }
+        const caps = requiredCaps.length > 0 ? requiredCaps : ['general'];
         const manager = await createSubAgentManager();
-        const a = await getAgent();
-        const { task, agent } = await manager.delegateTask(
+        // ★ 2026-09-25 (P5 验收修复): 派遣**必须**带 goalId。
+        //   `SubAgentManager` 只在拿到 goalId 时才签工作合同 (没有长期目标就没有合同上下文);
+        //   而在真实运行里复现过: 不签合同 ⇒ 回报核验这道门完全不生效 ——
+        //   一句"全部做完了"就能把任务标成 completed, 父 Goal 上也留不下"等回报"的痕迹。
+        //   显式 `--goal <goalId>` (校验目标存在) 优先; 没给就为这次委派**建一个目标**,
+        //   合同门在生产路径上不再空转 (目标进"等外部回报"态, 见 ensureDelegateGoal)。
+        let goalId = '';
+        let goalNote = '';
+        try {
+          const g = await ensureDelegateGoal(goalFlag || '', taskDesc, caps);
+          goalId = g.goalId;
+          goalNote = g.note;
+        } catch (err) {
+          goalNote = `目标上下文准备失败 → 本次不签工作合同 (合同门不生效): ${String((err as Error)?.message || err).slice(0, 160)}`;
+        }
+        const { task, agent, workContract } = await manager.delegateTask(
           'cli-user',
           taskDesc,
-          requiredCaps.length > 0 ? requiredCaps : ['general']
+          caps,
+          'normal',
+          undefined,
+          goalId ? { goalId, successCriteria: [taskDesc] } : undefined,
         );
-        if (agent) {
-          response = `✅ 任务已委派:\n  任务ID: ${task.id}\n  执行Agent: ${agent.name} (${agent.id})\n  状态: ${task.status}`;
+        const head = agent
+          ? `✅ 任务已委派:\n  任务ID: ${task.id}\n  执行Agent: ${agent.name} (${agent.id})\n  状态: ${task.status}`
+          : `⚠️ 未找到合适的Agent，任务已创建:\n  任务ID: ${task.id}\n  状态: ${task.status}`;
+        if (workContract) {
+          response = `${head}\n  ${goalNote}\n  工作合同: ${workContract.workId} (目标 ${goalId})\n`
+            + `  完成判据 ${workContract.successCriteria.length} 条 · 必带证据 ${workContract.requiredEvidence.length} 条\n`
+            + `  ⚠️ 回报必须按判据逐条给证据: 一句"全部做完了"**不会**被接受为完成`;
         } else {
-          response = `⚠️ 未找到合适的Agent，任务已创建:\n  任务ID: ${task.id}\n  状态: ${task.status}`;
+          response = `${head}\n  ⚠️ 未签工作合同: ${goalNote || '没有目标上下文'} —— 无合同的回报不做证据核验`;
         }
         break;
       }
@@ -3776,7 +3849,7 @@ async function runNonInteractive(
     };
 
     if (tool) {
-      await runToolCommand(tool, toolArgs, false, comm, args.model, prompt);
+      await runToolCommand(tool, toolArgs, false, comm, args.model, prompt, args.goal);
     } else if (prompt) {
       const a = await getAgent();
       console.log(await a.prompt(prompt));
@@ -3815,7 +3888,7 @@ async function runNonInteractive(
   }
 
   if (tool) {
-    await runToolCommand(tool, toolArgs, !!json, comm, args.model, prompt);
+    await runToolCommand(tool, toolArgs, !!json, comm, args.model, prompt, args.goal);
   } else if (prompt) {
     const startTime = Date.now();
     const a = await getAgent();
@@ -3877,6 +3950,8 @@ interface ParsedArgs {
   agents?: boolean;
   registerAgent?: boolean;
   delegate?: boolean;
+  /** `--goal <goalId>`: 给 `--delegate` 指定长期目标上下文 (P5 验收修复: 有 goalId 才签工作合同) */
+  goal?: string;
   context?: boolean;
   globalAgents?: boolean;
   addAction?: boolean;
@@ -4020,6 +4095,10 @@ function parseArgs(): ParsedArgs {
           delArgs.push(args[++i]);
         }
         result.toolArgs = delArgs;
+        break;
+      // ★ 2026-09-25 (P5 验收修复): 给 --delegate 指定长期目标 (有 goalId 才签工作合同)
+      case '--goal':
+        result.goal = args[++i];
         break;
       case '--engine':
       case '-e':
@@ -4225,7 +4304,9 @@ function printHelp(): void {
   # SubAgent 管理
   --agents                   列出所有 SubAgent
   --register-agent <name> [cap1] [cap2]...  注册新 SubAgent
-  --delegate <任务描述> [能力要求...]  委派任务给最佳 Agent
+  --delegate <任务描述> [能力要求...] [--goal <goalId>]
+                              委派任务给最佳 Agent (签工作合同: 回报必须带逐条证据;
+                              --goal 不给则为本次委派建一个目标)
 
   # 全局共享上下文
   --context                  显示全局共享上下文摘要

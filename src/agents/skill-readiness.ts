@@ -121,6 +121,26 @@ export async function blockGoalOnSkills(goalId: string, res: ReadinessResult): P
   for (const d of res.degradations) await recordDegradation({ kind: 'observational', op: 'skill-readiness', message: d }).catch(() => {});
 }
 
+/**
+ * 只**记事实**、不改状态: 把本地技能就绪检查的结论写进 `continuation.skillReadiness`。
+ *
+ * ★ 2026-09-25 (P5 验收修复): 飞轮裁决 = `delegate` 时本地技能门禁**不适用** (能力由子 Agent 凭合同
+ *   交付), 所以不能调 `blockGoalOnSkills` (那会把 Goal 打成 needs_human)。但"本地缺什么"必须仍然
+ *   可查 —— 原来只有 `blockGoalOnSkills` 写这个字段, 门禁一放行就没有任何记录了。
+ */
+export async function recordSkillReadiness(goalId: string, res: ReadinessResult): Promise<void> {
+  await setContinuation(goalId, {
+    skillReadiness: {
+      ok: res.ok,
+      at: new Date().toISOString(),
+      reason: res.reason,
+      missing: res.missing,
+      drift: res.drift,
+      degradations: res.degradations,
+    },
+  } as any);
+}
+
 /** 人工批准技能升级: 重新冻结快照 (显式动作, 不隐式切换) */
 export async function approveSkillUpgrade(goalId: string, opts: { home?: string } = {}): Promise<{ ok: boolean; reason?: string; snapshot?: SkillSnapshotEntry[] }> {
   const goal = await readGoal(goalId);

@@ -58,7 +58,7 @@ import { applyHardLimits, decideContinuation, isRunnable } from './goal-flywheel
 import { closeRun, type CloseRunInput, type CloseRunResult } from './goal-flywheel/run-closure.js';
 import { writeMemoryRecords } from './goal-flywheel/memory-layers.js';
 import { assessCandidate } from './goal-flywheel/skill-candidate.js';
-import { acceptsAsComplete, issueWorkContract, validateChildReport } from './goal-flywheel/work-contract.js';
+import { acceptsAsComplete, issueWorkContract, stableHash, validateChildReport } from './goal-flywheel/work-contract.js';
 import { detectBlocks, planBlockHandling, toUserVisibleState } from './goal-flywheel/work-monitor.js';
 import { applyChange, classifyChange, ingestChange, nextStatusFor, shouldSupersedePending } from './goal-flywheel/goal-change.js';
 import type { ChangeApplication } from './goal-flywheel/goal-change.js';
@@ -476,6 +476,30 @@ export const SKILL_CANDIDATE_BOUNDARY_NOTE =
   + "`snapshotScope='next_run_only'` 且 `appliesToRunningRun=false` (新版本只影响下一次 Run)。";
 
 /**
+ * 收尾候选的 `contentHash` (P5 验收修复)。
+ *
+ * 只覆盖**草案内容** —— 名字 / 用途 / 输入输出契约 / 保证与不保证 / 失败边界 / 证据面 / 出现次数与边界清晰度;
+ * **不含** candidateId / proposedAt / sourceRunIds (同一份内容来自不同 Run 必须是同一个哈希, 否则
+ * `assessCandidate` 的 `duplicate_of_existing` 永远判不出来)。算法用 `work-contract.stableHash`
+ * (与工作合同/快照同一套哈希口径), 不是 crypto —— 内容哈希只需**可比**, 不需要抗碰撞强度。
+ */
+export function candidateContentHash(c: SkillImprovementCandidate): string {
+  const parts = [
+    `name=${c.name}`,
+    `purpose=${c.purpose}`,
+    `input=${c.inputSchema}`,
+    `output=${c.outputSchema}`,
+    `guarantees=${[...(c.guarantees ?? [])].join('|')}`,
+    `doesNotGuarantee=${[...(c.doesNotGuarantee ?? [])].join('|')}`,
+    `failureCases=${[...(c.failureCases ?? [])].join('|')}`,
+    `evidenceRefs=${[...(c.evidenceRefs ?? [])].join('|')}`,
+    `occurrences=${c.occurrences}`,
+    `boundaryClear=${c.boundaryClear === true}`,
+  ];
+  return stableHash(parts.join('\u0000'));
+}
+
+/**
  * 写一条 Skill 改进候选 (closeRun 的 `deps.writeCandidate`)。
  *
  * 两道门:
@@ -589,6 +613,9 @@ export async function closeGoalRun(input: {
         return p;
       },
       decide: (decisionInput) => applyHardLimits(decideContinuation(decisionInput), decisionInput.hardLimits),
+      // ★ 2026-09-25 (P5 验收修复): 候选的 contentHash 由**这里**注入 (run-closure 不 import 别的阶段
+      //   实现, 见它的文件头边界) —— 缺了它, 每份候选都被第二道门以 `unverifiable_result` 拒收。
+      contentHashOf: candidateContentHash,
     },
   );
 

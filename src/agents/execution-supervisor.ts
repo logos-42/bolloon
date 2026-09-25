@@ -636,11 +636,36 @@ export class ExecutionSupervisor {
     }
 
     // 2026-09-16 (2-G.2): 执行前技能就绪门禁 —— 缺/未启用/损坏/漂移 → 不启动 Run, Goal → needs_human
+    //
+    // ★ 2026-09-25 (P5 验收修复): 飞轮这一步的裁决是 **delegate** (缺能力 → 派给子 Agent 并签工作合同)
+    //   时, **本地技能门禁不适用** —— 这一步本来就不由本节点执行, 能力由子 Agent 凭合同交付。
+    //   原来一律拦成 `blocked_by_skills`, 于是"缺能力 → 派活"这条链在真路径上永远走不到,
+    //   `dispatchIfDelegate` 成了死代码 (P5 ★①②③ 实测: 合同一份都没签发)。
+    //   其余裁决 (continue/first_run/...) 照旧: 技能不就绪照样不启动 Run (门禁没有放松)。
+    let flywheelDelegates = false;
+    let flywheelCapability = '';
     try {
-      const { ensureGoalSkillsReady, blockGoalOnSkills } = await import('./skill-readiness.js');
+      const { decideGoalStep } = await import('./goal-flywheel-wiring.js');
+      const step = await decideGoalStep({
+        goalId: goal.goalId, now: new Date(this.now()).toISOString(), maxRetries: this.maxRetries, writeRecord: false,
+      });
+      flywheelDelegates = step?.decision?.decision === 'delegate';
+      flywheelCapability = step?.decision?.requiredCapability || '';
+    } catch { /* 决策层不可用 → 不改变门禁行为 (fail-closed, 照旧拦) */ }
+    try {
+      const { ensureGoalSkillsReady, blockGoalOnSkills, recordSkillReadiness } = await import('./skill-readiness.js');
       const ready = await ensureGoalSkillsReady(goal);
       for (const d of ready.degradations) this.log(`[supervisor] goal=${goal.goalId} 技能降级: ${d}`);
-      if (!ready.ok) {
+      if (!ready.ok && flywheelDelegates) {
+        // 本地缺的能力由子 Agent 提供: 记清楚"放过门禁的原因", 不静默。
+        // 这里**不进** report.skipped —— 门禁放过 = 本轮**真跑**了 (Run + 之后的合同签发),
+        // 记成 skipped 会与事实相反。
+        await recordSkillReadiness(goal.goalId, ready).catch(() => { /* 记事实失败不影响本轮 */ });
+        const why = `飞轮裁决=delegate (缺能力「${flywheelCapability || '-'}」) → 本地技能门禁不适用, `
+          + `本轮照跑(不拦)并改为签发工作合同交给子 Agent; 本地缺: ${ready.reason || ''}`;
+        this.log(`[supervisor] goal=${goal.goalId} 技能门禁对 delegate 放行: ${why}`);
+        this.emit({ kind: 'skill_gate_waived_for_delegate', goalId: goal.goalId, message: why });
+      } else if (!ready.ok) {
         await blockGoalOnSkills(goal.goalId, ready);
         report.skipped.push({ goalId: goal.goalId, reason: `技能未就绪: ${ready.reason}` });
         this.emit({ kind: 'needs_human', goalId: goal.goalId, message: ready.reason || '技能未就绪' });
@@ -712,6 +737,8 @@ export class ExecutionSupervisor {
       flywheelStop: false,
       roundsOverridden: false,
     };
+    /** 本轮收尾要派遣的能力 (定状态之后才签合同 —— 顺序见下方注释) */
+    let capabilityWanted: string | null = null;
     if (finalRun) {
       try {
         const closure = await closeGoalRun({
@@ -754,20 +781,33 @@ export class ExecutionSupervisor {
         this.emit({ kind: 'run_closure_failed', goalId: goal.goalId, runId: finalRun.runId, message: String((err as Error)?.message || err) });
       }
       // P2: 飞轮说"这一步该派活" → **必发工作合同** (不是发一句话)
-      //   能力来源 = 这次收尾**决策里的** requiredCapability (权威), 退回 continuation 上的 requiredAgent
-      const capabilityWanted = closureDecision?.requiredCapability
+      //   能力来源 (权威顺序): ① 这次收尾决策点名的能力 ② continuation 上记的 requiredAgent
+      //   ③ **本轮跑之前**飞轮裁决=delegate 时点名的能力 (且本地**仍然**缺它) ——
+      //      收尾决策只拿得到 Run 的结果, 拿不到"目标声明的能力本地有没有"这条输入,
+      //      所以"缺能力 → 派活"必须能回落到 preflight 的结论; 否则它永远只在判定层成立、
+      //      在动作层消失 (P5 ★① 实测: 技能门禁放行之后, 合同还是一份都签不出来)。
+      const stillMissing = (await readGoal(goal.goalId))?.continuation?.skillReadiness;
+      const stillMissingCap = !!flywheelCapability && stillMissing?.ok === false
+        && (stillMissing.missing ?? []).includes(flywheelCapability);
+      capabilityWanted = closureDecision?.requiredCapability
         || merged.continuation.requiredAgent
-        || null;
-      if (capabilityWanted && merged.goalStatus !== 'completed' && !merged.flywheelStop) {
-        await this.dispatchIfDelegate(goal.goalId, finalRun, report, capabilityWanted).catch((err) => {
-          report.errors.push(`${goal.goalId}: 派遣合同失败: ${(err as Error)?.message || err}`);
-        });
-      }
+        || (stillMissingCap ? flywheelCapability : null);
       // 变更注入的"版本已下发"记账 (新要求只影响后续 Run; 记下它被第几个 Run 读到)
       await markChangesConsumed(goal.goalId, goalForDecision.runs.length).catch(() => null);
     }
 
     await this.applyDecision(goal, merged, finalRun);
+
+    // ★ 合同必须在**状态写完之后**签发 (P5 ★① 实测的顺序缺陷):
+    //   `applyDecision` 是整份 continuation 的覆盖写 (`setContinuation(decision.continuation)`),
+    //   而 `dispatchChildWork` 会把"等这份回报"写进 `continuation.pendingReports` ——
+    //   先签发再写状态 ⇒ 刚登记的 pendingReports 立刻被覆盖成空, 父 Goal 上不留痕,
+    //   阻塞巡检再次没有输入 (与修复前一样"空转")。顺序: 定状态 → 签合同。
+    if (finalRun && capabilityWanted && merged.goalStatus !== 'completed' && !merged.flywheelStop) {
+      await this.dispatchIfDelegate(goal.goalId, finalRun, report, capabilityWanted).catch((err) => {
+        report.errors.push(`${goal.goalId}: 派遣合同失败: ${(err as Error)?.message || err}`);
+      });
+    }
     this.emit({ kind: 'goal_decision', goalId: goal.goalId, runId: finalRunId, message: `${finalRun?.status || result.status || '?'} → ${merged.goalStatus}: ${merged.reason}` });
     this.log(`[supervisor] goal=${goal.goalId} run=${finalRunId || '-'} ${finalRun?.status || result.status || '?'} → goal=${merged.goalStatus} (${merged.reason})`
       + `${merged.roundsOverridden ? ' [飞轮覆盖轮次上限]' : ''} ${Date.now() - t0}ms`);
@@ -851,12 +891,34 @@ export class ExecutionSupervisor {
     }
   }
 
-  /** 外部事件到达 → 给对应 Goal 清除等待并加速唤醒 (2-E 第 4 类的入口) */
+  /**
+   * 外部事件到达 → 给对应 Goal 清除等待并加速唤醒 (2-E 第 4 类的入口)
+   * 手动唤醒 (CLI `/wake` / `POST /api/goals/:id/wake`): 人明确说"外部条件我已经满足了"。
+   *
+   * ★ 2026-09-25 (P5 验收修复): 原来只清等待事实、**不改 goal.status** —— `listRunnableGoals`
+   *   又按 `status === 'awaiting_external'` 直接跳过, 于是"唤醒"成了空操作:
+   *   接口回话 `woke:true`, 目标却仍然醒不过来 (真 tick executed=0)。
+   *   真事件路径 (`deliverExternalEvent`) 本来就把状态拉回 `active` —— 两条唤醒路径必须一致。
+   *
+   * 只拉**等待类**状态: 终态与人已判定的状态 (completed/failed/abandoned/paused/needs_human)
+   * 不动 —— 唤醒是"外部条件到了", 不是绕过人的决定。
+   */
   async notifyExternal(goalId: string): Promise<boolean> {
     const g = await readGoal(goalId);
     if (!g) return false;
     if (g.continuation?.wakeReason !== 'awaiting_external' && !g.continuation?.needsExternal) return false;
-    await setContinuation(goalId, { wakeReason: 'active', needsExternal: undefined, autoContinue: true, wakeAt: undefined });
+    // 等待类的 continuation.state 也要拉回 `active` (与 goal.status 同步): 界面只读 continuation
+    //   (`toUserVisibleState`), 留着 `awaiting_external` 的话页面仍显示"等待外部回复" ——
+    //   与"已唤醒、下一次 tick 会推进它"自相矛盾 (真 DOM 就是这么读到的)。
+    const wasWaiting = ['awaiting_external', 'retry_wait'].includes(String(g.continuation?.state));
+    await setContinuation(goalId, {
+      wakeReason: 'active', needsExternal: undefined, autoContinue: true, wakeAt: undefined,
+      ...(wasWaiting ? { state: 'active' as const } : {}),
+    });
+    if (g.status === 'awaiting_external') {
+      const { updateGoal } = await import('./goal-store.js');
+      await updateGoal(goalId, { status: 'active' } as any).catch(() => { /* 状态写失败不影响把等待清掉 */ });
+    }
     await bumpContinuationAttempts(goalId); // 记一次唤醒 (可观测)
     return true;
   }

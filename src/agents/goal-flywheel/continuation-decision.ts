@@ -151,6 +151,15 @@ const LOW_CONFIDENCE = 0.5;
 /** Run 还"没跑干净"的状态: 它们存在时不许判完成 (与 goal-store 完成门同一口径) */
 const UNSETTLED_RUN_STATUSES: readonly string[] = ['failed', 'interrupted', 'stalled'];
 
+/**
+ * **还在跑**的 Run 状态 (没有给出任何结束结论的那种)。
+ * 单 Run 时间上限给这类 Run 计龄时必须用 `now` —— 它们的 `updatedAt` 只是"最后一次心跳",
+ * 用它会得出"这个跑了 3 小时的 Run 只跑了 0ms"的假结论 (P5 验收修复的一部分)。
+ * 注意 `failed`/`interrupted`/`stalled` 不在这个集合里但由 `UNSETTLED_RUN_STATUSES` 一起覆盖
+ * (它们是"已经停了但没收尾"的中间态, 同样按 now 计龄)。
+ */
+const RUN_ACTIVE_STATUSES: readonly string[] = ['queued', 'running'];
+
 /** 缺权限类失败: 不重试, 交人 (run-store 的错误分类表) */
 const PERMISSION_FAILURES: readonly string[] = ['auth', 'policy_denied'];
 
@@ -320,12 +329,22 @@ export function decideContinuation(input: DecideContinuationInput): Continuation
 
   // ③ 三类硬底线 (安全线, 不是节奏): 命中即"必须停", 一律交人 ——— 不许自动开下一轮
   const breaker = isCount(hardLimits.noProgressCircuitBreaker) ? hardLimits.noProgressCircuitBreaker : 1;
-  const runElapsedMs = nowMs - parseTs(run.startedAt);
+  // ★ 2026-09-25 (P5 验收修复): 「本轮跑了多久」必须用**这一段 Run 自己的时长** ——
+  //   已结束/已收干净的 Run 用它的最后一次写入 (`updatedAt` ≈ 结束时刻), **还在跑**的
+  //   (`queued`/`running`/`failed`/`interrupted`/`stalled` = 没给出结束结论的) 才用 now。
+  //   原来一律 `now - startedAt`: 只要上一次 Run 结束得早, 之后**任何一次等待**都会被算成
+  //   "本轮超时" (等 wakeAt / 等外部事件 > 30min 尤其明显) → 事件到了也开不了下一轮,
+  //   长等待永远醒不过来 (P5 ⑥ 实测)。安全线本身不动: **还在跑**的超长 Run 仍然照拦 (用 now 计龄)。
+  // 缺/坏时间戳时退回 now (= 旧行为, 门禁只会更严不会更松)
+  const runUpdatedMs = parseTs(run.updatedAt);
+  const runActive = runUnsettled || RUN_ACTIVE_STATUSES.includes(String(run.status));
+  const runEndMs = runActive || !Number.isFinite(runUpdatedMs) ? nowMs : runUpdatedMs;
+  const runElapsedMs = runEndMs - parseTs(run.startedAt);
   if (isPosFinite(hardLimits.maxRunDurationMs) && Number.isFinite(runElapsedMs) && runElapsedMs > hardLimits.maxRunDurationMs) {
     return finalize({
       decision: 'ask_human',
       state: 'needs_decision',
-      reason: `本轮已超出单 Run 时间上限 (${runElapsedMs}ms > ${hardLimits.maxRunDurationMs}ms, 从 ${run.startedAt} 到 ${now}) → 硬底线是安全线: 不许自动开下一轮`,
+      reason: `本轮已超出单 Run 时间上限 (${runElapsedMs}ms > ${hardLimits.maxRunDurationMs}ms, 从 ${run.startedAt} 到 ${runActive ? now : run.updatedAt}${runActive ? ' (仍在跑)' : ' (已结束)'}) → 硬底线是安全线: 不许自动开下一轮`,
       nextAction: '等人决定: 放宽单 Run 时间上限 / 拆小目标 / 改计划后再开新 Run',
       expectedOutcome: '人对单 Run 时间上限的一个取舍',
       confidence: 0.3,
