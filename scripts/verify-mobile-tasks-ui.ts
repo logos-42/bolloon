@@ -89,7 +89,10 @@ async function main() {
     if (m.id && pending.has(m.id)) { pending.get(m.id)!(m); pending.delete(m.id); return; }
     if (m.method === 'Log.entryAdded') {
       const e = m.params?.entry || {};
-      if (e.level === 'error') exceptions.push('[log] ' + String(e.text || '').slice(0, 300));
+      // 只记"页面自己的错"; 本 harness 的静态服务没有 favicon/manifest 之类的资源 → 404 归噪音
+      if (e.level === 'error' && !/status of 404/.test(String(e.text || ''))) {
+        exceptions.push('[log] ' + String(e.text || '').slice(0, 300));
+      }
     }
     if (m.method === 'Runtime.consoleAPICalled' && m.params?.type === 'error') {
       exceptions.push('[console] ' + String((m.params.args || []).map((a: any) => a.value || a.description || '').join(' ')).slice(0, 300));
@@ -114,6 +117,20 @@ async function main() {
   await send('Runtime.enable');
   await send('Log.enable');
   await send('Page.enable');
+  // 踩过的坑: headless Chrome 的 CDP 目标可能停在 about:blank (URL 参数只在新建 tab 时生效),
+  // 那样就会"对着空白页断言全绿/全红"。所以这里**显式导航**并等到真文档 + load 完成。
+  const PAGE_URL = `http://127.0.0.1:${PORT}/mobile.html`;
+  await send('Page.navigate', { url: PAGE_URL });
+  let loaded = false;
+  for (let i = 0; i < 40; i++) {
+    try {
+      const r = await evaluate('JSON.stringify({ href: location.href, rs: document.readyState })');
+      const v = JSON.parse(String(r.value || '{}'));
+      if (String(v.href).includes('mobile.html') && v.rs === 'complete') { loaded = true; break; }
+    } catch { /* 还在换页 */ }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  if (!loaded) { console.error('页面没加载到 mobile.html → 未验证'); srv.close(); chrome.kill('SIGKILL'); process.exit(2); }
   await new Promise((r) => setTimeout(r, 2500));   // 等 mobile.js / mobile-core.js 初始化
 
   console.log('[1] 页面与「任务」tab');
