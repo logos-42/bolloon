@@ -3771,3 +3771,31 @@ closeTaskRun() (CLI 宿主)     → 与 Supervisor 同一条链, 同一份产物
 - 小时级真时钟 · 多 worker 租约竞争 · 外部事件去重表命中条件 —— 未验。
 - `src/agents/goal-flywheel/block-executor.ts` (另一条线 2026-09-26 落地) **不在 M0 声明的扫描面里**;
   名册只能登记"这个文件是谁的", 不代表 M0 的六条门覆盖了它。
+
+## [2026-09-25] feat(goal) | 飞轮接线四阶段落地 (M1–M4) + M0 骨架钩子待串行补齐
+
+四条并行线各自交付并提交(本批未 push): **M1** `02d9898` 自适应节奏接缝(`wiring/continuation.ts` 602 行 + 44 测,
+旧 `maxRounds`/`maxRetries` 降级为三类安全上限, 「哪条上限在说话」用反事实 `bindingCaps` 判定) ·
+**M2** `bd6ccd0` 强制收尾飞轮接缝(11 类终止路径名册 + `terminalRegistryCoverage` 自检 + 六阶段 Skill 升级通道
+`结构化→schema→去重→权限→next_run_only 试用→下次成功复用才提升`; `openSkillTrial` 的 promotion 恒 null; 63 测) ·
+**M3** `f8a1da9` 子 Agent 最小 OS(`wiring/contract.ts` + `wiring/monitor.ts`; 真派遣落合同 · 真心跳超时 → 上报 → needs_human; 69 测) ·
+**M4** `6acae77` 新要求注入接缝(`wiring/change.ts` + `goal-change.ts` 计划器 + `web/server.ts` 路由; 真撤销 → Run 变 aborted 落盘 · Goal abandoned · 历史与预算不被改写; 31 测)。
+
+每条线均: 冻结门 **34/34** · `tsc --noEmit` **0 错** · 变异验证有真判红条数 · 真跑(真 Goal/Run Store + 隔离 HOME)。
+**主线复核(本条)**: 冻结门 34/34 绿 · tsc 0 错 · 跨阶段可疑红 `goal-flywheel-wiring.test.ts` 空载单跑 **12/12 绿**(并行负载假红, 非回归) · 工作区干净。
+
+### 待串行补齐 (M0 骨架钩子 —— 四条线都改不了, 必须有主线的单独一轮)
+
+- **M1**: `execution-supervisor` 需要 `readFacts({goalId, now}) => RhythmFacts` 注入 —— 不加, 主循环仍走注入结论路径, **节奏没真接管**。
+- **M2**: 候选产出处调 `openSkillTrial`(`closeGoalRun`/`writeSkillCandidate`) + 下一条 Run 成功点调 `settleSkillTrial`; `closeRunOnce` 需透传 `terminalKind`(否则申明"超时/支付·权限/子阻塞"这类终止原因做不到)。
+- **M3**: **`sweepAll` 没有真实调用方** —— 宿主循环里没有定时/事件源触发它 ⇒ **阻塞监控实际上不会自己跑**(最要紧的一条)。
+- **M4**: `createChangeSeam` 缺 `runningRun` / `stopRunningRun` / `liveWorkIds` ⇒ 非 web 路径(supervisor/CLI)提撤销时只能如实报 `factsMissing=true`, 停不了在跑的 Run。
+
+### 两个跨阶段真问题 (不是超时假红)
+
+1. `work-monitor.toUserVisibleState` 把 `pendingReports` 当必存, 而 `goal-store.setContinuation` 是**部分覆盖** ⇒ 任何直传 `goal.continuation` 的调用方会抛(`goalVisibleState` / `/api/goals` 都在踩)。M4 已在接缝里兜住(读不到就 `visibleState:null`, 不编态), 根因修法在 M3 的 `(c.pendingReports ?? [])` 或 M0 归一化。
+2. `goal-flywheel-wiring.test.ts > 失败 Run 与中断恢复的 Run 同样过收尾` 在四线并行负载下曾闪红(`closures=0`); 空载单跑 12/12 绿, 判定为负载假红, 已记录。
+
+### 未做
+
+M5 长周期真跑(用真实长期目标当靶子) · M6 空闲反思(做梦) · M7 bolloon 全局记忆(跨频道/session/项目/设备/工具)。
