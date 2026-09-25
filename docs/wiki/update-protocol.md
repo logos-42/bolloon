@@ -74,13 +74,17 @@ npm-global | npm-local | source-git | release-binary | development | unknown
 npm | github-release | git | unknown
 ```
 
-### 1.4 渠道决定 (冻结)
+### 1.4 渠道决定
 
-**npm 是唯一稳定发行渠道; GitHub 只作为源码与发布记录。**
+**npm 是稳定发行渠道 (stable 的权威); GitHub 作为源码 + 发布记录, 并作 stable 的交叉校验源与 dev 通道的唯一源。**
+
+> **2026-09-25 修订 (原句是 "npm 是唯一稳定发行渠道")**: 改的是"唯一"两个字, **权威顺序没变** ——
+> 完整口径、实数语义与真跑验收见 §12 (已落地)。
 
 - `NPM_REGISTRY_BASE` (可被 `BOLLOON_NPM_REGISTRY` 覆盖 → 镜像/内网)
 - `dist-tags.latest` 是 stable 通道; `beta` 暂与 stable 同源 (**明说, 不假装有独立 beta 通道**)
-- 安装脚本不再查 GitHub Releases (旧行为会去下载"有 tag 但 npm 未公开"的资产)
+- 安装脚本不再查 GitHub Releases 下载资产 (旧行为会去下载"有 tag 但 npm 未公开"的资产)
+- GitHub 那一侧: `BOLLOON_GITHUB_API` 可覆盖 (受控假源/企业实例); 可选 `GITHUB_TOKEN` **只为提配额**, 只进请求头, 永不打印/入库
 
 ---
 
@@ -275,6 +279,7 @@ updateChannel (默认 stable)
 | Phase 6 更新后健康检查 | ✅ | `runHealthCheck` 8 项真读 (真起子进程跑 `--version json`), 分级 healthy/degraded/failed; 本机 doctor 实测 degraded (技能漂移) |
 | Phase 7 `--status/--history/doctor` | ✅ | 三个命令真跑; `doctor` 9 项含"npm 全局路径冲突""更新锁残留""上次更新异常中断""幽灵 Supervisor" |
 | Phase 8 发布纪律 | ✅ | `verify-release.mjs` 7 项硬门 (真下载 tarball + 可选真隔离安装) · `install.sh` 安装后自检 · `upgrade.sh` 收敛到同一流水线 |
+| Phase 9 双源 (npm + GitHub) | ✅ ①②③ / ⛔ ④⑤ | 见 §12: `dual-source.ts` 源事实 + `--channel stable\|dev` + `github_unavailable`/`cross_check_mismatch` + 真跑验收 **63 PASS/0 FAIL** + 变异验证 **6/6 判红**; **未做**: 发布硬门 ④ 与 npm 发新包 ⑤ |
 
 交付批次对照: 第一批 (身份统一) ✅ · 第二批 (检查统一) ✅ · 第三批 (安全更新) ✅ (含偏差) · 第四批 (诊断与发布质量) ✅ + wiki 回写 ✅。
 
@@ -282,7 +287,7 @@ updateChannel (默认 stable)
 
 - **运行时 (Node/npm/Git/Python) 的检查/安装/配置/验证** 不在本页 —— 见 [runtime-bootstrap-protocol.md](./runtime-bootstrap-protocol.md)
   (更新流程已接它的健康检查: 更新后 Git/Python 真执行验证不过 → `failed`, 不因 npm 装成功就宣布环境健康)
-- **多渠道 / 自动灰度 / 插件热更新 / 后台强制升级** —— 明确不做 (计划里就说不做); **例外**: "npm + GitHub 双源"是 §12 的增量计划 (只加源与交叉校验, 不做灰度)
+- **多渠道 / 自动灰度 / 插件热更新 / 后台强制升级** —— 明确不做 (计划里就说不做); **例外**: "npm + GitHub 双源"已于 2026-09-25 落地 (见 §12, 只加源与交叉校验, 不做灰度)
 - **`update now wait` 没有后台守护进程**: 它只**记录**"等当前 Run 结束后再执行", 不会在 Run 结束时自动替用户更新 (自动替用户动运行时正是这次要收敛掉的东西)
 - **beta/dev 通道没有独立 dist-tag**: 只有 stable 是真通道, `beta` 落到 `beta` tag 但 npm 上没有该 tag → 走 `latest`; 不假装有独立通道
   (dev 通道的双源口径见 §12: dev 走 **GitHub master HEAD + commit sha**, 仍然**不靠 npm dist-tag 假装**有独立通道)
@@ -297,7 +302,10 @@ updateChannel (默认 stable)
 | 验收 | 命令 | 结果 |
 | --- | --- | --- |
 | 单元 | `npx vitest run src/test/update-system.test.ts` | **53/53** |
+| 单元 (双源) | `npx vitest run src/test/update-dual-source.test.ts` | **34/34** (2026-09-25 新增) |
 | 真跑 (真 npm / 真 registry / 真 SIGKILL) | `npx tsx scripts/verify-update-system.ts` | 见下 |
+| 真跑 (双源: 真 registry + 真 GitHub + 真 codeload + 真构建) | `npx tsx scripts/verify-dual-source.ts` | **63 PASS / 0 FAIL / 0 SKIP** (见 §12.7) |
+| 变异验证 (双源) | `python3 scripts/verify-dual-source-mutations.py` | **6/6 判红**, 恢复后全绿 (见 §12.7) |
 | 类型 | `npx tsc --noEmit` | 0 错 |
 | 构建 | `npm run build:main` | 通过 |
 | 真命令 | `bolloon --version` / `update` / `update plan` / `update status` / `update history` / `doctor` | 见 §6 与 log |
@@ -322,94 +330,171 @@ updateChannel (默认 stable)
 
 ---
 
-## 12. 双源计划 (stable: npm + GitHub Release · dev: master HEAD) —— **计划, 未落地**
+## 12. 双源 (stable: npm + GitHub Tag · dev: GitHub master HEAD) —— **已落地**
 
-> 状态: **plan (2026-09-25 leo 提)**。本节只定口径与验收, **不改任何现有代码** —— 现有实现仍是 §1–§11 描述的单源 (npm)。
-> 落地顺序见 §12.6 的硬约束: **双源先于发 npm 新包**。
+> 状态: **shipped (2026-09-25)**。
+> §12.1–12.5 的**口径一行没改**, 本节现在是"落地后的实数语义 + 真跑验收结果"。
+> 落地顺序里的 **④⑤ 仍未做** —— 这一步**没有发 npm 新包** (发布是下一步, 由主线做)。
 
-### 12.1 为什么 (§1.4 的修订)
+### 12.0 落地前先查到的**事实** (决定 stable 那一侧必须怎么降级)
 
-§1.4 冻结的是 "**npm 是唯一稳定发行渠道; GitHub 只作为源码与发布记录**"。这条要改成**双源**, 但**权威顺序不变**:
+真查 (2026-09-25 · `scripts/verify-dual-source.ts` 第 0 段 · 真调 `api.github.com` + 真读本地 tag):
 
-| 通道 | 源 | 谁是权威 | 拿到的"版本身份" |
-| --- | --- | --- | --- |
-| `stable` | npm registry (`dist-tags.latest`) **+** GitHub Release/Tag | **npm 仍是权威**; GitHub Release 是**交叉校验源** | semver (`0.4.29`) |
-| `dev` | GitHub `master` HEAD (git ref) | **GitHub 是唯一源** | **`<package.json 版本>+dev.<commit sha 前 7>`** (不用 semver 当身份) |
+| 事实 | 实数 |
+| --- | --- |
+| git tag | **25 个**, 最高 **`v0.4.30`** |
+| **GitHub Release** | **0 个 (空的)** |
+| GitHub `refs/heads/master` HEAD | **`d2148f3`** |
+| npm `dist-tags.latest` | **`0.4.33`** (没有对应 tag) |
 
-为什么 stable 仍以 npm 为权威: npm 的 `dist-tags.latest` 是用户 `npm i -g` 真拿到的东西 (§8 第 4 项硬门就在验这个)。GitHub Release 作为**第二条事实**进来只做一件事: **证明"这次发布的 Record 与 registry 上的 latest 指向同一版"** —— 发布流程真的跑完了, 而不是 publish 退出码 0 但资产/记录缺失。
+**如实降级 (不编造一条不存在的 tag / Release 路径)**: 本仓**没有 Release**, 所以
 
-为什么 dev **必须用 `git ref + commit sha`** 而不是 semver: master 上的 `package.json` 版本**长期不动**(同一个版本号可能对应几十个 commit)。若拿 semver 当 dev 的身份, "我装的是哪个 dev 版" 这个问题就没有答案 —— 也没法回滚到"上一个 dev 版"。所以 dev 的**身份 = commit sha**, 版本号只作**参考展示**。
+- stable 的"GitHub 那一侧" **以 Tag 为准** (`v<版本>` 与 `<版本>` 两种写法都认);
+- **没有**"Release 资产存在"这类硬门可设 —— §12.6 的 ④ **因此还没做**, 理由见 §12.6;
+- 交叉校验在**本仓的真实数据**上给出的是 `missing_record` (npm latest `0.4.33` 在 GitHub 上没有同名 Tag),
+  这是**提醒级、不阻塞**, 也正是"发布记录缺 Tag"这一行的真实长相 (§12.5 第 4 行)。
 
-### 12.2 命令面增量 (§2 的增项)
+### 12.1 为什么 (§1.4 的修订) —— 口径不变
+
+§1.4 原来冻结的是 "**npm 是唯一稳定发行渠道; GitHub 只作为源码与发布记录**"。现在改成**双源**, 但**权威顺序不变**:
+
+| 通道 | 源 | 谁是权威 | 版本身份 | 比较语义 (代码里显式) |
+| --- | --- | --- | --- | --- |
+| `stable` | npm registry (`dist-tags.latest`) **+** GitHub Tag/Release | **npm 仍是权威**; GitHub 是**交叉校验源** | semver (`0.4.33`) | `semver` —— 只有"npm latest 与 GitHub 同名 tag/Release 指向同一版"才算对得上 |
+| `dev` | GitHub `master` HEAD (git ref) | **GitHub 是唯一源** | **`<package.json 版本>+dev.<commit sha 前 7>`** | `git-ref` —— **不用 semver**, 只判"是否同一 commit / 是否落后" |
+
+两套比较语义是**代码里的显式字段** (`ChannelKind = 'semver' | 'git-ref'`, `channelKindOf()`), 不是靠注释约定 ——
+`update status` / `update plan` / `--version json` 都会把 `channelKind` 打出来。
+
+为什么 stable 仍以 npm 为权威: `dist-tags.latest` 是用户 `npm i -g` 真拿到的东西 (§8 第 4 项硬门就在验它)。
+GitHub 那条记录进来只做一件事: **证明"两条记录指向同一版"** —— 发布流程真的跑完了。
+
+为什么 dev **必须用 `git ref + commit sha`**: master 上的 `package.json` 版本**长期不动** (同一个版本号可能对应几十个 commit)。
+拿 semver 当 dev 的身份, "我装的是哪个 dev 版" 就没有答案。**真跑里的实证**: dev 装出来后 `0.4.33` 与 `0.4.33+dev.d2148f3`
+的 semver 段**完全相同**, 但按 sha 判定必须报 `update_available` (有另一个 dev 版), 不能报"已是最新"。
+
+### 12.2 命令面增量 (§2 的增项) —— 已接线
 
 ```text
 bolloon update [--channel stable|dev]          检查 (默认 stable; 显式给了就忽略节流)
 bolloon update plan|status|history|now [--channel stable|dev]
 ```
 
-- `--channel` **只覆盖本次进程**, 不落盘 (与 §7 的 `BOLLOON_UPDATE_CHANNEL=stable|beta|dev` 同语义; config 里的 `updateChannel` 仍是默认值)。
-- 非 `--channel` 的调用方仍按老口径走 `stable` —— **本次改动不改变任何现有调用方的默认行为**。
+- `--channel` **只覆盖本次进程**, 不落盘 (config 里的 `updateChannel` 仍是默认值)。
+- 只认 `stable | beta | dev`; **给别的值 → 拒绝执行并说清** (不静默落回 stable)。
+- `--channel=dev` 与 `--channel dev` 两种写法都吃; 非 `--channel` 的调用方**行为一行没变**。
+- **"通道"与"当前装的是哪个源"是两件事**: 通道 = 你想跟谁走; 装的是什么源 = 现在磁盘上跑的代码是谁给的。
+  `update status` **分开报** —— 装的 dev、通道 stable (默认值) 是**正常状态**, 不是矛盾。
 
-### 12.3 检查结论与错误分类 (补 `github_unavailable`)
+### 12.3 检查结论与错误分类 (补 `github_unavailable`) —— 已落地
 
-§3 的 7 个结论**只增不改**, 新增两个:
+§3 的 7 个结论**只增不改**, 现在是 **9 个**:
 
 ```text
-github_unavailable      # GitHub 不可达 / 403·429 限流 / 没有 Release / 没有 master
-cross_check_mismatch    # stable 下 npm 与 GitHub Release 指向不同版本 (两个源的事实都摆出来)
+github_unavailable      # GitHub 不可达 / 403·429 限流 / 404 / 读不到 master HEAD
+cross_check_mismatch    # stable 下 npm 与 GitHub 的记录指向不同版本 (两个源的事实都摆出来)
 ```
 
-优先级 (插进 §3 的序列, 位置本身就是口径): `local_version_unknown` → `unsupported_installation` → `check_skipped` → `offline` → **`github_unavailable`** → `registry_unavailable` → **`cross_check_mismatch`** → `update_available` → `up_to_date`。
+优先级 (插进 §3 的序列, 位置本身就是口径):
+`local_version_unknown` → `unsupported_installation` → `check_skipped` → `offline` → **`github_unavailable`** →
+`registry_unavailable` → **`cross_check_mismatch`** → `update_available` → `up_to_date`。
 
-错误分类: `classifyGithubError` (与 §3 的 `classifyRegistryError` 并列, **不合并**) —— ENOTFOUND/EAI_AGAIN/ECONNREFUSED/超时 → `github_unavailable(reason=offline)`; 403/429 → `github_unavailable(reason=rate_limited)`; 404 (无 Release / 无 master) → `github_unavailable(reason=not_found)`。
+错误分类: `classifyGithubError` 与 registry 侧**并列、不合并** (这是硬要求 —— "更新失败"一句话废掉了):
 
-**dev 通道下 `github_unavailable` = 直接拒** (没有第二个源可退, 也就不存在"退到哪去"这件事)。
+| 情形 | 分类 (reason) |
+| --- | --- |
+| `ENOTFOUND`/`EAI_AGAIN`/`ECONNREFUSED`/`ETIMEDOUT`/超时 | `github_unavailable(offline)` |
+| HTTP 403 / 429 | `github_unavailable(rate_limited)` + **写明重试时间** (`x-ratelimit-reset`) |
+| HTTP 404 (没有该项记录 / codeload 上没这个 commit) | `github_unavailable(not_found)` |
+| 5xx / 其它 | `github_unavailable(http_error)` |
+| 返回体解析不了 | `github_unavailable(parse_error)` |
 
-### 12.4 dev 通道的三条硬约束 (leo 明确要求)
+**dev 通道下 `github_unavailable` = 直接拒** (没有第二个源可退)。
+`REFUSED_STATUSES = ['offline','registry_unavailable','local_version_unknown','github_unavailable','cross_check_mismatch']`
+—— 这 5 个结论在**执行面**会让 `applyUpdate` 直接 `blocked`, **一个 `npm` 都不调** (§12.5)。
 
-1. **必须显式警告**: dev 是 master 的即时快照, 不是发布物。检查/计划/执行三处都要打印同一句话:
+### 12.4 dev 通道的三条硬约束 (leo 明确要求) —— 已落地, 落点如下
+
+1. **显式警告**: 检查 / 计划 / 执行 / `status` / `doctor` 五处打印**同一句** (`DEV_CHANNEL_WARNING` 常量, 只此一份文案):
    `⚠️ dev 通道 = GitHub master HEAD 的即时快照 (未走发布门): 可能中断正在跑的 Goal/Run, 且不保证可回滚到上一个 dev 版。`
-2. **必须记录 sha**: 装完把 `{ channel: 'dev', devSha, devRef: 'refs/heads/master', checkedAt }` 写进 `~/.bolloon/update-state.json` —— 于是 `bolloon --version` / `update status` / `doctor` 都能回答"我现在跑的是哪个 dev 快照"。**不新开存储** (沿用同一个状态文件)。
-3. **一键回 stable**: `bolloon update now --channel stable` 必须能把 dev 快照换回 registry 上的 latest, **且不需要用户先手工 npm 卸载**; 回退后用 §6 的健康检查确认, 并把这件事写进 `update-history.jsonl` (`from: 'dev+<sha>' → to: '<semver>'`)。
+2. **记录 sha**: 装完写 `~/.bolloon/update-state.json`: `{ installedChannel: 'dev', installedDevSha: <sha7>, devSha, devRef: 'refs/heads/master', devCheckedAt }`
+   —— 于是 `bolloon --version` / `update status` / `doctor` 都能回答"我现在跑的是哪个 dev 快照"。**没有新开存储** (沿用同一个状态文件)。
+   `installedChannel`/`installedDevSha` 是"**当前**装的是谁" (切回 stable 后清空), `devSha`/`devRef` 是"**上次**用过的 dev 快照" (切回后保留)。
+3. **一键回 stable**: `bolloon update now --channel stable` 真跑通了 —— 不需要手工 `npm uninstall`,
+   换回 registry 的 latest、走 §6 的健康检查、并在 `update-history.jsonl` 留下 `0.4.33+dev.d2148f3 → 0.4.33`。
 
-### 12.5 拒绝, 而不是静默退回旧版 (验收的核心)
+### 12.5 拒绝, 而不是静默退回旧版 (验收的核心) —— 已落地 + **逐条真跑**
 
-| 场景 | 必须的行为 | 绝不允许 |
+| 场景 | 必须的行为 | 真跑结果 |
 | --- | --- | --- |
-| npm 不可达 (`registry_unavailable`) | 明说"registry 不可达, 没有查到有没有新版", 退出码 **2** | 打印"✅ 已是最新版本" (§7 行为变更 3) |
-| GitHub 不可达 (dev 通道) | `github_unavailable` + 说清是哪一类 (offline/rate_limited/not_found) | 静默回落到 `stable` 装一个 npm 旧版 |
-| Release 存在但 registry 上没有该版本 | `cross_check_mismatch` + 摆出两个源的版本与时间 | 按 GitHub 的 tag 去 `npm install -g <版本>` |
-| registry 有该版本但 Release 缺 | 报**发布记录缺 Tag** (提醒级, 不阻塞 stable 更新) | 假装双源都验过了 |
-| `--channel dev` 但 master 的 `package.json` 版本没变 | 照常按 **sha** 判"是另一个 dev 版" | 因为版本号相同就说"已是最新" |
+| npm 不可达 (`registry_unavailable`) | 明说"registry 不可达", 退出码 **2**, 不打印"已是最新" | ✅ `offline`, 退出码 2, 输出无"已是最新", **磁盘版本没被动过** |
+| GitHub 不可达 (dev 通道) | `github_unavailable` + 说清哪一类, 不回落 stable 装 npm 旧版 | ✅ `github_unavailable(offline)`: releases: ECONNREFUSED, 退出码 2, 明确"拒绝安装 (不回落到 stable)" |
+| Release 存在但 registry 上没有该版本 | `cross_check_mismatch` + 摆出两个源 | ✅ 受控假源造 `v9.9.9` → `cross_check_mismatch`, 退出码 2, 输出无"已是最新" |
+| registry 有该版本但 Release/Tag 缺 | 报**发布记录缺 Tag** (提醒级, 不阻塞) | ✅ 本仓真实数据就是这一行: `missing_record`, 计划不阻塞, stable 照常更新 |
+| `--channel dev` 但 master 的版本号没变 | 照常按 **sha** 判"是另一个 dev 版" | ✅ 单测 + 真跑: 版本号段相同、sha 不同 → `update_available`, 理由写明"dev 快照落后" |
+| 目标 commit 不存在 | 拒绝, 不许装身份不明的快照 | ✅ 真 codeload 404 → `github_unavailable(not_found)`, 什么都没装 |
 
-> 一句话口径: **源不可达 / 版本不存在 → 拒绝并说清 (退出码 2), 不许静默装回旧版。** §1 的"唯一事实"在这里的落点: 每个源给什么、哪个源答的、交叉校验的结果, 都要能在 `update status json` 里看到, 而不是只给一个结论。
+> 一句话口径 (代码里的落点就是 `REFUSED_STATUSES`): **源不可达 / 版本不存在 → 拒绝并说清 (退出码 2), 不许静默装回旧版。**
+> §1 的"唯一事实"在这里的落点: 每个源给了什么 (`sourceFacts`)、哪个源答的、交叉校验结果 (`crossCheck`)、
+> 现在装的是谁 (`installedChannel`/`installedDevSha`)、能切回谁 (`switchableTo`) —— 全部落盘, `update status` 直接打出来。
 
-### 12.6 落地顺序 (**双源先于发 npm 新包**)
+### 12.6 落地顺序 (**双源先于发 npm 新包**) —— ①②③ 已完成, ④⑤ 未做
 
 ```text
-① 双源的就位 (本节) —— version-info 的源事实 + update-state 的 dev sha 字段 + 两个 classify
-② 检查/计划面接双源 (--channel, github_unavailable / cross_check_mismatch)
-③ 验收脚本真跑 (§12.7) 全绿
-④ verify-release.mjs 加"GitHub Release 存在且与 package.json 版本同名"作为**发布硬门**
-⑤ 才允许 npm publish 新包
+① 双源的就位        ✅ src/utils/dual-source.ts (源事实: classifyGithubError / crossCheckStable /
+                       compareDevSnapshots / prepareDevSnapshot) + version-info 的通道与身份 +
+                       update-state 的 dev 字段与 9 个结论
+② 检查/计划面接双源  ✅ --channel stable|dev / github_unavailable / cross_check_mismatch / REFUSED_STATUSES
+③ 验收脚本真跑       ✅ scripts/verify-dual-source.ts 63 PASS / 0 FAIL (§12.7)
+④ verify-release.mjs 加 "GitHub Tag 与 package.json 版本同名" 作为发布硬门   ⛔ 未做
+⑤ 才允许 npm publish 新包                                                  ⛔ 本步刻意不发 (下一步, 主线做)
 ```
 
-为什么这个顺序不能反: 若先 `npm publish` 再补 GitHub Release, 那段时间里"latest 已公开但 Record 缺失"是一个**真实存在过的发布状态** —— 而 §8 的第 4 项硬门只验 registry, 验不到它。**先让两条记录都存在, 再让用户看得见。**
+④ **为什么还没做 (如实)**: GitHub 上 **Release 为 0、Tag 最高 `v0.4.30`** 而 npm 已是 `0.4.33` ——
+把这条件设成硬门, 当前状态**每一次发布都会被它拦住**, 而拦住的理由是"历史发布没打 tag", 不是"这次发布坏了"。
+先发一个**打了同名 tag** 的版本 (④⑤ 一起做), 硬门才有意义。**在此之前不许假装双源都验过了。**
 
-### 12.7 验收 (计划中, 落地时必须有真跑证据)
+### 12.7 验收 (真跑, 2026-09-25) —— 结果
 
-真跑脚本 (对齐 §10 的 A–F 风格; 隔离 HOME + 隔离 npm prefix, 不触碰本机全局安装):
+真跑脚本: `npx tsx scripts/verify-dual-source.ts` (**真 npm registry + 真 api.github.com + 真 codeload 下载 + 真构建 + 真 npm 替换**;
+隔离 HOME + 隔离 npm prefix, **不碰本机全局安装**)。**63 PASS / 0 FAIL / 0 SKIP**。
 
-- **A** npm 真断网 + GitHub 可达 → `registry_unavailable`, 退出码 2, 输出里**不含**"已是最新"
-- **B** GitHub 真不可达 (dev 通道) → `github_unavailable`, 退出码 2, **不回落 stable**
-- **C** GitHub 真 403/429 (限流) → `github_unavailable(reason=rate_limited)` 且写明重试时间
-- **D** 不存在的 Release tag → `github_unavailable(not_found)`, **不**去装任何版本
-- **E** dev 真跑: master HEAD → 装出 `+dev.<sha>` 身份; `update-state.json` 里有 `devSha`; `--version json` 报得出来
-- **F** 一键回 stable: dev → `--channel stable` → 磁盘版本真变回 semver + 健康检查 8 项跑过 + `update-history.jsonl` 有 `dev+<sha> → <semver>`
-- **G** 交叉校验: 造一个"Release 在 / registry 缺"的受控 registry → `cross_check_mismatch`, 且**没有**任何 `npm install` 被调用 (用真 npm 的日志断言)
+| 验收 (对齐原计划的 A–G) | 真跑证据 |
+| --- | --- |
+| **A** npm 真断网 + GitHub 可达 | `status=offline`, 退出码 2, 输出**不含**"已是最新"; `applyUpdate` 里 `npmCalled=0`, 磁盘版本未动 |
+| **B** GitHub 真不可达 (dev 通道) | `github_unavailable(offline)` (真打一个没人监听的端口), 退出码 2, **不回落 stable** |
+| **C** GitHub 限流 403 | 同一分类 `github_unavailable(rate_limited)` —— 首次匿名真跑时**真的被 api.github.com 限流打到 403** (60 次/小时), 分类与文案当场验证; 之后用 `GITHUB_TOKEN` (可选, 只进请求头, 永不打印/入库) 把配额提到 5000/h |
+| **D** 不存在的 commit / tag | 真 codeload **404** → `github_unavailable(not_found)`, 不装任何东西 |
+| **E** dev 真跑 | 真取 codeload master 快照 → 真 `npm run build` → 装出身份 `0.4.33+dev.d2148f3`; `update-state.json` 有 `devSha=d2148f3`/`devRef`; 真起装完的入口, 它**自报** `Bolloon Agent v0.4.33+dev.d2148f3` |
+| **F** 一键回 stable | 真 CLI 子进程 `update now --channel stable` → 退出码 0, 磁盘真变回 `0.4.33`, 状态改回 `stable`, 历史留 `+dev.d2148f3 → 0.4.33` |
+| **G** 交叉校验 | 受控假 GitHub 说 `v9.9.9` → `cross_check_mismatch`, 退出码 2, **没有任何 `npm install` 被调用** |
+| **H** `update --status` 三态 | ① 只装 npm: `安装来源: stable (npm registry)` + `能切回: dev (github)` ② 装了 dev: `安装来源: dev (GitHub master 快照, ref refs/heads/master, commit d2148f3)` + `能切回: stable (npm @ 0.4.33) — 一键切: bolloon update now --channel stable` + 显式警告 ③ 刚切回: `安装来源: stable` + `上次 dev: commit d2148f3… (已切回 stable)` |
 
-门: 上面每条都要**真跑 + 真拒**, 且**阴性对照**(该拒的场景必须判红) —— 与 §10 的验收表同一纪律。
+**变异验证** (`scripts/verify-dual-source-mutations.py`, 按**词界**改坏、恢复后复跑):
+
+| 变异 | 聚焦测试 |
+| --- | --- |
+| M1 `REFUSED_STATUSES` 漏掉 `github_unavailable` | 🔴 1 个用例失败 |
+| M2 两源不一致 → 说成 `agree` (不再阻塞) | 🔴 3 个用例失败 |
+| M3 `channelKindOf`: dev 的比较语义 → 说成 `semver` | 🔴 9 个用例失败 |
+| M4 dev 源不可达 → 改报 `up_to_date` ("假装没事") | 🔴 1 个用例失败 |
+| M5 装完 dev 却把来源记成 `stable` | 🔴 1 个用例失败 |
+| M6 dev 身份反解 sha 失效 | 🔴 5 个用例失败 |
+
+**6/6 按预期判红**, 恢复后 `update-dual-source.test.ts` 34/34 + `update-system.test.ts` 53/53 全绿。
+**门禁**: `npx tsc --noEmit` 0 错 · `goal-flywheel-wiring-freeze.test.ts` 34/34 (飞轮侧未削弱) · 全量 `vitest run` 见 §12.7 收尾记录。
+
+**真跑暴露的两个真问题 (都不是设计问题, 是只有真跑才会暴露的)**:
+
+1. dev 快照从 **git 源码树**构建必须**两步**: 先 `npm run build --workspaces --if-present`
+   (建 `@bolloon/constraint-runtime`), 再 `npm run build:main` —— 只跑第二步会在干净源码树上必失败 (TS2307)。
+2. 验收脚本里**假源必须用异步子进程**: 用 `spawnSync` 会阻塞父进程事件循环, 父进程里的受控假服务器永远答不上话
+   (表现为 `releases: timeout`) —— 记录在这里, 免得下次重踩。
 
 ### 12.8 与 §9 台账的关系
 
-§9 的 8 个 Phase 完成度**不变** (现有实现原样)。本节是 §9 之后的**增量计划**, 落地后 §9 会多一行 `Phase 9 双源 (npm + GitHub)`, 并把 §1.4 从"npm 唯一渠道"改写成 §12.1 的双源口径 (权威顺序不变)。
+§9 的 8 个 Phase 完成度**不变** (现有实现原样)。本节兑现后:
+
+- §9 多一行 `Phase 9 双源 (npm + GitHub)`;
+- §1.4 已按 §12.1 改成双源口径 (**权威顺序不变**);
+- **未做**, 且如实留在这里: ④ 发布硬门 (等第一个"带同名 tag"的版本) · ⑤ 发 npm 新包 (下一步)。

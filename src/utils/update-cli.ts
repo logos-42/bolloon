@@ -16,8 +16,8 @@
  */
 
 import { resolveBolloonHome } from '../setup/setup-store.js';
-import { checkForUpdate, readUpdateStatus } from './update-manager.js';
-import { renderCheckResult, runDoctorCommand, runUpdateCommand, runVersionCommand } from '../cli/update-commands.js';
+import { checkForUpdate, readUpdateStatus, checkExitCode } from './update-manager.js';
+import { renderCheckResult, renderStatusReport, runDoctorCommand, runUpdateCommand, runVersionCommand, parseChannelArg } from '../cli/update-commands.js';
 import { runDoctor, renderDoctor } from './update-health.js';
 
 function out(s: string) { process.stdout.write(s + '\n'); }
@@ -28,12 +28,18 @@ async function main(): Promise<number> {
   const args = argv.slice(1);
   const json = args.includes('json') || args.includes('--json');
   const home = resolveBolloonHome();
+  // 双源: `--channel stable|dev` 只覆盖本次进程 (§12.2); 给了不认识的值就直接拒
+  const ch = parseChannelArg(args);
+  if (ch.error) {
+    process.stderr.write(`✗ ${ch.error}\n`);
+    return 2;
+  }
 
   switch (cmd) {
     case 'check': {
-      const force = args.includes('force') || args.includes('--force') || args.includes('--fresh');
+      const force = args.includes('force') || args.includes('--force') || args.includes('--fresh') || !!ch.channel;
       const offline = args.includes('offline') || args.includes('--offline');
-      const r = await checkForUpdate({ home, force, offline });
+      const r = await checkForUpdate({ home, force, offline, channel: ch.channel });
       if (json) out(JSON.stringify(r, null, 2));
       else if (r.status === 'up_to_date' || r.status === 'check_skipped') {
         // 脚本默认静默: 只有在"有话说"时才输出 (与 AGENTS.md §1 步 0 的约定一致)
@@ -41,27 +47,15 @@ async function main(): Promise<number> {
       } else {
         out(renderCheckResult(r));
       }
-      return (r.status === 'offline' || r.status === 'registry_unavailable' || r.status === 'local_version_unknown') ? 2 : 0;
+      return checkExitCode(r.status);
     }
     case 'status': {
-      const s = await readUpdateStatus({ home });
+      const s = await readUpdateStatus({ home, channel: ch.channel });
       if (json) out(JSON.stringify(s, null, 2));
-      else {
-        const L = [
-          `当前版本: ${s.currentVersion}`,
-          `最新版本: ${s.latestVersion || '未知'}`,
-          `检查结论: ${s.lastCheckStatus || '尚未检查'}${s.lastCheckReason ? ` (${s.lastCheckReason})` : ''}`,
-          `最近检查: ${s.lastCheckAt || '从未'}`,
-          `安装方式: ${s.installMethod}`,
-          `安装目录: ${s.installDir}`,
-          `最近更新: ${s.lastUpdate ? `${s.lastUpdate.at} ${s.lastUpdate.from} → ${s.lastUpdate.to} [${s.lastUpdate.status}]` : '无记录'}`,
-          `需要重启: ${s.needsRestart ? '是' : '否'}`,
-        ];
-        out(L.join('\n'));
-      }
+      else out(renderStatusReport(s));
       return 0;
     }
-    case 'plan': return runUpdateCommand(['plan', ...(json ? ['json'] : [])]);
+    case 'plan': return runUpdateCommand(['plan', ...(ch.channel ? ['--channel', ch.channel] : []), ...(json ? ['json'] : [])]);
     case 'history': return runUpdateCommand(['history', ...args.filter((a) => /^\d+$/.test(a)), ...(json ? ['json'] : [])]);
     case 'version': return runVersionCommand(args);
     case 'doctor': {
@@ -71,7 +65,7 @@ async function main(): Promise<number> {
       return rep.grade === 'failed' ? 1 : 0;
     }
     default:
-      process.stderr.write(`未知子命令: ${cmd}\n用法: update-cli check|status|plan|history|version|doctor [json]\n`);
+      process.stderr.write(`未知子命令: ${cmd}\n用法: update-cli check|status|plan|history|version|doctor [json] [--channel stable|dev]\n`);
       return 64;
   }
 }

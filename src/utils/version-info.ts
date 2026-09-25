@@ -57,6 +57,68 @@ export function distTagForChannel(channel: UpdateChannel): string {
   return channel === 'beta' ? 'beta' : 'latest';
 }
 
+// ── 双源 (update-protocol §12, 2026-09-25) ──────────────────────────────────
+//
+// stable: npm registry (`dist-tags.latest`) 是**权威**, GitHub Release/Tag 是**交叉校验源**;
+// dev   : GitHub `master` HEAD 是**唯一源**, 版本身份 = `<package.json 版本>+dev.<commit sha 前 7>`。
+//
+// 两条硬口径 (从这里开始, 全局只有这一份):
+//   ① 两套版本比较语义**显式分开** —— stable 比 semver, dev 比 commit sha (`ChannelKind`)
+//   ② 源不可达 / 版本不存在 → **拒绝并说清**, 不许静默装回旧版 (§12.5)
+
+/** GitHub 上游 (owner/repo) —— 与 UPSTREAM_REPO 同一处, 这里给 API 用。 */
+export const GITHUB_UPSTREAM_SLUG = 'logos-42/bolloon';
+/** GitHub API 根 (可被 BOLLOON_GITHUB_API 覆盖 → 受控假 API / 企业实例)。 */
+export const GITHUB_API_BASE = (process.env.BOLLOON_GITHUB_API || 'https://api.github.com').replace(/\/+$/, '');
+/** dev 通道盯的分支 (冻结: master)。 */
+export const DEV_BRANCH = 'master';
+export const DEV_REF = `refs/heads/${DEV_BRANCH}`;
+
+/**
+ * 版本比较语义 (显式, 不是隐含约定):
+ *   semver  —— stable: 按 semver 数值段比大小
+ *   git-ref —— dev: **不用 semver**, 只判"是否同一 commit / 是否落后"
+ */
+export const CHANNEL_KINDS = ['semver', 'git-ref'] as const;
+export type ChannelKind = typeof CHANNEL_KINDS[number];
+
+export function channelKindOf(channel: UpdateChannel): ChannelKind {
+  return channel === 'dev' ? 'git-ref' : 'semver';
+}
+
+/** dev 快照身份里的后缀标记 (`0.4.33+dev.a1b2c3d`)。 */
+export const DEV_IDENTITY_SEP = '+dev.';
+
+/** dev 快照身份 —— 用 commit sha (不是 semver) 当身份, 版本号只作参考展示。 */
+export function devIdentity(baseVersion: string, sha: string): string {
+  return `${baseVersionOf(baseVersion)}${DEV_IDENTITY_SEP}${String(sha).slice(0, 7)}`;
+}
+
+/**
+ * dev 通道的**唯一一句警告** (§12.4 硬约束 1) —— 检查 / 计划 / 执行三处打印同一句话。
+ * 定义在这里 (唯一事实层), 由 dual-source / update-manager / CLI 复用, 不允许各处自己造一句。
+ */
+export const DEV_CHANNEL_WARNING = '⚠️ dev 通道 = GitHub master HEAD 的即时快照 (未走发布门): 可能中断正在跑的 Goal/Run, 且不保证可回滚到上一个 dev 版。';
+/** 一键回 stable 的提示语 (同一份措辞)。 */
+export const DEV_BACK_TO_STABLE_HINT = '一键回稳定版: bolloon update now --channel stable';
+
+/** 去掉 `+dev.<sha>` 后缀, 拿到基础版本号 (stable 目标的比对基准)。 */
+export function baseVersionOf(v: string | null | undefined): string {
+  return String(v || '').split(DEV_IDENTITY_SEP)[0].trim();
+}
+
+/** 这个版本号是不是一个 dev 快照身份。 */
+export function isDevIdentity(v: string | null | undefined): boolean {
+  return String(v || '').includes(DEV_IDENTITY_SEP);
+}
+
+/** 从 dev 身份里取 commit sha (前 7 位); 不是 dev 身份返回 null。 */
+export function devShaFromIdentity(v: string | null | undefined): string | null {
+  if (!isDevIdentity(v)) return null;
+  const sha = String(v).split(DEV_IDENTITY_SEP)[1]?.trim();
+  return sha ? sha : null;
+}
+
 // ── 包根定位 ────────────────────────────────────────────────────────────────
 
 /**
@@ -405,6 +467,12 @@ export interface VersionUpdateSummary {
   latestVersion: string | null;
   lastUpdate: { at: string; from: string; to: string; status: string; reason?: string } | null;
   needsRestart: boolean;
+  /** 当前装的是哪个源 (stable= npm 权威 / dev= GitHub master 快照) —— §12.5 "哪个源答的" */
+  installedChannel?: 'stable' | 'dev' | null;
+  /** 已装 dev 快照的 commit sha (只在 installedChannel=dev 时有意义) */
+  installedDevSha?: string | null;
+  /** 一键能切回的另一个源 (例如 dev 快照能一键回 stable) */
+  switchableTo?: { channel: 'stable' | 'dev'; source: string; target: string | null } | null;
 }
 
 export interface VersionInfo {
@@ -429,11 +497,17 @@ export interface VersionInfo {
   binPath: string | null;
   configDir: string;
   channel: UpdateChannel;
+  /** 该通道的**比较语义** (stable=semver / dev=git-ref) —— 显式, 不靠约定 */
+  channelKind: ChannelKind;
   upstream: string;
   registry: string;
   updateSource: UpdateSource;
   autoUpdatable: boolean;
   installReason: string;
+  /** 当前安装的 dev 快照 commit sha (非 dev 安装 = null) */
+  installedDevSha: string | null;
+  /** 一键能切回的另一个源 (dev → stable / stable → dev) */
+  switchableTo: { channel: 'stable' | 'dev'; source: string; target: string | null } | null;
   update: VersionUpdateSummary | null;
   /**
    * 运行时配置 (Node/npm/Git/Python 的路径 + 版本 + 来源 + 是否由 Bolloon 安装 + 最后验证时间)。
@@ -470,6 +544,12 @@ export function collectVersionInfo(opts: CollectVersionOptions = {}): VersionInf
   if (!gitCommit && gitHeadFromPkg) { gitCommit = String(gitHeadFromPkg).slice(0, 7); gitCommitSource = 'package.json'; }
   if (!gitCommit) gitCommitSource = 'unknown';
 
+  // dev 身份从**磁盘上的版本号**读 (不是从状态文件猜): `0.4.33+dev.a1b2c3d` → sha=a1b2c3d
+  const installedDevSha = devShaFromIdentity(pkg?.version) || (opts.update?.installedDevSha ?? null);
+  const switchableTo = opts.update?.switchableTo ?? (installedDevSha
+    ? { channel: 'stable' as const, source: 'npm', target: null }
+    : null);
+
   return {
     schema: 'bolloon-version/1',
     packageName: pkg?.name || PKG_NAME,
@@ -491,11 +571,14 @@ export function collectVersionInfo(opts: CollectVersionOptions = {}): VersionInf
     binPath: install.binPath,
     configDir: home,
     channel,
+    channelKind: channelKindOf(channel),
     upstream: UPSTREAM_REPO,
     registry: `${NPM_REGISTRY_BASE}/${PKG_NAME}`,
     updateSource: install.updateSource,
     autoUpdatable: install.autoUpdatable,
     installReason: install.reason,
+    installedDevSha,
+    switchableTo,
     update: opts.update ?? null,
     runtime: opts.runtime ?? null,
     runtimeConfigBacked: opts.runtimeConfigBacked ?? false,
@@ -528,8 +611,18 @@ export function describeUpdateLine(info: VersionInfo): string {
     case 'registry_unavailable': return `更新检查: registry 不可用${u.lastCheckReason ? ` (${u.lastCheckReason})` : ''} (不等于最新)`;
     case 'local_version_unknown': return '更新检查: 读不到本地版本 — 不判断是否有更新';
     case 'unsupported_installation': return '更新检查: 当前安装方式不支持自动更新';
+    case 'github_unavailable': return `更新检查: GitHub 源不可用${u.lastCheckReason ? ` (${u.lastCheckReason})` : ''} (不等于最新)`;
+    case 'cross_check_mismatch': return `更新检查: 两个源不一致 (npm ↔ GitHub) — 不执行更新`;
     default: return `更新检查: ${u.lastCheckStatus}`;
   }
+}
+
+/** 双源身份那一行 (谁装的 / 哪个 sha / 能切回哪) —— `--version` 与 `update status` 共用同一份措辞。 */
+export function describeSourceIdentity(info: Pick<VersionInfo, 'packageVersion' | 'installedDevSha' | 'switchableTo' | 'channel' | 'channelKind'>): string {
+  const src = info.installedDevSha ? 'dev (GitHub master 快照)' : 'stable (npm registry)';
+  const ident = info.installedDevSha ? `commit ${info.installedDevSha}` : baseVersionOf(info.packageVersion);
+  const back = info.switchableTo ? ` · 可切回 ${info.switchableTo.channel} (${info.switchableTo.source})` : '';
+  return `当前安装源: ${src} · 版本/commit: ${ident} · 比较语义: ${info.channelKind}${back}`;
 }
 
 export function renderVersionText(info: VersionInfo, opts: { verbose?: boolean } = {}): string {
@@ -549,10 +642,12 @@ export function renderVersionText(info: VersionInfo, opts: { verbose?: boolean }
       `运行入口:    ${info.entryPath}`,
       `bin shim:    ${info.binPath || 'unknown'}`,
       `配置目录:    ${info.configDir}`,
-      `更新通道:    ${info.channel}`,
+      `更新通道:    ${info.channel} (比较语义: ${info.channelKind})`,
       `更新来源:    ${info.updateSource}${info.autoUpdatable ? '' : ' (不支持自动更新)'}`,
+      describeSourceIdentity(info),
       `上游地址:    ${info.upstream}`,
       `registry:    ${info.registry}`,
+      `GitHub:      ${GITHUB_UPSTREAM_SLUG} (${DEV_BRANCH} HEAD = dev 通道的源)`,
       describeUpdateLine(info),
       `上次检查:    ${fmtTime(info.update?.lastCheckAt)}`,
     ];
@@ -577,12 +672,14 @@ export function renderVersionText(info: VersionInfo, opts: { verbose?: boolean }
     `安装目录: ${info.installDir}`,
     `运行入口: ${info.binPath || info.entryPath}`,
     `更新通道: ${info.channel}`,
+    describeSourceIdentity(info),
     `Node.js: ${info.nodeVersion}`,
     `平台: ${info.platform} ${info.arch}`,
     `上游提交: ${info.gitCommit || 'unknown'}`,
     describeUpdateLine(info),
     `上次检查: ${fmtTime(info.update?.lastCheckAt)}`,
   ];
+  if (info.installedDevSha) lines.push(DEV_CHANNEL_WARNING, DEV_BACK_TO_STABLE_HINT);
   if (info.runtime) {
     lines.push('');
     lines.push(...renderRuntimeLines(info.runtime, { verbose: false, configBacked: info.runtimeConfigBacked }));

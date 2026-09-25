@@ -24,6 +24,8 @@ import {
   type UpdateLockInfo,
 } from './update-state.js';
 import { queryRegistryDoc, parseJsonFromStdout } from './update-manager.js';
+import { fetchGithubFacts, toGithubReport, renderGithubReportLine } from './dual-source.js';
+import { devShaFromIdentity, channelKindOf, DEV_CHANNEL_WARNING, DEV_BACK_TO_STABLE_HINT } from './version-info.js';
 import {
   detectRuntimeReport, verifyRuntimesDeep, evaluateCapabilities, RUNTIME_MIN, readIncompleteMarker,
   type RuntimeReport,
@@ -351,6 +353,25 @@ export async function runDoctor(opts: { bolloonHome: string; userHome?: string; 
 
   // 6. 上次更新是否异常中断
   const st = await readUpdateState(home);
+  // 6.5 双源身份 (§12.5): doctor 也必须能回答"我装的是哪个源 / 哪个 commit / 能切回哪"
+  {
+    const devSha = devShaFromIdentity(version);
+    const prefsChannel = st.channel || 'stable';
+    checks.push(devSha
+      ? {
+        id: 'update_source', label: '安装来源 (双源)', grade: 'degraded',
+        detail: `dev 快照: GitHub master ${st.devRef || 'refs/heads/master'} @ commit ${devSha} (比较语义 ${channelKindOf('dev')}, 非 semver)`
+          + `${st.switchableTo ? ` · 可切回 stable (${st.switchableTo.source}${st.switchableTo.target ? ` @ ${st.switchableTo.target}` : ''})` : ''}`
+          + ` · ${DEV_CHANNEL_WARNING}`,
+        action: 'bolloon update now --channel stable',
+      }
+      : {
+        id: 'update_source', label: '安装来源 (双源)', grade: 'ok',
+        detail: `stable: npm registry 权威 (比较语义 ${channelKindOf('stable')})`
+          + `${st.devSha ? ` · 上次用过 dev 快照 commit ${st.devSha}${st.devCheckedAt ? ` (${st.devCheckedAt})` : ''}, 已切回` : ''}`
+          + ` · 默认通道 ${prefsChannel} · 切 dev 用: bolloon update now --channel dev`,
+      });
+  }
   const inFlight = st.lastUpdate && (IN_FLIGHT_RUN_STATUSES as string[]).includes(st.lastUpdate.status);
   checks.push(inFlight
     ? { id: 'last_update', label: '上次更新', grade: 'degraded', detail: `上次更新停在 ${st.lastUpdate!.status} (${st.lastUpdate!.at}) — 异常中断, 建议 bolloon update --plan 后再更新一次`, action: 'bolloon update --plan' }
@@ -362,14 +383,23 @@ export async function runDoctor(opts: { bolloonHome: string; userHome?: string; 
     checks.push({ id: 'needs_restart', label: '待重启', grade: 'degraded', detail: '新版本已就位但还没重启, 当前进程仍在跑旧代码', action: '重启 bolloon' });
   }
 
-  // 7. 版本检查源是否可达 (可跳过)
+  // 7. 版本检查源是否可达 (可跳过) —— 双源: npm 是权威, GitHub 是交叉校验/dev 的源
   if (opts.skipNetwork) {
     checks.push({ id: 'version_source', label: '版本源可达', grade: 'ok', detail: '已跳过 (离线)' });
   } else {
-    const reg = await queryRegistryDoc();
-    checks.push(reg.ok
-      ? { id: 'version_source', label: '版本源可达', grade: 'ok', detail: `npm registry 可达, latest=${reg.doc.latest}` }
-      : { id: 'version_source', label: '版本源可达', grade: 'degraded', detail: `${reg.kind}: ${reg.detail}` });
+    const [reg, ghRes] = await Promise.all([queryRegistryDoc(), fetchGithubFacts()]);
+    const gh = toGithubReport(ghRes);
+    const npmPart = reg.ok
+      ? `npm registry 可达, latest=${reg.doc.latest}`
+      : `npm ${reg.kind}: ${reg.detail}`;
+    checks.push({
+      id: 'version_source', label: '版本源可达 (双源)',
+      // npm 是 stable 的权威 (坏了就是 degraded); GitHub 坏了只影响交叉校验与 dev 通道 → 也只 degraded
+      grade: reg.ok ? (gh.reachable ? 'ok' : 'degraded') : 'degraded',
+      detail: `${npmPart} · ${renderGithubReportLine(gh)}`,
+      action: !reg.ok ? '检查网络/代理后重跑 bolloon doctor'
+        : (!gh.reachable ? 'GitHub 交叉校验不可用 (stable 仍以 npm 为权威); dev 通道此时会直接拒绝' : undefined),
+    });
   }
 
   // 7.5 安装完整性标记 (postinstall 发现缺 Git/Python 时留下的)

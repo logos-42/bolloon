@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-25 | feat | **更新系统落双源 (npm + GitHub): `--channel stable\|dev` + 两套版本比较语义显式分开 + 错误分类不合并 + **源不可达/版本不存在必拒 (退出码 2), 不许静默装回旧版** (真跑 **63 PASS / 0 FAIL** + 变异验证 **6/6 判红**)** —— ① **先查事实再看设计**: 真调 api.github.com + 看本地 tag → 本仓 **GitHub Release = 0 个 / Tag 25 个 (最高 `v0.4.30`) / master HEAD `d2148f3` / npm latest `0.4.33` (无对应 tag)** → stable 的 GitHub 那一侧**如实降级为「以 Tag 为准 + 没记录就报提醒级 `missing_record`」**, **没有**编造一条不存在的 Release 路径 (发布硬门 ④ 因此未做, 理由写在 wiki §12.6)。② **两套比较语义是代码里的显式字段** (`ChannelKind='semver'|'git-ref'`): stable = semver (npm `dist-tags.latest` 权威, GitHub Tag/Release 只做交叉校验) · dev = **git ref + commit sha** (版本号只作参考展示; 真跑实证: `0.4.33` 与 `0.4.33+dev.d2148f3` 的 semver 段相同, 但按 sha 必须判「有另一个 dev 版」)。③ **错误分类不合并**: 新增 `github_unavailable(offline/rate_limited/not_found/http_error/parse_error)` 与 `cross_check_mismatch`, 与 registry 侧**并列** (9 个结论只增不改, 优先级插进原序列); `REFUSED_STATUSES` 5 个结论在执行面**一个 npm 都不调**。④ **dev 三条硬约束全落**: 同一句警告在 检查/计划/执行/status/doctor 五处 (常量只一份文案) · 装完写 `installedChannel/installedDevSha/devSha/devRef/devCheckedAt` (`installed*` = 当前, `devSha` = 上次, 切回后仍能回答「上次装的是哪个 dev 版」) · `bolloon update now --channel stable` **真跑通** (退出码 0, 磁盘真变回 `0.4.33`)。⑤ **复用既有替换机制** (没有另造一套): dev 也只是「另一个 tarball」, 仍走 临时下载→校验→交给 npm 替换→验证可启动→失败回滚。⑥ **真跑暴露两个真问题** (都修): dev 快照从 git 树构建必须**两步** (`build --workspaces` 先建 `@bolloon/constraint-runtime`, 再 `build:main`; 只跑第二步在干净源码树上必 TS2307) · 验收脚本里**假源必须用异步子进程** (`spawnSync` 阻塞父进程事件循环 → 父进程的受控假服务器永远答不上话, 表现为 `releases: timeout`)。⑦ **真验证矩阵**: A npm 真断网+GitHub 可达 → `offline` 退出码 2 且**磁盘没被动过** · B GitHub 真不可达(dev) → `github_unavailable(offline)` 退出码 2 **不回落 stable** · C 限流 403 (匿名真跑时**真的被打到**, 分类当场验证) · D 真 codeload 404 → `not_found` 不装任何东西 · E dev 真跑 (真取 codeload 快照→真构建→装出 `0.4.33+dev.d2148f3`, 真起入口**自报**该身份) · F 一键回 stable 真跑 (历史留 `+dev.d2148f3 → 0.4.33`) · G 受控假源造 `v9.9.9` → `cross_check_mismatch` 退出码 2 **且没有任何 npm install 被调用** · H `update --status` 三态 (只装 npm / 装了 dev / 刚切回) 都**说清装的哪个源 + 哪个 sha + 能切回哪个源**。**门禁**: `tsc --noEmit` 0 错 · 飞轮冻结门 **34/34** (未削弱) · `update-system.test.ts` 53/53 不变红 · 新增 `update-dual-source.test.ts` 34/34 · 全量 vitest 见收尾 · wiki 四门 OK。**未做 (如实)**: ④ 发布硬门 (GitHub 上还没有与 `package.json` 同名的 Tag/Release, 现在设门会把每次发布都拦住 —— 等第一个「带同名 tag」的版本一起做) · ⑤ **本步刻意不发 npm 包** (下一步由主线做) · dev 快照构建时「装依赖」这一跳复用本仓 `node_modules` (只省这一步, 构建/打包/替换都是真的) · 真 LLM 驱动的长周期跑仍未验 | [update-protocol.md](./update-protocol.md) · [dual-source.ts](../../src/utils/dual-source.ts) · [update-manager.ts](../../src/utils/update-manager.ts) · [update-dual-source.test.ts](../../src/test/update-dual-source.test.ts) · [verify-dual-source.ts](../../scripts/verify-dual-source.ts) · [verify-dual-source-mutations.py](../../scripts/verify-dual-source-mutations.py) |
 | 2026-09-25 | test | **飞轮 M5 长周期真跑验收: 10 场景真跑全过 (191 过 / 0 败) + 挖出并修掉 7 个真系统缺陷 (最要紧的两个都是「界面撒谎 / 醒了没人管」类)** —— 场景 01 按进展跳 Run · 02 真 `kill -9` 后接续 · 03 子 Agent 卡死在 `tickOnce` 内被接管 · 04 父逐条拒收 · 05 外部等待+可信事件唤醒 · 06 注入新要求 · 07 结束自动出四类产物 · 08 下次相似任务复用 (**引用可指认 + 步骤数 3→2, 不用耗时**) · 09 没证据三层都挡 (**正向对照暴露主缺陷**) · 10 五种失败都给下一步。**⑦ 个真缺陷**: ① `goalStatusFromDecision` 缺 `wait` 分支 (等外部的 Goal 盘上是 `active`) ② 飞轮规则只看 Run 历史 ⇒ 醒了的 Goal 仍判「在等」 ③ `RUN_TRANSITIONS` 缺 `recovering` 入口 ⇒ `prepareResume` 对 paused/needs_human/awaiting_external 必失败 ④ 计龄把**等待**算成**超时** (只有 `queued/running` 该用 `now`) ⑤ 外部事件送达后只改 `wakeReason` 不改 `state`, 且一次真唤醒被报成「没唤醒」 ⑥ **(本轮主缺陷)** 完成那条路**不落盘收尾 continuation** (带 `wakeReason !== 'completed'` 守卫) → preflight 的整份覆盖写把旧 `state:'active'` 盖回来 ⇒ 已完成 Goal 的 `goalVisibleState` 回 `executing` (**界面比系统乐观**): 根因修 reducer 完成分支无条件落盘 + 投影层 `toUserVisibleState` 增 `goalStatus` 入参 (终态最高优先) 三处调用点跟着传 ⑦ 到点唤醒只清 `wakeAt` 不拉回 `goal.status` ⇒ 唤醒后真跑一轮有进展, 收尾却读到 stale `retry_wait` → 落成 `awaiting_external` (wakeAt 已空 ⇒ 只能靠事件唤醒) = **刚有进展的目标被挂起来没人跑** (P6-③ 时钟用例阴性对照真判红逼出): 新增 reducer 意图 `scheduled_wake` 走唯一漏斗。**门禁**: 全量 `vitest run` **233 文件 / 3640 测全绿** · `tsc --noEmit` **0 错** · 冻结门 **34/34** · 成本 **29 Run / 0 LLM 调用 / 场景墙钟 18.7s** (注入时钟, 每 tick 推 10 分钟) · 探针交付前全删 (`_probe-*` = 0) · `goal-flywheel/types.ts` 未动。**如实区分**: 07/10 两条断言**写错**(旧要求「三路径状态两两不同」「失败收尾 ≥3 种形态」)、08 夹具两个 bug(`requiredSkills` 误挡技能门禁 + `createGoal` 返回对象 `runs` 为空) —— 都不是系统缺陷; 未做到: 跨 Goal 试用仍不结算 (`trial_belongs_to_other_goal`)、收尾理由文本不区分失败种类、注入时钟非真时钟、未在真 DOM 上核界面 | [goal-flywheel-m5-acceptance-report.md](./goal-flywheel-m5-acceptance-report.md) / [goal-state-reducer.ts](../../src/agents/goal-state-reducer.ts) / [execution-supervisor.ts](../../src/agents/execution-supervisor.ts) / [work-monitor.ts](../../src/agents/goal-flywheel/work-monitor.ts) / [scenario-09-no-evidence.ts](../../scripts/acceptance/m5/scenario-09-no-evidence.ts) / [goal-flywheel-wiring-freeze.test.ts](../../src/test/goal-flywheel-wiring-freeze.test.ts) |
 | 2026-09-25 | feat | **M0 接线冻结: 把飞轮接成唯一责任链 + 删掉绕过 `closeRun` 的旧收尾路径 + 六条规则用**源码级门**钉死 (带变异验证) + 为 M1–M4 给出互不重叠的文件划分**: 链条 `Supervisor → Goal continuation → Runner/子 Agent → Run → closeRun → Memory + Skill 候选 → 下一次 continuation` 落地为**唯一入口** `closeRunOnce` (幂等)。① **删/改道 6 条旧旁路**: `pi-sdk.ts` 自己那套「读完证据 → `evaluateGoalCompletion` → `completeGoalIfEligible`/`setUnresolved`」Goal 侧收尾 (不收尾: 不写 Memory/不生成候选/不写权威 continuation) **删除**, 改走收尾漏斗 + Goal reducer; `pi-sdk` 的「LLM 不可用 → fallback」出口补收尾 (工具/权限失败也是终止路径); `task/task-runner.ts` 两处 `finishRun` 只结束不收尾 + 直接 `completeGoalIfEligible` → 改走 `closeTaskRun`; 全仓 6 处「各写一遍 `updateGoal(id,{status})`」(Supervisor 的判停/唤醒、接线层阻塞升级、contacts 撤权/等回话、`goal-criteria`、`skill-readiness`、`external-events` 到达/超时、`applyBlockHandling`) 全部收敛到新 `goal-state-reducer.ts` 的 **唯一漏斗** `reduceGoalState` (13 个 intent); `run-store` 新增 Run 终止回调注册点 → **崩溃恢复 (`reconcileOrphans`→interrupted) 与失速 (`superviseRuns`→stalled) 也进同一条链**。② **六条源码级门** (纯函数吃源码文本, 所以变异验证能把人为改坏的源码喂给同一份判据): 规则①只有 Supervisor 判继续 · ②只有 Goal reducer 改状态 (**按文件粒度**判: `patch.status='abandoned'` 与 `await updateGoal(...)` 分行写也必须抓到) · ③只有 `closeRun` 关 Run (含「新增一条 import」也算触碰) · ④**八类终止路径逐条登记** (`FUNNEL_CALL_RE` 带词界, 别名 `closeTaskRun` 必须真调 `closeRunOnce`) · ⑤子 Agent 不许写 Goal · ⑥Skill 不许绕过「验证+快照+可回退」通道 (**措辞是"不许绕过通道"不是"不许自动"** —— M6 允许自动晋升, 通道留出来)。③ **实证**: 新增 2 个测试文件 —— `goal-flywheel-wiring-freeze.test.ts` (34 条: 扫描面真读盘 · 条数下限只加不减 · **每条规则一个注入旧旁路→必须判红的变异** · 空文件列表→门拒跑) 与 `goal-flywheel-m0-chain.test.ts` (5 条**真跑整条链**: 跨 2 个 Run 且第 2 个 Run 的指令里真带上第 1 次收尾写下的 `nextAction` · 收尾幂等 + 事实读不回来如实说 · 崩溃恢复走同一链 · CLI 宿主同一条链)。**门禁**: `tsc --noEmit` **0 错** · 全量 `vitest run` **223 文件 / 3442 测 = 3440 过 + 2 红**, 2 红全在**另一条线**刚落地的 `goal-flywheel-p6-block-executor.test.ts` 且**单独跑 13/13 全绿**(本机并发打穿超时的已知现象) —— 本批新增的 39 条测试与既有 `goal-flywheel-*` 全绿。**未做(如实)**: 真 REPL/真 Web 界面上的 `/supervise` 未验 · 小时级真时钟与多 worker 租约竞争未验 · `block-executor.ts` 不在 M0 声明的扫描面里 (它由另一条线并发落地) | [goal-continuation-flywheel.md](./goal-continuation-flywheel.md) / [m1-m4-closure.md](./m1-m4-closure.md) / [seams.ts](../../src/agents/goal-flywheel/wiring/seams.ts) / [goal-state-reducer.ts](../../src/agents/goal-state-reducer.ts) / [goal-flywheel-wiring-freeze.test.ts](../../src/test/goal-flywheel-wiring-freeze.test.ts) / [goal-flywheel-m0-chain.test.ts](../../src/test/goal-flywheel-m0-chain.test.ts) |
 | 2026-09-25 | docs | **框架改写 (只动文档): 把 `goal-continuation-flywheel.md` 从「项目功能 / 实施路线图」口径改成「意图 + 执行机制」** —— leo 纠正「**飞轮是我的最终意图和意愿, 并不是项目功能**」。① 开头框架: 飞轮**不是给产品加的功能**, 而是把**人的长期意图**持续执行下去的**机制 (引擎)**; **意图是一等输入**, **Goal 是意图的可执行投影** (仓库原则 `Idea / Intent` 优先于 `Code`); 显式写明本页**不是**产品功能清单、**也不是**产品路线图。② **新增一节「意图的落位」** (不编号, 插在 §1 之前, 既有编号一个没动): `意图 (Intent) → Goal → continuation → Run → Memory/Skill → 下一次执行` 六层逐层写清「是什么 / 谁能改」(意图**只有人能改**, Agent 只读; continuation 可自动写但**不改意图、不改完成判据**; 正式 Skill 变更需批准) + 三条纪律: **意图可更新可撤销** · **意图级变更高于 Goal 级** (现有 P4 `GoalChangeRequest` 只管 Goal 级, 意图级变更**需要单独一层由人确认**, Agent 不得自行改意图) · 意图撤销后 Goal 落 `abandoned`/`needs_human` 且不许悬空 (历史 Run 不被改写)。③ 措辞换框: §2「已经有的**引擎零件**」· §3「没收敛的**引擎能力**」· §11 补一条**框架上的不做** (不把飞轮排成产品功能项 / 产品路线图)。**技术事实一字未改**: 8 态状态机 · `ContinuationDecision` 12 字段 + 三类硬底线 · P1 固定收尾 9 步 + 四类产物 · Memory 5 层判别联合 · `SkillImprovementCandidate`/`SkillJunkReason`/`snapshotScope` · `AgentWorkContract` 16 字段 + `AgentWorkReport` + 5 条子禁项 · `BlockKind`(10)/`BlockRecord`/`BlockResolutionAction`/`UserVisibleState`(5) · `GoalChangeRequest` + `ChangeKind`(8) + 5 条规则 + 两份输出 · P5 验收 6 正例 + 2 强负例 · §15 门禁 · §11 不做清单 全部保留原样。**§13 所有权表与 §14 函数签名一个字未动** (从 `## 13.` 到文件末 `cmp` 逐字节相同, 87 行)。`src/**` **零改动**。**门禁**: `wiki_check` / `wiki_lint --strict=v2` / `raw_manifest_check` / `supersede_check` **四门 OK**; `git diff --stat` 只有 4 个 docs 文件。**未做(如实)**: **没有新增意图层类型** (落位先写清, 类型等有真实需要再**单独一次提交**冻结, 与 `types.ts` 改接口同样的纪律) · 6 条并行实现线仍在各自写 `src/agents/goal-flywheel/*.ts`, 本页 §13 未按任何一条的实际进度调整。 | [goal-continuation-flywheel.md](./goal-continuation-flywheel.md) / [index.md](./index.md) / [current-status.md](./current-status.md) |
@@ -3889,3 +3890,87 @@ M5 长周期真跑(用真实长期目标当靶子) · M6 空闲反思(做梦) ·
 跨 Goal 的复用**不兑现 Skill 试用** (`trial_belongs_to_other_goal`, 候选停在 `trialing`, 需 leo 拍) · 收尾理由文本**不区分**
 失败种类 (3/5 同模板, 2/5 被 `classifyError` 归到 `auth`/`unknown`) · **注入时钟非真时钟** (小时级/跨进程长周期未验) ·
 场景 05 备案号真实例不计入 · **未在真 DOM** 上核界面投影 · 临时探针交付前已全删 (`_probe-*` = 0)。
+## [2026-09-25] feat | 更新系统落双源 (npm + GitHub): `--channel stable|dev` + 两套比较语义 + 源不可达必拒
+
+规格来源 = `update-protocol.md` §12 (它原来标题是「**计划, 未落地**」, 本次把它改成**已落地**, 并补上落地后才有的**实数**)。
+
+### 一、先查事实, 再决定 stable 那一侧怎么降级 (不许编造 tag/Release 路径)
+
+| 事实 (真查) | 实数 |
+| --- | --- |
+| git tag | **25 个**, 最高 `v0.4.30` |
+| **GitHub Release** | **0 个 (空数组)** |
+| GitHub `refs/heads/master` HEAD | `d2148f3` |
+| npm `dist-tags.latest` | `0.4.33` (**没有对应 tag**) |
+
+本仓**没有 Release** → stable 的 GitHub 那一侧**以 Tag 为准**; 交叉校验在真实数据上给出的是
+`missing_record` (**提醒级, 不阻塞**), 这正是 §12.5 「registry 有该版本但 Release 缺」那一行的真实长相。
+发布硬门 (④) **因此没做**: GitHub 上没有与 `package.json` 同名的 Tag, 现在设门会把**每一次**发布都拦住,
+而拦住的理由是「历史发布没打 tag」, 不是「这次发布坏了」—— 等第一个带同名 tag 的版本一起做。
+
+### 二、两套比较语义是**显式字段**, 不是注释约定
+
+- `ChannelKind = 'semver' | 'git-ref'` + `channelKindOf()`; `update status` / `update plan` / `--version json` 都打出来。
+- **stable** = semver: npm `dist-tags.latest` 是**权威**; GitHub Tag/Release 只回答「两条记录是否指向同一版」。
+- **dev** = **git ref + commit sha**: dev 身份 = `<package.json 版本>+dev.<commit sha 前 7>`, 版本号**只作参考展示**。
+  **真跑实证**: 装出来的是 `0.4.33+dev.d2148f3` —— semver 段与 npm 的 `0.4.33` **完全相同**,
+  但按 sha 判定必须报 `update_available` (有另一个 dev 版), **不能**因为版本号相同就说「已是最新」。
+- **「通道」与「当前装的是哪个源」是两件事**: 通道 = 你想跟谁走; 装的什么源 = 现在磁盘上跑的代码是谁给的。
+  `status` **分开报** (装的 dev + 通道 stable 是正常状态, 不是矛盾)。
+
+### 三、落了什么 (文件级)
+
+- **新增** `src/utils/dual-source.ts` —— 双源的**源事实**: `fetchGithubFacts` (Releases/Tags/master HEAD 三个事实, 任一失败即
+  `github_unavailable` 但**把已拿到的部分一起带回来**)、`classifyGithubError` (offline / rate_limited(带重试时间) /
+  not_found / http_error / parse_error)、`crossCheckStable` (agree / mismatch / missing_record / no_record_at_all)、
+  `compareDevSnapshots`、`prepareDevSnapshot` (取源码 → 校验 sha → 打 dev 身份 → 需要时构建 → `npm pack`)。
+  可选 `GITHUB_TOKEN`/`GH_TOKEN`/`BOLLOON_GITHUB_TOKEN` **只为提配额** (60/h → 5000/h), **只进请求头, 永不打印/入库**。
+- **新增** `src/test/update-dual-source.test.ts` (**34 条**, 断言只加不减) + `scripts/verify-dual-source.ts` (真跑) +
+  `scripts/verify-dual-source-mutations.py` (变异验证)。
+- **只增不改**: `CHECK_STATUSES` 7 → **9** (新增 `github_unavailable` / `cross_check_mismatch`); `UpdateState` 加
+  `installedChannel / installedDevSha / devSha / devRef / devCheckedAt / sourceFacts / switchableTo`;
+  `update-manager` 里 `REFUSED_STATUSES` 5 个结论在执行面**一个 npm 都不调**。
+- **复用既有替换机制 (没有另造一套)**: dev 也只是「另一个 tarball」——临时下载 → 校验 → 交给 npm 替换 →
+  验证可启动 → 失败回滚, 与 §5 的流水线**同一条**。
+- 顺带两处小修: `doctor` 的「版本源可达」升为**双源** (npm + GitHub 各报各的, GitHub 坏了只 degraded, 因为 npm 仍是权威) +
+  新增一项「安装来源 (双源)」(dev 时带 commit sha 与「一键回 stable」的提示); `status` 的「能切回」提示统一成 `bolloon update now --channel <源>`。
+
+### 四、真跑验收 (`npx tsx scripts/verify-dual-source.ts`) —— **63 PASS / 0 FAIL / 0 SKIP**
+
+真 npm registry + 真 api.github.com + **真 codeload 下载 21MB master 快照 + 真 `npm run build` + 真 `npm pack` + 真 `npm install -g`**,
+隔离 HOME / 隔离 npm prefix (**不碰本机全局安装**)。
+
+| 验收 | 真输出 |
+| --- | --- |
+| A stable → dev | 装出 `0.4.33+dev.d2148f3`; 真起装完的入口, 它**自报** `Bolloon Agent v0.4.33+dev.d2148f3 / 安装方式: npm-global` |
+| B dev → stable | `check(stable)` 判 `update_available` 且理由写明「切回 stable 的 0.4.33」; 真换回 `0.4.33`; 历史留 `0.4.33+dev.d2148f3 → 0.4.33` |
+| C 一键回 stable | 真 CLI 子进程 `update now --channel stable` → **退出码 0**, 磁盘真变回 `0.4.33` |
+| D 源不可达 (假阳性检查) | dev + GitHub 不可达 → `github_unavailable(offline): releases: ECONNREFUSED`, 退出码 **2**, 输出**无**「已是最新」, `latestVersion=null`, **不回落 stable**; stable + npm 不可达 → `offline` 退出码 2, `npmCalled=0`, **磁盘版本未动** |
+| D 两源不一致 | 受控假源说 `v9.9.9` → `cross_check_mismatch`, 退出码 2, **没有任何 `npm install` 被调用** |
+| D commit 不存在 | 真 codeload **404** → `github_unavailable(not_found)`, 什么都没装 |
+| E `--status` 三态 | ① `安装来源: stable (npm registry)` + `能切回: dev (github)` ② `安装来源: dev (GitHub master 快照, ref refs/heads/master, commit d2148f3)` + `能切回: stable (npm @ 0.4.33) — 一键切: bolloon update now --channel stable` + 显式警告 ③ `安装来源: stable` + `上次 dev: commit d2148f3… (已切回 stable)` |
+
+**变异验证 (按词界改坏关键判据 → 聚焦测试必须判红 → 恢复 → 全绿)**: M1 `REFUSED_STATUSES` 漏 `github_unavailable` 🔴1 ·
+M2 两源不一致说成 `agree` 🔴3 · M3 dev 的比较语义说成 `semver` 🔴9 · M4 dev 源不可达改报 `up_to_date` 🔴1 ·
+M5 装完 dev 记成 `stable` 🔴1 · M6 dev 身份反解 sha 失效 🔴5 —— **6/6 按预期判红**, 恢复后 34/34 + 53/53 全绿。
+
+### 五、真跑暴露的两个真问题 (都修了, 记在这里免得重踩)
+
+1. **dev 快照从 git 源码树构建必须两步**: 先 `npm run build --workspaces --if-present` (建 `@bolloon/constraint-runtime`),
+   再 `npm run build:main`。只跑第二步 → `TS2307: Cannot find module '../constraint-runtime/dist/tools/...'` —— **干净源码树上必失败**。
+2. **验收脚本里的受控假源必须用异步子进程**: `spawnSync` 会阻塞父进程事件循环, 父进程里的假 HTTP 服务器**永远答不上话**
+   (症状是 `releases: timeout`, 看起来像产品超时, 其实是脚本自锁)。
+
+### 六、如实留下的 (没做到 / 有保留)
+
+- **④ 发布硬门未做** (理由见第一节) · **⑤ 本步刻意不发 npm 包** —— 下一步由主线做。
+- dev 快照构建时「装依赖」这一跳**复用本仓 `node_modules`** (`BOLLOON_DEV_REUSE_NODE_MODULES`, 验收用加速开关):
+  **只省这一步**, 下载/构建/打包/替换/验证都是真的。
+- 匿名 GitHub API 只有 **60 次/小时** —— 首次真跑就被 403 限流打到过 (顺带当场验证了 `rate_limited` 分类与文案);
+  之后用 `GITHUB_TOKEN` (配额 5000/h) 跑。**这是环境约束, 不是功能问题**, 但它证明了一件事: stable 下 GitHub 不可达**不该**阻塞 npm 权威的更新。
+- 本机全局安装**没有**被这次验收动过 (改的是隔离 prefix)。
+- **`--channel beta` 仍落 `latest`** (npm 上没有 `beta` dist-tag) —— 未改口径, 不假装有独立通道。
+
+### 待办 (留给主线 / 下一步, 本步不做)
+
+- **真 LLM 驱动的长周期跑尚未验** —— 飞轮 M5 验收报告里写明「**0 次 LLM 调用 (脚本化确定性 runner)**」, 这条仍是缺口。

@@ -21,7 +21,13 @@ import { resolveBolloonHome } from '../setup/setup-store.js';
 
 // ── 枚举 (冻结: 出口/状态都不许临时造词) ────────────────────────────────────
 
-/** 一次"检查"的结论。7 个值就是全部, 不认识的一律落进 registry_unavailable 并带原因。 */
+/**
+ * 一次"检查"的结论。**9 个值就是全部**, 不认识的一律落进 registry_unavailable 并带原因。
+ *
+ * 2026-09-25 (update-protocol §12.3, 双源): **只增不改** —— 新增 2 个, 错误分类**不合并**:
+ *   github_unavailable     GitHub 不可达 / 403·429 限流 / 没有 Release / 没有 master
+ *   cross_check_mismatch   stable 下 npm 与 GitHub 指向不同版本 (两个源的事实都摆出来)
+ */
 export const CHECK_STATUSES = [
   'up_to_date',              // 确认最新
   'update_available',        // 有新版本
@@ -30,6 +36,8 @@ export const CHECK_STATUSES = [
   'registry_unavailable',    // 可达但拿不到有效数据 (5xx / 包不存在 / 无 dist-tags)
   'local_version_unknown',   // 读不到本地版本 (不猜 0.0.0)
   'unsupported_installation',// 认得出本地版本, 但这种安装方式不支持自动更新
+  'github_unavailable',      // GitHub 源不可用 (offline / rate_limited / not_found / http_error)
+  'cross_check_mismatch',    // npm 与 GitHub 两个源不一致 → 拒绝更新
 ] as const;
 export type CheckStatus = typeof CHECK_STATUSES[number];
 
@@ -118,6 +126,38 @@ export interface UpdateState {
   autoRestart: boolean;
   needsRestart: boolean;
   updatedAt: string;
+
+  // ── 双源 (§12, 2026-09-25) ──────────────────────────────────────────────
+  /** **当前装的是哪个源**: stable = npm registry 权威; dev = GitHub master 快照 */
+  installedChannel?: InstalledChannel | null;
+  /** 磁盘身份里的 dev commit sha (`0.4.33+dev.a1b2c3d` → `a1b2c3d`); 非 dev 安装 = null */
+  installedDevSha?: string | null;
+  /** 最近一次装成 dev 用的 sha (切回 stable 后仍保留 —— 回答"上次那个 dev 快照是哪个") */
+  devSha?: string | null;
+  devRef?: string | null;
+  devCheckedAt?: string | null;
+  /** 上次检查时两个源各自的事实 (§12.5: 谁答的 / 交叉校验结果都要看得到) */
+  sourceFacts?: SourceFacts | null;
+  /** 与当前安装通道不同的那个源 (一键能切回去的目标) */
+  switchableTo?: SwitchTarget | null;
+}
+
+/** 当前安装来源的通道 (§12.1) */
+export type InstalledChannel = 'stable' | 'dev';
+
+/** 一键切回另一个源的目标 (§12.4 硬约束 3) */
+export interface SwitchTarget { channel: InstalledChannel; source: string; target: string | null }
+
+/** 两个源各自的事实 (只留能回答问题的字段, 不把整份 facts 塞进状态文件) */
+export interface SourceFacts {
+  npm?: { reachable: boolean; latest: string | null; detail?: string } | null;
+  github?: {
+    reachable: boolean; reason?: string; detail?: string; retryAt?: string | null;
+    ref?: string; headSha?: string | null; newestVersion?: string | null;
+    releases?: number; tags?: number;
+  } | null;
+  /** stable 的交叉校验结论 / 没有就是没查 */
+  crossCheck?: { kind: string; blocking: boolean; detail: string } | null;
 }
 
 export function emptyUpdateState(now = new Date()): UpdateState {
@@ -142,6 +182,13 @@ export function emptyUpdateState(now = new Date()): UpdateState {
     autoRestart: false,
     needsRestart: false,
     updatedAt: now.toISOString(),
+    installedChannel: null,
+    installedDevSha: null,
+    devSha: null,
+    devRef: null,
+    devCheckedAt: null,
+    sourceFacts: null,
+    switchableTo: null,
   };
 }
 
