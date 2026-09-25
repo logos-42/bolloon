@@ -3818,7 +3818,7 @@ M5 长周期真跑(用真实长期目标当靶子) · M6 空闲反思(做梦) ·
 **门禁**: `goal-flywheel-wiring-freeze.test.ts` **34/34** · 串行收口验收 `goal-flywheel-m0-serial-hooks.test.ts` **14/14** · `tsc --noEmit` **0 错** ·
 跨阶段回归 `goal-flywheel-wiring*.test.ts` 9 文件 **236/236** + 飞轮/监督者相关 19 文件 **670/670** 全绿。
 
-**变异验证 (改坏新钩子 → 必须判红, 恢复后全绿)**: 8 次变异, **7 次判红** (readFacts 注入改名 → ①两测红; `runningRun` 读成 null → ④红; `liveWorkIds` 返回空 → ④红;
+**变异验证 (改坏新钩子 → 必须判红, 恢复后全绿)**: **10 次变异, 9 次判红** (readFacts 注入改名 → ①两测红; `runningRun` 读成 null → ④红; `liveWorkIds` 返回空 → ④红;
 巡检调用方摘掉 → ③红; 成功点结算摘掉 → ②三测红; 归一化改回"必存" → ⑤两测红; `bindingCaps` 改名 → ①(2) 红; `terminalKind` 透传摘掉 → ②(4) 红; `wiring/index` 补导改名 → ⑥两测红)。
 **1 次判绿, 如实说明**: 把 `stopRunningRun` 注入改名 → **绿** —— 因为 `ingestRequirementViaSeam` 里有一条**等价兜底**
 (接缝没给执行器时按计划把停落到真 Run 上), 能力不丢。所以 ④ 的"真能停住"是**结果级**证据, 不是"注入的键在不在"的证据;
