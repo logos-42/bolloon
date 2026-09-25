@@ -12,8 +12,8 @@
  *        - `contacts/policy.ts` 的 `BlockKind` 与本文件 §6 的 `BlockKind` 取值**完全不相交** (同名不同域)
  *        - `skill-writer.ts` 的 `SkillCandidate` 是 run-end 文本候选, 本模块**刻意不重名**, 且它**不满足**本模块的晋升契约
  *        - 一段纯文本 (`string`) **不是**合法子 Agent 回报 (`AgentWorkReport`)
- *   ④ 冻结层自己是"纯类型": 零 import、零 function/async; 目录里此刻只有 types.ts + index.ts
- *      (P1–P4 各自的新文件还没建 —— 所有权划分见 `docs/wiki/goal-continuation-flywheel.md`)
+ *   ④ 冻结层自己是"纯类型": 零 import、零 function/async; 目录里只允许存在冻结面
+ *      (types.ts / index.ts) + §13 所有权名册上列名的阶段实现文件 —— 名册之外的"野文件"仍然判红
  *
  * 阴性对照 (怎么知道这道门不是空转): 把 `ContinuationDecision.wakeAt` 改成 `wakeAt?:` →
  * 源级断言立刻判红 (点名 `ContinuationDecision.wakeAt`), 类型级 `reqField` 同时塌成 `never`;
@@ -608,9 +608,24 @@ describe('④ 冻结层的纯度与所有权', () => {
     expect(indexSrc).not.toMatch(/\bfunction\b/);
   });
 
-  it('此刻目录里只有 types.ts + index.ts (P1–P4 的文件尚未动工, 所有权清晰)', () => {
+  it('目录里只有冻结面 + §13 名册上的阶段实现 (名册外的野文件仍然判红)', () => {
     const files = fs.readdirSync(path.join(root, 'src/agents/goal-flywheel')).sort();
-    expect(files).toEqual(['index.ts', 'types.ts']);
+    // 冻结面必须在 (types.ts 自身是"纯类型"由上一组断言钉住)
+    expect(files).toContain('index.ts');
+    expect(files).toContain('types.ts');
+    // P0–P4 的实现按 §13 的所有权划分逐个落地。判据从"目录只有两个文件"(时间快照, 落地即失效)
+    // 收紧成"名册白名单": 任何**不在名册上**的 .ts 文件照样判红 (不是随便加个文件就放行)。
+    const PHASE_FILES = [
+      'continuation-decision.ts', // P0 节奏
+      'run-closure.ts',           // P1 收尾
+      'memory-layers.ts',         // P1b Memory 分层
+      'skill-candidate.ts',       // P1b Skill 候选
+      'work-contract.ts',         // P2 子 Agent 合同
+      'work-monitor.ts',          // P3 阻塞监控
+      'goal-change.ts',           // P4 新要求注入
+    ];
+    const rogue = files.filter((f) => f !== 'types.ts' && f !== 'index.ts' && !PHASE_FILES.includes(f));
+    expect(rogue).toEqual([]);
   });
 
   it('本轮没有把"不做"清单里的东西混进来 (门自身非空转)', () => {
