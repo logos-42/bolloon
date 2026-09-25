@@ -334,7 +334,8 @@ updateChannel (默认 stable)
 
 > 状态: **shipped (2026-09-25)**。
 > §12.1–12.5 的**口径一行没改**, 本节现在是"落地后的实数语义 + 真跑验收结果"。
-> 落地顺序里的 **④⑤ 仍未做** —— 这一步**没有发 npm 新包** (发布是下一步, 由主线做)。
+> 落地顺序: **⑤ 已完成** —— 2026-09-25 发布 `@bolloon/bolloon-agent@0.5.0` (含同名 tag `v0.5.0`), 见 §12.9;
+> **④ 发布硬门仍未开** (第一个真实例已经造出来, 要不要开由主线定)。
 
 ### 12.0 落地前先查到的**事实** (决定 stable 那一侧必须怎么降级)
 
@@ -438,7 +439,7 @@ cross_check_mismatch    # stable 下 npm 与 GitHub 的记录指向不同版本 
 > §1 的"唯一事实"在这里的落点: 每个源给了什么 (`sourceFacts`)、哪个源答的、交叉校验结果 (`crossCheck`)、
 > 现在装的是谁 (`installedChannel`/`installedDevSha`)、能切回谁 (`switchableTo`) —— 全部落盘, `update status` 直接打出来。
 
-### 12.6 落地顺序 (**双源先于发 npm 新包**) —— ①②③ 已完成, ④⑤ 未做
+### 12.6 落地顺序 (**双源先于发 npm 新包**) —— ①②③⑤ 已完成, ④ 仍未开
 
 ```text
 ① 双源的就位        ✅ src/utils/dual-source.ts (源事实: classifyGithubError / crossCheckStable /
@@ -446,13 +447,17 @@ cross_check_mismatch    # stable 下 npm 与 GitHub 的记录指向不同版本 
                        update-state 的 dev 字段与 9 个结论
 ② 检查/计划面接双源  ✅ --channel stable|dev / github_unavailable / cross_check_mismatch / REFUSED_STATUSES
 ③ 验收脚本真跑       ✅ scripts/verify-dual-source.ts 63 PASS / 0 FAIL (§12.7)
-④ verify-release.mjs 加 "GitHub Tag 与 package.json 版本同名" 作为发布硬门   ⛔ 未做
-⑤ 才允许 npm publish 新包                                                  ⛔ 本步刻意不发 (下一步, 主线做)
+④ verify-release.mjs 加 "GitHub Tag 与 package.json 版本同名" 作为发布硬门   ⛔ 仍未开 (真实例已造出 → 由主线定)
+⑤ 才允许 npm publish 新包                                                  ✅ 已完成 (2026-09-25: 0.5.0 + tag v0.5.0, 见 §12.9)
 ```
 
 ④ **为什么还没做 (如实)**: GitHub 上 **Release 为 0、Tag 最高 `v0.4.30`** 而 npm 已是 `0.4.33` ——
 把这条件设成硬门, 当前状态**每一次发布都会被它拦住**, 而拦住的理由是"历史发布没打 tag", 不是"这次发布坏了"。
 先发一个**打了同名 tag** 的版本 (④⑤ 一起做), 硬门才有意义。**在此之前不许假装双源都验过了。**
+
+**2026-09-25 更新 (这个版本已经发出来了)**: `@bolloon/bolloon-agent@0.5.0` + tag `v0.5.0` 已发 (§12.9) ——
+交叉校验在本仓真实数据上**从 `missing_record` 变成 `agree`**。也就是说 **④ 的条件现在具备了**,
+但本步**刻意没开它** (开不开由主线定): 本步的活是把真实例造出来, 不是顺手打开一道会拦死后续发布的门。
 
 ### 12.7 验收 (真跑, 2026-09-25) —— 结果
 
@@ -497,4 +502,62 @@ cross_check_mismatch    # stable 下 npm 与 GitHub 的记录指向不同版本 
 
 - §9 多一行 `Phase 9 双源 (npm + GitHub)`;
 - §1.4 已按 §12.1 改成双源口径 (**权威顺序不变**);
-- **未做**, 且如实留在这里: ④ 发布硬门 (等第一个"带同名 tag"的版本) · ⑤ 发 npm 新包 (下一步)。
+- **⑤ 已完成**: 2026-09-25 发布 `0.5.0` + tag `v0.5.0` (§12.9) —— §9 因而再多一行 `Phase 10 发布 0.5.0`;
+- **④ 发布硬门仍未开**, 如实留在这里: 第一个"带同名 tag"的版本**已经发出来了** (条件已具备), 开不开由主线定 (§12.9)。
+
+---
+
+## 12.9 发布记录: `@bolloon/bolloon-agent@0.5.0` (2026-09-25) —— **第一个「带同名 Tag」的版本**
+
+### 发的是什么
+
+| 项 | 值 |
+| --- | --- |
+| 版本号 | **`0.4.33` → `0.5.0`** |
+| 内容 | ① **飞轮** M0 接线冻结 + M1–M4 接线 + M5 长周期真跑验收 (接进真执行路径) · ② **新 CLI**: `bolloon task group create\|join\|list\|link\|leave` 与 `bolloon identity init\|show` (此前只在源码, `0.4.33` 里没有; 旧版会把 `announce …` 这类吞成一句任务正文真跑) · ③ **`update` 双源** (`--channel stable\|dev` + 两套比较语义 + 源不可达必拒, §12) |
+| tag | annotated **`v0.5.0`** → commit **`493d8d5`** (发布出去的源码提交) |
+| 产物 | 1565 文件 · `package size 19.0 MB` / `unpacked 43.9 MB` · `shasum f8f5dbcf223a8994d788ce9abefa51fcd772c52b` |
+
+### 版本号为什么是 minor (依据与取舍)
+
+- **仓内没有成文的发布版本号政策** (`AGENTS.md` / 本页 / `docs/` 都没有, 也没有 `scripts/release*` 约定脚本)。
+- 找到的是**习惯**: 线上 142 个版本**全是 patch**, 且**功能批次也走 patch** (0.4.30 = 手机端联系方式与授权能力)。
+- 本次取 **minor**, 依据 = 本批是**向后兼容的新能力** (新子命令 + `--channel` 选项 + 飞轮接线) —— semver 对这种情况的定义就是 minor。
+- **取舍如实**: 严格照习惯应是 `0.4.34`。选 minor 是**判断, 不是仓内约定**; 属主线可否决项 (npm 已发, 真要改只能等下一次发布)。
+- 影响面确认: 版本号唯一影响的是 **dev 身份** (`<package.json 版本>+dev.<sha7>`, 按 sha 比较), 比较语义**一行未变**。
+
+### 发布判据 (逐条真查, 全过)
+
+| # | 判据 | 真输出 |
+| --- | --- | --- |
+| 1 | `dist-tags.latest` 真前进 | `{"latest":"0.5.0"}` (版本总数 143); **发布后约 5 分钟才放行** (20:25:47 翻), 期间直连 404 —— 与 0.4.27/0.4.28「退出码 0 但未公开」同形状, 处置是**只轮询不重发** |
+| 2 | 版本直连 URL | `HTTP 200` |
+| 3 | packument `dist.tarball` 真下载 + shasum 逐字对上 | 19010013 字节 → 本地 SHA-1 **== `dist.shasum`**; SRI 同样逐字相同 |
+| 4 | `tar -tzf` 入口 + **新 CLI** | `dist/cli-entry.js` · `bin/bolloon.cjs` 在; `GROUP_ACTIONS`/`case 'group'` · `identity init` · `--channel` 解析都在; 装出来真跑 `task group`/`identity` 帮助 + `--channel nonsense` 必拒 |
+| 5 | **全新目录**消费者安装 | `added 972 packages` · **`npm warn` 行数 = 0** (stderr 逐字为空) · `bolloon --version` → `Bolloon Agent v0.5.0` |
+| 6 | 拿新版**回环重跑**双源验收 | **63 PASS / 0 FAIL / 0 SKIP**; dev 身份 `0.5.0+dev.493d8d5` 真启动自报; 一键回 stable 退出码 0 且磁盘真变回; `--status` 三态说清源 + sha |
+| 补充 | 仓内发布后硬门 | `node scripts/verify-release.mjs 0.5.0 --install-check` → **13/13 全过**, 结论「发布可信」 |
+
+### 交叉校验: 第一个真实例
+
+真跑 (真 `api.github.com` + 真 packument + **仓内同一份** `crossCheckStable`):
+
+```text
+kind = agree · blocking = false · hasTag = true · hasRelease = false
+GitHub: 可达 · master HEAD 493d8d5 · Release 0 个 · Tag 26 个 · 最新版本标签 0.5.0
+detail = npm latest=0.5.0 在 GitHub 上有同名记录 (Tag v0.5.0) — 两个源指向同一版
+```
+
+**此前这条恒为 `missing_record`** (§12.0 的真实数据: npm latest `0.4.33` 在 GitHub 上没有同名 Tag)。
+**④ 发布硬门仍未开** —— 真实例已经造出来了, 条件具备, 但**开不开由主线定** (本步不顺手打开会拦死后续发布的门)。
+
+### 如实留下的 (没做到 / 有保留)
+
+1. 双源验收**第一次跑 18 FAIL**, 单一根因 = 隔离 prefix 预置安装失败 (`磁盘=null`), 下游 18 项被连带判红;
+   手动**同形状**命令复现成功 (`added 972 packages`, exit 0) → 判**瞬时环境抖动**, 重跑 63/0。
+   **但夹具把 npm 的 stderr 丢掉 ⇒ 红起来没有原因可读** —— 这个弱点本轮**未改**。
+2. `skills/bolloon-network/SKILL.md` 的「发行版可用性边界」仍按 **0.4.33 实测**口径写 (0.5.0 已带上 `group/announce/trail/post`);
+   技能源与站点镜像按纪律**逐字节同源**, 改它属 **UI 仓**那一侧的活, 本步没动。
+3. 双源验收的「装依赖」一跳仍复用本仓 `node_modules` (`BOLLOON_DEV_REUSE_NODE_MODULES`, 加速开关) —— 其余全真。
+4. tag 指向 `493d8d5`, wiki 回写落在随后一个 docs 提交 → tag 与 HEAD 不再重合; `verify-release.mjs` 的 `git_tag` 是**软门**, 之后跑会显示 ⚠️ (不是发布坏了, 是回写在 tag 之后)。
+5. 匿名 GitHub API 配额只有 60 次/小时 (本次全程真调) —— 环境约束, 且按设计 **stable 侧不该被 GitHub 阻塞** (npm 仍是权威)。
