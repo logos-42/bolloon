@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import type { AgentWorkContract, AgentWorkReport } from './goal-flywheel/types.js';
 
 export type SubAgentStatus = 'creating' | 'active' | 'idle' | 'busy' | 'terminated';
 export type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed';
@@ -30,6 +31,20 @@ export interface SubAgent {
   parentAgentId?: string;
 }
 
+/**
+ * 2026-09-25 (飞轮接线 P2): 带合同的派遣参数。
+ * 只有给了 `goalId` 才会签工作合同 —— 普通/临时子任务行为完全不变 (向后兼容)。
+ */
+export interface DelegateContractOptions {
+  goalId: string;
+  parentRunId?: string;
+  successCriteria?: string[];
+  budget?: { maxSteps: number | null; maxDurationMs: number | null; maxAmount: number | null; currency: string | null };
+  deadline?: string | null;
+  /** 合同里允许子用的工具 (空 = 不限制显式工具面, 由 Harness 管) */
+  allowedTools?: string[];
+}
+
 export interface SubAgentTask {
   id: string;
   type: 'delegate' | 'consult' | 'collaborate';
@@ -47,6 +62,12 @@ export interface SubAgentTask {
   assignedAt?: string;
   completedAt?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * 2026-09-25 (飞轮接线 P2): 这次派遣关联的长期 Goal 与工作合同 id。
+   * 有 `workId` 的任务: "完成"必须过 `validateChildReport` / `acceptsAsComplete` 核验。
+   */
+  goalId?: string;
+  workId?: string;
 }
 
 export interface InterAgentMessage {
@@ -285,6 +306,21 @@ export class SubAgentManager {
   async updateTaskStatus(taskId: string, status: TaskStatus, result?: string, error?: string): Promise<void> {
     const task = this.tasks.get(taskId);
     if (task) {
+      // 2026-09-25 (飞轮接线 P2): 挂着工作合同的任务, "完成" 必须过回报核验 ——
+      //   回一段漂亮话 (没有逐条判据证据) **不算完成**: 任务留在 in_progress, 原因写清楚,
+      //   而 Goal 那边的 pendingReports 保持 (父仍然在等这份回报)。
+      if (status === 'completed' && task.workId && task.goalId) {
+        const verdict = await this.validateTaskReport(task, result ?? '');
+        if (!verdict.accepted) {
+          task.status = 'in_progress';
+          if (result) task.result = result;
+          task.error = `回报核验不过, 不接受为完成: ${verdict.reason}`
+            + (verdict.missingEvidence.length ? ` [缺证据: ${verdict.missingEvidence.join('; ')}]` : '');
+          await this.saveTasks();
+          this.notifyTaskListeners(task);
+          return;
+        }
+      }
       task.status = status;
       if (result) task.result = result;
       if (error) task.error = error;
@@ -451,8 +487,9 @@ export class SubAgentManager {
     taskDescription: string,
     requiredCapabilities: string[],
     priority: TaskPriority = 'normal',
-    input?: string
-  ): Promise<{ task: SubAgentTask; agent?: SubAgent }> {
+    input?: string,
+    contractOptions?: DelegateContractOptions,
+  ): Promise<{ task: SubAgentTask; agent?: SubAgent; workContract?: AgentWorkContract }> {
     const agent = await this.findBestAgentForTask(requiredCapabilities, fromAgentId);
 
     if (!agent) {
@@ -465,7 +502,8 @@ export class SubAgentManager {
         priority,
         input
       );
-      return { task, agent: undefined };
+      const workContract = await this.issueWorkContractFor(fromAgentId, task, requiredCapabilities, contractOptions);
+      return { task, agent: undefined, workContract };
     }
 
     const task = await this.createTask(
@@ -477,8 +515,90 @@ export class SubAgentManager {
       priority,
       input
     );
+    // 2026-09-25 (P2): 派遣这件事**本身**就包含签合同 (不是事后再补一份文档);
+    //   有没有空闲子 Agent 不影响合同签发 (合同锁的是能力与判据, 不是某个人)。
+    const workContract = await this.issueWorkContractFor(fromAgentId, task, requiredCapabilities, contractOptions);
 
-    return { task, agent };
+    return { task, agent, workContract };
+  }
+
+  /**
+   * 给这次派遣签工作合同 (P2)。只有调用方给了 `goalId` 才签 —— 没有长期目标就没有合同上下文,
+   * 这时行为与接线前完全一致 (只记任务)。
+   */
+  private async issueWorkContractFor(
+    fromAgentId: string,
+    task: SubAgentTask,
+    requiredCapabilities: string[],
+    opts?: DelegateContractOptions,
+  ): Promise<AgentWorkContract | undefined> {
+    if (!opts?.goalId) return undefined;
+    try {
+      const { dispatchChildWork } = await import('./goal-flywheel-wiring.js');
+      const capability = (requiredCapabilities[0] || 'general').trim();
+      const issued = await dispatchChildWork({
+        goalId: opts.goalId,
+        parentRunId: opts.parentRunId ?? `subagent-task:${task.id}`,
+        childAgentId: task.assignedAgentId || task.toAgentId || `(unassigned:${fromAgentId})`,
+        capability,
+        objective: task.description,
+        inputs: { taskId: task.id, input: task.input ?? null },
+        allowedTools: opts.allowedTools ?? [],
+        budget: opts.budget ?? { maxSteps: null, maxDurationMs: this.config.taskTimeoutMs, maxAmount: null, currency: null },
+        deadline: opts.deadline ?? null,
+        successCriteria: (opts.successCriteria?.length ? opts.successCriteria : [task.description]).slice(0, 20),
+        issuedBy: `subagent-manager:${fromAgentId}`,
+      });
+      task.goalId = opts.goalId;
+      task.workId = issued.workId;
+      task.metadata = { ...(task.metadata ?? {}), workContract: issued };
+      await this.saveTasks();
+      return issued;
+    } catch (err) {
+      // 签合同失败 → 如实记在任务上 (不许悄悄降级成"没合同也能派")
+      task.error = `工作合同签发失败: ${String((err as Error)?.message || err).slice(0, 200)}`;
+      await this.saveTasks();
+      return undefined;
+    }
+  }
+
+  /**
+   * 核验挂着合同的子任务回报 (P2)。
+   * 报告可以是**结构化 JSON 文本** (推荐: 子按 `bolloon-work-report/1` 回), 也可以是纯文本 ——
+   * 纯文本没有逐条证据 → **不接受为完成** (这正是要堵的"回一段漂亮话就算完成")。
+   */
+  private async validateTaskReport(
+    task: SubAgentTask,
+    result: string,
+  ): Promise<{ accepted: boolean; reason: string; missingEvidence: string[] }> {
+    const { handleChildReport } = await import('./goal-flywheel-wiring.js');
+    const contract = (task.metadata?.workContract ?? null) as AgentWorkContract | null;
+    const raw = String(result ?? '');
+    let report: AgentWorkReport | null = null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && typeof (parsed as { status?: unknown }).status === 'string') {
+        report = parsed as AgentWorkReport;
+      }
+    } catch { /* 不是 JSON → 当纯文本处理 */ }
+    if (!report) {
+      report = {
+        workId: task.workId!,
+        childAgentId: contract?.childAgentId ?? task.assignedAgentId ?? task.toAgentId ?? '(unknown)',
+        status: 'completed',
+        summary: raw.slice(0, 400),
+        evidence: [],
+        artifacts: [],
+        checks: [],
+        unresolvedItems: [],
+        blockReason: null,
+        nextRecommendation: '(未提供)',
+        durationMs: 0,
+        reportedAt: new Date().toISOString(),
+      };
+    }
+    const out = await handleChildReport({ goalId: task.goalId!, workId: task.workId!, report });
+    return { accepted: out.accepted, reason: out.reason, missingEvidence: out.missingEvidence };
   }
 
   async consultAgent(

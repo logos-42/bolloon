@@ -28,6 +28,7 @@ import {
   type GoalContinuation,
   type GoalStatus,
 } from './goal-store.js';
+import type { ContinuationDecision } from './goal-flywheel/types.js';
 import {
   readRun,
   reconcileOrphans,
@@ -36,6 +37,25 @@ import {
   RESUMABLE_STATUSES,
   type RunRecord,
 } from './run-store.js';
+// 2026-09-25 (飞轮接线): P0–P4 的七个模块经**唯一**适配层接进真实执行路径
+//   (节奏由进展决定 · Run 收尾必过 closeRun · 子 Agent 走工作合同 · 阻塞监控 · 变更注入 · 用户可见态)
+import {
+  applyBlockHandling,
+  closeGoalRun,
+  collectWorkBlocks,
+  decideGoalStep,
+  dispatchChildWork,
+  flywheelTickNote,
+  lifecycleOf,
+  listGoalsWithPendingWork,
+  markChangesConsumed,
+  mergeGoalOutcome,
+  nextRunChangeDirective,
+  pendingContractDigest,
+  type FlywheelTickNote,
+  type GoalStepDecision,
+  type MergedGoalOutcome,
+} from './goal-flywheel-wiring.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2-D: Run 结束 → Goal 状态决策 (确定性 reducer, 纯函数, 可单测)
@@ -242,6 +262,17 @@ export interface TickReport {
   skipped: { goalId: string; reason: string }[];
   errors: string[];
   dryRun: boolean;
+  /** 2026-09-25 (飞轮接线 P0): 每个候选 Goal 的节奏判定 + 用户可见态 */
+  flywheel: FlywheelTickNote[];
+  /** 2026-09-25 (飞轮接线 P3): 阻塞巡检结论 (不看进程存活, 看任务是否卡住) */
+  blocks: { goalId: string; workId: string; kind: string; action: string; note: string }[];
+  /** 2026-09-25 (飞轮接线 P1): 每个 Run 的收尾流水线结论 (9 步 + 产物路径) */
+  closures: {
+    goalId: string; runId: string; steps: number; decision: string;
+    memories: number; candidates: number; reportPath: string; decisionRecordPath: string;
+  }[];
+  /** 2026-09-25 (飞轮接线 P2): 本轮签发的工作合同 (子 Agent 不是"派个任务", 是"管理一份合同") */
+  workContracts: { goalId: string; workId: string; capability: string }[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -378,9 +409,59 @@ export class ExecutionSupervisor {
       // 2. 扫描可执行 Goal
       const { runnable, skipped } = await listRunnableGoals({ now: this.now(), owner: this.owner });
       report.skipped = skipped;
+      const nowIso = new Date(this.now()).toISOString();
 
-      // 3. 逐个推进 (每个 Goal: 抢 lease → 执行 → 决策 → 释放 lease)
+      // 2.5 (2026-09-25, 飞轮接线 P3): 阻塞巡检 —— **不看进程存活, 看任务是否卡住**
+      //   只对"还有子 Agent 工作没回报"的 Goal 做 (有界), 由 detectBlocks + planBlockHandling 给结论;
+      //   接管 / 升级 / 要求补齐这些副作用在这里执行 (设计 §8)。
+      try {
+        for (const g of await listGoalsWithPendingWork()) {
+          const blocks = await collectWorkBlocks({ goalId: g.goalId, now: nowIso, runnerAvailable: this.canExecute });
+          if (blocks.length === 0) continue;
+          const handling = await applyBlockHandling({ goalId: g.goalId, blocks, now: nowIso });
+          for (const a of handling.actions) {
+            report.blocks.push({ goalId: g.goalId, workId: a.workId, kind: a.kind, action: a.action, note: a.note });
+          }
+          if (handling.actions.length) {
+            this.log(`[supervisor] goal=${g.goalId} 阻塞巡检: ${handling.actions.map((a) => `${a.kind}→${a.action}`).join(', ')}`);
+          }
+          if (handling.escalated.length) this.emit({ kind: 'needs_human', goalId: g.goalId, message: `子 Agent 工作升级到人: ${handling.escalated.join(', ')}` });
+          if (handling.takeovers.length) this.log(`[supervisor] goal=${g.goalId} 父接管子工作 (无心跳 + 执行权空闲 + 合同允许): ${handling.takeovers.join(', ')}`);
+        }
+      } catch (err) {
+        report.errors.push(`阻塞巡检: ${(err as Error)?.message || err}`);
+      }
+
+      // 3. 逐个推进 (每个 Goal: 节奏判定 → 抢 lease → 执行 → 收尾 → 决策 → 释放 lease)
       for (const goal of runnable.slice(0, this.maxPerTick)) {
+        // 3.1 (P0) 节奏由进展决定: 读权威 continuation + 最近 Run 进展 → decideContinuation
+        //     + applyHardLimits + isRunnable。没进展就不开新轮 (硬底线只能收紧)。
+        let step: GoalStepDecision | null = null;
+        try {
+          step = await decideGoalStep({ goalId: goal.goalId, now: nowIso, maxRetries: this.maxRetries, writeRecord: true });
+        } catch (err) {
+          report.errors.push(`${goal.goalId}: 节奏判定失败 ${(err as Error)?.message || err}`);
+        }
+        if (step) {
+          report.flywheel.push(await flywheelTickNote({ goalId: goal.goalId, step, now: nowIso }).catch(() => ({
+            goalId: goal.goalId,
+            decision: step!.decision?.decision ?? 'first_run',
+            state: step!.decision?.state ?? 'progressing',
+            runnable: step!.runnable,
+            reason: step!.reason,
+            noProgressStreak: step!.noProgressStreak,
+            visibleState: 'executing' as const,
+            nextAction: step!.decision?.nextAction ?? '(首个 Run)',
+          })));
+          if (!step.runnable) {
+            report.skipped.push({ goalId: goal.goalId, reason: `飞轮: ${step.reason}` });
+            await this.applyFlywheelStop(goal.goalId, step, nowIso).catch((err) => {
+              report.errors.push(`${goal.goalId}: 飞轮停写失败 ${(err as Error)?.message || err}`);
+            });
+            continue;
+          }
+        }
+
         const claimed = await claimGoal(goal.goalId, { owner: this.owner, ttlMs: this.leaseTtlMs });
         if (!claimed.ok) {
           report.skipped.push({ goalId: goal.goalId, reason: claimed.reason || 'claim 失败' });
@@ -414,7 +495,50 @@ export class ExecutionSupervisor {
     payments: { scanned: 0, reconciled: [], awaitingPayment: [], mustNotRepay: [], closed: [], goalsWoken: [], goalsFlagged: [], errors: [] },
       supervised: { stalled: [], failed: [] },
       claimed: [], executed: [], skipped: [], errors: [], dryRun: !this.runner,
+      flywheel: [], blocks: [], closures: [], workContracts: [],
     };
+  }
+
+  /**
+   * 飞轮说"不该跑"时, 该不该把"停"写进 Goal?
+   *
+   * 只有**明确要求停**的决策才写 (fail / pause / 无进展熔断 / 硬底线 / 阻塞):
+   * 这些是"停就是停"的判断, 不写下去的话下一个 tick 还会来问一遍 (且用户看不到原因)。
+   * 其余 `ask_human` (例如"本轮没有新证据, 未到熔断阈值 → 需要人定夺") 只**跳过本轮**、
+   * 不动状态: 那属于"没有继续的资格", 由运输层(退避/等外部)与人决定 ——
+   * 这样既不会用轮次冒充节奏, 也不会把一次没证据的 Run 直接判死。
+   */
+  private async applyFlywheelStop(goalId: string, step: GoalStepDecision, now: string): Promise<void> {
+    const d = step.decision;
+    if (!d) return;
+    const { updateGoal } = await import('./goal-store.js');
+    const hardLine = /硬底线/.test(step.reason);
+    const stop = d.decision === 'fail'
+      || d.decision === 'pause'
+      || (d.decision === 'ask_human' && (d.state === 'no_progress' || d.state === 'blocked'))
+      || hardLine;
+    if (!stop) return;
+
+    const status: GoalStatus = d.decision === 'fail' ? 'failed' : d.decision === 'pause' ? 'paused' : 'needs_human';
+    const goal = await readGoal(goalId);
+    if (!goal) return;
+    if (goal.status !== status && !['completed', 'failed', 'abandoned'].includes(goal.status)) {
+      await updateGoal(goalId, status === 'failed'
+        ? { status, resolution: { reason: `飞轮判不可达: ${d.reason}`, at: now } }
+        : { status });
+    }
+    await setContinuation(goalId, {
+      state: lifecycleOf(status),
+      autoContinue: false,
+      wakeAt: undefined,
+      wakeReason: status === 'failed' ? 'failed' : status === 'paused' ? 'paused' : 'needs_human',
+      lastDecisionId: d.decisionId,
+      unresolvedItems: [...d.unresolvedItems],
+      nextAction: d.nextAction,
+      updatedAt: now,
+    });
+    this.emit({ kind: status === 'needs_human' ? 'needs_human' : status, goalId, message: d.reason });
+    this.log(`[supervisor] goal=${goalId} 飞轮判停 → ${status}: ${d.reason}`);
   }
 
   /** 认领后执行一个 Goal: 决定 resume 还是开新 Run → 跑 → 决策 Goal 状态 */
@@ -462,9 +586,21 @@ export class ExecutionSupervisor {
     const prevRun = prevRunId ? await readRun(prevRunId) : null;
     const plan = prevRunId ? await buildContinuationPlan(prevRunId).catch(() => null) : null;
     const guards = plan?.replayGuards || [];
-    const instruction = plan
+
+    // 2026-09-25 (飞轮接线 P4 / P2): 下一个 Run 必须真的读到**同一份**事实 ——
+    //   ① 权威 continuation 的 nextAction (飞轮收尾写下的"下一步是什么");
+    //   ② 已生效的新要求 (变更注入: 只影响后续 Run, 不改写历史);
+    //   ③ 还在等回报的子 Agent 工作合同 (规则 5: 子必须拿到同一份合同)。
+    const continuationHint = goal.continuation?.nextAction ? `\n飞轮下一步 (权威 continuation): ${goal.continuation.nextAction}` : '';
+    const changeHint = await nextRunChangeDirective(goal.goalId).catch(() => null);
+    const contractHint = await pendingContractDigest(goal.goalId).catch(() => null);
+
+    const instruction = (plan
       ? `继续这个目标 (不要重头开始):\n目标: ${plan.objective || goal.objective}\n已完成 ${plan.completedSteps.length} 步; 下一步: ${plan.nextAction}`
-      : `开始执行这个目标:\n目标: ${goal.objective}${goal.successCriteria.length ? `\n完成判据: ${goal.successCriteria.join('; ')}` : ''}`;
+      : `开始执行这个目标:\n目标: ${goal.objective}${goal.successCriteria.length ? `\n完成判据: ${goal.successCriteria.join('; ')}` : ''}`)
+      + continuationHint
+      + (changeHint ? `\n${changeHint}` : '')
+      + (contractHint ? `\n${contractHint}` : '');
 
     const kind: GoalExecutionRequest['kind'] =
       !prevRun ? 'first_run'
@@ -563,16 +699,126 @@ export class ExecutionSupervisor {
 
     // 重新读一次 Goal: Run 期间判据可能已被满足 (否则会拿旧快照判决)
     const goalForDecision = (await readGoal(goal.goalId)) || goal;
-    const decision = decideGoalOutcome(goalForDecision, finalRun, { now: this.now(), maxAttempts: this.maxRetries, lastRunStatus: finalRun?.status });
-    await this.applyDecision(goal, decision, finalRun);
-    this.emit({ kind: 'goal_decision', goalId: goal.goalId, runId: finalRunId, message: `${finalRun?.status || result.status || '?'} → ${decision.goalStatus}: ${decision.reason}` });
-    this.log(`[supervisor] goal=${goal.goalId} run=${finalRunId || '-'} ${finalRun?.status || result.status || '?'} → goal=${decision.goalStatus} (${decision.reason}) ${Date.now() - t0}ms`);
+    const legacy = decideGoalOutcome(goalForDecision, finalRun, { now: this.now(), maxAttempts: this.maxRetries, lastRunStatus: finalRun?.status });
+
+    // ★ 2026-09-25 (飞轮接线 P1): Run 结束**必过收尾飞轮** —— 正常 / 失败 / 中断恢复都走同一条
+    //   9 步流水线 (写 Memory · 生成 Skill 候选 · 更新 continuation · 生成用户汇报)。
+    //   飞轮决策是权威 (是否继续), 既有 reducer 退化为运输层 (退避/wakeAt/attempts) —— 见 mergeGoalOutcome。
+    let closureDecision: ContinuationDecision | null = null;
+    let merged: MergedGoalOutcome = {
+      goalStatus: legacy.goalStatus,
+      continuation: legacy.continuation,
+      reason: legacy.reason,
+      flywheelStop: false,
+      roundsOverridden: false,
+    };
+    if (finalRun) {
+      try {
+        const closure = await closeGoalRun({
+          goalId: goal.goalId,
+          runId: finalRun.runId,
+          now: new Date(this.now()).toISOString(),
+          finalReview: this.finalReviewText(finalRun, result),
+          maxRetries: this.maxRetries,
+        });
+        if (closure) {
+          closureDecision = closure.result.decision;
+          merged = mergeGoalOutcome({
+            legacy,
+            flywheel: closure.result,
+            run: finalRun,
+            pendingReports: goalForDecision.continuation?.pendingReports ?? [],
+            now: new Date(this.now()).toISOString(),
+          });
+          report.closures.push({
+            goalId: goal.goalId,
+            runId: finalRun.runId,
+            steps: closure.result.steps.length,
+            decision: closure.result.decision.decision,
+            memories: closure.written.length,
+            candidates: closure.result.candidates.length,
+            reportPath: closure.reportPath,
+            decisionRecordPath: closure.decisionRecordPath,
+          });
+          this.emit({
+            kind: 'run_closure',
+            goalId: goal.goalId,
+            runId: finalRun.runId,
+            message: `收尾 ${closure.result.steps.length} 步 → ${closure.result.decision.decision}`
+              +` (memory ${closure.written.length} · skill 候选 ${closure.result.candidates.length} · 用户汇报 ${closure.result.userReport.visibleState})`,
+          });
+        }
+      } catch (err) {
+        // 收尾失败**不掩盖**: 如实记进 errors, 但仍按运输层决策收口 (不许因为收尾炸了就不写状态)
+        report.errors.push(`${goal.goalId}: Run 收尾失败: ${(err as Error)?.message || err}`);
+        this.emit({ kind: 'run_closure_failed', goalId: goal.goalId, runId: finalRun.runId, message: String((err as Error)?.message || err) });
+      }
+      // P2: 飞轮说"这一步该派活" → **必发工作合同** (不是发一句话)
+      //   能力来源 = 这次收尾**决策里的** requiredCapability (权威), 退回 continuation 上的 requiredAgent
+      const capabilityWanted = closureDecision?.requiredCapability
+        || merged.continuation.requiredAgent
+        || null;
+      if (capabilityWanted && merged.goalStatus !== 'completed' && !merged.flywheelStop) {
+        await this.dispatchIfDelegate(goal.goalId, finalRun, report, capabilityWanted).catch((err) => {
+          report.errors.push(`${goal.goalId}: 派遣合同失败: ${(err as Error)?.message || err}`);
+        });
+      }
+      // 变更注入的"版本已下发"记账 (新要求只影响后续 Run; 记下它被第几个 Run 读到)
+      await markChangesConsumed(goal.goalId, goalForDecision.runs.length).catch(() => null);
+    }
+
+    await this.applyDecision(goal, merged, finalRun);
+    this.emit({ kind: 'goal_decision', goalId: goal.goalId, runId: finalRunId, message: `${finalRun?.status || result.status || '?'} → ${merged.goalStatus}: ${merged.reason}` });
+    this.log(`[supervisor] goal=${goal.goalId} run=${finalRunId || '-'} ${finalRun?.status || result.status || '?'} → goal=${merged.goalStatus} (${merged.reason})`
+      + `${merged.roundsOverridden ? ' [飞轮覆盖轮次上限]' : ''} ${Date.now() - t0}ms`);
 
     return { goalId: goal.goalId, runId: finalRunId, status: finalRun?.status || result.status, error: result.error };
   }
 
+  /**
+   * Run 收尾用的 Final Review 文本 (P1 的输入契约, 见 run-closure.ts 文件头):
+   *   ① 宿主/验收可用 `BOLLOON_RUN_FINAL_REVIEW` 注入结构化评审 (评审人 + 事实 + 教训 + 候选);
+   *   ② 否则用执行器这次给的回执文本 —— 散文**也能收尾** (评论非结构化只影响"是否产出教训/候选",
+   *      不会让收尾整条跳过)。
+   */
+  private finalReviewText(run: RunRecord, result: GoalExecutionResult): string {
+    const injected = process.env.BOLLOON_RUN_FINAL_REVIEW;
+    if (injected && injected.trim()) return injected;
+    const parts = [
+      result.reply,
+      run.summary,
+      run.error,
+    ].filter((s): s is string => typeof s === 'string' && s.trim().length > 0);
+    return parts.join('\n');
+  }
+
+  /** 飞轮要求派遣 (decision=delegate) → 签发工作合同并把"等回报"写进 continuation */
+  private async dispatchIfDelegate(goalId: string, run: RunRecord, report: TickReport, capability = ''): Promise<void> {
+    if (!capability) return;
+    const goal = await readGoal(goalId);
+    if (!goal) return;
+    const nextAction = goal.continuation?.nextAction || `把需要「${capability}」的子目标派出去`;
+    const contract = await dispatchChildWork({
+      goalId,
+      parentRunId: run.runId,
+      // 合同只锁"能力", 具体派给谁由执行器解析 (这里如实写能力名, 不假装知道某个 agent 的 id)
+      childAgentId: capability,
+      capability,
+      objective: nextAction,
+      inputs: { goalObjective: goal.objective, successCriteria: goal.successCriteria },
+      allowedTools: [],
+      budget: { maxSteps: null, maxDurationMs: run.budget?.deadlineMs ?? null, maxAmount: null, currency: null },
+      deadline: null,
+      successCriteria: goal.successCriteria.length ? goal.successCriteria : [nextAction],
+      issuedBy: this.owner,
+    });
+    this.log(`[supervisor] goal=${goalId} 已签发工作合同 workId=${contract.workId} (能力「${capability}」, ${contract.successCriteria.length} 条判据, 必带证据 ${contract.requiredEvidence.length} 条)`);
+    this.emit({ kind: 'work_contract_issued', goalId, runId: run.runId, message: `workId=${contract.workId} 能力=${capability}` });
+    report.workContracts.push({ goalId, workId: contract.workId, capability });
+  }
+
   /** 把决策写进 Goal (+ 证据同步 + 完成出口), 并写下一次唤醒信息 */
-  private async applyDecision(goal: GoalRecord, decision: GoalDecision, run: RunRecord | null): Promise<void> {
+  private async applyDecision(goal: GoalRecord, decision: GoalDecision | MergedGoalOutcome, run: RunRecord | null): Promise<void> {
     const { updateGoal } = await import('./goal-store.js');
 
     // 证据同步: Run 的成功步骤 → Goal 证据 (长期执行的判据要有据可依)
