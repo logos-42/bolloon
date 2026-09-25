@@ -640,13 +640,17 @@ const GOAL_STATE_FOR_DECISION: Record<ContinuationDecisionKind, GoalLifecycleSta
   pause: 'paused',
 };
 
-/** 五类用户可见态 (内部状态不出现)。保留: 终态在冻结的五类里没有对应取值 → 沿用 'executing' */
+/**
+ * 用户可见态 (2026-09-25 起是**六类**)。终态不再借用 `executing`:
+ * 第 6 类 `ended` 已补进冻结面, 收尾汇报按它表达"已结束"。
+ */
 function visibleStateFor(decision: ContinuationDecision): UserVisibleState {
   if (decision.decision === 'ask_human') return 'needs_your_decision';
+  if (decision.state === 'completed' || decision.state === 'failed') return 'ended';
   if (decision.state === 'waiting_external') return 'waiting_external_reply';
   if (decision.state === 'blocked') return 'child_blocked';
   if (decision.state === 'no_progress') return 'no_progress';
-  // progressing / waiting_agent / completed / failed → 'executing' (系统在收尾, 不向用户索要决定)
+  // progressing / waiting_agent → 'executing' (系统在收尾, 不向用户索要决定)
   return 'executing';
 }
 

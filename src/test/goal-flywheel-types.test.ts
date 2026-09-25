@@ -214,7 +214,7 @@ const ENUM_SPECS: { name: string; values: readonly string[]; count: number }[] =
   { name: 'BLOCK_KINDS', values: BLOCK_KINDS, count: 10 },
   { name: 'BLOCK_OWNERS', values: BLOCK_OWNERS, count: 5 },
   { name: 'BLOCK_RESOLUTION_ACTIONS', values: BLOCK_RESOLUTION_ACTIONS, count: 8 },
-  { name: 'USER_VISIBLE_STATES', values: USER_VISIBLE_STATES, count: 5 },
+  { name: 'USER_VISIBLE_STATES', values: USER_VISIBLE_STATES, count: 6 },
   { name: 'CHANGE_KINDS', values: CHANGE_KINDS, count: 8 },
   { name: 'CHANGE_SOURCES', values: CHANGE_SOURCES, count: 4 },
   { name: 'CHANGE_PRIORITIES', values: CHANGE_PRIORITIES, count: 4 },
@@ -263,8 +263,12 @@ describe('① 冻结枚举表: 完备 / 无重复 / 命名规范 / 计数被钉�
     expect(constArrayValues(typesSrc, 'USER_REPORT_FIELDS')).toEqual([...USER_REPORT_FIELDS]);
   });
 
-  it('用户可见状态只有 5 类, 且每类都有中文文案', () => {
-    expect(USER_VISIBLE_STATES.length).toBe(5);
+  // 2026-09-25: 6 类 —— 接线时补了第 6 类终态 'ended' (改冻结层 = 单独一个提交, 见 types.ts 注释)。
+  it('用户可见状态只有 6 类 (含终态 ended), 且每类都有中英文案', () => {
+    expect(USER_VISIBLE_STATES.length).toBe(6);
+    expect([...USER_VISIBLE_STATES]).toEqual([
+      'executing', 'waiting_external_reply', 'child_blocked', 'no_progress', 'needs_your_decision', 'ended',
+    ]);
     expect(Object.keys(USER_VISIBLE_STATE_LABELS).sort()).toEqual([...USER_VISIBLE_STATES].sort());
     for (const s of USER_VISIBLE_STATES) {
       expect(USER_VISIBLE_STATE_LABELS[s].zh.length).toBeGreaterThan(0);
@@ -510,11 +514,18 @@ describe('③ 与仓里现有类型不冲突 (关系被精确钉住)', () => {
     const legacyFields = interfaceFields(goalStoreSrc, 'GoalContinuation');
     expect(legacyFields.length).toBeGreaterThanOrEqual(14);
     const shared = legacyFields.filter((f) => (GOAL_CONTINUATION_RECORD_FIELDS as readonly string[]).includes(f));
-    expect(shared.sort()).toEqual(['autoContinue', 'nextAction', 'updatedAt', 'wakeAt', 'wakeReason']);
+    // 2026-09-25 (接线收敛): GoalContinuation 已把 GoalContinuationRecord 的**全部**字段收进同一个对象
+    //   (Goal 上只有一个权威 continuation) → 共享集 = 记录类型的全部字段, "新增"集为空。
+    expect(shared.sort()).toEqual([...GOAL_CONTINUATION_RECORD_FIELDS].sort());
+    expect(shared.length).toBe(GOAL_CONTINUATION_RECORD_FIELDS.length);
 
-    // 只加不减: 本类型相对旧类型的**新增**字段, 一个都不能与旧字段撞名 (不覆盖旧语义)
+    // 只加不减: 收敛**没有**丢掉旧字段 (原有调度 / 外部等待 / 租约镜像语义都还在)
+    for (const f of ['attempts', 'external', 'externalResult', 'lastRunId', 'replayGuards',
+      'completedActions', 'needsExternal', 'deliveredEventIds', 'skillReadiness', 'lastExternalTimeout']) {
+      expect(legacyFields).toContain(f);
+    }
     const added = GOAL_CONTINUATION_RECORD_FIELDS.filter((f) => !legacyFields.includes(f));
-    expect(added.sort()).toEqual(['lastDecisionId', 'pendingReports', 'requiredAgent', 'state', 'unresolvedItems']);
+    expect(added).toEqual([]);
 
     // 反面: 旧类型**不满足**"继续记录"的必答项 (nextAction 在旧类型里是 optional → 不许拿它当已完工的继续记录)
     const legacyIsComplete: NotAssignable<GoalContinuation, GoalContinuationRecord> = true;

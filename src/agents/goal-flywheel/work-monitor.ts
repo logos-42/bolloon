@@ -450,15 +450,14 @@ function isTerminalGoalState(state: GoalLifecycleState): boolean {
 }
 
 /**
- * 内部状态 → 用户可见**五类** (其余内部状态一律不外露: lease · reducer · internal status · retry counter · worker owner)。
+ * 内部状态 → 用户可见**六类** (其余内部状态一律不外露: lease · reducer · internal status · retry counter · worker owner)。
  *
  * 优先级 (确定性, 不随 blocks 数组顺序变化):
  *   ① 未解决阻塞的处置就是 `needs_human` (或决策/继续记录显式要人) → `needs_your_decision`
- *   ② 目标**终态** → `needs_your_decision`:
- *      五类里没有"已结束"这一类 (类型面 `GoalContinuationEnvelope` 已把终态的 continuation 收成 null)。
- *      这里**刻意不返回 `executing`** —— 把一个已经结束的目标显示成"正在执行", 正是 P3 要防的假象
- *      ("看着在跑其实没在跑")。已结束的目标必然需要人接一下 (接受结论 / 重试 / 立新目标)。
- *      汇报层应用 `conclusion` 表达"已完成/已失败", 不得把本返回值当"还在跑"的依据。
+ *   ② 目标**终态** → `ended` (2026-09-25 补的第 6 类):
+ *      此前五类里没有"已结束", 只能借用 `needs_your_decision`, 且**绝不能**返回 `executing` ——
+ *      把一个已经结束的目标显示成"正在执行", 正是 P3 要防的假象 ("看着在跑其实没在跑")。
+ *      汇报层仍应用 `conclusion` 表达"已完成/已失败", 不得把本返回值当"还在跑"的依据。
  *   ③ 未解决阻塞 → 子被阻塞 > 无进展 > 等外部
  *   ④ 决策/继续记录描述的等待或无进展
  *   ⑤ 还有子任务没回报 → 等回复
@@ -481,10 +480,10 @@ export function toUserVisibleState(
   }
   if (c !== null && (c.state === 'needs_human' || c.state === 'paused')) return 'needs_your_decision';
 
-  // ② 终态 (没有"已结束"这一类, 且绝不说成"正在执行")
-  if (c !== null && isTerminalGoalState(c.state)) return 'needs_your_decision';
+  // ② 终态 (第 6 类 `ended`: 已结束绝不说成"正在执行", 也不再冒充"需要你决定")
+  if (c !== null && isTerminalGoalState(c.state)) return 'ended';
   if (decision !== null && (decision.state === 'completed' || decision.state === 'failed')) {
-    return 'needs_your_decision';
+    return 'ended';
   }
 
   // ③ 未解决阻塞 (子被阻塞 > 无进展 > 等外部)

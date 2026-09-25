@@ -582,8 +582,12 @@ export interface BlockRecord {
 }
 
 /**
- * 用户可见的**五类**状态 (其余内部状态不外露):
- *   正在执行 / 等待外部回复 / 子 Agent 被阻塞 / 暂时没有进展 / 需要你决定
+ * 用户可见的**六类**状态 (其余内部状态不外露):
+ *   正在执行 / 等待外部回复 / 子 Agent 被阻塞 / 暂时没有进展 / 需要你决定 / **已结束**
+ *
+ * 第 6 类 (`ended`) 是 2026-09-25 接线时补的: 前五类里没有"已结束", 于是 P1 的收尾汇报只能
+ * 借用 `executing` —— 把一个**已经结束**的目标显示成"正在执行"正是 P3/P4 要防的假象。
+ * 补法只有一种: 改冻结层 + 单独一个提交 (见 `goal-flywheel-types.test.ts` 的计数门)。
  */
 export const USER_VISIBLE_STATES = [
   'executing',
@@ -591,16 +595,20 @@ export const USER_VISIBLE_STATES = [
   'child_blocked',
   'no_progress',
   'needs_your_decision',
+  // 2026-09-25 新增 (第 6 类): 目标已结束 (completed / failed / abandoned) ——
+  //   "已结束"必然需要人接一下 (接受结论 / 重试 / 立新目标), 但**不许**说成"正在执行"。
+  'ended',
 ] as const;
 export type UserVisibleState = (typeof USER_VISIBLE_STATES)[number];
 
-/** 用户态文案 (只暴露五类, 不出现 lease/reducer/retry counter 这类内部词) */
+/** 用户态文案 (只暴露六类, 不出现 lease/reducer/retry counter 这类内部词) */
 export const USER_VISIBLE_STATE_LABELS: Record<UserVisibleState, { zh: string; en: string }> = {
   executing: { zh: '正在执行', en: 'Executing' },
   waiting_external_reply: { zh: '等待外部回复', en: 'Waiting for an external reply' },
   child_blocked: { zh: '子 Agent 被阻塞', en: 'A sub-agent is blocked' },
   no_progress: { zh: '暂时没有进展', en: 'Temporarily no progress' },
   needs_your_decision: { zh: '需要你决定', en: 'Your decision is needed' },
+  ended: { zh: '已结束', en: 'Ended' },
 };
 
 // ============================================================================

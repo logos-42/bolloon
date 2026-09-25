@@ -7,7 +7,7 @@
  *   ③ 无进展的**两段规则**: 先发一次调整指令, 二档才停/换人 (不是一上来就换)
  *   ④ 报告缺失/不完整 **不接受为完成**: 无证据 · 缺必备证据 · 自称 blocked 无 blockReason · 张冠李戴
  *   ⑤ 工具/资源被阻只允许「父改计划 / 转人工」, **永不** 接管/替换/绕过 Harness
- *   ⑥ 用户可见只有五类, 且**终态目标绝不说成"正在执行"**; 已解决的阻塞不进用户态
+ *   ⑥ 用户可见只有六类 (2026-09-25 补终态 `ended`), 且**终态目标是 `ended`, 绝不说成"正在执行"**; 已解决的阻塞不进用户态
  *   ⑦ 确定性: 判定顺序固定 · 同输入幂等 (blockId 稳定) · 时间读不出就不判定 (宁可漏报)
  *
  * 阴性对照 (怎么知道这道门不是空转): 见文件末尾 `describe('变异验证')` 的说明 ——
@@ -648,10 +648,12 @@ describe('toUserVisibleState — 五类映射', () => {
     );
   });
 
+  // 2026-09-25: 五类没有"已结束"时终态只能借用 needs_your_decision; 第 6 类补上后终态映射成 'ended'。
+  // 负控制不变: 终态绝不说成「正在执行」。
   it('负控制: 目标终态绝不说成「正在执行」', () => {
     for (const state of ['completed', 'failed', 'abandoned'] as const) {
       const visible = toUserVisibleState(mkContinuation({ state }), [], null);
-      expect(visible).toBe('needs_your_decision');
+      expect(visible).toBe('ended');
       expect(visible).not.toBe('executing');
     }
     for (const state of ['completed', 'failed'] as const) {
@@ -730,7 +732,7 @@ describe('toUserVisibleState — 五类映射', () => {
     expect(toUserVisibleState(null, [], null)).toBe('executing');
   });
 
-  it('返回值恒在五类闭集内, 且不含任何内部字段名 (lease / reducer / worker owner …)', () => {
+  it('返回值恒在六类闭集内, 且不含任何内部字段名 (lease / reducer / worker owner …)', () => {
     const battery: Array<[GoalContinuationRecord | null, BlockRecord[], ContinuationDecision | null]> = [
       [mkContinuation(), [], null],
       [mkContinuation({ state: 'stalled' }), [], null],
@@ -753,7 +755,7 @@ describe('toUserVisibleState — 五类映射', () => {
     }
   });
 
-  it('用户可见映射表覆盖全部 BLOCK_KINDS 且取值都在五类内', () => {
+  it('用户可见映射表覆盖全部 BLOCK_KINDS 且取值都在六类内', () => {
     expect(Object.keys(USER_VISIBLE_STATE_FOR_BLOCK_KIND).sort()).toEqual([...BLOCK_KINDS].sort());
     for (const kind of BLOCK_KINDS) {
       expect(USER_VISIBLE_STATES).toContain(USER_VISIBLE_STATE_FOR_BLOCK_KIND[kind]);
@@ -775,5 +777,8 @@ describe('变异验证 — 门不是空转 (说明)', () => {
     );
     expect(secondStage.suggestedAction).toBe('replace_child');
     expect(toUserVisibleState(mkContinuation({ state: 'completed' }), [], null)).not.toBe('executing');
+    // 第 6 类补上后: 终态 = 'ended' (而不是借用 needs_your_decision)
+    expect(toUserVisibleState(mkContinuation({ state: 'completed' }), [], null)).toBe('ended');
+    expect(toUserVisibleState(mkContinuation({ state: 'abandoned' }), [], null)).toBe('ended');
   });
 });
