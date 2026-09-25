@@ -46,6 +46,7 @@
 | [copyright-registration.md](./copyright-registration.md) | v2 | 软著登记材料 (500 字主要功能 + 源程序前/后各 30 页 · 生成器/口径/自检/未闭合项) |
 | [goal-continuation-flywheel.md](./goal-continuation-flywheel.md) | v2 | **Goal 长期执行飞轮 = 意图 + 执行机制** (leo: 飞轮是意图, **不是项目功能**): 意图是一等输入 · Goal 是意图的可执行投影 · **意图的落位** (意图 → Goal → continuation → Run → Memory/Skill → 下一次执行; 意图可改可撤, **意图级变更高于 Goal 级**) · 把已有能力收敛成一台引擎 · P0 节奏由进展决定 (ContinuationDecision + 三类硬底线) · P1 强制收尾四类产物 · P1b Memory 分层 + Skill 更新流程 · P2 AgentWorkContract · P3 WorkMonitor 阻塞 · P4 GoalChangeRequest + 两份输出 · P5 验收 (含 2 条强负例) · 文件所有权划分 + 函数签名 |
 
+| [goal-flywheel-p5-acceptance.md](./goal-flywheel-p5-acceptance.md) | v2 | **P5 统一长周期验收报告** (独立真跑 6 场景 + 2 强负例 + 3 条必查): 逐场景结论与证据 · **缺口台账** (已修 4 / 未修 2, 改前→改后→证据) · 真 DOM 34 过/0 败 · 变异验证 (每处修复还原 → 必红) · 未验证项清单 |
 || [log.md](./log.md) | (none) | session-by-session 变更日志 |
 
 ## 读者向页面 (docs/, audience=reader)
