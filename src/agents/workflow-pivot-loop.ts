@@ -15,6 +15,8 @@
 
 import type { Tool, ToolResult, StreamCallback, StreamEvent } from './pi-sdk.js';
 import { detectRepeatingCalls, toolCallArgsHash } from './loop-review.js';
+// 2026-09-26: 回程派发还原 (LLM 回吐的 API 名 → 注册表真名; 净化在 pi-ai.ts 唯一边界)
+import { resolveApiToolName } from '../llm/tool-name.js';
 
 /**
  * 2026-08-11 (借鉴 Hermes `_canonicalize_tool_call_arguments`): 工具参数规范化 —
@@ -303,7 +305,8 @@ export class WorkflowPivotLoop {
     for (const tc of toolCalls || []) {
       const fn = tc?.function;
       if (!fn || !fn.name) continue;
-      const name = fn.name;
+      // 2026-09-26: 回程还原 — 原生 tool_calls 里的名字是净化后的 API 名
+      const name = resolveApiToolName(fn.name);
       if (!this.tools.has(name)) {
         this.pushContinuationHint(`工具 ${name} 未注册/不存在, 调用已跳过 — 请换用已提供的工具`);
         continue;
@@ -735,10 +738,11 @@ export class WorkflowPivotLoop {
     while ((match = toolUseRe.exec(content)) !== null) {
       try {
         const obj = JSON.parse(match[1]);
-        if (obj && obj.name && this.tools.has(obj.name)) {
+        const realName = obj && obj.name ? resolveApiToolName(String(obj.name)) : '';
+        if (obj && realName && this.tools.has(realName)) {
           const args = this.normalizeArgs(canonicalizeToolCallArguments(obj.arguments));
-          pending.push({ name: obj.name, args, description: '', parameters: {} });
-        } else if (obj && obj.name && !this.tools.has(obj.name)) {
+          pending.push({ name: realName, args, description: '', parameters: {} });
+        } else if (obj && obj.name && !this.tools.has(realName)) {
           this.pushContinuationHint(`工具 ${obj.name} 未注册/不存在, 调用已跳过 — 请换用已提供的工具`);
         }
       } catch (e) {
@@ -755,14 +759,15 @@ export class WorkflowPivotLoop {
       const invokeRe = /<invoke\s+name="(\w+)"\s*>([\s\S]*?)<\/invoke>/g;
       let im;
       while ((im = invokeRe.exec(block)) !== null) {
-        const name = im[1];
+        // 2026-09-26: 回程还原 — LLM 可能回吐的是净化后的 API 名
+        const name = resolveApiToolName(im[1]);
         if (!this.tools.has(name)) continue;
         // 抓 <parameter name="k">v</parameter> 列表
         const args: Record<string, string> = {};
         const paramRe = /<parameter\s+name="(\w+)"\s*>([\s\S]*?)<\/parameter>/g;
         let pm;
         while ((pm = paramRe.exec(im[2])) !== null) {
-          args[pm[1]] = pm[2].trim().replace(/^["']|['"]$/g, '');
+          args[pm[1]] = pm[2].trim().replace(/^["']|["']$/g, '');
         }
         // 避免重复添加
         if (!pending.some(p => p.name === name)) {
@@ -780,7 +785,8 @@ export class WorkflowPivotLoop {
       const invokeRe = /<invoke\s+name="(\w+)"\s*>([\s\S]*?)<\/invoke>/g;
       let im;
       while ((im = invokeRe.exec(block)) !== null) {
-        const name = im[1];
+        // 2026-09-26: 回程还原 — LLM 可能回吐的是净化后的 API 名
+        const name = resolveApiToolName(im[1]);
         if (!this.tools.has(name)) continue;
         const args: Record<string, string> = {};
         const paramRe = /<parameter\s+name="(\w+)"\s*>([\s\S]*?)<\/parameter>/g;
@@ -797,7 +803,7 @@ export class WorkflowPivotLoop {
     // Pattern 1: Chinese format "调用工具: tool_name(args)"
     const pattern1 = /调用工具[：:]\s*(\w+)\s*\(([^)]*)\)/g;
     while ((match = pattern1.exec(content)) !== null) {
-      const name = match[1];
+      const name = resolveApiToolName(match[1]);
       const argsStr = match[2];
       const args = this.parseArgs(argsStr);
       if (this.tools.has(name)) {
@@ -808,7 +814,7 @@ export class WorkflowPivotLoop {
     // Pattern 2: tool_name(args) format
     const pattern2 = /(\w+)\s*\(\s*([^)]*)\s*\)/g;
     while ((match = pattern2.exec(content)) !== null) {
-      const name = match[1];
+      const name = resolveApiToolName(match[1]);
       const argsStr = match[2];
       // Skip if already matched or doesn't look like a tool call
       if (pending.some(p => p.name === name)) continue;
@@ -825,8 +831,9 @@ export class WorkflowPivotLoop {
         const parsed = JSON.parse(jsonMatch[0]);
         if (Array.isArray(parsed.tool_calls)) {
           for (const tc of parsed.tool_calls) {
-            if (this.tools.has(tc.name)) {
-              pending.push({ name: tc.name, args: tc.args || {}, description: '', parameters: {} });
+            const realName = resolveApiToolName(String(tc?.name ?? ''));
+            if (this.tools.has(realName)) {
+              pending.push({ name: realName, args: tc.args || {}, description: '', parameters: {} });
             }
           }
         }
@@ -842,7 +849,7 @@ export class WorkflowPivotLoop {
     const singleJsonRe = /\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"(?:arguments|input)"\s*:\s*(\{[\s\S]*?\})\s*\}/g;
     let singleMatch;
     while ((singleMatch = singleJsonRe.exec(content)) !== null) {
-      const name = singleMatch[1];
+      const name = resolveApiToolName(singleMatch[1]);
       if (pending.some(p => p.name === name)) continue;
       if (!this.tools.has(name)) continue;
 

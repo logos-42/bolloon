@@ -4266,3 +4266,20 @@ Run/Goal 显式绑定 > 当前 Session > 用户 Global > provider 默认 > 环�
 4. **P3/P5/P7 负责的 11/14/15 本轮没做**; 相关既有测试 (冻结门 / update 两个门) 都跑到过, 未见变红。
 5. 会话绑定文件与全局配置文件都**没有**加"快照校验" —— `configHash` 目前只在 Run 快照与回显里用,
    没有反过来校验盘上配置有没有被外部改过。
+
+### 2026-09-26 热修: 工具名非法字符导致「配了 API 也失败」(400)
+
+**症状**: 网页端配好 API, 一真跑就 `400 Invalid 'tools[120].function.name': string does not match pattern '^[a-zA-Z0-9_-]+$'`
+—— 配置其实生效, 是**请求体**被拒。
+
+**根因**: 全仓**没有工具名净化环节**。社交/联系人工具注册时用了带点号的名字(`contact.list_authorized` 等 6 个),
+而点号不在 OpenAI 的名称模式里 ⇒ **一个不合法, 整个请求 400**。真注册表 180 个工具, 违规 6 个(#121–#126),
+报错的 `tools[120]` 逐字对上 `contact.list_authorized`。
+
+**修**: `src/llm/tool-name.ts`(净化器 + 路由表 + 碰撞拒绝)在**唯一边界** `src/llm/pi-ai.ts` 生效:
+非法字符→`_`、超长截断 + 指纹后缀、原名↔净化名↔handler 映射保证派发不断、撞名**不静默**。
+`src/agents/pi-sdk.ts` / `src/agents/workflow-pivot-loop.ts` 同步对齐名字视图。
+
+**证据**: `scripts/verify-tool-names.ts` **26 PASS / 0 FAIL** —— 未净化时本地冒充服务器逐字复现 400;
+净化后走真边界(`chat → generateText → callOpenAI`)→ **200 + 正常回复**; 服务器侧收到 180 条工具**逐条合法、无重名**;
+被改写名字与违规名单一一对应(6/6)。变异门 `scripts/verify-tool-names-mutations.py` 判红。

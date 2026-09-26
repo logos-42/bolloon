@@ -34,6 +34,8 @@ import { shellExec } from './shell-tool.js';
 import { startRun, recordStep, finishRun, readRun, budgetVerdict, recordDegradation, recordHarnessEvent, recordRecovery, setRunStatus, prepareResume, markRunRunning, buildResumeInstruction, argsDigestOf, repeatedFailureCount, classifyError as classifyRunError, type RunSurface, type RunStatus, type ResumePlan } from './run-store.js';
 import { createGoal, attachRun, findActiveGoal } from './goal-store.js';
 import { captureRunModelConfig, type RunModelConfig, type ConfigDriftReport } from '../llm/model-selection.js';
+// 2026-09-26: 工具名出网净化 (pi-ai.ts 唯一边界) + 回程派发还原 (原名 ↔ API 名)
+import { resolveApiToolName, expandKnownToolNames } from '../llm/tool-name.js';
 import { PiAgentHarness, type HarnessRunContext, type ToolDecision } from './pi-harness.js';
 import { getBranchPrefix, getCooldownMs, checkWritePath } from './shell-guard.js';
 import {
@@ -2030,7 +2032,10 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
 
       // 路径 B: 文本解析 (parseAllToolCalls 收集全部)
       if (toolCalls.length === 0) {
-        const knownTools = new Set(Array.from(this.tools.keys()));
+        // 2026-09-26: 已知名集合 = 注册表原名 + 它们的 API 名 (净化后的).
+        //   出网时工具面给的是 API 名 (见 pi-ai.ts 的唯一净化边界), LLM 在文本里
+        //   回吐的也可能是 API 名 —— 只用原名集合过滤会把这类调用整个丢掉.
+        const knownTools = expandKnownToolNames(this.tools.keys());
         toolCalls = parseAllToolCalls(reply, { tools: knownTools });
       }
 
@@ -2038,6 +2043,12 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
       if (toolCalls.length === 0) {
         const single = this.parseToolCall(reply);
         if (single) toolCalls.push(single);
+      }
+
+      // 2026-09-26: **回程派发的唯一还原点** —— LLM 回吐的是 API 名 (净化过的), 这里
+      //   还原成注册表真名再交给 this.tools.get(); 原名 (LLM 照 system prompt 抄的) 原样穿透.
+      for (const tc of toolCalls) {
+        if (typeof tc.name === 'string' && tc.name) tc.name = resolveApiToolName(tc.name);
       }
 
       // 给每个 toolCall 分配稳定 id

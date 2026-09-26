@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { request, Agent } from 'undici';
+import { sanitizeToolsForApi } from './tool-name.js';
 
 export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'grok' | 'local';
 
@@ -266,8 +267,14 @@ export class PiAIModel {
     if (tools && tools.length > 0) {
       // 预格式化的 tools (含参数 schema) → 直接使用
       if (typeof tools[0] === 'object' && (tools[0] as any)?.type === 'function') {
-        openaiTools = tools as any[];
-        const toolDescriptions = (tools as any[]).map(t =>
+        // 2026-09-26: **工具名出网的唯一净化边界**.
+        //   全仓只有这里产出 wire 形状的 tools 数组 (所有入口: CLI/Web/MCP/技能/子 Agent/长期任务
+        //   都经 chat() → generateText() 到这里). 非法字符 (如 contact.list_authorized 里的 '.')
+        //   会让整个请求 400: Invalid 'tools[120].function.name': string does not match pattern.
+        //   净化同时把「原名 ↔ API 名」登记进 globalToolNameRoutes, 回程派发靠它还原成真名.
+        //   撞名/无名 → 抛错点名, 不许静默.
+        openaiTools = sanitizeToolsForApi(tools as any[]);
+        const toolDescriptions = (openaiTools as any[]).map(t =>
           `- ${t.function.name}: ${t.function.description || ''} ${Object.keys(t.function.parameters?.properties || {}).length > 0 ? `(${Object.keys(t.function.parameters.properties).join(', ')})` : ''}`
         ).join('\n');
         finalMessages = [{ role: 'system', content: `可用工具:\n${toolDescriptions}` }, ...messages];
