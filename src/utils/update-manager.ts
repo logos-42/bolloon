@@ -920,7 +920,7 @@ export async function applyUpdate(opts: ApplyOptions = {}): Promise<ApplyOutcome
   if (!lock.ok) {
     const held = lock.heldBy;
     await stage('blocked', `已有更新进程 (pid ${held?.pid})`);
-    return record({ stage: 'blocked', ok: false, from, to, durationMs: Date.now() - started, reason: `已有更新进程持有锁 (pid ${held?.pid}, ${held?.at})`, needsRestart: false }, 'blocked');
+    return record({ stage: 'blocked', ok: false, from, to, durationMs: Date.now() - started, reason: `另一个更新进程持有锁 (pid ${held?.pid}, ${held?.at})`, needsRestart: false }, 'blocked');
   }
 
   const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'bolloon-update-'));
