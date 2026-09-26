@@ -33,7 +33,7 @@ import { p2pDocumentTools, initDocumentReceiver } from './p2p-document-tools.js'
 import { shellExec } from './shell-tool.js';
 import { startRun, recordStep, finishRun, readRun, budgetVerdict, recordDegradation, recordHarnessEvent, recordRecovery, setRunStatus, prepareResume, markRunRunning, buildResumeInstruction, argsDigestOf, repeatedFailureCount, classifyError as classifyRunError, type RunSurface, type RunStatus, type ResumePlan } from './run-store.js';
 import { createGoal, attachRun, findActiveGoal } from './goal-store.js';
-import { captureRunModelConfig, type RunModelConfig } from '../llm/model-selection.js';
+import { captureRunModelConfig, type RunModelConfig, type ConfigDriftReport } from '../llm/model-selection.js';
 import { PiAgentHarness, type HarnessRunContext, type ToolDecision } from './pi-harness.js';
 import { getBranchPrefix, getCooldownMs, checkWritePath } from './shell-guard.js';
 import {
@@ -1503,16 +1503,32 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
    * 2026-09-16 (M2): 从 checkpoint 恢复一次运行 —— **不是**重发原 prompt。
    * 语义: prepareResume (校验状态 + 读 checkpoint + 记 recovery + 落 recovering) → 用恢复指令
    * 驱动同一个 runId 继续 (历史保留), 非幂等动作由重放守卫挡住。
+   *
+   * 2026-09-26: 恢复前**反查一次模型配置**。Run 记录里存的 `modelConfig` 快照此前只被写进
+   * 快照和回显, 没人拿它核对现状 —— 于是"快照记的是 A, 现在盘上生效的是 B"这种情况会被
+   * 静默继续下去 (长任务的历史执行链就说不清了)。现在: 漂了就 `console.warn` 说清哪几个字段漂了,
+   * 并把结论放进返回值 (`modelDrift`) 让调用方能上报; 一致时也有一句明确结论。
+   * 判断失败 (读不到 Run 等) 不阻塞恢复。
    */
-  async resumeRun(runId: string): Promise<{ ok: boolean; reason?: string; reply?: string }> {
+  async resumeRun(runId: string): Promise<{ ok: boolean; reason?: string; reply?: string; modelDrift?: ConfigDriftReport }> {
+    let modelDrift: ConfigDriftReport | undefined;
+    try {
+      const { detectRunConfigDrift } = await import('../llm/model-selection.js');
+      modelDrift = (await detectRunConfigDrift(runId)) || undefined;
+      if (modelDrift?.drifted) {
+        console.warn('[pi-sdk] 恢复时模型配置已偏离 Run 快照:', modelDrift.message);
+      } else if (modelDrift) {
+        console.log('[pi-sdk] 恢复前核对:', modelDrift.message);
+      }
+    } catch { /* 核对本身失败不阻塞恢复 */ }
     const prep = await prepareResume(runId);
-    if (!prep.ok || !prep.plan) return { ok: false, reason: prep.reason };
+    if (!prep.ok || !prep.plan) return { ok: false, reason: prep.reason, ...(modelDrift ? { modelDrift } : {}) };
     this.resumeRunId = runId;
     this.resumePlan = prep.plan;
     this.currentGoalId = prep.plan.goalId || this.currentGoalId;
     try {
       const reply = await this.prompt(buildResumeInstruction(prep.plan), {});
-      return { ok: true, reply };
+      return { ok: true, reply, ...(modelDrift ? { modelDrift } : {}) };
     } finally {
       this.resumeRunId = '';
       this.resumePlan = null;

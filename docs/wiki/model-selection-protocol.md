@@ -152,6 +152,13 @@ Web 自己 `setActiveProvider + initMinimax`), 同一个动作两种结果。
 
 ## 7. 如实留下
 
+> **2026-09-26 P2 更新**: 本节第 1/2/5 条已在 [model-selector-p2.md](./model-selector-p2.md) §5 结清 ——
+> ① `invalidate()` 现在**有门钉住** (用 mtime+size 撞车构造, 变异判红; 见该页 §5①);
+> ② 真启动验收**已跑通** (`scripts/ablation/run.ts` 15/16), 启动停滞的根因是**夹具探错了端口**
+>    (`--port` 从来不被解析, 端口契约是 `PORT` 环境变量) + 启动序列串行 (冷启动实测 ~143s);
+> ③ `configHash` 反向校验**已补** (`detectRunConfigDrift` + `resumeRun` 接线, 逐字段点名漂移)。
+> 以下原文保留, 作为当时的口径。
+
 - `withConfigLock` 里那句 `invalidate()` 在当前实现下**不是承重的** (文件签名检查已经能触发重读);
   它的价值只在"mtime 与 size 同时撞上"的边角。变异 M3 因此**没判红**。
 - 并发验收 (条 12) 的判别力来自"持锁进程故意拉开窗口"的负控制 + 去掉锁的变异, 不来自

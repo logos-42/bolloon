@@ -568,22 +568,23 @@ async function handleP2pCommand(p2pArgs: string[]): Promise<void> {
 }
 
 async function handleModelCommand(modelArgs: string[]): Promise<void> {
-  const { llmConfigStore, PROVIDER_INFO } = await import('./llm/config-store.js');
+  const { llmConfigStore } = await import('./llm/config-store.js');
+  const { buildProviderSummaries, formatProviderLine } = await import('./llm/model-catalog.js');
+  const { effectiveModelConfig, formatEffectiveModel } = await import('./llm/model-selection.js');
   await llmConfigStore.initialize();
 
-  // 无参: 列出所有供应商 + 当前 active
+  // 无参: 列出所有供应商 + 当前**真实生效**的那一份 + 指引分步选择器
   if (modelArgs.length === 0) {
-    const config = await llmConfigStore.getConfig();
-    console.log(`\n${BOLD}模型供应商${RESET} (当前: ${config.activeProvider})\n`);
+    const eff = await effectiveModelConfig({}).catch(() => null);
+    const summaries = await buildProviderSummaries({});
+    console.log(`\n${BOLD}模型供应商${RESET} (当前生效: ${eff ? `${eff.provider}/${eff.model}` : '读不出来'})\n`);
+    if (eff) console.log(`  ${formatEffectiveModel(eff)}`);
     console.log('─'.repeat(58));
-    for (const [name, p] of Object.entries(config.providers)) {
-      const info = (PROVIDER_INFO as any)[name] || {};
-      const active = name === config.activeProvider ? '●' : '○';
-      const keyState = p.apiKey ? '🔑' : p.requiresApiKey ? '⚠ 无 key' : '';
-      const model = p.model || (info.models && info.models[0]) || '';
-      console.log(`  ${active} ${name.padEnd(10)} ${String(info.name || '').padEnd(16)} ${keyState.padEnd(8)} model: ${model}`);
+    for (const s of [...summaries.filter((x) => x.configured), ...summaries.filter((x) => !x.configured)]) {
+      console.log(`  ${formatProviderLine(s)}`);
     }
     console.log(`\n${BOLD}用法:${RESET}`);
+    console.log(`  bolloon model pick                # 分步选择 (供应商→凭证→模型→参数→作用域→测试→确认)`);
     console.log(`  bolloon model <name>             # 切换到该供应商`);
     console.log(`  bolloon model <name> <model>     # 切换并指定模型`);
     console.log(`  示例: bolloon model deepseek deepseek-v4-flash`);
@@ -591,11 +592,14 @@ async function handleModelCommand(modelArgs: string[]): Promise<void> {
   }
 
   // 有参: 统一交给 setup-wizard 的 runModelCommand
-  //   (切换 / <provider> <model> / key <provider> / test / status 一套语义, 与 CLI 会话内 /model 完全一致)
-  const { runModelCommand, askHiddenLine } = await import('./cli/setup-wizard.js');
+  //   (pick 分步选择 / 切换 / <provider> <model> / key <provider> / test / status 一套语义,
+  //    与 CLI 会话内 /model 完全一致 —— 写配置与重建运行时的逻辑只有 selectModel 一处)
+  const { runModelCommand, askHiddenLine, askLine } = await import('./cli/setup-wizard.js');
   const out = await runModelCommand(modelArgs.join(' '), {
     // 正常终端里可以安全收 key (隐藏输入, 不回显)
     askHidden: (q: string) => askHiddenLine(q),
+    // 分步选择器的文本输入 (搜索模型 / 手工 temperature)
+    ask: (q: string, opts?: { default?: string }) => askLine(q, opts),
   });
   for (const line of String(out).split('\n')) console.log(line);
 }

@@ -71,12 +71,20 @@ async function startServer(label: string): Promise<void> {
     const tsxEntry = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
     serverProc = spawn(
       cmd,
-      [tsxEntry, '-r', 'dotenv/config', 'src/index.ts', '--web', '--port', String(PORT)],
+      [tsxEntry, '-r', 'dotenv/config', 'src/index.ts', '--web'],
       {
         cwd: ROOT,
-        // 2026-09-18: 本机启动时 DID/IPNS 发布会先 30s 超时再走回退 (环境噪音, 见 AGENTS.md),
-        //   所以跳过不必要的初始化并给足等待时间 —— 夹具问题, 不是产品缺陷。
-        env: { ...process.env, BOLLOON_VERBOSE: '0', BOLLOON_SKIP_KUBO: '1', BOLLOON_SKIP_UPDATE: '1' },
+        env: {
+          ...process.env,
+          // 2026-09-26: 端口必须走 **PORT** 环境变量 —— `src/index.ts` 的 web 模式读的是
+          //   `parseInt(process.env.PORT || '54188')`, **不解析 --port** (传了也当没有)。
+          //   夹具的 PORT 恰好等于默认值 54188, 所以过去"看起来能用"; 真实契约仍是环境变量:
+          //   一旦默认值变了 / 54188 被别的实例占用而自动上移, 探活就会在自己的端口上空等到超时。
+          PORT: String(PORT),
+          BOLLOON_VERBOSE: '0',
+          BOLLOON_SKIP_KUBO: '1',
+          BOLLOON_SKIP_UPDATE: '1',
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       }
@@ -92,7 +100,9 @@ async function startServer(label: string): Promise<void> {
       setTimeout(checkUp, 300);
     };
     setTimeout(checkUp, 500);
-    setTimeout(() => reject(new Error('server start timeout')), 180000);   // 本机 IPNS 回退会拖到 60s+
+    // 2026-09-26: 实测冷启动 ~143s (tsx 首次编译 ~40s + DID/IPFS 步骤 + 本地 Kubo 守护等待 20s
+    //   + IPNS 本地发布 30s 超时 + 备用发布), 180s 会卡在临界点上 —— 给 300s。
+    setTimeout(() => reject(new Error('server start timeout')), 300000);
   });
 }
 

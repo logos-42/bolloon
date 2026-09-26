@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-26 | feat | **模型 `/model` 改分步选择器 + 冻结模型元数据接口 (P2): 拿不到真数据的能力一律显示"未知" · 上轮三条遗留全部结清 (invalidate 补门判红 / 真启动验收 15/16 且启动停滞定位到端口契约 / configHash 反向校验) · 真跑 51/0 + 变异 10/10 判红** | [model-selector-p2.md](./model-selector-p2.md) / [model-catalog.ts](../../src/llm/model-catalog.ts) / [model-selector.ts](../../src/cli/model-selector.ts) / [verify-model-selector.ts](../../scripts/verify-model-selector.ts) |
 | 2026-09-26 | feat | **模型切换统一入口 + 「有效模型配置」 + 每 Run 快照 (P0+P1): 修掉 CLI `/model` "切了不生效" 硬缺陷 · 五层优先级固定 Run>Session>Global>默认>env · 失败时配置与运行时都原样不变 (真跑 55/0 · 变异 6/7 判红)** | [model-selection-protocol.md](./model-selection-protocol.md) / [model-selection.ts](../../src/llm/model-selection.ts) / [verify-model-selection.ts](../../scripts/verify-model-selection.ts) |
 | 2026-09-25 | release | **发布 `@bolloon/bolloon-agent@0.5.0` (npm 新包: 飞轮接线+验收 · 新 CLI `task group`/`identity init` · `update` 双源) —— 发前门禁全绿, 判据链 1–6 逐条真查全过, tag `v0.5.0` 已推, 仓内 `verify-release.mjs` 13/13 硬门全过, 交叉校验拿到第一个真实例 `agree`**: 版本号 **0.4.33 → 0.5.0** —— 仓内**没有成文的发布版本号政策**, 找到的是**习惯** (0.4.x 线上 142 个版本**全是 patch**, 连 0.4.30 那种功能批次也走 patch) → 本次仍取 **minor**, 依据 = 本批是**向后兼容的新能力** (新子命令 `task group create\|join\|list\|link\|leave` / `identity init\|show` + `update --channel stable\|dev` 选项 + 飞轮 M0 接线与 M1–M5 验收接进真执行路径); 取舍属判断、**主线可否决**, 逐条写在 [update-protocol.md §12.9](./update-protocol.md)。**发前门禁 (缺一不发, 全是真跑)**: `npx tsc --noEmit` **0 错** · 冻结门 `goal-flywheel-wiring-freeze.test.ts` **34/34** · 全量 `npx vitest run` (前台一次) **234 文件 / 3674 测全绿** (64.6s) · wiki 四门 (`wiki_check`/`raw_manifest_check`/`wiki_lint --strict=v2`/`supersede_check`) OK · 工作区干净 · `build:all` + `smoke:esm` 通过 (921 个 `dist/*.js` 语法检查 · gemini 模型 ID 36 条核对)。**发布动作**: `npm publish --access public` **EXIT=0** · 1565 文件 / 19.0MB (解包 43.9MB) · tarball shasum `f8f5dbcf223a8994d788ce9abefa51fcd772c52b` (**凭据只在 `~/.npmrc`, 值不入仓/不入日志: `[REDACTED]`**)。**判据链 (逐条真查, 不手拼 URL / 不编造)**: ① 真 packument `dist-tags.latest` 前进到 `0.5.0` —— **发布后 ~5 分钟才放行** (20:20 起轮询, **20:25:47** 才翻; 期间直连 404 —— 与 0.4.27/0.4.28「退出码 0 但未公开」同形状, 处置是**只轮询不重发**, 同版本重发必 E409) ② 版本直连 URL `https://registry.npmjs.org/@bolloon/bolloon-agent/0.5.0` **HTTP 200** ③ 从 packument 取 `dist.tarball` **真 URL** 下载 **19010013 字节** → 本地 SHA-1 与 packument `dist.shasum` **逐字相同** (`sha512-xcsPJp7NXmkNw…` SRI 同样逐字相同) ④ `tar -tzf` 核包内**入口文件**在 (`package/dist/cli-entry.js` · `package/bin/bolloon.cjs` · `package/package.json`) 且**新 CLI 的入口真在**: `tasks.js` 含 `GROUP_ACTIONS` 与 `case 'group'` · `identity-command.js` 含 `identity init` · `update-commands.js` 解析 `--channel`; 装出来后真跑 `task group` / `identity` 帮助 (真列出 create/join/list/link/leave · init/show) 且 `--channel nonsense` **必拒** (「只接受 stable\|dev\|beta … 拒绝执行 (没有静默落回 stable)」) ⑤ **全新目录**装 `@bolloon/bolloon-agent@0.5.0`: `added 972 packages`, **`npm warn` 行数 = 0** (stderr 逐字为空), `bolloon --version` 真报 `Bolloon Agent v0.5.0` + `当前安装源: stable (npm registry) · 0.5.0 · semver` ⑥ **拿新发布版本回环重跑双源真跑验收**: **63 PASS / 0 FAIL / 0 SKIP** (dev 身份 `0.5.0+dev.493d8d5` 且真起装完的入口**自报**该身份; `check(stable)` 判 `update_available` 且理由写明「切回 stable 的 0.5.0」; `update now --channel stable` **退出码 0** + 磁盘真变回 `0.5.0`; `--status` 三态都**说清装的哪个源 + 哪个 sha + 能切回哪个源**)。**tag 与交叉校验 (第一个真实例)**: 建 annotated tag **`v0.5.0` → `493d8d5`**(= **发布出去的源码提交**, npm tarball 的 `src/`+`package.json`+`scripts/` 就是这棵树) 并 push; 真跑交叉校验 (真 `api.github.com` + 真 packument + **仓内同一份** `crossCheckStable`) = **`agree`** (`blocking=false` · `hasTag=true`): 「npm latest=0.5.0 在 GitHub 上有同名记录 (Tag v0.5.0) — 两个源指向同一版」—— 此前恒为 `missing_record`, **这是 §12.4 那条判据的第一个真实例**; 发布硬门 (把「GitHub 同名 Tag」写进 `verify-release.mjs` 当硬门) **刻意没开** —— 现在有真实例可依, 要不要开由**主线**定。**仓内发布校验**: `node scripts/verify-release.mjs 0.5.0 --install-check` **13/13 全过** (含 `git_tag: tag=493d8d5 HEAD=493d8d5` · 工作区干净 · 真装线上 tarball 后 `--version json` 版本一致 · `update plan` 结构正确) → 「发布可信」。**如实留下 (没做到/有保留)**: ① 双源验收**第一次跑是 18 FAIL** —— 隔离 prefix 的「预置真装 0.5.0」失败 (`磁盘=null`), 下游 18 项全被带红; 手动用**同一形状**命令复现却**成功** (`added 972 packages`, exit 0) → 判**瞬时环境抖动**; 但夹具**把 npm 的 stderr 丢掉** ⇒ **这道门红起来没有原因可读**, 这个弱点本轮**没改** ② `skills/bolloon-network/SKILL.md` 的「发行版可用性边界」仍按 **0.4.33 实测**口径写 (0.5.0 已把 `group/announce/trail/post` 全带上; 但技能源与站点镜像按纪律**逐字节同源**, 改它属 UI 仓那一侧的活) ③ 双源验收的「装依赖」一跳仍复用本仓 `node_modules` (加速开关, 其余全真) ④ tag 指向 `493d8d5`, wiki 回写落在随后一个 docs 提交 (tag 与 HEAD 不再重合; `verify-release.mjs` 的 `git_tag` 是软门, 之后会显示 ⚠️ —— 如实说明, 不是发布坏了) | [update-protocol.md §12](./update-protocol.md) / [package.json](../../package.json) / [verify-dual-source.ts](../../scripts/verify-dual-source.ts) / [verify-release.mjs](../../scripts/verify-release.mjs) |
 | 2026-09-25 | feat | **更新系统落双源 (npm + GitHub): `--channel stable\|dev` + 两套版本比较语义显式分开 + 错误分类不合并 + **源不可达/版本不存在必拒 (退出码 2), 不许静默装回旧版** (真跑 **63 PASS / 0 FAIL** + 变异验证 **6/6 判红**)** —— ① **先查事实再看设计**: 真调 api.github.com + 看本地 tag → 本仓 **GitHub Release = 0 个 / Tag 25 个 (最高 `v0.4.30`) / master HEAD `d2148f3` / npm latest `0.4.33` (无对应 tag)** → stable 的 GitHub 那一侧**如实降级为「以 Tag 为准 + 没记录就报提醒级 `missing_record`」**, **没有**编造一条不存在的 Release 路径 (发布硬门 ④ 因此未做, 理由写在 wiki §12.6)。② **两套比较语义是代码里的显式字段** (`ChannelKind='semver'|'git-ref'`): stable = semver (npm `dist-tags.latest` 权威, GitHub Tag/Release 只做交叉校验) · dev = **git ref + commit sha** (版本号只作参考展示; 真跑实证: `0.4.33` 与 `0.4.33+dev.d2148f3` 的 semver 段相同, 但按 sha 必须判「有另一个 dev 版」)。③ **错误分类不合并**: 新增 `github_unavailable(offline/rate_limited/not_found/http_error/parse_error)` 与 `cross_check_mismatch`, 与 registry 侧**并列** (9 个结论只增不改, 优先级插进原序列); `REFUSED_STATUSES` 5 个结论在执行面**一个 npm 都不调**。④ **dev 三条硬约束全落**: 同一句警告在 检查/计划/执行/status/doctor 五处 (常量只一份文案) · 装完写 `installedChannel/installedDevSha/devSha/devRef/devCheckedAt` (`installed*` = 当前, `devSha` = 上次, 切回后仍能回答「上次装的是哪个 dev 版」) · `bolloon update now --channel stable` **真跑通** (退出码 0, 磁盘真变回 `0.4.33`)。⑤ **复用既有替换机制** (没有另造一套): dev 也只是「另一个 tarball」, 仍走 临时下载→校验→交给 npm 替换→验证可启动→失败回滚。⑥ **真跑暴露两个真问题** (都修): dev 快照从 git 树构建必须**两步** (`build --workspaces` 先建 `@bolloon/constraint-runtime`, 再 `build:main`; 只跑第二步在干净源码树上必 TS2307) · 验收脚本里**假源必须用异步子进程** (`spawnSync` 阻塞父进程事件循环 → 父进程的受控假服务器永远答不上话, 表现为 `releases: timeout`)。⑦ **真验证矩阵**: A npm 真断网+GitHub 可达 → `offline` 退出码 2 且**磁盘没被动过** · B GitHub 真不可达(dev) → `github_unavailable(offline)` 退出码 2 **不回落 stable** · C 限流 403 (匿名真跑时**真的被打到**, 分类当场验证) · D 真 codeload 404 → `not_found` 不装任何东西 · E dev 真跑 (真取 codeload 快照→真构建→装出 `0.4.33+dev.d2148f3`, 真起入口**自报**该身份) · F 一键回 stable 真跑 (历史留 `+dev.d2148f3 → 0.4.33`) · G 受控假源造 `v9.9.9` → `cross_check_mismatch` 退出码 2 **且没有任何 npm install 被调用** · H `update --status` 三态 (只装 npm / 装了 dev / 刚切回) 都**说清装的哪个源 + 哪个 sha + 能切回哪个源**。**门禁**: `tsc --noEmit` 0 错 · 飞轮冻结门 **34/34** (未削弱) · `update-system.test.ts` 53/53 不变红 · 新增 `update-dual-source.test.ts` 34/34 · 全量 vitest 见收尾 · wiki 四门 OK。**未做 (如实)**: ④ 发布硬门 (GitHub 上还没有与 `package.json` 同名的 Tag/Release, 现在设门会把每次发布都拦住 —— 等第一个「带同名 tag」的版本一起做) · ⑤ **本步刻意不发 npm 包** (下一步由主线做) · dev 快照构建时「装依赖」这一跳复用本仓 `node_modules` (只省这一步, 构建/打包/替换都是真的) · 真 LLM 驱动的长周期跑仍未验 | [update-protocol.md](./update-protocol.md) · [dual-source.ts](../../src/utils/dual-source.ts) · [update-manager.ts](../../src/utils/update-manager.ts) · [update-dual-source.test.ts](../../src/test/update-dual-source.test.ts) · [verify-dual-source.ts](../../scripts/verify-dual-source.ts) · [verify-dual-source-mutations.py](../../scripts/verify-dual-source-mutations.py) |
@@ -4041,6 +4042,88 @@ M5 装完 dev 记成 `stable` 🔴1 · M6 dev 身份反解 sha 失效 🔴5 —�
 4. tag 指向 `493d8d5`, wiki 回写落在随后一个 docs 提交 —— tag 与 HEAD 不再重合, `verify-release.mjs` 的 `git_tag` 是**软门**, 之后跑会显示 ⚠️ (如实说明: 不是发布坏了, 是回写在 tag 之后)。
 5. 匿名 GitHub API 只有 **60 次/小时** (本次全程真调) —— 是环境约束, 不是功能问题; 配额耗尽时 stable 侧按设计**不该**被 GitHub 阻塞 (npm 仍是权威)。
 
+
+## [2026-09-26] feat | 模型 `/model` 改分步选择器 + 冻结模型元数据接口 (P2): 能力字段拿不到真数据一律"未知" · 上轮三条遗留全部结清
+
+> 计划: 模型配置任务书 **P2**(分步选择器 + 模型元数据) + 上轮遗留三条。承接
+> [P0+P1](#2026-09-26-feat--模型切换统一入口--有效模型配置--每-run-快照-p0p1)。
+> 协议页: [model-selector-p2.md](./model-selector-p2.md)。
+
+### 一、七步选择器 (每一步都能取消, 写盘只在第 7 步)
+
+`供应商 → (未配置则输 key) → 模型 → reasoning/temperature → Session/Global → 测试连接 → 确认`。
+
+- 任意一步取消 ⇒ 全局配置 + 会话绑定**字节不变**(sha 比对, 单测 + 真跑各一组)。
+- 最终仍只走 P0 的 `selectModel(req)` —— 没有第二条写配置/重建运行时的路 (源码级门 + 变异 M1/M2 判红)。
+- 第 6 步「测试连接」探**候选**, **不写盘**; 预检凭证与落盘凭证**同一份**
+  (`resolvedApiKeyOf`: 本次输入 > 配置 > 环境变量) —— 否则"已配好 key 的供应商"会被上游按 401 打回,
+  用户读到一句假的"探测失败"。这是本轮真跑时**发现并修掉**的一个真问题。
+- 列表三态行 `● 可用 · N models` / `○ 未配置 key (ENV)` / `● 本地`; 模型行带
+  **当前置顶(▸)** · 模糊搜索 · **provider 原始 model ID** · 工具调用 · reasoning · 上下文 ·
+  凭证状态 · 是否本地 · 连接失败原因。
+
+### 二、冻结的模型元数据接口 (P3/P5 唯一填充点)
+
+文件 `src/llm/model-catalog.ts`。**只准填, 不准改形状**:
+`ModelCapabilityFacts` / `ModelMetadataSource` / `registerModelMetadataSource` /
+`listModelMetadataSources` / `resetModelMetadataSources`; 读侧 `ModelEntry` / `ProviderSummary` /
+`buildProviderSummaries` / `listModelsFor` / `searchModelEntries` / `formatProviderLine` /
+`formatModelLine` / `unknownFootnote` / `isLocalBaseUrl` / `curatedModelIds`。
+
+- 填充点返回 `undefined` 或缺键 ⇒ 字段保持 `unknown`/`null`, **本层不补默认值**; 抛错 = 没有数据
+  (不把异常变成"不支持"); 优先级 = 注册顺序, 同一 `id` 再注册**原地替换**(优先级不变)。
+- **实测"未知"清单**: 模型级 `toolCalling`/`reasoning`/`contextLength` **全部未知** (内置目录只有
+  ~13 家 × 少量 model ID, 没有能力字段); `reachability` 没探过 = unknown。
+  真值字段: `requiresApiKey`(注册表) · `credentialReady`(配置/环境) · `isLocal`(base URL 主机名) ·
+  `modelCount`(内置目录, 没有目录时显示"无内置目录"而不是 0)。
+
+### 三、真跑验收 (真本地 HTTP server + 真子进程 + 真 `chat()`)
+
+`scripts/verify-model-selector.ts` **51 passed / 0 failed (7s)**; P0 门 `verify-model-selection.ts`
+仍 **55/0**。判据: S1 七步真走完 → 下一次请求**真命中**选中的 model (含"不在目录 → 手工输入 ID"路径) ·
+S2 列表真内容 (三态行 / 能力"未知" / `key 已配` vs `缺 key` / **注册表与配置对 ollama 的 key 要求冲突
+如实标出**) · S3 填充点真接线 (注册→真值, 撤掉→回到未知) · S4 命令面同一份 (`pick` + `status --json`) ·
+S5 预检失败/参数越界 → 字节不变 · S6 真子进程改盘 + mtime/size 撞车 → 改动不被覆盖 ·
+S7 Run 快照反查 (一致 / 漂移逐字段点名 / 没快照 → null) · S8 新进程读到同一份且输出无 key 明文。
+
+### 四、变异验证 **10/10 判红**
+
+`scripts/verify-model-selector-mutations.py` (改前先确认盘上 sha256 真变): M1 第二条写盘路径 ·
+M2 选择器不走唯一入口 · M3 编造 `toolCalling=yes` · M4 渲染层把未知翻成"支持" · M5 抽掉锁内
+`invalidate()` · M6 反查永远说"没漂移" · M7 key 明文进日志 · M8 `configHash` 不含 model ·
+M9 key 要求改回以配置为准 · M10 第 4 步不再收窄列表。
+
+### 五、上轮三条遗留
+
+1. **锁内 `invalidate()` 补上门 (上轮 0 红)**: 签名 = `${mtimeMs}:${size}`, 用**真子进程**改成同长度
+   的 model 名 + `utimes` 拨回同一整毫秒构造撞车 (先断言"签名检查确实看不见这次改动"),
+   再验证父进程切换后子进程的改动**活下来**。变异 M5 判红 ⇒ 这条现在**承重且有门**。
+2. **真启动验收 + 启动停滞定位**: 根因**不是** DID/IPNS 死锁, 而是**夹具探错端口** ——
+   `src/index.ts` web 模式读 `parseInt(process.env.PORT || '54188')`, **不解析 `--port`**,
+   而 `scripts/ablation/run.ts` 只传了 `--port` (夹具 PORT 恰好 = 默认 54188, 所以过去"看起来能用");
+   已改为传 `PORT` 环境变量 + 超时 180s→300s。冷启动实测 **~143s** (tsx 编译 ~40s + 启动序列串行;
+   其中本地 Kubo 守护等待 20s + 本地 IPNS 发布 30s 超时 + 备用发布 ≈ 80s)。
+   真跑: `[server:main] ready` + `/api/health` **200** + 16 项端到端 **15 通过 / 1 失败**。
+   那 1 项失败是**上游 400 `tools[120].function.name` 非法**(工具注册表的问题, 不属本轮范围, 如实记录)。
+3. **`configHash` 反向校验**: 新增 `compareRunModelConfig` (纯函数) + `detectRunConfigDrift(runId)`,
+   逐字段点名 `provider/model/baseUrl/configHash`; 一致就明说"一致", 现状读不出来 → `verified:false`
+   (**不假装一致**), 没快照/没这个 Run → `null` (不编)。接线到 `pi-sdk.resumeRun` (漂了 warn + 返回值带
+   `modelDrift`), 旧 Run 记录不改写。
+
+### 六、门禁与如实留下
+
+`tsc --noEmit` **0 错** · 飞轮冻结门 **34/34** · update 两个门 (53 / 34) 不变 · 本页门:
+`src/test/model-selector.test.ts` **35/35** · 真跑 51/0 + 55/0 · 变异 10/10 · 全量 vitest 见收尾 · wiki 四门 OK。
+
+1. **模型级能力全是"未知"** —— 本轮只定义接口 + 如实显示, 真数据由 P3/P5 填。
+2. **`requiresApiKey` 两处真相且现在冲突** (注册表说 ollama 不要 key / 默认配置说 `true`):
+   本层以注册表为准并在列表行标冲突, **要不要统一由 P3 定** (不改默认配置, 免得动到别的线的判据)。
+3. **会话内 (ink) 没有文本输入**: 因此会话内选择器没有模糊搜索/自定义 temperature, 需要新 key 时给
+   "去系统终端 `bolloon model key`"的指引 (不把 key 打进会话回显); 命令行的 `bolloon model pick` 七步齐全。
+4. **启动耗时只定位到"端口契约 + 串行时序 + IPNS ~80s"**, 没有逐行 profiler; 143s 是冷启动单次实测。
+5. **消融 15/16 里那 1 项失败没修** (`tools[120].function.name`), 属工具注册表。
+
+---
 
 ## [2026-09-26] feat | 模型切换统一入口 + 「有效模型配置」 + 每 Run 快照 (P0+P1)
 

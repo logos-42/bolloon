@@ -1601,49 +1601,35 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     return;
   }
 
-  // /model — 无参: 交互选择器 (ink 渲染, 复用 MentionPopup); 有参: 直接切换/测连通/看状态
+  // /model — 无参: 分步选择器 (供应商 → 凭证 → 模型 → 参数 → 作用域 → 测试 → 确认);
+  //   有参: 直接切换/测连通/看状态 (与 bolloon model 同一套语义)
   if (cmd === '/model' || cmd.startsWith('/model ')) {
     const modelArg = trimmed.slice('/model'.length).trim();
-    if (modelArg) {
-      try {
-        const { runModelCommand } = await import('./cli/setup-wizard.js');
-        // 会话内不提供隐藏输入 (避免 API key 留在会话回显/记录里) → 需要 key 时给出系统终端指引
-        const out = await runModelCommand(modelArg);
-        for (const line of String(out).split('\n')) appendLine(`${C_DIM}${line}${RESET}`);
-      } catch (e: any) {
-        appendLine(`${C_ERROR}/model 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
-      }
-      return;
+    if (!modelArg) {
+      appendLine(`${C_DIM}模型选择 (分步): 供应商 → 凭证 → 模型 → 生成参数 → 作用域 → 测试连接 → 确认切换${RESET}`);
     }
     try {
-      const { llmConfigStore, PROVIDER_INFO } = await import('./llm/config-store.js');
-      await llmConfigStore.initialize();
-      const config = await llmConfigStore.getConfig();
-      const items = Object.entries(config.providers).map(([name, p]) => ({
-        kind: 'command' as const,
-        label: name,
-        hint: `${String((PROVIDER_INFO as any)[name]?.name || '').padEnd(14)} ${p.apiKey ? '🔑' : p.requiresApiKey ? '⚠ 无key' : ''}  ${p.model || ''}`,
-        insert: name,
-      }));
-      (globalThis as any).__inkOpenPicker?.(items, '选择模型供应商 (↑↓ 选择 · Enter 确认 · Esc 取消)', async (it: any) => {
-        try {
-          // 2026-09-26: 会话内选择器不再只写配置 —— 走统一入口, 一并重建运行时并回显真实生效的那一份。
-          //   作用域 = 当前会话 (不动全局默认), 想改全局请用 /model <provider> [model]。
-          const { selectModel, formatEffectiveModel } = await import('./llm/model-selection.js');
-          const r = await selectModel({ provider: it.label, scope: 'session' });
-          if (!r.ok) {
-            appendLine(`${C_ERROR}✗ 切换失败: ${String(r.message || '').slice(0, 150)}${RESET}`);
-            if (r.previous) appendLine(`${C_DIM}  仍在用: ${formatEffectiveModel(r.previous)}${RESET}`);
-            return;
-          }
-          appendLine(`${C_OK}✓ 已切换到 ${it.label} (${String((PROVIDER_INFO as any)[it.label]?.name || '')}) — 仅当前会话${RESET}`);
-          appendLine(`${C_DIM}  ${formatEffectiveModel(r.effective!)}${RESET}`);
-        } catch (e: any) {
-          appendLine(`${C_ERROR}✗ 切换失败: ${String(e.message || e).slice(0, 150)}${RESET}`);
-        }
-      });
+      const { runModelCommand } = await import('./cli/setup-wizard.js');
+      /**
+       * 把渲染层的选择器借给分步选择器用: 每次要一个选择时开窗, 拿到结果 (或用户 Esc) 就往下走。
+       * Esc 通过取消回调报回 null —— 没有这条通路时"按 Esc"会让调用方一直等。
+       */
+      const inkChoose = (items: Array<{ value: string; label: string; hint?: string }>, title: string): Promise<string | null> =>
+        new Promise<string | null>((resolve) => {
+          const g = globalThis as any;
+          if (typeof g.__inkOpenPicker !== 'function') { resolve(null); return; }
+          g.__inkOpenPicker(
+            items.map((c) => ({ kind: 'command', label: c.label, hint: c.hint, insert: c.value })),
+            title,
+            (it: any) => resolve(it?.insert ?? it?.label ?? null),
+            () => resolve(null),
+          );
+        });
+      // 会话内不提供隐藏输入 (避免 API key 留在会话回显/记录里) → 需要 key 时选择器给出系统终端指引
+      const out = await runModelCommand(modelArg, { choose: inkChoose });
+      for (const line of String(out).split('\n')) appendLine(`${C_DIM}${line}${RESET}`);
     } catch (e: any) {
-      appendLine(`${C_ERROR}/model 失败: ${String(e.message || e).slice(0, 150)}${RESET}`);
+      appendLine(`${C_ERROR}/model 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
     }
     return;
   }

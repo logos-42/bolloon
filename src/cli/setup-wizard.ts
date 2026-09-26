@@ -28,6 +28,11 @@ import {
   normalizeBaseUrl, validateBaseUrlShape, currentSessionKey,
   type EffectiveModelConfig, type SelectionFailureClass,
 } from '../llm/model-selection.js';
+import {
+  buildProviderSummaries, formatProviderLine,
+  type ProviderSummary,
+} from '../llm/model-catalog.js';
+import { runModelSelector, type SelectorChoice, type ModelSelectorResult } from './model-selector.js';
 
 /** 向导推荐的供应商顺序 (第一个是最省事的国内直连) */
 export const RECOMMENDED_PROVIDERS: ModelProvider[] = [
@@ -77,6 +82,19 @@ export async function askHiddenLine(question: string): Promise<string> {
       process.stdout.write('\n');
       rl.close();
       resolve(String(ans ?? '').trim());
+    });
+  });
+}
+
+/** 一次性普通输入 (分步选择器的搜索/参数输入用; 有默认值时回车即取默认) */
+export async function askLine(question: string, opts: { default?: string } = {}): Promise<string> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  return new Promise<string>((resolve) => {
+    const prompt = `${question}${opts.default !== undefined ? ` [${opts.default}]` : ''} `;
+    rl.question(prompt, (ans) => {
+      rl.close();
+      const v = String(ans ?? '').trim();
+      resolve(v === '' && opts.default !== undefined ? String(opts.default) : v);
     });
   });
 }
@@ -350,6 +368,10 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
 export interface ModelCommandIO {
   /** 需要收 API key 时使用的隐藏输入 (会话内没有此能力 → 不传) */
   askHidden?: (q: string) => Promise<string>;
+  /** 普通文本输入 (分步选择器的搜索/温度输入用; TTY 场景才传) */
+  ask?: (q: string, opts?: { default?: string }) => Promise<string>;
+  /** 结构化选择器 (会话内的渲染层选择器; 传了就优先用它) */
+  choose?: (items: SelectorChoice[], title: string) => Promise<string | null>;
 }
 
 /** 切换失败的机器可读分类 → 人话 (不许只回"切换成功"/"失败了") */
@@ -363,6 +385,7 @@ const FAILURE_ZH: Record<SelectionFailureClass, string> = {
   provider_unreachable: '服务不可达',
   model_not_found: '服务不认识这个模型',
   protocol_mismatch: '协议不匹配',
+  invalid_temperature: 'temperature 越界 (只接受 0~2)',
   timeout: '连接超时',
 };
 
@@ -375,7 +398,7 @@ function flagValue(parts: string[], i: number, name: string): string | undefined
 
 /** `/model` 的解析结果 (纯数据, 好测) */
 export interface ParsedModelCommand {
-  action: 'status' | 'test' | 'reset' | 'key' | 'select';
+  action: 'status' | 'test' | 'reset' | 'key' | 'select' | 'pick';
   provider?: string;
   model?: string;
   baseUrl?: string;
@@ -419,6 +442,7 @@ export function parseModelCommand(arg: string): ParsedModelCommand {
 
   const sub = (positional[0] || '').toLowerCase();
   if (!sub || sub === 'status' || sub === 'list') { out.action = 'status'; return out; }
+  if (sub === 'pick' || sub === 'wizard') { out.action = 'pick'; return out; }
   if (sub === 'test') { out.action = 'test'; out.provider = positional[1]?.toLowerCase(); return out; }
   if (sub === 'reset') { out.action = 'reset'; return out; }
   if (sub === 'key' || sub === 'auth') {
@@ -434,21 +458,17 @@ export function parseModelCommand(arg: string): ParsedModelCommand {
   return out;
 }
 
-/** 供应商列表 (每行最后是**该 provider 当前配置的** model, 不是有效配置) */
-async function providerLines(): Promise<string[]> {
-  await llmConfigStore.initialize();
-  const cfg = await llmConfigStore.getConfig();
-  const providers = cfg.providers as unknown as Record<string, any>;
+/**
+ * 供应商列表 —— 每一行就是选择器第一步看到的那种行 (`● 供应商 · N models`)。
+ * 数字与状态全部来自 `model-catalog`: 有真来源的给真值, 拿不到目录的写"无内置目录"
+ * (而不是 0 个模型), 未配置凭证的写清要哪个环境变量。
+ */
+async function providerLines(sessionKey?: string): Promise<string[]> {
+  const summaries = await buildProviderSummaries({ sessionKey });
+  const live = summaries.filter((s) => s.configured);
+  const unconfigured = summaries.filter((s) => !s.configured);
   const lines: string[] = [];
-  for (const p of RECOMMENDED_PROVIDERS) {
-    const st = providers[p];
-    if (!st) continue;
-    const info = (PROVIDER_INFO as any)[p] || {};
-    const active = p === cfg.activeProvider ? '●' : '○';
-    const keyState = st.apiKey ? '🔑' : (st.requiresApiKey === false ? '免key' : '—');
-    const flag = providerUsable(st) ? '' : ' (未启用)';
-    lines.push(`  ${active} ${p.padEnd(11)} ${String(info.name || '').padEnd(16)} ${keyState.padEnd(6)} model: ${st.model || '(默认)'}${flag}`);
-  }
+  for (const s of [...live, ...unconfigured]) lines.push(`  ${formatProviderLine(s)}`);
   return lines;
 }
 
@@ -464,13 +484,38 @@ export async function formatProviderStatus(sessionKey?: string): Promise<string>
     `  ${formatEffectiveModel(eff)}`,
     `  会话键: ${key}`,
     '',
-    '供应商配置:',
+    '供应商 (● 可用 · ○ 未配置):',
   ];
-  lines.push(...await providerLines());
+  lines.push(...await providerLines(sessionKey));
   lines.push('');
-  lines.push('用法: /model <provider> [model] [--base-url <url>] [--session] · /model test [provider] · /model status · /model reset · /model key <provider>');
+  lines.push('用法: /model pick 分步选择 (供应商→凭证→模型→参数→作用域→测试→确认)');
+  lines.push('      /model <provider> [model] [--base-url <url>] [--session] · /model test [provider] · /model status · /model reset · /model key <provider>');
   lines.push('      --session 只影响当前会话 (不动全局默认) · --no-verify 跳过切换前连通探测 (不推荐)');
   return lines.join('\n');
+}
+
+/**
+ * 分步选择器的薄包装: 把界面给的选择/输入能力交给它, 结果整理成可打印文本。
+ * 这里**不看配置、不写配置** —— 全部动作都在选择器内部走到 `selectModel()` 那一个点。
+ */
+export async function runModelPicker(
+  io: ModelCommandIO = {},
+  opts: { sessionKey?: string; skipProbe?: boolean; verify?: boolean; assumeYes?: boolean; initialProvider?: string } = {},
+): Promise<{ text: string; result: ModelSelectorResult }> {
+  const collected: string[] = [];
+  const res = await runModelSelector(
+    {
+      print: (l) => collected.push(l),
+      ...(io.ask ? { ask: io.ask } : {}),
+      ...(io.askHidden ? { askHidden: io.askHidden } : {}),
+      ...(io.choose ? { choose: io.choose } : {}),
+    },
+    opts,
+  );
+  const tail = res.ok
+    ? [`✅ 当前生效: ${formatEffectiveModel(res.effective!)}`]
+    : [res.cancelled ? `· ${res.message}` : `✗ 切换未完成${res.failureClass ? ` [${FAILURE_ZH[res.failureClass]}]` : ''}: ${res.message}`];
+  return { text: [...collected, ...tail].join('\n'), result: res };
 }
 
 /**
@@ -483,6 +528,20 @@ export async function runModelCommand(arg: string, io: ModelCommandIO = {}): Pro
   const parsed = parseModelCommand(arg);
   if (parsed.errors.length) {
     return [`参数有问题, 未改动任何配置:`, ...parsed.errors.map((e) => `  · ${e}`)].join('\n');
+  }
+
+  // ── 分步选择器 (显式 `pick`, 或空参 + 界面能给结构化选择) ───
+  //     两种入口都只是"把界面能力递给选择器"; 写配置/重建运行时仍只在 selectModel 一处。
+  if (parsed.action === 'pick' || (parsed.action === 'status' && !String(arg || '').trim() && !!io.choose)) {
+    if (!io.choose && !io.ask) {
+      return [
+        '分步选择需要交互能力 (当前环境既没有选择器也没有文本输入)。',
+        '  在系统终端跑: bolloon model pick',
+        `  或直接一条命令切: /model <provider> [model] [--base-url <url>]`,
+      ].join('\n');
+    }
+    const { text } = await runModelPicker(io, { skipProbe: !parsed.verify, verify: parsed.verify });
+    return text;
   }
 
   // ── 状态 ─────────────────────────────────────────────────
@@ -547,8 +606,11 @@ export async function runModelCommand(arg: string, io: ModelCommandIO = {}): Pro
     const r = await selectModel({ provider, apiKey: key, scope: 'global' });
     const tail = key.slice(-4);
     if (!r.ok) {
+      // 实情: 统一入口先校验探测再写盘, 所以失败(=探测没过/校验没过)时 **key 与切换都没落盘**,
+      //   旧配置与运行时原样。这里不许写成"key 已保存但没切过去" —— 那是另一种状态, 而且不是真的。
       return [
-        `⚠ 已保存 ${provider} 的 key (尾号 ****${tail}), 但**没有切换过去**: [${r.failureClass ? FAILURE_ZH[r.failureClass] : '未知'}] ${r.message}`,
+        `⚠ ${provider} 没有配置成功 [${r.failureClass ? FAILURE_ZH[r.failureClass] : '未知'}]: ${r.message}`,
+        `  key (尾号 ****${tail}) 与这次切换**都没有落盘**, 旧配置与运行时保持原样。`,
         r.previous ? `当前仍在用: ${formatEffectiveModel(r.previous)}` : '',
       ].filter(Boolean).join('\n');
     }

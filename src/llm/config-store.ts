@@ -18,6 +18,11 @@ export interface ProviderConfig {
   temperature?: number;
   maxTokens?: number;
   requiresApiKey?: boolean;
+  /**
+   * 2026-09-26: 推理/思考模式的**用户偏好** (与"这个供应商支不支持 reasoning"是两件事)。
+   * 只在用户明确选过时才写; 字段缺失 = 没选过 (不假装成 false)。
+   */
+  reasoning?: boolean;
 }
 
 export interface LLMConfig {

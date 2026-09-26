@@ -73,6 +73,10 @@ export interface ModelSelection {
   model: string;
   baseUrl: string;
   apiKey?: string;
+  /** 生成参数: 温度 (0~2)。`undefined` = 这一层没意见, 不覆盖下层 */
+  temperature?: number;
+  /** 生成参数: 推理/思考模式偏好。`undefined` = 这一层没意见 */
+  reasoningMode?: boolean;
   updatedAt?: string;
 }
 
@@ -84,8 +88,12 @@ export interface EffectiveModelConfig {
   protocol: ModelProtocol;
   /** 凭证来源引用 (**不是** key 本身): `provider:<id>` / `env:<VAR>` / `none` */
   authRef: string;
-  /** 该 provider 是否原生支持 reasoning / thinking 模式 */
+  /** 该 provider 是否原生支持 reasoning / thinking 模式 (供应商级能力, 不是模型级数据) */
   reasoning: boolean;
+  /** 用户选的推理模式偏好: `on` / `off` / `unset` (没选过) —— 与上面的"能力"是两件事 */
+  reasoningMode: 'on' | 'off' | 'unset';
+  /** 生效的温度。`null` = 没有任何一层给过值 */
+  temperature: number | null;
   /** 这一份配置来自哪一层 (与 source 同值, 分开写是为了让读的人不必猜) */
   scope: SelectionSource;
   source: SelectionSource;
@@ -115,6 +123,7 @@ export type SelectionFailureClass =
   | 'provider_unreachable'
   | 'model_not_found'
   | 'protocol_mismatch'
+  | 'invalid_temperature'
   | 'timeout';
 
 export interface SelectModelRequest {
@@ -123,6 +132,10 @@ export interface SelectModelRequest {
   baseUrl?: string;
   /** 仅在 `key` 子命令里出现; 不进日志/不进返回值 */
   apiKey?: string;
+  /** 生成参数 (可选): 温度 0~2。给了就写进该 provider 的配置 */
+  temperature?: number;
+  /** 生成参数 (可选): 推理模式偏好 */
+  reasoningMode?: boolean;
   /** 默认 global (与历史语义一致): 影响新会话 + 未绑定模型的任务 */
   scope?: 'global' | 'session';
   /** 哪个 CLI 会话 —— scope=session 时必填 (否则用当前会话键) */
@@ -268,6 +281,8 @@ export function materialize(
     protocol,
     authRef,
     reasoning: supportsReasoning(provider),
+    reasoningMode: sel.reasoningMode === true ? 'on' : sel.reasoningMode === false ? 'off' : 'unset',
+    temperature: typeof sel.temperature === 'number' && Number.isFinite(sel.temperature) ? sel.temperature : null,
     scope: source,
     source,
     updatedAt: sel.updatedAt || new Date().toISOString(),
@@ -359,7 +374,14 @@ export async function readSessionSelection(sessionKey?: string): Promise<ModelSe
   const all = await readSessionBindings();
   const hit = all.sessions[key];
   if (!hit || !hit.provider) return null;
-  return { provider: hit.provider, model: hit.model, baseUrl: hit.baseUrl, updatedAt: hit.updatedAt };
+  return {
+    provider: hit.provider,
+    model: hit.model,
+    baseUrl: hit.baseUrl,
+    ...(typeof hit.temperature === 'number' ? { temperature: hit.temperature } : {}),
+    ...(typeof hit.reasoningMode === 'boolean' ? { reasoningMode: hit.reasoningMode } : {}),
+    updatedAt: hit.updatedAt,
+  };
 }
 
 export async function writeSessionSelection(sessionKey: string, sel: ModelSelection): Promise<void> {
@@ -370,6 +392,8 @@ export async function writeSessionSelection(sessionKey: string, sel: ModelSelect
     provider: sel.provider,
     model: sel.model,
     baseUrl: normalizeBaseUrl(sel.baseUrl || ''),
+    ...(typeof sel.temperature === 'number' ? { temperature: sel.temperature } : {}),
+    ...(typeof sel.reasoningMode === 'boolean' ? { reasoningMode: sel.reasoningMode } : {}),
     updatedAt: new Date().toISOString(),
     scope: 'session',
   };
@@ -400,6 +424,8 @@ async function readGlobalSelection(): Promise<ModelSelection | null> {
     model: p.model,
     baseUrl: p.baseUrl,
     apiKey: p.apiKey || envKey?.value,
+    ...(typeof p.temperature === 'number' ? { temperature: p.temperature } : {}),
+    ...(typeof (p as any).reasoning === 'boolean' ? { reasoningMode: (p as any).reasoning } : {}),
     updatedAt: cfg.updatedAt,
   };
 }
@@ -569,6 +595,14 @@ export function validateSelection(
     };
   }
 
+  // 生成参数: 温度只在 0~2 有意义。非法值**当场拒**, 不静默夹到边界 (夹了就是改了用户的意思)
+  if (req.temperature !== undefined) {
+    const t = Number(req.temperature);
+    if (!Number.isFinite(t) || t < 0 || t > 2) {
+      return { ok: false, failureClass: 'invalid_temperature', message: `temperature 只接受 0~2 的数字, 收到 '${req.temperature}'` };
+    }
+  }
+
   return {
     ok: true,
     selection: {
@@ -576,6 +610,8 @@ export function validateSelection(
       model,
       baseUrl,
       apiKey: apiKey || envKey?.value,
+      ...(req.temperature !== undefined ? { temperature: Number(req.temperature) } : {}),
+      ...(req.reasoningMode !== undefined ? { reasoningMode: req.reasoningMode } : {}),
     },
   };
 }
@@ -793,6 +829,9 @@ export async function selectModel(req: SelectModelRequest): Promise<SelectModelR
         if (target.apiKey || stored?.apiKey || stored?.requiresApiKey === false) {
           patch.requiresApiKey = false;
         }
+        // 生成参数: 只有这一次明确给了才写 (不传 = 不动原有的值, 不拿内置默认去覆盖用户已经调好的)
+        if (req.temperature !== undefined) patch.temperature = Number(req.temperature);
+        if (req.reasoningMode !== undefined) patch.reasoning = req.reasoningMode;
 
         await llmConfigStore.updateProvider(provider as ModelProvider, patch);
         await llmConfigStore.setActiveProvider(provider as ModelProvider);
@@ -889,7 +928,8 @@ export function formatEffectiveModel(eff: EffectiveModelConfig): string {
     `base=${eff.baseUrl}`,
     `协议=${eff.protocol}`,
     `凭证=${eff.authRef}`,
-    eff.reasoning ? 'reasoning=支持' : 'reasoning=不支持',
+    `${eff.reasoning ? 'reasoning=支持' : 'reasoning=不支持'}(偏好${eff.reasoningMode === 'unset' ? '未设' : eff.reasoningMode === 'on' ? '开' : '关'})`,
+    `temperature=${eff.temperature === null ? '未设' : eff.temperature}`,
     `作用域=${scopeZh[eff.source]}`,
     `hash=${eff.configHash}`,
   ].join(' · ');
@@ -897,4 +937,112 @@ export function formatEffectiveModel(eff: EffectiveModelConfig): string {
 
 export function providerDisplayName(provider: string): string {
   return (PROVIDER_INFO as any)[provider]?.name || provider;
+}
+
+// ============================================================
+// 反向校验: 现在生效的这一份, 还是快照记的那一份吗?
+// ============================================================
+
+/** 一处不一致 (只有真的不同才会出现在报告里) */
+export interface ConfigDriftField {
+  field: 'provider' | 'model' | 'baseUrl' | 'configHash';
+  snapshot: string;
+  current: string;
+}
+
+export interface ConfigDriftReport {
+  /** `true` = 真的比对过了 (false = 现状读不出来, 只能如实说"没核对成") */
+  verified: boolean;
+  /** `true` = 快照与现状不是同一份配置 (只有 `verified` 时才可能是 true) */
+  drifted: boolean;
+  snapshot: RunModelConfig;
+  current: EffectiveModelConfig | null;
+  fields: ConfigDriftField[];
+  /** 一句话结论 (可直接展示/落日志), 一致时也说清"一致" */
+  message: string;
+}
+
+/**
+ * 纯函数: 把 Run 快照与当前有效配置逐字段比。
+ *
+ * 存在意义: `configHash` 此前只被"写进快照"和"回显", 没有任何地方拿它**反着查一次** ——
+ * 于是外部手改了配置文件 (或另一个进程切了默认模型) 时, 拿着旧快照的人不会知道。
+ * 这里给出可判定的回答: 漂了就点名是哪几个字段漂了, 不漂就明确说"一致"。
+ */
+export function compareRunModelConfig(
+  snapshot: RunModelConfig,
+  current: EffectiveModelConfig | null,
+): ConfigDriftReport {
+  const snap: Record<ConfigDriftField['field'], string> = {
+    provider: snapshot.provider,
+    model: snapshot.model,
+    baseUrl: normalizeBaseUrl(snapshot.baseUrl || ''),
+    configHash: snapshot.configHash,
+  };
+  if (!current) {
+    return {
+      verified: false,
+      drifted: false,
+      snapshot,
+      current: null,
+      fields: [],
+      message: `无法核对: 当前配置读不出来 (Run 快照仍是 ${snapshot.provider}/${snapshot.model}, hash=${snapshot.configHash})`,
+    };
+  }
+  const cur: Record<ConfigDriftField['field'], string> = {
+    provider: current.provider,
+    model: current.model,
+    baseUrl: normalizeBaseUrl(current.baseUrl || ''),
+    configHash: current.configHash,
+  };
+  const fields: ConfigDriftField[] = [];
+  for (const f of ['provider', 'model', 'baseUrl', 'configHash'] as const) {
+    if (snap[f] !== cur[f]) fields.push({ field: f, snapshot: snap[f], current: cur[f] });
+  }
+  if (!fields.length) {
+    return {
+      verified: true,
+      drifted: false,
+      snapshot,
+      current,
+      fields,
+      message: `模型配置与 Run 快照一致 (${current.provider}/${current.model} @ ${current.baseUrl}, hash=${current.configHash})`,
+    };
+  }
+  return {
+    verified: true,
+    drifted: true,
+    snapshot,
+    current,
+    fields,
+    message: `模型配置已偏离 Run 快照 — 快照: ${snapshot.provider}/${snapshot.model} @ ${normalizeBaseUrl(snapshot.baseUrl || '')} (hash=${snapshot.configHash}); 现在生效: ${current.provider}/${current.model} @ ${current.baseUrl} (hash=${current.configHash}); 变化的字段: ${fields.map((f) => f.field).join(', ')}`,
+  };
+}
+
+/** 拿当前有效配置核对一份 Run 快照 (不写任何东西) */
+export async function detectRunModelDrift(
+  snapshot: RunModelConfig,
+  sessionKey?: string,
+): Promise<ConfigDriftReport> {
+  let current: EffectiveModelConfig | null = null;
+  try {
+    current = await effectiveModelConfig({ sessionKey });
+  } catch { current = null; }
+  return compareRunModelConfig(snapshot, current);
+}
+
+/**
+ * 从盘上读某个 Run 的快照再核对 (读不到 Run / 这个 Run 没快照 → `null`, 不编一份出来)。
+ * 动态 import 记录层, 避免"记录层 ← 入口层"的双向静态依赖。
+ */
+export async function detectRunConfigDrift(runId: string, sessionKey?: string): Promise<ConfigDriftReport | null> {
+  try {
+    const store: any = await import('../agents/run-store.js');
+    const rec = await store.readRun(runId);
+    const snap = rec?.modelConfig as RunModelConfig | undefined;
+    if (!snap) return null;
+    return await detectRunModelDrift(snap, sessionKey);
+  } catch {
+    return null;
+  }
 }

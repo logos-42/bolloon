@@ -157,15 +157,27 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const [picker, setPicker] = useState<{ title: string; items: MentionItem[]; sel: number } | null>(null);
   const pickerCb = useRef<((item: MentionItem) => void) | null>(null);
   const pickerSelRef = useRef(0);
+  /**
+   * 2026-09-26: 取消回调。此前 Esc 只把 `pickerCb` 置空并关窗 —— 对"等一个选择结果"的调用方
+   * (分步选择器要按步往下走) 来说就是**永远等不到**。现在 Esc/显式关闭都会回调它。
+   */
+  const pickerCancel = useRef<(() => void) | null>(null);
   // 全局钩子: index.ts 命令打开/关闭选择器
   useEffect(() => {
-    (globalThis as any).__inkOpenPicker = (itemsArg: MentionItem[], title: string, onPick: (item: MentionItem) => void) => {
+    (globalThis as any).__inkOpenPicker = (itemsArg: MentionItem[], title: string, onPick: (item: MentionItem) => void, onCancel?: () => void) => {
       pickerSelRef.current = 0;
       pickerCb.current = onPick;
+      pickerCancel.current = onCancel ?? null;
       setPicker({ title: title || '选择', items: itemsArg, sel: 0 });
       setInput('');
     };
-    (globalThis as any).__inkClosePicker = () => { pickerCb.current = null; setPicker(null); };
+    (globalThis as any).__inkClosePicker = () => {
+      const c = pickerCancel.current;
+      pickerCb.current = null;
+      pickerCancel.current = null;
+      setPicker(null);
+      c?.();
+    };
     return () => { delete (globalThis as any).__inkOpenPicker; delete (globalThis as any).__inkClosePicker; };
   }, []);
 
@@ -400,11 +412,20 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         const it = itemsArg[Math.min(pickerSelRef.current, itemsArg.length - 1)];
         const cb = pickerCb.current;
         pickerCb.current = null;
+        pickerCancel.current = null;
         setPicker(null);
         cb?.(it);
         return;
       }
-      if (key.escape) { pickerCb.current = null; setPicker(null); return; }
+      if (key.escape) {
+        // 取消也要**回调**调用方 (否则等结果的调用方永远挂着)
+        const c = pickerCancel.current;
+        pickerCb.current = null;
+        pickerCancel.current = null;
+        setPicker(null);
+        c?.();
+        return;
+      }
       return; // 其余键忽略
     }
 

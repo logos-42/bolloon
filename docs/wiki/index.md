@@ -23,6 +23,7 @@
 | [agent-economic-protocol.md](./agent-economic-protocol.md) | v2 | Agent Economic Protocol 设计 (7 协议 + bolloon 映射 + Registry/x402/Policy MVP) |
 | [durable-run-protocol.md](./durable-run-protocol.md) | v2 | Durable Run 协议 (Goal→Run→Checkpoint→Recovery 状态机 + 字段协议 + 现状盘点 + 六阶段完成度台账) |
 | [model-selection-protocol.md](./model-selection-protocol.md) | v2 | 模型选择协议 (统一入口 + 有效模型配置 + 五层优先级 + 每 Run 快照 + 命令面 + 验收矩阵) |
+| [model-selector-p2.md](./model-selector-p2.md) | v2 | 模型分步选择器 + **冻结的模型元数据接口** (七步流程 · P3/P5 唯一填充点 · 未知语义 · 三条遗留结清 · 并行名册) |
 | [access-protocol-v1.md](./access-protocol-v1.md) | 外部接入协议 v1 (P1 冻结): 版本策略 + JSON 信封 + 错误码表 + 状态映射 + local-dev 红线 | current |
 | [agent-access-layer.md](./agent-access-layer.md) | Agent 接入层: CLI 为主协议 · MCP 为薄适配 · Skill 为使用说明 (含六阶段落地状态) | current |
 | [task-protocol.md](./task-protocol.md) | bolloon-task/1 任务协议: 14 态状态机 + 支付事实分离 + 受控自主签名闸 + 签名审计 + 公开投影 | current |
