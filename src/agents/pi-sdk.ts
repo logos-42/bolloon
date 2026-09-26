@@ -33,6 +33,7 @@ import { p2pDocumentTools, initDocumentReceiver } from './p2p-document-tools.js'
 import { shellExec } from './shell-tool.js';
 import { startRun, recordStep, finishRun, readRun, budgetVerdict, recordDegradation, recordHarnessEvent, recordRecovery, setRunStatus, prepareResume, markRunRunning, buildResumeInstruction, argsDigestOf, repeatedFailureCount, classifyError as classifyRunError, type RunSurface, type RunStatus, type ResumePlan } from './run-store.js';
 import { createGoal, attachRun, findActiveGoal } from './goal-store.js';
+import { captureRunModelConfig, type RunModelConfig } from '../llm/model-selection.js';
 import { PiAgentHarness, type HarnessRunContext, type ToolDecision } from './pi-harness.js';
 import { getBranchPrefix, getCooldownMs, checkWritePath } from './shell-guard.js';
 import {
@@ -729,6 +730,18 @@ export class PiAgentSession implements AgentSession {
     }
   }
 
+  /**
+   * 2026-09-26: 这个 Run 开始那一刻**真实生效**的模型配置快照, 由 startRun 落进 Run 记录。
+   * 拿不到 (配置读不出来) 就返回 undefined —— 宁可这个字段缺, 也不编一个假的进去。
+   */
+  private async runModelSnapshot(): Promise<RunModelConfig | undefined> {
+    try {
+      return await captureRunModelConfig();
+    } catch {
+      return undefined;
+    }
+  }
+
   /** 2026-08-07: prompt 出口统一上报 token 用量到 ContextManager (fallback/pivot/react 全路径覆盖) —
    *   之前只有 runReActLoop 迭代内上报, chitchat/fallback/pivot 路径状态栏恒 0 */
   private reportUsageToContextManager(): void {
@@ -832,6 +845,7 @@ export class PiAgentSession implements AgentSession {
           goalId: boundGoalId,
           channelId: this.currentChannelId || undefined,
           agentId: this.currentAgentId || undefined,
+          modelConfig: await this.runModelSnapshot(),
         });
         this.lastRunId = rec.runId;
         await attachRun(boundGoalId, rec.runId).catch(() => null);
@@ -1641,6 +1655,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
           goalId: boundGoalId || undefined,
           channelId: this.currentChannelId || undefined,
           agentId: this.currentAgentId || undefined,
+          modelConfig: await this.runModelSnapshot(),
         });
         this.currentRunId = rec.runId;
         this.lastRunId = rec.runId;

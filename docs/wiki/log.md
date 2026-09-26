@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-26 | feat | **模型切换统一入口 + 「有效模型配置」 + 每 Run 快照 (P0+P1): 修掉 CLI `/model` "切了不生效" 硬缺陷 · 五层优先级固定 Run>Session>Global>默认>env · 失败时配置与运行时都原样不变 (真跑 55/0 · 变异 6/7 判红)** | [model-selection-protocol.md](./model-selection-protocol.md) / [model-selection.ts](../../src/llm/model-selection.ts) / [verify-model-selection.ts](../../scripts/verify-model-selection.ts) |
 | 2026-09-25 | release | **发布 `@bolloon/bolloon-agent@0.5.0` (npm 新包: 飞轮接线+验收 · 新 CLI `task group`/`identity init` · `update` 双源) —— 发前门禁全绿, 判据链 1–6 逐条真查全过, tag `v0.5.0` 已推, 仓内 `verify-release.mjs` 13/13 硬门全过, 交叉校验拿到第一个真实例 `agree`**: 版本号 **0.4.33 → 0.5.0** —— 仓内**没有成文的发布版本号政策**, 找到的是**习惯** (0.4.x 线上 142 个版本**全是 patch**, 连 0.4.30 那种功能批次也走 patch) → 本次仍取 **minor**, 依据 = 本批是**向后兼容的新能力** (新子命令 `task group create\|join\|list\|link\|leave` / `identity init\|show` + `update --channel stable\|dev` 选项 + 飞轮 M0 接线与 M1–M5 验收接进真执行路径); 取舍属判断、**主线可否决**, 逐条写在 [update-protocol.md §12.9](./update-protocol.md)。**发前门禁 (缺一不发, 全是真跑)**: `npx tsc --noEmit` **0 错** · 冻结门 `goal-flywheel-wiring-freeze.test.ts` **34/34** · 全量 `npx vitest run` (前台一次) **234 文件 / 3674 测全绿** (64.6s) · wiki 四门 (`wiki_check`/`raw_manifest_check`/`wiki_lint --strict=v2`/`supersede_check`) OK · 工作区干净 · `build:all` + `smoke:esm` 通过 (921 个 `dist/*.js` 语法检查 · gemini 模型 ID 36 条核对)。**发布动作**: `npm publish --access public` **EXIT=0** · 1565 文件 / 19.0MB (解包 43.9MB) · tarball shasum `f8f5dbcf223a8994d788ce9abefa51fcd772c52b` (**凭据只在 `~/.npmrc`, 值不入仓/不入日志: `[REDACTED]`**)。**判据链 (逐条真查, 不手拼 URL / 不编造)**: ① 真 packument `dist-tags.latest` 前进到 `0.5.0` —— **发布后 ~5 分钟才放行** (20:20 起轮询, **20:25:47** 才翻; 期间直连 404 —— 与 0.4.27/0.4.28「退出码 0 但未公开」同形状, 处置是**只轮询不重发**, 同版本重发必 E409) ② 版本直连 URL `https://registry.npmjs.org/@bolloon/bolloon-agent/0.5.0` **HTTP 200** ③ 从 packument 取 `dist.tarball` **真 URL** 下载 **19010013 字节** → 本地 SHA-1 与 packument `dist.shasum` **逐字相同** (`sha512-xcsPJp7NXmkNw…` SRI 同样逐字相同) ④ `tar -tzf` 核包内**入口文件**在 (`package/dist/cli-entry.js` · `package/bin/bolloon.cjs` · `package/package.json`) 且**新 CLI 的入口真在**: `tasks.js` 含 `GROUP_ACTIONS` 与 `case 'group'` · `identity-command.js` 含 `identity init` · `update-commands.js` 解析 `--channel`; 装出来后真跑 `task group` / `identity` 帮助 (真列出 create/join/list/link/leave · init/show) 且 `--channel nonsense` **必拒** (「只接受 stable\|dev\|beta … 拒绝执行 (没有静默落回 stable)」) ⑤ **全新目录**装 `@bolloon/bolloon-agent@0.5.0`: `added 972 packages`, **`npm warn` 行数 = 0** (stderr 逐字为空), `bolloon --version` 真报 `Bolloon Agent v0.5.0` + `当前安装源: stable (npm registry) · 0.5.0 · semver` ⑥ **拿新发布版本回环重跑双源真跑验收**: **63 PASS / 0 FAIL / 0 SKIP** (dev 身份 `0.5.0+dev.493d8d5` 且真起装完的入口**自报**该身份; `check(stable)` 判 `update_available` 且理由写明「切回 stable 的 0.5.0」; `update now --channel stable` **退出码 0** + 磁盘真变回 `0.5.0`; `--status` 三态都**说清装的哪个源 + 哪个 sha + 能切回哪个源**)。**tag 与交叉校验 (第一个真实例)**: 建 annotated tag **`v0.5.0` → `493d8d5`**(= **发布出去的源码提交**, npm tarball 的 `src/`+`package.json`+`scripts/` 就是这棵树) 并 push; 真跑交叉校验 (真 `api.github.com` + 真 packument + **仓内同一份** `crossCheckStable`) = **`agree`** (`blocking=false` · `hasTag=true`): 「npm latest=0.5.0 在 GitHub 上有同名记录 (Tag v0.5.0) — 两个源指向同一版」—— 此前恒为 `missing_record`, **这是 §12.4 那条判据的第一个真实例**; 发布硬门 (把「GitHub 同名 Tag」写进 `verify-release.mjs` 当硬门) **刻意没开** —— 现在有真实例可依, 要不要开由**主线**定。**仓内发布校验**: `node scripts/verify-release.mjs 0.5.0 --install-check` **13/13 全过** (含 `git_tag: tag=493d8d5 HEAD=493d8d5` · 工作区干净 · 真装线上 tarball 后 `--version json` 版本一致 · `update plan` 结构正确) → 「发布可信」。**如实留下 (没做到/有保留)**: ① 双源验收**第一次跑是 18 FAIL** —— 隔离 prefix 的「预置真装 0.5.0」失败 (`磁盘=null`), 下游 18 项全被带红; 手动用**同一形状**命令复现却**成功** (`added 972 packages`, exit 0) → 判**瞬时环境抖动**; 但夹具**把 npm 的 stderr 丢掉** ⇒ **这道门红起来没有原因可读**, 这个弱点本轮**没改** ② `skills/bolloon-network/SKILL.md` 的「发行版可用性边界」仍按 **0.4.33 实测**口径写 (0.5.0 已把 `group/announce/trail/post` 全带上; 但技能源与站点镜像按纪律**逐字节同源**, 改它属 UI 仓那一侧的活) ③ 双源验收的「装依赖」一跳仍复用本仓 `node_modules` (加速开关, 其余全真) ④ tag 指向 `493d8d5`, wiki 回写落在随后一个 docs 提交 (tag 与 HEAD 不再重合; `verify-release.mjs` 的 `git_tag` 是软门, 之后会显示 ⚠️ —— 如实说明, 不是发布坏了) | [update-protocol.md §12](./update-protocol.md) / [package.json](../../package.json) / [verify-dual-source.ts](../../scripts/verify-dual-source.ts) / [verify-release.mjs](../../scripts/verify-release.mjs) |
 | 2026-09-25 | feat | **更新系统落双源 (npm + GitHub): `--channel stable\|dev` + 两套版本比较语义显式分开 + 错误分类不合并 + **源不可达/版本不存在必拒 (退出码 2), 不许静默装回旧版** (真跑 **63 PASS / 0 FAIL** + 变异验证 **6/6 判红**)** —— ① **先查事实再看设计**: 真调 api.github.com + 看本地 tag → 本仓 **GitHub Release = 0 个 / Tag 25 个 (最高 `v0.4.30`) / master HEAD `d2148f3` / npm latest `0.4.33` (无对应 tag)** → stable 的 GitHub 那一侧**如实降级为「以 Tag 为准 + 没记录就报提醒级 `missing_record`」**, **没有**编造一条不存在的 Release 路径 (发布硬门 ④ 因此未做, 理由写在 wiki §12.6)。② **两套比较语义是代码里的显式字段** (`ChannelKind='semver'|'git-ref'`): stable = semver (npm `dist-tags.latest` 权威, GitHub Tag/Release 只做交叉校验) · dev = **git ref + commit sha** (版本号只作参考展示; 真跑实证: `0.4.33` 与 `0.4.33+dev.d2148f3` 的 semver 段相同, 但按 sha 必须判「有另一个 dev 版」)。③ **错误分类不合并**: 新增 `github_unavailable(offline/rate_limited/not_found/http_error/parse_error)` 与 `cross_check_mismatch`, 与 registry 侧**并列** (9 个结论只增不改, 优先级插进原序列); `REFUSED_STATUSES` 5 个结论在执行面**一个 npm 都不调**。④ **dev 三条硬约束全落**: 同一句警告在 检查/计划/执行/status/doctor 五处 (常量只一份文案) · 装完写 `installedChannel/installedDevSha/devSha/devRef/devCheckedAt` (`installed*` = 当前, `devSha` = 上次, 切回后仍能回答「上次装的是哪个 dev 版」) · `bolloon update now --channel stable` **真跑通** (退出码 0, 磁盘真变回 `0.4.33`)。⑤ **复用既有替换机制** (没有另造一套): dev 也只是「另一个 tarball」, 仍走 临时下载→校验→交给 npm 替换→验证可启动→失败回滚。⑥ **真跑暴露两个真问题** (都修): dev 快照从 git 树构建必须**两步** (`build --workspaces` 先建 `@bolloon/constraint-runtime`, 再 `build:main`; 只跑第二步在干净源码树上必 TS2307) · 验收脚本里**假源必须用异步子进程** (`spawnSync` 阻塞父进程事件循环 → 父进程的受控假服务器永远答不上话, 表现为 `releases: timeout`)。⑦ **真验证矩阵**: A npm 真断网+GitHub 可达 → `offline` 退出码 2 且**磁盘没被动过** · B GitHub 真不可达(dev) → `github_unavailable(offline)` 退出码 2 **不回落 stable** · C 限流 403 (匿名真跑时**真的被打到**, 分类当场验证) · D 真 codeload 404 → `not_found` 不装任何东西 · E dev 真跑 (真取 codeload 快照→真构建→装出 `0.4.33+dev.d2148f3`, 真起入口**自报**该身份) · F 一键回 stable 真跑 (历史留 `+dev.d2148f3 → 0.4.33`) · G 受控假源造 `v9.9.9` → `cross_check_mismatch` 退出码 2 **且没有任何 npm install 被调用** · H `update --status` 三态 (只装 npm / 装了 dev / 刚切回) 都**说清装的哪个源 + 哪个 sha + 能切回哪个源**。**门禁**: `tsc --noEmit` 0 错 · 飞轮冻结门 **34/34** (未削弱) · `update-system.test.ts` 53/53 不变红 · 新增 `update-dual-source.test.ts` 34/34 · 全量 vitest 见收尾 · wiki 四门 OK。**未做 (如实)**: ④ 发布硬门 (GitHub 上还没有与 `package.json` 同名的 Tag/Release, 现在设门会把每次发布都拦住 —— 等第一个「带同名 tag」的版本一起做) · ⑤ **本步刻意不发 npm 包** (下一步由主线做) · dev 快照构建时「装依赖」这一跳复用本仓 `node_modules` (只省这一步, 构建/打包/替换都是真的) · 真 LLM 驱动的长周期跑仍未验 | [update-protocol.md](./update-protocol.md) · [dual-source.ts](../../src/utils/dual-source.ts) · [update-manager.ts](../../src/utils/update-manager.ts) · [update-dual-source.test.ts](../../src/test/update-dual-source.test.ts) · [verify-dual-source.ts](../../scripts/verify-dual-source.ts) · [verify-dual-source-mutations.py](../../scripts/verify-dual-source-mutations.py) |
 | 2026-09-25 | test | **飞轮 M5 长周期真跑验收: 10 场景真跑全过 (191 过 / 0 败) + 挖出并修掉 7 个真系统缺陷 (最要紧的两个都是「界面撒谎 / 醒了没人管」类)** —— 场景 01 按进展跳 Run · 02 真 `kill -9` 后接续 · 03 子 Agent 卡死在 `tickOnce` 内被接管 · 04 父逐条拒收 · 05 外部等待+可信事件唤醒 · 06 注入新要求 · 07 结束自动出四类产物 · 08 下次相似任务复用 (**引用可指认 + 步骤数 3→2, 不用耗时**) · 09 没证据三层都挡 (**正向对照暴露主缺陷**) · 10 五种失败都给下一步。**⑦ 个真缺陷**: ① `goalStatusFromDecision` 缺 `wait` 分支 (等外部的 Goal 盘上是 `active`) ② 飞轮规则只看 Run 历史 ⇒ 醒了的 Goal 仍判「在等」 ③ `RUN_TRANSITIONS` 缺 `recovering` 入口 ⇒ `prepareResume` 对 paused/needs_human/awaiting_external 必失败 ④ 计龄把**等待**算成**超时** (只有 `queued/running` 该用 `now`) ⑤ 外部事件送达后只改 `wakeReason` 不改 `state`, 且一次真唤醒被报成「没唤醒」 ⑥ **(本轮主缺陷)** 完成那条路**不落盘收尾 continuation** (带 `wakeReason !== 'completed'` 守卫) → preflight 的整份覆盖写把旧 `state:'active'` 盖回来 ⇒ 已完成 Goal 的 `goalVisibleState` 回 `executing` (**界面比系统乐观**): 根因修 reducer 完成分支无条件落盘 + 投影层 `toUserVisibleState` 增 `goalStatus` 入参 (终态最高优先) 三处调用点跟着传 ⑦ 到点唤醒只清 `wakeAt` 不拉回 `goal.status` ⇒ 唤醒后真跑一轮有进展, 收尾却读到 stale `retry_wait` → 落成 `awaiting_external` (wakeAt 已空 ⇒ 只能靠事件唤醒) = **刚有进展的目标被挂起来没人跑** (P6-③ 时钟用例阴性对照真判红逼出): 新增 reducer 意图 `scheduled_wake` 走唯一漏斗。**门禁**: 全量 `vitest run` **233 文件 / 3640 测全绿** · `tsc --noEmit` **0 错** · 冻结门 **34/34** · 成本 **29 Run / 0 LLM 调用 / 场景墙钟 18.7s** (注入时钟, 每 tick 推 10 分钟) · 探针交付前全删 (`_probe-*` = 0) · `goal-flywheel/types.ts` 未动。**如实区分**: 07/10 两条断言**写错**(旧要求「三路径状态两两不同」「失败收尾 ≥3 种形态」)、08 夹具两个 bug(`requiredSkills` 误挡技能门禁 + `createGoal` 返回对象 `runs` 为空) —— 都不是系统缺陷; 未做到: 跨 Goal 试用仍不结算 (`trial_belongs_to_other_goal`)、收尾理由文本不区分失败种类、注入时钟非真时钟、未在真 DOM 上核界面 | [goal-flywheel-m5-acceptance-report.md](./goal-flywheel-m5-acceptance-report.md) / [goal-state-reducer.ts](../../src/agents/goal-state-reducer.ts) / [execution-supervisor.ts](../../src/agents/execution-supervisor.ts) / [work-monitor.ts](../../src/agents/goal-flywheel/work-monitor.ts) / [scenario-09-no-evidence.ts](../../scripts/acceptance/m5/scenario-09-no-evidence.ts) / [goal-flywheel-wiring-freeze.test.ts](../../src/test/goal-flywheel-wiring-freeze.test.ts) |
@@ -4039,3 +4040,146 @@ M5 装完 dev 记成 `stable` 🔴1 · M6 dev 身份反解 sha 失效 🔴5 —�
 3. 双源验收的「装依赖」一跳仍**复用本仓 `node_modules`** (加速开关 `BOLLOON_DEV_REUSE_NODE_MODULES`) —— 只省这一步, 下载/构建/打包/替换/验证都是真的。
 4. tag 指向 `493d8d5`, wiki 回写落在随后一个 docs 提交 —— tag 与 HEAD 不再重合, `verify-release.mjs` 的 `git_tag` 是**软门**, 之后跑会显示 ⚠️ (如实说明: 不是发布坏了, 是回写在 tag 之后)。
 5. 匿名 GitHub API 只有 **60 次/小时** (本次全程真调) —— 是环境约束, 不是功能问题; 配额耗尽时 stable 侧按设计**不该**被 GitHub 阻塞 (npm 仍是权威)。
+
+
+## [2026-09-26] feat | 模型切换统一入口 + 「有效模型配置」 + 每 Run 快照 (P0+P1)
+
+> 计划: 模型配置任务书 P0 (修 CLI `/model` "切了不生效" 硬缺陷) + P1 (引入「有效模型配置」与每 Run 快照)。
+> 本轮**只做 P0 + P1**; P3/P5/P7 负责的条目 (验收 11/14/15) **没做**, 但已确认没被本轮改坏。
+
+### 一、先读实现, 不按描述猜
+
+改前实测的三条分散路径 (都是真读代码得到的):
+
+| 路径 | 干了什么 | 缺什么 |
+| --- | --- | --- |
+| CLI `/model` (`src/cli/setup-wizard.ts` 的 `runModelCommand`) | 只 `setActiveProvider` + `updateProvider` **写配置文件** | **不重建模型运行时** ⇒ 内存实例仍是旧模型, 用户看到"切了但没生效" |
+| Web (`src/web/routes-llm-config.ts`) | `updateProvider` → `setActiveProvider` + **自己** `initMinimax` | 与 CLI 同一个动作两种结果 |
+| 初始化向导 (`src/setup/onboard.ts`) | 各阶段自己写 provider/credential/model | 第三条写配置的路 |
+
+补充事实: `getPiSDKConfig()` 依赖缓存 ⇒ 配置文件 / 当前会话 / 模型实例三者可能不同步;
+CLI 启动装配此前按"**环境变量里有哪些 key**"挑供应商, 而 Web 启动读配置文件 ⇒ 同一个 bin
+换个入口就换模型 (示例: 配置里是 deepseek, 环境里又留着 `OPENAI_API_KEY`, 两条路选不同的家)。
+
+### 二、P0: 唯一入口
+
+**新增** `src/llm/model-selection.ts` —— 「有效模型配置」的唯一出口。数据流固定为:
+
+```
+validateSelection → 写配置 (仅 global) → 更新 scope → 重建模型运行时 → 更新 session → 返回 effective config
+```
+
+- `selectModel(req)` 是**唯一**入口; CLI `/model` · Web `/api/llm-provider` · 会话内选择器全部改调它。
+- **失败时配置与运行时都原样不变**: 校验/探测任一关不过 → 返回失败分类, 盘上字节**逐字节不变**
+  (验收真按 sha256 前后比对)。此前"文件已改但实例仍旧"的半成功态从结构上没了。
+- **凭证是全局概念**: 会话级切换带 `apiKey` 直接判 `credential_scope_conflict`, 且在**探测之前**就拒
+  (试一次就等于拿一个不打算落盘的 key 打了一次上游)。
+- **跨进程锁**: 写配置走 `~/.bolloon/bolloon-config.lock` (`O_EXCL` 抢占 + 15s 视为陈旧可夺 +
+  死 pid 可夺), 拿到锁后**重读**文件再改。
+- **URL 规范化**: 去尾斜杠 · 合并重复斜杠 (不碰协议后的 `//`) · **折叠重复的 `/v1/v1`**
+  (否则拼出来是 `/v1/v1/models`); 畸形 URL / 非 http(s) 在形状校验阶段就拒。
+
+**命令面** (`parseModelCommand` 纯函数 + `runModelCommand` 外壳):
+
+| 命令 | 行为 |
+| --- | --- |
+| `/model` · `/model status` · `/model list` | 打印**当前真实生效**的 provider/model/base URL/scope/凭证来源/hash |
+| `/model <provider>` | 切到该 provider (用它已配置的 model/URL/凭证) |
+| `/model <provider> <model>` | 同 provider 换模型 |
+| `/model <provider> <model> --base-url <url>` | 指定地址 (本地/自建/网关) |
+| `/model test [provider]` | 只探测, **不写任何配置** |
+| `/model reset` | 回到 provider 默认并重建运行时 |
+| `/model key <provider> [key]` | 写凭证 (仅全局); 缺参时交互式隐藏输入 |
+
+修饰符 `--session` / `--scope session` / `--global` (默认 global) · `--no-verify` · `--json`。
+未知选项与非法 `--base-url` 在**解析期**报错 (不静默忽略)。
+
+**失败分类 10 类** (`SelectionFailureClass`, 全部有中文人话映射, 不许只回"切换成功了/失败了"):
+`invalid_provider` · `invalid_model` · `invalid_url` · `missing_api_key` · `credential_scope_conflict` ·
+`auth_failed` · `provider_unreachable` · `model_not_found` · `protocol_mismatch` · `timeout`。
+
+### 三、P1: 有效模型配置 + 每 Run 快照
+
+**有效模型配置** = `{provider, model, baseUrl, protocol, authRef, reasoning, scope, source, updatedAt, configHash}`;
+`authRef` **只记来源不记 key** (`provider:<id>` / `env:<VAR>` / `none`)。
+
+**来源优先级固定** (`SELECTION_PRIORITY` 常量, 调用方不许打乱):
+
+```
+Run/Goal 显式绑定 > 当前 Session > 用户 Global > provider 默认 > 环境变量
+```
+
+- Global 影响新会话 + 未绑模型的任务; Session **只**影响当前 CLI 会话。
+- 空层被跳过 (只有 provider 没有 model/baseUrl 的那一层不算数)。
+- Global 不可用时落到 `provider` 默认并**如实标 `source: 'provider'`**, 不假装是用户选的。
+- **Goal 的可选模型策略不因一次 `/model` 被改写** —— `/model` 只动 Global/Session 两层。
+
+**每 Run 快照** `RunRecord.modelConfig?: {provider, model, baseUrl, configHash, selectionScope, capturedAt}`:
+
+- **加成字段**: 老 Run 记录没有它照样读; 记录层 (run-store) **不做解析** —— 快照由调用方
+  (`captureRunModelConfig()` / `pi-sdk.runModelSnapshot()`) 算好传进来。
+- 落点两条真执行链: `pi-sdk` 两处 `startRun` + `agents/task/task-runner` 的 `startRun`。
+- 效果: 长任务中途切默认模型 → **旧 Run 留原快照**, 下一 Run 用新模型; `configHash` 能回答
+  "这两段执行是不是同一份模型配置"。
+- `src/agents/goal-flywheel/types.ts` **一字未动** (不需要动)。
+
+**会话绑定文件** `~/.bolloon/model-sessions.json` (**0600**, 内容里没有 key 字段) ·
+**旧配置迁移** `~/.bolloon/llm-config.json` → `bolloon-config.json` (仅当新文件不存在, 原文件保留)。
+
+### 四、真跑验收 (逐条真命中)
+
+`scripts/verify-model-selection.ts` (真起 3 台本地假模型服务器 + 真 express 路由 + 真子进程) →
+**55 passed / 0 failed**。
+
+| # | 判据 | 真输出摘要 |
+| --- | --- | --- |
+| 1 | 切 provider → 下一次请求真命中 | 切 A 后 A+1/B+0, 切 B 后 A+0/B+1 |
+| 2 | 同 provider 切 model → 请求体里的 model 真变 | 读请求体 `model` 字段 = `stubB-2` |
+| 3 | 自定义 base URL → 请求命中该地址 | 命中路径逐字 `/alt/v1/chat/completions`; 尾斜杠被规范化后仍命中 `/weird/path/v9` |
+| 4 | 错 key / 错 URL / 错 model → 都不能切换成功 | 四类分别判 `auth_failed` / `provider_unreachable` / `model_not_found` / `invalid_url`; 配置 sha **前后相同** (`351edd14cf7462da`) |
+| 5 | CLI 与 Web 读到同一份配置 | `runModelCommand('status --json')` vs 真 `GET /api/llm-config` / `POST /api/llm-provider`, activeProvider/model/baseUrl 逐项一致 |
+| 6 | 重启 CLI 后仍生效 | **真新进程**读回同一 provider/model/baseUrl |
+| 7 | Session 切换不改变 Global | 全局文件字节不变 + 绑定落在 `model-sessions.json` + 别的会话仍是全局 deepseek + 绑定文件无 key 明文 |
+| 8 | Global 切换影响新 Session | 全新 sessionKey 读到新全局默认 (`openai/stubA-2`, source=global) |
+| 9 | 长任务中途切默认 → 旧 Run 保留原快照 | 旧 Run `{deepseek, stubB-1, hash c13e55e8…, global}`, 与"执行中那一刻"的有效配置 hash 一致 |
+| 10 | 下一 Run 用新模型 | 新 Run `{openai, stubA-1, hash 9ab63013…}`, 两个 Run 的 hash 不同 |
+| 12 | 两进程同时切配置 → 不互相覆盖 | 真并发子进程各自改动都在; 另一进程写的 glm 标记没被陈旧缓存覆盖; **持锁进程刻意拉开 900ms 窗口**时并发的 kimi 改动也没丢 |
+| 13 | 旧配置可迁移 | 隔离 HOME 只放 `llm-config.json` → `bolloon-config.json` 出现, 有效配置 = 旧文件里那一份 |
+| 16 | 切换失败后旧模型仍可用 | 四次失败后**真发一次**请求 → 命中旧端点, `reply=pong:stubB-1` |
+
+### 五、变异验证 (按词界改坏, 先确认盘上 hash 真变了)
+
+| 变异 | 结果 |
+| --- | --- |
+| M1 切换后**不重建运行时** | **8 条红** (`PiAI not initialized` / model=undefined —— 正是"切了不生效") |
+| M2 会话级也去写全局配置文件 | 4 条红 (作用域变 global · 全局字节变了 · 绑定文件没生成) |
+| M3 拿到锁后**不重读** | **0 条红** —— 如实记录: `initialize()` 的文件签名检查已经能触发重读, `invalidate()` 是补刀 (只在 mtime+size 同时撞上时才承重) |
+| M4 去掉跨进程锁 | 5 条红 (并发子进程互相覆盖, 两个改动各丢一个) |
+| M5 `materialize` 把 key 写进 `authRef` | 1 条红 (凭证不进有效配置) |
+| M6 调换优先级顺序 (session/global 对调) | 3 条红 |
+| M7 Run 记录不落快照 | 4 条红 |
+
+### 六、门禁
+
+- `npx tsc --noEmit` **0 错**。
+- 飞轮冻结门 `goal-flywheel-wiring-freeze.test.ts` **34/34** · `update-system.test.ts` **53/53** ·
+  `update-dual-source.test.ts` **34/34** · `run-store.test.ts` 全绿 · `setup-wizard.test.ts` 全绿。
+- 全量 `npx vitest run` (前台一次) **236 文件 / 3764 测 = 3761 过 + 3 个 20s 超时**:
+  - 2 条在 `runtime-bootstrap.test.ts`, **空载单跑 32/32 全绿** ⇒ 负载假红;
+  - 1 条在 `goal-flywheel-p5-acceptance.test.ts`, 空载单跑仍超时 **但干净 HEAD 在同一目录同样超时**
+    (干净 checkout 副本 + 同一份源码 → 22/22 绿; `--testTimeout=180000` → 22/22 绿) ⇒ **环境墙钟, 不是本轮回归**。
+- wiki 四门 (`wiki_check` / `raw_manifest_check` / `wiki_lint --strict=v2` / `supersede_check`) **OK**。
+
+### 七、如实留下 (没做到 / 有保留)
+
+1. **变异 M3 没判红**: 锁内那句 `invalidate()` 在当前实现下不承重 —— 语义上真正保证"重读"的是
+   `initialize()` 的文件签名检查。保留它是为了 mtime+size 同时撞上的边角, 但**它现在没有被门钉住**。
+2. **Web 侧验收走的是同进程挂载真路由 + 真 HTTP 请求**, 不是完整启动的 Web 服务 ——
+   本机启动被 DID/IPNS 发布拖到 **2.5 分钟仍停在启动序列第 2 步** (环境噪音, 与 2026-09-18 记过的
+   同形状), 所以功能消融脚本 `scripts/ablation/run.ts` 本轮**没跑成** (`server start timeout`)。
+   真启动路径只验到"模型装配从有效配置来"那一行日志 (`● 模型: deepseek/deepseek-chat (来源: global)`)。
+3. **验收 12 的判别力不是来自"两个子进程自然撞车"** —— 自然撞车窗口只有毫秒级, 撞不上。
+   判别力来自两点: "持锁进程故意拉开 900ms 窗口"的负控制, 以及去掉锁的变异 (M4, 5 红)。
+4. **P3/P5/P7 负责的 11/14/15 本轮没做**; 相关既有测试 (冻结门 / update 两个门) 都跑到过, 未见变红。
+5. 会话绑定文件与全局配置文件都**没有**加"快照校验" —— `configHash` 目前只在 Run 快照与回显里用,
+   没有反过来校验盘上配置有没有被外部改过。

@@ -22,6 +22,12 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { llmConfigStore, PROVIDER_INFO, DEFAULT_PROVIDER_CONFIGS, type ModelProvider } from '../llm/config-store.js';
+import {
+  selectModel, resetModelSelection, probeSelection,
+  effectiveModelConfig, formatEffectiveModel, protocolOf,
+  normalizeBaseUrl, validateBaseUrlShape, currentSessionKey,
+  type EffectiveModelConfig, type SelectionFailureClass,
+} from '../llm/model-selection.js';
 
 /** 向导推荐的供应商顺序 (第一个是最省事的国内直连) */
 export const RECOMMENDED_PROVIDERS: ModelProvider[] = [
@@ -341,11 +347,99 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
   };
 }
 
-export async function formatProviderStatus(): Promise<string> {
+export interface ModelCommandIO {
+  /** 需要收 API key 时使用的隐藏输入 (会话内没有此能力 → 不传) */
+  askHidden?: (q: string) => Promise<string>;
+}
+
+/** 切换失败的机器可读分类 → 人话 (不许只回"切换成功"/"失败了") */
+const FAILURE_ZH: Record<SelectionFailureClass, string> = {
+  invalid_provider: '供应商不存在',
+  invalid_model: '模型名为空',
+  invalid_url: 'API 地址非法',
+  missing_api_key: '缺少 API key',
+  credential_scope_conflict: '会话级切换不允许写凭证',
+  auth_failed: '凭证被拒 (401/403)',
+  provider_unreachable: '服务不可达',
+  model_not_found: '服务不认识这个模型',
+  protocol_mismatch: '协议不匹配',
+  timeout: '连接超时',
+};
+
+function flagValue(parts: string[], i: number, name: string): string | undefined {
+  const p = parts[i];
+  if (p === name) return parts[i + 1];
+  if (p.startsWith(`${name}=`)) return p.slice(name.length + 1);
+  return undefined;
+}
+
+/** `/model` 的解析结果 (纯数据, 好测) */
+export interface ParsedModelCommand {
+  action: 'status' | 'test' | 'reset' | 'key' | 'select';
+  provider?: string;
+  model?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  scope: 'global' | 'session';
+  verify: boolean;
+  json: boolean;
+  errors: string[];
+}
+
+export function parseModelCommand(arg: string): ParsedModelCommand {
+  const parts = String(arg || '').trim().split(/\s+/).filter(Boolean);
+  const out: ParsedModelCommand = { action: 'status', scope: 'global', verify: true, json: false, errors: [] };
+  const positional: string[] = [];
+
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p === '--json') { out.json = true; continue; }
+    if (p === '--no-verify') { out.verify = false; continue; }
+    if (p === '--session' || p === '--scope=session') { out.scope = 'session'; continue; }
+    if (p === '--global' || p === '--scope=global') { out.scope = 'global'; continue; }
+    if (p === '--scope') {
+      const v = parts[i + 1];
+      if (v === 'session' || v === 'global') { out.scope = v; i++; continue; }
+      out.errors.push(`--scope 只接受 session|global, 收到 '${v ?? ''}'`);
+      i++;
+      continue;
+    }
+    const bu = flagValue(parts, i, '--base-url') ?? flagValue(parts, i, '--url');
+    if (bu !== undefined) {
+      const consumedEq = p.includes('=');
+      if (!consumedEq) i++;
+      const shape = validateBaseUrlShape(bu);
+      if (!shape.ok) out.errors.push(`--base-url 非法: ${shape.reason}`);
+      else out.baseUrl = shape.url;
+      continue;
+    }
+    if (p.startsWith('--')) { out.errors.push(`未知选项 ${p}`); continue; }
+    positional.push(p);
+  }
+
+  const sub = (positional[0] || '').toLowerCase();
+  if (!sub || sub === 'status' || sub === 'list') { out.action = 'status'; return out; }
+  if (sub === 'test') { out.action = 'test'; out.provider = positional[1]?.toLowerCase(); return out; }
+  if (sub === 'reset') { out.action = 'reset'; return out; }
+  if (sub === 'key' || sub === 'auth') {
+    out.action = 'key';
+    out.provider = positional[1]?.toLowerCase();
+    out.apiKey = positional[2];
+    if (!out.provider) out.errors.push('用法: /model key <provider>');
+    return out;
+  }
+  out.action = 'select';
+  out.provider = sub;
+  out.model = positional[1];
+  return out;
+}
+
+/** 供应商列表 (每行最后是**该 provider 当前配置的** model, 不是有效配置) */
+async function providerLines(): Promise<string[]> {
   await llmConfigStore.initialize();
   const cfg = await llmConfigStore.getConfig();
   const providers = cfg.providers as unknown as Record<string, any>;
-  const lines: string[] = [`模型供应商 (当前: ${cfg.activeProvider})`];
+  const lines: string[] = [];
   for (const p of RECOMMENDED_PROVIDERS) {
     const st = providers[p];
     if (!st) continue;
@@ -355,36 +449,89 @@ export async function formatProviderStatus(): Promise<string> {
     const flag = providerUsable(st) ? '' : ' (未启用)';
     lines.push(`  ${active} ${p.padEnd(11)} ${String(info.name || '').padEnd(16)} ${keyState.padEnd(6)} model: ${st.model || '(默认)'}${flag}`);
   }
-  lines.push('用法: /model <provider> [model] 切换 · /model test [provider] 测连通 · /model status 状态');
-  return lines.join('\n');
+  return lines;
 }
 
-export interface ModelCommandIO {
-  /** 需要收 API key 时使用的隐藏输入 (会话内没有此能力 → 不传) */
-  askHidden?: (q: string) => Promise<string>;
+/**
+ * `/model status` — 一律先给**当前真实生效**的那一份 (provider/model/base URL/协议/凭证来源/作用域),
+ * 再给候选列表。用户问"现在到底在用哪个"必须能一眼答上。
+ */
+export async function formatProviderStatus(sessionKey?: string): Promise<string> {
+  const eff = await effectiveModelConfig({ sessionKey });
+  const key = sessionKey || currentSessionKey();
+  const lines: string[] = [
+    `当前生效: ${eff.provider}/${eff.model}`,
+    `  ${formatEffectiveModel(eff)}`,
+    `  会话键: ${key}`,
+    '',
+    '供应商配置:',
+  ];
+  lines.push(...await providerLines());
+  lines.push('');
+  lines.push('用法: /model <provider> [model] [--base-url <url>] [--session] · /model test [provider] · /model status · /model reset · /model key <provider>');
+  lines.push('      --session 只影响当前会话 (不动全局默认) · --no-verify 跳过切换前连通探测 (不推荐)');
+  return lines.join('\n');
 }
 
 /**
  * `/model` / `bolloon model` 命令实现。
- * 参数为空 = 状态; `<provider> [model]` = 切换; `test [provider]` = 测试; `key <provider>` = 设 key。
+ *
+ * 切换类动作**全部**走统一入口 `selectModel()` —— 这里只做参数解析与结果展示,
+ * 不自己写配置、不自己重建运行时 (否则又会分叉出第二条路)。
  */
 export async function runModelCommand(arg: string, io: ModelCommandIO = {}): Promise<string> {
-  const parts = String(arg || '').trim().split(/\s+/).filter(Boolean);
-  await llmConfigStore.initialize();
+  const parsed = parseModelCommand(arg);
+  if (parsed.errors.length) {
+    return [`参数有问题, 未改动任何配置:`, ...parsed.errors.map((e) => `  · ${e}`)].join('\n');
+  }
 
-  if (parts.length === 0 || parts[0] === 'status' || parts[0] === 'list') {
+  // ── 状态 ─────────────────────────────────────────────────
+  if (parsed.action === 'status') {
+    const eff = await effectiveModelConfig({});
+    if (parsed.json) return JSON.stringify({ ok: true, effective: eff }, null, 2);
     return formatProviderStatus();
   }
 
-  const sub = parts[0].toLowerCase();
+  // ── 重置 (清会话级绑定, 回到全局那一份) ────────────────────
+  if (parsed.action === 'reset') {
+    const r = await resetModelSelection();
+    if (parsed.json) return JSON.stringify(r, null, 2);
+    if (!r.ok) return `⚠ 重置失败: ${r.message}`;
+    return [
+      r.previous?.source === 'session' ? '✅ 已清掉当前会话的模型绑定, 回到全局默认' : '当前会话本来就没有绑定 (全局默认不变)',
+      `当前生效: ${formatEffectiveModel(r.effective!)}`,
+    ].join('\n');
+  }
 
-  // key <provider> [key]
-  if (sub === 'key' || sub === 'auth') {
-    const provider = (parts[1] || '').toLowerCase();
-    if (!provider) return '用法: /model key <provider> (随后会提示粘贴 API key, 输入不回显)';
+  // ── 连通测试 ─────────────────────────────────────────────
+  if (parsed.action === 'test') {
+    const eff = await effectiveModelConfig({});
+    const provider = (parsed.provider || eff.provider).toLowerCase();
+    const target = provider === eff.provider
+      ? { provider, model: eff.model, baseUrl: eff.baseUrl, apiKey: undefined }
+      : await (async () => {
+        const p = await llmConfigStore.getProvider(provider as ModelProvider);
+        if (!p) return null;
+        return { provider, model: p.model, baseUrl: normalizeBaseUrl(p.baseUrl), apiKey: p.apiKey };
+      })();
+    if (!target) return `未知供应商 '${provider}'`;
+    const started = Date.now();
+    const probe = await probeSelection(target);
+    const ms = Date.now() - started;
+    if (parsed.json) return JSON.stringify({ ok: probe.ok, provider, model: target.model, baseUrl: target.baseUrl, failureClass: probe.failureClass, detail: probe.detail, ms }, null, 2);
+    return probe.ok
+      ? `✅ ${provider}/${target.model} 连通 (${ms} ms) — ${probe.detail}`
+      : `⚠ ${provider}/${target.model} 测试失败 [${probe.failureClass ? FAILURE_ZH[probe.failureClass] : '未知'}]: ${probe.detail}`;
+  }
+
+  // ── 设 key (然后立刻切到该 provider) ────────────────────────
+  if (parsed.action === 'key') {
+    const provider = parsed.provider!;
     const cfg = await llmConfigStore.getConfig();
-    if (!(cfg.providers as any)[provider]) return `未知供应商 '${provider}'. 可用: ${Object.keys(cfg.providers).join(', ')}`;
-    let key = parts[2] || '';
+    if (!(cfg.providers as any)[provider]) {
+      return `未知供应商 '${provider}'. 可用: ${Object.keys(cfg.providers).join(', ')}`;
+    }
+    let key = parsed.apiKey || '';
     if (!key) {
       if (!io.askHidden) {
         return [
@@ -396,32 +543,45 @@ export async function runModelCommand(arg: string, io: ModelCommandIO = {}): Pro
       key = await io.askHidden(`粘贴 ${provider} API key`);
     }
     if (!key) return '未输入 key, 未改动配置';
-    await llmConfigStore.updateProvider(provider as ModelProvider, { enabled: true, apiKey: key });
-    await llmConfigStore.setActiveProvider(provider as ModelProvider);
+
+    const r = await selectModel({ provider, apiKey: key, scope: 'global' });
     const tail = key.slice(-4);
-    return `✅ 已配置并启用 ${provider} (key 尾号 ****${tail}, 已写入 ~/.bolloon/bolloon-config.json, 不会进 git)`;
+    if (!r.ok) {
+      return [
+        `⚠ 已保存 ${provider} 的 key (尾号 ****${tail}), 但**没有切换过去**: [${r.failureClass ? FAILURE_ZH[r.failureClass] : '未知'}] ${r.message}`,
+        r.previous ? `当前仍在用: ${formatEffectiveModel(r.previous)}` : '',
+      ].filter(Boolean).join('\n');
+    }
+    return [
+      `✅ 已配置并启用 ${provider} (key 尾号 ****${tail}, 写入 ~/.bolloon/bolloon-config.json, 不会进 git)`,
+      `当前生效: ${formatEffectiveModel(r.effective!)}`,
+    ].join('\n');
   }
 
-  // test [provider]
-  if (sub === 'test') {
-    const provider = (parts[1] || (await llmConfigStore.getActiveProvider())).toLowerCase();
-    const r = await llmConfigStore.testProvider(provider as ModelProvider);
-    return r.success
-      ? `✅ ${provider} 连通 (${r.latency ?? '?'} ms)`
-      : `⚠ ${provider} 测试失败: ${String(r.error || '').slice(0, 300)}`;
+  // ── 切换供应商 / 模型 / URL ────────────────────────────────
+  const provider = parsed.provider!;
+  const r = await selectModel({
+    provider,
+    model: parsed.model,
+    baseUrl: parsed.baseUrl,
+    scope: parsed.scope,
+    verify: parsed.verify,
+  });
+
+  if (parsed.json) return JSON.stringify(r, null, 2);
+
+  if (!r.ok) {
+    return [
+      `✗ 切换失败 [${r.failureClass ? FAILURE_ZH[r.failureClass] : '未知'}]: ${r.message}`,
+      ...(r.checks || []).map((c) => `  ${c}`),
+      r.previous ? `配置与运行时均保持原样, 仍在用: ${formatEffectiveModel(r.previous)}` : '',
+    ].filter(Boolean).join('\n');
   }
 
-  // <provider> [model]
-  const provider = sub;
-  const cfg = await llmConfigStore.getConfig();
-  const st = (cfg.providers as any)[provider];
-  if (!st) return `未知供应商 '${provider}'. 可用: ${Object.keys(cfg.providers).join(', ')}`;
-  if (st.requiresApiKey !== false && !st.apiKey) {
-    return `${provider} 还没有 API key — 用 /model key ${provider} 配置 (或 bolloon setup 走向导)`;
-  }
-  const patch: Record<string, any> = { enabled: true };
-  if (parts[1]) patch.model = parts[1];
-  await llmConfigStore.updateProvider(provider as ModelProvider, patch);
-  await llmConfigStore.setActiveProvider(provider as ModelProvider);
-  return `✅ 已切换到 ${provider}${parts[1] ? ` (model=${parts[1]})` : ''}`;
+  const scopeZh = parsed.scope === 'session' ? '仅当前会话' : '全局默认 (新会话生效)';
+  return [
+    `✅ 已切换到 ${provider}${parsed.model ? ` (model=${parsed.model})` : ''} — ${scopeZh}`,
+    ...(r.checks || []).map((c) => `  ${c}`),
+    `当前生效: ${formatEffectiveModel(r.effective!)}`,
+  ].join('\n');
 }

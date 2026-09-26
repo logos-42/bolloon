@@ -21,6 +21,9 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 
+/** 只引用类型 —— 快照**由调用方**算好传进来, run-store 不去解析模型配置 (记录层只管事实) */
+import type { RunModelConfig } from '../llm/model-selection.js';
+
 export type RunSurface = 'cli' | 'web' | 'mobile' | 'cron' | 'delegate';
 
 /**
@@ -157,6 +160,13 @@ export interface RunRecord {
   recovery: RecoveryAttempt[];
   /** 2026-09-16 (Milestone 1-B): Harness 生命周期决策留痕 (只留最近 MAX_HARNESS_EVENTS 条) */
   harness?: HarnessTraceEvent[];
+  /**
+   * 2026-09-26: 这个 Run 开始执行时**真实生效**的模型配置快照 (加成字段, 老记录没有它照样读)。
+   * 为什么要落进 Run 记录: 长任务跑到一半用户改了全局默认模型, 事后回看"这条执行链当时
+   * 到底用的哪个 provider/model/URL"必须有答案 —— 否则历史执行链无法解释, 也无法复现。
+   * 快照在 Run 创建时**定稿**, 之后不再改写: 同一 Run 内换模型属于换 Run 的范畴。
+   */
+  modelConfig?: RunModelConfig;
   summary?: string;
   error?: string;
   errorClass?: ErrorClass;
@@ -463,6 +473,11 @@ export interface StartRunOptions {
   channelId?: string;
   agentId?: string;
   sessionKey?: string;
+  /**
+   * 2026-09-26: 这次运行**开始那一刻**的模型配置快照 (provider/model/baseUrl/configHash/selectionScope)。
+   * 不传 = 这条 Run 记录没有模型快照 (老调用方/纯测试照旧可用), 但生产路径必须传。
+   */
+  modelConfig?: RunModelConfig;
 }
 
 export async function startRun(opts: StartRunOptions): Promise<RunRecord> {
@@ -484,6 +499,7 @@ export async function startRun(opts: StartRunOptions): Promise<RunRecord> {
     steps: [],
     budget: { maxSteps: cfg.maxSteps, deadlineMs: cfg.deadlineMs },
     recovery: [],
+    modelConfig: opts.modelConfig,
   };
   await coreWrite('startRun', rec.runId, () => writeRun(rec));
   return rec;

@@ -22,6 +22,7 @@ import {
   createGoal, attachRun, markCriterion, completeGoalIfEligible, readGoal, setCriteria,
 } from '../goal-store.js';
 import { startRun, recordStep, finishRun, readRun } from '../run-store.js';
+import { captureRunModelConfig } from '../../llm/model-selection.js';
 import { listTransactions, updateTransaction, setTransactionStatus } from '../x402/transaction-store.js';
 import { bridgeTransactionToRunGoal } from '../x402/goal-run-bridge.js';
 import { buyInfoAsTransaction } from '../x402/trade.js';
@@ -354,7 +355,13 @@ export async function runTask(opts: RunTaskOptions): Promise<TaskRunResult> {
       return { ok: false, card, text: renderReportCard(card), stages, budget, outputIssues: [] };
     }
   }
-  const run = await startRun({ surface: 'cli', goal: opts.task, goalId: goal.goalId });
+  const run = await startRun({
+    surface: 'cli',
+    goal: opts.task,
+    goalId: goal.goalId,
+    // 2026-09-26: 任务执行链同样要记下"这一跑用的是哪一份模型配置"
+    modelConfig: await captureRunModelConfig().catch(() => undefined),
+  });
   await attachRun(goal.goalId, run.runId);
   const fail = async (stage: TaskStage, note: string, cardOpts: Parameters<typeof buildReportCard>[0], runStatus: 'needs_human' | 'failed' = 'needs_human') => {
     mark(stage, note);

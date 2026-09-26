@@ -1627,10 +1627,17 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       }));
       (globalThis as any).__inkOpenPicker?.(items, '选择模型供应商 (↑↓ 选择 · Enter 确认 · Esc 取消)', async (it: any) => {
         try {
-          await llmConfigStore.setActiveProvider(it.label as any);
-          const active = await llmConfigStore.getActiveProvider();
-          appendLine(`${C_OK}✓ 已切换到 ${it.label} (${String((PROVIDER_INFO as any)[it.label]?.name || '')})${RESET}`);
-          appendLine(`${C_DIM}  当前模型: ${config.providers[it.label as keyof typeof config.providers]?.model || '默认'}${RESET}`);
+          // 2026-09-26: 会话内选择器不再只写配置 —— 走统一入口, 一并重建运行时并回显真实生效的那一份。
+          //   作用域 = 当前会话 (不动全局默认), 想改全局请用 /model <provider> [model]。
+          const { selectModel, formatEffectiveModel } = await import('./llm/model-selection.js');
+          const r = await selectModel({ provider: it.label, scope: 'session' });
+          if (!r.ok) {
+            appendLine(`${C_ERROR}✗ 切换失败: ${String(r.message || '').slice(0, 150)}${RESET}`);
+            if (r.previous) appendLine(`${C_DIM}  仍在用: ${formatEffectiveModel(r.previous)}${RESET}`);
+            return;
+          }
+          appendLine(`${C_OK}✓ 已切换到 ${it.label} (${String((PROVIDER_INFO as any)[it.label]?.name || '')}) — 仅当前会话${RESET}`);
+          appendLine(`${C_DIM}  ${formatEffectiveModel(r.effective!)}${RESET}`);
         } catch (e: any) {
           appendLine(`${C_ERROR}✗ 切换失败: ${String(e.message || e).slice(0, 150)}${RESET}`);
         }
@@ -4591,8 +4598,19 @@ async function main() {
                       hasGlm ? 'GLM' :
                       hasQwen ? 'Qwen' : null;
 
+  // 2026-09-26: 启动装配统一从「有效模型配置」来 (Session > Global > 供应商默认 > 环境变量)。
+  //   旧写法按"环境变量里有哪些 key"挑供应商, 与 Web 启动(读配置文件)给出不同结果 ——
+  //   同一个人配了 deepseek 配置文件、环境里又留着 OPENAI_API_KEY, 换个入口就换模型。
   if (llmProvider) {
-    initMinimax({ provider: llmProvider.toLowerCase() as any });
+    try {
+      const { applyEffectiveToRuntime } = await import('./llm/model-selection.js');
+      const eff = await applyEffectiveToRuntime();
+      s.info?.(`模型: ${eff.provider}/${eff.model} (来源: ${eff.source})`);
+    } catch (e: any) {
+      // 装配失败不静默: 退回按环境变量初始化 (至少让用户看到原因)
+      s.warn?.(`按有效配置装配模型失败 (${String(e?.message || e).slice(0, 120)}), 退回环境变量猜测`);
+      initMinimax({ provider: llmProvider.toLowerCase() as any });
+    }
   } else {
     if (isNonInteractive) {
       s.warn('未设置任何 LLM API Key，功能受限');

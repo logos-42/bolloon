@@ -529,6 +529,34 @@ class LLMConfigStore {
   getAllProviderInfo() {
     return PROVIDER_INFO;
   }
+
+  /**
+   * 2026-09-26: 丢弃内存缓存, 下一次 initialize() 强制重新读盘。
+   * 用途: 统一入口在做"读出→改写→写回"时, 必须在拿到跨进程锁之后重读,
+   * 否则两个进程各自拿旧内存值写回, 后写的会把先写的那份改动覆盖掉。
+   * 回滚路径同样需要它 (把文件还原后, 内存里的那一份也得跟着回来)。
+   */
+  invalidate(): void {
+    this.initialized = false;
+    this.config = null;
+    this.loadedDir = null;
+    this.loadedSig = null;
+  }
+
+  /** 配置文件绝对路径 (统一入口/锁/迁移都从这里取, 不再各自拼) */
+  configFilePath(): string {
+    return CONFIG_PATH;
+  }
+
+  /** 旧文件名 (迁移输入) */
+  legacyConfigFilePath(): string {
+    return LEGACY_CONFIG_PATH;
+  }
+
+  /** 配置目录 (锁文件、session 绑定都落在这里) */
+  configDirPath(): string {
+    return configDir();
+  }
 }
 
 export const llmConfigStore = new LLMConfigStore();

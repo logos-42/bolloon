@@ -9,7 +9,7 @@ import type { Express } from 'express';
 import { llmConfigStore, type ModelProvider } from '../llm/config-store.js';
 import { videoConfigStore, type VideoProvider } from '../llm/video-config-store.js';
 import { audioConfigStore, type AudioProvider } from '../llm/audio-config-store.js';
-import { initMinimax, getMinimax } from '../constraints/index.js';
+import { getMinimax } from '../constraints/index.js';
 
 export function registerLlmConfigRoutes(app: Express): void {
   // ==================== LLM 配置 API ====================
@@ -55,29 +55,29 @@ export function registerLlmConfigRoutes(app: Express): void {
 
       await llmConfigStore.updateProvider(provider, config);
 
-      // v0.2.15: 当用户保存一个 LLM 配置为 enabled + 有 key 时，自动把它切为
-      // activeProvider 并 rebind runtime singleton。修原来的两个真问题：
-      //   1) frontend Save 从不调 /api/llm-provider，于是 activeProvider 一直
-      //      卡在 process 启动时的第一个值，新配置的 provider 永远不接管 chat
-      //   2) 即使用户手动 active，updateProvider 不替换 modelInstance（只有
-      //      当前 active 命中才 rebind），所以保存非 active 那个 provider 之后
-      //      runtime 还是指向旧 provider + 旧 key
-      // 现在：用户每保存一个 enabled 的 LLM 配置，bolloon 立即把这个 provider
-      // 设成 active + 重新 init MinLLM/Pi SDK，让"配置 + 立刻能跑"成立。
-      // 用户想保持旧 active，可以显式调 /api/llm-provider 改回去。
+      // 2026-09-26: 保存 + 激活收敛到**同一个统一入口** (此前这里自己 setActiveProvider +
+      //   initMinimax, CLI 那条路却不重建运行时 —— 同一个动作两种结果)。
+      //   语义不变: 保存一个 enabled + 有凭证的 LLM 配置 = 立即把它设为 active 并重建运行时。
+      //   变了的是: 激活前真做一次轻量连通探测, 探测不过就**不激活** (配置与运行时保持原样),
+      //   并把失败分类如实回给前端 —— 而不是"save 成功"后面跟着一个用不了的运行时。
       const newConfig = await llmConfigStore.getProvider(provider as ModelProvider);
       const shouldAutoActivate =
         newConfig?.enabled === true &&
         // 如果 provider 不需要 key (如 ollama) 或者已经给了真 key，才激活
         (newConfig.apiKey || !newConfig.requiresApiKey);
       if (shouldAutoActivate) {
-        await llmConfigStore.setActiveProvider(provider as ModelProvider);
-        initMinimax({
-          provider: provider as ModelProvider,
-          apiKey: newConfig.apiKey || undefined,
-          baseUrl: newConfig.baseUrl || undefined,
-          model: newConfig.model || undefined
-        });
+        const { selectModel } = await import('../llm/model-selection.js');
+        const r = await selectModel({ provider, scope: 'global' });
+        if (!r.ok) {
+          return res.json({
+            ok: true,
+            autoActivated: false,
+            failureClass: r.failureClass,
+            message: r.message,
+            effective: r.previous,
+          });
+        }
+        return res.json({ ok: true, autoActivated: true, effective: r.effective });
       }
 
       res.json({ ok: true, autoActivated: shouldAutoActivate });
@@ -95,20 +95,21 @@ export function registerLlmConfigRoutes(app: Express): void {
         return res.status(400).json({ error: 'provider required' });
       }
 
-      await llmConfigStore.setActiveProvider(provider as ModelProvider);
-
-      // 重新初始化 Pi SDK
-      const config = await llmConfigStore.getActiveProviderConfig();
-      if (config) {
-        initMinimax({
-          provider: provider as ModelProvider,
-          apiKey: config.apiKey || undefined,
-          baseUrl: config.baseUrl || undefined,
-          model: config.model || undefined
+      // 2026-09-26: 统一入口 —— 校验+探测通过才写配置, 然后重建运行时并返回真实生效配置。
+      //   刻意**不**在这里先 setActiveProvider: 那条路径会在探测失败时留下"配置已改但运行时没改"的半成功状态。
+      const { selectModel } = await import('../llm/model-selection.js');
+      const r = await selectModel({ provider, scope: 'global' });
+      if (!r.ok) {
+        return res.status(409).json({
+          ok: false,
+          provider,
+          failureClass: r.failureClass,
+          message: r.message,
+          effective: r.previous,
         });
       }
 
-      res.json({ ok: true, provider });
+      res.json({ ok: true, provider, effective: r.effective });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
