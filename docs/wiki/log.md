@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-26 | test | **模型切换 P8 终验收口: 用户点名的 16 条端到端验收在**当前集成树**上逐条真跑 → **16/16 条目 · 103/103 断言 · 16/16 反事实对照** + 变异 **5/5 判红** (每条红在它该红的条目上), **0 次真 LLM / 成本 0** (5 台本地假上游, key 全 `stub-*`)**: ① CLI `/model` 真切真命中 (真 `src/cli-entry.ts` argv 进程 + **同进程内运行时真被换掉** → 下一次请求 `reply=pong:B:stubB-1`, A 这一轮 +0 笔) ② 同 provider 只切 model → 假上游逐笔请求体 `stubB-1`→`stubB-2`, 盘上只这一格变 ③ 自定义 base URL (`/weird/path/v9/` 尾斜杠规范化) 真命中该路径, A/B 一笔没收到 ④ 错 key (401)/错 URL/错 model/畸形 URL 四类全拒, 四次失败前后配置 `sha256[:16]` **逐字相同** (`d1fa2c48…`), 且一次**正确**切换必须让 sha 变 (判别力自证) ⑤ 真 CLI 进程 ⇄ 真 Web HTTP (`express`+`registerLlmConfigRoutes`) 两个方向读到**同一份** (`configHash` 同值), 诱饵 `llm-config.json` 被两个入口无视 ⑥ 两个**全新进程**读到同一 `configHash` 且真打请求命中 ⑦ 会话级切换后全局字节**一个都没变** + 绑定落 `model-sessions.json` (无 key 明文) + 别的会话仍读全局 + 该会话真命中 A + 会话级带凭证被拒 `credential_scope_conflict` ⑧ Global 切完**新**会话跟着变 (老会话仍读自己的绑定) ⑨ 执行中切全局 → 盘上 Run 快照逐字段没变 (用 `detectRunConfigDrift` 反向证明"确实已漂"并点名 4 字段) ⑩ `resolveNextRunModel` → 新 Run 快照 = 新模型, 旧 Run 未改写 ⑪ 真 `ExecutionSupervisor.tickOnce` 交给执行器的 `req.modelConfig` = **pinned 那份** (不是刚切的全局) 且 `kind=resume`; 按 Run 快照 `applyRunModelConfigToRuntime` 真装配后真打请求命中快照那台 ⑫ 屏障发令两个真进程同时切 + 持锁 900ms 窗口 + **互斥时序判决 (实测等锁 928ms)** ⑬ 旧 `llm-config.json` **逐字节**迁移 (旧/新 sha 相同) ⑭ `/models` 翻真 404: provider 不被静默删 (`unavailable`+原因)、缓存 `live-m1` 与手输 `manual-m9` 仍可用 (清缓存后 `live-m1` 消失 = 缓存在兜) ⑮ 拒绝工具声明的模型被拒 `tool_call_unsupported` 且盘上不变 + 注册表 `toolCalling=no` 不许当长期任务执行器/不进备用候选 ⑯ 失败后同进程与另起进程都仍命中旧模型 (反事实: 不回滚 → 用不了) | [model-selection-acceptance.md](./model-selection-acceptance.md) / [verify-model-acceptance.ts](../../scripts/verify-model-acceptance.ts) / [verify-model-acceptance-mutations.py](../../scripts/verify-model-acceptance-mutations.py) / [model-acceptance-child.ts](../../scripts/lib/model-acceptance-child.ts) |
 | 2026-09-26 | feat | **模型入口收敛 (P6): 补齐五个 Web 端点 (`providers`/`options`/`test`/`select`/`discover`) + 旧接口 (`/api/llm-config` · `/api/llm-provider` · `/api/llm-test`) **保留形状但内部转发到唯一写口** (整个路由文件里 `selectModel(` 只剩 1 处) · 命令面挂上 P5 发现能力 (`/model refresh [provider]` · `/model refresh --clear` · `/model list [provider]` · 手输模型 → `admitManualModel`) · **自定义供应商 id 进得来** (存在性判据从内置表改注册表, 缺口㈡结清) · Agent 配置工具/安装向导/长任务恢复**(用 Run 自己那份快照)**同一入口 · 真跑证明「CLI 命令面 · 会话内 `/model` · 真 Web 路由」三者切到同一选择后读回**逐字段相同**的有效配置 (11 字段 + `configHash` 全同, 三个入口三个进程 + 读回另起进程) · 真跑新门 **59/0** (Web 侧真起 `createWebServer`, 冷启动 ~114s) + 变异 **3/3 判红** (旧接口绕过 3 红 / 自定义退回内置表 11 红 / `refresh` 空转 2 红) · 既有七门 55/0 · 51/0 · 89/0 · 81/0 · 50/0 · 44/0 · 36/0 + 飞轮冻结门 34/34 全绿** | [model-selection-protocol.md §9](./model-selection-protocol.md) / [routes-llm-config.ts](../../src/web/routes-llm-config.ts) / [verify-model-entrypoints.ts](../../scripts/verify-model-entrypoints.ts) / [setup-wizard.ts](../../src/cli/setup-wizard.ts) / [model-selection.ts](../../src/llm/model-selection.ts) / [pi-sdk-tools.ts](../../src/agents/pi-sdk-tools.ts) / [onboard.ts](../../src/setup/onboard.ts) |
 | 2026-09-26 | feat | **模型接线收口 (四根线一次插上: P4 探测原语接进 `selectModel` + 失败分类映射表 · P7 四处钩子 · P3 自定义供应商进 `/model` 列表 · 客户端鉴权头读注册表): 探测 7 类 → 入口 15 类**一类不丢** (含 `tool_call_unsupported`), 未映射**不退化成「切换失败」** · 真跑新门 **89/0** + 变异 **5/5 判红** (丢类 7 红 / 退化 1 红 / **在跑 Run 被新默认改写** 2 红 / 鉴权头不看注册表 2 红 / **往已收尾的 Run 上追加事件** 4 红) · 既有门全绿: 55/0 · 51/0 · 36/0 · 50/0 · 44/0 · 81/0 · 飞轮冻结门 34/34** | [model-selection-protocol.md §8](./model-selection-protocol.md) / [verify-model-wiring.ts](../../scripts/verify-model-wiring.ts) / [model-wiring-serial.test.ts](../../src/test/model-wiring-serial.test.ts) / [model-selection.ts](../../src/llm/model-selection.ts) / [execution-supervisor.ts](../../src/agents/execution-supervisor.ts) |
 | 2026-09-26 | feat | **模型 `/model` 改分步选择器 + 冻结模型元数据接口 (P2): 拿不到真数据的能力一律显示"未知" · 上轮三条遗留全部结清 (invalidate 补门判红 / 真启动验收 15/16 且启动停滞定位到端口契约 / configHash 反向校验) · 真跑 51/0 + 变异 10/10 判红** | [model-selector-p2.md](./model-selector-p2.md) / [model-catalog.ts](../../src/llm/model-catalog.ts) / [model-selector.ts](../../src/cli/model-selector.ts) / [verify-model-selector.ts](../../scripts/verify-model-selector.ts) |
@@ -4451,3 +4452,77 @@ M1 旧接口自己写 activeProvider → **3 红** (含「盘上配置被改了!
   的协议形状没被这道门覆盖 (既有 url-chain / registry 门覆盖它们的 URL 与鉴权形状)。
 - 门跑一遍 ~2.5min (Web 冷启动占大头), 所以变异脚本只放 3 条: 全绿前提下每条都要真跑一次门。
 - 探针里的 key 全是假值 (`stub-key-*`), 报告与产物里**无真凭据** `[REDACTED]`。
+
+## [2026-09-26] test | 模型切换 P8 终验收口 (16 条逐条真跑 · 103 断言 · 5/5 变异判红 · 0 次真 LLM)
+
+**起因**: 用户点名 16 条模型切换端到端验收, 要求**在当前集成树上逐条真跑** (每条带真跑输出摘录 + 反事实对照),
+并产出「可重跑的验收脚本 + 验收报告页」。**"前面那道门绿过"不算数** —— 16 条每一条都在本次运行里重新跑了一遍并留了产物。
+
+**产物**: `scripts/verify-model-acceptance.ts`(新, 16 条真跑门) ·
+`scripts/verify-model-acceptance-mutations.py`(新, 变异门 5 条) ·
+`scripts/lib/model-acceptance-child.ts`(新, 真进程子脚本) · `docs/wiki/model-selection-acceptance.md`(新, 报告页)。
+
+### ① 这道门的主张 (与已有八道门不重复)
+
+已有八门各管一段 (P0 选择入口 · P2 选择器 · P3 注册表 · P4 URL 链 · P5 发现与缓存 · P6 入口收敛 · P7 长任务策略 · 飞轮冻结)。
+本门的主张只有一句: **把用户点名的 16 条验收, 用「真进程 / 真 CLI argv / 真 HTTP / 真文件字节 / 真 Supervisor tick」逐个立起证据**。
+为此门内自带: 隔离 HOME (不动机主真实 `~/.bolloon`)、5 台本地假上游 (A `/v1` · B `/alt/v1` · C `/weird/path/v9` · D 拒工具声明 · E 目录端点可翻 404)、
+一个真进程子脚本 (8 种模式), 并且**每次跑都从零重来**、结束关掉全部 server。
+
+### ② 结果
+
+| # | 验收 | 结果 | 反事实 |
+| --- | --- | --- | --- |
+| 1 | CLI `/model` 从 A 切到 B, 下一次请求命中 B (不是同一家) | ✅ 10/10 | 只写配置不重建运行时 → 请求仍打旧端点 (反向复现 P0 缺陷) |
+| 2 | 同 provider 只切 model, 请求体里 model 真变 | ✅ 3/3 | 换之前那一笔必须是旧 model (时间轴对照) |
+| 3 | 自定义 base URL 真命中本地 HTTP server | ✅ 6/6 | 指到该服务没有的路径 → 探测判红 `invalid_url` |
+| 4 | 四类错误全拒 + 盘上配置**字节不变** | ✅ 7/7 | 一次**正确**切换必须让 sha 变 (判别力自证) |
+| 5 | CLI 与 Web 读到**同一份**配置 | ✅ 6/6 | 放诱饵 `llm-config.json` → 两个入口都无视 |
+| 6 | 重启 CLI 后仍生效 | ✅ 5/5 | 会话级切换后新进程仍读全局 (验的是落盘不是内存) |
+| 7 | Session 切换不改变 Global | ✅ 8/8 | 同选择改 `scope=global` → 全局 sha **必须**变 |
+| 8 | Global 切换影响新 Session | ✅ 3/3 | 第 7 条留下的老会话仍读自己的绑定 |
+| 9 | 旧 Run 保原配置快照 | ✅ 7/7 | 同时刻重解析 = 新模型 ≠ Run 快照 (漂移被 `detectRunConfigDrift` 点名) |
+| 10 | 下一 Run 用新模型 | ✅ 4/4 | 新旧 Run 快照并排不同, 旧的没被改写 |
+| 11 | Supervisor 恢复用正确的 Run/Goal 模型策略 | ✅ 7/7 | 同刻按当前全局装配 → 命中**另一台** |
+| 12 | 两进程同时切配置 → 不互相覆盖 | ✅ 11/11 | 变异 M4 (锁空转+签名恒等) → (a) 丢一家 + (c) 只等 12ms |
+| 13 | 旧 `llm-config.json` 可迁移 | ✅ 4/4 | 改名叫 `.bak` (不触发迁移) → 读到内置默认 |
+| 14 | `/models` 不可用时缓存与手输仍可用 | ✅ 8/8 | 清缓存 + 上游仍 404 → 缓存模型消失 (证明是缓存在兜) |
+| 15 | 不支持 tool calling 的模型被拒 | ✅ 7/7 | 同一地址改成接受工具声明 → 切换**成功** |
+| 16 | 失败后旧模型仍可用 | ✅ 7/7 | 手工模拟"失败但没回滚" → 请求**用不了** |
+
+**16/16 条目 · 103/103 断言 · 16/16 反事实** (单遍 ~44s) · 真模型调用 7 次 (全部打到本地假上游, **非真 LLM**) · **真 LLM 0 次 / 成本 0**。
+
+### ③ 变异验证: **5/5 判红** (每条红在它该红的条目上)
+
+| 变异 | 改坏了什么 | 红项 |
+| --- | --- | --- |
+| M1 | CLI 切完**不重建运行时** | **[1]** + 2/3/4/5/9/16 |
+| M2 | 探测失败**不再拦** (一律当成功写盘) | **[4]** + 3/15/16 |
+| M3 | 会话级切换**把全局也写了** | **[7]** |
+| M4 | 跨进程互斥两条机制一起拿掉 (锁空转 + 签名恒等) | **[12]** + 5 |
+| M5 | "不接受工具调用声明"不再归类 `tool_call_unsupported` | **[15]** |
+
+- 变异脚本每条都先证明**盘上 sha256 真变了**, 再真跑整道门, 门判绿算失败; 跑完从内存原文写回 (`git diff` 空)。
+- 给被测门设 `BOLLOON_ACCEPTANCE_M4_RED=1`: 让第 12 条那个**外部**反事实位**通过**, 红必须从真跑检查里出 (不靠"位没填"空红)。
+- **一处如实修正**: M4 第一次跑时第 12 条的并发臂 (a) 因调度抖动**没红** (只红了第 5 条) → 补了 **(c) 互斥时序判决**
+  (持锁进程占锁 900ms, 并发切换**必须**等到锁释放; 实测等 928ms) ⇒ 现在 M4 下 (a)+(c) 都判红。
+
+### ④ 如实留下 (没做到 / 有保留)
+
+1. **0 次真 LLM**: 全打本地假上游。假上游能把"命中了哪台 / 请求体里 model 是什么"逐笔记死; 真 LLM 能多验的是
+   "生成的 token 确实来自新模型" —— 本轮**没验** (没用真凭据)。
+2. 第 5 条 Web 侧是同进程真 `express` + 真 `registerLlmConfigRoutes` + 真 HTTP 监听, **不是**完整 `src/index.ts --web` 引导。
+3. 第 11 条 Supervisor 用**注入执行器** (不回网, 只回 `blocked`): 调度/决策/Run 装配/策略挑选全真, "真 LLM 被唤醒后真跑完一轮"没跑。
+4. 第 11 条为让 Goal 有"继续的资格", 给那条 Run 补了一条可核验证据 (飞轮冻结门的规则: 本轮有新证据才有继续资格) —— 与模型策略无关, 但它是跑到恢复路径的前提, 如实记。
+5. Goal 创建用了 `BOLLOON_SETUP_IN_PROGRESS=1` (隔离 home 没有 setup 引导状态, `createGoal` 会拦): 用代码**已有**的旁路开关, **不是**把机主真实配置/凭据复制进来。
+6. 第 12 条 (a) 的并发用**屏障发令**把两个真进程对齐到同一瞬间 (不靠 sleep 猜时机), 但进程内锁竞争的极端交错未穷举。
+7. 未验: 真 Web UI 点击 (DOM) · 真 REPL 按键 · Anthropic/Gemini **原生协议形状** · 真断网/真限流下的发现回退 (第 14 条用"目录端点 404") · 与更新系统 (双源) 的交互 · 跨机器配置一致性 (门内两进程同机同 HOME)。
+
+### ⑤ 命令面
+
+```bash
+npx tsx scripts/verify-model-acceptance.ts            # 16 条全跑 (~44s)
+npx tsx scripts/verify-model-acceptance.ts 1 4 7 12   # 只跑指定条目
+python3 scripts/verify-model-acceptance-mutations.py  # 5 条变异各真跑一遍门 (~4min)
+python3 scripts/verify-model-acceptance-mutations.py --only M4
+```
