@@ -165,3 +165,28 @@ Web 自己 `setActiveProvider + initMinimax`), 同一个动作两种结果。
   两个子进程自然撞车 —— 自然撞车的窗口只有毫秒级。
 - Web 侧验收用的是**同进程挂载真路由 + 真 HTTP 请求**, 不是完整启动的 Web 服务
   (本机启动被 DID/IPNS 发布拖到 2.5min+ 仍停在启动第 2 步, 属环境噪音)。
+
+
+---
+
+## 8. 追记: 接线收口 (2026-09-26) —— 探测原语接进入口 · 映射表 7→15 类
+
+§1 说的「一次切换失败必须落到一个类上」在本轮**从入口自己判**升级成「**探测原语是唯一探测者**」:
+
+- `selectModel` 的探测段改成调 `connection-probe.ts` 的 `probe(...)`; 原语报的 **7 类**经
+  `PROBE_TO_SELECTION` **逐类映射** (1:1, 不合并/不丢), 入口类目 **11 → 15**:
+  `+tool_call_unsupported` · `+persist_failed` · `+runtime_rebuild_failed` · `+probe_failure_unmapped`。
+- **未映射不许退化成无信息文案**: 兜底类 `probe_failure_unmapped` 照实报原语给的原类名与逐步事实
+  (真跑里用「将来 P4 加了新类」的方式钉住这条)。
+- 逐类真出处由 `SELECTION_FAILURE_CLASS_ORIGIN` 标 (7 `probe` / 8 `entry`), `selectionFailureClassTable()`
+  是报告/CLI/门禁共用的**同一张**给人看的表。
+- 口径变化 (照实记): 主机名拼错 → `provider_unreachable` (原语按 undici `UND_ERR_SOCKET` 归), 旧入口叫 `invalid_url`。
+
+**事件落点的一条硬规矩 (接线时真跑逼出来的)**: 决定函数的缺省落点是上一条 Run, 但**已经收尾的 Run 是历史** ——
+往它上面追加事件会撞飞轮规则 ⑦「已发生的 Run 记录不被改写」(逐字节比对)。所以调用侧分两种:
+上一条 Run 还活着 → 事件写它; 已收尾 → 决定"只算不写", 等新 Run 起来后记到**新 Run 自己**的账本上
+(与本节「它不回头改老 Run」一致)。新门把「旧 Run 整条记录逐字节没变」也钉上了。
+
+真跑: `scripts/verify-model-wiring.ts` **89/0** (7 类各一枚真探 + 真 `Supervisor.tickOnce()` 且旧 Run 逐字节不动 + 真服务器收鉴权头) ·
+变异 `scripts/verify-model-wiring-mutations.py` **5/5 判红** (丢类 7 红 / 退化 1 红 / 在跑 Run 被改写 2 红 / 鉴权头不看注册表 2 红 / 往已收尾 Run 追加事件 4 红) ·
+既有门 55/0 · 51/0 · 36/0 · 50/0 · 44/0 · 冻结门 34/34 全绿。P7 的四处钩子接法与保留项见 [log.md 2026-09-26 详细段](./log.md)。

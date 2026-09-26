@@ -55,6 +55,13 @@ import {
   type ProviderConfig,
 } from './config-store.js';
 import { initMinimax } from '../constraints/index.js';
+import {
+  probe,
+  PROBE_FAILURE_CLASSES,
+  PROBE_FAILURE_ZH,
+  type ProbeFailureClass,
+  type ProbeCheck,
+} from './connection-probe.js';
 
 // ============================================================
 // 类型
@@ -112,19 +119,139 @@ export interface RunModelConfig {
   capturedAt: string;
 }
 
-/** 切换失败分类 (不许只回一句"切换成功"或静默退回旧的) */
-export type SelectionFailureClass =
-  | 'invalid_provider'
-  | 'invalid_model'
-  | 'invalid_url'
-  | 'missing_api_key'
-  | 'credential_scope_conflict'
-  | 'auth_failed'
-  | 'provider_unreachable'
-  | 'model_not_found'
-  | 'protocol_mismatch'
-  | 'invalid_temperature'
-  | 'timeout';
+/**
+ * 入口自己的失败分类 (冻结)。一次切换失败**必须**落到这里的一个类上 ——
+ * 只回一句"切换失败"或"连接失败"等于没有信息, 用户无从知道该改 URL、改 key、还是改模型名。
+ *
+ * 分两组, 由 `SELECTION_FAILURE_CLASS_ORIGIN` 逐类标出真出处:
+ *
+ *   · `probe` (7 类) —— P4 探测原语 (`connection-probe.ts`) 报出的类目, 经
+ *     `PROBE_TO_SELECTION` **逐类映射**过来 (不是"把探测结果揉成一句失败");
+ *   · `entry` (8 类) —— 入口自己在写盘**之前**的校验、以及写盘**之后**的写盘/重建路径产生的类
+ *     (探测原语根本不回答这些: 它不校验 provider 是否存在、不写盘、不建运行时)。
+ *
+ * 为什么 `tool_call_unsupported` 必须出现在这里: 探测原语第 ⑥ 步会**真的**去确认工具调用能力,
+ * 它是一个独立类目。入口若没有这一类, 映射时就只能把它塞进别的类 (或退化成"切换失败") ——
+ * 而这一类恰恰是用户最需要看到的: 它直接回答"这个模型能不能用来做 Agent 执行"。
+ */
+export const SELECTION_FAILURE_CLASSES = [
+  // ── 由探测原语映射而来 (7) ──
+  'invalid_url',
+  'auth_failed',
+  'provider_unreachable',
+  'model_not_found',
+  'protocol_mismatch',
+  'tool_call_unsupported',
+  'timeout',
+  // ── 入口自己判定 (8) ──
+  'invalid_provider',
+  'invalid_model',
+  'missing_api_key',
+  'credential_scope_conflict',
+  'invalid_temperature',
+  'persist_failed',
+  'runtime_rebuild_failed',
+  'probe_failure_unmapped',
+] as const;
+
+export type SelectionFailureClass = (typeof SELECTION_FAILURE_CLASSES)[number];
+
+/** 逐类的**真出处** (`probe` = 探测原语报的; `entry` = 入口自己判的) */
+export const SELECTION_FAILURE_CLASS_ORIGIN: Record<SelectionFailureClass, 'probe' | 'entry'> = {
+  invalid_url: 'probe',
+  auth_failed: 'probe',
+  provider_unreachable: 'probe',
+  model_not_found: 'probe',
+  protocol_mismatch: 'probe',
+  tool_call_unsupported: 'probe',
+  timeout: 'probe',
+  invalid_provider: 'entry',
+  invalid_model: 'entry',
+  missing_api_key: 'entry',
+  credential_scope_conflict: 'entry',
+  invalid_temperature: 'entry',
+  persist_failed: 'entry',
+  runtime_rebuild_failed: 'entry',
+  probe_failure_unmapped: 'entry',
+};
+
+/**
+ * **持久化映射表**: 探测原语的 7 类 → 入口类目。
+ *
+ * 逐类点名 (不写"其余照搬"): 这张表是"探测换一次实现, 入口的对外文案会不会悄悄变形"的唯一答案。
+ * 门禁 (`scripts/verify-model-wiring.ts`) 断言: 这张表的键集 == `PROBE_FAILURE_CLASSES`,
+ * 且每个值都在 `SELECTION_FAILURE_CLASSES` 里 —— 少一类 / 映射到不存在的类都判红。
+ */
+export const PROBE_TO_SELECTION: Record<ProbeFailureClass, SelectionFailureClass> = {
+  invalid_url: 'invalid_url',
+  auth_failed: 'auth_failed',
+  provider_unreachable: 'provider_unreachable',
+  model_not_found: 'model_not_found',
+  protocol_mismatch: 'protocol_mismatch',
+  tool_call_unsupported: 'tool_call_unsupported',
+  timeout: 'timeout',
+};
+
+/**
+ * 未映射的探测类目。
+ *
+ * 理论上**不可达** (上面 7 类已被 `PROBE_TO_SELECTION` 全覆盖, 门禁钉住这一点)。真走到这里
+ * 只可能是 P4 加了新类而入口没同步: 这时仍然如实报出**原文类名** (`probeClass`), 绝不退化成
+ * "切换失败"这种无信息文案 —— 宁可暴露一个没见过的类名, 也不许把事实糊掉。
+ */
+export const UNMAPPED_PROBE_CLASS = 'probe_failure_unmapped' as const;
+
+/** 探测类目 → 入口类目 (映射之后的类名与原名一起给出, 调用方要报原文就报原文) */
+export function mapProbeFailureClass(rawClass: string | undefined): {
+  failureClass: SelectionFailureClass;
+  raw: string;
+  unmapped: boolean;
+} {
+  const raw = String(rawClass ?? '');
+  if (Object.prototype.hasOwnProperty.call(PROBE_TO_SELECTION, raw)) {
+    return { failureClass: PROBE_TO_SELECTION[raw as ProbeFailureClass], raw, unmapped: false };
+  }
+  return { failureClass: UNMAPPED_PROBE_CLASS, raw, unmapped: true };
+}
+
+/** 一张给人看的映射表 (逐行, 报告/CLI/门禁共用同一张表, 不许各自再写一份) */
+export function selectionFailureClassTable(): Array<{
+  selection: SelectionFailureClass;
+  origin: 'probe' | 'entry';
+  probeClass?: ProbeFailureClass;
+  zh: string;
+}> {
+  const bySelection = new Map<SelectionFailureClass, ProbeFailureClass>();
+  for (const pc of PROBE_FAILURE_CLASSES) bySelection.set(PROBE_TO_SELECTION[pc], pc);
+  return SELECTION_FAILURE_CLASSES.map((s) => {
+    const probeClass = bySelection.get(s);
+    return {
+      selection: s,
+      origin: SELECTION_FAILURE_CLASS_ORIGIN[s],
+      ...(probeClass ? { probeClass } : {}),
+      zh: probeClass ? PROBE_FAILURE_ZH[probeClass] : SELECTION_FAILURE_ZH[s],
+    };
+  });
+}
+
+/** 入口自有类目的中文说法 (探测类目直接复用原语的人话, 不再翻译一遍) */
+export const SELECTION_FAILURE_ZH: Record<SelectionFailureClass, string> = {
+  invalid_url: 'URL 写错了',
+  auth_failed: '凭证被拒',
+  provider_unreachable: '连不上供应商',
+  model_not_found: '端点不认识这个模型名',
+  protocol_mismatch: '这个地址上的服务不是该协议',
+  tool_call_unsupported: '模型/端点不接受工具调用声明',
+  timeout: '探测超时',
+  invalid_provider: '供应商不存在 (内置表与注册表里都没有这家)',
+  invalid_model: '模型名为空 (配置里没有, 也没有内置默认)',
+  missing_api_key: '这家还需要 API key (配置里没有, 环境变量也没有)',
+  credential_scope_conflict: '会话级切换不许写凭证 (凭证只属于全局)',
+  invalid_temperature: 'temperature 不在 0~2',
+  persist_failed: '写配置失败 (已回滚, 盘上仍是旧配置)',
+  runtime_rebuild_failed: '配置写成功但重建模型运行时失败 (已回滚)',
+  probe_failure_unmapped: '探测报了一个入口还不认识的类目 (映射表没覆盖)',
+};
 
 export interface SelectModelRequest {
   provider?: string;
@@ -482,8 +609,79 @@ export async function applyEffectiveToRuntime(sessionKey?: string): Promise<Effe
   const eff = await effectiveModelConfig({ sessionKey });
   const stored = await llmConfigStore.getProvider(eff.provider as ModelProvider).catch(() => null);
   const apiKey = stored?.apiKey || envKeyOf(eff.provider)?.value;
-  initMinimax({ provider: eff.provider as any, apiKey, baseUrl: eff.baseUrl, model: eff.model });
+  await installRuntime(eff, apiKey);
   return eff;
+}
+
+/**
+ * 把一份有效配置装进客户端 —— **声明的 provider id** 与**运行时分支 id** 分开送。
+ *
+ * 为什么必须分开 (P3 的"兼容协议"落地): 自定义供应商不改联合类型, 它在运行期接到"说同一种协议"
+ * 的内置分支上 (`runtimeProviderIdOf`: openai-compatible → `openai`, …), 但它的**鉴权头**只有按
+ * 声明的 id 查注册表才拿得到 (`authHeader`)。旧写法只送 `eff.provider` 一个名字:
+ *   · 送声明 id ('stub-gw') → 客户端 `switch` 落进 default, 直接 "Unsupported provider";
+ *   · 送运行期 id ('openai') → 分支能跑, 但自定义的鉴权头永远用不上 (注册表那一格白填)。
+ * 所以两个都送: 分支用运行期 id, 鉴权/协议用声明 id。
+ *
+ * 注册表里查不到这个 id (老配置 / 未知供应商) → 原样返回, **不编**一条记录出来。
+ */
+async function installRuntime(eff: EffectiveModelConfig, apiKey: string | undefined): Promise<void> {
+  const declaredId = String(eff.provider || '');
+  let runtimeProvider = declaredId;
+  try {
+    const reg: any = await import('./provider-registry.js');
+    const entry = reg.getProviderRegistryEntry(declaredId);
+    if (entry) runtimeProvider = String(reg.runtimeProviderIdOf(entry));
+  } catch { /* 注册表不可用 → 用声明 id (内置供应商本来就是它自己) */ }
+  initMinimax({
+    provider: runtimeProvider as any,
+    providerId: declaredId,
+    apiKey,
+    baseUrl: eff.baseUrl,
+    model: eff.model,
+  });
+}
+
+/**
+ * 「备用模型候选」—— Supervisor 在**模型相关失败** + `auto` 策略下可以挑的那些。
+ *
+ * 只从注册表里挑**现在真能用**的 (手上真有凭证: 配置里的 key / 声明的环境变量 / 这家免 key),
+ * 而且必须 `canServeLongRunningTasks` (工具调用发不出去的通道不能跑长期任务)。
+ * 挑不到就返回空数组 —— 空数组的语义是"没有候选", 不是"随便挑一个"。
+ */
+export async function usableFallbackCandidates(current: RunModelConfig | null): Promise<RunModelConfig[]> {
+  const out: RunModelConfig[] = [];
+  try {
+    const reg: any = await import('./provider-registry.js');
+    const entries = reg.listProviderRegistry() as any[];
+    for (const entry of entries) {
+      const id = String(entry?.id || '');
+      if (!id) continue;
+      if (!reg.canServeLongRunningTasks(id)) continue;
+      const stored = await llmConfigStore.getProvider(id as ModelProvider).catch(() => null);
+      const envKey = envKeyOf(id);
+      const noKeyNeeded = entry.requiresApiKey === false;
+      if (!stored?.apiKey && !envKey && !noKeyNeeded) continue;
+      const model = String(stored?.model || entry.defaultModel || '').trim();
+      if (!model) continue;
+      const baseUrl = normalizeBaseUrl(String(stored?.baseUrl || entry.defaultBaseUrl || ''));
+      out.push({
+        provider: id,
+        model,
+        baseUrl,
+        configHash: configHashOf({ provider: id, model, baseUrl }),
+        // 这一份来自哪一层: 配置里写的就是配置层, 否则是注册表给的**供应商默认**层
+        //   (快照字段只表达"配置从哪来"; "谁挑的" 由 Run 事件的 source=supervisor_fallback 表达)
+        selectionScope: stored ? 'global' : 'provider',
+        capturedAt: new Date().toISOString(),
+      });
+    }
+  } catch { return []; }
+  // 丢掉与当前那份**逐字段相同**的候选 (pickFallbackConfig 也会跳, 这里先去掉免得报"有候选"却挑不到)
+  return out.filter((c) => !(current
+    && c.provider === current.provider
+    && c.model === current.model
+    && normalizeBaseUrl(c.baseUrl) === normalizeBaseUrl(current.baseUrl)));
 }
 
 // ============================================================
@@ -624,125 +822,117 @@ interface ProbeResult {
   catalog?: string[];
 }
 
-const PROBE_TIMEOUT_MS = 8000;
+export const PROBE_TIMEOUT_MS = 8000;
 
-function probeHeaders(sel: ModelSelection): Record<string, string> {
-  const protocol = protocolOf(sel.provider);
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (!sel.apiKey) return headers;
-  if (protocol === 'anthropic') {
-    headers['x-api-key'] = sel.apiKey;
-    headers['anthropic-version'] = '2023-06-01';
-  } else if (protocol === 'gemini') {
-    headers['x-goog-api-key'] = sel.apiKey;
-  } else {
-    headers['Authorization'] = `Bearer ${sel.apiKey}`;
-  }
-  return headers;
-}
-
-/** 每个协议挑一个**真正校验凭证**的轻端点 (无鉴权的公开目录不算) */
-function probeRequest(sel: ModelSelection): { url: string; init: RequestInit } {
-  const protocol = protocolOf(sel.provider);
-  if (protocol === 'anthropic') {
-    return {
-      url: `${sel.baseUrl}/messages`,
-      init: {
-        method: 'POST',
-        headers: probeHeaders(sel),
-        body: JSON.stringify({ model: sel.model, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
-      },
-    };
-  }
-  if (protocol === 'gemini') {
-    return { url: `${sel.baseUrl}/models?key=${encodeURIComponent(sel.apiKey || '')}`, init: { method: 'GET' } };
-  }
-  if (protocol === 'ollama') {
-    return { url: `${sel.baseUrl}/api/tags`, init: { method: 'GET' } };
-  }
-  return { url: `${sel.baseUrl}/models`, init: { method: 'GET', headers: probeHeaders(sel) } };
-}
-
-function classifyProbeError(err: any): { failureClass: SelectionFailureClass; detail: string } {
-  const msg = String(err?.message || err || '未知错误');
-  const code = String(err?.code || err?.cause?.code || '');
-  if (err?.name === 'AbortError' || err?.name === 'TimeoutError' || /abort|timeout/i.test(msg)) {
-    return { failureClass: 'timeout', detail: `探测超时 (${PROBE_TIMEOUT_MS}ms): ${msg}` };
-  }
-  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(`${code} ${msg}`)) {
-    return { failureClass: 'invalid_url', detail: `主机名解析失败 — 检查 base URL (${msg})` };
-  }
-  return { failureClass: 'provider_unreachable', detail: `连接失败: ${msg}` };
-}
-
-function timeoutSignal(): AbortSignal | undefined {
-  const anyAbort = AbortSignal as any;
-  if (typeof anyAbort?.timeout === 'function') return anyAbort.timeout(PROBE_TIMEOUT_MS);
-  return undefined;
+/** 一次探测的完整结论 (入口/选择器/门禁共用; 也能直接给用户看) */
+export interface ConnectionProbeOutcome {
+  ok: boolean;
+  /** 探测失败时**必有** (已按 `PROBE_TO_SELECTION` 映射成入口类目) */
+  failureClass?: SelectionFailureClass;
+  /** 探测原语自己报的类目 (映射**之前**的那个名字) —— 报告里要报原文 */
+  probeClass?: string;
+  /** 映射表没覆盖这个类目 (理论上不可达; 真发生就是 P4 加了新类而入口没同步) */
+  unmapped: boolean;
+  /** 类目的人话 (探测类目直接复用原语的说法, 不另写一份) */
+  failureClassZh: string;
+  message: string;
+  /** 真正会用的 URL (规范化 + 合并重复 /v1 之后) */
+  baseUrl: string;
+  /** 这个 URL 来自哪一层 (`null` = 四层全空) */
+  baseUrlSource: string | null;
+  toolCalling: 'yes' | 'no' | 'unknown';
+  catalog?: string[];
+  checks: ProbeCheck[];
 }
 
 /**
- * 轻量连通探测 —— 拿**候选**配置去问一次, 而不是问已经存在配置里的那一份。
- * 探测失败 → 调用方必须放弃这次切换 (配置与运行时都保持原样)。
+ * **唯一探测路径**: 把候选配置交给 P4 的探测原语 (`connection-probe.probe`), 再把它的 7 类失败
+ * 按 `PROBE_TO_SELECTION` **逐类映射**成入口类目。
  *
- * 模型名检查刻意保守: 只有服务端给出**可解析且非空**的模型目录时, 才敢断言
- * "这个模型不存在"; 目录拿不到 (自定义端点常见) 就不下结论, 如实说明"未校验模型名"。
+ * 为什么四层 URL 来源都要交给原语: "显式 > 配置 > 供应商默认 > 环境变量"这条优先级是**原语的**
+ * 语义 (`resolveChainBaseUrl`, 且"哪一层赢了"会回在 `baseUrlSource` 里)。入口若只传显式那一层,
+ * 就等于把"配置/默认/环境"这几层又拿回入口自己判 —— 两处真相, 而且会重现"填错的显式 URL 被
+ * 默认值悄悄盖掉"的隐藏 URL 问题。
+ *
+ * 凭证: 只以**引用名**进原语 (`provider:<id>` / `none`), 值由这里的 `resolveSecret` 现场给;
+ * 原语返回值里永不含 key (`resultLeaksSecret` 检查在门禁里)。
+ */
+export async function runConnectionProbe(opts: {
+  provider: string;
+  model: string;
+  /** 显式 `--base-url` (最高优先) */
+  baseUrl?: string;
+  /** 配置里这一家的 baseUrl (第二优先) */
+  configuredBaseUrl?: string;
+  /** 手上这一份凭证 (只进请求头, 不进返回值) */
+  apiKey?: string;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}): Promise<ConnectionProbeOutcome> {
+  const provider = String(opts.provider || '').trim().toLowerCase();
+  let protocol: ModelProtocol = protocolOf(provider);
+  let providerDefaultUrl: string | undefined = (DEFAULT_PROVIDER_CONFIGS as any)[provider]?.baseUrl;
+  let envBaseUrlVar: string | undefined;
+  try {
+    const reg: any = await import('./provider-registry.js');
+    const entry = reg.getProviderRegistryEntry(provider);
+    if (entry) {
+      // 注册表是协议/默认地址/环境变量覆盖的**主来源** (自定义供应商只有它认识)
+      if (entry.protocol) protocol = entry.protocol;
+      if (entry.defaultBaseUrl) providerDefaultUrl = entry.defaultBaseUrl;
+      if (Array.isArray(entry.baseUrlEnvVars) && entry.baseUrlEnvVars.length) envBaseUrlVar = String(entry.baseUrlEnvVars[0]);
+    }
+  } catch { /* 注册表拿不到 → 退回内置协议表; 仍不编一个默认地址出来 */ }
+
+  const apiKey = String(opts.apiKey || '').trim();
+  const r = await probe({
+    providerId: provider,
+    baseUrl: opts.baseUrl,
+    configuredBaseUrl: opts.configuredBaseUrl,
+    providerDefaultUrl,
+    envBaseUrlVar,
+    protocol,
+    model: opts.model,
+    apiKeyRef: apiKey ? `provider:${provider}` : 'none',
+    resolveSecret: () => (apiKey ? apiKey : undefined),
+    timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+  });
+  const mapped = mapProbeFailureClass(r.failureClass);
+  const zh = r.failureClass ? PROBE_FAILURE_ZH[r.failureClass] : '';
+  const common = {
+    failureClassZh: zh,
+    message: r.message,
+    baseUrl: r.baseUrl,
+    baseUrlSource: r.baseUrlSource as string | null,
+    toolCalling: r.toolCalling,
+    ...(r.catalog ? { catalog: r.catalog } : {}),
+    checks: r.checks as ProbeCheck[],
+  };
+  if (r.ok) return { ok: true, unmapped: false, ...common };
+  return {
+    ok: false,
+    failureClass: mapped.failureClass,
+    probeClass: mapped.raw,
+    unmapped: mapped.unmapped,
+    ...common,
+  };
+}
+
+/**
+ * 兼容壳: 老调用方 (分步选择器的第 ⑥ 步预检 / 向导) 只要 `{ok, failureClass, detail, catalog}`。
+ * 内部走**同一条**探测路径 —— 不存在"入口一份原语、选择器另一份手写探测"的第二种实现。
  */
 export async function probeSelection(sel: ModelSelection): Promise<ProbeResult> {
-  const { url, init } = probeRequest(sel);
-  const signal = timeoutSignal();
-  let res: Response;
-  try {
-    res = await fetch(url, { ...init, ...(signal ? { signal } : {}) });
-  } catch (e: any) {
-    const { failureClass, detail } = classifyProbeError(e);
-    return { ok: false, failureClass, detail };
-  }
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    const snippet = body.slice(0, 300);
-    if (res.status === 401 || res.status === 403) {
-      return { ok: false, failureClass: 'auth_failed', detail: `HTTP ${res.status} 凭证被拒 — ${snippet}` };
-    }
-    if (res.status === 404) {
-      return { ok: false, failureClass: 'invalid_url', detail: `HTTP 404 端点不存在 — 检查 base URL (${url})` };
-    }
-    if (res.status === 429) {
-      return { ok: false, failureClass: 'provider_unreachable', detail: `HTTP 429 被限流 — ${snippet}` };
-    }
-    return { ok: false, failureClass: 'provider_unreachable', detail: `HTTP ${res.status} — ${snippet}` };
-  }
-
-  // 端点通了 → 能解析出模型目录就顺手校验模型名
-  let catalog: string[] | undefined;
-  try {
-    const body = await res.json();
-    const arr = Array.isArray(body?.data) ? body.data
-      : Array.isArray(body?.models) ? body.models
-        : Array.isArray(body) ? body
-          : null;
-    if (arr) {
-      const ids = arr
-        .map((x: any) => (typeof x === 'string' ? x : x?.id || x?.name || x?.model))
-        .filter((x: any) => typeof x === 'string' && x);
-      if (ids.length) catalog = ids;
-    }
-  } catch { /* 非 JSON 目录 → 不校验模型名 */ }
-
-  if (catalog && !catalog.includes(sel.model)) {
-    return {
-      ok: false,
-      failureClass: 'model_not_found',
-      detail: `端点可达但不认识模型 '${sel.model}' (目录里 ${catalog.length} 个, 例: ${catalog.slice(0, 5).join(', ')})`,
-      catalog,
-    };
-  }
-
+  const r = await runConnectionProbe({ provider: sel.provider, model: sel.model, baseUrl: sel.baseUrl, apiKey: sel.apiKey });
+  const facts = r.checks.map((c) => `${c.step}:${c.ok ? '✓' : '✗'} ${c.detail}`).join(' | ');
   return {
-    ok: true,
-    detail: `端点可达 (${url})${catalog ? ` · 模型 '${sel.model}' 在目录中 (${catalog.length} 个)` : ' · 未提供模型目录, 模型名未校验'}`,
-    catalog,
+    ok: r.ok,
+    ...(r.ok ? {} : { failureClass: r.failureClass }),
+    detail: r.ok
+      ? r.message
+      : `${r.message} [探测类目 ${r.probeClass}${r.unmapped ? ' → 未映射!' : ''}; 逐步事实: ${facts}]`,
+    ...(r.catalog ? { catalog: r.catalog } : {}),
   };
 }
 
@@ -787,21 +977,32 @@ export async function selectModel(req: SelectModelRequest): Promise<SelectModelR
     };
   }
 
-  // ── 2) 轻量连通探测 (写盘之前) ─────────────────────────────
+  // ── 2) 连通探测 (写盘之前; 走 P4 探测原语这一条唯一路径) ─────
   const checks: string[] = [];
   const wantProbe = req.verify !== false && process.env.BOLLOON_MODEL_SKIP_PROBE !== '1';
   if (wantProbe) {
-    const probe = await probeSelection(target);
-    checks.push(`${probe.ok ? '✓' : '✗'} ${probe.detail}`);
-    if (!probe.ok) {
+    const p = await runConnectionProbe({
+      provider: target.provider,
+      model: target.model,
+      baseUrl: req.baseUrl,          // 显式 --base-url (最高优先)
+      configuredBaseUrl: stored?.baseUrl, // 配置里这一家现在写的地址
+      apiKey: target.apiKey,
+    });
+    // 逐项事实 (URL 来自哪一层 / 协议 / 凭证 / 目录 / 模型 / 工具调用) 全部如实带出去
+    checks.push(`· base URL 来源=${p.baseUrlSource ?? '无'} → ${p.baseUrl || '(无 URL)'}; 工具调用能力=${p.toolCalling}`);
+    for (const c of p.checks) checks.push(`${c.ok ? '✓' : '✗'} [${c.step}] ${c.detail}`);
+    if (!p.ok) {
+      const cls = p.failureClass as SelectionFailureClass;
       return {
         ok: false,
-        failureClass: probe.failureClass,
-        message: `切换未生效 (探测失败, 配置与运行时保持原样): ${probe.detail}`,
+        failureClass: cls,
+        message: `切换未生效 (探测失败, 配置与运行时保持原样) — ${cls} (${SELECTION_FAILURE_ZH[cls]}): ${p.message}`
+          + ` [探测类目=${p.probeClass ?? '无'}${p.unmapped ? ' ⚠ 未被映射表覆盖' : ''}]`,
         previous,
         checks,
       };
     }
+    checks.push(`✓ 探测通过: ${p.message}`);
   } else {
     checks.push('· 已跳过连通探测 (BOLLOON_MODEL_SKIP_PROBE / verify:false)');
   }
@@ -813,6 +1014,9 @@ export async function selectModel(req: SelectModelRequest): Promise<SelectModelR
     beforeBytes = await fsp.readFile(configPath, 'utf-8');
   } catch { beforeBytes = null; }
 
+  // 写盘阶段的失败**分两类**报出, 不再一律叫"切换失败": 写盘失败 (`persist_failed`) 与
+  // 写完配置但重建运行时失败 (`runtime_rebuild_failed`) 是两件不同的事, 排障要看得出是哪一件。
+  let wrote = false;
   try {
     if (scope === 'global') {
       await withConfigLock(async () => {
@@ -843,6 +1047,7 @@ export async function selectModel(req: SelectModelRequest): Promise<SelectModelR
       await writeSessionSelection(req.sessionKey || currentSessionKey(), target);
     }
 
+    wrote = true;
     // 重建模型运行时 —— 从"刚写好的那一份有效配置"读, 保证运行时 == 有效配置
     const applied = await applyEffectiveToRuntime(req.sessionKey);
     if (applied.provider !== target.provider || applied.model !== target.model || applied.baseUrl !== target.baseUrl) {
@@ -852,10 +1057,13 @@ export async function selectModel(req: SelectModelRequest): Promise<SelectModelR
     // 回滚: 文件字节级还原 + 运行时按旧配置重建
     await rollbackConfig(configPath, beforeBytes);
     await restoreRuntime(previous);
+    const cls: SelectionFailureClass = wrote ? 'runtime_rebuild_failed' : 'persist_failed';
+    const zh = SELECTION_FAILURE_ZH[cls];
+    checks.push(`✗ [write] ${cls} (${zh}): ${String(err?.message || err).slice(0, 200)}`);
     return {
       ok: false,
-      failureClass: 'provider_unreachable',
-      message: `切换失败已回滚, 旧配置仍生效: ${String(err?.message || err).slice(0, 300)}`,
+      failureClass: cls,
+      message: `切换失败已回滚, 旧配置仍生效 — ${cls} (${zh}): ${String(err?.message || err).slice(0, 300)}`,
       previous,
       checks,
     };
@@ -882,7 +1090,7 @@ async function rollbackConfig(configPath: string, beforeBytes: string | null): P
 async function restoreRuntime(prev: EffectiveModelConfig): Promise<void> {
   try {
     const key = await storedKeyOf(prev.provider);
-    initMinimax({ provider: prev.provider as any, apiKey: key, baseUrl: prev.baseUrl, model: prev.model });
+    await installRuntime(prev, key);
   } catch { /* 运行时还原失败: 单例仍指向被拒的候选, 调用方会看到 ok:false */ }
 }
 
@@ -901,7 +1109,8 @@ export async function resetModelSelection(sessionKey?: string): Promise<SelectMo
   if (global) {
     const key = await storedKeyOf(global.provider);
     try {
-      initMinimax({ provider: global.provider as any, apiKey: key, baseUrl: global.baseUrl, model: global.model });
+      // 走同一个装法: 声明 id → 注册表 → 运行时分支 (自定义供应商的协议/鉴权头才落得下来)
+      await installRuntime(materialize(global, 'global'), key);
     } catch (e: any) {
       return { ok: false, message: `重置时重建运行时失败: ${String(e?.message || e).slice(0, 200)}`, previous: before };
     }

@@ -7,6 +7,14 @@ export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | '
 
 export interface ModelConfig {
   provider: ModelProvider;
+  /**
+   * **声明的 provider id** (P3 注册表里的那个 id)。内置供应商 == `provider`; 自定义供应商则是它自己的
+   * 名字 (`stub-gw`), 而 `provider` 是它在运行期接上的**协议分支** (`openai`/`anthropic`/…)。
+   *
+   * 为什么两个都要: 协议分支决定走哪条出网代码, 而**鉴权头**只有按声明 id 查注册表才拿得到
+   * (自定义供应商可以声明自己的 `authHeader`)。缺省 = 用 `provider`, 于是老调用方行为一字不变。
+   */
+  providerId?: string;
   apiKey?: string;
   baseUrl?: string;
   model: string;
@@ -104,6 +112,35 @@ export class PiAIModel {
       return ctrl.signal;
     }
     return valid;
+  }
+
+  /**
+   * 按**注册表**取这条 provider 的认证头与 query (P3 注册表是唯一出处)。
+   *
+   * `providerId` (声明 id) 优先于运行期分支 id —— 自定义供应商的 `authHeader` 只有按声明 id 才查得到。
+   * 拿不到 (模块不可用 / 这个 id 不在注册表里) → 返回 `null`, 各分支**退回自己的旧内置常量**,
+   * 于是内置供应商的请求头一字不变 (门禁 `scripts/verify-model-wiring.ts` 逐分支比对真收到的头)。
+   */
+  private async registryAuth(): Promise<{
+    headers: Record<string, string>;
+    query: Record<string, string>;
+    authKind: string;
+    entryKind: string;
+  } | null> {
+    const declared = String(this.config.providerId || this.provider || '').trim();
+    if (!declared) return null;
+    try {
+      const reg: any = await import('./provider-registry.js');
+      const entry = reg.getProviderRegistryEntry(declared);
+      if (!entry) return null;
+      const auth = reg.authHeadersFor(entry, this.getApiKey());
+      return {
+        headers: (auth && auth.headers) || {},
+        query: (auth && auth.query) || {},
+        authKind: String(entry.auth && entry.auth.kind || 'none'),
+        entryKind: String(entry.kind || ''),
+      };
+    } catch { return null; }
   }
 
   /**
@@ -429,6 +466,11 @@ export class PiAIModel {
     //   会静默忽略 npm undici Agent 的 dispatcher (实测 localPort 不变), 导致重试仍在复用坏连接.
     //   改用 npm undici 的 request(): 独立连接池 + 重试传 dispatcher 真正生效 (新 TCP 连接).
     let retryAgent: Agent | null = null;
+    // 认证头走注册表 (拿不到注册表 → 退回本分支原来的 `Authorization: Bearer <key>`)
+    const regAuth = await this.registryAuth();
+    const authHeaders: Record<string, string> = regAuth
+      ? regAuth.headers
+      : { 'Authorization': `Bearer ${apiKey}` };
     for (let attempt = 0; attempt < 4; attempt++) {
       const _tFetch = Date.now();
       let statusCode = 0;
@@ -438,7 +480,7 @@ export class PiAIModel {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
+            ...authHeaders,
           },
           body: JSON.stringify(requestBody),
           signal: this.combinedSignal(signal),
@@ -522,12 +564,14 @@ export class PiAIModel {
     const systemMessage = messages.find(m => m.role === 'system')?.content || '';
     const userMessages = messages.filter(m => m.role !== 'system');
 
+    // 认证头走注册表 (拿不到 → 退回原来的 x-api-key + anthropic-version);
+    // `anthropic-dangerous-direct-browser-access` 是本分支历史行为, 无论注册表说什么都保留。
+    const regAuthA = await this.registryAuth();
     const response = await fetch(`${this.getBaseUrl()}/messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
+        ...(regAuthA ? regAuthA.headers : { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }),
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
@@ -549,10 +593,14 @@ export class PiAIModel {
   }
 
   private async callOllama(messages: ChatMessage[], temperature: number, signal?: AbortSignal): Promise<ChatResult> {
+    // ollama 协议在注册表里是 `auth.kind='none'` → 内置行为仍是"只带 Content-Type" (一字不变);
+    // 自定义的 ollama 协议供应商若声明了鉴权头, 这里就能真的带上。
+    const regAuthO = await this.registryAuth();
     const response = await fetch(`${this.getBaseUrl()}/api/chat`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...(regAuthO ? regAuthO.headers : {})
       },
       body: JSON.stringify({
         model: this.mapModel(),
@@ -577,11 +625,12 @@ export class PiAIModel {
       throw new Error('OPENROUTER_API_KEY not set');
     }
 
+    const regAuthR = await this.registryAuth();
     const response = await fetch(`${this.getBaseUrl()}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        ...(regAuthR ? regAuthR.headers : { 'Authorization': `Bearer ${apiKey}` }),
         'HTTP-Referer': 'https://openclaw.ai',
         'X-Title': 'OpenClaw'
       },
@@ -617,13 +666,24 @@ export class PiAIModel {
 
     const systemInstruction = messages.find(m => m.role === 'system')?.content;
 
+    // gemini 的凭据在 **query** (`?key=`) 里 —— 出处就是注册表那一格 (`auth.kind='query-key'`)。
+    // 内置 gemini 走注册表得到的仍是 `?key=<原样 key>`, 且**不加任何头** (历史行为一字不变);
+    // 只有用户**声明了自定义 authHeader** 的自定义供应商才额外带一个头。
+    const regAuthG = await this.registryAuth();
+    const keyQuery = regAuthG && typeof regAuthG.query.key === 'string'
+      ? `?key=${encodeURIComponent(regAuthG.query.key)}`
+      : (regAuthG && Object.keys(regAuthG.query).length
+        ? `?${new URLSearchParams(regAuthG.query).toString()}`
+        : `?key=${encodeURIComponent(apiKey)}`);
+    const geminiHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (regAuthG && regAuthG.entryKind === 'custom' && Object.keys(regAuthG.headers).length) {
+      Object.assign(geminiHeaders, regAuthG.headers);
+    }
     const response = await fetch(
-      `${this.getBaseUrl()}/models/${this.mapModel()}:generateContent?key=${apiKey}`,
+      `${this.getBaseUrl()}/models/${this.mapModel()}:generateContent${keyQuery}`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: geminiHeaders,
         body: JSON.stringify({
           contents,
           systemInstruction: systemInstruction ? { parts: [{ text: systemInstruction }] } : undefined,
@@ -775,6 +835,8 @@ let modelInstance: PiAIModel | null = null;
 
 export interface PiAIConfig {
   provider?: ModelProvider;
+  /** 声明的 provider id (自定义供应商的真名); 缺省 = `provider` (内置行为不变) */
+  providerId?: string;
   apiKey?: string;
   baseUrl?: string;
   model?: string;
@@ -868,6 +930,7 @@ export function initPiAI(config: PiAIConfig = {}): PiAIModel {
 
   modelInstance = new PiAIModel({
     provider,
+    providerId: config.providerId,
     apiKey,
     baseUrl: config.baseUrl,
     model

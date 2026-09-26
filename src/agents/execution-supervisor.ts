@@ -28,11 +28,23 @@ import {
   type GoalStatus,
 } from './goal-store.js';
 import type { ContinuationDecision } from './goal-flywheel/types.js';
+// 2026-09-26 (P7 接线): 长期任务的模型策略 —— 「下一个 Run 用哪一份模型」的唯一决定函数,
+//   以及「这次失败换模型能解决吗」的唯一判定函数 (Supervisor 不再自己看失败类别猜)。
+import {
+  resolveNextRunModel,
+  supervisorMaySwitchModel,
+  parseGoalModelPolicy,
+  formatModelDecision,
+  isTerminalRunStatus,
+} from './model-policy.js';
+// 只借类型: 值 (备用候选来源) 用动态 import, 免得 Supervisor ↔ 切换入口 变成静态环
+import type { RunModelConfig } from '../llm/model-selection.js';
 import {
   readRun,
   reconcileOrphans,
   superviseRuns,
   buildContinuationPlan,
+  recordModelSwitch,
   RESUMABLE_STATUSES,
   type RunRecord,
 } from './run-store.js';
@@ -164,13 +176,19 @@ export function decideGoalOutcome(
     case 'failed':
     case 'needs_human': {
       const cls = run.errorClass || 'unknown';
+      // ★ 2026-09-26 (P7 接线): 这次失败"换一个模型能不能解决"由**唯一判定函数**回答, 不再由
+      //   Supervisor 这边看类别自己猜。结论照实写进 reason (含策略模式与理由), 但**不改写**任何
+      //   在跑的 Run —— 真正换模型发生在下一个 Run 的决定里 (`resolveNextRunModel`, 见 runGoal)。
+      const policyMode = parseGoalModelPolicy(goal.modelPolicy).policy.mode;
+      const modelVerdict = supervisorMaySwitchModel({ mode: policyMode, errorClass: run.errorClass });
+      const modelHint = `; 模型: 策略=${policyMode} · ${modelVerdict.reason}`;
       const needsHuman = ['auth', 'persist_failed', 'corrupt_state', 'policy_denied', 'repeat_failure', 'bad_args', 'no_such_tool'].includes(cls)
         || attempts >= maxAttempts;
       if (needsHuman) {
         return {
           goalStatus: 'needs_human',
           continuation: { ...base, autoContinue: false, wakeReason: 'needs_human', attempts },
-          reason: `${cls} 需要人工介入${attempts >= maxAttempts ? ` (自动继续已试 ${attempts} 次)` : ''}`,
+          reason: `${cls} 需要人工介入${attempts >= maxAttempts ? ` (自动继续已试 ${attempts} 次)` : ''}${modelHint}`,
         };
       }
       const wait = continuationBackoffMs(attempts);
@@ -182,7 +200,7 @@ export function decideGoalOutcome(
           wakeAt: new Date(now + wait).toISOString(),
           attempts: attempts + 1,
         },
-        reason: `可恢复错误 ${cls}: 第 ${attempts + 1} 次自动继续, ${Math.round(wait / 1000)}s 后唤醒`,
+        reason: `可恢复错误 ${cls}: 第 ${attempts + 1} 次自动继续, ${Math.round(wait / 1000)}s 后唤醒${modelHint}`,
       };
     }
 
@@ -207,6 +225,15 @@ export interface GoalExecutionRequest {
   instruction: string;
   /** 上一个 Run 已成功的非幂等动作 (新 Run 也要守住, 不许重做) */
   guards: { tool: string; argsDigest?: string; summary: string }[];
+  /**
+   * ★ 2026-09-26 (P7 接线): 这个 Run 该用的模型配置**快照** —— 由 `resolveNextRunModel` 定稿
+   * (新 Run 用最新 Global 默认 / Goal pin / 会话绑定 / Supervisor 备用, 按策略与失败类别)。
+   *
+   * 执行器拿到它就该**按这份配置跑**; 拿不到 (`undefined`) = 没有任何一层给出可信配置
+   * (比如这条 Goal 没有上一个 Run 也没有可用默认) —— 那时按执行器自己的默认启动,
+   * 而且这一格**不许**由执行器自己去猜一份 (猜了就没有"这条 Run 用的是哪一份"的记录了)。
+   */
+  modelConfig?: RunModelConfig;
 }
 
 export interface GoalExecutionResult {
@@ -680,6 +707,55 @@ export class ExecutionSupervisor {
     const plan = prevRunId ? await buildContinuationPlan(prevRunId).catch(() => null) : null;
     const guards = plan?.replayGuards || [];
 
+    // ★ 2026-09-26 (P7 接线): 下一个 Run 该用**哪一份**模型配置 —— 唯一决定函数 `resolveNextRunModel`。
+    //   它自己走完四步: ① 读 Goal 策略 (记录上的 modelPolicy 优先, 没有才读 sidecar);
+    //   ② 定稿配置 (auto → 最新 Global 默认; pinned → 固定三元组; session → 会话绑定);
+    //   ③ 按**失败类别**判定能不能挑备用模型 (内部就是 `supervisorMaySwitchModel`);
+    //   ④ 跨 Run 非幂等守卫照带 (模型换了也不重做副作用), 并把这次决定写成 Run 事件。
+    //   它算的是**下一条** Run: 在跑的那条 Run 的快照一个字都不动 (旧 Run 可追溯)。
+    //
+    //   ⚠ **事件落点** (接线时真跑逼出来的, 不是设计洁癖): P7 自己文档里的事实边界是
+    //   「本层算出来的只用于①下一个 Run 的启动快照 ②切换事件 —— **它不回头改老 Run**」,
+    //   飞轮规则 ⑦ (`goal-flywheel-wiring.test.ts`) 更是**逐字节**钉住「已发生的 Run 记录不被改写」。
+    //   而决定函数的事件缺省落点是 `prevRunId` —— 上一条 Run **已经收尾**时, 那条写入等于
+    //   往历史记录上追加一格 (真跑实测: `updatedAt`/`modelSwitches`/`harness` 全变 ⇒ 判红)。
+    //   所以分两种, 都说清: 上一条 Run **还活着** → 事件就写它 (它是当事 Run, 也是缺省);
+    //   **已收尾** → 它是历史, 决定"只算不写", 等新 Run 起来后把同一条决定记到**新 Run 自己**的
+    //   账本上 (`RunModelSwitchEvent.to` 的语义本来就是"这个 Run **或下一个 Run** 该用的那一份")。
+    const prevIsHistory = prevRun ? isTerminalRunStatus(prevRun.status) : true;
+    let modelResolution: Awaited<ReturnType<typeof resolveNextRunModel>> | null = null;
+    try {
+      // 备用候选: 只有上一个 Run 是**模型相关失败**时才值得去凑 (凑法在切换入口里, 只挑现在真能用的)
+      const fallbackCandidates: RunModelConfig[] = prevRun?.errorClass
+        ? await (async () => {
+            const ms: any = await import('../llm/model-selection.js');
+            return await ms.usableFallbackCandidates(prevRun.modelConfig ?? null);
+          })().catch(() => [] as RunModelConfig[])
+        : [];
+      modelResolution = await resolveNextRunModel({
+        goalId: goal.goalId,
+        // 上一条 Run 已收尾 = 历史 → 不给事件落点 (P7 契约里"只算不写"的那一档), 免得往历史追加
+        ...(prevIsHistory ? {} : { prevRunId: prevRunId || undefined }),
+        policy: goal.modelPolicy,
+        errorClass: prevRun?.errorClass,
+        ...(fallbackCandidates.length ? { fallbackCandidates } : {}),
+      });
+    } catch (err: any) {
+      // 算不出来**不猜**: 下一句日志说清, 执行器按自己的默认启动 (Run 记录里因此没有模型快照)
+      this.log(`[supervisor] goal=${goal.goalId} 下一个 Run 的模型决定算不出来 (按无快照启动): ${String(err?.message || err).slice(0, 160)}`);
+    }
+    const nextModelConfig = modelResolution?.startRunModelConfig;
+    if (modelResolution) {
+      this.log(`[supervisor] goal=${goal.goalId} 下一个 Run 模型: ${formatModelDecision(modelResolution.decision)}`
+        + `; 策略来源=${modelResolution.policyOrigin}`
+        + `${modelResolution.startRunModelConfig ? `; 启动快照 hash=${modelResolution.startRunModelConfig.configHash}` : '; 没有可信快照 → 不写快照'}`
+        + `; 事件=${modelResolution.event.ok
+          ? `已写(Run ${modelResolution.event.onRunId || '-'})`
+          : prevIsHistory && modelResolution.startRunModelConfig
+            ? '等新 Run 起来后写在它自己的账本上 (上一条 Run 已收尾 = 历史, 不许改写)'
+            : `未写(${modelResolution.event.reason || '原因未明'})`}`);
+    }
+
     // 2026-09-25 (飞轮接线 P4 / P2): 下一个 Run 必须真的读到**同一份**事实 ——
     //   ① 权威 continuation 的 nextAction (飞轮收尾写下的"下一步是什么");
     //   ② 已生效的新要求 (变更注入: 只影响后续 Run, 不改写历史);
@@ -710,7 +786,7 @@ export class ExecutionSupervisor {
     if (!runner && this.resolver) {
       let res: RunnerResolution;
       try {
-        res = await this.resolver({ goal, kind, prevRunId, instruction, guards });
+        res = await this.resolver({ goal, kind, prevRunId, instruction, guards, ...(nextModelConfig ? { modelConfig: nextModelConfig } : {}) });
       } catch (err) {
         res = { ok: false, kind: 'none', reason: `resolver 抛错: ${String((err as Error)?.message || err).slice(0, 140)}` };
       }
@@ -783,11 +859,36 @@ export class ExecutionSupervisor {
     let result: GoalExecutionResult;
     const t0 = Date.now();
     try {
-      result = await runner({ goal, kind, prevRunId, instruction, guards });
+      result = await runner({ goal, kind, prevRunId, instruction, guards, ...(nextModelConfig ? { modelConfig: nextModelConfig } : {}) });
     } catch (err) {
       result = { error: (err as Error)?.message || String(err) };
     } finally {
       clearInterval(hb);
+    }
+
+    // ★ 2026-09-26 (P7 接线): 决定"只算不写"的那一档, 把同一条决定**补写进它真正生效的那条 Run**。
+    //   为什么不写在算决定的那一刻: 那时新 Run 还没有 id, 而唯一的现成落点是已经收尾的上一条 Run
+    //   —— 那是历史 (`prevIsHistory` 分支就是为了不碰它)。落点等执行器报回 runId 再定, 事实不丢。
+    const runIdOfThisRun = result.runId && result.runId !== prevRunId ? result.runId : null;
+    if (modelResolution && nextModelConfig && runIdOfThisRun && !modelResolution.event.ok
+      && prevIsHistory && (await readRun(runIdOfThisRun).catch(() => null))) {
+      const d = modelResolution.decision;
+      const from = prevRun?.modelConfig ?? null;
+      // 同口径 = 同一份 `configHash` 就是同一份 (P7 的 configHash 契约), 别自己另立一套
+      const outcome = (d.conflict && d.conflict.length) ? 'conflict'
+        : (from && from.configHash === nextModelConfig.configHash) ? 'frozen' : 'switched';
+      const w = await recordModelSwitch(runIdOfThisRun, {
+        to: nextModelConfig,
+        from,
+        outcome,
+        mode: (d.mode === 'auto' || d.mode === 'pinned' || d.mode === 'session' ? d.mode : 'unknown'),
+        source: d.source,
+        reason: `${d.reason}; 事件落在新 Run (上一条 Run 已收尾 = 历史, 不许改写)`.slice(0, 400),
+        guardsCarried: guards.length,
+        goalId: goal.goalId,
+      });
+      this.log(`[supervisor] goal=${goal.goalId} 模型决定补写在新 Run ${runIdOfThisRun} 的账本上: `
+        + `${w.ok ? `outcome=${outcome}` : `写不进去 (${w.reason || '原因未明'})`}`);
     }
 
     // Run 结束 → Goal 决策 (确定性 reducer, 落盘)

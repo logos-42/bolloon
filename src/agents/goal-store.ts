@@ -158,6 +158,21 @@ export interface GoalRecord {
   goalChanges?: GoalChangeRequest[];
   /** 执行权租约镜像 (真值在 <goalId>.lease 文件; 这里只为可读) */
   lease?: GoalLease;
+  /**
+   * 2026-09-26 (P7 接线): Goal 的**可选**模型策略 (`auto` / `pinned` / `session`)。
+   *
+   * 形状与 `model-policy.GoalModelPolicy` 同域, 这里只写结构类型 —— 免得 goal-store ↔ model-policy
+   * 互相静态 import 成环。读取优先级由 `readGoalModelPolicy` 定: **记录上这个字段优先**, 没有再读
+   * 同级的 sidecar 文件。一次 `/model` 切换**不许**改写它 (Goal 的模型策略是用户对这条目标的决定)。
+   * 通过既有的 `updateGoal(goalId, { modelPolicy })` 写入, 不需要另开写口。
+   */
+  modelPolicy?: {
+    mode: 'auto' | 'pinned' | 'session';
+    pin?: { provider: string; model: string; baseUrl?: string };
+    note?: string;
+    updatedBy?: string;
+    updatedAt?: string;
+  } | null;
 }
 
 export interface CreateGoalOptions {

@@ -380,7 +380,67 @@ export async function buildProviderSummaries(opts: {
       ...(probe && !probe.ok && probe.detail ? { failureReason: probe.detail } : {}),
     });
   }
+
+  // ★ 2026-09-26 (P3 接线收口): **自定义供应商也必须出现在这个列表里**。
+  //   只遍历 `DEFAULT_PROVIDER_CONFIGS` 的话, 用户在 `/model` 里根本看不到自己配的那一家
+  //   (它不在内置表里) —— 只能靠记住 id 手打, 而"这家到底配没配 key / 是不是本地端点"更没有地方可看。
+  //   数据来源是注册表读口 (`listProviderRegistry`) 与自定义供应商的**声明** (真出处), 不在这里
+  //   编任何一条: 拿不到声明就不出这一行。
+  for (const { entry, spec } of await customProviderRows()) {
+    if (Object.prototype.hasOwnProperty.call(DEFAULT_PROVIDER_CONFIGS, entry.id)) continue; // 内置的上面已经出过
+    const cfg = providers[entry.id];
+    const baseUrl = normalizeBaseUrl(cfg?.baseUrl || entry.defaultBaseUrl || '');
+    const declaredEnv = Array.isArray(entry.apiKeyEnvVars) && entry.apiKeyEnvVars.length ? String(entry.apiKeyEnvVars[0]) : '';
+    const envHas = declaredEnv ? !!String(process.env[declaredEnv] || '').trim() : false;
+    const ownKey = String(spec.apiKey || '').trim();
+    const requiresApiKey = entry.requiresApiKey !== false;
+    const keyState: ProviderSummary['keyState'] = ownKey ? 'configured' : envHas ? 'env' : (requiresApiKey ? 'missing' : 'not_required');
+    const credentialReady = keyState === 'configured' || keyState === 'env' || !requiresApiKey;
+    const declaredIds = Array.isArray(entry.declaredModelIds) ? entry.declaredModelIds : [];
+    // 配置那一格只有**真的存在**时才算一个事实 (自定义供应商本来就不在 providers 里)
+    const hasConfigRow = !!cfg && (cfg.requiresApiKey !== undefined || cfg.baseUrl !== undefined || cfg.model !== undefined);
+    const configRequiresKey = hasConfigRow ? cfg!.requiresApiKey !== false : requiresApiKey;
+    const probe = opts.probes?.[entry.id];
+    out.push({
+      id: entry.id,
+      name: String(entry.displayName || entry.id),
+      protocol: entry.protocol,
+      configured: credentialReady,
+      requiresApiKey,
+      configRequiresKey,
+      requiresKeyConflict: configRequiresKey !== requiresApiKey,
+      isLocal: !!entry.isLocal || isLocalBaseUrl(baseUrl),
+      modelCount: declaredIds.length,
+      modelCountOrigin: declaredIds.length ? 'custom' : 'unavailable',
+      configuredModel: String(cfg?.model || spec.model || ''),
+      baseUrl,
+      keyState,
+      current: !!eff && eff.provider === entry.id,
+      active: !!eff && eff.provider === entry.id,
+      providerReasoning: entry.reasoning,
+      reachability: probe ? (probe.ok ? 'ok' : 'failed') : 'unknown',
+      ...(probe && !probe.ok && probe.detail ? { failureReason: probe.detail } : {}),
+    });
+  }
   return out;
+}
+
+/**
+ * 「在册的自定义供应商」的注册表记录 + 声明 (真出处: 注册表读口 / 自定义供应商存储)。
+ *
+ * 两个都是动态 import: `provider-registry` ↔ `model-catalog` 之间本来就是循环 import
+ * (见 provider-registry 文件头对模块体时机的说明), 静态 import 会把循环带进本模块的初始化路径。
+ * 读失败 → 返回空数组 (列表少一行自定义供应商, 而不是把整个列表炸掉)。
+ */
+async function customProviderRows(): Promise<Array<{ entry: any; spec: any }>> {
+  try {
+    const reg: any = await import('./provider-registry.js');
+    const store: any = await import('./custom-provider-store.js');
+    const specs: Record<string, any> = await store.readCustomProviders();
+    return Object.values(specs || {})
+      .map((spec: any) => ({ entry: reg.getProviderRegistryEntry(String(spec?.providerId || '')), spec }))
+      .filter((r: any) => r.entry && r.entry.kind === 'custom');
+  } catch { return []; }
 }
 
 /**

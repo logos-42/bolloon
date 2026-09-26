@@ -387,6 +387,14 @@ const FAILURE_ZH: Record<SelectionFailureClass, string> = {
   protocol_mismatch: '协议不匹配',
   invalid_temperature: 'temperature 越界 (只接受 0~2)',
   timeout: '连接超时',
+  // 2026-09-26 (接线收口): 探测原语第 ⑥ 步确认工具调用能力时可能报这一类 —— 入口必须认它,
+  //   否则这类失败会在映射时被丢进别的类 (用户就看不到"是工具调用声明被端点拒了")
+  tool_call_unsupported: '模型/端点不接受工具调用声明 (这个模型不能用于 Agent 执行)',
+  // 写盘阶段的两类 (写盘失败 / 写成功了但重建运行时失败), 分开报, 不再合成一句"切换失败"
+  persist_failed: '写配置失败 (已回滚, 盘上仍是旧配置)',
+  runtime_rebuild_failed: '配置写成功但重建模型运行时失败 (已回滚)',
+  // 理论上不可达: 探测报了一个映射表还没覆盖的新类目 (宁可露出原文类名, 也不糊成一句"失败")
+  probe_failure_unmapped: '探测类目未被映射表覆盖 (按原文类名报出)',
 };
 
 function flagValue(parts: string[], i: number, name: string): string | undefined {

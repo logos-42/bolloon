@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-26 | feat | **模型接线收口 (四根线一次插上: P4 探测原语接进 `selectModel` + 失败分类映射表 · P7 四处钩子 · P3 自定义供应商进 `/model` 列表 · 客户端鉴权头读注册表): 探测 7 类 → 入口 15 类**一类不丢** (含 `tool_call_unsupported`), 未映射**不退化成「切换失败」** · 真跑新门 **89/0** + 变异 **5/5 判红** (丢类 7 红 / 退化 1 红 / **在跑 Run 被新默认改写** 2 红 / 鉴权头不看注册表 2 红 / **往已收尾的 Run 上追加事件** 4 红) · 既有门全绿: 55/0 · 51/0 · 36/0 · 50/0 · 44/0 · 81/0 · 飞轮冻结门 34/34** | [model-selection-protocol.md §8](./model-selection-protocol.md) / [verify-model-wiring.ts](../../scripts/verify-model-wiring.ts) / [model-wiring-serial.test.ts](../../src/test/model-wiring-serial.test.ts) / [model-selection.ts](../../src/llm/model-selection.ts) / [execution-supervisor.ts](../../src/agents/execution-supervisor.ts) |
 | 2026-09-26 | feat | **模型 `/model` 改分步选择器 + 冻结模型元数据接口 (P2): 拿不到真数据的能力一律显示"未知" · 上轮三条遗留全部结清 (invalidate 补门判红 / 真启动验收 15/16 且启动停滞定位到端口契约 / configHash 反向校验) · 真跑 51/0 + 变异 10/10 判红** | [model-selector-p2.md](./model-selector-p2.md) / [model-catalog.ts](../../src/llm/model-catalog.ts) / [model-selector.ts](../../src/cli/model-selector.ts) / [verify-model-selector.ts](../../scripts/verify-model-selector.ts) |
 | 2026-09-26 | feat | **模型切换统一入口 + 「有效模型配置」 + 每 Run 快照 (P0+P1): 修掉 CLI `/model` "切了不生效" 硬缺陷 · 五层优先级固定 Run>Session>Global>默认>env · 失败时配置与运行时都原样不变 (真跑 55/0 · 变异 6/7 判红)** | [model-selection-protocol.md](./model-selection-protocol.md) / [model-selection.ts](../../src/llm/model-selection.ts) / [verify-model-selection.ts](../../scripts/verify-model-selection.ts) |
 | 2026-09-25 | release | **发布 `@bolloon/bolloon-agent@0.5.0` (npm 新包: 飞轮接线+验收 · 新 CLI `task group`/`identity init` · `update` 双源) —— 发前门禁全绿, 判据链 1–6 逐条真查全过, tag `v0.5.0` 已推, 仓内 `verify-release.mjs` 13/13 硬门全过, 交叉校验拿到第一个真实例 `agree`**: 版本号 **0.4.33 → 0.5.0** —— 仓内**没有成文的发布版本号政策**, 找到的是**习惯** (0.4.x 线上 142 个版本**全是 patch**, 连 0.4.30 那种功能批次也走 patch) → 本次仍取 **minor**, 依据 = 本批是**向后兼容的新能力** (新子命令 `task group create\|join\|list\|link\|leave` / `identity init\|show` + `update --channel stable\|dev` 选项 + 飞轮 M0 接线与 M1–M5 验收接进真执行路径); 取舍属判断、**主线可否决**, 逐条写在 [update-protocol.md §12.9](./update-protocol.md)。**发前门禁 (缺一不发, 全是真跑)**: `npx tsc --noEmit` **0 错** · 冻结门 `goal-flywheel-wiring-freeze.test.ts` **34/34** · 全量 `npx vitest run` (前台一次) **234 文件 / 3674 测全绿** (64.6s) · wiki 四门 (`wiki_check`/`raw_manifest_check`/`wiki_lint --strict=v2`/`supersede_check`) OK · 工作区干净 · `build:all` + `smoke:esm` 通过 (921 个 `dist/*.js` 语法检查 · gemini 模型 ID 36 条核对)。**发布动作**: `npm publish --access public` **EXIT=0** · 1565 文件 / 19.0MB (解包 43.9MB) · tarball shasum `f8f5dbcf223a8994d788ce9abefa51fcd772c52b` (**凭据只在 `~/.npmrc`, 值不入仓/不入日志: `[REDACTED]`**)。**判据链 (逐条真查, 不手拼 URL / 不编造)**: ① 真 packument `dist-tags.latest` 前进到 `0.5.0` —— **发布后 ~5 分钟才放行** (20:20 起轮询, **20:25:47** 才翻; 期间直连 404 —— 与 0.4.27/0.4.28「退出码 0 但未公开」同形状, 处置是**只轮询不重发**, 同版本重发必 E409) ② 版本直连 URL `https://registry.npmjs.org/@bolloon/bolloon-agent/0.5.0` **HTTP 200** ③ 从 packument 取 `dist.tarball` **真 URL** 下载 **19010013 字节** → 本地 SHA-1 与 packument `dist.shasum` **逐字相同** (`sha512-xcsPJp7NXmkNw…` SRI 同样逐字相同) ④ `tar -tzf` 核包内**入口文件**在 (`package/dist/cli-entry.js` · `package/bin/bolloon.cjs` · `package/package.json`) 且**新 CLI 的入口真在**: `tasks.js` 含 `GROUP_ACTIONS` 与 `case 'group'` · `identity-command.js` 含 `identity init` · `update-commands.js` 解析 `--channel`; 装出来后真跑 `task group` / `identity` 帮助 (真列出 create/join/list/link/leave · init/show) 且 `--channel nonsense` **必拒** (「只接受 stable\|dev\|beta … 拒绝执行 (没有静默落回 stable)」) ⑤ **全新目录**装 `@bolloon/bolloon-agent@0.5.0`: `added 972 packages`, **`npm warn` 行数 = 0** (stderr 逐字为空), `bolloon --version` 真报 `Bolloon Agent v0.5.0` + `当前安装源: stable (npm registry) · 0.5.0 · semver` ⑥ **拿新发布版本回环重跑双源真跑验收**: **63 PASS / 0 FAIL / 0 SKIP** (dev 身份 `0.5.0+dev.493d8d5` 且真起装完的入口**自报**该身份; `check(stable)` 判 `update_available` 且理由写明「切回 stable 的 0.5.0」; `update now --channel stable` **退出码 0** + 磁盘真变回 `0.5.0`; `--status` 三态都**说清装的哪个源 + 哪个 sha + 能切回哪个源**)。**tag 与交叉校验 (第一个真实例)**: 建 annotated tag **`v0.5.0` → `493d8d5`**(= **发布出去的源码提交**, npm tarball 的 `src/`+`package.json`+`scripts/` 就是这棵树) 并 push; 真跑交叉校验 (真 `api.github.com` + 真 packument + **仓内同一份** `crossCheckStable`) = **`agree`** (`blocking=false` · `hasTag=true`): 「npm latest=0.5.0 在 GitHub 上有同名记录 (Tag v0.5.0) — 两个源指向同一版」—— 此前恒为 `missing_record`, **这是 §12.4 那条判据的第一个真实例**; 发布硬门 (把「GitHub 同名 Tag」写进 `verify-release.mjs` 当硬门) **刻意没开** —— 现在有真实例可依, 要不要开由**主线**定。**仓内发布校验**: `node scripts/verify-release.mjs 0.5.0 --install-check` **13/13 全过** (含 `git_tag: tag=493d8d5 HEAD=493d8d5` · 工作区干净 · 真装线上 tarball 后 `--version json` 版本一致 · `update plan` 结构正确) → 「发布可信」。**如实留下 (没做到/有保留)**: ① 双源验收**第一次跑是 18 FAIL** —— 隔离 prefix 的「预置真装 0.5.0」失败 (`磁盘=null`), 下游 18 项全被带红; 手动用**同一形状**命令复现却**成功** (`added 972 packages`, exit 0) → 判**瞬时环境抖动**; 但夹具**把 npm 的 stderr 丢掉** ⇒ **这道门红起来没有原因可读**, 这个弱点本轮**没改** ② `skills/bolloon-network/SKILL.md` 的「发行版可用性边界」仍按 **0.4.33 实测**口径写 (0.5.0 已把 `group/announce/trail/post` 全带上; 但技能源与站点镜像按纪律**逐字节同源**, 改它属 UI 仓那一侧的活) ③ 双源验收的「装依赖」一跳仍复用本仓 `node_modules` (加速开关, 其余全真) ④ tag 指向 `493d8d5`, wiki 回写落在随后一个 docs 提交 (tag 与 HEAD 不再重合; `verify-release.mjs` 的 `git_tag` 是软门, 之后会显示 ⚠️ —— 如实说明, 不是发布坏了) | [update-protocol.md §12](./update-protocol.md) / [package.json](../../package.json) / [verify-dual-source.ts](../../scripts/verify-dual-source.ts) / [verify-release.mjs](../../scripts/verify-release.mjs) |
@@ -4283,3 +4284,89 @@ Run/Goal 显式绑定 > 当前 Session > 用户 Global > provider 默认 > 环�
 **证据**: `scripts/verify-tool-names.ts` **26 PASS / 0 FAIL** —— 未净化时本地冒充服务器逐字复现 400;
 净化后走真边界(`chat → generateText → callOpenAI`)→ **200 + 正常回复**; 服务器侧收到 180 条工具**逐条合法、无重名**;
 被改写名字与违规名单一一对应(6/6)。变异门 `scripts/verify-tool-names-mutations.py` 判红。
+
+## [2026-09-26] feat | 模型接线收口: P4 探测原语接进入口 + P7 四处钩子 + P3 自定义供应商进列表 + 鉴权头读注册表
+
+**这一轮只做一件事: 把已经建好但没插上的东西接到共用骨架上**, 四根线逐根真跑。
+
+### ① P4 探测原语接进 `selectModel` (含 7→15 类失败分类映射表)
+
+**接法**: 入口原来的手写探测 (`probeSelection` 自己拼 `/models`、自己判 401/404/超时) 整段换成
+`src/llm/connection-probe.ts` 的唯一原语 `probe(...)`; `probeSelection` 里只剩把原语的结论翻译成入口口径。
+**映射表 (持久在代码里, 不是运行期拼的)**: `PROBE_TO_SELECTION` 把原语的 **7 类逐类 1:1** 映射过来
+(`invalid_url` / `auth_failed` / `provider_unreachable` / `model_not_found` / `protocol_mismatch` /
+`tool_call_unsupported` / `timeout` —— 一类不合并、一类不丢)。入口类目从 **11 类扩到 15 类**:
+`+tool_call_unsupported` (原语第 ⑥ 步真的确认工具调用能力, 以前会被塞进别的类)、
+`+persist_failed` / `+runtime_rebuild_failed` (以前糊成一句「切换失败」的写盘/重建失败拆开报)、
+`+probe_failure_unmapped` (兜底: 原语报了映射表还没覆盖的新类 → 照实报**原文类名 + 逐步事实**, 绝不退化成无信息文案)。
+`SELECTION_FAILURE_CLASS_ORIGIN` 逐类标真出处 (7 probe / 8 entry), `selectionFailureClassTable()` 是一张给人看的表。
+
+**真跑**: 新门 `scripts/verify-model-wiring.ts` 用**真本地 HTTP 服务器**造 7 类各一枚 ——
+`invalid_url` (base URL 路径写错 → 真 404 且同协议在另一路径可达) · `auth_failed` (真 401) ·
+`provider_unreachable` (真连不上的端口) · `model_not_found` (目录里真没有这个模型) ·
+`protocol_mismatch` (ollama 形状答 openai 请求) · `tool_call_unsupported` (真 400 且说 tools 不支持) ·
+`timeout` (真挂住不答) —— **入口逐枚如实报出对应类**, 文案带**原文探测类目** + 人话理由 + 逐步事实;
+7 次失败**盘上配置字节不变**。口径变化如实钉住: 主机名拼错现在归 `provider_unreachable`
+(P4 原语按 undici 的 `UND_ERR_SOCKET` 归类), 不再像旧入口那样叫 `invalid_url`。
+
+### ② P7 四处钩子 (串行点 · 请求形状 · 失败类别 · Goal 字段)
+
+`execution-supervisor.ts`: `runGoal` 在算完指令/守卫之后调 `resolveNextRunModel` (唯一决定函数),
+把 `startRunModelConfig` 作为**可选 `modelConfig`** 交给执行器 (resolver 与 runner 两条路都给);
+`decideGoalOutcome` 的失败分支调 `supervisorMaySwitchModel`, 把结论 (策略模式 + 能不能换) 写进 reason。
+`goal-store.ts`: `GoalRecord` 加可选 `modelPolicy?` (结构类型, 不静态 import 免得成环; 走既有 `updateGoal` 写入)。
+**真跑**: 建 Goal + 一条**在跑**的 Run (快照 = 服务 A) → 全局默认真切到服务 B → `Supervisor.tickOnce()`:
+执行器**真收到** B 的快照 (新 Run 用最新全局默认) + 事件账本记下 `switched`; 那条在跑的 Run
+**逐字段仍等于旧快照** (盘上读回 + `resolveCurrentRunModel` 报 `frozen`), 收尾成终态后才轮到下一个 Run。
+`verify-model-policy.ts` 仍 **36/0** (`configHash` 反向校验也过)。**接线时真跑逼出一个真缺陷 (已修)**:
+P7 的决定函数缺省把「切换事件」写在上一条 Run 的账本上 —— 上一条 Run **已经收尾**时那就是往历史追加
+(`updatedAt`/`modelSwitches`/`harness` 全变), 撞上飞轮规则 ⑦「已发生的 Run 记录不被改写」
+(`goal-flywheel-wiring.test.ts` 逐字节比对, 收尾全量门真判红)。修法在**调用侧**(Supervisor):
+上一条 Run 已收尾 (历史) → 决定"只算不写", 等新 Run 起来后把同一条决定记到**新 Run 自己**的账本上
+(`RunModelSwitchEvent.to` 的语义本来就是"这个 Run 或下一个 Run 该用的那一份"); 上一条 Run 还活着 → 照缺省写它。
+新门因此把「旧 Run **整条记录逐字节**没变」也钉上了 (上一版只比 `modelConfig`, 这个缝正是从那儿漏过去的)。
+
+### ③ P3 自定义供应商出现在 `/model` 列表
+
+`buildProviderSummaries` 纳入注册表的自定义供应商: 配了 key 的标 `●` + `本地/远端`,
+**没配 key 的照实标「未配置 key (环境变量)」**, 模型数来自**声明** (`modelCountOrigin='custom'`), 能力走
+`registerModelMetadataSource()` 填充点。内置 13 家一份没少 (真跑逐家点名)。
+
+### ④ 客户端鉴权头改读注册表 (内置一字不变)
+
+`pi-ai.ts` 新增 `registryAuth()`: 按**声明的 provider id** (`config.providerId`, 缺省 = 协议分支) 查注册表拿
+`authHeadersFor(entry, key)` 的头与 query; **拿不到就退回本分支原来的常量**。真服务器收到的头逐分支比对:
+openai 仍只有 `Authorization: Bearer <k>` · anthropic 仍 `x-api-key` + `anthropic-version: 2023-06-01` +
+dangerous-access 且**没有** Authorization · gemini 凭据仍在 **query (?key=)** 且**不加** `x-goog-api-key` ·
+ollama 仍**不带**任何鉴权头 · openrouter 仍是 Bearer + HTTP-Referer/X-Title;
+自定义供应商声明的 `authHeader` (如 `x-wiring-key`) **真生效**且**不发** Authorization。
+装配路真跑: 配置文件里自定义供应商当 `activeProvider` → `applyEffectiveToRuntime()` → 真 `chat()` 打到它的
+baseUrl + 自定义头 (以前这里会抛 `Unsupported provider`)。
+
+### 门禁与变异
+
+`tsc --noEmit` **0 错** · 新门 `verify-model-wiring` **89 passed / 0 failed** (逐枚真探 + 真 tick + 真服务器收头) ·
+新聚焦单测 `model-wiring-serial.test.ts` **12/12** · `verify-model-selection` **55/0** · `verify-model-selector` **51/0** ·
+`verify-model-policy` **36/0** · `verify-url-chain` **50/0** · `verify-provider-registry` **44/0** · `verify-model-discovery` **81/0** (变异 4/4) ·
+`verify-model-selector-mutations` **10/10 判红** · `verify-provider-registry-mutations` **8/8 判红** · 飞轮冻结门 **34/34**。
+新变异门 `scripts/verify-model-wiring-mutations.py` **5/5 判红** (每条先证明盘上 sha 变了再跑真门):
+M1 映射表丢 `tool_call_unsupported` → **7 红** · M2 未映射退化成 `switch_failed` → 1 红 ·
+**M3 在跑 Run 被新默认改写** (把下一个 Run 的模型盖到上一条 Run 的快照上) → 2 红 · M4 鉴权头不看注册表 → 2 红 ·
+**M5 往已收尾的 Run 上追加切换事件** (历史被改写) → 4 红。
+
+### 如实留下 (没做到/有保留)
+
+- **`buildProviderSummaries` 在 `src/llm/model-catalog.ts`** —— 该文件是 P2 冻结的「模型元数据接口」, 不在本线自有清单里;
+  ③ 只在那里加了**最小增量块** (自定义供应商入列表 + 一行自带 key 判定), 没动既有逻辑。**要不要保留由主线定**。
+- `selectModel` 仍按**内置表**校验 provider (`validateSelection` → `invalid_provider`), `llmConfigStore.updateProvider/setActiveProvider`
+  也拒非内置 id ⇒ 从 `/model` 列表里点自定义供应商**不能**经入口落成全局默认; 自定义供应商当默认仍走「配置文件里已是 `activeProvider`」
+  那条路 (P3 既有口径)。这条**没做**, 属选择器/入口的扩展。
+- **接线逼出的那个真缺陷** (事件写进历史 Run) 是在**飞轮线自己的测试**上判红才暴露的 (`goal-flywheel-wiring.test.ts`,
+  lefthook 的 vitest-bail 先抓到, 随后全量门也判红) —— 修的是**我的调用侧** (没碰 `model-policy.ts`, 那是 P7 自有文件):
+  该文件里 `resolveNextRunModel` 把事件落点缺省成 `prevRunId` 这件事**本身**与它自己文档的「它不回头改老 Run」相抵,
+  这一条留给 P7/主线判 (要改行为就得动它的缺省值; 我这边按文档口径绕开了)。
+- P7 自己的门 `verify-model-policy` 在 M3 变异下仍 **绿 (36/0)** —— 它不覆盖 Supervisor 的写入路径,
+  「在跑 Run 不被改写」这格由新门 `verify-model-wiring` 承担 (如实说明, 不是它坏了)。
+- 探针里的 key 全是假值 (`k-wire-*` / `k-h`), 报告与产物里**无真凭据**。
+- 未跑: Web/移动端界面上的 `/model` 自定义供应商点击路径 · 真 LLM 长任务里「失败换备用模型」的端到端 (只验了决定与快照落盘)。
+
