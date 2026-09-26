@@ -195,17 +195,17 @@ npx tsx scripts/verify-url-chain.ts               # 50 passed / 0 failed
 
 1. **未接线**。本轮只交付原语 + 门 + 验收; `selectModel` 的探测**仍是**它自己那份
    `probeSelection`。因此 P8 的 15 条**没有**因为本轮而发生变化, §8 的转换动作没做。
-2. **`tsc --noEmit` 全仓当前是红的, 但不是本轮的**。唯一一条错误在并行线的
-   `src/llm/custom-provider-store.ts(86,63)` (该文件不在 HEAD 里, 属其他阶段的在建产物)。
-   本轮的三个文件 0 错 (写这个原语后的第一次 `tsc` 退出码 0; 现在那次全仓跑里也没有一条落在
-   `connection-probe.ts` / `connection-probe.test.ts` / `verify-url-chain.ts`)。
-3. **`scripts/verify-model-selector.ts` 当前是红的, 但不是本轮的**。它以
+2. **`tsc --noEmit` 本轮的三个文件 0 错**。中途全仓曾短暂为红: 当时唯一一条错误落在**并行线在建**的
+   `src/llm/custom-provider-store.ts(86,63)` (该文件不在 HEAD 里)。那条错误不由本轮引入、也不是本轮
+   修的; 收口时全仓 `tsc --noEmit` 已回到 **0 错**, 本轮三个文件全程没有出现过错误。
+3. **`scripts/verify-model-selector.ts` 中途曾红, 但不是本轮的**。它一度以
    `ReferenceError: Cannot access 'metadataSources' before initialization` 崩在
    `model-catalog.ts:185 ← provider-registry.ts:846 ← provider-registry.ts:849 (模块顶层调用)` ——
-   并行线新加的 `provider-registry.ts` 在模块顶层注册填充点, 而 `config-store.ts` (同批在建)
-   又 import 它, 与 `model-catalog.ts` 形成环 → TDZ。证据: ①本轮三个文件全部物理挪走后再跑,
+   并行线新加的 `provider-registry.ts` 在模块顶层注册填充点, 而同批在建的 `config-store.ts` 又
+   import 它, 与 `model-catalog.ts` 形成环 → TDZ。当时的证据: ①本轮三个文件全部物理挪走后再跑,
    同一个崩溃逐字复现; ②直接 `import` **未改动**的 `model-catalog.js` 也照样崩。
-   `verify-model-selection.ts` 仍是 **55/0**, 冻结门仍是 **34/34** (它们不 import model-catalog)。
+   该环随后由那条并行线自己修掉, 收口时 `verify-model-selector.ts` 已是 **51/0**,
+   `verify-model-selection.ts` **55/0**, 冻结门 **34/34** —— 三条门都绿, 本轮没有削弱任何一条。
 4. **本机造不出真的主机名解析失败**。本机 DNS 把不存在的名字也解析到 sinkhole (任意 `.invalid`
    都回同一个保留网段地址), 真跑只会得到 `UND_ERR_SOCKET` → 归 `provider_unreachable`。
    所以 `invalid_url` 的 `ENOTFOUND` 那一格用**真形状的错误对象**覆盖分类器 (单测里注明),
