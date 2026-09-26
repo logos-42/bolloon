@@ -24,6 +24,7 @@
 | [durable-run-protocol.md](./durable-run-protocol.md) | v2 | Durable Run 协议 (Goal→Run→Checkpoint→Recovery 状态机 + 字段协议 + 现状盘点 + 六阶段完成度台账) |
 | [model-selection-protocol.md](./model-selection-protocol.md) | v2 | 模型选择协议 (统一入口 + 有效模型配置 + 五层优先级 + 每 Run 快照 + 命令面 + 验收矩阵) |
 | [model-selector-p2.md](./model-selector-p2.md) | v2 | 模型分步选择器 + **冻结的模型元数据接口** (七步流程 · P3/P5 唯一填充点 · 未知语义 · 三条遗留结清 · 并行名册) |
+| [model-url-chain.md](./model-url-chain.md) | v2 | **探测原语** (独立, 未接线): API URL 四层解析 (显式 > 配置 > 供应商默认 > 环境变量) + 规范化合并重复 `/v1` + 六步探测 (协议形状/连接/模型接口/工具调用) + **失败七类** (`invalid_url`·`auth_failed`·`provider_unreachable`·`model_not_found`·`protocol_mismatch`·`tool_call_unsupported`·`timeout`) + 三条硬规则 (不静默退回默认/失败不当成功/凭证不进返回值) + 真跑 50/0 与 4 条变异判红 |
 | [access-protocol-v1.md](./access-protocol-v1.md) | 外部接入协议 v1 (P1 冻结): 版本策略 + JSON 信封 + 错误码表 + 状态映射 + local-dev 红线 | current |
 | [agent-access-layer.md](./agent-access-layer.md) | Agent 接入层: CLI 为主协议 · MCP 为薄适配 · Skill 为使用说明 (含六阶段落地状态) | current |
 | [task-protocol.md](./task-protocol.md) | bolloon-task/1 任务协议: 14 态状态机 + 支付事实分离 + 受控自主签名闸 + 签名审计 + 公开投影 | current |
