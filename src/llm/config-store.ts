@@ -7,6 +7,10 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as fsSync from 'fs';
+// 2026-09-26 (P3): 自定义供应商与注册表快照 —— 类型的边是 `import type` (编译后消失),
+// 运行时只在这里的 initialize()/setCustomProviders() 里**调用**, 模块体不读对方的导出 (无 TDZ 风险)。
+import type { CustomProviderConfig } from './provider-registry.js';
+import { absorbLegacyProviderEntries, ensureProviderRegistryMetadataSource, normalizeCustomProviders, setCustomProviderSnapshot } from './provider-registry.js';
 
 export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'grok' | 'local';
 
@@ -28,6 +32,13 @@ export interface ProviderConfig {
 export interface LLMConfig {
   activeProvider: ModelProvider;
   providers: Record<ModelProvider, ProviderConfig>;
+  /**
+   * 2026-09-26 (P3): 通用自定义供应商 (不占用 `ModelProvider` 联合类型)。
+   *
+   * 旧配置没有这一格 → `undefined` = 空表, 内置供应商照旧 (向后兼容由迁移与回归测试钉住)。
+   * 键 = `providerId`; 值见 `CustomProviderConfig`。
+   */
+  customProviders?: Record<string, CustomProviderConfig>;
   updatedAt: string;
 }
 
@@ -279,6 +290,11 @@ class LLMConfigStore {
   }
 
   async initialize(): Promise<void> {
+    // 2026-09-26 (P3): 任何一次配置读都顺手把注册表的元数据填充点接上。
+    //   为什么不放模块体: 本模块与注册表之间是循环 import, 模块体的执行时机取决于"谁是入口",
+    //   实测会撞上对方模块 `metadataSources` 的 TDZ (整个进程起不来)。配置路径是所有读模型
+    //   元数据的前置步骤, 放这里既能自动接上, 又不依赖 import 顺序 (详见 provider-registry)。
+    ensureProviderRegistryMetadataSource();
     // 目录变了 (换 HOME / 独立宿主 / 测试注入): 内存缓存作废, 重新读盘
     const dir = configDir();
     const sig = this.fileSignature();
@@ -313,19 +329,46 @@ class LLMConfigStore {
         }
       }
 
+      // 2026-09-26 (P3): 自定义供应商在**内存里**规范化 (数组形 → map / 别名 / 从 providers 吸收),
+      //   **不写盘** —— "读一下就把用户文件改了"是另一种意外。写回只发生在显式 add/update/remove。
+      const normCustom = normalizeCustomProviders(loadedConfig.customProviders);
+      const absorbed = absorbLegacyProviderEntries(loadedConfig.providers, normCustom.providers);
+      loadedConfig.customProviders = absorbed.providers;
+      if (normCustom.rejected.length) {
+        console.warn(`[config-store] customProviders 有 ${normCustom.rejected.length} 条被拒: `
+          + normCustom.rejected.map((r) => `${r.key}(${r.reason})`).join('; '));
+      }
+      // 注册表的同步读口 (元数据填充点/长期任务门) 靠这份快照 —— 配置一读完就刷新, 不留陈旧结论
+      setCustomProviderSnapshot(absorbed.providers);
+
       // 确保有 activeProvider
       const activeProvider = loadedConfig.activeProvider as ModelProvider;
-      if (!activeProvider || !DEFAULT_PROVIDER_CONFIGS[activeProvider]) {
+      if (!activeProvider || !this.isSelectableProvider(activeProvider, loadedConfig)) {
         loadedConfig.activeProvider = 'ollama';
       }
 
       this.config = loadedConfig;
     } catch {
       this.config = getDefaultConfig();
+      setCustomProviderSnapshot({});
       await this.save();
     }
 
     this.initialized = true;
+  }
+
+  /**
+   * 这个 provider id 现在**能当 activeProvider** 吗。
+   *
+   * 2026-09-26 (P3) 之前: 只认内置表 → 用户把自定义端点当默认模型时会被**静默改成 ollama**
+   * (旧配置直接失效)。现在: 内置, 或已注册的自定义供应商, 或配置里**真有这一格且写了地址/模型**
+   * (旧的"手写 provider 条目"写法) 都算数; 三者都不是才退到 ollama。
+   */
+  private isSelectableProvider(id: string, cfg: LLMConfig): boolean {
+    if (DEFAULT_PROVIDER_CONFIGS[id as ModelProvider]) return true;
+    if (cfg.customProviders && cfg.customProviders[id]) return true;
+    const own = (cfg.providers as Record<string, ProviderConfig | undefined>)[id];
+    return !!own && (String(own.baseUrl || '').trim().length > 0 || String(own.model || '').trim().length > 0);
   }
 
   private async save(): Promise<void> {
@@ -556,6 +599,35 @@ class LLMConfigStore {
   /** 旧文件名 (迁移输入) */
   legacyConfigFilePath(): string {
     return LEGACY_CONFIG_PATH;
+  }
+
+  /**
+   * 现在在册的自定义供应商 (规范化后的内存视图; 读盘由 `initialize()` 保证已经发生过)。
+   * 凭据原样在里面 —— 调用方展示前必须走脱敏 (`custom-provider-store.redactCustomProviders`)。
+   */
+  async getCustomProviders(): Promise<Record<string, CustomProviderConfig>> {
+    await this.initialize();
+    return { ...(this.config?.customProviders || {}) };
+  }
+
+  /**
+   * 覆盖 `customProviders` 一格 (唯一写口)。
+   *
+   * 只动这一格 —— 内置 `providers` / `activeProvider` 一个字节都不碰; 于是"加个自定义供应商"
+   * 不会顺手把用户在别处刚改的模型选择覆盖掉。写前调用方负责 `invalidate()` + `initialize()`
+   * (拿到跨进程锁之后重读), 否则两个进程各自拿旧内存值写回。
+   */
+  async setCustomProviders(map: Record<string, CustomProviderConfig>): Promise<void> {
+    await this.initialize();
+    const norm = normalizeCustomProviders(map && typeof map === 'object' ? map : {});
+    if (norm.rejected.length) {
+      throw new Error(`customProviders 规范化失败: ${norm.rejected.map((r) => `${r.key}(${r.reason})`).join('; ')}`);
+    }
+    await this.withWriteLock(async () => {
+      this.config!.customProviders = norm.providers;
+      setCustomProviderSnapshot(norm.providers);
+      await this.save();
+    });
   }
 
   /** 配置目录 (锁文件、session 绑定都落在这里) */
