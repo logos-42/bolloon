@@ -111,6 +111,15 @@
       "source_file": "docs/wiki/claude-code-design-parallels.md"
     },
     {
+      "id": "cli-startup-output.md",
+      "type": "protocol",
+      "label": "CLI 启动期加载日志: 默认静默 + 诊断回流 + 文件留底",
+      "tags": "[cli, startup, logging, log-gate, quiet, verbose, ink, acceptance, mutation]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/cli-startup-output.md"
+    },
+    {
       "id": "contacts-protocol.md",
       "type": "chapter",
       "label": "联系方式与社交身份协议 (绑定 → 受约束调用 → 等待回复 → 唤醒任务 → 证据回放)",
@@ -141,7 +150,7 @@
       "id": "current-status.md",
       "type": "chapter",
       "label": "Bolloon 当前状态",
-      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor, open-tasks-public-projection, public-open-tasks-2026-09-23]",
+      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, npm-0.5.0, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor, open-tasks-public-projection, public-open-tasks-2026-09-23, task-open-announcement-live-2026-09-24, skill-doc-cli-parity-2026-09-24, task-announce-board-docs, task-group-channel-docs]",
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/current-status.md"
@@ -181,6 +190,42 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/github-and-raw-strategy.md"
+    },
+    {
+      "id": "goal-continuation-flywheel.md",
+      "type": "chapter",
+      "label": "Goal 长期执行飞轮 (意图 + 执行机制: 意图 → Goal → continuation → Run → Memory/Skill → 下一次执行)",
+      "tags": "[intent, goal, continuation, flywheel, supervisor, memory, skill, work-contract, block-monitor, goal-change, interface-freeze, p0, p1, p2, p3, p4, p5]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/goal-continuation-flywheel.md"
+    },
+    {
+      "id": "goal-flywheel-m5-acceptance-report.md",
+      "type": "chapter",
+      "label": "Goal 长期执行飞轮 · M5 长周期真跑验收报告 (10 场景真跑 · 191 条断言 · 7 个真缺陷与修法)",
+      "tags": "[goal, continuation, flywheel, m5, acceptance, verification, supervisor, run-store, goal-state, memory, skill-candidate, defect-log, fix-log, honest-report]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/goal-flywheel-m5-acceptance-report.md"
+    },
+    {
+      "id": "goal-flywheel-p5-acceptance.md",
+      "type": "chapter",
+      "label": "Goal 长期执行飞轮 · P5 统一长周期验收 (独立真跑 6 场景 + 2 强负例, 逐条证据 + 已知缺口 + 修复台账)",
+      "tags": "[goal, continuation, flywheel, p5, acceptance, verification, supervisor, work-contract, block-monitor, goal-change, memory, skill-candidate, gap, fix-log]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/goal-flywheel-p5-acceptance.md"
+    },
+    {
+      "id": "goal-model-policy.md",
+      "type": "protocol",
+      "label": "长期任务 / Supervisor 的模型策略 (Goal modelPolicy · 在跑 Run 不漂移 · 非幂等不重跑)",
+      "tags": "[model, llm, goal, supervisor, run-store, policy, run-snapshot, idempotency, replay-guard, acceptance]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/goal-model-policy.md"
     },
     {
       "id": "hermes-agent-architecture.md",
@@ -237,6 +282,51 @@
       "source_file": "docs/wiki/milestone-dispute-responsibility.md"
     },
     {
+      "id": "model-discovery.md",
+      "type": "protocol",
+      "label": "模型发现与缓存 (P5)",
+      "tags": "[model, llm, discovery, cache, provider, fallback, credential-fingerprint, acceptance, mutation]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/model-discovery.md"
+    },
+    {
+      "id": "model-selection-acceptance.md",
+      "type": "chapter",
+      "label": "模型切换 · P8 终验收口报告 (16 条逐条真跑 · 103 断言 · 5/5 变异判红)",
+      "tags": "[model, model-selection, provider, base-url, session-scope, run-snapshot, supervisor, config-store, migration, model-discovery, tool-calling, acceptance, verification, mutation-test, honest-report, p8]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/model-selection-acceptance.md"
+    },
+    {
+      "id": "model-selection-protocol.md",
+      "type": "protocol",
+      "label": "模型选择协议 (统一入口 + 有效模型配置 + 每 Run 快照)",
+      "tags": "[model, llm, config, cli, web, run-store, snapshot, selection, priority, acceptance]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/model-selection-protocol.md"
+    },
+    {
+      "id": "model-selector-p2.md",
+      "type": "protocol",
+      "label": "模型分步选择器 + 冻结的模型元数据接口 (P2)",
+      "tags": "[model, llm, cli, selector, metadata, catalog, interface, parallel, acceptance, mutation]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/model-selector-p2.md"
+    },
+    {
+      "id": "model-url-chain.md",
+      "type": "protocol",
+      "label": "API URL 完整切换链路 + 探测原语 (P4)",
+      "tags": "[model, llm, url, probe, connection, failure-classification, primitive, acceptance, mutation]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/model-url-chain.md"
+    },
+    {
       "id": "network-ledger-design.md",
       "type": "meta",
       "label": "Bolloon Network Ledger — 区块链式网络账本 (设计计划)",
@@ -280,6 +370,15 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/project-overview.md"
+    },
+    {
+      "id": "provider-registry.md",
+      "type": "protocol",
+      "label": "供应商注册表 + 兼容协议 + 自定义 endpoint (P3)",
+      "tags": "[model, llm, provider, registry, protocol, custom-endpoint, migration, backward-compat, acceptance, mutation]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/provider-registry.md"
     },
     {
       "id": "pulse-ledger-design.md",
@@ -366,13 +465,18 @@
       "id": "update-protocol.md",
       "type": "chapter",
       "label": "更新协议 (版本身份 → 更新检查 → 更新计划 → 安全替换 → 健康验证 → 回滚)",
-      "tags": "[update, version, install-identity, update-manager, update-state, update-lock, doctor, health-check, publish-gate, npm-channel, release, phase-0, acceptance-matrix, cli, bare-word-commands]",
+      "tags": "[update, version, install-identity, update-manager, update-state, update-lock, doctor, health-check, publish-gate, npm-channel, github-release, dual-source, dev-channel, release, phase-0, acceptance-matrix, cli, bare-word-commands]",
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/update-protocol.md"
     }
   ],
   "edges": [
+    {
+      "from": "android-agent-runtime.md",
+      "to": "update-protocol.md",
+      "type": "references"
+    },
     {
       "from": "chain-model-freeze.md",
       "to": "chain-settlement-design.md",
@@ -405,7 +509,32 @@
     },
     {
       "from": "current-status.md",
-      "to": "chain-model-freeze.md",
+      "to": "model-selection-acceptance.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "model-selection-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "model-selector-p2.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "goal-flywheel-p5-acceptance.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "goal-continuation-flywheel.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "log.md",
       "type": "references"
     },
     {
@@ -415,12 +544,12 @@
     },
     {
       "from": "current-status.md",
-      "to": "contacts-protocol.md",
+      "to": "chain-model-freeze.md",
       "type": "references"
     },
     {
       "from": "current-status.md",
-      "to": "log.md",
+      "to": "contacts-protocol.md",
       "type": "references"
     },
     {
@@ -486,6 +615,26 @@
     {
       "from": "current-status.md",
       "to": "android-agent-runtime.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "goal-flywheel-m5-acceptance-report.md",
+      "type": "references"
+    },
+    {
+      "from": "goal-continuation-flywheel.md",
+      "to": "goal-flywheel-m5-acceptance-report.md",
+      "type": "references"
+    },
+    {
+      "from": "goal-flywheel-p5-acceptance.md",
+      "to": "log.md",
+      "type": "references"
+    },
+    {
+      "from": "goal-model-policy.md",
+      "to": "model-selection-protocol.md",
       "type": "references"
     },
     {
@@ -566,6 +715,46 @@
     {
       "from": "index.md",
       "to": "durable-run-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "model-selection-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "model-selector-p2.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "provider-registry.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "model-url-chain.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "model-discovery.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "goal-model-policy.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "model-selection-acceptance.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "cli-startup-output.md",
       "type": "references"
     },
     {
@@ -675,6 +864,21 @@
     },
     {
       "from": "index.md",
+      "to": "goal-continuation-flywheel.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "goal-flywheel-p5-acceptance.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "goal-flywheel-m5-acceptance-report.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "log.md",
       "type": "references"
     },
@@ -685,17 +889,57 @@
     },
     {
       "from": "log.md",
+      "to": "model-selection-acceptance.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "model-selection-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "model-selector-p2.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "update-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "goal-flywheel-m5-acceptance-report.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "goal-continuation-flywheel.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "m1-m4-closure.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "index.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "current-status.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
       "to": "network-pulse.md",
       "type": "references"
     },
     {
       "from": "log.md",
       "to": "contacts-protocol.md",
-      "type": "references"
-    },
-    {
-      "from": "log.md",
-      "to": "update-protocol.md",
       "type": "references"
     },
     {
@@ -735,11 +979,6 @@
     },
     {
       "from": "log.md",
-      "to": "current-status.md",
-      "type": "references"
-    },
-    {
-      "from": "log.md",
       "to": "bolloon-bug-report-20260716.md",
       "type": "references"
     },
@@ -764,6 +1003,66 @@
       "type": "references"
     },
     {
+      "from": "model-discovery.md",
+      "to": "provider-registry.md",
+      "type": "references"
+    },
+    {
+      "from": "model-discovery.md",
+      "to": "model-url-chain.md",
+      "type": "references"
+    },
+    {
+      "from": "model-selection-acceptance.md",
+      "to": "model-selection-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "model-selection-acceptance.md",
+      "to": "goal-model-policy.md",
+      "type": "references"
+    },
+    {
+      "from": "model-selection-acceptance.md",
+      "to": "model-discovery.md",
+      "type": "references"
+    },
+    {
+      "from": "model-selection-acceptance.md",
+      "to": "provider-registry.md",
+      "type": "references"
+    },
+    {
+      "from": "model-selection-acceptance.md",
+      "to": "model-url-chain.md",
+      "type": "references"
+    },
+    {
+      "from": "model-selection-protocol.md",
+      "to": "model-selector-p2.md",
+      "type": "references"
+    },
+    {
+      "from": "model-selection-protocol.md",
+      "to": "log.md",
+      "type": "references"
+    },
+    {
+      "from": "model-selector-p2.md",
+      "to": "model-selection-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "model-url-chain.md",
+      "to": "model-selection-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "model-url-chain.md",
+      "to": "model-selector-p2.md",
+      "type": "references"
+    },
+    {
       "from": "network-ledger-design.md",
       "to": "pulse-ledger-design.md",
       "type": "supersedes"
@@ -771,6 +1070,16 @@
     {
       "from": "project-overview.md",
       "to": "current-status.md",
+      "type": "references"
+    },
+    {
+      "from": "provider-registry.md",
+      "to": "model-selection-protocol.md",
+      "type": "references"
+    },
+    {
+      "from": "provider-registry.md",
+      "to": "model-selector-p2.md",
       "type": "references"
     },
     {
@@ -785,16 +1094,16 @@
     }
   ],
   "stats": {
-    "node_count": 41,
-    "edge_count": 82,
+    "node_count": 52,
+    "edge_count": 124,
     "node_types": {
       "meta": 13,
-      "protocol": 3,
-      "chapter": 24,
+      "protocol": 10,
+      "chapter": 28,
       "claim": 1
     },
     "edge_types": {
-      "references": 80,
+      "references": 122,
       "supersedes": 2
     }
   }

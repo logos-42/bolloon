@@ -28,6 +28,8 @@ import * as readline from 'readline';
 import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, ROBOT_HEAD, BOLLOON_BANNER, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
 import { startInk, stopInk, inkAppendLine as appendLine, inkReplaceMatchingLine, inkSetStatus, inkSetThinking, inkSetTransient } from './cli/ink-app.js';
+// 2026-09-26: 启动期日志闸门 (默认静默加载日志 + 写文件 + verbose 全量回流 + 信号行不吞)
+import { installStartupLogGate, isStartupVerbose, startupLogPath, VERBOSE_ENV, type StartupLogGateHandle } from './cli/log-gate.js';
 import * as dbgFs from 'fs';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
@@ -495,6 +497,8 @@ function rpcErr(code: string, msg: string): string {
 
 let isRunning = false;
 let queueMode = false;
+// 2026-09-26: 启动期日志闸门句柄 (main() 里装; 诊断/验收用 `gate.stats` 读被静默的行数)
+let _startupLogGate: StartupLogGateHandle | null = null;
 const pendingQueue: string[] = [];
 let cliStartTime = 0;
 let cliModelName = '…';
@@ -700,31 +704,11 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
   let comm: HyperswarmCommunicator | null = null as HyperswarmCommunicator | null;
   commReady.then((c) => { comm = c; }).catch(() => {});
 
-  // CLI 模式下静音所有 console.log/warn/info/debug
-  // (Ink 用自己的 render 引擎, console 输出会污染终端)
-  console.log = () => {};
-  console.warn = () => {};
-  console.info = () => {};
-  console.debug = () => {};
-  // 过滤 process.stdout/stderr.write — 丢弃启动期 SDK/后台日志
-  //   (ISO 时间戳前缀如 `2026-09-08T...Z [info]:` 或被 [info]/[warn]/[error] 标记的行)
-  const _origStdout = process.stdout.write.bind(process.stdout);
-  const _origStderr = process.stderr.write.bind(process.stderr);
-  const isLogLine = (line: string) => {
-    const t = line.trimStart();
-    return t.startsWith('[') || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(t) || /\[\s*(info|warn|error|debug|log)\s*\]/.test(t)
-      // Kubo/ipfs 启动噪声: "Use 'ipfs init --help'..." / "ipfs daemon is running..." 提示行无时间戳, 一并丢弃
-      || /ipfs init --help|ipfs daemon is running|please stop it to run this command/i.test(t);
-  };
-  const wrap = (orig: (b: any, ...r: any[]) => boolean) => (chunk: any, ...rest: any[]) => {
-    const s = typeof chunk === 'string' ? chunk : String(chunk);
-    if (!isLogLine(s)) return orig(chunk, ...rest);
-    const keep = s.split('\n').filter((l) => !isLogLine(l)).join('\n');
-    if (keep) orig(keep, ...rest);
-    return true;
-  };
-  process.stdout.write = wrap(_origStdout) as any;
-  process.stderr.write = wrap(_origStderr) as any;
+  // 2026-09-26: 启动期日志静默**上移到 `src/cli/log-gate.ts`** (闸门在 main() 里装, 覆盖 CLI 交互 +
+  //   dashboard/web + plain 三个启动面)。这里不再自己 wrap stdout/stderr / 清空 console ——
+  //   旧写法只丢「行首 `[`」, 既漏掉依赖库的 ISO 时间戳日志, 又会把 `[supervisor] 初始化未就绪`
+  //   这种**需要人介入**的行一起吞掉 (与「错误不许被吞」冲突)。闸门按行分类, 信号行改道 stderr。
+  void _startupLogGate;
 
   let peerCount = 0;
   void commReady.then((c) => { try { if (c) peerCount = c.getConnections().length; } catch { /* */ } });
@@ -4420,6 +4404,30 @@ async function main() {
     process.exit(0);
   }
 
+  // 2026-09-26: 启动期日志闸门 —— 在**任何 bootstrap 之前**装上, 覆盖三个启动面:
+  //   `cli-interactive` (CLI 交互启动, stdout 归 Ink, 信号行改道 stderr) / `web` (dashboard) / 其它 `plain`。
+  //   默认: 加载日志不上控制台 + 全部落日志文件; `--verbose` / `BOLLOON_VERBOSE=1`: 一行不改地全量回流;
+  //   带「失败/未就绪/超时/⚠」等信号的行任何模式下都可见 (leo: 错误不许被吞)。
+  //   不装闸门的三类: `--json` (stdout 是机器读的数据本体)、一次性工具调用 (`--prompt`/`--tool`/`--read` …)、
+  //   命令式诊断 (`--setup-*` / `--supervise*`, 它们的输出就是交付物)。
+  const isOneShotTool = !!(args.tool || args.prompt);
+  const isCommandLike = !!(args.supervise || args.setupStatus || args.setupResume || args.setupRepair
+    || args.setupReconfigure || args.setupTest);
+  if (!args.json && !isOneShotTool && !isCommandLike) {
+    _startupLogGate = installStartupLogGate({
+      mode: args.web ? 'web' : 'cli-interactive',
+      args: process.argv.slice(2),
+    });
+    // 闸门自己的失败必须可见 (否则「日志写不进去」会成为新的静默缺陷)
+    if (_startupLogGate.stats.fileError) {
+      process.stderr.write(`${_startupLogGate.stats.fileError}\n`);
+    }
+    // 诊断模式提示: 告诉用户「现在全量输出」+ 静默时的日志落哪 (默认模式下这一行不出现)
+    if (isStartupVerbose(process.argv.slice(2))) {
+      process.stderr.write(`[log-gate] 诊断模式 (--verbose / ${VERBOSE_ENV}=1): 启动日志全量输出, 同时落盘 ${startupLogPath()}\n`);
+    }
+  }
+
   // 启动时后台检查更新 (不阻塞主流程)。
   // 2026-09-19 行为变更: **默认只通知, 不自动安装** —— 发现新版本会打印一行提示 +
   //   "bolloon update plan / now"。要恢复自动安装需显式 config.json `autoInstall: true`
@@ -4511,15 +4519,9 @@ async function main() {
 
   const isCLIInteractive = mode === 'cli' && !isNonInteractive;
   if (isCLIInteractive) {
-    console.log = () => {};
-    console.info = () => {};
-    // 2026-08-07: 只吞 SDK 结构化日志 (2026-...T 前缀直接写 stdout 的), 其余 (Ink ANSI 渲染) 走原始 write
-    //   不能整体 no-op — Ink 渲染依赖 write callback, 且 pty/管道缓冲满时 no-op 会掩盖真实写状态
-    process.stdout.write = ((chunk: any, ...rest: any[]) => {
-      const s = String(chunk);
-      if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return true; // SDK 结构化日志 → 吞
-      return (originalStdoutWrite as any)(chunk, ...rest);
-    }) as any;
+    // 2026-09-26: console.log/info 与 stdout 的静默已由 `src/cli/log-gate.ts` 统一负责
+    //   (mode='cli-interactive': 加载日志丢弃并写文件, 信号行改道 stderr, Ink 的 ANSI 原样放行)。
+    //   这里只留「交互模式不打扰用户」的那一件与日志无关的事: 静音 auto-update 通知。
     // 2026-08-07: 交互模式静音 auto-update 后台通知 (stderr), 避免 "🔍 检查更新" 污染 TUI
     void import('./utils/auto-update.js').then(({ setNotifyQuiet }) => setNotifyQuiet(true)).catch(() => {});
   }
