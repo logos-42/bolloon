@@ -218,5 +218,7 @@ npx tsx scripts/verify-url-chain.ts               # 50 passed / 0 failed
    关掉", 本原语按"连不上供应商"如实报, 不硬猜成 `invalid_url`。
 7. **重复 `/v1` 只合并结尾叠加** (`/v1/v1` → `/v1`)。中间重复 (`/v1/gateway/v1`) 不动 ——
    与入口 `normalizeBaseUrl` 保持一致, 宁可少合并也不改用户地址。
-8. **本轮的 wiki 只回写这一页**。`index.md` / `current-status.md` / `log.md` 不在本轮的
-   文件归属里 (并行名册), 由主线在收口时统一登记。
+8. **本轮的 wiki 只回写这一页 + `index.md` 的一行登记**。`index.md` 不在并行名册的文件归属里,
+   但 `python scripts/wiki_check.py` 会判"新页面没有被 index.md 引用" ⇒ 不做这一步就等于
+   **自己把仓里的 wiki 门弄红**。权衡后只加了一行 (与 P2 那一轮 `index.md | 1 +` 的做法一致),
+   没有动 `log.md` / `current-status.md` —— 那两页仍由主线在收口时统一登记。
