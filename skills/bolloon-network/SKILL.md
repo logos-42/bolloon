@@ -330,13 +330,27 @@ bolloon task post --kind deliver|screen|final --group <群> --announcement-id <i
   建群时把 ACL `write:['*']` (成员可广播) 写进 store manifest。
 - **store 拿不到区块 → 大声失败** (`TRANSPORT_FAILED` + `storeCode=STORE_UNREACHABLE`), **绝不显示成空群**。
 
-**⚠️ 发行版可用性边界 (2026-09-24 实测, 照做前先看)**: 这两族命令**源码已实现**, 但 **npm 发行版 0.4.33 不是全带**:
+**⚠️ 发行版可用性边界 (照做前先看)**: 这两族命令**源码已实现**, 但**不是所有发行版都全带** ——
+按**发行版**分档 (下表是实测记录, 不是猜出来的兼容性声明):
 
-| 命令 | 在 0.4.33 上会怎样 |
-|---|---|
-| `publish` · `board` · `claim` | ✅ 正常 |
-| `announce` · `trail` · `post` | ⚠️ **被 M1 自由文本路径吞掉** —— 变成"真去跑一个名叫 `announce …` 的任务" (会找资源、可能**花钱**), 而输出看着像正常执行 |
-| `group create\|join\|list\|link\|leave` | ⚠️ 同上 (0.4.33 里根本没有 `group`) |
+| 命令 | 在 `0.4.33` 上 (2026-09-24 实测) | 在**当前发行版**上 |
+|---|---|---|
+| `publish` · `board` · `claim` | ✅ 正常 | ✅ 正常 |
+| `announce` · `trail` · `post` | ⚠️ **被 M1 自由文本路径吞掉** —— 变成"真去跑一个名叫 `announce …` 的任务" (会找资源、可能**花钱**), 而输出看着像正常执行 | ✅ 正常 (白名单已补齐, 真派发) |
+| `group create\|join\|list\|link\|leave` | ⚠️ 同上 (`0.4.33` 里根本没有 `group`) | ✅ 正常 |
+
+**「当前发行版」那一格 = 派生值, 不许手抄 (写法见下)**。它是 `package.json` 的 `version`, 与 npm 的
+`dist-tags.latest` 同一个数; 真值自己取, 别信这一页印出来的数字:
+
+```bash
+bolloon --version json                     # 本机装的是哪一版
+npm view @bolloon/bolloon-agent version    # registry 上最新是哪一版
+```
+
+判据 (在 `0.5.0` 上实测, 2026-09-26): `npm pack @bolloon/bolloon-agent@0.5.0` 解包对表 →
+`dist/cli-entry.js` 的 `TASK_SUBCOMMANDS` = **18 条 (含 `announce` / `trail` / `post` / `group`)**,
+`dist/cli/commands/tasks.js` 里 `case 'group'` 在 ⇒ **这四条真派发**, 不再被自由文本路径吞。
+**发版时必须把新旧两版都重跑一遍这个对表**, 结论写回本节 —— 本节就是"发行版边界"的唯一出处。
 
 所以跑这两族之前先 `bolloon --version json`; 老版本上**先用只读命令探一下** (例如 `bolloon task board --local`),
 若输出里出现「任务: announce …」这种字样 = 版本太旧 → **停手, 先升级**(或本机用源码构建: `cd <repo> && npm run build:main`, 再用 `dist/cli-entry.js`)。

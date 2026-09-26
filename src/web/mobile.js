@@ -1948,9 +1948,28 @@
     $('#settings-did').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('DID: ' + (s.did || '未生成'))); });
   }
 
-  // === API 配置 (LLM 供应商) ===
-  // 注意: 手机端 RemoteLlm 走 OpenAI 兼容协议 (baseUrl + /chat/completions) —— 新增 provider 必须是
-  // OpenAI 兼容端点 (gemini 用 /v1beta/openai, 智谱 v4 / dashscope compatible-mode 都兼容)。
+  // === 模型配置 (供应商 / 模型 / 地址) ===
+  //
+  // 2026-09-26 (模型链路升级 P6 的手机侧): 这一页**只显示与触发**, 自己不算配置 ——
+  // 唯一事实来自桌面端的模型端点 (与 CLI `/model` / Web 桌面页**同一份**):
+  //
+  //   当前真实生效   GET  /api/models/providers             → body.effective
+  //                       (provider · model · baseUrl · scope · configHash)
+  //   目录 + 来源    GET  /api/models/options?provider=<id> → body.catalog.origin
+  //                       (live | cached | curated | custom | unavailable)
+  //   刷新发现       POST /api/models/discover {action:'refresh', provider}
+  //   手输模型       POST /api/models/discover {action:'admit',   provider, model}
+  //
+  // 纪律: **不回读 /api/llm-config 自己拼 activeProvider/providers 来显示"生效配置"** —— 那是
+  //   第二套读配置逻辑, 与服务端早晚漂移。下面 `localCfg` 只喂"编辑表单"和"保存"(写路径),
+  //   展示层一个字都不从它取; 拿不到桌面端就如实说"显示不了", 不猜不编。
+  //
+  // 注意: 手机端 RemoteLlm 走 OpenAI 兼容协议 (baseUrl + /chat/completions) —— 自定义 provider
+  // 必须是 OpenAI 兼容端点 (gemini 用 /v1beta/openai, 智谱 v4 / dashscope compatible-mode 都兼容)。
+  const ORIGIN_LABEL = {
+    live: '实时发现 (live)', cached: '缓存发现 (cached)', curated: '内置清单 (curated)',
+    custom: '自定义 (custom)', unavailable: '不可用 (unavailable)',
+  };
   const LLM_PROVIDERS = [
     { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
     { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
@@ -1968,43 +1987,155 @@
     { id: 'custom', label: '自定义', baseUrl: '', model: '' },
   ];
   const LLM_BY_ID = LLM_PROVIDERS.reduce((m, p) => (m[p.id] = p, m), {});
+
+  /** configHash 只显示前 8 位 (完整值在桌面端 / Run 快照里, 手机屏不需要 64 位) */
+  function shortConfigHash(h) {
+    const s = String(h == null ? '' : h);
+    return s ? s.slice(0, 8) : '—';
+  }
+
+  /** 目录来源标记 → 人话 (认不出来就原样回显, 不编) */
+  function originLabel(origin) {
+    const k = String(origin || '');
+    return ORIGIN_LABEL[k] || (k ? k : '—');
+  }
+
+  /** 电脑端基址 (设置里填; 手机自足模式拿不到就如实说, 不假装成功) */
+  async function modelApiGet(path) {
+    const base = await desktopBaseUrl();
+    if (!base) return { ok: false, error: '未接电脑端 —— 设置 → 电脑端同步 里填桌面地址后可看' };
+    const r = await desktopFetch(path);
+    if (r === null) return { ok: false, error: '电脑端不可达或返回非 200' };
+    return { ok: true, data: r };
+  }
+  async function modelApiPost(path, body) {
+    const base = await desktopBaseUrl();
+    if (!base) return { ok: false, error: '未接电脑端 —— 设置 → 电脑端同步 里填桌面地址后可看' };
+    return await desktopPostRaw(path, body);       // 保留后端错误原文
+  }
+
   async function openApiConfig() {
-    let cfg;
-    try { cfg = await api.get('/api/llm-config'); } catch { cfg = null; }
-    if (!cfg || !cfg.providers) cfg = { activeProvider: 'deepseek', providers: {}, updatedAt: Date.now() };
     const page = document.createElement('div');
     page.className = 'chat-page';
     page.id = 'api-config-page';
-    const provider = cfg.activeProvider || 'deepseek';
-    const pc = cfg.providers?.[provider] || {};
+    // 编辑表单的本地草稿 (写路径) —— 展示层不读它
+    let localCfg = null;
+    try { localCfg = await api.get('/api/llm-config'); } catch (e) { localCfg = null; }
+    if (!localCfg || !localCfg.providers) localCfg = { activeProvider: 'deepseek', providers: {}, updatedAt: Date.now() };
+    const _in = 'width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text);box-sizing:border-box';
+    const _btn = 'padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)';
     page.innerHTML = `
       <div class="chat-topbar">
         <button class="icon-btn" id="api-config-back">←</button>
-        <div style="flex:1;font-weight:600">API 配置</div>
+        <div style="flex:1;font-weight:600">模型配置</div>
       </div>
-      <div style="padding:12px;display:flex;flex-direction:column;gap:12px">
-        <label style="font-size:13px;color:var(--text-secondary)">供应商 <span id="api-provider-count" style="opacity:.55"></span></label>
-        <div class="provider-chips" id="api-provider-chips">
-          ${LLM_PROVIDERS.map((p) => `<button type="button" class="provider-chip${p.id === provider ? ' active' : ''}" data-provider="${p.id}">${p.label}</button>`).join('')}
+      <div style="padding:12px;display:flex;flex-direction:column;gap:12px;overflow:auto">
+        <div class="section-label">当前真实生效 (电脑端 /api/models/providers)</div>
+        <div id="api-eff-card" style="padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-card);display:flex;flex-direction:column;gap:6px">
+          <div style="font-size:13px">供应商: <b id="api-eff-provider">读取中…</b></div>
+          <div style="font-size:13px">模型: <b id="api-eff-model">—</b></div>
+          <div style="font-size:12px;color:var(--text-secondary);word-break:break-all">地址: <span id="api-eff-baseurl">—</span></div>
+          <div style="font-size:12px;color:var(--text-secondary)">来源(scope): <span id="api-eff-scope">—</span> · 配置指纹: <span id="api-eff-hash">—</span></div>
+          <div id="api-eff-note" style="font-size:12px;color:var(--text-muted)"></div>
         </div>
+
+        <div class="section-label">模型目录 (电脑端 /api/models/options)</div>
+        <div id="api-catalog-origin" style="font-size:13px">—</div>
+        <div id="api-catalog-head" style="font-size:12px;color:var(--text-secondary)"></div>
+        <div id="api-catalog-list" style="font-size:12px;color:var(--text-secondary);max-height:170px;overflow:auto;word-break:break-all"></div>
+        <div id="api-catalog-note" style="font-size:12px;color:var(--text-muted)"></div>
+        <button id="api-discover-refresh" style="${_btn}">刷新发现</button>
+        <div style="display:flex;gap:8px">
+          <input id="api-manual-model" placeholder="手输模型名 (目录里没有的)" style="flex:1;${_in}">
+          <button id="api-manual-admit" style="${_btn}">加入目录</button>
+        </div>
+        <div id="api-discover-result" style="font-size:12px;color:var(--text-secondary)"></div>
+
+        <div class="section-label">供应商 / 端点 / 凭据 (本机保存) <span id="api-provider-count" style="opacity:.55"></span></div>
+        <div class="provider-chips" id="api-provider-chips"></div>
         <div id="api-hint" style="font-size:12px;color:var(--text-muted)"></div>
-        <label style="font-size:13px;color:var(--text-secondary)">Base URL</label>
-        <input id="api-baseurl" placeholder="https://api.xxx.com/v1" value="${escapeHtml(pc.baseUrl || '')}" style="padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)">
-        <label style="font-size:13px;color:var(--text-secondary)">API Key</label>
-        <input id="api-key" type="password" placeholder="sk-..." value="${escapeHtml(pc.apiKey || '')}" style="padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)">
-        <label style="font-size:13px;color:var(--text-secondary)">模型</label>
-        <input id="api-model" placeholder="模型名" value="${escapeHtml(pc.model || '')}" style="padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)">
+        <input id="api-baseurl" placeholder="https://api.xxx.com/v1" style="${_in}">
+        <input id="api-key" type="password" placeholder="sk-..." style="${_in}">
+        <input id="api-model" placeholder="模型名" style="${_in}">
         <button id="api-save" style="padding:12px;border:none;border-radius:10px;background:var(--accent);color:var(--bg);font-weight:700">保存配置</button>
       </div>`;
     document.body.appendChild(page);
     $('#api-config-back').addEventListener('click', () => page.remove());
-    // 供应商选择: 芯片式 (原来是一个原生 select, 小屏上难点、也看不出有哪些可选)
-    let picked = LLM_BY_ID[provider] ? provider : 'deepseek';
-    const fillFrom = (id) => {
-      const saved = (cfg.providers && cfg.providers[id]) || {};
+    const setText = (sel, v) => { const el = page.querySelector(sel); if (el) el.textContent = String(v == null ? '' : v); };
+
+    // ── ① 当前真实生效: 只认服务端 effective ──────────────────────────
+    let lastProviders = null;
+    async function paintEffective() {
+      const r = await modelApiGet('/api/models/providers');
+      if (!r.ok) {
+        setText('#api-eff-provider', '—'); setText('#api-eff-model', '—');
+        setText('#api-eff-baseurl', '—'); setText('#api-eff-scope', '—'); setText('#api-eff-hash', '—');
+        setText('#api-eff-note', '读不到生效配置: ' + r.error);
+        return null;
+      }
+      const eff = r.data && r.data.effective;
+      if (!eff) {
+        setText('#api-eff-note', '电脑端没给出 effective (不猜: 不显示任何默认值)');
+        return r.data;
+      }
+      setText('#api-eff-provider', eff.provider);
+      setText('#api-eff-model', eff.model || '—');
+      setText('#api-eff-baseurl', eff.baseUrl || '—');
+      setText('#api-eff-scope', eff.scope || eff.source || '—');
+      setText('#api-eff-hash', shortConfigHash(eff.configHash));
+      setText('#api-eff-note', '协议 ' + (eff.protocol || '?') + ' · 凭据 ' + (eff.authRef || 'none')
+        + ' · 指纹前 8 位 (完整值见电脑端 Run 快照)');
+      return r.data;
+    }
+
+    // ── ② 目录 + 来源标记 ────────────────────────────────────────────
+    let picked = (localCfg.activeProvider && LLM_BY_ID[localCfg.activeProvider]) ? localCfg.activeProvider : 'deepseek';
+    async function paintCatalog() {
+      setText('#api-catalog-origin', '来源: 读取中…');
+      setText('#api-catalog-head', ''); setText('#api-catalog-list', ''); setText('#api-catalog-note', '');
+      const r = await modelApiGet('/api/models/options?provider=' + encodeURIComponent(picked));
+      if (!r.ok) { setText('#api-catalog-origin', '来源: —'); setText('#api-catalog-note', '读不到目录: ' + r.error); return; }
+      const d = r.data || {};
+      const cat = d.catalog || null;
+      setText('#api-catalog-origin', '来源: ' + originLabel(cat && cat.origin));
+      const models = Array.isArray(d.models) ? d.models : [];
+      setText('#api-catalog-head', String(d.count == null ? models.length : d.count) + ' 个模型'
+        + (cat && cat.stale ? ' · 缓存已过期' : '')
+        + (cat && cat.discoveryFailed ? ' · 上游发现失败' : ''));
+      const listEl = page.querySelector('#api-catalog-list');
+      if (listEl) {
+        listEl.innerHTML = models.slice(0, 40).map((m) => {
+          const id = escapeHtml(String((m && (m.id || m.name)) || ''));
+          const tool = (m && m.toolCalling) ? ' · 工具调用 ' + escapeHtml(String(m.toolCalling)) : '';
+          return '<div>' + id + tool + '</div>';
+        }).join('') || '(空目录)';
+      }
+      if (cat && cat.failure) {
+        const f = cat.failure;
+        setText('#api-catalog-note', '上游失败类目: ' + String(f.failureClass || f.class || f.message || JSON.stringify(f)).slice(0, 160));
+      }
+    }
+
+    // ── ③ 供应商芯片 (名字/可用性来自服务端 providers, 不是本机硬编码表) ──
+    function paintChips() {
+      const box = page.querySelector('#api-provider-chips');
+      if (!box) return;
+      const rows = (lastProviders && Array.isArray(lastProviders.providers) && lastProviders.providers.length)
+        ? lastProviders.providers.map((p) => ({ id: String(p.id), label: String(p.name || p.id), configured: p.configured !== false, current: p.current === true, isLocal: p.isLocal === true }))
+        : LLM_PROVIDERS;
+      box.innerHTML = rows.map((p) => `<button type="button" class="provider-chip${p.id === picked ? ' active' : ''}" data-provider="${escapeHtml(p.id)}">${escapeHtml(p.label)}</button>`).join('');
+      const cn = page.querySelector('#api-provider-count');
+      if (cn) {
+        const ready = rows.filter((p) => p.configured !== false).length;
+        cn.textContent = '（' + ready + ' / ' + rows.length + ' 家可用凭据就绪）';
+      }
+    }
+    function fillFrom(id) {
+      const saved = (localCfg.providers && localCfg.providers[id]) || {};
       const d = LLM_BY_ID[id] || {};
-      $('#api-baseurl').value = saved.baseUrl || d.baseUrl || '';
-      $('#api-model').value = saved.model || d.model || '';
+      const row = lastProviders && Array.isArray(lastProviders.providers) ? lastProviders.providers.find((x) => String(x.id) === String(id)) : null;
+      $('#api-baseurl').value = saved.baseUrl || (row && row.baseUrl) || d.baseUrl || '';
+      $('#api-model').value = saved.model || (row && row.configuredModel) || d.model || '';
       $('#api-key').value = saved.apiKey || '';
       const hint = $('#api-hint');
       if (hint) {
@@ -2013,23 +2144,37 @@
           : (saved.apiKey ? '该供应商已保存过 key（改完记得再点保存）'
                           : '填官方文档里的 API key; 保存后本机智能体就走它');
       }
-    };
-    const paintChips = () => {
-      $$('#api-provider-chips .provider-chip').forEach((c) => c.classList.toggle('active', c.dataset.provider === picked));
-    };
-    const configured = Object.keys(cfg.providers || {}).filter((k) => cfg.providers[k] && cfg.providers[k].apiKey);
-    $('#api-provider-count').textContent = configured.length ? `（已配 ${configured.length} 个: ${configured.join(' / ')}）` : '';
-    $('#api-provider-chips').addEventListener('click', (e) => {
+    }
+    page.querySelector('#api-provider-chips').addEventListener('click', (e) => {
       const b = e.target.closest && e.target.closest('.provider-chip');
       if (!b) return;
       picked = b.dataset.provider;
       paintChips();
       fillFrom(picked);
+      void paintCatalog();
     });
-    fillFrom(picked);
+
+    // ── ④ 刷新发现 / ⑤ 手输模型 (都打在服务端唯一入口上) ─────────────
+    page.querySelector('#api-discover-refresh').addEventListener('click', async () => {
+      setText('#api-discover-result', '刷新中…');
+      const r = await modelApiPost('/api/models/discover', { action: 'refresh', provider: picked, force: true });
+      if (r && r.ok === false) { setText('#api-discover-result', '刷新失败: ' + String(r.error || r.message || '').slice(0, 200)); return; }
+      setText('#api-discover-result', '刷新完成 · 来源 ' + originLabel(r && r.catalog && r.catalog.origin));
+      await paintCatalog();
+    });
+    page.querySelector('#api-manual-admit').addEventListener('click', async () => {
+      const model = String($('#api-manual-model').value || '').trim();
+      if (!model) { setText('#api-discover-result', '先填一个模型名'); return; }
+      const r = await modelApiPost('/api/models/discover', { action: 'admit', provider: picked, model });
+      if (r && r.ok === false) { setText('#api-discover-result', '加入失败: ' + String(r.error || r.message || '').slice(0, 200)); return; }
+      setText('#api-discover-result', '已加入目录: ' + model);
+      await paintCatalog();
+    });
+
+    // ── ⑥ 编辑表单保存 (写路径, 与从前同一口) ─────────────────────────
     $('#api-save').addEventListener('click', async () => {
       const p = picked;
-      const next = (cfg && cfg.providers) ? cfg : { activeProvider: cfg.activeProvider, providers: {}, updatedAt: Date.now() };
+      const next = (localCfg && localCfg.providers) ? localCfg : { activeProvider: localCfg.activeProvider, providers: {}, updatedAt: Date.now() };
       next.activeProvider = p;
       next.providers[p] = Object.assign({}, (next.providers[p] || {}), {
         enabled: true, apiKey: $('#api-key').value.trim(), baseUrl: $('#api-baseurl').value.trim(),
@@ -2041,6 +2186,12 @@
         page.remove();
       } catch (e) { alert('保存失败: ' + (e.message || e)); }
     });
+
+    // 启动: 先画芯片(服务端清单) → 再画生效卡片与目录
+    lastProviders = await paintEffective();
+    paintChips();
+    fillFrom(picked);
+    await paintCatalog();
   }
 
   // === 加密钱包 (只读 MVP) ===

@@ -200,6 +200,21 @@ async function main() {
   }, null, 2) + '\n');
   console.log('[build-web] 构建戳 →', path.relative(ROOT, stampPath));
 
+  // 2026-09-26: Service Worker 的缓存名也从 **同一个源** (package.json 的 version) 派生。
+  //   为什么: `sw.js` 的 `CACHE` 是手机端 web 层的第二个"版本标识" —— 手写一个独立数字的话,
+  //   发版时忘了改 → 手机上装着新 mobile.js 却仍被旧缓存挡住（"改了 UI 没变化"）。
+  //   现在它跟着包版本走: 版本一升, 缓存名就变, activate 自动清旧缓存。**只有这一处真源。**
+  const swPath = path.join(DIST_WEB, 'sw.js');
+  const swSrc = await fs.readFile(swPath, 'utf8');
+  const swNext = swSrc.replace(/const CACHE = 'bolloon-mobile-v[^']*';/,
+    `const CACHE = 'bolloon-mobile-v${String(pkgVersion)}';`);
+  if (!/const CACHE = 'bolloon-mobile-v[^']*';/.test(swSrc)) {
+    console.error('[build-web] ✗ dist/web/sw.js 里没找到 CACHE 常量 —— 拒绝静默跳过 (缓存名会与包版本脱钩)');
+    process.exit(1);
+  }
+  await fs.writeFile(swPath, swNext, 'utf8');
+  console.log(`[build-web] sw.js 缓存名 = bolloon-mobile-v${String(pkgVersion)} (派生自 package.json)`);
+
   console.log('[build-web] 完成!');
 }
 
