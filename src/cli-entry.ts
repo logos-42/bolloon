@@ -80,6 +80,9 @@ ${BOLD}命令:${RESET}
   bolloon model [name] [model]      列出 / 切换模型供应商 (如: bolloon model deepseek deepseek-v4-flash)
   bolloon model key <name>          配置某供应商的 API key (隐藏输入, 不回显)
   bolloon model test [name]         测试供应商连通性
+  bolloon model list [name]         看模型发现目录 (P5)
+  bolloon model refresh [name]      重取上游模型目录 (--clear 清缓存)
+  bolloon model admit <name> <model>  手输一个目录里没有的模型名
   bolloon read <file>               读取文档
   bolloon summarize <file>          总结文档
   bolloon improve <file> <req>      改进文档
@@ -587,6 +590,9 @@ async function handleModelCommand(modelArgs: string[]): Promise<void> {
     console.log(`  bolloon model pick                # 分步选择 (供应商→凭证→模型→参数→作用域→测试→确认)`);
     console.log(`  bolloon model <name>             # 切换到该供应商`);
     console.log(`  bolloon model <name> <model>     # 切换并指定模型`);
+    console.log(`  bolloon model list [name]        # 看模型发现目录 (只读)`);
+    console.log(`  bolloon model refresh [name]     # 重取上游目录 (--clear 清缓存)`);
+    console.log(`  bolloon model admit <name> <m>   # 手输一个目录里没有的模型名`);
     console.log(`  示例: bolloon model deepseek deepseek-v4-flash`);
     return;
   }

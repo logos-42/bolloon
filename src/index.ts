@@ -1340,6 +1340,8 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       if (!agent?.resumeRun) { appendLine(`${C_ERROR}当前 agent 不支持 resumeRun${RESET}`); return; }
       const r = await agent.resumeRun(runId);
       appendLine(r.ok ? `${C_ACCENT}✅ 恢复执行完成${RESET}` : `${C_ERROR}恢复失败: ${r.reason}${RESET}`);
+      if ((r as any).modelDrift?.drifted) appendLine(`${C_ERROR}⚠ 模型配置已漂离快照: ${(r as any).modelDrift.message}${RESET}`);
+      if ((r as any).modelApplied) appendLine(`${C_DIM}  本次恢复用的模型 (按 Run 快照装配): ${(r as any).modelApplied.provider}/${(r as any).modelApplied.model}${RESET}`);
     } catch (e: any) {
       appendLine(`${C_ERROR}/resume 失败: ${String(e?.message || e).slice(0, 200)}${RESET}`);
     }
@@ -1384,6 +1386,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       if (!agent?.resumeRun) { appendLine(`${C_ERROR}当前 agent 不支持 resumeRun${RESET}`); return; }
       const r = await agent.resumeRun(runId);
       appendLine(r.ok ? `${C_ACCENT}✅ 已批准并继续执行${RESET}` : `${C_ERROR}批准后恢复失败: ${r.reason}${RESET}`);
+      if ((r as any).modelApplied) appendLine(`${C_DIM}  本次恢复用的模型 (按 Run 快照装配): ${(r as any).modelApplied.provider}/${(r as any).modelApplied.model}${RESET}`);
     } catch (e: any) { appendLine(`${C_ERROR}/approve 失败: ${String(e?.message || e).slice(0, 200)}${RESET}`); }
     return;
   }

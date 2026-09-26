@@ -3067,9 +3067,9 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('bolloon_config_set', {
     name: 'bolloon_config_set',
-    description: '修改 Bolloon 自身配置 (~/.bolloon/bolloon-config.json). 可切换激活供应商 (provider) 或改某供应商的 model/baseUrl/temperature/enabled. 修改立即生效 (下次 LLM 调用使用新配置). 例: provider=deepseek; provider=minimax, model=MiniMax-M3; deepseek.temperature=0.3',
+    description: '修改 Bolloon 自身配置 (~/.bolloon/bolloon-config.json). 可切换激活供应商 (provider) 或改某供应商的 model/baseUrl/temperature/enabled/maxTokens. 切换类改动走**统一入口** (先校验探测, 过了才落盘并重建模型运行时), 所以调用后返回的"当前生效"就是真的生效的那一份. 例: provider=deepseek; provider=minimax, model=MiniMax-M3; deepseek.temperature=0.3',
     parameters: {
-      provider: '可选: 切换激活供应商 (如 deepseek / minimax / openai / anthropic / ollama)',
+      provider: '可选: 切换激活供应商 (内置的 13 家 + 已注册的自定义供应商)',
       'provider.key': '可选: 修改指定供应商字段, 格式 <供应商>.<字段>=<值>, 如 minimax.model=MiniMax-M3',
       model: '可选: 同时设置激活供应商的 model',
       temperature: '可选: 同时设置激活供应商的 temperature (0-2)',
@@ -3077,53 +3077,103 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     execute: async (args) => {
       try {
         const { llmConfigStore } = await import('../llm/config-store.js');
+        const { selectModel, formatEffectiveModel, listRegisteredProviderIds } = await import('../llm/model-selection.js');
         await llmConfigStore.initialize();
         const changes: string[] = [];
 
-        // 1. 切换激活供应商
-        if (args.provider) {
-          const name = String(args.provider).trim().toLowerCase();
-          const known = ['openai', 'anthropic', 'ollama', 'openrouter', 'gemini', 'minimax', 'deepseek', 'kimi', 'glm', 'qwen', 'mimo', 'grok', 'local'];
-          if (!known.includes(name)) return { success: false, error: `未知供应商: ${name}. 可用: ${known.join(', ')}` };
-          await llmConfigStore.setActiveProvider(name as any);
-          changes.push(`activeProvider=${name}`);
+        // 切换类改动累积起来**一次性**交给统一入口 (校验+探测+落盘+重建运行时都在它里面)。
+        //   `provider.field=` 里 model/baseUrl 是"选择自己的字段": 只在这家**正在用**时才算切换
+        //   (改一家没在用的供应商的地址/模型 = 配置编辑, 不该顺手把它切成激活)。
+        const switchReq: { provider?: string; model?: string; baseUrl?: string; temperature?: number } = {};
+        const activeBefore = await llmConfigStore.getActiveProvider().catch(() => '' as any);
+        const optIn = (provider: string, field: string, val: string) => {
+          if (!switchReq.provider) switchReq.provider = provider;
+          if (switchReq.provider !== provider) return false;
+          if (field === 'model') switchReq.model = val;
+          else if (field === 'baseUrl') switchReq.baseUrl = val;
+          else return false;
+          return true;
+        };
+
+        const switchProvider = args.provider ? String(args.provider).trim().toLowerCase() : '';
+        if (switchProvider) {
+          switchReq.provider = switchProvider;
+          if (args.model) switchReq.model = String(args.model);
+          if (args.temperature !== undefined) {
+            const t = Number(args.temperature);
+            if (Number.isNaN(t)) return { success: false, error: `temperature=${args.temperature} 不是数字` };
+            switchReq.temperature = t;
+          }
         }
-        // 2. 修改指定供应商字段 (provider.key=value)
+
+        // 1. 非选择的字段 (temperature/maxTokens/enabled/apiKey) 与"没在用那家"的字段 —— 配置编辑
         for (const [k, v] of Object.entries(args)) {
           if (k === 'provider' || k === 'model' || k === 'temperature') continue;
           if (!k.includes('.')) continue;
           const [prov, field] = k.split('.');
+          const p = prov.trim().toLowerCase();
           const val = String(v);
+          const isSelectionField = field === 'model' || field === 'baseUrl';
+          if (isSelectionField && (switchProvider ? switchProvider === p : activeBefore === p)) {
+            optIn(p, field, val); // 改的是"正在用的那一份" → 走入口 (顺带重建运行时)
+            continue;
+          }
           if (field === 'temperature' || field === 'maxTokens') {
             const num = Number(val);
             if (Number.isNaN(num)) return { success: false, error: `${k}=${val} 不是数字` };
-            await llmConfigStore.updateProvider(prov as any, { [field]: num } as any);
+            await llmConfigStore.updateProvider(p as any, { [field]: num } as any);
           } else if (field === 'enabled') {
-            await llmConfigStore.updateProvider(prov as any, { enabled: val === 'true' || val === '1' } as any);
+            await llmConfigStore.updateProvider(p as any, { enabled: val === 'true' || val === '1' } as any);
           } else if (field === 'apiKey') {
-            await llmConfigStore.updateProvider(prov as any, { apiKey: val } as any);
+            await llmConfigStore.updateProvider(p as any, { apiKey: val } as any);
           } else {
-            await llmConfigStore.updateProvider(prov as any, { [field]: val } as any);
+            await llmConfigStore.updateProvider(p as any, { [field]: val } as any);
           }
-          changes.push(`${prov}.${field}=${field === 'apiKey' ? '***' : val}`);
+          changes.push(`${p}.${field}=${field === 'apiKey' ? '***' : val}`);
         }
-        // 3. 激活供应商的 model / temperature
-        if (args.model || args.temperature) {
-          const active = await llmConfigStore.getActiveProvider();
-          const patch: any = {};
-          if (args.model) patch.model = String(args.model);
-          if (args.temperature) {
+
+        // 2. 选择的字段 (model/baseUrl) 单独给 activate 供应商时, 也走入口
+        if (!switchProvider && (args.model || args.temperature !== undefined)) {
+          switchReq.provider = activeBefore;
+          if (args.model) switchReq.model = String(args.model);
+          if (args.temperature !== undefined) {
             const t = Number(args.temperature);
             if (Number.isNaN(t)) return { success: false, error: `temperature=${args.temperature} 不是数字` };
-            patch.temperature = t;
+            switchReq.temperature = t;
           }
-          await llmConfigStore.updateProvider(active, patch);
-          if (args.model) changes.push(`${active}.model=${args.model}`);
-          if (args.temperature) changes.push(`${active}.temperature=${args.temperature}`);
         }
-        if (changes.length === 0) return { success: false, error: '没有要修改的配置项. 例: provider=deepseek 或 minimax.model=MiniMax-M3' };
-        const cfg = await llmConfigStore.getConfig();
-        return { success: true, output: `✅ 配置已更新: ${changes.join(', ')}\n  当前激活: ${cfg.activeProvider}` };
+
+        // 3. 一次性提交给统一入口 —— 它是唯一做"校验+探测+落盘+重建运行时"的地方
+        if (switchReq.provider) {
+          const r = await selectModel({ ...switchReq, scope: 'global' } as any);
+          if (!r.ok) {
+            // 失败时入口保证"配置与运行时都没变" —— 如实说, 不假装成功
+            return {
+              success: false,
+              error: `切换 ${switchReq.provider} 未生效 [${r.failureClass || '未知'}]: ${r.message}` +
+                (r.previous ? `\n  仍在用: ${formatEffectiveModel(r.previous)}` : ''),
+            };
+          }
+          const bits = [`activeProvider=${r.effective!.provider}`];
+          if (switchReq.model) bits.push(`model=${r.effective!.model}`);
+          if (switchReq.baseUrl) bits.push(`baseUrl=${r.effective!.baseUrl}`);
+          if (switchReq.temperature !== undefined) bits.push(`temperature=${switchReq.temperature}`);
+          changes.push(...bits);
+        }
+
+        if (changes.length === 0) {
+          return {
+            success: false,
+            error: `没有要修改的配置项. 例: provider=deepseek 或 minimax.model=MiniMax-M3. 可用供应商: ${listRegisteredProviderIds().join(', ')}`,
+          };
+        }
+        // 结尾一律回**真正生效**的那一份 (入口写完就是它; 只有配置编辑时也从入口读, 免得各读各的)
+        const { effectiveModelConfig } = await import('../llm/model-selection.js');
+        const eff = await effectiveModelConfig({});
+        return {
+          success: true,
+          output: `✅ 配置已更新: ${changes.join(', ')}\n  当前生效: ${eff ? formatEffectiveModel(eff) : '读不出来'}`,
+        };
       } catch (e: any) {
         return { success: false, error: `bolloon_config_set 失败: ${String(e.message || e).slice(0, 200)}` };
       }

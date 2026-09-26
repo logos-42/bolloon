@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-26 | feat | **模型入口收敛 (P6): 补齐五个 Web 端点 (`providers`/`options`/`test`/`select`/`discover`) + 旧接口 (`/api/llm-config` · `/api/llm-provider` · `/api/llm-test`) **保留形状但内部转发到唯一写口** (整个路由文件里 `selectModel(` 只剩 1 处) · 命令面挂上 P5 发现能力 (`/model refresh [provider]` · `/model refresh --clear` · `/model list [provider]` · 手输模型 → `admitManualModel`) · **自定义供应商 id 进得来** (存在性判据从内置表改注册表, 缺口㈡结清) · Agent 配置工具/安装向导/长任务恢复**(用 Run 自己那份快照)**同一入口 · 真跑证明「CLI 命令面 · 会话内 `/model` · 真 Web 路由」三者切到同一选择后读回**逐字段相同**的有效配置 (11 字段 + `configHash` 全同, 三个入口三个进程 + 读回另起进程) · 真跑新门 **59/0** (Web 侧真起 `createWebServer`, 冷启动 ~114s) + 变异 **3/3 判红** (旧接口绕过 3 红 / 自定义退回内置表 11 红 / `refresh` 空转 2 红) · 既有七门 55/0 · 51/0 · 89/0 · 81/0 · 50/0 · 44/0 · 36/0 + 飞轮冻结门 34/34 全绿** | [model-selection-protocol.md §9](./model-selection-protocol.md) / [routes-llm-config.ts](../../src/web/routes-llm-config.ts) / [verify-model-entrypoints.ts](../../scripts/verify-model-entrypoints.ts) / [setup-wizard.ts](../../src/cli/setup-wizard.ts) / [model-selection.ts](../../src/llm/model-selection.ts) / [pi-sdk-tools.ts](../../src/agents/pi-sdk-tools.ts) / [onboard.ts](../../src/setup/onboard.ts) |
 | 2026-09-26 | feat | **模型接线收口 (四根线一次插上: P4 探测原语接进 `selectModel` + 失败分类映射表 · P7 四处钩子 · P3 自定义供应商进 `/model` 列表 · 客户端鉴权头读注册表): 探测 7 类 → 入口 15 类**一类不丢** (含 `tool_call_unsupported`), 未映射**不退化成「切换失败」** · 真跑新门 **89/0** + 变异 **5/5 判红** (丢类 7 红 / 退化 1 红 / **在跑 Run 被新默认改写** 2 红 / 鉴权头不看注册表 2 红 / **往已收尾的 Run 上追加事件** 4 红) · 既有门全绿: 55/0 · 51/0 · 36/0 · 50/0 · 44/0 · 81/0 · 飞轮冻结门 34/34** | [model-selection-protocol.md §8](./model-selection-protocol.md) / [verify-model-wiring.ts](../../scripts/verify-model-wiring.ts) / [model-wiring-serial.test.ts](../../src/test/model-wiring-serial.test.ts) / [model-selection.ts](../../src/llm/model-selection.ts) / [execution-supervisor.ts](../../src/agents/execution-supervisor.ts) |
 | 2026-09-26 | feat | **模型 `/model` 改分步选择器 + 冻结模型元数据接口 (P2): 拿不到真数据的能力一律显示"未知" · 上轮三条遗留全部结清 (invalidate 补门判红 / 真启动验收 15/16 且启动停滞定位到端口契约 / configHash 反向校验) · 真跑 51/0 + 变异 10/10 判红** | [model-selector-p2.md](./model-selector-p2.md) / [model-catalog.ts](../../src/llm/model-catalog.ts) / [model-selector.ts](../../src/cli/model-selector.ts) / [verify-model-selector.ts](../../scripts/verify-model-selector.ts) |
 | 2026-09-26 | feat | **模型切换统一入口 + 「有效模型配置」 + 每 Run 快照 (P0+P1): 修掉 CLI `/model` "切了不生效" 硬缺陷 · 五层优先级固定 Run>Session>Global>默认>env · 失败时配置与运行时都原样不变 (真跑 55/0 · 变异 6/7 判红)** | [model-selection-protocol.md](./model-selection-protocol.md) / [model-selection.ts](../../src/llm/model-selection.ts) / [verify-model-selection.ts](../../scripts/verify-model-selection.ts) |
@@ -4370,3 +4371,83 @@ M1 映射表丢 `tool_call_unsupported` → **7 红** · M2 未映射退化成 `
 - 探针里的 key 全是假值 (`k-wire-*` / `k-h`), 报告与产物里**无真凭据**。
 - 未跑: Web/移动端界面上的 `/model` 自定义供应商点击路径 · 真 LLM 长任务里「失败换备用模型」的端到端 (只验了决定与快照落盘)。
 
+
+## [2026-09-26] feat | 模型入口收敛 (P6): 五个 Web 端点 + 旧接口单路径转发 + 命令面挂 P5 + 自定义供应商进得来
+
+**这一轮只做一件事: 把「切模型」的六套入口收敛成一套** —— CLI 命令面 · 会话内 `/model` · Web 路由 ·
+Agent 配置工具 · 安装向导 · 长任务恢复, 谁都不许自己写 activeProvider、自己重建运行时, 全部只走
+`selectModel` (P0 建的唯一入口)。
+
+### ① Web: 五个端点补齐, 旧接口保留形状但**内部转发**
+
+新增 `GET /api/models/providers` (在册供应商 + 注册表事实 + 当前有效配置) ·
+`GET /api/models/options?provider=` (P5 的模型清单: 上游真目录 / 声明 / 手输, 带 `origin`) ·
+`POST /api/models/test` (P4 探测原语, **不写任何配置**) · `POST /api/models/select` (唯一写口
+`runModelSelect`) · `POST /api/models/discover` (`refresh|clear|admit`)。
+
+旧接口 `POST /api/llm-config`(旧 UI 的 `{provider, config:{…}}` 形状) · `POST /api/llm-provider` ·
+`POST /api/llm-test` **一个字段都没改形状**, 但内部全部转到同一个 `runModelSelect`: 有凭证 → 走入口
+(校验 + 探测 + 落盘 + 重建运行时 + 回真正生效的配置), 无凭证 → 仍旧只存字段(不激活, 保持旧行为)。
+**不留第二套写配置逻辑**: 源码级门钉住「整个路由文件里 `selectModel(` 只出现 1 处」+「旧
+`/api/llm-provider` 段里不许出现 `setActiveProvider(` / `updateProvider(`」。真跑负例: 旧接口传一个
+打不通的 baseUrl → **409 且盘上配置字节不变** (旧接口**绕不过**入口)。
+
+### ② 命令面挂上 P5 的发现能力 (P5 自己按分工没碰命令面)
+
+`/model refresh [provider]` → `refreshModelDiscovery` · `/model refresh --clear` → `clearDiscoveryCache`
+(报清了几条) · `/model list` / `/model list <provider>` → `listModelCatalog` (复用 P5 的格式化行) ·
+**手输模型** → `admitManualModel` (分步选择器里「自己输一个」也改走它)。门同时钉源码级 (真的调这些函数)
+与真跑 (上游目录端点**命中数真的涨**)。
+
+### ③ 自定义供应商进得来 (上一轮如实留下的缺口㈡)
+
+`validateSelection` 的「这家存在吗」判据从**内置表**改成**注册表**, 于是从列表点一个自定义供应商能
+**落成全局默认**; 内置那条路一字未改 (P0 门 55/0 + 选择器 51/0 不变红)。读事实的规矩沿用上轮:
+**自定义问注册表, 内置问内置表**。`config-store.setActiveProvider` 同步改成按注册表判存在。
+
+### ④ Agent 工具 / 向导 / 恢复 同一入口
+
+- `bolloon_config_set` 走 `selectModel`; 未知 id 用 `listRegisteredProviderIds()` 列**在册的**。
+- 向导 (`bolloon model --provider …` · `setup/onboard.ts` 的 stepProvider/stepConnectivity/stepRuntime)
+  不再自己 `setActiveProvider` / 本地 `initMinimax` —— **装配只有 `installRuntime` 一处**。
+- 长任务恢复用**该 Run 自己那份快照** (`applyRunModelConfigToRuntime`, **不动全局**), `resumeRun` 回
+  `modelApplied`, CLI 恢复处打印 `modelApplied`/`modelDrift`。
+
+### ⑤ 真跑证据 (这道门的主张: 所有入口得到**同一份**有效配置)
+
+`scripts/verify-model-entrypoints.ts` **59 passed / 0 failed** —— Web 侧**真起 `createWebServer`**
+(`scripts/lib/model-web-boot.ts`, 端口契约是 `PORT` 环境变量, 本机冷启动实测 **~114s**), 模型上游是
+`scripts/lib/model-stub-server.ts` 的**假上游** (真 HTTP + 真 `/v1/models`, 所以「探测/发现真发生了」
+有上游命中数作证)。核心一条: **CLI 命令面 (真 argv 子进程) · 会话内 `/model` (同一函数的会话形状) ·
+真 Web 路由** 三者切到**同一家自定义供应商**, 各自在**独立进程**读回 `EffectiveModelConfig` ——
+**11 个字段逐字段相同**、`configHash` 三者相同; 三个入口分处三个进程、读回也是另起的进程
+(同进程连调三次共享内存缓存, 那样的"绿"什么都不证明)。另有真跑: 恢复路径 (建 Run → 全局切走 →
+恢复装配的是 Run 自己那份 → 全局没被动) · 五端点逐个真打 · 旧接口转发与负例 (见①)。
+
+### ⑥ 变异 (改坏必须判红)
+
+`scripts/verify-model-entrypoints-mutations.py` **3/3 判红** (先断言盘上 sha256 真变了再跑门):
+M1 旧接口自己写 activeProvider → **3 红** (含「盘上配置被改了!」) · M2 自定义供应商校验退回内置表 →
+**11 红** (真切不过去) · M3 `/model refresh` 空转 (不调 P5) → **2 红** (上游命中数 4→4)。
+
+### ⑦ 顺手修掉的真缺口 (本轮接线逼出来的)
+
+`model-discovery` 在**全新进程**里对自定义供应商报「未配置凭据 + 发现失败原因未明」: 注册表快照要
+`config-store.initialize()` 才推, 内置那条路顺手 initialize 了、自定义那条没做 → 补 `ensureConfigSnapshot()`
+(resolveDiscoveryTarget 与 resolveCredential 两处)。命令面/Web 一挂上 P5 就暴露了, 内置供应商此前遮住了它。
+
+### ⑧ 门禁
+
+新门 **59/0** · 变异 **3/3 判红** · 既有七门 **55/0 · 51/0 · 89/0 · 81/0 · 50/0 · 44/0 · 36/0** ·
+`tsc --noEmit` **0 错** · 全量 vitest 见收尾 · wiki 四门 OK。
+
+### ⑨ 如实留下 (没做到 / 有保留)
+
+- Web 侧验收起的是**同一个 `createWebServer` 工厂**, **不是**完整 `src/index.ts --web` 引导
+  (身份/kubo/IPNS 那一层没跑; 本机这套工厂冷启动已 ~114s, 完整引导更长)。
+- 「会话内 `/model`」在门里是**同一 `runModelCommand` 的会话形状调用**; 真 REPL 那一步还会经过 ink
+  选择器 (要人按键), 门不替你按键 —— 差别只在「谁来给选择」。
+- 假上游只覆盖 OpenAI 兼容协议 (`/v1/models` + `/v1/chat/completions`); Anthropic 原生 / Gemini 原生
+  的协议形状没被这道门覆盖 (既有 url-chain / registry 门覆盖它们的 URL 与鉴权形状)。
+- 门跑一遍 ~2.5min (Web 冷启动占大头), 所以变异脚本只放 3 条: 全绿前提下每条都要真跑一次门。
+- 探针里的 key 全是假值 (`stub-key-*`), 报告与产物里**无真凭据** `[REDACTED]`。

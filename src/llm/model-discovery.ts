@@ -551,6 +551,11 @@ async function resolveCredential(
   if (explicit) return { apiKey: explicit, source: 'explicit' };
   if (!entry) return { source: 'none' };
   if (entry.kind === 'custom') {
+    // 2026-09-26 (P6 接线时逼出来的): 自定义供应商在**全新进程**里可能还没被注册表认识 ——
+    //   `config-store.initialize()` 才会把 `customProviders` 推成注册表快照 (setCustomProviderSnapshot)。
+    //   此前这条分支直接读快照, 于是"刚起的进程 + 自定义供应商"会报"未配置凭据 + 发现失败原因未明"
+    //   (内置那条分支顺手 initialize 了, 所以只有自定义会踩到)。
+    await ensureConfigSnapshot();
     const spec = customProviderSpecOf(providerId);
     const own = String(spec?.apiKey ?? '').trim();
     if (own) return { apiKey: own, source: 'config' };
@@ -559,13 +564,23 @@ async function resolveCredential(
     if (fromEnv) return { apiKey: fromEnv, source: 'env' };
     return { source: 'none' };
   }
-  await llmConfigStore.initialize();
+  await ensureConfigSnapshot();
   const cfg: any = await llmConfigStore.getConfig();
   const own = String(cfg?.providers?.[providerId]?.apiKey ?? '').trim();
   if (own) return { apiKey: own, source: 'config' };
   const env = envApiKeyOf(providerId);
   if (env?.value) return { apiKey: env.value, source: 'env' };
   return { source: 'none' };
+}
+
+/**
+ * 保证"配置里的自定义供应商"这一格已经进到注册表快照 (读盘失败不炸: 顶多更保守一点)。
+ * 幂等: `initialize()` 自己有文件签名缓存, 不会每次都真读盘。
+ */
+async function ensureConfigSnapshot(): Promise<void> {
+  try {
+    await llmConfigStore.initialize();
+  } catch { /* 读不到配置 → 后面的判断按"没有这一家"走, 不编 */ }
 }
 
 /**
@@ -577,6 +592,11 @@ async function resolveCredential(
  */
 export async function resolveDiscoveryTarget(providerId: string, opts: DiscoverOptions = {}): Promise<DiscoveryTarget> {
   ensureDiscoveryMetadataSource();
+  // 2026-09-26 (P6): 先把"配置里的自定义供应商"推进注册表快照, 再查这一家是谁 ——
+  //   否则全新进程里 `getProviderRegistryEntry('某自定义 id')` 会是 undefined, 这一家被当成
+  //   "不在册", 于是拿着 0 个模型、报"未配置凭据 / 发现失败原因未明"。内置供应商此前是靠
+  //   resolveCredential 里那句 initialize() 顺手救回来的, 所以只有自定义会踩。
+  await ensureConfigSnapshot();
   const id = String(providerId || '').trim();
   const entry = getProviderRegistryEntry(id) || null;
   const notes: string[] = [];

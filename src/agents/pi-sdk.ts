@@ -33,7 +33,7 @@ import { p2pDocumentTools, initDocumentReceiver } from './p2p-document-tools.js'
 import { shellExec } from './shell-tool.js';
 import { startRun, recordStep, finishRun, readRun, budgetVerdict, recordDegradation, recordHarnessEvent, recordRecovery, setRunStatus, prepareResume, markRunRunning, buildResumeInstruction, argsDigestOf, repeatedFailureCount, classifyError as classifyRunError, type RunSurface, type RunStatus, type ResumePlan } from './run-store.js';
 import { createGoal, attachRun, findActiveGoal } from './goal-store.js';
-import { captureRunModelConfig, type RunModelConfig, type ConfigDriftReport } from '../llm/model-selection.js';
+import { captureRunModelConfig, type RunModelConfig, type ConfigDriftReport, type EffectiveModelConfig } from '../llm/model-selection.js';
 // 2026-09-26: 工具名出网净化 (pi-ai.ts 唯一边界) + 回程派发还原 (原名 ↔ API 名)
 import { resolveApiToolName, expandKnownToolNames } from '../llm/tool-name.js';
 import { PiAgentHarness, type HarnessRunContext, type ToolDecision } from './pi-harness.js';
@@ -1512,8 +1512,9 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
    * 并把结论放进返回值 (`modelDrift`) 让调用方能上报; 一致时也有一句明确结论。
    * 判断失败 (读不到 Run 等) 不阻塞恢复。
    */
-  async resumeRun(runId: string): Promise<{ ok: boolean; reason?: string; reply?: string; modelDrift?: ConfigDriftReport }> {
+  async resumeRun(runId: string): Promise<{ ok: boolean; reason?: string; reply?: string; modelDrift?: ConfigDriftReport; modelApplied?: EffectiveModelConfig }> {
     let modelDrift: ConfigDriftReport | undefined;
+    let modelApplied: EffectiveModelConfig | undefined;
     try {
       const { detectRunConfigDrift } = await import('../llm/model-selection.js');
       modelDrift = (await detectRunConfigDrift(runId)) || undefined;
@@ -1525,12 +1526,26 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
     } catch { /* 核对本身失败不阻塞恢复 */ }
     const prep = await prepareResume(runId);
     if (!prep.ok || !prep.plan) return { ok: false, reason: prep.reason, ...(modelDrift ? { modelDrift } : {}) };
+    // 2026-09-26 (P6 × P7): 恢复一个在跑的 Run, 用的是**它自己那份快照**, 不是盘上现在的全局默认 ——
+    //   否则这次恢复就是"带着漂移继续跑", 之后再存快照会把漂移固化成历史。
+    //   只在"漂了"或"核对不了"时重装 (一致时运行时本来就是对的, 重装是白跑一趟)。
+    //   装配只有一处实现: `applyRunModelConfigToRuntime` → `installRuntime` (这里不自己 initMinimax)。
+    if (modelDrift && (modelDrift.drifted || !modelDrift.verified)) {
+      try {
+        const { applyRunModelConfigToRuntime } = await import('../llm/model-selection.js');
+        modelApplied = await applyRunModelConfigToRuntime(modelDrift.snapshot);
+        console.log(`[pi-sdk] 已按 Run 快照装配运行时: ${modelApplied.provider}/${modelApplied.model} (configHash ${String(modelApplied.configHash).slice(0, 12)})`);
+      } catch (e) {
+        // 装配失败不阻塞恢复 (如实说; 调用方可以从返回值里看出没装成)
+        console.warn('[pi-sdk] 按 Run 快照装配运行时失败, 保持当前运行时:', String((e as Error)?.message || e).slice(0, 160));
+      }
+    }
     this.resumeRunId = runId;
     this.resumePlan = prep.plan;
     this.currentGoalId = prep.plan.goalId || this.currentGoalId;
     try {
       const reply = await this.prompt(buildResumeInstruction(prep.plan), {});
-      return { ok: true, reply, ...(modelDrift ? { modelDrift } : {}) };
+      return { ok: true, reply, ...(modelDrift ? { modelDrift } : {}), ...(modelApplied ? { modelApplied } : {}) };
     } finally {
       this.resumeRunId = '';
       this.resumePlan = null;

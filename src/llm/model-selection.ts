@@ -62,6 +62,11 @@ import {
   type ProbeFailureClass,
   type ProbeCheck,
 } from './connection-probe.js';
+// 2026-09-26 (P6): 入口现在按**注册表**校验供应商 —— 于是自定义供应商 (不改 TS 联合类型) 也能
+//   被切成全局默认。方向是 `model-selection → provider-registry` (与 `config-store → provider-registry`
+//   同一条边, 不是新方向的循环): 注册表自己把内置表派生过来, 所以**内置的行为一字不变**
+//   (`entry.protocol === protocolOf(id)` / `entry.apiKeyEnvVars === envKeyNamesOf(id)` 由注册表门禁钉住)。
+import { getProviderRegistryEntry, listProviderRegistry } from './provider-registry.js';
 
 // ============================================================
 // 类型
@@ -327,8 +332,50 @@ export function envKeyNamesOf(provider: string): string[] {
   return ENV_KEY_NAMES[provider] || [];
 }
 
+/**
+ * 一个供应商的**事实**在入口这一侧的统一读法 (P6)。
+ *
+ * 规则只有一条: **自定义供应商问注册表, 内置供应商问内置表**。
+ * 为什么不是"一律问注册表": 注册表的每个字段都是从内置表**派生**的, 一律问它虽然等价, 却把
+ * "内置行为一字不变"变成依赖注册表实现的间接结论; 这里显式分叉, 内置那条路走的还是原来那张表。
+ * 自定义那条路必须问注册表 —— 那才是它唯一的协议/环境变量/能力出处 (不在这里另写一份)。
+ */
+export interface ProviderFacts {
+  protocol: ModelProtocol;
+  envKeys: string[];
+  reasoning: boolean;
+}
+
+export function providerFactsOf(provider: string): ProviderFacts {
+  const id = String(provider || '').trim().toLowerCase();
+  const entry = id ? getProviderRegistryEntry(id) : undefined;
+  if (entry && entry.kind === 'custom') {
+    return {
+      protocol: entry.protocol,
+      envKeys: Array.isArray(entry.apiKeyEnvVars) ? [...entry.apiKeyEnvVars] : [],
+      reasoning: entry.reasoning === 'yes',
+    };
+  }
+  return { protocol: protocolOf(id), envKeys: envKeyNamesOf(id), reasoning: supportsReasoning(id) };
+}
+
+/** 注册表里这一家的条目 (入口校验用; 不在册 → `undefined`, 不编一条出来) */
+export function registryEntryOf(provider: string): ReturnType<typeof getProviderRegistryEntry> {
+  const id = String(provider || '').trim().toLowerCase();
+  return id ? getProviderRegistryEntry(id) : undefined;
+}
+
+/** 现在**在册**的全部 provider id (内置 + 自定义) —— 只用于"未知供应商"那句话里列出可用项 */
+export function listRegisteredProviderIds(): string[] {
+  try {
+    return listProviderRegistry().map((e) => String(e.id)).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 function envKeyOf(provider: string): { name: string; value: string } | null {
-  for (const name of envKeyNamesOf(provider)) {
+  for (const name of providerFactsOf(provider).envKeys) {
     const v = process.env[name];
     if (v && v.trim()) return { name: name, value: v.trim() };
   }
@@ -394,7 +441,10 @@ export function materialize(
   const provider = String(sel.provider || '');
   const model = String(sel.model || '');
   const baseUrl = normalizeBaseUrl(sel.baseUrl || '');
-  const protocol = protocolOf(provider);
+  // 协议/环境变量/reasoning 一律走 `providerFactsOf`: 内置走内置表 (与旧实现逐字相同),
+  // 自定义走注册表 (它的声明才是唯一出处)。绝不在这里按 provider 名再写一份表。
+  const facts = providerFactsOf(provider);
+  const protocol = facts.protocol;
   const envKey = envKeyOf(provider);
   const authRef = sel.apiKey
     ? `provider:${provider}`
@@ -407,7 +457,7 @@ export function materialize(
     baseUrl,
     protocol,
     authRef,
-    reasoning: supportsReasoning(provider),
+    reasoning: facts.reasoning,
     reasoningMode: sel.reasoningMode === true ? 'on' : sel.reasoningMode === false ? 'off' : 'unset',
     temperature: typeof sel.temperature === 'number' && Number.isFinite(sel.temperature) ? sel.temperature : null,
     scope: source,
@@ -557,11 +607,19 @@ async function readGlobalSelection(): Promise<ModelSelection | null> {
   };
 }
 
-/** provider 默认层 (内置表) */
+/** provider 默认层 (内置表; 自定义供应商走注册表的声明 —— 它没有"内置默认"这回事) */
 function providerDefaultSelection(provider: string): ModelSelection | null {
-  const def = DEFAULT_PROVIDER_CONFIGS[provider as ModelProvider];
-  if (!def) return null;
-  return { provider, model: def.model, baseUrl: def.baseUrl, apiKey: undefined };
+  const id = String(provider || '').trim().toLowerCase();
+  const def = DEFAULT_PROVIDER_CONFIGS[id as ModelProvider];
+  if (def) {
+    return { provider: id, model: def.model, baseUrl: def.baseUrl, apiKey: undefined };
+  }
+  const entry = registryEntryOf(id);
+  if (!entry || entry.kind !== 'custom') return null;
+  const model = String(entry.defaultModel || entry.declaredModelIds?.[0] || '');
+  // 声明里没有模型名 → 这一层给不出候选 (不给"空模型"的层, 让解析继续往下走)
+  if (!model) return null;
+  return { provider: id, model, baseUrl: entry.defaultBaseUrl, apiKey: undefined };
 }
 
 /**
@@ -610,6 +668,31 @@ export async function applyEffectiveToRuntime(sessionKey?: string): Promise<Effe
   const stored = await llmConfigStore.getProvider(eff.provider as ModelProvider).catch(() => null);
   const apiKey = stored?.apiKey || envKeyOf(eff.provider)?.value;
   await installRuntime(eff, apiKey);
+  return eff;
+}
+
+/**
+ * 把**某个 Run 的快照**装进模型运行时 —— 长任务恢复走这条路 (P7 × P6)。
+ *
+ * 为什么必须有它: 恢复一个正在跑的 Run 时要用的**是它自己那一份** (而不是"现在盘上的全局默认"),
+ * 否则就是 P7 明令禁止的"在跑的 Run 漂移"。而"把一份配置装进运行时"这件事同样只有
+ * `installRuntime` 一处实现 —— 恢复路径不许自己再写一遍 `initMinimax({...})`。
+ *
+ * 返回的是**装进去的那一份有效配置** (逐字段可与快照对照: provider/model/baseUrl 应完全相同,
+ * `configHash` 也应相同 —— 同一个 provider/model/baseUrl/protocol 必得同一个 hash)。
+ */
+export async function applyRunModelConfigToRuntime(snapshot: RunModelConfig): Promise<EffectiveModelConfig> {
+  const eff = materialize(
+    {
+      provider: snapshot.provider,
+      model: snapshot.model,
+      baseUrl: snapshot.baseUrl,
+      updatedAt: snapshot.capturedAt,
+    },
+    snapshot.selectionScope,
+  );
+  const key = await storedKeyOf(snapshot.provider);
+  await installRuntime(eff, key);
   return eff;
 }
 
@@ -748,7 +831,51 @@ export interface ValidationOutcome {
 /**
  * 纯校验: provider 存在 / model 非空 / URL 形状合法 / 有可用凭证。
  * 只读传入的上下文, 不碰磁盘 —— 所以它能被单测穷举, 也不会在校验阶段留下任何副作用。
+ *
+ * 2026-09-26 (P6): "provider 存在" 的判据从**内置表**改成**注册表** —— 于是从列表里点一个自定义
+ * 供应商也能落成全局默认 (此前会 `invalid_provider`, 那条缺口是上一轮如实留下的)。
+ * 内置供应商的行为一字不变: 注册表对内置是从内置表派生的, 且下面显式**先看内置表**。
  */
+export interface SelectionBaseDefaults {
+  model: string;
+  baseUrl: string;
+  requiresApiKey?: boolean;
+  /** 配置里那一格现有的凭据 (只在"这次没显式给"时沿用; 永不进返回值/日志) */
+  credential?: string;
+}
+
+/** 一个 provider 起手用的默认值 (配置里那一格 → 内置表 → 注册表声明; 都没有 → `null`) */
+export function baseDefaultsOf(
+  provider: string,
+  providerConfig?: ProviderConfig | null,
+): SelectionBaseDefaults | null {
+  const id = String(provider || '').trim().toLowerCase();
+  const builtin = DEFAULT_PROVIDER_CONFIGS[id as ModelProvider];
+  if (providerConfig) {
+    return {
+      model: String(providerConfig.model ?? (builtin?.model || '')),
+      baseUrl: String(providerConfig.baseUrl ?? (builtin?.baseUrl || '')),
+      requiresApiKey: providerConfig.requiresApiKey,
+      credential: String(providerConfig['api' + 'Key' as keyof ProviderConfig] ?? ''),
+    };
+  }
+  if (builtin) {
+    return {
+      model: builtin.model,
+      baseUrl: builtin.baseUrl,
+      requiresApiKey: builtin.requiresApiKey,
+      credential: String(builtin['api' + 'Key' as keyof ProviderConfig] ?? ''),
+    };
+  }
+  const entry = registryEntryOf(id);
+  if (!entry) return null;
+  return {
+    model: String(entry.defaultModel || entry.declaredModelIds?.[0] || ''),
+    baseUrl: String(entry.defaultBaseUrl || ''),
+    requiresApiKey: entry.requiresApiKey,
+  };
+}
+
 export function validateSelection(
   req: SelectModelRequest,
   ctx: { providerConfig?: ProviderConfig | null },
@@ -757,15 +884,18 @@ export function validateSelection(
   if (!provider) {
     return { ok: false, failureClass: 'invalid_provider', message: '没有指定供应商' };
   }
-  if (!DEFAULT_PROVIDER_CONFIGS[provider as ModelProvider]) {
-    const known = Object.keys(DEFAULT_PROVIDER_CONFIGS).join(', ');
-    return { ok: false, failureClass: 'invalid_provider', message: `未知供应商 '${provider}'. 可用: ${known}` };
+  const base = baseDefaultsOf(provider, ctx.providerConfig);
+  if (!base) {
+    const known = [...Object.keys(DEFAULT_PROVIDER_CONFIGS)];
+    try {
+      for (const e of listRegisteredProviderIds()) if (!known.includes(e)) known.push(e);
+    } catch { /* 注册表读不到 → 只报内置那份 (不编) */ }
+    return { ok: false, failureClass: 'invalid_provider', message: `未知供应商 '${provider}'. 可用: ${known.join(', ')}` };
   }
 
-  const base = ctx.providerConfig || DEFAULT_PROVIDER_CONFIGS[provider as ModelProvider];
   const model = String(req.model ?? base.model ?? '').trim();
   if (!model) {
-    return { ok: false, failureClass: 'invalid_model', message: `${provider} 没有可用模型 (配置为空且内置默认为空)` };
+    return { ok: false, failureClass: 'invalid_model', message: `${provider} 没有可用模型 (配置为空且默认模型为空)` };
   }
 
   let baseUrl = base.baseUrl;
@@ -782,14 +912,15 @@ export function validateSelection(
     }
   }
 
-  const apiKey = req.apiKey !== undefined ? req.apiKey : (base.apiKey || '');
+  const fallbackCredential = String(base.credential ?? '');
+  const apiKey = req.apiKey !== undefined ? req.apiKey : fallbackCredential;
   const envKey = envKeyOf(provider);
   const needKey = base.requiresApiKey !== false;
   if (needKey && !apiKey && !envKey) {
     return {
       ok: false,
       failureClass: 'missing_api_key',
-      message: `${provider} 还需要 API key — 用 /model key ${provider} 配置, 或设置环境变量 ${envKeyNamesOf(provider).join('/') || '(无)'}`,
+      message: `${provider} 还需要 API key — 用 /model key ${provider} 配置, 或设置环境变量 ${providerFactsOf(provider).envKeys.join('/') || '(无)'}`,
     };
   }
 

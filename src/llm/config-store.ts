@@ -10,7 +10,7 @@ import * as fsSync from 'fs';
 // 2026-09-26 (P3): 自定义供应商与注册表快照 —— 类型的边是 `import type` (编译后消失),
 // 运行时只在这里的 initialize()/setCustomProviders() 里**调用**, 模块体不读对方的导出 (无 TDZ 风险)。
 import type { CustomProviderConfig } from './provider-registry.js';
-import { absorbLegacyProviderEntries, ensureProviderRegistryMetadataSource, normalizeCustomProviders, setCustomProviderSnapshot } from './provider-registry.js';
+import { absorbLegacyProviderEntries, ensureProviderRegistryMetadataSource, getProviderRegistryEntry, normalizeCustomProviders, setCustomProviderSnapshot } from './provider-registry.js';
 
 export type ModelProvider = 'openai' | 'anthropic' | 'ollama' | 'openrouter' | 'gemini' | 'minimax' | 'deepseek' | 'kimi' | 'glm' | 'qwen' | 'mimo' | 'grok' | 'local';
 
@@ -411,16 +411,18 @@ class LLMConfigStore {
   async setActiveProvider(provider: ModelProvider): Promise<void> {
     await this.initialize();
 
-    if (!this.config?.providers[provider]) {
+    const hit = this.providerRowFor(String(provider));
+    if (!hit) {
       throw new Error(`Unknown provider: ${provider}`);
     }
 
-    const providerConfig = this.config.providers[provider];
+    const providerConfig = hit.row;
     if (providerConfig.requiresApiKey && !providerConfig.apiKey) {
       throw new Error(`${provider} requires an API key but none is configured`);
     }
 
     await this.withWriteLock(async () => {
+      if (!hit.existing) (this.config!.providers as Record<string, ProviderConfig>)[String(provider)] = hit.row;
       this.config!.activeProvider = provider;
       await this.save();
     });
@@ -429,17 +431,51 @@ class LLMConfigStore {
   async updateProvider(provider: ModelProvider, updates: Partial<ProviderConfig>): Promise<void> {
     await this.initialize();
 
-    if (!this.config?.providers[provider]) {
+    const hit = this.providerRowFor(String(provider));
+    if (!hit) {
       throw new Error(`Unknown provider: ${provider}`);
     }
 
     await this.withWriteLock(async () => {
-      this.config!.providers[provider] = {
-        ...this.config!.providers[provider],
+      (this.config!.providers as Record<string, ProviderConfig>)[String(provider)] = {
+        ...hit.row,
         ...updates
       };
       await this.save();
     });
+  }
+
+  /**
+   * 取（必要时**算出**）一个 provider 的配置行。`existing=false` 表示这一行还不存在, 由调用方
+   * 在自己的写锁里落进 map（本方法**不改任何状态** —— 校验失败时就该什么都不发生）。
+   *
+   * 2026-09-26 (P6): 统一入口现在**接受自定义供应商 id** (从注册表校验, 不再只看内置表),
+   * 于是切换时会把 `model/baseUrl/apiKey` 写进 `providers.<自定义 id>` 这一格 —— 而这一格此前
+   * 根本不存在, 旧实现直接 `Unknown provider` 抛错。
+   *
+   * 规矩 (不编默认值):
+   *   · 内置供应商 / 配置里本来就有这一格 → 原样返回 (老行为一字不变);
+   *   · 已注册的**自定义供应商** → 用它的**声明**起手 (地址/模型), 凭据那一格留空等写入 ——
+   *     不拿内置默认去顶;
+   *   · 其余 (既不是内置, 也不在 `customProviders` 里) → `null` (调用方照旧抛 Unknown provider)。
+   */
+  private providerRowFor(id: string): { row: ProviderConfig; existing: boolean } | null {
+    const rows = this.config?.providers as Record<string, ProviderConfig> | undefined;
+    if (!rows) return null;
+    if (rows[id]) return { row: rows[id], existing: true };
+    const spec = this.config?.customProviders?.[id];
+    if (!spec) return null;
+    const entry = getProviderRegistryEntry(id);
+    return {
+      existing: false,
+      row: {
+        enabled: true,
+        apiKey: '',
+        baseUrl: spec.baseUrl,
+        model: String(spec.model || spec.models?.[0] || ''),
+        requiresApiKey: entry ? entry.requiresApiKey : true,
+      },
+    };
   }
 
   async testProvider(provider: ModelProvider): Promise<{ success: boolean; error?: string; latency?: number }> {

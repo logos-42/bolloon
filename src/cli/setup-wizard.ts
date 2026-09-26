@@ -33,6 +33,10 @@ import {
   type ProviderSummary,
 } from '../llm/model-catalog.js';
 import { runModelSelector, type SelectorChoice, type ModelSelectorResult } from './model-selector.js';
+import {
+  refreshModelDiscovery, clearDiscoveryCache, listModelCatalog,
+  admitManualModel, formatCatalogLine, formatListingSummary,
+} from '../llm/model-discovery.js';
 
 /** 向导推荐的供应商顺序 (第一个是最省事的国内直连) */
 export const RECOMMENDED_PROVIDERS: ModelProvider[] = [
@@ -329,12 +333,19 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
     if (opts.name) await writeUserIdentity(opts.name, home);
     const prov = (opts as any).provider;
     if (prov) {
-      const store: any = llmConfigStore;
-      await store.initialize();
-      await store.updateProvider(prov, { enabled: true });
-      if ((opts as any).apiKey) await store.updateProvider(prov, { apiKey: (opts as any).apiKey });
-      if ((opts as any).model) await store.updateProvider(prov, { model: (opts as any).model });
-      if (mode !== 'reconfigure') await store.setActiveProvider(prov);
+      // 2026-09-26 (P6): 参数式输入也是一次**切换**, 走统一入口 (校验 / 落盘 / 重建运行时都在它里面)。
+      //   此前这里自己 updateProvider + setActiveProvider = 第二条切换实现 (而且不重建运行时)。
+      //   `verify:false`: 脚本/CI 场景不在这里打上游 —— 紧随其后的 onboard 连通性阶段才是实测处
+      //   (只有 skipTest 才真跳过)。
+      const { selectModel: selectFromParams } = await import('../llm/model-selection.js');
+      const r = await selectFromParams({
+        provider: prov,
+        model: (opts as any).model,
+        apiKey: (opts as any).apiKey,
+        scope: 'global',
+        verify: false,
+      });
+      if (!r.ok) return { ok: false, error: `参数落盘失败 [${r.failureClass}]: ${r.message}` };
     }
   } catch (e: any) {
     return { ok: false, error: `参数落盘失败: ${String(e?.message || e).slice(0, 160)}` };
@@ -406,7 +417,15 @@ function flagValue(parts: string[], i: number, name: string): string | undefined
 
 /** `/model` 的解析结果 (纯数据, 好测) */
 export interface ParsedModelCommand {
-  action: 'status' | 'test' | 'reset' | 'key' | 'select' | 'pick';
+  action: 'status' | 'test' | 'reset' | 'key' | 'select' | 'pick' | 'refresh' | 'admit';
+  /**
+   * `/model list` 标记。**action 仍是 `status`** —— 老门禁钉着 `parseModelCommand('list').action === 'status'`
+   * (`list` 在无参时与 `status` 同类: 都是"看, 不改")。区别只在输出: 带这个标记就把 P5 的
+   * 发现目录清单打出来, 而不是打当前生效配置。
+   */
+  list?: boolean;
+  /** `/model refresh --clear` — 清发现缓存而不是重取 */
+  clear?: boolean;
   provider?: string;
   model?: string;
   baseUrl?: string;
@@ -426,6 +445,7 @@ export function parseModelCommand(arg: string): ParsedModelCommand {
     const p = parts[i];
     if (p === '--json') { out.json = true; continue; }
     if (p === '--no-verify') { out.verify = false; continue; }
+    if (p === '--clear') { out.clear = true; continue; }
     if (p === '--session' || p === '--scope=session') { out.scope = 'session'; continue; }
     if (p === '--global' || p === '--scope=global') { out.scope = 'global'; continue; }
     if (p === '--scope') {
@@ -449,7 +469,19 @@ export function parseModelCommand(arg: string): ParsedModelCommand {
   }
 
   const sub = (positional[0] || '').toLowerCase();
-  if (!sub || sub === 'status' || sub === 'list') { out.action = 'status'; return out; }
+  if (!sub || sub === 'status') { out.action = 'status'; return out; }
+  // `/model list [provider]` — 看 P5 的发现目录 (不写配置)。action 仍是 status (见 list 字段注释)。
+  if (sub === 'list') { out.action = 'status'; out.list = true; out.provider = positional[1]?.toLowerCase(); return out; }
+  // `/model refresh [provider]` — 真去上游重取一次目录 (P5 的能力); `--clear` 改成清缓存。
+  if (sub === 'refresh' || sub === 'discover') { out.action = 'refresh'; out.provider = positional[1]?.toLowerCase(); return out; }
+  // 手输模型: 把一个上游目录里没有的模型名记进这家供应商的发现缓存 (不是"切换")。
+  if (sub === 'admit') {
+    out.action = 'admit';
+    out.provider = positional[1]?.toLowerCase();
+    out.model = positional[2];
+    if (!out.provider || !out.model) out.errors.push('用法: /model admit <provider> <model>');
+    return out;
+  }
   if (sub === 'pick' || sub === 'wizard') { out.action = 'pick'; return out; }
   if (sub === 'test') { out.action = 'test'; out.provider = positional[1]?.toLowerCase(); return out; }
   if (sub === 'reset') { out.action = 'reset'; return out; }
@@ -481,6 +513,35 @@ async function providerLines(sessionKey?: string): Promise<string[]> {
 }
 
 /**
+ * `/model list [provider]` — 把 P5 的发现目录打成人看的清单。
+ * 明细/汇总/来源中文全部复用 model-discovery 自己的格式化函数 (不在这里再写一套说法)。
+ */
+export async function formatCatalogListing(provider?: string, json = false): Promise<string> {
+  if (provider) {
+    const one = await listModelCatalog(provider);
+    const entry = one.entries[0];
+    const unavailable = one.unavailable.find((u) => u.provider === provider);
+    if (json) return JSON.stringify({ ok: !unavailable, listing: one, entry: entry || null }, null, 2);
+    const lines: string[] = [`${provider} 的模型目录:`];
+    if (entry) {
+      lines.push(`  ${formatCatalogLine(entry)}`);
+      for (const m of entry.models) lines.push(`    · ${m}${entry.modelOrigins?.[m] ? `  (${entry.modelOrigins[m]})` : ''}`);
+      if (!entry.models.length) lines.push('    (目录里一个模型都没有 — 用 /model admit 手输, 或 /model refresh 重取)');
+    } else {
+      lines.push(`  ⚠ 这家这一轮拿不到目录${unavailable?.failureClass ? ` (${unavailable.failureClass})` : ''}: ${String(unavailable?.reason ?? '未发现').slice(0, 160)}`);
+    }
+    for (const n of one.notes || []) lines.push(`  · ${n}`);
+    return lines.join('\n');
+  }
+  const listing = await listModelCatalog();
+  if (json) return JSON.stringify({ ok: listing.unavailable.length === 0, listing }, null, 2);
+  const lines: string[] = [...formatListingSummary(listing)];
+  for (const c of listing.entries) lines.push(`  ${formatCatalogLine(c)}`);
+  lines.push('  细节: /model list <provider> · 重取: /model refresh [provider] · 清缓存: /model refresh --clear');
+  return lines.join('\n');
+}
+
+/**
  * `/model status` — 一律先给**当前真实生效**的那一份 (provider/model/base URL/协议/凭证来源/作用域),
  * 再给候选列表。用户问"现在到底在用哪个"必须能一眼答上。
  */
@@ -498,6 +559,7 @@ export async function formatProviderStatus(sessionKey?: string): Promise<string>
   lines.push('');
   lines.push('用法: /model pick 分步选择 (供应商→凭证→模型→参数→作用域→测试→确认)');
   lines.push('      /model <provider> [model] [--base-url <url>] [--session] · /model test [provider] · /model status · /model reset · /model key <provider>');
+  lines.push('      /model list [provider] 看模型发现目录 · /model refresh [provider] 重取 · /model refresh --clear 清缓存 · /model admit <provider> <model> 手输模型');
   lines.push('      --session 只影响当前会话 (不动全局默认) · --no-verify 跳过切换前连通探测 (不推荐)');
   return lines.join('\n');
 }
@@ -554,9 +616,41 @@ export async function runModelCommand(arg: string, io: ModelCommandIO = {}): Pro
 
   // ── 状态 ─────────────────────────────────────────────────
   if (parsed.action === 'status') {
+    // `/model list [provider]` — P5 的发现目录 (只读, 不写配置)
+    if (parsed.list) return formatCatalogListing(parsed.provider, parsed.json);
     const eff = await effectiveModelConfig({});
     if (parsed.json) return JSON.stringify({ ok: true, effective: eff }, null, 2);
     return formatProviderStatus();
+  }
+
+  // ── 发现目录: 重取 / 清缓存 (P5 的能力挂到命令面) ───────────
+  if (parsed.action === 'refresh') {
+    if (parsed.clear) {
+      const cleared = await clearDiscoveryCache(parsed.provider || undefined);
+      if (parsed.json) return JSON.stringify({ ok: true, action: 'clear', provider: parsed.provider || null, cleared }, null, 2);
+      return `✅ 已清掉发现缓存${parsed.provider ? ` (${parsed.provider})` : ' (全部)'} — 清了 ${cleared} 条; 下次需要时再真取。`;
+    }
+    const r = await refreshModelDiscovery(parsed.provider || undefined, { force: true });
+    if (parsed.json) return JSON.stringify({ ok: r.failures.length === 0, ...r }, null, 2);
+    const lines: string[] = [`模型目录已刷新 (${r.results.length} 家, 失败 ${r.failures.length} 家 · ${r.refreshedAt})`];
+    for (const c of r.results) lines.push(`  ${formatCatalogLine(c)}`);
+    for (const f of r.failures) lines.push(`  ⚠ ${f.provider} · ${f.failureClass}: ${String(f.reason).slice(0, 160)}`);
+    for (const n of r.notes || []) lines.push(`  · ${n}`);
+    lines.push('  用 /model list [provider] 看明细');
+    return lines.join('\n');
+  }
+
+  // ── 手输模型: 记进这一家的发现缓存 (不是"切换"; 切换仍只走 selectModel) ──
+  if (parsed.action === 'admit') {
+    const provider = parsed.provider!;
+    const r = await admitManualModel(provider, parsed.model!);
+    if (parsed.json) return JSON.stringify(r, null, 2);
+    if (!r.ok) return `✗ ${provider} 手工模型没记上: ${r.reason}`;
+    return [
+      `✅ 已把 ${provider}/${parsed.model} 记进发现缓存 (手输)`,
+      `  ${formatCatalogLine(r.catalog)}`,
+      `  切成当前模型: /model ${provider} ${parsed.model}`,
+    ].join('\n');
   }
 
   // ── 重置 (清会话级绑定, 回到全局那一份) ────────────────────

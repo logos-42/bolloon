@@ -173,15 +173,16 @@ const stepProvider: OnboardStep = {
     }
     try {
       await store.updateProvider(picked, { enabled: true });
-      // setup 模式直接激活; reconfigure 要等测试通过才切换 active (失败不破坏旧配置)
-      if (c.mode !== 'reconfigure') await store.setActiveProvider(picked);
+      // 2026-09-26 (P6): 这里**不再**直接 `setActiveProvider` —— 激活是"切换", 只能走统一入口,
+      //   而且必须等 key/模型齐了、连通实测过了才切 (见 stepConnectivity 的成功分支)。
+      //   早切的问题: 那时还没有 key, 切过去等于把 effective 配置指到一个用不了的供应商。
     } catch (err) {
       return { ok: false, errorClass: 'io', message: `写配置失败: ${String((err as Error)?.message || err).slice(0, 120)}` };
     }
     return {
       ok: true,
       patch: { inputs: { provider: picked }, checks: { providerSelected: true } },
-      note: `${picked} 已 ${c.mode === 'reconfigure' ? '标记为候选 (测试通过后切换)' : '激活'}`,
+      note: `${picked} 已 ${c.mode === 'reconfigure' ? '标记为候选 (测试通过后切换)' : '标记为待启用 (连通实测通过后由统一入口切换)'}`,
     };
   },
 };
@@ -259,7 +260,29 @@ const stepConnectivity: OnboardStep = {
     c.io.print(`用最终保存的 provider/key/baseUrl/model 真实测试 ${provider} …`);
     const res = await store.testProvider(provider);
     if (res?.success) {
-      return { ok: true, patch: { checks: { connectivityOk: true, connectivityAt: new Date().toISOString(), connectivityErrorClass: undefined } }, note: `通过 (${res.latency ?? '?'}ms)` };
+      // 2026-09-26 (P6): 测试通过之后**才**真正切换 —— 而且只有一处实现: 统一入口 `selectModel()`。
+      //   此前 setup 模式在 stepProvider 里直接 `setActiveProvider` (那时还没有 key, 也没探测过),
+      //   reconfigure 模式则根本不切换 —— 两个都不算"同一语义"。
+      //   这里 `verify:false`: 刚在上面真测过一次, 入口不用再打一次上游 (重复探测是浪费, 不是严谨)。
+      try {
+        const { selectModel } = await import('../llm/model-selection.js');
+        const sw = await selectModel({ provider, model: c.state.inputs.model, scope: 'global', verify: false });
+        if (!sw.ok) {
+          return {
+            ok: false,
+            errorClass: sw.failureClass === 'missing_api_key' ? 'auth' : 'config',
+            message: `连接是通的, 但切换没有落盘 [${sw.failureClass}]: ${sw.message}`,
+            retryable: false,
+          };
+        }
+        return {
+          ok: true,
+          patch: { checks: { connectivityOk: true, connectivityAt: new Date().toISOString(), connectivityErrorClass: undefined } },
+          note: `通过 (${res.latency ?? '?'}ms) · 已由统一入口切到 ${sw.effective!.provider}/${sw.effective!.model}`,
+        };
+      } catch (err) {
+        return { ok: false, errorClass: 'runtime', message: `连通但切换失败: ${String((err as Error)?.message || err).slice(0, 160)}` };
+      }
     }
     const raw = String(res?.error || '未知错误');
     const cls: ErrorClass = /401|403|key/i.test(raw) ? 'auth' : /429|限流/i.test(raw) ? 'network' : /404|端点|baseUrl/i.test(raw) ? 'config' : /timeout|超时/i.test(raw) ? 'timeout' : /fetch|network|ECONN/i.test(raw) ? 'network' : 'unknown';
@@ -278,10 +301,13 @@ const stepRuntime: OnboardStep = {
     const details: string[] = [];
     try {
       const mod: any = await import('../llm/pi-ai.js');
-      mod.initMinimax?.();
+      // 2026-09-26 (P6): 运行时**只由统一入口装配** —— `installRuntime` 是唯一那个 initMinimax 调用点,
+      //   这里不再自己 `initMinimax()` (那会让"按配置文件装配"和"按有效配置装配"分叉成两条)。
+      const { applyEffectiveToRuntime } = await import('../llm/model-selection.js');
+      const eff = await applyEffectiveToRuntime();
       const model = mod.getMinimax?.() || mod.getModel?.();
-      if (!model) return { ok: false, errorClass: 'runtime', message: 'initMinimax 之后仍拿不到模型对象' };
-      details.push('initMinimax ✓');
+      if (!model) return { ok: false, errorClass: 'runtime', message: '统一入口装配之后仍拿不到模型对象' };
+      details.push(`统一入口装配 ✓ (${eff.provider}/${eff.model})`);
 
       const chat = model.chat || model.generate || model.complete || model.call;
       if (typeof chat !== 'function') {

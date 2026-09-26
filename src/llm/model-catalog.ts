@@ -444,6 +444,20 @@ async function customProviderRows(): Promise<Array<{ entry: any; spec: any }>> {
 }
 
 /**
+ * 注册表里**自定义**供应商的那一条记录 (内置 / 不在册 → `null`)。
+ * 动态 import 的理由与 `customProviderRows` 相同 (provider-registry ↔ model-catalog 循环)。
+ */
+async function customRegistryEntryOf(providerId: string): Promise<any | null> {
+  const id = String(providerId || '').trim();
+  if (!id) return null;
+  try {
+    const reg: any = await import('./provider-registry.js');
+    const entry = reg.getProviderRegistryEntry(id);
+    return entry && entry.kind === 'custom' ? entry : null;
+  } catch { return null; }
+}
+
+/**
  * 一家供应商的模型条目。
  * 当前生效的那一条**置顶** (不在内置清单里也要出现 —— 用户配了自定义 model 时必须看得到它)。
  */
@@ -455,29 +469,37 @@ export async function listModelsFor(providerId: string, opts: {
 } = {}): Promise<ModelEntry[]> {
   const providers = await providerConfigMap();
   const def = DEFAULT_PROVIDER_CONFIGS[providerId as ModelProvider];
-  if (!def) return [];
+  // 2026-09-26 (P6): 自定义供应商也要能列模型 —— 此前这里在内置表里查不到就直接返回空数组,
+  //   于是"从列表里点自定义供应商"看到的是一张空清单。事实全部来自注册表 (声明), 不在这里编。
+  const customEntry = def ? null : await customRegistryEntryOf(providerId);
+  if (!def && !customEntry) return [];
   const cfg = providers[providerId];
   const eff = await effectiveModelConfig({ sessionKey: opts.sessionKey }).catch(() => null);
-  const registryRequires = ((PROVIDER_INFO as any)[providerId]?.requiresApiKey ?? def.requiresApiKey) !== false;
+  const needsKey = def
+    ? (((PROVIDER_INFO as any)[providerId]?.requiresApiKey ?? def.requiresApiKey) !== false)
+    : (customEntry!.requiresApiKey !== false);
+  const baseUrl = normalizeBaseUrl(cfg?.baseUrl || def?.baseUrl || customEntry?.defaultBaseUrl || '');
+  const keyState = keyStateOf(cfg, providerId);
   const ctx: BuildEntryContext = {
     provider: providerId,
-    requiresApiKey: registryRequires,
-    credentialReady: keyStateOf(cfg, providerId) === 'configured' || keyStateOf(cfg, providerId) === 'env',
-    baseUrl: normalizeBaseUrl(cfg?.baseUrl || def.baseUrl),
+    requiresApiKey: needsKey,
+    credentialReady: keyState === 'configured' || keyState === 'env',
+    baseUrl,
     currentProvider: eff?.provider,
     currentModel: eff?.model,
     reachability: opts.probe ? (opts.probe.ok ? 'ok' : 'failed') : 'unknown',
     failureReason: opts.probe && !opts.probe.ok ? opts.probe.detail : undefined,
   };
 
+  const declared = def ? curatedModelIds(providerId) : (customEntry!.declaredModelIds || []);
   const seen = new Set<string>();
   const order: string[] = [];
-  // 配置里写着的 model 与当前生效的 model 都必须出现在清单里 (可能不在内置目录中)
+  // 配置里写着的 model 与当前生效的 model 都必须出现在清单里 (可能不在目录中)
   for (const extra of [eff?.provider === providerId ? eff.model : '', cfg?.model || '', ...(opts.extra || [])]) {
     const m = String(extra || '').trim();
     if (m && !seen.has(m)) { seen.add(m); order.push(m); }
   }
-  for (const m of curatedModelIds(providerId)) {
+  for (const m of declared) {
     if (!seen.has(m)) { seen.add(m); order.push(m); }
   }
 

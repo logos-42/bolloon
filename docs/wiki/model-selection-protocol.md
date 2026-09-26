@@ -190,3 +190,77 @@ Web 自己 `setActiveProvider + initMinimax`), 同一个动作两种结果。
 真跑: `scripts/verify-model-wiring.ts` **89/0** (7 类各一枚真探 + 真 `Supervisor.tickOnce()` 且旧 Run 逐字节不动 + 真服务器收鉴权头) ·
 变异 `scripts/verify-model-wiring-mutations.py` **5/5 判红** (丢类 7 红 / 退化 1 红 / 在跑 Run 被改写 2 红 / 鉴权头不看注册表 2 红 / 往已收尾 Run 追加事件 4 红) ·
 既有门 55/0 · 51/0 · 36/0 · 50/0 · 44/0 · 冻结门 34/34 全绿。P7 的四处钩子接法与保留项见 [log.md 2026-09-26 详细段](./log.md)。
+
+---
+
+## 9. 追记: 入口收敛 (2026-09-26) —— 五端点 · 命令面挂 P5 · 自定义供应商进得来
+
+此前「切模型」这件事有**六套入口**: CLI 命令面 · 会话内 `/model` · Web 路由 · Agent 配置工具 ·
+安装向导 · 长任务恢复 —— 各自读一点配置、写一点配置、可能各自重建运行时 (Web 那条路当年就是
+自己 `setActiveProvider + initMinimax`, 这正是「CLI 切了不生效」的来源)。本轮全部收敛到
+**只走 `selectModel`**: 谁都不许自己写 activeProvider、自己重建运行时。
+
+### 9.1 五个端点 (Web 侧对外只有这一套语义)
+
+| 端点 | 方法 | 干什么 | 靠谁 |
+| --- | --- | --- | --- |
+| `/api/models/providers` | GET | 在册供应商 + 注册表事实 (protocol/requiresApiKey) + 当前有效配置 | 注册表 + `effectiveModelConfig` |
+| `/api/models/options` | GET | 某家 (或不指定) 的模型清单 (上游真目录 / 声明 / 手输, 标 `origin`) | P5 `listModelCatalog` |
+| `/api/models/test` | POST | 连通 + 工具调用能力探测, **不写任何配置** | P4 `probeSelection` |
+| `/api/models/select` | POST | 切换 (= 唯一写口 `runModelSelect`) | `selectModel` |
+| `/api/models/discover` | POST | 发现/刷新一家或全量 (`action: refresh\|clear\|admit`) | P5 |
+
+**旧接口保留形状、内部转发**(不许两套写配置逻辑): `POST /api/llm-config`(旧 UI 的
+`{provider, config:{…}}` 形状) · `POST /api/llm-provider` · `POST /api/llm-test` —— 有凭证就**转到
+同一个 `runModelSelect`**, 无凭证的旧写法仍只存字段 (不激活, 保持旧行为); 探测没过 → **409 且盘上
+配置字节不变**。源码级门钉两条: 整个路由文件里 `selectModel(` **只出现 1 处** (就在唯一写口里),
+旧 `/api/llm-provider` 段里**不许出现** `setActiveProvider(`/`updateProvider(`。
+
+### 9.2 命令面挂上 P5 的发现能力 (P5 自己没碰命令面)
+
+`/model refresh [provider]` → `refreshModelDiscovery` · `/model refresh --clear` → `clearDiscoveryCache`
+(报清了几条) · `/model list` / `/model list <provider>` → `listModelCatalog` (复用 P5 的格式化行) ·
+**手输模型** → `admitManualModel` (选择器的「自己输一个」那条路也改走它, 不再自己写)。门同时钉
+「源码级真的调这些函数」与「真跑上游目录端点命中数真的涨」。
+
+### 9.3 自定义供应商进得来 (上一轮如实留下的缺口㈡)
+
+`validateSelection` 的「这家存在吗」判据从**内置表**改成**注册表** (`registryEntryOf`), 于是从列表里
+点一个**自定义供应商**能落成全局默认; **内置那条路一字未改** (P0 的 55 条 + 选择器 51 条不变红)。
+事实读法沿用上轮定的规矩: **自定义问注册表, 内置问内置表**。`config-store.setActiveProvider` 同步
+改成按注册表判存在 (否则自定义 id 连激活都进不去)。
+
+### 9.4 Agent 工具 / 向导 / 恢复 也走同一入口
+
+- `bolloon_config_set` (Agent 工具) 改走 `selectModel`, 不再自己写配置; 未知 id 报错时用
+  `listRegisteredProviderIds()` 列**在册的** (不是把内置表抄一遍)。
+- 安装向导: `bolloon model --provider …` 与 `setup/onboard.ts` 的 `stepProvider`/`stepConnectivity`/
+  `stepRuntime` 不再自己 `setActiveProvider` 或本地 `initMinimax` —— **装配只有 `installRuntime` 一处**。
+- 长任务恢复: 用**该 Run 自己那份快照**走 `applyRunModelConfigToRuntime` (**不动全局**, P7 的「在跑的
+  Run 不许漂移」), `resumeRun` 把 `modelApplied` 回给调用方, CLI 恢复处打印 `modelApplied`/`modelDrift`。
+
+### 9.5 真跑证据 + 变异
+
+`scripts/verify-model-entrypoints.ts` **59/0**, Web 侧是**真起 `createWebServer`**
+(`scripts/lib/model-web-boot.ts`; 端口契约是 **`PORT` 环境变量** —— `--port` 从来不被解析, 冷启动本机
+实测 **~114s**), 模型上游是 `scripts/lib/model-stub-server.ts` 的**假上游** (真 HTTP + 真 `/v1/models`,
+所以「探测/发现真发生了」有上游命中数作证)。核心一条: **CLI 命令面 (真 argv 子进程) · 会话内 `/model`
+(同一函数的会话形状) · 真 Web 路由** 三者都切到**同一家自定义供应商**, 各自在**独立进程**里读回
+`EffectiveModelConfig` —— **11 个字段逐字段相同**, `configHash` 三者相同。三个入口分处三个进程、读回
+也是另外起的进程 (同进程连调三次共享内存缓存, 那样的"绿"什么都不证明)。
+
+变异 `scripts/verify-model-entrypoints-mutations.py` **3/3 判红**: 旧接口自己写 activeProvider **3 红**
+(含「盘上配置被改了!」) · 自定义 provider 退回内置表 **11 红** · `/model refresh` 空转 **2 红**。
+
+**顺手修掉一个被本轮接线逼出来的真缺口**: `model-discovery` 在**全新进程**里对自定义供应商会报
+「未配置凭据 + 发现失败原因未明」—— 根因是注册表快照要 `config-store.initialize()` 才推, 内置那条路
+顺手 initialize 了、自定义那条没做; 已补 `ensureConfigSnapshot()`。
+
+### 9.6 如实留下
+
+- Web 侧验收起的是**同一个 `createWebServer` 工厂**(路由是真的、HTTP 是真的、前端真能打), 但**不是**
+  完整 `src/index.ts --web` 引导 (身份/kubo/IPNS 那一层没跑: 本机冷启动 ~114s 已是这套工厂, 完整引导更长)。
+- 「会话内 `/model`」这条入口在门里用的是**同一个 `runModelCommand` 的会话形状调用**; 真 REPL 里那一步
+  还会经过 ink 选择器 (要人按键), 门不会替你按键 —— 差别只在「谁来给选择」, 切换路径是同一条。
+- 假上游只覆盖 OpenAI 兼容的 `/v1/models` + `/v1/chat/completions`; Anthropic 原生 / Gemini 原生那两条
+  协议形状没被这道门覆盖 (既有 url-chain/registry 门覆盖它们的 URL 与鉴权形状)。

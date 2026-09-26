@@ -37,6 +37,7 @@ import {
   type EffectiveModelConfig, type SelectionFailureClass,
   type SelectModelRequest,
 } from '../llm/model-selection.js';
+import { admitManualModel } from '../llm/model-discovery.js';
 
 // ============================================================
 // IO
@@ -250,6 +251,16 @@ export async function runModelSelector(
         if (!manual) return done({ ok: false, cancelled: true, reachedStep: 'model', message: '已取消, 未改动任何配置' });
         manualModel = manual;
         push(`使用手工输入的 model ID: ${manual} (不在目录里, 元数据一律按未知处理; 切换前的探测仍会真跑一次)`);
+        // 手输的模型顺手记进发现缓存 (`admitManualModel` 是唯一那处实现) —— 下次搜它就能搜到。
+        // 记不上不影响这次切换 (缓存是次要的, 切换才是主要动作), 所以失败只提一句。
+        try {
+          const admitted = await admitManualModel(providerId, manual);
+          push(admitted.ok
+            ? `已记进 ${providerId} 的发现缓存 (手输), 下次可直接搜到`
+            : `· 手工模型没记进缓存: ${admitted.reason} (不影响这次切换)`);
+        } catch (e) {
+          push(`· 手工模型没记进缓存: ${(e as Error).message} (不影响这次切换)`);
+        }
       }
     }
   }
