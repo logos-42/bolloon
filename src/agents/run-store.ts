@@ -137,6 +137,49 @@ export interface RunCheckpoint {
   ts: string;
 }
 
+/**
+ * 2026-09-26 (P7): 模型切换事件的**模式**字段。
+ * 记录层只存字符串, 不在这里解析 Goal 策略 (那是 `model-policy.ts` 的事) ——
+ * 事实层不认识策略, 只如实记下「当时按哪个模式做的决定」。
+ * `unknown` = 当时没读到一个可解析的 Goal 策略 (老 Goal / 策略文件损坏), 不是「没有策略」。
+ */
+export type RunModelSwitchMode = 'auto' | 'pinned' | 'session' | 'unknown';
+
+/**
+ * 2026-09-26 (P7): 一次模型切换的留痕 (Run 事件)。
+ *
+ * 为什么要落进 Run 记录: 长任务中途模型变了, 事后必须能回答三件事 ——
+ *   ① 从哪一份变到哪一份 (两边都是快照, 带 configHash);
+ *   ② 按什么策略变的 (auto / pinned / session), 以及变更前后的非幂等守卫条数;
+ *   ③ 变的过程里有没有「本该换却没换」(frozen) 或「与固定策略冲突」(conflict) 的情形 ——
+ *      这两种**不计成成功切换**, 但它们同样是事实, 必须留痕。
+ *
+ * 语义边界: 这条事件**不改变** Run 自己的模型快照(`modelConfig`)。同一 Run 内换模型不属于
+ * 「换模型」的范畴 (那是换 Run); 事件只回答「下一个 Run / 这次决定」用的是哪一份。
+ */
+export interface RunModelSwitchEvent {
+  ts: string;
+  /** 决定**之后**这个 Run (或下一个 Run) 该用的那一份 —— 缺失的一侧不编造 */
+  to: RunModelConfig;
+  /** 决定**之前**记录里的那一份 (老 Run 没有快照 → null) */
+  from?: RunModelConfig | null;
+  /** 这次决定的结果: switched=真换了 / frozen=按策略拒绝换 / conflict=与固定策略冲突 (未改写) */
+  outcome: 'switched' | 'frozen' | 'conflict';
+  /** 当时生效的 Goal 模型策略模式 */
+  mode: RunModelSwitchMode;
+  /** 这一份配置来自哪一层 (`supervisor_fallback` = 按失败类别挑的备用模型) */
+  source: 'run_snapshot' | 'goal_pin' | 'session' | 'global' | 'supervisor_fallback' | 'none';
+  /** 人可读理由 (含失败类别, 若有) */
+  reason: string;
+  /** 这次切换有没有把跨 Run 的非幂等守卫带上 (带不上 = 重复副作用风险) */
+  guardsCarried: number;
+  runId: string;
+  goalId?: string;
+}
+
+/** 模型切换账本只留最近 N 条 (审计账本, 不是全量日志) */
+export const MAX_MODEL_SWITCHES = 20;
+
 export interface RunRecord {
   runId: string;
   /** Phase 2: 与 Goal 强绑定 (Goal 不因一次 prompt 结束而消失) */
@@ -167,6 +210,12 @@ export interface RunRecord {
    * 快照在 Run 创建时**定稿**, 之后不再改写: 同一 Run 内换模型属于换 Run 的范畴。
    */
   modelConfig?: RunModelConfig;
+  /**
+   * 2026-09-26 (P7): 这个 Run 上发生过的**模型切换决定** (最近 MAX_MODEL_SWITCHES 条)。
+   * 与 `modelConfig` 的分工: 快照回答「这条执行链当时用哪一份」(定稿不改),
+   * 这里回答「后来按什么策略决定了用哪一份」(含被策略挡住没换的情形)。
+   */
+  modelSwitches?: RunModelSwitchEvent[];
   summary?: string;
   error?: string;
   errorClass?: ErrorClass;
@@ -607,6 +656,56 @@ export async function recordHarnessEvent(runId: string, evt: HarnessTraceEvent):
     });
   } catch (err) {
     await recordDegradation({ kind: 'observational', op: 'recordHarnessEvent', runId, message: `${evt.event}/${evt.kind} 写入失败: ${String((err as Error)?.message || err).slice(0, 150)}` });
+  }
+}
+
+/**
+ * 2026-09-26 (P7): 记一次模型切换决定 (Run 事件)。
+ *
+ * 与 `recordHarnessEvent` 同一纪律: 决策**已经**做出, 记账失败绝不反过来改决策 ——
+ * 所以这里只记降级 + 返回 `{ok:false}` 让调用方能如实上报, 不抛。
+ * 写两处事实: ① `modelSwitches` 账本 (机器可查的切换链); ② `harness` 事件 (人工审计的那本账)。
+ * 本次写入**不改** `modelConfig` —— Run 快照一旦定稿就不再改写。
+ */
+export async function recordModelSwitch(
+  runId: string,
+  evt: Omit<RunModelSwitchEvent, 'ts' | 'runId'> & { ts?: string; runId?: string },
+): Promise<{ ok: boolean; record?: RunRecord | null; reason?: string }> {
+  const full: RunModelSwitchEvent = {
+    ts: evt.ts || new Date().toISOString(),
+    ...evt,
+    runId: evt.runId || runId,
+  } as RunModelSwitchEvent;
+  try {
+    const rec = await withRunLock(runId, async () => {
+      const cur = await readRun(runId);
+      if (!cur) return null;
+      cur.modelSwitches = cur.modelSwitches || [];
+      cur.modelSwitches.push(full);
+      if (cur.modelSwitches.length > MAX_MODEL_SWITCHES) {
+        cur.modelSwitches = cur.modelSwitches.slice(-MAX_MODEL_SWITCHES);
+      }
+      // 人工审计账本: 同一件事在 harness 事件里也留一条 (kind 按结果映射, 不美化)
+      cur.harness = cur.harness || [];
+      cur.harness.push({
+        ts: full.ts,
+        event: 'model.switch',
+        kind: full.outcome === 'switched' ? 'note' : 'deny',
+        reason: `${full.outcome} mode=${full.mode} source=${full.source} → ${full.to.provider}/${full.to.model}#${full.to.configHash} · 守卫 ${full.guardsCarried} 条 · ${full.reason}`.slice(0, 400),
+        runId,
+        goalId: full.goalId,
+      });
+      if (cur.harness.length > MAX_HARNESS_EVENTS) cur.harness = cur.harness.slice(-MAX_HARNESS_EVENTS);
+      cur.updatedAt = new Date().toISOString();
+      await writeRun(cur);
+      return cur;
+    });
+    if (!rec) return { ok: false, reason: `run 不存在: ${runId}` };
+    return { ok: true, record: rec };
+  } catch (err) {
+    const reason = `模型切换事件写入失败: ${String((err as Error)?.message || err).slice(0, 160)}`;
+    await recordDegradation({ kind: 'observational', op: 'recordModelSwitch', runId, message: reason });
+    return { ok: false, reason };
   }
 }
 
