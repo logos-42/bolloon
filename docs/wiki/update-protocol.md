@@ -561,3 +561,115 @@ detail = npm latest=0.5.0 在 GitHub 上有同名记录 (Tag v0.5.0) — 两个�
 3. 双源验收的「装依赖」一跳仍复用本仓 `node_modules` (`BOLLOON_DEV_REUSE_NODE_MODULES`, 加速开关) —— 其余全真。
 4. tag 指向 `493d8d5`, wiki 回写落在随后一个 docs 提交 → tag 与 HEAD 不再重合; `verify-release.mjs` 的 `git_tag` 是**软门**, 之后跑会显示 ⚠️ (不是发布坏了, 是回写在 tag 之后)。
 5. 匿名 GitHub API 配额只有 60 次/小时 (本次全程真调) —— 环境约束, 且按设计 **stable 侧不该被 GitHub 阻塞** (npm 仍是权威)。
+
+## 13. 手机端: **web 资源层**双源 OTA (2026-09-26) —— 已落地
+
+> 一句话: 手机 App 里**能自己换新的那一层**, 是**界面与逻辑 (web 资源层)**; 原生壳层 (二进制) **不在**这里换。
+> 桌面与手机**共用同一份双源语义** (不是手机端另写一套), 判据是: 两边 import 同一批 node-free 模块。
+
+### 13.1 先查到的**事实** (决定目标怎么定)
+
+| 查到的 | 落地含义 |
+| --- | --- |
+| 本仓今天**没有任何手机端 OTA** —— `dist/web` 是**烤进二进制**的, 装完就再也不变 | 这一轮要做的不是"加个按钮", 而是**给手机端补上"能被替换的那一层"** |
+| 手机 WebView **没有 `node:`** (`fs`/`os`/`path`/`child_process` 全无) | 共用语义必须抽成 **node-free 模块**: 抽 `version-identity.ts` + `dual-source-facts.ts`, 桌面/手机 **import 同一份** (抽出, 不是改写) |
+| GitHub master 源码快照里**没有 `dist/web`** (构建产物不入库) | dev 通道要**独立生产者** `scripts/build-mobile-web-bundle.ts`, 产出 `<版本>+dev.<sha7>` 的 web 资源层 tar.gz |
+| iOS 原生壳层**不能自更** (App Store 规则) | **不承诺"iOS 整体自动更新"**; 只承诺 **web 资源层**可自更 |
+| Android 侧载 APK 自更可行, 但需用户允许未知来源 | 必须**显式告知 + 人在环**, 不许静默安装 |
+
+### 13.2 天花板: 哪一层能自更, 哪一层不能 (写死进代码, 也写进界面)
+
+| 层 | 能不能自更 | 走什么 | 界面上怎么写 |
+| --- | --- | --- | --- |
+| **web 资源层** (界面 + 逻辑 = 入群/发任务公告/看飞轮进度/授权签名这四件事的界面) | ✅ **能**, 就是本页 §13 | OTA 双源 (npm / GitHub) | "装完需要重载界面才生效; 装坏了可以一键回滚" |
+| **原生壳层** (二进制) | ❌ 不能自更 | iOS: App Store / TestFlight · Android: 侧载新 APK (需用户允许未知来源) | 原文照写, 不许含糊 |
+
+`NATIVE_CEILING_LINE` 这段文案是**常量**, 界面直接渲染它 —— 避免"界面上少写一句, 用户以为整个 App 会自动变新"。
+
+### 13.3 身份 = 与桌面**字面同一套**
+
+- stable: `0.5.0` (npm `dist-tags.latest` 权威; GitHub 同名 Tag 只做**交叉校验**)
+- dev: `0.5.0+dev.fb60ccf` — 比较的是 **git ref + commit sha**(版本号只作参考展示), 形如 `<版本>+dev.<sha7>`
+- 两源结论不一致 ⇒ `cross_check_mismatch`: **拒绝**, 不按 GitHub 的记录去装一个 npm 上不存在的版本
+
+### 13.4 一次更新的全部动作 (与桌面 `bolloon update now` 同语义)
+
+`检查` → `下载` → **校验 (shasum/摘要)** → 写 `staging` → **验证可启动** → **原子替换** (`current` ⇄ `previous`) → 再验证 → 落状态 → 需要重载才生效;
+任何一步失败 ⇒ **回滚** (`previous` 搬回 `current`) 且**如实说回滚到哪一版**。
+
+**"验证可启动"到底是什么** (两档, 如实标注, 不冒充):
+- 有 DOM (真机 / 真浏览器): 把 staging 那份**真加载进隐藏 iframe** → 看得到 `.tabbar` **且** `BolloonCore` 真挂上 ⇒ `mode: 'iframe'` (**真启动探测**)
+- 无 DOM (纯 Node 验收): 只做结构 + 语法 ⇒ `mode: 'static-only'`, 文案明写"未做真启动探测"
+
+### 13.5 拒绝语义 (§12.5 的手机端同款) —— 5 类 `github_unavailable` + `cross_check_mismatch`
+
+源不可达 ⇒ `offline`; 版本不存在 ⇒ `target_unpublished`; 两源不一致 ⇒ `cross_check_mismatch`;
+本地身份读不到 ⇒ `local_version_unknown` (**绝不猜**)。
+拒绝时必须**说清是哪一类 + 一个字节都没下载 + 没动 current**; **绝不静默装回旧版, 绝不假装成功**。
+
+另有两道**只在手机端才有**的门:
+- `native_shell_not_wired`: 原生壳还没指向可写目录 ⇒ 资源**准备好并验证过**, 但**不切换** (装了也白装)
+- `human_confirm_required`: 没有 `confirm` ⇒ 不许切换 (见 §13.7)
+
+### 13.6 手机上看得见的"源身份"
+
+App 内 `设置 → App 更新` 一页看完 (与桌面 `bolloon update --status` 同口径):
+
+```
+当前装的: 0.5.0 (stable · npm registry) · 摘要 sha1:…
+更新层:   web 资源层 (界面与逻辑) —— 入群 / 发任务公告 / 看飞轮进度 / 授权签名
+会生效吗: 原生壳还没指向可写目录 ⇒ 装好也加载不到
+能切回:   dev (上次 dev.fb60ccf) ⇒ 一键回滚
+天花板:   iOS 原生壳层不能自更 (App Store 规则) · Android 要侧载并允许未知来源
+```
+
+### 13.7 智能体自主更新的**前置条件与风险边界** (leo 要的那一条)
+
+动作面被**显式分成两段** (`MOBILE_UPDATE_AGENT_CONTRACT`, `schema: bolloon-mobile-agent-update/1`, 可程序读):
+
+| 段 | 动作 | 谁能做 | 为什么 |
+| --- | --- | --- | --- |
+| **可自动** | `check` · `download` · `digest-verify` · `extract` · `stage` · `verify` · `prepare` | **智能体可自主**, 不需人 | 只读 + 只写 staging, **不动正在跑的 current**; 最坏结果是白下一份 |
+| **必须人在环** | `switch` · `reload` · `rollback` · `channel-switch` | **必须人确认** | 会换掉**用户正在看的界面**; 出问题表现为"App 打不开", 不能由智能体单方面决定 |
+
+**前置条件 (代码里 `preconditions` 六条, 缺一不可)**: ① web 层身份可读 (壳层注入 / OTA state / 构建戳三者之一; 读不到 → `local_version_unknown`, **不猜**) ② 原生壳已指向可写目录 (否则 `native_shell_not_wired`) ③ 设备存储够 (下载物 ≤ 80 MiB 上限, 超了 `payload_too_large`, 不赌内存) ④ WebView 有 `DecompressionStream('gzip')` (iOS 16.4+ / Chrome 80+, 没有就 `decompress_unavailable`) ⑤ 稳定网络 (源不可达一律拒绝, **不静默重试到"看起来成功"**) ⑥ 摘要可校验 (npm 侧 `dist.shasum`/`dist.integrity`; dev 侧包内 `.bolloon-dev-snapshot.json`)。
+**风险边界**: 自动段**不碰** `current`/`previous`; 崩在自动段 = 浪费一次下载, **不影响正在用的版本**。切换后若起不来, **回滚入口在任何界面之前就可用**(不依赖那份刚换上去的资源)。
+
+### 13.8 程序调用入口 (为"未来智能体在手机自动更新"铺路)
+
+不是只能人手点 —— 内核导出了可调用入口 (`window.BolloonCore.update.*`, 与 `tasks` 命名空间并列):
+
+```
+update.vocabulary()       结论表 (17) / 拒绝表 (13) / 必带文件 / 布局 / 天花板文案 / 智能体契约 —— 给 UI 与智能体读的契约
+update.nativeWired()      原生壳接上没有可写目录 (= 装了会不会生效)
+update.identity()         当前 web 层身份 (壳层注入 / OTA state / 构建戳)
+update.state()            已装状态 (通道 / 摘要 / 上一版 / 历史)
+update.report(opts)       检查 + 报告行 (与桌面 `update --status` 同口径)
+update.check(opts)        只检查两源 (只读, 不下载)
+update.prepare(opts)      下载 → 解压 → 落 staging → 验证可启动; **不切换**  ← 智能体可自动跑到这一步
+update.apply({confirm})   原子替换 + 再验证 + 失败回滚 + 落状态 + 提示重载  ← 必须 confirm
+update.rollback({confirm})一键搬回 previous                              ← 必须 confirm
+update.channel() / setChannel(c)   读/改通道偏好 (只写偏好, 不装东西)
+update.reload()           重载 web 层让新资源生效 (人在环)
+```
+
+### 13.9 验收 (真跑, 2026-09-26)
+
+**三层门, 各管一件事** (都不许互相替代):
+
+| 门 | 验什么 | 结果 |
+| --- | --- | --- |
+| `src/test/mobile-update.test.ts` | 离线行为 (只换传输层, 不打网) | **41/41** |
+| `scripts/verify-mobile-update.ts` | **真网**: 真 packument / 真 19MB tarball / 真 digest / 真落盘 / 真回滚 | **59 通过 · 0 失败** (+3 项如实不验) |
+| `scripts/verify-mobile-update-ui.ts` | **真 headless Chrome**: 首启同意门 → 真 iframe 启动探测 → 真切换 → 换完的资源在真浏览器里能起来 → UI 真显示源身份 → 拒绝语义在界面上说清 | **28 通过 · 0 失败** |
+| `scripts/verify-mobile-update-mutation.mjs` | **门是不是空的**: 按词界改坏 11 条关键判据 | **11/11 判红**, 恢复后 sha256 全一致 |
+
+真跑覆盖的两条主路径 (手机侧): **stable→dev** 与 **dev→stable**, 拿的都是真输出; 假阳性三条 (源不可达 / 版本不存在 / 交叉校验不一致) 全部**拒绝 + 分类说清**; 另有一条**装到一半失败 → 回滚真跑** (旧资源真回到 `current`, 且在真浏览器里能起来)。
+
+### 13.10 如实留下的 (没做到 / 有保留)
+
+1. **"验证可启动"在纯 Node 验收里只是 `static-only`** —— 真启动探测要到**真浏览器**那一层 (`verify-mobile-update-ui.ts`) 才成立; 纯 Node 那份**如实标注**, 不冒充。
+2. **真机 (真手机) 未验** —— 本机 macOS 13 **无签名环境、无真机**; 上面全部是"真浏览器/真网络", 不是"真手机"。
+3. **原生壳层自更** —— 按 §13.2 的天花板,**本来就不做** (iOS App Store 规则), 不是"没做到", 是"不该做"。
+4. **dev 通道的 web 包需要人先发布** —— `build-mobile-web-bundle.ts` 产出后要放到可下载 URL (`BOLLOON_MOBILE_DEV_BUNDLE_URL`); 本轮**没有**为它建自动分发, 配置里没配就**没有 dev 源** (如实报 `dev_bundle_unavailable`)。
+5. **隐私同意门没有为了验收被放宽** —— 验收脚本走的是**真用户路径** (点"同意"), 不是把门关掉。

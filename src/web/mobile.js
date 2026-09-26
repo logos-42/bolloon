@@ -1697,6 +1697,110 @@
     return r;
   }
 
+  /**
+   * 「App 更新 (web 资源层)」页 (2026-09-26, update-protocol §13)
+   *   看得见的: 当前装的是哪个源 / 哪个版本·sha / 能切回哪个源 —— 与桌面 `bolloon update --status` 同一口径。
+   *   做得出的: 检查 → (智能体可自动跑到"准备并验证") → 人工确认切换 → 重载; 一键回滚。
+   *   说不出的不说: 原生壳层不能在这里自更 (iOS 走商店/TestFlight, Android 侧载需允许未知来源)。
+   */
+  async function openUpdatePage() {
+    const page = document.createElement('div');
+    page.className = 'chat-page';
+    page.id = 'update-page';
+    page.innerHTML = `
+      <div class="chat-topbar">
+        <button class="icon-btn" id="update-back">←</button>
+        <div style="flex:1;font-weight:600">App 更新</div>
+        <button class="icon-btn" id="update-check" title="检查更新">↻</button>
+      </div>
+      <div style="padding:12px;overflow:auto">
+        <pre id="update-identity" style="white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;background:var(--bg-2,#0001);padding:10px;border-radius:10px;margin:0 0 10px">读取中…</pre>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <button class="conv-item" id="update-ch-stable" style="flex:1;justify-content:center">stable (npm)</button>
+          <button class="conv-item" id="update-ch-dev" style="flex:1;justify-content:center">dev (GitHub master)</button>
+        </div>
+        <div class="conv-item" id="update-apply"><span class="list-icon">${ICONS.chip}</span><span style="flex:1;min-width:0"><span style="display:block">安装更新（需要你确认）</span><span class="conv-preview" style="display:block" id="update-apply-sub">先点右上角 ↻ 检查</span></span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="update-rollback"><span class="list-icon">${ICONS.trash}</span><span style="flex:1;min-width:0"><span style="display:block">回滚到上一份</span><span class="conv-preview" style="display:block">装坏了就换回上一次能用的资源</span></span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="update-reload"><span class="list-icon">${ICONS.themeAuto}</span><span>重载界面让更新生效</span></div>
+        <div id="update-ceiling" style="font-size:12px;line-height:1.6;color:var(--fg-2,#888);margin:10px 0"></div>
+        <pre id="update-log" style="white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;margin:0"></pre>
+      </div>`;
+    document.body.appendChild(page);
+
+    const identityEl = page.querySelector('#update-identity');
+    const logEl = page.querySelector('#update-log');
+    const applySub = page.querySelector('#update-apply-sub');
+    const ceilingEl = page.querySelector('#update-ceiling');
+    let lastCheck = null;
+
+    const log = (line) => { logEl.textContent += `${line}\n`; logEl.scrollTop = logEl.scrollHeight; };
+    const UP = () => (window.BolloonCore && window.BolloonCore.update) || null;
+    const setIdentity = async () => {
+      const up = UP();
+      if (!up) { identityEl.textContent = '内核未就绪'; return; }
+      const voc = up.vocabulary();
+      ceilingEl.textContent = voc.nativeCeiling;
+      const st = await up.state();
+      const applied = st.installedChannel ? `${st.installedChannel}${st.installedDevSha ? ` @ ${st.installedDevSha}` : ''}` : '（还没用这个功能装过）';
+      identityEl.textContent = [
+        `当前装的:   ${applied}`,
+        `通道偏好:   ${up.channel()}`,
+        `能切回:     ${st.switchableTo ? `${st.switchableTo.channel} (${st.switchableTo.source}${st.switchableTo.target ? ` @ ${st.switchableTo.target}` : ''})` : '—'}`,
+        `上次来源:   ${st.installedFrom ? `${st.installedFrom.source}${st.installedFrom.digest ? ` · ${st.installedFrom.digest}` : ''}` : '—'}`,
+        `更新层:     web 资源层（界面与逻辑：入群 / 发任务公告 / 看飞轮进度 / 授权签名）`,
+        `会生效吗:   ${up.nativeWired() ? '会（原生壳已指向可写目录）' : '不会 —— 原生壳还没指向可写目录，装了也不生效，所以不会切换'}`,
+      ].join('\n');
+    };
+    const runCheck = async () => {
+      const up = UP();
+      if (!up) { log('内核未就绪'); return; }
+      log('· 检查两源（npm + GitHub）…');
+      const r = await up.report({});
+      lastCheck = r.result;
+      identityEl.textContent = r.lines.join('\n');
+      applySub.textContent = r.result.status === 'update_available'
+        ? `可装: ${r.result.targetIdentity || r.result.latestVersion}` : `结论: ${r.result.status}`;
+      log(`· 结论: ${r.result.status}${r.result.reason ? ` — ${r.result.reason}` : ''}`);
+      if (r.result.warnings && r.result.warnings.length) r.result.warnings.forEach((w) => log(`  ⚠ ${w}`));
+      await setIdentity();
+    };
+
+    page.querySelector('#update-back').addEventListener('click', () => { page.remove(); void openSettings(); });
+    page.querySelector('#update-check').addEventListener('click', () => { logEl.textContent = ''; void runCheck(); });
+    page.querySelector('#update-ch-stable').addEventListener('click', async () => { const r = await UP().setChannel('stable'); log(`· ${r.detail}`); await setIdentity(); });
+    page.querySelector('#update-ch-dev').addEventListener('click', async () => { const r = await UP().setChannel('dev'); log(`· ${r.detail}`); await setIdentity(); });
+    page.querySelector('#update-apply').addEventListener('click', async () => {
+      const up = UP();
+      if (!up) return;
+      const target = lastCheck && (lastCheck.targetIdentity || lastCheck.latestVersion);
+      if (!lastCheck || lastCheck.status !== 'update_available') { log('· 先检查更新（右上角 ↻）：现在没有可装的目标，或源不可达/交叉校验不一致 —— 拒绝安装。'); return; }
+      // 人在环: 说清要换的是哪一层, 再动手
+      if (!confirm(`要装 ${target} 吗？\n\n换的是「web 资源层」（界面与逻辑）。装完需要重载界面才生效；装坏了可以一键回滚。\n原生壳层（二进制）不在这里更新。`)) return;
+      log('· 准备并验证 …');
+      const prep = await up.prepare({ onStage: (s, d) => log(`    [${s}] ${d}`) });
+      if (!prep.ok) { log(`· 准备/验证失败: ${prep.status} — ${prep.reason}`); return; }
+      log(`· 已验证 ${prep.to}（${prep.fileCount} 个文件）—— 现在切换`);
+      const out = await up.apply({ confirm: true, reuseStaging: true, onStage: (s, d) => log(`    [${s}] ${d}`) });
+      log(out.ok ? `· 成功: ${out.from} → ${out.to}（重载界面后生效）` : `· 未生效 (${out.stage}): ${out.reason}`);
+      applySub.textContent = out.ok ? '已装好 · 点「重载界面」生效' : `未生效: ${out.status}`;
+      await setIdentity();
+    });
+    page.querySelector('#update-rollback').addEventListener('click', async () => {
+      const up = UP();
+      if (!up) return;
+      if (!confirm('换回上一份能用的 web 资源吗？（当前这一份会被替换掉）')) return;
+      const out = await up.rollback({ confirm: true, onStage: (s, d) => log(`    [${s}] ${d}`) });
+      log(out.ok ? `· 已回滚到 ${out.to}` : `· 回滚未执行 (${out.stage}): ${out.reason}`);
+      await setIdentity();
+    });
+    page.querySelector('#update-reload').addEventListener('click', async () => {
+      const r = await UP().reload();
+      log(`· ${r.detail}（方式: ${r.how}）`);
+    });
+
+    await setIdentity();
+  }
+
   function openSettings() {
     const page = document.createElement('div');
     page.className = 'chat-page';
@@ -1709,6 +1813,7 @@
       <div style="padding:12px">
         <div class="conv-item" id="api-config-item"><span class="list-icon">${ICONS.chip}</span><span>API 配置</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="theme-toggle"><span class="list-icon" id="theme-icon">${ICONS.themeAuto}</span><span id="theme-text">跟随系统</span></div>
+        <div class="conv-item" id="settings-update"><span class="list-icon">${ICONS.themeAuto}</span><span style="flex:1;min-width:0"><span style="display:block">App 更新（web 资源层）</span><span class="conv-preview" style="display:block" id="update-preview">读取中…</span></span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-data"><span class="list-icon">${ICONS.chip}</span><span style="flex:1;min-width:0"><span style="display:block">本机数据</span><span class="conv-preview" style="display:block">读取中…</span></span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-desktop"><span class="list-icon">${ICONS.globe}</span><span>电脑端同步</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-chain"><span class="list-icon">${ICONS.chip}</span><span>链上配置 (RPC/网络)</span><span class="list-arrow">›</span></div>
@@ -1725,6 +1830,22 @@
     applyTheme(resolveThemePref(), false);
     $('#settings-back').addEventListener('click', () => page.remove());
     $('#api-config-item').addEventListener('click', openApiConfig);
+    // App 更新: 预览里就说清"现在装的是哪个源 / 哪个版本·sha / 能切回谁"(= 桌面 update --status 同一口径)
+    $('#settings-update').addEventListener('click', () => { page.remove(); void openUpdatePage(); });
+    void (async () => {
+      const el = page.querySelector('#update-preview');
+      if (!el) return;
+      try {
+        const up = window.BolloonCore && window.BolloonCore.update;
+        if (!up) { el.textContent = '内核未就绪'; return; }
+        const st = await up.state();
+        const applied = st.installedChannel
+          ? `${st.installedChannel}${st.installedDevSha ? ` @ ${st.installedDevSha}` : ''}`
+          : '内置资源';
+        const back = st.switchableTo ? ` · 能切回 ${st.switchableTo.channel}` : '';
+        el.textContent = `当前 ${applied}${back} · 通道 ${up.channel()}${up.nativeWired() ? '' : ' · 原生壳未接通'}`;
+      } catch (e) { el.textContent = '读取失败: ' + ((e && e.message) || e); }
+    })();
     $('#theme-toggle').addEventListener('click', () => {
       const next = currentTheme === 'auto' ? 'light' : (currentTheme === 'light' ? 'dark' : 'auto');
       applyTheme(next, true);
@@ -3693,7 +3814,8 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindEvents);
   else bindEvents();
 
-  // 供验收脚本驱动 (真 headless DOM 用): 只暴露行为入口, 不暴露数据
+  // 供验收脚本/壳层驱动 (真 headless DOM 用): 只暴露行为入口, 不暴露数据
+  window.__mobileUpdateUi = { open: () => openUpdatePage(), openSettings: () => openSettings() };
   window.__mobileTasksUi = {
     refresh: refreshAll, askJoin: askJoin, askCreate: askCreate, askPublish: askPublish,
     askTrail: askTrail, askAnnounceToGroup: askAnnounceToGroup, confirm: doConfirmed,

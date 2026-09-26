@@ -33,6 +33,11 @@ import {
   type InstallMethod, type UpdateSource, type UpdateChannel, type ChannelKind, type InstallationInfo, type VersionUpdateSummary,
 } from './version-info.js';
 import {
+  parseVersion, compareVersions, isKnownVersion, checkExitCode, REFUSED_STATUSES,
+} from './version-identity.js';
+// registry 侧的错误分类也在纯那一半 (手机端要用同一份分类) —— 定义在 dual-source-facts.ts。
+import { classifyRegistryError } from './dual-source-facts.js';
+import {
   fetchGithubFacts, toGithubReport, crossCheckStable, compareDevSnapshots, prepareDevSnapshot,
   renderGithubReportLine,
   type GithubResult, type GithubReport, type CrossCheck, type DevCheck,
@@ -47,7 +52,11 @@ import {
 export type { CheckStatus, UpdateRunStatus, UpdateRecord, UpdatePrefs, UpdateState };
 export { DEV_CHANNEL_WARNING, DEV_BACK_TO_STABLE_HINT };
 
-// ── 版本比较 (唯一一份) ─────────────────────────────────────────────────────
+// 版本比较 / 结论→退出码 / 拒绝语义: **唯一一份在 `version-identity.ts`** (桌面与手机共用)。
+// 这里原样再导出, 避免出现第二套实现 (手机端 WebView 里也要判同一批结论)。
+export { parseVersion, compareVersions, isKnownVersion, checkExitCode, REFUSED_STATUSES };
+
+// ── 版本比较 (唯一一份在 version-identity.ts; 上面已再导出) ────────────────
 
 /**
  * 从子进程 stdout 里取 JSON —— **不要**按"行首是否 { "过滤:
@@ -70,27 +79,6 @@ export function parseJsonFromStdout(stdout: string): any | null {
   }
 }
 
-export function parseVersion(v: string): number[] {
-  const clean = String(v || '').trim().replace(/^v/, '').split('-')[0];
-  const parts = clean.split('.').map((p) => parseInt(p.replace(/\D.*$/, ''), 10));
-  return parts.map((n) => (Number.isFinite(n) ? n : 0));
-}
-
-/** -1 = a<b, 0 = 相等, 1 = a>b (只比数值段, 忽略预发布标签) */
-export function compareVersions(a: string, b: string): -1 | 0 | 1 {
-  const pa = parseVersion(a); const pb = parseVersion(b);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const x = pa[i] ?? 0; const y = pb[i] ?? 0;
-    if (x < y) return -1;
-    if (x > y) return 1;
-  }
-  return 0;
-}
-
-export function isKnownVersion(v: string | null | undefined): boolean {
-  return !!v && v !== 'unknown' && /^\d/.test(String(v).trim().replace(/^v/, ''));
-}
-
 // ── registry 查询 (错误分类是本模块的核心价值之一) ──────────────────────────
 
 export interface RegistryDoc { latest: string; distTags: Record<string, string>; versions: string[]; gitHeads: Record<string, string> }
@@ -111,19 +99,11 @@ function httpGetJson(url: string, timeoutMs = 10000): Promise<{ status: number; 
   });
 }
 
-const OFFLINE_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'ENETDOWN', 'EAI_FAIL', 'UND_ERR_CONNECT_TIMEOUT']);
-
-/** 网络类错误 → offline; 其它 (HTTP 5xx / 解析失败 / 包不存在) → registry_unavailable。 */
-export function classifyRegistryError(err: any, httpStatus?: number): { kind: 'offline' | 'registry_unavailable'; detail: string } {
-  const code = String(err?.code || '');
-  if (OFFLINE_CODES.has(code) || /timeout|timed out|ENOTFOUND|getaddrinfo|network|socket hang up|超时/i.test(String(err?.message || ''))) {
-    return { kind: 'offline', detail: `${code || err?.message || '网络不可达'}` };
-  }
-  if (httpStatus && httpStatus >= 500) return { kind: 'registry_unavailable', detail: `registry 返回 HTTP ${httpStatus}` };
-  if (httpStatus === 404) return { kind: 'registry_unavailable', detail: `registry 上没有 ${PKG_NAME} (HTTP 404)` };
-  if (httpStatus && httpStatus >= 400) return { kind: 'registry_unavailable', detail: `registry 返回 HTTP ${httpStatus}` };
-  return { kind: 'registry_unavailable', detail: code || err?.message || '未知错误' };
-}
+/**
+ * 网络类错误 → offline; 其它 (HTTP 5xx / 解析失败 / 包不存在) → registry_unavailable。
+ * **唯一一份在 `dual-source-facts.ts`** (上面已 import+再导出) —— 桌面与手机端同一个分类器。
+ */
+export { classifyRegistryError };
 
 export async function queryRegistryDoc(pkg: string = PKG_NAME, timeoutMs = 10000): Promise<RegistryResult> {
   const url = `${NPM_REGISTRY_BASE}/${encodeURIComponent(pkg).replace('%40', '@')}`;
@@ -217,29 +197,11 @@ export interface CheckOptions {
 }
 
 /**
- * 检查结论 → 退出码 (稳定约定, §2): 0 正常 / 2 检查不可用。
- *
+ * 检查结论 → 退出码 / "源不可达必拒" 的这一组结论:
+ * **唯一一份在 `version-identity.ts`** (上面已 import+再导出)。
  * §12.5 的核心就是这一句: **源不可达 / 版本不存在 → 拒绝并说清 (退出码 2)**,
- * 不许静默装回旧版, 也不许打印"✅ 已是最新"。
+ * 不许静默装回旧版, 也不许打印"✅ 已是最新"。桌面与手机共用同一份。
  */
-export function checkExitCode(status: CheckStatus | null | undefined): 0 | 2 {
-  switch (status) {
-    case 'offline':
-    case 'registry_unavailable':
-    case 'local_version_unknown':
-    case 'github_unavailable':
-    case 'cross_check_mismatch':
-      return 2;
-    default:
-      return 0;
-  }
-}
-
-/**
- * "源不可达 / 版本不存在" 这一组结论 —— 它们必须**拒绝执行并说清**。
- * 这是 §12.5 那一条的代码落点: 不许静默装回旧版, 也不许打印"已是最新"。
- */
-export const REFUSED_STATUSES: CheckStatus[] = ['offline', 'registry_unavailable', 'local_version_unknown', 'github_unavailable', 'cross_check_mismatch'];
 
 /**
  * 检查更新。**这是唯一的检查入口** —— CLI / 启动后台 / Python 检查器 / 安装脚本都走它。

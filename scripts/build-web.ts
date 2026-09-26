@@ -179,6 +179,27 @@ async function main() {
     }
   }
 
+  // 2026-09-26: 写「web 层构建戳」—— 手机端 OTA 要靠它认出"本机现在装的是哪个版本/哪个源"
+  //   (resolveLocalWebIdentity 的第 ③ 级回退: 壳层注入 > OTA state.json > 这个戳)
+  //   注意: 它只描述**这一次构建**, 不是"已安装状态"; OTA 之后以 state.json 为准 (优先级更高)。
+  let gitCommit: string | null = null;
+  try {
+    gitCommit = execSync('git rev-parse HEAD', { cwd: ROOT, encoding: 'utf8' }).trim() || null;
+  } catch { gitCommit = null; }
+  const stampPath = path.join(DIST_WEB, 'bolloon-web.json');
+  const pkgVersion = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8')).version;
+  await fs.writeFile(stampPath, JSON.stringify({
+    schema: 'bolloon-mobile-web/1',
+    version: String(pkgVersion),
+    channel: 'stable',
+    build: 'stable',
+    commit: gitCommit,
+    builtAt: new Date().toISOString(),
+    layer: 'web',
+    note: 'web 资源层构建戳 (手机端 OTA 的身份第 ③ 级回退; 装机后以 OTA state.json 为准)',
+  }, null, 2) + '\n');
+  console.log('[build-web] 构建戳 →', path.relative(ROOT, stampPath));
+
   console.log('[build-web] 完成!');
 }
 

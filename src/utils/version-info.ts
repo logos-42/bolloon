@@ -27,97 +27,35 @@ import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { resolveBolloonHome } from '../setup/setup-store.js';
 import { renderRuntimeLines, type RuntimeReport } from './runtime-bootstrap.js';
-
-export const PKG_NAME = '@bolloon/bolloon-agent';
-export const CONSTRAINT_PKG_NAME = '@bolloon/constraint-runtime';
-/** npm registry (可用 BOLLOON_NPM_REGISTRY 指向镜像/内网; 末尾斜杠统一去掉) */
-export const NPM_REGISTRY_BASE = (process.env.BOLLOON_NPM_REGISTRY || 'https://registry.npmjs.org').replace(/\/+$/, '');
-export const UPSTREAM_REPO = 'https://github.com/logos-42/bolloon';
-
-export const INSTALL_METHODS = [
-  'npm-global', 'npm-local', 'source-git', 'release-binary', 'development', 'unknown',
-] as const;
-export type InstallMethod = typeof INSTALL_METHODS[number];
-
-export const UPDATE_SOURCES = ['npm', 'github-release', 'git', 'unknown'] as const;
-export type UpdateSource = typeof UPDATE_SOURCES[number];
-
-export const UPDATE_CHANNELS = ['stable', 'beta', 'dev'] as const;
-export type UpdateChannel = typeof UPDATE_CHANNELS[number];
-
-/** 发行通道: 环境变量 > 配置 > stable。npm 只有 `latest` (stable) 一个 dist-tag, beta/dev 暂走同一标签。 */
-export function resolveUpdateChannel(explicit?: string): UpdateChannel {
-  const raw = (explicit || process.env.BOLLOON_UPDATE_CHANNEL || '').trim().toLowerCase();
-  if (raw === 'stable' || raw === 'beta' || raw === 'dev') return raw;
-  return 'stable';
-}
-
-/** dist-tag 映射: stable → latest; beta/dev 暂与 stable 同源 (明说, 不假装有独立通道)。 */
-export function distTagForChannel(channel: UpdateChannel): string {
-  return channel === 'beta' ? 'beta' : 'latest';
-}
-
-// ── 双源 (update-protocol §12, 2026-09-25) ──────────────────────────────────
-//
-// stable: npm registry (`dist-tags.latest`) 是**权威**, GitHub Release/Tag 是**交叉校验源**;
-// dev   : GitHub `master` HEAD 是**唯一源**, 版本身份 = `<package.json 版本>+dev.<commit sha 前 7>`。
-//
-// 两条硬口径 (从这里开始, 全局只有这一份):
-//   ① 两套版本比较语义**显式分开** —— stable 比 semver, dev 比 commit sha (`ChannelKind`)
-//   ② 源不可达 / 版本不存在 → **拒绝并说清**, 不许静默装回旧版 (§12.5)
-
-/** GitHub 上游 (owner/repo) —— 与 UPSTREAM_REPO 同一处, 这里给 API 用。 */
-export const GITHUB_UPSTREAM_SLUG = 'logos-42/bolloon';
-/** GitHub API 根 (可被 BOLLOON_GITHUB_API 覆盖 → 受控假 API / 企业实例)。 */
-export const GITHUB_API_BASE = (process.env.BOLLOON_GITHUB_API || 'https://api.github.com').replace(/\/+$/, '');
-/** dev 通道盯的分支 (冻结: master)。 */
-export const DEV_BRANCH = 'master';
-export const DEV_REF = `refs/heads/${DEV_BRANCH}`;
+import {
+  PKG_NAME, CONSTRAINT_PKG_NAME, UPSTREAM_REPO, GITHUB_UPSTREAM_SLUG,
+  INSTALL_METHODS, UPDATE_SOURCES, UPDATE_CHANNELS, CHANNEL_KINDS,
+  DEV_BRANCH, DEV_REF, DEV_IDENTITY_SEP, DEV_CHANNEL_WARNING, DEV_BACK_TO_STABLE_HINT,
+  NPM_REGISTRY_BASE, GITHUB_API_BASE,
+  resolveUpdateChannel, distTagForChannel, channelKindOf, devIdentity, baseVersionOf,
+  isDevIdentity, devShaFromIdentity, parseVersion, compareVersions, isKnownVersion,
+  checkExitCode, REFUSED_STATUSES, CHECK_STATUSES, describeSourceIdentity,
+  envValue,
+  type InstallMethod, type UpdateSource, type UpdateChannel, type ChannelKind, type CheckStatus,
+} from './version-identity.js';
 
 /**
- * 版本比较语义 (显式, 不是隐含约定):
- *   semver  —— stable: 按 semver 数值段比大小
- *   git-ref —— dev: **不用 semver**, 只判"是否同一 commit / 是否落后"
+ * 版本身份 / 通道 / 结论分类的**纯词汇表**已抽到 `version-identity.ts` (2026-09-26),
+ * 这里原样再导出 —— 既有 import 路径 (`from './version-info.js'`) 一行都不用改,
+ * 手机端 (无 node:) 直接 import 那份纯模块即可, 两边共用同一套语义。
  */
-export const CHANNEL_KINDS = ['semver', 'git-ref'] as const;
-export type ChannelKind = typeof CHANNEL_KINDS[number];
-
-export function channelKindOf(channel: UpdateChannel): ChannelKind {
-  return channel === 'dev' ? 'git-ref' : 'semver';
-}
-
-/** dev 快照身份里的后缀标记 (`0.4.33+dev.a1b2c3d`)。 */
-export const DEV_IDENTITY_SEP = '+dev.';
-
-/** dev 快照身份 —— 用 commit sha (不是 semver) 当身份, 版本号只作参考展示。 */
-export function devIdentity(baseVersion: string, sha: string): string {
-  return `${baseVersionOf(baseVersion)}${DEV_IDENTITY_SEP}${String(sha).slice(0, 7)}`;
-}
-
-/**
- * dev 通道的**唯一一句警告** (§12.4 硬约束 1) —— 检查 / 计划 / 执行三处打印同一句话。
- * 定义在这里 (唯一事实层), 由 dual-source / update-manager / CLI 复用, 不允许各处自己造一句。
- */
-export const DEV_CHANNEL_WARNING = '⚠️ dev 通道 = GitHub master HEAD 的即时快照 (未走发布门): 可能中断正在跑的 Goal/Run, 且不保证可回滚到上一个 dev 版。';
-/** 一键回 stable 的提示语 (同一份措辞)。 */
-export const DEV_BACK_TO_STABLE_HINT = '一键回稳定版: bolloon update now --channel stable';
-
-/** 去掉 `+dev.<sha>` 后缀, 拿到基础版本号 (stable 目标的比对基准)。 */
-export function baseVersionOf(v: string | null | undefined): string {
-  return String(v || '').split(DEV_IDENTITY_SEP)[0].trim();
-}
-
-/** 这个版本号是不是一个 dev 快照身份。 */
-export function isDevIdentity(v: string | null | undefined): boolean {
-  return String(v || '').includes(DEV_IDENTITY_SEP);
-}
-
-/** 从 dev 身份里取 commit sha (前 7 位); 不是 dev 身份返回 null。 */
-export function devShaFromIdentity(v: string | null | undefined): string | null {
-  if (!isDevIdentity(v)) return null;
-  const sha = String(v).split(DEV_IDENTITY_SEP)[1]?.trim();
-  return sha ? sha : null;
-}
+export {
+  PKG_NAME, CONSTRAINT_PKG_NAME, UPSTREAM_REPO, GITHUB_UPSTREAM_SLUG,
+  INSTALL_METHODS, UPDATE_SOURCES, UPDATE_CHANNELS, CHANNEL_KINDS,
+  DEV_BRANCH, DEV_REF, DEV_IDENTITY_SEP, DEV_CHANNEL_WARNING, DEV_BACK_TO_STABLE_HINT,
+  NPM_REGISTRY_BASE, GITHUB_API_BASE,
+  resolveUpdateChannel, distTagForChannel, channelKindOf, devIdentity, baseVersionOf,
+  isDevIdentity, devShaFromIdentity, parseVersion, compareVersions, isKnownVersion,
+  checkExitCode, REFUSED_STATUSES, CHECK_STATUSES, describeSourceIdentity,
+};
+export type {
+  InstallMethod, UpdateSource, UpdateChannel, ChannelKind, CheckStatus,
+};
 
 // ── 包根定位 ────────────────────────────────────────────────────────────────
 
@@ -617,13 +555,10 @@ export function describeUpdateLine(info: VersionInfo): string {
   }
 }
 
-/** 双源身份那一行 (谁装的 / 哪个 sha / 能切回哪) —— `--version` 与 `update status` 共用同一份措辞。 */
-export function describeSourceIdentity(info: Pick<VersionInfo, 'packageVersion' | 'installedDevSha' | 'switchableTo' | 'channel' | 'channelKind'>): string {
-  const src = info.installedDevSha ? 'dev (GitHub master 快照)' : 'stable (npm registry)';
-  const ident = info.installedDevSha ? `commit ${info.installedDevSha}` : baseVersionOf(info.packageVersion);
-  const back = info.switchableTo ? ` · 可切回 ${info.switchableTo.channel} (${info.switchableTo.source})` : '';
-  return `当前安装源: ${src} · 版本/commit: ${ident} · 比较语义: ${info.channelKind}${back}`;
-}
+/**
+ * 双源身份那一行 (谁装的 / 哪个 sha / 能切回哪) —— 已在 `version-identity.ts` (唯一一份,
+ * 桌面 `--version` 与 `update status` 共用同一份措辞)。这里只留注释, 避免出现第二份实现。
+ */
 
 export function renderVersionText(info: VersionInfo, opts: { verbose?: boolean } = {}): string {
   if (opts.verbose) {

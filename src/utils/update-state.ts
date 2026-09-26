@@ -18,28 +18,15 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import { resolveBolloonHome } from '../setup/setup-store.js';
+import { CHECK_STATUSES, type CheckStatus, type UpdatePrefs } from './version-identity.js';
 
 // ── 枚举 (冻结: 出口/状态都不许临时造词) ────────────────────────────────────
-
-/**
- * 一次"检查"的结论。**9 个值就是全部**, 不认识的一律落进 registry_unavailable 并带原因。
- *
- * 2026-09-25 (update-protocol §12.3, 双源): **只增不改** —— 新增 2 个, 错误分类**不合并**:
- *   github_unavailable     GitHub 不可达 / 403·429 限流 / 没有 Release / 没有 master
- *   cross_check_mismatch   stable 下 npm 与 GitHub 指向不同版本 (两个源的事实都摆出来)
- */
-export const CHECK_STATUSES = [
-  'up_to_date',              // 确认最新
-  'update_available',        // 有新版本
-  'check_skipped',           // 节流/显式跳过, 结论来自缓存
-  'offline',                 // 网络不可达 (≠ 最新)
-  'registry_unavailable',    // 可达但拿不到有效数据 (5xx / 包不存在 / 无 dist-tags)
-  'local_version_unknown',   // 读不到本地版本 (不猜 0.0.0)
-  'unsupported_installation',// 认得出本地版本, 但这种安装方式不支持自动更新
-  'github_unavailable',      // GitHub 源不可用 (offline / rate_limited / not_found / http_error)
-  'cross_check_mismatch',    // npm 与 GitHub 两个源不一致 → 拒绝更新
-] as const;
-export type CheckStatus = typeof CHECK_STATUSES[number];
+//
+// 2026-09-26: 结论枚举与 UpdatePrefs 的结构定义抽到 `version-identity.ts` (纯模块, 无 node:)。
+// **只有一个原因**: 手机端 WebView 里没有 `fs`/`os`, 但手机端必须用**同一份**结论语义
+// (9 个结论 + REFUSED_STATUSES 的拒绝口径)。这里原样再导出, 既有 import 路径不变。
+export { CHECK_STATUSES };
+export type { CheckStatus, UpdatePrefs };
 
 /** 一次"更新执行"的流水线状态。 */
 export const UPDATE_RUN_STATUSES = [
@@ -78,20 +65,6 @@ export interface UpdateRecord {
   status: UpdateRunStatus;
   durationMs?: number;
   reason?: string;
-}
-
-export interface UpdatePrefs {
-  /** 启动时后台检查 (默认开) */
-  checkUpdates: boolean;
-  /** 自动安装 (默认关 —— 长期运行/Supervisor/支付恢复不能被自动换运行时打断) */
-  autoInstall: boolean;
-  /** 装完自动重启 (默认关) */
-  autoRestart: boolean;
-  channel: 'stable' | 'beta' | 'dev';
-  /** 检查节流 (小时) */
-  checkIntervalHours: number;
-  /** 每项开关的来源: 'config' | 'env' | 'default' */
-  sources: Record<'checkUpdates' | 'autoInstall' | 'autoRestart' | 'channel', 'config' | 'env' | 'default'>;
 }
 
 export interface UpdateLockInfo {

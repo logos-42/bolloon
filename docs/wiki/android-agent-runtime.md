@@ -273,3 +273,30 @@ Ghost (io.github.ghost-in-the-droid/android-agent): Android+iOS Agent 框架, 62
 
 - 代码: `android/app/src/main/java/com/hibs/bolloon/` (BolloonAccessibilityService / AndroidAgentTools / AgentLoop / RemoteLlm / ShizukuManager / LlmBackend / AgentRuntimeHolder)
 - 参考: https://a2ui.org/specification/v1.0-a2ui/ (UI 渲染) + AOHP/AutoDroid (arXiv)
+
+
+## 原生构建与 web 资源层 OTA (2026-09-26)
+
+### 本轮结论 (一条一条, 不修粉)
+
+| 项 | 结论 | 证据 / 卡在哪 |
+| --- | --- | --- |
+| **未签名 IPA** | ✅ **真构建出来了** | `bash scripts/ios-unsigned-ipa.sh` exit 0 → `build/ipa/Bolloon-unsigned.ipa` (**10 MB**) · 壳内 `Info.plist` 读出来 `CFBundleShortVersionString = 0.5.0` / `CFBundleIdentifier = com.hibs.bolloon` / `CFBundleVersion = 500` · 壳里带 `public/mobile.html` + `mobile.js` + `mobile-core.js` + `bolloon-web.json` (那就是 OTA 要替换的"第一份") |
+| **debug APK** | ❌ **本机造不出来** | 本机**没有 Java 运行时** (`java -version` → "Unable to locate a Java Runtime") + **没有 Android SDK** (`ANDROID_HOME`/`ANDROID_SDK_ROOT` 未设, `~/Library/Android/sdk` 不存在) → `android/app/build.gradle` 改好版本也编译不了。**要 leo 装 JDK + Android SDK**, 或换一台有 Android 工具链的机器 |
+| **版本对齐 (npm `0.5.0`)** | ✅ 三处对齐, 有门 | `versionName '0.5.0'` · `versionCode 500` (= `major*10000+minor*100+patch`) · iOS `MARKETING_VERSION = 0.5.0` + `CURRENT_PROJECT_VERSION = 500` → `node scripts/check-native-artifacts.mjs` 逐条核 |
+| **真机 (真手机) 验收** | ❌ **做不了, 要 leo 插设备** | 本机 macOS 13 **无签名环境、无真机**。上面 IPA 是**未签名**的, 本身**不能直接双击安装** (要 AltStore / SideStore / 自己的 Apple ID 签); 所以"装到手机上真的能跑"这一跳**没验** |
+| **web 资源层在真浏览器里能起来** | ✅ 真验过 | `scripts/verify-mobile-update-ui.ts` 用真 headless Chrome 把 OTA 下来的资源**真加载进 iframe** (28 通过 / 0 失败) —— 但这是**真浏览器**, 不等于**真手机 WebView** |
+
+### 手机端现在**怎么**更新 (2026-09-26 之前 → 之后)
+
+- **之前**: `dist/web` 是**烤进二进制**的 —— 装完那一刻是什么界面, 就永远是那个界面 (想换只能重装 APK / 上新 TestFlight)。
+- **之后**: 多了一层"**能被替换的 web 资源层**"。壳里的那份是**出厂第一份**, 之后可以 OTA 换成新的; 原生壳层 (二进制) 仍然只能走商店/侧载。
+- 完整规格 (身份 · 下载校验 · 原子替换 · 验证可启动 · 失败回滚 · 拒绝语义 · 智能体边界) 写在 [update-protocol.md §13](./update-protocol.md)。
+
+### 打包前必查 (沿用 §"重新打包" 那一节, 本轮增补)
+
+```bash
+node scripts/check-native-artifacts.mjs        # ① 三处版本对齐 + 产物内容自检 (IPA/APK 在就查, 不在就如实说"未构建")
+bash scripts/ios-unsigned-ipa.sh               # ② 未签名 IPA (需 Xcode)
+cd android && ./gradlew assembleDebug          # ③ debug APK (需 JDK + Android SDK)
+```

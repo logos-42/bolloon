@@ -37,6 +37,45 @@ import * as mobileTaskViews from '../agents/mobile-task-views.js';
 // 公开文本红线 (与桌面 task-group 同一份规则表: 页面渲染前最后一道自检)
 import { scanPublicText } from '../agents/task-public-text.js';
 
+// 2026-09-26: 手机端 web 资源层**双源 OTA 更新** (npm + GitHub; 与桌面 `bolloon update` 同语义)
+import {
+  checkMobileUpdate, prepareMobileUpdate, applyMobileUpdate, rollbackMobileUpdate,
+  autoPrepareMobileUpdate, readMobileUpdateState, resolveLocalWebIdentity,
+  renderMobileUpdateReport, createAutoWebStore, storedMobileChannel,
+  setMobileUpdateChannel, reloadMobileWeb, nativeWired,
+  MOBILE_WEB_STATUSES, MOBILE_REFUSED_STATUSES, MOBILE_WEB_REQUIRED_FILES,
+  WEB_LAYOUT, MOBILE_UPDATE_AGENT_CONTRACT, NATIVE_CEILING_LINE,
+  type MobileUpdateDeps, type WebResourceStore,
+} from './mobile-update.js';
+
+// ============ 手机端 OTA 的装配 (store / 通道 / 壳层身份) ============
+// store 只建一次: 它是"可写 web 资源目录"的句柄, 每次重建会让 IPC 句柄白费
+let __webStore: WebResourceStore | null = null;
+function currentWebStore(): WebResourceStore {
+  if (!__webStore) __webStore = createAutoWebStore();
+  return __webStore;
+}
+/** 壳层注入的构建戳 (真机由原生侧 / 内置 bolloon-web.json 提供; 拿不到就不猜) */
+function injectedWebIdentity(): { version: string; channel?: 'stable' | 'dev' } | null {
+  const v: any = (globalThis as any).__bolloonWebIdentity;
+  if (v && typeof v === 'object' && typeof v.version === 'string' && v.version) {
+    return { version: v.version, channel: v.channel === 'dev' ? 'dev' : v.channel === 'stable' ? 'stable' : undefined };
+  }
+  return null;
+}
+function mobileUpdateDeps(opts: any = {}): MobileUpdateDeps {
+  return {
+    // 透传: 壳层/验收可以覆盖 registryBase / apiBase / devBundleUrl / devBundleSha256 / fetchImpl …
+    // (只有 store / 通道 / 身份 / 壳层判据由本层接管 —— 那几项是"设备说了算"的)
+    ...opts,
+    store: currentWebStore(),
+    channel: opts.channel || storedMobileChannel() || undefined,
+    localIdentity: opts.localIdentity !== undefined ? opts.localIdentity : injectedWebIdentity(),
+    nativeWritable: opts.nativeWritable !== undefined ? opts.nativeWritable : undefined,
+    onStage: opts.onStage,
+  };
+}
+
 // ============ 事件总线 (替代 SSE) ============
 
 type BusHandler = (msg: any) => void;
@@ -934,6 +973,55 @@ export const core = {
     /** 最近一条操作提示 */
     hint(): string { return mobileTasks.getTaskHint(core.contacts.storage()); },
     setHint(text: string): void { mobileTasks.setTaskHint(text, core.contacts.storage()); },
+  },
+
+  /**
+   * web 资源层双源 OTA 更新 (2026-09-26, update-protocol §13) — 与桌面 `bolloon update` 同语义:
+   *   ① 身份: stable = npm dist-tag 权威 + GitHub Tag 交叉校验; dev = master `ref` + commit sha, 身份 `<版本>+dev.<sha7>`
+   *   ② 拒绝: 源不可达 / 版本不存在 / 交叉校验不一致 ⇒ **拒绝并说清分类**, 绝不静默装回旧版、绝不假装成功
+   *   ③ 可见: 当前装的是哪个源 / 哪个 sha / 能切回哪个源 (与桌面同措辞)
+   *   ④ 智能体: check/plan/download/verify 可程序调用; **switch / reload / rollback / 切通道必须人确认**
+   *
+   * 天花板 (不许承诺做不到的): iOS 原生壳层**不能自更** (App Store 规则) —— 自更的只是 web 资源层;
+   * 二进制要走商店 / TestFlight。Android 侧载 APK 可自更但要用户允许未知来源 (显式告知 + 人在环)。
+   */
+  update: {
+    /** 结论/阶段枚举与拒绝表 (给 UI 与智能体做判断, 不用猜字符串) */
+    vocabulary() {
+      return {
+        statuses: MOBILE_WEB_STATUSES.slice(),
+        refused: MOBILE_REFUSED_STATUSES.slice(),
+        requiredFiles: MOBILE_WEB_REQUIRED_FILES.slice(),
+        layout: { ...WEB_LAYOUT },
+        nativeCeiling: NATIVE_CEILING_LINE,
+        agentContract: MOBILE_UPDATE_AGENT_CONTRACT,
+      };
+    },
+    /** 可写 web 资源目录接上没有 (真机: 原生壳要指向它才生效) */
+    nativeWired(): boolean { return nativeWired(mobileUpdateDeps()); },
+    /** 当前 web 层的身份/来源/能切回谁 (读 state + 壳层注入的构建戳) */
+    async state() { return readMobileUpdateState(currentWebStore()); },
+    async identity() { return resolveLocalWebIdentity(mobileUpdateDeps()); },
+    /** 检查两源 (只读, 不下载任何东西) */
+    async check(opts: any = {}) { return checkMobileUpdate(mobileUpdateDeps(opts)); },
+    /** 检查 + 说明 (报告行: 与桌面 `update --status` 同口径) */
+    async report(opts: any = {}) {
+      const r = await checkMobileUpdate(mobileUpdateDeps(opts));
+      const st = await readMobileUpdateState(currentWebStore());
+      return { result: r, lines: renderMobileUpdateReport(r, st) };
+    },
+    /** 下载 → 解压 → 落 staging → 验证可启动; **不切换** (智能体能自动跑到这一步) */
+    async prepare(opts: any = {}) { return autoPrepareMobileUpdate(mobileUpdateDeps(opts)); },
+    /** 切换 (人在环: 必须 confirm) → 原子替换 + 失败回滚; 成功后提示重载 */
+    async apply(opts: any = {}) { return applyMobileUpdate({ ...mobileUpdateDeps(opts), confirm: opts.confirm === true, reuseStaging: opts.reuseStaging === true }); },
+    /** 回滚到 previous (人在环) */
+    async rollback(opts: any = {}) { return rollbackMobileUpdate({ ...mobileUpdateDeps(opts), confirm: opts.confirm === true }); },
+    /** 切换通道 (stable ↔ dev; 只写偏好, 不装东西) */
+    async setChannel(channel: string) { return setMobileUpdateChannel(channel, currentWebStore()); },
+    /** 当前通道偏好 */
+    channel(): string { return storedMobileChannel() || 'stable'; },
+    /** 重载 web 层让新资源生效 (人在环) */
+    async reload() { return reloadMobileWeb(); },
   },
 
   message: {
