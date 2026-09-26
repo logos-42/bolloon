@@ -300,3 +300,18 @@ node scripts/check-native-artifacts.mjs        # ① 三处版本对齐 + 产物
 bash scripts/ios-unsigned-ipa.sh               # ② 未签名 IPA (需 Xcode)
 cd android && ./gradlew assembleDebug          # ③ debug APK (需 JDK + Android SDK)
 ```
+
+## 手机侧验收脚本的前置条件 (2026-09-25 主线实测补记)
+
+**这四个门没有前置就会全红, 且红得不像"环境问题"** —— 它们是**对着一个已经在跑的本地宿主**做的 UI 验收, 不是自包含单测:
+
+| 脚本 | 需要的前置 | 缺前置时的表现 |
+|---|---|---|
+| `scripts/verify-mobile-privacy.ts` | **8899 上已有 web 宿主**(脚本自己不起, `listen=0` 却引用 8899) | `打不开 http://127.0.0.1:8899/mobile.html: net::ERR_CONNECTION_REFUSED`, exit=1 |
+| `scripts/verify-mobile-network-ui.ts` | 同上 | 同上 |
+| `scripts/verify-mobile-join-e2e.ts` | **真节点 + LLM**(会起 supervisor-host / OrbitDB 注册表 / HealthMonitor) | `CDP 命令超时: Page.navigate (30000ms)`, exit=1 |
+| `scripts/verify-mobile-x402-ui.ts` | **真卖方 + 已发布的付费信息** | 15/19, 未过 4 条全在付费链上(元数据 sheet / 402 如实 / 购买并验真 / 对端未发布), exit=1 |
+
+**自包含、可以裸跑的**(无前置):`scripts/verify-mobile-tasks-ui.ts`(41/0) · `scripts/verify-mobile-agent-trace.ts`(exit 0) · `scripts/verify-mobile-update*.ts`(59/0 · 真 Chrome 28/0)。
+
+**教训(给以后的自己)**: 看到这四个门 exit=1 **先查 `lsof -nP -iTCP:8899 -sTCP:LISTEN`** —— 没人监听就是前置缺失, 别急着归因成"我改坏了源码"(失败形态是 `ERR_CONNECTION_REFUSED` 这类**连接层**错误时, 与源码改动没有因果关系)。要拿铁证再做基线对照(在改动前的提交上跑同一个门)。
