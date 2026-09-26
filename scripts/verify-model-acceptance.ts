@@ -28,7 +28,18 @@
  *   npx tsx scripts/verify-model-acceptance.ts            # 跑全部 16 条
  *   npx tsx scripts/verify-model-acceptance.ts 1 4 7 12   # 只跑指定条 (调试用; 报告会标 partial)
  *
- * 退出码: 0 = 16 条全过 (含反事实臂都符合预期); 1 = 有条目红; 2 = 脚本自身崩了。
+ * 退出码: 0 = 16 条全过 (含门内真跑的反事实臂都符合预期; 被标 SKIP 的外部臂不计红绿);
+ *         1 = 有条目红; 2 = 脚本自身崩了。
+ *
+ * ## 反事实的两种: 门内真跑 / SKIP + 引证 (口径自洽, 2026-09-26 修)
+ *
+ * · **门内跑得到的臂一律真跑** —— 把旧行为原样执行一次。第 12 条"把跨进程锁拿掉"这一臂就是这样:
+ *   用子进程的 `holdwrite { lock: false }` 真的跑一次**不带锁**的 read-modify-write (旧行为),
+ *   与带锁那一次并排放同一个窗口里量时间 (实测 无锁 ~5ms / 带锁 ~910ms)。
+ * · **门内跑不到的臂 = 必须在源码级改掉被测实现才看得到** —— 第 12 条要把 `withConfigLock` 空转
+ *   与配置签名恒等**同时**改坏才会真丢更新 (只拿掉锁: 签名新鲜度那层仍在重读, 实测改动没丢)。
+ *   验收门不改**自己被测的源码** ⇒ 这种臂在裸跑时**显式 SKIP**, 输出里写出**为什么跑不到** +
+ *   **引证外部脚本的真输出** (变异脚本 M4), 并且**不允许**它把裸跑判红。
  */
 
 import * as fs from 'fs';
@@ -62,8 +73,15 @@ delete process.env.BOLLOON_SESSION_KEY;
 /** 假上游地址 (main 里起好之后填; 后面几个条目要用) */
 let A_BASE = '';
 let D_BASE = '';
-/** 变异脚本跑完后由环境变量传进来 (变异脚本自己真跑本门, 这里只把结论记进报告) */
-const MUTATION_M4_RED = process.env.BOLLOON_ACCEPTANCE_M4_RED === '1';
+
+/**
+ * 第 12 条那个"外部臂"的引证 = 变异脚本 M4 的**真输出** (人工粘进来的, 不是本门算出来的)。
+ * 规矩: 每次重跑 `python3 scripts/verify-model-acceptance-mutations.py --only M4` 后数字若变了,
+ * 这一行跟着改 —— 它是**引证**, 门内真跑的部分是 item12 的 (a)~(d)。
+ */
+const M4_CITATION = '变异脚本 M4 真输出 (`python3 scripts/verify-model-acceptance-mutations.py --only M4 --repeat 3`, 2026-09-26 连跑 3 遍): '
+  + '3/3 判红, 红项条目每次都是 **[5, 12]**; 第 12 条的红项 = `❌ (c) 并发切换必须等到锁释放之后才写完 (实测等待 9ms / 9ms / 11ms)` (3 遍全红), '
+  + '另有 `❌ (a) 进程 2 的改动活着 — providers.openai.model=stubA-1` (3 遍里只红 1 遍, 调度抖动 —— (a) 这一条**不算稳定**, 判红靠的是 (c))';
 
 const ONLY = process.argv.slice(2).map((s) => Number(s)).filter((n) => Number.isFinite(n));
 const CHILD = 'scripts/lib/model-acceptance-child.ts';
@@ -82,6 +100,12 @@ interface Counterfactual {
   /** 真跑到的结果 */
   observed: string;
   ok: boolean;
+  /** 'pass' = 门内真跑出来的结论; 'skip' = 这条臂必须在**源码级**改掉被测实现才跑得到 ⇒ 裸跑时显式 SKIP */
+  status: 'pass' | 'skip';
+  /** status='skip' 时: 为什么本门内跑不到 (要说得出实测依据) */
+  skipReason?: string;
+  /** status='skip' 时: 外部证据引证 (哪个脚本哪一条 + 它的真输出) */
+  citation?: string;
 }
 interface ItemReport {
   id: number;
@@ -107,7 +131,18 @@ function chk(it: ItemReport, label: string, cond: boolean, evidence = ''): boole
   return !!cond;
 }
 function cf(it: ItemReport, arm: string, expected: string, observed: string, ok: boolean): void {
-  it.counterfactuals.push({ arm, expected, observed: String(observed).slice(0, 900), ok: !!ok });
+  it.counterfactuals.push({ arm, expected, observed: String(observed).slice(0, 900), ok: !!ok, status: 'pass' });
+}
+/**
+ * 门内**跑不到**的反事实臂: 必须在源码级改掉被测实现才看得到 (例: 第 12 条要把锁与配置签名
+ * 同时改坏)。验收门不改自己被测的源码 ⇒ 显式 SKIP + 写出理由 + 引证外部脚本的真输出。
+ * SKIP 的臂**不参与**红绿判定 (裸跑必须 exit 0), 但它在输出里缺一行都不行 (口径自洽门会判红)。
+ */
+function cfSkip(it: ItemReport, arm: string, expected: string, skipReason: string, citation: string): void {
+  it.counterfactuals.push({
+    arm, expected, observed: '(门内不跑 — 见 SKIP 理由与引证)', ok: false, status: 'skip',
+    skipReason: String(skipReason).slice(0, 900), citation: String(citation).slice(0, 900),
+  });
 }
 function art(it: ItemReport, s: string): void { if (!it.artifacts.includes(s)) it.artifacts.push(s); }
 
@@ -390,7 +425,7 @@ async function main(): Promise<void> {
   // ────────────────────────────────────────────────────────
   if (want(11)) await item11(A, B, MS, MP, RS, GS, runChild);
   // ────────────────────────────────────────────────────────
-  if (want(12)) await item12(A, B, C, E, MS, runChild);
+  if (want(12)) await item12(A, B, C, E, MS, runChild, CS);
   // ────────────────────────────────────────────────────────
   if (want(13)) await item13(B, runChild);
   // ────────────────────────────────────────────────────────
@@ -405,30 +440,57 @@ async function main(): Promise<void> {
 
   // ── 打印 ─────────────────────────────────────────────────
   const totalChecks = report.items.reduce((n, i) => n + i.checks.length, 0);
-  const totalCf = report.items.reduce((n, i) => n + i.counterfactuals.length, 0);
+  // 反事实分两种: 门内真跑 (参与红绿) 与 外部臂 SKIP (源码级变异才跑得到, 不参与红绿)
+  const allCf = report.items.flatMap((i) => i.counterfactuals);
+  const realCf = allCf.filter((c) => c.status !== 'skip');
+  const skippedCf = allCf.filter((c) => c.status === 'skip');
+  const totalCf = realCf.length;
   const redChecks = report.items.flatMap((i) => i.checks.filter((c) => !c.ok).map((c) => `[${i.id}] ${c.label} — ${c.evidence}`));
-  const redCf = report.items.flatMap((i) => i.counterfactuals.filter((c) => !c.ok).map((c) => `[${i.id}] 反事实 ${c.arm} — 期望: ${c.expected}; 实到: ${c.observed}`));
+  const redCf = report.items.flatMap((i) => i.counterfactuals.filter((c) => c.status !== 'skip' && !c.ok).map((c) => `[${i.id}] 反事实 ${c.arm} — 期望: ${c.expected}; 实到: ${c.observed}`));
 
   console.log('\n' + '─'.repeat(72));
   for (const it of report.items) {
-    const cfOk = it.counterfactuals.length === 0 || it.counterfactuals.every((c) => c.ok);
+    const real = it.counterfactuals.filter((c) => c.status !== 'skip');
+    const skip = it.counterfactuals.filter((c) => c.status === 'skip');
+    const cfOk = real.every((c) => c.ok);
     const pass = it.checks.every((c) => c.ok) && cfOk;
     console.log(`\n[${String(it.id).padStart(2, '0')}] ${it.title} — ${pass ? 'PASS' : 'FAIL'} (${it.checks.filter((c) => c.ok).length}/${it.checks.length} 断言`
-      + `${it.counterfactuals.length ? ` · 反事实 ${it.counterfactuals.filter((c) => c.ok).length}/${it.counterfactuals.length} 符合预期` : ''})`);
+      + `${real.length ? ` · 反事实 ${real.filter((c) => c.ok).length}/${real.length} 符合预期` : ''}`
+      + `${skip.length ? ` · ${skip.length} 条外部臂 SKIP` : ''})`);
     console.log(`     做法: ${it.method}`);
     for (const c of it.checks) console.log(`     ${c.ok ? '✅' : '❌'} ${c.label}${c.evidence ? ` — ${c.evidence}` : ''}`);
     for (const c of it.counterfactuals) {
-      console.log(`     ${c.ok ? '↔' : '❌'} 反事实: ${c.arm}`);
-      console.log(`        期望: ${c.expected}`);
-      console.log(`        实到: ${c.observed}`);
+      if (c.status === 'skip') {
+        console.log(`     ↷ 反事实 (SKIP·门内跑不到, 不计红绿): ${c.arm}`);
+        console.log(`        SKIP 理由: ${c.skipReason}`);
+        console.log(`        引证: ${c.citation}`);
+      } else {
+        console.log(`     ${c.ok ? '↔' : '❌'} 反事实: ${c.arm}`);
+        console.log(`        期望: ${c.expected}`);
+        console.log(`        实到: ${c.observed}`);
+      }
     }
     if (it.artifacts.length) console.log(`     产物: ${it.artifacts.join(' · ')}`);
+  }
+
+  // ── 第 12 条口径 (机器可读的一行; 口径自洽门按这一行判红绿) ────
+  const it12 = itemById.get(12);
+  if (it12) {
+    const skip12 = it12.counterfactuals.filter((c) => c.status === 'skip');
+    const inline12 = it12.checks.filter((c) => c.label.includes('(d)'));
+    const ok12 = it12.checks.every((c) => c.ok) && it12.counterfactuals.every((c) => c.ok || c.status === 'skip');
+    console.log(`\n第 12 条口径: ${ok12 ? 'PASS' : 'FAIL'} — 门内真跑断言 ${it12.checks.filter((c) => c.ok).length}/${it12.checks.length}`
+      + (inline12.length ? ` (含 (d) 内联反事实 ${inline12.filter((c) => c.ok).length}/${inline12.length}: 锁拿掉 → 互斥消失)` : '')
+      + (skip12.length ? ` · 外部臂 ${skip12.length} 条 SKIP (源码级变异才跑得到, 理由 + 引证写在条目里)` : ' · 无外部臂'));
   }
 
   // ── 判定 ─────────────────────────────────────────────────
   for (const it of report.items) {
     for (const c of it.checks) if (!c.ok) fail(it.id, c.label, c.evidence);
-    for (const c of it.counterfactuals) if (!c.ok) fail(it.id, `反事实 ${c.arm}`, `期望 ${c.expected} / 实到 ${c.observed}`);
+    for (const c of it.counterfactuals) {
+      if (c.status === 'skip') continue;   // 外部臂: 引证在输出里, 不参与裸跑红绿
+      if (!c.ok) fail(it.id, `反事实 ${c.arm}`, `期望 ${c.expected} / 实到 ${c.observed}`);
+    }
   }
 
   const partial = ONLY.length > 0;
@@ -436,7 +498,8 @@ async function main(): Promise<void> {
   await fsp.writeFile(outPath, JSON.stringify({ ...report, partial, only: ONLY }, null, 2), 'utf-8');
 
   console.log('\n' + '='.repeat(72));
-  console.log(`verify-model-acceptance: 条目 ${report.items.length}/16 · 断言 ${totalChecks - redChecks.length}/${totalChecks} 过 · 反事实 ${totalCf - redCf.length}/${totalCf} 符合预期`);
+  console.log(`verify-model-acceptance: 条目 ${report.items.length}/16 · 断言 ${totalChecks - redChecks.length}/${totalChecks} 过 · 反事实 ${totalCf - redCf.length}/${totalCf} 符合预期`
+    + (skippedCf.length ? ` · ${skippedCf.length} 条外部臂 SKIP (源码级变异才跑得到, 理由 + 引证写在条目里: ${skippedCf.map((c) => c.arm.match(/M4/) ? 'M4' : '见条目').join(',')})` : ''));
   console.log(`模型调用 (真 HTTP 打到本地假上游, **非真 LLM**): ${report.modelCalls} 次 · 成本 0`);
   console.log(`报告 JSON: ${outPath}${partial ? ` (partial: 只跑了 ${ONLY.join(',')})` : ''}`);
   if (redChecks.length || redCf.length) {
@@ -1004,7 +1067,7 @@ async function item11(A: Stub, B: Stub, MS: any, MP: any, RS: any, GS: any, runC
 // 第 12 条: 两个进程同时切配置 → 不互相覆盖
 // ============================================================
 
-async function item12(A: Stub, B: Stub, C: Stub, E: Stub, MS: any, runChild: any): Promise<void> {
+async function item12(A: Stub, B: Stub, C: Stub, E: Stub, MS: any, runChild: any, CS: any): Promise<void> {
   const it = startItem(12, '两个进程同时切配置 → 不互相覆盖',
     '(a) 同时起**两个真进程**各切一家 (deepseek / openai), 各写各的 model, 然后读盘看两家的改动是不是都在; '
     + '(b) 一个进程持跨进程锁做 read-modify-write (中间故意停 900ms), 同时父进程再切第三家 —— 两边的改动都必须活下来。');
@@ -1067,16 +1130,57 @@ async function item12(A: Stub, B: Stub, C: Stub, E: Stub, MS: any, runChild: any
     tDone >= heldUntil,
     `${kv('父进程写完', String(tDone))} ${kv('对方临界区结束', String(heldUntil))} ${kv('等待', `${tDone - tAttempt}ms`)} · 本次切换 ok=${duringHold.ok}`);
 
-  cf(it,
-    '反事实对照 (跨进程互斥那两条机制一起拿掉 —— 由变异脚本 `verify-model-acceptance-mutations.py` 的 M4 执行: '
-    + '① `withConfigLock` 空转 (不真建锁文件) ② 配置签名恒等 (不再看文件变没变))',
-    '同一份门在那两个变异下必须**判红** (两个进程各读旧配置 → 后写的把先写的整份覆盖掉)',
-    '见变异脚本输出: M4 → 本门判红 (红项里包含第 12 条)',
-    MUTATION_M4_RED === true);
-  art(it, '反事实证据由 scripts/verify-model-acceptance-mutations.py 的 M4 提供 (输出摘录见 wiki 报告)');
+  // (d) 反事实臂 —— 门内**真跑** (不靠外部脚本, 见文件头"反事实的两种"):
+  //     把跨进程锁从这一次 read-modify-write 里**拿掉** —— 子进程 `holdwrite { lock: false }` 就是
+  //     **旧行为**: 同样的 read-modify-write, 但一步都不经过 `withConfigLock`。同一个窗口里, 父进程
+  //     再做一次与 (c)"持锁那一段"**逐句相同**的写 (withConfigLock → invalidate → initialize → updateProvider)。
+  //     带锁那一次 (c): 父进程**必须等到窗口结束**才写完; 拿掉锁: 父进程在窗口**里面**就写完了 ——
+  //     于是 (c) 的"必等"不是空话, 是那个锁换来的 (本次两条并排数字都在证据里)。
+  const marker2 = path.join(TMP, 'lock-absent.marker');
+  const noLock = runChild({ mode: 'holdwrite', target: { provider: 'glm', model: 'no-tool-model' }, holdMs: 900, lock: false, markerPath: marker2 });
+  const waitMarker2 = Date.now() + 20000;
+  while (!fs.existsSync(marker2) && Date.now() < waitMarker2) await new Promise((r) => setTimeout(r, 10));
+  const t2Attempt = Date.now();
+  await MS.withConfigLock(async () => {
+    CS.llmConfigStore.invalidate();
+    await CS.llmConfigStore.initialize();
+    await CS.llmConfigStore.updateProvider('qwen', { model: 'lock-absent-1', enabled: true });
+  });
+  const t2Done = Date.now();
+  const noLockRes = await noLock;
+  const noLockT0 = Number(noLockRes.out?.t0 || 0);
+  const noLockT1 = Number(noLockRes.out?.t1 || 0);
+  const noLockWindowMs = noLockT1 - noLockT0;
+  const waitedNoLock = Math.max(0, t2Done - t2Attempt);
+  const waitedLocked = Math.max(0, tDone - tAttempt);
+  chk(it, '(d) 反事实臂 (真跑, 门内): 不带锁的那个临界区真的开了窗口 (子进程在临界区里停 900ms, 标记已落盘)',
+    fs.existsSync(marker2) && noLockWindowMs >= 500,
+    `${kv('marker', String(fs.existsSync(marker2)))} ${kv('窗口', `${noLockWindowMs}ms`)} ${kv('子进程 lock', String(noLockRes.out?.lock))}`);
+  const mutualExclusionAbsent = t2Done < noLockT1;
+  chk(it, '(d) **内联反事实**: 把跨进程锁拿掉 (= 旧行为: 不带锁的 read-modify-write) → 互斥**消失**, 父进程在窗口里就写完了',
+    mutualExclusionAbsent,
+    `拿掉锁这次只等 ${waitedNoLock}ms (父进程写完 ${t2Done} < 对方临界区结束 ${noLockT1}) · 对照 (c) 带锁那次等了 ${waitedLocked}ms`);
+  chk(it, '(d) 只拿掉锁**还丢不了**改动 —— 签名新鲜度那层仍在兜底 (这就是下面那条 SKIP 的实测依据)',
+    rowModel('qwen') === 'lock-absent-1' && rowModel('glm') === 'no-tool-model',
+    `${kv('providers.qwen.model', rowModel('qwen'))} ${kv('providers.glm.model', rowModel('glm'))} ${kv('拿掉锁那次等的', `${waitedNoLock}ms`)}`);
+
+  // 门内跑不到的臂: 要**真丢更新**, 必须把"锁"和"配置签名新鲜度"**一起**在源码级改坏 (变异脚本 M4)。
+  // 门不能改自己被测的源码 ⇒ 显式 SKIP + 理由 (带实测依据) + 引证 M4 的真输出。
+  cfSkip(it,
+    '反事实对照 (互斥的**两条**机制一起拿掉 → 真丢更新; 只能在**源码级**由变异脚本 `verify-model-acceptance-mutations.py` 的 M4 执行: '
+    + '① `withConfigLock` 空转 (不真建锁文件) ② `config-store` 的配置签名恒等 (不再按文件变化重读))',
+    'M4 那两个变异下同一道门必须**判红** (红项里含第 12 条)',
+    '本门内跑不到: 验收门不改**自己被测的源码**(那是变异脚本的活)。实测依据在 (d): 只把锁拿掉时, 父进程的写与无锁进程的写虽然**重叠**了 (拿掉锁只等 ' + waitedNoLock + 'ms), '
+    + '但 `updateProvider` 里的 `initialize()` 仍会按文件签名重读到盘上最新的一份 → qwen/glm 两格改动都活着 ⇒ "锁没了" ≠ "改动丢了"。'
+    + '要真把改动丢掉必须**同时**把签名改成恒等 (内存里那份陈旧配置整份写回) —— 那是改 `src/llm/config-store.ts`, 正是 M4 干的事。',
+    M4_CITATION);
+  art(it, '反事实: (d) 的"拿掉锁"臂在门内真跑 (子进程 `holdwrite { lock:false }` + 父进程 withConfigLock 里逐句相同的写); '
+    + '另一臂(两条机制一起拿掉)由 scripts/verify-model-acceptance-mutations.py 的 M4 在源码级执行, 真输出引证见上');
+  art(it, `第 12 条口径: 门内真跑 (a)(b)(c)(d) 全过 + 1 条外部臂 SKIP 并引证 (裸跑 exit 0 靠这条口径成立)`);
 }
 
-// 变异脚本跑完后由环境变量传进来 (测试纪律: 变异脚本自己真跑本门, 这里只汇报它红没红)
+// 第 12 条那条"外部臂"(两条互斥机制一起拿掉)由变异脚本 M4 在**源码级**执行 —— 本门不改自己被测的源码,
+// 所以门内只做两件事: ① 真跑"锁拿掉"那一臂 (item12 的 (d)); ② 把 M4 的真输出当**引证**写进报告 (cfSkip)。
 
 // ============================================================
 // 第 13 条: 旧 llm-config.json 可迁移

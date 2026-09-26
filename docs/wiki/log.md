@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-26 | test | **P8 验收门口径自洽 (第 12 条): 反事实臂"能内联的真跑 / 跑不到的显式 SKIP + 引证" —— 裸跑 exit 1 → **exit 0** 且第 12 条 `PASS` 明明白白; 并立了一道能判红的门 (M6) 钉住这条口径** —— 判定是**先跑出来再下结论**: 探针把"持锁 900ms 窗口"分别用 `holdwrite { lock: true }` 与 `{ lock: false }` 各跑 3 遍, 带锁那次父进程等到窗口结束 (**917 / 906 / 924ms**)、拿掉锁那次 **5 / 6 / 4ms** 就在窗口里写完了 ⇒ "锁被拿掉"这一臂**确定性可测 ⇒ 内联真跑**; 但**只拿掉锁不丢改动** (签名新鲜度那层仍按文件重读, qwen/glm 两格 3/3 都活着) ⇒ "两条机制**一起**拿掉 → 真丢更新"这一臂**门内跑不到** (要同时把配置签名改恒等 = 源码级变异), 于是**显式 SKIP + 写出理由 + 引证变异脚本 M4 的真输出**, 那条"由环境变量填的外部反事实位"**整个删掉** (连同 `BOLLOON_ACCEPTANCE_M4_RED`)。**门内新增 (d) 三条真跑判决** (不带锁的临界区真开了窗口 · 拿掉锁 → 互斥消失 1ms vs 916ms · 只拿掉锁改动不丢), 断言 103 → **106**; 输出新增机器可读口径行 `第 12 条口径: PASS …`; 条目行 = `[12] 两个进程同时切配置 → 不互相覆盖 — PASS (14/14 断言 · 1 条外部臂 SKIP)`。**新门 M6**: 变异脚本先跑**裸跑口径门** (exit 0 + 那两行 + SKIP 的**理由与引证**四样缺一不可), 再把第 12 条口径**改回"外部位"写法** → 裸跑立刻红 (断言 105/106, 红项 **[12]**, 红在 `(d) **内联反事实**`) ⇒ 拿掉这条口径修正, 门必红。**M4 稳定性 (`--repeat 3`)**: 3/3 判红, 红项条目每次都是 **[5, 12]** (判红条数 2/3/2, 差异全在第 12 条内的 **(a) 并发臂** —— 3 遍里只红 1 遍; **"该红的条目"稳定, (a) 单条不算稳定**, 如实标)。**门禁**: 裸跑 exit 0 · 基线门绿 · 变异 **6/6 判红** (含 M6) · `tsc --noEmit` 0 错 · 八道 `verify-model-*` + `verify-cli-quiet` 全绿 · 冻结门 34/34 · 全量 vitest 见 §收尾 | [model-selection-acceptance.md §3/§5](./model-selection-acceptance.md) / [verify-model-acceptance.ts](../../scripts/verify-model-acceptance.ts) / [verify-model-acceptance-mutations.py](../../scripts/verify-model-acceptance-mutations.py) |
 | 2026-09-26 | test | **模型切换 P8 终验收口: 用户点名的 16 条端到端验收在**当前集成树**上逐条真跑 → **16/16 条目 · 103/103 断言 · 16/16 反事实对照** + 变异 **5/5 判红** (每条红在它该红的条目上), **0 次真 LLM / 成本 0** (5 台本地假上游, key 全 `stub-*`)**: ① CLI `/model` 真切真命中 (真 `src/cli-entry.ts` argv 进程 + **同进程内运行时真被换掉** → 下一次请求 `reply=pong:B:stubB-1`, A 这一轮 +0 笔) ② 同 provider 只切 model → 假上游逐笔请求体 `stubB-1`→`stubB-2`, 盘上只这一格变 ③ 自定义 base URL (`/weird/path/v9/` 尾斜杠规范化) 真命中该路径, A/B 一笔没收到 ④ 错 key (401)/错 URL/错 model/畸形 URL 四类全拒, 四次失败前后配置 `sha256[:16]` **逐字相同** (`d1fa2c48…`), 且一次**正确**切换必须让 sha 变 (判别力自证) ⑤ 真 CLI 进程 ⇄ 真 Web HTTP (`express`+`registerLlmConfigRoutes`) 两个方向读到**同一份** (`configHash` 同值), 诱饵 `llm-config.json` 被两个入口无视 ⑥ 两个**全新进程**读到同一 `configHash` 且真打请求命中 ⑦ 会话级切换后全局字节**一个都没变** + 绑定落 `model-sessions.json` (无 key 明文) + 别的会话仍读全局 + 该会话真命中 A + 会话级带凭证被拒 `credential_scope_conflict` ⑧ Global 切完**新**会话跟着变 (老会话仍读自己的绑定) ⑨ 执行中切全局 → 盘上 Run 快照逐字段没变 (用 `detectRunConfigDrift` 反向证明"确实已漂"并点名 4 字段) ⑩ `resolveNextRunModel` → 新 Run 快照 = 新模型, 旧 Run 未改写 ⑪ 真 `ExecutionSupervisor.tickOnce` 交给执行器的 `req.modelConfig` = **pinned 那份** (不是刚切的全局) 且 `kind=resume`; 按 Run 快照 `applyRunModelConfigToRuntime` 真装配后真打请求命中快照那台 ⑫ 屏障发令两个真进程同时切 + 持锁 900ms 窗口 + **互斥时序判决 (实测等锁 928ms)** ⑬ 旧 `llm-config.json` **逐字节**迁移 (旧/新 sha 相同) ⑭ `/models` 翻真 404: provider 不被静默删 (`unavailable`+原因)、缓存 `live-m1` 与手输 `manual-m9` 仍可用 (清缓存后 `live-m1` 消失 = 缓存在兜) ⑮ 拒绝工具声明的模型被拒 `tool_call_unsupported` 且盘上不变 + 注册表 `toolCalling=no` 不许当长期任务执行器/不进备用候选 ⑯ 失败后同进程与另起进程都仍命中旧模型 (反事实: 不回滚 → 用不了) | [model-selection-acceptance.md](./model-selection-acceptance.md) / [verify-model-acceptance.ts](../../scripts/verify-model-acceptance.ts) / [verify-model-acceptance-mutations.py](../../scripts/verify-model-acceptance-mutations.py) / [model-acceptance-child.ts](../../scripts/lib/model-acceptance-child.ts) |
 | 2026-09-26 | feat | **模型入口收敛 (P6): 补齐五个 Web 端点 (`providers`/`options`/`test`/`select`/`discover`) + 旧接口 (`/api/llm-config` · `/api/llm-provider` · `/api/llm-test`) **保留形状但内部转发到唯一写口** (整个路由文件里 `selectModel(` 只剩 1 处) · 命令面挂上 P5 发现能力 (`/model refresh [provider]` · `/model refresh --clear` · `/model list [provider]` · 手输模型 → `admitManualModel`) · **自定义供应商 id 进得来** (存在性判据从内置表改注册表, 缺口㈡结清) · Agent 配置工具/安装向导/长任务恢复**(用 Run 自己那份快照)**同一入口 · 真跑证明「CLI 命令面 · 会话内 `/model` · 真 Web 路由」三者切到同一选择后读回**逐字段相同**的有效配置 (11 字段 + `configHash` 全同, 三个入口三个进程 + 读回另起进程) · 真跑新门 **59/0** (Web 侧真起 `createWebServer`, 冷启动 ~114s) + 变异 **3/3 判红** (旧接口绕过 3 红 / 自定义退回内置表 11 红 / `refresh` 空转 2 红) · 既有七门 55/0 · 51/0 · 89/0 · 81/0 · 50/0 · 44/0 · 36/0 + 飞轮冻结门 34/34 全绿** | [model-selection-protocol.md §9](./model-selection-protocol.md) / [routes-llm-config.ts](../../src/web/routes-llm-config.ts) / [verify-model-entrypoints.ts](../../scripts/verify-model-entrypoints.ts) / [setup-wizard.ts](../../src/cli/setup-wizard.ts) / [model-selection.ts](../../src/llm/model-selection.ts) / [pi-sdk-tools.ts](../../src/agents/pi-sdk-tools.ts) / [onboard.ts](../../src/setup/onboard.ts) |
 | 2026-09-26 | feat | **模型接线收口 (四根线一次插上: P4 探测原语接进 `selectModel` + 失败分类映射表 · P7 四处钩子 · P3 自定义供应商进 `/model` 列表 · 客户端鉴权头读注册表): 探测 7 类 → 入口 15 类**一类不丢** (含 `tool_call_unsupported`), 未映射**不退化成「切换失败」** · 真跑新门 **89/0** + 变异 **5/5 判红** (丢类 7 红 / 退化 1 红 / **在跑 Run 被新默认改写** 2 红 / 鉴权头不看注册表 2 红 / **往已收尾的 Run 上追加事件** 4 红) · 既有门全绿: 55/0 · 51/0 · 36/0 · 50/0 · 44/0 · 81/0 · 飞轮冻结门 34/34** | [model-selection-protocol.md §8](./model-selection-protocol.md) / [verify-model-wiring.ts](../../scripts/verify-model-wiring.ts) / [model-wiring-serial.test.ts](../../src/test/model-wiring-serial.test.ts) / [model-selection.ts](../../src/llm/model-selection.ts) / [execution-supervisor.ts](../../src/agents/execution-supervisor.ts) |
@@ -4526,3 +4527,38 @@ npx tsx scripts/verify-model-acceptance.ts 1 4 7 12   # 只跑指定条目
 python3 scripts/verify-model-acceptance-mutations.py  # 5 条变异各真跑一遍门 (~4min)
 python3 scripts/verify-model-acceptance-mutations.py --only M4
 ```
+
+### 收尾追加 (2026-09-26 · P8 第 12 条口径自洽) —— 只追加, 上面任何一行都没改
+
+**① 判定 (先跑出来再下结论, 不两边都说)**
+
+- 探针 (隔离 HOME + 真子进程) 把"持锁 900ms 窗口"分别用 `holdwrite { lock: true }` 与 `{ lock: false }` 各跑 3 遍:
+  带锁那次父进程的并发写等到窗口结束 (**917 / 906 / 924ms**), 拿掉锁那次 **5 / 6 / 4ms** 就在窗口里写完了。
+  ⇒ 互斥的**存在性**在同一窗口里是**确定性可测**的 ⇒ **"锁被拿掉"这一臂内联真跑** (就是门内的 (d))。
+- 同一探针量"丢不丢改动": **只拿掉锁时 qwen / glm 两格改动都活着 (3/3)** —— `updateProvider` 里的 `initialize()`
+  仍按文件签名重读盘上最新那份。⇒ "互斥**两条**机制一起拿掉 → 真丢更新"这一臂**门内跑不到**
+  (要同时把 `src/llm/config-store.ts` 的签名改成恒等 = 源码级变异; 验收门不改自己被测的源码) ⇒ **显式 SKIP + 写理由 + 引证**。
+- 界线只有一条: **"这道门自己跑得到吗"** —— 跑得到的真跑, 跑不到的 SKIP + 引证变异脚本的真输出。
+
+**② 改了什么** (只动 `scripts/verify-model-acceptance.ts` · `scripts/verify-model-acceptance-mutations.py`)
+
+- 门: 新增 **(d) 三条真跑判决** (不带锁的临界区真开了窗口 · 拿掉锁 → 互斥消失 · 只拿锁 → 改动不丢);
+  反事实记录分 `pass` / `skip` 两种, `skip` 渲染成 `↷ 反事实 (SKIP·门内跑不到) + SKIP 理由 + 引证`, **不参与红绿**;
+  输出多一行机器可读口径行 `第 12 条口径: PASS …`; 删掉 `MUTATION_M4_RED` 与那个"由环境变量填的外部反事实位"。断言 103 → **106**。
+- 变异脚本: 新增 **A) 裸跑口径门** (exit 0 + `[12] … — PASS` + `第 12 条口径: PASS` + SKIP 的**理由与引证**四样缺一不可)
+  与 **M6** (把第 12 条口径改回"外部位"写法 → 裸跑必须红); 新增 `--repeat N` 如实刻画稳定性; 不再给被测门设任何开关。
+
+**③ 门禁 (真跑, 2026-09-26 15:33–15:45)**
+
+- `npx tsx scripts/verify-model-acceptance.ts` → **exit 0** · `条目 16/16 · 断言 106/106 过 · 反事实 15/15 符合预期 · 1 条外部臂 SKIP`
+- `python3 scripts/verify-model-acceptance-mutations.py` → 基线绿 + **6/6 判红**: M1 `[1,2,3,4,5,9,16]` · M2 `[3,4,15,16]` · M3 `[7]` · M4 `[5,12]` · M5 `[15]` · **M6 `[12]`**
+- `--only M4 --repeat 3` → **3/3 判红, 红项条目每次都是 `[5, 12]`** (判红条数 2 / 3 / 2)
+- `npx tsc --noEmit` **0 错** · 七道 `verify-model-*` 门 **55/0 · 51/0 · 36/0 · 89/0 · 81/0 · 59/0** + 本门 **16/16·106/106** · `verify-cli-quiet` **12 passed / 0 failed** · 冻结门 **34/34**
+- 全量 `npx vitest run` **245 文件 / 3980 测全绿** (91s)
+- 零源码改动: `src/**` 一个字节没动 (只动两个验收脚本 + 本页 + log.md)。
+
+**④ 如实留下**
+
+- "这一臂门内跑不到"这个判断是**人**写进代码的 (依据是实测), 不是机器证明的; M6 钉的是"口径有没有被退回", 不是"这个判断对不对"。
+- 第 12 条的 **(a) 并发臂在 M4 下仍抖动** (3 遍里只红 1 遍) —— M4 的稳定判红靠 **(c) 互斥时序判决** (9 / 9 / 11ms), 不假装 (a) 稳定。
+- 上面那行 P8 条目仍写着 `103/103 · 16/16 反事实` (当次事实, 历史行不改): [model-selection-acceptance.md §1/§3/§5](./model-selection-acceptance.md) 已按本次口径更新为 **106/106 + 15/15 真跑 + 1 条外部臂 SKIP**。
