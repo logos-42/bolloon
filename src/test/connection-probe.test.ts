@@ -363,9 +363,12 @@ describe('真 HTTP 服务器: 七类失败逐类造出来', () => {
     } finally { await ollama.close(); }
 
     // ② 在目录端点回 Gemini 形状
-    const gem = await startStub((_q, res) => json(res, 200, { models: [{ name: 'models/gemini-1.5-pro' }] }));
+    //    ⚠ 这里的 model id 必须用**允许清单里**的: `prepublishOnly` 的 `smoke:esm` 会扫
+    //    `src/` 里所有**带引号**的 gemini id (注释里的也算), EOL 的 1.5 系 id 在禁用集里,
+    //    写进去就拒绝出包。本用例只关心"目录形状 → protocol_mismatch", 与具体 id 无关。
+    const gem = await startStub((_q, res) => json(res, 200, { models: [{ name: 'models/gemini-2.5-pro' }] }));
     try {
-      const r = await CP.probe({ providerId: 'openai', baseUrl: `${gem.origin}/v1`, protocol: 'openai-compatible', model: 'gemini-1.5-pro', apiKeyRef: 'none', timeoutMs: 3000 });
+      const r = await CP.probe({ providerId: 'openai', baseUrl: `${gem.origin}/v1`, protocol: 'openai-compatible', model: 'gemini-2.5-pro', apiKeyRef: 'none', timeoutMs: 3000 });
       expect(r.ok).toBe(false);
       expect(r.failureClass).toBe('protocol_mismatch');
       expect(r.message).toContain('gemini');
