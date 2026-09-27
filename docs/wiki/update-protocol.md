@@ -562,6 +562,43 @@ detail = npm latest=0.5.0 在 GitHub 上有同名记录 (Tag v0.5.0) — 两个�
 4. tag 指向 `493d8d5`, wiki 回写落在随后一个 docs 提交 → tag 与 HEAD 不再重合; `verify-release.mjs` 的 `git_tag` 是**软门**, 之后跑会显示 ⚠️ (不是发布坏了, 是回写在 tag 之后)。
 5. 匿名 GitHub API 配额只有 60 次/小时 (本次全程真调) —— 环境约束, 且按设计 **stable 侧不该被 GitHub 阻塞** (npm 仍是权威)。
 
+## 12.10 发布记录: `@bolloon/bolloon-agent@0.5.1` (2026-09-27) —— **tag 指向的那份源码就是出包的那份**
+
+### 发的是什么
+
+| 项 | 值 |
+| --- | --- |
+| 版本号 | **`0.5.0` → `0.5.1`** (patch) |
+| 内容 | ① **CLI 启动面**: 面板第一帧之前**真 0 行** (启动期进度行不再刷屏) + **真降级折进面板告警** (IPFS/DID 发布失败 · Kubo · P2P · iroh · bootstrap 一并对齐 `bootNotice`) · ② 面板几何: 每帧行数 == 终端高 · 输入行号恒 22 · 跟随可暂停 · ③ `/copy` **真落系统剪贴板** (走被测代码挑的 `pbcopy`, 门独立 `pbpaste` 读回) · ④ 会话内 `/model` **打字即筛** / 退格逐字复原 / 每帧 ≤ 16 行 · ⑤ **回复流卫生** (内部运行日志不进回复流; 黑名单 16 串 0 命中) · ⑥ 供应商目录驱动 **223 家** (离线可用) |
+| tag | annotated **`v0.5.1`** → commit **`8efb696`** (= `npm publish` 那一刻工作区那一版; `prepublishOnly` 就从这个树重建 dist) |
+| 产物 | **1613 文件** · `package size 19.6 MB` / `unpacked 47.6 MB` · `shasum 483c6336712d690261be138bbf2dba1979f6776b` |
+| 为什么是 patch | 本批**没有新命令行面/新选项**, 全是修 + 口径收口 (启动面输出 · 回复流 · 剪贴板 · 筛选) ⇒ semver 就是 patch; 与仓内"功能批次也走 patch"的习惯一致。 |
+
+### 发布判据 (七步逐条真查, 全过)
+
+| # | 判据 | 真输出 |
+| --- | --- | --- |
+| 1 | `dist-tags.latest` 真前进 | 发布前 `{"latest":"0.5.0"}` → 发布后 **`latest=0.5.1`** (本轮**没有**等到 5 分钟暂存, 第 1 次轮询就翻); `verify-release.mjs` 读到 registry 共 **144 个版本** |
+| 2 | 版本直连 HTTP | `registry.npmjs.org/@bolloon%2Fbolloon-agent` → **200** |
+| 3 | packument `dist.tarball` **真下载** + shasum 逐字对上 | 真下载 **19,646,772 字节** → 本地 SHA-1 `483c6336712d690261be138bbf2dba1979f6776b` **== packument `dist.shasum`** (也与 publish 时 tarball 明细逐字相同) |
+| 4 | `tar -tzf` 入口 + **新能力真在包里** | 1613 条; `package.json`(0.5.1 · `main=dist/cli-entry.js`) / `bin/bolloon.cjs` / `dist/cli-entry.js` / `dist/web/client.js` 都在; **新能力真在包里**: `dist/index.js` 里 **`bootNotice` 19 处** · `startupPanelFirst` 3 处; `dist/cli/reply-hygiene.js` · `startup-notice.js` · `clipboard.js` · `log-gate.js` 全在 |
+| 5 | **全新空目录**消费者安装 | 空目录 `npm i @bolloon/bolloon-agent@0.5.1` → exit 0 · **`^npm warn` 行数 = 0** · 装出 0.5.1 · `./node_modules/.bin/bolloon --version` → **`Bolloon Agent v0.5.1`** (安装方式 `npm-local` · 通道 stable) |
+| 6 | 拿新版**回环重跑**双源验收 | `npx tsx scripts/verify-dual-source.ts` → **63 PASS / 0 FAIL / 0 SKIP** (exit 0): dev 身份 **`0.5.1+dev.8efb696`** 真装真启动 · 一键回 stable 磁盘真变回 `0.5.1` (留痕 `from=0.5.1+dev.8efb696 → to=0.5.1`) · `--status` 三态说清源 + sha。脚本 `FROM_VERSION` **随 latest 前移到 `0.5.1`** (它自己的注释写着"必须等于当前 latest, 否则 dev 身份前缀断言必红") |
+| 7 | 仓内发布后硬门 (补充) | `node scripts/verify-release.mjs 0.5.1 --install-check` → **13/13 · 硬门全过 (1 项提醒)**: 唯一提醒是"工作区干净"(那时 `FROM_VERSION` 前移尚未提交 = 就是这条记录本身) |
+| 8 | tag | annotated **`v0.5.1` → `8efb696`**, 已 `git push origin v0.5.1` |
+
+### 这一轮发布前**真拦下来**的两件事 (不是绕过, 是修)
+
+1. **`prepublishOnly` 本来就是红的**: `smoke:esm` 会扫 `src/` 里**带引号**的 gemini id (注释里的也算), 而 `src/test/connection-probe.test.ts` 的夹具用了 EOL 的 `gemini-1.5-pro` (禁用集) ⇒ **出包被自家门拒**。夹具只关心"目录回的是 Gemini 形状 → protocol_mismatch", 与具体 id 无关 → 换成允许清单里的 `gemini-2.5-pro`。**禁用集/允许集一行没动** (不是把门改宽换绿); 修完 `smoke:esm` **PASS** (37 literal(s) verified)。
+2. **wiki 占位符**: `log.md` 里本轮那两处 `{{GATES}}` / `{{RESERVED}}` 全填成**真数字**。
+
+### 如实留下的 (没做到 / 有保留)
+
+1. **`verify-cli-quiet` 整轮跑红 2 条, 都是 A6**: 那一轮子进程在 120s 窗口内**压根没走到** `initPiAI` (`[PiAIModel]` 一行都没出, 停在 `[1/5]`–`[4/5]` 那一段) ⇒ 是"错误**还没发生**"不是"被吞"; `--only-a6` 单跑 **1/0** 且原文逐字在屏 (`[PiAIModel] Error reading apiKey from config: SyntaxError …`)。整轮连红两次 (A6 在结果里记两条)、单跑两次都绿 ⇒ 分类 **环境/时序类**, **本轮没修**, 也**没当绿**。改动本身在 `--web` 面是 no-op (`startupPanelFirst` 只在交互 CLI 分支置位)。
+2. **`verify-mobile-model-sync` 的红仍挂着** (陈旧 IPA `0.5.0` vs `npm=0.5.1`) —— 要 Xcode 重打, 本轮**没打**。
+3. **tag 之后还有提交**: 这条发布记录 + `FROM_VERSION` 前移落在 tag 之后 (与 `0.5.0` 同一形状), 所以之后再跑 `verify-release.mjs` 的 `git_tag` 会显示"tag 与 HEAD 不一致"的提醒 —— 那是回写在 tag 之后, 不是发布坏了。
+4. **tarball 里仍有 `hermes` 字样**: 1613 个文件里 100+ 个命中 (形如注释 `(TaskM2, hermes sync 模式)` · `Session id (Hermes 风格: …)`) —— 这是**产品早就有的字面** (已发布的 `0.5.0` 包里**同样命中且逐字相同**), 不是本轮产物引入; 本轮的提交信息/wiki/发布记录里**没有**该字样。没删是因为它落在仓内既有特性命名 (88 个源文件), 超出本轮范围。
+
 ## 13. 手机端: **web 资源层**双源 OTA (2026-09-26) —— 已落地
 
 > 一句话: 手机 App 里**能自己换新的那一层**, 是**界面与逻辑 (web 资源层)**; 原生壳层 (二进制) **不在**这里换。

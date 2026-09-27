@@ -31,7 +31,7 @@ import { renderStatusReport, renderCheckResult } from '../src/cli/update-command
 import type { InstallationInfo } from '../src/utils/version-info.js';
 
 const PKG = '@bolloon/bolloon-agent';
-const FROM_VERSION = '0.5.0';           // npm 上已发布的当 "from" 版本 (2026-09-25 从 0.4.33 前移到 0.5.0 —— 本脚本的 from 必须等于**当前 latest**, 否则 dev 身份前缀断言必红)
+const FROM_VERSION = '0.5.1';           // npm 上已发布的当 "from" 版本 (2026-09-27 从 0.5.0 前移到 0.5.1 —— 本脚本的 from 必须等于**当前 latest**, 否则 dev 身份前缀断言必红)
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 
 let pass = 0; let fail = 0; let skipped = 0;
