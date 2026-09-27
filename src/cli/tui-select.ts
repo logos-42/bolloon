@@ -10,23 +10,35 @@
  *   · 七步各写一套渲染 = 七份会各自腐烂的代码。
  * 所以本模块提供**一个**选择器组件 + 一个掩码输入组件, 七步共用 (调用方只给候选与标题)。
  *
- * ## 四条同级的一等选择方式 (不是"主/次", 谁都别退化成脚本专用)
+ * ## 六种同级的一等选择方式 (不是"主/次", 谁都别退化成脚本专用)
  *
- *   ① `↑` / `↓`  移动光标行 (行首 `→` + 反白高亮), 到边上自动滚窗;
- *   ② `Enter`    确认当前光标行;
- *   ③ **数字跳选** 直接敲 `12` = 跳到第 12 项 (高亮当场跟过去, 状态行 `第 i/N` 同时变),
- *      多位数逐位收窄 (先 `1` 再 `2` = 跳到 12), 越界**说清范围**而不是静默不动;
- *   ④ **字母/`/` 筛选** 敲字符/`/` 进入过滤 (大小写不敏感, 匹配 id/名字/族), 过滤后**序号按新序重排**
- *      且状态行 `已筛 M` 真变; 空查询 = 回全量, `Backspace` 逐字退。
+ *   ① `↑` / `↓`  移动光标行 (行首 `→` + **accent 底/深色字**高亮), 到边上自动滚窗;
+ *   ② `Enter`    确认当前光标行 (**落在分组标题上 = 展开/收起那一组**, 不会误选);
+ *   ③ **数字跳行** 直接敲 `12` = 跳到第 12 行 (高亮当场跟过去, 状态行 `第 i/N` 同时变),
+ *      多位数逐位收窄, 越界**说清范围**而不是静默不动;
+ *   ④ **字母/`/` 筛选** 敲字符/`/` 进入过滤 (大小写不敏感, 匹配 id/名字/族), **命中项平铺** ——
+ *      收起的分组也挡不住命中 (等价于"自动展开命中的那一组"); `Backspace` 逐字退, 空 = 回全量;
+ *   ⑤ **分组折叠** `空格` 切换 / `←` 收起 / `→` 展开 —— 光标在哪一组就作用于哪一组
+ *      (标题行上直接按也行); 收起的分组**只占一行且照写家数** (`── 未配置凭据 (200 家) ›`);
+ *   ⑥ **滚动指示** 视窗上下边各一行 `↑ 上面还有 N 家` / `↓ 下面还有 N 家`; 视窗外的行**根本不画**。
  *
  * 取消: `Esc` / `Ctrl-C` 随时干净取消; 列表末尾还有一行 `Cancel` 可移动过去 + `Enter` 取消;
- * 查询为空时 `q` 也取消 (查询非空时 `q` 只是过滤字符 —— 否则"敲字母筛"与"q 取消"会打架)。
+ * 查询为空时 `q` 也取消, 空格=折叠 (查询非空时 `q`/空格只是过滤字符 —— 否则"敲字筛"与快捷键会打架)。
+ *
+ * ## 为什么是"固定高度视窗 + 可折叠分组" (leo 2026-09-27 口径)
+ *
+ * 候选集是**全部家** (内置 + 自定义 + 整个目录 ≈ 233 家), 一屏画不完是必然的 ——
+ * 但**不能靠藏家数来让页面放得下**: 中间候选区高度固定 (`min(12, 终端高-头尾)`),
+ * 只画可见的那几行; 其余靠滚动/搜索/折叠消化。折叠只决定"画不画成员行",
+ * 家数永远写在标题上, 搜索也一定搜得到 —— 折叠是可逆的排版, 不是隐藏。
  *
  * ## 符号 + 颜色**双通道** (leo 的要求: 不许只靠颜色)
  *
  * 语义全部先写在**符号/文字**里 (`●` 可用 / `○` 未配置 / `← 当前` / `special (需专用鉴权, 未支持)` /
- * `无基址 …` / `内置|自定义|目录`), 颜色只是加速扫视的第二通道。所以 `NO_COLOR` / `TERM=dumb` /
- * 非终端下, 把颜色整个关掉也**仍然分得清** —— 有真终端字节的验收门钉住这一条。
+ * `无基址 …` / `内置|自定义|目录`), 颜色只是加速扫视的第二通道 —— 且颜色**只有一个来源**:
+ * `./theme.ts` 的 `THEME` token (与 Web UI 同一套 bolloon 色系), 本文件一个 hex 字面量都没有。
+ * `NO_COLOR` / `TERM=dumb` / 非终端下关掉颜色也**仍然分得清** —— 有真终端字节的验收门钉住这两条。
+
  *
  * ## 降级 (三条路径, 都要能走)
  *
@@ -43,7 +55,7 @@
  * 掩码输入的值只活在内存里, 从不进屏幕/日志/报告 —— 屏幕上只有 `•` 与长度。
  */
 
-import { THEME, fg } from './theme.js';
+import { THEME, fg, bg, colorEnabled, TONE_TOKEN, type Tone } from './theme.js';
 
 // ============================================================
 // ANSI 原语 (散落的转义码只在这里)
@@ -51,7 +63,7 @@ import { THEME, fg } from './theme.js';
 
 const E = '\x1b';
 const RESET = `${E}[0m`;
-/** 反白 (当前光标行的高亮底色 —— 同时是验收门可结构判定的"高亮"信号) */
+/** 反白 (当前光标行的高亮: 结构判据 + 无真彩时的兜底) */
 const REVERSE = `${E}[7m`;
 const BOLD = `${E}[1m`;
 const HIDE_CURSOR = `${E}[?25l`;
@@ -61,22 +73,46 @@ const ERASE_DOWN = `${E}[J`;
 /** 清到行末 (每一行都用它, 免得窄终端里残留上一帧的长尾巴) */
 const ERASE_EOL = `${E}[K`;
 
-/** 行语义色 (只有加速扫视的作用; 语义本体在符号里) */
-export type TuiTone = 'ok' | 'warn' | 'dim' | 'accent' | 'plain';
+/**
+ * 行色调 → bolloon 调色板 token (唯一颜色事实源是 `theme.ts`)。
+ *
+ * 颜色只是**第二通道**: 语义本体永远写在 label 的符号/文字里 (●/○/← 当前/special/无基址),
+ * 所以 `NO_COLOR` / `TERM=dumb` / 非终端下关掉颜色, 信息一点都不丢。
+ */
+export type TuiTone = Tone;
 
-const TONE: Record<TuiTone, string> = {
-  ok: fg(THEME.ok),
-  warn: fg(THEME.warn),
-  dim: fg(THEME.dim),
-  accent: fg(THEME.accent),
-  plain: '',
-};
+/** 调子 → 前景 SGR。表**从 `theme.ts` 的 `TONE_TOKEN` 生成**, 这里不再写第二份映射。 */
+const TONE: Record<TuiTone, string> = Object.fromEntries(
+  (Object.keys(TONE_TOKEN) as Tone[]).map((t) => [t, t === 'plain' ? '' : fg(THEME[TONE_TOKEN[t]])]),
+) as Record<TuiTone, string>;
 
-/** 帮助行 —— 四种一等选择方式 + 取消, 全都写出来 (leo 口径) */
-export const TUI_HINT = '↑↓ 移动 · Enter 确认 · / 搜索 · 数字跳选 · Esc 取消';
+/**
+ * 光标行的高亮 SGR (2026-09-27 leo 口径: 切换界面上色, 别灰白)。
+ *
+ * 写法刻意是 **REVERSE + accent 前景 + muted 底**: 反白会把前景/底色互换, 于是实际渲染出来是
+ * **accent 底 + muted 灰字** —— bolloon 主色块 + 深色字, 对比度够。为什么不直接 `bg(accent)`:
+ * 反白序列是**结构判据** (验收门靠 `ESC[7m…ESC[0m` 认"哪一行是高亮"), 拿掉它等于把可核证据删了。
+ * 无真彩时 (`color=false`) 整段不上, 只剩 `→ ` 前缀 —— 符号通道不依赖颜色。
+ */
+const CURSOR_SGR = `${REVERSE}${BOLD}${fg(THEME.accent)}${bg(THEME.muted)}`;
+
+/**
+ * 帮助行 —— 每一种一等选择方式 + 折叠键 + 取消, 全都写出来 (leo 口径: 键位写进头行)。
+ * 大清单靠"固定高度视窗 + 分组折叠"消化, 所以折叠/展开键必须与 ↑↓ 同权写在头行。
+ */
+export const TUI_HINT = '↑↓ 移动 · ←→/空格 折叠分组 · Enter 确认 · / 搜索 · 数字跳行 · Esc 取消';
 
 /** 掩码字符 (屏幕上绝不出现明文) */
 export const MASK_CHAR = '•';
+
+/** 中间候选区的**固定高度上限** (每步可见行数 ≤ 12; 超出靠滚窗, 不是靠减少家数) */
+export const VIEWPORT_MAX = 12;
+
+/** 分组收起的标记 (收起 = 只画标题 + 家数; 展开 = 标题 + 成员) */
+export const GROUP_COLLAPSED_MARK = '›';
+/** 分组展开的标记 */
+export const GROUP_EXPANDED_MARK = '▾';
+
 
 // ============================================================
 // 颜色开关 (一处判据)
@@ -90,9 +126,7 @@ export const MASK_CHAR = '•';
  * 拿不到 `isTTY` (某些宿主) 时按"不是终端"处理 —— 宁可不猜。
  */
 export function ansiEnabled(out: NodeJS.WriteStream = process.stdout): boolean {
-  if (process.env.NO_COLOR) return false;
-  if (String(process.env.TERM || '').toLowerCase() === 'dumb') return false;
-  return !!out.isTTY;
+  return colorEnabled(!!out.isTTY);
 }
 
 /** 一个 tone 的着色函数 (不上色时原样返回) */
@@ -176,6 +210,7 @@ function padToWidth(plain: string, width: number): string {
 
 export type KeyEvent =
   | { type: 'up' } | { type: 'down' }
+  | { type: 'left' } | { type: 'right' }
   | { type: 'pageup' } | { type: 'pagedown' }
   | { type: 'home' } | { type: 'end' }
   | { type: 'enter' } | { type: 'esc' } | { type: 'ctrl-c' } | { type: 'ctrl-d' }
@@ -191,6 +226,8 @@ function seqEvent(seq: string): KeyEvent | null {
   switch (seq) {
     case '\x1b[A': case '\x1bOA': return { type: 'up' };
     case '\x1b[B': case '\x1bOB': return { type: 'down' };
+    case '\x1b[D': case '\x1bOD': return { type: 'left' };    // ← 收起光标所在分组
+    case '\x1b[C': case '\x1bOC': return { type: 'right' };   // → 展开光标所在分组
     case '\x1b[5~': return { type: 'pageup' };
     case '\x1b[6~': return { type: 'pagedown' };
     case '\x1b[H': case '\x1b[1~': case '\x1bOH': return { type: 'home' };
@@ -366,12 +403,20 @@ export interface TuiChoice {
   tone?: TuiTone;
   /** 这一项等于"取消" (列表末尾的 Cancel 行) */
   cancel?: boolean;
+  /**
+   * 这一项所在分组**默认收起** (每组的第一个候选给一次就够)。
+   *
+   * 收起的分组在屏幕上只占**一行**: `── 名字 (208) ›` —— **家数照写**, 只是成员行不画。
+   * 233 家靠"固定高度视窗 + 可折叠分组"消化, **不是靠把家从候选集里藏掉**:
+   * 折叠只影响画不画, 不影响它在不在列表里、能不能搜到、能不能用数字跳过去。
+   */
+  groupCollapsed?: boolean;
 }
 
 export interface TuiSelectOptions {
   /** 计数单位 (供应商 = '家', 其余 = '项') */
   unit?: string;
-  /** 初始光标落点 (按 value; 命中不了就停在第 1 项) */
+  /** 初始光标落点 (按 value; 命中不了就停在第一行候选) */
   initialValue?: string;
   cancelLabel?: string;
   color?: boolean;
@@ -381,8 +426,15 @@ export interface TuiSelectOptions {
   rows?: number;
 }
 
-/** 一行"渲染行": 分组标题 或 候选项 */
-type DisplayLine = { kind: 'sep'; text: string } | { kind: 'item'; item: TuiChoice; itemIndex: number };
+/**
+ * 一行"**光标能落的行**": 分组标题 或 候选项。
+ *
+ * 光标走的是"行", 所以 **↑↓ / 数字跳选 / 第 i/N 都按行算** —— 分组标题是一等行 (能在上面按空格展开),
+ * 收起的分组只留标题行, 成员行**根本不渲染** (不是画完再滚出屏幕)。
+ */
+export type DisplayLine =
+  | { kind: 'sep'; group: string; count: number; collapsed: boolean }
+  | { kind: 'item'; item: TuiChoice; itemIndex: number };
 
 /** 过滤: 大小写不敏感, 匹配 value(id) / label(名字+状态) / hint / group(族) */
 export function matchesQuery(item: TuiChoice, query: string): boolean {
@@ -393,11 +445,51 @@ export function matchesQuery(item: TuiChoice, query: string): boolean {
 }
 
 /**
+ * 把候选行摊成"可画/可落"的行 (**纯函数** —— 单测与验收门都能直接喂它复核)。
+ *
+ * 三条规矩:
+ *   ① 有搜索词时**平铺命中项**: 不画分组标题, 也不受任何分组收起状态影响 ——
+ *      搜索结果被折叠挡住是最气人的事, 所以命中项一律可见 (等价于"自动展开命中的那一组");
+ *   ② 无搜索词时按分组分段: 每个分组一行标题 (`── 名字 (N) ›|▾`, **家数永远照写**),
+ *      收起的分组不画成员行 (这就是"只画可见的 N 行"的出处);
+ *   ③ 无分组的候选项 (模型/参数/作用域那些步骤) 原样逐行出 —— 行为与从前一致。
+ */
+export function buildDisplayLines(items: TuiChoice[], collapsed: Set<string>, query: string): DisplayLine[] {
+  const lines: DisplayLine[] = [];
+  if (String(query || '').trim()) {
+    items.forEach((item, itemIndex) => lines.push({ kind: 'item', item, itemIndex }));
+    return lines;
+  }
+  const counts = new Map<string, number>();
+  for (const it of items) if (it.group) counts.set(it.group, (counts.get(it.group) || 0) + 1);
+  let lastGroup: string | undefined;
+  items.forEach((item, itemIndex) => {
+    const g = item.group;
+    if (g && g !== lastGroup) {
+      const isCollapsed = collapsed.has(g);
+      lines.push({ kind: 'sep', group: g, count: counts.get(g) || 0, collapsed: isCollapsed });
+      lastGroup = g;
+    }
+    if (g && collapsed.has(g)) return;      // 收起: 只留标题行, 成员行不渲染
+    if (item.cancel) { lines.push({ kind: 'item', item, itemIndex }); return; }
+    lines.push({ kind: 'item', item, itemIndex });
+  });
+  return lines;
+}
+
+/** 视窗高度: 中间候选区**固定高度** = min(12, 终端高 - 头尾各一行) —— 超出的行根本不画 */
+export function viewportHeight(rows: number): number {
+  return Math.max(3, Math.min(VIEWPORT_MAX, Math.max(0, rows - 3)));
+}
+
+
+/**
  * 全屏光标选择器。返回选中项的 `value`; `null` = 取消
  * (Esc / Ctrl-C / `q`(查询为空时) / 末尾 Cancel 行 / 输入流结束)。
  *
- * 屏幕上永远只有: 头行(标题+键位) · 窗口内的列表行 · 状态行。
- * 列表比窗口高就**滚窗** (光标到边才滚, 修掉"印满就没了")。
+ * 屏幕上永远只有: 头行(标题+计数+键位) · **固定高度视窗内的可见行** · 状态行。
+ * 视窗外的行**根本不画** (不是画完再滚出屏幕); 上下边各有一行"还有 N 家"的滚动指示,
+ * 让人知道"没画完"而不是"没有"。分组标题可折叠: 收起的分组只占一行且照写家数。
  */
 export function tuiSelect(
   choices: TuiChoice[],
@@ -419,57 +511,105 @@ export function tuiSelect(
   };
 
   let query = '';
-  let cursor = 0;                 // 光标项序号 (0 = 第一个候选项, real.length = Cancel 行)
+  let cursor = 0;                 // 光标**行**号 (下标进 lines: 分组标题行也算一行)
   let scrollTop = 0;
   let note = '';                  // 非法输入/提示 (状态行里说清为什么)
-  let numBuf = '';                // 数字跳选的累计缓冲 (多位数)
+  let numBuf = '';                // 数字跳行的累计缓冲 (多位数)
   let rendered = 0;               // 上一帧写了几行 (重绘时向上回退这么多行)
   let first = true;
   let done = false;
 
-  const rowsOf = (): TuiChoice[] => [...real.filter((c) => matchesQuery(c, query)), cancelRow];
+  // ★ 分组折叠状态 (候选集本身**不动**): 默认从候选的 `groupCollapsed` 标记来
+  //   (第 1 步的"未配置凭据 / 需专用鉴权 / 无基址"三组默认收起), 用户按键只改这一份。
+  const collapsed = new Set<string>();
+  for (const c of real) if (c.group && c.groupCollapsed) collapsed.add(c.group);
+
+  /** 当前该画/该落哪些行 (过滤 → 折叠 → 摊行, 全在纯函数里) */
+  const linesOf = (): DisplayLine[] =>
+    buildDisplayLines([...real.filter((c) => matchesQuery(c, query)), cancelRow], collapsed, query);
+
+  /** 落在第一行**候选**上 (跳过分组标题 —— 标题是折叠手柄, 不是默认落点) */
+  const firstItemRow = (ls: DisplayLine[]): number => {
+    const i = ls.findIndex((l) => l.kind === 'item');
+    return i >= 0 ? i : 0;
+  };
 
   if (opts.initialValue) {
-    const i = real.findIndex((c) => c.value === opts.initialValue);
-    if (i >= 0) cursor = i;
+    const ls = linesOf();
+    const i = ls.findIndex((l) => l.kind === 'item' && l.item.value === opts.initialValue);
+    cursor = i >= 0 ? i : firstItemRow(ls);
+  } else {
+    cursor = firstItemRow(linesOf());
   }
 
-  const buildLines = (rows: TuiChoice[]): DisplayLine[] => {
-    const lines: DisplayLine[] = [];
-    let lastGroup: string | undefined;
-    rows.forEach((item, itemIndex) => {
-      if (item.cancel) {
-        lines.push({ kind: 'item', item, itemIndex });
-        return;
-      }
-      if (item.group && item.group !== lastGroup) {
-        lines.push({ kind: 'sep', text: item.group });
-        lastGroup = item.group;
-      }
-      lines.push({ kind: 'item', item, itemIndex });
-    });
-    return lines;
+  /** 光标所在行 (越界时钳回最后一行) */
+  const cursorLine = (ls: DisplayLine[]): DisplayLine | undefined => ls[Math.max(0, Math.min(cursor, ls.length - 1))];
+
+  /** 光标当前所属的分组名 (标题行 → 自己; 候选行 → 它那一组; 没有 → undefined) */
+  const groupAtCursor = (ls: DisplayLine[]): string | undefined => {
+    const l = cursorLine(ls);
+    if (!l) return undefined;
+    return l.kind === 'sep' ? l.group : l.item.group;
+  };
+
+  /**
+   * 展开/收起"光标所在的那一组"。收起后把光标**停在该分组的标题行**上 ——
+   * 光标永远站在看得见的行上 (收起的那一瞬间原候选行就没了, 不挪光标等于把光标画丢)。
+   */
+  const setGroupCollapsed = (g: string, want: boolean): void => {
+    if (want === collapsed.has(g)) { note = want ? `${g} 已经是收起的` : `${g} 已经是展开的`; return; }
+    if (want) collapsed.add(g); else collapsed.delete(g);
+    const after = linesOf();
+    const at = after.findIndex((l) => (l.kind === 'sep' ? l.group === g : l.item.group === g));
+    if (at >= 0) cursor = at;
+    const sep = after.find((l) => l.kind === 'sep' && l.group === g);
+    const count = sep && sep.kind === 'sep' ? sep.count : 0;
+    note = want
+      ? `已收起 ${g} (${count} ${unit}) — 空格/→ 可再展开`
+      : `已展开 ${g} (${count} ${unit})`;
   };
 
   const render = (): void => {
     const { cols, rows } = termSize(out, opts);
-    const H = Math.max(3, Math.min(rows - 3, 40));       // 列表窗口行数
-    const rowsList = rowsOf();
-    const lines = buildLines(rowsList);
-    // 光标所在行在 lines 里的位置
-    const cursorLine = Math.max(0, lines.findIndex((l) => l.kind === 'item' && l.itemIndex === cursor));
-    if (cursorLine < scrollTop) scrollTop = cursorLine;
-    if (cursorLine > scrollTop + H - 1) scrollTop = cursorLine - H + 1;
-    scrollTop = Math.max(0, Math.min(scrollTop, Math.max(0, lines.length - H)));
+    const H = viewportHeight(rows);                     // 固定高度视窗 (≤12 行)
+    const lines = linesOf();
+    const total = lines.length;
+    if (cursor > total - 1) cursor = total - 1;
+    if (cursor < 0) cursor = 0;
 
-    const head = `${String(title).replace(/[::]\s*$/, '')}  ${TUI_HINT}`;
-    const filtered = rowsList.length - 1;               // 减掉 Cancel 行 = 真候选数
-    const shownIdx = cursor >= real.length ? rowsList.length : cursor + 1;
+    // ── 定位视窗: 先把光标放进窗口, 再为"还有 N 家"指示行让位 (让位后可能再挤一次) ──
+    let top = Math.max(0, Math.min(scrollTop, Math.max(0, total - H)));
+    for (let pass = 0; pass < 4; pass++) {
+      const above0 = top > 0;
+      const below0 = top + H - (above0 ? 1 : 0) < total;
+      const body0 = Math.max(1, H - (above0 ? 1 : 0) - (below0 ? 1 : 0));
+      const start0 = top + (above0 ? 1 : 0);
+      let nt = top;
+      if (cursor < start0) nt = Math.max(0, cursor - (above0 ? 1 : 0));
+      else if (cursor > start0 + body0 - 1) nt = cursor - body0 + 1 - (above0 ? 1 : 0);
+      nt = Math.max(0, Math.min(nt, Math.max(0, total - H)));
+      if (nt === top) break;
+      top = nt;
+    }
+    scrollTop = top;
+    const above = top > 0;
+    const below = top + H - (above ? 1 : 0) < total;
+    const body = Math.max(1, H - (above ? 1 : 0) - (below ? 1 : 0));
+    const start = top + (above ? 1 : 0);
+
+    // `已筛` = **命中筛选的家数** (与折叠无关: 收起只是不画成员行, 家数照数) ——
+    //   这是"折叠不是隐藏"的可读证据: 全量时 `共 231 家 · 已筛 231 家`, 收起 3 组也不变。
+    const filteredItems = real.filter((c) => matchesQuery(c, query)).length;
+    const collapsedGroups = [...collapsed].filter((g) => real.some((c) => c.group === g));
+    // 头行: 标题 + 计数 (共 N 家 · 已筛 M 家) + 键位提示 —— **不滚** (每帧都画)
+    const head = `${String(title).replace(/[::]\s*$/, '')} · 共 ${real.length} ${unit} · 已筛 ${filteredItems} ${unit}  ${TUI_HINT}`;
+    // 状态行: `第 i/N` 与 `筛选 "x"` 必须相邻 (既有验收门按这个形状钉"数字真的跟着动")
+    const shownIdx = cursor + 1;
     const status = [
-      `共 ${real.length} ${unit}`,
-      `已筛 ${filtered} ${unit}`,
-      `第 ${shownIdx}/${rowsList.length}`,
+      `第 ${shownIdx}/${total}`,
       query ? `筛选 "${query}"` : '',
+      query ? '命中平铺 (折叠不挡命中)' : '',
+      !query && collapsedGroups.length ? `收起 ${collapsedGroups.length} 组` : '',
       note,
       query ? '' : 'q=取消',
     ].filter(Boolean).join(' · ');
@@ -478,32 +618,38 @@ export function tuiSelect(
     buf.push(`${first ? '' : `${E}[${rendered}A`}${ERASE_DOWN}`);
     // 头行: 先按纯文本截到宽度, 再上色 (顺序反了的话颜色码会被截断丢掉)
     buf.push(`${toneWrap(truncateToWidth(head, cols), 'accent', color)}${ERASE_EOL}\r\n`);
-    for (let i = 0; i < H; i++) {
-      const line = lines[scrollTop + i];
+    if (above) buf.push(`${toneWrap(truncateToWidth(`  ↑ 上面还有 ${top} ${unit}`, cols), 'muted', color)}${ERASE_EOL}\r\n`);
+    for (let i = 0; i < body; i++) {
+      const line = lines[start + i];
       // 先算**纯文本**行内容并按宽度截断/补齐, 再决定怎么上色 —— 保证"颜色不被截断抹掉 + 不撑破"
       let plain = '';
       let tone: TuiTone = 'plain';
       let isCursor = false;
       if (line && line.kind === 'sep') {
-        plain = `  ── ${line.text}`;
-        tone = 'dim';
+        const mark = line.collapsed ? GROUP_COLLAPSED_MARK : GROUP_EXPANDED_MARK;
+        // 分组标题**照写家数** (折叠 ≠ 藏家数): `── 未配置凭据 (200 家) ›`
+        plain = `  ── ${line.group} (${line.count} ${unit}) ${mark}`;
+        tone = 'muted';
       } else if (line) {
-        const body = `${line.item.label}${line.item.hint ? ` — ${line.item.hint}` : ''}`;
-        isCursor = line.itemIndex === cursor;
-        plain = isCursor ? `→ ${body}` : `  ${body}`;
+        const bodyText = `${line.item.label}${line.item.hint ? ` — ${line.item.hint}` : ''}`;
+        isCursor = start + i === cursor;
+        plain = isCursor ? `→ ${bodyText}` : `  ${bodyText}`;
         tone = line.item.tone ?? 'plain';
+      } else {
+        continue;                                   // 窗口尾部没有行: **不画空行**
       }
       if (isCursor) {
-        // ★ 当前光标行: 行首 `→` + 整行反白到行尾 (符号与颜色双通道)
+        // ★ 光标行: `→ ` 前缀 + **accent 底 / 深色字** (见 CURSOR_SGR; 反白序列同时是结构判据)
         const padded = padToWidth(truncateToWidth(plain, cols), cols);
-        buf.push(`${color ? `${REVERSE}${BOLD}${padded}${RESET}` : truncateToWidth(plain, cols)}${ERASE_EOL}\r\n`);
+        buf.push(`${color ? `${CURSOR_SGR}${padded}${RESET}` : truncateToWidth(plain, cols)}${ERASE_EOL}\r\n`);
         continue;
       }
       buf.push(`${toneWrap(truncateToWidth(plain, cols), tone, color)}${ERASE_EOL}\r\n`);
     }
-    buf.push(`${toneWrap(truncateToWidth(status, cols), 'dim', color)}${ERASE_EOL}`);
-    // 帧共 H+2 行 (头行 + H 行列表 + 状态行), 光标停在状态行末尾 ⇒ 回到头行要上移 H+1 行
-    rendered = H + 1;
+    if (below) buf.push(`${toneWrap(truncateToWidth(`  ↓ 下面还有 ${total - (start + body)} ${unit}`, cols), 'muted', color)}${ERASE_EOL}\r\n`);
+    buf.push(`${toneWrap(truncateToWidth(status, cols), 'muted', color)}${ERASE_EOL}`);
+    // 帧共 1(头) + (above?1:0) + body + (below?1:0) + 1(状态) ≤ 终端高度 行 (硬预算)
+    rendered = 1 + (above ? 1 : 0) + body + (below ? 1 : 0);
     out.write(buf.join(''));
     first = false;
   };
@@ -520,8 +666,8 @@ export function tuiSelect(
 
   const session = new RawSession(out);
   const onKey = (k: KeyEvent): void => {
-    const rowsList = rowsOf();
-    const maxIdx = rowsList.length - 1;        // 含 Cancel 行
+    const maxIdx = linesOf().length - 1;
+    const clampCursor = (): void => { cursor = Math.max(0, Math.min(cursor, linesOf().length - 1)); };
     switch (k.type) {
       case 'up': {
         if (cursor > 0) cursor--; else cursor = maxIdx;
@@ -534,17 +680,30 @@ export function tuiSelect(
         break;
       }
       case 'pageup': {
-        cursor = Math.max(0, cursor - Math.max(1, Math.floor((termSize(out, opts).rows - 3) / 2)));
+        cursor = Math.max(0, cursor - Math.max(1, Math.floor(viewportHeight(termSize(out, opts).rows) / 2)));
         numBuf = ''; note = '';
         break;
       }
       case 'pagedown': {
-        cursor = Math.min(maxIdx, cursor + Math.max(1, Math.floor((termSize(out, opts).rows - 3) / 2)));
+        cursor = Math.min(maxIdx, cursor + Math.max(1, Math.floor(viewportHeight(termSize(out, opts).rows) / 2)));
         numBuf = ''; note = '';
         break;
       }
       case 'home': cursor = 0; numBuf = ''; note = ''; break;
       case 'end': cursor = maxIdx; numBuf = ''; note = ''; break;
+      // ── 折叠/展开 (leo 口径: `←` 收起 / `→` 展开 / `空格` 切换) ──
+      case 'left': {
+        const g = groupAtCursor(linesOf());
+        if (g) setGroupCollapsed(g, true); else note = '这一行没有分组可收起';
+        numBuf = '';
+        break;
+      }
+      case 'right': {
+        const g = groupAtCursor(linesOf());
+        if (g) setGroupCollapsed(g, false); else note = '这一行没有分组可展开';
+        numBuf = '';
+        break;
+      }
       case 'char': {
         const ch = k.ch;
         if (ch === '/' && query === '') {
@@ -552,11 +711,18 @@ export function tuiSelect(
           note = '筛选模式: 直接敲字即过滤 (Backspace 退字, 清空 = 回全量)';
           break;
         }
+        if (ch === ' ' && query === '') {
+          // 空格 = 折叠/展开光标所在分组 (搜索时它是**普通过滤字符**, 免得"搜带空格的词"没法打)
+          const g = groupAtCursor(linesOf());
+          if (g) setGroupCollapsed(g, !collapsed.has(g)); else note = '这一行没有分组可折叠';
+          numBuf = '';
+          break;
+        }
         if (/[0-9]/.test(ch)) {
-          // ★ 数字跳选: 逐位累计 (先 1 再 2 = 第 12 项), 高亮当场跟过去
+          // ★ 数字跳行: 逐位累计 (先 1 再 2 = 第 12 行), 高亮当场跟过去
           const next = `${numBuf}${ch}`;
           const n = Number(next);
-          if (n >= 1 && n <= rowsList.length) {
+          if (n >= 1 && n <= maxIdx + 1) {
             numBuf = next;
             cursor = n - 1;
             note = `已跳到第 ${n} 项`;
@@ -565,19 +731,19 @@ export function tuiSelect(
           } else {
             // 多位数越界 → 退化成"只有最后这一位"再试 (标准做法), 单个数越界就报范围
             const last = Number(ch);
-            if (next.length > 1 && last >= 1 && last <= rowsList.length) {
+            if (next.length > 1 && last >= 1 && last <= maxIdx + 1) {
               numBuf = ch; cursor = last - 1; note = `已跳到第 ${last} 项 (${next} 越界)`;
             } else {
-              numBuf = ''; note = `✗ 序号 ${next} 超出范围 (这里只有 1~${rowsList.length} 项)`;
+              numBuf = ''; note = `✗ 序号 ${next} 超出范围 (这里只有 1~${maxIdx + 1} 项)`;
             }
           }
         } else if (ch === 'q' && query === '') {
           session.close(); finish(null); return;
         } else {
-          // ★ 字母/文字 = 真筛选 (过滤后序号按新序重排)
+          // ★ 字母/文字 = 真筛选 (过滤后序号按新序重排, 命中项平铺 —— 收起的分组也挡不住命中)
           query += ch;
           numBuf = ''; note = '';
-          cursor = Math.min(cursor, rowsOf().length - 1);
+          cursor = firstItemRow(linesOf());
           scrollTop = 0;
         }
         break;
@@ -585,22 +751,25 @@ export function tuiSelect(
       case 'paste': {
         query += k.text.replace(/[\r\n]+/g, ' ');
         numBuf = ''; note = '';
-        cursor = Math.min(cursor, rowsOf().length - 1);
+        cursor = firstItemRow(linesOf());
         scrollTop = 0;
         break;
       }
       case 'backspace': {
-        if (query) { query = query.slice(0, -1); cursor = Math.min(cursor, rowsOf().length - 1); scrollTop = 0; note = ''; }
+        if (query) { query = query.slice(0, -1); cursor = firstItemRow(linesOf()); scrollTop = 0; note = ''; }
         else if (numBuf) { numBuf = ''; note = ''; }
         else { note = '已在全量列表 (没有可退的筛选词)'; }
         break;
       }
-      case 'ctrl-u': { query = ''; numBuf = ''; note = '筛选已清空 (回全量)'; cursor = 0; scrollTop = 0; break; }
+      case 'ctrl-u': { query = ''; numBuf = ''; note = '筛选已清空 (回全量)'; cursor = firstItemRow(linesOf()); scrollTop = 0; break; }
       case 'enter': {
-        const hit = rowsList[cursor];
-        if (!hit || hit.cancel) { session.close(); finish(null); return; }
+        const hit = linesOf()[cursor];
+        if (!hit) { session.close(); finish(null); return; }
+        // 落在分组标题上: Enter = 展开/收起 (它不是候选, 选不了 —— 所以不会"选了个标题"这种鬼事)
+        if (hit.kind === 'sep') { setGroupCollapsed(hit.group, !hit.collapsed); clampCursor(); render(); return; }
+        if (hit.item.cancel) { session.close(); finish(null); return; }
         session.close();
-        finish(hit.value);
+        finish(hit.item.value);
         return;
       }
       case 'esc': case 'ctrl-c': case 'ctrl-d': {

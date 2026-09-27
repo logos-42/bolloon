@@ -399,11 +399,14 @@ export async function buildProviderSummaries(opts: {
   probes?: Record<string, { ok: boolean; detail?: string }>;
   sessionKey?: string;
   /**
-   * 目录里的家怎么进列表 (**不刷 223 行噪音**):
-   *   · `'none'`       —— 不进 (只要内置 + 自定义);
-   *   · `'configured'` —— **默认**: 只进"手上有凭证/配置里写了这一格"的那些
-   *     (= "新家只要在目录里 + 有你配的 key 就自动可用"); 其余用分组计数概括;
-   *   · `'all'`        —— 223 家全进 (给 `/model catalog list` 这种显式查看用)。
+   * 目录里的家怎么进列表:
+   *   · `'none'`       —— 不进 (只要内置 + 自定义; 给"只看手写的 13 家"那条断言用);
+   *   · `'configured'` —— 只进"手上有凭证/配置里写了这一格"的那些 (旧默认, 会**藏掉** 218 家);
+   *   · `'all'`        —— **默认**: 内置 13 + 自定义 + 目录全部 (与内置同名的目录项跳过, 不重复)。
+   *
+   * 2026-09-27 改口径 (leo: "15 家登记在里面显示, 可以更多吗?"): 默认必须是**全部** ——
+   * 藏家数/只给计数会让用户以为"没有这家"。看得下的问题交给界面层解决
+   * (固定高度视窗 + 可折叠分组 + 搜索), 而不是靠从候选集里删。
    */
   catalog?: 'none' | 'configured' | 'all';
 } = {}): Promise<ProviderSummary[]> {
@@ -489,10 +492,10 @@ export async function buildProviderSummaries(opts: {
     });
   }
 
-  // ★ 2026-09-27 (目录驱动): **目录里的家也进这个列表** —— 但默认只进"有凭证"的那些,
-  //   其余用一行分组计数概括 (223 行会把列表冲成噪音, 而用户真正要的是"哪些能用")。
+  // ★ 2026-09-27 (目录驱动): **目录里的家也进这个列表** —— 默认全部进来 (内置同名项跳过, 不重复)。
   //   数据全部来自目录层 (`origin='catalog'`), 这里**不编**任何一条: 目录里没有这一家就不出这一行。
-  const catalogMode = opts.catalog ?? 'configured';
+  //   家数多 (=一屏放不下) 由界面层用"固定高度视窗 + 可折叠分组 + 搜索"消化 —— 见 `providerTierOf`。
+  const catalogMode = opts.catalog ?? 'all';
   if (catalogMode !== 'none') {
     const cat: any = await import('./provider-catalog.js');
     await cat.initializeProviderCatalog();
@@ -551,17 +554,60 @@ function catalogProviderReasoningOf(v: any): Capability {
 }
 
 /**
- * 列表分组/计数 (**status 不刷 223 行噪音**的那一半): 内置/自定义/目录各多少家, 各几家可用。
- * 只数, 不产生值。
+ * 列表分组/计数: 内置/自定义/目录各多少家, 各几家可用。只数, 不产生值。
+ * (2026-09-27: 默认已经**全部列出**, 所以这里不再说"目录家未列出"; 只有显式 `catalog:'none'` 时才是那样)
  */
 export function providerGroupSummary(s: ProviderSummary[]): string {
   const g = (list: ProviderSummary[]) => `${list.length} 家 (可用 ${list.filter((x) => x.configured).length})`;
   const builtin = s.filter((x) => (x.origin || 'builtin') === 'builtin');
   const custom = s.filter((x) => x.origin === 'custom');
   const catalog = s.filter((x) => x.origin === 'catalog');
-  return `分组: 内置 ${g(builtin)} · 自定义 ${g(custom)} · 目录 ${g(catalog)}`
-    + (catalog.length ? '' : ' · 目录家未列出 (看 /model catalog)');
+  return `分组: 内置 ${g(builtin)} · 自定义 ${g(custom)} · 目录 ${g(catalog)} · 合计 ${s.length} 家`
+    + (catalog.length ? '' : ' · 目录家未列出 (catalog:none; 看 /model catalog)');
 }
+
+// ============================================================
+// 第 1 步的"分组/排序"依据 (2026-09-27: 全量列出 + 分组折叠, 不再靠藏家数)
+// ============================================================
+
+/** 第 1 步的分组名 (顺序 = 优先级: 当前 → 可用 → 未配置凭据 → 需专用鉴权 → 无 api 基址) */
+export const PROVIDER_GROUPS: Record<ProviderTier, string> = {
+  current: '当前生效',
+  usable: '可用 (有凭证 / 免 key)',
+  noCredential: '未配置凭据 (选了会先要 key)',
+  specialAuth: '需专用鉴权 (未支持)',
+  noBaseUrl: '无 api 基址 (需自定义 baseUrl)',
+};
+
+export type ProviderTier = 'current' | 'usable' | 'noCredential' | 'specialAuth' | 'noBaseUrl';
+
+const TIER_RANK: Record<ProviderTier, number> = { current: 0, usable: 1, noCredential: 2, specialAuth: 3, noBaseUrl: 4 };
+
+/**
+ * 这家落在第 1 步的哪一组。**分组只是排版, 不是候选集** ——
+ * 后两组 (需专用鉴权未支持 / 目录没给基址) 照样在列表里、照样搜得到、标题上照写家数,
+ * 它们只是**默认收起** (界面层按 `providerTierCollapsedByDefault` 决定)。
+ */
+export function providerTierOf(s: ProviderSummary): ProviderTier {
+  if (s.current) return 'current';
+  if (s.catalogAuthUnsupported) return 'specialAuth';
+  if (s.catalogBaseUrlMissing) return 'noBaseUrl';
+  return s.configured ? 'usable' : 'noCredential';
+}
+
+/**
+ * 哪些分组**默认收起** (leo 2026-09-27: "默认只展开'当前生效 + 可用', 其余分组折叠但显示家数")。
+ * 后三组家数最多 (目录 200+ 家), 默认收起才不会把页面塞满; 按 `空格` 随时展开看全。
+ */
+export function providerTierCollapsedByDefault(t: ProviderTier): boolean {
+  return t === 'noCredential' || t === 'specialAuth' || t === 'noBaseUrl';
+}
+
+/** 按"当前 → 可用 → 未配置 → 需专用鉴权 → 无基址"排 (稳定排序: 同组内保持目录层给的顺序) */
+export function orderProvidersForMenu(list: ProviderSummary[]): ProviderSummary[] {
+  return [...list].sort((a, b) => TIER_RANK[providerTierOf(a)] - TIER_RANK[providerTierOf(b)]);
+}
+
 
 /**
  * 「在册的自定义供应商」的注册表记录 + 声明 (真出处: 注册表读口 / 自定义供应商存储)。
@@ -766,29 +812,41 @@ export function formatProviderLine(s: ProviderSummary): string {
  *
  * 只做排版, 一个字段都不产生 (真事实全来自 `ProviderSummary`)。
  */
+/**
+ * 供应商菜单行 (全屏选择器用): 一行的**截断存活优先级**就是它的字段顺序 ——
+ * 窄终端/长行会把尾巴切掉, 所以"为什么这家不能用"必须排在最前面, 计数排在后面。
+ *
+ *   ① 不可用/需额外条件的原因 (`special (需专用鉴权, 未支持)` / `无基址 (需自定义 baseUrl)` / key 要求不一致)
+ *   ② 凭证状态 (`免 key` / `key 已配` / `key 来自 env` / `缺 key (VAR)`)
+ *   ③ 计数与来源 (模型数 / 内置·自定义·目录 / 族 / 本地)
+ *   ④ `← 当前`
+ */
 export function formatProviderMenuRow(s: ProviderSummary): string {
   const mark = s.configured ? '●' : '○';
   const bits: string[] = [];
-  bits.push(s.modelCountOrigin === 'unavailable' ? '模型数未知' : `${s.modelCount} models`);
+  // ① 原因类 (最不经得起截断)
+  if (s.catalogAuthUnsupported) bits.push('special (需专用鉴权, 未支持)');
+  if (s.catalogBaseUrlMissing) bits.push('无基址 (需自定义 baseUrl)');
+  if (s.requiresKeyConflict) bits.push('⚠ key 要求不一致');
+  // ② 凭证状态
   bits.push(!s.requiresApiKey
     ? '免 key'
     : s.keyState === 'configured' ? 'key 已配'
       : s.keyState === 'env' ? 'key 来自 env'
         : `缺 key${s.catalogEnvVar ? ` (${s.catalogEnvVar})` : ''}`);
+  // ③ 计数与来源
+  bits.push(s.modelCountOrigin === 'unavailable' ? '模型数未知' : `${s.modelCount} models`);
   bits.push(s.origin === 'catalog' ? '目录' : s.origin === 'custom' ? '自定义' : '内置');
   if (s.origin === 'catalog' && s.catalogFamily) bits.push(`族 ${s.catalogFamily}`);
   if (s.isLocal) bits.push('本地');
-  // 目录家不能用时**如实标**, 且不当可用 (符号与文字都在, 不靠颜色)
-  if (s.catalogAuthUnsupported) bits.push('special (需专用鉴权, 未支持)');
-  if (s.catalogBaseUrlMissing) bits.push('无基址 (需自定义 baseUrl)');
-  if (s.requiresKeyConflict) bits.push('⚠ key 要求不一致');
+  // ④ 当前
   if (s.current) bits.push('← 当前');
   return `${mark} ${s.id} · ${bits.join(' · ')}`;
 }
-
 /** 供应商行的**语义 tone** (只给颜色用; 语义本体在符号/文字里) */
 export function providerRowTone(s: ProviderSummary): 'ok' | 'warn' | 'dim' | 'accent' | 'plain' {
-  if (s.catalogAuthUnsupported) return 'warn';
+  // "不能用/需额外条件"两类都用 warn (leo 2026-09-27: special 与 无基址 显眼)
+  if (s.catalogAuthUnsupported || s.catalogBaseUrlMissing) return 'warn';
   if (s.current) return 'accent';
   return s.configured ? 'ok' : 'dim';
 }

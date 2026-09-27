@@ -340,8 +340,12 @@ describe('C6 运行期刷新: 落盘 0600 + 来源/字节数/时间/家数; 陈�
     expect(entry!.kind).toBe('catalog');
     expect(entry!.defaultBaseUrl).toBe('http://127.0.0.1:9/v1');
     expect(entry!.apiKeyEnvVars).toEqual(['ACME_API_KEY']);
+    // 2026-09-27 (二改): 默认**全部列出** —— 没配环境变量的目录家也在列表里, 只是如实标 `configured: false`
+    //   ("藏掉没凭证的家"是用户明确否掉的做法: 他要看到全部家, 靠滚动/搜索/折叠消化)。
     const before = (await MC.buildProviderSummaries({})).find((s: any) => s.id === 'acme-local');
-    expect(before).toBeUndefined();                        // 没配环境变量 → 默认列表里不出现 (不刷噪音)
+    expect(before).toBeTruthy();
+    expect(before.configured).toBe(false);
+    expect(before.origin).toBe('catalog');
     process.env.ACME_API_KEY = 'stub-key';
     try {
       const sums = await MC.buildProviderSummaries({});

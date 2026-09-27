@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-27 | feat | **第 1 步全量候选 + 固定高度视窗与折叠 + bolloon 色系 (二改收尾): 候选 **231 家** = **盘上真算** (内置 13 + 自定义 0 + 目录 223 − 同名 5), 五个分组是**划分不是筛选** (当前 1 · 可用 2 · 未配置 199 · 需专用鉴权 14 · 无基址 15 = 231), **屏上两处数字都对上真算** · **单帧 ≤ 14 行** (rows=30, 候选 231 家) 且**视窗外的行根本不画** (不靠回滚缓冲) · **折叠标题照写家数** 且展开真生效 (收起帧候选行 3 → 展开帧 6) · 颜色收进**唯一事实源** `theme.ts` (真彩 RGB **全部**来自调色板, 越界 **0**; `tui-select`/`model-selector` hex 字面量 **0/0**) —— 真 pty 门 **104 passed / 0 failed** + 变异 **17/17 判红** (新增 **M16 拿掉搜索** · **M17 取消也写盘**, 后者只有配置 sha 会露馅) + 顺手修掉一条**写死旧行形状的陈旧单测断言** (钉新形状而非放宽)** | [model-selector-p2.md §9](./model-selector-p2.md) / [tui-select.ts](../../src/cli/tui-select.ts) / [theme.ts](../../src/cli/theme.ts) / [model-catalog.ts](../../src/llm/model-catalog.ts) / [verify-model-ux.ts](../../scripts/verify-model-ux.ts) |
 | 2026-09-27 | feat | **`bolloon model` 真交互 TUI 收尾 (掩码凭证 · 版面减法 · 修 `model_not_found` 误杀) —— 三个真 bug 收掉 + 真 pty 门 **68/0** + 变异 **9/9 判红** + 版面每步主屏 ≤ 12 行与四条黑名单串**: ① 门里 `OOC_BASE`/`MASK_PROBE`/`main()` **从未定义** (tsconfig 只含 `src/**` ⇒ `tsc` 拦不到, tsx 一跑就 ReferenceError) + 三处 `pairs: [[…] }]` **少一个 `]`** (esbuild 直接语法错) ② 源码里**上一轮撞迭代上限时留下的 M1 变异残留** (`tui-select.ts` 的 `case '\x1b[B': case '\x1bOB': return null; // 变异: 方向键失灵` —— 也就是说"接手的这份源"当时箭头键本来就是坏的) ③ `scripts/lib/pty-drive.py` 的 `decode_send` **不解通用 `\xNN` 转义**: `\x15` 被当 4 个字符 `\ x 1 5` 喂进去 ⇒ **Ctrl-U 从来没真被按过**, 筛选/清空那几条断言量到的是假象 (原始输出里看得见 `筛选 "\"` → `筛选 "\x"`)。三处都是**先量到再改**。补上的真断言 (全部**真 pty**, expect 就是断言): 高亮行两帧**反白行逐字对比真位移** + `第 i/N` 序列 `[1,2,3,2]` · 数字 9 跳选 · `/` 过滤后**列表真变短** (全量 14 项 → 筛 `deep` 剩 **2** 项) **且状态行数字真变** (一条 `expect_raw` 钉死 `第 1/2 · 筛选 "deep"`) · 滚动窗口 (rows=12, 光标 11 > H=9 且首帧第一项已滚出末帧) · 窄终端 cols=40 用**渲染器自己的尺子** `displayWidth` 量 (最宽 40 列, 超宽 **0** 行) · **凭证四条路** (保持现有 `fp:…` / 替换掩码 / 清除存盘 key / 改用环境变量) 全渲染可达 · **掩码**: 唯一探针串在 pty **原始输出里 0 命中** + 屏上**有** `•` + `(25 字符)` 计数与输入长度对上 (证明真收到不是静默丢) · 取消 / EOF / 探测失效三条路**配置 sha 逐字节不变** · **版面**: 主屏取样用**结构判据** (帧内每行都带 `\x1b[K`, 主屏行从不带) ⇒ 每步 **≤ 12 行** (实测默认最多 **3** 行 vs 同流程 `--verbose` **6** 行, 并配正向对照证明是**搬走**不是删掉) + 黑名单串 (`未知原因` / 逐行复读 `工具调用=未知` / 教程行 `看目录:` / 假二次确认 `还要继续尝试切换吗`) 主屏 **0 命中** · **9 条变异全部判红**且逐字节还原。**两条实测事实回写 wiki**: ① 「没颜色」**不是** `NO_COLOR`/`TERM`/非 TTY —— 同一个真 pty 里 `bolloon help` 有 **24** 个 SGR 而 `bolloon model list` 是 **0** 个 ⇒ **那条路径压根没上色代码** (颜色**本轮没修**, 只把根因量清并写下) ② **「目录里没有就拒绝」杀掉了真能用的模型** —— 用真凭证发最小请求逐条实测: `deepseek-v4-flash` **HTTP 200 · choices 正常** 但**不在**上游 `/models`; `deepseek-chat` 200/不在; `deepseek-flash` 200/在; `deepseek-v4-pro` 200/在 ⇒ 上游 `/models` **不是全集**, 旧判据把 `deepseek-v4-flash` 误杀 (用户先被允许选中, 到第 6 步才被拦); 改成「目录里没有 = **只作警告** + 真请求裁决」并把 `modelAcceptedOutsideCatalog` **照实带出去**。**顺手补的两条门内纵深**: M9 的探针改**子进程**跑 (进程内 `import()` 被模块缓存钉死 ⇒ 改了盘上的源也量不到, 原先是假绿) + 新增 **R0 开工前自检** (10 个变异锚点必须全在原位, 缺一个就 exit 2 拒绝开跑 —— 防的正是本轮踩到的那类"上一轮被打断留下残留"。**收尾跑全部门时又挖出两道老门的真回归并当场修掉** (`verify-model-wiring` 起手 **84/5** → **92/0**; `verify-model-acceptance` 起手 3+1+6 条红 → **16/16 条目 · 106/106 断言**): 两处都是**夹具写死了旧语义** (目录里没有 = 硬拒), 改判之后那台假上游**真的通过探测并写盘**, 于是「失败不落盘」「配置字节未变」「全局默认仍是服务 A」一路崩 —— 不是断言写错, 是夹具跟真端点不像 (真端点遇到不认识的模型就是回 404); 修法是换 `model-ping-404` 桩 + 在 wiring 门里**新增 M6 一节**把新语义钉住 (放行 + 标 `modelAcceptedOutsideCatalog` + 真写盘), 并顺带补掉 `selectModel` 成功返回**漏透传** `modelAcceptedOutsideCatalog` 这个真缺口 (类型声明了却没人填)。**两道如实留账的红 (都不属本轮, 没修)**: `verify-cli-quiet` **11/1** —— A6 是既有的负载/20s 窗口敏感项 (空载单跑复现出判据那行, 6.6s, 与仓内 t≈6.8s 一致; 门自己连跑 3 回都停在 `(setup, 阶段 connectivity_pending)` = 还没读到 LLM 配置; 它那条源码路径本轮一行没动) · `verify-mobile-model-sync` **53/1** —— 唯一那红是**陈旧 IPA** (`ipa=0.5.0` vs `npm=0.5.1`, 要 Xcode 重打) | [model-selector-p2.md §8](./model-selector-p2.md) / [verify-model-ux.ts](../../scripts/verify-model-ux.ts) / [pty-drive.py](../../scripts/lib/pty-drive.py) / [connection-probe.ts](../../src/llm/connection-probe.ts) / [tui-select.ts](../../src/cli/tui-select.ts) |
 | 2026-09-27 | feat | **供应商目录驱动 (公开目录 223 家 → 离线可用) + `bolloon model` 真终端裸敲**就是**切换 (第一屏即选择器) —— 收尾线: 夹具修正 (负控制 `deepinfra`→`ai21`, 诱因是它本身无 api 基址把"无基址"顶成 25) 让 S1/S7/S9 稳定 **197/26** + 门禁全绿 (自有门 **70/0** · 变异 **5/5** · 真 pty 门 **27/0** · 变异 **2/2** · 八道 `verify-model-*` 全绿 · 冻结门 34/34 · 全量 **246 文件 / 4009 测**) + `build:main` 让 leo 手上那个全局 `bolloon` 真带上目录** | [provider-catalog.md](./provider-catalog.md) / [verify-provider-catalog.ts](../../scripts/verify-provider-catalog.ts) / [verify-model-ux.ts](../../scripts/verify-model-ux.ts) / [provider-catalog.ts](../../src/llm/provider-catalog.ts) / [pty-drive.py](../../scripts/lib/pty-drive.py) |
 | 2026-09-26 | test | **P8 验收门口径自洽 (第 12 条): 反事实臂"能内联的真跑 / 跑不到的显式 SKIP + 引证" —— 裸跑 exit 1 → **exit 0** 且第 12 条 `PASS` 明明白白; 并立了一道能判红的门 (M6) 钉住这条口径** —— 判定是**先跑出来再下结论**: 探针把"持锁 900ms 窗口"分别用 `holdwrite { lock: true }` 与 `{ lock: false }` 各跑 3 遍, 带锁那次父进程等到窗口结束 (**917 / 906 / 924ms**)、拿掉锁那次 **5 / 6 / 4ms** 就在窗口里写完了 ⇒ "锁被拿掉"这一臂**确定性可测 ⇒ 内联真跑**; 但**只拿掉锁不丢改动** (签名新鲜度那层仍按文件重读, qwen/glm 两格 3/3 都活着) ⇒ "两条机制**一起**拿掉 → 真丢更新"这一臂**门内跑不到** (要同时把配置签名改恒等 = 源码级变异), 于是**显式 SKIP + 写出理由 + 引证变异脚本 M4 的真输出**, 那条"由环境变量填的外部反事实位"**整个删掉** (连同 `BOLLOON_ACCEPTANCE_M4_RED`)。**门内新增 (d) 三条真跑判决** (不带锁的临界区真开了窗口 · 拿掉锁 → 互斥消失 1ms vs 916ms · 只拿掉锁改动不丢), 断言 103 → **106**; 输出新增机器可读口径行 `第 12 条口径: PASS …`; 条目行 = `[12] 两个进程同时切配置 → 不互相覆盖 — PASS (14/14 断言 · 1 条外部臂 SKIP)`。**新门 M6**: 变异脚本先跑**裸跑口径门** (exit 0 + 那两行 + SKIP 的**理由与引证**四样缺一不可), 再把第 12 条口径**改回"外部位"写法** → 裸跑立刻红 (断言 105/106, 红项 **[12]**, 红在 `(d) **内联反事实**`) ⇒ 拿掉这条口径修正, 门必红。**M4 稳定性 (`--repeat 3`)**: 3/3 判红, 红项条目每次都是 **[5, 12]** (判红条数 2/3/2, 差异全在第 12 条内的 **(a) 并发臂** —— 3 遍里只红 1 遍; **"该红的条目"稳定, (a) 单条不算稳定**, 如实标)。**门禁**: 裸跑 exit 0 · 基线门绿 · 变异 **6/6 判红** (含 M6) · `tsc --noEmit` 0 错 · 八道 `verify-model-*` + `verify-cli-quiet` 全绿 · 冻结门 34/34 · 全量 vitest 见 §收尾 | [model-selection-acceptance.md §3/§5](./model-selection-acceptance.md) / [verify-model-acceptance.ts](../../scripts/verify-model-acceptance.ts) / [verify-model-acceptance-mutations.py](../../scripts/verify-model-acceptance-mutations.py) |
@@ -4732,3 +4733,89 @@ python3 scripts/verify-model-acceptance-mutations.py --only M4
 - 真 pty 门覆盖的是**命令行交互面**; 会话内 `/model` 的 Ink 选择器 (`io.choose` 自己渲染) **没有**单独跑 pty 断言 (同一份七步与"先印选项"代码)。
 - 门只钉家族级计数 (223/197/26/四族), **没有**逐家核对 8174 个模型 id 与公开源的一致性; 一致性由构建期生成 + 源 sha256 记录承担。
 - 并行跑多道门时 `verify-cli-quiet` 的 **A6 曾判红一次** —— 负载把 20s 窗口拉长, 空载单跑绿 (判据成立), 按**负载假红**处理并如实记账。
+
+---
+
+## [2026-09-27] feat | 第 1 步全量候选 + 固定高度视窗与折叠 + bolloon 色系 (二改收尾)
+
+**接手方式**: 上游被"无回复"中断 (9 文件 +886/−185 未提交, `tsc --noEmit` 0 错)。
+**第一条指令 = 先 `git status` + `git diff` 逐文件看清改了什么, 不推翻**。三个验收目标逐条对上真 pty 门, 缺的补, 补齐后**全部变异跑到判红**。
+
+### 1. 第 1 步默认列出全部家 (藏家数被明确否掉)
+
+| 项 | 实测 (门里盘上真算) |
+|---|---|
+| 候选总数 | **231 家** = 内置 **13** + 自定义 **0** + 目录 **223** − 同名排除 **5** |
+| 同名排除项 (逐项点名) | `anthropic` · `deepseek` · `minimax` · `openai` · `openrouter` (内置优先, 不重复) |
+| 五组 (是**划分**不是筛选) | 当前生效 **1** · 可用 **2** · 未配置凭据 **199** · 需专用鉴权 (未支持) **14** · 无 api 基址 **15** = **231** ✓ |
+| 屏上数字 | 主屏 `共 231 家` 与选择器头行 `共 231 家` **都对上真算** (不是写死的) |
+
+默认值 `catalog: 'configured'` → **`'all'`**; 分组依据落成**纯函数**
+(`providerTierOf` / `providerTierCollapsedByDefault` / `orderProvidersForMenu` / `PROVIDER_GROUPS`,
+`src/llm/model-catalog.ts`) —— 主屏 / 纯文本清单 / 全屏选择器**共用同一份**, 不各写一套。
+
+### 2. 固定高度视窗 + 分组折叠 (页面放得下, 家数照样看得见)
+
+- `viewportHeight(rows) = clamp(rows-3, 3, 12)`, 每帧只渲染 `头行 + 指示行 + body + 状态行`,
+  **视窗外的行根本不画** (不是"画完再滚出屏幕" ⇒ **不靠终端回滚缓冲**)。
+- 折叠标题 `── 名字 (N 家) ›` / `▾` —— **家数永远写在标题上**; 默认只展开"当前生效 + 可用",
+  后三组 (199 / 14 / 15) 默认收起; 键位 `空格` 切换 · `←` 收起 · `→` 展开, 并写进头行提示。
+- **有查询词时命中平铺** (不画分组标题、不受收起状态影响) —— 搜索命中被折叠挡住是最气人的事。
+- 视窗上下边 `↑/↓ 还有 N 家` 指示; `第 i/N` 按**行**算 (分组标题是一等行, 能在上面按空格)。
+
+真 pty 原文级断言: 单帧 **≤ 14 行** (rows=30, 候选 231 家, 共 13 帧) · 矮终端 rows=12 **≤ 12 行** 且光标真走出窗口 ·
+收起标题 `未配置凭据 (选了会先要 key) (199 家)✓` / `需专用鉴权 (未支持) (14 家)✓` / `无 api 基址 (需自定义 baseUrl) (15 家)✓`
+(与盘上逐项一致) · 收起帧候选行 **3** → 展开帧 **6** (`›` → `▾`) ·
+`○ amazon-bedrock · special (需专用鉴权, 未支持) · 无基址 (需自定义 baseUrl) · 缺 key (AWS_ACCESS_…` ·
+`○ aihubmix · 无基址 (需自定义 baseUrl) · 缺 key (AIHUBMIX_API_KEY) · 106 models · 目录 · 族 opena…` ·
+搜 `nvidia` 命中 `→ ○ nvidia · 缺 key (NVIDIA_API_KEY) · 105 models · 目录 · 族 openai-compatible` **并继续走到凭证步**。
+
+### 3. 颜色收回 bolloon 色系 (唯一事实源)
+
+`src/cli/theme.ts` = 唯一颜色事实源 (`THEME` 9 token + `fg()`/新增 `bg()` + `Tone`/`TONE_TOKEN` +
+`colorEnabled()` + `tint()`); 组件里 **一个 hex 字面量都没有** (`tui-select`/`model-selector` = **0/0`**)。
+光标行 `REVERSE + BOLD + fg(accent) + bg(muted)` ⇒ 实际是 **accent 底色 + muted 灰字**;
+保留反白序列是因为它是**结构判据** (门靠它认哪一行是高亮), 拿掉等于把可核证据删了。
+门**真读 `theme.ts`** 拿调色板 (不在门里另抄一份) 再逐条比对输出里所有 `38;2;`/`48;2;` 的 RGB:
+用到 **5 色** (accent `196;214;64` · muted `96;96;88` · ok `34;197;94` · warn `245;158;11` · dim `144;144;136`),
+**越界 0**; 光标行有 `48;2;` 底 (9 次) + 反白 (9 次); `NO_COLOR=1` 下真彩 **0 条** 但 `●/○` · `→ ` · `(N 家) ›` 照旧分得清。
+
+### 4. 长列表响应性 (给真耗时, 不给"按完没崩")
+
+搜索 `a` 平铺 **230 行** 后连续 **20 次 ↓**: 单键重绘延迟 **p50=157ms / p95=163ms / max=163ms**, 整轮 **5.16s**,
+序号 `1..21` 逐行递进, 一次都没超时。⚠ 这三个数是**上界** (pty 驱动 0.15s 轮询自带 ~150ms 量化, p50 就在量化地板上);
+判据写成 `max ≤ 2000ms` 并把每次真耗时打进报告。
+
+### 5. 验收与变异
+
+- `npx tsx scripts/verify-model-ux.ts` → **104 passed / 0 failed · exit 0**; R0 开工前自检 **19/19 锚点**。
+- **变异 17/17 判红, 17/17 逐字节还原**。本轮在 15 条上**新增 2 条**:
+  **M16 拿掉搜索** (屏上一次都没有 `筛选 "…"` 帧; 且要求"选择器真开起来了"才算红, 避免崩溃也判红的自证) ·
+  **M17 取消也写盘** (提示语仍是 `已取消, 未改动任何配置`, 界面看不出问题 ⇒ 判据必须是**字节级**: 取消后配置 sha 变了就红)。
+  M17 先用**定点探针**验过: 变异后取消 → 盘上真出现 `mut-cancel-1`, sha `ffd7ad9d…` → `a08350f1…`。
+- 回归: `tsc --noEmit` **0 错** · `verify-provider-catalog` **70/0** · `verify-model-selection` **57/0** ·
+  `verify-model-selector` **51/0** · `verify-model-wiring` **92/0** · `verify-model-discovery` **81/0** ·
+  `verify-model-policy` **36/0** · `verify-model-acceptance` **16/16 条目 · 106/106 断言 · 15/15 反事实** ·
+  `verify-model-entrypoints` **59/0** · 冻结门 **34/34** ·
+  全量 `npx vitest run` **246 文件 / 4010 测: 244 文件 / 4007 测绿**, 3 条红全是 **20s 超时类**
+  (`goal-flywheel-p5-acceptance` 1 条 20027ms · `runtime-bootstrap` 2 条 24610/23124ms), 这两个文件本轮**一行没动**,
+  **空载单跑 54/54 全绿 (14.44s)** ⇒ 判**负载假红**。
+- `npm run build:main` exit 0; **真跑全局 `bolloon`** (全局 bin 是**指向本仓的符号链接**, 所以真用上本轮代码):
+  `bolloon model` → **231 行全量** (分组标题 + 家数 + `← 当前`, 非 TTY 也全列) ·
+  `bolloon model catalog list` → **223 行全量** (`--usable` 才 192) · `bolloon model list` → 发现目录 13 家。
+- 顺手修掉一条**真回归**: `src/test/model-selector.test.ts` 里写死旧行形状的断言
+  (旧 `/● deepseek · \d+ models/` 在新形状下必然不命中 —— 新形状把"为什么不能用"与凭证状态排到**模型数之前**,
+  依据是**截断存活优先级**)。**钉新形状而非放宽**: 逐项正则 + 顺序断言 + `← 当前` 必须在行尾 + 分组标题带家数。
+
+### 6. 如实留下 (没做到 / 有保留)
+
+1. **`verify-model-selection` 在批跑里红过一次 (55/2)**: 红的是**第 12 条并发臂**, **空载单跑 12/12 全绿** ⇒ 时序/负载敏感。
+   **根因读源码定位**: `src/llm/config-store.ts` 的 `initialize()` 在**任何读失败**时 `catch { getDefaultConfig(); await save(); }`
+   (**把默认配置回写覆盖**), 且 `save()` 是**非原子原地 `fs.writeFile`** —— 并发写时读方可能读到半截文件 ⇒ 整份配置被默认值顶掉。
+   **该文件本轮一行没动**, 属**既有缺陷**, 门里那条断言正是它的探测器; **本轮不修**, 记账在此。
+2. 响应性数字是**上界** (pty 轮询量化 ~150ms)。
+3. **`.git/index` 被别的进程动过一次** (16:06): 索引里 `src/cli/tui-select.ts` 是**变异中途**的快照
+   (含 `return null; // 变异: 方向键失灵`)。处置: 收尾**逐文件重 `git add`** 刷成工作区内容, 提交后核对
+   (工作区 `grep 变异` = **0 命中**, 提交内容里也没有)。
+4. 会话内 (ink) 选择器仍**没有**单独跑 pty; 上游 `/models` 不是全集的判定仍只在一家上游实测过 (老限制延续)。
+5. 提交**未 push**; 那 4 项版本号文件(暂存区)**没动也没提交**。

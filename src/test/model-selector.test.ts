@@ -540,11 +540,14 @@ describe('文本回退路径 (真终端): 先印选项再问 · 非法输入给�
 
   it('★ 非法输入: 说清原因再重问 (序号越界报范围; 对不上报"可用值见上表")', async () => {
     await seedConfig(baseConfig());
-    const s = textIO(['99', 'zzz', 'deepseek', '2', '1', '3', '1']);
+    // 2026-09-27 (二改): 候选集 = 全部家 (200+), 所以"越界"要用一个**真的超出范围**的序号 ——
+    //   从前喂 99 就出界, 现在 99 是合法行号 (这本身就是"列表真的长了"的证据)。
+    const s = textIO(['99999', 'zzz', 'deepseek', '2', '1', '3', '1']);
     const r = await SEL.runModelSelector(s.io as any, { verify: false });
     expect(r.ok).toBe(true);
     const text = s.printed.join('\n');
-    expect(text).toMatch(/✗ 序号 99 超出范围 \(这里只有 1~\d+ 项\) — 重问/);
+    expect(text).toMatch(/✗ 序号 99999 超出范围 \(这里只有 1~\d+ 项\) — 重问/);
+    expect(Number(/这里只有 1~(\d+) 项/.exec(text)![1])).toBeGreaterThan(100);   // 候选家数真的是 200+
     expect(text).toContain("✗ 没有候选的值或名字匹配 'zzz'");
     // 同一题上重问: 越界之后又出现了一次提问
     expect(s.asks.filter((q) => q === PICK_PROMPT).length).toBeGreaterThan(5);
@@ -752,7 +755,14 @@ describe('命令面: /model pick 与状态列表', () => {
     await seedConfig(baseConfig());
     const out = await SW.runModelCommand('status');
     expect(out).toContain('当前生效: deepseek/deepseek-v4-flash');
-    expect(out).toMatch(/● deepseek · \d+ models/);
+    // 2026-09-27 (二改) 行形状变了: ① 不可用/需额外条件的原因 ② 凭证状态 ③ 计数与来源 ④ `← 当前`
+    //   —— 凭证状态排在**模型数之前**是刻意的 (截断存活优先级: 尾巴被切掉时先丢计数, 不丢"为什么不能用"),
+    //   所以旧正则 `● deepseek · \d+ models` 在这个形状下必然不再命中 ⇒ 按**新形状逐项钉住**, 不是放宽。
+    expect(out).toMatch(/● deepseek · (⚠ key 要求不一致 · )?key 已配 · \d+ models · 内置 · ← 当前/);
+    const effRow = out.split('\n').find((l) => l.includes('● deepseek ·')) || '';
+    expect(effRow.indexOf('key 已配')).toBeLessThan(effRow.indexOf('models'));   // 凭证状态在计数之前
+    expect(effRow.trim().endsWith('← 当前')).toBe(true);                          // 当前那一份有标记
+    expect(out).toContain('── 当前生效 (1 家)');                                  // 分组标题带家数 (全量列出, 不藏家数)
     expect(out).toContain('/model pick');
   });
 

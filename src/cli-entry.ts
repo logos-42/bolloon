@@ -586,7 +586,6 @@ function isRealTty(): boolean {
  */
 async function handleModelCommand(modelArgs: string[]): Promise<void> {
   const { llmConfigStore } = await import('./llm/config-store.js');
-  const { buildProviderSummaries, formatProviderLine } = await import('./llm/model-catalog.js');
   const { effectiveModelConfig, formatEffectiveModel } = await import('./llm/model-selection.js');
   await llmConfigStore.initialize();
 
@@ -605,26 +604,36 @@ async function handleModelCommand(modelArgs: string[]): Promise<void> {
     return;
   }
 
-  // ── 无参 + 非终端 (管道/脚本): 列出所有供应商 + 当前**真实生效**的那一份 + 用法 ──
+  // ── 无参 + 非终端 (管道/脚本): 列出**全部**供应商 (分组带家数) + 当前**真实生效**的那一份 + 用法 ──
   if (modelArgs.length === 0) {
     const eff = await effectiveModelConfig({}).catch(() => null);
-    const summaries = await buildProviderSummaries({});
-    const { providerGroupSummary } = await import('./llm/model-catalog.js');
+    const mc: any = await import('./llm/model-catalog.js');
+    const summaries = await mc.buildProviderSummaries({});
     const pc: any = await import('./llm/provider-catalog.js');
     await pc.initializeProviderCatalog();
     console.log(`\n${BOLD}模型供应商${RESET} (当前生效: ${eff ? `${eff.provider}/${eff.model}` : '读不出来'})\n`);
     if (eff) console.log(`  ${formatEffectiveModel(eff)}`);
     console.log('─'.repeat(58));
-    for (const s of [...summaries.filter((x) => x.configured), ...summaries.filter((x) => !x.configured)]) {
-      console.log(`  ${formatProviderLine(s)}`);
+    // 非终端里没有"固定高度视窗 + 折叠"那套交互 (那是全屏 TUI 的事), 所以这里**整份列全**:
+    //   内置 13 + 自定义 + 目录全部 逐行出, 分组标题带家数。只给"分组计数"是这条线要修的病 ——
+    //   脚本要能 grep 到任何一家 (含"需专用鉴权 (未支持)""无基址"的那些)。
+    const ordered = mc.orderProvidersForMenu(summaries);
+    let lastGroup = '';
+    for (const s of ordered) {
+      const tier = mc.providerTierOf(s);
+      const g = mc.PROVIDER_GROUPS[tier];
+      if (g !== lastGroup) {
+        lastGroup = g;
+        const n = ordered.filter((x: any) => mc.providerTierOf(x) === tier).length;
+        console.log(`  ── ${g} (${n} 家)${mc.providerTierCollapsedByDefault(tier) ? ' · 交互界面里默认收起, 空格/→ 展开' : ''}`);
+      }
+      console.log(`  ${mc.formatProviderMenuRow(s)}`);
     }
-    // 目录驱动 (2026-09-27): 目录里的家默认只列"已有凭证"的那些 (上面那些 ● 行),
-    //   其余 200+ 家用分组计数概括 —— 不刷 223 行噪音, 但也要说清它们在哪、目录是几号的。
-    console.log(`  ${providerGroupSummary(summaries)}`);
+    console.log(`  ${mc.providerGroupSummary(summaries)}`);
     console.log(`  ${pc.catalogStatusLine()}`);
     console.log(`  ${pc.catalogGroupLine()}`);
     console.log(`\n${BOLD}用法:${RESET}`);
-    console.log(`  bolloon model                    # 终端里直接进选择界面 (下面这份清单是管道/脚本的可读输出)`);
+    console.log(`  bolloon model                    # 终端里直接进选择界面 (固定高度视窗 + 分组折叠; 上面这份全量列表是管道/脚本的可读输出)`);
     console.log(`  bolloon model pick               # 同上, 显式写法 (供应商→凭证→模型→参数→作用域→测试→确认)`);
     console.log(`  bolloon model <name>             # 切换到该供应商`);
     console.log(`  bolloon model <name> <model>     # 切换并指定模型`);
@@ -632,7 +641,7 @@ async function handleModelCommand(modelArgs: string[]): Promise<void> {
     console.log(`  bolloon model refresh [name]     # 重取上游目录 (--clear 清缓存)`);
     console.log(`  bolloon model admit <name> <m>   # 手输一个目录里没有的模型名`);
     console.log(`  bolloon model catalog            # 供应商目录: 是几号的/新鲜度/族分布 (只读)`);
-    console.log(`  bolloon model catalog list [词]  # 逐家看 (--all 连"需专用鉴权/无基址"的也看)`);
+    console.log(`  bolloon model catalog list [词]  # 逐家看 (**默认全量**, 含"需专用鉴权/无基址"并标原因; --usable 只看能用的)`);
     console.log(`  bolloon model catalog refresh    # 运行期真拉最新目录 (落盘 0600, 记来源与时间)`);
     console.log(`  示例: bolloon model deepseek deepseek-v4-flash`);
     return;

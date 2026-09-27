@@ -10,7 +10,7 @@
  *   「上一/本步的 expect 已被当前画面满足」+ `send`, 然后**下一步**的 expect 才是这个键的效果。
  *   把"等待按键效果"和"发送按键"写在同一步 = 永远等不到 (上一条线就是这么写坏的)。
  *
- * 验的九件事 (对应 leo 亲测报的口径):
+ * 验的十四件事 (对应 leo 亲测报的口径; ⑨-⑬ 是 2026-09-27 二改加的口径):
  *   ① 裸敲 `bolloon model` = 切换启动命令: 真终端里第一屏**就是**带序号/状态/当前项标记的供应商列表,
  *      **不许**先刷一坨供应商清单+用法; 管道/非 TTY 才退回清单+用法 (脚本可读, 不卡等待输入)。
  *   ② 四条同级选择方式都真生效: ↑/↓ 高亮**真位移** (两帧反白行对比) · 数字跳选 · 逐字/`/` 筛选
@@ -25,7 +25,20 @@
  *   ⑦ 真开关: 切换真落盘 (配置 sha 变了) + 探测真打到**假上游** (记录到真请求, 不是空转);
  *      探测**失效**时 (连不上) 停在这一步、不写盘、也不出现假二次确认。
  *   ⑧ `list` 子命令只读 (配置 sha 不变)。
- *   ⑨ **变异判红** (门承重): 9 条变异逐条跑, 每条都必须把自己的判据打红。
+ *   ⑨ **候选集 = 盘上全部家** (内置 13 + 自定义 + 目录全部): 第 1 步头行/标题里的 `共 N 家` 与
+ *      盘上真算的家数逐家对齐 (允许的排除项必须在报告里点名), 目录家**搜得到、选得中、能继续走流程**。
+ *   ⑩ **固定高度视窗 + 分组折叠**: 单帧渲染总行数 ≤ 终端高度 (不是靠终端回滚缓冲才"看得完") ·
+ *      收起的分组标题**照写家数**且与盘上真算一致 · `空格/→` 展开真生效 (两帧对比) ·
+ *      `special (需专用鉴权, 未支持)` / `无基址 (需自定义 baseUrl)` 的家在真 pty 屏幕上真能看到。
+ *   ⑪ **颜色只有一个来源**: 屏幕上的真彩序列 (`38;2;` / `48;2;`) 用到的 RGB **全部**来自
+ *      `src/cli/theme.ts` 的调色板 (本门真读那个文件, 不复制一份) · 光标行有背景 + 反白 ·
+ *      `NO_COLOR=1` 下仍然靠符号分得清 (●/○/→/分组标记) · `tui-select.ts` + `model-selector.ts`
+ *      里 hex 字面量计数 == 0 (全走 `THEME.*` / `fg()` / `bg()`)。
+ *   ⑬ **长列表响应性 (给真耗时)**: 候选平铺成 200+ 行时**连续 20 次按键**, 每一次按键都
+ *      **等"新的 `第 i/N · 筛选 …` 帧"出现** —— 等的毫秒数就是这一键的重绘延迟 (视窗定位 / 滚动 /
+ *      摊行 全在这条路径上); 逐次记下来报 p50/p95/max, 并断言序号序列真的 1,2,…,21 逐行递进。
+ *      (判据不是"按完没崩" —— 那种假判据对"卡"一无所获。)
+ *   ⑭ **变异判红** (门承重): 17 条变异逐条跑, 每条都必须把自己的判据打红。
  *
  * 报告口径: 只贴**真渲染** (pty 原始输出里摘), 计数与结论都从盘上/输出里算, 不从内存复述。
  * 凭据: 假上游 + 隔离 home + 洗过的 env (把 `*_API_KEY/*_KEY/*_TOKEN/*_SECRET` 全删掉再 spawn);
@@ -38,6 +51,9 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { spawn } from 'child_process';
+// ★ 颜色断言只用**真事实源**: 本门从 `theme.ts` 真读调色板来比对 (不在这里抄一份 hex ——
+//   抄一份的话"配色统一"就变成了自证)。
+import { THEME } from '../src/cli/theme.js';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-model-ux-'));
@@ -177,7 +193,12 @@ function stripAnsi(s: string): string {
     .replace(/\r/g, '\n');
 }
 
-interface PtyPlan { timeout_s: number; settle_ms?: number; cols?: number; rows?: number; steps: PlanStep[] }
+interface PtyPlan {
+  timeout_s: number; settle_ms?: number; cols?: number; rows?: number;
+  /** 追加/覆盖子进程 env (值为 null = 删掉这个变量); 无色降级那条路要用它塞 `NO_COLOR=1` */
+  env?: Record<string, string | null>;
+  steps: PlanStep[];
+}
 
 /**
  * 跑一轮真 pty。
@@ -315,15 +336,64 @@ function stepSegments(lines: string[]): Array<{ step: number; lines: string[] }>
 }
 
 // ---------------------------------------------------------------------------
+// 颜色 (⑪): 真彩序列 vs `theme.ts` 的调色板
+// ---------------------------------------------------------------------------
+
+/** '#c4d640' → '196;214;64' (真彩序列里的那个写法) */
+function rgbOfHex(hex: string): string {
+  const h = String(hex || '').trim();
+  return `${parseInt(h.slice(1, 3), 16)};${parseInt(h.slice(3, 5), 16)};${parseInt(h.slice(5, 7), 16)}`;
+}
+
+/** 调色板 (**从 theme.ts 真读**): token → 'r;g;b' */
+function paletteRgb(): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [token, hex] of Object.entries(THEME as Record<string, string>)) out.set(token, rgbOfHex(hex));
+  return out;
+}
+
+interface TrueColorHit { channel: string; rgb: string }
+
+/** 原始输出里所有真彩序列 (`38;2;r;g;b` 前景 / `48;2;r;g;b` 背景) */
+function trueColorHits(raw: string): TrueColorHit[] {
+  const out: TrueColorHit[] = [];
+  const re = /\x1b\[(3|4)8;2;(\d{1,3});(\d{1,3});(\d{1,3})m/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) out.push({ channel: m[1], rgb: `${Number(m[2])};${Number(m[3])};${Number(m[4])}` });
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// 视窗预算 (⑩): 单帧渲染**总行数** / 帧里的真候选行
+// ---------------------------------------------------------------------------
+
+/** 每一帧的渲染行数 (头行 + 视窗内可见行 + 滚动指示行 + 状态行) —— 帧行都带 `ESC[K` */
+function frameSizes(raw: string): number[] {
+  return frameBlocks(raw).map((b) => b.length).filter((n) => n > 0);
+}
+
+/** 一帧里的**真候选行** (以 ●/○ 开头; 分组标题 / 滚动指示 / 状态行都不算) */
+function candidateRows(block: string[]): string[] {
+  return block.filter((l) => /^(→ | {2})[●○] /.test(l));
+}
+
+/** 正则里要转义的字符 (分组名里有 `(`/`)`, 直接拼进正则会变成分组) */
+function escapeRe(s: string): string {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ---------------------------------------------------------------------------
 // 变异 (改源码 → 聚焦检查判红 → 逐字节恢复)
 // ---------------------------------------------------------------------------
 
 interface MutStep { file: string; pairs: Array<[string, string]> }
+/** 变异跑之前记下的事实用它传给 `check` (例如\"取消不变性\"要拿跑之前的配置 sha 做对照) */
+interface MutCtx { configShaBefore: string }
 interface Mutation {
   id: string; desc: string; steps: MutStep[];
   /** 这个变异下要怎么跑 (`plan`) 与**怎样才能判红** (`check`) —— 每条自己一套, 不共用一把钝刀 */
   plan: (stubBaseUrl: string) => PlanStep[];
-  check: (r: PtyResult) => boolean;
+  check: (r: PtyResult, ctx: MutCtx) => boolean;
 }
 
 /** `↓↑` 高亮位移用 (两帧反白行对比) */
@@ -393,7 +463,7 @@ const MUTATIONS: Mutation[] = [
   {
     id: 'M2',
     desc: '拿掉高亮 (光标行不再反白 → 看不出在哪一行)',
-    steps: [{ file: 'src/cli/tui-select.ts', pairs: [["buf.push(`${color ? `${REVERSE}${BOLD}${padded}${RESET}` : truncateToWidth(plain, cols)}${ERASE_EOL}\\r\\n`);", "buf.push(`${truncateToWidth(plain, cols)}${ERASE_EOL}\\r\\n`);"]] }],
+    steps: [{ file: 'src/cli/tui-select.ts', pairs: [["buf.push(`${color ? `${CURSOR_SGR}${padded}${RESET}` : truncateToWidth(plain, cols)}${ERASE_EOL}\\r\\n`);", "buf.push(`${truncateToWidth(plain, cols)}${ERASE_EOL}\\r\\n`);"]] }],
     plan: () => twoArrowPlan(),
     check: (r) => highlightRows(r.raw).length < 2,
   },
@@ -456,6 +526,83 @@ const MUTATIONS: Mutation[] = [
     plan: () => firstScreenOnlyPlan(),
     check: () => false,   // 由 M9 专用检查 (outOfCatalogProbe) 判, 见 runMutations
   },
+  {
+    id: 'M10',
+    desc: '把"目录家默认全部列出"改回"只列有凭证的家" (藏家数)',
+    steps: [{ file: 'src/llm/model-catalog.ts', pairs: [["const catalogMode = opts.catalog ?? 'all';", "const catalogMode = opts.catalog ?? 'configured';   // 变异: 又只列有凭证的了"]] }],
+    plan: () => firstScreenOnlyPlan(),
+    check: (r) => Number((/共\s*(\d+)\s*家/.exec((frameBlocks(r.raw)[0] || [])[0] || '') || [])[1]) !== MUT_CTX.totalCandidates,
+  },
+  {
+    id: 'M11',
+    desc: '把"默认只展开当前生效+可用"改成全展开 (折叠失效 → 收起标题连带家数一起消失)',
+    steps: [{ file: 'src/llm/model-catalog.ts', pairs: [["  return t === 'noCredential' || t === 'specialAuth' || t === 'noBaseUrl';", '  return false;   // 变异: 所有分组都默认展开']] }],
+    plan: () => firstScreenOnlyPlan(),
+    check: (r) => !frameBlocks(r.raw).some((b) => b.some((l) => l.includes(MUT_CTX.collapsedHeader))),
+  },
+  {
+    id: 'M12',
+    desc: '把"固定高度视窗 + 默认折叠"改回"一次性把全部候选都画出来" (版面撑爆终端)',
+    steps: [
+      { file: 'src/cli/tui-select.ts', pairs: [['  return Math.max(3, Math.min(VIEWPORT_MAX, Math.max(0, rows - 3)));', '  return Math.max(3, Math.max(0, rows - 3) * 1000);   // 变异: 视窗不要了']] },
+      { file: 'src/llm/model-catalog.ts', pairs: [["  return t === 'noCredential' || t === 'specialAuth' || t === 'noBaseUrl';", '  return false;   // 变异: 全展开']] },
+    ],
+    plan: () => firstScreenOnlyPlan(),
+    check: (r) => (frameSizes(r.raw).length ? Math.max(...frameSizes(r.raw)) : 0) > 30,
+  },
+  {
+    id: 'M13',
+    desc: '把光标行的 accent 底色拿掉 (只剩反白 → bolloon 主色块没了)',
+    steps: [{ file: 'src/cli/tui-select.ts', pairs: [['const CURSOR_SGR = `${REVERSE}${BOLD}${fg(THEME.accent)}${bg(THEME.muted)}`;', 'const CURSOR_SGR = `${REVERSE}${BOLD}`;   // 变异: 只有反白, 没有底色']] }],
+    plan: () => firstScreenOnlyPlan(),
+    check: (r) => !/\x1b\[48;2;/.test(r.raw),
+  },
+  {
+    id: 'M14',
+    desc: '把一个调子换成调色板外的随手 hex (#ff00ff → 配色又散回各处)',
+    steps: [{ file: 'src/cli/tui-select.ts', pairs: [["(Object.keys(TONE_TOKEN) as Tone[]).map((t) => [t, t === 'plain' ? '' : fg(THEME[TONE_TOKEN[t]])]),", "(Object.keys(TONE_TOKEN) as Tone[]).map((t) => [t, t === 'plain' ? '' : (t === 'ok' ? fg('#ff00ff') : fg(THEME[TONE_TOKEN[t]]))]),"]] }],
+    plan: () => firstScreenOnlyPlan(),
+    check: (r) => { const palList = [...paletteRgb().values()]; return trueColorHits(r.raw).some((h) => !palList.includes(h.rgb)); },
+  },
+  {
+    id: 'M15',
+    desc: '把"收起的分组标题照写家数"改回"只给标记不给家数" (藏家数)',
+    steps: [{ file: 'src/cli/tui-select.ts', pairs: [['        plain = `  ── ${line.group} (${line.count} ${unit}) ${mark}`;', '        plain = `  ── ${line.group} ${mark}`;   // 变异: 不给家数']] }],
+    plan: () => firstScreenOnlyPlan(),
+    check: (r) => !frameBlocks(r.raw).some((b) => b.some((l) => new RegExp(`── .*\\(\\d+ 家\\) ${MUT_CTX.collapsedMark}`).test(l))),
+  },
+  {
+    id: 'M16',
+    desc: '拿掉搜索 (敲字母不再过滤 → 长列表里既搜不到目录家, 也回不到全量)',
+    steps: [{
+      file: 'src/cli/tui-select.ts',
+      pairs: [['          query += ch;\n          numBuf = \'\'; note = \'\';\n          cursor = firstItemRow(linesOf());\n          scrollTop = 0;',
+        "          note = '变异: 拿掉搜索 (字母不再过滤)';   // 变异"]],
+    }],
+    plan: () => [
+      { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 90 },
+      { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 30 },
+      { name: '敲筛选词', send: 'deep', timeout_s: 15 },
+      // 这一步**故意等不到** (搜索被拿掉了) —— 8s 后超时, 原始输出里也就不会有 `筛选 "…"` 帧
+      { name: '等筛选生效', expect_raw: '第\\s*1\\s*/\\s*\\d+\\s*·\\s*筛选', timeout_s: 8 },
+      { name: '发 Esc', send: '\\x1b', timeout_s: 15 },
+      { name: '取消回执', expect: '已取消|未改动', timeout_s: 20 },
+    ],
+    // 红判据: 选择器**真开起来了** (否则崩了也算红 = 自证), 但屏上**一次都没有**过滤生效
+    check: (r) => r.text.includes('选择供应商') && !/筛选\s*"/.test(r.text),
+  },
+  {
+    id: 'M17',
+    desc: '取消也写盘 (取消不变性被拿掉 —— 提示语仍然是"已取消, 未改动任何配置", 只有配置 sha 会露馅)',
+    steps: [{
+      file: 'src/cli/model-selector.ts',
+      pairs: [["  if (!providerId) return done({ ok: false, cancelled: true, reachedStep: 'provider', message: '已取消, 未改动任何配置' });",
+        "  if (!providerId) {\n    // 变异: 取消也写盘 (话术一个字不改 —— 只有 sha 会变)\n    try { const CS = await import('../llm/config-store.js'); await CS.llmConfigStore.updateProvider('deepseek' as any, { model: 'mut-cancel-1' }); } catch { /* 变异 */ }\n    return done({ ok: false, cancelled: true, reachedStep: 'provider', message: '已取消, 未改动任何配置' });\n  }"]],
+    }],
+    plan: () => firstScreenOnlyPlan(),
+    // 红判据: sha 变了 (真写盘了) 或干净取消的回执没了 —— 两条都说明"取消不变性"被破坏
+    check: (r, ctx) => sha(CONFIG) !== ctx.configShaBefore || !r.text.includes('已取消, 未改动任何配置'),
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -517,6 +664,63 @@ async function probeRaw(tag: string, args: string[], steps: PlanStep[]): Promise
   return await runPty(tag, args, { timeout_s: 200, settle_ms: 600, cols: 100, rows: 30, steps });
 }
 
+/**
+ * 变异检查要用的"盘上真算"期望值 —— 由 `main()` 在 R11 里填好。
+ * 为什么不放在 `check` 里现算: 那是**在变异之后**算的 (盘上的源已经被改了), 拿被污染的源算期望值 = 自证。
+ */
+const MUT_CTX: { totalCandidates: number; collapsedHeader: string; collapsedMark: string } = {
+  totalCandidates: 0, collapsedHeader: '', collapsedMark: '',
+};
+
+
+interface DiskCounts {
+  total: number; builtin: number; custom: number; catalog: number; excluded: string[];
+  tiers: Record<string, number>; searchTarget: string; searchIsCatalogOnly: boolean;
+}
+
+/**
+ * 候选集与分组家数 —— **在子进程里按盘上的源真算**, 而且 env 与 pty 子进程**逐条一致** (`childEnv()`)。
+ *
+ * ⚠ 为什么必须同一套 env: "算不算有凭证"这件事本身是 env 决定的 (目录家靠 `*_API_KEY` 从
+ *   未配置变可用) —— 门进程自己的 shell 里存着某个 key 时, 在门里算出来的分组家数就会比 pty 里多两家
+ *   (踩过: 门报 noCredential=197 / 屏上写 199)。宁可多开一个子进程, 也不要拿两套 env 的数字互相对。
+ */
+async function diskCountsInChild(): Promise<DiskCounts> {
+  const code = [
+    "const MC = await import('./src/llm/model-catalog.js');",
+    "const PC = await import('./src/llm/provider-catalog.js');",
+    "await PC.initializeProviderCatalog();",
+    "const all = await MC.buildProviderSummaries({ catalog: 'all' });",
+    "const views = PC.catalogProviders();",
+    "const origin = (s) => s.origin || 'builtin';",
+    "const bIds = new Set(all.filter((s) => origin(s) === 'builtin').map((s) => s.id));",
+    "const tiers = {};",
+    "for (const t of ['current','usable','noCredential','specialAuth','noBaseUrl']) tiers[t] = all.filter((s) => MC.providerTierOf(s) === t).length;",
+    "const want = process.argv[1];",
+    "const target = (want && views.some((v) => v.id === want) && !bIds.has(want)) ? want",
+    "  : ((all.find((s) => origin(s) === 'catalog' && MC.providerTierOf(s) === 'noCredential') || {}).id || want);",
+    "process.stdout.write('@@CNT@@' + JSON.stringify({ total: all.length,"
+      + " builtin: all.filter((s) => origin(s) === 'builtin').length,"
+      + " custom: all.filter((s) => origin(s) === 'custom').length,"
+      + " catalog: views.length, excluded: views.filter((v) => bIds.has(v.id)).map((v) => v.id),"
+      + " tiers, searchTarget: target,"
+      + " searchIsCatalogOnly: views.some((v) => v.id === target) && !bIds.has(target) }) + '\\n');",
+  ].join('\n');
+  const raw = await new Promise<string>((resolve, reject) => {
+    const p = spawn(TSX, ['--input-type=module', '-e', code, 'nvidia'], {
+      cwd: ROOT, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = ''; let err = '';
+    p.stdout.on('data', (d) => { out += d.toString(); });
+    p.stderr.on('data', (d) => { err += d.toString(); });
+    p.on('error', reject);
+    p.on('close', (c) => (c === 0 ? resolve(out) : reject(new Error(`子进程家数探针 exit=${c}: ${short(err, 300)}`))));
+  });
+  const m = raw.match(/@@CNT@@(\{.*\})/);
+  if (!m) throw new Error(`子进程家数探针没吐结果: ${short(raw, 300)}`);
+  return JSON.parse(m[1]);
+}
+
 async function runMutations(): Promise<void> {
   const originals = new Map<string, string>();
   const restoreAll = (): void => {
@@ -556,8 +760,9 @@ async function runMutations(): Promise<void> {
           red = oc.ok === false && oc.failureClass === 'model_not_found';
           why = red ? `目录外名字被硬拒 (${oc.failureClass}) ⇒ 门会红` : `仍然通过 ⇒ 没抓住 (ok=${oc.ok})`;
         } else {
+          const configShaBefore = sha(CONFIG);
           const r = await probeRaw(`mut-${m.id}`, ['model'], m.plan(OOC_BASE));
-          red = m.check(r);
+          red = m.check(r, { configShaBefore });
           why = red ? '判据被破坏 ⇒ 门会红' : `判据仍成立 ⇒ **门漏了** (exit=${r.exit} raw=${r.raw.length}B)`;
         }
         ok(`${m.id} 变异被判红`, red, `${why} · ${m.desc.slice(0, 40)}`);
@@ -609,9 +814,10 @@ async function main(): Promise<number> {
   // ── R0 开工前自检: 变异锚点必须全在原位 (见 mutationResidue 注释) ──────
   {
     const residue = mutationResidue();
+    const anchorCount = MUTATIONS.reduce((n, m) => n + m.steps.reduce((k, st) => k + st.pairs.length, 0), 0);
     ok('R0 开工前: 变异锚点全在原位 (源没被上一轮打断的变异污染)',
       residue.length === 0,
-      residue.length ? `残留: ${residue.join(' | ')}` : '10/10 锚点命中');
+      residue.length ? `残留: ${residue.join(' | ')}` : `${anchorCount}/${anchorCount} 锚点命中 (${MUTATIONS.length} 条变异)`);
     if (residue.length) {
       console.log('\n✗ 源里有**变异残留** —— 先看清 git diff 并还原, 不要在这个状态下跑门。');
       return 2;
@@ -646,6 +852,18 @@ async function main(): Promise<number> {
     section('R2 真 TTY 裸敲 `bolloon model` = 直入选择器 (第一屏就是供应商列表)');
     // ══════════════════════════════════════════════════════════
     // 一个 run 里按顺序验: ①首帧就是选择器 ②↑↓ 高亮真位移 ③数字跳选 ④筛选 ⑤非法输入原因 ⑥EOF 干净取消
+    // 逐字筛选用**一个只有 1 个命中**的词: 候选集现在是全部家 (200+), 硬写 `deep` 这种常数会随目录变宽/
+    //   变窄, 而这条要证的是"N 真的缩了" —— 用 1 命中同时把"筛得准"也钉住。
+    const MCc: any = await import('../src/llm/model-catalog.js');
+    const probeSums: any[] = await MCc.buildProviderSummaries({ catalog: 'all' });
+    const hitsOf = (t: string): number => probeSums.filter((s: any) =>
+      TUI.matchesQuery({ value: s.id, label: MCc.formatProviderMenuRow(s) } as any, t)).length;
+    const TERM = ['deepseek', 'nvidia', 'groq', 'openai', 'cerebras', 'ollama', 'local']
+      .map((t) => ({ t, n: hitsOf(t) })).find((x) => x.n === 1) || { t: 'deepseek', n: Math.max(1, hitsOf('deepseek')) };
+    // 选择器里 **Cancel 行恒在末位** (收起/筛选都不隐藏), 所以筛后行数 = 命中家数 + 1
+    const FILTERED = TERM.n + 1;
+    const OUT_OF_RANGE = String(FILTERED + 2);
+    report(`R2 逐字筛选词: 「${TERM.t}」命中 ${TERM.n} 家 (+ Cancel 行 = ${FILTERED} 行; 越界探针用 ${OUT_OF_RANGE})`);
     const mainRun = await probeRaw('ux-main', ['model'], [
       { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
       { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
@@ -658,10 +876,10 @@ async function main(): Promise<number> {
       { name: '等第 9 项', expect_raw: '第\\s*9\\s*/', timeout_s: 20 },
       { name: '发 ctrl-u', send: '\\x15', timeout_s: 20 },
       { name: '等清空', expect: '筛选已清空', timeout_s: 20 },
-      { name: '逐字筛选 deep', send: 'deep', timeout_s: 20 },
-      // 一条正则同时钉住两件事: 状态行里的 `第 i/N` 真的缩了 **且** 筛的词就是 deep
-      { name: '等筛选生效 (N 变小)', expect_raw: '第\\s*1\\s*/\\s*2\\s*·\\s*筛选\\s*"deep"', timeout_s: 20 },
-      { name: '超范围 5', send: '5', timeout_s: 20 },
+      { name: `逐字筛选 ${TERM.t}`, send: TERM.t, timeout_s: 20 },
+      // 一条正则同时钉住两件事: 状态行里的 `第 i/N` 真的缩了 **且** 筛的词就是它
+      { name: `等筛选生效 (N 缩到 ${FILTERED})`, expect_raw: `第\\s*1\\s*/\\s*${FILTERED}\\s*·\\s*筛选\\s*"${TERM.t}"`, timeout_s: 20 },
+      { name: `超范围 ${OUT_OF_RANGE}`, send: OUT_OF_RANGE, timeout_s: 20 },
       { name: '等原因(超范围)', expect: '超出范围', timeout_s: 20 },
       { name: '再 ctrl-u', send: '\\x15', timeout_s: 20 },
       { name: '等清空 2', expect: '筛选已清空', timeout_s: 20 },
@@ -691,8 +909,11 @@ async function main(): Promise<number> {
       hi.length >= 3 && hi[0] !== hi[1] && hi[1] !== hi[2],
       `帧 1:「${short(hi[0], 46)}」→ 帧 2:「${short(hi[1], 46)}」`);
     const idx = cursorIndexes(mainRun.raw);
-    ok('光标序号序列 1→2→3→(↑回)2 (状态行数字真的跟着动)',
-      idx.slice(0, 4).join(',') === '1,2,3,2', `第 i/N 序列前 4 个 = [${idx.slice(0, 4).join(', ')}]`);
+    // 行号从 **2** 起: 第 1 行是分组标题 (`── 当前生效 (1 家) ▾`), 第 2 行才是当前生效的那一家 ——
+    //   分组标题现在是**一等行** (能在上面按空格展开), 所以整段位移比从前 +1。
+    //   断言的是**位移性质** (↓ +1 · ↓ +1 · ↑ −1), 不是某个硬编码的行号。
+    ok('光标序号序列 2→3→4→(↑回)3 (状态行数字真的跟着动)',
+      idx.slice(0, 4).join(',') === '2,3,4,3', `第 i/N 序列前 4 个 = [${idx.slice(0, 4).join(', ')}]`);
     report(`高亮两帧对比: 帧1「${short(hi[0], 40)}」 vs 帧2「${short(hi[1], 40)}」 (不同)`);
     report(`状态行光标序列: [${idx.slice(0, 4).join(', ')}]`);
 
@@ -705,17 +926,17 @@ async function main(): Promise<number> {
     const counts = filteredCounts(mainRun.raw);
     const blocks = frameBlocks(mainRun.raw);
     const firstItems = itemLines(blocks[0] || []).length;
-    const deepBlock = [...blocks].reverse().find((b) => b.some((l) => l.includes('筛选 "deep"')));
+    const deepBlock = [...blocks].reverse().find((b) => b.some((l) => l.includes(`筛选 "${TERM.t}"`)));
     const deepItems = deepBlock ? itemLines(deepBlock).length : -1;
     ok('筛选后**列表真的变短了** (候选项行数逐帧对比)',
-      deepItems >= 0 && deepItems < firstItems, `全量 ${firstItems} 项 → 筛 "deep" 后 ${deepItems} 项`);
+      deepItems >= 0 && deepItems < firstItems, `全量 ${firstItems} 项 → 筛 "${TERM.t}" 后 ${deepItems} 项`);
     // 比较"筛过之后的最小值"而不是最后一帧 —— 后面还会 ctrl-u 回全量, 拿末帧比是假判据
     ok('状态行 `已筛 M 家` 真的变小了', counts.length >= 2 && Math.min(...counts) < counts[0],
       `已筛序列 = [${counts.join(', ')}] · 最小 ${counts.length ? Math.min(...counts) : '-'} < 起始 ${counts[0]}`);
-    ok('状态行 `第 i/N` 的 N 也跟着变小 (筛后只剩 1 家 + Cancel)',
-      /第\s*1\/2\s/.test(mainRun.text.replace(/\s+/g, ' ')) || /第 1\/2/.test(mainRun.text),
-      short(mainRun.text.match(/共\s*\d+\s*家[^\n]*/) ? mainRun.text.match(/共\s*\d+\s*家[^\n]*/)![0] : '', 90));
-    report(`筛选: 候选项 ${firstItems} → ${deepItems}; 已筛 ${counts.join(' → ')}`);
+    ok(`状态行 \`第 i/N\` 的 N 也跟着变小 (筛后 ${FILTERED} 行 = 命中 ${TERM.n} 家 + Cancel)`,
+      new RegExp(`第\\s*1\\/\\s*${FILTERED}\\s*·\\s*筛选\\s*"${TERM.t}"`).test(mainRun.text) && FILTERED < firstItems,
+      `状态行: ${short((mainRun.text.match(/第\s*1\/\d+[^\n]*/) || [''])[0], 80)}`);
+    report(`筛选: 候选项 ${firstItems} → ${deepItems} (词「${TERM.t}」); 已筛 ${counts.join(' → ')}`);
 
     // ⑤ 非法输入给原因
     ok('序号 0 报"从 1 开始"', mainRun.text.includes('序号从 1 开始'), '');
@@ -730,11 +951,18 @@ async function main(): Promise<number> {
     // ══════════════════════════════════════════════════════════
     section('R3 滚动窗口 (矮终端 rows=12 → 光标越过窗口时窗口真的滚)');
     // ══════════════════════════════════════════════════════════
+    // 默认只展开"当前生效 + 可用", 所以"越过窗口"这条要先**展开一个大分组**再走 (收起的分组只有标题行) ——
+    // End → ↑ → ↑ 落在「需专用鉴权 (未支持)」标题上 → 空格展开 → 再连续 ↓。
     const scrollSteps: PlanStep[] = [
       { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
       { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
+      { name: 'End 到末行', send: '\\x1b[F', timeout_s: 20 },
+      { name: '↑ 到无基址标题', send: '\\x1b[A', timeout_s: 20 },
+      { name: '↑ 到需专用鉴权标题', send: '\\x1b[A', timeout_s: 20 },
+      { name: '空格展开', send: ' ', timeout_s: 20 },
+      { name: '等展开回执', expect: '已展开 需专用鉴权', timeout_s: 20 },
       ...Array.from({ length: 10 }, (_, i) => ({ name: `↓ #${i + 1}`, send: '\\x1b[B', timeout_s: 15 })),
-      { name: '等第 11 项', expect_raw: '第\\s*11\\s*/', timeout_s: 20 },
+      { name: '等第 17 行', expect_raw: '第\\s*17\\s*/', timeout_s: 20 },
       { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
       { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
     ];
@@ -744,33 +972,44 @@ async function main(): Promise<number> {
     const sFirst = itemLines(sBlocks[0] || []);
     const sLast = itemLines(sBlocks[sBlocks.length - 1] || []);
     const windowH = Math.max(3, Math.min(12 - 3, 40));
-    ok('矮终端里一直 ↓ 能把光标带到窗口之外 (第 11 项 > 窗口 H=9)',
-      scrollRun.ok && sIdx.includes(11) && 11 - 1 >= windowH,
-      `第 i/N 序列 = [${sIdx.join(', ')}] · 窗口 H=${windowH}`);
+    const sFar = sIdx.length ? Math.max(...sIdx) : 0;
+    ok('矮终端里一直 ↓ 能把光标带到窗口之外 (走到的行号 > 窗口 H=9)',
+      scrollRun.ok && sFar > 1 + windowH,
+      `第 i/N 序列 = [${sIdx.join(', ')}] · 最远 ${sFar} · 窗口 H=${windowH}`);
     ok('窗口真的滚了 (首帧里的第一项已经滚出最后一帧)',
       sFirst.length > 0 && !sLast.some((l) => l === sFirst[0]),
       `首帧首项「${short(sFirst[0], 46)}」不在最后一帧 ${sLast.length} 项里`);
+    const sSizes = frameSizes(scrollRun.raw);
+    ok('矮终端 (rows=12) 下单帧渲染总行数 ≤ 12 (固定高度视窗, 不是靠回滚缓冲)',
+      sSizes.length > 0 && Math.max(...sSizes) <= 12,
+      `帧行数最多 ${Math.max(...sSizes)} (共 ${sSizes.length} 帧)`);
 
     // ══════════════════════════════════════════════════════════
-    section('R4 窄终端不撑破 (cols=40: 每一帧每一行的显示宽度 ≤ 40)');
+    section('R4 窄终端不撑破 (cols=60/40: 每一帧每一行的显示宽度 ≤ 终端列数)');
     // ══════════════════════════════════════════════════════════
-    const narrowRun = await runPty('ux-narrow', ['model'], {
-      timeout_s: 200, cols: 40, rows: 20,
-      steps: [
-        { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
-        { name: '选择器就绪', expect: '选择供应商', timeout_s: 40 },
-        { name: '↓ #1', send: '\\x1b[B', timeout_s: 15 },
-        { name: '等第 2 帧', expect_raw: '第\\s*2\\s*/', timeout_s: 20 },
-        { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
-        { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
-      ],
-    });
-    const nLines = frameBlocks(narrowRun.raw).flat();
-    const over = nLines.filter((l) => TUI.displayWidth(l) > 40);
-    ok('窄终端 (40 列) 下没有一行撑破 —— 用**渲染器自己的尺子** (displayWidth) 量',
-      narrowRun.ok && nLines.length > 0 && over.length === 0,
-      `帧内容行 ${nLines.length} 行, 最宽 ${Math.max(...nLines.map((l) => TUI.displayWidth(l)), 0)} 列, 超宽 ${over.length} 行`);
-    if (over.length) report(`⚠ 超宽行: ${over.slice(0, 3).map((l) => `${TUI.displayWidth(l)}列「${short(l, 40)}」`).join(' | ')}`);
+    const narrowDetail: string[] = [];
+    for (const cols of [60, 40]) {
+      const narrowRun = await runPty(`ux-narrow-${cols}`, ['model'], {
+        timeout_s: 200, cols, rows: 20,
+        steps: [
+          { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+          { name: '选择器就绪', expect: '选择供应商', timeout_s: 40 },
+          { name: '↓ #1', send: '\\x1b[B', timeout_s: 15 },
+          { name: '等第 2 帧', expect_raw: '第\\s*2\\s*/', timeout_s: 20 },
+          { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
+          { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
+        ],
+      });
+      const nLines = frameBlocks(narrowRun.raw).flat();
+      const over = nLines.filter((l) => TUI.displayWidth(l) > cols);
+      const widest = Math.max(...nLines.map((l) => TUI.displayWidth(l)), 0);
+      narrowDetail.push(`${cols} 列: 帧内容行 ${nLines.length} 行 · 最宽 ${widest} 列 · 超宽 ${over.length} 行`);
+      ok(`R4 窄终端 (${cols} 列) 下没有一行撑破 —— 用**渲染器自己的尺子** (displayWidth) 量`,
+        narrowRun.ok && nLines.length > 0 && over.length === 0,
+        `${cols} 列: 帧内容行 ${nLines.length} 行, 最宽 ${widest} 列, 超宽 ${over.length} 行`);
+      if (over.length) report(`⚠ 超宽行 (${cols} 列): ${over.slice(0, 3).map((l) => `${TUI.displayWidth(l)}列「${short(l, 40)}」`).join(' | ')}`);
+    }
+    report(`R4 窄终端: ${narrowDetail.join(' | ')}`);
 
     // ══════════════════════════════════════════════════════════
     section('R5 凭证步四条路可达 + 掩码输入 0 命中');
@@ -965,6 +1204,197 @@ async function main(): Promise<number> {
     ok('负控制: 端点**真拒**这个目录外名字 → 拦住 (放宽判据不等于放过真不通的)',
       neg.verdict !== 'ok', `判成 ${neg.verdict} (目录 ${neg.catalog} 个)`);
     report(`目录外模型: 端点接受 → ok=${oc.ok} (acceptedOutsideCatalog=${oc.acceptedOutsideCatalog}); 端点真拒 → ${neg.verdict}`);
+
+    // ══════════════════════════════════════════════════════════
+    // R11 候选集 = 盘上全部家 (内置 + 自定义 + 目录) · 固定高度视窗 · 分组折叠 · 目录家可搜/可选
+    // ══════════════════════════════════════════════════════════
+    const MCx: any = await import('../src/llm/model-catalog.js');
+    // 期望值**从盘上真算**, 而且是与 pty 同一套 env 的子进程算的 (见 diskCountsInChild 注释):
+    //   子进程里显式 `catalog:'all'` —— 就算"默认值"被改回 `'configured'` (M10), 这里算出来的仍是**全部家**;
+    //   拿自己的默认值当期望值 = 自证, 门就抓不住了。
+    const disk = await diskCountsInChild();
+    const totalCandidates = disk.total;
+    const excluded = disk.excluded;
+    const TIERS = ['current', 'usable', 'noCredential', 'specialAuth', 'noBaseUrl'] as const;
+    const tierCount = (t: string): number => disk.tiers[t] ?? 0;
+    const COLLAPSED = String(TUI.GROUP_COLLAPSED_MARK);
+    const EXPANDED = String(TUI.GROUP_EXPANDED_MARK);
+    const collapsedHeader = (t: string): string => `── ${MCx.PROVIDER_GROUPS[t]} (${tierCount(t)} 家) ${COLLAPSED}`;
+    section(`R11 第 1 步 = 盘上全部家 (视窗 ≤ 终端高 · 分组折叠 · 目录家可搜/可选) [候选 ${totalCandidates} 家]`);
+    MUT_CTX.totalCandidates = totalCandidates;
+    MUT_CTX.collapsedHeader = collapsedHeader('noCredential');
+    MUT_CTX.collapsedMark = COLLAPSED;
+    ok('R11.0 候选集 == 内置 + 自定义 + 目录全部 (逐项点名允许的排除项)',
+      totalCandidates === disk.builtin + disk.custom + disk.catalog - excluded.length && totalCandidates > 100,
+      `内置 ${disk.builtin} + 自定义 ${disk.custom} + 目录 ${disk.catalog} - 同名排除 ${excluded.length} = ${totalCandidates}`
+        + (excluded.length ? ` · 排除项: ${excluded.join(', ')}` : ' · 无排除项'));
+    ok('R11.0b 五个分组是**划分**不是筛选 (各家数之和 == 候选总数)',
+      TIERS.reduce((a, t) => a + tierCount(t), 0) === totalCandidates,
+      TIERS.map((t) => `${MCx.PROVIDER_GROUPS[t]}=${tierCount(t)}`).join(' · '));
+
+    // 搜索目标: 只存在于**目录**里的家 (落在默认收起的"未配置凭据"组里 —— 收起挡不住搜索才算数)
+    const SEARCH_TARGET = disk.searchTarget;
+    const searchIsCatalogOnly = disk.searchIsCatalogOnly;
+    const browseRun = await runPty('ux-browse', ['model'], {
+      timeout_s: 240, cols: 100, rows: 30,
+      steps: [
+        { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+        { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
+        { name: 'End 到末行', send: '\\x1b[F', timeout_s: 20 },
+        { name: '↑ 到无基址标题', send: '\\x1b[A', timeout_s: 20 },
+        { name: '等无基址标题 (收起态 · 带家数)', expect_raw: `── 无 api 基址 \\(需自定义 baseUrl\\) \\(${tierCount('noBaseUrl')} 家\\) ${COLLAPSED}`, timeout_s: 20 },
+        { name: '空格展开无基址', send: ' ', timeout_s: 20 },
+        { name: '等展开回执', expect: '已展开 无 api 基址', timeout_s: 20 },
+        { name: '↑ 到需专用鉴权标题', send: '\\x1b[A', timeout_s: 20 },
+        { name: '等 special 标题 (收起态 · 带家数)', expect_raw: `── 需专用鉴权 \\(未支持\\) \\(${tierCount('specialAuth')} 家\\) ${COLLAPSED}`, timeout_s: 20 },
+        { name: '空格展开 special', send: ' ', timeout_s: 20 },
+        { name: '等展开回执 2', expect: '已展开 需专用鉴权', timeout_s: 20 },
+        { name: `搜目录家 ${SEARCH_TARGET}`, send: SEARCH_TARGET, timeout_s: 25 },
+        { name: '等筛选命中', expect: `筛选 "${SEARCH_TARGET}"`, timeout_s: 25 },
+        { name: '选中它', send: '\\r', timeout_s: 25 },
+        { name: '继续走到凭证步', expect: '凭证怎么处理', timeout_s: 40 },
+        { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
+        { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
+      ],
+    });
+    const bBlocks = frameBlocks(browseRun.raw).filter((b) => b.length > 0);
+    const bFirst = bBlocks[0] || [];
+    const bText = browseRun.text;
+    // ① 候选总数 == 盘上真算 (屏上两处都要对得上: 主屏标题 + 选择器头行)
+    const pick = (re: RegExp, s: string): number => Number((re.exec(s) || [])[1]);
+    const headCount = pick(/共\s*(\d+)\s*家/, bFirst[0] || '');
+    const screenLine = mainScreenLines(browseRun.raw).find((l) => /步骤 1\/7 供应商/.test(l)) || '';
+    const screenCount = pick(/共\s*(\d+)\s*家/, screenLine);
+    ok(`R11.1 候选总数 == 盘上真算的全部家数 (${totalCandidates} 家)`,
+      browseRun.ok && headCount === totalCandidates && screenCount === totalCandidates,
+      `选择器头行 共 ${headCount} 家 · 主屏标题 共 ${screenCount} 家 · 盘上 ${totalCandidates} 家`
+        + ` (内置 ${disk.builtin} + 自定义 ${disk.custom} + 目录 ${disk.catalog} - 同名 ${excluded.length})`);
+    // ② 固定高度视窗: 单帧渲染总行数 ≤ 终端高度, 且远小于候选总数 (不是"全画出来再滚")
+    const bSizes = frameSizes(browseRun.raw);
+    const maxFrame = bSizes.length ? Math.max(...bSizes) : 0;
+    ok('R11.2 单帧渲染总行数 ≤ 终端高度 (rows=30) 且远小于候选总数',
+      bSizes.length > 0 && maxFrame <= 30 && maxFrame < totalCandidates / 4,
+      `最大帧 ${maxFrame} 行 (≤ 30) · 候选 ${totalCandidates} 家 · 共 ${bSizes.length} 帧`);
+    // ③ 收起的分组: 标题照写家数, 且与盘上真算一致
+    const collapsedDetail = (['noCredential', 'specialAuth', 'noBaseUrl'] as const).map((t) => {
+      const hit = bFirst.some((l) => l.includes(collapsedHeader(t)));
+      return `${MCx.PROVIDER_GROUPS[t]} (${tierCount(t)} 家)${hit ? '✓' : '✗'}`;
+    });
+    ok('R11.3 收起的分组标题**照写家数**且与盘上真算一致 (折叠 ≠ 藏家数)',
+      collapsedDetail.every((d) => d.endsWith('✓')), collapsedDetail.join(' · '));
+    // ④ 展开真生效 (两帧对比: 标记 › → ▾, 该组候选行真的出现在屏幕上)
+    const cPick = (b: string[]): number => candidateRows(b).length;
+    const beforeFrames = bBlocks.filter((b) => b.some((l) => l.includes(collapsedHeader('noBaseUrl'))));
+    const afterFrames = bBlocks.filter((b) => b.some((l) => l.includes(`── 无 api 基址 (需自定义 baseUrl) (${tierCount('noBaseUrl')} 家) ${EXPANDED}`)));
+    const before = beforeFrames.length ? beforeFrames[beforeFrames.length - 1] : [];
+    const after = afterFrames.length ? afterFrames[0] : [];
+    ok('R11.4 `空格/→` 展开真生效 (两帧对比: 标记 › → ▾, 该组候选行真的画出来)',
+      before.length > 0 && after.length > 0 && cPick(after) > cPick(before),
+      `收起帧候选行 ${cPick(before)} → 展开帧 ${cPick(after)}`);
+    // ⑤ 真 pty 原文里能看到 special / 无基址 标记的家
+    const specialLine = bText.split('\n').find((l) => /[●○] .*special \(需专用鉴权, 未支持\)/.test(l)) || '';
+    const noBaseLine = bText.split('\n').find((l) => /[●○] .*无基址 \(需自定义 baseUrl\)/.test(l)) || '';
+    ok('R11.5 真 pty 原文里看到带 `special (需专用鉴权, 未支持)` 标记的家',
+      specialLine.length > 0, specialLine ? `原文: ${specialLine.trim()}` : '没看到 (展开 需专用鉴权 分组后仍无)');
+    ok('R11.6 真 pty 原文里看到带 `无基址 (需自定义 baseUrl)` 标记的家',
+      noBaseLine.length > 0, noBaseLine ? `原文: ${noBaseLine.trim()}` : '没看到 (展开 无 api 基址 分组后仍无)');
+    // ⑥ 搜索只存在于目录里的家 → 命中 + 选得中 + 能继续走流程
+    const hitLine = bText.split('\n').find((l) => new RegExp(`[●○] ${SEARCH_TARGET} `).test(l)) || '';
+    ok(`R11.7 搜索目录家 ${SEARCH_TARGET} 能命中 (默认收起的分组挡不住搜索)`,
+      browseRun.ok && hitLine.length > 0 && searchIsCatalogOnly,
+      `命中行: ${short(hitLine.trim(), 96)}`);
+    ok(`R11.8 选中目录家 ${SEARCH_TARGET} 后真走到凭证步 (能继续走流程, 不是死胡同)`,
+      /凭证怎么处理/.test(bText), `屏幕上出现「凭证怎么处理」= ${/凭证怎么处理/.test(bText)}`);
+    // ⑦ 颜色只有一个来源: 真彩序列全部出自 theme.ts 调色板 + 光标行有底色 + 反白
+    const pal = paletteRgb();
+    const palList = [...pal.values()];
+    const hits2 = trueColorHits(browseRun.raw);
+    const used = [...new Set(hits2.map((h) => h.rgb))];
+    const offPalette = used.filter((rgb) => !palList.includes(rgb));
+    ok('R11.9 屏幕上真彩序列用到的 RGB **全部**来自 `theme.ts` 的调色板 (本门真读那个文件比对)',
+      hits2.length > 0 && offPalette.length === 0,
+      `用到 ${used.length} 色: ${used.map((r) => `rgb(${r})`).join(' ')} · 调色板 ${pal.size} 色`
+        + ` · 越界 ${offPalette.length}${offPalette.length ? ` (${offPalette.join(' ')})` : ''}`);
+    ok('R11.10 光标行有**背景色 + 反白** (`48;2;` + `ESC[7m`), 且有 `→ ` 前缀',
+      /\x1b\[48;2;/.test(browseRun.raw) && /\x1b\[7m/.test(browseRun.raw) && /→ [●○]/.test(bText),
+      `48;2 序列 ${(browseRun.raw.match(/\x1b\[48;2;/g) || []).length} 个 · 反白 ${(browseRun.raw.match(/\x1b\[7m/g) || []).length} 次`);
+    // ⑧ 源码级: hex 字面量归零 (唯一颜色事实源是 theme.ts)
+    const hexIn = (rel: string): number => (fs.readFileSync(path.join(ROOT, rel), 'utf-8').match(/#[0-9a-fA-F]{6}\b/g) || []).length;
+    const hexA = hexIn('src/cli/tui-select.ts'), hexB = hexIn('src/cli/model-selector.ts'), hexT = hexIn('src/cli/theme.ts');
+    ok('R11.11 `tui-select.ts` + `model-selector.ts` 里 hex 字面量计数 == 0 (颜色只从 theme.ts 来)',
+      hexA === 0 && hexB === 0 && hexT >= 9,
+      `tui-select ${hexA} · model-selector ${hexB} · theme.ts ${hexT} (≥9 = 调色板本体所在的地方)`);
+    report(`R11 候选 ${totalCandidates} 家 = 内置 ${disk.builtin} + 自定义 ${disk.custom} + 目录 ${disk.catalog}`
+      + ` - 同名 ${excluded.length}${excluded.length ? ` (${excluded.join(',')})` : ''}`
+      + ` · 分组 ${TIERS.map((t) => `${t}=${tierCount(t)}`).join('/')} · 最大帧 ${maxFrame} 行 · 目录家 ${SEARCH_TARGET} 可搜/可选中`);
+
+    // ══════════════════════════════════════════════════════════
+    // R12 无色降级 (NO_COLOR=1): 一个真彩字节都不发, 但仍靠符号分得清
+    // ══════════════════════════════════════════════════════════
+    section('R12 NO_COLOR=1 降级: 真彩归零 · 符号仍在 (●/○/→/折叠标记+家数)');
+    const ncRun = await runPty('ux-nocolor', ['model'], {
+      timeout_s: 200, cols: 100, rows: 30, env: { NO_COLOR: '1' },
+      steps: [
+        { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+        { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
+        { name: '↓ #1', send: '\\x1b[B', timeout_s: 20 },
+        { name: '等第 3 行', expect_raw: '第\\s*3\\s*/', timeout_s: 20 },
+        { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
+        { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
+      ],
+    });
+    const ncHits = trueColorHits(ncRun.raw);
+    ok('R12.1 NO_COLOR=1 下原始输出里 0 条真彩序列',
+      ncRun.ok && ncHits.length === 0, `真彩序列 ${ncHits.length} 条 (期望 0)`);
+    const ncCollapsed = new RegExp(`\\(\\d+ 家\\) ${COLLAPSED}`).test(ncRun.text);
+    ok('R12.2 NO_COLOR=1 下仍靠符号分得清 (●/○ 状态 · → 光标 · 折叠标记 + 家数)',
+      /[●○] /.test(ncRun.text) && /→ [●○]/.test(ncRun.text) && /── /.test(ncRun.text) && ncCollapsed,
+      `●/○=${/[●○] /.test(ncRun.text)} · → 光标=${/→ [●○]/.test(ncRun.text)} · 分组标题=${/── /.test(ncRun.text)} · 折叠+家数=${ncCollapsed}`);
+
+    // ══════════════════════════════════════════════════════════
+    const BURST_TERM = 'a';   // 命中 200+ 家的搜索词 (家数从真 pty 的状态行里量, 见 R13.2)
+    const BURST = 20;
+    section(`R13 长列表响应性 (真耗时): ${BURST_TERM} 平铺成 200+ 行后**连续 ${BURST} 次 ↓**`);
+    // ══════════════════════════════════════════════════════════
+    // 判据不是"按完没崩" (那样对"卡"一无所获): 每一次按键都用 `expect_raw` 等**新的**
+    //   `第 i/N · 筛选 "…"` 帧出现 —— 正则里带上 `筛选 "${BURST_TERM}"` 保证只能匹配**搜索生效之后**的帧
+    //   (不会占到搜索前那些旧帧的便宜, 于是不会得到 ~0ms 的假耗时)。等的毫秒数 = 这一键的重绘延迟:
+    //   视窗定位 / 滚动 / 200+ 行摊行 全在这条路径上。
+    // ⚠ 这个数字是**上界**: pty 驱动是 0.15s 粒度的轮询, 本身带来 ~150ms 量化, 报告里如实这么说。
+    const burstSteps: PlanStep[] = [
+      { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+      { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
+      { name: `搜 ${BURST_TERM} (平铺长列表)`, send: BURST_TERM, timeout_s: 20 },
+      { name: '等搜索生效', expect_raw: `第\\s*1\\s*/\\s*\\d+\\s*·\\s*筛选\\s*"${BURST_TERM}"`, timeout_s: 25 },
+    ];
+    for (let k = 2; k <= BURST + 1; k++) {
+      burstSteps.push({ name: `↓ #${k - 1}`, send: '\\x1b[B', timeout_s: 15 });
+      burstSteps.push({ name: `等第 ${k} 行`, expect_raw: `第\\s*${k}\\s*/\\s*\\d+\\s*·\\s*筛选\\s*"${BURST_TERM}"`, timeout_s: 15 });
+    }
+    burstSteps.push({ name: '发 Esc', send: '\\x1b', timeout_s: 20 });
+    burstSteps.push({ name: '取消回执', expect: '已取消|未改动', timeout_s: 25 });
+    const burstRun = await runPty('ux-burst', ['model'], { timeout_s: 240, cols: 100, rows: 30, steps: burstSteps });
+    const lat = burstRun.steps.filter((s) => /^等第 \d+ 行$/.test(s.name)).map((s) => s.waited_ms);
+    const latSorted = [...lat].sort((a, b) => a - b);
+    const latP50 = latSorted.length ? latSorted[Math.floor(latSorted.length / 2)] : -1;
+    const latP95 = latSorted.length ? latSorted[Math.min(latSorted.length - 1, Math.ceil(latSorted.length * 0.95) - 1)] : -1;
+    const latMax = latSorted.length ? latSorted[latSorted.length - 1] : -1;
+    // 列表到底多少行: 从**真 pty 输出**的状态行里读 —— 不拿门进程的 env 另算一份 (两套 env 会差几家)
+    const listNs = [...burstRun.text.matchAll(new RegExp(`第\\s*\\d+\\s*/\\s*(\\d+)\\s*·\\s*筛选\\s*"${BURST_TERM}"`, 'g'))].map((m) => Number(m[1]));
+    const listLen = listNs.length ? Math.max(...listNs) : 0;
+    const burstIdx = cursorIndexes(burstRun.raw);
+    const runStart = burstIdx.indexOf(1);
+    const idxRun = runStart >= 0 ? burstIdx.slice(runStart, runStart + BURST + 1) : [];
+    ok(`R13.1 连续 ${BURST} 次 ↓ 每次都真画出了新的一帧 (光标序号 1,2,…,${BURST + 1} 逐行递进)`,
+      idxRun.length === BURST + 1 && idxRun.every((v, i) => v === i + 1),
+      `序号序列 = [${idxRun.join(', ')}] (期望 [1..${BURST + 1}])`);
+    ok(`R13.2 这确实是一份**长列表** (搜索 "${BURST_TERM}" 平铺出 ${listLen} 行 ≥ 150)`,
+      listLen >= 150, `真 pty 状态行里的 N = ${listLen} 行 (候选总数 231 家)`);
+    ok(`R13.3 长列表下连续按 ${BURST} 次键**不卡** (单键重绘延迟 max ≤ 2000ms, 含 pty 轮询量化)`,
+      lat.length === BURST && latMax >= 0 && latMax <= 2000,
+      `单键重绘延迟: p50=${latP50}ms · p95=${latP95}ms · max=${latMax}ms (共 ${lat.length}/${BURST} 次真量)`);
+    report(`R13 长列表响应性: 列表 ${listLen} 行 · 连续 ${BURST} 次 ↓ 单键重绘延迟 p50=${latP50}ms / p95=${latP95}ms / max=${latMax}ms`
+      + ` (含 ~150ms pty 轮询量化, 故为**上界**) · 整轮 ${burstRun.elapsed_s}s · 期间**一次都没超时**`);
 
     // ══════════════════════════════════════════════════════════
     section(`变异判红 (${MUTATIONS.length} 条)`);

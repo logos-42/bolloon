@@ -29,7 +29,8 @@
 
 import {
   buildProviderSummaries, listModelsFor, formatProviderLine, formatModelLine, formatModelMenuRow,
-  providerGroupSummary,
+  providerGroupSummary, providerTierOf, providerTierCollapsedByDefault, orderProvidersForMenu, PROVIDER_GROUPS,
+  providerRowTone, formatProviderMenuRow,
   unknownFootnote, searchModelEntries, capabilityZh, resolvedApiKeyOf,
   type ModelEntry, type ProviderSummary,
 } from '../llm/model-catalog.js';
@@ -40,6 +41,8 @@ import {
 } from '../llm/model-selection.js';
 import { admitManualModel } from '../llm/model-discovery.js';
 import type { TuiTone } from './tui-select.js';
+// 颜色只从 `theme.ts` 来 (唯一事实源): 调子→token 的映射与 `tint()` 都住在那边。
+import { tint, type Tone } from './theme.js';
 
 // ============================================================
 // IO
@@ -52,6 +55,11 @@ export interface SelectorChoice {
   hint?: string;
   /** 分组标题 (同一个分组只印一次; 用于"可用 / 未配置凭据"这类分段) */
   group?: string;
+  /**
+   * 这一项所在分组**默认收起** (全屏选择器用: 收起只画标题 + 家数, 不画成员)。
+   * **只是排版** —— 候选集不因它变小, 搜索/数字跳行照样能到。
+   */
+  groupCollapsed?: boolean;
   /** 颜色调子 (第二通道; 拿掉颜色也有符号在, 语义不丢) */
   tone?: TuiTone;
 }
@@ -74,6 +82,12 @@ export interface ModelSelectorIO {
    * 有它时选择器**不再单独问一遍"搜索模型"** —— 同一件事问两遍就是冗余 (用户要减到必要)。
    */
   filterable?: boolean;
+  /**
+   * 输出口支持 ANSI 颜色 (真终端 + 没设 `NO_COLOR`; 判据来自 `theme.ts` 的 `colorEnabled`)。
+   * **默认不开** —— 管道/测试拿到的仍是纯文本; 上色只发生在 `print` 那一刻,
+   * `lines` (界面回显/验收读的那份) 里永远是**不含 SGR 的原文**。
+   */
+  color?: boolean;
 }
 
 /** 走到了哪一步 (诊断/验收用) */
@@ -119,8 +133,28 @@ export interface RunModelSelectorOptions {
 // 选择原语 (choose → ask → 放弃)
 // ============================================================
 
+/**
+ * 主屏 (七步那些非选择器屏幕) 一行该用什么调子 —— 分类在**唯一一处**, 组件里不再散落判断。
+ * 只认行首的**符号/文字** (✓ ✗ ⚠ ● ○ 步骤 N/7 ──), 不认颜色 —— 所以无色环境下
+ * 同一张分类表照样成立, 屏幕只是少了颜色这一层。
+ */
+function mainLineTone(line: string): Tone {
+  const s = line.trim();
+  if (/^(✗|错误|没有|非法|失败|无法)/.test(s)) return 'error';
+  if (/^(✓|●)/.test(s)) return 'ok';
+  if (/^○/.test(s)) return 'dim';
+  if (/^⚠/.test(s)) return 'warn';
+  if (/^步骤 \d\/7/.test(s)) return 'accent';
+  if (s.includes('special (需专用鉴权') || s.includes('无基址 (需自定义 baseUrl)')) return 'warn';
+  if (/^──/.test(s)) return 'muted';
+  if (/^(已选|已收到|沿用|作用域|temperature|参数|模型|供应商|提示|用法|分组|目录|当前)/.test(s)) return 'muted';
+  return 'text';
+}
+
 function makeCtx(io: ModelSelectorIO, lines: string[]) {
-  const push = (s: string) => { for (const l of String(s).split('\n')) { lines.push(l); io.print(l); } };
+  /** 屏幕那一行上色 (只在 `print` 那一刻; `lines` 里留原文) */
+  const paint = (l: string) => (io.color ? tint(l, mainLineTone(l)) : l);
+  const push = (s: string) => { for (const l of String(s).split('\n')) { lines.push(l); io.print(paint(l)); } };
 
   /**
    * 把候选**逐条印出来再问** (leo 2026-09-27 硬要求)。
@@ -233,9 +267,10 @@ export async function runModelSelector(
   const verbose = (s: string) => { try { if (opts.verbose) push(s); } catch { /* 细节打不出不该中断主流程 */ } };
 
   // ── 1) 供应商 ────────────────────────────────────────────
-  // 版面 (2026-09-27 简化): 主屏 = **一行标题 + 候选列表 + 一行提示**。
-  //   分组计数/目录新鲜度/目录分组/三条教程行 全部退到 `--verbose` 或交互里的 `?` 帮助 ——
-  //   用户不需要在主屏上读内部账本。
+  // 版面 (2026-09-27 二改, leo: "15 家登记…可以更多吗?" + "不用一下子全部显示, 可以有固定高度或者折叠"):
+  //   主屏 = **一行标题 + 候选行 + 一行状态**; 候选**是全部家** (内置 13 + 自定义 + 目录全部),
+  //   一屏画不完由全屏选择器用"固定高度视窗 (≤12 行) + 可折叠分组 + 搜索"消化 ——
+  //   **不是靠把家从候选集里藏掉** (藏了就搜不到、也数不出来)。分组计数/目录新鲜度仍退到 `--verbose`。
   let summaries: ProviderSummary[];
   try {
     summaries = await buildProviderSummaries({ sessionKey: opts.sessionKey });
@@ -243,8 +278,8 @@ export async function runModelSelector(
     return done({ ok: false, reachedStep: 'provider', message: `读供应商列表失败: ${String(e?.message || e).slice(0, 160)}` });
   }
   const live = summaries.filter((s) => s.configured);
-  const unconfigured = summaries.filter((s) => !s.configured);
-  push(`步骤 1/7 供应商 (${live.length} 家可用 / ${summaries.length} 家登记)`);
+  // "共 N 家" 从盘上真算 (内置 + 自定义 + 目录全部), 不写死 —— 验收门拿它跟盘上数字对。
+  push(`步骤 1/7 供应商 (共 ${summaries.length} 家登记: 内置+自定义+目录全部 · 可用 ${live.length} 家 · 分组可折叠)`);
   verbose(`  ${providerGroupSummary(summaries)}`);
   try {
     // 动态 import: 选择器 → provider-catalog 是单向的 (目录层不 import 选择器), 不构成环;
@@ -259,20 +294,23 @@ export async function runModelSelector(
   }
   if (!summaries.length) return done({ ok: false, reachedStep: 'provider', message: '没有任何登记在册的供应商' });
 
-  const ordered = [
-    ...summaries.filter((s) => s.current),
-    ...live.filter((s) => !s.current),
-    ...unconfigured,
-  ];
-  const providerChoices: SelectorChoice[] = ordered.map((s) => ({
-    value: s.id,
-    label: formatProviderLine(s),
-    hint: `${s.name}${s.providerReasoning === 'yes' ? ' · 登记支持 reasoning' : ''}${s.configuredModel ? ` · 配置里 model=${s.configuredModel}` : ''}`,
-    // 分组标题只在切换分组时印一次: 当前 → 可用 → 未配置凭据 (序号是全局连续的)
-    group: s.current ? '当前生效' : (s.configured ? '可用 (有凭证)' : '未配置凭据 (选了会先要 key)'),
-    // 颜色只做**第二通道**: 语义本体是 label 里的符号 (●/○) 与分组标题
-    tone: s.current ? 'accent' : s.configured ? 'ok' : 'dim',
-  }));
+  // 排序 = 分组优先级 (当前 → 可用 → 未配置凭据 → 需专用鉴权 → 无 api 基址);
+  //   **全部家都在候选数组里** (包括后三组), 只是它们的分组**默认收起** (标题上照写家数)。
+  const ordered = orderProvidersForMenu(summaries);
+  const providerChoices: SelectorChoice[] = ordered.map((s) => {
+    const tier = providerTierOf(s);
+    return {
+      value: s.id,
+      label: formatProviderMenuRow(s),
+      hint: `${s.name}${s.providerReasoning === 'yes' ? ' · 登记支持 reasoning' : ''}${s.configuredModel ? ` · 配置里 model=${s.configuredModel}` : ''}`,
+      // 分组标题只在切换分组时印一次; 家数由选择器写在标题行上 (`── 名字 (N 家) ›`)
+      group: PROVIDER_GROUPS[tier],
+      // 后三组默认收起: 页面放得下, 而家数照样看得见 (`空格`/`→` 一键展开)
+      groupCollapsed: providerTierCollapsedByDefault(tier),
+      // 颜色只做**第二通道**: 语义本体是 label 里的符号 (●/○) 与分组标题 (special/无基址 → warn)
+      tone: providerRowTone(s),
+    };
+  });
   const providerId = await pick(providerChoices, '选择供应商 (序号 / 供应商 id):');
   if (!providerId) return done({ ok: false, cancelled: true, reachedStep: 'provider', message: '已取消, 未改动任何配置' });
   const summary = summaries.find((s) => s.id === providerId)!;

@@ -29,10 +29,13 @@ import {
   type EffectiveModelConfig, type SelectionFailureClass,
 } from '../llm/model-selection.js';
 import {
-  buildProviderSummaries, formatProviderLine, providerGroupSummary,
+  buildProviderSummaries, formatProviderLine, formatProviderMenuRow, providerGroupSummary,
+  providerTierOf, providerTierCollapsedByDefault, orderProvidersForMenu, PROVIDER_GROUPS,
   type ProviderSummary,
 } from '../llm/model-catalog.js';
 import { runModelSelector, type SelectorChoice, type ModelSelectorResult } from './model-selector.js';
+// 着色判据只有一处 (`theme.ts`) —— 主屏与全屏选择器共用
+import { colorEnabled } from './theme.js';
 import {
   refreshModelDiscovery, clearDiscoveryCache, listModelCatalog,
   admitManualModel, formatCatalogLine, formatListingSummary,
@@ -422,6 +425,8 @@ export interface ModelCommandIO {
   live?: boolean;
   /** `live` 时的逐行出口 (默认 `process.stdout`)。每行进来就打, 不回显缓冲。 */
   print?: (line: string) => void;
+  /** 输出口支持 ANSI 颜色 (真终端 + 没设 `NO_COLOR`); 判据来自 `theme.ts` 的 `colorEnabled` */
+  color?: boolean;
 }
 
 /** 切换失败的机器可读分类 → 人话 (不许只回"切换成功"/"失败了") */
@@ -469,14 +474,17 @@ export interface ParsedModelCommand {
   /**
    * `/model catalog [status|list|refresh]` 的子动作 (目录驱动, 2026-09-27)。
    *   · `status`  —— 这份目录是几号的 / 新鲜还是陈旧 / 有哪些族 (默认);
-   *   · `list`    —— 逐家列 (默认只列"能用的"; `--all` 连"不能用"的也列, 并如实标原因);
+   *   · `list`    —— 逐家列 (**默认列全部**, 含"需专用鉴权 (未支持)/ 无 api 基址"并如实标原因;
+   *                  `--usable` 才只看真能打的那些 —— 藏家数是不许的, 少列要靠显式开关);
    *   · `refresh` —— 运行期真拉一次公开源, 落盘 `provider-catalog.json` (0600) 并打印来源/字节数/时间/家数。
    */
   catalogSub?: 'status' | 'list' | 'refresh';
   /** `/model catalog list <筛选词>` 的筛选词 (匹配 id / 名字) */
   filter?: string;
-  /** `/model catalog list --all` 连"需专用鉴权 (未支持)/ 无 api 基址"的家一起列 */
+  /** `/model catalog list --all` = 全部 (2026-09-27 起**这就是默认**; 留着只为老命令不报错) */
   all?: boolean;
+  /** `/model catalog list --usable` 只看"有 api 基址 + 鉴权受支持 + 配了环境变量"的家 */
+  usableOnly?: boolean;
   /** `/model catalog list --family <族>` 只看某一族 */
   family?: string;
   /** `/model refresh --clear` — 清发现缓存而不是重取 */
@@ -501,8 +509,9 @@ export function parseModelCommand(arg: string): ParsedModelCommand {
     if (p === '--json') { out.json = true; continue; }
     if (p === '--no-verify') { out.verify = false; continue; }
     if (p === '--clear') { out.clear = true; continue; }
-    // `/model catalog list --all | --family <族>` (目录驱动的筛选; 不认识的族名留给展示层如实报)
+    // `/model catalog list --all | --usable | --family <族>` (目录驱动的筛选; 不认识的族名留给展示层如实报)
     if (p === '--all') { out.all = true; continue; }
+    if (p === '--usable' || p === '--only-usable') { out.usableOnly = true; continue; }
     const fam = flagValue(parts, i, '--family');
     if (fam !== undefined) {
       if (!p.includes('=')) i++;
@@ -580,12 +589,22 @@ export function parseModelCommand(arg: string): ParsedModelCommand {
  */
 async function providerLines(sessionKey?: string): Promise<string[]> {
   const summaries = await buildProviderSummaries({ sessionKey });
-  const live = summaries.filter((s) => s.configured);
-  const unconfigured = summaries.filter((s) => !s.configured);
+  // 2026-09-27 (目录驱动, 二改): 这里**列全量** (内置 13 + 自定义 + 目录全部), 并按第 1 步同一套
+  //   分组优先级排出分组标题 (带家数)。纯文本这条路没有视窗/折叠 (那是全屏选择器的事), 所以逐行列全 ——
+  //   门禁钉着"不许只给计数": 任何一家都要能在这份输出里被看见。
   const lines: string[] = [];
-  for (const s of [...live, ...unconfigured]) lines.push(`  ${formatProviderLine(s)}`);
-  // 2026-09-27 (目录驱动): 目录里的家**不刷 223 行噪音** —— 默认只在上面的列表里出现
-  //   "你已经有凭证"的那些 (它们自动就是 ● 可用), 这里再补一行分组计数说清另外 200+ 家在哪。
+  const ordered = orderProvidersForMenu(summaries);
+  let lastGroup = '';
+  for (const s of ordered) {
+    const tier = providerTierOf(s);
+    const g = PROVIDER_GROUPS[tier];
+    if (g !== lastGroup) {
+      lastGroup = g;
+      lines.push(`  ── ${g} (${ordered.filter((x) => providerTierOf(x) === tier).length} 家)`
+        + `${providerTierCollapsedByDefault(tier) ? ' · 全屏选择器里默认收起 (空格/→ 展开)' : ''}`);
+    }
+    lines.push(`  ${formatProviderMenuRow(s)}`);
+  }
   lines.push(`  ${providerGroupSummary(summaries)}`);
   lines.push(...await providerCatalogLines());
   return lines;
@@ -596,7 +615,7 @@ async function providerLines(sessionKey?: string): Promise<string[]> {
  *
  * 三件事, 全部输出都由 `provider-catalog.ts` 生成 (不在这里另造一套说法):
  *   · 默认/`status` —— 这份目录**是几号的、是不是刚刷的** (陈旧必如实标), 各族多少家;
- *   · `list`        —— 逐家列 (默认只列能用的; `--all` 连不能用的也列并标清原因);
+ *   · `list`        —— 逐家列 (**默认全量**: 连"需专用鉴权/无 api 基址"的也列并标清原因; `--usable` 才只看能用的);
  *   · `refresh`     —— 运行期真拉一次公开源, 落盘 `${BOLLOON_HOME}/provider-catalog.json` (0600),
  *                      打印来源 URL / 字节数 / sha256 / 拉到时间 / 家数。
  */
@@ -621,7 +640,7 @@ export async function formatProviderCatalog(parsed: ParsedModelCommand): Promise
     return lines.join('\n');
   }
 
-  // ── 逐家列 (默认只列能用的; 噪音可控) ───────────────────────────
+  // ── 逐家列 (**默认全部** —— 折/藏家数是这条线要修的病) ─────────────
   if (sub === 'list') {
     const fams: string[] = pc.CATALOG_FAMILIES;
     if (parsed.family && !fams.includes(parsed.family)) {
@@ -635,14 +654,16 @@ export async function formatProviderCatalog(parsed: ParsedModelCommand): Promise
       rows = rows.filter((v) => v.id.includes(q) || String(v.name || '').toLowerCase().includes(q));
     }
     const usable = rows.filter((v) => v.speakable);
-    const shown = parsed.all ? rows : usable;
+    // 默认 = 全部匹配 (含不能用但如实标了原因的); `--usable` 才是"只看能用的"
+    const shown = parsed.usableOnly ? usable : rows;
     const lines: string[] = [
       `${pc.catalogStatusLine()}`,
-      `  匹配 ${rows.length} 家 (${parsed.all ? '含不能用的' : '只列能用的'} · 目录里共 ${all.length} 家)`
+      `  匹配 ${rows.length} 家 (列出全部 · 目录里共 ${all.length} 家` +
+        ` · 真能打 ${usable.length} 家${parsed.usableOnly ? ' (--usable: 只列这些)' : ''})`
         + `${parsed.filter ? ` · 筛选 '${parsed.filter}'` : ''}${parsed.family ? ` · 族 ${parsed.family}` : ''}`,
     ];
     if (!shown.length) {
-      lines.push('  (没有匹配的家 —— 换个筛选词, 或加 --all 连"需专用鉴权/无 api 基址"的也看)');
+      lines.push('  (没有匹配的家 —— 换个筛选词, 或去掉 --family / --usable)');
     }
     // 已配置凭证的排前面 (用户最可能想用这些)
     for (const v of [...shown].sort((a, b) => Number(envOn(b)) - Number(envOn(a)) || String(a.id).localeCompare(String(b.id)))) {
@@ -665,7 +686,7 @@ export async function formatProviderCatalog(parsed: ParsedModelCommand): Promise
       + ` · 需专用鉴权 (未支持): ${stats.specialAuth} · 无 api 基址: ${stats.noBaseUrl}`,
     `  源: ${load.provenance?.sourceUrl || pc.CATALOG_SOURCE_URL} · 来源: ${load.source === 'runtime' ? `运行期文件 ${load.path}` : '构建期烘焙数据 (离线可用)'}`,
     '',
-    '  用法: /model catalog list [筛选词] [--all] [--family <族>]',
+    '  用法: /model catalog list [筛选词] [--usable] [--family <族>]   (默认**全量**列出, 不藏家数)',
     '        /model catalog refresh [--url <地址>]   (真拉最新, 落盘 0600, 记来源与时间)',
     '',
     `  目录里的家直接用: /model <家> <模型> —— 只要你有该家声明的环境变量, 不用改代码就能用`,
@@ -729,14 +750,14 @@ export async function formatProviderStatus(sessionKey?: string): Promise<string>
     `  ${formatEffectiveModel(eff)}`,
     `  会话键: ${key}`,
     '',
-    '供应商 (● 可用 · ○ 未配置):',
+    '供应商 (**全部**列出 · 分组标题带家数 · ● 可用 / ○ 未配置; 一屏放得下的交互版走 `/model pick`):',
   ];
   lines.push(...await providerLines(sessionKey));
   lines.push('');
   lines.push('用法: /model pick 分步选择 (供应商→凭证→模型→参数→作用域→测试→确认)');
   lines.push('      /model <provider> [model] [--base-url <url>] [--session] · /model test [provider] · /model status · /model reset · /model key <provider>');
   lines.push('      /model list [provider] 看模型发现目录 · /model refresh [provider] 重取 · /model refresh --clear 清缓存 · /model admit <provider> <model> 手输模型');
-  lines.push('      /model catalog 看供应商目录 (是几号的/新鲜度) · /model catalog list [筛选词] [--all] · /model catalog refresh 拉最新');
+  lines.push('      /model catalog 看供应商目录 (是几号的/新鲜度) · /model catalog list [筛选词] [--usable] · /model catalog refresh 拉最新');
   lines.push('      --session 只影响当前会话 (不动全局默认) · --no-verify 跳过切换前连通探测 (不推荐)');
   return lines.join('\n');
 }
@@ -760,6 +781,8 @@ export async function runModelPicker(
       ...(io.askHidden ? { askHidden: io.askHidden } : {}),
       ...(io.choose ? { choose: io.choose } : {}),
       ...(io.filterable ? { filterable: true } : {}),
+      // 七步主屏也走 bolloon 色系 (真终端才上; `lines` 里仍是原文)
+      ...(io.color ? { color: true } : {}),
     },
     { ...opts, ...(io.verbose ? { verbose: true } : {}) },
   );
@@ -791,6 +814,9 @@ export async function runModelPicker(
 export function modelTtyIO(): ModelCommandIO {
   return {
     live: true,
+    // ★ 七步主屏也走 bolloon 色系 (leo 2026-09-27: "切换时的颜色变成 bolloon 色系, 不是灰白") ——
+    //   判据只有一处 (`theme.ts`: 真终端 + 没设 NO_COLOR + TERM != dumb)。
+    color: colorEnabled(!!process.stdout.isTTY),
     print: (l: string) => { try { process.stdout.write(l + '\n'); } catch { /* 管道关了就安静 */ } },
     choose: async (items: SelectorChoice[], title: string) => {
       const tui: any = await import('./tui-select.js');
@@ -799,6 +825,8 @@ export function modelTtyIO(): ModelCommandIO {
         label: c.label,
         ...(c.hint ? { hint: c.hint } : {}),
         ...(c.group ? { group: c.group } : {}),
+        // 分组"默认收起"的标记要原样带过去 (候选集不受影响, 只是排版: 标题照写家数)
+        ...(c.groupCollapsed ? { groupCollapsed: true } : {}),
         ...(c.tone ? { tone: c.tone } : {}),
         // 末行"取消 / 手输"与其它步骤同一形态: 把它当取消行, `Esc` 与它同义
         ...(/^取消/.test(c.label) ? { cancel: true } : {}),
