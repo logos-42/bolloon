@@ -72,7 +72,7 @@ interface Stub {
   close: () => Promise<void>;
 }
 
-function startStub(opts: { label: string; basePath?: string; expectKey?: string | null; models: string[] }): Promise<Stub> {
+function startStub(opts: { label: string; basePath?: string; expectKey?: string | null; models: string[]; /** 负控制: 真拒目录外的 model 名 (404) */ refuseUnknownModel?: boolean }): Promise<Stub> {
   const basePath = opts.basePath ?? '/v1';
   const hits: Hit[] = [];
   const server = http.createServer((req, res) => {
@@ -100,6 +100,12 @@ function startStub(opts: { label: string; basePath?: string; expectKey?: string 
         let model = '';
         try { model = JSON.parse(Buffer.concat(chunks).toString('utf-8')).model; } catch { /* 记录空串 */ }
         hits.push({ url, model, auth: auth ? auth.slice(0, 12) : '' });
+        // 负控制: 模拟"真会拒目录外 model"的端点 (与"目录不全但端点接受"成对)
+        if (opts.refuseUnknownModel && !opts.models.includes(String(model))) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: `model '${model}' does not exist`, type: 'invalid_request_error' } }));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           id: 'chatcmpl-stub',
@@ -201,13 +207,28 @@ async function main(): Promise<void> {
 
     // ────────────────────────────────────────────────────────
     section('4 错 key / 错 URL / 错 model → 都不能切换成功 (配置字节不变)');
-    const beforeBad = sha(modelCfgPath);
+    // 起点在下面"accepting/reset"两步之后取 (那两步里有一步是**真成功**的切换, 会写盘)
 
     const badKey = await MS.selectModel({ provider: 'openai', model: 'stubA-1', baseUrl: `http://127.0.0.1:${A.port}/v1`, apiKey: 'totally-wrong', scope: 'global' });
     ok('错 key 被拒 (auth_failed)', !badKey.ok && badKey.failureClass === 'auth_failed', `${badKey.failureClass}: ${String(badKey.message || '').slice(0, 90)}`);
 
-    const badModel = await MS.selectModel({ provider: 'openai', model: 'no-such-model-xyz', baseUrl: `http://127.0.0.1:${A.port}/v1`, apiKey: 'k-stub-a', scope: 'global' });
-    ok('错 model 被拒 (model_not_found)', !badModel.ok && badModel.failureClass === 'model_not_found', `${badModel.failureClass}: ${String(badModel.message || '').slice(0, 90)}`);
+    // 2026-09-27 实测改判: "目录里没有这个名字"**不再是硬拒** (真上游 /models 不是可用模型的全集:
+    //   deepseek-v4-flash 不在 /models 里却回 200)。所以这里分两半验:
+    //   ① 端点**接受**目录外名字 → 必须能切成功 (下面这条);
+    //   ② 端点**真拒** → 仍然 model_not_found (负控制, 见 refusing 那段)。
+    const accepting = await MS.selectModel({ provider: 'openai', model: 'no-such-model-xyz', baseUrl: `http://127.0.0.1:${A.port}/v1`, apiKey: 'k-stub-a', scope: 'global' });
+    ok('目录外的 model 在"端点接受"的端点上**不再被硬拒** (实测: /models 不是全集)',
+      accepting.ok === true, accepting.ok ? MS.formatEffectiveModel(accepting.effective) : `${accepting.failureClass}: ${String(accepting.message || '').slice(0, 90)}`);
+    // 负控制: 端点真拒这个模型名 → 仍然被拦 (放宽判据 ≠ 放行真不通的模型)
+    const refusing = await startStub({ label: 'R', basePath: '/v1', expectKey: 'k-stub-a', models: ['stubA-1'], refuseUnknownModel: true });
+    const badModel = await MS.selectModel({ provider: 'openai', model: 'no-such-model-xyz', baseUrl: `http://127.0.0.1:${refusing.port}/v1`, apiKey: 'k-stub-a', scope: 'global' });
+    ok('端点真拒的 model 仍然被拒 (model_not_found, 负控制)', !badModel.ok && badModel.failureClass === 'model_not_found', `${badModel.failureClass}: ${String(badModel.message || '').slice(0, 90)}`);
+    await refusing.close();
+    // 切回去 (accepting 那一条真的写盘了) —— 让后面"字节未变"的对照有确定的起点
+    const reset = await MS.selectModel({ provider: 'deepseek', model: 'stubB-1', baseUrl: `http://127.0.0.1:${B.port}/alt/v1`, apiKey: 'k-stub-b', scope: 'global', verify: false });
+    ok('对照起点已复位到 B/stubB-1', reset.ok, reset.message || '');
+    // ⚠️ 起点必须在**上面那两步之后**取: 它们里有一步是真成功的切换 (会写盘)。
+    const beforeBad = sha(modelCfgPath);
 
     const deadPort = 9; // 几乎不可能有人在听
     const badUrl = await MS.selectModel({ provider: 'openai', model: 'stubA-1', baseUrl: `http://127.0.0.1:${deadPort}/v1`, apiKey: 'k-stub-a', scope: 'global' });

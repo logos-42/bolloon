@@ -167,8 +167,10 @@ async function main(): Promise<void> {
     const r1 = await SEL.runModelSelector(s1.io, {});
     const lineS1 = s1.printed.join('\n');
     ok('选择器七步走完并切换成功', r1.ok, r1.message || '');
-    ok('真走了第 6 步"测试连接"', lineS1.includes('测试连接') && lineS1.includes('✅ 通过'), lineS1.split('\n').find((l) => l.includes('测试连接')) || '');
-    ok('打印里说明了模型不在目录里 (手工 ID 路径)', lineS1.includes('使用手工输入的 model ID: stubA-1'), '');
+    ok('真走了第 6 步"测试连接"', /步骤 6\/7 连通测试通过/.test(lineS1), lineS1.split('\n').find((l) => /步骤 6\/7/.test(l)) || '');
+    ok('打印里说明了模型不在上游目录里 (实测: 未列出 ≠ 不能用)',
+      lineS1.includes('已选模型: stubA-1') && /目录未列出|上游未见/.test(lineS1),
+      lineS1.split('\n').find((l) => l.includes('已选模型')) || '');
     ok('切换结果就是选的那个 model', r1.effective?.model === 'stubA-1' && r1.effective?.provider === 'openai', MS.formatEffectiveModel(r1.effective));
     ok('作用域 = 全局默认', r1.effective?.source === 'global', r1.effective?.source);
     const hits0 = A.hits.length;
@@ -251,7 +253,11 @@ async function main(): Promise<void> {
     const s5 = scriptedIO(['openai', 'stubA-2', 'stubA-2', '不设', '0.7', 'global', 'no']);
     const r5 = await SEL.runModelSelector(s5.io, {});
     const lineS5 = s5.printed.join('\n');
-    ok('第 6 步真探测失败 (不是伪造的失败)', lineS5.includes('测试连接') && lineS5.includes('✗ 失败'), lineS5.split('\n').find((l) => l.includes('测试连接')) || '');
+    // 版面简化 (2026-09-27): 预检失败**直接停** (一行说清什么错+怎么办), 不再问"还要继续吗" ——
+    //   那种问句按 y 也照样被第 7 步拦下, 是假选择。失败原话在**返回值**里 (printed 里只有过程中印的行)。
+    ok('第 6 步真探测失败 (不是伪造的失败)',
+      /连不上\/不认识这个模型/.test(String(r5.message || '')) && !lineS5.includes('还要继续尝试切换吗'),
+      String(r5.message || '').slice(0, 110));
     ok('用户取消后整体失败且分类可读', r5.ok === false && !!r5.failureClass, `${r5.failureClass}: ${String(r5.message || '').slice(0, 80)}`);
     ok('配置文件字节未变', sha(CFG) === beforeFail, `${beforeFail} → ${sha(CFG)}`);
     // 参数越界: 即使跳过探测, 也在**写盘前**被统一入口拒掉

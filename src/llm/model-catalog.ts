@@ -102,6 +102,16 @@ export interface ModelEntry {
   unknowns: UnknownNote[];
   /** 这一条就是当前生效的 provider+model */
   current: boolean;
+  /**
+   * **上游目录里见过这个模型名吗** (实测口径, 2026-09-27):
+   *   · `true`  = 上游/发现的目录里字面有这个名字;
+   *   · `false` = 上游目录里**没有**, 但内建/手输清单里有 (实测这种名字**常常真能用** ——
+   *     `/models` 不是可用模型的全集, 所以它只是"上游未见", **不是**"不可用");
+   *   · `undefined` = 压根没拿到上游目录 (无从判断, 不编结论)。
+   */
+  upstreamSeen?: boolean;
+  /** 上游目录的来源 (`'live'` 实时 / `'cached'` 上次成功缓存); 没拿到就是 `undefined` */
+  upstreamOrigin?: CatalogOrigin;
 }
 
 /** 供应商级汇总 (选择器第一步与 `/model status` 的列表行) */
@@ -150,6 +160,14 @@ export interface ProviderSummary {
   catalogFamily?: string;
   /** 目录行读凭据的环境变量名 (`origin='catalog'` 时才有; 只存名字) */
   catalogEnvVar?: string;
+  /**
+   * 目录里这一家的**鉴权形状本运行时不支持** (`special`: AWS SigV4 / Azure 多变量 / GCP 服务账号 …)。
+   * 这是目录层给的**真事实** (`auth.supported === false`), 不是界面自己判的 —— 界面上如实标
+   * "special (需专用鉴权, 未支持)" 并**不当可用**, 不许假装能打。
+   */
+  catalogAuthUnsupported?: boolean;
+  /** 目录里这一家**没有 api 基址** (`hasBaseUrl === false`) → 想用必须自己给 baseUrl */
+  catalogBaseUrlMissing?: boolean;
   /**
    * 目录行的**如实标注** (不能用时说清为什么): "需专用鉴权 (未支持)" /
    * "目录里无 api 基址 → 需自定义 baseUrl"。能用时为 `undefined`。
@@ -300,6 +318,13 @@ export interface BuildEntryContext {
   unknownReason?: string;
   /** 没有更具体的来源时, 这一家的清单来源 (目录家给 `'catalog'`) */
   originDefault?: CatalogOrigin;
+  /**
+   * **上游目录**里的模型名集合 + 它的来源 (`undefined` = 没拿到上游目录)。
+   * 拿到就逐条判 `upstreamSeen`: 上游没列出的名字**仍然保留在清单里**(实测它们常真能用),
+   * 只是如实标成"上游未见" —— 不许把"目录里没有"说成"不可用"。
+   */
+  upstreamModels?: Set<string>;
+  upstreamOrigin?: CatalogOrigin;
 }
 
 export function buildModelEntry(model: string, ctx: BuildEntryContext): ModelEntry {
@@ -331,6 +356,9 @@ export function buildModelEntry(model: string, ctx: BuildEntryContext): ModelEnt
     ...(ctx.failureReason ? { failureReason: ctx.failureReason } : {}),
     unknowns,
     current: ctx.currentProvider === ctx.provider && ctx.currentModel === model,
+    ...(ctx.upstreamModels
+      ? { upstreamSeen: ctx.upstreamModels.has(model), upstreamOrigin: ctx.upstreamOrigin }
+      : {}),
   };
 }
 
@@ -501,6 +529,8 @@ export async function buildProviderSummaries(opts: {
         reachability: probe ? (probe.ok ? 'ok' : 'failed') : 'unknown',
         origin: 'catalog',
         catalogFamily: String(v.family),
+        ...(v.auth?.supported ? {} : { catalogAuthUnsupported: true }),
+        ...(v.hasBaseUrl ? {} : { catalogBaseUrlMissing: true }),
         ...(v.auth?.envVar ? { catalogEnvVar: String(v.auth.envVar) } : {}),
         ...(!v.auth?.supported || !v.hasBaseUrl ? { catalogNote: String(v.unusableReason || '') } : {}),
         ...(probe && !probe.ok && probe.detail ? { failureReason: probe.detail } : {}),
@@ -597,6 +627,23 @@ export async function listModelsFor(providerId: string, opts: {
   const baseUrl = normalizeBaseUrl(cfg?.baseUrl || def?.baseUrl || customEntry?.defaultBaseUrl || '');
   const keyState = keyStateOf(cfg, providerId);
   const isCatalog = !!customEntry && customEntry.kind === 'catalog';
+
+  // ★ 2026-09-27 (实测改判): **优先用上游/发现到的真目录**。
+  //   实测事实: deepseek 的 `/models` 只列 `deepseek-flash`/`deepseek-v4-pro`, 而
+  //   `deepseek-v4-flash` 发 chat 请求**回 200 并给出 choices** ⇒ `/models` 是"上游愿意列出来的",
+  //   **不是**"可用模型的全集"。于是这里的规矩是:
+  //     · 上游目录里有的名字 → 排前面 (真目录优先, 顺序也按上游的);
+  //     · 内建 curated 表里有、上游没列的 → **保留**并标 `upstreamSeen: false` (界面写"上游未见"),
+  //       因为实测这种名字常常真能用 —— 隐藏它才是另一种撒谎;
+  //     · 一个字节都不**删**。
+  //   只读缓存, 不发请求 (列表路径不许偷偷打上游)。
+  let upstream: { models: string[]; origin: CatalogOrigin } | undefined;
+  try {
+    const md: any = await import('./model-discovery.js');
+    upstream = await md.cachedUpstreamModels(providerId, { baseUrl });
+  } catch { upstream = undefined; }
+  const upstreamModels = upstream?.models?.length ? new Set(upstream.models) : undefined;
+
   const ctx: BuildEntryContext = {
     provider: providerId,
     requiresApiKey: needsKey,
@@ -611,16 +658,22 @@ export async function listModelsFor(providerId: string, opts: {
       originDefault: 'catalog' as CatalogOrigin,
       unknownReason: `供应商目录 (models.dev 快照) 里这一条没有字面声明该能力 → 未知 (不许编)`,
     } : {}),
+    ...(upstreamModels ? { upstreamModels, upstreamOrigin: upstream!.origin } : {}),
   };
 
   const declared = def ? curatedModelIds(providerId) : (customEntry!.declaredModelIds || []);
   const seen = new Set<string>();
   const order: string[] = [];
-  // 配置里写着的 model 与当前生效的 model 都必须出现在清单里 (可能不在目录中)
+  // ① 上游真目录优先 (顺序也用上游的)
+  for (const m of upstream?.models ?? []) {
+    if (m && !seen.has(m)) { seen.add(m); order.push(m); }
+  }
+  // ② 配置里写着的 model 与当前生效的 model 都必须出现在清单里 (可能不在任何目录中)
   for (const extra of [eff?.provider === providerId ? eff.model : '', cfg?.model || '', ...(opts.extra || [])]) {
     const m = String(extra || '').trim();
     if (m && !seen.has(m)) { seen.add(m); order.push(m); }
   }
+  // ③ 内建/声明的清单 (上游没列的会被标成"上游未见", 但一条都不删)
   for (const m of declared) {
     if (!seen.has(m)) { seen.add(m); order.push(m); }
   }
@@ -699,6 +752,70 @@ export function formatProviderLine(s: ProviderSummary): string {
   // 两处说法不一致就如实标 (不挑一个装作不知道)
   if (s.requiresKeyConflict) bits.push(`⚠ key 要求不一致 (注册表说${s.requiresApiKey ? '要' : '不要'} / 配置里说${s.configRequiresKey ? '要' : '不要'})`);
   return `${mark} ${s.id} · ${bits.join(' · ')}`;
+}
+
+/**
+ * 菜单行 (全屏选择器用): 比 `formatProviderLine` **更紧凑** —— 名字 · 模型数 · 凭证 · 族,
+ * 状态全用**符号/文字**表达 (颜色只是第二通道):
+ *
+ *   · `●` 可用 (有凭证或免 key) / `○` 未配置凭据;
+ *   · `← 当前` 这一家就是当前生效的;
+ *   · `special (需专用鉴权, 未支持)` —— 目录里这一家的鉴权形状本运行时不支持;
+ *   · `无基址 (需自定义 baseUrl)` —— 目录里没给 api 基址;
+ *   · `内置|自定义|目录` + `族 <family>` —— 这一行从哪来。
+ *
+ * 只做排版, 一个字段都不产生 (真事实全来自 `ProviderSummary`)。
+ */
+export function formatProviderMenuRow(s: ProviderSummary): string {
+  const mark = s.configured ? '●' : '○';
+  const bits: string[] = [];
+  bits.push(s.modelCountOrigin === 'unavailable' ? '模型数未知' : `${s.modelCount} models`);
+  bits.push(!s.requiresApiKey
+    ? '免 key'
+    : s.keyState === 'configured' ? 'key 已配'
+      : s.keyState === 'env' ? 'key 来自 env'
+        : `缺 key${s.catalogEnvVar ? ` (${s.catalogEnvVar})` : ''}`);
+  bits.push(s.origin === 'catalog' ? '目录' : s.origin === 'custom' ? '自定义' : '内置');
+  if (s.origin === 'catalog' && s.catalogFamily) bits.push(`族 ${s.catalogFamily}`);
+  if (s.isLocal) bits.push('本地');
+  // 目录家不能用时**如实标**, 且不当可用 (符号与文字都在, 不靠颜色)
+  if (s.catalogAuthUnsupported) bits.push('special (需专用鉴权, 未支持)');
+  if (s.catalogBaseUrlMissing) bits.push('无基址 (需自定义 baseUrl)');
+  if (s.requiresKeyConflict) bits.push('⚠ key 要求不一致');
+  if (s.current) bits.push('← 当前');
+  return `${mark} ${s.id} · ${bits.join(' · ')}`;
+}
+
+/** 供应商行的**语义 tone** (只给颜色用; 语义本体在符号/文字里) */
+export function providerRowTone(s: ProviderSummary): 'ok' | 'warn' | 'dim' | 'accent' | 'plain' {
+  if (s.catalogAuthUnsupported) return 'warn';
+  if (s.current) return 'accent';
+  return s.configured ? 'ok' : 'dim';
+}
+
+/**
+ * 模型菜单行 (全屏选择器用): **一行只放这一行独有的事实**。
+ *
+ * 版面纪律 (2026-09-27 简化后):
+ *   · 未知字段**一律不显示** —— 不逐行复读 `工具调用=未知 · reasoning=未知 · 上下文=未知`,
+ *     那是每行都一样的话, 由页脚统一说一次 (或什么都不说);
+ *   · 来源要标出来: `上游` / `上游(缓存)` / `上游未见` (测过: 上游未列 ≠ 不能用) / `手输`;
+ *   · 能力 (上下文/reasoning/tools) 只在本条**有真数据**时才出现。
+ */
+export function formatModelMenuRow(e: ModelEntry): string {
+  const bits: string[] = [];
+  if (e.upstreamSeen === true) bits.push(e.upstreamOrigin === 'live' ? '上游' : '上游(缓存)');
+  else if (e.upstreamSeen === false) bits.push('上游未见');
+  if (e.origin === 'custom') bits.push('手输');
+  if (typeof e.contextLength === 'number' && e.contextLength > 0) {
+    bits.push(e.contextLength >= 1000 ? `${Math.round(e.contextLength / 1000)}k` : String(e.contextLength));
+  }
+  if (e.reasoning === 'yes') bits.push('reasoning');
+  if (e.toolCalling === 'yes') bits.push('tools');
+  if (e.isLocal) bits.push('本地');
+  if (e.reachability === 'failed') bits.push(`连不上 (${e.failureReason || '原因未知'})`);
+  if (e.current) bits.push('← 当前');
+  return bits.length ? `${e.id} · ${bits.join(' · ')}` : e.id;
 }
 
 /** 模型条目行: 当前置顶标记 + 原始 ID + 能力三态 + 凭证状态 + 本地/远端 + 失败原因 */

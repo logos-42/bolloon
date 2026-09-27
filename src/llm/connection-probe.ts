@@ -595,6 +595,12 @@ export interface ProbeResult {
   checks: ProbeCheck[];
   /** 服务端可解析的模型目录 (拿得到才给) */
   catalog?: string[];
+  /**
+   * **实测事实**: 这名字不在上游 `/models` 里, 但端点接受了它 (真发过请求)。
+   * 2026-09-27 实测发现 `/models` 不是可用模型的全集, 所以这一条要能带出去让界面照实说 ——
+   * 曾经"目录里没有"是硬拒, 会误杀真能用的模型。
+   */
+  modelAcceptedOutsideCatalog?: boolean;
   elapsedMs: number;
 }
 
@@ -627,6 +633,8 @@ export async function probe(req: ProbeRequest): Promise<ProbeResult> {
   let baseUrl = '';
   let baseUrlSource: BaseUrlSource | null = null;
   let toolCalling: ProbeCapability = 'unknown';
+  /** 「目录里没有但端点接受」的实测事实 (只在真发过请求且 2xx 时置位) */
+  let modelAcceptedOutsideCatalog = false;
 
   const finish = (r: Partial<ProbeResult> & { ok: boolean; message: string }): ProbeResult => ({
     providerId,
@@ -636,6 +644,7 @@ export async function probe(req: ProbeRequest): Promise<ProbeResult> {
     baseUrl,
     baseUrlSource,
     toolCalling,
+    ...(modelAcceptedOutsideCatalog ? { modelAcceptedOutsideCatalog: true } : {}),
     checks,
     elapsedMs: Date.now() - started,
     ...r,
@@ -751,10 +760,22 @@ export async function probe(req: ProbeRequest): Promise<ProbeResult> {
   }
 
   // ── 5) 模型接口可用 ────────────────────────────────────────
-  if (!catalog.includes(model)) {
+  //
+  // ⚠️ 2026-09-27 实测改判 (真实凭证, 真上游): **上游 `/models` 列出的 ≠ 端点真能用的全集**。
+  //   证据: deepseek 的 `/models` 只回 `deepseek-flash` / `deepseek-v4-pro`, 但
+  //   `deepseek-v4-flash` 发 chat 请求**回 HTTP 200 并给出 choices** (一直有人这么用)。
+  //   所以"目录里没有这个名字"**只能是警告, 不能是硬拒** —— 旧实现在这里直接判 `model_not_found`,
+  //   把真能用的模型误杀了 (用户先被允许选中, 到探测这一步才被拦)。
+  //   真拒的判据只有一个: **发一次请求, 端点自己拒了** (下面 §模型接口那段)。
+  const notInCatalog = !catalog.includes(model);
+  if (notInCatalog) {
     const sample = catalog.slice(0, 5).join(', ');
-    checks.push({ step: 'model', ok: false, detail: `目录里没有 '${model}' (共 ${catalog.length} 个, 例: ${sample})` });
-    return fail('model_not_found', `端点可达但不认识模型 '${model}' (目录里 ${catalog.length} 个, 例: ${sample})`, { catalog });
+    checks.push({
+      step: 'model',
+      ok: true,
+      detail: `目录 (/models) 里没有 '${model}' (目录 ${catalog.length} 个, 例: ${sample})`
+        + ' — /models 不是可用模型的全集, 继续真试一次由端点裁决',
+    });
   }
   const ping = proto.modelRequest(baseUrl, model, apiKey);
   {
@@ -767,7 +788,14 @@ export async function probe(req: ProbeRequest): Promise<ProbeResult> {
         checks.push({ step: 'model', ok: false, detail: `${ping.url} → ${cls.detail}` });
         return fail(cls.failureClass, `模型接口不可用 — ${cls.detail}`, { catalog });
       }
-      checks.push({ step: 'model', ok: true, detail: `${ping.url} 回 HTTP ${res.status} (模型 '${model}' 可寻址)` });
+      checks.push({
+        step: 'model',
+        ok: true,
+        detail: `${ping.url} 回 HTTP ${res.status} (模型 '${model}' 可寻址)`
+          + (notInCatalog ? ' — 注: 上游目录未列出, 但端点接受' : ''),
+      });
+      // 把"目录里没有但端点接受"这个**实测事实**带出去 (界面/报告照实说, 不回头改判成失败)
+      if (notInCatalog) modelAcceptedOutsideCatalog = true;
     } catch (e) {
       const cls = classifyNetworkError(e, flag, timeoutMs);
       checks.push({ step: 'model', ok: false, detail: `${ping.url} → ${cls.detail}` });

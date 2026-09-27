@@ -17,33 +17,44 @@ plan.json:
   {
     "timeout_s": 240,           # 整轮墙钟上限
     "settle_ms": 500,           # 最后一步答完后再收多久输出
+    "cols": 100,                # 伪终端的列数 (可选; 不给就不设 winsize, 由被测方自己兜底)
+    "rows": 30,                 # 伪终端的行数 (可选; 与 cols 一起设置才生效)
+    "env": {"NO_COLOR": "1"},   # 追加/覆盖子进程环境变量 (值为 null = 删掉这个变量)
     "steps": [
       {"name": "第一屏", "expect": "步骤 1/7 供应商", "send": "deepseek\\n", "timeout_s": 60},
       {"name": "取消",   "expect": "已取消", "send": "<eof>", "timeout_s": 30}
     ]
   }
   · `send` 支持 `<eof>` (= Ctrl-D, 关掉 stdin), `<c-c>` (= SIGINT 字节 0x03), `<wait>` (只等不喂)。
+    `send` 里的转义按 **Python 字符串** 解 (所以箭头键写成 `"\\x1b[B"`, 反斜杠 `\\n` = 回车)。
   · `expect` 是 Python 正则, 在**到目前为止的全部输出**上匹配 (pty 里有 ANSI/\\r, 匹配前会先去掉 ANSI 再归一化 \\r\\n)。
+  · `expect_raw` (可选): 同样的正则, 但在**原始字节 (含 ANSI)** 上匹配 —— 用来断言"真有颜色/真有光标序列"
+    这种东西; 去 ANSI 之后才匹配的话, 颜色是不是真存在就检不出来了。
+  · `until` (可选): 断言"到这一步为止原始输出里某个正则**没有**命中" (例如明文 key 不许出现)。
+    写法: `{"name": "...", "until_absent": "sk-PROBE-…"}`
 
 输出:
   · `--out`: 子进程的**原始**输出 (含 ANSI/进度帧, 供人眼复核与报告引用)。
   · `--json`: 机器可读结论, 形如
       {"ok": true, "exit": 0, "killed": false, "steps": [{"name":..., "matched": true, "waited_ms": 1234, "sent": "deepseek\\n"}]}
-    **`ok` 只取决于 expect 是否都命中 + 子进程是否自然退出** —— 不掺别的判断。
+    **`ok` 只取决于 expect/expect_raw/until_absent 是否都成立 + 子进程是否自然退出** —— 不掺别的判断。
 
 退出码: 0 = ok; 1 = 有 expect 没等到 (或超时被强杀); 2 = 脚本自身参数/环境问题。
 始终**持续 read** 主 fd (不读会让对端写满缓冲后卡住, 量到的是缓冲假象, 不是真渲染)。
 """
 
 import argparse
+import fcntl
 import json
 import os
 import pty
 import re
 import select
 import signal
+import struct
 import subprocess
 import sys
+import termios
 import time
 
 ANSI = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>]')
@@ -55,6 +66,40 @@ def strip_ansi(b: bytes) -> str:
     s = s.replace('\r\n', '\n').replace('\r', '\n')
     # 进度帧 (Braille/块状 spinner) 会碎片化同一行: 汇总时把连续空格压掉, 便于正则
     return s
+
+
+# `send` 里的转义: 两种写法都收 (JSON 的 `\u001b` 交给 json 解; 人写的 `\x1b` 在这里解)。
+# 只替换这几种已知转义, 其余字符 (含中文) 原样保留 —— 不用 unicode_escape 全量解码。
+_ESCAPES = {'\\x1b': '\x1b', '\\u001b': '\x1b', '\\n': '\n', '\\r': '\r',
+            '\\t': '\t', '\\\\': '\\', '\\x04': '\x04', '\\x03': '\x03'}
+_HEXNN = re.compile(r'\\x([0-9a-fA-F]{2})')
+
+
+def decode_send(s: str) -> str:
+    out, i = [], 0
+    while i < len(s):
+        if s[i] == '\\':
+            for ln in (6, 4, 2):
+                key = s[i:i + ln]
+                if key in _ESCAPES:
+                    out.append(_ESCAPES[key])
+                    i += ln
+                    break
+            else:
+                # 通用 `\xNN`: 表里没列的控制字节 (Ctrl-U = `\x15` 等) 也必须真解成那个字节。
+                # 不解的话会当**字面量**喂进去 —— 量到的是"用户打了 \ x 1 5", 不是 Ctrl-U,
+                # 于是筛选/清空这类按键的断言会用假红或假绿收场。
+                m = _HEXNN.match(s, i)
+                if m:
+                    out.append(chr(int(m.group(1), 16)))
+                    i += 4
+                else:
+                    out.append(s[i])
+                    i += 1
+            continue
+        out.append(s[i])
+        i += 1
+    return ''.join(out)
 
 
 def main() -> int:
@@ -77,8 +122,22 @@ def main() -> int:
     steps = plan.get('steps', [])
 
     master, slave = pty.openpty()
+    # 伪终端尺寸: 不给就**不动** winsize (由被测方自己兜底 —— 免得把默认行为偷偷改掉);
+    # 给了就必须真的设上, 否则"窄终端不撑破"验的还是别的尺寸。
+    cols, rows = plan.get('cols'), plan.get('rows')
+    if cols and rows:
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', int(rows), int(cols), 0, 0))
+        except OSError as e:
+            print(f'pty-drive: 设 winsize 失败: {e}', file=sys.stderr)
+            return 2
     env = dict(os.environ)
     env['TERM'] = env.get('TERM', 'xterm-256color')
+    for k, v in (plan.get('env') or {}).items():
+        if v is None:
+            env.pop(str(k), None)
+        else:
+            env[str(k)] = str(v)
     p = subprocess.Popen(cmd, stdin=slave, stdout=slave, stderr=slave,
                          env=env, cwd=a.cwd, close_fds=True, start_new_session=True)
     os.close(slave)
@@ -107,24 +166,45 @@ def main() -> int:
 
     for st in steps:
         pat = re.compile(st['expect']) if st.get('expect') else None
+        raw_pat = re.compile(st['expect_raw']) if st.get('expect_raw') else None
+        absent_raw = re.compile(st['until_absent']) if st.get('until_absent') else None
         step_t0 = time.time()
         limit = float(st.get('timeout_s', 60))
-        matched = pat is None
-        while pat is not None:
+
+        def step_ok() -> bool:
+            if pat and not pat.search(strip_ansi(bytes(raw))):
+                return False
+            if raw_pat and not raw_pat.search(bytes(raw).decode('utf-8', 'replace')):
+                return False
+            if absent_raw and absent_raw.search(bytes(raw).decode('utf-8', 'replace')):
+                return False
+            return True
+
+        matched = (pat is None and raw_pat is None)
+        while (pat is not None) or (raw_pat is not None):
             if time.time() - t0 > total_budget:
                 break
             if time.time() - step_t0 > limit:
                 break
             drain(min(time.time() + 0.15, step_t0 + limit))
-            if pat.search(strip_ansi(bytes(raw))):
+            if step_ok():
                 matched = True
                 break
             if p.poll() is not None:
                 drain(time.time() + 0.3)
-                if pat.search(strip_ansi(bytes(raw))):
+                if step_ok():
                     matched = True
                 break
+        if absent_raw is not None:
+            entry_absent = not absent_raw.search(bytes(raw).decode('utf-8', 'replace'))
+            if not entry_absent:
+                matched = False
+        else:
+            entry_absent = None
         entry = {'name': st.get('name', ''), 'expect': st.get('expect'),
+                 'expect_raw': st.get('expect_raw'),
+                 'until_absent': st.get('until_absent'),
+                 'absent_ok': entry_absent,
                  'matched': bool(matched), 'waited_ms': int((time.time() - step_t0) * 1000)}
         send = st.get('send')
         if matched:
@@ -143,7 +223,7 @@ def main() -> int:
                 pass
             elif send is not None:
                 try:
-                    os.write(master, send.encode())
+                    os.write(master, decode_send(send).encode())
                 except OSError:
                     pass
             entry['sent'] = send

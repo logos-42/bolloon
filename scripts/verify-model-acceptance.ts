@@ -206,6 +206,16 @@ function startStub(opts: {
 
       if (url.pathname === `${basePath}/chat/completions`) {
         if (!authOk) { res.statusCode = 401; res.end(JSON.stringify({ error: { message: 'invalid api key' } })); return; }
+        // 端点自己**不认识**这个模型 → 真 404 (2026-09-27 改判之后, `model_not_found` 的唯一来源就是这里)。
+        //   旧夹具对任何 model 名都回 200, 于是"错 model 被拒"这条只能靠**目录**拦 —— 而实测证明
+        //   上游 `/models` 不是可用模型的全集 (`deepseek-v4-flash` HTTP 200 却不在目录里), 目录拦法已改成警告。
+        //   真端点对不认识的模型就是回 404/405, 夹具照这个形状来。
+        const reqModel = typeof body?.model === 'string' ? body.model : '';
+        if (reqModel && opts.models.length > 0 && !opts.models.includes(reqModel)) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ error: { message: `The model '${reqModel}' does not exist`, code: 'model_not_found', type: 'invalid_request_error' } }));
+          return;
+        }
         if (hasTools && mode.rejectTools) {
           // 明确"不接受工具/函数声明" —— 这正是 tool_call_unsupported 的触发形状
           res.statusCode = 400;
@@ -670,7 +680,7 @@ async function item04(A: Stub, B: Stub, MS: any, realCall: any, runChild: any): 
     `${kv('failureClass', String(badUrl.failureClass))} · ${short(badUrl.message || '', 150)}`);
 
   const badModel = await MS.selectModel({ provider: 'openai', model: 'no-such-model-xyz', baseUrl: A.baseUrl, apiKey: 'stub-k-a', scope: 'global' });
-  chk(it, '③ 错 model (目录里没有) 被拒 (model_not_found)',
+  chk(it, '③ 错 model (端点自己不认识, 真 404) 被拒 (model_not_found)',
     badModel.ok === false && badModel.failureClass === 'model_not_found' && shaOf(CONFIG_PATH) === before,
     `${kv('failureClass', String(badModel.failureClass))} · ${short(badModel.message || '', 150)}`);
 

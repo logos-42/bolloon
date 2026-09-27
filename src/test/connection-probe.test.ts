@@ -89,13 +89,17 @@ const json = (res: http.ServerResponse, code: number, body: unknown, type = 'app
 const openaiCatalog = (ids: string[]) => ({ object: 'list', data: ids.map((id) => ({ id, object: 'model' })) });
 
 /** 一台"正常"的 OpenAI 兼容服务: 目录 + 模型调用 + 工具调用 */
-function openaiServer(opts: { models: string[]; key?: string; toolsAnswer?: 'call' | 'plain' | 'reject' }): Handler {
+function openaiServer(opts: { models: string[]; key?: string; toolsAnswer?: 'call' | 'plain' | 'reject'; /** 端点**真的拒**不在 opts.models 里的名字 (负控制用) */ refuseUnknownModel?: boolean }): Handler {
   return (req, res, body) => {
     const auth = String(req.headers.authorization || '');
     if (opts.key && auth !== `Bearer ${opts.key}`) return json(res, 401, { error: { message: 'invalid api key' } });
     if (req.url === '/v1/models') return json(res, 200, openaiCatalog(opts.models));
     if (req.url === '/v1/chat/completions') {
       const payload = JSON.parse(body || '{}');
+      if (opts.refuseUnknownModel && !opts.models.includes(String(payload.model || ''))) {
+        // 有些端点就是这样: 不认识的模型名 -> 404 + error 里带 model
+        return json(res, 404, { error: { message: `model '${payload.model}' does not exist` } });
+      }
       const withTools = Array.isArray(payload.tools) && payload.tools.length > 0;
       if (withTools && opts.toolsAnswer === 'reject') {
         return json(res, 400, { error: { message: 'tools is not supported by this model' } });
@@ -314,15 +318,37 @@ describe('真 HTTP 服务器: 七类失败逐类造出来', () => {
     } finally { await boom.close(); }
   });
 
-  it('model_not_found — 目录可达但没有这个名字 (目录也带回来了)', async () => {
-    const s = await startStub(openaiServer({ models: ['alpha-1', 'beta-2'] }));
+  it('目录里没有这个名字**不再硬拒**: 端点接受就算可用 (2026-09-27 实测改判 + 负控制)', async () => {
+    // ① 端点接受目录外的名字 → 必须**通过**, 且把"目录未列出但端点接受"这个实测事实带出去。
+    //    依据: 真实凭证实测 —— deepseek 的 /models 只列 deepseek-flash/deepseek-v4-pro,
+    //    但 deepseek-v4-flash 发 chat 请求回 HTTP 200 并给出 choices。旧实现把这种名字直接判
+    //    model_not_found = 误杀真能用的模型 (用户能选中, 到探测才被拦)。
+    const accept = await startStub(openaiServer({ models: ['alpha-1', 'beta-2'] }));
     try {
-      const r = await CP.probe({ providerId: 'openai', baseUrl: `${s.origin}/v1`, protocol: 'openai-compatible', model: 'ghost-9', apiKeyRef: 'none', timeoutMs: 3000 });
+      const r = await CP.probe({ providerId: 'openai', baseUrl: `${accept.origin}/v1`, protocol: 'openai-compatible', model: 'ghost-9', apiKeyRef: 'none', timeoutMs: 3000 });
+      expect(r.ok).toBe(true);
+      expect(r.modelAcceptedOutsideCatalog).toBe(true);
+      expect(r.catalog).toEqual(['alpha-1', 'beta-2']);
+      expect(r.checks.some((c) => c.step === 'model' && /不是可用模型的全集/.test(c.detail))).toBe(true);
+      expect(r.checks.find((c) => c.step === 'model' && /端点接受/.test(c.detail))).toBeTruthy();
+    } finally { await accept.close(); }
+
+    // ② 负控制: 端点**真的拒**这个名字 → 仍然判 model_not_found (放宽判据 ≠ 放行真不通的模型)
+    const refuse = await startStub(openaiServer({ models: ['alpha-1', 'beta-2'], refuseUnknownModel: true }));
+    try {
+      const r = await CP.probe({ providerId: 'openai', baseUrl: `${refuse.origin}/v1`, protocol: 'openai-compatible', model: 'ghost-9', apiKeyRef: 'none', timeoutMs: 3000 });
       expect(r.ok).toBe(false);
       expect(r.failureClass).toBe('model_not_found');
-      expect(r.catalog).toEqual(['alpha-1', 'beta-2']);
       observedClasses.add(r.failureClass!);
-    } finally { await s.close(); }
+    } finally { await refuse.close(); }
+
+    // ③ 负控制二: 目录里**有**这个名字, 端点也接受 → 不许被任何判据拒掉
+    const known = await startStub(openaiServer({ models: ['alpha-1', 'beta-2'] }));
+    try {
+      const r = await CP.probe({ providerId: 'openai', baseUrl: `${known.origin}/v1`, protocol: 'openai-compatible', model: 'alpha-1', apiKeyRef: 'none', timeoutMs: 3000 });
+      expect(r.ok).toBe(true);
+      expect(r.modelAcceptedOutsideCatalog).toBeUndefined();
+    } finally { await known.close(); }
   });
 
   it('protocol_mismatch — ①服务其实是另一个协议 ②回了外协议形状 ③回的压根不是 JSON', async () => {

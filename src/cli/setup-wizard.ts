@@ -409,6 +409,10 @@ export interface ModelCommandIO {
   ask?: (q: string, opts?: { default?: string }) => Promise<string | null>;
   /** 结构化选择器 (会话内的渲染层选择器; 传了就优先用它) */
   choose?: (items: SelectorChoice[], title: string) => Promise<string | null>;
+  /** 这个 `choose` 自带实时筛选 (全屏 TUI 的 `/`) → 选择器不再单独问一遍"搜索模型" */
+  filterable?: boolean;
+  /** 打内部细节 (目录新鲜度/逐步事实/未知字段脚注); 默认不打 (`--verbose`) */
+  verbose?: boolean;
   /**
    * 交互式 (真终端) 场景: 选择器的每一步**当场打到终端**, 而不是等整轮结束才一次性回显。
    *
@@ -755,8 +759,9 @@ export async function runModelPicker(
       ...(io.ask ? { ask: io.ask } : {}),
       ...(io.askHidden ? { askHidden: io.askHidden } : {}),
       ...(io.choose ? { choose: io.choose } : {}),
+      ...(io.filterable ? { filterable: true } : {}),
     },
-    opts,
+    { ...opts, ...(io.verbose ? { verbose: true } : {}) },
   );
   const tailLines = res.ok
     ? [`✅ 当前生效: ${formatEffectiveModel(res.effective!)}`]
@@ -767,6 +772,54 @@ export async function runModelPicker(
     tail: tailLines.join('\n'),
     live: !!liveSink,
     result: res,
+  };
+}
+
+/**
+ * 真终端下的模型选择器 IO: **全屏光标选择器 + 掩码隐藏输入** (2026-09-27)。
+ *
+ * 为什么单列一个工厂: 交互能力必须**同一份**递给所有步骤 (供应商/凭证/模型/参数/作用域/确认都用
+ * 同一个 `tuiSelect`), 否则就会出现"某一步退化成文本问答"。
+ *
+ * 能力/降级说得明明白白:
+ *   · `tuiCapable()` 为假 (非 TTY / 终端太矮 / `BOLLOON_NO_TUI=1`) → 调用方**不要**用这个工厂,
+ *     退回逐行问答 (管道输出仍可读, 一个字节不变);
+ *   · 拿不到 raw mode 时掩码输入**如实降级**成 readline 隐藏输入 (同样不回显明文), 绝不静默明文回显;
+ *   · 颜色按 `NO_COLOR` / `TERM=dumb` / isTTY 三判据关掉 —— 但符号 (`●`/`○`/`← 当前`/`special`) 永远在,
+ *     无色终端一样分得清。
+ */
+export function modelTtyIO(): ModelCommandIO {
+  return {
+    live: true,
+    print: (l: string) => { try { process.stdout.write(l + '\n'); } catch { /* 管道关了就安静 */ } },
+    choose: async (items: SelectorChoice[], title: string) => {
+      const tui: any = await import('./tui-select.js');
+      const choices = items.map((c) => ({
+        value: c.value,
+        label: c.label,
+        ...(c.hint ? { hint: c.hint } : {}),
+        ...(c.group ? { group: c.group } : {}),
+        ...(c.tone ? { tone: c.tone } : {}),
+        // 末行"取消 / 手输"与其它步骤同一形态: 把它当取消行, `Esc` 与它同义
+        ...(/^取消/.test(c.label) ? { cancel: true } : {}),
+      }));
+      // 供应商那一步的单位是"家", 其余是"项" (计数行读起来才像话)
+      const unit = /供应商/.test(title) ? '家' : '项';
+      return await tui.tuiSelect(choices, title, { unit });
+    },
+    filterable: true,
+    askHidden: async (q: string) => {
+      const tui: any = await import('./tui-select.js');
+      if (tui.tuiCapable()) {
+        const r = await tui.tuiAskMasked({ prompt: q.replace(/\(.*?\)\s*$/, '').trim() || q });
+        return r.eof ? null : r.value;
+      }
+      // 拿不到 raw mode: 如实降级到 readline 隐藏输入 (仍然不回显明文, 且明确告知)
+      process.stdout.write('· 本终端不支持全屏掩码输入 → 降级为隐藏输入 (同样不回显明文)\n');
+      const r = await askHiddenLineEof(q);
+      return r.eof ? null : r.value;
+    },
+    ask: async (q: string, opts?: { default?: string }) => { const r = await askLineEof(q, opts); return r.eof ? null : r.value; },
   };
 }
 

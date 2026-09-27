@@ -85,6 +85,12 @@ export interface ModelSelection {
   model: string;
   baseUrl: string;
   apiKey?: string;
+  /**
+   * 这一层的凭据**从哪来** (`'provider'` = 存盘的那一份 / `'env'` = 环境变量)。
+   * 不给就按"apiKey 非空 ⇒ provider"推断 —— 历史语义一字未变; 用户显式选"改用环境变量"时由
+   * 写盘点传 `'env'`, 好让有效配置的 `authRef` 如实写成 `env:<VAR>` 而不是冒充存盘凭据。
+   */
+  credentialSource?: 'provider' | 'env';
   /** 生成参数: 温度 (0~2)。`undefined` = 这一层没意见, 不覆盖下层 */
   temperature?: number;
   /** 生成参数: 推理/思考模式偏好。`undefined` = 这一层没意见 */
@@ -273,6 +279,19 @@ export interface SelectModelRequest {
   baseUrl?: string;
   /** 仅在 `key` 子命令里出现; 不进日志/不进返回值 */
   apiKey?: string;
+  /**
+   * **凭证意图** (2026-09-27)。不传 = 沿用配置里现存的那一份 (历史语义, 一字未变)。
+   *
+   *   · `'keep'`    = 只切路由, 凭据一格不动;
+   *   · `'replace'` = 用 `apiKey` 覆盖存盘凭据 (必须给了非空 apiKey);
+   *   · `'clear'`   = **删掉**存盘凭据 (之后只有环境变量还能救它 —— 若既没 env 又必须 key,
+   *                   这里会**在写盘之前**拒掉并说清后果, 因为"失败 = 什么都没写"是硬约束);
+   *   · `'env'`     = 不用存盘凭据, 改用环境变量 (要求环境里真有那个变量, 否则同上拒掉)。
+   *
+   * 为什么不给一条"清 key"的旁路 API: 写配置的入口**只能有一个**。所以这四种意图都在这一个
+   * 写盘点里落地 (校验 → 探测 → 写 → 重建运行时 → 会话), 不新增第二条写盘路径。
+   */
+  credentialAction?: 'keep' | 'replace' | 'clear' | 'env';
   /** 生成参数 (可选): 温度 0~2。给了就写进该 provider 的配置 */
   temperature?: number;
   /** 生成参数 (可选): 推理模式偏好 */
@@ -339,6 +358,22 @@ const ENV_KEY_NAMES: Record<string, string[]> = {
 
 export function envKeyNamesOf(provider: string): string[] {
   return ENV_KEY_NAMES[provider] || [];
+}
+
+/**
+ * 这个供应商**当前生效凭据的指纹** (`fp:<sha256 前 16 位>`), 没有则 `undefined`。
+ *
+ * **只有指纹, 没有明文** —— 界面/报告要能说"沿用现有 key (指纹 fp:xxxx)"以及"替换后指纹真的变了",
+ * 但不许把 key 本身写进任何输出。哈希口径与模型发现缓存**同一把尺子**
+ * (`credentialIdentityOf`, 见 `model-discovery.ts`), 免得同一把 key 在两处算出两个指纹。
+ */
+export async function credentialFingerprintOf(provider: string): Promise<string | undefined> {
+  const { resolvedApiKeyOf } = await import('./model-catalog.js');
+  const v = await resolvedApiKeyOf(provider).catch(() => undefined);
+  const k = String(v || '').trim();
+  if (!k) return undefined;
+  const md: any = await import('./model-discovery.js');
+  return md.credentialIdentityOf(k);
 }
 
 /**
@@ -457,11 +492,12 @@ export function materialize(
   const facts = providerFactsOf(provider);
   const protocol = facts.protocol;
   const envKey = envKeyOf(provider);
-  const authRef = sel.apiKey
-    ? `provider:${provider}`
-    : envKey
-      ? `env:${envKey.name}`
-      : 'none';
+  // 凭据来源: 显式声明优先 (用户选了"改用环境变量"就如实写 env:), 否则按"有 key ⇒ provider"推断
+  const credentialSource = sel.credentialSource ?? (sel.apiKey ? 'provider' : envKey ? 'env' : 'none');
+  const authRef = credentialSource === 'env' && envKey ? `env:${envKey.name}`
+    : sel.apiKey ? `provider:${provider}`
+      : envKey ? `env:${envKey.name}`
+        : 'none';
   return {
     provider,
     model,
@@ -837,6 +873,10 @@ export interface ValidationOutcome {
   failureClass?: SelectionFailureClass;
   message?: string;
   selection?: ModelSelection;
+  /** 这次要把**存盘凭据删掉** (`credentialAction: 'clear' | 'env'` 的落地结果) */
+  credentialDrop?: boolean;
+  /** 这家供应商是不是必须要有凭据才能用 (写盘阶段决定 `requiresApiKey` 怎么落) */
+  requiresKey?: boolean;
 }
 
 /**
@@ -957,9 +997,37 @@ export function validateSelection(
   }
 
   const fallbackCredential = String(base.credential ?? '');
-  const apiKey = req.apiKey !== undefined ? req.apiKey : fallbackCredential;
+  const action = req.credentialAction ?? (req.apiKey !== undefined ? 'replace' : 'keep');
   const envKey = envKeyOf(provider);
   const needKey = base.requiresApiKey !== false;
+
+  // ── 凭证意图 (2026-09-27): 四种意图在这里落地成"这一次要用的 key + 会不会写存盘凭据" ──
+  //   `replace` / 历史不传 action 但有 apiKey → 用新 key; `clear` / `env` → 不用存盘凭据。
+  let apiKey: string;
+  let dropStored = false;
+  if (action === 'replace') {
+    const k = String(req.apiKey ?? '').trim();
+    if (!k) {
+      return { ok: false, failureClass: 'missing_api_key', message: '要替换凭证但没收到 key (未改动任何配置)' };
+    }
+    apiKey = k;
+  } else if (action === 'clear' || action === 'env') {
+    // 两种都是"不再用存盘凭据": clear 连环境变量也要求有, 否则这家当场就没法用 ——
+    //   宁可在写盘之前拒掉并说清后果, 也不写下一个"看着像切换成功、其实没有凭证"的配置。
+    if (needKey && !envKey) {
+      return {
+        ok: false,
+        failureClass: 'missing_api_key',
+        message: `${action === 'clear' ? '清除' : '改用环境变量'}被拒绝: ${provider} 需要一个 key, 而`
+          + `环境变量 ${providerFactsOf(provider).envKeys.join('/') || '(这家没登记环境变量名)'} 没设 —— `
+          + '清掉存盘凭据后这家就用不了了。未改动任何配置 (要清就先 `export` 那个变量, 或改用"替换"给一个新 key)。',
+      };
+    }
+    apiKey = envKey?.value ?? '';
+    dropStored = true;
+  } else {
+    apiKey = req.apiKey !== undefined ? req.apiKey : fallbackCredential;
+  }
   if (needKey && !apiKey && !envKey) {
     return {
       ok: false,
@@ -978,11 +1046,16 @@ export function validateSelection(
 
   return {
     ok: true,
+    // 凭证意图的落地结果: 要不要把存盘凭据删掉 / 这家是不是必须 key —— 写盘阶段要用它,
+    //   所以由**同一个校验**算出来带出去, 免得写盘时再算一遍 (两处算法早晚会分叉)。
+    credentialDrop: dropStored,
+    requiresKey: needKey,
     selection: {
       provider,
       model,
       baseUrl,
       apiKey: apiKey || envKey?.value,
+      ...(action === 'env' ? { credentialSource: 'env' as const } : {}),
       ...(req.temperature !== undefined ? { temperature: Number(req.temperature) } : {}),
       ...(req.reasoningMode !== undefined ? { reasoningMode: req.reasoningMode } : {}),
     },
@@ -995,6 +1068,8 @@ interface ProbeResult {
   detail: string;
   /** 服务端可解析的模型目录 (拿得到才给, 拿不到不算失败) */
   catalog?: string[];
+  /** 实测事实: 上游 `/models` 没列这个名字, 但端点接受 (2026-09-27 实测: 目录不是全集) */
+  modelAcceptedOutsideCatalog?: boolean;
 }
 
 export const PROBE_TIMEOUT_MS = 8000;
@@ -1017,6 +1092,8 @@ export interface ConnectionProbeOutcome {
   baseUrlSource: string | null;
   toolCalling: 'yes' | 'no' | 'unknown';
   catalog?: string[];
+  /** 实测事实: 上游 `/models` 没列这个名字, 但端点接受 (目录不是可用模型的全集) */
+  modelAcceptedOutsideCatalog?: boolean;
   checks: ProbeCheck[];
 }
 
@@ -1082,6 +1159,8 @@ export async function runConnectionProbe(opts: {
     baseUrlSource: r.baseUrlSource as string | null,
     toolCalling: r.toolCalling,
     ...(r.catalog ? { catalog: r.catalog } : {}),
+    // 实测事实: 上游目录没列这个名字, 但端点接受 (2026-09-27 实测: /models 不是可用全集)
+    ...(r.modelAcceptedOutsideCatalog ? { modelAcceptedOutsideCatalog: true } : {}),
     checks: r.checks as ProbeCheck[],
   };
   if (r.ok) return { ok: true, unmapped: false, ...common };
@@ -1108,6 +1187,8 @@ export async function probeSelection(sel: ModelSelection): Promise<ProbeResult> 
       ? r.message
       : `${r.message} [探测类目 ${r.probeClass}${r.unmapped ? ' → 未映射!' : ''}; 逐步事实: ${facts}]`,
     ...(r.catalog ? { catalog: r.catalog } : {}),
+    // 「目录里没有但端点接受」的实测事实要传出去, 界面照实说 (2026-09-27 实测改判)
+    ...(r.modelAcceptedOutsideCatalog ? { modelAcceptedOutsideCatalog: true } : {}),
   };
 }
 
@@ -1154,6 +1235,9 @@ export async function selectModel(req: SelectModelRequest): Promise<SelectModelR
 
   // ── 2) 连通探测 (写盘之前; 走 P4 探测原语这一条唯一路径) ─────
   const checks: string[] = [];
+  // 探测里的「目录里没有但端点接受」实测事实 —— 探针已经算出来了, 这里必须**接着带出去**;
+  //   否则 `SelectModelResult` 声明了字段却没有一条路能填上 (调用方/界面永远看不到)。
+  let acceptedOutsideCatalog = false;
   const wantProbe = req.verify !== false && process.env.BOLLOON_MODEL_SKIP_PROBE !== '1';
   if (wantProbe) {
     const p = await runConnectionProbe({
@@ -1163,6 +1247,7 @@ export async function selectModel(req: SelectModelRequest): Promise<SelectModelR
       configuredBaseUrl: stored?.baseUrl, // 配置里这一家现在写的地址
       apiKey: target.apiKey,
     });
+    if (p.modelAcceptedOutsideCatalog) acceptedOutsideCatalog = true;
     // 逐项事实 (URL 来自哪一层 / 协议 / 凭证 / 目录 / 模型 / 工具调用) 全部如实带出去
     checks.push(`· base URL 来源=${p.baseUrlSource ?? '无'} → ${p.baseUrl || '(无 URL)'}; 工具调用能力=${p.toolCalling}`);
     for (const c of p.checks) checks.push(`${c.ok ? '✓' : '✗'} [${c.step}] ${c.detail}`);
@@ -1202,11 +1287,19 @@ export async function selectModel(req: SelectModelRequest): Promise<SelectModelR
         await llmConfigStore.initialize();
 
         const patch: Partial<ProviderConfig> = { enabled: true, model: target.model, baseUrl: target.baseUrl };
-        // 只写"用户明确给了 key"的情况; 掩码/空值不动既有 key
-        if (req.apiKey) patch.apiKey = req.apiKey;
-        else if (target.apiKey && !(stored?.apiKey)) patch.apiKey = target.apiKey;
-        if (target.apiKey || stored?.apiKey || stored?.requiresApiKey === false) {
-          patch.requiresApiKey = false;
+        if (validation.credentialDrop) {
+          // 清除 / 改用环境变量: 存盘凭据**真的删掉** —— 写成空串 (写 `undefined` 是"这一格不动",
+          //   那是另一件事; 这里要的就是"不再有存盘凭据")。同时如实回到"这家又要 key 了"的状态,
+          //   否则列表会拿旧的 `requiresApiKey:false` 把一个已无凭据的家显示成可用 (那是假话)。
+          patch.apiKey = '';
+          patch.requiresApiKey = validation.requiresKey !== false;
+        } else {
+          // 只写"用户明确给了 key"的情况; 掩码/空值不动既有 key
+          if (req.apiKey) patch.apiKey = req.apiKey;
+          else if (target.apiKey && !(stored?.apiKey)) patch.apiKey = target.apiKey;
+          if (target.apiKey || stored?.apiKey || stored?.requiresApiKey === false) {
+            patch.requiresApiKey = false;
+          }
         }
         // 生成参数: 只有这一次明确给了才写 (不传 = 不动原有的值, 不拿内置默认去覆盖用户已经调好的)
         if (req.temperature !== undefined) patch.temperature = Number(req.temperature);
@@ -1246,7 +1339,11 @@ export async function selectModel(req: SelectModelRequest): Promise<SelectModelR
 
   // ── 7) 返回真实生效的那一份 ────────────────────────────────
   const effective = await effectiveModelConfig({ sessionKey: req.sessionKey });
-  return { ok: true, effective, previous, checks };
+  return {
+    ok: true, effective, previous, checks,
+    // 「目录里没有但端点接受」这个**实测事实**照实带出去 (界面/报告要说真话, 但不回头改判成失败)
+    ...(acceptedOutsideCatalog ? { modelAcceptedOutsideCatalog: true } : {}),
+  };
 }
 
 async function rollbackConfig(configPath: string, beforeBytes: string | null): Promise<void> {

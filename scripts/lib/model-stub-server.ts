@@ -41,6 +41,15 @@ export interface StubOptions {
   models?: string[];
   /** `true` = 工具声明请求回一句带 tool_calls 的响应 (工具调用能力=已证支持) */
   toolCalling?: boolean;
+  /**
+   * `true` = **真的拒**不在 `models` 里的模型名 (chat 请求回 404 + error 里带 model)。
+   *
+   * 为什么要这个开关 (2026-09-27 实测): 上游 `/models` **不是**可用模型的全集 ——
+   * 真实 deepseek 端点对目录外的 `deepseek-v4-flash` 回 HTTP 200。所以"端点接受目录外的名字"
+   * 和"端点拒目录外的名字"是两种**不同的真实世界**, 负控制要能分别模拟, 否则这道门就没法
+   * 证明"放宽判据"与"仍然拦住真不通的模型"两件事同时成立。
+   */
+  refuseUnknownModel?: boolean;
   /** 端口 (0 = 让系统挑) */
   port?: number;
 }
@@ -72,6 +81,12 @@ export async function startModelStub(opts: StubOptions = {}): Promise<StubServer
         return;
       }
       if (url.pathname.endsWith('/chat/completions')) {
+        // 负控制: 模拟"真会拒未知模型"的端点 (与"目录不全但端点接受"形成对照)
+        if (opts.refuseUnknownModel && !models.includes(String(parsed?.model || ''))) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ error: { message: `model '${parsed?.model}' does not exist`, type: 'invalid_request_error' } }));
+          return;
+        }
         if (hasTools && toolCalling) {
           res.end(JSON.stringify({
             id: 'stub', object: 'chat.completion', model: parsed?.model || 'stub',

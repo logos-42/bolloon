@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-27 | feat | **`bolloon model` 真交互 TUI 收尾 (掩码凭证 · 版面减法 · 修 `model_not_found` 误杀) —— 三个真 bug 收掉 + 真 pty 门 **68/0** + 变异 **9/9 判红** + 版面每步主屏 ≤ 12 行与四条黑名单串**: ① 门里 `OOC_BASE`/`MASK_PROBE`/`main()` **从未定义** (tsconfig 只含 `src/**` ⇒ `tsc` 拦不到, tsx 一跑就 ReferenceError) + 三处 `pairs: [[…] }]` **少一个 `]`** (esbuild 直接语法错) ② 源码里**上一轮撞迭代上限时留下的 M1 变异残留** (`tui-select.ts` 的 `case '\x1b[B': case '\x1bOB': return null; // 变异: 方向键失灵` —— 也就是说"接手的这份源"当时箭头键本来就是坏的) ③ `scripts/lib/pty-drive.py` 的 `decode_send` **不解通用 `\xNN` 转义**: `\x15` 被当 4 个字符 `\ x 1 5` 喂进去 ⇒ **Ctrl-U 从来没真被按过**, 筛选/清空那几条断言量到的是假象 (原始输出里看得见 `筛选 "\"` → `筛选 "\x"`)。三处都是**先量到再改**。补上的真断言 (全部**真 pty**, expect 就是断言): 高亮行两帧**反白行逐字对比真位移** + `第 i/N` 序列 `[1,2,3,2]` · 数字 9 跳选 · `/` 过滤后**列表真变短** (全量 14 项 → 筛 `deep` 剩 **2** 项) **且状态行数字真变** (一条 `expect_raw` 钉死 `第 1/2 · 筛选 "deep"`) · 滚动窗口 (rows=12, 光标 11 > H=9 且首帧第一项已滚出末帧) · 窄终端 cols=40 用**渲染器自己的尺子** `displayWidth` 量 (最宽 40 列, 超宽 **0** 行) · **凭证四条路** (保持现有 `fp:…` / 替换掩码 / 清除存盘 key / 改用环境变量) 全渲染可达 · **掩码**: 唯一探针串在 pty **原始输出里 0 命中** + 屏上**有** `•` + `(25 字符)` 计数与输入长度对上 (证明真收到不是静默丢) · 取消 / EOF / 探测失效三条路**配置 sha 逐字节不变** · **版面**: 主屏取样用**结构判据** (帧内每行都带 `\x1b[K`, 主屏行从不带) ⇒ 每步 **≤ 12 行** (实测默认最多 **3** 行 vs 同流程 `--verbose` **6** 行, 并配正向对照证明是**搬走**不是删掉) + 黑名单串 (`未知原因` / 逐行复读 `工具调用=未知` / 教程行 `看目录:` / 假二次确认 `还要继续尝试切换吗`) 主屏 **0 命中** · **9 条变异全部判红**且逐字节还原。**两条实测事实回写 wiki**: ① 「没颜色」**不是** `NO_COLOR`/`TERM`/非 TTY —— 同一个真 pty 里 `bolloon help` 有 **24** 个 SGR 而 `bolloon model list` 是 **0** 个 ⇒ **那条路径压根没上色代码** (颜色**本轮没修**, 只把根因量清并写下) ② **「目录里没有就拒绝」杀掉了真能用的模型** —— 用真凭证发最小请求逐条实测: `deepseek-v4-flash` **HTTP 200 · choices 正常** 但**不在**上游 `/models`; `deepseek-chat` 200/不在; `deepseek-flash` 200/在; `deepseek-v4-pro` 200/在 ⇒ 上游 `/models` **不是全集**, 旧判据把 `deepseek-v4-flash` 误杀 (用户先被允许选中, 到第 6 步才被拦); 改成「目录里没有 = **只作警告** + 真请求裁决」并把 `modelAcceptedOutsideCatalog` **照实带出去**。**顺手补的两条门内纵深**: M9 的探针改**子进程**跑 (进程内 `import()` 被模块缓存钉死 ⇒ 改了盘上的源也量不到, 原先是假绿) + 新增 **R0 开工前自检** (10 个变异锚点必须全在原位, 缺一个就 exit 2 拒绝开跑 —— 防的正是本轮踩到的那类"上一轮被打断留下残留"。**收尾跑全部门时又挖出两道老门的真回归并当场修掉** (`verify-model-wiring` 起手 **84/5** → **92/0**; `verify-model-acceptance` 起手 3+1+6 条红 → **16/16 条目 · 106/106 断言**): 两处都是**夹具写死了旧语义** (目录里没有 = 硬拒), 改判之后那台假上游**真的通过探测并写盘**, 于是「失败不落盘」「配置字节未变」「全局默认仍是服务 A」一路崩 —— 不是断言写错, 是夹具跟真端点不像 (真端点遇到不认识的模型就是回 404); 修法是换 `model-ping-404` 桩 + 在 wiring 门里**新增 M6 一节**把新语义钉住 (放行 + 标 `modelAcceptedOutsideCatalog` + 真写盘), 并顺带补掉 `selectModel` 成功返回**漏透传** `modelAcceptedOutsideCatalog` 这个真缺口 (类型声明了却没人填)。**两道如实留账的红 (都不属本轮, 没修)**: `verify-cli-quiet` **11/1** —— A6 是既有的负载/20s 窗口敏感项 (空载单跑复现出判据那行, 6.6s, 与仓内 t≈6.8s 一致; 门自己连跑 3 回都停在 `(setup, 阶段 connectivity_pending)` = 还没读到 LLM 配置; 它那条源码路径本轮一行没动) · `verify-mobile-model-sync` **53/1** —— 唯一那红是**陈旧 IPA** (`ipa=0.5.0` vs `npm=0.5.1`, 要 Xcode 重打) | [model-selector-p2.md §8](./model-selector-p2.md) / [verify-model-ux.ts](../../scripts/verify-model-ux.ts) / [pty-drive.py](../../scripts/lib/pty-drive.py) / [connection-probe.ts](../../src/llm/connection-probe.ts) / [tui-select.ts](../../src/cli/tui-select.ts) |
 | 2026-09-27 | feat | **供应商目录驱动 (公开目录 223 家 → 离线可用) + `bolloon model` 真终端裸敲**就是**切换 (第一屏即选择器) —— 收尾线: 夹具修正 (负控制 `deepinfra`→`ai21`, 诱因是它本身无 api 基址把"无基址"顶成 25) 让 S1/S7/S9 稳定 **197/26** + 门禁全绿 (自有门 **70/0** · 变异 **5/5** · 真 pty 门 **27/0** · 变异 **2/2** · 八道 `verify-model-*` 全绿 · 冻结门 34/34 · 全量 **246 文件 / 4009 测**) + `build:main` 让 leo 手上那个全局 `bolloon` 真带上目录** | [provider-catalog.md](./provider-catalog.md) / [verify-provider-catalog.ts](../../scripts/verify-provider-catalog.ts) / [verify-model-ux.ts](../../scripts/verify-model-ux.ts) / [provider-catalog.ts](../../src/llm/provider-catalog.ts) / [pty-drive.py](../../scripts/lib/pty-drive.py) |
 | 2026-09-26 | test | **P8 验收门口径自洽 (第 12 条): 反事实臂"能内联的真跑 / 跑不到的显式 SKIP + 引证" —— 裸跑 exit 1 → **exit 0** 且第 12 条 `PASS` 明明白白; 并立了一道能判红的门 (M6) 钉住这条口径** —— 判定是**先跑出来再下结论**: 探针把"持锁 900ms 窗口"分别用 `holdwrite { lock: true }` 与 `{ lock: false }` 各跑 3 遍, 带锁那次父进程等到窗口结束 (**917 / 906 / 924ms**)、拿掉锁那次 **5 / 6 / 4ms** 就在窗口里写完了 ⇒ "锁被拿掉"这一臂**确定性可测 ⇒ 内联真跑**; 但**只拿掉锁不丢改动** (签名新鲜度那层仍按文件重读, qwen/glm 两格 3/3 都活着) ⇒ "两条机制**一起**拿掉 → 真丢更新"这一臂**门内跑不到** (要同时把配置签名改恒等 = 源码级变异), 于是**显式 SKIP + 写出理由 + 引证变异脚本 M4 的真输出**, 那条"由环境变量填的外部反事实位"**整个删掉** (连同 `BOLLOON_ACCEPTANCE_M4_RED`)。**门内新增 (d) 三条真跑判决** (不带锁的临界区真开了窗口 · 拿掉锁 → 互斥消失 1ms vs 916ms · 只拿掉锁改动不丢), 断言 103 → **106**; 输出新增机器可读口径行 `第 12 条口径: PASS …`; 条目行 = `[12] 两个进程同时切配置 → 不互相覆盖 — PASS (14/14 断言 · 1 条外部臂 SKIP)`。**新门 M6**: 变异脚本先跑**裸跑口径门** (exit 0 + 那两行 + SKIP 的**理由与引证**四样缺一不可), 再把第 12 条口径**改回"外部位"写法** → 裸跑立刻红 (断言 105/106, 红项 **[12]**, 红在 `(d) **内联反事实**`) ⇒ 拿掉这条口径修正, 门必红。**M4 稳定性 (`--repeat 3`)**: 3/3 判红, 红项条目每次都是 **[5, 12]** (判红条数 2/3/2, 差异全在第 12 条内的 **(a) 并发臂** —— 3 遍里只红 1 遍; **"该红的条目"稳定, (a) 单条不算稳定**, 如实标)。**门禁**: 裸跑 exit 0 · 基线门绿 · 变异 **6/6 判红** (含 M6) · `tsc --noEmit` 0 错 · 八道 `verify-model-*` + `verify-cli-quiet` 全绿 · 冻结门 34/34 · 全量 vitest 见 §收尾 | [model-selection-acceptance.md §3/§5](./model-selection-acceptance.md) / [verify-model-acceptance.ts](../../scripts/verify-model-acceptance.ts) / [verify-model-acceptance-mutations.py](../../scripts/verify-model-acceptance-mutations.py) |
 | 2026-09-26 | test | **模型切换 P8 终验收口: 用户点名的 16 条端到端验收在**当前集成树**上逐条真跑 → **16/16 条目 · 103/103 断言 · 16/16 反事实对照** + 变异 **5/5 判红** (每条红在它该红的条目上), **0 次真 LLM / 成本 0** (5 台本地假上游, key 全 `stub-*`)**: ① CLI `/model` 真切真命中 (真 `src/cli-entry.ts` argv 进程 + **同进程内运行时真被换掉** → 下一次请求 `reply=pong:B:stubB-1`, A 这一轮 +0 笔) ② 同 provider 只切 model → 假上游逐笔请求体 `stubB-1`→`stubB-2`, 盘上只这一格变 ③ 自定义 base URL (`/weird/path/v9/` 尾斜杠规范化) 真命中该路径, A/B 一笔没收到 ④ 错 key (401)/错 URL/错 model/畸形 URL 四类全拒, 四次失败前后配置 `sha256[:16]` **逐字相同** (`d1fa2c48…`), 且一次**正确**切换必须让 sha 变 (判别力自证) ⑤ 真 CLI 进程 ⇄ 真 Web HTTP (`express`+`registerLlmConfigRoutes`) 两个方向读到**同一份** (`configHash` 同值), 诱饵 `llm-config.json` 被两个入口无视 ⑥ 两个**全新进程**读到同一 `configHash` 且真打请求命中 ⑦ 会话级切换后全局字节**一个都没变** + 绑定落 `model-sessions.json` (无 key 明文) + 别的会话仍读全局 + 该会话真命中 A + 会话级带凭证被拒 `credential_scope_conflict` ⑧ Global 切完**新**会话跟着变 (老会话仍读自己的绑定) ⑨ 执行中切全局 → 盘上 Run 快照逐字段没变 (用 `detectRunConfigDrift` 反向证明"确实已漂"并点名 4 字段) ⑩ `resolveNextRunModel` → 新 Run 快照 = 新模型, 旧 Run 未改写 ⑪ 真 `ExecutionSupervisor.tickOnce` 交给执行器的 `req.modelConfig` = **pinned 那份** (不是刚切的全局) 且 `kind=resume`; 按 Run 快照 `applyRunModelConfigToRuntime` 真装配后真打请求命中快照那台 ⑫ 屏障发令两个真进程同时切 + 持锁 900ms 窗口 + **互斥时序判决 (实测等锁 928ms)** ⑬ 旧 `llm-config.json` **逐字节**迁移 (旧/新 sha 相同) ⑭ `/models` 翻真 404: provider 不被静默删 (`unavailable`+原因)、缓存 `live-m1` 与手输 `manual-m9` 仍可用 (清缓存后 `live-m1` 消失 = 缓存在兜) ⑮ 拒绝工具声明的模型被拒 `tool_call_unsupported` 且盘上不变 + 注册表 `toolCalling=no` 不许当长期任务执行器/不进备用候选 ⑯ 失败后同进程与另起进程都仍命中旧模型 (反事实: 不回滚 → 用不了) | [model-selection-acceptance.md](./model-selection-acceptance.md) / [verify-model-acceptance.ts](../../scripts/verify-model-acceptance.ts) / [verify-model-acceptance-mutations.py](../../scripts/verify-model-acceptance-mutations.py) / [model-acceptance-child.ts](../../scripts/lib/model-acceptance-child.ts) |
@@ -379,6 +380,123 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+
+### [2026-09-27] feat | `bolloon model` 真交互 TUI 收尾 — 三个真 bug + 真 pty 门 68/0 + 变异 9/9 判红
+
+**接手时的现场 (不推翻, 先摸清)**: 上一条线把「真交互 TUI + 凭证掩码 + 版面减法 + 修 `model_not_found`
+误杀」做完但**撞 250 次迭代上限**, 留下未提交成果 + 一个没跑过的门。开工前 `git status`/`git diff --stat`
+点清: 14 个 modified + 2 个 untracked (`src/cli/tui-select.ts` 是**新增文件**), 另有 **4 项版本号文件在
+暂存区 —— 一律没碰**。
+
+**三个真 bug (全是"先量到, 再改", 不是看代码猜的)**:
+
+1. **门自己写不完**: `scripts/verify-model-ux.ts` 里 `OOC_BASE` / `MASK_PROBE` / `main()` **从未定义** ——
+   `tsconfig.json` 只 include `src/**`, 所以 `tsc` 拦不到脚本目录, `tsx` 一跑就是 ReferenceError;
+   另外三处变异定义写成 `pairs: [[…] }]` **少一个 `]`** (esbuild 直接语法错, 也就是说这份文件当时
+   **根本编译不过**)。修法: `OOC_BASE` 从桩服务的 `baseUrl` 定义 (桩起来之后再赋值), 补 `MASK_PROBE`
+   定义与完整 `main()`。
+
+2. **源码里躺着上一轮的变异残留 (这个最危险)**: `src/cli/tui-select.ts` 第 193 行是
+
+   ```ts
+   case '\x1b[B': case '\x1bOB': return null; // 变异: 方向键失灵
+   ```
+
+   —— **↓ 箭头键当时是坏的**。证据链: 变异 M1 的 `from` 串 (= 正确原文) 在源里**找不到**, 而 `to` 串
+   (= 变异体) **在**; 且第一次真 pty 探针里按 ↓ 之后**一帧都没重画** (反白行数 = 1, `第 i/N` 序列 = `[1]`)。
+   还原成 `return { type: 'down' };` 之后, 同一个探针两帧反白行逐字不同、序列 `[1,2,3,2]`。
+   成因: 变异是**就地改源再还原**, 上一轮被 SIGKILL (撞迭代上限/超时) 打断时 `finally` 没跑到。
+
+3. **pti 驱动器不解通用 `\xNN` 转义**: `scripts/lib/pty-drive.py` 的 `decode_send` 只认表里列出的
+   `\x1b`/`\n`/`\r`/`\t`/`\\`/`\x03`/`\x04`, `\x15` (Ctrl-U) 走到 else 分支**被当字面量** `\`,`x`,`1`,`5`
+   → 四个字符喂进去。原始输出里看得一清二楚: `筛选 "\"` → `筛选 "\x"` → `已筛 0 家`。
+   也就是说**"清空筛选"这个键从来没真被按过**, 那几条断言量到的是假象。修法: 加通用 `\xNN` 解码
+   (与文件头文档里写的"转义按 Python 字符串解"对齐), 并单测式核过 `\x15`→0x15 字节、`\\x15` 仍是字面量。
+
+**补上的真断言 (全部真 pty; `expect` 本身就是断言 —— 等渲染真的出现再喂下一个键)**:
+
+| 断言 | 取样办法 (不信提示文字, 只看结构/字节) | 实测 |
+|---|---|---|
+| 第一屏就是选择器 | 首帧前 56B 里就有 `步骤 1/7 供应商`, 且**没有** `用法:`/清单 dump | 56B / 清单行 0 |
+| 高亮行**真位移** | 两帧**反白行** (`\x1b[7m…\x1b[0m`) 逐字对比 | 帧1 `→ ● deepseek …` vs 帧2 `→ ● ollama …` |
+| 光标序号**真的是** 1→2→3→(↑回)2 | 各帧状态行抽 `第 i/N` 序列 | `[1, 2, 3, 2]` |
+| 数字跳选 | 敲 `9` → `第 9/N` + `已跳到第 9 项` | 命中 |
+| 搜索过滤**列表真变短** | 逐帧数**候选项行数** | 全量 14 → 筛 `deep` **2** |
+| 搜索过滤**状态行数字真变** | 一条 `expect_raw` 同时钉死 `第 1/2 · 筛选 "deep"` | `已筛` 最小 **1** < 起始 13 |
+| 滚动窗口 | rows=12 (窗口 H=9) 连按 11 次 ↓ | 光标 11 > 9, 首帧第一项已滚出末帧 |
+| 窄终端不撑破 | cols=40, 用**渲染器自己的尺子** `displayWidth` 量每帧每行 | 最宽 40 列, 超宽 **0** |
+| 凭证四路可达 | 四个标签都真的渲染出来 | 保持/替换/清除/环境变量 |
+| **掩码 0 命中** | 唯一探针串在**原始输出**里搜 | **0 次**(25 字符); 屏上有 `•` + `(25 字符)` |
+| 取消/EOF/失效后 sha 不变 | 三条路各自比对配置 sha | 三条都逐字节相同 |
+| 真开关 (七步走完) | 落盘 sha 真变 + 盘上 model == 界面说的那个 | `deepseek-v4-flash` 两边一致 |
+| 探测**真打到假上游** | 桩记录请求 | 目录 2 次 / chat 4 次 |
+| 目录外模型 | 端点接受 → 放行 + 标 `acceptedOutsideCatalog` | `ok=true`; 负控制真拒 → `model_not_found` |
+| `model list` 只读 | sha 比对 | 不变 |
+| 非 TTY (管道) | 退回「清单 + 用法」 | exit 0, 不挂起 |
+
+**版面预算 (≤ 12 行) 与四条黑名单串** —— 主屏行的取样用**结构判据**: 帧里每一行都以
+`ERASE_EOL` (`\x1b[K`) 结尾, 主屏行 (`io.print`) **从不带** ⇒ 据此把帧剔掉再数。实测:
+
+| 取样面 | 每步主屏最多 |
+|---|---|
+| 主流程 | **2 行** |
+| 凭证步流程 | **2 行** |
+| 探测失效路径 (一直到第 5 步) | **3 行** |
+| 同流程 + `--verbose` | **6 行** (第一步 6 行) |
+
+判据取 **≤ 12 行** (留增长余量), 并配**正向对照**: `--verbose` 时 `看目录:` / `目录数据:` / `目录分组:`
+**真的还能打出来** ⇒ 减法是真**搬走**了, 不是把话删掉。黑名单串 (主屏出现即判红):
+`未知原因` · 逐行复读的 `工具调用=未知` · 教程行 `看目录:` · 假二次确认 `还要继续尝试切换吗`。
+
+**两条实测事实 (先跑出来, 再写下来)**:
+
+1. **「没颜色」不是 `NO_COLOR` / `TERM` / 非 TTY 挡的 —— 那条路径压根没有上色代码。**
+   同一个真 pty、同一套环境变量: `bolloon help` 有 **24** 个 SGR 序列, `bolloon model list` 是 **0** 个。
+   颜色本轮**没修** (只把根因量清并写下), 因为要不要上色属版面决策。
+2. **「目录里没有就拒绝」杀掉了真能用的模型。** 用真凭证对真上游发最小请求, 逐条实测:
+   `deepseek-v4-flash` **HTTP 200 · choices 正常** 但**不在**上游 `/models`; `deepseek-chat` 200/不在;
+   `deepseek-flash` 200/在; `deepseek-v4-pro` 200/在 ⇒ **`/models` 不是可用模型的全集**。
+   旧实现拿它当白名单 → 用户先被允许选中, 到第 6 步探测才被拦, `deepseek-v4-flash` 这种真能用的名字
+   **被硬杀**。改成「目录里没有 = **只作警告**, 真拒的唯一判据是发一次请求由端点裁决」, 并把
+   `modelAcceptedOutsideCatalog` 照实带出去 (不回头改判失败, 也不假装它在目录里)。
+
+**变异判红 9/9** (就地改源 → 跑门 → 必红 → 逐字节还原): M1 拿掉 ↓ → 高亮不动 · M2 拿掉反白 → 反白行 < 2 ·
+M3 拿掉数字快选 → 无 `第 9/N` · M4 掩码改回显 → 探针串**命中** · M5 有 key 静默跳过凭证步 → 屏上无
+`凭证怎么处理` · M6 教程行塞回主屏 → 出现 `看目录:` · M7 未知字段逐行复读 → 出现 `工具调用=未知` ·
+M8 `verbose` 开关失效 → 主屏出现 `目录数据:` · M9 「目录里没有就硬拒」改回来 → 目录外模型被硬拒。
+
+**顺手补的两条门内纵深**:
+
+- **M9 的探针改子进程跑**: 进程内 `import()` 会被**模块缓存**钉死 —— 变异改了盘上的
+  `connection-probe.ts`, 同一进程里的缓存副本还是老代码, 于是 M9 **"通过了但看不出被改过" (假绿)**。
+  改成 `tsx --input-type=module -e` 起子进程发真请求, 结果从 stdout 的 `@@OOC@@{...}` 取。
+- **新增 R0 开工前自检**: 开工前逐个确认 **10 个变异锚点的 `from` 串都还在原位**, 缺一个就打印残留清单
+  并 exit 2 拒绝开跑。防的正是本轮踩到的那类「上一轮被打断留下残留」—— 它防不住"正在跑的时候被杀",
+  但能保证**下一轮**不在污染的源上跑出说不清的红绿。
+
+**门禁 (收尾一次, 顺序跑, 不并行)**: `npx tsc --noEmit`/`npm run build:main` **0 错** ·
+`verify-provider-catalog` **70/0** · `verify-model-selection` **57/0** · `verify-model-selector` **51/0** ·
+`verify-model-ux` **68/0** · `verify-model-wiring` **92/0** · `verify-model-acceptance` **16/16 条目 ·
+106/106 断言** · `verify-model-discovery` **81/0** · `verify-model-entrypoints` **59/0** ·
+`verify-model-policy` exit 0 · 冻结门 **34/34** · 全量 `npx vitest run` 一次 ·
+`npm run build:main` + 真跑一次**全局** `bolloon model` (全局包是指向本仓的软链, 所以装上的就是新的:
+非 TTY 下打印「清单 + 用法」36 行 · exit 0 · 不挂起)。
+
+**两道老门在本轮收尾时才暴出来的真回归 (都是"夹具写死了旧语义", 已修, 见 §8.5)**:
+`verify-model-wiring` 起手 **84/5** · `verify-model-acceptance` 起手 **3+1+6 条红** —— 两处都不是断言写错,
+是夹具跟真实上游不像 (真端点遇到不认识的模型就是回 404)。修法: `verify-model-wiring` 的 `model_not_found`
+那一格改用**本来就定义好却一直没人用**的 `model-ping-404` 桩, 并**新增 M6 一节** (目录里没有但端点接受 ⇒
+必须放行 + `modelAcceptedOutsideCatalog` + 真写盘, 旧语义下必红); `verify-model-acceptance` 的桩补上
+「不认识的模型回 404」。**顺带挖出并修掉一个真缺口**: `selectModel` 成功返回把
+`modelAcceptedOutsideCatalog` **丢了** (类型声明了却没人填) ⇒ 补透传。
+
+**两道如实留账的红 (都不属本轮, 没修)**:
+`verify-cli-quiet` **11/1** —— A6 是既有的负载/窗口敏感项 (`log.md` 早有记载: 负载把 20s 窗口拉长;
+本轮空载单跑 3 次都复现出判据要的那行, 启动后 **6.6s**, 与仓内记载的 t≈6.8s 一致; 而门自己连跑 3 回都落在
+`(setup, 阶段 connectivity_pending)` 而不是 `(repair, 阶段 provider_pending)` = 还没走到读 LLM 配置那一步;
+A6 的整条源码路径本轮一行没动)。`verify-mobile-model-sync` **53/1** —— 唯一那红是**陈旧 IPA**
+(`ipa=0.5.0` vs `npm=0.5.1`), 要 Xcode 重打; 未跑 `build:web` 之前它是 14+ 条红 (前端产物没编译, 不是回归)。
+各门数字与本轮**如实留下**见 [model-selector-p2.md §8](./model-selector-p2.md)。
 
 ### [2026-09-24] feat | 补两条 CLI 真缺口 — 外部接单者自助入群 (`task group`) + 非交互建身份 (`identity init`)
 

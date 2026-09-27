@@ -220,7 +220,11 @@ async function main(): Promise<void> {
 
     const okStub = await startStub('ok-2', 'ok', ['w-1'], 'k-wire-x');
     const authStub = await startStub('auth401', 'auth401', ['w-1']);
-    const missStub = await startStub('catalog-missing', 'catalog-missing', ['w-1'], 'k-wire-x');
+    // 无 key 的桩: M6 拿它证明「目录里没有但端点接受 ⇒ 放行」, 探测**不带**显式 key (走服务端解析出的凭证),
+    //   所以这台桩不校验 Authorization —— 否则 401 会把这条正向断言变成 auth_failed 的假红
+    const missStub = await startStub('catalog-missing', 'catalog-missing', ['w-1']);
+    // 端点自己不认识这个模型 (chat 真 404) —— 2026-09-27 改判之后, `model_not_found` 的**唯一**来源就是这里
+    const modelPingStub = await startStub('model-ping-404', 'model-ping-404', ['w-1'], 'k-wire-x');
     const shapeStub = await startStub('ollama-shape', 'ollama-shape', ['w-1']);
     const toolStub = await startStub('tools-rejected', 'tools-rejected', ['w-1'], 'k-wire-x');
     const hangStub = await startStub('hang', 'hang', ['w-1']);
@@ -230,7 +234,7 @@ async function main(): Promise<void> {
       { cls: 'invalid_url', probeCls: 'invalid_url', baseUrl: `${wrongPathStub.origin}/wrong/path/v1`, key: 'k-wire-x', stub: wrongPathStub, label: 'base URL 路径写错 (真 404, 同协议在另一路径可达)' },
       { cls: 'auth_failed', probeCls: 'auth_failed', baseUrl: `${authStub.origin}/v1`, key: 'k-wire-x', stub: authStub, label: '凭证被拒 (真 401)' },
       { cls: 'provider_unreachable', probeCls: 'provider_unreachable', baseUrl: 'http://127.0.0.1:9/v1', key: 'k-wire-x', stub: okStub, label: '端口没人听 (拒绝连接)' },
-      { cls: 'model_not_found', probeCls: 'model_not_found', baseUrl: `${missStub.origin}/v1`, key: 'k-wire-x', stub: missStub, label: '目录里没有这个模型' },
+      { cls: 'model_not_found', probeCls: 'model_not_found', baseUrl: `${modelPingStub.origin}/v1`, key: 'k-wire-x', stub: modelPingStub, label: '端点自己不认识这个模型 (真 404)' },
       { cls: 'protocol_mismatch', probeCls: 'protocol_mismatch', baseUrl: `${shapeStub.origin}/v1`, key: 'k-wire-x', stub: shapeStub, label: '地址上其实是另一个协议' },
       { cls: 'tool_call_unsupported', probeCls: 'tool_call_unsupported', baseUrl: `${toolStub.origin}/v1`, key: 'k-wire-x', stub: toolStub, label: '端点拒收工具声明 (真 400)' },
       { cls: 'timeout', probeCls: 'timeout', baseUrl: `${hangStub.origin}/v1`, key: 'k-wire-x', stub: hangStub, label: '收下请求永不响应' },
@@ -272,7 +276,8 @@ async function main(): Promise<void> {
       && /UND_ERR|ENOTFOUND|网络不可达|连接失败|解析/.test(String(dnsCase.message)),
       `${dnsCase.failureClass}: ${String(dnsCase.message || '').slice(0, 150)}`);
 
-    for (const s of [okStub, authStub, missStub, shapeStub, toolStub, hangStub, wrongPathStub]) await s.close();
+    // missStub 留着给 M6 (改判的正向钉子) —— 这里先不关它
+    for (const s of [okStub, authStub, modelPingStub, shapeStub, toolStub, hangStub, wrongPathStub]) await s.close();
 
     // ══════════════════════════════════════════════════════════
     section('M2 P7 钩子: 串行点算出「下一个 Run 用什么」并交给执行器 (在跑的 Run 一个字不动)');
@@ -528,6 +533,26 @@ async function main(): Promise<void> {
     const childLine = String(child.stdout || '').split('\n').find((l) => l.startsWith('CHILD:'));
     ok('映射表在新进程里也读得到 (是**持久**在代码里的表, 不是运行期拼的)',
       !!childLine && JSON.parse(childLine.slice(6)).m.length === 7, childLine || String(child.stderr || '').slice(-160));
+
+    // ══════════════════════════════════════════════════════════
+    section('M6 目录里没有但端点接受 ⇒ **放行** (2026-09-27 改判: 不再误杀真能用的模型)');
+
+    // 旧语义把"目录里没有这个名字"当**硬拒**: 用户先被允许选中, 到探测步才被拦 ——
+    //   而**上游 `/models` 不是可用模型的全集** (真凭证最小请求实测: `deepseek-v4-flash` HTTP 200 ·
+    //   choices 正常, 但不在 `/models`; `deepseek-chat` 同样 200/不在) ⇒ 真能用的名字被硬杀。
+    //   改判后"目录里没有"**只作警告**, 真拒的唯一判据是发一次请求由端点裁决 —— 下面这枚就是那件事的钉子。
+    const outsideBefore = cfgBytes();
+    const outside = await MS.selectModel({ provider: 'openai', model: 'w-1', baseUrl: `${missStub.origin}/v1`, scope: 'global' });
+    ok('目录里没有但端点接受 ⇒ 放行, 且如实标出「目录外接受」',
+      outside.ok === true && outside.modelAcceptedOutsideCatalog === true,
+      `${outside.ok ? 'ok' : outside.failureClass} · modelAcceptedOutsideCatalog=${outside.modelAcceptedOutsideCatalog === true}`
+      + ` · ${String(outside.message || '').slice(0, 110)}`);
+    ok('这一枚是**真写盘**的成功 (不是"探测没跑"的空过)', cfgBytes() !== outsideBefore,
+      `配置字节 ${cfgBytes() === outsideBefore ? '未变' : '已变'}`);
+    const outsideEff = await MS.effectiveModelConfig({});
+    ok('放行之后全局默认真的落到它身上 (放行不是嘴上说说)',
+      outsideEff.provider === 'openai' && outsideEff.model === 'w-1', MS.formatEffectiveModel(outsideEff));
+    await missStub.close();
 
     await A.close();
     await B.close();

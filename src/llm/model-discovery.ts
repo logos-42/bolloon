@@ -1092,6 +1092,28 @@ function registryProviderIds(): string[] {
   return ids;
 }
 
+/** 一家一行的目录结论 (**不发请求**, 只读: 进程内快照 → 盘上缓存) */
+export async function cachedUpstreamModels(
+  provider: string,
+  opts: { baseUrl?: string } = {},
+): Promise<{ models: string[]; origin: CatalogOrigin } | undefined> {
+  const id = String(provider || '').trim();
+  if (!id) return undefined;
+  const snap = currentDiscoveryCatalog(id);
+  if (snap && snap.models.length) {
+    return { models: [...snap.models], origin: snap.origin === 'live' ? 'live' : 'cached' };
+  }
+  const file = await readDiscoveryCache();
+  const want = String(opts.baseUrl || '').replace(/\/+$/, '');
+  const hit: any = Object.values(file.entries || {}).find(
+    (e: any) => e && e.provider === id
+      && Array.isArray(e.models) && e.models.length
+      && (!want || String(e.baseUrl || '').replace(/\/+$/, '') === want),
+  );
+  if (!hit) return undefined;
+  return { models: [...hit.models], origin: 'cached' };
+}
+
 /**
  * 全部在册供应商的目录结论 (**一家都不删**)。
  *

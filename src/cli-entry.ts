@@ -594,8 +594,8 @@ async function handleModelCommand(modelArgs: string[]): Promise<void> {
 
   // ── 真终端 + 裸敲: 直接进选择器 (第一屏 = 供应商列表) ──────────
   if (modelArgs.length === 0 && tty) {
-    const { runModelCommand, askHiddenLineEof, askLineEof } = await import('./cli/setup-wizard.js');
-    const out = await runModelCommand('pick', {
+    const { runModelCommand, modelTtyIO, askHiddenLineEof, askLineEof } = await import('./cli/setup-wizard.js');
+    const out = await runModelCommand('pick', await useTui() ? modelTtyIO() : {
       live: true, // 每一步当场打到终端 (不是等整轮结束才一次性回显)
       print: (l: string) => process.stdout.write(l + '\n'),
       askHidden: async (q: string) => { const r = await askHiddenLineEof(q); return r.eof ? null : r.value; },
@@ -641,17 +641,38 @@ async function handleModelCommand(modelArgs: string[]): Promise<void> {
   // ── 有参: 统一交给 setup-wizard 的 runModelCommand ───────────
   //   (pick 分步选择 / 切换 / <provider> <model> / key <provider> / test / status 一套语义,
   //    与 CLI 会话内 /model 完全一致 —— 写配置与重建运行时的逻辑只有 selectModel 一处)
-  const { runModelCommand, askHiddenLineEof, askLineEof } = await import('./cli/setup-wizard.js');
-  const out = await runModelCommand(modelArgs.join(' '), {
-    // 真终端: 选择器每一步当场印出来 (leo: 不许只印一句"选择 (序号/值, 回车=1)")
+  const { runModelCommand, modelTtyIO, askHiddenLineEof, askLineEof } = await import('./cli/setup-wizard.js');
+  // `--verbose` 交给界面层决定"打不打内部细节", 不进参数解析 (解析器不认识这个词会被当值)
+  const wantVerbose = modelArgs.includes('--verbose');
+  const args = modelArgs.filter((a) => a !== '--verbose');
+  const out = await runModelCommand(args.join(' '), (await useTui()) && tty ? {
+    ...modelTtyIO(),
+    ...(wantVerbose ? { verbose: true } : {}),
+  } : {
+    // 非 TTY (管道/脚本) / 显式关掉 TUI: 逐行问答 —— 输出可读、不卡死、行为与以前一致
     live: tty,
     print: (l: string) => process.stdout.write(l + '\n'),
-    // 正常终端里可以安全收 key (隐藏输入, 不回显); EOF/Ctrl-D → null = 干净取消
     askHidden: async (q: string) => { const r = await askHiddenLineEof(q); return r.eof ? null : r.value; },
-    // 分步选择器的文本输入 (搜索模型 / 手工 temperature)
     ask: async (q: string, opts?: { default?: string }) => { const r = await askLineEof(q, opts); return r.eof ? null : r.value; },
+    ...(wantVerbose ? { verbose: true } : {}),
   });
   for (const line of String(out).split('\n')) if (line !== '') console.log(line);
+}
+
+/**
+ * 这个环境要不要用全屏 TUI 选择器。
+ * 三判据: ① 用户没显式关 (`BOLLOON_NO_TUI=1`); ② 真 TTY; ③ `tuiCapable()` (终端够高/能拿 raw mode)。
+ * 任何一条不满足 → 退回逐行问答 (**不静默变样子**: 管道输出仍是可读清单+用法)。
+ */
+function useTui(): Promise<boolean> {
+  return (async () => {
+    if (process.env.BOLLOON_NO_TUI) return false;
+    try {
+      // 同步判据在 tui-select 里 (它不许在非 TTY 里抢输入)
+      const { tuiCapable } = await import('./cli/tui-select.js');
+      return !!tuiCapable();
+    } catch { return false; }
+  })();
 }
 
 /** `bolloon setup` — 首次运行初始化向导 (用户身份 + 模型供应商 + API key + 连通性测试) */
