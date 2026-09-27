@@ -87,14 +87,16 @@ const TONE: Record<TuiTone, string> = Object.fromEntries(
 ) as Record<TuiTone, string>;
 
 /**
- * 光标行的高亮 SGR (2026-09-27 leo 口径: 切换界面上色, 别灰白)。
+ * 光标行的高亮 SGR (2026-09-27 leo 口径: 切换界面上色, 别灰白; 三改: 对比要够)。
  *
- * 写法刻意是 **REVERSE + accent 前景 + muted 底**: 反白会把前景/底色互换, 于是实际渲染出来是
- * **accent 底 + muted 灰字** —— bolloon 主色块 + 深色字, 对比度够。为什么不直接 `bg(accent)`:
- * 反白序列是**结构判据** (验收门靠 `ESC[7m…ESC[0m` 认"哪一行是高亮"), 拿掉它等于把可核证据删了。
+ * 写法刻意是 **REVERSE + accent 底 + 近黑字**: 反白会把前景/底色互换, 于是实际渲染出来是
+ * **accent 底 + `THEME.cursor` 近黑字** —— bolloon 主色块 + 深色字, 对比度 ~11:1。
+ * (这里刻意不写那个 hex —— 本文件 hex 字面量必须为 0, 颜色只从 `theme.ts` 来。)
+ * 为什么不直接 `bg(accent)`: 反白序列是**结构判据** (验收门靠 `ESC[7m…ESC[0m` 认"哪一行是高亮"),
+ * 拿掉它等于把可核证据删了; 而且万一哪台终端吃掉 `7m`, 也还是"深字压主色块"能看清。
  * 无真彩时 (`color=false`) 整段不上, 只剩 `→ ` 前缀 —— 符号通道不依赖颜色。
  */
-const CURSOR_SGR = `${REVERSE}${BOLD}${fg(THEME.accent)}${bg(THEME.muted)}`;
+const CURSOR_SGR = `${REVERSE}${BOLD}${fg(THEME.cursor)}${bg(THEME.accent)}`;
 
 /**
  * 帮助行 —— 每一种一等选择方式 + 折叠键 + 取消, 全都写出来 (leo 口径: 键位写进头行)。
@@ -624,7 +626,6 @@ export function tuiSelect(
       // 先算**纯文本**行内容并按宽度截断/补齐, 再决定怎么上色 —— 保证"颜色不被截断抹掉 + 不撑破"
       let plain = '';
       let tone: TuiTone = 'plain';
-      let isCursor = false;
       if (line && line.kind === 'sep') {
         const mark = line.collapsed ? GROUP_COLLAPSED_MARK : GROUP_EXPANDED_MARK;
         // 分组标题**照写家数** (折叠 ≠ 藏家数): `── 未配置凭据 (200 家) ›`
@@ -632,14 +633,22 @@ export function tuiSelect(
         tone = 'muted';
       } else if (line) {
         const bodyText = `${line.item.label}${line.item.hint ? ` — ${line.item.hint}` : ''}`;
-        isCursor = start + i === cursor;
-        plain = isCursor ? `→ ${bodyText}` : `  ${bodyText}`;
+        plain = `  ${bodyText}`;
         tone = line.item.tone ?? 'plain';
       } else {
         continue;                                   // 窗口尾部没有行: **不画空行**
       }
+      // ★ 光标行 (2026-09-27 三改: **光标在任意行类上都有明显选中态**)。
+      //   leo 亲测报的正是"光标停在分组标题行上, 一行粉都没有" —— 那不是配色问题, 是**这一行类
+      //   压根没进高亮分支**: 从前 `isCursor` 只在候选行那一支里算, 分组标题行 (sep) 永远是 false,
+      //   于是光标站在标题上时屏上与"没选中"字节完全相同 (只有个 `  ` 前缀, 连 `→` 都没有)。
+      //   现在: 判据只有一句 `start + i === cursor`, 与行类无关; 分组标题 / 普通项 / `special` /
+      //   `无基址` / `← 当前` / `Cancel` 一律照此高亮。
+      const isCursor = start + i === cursor;
       if (isCursor) {
-        // ★ 光标行: `→ ` 前缀 + **accent 底 / 深色字** (见 CURSOR_SGR; 反白序列同时是结构判据)
+        // `  ` 前导换成 `→ ` (两者都占 2 列, 补齐宽度不受影响) —— 符号通道在 NO_COLOR 下也分得清
+        plain = `→ ${plain.slice(2)}`;
+        // ★ 光标行: `→ ` 前缀 + **accent 底 / 近黑字** (见 CURSOR_SGR; 反白序列同时是结构判据)
         const padded = padToWidth(truncateToWidth(plain, cols), cols);
         buf.push(`${color ? `${CURSOR_SGR}${padded}${RESET}` : truncateToWidth(plain, cols)}${ERASE_EOL}\r\n`);
         continue;

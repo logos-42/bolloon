@@ -34,11 +34,17 @@
  *      `src/cli/theme.ts` 的调色板 (本门真读那个文件, 不复制一份) · 光标行有背景 + 反白 ·
  *      `NO_COLOR=1` 下仍然靠符号分得清 (●/○/→/分组标记) · `tui-select.ts` + `model-selector.ts`
  *      里 hex 字面量计数 == 0 (全走 `THEME.*` / `fg()` / `bg()`)。
+ *   ⑫ **(三改加) 光标落在任意行类上都有明显选中态**: 分组标题 / 普通项 / `special` / `无基址` /
+ *      `←当前` / `Cancel` 逐类比"选中 vs 未选中"两帧**原始字节** (选中帧该行带 `48;2;` 或 `7m` ·
+ *      两帧字节不同 · 未选中行不带底色)。光标行落在哪一行**不看哪行有反白** (那是被测对象),
+ *      而是由状态行 `第 i/N` + 帧几何自推 —— 正是这条抓出了 leo 踩的"分组标题行没有选中态"。
  *   ⑬ **长列表响应性 (给真耗时)**: 候选平铺成 200+ 行时**连续 20 次按键**, 每一次按键都
  *      **等"新的 `第 i/N · 筛选 …` 帧"出现** —— 等的毫秒数就是这一键的重绘延迟 (视窗定位 / 滚动 /
  *      摊行 全在这条路径上); 逐次记下来报 p50/p95/max, 并断言序号序列真的 1,2,…,21 逐行递进。
  *      (判据不是"按完没崩" —— 那种假判据对"卡"一无所获。)
- *   ⑭ **变异判红** (门承重): 17 条变异逐条跑, 每条都必须把自己的判据打红。
+ *   ⑭ **变异判红** (门承重): 19 条变异逐条跑, 每条都必须把自己的判据打红
+ *      (其中 M18 = 把分组标题行的选中态拿掉 · M19 = 选中态只剩 `→ ` 标记没有颜色 —— 这两条就是
+ *       leo 报的这一类回归的守门人)。
  *
  * 报告口径: 只贴**真渲染** (pty 原始输出里摘), 计数与结论都从盘上/输出里算, 不从内存复述。
  * 凭据: 假上游 + 隔离 home + 洗过的 env (把 `*_API_KEY/*_KEY/*_TOKEN/*_SECRET` 全删掉再 spawn);
@@ -303,9 +309,16 @@ function frameBlocks(raw: string): string[][] {
   return blocks;
 }
 
-/** 一帧里的**候选项行** (分组标题 `  ── …` 与空行都不算) */
+/**
+ * 一帧里的**候选项行** (分组标题 `  ── …` 与空行都不算)。
+ *
+ * ⚠ 光标落在分组标题行上时, 那一行是 `→ ── …` (2026-09-27 三改: 光标行不分行类) —— 它**不是**
+ * 候选项行, 所以 `→ ──` 也要排除, 否则"候选项行数"会把光标所在的那个标题行算进去。
+ */
 function itemLines(block: string[]): string[] {
-  return block.filter((l) => l.startsWith('→ ') || (l.startsWith('  ') && !l.startsWith('  ── ')));
+  return block.filter((l) => l.startsWith('→ ')
+    ? !l.startsWith('→ ── ')
+    : (l.startsWith('  ') && !l.startsWith('  ── ')));
 }
 
 /**
@@ -375,6 +388,152 @@ function frameSizes(raw: string): number[] {
 /** 一帧里的**真候选行** (以 ●/○ 开头; 分组标题 / 滚动指示 / 状态行都不算) */
 function candidateRows(block: string[]): string[] {
   return block.filter((l) => /^(→ | {2})[●○] /.test(l));
+}
+
+// ---------------------------------------------------------------------------
+// 行类光标态分析 (2026-09-27 三改): "光标在**每一类行**上都有明显选中态" 的可核判据
+//
+// leo 亲测报的: 光标停在**分组标题行**上时看不出选中 (从前 `isCursor` 只在候选行那一支里算)。
+// 上一版门只在**普通候选项**上断言过"高亮真位移", 分组标题 / Cancel / ←当前 / special / 无基址
+// 这些行类一条都没覆盖 —— 于是门全绿而用户照样看着没变化。下面这套判据按**行类**逐类比两帧字节。
+//
+// ⚠ 判"这一帧的光标落在哪一行"**不许**看"哪一行有反白" (那正是被测对象, 拿它当判据 = 自证):
+//   每帧的显示行是连续的 (头行 = 第 1 行; 滚动指示行与状态行都能按形状认出来), 于是显示行里
+//   第 j 行 (0-based) 的序号 = j+1; 状态行 `第 i/N` 给出**光标行序号 i** ⇒ 序号 == i 的那一行是光标行。
+//   前提: 本轮**不出现上滚指示** (`↑ 上面还有 N 家`) —— 它一出现, "第 j 行序号 = j+1" 就不成立。
+//   调用方必须先断言这个前提 (本门的 `R11.12.0` 就是干这个的), 不成立就判红, 绝不量歪。
+// ---------------------------------------------------------------------------
+
+const STATUS_NUM_RE = /第\s*(\d+)\s*\/\s*(\d+)/;
+const SCROLL_IND_RE = /^\s*[↑↓] (上面还有|下面还有) \d+/;
+/** 分组标题行 (光标态只是前缀 `→ ` 与 `  ` 的区别) */
+const SEP_ROW_RE = /^(→ | {2})── /;
+/** `special` 行的语义标记 (用**文字**认行类, 不靠颜色 —— 颜色只是第二通道) */
+const SPECIAL_MARK = 'special (需专用鉴权, 未支持)';
+const NOBASE_MARK = '无基址 (需自定义 baseUrl)';
+
+interface FrameRow {
+  /** 第几帧 (1-based) */
+  frame: number;
+  /** 该行在本帧显示行里的序号 (1-based; 与状态行 `第 i/N` 同一套编号) */
+  ordinal: number;
+  /** 状态行说光标就在这一行 */
+  cursor: boolean;
+  /** **原始字节** (含 ANSI) —— 逐字节对比只用它 */
+  raw: string;
+  /** 去 ANSI 后的行文字 (只用来认行类) */
+  text: string;
+}
+
+/** 每帧的**原始**行 (保留 ANSI; 与 `frameBlocks` 同一套切帧规则, 只是不剥色) */
+function frameRawBlocks(raw: string): string[][] {
+  const blocks: string[][] = [];
+  for (const chunk of raw.split(FRAME_SEP_RE)) {
+    const lines: string[] = [];
+    for (const ln of chunk.split('\n')) {
+      const at = ln.indexOf(ERASE_EOL);
+      if (at < 0) continue;
+      lines.push(ln.slice(0, at).replace(/\r/g, ''));
+    }
+    if (lines.length) blocks.push(lines);
+  }
+  return blocks;
+}
+
+/** 把 raw 拆成"每一行的原始字节 + 行类文字 + 是不是光标行" (光标行位置由状态行几何自推) */
+function frameRowsWithCursor(raw: string): { rows: FrameRow[]; upScrolledFrames: number; frames: number } {
+  const rows: FrameRow[] = [];
+  let upScrolledFrames = 0;
+  const blocks = frameRawBlocks(raw);
+  blocks.forEach((block, fi) => {
+    const rest = block.slice(1);                        // 第 1 行 = 头行 (标题 + 计数 + 键位)
+    const statusRaw = rest.filter((l) => STATUS_NUM_RE.test(stripAnsi(l).trim())).pop();
+    if (!statusRaw) return;                             // 没有状态行的块不算一帧
+    const cursorOrdinal = Number(STATUS_NUM_RE.exec(stripAnsi(statusRaw))![1]);
+    const body = rest.filter((l) => l !== statusRaw && !SCROLL_IND_RE.test(stripAnsi(l)));
+    if (rest.some((l) => /^\s*↑ 上面还有/.test(stripAnsi(l)))) upScrolledFrames++;
+    body.forEach((l, j) => rows.push({
+      frame: fi + 1, ordinal: j + 1, cursor: j + 1 === cursorOrdinal,
+      raw: l, text: stripAnsi(l).trimEnd(),
+    }));
+  });
+  return { rows, upScrolledFrames, frames: blocks.length };
+}
+
+/** 一行类: 按**文字/形状**认 (颜色不算行类判据 —— NO_COLOR 下也要认得出) */
+interface RowClass { name: string; match: (text: string) => boolean }
+
+const ROW_CLASSES: RowClass[] = [
+  { name: '分组标题行', match: (t) => SEP_ROW_RE.test(t) },
+  {
+    name: '普通候选项',
+    match: (t) => /^(→ | {2})[●○] /.test(t) && !t.includes('← 当前')
+      && !t.includes(SPECIAL_MARK) && !t.includes(NOBASE_MARK) && !/^(→ | {2})Cancel/.test(t),
+  },
+  { name: '←当前 行', match: (t) => /^(→ | {2})[●○] /.test(t) && t.includes('← 当前') },
+  { name: 'special 行', match: (t) => t.includes(SPECIAL_MARK) },
+  { name: '无基址 行', match: (t) => t.includes(NOBASE_MARK) && !t.includes(SPECIAL_MARK) },
+  { name: 'Cancel 行', match: (t) => /^(→ | {2})Cancel/.test(t) },
+];
+
+interface ClassPair {
+  name: string;
+  /** 该行类被光标选中的那一帧 */
+  sel: FrameRow | null;
+  /** **同一个内容**、但光标不在它上面的那一帧 (可比: 只有光标态不同) */
+  unsel: FrameRow | null;
+  /** 选中帧那一行带底色 (`48;2;`) 或反白 (`7m`) */
+  selHasColor: boolean;
+  /** 未选中帧那一行**也**带颜色 (不许 —— 整屏花了就分不出选中) */
+  unselHasColor: boolean;
+  /** 两帧该行**原始字节**不同 */
+  bytesDiffer: boolean;
+  /** 该行类在本轮出现过几行 (选中/未选中各几行) —— 失败时用来自证"是没落过光标还是真没高亮" */
+  seen: { total: number; sel: number; unsel: number };
+}
+
+/** 行真带底色/反白 (逐字节看 SGR, 不看人眼印象) */
+const hasBgOrReverse = (s: string): boolean => s.includes(`${E}[48;2;`) || s.includes(`${E}[7m`);
+
+/**
+ * 逐类算"选中 vs 未选中"两帧对比。
+ * `dirtyNonCursor` = 带底色却**不是**光标行的那些行 (非空 ⇒ 整屏花掉 / 分不出选中) ⇒ 必须为空。
+ */
+function rowClassPairs(raw: string): {
+  pairs: ClassPair[]; dirtyNonCursor: FrameRow[]; upScrolledFrames: number; frames: number; totalRows: number;
+} {
+  const { rows, upScrolledFrames, frames } = frameRowsWithCursor(raw);
+  const key = (t: string): string => t.replace(/^(→ | {2})/, '');
+  const pairs: ClassPair[] = ROW_CLASSES.map((c) => {
+    const hit = rows.filter((r) => c.match(r.text));
+    const selRows = hit.filter((r) => r.cursor);
+    const unselRows = hit.filter((r) => !r.cursor);
+    // 取"内容一致, 只有光标态不同"的那一对 —— 这样字节差异只可能来自光标态本身
+    const sel = selRows.find((x) => unselRows.some((u) => key(u.text) === key(x.text))) || null;
+    const unsel = sel ? (unselRows.find((u) => key(u.text) === key(sel.text)) || null) : null;
+    return {
+      name: c.name, sel, unsel,
+      selHasColor: !!sel && hasBgOrReverse(sel.raw),
+      unselHasColor: !!unsel && hasBgOrReverse(unsel.raw),
+      bytesDiffer: !!sel && !!unsel && sel.raw !== unsel.raw,
+      seen: { total: hit.length, sel: selRows.length, unsel: unselRows.length },
+    };
+  });
+  const dirtyNonCursor = rows.filter((r) => r.raw.includes(`${E}[48;2;`) && !r.cursor);
+  return { pairs, dirtyNonCursor, upScrolledFrames, frames, totalRows: rows.length };
+}
+
+/** 一行类的"选中态是否真的存在" —— 门与变异检查共用这一把尺 (不许两处各写一份) */
+const classOk = (p: ClassPair | undefined): boolean =>
+  !!p && !!p.sel && !!p.unsel && p.selHasColor && !p.unselHasColor && p.bytesDiffer;
+
+/** 行类分析的取证文字 (报告/失败细节都用它, 免得两处各拼一次) */
+function classDetail(p: ClassPair): string {
+  const s = p.sel, u = p.unsel;
+  return `${p.name}: 选中${s ? `(帧${s.frame}行${s.ordinal})「${short(stripAnsi(s.raw).trim(), 34)}」` : '(本轮光标没落到过这类行)'}`
+    + ` / 未选中${u ? `(帧${u.frame}行${u.ordinal})` : '(无)'}`
+    + ` · 选中带底色或反白=${p.selHasColor} · 未选中带色=${p.unselHasColor} · 两帧字节不同=${p.bytesDiffer}`
+    + ` · 本类出现过 ${p.seen.total} 行 (选中 ${p.seen.sel}/未选中 ${p.seen.unsel})`;
 }
 
 /** 正则里要转义的字符 (分组名里有 `(`/`)`, 直接拼进正则会变成分组) */
@@ -447,6 +606,66 @@ function credentialPlan(): PlanStep[] {
     { name: '掩码行就绪', expect: 'API key \\[', timeout_s: 25 },
     { name: '输入探针', send: `${MASK_PROBE}\\r`, timeout_s: 20 },
     { name: '模型选择器就绪', expect: '选择模型 \\(', timeout_s: 25 },
+    { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
+    { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
+  ];
+}
+
+/**
+ * 行类漫游的**期望序号** —— 与盘上真算的分组家数绑定 (不写死行号: 机器上多几家少几家都对得上)。
+ *
+ * 布局 (三组默认收起时):
+ *   [1] 当前生效 标题 · [2..1+uc] 当前项 · [2+uc] 可用 标题 · [3+uc..2+uc+uu] 可用项 ·
+ *   [3+uc+uu] 未配置凭据 标题 · [4+uc+uu] 需专用鉴权 标题 · [5+uc+uu] 无 api 基址 标题 · [6+uc+uu] Cancel
+ * 由 `main()` 在 R11 里按 `tierCount(...)` 填好 (变异检查与 R11.12 共用同一份)。
+ */
+const ROWS_CTX = { uc: 0, uu: 0, nb: 0, sa: 0 };
+
+/**
+ * 光标**逐类漫游**一轮 (每类行各被选中一次) —— R11.12 与"拿掉行类选中态"那两条变异共用这条计划。
+ *
+ * 走位: 首帧(候选行) → End(Cancel) → ↑(无 api 基址 标题, 收起) → 空格展开 → ↓(无基址 成员)
+ *       → ↑ 回标题 → 空格收起 → ↑(需专用鉴权 标题) → 空格展开 → ↓(special 成员)
+ *       → Home(当前生效 标题) → ↓(←当前 行) → ↓(可用 标题) → ↓(普通候选项) → Esc
+ * 每一步都用 `第 i/N ·` (i 与 N 都从盘上家数算出来) 等帧出现 —— 等待本身就是"光标真落在这一行上"的断言。
+ */
+function rowWalkPlan(): PlanStep[] {
+  const { uc, uu, nb, sa } = ROWS_CTX;
+  const N0 = 6 + uc + uu;                 // 三组收起时的总行数
+  const N1 = N0 + nb;                     // 展开"无 api 基址"后
+  const N2 = N0 + sa;                     // 再展开"需专用鉴权"后
+  const nbTitle = 5 + uc + uu;            // ── 无 api 基址 标题行序号
+  const spTitle = 4 + uc + uu;            // ── 需专用鉴权 标题行序号
+  const firstUsable = 3 + uc;             // 可用组第一家 (普通候选项)
+  const at = (i: number, n: number): string => `第\\s*${i}\\s*/\\s*${n}\\s*·`;
+  return [
+    { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+    { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
+    { name: '首帧光标在候选行 (第 2 行)', expect_raw: at(2, N0), timeout_s: 20 },
+    { name: 'End → Cancel 行', send: '\\x1b[F', timeout_s: 20 },
+    { name: '↑ → 无 api 基址 标题', send: '\\x1b[A', timeout_s: 20 },
+    { name: '等光标落在分组标题行上', expect_raw: at(nbTitle, N0), timeout_s: 20 },
+    { name: '空格展开无 api 基址', send: ' ', timeout_s: 20 },
+    { name: '等展开回执', expect: '已展开 无 api 基址', timeout_s: 20 },
+    { name: '↓ → 无基址 成员', send: '\\x1b[B', timeout_s: 20 },
+    { name: '等光标落在无基址行上', expect_raw: at(nbTitle + 1, N1), timeout_s: 20 },
+    { name: '↑ 回标题', send: '\\x1b[A', timeout_s: 20 },
+    { name: '空格收起无 api 基址', send: ' ', timeout_s: 20 },
+    { name: '等收起回执', expect: '已收起 无 api 基址', timeout_s: 20 },
+    { name: '↑ → 需专用鉴权 标题', send: '\\x1b[A', timeout_s: 20 },
+    { name: '等光标落在 special 标题上', expect_raw: at(spTitle, N0), timeout_s: 20 },
+    { name: '空格展开需专用鉴权', send: ' ', timeout_s: 20 },
+    { name: '等展开回执 2', expect: '已展开 需专用鉴权', timeout_s: 20 },
+    { name: '↓ → special 成员', send: '\\x1b[B', timeout_s: 20 },
+    { name: '等光标落在 special 行上', expect_raw: at(spTitle + 1, N2), timeout_s: 20 },
+    { name: 'Home → 第 1 行', send: '\\x1b[H', timeout_s: 20 },
+    { name: '等第 1 行 (当前生效 标题)', expect_raw: at(1, N2), timeout_s: 20 },
+    { name: '↓ → ←当前 行', send: '\\x1b[B', timeout_s: 20 },
+    { name: '等第 2 行', expect_raw: at(2, N2), timeout_s: 20 },
+    { name: '↓ → 可用 标题', send: '\\x1b[B', timeout_s: 20 },
+    { name: '等第 3 行', expect_raw: at(3, N2), timeout_s: 20 },
+    { name: '↓ → 普通候选项', send: '\\x1b[B', timeout_s: 20 },
+    { name: '等光标落在普通候选项上', expect_raw: at(firstUsable, N2), timeout_s: 20 },
     { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
     { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
   ];
@@ -553,9 +772,33 @@ const MUTATIONS: Mutation[] = [
   {
     id: 'M13',
     desc: '把光标行的 accent 底色拿掉 (只剩反白 → bolloon 主色块没了)',
-    steps: [{ file: 'src/cli/tui-select.ts', pairs: [['const CURSOR_SGR = `${REVERSE}${BOLD}${fg(THEME.accent)}${bg(THEME.muted)}`;', 'const CURSOR_SGR = `${REVERSE}${BOLD}`;   // 变异: 只有反白, 没有底色']] }],
+    steps: [{ file: 'src/cli/tui-select.ts', pairs: [['const CURSOR_SGR = `${REVERSE}${BOLD}${fg(THEME.cursor)}${bg(THEME.accent)}`;', 'const CURSOR_SGR = `${REVERSE}${BOLD}`;   // 变异: 只有反白, 没有底色']] }],
     plan: () => firstScreenOnlyPlan(),
     check: (r) => !/\x1b\[48;2;/.test(r.raw),
+  },
+  {
+    id: 'M18',
+    desc: '把**分组标题行**的选中态拿掉 (光标站在标题上时那一行与未选中字节完全相同 —— leo 亲测踩的那条)',
+    steps: [{
+      file: 'src/cli/tui-select.ts',
+      pairs: [['      const isCursor = start + i === cursor;',
+        "      const isCursor = start + i === cursor && !(line && line.kind === 'sep');   // 变异: 分组标题行没有选中态"]],
+    }],
+    plan: () => rowWalkPlan(),
+    // 红判据: 行类分析里**分组标题行**那一类不再"选中帧带底色/反白 + 两帧字节不同"
+    check: (r) => !classOk(rowClassPairs(r.raw).pairs.find((p) => p.name === '分组标题行')),
+  },
+  {
+    id: 'M19',
+    desc: '把选中态改成**只有 `→ ` 标记、没有颜色** (符号还在, 但屏幕上看不出哪一行被选中)',
+    steps: [{
+      file: 'src/cli/tui-select.ts',
+      pairs: [['const CURSOR_SGR = `${REVERSE}${BOLD}${fg(THEME.cursor)}${bg(THEME.accent)}`;',
+        "const CURSOR_SGR = '';   // 变异: 选中态只剩 `→ ` 标记, 没有颜色/反白"]],
+    }],
+    plan: () => rowWalkPlan(),
+    // 红判据: 任一类行"选中帧带底色或反白"不再成立 (光标行的颜色通道整个没了)
+    check: (r) => rowClassPairs(r.raw).pairs.some((p) => !classOk(p)),
   },
   {
     id: 'M14',
@@ -1324,6 +1567,47 @@ async function main(): Promise<number> {
     ok('R11.11 `tui-select.ts` + `model-selector.ts` 里 hex 字面量计数 == 0 (颜色只从 theme.ts 来)',
       hexA === 0 && hexB === 0 && hexT >= 9,
       `tui-select ${hexA} · model-selector ${hexB} · theme.ts ${hexT} (≥9 = 调色板本体所在的地方)`);
+
+    // ══════════════════════════════════════════════════════════
+    // R11.12 光标落在**每一类行**上都必须有明显选中态 (leo 亲测: 停在分组标题行上时看不出选中)
+    //
+    // 上一版门只在**普通候选项**上断言过"高亮真位移" (两帧反白行对比: `→ ● deepseek` vs `→ ● ollama`),
+    // 分组标题 / Cancel / ←当前 / special / 无基址 一条都没覆盖 —— 于是门 104/0 全绿, 而 leo 的光标
+    // 正好停在**分组标题行**上, 那一行**压根没进高亮分支**, 屏上与"没选中"逐字节相同。
+    // 现在按**行类**逐类比两帧原始字节: ①选中帧该行带底色 (`48;2;`) 或反白 (`7m`) ②两帧该行字节不同
+    // ③未选中行**不许**带底色 (否则整屏花掉, 也分不出选中)。
+    // ══════════════════════════════════════════════════════════
+    section('R11.12 光标行在**每一类行**上都有明显选中态 (选中 vs 未选中 两帧原始字节对比)');
+    ROWS_CTX.uc = tierCount('current');
+    ROWS_CTX.uu = tierCount('usable');
+    ROWS_CTX.nb = tierCount('noBaseUrl');
+    ROWS_CTX.sa = tierCount('specialAuth');
+    const rowsRun = await runPty('ux-rows', ['model'], {
+      timeout_s: 220, cols: 100, rows: 30, steps: rowWalkPlan(),
+    });
+    const rca = rowClassPairs(rowsRun.raw);
+    ok('R11.12.0 行类分析前提: 光标漫游整轮跑完 + 全程**没有上滚指示** (显示行序号 = 第 j 行 j+1 才成立)',
+      rowsRun.ok && rca.upScrolledFrames === 0 && rca.frames >= 8,
+      `帧 ${rca.frames} · 显示行 ${rca.totalRows} 行 · 上滚指示帧 ${rca.upScrolledFrames}`
+        + ` · 步数命中 ${rowsRun.steps.filter((s) => s.matched).length}/${rowsRun.steps.length} · exit=${rowsRun.exit}`);
+    for (const p of rca.pairs) {
+      ok(`R11.12 [${p.name}] 选中帧该行**带底色或反白** (逐字节看 SGR; 不是凭肉眼印象)`,
+        !!p.sel && p.selHasColor, classDetail(p));
+      ok(`R11.12 [${p.name}] 选中 vs 未选中 两帧该行**原始字节不同** (行内容一致, 只差光标态)`,
+        !!p.sel && !!p.unsel && p.bytesDiffer, classDetail(p));
+    }
+    ok('R11.12 未选中行**一律不带底色** (只有光标行有 `48;2;`; 否则整屏花掉 = 也分不出选中)',
+      rca.dirtyNonCursor.length === 0,
+      rca.dirtyNonCursor.length
+        ? `带底色的非光标行 ${rca.dirtyNonCursor.length} 行: ${rca.dirtyNonCursor.slice(0, 2).map((r) => short(r.text, 40)).join(' | ')}`
+        : '整轮一个都没有');
+    const sepPair = rca.pairs.find((p) => p.name === '分组标题行');
+    if (sepPair?.sel && sepPair.unsel) {
+      report(`R11.12 分组标题行两帧原文 (选中 vs 未选中, 逐字节对比):`);
+      report(`   选中  : ${JSON.stringify(sepPair.sel.raw.slice(0, 150))}`);
+      report(`   未选中: ${JSON.stringify(sepPair.unsel.raw.slice(0, 150))}`);
+    }
+    report(`R11.12 逐类结果: ${rca.pairs.map((p) => `${p.name}=${classOk(p) ? '✓' : '✗'}`).join(' · ')}`);
     report(`R11 候选 ${totalCandidates} 家 = 内置 ${disk.builtin} + 自定义 ${disk.custom} + 目录 ${disk.catalog}`
       + ` - 同名 ${excluded.length}${excluded.length ? ` (${excluded.join(',')})` : ''}`
       + ` · 分组 ${TIERS.map((t) => `${t}=${tierCount(t)}`).join('/')} · 最大帧 ${maxFrame} 行 · 目录家 ${SEARCH_TARGET} 可搜/可选中`);
@@ -1350,6 +1634,13 @@ async function main(): Promise<number> {
     ok('R12.2 NO_COLOR=1 下仍靠符号分得清 (●/○ 状态 · → 光标 · 折叠标记 + 家数)',
       /[●○] /.test(ncRun.text) && /→ [●○]/.test(ncRun.text) && /── /.test(ncRun.text) && ncCollapsed,
       `●/○=${/[●○] /.test(ncRun.text)} · → 光标=${/→ [●○]/.test(ncRun.text)} · 分组标题=${/── /.test(ncRun.text)} · 折叠+家数=${ncCollapsed}`);
+    // R12.3 无色降级下**光标落在分组标题行上**也要分得清 —— 这条正是 leo 踩的那类行的降级通道:
+    //   没有颜色就只剩 `→ ` 前缀 (符号通道), 于是"选中 vs 未选中"仍然**逐字节不同**。
+    const ncTitle = rowClassPairs(ncRun.raw).pairs.find((p) => p.name === '分组标题行');
+    ok('R12.3 NO_COLOR=1 下光标停在分组标题行上仍分得清 (`→ ` 前缀 + 两帧字节不同; 且确实 0 条真彩)',
+      !!ncTitle?.sel && !!ncTitle?.unsel && ncTitle.sel.raw.startsWith('→ ')
+        && ncTitle.bytesDiffer && !ncTitle.selHasColor && !ncTitle.unselHasColor,
+      ncTitle ? `${classDetail(ncTitle)} · 选中行以「→ 」开头=${!!ncTitle.sel && ncTitle.sel.raw.startsWith('→ ')}` : '没抓到分组标题行的两帧对比');
 
     // ══════════════════════════════════════════════════════════
     const BURST_TERM = 'a';   // 命中 200+ 家的搜索词 (家数从真 pty 的状态行里量, 见 R13.2)

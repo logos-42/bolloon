@@ -13,6 +13,15 @@ export const THEME = {
   warn: '#f59e0b',          // 警告
   border: '#3a3a36',        // 暗描边
   borderBright: '#8a8a7e',  // 对话框边框提亮
+  /**
+   * 光标行的**字色** (2026-09-27 三改: 压在 accent 底上的近黑, 对比度 ~11:1)。
+   *
+   * 原来压在 accent 底上是 `muted` (#606058) —— 对比只有 ~3.9:1, 在真终端里看着"灰糊糊一片",
+   * 而且分组标题行当时**压根没进高亮分支** (leo 亲测: 光标停在标题上看不出选中)。
+   * 光标是"你在哪儿"的唯一指示, 必须一眼看到: 底色 = `accent` (主色块), 字色 = 本 token (近黑)。
+   * 仍然只有这一个色源 —— 组件里不许写第二份 RGB。
+   */
+  cursor: '#141410',        // 光标行字色 (accent 底上的近黑)
 } as const;
 
 export type ThemeToken = keyof typeof THEME;
