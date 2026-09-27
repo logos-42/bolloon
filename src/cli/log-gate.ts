@@ -174,6 +174,25 @@ export function startupLogPath(
 
 let activeGate: StartupLogGateHandle | null = null;
 
+/**
+ * 当前闸门的**文件写入口** (只落盘不上屏的那条路)。
+ *
+ * 为什么要有它: `startup-notice.ts` 默认把"启动前言"收进内存**不上屏**, 但"诊断不丢"这条
+ * 规矩不因为不上屏就作废 —— 那一段必须照样落进 `startup.log`。落盘逻辑(路径/时间戳/失败退场)
+ * 只允许有一份, 所以由闸门把它开放出来, 而不是让调用方自己拼一遍。
+ */
+let activeFileWriter: ((lines: string[]) => void) | null = null;
+
+/** 追加一行到启动日志文件 (不上屏)。闸门没装时按**已文档化的路径契约**自己落盘。 */
+export function logStartupLine(line: string): void {
+  try {
+    if (activeFileWriter) { activeFileWriter([line]); return; }
+    const p = startupLogPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.appendFileSync(p, `[${new Date().toISOString()}] ${line}\n`);
+  } catch { /* 落盘失败绝不影响启动 */ }
+}
+
 /** 取当前闸门 (未装 = null); 验收脚本用它读 stats */
 export function getStartupLogGate(): StartupLogGateHandle | null {
   return activeGate;
@@ -376,6 +395,7 @@ export function installStartupLogGate(opts: StartupLogGateOptions = {}): Startup
     stop() {
       if (stopped) return;
       stopped = true;
+      if (activeFileWriter === writeLines) activeFileWriter = null;
       if (filtering) {
         process.stdout.write = origStdout as any;
         process.stderr.write = origStderr as any;
@@ -417,5 +437,6 @@ export function installStartupLogGate(opts: StartupLogGateOptions = {}): Startup
   }
 
   activeGate = handle;
+  if (fileReady) activeFileWriter = writeLines;
   return handle;
 }

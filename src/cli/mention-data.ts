@@ -46,6 +46,8 @@ const CLI_COMMANDS: MentionItem[] = [
   { kind: 'command', label: 'resume', hint: '恢复上下文', insert: 'resume' },
   { kind: 'command', label: 'goal', hint: '进行中目标', insert: 'goal' },
   { kind: 'command', label: 'tools', hint: '可用工具列表', insert: 'tools' },
+  // 2026-09-27: 面板是 Ink 整屏自绘, 鼠标框选会被"重画一帧"打断 → 给一条不靠鼠标的复制通路
+  { kind: 'command', label: 'copy', hint: '复制最近一条回复到系统剪贴板 (/copy all · /copy N)', insert: 'copy' },
   { kind: 'command', label: 'skill', hint: '技能候选', insert: 'skill' },
   { kind: 'command', label: 'mcp', hint: 'MCP 服务器列表', insert: 'mcp' },
   { kind: 'command', label: 'agent', hint: '当前智能体', insert: 'agent' },

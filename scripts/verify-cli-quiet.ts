@@ -41,9 +41,15 @@ const argVal = (name: string, dflt: number): number => {
   return i >= 0 && argv[i + 1] ? Number(argv[i + 1]) : dflt;
 };
 const WINDOW_MS = argVal('--window', 26) * 1000;
-const SHORT_MS = 20_000;
+const SHORT_MS = 30_000;
+// A6 (坏配置定向注入) 单独给更长窗口: 配置读取出错排在 P2P/DID 之后, 空载 ~6s 就出现,
+//  但机器有负载/前面几轮留下 kubo 守护进程时, P2P 就绪那几步会明显拖长 ⇒ 45s 也不够
+//  (实测: 整轮跑里 A6 报红而 --only-a6 单跑绿)。**加长窗口不削弱判据** —— 判的是
+//  「错误行必须可见」—— 被吞掉的错误多等多久都不会出现; 加长只避免「还没发生」被误判成「被吞」。
+const A6_MS = 120_000;
 const MUTATION = argv.includes('--mutation');
 const ONLY_DEFAULT = argv.includes('--only-default');
+const ONLY_A6 = argv.includes('--only-a6');   // 排查用: 只复跑 A6 (定向注入), 并把该轮原文落盘留证
 const HAS_PTY_CMD = fs.existsSync('/usr/bin/script');
 
 // ---------------------------------------------------------------------------
@@ -161,8 +167,79 @@ const VERBOSE_ENV = { ...BASE_ENV, BOLLOON_VERBOSE: '1' };
 // 主流程
 // ---------------------------------------------------------------------------
 
+/**
+ * A6 那一条 (定向注入: 坏 config → 启动期真错误必须可见) 的**可单独复跑**版本。
+ * 排查时用 `--only-a6`: 省掉前面几分钟的基线轮, 红的时候把那一段原文落盘留证。
+ */
+async function runA6(): Promise<void> {
+
+  const brokenHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-quiet-'));
+  fs.mkdirSync(path.join(brokenHome, '.bolloon'), { recursive: true });
+  fs.writeFileSync(path.join(brokenHome, '.bolloon', 'bolloon-config.json'), '{"activeProvider": "deepseek", "providers": {', 'utf8');
+  // 等那条错误行**真的出现**再判 (而不是"固定窗口到了就判死"): 配置读取出错排在
+  //   P2P/DID 之后, 空载 ~6s 就出, 但机器有负载时会明显靠后 —— 固定窗口会把「还没发生」
+  //   误判成「被吞」(踩过: 20s/45s 窗口在整轮跑里都报过红线, 单跑 --only-a6 却绿)。
+  const A6_WAIT_RE = /Error reading apiKey from config|SyntaxError/;
+  //  夹具注意: 这一轮额外关掉 kubo (`BOLLOON_SKIP_KUBO=1`)。前面几轮用**真 HOME** 开过
+  //  `--web`, 它们的 kubo/ipfs 守护进程和这一轮互抢 (整轮跑里实测: 这一轮会卡在 `[3/5] 启动
+  //  P2P 网络`, 两条 `守护进程启动超时` 之后仍没走到读配置那一步, 45s 都不够) ——
+  //  这条判的是"坏 config 的错误没被吞", 与 kubo 起不起得来无关, 关掉它才是**可复现**的观察。
+  //  还有一条 (2026-09-27 收尾实测**: 真根因是"复用本机那个 daemon"**): 早先让 IPFS_PATH 指向
+  //  **真 HOME 的 .ipfs** 去复用本机 daemon —— 但整轮跑里那个 daemon 被前面几轮占用/半死时,
+  //  这一轮就**卡在 `[2/5] 发布 DID → IPFS` 不动** (控制台 56 行、exit=null、120s 窗口都不够),
+  //  于是 A6 在整轮跑里红、`--only-a6` 单跑却绿 —— 量的不是"错误有没有被吞"。
+  //  改成 **IPFS_PATH 指向这一轮的隔离目录** (没有 daemon 可复用 ⇒ 那一步快速失败/降级),
+  //  实测 `--only-a6` 与整轮跑都在 ~7s 内读到 `Error reading apiKey from config` (与 kubo 起不起得来无关)。
+  const errProc = spawnCli([MAIN, '--web'], {
+    ...BASE_ENV, BOLLOON_SKIP_KUBO: '1', HOME: brokenHome, BOLLOON_HOME: path.join(brokenHome, '.bolloon'),
+    IPFS_PATH: path.join(brokenHome, '.ipfs'),   // 隔离: 不抢本机 daemon, 也不被它拖住
+  });
+  {
+    const t0 = Date.now();
+    while (Date.now() - t0 < A6_MS) {
+      if (A6_WAIT_RE.test(`${errProc.out()}${errProc.err()}`)) break;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    await observe(errProc, 1500);          // 静默 1.5s 收尾再杀 (拿到同一轮的全部字节)
+  }
+  const errLog = (() => {                      // 同一轮: 错误行有没有落到启动日志里 (诊断不丢)
+    try {
+      return fs.readFileSync(path.join(brokenHome, '.bolloon', 'logs', 'startup.log'), 'utf-8');
+    } catch { return ''; }
+  })();
+  fs.rmSync(brokenHome, { recursive: true, force: true });
+  const errLines = errProc.lines();
+  const errPure = errLines.filter(isPureLoading);
+  const injected = errLines.find((l) => A6_WAIT_RE.test(l));
+  assert('A6 错误不吞 (定向注入): 坏配置引发的启动期真错误必须可见, 且该轮加载日志仍为 0',
+    !!injected && errPure.length === 0,
+    `隔离 HOME 写坏 bolloon-config.json → 命中错误行=${!!injected}; 该轮加载日志类=${errPure.length}`
+      + `; 控制台行数=${errLines.length} exit=${errProc.code()}; 日志文件命中=${/Error reading apiKey|SyntaxError/.test(errLog)}`
+      + (injected ? `; 原文: ${injected.slice(0, 150)}` : `; 头 3 行: ${errLines.slice(0, 3).join(' | ').slice(0, 200) || '(空)'}`));
+  if (!injected) {   // 红的时候把整轮原文落盘 (下一次不用猜: 到底是"没输出"还是"输出里没有")
+    const dump = path.join(os.tmpdir(), 'quiet-a6-raw.txt');
+    fs.writeFileSync(dump, `${errProc.out()}\n--- stderr ---\n${errProc.err()}`, 'utf-8');
+    console.log(`  (A6 该轮原文已落盘: ${dump})`);
+  }
+}
+
+async function onlyA6(): Promise<number> {
+  console.log(`\n=== verify-cli-quiet --only-a6 (定向注入单跑 · entry=${path.relative(ROOT, MAIN)} · 窗口 ${A6_MS / 1000}s) ===\n`);
+  await runA6();
+  printSummary();
+  return results.some((r) => r.ok === false) ? 1 : 0;
+}
+
 async function main(): Promise<number> {
   console.log(`\n=== verify-cli-quiet (窗口 ${WINDOW_MS / 1000}s · entry=${path.relative(ROOT, ENTRY)}${ONLY_DEFAULT ? ' · 只跑默认静默' : ''}) ===\n`);
+
+  if (ONLY_A6) return await onlyA6();
+
+  // A6 **先跑**: 它是一颗独立的"坏 config"子进程, 但 `--web` 会拉 kubo/ipfs 守护进程;
+  //   放在基线轮之后跑, 会和前面几轮留下的守护进程抢 (实测: 卡在 `[3/5] 启动 P2P 网络`
+  //   两条 `守护进程启动超时` 之后仍走不到"读配置"那一步 ⇒ 整轮跑里报假红, 单跑 `--only-a6` 却绿)。
+  //   断言一个字没改, 只是把"观测这颗子进程"挪到没有 kubo 竞争的时点。
+  await runA6();
 
   // B: 基线 (闸门不装 = 完全没有静默)
   const base = await observe(spawnCli([ENTRY, '--web'], GATE_OFF_ENV), WINDOW_MS);
@@ -274,34 +351,43 @@ async function main(): Promise<number> {
       `基线信号行 ${baseSig.length} 条 · 默认模式复现 ${sigKept.length} 条` + (sigKept.length ? `; 例: ${sigKept[0].slice(0, 130)}` : ''));
   }
 
-  // A6: 定向注入的真错误 (夹具自造, 不依赖环境)
-  const brokenHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-quiet-'));
-  fs.mkdirSync(path.join(brokenHome, '.bolloon'), { recursive: true });
-  fs.writeFileSync(path.join(brokenHome, '.bolloon', 'bolloon-config.json'), '{"activeProvider": "deepseek", "providers": {', 'utf8');
-  const errProc = await observe(spawnCli([MAIN, '--web'], {
-    ...BASE_ENV, HOME: brokenHome, BOLLOON_HOME: path.join(brokenHome, '.bolloon'),
-  }), SHORT_MS);
-  fs.rmSync(brokenHome, { recursive: true, force: true });
-  const errLines = errProc.lines();
-  const errPure = errLines.filter(isPureLoading);
-  const injected = errLines.find((l) => /Error reading apiKey from config|SyntaxError/.test(l));
-  assert('A6 错误不吞 (定向注入): 坏配置引发的启动期真错误必须可见, 且该轮加载日志仍为 0',
-    !!injected && errPure.length === 0,
-    `隔离 HOME 写坏 bolloon-config.json → 命中错误行=${!!injected}; 该轮加载日志类=${errPure.length}`
-      + (injected ? `; 原文: ${injected.slice(0, 150)}` : ''));
+  await runA6();
 
   // A7: CLI 交互启动 (开真 pty, 否则 Ink 的 TUI 压根不渲染)
+  //   2026-09-27 口径变更 (leo): 启动前言 (初始化状态 / 就绪度明细 / 已完成阶段 / 配置来源 /
+  //   `门禁: …` 字段) **默认一个字节都不上屏** —— 面板里替代品是 ① 一行 `就绪: …`
+  //   ② 失败/需人介入折成 `/!\` 告警行。所以这里判**新契约**, 不再判老契约的 `门禁: …` 字段
+  //   (那条已被刻意收掉; 继续判它 = 判「不该出现的东西出现了」)。
   const cli = await observe(spawnCli([ENTRY, '--cli'], BASE_ENV, true), SHORT_MS);
   const cliLines = cli.lines();
   const cliPure = cliLines.filter(isPureLoading);
   const cliText = stripAnsi(cli.out());
-  const panelMark = ['启动面板', '🚀 Bolloon'].find((k) => cliText.includes(k)) || '';
+  const panelMark = ['🚀 Bolloon', 'Esc 双击退出', '启动面板'].find((k) => cliText.includes(k)) || '';
+  const readyMark = ['就绪: basic', '就绪:'].find((k) => cliText.includes(k)) || '';
   const promptMark = ['输入消息', '@智能体', '/queue'].find((k) => cliText.includes(k)) || '';
-  const gateMark = ['BOLLOON_SKIP_SETUP=1', '门禁'].find((k) => cliText.includes(k)) || '';
-  assert('A7 CLI 交互启动: 加载日志 0 行, 但启动面板/输入提示 与门禁提示都还在',
-    cliPure.length === 0 && !!panelMark && !!promptMark && !!gateMark,
-    `pty=${HAS_PTY_CMD} · 加载日志类=${cliPure.length}; 面板命中="${panelMark}"; 输入提示命中="${promptMark}"; 门禁提示命中="${gateMark}"`
+  const oldPreamble = ['初始化状态:', '已完成阶段', '配置来源'].filter((k) => cliText.includes(k));
+  assert('A7 CLI 交互启动: 加载日志 0 行 · 面板起来了 · 面板里有一行就绪度 + 输入提示 · 老前言不再刷屏',
+    cliPure.length === 0 && !!panelMark && !!readyMark && !!promptMark && oldPreamble.length === 0,
+    `pty=${HAS_PTY_CMD} · 加载日志类=${cliPure.length}; 面板命中="${panelMark}"; 就绪度行命中="${readyMark}"`
+      + `; 输入提示命中="${promptMark}"; 老前言残留=${oldPreamble.length ? oldPreamble.join(' / ') : '0'}`
       + (cliPure.length ? `; 残留: ${cliPure.slice(0, 3).join(' | ')}` : ''));
+
+  // A7b: 失败 / 需人介入 **不许被吞** (交互路径). 隔离 HOME 里没有配置 → 门禁必然未就绪 →
+  //   面板里必须看得到 `/!\` 告警; 同时那一坨老前言仍然不上屏 (与 A7 同口径)。
+  const a7bHome = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-quiet-a7b-'));
+  const cli2 = await observe(spawnCli([ENTRY, '--cli'],
+    { BOLLOON_SKIP_UPDATE: '1', HOME: a7bHome, BOLLOON_HOME: path.join(a7bHome, '.bolloon') }, true), SHORT_MS);
+  fs.rmSync(a7bHome, { recursive: true, force: true });
+  const t2 = stripAnsi(cli2.out());
+  const alertHits = ['/!\\', '未就绪', '门禁'].filter((k) => t2.includes(k));
+  const cli2Pure = cli2.lines().filter(isPureLoading);
+  const inPanel = ['/!\\', '⚠ 未就绪'].some((k) => t2.includes(k));
+  assert('A7b 失败不吞 (交互路径): 门禁未就绪 → 告警在屏上可见 (面板告警行 或 向导前当场落屏的前言), 且加载日志 0 行',
+    alertHits.length >= 2 && t2.includes('未就绪') && cli2Pure.length === 0,
+    `隔离 HOME (空) → 告警命中=${alertHits.join(' / ') || '(无)'} · 出处=${inPanel ? '面板告警行' : '向导前当场落屏的前言'}`
+      + ` (注: 这条走的是向导问答路径, 前言"当场落屏"是设计出口, 不算刷屏; 面板告警那条见 verify-cli-panel A4)`
+      + `; 加载日志类=${cli2Pure.length}`
+      + (t2.includes('/!\\') ? `; 原文: ${(t2.split('\n').find((l) => l.includes('/!\\')) || '').trim().slice(0, 130)}` : ''));
 
   // A8: 子命令 + 机器可读输出
   const subProblems: string[] = [];
@@ -331,11 +417,12 @@ async function main(): Promise<number> {
   return results.some((r) => r.ok === false) ? 1 : 0;
 }
 
-function printSummary(): void {
+function printSummary(): number {
   const passed = results.filter((r) => r.ok === true).length;
   const failed = results.filter((r) => r.ok === false).length;
   const skipped = results.filter((r) => r.ok === 'skip').length;
   console.log(`\n=== ${passed} passed, ${failed} failed, ${skipped} skipped ===`);
+  return failed;
 }
 
 // ---------------------------------------------------------------------------

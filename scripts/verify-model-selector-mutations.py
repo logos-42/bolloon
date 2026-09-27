@@ -66,8 +66,8 @@ MUTATIONS = [
     (
         "M7", "把用户输入的 key 明文打进日志",
         "src/cli/model-selector.ts",
-        "push(`已收到 key (尾号 ****${k.slice(-4)})",
-        "push(`已收到 key ${k}",
+        "      push(`已收到 key (****${k.slice(-4)}) — 只在第 7 步落盘, 中途取消则一个字节都不写`);",
+        "      push(`已收到 key ${k} — 只在第 7 步落盘, 中途取消则一个字节都不写`);",
         UNIT,
     ),
     (
@@ -87,7 +87,7 @@ MUTATIONS = [
     (
         "M10", "第 4 步不再收窄列表 (模糊搜索形同虚设)",
         "src/cli/model-selector.ts",
-        "  if (io.ask && entries.length > 3) {",
+        "  if (io.ask && !io.filterable && entries.length > 3) {",
         "  if (false) {",
         UNIT,
     ),

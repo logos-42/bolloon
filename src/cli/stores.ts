@@ -71,11 +71,29 @@ export function replaceMarkerMsg(marker: string, line: string): void {
 }
 
 export function setUiStatus(status: string): void {
+  // 2026-09-27: **同值不通知** —— 状态栏每秒 tick 一次 (时钟/上下文), 但值没变时重渲染 = Ink 整帧重画,
+  //   会把"用户正在框选复制"和"用户上滚暂停跟随"这两件事一起打断 (见 ink-app 的跟随冻结)。
+  if (uiStore.get().status === status) return;
   uiStore.set({ ...uiStore.get(), status });
 }
 export function setUiThinking(thinking: boolean): void {
+  if (uiStore.get().thinking === thinking) return;
   uiStore.set({ ...uiStore.get(), thinking });
 }
 export function setUiTransient(v: string | null): void {
-  uiStore.set({ ...uiStore.get(), transient: v === undefined ? null : v });
+  const next = v === undefined ? null : v;
+  if (uiStore.get().transient === next) return;
+  uiStore.set({ ...uiStore.get(), transient: next });
+}
+
+/** transcript 里最后一条**非空**消息 (面板/`/copy` 都要"最近一条回复") */
+export function lastMsg(): string {
+  const c = transcriptStore.get();
+  for (let i = c.length - 1; i >= 0; i--) if (String(c[i] ?? '').trim()) return c[i];
+  return '';
+}
+
+/** 整段会话文本 (`/copy all`) —— 内存里**完整**历史, 不裁剪 */
+export function allMsgsText(): string {
+  return transcriptStore.get().join('\n');
 }

@@ -18,6 +18,8 @@ import {
   type ErrorClass as SetupErrorClass,
 } from '../setup/setup-store.js';
 import { runOnboard, type OnboardIO, type OnboardMode } from '../setup/onboard.js';
+// 2026-09-27: 启动期"续跑前言"闸门 (默认不上屏 → 面板一行 + 显式查询命令; verbose 逐字回流)
+import { noticeLine as startupNotice, startupPreambleVisible, flushStartupNotices } from './startup-notice.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -292,6 +294,16 @@ export interface SetupOptions {
   io?: WizardIO;
   /** 跳过连通性测试 */
   skipTest?: boolean;
+  /**
+   * **启动期**调用 (`bolloon --cli` 的续跑引导) 时置 true: 向导的"续跑前言"默认不上屏
+   * (那个初始化框 / `Onboard 模式: …` / 每步 ✓✗ / 收尾就绪度报告), 改走 `startup-notice.ts`:
+   *    · 默认: 进缓冲 + 落启动日志 —— **打完命令直接看到面板** (leo 2026-09-27);
+   *    · `--verbose` / `BOLLOON_VERBOSE=1` / `BOLLOON_STARTUP_PREAMBLE=1`: 逐字打回 stderr;
+   *    · **要人当场回答**(下面 ask/askHidden/confirm/select 之前) 或 **真跑了步骤 / 失败** → 先 flush 再继续,
+   *      绝不把"要人下手的事"吞进缓冲 (这是硬规矩, 不是优化)。
+   * 用户显式敲 `bolloon setup` 时**不要**置它 —— 那时向导的输出就是用户要的交付物。
+   */
+  quietStartup?: boolean;
 }
 
 export interface SetupResult {
@@ -349,8 +361,20 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
   const io = opts.io ?? defaultWizardIO();
   const home = opts.home ?? os.homedir();
   const bolloonHome = resolveBolloonHome(process.env, home);
-  const P = (s: string) => io.print(s);
   const mode: OnboardMode = (opts as any).mode || 'setup';
+
+  // ── 启动期 vs 显式运行 (2026-09-27) ──────────────────────────────────────
+  //   启动期 (`bolloon --cli` 的续跑引导): 续跑前言默认**不上屏** —— 收进缓冲 + 落启动日志,
+  //   面板那边会给一行就绪度; 失败/要人回答时下面的 `flushQuiet()` 会先把缓冲打出来。
+  //   判据只有一处 (`startupPreambleVisible()`): verbose / BOLLOON_VERBOSE / BOLLOON_STARTUP_PREAMBLE=1
+  //   任一为真 → 与修前逐字一致地全量输出 (也是验收门的"修前对照")。
+  const quiet = !!opts.quietStartup && !startupPreambleVisible();
+  const quietBuf: string[] = [];
+  const P = (s: string) => { if (quiet) quietBuf.push(s); else io.print(s); };
+  // 要人当场回答 → 先把**所有**攒着的前言落屏: 向导自己的续跑框 + `startup-notice` 那边
+  //   攒的初始门禁报告 (缺什么/下一步)。少了后一半就等于"把失败原因吞了" —— 人正要就着它做决定。
+  //   (两次调用幂等: 两边缓冲都是取走即清。)
+  const flushQuiet = () => { flushStartupNotices(); for (const l of quietBuf.splice(0)) startupNotice(l, { visible: true }); };
 
   P('');
   P('╭─ Bolloon 初始化 (可中断, 下次从失败阶段继续) ─────╮');
@@ -380,15 +404,29 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
     return { ok: false, error: `参数落盘失败: ${String(e?.message || e).slice(0, 160)}` };
   }
 
+  // 启动期静默: onboard 的 io 全部收进缓冲; 一旦**要人当场回答** → 先把缓冲打出来再问
+  const baseOnboardIO = onboardIO(io);
+  const wrappedOnboardIO: OnboardIO = quiet ? {
+    ...baseOnboardIO,
+    print: (m: string) => P(m),
+    ask: async (q, o) => { flushQuiet(); return baseOnboardIO.ask(q, o); },
+    askHidden: async (q) => { flushQuiet(); return baseOnboardIO.askHidden(q); },
+    confirm: async (q, d) => { flushQuiet(); return baseOnboardIO.confirm(q, d); },
+    select: async (q, c) => { flushQuiet(); return baseOnboardIO.select(q, c); },
+  } : baseOnboardIO;
+
   const res = await runOnboard({
     mode,
-    io: onboardIO(io),
+    io: wrappedOnboardIO,
     home,
     bolloonHome,
     targets: (opts as any).targets,
     skipSteps: opts.skipTest ? ['connectivity'] : undefined,
     oneShot: opts.interactive === false,
   });
+
+  // 真干了活 (有步骤不是 skipped) 或没走通 → 前言必须先落屏: 那是"发生了什么/哪儿卡住"的唯一上下文
+  if (quiet && (!res.ok || res.steps.some((s) => s.status !== 'skipped'))) flushQuiet();
 
   const cfg = await readConfigFacts(bolloonHome).catch(() => null);
   return {

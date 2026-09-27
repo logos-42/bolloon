@@ -120,6 +120,18 @@ export interface StreamEvent {
   args?: Record<string, unknown>;
   // step_* 可选: 步骤耗时 (server 端用来展示 in 状态条 + 性能分析)
   durationMs?: number;
+  /**
+   * 2026-09-27: 这一条是**内部运行日志** (循环推进 / 运行登记 / 压缩 / 收尾计数 …)。
+   *
+   * 它与"给用户看的状态"在语义上是两回事: 前者的读者是**开发者**, 后者才是用户。
+   * 所以 emit 侧用这个标记把事实说清楚, 由**每个消费面自己决定去处**:
+   *   · CLI 交互面 (`src/index.ts` 的 onStream 就是**对话回复流**) → 不进回复流,
+   *     默认只落 `logs/startup.log`, `--verbose` / `BOLLOON_VERBOSE=1` 时原样回到屏上;
+   *   · Web 面 (`src/web/server.ts` → 状态栏 / workflow_step) → 行为**一字不变**;
+   *   · 轨迹 / Run 记录等观测面 → 照旧。
+   * 缺省 (不写这个字段) = 用户可见, 保持既有行为 —— 只有明确是内部日志的才标 true。
+   */
+  internal?: boolean;
 }
 
 export const TOOL_DEFINITIONS = `

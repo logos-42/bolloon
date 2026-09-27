@@ -8,6 +8,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import * as fs from 'fs';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
@@ -42,6 +43,45 @@ function msgVisualLines(text: string, width: number): number {
   return n;
 }
 
+/**
+ * 分区账本 (2026-09-27 leo 口径: **面板高度必须确立 + 底部输入框打字不许抖**) ——
+ * 一屏就是终端的真实行数, 且**每一块的行数是常数**:
+ *
+ *   行 1 … history                 ← 历史区 (占满剩余高度; 消息窗口 + 弹层都在这里面)
+ *   行 history+1                   ← 活动行 (思考/自动整理/暂停跟随提示; **固定预留 1 行**)
+ *   行……                           ← 分隔线 / 状态栏 / 分隔线 / 输入栏 / 分隔线 (固定 5 行)
+ *
+ * 三条硬边界:
+ *   · 几何恒定: 打字 / 提示出现 / 补全弹窗出现或消失, **输入行所在行号与其余区域位置一个字不动**
+ *     (弹窗**覆盖**在历史区底部 —— 从 history 里扣, 不与固定栏抢位置);
+ *   · **渲染总行数 == 终端高** —— 消息窗口切片 + 根容器 `overflow="hidden"` 兜底。
+ *     (注: 修前帧高忽高忽低, 一旦某帧 > 终端高, Ink 的 `shouldClearTerminalForFrame` 会在**之后每一帧**
+ *      发 `ESC[2J ESC[3J ESC[H` —— 连回滚缓冲一起清, 于是"选不中 / 滚不回"同时出现。帧高恒定 = 那些清屏不再发。)
+ *   · 暂停跟随时冻结整帧 (状态栏时钟也不 tick) ⇒ 帧字节不变 ⇒ 终端里的框选/复制不被打断。
+ */
+const CHROME_LINES = 5;    // 3 条全宽分隔线 + 状态栏 + 输入栏
+const ACTIVITY_LINES = 1;  // 活动行 (固定预留, 免得状态一变就推挤历史区)
+const RESERVED_LINES = CHROME_LINES + ACTIVITY_LINES;
+const MIN_HISTORY_LINES = 1;
+/** 弹层最多占几行 (给历史区留出至少 1 行消息, 免得弹窗把历史区吃光) */
+const POPUP_MAX_ROWS = 8;
+
+/** 一屏布局账本 (纯函数 —— 验收门直接喂尺寸复核) */
+export function layoutBudget(opts: { rows: number; cols: number; popupRows?: number }): {
+  rows: number; cols: number; chrome: number; activity: number; history: number;
+  msgH: number; popupRows: number;
+} {
+  const rows = Math.max(RESERVED_LINES + MIN_HISTORY_LINES, Math.floor(opts.rows || 24));
+  const cols = Math.max(20, Math.floor(opts.cols || 80));
+  const history = Math.max(MIN_HISTORY_LINES, rows - RESERVED_LINES);
+  const popupRows = Math.max(0, Math.min(Math.floor(opts.popupRows || 0), POPUP_MAX_ROWS, Math.max(0, history - MIN_HISTORY_LINES)));
+  return {
+    rows, cols,
+    chrome: CHROME_LINES, activity: ACTIVITY_LINES,
+    history, msgH: history - popupRows, popupRows,
+  };
+}
+
 // 2026-09-08: React.memo — msgs 引用不变时跳过重渲染 (配合虚拟化 slice, status tick 不再整表重绘)
 const Messages: React.FC<{ msgs: string[] }> = React.memo(({ msgs }) => (
   <Box flexDirection="column" flexGrow={1} justifyContent="flex-start">
@@ -60,20 +100,33 @@ interface MentionPopupProps {
   sel: number;
   width: number;
   loading?: boolean;
+  /**
+   * 这个弹层**总共占几行** (含上下边框) —— 由 `layoutBudget` 给。
+   *
+   * 为什么必须给: 弹层画在历史区**内部**(覆盖式), 总行数必须**定死**,
+   * 否则"弹窗出现/消失"会改帧高 → 输入行位置跟着动 (leo 报的"打字抖动"就是这一类)。
+   */
+  maxRows: number;
 }
 
-const MentionPopup: React.FC<MentionPopupProps> = ({ title, items, sel, width, loading }) => {
-  const MAX_ROWS = 8;
-  // 2026-08-08: 滑动窗口 — 选中项始终可见 (原实现 fix 屏幕顶部, sel 超窗口时无高亮行)
-  const offset = Math.max(0, Math.min(sel - Math.floor(MAX_ROWS / 2), Math.max(0, items.length - MAX_ROWS)));
-  const shown = items.slice(offset, offset + MAX_ROWS);
+const MentionPopup: React.FC<MentionPopupProps> = ({ title, items, sel, width, loading, maxRows }) => {
   const innerW = Math.max(width - 2, 10);
+  // 行账本: 2 行边框 + 正文若干 + (还有更多?1:0) —— 正文裁剪到刚好填满 maxRows
+  const totalRows = Math.max(1, maxRows);
+  const emptyNote = !loading && items.length === 0;
+  let bodyRows = Math.max(0, totalRows - 2 - (emptyNote ? 1 : 0));
+  let hasMore = items.length > bodyRows;
+  if (hasMore && bodyRows > 0) bodyRows -= 1;   // 给"还有 N 项"让一行
+  hasMore = items.length > bodyRows;
+  // 2026-08-08: 滑动窗口 — 选中项始终可见 (原实现 fix 屏幕顶部, sel 超窗口时无高亮行)
+  const offset = Math.max(0, Math.min(sel - Math.floor(bodyRows / 2), Math.max(0, items.length - bodyRows)));
+  const shown = items.slice(offset, offset + bodyRows);
   return (
     <Box flexDirection="column" width={width}>
       <Text color={THEME.accent} bold>{`╭─ ${title} ${'─'.repeat(Math.max(2, innerW - dispWidth(title) - 4))}╮`}</Text>
       {loading && items.length === 0 ? (
         <Text color="dim">│ 扫描中...</Text>
-      ) : !loading && items.length === 0 ? (
+      ) : emptyNote ? (
         <Text color="dim">│ 无匹配</Text>
       ) : (
         shown.map((it, i) => {
@@ -92,7 +145,7 @@ const MentionPopup: React.FC<MentionPopupProps> = ({ title, items, sel, width, l
           );
         })
       )}
-      {items.length > MAX_ROWS && (
+      {hasMore && (
         <Text color="dim">│ {offset + 1}-{offset + shown.length}/{items.length} · 还有 {items.length - (offset + shown.length)} 项...</Text>
       )}
       <Text color={THEME.accent}>{`╰${'─'.repeat(innerW)}╯`}</Text>
@@ -521,7 +574,9 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       return;
     }
     // 双击 Esc 退出当前进程: 第一击提示, 500ms 内第二击退出
-    if (key.escape) {
+    //   ⚠ 判据含**字节级兜底** (`_input === '\u001b'`): Ink 对"孤独的 Esc"要先攒 20ms 再吐,
+    //   重挂之后实测 `key.escape` 不再为真 —— 与上面 Enter 那条同一个道理 (不依赖 Ink 的键解析)。
+    if (key.escape || _input === '\u001b') {
       const now = Date.now();
       if (now - lastEscRef.current < DOUBLE_ESC_MS) {
         requestExit();
@@ -551,7 +606,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   // 自动更新状态栏 (每秒)
   // 2026-08-07 修复: 依赖必须为空 [] — [getStatusUpdate] 在渲染间引用变化 (Ink 内部元素重建),
   //   effect 每次渲染 cleanup+setup → setInterval 刚建立就被清除 → 永不 tick → 状态栏恒初始值.
-  //   getStatusUpdate 是 startInk 传入的模块级函数 (引用稳定), 空依赖首渲染捕获即可, 内部实时读.
+  // 2026-09-27: **暂停跟随时不 tick** —— 用户上滚后整帧冻结 (Ink 的 log-update 在输出相同时
+  //   一个字节都不写), 于是终端里的框选/复制不会被打断, 也保证"底部行字节不再变化"。
   useEffect(() => {
     // 挂载时立即同步刷新一次状态栏 (不等 1s 后第一个 tick)
     try {
@@ -559,6 +615,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       if (s0) setUiStatus(s0);
     } catch { /* 状态栏更新失败不致命 */ }
     const timer = setInterval(() => {
+      if (!stickRef.current) return;   // 暂停跟随: 冻结整帧 (回到最底自动恢复)
       try {
         const s = getStatusUpdate();
         if (s) setUiStatus(s);
@@ -595,7 +652,16 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   // ── 虚拟化 transcript (消息级窗口 + 自动跟随底部) ───────────────────────────
   // #1 分区预留: chrome 固定行 = 分隔线×3 + 状态栏 + 输入栏 = 5; transcript 严格不超区
   //   (content Box flexGrow=1 但内容超宽会把 status/composer 挤走 → 可见窗口行数钳制 ≤ availH)
-  const availH = Math.max(6, termSize.h - 5);
+  // 2026-09-27: 高度**全部来自真终端尺寸** (`layoutBudget`) —— 帧高 == 终端高 (常数),
+  //   弹层从历史区里扣 (覆盖式, 不推挤固定栏) ⇒ 打字 / 提示出现都不动输入行位置。
+  const sticky = stickRef.current;
+  const popupOpenNow = !!(popupOpen || picker);
+  const budget = layoutBudget({
+    rows: termSize.h, cols: W,
+    popupRows: popupOpenNow ? POPUP_MAX_ROWS : 0,
+  });
+  const msgH = budget.msgH;                 // 消息窗口高度 (弹层占的那几行已经扣掉)
+  const availH = budget.history;            // 滚动按"历史区总高"算 (含被弹层覆盖的几行)
   const heights = useMemo(() => msgs.map(m => msgVisualLines(m, W)), [msgs, W]);
   const cumulative = useMemo(() => {
     const c = [0];
@@ -603,44 +669,71 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     return c;
   }, [heights]);
   const totalLines = cumulative[cumulative.length - 1] || 0;
-  const maxTop = Math.max(0, totalLines - availH);
-  const sticky = stickRef.current;
+  const maxTop = Math.max(0, totalLines - msgH);
   const top = sticky ? maxTop : Math.min(scrollTop, maxTop);
   let start = 0;
   while (start < msgs.length && cumulative[start + 1] <= top + 0.5) start++;
   let end = start;
-  // 严格钳制: 端界不越过 availH, 保证 transcript 内容行数 ≤ 分区高度 (互不覆盖)
-  while (end + 1 < msgs.length && cumulative[end + 1] <= top + availH) end++;
+  // 严格钳制: 端界不越过 msgH, 保证 transcript 内容行数 ≤ 分区高度 (互不覆盖)
+  while (end + 1 < msgs.length && cumulative[end + 1] <= top + msgH) end++;
   const visible = useMemo(() => msgs.slice(start, end + 1), [msgs, start, end]);
   const scrolledOut = maxTop > 0 && !sticky;
 
+  // 测试/诊断探针: 把**真实用到的**布局与滚动状态写一份 JSONL (验收门按它做精确断言;
+  //   不设 BOLLOON_TUI_PROBE 时零开销 —— 只在渲染后追加一行)。
+  //   注: 走静态 import —— dist 是 ESM, 这里 `require()` 不存在 (踩过一次: 探针静默不写 + 树停更)。
+  useEffect(() => {
+    const p = process.env.BOLLOON_TUI_PROBE;
+    if (!p) return;
+    try {
+      fs.appendFileSync(p, JSON.stringify({
+        t: Date.now(), rows: budget.rows, cols: budget.cols, chrome: budget.chrome,
+        activity: budget.activity, history: budget.history, msgH, popupRows: budget.popupRows,
+        inputLine: budget.rows - 1,      // 输入栏行号 (1-based; 最后一行是底部分隔线)
+        totalMsgs: msgs.length, totalLines, top, maxTop, stick: sticky,
+        firstVisible: start, lastVisible: end, visibleCount: visible.length,
+        input, pausedHint: scrolledOut ? '已暂停跟随 · PgDn/End 回到底部' : '',
+      }) + '\n');
+    } catch { /* 探针写不进去绝不影响界面 */ }
+  });
+
   return (
-    <Box flexDirection="column" height="100%">
-      {/* 内容区: 置顶 (艺术字+元信息已合并进启动面板框, 即 msgs 首条) */}
-      <Box flexGrow={1} flexDirection={hasRails ? 'row' : 'column'}>
-        <Box flexGrow={1} flexDirection="column" justifyContent="flex-start">
-        <Messages msgs={visible} />
-        {scrolledOut && (
-          <Text color={THEME.muted}>
-            ▾ 上滚 {top} 行 · Ctrl+U/D 翻页 · Home 顶 · End 回底
-          </Text>
-        )}
-        {thinking && (
-          <Box>
-            <Text color="yellow">{KAOMOJI[thinkingIdx.current]} 思考中...</Text>
+    <Box flexDirection="column" height={budget.rows} width={budget.cols} overflow="hidden">
+      {/* 历史区 (高度 = 终端高 - 固定栏): 消息窗口 + 弹层都在这块内部, 外面几何不受影响 */}
+      <Box flexDirection="column" height={budget.history}>
+        <Box height={msgH} overflow="hidden" flexDirection={hasRails ? 'row' : 'column'}>
+          <Box flexGrow={1} flexDirection="column" justifyContent="flex-start" overflow="hidden">
+            <Messages msgs={visible} />
           </Box>
-        )}
-        {/* 2026-08-10: 临时状态行 — 复用颜文字行位置 (自动整理/经验整理), 结束后 null 即消失 */}
-        {transient && (
-          <Box>
-            <Text>{transient}</Text>
-          </Box>
-        )}
+          {hasRails && (
+            <Box width={36} marginLeft={1} flexDirection="column" justifyContent="flex-start">
+              {railNames.map((n) => <Text key={n} color={THEME.muted}>{n}\n{widgets[n]}</Text>)}
+            </Box>
+          )}
         </Box>
-        {hasRails && (
-          <Box width={36} marginLeft={1} flexDirection="column" justifyContent="flex-start">
-            {railNames.map((n) => <Text key={n} color={THEME.muted}>{n}\n{widgets[n]}</Text>)}
-          </Box>
+        {/* 弹层 (**覆盖式**): 画在历史区底部, 总行数定死 —— 不推挤历史区 / 不动输入行位置 */}
+        {popupOpenNow && tabState && (
+          <MentionPopup title={POPUP_TITLE_TAB} items={filtered} sel={safeSel} width={W} maxRows={budget.popupRows} />
+        )}
+        {popupOpenNow && !tabState && mention && (
+          <MentionPopup title={popupTitle} items={filtered} sel={safeSel} width={W} loading={loadingFiles} maxRows={budget.popupRows} />
+        )}
+        {popupOpenNow && !tabState && !mention && picker && (
+          <MentionPopup title={picker.title} items={picker.items} sel={Math.min(picker.sel, picker.items.length - 1)} width={W} maxRows={budget.popupRows} />
+        )}
+      </Box>
+
+      {/* 活动行 (固定 1 行): 优先级 = 暂停跟随提示 > 临时状态 > 思考中 > 空行
+          (暂停提示本身挺长 → 同样硬裁 1 行, 免得在窄终端把下面的固定栏顶下去) */}
+      <Box height={budget.activity} width={budget.cols} overflow="hidden">
+        {scrolledOut ? (
+          <Text color={THEME.warn}>已暂停跟随 · PgDn/End 回到底部 (↑{top} 行 · Ctrl+U/D 翻页 · Home 到顶)</Text>
+        ) : transient ? (
+          <Text>{transient}</Text>
+        ) : thinking ? (
+          <Text color="yellow">{KAOMOJI[thinkingIdx.current]} 思考中...</Text>
+        ) : (
+          <Text> </Text>
         )}
       </Box>
 
@@ -649,8 +742,9 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         <Text bold color={THEME.accent}>{'─'.repeat(W)}</Text>
       </Box>
 
-      {/* 状态栏 */}
-      <Box>
+      {/* 状态栏 (固定 1 行: 窄终端下状态串本身会换行 —— 不硬裁就会把整屏往下推一格,
+          而帧高被根容器钳死 → Ink 从**顶上**切一行, 版面上所有行号跟着漂; 验收门 D2b 抓的就是这个) */}
+      <Box height={1} width={budget.cols} overflow="hidden">
         <Text>{status}</Text>
       </Box>
 
@@ -659,38 +753,22 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         <Text bold color={THEME.accent}>{'─'.repeat(W)}</Text>
       </Box>
 
-      {/* 弹出选择窗 (输入栏上方, 弹出页) */}
-      {popupOpen && (tabState || mention) && (
-        <MentionPopup
-          title={popupTitle}
-          items={filtered}
-          sel={safeSel}
-          width={W}
-          loading={loadingFiles}
-        />
-      )}
-
-      {/* 程序化选择器 (2026-08-06: /login /model 等命令触发) — 复用 MentionPopup 渲染 */}
-      {picker && (
-        <MentionPopup
-          title={picker.title}
-          items={picker.items}
-          sel={Math.min(picker.sel, picker.items.length - 1)}
-          width={W}
-        />
-      )}
-
-      {/* 输入栏 */}
-      <Box>
+      {/* 输入栏 (固定 1 行: 内容超宽**按宽度裁剪**, 绝不换行 —— 换行会让整屏位移)
+          两层 Box 都必须 `height={1}`: 只给 width 时, 子文本换行会把 Box **撑高**
+          (overflow="hidden" 对"自己长高了"的 Box 不裁剪) → 空输入时占位文案在窄终端
+          换行 = 底下三条线整块下移, 一打字就又回来 —— leo 报的"打字抖动"就是这个。 */}
+      <Box width={budget.cols} height={1} overflow="hidden">
         <Text bold color={THEME.accent}>❯ </Text>
-        <TextInput
-          key={tiKey}
-          value={input}
-          onChange={setInput}
-          onSubmit={onSubmit}
-          focus={!popupOpen && !picker}
-          placeholder={COMPOSER_PLACEHOLDER}
-        />
+        <Box width={Math.max(10, budget.cols - 2)} height={1} overflow="hidden" flexShrink={0}>
+          <TextInput
+            key={tiKey}
+            value={input}
+            onChange={setInput}
+            onSubmit={onSubmit}
+            focus={!popupOpenNow}
+            placeholder={COMPOSER_PLACEHOLDER}
+          />
+        </Box>
       </Box>
 
       {/* 底部分界线 (全宽, bolloon 色系 #c4d640) */}
@@ -706,6 +784,8 @@ export { InkApp };
 // ─── 启动 ────────────────────────────────────────────────────────────────────
 
 let _inkInstance: ReturnType<typeof render> | null = null;
+/** 上次 render 的参数 (suspend → resume 要原样重挂, 所以必须留着) */
+let _lastInkArgs: { onPrompt: (t: string) => void; initialStatus: string; getStatusUpdate: () => string } | null = null;
 
 export function startInk(
   onPrompt: (text: string) => void,
@@ -714,6 +794,7 @@ export function startInk(
 ): void {
   const tw = process.stdout.columns || 80;
   const th = process.stdout.rows || 24;
+  _lastInkArgs = { onPrompt, initialStatus, getStatusUpdate };
 
   _inkInstance = render(
     <InkApp
@@ -732,12 +813,42 @@ export function startInk(
   );
 }
 
+/**
+ * 暂时让出终端 (2026-09-27): 会话内 `/model` 要用**与 `bolloon model` 同一个**全屏选择器组件
+ * (`tui-select.ts` —— 固定高度视窗 + 跟随 + 折叠 + 搜索 + 光标高亮), 而它自己是 raw-mode
+ * 逐键渲染: 两个渲染器同时抢同一个终端必然互相撕。
+ *
+ * 语义: 先把 Ink 卸掉并清掉它那一帧 (终端干净), 交给选择器画; 用完 `resumeInk()` 原样挂回来。
+ * 为什么可以这么做: 会话内容活在**外部 store** (`stores.ts` 的 transcriptStore/uiStore), 不在 React 里,
+ * 所以重挂之后历史一字不少 (只丢"输入框草稿"这种真正的临时态)。
+ */
+export function suspendInk(): void {
+  if (!_inkInstance) return;
+  try {
+    _inkInstance.unmount();
+    _inkInstance.clear();
+  } catch { /* 卸不掉也让调用方继续 (选择器会自己清干净) */ }
+  _inkInstance = null;
+}
+
+/** 把 Ink 按上次的参数挂回来 (suspendInk 之后用); 没挂过则忽略 */
+export function resumeInk(): void {
+  if (_inkInstance || !_lastInkArgs) return;
+  const a = _lastInkArgs;
+  startInk(a.onPrompt, a.initialStatus, a.getStatusUpdate);
+  // ⚠ 必须把 stdin **重新拉起来**: 选择器的 `RawSession.close()` 会 `stdin.pause()`,
+  //   而 Ink 挂载时只 `setRawMode(true)`、**自己不会 resume** ⇒ 少这一下, 面板照常重绘,
+  //   但按键再也不进来 —— 实测: 打字不回显、Esc 双击退出也没反应 (2026-09-27 验收门抓到)。
+  try { (process.stdin as any).resume(); } catch { /* 不支持的宿主, 不影响渲染 */ }
+}
+
 export function stopInk(): void {
   if (_inkInstance) {
     _inkInstance.unmount();
     _inkInstance.clear();
     _inkInstance = null;
   }
+  _lastInkArgs = null;
 }
 
 export function inkAppendLine(line: string): void {

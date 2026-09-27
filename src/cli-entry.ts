@@ -23,6 +23,9 @@ import { discoverEngines, delegateToEngine } from './external-engines/index.js';
 import { x402CheckBalance, x402Fetch } from './agents/x402/x402Pay.js';
 import { runVersionCommand, runUpdateCommand, runDoctorCommand, runRuntimeCommand, UPDATE_HELP } from './cli/update-commands.js';
 import { collectVersionInfo } from './utils/version-info.js';
+// 2026-09-27: 启动前言的默认静默 + 显式查询命令 (与 `src/index.ts` 同一套判断)
+import { startupPreambleVisible, SETUP_STATUS_CMD } from './cli/startup-notice.js';
+import { logStartupLine } from './cli/log-gate.js';
 // 2026-09-21 (P3): 统一 JSON 信封 + 命令组 (network/agent/task/wallet/payment/trade)
 import { runServiceGroup, GROUPS_HELP } from './cli/commands/index.js';
 // 2026-09-21 (P4): MCP 适配层 (`bolloon mcp serve` = stdio, 只调 P3 服务层)
@@ -700,6 +703,7 @@ async function handleSetupCommand(setupArgs: string[]): Promise<void> {
     console.log(`${BOLD}bolloon setup${RESET} — 初始化 Bolloon (用户身份 + 模型供应商 + API key)`);
     console.log('');
     console.log('  无参数            交互式向导 (推荐)');
+    console.log('  status            只读: 看初始化状态/门禁/就绪度全量 (启动面板那一行"详情"指的就是它)');
     console.log('  --provider <名>   指定供应商 (deepseek / minimax / openai / anthropic / ...)');
     console.log('  --api-key <key>   直接给 key (脚本用; 交互模式会隐藏输入)');
     console.log('  --model <名>      指定模型');
@@ -707,6 +711,15 @@ async function handleSetupCommand(setupArgs: string[]): Promise<void> {
     console.log('  --no-test         跳过连通性测试');
     console.log('  repair-runtime    检查并补装缺失运行时 (Node/npm/Git/Python)');
     return;
+  }
+  // 2026-09-27: `bolloon setup status` —— **启动前言搬去的地方**。
+  //   启动时那一整段 (初始化状态/就绪度/已完成/配置来源/已存输入/缺什么/下一步) 默认不上屏,
+  //   要看全量就显式敲这条 (只读, 不写任何文件; 退出码 0 = ready, 1 = 未就绪 —— 脚本可用)。
+  if (setupArgs[0] === 'status' || setupArgs.includes('--status')) {
+    const { evaluateSetup, describeSetup } = await import('./setup/setup-store.js');
+    const ev = await evaluateSetup();
+    process.stdout.write(describeSetup(ev) + '\n');
+    process.exit(ev.gate === 'ready' ? 0 : 1);
   }
   const apiKey = val('--api-key');
   const needsInteractive = !apiKey;
@@ -902,7 +915,11 @@ async function startWebServer(additionalArgs: string[]) {
 
 // 启动 CLI
 async function startCLI(additionalArgs: string[]) {
-  log('启动命令行界面...', CYAN);
+  // 2026-09-27 (leo 口径: 打完 `bolloon --cli` 直接看到面板): 这句"启动命令行界面..."属于**启动前言**,
+  //   默认不上屏 (照落启动日志); `--verbose` / `BOLLOON_VERBOSE=1` / `BOLLOON_STARTUP_PREAMBLE=1` 逐字回来。
+  //   (gui/web 那两个面的 banner 不动 —— 它们没有"面板", 输出就是交付物。)
+  if (startupPreambleVisible()) log('启动命令行界面...', CYAN);
+  else logStartupLine('启动命令行界面...');
 
   try {
     const mainPath = getMainScript();

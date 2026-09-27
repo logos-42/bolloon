@@ -27,9 +27,18 @@ import { BollharnessIntegration, createBollharnessIntegration } from './bollharn
 import * as readline from 'readline';
 import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, ROBOT_HEAD, BOLLOON_BANNER, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
-import { startInk, stopInk, inkAppendLine as appendLine, inkReplaceMatchingLine, inkSetStatus, inkSetThinking, inkSetTransient } from './cli/ink-app.js';
+import { startInk, stopInk, suspendInk, resumeInk, inkAppendLine as appendLine, inkReplaceMatchingLine, inkSetStatus, inkSetThinking, inkSetTransient } from './cli/ink-app.js';
 // 2026-09-26: 启动期日志闸门 (默认静默加载日志 + 写文件 + verbose 全量回流 + 信号行不吞)
-import { installStartupLogGate, isStartupVerbose, startupLogPath, VERBOSE_ENV, type StartupLogGateHandle } from './cli/log-gate.js';
+import { installStartupLogGate, isStartupVerbose, startupLogPath, VERBOSE_ENV, carriesHumanSignal, logStartupLine, type StartupLogGateHandle } from './cli/log-gate.js';
+// 2026-09-27: 回复流卫生 — 内部运行日志 (循环推进/运行登记/收尾计数…) 不进对话回复流, 改落日志文件
+import { isInternalRunLog, appendInternalRunLog } from './cli/reply-hygiene.js';
+// 2026-09-27: 启动**前言 / 就绪度报告**闸门 (默认不上屏 → 面板一行 + 显式查询命令; 失败折成面板提示)
+import {
+  noticeLine as noticePreamble, flushStartupNotices, setStartupReadiness, alertsFromSetup,
+  readinessLine, preambleHintLine, startupPreambleVisible, pushStartupAlert,
+  takeStartupPanelNotes, clearBufferedNotices,
+} from './cli/startup-notice.js';
+import { clipboardWrite } from './cli/clipboard.js';
 import * as dbgFs from 'fs';
 
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
@@ -152,6 +161,50 @@ const s = {
 (ed25519.hashes as any).sha512 = sha512;
 
 // ---------------------------------------------------------------------------
+// 启动期(面板之前)输出 —— 「面板优先」与「失败不许吞」两条口径的收口 (2026-09-27)
+// ---------------------------------------------------------------------------
+
+/**
+ * true = 这一程走「面板优先」口径 (交互 CLI 且没开 verbose/前言), 由 `main()` 的交互分支置位。
+ * 为什么需要它: 下面那些 `s.info` / `s.warn` (**面板之前**打的那几条进度/降级) 不能只看
+ * "有没有 ⚠" 决定上不上屏 —— 默认口径要求**面板第一帧之前一行都没有**, 而 leo 的铁律
+ * 又要求错误/降级**必须看得见**。两条同时成立 => 不放 stderr, 折进面板。
+ */
+let startupPanelFirst = false;
+/** 面板第一帧已经画出来了 (startCLI 取走面板提示之后): 晚到的降级提示直接追加进面板 */
+let startupPanelReady = false;
+
+/**
+ * 启动期(面板之前)一行进度 / 降级输出 —— 交互默认口径下的**唯一出路**。
+ *
+ * leo 口径 (2026-09-27, 两条必须同时成立):
+ *   ① 「打完 `bolloon --cli` 直接就是面板」⇒ 面板第一帧之前**一行都不许上屏** (进度/就绪度/初始化日志都算);
+ *   ② 「错误 / 降级 / 需人介入不许吞」⇒ 它必须**在屏上真能看到**。
+ * 于是这一层把面板之前那些 `s.info` / `s.warn` 分成两种去处:
+ *   · 带人信号的 (失败/降级/超时/不可用/⚠ …, 判据复用 `log-gate.carriesHumanSignal` —— 只有一处) →
+ *     **折进面板告警通道**: 面板还没画就登记 (`pushStartupAlert`, 与 `/!\ ⚠ 未就绪 …` 同一出路),
+ *     面板已经画了就地 `appendLine` 追加一行 (晚到的失败也不许消失在内存里);
+ *   · 不带信号的纯进度 → 不上屏, 只落 `~/.bolloon/logs/startup.log` (诊断不丢)。
+ *
+ * `--verbose` / `BOLLOON_STARTUP_PREAMBLE=1` / 非交互 / web: **逐字照旧** (`s.warn` / `s.info`
+ * 原样打屏, 非交互那几条就是正常输出 —— 那里没有面板接着显示, 折进面板等于吞)。
+ *
+ * @param fallback 老路径的渲染方式 (只有 publishDID 那条 `s.step(…, 'warn')` 与 `s.warn` 不同)
+ */
+function bootNotice(kind: 'info' | 'warn', line: string, fallback?: () => void): void {
+  if (!startupPanelFirst || startupPreambleVisible()) {
+    if (fallback) fallback();
+    else if (kind === 'warn') s.warn(line);
+    else s.info(line);
+    return;
+  }
+  logStartupLine(line);                       // 诊断不丢: 无论上不上屏
+  if (!carriesHumanSignal(line)) return;      // 纯进度: 默认口径下不上屏
+  if (startupPanelReady) appendLine(`${C_WARN}/!\\ ${line}${RESET}`);
+  else pushStartupAlert(line);
+}
+
+// ---------------------------------------------------------------------------
 // Message envelope
 //   Sender wraps:  DID:<hex_did>|{"id":"...","type":"summarize|improve","documentPath":"...","requirements":"..."}
 //   So receiver can verify identity before dispatching
@@ -231,8 +284,15 @@ function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<{ ci
         resolve({ cid: result.cid });
       } catch (e: any) {
         // 一次失败直接放弃 — 本地模式运行就够了, 不重试
-        appendLine(`     ${YELLOW}⚠ IPFS 发布失败 (${e?.message?.slice(0, 80) || 'unknown'}), 本地模式运行${RESET}`);
-        s.step(2, 5, '发布 DID → IPFS', 'warn');
+        const reason = e?.message?.slice(0, 80) || 'unknown';
+        // 失败详情照旧进面板 (appendLine → Ink): "为什么降级"这一条本来就是给面板看的
+        appendLine(`     ${YELLOW}⚠ IPFS 发布失败 (${reason}), 本地模式运行${RESET}`);
+        // 2026-09-27 口径收口: 这一行原来是打在**面板之前**的进度行 (默认口径下不许上屏),
+        //   可它是"降级" ⇒ 按铁律不许吞。两条同时成立的做法 = 折进面板告警通道
+        //   (`verify-cli-panel` 的 A1「面板前 0 行」+ A7「面板里能定位到这条降级原文」成对钉住)。
+        //   verbose / 非交互: 逐字回到老样子 (`s.step(…, 'warn')`)。
+        bootNotice('warn', `⚠ 降级: [2/5] 发布 DID → IPFS 失败 (${reason}) · 本地模式继续`,
+          () => s.step(2, 5, '发布 DID → IPFS', 'warn'));
         resolve({});
       }
     };
@@ -904,6 +964,24 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
     '⟳ 正在加载技能 / 工具...',
   ]);
   appendLine(bootBox);
+
+  // 2026-09-27 (leo 口径: `bolloon --cli` 起来直接就是面板, 启动前不刷前言):
+  //   就绪度报告 / 初始化续跑前言**默认不上屏** —— 但它们不是消失, 而是变成**面板里的行**:
+  //     · 就绪度折成一行 `就绪: basic ✓ · agent ✓ · durable ✗ · network ✓ · 详情: …`
+  //     · 失败 / 需人介入 (缺 key、连通性实测失败、初始化中断) 折成 `/!\` 开头的提示行 —— **不许吞**
+  //   注: 字面量里必须写 `\\ ` (反斜杠要转义), 否则 JS 会把 `\ ` 吃成空格 —— 屏上就变成 `/! ` 了
+  //   (验收门 `verify-cli-panel` 的 A4 按 `/!\` 判, 真踩过一次)。
+  //   全量版仍在 `startup.log`; `--verbose` / BOLLOON_VERBOSE=1 下逐字回到启动前的位置 (走 stderr)。
+  const notes = takeStartupPanelNotes();
+  const verbosePreamble = startupPreambleVisible();
+  if (notes.readiness && !verbosePreamble) appendLine(`${C_DIM}${notes.readiness}${RESET}`);
+  for (const a of notes.alerts) appendLine(`${C_WARN}/!\\ ${a}${RESET}`);
+  // 已经到面板了: 缓冲里剩下的纯前言**不上屏**(已在 startup.log), 丢掉引用免得下次启动重放
+  clearBufferedNotices();
+  // 面板第一帧之后: 晚到的降级提示 (后台 iroh / bootstrap / DID 发布…) 直接追加进面板,
+  //   不再等下一次 `takeStartupPanelNotes()` —— 否则它们会静静地烂在告警数组里 (= 吞)
+  startupPanelReady = true;
+
   void bootPanel({ dir: bootDirShort, model: (cliModelName && cliModelName !== '…') ? cliModelName : undefined, session: bootSessionId })
     .then((box) => { if (box) inkReplaceMatchingLine(bootBox, box); }).catch(() => {});
 
@@ -1596,10 +1674,14 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       appendLine(`${C_DIM}模型选择 (分步): 供应商 → 凭证 → 模型 → 生成参数 → 作用域 → 测试连接 → 确认切换${RESET}`);
     }
     try {
-      const { runModelCommand } = await import('./cli/setup-wizard.js');
+      const { runModelCommand, modelTtyIO } = await import('./cli/setup-wizard.js');
       /**
        * 把渲染层的选择器借给分步选择器用: 每次要一个选择时开窗, 拿到结果 (或用户 Esc) 就往下走。
        * Esc 通过取消回调报回 null —— 没有这条通路时"按 Esc"会让调用方一直等。
+       *
+       * ⚠️ 这条 (`inkChoose`, Ink 画的小弹窗) 现在只是**非终端**的兜底 (管道/脚本)。
+       *    真终端走下面那条: 与 `bolloon model` **同一个** `tui-select` 全屏选择器
+       *    (固定高度视窗 + 跟随 + 折叠 + 搜索 + 光标高亮 + "还有 M 家")。
        */
       const inkChoose = (items: Array<{ value: string; label: string; hint?: string }>, title: string): Promise<string | null> =>
         new Promise<string | null>((resolve) => {
@@ -1612,11 +1694,63 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
             () => resolve(null),
           );
         });
-      // 会话内不提供隐藏输入 (避免 API key 留在会话回显/记录里) → 需要 key 时选择器给出系统终端指引
-      const out = await runModelCommand(modelArg, { choose: inkChoose });
-      for (const line of String(out).split('\n')) appendLine(`${C_DIM}${line}${RESET}`);
+      // 真终端: 让出终端给**同一个**全屏选择器组件 (两个渲染器不能同时抢一个 tty), 用完挂回来。
+      const sharedPicker = await import('./cli/tui-select.js').then((m) => m.tuiCapable()).catch(() => false);
+      let out: string;
+      if (sharedPicker) {
+        suspendInk();
+        try {
+          const tio = modelTtyIO();
+          out = await runModelCommand(modelArg, {
+            ...tio,
+            // 会话内**不提供**隐藏输入: API key 不许进会话回显/记录 (需要 key 时选择器给系统终端指引)
+            askHidden: undefined,
+            // `tio.live = true`: 每一步当场打在终端上 (选择器自己就是整屏渲染, 不需要再回放整段)
+          });
+        } finally {
+          resumeInk();
+        }
+      } else {
+        out = await runModelCommand(modelArg, { choose: inkChoose });
+      }
+      for (const line of String(out).split('\n')) if (line.trim()) appendLine(`${C_DIM}${line}${RESET}`);
     } catch (e: any) {
       appendLine(`${C_ERROR}/model 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
+    }
+    return;
+  }
+
+  // /copy — 把**最近一条回复** (或整段会话) 真写进系统剪贴板 (2026-09-27)
+  //   为什么要有: 面板是 Ink 画的整屏自绘帧, 终端里用鼠标框选会被"重画一帧"打断;
+  //   与其让用户撞运气, 不如给一条**不靠鼠标**的显式通路 (`/copy` / `/copy all` / `/copy 3`)。
+  if (cmd === '/copy' || cmd.startsWith('/copy ')) {
+    const arg = trimmed.slice('/copy'.length).trim().toLowerCase();
+    try {
+      const store = await import('./cli/stores.js');
+      const msgs = store.transcriptStore.get().filter((m) => String(m ?? '').trim());
+      let text = '';
+      let what = '';
+      if (arg === 'all') {
+        text = store.allMsgsText();
+        what = `整段会话 (${msgs.length} 条)`;
+      } else if (/^\d+$/.test(arg)) {
+        const n = Math.max(1, Math.min(Number(arg), msgs.length));
+        text = msgs.slice(msgs.length - n).join('\n');
+        what = `最近 ${n} 条`;
+      } else {
+        text = store.lastMsg();
+        what = '最近一条';
+      }
+      if (!String(text).trim()) { appendLine(`${C_DIM}面板里还没有可复制的内容${RESET}`); return; }
+      const r = clipboardWrite(text);
+      if (r.ok) {
+        appendLine(`${C_ACCENT}✅ 已复制${what} → 系统剪贴板 (${r.tool} · ${r.chars} 字符)${RESET}`);
+      } else {
+        appendLine(`${C_ERROR}✗ 复制失败 (${what}): ${r.error}${RESET}`);
+        appendLine(`${C_DIM}  兜底: 终端里用鼠标框选不会被自动重画打断 (上滚会自动暂停跟随)${RESET}`);
+      }
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/copy 失败: ${String(e?.message || e).slice(0, 150)}${RESET}`);
     }
     return;
   }
@@ -2676,8 +2810,20 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           //   用户偏好"中间过程不显示" → 静默丢弃, 不污染终端. (仅 Reflection 框保留, 走 status 分支)
         } else if (e.type === 'status' && e.content) {
           const content = String(e.content);
+          // 2026-09-27 (回复流卫生): **内部运行日志不进对话回复流** ——
+          //   CLI 交互面没有独立的状态区, 这条 onStream 就是"回复流", 于是
+          //   `🔄 开始 ReAct 循环...` / `🧷 运行已登记 (...)` / `✅ 处理完成，共 N 次循环` /
+          //   `🎯 目标仍在进行 (未判完成): …` 这类**给开发者看的运行过程**会和用户的结论
+          //   混成一列消息 (leo 报的正是这个)。判据不按子串猜, 只认发送点的显式声明
+          //   (`StreamEvent.internal`, 见 pi-sdk-types) —— 旧的子串过滤继续保留在下面兜底。
+          //   搬走不是删掉: 同一行原文照落 logs/startup.log (目的地走已有的 startupLogPath()),
+          //   `--verbose`/`BOLLOON_VERBOSE=1` 时原样上屏, 诊断能力一点不丢。
+          if (isInternalRunLog(e)) {
+            appendInternalRunLog(content, e.tool);
+            if (isStartupVerbose()) appendLine(`${C_DIM}${content}${RESET}`);
+          }
           // Reflection / 反思 / 💡 → 圆角思考框 (和回复一样走 renderMessageBox, 白字+亮边框)
-          if (content.includes('Reflection') || content.includes('反思') || content.includes('💡')) {
+          else if (content.includes('Reflection') || content.includes('反思') || content.includes('💡')) {
             const body = content.replace(/^💡\s*/, '').slice(0, 1500);
             if (body.trim()) appendLine(renderMessageBox({ title: '💡 反思', body, color: C_WARN }));
           } else if (!content.includes('🔄 循环') && !content.includes('📋 参数')
@@ -4529,36 +4675,57 @@ async function main() {
   // 2026-09-13: 首次运行引导 — 没有可用模型供应商 / 还没有用户身份时, 先走初始化向导
   //   (放在 CLI 启动前: 用户先回答"你是谁 / 用哪个模型", 再进 TUI 面板)
   if (isCLIInteractive) {
+    // 面板优先口径 (2026-09-27): 这一程后面打的所有启动期进度/降级行都走 `bootNotice()`
+    //   —— 面板第一帧之前不上屏, 但"失败/降级/需人介入"折进面板告警 (两条口径同时成立)。
+    //   `--verbose` / `BOLLOON_STARTUP_PREAMBLE=1` 时这个开关是 false ⇒ 逐字照旧打屏。
+    startupPanelFirst = !startupPreambleVisible();
     // 2026-09-16 (M4 启动硬门禁): 先把初始化事实读出来 —— 未就绪就**先修**, 修不好就非零退出。
     //   旧行为是"向导失败也只 warn, 照常进对话", 结果是半成品配置能进运行态 (看起来启动成功、实际不可执行)。
+    //
+    // 2026-09-27 (leo 口径): **打完 `bolloon --cli` 就该直接看到面板** ——
+    //   下面这一整段 (门禁报告 / 向导续跑前言 / `✅ 初始化完成`) 属于"启动前的日志", 默认**一个字节都不上屏**:
+    //     · `describeSetup(ev)` 改走 `noticePreamble()` → 默认进缓冲 (照落启动日志), verbose/`BOLLOON_STARTUP_PREAMBLE=1` 时逐字回来;
+    //     · 就绪度折成**面板一行** (`就绪: basic ✓ · … · 详情: bolloon setup status`, 在 startCLI 里 appendLine);
+    //     · 失败 / 需人介入折成**面板告警行** (`alertsFromSetup`) —— 不许被吞, 但也不许刷屏。
+    //   兜底: 只要这一程**走不到面板** (非零退出) 或**要人当场回答** (向导提问前), 缓冲先 flush 到 stderr。
     const w = (m: string) => process.stderr.write(m.endsWith('\n') ? m : m + '\n');
     let gateEv: any = null;
     try {
       const { refreshSetupState, describeSetup } = await import('./setup/setup-store.js');
       gateEv = await refreshSetupState({ light: true });
+      // 面板一行就绪度 + 告警 (先登记, 面板渲染时取走)
+      setStartupReadiness(readinessLine(gateEv.state?.readiness || {}));
+      for (const a of alertsFromSetup(gateEv)) { pushStartupAlert(a); noticePreamble(a); }
       if (gateEv.gate !== 'ready') {
-        w(describeSetup(gateEv));
+        noticePreamble(describeSetup(gateEv));
         if (process.env.BOLLOON_SKIP_SETUP === '1') {
-          w('⚠ BOLLOON_SKIP_SETUP=1 → 诊断模式: 可以看状态/修配置, 但 agent 执行被门禁拦住 (不能绕过)');
+          noticePreamble('⚠ BOLLOON_SKIP_SETUP=1 → 诊断模式: 可以看状态/修配置, 但 agent 执行被门禁拦住 (不能绕过)');
         } else {
           const { runSetupWizard } = await import('./cli/setup-wizard.js');
-          await runSetupWizard({ interactive: true });
+          // quietStartup: 向导的续跑前言默认不上屏 (它自己会在"要人回答/有失败"时先 flush)
+          await runSetupWizard({ interactive: true, quietStartup: true });
           const after = await refreshSetupState({});
+          setStartupReadiness(readinessLine(after.state?.readiness || {}));
+          for (const a of alertsFromSetup(after)) { pushStartupAlert(a); noticePreamble(a); }
           if (after.gate !== 'ready') {
-            w(describeSetup(after));
+            // 走不到面板 → 前言必须先落屏 (否则就是被吞)
+            noticePreamble(describeSetup(after));
+            flushStartupNotices();
             w('⛔ 初始化未完成 → 退出 (不会以"看起来能跑"的状态进入对话)');
             process.exit(1);
           }
-          w('✅ 初始化完成, 进入正常模式');
+          noticePreamble('✅ 初始化完成, 进入正常模式');
         }
       }
     } catch (e: any) {
-      // 评估/向导自身异常: fail-closed —— 不假装就绪
-      w(`⛔ 初始化流程失败 (fail-closed): ${String(e?.message || e).slice(0, 200)}`);
-      w(`   当前状态评估: ${gateEv ? gateEv.gate : '未知 (评估都没跑通)'}`);
-      w('   排查: `bolloon setup --status` (或删掉 ~/.bolloon/setup-state.json 后重跑 setup)');
+      // 评估/向导自身异常: fail-closed —— 不假装就绪, 且缓冲**必须**落屏 (这就要退出了, 没有面板接着)
+      noticePreamble(`⛔ 初始化流程失败 (fail-closed): ${String(e?.message || e).slice(0, 200)}`, { visible: true });
+      noticePreamble(`   当前状态评估: ${gateEv ? gateEv.gate : '未知 (评估都没跑通)'}`, { visible: true });
+      noticePreamble(`   排查: \`bolloon setup status\` (或删掉 ~/.bolloon/setup-state.json 后重跑 setup)`, { visible: true });
+      flushStartupNotices();
       process.exit(1);
     }
+    if (startupPreambleVisible()) w(preambleHintLine());
   }
 
   if (isNonInteractive) {
@@ -4596,10 +4763,10 @@ async function main() {
     try {
       const { applyEffectiveToRuntime } = await import('./llm/model-selection.js');
       const eff = await applyEffectiveToRuntime();
-      s.info?.(`模型: ${eff.provider}/${eff.model} (来源: ${eff.source})`);
+      bootNotice('info', `模型: ${eff.provider}/${eff.model} (来源: ${eff.source})`);
     } catch (e: any) {
       // 装配失败不静默: 退回按环境变量初始化 (至少让用户看到原因)
-      s.warn?.(`按有效配置装配模型失败 (${String(e?.message || e).slice(0, 120)}), 退回环境变量猜测`);
+      bootNotice('warn', `按有效配置装配模型失败 (${String(e?.message || e).slice(0, 120)}), 退回环境变量猜测`);
       initMinimax({ provider: llmProvider.toLowerCase() as any });
     }
   } else {
@@ -4622,10 +4789,10 @@ async function main() {
       if (typeof checkKuboSetup === 'function') {
         const setup = await checkKuboSetup(true, true);
         kuboReady = !!(setup?.ready && setup?.daemonRunning);
-        s.info(kuboReady ? 'IPFS 本地 Kubo 就绪 → IPNS 发布/解析可用' : 'Kubo 不可用, IPFS 降级本地模式');
+        bootNotice('info', kuboReady ? 'IPFS 本地 Kubo 就绪 → IPNS 发布/解析可用' : 'Kubo 不可用, IPFS 降级本地模式');
       }
     } catch (e: any) {
-      s.warn(`Kubo 自动安装失败 (非致命): ${String(e?.message || e).slice(0, 120)}`);
+      bootNotice('warn', `Kubo 自动安装失败 (非致命): ${String(e?.message || e).slice(0, 120)}`);
     }
     publishDID(name, keypair).then(({ cid, ipnsName }) => {
       if (cid) agentIdentity!.cid = cid;
@@ -4650,14 +4817,14 @@ async function main() {
         }
       }).catch(err => {
   
-        s.warn(`P2P Web 模式启动失败: ${err.message}`);
+        bootNotice('warn', `P2P Web 模式启动失败: ${err.message}`);
       });
     } else if (isCLIInteractive) {
       // 2026-09-08 加速启动: 交互 CLI 不阻塞等 P2P — 后台 20s 超时门, 就绪后自动挂上;
       // startCLI 收 Promise, 内部空安全 (P2P 功能就绪前自动降级, 一般 1-3s 内可用)
       commReady = withTimeout(bootstrapP2P(verifier), 20_000, 'P2P 网络初始化')
         .catch((err: Error) => {
-          s.warn(`P2P 初始化超时/失败, 降级无 P2P 模式: ${err.message}`);
+          bootNotice('warn', `P2P 初始化超时/失败, 降级无 P2P 模式: ${err.message}`);
           return null;
         });
       void commReady.then((c) => {
@@ -4673,7 +4840,7 @@ async function main() {
       // 2026-08-07: 弱网下 hyperswarm DHT start/joinTopic 可能无限挂起 → 20s 超时门, 超时降级无 P2P 模式
       comm = await withTimeout(bootstrapP2P(verifier), 20_000, 'P2P 网络初始化')
         .catch((err: Error) => {
-          s.warn(`P2P 初始化超时/失败, 降级无 P2P 模式: ${err.message}`);
+          bootNotice('warn', `P2P 初始化超时/失败, 降级无 P2P 模式: ${err.message}`);
           return null;
         });
       if (comm) {
@@ -4685,36 +4852,36 @@ async function main() {
       }
     }
   } catch (err: any) {
-    s.warn(`P2P 初始化失败: ${err.message}`);
-    s.warn('将使用无 P2P 模式运行');
+    bootNotice('warn', `P2P 初始化失败: ${err.message}`);
+    bootNotice('warn', '将使用无 P2P 模式运行');
   }
 
   if (isCLIInteractive) {
     // 2026-09-08 加速启动: iroh + Bolloon bootstrap 也全部后台, 不阻塞 UI 首帧
     void withTimeout(bootstrapIroh(keypair, name), 15_000, 'iroh P2P 初始化')
-      .catch((err: Error) => s.warn(`iroh 初始化超时, 继续使用 Hyperswarm P2P: ${err.message}`));
+      .catch((err: Error) => bootNotice('warn', `iroh 初始化超时, 继续使用 Hyperswarm P2P: ${err.message}`));
     void (async () => {
       try {
         const { bootstrapBolloon } = await import('./pi-ecosystem-judgment/human-value-pipeline.js');
         const bs = await withTimeout(bootstrapBolloon({ cwd: process.cwd() }), 20_000, 'Bolloon 上下文扫描');
-        s.info(`Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
+        bootNotice('info', `Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
       } catch (err: any) {
-        s.warn(`Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);
+        bootNotice('warn', `Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);
       }
     })();
   } else {
     await withTimeout(bootstrapIroh(keypair, name), 15_000, 'iroh P2P 初始化')
-      .catch((err: Error) => s.warn(`iroh 初始化超时, 继续使用 Hyperswarm P2P: ${err.message}`));
+      .catch((err: Error) => bootNotice('warn', `iroh 初始化超时, 继续使用 Hyperswarm P2P: ${err.message}`));
 
     // Bolloon Bootstrap: 启动扫描 + Context 收集 + 挂定时任务
     // 失败静默 (主流程不被阻塞)
     try {
       const { bootstrapBolloon } = await import('./pi-ecosystem-judgment/human-value-pipeline.js');
-      s.info('正在 bootstrap bolloon 上下文...');
+      bootNotice('info', '正在 bootstrap bolloon 上下文...');
       const bs = await withTimeout(bootstrapBolloon({ cwd: process.cwd() }), 20_000, 'Bolloon 上下文扫描');
-      s.info(`Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
+      bootNotice('info', `Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
     } catch (err: any) {
-      s.warn(`Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);
+      bootNotice('warn', `Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);
     }
   }
 

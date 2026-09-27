@@ -1183,7 +1183,7 @@ export class PiAgentSession implements AgentSession {
       const backoffMs = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
       console.log(`[PiAgent] loop 自动重试 ${attempt}/${MAX_LOOP_RETRIES}, 等待 ${backoffMs}ms`);
       if (onStream) {
-        onStream({ type: 'status', content: `↻ 自动重试 loop ${attempt}/${MAX_LOOP_RETRIES} (${(backoffMs / 1000).toFixed(0)}s 后)`, tool: 'system' });
+        onStream({ type: 'status', internal: true, content: `↻ 自动重试 loop ${attempt}/${MAX_LOOP_RETRIES} (${(backoffMs / 1000).toFixed(0)}s 后)`, tool: 'system' });
       }
       // 中途 abort 也要响应
       await new Promise<void>((resolve, reject) => {
@@ -1618,7 +1618,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
 
     // 发送循环开始的事件
     if (onStream) {
-      onStream({ type: 'status', content: '🔄 开始 ReAct 循环...', tool: 'system' });
+      onStream({ type: 'status', internal: true, content: '🔄 开始 ReAct 循环...', tool: 'system' });
     }
 
     // React Harness: 循环开始 (重置 turn 计数 + 触发 harness sessionStart)
@@ -1652,7 +1652,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
       }
       const doneN = this.resumePlan?.completedSteps.length ?? 0;
       const guards = this.resumePlan?.replayGuards.length ?? 0;
-      onStream?.({ type: 'status', content: `♻️ 从 checkpoint 恢复运行 ${this.currentRunId} (已完成 ${doneN} 步, 非幂等重放守卫 ${guards} 条)`, tool: 'harness' });
+      onStream?.({ type: 'status', internal: true, content: `♻️ 从 checkpoint 恢复运行 ${this.currentRunId} (已完成 ${doneN} 步, 非幂等重放守卫 ${guards} 条)`, tool: 'harness' });
     } else {
       // 2026-09-16 (M2): 目标绑定 —— 有 goalId 就在该 Goal 下执行; 没有就建 Goal 再建 Run。
       //   延续规则 (确定性, 不靠猜): 该 channel/agent 上已有 open/active Goal, 且它的上一次执行**没收尾**
@@ -1697,7 +1697,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
           // Run → Goal 反查链: runId → goalId → objective / success criteria
           await attachRun(this.currentGoalId, rec.runId).catch((err) => console.warn('[PiAgent] attachRun 失败:', (err as Error)?.message));
         }
-        onStream?.({ type: 'status', content: `🧷 运行已登记 (run=${rec.runId}${this.currentGoalId ? `, goal=${this.currentGoalId}` : ''}, 预算 ${rec.budget.maxSteps} 步 / ${Math.round(rec.budget.deadlineMs / 60000)} 分钟)`, tool: 'harness' });
+        onStream?.({ type: 'status', internal: true, content: `🧷 运行已登记 (run=${rec.runId}${this.currentGoalId ? `, goal=${this.currentGoalId}` : ''}, 预算 ${rec.budget.maxSteps} 步 / ${Math.round(rec.budget.deadlineMs / 60000)} 分钟)`, tool: 'harness' });
       } catch (err) {
         // 核心写失败: 不再 warn 后继续 —— 没有运行记录就不执行 (strict 模式默认如此)
         runPersistenceFailure = `无法创建运行记录: ${String((err as Error)?.message || err).slice(0, 200)}`;
@@ -1820,7 +1820,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
       if (shouldCompactBeforeIteration(estimatedTokensBefore, compactThreshold)) {
         const tokensBeforeCompact = estimatedTokensBefore;
         console.log(`[PiAgent] loop 入口 token ${tokensBeforeCompact} > ${compactThreshold}, 触发自动压缩`);
-        onStream?.({ type: 'status', content: `🗜️ loop 自动压缩 (token ${tokensBeforeCompact} > ${compactThreshold})`, tool: 'compactor' });
+        onStream?.({ type: 'status', internal: true, content: `🗜️ loop 自动压缩 (token ${tokensBeforeCompact} > ${compactThreshold})`, tool: 'compactor' });
         try {
           await this.maybeAutoCompact(onStream, signal);
         } catch (compactErr) {
@@ -1843,7 +1843,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
       // 调试日志：显示每次循环开始
       console.log(`[PiAgent] 循环 ${iteration}/${this.MAX_REACT_ITERATIONS} 开始`);
       if (onStream) {
-        onStream({ type: 'status', content: `🔄 循环 ${iteration}/${this.MAX_REACT_ITERATIONS}`, tool: 'loop' });
+        onStream({ type: 'status', internal: true, content: `🔄 循环 ${iteration}/${this.MAX_REACT_ITERATIONS}`, tool: 'loop' });
       }
 
       const context = this.buildContext();
@@ -2093,7 +2093,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
         if (onStream) {
           onStream({ type: 'tool', content: `🔧 调用工具 (${ti + 1}/${toolCalls.length}): ${toolCall.name}`, tool: toolCall.name });
           if (toolCall.args && Object.keys(toolCall.args).length > 0) {
-            onStream({ type: 'status', content: `📋 参数: ${JSON.stringify(toolCall.args)}`, tool: toolCall.name });
+            onStream({ type: 'status', internal: true, content: `📋 参数: ${JSON.stringify(toolCall.args)}`, tool: toolCall.name });
           }
           onStream({
             type: 'step_start',
@@ -2218,7 +2218,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
           const toolDurationMs = Date.now() - toolStart;
           if (replaySkip) {
             console.log(`[PiAgent] 恢复重放守卫: 跳过已完成的非幂等工具 ${toolCall.name}`);
-            onStream?.({ type: 'status', content: `🛡️ 恢复保护: ${toolCall.name} 此前已成功执行, 本次不重复执行`, tool: toolCall.name });
+            onStream?.({ type: 'status', internal: true, content: `🛡️ 恢复保护: ${toolCall.name} 此前已成功执行, 本次不重复执行`, tool: toolCall.name });
           }
           console.log(`[PiAgent] 工具 ${toolCall.name} 执行完成: success=${result.success} (${toolDurationMs}ms)`);
 
@@ -2292,7 +2292,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
 
           if (onStream) {
             if (result.success) {
-              onStream({ type: 'status', content: `✅ ${toolCall.name} 执行成功`, tool: toolCall.name });
+              onStream({ type: 'status', internal: true, content: `✅ ${toolCall.name} 执行成功`, tool: toolCall.name });
               if (result.output) { onStream({ type: 'tool', content: `📤 结果: ${result.output.substring(0, 200)}${result.output.length > 200 ? '...' : ''}`, tool: toolCall.name }); }
               onStream({ type: 'step_done', content: `${toolCall.name} 执行成功`, tool: toolCall.name, success: true, output: result.output });
             } else {
@@ -2312,7 +2312,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
             loopReviewCompletedTools.add(toolCall.name);
             lastQualityScore = this.estimateToolResultQuality(result);
             if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) { refineAttempts++; }
-            if (onStream) { onStream({ type: 'status', content: `🔄 工具执行完成，继续循环...`, tool: 'loop' }); }
+            if (onStream) { onStream({ type: 'status', internal: true, content: `🔄 工具执行完成，继续循环...`, tool: 'loop' }); }
           } else {
             consecutiveErrors++;
             totalErrors++;
@@ -2392,7 +2392,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
               content: `[dive-into stop condition] 你之前已成功执行了 ${unreported} 个工具, 但当前回复里没把它们的结果告诉用户. 请基于已有的工具结果 (在 history 里) 写一个完整总结回复给用户, 用 <final gen> 结尾. 不要再调工具.`
             });
             if (onStream) {
-              onStream({ type: 'status', content: `🔄 还有 ${unreported} 个工具结果未汇报, 让 LLM 继续总结 (${unreportedRetries}/${MAX_UNREPORTED_RETRIES})`, tool: 'system' });
+              onStream({ type: 'status', internal: true, content: `🔄 还有 ${unreported} 个工具结果未汇报, 让 LLM 继续总结 (${unreportedRetries}/${MAX_UNREPORTED_RETRIES})`, tool: 'system' });
             }
             continue;
           } else if (unreportedDecision === 'force-final') {
@@ -2404,7 +2404,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
               content: `[dive-into stop condition] 已多次提示汇报工具结果仍未完成 (超过 ${MAX_UNREPORTED_RETRIES} 次). 现在直接基于你已知的信息写最终回复给用户, 用 <final gen> 结尾, 不要再调任何工具.`
             });
             if (onStream) {
-              onStream({ type: 'status', content: `🔄 工具结果汇报超限, 强制收尾`, tool: 'system' });
+              onStream({ type: 'status', internal: true, content: `🔄 工具结果汇报超限, 强制收尾`, tool: 'system' });
             }
           }
 lastQualityScore = this.estimateResponseQuality(reply);
@@ -2435,7 +2435,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
             console.log(`[PiAgent] review ${loopReviewCount}/${DEFAULT_MAX_REVIEWS}: LLM 想 final 但先对齐需求深挖一次`);
             this.messageHistory.push({ role: 'system', content: reviewDecision.hint });
             if (onStream) {
-              onStream({ type: 'status', content: `🔄 目标对齐 review ${loopReviewCount}/${DEFAULT_MAX_REVIEWS}: 深挖续跑`, tool: 'system' });
+              onStream({ type: 'status', internal: true, content: `🔄 目标对齐 review ${loopReviewCount}/${DEFAULT_MAX_REVIEWS}: 深挖续跑`, tool: 'system' });
             }
             continue; // 让 LLM 看到 hint, 深挖或确认完成后再次 final
           }
@@ -2462,7 +2462,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
         if (needsMoreWork && iteration < this.MAX_REACT_ITERATIONS) {
           console.log(`[PiAgent] 继续循环处理 (${iteration}/${this.MAX_REACT_ITERATIONS}): needsMoreWork=${needsMoreWork}, hasError=${hasError}, containsToolCallIntent=${containsToolCallIntent}`);
           if (onStream) {
-            onStream({ type: 'status', content: `🔄 继续处理，循环 ${iteration}...`, tool: 'loop' });
+            onStream({ type: 'status', internal: true, content: `🔄 继续处理，循环 ${iteration}...`, tool: 'loop' });
           }
           continue;
         }
@@ -2470,7 +2470,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
         // 否则把这个当作可能的最终回答
         finalResponse = reply;
         if (onStream) {
-          onStream({ type: 'status', content: `📝 提取最终回答，长度 ${reply.length}`, tool: 'system' });
+          onStream({ type: 'status', internal: true, content: `📝 提取最终回答，长度 ${reply.length}`, tool: 'system' });
         }
         break;
       }
@@ -2490,7 +2490,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
 
     // 通知前端循环完成
     if (onStream) {
-      onStream({ type: 'status', content: `✅ 处理完成，共 ${iteration - 1} 次循环`, tool: 'system' });
+      onStream({ type: 'status', internal: true, content: `✅ 处理完成，共 ${iteration - 1} 次循环`, tool: 'system' });
     }
 
     this.messageHistory.push({ role: 'assistant', content: finalResponse });
@@ -2583,7 +2583,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
               ? `🎯 目标已达成 (仍要过完成门): ${view.decision.reason}`
               : `🎯 目标仍在进行 (未判完成): ${view.decision.reason}`;
             onStream?.({
-              type: 'status',
+              type: 'status', internal: true,
               content: `${line}${applied.gateRejected ? ` [完成门拒绝: ${applied.gateRejected}]` : ''} `
                 + `(收尾 ${view.steps} 步 · memory ${view.memories} · skill 候选 ${view.candidates} · goal=${this.currentGoalId})`,
               tool: 'harness',
@@ -2777,7 +2777,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
     const estimated = this.estimateHistoryTokens();
     if (estimated > this.maxContextTokens() * 0.8) {
       console.warn(`[PiAgent] reactive compaction pre-check (${estimated} tokens > 80% threshold)`);
-      onStream?.({ type: 'status', content: '⚠️ reactive compaction 预检触发', tool: 'recovery' });
+      onStream?.({ type: 'status', internal: true, content: '⚠️ reactive compaction 预检触发', tool: 'recovery' });
       try {
         const compacted = this.compressHistorySync(this.messageHistory);
         this.messageHistory = compacted;
@@ -2927,7 +2927,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
   ): Promise<void> {
     if (this.messageHistory.length < 10) return;  // 历史太短, 不值得压
 
-    onStream?.({ type: 'status', content: '🗜️ 评估是否需要压缩上下文...', tool: 'compactor' });
+    onStream?.({ type: 'status', internal: true, content: '🗜️ 评估是否需要压缩上下文...', tool: 'compactor' });
 
     // 注入 LLM (用 getMinimax().chat, 与 judgment 注入门 / ReAct 循环同一来源)
     // 给 Context Collapse (虚拟投影) 和 Auto-Compact (摘要) 共用
@@ -2959,7 +2959,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
       const savedTokens = Math.max(0, beforeTokens - afterTokens);
       cm.markCompressStart(beforeTokens);
       onStream?.({
-        type: 'status',
+        type: 'status', internal: true,
         content: `🗜️ 上下文压缩: ${stagesApplied || 'no-op'} | 节省 ${saved} 条 / ${savedTokens.toLocaleString()} tokens (剩余 ${result.history.length}, collapse=${isContextCollapseEnabled() ? 'on' : 'off'})`,
         tool: 'compactor',
       });
