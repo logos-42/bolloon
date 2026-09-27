@@ -27,8 +27,8 @@ android {
         minSdk 28
         targetSdk 35
         // versionCode/versionName 与 npm package.json 的版本对齐 (0.5.0) — 见 scripts/check-native-artifacts.mjs
-        versionCode 500
-        versionName '0.5.0'
+        versionCode 501
+        versionName '0.5.1'
     }
 
     // 2026-09-16: 渠道分化 —— 应用商店版必须摘掉「无障碍服务」与「Shizuku 提权通道」(商店审核红线),
