@@ -298,8 +298,9 @@ describe('分步选择器: 流程与"不留痕"', () => {
     expect(r.ok).toBe(true);
     expect(r.reachedStep).toBe('done');
     // 步骤顺序真的走了: 供应商 → 模型 → 参数(reasoning/temperature) → 作用域 → 提交
-    expect(s.chosen[0]).toBe('选择供应商');
-    expect(s.chosen[1]).toBe('选择模型');
+    // (2026-09-27: 标题带上"接受什么输入" —— 序号/供应商 id, 标题本身就是给用户的用法说明)
+    expect(s.chosen[0]).toBe('选择供应商 (序号 / 供应商 id):');
+    expect(s.chosen[1]).toBe('选择模型 (deepseek, 序号 / model id):');
     expect(s.chosen[2]).toContain('reasoning');
     expect(s.chosen[3]).toBe('temperature (0~2)');
     expect(s.chosen[4]).toBe('这次切换的作用域?');
@@ -433,6 +434,96 @@ describe('分步选择器: 流程与"不留痕"', () => {
 // ============================================================
 // ③ 唯一写盘路径的源码级门
 // ============================================================
+
+/**
+ * ★ 文本回退路径 (= 真终端里没有结构化选择器时走的那条; leo 2026-09-27 亲测报的缺陷就在这条路上:
+ *   曾经每一步只印一句 `选择 (序号/值, 回车=1)`, **一个选项都没有** ⇒ 用户无从知道 1 是谁)。
+ * 这里把三条硬要求钉在单测里 (真 pty 端到端在 scripts/verify-model-ux.ts):
+ *   ① 先印选项再问 (标题 → 序号行 → `共 N 项` → 才问); ② 非法输入给原因再重问;
+ *   ③ EOF/Ctrl-D 当"取消"而不是"回车 = 第 1 项", 且一个字节都不写。
+ */
+describe('文本回退路径 (真终端): 先印选项再问 · 非法输入给原因 · EOF 干净取消', () => {
+  const PICK_PROMPT = '选择 (序号/值, 回车=1)';
+
+  /** 只给 `ask` (没有 `choose`) → 走 printOptions + 序号解析那条路; `seq` 保留 print/ask 的**真实先后** */
+  function textIO(answers: Array<string | null>) {
+    const printed: string[] = [];
+    const asks: string[] = [];
+    const seq: Array<{ kind: 'print' | 'ask'; text: string }> = [];
+    let eof = false;
+    return {
+      printed, asks, seq,
+      io: {
+        print: (l: string) => { printed.push(l); seq.push({ kind: 'print', text: l }); },
+        ask: async (q: string) => {
+          asks.push(q);
+          seq.push({ kind: 'ask', text: q });
+          if (eof) return null;                       // 输入流结束之后一律 EOF (readline 就是这个行为)
+          if (!answers.length) return null;
+          const a = answers.shift()!;
+          if (a === null) { eof = true; return null; }
+          return a;
+        },
+      },
+    };
+  }
+
+  it('★ 每一步都先把选项印出来再问 (标题 → 至少一条序号行 → `共 N 项` → 提问)', async () => {
+    await seedConfig(baseConfig());
+    // deepseek(1) → deepseek-v4-pro(2) → reasoning=不设(1) → temperature=0.3(3) → 作用域=global(1)
+    const s = textIO(['1', '2', '1', '3', '1']);
+    const r = await SEL.runModelSelector(s.io as any, { verify: false });
+    expect(r.ok).toBe(true);
+
+    // 对每个提问行, 往回看: 这一段里必须**先**有标题、有序号行、有计数行 (顺序真对, 不是"文本里出现过")
+    let sawNumbered = 0;
+    let sawCount = false;
+    let blocks = 0;
+    for (const e of s.seq) {
+      if (e.kind === 'print') {
+        if (/^\s*\d+\) \S/.test(e.text)) sawNumbered++;
+        if (/共 \d+ 项 · 回空 = 第 1 项/.test(e.text)) sawCount = true;
+        continue;
+      }
+      if (e.text !== PICK_PROMPT) continue;
+      blocks++;
+      expect(sawNumbered, `第 ${blocks} 个提问前没有任何选项行 —— 这就是 leo 报的那条缺陷`).toBeGreaterThan(0);
+      expect(sawCount, `第 ${blocks} 个提问前没有 \`共 N 项\` 计数行`).toBe(true);
+      expect(s.printed.join('\n')).toMatch(/^\s*\d+\) \S/m);   // 序号行的形状: `  1) ● deepseek …`
+      sawNumbered = 0;
+      sawCount = false;
+    }
+    expect(blocks).toBe(5);       // 供应商 / 模型 / reasoning / temperature / 作用域
+  });
+
+  it('★ 非法输入: 说清原因再重问 (序号越界报范围; 对不上报"可用值见上表")', async () => {
+    await seedConfig(baseConfig());
+    const s = textIO(['99', 'zzz', 'deepseek', '2', '1', '3', '1']);
+    const r = await SEL.runModelSelector(s.io as any, { verify: false });
+    expect(r.ok).toBe(true);
+    const text = s.printed.join('\n');
+    expect(text).toMatch(/✗ 序号 99 超出范围 \(这里只有 1~\d+ 项\) — 重问/);
+    expect(text).toContain("✗ 没有候选的值或名字匹配 'zzz'");
+    // 同一题上重问: 越界之后又出现了一次提问
+    expect(s.asks.filter((q) => q === PICK_PROMPT).length).toBeGreaterThan(5);
+  });
+
+  it('★ EOF (Ctrl-D) 不是"回车 = 第 1 项": 干净取消 + 配置逐字节不变', async () => {
+    await seedConfig(baseConfig());
+    const before = await fs.readFile(CFG, 'utf-8');
+    const s = textIO([null]);
+    const r = await SEL.runModelSelector(s.io as any, { verify: false });
+    expect(r.ok).toBe(false);
+    expect(r.cancelled).toBe(true);
+    const text = s.printed.join('\n');
+    expect(text).toContain('输入已结束 (Ctrl-D / EOF)');
+    expect(r.message).toContain('已取消, 未改动任何配置');   // 最终回执在返回值里 (printed 里是那行取消理由)
+    // 取消前用户**看得见自己在哪一步** (选项已经印出来了), 不是"什么都没印就退出"
+    expect(s.printed.some((l) => /^\s*\d+\) \S/.test(l))).toBe(true);
+    expect(text).toContain('共 ');
+    expect(await fs.readFile(CFG, 'utf-8')).toBe(before);
+  });
+});
 
 describe('唯一写盘路径 (源码级门: 选择器里不许出现第二条路)', () => {
   const read = async (p: string) => fs.readFile(path.join(ROOT, p), 'utf-8');

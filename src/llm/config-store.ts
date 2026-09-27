@@ -464,7 +464,24 @@ class LLMConfigStore {
     if (!rows) return null;
     if (rows[id]) return { row: rows[id], existing: true };
     const spec = this.config?.customProviders?.[id];
-    if (!spec) return null;
+    if (!spec) {
+      // 2026-09-27 (目录驱动): **目录里的家**也走这条 —— 新家只要在目录里就能切进来 (不改代码)。
+      //   起手行只放目录**声明过的**东西: 基址 = 目录里的 api (目录没给就是空串, 让校验层如实报
+      //   "需自定义 baseUrl"); 模型留空 (公开目录没有"默认模型"这回事, 不许抓一个凑数);
+      //   凭据那一格留空, 等写入或等环境变量 (目录只给环境变量**名**)。
+      const catEntry = getProviderRegistryEntry(id);
+      if (!catEntry || catEntry.kind !== 'catalog') return null;
+      return {
+        existing: false,
+        row: {
+          enabled: true,
+          apiKey: '',
+          baseUrl: catEntry.defaultBaseUrl,
+          model: '',
+          requiresApiKey: catEntry.requiresApiKey !== false,
+        },
+      };
+    }
     const entry = getProviderRegistryEntry(id);
     return {
       existing: false,

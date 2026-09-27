@@ -29,6 +29,7 @@
 
 import {
   buildProviderSummaries, listModelsFor, formatProviderLine, formatModelLine,
+  providerGroupSummary,
   unknownFootnote, searchModelEntries, capabilityZh, resolvedApiKeyOf,
   type ModelEntry, type ProviderSummary,
 } from '../llm/model-catalog.js';
@@ -48,15 +49,21 @@ export interface SelectorChoice {
   value: string;
   label: string;
   hint?: string;
+  /** 分组标题 (同一个分组只印一次; 用于"可用 / 未配置凭据"这类分段) */
+  group?: string;
 }
 
 /** 选择器的输入输出口。会话内只注入 `choose` (没有文本输入与隐藏输入能力) */
 export interface ModelSelectorIO {
   print(line: string): void;
-  /** 文本输入 (TTY 场景) */
-  ask?(q: string, opts?: { default?: string }): Promise<string>;
-  /** 隐藏输入 —— **只用于 API key** */
-  askHidden?(q: string): Promise<string>;
+  /**
+   * 文本输入 (TTY 场景)。
+   * **返回 `null` = 输入流结束了 (EOF / Ctrl-D / 管道读完)** —— 不是"用户输了空串"。
+   * 两者必须分开: 空串 = 回车 = 取默认; `null` = 只能取消 (没有可读的输入了)。
+   */
+  ask?(q: string, opts?: { default?: string }): Promise<string | null>;
+  /** 隐藏输入 —— **只用于 API key**; 返回 null 同 `ask` (EOF) */
+  askHidden?(q: string): Promise<string | null>;
   /** 结构化选择 (回车/↑↓ 那种); 返回 null = 用户取消 */
   choose?(items: SelectorChoice[], title: string): Promise<string | null>;
 }
@@ -102,54 +109,98 @@ export interface RunModelSelectorOptions {
 function makeCtx(io: ModelSelectorIO, lines: string[]) {
   const push = (s: string) => { for (const l of String(s).split('\n')) { lines.push(l); io.print(l); } };
 
-  /** 让用户从候选里挑一个; 返回 null = 取消 */
+  /**
+   * 把候选**逐条印出来再问** (leo 2026-09-27 硬要求)。
+   *
+   * 为什么单列一个函数: 曾经这里只印一句 `选择 (序号/值, 回车=1)`, 用户**无从知道 1 是谁** ——
+   * 序号与选项必须一起出现, 否则提示是空承诺。序号右对齐两位, 分组标题只在切换分组时印一次,
+   * 每条的 `label` 自带状态标记 (● 可用 / ○ 未配置凭据 / ← 当前), 不在这一层另编状态。
+   */
+  const printOptions = (items: SelectorChoice[], title: string): void => {
+    push(title);
+    let lastGroup: string | undefined;
+    items.forEach((c, i) => {
+      if (c.group && c.group !== lastGroup) { push(`  ── ${c.group}`); lastGroup = c.group; }
+      push(`  ${String(i + 1).padStart(2)}) ${c.label}${c.hint ? ` — ${c.hint}` : ''}`);
+    });
+    push(`  共 ${items.length} 项 · 回空 = 第 1 项`);
+  };
+
+  /**
+   * 让用户从候选里挑一个; 返回 null = 取消 (或输入流结束)。
+   *
+   * 非法的输入**要说清为什么**再重问 (序号越界 → 报范围; 字母前缀没命中 → 报实际命中数),
+   * 而不是笼统一句"没对上"。**EOF (Ctrl-D)** 与"用户取消"分开: 前者印一行明确的取消理由。
+   */
   const pick = async (items: SelectorChoice[], title: string): Promise<string | null> => {
     if (!items.length) return null;
+    // 结构化选择器 (会话内 Ink) 自己渲染选项列表与当前光标 —— 这里不重复印一遍, 否则双份。
     if (io.choose) return await io.choose(items, title);
     if (!io.ask) return null;
-    push(title);
-    items.forEach((c, i) => push(`  ${String(i + 1).padStart(2)}) ${c.label}${c.hint ? ` — ${c.hint}` : ''}`));
+    printOptions(items, title);
     for (let tries = 0; tries < 3; tries++) {
-      const raw = String(await io.ask('选择 (序号/值, 回车=1)') ?? '').trim();
+      const ans = await io.ask(CH_PICK);
+      if (ans === null) { push(EOF_CANCEL); return null; }
+      const raw = ans.trim();
       if (raw === '') return items[0].value;
       if (/^\d+$/.test(raw)) {
-        const hit = items[Number(raw) - 1];
+        const n = Number(raw);
+        const hit = items[n - 1];
         if (hit) return hit.value;
+        push(`  ✗ 序号 ${n} 超出范围 (这里只有 1~${items.length} 项) — 重问`);
+        continue;
       }
       const exact = items.find((c) => c.value === raw);
       if (exact) return exact.value;
       const lo = raw.toLowerCase();
       const pref = items.filter((c) => c.value.toLowerCase().startsWith(lo) || c.label.includes(raw));
       if (pref.length === 1) return pref[0].value;
-      push(`  ✗ 没对上 (${pref.length} 个候选), 再来一次`);
+      if (pref.length > 1) {
+        push(`  ✗ '${raw}' 对上 ${pref.length} 个候选, 请给序号: ${pref.slice(0, 6).map((c) => c.value).join(', ')}${pref.length > 6 ? ' …' : ''} — 重问`);
+        continue;
+      }
+      push(`  ✗ 没有候选的值或名字匹配 '${raw}' (可用值见上表) — 重问`);
     }
+    push('  ✗ 连试 3 次都没对上 → 取消 (未改动任何配置)');
     return null;
   };
 
-  /** 是非确认 */
+  /** 是非确认 (一律先把两个选项印出来再问) */
   const confirm = async (q: string, def = true): Promise<boolean> => {
+    const opts: SelectorChoice[] = [
+      { value: 'yes', label: def ? '确认 (默认)' : '确认' },
+      { value: 'no', label: def ? '取消' : '取消 (默认)' },
+    ];
     if (io.ask) {
-      const a = String(await io.ask(`${q} (y/n)`, { default: def ? 'y' : 'n' })).trim().toLowerCase();
+      push(q);
+      opts.forEach((c, i) => push(`  ${i + 1}) ${c.label}`));
+      const ans = await io.ask(`${q} (y/n, 回车=${def ? 'y' : 'n'})`, { default: def ? 'y' : 'n' });
+      if (ans === null) { push(EOF_CANCEL); return false; }
+      const a = ans.trim().toLowerCase();
       return a === '' ? def : /^(y|yes|1|true|是|好|确认)$/.test(a);
     }
     if (io.choose) {
-      const v = await io.choose(
-        [{ value: 'yes', label: '确认' }, { value: 'no', label: '取消' }],
-        q,
-      );
+      const v = await io.choose(opts, q);
       return v === 'yes';
     }
     return false;
   };
 
-  /** 文本输入 (没有该能力 → 返回 null, 由调用方决定退化行为) */
+  /** 文本输入 (没有该能力 → 返回 null, 由调用方决定退化行为; EOF 也返回 null) */
   const text = async (q: string, def?: string): Promise<string | null> => {
     if (!io.ask) return null;
-    return String(await io.ask(q, def !== undefined ? { default: def } : undefined) ?? '').trim();
+    const ans = await io.ask(q, def !== undefined ? { default: def } : undefined);
+    if (ans === null) return null;
+    return ans.trim();
   };
 
-  return { push, pick, confirm, text };
+  return { push, pick, confirm, text, printOptions };
 }
+
+/** 选择提示语 (每一步都用同一句, 方便验收按它数步骤) */
+const CH_PICK = '选择 (序号/值, 回车=1)';
+/** 输入流结束时的统一口径 (必须是"干净取消", 且不许写任何东西) */
+const EOF_CANCEL = '· 输入已结束 (Ctrl-D / EOF) → 取消本次切换, 一个字节都没写';
 
 // ============================================================
 // 主流程
@@ -177,27 +228,44 @@ export async function runModelSelector(
   }
   const live = summaries.filter((s) => s.configured);
   const unconfigured = summaries.filter((s) => !s.configured);
-  push(`供应商 (${live.length} 家可用 / ${summaries.length} 家登记):`);
-  for (const s of live) push(`  ${formatProviderLine(s)}`);
-  for (const s of unconfigured) push(`  ${formatProviderLine(s)}`);
+  // 第一屏 = 计数 + 分组 + 目录新鲜度, 紧接着就是**带序号的选项表** (由 `pick` 里的
+  //   `printOptions` 印出): 不再在选项表之外另抄一份无序号清单 —— 那是同一份东西印两遍,
+  //   而且没有序号 (用户没法回答"1 是谁")。目录里的 200+ 家由分组计数概括, 不刷屏。
+  push(`步骤 1/7 供应商 (${live.length} 家可用 / ${summaries.length} 家登记):`);
+  push(`  ${providerGroupSummary(summaries)}`);
+  try {
+    // 动态 import: 选择器 → provider-catalog 是单向的 (目录层不 import 选择器), 不构成环;
+    // 用动态是为了让"目录读盘失败"不影响选择器本身能用。
+    const pc: any = await import('../llm/provider-catalog.js');
+    await pc.initializeProviderCatalog();
+    push(`  ${pc.catalogStatusLine()}`);
+    push(`  ${pc.catalogGroupLine()}`);
+    push('  看目录: /model catalog · 筛: /model catalog list <筛选词> · 拉最新: /model catalog refresh');
+  } catch (e: any) {
+    push(`  ⚠ 目录状态读不出来: ${String(e?.message || e).slice(0, 120)} (目录层的问题, 不影响下面的选择)`);
+  }
   if (!summaries.length) return done({ ok: false, reachedStep: 'provider', message: '没有任何登记在册的供应商' });
 
-  const providerChoices: SelectorChoice[] = [
+  const ordered = [
     ...summaries.filter((s) => s.current),
     ...live.filter((s) => !s.current),
     ...unconfigured,
-  ].map((s) => ({
+  ];
+  const providerChoices: SelectorChoice[] = ordered.map((s) => ({
     value: s.id,
     label: formatProviderLine(s),
     hint: `${s.name}${s.providerReasoning === 'yes' ? ' · 登记支持 reasoning' : ''}${s.configuredModel ? ` · 配置里 model=${s.configuredModel}` : ''}`,
+    // 分组标题只在切换分组时印一次: 当前 → 可用 → 未配置凭据 (序号是全局连续的)
+    group: s.current ? '当前生效' : (s.configured ? '可用 (有凭证)' : '未配置凭据 (选了会先要 key)'),
   }));
-  const providerId = await pick(providerChoices, '选择供应商');
+  const providerId = await pick(providerChoices, '选择供应商 (序号 / 供应商 id):');
   if (!providerId) return done({ ok: false, cancelled: true, reachedStep: 'provider', message: '已取消, 未改动任何配置' });
   const summary = summaries.find((s) => s.id === providerId)!;
   push(`已选供应商: ${providerId} (${summary.name})`);
 
   // ── 2) 凭证 ──────────────────────────────────────────────
   let pendingKey: string | undefined;
+  push(`步骤 2/7 凭证 — ${providerId}: ${summary.requiresApiKey ? (summary.keyState === 'missing' ? '还没有凭证, 需要粘贴一个 key' : summary.keyState === 'env' ? '凭证来自环境变量 (authRef=env)' : '已配置') : '该供应商免 key'}`);
   if (summary.requiresApiKey && summary.keyState === 'missing') {
     if (!io.askHidden) {
       return done({
@@ -207,7 +275,9 @@ export async function runModelSelector(
         message: `${providerId} 还没有凭证, 且当前环境不能安全地收 key —— 请在系统终端执行 \`bolloon model key ${providerId}\` (或打开 Web 配置页) 后再选。未改动任何配置。`,
       });
     }
-    const k = String(await io.askHidden(`粘贴 ${providerId} API key (输入不回显)`) ?? '').trim();
+    const ans = await io.askHidden(`粘贴 ${providerId} API key (输入不回显)`);
+    if (ans === null) { push(EOF_CANCEL); return done({ ok: false, cancelled: true, reachedStep: 'key', message: '输入已结束 (EOF/Ctrl-D) —— 未改动任何配置' }); }
+    const k = ans.trim();
     if (!k) return done({ ok: false, cancelled: true, reachedStep: 'key', message: '没有收到 key, 未改动任何配置' });
     pendingKey = k;
     // 只回显尾 4 位 —— 全文不进任何输出/日志/报告
@@ -231,23 +301,22 @@ export async function runModelSelector(
       message: `${providerId} 没有可用模型 (无内置目录且配置为空) —— 请用 \`/model ${providerId} <model>\` 直接指定, 或先配好目录`,
     });
   }
-  push(`模型 (${providerId}, ${entries.length} 个候选${summary.modelCountOrigin === 'unavailable' ? ' · 无内置目录, 只列配置里和当前生效的那个' : ' · 内置目录'}):`);
-  for (const e of entries) push(`  ${formatModelLine(e)}`);
+  push(`步骤 3/7 模型 — ${providerId}, ${entries.length} 个候选${summary.modelCountOrigin === 'unavailable' ? ' · 无内置目录, 只列配置里和当前生效的那个' : ' · 内置目录'} (带序号的清单见下)`);
   for (const f of unknownFootnote(entries)) push(`  ${f}`);
 
   let candidates = entries;
   let manualModel: string | undefined;
   if (io.ask && entries.length > 3) {
     const q = await text('搜索模型 (模糊, 留空 = 全部)');
-    if (q === null) return done({ ok: false, cancelled: true, reachedStep: 'model', message: '已取消, 未改动任何配置' });
+    if (q === null) { push(EOF_CANCEL); return done({ ok: false, cancelled: true, reachedStep: 'model', message: '输入已结束 (EOF/Ctrl-D) —— 未改动任何配置' }); }
     if (q) {
       const hit = searchModelEntries(entries, q);
-      push(`搜索 '${q}' → ${hit.length} 个命中`);
-      for (const e of hit) push(`  ${formatModelLine(e)}`);
+      push(`搜索 '${q}' → ${hit.length} 个命中 (清单见下)`);
       candidates = hit;
       if (!hit.length) {
         // 自定义模型允许手动输入 (目录里没有不等于不能用) —— 但要说清"未在目录里"
         const manual = await text(`目录里没有匹配项。直接输入 ${providerId} 的原始 model ID (留空=取消)`);
+        if (manual === null) { push(EOF_CANCEL); return done({ ok: false, cancelled: true, reachedStep: 'model', message: '输入已结束 (EOF/Ctrl-D) —— 未改动任何配置' }); }
         if (!manual) return done({ ok: false, cancelled: true, reachedStep: 'model', message: '已取消, 未改动任何配置' });
         manualModel = manual;
         push(`使用手工输入的 model ID: ${manual} (不在目录里, 元数据一律按未知处理; 切换前的探测仍会真跑一次)`);
@@ -267,7 +336,7 @@ export async function runModelSelector(
 
   const modelId = manualModel ?? await pick(
     candidates.map((e) => ({ value: e.id, label: formatModelLine(e), hint: e.current ? '当前生效' : e.origin })),
-    '选择模型',
+    `选择模型 (${providerId}, 序号 / model id):`,
   );
   if (!modelId) return done({ ok: false, cancelled: true, reachedStep: 'model', message: '已取消, 未改动任何配置' });
   const entry = candidates.find((e) => e.id === modelId) || entries.find((e) => e.id === modelId);
@@ -275,6 +344,7 @@ export async function runModelSelector(
 
   // ── 4) 生成参数 (reasoning / temperature) ────────────────
   const params: { temperature?: number; reasoningMode?: boolean } = {};
+  push('步骤 4/7 生成参数 (reasoning / temperature)');
   // reasoning: 只有"登记为支持"时才提供开关; 能力未知就不给这一项 (不猜)
   if (summary.providerReasoning === 'yes') {
     const r = await pick([
@@ -301,7 +371,8 @@ export async function runModelSelector(
   if (temp === null) return done({ ok: false, cancelled: true, reachedStep: 'params', message: '已取消, 未改动任何配置' });
   if (temp === '__custom__') {
     const raw = await text('temperature (0~2)', '0.7');
-    if (raw === null || raw === '') {
+    if (raw === null) { push(EOF_CANCEL); return done({ ok: false, cancelled: true, reachedStep: 'params', message: '输入已结束 (EOF/Ctrl-D) —— 未改动任何配置' }); }
+    if (raw === '') {
       push('没输入 → 本项不设');
     } else {
       const n = Number(raw);
@@ -317,6 +388,7 @@ export async function runModelSelector(
 
   // ── 5) 作用域 ────────────────────────────────────────────
   let scope: 'global' | 'session' = 'global';
+  push('步骤 5/7 作用域');
   for (let round = 0; round < 2; round++) {
     const s = await pick([
       { value: 'global', label: '全局默认 (影响新会话 + 未绑定模型的任务)' },
@@ -370,7 +442,7 @@ async function commit(
 
   // ── 6) 测试连接 (对**候选**配置探测; 不写任何东西) ─────────
   if (a.opts.verify === false) {
-    push('已按 --no-verify 跳过连通探测 (第 6 步预检与第 7 步切换前校验都关) —— 离线自测用');
+    push('步骤 6/7 测试连接: 已按 --no-verify 跳过连通探测 (第 6 步预检与第 7 步切换前校验都关) —— 离线自测用');
   } else if (!a.opts.skipProbe) {
     // 预检必须用**和落盘时同一份凭证**: 本次新输入的 key 优先, 否则用该供应商已配置/环境变量里的那一份。
     //   (拿不到 key 就不带鉴权头 —— 那确实是"这个供应商现在用不了", 如实报 401, 不假装探测通过。)
@@ -378,8 +450,17 @@ async function commit(
     const t0 = Date.now();
     const probe = await probeSelection({ provider: a.providerId, model: a.modelId, baseUrl: a.baseUrl, apiKey: probeKey });
     const ms = Date.now() - t0;
-    push(`测试连接 (${a.providerId}/${a.modelId} @ ${a.baseUrl}): ${probe.ok ? '✅ 通过' : '✗ 失败'} — ${probe.detail} (${ms} ms)`);
+    push(`步骤 6/7 测试连接 (${a.providerId}/${a.modelId} @ ${a.baseUrl}): ${probe.ok ? '✅ 通过' : '✗ 失败'} — ${probe.detail} (${ms} ms)`);
     if (!probe.ok) push(`失败分类: ${probe.failureClass || '未知'} — 第 6 步只是预检; 继续也不会跳过第 7 步切换前的校验。`);
+    // 第 7 步的"确认"必须先把**要提交的东西**逐条印出来 —— 否则用户是在确认一份看不见的配置。
+    push('步骤 7/7 确认 — 即将提交这一份:');
+    push(`  供应商: ${a.providerId} (${a.summary.name})`);
+    push(`  模型:   ${a.modelId}`);
+    push(`  基址:   ${a.baseUrl}`);
+    push(`  作用域: ${scope === 'global' ? '全局默认 (影响新会话 + 未绑定模型的任务)' : '仅当前会话 (不动全局默认)'}`);
+    push(`  凭证:   ${a.pendingKey ? '本次新输入的 key (落盘为全局凭证, 不回显)' : '沿用已配置 / 环境变量里的那一份'}`);
+    push(`  参数:   ${params.temperature === undefined ? 'temperature=不设' : `temperature=${params.temperature}`}`
+      + `${params.reasoningMode === undefined ? '' : ` · reasoning=${params.reasoningMode ? '开' : '关'}`}`);
     const proceed = a.opts.assumeYes
       ? true
       : await confirm(probe.ok ? '探测通过, 确认按上面的配置切换?' : '探测没通过, 还要继续尝试切换吗? (不推荐)', probe.ok);
@@ -392,7 +473,7 @@ async function commit(
         });
     }
   } else {
-    push('已跳过第 6 步预检 (skipProbe) —— 第 7 步的切换前校验仍在');
+    push('步骤 6/7 已跳过预检 (skipProbe) —— 第 7 步的切换前校验仍在');
   }
 
   // ── 7) 唯一写盘点 ───────────────────────────────────────

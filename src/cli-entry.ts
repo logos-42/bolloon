@@ -570,44 +570,88 @@ async function handleP2pCommand(p2pArgs: string[]): Promise<void> {
   process.exit(info.ok ? 0 : 1);
 }
 
+/** 真终端判定: stdin 与 stdout 都是 TTY 才算交互 (管道 / 重定向 = 脚本可读输出) */
+function isRealTty(): boolean {
+  return !!process.stdin.isTTY && !!process.stdout.isTTY;
+}
+
+/**
+ * `bolloon model [...]` — 模型供应商/模型切换的唯一命令行入口。
+ *
+ * leo 2026-09-27 口径: **`bolloon model` 就是"切换"的启动命令** —— 真终端里敲完直接就是选择界面
+ * (与 `bolloon model pick` 同一实现, 只是用户不必知道 pick 这个词), 第一屏就是带序号/状态/当前项
+ * 标记的供应商列表, 选完往下走; **不许**先刷一坨供应商清单+用法再问。
+ * 管道/非 TTY 才退回清单+用法 (脚本可读, 不会卡在等待输入)。
+ * `pick` / `list` 两个子命令都保留 (pick 是显式写法, list 只读列表)。
+ */
 async function handleModelCommand(modelArgs: string[]): Promise<void> {
   const { llmConfigStore } = await import('./llm/config-store.js');
   const { buildProviderSummaries, formatProviderLine } = await import('./llm/model-catalog.js');
   const { effectiveModelConfig, formatEffectiveModel } = await import('./llm/model-selection.js');
   await llmConfigStore.initialize();
 
-  // 无参: 列出所有供应商 + 当前**真实生效**的那一份 + 指引分步选择器
+  const tty = isRealTty();
+
+  // ── 真终端 + 裸敲: 直接进选择器 (第一屏 = 供应商列表) ──────────
+  if (modelArgs.length === 0 && tty) {
+    const { runModelCommand, askHiddenLineEof, askLineEof } = await import('./cli/setup-wizard.js');
+    const out = await runModelCommand('pick', {
+      live: true, // 每一步当场打到终端 (不是等整轮结束才一次性回显)
+      print: (l: string) => process.stdout.write(l + '\n'),
+      askHidden: async (q: string) => { const r = await askHiddenLineEof(q); return r.eof ? null : r.value; },
+      ask: async (q: string, opts?: { default?: string }) => { const r = await askLineEof(q, opts); return r.eof ? null : r.value; },
+    });
+    for (const line of String(out).split('\n')) if (line !== '') console.log(line);
+    return;
+  }
+
+  // ── 无参 + 非终端 (管道/脚本): 列出所有供应商 + 当前**真实生效**的那一份 + 用法 ──
   if (modelArgs.length === 0) {
     const eff = await effectiveModelConfig({}).catch(() => null);
     const summaries = await buildProviderSummaries({});
+    const { providerGroupSummary } = await import('./llm/model-catalog.js');
+    const pc: any = await import('./llm/provider-catalog.js');
+    await pc.initializeProviderCatalog();
     console.log(`\n${BOLD}模型供应商${RESET} (当前生效: ${eff ? `${eff.provider}/${eff.model}` : '读不出来'})\n`);
     if (eff) console.log(`  ${formatEffectiveModel(eff)}`);
     console.log('─'.repeat(58));
     for (const s of [...summaries.filter((x) => x.configured), ...summaries.filter((x) => !x.configured)]) {
       console.log(`  ${formatProviderLine(s)}`);
     }
+    // 目录驱动 (2026-09-27): 目录里的家默认只列"已有凭证"的那些 (上面那些 ● 行),
+    //   其余 200+ 家用分组计数概括 —— 不刷 223 行噪音, 但也要说清它们在哪、目录是几号的。
+    console.log(`  ${providerGroupSummary(summaries)}`);
+    console.log(`  ${pc.catalogStatusLine()}`);
+    console.log(`  ${pc.catalogGroupLine()}`);
     console.log(`\n${BOLD}用法:${RESET}`);
-    console.log(`  bolloon model pick                # 分步选择 (供应商→凭证→模型→参数→作用域→测试→确认)`);
+    console.log(`  bolloon model                    # 终端里直接进选择界面 (下面这份清单是管道/脚本的可读输出)`);
+    console.log(`  bolloon model pick               # 同上, 显式写法 (供应商→凭证→模型→参数→作用域→测试→确认)`);
     console.log(`  bolloon model <name>             # 切换到该供应商`);
     console.log(`  bolloon model <name> <model>     # 切换并指定模型`);
     console.log(`  bolloon model list [name]        # 看模型发现目录 (只读)`);
     console.log(`  bolloon model refresh [name]     # 重取上游目录 (--clear 清缓存)`);
     console.log(`  bolloon model admit <name> <m>   # 手输一个目录里没有的模型名`);
+    console.log(`  bolloon model catalog            # 供应商目录: 是几号的/新鲜度/族分布 (只读)`);
+    console.log(`  bolloon model catalog list [词]  # 逐家看 (--all 连"需专用鉴权/无基址"的也看)`);
+    console.log(`  bolloon model catalog refresh    # 运行期真拉最新目录 (落盘 0600, 记来源与时间)`);
     console.log(`  示例: bolloon model deepseek deepseek-v4-flash`);
     return;
   }
 
-  // 有参: 统一交给 setup-wizard 的 runModelCommand
+  // ── 有参: 统一交给 setup-wizard 的 runModelCommand ───────────
   //   (pick 分步选择 / 切换 / <provider> <model> / key <provider> / test / status 一套语义,
   //    与 CLI 会话内 /model 完全一致 —— 写配置与重建运行时的逻辑只有 selectModel 一处)
-  const { runModelCommand, askHiddenLine, askLine } = await import('./cli/setup-wizard.js');
+  const { runModelCommand, askHiddenLineEof, askLineEof } = await import('./cli/setup-wizard.js');
   const out = await runModelCommand(modelArgs.join(' '), {
-    // 正常终端里可以安全收 key (隐藏输入, 不回显)
-    askHidden: (q: string) => askHiddenLine(q),
+    // 真终端: 选择器每一步当场印出来 (leo: 不许只印一句"选择 (序号/值, 回车=1)")
+    live: tty,
+    print: (l: string) => process.stdout.write(l + '\n'),
+    // 正常终端里可以安全收 key (隐藏输入, 不回显); EOF/Ctrl-D → null = 干净取消
+    askHidden: async (q: string) => { const r = await askHiddenLineEof(q); return r.eof ? null : r.value; },
     // 分步选择器的文本输入 (搜索模型 / 手工 temperature)
-    ask: (q: string, opts?: { default?: string }) => askLine(q, opts),
+    ask: async (q: string, opts?: { default?: string }) => { const r = await askLineEof(q, opts); return r.eof ? null : r.value; },
   });
-  for (const line of String(out).split('\n')) console.log(line);
+  for (const line of String(out).split('\n')) if (line !== '') console.log(line);
 }
 
 /** `bolloon setup` — 首次运行初始化向导 (用户身份 + 模型供应商 + API key + 连通性测试) */

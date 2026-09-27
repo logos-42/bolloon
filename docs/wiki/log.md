@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-27 | feat | **供应商目录驱动 (公开目录 223 家 → 离线可用) + `bolloon model` 真终端裸敲**就是**切换 (第一屏即选择器) —— 收尾线: 夹具修正 (负控制 `deepinfra`→`ai21`, 诱因是它本身无 api 基址把"无基址"顶成 25) 让 S1/S7/S9 稳定 **197/26** + 门禁全绿 (自有门 **70/0** · 变异 **5/5** · 真 pty 门 **27/0** · 变异 **2/2** · 八道 `verify-model-*` 全绿 · 冻结门 34/34 · 全量 **246 文件 / 4009 测**) + `build:main` 让 leo 手上那个全局 `bolloon` 真带上目录** | [provider-catalog.md](./provider-catalog.md) / [verify-provider-catalog.ts](../../scripts/verify-provider-catalog.ts) / [verify-model-ux.ts](../../scripts/verify-model-ux.ts) / [provider-catalog.ts](../../src/llm/provider-catalog.ts) / [pty-drive.py](../../scripts/lib/pty-drive.py) |
 | 2026-09-26 | test | **P8 验收门口径自洽 (第 12 条): 反事实臂"能内联的真跑 / 跑不到的显式 SKIP + 引证" —— 裸跑 exit 1 → **exit 0** 且第 12 条 `PASS` 明明白白; 并立了一道能判红的门 (M6) 钉住这条口径** —— 判定是**先跑出来再下结论**: 探针把"持锁 900ms 窗口"分别用 `holdwrite { lock: true }` 与 `{ lock: false }` 各跑 3 遍, 带锁那次父进程等到窗口结束 (**917 / 906 / 924ms**)、拿掉锁那次 **5 / 6 / 4ms** 就在窗口里写完了 ⇒ "锁被拿掉"这一臂**确定性可测 ⇒ 内联真跑**; 但**只拿掉锁不丢改动** (签名新鲜度那层仍按文件重读, qwen/glm 两格 3/3 都活着) ⇒ "两条机制**一起**拿掉 → 真丢更新"这一臂**门内跑不到** (要同时把配置签名改恒等 = 源码级变异), 于是**显式 SKIP + 写出理由 + 引证变异脚本 M4 的真输出**, 那条"由环境变量填的外部反事实位"**整个删掉** (连同 `BOLLOON_ACCEPTANCE_M4_RED`)。**门内新增 (d) 三条真跑判决** (不带锁的临界区真开了窗口 · 拿掉锁 → 互斥消失 1ms vs 916ms · 只拿掉锁改动不丢), 断言 103 → **106**; 输出新增机器可读口径行 `第 12 条口径: PASS …`; 条目行 = `[12] 两个进程同时切配置 → 不互相覆盖 — PASS (14/14 断言 · 1 条外部臂 SKIP)`。**新门 M6**: 变异脚本先跑**裸跑口径门** (exit 0 + 那两行 + SKIP 的**理由与引证**四样缺一不可), 再把第 12 条口径**改回"外部位"写法** → 裸跑立刻红 (断言 105/106, 红项 **[12]**, 红在 `(d) **内联反事实**`) ⇒ 拿掉这条口径修正, 门必红。**M4 稳定性 (`--repeat 3`)**: 3/3 判红, 红项条目每次都是 **[5, 12]** (判红条数 2/3/2, 差异全在第 12 条内的 **(a) 并发臂** —— 3 遍里只红 1 遍; **"该红的条目"稳定, (a) 单条不算稳定**, 如实标)。**门禁**: 裸跑 exit 0 · 基线门绿 · 变异 **6/6 判红** (含 M6) · `tsc --noEmit` 0 错 · 八道 `verify-model-*` + `verify-cli-quiet` 全绿 · 冻结门 34/34 · 全量 vitest 见 §收尾 | [model-selection-acceptance.md §3/§5](./model-selection-acceptance.md) / [verify-model-acceptance.ts](../../scripts/verify-model-acceptance.ts) / [verify-model-acceptance-mutations.py](../../scripts/verify-model-acceptance-mutations.py) |
 | 2026-09-26 | test | **模型切换 P8 终验收口: 用户点名的 16 条端到端验收在**当前集成树**上逐条真跑 → **16/16 条目 · 103/103 断言 · 16/16 反事实对照** + 变异 **5/5 判红** (每条红在它该红的条目上), **0 次真 LLM / 成本 0** (5 台本地假上游, key 全 `stub-*`)**: ① CLI `/model` 真切真命中 (真 `src/cli-entry.ts` argv 进程 + **同进程内运行时真被换掉** → 下一次请求 `reply=pong:B:stubB-1`, A 这一轮 +0 笔) ② 同 provider 只切 model → 假上游逐笔请求体 `stubB-1`→`stubB-2`, 盘上只这一格变 ③ 自定义 base URL (`/weird/path/v9/` 尾斜杠规范化) 真命中该路径, A/B 一笔没收到 ④ 错 key (401)/错 URL/错 model/畸形 URL 四类全拒, 四次失败前后配置 `sha256[:16]` **逐字相同** (`d1fa2c48…`), 且一次**正确**切换必须让 sha 变 (判别力自证) ⑤ 真 CLI 进程 ⇄ 真 Web HTTP (`express`+`registerLlmConfigRoutes`) 两个方向读到**同一份** (`configHash` 同值), 诱饵 `llm-config.json` 被两个入口无视 ⑥ 两个**全新进程**读到同一 `configHash` 且真打请求命中 ⑦ 会话级切换后全局字节**一个都没变** + 绑定落 `model-sessions.json` (无 key 明文) + 别的会话仍读全局 + 该会话真命中 A + 会话级带凭证被拒 `credential_scope_conflict` ⑧ Global 切完**新**会话跟着变 (老会话仍读自己的绑定) ⑨ 执行中切全局 → 盘上 Run 快照逐字段没变 (用 `detectRunConfigDrift` 反向证明"确实已漂"并点名 4 字段) ⑩ `resolveNextRunModel` → 新 Run 快照 = 新模型, 旧 Run 未改写 ⑪ 真 `ExecutionSupervisor.tickOnce` 交给执行器的 `req.modelConfig` = **pinned 那份** (不是刚切的全局) 且 `kind=resume`; 按 Run 快照 `applyRunModelConfigToRuntime` 真装配后真打请求命中快照那台 ⑫ 屏障发令两个真进程同时切 + 持锁 900ms 窗口 + **互斥时序判决 (实测等锁 928ms)** ⑬ 旧 `llm-config.json` **逐字节**迁移 (旧/新 sha 相同) ⑭ `/models` 翻真 404: provider 不被静默删 (`unavailable`+原因)、缓存 `live-m1` 与手输 `manual-m9` 仍可用 (清缓存后 `live-m1` 消失 = 缓存在兜) ⑮ 拒绝工具声明的模型被拒 `tool_call_unsupported` 且盘上不变 + 注册表 `toolCalling=no` 不许当长期任务执行器/不进备用候选 ⑯ 失败后同进程与另起进程都仍命中旧模型 (反事实: 不回滚 → 用不了) | [model-selection-acceptance.md](./model-selection-acceptance.md) / [verify-model-acceptance.ts](../../scripts/verify-model-acceptance.ts) / [verify-model-acceptance-mutations.py](../../scripts/verify-model-acceptance-mutations.py) / [model-acceptance-child.ts](../../scripts/lib/model-acceptance-child.ts) |
 | 2026-09-26 | feat | **模型入口收敛 (P6): 补齐五个 Web 端点 (`providers`/`options`/`test`/`select`/`discover`) + 旧接口 (`/api/llm-config` · `/api/llm-provider` · `/api/llm-test`) **保留形状但内部转发到唯一写口** (整个路由文件里 `selectModel(` 只剩 1 处) · 命令面挂上 P5 发现能力 (`/model refresh [provider]` · `/model refresh --clear` · `/model list [provider]` · 手输模型 → `admitManualModel`) · **自定义供应商 id 进得来** (存在性判据从内置表改注册表, 缺口㈡结清) · Agent 配置工具/安装向导/长任务恢复**(用 Run 自己那份快照)**同一入口 · 真跑证明「CLI 命令面 · 会话内 `/model` · 真 Web 路由」三者切到同一选择后读回**逐字段相同**的有效配置 (11 字段 + `configHash` 全同, 三个入口三个进程 + 读回另起进程) · 真跑新门 **59/0** (Web 侧真起 `createWebServer`, 冷启动 ~114s) + 变异 **3/3 判红** (旧接口绕过 3 红 / 自定义退回内置表 11 红 / `refresh` 空转 2 红) · 既有七门 55/0 · 51/0 · 89/0 · 81/0 · 50/0 · 44/0 · 36/0 + 飞轮冻结门 34/34 全绿** | [model-selection-protocol.md §9](./model-selection-protocol.md) / [routes-llm-config.ts](../../src/web/routes-llm-config.ts) / [verify-model-entrypoints.ts](../../scripts/verify-model-entrypoints.ts) / [setup-wizard.ts](../../src/cli/setup-wizard.ts) / [model-selection.ts](../../src/llm/model-selection.ts) / [pi-sdk-tools.ts](../../src/agents/pi-sdk-tools.ts) / [onboard.ts](../../src/setup/onboard.ts) |
@@ -4562,3 +4563,54 @@ python3 scripts/verify-model-acceptance-mutations.py --only M4
 - "这一臂门内跑不到"这个判断是**人**写进代码的 (依据是实测), 不是机器证明的; M6 钉的是"口径有没有被退回", 不是"这个判断对不对"。
 - 第 12 条的 **(a) 并发臂在 M4 下仍抖动** (3 遍里只红 1 遍) —— M4 的稳定判红靠 **(c) 互斥时序判决** (9 / 9 / 11ms), 不假装 (a) 稳定。
 - 上面那行 P8 条目仍写着 `103/103 · 16/16 反事实` (当次事实, 历史行不改): [model-selection-acceptance.md §1/§3/§5](./model-selection-acceptance.md) 已按本次口径更新为 **106/106 + 15/15 真跑 + 1 条外部臂 SKIP**。
+
+## [2026-09-27] feat | 供应商目录驱动 (公开目录 223 家) + `bolloon model` 交互面口径 (真终端直入选择器)
+
+### 触发
+
+两条线接在一条 session 里: ① 「复刻 models.dev 的 223 家供应商」这条目录驱动线已经写完但撞了迭代上限, 留下**未提交**的成果
+(目录层 + 烘焙数据 + 26 条单测 + 自有门), 并暴露一处**计数不自洽** (S1 说"无基址 26 家"、S7/S9 说 25);
+② leo 亲测报了 CLI 体验硬缺陷: 真终端里 `bolloon model` **先刷一大坨供应商清单 + 用法**, 才进选择器;
+`pick` 那条路更糟 —— TUI 里**只印一句 `选择 (序号/值, 回车=1)`, 一个选项都没有**。
+口径由 leo 二次确认: **TTY 下裸敲 `bolloon model` 就是"切换"的启动命令, 第一屏就是带序号/状态/当前项标记的供应商列表**;
+管道/非 TTY 才退回清单 + 用法 (脚本可读); `pick` / `list` 都保留。
+
+### 关键数字
+
+- 公开源 `https://models.dev/api.json` — **4,924,682 字节** · sha256 `d01edbc7…b3715c` · 取于 `2026-09-27T03:15:32.627Z` · 源自报 **223 家**
+- 烘焙产物 — **223 家 / 8174 模型** · 有基址 **197** / 无基址 **26** · 四族 `openai-compatible` 200 · `anthropic` 8 · `gemini` 1 · `special` 14
+- 逐家重算核对过统计 (**不是拿减法估的**): 有 `api` 字段 197 · 无 26 · `auth.supported && hasBaseUrl` = **192** · 无基址家 0 条被误标可用 · `special` 家 0 条被误标可用
+- 内置 **13 家零变化**有证: 注册表条目逐字节相同 · 目录层不回答内置 (`catalogAnswersProvider` 先查 `fillScope.builtinIds`) · 同名不顶掉 · 合并读口 13 家在前
+
+### 收尾四件事 (逐条)
+
+1. **夹具修正的真因与前后**: 负控制原本挑 `deepinfra` —— 它在**真目录里没有 api 基址**, 于是夹具为了让它能发请求**给它补了本地地址**,
+   把"无基址"家数从 26 顶成 25 / 有基址 197 顶成 198, 于是 S1 与 S7/S9 互相矛盾。
+   换成本就有基址的 `ai21` (`api=https://api.ai21.com/studio/v1` + 单 env) 之后**夹具不再给任何一家补 api**,
+   并给这条不变量**上了门**: S1 记下 `bakedNoApi` 快照 → S7 断言"刷过目录之后无基址家数没变"。
+   实测 **S1 · S7 · S9 三处都是 197/26**。
+2. **门禁 (全部本机真跑, 前台定点)**: `tsc --noEmit` 0 错 · 自有门 `verify-provider-catalog.ts` **70/0 · 变异 5/5 判红** ·
+   真 pty 门 `verify-model-ux.ts` **27/0 · 变异 2/2 判红** (拿掉"印选项"/拿掉"裸敲直接进选择器" → 判红; 恢复后逐字节回原文) ·
+   八道 `verify-model-*` 全绿 (`selection` 55/0 · `selector` 51/0 · `entrypoints` 59/0 · `wiring` 89/0 · `acceptance` 16/16 条目·**106/106** 断言 · `policy` 36/0 · `discovery` 81/0 · `provider-registry` 44/0) ·
+   `verify-cli-quiet` **11/0/1 skip** (A5 是环境依赖项: 本机基线没有降级行 ⇒ 判不了; A6 定向注入坏配置**空载 t≈6.8s** 命中那行 `Error reading apiKey from config: SyntaxError…`) ·
+   冻结门 **34/34** · 全量 `npx vitest run` **246 文件 / 4009 测试全绿** (128s, 代码冻结后跑的最后一次) ·
+   `npm run build:main` exit 0 —— `dist/llm/data/provider-catalog-baked.js` **1,062,405 字节**, 且全局 `bolloon` 与本仓 dist 的 `provider-catalog.js` **sha256 相同** (全局 bin 是**符号链接到本仓**), 实测 `bolloon model catalog` 打出 223/197/26/8174。
+3. **CLI 改造 (口径落到代码 + 上单测 + 上真 pty 门)**: 真 TTY 裸敲 `bolloon model` → **直入选择器** (`isRealTty()` 才走交互); 每一步**先印选项再问**
+   (标题 → 分组 → 序号行 `  N) ●/○ 名字 — 说明` → `共 N 项 · 回空 = 第 1 项`); 非法输入**给范围再重问**; **EOF/Ctrl-D 与"回车"语义分开** (空串 = 取默认, 流结束 = 干净取消 + 一个字节都不写)。
+   新增 3 条文本回退路径单测 (逐块检查 print/ask **真实先后**、非法输入、EOF 后配置**逐字节不变**)。
+4. **wiki 回写 (AGENTS §3)**: 新页 `docs/wiki/provider-catalog.md` (源与 sha256/字节数/时间 · 家数族分布 · 诚实边界 · 内置零变化怎么证 · 运行期刷新链与陈旧标记 · 交互面口径 · 门禁与变异 · 如实留下) + `index.md` 登记行 + `current-status.md` 表行 + 本页。
+
+### 顺手修的真缺陷
+
+- **帮助文案转义写坏**: `setup-wizard.ts` 两处 `${'{'}…{'}'}` 的收尾少了个 `$`, 终端上**真打成一个 `{'}'}`** 给用户看 (`只要你有 {目录声明的环境变量{'}'}`)。
+  改成纯文本, 不再玩花括号转义。
+- **两条单测断言按新事实改指向 (不是放宽)**: `model-selector.test.ts` 两处标题改名 (原标题没写"接受什么输入") + 新增 3 条;
+  `provider-registry.test.ts` 的"reset 之后不偷偷加回来" —— 现在有**两个**自动填充点, 改为如实钉住**各自每进程只自动接线一次** (注册表那个**没**回来, 目录最多一份, 再 init 结果逐项不变; 用独立探针先把行为量清楚才写的断言)。
+
+### 如实留下 (没做到 / 有保留)
+
+- `verify-mobile-model-sync` **53 passed / 1 failed**: 红项是**陈旧打包产物** —— `build/ipa/Bolloon-unsigned.ipa` (09-26 09:36 打) 里的 `0.5.0` 比 `package.json` (09-26 17:00 的 bump, 仍在暂存区未提交) 的 `0.5.1`, 要 **Xcode 重打 IPA** 才对齐; **不是本轮回归**, 那 4 个版本号文件本轮**没动也没提交**。
+- 26 家无 api 基址仍要用户显式给地址 (目录里没给就是没给, 不补); 14 家 `special` 仍**不**支持 (界面如实标, 切换会被拒)。
+- 真 pty 门覆盖的是**命令行交互面**; 会话内 `/model` 的 Ink 选择器 (`io.choose` 自己渲染) **没有**单独跑 pty 断言 (同一份七步与"先印选项"代码)。
+- 门只钉家族级计数 (223/197/26/四族), **没有**逐家核对 8174 个模型 id 与公开源的一致性; 一致性由构建期生成 + 源 sha256 记录承担。
+- 并行跑多道门时 `verify-cli-quiet` 的 **A6 曾判红一次** —— 负载把 20s 窗口拉长, 空载单跑绿 (判据成立), 按**负载假红**处理并如实记账。

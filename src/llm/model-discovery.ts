@@ -125,6 +125,9 @@ import {
   type ProbeFailureClass,
   type TimeoutFlag,
 } from './connection-probe.js';
+// ★ 2026-09-27 (目录驱动): 发现层把"真目录覆盖了哪些模型"**注入**给目录层。
+//   方向是 discovery → catalog (单向, 不成环): 目录层不 import 本文件, 它只认注入进来的探针函数。
+import { setLiveFactsProbe } from './provider-catalog.js';
 
 // ============================================================
 // 常量
@@ -247,6 +250,12 @@ export interface DiscoveredCatalog {
   failureReason?: string;
   /** 发现失败但 provider **被保留** (本层的不静默删承诺) */
   keptDespiteFailure: boolean;
+  /**
+   * 目录家需要**专用鉴权 (本版本未支持)** 时的原因 (人话); 其余 `undefined`。
+   *
+   * 有值就意味着"本运行时**没发过**请求" —— 展示层必须如实标出来 (不许让它看起来像"试过了只是失败")。
+   */
+  authUnsupported?: string;
   notes: string[];
 }
 
@@ -661,8 +670,20 @@ export async function resolveDiscoveryTarget(providerId: string, opts: DiscoverO
   };
   if (cred.apiKey) target.apiKey = cred.apiKey;
 
+  // ★ 2026-09-27 (目录驱动): 目录里需要**专用鉴权**的家 (云签名/OAuth/多变量云凭证) ——
+  //   本运行时不会说那家的鉴权语言, 于是**根本没发请求**。如实报出来, 不许假装做了一次发现。
+  //   放在 baseUrl/endpoint 检查之前: 换地址也救不了这一条。
+  if (entry.authSupported === false) {
+    // `authSupportNote` 自带"需专用鉴权 (未支持): <为什么>"的口径, 这里不再叠前缀
+    target.skipReason = `这家不能发现: ${entry.authSupportNote || '需专用鉴权 (本版本未支持), 形状未知'}`
+      + ` → 本运行时不发它的请求 (它仍然出现在列表里, 并如实标注不能用)`;
+    return target;
+  }
+
   if (!baseUrl) {
-    target.skipReason = '没有任何一层给出 base URL (显式/配置/供应商默认/环境变量都空) → 没有发现可做';
+    target.skipReason = entry.origin === 'catalog'
+      ? '目录里这一家没有 api 基址 (公开目录没给) 且你也没给 → 需自定义 baseUrl (--base-url 或写进配置)'
+      : '没有任何一层给出 base URL (显式/配置/供应商默认/环境变量都空) → 没有发现可做';
     return target;
   }
   if (!endpoint) {
@@ -687,12 +708,12 @@ interface MergedModels {
 }
 
 /**
- * 合并清单。顺序 = **优先级降序**: `live` → `cached` → `custom` → `curated`。
+ * 合并清单。顺序 = **优先级降序**: `live` → `cached` → `custom` → `catalog` → `curated`。
  * 同一模型出现多次时按**更高优先级的来源**记 (但首次出现的位置保留 —— 列表顺序稳定)。
  */
 function mergeModels(layers: Array<{ origin: CatalogOrigin; ids: string[] }>): MergedModels {
   const origins: Record<string, CatalogOrigin> = {};
-  const rank: Record<string, number> = { live: 4, cached: 3, custom: 2, curated: 1, unavailable: 0 };
+  const rank: Record<string, number> = { live: 5, cached: 4, custom: 3, catalog: 2, curated: 1, unavailable: 0 };
   const order: string[] = [];
   for (const layer of layers) {
     for (const raw of layer.ids) {
@@ -731,7 +752,29 @@ export function setDiscoverySnapshot(catalogs: DiscoveredCatalog[]): void {
     if (!c || !c.provider) continue;
     discoverySnapshot.set(c.provider, c);
   }
+  installLiveFactsProbe();
 }
+
+/**
+ * 把"真目录 (live/cached) 覆盖了这条模型"这件事告诉目录层 —— **幂等**, 接一次。
+ *
+ * 为什么要有它: 目录层 (223 家的目录快照) 也是元数据填充点之一, 而"先注册的源赢"这条冻结规则
+ * 会让目录快照压住真发现到的事实。两者**都**是字面声明, 但真目录更新 (它来自供应商自己的 API),
+ * 所以这里显式让位: 真目录答过的字段, 目录快照不再答。
+ */
+function installLiveFactsProbe(): void {
+  if (liveProbeInstalled) return;
+  liveProbeInstalled = true;
+  setLiveFactsProbe((provider, model) => {
+    const cat = discoverySnapshot.get(String(provider || '').trim());
+    if (!cat || (cat.origin !== 'live' && cat.origin !== 'cached')) return undefined;
+    const f = cat.facts?.[model];
+    if (!f) return undefined;
+    return { toolCalling: f.toolCalling, reasoning: f.reasoning, contextLength: f.contextLength };
+  });
+}
+
+let liveProbeInstalled = false;
 
 /** 清空快照 (测试用; 生产路径不调用) */
 export function resetDiscoverySnapshot(): void {
@@ -790,6 +833,9 @@ export async function discoverProviderModels(providerId: string, opts: DiscoverO
     : [];
   const manualModels = trimNotes([...(opts.manualModels || []), ...((cached?.manualModels) || [])]);
   const curated = target.entry && target.entry.kind === 'builtin' ? curatedModelIds(target.provider) : [];
+  // 目录快照里这一家声明的模型 (目录驱动: 新家不用改代码就有清单可用)。
+  // 它和内置 `curated` 是同一层意思 (**这家真有的模型**), 但来源是公开目录, 所以 origin 记 'catalog'。
+  const catalogModels = target.entry && target.entry.origin === 'catalog' ? target.entry.declaredModelIds : [];
 
   const base: Omit<DiscoveredCatalog, 'origin' | 'discoveryState' | 'models' | 'modelOrigins' | 'facts'
     | 'fromCache' | 'stale' | 'discoveryFailed' | 'keptDespiteFailure'> = {
@@ -806,6 +852,10 @@ export async function discoverProviderModels(providerId: string, opts: DiscoverO
     declaredModels,
     fetchedAt: cached?.fetchedAt ?? null,
     expiresAt: cached?.expiresAt ?? null,
+    // 目录家需要专用鉴权时, 这一条一直带着 (展示层据此如实标"未支持")
+    ...(target.entry?.authSupported === false
+      ? { authUnsupported: String(target.entry.authSupportNote || '需专用鉴权 (形状未知)') }
+      : {}),
     notes: [],
   };
 
@@ -837,6 +887,7 @@ export async function discoverProviderModels(providerId: string, opts: DiscoverO
       ...(failureReason ? { failureReason } : {}),
     };
     discoverySnapshot.set(cat.provider, cat);
+    installLiveFactsProbe();
     return cat;
   };
 
@@ -849,6 +900,7 @@ export async function discoverProviderModels(providerId: string, opts: DiscoverO
    */
   const fallbackLayers = (): Array<{ origin: CatalogOrigin; ids: string[] }> => [
     { origin: 'custom', ids: [...manualModels, ...declaredModels] },
+    { origin: 'catalog', ids: catalogModels },
     { origin: 'curated', ids: curated },
   ];
 
@@ -1123,7 +1175,7 @@ export async function refreshModelDiscovery(
     : (Array.isArray(providerIds) ? providerIds : [providerIds]).map((s) => String(s || '').trim()).filter(Boolean);
   const results = await Promise.all(ids.map((id) => discoverProviderModels(id, { ...opts, force: opts.force !== false })
     .catch((e) => crashCatalog(id, String((e as any)?.message ?? e)))));
-  const counts: Record<CatalogOrigin, number> = { live: 0, cached: 0, curated: 0, custom: 0, unavailable: 0 };
+  const counts: Record<CatalogOrigin, number> = { live: 0, cached: 0, curated: 0, custom: 0, catalog: 0, unavailable: 0 };
   for (const c of results) counts[c.discoveryState] = (counts[c.discoveryState] || 0) + 1;
   const failures = results
     .filter((c) => c.discoveryFailed && c.failure)
@@ -1207,6 +1259,7 @@ export function catalogOriginZh(o: CatalogOrigin): string {
     case 'cached': return '上次成功缓存';
     case 'curated': return '内置目录';
     case 'custom': return '用户声明/手输';
+    case 'catalog': return '目录快照';
     case 'unavailable': return '发现不可用';
     default: return String(o);
   }
@@ -1223,6 +1276,8 @@ export function formatCatalogLine(c: DiscoveredCatalog): string {
     ? (c.requiresApiKey ? '未配置凭据' : '免 key')
     : `凭据指纹 ${c.credentialIdentity}`;
   bits.push(cred);
+  // 目录家需要专用鉴权 → **如实标"未支持"** (这一行最容易变得含糊: 必须一眼看出"没发请求")
+  if (c.authUnsupported) bits.push(`⚠ ${String(c.authUnsupported).slice(0, 90)}`);
   if (c.discoveryFailed) bits.push(`⚠ 本轮发现失败: ${String(c.failureReason || '原因未明').slice(0, 100)}`);
   return `· ${c.provider} · ${bits.join(' · ')}`;
 }

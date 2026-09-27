@@ -27,6 +27,7 @@ let PR: typeof import('../llm/provider-registry.js');
 let CS: typeof import('../llm/config-store.js');
 let MS: typeof import('../llm/model-selection.js');
 let MC: typeof import('../llm/model-catalog.js');
+let PC: typeof import('../llm/provider-catalog.js');   // 目录层填充点 (2026-09-27): 它也是自动接线的一个
 
 beforeAll(async () => {
   process.env.BOLLOON_HOME = TMP;
@@ -37,6 +38,7 @@ beforeAll(async () => {
   MS = await import('../llm/model-selection.js');
   MC = await import('../llm/model-catalog.js');
   PR = await import('../llm/provider-registry.js');
+  PC = await import('../llm/provider-catalog.js');
 });
 
 afterAll(async () => {
@@ -297,7 +299,15 @@ describe('元数据填充点: 真接线, 且只填自己有真值的项', () => 
     MC.resetModelMetadataSources();
     expect(MC.listModelMetadataSources()).toEqual([]);
     await CS.llmConfigStore.initialize();                 // 自动接线只做一次 → 不会偷偷加回来
-    expect(MC.listModelMetadataSources()).toEqual([]);
+    // 2026-09-27 (目录驱动): 现在有**两个**自动填充点, 各自**每进程只自动接线一次**:
+    //   · 注册表那一个在上面的显式调用里已经"接过一次" ⇒ initialize 不许把它加回来 (这条原意不变, 照旧断言);
+    //   · 目录那一个若**本进程还没接过**, 会在这一次 initialize 里接上自己 (同一 id ⇒ 永远最多一份)。
+    //   ⇒ 钉两件事: 注册表**没**偷偷回来 + 目录**最多一份**; 再 init 一次结果逐项不变 (幂等)。
+    const afterInit = MC.listModelMetadataSources();
+    expect(afterInit).not.toContain(PR.PROVIDER_REGISTRY_SOURCE_ID);
+    expect(afterInit.filter((s) => s === PC.CATALOG_METADATA_SOURCE_ID).length).toBeLessThanOrEqual(1);
+    await CS.llmConfigStore.initialize();                 // 再读一次: 谁都不许多出来一条
+    expect(MC.listModelMetadataSources()).toEqual(afterInit);
     PR.registerProviderRegistryMetadataSource();          // 显式接回去
     expect(MC.listModelMetadataSources().filter((s) => s === PR.PROVIDER_REGISTRY_SOURCE_ID).length).toBe(1);
     PR.registerProviderRegistryMetadataSource();          // 再显式一次: 同 id 原地替换, 不重复

@@ -51,8 +51,14 @@ import {
 /** 能力三态。**没有真来源必须是 `unknown`** —— 不许用 `false` 冒充"不支持" */
 export type Capability = 'yes' | 'no' | 'unknown';
 
-/** 目录里这一条的来源标记 */
-export type CatalogOrigin = 'curated' | 'live' | 'cached' | 'custom' | 'unavailable';
+/**
+ * 目录里这一条的来源标记。
+ *
+ * `catalog` = 这一条来自**供应商目录** (公开模型目录的快照, 记 id/env 名/api 基址/模型与字面声明的
+ * 能力)。它与 `curated` (内置那十几家的手写模型 ID 清单) 是**两个数据源**, 所以是两个值 ——
+ * 界面上"这条清单从哪来"必须答得清。
+ */
+export type CatalogOrigin = 'curated' | 'live' | 'cached' | 'custom' | 'catalog' | 'unavailable';
 
 /** 连接状态 (`unknown` = 本轮没有探测过, 不许写 `ok`) */
 export type Reachability = 'ok' | 'failed' | 'unknown';
@@ -135,6 +141,20 @@ export interface ProviderSummary {
   providerReasoning: Capability;
   reachability: Reachability;
   failureReason?: string;
+  /**
+   * 这一行的来源 (`'builtin' | 'custom' | 'catalog'`)。
+   * 目录行 (223 家里的那些) 靠它区分 —— 列表与选择器按它分组, 不靠"不在内置表里"反推。
+   */
+  origin?: 'builtin' | 'custom' | 'catalog';
+  /** 目录行的协议族 (`origin='catalog'` 时才有) */
+  catalogFamily?: string;
+  /** 目录行读凭据的环境变量名 (`origin='catalog'` 时才有; 只存名字) */
+  catalogEnvVar?: string;
+  /**
+   * 目录行的**如实标注** (不能用时说清为什么): "需专用鉴权 (未支持)" /
+   * "目录里无 api 基址 → 需自定义 baseUrl"。能用时为 `undefined`。
+   */
+  catalogNote?: string;
 }
 
 /**
@@ -273,18 +293,26 @@ export interface BuildEntryContext {
   currentModel?: string;
   reachability?: Reachability;
   failureReason?: string;
+  /**
+   * 这一家的清单来自哪个源没给能力数据时, 脚注写什么 (默认 = 内置目录那句)。
+   * 目录家 (`origin='catalog'`) 要写"目录快照里没有这一条", 不许说成"内置目录只有模型 ID"。
+   */
+  unknownReason?: string;
+  /** 没有更具体的来源时, 这一家的清单来源 (目录家给 `'catalog'`) */
+  originDefault?: CatalogOrigin;
 }
 
 export function buildModelEntry(model: string, ctx: BuildEntryContext): ModelEntry {
   const facts = factsOf(ctx.provider, model);
-  const origin = facts.origin || curatedOriginOf(ctx.provider);
+  const origin = facts.origin || ctx.originDefault || curatedOriginOf(ctx.provider);
   const unknowns: UnknownNote[] = [];
   const toolCalling = facts.toolCalling ?? 'unknown';
   const reasoning = facts.reasoning ?? 'unknown';
   const contextLength = typeof facts.contextLength === 'number' ? facts.contextLength : null;
-  if (toolCalling === 'unknown') unknowns.push({ field: 'toolCalling', reason: CURATED_ONLY_REASON });
-  if (reasoning === 'unknown') unknowns.push({ field: 'reasoning', reason: CURATED_ONLY_REASON });
-  if (contextLength === null) unknowns.push({ field: 'contextLength', reason: CURATED_ONLY_REASON });
+  const why = ctx.unknownReason || CURATED_ONLY_REASON;
+  if (toolCalling === 'unknown') unknowns.push({ field: 'toolCalling', reason: why });
+  if (reasoning === 'unknown') unknowns.push({ field: 'reasoning', reason: why });
+  if (contextLength === null) unknowns.push({ field: 'contextLength', reason: why });
   // 注册表是"这家要不要 key"的主来源; 填充点只在**知道得更准**时覆盖它
   const requiresApiKey = facts.requiresApiKey ?? ctx.requiresApiKey;
 
@@ -342,6 +370,14 @@ export async function buildProviderSummaries(opts: {
   /** 已探过的连通性结论 (provider → 结论); 没探过就是 unknown */
   probes?: Record<string, { ok: boolean; detail?: string }>;
   sessionKey?: string;
+  /**
+   * 目录里的家怎么进列表 (**不刷 223 行噪音**):
+   *   · `'none'`       —— 不进 (只要内置 + 自定义);
+   *   · `'configured'` —— **默认**: 只进"手上有凭证/配置里写了这一格"的那些
+   *     (= "新家只要在目录里 + 有你配的 key 就自动可用"); 其余用分组计数概括;
+   *   · `'all'`        —— 223 家全进 (给 `/model catalog list` 这种显式查看用)。
+   */
+  catalog?: 'none' | 'configured' | 'all';
 } = {}): Promise<ProviderSummary[]> {
   const providers = await providerConfigMap();
   const eff = await effectiveModelConfig({ sessionKey: opts.sessionKey }).catch(() => null);
@@ -377,6 +413,7 @@ export async function buildProviderSummaries(opts: {
       active: !!eff && eff.provider === id,
       providerReasoning: supportsReasoning(id) ? 'yes' : 'unknown',
       reachability: probe ? (probe.ok ? 'ok' : 'failed') : 'unknown',
+      origin: 'builtin',
       ...(probe && !probe.ok && probe.detail ? { failureReason: probe.detail } : {}),
     });
   }
@@ -419,10 +456,81 @@ export async function buildProviderSummaries(opts: {
       active: !!eff && eff.provider === entry.id,
       providerReasoning: entry.reasoning,
       reachability: probe ? (probe.ok ? 'ok' : 'failed') : 'unknown',
+      origin: 'custom',
       ...(probe && !probe.ok && probe.detail ? { failureReason: probe.detail } : {}),
     });
   }
+
+  // ★ 2026-09-27 (目录驱动): **目录里的家也进这个列表** —— 但默认只进"有凭证"的那些,
+  //   其余用一行分组计数概括 (223 行会把列表冲成噪音, 而用户真正要的是"哪些能用")。
+  //   数据全部来自目录层 (`origin='catalog'`), 这里**不编**任何一条: 目录里没有这一家就不出这一行。
+  const catalogMode = opts.catalog ?? 'configured';
+  if (catalogMode !== 'none') {
+    const cat: any = await import('./provider-catalog.js');
+    await cat.initializeProviderCatalog();
+    const seen = new Set(out.map((s) => s.id));
+    for (const v of cat.catalogProviders()) {
+      if (seen.has(v.id)) continue;              // 内置与自定义优先 (同名目录项直接跳过)
+      if (Object.prototype.hasOwnProperty.call(DEFAULT_PROVIDER_CONFIGS, v.id)) continue;
+      const cfg = providers[v.id];
+      const envHas = v.auth?.envVar ? !!String(process.env[String(v.auth.envVar)] || '').trim() : false;
+      const ownKey = String((cfg as any)?.apiKey || '').trim();
+      const configured = envHas || !!ownKey;
+      if (catalogMode === 'configured' && !configured) continue;
+      const baseUrl = normalizeBaseUrl(String((cfg as any)?.baseUrl || v.api || ''));
+      const keyState: ProviderSummary['keyState'] = ownKey ? 'configured' : envHas ? 'env' : 'missing';
+      const probe = opts.probes?.[v.id];
+      const requiresApiKey = true;
+      out.push({
+        id: v.id,
+        name: String(v.name || v.id),
+        protocol: v.family === 'anthropic' ? 'anthropic' : v.family === 'gemini' ? 'gemini' : 'openai-compatible',
+        configured,
+        requiresApiKey,
+        configRequiresKey: (cfg as any)?.requiresApiKey !== false,
+        requiresKeyConflict: false,
+        isLocal: isLocalBaseUrl(baseUrl),
+        modelCount: v.modelIds.length,
+        modelCountOrigin: 'catalog',
+        configuredModel: String((cfg as any)?.model || ''),
+        baseUrl,
+        keyState,
+        current: !!eff && eff.provider === v.id,
+        active: !!eff && eff.provider === v.id,
+        providerReasoning: catalogProviderReasoningOf(v),
+        reachability: probe ? (probe.ok ? 'ok' : 'failed') : 'unknown',
+        origin: 'catalog',
+        catalogFamily: String(v.family),
+        ...(v.auth?.envVar ? { catalogEnvVar: String(v.auth.envVar) } : {}),
+        ...(!v.auth?.supported || !v.hasBaseUrl ? { catalogNote: String(v.unusableReason || '') } : {}),
+        ...(probe && !probe.ok && probe.detail ? { failureReason: probe.detail } : {}),
+      });
+      seen.add(v.id);
+    }
+  }
   return out;
+}
+
+/** 目录家**供应商级** reasoning (目录里字面声明过才给结论; 没声明 → unknown) */
+function catalogProviderReasoningOf(v: any): Capability {
+  const facts: any[] = Object.values(v?.models || {});
+  if (!facts.length) return 'unknown';
+  if (facts.some((f) => f?.reasoning === true)) return 'yes';
+  if (facts.every((f) => f?.reasoning === false)) return 'no';
+  return 'unknown';
+}
+
+/**
+ * 列表分组/计数 (**status 不刷 223 行噪音**的那一半): 内置/自定义/目录各多少家, 各几家可用。
+ * 只数, 不产生值。
+ */
+export function providerGroupSummary(s: ProviderSummary[]): string {
+  const g = (list: ProviderSummary[]) => `${list.length} 家 (可用 ${list.filter((x) => x.configured).length})`;
+  const builtin = s.filter((x) => (x.origin || 'builtin') === 'builtin');
+  const custom = s.filter((x) => x.origin === 'custom');
+  const catalog = s.filter((x) => x.origin === 'catalog');
+  return `分组: 内置 ${g(builtin)} · 自定义 ${g(custom)} · 目录 ${g(catalog)}`
+    + (catalog.length ? '' : ' · 目录家未列出 (看 /model catalog)');
 }
 
 /**
@@ -444,7 +552,7 @@ async function customProviderRows(): Promise<Array<{ entry: any; spec: any }>> {
 }
 
 /**
- * 注册表里**自定义**供应商的那一条记录 (内置 / 不在册 → `null`)。
+ * 注册表里**非内置**的那一条记录 (自定义或目录; 内置 / 不在册 → `null`)。
  * 动态 import 的理由与 `customProviderRows` 相同 (provider-registry ↔ model-catalog 循环)。
  */
 async function customRegistryEntryOf(providerId: string): Promise<any | null> {
@@ -453,7 +561,15 @@ async function customRegistryEntryOf(providerId: string): Promise<any | null> {
   try {
     const reg: any = await import('./provider-registry.js');
     const entry = reg.getProviderRegistryEntry(id);
-    return entry && entry.kind === 'custom' ? entry : null;
+    if (!entry || entry.kind === 'builtin') return null;
+    // 目录家走目录层: 先保证目录文件被读过 (全新进程里 status/list 也要看得到盘上的最新目录)
+    if (entry.kind === 'catalog') {
+      const cat: any = await import('./provider-catalog.js');
+      await cat.initializeProviderCatalog();
+      const fresh = reg.getProviderRegistryEntry(id);
+      if (fresh && fresh.kind === 'catalog') return fresh;
+    }
+    return entry;
   } catch { return null; }
 }
 
@@ -480,6 +596,7 @@ export async function listModelsFor(providerId: string, opts: {
     : (customEntry!.requiresApiKey !== false);
   const baseUrl = normalizeBaseUrl(cfg?.baseUrl || def?.baseUrl || customEntry?.defaultBaseUrl || '');
   const keyState = keyStateOf(cfg, providerId);
+  const isCatalog = !!customEntry && customEntry.kind === 'catalog';
   const ctx: BuildEntryContext = {
     provider: providerId,
     requiresApiKey: needsKey,
@@ -489,6 +606,11 @@ export async function listModelsFor(providerId: string, opts: {
     currentModel: eff?.model,
     reachability: opts.probe ? (opts.probe.ok ? 'ok' : 'failed') : 'unknown',
     failureReason: opts.probe && !opts.probe.ok ? opts.probe.detail : undefined,
+    // 目录家的清单来自目录快照: 脚注要说"目录里没声明", 不许说成"内置目录只有模型 ID"
+    ...(isCatalog ? {
+      originDefault: 'catalog' as CatalogOrigin,
+      unknownReason: `供应商目录 (models.dev 快照) 里这一条没有字面声明该能力 → 未知 (不许编)`,
+    } : {}),
   };
 
   const declared = def ? curatedModelIds(providerId) : (customEntry!.declaredModelIds || []);
@@ -557,11 +679,22 @@ export function searchModelEntries(entries: ModelEntry[], query: string): ModelE
 
 /** 供应商列表行: `● <供应商> · N models` / `○ <供应商> · N models · 未配置 key` / `● <供应商> · 本地` */
 export function formatProviderLine(s: ProviderSummary): string {
+  const isCatalog = s.origin === 'catalog';
   const mark = s.configured ? '●' : '○';
   const bits: string[] = [];
+  if (isCatalog) bits.push(`目录 · 族 ${s.catalogFamily || '未标'}`);
   if (s.isLocal) bits.push('本地');
-  bits.push(s.modelCountOrigin === 'unavailable' ? '无内置目录' : `${s.modelCount} models`);
-  if (!s.configured && s.requiresApiKey) bits.push(`未配置 key (${envKeyNamesOf(s.id).join('/') || '环境变量'})`);
+  bits.push(s.modelCountOrigin === 'unavailable'
+    ? '无内置目录'
+    : `${s.modelCount} models${s.modelCountOrigin === 'catalog' ? ' (目录)' : ''}`);
+  if (!s.configured && s.requiresApiKey) {
+    const envName = isCatalog
+      ? (s.catalogEnvVar || '环境变量名缺失')
+      : (envKeyNamesOf(s.id).join('/') || '环境变量');
+    bits.push(`未配置 key (${envName})`);
+  }
+  // 目录家不能用时**如实标**: 需专用鉴权 (未支持) / 目录里没给基址 —— 不许假装可用
+  if (isCatalog && s.catalogNote) bits.push(`⚠ ${s.catalogNote}`);
   if (s.current) bits.push('← 当前');
   // 两处说法不一致就如实标 (不挑一个装作不知道)
   if (s.requiresKeyConflict) bits.push(`⚠ key 要求不一致 (注册表说${s.requiresApiKey ? '要' : '不要'} / 配置里说${s.configRequiresKey ? '要' : '不要'})`);

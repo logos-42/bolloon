@@ -62,6 +62,18 @@ import {
   type ModelCapabilityFacts,
   type ModelMetadataSource,
 } from './model-catalog.js';
+// 2026-09-27 (目录驱动): 目录里的家也进注册表。
+//   方向是 registry → provider-catalog (**单向**, 不成环: provider-catalog 不 import 本文件,
+//   它靠发现层注入的探针拿"真目录是否已覆盖这条模型")。
+//   内置 13 家仍然由上面的内置表逐个派生, **一个字都不改**; 目录只在"内置表里没有这个 id"时回答。
+import {
+  catalogLoad,
+  getCatalogProvider,
+  catalogProviderIds,
+  ensureProviderCatalogMetadataSource,
+  type CatalogFamily,
+  type CatalogFillScope,
+} from './provider-catalog.js';
 
 // ============================================================
 // 类型
@@ -70,7 +82,7 @@ import {
 /** 线上协议 (与 P1 冻结的 `ModelProtocol` **同一个**联合类型, 不另起一个) */
 export type ProviderProtocol = ModelProtocol;
 
-export type ProviderKind = 'builtin' | 'custom';
+export type ProviderKind = 'builtin' | 'custom' | 'catalog';
 
 /** 模型发现方式 (怎么问出"这家有哪些模型") */
 export type ProviderDiscovery =
@@ -80,7 +92,9 @@ export type ProviderDiscovery =
   | 'manual';         // 没有可用的目录端点 → 只能手工填 model ID
 
 /** 认证方式 */
-export type ProviderAuthKind = 'bearer' | 'x-api-key' | 'x-goog-api-key' | 'query-key' | 'none' | 'custom';
+export type ProviderAuthKind = 'bearer' | 'x-api-key' | 'x-goog-api-key' | 'query-key' | 'none' | 'custom'
+  /** 目录家专用: 需要云签名 / OAuth / 多变量凭证 —— 本运行时**不支持**, 不许当可用 */
+  | 'special';
 
 /** 认证怎么摆 (头名 / 前缀 / query 参数) */
 export interface ProviderAuthSpec {
@@ -135,6 +149,13 @@ export interface ProviderRegistryEntry {
   id: string;
   displayName: string;
   kind: ProviderKind;
+  /**
+   * 这条记录从哪来 —— 与 `kind` 同值 (`'builtin' | 'custom' | 'catalog'`)。
+   *
+   * 为什么分开写: 目录 (`origin='catalog'`) 是**新增的数据源**, 调用方 (列表分组/选择器/文档)
+   * 要能一眼按来源分叉, 而不是靠"不在内置表里"这种反推。
+   */
+  origin: ProviderKind;
   protocol: ProviderProtocol;
   /** 内置默认 URL (不含用户配置里的覆盖) */
   defaultBaseUrl: string;
@@ -163,6 +184,16 @@ export interface ProviderRegistryEntry {
   longRunningReason: string;
   /** `toolCalling` 这个值从哪来 (证据句) */
   toolCallingEvidence: string;
+  /**
+   * 本运行时能不能按这条记录的鉴权形状把请求发出去。
+   * 目录里判成"需专用鉴权 (未支持)"的家 (`AWS SigV4` / `Azure` / `GCP 服务账号` / OAuth …)
+   * 在这里就是 `false` —— 界面与选择器读它, **不许把它们当可用**。
+   */
+  authSupported: boolean;
+  /** `authSupported=false` 的人话理由 (可用时 `null`) */
+  authSupportNote: string | null;
+  /** 目录族的判定信号 (只对 `origin='catalog'` 有意义; 其余为 `null`) */
+  catalogFamilySignal: string | null;
   /** 逐字段出处 (字段名 → 真出处); 门禁要求九项能力字段项项有出处 */
   provenance: Record<string, string>;
 }
@@ -343,6 +374,7 @@ export function builtinProviderEntry(id: string): ProviderRegistryEntry | undefi
     id,
     displayName: String(info?.name || id),
     kind: 'builtin',
+    origin: 'builtin',
     protocol,
     defaultBaseUrl: baseUrl,
     defaultModel: String(def.model || ''),
@@ -359,6 +391,9 @@ export function builtinProviderEntry(id: string): ProviderRegistryEntry | undefi
     allowsLongRunningExecutor: verdict.ok,
     longRunningReason: verdict.reason,
     toolCallingEvidence: evidence,
+    authSupported: true,
+    authSupportNote: null,
+    catalogFamilySignal: null,
     provenance: { ...PROVENANCE },
   };
   entry.modelsEndpoint = modelsEndpointOf(entry);
@@ -407,6 +442,7 @@ function customEntry(id: string, spec: CustomProviderConfig): ProviderRegistryEn
     id,
     displayName: spec.displayName || id,
     kind: 'custom',
+    origin: 'custom',
     protocol,
     defaultBaseUrl: baseUrl,
     defaultModel: String(spec.model || ''),
@@ -423,6 +459,9 @@ function customEntry(id: string, spec: CustomProviderConfig): ProviderRegistryEn
     allowsLongRunningExecutor: verdict.ok,
     longRunningReason: verdict.reason,
     toolCallingEvidence: evidence,
+    authSupported: true,
+    authSupportNote: null,
+    catalogFamilySignal: null,
     provenance: {
       defaultBaseUrl: '自定义供应商声明 (baseUrl)',
       defaultModel: '自定义供应商声明 (model)',
@@ -439,6 +478,134 @@ function customEntry(id: string, spec: CustomProviderConfig): ProviderRegistryEn
     },
   };
   entry.modelsEndpoint = modelsEndpointOf(entry, spec.modelsEndpoint);
+  return entry;
+}
+
+// ============================================================
+// 目录供应商 → 条目 (origin='catalog'; 内置同名项优先, 这条只在"内置表里没有这个 id"时用)
+// ============================================================
+
+/**
+ * 目录填充点的**范围**: 哪些家归目录层答 (`kind === 'catalog'`), 内置名单是谁。
+ * 方向 registry → catalog (单向)。理由见 `provider-catalog.CatalogFillScope` 的注释:
+ * 不知道范围就答, 会把内置 13 家与自定义家的 `unknown` 悄悄换成目录里的值 —— 那是改行为。
+ */
+function catalogFillScope(): CatalogFillScope {
+  return {
+    builtinIds: [...Object.keys(DEFAULT_PROVIDER_CONFIGS)],
+    kindOf: (id: string) => {
+      if (isBuiltinProvider(id)) return 'builtin';
+      if (customSnapshot[id]) return 'custom';
+      if (getCatalogProvider(id)) return 'catalog';
+      return undefined;
+    },
+  };
+}
+
+/** 目录族 → 线上协议 (`special` 族本运行时不发请求, 这个值只是"最贴近的线上形状") */
+const CATALOG_PROTOCOL_BY_FAMILY: Record<CatalogFamily, ProviderProtocol> = {
+  'openai-compatible': 'openai-compatible',
+  anthropic: 'anthropic',
+  gemini: 'gemini',
+  special: 'openai-compatible',
+};
+
+const CATALOG_TOOL_EVIDENCE_COMPATIBLE =
+  '运行期接到 openai 分支 (runtimeProviderIdOf: 非内置 + openai-compatible → \'openai\'), 该分支发原生 tools'
+  + ' —— 这是**运行时口径**, 不等于这家所有模型都支持工具 (模型级看目录里字面声明的 tool_call)';
+
+const CATALOG_TOOL_EVIDENCE_OTHER =
+  '本运行时的这条协议分支不接收原生 tools (客户端 generateText 路由表) → 工具调用发不出去; '
+  + '这是**运行时口径**, 不等于供应商 API 本身不支持工具';
+
+const CATALOG_TOOL_EVIDENCE_SPECIAL =
+  '本运行时不支持这家的鉴权形状 (需专用鉴权) → 请求根本发不出去, 工具调用无从谈起';
+
+/** 目录家**供应商级** reasoning: 只有目录里字面声明过才给结论, 没声明就是 `unknown` */
+function catalogProviderReasoning(v: ReturnType<typeof getCatalogProvider> & object): Capability {
+  const facts = Object.values(v.models);
+  if (!facts.length) return 'unknown';
+  if (facts.some((f) => f.reasoning === true)) return 'yes';
+  if (facts.every((f) => f.reasoning === false)) return 'no';
+  return 'unknown';
+}
+
+/**
+ * 目录里的一家 → 注册表条目 (目录驱动: 新家只要在目录里就自动有记录, **不改代码**)。
+ *
+ * 三条诚实边界写在这里:
+ *   ① `defaultBaseUrl` 只用目录里的 `api`; 目录没给就是**空串** (调用方要如实报"需自定义 baseUrl");
+ *   ② 鉴权判成 `special` 的家 → `authSupported=false` + `authSupportNote` 里写清为什么, 不许当可用;
+ *   ③ `toolCalling` 是**运行时口径** (这条分支发不发得出原生 tools), **不是**模型能力数据。
+ *
+ * 不在这里编: 默认模型 (目录里没有"默认模型"这回事 → 空串), base URL 的环境变量覆盖名 (目录没说 → 空数组)。
+ */
+export function catalogProviderEntry(id: string): ProviderRegistryEntry | undefined {
+  const v = getCatalogProvider(id);
+  if (!v) return undefined;
+  ensureProviderCatalogMetadataSource(catalogFillScope());
+  const load = catalogLoad();
+  const family = v.family;
+  const protocol = CATALOG_PROTOCOL_BY_FAMILY[family];
+  const auth: ProviderAuthSpec = family === 'special'
+    ? { kind: 'special' }
+    : v.auth.kind === 'x-api-key'
+      ? { kind: 'x-api-key', header: 'x-api-key' }
+      : v.auth.kind === 'x-goog-api-key'
+        ? { kind: 'query-key', header: 'x-goog-api-key', query: 'key' }
+        : v.auth.kind === 'none'
+          ? { kind: 'none' }
+          : { kind: 'bearer', header: 'Authorization', scheme: 'Bearer' };
+  const toolCalling: Capability = family === 'special'
+    ? 'no'
+    : (family === 'openai-compatible' ? 'yes' : 'no');
+  const evidence = family === 'special'
+    ? CATALOG_TOOL_EVIDENCE_SPECIAL
+    : (family === 'openai-compatible' ? CATALOG_TOOL_EVIDENCE_COMPATIBLE : CATALOG_TOOL_EVIDENCE_OTHER);
+  const verdict = longRunningVerdict(toolCalling, evidence, family === 'special' ? v.auth.note : undefined);
+  const requiresApiKey = true;   // 目录家都有"要一个 key"这件事 (special 家要的是专用凭证)
+  const entry: ProviderRegistryEntry = {
+    id: v.id,
+    displayName: v.name || v.id,
+    kind: 'catalog',
+    origin: 'catalog',
+    protocol,
+    defaultBaseUrl: normalizeBaseUrl(v.api),
+    defaultModel: '',
+    apiKeyEnvVars: [...v.env],
+    baseUrlEnvVars: [],
+    discovery: family === 'special' ? 'manual' : discoveryOfProtocol(protocol),
+    modelsEndpoint: '',
+    auth,
+    requiresApiKey,
+    toolCalling,
+    reasoning: catalogProviderReasoning(v),
+    declaredModelIds: [...v.modelIds],
+    isLocal: isLocalBaseUrl(v.api),
+    allowsLongRunningExecutor: verdict.ok,
+    longRunningReason: verdict.reason,
+    toolCallingEvidence: evidence,
+    authSupported: v.auth.supported,
+    authSupportNote: v.auth.supported ? null : v.auth.note,
+    catalogFamilySignal: v.familySignal,
+    provenance: {
+      defaultBaseUrl: v.api
+        ? `目录 api 基址 (${load.provenance.sourceUrl || '公开源'} 快照, 生成于 ${load.generatedAt || '未知时间'})`
+        : '目录里没有 api 基址 → 空 (不许编一个; 需自定义 baseUrl)',
+      defaultModel: '目录里没有"默认模型"这回事 → 空 (用 /model <provider> <model> 指定)',
+      apiKeyEnvVars: `目录 env 名 (${load.provenance.sourceUrl || '公开源'}; 只存名字, 永不取值)`,
+      protocol: `按目录 npm/api 形状推得的协议族 (provider-catalog.familyOfProvider; 信号: ${v.familySignal})`,
+      requiresApiKey: '目录给了环境变量名 → 要一个 key (special 家要的是专用凭证)',
+      reasoning: '目录里逐模型字面声明的 reasoning (任一 true → yes; 全 false → no; 没声明 → unknown)',
+      isLocal: 'model-catalog.isLocalBaseUrl (base URL 主机名真判定)',
+      baseUrlEnvVars: '目录没说哪个环境变量能覆盖基址 → 空 (不编; 要用别的地址就 --base-url 或写配置)',
+      discovery: '按协议族取默认发现方式 (special 族 → manual: 本运行时不发它的请求)',
+      auth: `目录鉴权形状 (${v.auth.kind}): ${v.auth.note}`,
+      toolCalling: '本文件: 运行期路由 (runtimeProviderIdOf) + 鉴权是否受支持',
+      allowsLongRunningExecutor: '本文件判定: 需要 toolCalling=yes (工具调用发不出去的通道不能跑长期任务)',
+    },
+  };
+  entry.modelsEndpoint = modelsEndpointOf(entry);
   return entry;
 }
 
@@ -491,15 +658,48 @@ export function listProviderRegistry(): ProviderRegistryEntry[] {
   return out;
 }
 
-/** 一个 id 的记录 (内置或自定义快照里有; 都没有 → `undefined`) */
+/**
+ * 一个 id 的记录 (内置 → 自定义快照 → **目录**; 都没有 → `undefined`)。
+ *
+ * 2026-09-27 (目录驱动): 目录里的家 (223 家) 也在这里回答 —— 于是 `registryEntryOf` /
+ * `validateSelection` / `resolveDiscoveryTarget` 不用改就能认识"目录里新出现的一家"。
+ * **内置 13 家优先**: 同名目录项永远不会被走到 (内置那条在最前面就返回了)。
+ */
 export function getProviderRegistryEntry(id: string): ProviderRegistryEntry | undefined {
   const bid = builtinProviderEntry(id);
   if (bid) return bid;
   const spec = customSnapshot[id];
-  return spec ? customEntry(id, spec) : undefined;
+  if (spec) return customEntry(id, spec);
+  return catalogProviderEntry(id);
 }
 
-/** 这个 id 现在**在册**吗 (内置 or 自定义快照) */
+/**
+ * 在册的家 + 目录里的家 (**列表/选择器/文档**读这个: 一条记录都不重复, 内置优先)。
+ *
+ * 为什么不在 `listProviderRegistry()` 里直接加目录家: 那张表是"**本机在册的**家"
+ * (内置 13 + 用户自定义), 有门 (单测 + 真跑门) 钉着它的长度与逐项来源 ——
+ * 目录是**另一个数据源** (223 家, 由公开目录决定), 混进同一张表会让"在册"这个说法失去判据。
+ * 于是分成两个读口: 在册的 (`listProviderRegistry`) 与 在册+目录 (`listProvidersWithCatalog`)。
+ */
+export function listProvidersWithCatalog(): ProviderRegistryEntry[] {
+  const out = listProviderRegistry();
+  const seen = new Set(out.map((e) => e.id));
+  for (const id of catalogProviderIds()) {
+    if (seen.has(id)) continue;   // 内置/自定义优先 (内置同名项按 id 直接跳过)
+    const e = catalogProviderEntry(id);
+    if (!e) continue;
+    seen.add(id);
+    out.push(e);
+  }
+  return out;
+}
+
+/** 这一家是不是**目录里来的** (内置/自定义都不是) */
+export function isCatalogProvider(id: string): boolean {
+  return getCatalogProvider(id) !== undefined && !isBuiltinProvider(id) && !customSnapshot[id];
+}
+
+/** 这个 id 现在**在册**吗 (内置 / 自定义快照 / 目录里的一家) */
 export function isRegisteredProvider(id: string): boolean {
   return getProviderRegistryEntry(id) !== undefined;
 }
@@ -860,6 +1060,11 @@ export function registerProviderRegistryMetadataSource(): void {
  * 只接一次也意味着: 测试里显式 `resetModelMetadataSources()` 之后它**不会**被偷偷加回来。
  */
 export function ensureProviderRegistryMetadataSource(): void {
+  // 目录的填充点一起接上: 注册表一旦被读, "目录里字面声明过的能力"就该能被问出来。
+  // 两个填充点各答各的字段 (注册表答 requiresApiKey/origin-custom; 目录答 origin-catalog/能力),
+  // 合并规则是 P2 冻结的"逐字段: 没答案的让下一个答"。
+  // **scope 必须给**: 目录层只答 `kind === 'catalog'` 的家 (内置 13 家与自定义家一个字都不许变)。
+  ensureProviderCatalogMetadataSource(catalogFillScope());
   if (metadataSourceWired) return;
   registerProviderRegistryMetadataSource();
 }

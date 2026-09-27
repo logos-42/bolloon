@@ -1091,7 +1091,8 @@ async function item12(A: Stub, B: Stub, C: Stub, E: Stub, MS: any, runChild: any
   fs.writeFileSync(goPath, 'go');
   const [p1r, p2r] = await Promise.all([p1, p2]);
   chk(it, '(a) 两个真进程各自切换都成功', p1r.out?.ok === true && p2r.out?.ok === true,
-    `P1=${p1r.out?.ok ? 'ok' : String(p1r.out?.failureClass)} P2=${p2r.out?.ok ? 'ok' : String(p2r.out?.failureClass)}`);
+    `P1=${p1r.out?.ok ? 'ok' : String(p1r.out?.failureClass)} P2=${p2r.out?.ok ? 'ok' : String(p2r.out?.failureClass)}`
+    + ` · P1 说: ${short(String(p1r.out?.message || '(没消息)'), 140)} · P2 说: ${short(String(p2r.out?.message || '(没消息)'), 140)}`);
   chk(it, '(a) 进程 1 的改动活着 (providers.deepseek.model=race-b)', rowModel('deepseek') === 'race-b',
     `${kv('providers.deepseek.model', rowModel('deepseek'))}`);
   chk(it, '(a) 进程 2 的改动活着 (providers.openai.model=race-a)', rowModel('openai') === 'race-a',

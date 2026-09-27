@@ -29,7 +29,7 @@ import {
   type EffectiveModelConfig, type SelectionFailureClass,
 } from '../llm/model-selection.js';
 import {
-  buildProviderSummaries, formatProviderLine,
+  buildProviderSummaries, formatProviderLine, providerGroupSummary,
   type ProviderSummary,
 } from '../llm/model-catalog.js';
 import { runModelSelector, type SelectorChoice, type ModelSelectorResult } from './model-selector.js';
@@ -74,33 +74,59 @@ export function defaultWizardIO(): WizardIO {
     };
 }
 
-/** 一次性隐藏输入 (bolloon model key <provider> 用; 单独开 readline, 用完即关, 不回显) */
-export async function askHiddenLine(question: string): Promise<string> {
+/**
+ * 一次性隐藏输入 —— **带回 EOF 判定**。
+ *
+ * 为什么要把"EOF/Ctrl-D"与"用户输入了空串"分开: 空串在分步选择器里是**回车 = 取默认**,
+ * 而输入流结束 (管道读完 / Ctrl-D) 只可能取消 —— 混成一件事会让 `printf '\x04' | bolloon model`
+ * 把"没有输入了"读成"用户选了第 1 项"并继续往下走 (真实踩过)。
+ * readline 在输入流结束时不一定回调 `question`, 所以另挂 `close` 兜底。
+ */
+export async function askHiddenLineEof(question: string): Promise<{ value: string; eof: boolean }> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-  return new Promise<string>((resolve) => {
+  return new Promise<{ value: string; eof: boolean }>((resolve) => {
+    let settled = false;
+    const finish = (value: string, eof: boolean) => { if (!settled) { settled = true; resolve({ value, eof }); } };
+    rl.once('close', () => finish('', true));
     const anyRl = rl as any;
     const orig = anyRl._writeToOutput?.bind(anyRl);
     anyRl._writeToOutput = function (s: string) { if (String(s).includes(question)) process.stdout.write(s); };
     rl.question(`${question} `, (ans) => {
       if (orig) anyRl._writeToOutput = orig;
       process.stdout.write('\n');
+      finish(String(ans ?? '').trim(), false);
       rl.close();
-      resolve(String(ans ?? '').trim());
+    });
+  });
+}
+
+/** 一次性隐藏输入 (`bolloon model key <provider>` 用; 单独开 readline, 用完即关, 不回显) */
+export async function askHiddenLine(question: string): Promise<string> {
+  return (await askHiddenLineEof(question)).value;
+}
+
+/**
+ * 一次性普通输入 —— **带回 EOF 判定** (理由见 `askHiddenLineEof`)。
+ * 有默认值时回车即取默认; EOF 时 `eof=true` (调用方必须当成取消, 不许当成回车)。
+ */
+export async function askLineEof(question: string, opts: { default?: string } = {}): Promise<{ value: string; eof: boolean }> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  return new Promise<{ value: string; eof: boolean }>((resolve) => {
+    let settled = false;
+    const finish = (value: string, eof: boolean) => { if (!settled) { settled = true; resolve({ value, eof }); } };
+    rl.once('close', () => finish('', true));
+    const prompt = `${question}${opts.default !== undefined ? ` [${opts.default}]` : ''} `;
+    rl.question(prompt, (ans) => {
+      const v = String(ans ?? '').trim();
+      finish(v === '' && opts.default !== undefined ? String(opts.default) : v, false);
+      rl.close();
     });
   });
 }
 
 /** 一次性普通输入 (分步选择器的搜索/参数输入用; 有默认值时回车即取默认) */
 export async function askLine(question: string, opts: { default?: string } = {}): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-  return new Promise<string>((resolve) => {
-    const prompt = `${question}${opts.default !== undefined ? ` [${opts.default}]` : ''} `;
-    rl.question(prompt, (ans) => {
-      rl.close();
-      const v = String(ans ?? '').trim();
-      resolve(v === '' && opts.default !== undefined ? String(opts.default) : v);
-    });
-  });
+  return (await askLineEof(question, opts)).value;
 }
 
 // ---------------------------------------------------------------- 用户身份
@@ -377,12 +403,21 @@ export async function runSetupWizard(opts: SetupOptions = {}): Promise<SetupResu
 }
 
 export interface ModelCommandIO {
-  /** 需要收 API key 时使用的隐藏输入 (会话内没有此能力 → 不传) */
-  askHidden?: (q: string) => Promise<string>;
-  /** 普通文本输入 (分步选择器的搜索/温度输入用; TTY 场景才传) */
-  ask?: (q: string, opts?: { default?: string }) => Promise<string>;
+  /** 需要收 API key 时使用的隐藏输入 (会话内没有此能力 → 不传); 返回 null = 输入流结束 (EOF) */
+  askHidden?: (q: string) => Promise<string | null>;
+  /** 普通文本输入 (分步选择器的搜索/温度输入用; TTY 场景才传); 返回 null = 输入流结束 (EOF) */
+  ask?: (q: string, opts?: { default?: string }) => Promise<string | null>;
   /** 结构化选择器 (会话内的渲染层选择器; 传了就优先用它) */
   choose?: (items: SelectorChoice[], title: string) => Promise<string | null>;
+  /**
+   * 交互式 (真终端) 场景: 选择器的每一步**当场打到终端**, 而不是等整轮结束才一次性回显。
+   *
+   * 为什么单列一个开关: 非交互调用方 (会话内 Ink / 验收脚本) 要的是"整段文本", 它们自己决定怎么呈现;
+   * 而命令行交互时不印出来 = 用户看不见选项 (曾经只有一句光秃秃的 `选择 (序号/值, 回车=1)`)。
+   */
+  live?: boolean;
+  /** `live` 时的逐行出口 (默认 `process.stdout`)。每行进来就打, 不回显缓冲。 */
+  print?: (line: string) => void;
 }
 
 /** 切换失败的机器可读分类 → 人话 (不许只回"切换成功"/"失败了") */
@@ -406,6 +441,9 @@ const FAILURE_ZH: Record<SelectionFailureClass, string> = {
   runtime_rebuild_failed: '配置写成功但重建模型运行时失败 (已回滚)',
   // 理论上不可达: 探测报了一个映射表还没覆盖的新类目 (宁可露出原文类名, 也不糊成一句"失败")
   probe_failure_unmapped: '探测类目未被映射表覆盖 (按原文类名报出)',
+  // 2026-09-27 (目录驱动): 目录里有些家要专用鉴权 (云签名/OAuth) —— 本运行时发不出它们的请求。
+  //   必须与"凭证被拒"分开说: 前者要换路, 后者换 key 就行。
+  provider_auth_unsupported: '这家需要专用鉴权 (本版本未支持)',
 };
 
 function flagValue(parts: string[], i: number, name: string): string | undefined {
@@ -417,13 +455,26 @@ function flagValue(parts: string[], i: number, name: string): string | undefined
 
 /** `/model` 的解析结果 (纯数据, 好测) */
 export interface ParsedModelCommand {
-  action: 'status' | 'test' | 'reset' | 'key' | 'select' | 'pick' | 'refresh' | 'admit';
+  action: 'status' | 'test' | 'reset' | 'key' | 'select' | 'pick' | 'refresh' | 'admit' | 'catalog';
   /**
    * `/model list` 标记。**action 仍是 `status`** —— 老门禁钉着 `parseModelCommand('list').action === 'status'`
    * (`list` 在无参时与 `status` 同类: 都是"看, 不改")。区别只在输出: 带这个标记就把 P5 的
    * 发现目录清单打出来, 而不是打当前生效配置。
    */
   list?: boolean;
+  /**
+   * `/model catalog [status|list|refresh]` 的子动作 (目录驱动, 2026-09-27)。
+   *   · `status`  —— 这份目录是几号的 / 新鲜还是陈旧 / 有哪些族 (默认);
+   *   · `list`    —— 逐家列 (默认只列"能用的"; `--all` 连"不能用"的也列, 并如实标原因);
+   *   · `refresh` —— 运行期真拉一次公开源, 落盘 `provider-catalog.json` (0600) 并打印来源/字节数/时间/家数。
+   */
+  catalogSub?: 'status' | 'list' | 'refresh';
+  /** `/model catalog list <筛选词>` 的筛选词 (匹配 id / 名字) */
+  filter?: string;
+  /** `/model catalog list --all` 连"需专用鉴权 (未支持)/ 无 api 基址"的家一起列 */
+  all?: boolean;
+  /** `/model catalog list --family <族>` 只看某一族 */
+  family?: string;
   /** `/model refresh --clear` — 清发现缓存而不是重取 */
   clear?: boolean;
   provider?: string;
@@ -446,6 +497,14 @@ export function parseModelCommand(arg: string): ParsedModelCommand {
     if (p === '--json') { out.json = true; continue; }
     if (p === '--no-verify') { out.verify = false; continue; }
     if (p === '--clear') { out.clear = true; continue; }
+    // `/model catalog list --all | --family <族>` (目录驱动的筛选; 不认识的族名留给展示层如实报)
+    if (p === '--all') { out.all = true; continue; }
+    const fam = flagValue(parts, i, '--family');
+    if (fam !== undefined) {
+      if (!p.includes('=')) i++;
+      out.family = String(fam).toLowerCase();
+      continue;
+    }
     if (p === '--session' || p === '--scope=session') { out.scope = 'session'; continue; }
     if (p === '--global' || p === '--scope=global') { out.scope = 'global'; continue; }
     if (p === '--scope') {
@@ -470,6 +529,18 @@ export function parseModelCommand(arg: string): ParsedModelCommand {
 
   const sub = (positional[0] || '').toLowerCase();
   if (!sub || sub === 'status') { out.action = 'status'; return out; }
+  // `/model catalog [status|list|refresh]` — 供应商目录层 (目录驱动): 看它是几号的 / 逐家列 / 真拉一次最新。
+  if (sub === 'catalog') {
+    out.action = 'catalog';
+    const csub = (positional[1] || '').toLowerCase();
+    out.catalogSub = csub === 'list' ? 'list' : csub === 'refresh' ? 'refresh' : 'status';
+    if (out.catalogSub === 'list') {
+      // 筛选词可以是第 3 段; 但要先跳过 `--family <值>` 这种"值也算一段"的写法
+      const rest = positional.slice(2).filter((s, i, arr) => arr[i - 1] !== '--family');
+      out.filter = rest[0]?.toLowerCase();
+    }
+    return out;
+  }
   // `/model list [provider]` — 看 P5 的发现目录 (不写配置)。action 仍是 status (见 list 字段注释)。
   if (sub === 'list') { out.action = 'status'; out.list = true; out.provider = positional[1]?.toLowerCase(); return out; }
   // `/model refresh [provider]` — 真去上游重取一次目录 (P5 的能力); `--clear` 改成清缓存。
@@ -509,7 +580,108 @@ async function providerLines(sessionKey?: string): Promise<string[]> {
   const unconfigured = summaries.filter((s) => !s.configured);
   const lines: string[] = [];
   for (const s of [...live, ...unconfigured]) lines.push(`  ${formatProviderLine(s)}`);
+  // 2026-09-27 (目录驱动): 目录里的家**不刷 223 行噪音** —— 默认只在上面的列表里出现
+  //   "你已经有凭证"的那些 (它们自动就是 ● 可用), 这里再补一行分组计数说清另外 200+ 家在哪。
+  lines.push(`  ${providerGroupSummary(summaries)}`);
+  lines.push(...await providerCatalogLines());
   return lines;
+}
+
+/**
+ * `/model catalog [status|list|refresh]` — 供应商目录层 (目录驱动, 2026-09-27)。
+ *
+ * 三件事, 全部输出都由 `provider-catalog.ts` 生成 (不在这里另造一套说法):
+ *   · 默认/`status` —— 这份目录**是几号的、是不是刚刷的** (陈旧必如实标), 各族多少家;
+ *   · `list`        —— 逐家列 (默认只列能用的; `--all` 连不能用的也列并标清原因);
+ *   · `refresh`     —— 运行期真拉一次公开源, 落盘 `${BOLLOON_HOME}/provider-catalog.json` (0600),
+ *                      打印来源 URL / 字节数 / sha256 / 拉到时间 / 家数。
+ */
+export async function formatProviderCatalog(parsed: ParsedModelCommand): Promise<string> {
+  const pc: any = await import('../llm/provider-catalog.js');
+  await pc.initializeProviderCatalog();
+  const sub = parsed.catalogSub || 'status';
+
+  // ── 真拉一次最新 (运行期刷新: 不只在构建期烤死那份) ──────────────
+  if (sub === 'refresh') {
+    const rep: any = await pc.refreshProviderCatalog(parsed.baseUrl ? { url: parsed.baseUrl } : {});
+    if (parsed.json) return JSON.stringify(rep, null, 2);
+    const lines: string[] = [`目录刷新: ${rep.ok ? '✅ 成功' : '✗ 失败'}`];
+    lines.push(`  源 URL: ${rep.sourceUrl}`);
+    lines.push(`  字节数: ${rep.sourceBytes} · sha256: ${String(rep.sourceSha256 || '').slice(0, 16)}`);
+    lines.push(`  拉到时间: ${rep.fetchedAt} · 家数: ${rep.providerCount} (有 api 基址 ${rep.stats?.withApi ?? 0}) · 模型 ${rep.modelCount}`);
+    lines.push(`  落盘: ${rep.path || '(未落盘)'} (权限 ${rep.fileMode || '未写'})`);
+    if (rep.error) lines.push(`  ⚠ ${rep.error}`);
+    for (const n of rep.notes || []) lines.push(`  · ${n}`);
+    lines.push('');
+    lines.push(pc.catalogStatusLine());
+    return lines.join('\n');
+  }
+
+  // ── 逐家列 (默认只列能用的; 噪音可控) ───────────────────────────
+  if (sub === 'list') {
+    const fams: string[] = pc.CATALOG_FAMILIES;
+    if (parsed.family && !fams.includes(parsed.family)) {
+      return `未知协议族 '${parsed.family}' —— 目录只分这几族: ${fams.join(' / ')} (没编别的)`;
+    }
+    const all: any[] = pc.catalogProviders();
+    const envOn = (v: any) => !!(v.auth?.envVar && String(process.env[String(v.auth.envVar)] || '').trim());
+    let rows = all.filter((v) => (parsed.family ? v.family === parsed.family : true));
+    if (parsed.filter) {
+      const q = parsed.filter;
+      rows = rows.filter((v) => v.id.includes(q) || String(v.name || '').toLowerCase().includes(q));
+    }
+    const usable = rows.filter((v) => v.speakable);
+    const shown = parsed.all ? rows : usable;
+    const lines: string[] = [
+      `${pc.catalogStatusLine()}`,
+      `  匹配 ${rows.length} 家 (${parsed.all ? '含不能用的' : '只列能用的'} · 目录里共 ${all.length} 家)`
+        + `${parsed.filter ? ` · 筛选 '${parsed.filter}'` : ''}${parsed.family ? ` · 族 ${parsed.family}` : ''}`,
+    ];
+    if (!shown.length) {
+      lines.push('  (没有匹配的家 —— 换个筛选词, 或加 --all 连"需专用鉴权/无 api 基址"的也看)');
+    }
+    // 已配置凭证的排前面 (用户最可能想用这些)
+    for (const v of [...shown].sort((a, b) => Number(envOn(b)) - Number(envOn(a)) || String(a.id).localeCompare(String(b.id)))) {
+      lines.push(`  ${pc.formatCatalogProviderLine(v, { envConfigured: envOn(v) })}`);
+    }
+    lines.push('');
+    lines.push(`  用起来: /model <家> <模型> [--base-url <地址>] · 看模型: /model list <家> · 刷新目录: /model catalog refresh`);
+    lines.push(`  注意: 只有"有 api 基址 + 鉴权形状受支持 + 你配了该家声明的环境变量"的家能真发请求 —— 其余如实标未支持, 不假装可用`);
+    return lines.join('\n');
+  }
+
+  // ── 默认: 这份目录是几号的 / 新鲜度 / 分布 ──────────────────────
+  const load: any = pc.catalogLoad();
+  const stats: any = pc.catalogStats();
+  if (parsed.json) return JSON.stringify({ load, stats }, null, 2);
+  const lines: string[] = [
+    pc.catalogStatusLine(),
+    `  ${pc.catalogGroupLine()}`,
+    `  本运行时真能打的家 (有 api 基址 + 鉴权受支持): ${stats.speakable} / ${stats.providers}`
+      + ` · 需专用鉴权 (未支持): ${stats.specialAuth} · 无 api 基址: ${stats.noBaseUrl}`,
+    `  源: ${load.provenance?.sourceUrl || pc.CATALOG_SOURCE_URL} · 来源: ${load.source === 'runtime' ? `运行期文件 ${load.path}` : '构建期烘焙数据 (离线可用)'}`,
+    '',
+    '  用法: /model catalog list [筛选词] [--all] [--family <族>]',
+    '        /model catalog refresh [--url <地址>]   (真拉最新, 落盘 0600, 记来源与时间)',
+    '',
+    `  目录里的家直接用: /model <家> <模型> —— 只要你有该家声明的环境变量, 不用改代码就能用`,
+  ];
+  for (const w of load.warnings || []) lines.push(`  ⚠ ${w}`);
+  return lines.join('\n');
+}
+
+/** 供应商列表末尾的目录状态行 (status / 选择器第一步共用; 陈旧必如实标) */
+export async function providerCatalogLines(): Promise<string[]> {
+  const pc: any = await import('../llm/provider-catalog.js');
+  await pc.initializeProviderCatalog();
+  const load: any = pc.catalogLoad();
+  return [
+    '',
+    `${pc.catalogStatusLine()}`,
+    `  ${pc.catalogGroupLine()}`,
+    `  看目录: /model catalog · 筛: /model catalog list <筛选词> · 拉最新: /model catalog refresh`,
+    ...(load.warnings || []).map((w: string) => `  ⚠ ${w}`),
+  ];
 }
 
 /**
@@ -560,6 +732,7 @@ export async function formatProviderStatus(sessionKey?: string): Promise<string>
   lines.push('用法: /model pick 分步选择 (供应商→凭证→模型→参数→作用域→测试→确认)');
   lines.push('      /model <provider> [model] [--base-url <url>] [--session] · /model test [provider] · /model status · /model reset · /model key <provider>');
   lines.push('      /model list [provider] 看模型发现目录 · /model refresh [provider] 重取 · /model refresh --clear 清缓存 · /model admit <provider> <model> 手输模型');
+  lines.push('      /model catalog 看供应商目录 (是几号的/新鲜度) · /model catalog list [筛选词] [--all] · /model catalog refresh 拉最新');
   lines.push('      --session 只影响当前会话 (不动全局默认) · --no-verify 跳过切换前连通探测 (不推荐)');
   return lines.join('\n');
 }
@@ -571,21 +744,30 @@ export async function formatProviderStatus(sessionKey?: string): Promise<string>
 export async function runModelPicker(
   io: ModelCommandIO = {},
   opts: { sessionKey?: string; skipProbe?: boolean; verify?: boolean; assumeYes?: boolean; initialProvider?: string } = {},
-): Promise<{ text: string; result: ModelSelectorResult }> {
+): Promise<{ text: string; tail: string; live: boolean; result: ModelSelectorResult }> {
   const collected: string[] = [];
+  // 交互式 (live): 每行**当场**打到终端, 同时仍收进 `collected` 作为完整回执。
+  //   非交互: 只收进 `collected`, 由调用方决定怎么呈现 (会话内 Ink / 验收脚本读整段)。
+  const liveSink = io.live ? (io.print ?? ((l: string) => process.stdout.write(l + '\n'))) : null;
   const res = await runModelSelector(
     {
-      print: (l) => collected.push(l),
+      print: (l) => { collected.push(l); liveSink?.(l); },
       ...(io.ask ? { ask: io.ask } : {}),
       ...(io.askHidden ? { askHidden: io.askHidden } : {}),
       ...(io.choose ? { choose: io.choose } : {}),
     },
     opts,
   );
-  const tail = res.ok
+  const tailLines = res.ok
     ? [`✅ 当前生效: ${formatEffectiveModel(res.effective!)}`]
     : [res.cancelled ? `· ${res.message}` : `✗ 切换未完成${res.failureClass ? ` [${FAILURE_ZH[res.failureClass]}]` : ''}: ${res.message}`];
-  return { text: [...collected, ...tail].join('\n'), result: res };
+  // 已经当场印过的部分不再回放 (live 时只回执尾行); 非 live 时整段文本原样返回。
+  return {
+    text: [...collected, ...tailLines].join('\n'),
+    tail: tailLines.join('\n'),
+    live: !!liveSink,
+    result: res,
+  };
 }
 
 /**
@@ -593,6 +775,10 @@ export async function runModelPicker(
  *
  * 切换类动作**全部**走统一入口 `selectModel()` —— 这里只做参数解析与结果展示,
  * 不自己写配置、不自己重建运行时 (否则又会分叉出第二条路)。
+ *
+ * 返回**要打印的文本**。⚠️ `io.live === true` (真终端交互) 时返回的**只有尾行** ——
+ * 分步选择器的每一步已经当场打给用户了, 调用方别再回放整段 (会刷两遍)。
+ * `io.live !== true` 时返回完整文本 (会话内 Ink / 验收脚本 / 管道都要这一份)。
  */
 export async function runModelCommand(arg: string, io: ModelCommandIO = {}): Promise<string> {
   const parsed = parseModelCommand(arg);
@@ -610,9 +796,13 @@ export async function runModelCommand(arg: string, io: ModelCommandIO = {}): Pro
         `  或直接一条命令切: /model <provider> [model] [--base-url <url>]`,
       ].join('\n');
     }
-    const { text } = await runModelPicker(io, { skipProbe: !parsed.verify, verify: parsed.verify });
-    return text;
+    const picked = await runModelPicker(io, { skipProbe: !parsed.verify, verify: parsed.verify });
+    // live: 正文已当场印过 → 只回执尾行; 非 live: 整段文本原样交出
+    return picked.live ? picked.tail : picked.text;
   }
+
+  // ── 供应商目录 (目录驱动: 不写配置; refresh 是显式拉源) ──────
+  if (parsed.action === 'catalog') return formatProviderCatalog(parsed);
 
   // ── 状态 ─────────────────────────────────────────────────
   if (parsed.action === 'status') {
@@ -701,7 +891,9 @@ export async function runModelCommand(arg: string, io: ModelCommandIO = {}): Pro
           `或打开 Web 配置页 (bolloon --web) 填 key。`,
         ].join('\n');
       }
-      key = await io.askHidden(`粘贴 ${provider} API key`);
+      const got = await io.askHidden(`粘贴 ${provider} API key`);
+      if (got === null) return '输入已结束 (EOF/Ctrl-D) —— 未输入 key, 未改动配置';
+      key = got;
     }
     if (!key) return '未输入 key, 未改动配置';
 

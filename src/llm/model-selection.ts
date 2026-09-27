@@ -148,7 +148,7 @@ export const SELECTION_FAILURE_CLASSES = [
   'protocol_mismatch',
   'tool_call_unsupported',
   'timeout',
-  // ── 入口自己判定 (8) ──
+  // ── 入口自己判定 (9) ──
   'invalid_provider',
   'invalid_model',
   'missing_api_key',
@@ -157,6 +157,13 @@ export const SELECTION_FAILURE_CLASSES = [
   'persist_failed',
   'runtime_rebuild_failed',
   'probe_failure_unmapped',
+  /**
+   * 目录里的家需要**本运行时不支持的鉴权形状** (云签名 / OAuth / 多变量云凭证 …)。
+   * 为什么单列一类而不是并进 `auth_failed`: `auth_failed` 是"发了请求被拒" (探测报的),
+   * 这一类是"**根本没发** —— 我们不会说那家的鉴权语言"。两者对用户的含义完全不同:
+   * 前者要换 key, 后者要换路 (走 openai-compatible 的自定义供应商)。
+   */
+  'provider_auth_unsupported',
 ] as const;
 
 export type SelectionFailureClass = (typeof SELECTION_FAILURE_CLASSES)[number];
@@ -178,6 +185,7 @@ export const SELECTION_FAILURE_CLASS_ORIGIN: Record<SelectionFailureClass, 'prob
   persist_failed: 'entry',
   runtime_rebuild_failed: 'entry',
   probe_failure_unmapped: 'entry',
+  provider_auth_unsupported: 'entry',
 };
 
 /**
@@ -256,6 +264,7 @@ export const SELECTION_FAILURE_ZH: Record<SelectionFailureClass, string> = {
   persist_failed: '写配置失败 (已回滚, 盘上仍是旧配置)',
   runtime_rebuild_failed: '配置写成功但重建模型运行时失败 (已回滚)',
   probe_failure_unmapped: '探测报了一个入口还不认识的类目 (映射表没覆盖)',
+  provider_auth_unsupported: '这家需要专用鉴权 (本版本未支持) —— 请求根本没发出去',
 };
 
 export interface SelectModelRequest {
@@ -333,12 +342,14 @@ export function envKeyNamesOf(provider: string): string[] {
 }
 
 /**
- * 一个供应商的**事实**在入口这一侧的统一读法 (P6)。
+ * 一个供应商的**事实**在入口这一侧的统一读法 (P6 + 目录驱动)。
  *
- * 规则只有一条: **自定义供应商问注册表, 内置供应商问内置表**。
+ * 规则只有一条: **内置供应商问内置表, 其余 (自定义 / 目录) 问注册表**。
  * 为什么不是"一律问注册表": 注册表的每个字段都是从内置表**派生**的, 一律问它虽然等价, 却把
  * "内置行为一字不变"变成依赖注册表实现的间接结论; 这里显式分叉, 内置那条路走的还是原来那张表。
- * 自定义那条路必须问注册表 —— 那才是它唯一的协议/环境变量/能力出处 (不在这里另写一份)。
+ * 非内置那条路必须问注册表 —— 那才是它唯一的协议/环境变量/能力出处 (不在这里另写一份)。
+ * 目录家 (223 家, `origin='catalog'`) 走的就是这条: 环境变量名来自目录, 于是"用户在环境里配了
+ * 那家的 key"这一件事**不用改代码**就能被认出来。
  */
 export interface ProviderFacts {
   protocol: ModelProtocol;
@@ -349,7 +360,7 @@ export interface ProviderFacts {
 export function providerFactsOf(provider: string): ProviderFacts {
   const id = String(provider || '').trim().toLowerCase();
   const entry = id ? getProviderRegistryEntry(id) : undefined;
-  if (entry && entry.kind === 'custom') {
+  if (entry && entry.kind !== 'builtin') {
     return {
       protocol: entry.protocol,
       envKeys: Array.isArray(entry.apiKeyEnvVars) ? [...entry.apiKeyEnvVars] : [],
@@ -869,8 +880,11 @@ export function baseDefaultsOf(
   }
   const entry = registryEntryOf(id);
   if (!entry) return null;
+  // 目录家 (`origin='catalog'`): **不**拿"目录里第一个模型"充当默认模型 —— 那是按字母序抓一个,
+  // 不是用户选的、也不是目录声明的"默认"。没有默认就是空, 由 validateSelection 如实报出来。
+  const isCatalog = entry.origin === 'catalog';
   return {
-    model: String(entry.defaultModel || entry.declaredModelIds?.[0] || ''),
+    model: String(entry.defaultModel || (isCatalog ? '' : entry.declaredModelIds?.[0]) || ''),
     baseUrl: String(entry.defaultBaseUrl || ''),
     requiresApiKey: entry.requiresApiKey,
   };
@@ -893,8 +907,30 @@ export function validateSelection(
     return { ok: false, failureClass: 'invalid_provider', message: `未知供应商 '${provider}'. 可用: ${known.join(', ')}` };
   }
 
+  // ★ 目录里的家, 鉴权形状本运行时不支持 → **根本没发请求**, 如实报清楚 (不许假装可用)。
+  //   放在模型/baseUrl 之前: 这是最根本的一条 —— 换 baseUrl 或换模型名都救不了它。
+  const regEntry = registryEntryOf(provider);
+  if (regEntry && regEntry.authSupported === false) {
+    return {
+      ok: false,
+      failureClass: 'provider_auth_unsupported',
+      // `authSupportNote` 自带"需专用鉴权 (未支持): <为什么>"的口径, 这里不再叠一层前缀 (否则读着像结巴)
+      message: `${provider} 不能切换: ${regEntry.authSupportNote || '需专用鉴权 (本版本未支持), 形状未知'}`
+        + ` —— 目录里有这一家, 但本运行时发不出它的请求 (要接就换成 openai-compatible 的自定义供应商, 自己给 baseUrl 与 key)`,
+    };
+  }
+
   const model = String(req.model ?? base.model ?? '').trim();
   if (!model) {
+    // 目录家没有"默认模型"这回事 (目录里也没声明) → 说清怎么指定, 不许抓一个凑数
+    if (regEntry && regEntry.origin === 'catalog') {
+      return {
+        ok: false,
+        failureClass: 'invalid_model',
+        message: `${provider} 是目录里的家, 目录里没有"默认模型" —— 请指定 model: /model ${provider} <model>`
+          + ` (目录里 ${regEntry.declaredModelIds.length} 个候选, 看 /model list ${provider})`,
+      };
+    }
     return { ok: false, failureClass: 'invalid_model', message: `${provider} 没有可用模型 (配置为空且默认模型为空)` };
   }
 
@@ -908,6 +944,14 @@ export function validateSelection(
   } else {
     baseUrl = normalizeBaseUrl(baseUrl);
     if (!baseUrl) {
+      // 目录里没给 api 基址的家 (223 家里有 26 家如此) → 如实说"要自定义 baseUrl", **不编一个**
+      if (regEntry && regEntry.origin === 'catalog') {
+        return {
+          ok: false,
+          failureClass: 'invalid_url',
+          message: `${provider} 在目录里没有 api 基址 → 必须自定义 baseUrl (加 --base-url <地址> 或写进配置)`,
+        };
+      }
       return { ok: false, failureClass: 'invalid_url', message: `${provider} 没有 base URL` };
     }
   }
