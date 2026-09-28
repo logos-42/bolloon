@@ -65,8 +65,12 @@ export interface PaidInfoItem {
 }
 
 export interface InfoPayment {
-  /** facilitator = 链上结算 (真钱); local-dev = 本机联调凭据, 明确标注非链上 */
-  mode: 'facilitator' | 'local-dev';
+  /**
+   * facilitator = 第三方/自建 relayer 链上结算 (钱经中间人发交易)
+   * direct      = **买方直付** (买方自己发 USDC 到 payTo, 卖方只读链核验; 无托管/无第三方)
+   * local-dev   = 本机联调凭据, 明确标注非链上
+   */
+  mode: 'facilitator' | 'direct' | 'local-dev';
   /** 结算回执原文 (X-PAYMENT-RESPONSE) */
   receipt: string;
   receiptHash: string;

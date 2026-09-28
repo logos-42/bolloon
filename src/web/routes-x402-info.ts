@@ -24,6 +24,7 @@ import {
 } from '../agents/x402/paid-info-store.js';
 import { buildSignedEnvelope, verifyEnvelope, summarizeVerify } from '../agents/x402/paid-info-protocol.js';
 import { makeDidResolver } from '../agents/x402/paid-info-tools.js';
+import { handleDirectPayment, directHealth, directPaymentPath, directPaymentEnabled } from '../agents/x402/direct-payment.js';
 
 /** 本机 DIAP 身份 (签发信封用) — 缺失时明确报错, 不静默造一个 */
 async function loadProviderKeypair(): Promise<{ did: string; publicKey: any; privateKey: any } | null> {
@@ -131,7 +132,7 @@ export function registerX402InfoRoutes(app: any): void {
         content: stored.content,
         keypair: kp as any,
         payment: {
-          mode: pay.mode === 'facilitator' ? 'facilitator' : 'local-dev',
+          mode: pay.mode === 'facilitator' ? 'facilitator' : pay.mode === 'direct' ? 'direct' : 'local-dev',
           receipt: String(pay.receipt || ''),
           txHash: pay.txHash,
           network: pay.network || stored.item.price.network,
@@ -146,6 +147,32 @@ export function registerX402InfoRoutes(app: any): void {
     } catch (e: any) {
       res.status(500).json({ error: e?.message });
     }
+  });
+
+  // ---- 去中心化直付 (mode = 'direct'): 买方自己发 USDC, 把 txHash 交回来 ----
+  //   POST /api/x402/info/:id/payment   body: { "txHash": "0x…" }
+  //   服务器**只读链**: receipt.status=1 + USDC Transfer → payTo + value >= accepts.amount
+  //   + 两条不同 RPC 交叉一致 + 确认数够 → 落待办 + 给取件 token (202); 未过 → 402 (accepts 逐字)
+  app.post('/api/x402/info/:id/payment', async (req: any, res: any) => {
+    try {
+      const id = String(req.params.id);
+      const stored = await getStoredInfo(id);
+      if (!stored) return res.status(404).json({ error: '信息不存在' });
+      const baseUrl = `${req.protocol || 'http'}://${req.headers?.host || `127.0.0.1:${process.env.PORT || 54188}`}`;
+      const out = await handleDirectPayment({
+        item: stored.item,
+        bodyText: typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? {}),
+        resourceUrl: `${baseUrl}${directPaymentPath(stored.item.id)}`,
+      });
+      return res.status(out.status).set(out.headers).send(out.body);
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message });
+    }
+  });
+
+  // ---- 直付模式自述 (health 用: 开关与口径必须能从机器读到) ----
+  app.get('/api/x402/direct', async (_req: any, res: any) => {
+    res.json({ enabled: directPaymentEnabled(), paymentPath: directPaymentPath(':id'), ...directHealth() });
   });
 
   // ---- 买方辅助: 代付 + 验真 ----

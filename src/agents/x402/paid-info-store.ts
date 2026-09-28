@@ -193,7 +193,7 @@ export function encodePaymentResponse(obj: unknown): string {
 
 export interface PaymentOutcome {
   ok: boolean;
-  mode: 'facilitator' | 'local-dev' | 'none';
+  mode: 'facilitator' | 'direct' | 'local-dev' | 'none';
   /** 回执原文 (X-PAYMENT-RESPONSE 的值) */
   receipt?: string;
   txHash?: string;

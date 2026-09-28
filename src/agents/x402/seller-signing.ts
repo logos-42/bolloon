@@ -234,7 +234,8 @@ export async function verifySellerAuth(
 // ────────────────────────────────────────────────────────────── 待办记录
 
 export interface PendingPayment {
-  mode: 'facilitator' | 'local-dev';
+  /** facilitator = 第三方/自建 relayer 结算; direct = 买方直付 + 服务器按 txHash 链上核验; local-dev = 联调 */
+  mode: 'facilitator' | 'direct' | 'local-dev';
   /** 结算回执原文 (X-PAYMENT-RESPONSE)。卖方本机要用它重建 receiptHash —— 签名必须绑同一张凭据 */
   receipt: string;
   /** sha256:<hex> of receipt —— 幂等键 (买方重试/重复付款都靠它) */
@@ -449,7 +450,7 @@ export async function resolvePendingDelivery(
 export async function resolvePaidDelivery(
   args: {
     item: { id: string; title: string; provider: { did: string }; contentHash: string; contentCid?: string; source: InfoSource; price: PendingSignRequest['price'] };
-    payment: { mode: 'facilitator' | 'local-dev'; receipt: string; txHash?: string; payer?: string; network: string; amount: string; currency: string };
+    payment: { mode: 'facilitator' | 'direct' | 'local-dev'; receipt: string; txHash?: string; payer?: string; network: string; amount: string; currency: string };
   },
   home?: string,
   now: number = Date.now(),
