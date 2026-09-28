@@ -36,6 +36,8 @@ import { createGoal, attachRun, findActiveGoal } from './goal-store.js';
 import { captureRunModelConfig, type RunModelConfig, type ConfigDriftReport, type EffectiveModelConfig } from '../llm/model-selection.js';
 // 2026-09-26: 工具名出网净化 (pi-ai.ts 唯一边界) + 回程派发还原 (原名 ↔ API 名)
 import { resolveApiToolName, expandKnownToolNames } from '../llm/tool-name.js';
+// 2026-09-28 (前缀 KV 可命中): CURRENT TURN 注入标记 —— "当前轮是否已注入"的唯一判据
+import { CURRENT_TURN_MARKER } from '../llm/pi-ai.js';
 import { PiAgentHarness, type HarnessRunContext, type ToolDecision } from './pi-harness.js';
 import { getBranchPrefix, getCooldownMs, checkWritePath } from './shell-guard.js';
 import {
@@ -137,6 +139,52 @@ import { DEFAULT_MAX_REVIEWS } from './loop-review.js';
  *   循环内: 注入 system 提示强制 LLM 收尾; 运行层 (M3): 熔断 → needs_human (交人)。
  */
 const MAX_SAME_TOOL_FAILURES = 3;
+
+/**
+ * 2026-09-28 (前缀 KV 可命中): 把 chat() 回带的「当前轮已注入」内容写回调用方自己的 history.
+ *
+ * 谁是调用方: ReAct 循环每轮用 `buildMessages()` **重建全新对象** —— 注入只活在那一份里.
+ *   不写回的话下一轮那条 user 就退回注入前, 前缀从它起分叉:
+ *     第 1 次 `S H [D1 U1]`   第 2 次 `S H U1 U2`   ← U1 丢了 D1
+ *   正确形态: `S H [D1 U1] U2` (D1 成了 U1 的一部分, 于是成为后续轮的稳定前缀).
+ *
+ * 为什么是纯函数 (不塞进类里): 门 `scripts/verify-kv-prefix.ts` 要能**直接驱它**断言,
+ *   而不是绕一整条 ReAct 循环才验到"写回"这一下.
+ *
+ * 匹配判据 (只做加法, 绝不乱改历史):
+ *   1. wire 最后一条 content 必须以 CURRENT TURN 标记开头 (没注入过 → 0, 不动);
+ *   2. 从 history **末尾往前**找第一条 `content` 是它后缀的条目 ——
+ *      去掉后缀剩下的那截必须仍以标记开头 (证明"注入是前部加了一段");
+ *   3. 命中就整段写回 (tool 条目拿到的是含 `[工具结果]\n` 前缀 + 注入的整段),
+ *      写回后该条 `content` 已等于 wire → 第二次调用前缀为空, 自然返回 0 (幂等).
+ *
+ * @returns 真写回的条数 (0 = 没注入过 / 匹配不上 / 已经写回过)
+ */
+export function writeBackCurrentTurnInto(
+  history: Array<{ role: string; content?: string }>,
+  wire: Array<{ role: string; content?: string }> | undefined
+): number {
+  try {
+    if (!Array.isArray(history) || history.length === 0) return 0;
+    if (!Array.isArray(wire) || wire.length === 0) return 0;
+    const last = wire[wire.length - 1];
+    const wireContent = typeof last?.content === 'string' ? last.content : '';
+    if (!wireContent.startsWith(CURRENT_TURN_MARKER)) return 0;   // 没注入过 → 不动
+    for (let i = history.length - 1; i >= 0; i--) {
+      const entry = history[i];
+      const inner = typeof entry?.content === 'string' ? entry.content : '';
+      if (!inner) continue;
+      if (!wireContent.endsWith(inner)) continue;
+      const prefix = wireContent.slice(0, wireContent.length - inner.length);
+      if (!prefix || !prefix.startsWith(CURRENT_TURN_MARKER)) continue;
+      entry.content = wireContent;
+      return 1;
+    }
+    return 0;
+  } catch {
+    return 0;   // 写回失败绝不影响对话本身
+  }
+}
 
 export class PiAgentSession implements AgentSession {
   private cwd: string;
@@ -1889,12 +1937,15 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
         loopProgressSection = `\n【本轮循环进度】你已完成以下 ${loopActionLog.length} 个动作, 这是连续执行的同一轮任务:\n${actionLines}\n请基于已有结果继续推进, 不要重复执行上面已成功的动作. 全部完成后用 <final gen> 结束.\n`;
       }
 
+      // 2026-09-28 (前缀 KV 可命中): `refineContext` / `loopProgressSection` 是**每轮都在变**的段
+      //   (质量分 / 连续错误数 / 本轮已完成动作). 留在 system 里 = 每轮把 IMMUTABLE PREFIX 打碎 =
+      //   服务端前缀 KV 永远 miss. 移到 CURRENT TURN 区 (注入到最后一条 user 前部) —— 文本一字未改, 只换位置.
+      const currentTurnContext = `${refineContext}${loopProgressSection}`;
+
       const systemPrompt = `${this.bootstrapAddition}你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
 当前工作目录: ${this.cwd}
 当前身份: ${this.identity.name} (${this.identity.did})
-${refineContext}
 ${this.currentIntentHint}
-${loopProgressSection}
 
 ${toolDefs}
 
@@ -1943,7 +1994,11 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
       // 2026-09-16 (Milestone 1-B): 模型调用前后走唯一门面 (扩展点 + 计数留痕; 默认不加新 hook 事件, 避免改变现有触发次数)
       this.piHarness().beforeModelCall(this.harnessCtx());
       const _modelCallT0 = Date.now();
-      const response = await this.callLlmWithRecovery(llm, messages, systemPrompt, signal, onStream, openaiFormattedTools);
+      const response = await this.callLlmWithRecovery(llm, messages, systemPrompt, signal, onStream, openaiFormattedTools, currentTurnContext);
+      // 2026-09-28 (前缀 KV 可命中): 把注入了 CURRENT TURN 的当前轮**原样写回自己的 messageHistory** ——
+      //   buildMessages() 每轮重建全新对象, 不写回的话下一轮那条 user 就退回注入前, 前缀从那里分叉.
+      //   用 chat() 回带的 wire (真正发出去的那一份), 而不是把 messages 再拼一遍.
+      this.writeBackCurrentTurn(response.messages);
       this.piHarness().afterModelCall(this.harnessCtx(), { ms: Date.now() - _modelCallT0 });
       const reply = (response.reply || '').trim();
       // 2026-06-30: OpenAI 协议 native tool_calls (LLM 真产了 tool_call 时, minimax/M3 会返回 id)
@@ -2695,6 +2750,13 @@ lastQualityScore = this.estimateResponseQuality(reply);
       const WINDOW = 15;
       const out: Array<{ role: string; content: string; reasoningContent?: string }> = [];
 
+      // 2026-09-28 (前缀 KV 可命中): 带 CURRENT TURN 注入的条目要**原样回带**.
+      // 两个理由: (1) 注入块是"当前轮的前缀", 重渲染 (重加 `[工具结果]` 前缀 / 再 slice 截断)
+      //   会改字节 → 下一轮前缀从这条起分叉; (2) 已注入的 tool 条目在 wire 上已经是 user 形状,
+      //   再套一次前缀就是双前缀, 连内容都变了.
+      const isInjectedEntry = (m: { content?: string }): boolean =>
+        typeof m.content === 'string' && m.content.includes(CURRENT_TURN_MARKER);
+
       // 早期历史压缩: 超过窗口时, 不直接丢弃 — 提取前段用户意图摘要注入 (同步, 无 LLM).
       // 结构对齐 Context OS: System Prompt(persona) + 压缩摘要 + 最近消息.
       if (source.length > WINDOW) {
@@ -2710,6 +2772,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
         });
         for (const m of slice) {
           const r = m.role;
+          if (isInjectedEntry(m)) { out.push({ role: 'user', content: String(m.content) }); continue; }
           if (r === 'tool') {
             out.push({ role: 'user', content: `[工具结果]\n${(m.content || '').slice(0, 2000)}` });
             continue;
@@ -2725,6 +2788,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
       const slice = source.slice(-WINDOW);
       for (const m of slice) {
         const r = m.role;
+        if (isInjectedEntry(m)) { out.push({ role: 'user', content: String(m.content) }); continue; }
         if (r === 'tool') {
           out.push({ role: 'user', content: `[工具结果]\n${m.content || ''}` });
           continue;
@@ -2741,6 +2805,20 @@ lastQualityScore = this.estimateResponseQuality(reply);
       console.warn('[PiAgent] buildMessages failed (silent, falling back to text):', err);
       // 退化: 用 buildContext 字符串包装成单 user message
       return [{ role: 'user', content: this.buildContext() }];
+    }
+  }
+
+  /**
+   * 2026-09-28 (前缀 KV 可命中): 把 chat() 回带的当前轮写回自己的 messageHistory.
+   * 逻辑在模块级 `writeBackCurrentTurnInto` (纯函数, 门可以直接驱它断言);
+   * 这里只负责接到 `this.messageHistory` 上, 并保证任何异常都静默 (写回失败不影响对话).
+   */
+  private writeBackCurrentTurn(wire?: Array<{ role: string; content?: string }>): number {
+    try {
+      return writeBackCurrentTurnInto(this.messageHistory, wire);
+    } catch (err) {
+      console.warn('[PiAgent] writeBackCurrentTurn failed (silent):', err);
+      return 0;
     }
   }
 
@@ -2771,8 +2849,10 @@ lastQualityScore = this.estimateResponseQuality(reply);
     systemPrompt: string,
     signal: AbortSignal | undefined,
     onStream?: (chunk: any) => void,
-    tools?: any[]
-  ): Promise<{ reply: string; toolCalls?: any[] }> {
+    tools?: any[],
+    /** 2026-09-28: 当前轮易变段 (循环进度/改进提示) —— 进 CURRENT TURN 区, 不进 system */
+    currentTurnContext?: string
+  ): Promise<{ reply: string; toolCalls?: any[]; messages?: Array<{ role: string; content?: string }> }> {
     // Reactive compaction 预检: 估算 token 超 80% 阈值, 跑一次
     const estimated = this.estimateHistoryTokens();
     if (estimated > this.maxContextTokens() * 0.8) {
@@ -2824,9 +2904,13 @@ lastQualityScore = this.estimateResponseQuality(reply);
         // M3.5 (2026-06-17): 传 messages 数组 (如果 contextOrMessages 是数组) 或字符串
         //   数组版让 LLM 看到结构化的 user/assistant/tool role, 而不是把 history 拼成单字符串
         // Bug 5: pass tool IDs for native OpenAI tool calling
-        const response = await llm.chat(contextOrMessages, systemPrompt, signal, tools);
+        // 2026-09-28 (前缀 KV 可命中): 显式 purpose/source —— pi-sdk 的 ReAct 循环**就是主对话**
+        //   (完整 IMMUTABLE PREFIX + 工具全集 + CURRENT TURN, 也只有它带 cache_prompt);
+        //   currentTurnContext 是调用方自己的当前轮易变段 (循环进度/改进提示), 走 CURRENT TURN 区.
+        // 2026-09-28: 回带最终 wire messages (含注入后的当前轮) → 上层据此写回 messageHistory.
+        const response = await llm.chat(contextOrMessages, systemPrompt, signal, tools, 'main-agent', 'react-loop', undefined, currentTurnContext);
         // 2026-06-30: 透传 toolCalls (OpenAI 协议 native) 给上层, 让 assistant message 能 emit 真 id
-        return { reply: response.reply || '', toolCalls: response.toolCalls };
+        return { reply: response.reply || '', toolCalls: response.toolCalls, messages: response.messages };
       } catch (err: any) {
         // 用户主动 abort: 不重试, 立即抛
         if (signal?.aborted || err?.name === 'AbortError') throw err;
@@ -2933,7 +3017,9 @@ lastQualityScore = this.estimateResponseQuality(reply);
     // 给 Context Collapse (虚拟投影) 和 Auto-Compact (摘要) 共用
     const llm = getMinimax();
     const llmChat = async (systemPrompt: string, userPrompt: string): Promise<string> => {
-      const r = await llm.chat(userPrompt, systemPrompt, signal);
+      // 2026-09-28 (前缀 KV 可命中): 压缩摘要是**非主对话的一次性调用** → 轻量前缀
+      //   (它不该拖满 IMMUTABLE PREFIX, 更不该把主对话的 KV slot 顶掉).
+      const r = await llm.chat(userPrompt, systemPrompt, signal, undefined, 'auto-compact', 'pi-sdk-compact');
       return r.reply;
     };
 
@@ -3212,7 +3298,8 @@ ${this.extractOperationsFromRef(operationsRef)}
     try {
       const response = await llm.chat(
         `根据以下对话内容，为这个对话生成一个简短的名称（不超过20个字）：\n\n${conversation}\n\n直接输出名称，不要其他解释。`,
-        '命名建议'
+        '命名建议',
+        undefined, undefined, 'chat', 'session-namer'   // 非主对话: 轻量前缀, 不抢主对话的 KV slot
       );
 
       const name = response.reply.trim();

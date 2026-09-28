@@ -416,7 +416,9 @@ export class WorkflowPivotLoop {
         // 2026-08-02: 传原生 OpenAI tools — deepseek 返回结构化 tool_calls,
         //   UI 才能显示真实的工具执行 step (之前靠文本 JSON 猜格式, LLM 编造 result)
         const openAITools = this.buildOpenAITools();
-        const llmResponse = await llm.chat(context, headerForThisIter, signal, openAITools);
+        // 2026-09-28: pivot loop 就是主对话循环 → purpose='main-agent'
+        //   (完整 IMMUTABLE PREFIX + 工具全集 + CURRENT TURN; 也只有它带 cache_prompt)
+        const llmResponse = await llm.chat(context, headerForThisIter, signal, openAITools, 'main-agent', 'pivot-loop');
         const reply = (llmResponse.reply || '').trim();
         this.vlog(`[pivot] iter=${this.state.iteration} LLM took=${Date.now() - t0}ms reply=${reply.length} nativeToolCalls=${llmResponse.toolCalls?.length ?? 0} head=${reply.substring(0, 80).replace(/\n/g, ' ')}`);
 
@@ -1066,7 +1068,15 @@ ${identityLine ? identityLine + '\n' : ''}当前 step 别再读 persona 全文, 
 export interface LLMInterface {
   // 2026-07-04: 加 signal 让 pivot loop 支持 abort (防止 LLM hang)
   // 2026-08-02: 加 tools 参数 (OpenAI 原生函数定义) + toolCalls 返回 (结构化工具调用)
-  chat(context: string, systemPrompt: string, signal?: AbortSignal, tools?: any[]): Promise<{ reply: string; tokens?: number; toolCalls?: any[] }>;
+  // 2026-09-28: 加 purpose/source (前缀分流: main-agent 走完整前缀 + cache_prompt) + messages 回带
+  chat(
+    context: string,
+    systemPrompt: string,
+    signal?: AbortSignal,
+    tools?: any[],
+    purpose?: string,
+    source?: string
+  ): Promise<{ reply: string; tokens?: number; toolCalls?: any[]; messages?: Array<{ role: string; content: string }> }>;
 }
 
 /**
