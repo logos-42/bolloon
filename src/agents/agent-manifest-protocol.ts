@@ -73,6 +73,12 @@ export interface AgentManifest {
   functions?: ManifestFunction[];
   exportments?: ManifestExportment[];
   sciences?: ManifestScience[];
+  /**
+   * v3 字段: 本节点支持哪些**交流语言** (只声明事实, 不代表一定用).
+   * 取值集合 = 已知语言名, 目前: 'natural' | 'efficode'。
+   * 对端没这个字段 = **没声明** = 一律按自然语言交流 (不许默认当成支持 efficode)。
+   */
+  supportedLangs?: string[];
 }
 
 // ============== 帧构造 ==============
@@ -125,6 +131,9 @@ export function setLocalManifest(m: Partial<AgentManifest>) {
   if (!('functions' in m)) localManifest.functions = [];
   if (!('exportments' in m)) localManifest.exportments = [];
   if (!('sciences' in m)) localManifest.sciences = [];
+  // 2026-09-28: 交流语言声明同规矩 —— 不给就显式清空, 免得旧的 efficode 声明在对端已经不支持时还留着.
+  // (老 manifest 语义不变: 没有 supportedLangs = 没声明 = 自然语言)
+  if (!('supportedLangs' in m)) localManifest.supportedLangs = [];
   // 2026-09-18: 网络脉冲 (只记公开统计; 不落 DID/正文; 统计失败绝不影响主路径)
   try {
     const did = String(localManifest.ownerPublicKey || '');

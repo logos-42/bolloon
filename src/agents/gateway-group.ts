@@ -19,6 +19,9 @@
 import * as os from 'os';
 import * as path from 'path';
 import { getCIDDatabase, type CIDDatabase, type OrbitDBStore } from '../orbitdb/cid-database.js';
+// 2026-09-28: 交流语言 (Efficode 是可选项, 不是默认项) —— 只有双方都声明才用
+import { decodeFromPeer, encodeForPeer, recordLangDecision, type IncomingResult } from '../efficode/negotiate.js';
+import type { AgentLang, OpSymbol } from '../efficode/types.js';
 
 // ============ 依赖注入 (测试用, 避免单测起真实 OrbitDB 节点) ============
 
@@ -40,6 +43,12 @@ export interface GroupMessage {
   from: string;         // did / agentId
   text: string;
   ts: number;
+  /**
+   * 2026-09-28: 本条消息用哪种**交流语言**写的 (`natural` | `efficode`).
+   * 缺字段 = 没声明 = 自然语言 (老消息/老节点语义完全不变).
+   * 未知字符串一律当"不支持"处理, 绝不当成 efficode 去解。
+   */
+  lang?: string;
 }
 
 export interface GroupInfo {
@@ -305,7 +314,10 @@ export async function groupMessages(groupId: string, limit = 50): Promise<GroupM
   for (const entry of all) {
     const v = entry.value as any;
     if (v && typeof v.text === 'string' && typeof v.from === 'string') {
-      msgs.push({ from: v.from, text: v.text, ts: typeof v.ts === 'number' ? v.ts : 0 });
+      const m: GroupMessage = { from: v.from, text: v.text, ts: typeof v.ts === 'number' ? v.ts : 0 };
+      // 只透传字符串形态的语言声明; 别的形状一律当"没声明"(不让脏值进到解码分派)
+      if (typeof v.lang === 'string' && v.lang.trim()) m.lang = v.lang.trim();
+      msgs.push(m);
     }
   }
   msgs.sort((a, b) => a.ts - b.ts);
@@ -319,7 +331,12 @@ export async function groupMembers(groupId: string): Promise<string[]> {
 }
 
 /** 发送群消息 (广播给所有成员) */
-export async function groupSend(groupId: string, text: string, from: string): Promise<{ ok: boolean; error?: string }> {
+export async function groupSend(
+  groupId: string,
+  text: string,
+  from: string,
+  opts?: { lang?: string }
+): Promise<{ ok: boolean; error?: string }> {
   const msg = String(text || '').trim();
   if (!msg) return { ok: false, error: '消息不能为空' };
   let store: OrbitDBStore | null = storeCache.get(groupId) ?? null;
@@ -333,11 +350,60 @@ export async function groupSend(groupId: string, text: string, from: string): Pr
     }
   }
   try {
-    await store.add({ from: String(from || 'anonymous'), text: msg, ts: Date.now() });
+    const record: Record<string, unknown> = { from: String(from || 'anonymous'), text: msg, ts: Date.now() };
+    // 只有显式给了合法声明才写字段 —— 不给就不写 (老读者读到的东西一字不变)
+    const lang = typeof opts?.lang === 'string' ? opts.lang.trim() : '';
+    if (lang) record.lang = lang;
+    await store.add(record);
     return { ok: true };
   } catch (e: any) {
     return { ok: false, error: `发送失败: ${String(e?.message || e).slice(0, 160)}` };
   }
+}
+
+/**
+ * 2026-09-28: 按语言裁决发群消息 —— 真可走的那条路。
+ *
+ * 双方都声明 efficode ⇒ 正文真编成 Efficode 包 (文本模式 Base64), `lang: 'efficode'` 一起落库;
+ * 否则**原文直发** + `lang: 'natural'` (或干脆不写字段, 由调用方定), 并记一笔回落原因。
+ * 裁决/编码/落库各自失败都有结构化结果, 不静默。
+ */
+export async function groupSendWithLang(
+  groupId: string,
+  text: string,
+  from: string,
+  opts: { mine: unknown; theirs: unknown; op?: OpSymbol; record?: 'always' | 'on-fallback' } = { mine: undefined, theirs: undefined }
+): Promise<{
+  ok: boolean;
+  error?: string;
+  lang: AgentLang;
+  bytes: number;
+  fallback: boolean;
+  reason: string;
+  symbolic: string;
+}> {
+  const enc = encodeForPeer({ text, mine: opts.mine, theirs: opts.theirs, from, op: opts.op });
+  recordLangDecision(enc.decision, { channel: `group:${groupId}`, peer: from });
+  const wantLang = enc.lang === 'efficode' || opts.record === 'always' ? enc.lang : '';
+  const r = await groupSend(groupId, enc.text, from, wantLang ? { lang: wantLang } : undefined);
+  return {
+    ok: r.ok,
+    error: r.error,
+    lang: enc.lang,
+    bytes: enc.bytes,
+    fallback: enc.decision.fallback,
+    reason: enc.decision.reason,
+    symbolic: enc.symbolic,
+  };
+}
+
+/**
+ * 2026-09-28: 读一条群消息 —— 严格按它自己声明的 `lang` 分派。
+ * 声明不是 efficode (含未知字符串 / 没声明) ⇒ 原样返回, **不进解码器**。
+ * 声明 efficode 且本机也声明支持 ⇒ 真解包 (畸形包抛, 由调用方如实报失败)。
+ */
+export function readGroupMessage(msg: GroupMessage, mine: unknown): IncomingResult {
+  return decodeFromPeer({ payload: msg.text, declaredLang: msg.lang, mine });
 }
 
 /** 群组邀请链接 */
