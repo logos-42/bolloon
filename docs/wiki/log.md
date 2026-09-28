@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-28 | chore | **卖方端点 `pay.bolloon.cn` 上公网 (402 可达 · `settlement.mode=none` = 非链上) + 上架 item 的机器清单口径对齐**: ① **部署形态**: 服务 = `/opt/bolloon-pay/app/server.mjs`(**157 行最小 x402 付费信息路由**, 复用仓内 `dist/agents/x402/*.js`, 零 npm 依赖 —— **不是**完整 `bolloon --web`) · systemd `bolloon-pay.service`(User/Group=`bolloonpay` · enabled+active · 加固 `NoNewPrivileges` / `ProtectSystem=full` / `ProtectHome=read-only` / `PrivateTmp` / `MemoryMax=256M` / `ReadWritePaths=/opt/bolloon-pay`) · **只 LISTEN `127.0.0.1:54188`**(HOST/PORT 走 env; `ss` 实测 node pid `51431` 绑回环) —— 公网入口一律走 nginx 反代 · `/etc/nginx/sites-available/pay.bolloon.cn` 的 443 **只放行** `= /api/health` · `^~ /api/x402/` · `= /`, 其余 `location / { return 404; }` · 证书 `CN=pay.bolloon.cn`(SAN 只有该域名) 有效至 **2026-12-27** · DNS A → **120.26.82.43**(Cloudflare 灰云)。② **公开真验**(本机 `curl --noproxy '*' --resolve pay.bolloon.cn:443:120.26.82.43`): 不带付款头 `GET /api/x402/info/info_efficode_spec_pack` → **402**, `accepts` 原文 `scheme=exact · network=base · asset=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 · amount=50000`(=**0.05 USDC**)` · payTo=0xb4e9dCF79055A8232670ebb1c8c664Dff4E70066 · itemId=info_efficode_spec_pack` · `/meta` **200** · 不存在的 id → **404** · 站根外的路径 → **404** · `GET /api/health` → **200** 且 `settlement={mode:"none", onchain:false, detail:"未配置 facilitator 也未开启本机联调 → 只发 402, 无法校验/结算任何付款"}` ⇒ **非链上: 只发报价, 不校验也不结算任何付款** · **站不回归**: `bolloon.cn` **200 / 18076B** · `efficode.bolloon.cn` **200 / 39715B**。③ **修掉的真漂移 (item 口径对齐)**: item 正文里嵌的机器清单快照写的是旧值 **3287B / sha256 `bd7a9ed8…9145`**, 而线上实际是 **3716B / sha256 `70354d7d…b528b`** ⇒ 只改快照那两行 + `updatedAt` → **2026-09-28T10:34:37.000Z**, 重算 contentHash **`sha256:02c93704…51ed8` → `sha256:868f7ffe…3e24c7`**(算法 = `sha256Hex(content)`, 与仓内 `computeContentHash` 同), 同步到 `/opt/bolloon-pay/.bolloon/x402-info/info_efficode_spec_pack.json`(旧文件留 `.bak-20260928T103509Z` · 属主/权限仍 `bolloonpay:bolloonpay 644`); ECS 侧重算 **match=true** · 旧值 `grep -c` **0/0** · 公网 `/meta` 已报新 hash; 固定参数(`title` / `category=data` / `protocol=bolloon-x402-info/1` / 0.05 USDC · base / `payTo` / `provider.did` / item id) **一字未改**, 内嵌规范正文仍 = 仓内 `docs/wiki/efficode.md`(301 行 / 19247B / sha256 `995e03e4…5e15`) **逐字节相同**; 服务每请求真读文件(`getStoredInfo` → `fs.readFile`) ⇒ **未重启**。④ **还缺两个决定**: **facilitator**(`BOLLOON_X402_FACILITATOR` → `POST /verify` + `/settle`)与**卖方 DIAP 签名私钥**(**刻意不上服务器** ⇒ 即便付款校验通过也签不出信封, 服务如实回 **500**)。⑤ **回滚**: item 还原 `cp -p /opt/bolloon-pay/.bolloon/x402-info/info_efficode_spec_pack.json.bak-20260928T103509Z /opt/bolloon-pay/.bolloon/x402-info/info_efficode_spec_pack.json`; 关端点 `systemctl disable --now bolloon-pay` + `rm /etc/nginx/sites-enabled/pay.bolloon.cn && nginx -t && systemctl reload nginx`。**如实**: 真链上**成交**仍未打通(缺 facilitator · 无私钥) · npm **未发布** | 仓外: `/opt/bolloon-pay/**` · `/etc/nginx/sites-available/pay.bolloon.cn` · `/etc/systemd/system/bolloon-pay.service` · 本页 + `current-status.md` |
 | 2026-09-28 | chore | **ICP 备案通过 → 域名真开通 (bolloon.cn) + Efficode 论坛上真域名 (机器入口) + 把「备案期」写死的那两条过期红线换成白名单真门 + Docker 依赖缺陷修复 (`1d88f0c`)**: ① **域名开通**: `bolloon.cn` / `www.bolloon.cn` → A 记录 **120.26.82.43** (Cloudflare 灰云, zone id `9be73c239b5159d75f0e8c62d8b5f41a`) · `https://bolloon.cn/` = **200 / 18076B** · 证书 CN=bolloon.cn 有效至 **2026-12-23** · `http://` → **301** → https · 页脚 **浙ICP备2026081254号-1** (链 `https://beian.miit.gov.cn/`) · 公安联网备案**已提交待审** · 主站零回归。② **Efficode 论坛上真域名**: `https://efficode.bolloon.cn/` = **200 / 39715B** · `/.well-known/efficode.json` 与 `/efficode.json` 各 **3716B** 且**逐字节相同** (md5 两份均 `8c323819ea9495fa9be45f4a166c6d5a`) · `/changelog.json` **200 / 2123B** · `/README-DEPLOY.md` **404** (按设计) · 证书 Certificate Name `efficode.bolloon.cn` (certbot, 复用 bolloon.cn 账号) · 论坛页脚也加了备案号; **死链修复前后**: 上域名前公开清单 **3287B** / 页面 **38716B**, 且 `forum_url`/`page_url`/`changelog_url` 指向 **`http://120.26.82.43/` (死链)** 而 `hosting` 写着 `server-ip-only` / `domain_enabled=false` / reason 「ICP filing review in progress」 ⇒ 现为 **`addressing=domain-https` · `domain_enabled=true`** · 三份公开 JSON 里 `grep -c 120.26.82.43` **0/0/0**、`https://efficode.bolloon.cn` 计数 **3/3/1** · `noindex`/`robots` 不收录是**有意保留** (非待办)。③ **配置真相源同源 + 白名单真门**: 本地 `~/.hermes/scripts/efficode-forum/nginx/efficode.conf` 与线上 `/etc/nginx/sites-available/efficode` **sha256 同值 `5cba1878d4539c274e02b32dedf0cdbec7b7a9657274374134d0c94eaa36de9f`**; 部署脚本里两条**过期红线** (`REFUSE 443` / `REFUSE 域名 server_name`) 已改成**白名单真门** (证书只许 `/etc/letsencrypt/live/efficode.bolloon.cn/` · 开 443 必须 cert+key · `server_name` 只许 `efficode.bolloon.cn` 与 `120.26.82.43`, 其余 **REFUSE exit 3**), 「bolloon.cn 配置被改动」那条 sha256 门**保留未放宽** (**exit 4**); **本机 10 例变异测试全判对** · `bash -n` 过 · 部署**幂等** (第二次跑打印「已经是最新…跳过上传与 reload」) · 主站配置 sha `943272b0f7c9f868e2eb37d857e9ee331a2bce6b911d4e699415ab0821b41de6` 部署前后一致 · 监听端口仍只有 **22/53/80/443**。④ **两份口径手册修正** (不在仓内): README **9753→11793B** · README-DEPLOY **10808→13265B**, 「只监听 80 / 只认 IP / 备案期不接域名」**0 处**残留。⑤ **内容源修正** (不在仓内): `content.py`/`build.py` 的 `forum_url`/`page_url`/`changelog_url` 改 https 域名 + `hosting` 三字段改真值 + 新增 `icp` 字段 + 页脚备案号 + `spec_note` 改成「已在仓内 `docs/wiki/efficode.md`, 工作规范**非已发布标准**」; 构建产物 `index.html` **39715B** / gz **12452B**。⑥ **Docker 依赖缺陷修复** (已提交推送 **`1d88f0c`**, `package.json` + `package-lock.json` 新增 **`undici ^7.30.0`**): `src/llm/pi-ai.ts:4` 真 `import undici` 却**不是直接依赖** (靠传递提升) ⇒ 容器 `npm ci --omit=dev` 装不到 ⇒ 启动即 `ERR_MODULE_NOT_FOUND`; 修后真验 build **exit=0 (567s)** · 镜像内 `/app/node_modules/undici` = **7.30.0** · 容器 run **exit=0** · 第 **65 秒** HTTP **200** · HEALTHCHECK 最终 **healthy** (探针原文 `exit=0 healthy /api/health=200 ok=true /= 200`; 启动期几次 `exit=1 fetch failed` 是探针早于服务) · 非 root **uid=1001 / bolloon** · **npm 未发布** (0.5.2 仍是线上最新版)。**如实两条**: 裸 IP 走 HTTP (`http://120.26.82.43/`) 现在 **404** (certbot 改写后只服务域名: 域名 301 跳 https、其它 Host 404), 按现状保留未改; 真链上「卖方发起」仍缺 **facilitator** (`BOLLOON_X402_FACILITATOR` → `POST /verify` + `/settle`), 卖方端点部署到 ECS (`pay.bolloon.cn`) **仍在进行中** | `~/.hermes/scripts/efficode-forum/{nginx/efficode.conf,README.md,README-DEPLOY.md}` · `~/.hermes/scripts/efficode-forum-deploy.sh` · `package.json` · `package-lock.json` · `src/llm/pi-ai.ts` · `docs/wiki/efficode.md` (301 行 / 19247B) · 本页 |
 | 2026-09-28 | fix | **收掉站点门最后一条常驻红:「钱包签名」的真 0 与裸 0 分开判 —— 是门错了, 不是站点谎报**: 门判据原写「数字且 ≠ 0」, 把「审计账 24h 窗口内真的 0 条」也判红。取证链: 本机 `~/.bolloon/wallet-signatures.jsonl` 真存在(**11 行, 最后一笔在 4 天前** ⇒ 窗口内本就 0 条) · 导出侧真读它 (`src/agents/network-pulse.ts` 的 `source:'signature-audit'`, 单测兜着「账 3 条(2 条在窗口内) → 计数 2」) · 真页面那一格 = 「0 钱包签名 **24h 签名审计**」且 `<i data-pulse-scope-tag="signatures" title="本机签名审计账 … 24h 内条数">` 真在 ⇒ 0 是量出来的结论。**判定改成看三元组**(更严不是更宽): 过 = (真源集合 ∧ 值是数字 ∧ **自己的口径标记非空**) ∨ (source==='none' ∧ 值==='未接入'); 裸 0 / 有源却无标记 / 无源却印数字 一律红。**另加规则自证判别力**: 同一判定函数拿人造输入跑, 三种坏形状必须假、两种好形状必须真。**同时修掉同族的「读太早」假红**: 三处等**真网络**hydrate 的等待预算 12s/6s → 50s (实测 CDN 冷启动 hydrate 要 7~10s, 旧预算卡线 ⇒ 整段落在 loading 态, 报出 dom=—/rows=0/口径行空 一片假红; 快照本身取一次仅 0.8s, 网络无问题), 断言未动; 现场还清了 3 台上一轮被中断的验收 Chrome (`kill-verify-chrome.sh` 在 skill 目录里, 不在仓库 `scripts/`)。**结果: `verify-site.mjs` 440 passed / 0 failed / 0 skipped** | `bolloon-UI/scripts/verify-site.mjs` · 本页 |
 | 2026-09-28 | fix | **npm 0.5.2 落地后收尾两处"会撒谎或会假红"的地方**: ① 查 npm 真值 = `dist-tags.latest 0.5.2` (145 版) ⇒ 站点文档昨天写的「npm 已发布 `0.5.1` / 本地 `0.5.2` 尚未发布」**当场变成错的** ⇒ 现况行改写为「已发布 `0.5.2` = 主仓 `package.json`, 一致」, 仓内两份逐字节同改 (sha 相同)。**门的洞一并堵上**: 旧断言只查「文档里出现过这个版本号」⇒**把已发布/待发布两个角色写反也能过**; 新增反面断言 = 从文档里取「现况」行, 与真实对表 (必须点出 npm 已发布那版; 版本一致时**不许**再出现「未发布」字样)。 ② 首页版本徽章门报红 `live=0.5.2 dom=—`: **用真 Chrome 两通道复核 ⇒ 徽章其实正常填成 0.5.2**(CF Pages 冷启动取 npm 要 ~9s, 域名 ~3.8s) ⇒ 是门的等待预算太紧的**假红**(1.2s + 16×0.5s ≈ 9.2s 刚好卡线), 预算放宽到 20s, **断言本身不动**(仍然要求 dom 逐字 = npm 最新版) | `bolloon-UI/bolloon-network.md` · `skills/bolloon-network/SKILL.md` · `bolloon-UI/scripts/verify-site.mjs` |
@@ -5347,3 +5348,106 @@ $ python3 scripts/supersede_check.py         → OK
 4. **本节只写本 session 亲手核过的事** —— 域名/证书/字节数/sha/探针原文都是当下真值;
    证书 **2026-12-23** 到期后需续期(certbot 已有账号复用路径, **续期本身本轮没验**)。
 5. **公安联网备案仍在审** —— 只到"已提交", 没有通过回执。
+
+## [2026-09-28] chore | 卖方端点 `pay.bolloon.cn` 上公网 (402 可达 · `settlement.mode=none` = **非链上**) + 上架 item 的机器清单口径对齐
+
+**一句话**: 卖方的「报价面」今天真上公网了 —— 任何第三方 agent 不带凭证就能拿到 402 与完整 `accepts`, 也能免费读到 item 元数据;
+但「钱的另一半」(校验 / 结算 / 签发信封)**没打通**, 本页只写前者, 一个字都不美化。
+
+### 一、部署形态: 最小卖方服务 · 只绑回环 · 公网入口只有三条
+
+| 项 | 真值 (本 session 亲手探得) |
+|---|---|
+| 服务本体 | `/opt/bolloon-pay/app/server.mjs` —— **157 行**最小 x402 付费信息路由, 只做四件事: `GET /api/health` · `GET /api/x402/info` · `GET /api/x402/info/:id/meta` · `GET /api/x402/info/:id`(无 `X-PAYMENT` → 402) |
+| 依赖 | 复用仓内编译产物 `/opt/bolloon-pay/app/lib/x402/{paid-info-store,paid-info-protocol}.js`, **零 npm 依赖**; **不是**完整 `bolloon --web`(P2P 监听面 / provider 凭证 / 889MB 依赖都不上服务器) |
+| 进程 | systemd `bolloon-pay.service`: `User=Group=bolloonpay` · **enabled + active**(`systemctl is-active` → `active`) · `Restart=always` · `RestartSec=3` · MainPID `51431` |
+| 加固 | `NoNewPrivileges` · `PrivateTmp` · `PrivateDevices` · `ProtectSystem=full` · `ProtectHome=read-only` · `ProtectKernelTunables` / `ProtectKernelModules` / `ProtectControlGroups` · `RestrictAddressFamilies=AF_INET AF_INET6` · `RestrictNamespaces` · `MemoryMax=256M` · `ReadWritePaths=/opt/bolloon-pay` |
+| 监听面 | **只 `127.0.0.1:54188`**(`Environment=HOST=127.0.0.1` / `PORT=54188`; `ss -lntp` 实测 `node pid=51431` 绑回环)。全机监听端口仍只有 **22 / 80 / 443** (+ 本机 53) —— 卖方服务一个公网口都没开 |
+| 公网入口 | nginx `/etc/nginx/sites-available/pay.bolloon.cn`(独立站点: **不**共享 server block / location / 证书): 443 只放行 **`= /api/health`** · **`^~ /api/x402/`** · **`= /`**, 其余一律 `location / { return 404; }`; 80 只留 `/.well-known/acme-challenge/` + `301` 跳 https |
+| 证书 | `CN=pay.bolloon.cn`, SAN 只有该域名, `notBefore=2026-09-28` → **`notAfter=2026-12-27`**(certbot, 独立 Certificate Name `pay.bolloon.cn`) |
+| DNS | `dig @luke.ns.cloudflare.com pay.bolloon.cn A` → **120.26.82.43**(Cloudflare 灰云; 备案要求流量真落备案 IP) |
+| 存储 | `/opt/bolloon-pay/.bolloon/x402-info/info_efficode_spec_pack.json`(**21661B** · `bolloonpay:bolloonpay 644`) |
+
+### 二、公开真验 (本机 `curl --noproxy '*' --resolve pay.bolloon.cn:443:120.26.82.43` 原文)
+
+| 探测 (不带任何凭证) | 结果 |
+|---|---|
+| `GET /api/x402/info/info_efficode_spec_pack` | **402** —— `accepts` 原文: `scheme=exact` · `network=base` · `asset=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` · `amount=50000`(= **0.05 USDC**) · `payTo=0xb4e9dCF79055A8232670ebb1c8c664Dff4E70066` · `itemId=info_efficode_spec_pack` · `maxTimeoutSeconds=60` · `providerDid=did:key:z6MkjpvG9Zu3DSYpE72LCApMVKYkZa4WMNGyPRBVc8acn83g` · 另有 `X-PAYMENT-REQUIRED` 头 |
+| `GET /api/x402/info/info_efficode_spec_pack/meta` | **200** —— 免费元数据, 报 `updatedAt=2026-09-28T10:34:37.000Z` 与**新** `contentHash` |
+| `GET /api/x402/info/<不存在的 id>` | **404**(`{"error":"信息不存在"}`) |
+| `GET /nope`(站根外任意路径) | **404**(按设计: 端点只对外露三条路径) |
+| `GET /api/health` | **200**, `settlement = {"mode":"none","onchain":false,"detail":"未配置 facilitator 也未开启本机联调 → 只发 402, 无法校验/结算任何付款"}` ⇒ **非链上** |
+| 站不回归 | `https://bolloon.cn/` = **200 / 18076B** · `https://efficode.bolloon.cn/` = **200 / 39715B** —— 两个既有站点零回归 |
+
+### 三、item 机器清单口径对齐 (本轮修掉的真漂移)
+
+| 字段 | 旧 (线上存量) | 新 (本轮) |
+|---|---|---|
+| 正文内嵌清单字节数 | `3287` | **`3716`** |
+| 正文内嵌清单 sha256 | `bd7a9ed80bfd4c981552f396d3ec61f842c3e916137288f17c216fdcb7ef9145` | **`70354d7dfeb4c80963cd3ba64cfe75bfab2d9a07a6d1bfcadc2e8ed16a5b528b`** |
+| `item.contentHash` | `sha256:02c937044a5934430b72259f075e652624fa84c8d03f94d84e5598afcec51ed8` | **`sha256:868f7ffeb6577612a12a35b122bc4532e0ea38c201991f5acd83faa30c3e24c7`** |
+| `item.updatedAt` | `2026-09-28T10:23:49.051Z` | **`2026-09-28T10:34:37.000Z`**(当下真实时刻) |
+| `item.createdAt` | `2026-09-28T10:23:49.051Z` | **不变**(创建时刻是历史事实, 改它就是造假) |
+| 正文其余部分 / 固定参数 | — | **逐字节不变**(`title` · `category=data` · `protocol=bolloon-x402-info/1` · 0.05 USDC · network base · `payTo` · `provider.did` · item id) |
+
+**漂移怎么来的**: 机器清单在「Efficode 论坛上真域名」那一轮被重建(**3287B → 3716B**), 而 item 正文里嵌的那份快照是**手抄的旧值**, 没人重新生成
+⇒ 买方拿着 item 去核验线上清单**对不上**(内容保真链断在校验之前)。本轮以**自己 curl 实测的真值**为准重生成 item。
+
+**算法与真验**: `contentHash = sha256Hex(content)`(content 取 UTF-8 字节), 与仓内 `src/agents/x402/paid-info-protocol.ts` 的 `computeContentHash` **同**;
+ECS 侧独立重算 **`match = true`**; 旧值 `grep -c` **0 / 0**(`3287` 与 `bd7a9ed8…` 已不在文件里, 旧 contentHash 也 0 命中);
+内嵌规范正文与仓内 `docs/wiki/efficode.md` **逐字节相同**(301 行 / 19247B / sha256 `995e03e4ee55f0fd57531c39efd7bd505226af68e784a71a63a408a358fb5e15`)。
+
+**同步方式**: 先 `cp -p` 备份为 `.bak-20260928T103509Z`, 再 `install -o bolloonpay -g bolloonpay -m 644` 写同目录临时文件 + `mv` **原子替换**
+(属主/权限与旧文件一致)。服务**每请求真读文件**(`getStoredInfo` → `fs.readFile`), 所以**不需要也**没有重启 —— 公网 `/meta` 立刻报出新 hash 即为证。
+
+### 四、还缺的两个决定 —— 这就是「非链上」的全部含义
+
+1. **facilitator 缺**: `BOLLOON_X402_FACILITATOR` 指向的服务(带 `POST /verify` + `/settle`)不存在 ⇒ 没有任何链上校验/结算通路。
+2. **卖方 DIAP 签名私钥缺**(**刻意不上服务器**): 就算将来付款校验通过, 也签不出信封 ⇒ 服务如实返回 **500** +
+   「付款已通过校验, 但本部署缺少卖方 DIAP 身份私钥 (刻意不上服务器), 无法签发信封 — 已收到的付款请人工处理」, **绝不把内容白给**。
+
+⇒ 现在能做的**只有发现与报价**(`402` + `accepts` + `/meta`)。`mode:none` / `onchain:false` 是服务**自报**的真值:
+**不许说成链上**; 也不许拿 local-dev 冒充链上(local-dev 同样显式 `onchain:false`, 且本部署连它都没开)。
+
+### 五、门与验证 (真跑, 本次回写后)
+
+```text
+$ python3 scripts/wiki_check.py              → wiki_check: OK
+  (markdown files: 58 · required files: 8 · frontmatter valid: 54 · index.md links: 57)          EXIT=0
+$ python3 scripts/raw_manifest_check.py      → raw_manifest_check: OK
+  (manifest: manifests/raw_sources.csv · schema: v2 · PROJECT_RAW_ROOT: not set, existence checks skipped)  EXIT=0
+$ python3 scripts/wiki_lint.py --strict=v2   → wiki_lint (--strict=v2): OK
+  (markdown files: 58 · schema: v2)                                                              EXIT=0
+$ python3 scripts/supersede_check.py         → supersede_check: OK
+  (pages: 54 · supersedes total: 2 · contradicts total: 0)                                        EXIT=0
+```
+
+四个门全绿 (EXIT=0), 在**本次回写之后**跑的。
+
+### 六、回滚
+
+```bash
+# 1) item 还原 (回到本轮之前的 3287B 口径)
+ssh -i ~/.hermes/secrets/aliyun-ecs.key root@120.26.82.43 \
+  'cp -p /opt/bolloon-pay/.bolloon/x402-info/info_efficode_spec_pack.json.bak-20260928T103509Z \
+         /opt/bolloon-pay/.bolloon/x402-info/info_efficode_spec_pack.json'
+
+# 2) 关掉公网端点 (先撤 nginx 入口, 再停服务)
+ssh -i ~/.hermes/secrets/aliyun-ecs.key root@120.26.82.43 \
+  'rm /etc/nginx/sites-enabled/pay.bolloon.cn && nginx -t && systemctl reload nginx'
+ssh -i ~/.hermes/secrets/aliyun-ecs.key root@120.26.82.43 'systemctl disable --now bolloon-pay'
+```
+
+**回滚边界**: 只动 `pay.bolloon.cn` 自己的 vhost 与 unit —— **不碰** `efficode` / `bolloon.cn` 的站点与证书;
+那个 `.bak-20260928T103509Z` 文件是唯一的旧 item 凭据, 别删。
+
+### 七、如实留下的 (没做到 / 不确定)
+
+1. **真链上「成交」仍未打通** —— 缺 facilitator + 卖方签名私钥(§四)。本页只记**报价面**, 一笔真 USDC 都没收到, 也没发生过任何买方付款尝试。
+2. **npm 未发布** —— 上一轮与本轮都没有发版(`0.5.2` 仍是 npm 最新版); ECS 上服务版本串 `0.3.2-min` 是 systemd 里手写的展示值, **不是**发行版本号。
+3. **快照这个坑本轮只修了结果, 没修机制** —— item 正文里的清单字节数/sha 依旧靠**人工同步**; efficode 清单下次再变, item 还会再漂一次。
+   正解是让生成 item 的脚本**现取** `https://efficode.bolloon.cn/.well-known/efficode.json` 的字节数与 sha256, **本轮未做工具化**, 记在这里当欠账。
+4. **证书续期未验** —— `pay.bolloon.cn` 证书 **2026-12-27** 到期, certbot 账号复用路径在, 但续期本身本轮没跑过。
+5. **未做端到端买方验收** —— 所有"真验"都是卖方**报价面**的探测; 没有真钱包、没有真测试网/主网 tx。
+6. **本仓本轮只动 wiki 两个文件**(`docs/wiki/log.md` · `docs/wiki/current-status.md`); `/opt/bolloon-pay/**`、`/etc/nginx/sites-available/pay.bolloon.cn`、`/etc/systemd/system/bolloon-pay.service` 全在**仓外**, 未登记进 `manifests/raw_sources.csv`(非本仓资产)。
+   `~/.hermes/scripts/efficode-forum-deploy.sh` 与 `/root/.secrets/cf.ini` **本轮未动**。
