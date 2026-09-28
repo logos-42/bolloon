@@ -189,13 +189,20 @@ function httpsGetJson(url) {
       });
   });
 }
-function httpsHead(url) {
-  return new Promise((resolve, reject) => {
-    const req = https.request(url, { method: 'HEAD', timeout: 20000 }, (res) => {
-      resolve({ status: res.statusCode || 0, length: Number(res.headers['content-length'] || 0) });
+function httpsSize(url) {
+  // registry/CDN 对 HEAD 回 200 但**不带 content-length** (真量过: curl -sI 也没有) ⇒ HEAD 拿不到字节数。
+  // 改用 Range GET 读 `content-range: bytes 0-0/<总长>` —— 只传 1 个字节就拿到精确大小。
+  return new Promise((resolve) => {
+    const req = https.request(url, { headers: { Range: 'bytes=0-0' }, timeout: 20000 }, (res) => {
+      res.resume(); // 必须排掉 1 字节响应体, 否则 keep-alive socket 挂着不释放
+      const cr = String(res.headers['content-range'] || '');
+      const m = /^bytes\s+\d+-\d+\/(\d+)$/.exec(cr);
+      const cl = Number(res.headers['content-length'] || 0);
+      res.on('end', () => resolve(m ? Number(m[1]) : (res.statusCode === 200 ? cl : 0)));
     });
-    req.on('error', reject).on('timeout', function () {
-      this.destroy(new Error(`HEAD ${url} 超时`));
+    req.on('error', () => resolve(0)).on('timeout', function () {
+      this.destroy();
+      resolve(0);
     });
     req.end();
   });
@@ -248,14 +255,9 @@ if (latestTag === version) {
   step('npm dist-tags.latest', false, `[不阻塞] ${note}${BACKFILL ? ' (回填旧版本属正常)' : ''}`);
 }
 
-// tarball 字节数 (真 HEAD) + 可选真下载重算 SHA-1
-let tarballBytes = 0;
-try {
-  const head = await httpsHead(dist.tarball);
-  if (head.status < 400) tarballBytes = head.length;
-} catch (e) {
-  if (!AS_JSON) console.log(`⚠️  读 tarball Content-Length 失败 (不阻塞): ${e.message}`);
-}
+// tarball 字节数 (真 Range GET 取 content-range; HEAD 这条路走不通) + 可选真下载重算 SHA-1
+let tarballBytes = await httpsSize(dist.tarball);
+if (!tarballBytes && !AS_JSON) console.log('⚠️  未取到 tarball 字节数 (Range 请求没回 content-range, 不阻塞)');
 let recomputed = null;
 if (VERIFY_TARBALL) {
   try {
@@ -323,7 +325,12 @@ const generatedVerify = [
   `| npm 包 | \`${PKG_NAME}@${version}\` |`,
   `| tarball | ${dist.tarball} |`,
   `| shasum (SHA-1) | \`${dist.shasum}\`${recomputed ? ' (本地真下载重算, 逐字相同)' : ' (packument `dist.shasum`; 本地未重算)'} |`,
-  `| tarball 字节数 | ${tarballBytes ? num(tarballBytes) : '未知 (HEAD 未取到)'}${recomputed ? ` · 真下载 ${num(recomputed.bytes)} 字节` : ''} |`,
+  `| tarball 字节数 | ${
+    tarballBytes || recomputed
+      ? `${num(tarballBytes || (recomputed && recomputed.bytes))} 字节` +
+        (tarballBytes && recomputed ? ' (Range 现取 + 真下载重算一致)' : tarballBytes ? ' (Range 现取)' : ' (真下载)')
+      : '未取到 (Range 请求没回 content-range)'
+  } |`,
   `| 解包大小 / 文件数 | ${dist.unpackedSize ? num(dist.unpackedSize) + ' 字节' : '未知'} / ${dist.fileCount || '未知'} |`,
   `| integrity (SRI) | \`${dist.integrity || '未知'}\` |`,
   `| npm dist-tags.latest | \`${latestTag}\`${latestTag === version ? ' (= 本版本)' : ` (本版本 ${version}, 非 latest)`} |`,
