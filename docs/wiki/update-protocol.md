@@ -710,3 +710,97 @@ update.reload()           重载 web 层让新资源生效 (人在环)
 3. **原生壳层自更** —— 按 §13.2 的天花板,**本来就不做** (iOS App Store 规则), 不是"没做到", 是"不该做"。
 4. **dev 通道的 web 包需要人先发布** —— `build-mobile-web-bundle.ts` 产出后要放到可下载 URL (`BOLLOON_MOBILE_DEV_BUNDLE_URL`); 本轮**没有**为它建自动分发, 配置里没配就**没有 dev 源** (如实报 `dev_bundle_unavailable`)。
 5. **隐私同意门没有为了验收被放宽** —— 验收脚本走的是**真用户路径** (点"同意"), 不是把门关掉。
+
+---
+
+## 14. 发版 = npm publish + GitHub Release **同步命名** (2026-09-28 落地)
+
+> 一句话: 一个版本发出去, **npm 上有、GitHub 上也有, 名字还完全一样** —— 用户在哪一侧查都查到同一版同一份说明。
+
+### 14.1 命名与真源 (三者必须逐字一致)
+
+| 东西 | 值 | 真源 |
+| --- | --- | --- |
+| npm 版本 | `<x.y.z>` | `package.json` 的 `version` (唯一真源, 见 §1.1) |
+| git tag | `v<x.y.z>` | **annotated** tag (`git tag -a`), 指向的 commit = **发版提交** (那份真实出包的源码) |
+| GitHub Release 名 | `v<x.y.z>` | 由 `scripts/gh-release.mjs` 用**同一个 tag** 建, 名字就是 tag 名 |
+
+**为什么必须同名**: §12 的双源交叉校验比的就是这一件事 —— npm `latest` 能不能在 GitHub 上找到同名记录。取名不一致 ⇒ 交叉校验永远 `missing_record`, 用户看到"两个源指向不同版本"。
+
+### 14.2 顺序 (照这个走, 每步都是硬门)
+
+```bash
+# ① 本地: 版本号 + 门禁 + annotated tag
+npm version <x.y.z> --no-git-tag-version     # 四处版本号对齐 (package.json / lock / android / ios)
+npx tsc --noEmit && npx vitest run            # §5.2 门禁
+git tag -a v<x.y.z> -m "<一句话>"             # 必须 annotated (轻量 tag 会被脚本拒)
+git push origin master && git push origin v<x.y.z>
+
+# ② npm 那一侧
+npm publish --access public
+node scripts/verify-release.mjs <x.y.z> --install-check    # 发布后硬门 (§8), 不过就别往下走
+
+# ③ GitHub 那一侧 (本节的活)
+node scripts/gh-release.mjs --dry-run         # 先读一遍 notes, 不改远端
+node scripts/gh-release.mjs                   # 建 Release (默认标记 latest)
+gh release view v<x.y.z> -R logos-42/bolloon  # 回读复核 (脚本自己也会回读一次)
+```
+
+**失败怎么办 (不许"看起来发了")**:
+
+- **①/② 挂了** → 修了重跑; npm 同版本**绝不能重发** (必 `E409`), 要改内容就 bump 一版。
+- **③ 挂了** → 脚本**非 0 退出并打原文**, 远端什么都没建。修掉原因后**重跑同一条命令**即可: 已存在的 Release 会被识别为"已存在", **默认不建也不改** (幂等跳过, 退出 0); 要覆盖 notes 必须显式 `--clobber` (TTY 下还会再问一次, `--yes` 跳过提问)。
+- **③ 只建了一半** (Release 建了但回读失败) → 脚本把 URL 打出来了, 用 `gh release view` 复核; 若名字/latest 不对, `gh release edit` 或带 `--clobber` 重跑。
+
+### 14.3 脚本 `scripts/gh-release.mjs` (幂等 · 不静默失败)
+
+| 参数 | 作用 |
+| --- | --- |
+| (默认) | 从 `package.json` 取版本 → 校验 tag (存在 / annotated / 指向 HEAD) → 拉 npm `dist.shasum` → 生成 notes → `gh release create`, 默认标记 **latest** |
+| `--dry-run` | 只生成并打印 notes, **不碰远端** (验收/校对用) |
+| `--draft` | 建草稿 (草稿不标记 latest) |
+| `--no-latest` | 建正式 Release 但不抢 latest (回填旧版本用) |
+| `--version <x.y.z> --backfill` | 回填历史版本: 显式指定版本, 并允许 tag 与 HEAD 不重合 (发布记录回写在 tag 之后属常态), 此时**打印差值与多出的提交数** |
+| `--verify-tarball` | 额外**真下载** tarball 并本地重算 SHA-1, 与 packument `dist.shasum` 不一致就停 |
+| `--clobber` [`--yes`] | 目标 Release 已存在时**覆盖** title/notes (默认绝不覆盖) |
+| `--strict` | 把"不是 npm latest / 已存在 Release 名字不符"这类软项升级为硬失败 |
+| `--json` | 机器可读摘要 (CI 用) |
+
+硬校验 (任一不过 ⇒ **非 0 退出并打原文**, 不静默): tag 不存在 · tag 是轻量 tag · 非回填模式下 tag ≠ HEAD · registry 查不到该版本 / 无 `dist.shasum` · notes 真源文件不存在 (「脚本不编内容」) · `--verify-tarball` SHA-1 不符 · notes 命中禁止字样 · `gh` 任何一步失败。
+
+**与 `scripts/verify-release.mjs` 的分工 (同一处点名, 别各查各的)**: `verify-release.mjs` 是**发布后硬门**, 管"npm 那一侧可不可信"(真公开 / 同名 tag / 真装得上); `gh-release.mjs` 管"GitHub 那一侧有没有、名字对不对、notes 是不是真材料"。两个都要跑, 顺序是 ② 再 ③。
+
+### 14.4 notes 从哪来 (一个字都不编)
+
+- **人写的那一半**: `docs/release-notes/v<x.y.z>.md` —— 照 `docs/release-notes/RELEASE-NOTES-TEMPLATE.md` 分节 (亮点 / 新增能力 / 修复 / 验证(真数字) / 升级方法), 每条要么对应 `git log <上一个 tag>..v<x.y.z>` 里真存在的提交, 要么对应本页/`log.md` 里真写下的记录。
+- **脚本现取的那一半**: 末尾「可核验信息」与「提交列表」两节**禁止手写**, 每次由脚本现取覆盖 —— npm `dist.shasum` · SRI · 文件数 · 解包大小 · tarball 字节数 · `dist-tags.latest`, 以及 git 区间提交数。手抄的数字会过期, 现取的不会。
+- **公开页纪律 (机械兜底 + 人的判据)**: notes 里出现禁用字样 (脚本里那两条: 内部工具名 + 私有锚点路径) 时, 脚本**直接非 0 退出**并打出命中行。这条门在 `v0.4.30..v0.5.0` 区间**真拦下过一条**提交标题 (它带着私有锚点路径与课题引用) —— 因此**提交列表默认不搬到 Release**, 只给区间 + `git log <区间> --oneline` 让读者自查; 确实要带列表时用 `--with-commit-list`, 命中的行会被**显式标注"略去"** (不静默删)。私有任务书 / 研究课题 / 本机凭据 / 私有路径一律不上公开 Release。
+
+### 14.5 历史回填 (真做过的, 不是计划)
+
+仓库历史上「只打 tag 不发 Release」, 到本轮为止 **Release 0 个 / tag 20+ 个**。两个 0.5.x 版本已按同一套命名回填 (notes 即 `docs/release-notes/v0.5.0.md` · `v0.5.1.md`):
+
+```text
+$ node scripts/gh-release.mjs --backfill --verify-tarball
+✅ tarball 真下载 + 本地重算 SHA-1 逐字相同 — 19646772 字节 · 483c6336712d690261be138bbf2dba1979f6776b
+$ gh release create v0.5.1 ... --latest --verify-tag
+https://github.com/logos-42/bolloon/releases/tag/v0.5.1
+
+$ node scripts/gh-release.mjs --version 0.5.0 --backfill --no-latest --verify-tarball
+✅ tarball 真下载 + 本地重算 SHA-1 逐字相同 — 19010013 字节 · f8f5dbcf223a8994d788ce9abefa51fcd772c52b
+✅ 回读: latest 标记 — isLatest=false (期望 false)
+https://github.com/logos-42/bolloon/releases/tag/v0.5.0
+
+$ gh release list -R logos-42/bolloon
+v0.5.1	Latest	v0.5.1
+v0.5.0		v0.5.0
+```
+
+`v0.5.1` 标记 **Latest**, `v0.5.0` **不抢** Latest (回填旧版本时若让它抢, 页面上"最新版"就指错人)。重复跑同一条命令 = **幂等跳过** (退出 0, 远端零写入)。
+
+### 14.6 自动化现状与如实留下的 (没做到 / 未验证)
+
+1. **`.github/workflows/gh-release.yml` 未在 CI 真跑过** —— 本机无法执行 GitHub Actions (也没有仓库侧 runner 可用), 因此"tag 推送后它会不会成功"**本轮没有验证**; 真跑过的只有它调用的那条命令 (`node scripts/gh-release.mjs ...`)。**主路径是手动一条命令**: tag 推完后在本地跑, 或在工作流跑红/没跑时手动补跑 (幂等, 不会重复建)。
+2. **仓库里更早的 `.github/workflows/release.yml` 每次 push 都以 0s 失败** —— GitHub 直接判 `This run likely failed because of a workflow file issue.` (工作流文件本身有问题), 所以它末尾那个建 Release 的 job 从来没跑到过 —— 这就是"25 个 tag 却 0 个 Release"的直接原因。该文件本轮**没动** (范围外), 记在这里免得下次再猜; 要不要修由主线定。
+3. **`gh` 的字段坑 (真踩过)**: 本机 `gh 2.87.3` 的 `release view --json` **没有** `isLatest` 字段 (只在 `release list` 里) —— 用它回读会以 `Unknown JSON field: "isLatest"` 退出 1。脚本已改成 view 拿名字/正文、list 拿 latest; 手写命令时注意。
+4. **`--version` 与 `package.json` 不一致时必须显式 `--backfill`** —— 这是刻意的双人复核: 防止把版本发错 (回填旧版本也是"不一致", 所以回填同样要写)。

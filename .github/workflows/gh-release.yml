@@ -1,0 +1,53 @@
+name: GitHub Release (与 npm 版本同步命名)
+
+# 干什么: tag 推送 (`v*`) 或手动触发时, 建一个 GitHub Release —— **Release 名 = tag 名 = v<package.json 的 version>**,
+# notes 取自仓内真源 `docs/release-notes/v<版本>.md` + 脚本现取的 npm 可核验数字 (见 docs/wiki/update-protocol.md §14)。
+#
+# ⚠️ 如实声明 (别把没验的当验过):
+#   本 workflow **从未在 CI 真跑过** —— 本机无法执行 GitHub Actions, 所以「tag 推送后它会不会成功」这件事
+#   本轮**没有验证**, 只有 YAML 语法与它调用的那条命令被真跑过:
+#     node scripts/gh-release.mjs --backfill          → 真建出 v0.5.1 (Latest) 与 v0.5.0 (非 Latest)
+#     node scripts/gh-release.mjs --backfill (重复跑)  → 幂等跳过, 未对 GitHub 写任何东西, 退出 0
+#   因此**主路径是手动一条命令**: tag 推完之后在本机 (或在任何已登录 gh 的机器上) 跑
+#     node scripts/gh-release.mjs --dry-run && node scripts/gh-release.mjs
+#   本 workflow 只是省这一次手动; 万一它没跑成或跑了红的, 手动补跑同一条命令即可 (幂等)。
+#
+#   另外如实说明: 仓库里另有一个更早的 `.github/workflows/release.yml` (打 mac/win/linux/iOS 原生包,
+#   末尾用第三方 action 建 Release)。它每次 push 都以 0s 失败 (`This run likely failed because of a workflow
+#   file issue.`), 历史 25 个 tag 因此一个 Release 也没建出来 —— 那个文件本轮**没动** (不属本次范围),
+#   这里记一笔免得下次猜。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要建 Release 的 tag (形如 v0.5.1 —— 必须已在 npm 上发过, 且仓内有 docs/release-notes/<tag>.md)'
+        required: true
+
+permissions:
+  contents: write   # 建 Release 需要写权限 (用内置 GITHUB_TOKEN, 不需要额外 secret)
+
+jobs:
+  gh-release:
+    name: create release from tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # 脚本要 git log <上一个 tag>..<tag> 与 tag 对象类型, 浅克隆会拿不到
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 建 GitHub Release (scripts/gh-release.mjs)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BOLLOON_GH_REPO: ${{ github.repository }}
+        run: |
+          # 非回填: CI 里 HEAD 就是 tag 指向的提交, 脚本会自己校验 (不一致就非 0 退出, 不静默)
+          node scripts/gh-release.mjs --verify-tarball

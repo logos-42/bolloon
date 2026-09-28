@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-28 | chore | **发版流程补上第二步: 「发版 = npm publish + GitHub Release 同步命名」真落地 (此前只打 tag 不发 Release ⇒ 25 个 tag / 0 个 Release)**: 先查现状再动手 (`gh release list` 空 · tag 25 个 · `package.json`=`0.5.1` · npm `dist-tags.latest=0.5.1`)。**命名三者一致** = Release 名 = tag 名 = `v<package.json version>`, tag 必须 annotated 且指向发版提交。**回填两个版本 (真建出来了)**: `v0.5.1` 标 **Latest** · `v0.5.0` **不抢** Latest; notes 全部从真材料归纳 (`git log v0.4.30..v0.5.0` · `v0.5.0..v0.5.1` + 本页 §12.9/§12.10 的发布记录), 结尾「可核验信息」由脚本**现取** npm `dist.shasum` (`0.5.1` = `483c6336…` · `0.5.0` = `f8f5dbcf…`, 两版都**真下载 tarball 重算 SHA-1 逐字相同**), 手抄数字一律不进 notes。**脚本 `scripts/gh-release.mjs`** (幂等 · 任一硬校验不过非 0 退出并打原文): 校验 tag (存在 / annotated / 指向 HEAD, 回填须显式 `--backfill` 且打印差值) → 拉 shasum → 套模板生成 notes → `gh release create` → **回读复核**; **幂等真验**: 重复跑同一条命令 = 识别"已存在" + 远端零写入 + 退出 0, 要覆盖必须显式 `--clobber`。**真踩到两条坑并修掉**: ① `gh 2.87.3` 的 `release view --json` **没有** `isLatest` 字段 (回读直接 `Unknown JSON field` 退出 1) ⇒ 改成 view 拿名字/正文 + list 拿 latest ② 禁用字样门在 `v0.4.30..v0.5.0` 区间**真拦下一条提交标题** (带私有锚点路径与课题引用) ⇒ **提交列表默认不搬上公开页**, 只给区间让读者自己 `git log` 自查。**顺手查明"为什么 25 个 tag 却 0 个 Release"**: 更早的 `.github/workflows/release.yml` 每次 push 都以 **0s 失败** (`This run likely failed because of a workflow file issue.`) ⇒ 它那个建 Release 的 job 从来没跑到过; 该文件本轮**没动** (范围外, 记在 §14.6) | [update-protocol.md §14](./update-protocol.md) · `scripts/gh-release.mjs` · `docs/release-notes/{RELEASE-NOTES-TEMPLATE,v0.5.0,v0.5.1}.md` · `.github/workflows/gh-release.yml` |
 | 2026-09-28 | fix | **raw 链接"点开变下载"修掉 + 一条假红门拆掉**: leo 报「skills 的 raw 链接无法直达网站」→ 真根因**不是链接**(站内相对路径 200 可达), 而是 **`.md` 的 content-type**: CF Pages 发 `text/markdown`、备案主机发 `application/octet-stream` —— **Chrome 对这两种都是直接下载**, 读者点 `skill.html` 上的 raw 拿不到文档。修: 备案主机 nginx 加 `location ~* \.(md\|markdown)$ { types { } default_type text/plain; charset utf-8; nosniff }`(改前备份+`nginx -t`+reload, 失败自动回滚), CF Pages 加仓根 `_headers`(`/*.md` → `Content-Type: text/plain; charset=utf-8`); 复核两通道 `content-type: text/plain; charset=utf-8` + md 原文两通道 sha256 相同。**门只加不减**: `verify-site.mjs` 新增「`点 raw 浏览器内联可看 (不是变下载)`」两条(对 localhost 显式 `skip`, 因为本机 `python3 -m http.server` 发 `text/markdown`; 阴性对照 = 拿 LAN 上的 http.server 当线上跑 ⇒ 真判红)。② **顺手拆掉一条"会撒谎的门"**: privacy 门那条 `html lang 已切换` 一直红, 我先前用 **上一提交跑同一道门**(37/1)判它"早就存在", 再用**真 Chrome 探针**手动驱动一次 —— 页面其实**完全正常**(h2 `一、适用范围` → `1. Scope`、`lang` 变 `en`、localStorage 记录), 假红来自门自己: 门外「点一次 + 等 400ms」在 app.js 绑监听之前点了个死按钮, 且旁边那条「正文变英文」的判据是**坏 XOR**(没切也绿)。修法 = 让**页内自等**(反复点 EN 直到 `lang==='en'` 且 h2 真变, 4s 上限), 判据改成「与中文原文不同 + 数字编号」; 线上 **43/0**, 阴性(把 `app.js` 删掉让切换真死)⇒ 新的两条**真判红**。③ 同批还把站点文档「当前发行版」那格派生值更新为 **0.5.1**(真 `npm pack` 拆包对表: `TASK_SUBCOMMANDS` = 18 条含 `announce/trail/post/group` · `case 'group'` 在), 站内 `bolloon-network.md` 与主仓 `skills/bolloon-network/SKILL.md` 逐字节同改。**未做**: APP 备案号(移动应用备案, 与网站备案号不同号)等下号; `verify-site` 里「签名快照 = 0 但声明 signature-audit 源」那条既有红仍在 | `bolloon-UI` 仓 `f81a596`/`e88d13d`/`6ef4dff` · 主仓 `26be7ee` · 门 `scripts/verify-site.mjs` · `scripts/verify-privacy.mjs` |
 | 2026-09-28 | chore | **备案号落地 + 快照"只认一个源"**: leo 给的网站备案号 **浙ICP备2026081254号-1** 展开进页脚(原来是 HTML 注释占位) —— **6 个页面**(index/install/docs/hibs/gateway/privacy)统一成可见 `浙ICP备2026081254号-1` + 链 `beian.miit.gov.cn`(`target=_blank rel=noopener`, 备案号不参与中英切换); **APP 备案号是另一个号**(移动应用备案), 仍留占位并在注释里写明"与网站备案号不同号", 等下号。**两条通道都真验**: 6 页在 **CF Pages 与备案主机上逐字节相同**(sha256 前 10 位逐个对上) 且两通道上 `index.html`/`privacy.html` 都真命中备案号串; UI 仓 `1c06753` + bolloon 仓 `9f732db`/`db1fa94` 已推。**顺手修掉快照分叉**(域名活了以后才成为真问题的那个): 备案主机 nginx 的 `location = /network-pulse.json` 从"发本机文件"改成 **反代 CF Pages + `error_page 404/5xx → @pulse_local` 回退本机那份**(后者保留在盘上, 且快照自带 `fresh_until` 会自曝陈旧) ⇒ 复核两通道 `generated_at` 与 sha256 **完全相同**(`465ad0edac92`), 从此不会再出现"主站新、备案主机旧 11.6 小时"; 选这条路而不是给刷新链加 ECS 步骤, 是因为它保持"**对外只有一个源**"、且不需要在 cron 里塞第二通道凭据。**踩坑**: 第一版直接在 server 块尾部插 `location` 被 nginx 以 **`duplicate location`** 拒(配置里本来就有这条) ⇒ 改成**改既有那条**(先备份 → `nginx -t` → reload, 失败自动回滚) | 页脚 6 页(`bolloon-UI` 仓 `1c06753`) · 备案主机 `/etc/nginx/sites-available/bolloon.cn` |
 | 2026-09-28 | chore | **ICP 备案通过 → 重建 `bolloon.cn` 解析 (域名真活了: 读者从此走备案主机) + 顺手修掉两个只有"域名活了"才会暴露的线上缺陷**: ① **解析**: `bolloon.cn` / `www` 各一条 **A → `120.26.82.43`(备案主机, `proxied=false` 灰云)** —— 备案要求流量真落在备案 IP 上, 橙云会把源站吸到 CF 边缘故不代理; 幂等脚本 `python3 ~/.hermes/scripts/cf-dns-open-bolloon.py` (**旧 shell 版建记录报 `9207 Request body is invalid`** —— GET 通、POST 挂, 根因是 shell 转义拼 JSON, 已改用 `json.dumps` 的 py 版, 坑记进 skill `bolloon-website`)。**取证**: `dig +short @luke.ns.cloudflare.com bolloon.cn` → ECS IP · HTTPS `--resolve` 直达 **200** · 证书 `CN=bolloon.cn`(2026-09-24→12-23) · HTTP **301 → https** · 5 页 + css/js 与 CF Pages **逐字节一致** · CF Pages 侧**无自定义域**(不会与灰云记录打架) ② **`dl/*.apk` 在备案主机上是 404** —— `install.html` 主按钮就指向 `dl/bolloon-0.4.28.apk`, 而 ECS 上只有 `0.4.22.3`; **真资产源在 `logos-42/bolloon-UI` 的 Release**(不是 `logos-42/bolloon`, 那个仓 0 Release 只有 tag): 取回 `android-v0.4.28-signed` 的资产 **19,915,587 字节 · sha256 `d339065a…347e2dab` == 页上钉的值**, 传 ECS + 留本地 `dl/`(否则下次整站替换又抹掉); **踩坑实录**: 先用 `curl -sI` 看到 pages.dev 上 **HTTP 200** 就当"文件在" —— 其实 CF Pages 对缺失文件**回退返回 index.html 且 200**, 我把 18066 字节的 HTML 当 APK 传了上去, 只能删回复盘 ⇒ 判据改成 `content-type` + `content-length` 真值 / 直接抓下来 `file`+`shasum` ③ **nginx 给 `.apk` 配 MIME** (`application/octet-stream` → `application/vnd.android.package-archive`; 注意 `/etc/nginx/sites-enabled/` 是符号链接, **`grep -r` 默认不跟** ⇒ 改实体 `sites-available/bolloon.cn`, 先备份 → `nginx -t` → reload) ④ **快照在备案主机上比主站旧 ~11.6 小时**(实测 `generated_at` 差 41836s) —— `refresh-pulse.sh` 只发 CF Pages, 域名活了以后读者走的就是备案主机 ⇒ **结构缺口**, 已先手工同步一次并列入待拍板 ⑤ 线上复核(经域名): APK `content-length 19915587` · 尾字节 range **206** `content-range: bytes 19915586-19915586/19915587` · 整包下载 sha256 与 GitHub 资产**逐字相同**; CF Pages 侧同 mime 同长度。**未做(如实)**: 页脚**备案号仍是 HTML 注释占位**(下号后须展开为可见备案号 + 链 `beian.miit.gov.cn`, 5 页统一) —— 等 leo 给的号; 刷新链要不要加备案主机一步未定 | 脚本 `~/.hermes/scripts/cf-dns-open-bolloon.py` · 坑记进 skill `bolloon-website`(均在本机, 不在仓内) |
@@ -5071,3 +5072,92 @@ A 场景复测 `pre_bytes=0` + 面板里降级原文在。
 **发布前真拦下来的一件** (不是绕过): `prepublishOnly` 的 `smoke:esm` **本来就是红的** —— 它扫 `src/` 里带引号的 gemini id, 而 `src/test/connection-probe.test.ts` 的夹具用了 EOL 的 `gemini-1.5-pro` (禁用集) ⇒ 出包被自家门拒。夹具只关心"目录回 Gemini 形状 → protocol_mismatch", 与具体 id 无关 → 换成允许清单里的 `gemini-2.5-pro`。**禁用集/允许集一行没动** (没把门改宽换绿), 修完 `smoke:esm` PASS (37 literal(s) verified)。
 
 **如实留下**: `verify-cli-quiet` 的 A6 在整轮跑里连红两次 (`--only-a6` 单跑 1/0 且原文逐字在屏, 分类环境/时序类, 本轮没修也没当绿) · `verify-mobile-model-sync` 的红仍挂着 (陈旧 IPA `0.5.0` vs `npm=0.5.1`, 要 Xcode 重打, 本轮没打) · 发布记录与 `FROM_VERSION` 前移落在 tag 之后 (与 0.5.0 同一形状) · tarball 里 100+ 处 `hermes` 字样是**产品既有字面** (已发布的 0.5.0 包里同样命中, 逐字相同), 不是本轮引入, 本轮产出里没有该字样。
+
+---
+
+## [2026-09-28] chore | 发版 = npm publish + GitHub Release **同步命名** (回填 v0.5.0 / v0.5.1 · 脚本 · 模板 · 文档)
+
+### 一、为什么 (leo 原话) 与动手前查到的**现状**
+
+leo: “Releases 也要发布到 GitHub 里面, 开始版本管理, 和我们的同步命名” ⇒ 以后每次发版 = **npm publish + GitHub Release**, 名字与版本一一对应。
+
+先查再动 (全是真命令, 不是推测):
+
+```text
+$ gh release list -R logos-42/bolloon          # → 空 (Release 0 个)
+$ git tag | sort -V | tail -8                  # → … v0.4.29 v0.4.30 v0.5.0 v0.5.1
+$ node -p "require('./package.json').version"  # → 0.5.1
+$ npm view @bolloon/bolloon-agent dist-tags    # → { latest: '0.5.1' }
+$ git cat-file -t v0.5.1                       # → tag   (annotated, 不是轻量 tag)
+```
+
+⇒ 结论: **历史上只打 tag 不发 Release** (25 个 tag / 0 个 Release), 所以「发过什么」在外人看来只有 npm 版本号可查。历史事实直接沿用, 本轮不重查 (最高曾 `v0.4.30`, 后加 `v0.5.0` 与 `v0.5.1`)。
+
+### 二、命名与真源 (三者逐字一致, 这是本节的核心约定)
+
+| 东西 | 值 | 真源 |
+| --- | --- | --- |
+| npm 版本 | `<x.y.z>` | `package.json` 的 `version` |
+| git tag | `v<x.y.z>` | **annotated**, 指向的 commit = 发版提交 (那份真出包的源码) |
+| GitHub Release 名 | `v<x.y.z>` | 同一个 tag |
+
+为什么必须同名: §12 的双源交叉校验比的就是「npm `latest` 在 GitHub 上有没有同名记录」, 名字不一致 ⇒ 永远 `missing_record`。
+
+### 三、回填两个版本 (真建出来了, 命令与输出都是原文)
+
+```text
+$ node scripts/gh-release.mjs --backfill --verify-tarball
+✅ tag 是 annotated — 对象类型 = tag
+⚠️  tag 与 HEAD 重合 — [回填模式放行, 仅告警] tag v0.5.1 → 8efb696 ≠ HEAD 26be7ee (HEAD 比 tag 多 5 个提交)
+✅ npm 版本存在且给得出 dist.shasum — shasum=483c6336712d690261be138bbf2dba1979f6776b
+✅ npm dist-tags.latest — latest = 0.5.1 (= 本版本)
+✅ tarball 真下载 + 本地重算 SHA-1 逐字相同 — 19646772 字节 · 483c6336712d690261be138bbf2dba1979f6776b
+$ gh release create v0.5.1 -R logos-42/bolloon --title v0.5.1 --notes-file … --latest --verify-tag
+https://github.com/logos-42/bolloon/releases/tag/v0.5.1
+
+$ node scripts/gh-release.mjs --version 0.5.0 --backfill --no-latest --verify-tarball
+❌ npm dist-tags.latest — [不阻塞] latest = 0.5.1 ≠ 0.5.0 (回填旧版本属正常)
+✅ tarball 真下载 + 本地重算 SHA-1 逐字相同 — 19010013 字节 · f8f5dbcf223a8994d788ce9abefa51fcd772c52b
+✅ 回读: Release 名 == tag 名 — name=v0.5.0
+✅ 回读: latest 标记 — isLatest=false (期望 false)
+✅ 回读: 正文非空 — body 3545 字符
+https://github.com/logos-42/bolloon/releases/tag/v0.5.0
+
+$ gh release list -R logos-42/bolloon
+v0.5.1	Latest	v0.5.1	2026-09-28T04:46:49Z
+v0.5.0		v0.5.0	2026-09-28T04:52:33Z
+```
+
+- `v0.5.1` 标 **Latest**, `v0.5.0` **不抢** Latest (`--latest=false`) —— 回填旧版本时若让它抢, 页面上"最新版"就指错人。
+- **tarball shasum 是脚本现取 + 真下载重算的**, 两个版本的 shasum 都与 npm packument 的 `dist.shasum` 逐字相同 (上面两行就是证据), 不是我抄的。
+- notes 里「可核验信息」整节由脚本现取生成: shasum / SRI / 文件数 (1613 · 1565) / 解包大小 / tarball 字节数 / `dist-tags.latest` / tag→commit; 手抄数字一律不进 notes (会过期)。
+
+### 四、脚本 `scripts/gh-release.mjs` (幂等 · 不静默失败)
+
+- **做什么**: 从 `package.json` 取版本 → 校验 tag (存在 / annotated / 指向 HEAD) → 拉 npm `dist.shasum` → 读 `docs/release-notes/v<版本>.md` 当 notes 真源 + 覆盖生成「可核验信息 / 提交列表」→ `gh release create` → **回读复核** (名 == tag 名 · latest 标记 · 正文非空 · url)。
+- **硬校验 (任一不过 ⇒ 非 0 退出并打原文)**: tag 不存在 · tag 是轻量 tag · 非回填模式下 tag ≠ HEAD · registry 查不到该版本 / 无 `dist.shasum` · **notes 真源不存在** (「脚本不编内容」) · `--verify-tarball` SHA-1 不符 · notes 命中禁用字样 · `gh` 任何一步失败。
+- **幂等真验** (不是声称): 建完之后**重跑同一条命令** → `✅ 目标 Release 已存在 (幂等判定) — name=v0.5.1 · isLatest=true` + `结果: 幂等跳过 (未对 GitHub 做任何写操作)` + **退出码 0**; 要覆盖 notes 必须显式 `--clobber` (非交互还要 `--yes`)。
+- **失败路径真验** (四条探针都非 0 退出且打原文): `--version 0.4.99 --backfill` → `fatal: Needed a single revision` (tag 不存在) · 轻量 tag `v0.4.98` → `是轻量 tag (对象类型 commit)` (探针后已删除, `git tag` 未留痕) · 指定不存在的 notes 文件 → `notes 真源不存在` · registry 换成不可达地址 → `Client network socket disconnected…`。
+
+### 五、真踩到的两条坑 (修掉了, 记在这里免得重踩)
+
+1. **`gh 2.87.3` 的 `release view --json` 没有 `isLatest`** —— 第一版用它回读, Release **已经建出来了**但回读以 `Unknown JSON field: "isLatest"` 退出 1 (字段只在 `release list` 里)。脚本已改成 view 拿名字/正文 + list 拿 latest; 手写命令时也要注意。
+2. **notes 禁字门在 `v0.4.30..v0.5.0` 区间真拦下一条提交标题** (它带着私有锚点路径与课题引用) ⇒ 由此定下: **提交列表默认不搬到公开 Release**, 只给区间 (`git log <区间> --oneline` 谁都能自查); 要带列表用 `--with-commit-list`, 命中的行**显式标注"略去"**而不是静默删。私有任务书 / 研究课题 / 凭据 / 私有路径一律不上公开页。
+
+### 六、顺手查明: 为什么「25 个 tag 却 0 个 Release」
+
+```text
+$ gh run list -R logos-42/bolloon
+completed  failure  .github/workflows/release.yml  master  push  36377777519  0s
+$ gh run view 36377777519 -R logos-42/bolloon
+X This run likely failed because of a workflow file issue.
+```
+
+⇒ 更早的 `.github/workflows/release.yml` **每次 push 都以 0s 失败** (GitHub 判为工作流文件本身有问题), 它末尾那个建 Release 的 job 从来没跑到过 —— 这才是 0 Release 的直接原因。该文件本轮**没动** (范围外), 要不要修由主线定。
+
+### 七、如实留下的 (没做到 / 未验证)
+
+1. **新增的 `.github/workflows/gh-release.yml` 未在 CI 真跑过** —— 本机无法执行 GitHub Actions, 所以"tag 推送后它会不会成功"**本轮没有验证**; 真跑过的只有它调用的那条命令 (`node scripts/gh-release.mjs …`)。**主路径是手动一条命令**: tag 推完后在本地跑一遍, 或工作流跑红/没跑时手动补跑 (幂等, 不会重复建)。
+2. **本轮推的是回填, 不是新发版** —— `v0.5.2` 之后要走完整顺序 (bump → 门禁 → annotated tag → npm publish → `verify-release.mjs` → `gh-release.mjs`) 才算真验证过一遍全流程。
+3. **`--version` 与 `package.json` 不一致时必须显式 `--backfill`** —— 刻意的双人复核 (防止把版本发错); 代价是回填旧版本也得写这个标志。
+4. 本节**只写文档与脚本, 没碰 `src/**`** (并行线在改源码); 提交也只 `git add` 自己这五个文件, 不 push (由主线统一推)。
