@@ -339,8 +339,12 @@ bolloon task post --kind deliver|screen|final --group <群> --announcement-id <i
 | `announce` · `trail` · `post` | ⚠️ **被 M1 自由文本路径吞掉** —— 变成"真去跑一个名叫 `announce …` 的任务" (会找资源、可能**花钱**), 而输出看着像正常执行 | ✅ 正常 (白名单已补齐, 真派发) |
 | `group create\|join\|list\|link\|leave` | ⚠️ 同上 (`0.4.33` 里根本没有 `group`) | ✅ 正常 |
 
-**「当前发行版」那一格 = 派生值, 不许手抄 (写法见下)**。它是 `package.json` 的 `version`, 与 npm 的
-`dist-tags.latest` 同一个数; 真值自己取, 别信这一页印出来的数字:
+**「当前发行版」那一格 = 派生值, 不许手抄 (写法见下)**。判据 = **npm 上真发布的那一版**
+(`dist-tags.latest`, 读者真装得到的), 它应与 `package.json` 的 `version` 一致 ——
+**万一不一致(本地推进到下一版但尚未发布), 两者都要写出来**(已发布那版为准 + 本地待发布版如实标注):
+只印本地版本号是骗读者, 不提就是藏差异。真值自己取, 别信这一页印出来的数字:
+
+**现况 (2026-09-28 实测)**: npm 已发布 **`0.5.1`**; 本地 `package.json` 已是 `0.5.2`(尚未发布)。
 
 ```bash
 bolloon --version json                     # 本机装的是哪一版
