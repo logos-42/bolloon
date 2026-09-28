@@ -225,6 +225,68 @@
     }
   }
 
+  // ── Efficode 条目 (内置参考实现: 仓内 src/efficode/**, 不靠"从电脑端同步") ──────
+  // 纪律: 这段**不用 innerHTML 拼任何数据** (纯 createElement + textContent) ·
+  //       双语走 data-zh/data-en (切语言时外面那段 applyLang 会一起改文字节点) ·
+  //       role=button + tabindex + aria-label + Enter/Space 可达 · 无外部依赖。
+  const EFFICODE_SPEC_PATH = 'docs/wiki/efficode.md';
+  const EFFICODE_IMPL_PATH = 'src/efficode/** · src/agents/agent-lang.ts';
+  const EFFICODE_GATE = 'scripts/verify-efficode.ts (55/0)';
+  function effiLangNow() {
+    try { return localStorage.getItem('bolloon_lang') === 'en' ? 'en' : 'zh'; } catch (e) { return 'zh'; }
+  }
+  function buildEfficodeEntry() {
+    const el = document.createElement('div');
+    el.className = 'conv-item';
+    el.id = 'item-efficode';
+    el.setAttribute('role', 'button');
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('aria-label', 'Efficode 规范页 (中文): ' + EFFICODE_SPEC_PATH);
+    const avatar = document.createElement('div');
+    avatar.className = 'conv-avatar';
+    avatar.textContent = 'E';
+    const body = document.createElement('div');
+    body.className = 'conv-body';
+    const name = document.createElement('div');
+    name.className = 'conv-name';
+    name.textContent = '/efficode';
+    const desc = document.createElement('div');
+    desc.className = 'conv-preview';
+    desc.setAttribute('data-zh', '智能体间的符号化交流语言 · 参考实现 (签名/声波未实现) — 点开看规范页 docs/wiki/efficode.md');
+    desc.setAttribute('data-en', 'Symbolic agent-to-agent language · reference impl (signing/audio not implemented) — tap for docs/wiki/efficode.md');
+    desc.textContent = effiLangNow() === 'en' ? desc.getAttribute('data-en') : desc.getAttribute('data-zh');
+    body.appendChild(name);
+    body.appendChild(desc);
+    el.appendChild(avatar);
+    el.appendChild(body);
+    const open = () => alert(
+      '/efficode\n\n' +
+      (effiLangNow() === 'en'
+        ? 'Symbolic binary language between agents (Efficient + Code). Reference implementation in this repo; negotiation falls back to natural language unless both sides declare efficode. Signing / ECC session keys / sound-wave mode are NOT implemented.\n\n'
+        : '智能体之间的符号化二进制交流语言 (Efficient + Code)。本仓有参考实现; 只有双方都声明 efficode 才用, 否则明确回落自然语言。签名验证 / ECC 临时会话密钥 / 声波模式尚未实现。\n\n') +
+      '规范页: ' + EFFICODE_SPEC_PATH + '\n' +
+      '实现: ' + EFFICODE_IMPL_PATH + '\n' +
+      '验收门: ' + EFFICODE_GATE
+    );
+    el.addEventListener('click', open);
+    el.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') { ev.preventDefault(); open(); }
+    });
+    return el;
+  }
+
+  /** 把内置 Efficode 条目追加到 Skills 页 (空态 / 有列表都显示 —— 它是仓内参考实现) */
+  function appendEfficodeBlock(body) {
+    if (!body || body.querySelector('#item-efficode')) return;
+    const cap = document.createElement('div');
+    cap.style.cssText = 'font-size:11px;color:var(--text-muted);margin:14px 0 6px';
+    cap.setAttribute('data-zh', '内置 (随客户端发布, 不来自电脑端同步)');
+    cap.setAttribute('data-en', 'Built in (ships with the client, not synced from desktop)');
+    cap.textContent = effiLangNow() === 'en' ? cap.getAttribute('data-en') : cap.getAttribute('data-zh');
+    body.appendChild(cap);
+    body.appendChild(buildEfficodeEntry());
+  }
+
   async function openSkillsPage() {
     if ($('#skills-page')) return;
     const page = mkOverlayPage('skills-page', 'Skills', '<div style="font-size:12px;color:var(--text-muted)">读取中…</div>');
@@ -241,6 +303,7 @@
         body.innerHTML = `<div style="padding:18px 8px;text-align:center;color:var(--text-muted);line-height:1.8">
           还没有技能列表<br><span style="font-size:12px">电脑端 ~/.bolloon/skills/ 下的 skills，会在「从电脑端同步」后出现在这里</span>
           ${err ? `<div style="font-size:11px;margin-top:8px">（读取失败：${escapeHtml(err)}）</div>` : ''}</div>`;
+        appendEfficodeBlock(body);
         return;
       }
       body.innerHTML = skills.map((s, i) => `<div class="conv-item" data-sk="${i}">
@@ -252,6 +315,7 @@
         const s = skills[Number(el.dataset.sk)] || {};
         alert(`/${s.name || ''}\n\n${s.description || '（无说明）'}`);
       }));
+      appendEfficodeBlock(body);
     };
     await render();
     const btn = page.querySelector('#skills-sync');

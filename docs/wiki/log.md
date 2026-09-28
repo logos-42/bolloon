@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-28 | docs | **Efficode 补上唯一事实源 (规范页 + Skills UI 引用), 并把它"到底省不省"算成真数字 —— 三条反虚处置**: ① 新增 [efficode.md](./efficode.md) —— 逐节状态总表 (`✅ 已实现`: 包封装/6 条符号指令/文本·二进制双模式/`none`·`lz77`·`deflate` 压缩层/32B DID 摘要段/协商回落/agent 帧与群消息接线 · `❌ 未实现(为何)`: **签名验证与 ECC 临时会话密钥**(`did.ts` 里没有签名函数、没有密钥交换函数, 刻意不写假实现; `matchesDidSegment` 返回值如实标 `signed:false`) · **声波/语音模式**(`mode` 只有 `compact`/`text`, 编码时显式抛 `EFFICODE_MODE_NOT_IMPLEMENTED`, 不静默降级) · `🚧 规范中`: 5G/区块链传输适配**仓内 0 行代码**、论坛地址**未定**) + 语言结构 (前缀表达式四条写死的解析规则 + 三条协商硬规则) + 包结构逐位 + 身份与安全 + 传输适配 + 命名与生态 + **「更高效吗」**. ② **宣传句一律降级为待测假设, 旁边放真测数**: 「压缩率提升 30%」→ 逐样本 -25.3%~-92.9%, **真随机 1KB 是负收益** (lz77 +13.0%), 故无单一数字; 「信息密度提升 20 倍」→ 实测最高 **14.15x** (40 条真发 JSON 帧 4089B→289B), 12B 寒暄只有 **1.47x**; 「兼容度 100%」「微秒级」「链路缩短 50%」= **均未测** (只有一个实现 / 无任何耗时或延迟基准); 「物理定律级」不列作判据. ③ **最要紧的一条实算 (短消息被包头吃回去)**: 20B 载荷带 DID 段 = **111B 包**, 逐段算式 `2(头)+32(DID段)+1(指令段长)+50(指令段)+1(数据块长)+1(压缩算法id)+20(载荷)+4(CRC)` **== 实测**; 净开销 **91B** ⇒ **开销/载荷 4.55x · 总/载荷 5.55x**; 同载荷去重口径 (身份只留 32B 摘要段) 只有 **33B / 13B 开销 / 0.65x** ⇒ 量化出**身份被写两遍白花 46B** 这条设计缺陷候选 (本轮**只量不改**); text 模式上线 Base64 = 148 字符 (×1.354); 并列固定开销表 (12B→7.58x · 100B→0.91x · 4KB→1.02x), 结论 = **Efficode 只在大而重复的结构化文本上真省, 短消息上是负的**. ④ 引用三处: [index.md](./index.md) 加一行 · 本页一行 · **手机端 Skills 页新增 `efficode` 条目** (`src/web/mobile.js` `openSkillsPage`, 全 `createElement`+`textContent` 零 `innerHTML` · 双语 `data-zh`/`data-en` · `role=button`+`tabindex`+`aria-label`+Enter/Space · 空列表分支也显示, 因为它是**内置参考实现**不靠电脑端同步). 数字来源: `npx tsx scripts/verify-efficode.ts` **55/0** (含 [D] 逐样本与 [F] 变异 4/4 判红) · `npx vitest run src/test/efficode.test.ts` **53/53** · 小包算式用一次性探针真编真解 (跑完已删, 口径与门 [D] 同源) | [efficode.md](./efficode.md) · [index.md](./index.md) · [mobile.js](../../src/web/mobile.js) · [verify-efficode.ts](../../scripts/verify-efficode.ts) · [efficode.test.ts](../../src/test/efficode.test.ts) |
 | 2026-09-28 | chore | **发版流程补上第二步: 「发版 = npm publish + GitHub Release 同步命名」真落地 (此前只打 tag 不发 Release ⇒ 25 个 tag / 0 个 Release)**: 先查现状再动手 (`gh release list` 空 · tag 25 个 · `package.json`=`0.5.1` · npm `dist-tags.latest=0.5.1`)。**命名三者一致** = Release 名 = tag 名 = `v<package.json version>`, tag 必须 annotated 且指向发版提交。**回填两个版本 (真建出来了)**: `v0.5.1` 标 **Latest** · `v0.5.0` **不抢** Latest; notes 全部从真材料归纳 (`git log v0.4.30..v0.5.0` · `v0.5.0..v0.5.1` + 本页 §12.9/§12.10 的发布记录), 结尾「可核验信息」由脚本**现取** npm `dist.shasum` (`0.5.1` = `483c6336…` · `0.5.0` = `f8f5dbcf…`, 两版都**真下载 tarball 重算 SHA-1 逐字相同**), 手抄数字一律不进 notes。**脚本 `scripts/gh-release.mjs`** (幂等 · 任一硬校验不过非 0 退出并打原文): 校验 tag (存在 / annotated / 指向 HEAD, 回填须显式 `--backfill` 且打印差值) → 拉 shasum → 套模板生成 notes → `gh release create` → **回读复核**; **幂等真验**: 重复跑同一条命令 = 识别"已存在" + 远端零写入 + 退出 0, 要覆盖必须显式 `--clobber`。**真踩到两条坑并修掉**: ① `gh 2.87.3` 的 `release view --json` **没有** `isLatest` 字段 (回读直接 `Unknown JSON field` 退出 1) ⇒ 改成 view 拿名字/正文 + list 拿 latest ② 禁用字样门在 `v0.4.30..v0.5.0` 区间**真拦下一条提交标题** (带私有锚点路径与课题引用) ⇒ **提交列表默认不搬上公开页**, 只给区间让读者自己 `git log` 自查。**顺手查明"为什么 25 个 tag 却 0 个 Release"**: 更早的 `.github/workflows/release.yml` 每次 push 都以 **0s 失败** (`This run likely failed because of a workflow file issue.`) ⇒ 它那个建 Release 的 job 从来没跑到过; 该文件本轮**没动** (范围外, 记在 §14.6) | [update-protocol.md §14](./update-protocol.md) · `scripts/gh-release.mjs` · `docs/release-notes/{RELEASE-NOTES-TEMPLATE,v0.5.0,v0.5.1}.md` · `.github/workflows/gh-release.yml` |
 | 2026-09-28 | fix | **raw 链接"点开变下载"修掉 + 一条假红门拆掉**: leo 报「skills 的 raw 链接无法直达网站」→ 真根因**不是链接**(站内相对路径 200 可达), 而是 **`.md` 的 content-type**: CF Pages 发 `text/markdown`、备案主机发 `application/octet-stream` —— **Chrome 对这两种都是直接下载**, 读者点 `skill.html` 上的 raw 拿不到文档。修: 备案主机 nginx 加 `location ~* \.(md\|markdown)$ { types { } default_type text/plain; charset utf-8; nosniff }`(改前备份+`nginx -t`+reload, 失败自动回滚), CF Pages 加仓根 `_headers`(`/*.md` → `Content-Type: text/plain; charset=utf-8`); 复核两通道 `content-type: text/plain; charset=utf-8` + md 原文两通道 sha256 相同。**门只加不减**: `verify-site.mjs` 新增「`点 raw 浏览器内联可看 (不是变下载)`」两条(对 localhost 显式 `skip`, 因为本机 `python3 -m http.server` 发 `text/markdown`; 阴性对照 = 拿 LAN 上的 http.server 当线上跑 ⇒ 真判红)。② **顺手拆掉一条"会撒谎的门"**: privacy 门那条 `html lang 已切换` 一直红, 我先前用 **上一提交跑同一道门**(37/1)判它"早就存在", 再用**真 Chrome 探针**手动驱动一次 —— 页面其实**完全正常**(h2 `一、适用范围` → `1. Scope`、`lang` 变 `en`、localStorage 记录), 假红来自门自己: 门外「点一次 + 等 400ms」在 app.js 绑监听之前点了个死按钮, 且旁边那条「正文变英文」的判据是**坏 XOR**(没切也绿)。修法 = 让**页内自等**(反复点 EN 直到 `lang==='en'` 且 h2 真变, 4s 上限), 判据改成「与中文原文不同 + 数字编号」; 线上 **43/0**, 阴性(把 `app.js` 删掉让切换真死)⇒ 新的两条**真判红**。③ 同批还把站点文档「当前发行版」那格派生值更新为 **0.5.1**(真 `npm pack` 拆包对表: `TASK_SUBCOMMANDS` = 18 条含 `announce/trail/post/group` · `case 'group'` 在), 站内 `bolloon-network.md` 与主仓 `skills/bolloon-network/SKILL.md` 逐字节同改。**未做**: APP 备案号(移动应用备案, 与网站备案号不同号)等下号; `verify-site` 里「签名快照 = 0 但声明 signature-audit 源」那条既有红仍在 | `bolloon-UI` 仓 `f81a596`/`e88d13d`/`6ef4dff` · 主仓 `26be7ee` · 门 `scripts/verify-site.mjs` · `scripts/verify-privacy.mjs` |
 | 2026-09-28 | chore | **备案号落地 + 快照"只认一个源"**: leo 给的网站备案号 **浙ICP备2026081254号-1** 展开进页脚(原来是 HTML 注释占位) —— **6 个页面**(index/install/docs/hibs/gateway/privacy)统一成可见 `浙ICP备2026081254号-1` + 链 `beian.miit.gov.cn`(`target=_blank rel=noopener`, 备案号不参与中英切换); **APP 备案号是另一个号**(移动应用备案), 仍留占位并在注释里写明"与网站备案号不同号", 等下号。**两条通道都真验**: 6 页在 **CF Pages 与备案主机上逐字节相同**(sha256 前 10 位逐个对上) 且两通道上 `index.html`/`privacy.html` 都真命中备案号串; UI 仓 `1c06753` + bolloon 仓 `9f732db`/`db1fa94` 已推。**顺手修掉快照分叉**(域名活了以后才成为真问题的那个): 备案主机 nginx 的 `location = /network-pulse.json` 从"发本机文件"改成 **反代 CF Pages + `error_page 404/5xx → @pulse_local` 回退本机那份**(后者保留在盘上, 且快照自带 `fresh_until` 会自曝陈旧) ⇒ 复核两通道 `generated_at` 与 sha256 **完全相同**(`465ad0edac92`), 从此不会再出现"主站新、备案主机旧 11.6 小时"; 选这条路而不是给刷新链加 ECS 步骤, 是因为它保持"**对外只有一个源**"、且不需要在 cron 里塞第二通道凭据。**踩坑**: 第一版直接在 server 块尾部插 `location` 被 nginx 以 **`duplicate location`** 拒(配置里本来就有这条) ⇒ 改成**改既有那条**(先备份 → `nginx -t` → reload, 失败自动回滚) | 页脚 6 页(`bolloon-UI` 仓 `1c06753`) · 备案主机 `/etc/nginx/sites-available/bolloon.cn` |
@@ -5162,3 +5163,79 @@ X This run likely failed because of a workflow file issue.
 2. **本轮推的是回填, 不是新发版** —— `v0.5.2` 之后要走完整顺序 (bump → 门禁 → annotated tag → npm publish → `verify-release.mjs` → `gh-release.mjs`) 才算真验证过一遍全流程。
 3. **`--version` 与 `package.json` 不一致时必须显式 `--backfill`** —— 刻意的双人复核 (防止把版本发错); 代价是回填旧版本也得写这个标志。
 4. 本节**只写文档与脚本, 没碰 `src/**`** (并行线在改源码); 提交也只 `git add` 自己这五个文件, 不 push (由主线统一推)。
+
+---
+
+## [2026-09-28] docs | Efficode 规范页 + 「更高效吗」的真算 (短消息被包头吃回去: 20B → 111B)
+
+### 一、落盘的三个文件
+
+| 文件 | 动作 | 内容 |
+|---|---|---|
+| `docs/wiki/efficode.md` | 新增 | Efficode 的**唯一事实源**: 一句话 + 逐节状态总表 + 语言结构 + 包结构 + 身份与安全 + 传输适配 + 命名与生态 + **「更高效吗」** + 没做到逐条 + 门与复现命令 |
+| `docs/wiki/index.md` | 加一行 | 指向 `efficode.md` (表内, 与既有行的列格式一致) |
+| `src/web/mobile.js` | 加一个条目 | 手机端 Skills 页 (`openSkillsPage`) 新增 `efficode` 条目: 名字 · 一句话 · 状态标记 (参考实现) · 指向规范页; 全 `createElement` + `textContent` (**零 `innerHTML`**) · 双语 `data-zh`/`data-en` · `role=button` + `tabindex` + `aria-label` + Enter/Space · 无外部依赖 |
+
+**为什么 `efficode` 条目在"还没有技能列表"的空态分支里也显示**: 它是**内置参考实现** (仓内 `src/efficode/**`),
+不靠「从电脑端同步」才出现 —— 空态直接 `return` 会让这条内置条目不显示, 那是错的。
+
+### 二、小包开销的真算 (本页最要紧的一条)
+
+口径与门 `[D]` 同源: 「自然语言帧」= `buildAgentMessage({ text, from, mine: [], theirs: undefined }).frame` 的 UTF-8 字节数。
+20B 载荷 (20B ASCII), 走 `encodeForPeer` 的真实指令形状 (`@DID:` + `#DATA:` + `!SEND`):
+
+```text
+2(Header 2B) + 32(DID 摘要段) + 1(指令段长 varint) + 50(指令段) + 1(数据块长 varint)
+  + 1(压缩算法 id) + 20(载荷) + 4(CRC32) = 111B     ← 算式 == 实测 111B
+
+其中指令段 50B 拆开: @DID:(1B码 + 1B长 + 44B身份明文) + #DATA:(1B码 + 1B长) + !SEND:(1B码 + 1B长)
+```
+
+| 口径 | 包 | 净开销 | 开销/载荷 | 总/载荷 |
+|---|---|---|---|---|
+| 今天真实路径 (身份写两遍) | **111B** | **91B** | **4.55x** | **5.55x** |
+| 去重 (身份只留 32B 摘要段) | **33B** | **13B** | 0.65x | 1.65x |
+| `text` 模式线上 (Base64) | 148 字符 | — | — | ×1.354 |
+| 自然语言帧基线 | 159B | — | — | — |
+
+固定开销不随载荷消失: 12B→**103B (7.58x)** · 20B→**111B (4.55x)** · 50B→141B (1.82x) · 100B→191B (0.91x) ·
+1KB→1116B (0.09x) · 4KB→4188B (0.02x) · 16KB→16477B (0.006x)。
+⇒ 要到载荷 ~100B 开销才降到 1x 以下, ~4KB 才基本可忽略。**短消息上包比正文大得多 (放大 5.55x)**。
+
+**顺手量化出一条设计缺陷候选**: 身份被写**两遍** —— 32B 摘要段 + `@DID:` 指令里的 44B 身份明文,
+白花 **46B**。去掉它 20B 载荷从 111B → 33B。修正属**规范中**, 本轮**只量不改代码**。
+
+另有 `< 32B 不开压缩` 这一条: `pickAlgo` 在 < 32B 直接返回 `none` (强制 deflate 在 20B 上确实更小: 块体 5B ⇒ 包 96B),
+默认策略仍走"压不小就不压" —— **不为好看而硬压**。
+
+### 三、宣传句 → 待测假设 的逐条处置 (反虚)
+
+| 原稿说法 | 处置 | 真测数 |
+|---|---|---|
+| 压缩率提升 30% | **降级为假设** | 逐样本差极大: 12B **-31.8%** / 51B **-25.3%** / 77B **-28.5%** / 1KB 重复 **-76.7%** / 40 帧 **-92.9%**; 真随机 1KB **负收益** (lz77 **+13.0%**) ⇒ **无单一数字** |
+| 信息密度提升 20 倍 | **降级为假设** | 实测最高 **14.15x** (4089B→289B); 12B 寒暄仅 **1.47x** |
+| 兼容度 100% | **未测** | 只有本仓一个实现, 没有第二实现可对编 |
+| 微秒级 | **未测** | 没有任何编解码耗时基准 |
+| 链路缩短 50% | **未测** | 字节数 ≠ 链路时间, 没有端到端延迟测量 |
+| 物理定律级 | **不作判据** | 不可证伪, 不进验收表 |
+
+### 四、门与验证 (全是真跑)
+
+- `npx tsx scripts/verify-efficode.ts` → **55 passed / 0 failed** (六节 A–F; [B] 严格性 17 条 ·
+  [C] 协商 14 条 · [D] 真测 8 条 · [E] 两进程端到端 6 条 · [F] 变异 M1–M4 **4/4 判红**且变异后源码逐字节还原回绿)
+- `npx vitest run src/test/efficode.test.ts` → **53 passed**
+- `npx tsc --noEmit` → **0 错**
+- wiki 四门 `wiki_check.py` / `raw_manifest_check.py` / `wiki_lint.py --strict=v2` / `supersede_check.py` → 全 OK
+
+### 五、如实留下的 (没做到 / 未验证)
+
+1. **签名验证与 ECC 临时会话密钥仍是空的** —— 本轮**没写任何签名/密钥交换代码** (不写假实现);
+   今天这条链的真实性保护 = 0 (CRC32 无密钥)。页上已如实标注为**规范中**。
+2. **声波/语音模式 0 行代码** —— 只有"显式拒绝"这一半。
+3. **5G / 区块链传输适配纯设想** —— 仓内 0 行, 与链上模块零 import 关系。
+4. **耗时与延迟一个数都没测** —— 「微秒级」「链路缩短 50%」在页上写的是"未测", 不是"达标"。
+5. **真跨机未验** —— 门 [E] 那三个进程是**同一台机器**走管道。
+6. **论坛地址未定** —— leo 原稿提到但没有给地址, **没有编**, 也没有登记任何 raw 来源 (manifests 未动)。
+7. **小包探针是一次性脚本** —— 真编真解跑完数字后**已删除** (不留在仓里), 页上写明了口径与算式, 可照上表复算;
+   要长期钉住这条应改门的 `[D]` 节, 本轮**没动门** (门与测试的既有断言一字未改)。
+8. **Skills UI 那一条只到"能看见"** —— 点进去给的是名字/一句话/状态/指向本页, **不是**可执行的 Efficode 调试器。
