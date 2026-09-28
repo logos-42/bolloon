@@ -108,6 +108,7 @@
     "qrcode": "^1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "undici": "^7.30.0",
     "viem": "^2.56.3"
   },
   "devDependencies": {
