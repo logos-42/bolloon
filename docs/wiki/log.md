@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-28 | chore | **ICP 备案通过 → 域名真开通 (bolloon.cn) + Efficode 论坛上真域名 (机器入口) + 把「备案期」写死的那两条过期红线换成白名单真门 + Docker 依赖缺陷修复 (`1d88f0c`)**: ① **域名开通**: `bolloon.cn` / `www.bolloon.cn` → A 记录 **120.26.82.43** (Cloudflare 灰云, zone id `9be73c239b5159d75f0e8c62d8b5f41a`) · `https://bolloon.cn/` = **200 / 18076B** · 证书 CN=bolloon.cn 有效至 **2026-12-23** · `http://` → **301** → https · 页脚 **浙ICP备2026081254号-1** (链 `https://beian.miit.gov.cn/`) · 公安联网备案**已提交待审** · 主站零回归。② **Efficode 论坛上真域名**: `https://efficode.bolloon.cn/` = **200 / 39715B** · `/.well-known/efficode.json` 与 `/efficode.json` 各 **3716B** 且**逐字节相同** (md5 两份均 `8c323819ea9495fa9be45f4a166c6d5a`) · `/changelog.json` **200 / 2123B** · `/README-DEPLOY.md` **404** (按设计) · 证书 Certificate Name `efficode.bolloon.cn` (certbot, 复用 bolloon.cn 账号) · 论坛页脚也加了备案号; **死链修复前后**: 上域名前公开清单 **3287B** / 页面 **38716B**, 且 `forum_url`/`page_url`/`changelog_url` 指向 **`http://120.26.82.43/` (死链)** 而 `hosting` 写着 `server-ip-only` / `domain_enabled=false` / reason 「ICP filing review in progress」 ⇒ 现为 **`addressing=domain-https` · `domain_enabled=true`** · 三份公开 JSON 里 `grep -c 120.26.82.43` **0/0/0**、`https://efficode.bolloon.cn` 计数 **3/3/1** · `noindex`/`robots` 不收录是**有意保留** (非待办)。③ **配置真相源同源 + 白名单真门**: 本地 `~/.hermes/scripts/efficode-forum/nginx/efficode.conf` 与线上 `/etc/nginx/sites-available/efficode` **sha256 同值 `5cba1878d4539c274e02b32dedf0cdbec7b7a9657274374134d0c94eaa36de9f`**; 部署脚本里两条**过期红线** (`REFUSE 443` / `REFUSE 域名 server_name`) 已改成**白名单真门** (证书只许 `/etc/letsencrypt/live/efficode.bolloon.cn/` · 开 443 必须 cert+key · `server_name` 只许 `efficode.bolloon.cn` 与 `120.26.82.43`, 其余 **REFUSE exit 3**), 「bolloon.cn 配置被改动」那条 sha256 门**保留未放宽** (**exit 4**); **本机 10 例变异测试全判对** · `bash -n` 过 · 部署**幂等** (第二次跑打印「已经是最新…跳过上传与 reload」) · 主站配置 sha `943272b0f7c9f868e2eb37d857e9ee331a2bce6b911d4e699415ab0821b41de6` 部署前后一致 · 监听端口仍只有 **22/53/80/443**。④ **两份口径手册修正** (不在仓内): README **9753→11793B** · README-DEPLOY **10808→13265B**, 「只监听 80 / 只认 IP / 备案期不接域名」**0 处**残留。⑤ **内容源修正** (不在仓内): `content.py`/`build.py` 的 `forum_url`/`page_url`/`changelog_url` 改 https 域名 + `hosting` 三字段改真值 + 新增 `icp` 字段 + 页脚备案号 + `spec_note` 改成「已在仓内 `docs/wiki/efficode.md`, 工作规范**非已发布标准**」; 构建产物 `index.html` **39715B** / gz **12452B**。⑥ **Docker 依赖缺陷修复** (已提交推送 **`1d88f0c`**, `package.json` + `package-lock.json` 新增 **`undici ^7.30.0`**): `src/llm/pi-ai.ts:4` 真 `import undici` 却**不是直接依赖** (靠传递提升) ⇒ 容器 `npm ci --omit=dev` 装不到 ⇒ 启动即 `ERR_MODULE_NOT_FOUND`; 修后真验 build **exit=0 (567s)** · 镜像内 `/app/node_modules/undici` = **7.30.0** · 容器 run **exit=0** · 第 **65 秒** HTTP **200** · HEALTHCHECK 最终 **healthy** (探针原文 `exit=0 healthy /api/health=200 ok=true /= 200`; 启动期几次 `exit=1 fetch failed` 是探针早于服务) · 非 root **uid=1001 / bolloon** · **npm 未发布** (0.5.2 仍是线上最新版)。**如实两条**: 裸 IP 走 HTTP (`http://120.26.82.43/`) 现在 **404** (certbot 改写后只服务域名: 域名 301 跳 https、其它 Host 404), 按现状保留未改; 真链上「卖方发起」仍缺 **facilitator** (`BOLLOON_X402_FACILITATOR` → `POST /verify` + `/settle`), 卖方端点部署到 ECS (`pay.bolloon.cn`) **仍在进行中** | `~/.hermes/scripts/efficode-forum/{nginx/efficode.conf,README.md,README-DEPLOY.md}` · `~/.hermes/scripts/efficode-forum-deploy.sh` · `package.json` · `package-lock.json` · `src/llm/pi-ai.ts` · `docs/wiki/efficode.md` (301 行 / 19247B) · 本页 |
 | 2026-09-28 | fix | **收掉站点门最后一条常驻红:「钱包签名」的真 0 与裸 0 分开判 —— 是门错了, 不是站点谎报**: 门判据原写「数字且 ≠ 0」, 把「审计账 24h 窗口内真的 0 条」也判红。取证链: 本机 `~/.bolloon/wallet-signatures.jsonl` 真存在(**11 行, 最后一笔在 4 天前** ⇒ 窗口内本就 0 条) · 导出侧真读它 (`src/agents/network-pulse.ts` 的 `source:'signature-audit'`, 单测兜着「账 3 条(2 条在窗口内) → 计数 2」) · 真页面那一格 = 「0 钱包签名 **24h 签名审计**」且 `<i data-pulse-scope-tag="signatures" title="本机签名审计账 … 24h 内条数">` 真在 ⇒ 0 是量出来的结论。**判定改成看三元组**(更严不是更宽): 过 = (真源集合 ∧ 值是数字 ∧ **自己的口径标记非空**) ∨ (source==='none' ∧ 值==='未接入'); 裸 0 / 有源却无标记 / 无源却印数字 一律红。**另加规则自证判别力**: 同一判定函数拿人造输入跑, 三种坏形状必须假、两种好形状必须真。**同时修掉同族的「读太早」假红**: 三处等**真网络**hydrate 的等待预算 12s/6s → 50s (实测 CDN 冷启动 hydrate 要 7~10s, 旧预算卡线 ⇒ 整段落在 loading 态, 报出 dom=—/rows=0/口径行空 一片假红; 快照本身取一次仅 0.8s, 网络无问题), 断言未动; 现场还清了 3 台上一轮被中断的验收 Chrome (`kill-verify-chrome.sh` 在 skill 目录里, 不在仓库 `scripts/`)。**结果: `verify-site.mjs` 440 passed / 0 failed / 0 skipped** | `bolloon-UI/scripts/verify-site.mjs` · 本页 |
 | 2026-09-28 | fix | **npm 0.5.2 落地后收尾两处"会撒谎或会假红"的地方**: ① 查 npm 真值 = `dist-tags.latest 0.5.2` (145 版) ⇒ 站点文档昨天写的「npm 已发布 `0.5.1` / 本地 `0.5.2` 尚未发布」**当场变成错的** ⇒ 现况行改写为「已发布 `0.5.2` = 主仓 `package.json`, 一致」, 仓内两份逐字节同改 (sha 相同)。**门的洞一并堵上**: 旧断言只查「文档里出现过这个版本号」⇒**把已发布/待发布两个角色写反也能过**; 新增反面断言 = 从文档里取「现况」行, 与真实对表 (必须点出 npm 已发布那版; 版本一致时**不许**再出现「未发布」字样)。 ② 首页版本徽章门报红 `live=0.5.2 dom=—`: **用真 Chrome 两通道复核 ⇒ 徽章其实正常填成 0.5.2**(CF Pages 冷启动取 npm 要 ~9s, 域名 ~3.8s) ⇒ 是门的等待预算太紧的**假红**(1.2s + 16×0.5s ≈ 9.2s 刚好卡线), 预算放宽到 20s, **断言本身不动**(仍然要求 dom 逐字 = npm 最新版) | `bolloon-UI/bolloon-network.md` · `skills/bolloon-network/SKILL.md` · `bolloon-UI/scripts/verify-site.mjs` |
 | 2026-09-28 | fix | **磁盘满(ENOSPC)事故修复 + 0.5.2 双发 (npm + GitHub Release 同名)**: ① **真凶与损伤**: 磁盘曾只剩 1.5G, 四条并行线全被 `errno: -28 ENOSPC` 写崩; 唯一**被写坏的文件** = `src/agents/pi-sdk.ts` 被写成 **0 行** (HEAD 3609 行) —— 一个文件解释全部症状 (tsc 13 错全是 "not a module" + 回复流门 10 条红)。修 = 从 HEAD 复原 + 子线按完整可用的门重建 KV 接线 (模块级 `writeBackCurrentTurnInto` / `messages` 透传 / 易变段移出 system)。② **清盘 (授权)**: npm 缓存 3.1G · WeChat 缓存 2.4G · Docker 镜像/构建缓存 **11.31GB** (Docker.raw 12G→5.9G; 只清镜像容器构建缓存, **3 个未激活数据卷一个没动**) · tmp/旧转录; 盘 **1.5G → 23Gi 可用**。③ **我自己犯的错 (如实记)**: 把一条**在跑的变异脚本产物当成成果提交并推送**了 —— `3968d83` 里带 `reply-hygiene.ts:51 return false; // MUTATION` (后果: 内部运行日志既不上屏也不落盘, 全漏回回复流) ⇒ 已 `28f43d0` 拔除; 另有两条子线变异残留 (`internalRunLogLine` 返回空串等) 已清。**教训**: 变异脚本收尾用 `git checkout -- ` 还原, 若 HEAD 本身是坏版本会把坏版本刷回来 ⇒ **修必须修进提交里; 发布前必须独立 grep 包内有没有 MUTATION (门绿 ≠ 包干净)**。④ **0.5.2 双发 (真验)**: `npm publish` 打出 `+ @bolloon/bolloon-agent@0.5.2` 后 registry 仍 404 达 **540 秒** (大包"处理中" ⇒ **只轮询不重发**), 出现后 tarball **19,697,680 字节 · 1623 文件 · 本地重算 SHA-1 `14e4e1e1…d790` == `dist.shasum` 逐字** · 包内 `MUTATION=0` 且默认判据行在 · 全新空目录安装 `npm warn=0` · CLI 自报 `Bolloon Agent v0.5.2`; tag `v0.5.2` (远端 `256ffdfa…`) → Release **isLatest=true · name==tag==v0.5.2 · 正文 3663 字符**。⑤ **顺手修的真问题**: `docker-compose.yml` 写死 `bolloon-agent:0.5.1` (发版即过期) ⇒ 改 `${BOLLOON_IMAGE_TAG:-local}`, README 与 docker 文档同步 | `docs/release-notes/v0.5.2.md` · `src/agents/pi-sdk.ts` · `src/cli/reply-hygiene.ts` · `docker-compose.yml` · `README.md` |
@@ -5245,3 +5246,104 @@ X This run likely failed because of a workflow file issue.
 7. **小包探针是一次性脚本** —— 真编真解跑完数字后**已删除** (不留在仓里), 页上写明了口径与算式, 可照上表复算;
    要长期钉住这条应改门的 `[D]` 节, 本轮**没动门** (门与测试的既有断言一字未改)。
 8. **Skills UI 那一条只到"能看见"** —— 点进去给的是名字/一句话/状态/指向本页, **不是**可执行的 Efficode 调试器。
+
+---
+
+## [2026-09-28] chore | 域名真开通 (ICP 已过) + Efficode 机器入口上真域名 + 配置真相源白名单真门 + Docker undici 依赖缺陷修复 (`1d88f0c`)
+
+### 一、域名开通 (备案已过)
+
+| 项 | 真值 (本 session 亲手探得) |
+|---|---|
+| 备案号 | **浙ICP备2026081254号-1** (页脚, 链 `https://beian.miit.gov.cn/`) |
+| 公安联网备案 | **已提交待审** (只到"已提交", 无通过回执) |
+| DNS | `bolloon.cn` / `www.bolloon.cn` → A 记录 **120.26.82.43** (Cloudflare 灰云, zone id `9be73c239b5159d75f0e8c62d8b5f41a`) |
+| `https://bolloon.cn/` | **200 / 18076B** |
+| 证书 | CN=**bolloon.cn**, 有效至 **2026-12-23** |
+| `http://` | **301** → https |
+| 主站回归 | 零回归: 页面只多页脚备案号; 监听端口仍只有 **22/53/80/443** |
+
+### 二、Efficode 论坛上真域名: 机器入口 + 死链修复前后
+
+论坛对外的"机器入口"= 三份公开 JSON (`/.well-known/efficode.json` · `/efficode.json` · `/changelog.json`), 外部 agent 靠它们拿论坛地址与 `hosting` 事实。
+
+| 探测项 | 上域名前 | 现况 |
+|---|---|---|
+| `https://efficode.bolloon.cn/` | 无域名 | **200 / 39715B** |
+| 同页 (裸 IP 口径, 页面本体) | **200 / 38716B** | — |
+| `/.well-known/efficode.json` | 清单 **3287B** | **200 / 3716B** |
+| `/efficode.json` | 同上 | **200 / 3716B** (与前一份**逐字节相同**, md5 两份均 `8c323819ea9495fa9be45f4a166c6d5a`) |
+| `/changelog.json` | — | **200 / 2123B** |
+| `/README-DEPLOY.md` | — | **404 (按设计)** |
+| `forum_url` / `page_url` / `changelog_url` | **`http://120.26.82.43/` (死链)** | https 域名 |
+| `hosting` | `server-ip-only` · `domain_enabled=false` · reason "ICP filing review in progress" | `addressing=domain-https` · `domain_enabled=true` |
+| 三份 JSON 里 `grep -c 120.26.82.43` | >0 | **0 / 0 / 0** |
+| 三份 JSON 里 `https://efficode.bolloon.cn` 计数 | 0 | **3 / 3 / 1** |
+
+证书: certbot, **Certificate Name `efficode.bolloon.cn`** (复用 bolloon.cn 那套账号); 论坛页脚也已加备案号。
+**有意保留 (不是待办)**: `noindex` / `robots` 不收录 —— 论坛只给机器入口与直链, 不进搜索引擎。
+
+### 三、配置真相源同源 + 两条过期红线换成白名单真门
+
+- **同源证据**: 本地 `~/.hermes/scripts/efficode-forum/nginx/efficode.conf` 与线上 `/etc/nginx/sites-available/efficode` **sha256 同值**
+  `5cba1878d4539c274e02b32dedf0cdbec7b7a9657274374134d0c94eaa36de9f` —— 配置只有一份真相源, 不是两边各写一份。
+- **被杀掉的两条过期门** (都是"备案期"假设写死的): `REFUSE 443`(一刀切禁止开 443) 与 `REFUSE 域名 server_name`(禁止 `server_name` 写域名)。
+  备案已过 ⇒ 两天门从"一律禁止"改成**白名单**。
+- **白名单真门 (部署脚本 `~/.hermes/scripts/efficode-forum-deploy.sh` 里)**: 证书路径只许 `/etc/letsencrypt/live/efficode.bolloon.cn/` ·
+  开 443 必须同时有 cert + key · `server_name` 只许 `efficode.bolloon.cn` 与 `120.26.82.43` · 其余一律 `REFUSE` **exit 3**。
+- **保留未放宽的门**: "bolloon.cn 配置被改动"那条 sha256 门 (主站配置 sha `943272b0f7c9f868e2eb37d857e9ee331a2bce6b911d4e699415ab0821b41de6`, 部署前后一致) —— 仍然 **exit 4**。
+- **门自身被验**: 本机 **10 例变异测试全判对**(该拒的拒、该放的放) · `bash -n` 通过 · **部署幂等**(第二次跑打印「已经是最新…跳过上传与 reload」, 不重复上传也不 reload)。
+
+### 四、两份口径手册 + 内容源 (都在 `~/.hermes/scripts/` 下, 不在本仓)
+
+| 文件 | 变化 |
+|---|---|
+| `efficode-forum/README.md` | **9753 → 11793B** |
+| `efficode-forum/README-DEPLOY.md` | **10808 → 13265B** |
+| 两份里的过期表述 | 「只监听 80 / 只认 IP / 备案期不接域名」**0 处**残留 |
+| `content.py` / `build.py` | `forum_url`/`page_url`/`changelog_url` → https 域名 · `hosting` 三字段改真值 · 新增 `icp` 字段 · 页脚加备案号 · `spec_note` 改成「已在仓内 `docs/wiki/efficode.md`, 工作规范**非已发布标准**」 |
+| 构建产物 | `index.html` **39715B** · gz **12452B** · 三份 JSON 见 §二 |
+
+本仓本轮只动 wiki 两个文件 (`docs/wiki/log.md` · `docs/wiki/current-status.md`), 上面这些手册与内容源都在仓外。
+
+### 五、Docker 依赖缺陷: 把 `undici` 声明成直接依赖 (`1d88f0c`)
+
+**缺陷**: `src/llm/pi-ai.ts:4` 直接 `import … from 'undici'`, 而 `package.json` 里**没有** `undici`(它只是靠别的包**传递提升**才出现在本地 `node_modules`)
+⇒ 容器里 `npm ci --omit=dev` 装不到它 ⇒ **镜像启动即 `ERR_MODULE_NOT_FOUND`**。本地 `tsx` 跑不出来, 只有真起容器才撞上。
+
+**修**: `package.json` + `package-lock.json` 新增 **`undici ^7.30.0`**。
+
+**真验 (真 build + 真 run)**:
+
+| 项 | 结果 |
+|---|---|
+| `docker build` | **exit=0 (567s)** |
+| 镜像内 `/app/node_modules/undici` | **7.30.0** |
+| 容器 run | **exit=0** |
+| HTTP 首次 200 | 第 **65 秒** |
+| HEALTHCHECK | 最终 **healthy** (探针原文 `exit=0 healthy /api/health=200 ok=true /= 200`; 启动期几次 `exit=1 fetch failed` 是探针早于服务, 不是缺陷) |
+| 运行身份 | 非 root, **uid=1001 / bolloon** |
+
+**npm 未发布** (leo 明令): `0.5.2` 仍是线上最新版 —— 这条修只在主仓, 从 npm 装的用户拿不到。
+
+### 六、门与验证 (真跑, 本次回写后)
+
+```text
+$ python3 scripts/wiki_check.py              → OK
+$ python3 scripts/raw_manifest_check.py      → OK
+$ python3 scripts/wiki_lint.py --strict=v2   → OK
+$ python3 scripts/supersede_check.py         → OK
+```
+
+顺带一条核对: 仓内 `docs/wiki/efficode.md` 现为 **301 行 / 19247B**, `git` 对本文件**无改动**(行数口径按 301 记)。
+
+### 七、如实留下的 (没做到 / 不确定)
+
+1. **裸 IP 走 HTTP 现在 404** —— `http://120.26.82.43/` 已不再是入口: certbot 改写后 nginx 只服务域名(域名 301 跳 https, 其它 Host 一律 **404**)。
+   这是**真行为变化**, 我们**按现状保留未改**(要恢复得另写 server 块, 本轮没做)。
+2. **真链上「卖方发起」仍缺 facilitator** —— `BOLLOON_X402_FACILITATOR` 指向的 `POST /verify` + `/settle` 还没有;
+   卖方端点部署到 ECS(`pay.bolloon.cn`)的工作**仍在进行中**, 本文不写它的结果。
+3. **npm 未发布** (见 §五) —— Docker 依赖缺陷修复没有落在任何已发布版本里。
+4. **本节只写本 session 亲手核过的事** —— 域名/证书/字节数/sha/探针原文都是当下真值;
+   证书 **2026-12-23** 到期后需续期(certbot 已有账号复用路径, **续期本身本轮没验**)。
+5. **公安联网备案仍在审** —— 只到"已提交", 没有通过回执。
