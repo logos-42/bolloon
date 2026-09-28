@@ -1,0 +1,145 @@
+# Bolloon Agent —— 本地/单机容器编排
+#
+# 用法:
+#   cp .env.example .env.docker   # 可选; 不建也行 (下面是空/默认值)
+#   docker compose config         # 校验本文件
+#   docker compose up -d          # 起 Web UI → http://127.0.0.1:54188
+#   docker compose logs -f bolloon
+#   docker compose ps             # 看 health 状态
+#   docker compose down           # 停 (数据卷保留)
+#   docker compose run --rm bolloon-cli --version   # 只跑一次 CLI
+#
+# ⚠️ 密钥纪律 (本文件是**刻意**这么写的, 不是漏了):
+#   1. 本文件里没有任何真实值, 也**不给凭证类变量做 `${VAR}` 插值**。
+#      原因 (本机实测过, 不是理论担心): `docker compose` 会自动读**仓根目录的 `.env`**
+#      来做插值 —— 那正是本机放真 key 的私密文件。一旦写成 `${MINIMAX_API_KEY:-}`,
+#      `docker compose config` 就会把真值原样打印出来 (实测输出里真的出现了 key),
+#      而这些输出经常被贴进 issue / CI 日志。所以凭证只走**两条**通道:
+#        a) `env_file: .env.docker`  —— 容器专属环境文件, 名字故意跟仓根的 `.env` 不撞,
+#           复制 `.env.example` 得到 (`.env.docker` 已在 .gitignore 里);
+#        b) 把 0600 的 `llm-config.json` 只读挂进 `/home/bolloon/.bolloon/` (**更安全**,
+#           密钥不进口令行/环境/compose 输出)。
+#   2. `env_file` 指向 `.env.docker` 而不是 `.env`, 就是为了不把开发者本机的私密
+#      `.env` 顺手灌进容器 (那是另一件事, 不该被 compose 悄悄接管)。
+
+name: bolloon
+
+services:
+  bolloon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bolloon-agent:0.5.1
+    container_name: bolloon-agent
+    # 让 tini 当 PID 1: 入口会 spawn 一个子 node 进程 (cli-entry.js → dist/index.js),
+    # 没有 init 的话 `docker stop` 的 SIGTERM 到不了子进程, 只剩 10s 后 SIGKILL。
+    init: true
+    # 端口: 默认**只发布到宿主机回环**, 同网段其它机器连不上 (Web 面有身份/对话数据)。
+    # 要给局域网/反代用, 改成 "54188:54188" 或 "0.0.0.0:54188:54188", 并自己加认证/防火墙。
+    ports:
+      - "127.0.0.1:54188:54188"
+    volumes:
+      # 状态卷: 配置 / 身份私钥 / llm-config.json / 会话 / 日志 / orbitdb。
+      # **里面有私钥**, 所以它是命名卷而不是 bind 到仓库目录 —— 别 `docker commit`,
+      # 也别把卷内容导出进仓。
+      - bolloon-data:/home/bolloon/.bolloon
+      # 更安全的密钥通道 (推荐): 把本机 0600 的配置只读挂进去, 就不必在 env 里放 key。
+      # 用绝对路径 (写成仓内相对路径会把本机配置暴露在仓目录里, 更容易被误提交)。
+      # - /absolute/path/to/llm-config.json:/home/bolloon/.bolloon/llm-config.json:ro
+    env_file:
+      # 不存在也不报错 (required: false) —— 没配密钥时容器照样起, 只是 agent 执行会被初始化门禁拦住。
+      - path: .env.docker
+        required: false
+    environment:
+      # 只用 `${VAR:-默认}` 形式, 且**只放非密钥项**: 宿主设了以宿主为准, 没设用默认。
+      NODE_ENV: production
+      PORT: "${PORT:-54188}"
+      BOLLOON_HOME: /home/bolloon/.bolloon
+      # 容器内必须 0.0.0.0 才能被 ports 映射打到 (程序默认只 bind 127.0.0.1)
+      BOLLOON_HOST: "${BOLLOON_HOST:-0.0.0.0}"
+      # 下面这些是行为开关, 不是凭证 —— 可以安全插值
+      BOLLOON_LLM_PROVIDER: "${BOLLOON_LLM_PROVIDER:-}"
+      BOLLOON_LLM_TIMEOUT: "${BOLLOON_LLM_TIMEOUT:-}"
+      BOLLOON_DISABLE_CACHE_PROMPT: "${BOLLOON_DISABLE_CACHE_PROMPT:-}"
+      BOLLOON_PROMPT_PROFILE: "${BOLLOON_PROMPT_PROFILE:-}"
+      DEBUG_PROMPT_PREFIX: "${DEBUG_PROMPT_PREFIX:-}"
+      BOLLOON_DUMP_BODY: "${BOLLOON_DUMP_BODY:-}"
+      BOLLOON_SKIP_KUBO: "${BOLLOON_SKIP_KUBO:-}"
+      # ── 凭证类: 故意留成注释占位, 不插值 ──────────────────────────────
+      # 取消注释 = 显式钉死空值, 会**盖掉** env_file, 所以别取消注释;
+      # 要填就填到 `.env.docker` (名字见 `.env.example`), 或挂载 llm-config.json。
+      # OPENAI_API_KEY / OPENAI_BASE_URL
+      # ANTHROPIC_API_KEY
+      # DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL
+      # MINIMAX_API_KEY / MINIMAX_BASE_URL
+      # KIMI_API_KEY / MOONSHOT_API_KEY / KIMI_BASE_URL
+      # GLM_API_KEY / ZHIPU_API_KEY / GLM_BASE_URL
+      # QWEN_API_KEY / DASHSCOPE_API_KEY / QWEN_BASE_URL
+      # OPENROUTER_API_KEY / GEMINI_API_KEY / XAI_API_KEY
+      # OLLAMA_BASE_URL / LLAMACPP_BASE_URL
+      # BOLLOON_WALLET_PRIVATE_KEY / BOLLOON_TREASURY_KEY / BOLLOON_SESSION_KEY
+    restart: unless-stopped
+    healthcheck:
+      # 与 Dockerfile 里那条探针**同一条** (同时要 /api/health 200+ok:true 和 / 200)。
+      # 想省事可以整块删掉 —— 删了会自动继承镜像自带的 HEALTHCHECK。
+      test:
+        - CMD
+        - node
+        - -e
+        - "const p=process.env.PORT||'54188';const bail=setTimeout(()=>{console.log('unhealthy: probe timeout');process.exit(1)},9000);const j=(u)=>fetch('http://127.0.0.1:'+p+u,{signal:AbortSignal.timeout(4000)});Promise.all([j('/api/health').then(r=>r.json().then(v=>({c:r.status,ok:!!(v&&v.ok)})).catch(()=>({c:r.status,ok:false}))),j('/').then(r=>({c:r.status,ok:r.ok}))]).then(([h,i])=>{clearTimeout(bail);const ok=h.ok&&h.c===200&&i.ok&&i.c===200;console.log((ok?'healthy':'unhealthy')+' /api/health='+h.c+' ok='+h.ok+' /= '+i.c);process.exit(ok?0:1)}).catch(e=>{clearTimeout(bail);console.log('unhealthy: '+e.message);process.exit(1)})"
+      interval: 30s
+      timeout: 10s
+      # 冷启动慢: 启动要先过 iroh/P2P 初始化 (源码里 15s 超时门) 才 bind 端口
+      start_period: 120s
+      retries: 4
+    # 只留必要能力 + 禁止提权 (跑在 1001 非 root, 用高位端口, 本来就不需要 root 能力)
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        # agent 日志会很多, 不设上限会把宿主机磁盘写满
+        max-size: "10m"
+        max-file: "3"
+    # /home/bolloon/.bolloon 在镜像里属 1001:1001, 命名卷首次创建会继承它, 所以不用额外 --user。
+    # 用 bind mount 时见 wiki 的 uid/gid 一节。
+    # 想强行用宿主 uid: 取消下面注释 (宿主目录必须已存在且可写)。
+    # user: "${UID:-1001}:${GID:-1001}"
+
+  # 一次性 CLI: 不进默认 up, 只在显式 `docker compose run` 时用。
+  #   docker compose run --rm bolloon-cli --version
+  #   docker compose run --rm bolloon-cli doctor
+  #   docker compose run --rm bolloon-cli model list
+  # --cli 是交互 TUI, 所以要 tty + stdin_open (docker compose run 默认已给)。
+  bolloon-cli:
+    profiles: ["cli"]
+    image: bolloon-agent:0.5.1
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    tty: true
+    stdin_open: true
+    volumes:
+      # 同一个状态卷 ⇒ CLI 里 `bolloon setup` 配好的身份/密钥, Web 服务直接用得上
+      - bolloon-data:/home/bolloon/.bolloon
+    env_file:
+      - path: .env.docker
+        required: false
+    environment:
+      NODE_ENV: production
+      BOLLOON_HOME: /home/bolloon/.bolloon
+    command: ["--version"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bolloon-data:
+    # 卷里是身份私钥 + API key 配置: 别导出进仓, 别共享给他人。
+    name: bolloon-data

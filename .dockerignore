@@ -1,0 +1,95 @@
+# .dockerignore —— 构建上下文过滤
+#
+# 取舍说明 (为什么排除这些, 以及排除了会付什么代价):
+#   · `node_modules/` — 构建阶段自己 `npm ci` 装。宿主机上那份 889MB 且含 darwin 二进制,
+#     带进上下文既慢又可能把错的平台二进制带进镜像。
+#   · `dist/`        — 构建阶段从源码重建 (tsc + build:web)。**故意**排除: 否则镜像里可能
+#     混进工作区上一轮的旧产物,"镜像里的东西 == 这棵树能编出来的东西"就不成立了。
+#   · `.git/` + 各 IDE/agent 目录 — 与构建无关 (`.git` 这里 104MB)。
+#   · `.bolloon/` `.bolloon-logs/` `.ipfs/` `*.log` — 本机运行态: 里面有身份私钥、
+#     llm-config.json (API key)、会话与区块。**绝不进构建上下文**, 也就绝不可能进镜像。
+#   · `.env` — 本机真密钥文件 (仓里已 gitignore)。容器要的变量名只在 `.env.example`。
+#   · `ios/` `android/` `rokid/` `release/` `build/` `contracts/` — 移动端/桌面打包产物与
+#     Foundry 构建 (contracts 479MB / build 466MB), 与 Node 服务无关。
+#   · `docs/` `manifests/` `raw_sources/` `staging/` `minitools/` — wiki 与资料, 构建不读。
+#   · `src/test/` + `src/**/__tests__/` — **有意的取舍**: 主 `tsconfig.json` 本来就
+#     `exclude` 它们, 编译不需要; 排除能让上下文小一点。代价: 镜像里不能跑单测
+#     (本来也没打算跑), 且如果哪天有源码 `import` 测试夹具, 构建才会发现 —— 那时把这两行删掉。
+#   · `scripts/verify-*.ts` `scripts/acceptance/` `scripts/ablation/` — 验收门/消融脚本,
+#     构建链只用 `scripts/{postinstall.js,build-web.ts,copy-constraint-runtime.mjs}` 等。
+#     同样**有意的取舍**: 镜像里没有这些门, 想在容器里复跑验收就得挂载宿主机源码跑。
+#   · `*.log` `test-results/` `coverage/` — 输出物。
+
+# ── 依赖与产物 (重建) ──────────────────────────────────────────────
+node_modules
+**/node_modules
+dist
+**/dist
+coverage
+test-results
+
+# ── 版本控制与工作区工具 ───────────────────────────────────────────
+.git
+.gitignore
+.github
+.kilo
+.claude
+.codex
+.crush
+.lsp.json
+.skill
+.playwright-mcp
+.port_sessions
+.DS_Store
+
+# ── 运行态 / 密钥 (含私钥与 API key, 永不入镜像) ────────────────────
+.env
+.env.*
+!.env.example
+.bolloon
+.bolloon-logs
+.ipfs
+*.log
+accounts.json
+wrangler
+.wrangler
+**/.dev.vars
+
+# ── 与 Node 服务无关的构建域 ───────────────────────────────────────
+ios
+android
+rokid
+release
+build
+contracts/out
+contracts/cache
+staging
+minitools/dist
+docs/copyright/out
+
+# ── wiki / 资料 (构建不读) ────────────────────────────────────────
+docs
+manifests
+raw_sources
+raw
+raw_local
+raw_vault
+bolloon_raw
+.obsidian
+.wiki-scratch
+
+# ── 测试与验收脚本 (取舍见文件头) ─────────────────────────────────
+src/test
+src/**/__tests__
+src/**/*.test.ts
+src/**/*.spec.ts
+scripts/acceptance
+scripts/ablation
+scripts/verify-*.ts
+scripts/verify-*.mjs
+scripts/lib/pty-drive.py
+
+# ── 杂项 ─────────────────────────────────────────────────────────
+Bolloon.md
+py-bolloon
+*.md.bak

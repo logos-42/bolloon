@@ -1,6 +1,10 @@
 node_modules/
 dist/
 .env
+# Docker/容器: 模板 `.env.example` 入库; 填了真值的实例文件 (`.env.docker` 等) 一律不入库
+.env.docker
+.env.*
+!.env.example
 *.log
 .DS_Store
 coverage/

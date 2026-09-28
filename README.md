@@ -91,6 +91,32 @@ npm start
 
 ---
 
+## Docker
+
+不想在本机装 Node 与依赖, 可以直接跑容器 (多阶段镜像 · 非 root 用户 uid 1001 · 状态全部落在卷里):
+
+```bash
+docker build -t bolloon-agent:0.5.1 .
+docker run -d --name bolloon-agent \
+  -p 127.0.0.1:54188:54188 \
+  -v bolloon-data:/home/bolloon/.bolloon \
+  bolloon-agent:0.5.1 --web
+# → http://127.0.0.1:54188
+
+docker compose up -d                            # 同上的 compose 写法
+docker compose run --rm bolloon-cli --version   # 一次性 CLI (不用起服务)
+```
+
+- **密钥别写进 compose**: 复制 `.env.example` → `.env.docker` (已在 `.gitignore`), 或者把本机
+  0600 的 `llm-config.json` **只读挂载**进容器 (更安全: 不进环境变量、不进 `docker inspect`)。
+- **数据卷里有身份私钥与 API key 配置** (`/home/bolloon/.bolloon`): 别导出、别提交、别 `docker commit`。
+- 端口只认环境变量 `PORT` (默认 `54188`); `--port` 参数无效。
+
+完整说明 (镜像怎么搭的 · 卷与 uid 权限 · HEALTHCHECK 探什么/不探什么 · 常见问题) 见
+[docs/wiki/docker-deployment.md](./docs/wiki/docker-deployment.md)。
+
+---
+
 ## 环境变量
 
 | 变量 | 说明 |
@@ -135,6 +161,19 @@ bolloon --help     # All commands
 ```
 
 Requires Node.js ≥ 18 and an LLM API key (`OPENAI_API_KEY` or `DEEPSEEK_API_KEY`).
+
+### Docker
+
+Run it in a container instead (multi-stage image, non-root user, state in a volume):
+
+```bash
+docker build -t bolloon-agent:0.5.1 .
+docker run -d --name bolloon-agent -p 127.0.0.1:54188:54188 \
+  -v bolloon-data:/home/bolloon/.bolloon bolloon-agent:0.5.1 --web
+```
+
+Copy `.env.example` to `.env.docker` (gitignored) for keys, or mount your `llm-config.json` read-only
+(safer). Full guide: [docs/wiki/docker-deployment.md](./docs/wiki/docker-deployment.md).
 
 ### License
 
