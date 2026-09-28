@@ -181,6 +181,11 @@ tags: [efficode, agent-lang, protocol, packet, did, crc32, lz77, deflate, negoti
 - **更新渠道 (真实存在的那一条)**: 本仓 `git remote origin = git@github.com:logos-42/bolloon.git`;
   公开页 `https://bolloon.cn`。Efficode 的规范与实现更新只走这两个, **不走任何第三方站点**。
 - **状态页**: 本页 (即 `docs/wiki/efficode.md`)。`src/efficode/index.ts` 顶部注释直接指向本页作为唯一事实源。
+- **对外精简版 (2026-09-28 起)**: 站上 `efficode.md` —— `https://bolloon.cn/efficode.md`(原文) ·
+  `https://bolloon.cn/view?f=efficode.md`(站内查看页), 同时列进 `skill.html` 的「站内 skills 索引」,
+  外部 agent 一条 `read https://bolloon.cn/efficode.md` 即可拿到。它是**本页的对外精简版**:
+  保留 6 条指令 / 逐位包结构 / DID 段布局 / 协商三规则 / **§六 的真数字与 §七 的未做清单**,
+  去掉过程与门细节; **两份不一致时以本页为准**。仓内副本 = `bolloon-UI/efficode.md`。
 - **客户端入口**: 手机端 Skills 页有一条 `efficode` 条目 (名字 · 一句话 · 状态标记 · 指向本页),
   实现见 `src/web/mobile.js` 的 `openSkillsPage` 渲染分支 (全 `textContent`, 双语 `data-zh`/`data-en`)。
 
