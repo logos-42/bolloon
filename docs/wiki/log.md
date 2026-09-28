@@ -5143,7 +5143,7 @@ v0.5.0		v0.5.0	2026-09-28T04:52:33Z
 
 1. **`gh 2.87.3` 的 `release view --json` 没有 `isLatest`** —— 第一版用它回读, Release **已经建出来了**但回读以 `Unknown JSON field: "isLatest"` 退出 1 (字段只在 `release list` 里)。脚本已改成 view 拿名字/正文 + list 拿 latest; 手写命令时也要注意。
 2. **notes 禁字门在 `v0.4.30..v0.5.0` 区间真拦下一条提交标题** (它带着私有锚点路径与课题引用) ⇒ 由此定下: **提交列表默认不搬到公开 Release**, 只给区间 (`git log <区间> --oneline` 谁都能自查); 要带列表用 `--with-commit-list`, 命中的行**显式标注"略去"**而不是静默删。私有任务书 / 研究课题 / 凭据 / 私有路径一律不上公开页。
-3. **registry 的 tarball 拿不到字节数** —— 对 tarball URL 发 `HEAD` 回 200 但**不带 `content-length`** (`curl -sI` 同样没有), 第一版 notes 那格因此印成"未知 (HEAD 未取到)"。改用 **Range GET** 读 `content-range: bytes 0-0/<总长>` (只传 1 个字节, 实测 `bytes 0-0/19646772`); 且响应体必须 `resume()` 排掉, 否则 keep-alive socket 挂着、进程不退出。修完用 **`--clobber --yes` 真覆盖**了两个已发布 Release 的正文 (旧正文里那格是错的, 覆盖是对的处置; 覆盖行为本身也就此验过一遍)。
+3. **registry 的 tarball 拿不到字节数** —— 对 tarball URL 发 `HEAD` 回 200 但**不带 `content-length`** (`curl -sI` 同样没有), 第一版 notes 那格因此印成"未知 (HEAD 未取到)"。改用 **Range GET** 读 `content-range: bytes 0-0/<总长>` (只传 1 个字节, 实测 `bytes 0-0/19646772`); **且拿到响应头就掐断, 不等 body** —— CDN 未命中缓存时那个 Range 请求会把整个 19MB 慢慢吐过来 (真卡了 5 分钟零输出); 响应体/socket 不排掉还会让进程不退出。修完用 **`--clobber --yes` 真覆盖**了两个已发布 Release 的正文 (旧正文里那格是错的, 覆盖是对的处置; 覆盖行为本身也就此验过一遍), 现在两版正文分别是 `19,646,772 字节 (Range 现取 + 真下载重算一致)` 与 `19,010,013 字节 (Range 现取)`。
 
 ### 六、顺手查明: 为什么「25 个 tag 却 0 个 Release」
 

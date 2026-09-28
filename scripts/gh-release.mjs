@@ -192,17 +192,36 @@ function httpsGetJson(url) {
 function httpsSize(url) {
   // registry/CDN 对 HEAD 回 200 但**不带 content-length** (真量过: curl -sI 也没有) ⇒ HEAD 拿不到字节数。
   // 改用 Range GET 读 `content-range: bytes 0-0/<总长>` —— 只传 1 个字节就拿到精确大小。
+  // 关键: **拿到响应头就立刻算完并掐断**, 绝不等于 body —— 大 tarball 若在 CDN 上未命中缓存,
+  // 服务端会把整个 19MB 慢慢吐过来 (真踩过: 卡了 5 分钟没有任何输出), 而我要的只是头里的那一行。
   return new Promise((resolve) => {
-    const req = https.request(url, { headers: { Range: 'bytes=0-0' }, timeout: 20000 }, (res) => {
-      res.resume(); // 必须排掉 1 字节响应体, 否则 keep-alive socket 挂着不释放
-      const cr = String(res.headers['content-range'] || '');
-      const m = /^bytes\s+\d+-\d+\/(\d+)$/.exec(cr);
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      resolve(v);
+    };
+    const hardTimer = setTimeout(() => {
+      req.destroy();
+      finish(0);
+    }, 20000);
+    const req = https.request(url, { headers: { Range: 'bytes=0-0' }, timeout: 15000 }, (res) => {
+      const m = /^bytes\s+\d+-\d+\/(\d+)$/.exec(String(res.headers['content-range'] || ''));
       const cl = Number(res.headers['content-length'] || 0);
-      res.on('end', () => resolve(m ? Number(m[1]) : (res.statusCode === 200 ? cl : 0)));
+      const value = m ? Number(m[1]) : res.statusCode === 200 ? cl : 0;
+      res.destroy(); // 不等 body
+      req.destroy();
+      clearTimeout(hardTimer);
+      finish(value);
     });
-    req.on('error', () => resolve(0)).on('timeout', function () {
-      this.destroy();
-      resolve(0);
+    req.on('error', () => {
+      clearTimeout(hardTimer);
+      finish(0);
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      clearTimeout(hardTimer);
+      finish(0);
     });
     req.end();
   });
