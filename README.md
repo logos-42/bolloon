@@ -96,11 +96,11 @@ npm start
 不想在本机装 Node 与依赖, 可以直接跑容器 (多阶段镜像 · 非 root 用户 uid 1001 · 状态全部落在卷里):
 
 ```bash
-docker build -t bolloon-agent:0.5.1 .
+docker build -t bolloon-agent:local .
 docker run -d --name bolloon-agent \
   -p 127.0.0.1:54188:54188 \
   -v bolloon-data:/home/bolloon/.bolloon \
-  bolloon-agent:0.5.1 --web
+  bolloon-agent:local --web
 # → http://127.0.0.1:54188
 
 docker compose up -d                            # 同上的 compose 写法
@@ -167,9 +167,9 @@ Requires Node.js ≥ 18 and an LLM API key (`OPENAI_API_KEY` or `DEEPSEEK_API_KE
 Run it in a container instead (multi-stage image, non-root user, state in a volume):
 
 ```bash
-docker build -t bolloon-agent:0.5.1 .
+docker build -t bolloon-agent:local .
 docker run -d --name bolloon-agent -p 127.0.0.1:54188:54188 \
-  -v bolloon-data:/home/bolloon/.bolloon bolloon-agent:0.5.1 --web
+  -v bolloon-data:/home/bolloon/.bolloon bolloon-agent:local --web
 ```
 
 Copy `.env.example` to `.env.docker` (gitignored) for keys, or mount your `llm-config.json` read-only

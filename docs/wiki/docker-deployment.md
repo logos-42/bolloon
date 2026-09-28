@@ -93,13 +93,13 @@ Stage runtime (同一个基础镜像)
 
 ```bash
 # 构建 (约 50MB 基础镜像 + 依赖; 慢网下第一次会很久)
-docker build -t bolloon-agent:0.5.1 .
+docker build -t bolloon-agent:local .
 
 # 起 (Web UI) —— 卷用命名卷, 前端只发布到宿主机回环
 docker run -d --name bolloon-agent \
   -p 127.0.0.1:54188:54188 \
   -v bolloon-data:/home/bolloon/.bolloon \
-  bolloon-agent:0.5.1 --web
+  bolloon-agent:local --web
 
 # 或 compose
 docker compose up -d
@@ -112,7 +112,7 @@ docker compose run --rm bolloon-cli --version
 docker compose run --rm bolloon-cli doctor
 docker compose run --rm bolloon-cli model list
 # 纯 docker 也行:
-docker run --rm bolloon-agent:0.5.1 --version
+docker run --rm bolloon-agent:local --version
 ```
 
 **四种启动姿势**(入口都是 `dist/cli-entry.js`):
