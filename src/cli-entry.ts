@@ -267,12 +267,13 @@ function firstPositional(args: string[]): string | undefined {
   return undefined;
 }
 
-/** x402 子命令: fetch / balance */
+/** x402 子命令: fetch / balance / pending (卖方本机签名交付) */
 async function handleX402Command(x402Args: string[]): Promise<void> {
   if (x402Args.length === 0) {
     console.log(`${BOLD}用法:${RESET}`);
     console.log('  bolloon x402 fetch <url> [options]        # 自动处理 402 Payment Required');
     console.log('  bolloon x402 balance <address> [options]  # 查询钱包余额');
+    console.log('  bolloon x402 pending list|show|sign       # 卖方本机签名交付 (私钥不离开本机)');
     console.log('');
     console.log(`${BOLD}选项:${RESET}`);
     console.log('  --private-key <0x...>  自动支付钱包私钥，也可用 X402_PRIVATE_KEY');
@@ -287,6 +288,13 @@ async function handleX402Command(x402Args: string[]): Promise<void> {
 
   const sub = x402Args[0];
   const rest = x402Args.slice(1);
+
+  // 2026-09-28: 卖方本机签名交付 —— 待办队列 (list/show/sign/auth-init/key)
+  if (sub === 'pending') {
+    const { x402PendingCommand } = await import('./cli/x402-seller-command.js');
+    process.exit(await x402PendingCommand(rest));
+    return;
+  }
 
   if (sub === 'fetch') {
     const url = firstPositional(rest);

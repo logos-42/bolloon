@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-09-28 | feat | **x402 **卖方本机签名交付** 的本机半边 + 接口冻结 (`bolloon-x402-seller/1`): 私钥只在卖方本机 · 服务器只持卖方公钥 · 卖方不在线买方**只能**拿到 `202 已付款待签名`**: ① **红线与复用**: 签名一律走既有 `ed25519Sign`/`ed25519Verify` + 既有信封契约 (`itemId + contentHash + source + receiptHash`, `proof.{did,publicKeyHex,signature,payload}`), **没有第二套协议**; 服务器侧**没钉住卖方公钥就拒收** (`SELLER_KEY_NOT_PINNED`, 不是"先信一次"); 本机钥匙 DID ≠ 待办 `providerDid`、或本机内容哈希 ≠ 待办 `contentHash` ⇒ **拒签** (宁可不出货, 不发假信封)。② **交付三件**: `docs/wiki/x402-seller-signing.md` (新, 接口冻结: 数据流图/待办记录结构/认证/幂等/超时诚实口径/与 facilitator 两条路/CLI 用法) · `src/agents/x402/seller-signing.ts` (新, 核心) + `src/cli/x402-seller-command.ts` (新, `bolloon x402 pending list\|show\|sign\|auth-init\|key`) + `src/cli-entry.ts` 挂载 · `src/test/x402-seller-signing.test.ts` (新 **40/40**)。③ **认证**: 0600 共享密钥 + HMAC-SHA256 覆盖 `方法\n路径\n时间戳\nnonce\n体哈希` (= 查询串**不**参与签名), ±5min 窗口, nonce **一次性且落盘** (重启不刷新重放窗口), **先验签再记 nonce** (否则垃圾签名能把好 nonce 耗掉 = 拒绝服务); 未配密钥回 **403 SELLER_AUTH_NOT_CONFIGURED** (与"你签错了"分得开)。④ **真跑 (隔离 HOME + 本地端点, local-dev 夹具, 0 真钱/0 链上)**: `402 逐字不变` → 付款后 `202 + 取件 token` → 真 CLI `list/show/sign` 全 exit=0 且 `✅ ed25519Verify 通过` → 买方取回信封 → **`ed25519Verify(卖方公钥, canonical(payload), signature) = true`** (`verifyEnvelope → 🟡 self-attested`, 未过 `did-binding` 是如实结论) + 阴性对照 3/3 全拒。⑤ **真机撞出并修掉 3 件**: **钥匙定位抓错** (旧实现"扫 agent-keys 优先"在本机 8 个历史 agent 里抓到排序第一的 `agent-__.json` = 别人的钥匙; 改为先认 `identity.json`, 与 `routes-x402-info.ts` 同源, 加回归测试) · did 过滤必须真生效 · **取件通道设计错** (不能让买方"重放同一张 X-PAYMENT": local-dev 回执带 `settledAt` ⇒ 每次结算新 receipt ⇒ 永远取不回; 改为**只读取件 token** `GET /api/x402/info/:id/pending/:token`, 测试里有反面对照钉住)。⑥ **真域名回显**: `pay.bolloon.cn/api/health` **200** (`settlement.mode=none/onchain=false`) · 402 `accepts` 逐字 (amount **10000** = 0.01 USDC · network **base**) · `/api/x402/seller/pending` = **404** (卖方队列端点**本轮被拒未上机**) · `bolloon.cn` **200/22297B** · `efficode.bolloon.cn` **200/43192B**。**如实**: ECS 上机命令被用户拒 ⇒ 真实域名下 `list/show/sign` **未验证**; **未做真钱结算** (无 facilitator/无 txHash/无链上交易); local-dev 取件 token 不提供保密性 · 过期待办不自动清理 · 无退款/无密钥轮换 | 仓内: `docs/wiki/x402-seller-signing.md`(新) · `src/agents/x402/seller-signing.ts`(新) · `src/cli/x402-seller-command.ts`(新) · `src/cli-entry.ts` · `src/test/x402-seller-signing.test.ts`(新) · `docs/wiki/{index,log,current-status}.md`; 仓外(**未改动**): `/opt/bolloon-pay/app/**` |
 | 2026-09-28 | chore | **卖方端点 `pay.bolloon.cn` 上公网 (402 可达 · `settlement.mode=none` = 非链上) + 上架 item 的机器清单口径对齐**: ① **部署形态**: 服务 = `/opt/bolloon-pay/app/server.mjs`(**157 行最小 x402 付费信息路由**, 复用仓内 `dist/agents/x402/*.js`, 零 npm 依赖 —— **不是**完整 `bolloon --web`) · systemd `bolloon-pay.service`(User/Group=`bolloonpay` · enabled+active · 加固 `NoNewPrivileges` / `ProtectSystem=full` / `ProtectHome=read-only` / `PrivateTmp` / `MemoryMax=256M` / `ReadWritePaths=/opt/bolloon-pay`) · **只 LISTEN `127.0.0.1:54188`**(HOST/PORT 走 env; `ss` 实测 node pid `51431` 绑回环) —— 公网入口一律走 nginx 反代 · `/etc/nginx/sites-available/pay.bolloon.cn` 的 443 **只放行** `= /api/health` · `^~ /api/x402/` · `= /`, 其余 `location / { return 404; }` · 证书 `CN=pay.bolloon.cn`(SAN 只有该域名) 有效至 **2026-12-27** · DNS A → **120.26.82.43**(Cloudflare 灰云)。② **公开真验**(本机 `curl --noproxy '*' --resolve pay.bolloon.cn:443:120.26.82.43`): 不带付款头 `GET /api/x402/info/info_efficode_spec_pack` → **402**, `accepts` 原文 `scheme=exact · network=base · asset=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 · amount=50000`(=**0.05 USDC**)` · payTo=0xb4e9dCF79055A8232670ebb1c8c664Dff4E70066 · itemId=info_efficode_spec_pack` · `/meta` **200** · 不存在的 id → **404** · 站根外的路径 → **404** · `GET /api/health` → **200** 且 `settlement={mode:"none", onchain:false, detail:"未配置 facilitator 也未开启本机联调 → 只发 402, 无法校验/结算任何付款"}` ⇒ **非链上: 只发报价, 不校验也不结算任何付款** · **站不回归**: `bolloon.cn` **200 / 18076B** · `efficode.bolloon.cn` **200 / 39715B**。③ **修掉的真漂移 (item 口径对齐)**: item 正文里嵌的机器清单快照写的是旧值 **3287B / sha256 `bd7a9ed8…9145`**, 而线上实际是 **3716B / sha256 `70354d7d…b528b`** ⇒ 只改快照那两行 + `updatedAt` → **2026-09-28T10:34:37.000Z**, 重算 contentHash **`sha256:02c93704…51ed8` → `sha256:868f7ffe…3e24c7`**(算法 = `sha256Hex(content)`, 与仓内 `computeContentHash` 同), 同步到 `/opt/bolloon-pay/.bolloon/x402-info/info_efficode_spec_pack.json`(旧文件留 `.bak-20260928T103509Z` · 属主/权限仍 `bolloonpay:bolloonpay 644`); ECS 侧重算 **match=true** · 旧值 `grep -c` **0/0** · 公网 `/meta` 已报新 hash; 固定参数(`title` / `category=data` / `protocol=bolloon-x402-info/1` / 0.05 USDC · base / `payTo` / `provider.did` / item id) **一字未改**, 内嵌规范正文仍 = 仓内 `docs/wiki/efficode.md`(301 行 / 19247B / sha256 `995e03e4…5e15`) **逐字节相同**; 服务每请求真读文件(`getStoredInfo` → `fs.readFile`) ⇒ **未重启**。④ **还缺两个决定**: **facilitator**(`BOLLOON_X402_FACILITATOR` → `POST /verify` + `/settle`)与**卖方 DIAP 签名私钥**(**刻意不上服务器** ⇒ 即便付款校验通过也签不出信封, 服务如实回 **500**)。⑤ **回滚**: item 还原 `cp -p /opt/bolloon-pay/.bolloon/x402-info/info_efficode_spec_pack.json.bak-20260928T103509Z /opt/bolloon-pay/.bolloon/x402-info/info_efficode_spec_pack.json`; 关端点 `systemctl disable --now bolloon-pay` + `rm /etc/nginx/sites-enabled/pay.bolloon.cn && nginx -t && systemctl reload nginx`。**如实**: 真链上**成交**仍未打通(缺 facilitator · 无私钥) · npm **未发布** | 仓外: `/opt/bolloon-pay/**` · `/etc/nginx/sites-available/pay.bolloon.cn` · `/etc/systemd/system/bolloon-pay.service` · 本页 + `current-status.md` |
 | 2026-09-28 | chore | **ICP 备案通过 → 域名真开通 (bolloon.cn) + Efficode 论坛上真域名 (机器入口) + 把「备案期」写死的那两条过期红线换成白名单真门 + Docker 依赖缺陷修复 (`1d88f0c`)**: ① **域名开通**: `bolloon.cn` / `www.bolloon.cn` → A 记录 **120.26.82.43** (Cloudflare 灰云, zone id `9be73c239b5159d75f0e8c62d8b5f41a`) · `https://bolloon.cn/` = **200 / 18076B** · 证书 CN=bolloon.cn 有效至 **2026-12-23** · `http://` → **301** → https · 页脚 **浙ICP备2026081254号-1** (链 `https://beian.miit.gov.cn/`) · 公安联网备案**已提交待审** · 主站零回归。② **Efficode 论坛上真域名**: `https://efficode.bolloon.cn/` = **200 / 39715B** · `/.well-known/efficode.json` 与 `/efficode.json` 各 **3716B** 且**逐字节相同** (md5 两份均 `8c323819ea9495fa9be45f4a166c6d5a`) · `/changelog.json` **200 / 2123B** · `/README-DEPLOY.md` **404** (按设计) · 证书 Certificate Name `efficode.bolloon.cn` (certbot, 复用 bolloon.cn 账号) · 论坛页脚也加了备案号; **死链修复前后**: 上域名前公开清单 **3287B** / 页面 **38716B**, 且 `forum_url`/`page_url`/`changelog_url` 指向 **`http://120.26.82.43/` (死链)** 而 `hosting` 写着 `server-ip-only` / `domain_enabled=false` / reason 「ICP filing review in progress」 ⇒ 现为 **`addressing=domain-https` · `domain_enabled=true`** · 三份公开 JSON 里 `grep -c 120.26.82.43` **0/0/0**、`https://efficode.bolloon.cn` 计数 **3/3/1** · `noindex`/`robots` 不收录是**有意保留** (非待办)。③ **配置真相源同源 + 白名单真门**: 本地 `~/.hermes/scripts/efficode-forum/nginx/efficode.conf` 与线上 `/etc/nginx/sites-available/efficode` **sha256 同值 `5cba1878d4539c274e02b32dedf0cdbec7b7a9657274374134d0c94eaa36de9f`**; 部署脚本里两条**过期红线** (`REFUSE 443` / `REFUSE 域名 server_name`) 已改成**白名单真门** (证书只许 `/etc/letsencrypt/live/efficode.bolloon.cn/` · 开 443 必须 cert+key · `server_name` 只许 `efficode.bolloon.cn` 与 `120.26.82.43`, 其余 **REFUSE exit 3**), 「bolloon.cn 配置被改动」那条 sha256 门**保留未放宽** (**exit 4**); **本机 10 例变异测试全判对** · `bash -n` 过 · 部署**幂等** (第二次跑打印「已经是最新…跳过上传与 reload」) · 主站配置 sha `943272b0f7c9f868e2eb37d857e9ee331a2bce6b911d4e699415ab0821b41de6` 部署前后一致 · 监听端口仍只有 **22/53/80/443**。④ **两份口径手册修正** (不在仓内): README **9753→11793B** · README-DEPLOY **10808→13265B**, 「只监听 80 / 只认 IP / 备案期不接域名」**0 处**残留。⑤ **内容源修正** (不在仓内): `content.py`/`build.py` 的 `forum_url`/`page_url`/`changelog_url` 改 https 域名 + `hosting` 三字段改真值 + 新增 `icp` 字段 + 页脚备案号 + `spec_note` 改成「已在仓内 `docs/wiki/efficode.md`, 工作规范**非已发布标准**」; 构建产物 `index.html` **39715B** / gz **12452B**。⑥ **Docker 依赖缺陷修复** (已提交推送 **`1d88f0c`**, `package.json` + `package-lock.json` 新增 **`undici ^7.30.0`**): `src/llm/pi-ai.ts:4` 真 `import undici` 却**不是直接依赖** (靠传递提升) ⇒ 容器 `npm ci --omit=dev` 装不到 ⇒ 启动即 `ERR_MODULE_NOT_FOUND`; 修后真验 build **exit=0 (567s)** · 镜像内 `/app/node_modules/undici` = **7.30.0** · 容器 run **exit=0** · 第 **65 秒** HTTP **200** · HEALTHCHECK 最终 **healthy** (探针原文 `exit=0 healthy /api/health=200 ok=true /= 200`; 启动期几次 `exit=1 fetch failed` 是探针早于服务) · 非 root **uid=1001 / bolloon** · **npm 未发布** (0.5.2 仍是线上最新版)。**如实两条**: 裸 IP 走 HTTP (`http://120.26.82.43/`) 现在 **404** (certbot 改写后只服务域名: 域名 301 跳 https、其它 Host 404), 按现状保留未改; 真链上「卖方发起」仍缺 **facilitator** (`BOLLOON_X402_FACILITATOR` → `POST /verify` + `/settle`), 卖方端点部署到 ECS (`pay.bolloon.cn`) **仍在进行中** | `~/.hermes/scripts/efficode-forum/{nginx/efficode.conf,README.md,README-DEPLOY.md}` · `~/.hermes/scripts/efficode-forum-deploy.sh` · `package.json` · `package-lock.json` · `src/llm/pi-ai.ts` · `docs/wiki/efficode.md` (301 行 / 19247B) · 本页 |
 | 2026-09-28 | fix | **收掉站点门最后一条常驻红:「钱包签名」的真 0 与裸 0 分开判 —— 是门错了, 不是站点谎报**: 门判据原写「数字且 ≠ 0」, 把「审计账 24h 窗口内真的 0 条」也判红。取证链: 本机 `~/.bolloon/wallet-signatures.jsonl` 真存在(**11 行, 最后一笔在 4 天前** ⇒ 窗口内本就 0 条) · 导出侧真读它 (`src/agents/network-pulse.ts` 的 `source:'signature-audit'`, 单测兜着「账 3 条(2 条在窗口内) → 计数 2」) · 真页面那一格 = 「0 钱包签名 **24h 签名审计**」且 `<i data-pulse-scope-tag="signatures" title="本机签名审计账 … 24h 内条数">` 真在 ⇒ 0 是量出来的结论。**判定改成看三元组**(更严不是更宽): 过 = (真源集合 ∧ 值是数字 ∧ **自己的口径标记非空**) ∨ (source==='none' ∧ 值==='未接入'); 裸 0 / 有源却无标记 / 无源却印数字 一律红。**另加规则自证判别力**: 同一判定函数拿人造输入跑, 三种坏形状必须假、两种好形状必须真。**同时修掉同族的「读太早」假红**: 三处等**真网络**hydrate 的等待预算 12s/6s → 50s (实测 CDN 冷启动 hydrate 要 7~10s, 旧预算卡线 ⇒ 整段落在 loading 态, 报出 dom=—/rows=0/口径行空 一片假红; 快照本身取一次仅 0.8s, 网络无问题), 断言未动; 现场还清了 3 台上一轮被中断的验收 Chrome (`kill-verify-chrome.sh` 在 skill 目录里, 不在仓库 `scripts/`)。**结果: `verify-site.mjs` 440 passed / 0 failed / 0 skipped** | `bolloon-UI/scripts/verify-site.mjs` · 本页 |
@@ -5451,3 +5452,162 @@ ssh -i ~/.hermes/secrets/aliyun-ecs.key root@120.26.82.43 'systemctl disable --n
 5. **未做端到端买方验收** —— 所有"真验"都是卖方**报价面**的探测; 没有真钱包、没有真测试网/主网 tx。
 6. **本仓本轮只动 wiki 两个文件**(`docs/wiki/log.md` · `docs/wiki/current-status.md`); `/opt/bolloon-pay/**`、`/etc/nginx/sites-available/pay.bolloon.cn`、`/etc/systemd/system/bolloon-pay.service` 全在**仓外**, 未登记进 `manifests/raw_sources.csv`(非本仓资产)。
    `~/.hermes/scripts/efficode-forum-deploy.sh` 与 `/root/.secrets/cf.ini` **本轮未动**。
+
+---
+
+## [2026-09-28] feat | x402 **卖方本机签名交付** (本机半边 + 接口冻结): 私钥不出本机 · 服务器只持公钥 · 卖方不在线买方只有「已付款待签名」
+
+**要解决的问题**: 上一轮把 `pay.bolloon.cn` 的 402 报价面上了公网, 但**付款之后没人能签信封** ——
+服务如实回 500, 因为签名私钥**刻意没上服务器**。这一轮把"买方→ECS→卖方本机→买方"这半边补上,
+并把接口**冻结成文档**。
+
+### 一、交付三件
+
+| 交付 | 落点 | 状态 |
+| --- | --- | --- |
+| ① 接口冻结文档 | `docs/wiki/x402-seller-signing.md` (新, **392 行**) | ✅ 含: 数据流图 · 待办记录结构 · 认证 · 幂等 · 超时诚实口径 · 与 facilitator 的两条路 · CLI 用法与真输出 · 未做清单 |
+| ② 本机 CLI | `bolloon x402 pending list\|show\|sign\|auth-init\|key` (`src/agents/x402/seller-signing.ts` 新 786 行 + `src/cli/x402-seller-command.ts` 新 269 行 + `src/cli-entry.ts` 挂载) | ✅ 真跑 (下面 §三 是原文输出) |
+| ③ 验证 + 提交 | `src/test/x402-seller-signing.test.ts` (新, **40/40**) + `npx tsc --noEmit` 0 错 + 四门 OK | ✅ 见 §五 |
+
+**没有新造协议**: 签名 = 既有 `ed25519Sign`; 验签 = 既有 `ed25519Verify`; 被签内容 = 既有契约
+(`itemId + contentHash + source + receiptHash`); 信封 = 既有 `proof.{did,publicKeyHex,signature,payload}`;
+付款校验 = 既有 `checkAndSettlePayment`; 402 的 `accepts` 一字未动。本轮**只加了**"待办队列"与"回传/取件通道"。
+
+### 二、接口冻结要点 (完整版在文档里)
+
+```text
+买方侧 (无认证)
+  GET /api/x402/info/:id                     无付款头 → 402 + accepts (逐字不变)
+                                             有付款头 → 200 信封 / 202 已付款待签名
+  GET /api/x402/info/:id/pending/:token      取件 (只读, 不重跑结算): 200 / 202 / 410 / 404
+卖方侧 (HMAC 认证, 只卖给卖方本机)
+  GET  /api/x402/seller/pending              待办列表
+  GET  /api/x402/seller/pending/:id          单条 (含付款凭据哈希/txHash/付款方)
+  POST /api/x402/seller/pending/:id/envelope 回传本机签好的信封
+```
+
+- **认证**: `~/.bolloon/x402-seller-auth.json` (**0600**, 32 字节随机 base64) + 四个头
+  `x-bolloon-seller-{key,ts,nonce,sig}`; 被签规范串 = `METHOD\nPATH\nts\nnonce\nsha256hex(body)`
+  (**查询串不参与签名** —— `handleSellerApi` 与 `signSellerRequest` 两处都只签 pathname)。
+  服务端三道门: 签名 (`timingSafeEqual`) → 时间戳 (±5min) → **一次性 nonce**;
+  **先验签再记 nonce**(反过来攻击者能用垃圾签名把好 nonce 耗掉 = 拒绝服务); nonce 台账**落盘**
+  (`x402-seller-pending/.nonces.json` 0600), **重启不刷新重放窗口**。未配密钥 → **403
+  `SELLER_AUTH_NOT_CONFIGURED`**(与"你签错了"分开, 不许伪装成空列表)。
+- **幂等键 = `receiptHash`**(`sha256:` + 结算回执原文哈希): 同一 receipt 再落一次 → 同一条待办
+  (`created:false`); 已签的待办**不许被另一个信封改写**(`PENDING_ALREADY_SIGNED`)。
+- **服务器侧钉公钥是硬门**: 没钉住 → `503 SELLER_KEY_NOT_PINNED` **拒收**(不是"先信一次");
+  信封自带公钥 ≠ 钉住的公钥 → `400 SELLER_KEY_MISMATCH`; 载荷四项 (itemId/providerDid/contentHash/
+  receiptHash) 与待办逐字对不上 → `400 PAYLOAD_MISMATCH`; 内容本体哈希 ≠ `item.contentHash` →
+  `400 CONTENT_HASH_MISMATCH`。收下时才存信封 + 待办置 `signed`。
+
+### 三、真跑证据 (隔离 HOME + 本地端点 + local-dev 夹具, **0 真钱 / 0 链上交易**)
+
+```text
+① /api/health          HTTP 200 · settlement=local-dev (onchain=False) · queueConfigured=True
+② 未付款 → 402         error=需要 x402 微支付 · accepts 与既有 buildPaymentRequired() 输出逐字同
+③ 买方付款 → 202       status=paid_awaiting_signature · pendingId=pnd_53a1ff…
+                       retrieval.path=/api/x402/info/info_stage_probe/pending/pnd_53a1ff56256995df
+   再取一次 (未签)      HTTP 202 (卖方不在线时就停在这里 —— 拿不到信封, 也不是失败)
+④ bolloon x402 pending list   exit=0
+   卖方待办 (http://127.0.0.1:54199) — 共 3 条, 待签名 3 条
+     pnd_53a1ff56256995df  [awaiting_signature]  info_stage_probe  0.01 USDC@base  …
+         内容哈希 sha256:9f2e0ef8… · 付款凭据哈希 sha256:8a8509e9… · mode=local-dev
+⑤ bolloon x402 pending show   exit=0
+   待办 pnd_53a1ff… [awaiting_signature] · 卖方 DID did:key:z6MkjpvG9Zu3… · 内容哈希 sha256:9f2e0ef8…
+   来源声明 kind=self refs=0 · 价格 0.01 USDC@base → 0xb4e9dC…0066 · 付款凭据哈希 sha256:8a8509e9… ← 签名会绑定它
+⑥ bolloon x402 pending sign   exit=0
+   签名自检: ✅ ed25519Verify 通过
+     签名公钥    4fd6d7d974be905b2cea6234d76b28384a4024fc317de77a6a0de82df15593af
+     钥匙来源    identity.json (DID did:key:z6MkjpvG9Zu3DSYpE72LCApMVKYkZa4WMNGyPRBVc8acn83g)
+   ✅ 已回传并收下 — envelopeHash=sha256:1131700ab513ee3368cf95bd558d7ed97c5df21e8545de200213aa74183f68c3
+⑦ 买方取件 → 200 + 信封
+   ed25519Verify(卖方公钥, canonical(proof.payload), proof.signature) = true
+   proof.publicKeyHex == 本机卖方公钥 = true · proof.did = did:key:z6MkjpvG9Zu3…n83g
+   verifyEnvelope → 🟡 self-attested (签名与内容对得上, 但身份/支付未上链核实) · 未过: did-binding
+   checks: protocol=true · content-integrity=true · provider-signature=true ·
+           signed-payload-consistency=true · payment-binding=true · did-binding=false · source-provenance=true
+   阴性对照① 内容 +1 空格  → content-integrity=false · trust=unverified
+   阴性对照② 载荷改 receiptHash → ed25519Verify=false
+   阴性对照③ 换成别的公钥   → ed25519Verify=false
+```
+
+**验签通过是买方侧独立算的** (拿信封 + 卖方公钥在**服务器之外**跑 `ed25519Verify`), 不是卖方自报。
+
+### 四、真机撞出来的三件事 (都改了, 都留了回归)
+
+1. **钥匙定位抓错钥匙** —— `bolloon x402 pending key` 打出的是 `did:key:z6MkuArXg…`(公钥 `daab6be9…`),
+   而本机卖方身份是 `did:key:z6MkjpvG9Zu3…`(公钥 `4fd6d7d9…`)。根因: `resolveSellerKey` 不指定 agent 时
+   **先扫 `agent-keys/*.json`**, 本机那目录里有 **8 个历史测试 agent**, 按文件名排序第一是 `agent-__.json`
+   ⇒ 抓到别人的钥匙。修: 默认**先认 `~/.bolloon/identity.json`**(与 `routes-x402-info.ts` 的
+   `loadProviderKeypair` 同源 —— "这份内容是谁发布的"), agent-keys 只作兜底, 且传了 `did` 就必须匹配。
+   加回归测试 `agent-keys/ 里排序第一是别人的钥匙时, 默认仍必须认 identity.json`。
+2. **did 过滤必须真生效** —— `signPending` 里 `keypair.did ≠ pending.providerDid` ⇒ 拒签 (用错钥匙不许签)。
+3. **取件通道设计错 (最要紧的一条)** —— 原设计让买方"签好后带**同一张** X-PAYMENT 重试原 URL 取回"。
+   真跑打脸: `checkAndSettlePayment` **每次都重新结算**, 而回执内含 `settledAt` (`new Date()`) ⇒
+   重放同一张凭据得到的是**另一个** `receiptHash` ⇒ **又落一条新待办, 永远取不回刚才那个信封**;
+   facilitator 模式下重放还会被判重复结算。改: 加**只读取件通道**
+   `GET /api/x402/info/:id/pending/:token` (`token = pendingId`, 202 响应里给买方), **不重跑结算**;
+   测试里有**反面对照**专证"重放 X-PAYMENT 会得到新 receipt"这条真行为。
+
+### 五、验证 (真输出)
+
+```text
+$ npx vitest run src/test/x402-seller-signing.test.ts
+ ✓ src/test/x402-seller-signing.test.ts (40 tests) 6.55s
+ Test Files  1 passed (1)      Tests  40 passed (40)
+
+$ npx tsc --noEmit
+ (无输出) = 0 错
+
+$ python3 scripts/wiki_check.py              → OK (markdown 59 · frontmatter 55 · index links 58)   EXIT=0
+$ python3 scripts/raw_manifest_check.py      → OK (manifest v2 · PROJECT_RAW_ROOT 未设, 跳过存在性)    EXIT=0
+$ python3 scripts/wiki_lint.py --strict=v2   → OK (markdown 59 · schema v2)                        EXIT=0
+$ python3 scripts/supersede_check.py         → OK (pages 55 · supersedes 2 · contradicts 0)         EXIT=0
+```
+
+40 条里含**真 `npx tsx src/cli-entry.ts` 子进程**(不是函数直调)与真 HTTP 服务; 覆盖: 402 逐字 ·
+四类认证拒绝 (无头/未知 keyId/时间戳偏移/签名被改) · nonce 重放 · 0600 权限 · 幂等 (同 receipt 同待办) ·
+本机先拒签 (内容被改 / DID 不符 / 本机没内容) · 服务器四道门 (未钉公钥 503 / 别人的钥匙 400 /
+载荷被改 / 已签不许改写) · 队列文件里**不含私钥与共享密钥** (测试专断)。
+
+### 六、真实域名回显 (本机 `curl --noproxy '*' --resolve <host>:443:120.26.82.43`)
+
+```text
+pay.bolloon.cn/api/health                    HTTP 200
+  {status:ok, version:0.3.2-min, itemCount:1,
+   settlement:{mode:"none", onchain:false, …}}
+pay.bolloon.cn/api/x402/info/info_efficode_spec_pack   HTTP 402 (不带付款头)
+  error = 需要 x402 微支付
+  accepts = [{scheme:exact, network:base, asset:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913,
+              amount:10000, payTo:0xb4e9dCF79055A8232670ebb1c8c664Dff4E70066,
+              maxTimeoutSeconds:60, extra:{name:USDC, itemId:info_efficode_spec_pack,
+              category:data, providerDid:did:key:z6MkjpvG9Zu3…n83g}}]
+  头 X-PAYMENT-REQUIRED = 同一份 accepts JSON
+pay.bolloon.cn/api/x402/seller/pending       HTTP 404 {"error":"not found"}   ← 卖方队列端点**未部署**
+bolloon.cn                                   HTTP 200 / 22297B
+efficode.bolloon.cn                          HTTP 200 / 43192B
+```
+
+**两点如实**:
+
+- `/api/x402/seller/pending` = **404** ⇒ 线上跑的还是**上一轮**那份 server.mjs, 卖方队列端点
+  **没上机**。因此**真实域名下的 `list/show/sign` 完全没验证过** —— 不是"验过了", 是**没做**。
+  原因: 本轮的上机步骤 (备份 + 上传 + 装 0600 密钥 + 装公钥 + 重启) 被用户**拒绝执行**, 未重试。
+- `bolloon.cn` / `efficode.bolloon.cn` 的字节数与上一轮记的 **18076B / 39715B 不同** (现为
+  22297B / 43192B): 两站此后被他线更新过内容, **不是本轮造成的回归** (本轮没碰任何站点文件与 nginx 配置;
+  402 与 health 的形态也证明线上服务是上一轮那份)。
+
+### 七、没做到 / 未验证 / 残余风险 (如实)
+
+1. **ECS 未部署**: 卖方队列端点 + 取件通道仍在**本机验证过的形态**, 线上没有 ⇒ 真实域名下
+   `bolloon x402 pending list/show/sign` **未验证**; 真实域名下的 402 仍是"付款也拿不到信封"(旧行为)。
+2. **没做真钱结算**: 全程 `local-dev` 联调凭据 (需服务端显式 `allowLocalDev`) —— **没有 facilitator 调用、
+   没有 txHash、没有广播任何链上交易**; `/api/health` 仍如实 `settlement.mode=none / onchain=false`。
+3. **卖方不在线 = 买方只有 202**: 这是设计, 不是缺陷; 但也**没有退款通道** —— 过期的待办 (`410`) 之后
+   钱已经动过, 退款属结算层, 本链路不含。
+4. **取件 token 是不记名 token** (谁拿到谁能取内容); `local-dev` 模式下买方本就能自行推导 receipt ⇒
+   token **不提供保密性**(联调模式不是安全边界)。生产用路 A/B 时应再加"只认付款方地址"的绑定 (未实现)。
+5. **未做 DID 解析** ⇒ 买方侧只能认定 `self-attested` (签名与内容对得上, 身份/支付未验), 不许读成"已验证卖方身份"。
+6. **过期待办不自动清理 · 无离线告警推送 · 单密钥无轮换协议 · 未做成镜像** (server.mjs 与两个配置文件仍只存在于机器上)。
+7. 本轮**没有跑全量 vitest** (按纪律只跑聚焦门); 改动面为**新增文件 + `src/cli-entry.ts` 一处挂载**,
+   未触碰其它模块既有行为。

@@ -46,6 +46,7 @@
 | [m1-m4-closure.md](./m1-m4-closure.md) | v1 | **M1–M4 收口验收口径**(冻结): 四个唯一事实来源 + 四条不可违反规则 + 5 个用户态口径 + 跨里程碑验收矩阵 + 失败→出口映射 |
 | [product-core-focus.md](./product-core-focus.md) | v1 | **产品核心收缩**: 一句话核心承诺 + 五步闭环 + 三问过滤器 + 冻结清单(不改代码) + M1-M4 路线图 + M1 真实差距 |
 | [facilitator-paths.md](./facilitator-paths.md) | v1 | facilitator 协议路径本地真跑 (verify/settle 四结果 + txHash 有无 + 报价自洽 + 凭据绑定; 真链部分明确未验) |
+| [x402-seller-signing.md](./x402-seller-signing.md) | v2 | **x402 卖方本机签名交付 (接口冻结)**: 私钥不出本机 (服务器只持卖方公钥, 没钉住就拒收) + 数据流图 (买方→ECS→待办队列→本机拉取→确认→本机 ed25519Sign→回传→买方离线验签) + 待办记录结构/幂等键 `receiptHash` + 认证 (0600 共享密钥 + HMAC(方法/路径/ts/nonce/体哈希), 先验签再记 nonce 防 DoS, nonce 台账落盘 ⇒ 重启不刷新重放窗口) + **取件走只读 token (不重放 X-PAYMENT)** + 超时口径 (卖方不在线买方只有 `202 已付款待签名`, 过期 410, 未配密钥 403) + 与 facilitator 关系 (路 A 自建 relayer / 路 B 买方直付+txHash 链上校验, 都不引入平台) + CLI `bolloon x402 pending list\|show\|sign` 真跑输出 + 39/39 聚焦测试 | current |
 | [milestone-dispute-responsibility.md](./milestone-dispute-responsibility.md) | v1 | 里程碑结算 (PartiallySettled) + 争议 (disputed/refund + 三条禁令 + 证据绑定) + 责任候选 + 交易审计 API |
 | [payment-recovery-protocol.md](./payment-recovery-protocol.md) | v1 | 支付中断恢复 (5 个 SIGKILL 时点 + 决策纯函数 + 先对账再重试 + 0 重复付款/0 错误 verified 验收) |
 | [executable-resource-protocol.md](./executable-resource-protocol.md) | v1 | 可执行资源协议 (输入/输出 Schema + 可执行入口 + 工具清单 + 验真/证据字段 + 能力边界 + 安装保真链 + Harness 执行) |
