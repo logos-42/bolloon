@@ -48,7 +48,7 @@ export function appendInternalRunLog(content: string, tool?: string): void {
  * 缺省 (未声明) 一律当"用户可见", 保持既有行为不变。
  */
 export function isInternalRunLog(e: { type?: string; internal?: boolean } | null | undefined): boolean {
-  return false; // MUTATION
+  return !!e && e.type === 'status' && e.internal === true;
 }
 
 /** 内部运行日志落盘时的那一行 (原文一字不改, 只加可 grep 的前缀与来源工具) */
