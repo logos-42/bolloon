@@ -29,7 +29,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: bolloon-agent:0.5.1
+    # 不写死版本号: 默认打本地 tag, 要固定版本就 `BOLLOON_IMAGE_TAG=0.5.2 docker compose up`
+    image: bolloon-agent:${BOLLOON_IMAGE_TAG:-local}
     container_name: bolloon-agent
     # 让 tini 当 PID 1: 入口会 spawn 一个子 node 进程 (cli-entry.js → dist/index.js),
     # 没有 init 的话 `docker stop` 的 SIGTERM 到不了子进程, 只剩 10s 后 SIGKILL。
@@ -116,7 +117,8 @@ services:
   # --cli 是交互 TUI, 所以要 tty + stdin_open (docker compose run 默认已给)。
   bolloon-cli:
     profiles: ["cli"]
-    image: bolloon-agent:0.5.1
+    # 不写死版本号: 默认打本地 tag, 要固定版本就 `BOLLOON_IMAGE_TAG=0.5.2 docker compose up`
+    image: bolloon-agent:${BOLLOON_IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: Dockerfile
