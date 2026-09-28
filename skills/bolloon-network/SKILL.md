@@ -347,7 +347,7 @@ bolloon --version json                     # 本机装的是哪一版
 npm view @bolloon/bolloon-agent version    # registry 上最新是哪一版
 ```
 
-判据 (在 `0.5.0` 上实测, 2026-09-26): `npm pack @bolloon/bolloon-agent@0.5.0` 解包对表 →
+判据 (在 `0.5.1` 上实测, 2026-09-28): `npm pack @bolloon/bolloon-agent@0.5.1` 解包对表 →
 `dist/cli-entry.js` 的 `TASK_SUBCOMMANDS` = **18 条 (含 `announce` / `trail` / `post` / `group`)**,
 `dist/cli/commands/tasks.js` 里 `case 'group'` 在 ⇒ **这四条真派发**, 不再被自由文本路径吞。
 **发版时必须把新旧两版都重跑一遍这个对表**, 结论写回本节 —— 本节就是"发行版边界"的唯一出处。
