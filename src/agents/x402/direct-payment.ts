@@ -20,6 +20,13 @@
  *   ⑤ **两条不同 RPC** 都说 ok 且事实一致 (blockNumber/to/from/value 全一致) → 才算 verified
  *      任何一条 RPC 说"没这回事"→ 不一致 = 不确定 = **不通过** (fail-closed)
  *   ⑥ 同一 txHash 只能交付一次 (幂等台账, 落盘 0600); 同一个 txHash 拿去换**另一条**资源 → 拒
+ *   ⑦ **订单标识 (EIP-3009 nonce, 约定 v1 标签 "BOL1")** —— 普通转账在链上**没有"买的是哪件"的痕迹**,
+ *      所以如果这笔交易的日志里还有 `AuthorizationUsed(payer, nonce)` 且 nonce 按 v1 编了
+ *      "本店 item + orderSeq"的哈希, 就**在同一笔交易里自证**了订单身份 (见 order-identity.ts)。
+ *      没有该事件 / 哈希对不上本店 item → **如实降级为「直转(无订单标识)」**,
+ *      **绝不假装自证** (降级不影响交付, 影响的是"这笔付款对应哪件东西"能不能被链上证明)。
+ *      ★ 同一 (payer, nonce) 在 EIP-3009 里只能用一次 (链上 authorizationState 置位, 再用必 revert);
+ *        台账另加一道 `NONCE_ALREADY_USED`: 同一个 (payer, nonce) 出现在**另一笔 txHash** 上 → 拒。
  *
  * 诚实边界 (不许美化):
  *   · 本模式**不退不追**: 买方发错金额/发错地址, 服务器只会拒 (钱在链上, 谁也拿不回来)。
@@ -32,10 +39,26 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { buildPaymentRequired } from './paid-info-store.js';
+import { buildPaymentRequired, listInfo } from './paid-info-store.js';
 import { resolvePaidDelivery, paidInfoRetrievePath } from './seller-signing.js';
 // 复用既有哈希实现 (paid-info-protocol.js 已在服务器上, 且只依赖 node:crypto —— 不拖 ethers)
 import { sha256Hex, type PaidInfoItem } from './paid-info-protocol.js';
+// ★ 订单标识 (约定 v1, 标签 BOL1): 纯 TS 零依赖 (自带 keccak-256), 服务器上没有 node_modules 也能跑
+import {
+  orderIdentityFromLogs, computeOrderNonce, decodeOrderNonce,
+  ORDER_IDENTITY_PROTOCOL, ORDER_NONCE_TAG, ORDER_NONCE_TAG_ASCII,
+  EIP3009_AUTHORIZATION_USED_TOPIC0, EIP3009_TRANSFER_WITH_AUTHORIZATION_SELECTOR,
+  type OrderIdentity,
+} from './order-identity.js';
+
+// 让"卖方核验这一条路"只需 import 一个模块 (订单标识的实现留在 order-identity.ts, 单一实现)
+export {
+  ORDER_IDENTITY_PROTOCOL, ORDER_NONCE_TAG, ORDER_NONCE_TAG_ASCII,
+  EIP3009_AUTHORIZATION_USED_TOPIC0, EIP3009_TRANSFER_WITH_AUTHORIZATION_SELECTOR,
+  computeOrderNonce, decodeOrderNonce, orderIdentityFromLogs,
+};
+export type { OrderIdentity };
+
 
 export const DIRECT_PROTOCOL = 'bolloon-x402-direct/1';
 /** 幂等台账 (txHash → 交付事实), 落盘 0600 */
@@ -148,6 +171,8 @@ export interface DirectRpcCheck {
   from?: string;
   to?: string;
   value?: string;
+  /** ★ 订单标识 (约定 v1): 从**同一条交易**的日志里读出 (没有 AuthorizationUsed 就是降级那条) */
+  orderIdentity?: OrderIdentity;
 }
 
 export interface DirectVerifyInput {
@@ -162,9 +187,15 @@ export interface DirectVerifyInput {
   minAmount: string;
   minConfirmations: number;
   rpcUrls: string[];
+  /**
+   * ★ 本店真实 item 的 id 列表 —— 订单标识自证要拿它**复算** nonce 里的哈希。
+   *   缺省时调用方应传 `[item.id]`; 传全量可以额外区分"买的是本店别的 item"与"完全对不上"。
+   */
+  orderItemIds?: string[];
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }
+
 
 /** 取地址最后 20 字节 (去掉 0x + 32 字节 topic 的左填充) */
 function topicToAddress(topic: string): string {
@@ -202,16 +233,24 @@ export async function checkOneRpc(input: DirectVerifyInput, rpcUrl: string): Pro
   const blockNumber = Number(BigInt(receipt.blockNumber));
   const latestBlock = Number(BigInt(latestHex));
   const confirmations = latestBlock - blockNumber + 1;
+  const logs: any[] = Array.isArray(receipt.logs) ? receipt.logs : [];
+
+  // ★ 订单标识 (约定 v1): 只读日志。**先算出来再判交付** —— 这样连"付款没到/事件对不上"的
+  //   响应里也能给出「这笔交易声明的订单身份是什么」, 排查时不用另开一轮。
+  //   payerHint 留空: 此时还不知道 Transfer.from, 事件里的 authorizer 才是权威付款方。
+  const orderIdentity = orderIdentityFromLogs(logs, {
+    itemIds: input.orderItemIds || [],
+    asset: String(input.asset),
+  });
 
   if (Number(BigInt(receipt.status ?? '0x0')) !== 1) {
-    return { ...base, status: 'reverted', blockNumber, confirmations, latestBlock, detail: `receipt.status=0 (交易回滚) —— 钱没动` };
+    return { ...base, status: 'reverted', blockNumber, confirmations, latestBlock, orderIdentity, detail: `receipt.status=0 (交易回滚) —— 钱没动` };
   }
 
   // 找 USDC 合约上、to == payTo、value >= 要求的 Transfer
   const wantAsset = String(input.asset).toLowerCase();
   const wantTo = String(input.to).toLowerCase();
   const minAmount = BigInt(input.minAmount);
-  const logs: any[] = Array.isArray(receipt.logs) ? receipt.logs : [];
   let transferLogs = 0;
   let matched: { from: string; to: string; value: bigint } | null = null;
   for (const l of logs) {
@@ -229,21 +268,24 @@ export async function checkOneRpc(input: DirectVerifyInput, rpcUrl: string): Pro
 
   if (!matched) {
     return {
-      ...base, status: 'event_mismatch', blockNumber, confirmations, latestBlock,
+      ...base, status: 'event_mismatch', blockNumber, confirmations, latestBlock, orderIdentity,
       detail: `receipt 里 ${transferLogs} 条 ${label} USDC Transfer, 没有一条 to=${input.to} 且 value>=${input.minAmount} 的 —— 不是这笔付款`,
     };
   }
 
+  // 付款方已知 ⇒ 用 Transfer.from 给订单标识补上 payer (事件里 authorizer 已是权威值, 这里只是兜底)
+  const withPayer = orderIdentity.payer ? orderIdentity : { ...orderIdentity, payer: matched.from };
+
   const status: DirectRpcStatus = confirmations >= 12 ? 'finalized' : 'confirmed';
   if (confirmations < input.minConfirmations) {
     return {
-      ...base, status: 'pending', blockNumber, confirmations, latestBlock,
+      ...base, status: 'pending', blockNumber, confirmations, latestBlock, orderIdentity: withPayer,
       from: matched.from, to: matched.to, value: matched.value.toString(),
       detail: `付款事实成立但确认数 ${confirmations} < ${input.minConfirmations} —— 还没到可以判交付的程度`,
     };
   }
   return {
-    rpc: label, ok: true, status, blockNumber, confirmations, latestBlock,
+    rpc: label, ok: true, status, blockNumber, confirmations, latestBlock, orderIdentity: withPayer,
     from: matched.from, to: matched.to, value: matched.value.toString(),
     detail: `receipt.status=1, USDC Transfer to=${matched.to} value=${matched.value} 确认数 ${confirmations}`,
   };
@@ -273,6 +315,10 @@ export interface DirectVerifyVerdict {
   amount?: string;
   blockNumber?: number;
   confirmations?: number;
+  /** ★ 订单标识 (约定 v1): 两条 RPC 一致时的那个。没带订单标识就是降级那条 */
+  orderIdentity?: OrderIdentity;
+  /** 两条 RPC 看到的 nonce 必须一致 (不一致 = 不敢判) */
+  orderNonce?: string | null;
 }
 
 const TXHASH_RE = /^0x[0-9a-fA-F]{64}$/;
@@ -302,12 +348,18 @@ export async function verifyDirectTransfer(input: Omit<DirectVerifyInput, 'minCo
   const checks = await Promise.all(rpcUrls.map((u) => checkOneRpc({ ...input, minConfirmations, rpcUrls } as DirectVerifyInput, u)));
   const ok = checks.filter((c) => c.ok);
   const negative = checks.filter((c) => !c.ok && (c.status === 'reverted' || c.status === 'event_mismatch' || c.status === 'chain_mismatch'));
-  const verdict = { ...shell, rpcChecks: checks };
+  // ★ 订单标识也从各条 RPC 的核查结果上带出来 (任一分支都带上; 没有则 undefined) ——
+  //   这样"付款没到/事件对不上"的 402 里也能给出"这笔交易声明的订单身份", 排查不用另开一轮
+  const verdict = { ...shell, rpcChecks: checks, orderIdentity: checks.find((c) => c.orderIdentity)?.orderIdentity };
 
-  // ① 两条以上都 ok → 还要事实**完全一致** (只比 blockNumber/from/to/value)
+  // ① 两条以上都 ok → 还要事实**完全一致** (比 blockNumber/from/to/value + ★ 订单 nonce)
   if (ok.length >= DIRECT_MIN_RPCS) {
     const first = ok[0];
-    const disagree = ok.find((c) => c.blockNumber !== first.blockNumber || c.from !== first.from || c.to !== first.to || c.value !== first.value);
+    const disagree = ok.find((c) =>
+      c.blockNumber !== first.blockNumber || c.from !== first.from || c.to !== first.to || c.value !== first.value
+      // ★ 订单标识也要一致: 一条 RPC 看到 AuthorizationUsed 另一条没看到 ⇒ 不确定, 不许挑好的信
+      || (c.orderIdentity?.nonce || null) !== (first.orderIdentity?.nonce || null)
+      || (c.orderIdentity?.mode || null) !== (first.orderIdentity?.mode || null));
     if (disagree) {
       return {
         ...verdict, ok: false, status: 'rpc_disagreement',
@@ -316,9 +368,10 @@ export async function verifyDirectTransfer(input: Omit<DirectVerifyInput, 'minCo
     }
     return {
       ...verdict, ok: true, status: first.status === 'finalized' ? 'finalized' : 'confirmed',
-      reason: `两条 RPC 一致: receipt.status=1, USDC Transfer to=${first.to} value=${first.value}, 确认数 ${first.confirmations} >= ${minConfirmations}`,
+      reason: `两条 RPC 一致: receipt.status=1, USDC Transfer to=${first.to} value=${first.value}, 确认数 ${first.confirmations} >= ${minConfirmations}; 订单标识=${first.orderIdentity?.mode || 'unknown'}`,
       verifiedBy: ok.map((c) => c.rpc),
       payer: first.from, amount: first.value, blockNumber: first.blockNumber, confirmations: first.confirmations,
+      orderIdentity: first.orderIdentity, orderNonce: first.orderIdentity?.nonce ?? null,
     };
   }
 
@@ -376,11 +429,16 @@ export interface DirectTxRecord {
   /** ★ 首次核验通过的时间 (第二次提交同一 txHash 会**复用**它 ⇒ 回执逐字相同 ⇒ 同一条待办) */
   settledAt: string;
   receiptHash: string;
+  /**
+   * ★ 订单标识 (约定 v1)。**有才有**: 老台账 / 普通转账没有这个键 (读法必须容忍 undefined)。
+   *   有了它, "谁付·多少·给谁"之外还能在链上自证"买的是哪件"。
+   */
+  orderIdentity?: OrderIdentity;
 }
 
 export interface DirectClaimResult {
   ok: boolean;
-  code?: 'TXHASH_ALREADY_USED';
+  code?: 'TXHASH_ALREADY_USED' | 'NONCE_ALREADY_USED';
   detail?: string;
   record?: DirectTxRecord;
   /** true = 这个 txHash 之前就交付过 (幂等命中, 不是新交付) */
@@ -428,11 +486,14 @@ export class DirectTxLedger {
    * 认领一笔交付事实。
    *   · 同 txHash + 同 itemId  → 幂等命中 (复用首次时间 ⇒ 回执哈希稳定 ⇒ 同一条待办, 不产生第二条)
    *   · 同 txHash + 别的 itemId → **拒** (拿一笔付款去换另一条资源 = 跨资源复用)
+   *   · 同一 (payer, nonce) 出现在**另一笔 txHash** → **拒** (EIP-3009 里 (payer,nonce) 只能用一次;
+   *     链上第二笔本来就必 revert, 能走到这里说明有人在换 txHash 蹭同一份授权 —— 不能认)
    */
   async claim(input: {
     txHash: string; itemId: string; network: string; chainId: number; asset: string;
     to: string; from: string; amount: string; blockNumber: number; confirmations: number;
     verifiedBy: string[]; receiptHash: string; settledAt?: string; now?: number;
+    orderIdentity?: OrderIdentity;
   }): Promise<DirectClaimResult> {
     await this.ensureLoaded();
     const key = String(input.txHash).toLowerCase();
@@ -446,6 +507,22 @@ export class DirectTxLedger {
       }
       return { ok: true, record: existing, reused: true };
     }
+    // ★ (payer, nonce) 唯一性: 与**别的 txHash** 撞同一个 nonce = 重放/换 txHash 蹭授权, 拒
+    const nonce = input.orderIdentity?.nonce || '';
+    if (nonce) {
+      const payer = String(input.orderIdentity?.payer || input.from || '').toLowerCase();
+      for (const [otherKey, other] of Object.entries(this.txs)) {
+        if (otherKey === key) continue;
+        const otherNonce = other.orderIdentity?.nonce || '';
+        if (!otherNonce || otherNonce !== nonce) continue;
+        const otherPayer = String(other.orderIdentity?.payer || other.from || '').toLowerCase();
+        if (otherPayer !== payer) continue;
+        return {
+          ok: false, code: 'NONCE_ALREADY_USED',
+          detail: `同一个 (payer=${payer}, nonce=${nonce.slice(0, 18)}…) 已经用在另一笔交易 ${otherKey.slice(0, 18)}… 上 —— EIP-3009 的 (payer, nonce) 只能用一次, 重复用链上必 revert`,
+        };
+      }
+    }
     const record: DirectTxRecord = {
       txHash: key, itemId: input.itemId, network: input.network, chainId: input.chainId,
       asset: input.asset, to: input.to, from: input.from, amount: input.amount,
@@ -453,6 +530,8 @@ export class DirectTxLedger {
       verifiedBy: input.verifiedBy,
       settledAt: input.settledAt || new Date(input.now ?? Date.now()).toISOString(),
       receiptHash: input.receiptHash,
+      // 没有订单标识时不写这个键 (老记录回执逐字不变)
+      ...(input.orderIdentity ? { orderIdentity: input.orderIdentity } : {}),
     };
     this.txs[key] = record;
     await this.persist();
@@ -482,6 +561,23 @@ export function buildDirectReceipt(record: DirectTxRecord): string {
     settledAt: record.settledAt,
     custody: 'none',
     note: '买方直付: 买方自己在钱包里发 USDC 到 payTo, 卖方端点按 txHash 读链核验 (两条 RPC 交叉); 不经过任何第三方托管/facilitator',
+    // ★ 订单标识 (约定 v1): **只有带上时才写这个键** —— 普通转账/老记录的回执逐字不变
+    //   (键序固定, 键在最后 ⇒ 旧台账重算回执得到的是同一串字节 ⇒ 同一 receiptHash ⇒ 同一 pendingId)
+    ...(record.orderIdentity ? {
+      orderIdentity: {
+        protocol: record.orderIdentity.protocol,
+        selfAttested: record.orderIdentity.selfAttested,
+        mode: record.orderIdentity.mode,
+        nonce: record.orderIdentity.nonce,
+        orderSeq: record.orderIdentity.orderSeq,
+        itemIdHash: record.orderIdentity.itemIdHash,
+        // 自证命中的本店 item (排序: 台账/回执要可复现)
+        items: [...record.orderIdentity.matchedItemIds].sort(),
+        note: record.orderIdentity.selfAttested
+          ? '订单自证: nonce 按约定 v1 (标签 BOL1) 编入 keccak256(itemId‖orderSeq), 卖方用本店 item 复算哈希一致'
+          : '未自证 (如实降级): 该交易没有带本店可复算的 BOL1 订单标识 —— 只有「谁付·多少·给谁」',
+      },
+    } : {}),
   };
   return Buffer.from(JSON.stringify(obj), 'utf-8').toString('base64');
 }
@@ -492,7 +588,7 @@ export interface DirectSettleResult {
   ok: boolean;
   code?:
     | 'DIRECT_MODE_DISABLED' | 'ITEM_PRICE_UNSUPPORTED' | 'DIRECT_PAYMENT_NOT_VERIFIED'
-    | 'TXHASH_ALREADY_USED' | 'TXHASH_INVALID';
+    | 'TXHASH_ALREADY_USED' | 'NONCE_ALREADY_USED' | 'TXHASH_INVALID';
   detail: string;
   mode: 'direct';
   receipt?: string;
@@ -506,6 +602,10 @@ export interface DirectSettleResult {
   verifiedBy?: string[];
   reused?: boolean;
   verdict?: DirectVerifyVerdict;
+  /** ★ 订单标识 (约定 v1): 「这笔付款对应哪件东西」能不能被链上证明 —— 不能就如实降级 */
+  orderIdentity?: OrderIdentity;
+  /** true = 订单自证成功 (只有这一种情况才算) */
+  orderIdentitySelfAttested?: boolean;
 }
 
 export interface DirectSettleOptions {
@@ -519,6 +619,8 @@ export interface DirectSettleOptions {
   timeoutMs?: number;
   ledger?: DirectTxLedger;
   now?: number;
+  /** ★ 本店真实 item id 列表 (订单标识自证拿它复算哈希); 缺省 = [item.id] */
+  orderItemIds?: string[];
   /** 测试用: 绕过 env 开关 (生产代码不传) */
   allowDisabled?: boolean;
 }
@@ -555,11 +657,17 @@ export async function settleDirectPayment(opts: DirectSettleOptions): Promise<Di
     minAmount: String(req.amount),
     minConfirmations: opts.minConfirmations ?? directMinConfirmations(),
     rpcUrls: opts.rpcUrls ?? directRpcUrls(network),
+    // ★ 订单标识自证要拿本店真实 item 复算哈希 —— 缺省只比"正在买的这一件",
+    //   调用方给全量列表时可额外区分「买的是本店另一件」与「完全对不上」
+    orderItemIds: opts.orderItemIds ?? [item.id],
     fetchImpl: opts.fetchImpl,
     timeoutMs: opts.timeoutMs,
   });
   if (!verdict.ok) {
-    return { ...shell, ok: false, code: 'DIRECT_PAYMENT_NOT_VERIFIED', detail: verdict.reason, txHash, verdict };
+    return {
+      ...shell, ok: false, code: 'DIRECT_PAYMENT_NOT_VERIFIED', detail: verdict.reason, txHash, verdict,
+      orderIdentity: verdict.orderIdentity, orderIdentitySelfAttested: !!verdict.orderIdentity?.selfAttested,
+    };
   }
 
   const ledger = opts.ledger ?? new DirectTxLedger(directTxLedgerPath(home));
@@ -567,30 +675,32 @@ export async function settleDirectPayment(opts: DirectSettleOptions): Promise<Di
   // 同一 receiptHash ⇒ 同一 pendingId ⇒ 幂等命中同一条待办, 不会因"现在几点"而变出第二条)
   const prior = await ledger.get(verdict.txHash);
   const settledAt = prior?.settledAt ?? new Date(opts.now ?? Date.now()).toISOString();
-  const receiptHash = `sha256:${sha256Hex(buildDirectReceipt({
+  // 先在内存里拼出整条记录 (含订单标识), 再算回执哈希 —— 回执与台账**同源**, 不各算一份
+  const draft: DirectTxRecord = {
     txHash: verdict.txHash.toLowerCase(), itemId: item.id, network, chainId,
     asset: String(req.asset), to: String(req.payTo), from: verdict.payer || '',
     amount: verdict.amount || '0', blockNumber: verdict.blockNumber ?? 0,
     confirmations: verdict.confirmations ?? 0, verifiedBy: verdict.verifiedBy,
     settledAt, receiptHash: '',
-  }))}`;
-  const claim = await ledger.claim({
-    txHash: verdict.txHash, itemId: item.id, network, chainId,
-    asset: String(req.asset), to: String(req.payTo), from: verdict.payer || '',
-    amount: verdict.amount || '0', blockNumber: verdict.blockNumber ?? 0,
-    confirmations: verdict.confirmations ?? 0, verifiedBy: verdict.verifiedBy,
-    receiptHash, settledAt, now: opts.now,
-  });
+    ...(verdict.orderIdentity ? { orderIdentity: verdict.orderIdentity } : {}),
+  };
+  const receiptHash = `sha256:${sha256Hex(buildDirectReceipt(draft))}`;
+  const claim = await ledger.claim({ ...draft, receiptHash, now: opts.now });
   if (!claim.ok || !claim.record) {
-    return { ...shell, ok: false, code: claim.code || 'DIRECT_PAYMENT_NOT_VERIFIED', detail: claim.detail || '认领失败', txHash, verdict };
+    return {
+      ...shell, ok: false, code: claim.code || 'DIRECT_PAYMENT_NOT_VERIFIED', detail: claim.detail || '认领失败', txHash, verdict,
+      orderIdentity: verdict.orderIdentity, orderIdentitySelfAttested: !!verdict.orderIdentity?.selfAttested,
+    };
   }
   const receipt = buildDirectReceipt(claim.record);
+  const orderIdentity = claim.record.orderIdentity ?? verdict.orderIdentity;
 
   return {
     ...shell, ok: true, detail: claim.reused ? '同一笔交易已交付过 (幂等: 回执逐字相同)' : '链上核验通过 (两条 RPC 交叉一致)',
     receipt, txHash: claim.record.txHash, payer: claim.record.from,
     confirmations: claim.record.confirmations, blockNumber: claim.record.blockNumber,
     verifiedBy: claim.record.verifiedBy, reused: !!claim.reused, verdict,
+    orderIdentity, orderIdentitySelfAttested: !!orderIdentity?.selfAttested,
   };
 }
 
@@ -628,6 +738,12 @@ export interface DirectPaymentRequest {
   ledger?: DirectTxLedger;
   now?: number;
   allowDisabled?: boolean;
+  /**
+   * ★ 本店真实 item id 列表 (订单标识自证复算哈希用)。
+   *   不传时**自己从 store 列一遍** (本店现有全部 item) —— 这样"对不上本店任何 item"
+   *   与"买的是本店另一件"才分得开; store 列不出来时退回 `[item.id]` (只认正在买的这一件)。
+   */
+  orderItemIds?: string[];
 }
 
 /**
@@ -654,6 +770,18 @@ export async function handleDirectPayment(req: DirectPaymentRequest): Promise<Di
     return jsonRes(400, { ok: false, code: 'INVALID_ARGUMENT', error: '缺少 txHash (body: {"txHash":"0x…"} —— 买方自己发的 USDC 转账交易哈希)' });
   }
 
+  // ★ 本店真实 item 列表: 没显式给就自己列一遍 (store 列不出来只退回正在买的这一件, 不阻止交付)
+  let orderItemIds = req.orderItemIds;
+  if (!orderItemIds || orderItemIds.length === 0) {
+    try {
+      const all = await listInfo(req.home);
+      const ids = all.map((i) => i.id).filter(Boolean);
+      orderItemIds = ids.length && ids.includes(req.item.id) ? ids : [req.item.id];
+    } catch {
+      orderItemIds = [req.item.id];
+    }
+  }
+
   const settled = await settleDirectPayment({
     item: req.item,
     txHash,
@@ -666,6 +794,7 @@ export async function handleDirectPayment(req: DirectPaymentRequest): Promise<Di
     ledger: req.ledger,
     now: req.now,
     allowDisabled: req.allowDisabled,
+    orderItemIds,
   });
 
   if (!settled.ok) {
@@ -677,6 +806,13 @@ export async function handleDirectPayment(req: DirectPaymentRequest): Promise<Di
     }
     if (settled.code === 'TXHASH_ALREADY_USED') {
       return jsonRes(409, { ok: false, code: settled.code, error: settled.detail, hint: '一笔链上付款只能换一条资源' });
+    }
+    if (settled.code === 'NONCE_ALREADY_USED') {
+      return jsonRes(409, {
+        ok: false, code: settled.code, error: settled.detail,
+        hint: 'EIP-3009 的 (payer, nonce) 只能用一次 —— 买家要重复购买请换 orderSeq 重签授权',
+        orderIdentity: settled.orderIdentity,
+      });
     }
     // 核验没过: 仍然返回 402 (资源未付款), accepts 与 GET 的 402 逐字同源
     const requirements = buildPaymentRequired(req.item, req.resourceUrl);
@@ -690,6 +826,8 @@ export async function handleDirectPayment(req: DirectPaymentRequest): Promise<Di
         status: settled.verdict?.status,
         rpcChecks: settled.verdict?.rpcChecks,
         minConfirmations: settled.verdict?.minConfirmations,
+        // 核验没过时也如实给出"这笔交易声明的订单身份"(方便买家自己看哪里错了)
+        orderIdentity: settled.orderIdentity,
       },
     }, { 'X-PAYMENT-REQUIRED': JSON.stringify(requirements.accepts) });
   }
@@ -727,6 +865,8 @@ export async function handleDirectPayment(req: DirectPaymentRequest): Promise<Di
     itemId: req.item.id,
     title: req.item.title,
     contentHash: req.item.contentHash,
+    // ★ 订单标识 (约定 v1): 「这笔付款对应哪件东西」能不能在链上自证 —— 这里只报事实, 不美化
+    orderIdentity: settled.orderIdentity,
     payment: {
       mode: 'direct',
       receiptHash: delivery.pending?.payment?.receiptHash,
@@ -741,6 +881,8 @@ export async function handleDirectPayment(req: DirectPaymentRequest): Promise<Di
       verifiedBy: settled.verifiedBy,
       custody: 'none',
       onchainVerification: 'receipt.status=1 + USDC Transfer to=payTo + value>=accepts.amount + 两条 RPC 一致 (不经过任何第三方托管)',
+      orderIdentitySelfAttested: !!settled.orderIdentitySelfAttested,
+      orderIdentityMode: settled.orderIdentity?.mode,
       reused: !!settled.reused,
     },
     retrieval: {
@@ -768,5 +910,15 @@ export function directHealth(env: NodeJS.ProcessEnv = process.env, network = 'ba
     minRpcAgreement: DIRECT_MIN_RPCS,
     minConfirmations: directMinConfirmations(env),
     paymentPath: '/api/x402/info/:id/payment',
+    // ★ 订单标识 (约定 v1): 让机器也能读到"本部署懂这个约定"; 不懂 = index 线不该在页面上声称
+    orderIdentity: {
+      protocol: ORDER_IDENTITY_PROTOCOL,
+      tag: ORDER_NONCE_TAG_ASCII,
+      tagHex: ORDER_NONCE_TAG,
+      layout: 'tag(4B "BOL1") ‖ orderSeq(uint32 BE, 4B) ‖ keccak256(utf8(itemId)‖uint256be(orderSeq))[0..23](24B)',
+      event: 'EIP-3009 AuthorizationUsed(authorizer, nonce)',
+      eventTopic0: EIP3009_AUTHORIZATION_USED_TOPIC0,
+      note: '自证 = 买方把订单身份编进 EIP-3009 nonce, 与付款在同一笔交易里; 没有该事件 / 哈希对不上本店 item ⇒ 如实降级为「直转(无订单标识)」',
+    },
   };
 }

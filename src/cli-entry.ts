@@ -93,6 +93,7 @@ ${BOLD}命令:${RESET}
   bolloon engine run <prompt>       委派任务给智能体
   bolloon x402 fetch <url>          x402 自动支付 HTTP 请求
   bolloon x402 balance <address>    查询 x402 钱包余额
+  bolloon x402 pay <endpoint>       买方自己发 EIP-3009 授权转账 (--with-memo 带订单标识)
   bolloon mcp serve                 MCP server (stdio) —— 给 MCP 客户端接本机 Agent 能力
   bolloon mcp tools                 列出 MCP 暴露的 tools/resources (只读清单)
 
@@ -104,8 +105,8 @@ ${BOLD}示例:${RESET}
   bolloon --cli              # 命令行模式
   bolloon model              # 查看当前模型供应商
   bolloon update             # 检查更新 (只读, 不改任何东西)
-  bolloon update plan        # 看更新计划与风险检查
-  bolloon update now         # 真正执行更新
+  bolloon update             # 直接执行更新 (先打印计划与风险检查)
+  bolloon update --dry-run   # 只看计划, 不动任何东西
   bolloon doctor             # 我这台机器的 Bolloon 是否自洽
   bolloon network join --json         # 入网 (失败也结构化: ok:false + code + next_action)
   bolloon task --request-id <id> "…"  # 用给定幂等键跑 M1 任务 (同一 requestId 不会付两次)
@@ -273,6 +274,7 @@ async function handleX402Command(x402Args: string[]): Promise<void> {
     console.log(`${BOLD}用法:${RESET}`);
     console.log('  bolloon x402 fetch <url> [options]        # 自动处理 402 Payment Required');
     console.log('  bolloon x402 balance <address> [options]  # 查询钱包余额');
+    console.log('  bolloon x402 pay <endpoint> [--with-memo] # 买方自己发 EIP-3009 授权转账 (nonce 带订单标识 BOL1)');
     console.log('  bolloon x402 pending list|show|sign       # 卖方本机签名交付 (私钥不离开本机)');
     console.log('');
     console.log(`${BOLD}选项:${RESET}`);
@@ -293,6 +295,13 @@ async function handleX402Command(x402Args: string[]): Promise<void> {
   if (sub === 'pending') {
     const { x402PendingCommand } = await import('./cli/x402-seller-command.js');
     process.exit(await x402PendingCommand(rest));
+    return;
+  }
+
+  // 2026-09-29: 买方自己发 EIP-3009 transferWithAuthorization (nonce 带订单标识 BOL1)
+  if (sub === 'pay') {
+    const { x402PayCommand } = await import('./cli/x402-buyer-command.js');
+    process.exit(await x402PayCommand(rest));
     return;
   }
 
