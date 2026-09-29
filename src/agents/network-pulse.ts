@@ -214,6 +214,33 @@ export interface NetworkPulseSnapshot {
   /** ★ 链上索引的覆盖口径: 覆盖什么 · 起止块 · 落后多少块 (公开页必须显示, 不许暗示"实时全网") */
   index_scope?: IndexScope | null;
   /**
+   * ★ **付款方智能体身份** 的取数口径 (2026-09-29, `diap-address-binding/1`)。
+   *
+   * 这一块**不是链上事实**: 它是本机的**链下登记**(地址↔DID 双侧签名的声明)在加载时**逐条重验**
+   * 的结果。只有重验通过的绑定才会把短写名字带进 `confirmed_activity[].payer_identity`;
+   * 未验签/验不过的**一条都不出名字、不出 DID**(硬闸)。
+   * 页面必须**就地**把它写成「链下登记(可离线验签)」, 不许与块号/tx_hash 混为一类表述。
+   * 没有绑定库/读不到 → 这里的 `verified=0` 且 `reason` 说清为什么 (不是"没有智能体付过款")。
+   */
+  payer_identity_scope?: {
+    /** 库里绑定文件数 */
+    loaded: number;
+    /** 加载时重验通过的条数 */
+    verified: number;
+    /** 重验不通过的条数 (附原因; 这些不会出现在任何行里) */
+    rejected: number;
+    rejected_reasons: { id: string; reasons: string[] }[];
+    /** 本轮活动行里**真的带上了** payer_identity 的行数 (与行数据同源, 同一时刻算出来的) */
+    rows_with_identity: number;
+    reason: string;
+    /** 取数语义 (页面/机器清单照原文显示) */
+    label: { zh: string; en: string };
+    note: { zh: string; en: string };
+    /** 协议名 (对外口径: 这是个**离线可验**的登记) */
+    method: string;
+    source: string;
+  } | null;
+  /**
    * ★ 本节点公告板上**未认领且未过期**的任务 (公开「待接单任务」)。
    * 每行只有白名单 7 个字段 (capability/budget/currency/network/deadline/claimed/announcementId 前 8 位)
    * —— **任务正文、正文摘要/预览、买方 DID/公钥、认领者、签名一律不在这里** (见 `OpenTaskRow`)。
@@ -410,10 +437,11 @@ export interface SnapshotOptions {
   unavailable?: boolean;
   /** 导出时刻读到的真链 head (只用于 index_scope.lag_blocks; 读不到 = null) */
   liveHeadBlock?: number | null;
-  /** 单测注入: 读链上索引 / 转账索引 / 卖方端点汇总缓存 (见 ConfirmedActivityQuery) */
+  /** 单测注入: 读链上索引 / 转账索引 / 卖方端点汇总缓存 / 付款方身份表 (见 ConfirmedActivityQuery) */
   readIndex?: ConfirmedActivityQuery['readIndex'];
   readTransfers?: ConfirmedActivityQuery['readTransfers'];
   readSellerSummary?: ConfirmedActivityQuery['readSellerSummary'];
+  readPayerIdentities?: ConfirmedActivityQuery['readPayerIdentities'];
 }
 
 /** 纯函数: 从事件列表算出快照 (便于单测; 不做 IO) */
@@ -617,6 +645,57 @@ export type ConfirmedActivitySource = 'chain-index' | 'pulse-events' | 'none';
  */
 export type PaymentClass = 'escrow_settlement' | 'self_transfer' | 'external_payment';
 
+// ── 付款方智能体身份 (链下登记, 2026-09-29) ──────────────────────────────────
+/**
+ * **形状**声明 (故意不 import `src/agents/identity/address-binding.ts` —— 那个模块会把 ethers 与
+ * 文件系统拖进本文件的静态依赖; 本文件是公开快照/网页路径上的热点, 加载代价敏感)。
+ * 字段集合与 address-binding 的 `PayerIdentity` 逐字一致, 由 `src/test/address-binding.test.ts`
+ * 与快照一致性门双向钉住。
+ */
+export interface PayerIdentityShort {
+  name_short: string;
+  did_short: string;
+  /** 只可能是 true —— 未验签的一律由 `usablePayerIdentity` 丢掉 (类型上也钉住, 免得被写进 false) */
+  verified: true;
+  method: string;
+  source: string;
+}
+
+/** 对外口径用的协议名与来源 (**唯一字面量**; 页面/快照/门都读它) */
+export const PAYER_IDENTITY_METHOD = 'diap-address-binding/1';
+export const PAYER_IDENTITY_SOURCE = 'off-chain-signed';
+/** 名字短写允许的形状 (与 address-binding 的 NAME_SHORT_RE 同规则: 不含 0x / did: / 空格) */
+export const PAYER_NAME_SHORT_RE = /^[A-Za-z0-9._\-\u4e00-\u9fff]{1,24}$/;
+/** DID 短写形状 (`did:key:` 之后的前 12 字符; **不含 did: 前缀**) */
+export const PAYER_DID_SHORT_RE = /^[1-9A-HJ-NP-Za-km-z]{4,16}$/;
+
+/**
+ * 一条身份短写**能不能用** (**硬闸**, 三关缺一不可):
+ *   ① 必须自称 `verified === true` (未验签的一律作废 —— 不静默降级为"可信");
+ *   ② `method`/`source` 必须是本协议与 `off-chain-signed` (别的来源不许冒充这一路);
+ *   ③ `name_short` / `did_short` 的形状必须精确 (含 0x / did: / 空格 → 直接丢掉, 宁可不出名字)。
+ * 返回 null = **这一行不出身份** (不是"出个空名字")。
+ */
+export function usablePayerIdentity(v: unknown): PayerIdentityShort | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  if (o.verified !== true) return null;
+  if (o.method !== PAYER_IDENTITY_METHOD) return null;
+  if (o.source !== PAYER_IDENTITY_SOURCE) return null;
+  const name = typeof o.name_short === 'string' ? o.name_short.trim() : '';
+  const did = typeof o.did_short === 'string' ? o.did_short.trim() : '';
+  if (!PAYER_NAME_SHORT_RE.test(name)) return null;
+  if (!PAYER_DID_SHORT_RE.test(did)) return null;
+  if (/0x/i.test(name) || /did:/i.test(name) || /0x/i.test(did) || /did:/i.test(did)) return null;
+  return { name_short: name, did_short: did, verified: true, method: PAYER_IDENTITY_METHOD, source: PAYER_IDENTITY_SOURCE };
+}
+
+/** 地址小写化 (只认 0x+40 的形状; 别的形状 → 空串 = 不匹配任何绑定) */
+function normalizeLookupAddress(a: unknown): string {
+  const s = String(a || '').trim().toLowerCase();
+  return /^0x[0-9a-f]{40}$/.test(s) ? s : '';
+}
+
 /** 冻结形状的一行 (老 9 个字段名/顺序逐字固定; 2026-09-23 起链上索引行**追加** 4 个可核验字段) */
 export interface ConfirmedActivityRow {
   /** 任务摘要: `sha256:<前 8 位十六进制>` (taskKey / taskId 的 sha256 短写, 不可逆) */
@@ -665,6 +744,23 @@ export interface ConfirmedActivityRow {
    *   **键整个不出现** = 台账拿不到 → 口径未知 (绝不当 false)
    */
   x402?: boolean;
+  // ── 2026-09-29 追加 (付款行的**付款方智能体身份**; 可选) ──
+  /**
+   * ★ 付款方智能体身份短写 —— 来自**链下登记**(`diap-address-binding/1`: 地址↔DID 双侧签名声明),
+   * **不是链上事实**; 每个字段都是短写 (`name_short` ≤24 字符 / `did_short` 12 字符, 不含 `did:` 前缀)。
+   * 硬规则 (三条同时成立才出现这个键):
+   *   ① 该付款行的 `from` 地址在本机绑定库里有绑定;
+   *   ② 那份绑定在**加载时重验通过**(双侧签名 + 正文 canonical + 时效 + nonce 一次性);
+   *   ③ 行的 kind 是 `payment_in` (只有付款行才有"付款方")。
+   * **没有匹配的已验签绑定 ⇒ 这个键整个不出现** —— 宁可没有, 不许猜一个名字 (也不出 DID)。
+   */
+  payer_identity?: {
+    name_short: string;
+    did_short: string;
+    verified: true;
+    method: string;
+    source: string;
+  };
 }
 
 export interface ConfirmedActivityGates { confirmed: number; finalized: number }
@@ -912,6 +1008,20 @@ export interface ConfirmedActivityResult {
   seller_summary?: { available: boolean; reason: string; fetched_at: number | null; endpoint: string | null; count: number | null } | null;
   /** escrow 链上索引的**覆盖信息** (给 index_scope 用: 起块/最后扫描块/行数) */
   index_info?: { chainId: number; networkName: string; escrowAddress: string; deploymentBlock: number; lastSyncedBlock: number; headBlock: number | null; rows: number; pageSize: number } | null;
+  /**
+   * 付款方身份的**取数状态** (链下登记; 未验签的一条都不进 `rows`)。
+   * 这一块**不是链上事实** —— 快照里必须与链上字段分开表述。
+   */
+  payer_identity?: {
+    loaded: number;
+    verified: number;
+    rejected: Array<{ id: string; reasons: string[] }>;
+    byAddress: Record<string, PayerIdentityShort>;
+    reason: string;
+    dir: string;
+    label: { zh: string; en: string };
+    note: { zh: string; en: string };
+  } | null;
 }
 
 /**
@@ -936,6 +1046,12 @@ export function buildPaymentRowsFromTransfers(
     tokenDecimals?: number | null;
     /** txHash(小写) → 是否出现在卖方端点台账里; 传 null/undefined = 台账拿不到 (x402 键不出现) */
     x402Txs?: Record<string, unknown> | null;
+    /**
+     * 小写付款方地址 → **已验签**的智能体身份短写 (2026-09-29)。
+     * 只由 `loadPayerIdentityIndex()` 产出; 传 null/undefined = 本机没有可用绑定 ⇒ `payer_identity` 键不出现。
+     * **不在这一层做任何验签**: 传进来的东西必须已经被验过 (这层只负责"匹配 + 出行")。
+     */
+    payerIdentities?: Record<string, PayerIdentityShort> | null;
   } = {},
 ): ConfirmedActivityRow[] {
   const gates = normalizeActivityGates(opts.gates);
@@ -957,6 +1073,11 @@ export function buildPaymentRowsFromTransfers(
     if (!at) continue;
     const cls = classifyTransfer({ from: String(e.from || ''), to: String(e.to || ''), direction: e.direction }, cfg as any);
     if (cls === 'outbound') continue;                                  // 出账不进「链上转入」
+    // ★ 付款方智能体身份 (链下登记): **只认已验签**的短写; 没匹配 = 这个键整个不出现
+    //   (分类为 outbound 的行上面就 continue 了 ⇒ 「付款方」只会出现在真正的转入行上)
+    const payerIdentity = usablePayerIdentity(
+      opts.payerIdentities ? opts.payerIdentities[normalizeLookupAddress(e.from)] : null,
+    );
     const confirmations = head == null ? Math.max(0, Number(e.confirmations) || 0) : Math.max(0, head - block + 1);
     const explorerTx = explorerTxUrl(chainId, txHash);
     const value = /^[0-9]+$/.test(String(e.value || '')) ? String(e.value) : '';
@@ -979,6 +1100,7 @@ export function buildPaymentRowsFromTransfers(
         ...(value ? { amount_atomic: value, amount_display: formatUnits(value, decimals) } : {}),
         ...(value && symbol ? { currency: symbol } : {}),
         ...(x402Known ? { x402: Object.prototype.hasOwnProperty.call(opts.x402Txs, txHash) } : {}),
+        ...(payerIdentity ? { payer_identity: payerIdentity } : {}),
       },
     });
   }
@@ -1029,6 +1151,23 @@ export function readSellerSummaryCacheFile(home?: string): any | null {
   } catch { return null; }
 }
 
+/**
+ * 惰性加载**付款方身份表** (地址↔DID 绑定库)。
+ * 为什么惰性: `address-binding.ts` 要 ethers (验 EIP-191) 与文件系统 —— 本文件在主站快照/网页
+ * 路径上被静态引入, 加载代价敏感; 而且这一块**失败必须能降级**(没有绑定库 ≠ 快照不可用)。
+ * **重验发生在 address-binding 内部** (`loadPayerIdentityIndex` 每条都当场验一遍),
+ * 本文件拿到的 `byAddress` 只含**已验签**的短写。
+ */
+let payerIdentityModule: { loadPayerIdentityIndex: (o?: { home?: string }) => Promise<any> } | null = null;
+async function readPayerIdentityIndexFile(home?: string): Promise<any | null> {
+  try {
+    if (!payerIdentityModule) payerIdentityModule = (await import('./identity/address-binding.js')) as any;
+    return await payerIdentityModule!.loadPayerIdentityIndex({ home });
+  } catch {
+    return null;
+  }
+}
+
 export interface ConfirmedActivityQuery {
   home?: string;
   /** 脉冲事件 (降级路径用; 会在内部按 24h 窗口过滤) */
@@ -1041,6 +1180,8 @@ export interface ConfirmedActivityQuery {
   readTransfers?: (home?: string) => Promise<{ state: any; cfg: any; summary: TransferSummary } | null> | { state: any; cfg: any; summary: TransferSummary } | null;
   /** 单测注入: 卖方端点汇总缓存 (缺省 = 真读 ~/.bolloon/x402-seller-summary.json) */
   readSellerSummary?: (home?: string) => any | null;
+  /** 单测注入: 付款方身份表 (缺省 = 真读 ~/.bolloon/bindings 并**逐条重验**) */
+  readPayerIdentities?: (home?: string) => Promise<any | null> | any | null;
 }
 
 /**
@@ -1070,6 +1211,12 @@ export async function resolveConfirmedActivity(q: ConfirmedActivityQuery): Promi
     const sellerOk = !!sellerCache && sellerCache.available === true && sellerCache.txs && typeof sellerCache.txs === 'object';
     const x402Txs = sellerOk ? sellerCache.txs : null;
 
+    // ★ 付款方身份 (链下登记, 2026-09-29): 只有**已验签**的绑定才会让付款行多出 `payer_identity`。
+    //   读不到/没有绑定库 ⇒ 空表 (行里没有这个键), 快照的 payer_identity_scope 如实说原因。
+    const tPayer = q.readPayerIdentities ?? readPayerIdentityIndexFile;
+    let payer: any = null;
+    try { payer = await tPayer(q.home); } catch { payer = null; }
+
     if (entries.length > 0 || (transfers && transfers.state?.entries?.length > 0)) {
       const gates = normalizeActivityGates(file?.confirmations);
       const taskRows = entries.length > 0
@@ -1095,6 +1242,7 @@ export async function resolveConfirmedActivity(q: ConfirmedActivityQuery): Promi
           tokenSymbol: transfers.state.tokenSymbol,
           tokenDecimals: transfers.state.tokenDecimals,
           x402Txs,                                    // null = 台账拿不到 → 行里不写 x402 键 (口径未知)
+          payerIdentities: payer && payer.byAddress && typeof payer.byAddress === 'object' ? payer.byAddress : null,
         })
         : [];
       // 两类行合并: 同一张表、同一套排序 (块号 desc, logIndex desc); 上限就是冻结的 25 行
@@ -1107,6 +1255,18 @@ export async function resolveConfirmedActivity(q: ConfirmedActivityQuery): Promi
           rows: merged,
           gates,
           transfers: transfers ? transfers.summary : null,
+          payer_identity: payer
+            ? {
+              loaded: Number(payer.loaded) || 0,
+              verified: Number(payer.verified) || 0,
+              rejected: Array.isArray(payer.rejected) ? payer.rejected : [],
+              byAddress: payer.byAddress && typeof payer.byAddress === 'object' ? payer.byAddress : {},
+              reason: String(payer.reason || ''),
+              dir: String(payer.dir || ''),
+              label: payer.label || { zh: '链下登记(可离线验签)', en: 'off-chain registration (verifiable offline)' },
+              note: payer.note || { zh: '', en: '' },
+            }
+            : null,
           index_info: entries.length > 0
             ? {
               chainId: Number(file?.chainId) || 0,
@@ -1541,6 +1701,7 @@ export function snapshotConsistencyIssues(snap: NetworkPulseSnapshot): string[] 
   issues.push(...totalsScopeIssues(snap));        // ⑧ ★ 同一概念不得并排两个数 (顶部 vs 表格)
   issues.push(...transferTotalsIssues(snap));     // ⑨ ★ 转入分桶必须与同行数算出来的一致
   issues.push(...indexScopeIssues(snap));         // ⑩ ★ 覆盖口径/起止块/落后块数必须自洽
+  issues.push(...payerIdentityIssues(snap));      // ⑪ ★ 付款方身份只许是**已验签**的短写 (链下登记)
   return issues;
 }
 
@@ -1621,6 +1782,63 @@ export function indexScopeIssues(snap: NetworkPulseSnapshot): string[] {
     if (Number(is.lag_blocks) !== expect) out.push(`index_scope.lag_blocks=${is.lag_blocks} ≠ head_block_live−last_scanned_block=${expect}`);
   }
   if (!is.coverage?.zh || !is.coverage?.en) out.push('index_scope.coverage 必须双语都给 (口径句是这一块的核心)');
+  return out;
+}
+
+/**
+ * ⑪ 付款方身份自检 (2026-09-29, `diap-address-binding/1`) —— **只收紧不放松**:
+ *   · 行里出现 `payer_identity` 就必须有 `payer_identity_scope` (口径不能缺);
+ *   · 每条身份必须是**已验签**的短写: `verified===true` · `method`/`source` 逐字对 · 键集恰好 5 个 ·
+ *     `name_short`/`did_short` 形状精确且**不含** `0x` / `did:` / 空格 (出了就是泄漏形态);
+ *   · `payer_identity` 只许出现在 `payment_in` 行上 (别的行没有"付款方"这一说);
+ *   · `rows_with_identity` 必须等于行里**真数出来**的条数 (同一批行, 同一时刻);
+ *   · 口径说 `verified=0` 却行里有身份 ⇒ 自相矛盾。
+ * 过了这道门, 快照里"出名字"这件事就只剩一种可能: 本机有一份**加载时重验通过**的绑定。
+ */
+export function payerIdentityIssues(snap: NetworkPulseSnapshot): string[] {
+  const out: string[] = [];
+  const rows = Array.isArray(snap?.confirmed_activity) ? snap.confirmed_activity : [];
+  const withId = rows.filter((r) => r && (r as any).payer_identity);
+  const scope: any = (snap as any)?.payer_identity_scope;
+  if (withId.length > 0 && (!scope || typeof scope !== 'object')) {
+    out.push(`有 ${withId.length} 行带 payer_identity 却没有 payer_identity_scope —— 口径不能缺`);
+  }
+  if (scope != null && typeof scope !== 'object') out.push('payer_identity_scope 必须是对象或 null');
+  const KEYS = ['did_short', 'method', 'name_short', 'source', 'verified'];
+  for (const [i, r] of rows.entries()) {
+    const id: any = (r as any)?.payer_identity;
+    if (!id) continue;
+    if (id.verified !== true) out.push(`confirmed_activity[${i}].payer_identity.verified=${String(id.verified)} —— 只有已验签的绑定才许出行`);
+    if (id.method !== PAYER_IDENTITY_METHOD) out.push(`confirmed_activity[${i}].payer_identity.method=${String(id.method)} ≠ ${PAYER_IDENTITY_METHOD}`);
+    if (id.source !== PAYER_IDENTITY_SOURCE) out.push(`confirmed_activity[${i}].payer_identity.source=${String(id.source)} ≠ ${PAYER_IDENTITY_SOURCE}`);
+    const keys = Object.keys(id).sort();
+    if (JSON.stringify(keys) !== JSON.stringify(KEYS)) out.push(`confirmed_activity[${i}].payer_identity 键集=${JSON.stringify(keys)} ≠ ${JSON.stringify(KEYS)}`);
+    if (!PAYER_NAME_SHORT_RE.test(String(id.name_short || ''))) out.push(`confirmed_activity[${i}].payer_identity.name_short 形状非法: ${JSON.stringify(id.name_short)}`);
+    if (!PAYER_DID_SHORT_RE.test(String(id.did_short || ''))) out.push(`confirmed_activity[${i}].payer_identity.did_short 形状非法: ${JSON.stringify(id.did_short)}`);
+    for (const [k, v] of Object.entries(id)) {
+      if (typeof v === 'string' && (/0x/i.test(v) || /did:/i.test(v))) {
+        out.push(`confirmed_activity[${i}].payer_identity.${k} 含 0x/did: 形态 —— 短写里不许出现`);
+      }
+    }
+    if (String((r as any).kind || '') !== 'payment_in') {
+      out.push(`confirmed_activity[${i}] kind=${String((r as any).kind)} 却带 payer_identity —— 只有付款行才有"付款方"`);
+    }
+  }
+  if (scope && typeof scope === 'object') {
+    if (!scope.label?.zh || !scope.label?.en) out.push('payer_identity_scope.label 必须双语 (口径句不能只写一种语言)');
+    if (Number(scope.rows_with_identity) !== withId.length) {
+      out.push(`payer_identity_scope.rows_with_identity=${scope.rows_with_identity} ≠ 行里真数出来的 ${withId.length} (同一批行必须相等)`);
+    }
+    if (Number(scope.verified) === 0 && withId.length > 0) {
+      out.push('payer_identity_scope.verified=0 却行里有身份 —— 自相矛盾');
+    }
+    if (Number(scope.rejected) !== (Array.isArray(scope.rejected_reasons) ? scope.rejected_reasons.length : 0)) {
+      out.push(`payer_identity_scope.rejected=${scope.rejected} ≠ rejected_reasons 条数=${Array.isArray(scope.rejected_reasons) ? scope.rejected_reasons.length : 0}`);
+    }
+    if (scope.method !== PAYER_IDENTITY_METHOD || scope.source !== PAYER_IDENTITY_SOURCE) {
+      out.push(`payer_identity_scope.method/source 必须是 ${PAYER_IDENTITY_METHOD} / ${PAYER_IDENTITY_SOURCE}`);
+    }
+  }
   return out;
 }
 
@@ -1922,6 +2140,7 @@ export function computeSnapshot(
       transfer_totals: null,
       x402_ledger: null,
       index_scope: null,
+      payer_identity_scope: null,
       capabilities: [],
       recent_activity: [],
       confirmed_activity: emptyRows,
@@ -2222,6 +2441,21 @@ export function computeSnapshot(
     recent_activity: recent,
     confirmed_activity: activity.rows,
     confirmed_activity_source: activity.source,
+    /** ★ 付款方智能体的**链下登记**取数口径 (2026-09-29): 只有已验签的绑定才让行里多出 payer_identity */
+    payer_identity_scope: activity.payer_identity
+      ? {
+        loaded: activity.payer_identity.loaded,
+        verified: activity.payer_identity.verified,
+        rejected: activity.payer_identity.rejected.length,
+        rejected_reasons: activity.payer_identity.rejected,
+        rows_with_identity: activity.rows.filter((r) => !!r.payer_identity).length,
+        reason: activity.payer_identity.reason,
+        label: activity.payer_identity.label,
+        note: activity.payer_identity.note,
+        method: PAYER_IDENTITY_METHOD,
+        source: PAYER_IDENTITY_SOURCE,
+      }
+      : null,
     activity_totals,
     chain_id_scope,
     open_tasks: Array.isArray(opts.openTasks) ? opts.openTasks : [],
@@ -2248,6 +2482,7 @@ export async function getNetworkPulse(opts: SnapshotOptions = {}): Promise<Netwo
         && Array.isArray((cached as any)?.open_tasks)        // 老缓存没有待接单任务 → 过期形状, 重算
         && 'index_scope' in (cached as any)                  // 2026-09-29: 老缓存没有覆盖口径 → 重算
         && 'transfer_totals' in (cached as any)              // 2026-09-29: 老缓存没有转入分桶 → 重算
+        && 'payer_identity_scope' in (cached as any)         // 2026-09-29: 老缓存没有付款方身份口径 → 重算
         && typeof (cached as any)?.totals?.tasks_refunded !== 'undefined';
       if (shapeOk && cached && Number.isFinite(cached.generated_at) && cached.generated_at + PULSE_LIMITS.snapshotTtlMs > now) return cached;
     } catch { /* 无缓存 */ }
@@ -2264,6 +2499,7 @@ export async function getNetworkPulse(opts: SnapshotOptions = {}): Promise<Netwo
     readIndex: opts.readIndex,
     readTransfers: opts.readTransfers,
     readSellerSummary: opts.readSellerSummary,
+    readPayerIdentities: opts.readPayerIdentities,
   });
   // 钱包签名的**真源**: 本机签名审计账 (窗口内条数)。没有账 → 注入 available:false → 快照标「未接入」
   // (不拿 0 冒充「没发生过」: 本机明明签过而脉冲事件丢了的那次真事故就是这么来的)

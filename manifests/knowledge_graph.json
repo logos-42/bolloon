@@ -174,6 +174,15 @@
       "source_file": "docs/wiki/current-status.md"
     },
     {
+      "id": "diap-address-binding.md",
+      "type": "chapter",
+      "label": "DIAP 地址↔DID 绑定登记 (diap-address-binding/1)",
+      "tags": "[diap, address-binding, did, ed25519, eip191, off-chain-registration, privacy-gate, payer-identity, network-pulse]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/diap-address-binding.md"
+    },
+    {
       "id": "docker-deployment.md",
       "type": "protocol",
       "label": "容器化部署 (Docker / Compose): 多阶段镜像 + 非 root + 真探针 + 密钥不进镜像",
@@ -384,7 +393,7 @@
       "id": "network-pulse.md",
       "type": "chapter",
       "label": "网络脉冲 (Network Pulse) — 匿名可验证的公开观察投影",
-      "tags": "[network-pulse, public-projection, privacy, gateway, bolloon-ui, observed, verified, stale, confirmed-activity, chain-index]",
+      "tags": "[network-pulse, public-projection, privacy, gateway, bolloon-ui, observed, verified, stale, confirmed-activity, chain-index, chain-transfers, x402, payments]",
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/network-pulse.md"
@@ -523,6 +532,15 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/update-protocol.md"
+    },
+    {
+      "id": "x402-chain-payment-index.md",
+      "type": "protocol",
+      "label": "链上交互索引: 付款行并入统一索引(任务与付款同一张表) + 计数口径修正",
+      "tags": "[x402, chain-index, pulse, payment-index, public-display]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/x402-chain-payment-index.md"
     },
     {
       "id": "x402-order-identity.md",
@@ -976,6 +994,16 @@
     },
     {
       "from": "index.md",
+      "to": "diap-address-binding.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "x402-chain-payment-index.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "x402-seller-signing.md",
       "type": "references"
     },
@@ -1280,6 +1308,16 @@
       "type": "supersedes"
     },
     {
+      "from": "network-pulse.md",
+      "to": "x402-seller-signing.md",
+      "type": "references"
+    },
+    {
+      "from": "network-pulse.md",
+      "to": "x402-order-identity.md",
+      "type": "references"
+    },
+    {
       "from": "project-overview.md",
       "to": "current-status.md",
       "type": "references"
@@ -1316,16 +1354,16 @@
     }
   ],
   "stats": {
-    "node_count": 60,
-    "edge_count": 154,
+    "node_count": 62,
+    "edge_count": 158,
     "node_types": {
       "meta": 13,
-      "protocol": 18,
-      "chapter": 28,
+      "protocol": 19,
+      "chapter": 29,
       "claim": 1
     },
     "edge_types": {
-      "references": 152,
+      "references": 156,
       "supersedes": 2
     }
   }

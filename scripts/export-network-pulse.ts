@@ -120,6 +120,16 @@ async function main() {
     process.stdout.write(json);
   }
 
+  // ★ 付款方智能体身份 (链下登记, 2026-09-29): 只有**已验签**的绑定才让付款行多出 payer_identity;
+  //   未验签/验不过的一条都不出名字与 DID (硬闸, 见 payerIdentityIssues)。
+  const pis = finalSnap.payer_identity_scope;
+  console.error(
+    pis
+      ? `[export-pulse] 付款方身份 (链下登记 ${pis.method} · ${pis.source})=库 ${pis.loaded} 条 → 重验通过 ${pis.verified} 条` +
+        `${pis.rejected ? ` · 拒 ${pis.rejected} 条 (${pis.rejected_reasons.map((r: any) => `${r.id}:${(r.reasons || []).join(',')}`).join(' | ').slice(0, 160)})` : ''}` +
+        ` · 活动行里带上身份的 ${pis.rows_with_identity} 行 · ${pis.reason} · 口径: ${pis.label.zh}`
+      : '[export-pulse] 付款方身份=(无绑定库/未参与: 行里没有 payer_identity —— 不是"没有智能体付过款")',
+  );
   const t = finalSnap.totals || {};
   const at = finalSnap.activity_totals || {};
   const cis = finalSnap.chain_id_scope || {};
