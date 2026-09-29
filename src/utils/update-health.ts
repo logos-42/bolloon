@@ -363,13 +363,13 @@ export async function runDoctor(opts: { bolloonHome: string; userHome?: string; 
         detail: `dev 快照: GitHub master ${st.devRef || 'refs/heads/master'} @ commit ${devSha} (比较语义 ${channelKindOf('dev')}, 非 semver)`
           + `${st.switchableTo ? ` · 可切回 stable (${st.switchableTo.source}${st.switchableTo.target ? ` @ ${st.switchableTo.target}` : ''})` : ''}`
           + ` · ${DEV_CHANNEL_WARNING}`,
-        action: 'bolloon update now --channel stable',
+        action: 'bolloon update --channel stable',
       }
       : {
         id: 'update_source', label: '安装来源 (双源)', grade: 'ok',
         detail: `stable: npm registry 权威 (比较语义 ${channelKindOf('stable')})`
           + `${st.devSha ? ` · 上次用过 dev 快照 commit ${st.devSha}${st.devCheckedAt ? ` (${st.devCheckedAt})` : ''}, 已切回` : ''}`
-          + ` · 默认通道 ${prefsChannel} · 切 dev 用: bolloon update now --channel dev`,
+          + ` · 默认通道 ${prefsChannel} · 切 dev 用: bolloon update --channel dev`,
       });
   }
   const inFlight = st.lastUpdate && (IN_FLIGHT_RUN_STATUSES as string[]).includes(st.lastUpdate.status);

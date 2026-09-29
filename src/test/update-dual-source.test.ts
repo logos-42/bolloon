@@ -555,7 +555,7 @@ describe('update --status: 三种状态都必须说清来源', () => {
     expect(text).toContain(`commit ${HEAD7}`);
     expect(text).toContain('refs/heads/master');
     expect(text).toContain('能切回:     stable');
-    expect(text).toContain('bolloon update now --channel stable');
+    expect(text).toContain('bolloon update --channel stable');
     expect(text).toContain(DEV_CHANNEL_WARNING);
   });
 

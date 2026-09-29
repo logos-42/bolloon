@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # bolloon-version: 0.4.29
-# 升级 Bolloon Agent —— 只是 `bolloon update --now` 的一层薄包装 (单一更新实现)。
+# 升级 Bolloon Agent —— 只是 `bolloon update` 的一层薄包装 (单一更新实现)。
 #
 # 为什么不再直接 `npm install -g latest`:
 #   那样会绕过**更新计划 / 更新锁 / 目标版本校验 / 切换后验证 / 失败回滚** ——
 #   同一次升级, 走 CLI 有保护, 走这个脚本没有, 等于两套更新语义。
 #
 # 用法:
-#   bash scripts/upgrade.sh              # 先看计划, 再执行 (等价 bolloon update now)
+#   bash scripts/upgrade.sh              # 直接更新 (等价 bolloon update: 先打印计划, 再执行)
 #   bash scripts/upgrade.sh plan         # 只看计划
 #   bash scripts/upgrade.sh force        # 忽略"有长期任务在跑"的提醒, 仍然更新
 set -euo pipefail
@@ -17,11 +17,11 @@ PKG="@bolloon/bolloon-agent"
 if command -v bolloon >/dev/null 2>&1; then
   BOLLOON="bolloon"
   echo "🔄 通过 bolloon update 升级 (计划 → 执行 → 健康检查)..."
-  if [ "${1:-}" = "plan" ] || [ "${1:-}" = "--plan" ]; then
-    exec "$BOLLOON" update plan
+  # `plan` / `--plan` 仍被接受 —— 就是新的只读位 `--dry-run` (只打印, 不装任何东西)
+  if [ "${1:-}" = "plan" ] || [ "${1:-}" = "--plan" ] || [ "${1:-}" = "--dry-run" ]; then
+    exec "$BOLLOON" update --dry-run
   fi
-  "$BOLLOON" update plan || true
-  exec "$BOLLOON" update now "$@"
+  exec "$BOLLOON" update "$@"
 fi
 
 # 兜底: 没有任何 bolloon 入口时 (源码目录直跑) 退回 npm, 并说明为什么少了保护

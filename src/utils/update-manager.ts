@@ -732,11 +732,11 @@ export function renderUpdatePlan(plan: UpdatePlan): string {
     L.push('');
     L.push('提醒 (不阻塞, 但建议先处理):');
     for (const a of plan.advisories) L.push(`  - ${a}`);
-    L.push(`  建议策略: 等当前 Run 结束后更新 (bolloon update --now --wait)`);
+    L.push(`  建议策略: 等当前 Run 结束后更新 (bolloon update wait)`);
   }
   L.push('');
-  L.push(`可选: 立即更新 (bolloon update --now --channel ${plan.channel}) / 等当前 Run 结束 (bolloon update --now --wait --channel ${plan.channel}) / 取消`);
-  if (plan.channelKind === 'git-ref') L.push(`一键回稳定版: bolloon update now --channel stable`);
+  L.push(`可选: 立即更新 (bolloon update --channel ${plan.channel}) / 等当前 Run 结束 (bolloon update wait --channel ${plan.channel}) / 取消`);
+  if (plan.channelKind === 'git-ref') L.push(`一键回稳定版: bolloon update --channel stable`);
   L.push(`默认: ${plan.defaultStrategy === 'wait' ? '等待当前 Run 结束后更新' : '立即更新'}`);
   return L.join('\n');
 }

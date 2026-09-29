@@ -43,7 +43,7 @@ tags: [runtime, bootstrap, install, node, npm, git, python, path, config, packag
 | 运行时 | 最低版本 | 为什么是这个版本 |
 | --- | --- | --- |
 | Node.js | **18.0.0** | Bolloon CLI/依赖的运行时 (ESM、全局 fetch、`node:` 前缀) |
-| npm | **9.0.0** | 随 Node 18+ 发布; 全局安装与 `update now` 的安装通道 |
+| npm | **9.0.0** | 随 Node 18+ 发布; 全局安装与 `bolloon update` 的安装通道 |
 | Git | **2.20.0** | `git -C`、`--porcelain`、worktree —— 源码更新与协作 |
 | Python | **3.8.0** | `scripts/**` (wiki 门禁/消融夹具) 与 Python Skill 执行 |
 

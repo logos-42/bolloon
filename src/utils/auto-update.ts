@@ -134,10 +134,10 @@ export async function checkAndUpdate(opts: { force?: boolean; onUpdated?: () => 
     case 'update_available': {
       notify(`⚠ 发现新版本: ${r.currentVersion} → ${r.latestVersion}`, YELLOW);
       if (!prefs.autoInstall) {
-        notify('  当前设置为**只通知不自动安装** (autoInstall=false)。更新: bolloon update plan → bolloon update now', CYAN);
+        notify('  当前设置为**只通知不自动安装** (autoInstall=false)。更新: bolloon update (直接执行; 只看计划用 --dry-run)', CYAN);
         return {
           hasUpdate: true, info, updated: false,
-          message: `发现新版 ${r.latestVersion}（未自动安装；运行 bolloon update now 更新）`,
+          message: `发现新版 ${r.latestVersion}（未自动安装；运行 bolloon update 更新）`,
         };
       }
       notify('  自动安装已开启 (autoInstall=true)，执行更新...', CYAN);

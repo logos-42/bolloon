@@ -172,7 +172,7 @@ describe('端到端: 真索引文件形状 → 快照里的行带真 txHash 与 
       chainId: 8453, escrowAddress: ESCROW, headBlock: 51640624,
       confirmations: { confirmed: 1, finalized: 12 }, entries: [entry()],
     };
-    const res = await NP.resolveConfirmedActivity({
+    const res = await NP.resolveConfirmedActivity({ readTransfers: () => null, readSellerSummary: () => null,
       events: [], now: NOW,
       readIndex: () => file,
     });
@@ -183,7 +183,7 @@ describe('端到端: 真索引文件形状 → 快照里的行带真 txHash 与 
     expect('explorer_contract' in (res.rows[0] as any)).toBe(false);
 
     // 同一批条目, 链换成 31337 → 链接消失 (行数/其它字段不变)
-    const local = await NP.resolveConfirmedActivity({
+    const local = await NP.resolveConfirmedActivity({ readTransfers: () => null, readSellerSummary: () => null,
       events: [], now: NOW,
       readIndex: () => ({ ...file, chainId: 31337, escrowAddress: ESCROW }),
     });
@@ -192,7 +192,7 @@ describe('端到端: 真索引文件形状 → 快照里的行带真 txHash 与 
     expect(local.rows[0].tx_hash).toBe(TX);
 
     // 索引文件的 escrowAddress 被人改歪 → 合约字段整个不填 (宁缺勿错), 交易链接照旧
-    const drifted = await NP.resolveConfirmedActivity({
+    const drifted = await NP.resolveConfirmedActivity({ readTransfers: () => null, readSellerSummary: () => null,
       events: [], now: NOW,
       readIndex: () => ({ ...file, escrowAddress: SELLER_EOA }),
     });

@@ -2,14 +2,14 @@
 title: 网络脉冲 (Network Pulse) — 匿名可验证的公开观察投影
 source: session (leo 2026-09-18 计划 + 真实实现与真跑结论)
 created: 2026-09-21
-last_confirmed: 2026-09-22
+last_confirmed: 2026-09-29
 schema_version: 2
 audience: self
 stage: current
 status: current
 confidence: high
 entity_type: chapter
-tags: [network-pulse, public-projection, privacy, gateway, bolloon-ui, observed, verified, stale, confirmed-activity, chain-index]
+tags: [network-pulse, public-projection, privacy, gateway, bolloon-ui, observed, verified, stale, confirmed-activity, chain-index, chain-transfers, x402, payments]
 ---
 
 # 网络脉冲 (Network Pulse) — 2026-09-21
@@ -164,6 +164,83 @@ interface NetworkPulseEvent {
 
 `scripts/export-network-pulse.ts` 在写文件前跑这套自检, **不过就 `exit 3` 拒绝导出**(不把打架的快照发上线)。
 
+## 2.3 链上交互索引 (2026-09-29): 关注地址集内 USDC 转账成行 + 顶部计数只报链上
+
+**leo 逐字收窄 (记下来免得下一轮又漂)**: ①「我要记录的是**链上数据**, 不是本机数据, 网关要显示的是**所有交互**」
+⇒ 网关页顶部计数区**只列链上交互** —— 本机三项 (节点 / 智能体 / 钱包签名) **整排下线** (它们长期是 0/4 这类本机数,
+摆在链上数字旁边就是误导)。②「退款**不得**算成已结算」⇒ 顶部把「已结算」拆成 **已释放给卖方 / 已退款 / 争议中**
+三格 (旧口径把四类并成一个「已结算 5」而「已完成」是 3 ⇒ 出现「已结算 5 > 已完成 3」这种读不通的假读数)。
+**快照契约没被删**: `totals.nodes/agents/signatures` 仍在 (别的消费方还在用), 只是网关照那一屏不列它们;
+`tasks_verified` 仍是 `null` + 逐字段口径照旧 (「已验证」那一格 2026-09-24 已下线, 见 §5)。
+
+### 2.3.1 为什么需要「转账索引」(旧索引看不见的那一半)
+
+旧 `confirmed_activity` 只来自 **AgentEscrow 合约日志** ⇒ 走 **x402 直付** 的收款 (买方自己发 USDC 到 `payTo`)
+在链上**没有任何 escrow 事件** (x402 在链上没有自己的事件, 付款就是一笔普通 ERC-20 `Transfer`) ⇒
+「所有交互」在旧口径里是漏的 (真事: `0x8d06bc84…0ff1` / `0x1499e5f2…02a7` 两笔真货款在旧表里 0 行)。
+
+新增两件 (**只读链 + 只写本机索引文件; 不发交易 / 不碰私钥**):
+
+| 文件 | 干什么 |
+| --- | --- |
+| `src/agents/chain/transfer-index.ts` | 扫本链 USDC 上 **`to` 或 `from` ∈ 关注地址集** 的 `Transfer`: `eth_getLogs` 单页 ≤ **2000 块** (mainnet.base.org 实测上限, 3000/5000/10000 全被拒 `is limited to a 2,000 range`; provider 报错就**对半拆**再试, 不静默漏页) · 每轮**强制回扫最后 32 块** (重组窗口, 重扫后不再出现的键标 `suspect` 且**保留**) · 去重键 `txHash:logIndex` · 自有游标 `~/.bolloon/chain/transfers.json`, **escrow 索引 `chain/index.json` 一行未动** (身份门 / 重组逻辑不动) |
+| `src/agents/chain/transfer-classify.ts` | **纯函数**那一半 (零依赖: 不 import ethers / 不发 RPC / 不读盘, 所以快照构建能静态引入): 分类三桶 + 原子折算 (纯整数运算, 不过浮点) + 汇总 |
+
+关注地址集来自**配置** `~/.bolloon/chain.json` 的 `watchAddresses[]` / `ownAddresses[]` (`BOLLOON_WATCH_ADDRESSES`
+可覆盖) —— **不硬编码任何单个地址**; 没配 → 索引自称 `enabled:false` 且不猜 (页面显示「未配置」, 不显示 0)。
+地址**不进公开快照** (只留本机索引; 快照里连 `0x` 长 hex 都 0 次 —— 隐私守卫 `scripts/pulse-privacy-check.py`
+与它的对照测试 `scripts/test-pulse-guard.sh` 守着)。同步入口 `scripts/sync-transfers.ts` (增量 / `--from <块>` 补扫),
+由 `scripts/refresh-pulse.sh` 每轮在导出前先跑 —— 失败**不静默**: 那几格写「未接入」。
+
+**分类口径 (不许只按「USDC 转到该地址」计数)**: `escrow_settlement` (`from == escrow 合约` → 退款/释放,
+**钱退回, 不是收入**; 实测块 51685757 / 51686009 两笔 +0.001 与两笔 `Disputed→Refunded` **逐块对应**) ·
+`self_transfer` (`from ∈ 自己地址集` → 转入(非销售)) · `external_payment` (其余) · `outbound` (自己付出去 →
+**不进「链上转入」计数**, 只在 `transfer_totals.outbound` 里有数)。**只有转入成行**: 行是「钱进来」的视角。
+
+### 2.3.2 「其中经 x402 流程」只能靠链下台账交叉核
+
+链上没有 x402 事件 ⇒「5 笔转入里哪几笔走了 x402 流程」只能拿**卖方端点只读汇总**
+(`GET https://pay.bolloon.cn/api/x402/seller/summary`, 消费脚本 `scripts/x402-seller-summary.ts`) 里的
+txHash 与链上扫到的收款**对账** (交集才计数)。**取不到 = `null` + 未知 + 原因, 绝不写 0** ——
+0 的意思是「一笔都没有」, 那是另一句话 (卖方端点那侧的口径见 [x402-seller-signing.md](./x402-seller-signing.md))。
+
+### 2.3.3 真快照 (2026-09-29, `bolloon.cn` / `bolloon.pages.dev` 两通道逐字节同值)
+
+`totals`: `tasks=5` · `tasks_completed=3` · `tasks_settled=3`(只算 `ReleasedV2` = 钱真从合约出给卖方) ·
+`tasks_refunded=2` · `tasks_disputed=2` · `payments_in=5` (`payments_in_total_atomic=707959` =
+**0.707959 USDC**) · `payments_in_x402=2` (0.02 USDC) · `tasks_verified=null` · `nodes/agents/signatures`
+仍在 (2/3/0) 但**页面不列**。
+
+`transfer_totals`: `configured=true` · 关注地址集 **1 个** · `token_symbol=USDC` (decimals 6) · `inbound=5`
+(0.707959) · `by_class {escrow_settlement:2 (+0.002), self_transfer:1 (+0.685959), external_payment:2 (+0.02)}` ·
+`outbound=7` · `from_block=51640073` · `last_synced_block=51931726` · `pending_observation=0`。
+
+`x402_ledger`: `available=true` · `count=2` · `endpoint=https://pay.bolloon.cn` (账本取不到时这格会出现
+`available:false` + 原因)。
+
+`index_scope`: `coverage` 一句话写清「本索引覆盖什么」 · `sources[]` = escrow (`51640073 → 51931706`, 15 行) +
+erc20-transfers (`51640073 → 51931726`, 12 行 = 5 转入 + 7 转出) · `head_block_live=51931728` ·
+`lag_blocks=22` (≈44 秒) · `note` 逐字写「这不是『实时全网』」。
+
+`activity_totals`: `rows=20` (= 15 escrow 行 + 5 付款行) · `tasks=5` / `tasks_completed=3` / `tasks_settled=3` /
+`tasks_refunded=2` / `tasks_disputed=2` / `tasks_expired=0` / `payments_in=5` (+ 三桶明细) · `by_finality{observed:0,
+confirmed:0, finalized:20}` · `chain_id_scope`: `[8453]` · Base 主网 · `public_network_rows=20`。
+
+### 2.3.4 快照新增字段 (老字段名一个没动)
+
+| 字段 | 内容 (有断言) |
+| --- | --- |
+| `transfer_totals` | `configured` · `reason`(关注地址集几个/为什么不可用) · `token_symbol`/`token_decimals` · `inbound`/`inbound_display`/`inbound_total_atomic` · `by_class{}`/`by_class_atomic{}` · `outbound` · `from_block`/`last_synced_block`/`pending_observation` |
+| `x402_ledger` | `available` · `reason` · `endpoint` · `fetched_at` · `count` |
+| `index_scope` | `source` · `chain_id` · `network_name`/`network_label{zh,en}` · `coverage{zh,en}` · `sources[]{kind,label,from_block,last_scanned_block,rows,…}` · `from_block`/`last_scanned_block`/`head_block_at_sync`/`head_block_live`/`lag_blocks` · `note{zh,en}` |
+| `activity_totals` (追加) | `tasks_refunded` · `tasks_disputed` · `tasks_expired` · `payments_in` · `payments_in_total_atomic` · `payments_in_external`/`_self`/`_escrow` · `payments_in_x402`(+`_total_atomic`) |
+| `totals` (追加) | `tasks_refunded` · `tasks_disputed` · `payments_in` · `payments_in_total_atomic` · `payments_in_total_usdc` / `payments_in_x402`(+`_total_atomic`,`_total_usdc`) · `payments_in_currency` |
+| 行 `kind='payment_in'` | `class` (`escrow_settlement`/`self_transfer`/`external_payment`) · `state='paid'` · `amount_atomic`/`amount_display` · `currency` · `x402` (**`true`/`false`/缺 = 口径未知** —— 缺时页面不许写成「不是 x402」) · 其余字段与 escrow 行同一套 (`task`/`tx` 短写 · `block` · `confirmations` · `finality` · `explorer_tx` 指向本行那笔) |
+
+**导出前自检加 4 条** (`snapshotConsistencyIssues`, 不过就 `exit 3` 拒绝导出): `transfer_totals.inbound
+=== activity_totals.payments_in` · `by_class` 三桶之和 = `inbound` (每一笔转入**恰好**落进一个桶) ·
+`by_class_atomic` 之和 = `inbound_total_atomic` · 两者与 `activity_totals.*` 同值。
+
 ## 3. 公开只读接口
 
 ```text
@@ -244,6 +321,35 @@ GET /api/public/network/progress
    「未接入」也是**显示态**(不是隐藏): 快照给 `null` + `unavailable:true` 时页面写「未接入」+ 说明,
    写 0 会被读成「没发生过」—— 本机真事: 8 条真签名曾被报成 0。
 
+**（2026-09-29）网关页: 一张表装两类行 + 顶部只报链上 + 「一页 = 一屏」的行高不变量**
+
+- **顶部计数行 = 7 格链上** (任务 / 已完成 / 已释放给卖方 / 已退款 / 争议中 / 链上转入(带合计金额) /
+  其中经 x402 流程): 本机三项 (节点 / 智能体 / 钱包签名) **整排下线** (2026-09-29 leo:「我要记录的是链上数据」)。
+  每个数旁挂自己的口径短标记 (`data-pulse-scope-tag`, 取 `totals_scope.fields[*].short`); 结算口径纠偏:
+  `tasks_settled` **只算 `ReleasedV2`** (钱真从合约出给卖方), 退款/争议**各占一格**。
+- **一行口径句** `data-pulse-chain-line` (拼出来的句子 = 这一区唯一允许的解释文案, 不写「收入/成交额」这种词):
+  「链上转入 N 笔（合计 X USDC）（含退款/自有转入，逐行可核验） · 其中经 x402 流程 M 笔或**未知（原因）** ·
+  任务 T 个（已完成 A / 已退款 B / 争议中 C / 已释放 D） · <覆盖什么> · 索引起止 from → to · 落后真链 head H L 块（读于导出时刻）」。
+  **所有数字只读快照** (前端不自己数), 缺哪块就不说哪块 (老快照没这些字段 → 整句隐藏, 不留空行)。
+  这一行也是「同一概念不变量门」的现场证据: 顶部数与表里同概念数必须逐字相等。
+- **表 = 一张** (类型 | 任务/交易 | 状态 | 事件 | 金额 | 网络 | 区块 | 确认数/最终性 | 时间): 类型列区分
+  **任务**(escrow 事件) 与 **付款**(`kind='payment_in'`), 两类同一张表、同一套排序 —— **不许分成两块**。
+  付款行的状态列写**链上分类** (`退款/释放` · `转入(非销售)` · `外部付款`), 经 x402 流程就追加 ` · x402`;
+  金额列 = 快照给的 `amount_display` + 币种 (任务行索引里没有金额就写 `—` + `data-empty`, **不估不折算**);
+  认不出的 `kind` 归「任务」并在事件列**原样显示** (不猜、不吞、不报错)。
+- ★ **一格一行 (整表 `white-space: nowrap`)**: 行高是全站校准过的基准 —— `--pulse-activity-h` = **865.03px**
+  = caption 30.69 + 表头 41.19 + **15×52.88**, 一页 = 15 行 = 正好一屏 (`scrollHeight == clientHeight`)。
+  加「类型 / 金额」两列时**真踩过这个坑**: 任务/交易格里的 `sha256:…` 短写与交易链接之间允许换行 ⇒ 行高
+  **52.84 → 77.38** ⇒ 15 行装不进框 (scrollHeight 1252 ≠ clientHeight 865), 门当场判红。
+  修法 = 整表 nowrap (表本来就在 `.pulse-table-scroll` 里横向滚, 所以不损失可读性), 行高回到 52.84;
+  窄屏因为同样不换行, 行高与桌面一致 ⇒ ≤640px 那条 `--pulse-activity-h: 1233px` 覆盖**删掉** (字面量只剩一处)。
+- **分页栏** (贴在十五行底部): 一页 15 行; **真快照涨到 20 行之后真数据也分页了** —— 「第 1/2 页 · 共 20 行」,
+  第 1 页「上一页」禁用 (暗调 lime + 虚线) / 「下一页」可点 (亮 lime + 实线), title 分别写「已经是第一页」与
+  「翻到第 2 页（共 2 页）」—— 两个态**都**穿品牌色, 都不退回中性灰 (真截图复核抓到过的回归, 门里钉着)。
+- 门 (`bolloon-UI/scripts/verify-site.mjs` §[15]) 的口径**全部由快照行数推导**: 总量 = `min(快照行数, 上限 60)`,
+  页数 = `ceil(总量 / 15)`, DOM 行数 = `min(快照行数, 60, 15)` —— 页数字面上一个都不写死
+  (真快照从 15 行涨到 20 行时, 正是这套推导让门跟着事实走, 而不是把「1/1 页」钉死)。
+
 前端行为: 首屏 loading · 成功 live · 快照过期 stale · 失败 unavailable · 30s 轮询 · 请求超时(AbortController)·
 失败指数退避 · **任何失败不得影响页面其它区域** · 活动文本只用 `textContent`(禁 innerHTML) · 双语走 `data-zh/data-en` ·
 相对时间只改文字节点 · 尊重 `prefers-reduced-motion` · `aria-live="polite"` · 移动端纵向堆叠。
@@ -252,3 +358,13 @@ GET /api/public/network/progress
 
 - 真正的**全球**公共观察入口(需要长期在线的观察者节点/Explorer); v1 只做"节点本地观察 + 可指定端点 + 静态签名快照"。
 - 链上强绑定 · 世界地图 · Agent 头像/主页 · 公开 DID 列表 · 任务内容流 · WebSocket/SSE。
+- **转账索引的边界 (2026-09-29, 逐条如实)**: 只覆盖**关注地址集**内的 **USDC** (`watchAddresses` 本机目前
+  **1 个地址**; 别的 token / 别的地址**不在口径内**, 快照里 `coverage` 逐字写明) · **只有转入成行**,
+  转出只在 `transfer_totals.outbound` 计数 (行是「钱进来」的视角) · 索引**落后真链 ~22 块 (≈44 秒)**, 不是实时
+  (`head_block_live` 读于导出时刻) · 每轮只回扫最后 **32 块**, 更长的重组会把旧行留在 `suspect` 里 (标出但保留)。
+- **「经 x402 流程」不是链上证明**: 它是「卖方本机台账 txHash ∩ 链上扫到的收款」的**交叉核**, 台账取不到就写
+  「未知 + 原因」(绝不写 0); 台账由卖方本机维护, 链上没有任何 x402 事件可自证 (口径 v1 的订单标识见
+  [x402-order-identity.md](./x402-order-identity.md))。
+- **页面口径**: 「链上索引 · 全量 · 逐行可核验」里的「全量」= **本索引覆盖范围**内的全量 (上面那句话写清了
+  覆盖什么), 不是全网/全链; 本机 24h 指标 (节点/智能体/钱包签名) 仍在快照契约里, 只是**这一屏不列**。
+

@@ -270,7 +270,7 @@ if [ "$VERIFY_FAIL" = "0" ] && [ "$BOOTSTRAP_OK" = "1" ]; then
   say ""
   ok "✅ Bolloon 安装完成: ${PKG}@${ACTUAL}"
   say "   入口: ${BOLLOON_BIN}"
-  say "💡 bolloon --version · bolloon doctor · bolloon update plan"
+  say "💡 bolloon --version · bolloon doctor · bolloon update (直接更新)"
   exit 0
 fi
 

@@ -296,6 +296,10 @@ describe('公开快照 · 同源计数与口径说明 (两个数字不许打架)
     ]);
     expect(keys).toEqual([
       'nodes', 'agents', 'active_agents', 'seen_last_24h', 'tasks', 'tasks_completed', 'tasks_verified', 'signatures', 'tasks_settled',
+      // ★ 2026-09-29 追加 (退款/争议单列 + 链上转入; 老字段顺序逐字不变, 新键一律排最后)
+      'tasks_refunded', 'tasks_disputed',
+      'payments_in', 'payments_in_total_atomic', 'payments_in_x402', 'payments_in_x402_total_atomic',
+      'payments_in_total_usdc', 'payments_in_x402_total_usdc', 'payments_in_currency',
     ]);
     for (const k of ['status', 'generated_at', 'fresh_until', 'scope', 'scope_label', 'totals', 'capabilities', 'recent_activity']) {
       expect(Object.keys(snap)).toContain(k);

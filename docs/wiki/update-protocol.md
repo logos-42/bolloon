@@ -95,15 +95,19 @@ npm | github-release | git | unknown
 
 ```text
 bolloon --version [verbose|json]     版本身份 (普通 / 诊断 / 机器可读)
-bolloon update                       只检查并给结论 (不安装任何东西)
-bolloon update plan                  更新计划 (要更新什么 / 不会动什么 / 风险检查 / 策略)
+bolloon update                       直接执行更新 (先打印计划与风险检查, 再真装; 检查/计划/执行三合一)
+bolloon update --dry-run             只读: 更新计划 (要更新什么 / 不会动什么 / 风险检查 / 策略), 一个字节都不动
 bolloon update status                状态 (当前/最新/通道/安装/最近检查/最近更新/失败/需重启/开关/锁)
 bolloon update history [N]           最近 N 次 (时间 · 版本变化 · 结果 · 耗时 · 原因)
-bolloon update now                   真正执行更新 (默认先打印计划)
-bolloon update now wait              等当前 Run 结束后再更新 (有长期任务时的默认建议)
-bolloon update now force             忽略"有长期任务在跑"的提醒
+bolloon update wait                  等当前 Run 结束后再更新 (有长期任务时的默认建议)
+bolloon update force                 忽略"有长期任务在跑"的提醒 (阻塞项仍然阻塞)
 bolloon doctor [json|offline]        安装入口 + 版本事实 + 更新状态 是否自洽
 ```
+
+**命名变更 (2026-09-28, leo 拍板)**: `update` 原本三个动作 —— `update`(只检查) / `update plan`(只出计划) / `update now`(才执行)。
+现在**合并成一个**: **`bolloon update` 直接执行更新**(先打印计划与风险检查, 再真装)。
+`plan` 的**只读位由 `--dry-run` 承接**(旧写法 `update plan` / `--plan` 仍等价于它 —— 只读意图绝不会静默变成写);
+`now` 已去掉(其意图 = 现在的默认行为)。下文「实跑记录」里出现的旧写法按此读。
 
 **退出码 (稳定约定)**: `0` 正常 · `1` 执行失败 · `2` 检查不可用 (离线 / registry 不可用 / 读不到本地版本)。
 —— `2` 的存在就是为了**把"没查到"和"没有更新"在脚本层面区分开**。
@@ -139,7 +143,7 @@ registry_unavailable | local_version_unknown | unsupported_installation
 
 ## 4. 更新计划与风险检查 (Phase 4)
 
-`bolloon update plan` 输出: 当前/目标版本 · 安装方式 · 通道 · **将更新** · **不会修改** · 需要重启 · 风险检查逐项 · 阻塞项 · 提醒项 · 三种策略。
+`bolloon update --dry-run` 输出: 当前/目标版本 · 安装方式 · 通道 · **将更新** · **不会修改** · 需要重启 · 风险检查逐项 · 阻塞项 · 提醒项 · 三种策略。
 
 **不会修改 (写进计划的承诺)**: `~/.bolloon/config.json` · `goals/` · `runs/` · `transactions/` · `skills/` · `sessions/` · `identity/`。
 
@@ -237,11 +241,11 @@ updateChannel (默认 stable)
 
 | # | 旧行为 | 新行为 | 为什么必须变 |
 | --- | --- | --- | --- |
-| 1 | 检测到新版 → 自动 `npm install -g` | **只通知** + 给出 `update plan / now` | Bolloon 有长期运行 / Supervisor / 持久化任务 / 支付恢复, 自动替换运行时可能打断正在执行的 Goal |
+| 1 | 检测到新版 → 自动 `npm install -g` | **只通知** + 给出 `bolloon update` | Bolloon 有长期运行 / Supervisor / 持久化任务 / 支付恢复, 自动替换运行时可能打断正在执行的 Goal |
 | 2 | 装完自动重启 | 默认不重启 (需 `autoRestart: true`) | 同上; 且重启会丢掉当前会话上下文 |
 | 3 | 网络失败 → "✅ 已是最新版本" | `offline` / `registry_unavailable` 明说**不等于最新** | 这是本次最危险的一条: 把"没查到"说成"最新"会让人以为升级完成了 |
 | 4 | 旧字段 `autoUpdate: true` 表示"自动检查+自动安装" | `autoUpdate` **只映射到 `checkUpdates`**, **绝不**映射成 `autoInstall` | 一次升级不能把"自动替换运行时"当成用户意愿 |
-| 5 | `bolloon update --now` 直接装 | `update` 默认只检查; `update now` 才装, 且先打印计划 | 先看计划再动手 |
+| 5 | `bolloon update` 直接装 | **采用** —— `update` 三合一后默认就执行(先打印计划与风险检查), 只读位是 `--dry-run` | 一条命令, 计划照样先看得到 |
 | 6 | `checkForUpdate` 节流时把缓存结论当作"刚查出来的" | `check_skipped` + `cachedStatus` 标明这是缓存里的哪条结论 | 避免时间戳骗人 |
 
 **旧语义怎么显式取回**: `autoInstall: true` (+ `autoRestart: true`) 或 `BOLLOON_AUTO_UPDATE=1`; 旧的 `--plan/--now/--json` 写法仍被接受。
@@ -258,9 +262,9 @@ updateChannel (默认 stable)
 4. `dist-tags.latest == 该版本` —— 否则: **"版本已上传但未公开为 latest (staged?), 用户 `npm i` 拿到的是旧版"**, 硬门失败
 5. tarball HTTP 200 + shasum/integrity 存在
 6. tarball 内 `package.json` 版本一致 + 含 `dist/cli-entry.js`
-7. (`--install-check`) 真 `npm install -g --prefix <tmp>` → `bolloon --version json` 可解析且版本一致 → 普通版 `--version` 含安装方式/目录/通道/上游 → `update plan json` 结构正确
+7. (`--install-check`) 真 `npm install -g --prefix <tmp>` → `bolloon --version json` 可解析且版本一致 → 普通版 `--version` 含安装方式/目录/通道/上游 → `update --dry-run json` 结构正确
 
-配套: `scripts/install.sh` 装完**自检** (`--version json` 报的版本 == 目标, 不等就报"发布/安装异常"并退出非 0); `scripts/upgrade.sh` 只是 `bolloon update now` 的包装 (不再直连 `npm install -g @latest`, 免得绕过计划/锁/校验/回滚)。
+配套: `scripts/install.sh` 装完**自检** (`--version json` 报的版本 == 目标, 不等就报"发布/安装异常"并退出非 0); `scripts/upgrade.sh` 只是 `bolloon update` 的包装 (不再直连 `npm install -g @latest`, 免得绕过计划/锁/校验/回滚)。
 
 > **0.4.28 的实况**: 2026-09-18 记录为"publish 退出码 0 但 registry 未公开 (暂存)"; 2026-09-19 复核 **已公开** —— `dist-tags.latest = 0.4.28`, `time[0.4.28] = 2026-09-19T06:10:13Z`, `versions` 尾三 `[0.4.26, 0.4.27, 0.4.28]`。这条待办可以关闭。
 
@@ -274,7 +278,7 @@ updateChannel (默认 stable)
 | Phase 1 版本身份三层 | ✅ | `bolloon --version` / `verbose` / `json` 真跑 (本机 development 安装报法正确) · 3 处硬编码版本号已消除 (`cli-entry`/`bin/bolloon.cjs`/`postinstall`) |
 | Phase 2 检查统一 | ✅ | `update-manager.checkForUpdate` 是唯一入口 (CLI / 启动后台 / `version_check.py` / `install.sh` / `update-cli` 都走它); 7 结论 + 优先级 + 错误分类有单测与真断网验收 |
 | Phase 3 自动更新 → 只通知 | ✅ | 默认三开关; `autoUpdate` 只映射 checkUpdates; 6 条行为变更逐条写明 |
-| Phase 4 更新前检查与计划 | ✅ | `update plan` 输出真跑; 10 项风险检查 (安装类 4 / registry 类 3 / 负载类 4, 其中负载 4 项的"不阻塞但改默认策略"有单测) |
+| Phase 4 更新前检查与计划 | ✅ | `update --dry-run` 输出真跑 (旧 `update plan`); 10 项风险检查 (安装类 4 / registry 类 3 / 负载类 4, 其中负载 4 项的"不阻塞但改默认策略"有单测) |
 | Phase 5 原子更新/失败恢复/回滚 | ⚠️ **按偏差落地** | 锁 + 临时校验 + 切换 + 验证 + 失败回滚全部真跑 (真 npm / 真 SIGKILL); **偏差**: 未手工实现"临时位置整树切换", 见 §5 |
 | Phase 6 更新后健康检查 | ✅ | `runHealthCheck` 8 项真读 (真起子进程跑 `--version json`), 分级 healthy/degraded/failed; 本机 doctor 实测 degraded (技能漂移) |
 | Phase 7 `--status/--history/doctor` | ✅ | 三个命令真跑; `doctor` 9 项含"npm 全局路径冲突""更新锁残留""上次更新异常中断""幽灵 Supervisor" |
@@ -288,11 +292,11 @@ updateChannel (默认 stable)
 - **运行时 (Node/npm/Git/Python) 的检查/安装/配置/验证** 不在本页 —— 见 [runtime-bootstrap-protocol.md](./runtime-bootstrap-protocol.md)
   (更新流程已接它的健康检查: 更新后 Git/Python 真执行验证不过 → `failed`, 不因 npm 装成功就宣布环境健康)
 - **多渠道 / 自动灰度 / 插件热更新 / 后台强制升级** —— 明确不做 (计划里就说不做); **例外**: "npm + GitHub 双源"已于 2026-09-25 落地 (见 §12, 只加源与交叉校验, 不做灰度)
-- **`update now wait` 没有后台守护进程**: 它只**记录**"等当前 Run 结束后再执行", 不会在 Run 结束时自动替用户更新 (自动替用户动运行时正是这次要收敛掉的东西)
+- **`update wait` 没有后台守护进程**: 它只**记录**"等当前 Run 结束后再执行", 不会在 Run 结束时自动替用户更新 (自动替用户动运行时正是这次要收敛掉的东西)
 - **beta/dev 通道没有独立 dist-tag**: 只有 stable 是真通道, `beta` 落到 `beta` tag 但 npm 上没有该 tag → 走 `latest`; 不假装有独立通道
   (dev 通道的双源口径见 §12: dev 走 **GitHub master HEAD + commit sha**, 仍然**不靠 npm dist-tag 假装**有独立通道)
 - **`release-binary` 安装方式只能识别, 不支持更新** (报 `unsupported_installation`) —— 目前没有发行二进制包, 不为此写实现
-- **`update now` 不会自动重启进程** (即使用户开着 `autoRestart`) —— CLI 场景明确提示"请重启"; 只有 Electron / 常驻宿主在 `autoInstall+autoRestart` 都开时才真重启
+- **`bolloon update` 不会自动重启进程** (即使用户开着 `autoRestart`) —— CLI 场景明确提示"请重启"; 只有 Electron / 常驻宿主在 `autoInstall+autoRestart` 都开时才真重启
 - **`--version verbose` 的"构建时间"是入口文件 mtime**, 不是真正的构建戳 (没有构建戳; 字段名里已标注来源 `buildTimeSource: 'entry-mtime'`)
 
 ---
@@ -308,7 +312,7 @@ updateChannel (默认 stable)
 | 变异验证 (双源) | `python3 scripts/verify-dual-source-mutations.py` | **6/6 判红**, 恢复后全绿 (见 §12.7) |
 | 类型 | `npx tsc --noEmit` | 0 错 |
 | 构建 | `npm run build:main` | 通过 |
-| 真命令 | `bolloon --version` / `update` / `update plan` / `update status` / `update history` / `doctor` | 见 §6 与 log |
+| 真命令 | `bolloon --version` / `update`(直接执行) / `update --dry-run` / `update status` / `update history` / `doctor` | 见 §6 与 log |
 | 全量回归 | `npx vitest run` | 见提交统计 |
 
 `scripts/verify-update-system.ts` 覆盖 (隔离 HOME + 隔离 npm prefix, **不触碰本机全局安装与 `~/.bolloon`**):
@@ -365,7 +369,7 @@ updateChannel (默认 stable)
 | `dev` | GitHub `master` HEAD (git ref) | **GitHub 是唯一源** | **`<package.json 版本>+dev.<commit sha 前 7>`** | `git-ref` —— **不用 semver**, 只判"是否同一 commit / 是否落后" |
 
 两套比较语义是**代码里的显式字段** (`ChannelKind = 'semver' | 'git-ref'`, `channelKindOf()`), 不是靠注释约定 ——
-`update status` / `update plan` / `--version json` 都会把 `channelKind` 打出来。
+`update status` / `update --dry-run` / `--version json` 都会把 `channelKind` 打出来。
 
 为什么 stable 仍以 npm 为权威: `dist-tags.latest` 是用户 `npm i -g` 真拿到的东西 (§8 第 4 项硬门就在验它)。
 GitHub 那条记录进来只做一件事: **证明"两条记录指向同一版"** —— 发布流程真的跑完了。
@@ -378,7 +382,7 @@ GitHub 那条记录进来只做一件事: **证明"两条记录指向同一版"*
 
 ```text
 bolloon update [--channel stable|dev]          检查 (默认 stable; 显式给了就忽略节流)
-bolloon update plan|status|history|now [--channel stable|dev]
+bolloon update [wait|force] | update status|history [N] | update --dry-run   [--channel stable|dev]
 ```
 
 - `--channel` **只覆盖本次进程**, 不落盘 (config 里的 `updateChannel` 仍是默认值)。
@@ -629,7 +633,7 @@ detail = npm latest=0.5.0 在 GitHub 上有同名记录 (Tag v0.5.0) — 两个�
 - dev: `0.5.0+dev.fb60ccf` — 比较的是 **git ref + commit sha**(版本号只作参考展示), 形如 `<版本>+dev.<sha7>`
 - 两源结论不一致 ⇒ `cross_check_mismatch`: **拒绝**, 不按 GitHub 的记录去装一个 npm 上不存在的版本
 
-### 13.4 一次更新的全部动作 (与桌面 `bolloon update now` 同语义)
+### 13.4 一次更新的全部动作 (与桌面 `bolloon update` 同语义)
 
 `检查` → `下载` → **校验 (shasum/摘要)** → 写 `staging` → **验证可启动** → **原子替换** (`current` ⇄ `previous`) → 再验证 → 落状态 → 需要重载才生效;
 任何一步失败 ⇒ **回滚** (`previous` 搬回 `current`) 且**如实说回滚到哪一版**。

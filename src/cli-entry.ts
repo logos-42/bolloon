@@ -77,7 +77,7 @@ ${BOLD}命令:${RESET}
   bolloon setup                     初始化向导 (你的称呼 + 模型供应商 + API key + 连通性测试)
   bolloon identity init             非交互建本机身份 (~/.bolloon/identity.json, 0600, 幂等; 新机器/第二实例用)
   bolloon identity show             看本机身份 (只出 DID/指纹, 绝不打印私钥)
-  bolloon update [plan|status|history|now]   检查更新 / 计划 / 状态 / 历史 / 执行 (默认只检查)
+  bolloon update [wait|force|--dry-run|status|history]   直接执行更新 (先打印计划与风险检查; 只看计划用 --dry-run)
   bolloon doctor                    安装入口 + 版本事实 + 更新状态自洽性诊断
   bolloon runtime [plan|install]    运行时 (Node/npm/Git/Python) 检查与安装
   bolloon model [name] [model]      列出 / 切换模型供应商 (如: bolloon model deepseek deepseek-v4-flash)
@@ -104,7 +104,6 @@ ${BOLD}示例:${RESET}
   bolloon --web              # 启动 Web UI
   bolloon --cli              # 命令行模式
   bolloon model              # 查看当前模型供应商
-  bolloon update             # 检查更新 (只读, 不改任何东西)
   bolloon update             # 直接执行更新 (先打印计划与风险检查)
   bolloon update --dry-run   # 只看计划, 不动任何东西
   bolloon doctor             # 我这台机器的 Bolloon 是否自洽

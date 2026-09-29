@@ -37,6 +37,8 @@ import * as crypto from 'crypto';
 import { DEFAULT_CONFIRMATIONS, LOCAL_DEV_CHAIN_ID } from './chain/chain-config.js';
 // 区块浏览器映射 (chainId → 公网浏览器); 认不出的链没有链接 —— 宁缺勿错, 不编死链
 import { ADDRESS_RE, EXPLORER_URL_RE, TX_HASH_RE, explorerTxUrl } from './chain/explorer.js';
+// 纯分类/折算 (零依赖: 不拖 ethers 进网页进程) —— 付款行的分类与折算都来自这里
+import { classifyTransfer, formatUnits, type TransferSummary, type TransferIndexEntry } from './chain/transfer-classify.js';
 // 「待接单任务」的数据源 = 本机公告板目录 (~/.bolloon/tasks/board)。只借**路径常量**,
 // 公告的解析/发布/接单一律留在 task-board.ts (这里不做第二套实现)。
 import { boardDir, REMOTE_CLAIMS_FILE } from './task-board.js';
@@ -129,8 +131,30 @@ export interface NetworkPulseTotals {
   tasks_verified: number | null;
   /** 钱包签名 = 本机签名审计账窗口内条数 (真实条数, 只计数不给内容); 无源 → null */
   signatures: number | null;
-  /** 托管结算口径 (released/refunded/expired/disputed) 的不同任务数 —— 链上索引权威值 */
+  /**
+   * ★ 2026-09-29 收窄: **只有托管释放给卖方 (ReleasedV2) 的不同任务数**才算「已结算」——
+   * 旧口径把 released/refunded/expired/disputed 四类并成一个数, 页面上就出现
+   * 「已结算 5 > 已完成 3」这种假读数 (5 = 释放 3 + 退款 2)。退款/争议/过期现在各占一格。
+   */
   tasks_settled: number | null;
+  /** 争议后退款 (RefundedV2) 的不同任务数 —— **不是成交**; 链上口径不可用 → null */
+  tasks_refunded?: number | null;
+  /** 争议中 (DisputedV2, 资金冻结) 的不同任务数; 链上口径不可用 → null */
+  tasks_disputed?: number | null;
+  /** 关注地址集内收到的 USDC 转账笔数 (含退款/自有转入, 逐行可核验); 未配置/不可用 → null */
+  payments_in?: number | null;
+  /** 上面这些转入的金额合计 (原子单位, 整数; 精度由 `transfer_totals.token_decimals` 给) */
+  payments_in_total_atomic?: number | null;
+  /** 其中**经 x402 流程**的笔数 (卖方端点台账交叉核); 台账拿不到 → null (未知, 不是 0) */
+  payments_in_x402?: number | null;
+  /** 其中经 x402 流程的金额合计 (原子单位); 同上 */
+  payments_in_x402_total_atomic?: number | null;
+  /** 展示用: 转入合计的十进制写法 (不参与门禁判定) */
+  payments_in_total_usdc?: string | null;
+  /** 展示用: 其中经 x402 流程的十进制写法 */
+  payments_in_x402_total_usdc?: string | null;
+  /** 计价币种符号 (如 USDC); 无源 → null */
+  payments_in_currency?: string | null;
 }
 
 export interface NetworkPulseSnapshot {
@@ -166,6 +190,29 @@ export interface NetworkPulseSnapshot {
   activity_totals: ActivityTotals;
   /** ★ 上表各行属于哪条链 (公开页不许把本机开发链的行读成公网活动) */
   chain_id_scope: ChainIdScope;
+  /**
+   * ★ 链上转入的分桶明细 (2026-09-29): 因 4 笔转入里既有**争议退款**、又有**自己钱包充值**,
+   * 只看总数会把它们读成"收入" —— 所以分桶计数与分桶金额都在这里, 页面按桶标注。
+   */
+  transfer_totals?: {
+    configured: boolean;
+    reason: string;
+    token_symbol: string;
+    token_decimals: number;
+    inbound: number;
+    inbound_display: string;
+    inbound_total_atomic: string;
+    by_class: { escrow_settlement: number; self_transfer: number; external_payment: number };
+    by_class_atomic: { escrow_settlement: string; self_transfer: string; external_payment: string };
+    outbound: number;
+    from_block: number;
+    last_synced_block: number;
+    pending_observation: number;
+  } | null;
+  /** ★ 卖方端点只读汇总的取数状态 (available=false ⇒ 「经 x402 流程」未知, 不是 0) */
+  x402_ledger?: { available: boolean; reason: string; endpoint: string | null; fetched_at: number | null; count: number | null } | null;
+  /** ★ 链上索引的覆盖口径: 覆盖什么 · 起止块 · 落后多少块 (公开页必须显示, 不许暗示"实时全网") */
+  index_scope?: IndexScope | null;
   /**
    * ★ 本节点公告板上**未认领且未过期**的任务 (公开「待接单任务」)。
    * 每行只有白名单 7 个字段 (capability/budget/currency/network/deadline/claimed/announcementId 前 8 位)
@@ -361,6 +408,12 @@ export interface SnapshotOptions {
   force?: boolean;
   /** 观察层不可用时置 true → 返回 unavailable */
   unavailable?: boolean;
+  /** 导出时刻读到的真链 head (只用于 index_scope.lag_blocks; 读不到 = null) */
+  liveHeadBlock?: number | null;
+  /** 单测注入: 读链上索引 / 转账索引 / 卖方端点汇总缓存 (见 ConfirmedActivityQuery) */
+  readIndex?: ConfirmedActivityQuery['readIndex'];
+  readTransfers?: ConfirmedActivityQuery['readTransfers'];
+  readSellerSummary?: ConfirmedActivityQuery['readSellerSummary'];
 }
 
 /** 纯函数: 从事件列表算出快照 (便于单测; 不做 IO) */
@@ -551,10 +604,18 @@ export async function emitTradePulse(before: any, after: any, h?: string): Promi
 /** 冻结形状: 活动行上限 */
 export const CONFIRMED_ACTIVITY_LIMIT = PULSE_LIMITS.maxConfirmedActivity;
 
-export type ConfirmedActivityKind = 'task_created' | 'task_accepted' | 'task_completed' | 'trade_settled' | 'trade_verified';
-export type ConfirmedActivityState = 'active' | 'released' | 'refunded' | 'expired' | 'disputed' | 'unknown';
+export type ConfirmedActivityKind = 'task_created' | 'task_accepted' | 'task_completed' | 'trade_settled' | 'trade_verified' | 'payment_in';
+export type ConfirmedActivityState = 'active' | 'released' | 'refunded' | 'expired' | 'disputed' | 'paid' | 'unknown';
 export type ConfirmedActivityFinality = 'observed' | 'confirmed' | 'finalized';
 export type ConfirmedActivitySource = 'chain-index' | 'pulse-events' | 'none';
+
+/**
+ * 付款行 (kind='payment_in') 的**分类** (见 chain/transfer-index.ts 的 classifyTransfer):
+ *   · escrow_settlement  from == escrow 合约 → 争议退款/释放 (钱退回, **不是收入**)
+ *   · self_transfer      from ∈ 自己地址集   → 转入(非销售)
+ *   · external_payment   其余               → 外部付款 (与卖方端点台账对上的加标 x402)
+ */
+export type PaymentClass = 'escrow_settlement' | 'self_transfer' | 'external_payment';
 
 /** 冻结形状的一行 (老 9 个字段名/顺序逐字固定; 2026-09-23 起链上索引行**追加** 4 个可核验字段) */
 export interface ConfirmedActivityRow {
@@ -588,6 +649,22 @@ export interface ConfirmedActivityRow {
   contract?: string;
   /** 区块浏览器**交易**链接; 该链**没有**已知公网浏览器 (如本机 31337) → 这个键整个不存在 */
   explorer_tx?: string;
+  // ── 2026-09-29 追加 (链上交互索引区: 类型/金额/付款分类; 都是**可选**, 老消费方不受影响) ──
+  /** 付款行的分类 (kind='payment_in' 才有) */
+  class?: PaymentClass;
+  /** 金额 (原子单位字符串; 付款行 = USDC Transfer 的 value; 任务行 = escrow 金额, 索引里没有就整个键不出现) */
+  amount_atomic?: string;
+  /** 金额的可读写法 (按 token 精度折算, 纯整数运算) */
+  amount_display?: string;
+  /** 计价币种符号 (只写符号; **地址不进页面/快照字段**) */
+  currency?: string;
+  /**
+   * 这笔收款是否**经 x402 流程** (txHash 与卖方端点只读汇总交叉核对过)。
+   *   true  = 台账里有 → 「经 x402 流程」
+   *   false = 台账拿得到、但里面没有这笔 → 不是 x402 流程
+   *   **键整个不出现** = 台账拿不到 → 口径未知 (绝不当 false)
+   */
+  x402?: boolean;
 }
 
 export interface ConfirmedActivityGates { confirmed: number; finalized: number }
@@ -683,6 +760,8 @@ export interface ChainActivitySourceEntry {
   suspect?: boolean;
   /** 本节点首次观察到该事件的时间 */
   firstSeenAt?: number | null;
+  /** 事件参数 (索引条目里就有; 只用来取 **金额** 与 **计价币种地址**(折算成符号后才出行), 其余不进快照) */
+  args?: Record<string, string>;
 }
 
 /**
@@ -704,6 +783,10 @@ export function buildConfirmedActivityFromIndex(
     limit?: number;
     /** 链配置里的 escrow **合约**地址 (索引文件顶层字段); 缺/非法 → 不给合约链接 (宁缺勿错) */
     escrowAddress?: string | null;
+    /** 计价 token 地址 (小写; 用来把 args.paymentAsset 折成**符号** —— 地址本身不进快照) */
+    tokenAddress?: string | null;
+    /** token 精度 (折算金额用; 缺省 6) */
+    tokenDecimals?: number | null;
   } = {},
 ): ConfirmedActivityRow[] {
   const gates = normalizeActivityGates(opts.gates);
@@ -713,6 +796,9 @@ export function buildConfirmedActivityFromIndex(
   // escrow 合约地址白名单 (唯一权威): 只有索引文件自己记的这个地址算数, 别的地址一律不当合约
   const escrow = typeof opts.escrowAddress === 'string' ? opts.escrowAddress.toLowerCase() : '';
   const escrowOk = ADDRESS_RE.test(escrow) ? escrow : '';
+  const token = typeof opts.tokenAddress === 'string' ? opts.tokenAddress.toLowerCase() : '';
+  const tokenOk = ADDRESS_RE.test(token) ? token : '';
+  const decimals = Number.isInteger(Number(opts.tokenDecimals)) && Number(opts.tokenDecimals) >= 0 ? Number(opts.tokenDecimals) : 6;
   const out: Array<{ row: ConfirmedActivityRow; block: number; logIndex: number }> = [];
 
   for (const e of Array.isArray(entries) ? entries : []) {
@@ -735,6 +821,11 @@ export function buildConfirmedActivityFromIndex(
     // 浏览器链接: 该链没有已知公网浏览器 → 返回 null → 键整个不出现 (不编 href="#")
     // 只有**交易**链接 (explorer_tx); 合约地址只在数据里 (contract), 不生成链接 (2026-09-23 收窄)
     const explorerTx = explorerTxUrl(chainId, txHash);
+    // 金额 (2026-09-29): 只从 args.amount 取 (链上事实); 计价地址先折成**符号**再出行 —— 地址不进快照
+    const argsAmt = String((e as any).args?.amount ?? '');
+    const assetAddr = String((e as any).args?.paymentAsset ?? '').toLowerCase();
+    const currency = tokenOk && assetAddr === tokenOk ? 'USDC' : '';
+    const amountAtomic = /^[0-9]+$/.test(argsAmt) ? argsAmt : '';
     out.push({
       block, logIndex,
       row: {
@@ -751,6 +842,8 @@ export function buildConfirmedActivityFromIndex(
         tx_hash: txHash,
         ...(contract ? { contract } : {}),
         ...(explorerTx ? { explorer_tx: explorerTx } : {}),
+        ...(amountAtomic ? { amount_atomic: amountAtomic, amount_display: formatUnits(amountAtomic, decimals) } : {}),
+        ...(amountAtomic && currency ? { currency } : {}),
       },
     });
   }
@@ -813,6 +906,84 @@ export interface ConfirmedActivityResult {
   source: ConfirmedActivitySource;
   rows: ConfirmedActivityRow[];
   gates: ConfirmedActivityGates;
+  /** 关注地址集内转账的汇总 (链上口径; 索引不可用/未配置 → null) */
+  transfers?: TransferSummary | null;
+  /** 卖方端点只读汇总的**取数状态** (available=false 时 x402 口径未知 —— 不许当 0) */
+  seller_summary?: { available: boolean; reason: string; fetched_at: number | null; endpoint: string | null; count: number | null } | null;
+  /** escrow 链上索引的**覆盖信息** (给 index_scope 用: 起块/最后扫描块/行数) */
+  index_info?: { chainId: number; networkName: string; escrowAddress: string; deploymentBlock: number; lastSyncedBlock: number; headBlock: number | null; rows: number; pageSize: number } | null;
+}
+
+/**
+ * 转账索引条目 → 付款行 (**纯函数**)。
+ *   · 只出**转入**行 (to ∈ 关注地址集); 出账行不进「链上转入」计数
+ *   · 分类走 classifyTransfer (from == escrow → escrow 退款/释放; from ∈ 自己地址集 → 转入(非销售); 其余 → 外部付款)
+ *   · x402 标记只在**台账拿得到**时才写 (true/false); 台账拿不到 → 键整个不出现 (口径未知)
+ *   · task 恒为空串: 一笔 ERC-20 转账链上**不带** taskKey ⇒ 不猜是哪个任务 (页面/表格靠 tx 定位)
+ *   · tx_hash / explorer_tx 照旧 (公开可核验); from/to 地址一律不出行 (隐私门也不放行)
+ */
+export function buildPaymentRowsFromTransfers(
+  entries: Array<Pick<TransferIndexEntry, 'blockNumber' | 'blockHash' | 'logIndex' | 'txHash' | 'from' | 'to' | 'value' | 'direction' | 'confirmations' | 'finality' | 'firstSeenAt' | 'suspect'>>,
+  opts: {
+    gates?: Partial<ConfirmedActivityGates> | null;
+    headBlock?: number | null;
+    chainId?: number;
+    limit?: number;
+    watchAddresses?: string[];
+    ownAddresses?: string[];
+    escrowAddress?: string | null;
+    tokenSymbol?: string | null;
+    tokenDecimals?: number | null;
+    /** txHash(小写) → 是否出现在卖方端点台账里; 传 null/undefined = 台账拿不到 (x402 键不出现) */
+    x402Txs?: Record<string, unknown> | null;
+  } = {},
+): ConfirmedActivityRow[] {
+  const gates = normalizeActivityGates(opts.gates);
+  const limit = activityLimit(opts.limit);
+  const chainId = Number.isInteger(Number(opts.chainId)) && Number(opts.chainId) >= 0 ? Number(opts.chainId) : 0;
+  const head = Number.isInteger(Number(opts.headBlock)) && Number(opts.headBlock) >= 0 ? Number(opts.headBlock) : null;
+  const decimals = Number.isInteger(Number(opts.tokenDecimals)) && Number(opts.tokenDecimals) >= 0 ? Number(opts.tokenDecimals) : 6;
+  const symbol = String(opts.tokenSymbol || '');
+  const cfg = { watchAddresses: opts.watchAddresses || [], ownAddresses: opts.ownAddresses || [], escrowAddress: opts.escrowAddress || '' };
+  const out: Array<{ row: ConfirmedActivityRow; block: number; logIndex: number }> = [];
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!e || e.suspect === true) continue;
+    const txHash = String(e.txHash || '').toLowerCase();
+    if (!/^0x[0-9a-f]{64}$/.test(txHash)) continue;
+    const block = Number(e.blockNumber);
+    const logIndex = Number(e.logIndex);
+    if (!Number.isInteger(block) || block < 0 || !Number.isInteger(logIndex) || logIndex < 0) continue;
+    const at = isoSeconds(Number(e.firstSeenAt));
+    if (!at) continue;
+    const cls = classifyTransfer({ from: String(e.from || ''), to: String(e.to || ''), direction: e.direction }, cfg as any);
+    if (cls === 'outbound') continue;                                  // 出账不进「链上转入」
+    const confirmations = head == null ? Math.max(0, Number(e.confirmations) || 0) : Math.max(0, head - block + 1);
+    const explorerTx = explorerTxUrl(chainId, txHash);
+    const value = /^[0-9]+$/.test(String(e.value || '')) ? String(e.value) : '';
+    const x402Known = !!opts.x402Txs && typeof opts.x402Txs === 'object';
+    out.push({
+      block, logIndex,
+      row: {
+        task: '',                                                       // ERC-20 转账不带 taskKey → 不猜
+        kind: 'payment_in',
+        state: 'paid',
+        chain_id: chainId,
+        block,
+        tx: anonShortRef(txHash, 'tx'),
+        confirmations,
+        finality: finalityFromConfirmations(confirmations, gates),   // suspect 行在上面就 continue 了
+        at,
+        tx_hash: txHash,
+        ...(explorerTx ? { explorer_tx: explorerTx } : {}),
+        class: cls,
+        ...(value ? { amount_atomic: value, amount_display: formatUnits(value, decimals) } : {}),
+        ...(value && symbol ? { currency: symbol } : {}),
+        ...(x402Known ? { x402: Object.prototype.hasOwnProperty.call(opts.x402Txs, txHash) } : {}),
+      },
+    });
+  }
+  out.sort((a, b) => b.block - a.block || b.logIndex - a.logIndex);
+  return out.slice(0, limit).map((x) => x.row);
 }
 
 /** 纯函数降级: 直接从脉冲事件算活动行 (没有索引时用, source 如实写 pulse-events / none) */
@@ -832,6 +1003,32 @@ async function readChainIndex(home?: string): Promise<unknown | null> {
   }
 }
 
+/** 惰性加载转账索引 (fs + RPC provider; 只读已落盘索引, 不发 RPC) */
+let transferQueryModule: {
+  readTransferIndex: (home?: string) => any;
+  readTransferWatchConfig: (home?: string) => any;
+  summarizeTransfers: (state: any, cfg: any) => TransferSummary;
+} | null = null;
+async function readTransferIndexFile(home?: string): Promise<{ state: any; cfg: any; summary: TransferSummary } | null> {
+  try {
+    if (!transferQueryModule) transferQueryModule = (await import('./chain/transfer-index.js')) as any;
+    const m = transferQueryModule!;
+    const cfg = m.readTransferWatchConfig(home);
+    const state = m.readTransferIndex(home);
+    return { state, cfg, summary: m.summarizeTransfers(state, cfg) };
+  } catch {
+    return null;
+  }
+}
+
+/** 卖方端点只读汇总的**缓存** (由 scripts/x402-seller-summary.ts 取数落盘; 这里只读盘, 不发网络) */
+export function readSellerSummaryCacheFile(home?: string): any | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(home || os.homedir(), '.bolloon', 'x402-seller-summary.json'), 'utf8'));
+    return raw && typeof raw === 'object' ? raw : null;
+  } catch { return null; }
+}
+
 export interface ConfirmedActivityQuery {
   home?: string;
   /** 脉冲事件 (降级路径用; 会在内部按 24h 窗口过滤) */
@@ -840,10 +1037,17 @@ export interface ConfirmedActivityQuery {
   limit?: number;
   /** 单测注入: 读链上索引 (抛错 / 返回空 = 索引不可用 → 降级到脉冲事件) */
   readIndex?: (home?: string) => unknown | Promise<unknown>;
+  /** 单测注入: 读转账索引 (缺省 = 真读 ~/.bolloon/chain/transfers.json) */
+  readTransfers?: (home?: string) => Promise<{ state: any; cfg: any; summary: TransferSummary } | null> | { state: any; cfg: any; summary: TransferSummary } | null;
+  /** 单测注入: 卖方端点汇总缓存 (缺省 = 真读 ~/.bolloon/x402-seller-summary.json) */
+  readSellerSummary?: (home?: string) => any | null;
 }
 
 /**
- * 解析活动行 (唯一入口): **先链上索引, 再脉冲降级**, 并如实报出来源。
+ * 解析活动行 (唯一入口): **先链上索引 (escrow 事件 + 关注地址集转账), 再脉冲降级**,
+ * 并如实报出来源。
+ *   2026-09-29: 表里现在有**两类行** —— 任务行 (escrow 事件) 与付款行 (USDC 转账),
+ *   同一张表、同一套排序 (块号/时间 新→旧), 不拆成两块。
  * 索引文件不存在/读不出/没有任何可用行 → 退回脉冲事件; 两边都没有 → none (不编行)。
  */
 export async function resolveConfirmedActivity(q: ConfirmedActivityQuery): Promise<ConfirmedActivityResult> {
@@ -857,16 +1061,75 @@ export async function resolveConfirmedActivity(q: ConfirmedActivityQuery): Promi
   try {
     const file: any = await reader(q.home);
     const entries: ChainActivitySourceEntry[] = Array.isArray(file?.entries) ? file.entries : [];
-    if (entries.length > 0) {
+
+    // ①b 转账索引 (关注地址集内收款) + 卖方端点汇总缓存 (x402 交叉核)
+    const tReader = q.readTransfers ?? readTransferIndexFile;
+    let transfers: { state: any; cfg: any; summary: TransferSummary } | null = null;
+    try { transfers = await tReader(q.home); } catch { transfers = null; }
+    const sellerCache = (q.readSellerSummary ?? readSellerSummaryCacheFile)(q.home);
+    const sellerOk = !!sellerCache && sellerCache.available === true && sellerCache.txs && typeof sellerCache.txs === 'object';
+    const x402Txs = sellerOk ? sellerCache.txs : null;
+
+    if (entries.length > 0 || (transfers && transfers.state?.entries?.length > 0)) {
       const gates = normalizeActivityGates(file?.confirmations);
-      const rows = buildConfirmedActivityFromIndex(entries, {
-        gates,
-        headBlock: file?.headBlock,
-        chainId: file?.chainId,
-        limit,
-        escrowAddress: file?.escrowAddress,        // 合约地址白名单 = 索引文件自己的部署身份
-      });
-      if (rows.length > 0) return { source: 'chain-index', rows, gates };
+      const taskRows = entries.length > 0
+        ? buildConfirmedActivityFromIndex(entries, {
+          gates,
+          headBlock: file?.headBlock,
+          chainId: file?.chainId,
+          limit,
+          escrowAddress: file?.escrowAddress,        // 合约地址白名单 = 索引文件自己的部署身份
+          tokenAddress: (file?.tokenAddress ?? transfers?.cfg?.tokenAddress) || null,
+          tokenDecimals: (file?.tokenDecimals ?? transfers?.cfg?.tokenDecimals) ?? null,
+        })
+        : [];
+      const paymentRows = transfers && transfers.state?.entries?.length > 0
+        ? buildPaymentRowsFromTransfers(transfers.state.entries, {
+          gates,
+          headBlock: transfers.state.headBlock ?? file?.headBlock,
+          chainId: transfers.state.chainId ?? file?.chainId,
+          limit,
+          watchAddresses: transfers.state.watchAddresses,
+          ownAddresses: transfers.cfg.ownAddresses,
+          escrowAddress: transfers.state.chainId ? (transfers.cfg.escrowAddress || file?.escrowAddress) : transfers.cfg.escrowAddress,
+          tokenSymbol: transfers.state.tokenSymbol,
+          tokenDecimals: transfers.state.tokenDecimals,
+          x402Txs,                                    // null = 台账拿不到 → 行里不写 x402 键 (口径未知)
+        })
+        : [];
+      // 两类行合并: 同一张表、同一套排序 (块号 desc, logIndex desc); 上限就是冻结的 25 行
+      const merged = [...taskRows, ...paymentRows]
+        .sort((a, b) => (Number(b.block) - Number(a.block)) || (String(b.tx).localeCompare(String(a.tx))))
+        .slice(0, limit);
+      if (merged.length > 0) {
+        return {
+          source: 'chain-index',
+          rows: merged,
+          gates,
+          transfers: transfers ? transfers.summary : null,
+          index_info: entries.length > 0
+            ? {
+              chainId: Number(file?.chainId) || 0,
+              networkName: String(file?.networkName || 'unknown'),
+              escrowAddress: String(file?.escrowAddress || ''),
+              deploymentBlock: Number(file?.deploymentBlock) || 0,
+              lastSyncedBlock: Number(file?.lastSyncedBlock) || 0,
+              headBlock: Number.isInteger(Number(file?.headBlock)) ? Number(file.headBlock) : null,
+              rows: entries.length,
+              pageSize: Number(file?.pageSize) || 2000,
+            }
+            : null,
+          seller_summary: sellerCache
+            ? {
+              available: sellerOk,
+              reason: String(sellerCache.reason || ''),
+              fetched_at: Number.isFinite(Number(sellerCache.fetched_at)) ? Number(sellerCache.fetched_at) : null,
+              endpoint: sellerCache.endpoint ? String(sellerCache.endpoint) : null,
+              count: sellerOk ? Number(sellerCache.count) : null,
+            }
+            : { available: false, reason: '本机没有卖方端点汇总缓存 (~/.bolloon/x402-seller-summary.json 不存在) → 「经 x402 流程」口径未知', fetched_at: null, endpoint: null, count: null },
+        };
+      }
     }
   } catch { /* 索引不可用 → 降级 (来源会在快照里标明) */ }
 
@@ -912,11 +1175,14 @@ export function isPublicChainId(chainId: number): boolean {
 }
 
 /** totals.* 的**逐字段**口径 (唯一实现: 每个数各自说清自己来自哪) */
-export type TotalsFieldSource = 'pulse-events' | 'chain-index' | 'signature-audit' | 'none';
+export type TotalsFieldSource = 'pulse-events' | 'chain-index' | 'signature-audit' | 'x402-ledger' | 'none';
 export type TotalsFieldWindow = 'window-24h' | 'full' | 'unknown';
 export type TotalsFieldKey =
   | 'nodes' | 'agents' | 'active_agents' | 'seen_last_24h'
-  | 'tasks' | 'tasks_completed' | 'tasks_verified' | 'tasks_settled' | 'signatures';
+  | 'tasks' | 'tasks_completed' | 'tasks_verified' | 'tasks_settled' | 'signatures'
+  // ★ 2026-09-29 追加 (退款/争议单列 + 链上转入)
+  | 'tasks_refunded' | 'tasks_disputed'
+  | 'payments_in' | 'payments_in_total_atomic' | 'payments_in_x402' | 'payments_in_x402_total_atomic';
 
 /**
  * 某个顶部计数的口径 (2026-09-24)。
@@ -954,8 +1220,31 @@ export interface ActivityTotals {
   tasks: number;
   /** 交付完成口径: kind = task_completed 的不同任务数 */
   tasks_completed: number;
-  /** 托管结算口径: kind = trade_settled 的不同任务数 (released/refunded/expired/disputed) */
+  /**
+   * ★ 2026-09-29 收窄 (leo: 退款不得算成已结算): 托管**释放给卖方** (state='released') 的不同任务数
+   * —— 只有 ReleasedV2 那种「钱真从合约出给卖方」才算。退款/过期/争议**各算各的**, 不再并进这里。
+   */
   tasks_settled: number;
+  /** 争议后退款 (state='refunded') 的不同任务数 —— **不是成交** */
+  tasks_refunded: number;
+  /** 争议中 (state='disputed', 资金冻结) 的不同任务数 */
+  tasks_disputed: number;
+  /** 托管到期 (state='expired') 的不同任务数 */
+  tasks_expired: number;
+  /** 付款行 (kind='payment_in') 的**转入**笔数 = 行数 (一笔转账一行) */
+  payments_in: number;
+  /** 转入金额合计 (原子单位字符串; 纯整数运算) */
+  payments_in_total_atomic: string;
+  /** 转入里分类为 `external_payment` 的笔数 (外部付款) */
+  payments_in_external: number;
+  /** 转入里分类为 `self_transfer` 的笔数 (转入(非销售)) */
+  payments_in_self: number;
+  /** 转入里分类为 `escrow_settlement` 的笔数 (escrow 退款/释放) */
+  payments_in_escrow: number;
+  /** 其中**经 x402 流程**的笔数 (行里带 x402=true); 口径未知 (行里没有 x402 键) → null */
+  payments_in_x402: number | null;
+  /** 其中经 x402 流程的金额合计 (原子单位; 未知 → null) */
+  payments_in_x402_total_atomic: string | null;
   /** finality 三档分布 (三档之和 === rows, 没有第四条腿) */
   by_finality: { observed: number; confirmed: number; finalized: number };
   /** 与行里 finality 同一口径的确认门槛 */
@@ -991,13 +1280,38 @@ export function summarizeActivityRows(
   const list = (Array.isArray(rows) ? rows : []).filter((r) => !!r);
   const tasks = new Set<string>();
   const completed = new Set<string>();
-  const settled = new Set<string>();
+  const settled = new Set<string>();       // 只有 released (钱真释放给卖方)
+  const refunded = new Set<string>();
+  const disputed = new Set<string>();
+  const expired = new Set<string>();
   const by_finality = { observed: 0, confirmed: 0, finalized: 0 };
+  let paymentsIn = 0, paymentsExternal = 0, paymentsSelf = 0, paymentsEscrow = 0;
+  let paidAtomic = 0n, x402Atomic = 0n;
+  let x402Count = 0, x402Known = 0;
   for (const r of list) {
     const t = String(r.task || '');
     if (t) tasks.add(t);
     if (t && r.kind === 'task_completed') completed.add(t);
-    if (t && r.kind === 'trade_settled') settled.add(t);
+    if (t && r.kind === 'trade_settled') {
+      // ★ 2026-09-29: 按 **state** 分桶 —— 只有 released 才是"已结算(释放给卖方)";
+      //   退款/争议/过期各算各的 (旧实现把四类并成一个 5 ⇒ 出现「已结算 5 > 已完成 3」的假读数)
+      if (r.state === 'released') settled.add(t);
+      else if (r.state === 'refunded') refunded.add(t);
+      else if (r.state === 'disputed') disputed.add(t);
+      else if (r.state === 'expired') expired.add(t);
+    }
+    if (r.kind === 'payment_in') {
+      paymentsIn++;
+      const v = /^[0-9]+$/.test(String((r as any).amount_atomic ?? '')) ? BigInt((r as any).amount_atomic) : 0n;
+      paidAtomic += v;
+      if (r.class === 'external_payment') paymentsExternal++;
+      else if (r.class === 'self_transfer') paymentsSelf++;
+      else if (r.class === 'escrow_settlement') paymentsEscrow++;
+      if (Object.prototype.hasOwnProperty.call(r, 'x402')) {
+        x402Known++;
+        if ((r as any).x402 === true) { x402Count++; x402Atomic += v; }
+      }
+    }
     if (r.finality === 'observed' || r.finality === 'confirmed' || r.finality === 'finalized') {
       by_finality[r.finality] += 1;
     }
@@ -1008,8 +1322,128 @@ export function summarizeActivityRows(
     tasks: tasks.size,
     tasks_completed: completed.size,
     tasks_settled: settled.size,
+    tasks_refunded: refunded.size,
+    tasks_disputed: disputed.size,
+    tasks_expired: expired.size,
+    payments_in: paymentsIn,
+    payments_in_total_atomic: paidAtomic.toString(),
+    payments_in_external: paymentsExternal,
+    payments_in_self: paymentsSelf,
+    payments_in_escrow: paymentsEscrow,
+    // x402 口径: **所有**付款行都带 x402 键才算"知道"; 否则 null (未知 ≠ 0)
+    payments_in_x402: x402Known === paymentsIn ? x402Count : null,
+    payments_in_x402_total_atomic: x402Known === paymentsIn ? x402Atomic.toString() : null,
     by_finality,
     gates: normalizeActivityGates(opts.gates),
+  };
+}
+
+/**
+ * ★ 链上索引的**覆盖口径** (2026-09-29 leo:「网关要显示的是所有交互」/「落后要显示出来」)。
+ *
+ * 这一块回答三件事, 每一件都必须能被独立核验:
+ *   ① 这份索引**覆盖什么** —— 「本索引覆盖的 Base 主网上该合约 (AgentEscrow 事件) 与该地址集
+ *      (USDC 转账) 内的全部交互」; 消息/心跳/任务报文**不上链 ⇒ 不在口径内** (leo 拍板: 先不做);
+ *   ② **从哪到哪** —— 每个源的起块 + 最后扫描块 (不是"实时全网");
+ *   ③ **落后多少块** —— 真链 head (导出时刻读, 读不到 = null 且如实说明) − 最后扫描块。
+ * 隐私: 这里只有数字与文字 —— 地址/哈希**一个都不出现** (合约地址也不写, 只写合约名)。
+ */
+export interface IndexScopeSource {
+  kind: 'escrow-contract' | 'erc20-transfers';
+  label: { zh: string; en: string };
+  from_block: number;
+  last_scanned_block: number;
+  rows: number;
+  token_symbol?: string;
+  token_decimals?: number;
+  watch_addresses_count?: number;
+  /** 该源自己的分页上限 (eth_getLogs 单次最多扫多少块) */
+  scan_chunk_blocks?: number;
+}
+export interface IndexScope {
+  source: 'chain-index';
+  chain_id: number;
+  network_name: string;
+  network_label: { zh: string; en: string } | null;
+  coverage: { zh: string; en: string };
+  sources: IndexScopeSource[];
+  /** 所有源里**最小**的起块 = 这份索引的覆盖下界 */
+  from_block: number;
+  /** 所有源里**最小**的最后扫描块 = 这份索引真正"扫到哪" */
+  last_scanned_block: number;
+  head_block_at_sync: number | null;
+  /** 导出时刻读到的**真链 head** (读不到 → null, 不拿同步时的高度冒充) */
+  head_block_live: number | null;
+  /** 落后块数 = head_block_live − last_scanned_block (任一未知 → null) */
+  lag_blocks: number | null;
+  note: { zh: string; en: string };
+}
+
+/** 覆盖口径 (纯函数; 不发网络: liveHeadBlock 由调用方(导出脚本)读好传入) */
+export function buildIndexScope(input: {
+  chainId?: number | null;
+  networkName?: string | null;
+  escrow?: { deploymentBlock: number; lastSyncedBlock: number; headBlock?: number | null; rows: number; pageSize?: number } | null;
+  transfers?: TransferSummary | null;
+  liveHeadBlock?: number | null;
+}): IndexScope | null {
+  const srcs: IndexScopeSource[] = [];
+  if (input.escrow && Number.isFinite(Number(input.escrow.deploymentBlock))) {
+    srcs.push({
+      kind: 'escrow-contract',
+      label: { zh: 'AgentEscrow 合约事件 (创建/提交证明/释放/争议/退款/到期)', en: 'AgentEscrow contract events (created / proof / released / disputed / refunded / expired)' },
+      from_block: Number(input.escrow.deploymentBlock),
+      last_scanned_block: Number(input.escrow.lastSyncedBlock),
+      rows: Number(input.escrow.rows) || 0,
+      scan_chunk_blocks: Number(input.escrow.pageSize) || 2000,
+    });
+  }
+  const t = input.transfers || null;
+  // 只有**真同步过**的转账索引才算一个源: 从未同步 (from_block 0 / last_synced_block -1) 时不列它
+  // —— 列出来会出现「扫到哪 (-1) 比起块 (0) 还早」这种说不出覆盖范围的源 (导出前的自检就该判红)。
+  if (t && t.configured && Number(t.from_block) > 0 && Number(t.last_synced_block) >= Number(t.from_block)) {
+    srcs.push({
+      kind: 'erc20-transfers',
+      label: { zh: `关注地址集内的 ${t.token_symbol || 'ERC20'} 转账 (转入/转出)`, en: `${t.token_symbol || 'ERC20'} transfers in/out of the watched address set` },
+      from_block: t.from_block,
+      last_scanned_block: t.last_synced_block,
+      rows: t.entries,
+      token_symbol: t.token_symbol,
+      token_decimals: t.token_decimals,
+      watch_addresses_count: t.watch_addresses_count,
+    });
+  }
+  if (!srcs.length) return null;
+  const fromBlock = Math.min(...srcs.map((s) => s.from_block));
+  const lastScanned = Math.min(...srcs.map((s) => s.last_scanned_block));
+  const live = Number.isFinite(Number(input.liveHeadBlock)) && Number(input.liveHeadBlock) > 0 ? Number(input.liveHeadBlock) : null;
+  const lag = live == null ? null : Math.max(0, live - lastScanned);
+  const networkName = String(input.networkName || 'unknown');
+  const label = chainLabelOf(Number(input.chainId)) || null;
+  const netZh = label?.zh || networkName;
+  return {
+    source: 'chain-index',
+    chain_id: Number(input.chainId) || 0,
+    network_name: networkName,
+    network_label: label ? { zh: label.zh, en: label.en } : null,
+    coverage: {
+      zh: `本索引覆盖 ${netZh}上该合约 (AgentEscrow 事件) 与该地址集内 (USDC 转账) 的全部交互 —— 消息/心跳/任务报文不上链, 不在本口径内`,
+      en: `This index covers all interactions on ${label?.en || networkName} for that contract (AgentEscrow events) and within the watched address set (USDC transfers). Messages/heartbeats/task envelopes are not on-chain and are outside this scope.`,
+    },
+    sources: srcs,
+    from_block: fromBlock,
+    last_scanned_block: lastScanned,
+    head_block_at_sync: input.escrow && Number.isFinite(Number(input.escrow.headBlock)) ? Number(input.escrow.headBlock) : (t?.head_block ?? null),
+    head_block_live: live,
+    lag_blocks: lag,
+    note: {
+      zh: live == null
+        ? `索引起止: ${fromBlock} → ${lastScanned}; 真链 head **未读到** (RPC 不可达) ⇒ 落后多少块未知 (不拿同步时的高度冒充)`
+        : `索引起止: ${fromBlock} → ${lastScanned}; 真链 head ${live} (读于导出时刻) ⇒ 落后 ${lag} 块 —— 这不是"实时全网"`,
+      en: live == null
+        ? `Index range: ${fromBlock} → ${lastScanned}; live chain head NOT read (RPC unreachable) so the lag is unknown (we do not pass off the sync-time height as the live head)`
+        : `Index range: ${fromBlock} → ${lastScanned}; live chain head ${live} (read at export time) ⇒ ${lag} blocks behind — this is not a real-time view of the whole chain`,
+    },
   };
 }
 
@@ -1105,15 +1539,100 @@ export function snapshotConsistencyIssues(snap: NetworkPulseSnapshot): string[] 
   issues.push(...auditPublicHexLeaks(snap));      // ⑥ 0x 长 hex 越界 → 拒绝导出 (不静默放行)
   issues.push(...openTasksIssues(snap));          // ⑦ 待接单任务的字段白名单与「只含未认领」不变式
   issues.push(...totalsScopeIssues(snap));        // ⑧ ★ 同一概念不得并排两个数 (顶部 vs 表格)
+  issues.push(...transferTotalsIssues(snap));     // ⑨ ★ 转入分桶必须与同行数算出来的一致
+  issues.push(...indexScopeIssues(snap));         // ⑩ ★ 覆盖口径/起止块/落后块数必须自洽
   return issues;
+}
+
+/**
+ * ⑨ 链上转入分桶自检 (2026-09-29): `transfer_totals` 与 `activity_totals` 是**同一批行**的两种投影,
+ * 对不上就是有人手改了其中一个 (页面上会出现"合计 4 笔 / 分桶 3 笔"这种读不通的数)。
+ * 另外: 未配置关注地址集时**不许**出现一个 0 —— 那会被读成"一笔都没有"。
+ */
+export function transferTotalsIssues(snap: NetworkPulseSnapshot): string[] {
+  const out: string[] = [];
+  const tt: any = (snap as any)?.transfer_totals;
+  const at: any = (snap as any)?.activity_totals || {};
+  const t: any = (snap as any)?.totals || {};
+  if (tt == null) return out;                          // 没有转账源 → 这一块不出现 (合法)
+  if (typeof tt !== 'object') return ['transfer_totals 必须是对象或 null'];
+  if (tt.configured !== true) {
+    // 未配置/没同步: 不许拿 0 冒充 —— 注意判据是「**有没有值**」而不是「值是不是数字 0」:
+    // null 才是"没有源"的正确写法 (Number(null)===0 会把"没源"误判成"报了 0")。
+    const hasVal = (v: any) => v !== null && v !== undefined;
+    // 只看**页面上真要显示**的那两个字段 (totals.payments_in / _total_atomic) 与分桶笔数:
+    // activity_totals.payments_in 是「这一批行里有几笔 payment_in」的**同源行数**, 它天生是数字
+    // (没有付款行时就是 0), 页面不显示它 —— 拿它来判「报了 0」是判错了对象。
+    if (hasVal(t.payments_in) || hasVal(t.payments_in_total_atomic) || Number(tt.inbound) > 0) {
+      out.push('transfer_totals.configured=false 却报出了转入笔数/金额 —— 未配置不是「一笔都没有」, 必须是 null (页面写「未接入」)');
+    }
+    return out;
+  }
+  if (Number(tt.inbound) !== Number(at.payments_in)) {
+    out.push(`transfer_totals.inbound=${tt.inbound} ≠ activity_totals.payments_in=${at.payments_in} (同一批行必须相等)`);
+  }
+  const cls = ['escrow_settlement', 'self_transfer', 'external_payment'] as const;
+  const sumCls = cls.reduce((n, k) => n + (Number(tt.by_class?.[k]) || 0), 0);
+  if (sumCls !== Number(tt.inbound)) {
+    out.push(`transfer_totals.by_class 三桶之和=${sumCls} ≠ inbound=${tt.inbound} (每一笔转入都必须落进恰好一个桶)`);
+  }
+  let sumAtomic = 0n;
+  for (const k of cls) sumAtomic += BigInt(String(tt.by_class_atomic?.[k] ?? '0'));
+  if (sumAtomic.toString() !== String(tt.inbound_total_atomic)) {
+    out.push(`transfer_totals.by_class_atomic 之和=${sumAtomic} ≠ inbound_total_atomic=${tt.inbound_total_atomic}`);
+  }
+  if (String(tt.inbound_total_atomic) !== String(at.payments_in_total_atomic)) {
+    out.push(`transfer_totals.inbound_total_atomic=${tt.inbound_total_atomic} ≠ activity_totals.payments_in_total_atomic=${at.payments_in_total_atomic}`);
+  }
+  return out;
+}
+
+/**
+ * ⑩ 覆盖口径自检 (2026-09-29): 「本索引覆盖…起止块…落后多少块」这句话必须能被数字复算 ——
+ *   · 每个源 from_block ≤ last_scanned_block;
+ *   · 顶层 last_scanned_block = 各源的最小值 (覆盖到哪以**最落后**的那个源为准);
+ *   · lag_blocks = head_block_live − last_scanned_block; 真链 head 读不到 ⇒ lag **必须是 null**
+ *     (拿同步时的高度冒充真链 head 就是"暗示实时")。
+ */
+export function indexScopeIssues(snap: NetworkPulseSnapshot): string[] {
+  const out: string[] = [];
+  const is: any = (snap as any)?.index_scope;
+  if (is == null) return out;                          // 没有链上源 → 不出现 (合法)
+  if (typeof is !== 'object') return ['index_scope 必须是对象或 null'];
+  const srcs: any[] = Array.isArray(is.sources) ? is.sources : [];
+  if (!srcs.length) out.push('index_scope.sources 不能是空数组 (要么整块不出现, 要么至少一个源)');
+  for (const [i, s] of srcs.entries()) {
+    const f = Number(s?.from_block), l = Number(s?.last_scanned_block);
+    if (!Number.isFinite(f) || !Number.isFinite(l)) { out.push(`index_scope.sources[${i}] 缺 from_block/last_scanned_block`); continue; }
+    if (l < f) out.push(`index_scope.sources[${i}].last_scanned_block=${l} < from_block=${f} (扫到哪不能比起块还早)`);
+    if (l > Number(is.head_block_live ?? l)) out.push(`index_scope.sources[${i}].last_scanned_block=${l} 比真链 head=${is.head_block_live} 还高`);
+  }
+  if (srcs.length) {
+    const minFrom = Math.min(...srcs.map((s) => Number(s.from_block)));
+    const minLast = Math.min(...srcs.map((s) => Number(s.last_scanned_block)));
+    if (Number(is.from_block) !== minFrom) out.push(`index_scope.from_block=${is.from_block} ≠ 各源最小起块=${minFrom}`);
+    if (Number(is.last_scanned_block) !== minLast) out.push(`index_scope.last_scanned_block=${is.last_scanned_block} ≠ 各源最小 last_scanned_block=${minLast} (覆盖到哪以最落后的源为准)`);
+  }
+  const live = is.head_block_live;
+  if (live == null) {
+    if (is.lag_blocks != null) out.push('index_scope.head_block_live 读不到 (null) 却给了 lag_blocks —— 落后块数必须未知, 不许拿同步时的高度顶替');
+  } else {
+    const expect = Math.max(0, Number(live) - Number(is.last_scanned_block));
+    if (Number(is.lag_blocks) !== expect) out.push(`index_scope.lag_blocks=${is.lag_blocks} ≠ head_block_live−last_scanned_block=${expect}`);
+  }
+  if (!is.coverage?.zh || !is.coverage?.en) out.push('index_scope.coverage 必须双语都给 (口径句是这一块的核心)');
+  return out;
 }
 
 /** 顶部逐字段口径的键 (与 `TotalsFieldKey` 逐字一致; 少一个 = 那个数没有来源说明) */
 export const TOTALS_FIELD_KEYS: readonly TotalsFieldKey[] = [
   'nodes', 'agents', 'active_agents', 'seen_last_24h',
-  'tasks', 'tasks_completed', 'tasks_verified', 'tasks_settled', 'signatures',
+  'tasks', 'tasks_completed', 'tasks_verified', 'tasks_settled',
+  'tasks_refunded', 'tasks_disputed',
+  'payments_in', 'payments_in_total_atomic', 'payments_in_x402', 'payments_in_x402_total_atomic',
+  'signatures',
 ];
-const TOTALS_FIELD_SOURCES: readonly TotalsFieldSource[] = ['pulse-events', 'chain-index', 'signature-audit', 'none'];
+const TOTALS_FIELD_SOURCES: readonly TotalsFieldSource[] = ['pulse-events', 'chain-index', 'signature-audit', 'x402-ledger', 'none'];
 const TOTALS_FIELD_WINDOWS: readonly TotalsFieldWindow[] = ['window-24h', 'full', 'unknown'];
 /** 「未接入」类措辞 (无源时必须出现, 否则等于没说清为什么没有数) */
 const UNAVAILABLE_WORDS = /未接入|not connected|无可用源|no available source/;
@@ -1184,6 +1703,10 @@ export function totalsScopeIssues(snap: NetworkPulseSnapshot): string[] {
       ['tasks', t.tasks, at.tasks],
       ['tasks_completed', t.tasks_completed, at.tasks_completed],
       ['tasks_settled', t.tasks_settled, at.tasks_settled],
+      ['tasks_refunded', t.tasks_refunded, at.tasks_refunded],
+      ['tasks_disputed', t.tasks_disputed, at.tasks_disputed],
+      ['payments_in', t.payments_in, at.payments_in],
+      ['payments_in_total_atomic', t.payments_in_total_atomic, at.payments_in_total_atomic],
     ];
     const tableRows = Number(at.rows) || rows.length;
     const sameSourceChain = String(at.source) === 'chain-index';
@@ -1319,6 +1842,23 @@ function noneField(why: { zh: string; en: string }): TotalsFieldScope {
   };
 }
 
+/**
+ * 「卖方端点只读汇总」口径 (2026-09-29): 链上**没有** x402 事件 —— 付款就是一笔普通 ERC-20
+ * USDC 转账, 所以单看链分不出「走 x402 下单流程的付款」与「别人随手转来的账」。这一格的口径 =
+ * 拿卖方端点台账里的 txHash 列表与链上扫到的收款**交叉核** (对上的才加标「经 x402 流程」)。
+ */
+function x402LedgerField(what: { zh: string; en: string }): TotalsFieldScope {
+  return {
+    source: 'x402-ledger',
+    window: 'full',
+    short: { zh: '经 x402 台账', en: 'via x402 ledger' },
+    label: {
+      zh: `卖方端点只读汇总的 txHash 列表与链上收款交叉核 (链上没有 x402 事件, 只能这样判) · ${what.zh}`,
+      en: `cross-checked against the seller endpoint's read-only txHash list (there is no x402 event on chain, this is the only way) · ${what.en}`,
+    },
+  };
+}
+
 export function computeSnapshot(
   events: NetworkPulseEvent[],
   opts: {
@@ -1334,6 +1874,11 @@ export function computeSnapshot(
      * 不给 = 没有源 → `totals.signatures` 记 `null` (未接入), **不拿 0 冒充「没发生过」**。
      */
     signatureAudit?: SignatureAuditTally | null;
+    /**
+     * 导出时刻读到的**真链 head** (由脚本读 RPC 后注入; 不给/读不到 = null)。
+     * 只用来算 `index_scope.lag_blocks` —— **绝不**拿同步时的高度冒充真链 head。
+     */
+    liveHeadBlock?: number | null;
   },
 ): NetworkPulseSnapshot {
   const now = opts.now;
@@ -1352,6 +1897,11 @@ export function computeSnapshot(
       totals: {
         nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0,
         tasks: null, tasks_completed: null, tasks_verified: null, signatures: null, tasks_settled: null,
+        // 2026-09-29: 不可用态下这些链上计数一律 null (未接入), 不给 0
+        tasks_refunded: null, tasks_disputed: null,
+        payments_in: null, payments_in_total_atomic: null,
+        payments_in_x402: null, payments_in_x402_total_atomic: null,
+        payments_in_total_usdc: null, payments_in_x402_total_usdc: null, payments_in_currency: null,
       },
       totals_scope: {
         source: 'pulse-events', window_ms: PULSE_LIMITS.windowMs,
@@ -1364,8 +1914,14 @@ export function computeSnapshot(
           nodes: downField, agents: downField, active_agents: downField, seen_last_24h: downField,
           tasks: downField, tasks_completed: downField, tasks_verified: downField,
           tasks_settled: downField, signatures: downField,
+          tasks_refunded: downField, tasks_disputed: downField,
+          payments_in: downField, payments_in_total_atomic: downField,
+          payments_in_x402: downField, payments_in_x402_total_atomic: downField,
         },
       },
+      transfer_totals: null,
+      x402_ledger: null,
+      index_scope: null,
       capabilities: [],
       recent_activity: [],
       confirmed_activity: emptyRows,
@@ -1452,8 +2008,36 @@ export function computeSnapshot(
   const totalsTasks = chainAuthoritative ? activity_totals.tasks : tasks.size;
   const totalsCompleted = chainAuthoritative ? activity_totals.tasks_completed : tasksCompleted.size;
   const totalsSettled = chainAuthoritative ? activity_totals.tasks_settled : tasksSettledPulse.size;
+  // ★ 2026-09-29: 退款 / 争议**单列** —— 旧实现把它们并进 tasks_settled, 页面上就出现
+  //   「已结算 5 > 已完成 3」这种假读数 (5 = Released 3 + Refunded 2, 而退款根本不是成交)。
+  const totalsRefunded = chainAuthoritative ? activity_totals.tasks_refunded : null;
+  const totalsDisputed = chainAuthoritative ? activity_totals.tasks_disputed : null;
   // 「验真」在链上索引里**没有**对应事件 → 链上口径下这个数没有源 (null + 未接入), 不拿结算数冒充已验证
   const totalsVerified: number | null = chainAuthoritative ? null : tasksVerified.size;
+
+  // ★ 链上转入 (关注地址集内的 USDC 转账): 只有**关注地址集配好 且 索引可用**才算"有源";
+  //   没配/没读到 → null + 未接入 (0 的意思是"一笔都没有", 那是另一句话)。
+  const transferSummary = activity.transfers ?? null;
+  // 「有源」的判据 (2026-09-29 收紧): 关注地址集配好 **且** 转账索引真同步过 —— 只配了地址集、
+  // 索引却从没同步成功 (from_block 0 / last_synced_block -1) 时, 报 0 笔会把"没读到"说成"一笔都没有"。
+  const transferSynced = !!transferSummary && transferSummary.configured === true &&
+    Number(transferSummary.from_block) > 0 && Number(transferSummary.last_synced_block) >= Number(transferSummary.from_block);
+  const paymentsKnown = chainAuthoritative && transferSynced;
+  const totalsPaymentsIn: number | null = paymentsKnown ? activity_totals.payments_in : null;
+  const totalsPaymentsInAtomic: number | null = paymentsKnown && activity_totals.payments_in !== null
+    ? Number(activity_totals.payments_in_total_atomic)
+    : null;
+  // 其中经 x402 流程: 口径来自**卖方端点只读汇总**的交叉核 (链上只有普通 ERC-20 转账, 单看链分不出)。
+  //   台账拿不到 → null + 未接入 (原因写清楚), **绝不当 0**。
+  const seller = activity.seller_summary ?? null;
+  const x402Known = paymentsKnown && !!seller && seller.available === true && activity_totals.payments_in_x402 !== null;
+  const totalsPaymentsX402: number | null = x402Known ? activity_totals.payments_in_x402 : null;
+  const totalsPaymentsX402Atomic: number | null = x402Known && activity_totals.payments_in_x402_total_atomic !== null
+    ? Number(activity_totals.payments_in_x402_total_atomic)
+    : null;
+  const x402UnknownWhy = !paymentsKnown
+    ? { zh: '链上转入这一格没有源 (关注地址集未配置/索引不可用)', en: 'no source for chain receipts (watched address set not configured / index unavailable)' }
+    : { zh: `卖方端点只读汇总取不到 → 「经 x402 流程」口径未知${seller?.reason ? ` (原因: ${seller.reason})` : ''}`, en: `seller read-only summary unavailable → the "via x402 flow" figure is unknown${seller?.reason ? ` (reason: ${seller.reason})` : ''}` };
 
   // 钱包签名: 真源 = 本机签名审计账 (窗口内条数, 只计数); 没有审计账 → 退回脉冲事件上报数;
   // 两个都没有 → null (未接入)。**绝不**在没有源的时候报 0 (那是「没发生过」, 是另一句话)。
@@ -1475,8 +2059,26 @@ export function computeSnapshot(
       ? chainField({ zh: '交付完成 (ProofSubmittedV2) 的不同任务', en: 'distinct tasks with ProofSubmittedV2' })
       : pulseField({ zh: '交付完成的任务', en: 'tasks observed as completed' }),
     tasks_settled: chainAuthoritative
-      ? chainField({ zh: '托管结算 (Released/Refunded/Expired/Disputed) 的不同任务', en: 'distinct tasks with an on-chain escrow settlement' })
+      ? chainField({ zh: '托管**释放给卖方** (ReleasedV2) 的不同任务 —— 只有钱真从合约出给卖方才算', en: 'distinct tasks whose escrow was RELEASED to the seller (ReleasedV2)' })
       : pulseField({ zh: '链上口径结算的任务', en: 'tasks with on-chain settlement' }),
+    tasks_refunded: chainAuthoritative
+      ? chainField({ zh: '争议后退款 (RefundedV2) 的不同任务 —— **不是成交**', en: 'distinct tasks refunded after a dispute (RefundedV2) — NOT a sale' })
+      : noneField({ zh: '脉冲口径没有退款事件', en: 'the pulse scope has no refund event' }),
+    tasks_disputed: chainAuthoritative
+      ? chainField({ zh: '争议中 (DisputedV2, 资金冻结) 的不同任务', en: 'distinct tasks under dispute (DisputedV2, funds frozen)' })
+      : noneField({ zh: '脉冲口径没有争议事件', en: 'the pulse scope has no dispute event' }),
+    payments_in: paymentsKnown
+      ? chainField({ zh: '关注地址集内收到的 USDC 转账笔数 (含退款与自有转入, 逐行可核验)', en: 'incoming USDC transfers to the watched address set (refunds and self top-ups included; every row verifiable)' })
+      : noneField({ zh: '关注地址集未配置 / 转账索引不可用', en: 'watched address set not configured / transfer index unavailable' }),
+    payments_in_total_atomic: paymentsKnown
+      ? chainField({ zh: '上面这些转入的金额合计 (原子单位, 6 位小数)', en: 'total of the incoming transfers above (atomic units, 6 decimals)' })
+      : noneField({ zh: '关注地址集未配置 / 转账索引不可用', en: 'watched address set not configured / transfer index unavailable' }),
+    payments_in_x402: x402Known
+      ? x402LedgerField({ zh: 'txHash 出现在卖方端点台账里的转入笔数', en: 'incoming transfers whose txHash appears in the seller endpoint ledger' })
+      : noneField(x402UnknownWhy),
+    payments_in_x402_total_atomic: x402Known
+      ? x402LedgerField({ zh: '其中经 x402 流程的金额合计 (原子单位)', en: 'total of the transfers attributed to the x402 flow (atomic units)' })
+      : noneField(x402UnknownWhy),
     tasks_verified: chainAuthoritative
       ? noneField({ zh: '链上索引没有「验真」事件', en: 'the chain index has no verification event' })
       : pulseField({ zh: '真验真 (trade_verified) 的任务', en: 'tasks truly verified (trade_verified)' }),
@@ -1492,10 +2094,10 @@ export function computeSnapshot(
     window_ms: PULSE_LIMITS.windowMs,
     label: {
       zh: chainAuthoritative
-        ? `节点/智能体 = 本节点 ${WINDOW_HOURS}h 脉冲事件; 任务/已完成/已结算 = 链上索引全量 (与下表同源); 钱包签名 = 本机签名审计`
+        ? `任务/已完成/已释放/已退款/争议中/链上转入 = 链上索引全量 (与下表同源); 「其中经 x402 流程」= 卖方端点台账交叉核; 节点/智能体 = 本节点 ${WINDOW_HOURS}h 脉冲事件 (非链上); 钱包签名 = 本机签名审计`
         : `只统计本节点 ${WINDOW_HOURS}h 观察窗口内收到的脉冲事件 (本节点自己上报的)`,
       en: chainAuthoritative
-        ? `nodes/agents = this node's ${WINDOW_HOURS}h pulse events; tasks/completed/settled = chain index, whole (same source as the table below); wallet signatures = this node's signature audit log`
+        ? `tasks/completed/released/refunded/disputed/chain-receipts = chain index, whole (same source as the table below); "via x402 flow" = cross-checked against the seller endpoint ledger; nodes/agents = this node's ${WINDOW_HOURS}h pulse events (not on-chain); wallet signatures = this node's signature audit log`
         : `Only pulse events received by this node within the ${WINDOW_HOURS}h observation window (reported by this node itself)`,
     },
     differs_from_activity: activity_totals.rows > 0 &&
@@ -1526,10 +2128,16 @@ export function computeSnapshot(
     );
   }
   if (chainAuthoritative) {
+    const x402Note = x402Known
+      ? `「其中经 x402 流程」= ${totalsPaymentsX402} 笔 (卖方端点台账交叉核: ${seller?.endpoint || ''} · 取于 ${seller?.fetched_at ? new Date(Number(seller.fetched_at)).toISOString() : '未知时刻'})`
+      : `「其中经 x402 流程」= **未知** (不是 0): ${x402UnknownWhy.zh}`;
     notes.push(
-      `顶部「任务/已完成/已结算」= 链上索引的**同源计数** (= activity_totals, 与下表同源, 同源即恒等): ` +
-      `tasks=${totalsTasks} · tasks_completed=${totalsCompleted} · tasks_settled=${totalsSettled}; ` +
-      `「节点/智能体」= 本节点 ${WINDOW_HOURS}h 脉冲事件; 「已验证」在链上索引里没有对应事件 → ` +
+      `顶部链上计数 = 链上索引的**同源计数** (= activity_totals, 与下表同源, 同源即恒等): ` +
+      `tasks=${totalsTasks} · tasks_completed=${totalsCompleted} · tasks_settled(释放给卖方)=${totalsSettled} · ` +
+      `tasks_refunded=${totalsRefunded === null ? '未接入' : totalsRefunded} · tasks_disputed=${totalsDisputed === null ? '未接入' : totalsDisputed} · ` +
+      `链上转入=${totalsPaymentsIn === null ? '没有源 → 不下发该字段 (不是 0)' : `${totalsPaymentsIn} 笔 (合计 ${activity_totals.payments_in_total_atomic} 原子)`}; ` +
+      `${x402Note}; ` +
+      `「节点/智能体」= 本节点 ${WINDOW_HOURS}h 脉冲事件 (**非链上**, 页面计数区不列); 「已验证」在链上索引里没有对应事件 → ` +
       `该口径无对应事件源, 不下发该字段 (不是 0); 「钱包签名」= ${auditWired
         ? `本机签名审计账 ${totalsSignatures} 条 (${WINDOW_HOURS}h 窗口, 只计数)`
         : (totalsSignatures === null
@@ -1558,9 +2166,58 @@ export function computeSnapshot(
       tasks_completed: totalsCompleted,
       tasks_verified: totalsVerified,        // 链上口径下 = null (未接入), 不冒充 0
       signatures: totalsSignatures,          // 真源 = 本机签名审计账; 无源 = null (未接入)
-      tasks_settled: totalsSettled,          // 新增字段一律排最后 (老 8 个字段顺序逐字不变)
+      tasks_settled: totalsSettled,          // 只算 Released (钱真释放给卖方)
+      // ★ 2026-09-29 追加 (新增字段一律排最后; 老字段的顺序逐字不变)
+      tasks_refunded: totalsRefunded,                 // 争议后退款 (不是成交); 无源 = null
+      tasks_disputed: totalsDisputed,                 // 争议中; 无源 = null
+      payments_in: totalsPaymentsIn,                  // 关注地址集内转入笔数; 未配置/不可用 = null
+      payments_in_total_atomic: totalsPaymentsInAtomic,   // 转入合计 (原子单位); 同上
+      payments_in_x402: totalsPaymentsX402,           // 其中经 x402 流程 (卖方台账交叉核); 未知 = null
+      payments_in_x402_total_atomic: totalsPaymentsX402Atomic,
+      // 展示用折算 (非门禁字段: 门只看原子值, 避免浮点参与判定)
+      payments_in_total_usdc: paymentsKnown ? formatUnits(activity_totals.payments_in_total_atomic, transferSummary?.token_decimals ?? 6) : null,
+      payments_in_x402_total_usdc: x402Known ? formatUnits(activity_totals.payments_in_x402_total_atomic || '0', transferSummary?.token_decimals ?? 6) : null,
+      payments_in_currency: paymentsKnown ? (transferSummary?.token_symbol || null) : null,
     },
     totals_scope,
+    /** 链上转入的**分桶明细** (纯数据: 页面/机器清单都能用; 数字全部来自同一批行) */
+    transfer_totals: transferSummary
+      ? {
+        configured: transferSynced,
+        reason: transferSummary.reason,
+        token_symbol: transferSummary.token_symbol,
+        token_decimals: transferSummary.token_decimals,
+        inbound: transferSummary.inbound,
+        inbound_display: transferSummary.inbound_display,
+        inbound_total_atomic: transferSummary.inbound_atomic,
+        by_class: transferSummary.by_class,
+        by_class_atomic: transferSummary.by_class_atomic,
+        outbound: transferSummary.outbound,
+        from_block: transferSummary.from_block,
+        last_synced_block: transferSummary.last_synced_block,
+        pending_observation: transferSummary.pending_observation,
+      }
+      : null,
+    /** 卖方端点只读汇总的取数状态 (available=false ⇒ 「经 x402 流程」是**未知**, 不是 0) */
+    x402_ledger: seller
+      ? { available: seller.available === true, reason: seller.reason, endpoint: seller.endpoint, fetched_at: seller.fetched_at, count: seller.available === true ? seller.count : null }
+      : null,
+    /** 链上索引的覆盖口径 (覆盖什么 / 起止块 / 落后多少块) */
+    index_scope: buildIndexScope({
+      chainId: activity.index_info?.chainId ?? null,
+      networkName: activity.index_info?.networkName ?? null,
+      escrow: activity.index_info
+        ? {
+          deploymentBlock: activity.index_info.deploymentBlock,
+          lastSyncedBlock: activity.index_info.lastSyncedBlock,
+          headBlock: activity.index_info.headBlock,
+          rows: activity.index_info.rows,
+          pageSize: activity.index_info.pageSize,
+        }
+        : null,
+      transfers: transferSummary,
+      liveHeadBlock: opts.liveHeadBlock ?? null,
+    }),
     capabilities,
     recent_activity: recent,
     confirmed_activity: activity.rows,
@@ -1588,7 +2245,10 @@ export async function getNetworkPulse(opts: SnapshotOptions = {}): Promise<Netwo
         && !!(cached as any)?.totals_scope?.fields          // 老缓存没有逐字段口径 → 过期形状, 重算
         && !!(cached as any)?.activity_totals
         && !!(cached as any)?.chain_id_scope
-        && Array.isArray((cached as any)?.open_tasks);        // 老缓存没有待接单任务 → 过期形状, 重算
+        && Array.isArray((cached as any)?.open_tasks)        // 老缓存没有待接单任务 → 过期形状, 重算
+        && 'index_scope' in (cached as any)                  // 2026-09-29: 老缓存没有覆盖口径 → 重算
+        && 'transfer_totals' in (cached as any)              // 2026-09-29: 老缓存没有转入分桶 → 重算
+        && typeof (cached as any)?.totals?.tasks_refunded !== 'undefined';
       if (shapeOk && cached && Number.isFinite(cached.generated_at) && cached.generated_at + PULSE_LIMITS.snapshotTtlMs > now) return cached;
     } catch { /* 无缓存 */ }
   }
@@ -1598,13 +2258,21 @@ export async function getNetworkPulse(opts: SnapshotOptions = {}): Promise<Netwo
   } catch (e: any) {
     return computeSnapshot([], { now, unavailable: true });
   }
-  // 活动行优先取 P5 链上索引 (真链上事实); 索引不可用 → 退回脉冲事件, 并在快照里标出来源
-  const confirmedActivity = await resolveConfirmedActivity({ home: opts.home, events, now });
+  // 活动行优先取 P5 链上索引 (真链上事实) + 关注地址集转账索引 (链上收款); 索引不可用 → 退回脉冲事件
+  const confirmedActivity = await resolveConfirmedActivity({
+    home: opts.home, events, now,
+    readIndex: opts.readIndex,
+    readTransfers: opts.readTransfers,
+    readSellerSummary: opts.readSellerSummary,
+  });
   // 钱包签名的**真源**: 本机签名审计账 (窗口内条数)。没有账 → 注入 available:false → 快照标「未接入」
   // (不拿 0 冒充「没发生过」: 本机明明签过而脉冲事件丢了的那次真事故就是这么来的)
   const signatureAudit = tallySignatureAudit(opts.home, { now, windowMs: PULSE_LIMITS.windowMs });
   // 待接单任务: 只读本机公告板目录 (未认领且未过期), 投影成白名单 7 字段 —— 与脉冲事件层无关
-  const snap = computeSnapshot(events, { now, confirmedActivity, openTasks: readOpenTasks(opts.home, now), signatureAudit });
+  const snap = computeSnapshot(events, {
+    now, confirmedActivity, openTasks: readOpenTasks(opts.home, now), signatureAudit,
+    liveHeadBlock: opts.liveHeadBlock ?? null,
+  });
   try {
     fs.mkdirSync(pulseDir(opts.home), { recursive: true });
     fs.writeFileSync(snapshotFile(opts.home), JSON.stringify(snap), 'utf8');

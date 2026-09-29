@@ -177,10 +177,10 @@ async function main() {
       check('install_human', '普通版 --version 输出可用 (含安装方式/目录/通道/上游)',
         /安装方式/.test(human.stdout) && /安装目录/.test(human.stdout) && /更新通道/.test(human.stdout) && /上游提交/.test(human.stdout),
         String(human.stdout).split('\n').slice(0, 3).join(' | '), true);
-      const plan = spawnSync(process.execPath, [entry, 'update', 'plan', 'json'], { encoding: 'utf8', timeout: 180000, maxBuffer: 16 * 1024 * 1024 });
+      const plan = spawnSync(process.execPath, [entry, 'update', '--dry-run', 'json'], { encoding: 'utf8', timeout: 180000, maxBuffer: 16 * 1024 * 1024 });
       let planJson = null;
       try { planJson = JSON.parse(sliceJson(String(plan.stdout))); } catch { planJson = null; }
-      check('update_plan', 'bolloon update plan 结果结构正确', !!planJson && Array.isArray(planJson.risk) && Array.isArray(planJson.willNotTouch),
+      check('update_plan', 'bolloon update --dry-run 结果结构正确 (旧 update plan 的只读位)', !!planJson && Array.isArray(planJson.risk) && Array.isArray(planJson.willNotTouch),
         planJson ? `target=${planJson.targetVersion} blockers=${planJson.blockers.length}` : '无法解析 plan JSON', true);
     }
   }

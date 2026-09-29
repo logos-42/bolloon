@@ -31,7 +31,7 @@ export type RuntimeId = 'node' | 'npm' | 'git' | 'python';
 
 export const RUNTIME_MIN: Record<RuntimeId, { min: string; why: string }> = {
   node: { min: '18.0.0', why: 'Bolloon CLI 与依赖 (ESM / 全局 fetch / node: 前缀) 的运行时' },
-  npm: { min: '9.0.0', why: '随 Node 18+ 发布; 全局安装与 `update now` 的安装通道' },
+  npm: { min: '9.0.0', why: '随 Node 18+ 发布; 全局安装与 `bolloon update` 的安装通道' },
   git: { min: '2.20.0', why: '`git -C` / `--porcelain` / worktree —— 源码更新与协作通道' },
   python: { min: '3.8.0', why: 'scripts/** (wiki 门禁/消融夹具) 与 Python Skill 执行' },
 };

@@ -219,7 +219,7 @@ async function main() {
   const plan = await buildUpdatePlan({ home: bolloonHome, installation: inst, force: true, channel: 'dev', github: ghRes, workloadRiskOverride: [] });
   assert('plan(dev): 显式警告在场', plan.warnings.some((w) => w.includes('dev 通道')), plan.warnings.join(' | ').slice(0, 90));
   const planText = renderUpdatePlan(plan);
-  assert('plan(dev): 打印里有一键回 stable', planText.includes('bolloon update now --channel stable'), '');
+  assert('plan(dev): 打印里有一键回 stable', planText.includes('bolloon update --channel stable'), '');
 
   // 真 dev 快照: 真 codeload 下载 + 真 npm run build:main + 真 npm pack
   // (唯一的捷径: 装依赖这步复用本仓 node_modules —— npm install 要 889MB; 构建/打包/替换都是真的)
@@ -282,7 +282,7 @@ async function main() {
   }
 
   // ── C. 一键回 stable (真 CLI 子进程) ──────────────────────────────────────
-  head('C. 一键回 stable: 真跑 CLI 子进程 (dev 装回 → update now --channel stable)');
+  head('C. 一键回 stable: 真跑 CLI 子进程 (dev 装回 → bolloon update --channel stable)');
   if (snapshot.ok) {
     const snap2 = snapshot;
     // 准备: 真装回 dev 快照 (身份 = 真 GitHub master commit)
@@ -308,7 +308,7 @@ async function main() {
     info(`  CLI 代码来源: ${overlaid ? '工作树 dist (master 上还没这个特性)' : 'GitHub master 快照自带 (无需覆盖)'}`);
 
     const entry = path.join(inst.packageRoot, 'dist', 'cli-entry.js');
-    const cli = spawnSync(process.execPath, [entry, 'update', 'now', '--channel', 'stable'], {
+    const cli = spawnSync(process.execPath, [entry, 'update', '--channel', 'stable'], {
       encoding: 'utf8', timeout: 300_000,
       env: { ...process.env, BOLLOON_HOME: bolloonHome, HOME: home, npm_config_prefix: prefix, npm_config_cache: path.join(home, '.npm-cache') },
     });

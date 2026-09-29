@@ -289,7 +289,7 @@ describe('confirmed_activity · 来源优先级与降级标注', () => {
         { key: `${TX_B}:1`, blockNumber: 130, blockHash: '0x' + 'bb'.repeat(32), txHash: TX_B, logIndex: 1, eventName: 'ReleasedV2', taskKey: TASK_A, args: {}, confirmations: 547, finality: 'finalized', suspect: false, firstSeenAt: NOW + 1000, updatedAt: NOW + 1000, history: [] },
       ],
     };
-    const res = await NP.resolveConfirmedActivity({ events: [], now: NOW, readIndex: () => file });
+    const res = await NP.resolveConfirmedActivity({ events: [], now: NOW, readIndex: () => file, readTransfers: () => null, readSellerSummary: () => null });
     expect(res.source).toBe('chain-index');
     expect(res.rows).toHaveLength(2);
     expect(res.rows.map((r) => r.state)).toEqual(['released', 'active']);   // 130 块那条在前 (最新在前)
@@ -299,26 +299,27 @@ describe('confirmed_activity · 来源优先级与降级标注', () => {
   it('索引读不出 / 空 / 无可用行 → 降级到脉冲事件并标明 source', async () => {
     const evs = [{ type: 'task_posted', bucket: '1', occurredAt: NOW, sourceProof: 'n1', taskProof: 'a'.repeat(16) }] as any;
 
-    const boom = await NP.resolveConfirmedActivity({ events: evs, now: NOW, readIndex: () => { throw new Error('索引文件坏了'); } });
+    const boom = await NP.resolveConfirmedActivity({ events: evs, now: NOW, readIndex: () => { throw new Error('索引文件坏了'); }, readTransfers: () => null, readSellerSummary: () => null });
     expect(boom.source).toBe('pulse-events');
     expect(boom.rows).toHaveLength(1);
 
-    const empty = await NP.resolveConfirmedActivity({ events: evs, now: NOW, readIndex: () => ({ entries: [] }) });
+    const empty = await NP.resolveConfirmedActivity({ events: evs, now: NOW, readIndex: () => ({ entries: [] }), readTransfers: () => null, readSellerSummary: () => null });
     expect(empty.source).toBe('pulse-events');
 
     const allSuspect = await NP.resolveConfirmedActivity({
       events: evs, now: NOW,
       readIndex: () => ({ chainId: 1, headBlock: 10, entries: [entry({ suspect: true })] }),
+      readTransfers: () => null, readSellerSummary: () => null,      // 读盘桩: 不掺本机真转账索引
     });
     expect(allSuspect.source).toBe('pulse-events');     // 索引里没有可用行 → 也降级 (不编行)
 
-    const none = await NP.resolveConfirmedActivity({ events: [], now: NOW, readIndex: () => null });
+    const none = await NP.resolveConfirmedActivity({ events: [], now: NOW, readIndex: () => null, readTransfers: () => null, readSellerSummary: () => null });
     expect(none).toMatchObject({ source: 'none', rows: [] });
   });
 
   it('窗口外的脉冲事件不成行 (降级路径也守 24h 边界)', async () => {
     const stale = [{ type: 'task_posted', bucket: '0', occurredAt: NOW - NP.PULSE_LIMITS.windowMs - 1000, sourceProof: 'n', taskProof: 'a'.repeat(16) }] as any;
-    const res = await NP.resolveConfirmedActivity({ events: stale, now: NOW, readIndex: () => null });
+    const res = await NP.resolveConfirmedActivity({ events: stale, now: NOW, readIndex: () => null, readTransfers: () => null, readSellerSummary: () => null });
     expect(res).toMatchObject({ source: 'none', rows: [] });
   });
 });
@@ -401,7 +402,12 @@ describe('confirmed_activity · 端到端 (getNetworkPulse)', () => {
     for (const k of ['status', 'generated_at', 'fresh_until', 'scope', 'scope_label', 'totals', 'capabilities', 'recent_activity']) {
       expect(Object.keys(snap)).toContain(k);
     }
-    expect(snap.totals).toEqual({ nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0, tasks: 0, tasks_completed: 0, tasks_verified: 0, tasks_settled: 0, signatures: null });
+    expect(snap.totals).toEqual({ nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0, tasks: 0, tasks_completed: 0, tasks_verified: 0, tasks_settled: 0,
+      // ★ 2026-09-29 新增的链上字段 (隔离 HOME 里没有关注地址集/转账索引 → 一律 null, 不是 0)
+      tasks_refunded: null, tasks_disputed: null,
+      payments_in: null, payments_in_total_atomic: null, payments_in_x402: null, payments_in_x402_total_atomic: null,
+      payments_in_total_usdc: null, payments_in_x402_total_usdc: null, payments_in_currency: null,
+      signatures: null });
     // 每个数都带逐字段口径 (页面就地在数字旁标出; signatures 无源 → 未接入, 不是 0)
     expect(Object.keys(snap.totals_scope.fields).sort()).toEqual([...NP.TOTALS_FIELD_KEYS].sort());
     expect(snap.totals_scope.fields.signatures.short.zh).toBe('未接入');

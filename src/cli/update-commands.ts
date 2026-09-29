@@ -158,7 +158,7 @@ export function renderCheckResult(r: CheckResult): string {
   if (r.reason) L.push(`说明: ${r.reason}`);
   L.push('');
   if (r.status === 'update_available') {
-    L.push(`下一步: ${BOLD}bolloon update plan --channel ${r.channel}${RESET} 看计划, ${BOLD}bolloon update now --channel ${r.channel}${RESET} 执行更新`);
+    L.push(`下一步: ${BOLD}bolloon update --channel ${r.channel}${RESET} 直接更新 (会先打印计划与风险检查); 只想看计划不动任何东西: ${BOLD}bolloon update --dry-run${RESET}`);
     if (dev) L.push(DEV_CHANNEL_WARNING), L.push(DEV_BACK_TO_STABLE_HINT);
   } else if (r.status === 'unsupported_installation') {
     L.push('下一步: 按上面"说明"里对应安装方式更新 (源码目录: git pull && npm install && npm run build:all)');
@@ -188,7 +188,7 @@ export function renderStatusReport(s: Awaited<ReturnType<typeof readUpdateStatus
     : 'stable (npm registry)'}`);
   L.push(`身份标识:   ${dev ? `commit ${s.installedDevSha || '未知'}` : s.currentVersion}`);
   L.push(`能切回:     ${s.switchableTo
-    ? `${s.switchableTo.channel} (${s.switchableTo.source}${s.switchableTo.target ? ` @ ${s.switchableTo.target}` : ''}) — 一键切: bolloon update now --channel ${s.switchableTo.channel}`
+    ? `${s.switchableTo.channel} (${s.switchableTo.source}${s.switchableTo.target ? ` @ ${s.switchableTo.target}` : ''}) — 一键切: bolloon update --channel ${s.switchableTo.channel}`
     : '无 (未知来源)'}`);
   if (s.lastDevSha && !dev) L.push(`上次 dev:   commit ${s.lastDevSha}${s.devCheckedAt ? ` @ ${s.devCheckedAt}` : ''} (已切回 stable)`);
   L.push(`最新版本:   ${s.latestVersion || (s.lastCheckStatus ? '未知' : '尚未检查')}`);
@@ -219,7 +219,7 @@ export function renderStatusReport(s: Awaited<ReturnType<typeof readUpdateStatus
 
 export async function runUpdateCommand(args: string[] = []): Promise<number> {
   const home = resolveBolloonHome();
-  // 裸词优先 (bolloon update plan / status / history / now / wait / force / json / --channel dev),
+  // 裸词优先 (bolloon update / status / history / wait / force / dry-run / json / --channel dev),
   // 同时兼容旧的 --plan / --status / ... 写法 (已有脚本不断裂)。
   const has = (...f: string[]) => f.some((x) => args.includes(x));
   const json = has('json', '--json');
@@ -229,6 +229,25 @@ export async function runUpdateCommand(args: string[] = []): Promise<number> {
     return 2;
   }
   const channel = ch.channel;
+  // `update --help` 必须是**只读**的 (三合一后默认会真装, 这条不拦就会「看帮助反而装了东西」)
+  if (has('help', '-h', '--help')) { out(UPDATE_HELP.trim()); return 0; }
+
+  /**
+   * 防误触 (2026-09-28, 与三合一同时加的): `update` 现在**默认就执行更新** ——
+   * 于是打错一个词 (如 `bolloon update plna`) 会直接装东西, 这是不可接受的。
+   * 白名单之外、又不是数字、又不是 --channel 的取值的裸词 ⇒ 拒绝执行并打用法。
+   */
+  {
+    const KNOWN_BARE = new Set(['status', 'history', 'wait', 'force', 'dry-run', 'plan', 'json', 'now']);
+    const valIdx = new Set<number>();
+    args.forEach((a, i) => { if (a === '--channel' || a === 'channel') valIdx.add(i + 1); });
+    const unknown = args.filter((a, i) => !a.startsWith('-') && !KNOWN_BARE.has(a) && !/^\d+$/.test(a) && !valIdx.has(i));
+    if (unknown.length > 0) {
+      err(`${RED}✗ 不认识 ${BOLD}update ${unknown[0]}${RESET} —— 已拒绝执行 (什么都没装)`);
+      err(`  用法: bolloon update [wait|force] [--dry-run|status|history [N]] [--channel stable|dev]`);
+      return 2;
+    }
+  }
 
   // ── 状态 ──
   if (has('status', '--status')) {
@@ -248,17 +267,23 @@ export async function runUpdateCommand(args: string[] = []): Promise<number> {
     return 0;
   }
 
-  // ── 计划 ──
-  if (has('plan', '--plan')) {
+  // ── 只读: --dry-run (2026-09-28 leo: `update` 三个动作合成一个, 默认直接执行;
+  //    只读位改由 `--dry-run` 承接 —— 旧写法 `plan`/`--plan` 等价于它, **只打印、不装任何东西**) ──
+  if (has('dry-run', '--dry-run', 'plan', '--plan')) {
     const plan = await buildUpdatePlan({ home, force: true, channel });
     if (json) { out(JSON.stringify(plan, null, 2)); return 0; }
     out(renderUpdatePlan(plan));
     if (plan.channelKind === 'git-ref') printDevNotice();
+    out('');
+    out(`${YELLOW}本次只打印计划, 没有安装任何东西${RESET} —— 要真更新就运行 ${BOLD}bolloon update${RESET}`);
     return 0;
   }
 
-  // ── 执行 ──
-  if (has('now', '--now')) {
+  // ── 默认动作 (三合一): 计划 + 风险检查 + 直接执行 ──
+  {
+    if (has('now', '--now')) {
+      out(`${YELLOW}提示${RESET}: \`now\` 已去掉 —— \`bolloon update\` 现在直接执行更新 (本条按新行为继续)。`);
+    }
     const wait = has('wait', '--wait');
     const force = has('force', '--force', '-f');
     const plan = await buildUpdatePlan({ home, force: true, channel });
@@ -320,15 +345,6 @@ export async function runUpdateCommand(args: string[] = []): Promise<number> {
     return 1;
   }
 
-  // ── 默认: 只检查, 给清晰结论 (显式命令 = 忽略节流) ──
-  const r = await checkForUpdate({ home, force: true, channel });
-  if (json) { out(JSON.stringify(r, null, 2)); return checkExitCode(r.status); }
-  out(renderCheckResult(r));
-  if (r.status !== 'up_to_date' && r.status !== 'check_skipped') {
-    out('');
-    out(`${YELLOW}提示${RESET}: 本次只检查, 没有安装任何东西。`);
-  }
-  return checkExitCode(r.status);
 }
 
 // ── doctor ──────────────────────────────────────────────────────────────────
@@ -428,12 +444,12 @@ ${BOLD}版本与更新:${RESET} (子命令一律裸词, 不带 -- 前缀)
   bolloon --version                  版本 + 安装方式/目录/入口/通道/来源身份/上游/是否最新
   bolloon --version verbose          诊断版 (构建时间/git/Node/npm/Python/配置目录/最近更新)
   bolloon --version json             机器版 (同一份 VersionInfo, 给脚本与问题报告)
-  bolloon update                     只检查并给结论 (不安装任何东西)
-  bolloon update plan                更新计划: 要更新什么 / 不会动什么 / 风险检查
+  bolloon update                     直接执行更新 (先打印计划与风险检查, 再真装; 不写 plan/now)
+  bolloon update --dry-run           只看计划与风险检查, 一个字节都不动 (旧 update plan 等价于它)
+  bolloon update wait                等当前 Run 结束后再更新 (有长期任务时的默认建议)
+  bolloon update force               忽略"有长期任务在跑"的提醒 (阻塞项仍然阻塞)
   bolloon update status              更新状态: 装的哪个源+版本/commit+能切回哪/最近检查/失败/开关
   bolloon update history [N]         最近 N 次更新 (时间 · 版本变化 · 结果 · 耗时 · 原因)
-  bolloon update now                 真正执行更新 (默认先看计划)
-  bolloon update now wait            等当前 Run 结束后再更新 (有长期任务时的默认建议)
   bolloon doctor                     安装入口 + 版本事实 + 更新状态 + 运行时 是否自洽
   bolloon doctor json                同上, 机器可读
   bolloon runtime [plan|install|json] 运行时 (Node/npm/Git/Python) 检查与安装 (install 需显式 yes)
@@ -443,7 +459,7 @@ ${BOLD}双源 (--channel):${RESET}
                            比较语义 = semver (npm 的 latest ↔ GitHub 同名 tag)
   --channel dev     GitHub master HEAD 是唯一源; 比较语义 = git ref + commit sha (不用 semver);
                            身份 = <版本>+dev.<sha7>; 未走发布门, 会打印警告并记录 sha
-  一键回稳定版:     bolloon update now --channel stable
+  一键回稳定版:     bolloon update --channel stable
   --channel 只覆盖本次进程, 不落盘 (config 里的 updateChannel 仍是默认值)
   源不可达 / 版本不存在 → 拒绝并说清 (退出码 2), 不会静默装回旧版
 

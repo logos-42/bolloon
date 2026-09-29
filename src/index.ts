@@ -3659,7 +3659,7 @@ break;
                 : r.status === 'unsupported_installation' ? '⚠ 当前安装方式不支持自动更新'
                   : 'ℹ 使用缓存结论';
         response = `${head}\n\n当前版本: ${r.currentVersion}\n最新版本: ${r.latestVersion || '未知'}\n安装方式: ${r.installMethod}\n结论: ${r.status}${r.reason ? `\n说明: ${r.reason}` : ''}`;
-        if (r.status === 'update_available') response += `\n\n运行 bolloon update plan 看计划, bolloon update now 执行更新`;
+        if (r.status === 'update_available') response += `\n\n运行 bolloon update 直接更新 (先打印计划与风险检查; 只看计划用 --dry-run)`;
         if (r.status === 'offline' || r.status === 'registry_unavailable' || r.status === 'local_version_unknown') error = response;
         break;
       }
@@ -4576,10 +4576,10 @@ async function main() {
 
   // 启动时后台检查更新 (不阻塞主流程)。
   // 2026-09-19 行为变更: **默认只通知, 不自动安装** —— 发现新版本会打印一行提示 +
-  //   "bolloon update plan / now"。要恢复自动安装需显式 config.json `autoInstall: true`
+  //   "bolloon update"。要恢复自动安装需显式 config.json `autoInstall: true`
   //   (+ `autoRestart: true` 才自动重启)。
   // 关闭本次检查: --no-update / BOLLOON_SKIP_UPDATE=1; 临时开自动装: BOLLOON_AUTO_UPDATE=1
-  // 手动检查: bolloon update / bolloon update plan / bolloon doctor
+  // 手动检查: bolloon update / bolloon update --dry-run / bolloon doctor
   if (!args.updateCheck && !args.updateNow) {
     void (async () => {
       try {

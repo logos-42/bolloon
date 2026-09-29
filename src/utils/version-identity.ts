@@ -120,7 +120,7 @@ export function devShaFromIdentity(v: string | null | undefined): string | null 
  */
 export const DEV_CHANNEL_WARNING = '⚠️ dev 通道 = GitHub master HEAD 的即时快照 (未走发布门): 可能中断正在跑的 Goal/Run, 且不保证可回滚到上一个 dev 版。';
 /** 一键回 stable 的提示语 (同一份措辞)。 */
-export const DEV_BACK_TO_STABLE_HINT = '一键回稳定版: bolloon update now --channel stable';
+export const DEV_BACK_TO_STABLE_HINT = '一键回稳定版: bolloon update --channel stable';
 /** 手机端同一件事的说法 (原生层规则不同: 手机走 web 层 OTA, 不是 npm 全局安装)。 */
 export const DEV_BACK_TO_STABLE_HINT_MOBILE = '一键回稳定版: 手机端「更新」页 → 切回 stable';
 

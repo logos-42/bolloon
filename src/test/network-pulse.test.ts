@@ -147,7 +147,12 @@ describe('状态: live / stale / unavailable / 空网络', () => {
     expect(snap.status).toBe('live');
     // tasks/tasks_completed/tasks_settled = 真 0 (没有链上索引 → 降级脉冲口径, 那里确实一条都没有);
     // signatures 没有审计账也没有脉冲 → null (页面写「未接入」, 不写 0: 「没发生过」是另一句话)
-    expect(snap.totals).toEqual({ nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0, tasks: 0, tasks_completed: 0, tasks_verified: 0, tasks_settled: 0, signatures: null });
+    expect(snap.totals).toEqual({ nodes: 0, agents: 0, active_agents: 0, seen_last_24h: 0, tasks: 0, tasks_completed: 0, tasks_verified: 0, tasks_settled: 0,
+      // ★ 2026-09-29: 本机链条目降级 (脉冲口径) 时这些**链上口径**的字段没有源 → 一律 null (页面写「未接入」, 不写 0)
+      tasks_refunded: null, tasks_disputed: null,
+      payments_in: null, payments_in_total_atomic: null, payments_in_x402: null, payments_in_x402_total_atomic: null,
+      payments_in_total_usdc: null, payments_in_x402_total_usdc: null, payments_in_currency: null,
+      signatures: null });
     expect(snap.totals_scope.fields.signatures.source).toBe('none');
     expect(snap.totals_scope.fields.signatures.short.zh).toBe('未接入');
     expect(NP.snapshotConsistencyIssues(snap)).toEqual([]);

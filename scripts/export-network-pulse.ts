@@ -22,6 +22,23 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as NP from '../src/agents/network-pulse.js';
+import { loadChainConfig } from '../src/agents/chain/chain-config.js';
+import { createJsonRpcProvider } from '../src/agents/chain/escrow-client.js';
+
+/** 读真链 head (导出时刻)**只用于算落后块数**; 读不到 → null (绝不用同步时的高度顶替) */
+async function readLiveHead(home?: string): Promise<number | null> {
+  try {
+    const cfg = loadChainConfig(home ? { home } : {});
+    const provider: any = createJsonRpcProvider(cfg.rpcUrl);
+    const n = await provider.getBlockNumber();
+    try { provider.destroy?.(); } catch { /* noop */ }
+    const num = Number(n);
+    return Number.isInteger(num) && num > 0 ? num : null;
+  } catch (e: any) {
+    console.error(`[export-pulse] 读真链 head 失败 (${e?.message || e}) → index_scope.lag_blocks 记 null (不拿同步时的高度顶替)`);
+    return null;
+  }
+}
 
 function arg(name: string, def?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -33,8 +50,10 @@ async function main() {
   const home = arg('home');
   const out = arg('out');
   const sign = !has('no-sign');
+  // 真链 head: 导出时刻读一次 (只用于 index_scope.lag_blocks); 读不到 → null (不冒充)
+  const liveHeadBlock = await readLiveHead(home);
 
-  const snap: any = await NP.getNetworkPulse(home ? { home } : {});
+  const snap: any = await NP.getNetworkPulse(home ? { home, liveHeadBlock } : { liveHeadBlock });
   snap.status = NP.snapshotStatus(snap);
   snap.agent_sites = NP.readAgentSites(home);   // 本节点显式发布的 IPNS 私有站 (可为空数组)
 
@@ -122,16 +141,40 @@ async function main() {
   const tsf = (finalSnap.totals_scope || {}).fields || {};
   const fsrc = (k: string) => (tsf[k] && tsf[k].source) || '(none)';
   console.error(
-    `[export-pulse] 顶部计数 (逐字段口径 ${JSON.stringify({ tasks: fsrc('tasks'), tasks_completed: fsrc('tasks_completed'), tasks_settled: fsrc('tasks_settled'), tasks_verified: fsrc('tasks_verified'), signatures: fsrc('signatures') })})=` +
-    `tasks:${t.tasks}/tasks_completed:${t.tasks_completed}/tasks_settled:${t.tasks_settled}/tasks_verified:${t.tasks_verified === null ? '未接入(null)' : t.tasks_verified}/signatures:${t.signatures === null ? '未接入(null)' : t.signatures}` +
+    `[export-pulse] 顶部计数 (逐字段口径 ${JSON.stringify({ tasks: fsrc('tasks'), tasks_completed: fsrc('tasks_completed'), tasks_settled: fsrc('tasks_settled'), tasks_refunded: fsrc('tasks_refunded'), tasks_disputed: fsrc('tasks_disputed'), payments_in: fsrc('payments_in'), payments_in_x402: fsrc('payments_in_x402'), tasks_verified: fsrc('tasks_verified'), signatures: fsrc('signatures') })})=` +
+    `tasks:${t.tasks}/tasks_completed:${t.tasks_completed}/tasks_settled(释放):${t.tasks_settled}/tasks_refunded:${t.tasks_refunded === null ? '未接入(null)' : t.tasks_refunded}/tasks_disputed:${t.tasks_disputed === null ? '未接入(null)' : t.tasks_disputed}/` +
+    `payments_in:${t.payments_in === null ? '未接入(null)' : `${t.payments_in} 笔 ${t.payments_in_total_usdc} ${t.payments_in_currency || ''}`}/payments_in_x402:${t.payments_in_x402 === null ? '未知(null)' : `${t.payments_in_x402} 笔 ${t.payments_in_x402_total_usdc}`}/` +
+    `tasks_verified:${t.tasks_verified === null ? '未接入(null)' : t.tasks_verified}/signatures:${t.signatures === null ? '未接入(null)' : t.signatures}` +
     `${t.tasks_verified === null ? ' · tasks_verified 无源 = 未接入 (不是 0)' : ''}` +
     `${t.signatures === null ? ' · signatures 无源 = 未接入 (不是 0)' : ''}`,
   );
   console.error(
     `[export-pulse] activity_totals(${finalSnap.confirmed_activity_source} 同源)=rows:${at.rows}/tasks:${at.tasks}/tasks_completed:${at.tasks_completed}/` +
-    `tasks_settled:${at.tasks_settled}/finality:${JSON.stringify(at.by_finality)} ` +
+    `tasks_settled(释放):${at.tasks_settled}/tasks_refunded:${at.tasks_refunded}/tasks_disputed:${at.tasks_disputed}/` +
+    `payments_in:${at.payments_in}/payments_in_total_atomic:${at.payments_in_total_atomic}/payments_in_x402:${at.payments_in_x402 === null ? '未知(null)' : at.payments_in_x402}/finality:${JSON.stringify(at.by_finality)} ` +
     `differs_from_activity=${!!(finalSnap.totals_scope || {}).differs_from_activity}` +
     ` · 顶部 tasks===at.tasks? ${t.tasks === at.tasks ? 'OK' : 'MISMATCH'}`,
+  );
+  // ★ 链上转入分桶 (2026-09-29): 退款 / 自有转入 / 外部付款 必须分开报 —— 只看总数会读成"收入"
+  const tt = finalSnap.transfer_totals || {};
+  console.error(
+    `[export-pulse] 链上转入 (关注地址集)=inbound:${tt.inbound ?? '(none)'} 笔 · 合计 ${tt.inbound_display ?? '?'} ${tt.token_symbol ?? ''} ` +
+    `· 分桶 escrow退款/释放:${tt.by_class?.escrow_settlement ?? '?'} · 转入(非销售):${tt.by_class?.self_transfer ?? '?'} · 外部付款:${tt.by_class?.external_payment ?? '?'} ` +
+    `· outbound:${tt.outbound ?? '?'} · 配置:${tt.configured ? 'OK' : `未配置 (${tt.reason || '?'})`}`,
+  );
+  // ★ x402 归属 (口径来自卖方端点台账交叉核; 取不到 = 未知, 不是 0)
+  const xl = finalSnap.x402_ledger;
+  console.error(
+    `[export-pulse] x402 台账: ${xl ? (xl.available ? `可用 (${xl.endpoint} · ${xl.count} 笔 · 取于 ${xl.fetched_at ? new Date(Number(xl.fetched_at)).toISOString() : '?'})` : `不可用 → 「经 x402 流程」= 未知 (原因: ${xl.reason})`) : '(未接入: 本机没有汇总缓存)'} ` +
+    `· totals.payments_in_x402=${t.payments_in_x402 === null ? 'null(未知)' : t.payments_in_x402}`,
+  );
+  // ★ 覆盖口径: 覆盖什么 / 起止块 / 落后多少块 (不许暗示"实时全网")
+  const is = finalSnap.index_scope;
+  console.error(
+    is
+      ? `[export-pulse] index_scope=${is.sources.map((s: any) => `${s.kind}[${s.from_block}→${s.last_scanned_block} ${s.rows}行]`).join(' + ')} ` +
+        `· 真链 head(读于导出时刻)=${is.head_block_live ?? '未读到'} · 落后 ${is.lag_blocks === null ? '未知' : is.lag_blocks} 块 · 覆盖: ${is.coverage.zh}`
+      : '[export-pulse] index_scope=(none: 这一份没有链上源)',
   );
   console.error(
     `[export-pulse] confirmed_activity=${act.length} 行 · chain_ids=${JSON.stringify(cis.chain_ids)} ` +

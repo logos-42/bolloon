@@ -108,7 +108,7 @@ def main() -> int:
     if status == "update_available":
         print(f"[bolloon] 发现新版本: v{current} -> v{latest} (安装方式: {install})")
         if install == "npm-global":
-            print("[bolloon] 更新: bolloon update plan 然后 bolloon update now")
+            print("[bolloon] 更新: bolloon update (直接执行; 只看计划用 bolloon update --dry-run)")
         else:
             print("[bolloon] 这是源码/开发目录, 更新走: git pull && npm install && npm run build:all")
         return 0
