@@ -602,3 +602,111 @@ trust = self-attested · ok = true
 | `src/web/routes-x402-info.ts` | 新增 `POST /api/x402/info/:id/payment` 路由 + envelope `mode` 三态映射 |
 | `src/agents/x402/{paid-info-protocol,paid-info-store,seller-signing}.ts` | 类型联合加 `'direct'` (无新协议、无第二套信封) |
 | 上机物 | `dist/agents/x402/*.js` → `/opt/bolloon-pay/app/lib/x402/` + 新版 `server.mjs` |
+
+---
+
+## 十二、公开只读汇总 `GET /api/x402/seller/summary` (2026-09-29)
+
+> 一句话: 这是**卖方本机的交付台账 (链下)**, 对外只读 —— 每笔都对应一笔**已在链上核验过**
+> 的直付交易 (带 `tx_hash` + 块号 + 区块浏览器链接), 第三方可**自己**上链复核。
+
+### 12.1 它与 §十/§十一 的分工 (别混)
+
+| | 谁看 | 认证 | 内容 |
+| --- | --- | --- | --- |
+| `GET /api/x402/seller/pending` (§十一) | **卖方本机** | **HMAC 认证** (0600 共享密钥) | 待办 + **付款凭据原文** + 取件 token (私有面) |
+| `GET /api/x402/seller/summary` (§十二, 新) | 任何人 / 网页 / 统一索引区 | **无** (公开只读) | **聚合数字 + 公开链上事实** (tx_hash / 块号 / 浏览器链接) |
+
+- 两条都长在 `^~ /api/x402/` 之下 (**nginx 白名单不用动**)。
+- 汇总分支必须挂在队列分支**之前** —— 队列分支是 `p.startsWith('/api/x402/seller/')`, 放后面会把 summary 一起 401 掉。
+
+### 12.2 数据源与口径
+
+| 源 | 文件 | 用来算什么 |
+| --- | --- | --- |
+| 直付台账 | `<服务目录>/.bolloon/x402-direct-txs.json` | `chain_verified_sales` · `revenue` · `by_item` · `latest` · `sales[]` · `txs{}` |
+| 交付队列 | `<服务目录>/.bolloon/x402-seller-pending/*.json` | `delivered` · `awaiting_signature` · `pending_total` · `delivered_tx_hashes[]` |
+
+- **每请求实时读盘, 不缓存** (新成交 / 新签名不必重启服务)。
+- 计数口径 = **本端点收款地址上、经链上核验的直付成交**; **不是**全网站点销量, **也不是**合约托管/结算总量 (托管结算在链上合约里)。
+- 交付队列只读**状态 / 时间 / `payment.txHash`**, **凭据原文一律不读出来**。
+- 读不到任何源 → 空数组 + 0 且**仍 200** (不 500, 不拿"读不到"冒充"没成交")。
+
+### 12.3 隐私红线 (硬; 由 `auditSellerSummaryLeaks` 在代码里守着)
+
+- **绝不返回**: 取件 token · 付款凭据原文 / 回执哈希 · 任何密钥 / DID · **任何 EOA 或合约地址**
+  (付款人 `from` · 收款人 `to` · 资产合约 `asset` · item 的 `payTo` 全都不出)。
+- **允许**: `tx_hash`(0x+64) 与 `explorer_tx`(区块浏览器**交易**链接) —— 本来就是公开链上事实。
+- 判据是「**键名白名单 + 值形态**」双判: 键名命中禁用词即剔 (带一份 ALLOWED_KEYS 白名单,
+  免得 `awaiting_signature` 被 `signature` 误伤); 值里出现 0x+40 地址 / 非白名单键下的 0x+64 → 剔除
+  (地址形态用负向前瞻与 64 位哈希区分, 否则哈希前 40 位会被误判); `txs{}` 的**键**必须逐个是
+  0x+64 且行内只许 `itemId/amount/settledAt`; 行级泄漏剔除该行并计入 `privacy_blocked`,
+  顶层泄漏则**不对外给这个对象** (退回空结果), 宁少报也不泄漏。
+
+### 12.4 返回体 (机器可读)
+
+```jsonc
+{
+  "protocol": "bolloon-x402-seller-summary/1",
+  "ok": true,
+  "scope": { "title": …, "ledger": … /* 卖方本机台账(链下), 不是链上索引 */, "verifiable": …, "not": … },
+  "generated_at": "2026-09-29T02:53:55.648Z",
+  "totals": { "chain_verified_sales": 1, "delivered": 1, "delivered_unverifiable": 0,
+              "awaiting_signature": 0, "pending_total": 1 },
+  "delivered_tx_hashes": ["0x8d06bc84…0ff1"],                       // 已交付笔数 → 对应链上 txHash
+  "txs": { "0x8d06bc84…0ff1": { "itemId": "info_efficode_spec_pack", "amount": "10000", "settledAt": "…" } },
+  "total_atomic": "10000",
+  "revenue": { "amount_atomic": "10000", "amount_display": "0.01 USDC", "currency": "USDC" },
+  "by_item": [ { "item_id": …, "sales": 1, "amount_atomic": "10000", "amount_display": "0.01 USDC", "currency": "USDC", "network": "base" } ],
+  "latest": { "settled_at": …, "item_id": …, "amount_atomic": "10000", "currency": "USDC", "network": "base",
+              "chain_id": 8453, "block_number": 51901934,
+              "tx_hash": "0x8d06bc84…0ff1", "explorer_tx": "https://basescan.org/tx/0x8d06bc84…0ff1" },
+  "sales": [ /* 同上, 按时间倒序, 每笔一行 */ ],
+  "privacy_blocked": 0
+}
+```
+
+- `txs{}` 的字段名是 **camelCase**(`itemId/amount/settledAt`) 且**键就是 txHash** —— 这是给
+  「统一索引区」交叉核用的最小机器面 (链上只看得见普通 ERC-20 转账, 单看链分不出"走没走 x402");
+  仓内消费方 `scripts/x402-seller-summary.ts` 按这个形状建索引 (`totalAtomic` / `total_atomic` 两个
+  兼容键都给)。**改形状 = 那边会静默变成「口径未知」**, 所以 `src/test/x402-seller-summary.test.ts`
+  里照着它的抽取规则钉了契约。
+- 该链**没有已知浏览器** (如本机 31337) → `explorer_tx` 键整个不存在 (绝不编死链)。
+
+### 12.5 实现与上机物
+
+| 件 | 说明 |
+| --- | --- |
+| `src/agents/x402/seller-summary.ts` (新) | `buildSellerSummary(home)` (聚合 + 隐私守卫) · `sellerSummaryResponse(home)` (HTTP 形状, 永远 200) · `auditSellerSummaryLeaks(obj)` (判据, 单测直接跑) |
+| `src/test/x402-seller-summary.test.ts` (新) | 13 条: 计数 / 按 item 汇总 / 时间倒序 / 空目录 / 坏文件 / 过期待签名不冒充可交付 / 已交付→txHash 列表 / 未知链不给链接 / 隐私审计含**变异验证** / `txs{}` 契约 |
+| `src/agents/x402/paid-info-store.ts` | 只加 `fromAtomicAmount` (原子→人读, 纯整数, `toAtomicAmount` 的逆; 展示用, 不参与判定) |
+| `src/agents/chain/explorer.ts` | (既有) `explorerTxUrl(chainId, txHash)` —— 白名单 4 条链, 只造 `/tx/0x64hex`, **没有地址链接构造器** |
+| 上机物 | `dist/agents/x402/seller-summary.js` → `/opt/bolloon-pay/app/lib/x402/` · `dist/agents/x402/paid-info-store.js` (带新函数) · **`dist/agents/chain/explorer.js` → `lib/chain/` (新目录)** · 新版 `server.mjs` (381→400 行) |
+
+### 12.6 部署与验证 (本轮真跑)
+
+```bash
+# 备份 → 语法检查 → 就位 → (就位后) 真 import 试加载 → restart → 5s 后 active
+cp -p server.mjs server.mjs.bak-<ts>; cp -a lib lib.bak-<ts>
+node --check server.mjs                                    # 候选文件本地检查
+install -o bolloonpay -g bolloonpay -m 644 <候选> <目标>     # 644 + 属主 bolloonpay
+node --input-type=module -e "await import('file:///opt/bolloon-pay/app/lib/x402/seller-summary.js')"  # ★ 就位后试加载
+systemctl restart bolloon-pay; sleep 5; systemctl is-active bolloon-pay
+```
+
+- ⚠️ **试加载必须在 lib 同级齐全的目录里跑**: `seller-summary.js → paid-info-store.js → paid-info-protocol.js`
+  是**兄弟相对导入**, 在只放了 `seller-summary.js` 的 staging 目录里试会报 `ERR_MODULE_NOT_FOUND` (本轮真撞到)。
+- 公网真验 (`curl --noproxy '*' --resolve pay.bolloon.cn:443:120.26.82.43`): summary **200** · `seller/pending`
+  仍 **401 `SELLER_AUTH_REQUIRED`** · 不带付款头 402 body sha256 `133664c0…dc2` **逐字未变** (上机未碰 :id 那支) · health **200**。
+- 回滚: `cp -a server.mjs.bak-<ts> server.mjs && rm -rf lib && cp -a lib.bak-<ts> lib && systemctl restart bolloon-pay`
+  (回滚后 summary 回 404; 402/health/pending 不受影响)。本轮记录追加在服务器 `/opt/bolloon-pay/RELEASE.txt`。
+
+### 12.7 未做 / 边界 (如实)
+
+- **不做全链扫描**: 端点只覆盖**本收款地址上的直付成交**。Base 公共 RPC 的 `eth_getLogs`
+  **单次上限 2000 块**, 大窗口会被拒 (`eth_getLogs is limited to a 2,000 range`) ⇒ 要扫必须 ≤2000 分块。
+- 核验依赖 **≥2 条公共 RPC 结论一致** (矛盾即不记账) ⇒ 台账是"已核验过的事实", 不是"链上全量"。
+- 该端点**公开无认证** —— 它是聚合面, 只出聚合与公开链上事实; **凭据/取件面仍在 HMAC 队列**里, 由 §十一 守着。
+- **页面上的付款/成交展示不由本端点负责**: Store / 可售资产区块**只讲「是什么 / 多少钱 / 怎么买 + 诚实边界」**,
+  销量与链上交互的统一展示区归另一条线 (2026-09-29 leo 拍板)。
+- 卖方不在线时买方仍只有 `202 已付款待签名` (交付是本机签名, 与"钱到了"是两件事)。

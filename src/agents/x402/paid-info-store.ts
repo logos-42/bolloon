@@ -145,6 +145,23 @@ export function toAtomicAmount(amount: string, currency: string): string {
   return `${int}${frac}`.replace(/^0+(?=\d)/, '');
 }
 
+/**
+ * 原子单位 → 人类可读 (**toAtomicAmount 的逆**; 纯整数运算, 不经过浮点)。
+ *   10000 + USDC(6) → "0.01" · 1000000 + USDC → "1" · 1 + ETH(18) → "0.000000000000000001"。
+ * 只用于**展示**; 台账/接口里一律以原子串为准 (展示值不参与任何判定)。
+ * 非纯数字输入 → 原样返回 (宁可显示原子串, 也不编一个折算过的数)。
+ */
+export function fromAtomicAmount(atomic: string, currency: string): string {
+  const decimals = currency === 'USDC' ? 6 : 18;
+  const s = String(atomic ?? '').trim();
+  if (!/^\d+$/.test(s)) return s;
+  const digits = s.replace(/^0+(?=\d)/, '');
+  const padded = digits.padStart(decimals + 1, '0');
+  const int = padded.slice(0, padded.length - decimals);
+  const frac = decimals > 0 ? padded.slice(padded.length - decimals).replace(/0+$/, '') : '';
+  return frac ? `${int}.${frac}` : int;
+}
+
 export interface PaymentRequiredBody {
   x402Version: number;
   error?: string;
