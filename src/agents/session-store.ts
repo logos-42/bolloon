@@ -155,6 +155,7 @@ export class SessionStore {
     return canonical;
   }
 
+
   /**
    * 读的时候用这个 —— 兼容**老文件名**。
    *
@@ -269,7 +270,11 @@ export class SessionStore {
     if (!key || key.includes('/') || key.includes('..')) {
       throw new Error(`SessionStore: invalid key ${JSON.stringify(key)}`);
     }
-    const filePath = await this.resolveExisting(key);
+    // 2026-09-30 回归修复: 读路径**不许**在"会话不存在"时抛错 —— 仓里的契约是
+    //   `loadMessages('cli:nonexistent') === null` (见 src/test/session-store.test.ts)。
+    //   用容错解析 (不存在 ⇒ 返回规范路径), 随后的 readFile 命中 ENOENT ⇒ return null。
+    //   老文件名(`real-123:default.json` 那批)由 resolveWritePath 兼容: 存在就返回老路径。
+    const filePath = await this.resolveWritePath(key);
     let raw: string;
     try {
       raw = await fs.readFile(filePath, 'utf-8');
