@@ -462,7 +462,15 @@ async function archiveSessionOnExit(key: string | null | undefined): Promise<str
     } catch { /* 树失败不挡退出 */ }
     let where = '';
     try { where = new SessionStore().pathFor(key); } catch { /* 路径拿不到不影响存档本身 */ }
-    return `${C_DIM}📦 session 已存档: ${key}${where ? ` → ${where}` : ''} · ${Date.now() - t0}ms${titleNote}${treeNote}${RESET}`;
+    // 2026-09-30 (leo: 「没有结束时间，没有总花费时间和日期记录」): 退出的那一行要能回答
+    //   「这次会话从几点到几点、一共多久」—— 起点取会话真起点 (cliStartTime, 与状态栏 ⏱ 同一个钟)。
+    const p2 = (n: number) => String(n).padStart(2, '0');
+    const stamp = (d: Date) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+    const ended = new Date();
+    const timeNote = cliStartTime
+      ? ` · ${stamp(new Date(cliStartTime))} → ${stamp(ended)} · 用时 ${fmtDuration(Date.now() - cliStartTime)}`
+      : ` · ${stamp(ended)}`;
+    return `${C_DIM}📦 session 已存档: ${key}${timeNote}${RESET}\n  ${C_DIM}${where ? where : ''} · ${Date.now() - t0}ms${titleNote}${treeNote}${RESET}`;
   } catch (e) {
     const msg = String((e as any)?.message || e);
     // 2026-09-30: "没内容可存档" 与 "存档失败" 是两件事 —— 前者不该报成 ⚠ 吓人。
