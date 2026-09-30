@@ -465,7 +465,7 @@ async function archiveSessionOnExit(key: string | null | undefined): Promise<str
     // 2026-09-30 (leo: 「没有结束时间，没有总花费时间和日期记录」): 退出的那一行要能回答
     //   「这次会话从几点到几点、一共多久」—— 起点取会话真起点 (cliStartTime, 与状态栏 ⏱ 同一个钟)。
     const p2 = (n: number) => String(n).padStart(2, '0');
-    const stamp = (d: Date) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+    const stamp = (d: Date) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
     const ended = new Date();
     const timeNote = cliStartTime
       ? ` · ${stamp(new Date(cliStartTime))} → ${stamp(ended)} · 用时 ${fmtDuration(Date.now() - cliStartTime)}`
