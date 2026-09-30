@@ -434,8 +434,15 @@
 - 拆包核: 今天新加的文件全在包里 · 关键判据行命中 (`rightAlignPad`×2 / `fitSegments`×1 / `cmdHead`×5 /
   `refreshSessionTitle`×3 / `userTextFrom`×4 / `cjsModuleDir`×3 / `looksSecret`×2) · `// MUTATION` = 0。
 
-**没做 / 待确认**: `--install-check` (全新目录装一遍数 warning) 起的那次后台被回收, 未取到结论;
-`◎` 之外 `20m`/`3m` 倒计时段仍无数据源 (不编数字)。
+**消费者复验 (补记, 两条独立路径)**:
+- 仓门 `node scripts/verify-release.mjs 0.5.4 --install-check`: **13 项全过** —— 追加 4 项 = `npm install -g` 真实安装成功 ·
+  `bolloon --version json` 可解析且版本一致 (`packageVersion=0.5.4` · `installMethod=npm-global`) · 普通 `--version` 可用 ·
+  `bolloon update --dry-run` 结构正确 (`target=null blockers=0`)。
+- 我自己那条全新目录装包: `npm install @bolloon/bolloon-agent@0.5.4` 装到 0.5.4 · **`npm warn` = 0** ·
+  真调 `dist/cli-entry.js --version` → `Bolloon Agent v0.5.4 | 安装方式: npm-local` (exit 0)。
+
+**没做 / 待确认**: 右对齐修完 `dispWidth` 后的**真机帧未采到样** (抓的那轮整轮没出现标题; 纯函数算的是
+`结束列 199 == 目标 199`) · `◎` 之外 `20m`/`3m` 倒计时段仍无数据源 (不编数字)。
 
 
 ### [2026-09-27] feat | `bolloon model` 真交互 TUI 收尾 — 三个真 bug + 真 pty 门 68/0 + 变异 9/9 判红
