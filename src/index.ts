@@ -450,7 +450,13 @@ async function archiveSessionOnExit(key: string | null | undefined): Promise<str
     try { where = new SessionStore().pathFor(key); } catch { /* 路径拿不到不影响存档本身 */ }
     return `${C_DIM}📦 session 已存档: ${key}${where ? ` → ${where}` : ''} · ${Date.now() - t0}ms${treeNote}${RESET}`;
   } catch (e) {
-    return `${C_WARN}⚠ session 存档失败: ${String((e as any)?.message || e).slice(0, 90)}${RESET}`;
+    const msg = String((e as any)?.message || e);
+    // 2026-09-30: "没内容可存档" 与 "存档失败" 是两件事 —— 前者不该报成 ⚠ 吓人。
+    //   (历史事故: 写路径误用读语义 ⇒ 新会话一律抛 not found ⇒ 用户看到红字却什么也没坏)
+    if (/session not found/i.test(msg)) {
+      return `${C_DIM}(本次没有可存档的会话内容 — 会话文件还没落盘)${RESET}`;
+    }
+    return `${C_WARN}⚠ session 存档失败: ${msg.slice(0, 90)}${RESET}`;
   }
 }
 /** 2026-08-09: agent 当前绑定的 channel id (null = 默认 harness 身份) — 切换时据此重建 */
