@@ -76,6 +76,21 @@ describe('log-gate 行分类', () => {
     expect(isStartupLogLine('kp.publicKey: Uint8Array(32) [')).toBe(true);
   });
 
+  it('SDK info 尾巴行 (带 [ts] 前缀 + ANSI 染色的 info) 不占屏, 且负控制成立', () => {
+    // 2026-09-30 真机: 行首有日志器加的 [ts] 前缀, `info` 还被 ANSI 染色 ⇒
+    //   旧规则 (只认"行首 ISO 时间戳 + 未染色 [info]:") 漏掉它, 于是
+    //   `2026-09-30T10:22:44.768Z [info]:   结果: ❌ 失败 (30004ms)` 照样上屏。
+    //   判据是 carriesHumanSignal (门用它决定"要不要占屏"), 不是 isStartupLogLine (那是"是不是加载行")。
+    const real = '[2026-09-30T10:22:44.768Z] 2026-09-30T10:22:44.768Z [\u001b[32minfo\u001b[39m]:   结果: ❌ 失败 (30004ms)';
+    expect(carriesHumanSignal(real), 'SDK info 尾巴行不占屏').toBe(false);
+    expect(carriesHumanSignal('2026-09-30T10:22:44.768Z [info]:   结果: ❌ 失败 (30004ms)'), '无染色同形也不占屏').toBe(false);
+    // 负控制 1: 同形状但是 warn ⇒ 必须算人味信号 (可行动的提示不许被吞)
+    const warn = '2026-09-30T10:22:44.768Z [\u001b[33mwarn\u001b[39m]:   ipfs daemon 启动超时, 可稍后手动运行';
+    expect(carriesHumanSignal(warn), 'warn 必须占屏').toBe(true);
+    // 负控制 2: error 级照旧上报
+    expect(carriesHumanSignal('2026-09-30T10:22:44.768Z [error]:   EADDRINUSE 端口被占'), 'error 必须占屏').toBe(true);
+  });
+
   it('信号行: 失败 / 未就绪 / 超时 / error / EADDRINUSE 都算「需人介入」', () => {
     for (const l of [
       '[did-catalog] OrbitDB 复制启动失败 (非致命, 稍后可用 API 重试): Cannot access x',

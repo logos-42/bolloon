@@ -540,7 +540,13 @@ export class PiAgentSession implements AgentSession {
         console.log(`[PiAgent] 从 ${sessionKey} 回灌 ${hydrated.length} 条历史`);
       }
     } catch (err) {
-      console.warn(`[PiAgent] hydrateMessageHistory 失败 (non-fatal): ${(err as Error).message?.slice(0, 100)}`);
+      // 2026-09-30: "会话文件不存在" 不是失败 —— 新 channel / 还没落过盘的会话就是这种情况
+      //   (真机噪声: `hydrateMessageHistory 失败 (non-fatal): session not found: ch_bolloon:default`)。
+      //   只有**非** not-found 的错误才值得 warn。
+      const __msg = String((err as Error)?.message || err);
+      if (!/session not found|ENOENT/i.test(__msg)) {
+        console.warn(`[PiAgent] hydrateMessageHistory 失败 (non-fatal): ${__msg.slice(0, 100)}`);
+      }
     }
   }
 

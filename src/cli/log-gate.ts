@@ -154,7 +154,11 @@ const OPTIONAL_BOOT_TASK = /(?:本地\s*IPNS\s*发布失败|IPNS\s*发布失败[
  *   `log-gate.test.ts` 断言 `… [warn]: ⚠️ 守护进程启动超时, 可稍后手动运行 ipfs daemon` 必须算人味信号
  *   (它确实可行动)。第一版规则连 warn 一起吞 ⇒ 被那条测试判红, 于是收窄。
  */
-const SDK_DIAG_LINE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*\[(?:info|debug)\]:/i;
+// 2026-09-30 真机修正: 原来只认"以 ISO 时间戳开头 + 未染色的 [info]:"。
+//   实测真身是 `[2026-…] 2026-…Z [[32minfo[39m]: …` —— 行首可能有日志器加的 `[ts] ` 前缀,
+//   `[info]` 里的 info 还会被 ANSI 染色 ⇒ 两条都让旧规则漏网, 于是
+//   `2026-09-30T10:22:44.768Z [info]:   结果: ❌ 失败 (30004ms)` 照样上屏 (leo 报过多次)。
+const SDK_DIAG_LINE = /^(?:\[[^\]]*\]\s*)?\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*\[(?:\x1b\[[0-9;]*m)*(?:info|debug)(?:\x1b\[[0-9;]*m)*\]:/i;
 
 /** 这一行是不是「错误 / 降级 / 需人介入」—— 是则任何模式下都不许被静默 */
 export function carriesHumanSignal(line: string): boolean {
