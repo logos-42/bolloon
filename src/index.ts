@@ -10,6 +10,7 @@ import {
   type P2PConnection,
 } from '@diap/sdk';
 import { irohTransport } from './network/iroh-transport.js';
+import { getLastAiTiming } from './llm/pi-ai.js';
 import { loadWalletTool } from './agents/wallet-tools.js';
 import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
@@ -698,9 +699,23 @@ function getStatus(): string {
     if (__run) {
       const secs = Math.max(0.1, (Date.now() - cliTurnStartedAt) / 1000);
       __segs.push(`${C_DIM}◷${RESET} ${C_TEXT}${secs.toFixed(1)}s${RESET}`);
-      if (cliTurnReplyBytes > 0) __segs.push(`${C_DIM}↑${RESET} ${C_TEXT}≈${Math.round(cliTurnReplyBytes / 3.5 / secs)} t/s${RESET}`);
+      // ↑ 吞吐: **用 pi-ai 的实测** (最近一次模型调用的 reply 字节 / 耗时), 只在本轮内更新过才显示;
+      //   字节折 token 按 ~3.5B/token 估算, 所以标 ≈ (数字本身是实测, 只有"折 token"这一步是估)。
+      // (上一版写成 require('./llm/pi-ai.js') —— 这仓里 require 是**已知陷阱**: 旁边注释就写着
+      //  "裸 require 抛错被 catch → 状态栏恒 0/1M"。已改静态导入, 这里直接调。)
+      const ti = getLastAiTiming();
+      if (ti && ti.at >= cliTurnStartedAt && ti.ms > 0 && ti.bytes > 0) {
+        __segs.push(`${C_DIM}↑${RESET} ${C_TEXT}≈${Math.round(ti.bytes / 3.5 / (ti.ms / 1000))} t/s${RESET}`);
+      }
     } else if (cliLastTurnMs > 0) {
       __segs.push(`${C_OK}✓${RESET} ${C_TEXT}${(cliLastTurnMs / 1000).toFixed(1)}s${RESET}`);
+      // ↑ 吞吐: 上一轮的回复字节 / 上一轮耗时 (标 ≈ —— 字节折 token 是估算, ~3.5B/token)。
+      //   坑 (2026-09-30 真机抓包照出来的): 原来只在"回合进行中 且 有字节"时显示, 而字节只在回合结束才算
+      //   ⇒ 条件永远凑不齐, 这段是**死代码**。改成跟 ✓ 一起显示 = 上一轮的吞吐, 数字是真的。
+      if (cliTurnReplyBytes > 0) {
+        const tps = Math.round(cliTurnReplyBytes / 3.5 / Math.max(0.1, cliLastTurnMs / 1000));
+        if (tps > 0) __segs.push(`${C_DIM}↑${RESET} ${C_TEXT}≈${tps} t/s${RESET}`);
+      }
     }
     if (cliTurnToolCount > 0) __segs.push(`${C_DIM}⚙${RESET} ${C_TEXT}${cliTurnToolCount}${RESET}`);
     const __live = __segs.length ? ` ${C_DIM}│${RESET} ${__segs.join(` ${C_DIM}│${RESET} `)}` : '';
@@ -2844,15 +2859,33 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       };
 
       if (!sub) {
+        // 表格 (leo 2026-09-30: 「钱包格式也统一一个表格」) —— 与 /sessions 同一套 idiom:
+        //   列宽按终端宽动态分配, 中文按**显示宽**对齐 (PAD/dispWidth), 宽不够就让 Name 先窄。
+        //   地址优先给满 42 字符 (能直接复制); 列宽不足时退回缩写 (0x1234…abcd), 不截半截地址。
         appendLine(`${C_ACCENT}钱包 (${list.length}):${RESET}`);
         if (!list.length) {
+          appendLine('');
           appendLine(`  ${C_DIM}无 — 用 ${RESET}${C_ACCENT}/wallet new [名字]${RESET}${C_DIM} 生成一个 EVM 钱包${RESET}`);
+        } else {
+          const PAD = (v: string, w: number) => v + ' '.repeat(Math.max(0, w - dispWidth(v)));
+          const avail = Math.max(60, termWidth() - 2);
+          const wN = 3, wChain = 8, wSrc = 6, wDate = 10;
+          const fixed = wN + wChain + wSrc + wDate + 5;
+          const wAddr = Math.max(13, Math.min(42, Math.floor((avail - fixed) * 0.55)));
+          const wName = Math.max(12, avail - fixed - wAddr);
+          const hdr = [PAD('#', wN), PAD('Name', wName), PAD('Address', wAddr), PAD('Chain', wChain), PAD('Source', wSrc), PAD('Created', wDate)];
+          const rule = [wN, wName, wAddr, wChain, wSrc, wDate].map(w => '─'.repeat(w));
+          appendLine('');
+          appendLine(`  ${C_DIM}${hdr.join(' ')}${RESET}`);
+          appendLine(`  ${C_DIM}${rule.join(' ')}${RESET}`);
+          list.forEach((w, k) => {
+            const addr = wAddr >= 42 ? w.address : shortAddr(w.address);
+            appendLine(`  ${C_ACCENT}${PAD(String(k + 1), wN)}${RESET} ${PAD(truncate(w.name, wName), wName)} ${C_DIM}${PAD(truncate(addr, wAddr), wAddr)}${RESET} ${PAD(truncate(w.network || '—', wChain), wChain)} ${C_DIM}${PAD(w.source === 'imported' ? '导入' : '生成', wSrc)}${RESET} ${C_DIM}${PAD(String(w.createdAt).slice(0, 10), wDate)}${RESET}`);
+          });
         }
-        list.forEach((w, k) => {
-          appendLine(`  ${C_DIM}${k + 1}.${RESET} ${w.name} ${C_DIM}·${RESET} ${shortAddr(w.address)} ${C_DIM}·${RESET} ${w.network || '—'} ${C_DIM}· ${w.source === 'imported' ? '导入' : '生成'} ${String(w.createdAt).slice(0, 10)}${RESET}`);
-        });
+        appendLine('');
         appendLine(`  ${C_DIM}台账目录: ${walletsDir()}/ (一钱包一文件 · 0600 · 私钥不回显)${RESET}`);
-        appendLine(`  ${C_DIM}用法: /wallet new [名字] · /wallet import <文件路径> [名字] · /wallet show <#|地址> · /wallet bal <#|地址>${RESET}`);
+        appendLine(`  ${C_DIM}用法: ${RESET}${C_ACCENT}/wallet new [名字]${RESET}${C_DIM} · ${RESET}${C_ACCENT}/wallet import <文件路径> [名字]${RESET}${C_DIM} · ${RESET}${C_ACCENT}/wallet show <#|地址>${RESET}${C_DIM} · ${RESET}${C_ACCENT}/wallet bal <#|地址>${RESET}`);
         return;
       }
 

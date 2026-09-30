@@ -1116,6 +1116,7 @@ export class PiAIModel {
         const _tAfter = Date.now();
         const promptBytes = JSON.stringify(messages).length;
         console.log(`[pi-ai timing] total=${_tAfter - _t0}ms attempt=${attempt + 1} fetch=${_tResp - _tFetch}ms parse=${_tParse - _tResp}ms reply=${content.length}B toolCalls=${toolCalls?.length ?? 0} model=${this.mapModel()} prompt=${promptBytes}B`);
+        lastAiTiming = { bytes: content.length, ms: Math.max(1, _tAfter - _t0), at: _tAfter };   // 状态栏 ↑ t/s 的真数
         retryAgent?.destroy().catch(() => {});
         return { reply: content, toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined, reasoningContent, usage };
       }
@@ -1179,6 +1180,7 @@ export class PiAIModel {
     if (usage) console.log(formatKvServerLine(purpose, usage, { stream: true }));
     const toolCalls = acc.filter(Boolean);
     console.log(`[pi-ai timing] total=${Date.now() - t0}ms stream reply=${reply.length}B toolCalls=${toolCalls.length}`);
+    lastAiTiming = { bytes: reply.length, ms: Math.max(1, Date.now() - t0), at: Date.now() };   // 状态栏 ↑ t/s 的真数
     return {
       reply,
       reasoningContent: reasoning || undefined,
@@ -1679,6 +1681,17 @@ export function getModel(): PiAIModel {
 export function isModelAvailable(): boolean {
   return modelInstance !== null;
 }
+
+/**
+ * 最近一次模型调用的**真实吞吐** (2026-09-30, 状态栏 `↑ ≈N t/s` 用)。
+ *
+ * 为什么不用"猜": 这里就是 pi-ai 自己打 timing 日志的地方 —— `total=<ms>` 与 `reply=<bytes>`
+ *   都是**实测**, 状态栏直接读它 = 真数字 (字节折 token 才标 ≈)。
+ *   注意: 只在**成功的模型调用**后更新; 没有记录时状态栏就不显示 ↑ (不编)。
+ */
+let lastAiTiming: { bytes: number; ms: number; at: number } | null = null;
+/** 读最近一次模型调用的吞吐记录 (null = 本进程还没成功调过) */
+export function getLastAiTiming(): { bytes: number; ms: number; at: number } | null { return lastAiTiming; }
 
 export function getMinimax(): PiAIModel {
   return getModel();
