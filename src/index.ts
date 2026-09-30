@@ -1573,6 +1573,11 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
 
   // ==================== 2026-08-06: 系统命令组 (/model /now /ipfs /memory ...) ====================
   const cmd = trimmed.toLowerCase();
+  // 2026-09-30 (leo: 「/session 1 是切换到该 session，目前这个命令还没成功」「bolloon 把这个命令当成了 prompt」):
+  //   `cmd` 是**整行**小写 ⇒ '/session 1' ≠ '/session' ⇒ 带参数的命令掉进 prompt 路径 (被当用户消息发下去)。
+  //   不能全局改成"首词" —— 同文件里 `/email clear` 这类多词命令就是靠整行匹配的。
+  //   所以加一个**首词**给"带参数的命令"用 (cmd 保持原样给多词命令用)。
+  const cmdHead = cmd.split(/\s+/)[0];
 
   // /net — Agent 网络快捷命令 (join/status/ctx, 2026-09-08)
   if (cmd === '/net' || cmd.startsWith('/net ')) {
@@ -2340,7 +2345,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   //   现在: 错误如实说出来; 并列出最近会话(最新在上), 可直接选一个接着聊。
   // /fork <#|id> — 从某条会话分叉出新会话 (标准 branch 语义: 共享 fork 点之前历史, 之后各自独立)
   //   树用 git 管: ~/.bolloon/sessions/ 是仓库, 每次 fork / 退出存档 = 一次 commit (git log --graph 即会话树)
-  if (cmd === '/fork') {
+  if (cmdHead === '/fork') {
     const forkArg = trimmed.split(/\s+/)[1] || '';
     if (!forkArg || forkArg === '--tree') {
       try {
@@ -2401,7 +2406,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   }
 
 
-  if (cmd === '/session' || cmd === '/sessions') {
+  if (cmdHead === '/session' || cmdHead === '/sessions') {   // 带参数 (如 /session 1) 也认
     const sessArg = trimmed.split(/\s+/)[1] || '';
     const sessStore = new SessionStore();
     try {
@@ -2602,7 +2607,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   }
 
   // /todo — 循环过程工具: 查看/勾选步骤 (2026-08-08)
-  if (cmd === '/todo') {
+  if (cmdHead === '/todo') {
     try {
       const { listActivePlans } = await import('./agents/plan-store.js');
       const plans = await listActivePlans();
@@ -2892,7 +2897,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   // /wallet — 钱包台账 (2026-09-30 做实: 以前只读一个**从来没人写过**的 wallets.json ⇒ 永远「钱包 (0)」)
   //   纪律: 私钥/助记词只落 0600 台账 (~/.bolloon/wallets.json), **命令输出永不回显**;
   //        不读别的 agent 的钱包目录 (chain-config.ts 硬规则), 要收编只能 /wallet import <path> 显式指定。
-  if (cmd === '/wallet' || trimmed.startsWith('/wallet ')) {
+  if (cmdHead === '/wallet') {
     try {
       const { loadWallets, addWallet, walletsDir, shortAddr } = await import('./cli/wallet-store.js');
       const arg = trimmed.split(/\s+/).slice(1);
