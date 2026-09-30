@@ -140,6 +140,22 @@ export class SessionStore {
    * (load/save/listKeys/deleteKey 全部透明).
    */
   /**
+   * **写**的时候用这个 —— 与 resolveExisting 的区别: 不存在**不抛错**, 返回规范路径 (等于新建)。
+   *
+   * 2026-09-30 回归事故: 我把 resolveExisting (读语义, 不存在就抛 not found) 批量替换进了
+   *   saveMessages ⇒ 退出存档对"还没落盘的新会话"直接抛 `session not found`
+   *   (leo 贴的 `⚠ session 存档失败: SessionStore: session not found: 20260930_175348_870c70`)。
+   *   写路径必须容忍"还没有文件" —— 那正是它要创建的东西。
+   */
+  private async resolveWritePath(key: string): Promise<string> {
+    const canonical = this.pathFor(key);
+    try { await fs.access(canonical); return canonical; } catch { /* 试老名 */ }
+    const legacy = path.join(this.cacheDir, `${key}.json`);
+    try { await fs.access(legacy); return legacy; } catch { /* 新会话 */ }
+    return canonical;
+  }
+
+  /**
    * 读的时候用这个 —— 兼容**老文件名**。
    *
    * 2026-09-30 发现: 早期版本直接把 `channelId:sessionId` 当文件名写盘 (`real-123:default.json`),
@@ -195,7 +211,7 @@ export class SessionStore {
         totalCount: messages.length,
       },
     };
-    const filePath = await this.resolveExisting(key);
+    const filePath = await this.resolveWritePath(key);   // 写路径: 新会话就建 (不抛 not found)
     const tmpPath = `${filePath}.tmp`;
     await fs.writeFile(tmpPath, JSON.stringify(payload, null, 2), 'utf-8');
     await fs.rename(tmpPath, filePath);
@@ -334,11 +350,18 @@ export class SessionStore {
    */
   async updateMetadata(key: string, patch: Record<string, unknown>): Promise<void> {
     if (!key || key.includes('/') || key.includes('..')) throw new Error(`SessionStore: invalid key ${JSON.stringify(key)}`);
-    const file = await this.resolveExisting(key);
-    const raw = JSON.parse(await fs.readFile(file, 'utf-8')) as any;
-    const next = Array.isArray(raw)
-      ? { key, messages: raw, metadata: { ...patch } }
-      : { ...raw, metadata: { ...(raw?.metadata || {}), ...patch } };
+    const file = await this.resolveWritePath(key);
+    let raw: any = null;
+    try { raw = JSON.parse(await fs.readFile(file, 'utf-8')); }
+    catch (e: any) {
+      if (e?.code !== 'ENOENT') throw new Error(`会话文件读不了 (${file}): ${String(e?.message || e).slice(0, 120)}`);
+      // 还没有文件 ⇒ 建成只有 metadata 的会话 (元数据更新对新会话应当有效, 不是错误)
+    }
+    const next = raw === null
+      ? { key, messages: [], metadata: { ...patch } }
+      : Array.isArray(raw)
+        ? { key, messages: raw, metadata: { ...patch } }
+        : { ...raw, metadata: { ...(raw?.metadata || {}), ...patch } };
     const tmp = `${file}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(next, null, 2), 'utf-8');
     await fs.rename(tmp, file);
