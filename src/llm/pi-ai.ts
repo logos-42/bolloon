@@ -1117,6 +1117,7 @@ export class PiAIModel {
         const promptBytes = JSON.stringify(messages).length;
         console.log(`[pi-ai timing] total=${_tAfter - _t0}ms attempt=${attempt + 1} fetch=${_tResp - _tFetch}ms parse=${_tParse - _tResp}ms reply=${content.length}B toolCalls=${toolCalls?.length ?? 0} model=${this.mapModel()} prompt=${promptBytes}B`);
         lastAiTiming = { bytes: content.length, ms: Math.max(1, _tAfter - _t0), at: _tAfter };   // 状态栏 ↑ t/s 的真数
+        lastAiUsage = { cached: usage?.cachedTokens || 0, prompt: usage?.promptTokens || 0, at: _tAfter };   // 状态栏 ◎ 缓存命中率
         retryAgent?.destroy().catch(() => {});
         return { reply: content, toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined, reasoningContent, usage };
       }
@@ -1181,6 +1182,7 @@ export class PiAIModel {
     const toolCalls = acc.filter(Boolean);
     console.log(`[pi-ai timing] total=${Date.now() - t0}ms stream reply=${reply.length}B toolCalls=${toolCalls.length}`);
     lastAiTiming = { bytes: reply.length, ms: Math.max(1, Date.now() - t0), at: Date.now() };   // 状态栏 ↑ t/s 的真数
+    lastAiUsage = { cached: usage?.cachedTokens || 0, prompt: usage?.promptTokens || 0, at: Date.now() };   // 状态栏 ◎ 缓存命中率
     return {
       reply,
       reasoningContent: reasoning || undefined,
@@ -1692,6 +1694,16 @@ export function isModelAvailable(): boolean {
 let lastAiTiming: { bytes: number; ms: number; at: number } | null = null;
 /** 读最近一次模型调用的吞吐记录 (null = 本进程还没成功调过) */
 export function getLastAiTiming(): { bytes: number; ms: number; at: number } | null { return lastAiTiming; }
+
+/**
+ * 最近一次模型调用的**用量** (2026-09-30, 状态栏 `◎ 缓存命中率` 用)。
+ *   cachedTokens / promptTokens 都来自 provider 的 usage 字段 (OpenAI/DeepSeek:
+ *   prompt_tokens_details.cached_tokens; llama.cpp: timings.cache_n) —— 见 extractUsage。
+ *   命中率 = cached / prompt。**只报实测**, 没记录就不显示 (不编)。
+ */
+let lastAiUsage: { cached: number; prompt: number; at: number } | null = null;
+/** 读最近一次模型调用的用量记录 (null = 本进程还没有带 usage 的成功调用) */
+export function getLastAiUsage(): { cached: number; prompt: number; at: number } | null { return lastAiUsage; }
 
 export function getMinimax(): PiAIModel {
   return getModel();

@@ -10,8 +10,9 @@ import {
   type P2PConnection,
 } from '@diap/sdk';
 import { irohTransport } from './network/iroh-transport.js';
-import { getLastAiTiming } from './llm/pi-ai.js';
+import { getLastAiTiming, getLastAiUsage } from './llm/pi-ai.js';
 import { setHistoryScope } from './cli/input-history.js';
+import { statusSegments } from './cli/status-segments.js';
 import { loadWalletTool } from './agents/wallet-tools.js';
 import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
@@ -700,35 +701,23 @@ function buildContextBar(usage: { pct: number; usedTokens: number; maxTokens: nu
 
 /** 状态栏: 模型 │ 当前智能体 (含 channel) │ ⏱ 时间 │ 320k/1M │ [██████░░░░] 32% (bolloon 色系) */
 function getStatus(): string {
-    // 2026-09-30 (leo): 追加**可测**的四段 —— ◷ 本轮用时 · ↑ ≈t/s · ⚙ 在跑工具数 · ✓ 上一步用时
-    const __run = cliTurnStartedAt > 0;
-    const __segs: string[] = [];
-    if (__run) {
-      const secs = Math.max(0.1, (Date.now() - cliTurnStartedAt) / 1000);
-      __segs.push(`${C_DIM}◷${RESET} ${C_TEXT}${secs.toFixed(1)}s${RESET}`);
-      // ↑ 吞吐: **用 pi-ai 的实测** (最近一次模型调用的 reply 字节 / 耗时), 只在本轮内更新过才显示;
-      //   字节折 token 按 ~3.5B/token 估算, 所以标 ≈ (数字本身是实测, 只有"折 token"这一步是估)。
-      // (上一版写成 require('./llm/pi-ai.js') —— 这仓里 require 是**已知陷阱**: 旁边注释就写着
-      //  "裸 require 抛错被 catch → 状态栏恒 0/1M"。已改静态导入, 这里直接调。)
-      const ti = getLastAiTiming();
-      if (ti && ti.at >= cliTurnStartedAt && ti.ms > 0 && ti.bytes > 0) {
-        __segs.push(`${C_DIM}↑${RESET} ${C_TEXT}≈${Math.round(ti.bytes / 3.5 / (ti.ms / 1000))} t/s${RESET}`);
-      }
-    } else if (cliLastTurnMs > 0) {
-      __segs.push(`${C_OK}✓${RESET} ${C_TEXT}${(cliLastTurnMs / 1000).toFixed(1)}s${RESET}`);
-      // ↑ 吞吐: 上一轮的回复字节 / 上一轮耗时 (标 ≈ —— 字节折 token 是估算, ~3.5B/token)。
-      //   坑 (2026-09-30 真机抓包照出来的): 原来只在"回合进行中 且 有字节"时显示, 而字节只在回合结束才算
-      //   ⇒ 条件永远凑不齐, 这段是**死代码**。改成跟 ✓ 一起显示 = 上一轮的吞吐, 数字是真的。
-      if (cliTurnReplyBytes > 0) {
-        const tps = Math.round(cliTurnReplyBytes / 3.5 / Math.max(0.1, cliLastTurnMs / 1000));
-        if (tps > 0) __segs.push(`${C_DIM}↑${RESET} ${C_TEXT}≈${tps} t/s${RESET}`);
-      }
-    }
-    // ⚙ **常显** (闲时 0 也是真话) —— leo 2026-09-30: 「这些标识没有出现」。
-    //   原因: ◷/↑/⚙ 是"正在干活"那一组, 静默时没有数据就不显示 ⇒ 看上去像功能没上。
-    //   现在 ⚙ 永远在 (0 = 没有在跑的工具), 至少能一眼确认这段功能是活的;
-    //   ◷/↑ 仍只在真有本轮数据时显示 (不编), ✓ 在回合结束后常驻。
-    __segs.push(`${C_DIM}⚙${RESET} ${C_TEXT}${cliTurnToolCount}${RESET}`);
+    // 2026-09-30 (leo): 四段抽到 src/cli/status-segments.ts (纯函数 ⇒ "什么时候显示什么"可确定性验证)
+    const __segs: string[] = statusSegments({
+      running: cliTurnStartedAt > 0,
+      turnElapsedMs: cliTurnStartedAt > 0 ? Date.now() - cliTurnStartedAt : 0,
+      lastTurnMs: cliLastTurnMs,
+      lastTurnReplyBytes: cliTurnReplyBytes,
+      toolCount: cliTurnToolCount,
+      aiTiming: getLastAiTiming(),
+      aiUsage: getLastAiUsage(),
+      turnStartedAt: cliTurnStartedAt,
+    }).map(s => {
+      const m = /^(\S+)\s(.*)$/.exec(s);
+      const icon = m ? m[1] : '';
+      const val = m ? m[2] : s;
+      const color = icon.startsWith('✓') ? C_OK : C_TEXT;
+      return `${C_DIM}${icon}${RESET} ${color}${val}${RESET}`;
+    });
     const __live = __segs.length ? ` ${C_DIM}│${RESET} ${__segs.join(` ${C_DIM}│${RESET} `)}` : '';
   const usage = getCliCtxUsage();
   // 名字兜底: 空/'…' 一律显示 bolloon —— 标识必须一直在 (leo: 「bolloon 标识没出现」)
