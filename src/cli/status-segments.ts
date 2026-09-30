@@ -1,3 +1,4 @@
+import { dispWidth } from './loading-tui.js';
 /**
  * status-segments.ts — 状态栏右侧"活数据"段的纯函数 (leo 2026-09-30)
  *
@@ -30,6 +31,11 @@ export interface StatusFacts {
   turnStartedAt?: number;
   /** 最近一次模型调用的用量 (算缓存命中率 ◎) */
   aiUsage?: { cached: number; prompt: number; at: number } | null;
+  /**
+   * 当前会话的 Title/Preview (leo 2026-09-30: 「session 的 Preview 在对话框工具栏右侧做显示」)。
+   *   低优先级: 宽度不够时**第一个**被丢 (它只是提示"这条会话在聊什么")。
+   */
+  sessionPreview?: string;
 }
 
 /** 字节 → token 的估算比 (只有这一步是估, 所以显示时标 ≈) */
@@ -60,6 +66,7 @@ export function statusSegments(f: StatusFacts): string[] {
     out.push(`◎ ${pct.toFixed(1)}%`);
   }
   out.push(`⚙ ${f.toolCount}`);        // 常显
+  // 会话 Title 不在这里拼 —— leo: 「这个 title 需要顶格右侧」⇒ 由 CLI 右对齐 (见 rightAlignPad)。
   return out;
 }
 
@@ -70,8 +77,11 @@ export function statusSegments(f: StatusFacts): string[] {
  *   每一段都按显示宽算 (中文 2 列)。
  */
 export function fitSegments(segs: string[], avail: number): string[] {
-  const w = (s: string) => [...s].reduce((n, ch) => n + (ch.charCodeAt(0) > 255 ? 2 : 1), 0);
-  const dropOrder = ['↑', '◎', '✓', '◷'];        // 先丢谁 (从重要性的低到高)
+  // 2026-09-30: 宽度一律用 loading-tui 的 dispWidth (按 East Asian Width 表) ——
+  //   之前这里和 getStatus 各写了一份 "charCode > 255 ⇒ 2" 的启发式, 它把 `│ ░ ◷ ▸ ◎ ✓ ↑ ⚙`
+  //   这些**单宽**符号都算成 2 列 ⇒ 右对齐时每行凭空多占十几列 (leo: 「没有完全右对齐」)。
+  const w = (s: string) => dispWidth(s);
+  const dropOrder = ['↑', '◎', '✓', '◷'];       // 先丢谁 (从重要性的低到高; ⚙ 永不丢)
   let cur = [...segs];
   const total = () => cur.reduce((n, s) => n + w(s), 0) + Math.max(0, cur.length - 1) * 3;   // 3 = ' │ '
   for (const tag of dropOrder) {
@@ -80,4 +90,18 @@ export function fitSegments(segs: string[], avail: number): string[] {
     if (i >= 0) cur.splice(i, 1);
   }
   return cur;
+}
+
+/**
+ * 右对齐一段注释 (会话 Title) 需要的**左填充空格数** (纯函数, 可确定性验证)。
+ *
+ * leo 2026-09-30: 「这个 title 需要顶格右侧」= 贴终端右边缘, 不在段后面跟着走。
+ * 规则:
+ *   · 目标右边缘 = width - 1 (**绝不出正好等于终端宽度的行** —— 终端自动换行会把版面撑歪);
+ *   · 至少留 1 个空格与左边内容分开 (挨着就分不清是标题还是段);
+ *   · 放不下 (pad < 1) 返回 null ⇒ 调用方**不显示**标题 (宁可没有, 不挤坏这一行)。
+ */
+export function rightAlignPad(usedWidth: number, noteWidth: number, width: number): number | null {
+  const pad = (width - 1) - usedWidth - noteWidth;
+  return pad >= 1 ? pad : null;
 }

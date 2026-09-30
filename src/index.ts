@@ -12,7 +12,7 @@ import {
 import { irohTransport } from './network/iroh-transport.js';
 import { getLastAiTiming, getLastAiUsage } from './llm/pi-ai.js';
 import { setHistoryScope } from './cli/input-history.js';
-import { statusSegments , fitSegments } from './cli/status-segments.js';
+import { statusSegments , fitSegments, rightAlignPad } from './cli/status-segments.js';
 import { loadWalletTool } from './agents/wallet-tools.js';
 import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
@@ -481,6 +481,32 @@ async function archiveSessionOnExit(key: string | null | undefined): Promise<str
     return `${C_WARN}⚠ session 存档失败: ${msg.slice(0, 90)}${RESET}`;
   }
 }
+/**
+ * 读一条会话的 metadata.title 并刷新工具栏右侧 (没有就清空)。
+ *   2026-09-30 (leo: 「切换 session 后也要有 title 加载」): 启动 / 切会话 / 回合结束三处共用同一套口径 ——
+ *   否则切完会话右侧还挂上一条的标题 (或空着), 看着像没生效。
+ */
+async function refreshSessionTitle(key: string | null | undefined): Promise<void> {
+  // 2026-09-30 (leo: 「切换后没有立刻刷新」): **先立刻清空并重绘** —— 否则等待异步读盘那几十毫秒里,
+  //   工具栏右侧还挂着上一条会话的标题, 看着就是"没刷新"。读完再填。
+  cliSessionPreview = '';
+  cliSessionTitleKey = key || null;
+  try { inkSetStatus(getStatus()); } catch { /* Ink 未起 */ }
+  if (!key) return;
+  try {
+    const fs = await import('fs/promises');
+    const store = new SessionStore();
+    const raw = JSON.parse(await fs.readFile(store.pathFor(key), 'utf-8'));
+    const md = (Array.isArray(raw) ? {} : raw?.metadata) || {};
+    const t = String(md.title || '').trim();
+    // 只认"这条读的确实是当前会话" —— 读盘期间可能又切了一次
+    cliSessionPreview = (t && t !== key && cliSessionTitleKey === key) ? t.slice(0, 24) : '';
+  } catch {
+    cliSessionPreview = '';   // 读不到/没标题 ⇒ 空着 (不拿旧标题冒充)
+  }
+  try { inkSetStatus(getStatus()); } catch { /* Ink 未起 */ }
+}
+
 /** 2026-08-09: agent 当前绑定的 channel id (null = 默认 harness 身份) — 切换时据此重建 */
 let agentBoundChannelId: string | null = null;
 let harness: BollharnessIntegration | null = null;
@@ -662,6 +688,7 @@ let cliTurnReplyBytes = 0;
 let cliTurnToolCount = 0;   // 在跑工具数 (回合内由工具事件更新)
 /** 当前会话的 Title/Preview (工具栏右侧显示用; 回合结束后后台生成一次, 生成过就不再跑) */
 let cliSessionPreview = '';
+let cliSessionTitleKey: string | null = null;   // 这条标题属于哪个会话 —— 不是当前会话一律不显示 (防串台)
 let cliSessionSummarizing = false;
 // 2026-08-12: 当前 active channel 的 agentId (如 agent-alice). memory 落盘按 agentId 存,
 //   /memory /resume /did 读路径必须用 agentId 而非 display name (cliAgentName), 否则路径不一致读不到.
@@ -754,7 +781,6 @@ function getStatus(): string {
       toolCount: cliTurnToolCount,
       aiTiming: getLastAiTiming(),
       aiUsage: getLastAiUsage(),
-      sessionPreview: cliSessionPreview,
       turnStartedAt: cliTurnStartedAt,
     }).map(s => {
       const m = /^(\S+)\s(.*)$/.exec(s);
@@ -772,7 +798,18 @@ function getStatus(): string {
           return `${C_DIM}${icon}${RESET} ${icon.startsWith('✓') ? C_OK : C_TEXT}${val}${RESET}`;
         }).join(` ${C_DIM}│${RESET} `)
       : '';
-  return `${__left}${__live}`;
+  // 2026-09-30 (leo: 「这个 title 需要顶格右侧」): 会话 Title **右对齐**贴右边缘 ——
+  //   先算左半边+活数据段的显示宽, 再补空格把 `▸ 标题` 推到 width-1 处; 放不下就不显示 (不挤坏这一行)。
+  const __notePlain = (cliSessionPreview && cliSessionTitleKey === cliSessionKey) ? `▸ ${cliSessionPreview}` : '';
+  let __noteStr = '';
+  if (__notePlain) {
+    // 宽度必须用 dispWidth (East Asian Width 表): 行内的 `│ ░ ◷ ▸ ◎ ✓ ↑ ⚙` 都是**单宽**,
+    //   用 "charCode > 255 ⇒ 2" 的启发式会每行多算十几列 ⇒ 右对齐留一大截 (leo: 「没有完全右对齐」)。
+    const used = dispWidth(`${__left}${__live}`);
+    const pad = rightAlignPad(used, dispWidth(__notePlain), termWidth());
+    if (pad !== null) __noteStr = ' '.repeat(pad) + `${C_DIM}${__notePlain}${RESET}`;
+  }
+  return `${__left}${__live}${__noteStr}`;
 }
 
 function statusBarLine(): string {
@@ -1128,6 +1165,7 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
     session: bootSessionId,
   });
   cliSessionKey = bootSessionId;   // 2026-09-30: 退出存档要用 (两条退出路径都读它)
+  void refreshSessionTitle(cliSessionKey);   // 启动就把当前会话的标题带上
   if (bootBox) {
     // 2026-09-30 (leo: 「面板和回复要往上面无限推」): 面板就是这条流的**第一条** —— 渲染侧走 <Static>, 高度无限
     appendLine(bootBox);
@@ -2499,6 +2537,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           }
           await writeFile(cp, JSON.stringify(Array.isArray(parsed) ? channels : { ...parsed, channels }, null, 2), 'utf-8');
         } catch { /* 无 channels.json 也能继续 */ }
+        await refreshSessionTitle(pick.key);   // 切完立刻把这条会话的标题带上 (leo 2026-09-30)
         appendLine(`${C_OK}✓ 已切到会话 ${pick.key}${RESET} ${C_DIM}(载入 ${n} 条历史${saved ? ' · 已写入 channel' : ''}; 屏上不重放旧消息, 直接接着聊)${RESET}`);
       } catch (e: any) {
         appendLine(`${C_ERROR}/session ${sessArg} 失败: ${String(e?.message || e).slice(0, 200)}${RESET}`);
