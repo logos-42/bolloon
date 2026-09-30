@@ -2874,20 +2874,12 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           appendLine('');
           appendLine(`  ${C_DIM}无 — 用 ${RESET}${C_ACCENT}/wallet new [名字]${RESET}${C_DIM} 生成一个 EVM 钱包${RESET}`);
         } else {
-          const PAD = (v: string, w: number) => v + ' '.repeat(Math.max(0, w - dispWidth(v)));
-          const avail = Math.max(60, termWidth() - 2);
-          const wN = 3, wChain = 8, wSrc = 6, wDate = 10;
-          const fixed = wN + wChain + wSrc + wDate + 5;
-          const wAddr = Math.max(13, Math.min(42, Math.floor((avail - fixed) * 0.55)));
-          const wName = Math.max(12, avail - fixed - wAddr);
-          const hdr = [PAD('#', wN), PAD('Name', wName), PAD('Address', wAddr), PAD('Chain', wChain), PAD('Source', wSrc), PAD('Created', wDate)];
-          const rule = [wN, wName, wAddr, wChain, wSrc, wDate].map(w => '─'.repeat(w));
+          // 表格渲染抽到 src/cli/wallet-table.ts (纯函数 ⇒ 可确定性验证对齐, 不用靠 PTY 抓包)
+          const { renderWalletTable } = await import('./cli/wallet-table.js');
+          const rows = renderWalletTable(list, { width: termWidth(), shortAddr });
           appendLine('');
-          appendLine(`  ${C_DIM}${hdr.join(' ')}${RESET}`);
-          appendLine(`  ${C_DIM}${rule.join(' ')}${RESET}`);
-          list.forEach((w, k) => {
-            const addr = wAddr >= 42 ? w.address : shortAddr(w.address);
-            appendLine(`  ${C_ACCENT}${PAD(String(k + 1), wN)}${RESET} ${PAD(truncate(w.name, wName), wName)} ${C_DIM}${PAD(truncate(addr, wAddr), wAddr)}${RESET} ${PAD(truncate(w.network || '—', wChain), wChain)} ${C_DIM}${PAD(w.source === 'imported' ? '导入' : '生成', wSrc)}${RESET} ${C_DIM}${PAD(String(w.createdAt).slice(0, 10), wDate)}${RESET}`);
+          rows.forEach((r, k) => {
+            appendLine(k < 2 ? `  ${C_DIM}${r}${RESET}` : `  ${C_TEXT}${r}${RESET}`);
           });
         }
         appendLine('');
