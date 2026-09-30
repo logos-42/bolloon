@@ -12,7 +12,7 @@ import {
 import { irohTransport } from './network/iroh-transport.js';
 import { getLastAiTiming, getLastAiUsage } from './llm/pi-ai.js';
 import { setHistoryScope } from './cli/input-history.js';
-import { statusSegments } from './cli/status-segments.js';
+import { statusSegments , fitSegments } from './cli/status-segments.js';
 import { loadWalletTool } from './agents/wallet-tools.js';
 import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
@@ -711,6 +711,16 @@ function statusModelName(): string {
 
 /** 状态栏: 模型 │ 当前智能体 (含 channel) │ ⏱ 时间 │ 320k/1M │ [██████░░░░] 32% (bolloon 色系) */
 function getStatus(): string {
+  const usage = getCliCtxUsage();
+  // 名字兜底: 空/'…' 一律显示 bolloon —— 标识必须一直在 (leo: 「bolloon 标识没出现」)
+  const __name = (!cliAgentName || cliAgentName === '…') ? 'bolloon' : cliAgentName;
+  // 2026-09-30: 左半边按宽压扁 —— 窄终端里 `(ch:xxx)` 与 token 计数让位给右边的活数据段
+  const __w = termWidth();
+  const agentPart = (cliActiveChannelId && __w >= 120) ? `${__name} ${C_DIM}(ch:${cliActiveChannelId.slice(0, 10)})${RESET}` : __name;
+  // 左半边先建好 —— 后面对右侧活数据段做宽度取舍要用它的纯文本长度
+  const __left = `${C_ACCENT}${statusModelName()}${RESET} ${C_DIM}v${_BOLLOON_VERSION}${RESET}${C_DIM}  │${RESET} ${agentPart} ${C_DIM}│${RESET} ⏱ ${C_TEXT}${fmtDuration(Date.now() - cliStartTime)}${RESET}${C_DIM} │${RESET} ${buildContextBar(usage)}`;
+  const __leftPlainLen = __left.replace(/\x1b\[[0-9;]*m/g, '').length;
+
     // 2026-09-30 (leo): 四段抽到 src/cli/status-segments.ts (纯函数 ⇒ "什么时候显示什么"可确定性验证)
     const __segs: string[] = statusSegments({
       running: cliTurnStartedAt > 0,
@@ -728,12 +738,16 @@ function getStatus(): string {
       const color = icon.startsWith('✓') ? C_OK : C_TEXT;
       return `${C_DIM}${icon}${RESET} ${color}${val}${RESET}`;
     });
-    const __live = __segs.length ? ` ${C_DIM}│${RESET} ${__segs.join(` ${C_DIM}│${RESET} `)}` : '';
-  const usage = getCliCtxUsage();
-  // 名字兜底: 空/'…' 一律显示 bolloon —— 标识必须一直在 (leo: 「bolloon 标识没出现」)
-  const __name = (!cliAgentName || cliAgentName === '…') ? 'bolloon' : cliAgentName;
-  const agentPart = cliActiveChannelId ? `${__name} ${C_DIM}(ch:${cliActiveChannelId.slice(0, 10)})${RESET}` : __name;
-  return `${C_ACCENT}${statusModelName()}${RESET} ${C_DIM}v${_BOLLOON_VERSION}${RESET}${C_DIM}  │${RESET} ${agentPart} ${C_DIM}│${RESET} ⏱ ${C_TEXT}${fmtDuration(Date.now() - cliStartTime)}${RESET}${C_DIM} │${RESET} ${buildContextBar(usage)}${__live}`;
+    // 按剩余宽度取舍 (真机 112 列时右段被截 ⇒ 看着像没出现)
+    const __segsFit = fitSegments(__segs.map(x => x.replace(/\x1b\[[0-9;]*m/g, '')), Math.max(20, termWidth() - 2 - __leftPlainLen - 6));
+    const __live = __segsFit.length
+      ? ` ${C_DIM}│${RESET} ` + __segsFit.map(x => {
+          const m = /^(\S+)\s(.*)$/.exec(x);
+          const icon = m ? m[1] : ''; const val = m ? m[2] : x;
+          return `${C_DIM}${icon}${RESET} ${icon.startsWith('✓') ? C_OK : C_TEXT}${val}${RESET}`;
+        }).join(` ${C_DIM}│${RESET} `)
+      : '';
+  return `${__left}${__live}`;
 }
 
 function statusBarLine(): string {

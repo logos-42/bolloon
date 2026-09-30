@@ -62,3 +62,22 @@ export function statusSegments(f: StatusFacts): string[] {
   out.push(`⚙ ${f.toolCount}`);        // 常显
   return out;
 }
+
+/**
+ * 按可用宽度取舍 (2026-09-30, 真机抓包照出来的问题):
+ *   整行 ~130 字符, 112 列终端里**右边的段直接被截掉** ⇒ 看着像"没出现"。
+ *   规则: 丢的顺序 = ↑ → ◎ → ✓ → ◷ (⚙ 永不丢 —— 它最短, 且"有没有在跑工具"最有信息量);
+ *   每一段都按显示宽算 (中文 2 列)。
+ */
+export function fitSegments(segs: string[], avail: number): string[] {
+  const w = (s: string) => [...s].reduce((n, ch) => n + (ch.charCodeAt(0) > 255 ? 2 : 1), 0);
+  const dropOrder = ['↑', '◎', '✓', '◷'];        // 先丢谁 (从重要性的低到高)
+  let cur = [...segs];
+  const total = () => cur.reduce((n, s) => n + w(s), 0) + Math.max(0, cur.length - 1) * 3;   // 3 = ' │ '
+  for (const tag of dropOrder) {
+    if (total() <= avail) break;
+    const i = cur.findIndex(s => s.startsWith(tag));
+    if (i >= 0) cur.splice(i, 1);
+  }
+  return cur;
+}
