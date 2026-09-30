@@ -660,6 +660,9 @@ let cliTurnStartedAt = 0;
 let cliLastTurnMs = 0;
 let cliTurnReplyBytes = 0;
 let cliTurnToolCount = 0;   // 在跑工具数 (回合内由工具事件更新)
+/** 当前会话的 Title/Preview (工具栏右侧显示用; 回合结束后后台生成一次, 生成过就不再跑) */
+let cliSessionPreview = '';
+let cliSessionSummarizing = false;
 // 2026-08-12: 当前 active channel 的 agentId (如 agent-alice). memory 落盘按 agentId 存,
 //   /memory /resume /did 读路径必须用 agentId 而非 display name (cliAgentName), 否则路径不一致读不到.
 let cliAgentId: string | null = null;
@@ -751,6 +754,7 @@ function getStatus(): string {
       toolCount: cliTurnToolCount,
       aiTiming: getLastAiTiming(),
       aiUsage: getLastAiUsage(),
+      sessionPreview: cliSessionPreview,
       turnStartedAt: cliTurnStartedAt,
     }).map(s => {
       const m = /^(\S+)\s(.*)$/.exec(s);
@@ -3434,6 +3438,38 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         cliTurnStartedAt = 0;
         cliTurnToolCount = 0;
       } catch { /* 结算失败不影响回复 */ }
+      // 2026-09-30 (leo: 「session 的 Preview 在对话框工具栏右侧做显示」):
+      //   回合结束后**后台**给这条会话生成一次标题/摘要 (600ms 级, 失败不打扰), 生成后工具栏右侧就有内容;
+      //   顺带把 metadata 写盘 ⇒ 这段会话在 /sessions 里也立刻有 Title/Preview。
+      if (cliSessionKey && !cliSessionPreview && !cliSessionSummarizing) {
+        cliSessionSummarizing = true;
+        const keyForNote = cliSessionKey;
+        setImmediate(async () => {
+          try {
+            const { summarizeSession } = await import('./cli/session-summary.js');
+            const store = new SessionStore();
+            // 先存档! 2026-09-30 诊断日志挖出的根因: 回合结束时**会话还没落盘**
+            //   (CLI 只在退出时存档) ⇒ 总结器看到的文件里没有用户那句话 ⇒ source=none ⇒ 永远没标题
+            //   (屏幕上因此看不到 ▸; 退出后才出现, 因为那次存档把消息写进去了)。
+            try { await (agent as any)?.saveCurrentSession?.(keyForNote); } catch { /* 存不下也继续试总结 */ }
+            const d = await summarizeSession(keyForNote, { store });
+            // 2026-09-30 (leo: 「Title 放在右侧吧，不要摘要了」): 右侧显示的是**标题** (≤20 字, 比摘要短得多);
+            //   优先用调用的返回值, 取不到再回读文件 (标题可能由退出存档/别的进程写进去)。
+            let note = String(d?.title && d.title !== keyForNote ? d.title : '').trim();
+            if (!note) {
+              try {
+                const fs = await import('fs/promises');
+                const raw = JSON.parse(await fs.readFile(store.pathFor(keyForNote), 'utf-8'));
+                const md = (Array.isArray(raw) ? {} : raw?.metadata) || {};
+                note = String(md.title || '').trim();
+              } catch { /* 回读失败就用返回值 */ }
+            }
+            if (note && note !== keyForNote) { cliSessionPreview = note.slice(0, 24); inkSetStatus(getStatus()); console.error(`[session-note] 已更新: ${note.slice(0, 24)}`); }
+            else console.error(`[session-note] 没拿到标题 (source=${d?.source}, key=${keyForNote})`);
+          } catch (e: any) { console.error(`[session-note] 失败: ${String(e?.message || e).slice(0, 120)}`); }
+          finally { cliSessionSummarizing = false; }
+        });
+      }
     // 停止思考动画
     inkSetThinking(false);
     // 2026-08-04: run-end 经验整理 — 连续成功工具 ≥2 自动写 skill 候选
