@@ -881,12 +881,14 @@ async function bootPanel(boot: { dir?: string; model?: string; session?: string 
   const total = sorted.reduce((s, [, arr]) => s + arr.length, 0);
   // 2026-09-30 (leo 报「回复渲染时被截断」): 面板**压矮** —— 技能类目只列前 4 类(其余归到计数行),
   //   否则 20+ 行面板把消息区占满, 后面的回复没地方站 (= 挤成窄列/看起来被截断).
+  // 2026-09-30 (真机日志: 计数行被面板裁掉): **计数行放类目之前** —— 面板装不下时裁的是尾部,
+  //   原来的顺序 (类目 → 计数) 会让"⚡ N skills · M 类"这个最要紧的数先被丢掉。
+  rest.push(`⚡ ${total} skills · ${sorted.length} 类${skillsFromCache ? ` (上次成功扫描的快照 · ${skillsCacheAt})` : ''}`, '');
   for (const [cat, arr] of sorted) {
     const shown = arr.slice(0, 8);
     const more = arr.length > shown.length ? `, +${arr.length - shown.length} more` : '';
     rest.push(`${cat}: ${shown.join(', ')}${more}`);
   }
-  rest.push(`⚡ ${total} skills · ${sorted.length} 类${skillsFromCache ? ` (上次成功扫描的快照 · ${skillsCacheAt})` : ''}`, '');
   if (skillsScanTimedOut) rest.push(`${C_DIM}(本次技能扫描超时, 上面是${skillsFromCache ? '快照' : '已扫到的部分'} —— bolloon status 看全量)${RESET}`, '');
   if (skillsScanErrors.length) rest.push(`${C_WARN}(技能根读取失败 ${skillsScanErrors.length} 个: ${skillsScanErrors[0]})${RESET}`, '');
   if (sub.length) rest.push(...sub, '');
