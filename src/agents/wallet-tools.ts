@@ -14,9 +14,14 @@
  * 注意: 这里用**变量**给 `import()` ⇒ 不做静态解析 (跨布局本来就不能静态解析)。
  */
 
-import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { pathToFileURL } from 'url';
+// 2026-09-30: 不用 import.meta —— 本文件会被 electron 那条 CJS 链间接引到,
+//   `tsc -p tsconfig.electron.json` 会报 TS1343 (module: CommonJS 下不允许 import.meta),
+//   而 `npm publish` 的 prepublishOnly (build:all → build:electron) 会因此挂住。
+//   仓里现成的替代: cjsModuleDir() (CJS/ESM 都能用) + currentPackageRoot() + firstExisting()。
+import { cjsModuleDir, firstExisting } from '../utils/module-context.js';
+import { currentPackageRoot } from '../utils/version-info.js';
 
 /** constraint-runtime 里可用的钱包相关模块 */
 export type WalletToolName =
@@ -25,27 +30,24 @@ export type WalletToolName =
 
 /** 候选路径 (先近后远; 覆盖 dev / dist 两种布局) */
 export function walletToolCandidates(name: WalletToolName): string[] {
-  const here = path.dirname(fileURLToPath(import.meta.url));   // src/agents 或 dist/agents
-  const repoRoot = path.resolve(here, '..', '..');
+  const root = (() => { try { return currentPackageRoot(); } catch { return process.cwd(); } })();
+  const here = cjsModuleDir() || path.join(root, 'dist', 'agents');   // src/agents 或 dist/agents
   return [
     // ① 构建后布局: dist/constraint-runtime/tools/… (从 dist/agents 出发)
     path.join(here, '..', 'constraint-runtime', 'tools', 'WalletTools', `${name}.js`),
     // ② 源码态布局: src/constraint-runtime/dist/tools/… (从 src/agents 出发)
     path.join(here, '..', 'constraint-runtime', 'dist', 'tools', 'WalletTools', `${name}.js`),
     // ③ 兜底: 从仓根分别按两种布局找
-    path.join(repoRoot, 'dist', 'constraint-runtime', 'tools', 'WalletTools', `${name}.js`),
-    path.join(repoRoot, 'src', 'constraint-runtime', 'dist', 'tools', 'WalletTools', `${name}.js`),
+    path.join(root, 'dist', 'constraint-runtime', 'tools', 'WalletTools', `${name}.js`),
+    path.join(root, 'src', 'constraint-runtime', 'dist', 'tools', 'WalletTools', `${name}.js`),
   ];
 }
 
 /** 加载一个钱包工具模块 (挑第一个真实存在的; 都不在就带着"试过哪些"报错) */
 export async function loadWalletTool<T = any>(name: WalletToolName): Promise<T> {
-  const tried: string[] = [];
-  for (const c of walletToolCandidates(name)) {
-    tried.push(c);
-    if (!fs.existsSync(c)) continue;
-    return (await import(pathToFileURL(c).href)) as T;
-  }
+  const tried = walletToolCandidates(name);
+  const hit = firstExisting(tried);
+  if (hit) return (await import(pathToFileURL(hit).href)) as T;
   throw new Error(`找不到钱包工具 ${name} (试过 ${tried.length} 个路径):\n    ${tried.join('\n    ')}`);
 }
 
@@ -56,7 +58,7 @@ export function walletToolLayout(): { pattern: string; exists: boolean }[] {
   for (const n of names) {
     for (const c of walletToolCandidates(n)) {
       if (out.some(o => o.pattern === c)) continue;
-      out.push({ pattern: c, exists: fs.existsSync(c) });
+      out.push({ pattern: c, exists: firstExisting([c]) !== null });
     }
   }
   return out;
