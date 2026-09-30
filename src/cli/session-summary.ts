@@ -21,9 +21,39 @@ export interface SessionDigest {
   source: 'ai' | 'raw' | 'none';
 }
 
-/** 自动注入的上下文块 (不是用户说的话) —— 不能拿它当 preview/title 素材 */
+/**
+ * 自动注入的上下文块 (不是用户说的话)。
+ *   ⚠ 2026-09-30 真机发现 (leo: 「结束进程的时候没有加载 title 和总结」): CLI 把**用户那句话
+ *   **附在注入块末尾**, 用 `\n---\n` 分隔 —— 实测长这样:
+ *       <!-- current-turn: … -->
+ *       # 你的项目上下文 (自动 bootstrap …)
+ *       … [预算截断]
+ *
+ *       ---
+ *
+ *       你好
+ *   ⇒ 整块丢掉的话, 所有 CLI 会话都"没有用户内容" (标题永远出不来)。
+ *   正确做法: **取末尾那一段**当用户输入 (见 userTextFrom), 只把真正的上下文头当注入。
+ */
 const isInjected = (x: string) =>
   /^<!--/.test(x.trim()) || /^#\s*你的项目上下文/.test(x.trim()) || /^\[cron\]/.test(x.trim()) || /^<!-- current-turn/.test(x.trim());
+
+/**
+ * 从一条 user 消息里取"真正属于用户的那句话":
+ *   · 普通消息 → 原样
+ *   · 注入块 → 取最后一个 `---` 分隔线之后的尾巴 (那是用户的输入)
+ *   · 拿不到有效尾巴 (还是上下文/太短) → 返回空串 (调用方跳过)
+ */
+export function userTextFrom(content: string): string {
+  const c = String(content || '').trim();
+  if (!c) return '';
+  if (!isInjected(c)) return c;
+  const parts = c.split(/\n\s*-{3,}\s*\n/);
+  const tail = (parts[parts.length - 1] || '').trim();
+  if (!tail || isInjected(tail)) return '';
+  // 尾巴太短 (一两个字符) 多半是分隔符残渣, 不算用户内容
+  return tail.length >= 2 ? tail : '';
+}
 
 const clip = (s: string, n: number) => s.replace(/\s+/g, ' ').trim().slice(0, n);
 
@@ -70,7 +100,12 @@ export async function summarizeSession(
     return { title: String(meta.title), preview: String(meta.preview ?? ''), source: 'ai' };
   }
 
-  const userMsgs = msgs.filter(m => m?.role === 'user' && typeof m.content === 'string' && m.content.trim() && !isInjected(String(m.content)));
+  // 2026-09-30: 用 userTextFrom 而不是"整块丢掉" —— 用户的话在注入块末尾 (见上面注释)
+  const userTexts = msgs
+    .filter(m => m?.role === 'user' && typeof m.content === 'string')
+    .map(m => userTextFrom(String(m.content)))
+    .filter(t => t.length > 0);
+  const userMsgs = userTexts.map(t => ({ content: t }));
   const rawPreview = userMsgs.length ? clip(String(userMsgs[0].content), 56) : '';
   if (!userMsgs.length) return { title: key, preview: '', source: 'none' };
 

@@ -440,6 +440,19 @@ async function archiveSessionOnExit(key: string | null | undefined): Promise<str
       return `${C_DIM}(本次没建会话, 无需存档)${RESET}`;
     }
     await (agent as any).saveCurrentSession(key);
+    // 2026-09-30 (leo: 「结束进程的时候没有加载 title 和总结，以至于打开 session 后没有内容」):
+    //   退出存档时**顺手把 AI 标题/摘要算好写回** —— 否则 /sessions 里那条只有会话 ID (数据在, 只是没标题)。
+    //   纪律: 12s 内不回来就放行 (存档已完成, 标题是附加品); 失败**如实标注**, 不挡退出, 不编标题。
+    let titleNote = '';
+    try {
+      const { summarizeSession } = await import('./cli/session-summary.js');
+      const d = await summarizeSession(key, { store: new SessionStore() });
+      if (d.source === 'ai' && d.title) titleNote = ` · ${C_TEXT}${d.title}${RESET}${C_DIM}`;
+      else if (d.source === 'raw' && d.title) titleNote = ` · ${C_DIM}(AI 不可用, 标题用了首条消息)`;
+      else titleNote = ` · ${C_DIM}(没有可总结的用户内容)`;
+    } catch (e: any) {
+      titleNote = ` · ${C_WARN}(标题没生成: ${String(e?.message || e).slice(0, 40)})${RESET}${C_DIM}`;
+    }
     // 2026-09-30: 退出也落一次 commit —— 会话树 (git) 靠 fork/退出两个时点建起来, 不做消息级提交
     let treeNote = '';
     try {
@@ -449,7 +462,7 @@ async function archiveSessionOnExit(key: string | null | undefined): Promise<str
     } catch { /* 树失败不挡退出 */ }
     let where = '';
     try { where = new SessionStore().pathFor(key); } catch { /* 路径拿不到不影响存档本身 */ }
-    return `${C_DIM}📦 session 已存档: ${key}${where ? ` → ${where}` : ''} · ${Date.now() - t0}ms${treeNote}${RESET}`;
+    return `${C_DIM}📦 session 已存档: ${key}${where ? ` → ${where}` : ''} · ${Date.now() - t0}ms${titleNote}${treeNote}${RESET}`;
   } catch (e) {
     const msg = String((e as any)?.message || e);
     // 2026-09-30: "没内容可存档" 与 "存档失败" 是两件事 —— 前者不该报成 ⚠ 吓人。
