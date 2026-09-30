@@ -436,9 +436,16 @@ async function archiveSessionOnExit(key: string | null | undefined): Promise<str
       return `${C_DIM}(本次没建会话, 无需存档)${RESET}`;
     }
     await (agent as any).saveCurrentSession(key);
+    // 2026-09-30: 退出也落一次 commit —— 会话树 (git) 靠 fork/退出两个时点建起来, 不做消息级提交
+    let treeNote = '';
+    try {
+      const { commitTree } = await import('./cli/session-tree.js');
+      const tr = await commitTree(new SessionStore(), `session: ${key} · exit save`);
+      if (!tr.ok) treeNote = ` · ${C_WARN}树未记上: ${String(tr.error).slice(0, 60)}${RESET}${C_DIM}`;
+    } catch { /* 树失败不挡退出 */ }
     let where = '';
     try { where = new SessionStore().pathFor(key); } catch { /* 路径拿不到不影响存档本身 */ }
-    return `${C_DIM}📦 session 已存档: ${key}${where ? ` → ${where}` : ''} · ${Date.now() - t0}ms${RESET}`;
+    return `${C_DIM}📦 session 已存档: ${key}${where ? ` → ${where}` : ''} · ${Date.now() - t0}ms${treeNote}${RESET}`;
   } catch (e) {
     return `${C_WARN}⚠ session 存档失败: ${String((e as any)?.message || e).slice(0, 90)}${RESET}`;
   }
@@ -610,6 +617,18 @@ let cliStartTime = 0;
 let cliModelName = '…';
 let cliAgentName = '…';
 let cliActiveChannelId: string | null = null;
+
+/**
+ * 状态栏"活数据" (leo 2026-09-30: 参考别家 CLI 的 ◎ / ◷ / ↑ t/s / ⚙ / ⏲ / ✓ 那一行)
+ *   · cliTurnStartedAt / cliLastTurnMs —— 本轮用时(◷) 与 上一步用时(✓)
+ *   · cliTurnReplyBytes —— 本轮回复字节数, 折 ≈t/s (按 ~3.5B/token 估, 所以标"≈")
+ *   · 在跑工具数不另存 —— 直接用已有的 tuiToolCalls (它就是"还没结束的工具"清单)
+ *   测不到的段 (比如"限流窗口还剩 20m") 一律不显示 —— 不编数字。
+ */
+let cliTurnStartedAt = 0;
+let cliLastTurnMs = 0;
+let cliTurnReplyBytes = 0;
+let cliTurnToolCount = 0;   // 在跑工具数 (回合内由工具事件更新)
 // 2026-08-12: 当前 active channel 的 agentId (如 agent-alice). memory 落盘按 agentId 存,
 //   /memory /resume /did 读路径必须用 agentId 而非 display name (cliAgentName), 否则路径不一致读不到.
 let cliAgentId: string | null = null;
@@ -672,9 +691,21 @@ function buildContextBar(usage: { pct: number; usedTokens: number; maxTokens: nu
 
 /** 状态栏: 模型 │ 当前智能体 (含 channel) │ ⏱ 时间 │ 320k/1M │ [██████░░░░] 32% (bolloon 色系) */
 function getStatus(): string {
+    // 2026-09-30 (leo): 追加**可测**的四段 —— ◷ 本轮用时 · ↑ ≈t/s · ⚙ 在跑工具数 · ✓ 上一步用时
+    const __run = cliTurnStartedAt > 0;
+    const __segs: string[] = [];
+    if (__run) {
+      const secs = Math.max(0.1, (Date.now() - cliTurnStartedAt) / 1000);
+      __segs.push(`${C_DIM}◷${RESET} ${C_TEXT}${secs.toFixed(1)}s${RESET}`);
+      if (cliTurnReplyBytes > 0) __segs.push(`${C_DIM}↑${RESET} ${C_TEXT}≈${Math.round(cliTurnReplyBytes / 3.5 / secs)} t/s${RESET}`);
+    } else if (cliLastTurnMs > 0) {
+      __segs.push(`${C_OK}✓${RESET} ${C_TEXT}${(cliLastTurnMs / 1000).toFixed(1)}s${RESET}`);
+    }
+    if (cliTurnToolCount > 0) __segs.push(`${C_DIM}⚙${RESET} ${C_TEXT}${cliTurnToolCount}${RESET}`);
+    const __live = __segs.length ? ` ${C_DIM}│${RESET} ${__segs.join(` ${C_DIM}│${RESET} `)}` : '';
   const usage = getCliCtxUsage();
   const agentPart = cliActiveChannelId ? `${cliAgentName} ${C_DIM}(ch:${cliActiveChannelId.slice(0, 10)})${RESET}` : cliAgentName;
-  return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${agentPart} ${C_DIM}│${RESET} ⏱ ${C_TEXT}${fmtDuration(Date.now() - cliStartTime)}${RESET}${C_DIM} │${RESET} ${buildContextBar(usage)}`;
+  return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${agentPart} ${C_DIM}│${RESET} ⏱ ${C_TEXT}${fmtDuration(Date.now() - cliStartTime)}${RESET}${C_DIM} │${RESET} ${buildContextBar(usage)}${__live}`;
 }
 
 function statusBarLine(): string {
@@ -2244,6 +2275,69 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   //   2026-09-30 (leo: 「/session 没有反应, 没有展示最新的记录, 无法选择继续」):
   //   原来只打三行信息, 且整段被 `catch {}` **静默吞错** ⇒ getAgent 一抛错就"什么都没发生"。
   //   现在: 错误如实说出来; 并列出最近会话(最新在上), 可直接选一个接着聊。
+  // /fork <#|id> — 从某条会话分叉出新会话 (标准 branch 语义: 共享 fork 点之前历史, 之后各自独立)
+  //   树用 git 管: ~/.bolloon/sessions/ 是仓库, 每次 fork / 退出存档 = 一次 commit (git log --graph 即会话树)
+  if (cmd === '/fork') {
+    const forkArg = trimmed.split(/\s+/)[1] || '';
+    if (!forkArg || forkArg === '--tree') {
+      try {
+        const { treeLog } = await import('./cli/session-tree.js');
+        const store = new SessionStore();
+        if (forkArg === '--tree') {
+          const t = await treeLog(store, 12);
+          appendLine(t.ok ? `${C_ACCENT}会话树 (最近 12 次提交):${RESET}\n${t.text.split('\n').map(l => `  ${C_DIM}${l}${RESET}`).join('\n')}` : `${C_WARN}⚠ 读会话树失败: ${t.error}${RESET}`);
+        } else {
+          appendLine(`${C_DIM}用法: ${RESET}${C_ACCENT}/fork <#|id>${RESET}${C_DIM} — 从某条会话分叉 (语义 = 共享 fork 点之前历史, 之后各自独立)${RESET}`);
+          appendLine(`${C_DIM}      ${RESET}${C_ACCENT}/fork --tree${RESET}${C_DIM}    — 看会话树 (git log) · 序号见 /sessions${RESET}`);
+        }
+      } catch (e: any) {
+        appendLine(`${C_WARN}⚠ ${String(e?.message || e).slice(0, 120)}${RESET}`);
+      }
+      return;
+    }
+    try {
+      const store = new SessionStore();
+      const list = await store.listRecent(12);
+      const idx = Number(forkArg);
+      const src = Number.isFinite(idx) && idx >= 1 ? list[idx - 1] : list.find(r => r.key === forkArg);
+      if (!src) {
+        appendLine(`${C_WARN}⚠ 没有第 ${forkArg} 个会话 —— 用 /sessions 列表里的 # 或完整 ID${RESET}`);
+        return;
+      }
+      const { forkSession } = await import('./cli/session-tree.js');
+      const r = await forkSession(store, src.key);
+      if (!r.ok || !r.newKey) {
+        appendLine(`${C_ERROR}/fork 失败: ${r.error || '未知原因'}${RESET}`);
+        return;
+      }
+      cliSessionKey = r.newKey;   // 之后就在这条分支上继续 (独立)
+      let resumed = 0;
+      try {
+        const a = await getAgent();
+        if (typeof (a as any).resumeSession === 'function') resumed = await (a as any).resumeSession(r.newKey, 30);
+      } catch { /* 载入失败不影响 fork 本身 */ }
+      // channel 的 currentSessionId 指到新分支 (与 /sessions <#> 同一套落盘口径)
+      try {
+        const { readFile, writeFile } = await import('fs/promises');
+        const { join } = await import('path');
+        const cp = join(process.env.HOME || '/tmp', '.bolloon', 'sessions', 'channels.json');
+        const parsed = JSON.parse(await readFile(cp, 'utf-8'));
+        const channels: any[] = Array.isArray(parsed) ? parsed : parsed?.channels || [];
+        for (const c of channels) {
+          if (cliActiveChannelId && c.id === cliActiveChannelId) c.currentSessionId = r.newKey;
+          else if (!cliActiveChannelId && c.id === channels[0]?.id) c.currentSessionId = r.newKey;
+        }
+        await writeFile(cp, JSON.stringify(Array.isArray(parsed) ? channels : { ...parsed, channels }, null, 2), 'utf-8');
+      } catch { /* 无 channels.json 也能继续 */ }
+      appendLine(`${C_OK}✓ 已分叉${RESET} ${C_DIM}${r.newKey}${RESET} ← ${C_DIM}${src.key}${RESET} ${C_DIM}(继承 ${r.inherited} 条历史 · 已载入 ${resumed} 条 · 之后两条各自独立)${RESET}`);
+      appendLine(r.commit ? `  ${C_DIM}git: ${r.commit}${RESET}` : `  ${C_WARN}⚠ 树未记上: ${r.error}${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/fork 失败: ${String(e?.message || e).slice(0, 200)}${RESET}`);
+    }
+    return;
+  }
+
+
   if (cmd === '/session' || cmd === '/sessions') {
     const sessArg = trimmed.split(/\s+/)[1] || '';
     const sessStore = new SessionStore();
@@ -2732,22 +2826,109 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   }
 
   // /wallet — 钱包状态
-  if (cmd === '/wallet') {
+  // /wallet — 钱包台账 (2026-09-30 做实: 以前只读一个**从来没人写过**的 wallets.json ⇒ 永远「钱包 (0)」)
+  //   纪律: 私钥/助记词只落 0600 台账 (~/.bolloon/wallets.json), **命令输出永不回显**;
+  //        不读别的 agent 的钱包目录 (chain-config.ts 硬规则), 要收编只能 /wallet import <path> 显式指定。
+  if (cmd === '/wallet' || trimmed.startsWith('/wallet ')) {
     try {
-      const { readFile } = await import('fs/promises');
-      const { join } = await import('path');
-      let wallets: any[] = [];
-      try { wallets = JSON.parse(await readFile(join(process.env.HOME || '/tmp', '.bolloon', 'wallets.json'), 'utf-8')); } catch { /* 无 */ }
-      appendLine(`${C_ACCENT}钱包 (${Array.isArray(wallets) ? wallets.length : 0}):${RESET}`);
-      if (!Array.isArray(wallets) || wallets.length === 0) {
-        appendLine(`  ${C_DIM}无 — 可用 wallet_create 工具创建 EVM 钱包${RESET}`);
+      const { loadWallets, addWallet, walletsDir, shortAddr } = await import('./cli/wallet-store.js');
+      const arg = trimmed.split(/\s+/).slice(1);
+      const sub = (arg[0] || '').toLowerCase();
+      const list = await loadWallets();
+      const pick = (spec: string) => {
+        const n = Number(spec);
+        if (spec && Number.isFinite(n) && n >= 1) return list[n - 1];
+        if (spec?.startsWith('0x')) return list.find(w => w.address.toLowerCase() === spec.toLowerCase());
+        return list.find(w => w.name === spec);
+      };
+
+      if (!sub) {
+        appendLine(`${C_ACCENT}钱包 (${list.length}):${RESET}`);
+        if (!list.length) {
+          appendLine(`  ${C_DIM}无 — 用 ${RESET}${C_ACCENT}/wallet new [名字]${RESET}${C_DIM} 生成一个 EVM 钱包${RESET}`);
+        }
+        list.forEach((w, k) => {
+          appendLine(`  ${C_DIM}${k + 1}.${RESET} ${w.name} ${C_DIM}·${RESET} ${shortAddr(w.address)} ${C_DIM}·${RESET} ${w.network || '—'} ${C_DIM}· ${w.source === 'imported' ? '导入' : '生成'} ${String(w.createdAt).slice(0, 10)}${RESET}`);
+        });
+        appendLine(`  ${C_DIM}台账目录: ${walletsDir()}/ (一钱包一文件 · 0600 · 私钥不回显)${RESET}`);
+        appendLine(`  ${C_DIM}用法: /wallet new [名字] · /wallet import <文件路径> [名字] · /wallet show <#|地址> · /wallet bal <#|地址>${RESET}`);
+        return;
       }
-      for (const w of (Array.isArray(wallets) ? wallets : []).slice(0, 5)) {
-        appendLine(`  ${C_DIM}·${RESET} ${(w as any).name || (w as any).address?.slice(0, 12) || '?'} ${C_DIM}${String((w as any).address || '').slice(0, 16)}...${RESET}`);
+
+      if (sub === 'new') {
+        const name = arg[1] || `wallet-${new Date().toISOString().slice(0, 10)}`;
+        const mod: any = await import('./constraint-runtime/dist/tools/WalletTools/createWallet.js')
+          .catch(() => import('./constraint-runtime/src/tools/WalletTools/createWallet.js').catch(() => null));
+        if (!mod?.createWallet) { appendLine(`${C_ERROR}/wallet new 失败: 找不到 createWallet 实现${RESET}`); return; }
+        const r = await mod.createWallet();
+        const { rec, replaced } = await addWallet({
+          name, address: r.address, network: '—', source: 'created',
+          createdAt: r.createdAt || new Date().toISOString(), privateKey: r.privateKey, mnemonic: r.mnemonic,
+        });
+        appendLine(`${C_OK}✓ 钱包${replaced ? '已在台账 (补齐信息)' : '已创建'}${RESET} ${C_ACCENT}${rec.name}${RESET}`);
+        appendLine(`  ${C_DIM}地址:${RESET} ${rec.address}`);
+        appendLine(`  ${C_DIM}私钥/助记词: 已写入 ${walletsDir()}/${rec.name}.json (0600) — 不回显, 需要时自己打开看${RESET}`);
+        return;
       }
-    } catch { /* 静默 */ }
+
+      if (sub === 'import') {
+        const src = arg[1];
+        if (!src) { appendLine(`${C_WARN}用法: /wallet import <文件路径> [名字] — 路径必须你显式给出 (不扫别的 agent 目录)${RESET}`); return; }
+        let raw: any;
+        try { raw = JSON.parse(await (await import('fs/promises')).readFile(src.replace(/^~/, process.env.HOME || ''), 'utf-8')); }
+        catch (err: any) { appendLine(`${C_ERROR}读不了 ${src}: ${String(err?.message || err).slice(0, 100)}${RESET}`); return; }
+        const pk = raw?.privateKey || raw?.private_key;
+        const mn = raw?.mnemonic || raw?.phrase;
+        if (!pk && !mn) { appendLine(`${C_ERROR}文件里没有 privateKey / mnemonic — 不收${RESET}`); return; }
+        let addr = raw?.address;
+        if (!addr && pk) {
+          const mod: any = await import('./constraint-runtime/dist/tools/WalletTools/importWallet.js')
+            .catch(() => import('./constraint-runtime/src/tools/WalletTools/importWallet.js').catch(() => null));
+          try { const r = await mod.importWallet({ privateKey: pk, mnemonic: mn }); addr = r.address; } catch { /* 下面照实报 */ }
+        }
+        if (!addr) { appendLine(`${C_ERROR}拿不到地址 — 文件里没有 address 且无法从私钥推导${RESET}`); return; }
+        const { rec, replaced } = await addWallet({
+          name: arg[2] || String(src).split('/').pop()!.replace(/\.json$/, ''), address: addr,
+          network: raw?.network || '—', source: 'imported', createdAt: new Date().toISOString(), privateKey: pk, mnemonic: mn,
+        });
+        appendLine(`${C_OK}✓ 已收编${RESET} ${C_ACCENT}${rec.name}${RESET}${replaced ? ` ${C_DIM}(同地址已在台账, 已合并)${RESET}` : ''}`);
+        appendLine(`  ${C_DIM}地址:${RESET} ${rec.address} ${C_DIM}(私钥只进 0600 台账, 不回显)${RESET}`);
+        return;
+      }
+
+      if (sub === 'show') {
+        const w = pick(arg[1] || '1');
+        if (!w) { appendLine(`${C_WARN}没有这个钱包 — /wallet 看列表${RESET}`); return; }
+        appendLine(`${C_ACCENT}${w.name}${RESET}`);
+        appendLine(`  ${C_DIM}地址:${RESET} ${w.address}`);
+        appendLine(`  ${C_DIM}网络:${RESET} ${w.network || '—'} ${C_DIM}· 来源:${RESET} ${w.source === 'imported' ? '导入' : '生成'} ${C_DIM}· 建立:${RESET} ${String(w.createdAt).slice(0, 19).replace('T', ' ')}`);
+        appendLine(`  ${C_DIM}密钥:${RESET} ${w.privateKey || w.mnemonic ? '已存 (只在本机 0600 文件里)' : '未存 (只有地址)'}`);
+        return;
+      }
+
+      if (sub === 'bal' || sub === 'balance') {
+        const w = pick(arg[1] || '1');
+        if (!w) { appendLine(`${C_WARN}没有这个钱包 — /wallet 看列表${RESET}`); return; }
+        const mod: any = await import('./constraint-runtime/dist/tools/WalletTools/getBalance.js')
+          .catch(() => import('./constraint-runtime/src/tools/WalletTools/getBalance.js').catch(() => null));
+        if (!mod?.getBalance) { appendLine(`${C_ERROR}找不到 getBalance 实现${RESET}`); return; }
+        appendLine(`${C_DIM}查询中… ${shortAddr(w.address)}${RESET}`);
+        try {
+          const r = await mod.getBalance({ address: w.address, rpcUrl: arg[2] });
+          appendLine(`${C_OK}💰${RESET} ${w.name} ${C_DIM}${r.address || w.address}${RESET} ${C_ACCENT}${r.balanceEth} ${r.symbol || 'ETH'}${RESET} ${C_DIM}(${r.balance} wei)${RESET}`);
+        } catch (err: any) {
+          appendLine(`${C_ERROR}查余额失败: ${String(err?.message || err).slice(0, 140)}${RESET}`);
+        }
+        return;
+      }
+
+      appendLine(`${C_WARN}未知子命令 ${sub} — 用法: /wallet [new|import|show|bal]${RESET}`);
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/wallet 失败: ${String(e?.message || e).slice(0, 200)}${RESET}`);
+    }
     return;
   }
+
 
   // /email — 邮件配置管理; /email <host:port:user:from> 设置 / /email clear 清除 (2026-08-08)
   if (cmd === '/email') {
@@ -3085,7 +3266,8 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     const boxW = Math.min(termWidth() - 2, 76);
     // 工具调用显示由 tui-shell 的 onStream handler 处理
 
-    const response = await a.prompt(trimmed, {
+    cliTurnStartedAt = Date.now(); cliTurnReplyBytes = 0; cliTurnToolCount = 0;
+      const response = await a.prompt(trimmed, {
       onStream: (e) => {
         // 2026-08-07: 中间思考/状态显示 — 之前只显示工具步骤, LLM 的思考过程
         //   (thinking / status / phase / Reflection) 全被丢弃 → 用户只能看到输入和最终输出
@@ -3158,6 +3340,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           }
           // 更新 transient: 还有进行中的工具 → 显示下一个; 否则清空 (交回 thinking 动画)
           const remaining = tuiToolCalls.filter(c => c.tool !== 'system' && c.tool !== 'loop' && c.tool !== '?');
+            cliTurnToolCount = remaining.length;   // ⚙ 状态栏用 (模块级)
           if (remaining.length > 0) {
             const label = remaining.length > 1 ? `执行 ${remaining.length} 个工具: ${remaining.map(c => c.tool).join(', ')}` : `🔧 ${remaining[0].tool}`;
             inkSetTransient(`${C_DIM}${label} 运行中...${RESET}`);
@@ -3169,6 +3352,12 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     });
     // 智能体回复框
     appendLine(renderAgentMessage(response));
+      try {
+        cliLastTurnMs = cliTurnStartedAt ? Date.now() - cliTurnStartedAt : 0;
+        cliTurnReplyBytes = String(response ?? '').length;
+        cliTurnStartedAt = 0;
+        cliTurnToolCount = 0;
+      } catch { /* 结算失败不影响回复 */ }
     // 停止思考动画
     inkSetThinking(false);
     // 2026-08-04: run-end 经验整理 — 连续成功工具 ≥2 自动写 skill 候选
