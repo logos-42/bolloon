@@ -9,7 +9,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as fs from 'fs';
-import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
+import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
@@ -67,6 +67,21 @@ const MIN_HISTORY_LINES = 1;
 const POPUP_MAX_ROWS = 8;
 
 /** 一屏布局账本 (纯函数 —— 验收门直接喂尺寸复核) */
+/**
+ * 启动面板最多能占几行 = 消息窗口真高 (与渲染同一套预算; 面板按它裁, 免得高过窗口).
+ *   2026-09-30: 面板高过窗口时 Ink 清不掉上一帧 ⇒ 退化成"追加", 顶框被反复重画.
+ */
+export function bootPanelMaxLines(rows: number, cols: number): number {
+  const b = layoutBudget({ rows: Math.max(8, Math.floor(rows || 24) - 2), cols: Math.floor(cols || 80) });
+  return Math.max(4, b.msgH);
+}
+
+/** 面板区高度 (窗口的 60%; 会话区永远留 >=3 行) —— 给启动面板建盒子时对齐用 */
+export function bootPanelRegionLines(rows: number, cols: number): number {
+  const b = layoutBudget({ rows: Math.max(8, Math.floor(rows || 24) - 2), cols: Math.floor(cols || 80) });
+  return Math.max(4, Math.min(Math.floor(b.msgH * 0.6), b.msgH - 3));
+}
+
 export function layoutBudget(opts: { rows: number; cols: number; popupRows?: number }): {
   rows: number; cols: number; chrome: number; activity: number; history: number;
   msgH: number; popupRows: number;
@@ -530,7 +545,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
     // ── 正常模式 ──
     // #7 输入层: 滚动键走数据化 keymap (Ctrl+U/D / PgUp/PgDn / Home-End / Alt+↑↓ / Ctrl+Home-End)
-    if (totalLines > availH) {
+    if (false && totalLines > availH) {   // 无限高度: 不再有 app 内虚拟滚动 (PgUp 归终端)
       const pg = Math.max(6, availH - 2);
       const maxT = Math.max(0, totalLines - availH);
       const act = resolveNormalKey(key as any, { scrollable: true, input: _input });
@@ -657,7 +672,11 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const sticky = stickRef.current;
   const popupOpenNow = !!(popupOpen || picker);
   const budget = layoutBudget({
-    rows: termSize.h, cols: W,
+    // 2026-09-30 (leo 报「顶部重绘」+ 真机日志坐实): 帧高 = 终端行数 - 2.
+    //   整帧 == 终端高时, 每次 flush (状态栏每秒一 tick) 都把最上一行滚进 scrollback
+    //   ⇒ 面板被一遍遍重复留在屏上 (实测一次运行重画 9 次). 留 2 行余量 (终端可视行数
+    //   常比报告值矮 1~2 行) 即根治.
+    rows: Math.max(8, termSize.h - 2), cols: W,
     popupRows: popupOpenNow ? POPUP_MAX_ROWS : 0,
   });
   const msgH = budget.msgH;                 // 消息窗口高度 (弹层占的那几行已经扣掉)
@@ -676,8 +695,9 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   let end = start;
   // 严格钳制: 端界不越过 msgH, 保证 transcript 内容行数 ≤ 分区高度 (互不覆盖)
   while (end + 1 < msgs.length && cumulative[end + 1] <= top + msgH) end++;
-  const visible = useMemo(() => msgs.slice(start, end + 1), [msgs, start, end]);
-  const scrolledOut = maxTop > 0 && !sticky;
+  void start; void end;
+  const visible = msgs;   // 2026-09-30 (leo: 「我要无限高度」): 全部内容交给 <Static>, 不再切片
+  const scrolledOut = false;   // 虚拟滚动退场 —— 滚动交给终端 scrollback
 
   // 测试/诊断探针: 把**真实用到的**布局与滚动状态写一份 JSONL (验收门按它做精确断言;
   //   不设 BOLLOON_TUI_PROBE 时零开销 —— 只在渲染后追加一行)。
@@ -698,20 +718,23 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   });
 
   return (
-    <Box flexDirection="column" height={budget.rows} width={budget.cols} overflow="hidden">
-      {/* 历史区 (高度 = 终端高 - 固定栏): 消息窗口 + 弹层都在这块内部, 外面几何不受影响 */}
-      <Box flexDirection="column" height={budget.history}>
-        <Box height={msgH} overflow="hidden" flexDirection={hasRails ? 'row' : 'column'}>
-          <Box flexGrow={1} flexDirection="column" justifyContent="flex-start" overflow="hidden">
-            <Messages msgs={visible} />
+    <>
+      {/* 2026-09-30 (leo: 「你好像锁死了整个虚拟渲染的高度, 我要无限高度」):
+          历史内容改走 Ink 的 <Static> —— 每条消息**只往终端写一次**, 写完永不重绘。于是:
+            · 高度**无限**: 内容进的是终端自己的 scrollback, 一路往上推, PgUp 就能看回启动面板
+            · 帧里只剩下面这一小块 (活动行 + 3 条分隔线 + 状态 + 输入) ⇒ 帧高恒定, 不再滚屏重画
+          代价 (如实说): 历史滚动交给终端自己, 不再有 app 内的"暂停跟随/翻页"那套虚拟滚动。 */}
+      <Static items={msgs}>
+        {(m, i) => <Text key={`m${i}`}>{m}</Text>}
+      </Static>
+
+      {/* 底部固定块 (活的): rails / 弹层 / 活动行 / 分隔线 / 状态 / 输入 */}
+      <Box flexDirection="column" width={budget.cols}>
+        {hasRails && (
+          <Box flexDirection="column">
+            {railNames.map((n) => <Text key={n} color={THEME.muted}>{`${n}: ${String(widgets[n] ?? '').replace(/\n/g, ' ')}`}</Text>)}
           </Box>
-          {hasRails && (
-            <Box width={36} marginLeft={1} flexDirection="column" justifyContent="flex-start">
-              {railNames.map((n) => <Text key={n} color={THEME.muted}>{n}\n{widgets[n]}</Text>)}
-            </Box>
-          )}
-        </Box>
-        {/* 弹层 (**覆盖式**): 画在历史区底部, 总行数定死 —— 不推挤历史区 / 不动输入行位置 */}
+        )}
         {popupOpenNow && tabState && (
           <MentionPopup title={POPUP_TITLE_TAB} items={filtered} sel={safeSel} width={W} maxRows={budget.popupRows} />
         )}
@@ -721,61 +744,44 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         {popupOpenNow && !tabState && !mention && picker && (
           <MentionPopup title={picker.title} items={picker.items} sel={Math.min(picker.sel, picker.items.length - 1)} width={W} maxRows={budget.popupRows} />
         )}
-      </Box>
 
-      {/* 活动行 (固定 1 行): 优先级 = 暂停跟随提示 > 临时状态 > 思考中 > 空行
-          (暂停提示本身挺长 → 同样硬裁 1 行, 免得在窄终端把下面的固定栏顶下去) */}
-      <Box height={budget.activity} width={budget.cols} overflow="hidden">
-        {scrolledOut ? (
-          <Text color={THEME.warn}>已暂停跟随 · PgDn/End 回到底部 (↑{top} 行 · Ctrl+U/D 翻页 · Home 到顶)</Text>
-        ) : transient ? (
-          <Text>{transient}</Text>
-        ) : thinking ? (
-          <Text color="yellow">{KAOMOJI[thinkingIdx.current]} 思考中...</Text>
-        ) : (
-          <Text> </Text>
-        )}
-      </Box>
+        <Box height={1} width={budget.cols} overflow="hidden">
+          {transient ? (
+            <Text>{transient}</Text>
+          ) : thinking ? (
+            <Text color="yellow">{KAOMOJI[thinkingIdx.current]} 思考中...</Text>
+          ) : (
+            <Text color={THEME.muted}>{'· 回车发送 · ↑↓ 历史 · PgUp 回看 · Esc 双击退出'}</Text>
+          )}
+        </Box>
 
-      {/* 分隔线 (全宽, bolloon 色系 #c4d640) */}
-      <Box>
-        <Text bold color={THEME.accent}>{'─'.repeat(W)}</Text>
-      </Box>
-
-      {/* 状态栏 (固定 1 行: 窄终端下状态串本身会换行 —— 不硬裁就会把整屏往下推一格,
-          而帧高被根容器钳死 → Ink 从**顶上**切一行, 版面上所有行号跟着漂; 验收门 D2b 抓的就是这个) */}
-      <Box height={1} width={budget.cols} overflow="hidden">
-        <Text>{status}</Text>
-      </Box>
-
-      {/* 输入栏分隔线 (全宽, bolloon 色系 #c4d640) */}
-      <Box>
-        <Text bold color={THEME.accent}>{'─'.repeat(W)}</Text>
-      </Box>
-
-      {/* 输入栏 (固定 1 行: 内容超宽**按宽度裁剪**, 绝不换行 —— 换行会让整屏位移)
-          两层 Box 都必须 `height={1}`: 只给 width 时, 子文本换行会把 Box **撑高**
-          (overflow="hidden" 对"自己长高了"的 Box 不裁剪) → 空输入时占位文案在窄终端
-          换行 = 底下三条线整块下移, 一打字就又回来 —— leo 报的"打字抖动"就是这个。 */}
-      <Box width={budget.cols} height={1} overflow="hidden">
-        <Text bold color={THEME.accent}>❯ </Text>
-        <Box width={Math.max(10, budget.cols - 2)} height={1} overflow="hidden" flexShrink={0}>
-          <TextInput
-            key={tiKey}
-            value={input}
-            onChange={setInput}
-            onSubmit={onSubmit}
-            focus={!popupOpenNow}
-            placeholder={COMPOSER_PLACEHOLDER}
-          />
+        <Box>
+          <Text bold color={THEME.accent}>{'─'.repeat(Math.max(10, W - 1))}</Text>
+        </Box>
+        <Box height={1} width={budget.cols} overflow="hidden">
+          <Text>{status}</Text>
+        </Box>
+        <Box>
+          <Text bold color={THEME.accent}>{'─'.repeat(Math.max(10, W - 1))}</Text>
+        </Box>
+        <Box width={budget.cols} height={1} overflow="hidden">
+          <Text bold color={THEME.accent}>❯ </Text>
+          <Box width={Math.max(10, budget.cols - 2)} height={1} overflow="hidden" flexShrink={0}>
+            <TextInput
+              key={tiKey}
+              value={input}
+              onChange={setInput}
+              onSubmit={onSubmit}
+              focus={!popupOpenNow}
+              placeholder={COMPOSER_PLACEHOLDER}
+            />
+          </Box>
+        </Box>
+        <Box>
+          <Text bold color={THEME.accent}>{'─'.repeat(Math.max(10, W - 1))}</Text>
         </Box>
       </Box>
-
-      {/* 底部分界线 (全宽, bolloon 色系 #c4d640) */}
-      <Box>
-        <Text bold color={THEME.accent}>{'─'.repeat(W)}</Text>
-      </Box>
-    </Box>
+    </>
   );
 };
 

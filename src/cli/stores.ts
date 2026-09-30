@@ -45,11 +45,29 @@ export interface UiState {
 }
 export const uiStore = createStore<UiState>({ status: '', thinking: false, transient: null });
 
+/**
+ * panel: **固定区**内容 (启动面板等) —— 与会话区**分开**存放.
+ *   2026-09-30 (leo: 「没有做切分区域, 导致顶部面板在回复的时候也被 AI 内容挤坏了」):
+ *   原来面板和会话共用一个 transcript 缓冲 ⇒ 回复一来窗口一滚, 面板就被挤烂/切掉.
+ *   现在面板活在独立 store, 渲染成"上半块固定区", 有自己的高度, 不随会话滚动.
+ */
+export const panelStore = createStore<string[]>([]);
+
 // ── 纯函数 action (bridge 与组件都走这里) ────────────────────────────────────
 
 export function appendMsg(line: string): void {
   const c = transcriptStore.get();
   transcriptStore.set([...c, line]);
+}
+
+export function appendPanelMsg(line: string): void {
+  const c = panelStore.get();
+  panelStore.set([...c, line]);
+}
+
+/** 清空固定区 (面板重打时用; 保证"只一块") */
+export function clearPanelMsg(): void {
+  if (panelStore.get().length) panelStore.set([]);
 }
 
 export function replaceLastMsg(line: string): void {

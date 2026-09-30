@@ -14,6 +14,7 @@ import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';   // 2026-09-30: 启动面板读技能快照(同步; 渲染路径上不能 await)
 import { existsSync, mkdirSync } from 'fs';
 import * as path from 'path';
 import { spawn, execSync } from 'child_process';
@@ -21,13 +22,15 @@ import * as os from 'os';
 import { documentReader } from './documents/reader.js';
 import { initMinimax } from './constraints/index.js';
 import { createAgentSession } from './agents/pi-sdk.js';
+import { SessionStore } from './agents/session-store.js';   // 2026-09-30: 退出存档 —— 只为把落盘路径如实打出来
+import { kuboAlreadyRunning } from './agents/pi-sdk-tools.js';
 import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
-import { printBanner, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, ROBOT_HEAD, BOLLOON_BANNER, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
+import { printBanner, termHeight, truncate, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, ROBOT_HEAD, BOLLOON_BANNER, BOLLOON_BANNER_SMALL, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
-import { startInk, stopInk, suspendInk, resumeInk, inkAppendLine as appendLine, inkReplaceMatchingLine, inkSetStatus, inkSetThinking, inkSetTransient } from './cli/ink-app.js';
+import { startInk, stopInk, suspendInk, resumeInk, inkAppendLine as appendLine, inkReplaceMatchingLine, inkSetStatus, inkSetThinking, inkSetTransient, bootPanelMaxLines, bootPanelRegionLines } from './cli/ink-app.js';
 // 2026-09-26: 启动期日志闸门 (默认静默加载日志 + 写文件 + verbose 全量回流 + 信号行不吞)
 import { installStartupLogGate, isStartupVerbose, startupLogPath, VERBOSE_ENV, carriesHumanSignal, logStartupLine, type StartupLogGateHandle } from './cli/log-gate.js';
 // 2026-09-27: 回复流卫生 — 内部运行日志 (循环推进/运行登记/收尾计数…) 不进对话回复流, 改落日志文件
@@ -173,6 +176,13 @@ const s = {
 let startupPanelFirst = false;
 /** 面板第一帧已经画出来了 (startCLI 取走面板提示之后): 晚到的降级提示直接追加进面板 */
 let startupPanelReady = false;
+/**
+ * 2026-09-30: 启动面板 / 就绪行**各只许追加一次**.
+ *   防任何重入路径 (会话切换 / 重复 boot / 恢复) 把面板再叠一条 —— leo 报的「顶框重复 14 次」那一类
+ *   都落在这个类里; 叠了就再也说不清屏上哪一条是真的.
+ */
+let bootPanelPrinted = false;
+let bootReadinessPrinted = false;
 
 /**
  * 启动期(面板之前)一行进度 / 降级输出 —— 交互默认口径下的**唯一出路**。
@@ -397,6 +407,42 @@ async function bootstrapIroh(keypair: any, name: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 let agent: Awaited<ReturnType<typeof createAgentSession>> | null = null;
+
+/**
+ * 退出存档 (2026-09-30, leo: 「按 ctrl+c / esc 退出的时候, 自动存档 session 进程, 最后显示再见👋」)
+ *
+ * 三条纪律:
+ *   1. **幂等** —— 两条退出路径 (Ctrl+C/双击 Esc 与输入 exit) 都调它, 只存一次 (sessionArchivedOnExit).
+ *   2. **如实** —— 存成功给 key 与落盘路径; 没建过会话就直说"无需存档"; 失败给原因。**不许静默**。
+ *   3. **不阻塞退出** —— 存档失败也照常走完退出流程 (存不下不是不退出的理由)。
+ */
+let sessionArchivedOnExit = false;
+/**
+ * 退出期上屏 (2026-09-30): `stopInk()` 之后 Ink 已卸载, 此时 `appendLine()` 只进 store、**打不到终端**
+ *   —— 既有代码就是这样, 所以「👋 再见！」用户**从来没真看见过** (这次真机日志坐实)。
+ *   退出期的最后几句话必须用 `process.stdout.write` 直写。
+ */
+function writeExitLine(line: string): void {
+  try { process.stdout.write(line + '\n'); } catch { /* 写不出去也不能挡住退出 */ }
+}
+/** 本次 CLI 会话的 key (bootSessionId 算好后写进来; 退出存档两条路径都读它) */
+let cliSessionKey: string | null = null;
+async function archiveSessionOnExit(key: string | null | undefined): Promise<string> {
+  if (sessionArchivedOnExit) return '';
+  sessionArchivedOnExit = true;
+  const t0 = Date.now();
+  try {
+    if (!agent || !key || typeof (agent as any).saveCurrentSession !== 'function') {
+      return `${C_DIM}(本次没建会话, 无需存档)${RESET}`;
+    }
+    await (agent as any).saveCurrentSession(key);
+    let where = '';
+    try { where = new SessionStore().pathFor(key); } catch { /* 路径拿不到不影响存档本身 */ }
+    return `${C_DIM}📦 session 已存档: ${key}${where ? ` → ${where}` : ''} · ${Date.now() - t0}ms${RESET}`;
+  } catch (e) {
+    return `${C_WARN}⚠ session 存档失败: ${String((e as any)?.message || e).slice(0, 90)}${RESET}`;
+  }
+}
 /** 2026-08-09: agent 当前绑定的 channel id (null = 默认 harness 身份) — 切换时据此重建 */
 let agentBoundChannelId: string | null = null;
 let harness: BollharnessIntegration | null = null;
@@ -643,62 +689,144 @@ function statusBarLine(): string {
  */
 /** 启动面板框: BOLLOON 字标 logo 顶部居中 → 下方两栏 = face 艺术字(左) + 加载内容(右) */
 function buildBootBox(face: string[], banner: string[], rest: string[]): string {
-  const faceW = Math.max(1, ...face.map((l) => dispWidth(l)));
-  const bannerMax = Math.max(1, ...banner.map((l) => dispWidth(l)));
-  const restMax = Math.max(1, ...rest.map((l) => dispWidth(l)));
+  /**
+   * 2026-09-30 修复 (leo 报「TUI 渲染出错 + 回复被截断」):
+   *   盒子外宽 = min(终端宽-2, 内容宽+4, 调用方上限) ⇒ **内容宽一旦超过 终端宽-6, 每行都被终端折行**,
+   *   艺术字因此裂成两列错位 (实测 110 列终端下 BOLLOON 艺术字宽 108 > 内宽 104).
+   *   另外原来 maxLines: 0 = 不限高 ⇒ 面板长过屏幕, 把输入行顶出视野 (30 行终端下实测输入行消失).
+   *   所以这里先把内容**裁进真实可用宽高**, 再画盒子:
+   *     宽度: 艺术字太宽 ⇒ 整块丢掉(宁可不显示) · 两栏装不下 ⇒ 先丢 face 列 · 右侧行超宽 ⇒ 逐行截断
+   *     高度: 面板 ≤ 终端行数 - 10 (给输入行/状态栏留位置), 砍掉的尾部如实标注行数与自查入口
+   */
   const gap = 4;
-  const twoColW = faceW + gap + restMax;
-  const contentW = Math.max(bannerMax + 8, twoColW);
-  const center = (rows: string[]) => rows.map((l) => ' '.repeat(Math.max(0, Math.floor((contentW - dispWidth(l)) / 2))) + l);
-  const n = rest.length;
-  const fStart = Math.max(0, Math.floor((n - face.length) / 2)); // face 列对内容垂直居中 = 等高
-  const twoCol = rest.map((r, i) => {
-    const f = (i >= fStart && i < fStart + face.length) ? face[i - fStart] : null;
-    const fpart = f ? `${f}${' '.repeat(Math.max(0, faceW - dispWidth(f)) + gap)}` : ' '.repeat(faceW + gap);
+  const maxInner = Math.max(24, termWidth() - 6);   // 外框 = │ + 空 + 内容 + 空 + │
+  const rows = termHeight();
+
+  const bannerW = banner.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
+  // 装不下(极窄终端)仍退回一行文字 —— 保证任何宽度都有字标, 不再是空白
+  const useBanner = bannerW > 0 && bannerW + 4 <= maxInner ? banner : [`${C_ACCENT}${BOLD}BOLLOON${RESET}`];
+
+  let useFace = face;
+  const faceW0 = face.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
+  const restMax0 = rest.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
+  if (useFace.length > 0 && faceW0 + gap + restMax0 > maxInner) useFace = [];
+
+  const faceW = useFace.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
+  const room = Math.max(16, maxInner - (useFace.length > 0 ? faceW + gap : 0));
+  const restFit = rest.map((l) => (dispWidth(l) > room ? truncate(l, room) : l));
+
+  const bannerRows = useBanner.length > 0 ? useBanner.length + 1 : 0;   // +1 = banner 与两栏之间的空行
+  // 2026-09-30 (leo: 「还是启动后会出现顶部的刷新」): 面板高过**消息窗口**时, Ink 清不掉上一帧
+  //   ⇒ 退化成追加模式, 顶框和艺术字被一条条重复写到屏上. 所以高度按窗口真高算, 不拍脑袋 (原来 rows-10).
+  const bootWinH = bootPanelMaxLines(rows, termWidth());
+  // 2026-09-30 (leo: 「面板右侧的 skills 内容不见了」): **内容优先** —— 面板内容按终端高度留出
+  //   输入栏/状态栏的余量来给 (不按"面板区"的高度砍); 装不下的部分由**面板区滚动**看全.
+  //   上一版按区域高算 ⇒ 小终端下面板只剩 3 行内容, skills 直接没了 (回归, 已改回).
+  const bodyCap = Math.max(8, rows - 10 - bannerRows);
+  void bootWinH;
+  let restLines = restFit;
+  if (restLines.length > bodyCap) {
+    const dropped = restLines.length - (bodyCap - 1);
+    restLines = [...restLines.slice(0, bodyCap - 1), `${C_DIM}… 还有 ${dropped} 行 (PgUp 滚面板 / bolloon status 看全量)${RESET}`];
+  }
+  const restMax = restLines.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
+
+  const twoColW = useFace.length > 0 ? faceW + gap + restMax : restMax;
+  const contentW = Math.max(useBanner.length > 0 ? bannerW + 8 : 0, twoColW);
+  const center = (rs: string[]) => rs.map((l) => ' '.repeat(Math.max(0, Math.floor((contentW - dispWidth(l)) / 2))) + l);
+  const n = restLines.length;
+  const fStart = Math.max(0, Math.floor((n - useFace.length) / 2)); // face 列对内容垂直居中 = 等高
+  const twoCol = restLines.map((r, i) => {
+    const f = (useFace.length > 0 && i >= fStart && i < fStart + useFace.length) ? useFace[i - fStart] : null;
+    const fpart = f
+      ? `${f}${' '.repeat(Math.max(0, faceW - dispWidth(f)) + gap)}`
+      : (useFace.length > 0 ? ' '.repeat(faceW + gap) : '');
     return fpart + r;
   });
-  const body = [...center(banner), '', ...twoCol];
-  return renderMessageBox({ title: '🚀 Bolloon · 启动面板', body: body.join('\n'), color: C_ACCENT, maxLines: 0 });
+  const body = [...(useBanner.length > 0 ? [...center(useBanner), ''] : []), ...twoCol];
+  const outer = Math.min(termWidth() - 2, Math.max(contentW + 4, 40));
+  return renderMessageBox({ title: '🚀 Bolloon · 启动面板', body: body.join('\n'), color: C_ACCENT, maxLines: 0, width: outer });
+}
+
+/** 启动面板的技能快照 (成功扫描后写; 下次超时/读失败时兜底 —— 跟启动日志同目录) */
+function skillsCachePath(): string {
+  return path.join(path.dirname(startupLogPath()), 'panel-skills.json');
 }
 
 async function bootPanel(boot: { dir?: string; model?: string; session?: string }): Promise<string | null> {
   const sub: string[] = []; // tools / MCP (Promise.all 里填充, 最后统一排到类别下方)
   const catNames = new Map<string, string[]>();
+  let skillsScanTimedOut = false;   // 技能扫描到点没收完 ⇒ 面板里如实标出来, 不假装"就是这些"
+  const skillsScanErrors: string[] = [];   // 2026-09-30: 读失败**必须计数写出来** —— 静默吞掉 = 屏上"0 skills"(假 0, 比不显示更坏)
+  let skillsFromCache = false;             // 本次没扫到 ⇒ 用上次成功扫描的快照, 并如实标注来源
+  let skillsCacheAt = '';
 
   await Promise.all([
     (async () => {
       try {
         // 真实类别 = 目录名前缀去掉技能名后缀 (SKILL.md 无 category 字段, 但 frontmatter.name 是真名:
         //   software-development-bolloon-development / name=bolloon-development → software-development)
+        // 2026-09-30: **先把模块导进来, 再开始计时** —— 原写法把 4s 预算从 import 之前就开始算,
+        //   而冷启动那一刻 import 技能模块(带 yaml 等)本身要好几秒 ⇒ 预算被 import 吃掉, 面板报
+        //   "扫描超时 / 0 个技能"(实测: 扫描真身只 702ms/1300 个, 却显示 0).
         const { loadSkillsDir, defaultSkillPaths } = await import('./agents/skill-loader.js');
         const pushCat = (cat: string, name: string) => {
           const arr = catNames.get(cat) || [];
           if (!arr.includes(name)) arr.push(name);
           catNames.set(cat, arr);
         };
-        for (const root of defaultSkillPaths()) {
-          const metas = await loadSkillsDir(root);
-          for (const m of metas) {
-            if (m.status === 'archived') continue;
-            const dir = m.sourcePath ? path.basename(path.dirname(m.sourcePath)) : '';
-            const nm = m.name || '';
-            let cat = dir;
-            if (dir && nm && dir.endsWith(nm)) {
-              const pre = dir.slice(0, dir.length - nm.length).replace(/-+$/, '');
-              if (pre) cat = pre;
+        // 2026-09-30: 多个技能根**并行**扫 (原来顺序 await ⇒ 实测 4399ms, 并行 297ms, 1300 个技能);
+        //   并给一个上限: 超时就如实标出来, 不让"出面板"被一次磁盘抖动无限期拖住.
+        const roots = defaultSkillPaths();
+        const all = await Promise.race([
+          Promise.all(roots.map((r) => loadSkillsDir(r).catch((e) => {
+            // 2026-09-30: 原来这里 `.catch(() => [])` **静默**吞错 ⇒ 屏上"0 skills · 0 类",
+            //   谁也看不出是"真 0"还是"读不动" (leo 报「面板内容变少了」)。现在计数 + 写出来。
+            skillsScanErrors.push(`${path.basename(r)}: ${String((e as any)?.message || e).slice(0, 70)}`);
+            return [] as any[];
+          }))),
+          new Promise<null>((res) => setTimeout(() => res(null), 6000)),   // 冷 FS 上留足余量
+        ]);
+        if (all === null) {
+          skillsScanTimedOut = true;
+        } else {
+          for (const metas of all) {
+            for (const m of metas) {
+              if (m.status === 'archived') continue;
+              const dir = m.sourcePath ? path.basename(path.dirname(m.sourcePath)) : '';
+              const nm = m.name || '';
+              let cat = dir;
+              if (dir && nm && dir.endsWith(nm)) {
+                const pre = dir.slice(0, dir.length - nm.length).replace(/-+$/, '');
+                if (pre) cat = pre;
+              }
+              pushCat(cat || 'other', nm || dir);
             }
-            pushCat(cat || 'other', nm || dir);
           }
+        }
+        // 扫到东西就落一份快照 —— 下次超时/读失败时用它兜底(并标注来源), 不再"内容突然变少"
+        if (catNames.size > 0) {
+          try {
+            const totalNow = [...catNames.values()].reduce((s2, a) => s2 + a.length, 0);
+            await fs.mkdir(path.dirname(skillsCachePath()), { recursive: true });
+            await fs.writeFile(skillsCachePath(), JSON.stringify({
+              at: new Date().toLocaleString('zh-CN', { hour12: false }), total: totalNow, cats: [...catNames.entries()],
+            }), 'utf8');
+          } catch { /* 快照写不进去不影响面板 */ }
         }
       } catch { /* 省略 */ }
     })(),
     (async () => {
+      /**
+       * 2026-09-30 (leo: 「面板的加载没有和输入框一起出现, 有时间差, 且面板内部内容有缺失」):
+       *   这里原来是 `getAgent()` —— 建**整个 agent 会话**(模型/工具/身份). 插桩实测它把事件循环
+       *   **同步阻塞**几十秒 (调用后 20s 连 end 都没打出来, 2.5s/4s 上限的定时器都点不着) ⇒ 面板被拖到
+       *   十几秒后才出, 技能那一段也没跑完(=内容缺失). 面板只为一行 `🔧 N tools` 付这个代价不值得
+       *   ⇒ **不再等它**: 已建好的 agent 才取工具数; 全量清单看 `bolloon status`.
+       */
       try {
-        const a = await Promise.race([
-          getAgent().catch(() => null),
-          new Promise<null>((res) => setTimeout(() => res(null), 2500)),
-        ]);
-        const tools = a && typeof (a as any).getToolList === 'function' ? (a as any).getToolList() : null;
+        const a = agent && typeof (agent as any).getToolList === 'function' ? (agent as any) : null;
+        const tools = a ? a.getToolList() : null;
         if (tools && tools.length > 0) sub.push(`🔧 ${tools.length} tools`);
       } catch { /* 省略 */ }
     })(),
@@ -713,7 +841,13 @@ async function bootPanel(boot: { dir?: string; model?: string; session?: string 
 
   // 栈式布局: face 艺术字居中 → BOLLOON 字标 logo 在其下 → 内容左对齐
   const art = ROBOT_HEAD;
-  const banner = BOLLOON_BANNER.split('\n');
+  // 2026-09-30 (leo: 「我看不到我的 logo」): 按宽度**挑档**, 不再"窄就丢".
+  //   原来只有一档 87 列艺术字, 终端宽 < ~97 列时整块被丢、只剩一行文字.
+  //   挑"装得下的最大档": 大(87 列) → 小(37 列) → 都装不下才在框里退回一行文字.
+  const candInner = Math.max(24, termWidth() - 6);
+  const banner = [BOLLOON_BANNER, BOLLOON_BANNER_SMALL]
+    .map(b => b.split('\n'))
+    .find(b => Math.max(...b.map(dispWidth)) + 4 <= candInner) || [];
 
   // 头: 目录 / 模型 / Session (预先加载信息)
   const rest: string[] = [];
@@ -721,6 +855,16 @@ async function bootPanel(boot: { dir?: string; model?: string; session?: string 
   if (boot.model) rest.push(`模型 ${boot.model}`);
   if (boot.session) rest.push(`Session: ${boot.session}`);
   rest.push('');
+
+  // 2026-09-30 (leo 的屏面: 提示写了"快照"但数字还是 0): 回落必须在 normalized/sorted **之前** ——
+  //   先把快照填进 catNames, 再统计, 否则出现"有提示没数字"的假面板。
+  if (catNames.size === 0) {
+    try {
+      const c = JSON.parse(fsSync.readFileSync(skillsCachePath(), 'utf8')) as { at?: string; cats?: [string, string[]][] };
+      for (const [k, arr] of (c.cats || [])) catNames.set(k, arr);
+      if (catNames.size > 0) { skillsFromCache = true; skillsCacheAt = String(c.at || ''); }
+    } catch { /* 没快照就照实显示 0 */ }
+  }
 
   // 类别行 (全部展开, 不截断类别; 每类列前 8 名 + '+N more') — 单一实例归 other
   const normalized = new Map<string, string[]>();
@@ -735,12 +879,16 @@ async function bootPanel(boot: { dir?: string; model?: string; session?: string 
   }
   const sorted = [...normalized.entries()].sort((a, b) => b[1].length - a[1].length);
   const total = sorted.reduce((s, [, arr]) => s + arr.length, 0);
+  // 2026-09-30 (leo 报「回复渲染时被截断」): 面板**压矮** —— 技能类目只列前 4 类(其余归到计数行),
+  //   否则 20+ 行面板把消息区占满, 后面的回复没地方站 (= 挤成窄列/看起来被截断).
   for (const [cat, arr] of sorted) {
     const shown = arr.slice(0, 8);
     const more = arr.length > shown.length ? `, +${arr.length - shown.length} more` : '';
     rest.push(`${cat}: ${shown.join(', ')}${more}`);
   }
-  rest.push(`⚡ ${total} skills · ${sorted.length} 类`, '');
+  rest.push(`⚡ ${total} skills · ${sorted.length} 类${skillsFromCache ? ` (上次成功扫描的快照 · ${skillsCacheAt})` : ''}`, '');
+  if (skillsScanTimedOut) rest.push(`${C_DIM}(本次技能扫描超时, 上面是${skillsFromCache ? '快照' : '已扫到的部分'} —— bolloon status 看全量)${RESET}`, '');
+  if (skillsScanErrors.length) rest.push(`${C_WARN}(技能根读取失败 ${skillsScanErrors.length} 个: ${skillsScanErrors[0]})${RESET}`, '');
   if (sub.length) rest.push(...sub, '');
   // 自动整理 (经验/技能整理心跳) 模式并入面板
   rest.push(`🧹 经验自动整理: 启动后每 30min 一次`);
@@ -810,6 +958,9 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
   if (process.env.BOLLOON_SKIP_KUBO !== '1') {
     void (async () => {
       try {
+        // 2026-09-30: 已经在跑就别让 SDK 再走装配 —— 那步会跑 `ipfs init` 并在启动面板前打一行
+        //   [warn](含"失败"⇒ 日志门按信号放行), 就是 leo 报的「开启过程的日志没去掉」.
+        if (await kuboAlreadyRunning()) return;
         const sdk = await import('@diap/sdk');
         const checkKuboSetup = (sdk as any).checkKuboSetup;
         if (typeof checkKuboSetup === 'function') {
@@ -850,6 +1001,39 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
     const p = (n: number, l = 2) => String(n).padStart(l, '0');
     return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_${Math.random().toString(16).slice(2, 8)}`;
   })();
+  const notes = takeStartupPanelNotes();
+  const verbosePreamble = startupPreambleVisible();
+  const bootBox = bootPanelPrinted ? null : await bootPanel({
+    dir: bootDirShort,
+    model: (cliModelName && cliModelName !== '…') ? cliModelName : undefined,
+    session: bootSessionId,
+  });
+  cliSessionKey = bootSessionId;   // 2026-09-30: 退出存档要用 (两条退出路径都读它)
+  if (bootBox) {
+    // 2026-09-30 (leo: 「面板和回复要往上面无限推」): 面板就是这条流的**第一条** —— 渲染侧走 <Static>, 高度无限
+    appendLine(bootBox);
+    bootPanelPrinted = true;
+  }
+
+  // 2026-09-27 (leo 口径: `bolloon --cli` 起来直接就是面板, 启动前不刷前言):
+  //   就绪度报告 / 初始化续跑前言**默认不上屏** —— 但它们不是消失, 而是变成**面板里的行**:
+  //     · 就绪度折成一行 `就绪: basic ✓ · agent ✓ · durable ✗ · network ✓ · 详情: …`
+  //     · 失败 / 需人介入 (缺 key、连通性实测失败、初始化中断) 折成 `/!\` 开头的提示行 —— **不许吞**
+  //   注: 字面量里必须写 `\\ ` (反斜杠要转义), 否则 JS 会把 `\ ` 吃成空格 —— 屏上就变成 `/! ` 了
+  //   (验收门 `verify-cli-panel` 的 A4 按 `/!\` 判, 真踩过一次)。
+  //   全量版仍在 `startup.log`; `--verbose` / BOLLOON_VERBOSE=1 下逐字回到启动前的位置 (走 stderr)。
+  if (notes.readiness && !verbosePreamble && !bootReadinessPrinted) {
+    appendLine(`${C_DIM}${notes.readiness}${RESET}`);
+    bootReadinessPrinted = true;
+  }
+  for (const a of notes.alerts) appendLine(`${C_WARN}/!\\ ${a}${RESET}`);
+  // 已经到面板了: 缓冲里剩下的纯前言**不上屏**(已在 startup.log), 丢掉引用免得下次启动重放
+  clearBufferedNotices();
+  // 面板第一帧之后: 晚到的降级提示 (后台 iroh / bootstrap / DID 发布…) 直接追加进面板,
+  //   不再等下一次 `takeStartupPanelNotes()` —— 否则它们会静静地烂在告警数组里 (= 吞)
+  startupPanelReady = true;
+  // 2026-09-30: 面板在起帧前已进 store ⇒ 首帧里与输入框一起出现
+
   startInk(
     (text: string) => { processInput(text, comm); },
     initialStatus,
@@ -881,7 +1065,15 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
           boxLines.push(`🧠 知识整理: ${kSections.map(s => s.error ? `${s.label}✗` : `${s.label}✓`).join(' ')}`);
         }
         if (boxLines.length > 0) {
-          appendLine(renderMessageBox({ title: '自动整理完成', body: boxLines.join('\n'), color: C_ACCENT, maxLines: 10 }));
+          /**
+           * 2026-09-30 (leo: 「还是没有把开启过程的日志去掉」): 自动整理是**内部运行日志** ——
+           *   ① 开机第一轮是纯扫描(不取 LLM、什么都没改) ⇒ 一个字符都不该上屏;
+           *   ② 周期轮就算真做了事, 也不许**往对话回复流塞一个 10 行盒子** ——
+           *      那会挤掉/截断正在渲染的回复(实测回复被压成窄列).
+           * 处置: 只落盘(与其它内部运行日志同一条路径/同一个 [运行] 标记), 屏上只留 transient 颜文字.
+           * 去哪儿查: grep '[运行]' ~/.bolloon/logs/startup.log
+           */
+          appendInternalRunLog(`自动整理完成: ${boxLines.join(' | ')}`, 'organize-heartbeat');
         }
       },
       onError: () => inkSetTransient(null),
@@ -956,34 +1148,12 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
   } catch { /* cron 调度启动失败不阻塞 CLI */ }
 
   // 启动会话面板 (大框): 栈式 = face 艺术字居中 + BOLLOON 字标 logo 在其下 + 预设信息(skills/工具/模型/目录/Session/分支/时间)
-  //   先立即渲染「艺术字 + logo + 正在加载...」, bootPanel 就绪后 inkReplaceMatchingLine 按标记原位替换为完整内容
-  //   (用匹配替换而非 replaceLast — P2P/连接消息可能先于 bootPanel 追加, replaceLast 会覆盖错一条)
-  const bootBox = buildBootBox(ROBOT_HEAD, BOLLOON_BANNER.split('\n'), [
-    `${bootDirShort}  ·  ${(cliModelName && cliModelName !== '…') ? cliModelName : ''}  ·  Session: ${bootSessionId}`,
-    '',
-    '⟳ 正在加载技能 / 工具...',
-  ]);
-  appendLine(bootBox);
+  //
+  // 2026-09-30 (leo: 「加载过程不渲染, 直接展示结果」): **不再先打「⟳ 正在加载技能 / 工具...」占位框再替换** ——
+  //   先把内容算完 (skills/tools 各有 2.5s 预算), 然后**一次性**把成品框打出来.
+  //   代价: 起来到出框之间屏幕是空的 (不给任何假的"加载中"画面); 好处: 屏上只会出现一份面板, 没有替换中间态.
 
-  // 2026-09-27 (leo 口径: `bolloon --cli` 起来直接就是面板, 启动前不刷前言):
-  //   就绪度报告 / 初始化续跑前言**默认不上屏** —— 但它们不是消失, 而是变成**面板里的行**:
-  //     · 就绪度折成一行 `就绪: basic ✓ · agent ✓ · durable ✗ · network ✓ · 详情: …`
-  //     · 失败 / 需人介入 (缺 key、连通性实测失败、初始化中断) 折成 `/!\` 开头的提示行 —— **不许吞**
-  //   注: 字面量里必须写 `\\ ` (反斜杠要转义), 否则 JS 会把 `\ ` 吃成空格 —— 屏上就变成 `/! ` 了
-  //   (验收门 `verify-cli-panel` 的 A4 按 `/!\` 判, 真踩过一次)。
-  //   全量版仍在 `startup.log`; `--verbose` / BOLLOON_VERBOSE=1 下逐字回到启动前的位置 (走 stderr)。
-  const notes = takeStartupPanelNotes();
-  const verbosePreamble = startupPreambleVisible();
-  if (notes.readiness && !verbosePreamble) appendLine(`${C_DIM}${notes.readiness}${RESET}`);
-  for (const a of notes.alerts) appendLine(`${C_WARN}/!\\ ${a}${RESET}`);
-  // 已经到面板了: 缓冲里剩下的纯前言**不上屏**(已在 startup.log), 丢掉引用免得下次启动重放
-  clearBufferedNotices();
-  // 面板第一帧之后: 晚到的降级提示 (后台 iroh / bootstrap / DID 发布…) 直接追加进面板,
-  //   不再等下一次 `takeStartupPanelNotes()` —— 否则它们会静静地烂在告警数组里 (= 吞)
-  startupPanelReady = true;
-
-  void bootPanel({ dir: bootDirShort, model: (cliModelName && cliModelName !== '…') ? cliModelName : undefined, session: bootSessionId })
-    .then((box) => { if (box) inkReplaceMatchingLine(bootBox, box); }).catch(() => {});
+  // (面板已在上面一次性打出 —— 不再有占位框需要替换)
 
   // Wait on a promise that resolves on Ctrl+C / 双击 Esc
   // (ink-app 的 requestExit 调 __inkRequestExit → resolve, 清理后 process.exit)
@@ -993,7 +1163,12 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
   await exitPromise;
   delete (globalThis as any).__inkRequestExit;
   stopInk();
-  appendLine(`\n${CYAN}👋 再见！${RESET}`);
+  // 2026-09-30 (leo): 退出前**自动存档 session**, 存档结果先上屏, 最后才是「再见👋」
+  try {
+    const note = await archiveSessionOnExit(cliSessionKey);
+    if (note) writeExitLine(note);
+  } catch { /* 存档绝不阻塞退出 */ }
+  writeExitLine(`\n${CYAN}👋 再见！${RESET}`);
   try { cliOrganizeHeartbeat?.stop(); } catch { /* 非致命 */ }
   try { cliUnsubQuestions?.(); } catch { /* 非致命 */ }
   if (cliCronTimer) clearInterval(cliCronTimer);
@@ -2726,6 +2901,11 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   }
 
   if (trimmed === '退出' || trimmed === 'exit' || trimmed === 'quit') {
+    // 同一条退出纪律: 先存档, 再告别 (幂等 —— 与 Ctrl+C 路径共用)
+    try {
+      const note = await archiveSessionOnExit(cliSessionKey);
+      if (note) appendLine(note);
+    } catch { /* 非致命 */ }
     appendLine(`\n${CYAN}👋 再见！${RESET}`);
     isRunning = false;
     return;
@@ -4784,12 +4964,18 @@ async function main() {
   void (async () => {
     let kuboReady = false;
     try {
-      const sdk = await import('@diap/sdk');
-      const checkKuboSetup = (sdk as any).checkKuboSetup;
-      if (typeof checkKuboSetup === 'function') {
-        const setup = await checkKuboSetup(true, true);
-        kuboReady = !!(setup?.ready && setup?.daemonRunning);
-        bootNotice('info', kuboReady ? 'IPFS 本地 Kubo 就绪 → IPNS 发布/解析可用' : 'Kubo 不可用, IPFS 降级本地模式');
+      // 2026-09-30: 已经在跑 → 直接算就绪, 不触发 SDK 那次注定失败的 `ipfs init`(它会在面板前打一行 warn)
+      if (await kuboAlreadyRunning()) {
+        kuboReady = true;
+        bootNotice('info', 'IPFS 本地 Kubo 已在运行 → IPNS 发布/解析可用');
+      } else {
+        const sdk = await import('@diap/sdk');
+        const checkKuboSetup = (sdk as any).checkKuboSetup;
+        if (typeof checkKuboSetup === 'function') {
+          const setup = await checkKuboSetup(true, true);
+          kuboReady = !!(setup?.ready && setup?.daemonRunning);
+          bootNotice('info', kuboReady ? 'IPFS 本地 Kubo 就绪 → IPNS 发布/解析可用' : 'Kubo 不可用, IPFS 降级本地模式');
+        }
       }
     } catch (e: any) {
       bootNotice('warn', `Kubo 自动安装失败 (非致命): ${String(e?.message || e).slice(0, 120)}`);

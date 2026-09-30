@@ -2868,13 +2868,16 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         const kp = KeyManager.fromPrivateKey(Buffer.from(identity.privateKey, 'hex'));
         const displayName = args.name ? String(args.name) : agentId || 'bolloon-agent';
 
-        // 1. 确保本地 Kubo (自动安装 + 启动)
+        // 1. 确保本地 Kubo (自动安装 + 启动) —— **已经在跑就别调 SDK 那次注定失败的 init**
+        //    (`sdk` 后面发布 IPNS 还要用, 所以模块导入留在函数作用域, 只把这一次调用关进短路里)
         const sdk = await import('@diap/sdk');
-        const checkKuboSetup = (sdk as any).checkKuboSetup;
-        if (typeof checkKuboSetup === 'function') {
-          const setup = await checkKuboSetup(true, true);
-          if (!setup?.ready || !setup?.daemonRunning) {
-            return { success: false, error: '本地 Kubo 不可用 (自动安装失败), 无法发布到 IPFS' };
+        if (!(await kuboAlreadyRunning())) {
+          const checkKuboSetup = (sdk as any).checkKuboSetup;
+          if (typeof checkKuboSetup === 'function') {
+            const setup = await checkKuboSetup(true, true);
+            if (!setup?.ready || !setup?.daemonRunning) {
+              return { success: false, error: '本地 Kubo 不可用 (自动安装失败), 无法发布到 IPFS' };
+            }
           }
         }
 
@@ -3310,7 +3313,25 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 // ─── IPFS/IPNS 通用 helper (2026-08-04) ─────────────────────────────────────
 // 复用 publish_did 的 checkKuboSetup 自动安装/启动本地 Kubo (darwin-arm64 v0.28.0)
 
+/**
+ * Kubo 本地节点已经在跑吗 (只读探测: POST /api/v0/version —— Kubo 只接受 POST).
+ *
+ * 2026-09-30 新增 (leo 报「开启过程的日志没去掉」): SDK 的 `checkKuboSetup(true, true)` 即使守护进程
+ * 已经在跑, 仍会跑一遍 `ipfs init` ⇒ 抛 "daemon is running" ⇒ **打一行 [warn](消息里含"失败"二字,
+ * 于是被启动日志门按"错误不许被吞"放行到屏上)** 外加子进程输出, 两行都落在启动面板之前.
+ * 启动路径上所有调用点都先用这个探测短路: 已经在跑就没有任何可装配的.
+ */
+export async function kuboAlreadyRunning(timeoutMs = 1500): Promise<boolean> {
+  try {
+    await kuboApi('/api/v0/version', undefined, timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureKuboReady(): Promise<void> {
+  if (await kuboAlreadyRunning()) return;   // 已在跑 ⇒ 没有可装配的, 也别触发那次注定失败的 init
   const sdk = await import('@diap/sdk');
   const checkKuboSetup = (sdk as any).checkKuboSetup;
   if (typeof checkKuboSetup === 'function') {

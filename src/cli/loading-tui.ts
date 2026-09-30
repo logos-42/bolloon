@@ -79,6 +79,17 @@ export const BOLLOON_BANNER = [
   `${C_TEXT}${BOLD}╚═════╝  ╚═════╝ ╚══════╝╚══════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝${RESET}`,
   `${C_DIM}Bolloon Agent v${BOLLOON_VERSION}${RESET}`,
 ].join('\n');
+/**
+ * 窄终端档: 同一套风格的小号艺术字 (leo 2026-09-30: 「我看不到我的 logo」).
+ *   原来宽 < ~97 列时整块 87 列艺术字被丢掉、只剩一行文字 —— 那不是 logo.
+ *   现在按"装得下就上"挑档: 大(87) → 小(37) → 文字(兜底), 保证任何宽度都有字标.
+ */
+export const BOLLOON_BANNER_SMALL = [
+  `${C_TEXT}${BOLD} ___  ___  _    _    ___   ___  _  _${RESET}`,
+  `${C_TEXT}${BOLD}| _ )/ _ \\| |  | |  / _ \\ / _ \\| \\| |${RESET}`,
+  `${C_TEXT}${BOLD}| _ \\ (_) | |__| |_| (_) | (_) | .\` |${RESET}`,
+  `${C_TEXT}${BOLD}|___/\\___/|____|____\\___/ \\___/|_|\\_|${RESET}`,
+].join('\n');
 
 /** 艺术字全部行 (机器人头在左, BOLLOON 艺术字在右), 供框内渲染 */
 export function brandArtLines(): string[] {
@@ -127,6 +138,45 @@ const RD: Corners = { tl: '╭', tr: '╮', bl: '╰', br: '╯', v: '│', h: '
 export function termWidth(): number {
   const c = (process.stdout as any).columns;
   return typeof c === 'number' && c > 24 ? c : 80;
+}
+
+/**
+ * 等真实终端尺寸就位 (2026-09-30, leo 报「TUI 渲染有问题: 顶框被重复打印 + 宽度一路涨」).
+ *
+ * 真 pty 下 `process.stdout.columns` 在启动最初那一刻可能**还没被写进来** ⇒ 面板先按兜底的 80 列
+ * 渲染一次; 等真尺寸到位后又渲染一次 —— 而面板落在 Ink 的静态输出(scrollback)里, 重画覆盖不掉旧内容,
+ * 于是**每渲染一次就多留一条顶框**, 宽度还在变 (实测 24x120: 110 → 120; 12x80: 80 → 76).
+ * 所以: 出任何一帧之前先等尺寸就位 (通常下一个 tick 或一次 resize 事件就到; 上限 timeoutMs).
+ */
+export async function waitForTermSize(timeoutMs = 600): Promise<void> {
+  const ok = () => {
+    const c = (process.stdout as any).columns;
+    return typeof c === 'number' && c > 24;
+  };
+  if (ok()) return;
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearInterval(iv);
+      clearTimeout(t);
+      try { process.stdout.off('resize', finish); } catch { /* 老 Node 没有 off */ }
+      resolve();
+    };
+    const iv = setInterval(() => { if (ok()) finish(); }, 20);
+    const t = setTimeout(finish, timeoutMs);
+    try { process.stdout.once('resize', finish); } catch { /* 忽略 */ }
+  });
+}
+
+/**
+ * 终端行数 (拿不到就按 24 —— 与 termWidth 同一套兜底口径).
+ * 2026-09-30 新增: 面板/盒子必须**知道自己有多少行可用**, 否则会长过屏幕把输入行顶出视野.
+ */
+export function termHeight(): number {
+  const r = (process.stdout as any).rows;
+  return typeof r === 'number' && r > 8 ? r : 24;
 }
 
 function stripAnsi(s: string): string {
@@ -178,8 +228,8 @@ function fitLeft(text: string, inner: number): string {
   return out + '…';
 }
 
-/** 按显示宽度截断并加省略号 */
-function truncate(text: string, max: number): string {
+/** 按显示宽度截断并加省略号 (导出: 调用方要自己把内容裁进盒子, 见 buildBootBox) */
+export function truncate(text: string, max: number): string {
   if (dispWidth(text) <= max) return text;
   let out = '';
   let w = 0;
@@ -237,11 +287,14 @@ export function renderDashboard(opts: DashboardOpts): string {
   const maxTitle = dispWidth(opts.title ?? 'Bolloon Agent · 仪表盘') + 4;
   const inner = Math.max(40, maxArt, maxRow, maxTitle);
   const width = Math.min(termWidth() - 2, opts.width ?? inner + 4);
+  // 2026-09-30: width 被夹到 termWidth()-2 之后, 内宽可能**小于**艺术字宽度 ——
+  //   那种情况下 boxRow 装不下, 终端会把每行折成两截 (实测: 艺术字裂成两列错位).
+  //   宁可不显示艺术字, 也不让它被折行.
+  const innerW = Math.max(0, width - 4);
+  const useArt = showBrand && maxArt <= innerW ? art : [];
   const lines: string[] = [];
   lines.push(boxTop(opts.title ?? 'Bolloon Agent · 仪表盘', width));
-  if (showBrand) {
-    for (const l of art) lines.push(boxRow(l, width, 'center'));
-  }
+  for (const l of useArt) lines.push(boxRow(l, width, 'center'));
   for (const r of opts.rows) {
     const sym = STATUS_SYMBOL[r.status ?? 'info'];
     const detail = r.detail ? `  ${C_DIM}${r.detail}${RESET}` : '';

@@ -22,6 +22,8 @@ import { printBanner } from './cli/loading-tui.js';
 import { discoverEngines, delegateToEngine } from './external-engines/index.js';
 import { x402CheckBalance, x402Fetch } from './agents/x402/x402Pay.js';
 import { runVersionCommand, runUpdateCommand, runDoctorCommand, runRuntimeCommand, UPDATE_HELP } from './cli/update-commands.js';
+import { installStartupLogGate } from './cli/log-gate.js';
+import { waitForTermSize } from './cli/loading-tui.js';
 import { collectVersionInfo } from './utils/version-info.js';
 // 2026-09-27: 启动前言的默认静默 + 显式查询命令 (与 `src/index.ts` 同一套判断)
 import { startupPreambleVisible, SETUP_STATUS_CMD } from './cli/startup-notice.js';
@@ -987,6 +989,26 @@ async function main() {
       break;
 
     case 'cli':
+      /**
+       * 2026-09-30 修复 (leo 报「开启过程的日志没去掉」): 启动日志门原先在 `index.ts` 很靠后的位置才装,
+       *   于是**早于它**发生的第三方输出会直接落到 tty, 出现在启动面板之前 (实测 SDK 的 ipfs 装配会打
+       *   `[warn]: ipfs init 失败…` 两行 + 它自己的子进程输出, 共 4 行泄漏).
+       *   门覆盖 `process.stdout.write` / `process.stderr.write` / `console.*` 三层, 且**是单例**
+       *   (index.ts 里那次 `installStartupLogGate` 会直接复用它) ⇒ 在这里提前装, 行为不变、只是更早生效.
+       *   与 index 侧同一套跳过条件: `--json` (stdout 是机器数据本体) / 一次性工具 / 命令式诊断 不装门.
+       */
+      {
+        const a = args as any;
+        const isOneShotTool = !!(a.tool || a.prompt);
+        const isCommandLike = !!(a.supervise || a.setupStatus || a.setupResume || a.setupRepair
+          || a.setupReconfigure || a.setupTest);
+        if (!a.json && !isOneShotTool && !isCommandLike) {
+          installStartupLogGate({ mode: 'cli-interactive', args: process.argv.slice(2) });
+        }
+      }
+      // 2026-09-30: 先等真实终端尺寸就位再出第一帧 —— 否则面板会先按兜底 80 列渲染一次,
+      //   拿到真尺寸后再渲染一次, 而静态输出覆盖不掉旧内容 ⇒ 顶框被重复打印 + 宽度乱变.
+      await waitForTermSize();
       await startCLI(args);
       break;
 
