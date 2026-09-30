@@ -468,6 +468,30 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     onPrompt(trimmed);
   }, [onPrompt]);
 
+  /**
+   * 输入历史: 上一/下一条。
+   *   2026-09-30 (leo: 「历史的上下切换遇到 /session 等指令就无法切换了」) —— 抽出来是因为
+   *   历史里一旦出现 `/xxx`, 恢复出来的输入会**打开命令补全弹窗**, 而弹窗把 ↑/↓ 当"移动候选"吃掉
+   *   ⇒ 历史再也切不动。现在: **空输入** 或 **已在历史态** 时 ↑/↓ 一律归历史 (见下面优先块)。
+   */
+  const histUp = useCallback(() => {
+    const hist = historyRef.current;
+    if (hist.length === 0) return;
+    if (historyIdxRef.current === -1) draftRef.current = inputRef.current;
+    if (historyIdxRef.current < hist.length - 1) {
+      historyIdxRef.current += 1;
+      setInput(hist[hist.length - 1 - historyIdxRef.current]);
+      setTiKey(k => k + 1);
+    }
+  }, []);
+  const histDown = useCallback(() => {
+    if (historyIdxRef.current === -1) return;
+    historyIdxRef.current -= 1;
+    if (historyIdxRef.current === -1) setInput(draftRef.current);
+    else setInput(historyRef.current[historyRef.current.length - 1 - historyIdxRef.current]);
+    setTiKey(k => k + 1);
+  }, []);
+
   useInput((_input, key) => {
     // 退出请求: 通知 startCLI resolve → 走清理 → process.exit (带兜底)
     const requestExit = () => {
@@ -478,6 +502,14 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     };
     if (key.ctrl && _input === 'c') {
       requestExit();
+      return;
+    }
+
+    // ── 输入历史优先 (比补全弹窗更优先) ──
+    //   规则: 空输入, 或已经在历史态 (historyIdx !== -1) ⇒ ↑/↓ 归历史, 弹窗/选择器都让路。
+    //   只有"用户自己敲了内容且不在历史态"时, 补全弹窗才拥有 ↑/↓。
+    if ((key.upArrow || key.downArrow) && (historyIdxRef.current !== -1 || !inputRef.current.trim())) {
+      if (key.upArrow) histUp(); else histDown();
       return;
     }
 
@@ -579,25 +611,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     // Tab 命令补齐 (匹配触发符后的 token 再补)
     if (key.tab) { doTabCompletion(); return; }
     // ↑/↓ 切换输入历史 (TextInput 本身忽略 up/down, 无冲突)
-    if (key.upArrow) {
-      const hist = historyRef.current;
-      if (hist.length === 0) return;
-      if (historyIdxRef.current === -1) draftRef.current = input;
-      if (historyIdxRef.current < hist.length - 1) {
-        historyIdxRef.current += 1;
-        setInput(hist[hist.length - 1 - historyIdxRef.current]);
-        setTiKey(k => k + 1);
-      }
-      return;
-    }
-    if (key.downArrow) {
-      if (historyIdxRef.current === -1) return;
-      historyIdxRef.current -= 1;
-      if (historyIdxRef.current === -1) setInput(draftRef.current);
-      else setInput(historyRef.current[historyRef.current.length - 1 - historyIdxRef.current]);
-      setTiKey(k => k + 1);
-      return;
-    }
+    if (key.upArrow) { histUp(); return; }
+    if (key.downArrow) { histDown(); return; }
     // 双击 Esc 退出当前进程: 第一击提示, 500ms 内第二击退出
     //   ⚠ 判据含**字节级兜底** (`_input === '\u001b'`): Ink 对"孤独的 Esc"要先攒 20ms 再吐,
     //   重挂之后实测 `key.escape` 不再为真 —— 与上面 Enter 那条同一个道理 (不依赖 Ink 的键解析)。
