@@ -8,6 +8,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { loadInputHistory, appendInputHistory, MEMORY_CAP } from './input-history.js';
 import * as fs from 'fs';
 import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
@@ -251,6 +252,13 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
 
   // ── 输入历史 (↑/↓ 切换) ───────────────────────────────────────────────────
   const historyRef = useRef<string[]>([]);
+  // 2026-09-30 (leo: 「输入历史有落盘文件夹吗，要实现一下」): 启动时把落盘历史读回内存 —— 重启后 ↑ 还能翻出来。
+  //   异步读, 读回来直接替换 ref (空文件/读失败 = 保持空, 不打扰输入)。
+  useEffect(() => {
+    let alive = true;
+    loadInputHistory().then(h => { if (alive && h.length) historyRef.current = h; }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
   const historyIdxRef = useRef(-1); // -1 = 正在编辑新草稿
   const draftRef = useRef('');
 
@@ -447,10 +455,12 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     if (lastSubmitRef.current.v === trimmed && now - lastSubmitRef.current.t < 1500) return;
     lastSubmitRef.current = { t: now, v: trimmed };
     if (!trimmed) return;
-    // 入历史 (去重最近一条, 上限 100)
+    // 入历史 (去重最近一条) + **落盘** (~/.bolloon/history/input-<渠道>.jsonl, 0600)
+    //   秘密形态的输入 (私钥/助记词) 由 appendInputHistory 拦下不写盘 —— 输入历史是纯文本, 写进去就是事故。
     const hist = historyRef.current;
     if (hist[hist.length - 1] !== trimmed) hist.push(trimmed);
-    if (hist.length > 100) hist.shift();
+    if (hist.length > MEMORY_CAP) hist.shift();
+    void appendInputHistory(trimmed);
     historyIdxRef.current = -1;
     draftRef.current = '';
     setInput('');

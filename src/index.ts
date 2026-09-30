@@ -11,6 +11,7 @@ import {
 } from '@diap/sdk';
 import { irohTransport } from './network/iroh-transport.js';
 import { getLastAiTiming } from './llm/pi-ai.js';
+import { setHistoryScope } from './cli/input-history.js';
 import { loadWalletTool } from './agents/wallet-tools.js';
 import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
@@ -1046,7 +1047,7 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
     const active = await store.getActive();
     if (active) {
       cliAgentName = active.name;
-      cliActiveChannelId = active.channelId ?? null;
+      cliActiveChannelId = active.channelId ?? null; setHistoryScope(active.channelId ?? null);
       // 2026-08-12: 同步 agentId (memory 路径一致) — 从 rawChannels 按 channelId 取 agentId
       const raw = active.channelId ? store.rawChannels.find((c: any) => c.id === active.channelId) : undefined;
       cliAgentId = raw?.agentId || null;
@@ -1361,7 +1362,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       const prev = await store.getActive();
       await store.setActive(r.channel.id);
       cliAgentName = r.identity.name;
-      cliActiveChannelId = r.channel.id;
+      cliActiveChannelId = r.channel.id; setHistoryScope(r.channel.id);
       cliAgentId = r.channel.agentId || null; // 2026-08-12: memory 路径一致
       // 2026-08-09: 切 channel 必须重建 agent session — 否则身份/记忆停留在旧 channel (bug 修复)
       invalidateAgent();
@@ -1452,7 +1453,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       await store.load();
       await store.setActive(id);
       cliAgentName = name.trim();
-      cliActiveChannelId = id;
+      cliActiveChannelId = id; setHistoryScope(id);
       cliAgentId = agentId; // 2026-08-12: memory 路径一致
       // 2026-08-09: 新建 agent 后立即重建 session — 否则新 agent 身份不加载 (bug 修复)
       invalidateAgent();
