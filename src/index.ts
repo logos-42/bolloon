@@ -699,6 +699,16 @@ function buildContextBar(usage: { pct: number; usedTokens: number; maxTokens: nu
   return `${usageTxt} ${C_DIM}│${RESET} ${bar} ${barColor}${pctTxt}${RESET}${suffix}`;
 }
 
+/**
+ * 状态栏里的模型名: **只留型号**。
+ *   2026-09-30 leo: 「deepseek · deepseek-flash v0.5.3，这里有重复冗余，保留模型型号就行，provider 可以不要」
+ *   (`cliModelName` 仍是 'deepseek · deepseek-flash' —— 启动面板那边保持原样, 只有状态栏缩。)
+ */
+function statusModelName(): string {
+  const parts = String(cliModelName || '').split(' · ');
+  return parts.length > 1 ? parts.slice(1).join(' · ') : String(cliModelName || '');
+}
+
 /** 状态栏: 模型 │ 当前智能体 (含 channel) │ ⏱ 时间 │ 320k/1M │ [██████░░░░] 32% (bolloon 色系) */
 function getStatus(): string {
     // 2026-09-30 (leo): 四段抽到 src/cli/status-segments.ts (纯函数 ⇒ "什么时候显示什么"可确定性验证)
@@ -723,13 +733,13 @@ function getStatus(): string {
   // 名字兜底: 空/'…' 一律显示 bolloon —— 标识必须一直在 (leo: 「bolloon 标识没出现」)
   const __name = (!cliAgentName || cliAgentName === '…') ? 'bolloon' : cliAgentName;
   const agentPart = cliActiveChannelId ? `${__name} ${C_DIM}(ch:${cliActiveChannelId.slice(0, 10)})${RESET}` : __name;
-  return `${C_ACCENT}${cliModelName}${RESET} ${C_DIM}v${_BOLLOON_VERSION}${RESET}${C_DIM}  │${RESET} ${agentPart} ${C_DIM}│${RESET} ⏱ ${C_TEXT}${fmtDuration(Date.now() - cliStartTime)}${RESET}${C_DIM} │${RESET} ${buildContextBar(usage)}${__live}`;
+  return `${C_ACCENT}${statusModelName()}${RESET} ${C_DIM}v${_BOLLOON_VERSION}${RESET}${C_DIM}  │${RESET} ${agentPart} ${C_DIM}│${RESET} ⏱ ${C_TEXT}${fmtDuration(Date.now() - cliStartTime)}${RESET}${C_DIM} │${RESET} ${buildContextBar(usage)}${__live}`;
 }
 
 function statusBarLine(): string {
   const dur = cliStartTime ? fmtDuration(Date.now() - cliStartTime) : '0s';
   const usage = getCliCtxUsage();
-  return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${buildContextBar(usage)}`;
+  return `${C_ACCENT}${statusModelName()}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${C_ACCENT}${dur}${RESET} ${C_DIM}│${RESET} ${buildContextBar(usage)}`;
 }
 
 /**
@@ -1063,7 +1073,7 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
   try {
     _ctxManagerRef = await import('./bootstrap/context-manager.js');
   } catch { /* 降级: getCliCtxUsage 返回 0/1M */ }
-  const initialStatus = `${C_ACCENT}${cliModelName}${RESET} ${C_DIM}v${_BOLLOON_VERSION}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ 0s${C_DIM} │${RESET} ${buildContextBar(getCliCtxUsage())}`;
+  const initialStatus = `${C_ACCENT}${statusModelName()}${RESET} ${C_DIM}v${_BOLLOON_VERSION}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ 0s${C_DIM} │${RESET} ${buildContextBar(getCliCtxUsage())}`;
   // 2026-09-08 (leo 规格): 图标下元信息层数据 — 目录(home→~) / 模型 / Session id (Hermes 风格: YYYYMMDD_HHMMSS_xxxx)
   const bootDirShort = process.cwd().replace(os.homedir(), '~');
   const bootSessionId = (() => {
@@ -3453,7 +3463,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         maxTokens: usage.maxTokens,
         stage: usage.stage,
       };
-      const statusText = `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${fmtDuration(Date.now() - cliStartTime)}${C_DIM} │${RESET} ${buildContextBar(usageView)}`;
+      const statusText = `${C_ACCENT}${statusModelName()}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ ${fmtDuration(Date.now() - cliStartTime)}${C_DIM} │${RESET} ${buildContextBar(usageView)}`;
       inkSetStatus(statusText);
     } catch { /* 降级容忍 */ }
     // 自动消费队列
