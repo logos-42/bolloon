@@ -722,7 +722,11 @@ function buildBootBox(face: string[], banner: string[], rest: string[]): string 
   // 2026-09-30 (leo: 「面板右侧的 skills 内容不见了」): **内容优先** —— 面板内容按终端高度留出
   //   输入栏/状态栏的余量来给 (不按"面板区"的高度砍); 装不下的部分由**面板区滚动**看全.
   //   上一版按区域高算 ⇒ 小终端下面板只剩 3 行内容, skills 直接没了 (回归, 已改回).
-  const bodyCap = Math.max(8, rows - 10 - bannerRows);
+  // 2026-09-30 (leo: 「内容出现了, logo 消失了」): 面板进 <Static>(无限高度) 后, 一旦
+  //   "面板 + 底部块" 超过可视行数, **被顶出视野的正是顶部的 logo** (内容在下面反而留着)。
+  //   原来 rows-10 正好卡满(0 余量) ⇒ 最后那个换行就把顶行(logo)滚掉。
+  //   底部块实测 6 行 + 就绪行 1 行 ⇒ 这里留 3 行余量, 启动这一刻 logo 一定看得见。
+  const bodyCap = Math.max(4, rows - 13 - bannerRows);   // 下限 4: 宁可少列类目, 也要保住整只 logo
   void bootWinH;
   let restLines = restFit;
   if (restLines.length > bodyCap) {
@@ -845,9 +849,16 @@ async function bootPanel(boot: { dir?: string; model?: string; session?: string 
   //   原来只有一档 87 列艺术字, 终端宽 < ~97 列时整块被丢、只剩一行文字.
   //   挑"装得下的最大档": 大(87 列) → 小(37 列) → 都装不下才在框里退回一行文字.
   const candInner = Math.max(24, termWidth() - 6);
-  const banner = [BOLLOON_BANNER, BOLLOON_BANNER_SMALL]
-    .map(b => b.split('\n'))
-    .find(b => Math.max(...b.map(dispWidth)) + 4 <= candInner) || [];
+  // 2026-09-30 (leo: 「内容出现了, logo 消失了」): 挑档**宽和高都要装得下** ——
+  //   面板进 <Static>(无限高度) 后, 一旦"面板 + 底部块"超过可视行数, 被顶出视野的正是顶部 logo。
+  //   所以: 整块艺术字(87 列)装不下高就换窄版(37 列), 都不行才退回一行文字 —— 任何行数都有 logo。
+  const candRows = termHeight();
+  const bannerFits = (b: string[]) => {
+    const w = Math.max(...b.map(dispWidth));
+    const panelRows = b.length + 4 /* 最少内容行 */ + 2 /* 上下边框 */;
+    return w + 4 <= candInner && panelRows + 7 /* 底部块+就绪行 */ <= candRows - 2;
+  };
+  const banner = [BOLLOON_BANNER, BOLLOON_BANNER_SMALL].map(b => b.split('\n')).find(bannerFits) || [];
 
   // 头: 目录 / 模型 / Session (预先加载信息)
   const rest: string[] = [];
