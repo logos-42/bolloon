@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import { loadWalletTool } from './wallet-tools.js';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import { currentPackageRoot } from '../utils/version-info.js';
@@ -3371,9 +3372,23 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     parameters: {},
     execute: async () => {
       try {
-        const { createWallet } = await import('../constraint-runtime/dist/tools/WalletTools/createWallet.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/createWallet.js'));
+        const { createWallet } = await loadWalletTool('createWallet');
         const r = await createWallet();
-        return { success: true, output: `✅ 钱包创建成功:\n  address: ${r.address}\n  privateKey: ${r.privateKey}\n  mnemonic: ${r.mnemonic}\n  createdAt: ${r.createdAt}` };
+        // 2026-09-30: **落台账** (以前只生成不存 ⇒ /wallet 永远「钱包 (0)」)。
+        //   落 ~/.bolloon/wallets/<名字>.json (0600); 输出只给地址 + 路径, 私钥/助记词不回显。
+        let savedPath = '';
+        try {
+          const { addWallet } = await import('../cli/wallet-store.js');
+          const { file } = await addWallet({
+            name: `agent-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}`,
+            address: r.address, network: '—', source: 'created',
+            createdAt: r.createdAt || new Date().toISOString(), privateKey: r.privateKey, mnemonic: r.mnemonic,
+          });
+          savedPath = file;
+        } catch (e: any) {
+          return { success: true, output: `⚠️ 钱包已生成但**没落台账**: ${String(e?.message || e).slice(0, 120)}\n  address: ${r.address}\n  (私钥只在本次输出里, 请立刻自己存好)` };
+        }
+        return { success: true, output: `✅ 钱包创建成功 (已落台账)\n  address: ${r.address}\n  台账: ${savedPath} (0600 — 私钥/助记词已存, 不回显)\n  createdAt: ${r.createdAt}` };
       } catch (e: any) {
         return { success: false, error: `创建失败: ${String(e.message || e)}` };
       }
@@ -3386,9 +3401,22 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     parameters: { mnemonic: '可选, 12/15/18/21/24 词助记词', privateKey: '可选, 0x 开头的私钥' },
     execute: async (args) => {
       try {
-        const { importWallet } = await import('../constraint-runtime/dist/tools/WalletTools/importWallet.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/importWallet.js'));
+        const { importWallet } = await loadWalletTool('importWallet');
         const r = await importWallet({ mnemonic: args.mnemonic, privateKey: args.privateKey });
-        return { success: true, output: `✅ 钱包导入成功:\n  address: ${r.address}\n  privateKey: ${r.privateKey}\n  source: ${r.source}` };
+        // 2026-09-30: 同 wallet_create —— 导入也落台账 (0600), 输出不回显私钥
+        let impPath = '';
+        try {
+          const { addWallet } = await import('../cli/wallet-store.js');
+          const { file } = await addWallet({
+            name: `imported-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}`,
+            address: r.address, network: '—', source: 'imported',
+            createdAt: new Date().toISOString(), privateKey: args.privateKey, mnemonic: args.mnemonic,
+          });
+          impPath = file;
+        } catch (e: any) {
+          return { success: true, output: `⚠️ 钱包已导入但**没落台账**: ${String(e?.message || e).slice(0, 120)}\n  address: ${r.address}\n  (私钥请自己存好, 不会再有第二遍)` };
+        }
+        return { success: true, output: `✅ 钱包导入成功 (已落台账)\n  address: ${r.address}\n  台账: ${impPath} (0600 — 私钥已存, 不回显)\n  source: ${r.source}` };
       } catch (e: any) {
         return { success: false, error: `导入失败: ${String(e.message || e)}` };
       }
@@ -3401,7 +3429,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     parameters: { address: '0x 开头的 EVM 地址 (必填)', rpcUrl: '可选 RPC URL (默认 eth.llamarpc.com)' },
     execute: async (args) => {
       try {
-        const { getBalance } = await import('../constraint-runtime/dist/tools/WalletTools/getBalance.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/getBalance.js'));
+        const { getBalance } = await loadWalletTool('getBalance');
         const r = await getBalance({ address: String(args.address), rpcUrl: args.rpcUrl });
         return { success: true, output: `💰 ${r.address}\n  ${r.balanceEth} ${r.symbol} (${r.balance} wei)` };
       } catch (e: any) {
@@ -3416,7 +3444,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     parameters: { message: '要签名的消息 (必填)', privateKey: '0x 开头的私钥 (必填)' },
     execute: async (args) => {
       try {
-        const { signMessage } = await import('../constraint-runtime/dist/tools/WalletTools/signMessage.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/signMessage.js'));
+        const { signMessage } = await loadWalletTool('signMessage');
         const r = await signMessage({ message: String(args.message), privateKey: String(args.privateKey) });
         return { success: true, output: `✅ 签名完成:\n  address: ${r.address}\n  message: ${r.message}\n  signature: ${r.signature}` };
       } catch (e: any) {
@@ -3431,7 +3459,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     parameters: { privateKey: '私钥 (必填)', to: '接收地址 (必填)', value: '发送 wei 数量 (必填)', data: '可选 0x 开头的 calldata', rpcUrl: '可选 RPC URL' },
     execute: async (args) => {
       try {
-        const { sendTransaction } = await import('../constraint-runtime/dist/tools/WalletTools/sendTransaction.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/sendTransaction.js'));
+        const { sendTransaction } = await loadWalletTool('sendTransaction');
         const r = await sendTransaction({
           privateKey: String(args.privateKey),
           to: String(args.to),
@@ -3452,7 +3480,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     parameters: { privateKey: '私钥 (必填)', tokenAddress: 'ERC20 合约地址 (必填)', to: '接收地址 (必填)', amount: 'token 数量', decimals: '可选 token decimals', rpcUrl: '可选 RPC URL' },
     execute: async (args) => {
       try {
-        const { transferToken } = await import('../constraint-runtime/dist/tools/WalletTools/transferToken.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/transferToken.js'));
+        const { transferToken } = await loadWalletTool('transferToken');
         const r = await transferToken({
           privateKey: String(args.privateKey),
           tokenAddress: String(args.tokenAddress),
@@ -3474,7 +3502,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     parameters: { from: '付款方地址 (必填)', to: '收款方地址 (必填)', amount: '金额 (必填)', interval: '周期 (e.g. daily/weekly/monthly)', token: '可选, 默认 ETH' },
     execute: async (args) => {
       try {
-        const mod: any = await import('../constraint-runtime/dist/tools/WalletTools/autoPay.js').catch(() => import('../constraint-runtime/src/tools/WalletTools/autoPay.js'));
+        const mod: any = await loadWalletTool('autoPay');
         const fn = mod.autoPay || mod.setAutoPay || mod.default;
         if (!fn) return { success: false, error: 'autoPay 接口未找到' };
         const r = await fn({

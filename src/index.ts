@@ -10,6 +10,7 @@ import {
   type P2PConnection,
 } from '@diap/sdk';
 import { irohTransport } from './network/iroh-transport.js';
+import { loadWalletTool } from './agents/wallet-tools.js';
 import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
@@ -2857,8 +2858,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
 
       if (sub === 'new') {
         const name = arg[1] || `wallet-${new Date().toISOString().slice(0, 10)}`;
-        const mod: any = await import('./constraint-runtime/dist/tools/WalletTools/createWallet.js')
-          .catch(() => import('./constraint-runtime/src/tools/WalletTools/createWallet.js').catch(() => null));
+        const mod: any = await loadWalletTool('createWallet');
         if (!mod?.createWallet) { appendLine(`${C_ERROR}/wallet new 失败: 找不到 createWallet 实现${RESET}`); return; }
         const r = await mod.createWallet();
         const { rec, replaced } = await addWallet({
@@ -2882,8 +2882,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         if (!pk && !mn) { appendLine(`${C_ERROR}文件里没有 privateKey / mnemonic — 不收${RESET}`); return; }
         let addr = raw?.address;
         if (!addr && pk) {
-          const mod: any = await import('./constraint-runtime/dist/tools/WalletTools/importWallet.js')
-            .catch(() => import('./constraint-runtime/src/tools/WalletTools/importWallet.js').catch(() => null));
+          const mod: any = await loadWalletTool('importWallet');
           try { const r = await mod.importWallet({ privateKey: pk, mnemonic: mn }); addr = r.address; } catch { /* 下面照实报 */ }
         }
         if (!addr) { appendLine(`${C_ERROR}拿不到地址 — 文件里没有 address 且无法从私钥推导${RESET}`); return; }
@@ -2909,8 +2908,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       if (sub === 'bal' || sub === 'balance') {
         const w = pick(arg[1] || '1');
         if (!w) { appendLine(`${C_WARN}没有这个钱包 — /wallet 看列表${RESET}`); return; }
-        const mod: any = await import('./constraint-runtime/dist/tools/WalletTools/getBalance.js')
-          .catch(() => import('./constraint-runtime/src/tools/WalletTools/getBalance.js').catch(() => null));
+        const mod: any = await loadWalletTool('getBalance');
         if (!mod?.getBalance) { appendLine(`${C_ERROR}找不到 getBalance 实现${RESET}`); return; }
         appendLine(`${C_DIM}查询中… ${shortAddr(w.address)}${RESET}`);
         try {
@@ -3309,6 +3307,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           tuiToolCounter++;
           const toolName = e.tool || '?';
           tuiToolCalls.push({ tool: toolName, args: e.args, _t: Date.now() });
+          cliTurnToolCount = tuiToolCalls.filter(c => c.tool !== 'system' && c.tool !== 'loop' && c.tool !== '?').length;   // ⚙ 启动即算
           // 2026-08-12 (TaskA): 工具命中要干净 — step_start 不 appendLine 到消息流 (避免重复),
           //   改用 transient 行显示"正在执行"(消息流只在 done 时出现一次完成行).
           if (toolName !== 'system' && toolName !== 'loop' && toolName !== '?') {
