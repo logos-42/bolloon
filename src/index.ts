@@ -624,7 +624,7 @@ let _startupLogGate: StartupLogGateHandle | null = null;
 const pendingQueue: string[] = [];
 let cliStartTime = 0;
 let cliModelName = '…';
-let cliAgentName = '…';
+let cliAgentName = 'bolloon';   // 2026-09-30: 别用 '…' —— 身份没解析出来时状态栏显示个省略号, 看着像"没有 bolloon 标识"
 let cliActiveChannelId: string | null = null;
 
 /**
@@ -724,11 +724,17 @@ function getStatus(): string {
         if (tps > 0) __segs.push(`${C_DIM}↑${RESET} ${C_TEXT}≈${tps} t/s${RESET}`);
       }
     }
-    if (cliTurnToolCount > 0) __segs.push(`${C_DIM}⚙${RESET} ${C_TEXT}${cliTurnToolCount}${RESET}`);
+    // ⚙ **常显** (闲时 0 也是真话) —— leo 2026-09-30: 「这些标识没有出现」。
+    //   原因: ◷/↑/⚙ 是"正在干活"那一组, 静默时没有数据就不显示 ⇒ 看上去像功能没上。
+    //   现在 ⚙ 永远在 (0 = 没有在跑的工具), 至少能一眼确认这段功能是活的;
+    //   ◷/↑ 仍只在真有本轮数据时显示 (不编), ✓ 在回合结束后常驻。
+    __segs.push(`${C_DIM}⚙${RESET} ${C_TEXT}${cliTurnToolCount}${RESET}`);
     const __live = __segs.length ? ` ${C_DIM}│${RESET} ${__segs.join(` ${C_DIM}│${RESET} `)}` : '';
   const usage = getCliCtxUsage();
-  const agentPart = cliActiveChannelId ? `${cliAgentName} ${C_DIM}(ch:${cliActiveChannelId.slice(0, 10)})${RESET}` : cliAgentName;
-  return `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${agentPart} ${C_DIM}│${RESET} ⏱ ${C_TEXT}${fmtDuration(Date.now() - cliStartTime)}${RESET}${C_DIM} │${RESET} ${buildContextBar(usage)}${__live}`;
+  // 名字兜底: 空/'…' 一律显示 bolloon —— 标识必须一直在 (leo: 「bolloon 标识没出现」)
+  const __name = (!cliAgentName || cliAgentName === '…') ? 'bolloon' : cliAgentName;
+  const agentPart = cliActiveChannelId ? `${__name} ${C_DIM}(ch:${cliActiveChannelId.slice(0, 10)})${RESET}` : __name;
+  return `${C_ACCENT}${cliModelName}${RESET} ${C_DIM}v${_BOLLOON_VERSION}${RESET}${C_DIM}  │${RESET} ${agentPart} ${C_DIM}│${RESET} ⏱ ${C_TEXT}${fmtDuration(Date.now() - cliStartTime)}${RESET}${C_DIM} │${RESET} ${buildContextBar(usage)}${__live}`;
 }
 
 function statusBarLine(): string {
@@ -1068,7 +1074,7 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
   try {
     _ctxManagerRef = await import('./bootstrap/context-manager.js');
   } catch { /* 降级: getCliCtxUsage 返回 0/1M */ }
-  const initialStatus = `${C_ACCENT}${cliModelName}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ 0s${C_DIM} │${RESET} ${buildContextBar(getCliCtxUsage())}`;
+  const initialStatus = `${C_ACCENT}${cliModelName}${RESET} ${C_DIM}v${_BOLLOON_VERSION}${RESET}${C_DIM}  │${RESET} ${cliAgentName} ${C_DIM}│${RESET} ⏱ 0s${C_DIM} │${RESET} ${buildContextBar(getCliCtxUsage())}`;
   // 2026-09-08 (leo 规格): 图标下元信息层数据 — 目录(home→~) / 模型 / Session id (Hermes 风格: YYYYMMDD_HHMMSS_xxxx)
   const bootDirShort = process.cwd().replace(os.homedir(), '~');
   const bootSessionId = (() => {
