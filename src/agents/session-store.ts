@@ -139,6 +139,27 @@ export class SessionStore {
    * fs.writeFile 抛 EINVAL. 修法: filename 层 escape `:` → `__`, key 保持不变
    * (load/save/listKeys/deleteKey 全部透明).
    */
+  /**
+   * 读的时候用这个 —— 兼容**老文件名**。
+   *
+   * 2026-09-30 发现: 早期版本直接把 `channelId:sessionId` 当文件名写盘 (`real-123:default.json`),
+   *   后来 Windows 兼容改成 filenameEscape (`:` → `__`), 但**老文件没迁移** ⇒ 用 pathFor 去读
+   *   老会话一律 ENOENT (`/sessions` 里那些 `real-*:default` 全是 Preview `—`, 也续不上)。
+   *   这里: 先试新名, 不存在再试老名; 老名存在时**顺手迁移**成新名 (迁移失败就继续读老名)。
+   */
+  private async resolveExisting(key: string): Promise<string> {
+    const canonical = this.pathFor(key);
+    try { await fs.access(canonical); return canonical; } catch { /* 试老名 */ }
+    const legacy = path.join(this.cacheDir, `${key}.json`);
+    try {
+      await fs.access(legacy);
+      try { await fs.rename(legacy, canonical); } catch { return legacy; }   // 迁移失败也能读
+      return canonical;
+    } catch {
+      throw new Error(`SessionStore: session not found: ${key}`);
+    }
+  }
+
   pathFor(key: string): string {
     if (!key || key.includes('/') || key.includes('..')) {
       throw new Error(`SessionStore: invalid key ${JSON.stringify(key)}`);
@@ -174,7 +195,7 @@ export class SessionStore {
         totalCount: messages.length,
       },
     };
-    const filePath = this.pathFor(key);
+    const filePath = await this.resolveExisting(key);
     const tmpPath = `${filePath}.tmp`;
     await fs.writeFile(tmpPath, JSON.stringify(payload, null, 2), 'utf-8');
     await fs.rename(tmpPath, filePath);
@@ -216,7 +237,7 @@ export class SessionStore {
         totalCount: messages.length,
       },
     };
-    const filePath = this.pathFor(key);
+    const filePath = this.pathFor(key);   // 同步保存一律写规范文件名
     const tmpPath = `${filePath}.tmp`;
     fsSyncWrite(tmpPath, JSON.stringify(payload, null, 2));
     fsSyncRename(tmpPath, filePath);
@@ -232,7 +253,7 @@ export class SessionStore {
     if (!key || key.includes('/') || key.includes('..')) {
       throw new Error(`SessionStore: invalid key ${JSON.stringify(key)}`);
     }
-    const filePath = this.pathFor(key);
+    const filePath = await this.resolveExisting(key);
     let raw: string;
     try {
       raw = await fs.readFile(filePath, 'utf-8');
@@ -259,6 +280,68 @@ export class SessionStore {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * 列最近改动的会话 (按 mtime 倒序), 带条数与首条用户消息预览。
+   *
+   * 2026-09-30 (leo: 「/session 没有反应, 没展示最新记录, 无法选择继续」): 只为"选一个继续"服务 ——
+   *   **只解析最新的 limit 个文件**(缓存目录可能上千个, 全量解析会卡住输入), 解析失败的那条如实记 0。
+   */
+  async listRecent(limit = 10): Promise<Array<{ key: string; title: string; mtimeMs: number; messages: number; preview: string }>> {
+    const out: Array<{ key: string; title: string; mtimeMs: number; messages: number; preview: string }> = [];
+    let files: string[] = [];
+    try { files = await fs.readdir(this.cacheDir); } catch { return out; }
+    const cands: Array<{ key: string; mtimeMs: number }> = [];
+    for (const f of files) {
+      if (!f.endsWith('.json') || f.endsWith('.tmp')) continue;
+      try {
+        const st = await fs.stat(path.join(this.cacheDir, f));
+        cands.push({ key: SessionStore.filenameUnescape(f.slice(0, -'.json'.length)), mtimeMs: st.mtimeMs });
+      } catch { /* 单条 stat 失败跳过 */ }
+    }
+    cands.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const c of cands.slice(0, Math.max(1, limit))) {
+      let messages = 0;
+      let preview = '';
+      let title = c.key;   // 会话文件里没有 title 字段 ⇒ 默认就是 key (web 侧才有会话名)
+      try {
+        // 兼容老文件名 (`real-123:default.json` 未转义那批) —— 读不到规范名就试原名
+        let text = '';
+        try { text = await fs.readFile(this.pathFor(c.key), 'utf-8'); }
+        catch { text = await fs.readFile(path.join(this.cacheDir, `${c.key}.json`), 'utf-8'); }
+        const raw = JSON.parse(text) as any;
+        const arr: any[] = Array.isArray(raw) ? raw : (raw?.messages || []);
+        messages = Array.isArray(arr) ? arr.length : 0;
+        const md = (!Array.isArray(raw) && raw?.metadata) || {};
+        if (typeof md.title === 'string' && md.title.trim()) title = md.title.trim();
+        const mdPreview = typeof md.preview === 'string' ? md.preview.trim() : '';
+        // 预览要用**真实用户话**, 跳过自动注入的上下文块 (否则全是 <!-- current-turn … -->)
+        const isInjected = (x?: string) => !!x && (/^<!--/.test(x.trim()) || /^#\s*你的项目上下文/.test(x.trim()) || /^\[cron\]/.test(x.trim()));
+        const first = (Array.isArray(arr) ? arr : []).find((m: any) => m && m.role === 'user' && m.content && !isInjected(String(m.content)));
+        preview = mdPreview || String(first?.content || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+      } catch { /* 损坏文件: 仍列出, 只是 0 条无预览 */ }
+      out.push({ key: c.key, title, mtimeMs: c.mtimeMs, messages, preview });
+    }
+    return out;
+  }
+
+  /**
+   * 合并写回会话文件的 metadata (原子: 先写 .tmp 再 rename)。
+   *   2026-09-30 (leo: 「Title/Preview 要有内容, 使用 AI 来总结进去」): AI 总结结果落在
+   *   `metadata.{title,preview,summarizedAt}`, **只算一次**, 后续 /sessions 直接读。
+   *   原子写是硬要求 —— 会话文件是用户的会话历史, 半截文件比没有标题糟得多。
+   */
+  async updateMetadata(key: string, patch: Record<string, unknown>): Promise<void> {
+    if (!key || key.includes('/') || key.includes('..')) throw new Error(`SessionStore: invalid key ${JSON.stringify(key)}`);
+    const file = await this.resolveExisting(key);
+    const raw = JSON.parse(await fs.readFile(file, 'utf-8')) as any;
+    const next = Array.isArray(raw)
+      ? { key, messages: raw, metadata: { ...patch } }
+      : { ...raw, metadata: { ...(raw?.metadata || {}), ...patch } };
+    const tmp = `${file}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(next, null, 2), 'utf-8');
+    await fs.rename(tmp, file);
   }
 
   /** 删一条 session — 失败抛错. */

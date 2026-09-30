@@ -709,7 +709,15 @@ function buildBootBox(face: string[], banner: string[], rest: string[]): string 
   let useFace = face;
   const faceW0 = face.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
   const restMax0 = rest.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
-  if (useFace.length > 0 && faceW0 + gap + restMax0 > maxInner) useFace = [];
+  /**
+   * 2026-09-30 (leo: 「我说的 logo 是面板里面的小吉祥物, 它看不到了」):
+   *   原来的判据是「吉祥物 + 最宽内容行 > 内宽 ⇒ **把吉祥物整块丢掉**」——
+   *   而技能类目行天生很长 (openclaw-imports: 3d-web-experience, …), 于是**每次都触发、吉祥物永远不显示**。
+   *   优先级反了: 吉祥物是面板的标识, 内容行可以裁。现在只在
+   *   「连最小内容宽度都放不下」(真的窄) 时才丢吉祥物; 否则**裁窄右侧内容**让它俩共存。
+   */
+  const MIN_REST_W = 30;
+  if (useFace.length > 0 && faceW0 + gap + MIN_REST_W > maxInner) useFace = [];
 
   const faceW = useFace.reduce((m, l) => Math.max(m, dispWidth(l)), 0);
   const room = Math.max(16, maxInner - (useFace.length > 0 ? faceW + gap : 0));
@@ -2232,16 +2240,104 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     return;
   }
 
-  // /session — 当前会话信息
-  if (cmd === '/session') {
+  // /session — 会话信息 + **最近会话列表**(用 /session <序号> 继续)
+  //   2026-09-30 (leo: 「/session 没有反应, 没有展示最新的记录, 无法选择继续」):
+  //   原来只打三行信息, 且整段被 `catch {}` **静默吞错** ⇒ getAgent 一抛错就"什么都没发生"。
+  //   现在: 错误如实说出来; 并列出最近会话(最新在上), 可直接选一个接着聊。
+  if (cmd === '/session' || cmd === '/sessions') {
+    const sessArg = trimmed.split(/\s+/)[1] || '';
+    const sessStore = new SessionStore();
     try {
       const a = await getAgent();
       const h = (a as any).messageHistory ?? [];
-      appendLine(`${C_ACCENT}会话:${RESET}`);
-      appendLine(`  ${C_DIM}channel:${RESET} ${(a as any).currentChannelId || '—'}`);
-      appendLine(`  ${C_DIM}agent:${RESET} ${(a as any).currentAgentId || '—'}`);
-      appendLine(`  ${C_DIM}消息:${RESET} ${h.length} 条 (${h.length > 15 ? `${h.length - 15} 条已压缩` : '窗口内'})`);
-    } catch { /* 静默 */ }
+      appendLine(`${C_ACCENT}当前会话:${RESET} ${C_DIM}${cliSessionKey || '—'}${RESET}`);
+      appendLine(`  ${C_DIM}channel:${RESET} ${(a as any).currentChannelId || cliActiveChannelId || '—'}  ${C_DIM}agent:${RESET} ${(a as any).currentAgentId || cliAgentId || '—'}`);
+      appendLine(`  ${C_DIM}消息:${RESET} ${h.length} 条 ${h.length > 15 ? `${C_DIM}(${h.length - 15} 条已压缩)${RESET}` : ''}`);
+    } catch (e: any) {
+      appendLine(`${C_WARN}⚠ 读当前会话失败: ${String(e?.message || e).slice(0, 120)}${RESET}`);
+    }
+    let recent: Array<{ key: string; title: string; mtimeMs: number; messages: number; preview: string; summarySource?: 'ai' | 'raw' | 'none' }> = [];
+    try {
+      recent = await sessStore.listRecent(10);
+    } catch (e: any) {
+      appendLine(`${C_WARN}⚠ 读会话目录失败: ${String(e?.message || e).slice(0, 120)}${RESET}`);
+    }
+    if (!recent.length) {
+      appendLine(`${C_DIM}没有可继续的历史会话 (${sessStore.dir})${RESET}`);
+    } else {
+      // 2026-09-30 (leo: 「Title, Preview 要有内容, 使用 AI 来总结进去」):
+      //   缺标题的会话 (title == key) 现场用 AI 总结一次, 结果写回文件 metadata (只算一次)。
+      //   每次最多 3 条 (每条 12s 超时), 免得 /sessions 变成一次长跑; 失败的**如实标注**不编。
+      const need = recent.filter(r => r.title === r.key).slice(0, 3);
+      if (need.length) {
+        appendLine(`${C_DIM}正在用 AI 总结 ${need.length} 个会话的标题/摘要…${RESET}`);
+        try {
+          const { summarizeSession } = await import('./cli/session-summary.js');
+          for (const r of need) {
+            const d = await summarizeSession(r.key, { store: sessStore });
+            r.title = d.title;
+            if (d.preview) r.preview = d.preview;
+            r.summarySource = d.source;
+          }
+        } catch (e: any) {
+          appendLine(`${C_WARN}⚠ AI 总结不可用 (标题保持会话 ID): ${String(e?.message || e).slice(0, 100)}${RESET}`);
+        }
+      }
+      // 表格 (leo 2026-09-30 指定格式): # / Title / Preview / Last Active / ID
+      //   列宽按终端宽动态分配 (先给 Preview 让位), 中文按**显示宽**对齐 (dispWidth)。
+      const relEn = (ms: number) => {
+        const age = Math.max(0, Date.now() - ms);
+        if (age < 60_000) return 'just now';
+        if (age < 3_600_000) return `${Math.floor(age / 60_000)}m ago`;
+        if (age < 86_400_000) return `${Math.floor(age / 3_600_000)}h ago`;
+        return `${Math.floor(age / 86_400_000)}d ago`;
+      };
+      const PAD = (v: string, w: number) => v + ' '.repeat(Math.max(0, w - dispWidth(v)));
+      const avail = Math.max(60, termWidth() - 2);
+      const wN = 3, wTitle = 32, wAgo = 13, wId = 24;
+      const wPrev = Math.max(12, Math.min(40, avail - (wN + wTitle + wAgo + wId + 4)));
+      const hdr = [PAD('#', wN), PAD('Title', wTitle), PAD('Preview', wPrev), PAD('Last Active', wAgo), PAD('ID', wId)];
+      const rule = [wN, wTitle, wPrev, wAgo, wId].map(w => '─'.repeat(w));
+      appendLine(`${C_ACCENT}Recent sessions:${RESET}`);
+      appendLine('');
+      appendLine(`  ${C_DIM}${hdr.join(' ')}${RESET}`);
+      appendLine(`  ${C_DIM}${rule.join(' ')}${RESET}`);
+      recent.forEach((r, i) => {
+        const cur = r.key === cliSessionKey ? ` ${C_OK}←当前${RESET}` : '';
+        appendLine(`  ${C_ACCENT}${PAD(String(i + 1), wN)}${RESET} ${PAD(truncate(r.title, wTitle), wTitle)} ${C_DIM}${PAD(truncate(r.preview || '—', wPrev), wPrev)}${RESET} ${PAD(relEn(r.mtimeMs), wAgo)} ${C_DIM}${PAD(truncate(r.key, wId), wId)}${RESET}${cur}`);
+      });
+      appendLine('');
+      appendLine(`  ${C_DIM}继续某个会话: ${C_ACCENT}/sessions <#>${C_DIM} (例如 /sessions 1)${RESET}`);
+    }
+    if (sessArg) {
+      const idx = Number(sessArg);
+      const pick = Number.isFinite(idx) && idx >= 1 ? recent[idx - 1] : recent.find(r => r.key === sessArg);
+      if (!pick) {
+        appendLine(`${C_WARN}⚠ 没有第 ${sessArg} 个会话 —— 用上面列表的 # 或完整 ID${RESET}`);
+        return;
+      }
+      try {
+        const a = await getAgent();
+        const n = typeof (a as any).resumeSession === 'function' ? await (a as any).resumeSession(pick.key, 30) : 0;
+        cliSessionKey = pick.key;   // 之后退出存档也写回这个会话
+        let saved = false;
+        try {
+          const { readFile, writeFile } = await import('fs/promises');
+          const { join } = await import('path');
+          const cp = join(process.env.HOME || '/tmp', '.bolloon', 'sessions', 'channels.json');
+          const parsed = JSON.parse(await readFile(cp, 'utf-8'));
+          const channels: any[] = Array.isArray(parsed) ? parsed : parsed?.channels || [];
+          for (const c of channels) {
+            if (cliActiveChannelId && c.id === cliActiveChannelId) { c.currentSessionId = pick.key; saved = true; }
+            else if (!cliActiveChannelId && c.id === channels[0]?.id) { c.currentSessionId = pick.key; saved = true; }
+          }
+          await writeFile(cp, JSON.stringify(Array.isArray(parsed) ? channels : { ...parsed, channels }, null, 2), 'utf-8');
+        } catch { /* 无 channels.json 也能继续 */ }
+        appendLine(`${C_OK}✓ 已切到会话 ${pick.key}${RESET} ${C_DIM}(载入 ${n} 条历史${saved ? ' · 已写入 channel' : ''}; 屏上不重放旧消息, 直接接着聊)${RESET}`);
+      } catch (e: any) {
+        appendLine(`${C_ERROR}/session ${sessArg} 失败: ${String(e?.message || e).slice(0, 200)}${RESET}`);
+      }
+    }
     return;
   }
 
@@ -5065,7 +5161,7 @@ async function main() {
         const bs = await withTimeout(bootstrapBolloon({ cwd: process.cwd() }), 20_000, 'Bolloon 上下文扫描');
         bootNotice('info', `Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
       } catch (err: any) {
-        bootNotice('warn', `Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);
+        bootNotice('warn', `上下文扫描未完成 (可选步骤, 已跳过, 主流程继续): ${err.message} —— 详情见 startup.log`);
       }
     })();
   } else {
@@ -5080,7 +5176,7 @@ async function main() {
       const bs = await withTimeout(bootstrapBolloon({ cwd: process.cwd() }), 20_000, 'Bolloon 上下文扫描');
       bootNotice('info', `Bootstrap 完成 (${bs.durationMs}ms, ${bs.errors.length} 个非致命错误)`);
     } catch (err: any) {
-      bootNotice('warn', `Bootstrap 失败 (非致命, 主流程继续): ${err.message}`);
+      bootNotice('warn', `上下文扫描未完成 (可选步骤, 已跳过, 主流程继续): ${err.message} —— 详情见 startup.log`);
     }
   }
 

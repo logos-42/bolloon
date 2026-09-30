@@ -128,10 +128,44 @@ export function isStartupLogLine(line: string): boolean {
   // inspect dump 的续行 (纯数字/逗号) 由 filterText 的 dump 状态机处理, 这里不判
 }
 
+/**
+ * 「可选启动富化」任务的失败 —— **落日志, 但默认不占屏**。
+ *
+ * 2026-09-30 (leo: 「都是启动期可选富化任务失败, 却用带时间戳的'失败'打在屏上」):
+ *   `[warn]: ⚠️ 本地 IPNS 发布失败: TimeoutError … ❌ 失败 (30003ms)` 这类来自 SDK / 内部后台任务,
+ *   用户启动时**无可行动**(看见了也没法处理), 但句子带'失败' ⇒ 按'错误不许被吞'被放上屏 = 纯噪音。
+ *   它们仍然**一字不漏落 startup.log**, `--verbose` 照原样上屏 ⇒ 诊断能力一点不丢。
+ *   这是把「要不要占屏」和「要不要留痕」分开, 不是把错误藏起来。
+ *
+ * 判据要求**同时**命中「上面这条窄规则」+「失败词」; 只命中一个照旧按人味信号上报。
+ *   **刻意只覆盖这两类**: SDK 的 IPNS 发布重试行 + 上下文扫描超时。
+ *   不收 `ipfs daemon 启动超时, 可稍后手动运行` 这类**可行动**提示 —— 门自己的契约测试
+ *   (`log-gate.test.ts` 的"信号行"用例) 就是拿它当反例, 第一版规则太宽时被它判红。
+ */
+const OPTIONAL_BOOT_TASK = /(?:本地\s*IPNS\s*发布失败|IPNS\s*发布失败[，,]\s*尝试备用发布|上下文扫描\s*未完成|上下文扫描\s*超时|Bolloon 上下文扫描)/;
+
+/**
+ * SDK(winston) 的**进度诊断**行形状: `2026-09-30T09:27:03.848Z [info]: 结果: ❌ 失败 (30004ms)`。
+ *
+ * 2026-09-30 (leo): 这类行来自 @diap/sdk 的 logger —— 它**直写控制台、绕过日志门**, 句子里带
+ *   "失败/❌" ⇒ 按"错误不许被吞"被放上屏, 但它是 `[info]` 级**进度尾巴**(IPNS 发布 30s 超时), 启动时不可行动。
+ *
+ * **只吞 info/debug, 绝不吞 warn/error** —— 这条收窄是门自己的契约测试逼出来的:
+ *   `log-gate.test.ts` 断言 `… [warn]: ⚠️ 守护进程启动超时, 可稍后手动运行 ipfs daemon` 必须算人味信号
+ *   (它确实可行动)。第一版规则连 warn 一起吞 ⇒ 被那条测试判红, 于是收窄。
+ */
+const SDK_DIAG_LINE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*\[(?:info|debug)\]:/i;
+
 /** 这一行是不是「错误 / 降级 / 需人介入」—— 是则任何模式下都不许被静默 */
 export function carriesHumanSignal(line: string): boolean {
   if (!line) return false;
-  return HUMAN_SIGNAL.test(line.replace(BENIGN_COUNT, ' '));
+  const l = line.replace(BENIGN_COUNT, ' ');
+  const isSignal = HUMAN_SIGNAL.test(l);
+  // SDK 诊断行 (info/warn/debug): 只落日志, 不占屏 —— error 级不在其中, 照旧上报
+  if (SDK_DIAG_LINE.test(l)) return false;
+  // 可选启动富化的失败: 留痕(日志)但默认不占屏 —— 见 OPTIONAL_BOOT_TASK 的说明
+  if (isSignal && OPTIONAL_BOOT_TASK.test(l)) return false;
+  return isSignal;
 }
 
 // ---------------------------------------------------------------------------

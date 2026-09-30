@@ -1004,6 +1004,7 @@ async function main() {
           || a.setupReconfigure || a.setupTest);
         if (!a.json && !isOneShotTool && !isCommandLike) {
           installStartupLogGate({ mode: 'cli-interactive', args: process.argv.slice(2) });
+
         }
       }
       // 2026-09-30: 先等真实终端尺寸就位再出第一帧 —— 否则面板会先按兜底 80 列渲染一次,
