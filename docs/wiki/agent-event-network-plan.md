@@ -167,7 +167,17 @@ t=65s   日志=301  订阅者=0   磁盘=1766KB     ← 一次到位
 **做什么**: 大内容只出 CID (share 按需) + 保留口径 (最近 N / 我参与的) + 可选裁剪。
 **门**: 同一台机器上, 从 1 群 → 10 群 → 100 群(同一事件量), 量"本地占用/agent"的曲线; **必须与群数近似正比、与全网 agent 数无关**; 并给出"删掉本地大块后仍能按 CID 取回"的真跑证据。
 
-### P4 · 查询面 (先结构化, 语义后置)
+### P4 · 查询面 (先结构化, 语义后置) —— **已落地 (2026-10-01)**
+
+> `src/orbitdb/event-query.ts` (新) + 门 `scripts/verify-event-query.ts` **13/13 通过**。
+> 查询面只出**元数据 + CID**(正文永远按 CID 单独取); `by-time` 的 ts 是 13 位补零 ⇒ 字符串序=时间序 ⇒
+> 二分定位 + 早停 ⇒ **窄窗只扫窗口内的 key**(实测: 300 条索引里 10 分钟窗 `keysScanned=10` / `keysRead=300`;
+> 反事实宽窗 `keysScanned=300` 证明计数不是写死的)。**无索引时不是静默空结果**, 而是带 `degraded.reason='no-index'`
+> 标注 (可从事件流重建 —— P2 的 `rebuildIndexes`)。过滤器 type/actor/capability/group/topic 与 limit 截断
+> (`complete=false`) 都有判据。
+> 如实保留: 本轮只证了**同机**真 store 与纯函数一致 (跨机同查询同结果属 P0 已验范畴, 未重复);
+> 语义检索 (embedding) 仍未做, 理由同下。
+
 **做什么**: 一个 `query(topic?, capability?, since?, actor?, group?)` 的读口 —— 走 P2 的索引 store, 返回 `{event_id, cid, summary, actor, ts}` 列表 (不返回大内容); 复用 `src/web/server.ts` 与链上索引的既有形状。
 **门**: ① 同一查询在**两个不同节点**返回同一集合 (逐条比对) ② 查询**不触发**全量下载 (用字节数证明) ③ 断网时降级为本地索引 + 如实标注"仅本地"。
 **不做**: 本轮不上 embedding/语义检索 (判据难做门, 且仓里无 embedding 设施) —— 语义放 P5 之后单独论证。
