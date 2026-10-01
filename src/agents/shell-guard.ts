@@ -86,7 +86,13 @@ const FALLBACK_PATH_DENYLIST: ReadonlyArray<RegExp> = [
   /(^|\/)tsconfig.*\.json$/,
   /(^|\/)\.env(\.|$)/,
   /(^|\/)\.git\//,
-  /(^|\/)\.bolloon\//,                     // 策略文件 / sessions / persona
+  // 2026-10-01 (用户实测): 原先这行把**整个** ~/.bolloon/ 一刀封死 ⇒ patch 写自己的
+  //   context-os/01-Me/… 被拒, 而同一目录 write_context_asset(Node fs) 却成功 ✗ —— 门在打自己的脚。
+  //   收窄口径: 只封**凭证 / 身份密钥 / 会话数据 / 钱包**; agent 自己的工作区
+  //   (context-os · persona · memory · logs · goals · runs …) 一律放行。
+  /(^|\/)\.bolloon\/(identity\.json|keypair\.json|accounts\.json|llm-config\.json|bolloon-config\.json|agent-keys\/|iroh-secret[^/]*\.json|chain\.json)/,
+  /(^|\/)\.bolloon\/(sessions|wallets|bindings|eas-bind|_migrate_bak_[^/]*)\//,
+  /(^|\/)\.bolloon\/[^/]*\.token$/,
   /(^|\/)dist\//,
   // 2026-06-17: node_modules 不再 denylist, 因为 M3.4 自动 commit 阶段需要 npm install / npx vitest
   //   通过 allowlist 限定 agent 只能 npm install, 不能 rm node_modules (shell arg denylist 仍禁 rm -rf)
@@ -138,7 +144,19 @@ function getDefaultPolicy(): SelfImprovePolicy {
   return {
     version: 1,
     commandAllowlist: Array.from(FALLBACK_COMMAND_ALLOWLIST),
-    pathAllowlist: [...FALLBACK_PATH_ALLOWLIST],
+    // 2026-10-01: agent 自己的数据工作区必须显式允许 —— 这道护栏是 deny → allow → **默认拒**,
+    //   所以光把旧禁区收窄还不够: allowlist 里没有的路径照样被拒 ✗ (用户实测 context-os 被拒就是这个)。
+    pathAllowlist: [
+      ...FALLBACK_PATH_ALLOWLIST,
+      ...(process.env.HOME ? [
+        `${process.env.HOME}/.bolloon/context-os/**`,
+        `${process.env.HOME}/.bolloon/persona/**`,
+        `${process.env.HOME}/.bolloon/memory/**`,
+        `${process.env.HOME}/.bolloon/logs/**`,
+        `${process.env.HOME}/.bolloon/goals/**`,
+        `${process.env.HOME}/.bolloon/runs/**`,
+      ] : []),
+    ],
     pathDenylist: FALLBACK_PATH_DENYLIST.map(r => r.source),
     cooldownMs: 6 * 60 * 60 * 1000,
     sandboxCwd: '.bolloon-shell-sandbox',
@@ -150,6 +168,43 @@ function getDefaultPolicy(): SelfImprovePolicy {
  * 加载策略 (有缓存)
  * 加载失败返回 null, 调用方应回退到硬编码兜底
  */
+/**
+ * 已知过时的策略条目 (2026-10-01)。
+ *
+ * 事故: 盘上 `~/.bolloon/self-improve-policy.json` 是 2026-06-14 写下的**快照**,
+ *   里面还留着旧版的宽正则 `(^|\/)\.bolloon\/` —— 它把整个数据目录一刀封死,
+ *   于是 `patch ~/.bolloon/context-os/...` 被拒, 而 `write_context_asset`(走 Node fs) 同一目录能写 ✗,
+ *   用户看到的就是"同一个目录, 一个工具能写一个不能"。
+ *   更糟: 连 2026-06-17 已经明确解禁的 `pi-sdk.ts` 也还封着 ✗ ⇒ **改代码也压不过这份旧策略**。
+ * 规矩: 代码里的 FALLBACK_PATH_DENYLIST 是唯一真源; 盘上策略里凡属"过时快照"的条目一律作废并回写。
+ */
+/** agent 自己的数据工作区 (相对 ~/.bolloon) —— 必须在 allowlist 里, 否则默认拒 */
+export const DATA_WORKSPACE_SUBDIRS: ReadonlyArray<string> = ['context-os', 'persona', 'memory', 'logs', 'goals', 'runs'];
+
+/** 盘上策略缺这些条目时补齐 (与"作废过时条目"对称: 旧策略既要减法也要加法) */
+function ensureWorkspaceAllowed(policy: SelfImprovePolicy, home: string): boolean {
+  if (!Array.isArray(policy.pathAllowlist)) policy.pathAllowlist = [];
+  let changed = false;
+  for (const sub of DATA_WORKSPACE_SUBDIRS) {
+    const need = `${home}/.bolloon/${sub}/**`;
+    if (!policy.pathAllowlist.includes(need)) { policy.pathAllowlist.push(need); changed = true; }
+  }
+  return changed;
+}
+
+const STALE_POLICY_PATTERNS: ReadonlyArray<string> = [
+  '(^|\\/)\\.bolloon\\/',      // 旧: 整个数据目录一刀封 (已收窄为凭证/身份/会话/钱包)
+  '(^|\\/)src\\/agents\\/pi-sdk\\.ts$', // 旧: 2026-06-17 已解禁 (自进化需要)
+  '(^|\\/)node_modules\\/',     // 旧: 2026-06-17 已从硬编码清单移除
+];
+
+function dropStalePolicyPatterns(policy: SelfImprovePolicy): boolean {
+  if (!Array.isArray(policy.pathDenylist) || policy.pathDenylist.length === 0) return false;
+  const before = policy.pathDenylist.length;
+  policy.pathDenylist = policy.pathDenylist.filter((src) => !STALE_POLICY_PATTERNS.includes(String(src)));
+  return policy.pathDenylist.length !== before;
+}
+
 export function loadPolicy(forceReload = false): SelfImprovePolicy | null {
   const now = Date.now();
   if (!forceReload && cachedPolicy && now - policyLoadedAt < POLICY_TTL_MS) {
@@ -167,6 +222,17 @@ export function loadPolicy(forceReload = false): SelfImprovePolicy | null {
 
     const raw = fs.readFileSync(POLICY_PATH, 'utf-8');
     const parsed = JSON.parse(raw) as SelfImprovePolicy;
+
+    // 2026-10-01: 盘上策略是**快照** —— 先作废已知过时条目 (否则改代码也压不过它), 再回写。
+    //   用户实测: `(^|\/)\.bolloon\/` 这条旧宽正则把整个数据目录封死, 而它只存在于盘上策略里。
+    try {
+      const dropped = dropStalePolicyPatterns(parsed);
+      const added = ensureWorkspaceAllowed(parsed, os.homedir());
+      if (dropped || added) {
+        fs.writeFileSync(POLICY_PATH, JSON.stringify(parsed, null, 2));
+        console.log(`[shell-guard] 已作废过时策略条目并回写: ${POLICY_PATH}`);
+      }
+    } catch { /* 回写失败不影响本次使用 */ }
 
     // 极简 schema 校验
     if (!parsed.version || !Array.isArray(parsed.commandAllowlist) || !Array.isArray(parsed.pathAllowlist) || !Array.isArray(parsed.pathDenylist)) {

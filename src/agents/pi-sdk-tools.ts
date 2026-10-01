@@ -1167,7 +1167,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         const { promisify } = await import('util');
         const pExecFile = promisify(execFile);
         const argv = ['-rn', '--include=' + (args.filePattern || '*'), pattern, searchPath];
-        const { stdout, stderr } = await pExecFile('grep', argv, { cwd: ctx.cwd, maxBuffer: 1024 * 1024 });
+        const { stdout, stderr } = await pExecFile('grep', argv, { cwd: ctx.cwd, maxBuffer: 32 * 1024 * 1024 });
         const lines = stdout.split('\n').filter(Boolean).slice(0, 50);
         return { success: true, output: `🔍 grep "${pattern}" in ${searchPath} (${args.filePattern || '*'}, 最多 50 行):\n${lines.join('\n')}${lines.length === 50 ? '\n... (truncated)' : ''}` };
       } catch (e: any) {

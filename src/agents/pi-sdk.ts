@@ -14,6 +14,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { expandHomeArgs } from './tool-path-args.js';
 import { getContextManager } from '../bootstrap/context-manager.js';
 import { createRequire } from 'module';
 import { currentPackageRoot } from '../utils/version-info.js';
@@ -2296,7 +2297,7 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
           }
           let result = replaySkip
             ? { success: true, output: `[恢复保护] ${toolCall.name} 在中断前已成功执行过, 本次不重复执行 (避免重复副作用)。当时结果: ${replaySkip}`, _replaySkipped: true } as ToolResult
-            : await tool.execute(toolCall.args);
+            : await tool.execute(expandHomeArgs(toolCall.args));
           const toolDurationMs = Date.now() - toolStart;
           if (replaySkip) {
             console.log(`[PiAgent] 恢复重放守卫: 跳过已完成的非幂等工具 ${toolCall.name}`);
