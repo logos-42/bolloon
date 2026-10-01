@@ -48,3 +48,56 @@ export function formatReasoningForDisplay(
   if (out.length > maxChars) { out = out.slice(0, maxChars); truncated = true; }
   return truncated ? `${out}\n…[思考已截断]` : out;
 }
+
+
+/* ==================== 2026-10-01 (用户: 「我要的是那种短的思考, 长思考思维链可以并不显示」) ====================
+ * 三档 (BOLLOON_SHOW_THINKING):
+ *   short (默认) —— 只显示**一句**"在想什么" (单行, ≤120 字): 用户要的形态 ✓
+ *   full         —— 显示有界思维链块 (调试用)
+ *   off / 0      —— 不显示
+ * 形态差别: short ⇒ 单行 dim 文本; full ⇒ 圆角框。
+ */
+export type ReasoningMode = 'short' | 'full' | 'off';
+
+export function reasoningMode(env: NodeJS.ProcessEnv = process.env): ReasoningMode {
+  const v = String(env.BOLLOON_SHOW_THINKING ?? '').trim().toLowerCase();
+  if (v === 'full' || v === 'chain' || v === 'long') return 'full';
+  if (v === '0' || v === 'false' || v === 'off' || v === 'no') return 'off';
+  return 'short';
+}
+
+/** 该模式下是否显示 (兼容旧 API: shouldShowReasoning) */
+export function isReasoningVisible(env: NodeJS.ProcessEnv = process.env): boolean {
+  return reasoningMode(env) !== 'off';
+}
+
+/**
+ * 把思维链压成**一句** "在想什么" (纯函数)。
+ * 规矩: 取第一句人话; 去掉编号/项目符号/引号; 压空白; 超长截断加省略号; 出不来就空串。
+ */
+export function summarizeReasoning(text: string, maxChars = 120): string {
+  const clean = normalizeReasoning(text);
+  if (!clean) return '';
+  // 2026-10-01 (实跑发现): 第一行往往是**场景铺垫**("注意上下文有点混乱…") ⇒ 用户要的是"**要做什么**"那句。
+  //   规则: 跳过以"铺垫词"开头的行 (注意/背景/上下文/现在/刚才/首先看), 取第一行"像是判断/行动"的。
+  const SCENERY = /^(?:注意|背景|上下文|现在|刚才|首先看|先看|情况是)/;
+  const lines = clean.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+  const firstLine = lines.find((l) => !SCENERY.test(l)) || lines[0] || '';
+  const noBullet = firstLine.replace(/^[-*•\d.、)\s]+/, '').trim();
+  // 取第一句 (中英句末都认); 太短就整行
+  const m = noBullet.match(/^(.{6,}?[。.!！?？;；])/);
+  let gist = (m ? m[1] : noBullet).replace(/\s+/g, ' ').trim();
+  if (gist.length > maxChars) gist = `${gist.slice(0, maxChars - 1).trimEnd()}…`;
+  return gist;
+}
+
+/** 按模式渲染: short ⇒ 单行摘要; full ⇒ 有界块; off ⇒ 空串 */
+export function renderReasoning(
+  text: string,
+  opts: { mode?: ReasoningMode; maxChars?: number; maxLines?: number; summaryChars?: number } = {},
+): { mode: ReasoningMode; text: string } {
+  const mode = opts.mode ?? reasoningMode();
+  if (mode === 'off') return { mode, text: '' };
+  if (mode === 'full') return { mode, text: formatReasoningForDisplay(text, { enabled: true, maxChars: opts.maxChars, maxLines: opts.maxLines }) };
+  return { mode, text: summarizeReasoning(text, opts.summaryChars ?? 120) };
+}
