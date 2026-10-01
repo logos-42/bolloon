@@ -3955,6 +3955,8 @@ fetchState();
       const r = await createGroup(String(req.body?.name || '').trim(), {
         from: String(req.body?.from || '').trim() || undefined,
         hello: req.body?.hello ? String(req.body.hello) : undefined,
+        // 微信式群聊: 拿到邀请链接的人都能发言 ⇒ 显式声明 (2026-10-01 起不再是隐式默认)
+        acl: 'open',
       });
       if (!r.ok) return res.status(400).json({ error: r.error });
       registerGroupSse(r.group!.id, r.group!.name);

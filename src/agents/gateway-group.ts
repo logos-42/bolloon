@@ -250,24 +250,31 @@ export function onGroupMessage(groupId: string, fn: (msg: GroupMessage) => void)
 /**
  * 创建群组: 新 events store + 持久化 + 生成邀请链接.
  *
- * 权限两条路 (2026-10-01, P1):
- *   · 不给 `opts.gate` → **老行为**: `write:['*']` (任何人可写, 微信式群聊). 保留是为了
- *     不悄悄改掉既有调用点 (mobile / cli / verify-* 脚本), 迁移清单见 group-access.ts 的报告.
+ * 权限三条路 (2026-10-01: 默认已收紧):
+ *   · 不给 `opts.gate` 也不给 `opts.acl` → **创建者独占**(默认): 不传 write 列表给
+ *     IPFSAccessController ⇒ 落回 OrbitDB 默认策略 (只有创建者能写). 老默认是 `write:['*']`,
+ *     已按「默认动作不该是敞开的」翻过来.
+ *   · `opts.acl === 'open'` → 显式声明 `write:['*']` (任何人可写, 微信式群聊) —— **必须显式写**,
+ *     并且会打一行 warn 留痕; 产品的两个真调用点 (server.ts / routes-mobile-tasks.ts) 都显式声明它.
  *   · 给 `opts.gate` → **DID 门控**: 白名单 = 群主 OrbitDB 写身份 + 显式成员 (+ 已验签
  *     add 事件里的成员). 非名单成员的 `add` 会被 OrbitDB 的 `canAppend` 拒掉
  *     ("Key … is not allowed to write to the log").
  *   成员事件在**重新验签通过后**才写进 store; 有一条验不过 → **不建群** (不静默降级).
  */
+/** 群的写入权限声明 (2026-10-01): 默认创建者独占; 'open' 必须显式声明 (任何人可写) */
+export type GroupAclMode = 'creator' | 'open';
+
 export async function createGroup(
   name: string,
-  opts?: { from?: string; hello?: string; gate?: GroupGateInput }
+  opts?: { from?: string; hello?: string; gate?: GroupGateInput; acl?: GroupAclMode }
 ): Promise<JoinGroupResult> {
   const groupName = String(name || '').trim() || `group-${Date.now().toString(36).slice(-4)}`;
   try {
     const db = getDb();
 
     // ---- 门控分支: 先派生白名单 (验签不过就直接拒), 再建 store ----
-    let writeList: string[] = ['*'];
+    // null = 不传 write 列表 ⇒ OrbitDB 默认 (创建者独占). 不再默认 ['*'].
+    let writeList: string[] | null = null;
     let gateInfo: Pick<GroupInfo, 'gated' | 'ownerDid' | 'aclWrite'> = {};
     let membershipEntries: MembershipEntry[] = [];
     if (opts?.gate) {
@@ -291,9 +298,20 @@ export async function createGroup(
       writeList = normalizeWriteList(ids);
       gateInfo = { gated: true, ownerDid: gate.owner.did, aclWrite: writeList };
       membershipEntries = applied.accepted.map(membershipEntryOf);
+    } else if (opts?.acl === 'open') {
+      // 显式声明开放写入 (产品语义: 谁拿到邀请链接都能发言) —— 打一行 warn 留痕
+      writeList = ['*'];
+      console.warn(`[group] ${groupName}: acl=open ⇒ 任何人可写 (调用方显式声明)`);
+    } else {
+      console.warn(`[group] ${groupName}: 未声明 acl ⇒ 创建者独占写入 (2026-10-01 起的默认)`);
     }
 
-    const store = await db.openStore(`bolloon-gw-group-${groupName}`, 'events', groupAccessOptions(writeList));
+    const store = await db.openStore(
+      `bolloon-gw-group-${groupName}`, 'events',
+      // 注意: groupAccessOptions([]) 会抛错 (空名单会被 accessControllerOption 丢掉 ⇒ 落回默认),
+      // 所以"创建者独占"这条路只能**不传** AC 选项 ⇒ 传 {}.
+      writeList ? groupAccessOptions(writeList) : {},
+    );
     const address = store.address;
     const id = groupIdOf(address);
     const link = `orbitdb://${address}?type=group&name=${encodeURIComponent(groupName)}`;

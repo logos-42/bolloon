@@ -112,23 +112,6 @@ async function main(): Promise<void> {
   // ── S1: 100 条 (A 常驻)
   const a1 = holdNode(path.join(ROOT, 's1-a'), { phase: 'create_and_send', group: 'p0-100', count: 100, from: 'A' });
   const A1 = await a1.result;
-  // ── S3 反事实 —— 2026-10-01 实测: **本判据的前提不成立, 待改成"A1 下线时读"**。
-  //   诊断打印 (子进程结果里的 peerConnections) 显示: dial:false + 关 mDNS 的 D **仍然连上了 A1**
-  //   (`12D3KooWGeL… ← /ip4/100.100.23.44/tcp/55204`, 另有 3 条官方 bootstrap), pubsub 订阅者 = 1 ⇒
-  //   seen=101 是这条网络的**真实行为**, 不是复制异常; 真正不成立的是「不拨号 ⇒ 一定看不见」这个前提
-  //   (同机同网里 libp2p 会经 bootstrap/发现路径把两端连上)。
-  //   正确的反事实 (待做): **A1 停掉后再按地址打开 ⇒ 必须 0 条/打不开** —— 那才证明数据来自 A1 的节点。
-  //   在此之前这一条**不当作"已定性为门噪声"**(此前我那样写过, 是错的)。
-  //    注意依赖: 它要用 A1 的地址 ⇒ 必须排在 A1 创建之后 (搬错位置会 ReferenceError, 已踩)
-  // S3 反事实必须"真隔离": 关掉 mDNS (否则同机 peer 不拨号也会被自动发现, 这条判据既可能假红也可能假绿)
-  const D3 = await runNode(path.join(ROOT, 's3-d'), { phase: 'join_and_wait', address: A1.address, dial: false, waitFor: 1, timeoutMs: 20000 }, 120000, { BOLLOON_ORBITDB_NO_MDNS: '1' });
-  console.log('   S3 · 反事实 (不拨号 + 关 mDNS, 而 A 在线且在供块 ⇒ 只有"真没连上"才可能 seen=0)');
-  console.log(`      D: seen=${D3.seen} 打不开=${D3.openError ? '是' : '否'}`);
-  // 2026-10-01 诊断 S3 真凶: 没拨号的节点是怎么连上的? 子进程结果里已经带 peerConnections 与订阅者数
-  console.log(`      D 的当前连接 = ${JSON.stringify((D3 as any).peerConnections ?? null)}`);
-  console.log(`      D 的 pubsub 订阅者数 = ${String((D3 as any).subscribers ?? null)}`);
-  if (D3.openError) console.log(`      → 原文: ${String(D3.openError).slice(0, 200)}`);
-  check('S3 不拨号必须看不见任何消息', Number(D3.seen) === 0, `seen=${D3.seen} (期望 0 = 复制确实来自网络)`);
 
   const B1 = await runNode(path.join(ROOT, 's1-b'), { phase: 'join_and_wait', address: A1.address, addrs: dialableAddrs(A1.addrs), waitFor: 101, timeoutMs: 120000 });
   console.log('   S1 · 100 条 (A 在线)');
@@ -142,6 +125,17 @@ async function main(): Promise<void> {
   console.log('');
 
   a1.kill();   // S1/S3 的供块方退场 —— 必须排在 S1 的 B 之后 (否则 B 拉不到块, 且 S1 会假红)
+  // ── S3 反事实 (2026-10-01 重写): **供块方下线后** 新节点按地址打 ⇒ 必须拿不到内容
+  //   旧判据前提不成立 (实测: dial:false + 关 mDNS 的 D 仍会经 bootstrap/发现路径连上 A1,
+  //   连接表里有 A1 的地址 ⇒ seen=101 是网络的真实行为, 不是复制异常)。
+  //   正确反事实 = 数据只在 A1 的节点上 ⇒ A1 停掉后, 谁也不可能凭空变出它;
+  //   D 明确去拨 A1 的(已失效)地址, 拿不到才证明"复制确实来自 A1 这个节点"。
+  const D3 = await runNode(path.join(ROOT, 's3-d'), { phase: 'join_and_wait', address: A1.address, addrs: dialableAddrs(((A1 as any).addrs as string[]) || []), dial: true, waitFor: 1, timeoutMs: 20000 }, 120000, { BOLLOON_ORBITDB_NO_MDNS: '1' });
+  console.log('   S3 · 反事实 (A1 已停 + D 明确去拨它的失效地址)');
+  console.log(`      D: seen=${D3.seen} 打不开=${D3.openError ? '是' : '否'}`);
+  console.log(`      D 的当前连接 = ${JSON.stringify((D3 as any).peerConnections ?? null)}`);
+  check('S3 供块方下线后, 新节点按地址打必须拿不到内容', Number(D3.seen) === 0 || !!D3.openError, `seen=${D3.seen} 打不开=${D3.openError ? '是' : '否'} (期望 0 或打不开 = 数据确实只在 A1 节点上)`);
+  console.log('');
 
   // ── S2: 1000 条 (迟到者拿长历史)
   const a2 = holdNode(path.join(ROOT, 's2-a'), { phase: 'create_and_send', group: 'p0-1000', count: 1000, from: 'A' }, 420000);

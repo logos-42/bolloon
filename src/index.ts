@@ -41,6 +41,8 @@ import { installStartupLogGate, isStartupVerbose, startupLogPath, VERBOSE_ENV, c
 import { isInternalRunLog, appendInternalRunLog } from './cli/reply-hygiene.js';
 // 2026-09-27: 启动**前言 / 就绪度报告**闸门 (默认不上屏 → 面板一行 + 显式查询命令; 失败折成面板提示)
 import {
+  onlyConnectivityRetest,
+  SETUP_STATUS_CMD,
   noticeLine as noticePreamble, flushStartupNotices, setStartupReadiness, alertsFromSetup,
   readinessLine, preambleHintLine, startupPreambleVisible, pushStartupAlert,
   takeStartupPanelNotes, clearBufferedNotices,
@@ -5329,6 +5331,12 @@ async function main() {
         noticePreamble(describeSetup(gateEv));
         if (process.env.BOLLOON_SKIP_SETUP === '1') {
           noticePreamble('⚠ BOLLOON_SKIP_SETUP=1 → 诊断模式: 可以看状态/修配置, 但 agent 执行被门禁拦住 (不能绕过)');
+        } else if (onlyConnectivityRetest(gateEv)) {
+          // 2026-10-01 (用户报「启动时候的日志也没去掉」):
+          //   只差"连通性结果过期(需重测)"这一类 ⇒ **不在启动时跑 setup 向导** (跑一次要刷约 30 行前言)。
+          //   改为: 面板内一行告警 + 让用户按需跑 `bolloon setup --test`; 门禁照旧拦住 agent 执行 (不绕过)。
+          const a = `⚠ 连通性结果过期 → 跑 \`bolloon setup --test\` 复测 (启动时不自动跑), 全量: ${SETUP_STATUS_CMD}`;
+          pushStartupAlert(a); noticePreamble(a);
         } else {
           const { runSetupWizard } = await import('./cli/setup-wizard.js');
           // quietStartup: 向导的续跑前言默认不上屏 (它自己会在"要人回答/有失败"时先 flush)

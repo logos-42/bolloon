@@ -182,7 +182,8 @@ export function registerMobileTaskRoutes(app: Express, opts: MobileTaskRouteOpts
       if (kind === 'group_create' || kind === 'group_join' || kind === 'group_leave') {
         const { createGroup, joinGroup, leaveGroup } = await import('../agents/gateway-group.js');
         if (kind === 'group_create') {
-          const r = await createGroup(String(request.groupRef || '').trim());
+          // 手机端建群与 Web 端同一语义 (微信式群聊) ⇒ 显式声明开放写入
+          const r = await createGroup(String(request.groupRef || '').trim(), { acl: 'open' });
           if (!r.ok || !r.group) return fail(res, 409, 'GROUP_CREATE_FAILED', `建群失败: ${r.error || '未知原因'}`);
           return res.json({ ok: true, kind, group: { id: r.group.id, name: r.group.name }, text: `已建群「${r.group.name}」` });
         }

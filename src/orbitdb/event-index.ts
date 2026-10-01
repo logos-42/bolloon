@@ -244,7 +244,7 @@ export interface IndexStoreOpener {
   openStore(name: string, type?: 'keyvalue' | 'events', opts?: { accessController?: { write: string[] } }): Promise<IndexStore>;
 }
 
-/** 群/网络共用: 任何成员都可写 (与 gateway-group 的 write:['*'] 一致) */
+/* 2026-10-01: 原注释「群/网络共用: 任何成员都可写」已不成立 —— 索引默认创建者独占, 见 INDEX_ACCESS */
 /**
  * 索引 store 的访问控制 (2026-10-01 收紧)。
  *
@@ -264,7 +264,7 @@ export async function openIndexStores(
   names: readonly IndexStoreName[] = INDEX_STORE_NAMES,
 ): Promise<Record<IndexStoreName, IndexStore>> {
   const stores = {} as Record<IndexStoreName, IndexStore>;
-  for (const name of names) stores[name] = await opener.openStore(name, 'keyvalue', { accessController: { write: ['*'] } });
+  for (const name of names) stores[name] = await opener.openStore(name, 'keyvalue', INDEX_ACCESS);
   return stores;
 }
 

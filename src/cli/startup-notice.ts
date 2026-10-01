@@ -188,6 +188,29 @@ export function alertsFromSetup(ev: SetupEvalLike | null | undefined): string[] 
   return out;
 }
 
+/**
+ * 这个未就绪状态是否**只差"连通性复测"** (2026-10-01)。
+ *
+ * 为什么单列这一类: 连通性实测结果 >24h 就"过期", 此后**每次启动**都会命中未就绪 ⇒
+ * 启动路径会去跑整个 setup 向导 ⇒ 向导按"真跑了步骤就要把前言放出来"的规矩刷约 30 行
+ * (初始化框 / Onboard 模式 / 每步 ✓✗ / 就绪度报告) —— 用户明确不要看到这些。
+ * 这类不需要在启动时抢跑: 门禁照旧拦住 agent 执行 (不绕过), 用户按需跑 `bolloon setup --test` 即可。
+ *
+ * 判据 (两条都满足才算):
+ *   ① 门禁是 setup 且 basic 就绪度没过;
+ *   ② basic 的原因里**只**出现连通性复测相关字样 (连通 / 过期 / 重测 / connectivity)。
+ * 首次使用 (缺 provider/key) 的 basic 原因不匹配 ⇒ 仍然照常跑向导 (onboarding 不能被跳过)。
+ */
+export function onlyConnectivityRetest(ev: SetupEvalLike | null | undefined): boolean {
+  if (!ev || ev.gate === 'ready') return false;
+  const basic = ev.state?.readiness?.basic;
+  if (basic !== false) return false;
+  const reasons = (ev.state?.readinessWhy?.basic || []).map((x) => String(x));
+  if (reasons.length === 0) return false;
+  const connLike = /连通|过期|重测|connectivity|expired/i;
+  return reasons.every((r) => connLike.test(r));
+}
+
 /** verbose 模式下那句"现在是全量"的提示 (默认不出现) */
 export function preambleHintLine(env: NodeJS.ProcessEnv = process.env): string {
   return `[startup] 诊断模式 (--verbose / ${VERBOSE_ENV}=1 / ${PREAMBLE_ENV}=1): 启动前言全量输出`
