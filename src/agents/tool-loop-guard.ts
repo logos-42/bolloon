@@ -59,6 +59,13 @@ export const MAX_CYCLE_PERIOD = 4;
 export const CYCLE_HISTORY = 64;
 /** 结果达到这个字符数才值得用 stub 替代 (太短本来就省不了多少) */
 export const STUB_MIN_CHARS = 512;
+/**
+ * **同签名 + 同结果**的重复调用: 门槛降到这个值 (2026-10-01, 优化 #1 的收尾)。
+ * 为什么单独一条: 512 是"值不值得压缩"的门槛 ✗, 而"同一个调用又跑了一遍、结果一字不差"**本身就是浪费** ✓
+ *   —— 实测 `get_identity` 输出才 ~90 字符 ⇒ 卡在 512 门外, 于是被连调 3–4 次 ✓。
+ * 现在: 同签名重复 且 结果一致 且 ≥64 字符 ⇒ 从第 2 次起换引用 stub ✓ (少于 64 字符的本来也占不了多少上下文, 放行 ✓)。
+ */
+export const REPEAT_STUB_MIN_CHARS = 64;
 /** stub 里保留的参数预览长度 (万一压缩把原结果挤掉, 还能看出当初调了什么) */
 export const STUB_ARGS_PREVIEW_CHARS = 120;
 
@@ -117,6 +124,8 @@ export interface ObserveInput {
   seenResultBefore?: boolean;
   /** 结果大小 (字符数), 缺省用 resultText.length */
   resultChars?: number;
+  /** 是否与**上一次**调用同签名 (同一个工具+同一份参数又跑了一遍) ⇒ 重复就是浪费, 门槛降到 REPEAT_STUB_MIN_CHARS */
+  sameSignatureBefore?: boolean;
 }
 
 /**
@@ -166,7 +175,9 @@ export function observeToolCall(state: LoopStallState, input: ObserveInput): Gua
 
   // ④ 结果引用 stub: 从**第 2 次**完全相同的返回起 (够长才替代; 失败永不替代)
   let stub: string | undefined;
-  if (ok && input.seenResultBefore && chars >= STUB_MIN_CHARS) {
+  // 2026-10-01 (优化 #1 收尾): 同签名重复 + 结果一字不差 ⇒ 用更低门槛 (重复本身就是浪费, 不管长短)
+  const repeatFloor = input.sameSignatureBefore ? REPEAT_STUB_MIN_CHARS : STUB_MIN_CHARS;
+  if (ok && input.seenResultBefore && chars >= repeatFloor) {
     stub = `[结果引用] 与本次会话中此前一次 ${input.toolName} 的返回**逐字相同** (${chars} 字符, 已折叠)。`
       + `参数预览: ${canonicalToolArgs(input.args).slice(0, STUB_ARGS_PREVIEW_CHARS)}`;
   }

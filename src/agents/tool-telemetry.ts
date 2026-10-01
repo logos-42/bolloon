@@ -43,6 +43,8 @@ export interface ToolCallRecord {
   resultChars: number;
   /** 与**上一次**调用是否完全同签名 (重复调用的第一手证据) */
   repeatOfPrev: boolean;
+  /** 失败时的错误类别 (算"错工具率"用; 成功为空) */
+  errorClass?: string;
 }
 
 /** 追加一条 (绝不影响调用方) */
@@ -61,6 +63,7 @@ export function recordToolCall(
       ok: !!rec.ok,
       resultChars: Math.max(0, Math.round(Number(rec.resultChars) || 0)),
       repeatOfPrev: !!rec.prevSig && rec.prevSig === rec.sig,
+      ...(rec.errorClass ? { errorClass: String(rec.errorClass).slice(0, 40) } : {}),
     };
     fs.appendFileSync(telemetryPath(home), JSON.stringify(row) + '\n', 'utf-8');
     return row;
@@ -74,6 +77,8 @@ export interface TelemetrySummary {
   repeats: number;
   repeatRate: number;
   okRate: number;
+  /** 失败按错误类别计数 ⇒ "错工具率"可从这类错误里看出来 */
+  errorsByClass: Array<{ cls: string; n: number }>;
   resultChars: number;
   avgMs: number;
   topTools: Array<{ tool: string; n: number }>;
@@ -83,7 +88,7 @@ export interface TelemetrySummary {
 
 /** 汇总 (给"优化前/后"对比用): 读回 JSONL, 算重复率/体量/慢工具 */
 export function summarizeTelemetry(home = os.homedir(), limit = 5000): TelemetrySummary {
-  const empty: TelemetrySummary = { calls: 0, repeats: 0, repeatRate: 0, okRate: 0, resultChars: 0, avgMs: 0, topTools: [], slowest: [], biggestResults: [] };
+  const empty: TelemetrySummary = { calls: 0, repeats: 0, repeatRate: 0, okRate: 0, resultChars: 0, avgMs: 0, errorsByClass: [], topTools: [], slowest: [], biggestResults: [] };
   try {
     const file = telemetryPath(home);
     if (!fs.existsSync(file)) return empty;
@@ -101,6 +106,7 @@ export function summarizeTelemetry(home = os.homedir(), limit = 5000): Telemetry
       repeats,
       repeatRate: Number((repeats / calls).toFixed(3)),
       okRate: Number((rows.filter((r) => r.ok).length / calls).toFixed(3)),
+      errorsByClass: [...rows.filter((r) => !r.ok).reduce((m, r) => m.set(r.errorClass || '未分类', (m.get(r.errorClass || '未分类') || 0) + 1), new Map<string, number>()).entries()].map(([cls, n]) => ({ cls, n })).sort((a, b) => b.n - a.n).slice(0, 8),
       resultChars: sum((r) => r.resultChars),
       avgMs: Math.round(sum((r) => r.ms) / calls),
       topTools: [...byTool.entries()].map(([tool, n]) => ({ tool, n })).sort((a, b) => b.n - a.n).slice(0, 10),

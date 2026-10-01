@@ -19,6 +19,7 @@ import { shouldReview, runExperienceReview } from './experience-review.js';
 import { IterationBudget, isRefundableTool } from './iteration-budget.js';
 import { recordToolCall, argsFingerprint } from './tool-telemetry.js';
 import { capToolResult } from './tool-result-gate.js';
+import { renderToolListWithParams } from './tool-subset.js';
 // 2026-10-01: 身份解析必须**静态导入** —— 之前在函数体里用 require(), 而打包后是 ESM ⇒
 //   require 是 undefined ⇒ 抛错被 catch 静默吞掉 ⇒ "自愈"根本没跑, DID 一直是空的 ✗。
 import { loadOrCreateAgentIdentity } from './agent-identity.js';
@@ -241,7 +242,9 @@ export const PROACTIVE_WORK_DISCIPLINE = `
 6. **收尾时说三句**: 改了什么 · 验过什么(拿什么读到的) · 还剩什么。不重述过程。
 7.5 **一轮里可以同时调多个独立工具** (并行执行已支持): 互不依赖的读取/查询**一次发出去**, 别一个一个来回 —
     零碎调用既慢又费预算(批量工具还会退还额度 ✓)。
-7.6 **不要写任何结束标记**(如 final-gen 那种): 想清楚了就**直接给最终答复**, 系统不需要标记也能识别收尾 ✓。
+7.6 **收尾标记的语义**(别猜, 就按这条): 写完那个结束标记 = "**我已收尾, 且自己验过**(改了什么/拿什么验证的), 请复核"。
+    只在这两种情况下写: ① 任务真的做完了(不是"我打算做") · ② 纯对话/问答也**不用**写(直接答即可)。
+    没做完就**别写** —— 写了会被当成"已完成"进入复核, 反而浪费一轮 ✓。
 7. **过程中主动考虑**: 动手前先想这个改动的**影响面**(同类调用点 · 相邻功能 · 已有数据/契约), 发现关联问题就说出来,
    并给出你建议的下一步 —— 主动是指"想在你前面", 不是"多问几句"。
 `;
@@ -285,6 +288,8 @@ export class PiAgentSession implements AgentSession {
   /** 上一个工具调用的参数指纹 (遥测判"是否重复调用") */
 
   private lastToolSig: string | null = null;
+  /** 最近一条用户消息 (按需子集档用来判 intent) */
+  private lastUserIntent = '';
 
   private iterBudget: any = null;
   private iterBudgetWarned: boolean = false;
@@ -857,16 +862,18 @@ export class PiAgentSession implements AgentSession {
     // M2.4 (2026-06-17): 缓存 tool 定义 — registerTools() 在构造时调一次, 此后不变
     // 2026-07-29: 拒绝列表变化时清空缓存, 重新生成
     if (this.cachedToolDefinitions) return this.cachedToolDefinitions;
-    const defs: string[] = ['可用工具 (name(params) - 简介):'];
     // 2026-07-29: 使用 allowedTools() 过滤掉拒绝列表中的工具
-    for (const tool of this.allowedTools()) {
-      // 2026-06-19: 压缩 tool 定义 — 只显示参数名 (不显示描述, 减少 60% 长度)
-      //   完整 description 在 history 第一轮注入 (getToolDefinitionsFull 调用), 后续轮只看简短
-      //   避免 system prompt 太大导致 minimax 撞 max_tokens 输出空
-      const paramNames = Object.keys(tool.parameters).join(',');
-      defs.push(`- ${tool.name}(${paramNames})`);
-    }
-    this.cachedToolDefinitions = defs.join('\n');
+    const allowed = Array.from(this.allowedTools());
+    const header = '可用工具 (按类分组; name(params) - 简介):';
+    // 2026-06-19: 压缩 tool 定义 — 只显示参数名 (不显示描述, 减少 60% 长度)
+    //   完整 description 在 history 第一轮注入 (getToolDefinitionsFull 调用), 后续轮只看简短
+    //   避免 system prompt 太大导致 minimax 撞 max_tokens 输出空
+    // 2026-10-01 (优化 #2 v2): 按类**分组**列 + 说明"未列出的也能按名字调" ⇒ 治选择过载, 且不丢能力。
+    //   BOLLOON_TOOL_SUBSET=on 时改走"按 intent 只展开相关桶"(仍带 list_tools + 能力提示 ✓)。
+    const subsetOn = String(process.env.BOLLOON_TOOL_SUBSET || '').toLowerCase() === 'on';
+    const intentText = subsetOn ? this.lastUserIntent : '';
+    const rendered = renderToolListWithParams(allowed, intentText, { subset: subsetOn, perBucket: 14 });
+    this.cachedToolDefinitions = `${header}\n${rendered.text}`;
     return this.cachedToolDefinitions;
   }
 
@@ -2505,6 +2512,7 @@ ${await this.renderActivePlansSection()}
           try {
             const obs = observeToolCall(stallState, {
               toolName: toolCall.name,
+              sameSignatureBefore: this.lastToolSig === argsFingerprint((toolCall as any).args),
               args: toolCall.args,
               resultText: String(result.output || (result.success ? '' : String(result.error || ''))),
               ok: !!result.success,
@@ -2595,6 +2603,13 @@ ${await this.renderActivePlansSection()}
             if (onStream) { onStream({ type: 'status', internal: true, content: `🔄 工具执行完成，继续循环...`, tool: 'loop' }); }
           } else {
             consecutiveErrors++;
+            // 2026-10-01 (优化 #3): 失败也记一行(带错误类别) ⇒ "错工具率"从这类错误里看得出来
+            try {
+              const __cls = classifyError(String(result.error || '')).label || '未分类';
+              recordToolCall({ tool: toolCall.name, sig: argsFingerprint((toolCall as any).args), ms: 0,
+                ok: false, resultChars: 0, prevSig: this.lastToolSig ?? null, errorClass: __cls });
+              this.lastToolSig = argsFingerprint((toolCall as any).args);
+            } catch { /* 遥测失败不影响 */ }
             totalErrors++;
             if (toolCall.name === lastFailedTool) { lastFailedToolCount++; }
             else { lastFailedTool = toolCall.name; lastFailedToolCount = 1; }
