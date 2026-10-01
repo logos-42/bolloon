@@ -505,11 +505,12 @@ export class PiAgentSession implements AgentSession {
           if (badDid || mismatch) {
             console.warn(`[identity] 身份纠正: ${this.currentAgentId} 的 did ${curDid ? curDid.slice(0, 26) : '(空)'} ⇒ ${mine.did.slice(0, 26)} (以该 agent 自己的密钥为准)`);
           }
-          this.identity = {
-            ...cur,
+          // 2026-10-01: 同样必须**原地改** —— 这段在 registerTools() **之后**跑, 工具上下文已经按引用
+          //   捕获了 this.identity; 换对象 ⇒ 工具看不到纠正结果 ✗ (同类 bug, 一并修)
+          Object.assign(this.identity, {
             ...(mine?.did ? { did: mine.did, publicKey: mine.publicKey || cur.publicKey } : {}),
             ...(missingName ? { name: agentPersonaName(this.currentAgentId) || this.currentAgentId } : {}),
-          } as any;
+          });
         }
       }
     } catch { /* 自愈失败不致命 */ }
@@ -3664,7 +3665,13 @@ ${this.extractOperationsFromRef(operationsRef)}
   }
 
   updateIdentity(updates: Partial<IdentityDoc>): void {
-    this.identity = { ...this.identity, ...updates };
+    // 2026-10-01 **修切换频道后身份不换的根因**: 上一版是 `this.identity = { ...this.identity, ...updates }`
+    //   —— **换成新对象** ✗。而工具上下文是在 registerTools() 时按**对象引用**捕获的 (`identity: this.identity`),
+    //   并且切频道时 session 是**复用**的(pi-sdk-session-factory 的模块级单例, 只调 updateIdentity) ⇒
+    //   工具里的 ctx.identity 一直指向**旧对象** ⇒ `get_identity` 永远返回上一个频道的身份 ✗✗
+    //   (实测: xiaomi/智能体频道都答「233 的 DID + 小龙」, 因为 233 是进程启动时的频道)。
+    //   ⇒ 改成**原地改**: 所有持有者(工具上下文/会话/状态栏)都看到同一个对象的新值 ✓。
+    Object.assign(this.identity, updates);
   }
 
   setCurrentChannelId(channelId: string): void {
