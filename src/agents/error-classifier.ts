@@ -85,6 +85,9 @@ export function buildObservation(
     obs.errorClass = cls.cls;
     obs.errorLabel = cls.label;
     obs.summary = `❌ ${tool} 失败: ${cls.label} — ${errMsg.slice(0, 120)}`;
+    // 2026-10-01 (优化 #6): 顺手给出"下一步该干什么" —— 光有标签模型会原地重试同一条命令
+    const __advice = suggestNextAction(`${cls.label} ${errMsg}`);
+    if (__advice) obs.summary = `${obs.summary} · ${__advice}`;
   }
   return obs;
 }
@@ -176,4 +179,22 @@ export function formatObservationWithReflection(
     }
   }
   return lines.join('\n');
+}
+
+/**
+ * 错误 ⇒ **下一步动作建议** (2026-10-01 优化 #6)。
+ * 光有标签(路径不存在/参数错误)还不够 —— 模型得知道**接着该干什么**, 否则就原地重试同一条命令。
+ */
+export function suggestNextAction(labelOrMsg: string): string | null {
+  const s = String(labelOrMsg || '');
+  const rules: Array<[RegExp, string]> = [
+    [/路径|不存在|ENOENT/i, '用 list_files / glob_files 看**真实**路径再重试(注意 ~ 展开与工作目录)'],
+    [/超时|timeout/i, '拆小(分成多次/加 limit)或改用后台执行, 别原样重发'],
+    [/权限|EACCES|EPERM/i, '换可写目录(如工作区或 /tmp), 不要动系统目录'],
+    [/参数|invalid|missing|必填/i, '对照工具描述里的必填项补齐参数; 不确定就先 list_tools 看schema'],
+    [/网络|ECONN|fetch failed|不可达/i, '确认本机服务/代理可达; 自家域走 --resolve + --noproxy'],
+    [/缓冲区|maxBuffer|输出过大/i, '加过滤(只取需要的行)或改写到文件再按需读取'],
+  ];
+  for (const [re, advice] of rules) if (re.test(s)) return `下一步: ${advice}`;
+  return null;
 }

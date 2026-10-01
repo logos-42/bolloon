@@ -848,6 +848,37 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   // 2026-08-10: terminal — 灵活终端写命令 (用户要求: bolloon 自己写命令进 terminal, 少围栏).
   //   2026-08-12 (Task2): 支持 commands 数组并行执行; 与 shell_exec 统一走 runTerminalCommand.
   //   与 shell_exec 的区别: 直接接受完整 shell 命令字符串, 更适合模型自主写命令.
+  // 2026-10-01 (优化 #2 v1): **工具发现** —— 125 个工具不可能都记住, 给一个"按关键词找工具"的入口。
+  // 空关键词只回**分类索引**(名称清单), 有关键词才回"名称+用途摘要" ⇒ 不刷屏。
+  ctx.tools.set('list_tools', {
+    name: 'list_tools',
+    description: '找不到该用哪个工具时用这个: 给关键词(如 "文件"/"钱包"/"群" / "grep")⇒ 返回匹配工具的名字+用途摘要; 不给关键词 ⇒ 回全部分类索引. 你**先** list_tools 摸清工具, 再动手.',
+
+    parameters: { keyword: '可选: 关键词 (工具名或用途里出现的词); 省略则回分类索引' },
+    async execute(args: any) {
+      const kw = String(args?.keyword ?? '').trim().toLowerCase();
+      const all = [...ctx.tools.entries()].map(([name, t]: any) => ({ name, desc: String(t?.description ?? '') }));
+      if (!kw) {
+        const groups: Record<string, string[]> = {};
+        for (const { name } of all) {
+          const k = /wallet|chain|token|balance|tx|polymarket|safe|x402/.test(name) ? '链上/钱包'
+            : /^(read|list|glob|grep|search)/.test(name) || /file|dir|doc/.test(name) ? '读/找文件'
+            : /^(write|edit|mkdir|move|delete|copy|patch)/.test(name) ? '写/改文件'
+            : /task|plan|todo|goal|run/.test(name) ? '任务/计划'
+            : /peer|channel|friend|send|broadcast|group|inbox|p2p/.test(name) ? 'P2P/沟通'
+            : /web|fetch|http|url/.test(name) ? '网络'
+            : '其它';
+          (groups[k] ||= []).push(name);
+        }
+        const lines = Object.entries(groups).map(([k, v]) => `- ${k} (${v.length}): ${v.slice(0, 14).join(' ')}${v.length > 14 ? ' …' : ''}`);
+        return { success: true, output: `共 ${all.length} 个工具, 按类:\n${lines.join('\n')}\n\n用 list_tools {keyword:"…"} 查具体用途.` };
+      }
+      const hits = all.filter((t) => t.name.toLowerCase().includes(kw) || t.desc.toLowerCase().includes(kw));
+      if (!hits.length) return { success: true, output: `没有工具匹配 "${kw}". 试试更短的词, 或 list_tools 不带关键词看分类.` };
+      return { success: true, output: hits.slice(0, 20).map((t) => `- ${t.name}: ${t.desc.replace(/\s+/g, ' ').slice(0, 90)}`).join('\n') };
+    },
+  });
+
   ctx.tools.set('terminal', {
     name: 'terminal',
     description: '执行 shell 命令 (管道/重定向/跑脚本/装依赖/查系统状态). '

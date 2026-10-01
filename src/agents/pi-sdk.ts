@@ -17,6 +17,8 @@ import * as path from 'path';
 import { expandHomeArgs } from './tool-path-args.js';
 import { shouldReview, runExperienceReview } from './experience-review.js';
 import { IterationBudget, isRefundableTool } from './iteration-budget.js';
+import { recordToolCall, argsFingerprint } from './tool-telemetry.js';
+import { capToolResult } from './tool-result-gate.js';
 // 2026-10-01: 身份解析必须**静态导入** —— 之前在函数体里用 require(), 而打包后是 ESM ⇒
 //   require 是 undefined ⇒ 抛错被 catch 静默吞掉 ⇒ "自愈"根本没跑, DID 一直是空的 ✗。
 import { loadOrCreateAgentIdentity } from './agent-identity.js';
@@ -196,6 +198,28 @@ export function writeBackCurrentTurnInto(
 import { LoopStallState, observeToolCall } from './tool-loop-guard.js';
 
 /**
+ * 写操作"读回自证" (2026-10-01 优化 #4): 写类工具成功后**自动**核一次, 把事实拼进结果。
+ * 为什么: 过程纪律写了"读回一次", 但**没人执行** ✗ ⇒ 现在由机制执行: "工具说成功 ≠ 任务成功"。
+ * 只做**便宜**的核对(存在性/大小); 失败静默(核对不该把工具搞失败)。
+ */
+export function verifyWriteOutcome(toolName: string, args: any, cwd: string): string | null {
+  try {
+    const fsMod = require('node:fs') as typeof import('node:fs');
+    const pathMod = require('node:path') as typeof import('node:path');
+    const WRITE = new Set(['write_file', 'edit_file', 'mkdir', 'move_file', 'copy_file']);
+    if (!WRITE.has(String(toolName))) return null;
+    const rel = String(args?.path ?? args?.to ?? args?.dir ?? '').trim();
+    if (!rel) return null;
+    const abs = pathMod.isAbsolute(rel) ? rel : pathMod.resolve(cwd, rel);
+    const st = fsMod.statSync(abs);
+    if (st.isDirectory()) return `[已核对] 目录存在: ${rel}`;
+    return `[已核对] 文件已落盘: ${rel} (${st.size} 字节, ${new Date(st.mtimeMs).toISOString()})`;
+  } catch (e: any) {
+    return `[未核对] 读回失败: ${String(e?.message || e).slice(0, 80)} —— 别急着说"已完成", 先确认路径/权限`;
+  }
+}
+
+/**
  * 过程纪律 (2026-10-01, 用户: 「智能体回复方式没有主动性 … 在过程里面更加主动考虑」)。
  *
  * 诊断: 系统提示里只有"理解→分析→调用→观察"这种**反应式**循环描述 ⇒ 模型容易"问一句答一句、
@@ -215,6 +239,9 @@ export const PROACTIVE_WORK_DISCIPLINE = `
 4. **被阻塞就如实说**: 讲清卡在哪一步、为什么、还缺什么; **绝不**用编造的结果顶替(编一个"看起来对"的输出比说"没做成"更糟)。
 5. **每一轮要么用工具推进, 要么给出结论**: 不要把"下一步我打算…"当成回答。
 6. **收尾时说三句**: 改了什么 · 验过什么(拿什么读到的) · 还剩什么。不重述过程。
+7.5 **一轮里可以同时调多个独立工具** (并行执行已支持): 互不依赖的读取/查询**一次发出去**, 别一个一个来回 —
+    零碎调用既慢又费预算(批量工具还会退还额度 ✓)。
+7.6 **不要写任何结束标记**(如 final-gen 那种): 想清楚了就**直接给最终答复**, 系统不需要标记也能识别收尾 ✓。
 7. **过程中主动考虑**: 动手前先想这个改动的**影响面**(同类调用点 · 相邻功能 · 已有数据/契约), 发现关联问题就说出来,
    并给出你建议的下一步 —— 主动是指"想在你前面", 不是"多问几句"。
 `;
@@ -255,6 +282,10 @@ export class PiAgentSession implements AgentSession {
 
   private cachedPersonaSection: string = '';
   /** 本轮迭代预算 (每轮重置; 批处理工具会退还 —— 见 iteration-budget.ts) */
+  /** 上一个工具调用的参数指纹 (遥测判"是否重复调用") */
+
+  private lastToolSig: string | null = null;
+
   private iterBudget: any = null;
   private iterBudgetWarned: boolean = false;
   /** 上一次回合后自审的时间 (节流; 0 = 从未) */
@@ -2412,7 +2443,7 @@ ${await this.renderActivePlansSection()}
           }
           let result = replaySkip
             ? { success: true, output: `[恢复保护] ${toolCall.name} 在中断前已成功执行过, 本次不重复执行 (避免重复副作用)。当时结果: ${replaySkip}`, _replaySkipped: true } as ToolResult
-            : await tool.execute(expandHomeArgs(toolCall.args));
+            : await ((toolCall as any).__t0 = Date.now(), tool.execute(expandHomeArgs(toolCall.args)));
           const toolDurationMs = Date.now() - toolStart;
           if (replaySkip) {
             console.log(`[PiAgent] 恢复重放守卫: 跳过已完成的非幂等工具 ${toolCall.name}`);
@@ -2520,6 +2551,31 @@ ${await this.renderActivePlansSection()}
             }
           }
 
+          // 2026-10-01 (优化 #1/#3/#4): 工具结果的**进上下文闸** + **遥测** + **写操作读回自证**
+          {
+            const __ms = Date.now() - Number((toolCall as any).__t0 || Date.now());
+            try {
+              // #1 结果闸: 超上限 ⇒ 头尾 + 完整结果落文件(给路径) ⇒ 上下文不再被一条大输出长期占住
+              const capped = capToolResult(String(result.output ?? ''), { tool: toolCall.name });
+              if (capped.capped) {
+                result.output = capped.text;
+                console.warn(`[PiAgent] ${toolCall.name} 结果过长(${capped.originalChars})已截断` + (capped.spilledTo ? `, 完整内容: ${capped.spilledTo}` : ''));
+              }
+              // #4 写操作"读回自证": 写类工具成功后自动核一次(存在? 大小?) ⇒ "工具说成功≠任务成功"从规矩变成机制
+              const verified = verifyWriteOutcome(toolCall.name, (toolCall as any).args, this.cwd);
+              if (verified) result.output = `${String(result.output ?? '')}\n${verified}`;
+              // #3 遥测: 记一行(工具/指纹/耗时/成败/结果大小/是否与上一次同签名) ⇒ 重复率可算
+              recordToolCall({
+                tool: toolCall.name,
+                sig: argsFingerprint((toolCall as any).args),
+                ms: __ms,
+                ok: true,
+                resultChars: String(result.output ?? '').length,
+                prevSig: this.lastToolSig ?? null,
+              });
+              this.lastToolSig = argsFingerprint((toolCall as any).args);
+            } catch { /* 任何优化项失败都不影响工具结果本身 */ }
+          }
           if (result.success) {
             consecutiveErrors = 0;
             // 2026-07-29: Hermes 风格硬限制计数
