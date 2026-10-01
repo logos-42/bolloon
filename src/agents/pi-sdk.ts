@@ -1210,13 +1210,30 @@ export class PiAgentSession implements AgentSession {
         if (shouldReviewTask(reviewNow, this.lastExperienceReviewAt, this.lastReviewedTaskSig, taskSig)) {
           this.lastExperienceReviewAt = reviewNow; // 先记账, 免得多路并发各起一次
           this.lastReviewedTaskSig = taskSig;
+          // 2026-10-01 (用户: 「我没有看到执行完命令后 bolloon 知道选中更新 skills，是不是没有触发」):
+          //   实测**确实没触发** ✓ —— 两个原因: ① 被调方又自己判了一次节流 ⇒ 换任务也被 throttled 掉 ✗;
+          //   ② 反馈走 `console.warn`(TUI 里被吞 ✗) + `void … .catch(() => {})`(失败无声 ✗)
+          //   ⇒ 你什么都看不到 ✓。现在: 传 force 尊重调用方的决定 ✓ · 复盘过程/结果/失败**都进对话流** ✓ ·
+          //   同时落一份 `~/.bolloon/logs/experience-review.log` 供事后核 ✓。
+          const reviewLog = (m: string) => {
+            const line = `[${new Date().toISOString()}] ${m}`;
+            try {
+              const p = path.join(os.homedir(), '.bolloon', 'logs', 'experience-review.log');
+              void fs.mkdir(path.dirname(p), { recursive: true })
+                .then(() => fs.appendFile(p, line + '\n'))
+                .catch(() => { /* 落日志失败不影响主流程 */ });
+            } catch { /* 落日志失败不影响主流程 */ }
+            try { this.currentOnStream?.({ type: 'status', content: `📚 复盘: ${m}`, tool: 'system' } as any); } catch { /* 上屏失败不打断 */ }
+          };
+          reviewLog('开始(换了任务 ⇒ 立刻复盘)');
           void runExperienceReview({
             turnSummary,
+            force: true,
             chat: async (prompt: string) => {
               const r: any = await getMinimax().chat(prompt);
               return typeof r === 'string' ? r : String(r?.content ?? r?.text ?? '');
             },
-            log: (m: string) => console.warn(m),
+            log: reviewLog,
             // 2026-10-01: 写了经验之后再找"能沉淀进哪个已有技能"的候选 —— **只记候选, 不自动改技能** ✓
             //   (实测: 拿真实教训撞真实 1300 个技能, 最高分只有 2 且 top 命中是瞎的 ✗ ⇒ 不替人决定 ✓)
             onLesson: (lesson) => {
@@ -1240,7 +1257,14 @@ export class PiAgentSession implements AgentSession {
                 } as any)).catch(() => { /* 判断力写入失败不影响经验沉淀 */ });
               } catch { /* 这一段整体是锦上添花, 绝不外泄错误 */ }
             },
-          }).catch(() => { /* 自审绝不外泄错误 */ });
+          }).then((r) => {
+            // 结果**如实上屏** ✓: 审没审 / 写没写 / 为什么没写 —— 不再无声 ✓
+            reviewLog(r?.reviewed
+              ? (r?.applied ? `已沉淀经验 ✓${r?.file ? ` → ${path.basename(String(r.file))}` : ''}` : `审了但没写: ${r?.reason || '无'}`)
+              : `没审: ${r?.reason || '无'}`);
+          }).catch((e) => {
+            reviewLog(`失败(已如实记录, 不外泄错误): ${String((e as Error)?.message || e).slice(0, 160)}`);
+          });
         }
       } catch { /* 挂点自身失败也不影响主流程 */ }
       this.finishTrajectory(trajRec, loopResult.reply, loopResult.aiFailed ? 'error' : 'ok');

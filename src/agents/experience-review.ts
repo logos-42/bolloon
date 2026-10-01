@@ -194,6 +194,8 @@ export async function runExperienceReview(opts: {
   lastAtMs?: number;
   minIntervalMs?: number;
   log?: (msg: string) => void;
+  /** 2026-10-01 (用户: 「bolloon 知道选中更新 skills，是不是没有触发」): 调用方已按**任务签名**判过 ⇒ 这里不许再拿节流否掉它 ✗ */
+  force?: boolean;
   /** 写成功后把这条教训交出去(2026-10-01: 用来找"可沉淀进哪个技能"的候选 ✓ 只读不写 ✓) */
   onLesson?: (lesson: { title: string; body: string; klass?: string }) => void;
 }): Promise<{ reviewed: boolean; applied: boolean; file?: string; updated?: boolean; reason?: string }> {
@@ -201,7 +203,7 @@ export async function runExperienceReview(opts: {
   const now = opts.nowMs ?? Date.now();
   const log = opts.log || (() => { /* 静默 */ });
   try {
-    if (!shouldReview(now, opts.lastAtMs, opts.minIntervalMs)) return { reviewed: false, applied: false, reason: 'throttled' };
+    if (!opts.force && !shouldReview(now, opts.lastAtMs, opts.minIntervalMs)) return { reviewed: false, applied: false, reason: 'throttled' };
     const summary = String(opts.turnSummary || '').trim();
     if (summary.length < 40) return { reviewed: false, applied: false, reason: '回合太短, 不值得审' };
     const prompt = buildReviewPrompt(summary, listExperienceIndex(home));
