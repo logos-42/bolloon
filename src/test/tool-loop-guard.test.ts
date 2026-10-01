@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import {
   LoopStallState, observeToolCall, canonicalToolArgs, toolCallSignature, detectCycle,
   IDENTICAL_CALL_THRESHOLD, STUB_MIN_CHARS, isRepeatableTool,
+  toolMayHaveSideEffect, trackProgress, newProgressBookkeeping, DEFAULT_THRESHOLDS, defaultHardStopFor,
 } from '../agents/tool-loop-guard.js';
 
 const call = (st: LoopStallState, toolName: string, args: any, text: string, ok = true) =>
@@ -123,5 +124,66 @@ describe('状态复位', () => {
     call(st, 'get_identity', args, 'same'); call(st, 'get_identity', args, 'same');
     st.reset();
     expect(call(st, 'get_identity', args, 'same').action).toBe('allow');
+  });
+});
+
+describe('无进展轴 (第二轮): 换了参数但结果一样 ⇒ 仍是无进展', () => {
+  it('幂等工具换参数 + 同结果 ⇒ 达阈值出引导', () => {
+    const book = newProgressBookkeeping();
+    const same = '文件内容完全一样';
+    expect(trackProgress(book, { toolName: 'read_file', args: { path: 'a.ts' }, resultText: same }).action).toBe('allow');
+    const second = trackProgress(book, { toolName: 'read_file', args: { path: 'a.ts', offset: 0 }, resultText: same });
+    expect(second.code).toBe('idempotent_no_progress');
+    expect(second.notice).toContain('世界没有变化');
+  });
+
+  it('结果真的变了 ⇒ 归 1, 不误判', () => {
+    const book = newProgressBookkeeping();
+    for (const t of ['v1', 'v2', 'v3', 'v4']) {
+      expect(trackProgress(book, { toolName: 'read_file', args: { path: t }, resultText: t }).action).toBe('allow');
+    }
+  });
+
+  it('进展的定义 = 有副作用的调用成功 ⇒ 清零无进展', () => {
+    const book = newProgressBookkeeping();
+    trackProgress(book, { toolName: 'read_file', args: { p: 1 }, resultText: 'same' });
+    trackProgress(book, { toolName: 'read_file', args: { p: 2 }, resultText: 'same' });
+    expect(book.noProgress.size).toBe(1);
+    // 改一次文件 (有副作用且成功) ⇒ 世界变了, 之前的"读了没变化"作废
+    trackProgress(book, { toolName: 'patch', args: { file: 'x' }, resultText: 'ok' });
+    expect(book.noProgress.size).toBe(0);
+    expect(trackProgress(book, { toolName: 'read_file', args: { p: 3 }, resultText: 'same' }).action).toBe('allow');
+  });
+
+  it('有副作用的调用**失败**不算进展', () => {
+    const book = newProgressBookkeeping();
+    trackProgress(book, { toolName: 'read_file', args: { p: 1 }, resultText: 'same' });
+    trackProgress(book, { toolName: 'terminal', args: { cmd: 'x' }, resultText: 'boom', ok: false });
+    expect(trackProgress(book, { toolName: 'read_file', args: { p: 2 }, resultText: 'same' }).code).toBe('idempotent_no_progress');
+  });
+
+  it('阈值可配 (矩阵): warn 阈值调大 ⇒ 不再出声', () => {
+    const book = newProgressBookkeeping();
+    const th = { ...DEFAULT_THRESHOLDS, noProgressWarnAfter: 9 };
+    trackProgress(book, { toolName: 'read_file', args: { p: 1 }, resultText: 's' }, th);
+    expect(trackProgress(book, { toolName: 'read_file', args: { p: 2 }, resultText: 's' }, th).action).toBe('allow');
+  });
+});
+
+describe('升级策略按在场与否分流', () => {
+  it('默认不硬停 (有人在); 无人值守场景才默认硬停', () => {
+    expect(DEFAULT_THRESHOLDS.hardStopEnabled).toBe(false);
+    expect(defaultHardStopFor({ unattended: true })).toBe(true);
+    expect(defaultHardStopFor({ unattended: false })).toBe(false);
+    expect(defaultHardStopFor({ env: { BOLLOON_CRON: '1' } as any })).toBe(true);
+    expect(defaultHardStopFor({ env: { BOLLOON_SUPERVISOR: '1' } as any })).toBe(true);
+    expect(defaultHardStopFor({ env: {} as any })).toBe(false);
+  });
+
+  it('工具是否有副作用: 登记表说了算, 未登记按"可能有" (保守)', () => {
+    expect(toolMayHaveSideEffect('patch')).toBe(true);
+    expect(toolMayHaveSideEffect('read_file')).toBe(false);
+    expect(toolMayHaveSideEffect('process_manage')).toBe(false); // 轮询
+    expect(toolMayHaveSideEffect('some_unknown_tool')).toBe(true);
   });
 });

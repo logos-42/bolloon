@@ -225,3 +225,106 @@ export function detectCycle(history: readonly Step[]): { period: number; laps: n
   }
   return null;
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// 2026-10-01 第二轮 (继续学): 三处补上
+//   ① **无进展**是独立一轴: 幂等工具即使**换了参数**, 只要结果与上次相同 ⇒ 也是无进展
+//      (原先只抓"同参数" ⇒ 换个措辞再问一遍就绕过去了)
+//   ② **进展的定义 = 有副作用的调用成功过** (纯读再多都不算) ⇒ 用它清零失败/无进展计数
+//   ③ 升级策略**按在场与否分流**: 有人在 ⇒ 只提醒(从不阻止执行); 无人值守 ⇒ 才允许拦/停
+//      (人在场时不该替用户做决定; 但 cron/supervisor 这种无人值守的场景, 该果断收)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** 有副作用 = 会改变世界 (文件/进程/网络/资金/记忆). 唯一判据, 供"进展"与"无进展"用 */
+export function toolMayHaveSideEffect(toolName: string): boolean {
+  if (MUTATING_TOOLS.has(toolName)) return true;
+  if (IDEMPOTENT_TOOLS.has(toolName)) return false;
+  if (isRepeatableTool(toolName)) return false;
+  // 未登记的工具按"可能有副作用"处理 (保守: 不轻易判定"它没改变世界")
+  return true;
+}
+
+/** 阈值矩阵 (不同轴不同限, 不搞单值一刀切) */
+export interface LoopGuardThresholds {
+  exactFailureWarnAfter: number;
+  exactFailureBlockAfter: number;
+  sameToolFailureWarnAfter: number;
+  sameToolFailureHaltAfter: number;
+  noProgressWarnAfter: number;
+  noProgressBlockAfter: number;
+  /** 提醒永不禁执行; 硬动作默认关, 只在无人值守时开 */
+  hardStopEnabled: boolean;
+}
+
+export const DEFAULT_THRESHOLDS: LoopGuardThresholds = {
+  exactFailureWarnAfter: 2,
+  exactFailureBlockAfter: 5,
+  sameToolFailureWarnAfter: 3,
+  sameToolFailureHaltAfter: 8,
+  noProgressWarnAfter: 2,
+  noProgressBlockAfter: 5,
+  hardStopEnabled: false,
+};
+
+/** 无人值守场景 (cron / supervisor / 非交互) —— 那里才默认允许拦与停 */
+export function defaultHardStopFor(context: { unattended?: boolean; env?: NodeJS.ProcessEnv } = {}): boolean {
+  if (typeof context.unattended === 'boolean') return context.unattended;
+  const env = context.env || process.env;
+  return env.BOLLOON_UNATTENDED === '1' || env.BOLLOON_CRON === '1' || env.BOLLOON_SUPERVISOR === '1';
+}
+
+export interface NoProgressState {
+  lastResultFp: string;
+  count: number;
+}
+
+export interface ProgressBookkeeping {
+  /** 某签名的失败已被"有副作用的成功"抵销 (key = 签名) */
+  progressClearedSignatures: Set<string>;
+  /** 幂等工具的无进展计数 (key = 工具名) */
+  noProgress: Map<string, NoProgressState>;
+}
+
+export function newProgressBookkeeping(): ProgressBookkeeping {
+  return { progressClearedSignatures: new Set(), noProgress: new Map() };
+}
+
+/**
+ * 记一次调用结果, 维护"进展 / 无进展"两本账。
+ * - 有副作用的调用**成功** ⇒ 视为进展: 清掉该签名的失败标记 + 清掉**所有**无进展记录
+ *   (世界变了 ⇒ 之前"读了没变化"的判定作废)
+ * - 幂等工具: 结果指纹与上次相同 ⇒ 无进展 +1 (**参数变没变不影响**), 不同 ⇒ 归 1
+ */
+export function trackProgress(
+  book: ProgressBookkeeping,
+  input: { toolName: string; args: unknown; resultText?: string; ok?: boolean },
+  thresholds: LoopGuardThresholds = DEFAULT_THRESHOLDS,
+): { action: GuardAction; code: 'allow' | 'idempotent_no_progress'; count: number; notice?: string } {
+  const ok = input.ok !== false;
+  const sig = toolCallSignature(input.toolName, input.args);
+  const fp = resultFingerprint(String(input.resultText ?? ''));
+
+  if (ok && toolMayHaveSideEffect(input.toolName)) {
+    book.progressClearedSignatures.add(sig);
+    if (book.noProgress.size > 0) book.noProgress.clear();
+    return { action: 'allow', code: 'allow', count: 0 };
+  }
+
+  if (!toolMayHaveSideEffect(input.toolName)) {
+    const prev = book.noProgress.get(input.toolName);
+    const count = prev && prev.lastResultFp === fp ? prev.count + 1 : 1;
+    book.noProgress.set(input.toolName, { lastResultFp: fp, count });
+    if (count >= thresholds.noProgressWarnAfter) {
+      return {
+        action: 'warn',
+        code: 'idempotent_no_progress',
+        count,
+        notice: `[系统提示] 连续 ${count} 次读取类调用 (${input.toolName}) 返回的都是**同一份内容**`
+          + `(参数不同也一样) —— 世界没有变化, 再读还是它。请基于已有内容作答, 或改去查别的来源。`,
+      };
+    }
+    return { action: 'allow', code: 'allow', count };
+  }
+
+  return { action: 'allow', code: 'allow', count: 0 };
+}
