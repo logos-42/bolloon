@@ -193,6 +193,27 @@ export function writeBackCurrentTurnInto(
 
 import { LoopStallState, observeToolCall } from './tool-loop-guard.js';
 
+/**
+ * 过程纪律 (2026-10-01, 用户: 「智能体回复方式没有主动性 … 在过程里面更加主动考虑」)。
+ *
+ * 诊断: 系统提示里只有"理解→分析→调用→观察"这种**反应式**循环描述 ⇒ 模型容易"问一句答一句、
+ *   试一次就收尾、把方案当交付"。主动不是靠一句"请主动"能给的, 要落成**可判定的规矩**。
+ * 落地方式 (7 条, 都是"做/不做"能验收的): 先动手别先问 · 做到底别停在半成品 · 一个工具不够就换法继续 ·
+ *   工具说成功 ≠ 任务成功(读回验证) · 被阻塞如实说绝不编 · 每轮要么推进要么交付 · 顺手想影响面并给下一步建议。
+ */
+export const PROACTIVE_WORK_DISCIPLINE = `
+过程纪律 (比"答得漂亮"更重要, 逐条可判定):
+0. **先动手, 别先问**: 请求有显而易见的默认解释时, 按它做, 不要为了确认而停下 —— 只有"不同解释会让我做不同的事"时才问。
+1. **做到底**: 交付的是**能跑的东西 + 真实的工具输出**, 不是"我打算怎么做"。只写方案、只搭一半、只报告打算做什么, 都算没做完。
+2. **一个工具不够就换法继续**: 同一件事试到确实不通为止 —— 换参数/换命令/换路径/换工具接着试, 不要试一次就收尾。
+3. **工具说成功 ≠ 任务成功**: 写入/生成/发布这类动作, **读回一次**再声称完成(内容/存在/大小/哈希都可)。
+4. **被阻塞就如实说**: 讲清卡在哪一步、为什么、还缺什么; **绝不**用编造的结果顶替(编一个"看起来对"的输出比说"没做成"更糟)。
+5. **每一轮要么用工具推进, 要么给出结论**: 不要把"下一步我打算…"当成回答。
+6. **收尾时说三句**: 改了什么 · 验过什么(拿什么读到的) · 还剩什么。不重述过程。
+7. **过程中主动考虑**: 动手前先想这个改动的**影响面**(同类调用点 · 相邻功能 · 已有数据/契约), 发现关联问题就说出来,
+   并给出你建议的下一步 —— 主动是指"想在你前面", 不是"多问几句"。
+`;
+
 export class PiAgentSession implements AgentSession {
   private cwd: string;
   private peerId: string;
@@ -213,6 +234,7 @@ export class PiAgentSession implements AgentSession {
   /** M2.4: 缓存 tool 列表, registerTools() 之后不变, runReActLoop 多次循环复用 */
   private cachedToolDefinitions: string = '';
   /** M2.4: 缓存 persona section */
+
   private cachedPersonaSection: string = '';
   /** 2026-06-30: 持久化层 — 默认走 ~/.bolloon/sessions/cache/, 测试可注入临时目录. */
   private _sessionStore: SessionStore;
@@ -1413,6 +1435,8 @@ ${this.getToolDefinitions()}
 
 ${PiAgentSession.TOOL_SELECTION_GUIDE}
 
+${PROACTIVE_WORK_DISCIPLINE}
+
 工作模式:
 1. 理解用户自然语言请求
 2. 分析需要哪些工具来完成
@@ -2010,6 +2034,8 @@ ${this.currentIntentHint}
 ${toolDefs}
 
 ${PiAgentSession.TOOL_SELECTION_GUIDE}
+
+${PROACTIVE_WORK_DISCIPLINE}
 
 工作模式:
 1. 理解用户自然语言请求
