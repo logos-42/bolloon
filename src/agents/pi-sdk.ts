@@ -16,6 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { expandHomeArgs } from './tool-path-args.js';
 import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
+import { runWithWriteOrigin } from './skill-ledger.js';
 import { createHash } from 'node:crypto';
 import { shouldReview, shouldReviewTask, runExperienceReview } from './experience-review.js';
 import { decideLessonSink, skillsFromDirs, logLessonSuggestions, routeLessonToSkill } from './lesson-to-skill.js';
@@ -1247,7 +1248,9 @@ export class PiAgentSession implements AgentSession {
                 const decision = decideLessonSink(lesson, skillsFromDirs(dirs));
                 logLessonSuggestions(lesson, decision);
                 // ⓐ' 用户要求「**都进去**」⇒ 每条教训都落进技能库: 强命中写那个技能 ✓, 否则写沉淀技能 `lessons-learned` ✓
-                routeLessonToSkill(lesson, skillsFromDirs(dirs));
+                // 2026-10-01 **写来源隔离**: 复盘/自审产生的写, 打上 review 标记 ✓ ⇒
+                //   它只许治理**自己造出来**的技能 ✓(用户在 skills 里点名要的归用户 ✓)
+                runWithWriteOrigin('review', () => routeLessonToSkill(lesson, skillsFromDirs(dirs)));
                 // 2026-10-01 (用户: 「复盘任务能否触发 loop?」): 教训**回流成下一轮的任务源** ✓ ——
                 //   只"记下来"等于闭环断在这 ✗; 投进共享队列 ⇒ 空闲时排空 ⇒ 以**新一轮**浮现 ✓(绝不中途插队 ✓)。
                 try { pushNotice('review', `${lesson.title} —— ${String(lesson.body || '').replace(/\s+/g, ' ').slice(0, 120)}`); } catch { /* 回流失败不打断 */ }

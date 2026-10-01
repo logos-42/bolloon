@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import { loadWalletTool } from './wallet-tools.js';
 import * as fsSync from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { currentPackageRoot } from '../utils/version-info.js';
 import { documentReader, DocumentContent } from '../documents/reader.js';
 import { p2pNetwork } from '../network/p2p.js';
@@ -95,6 +96,14 @@ export interface RunCodeOptions {
   cwd?: string;
   tmpDir?: string;
 }
+/**
+ * 技能文件路径(账本/快照用) —— 与 skill-writer 的落盘规则一致: <root>/<name>/SKILL.md ✓
+ */
+function skillFilePath(name: string, scope: 'user' | 'project'): string {
+  const root = scope === 'project' ? path.join(process.cwd(), '.bolloon', 'skills') : path.join(os.homedir(), '.bolloon', 'skills');
+  return path.join(root, name, 'SKILL.md');
+}
+
 export async function runCodeSnippet(opts: RunCodeOptions): Promise<any> {
   const code = String(opts.code ?? '').trim();
   if (!code) return { success: false, error: 'code 必填' };
@@ -925,6 +934,8 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       try { body = ctx.getSkillBody ? await ctx.getSkillBody(name) : null; } catch { body = null; }
       if (!body) return { success: false, error: `没有这个技能: ${name}(用 list_skills 看有哪些)` };
       const clipped = body.length > 8000 ? body.slice(0, 8000) + `\n…[已截断, 原文 ${body.length} 字符]` : body;
+      // 2026-10-01: 用量遥测(旁挂文件 ✓ 绝不写进用户 SKILL.md ✗)—— best-effort, 失败不影响本次读取 ✓
+      try { const { bumpUsage } = await import('./skill-health.js'); bumpUsage(name); } catch { /* best-effort */ }
       return { success: true, output: clipped };
     },
   });
@@ -1802,10 +1813,19 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
           const t = JSON.parse(String(args.triggers || '[]'));
           if (Array.isArray(t)) triggers = t.map(String);
         } catch { /* triggers 解析失败忽略 */ }
+        // 2026-10-01: 变更前先留快照(覆盖已有技能时才有内容 ✓)+ 记"谁建的"(决定自审有没有资格治理它 ✓)
+        const { captureSkillBefore, appendLedger, currentWriteOrigin } = await import('./skill-ledger.js');
+        const { markCreatedBy } = await import('./skill-health.js');
+        const before = captureSkillBefore(skillFilePath(name, args.scope === 'project' ? 'project' : 'user'));
         const r = await createSkill(name, String(args.description || ''), body, {
           scope: args.scope === 'project' ? 'project' : 'user',
           triggers,
         });
+        if (r.ok) {
+          const after = captureSkillBefore(r.path);
+          appendLedger({ origin: currentWriteOrigin(), tool: 'create_skill', skill: name, file: r.path, beforeSha: before.beforeSha, beforeBytes: undefined as any, afterSha: after.beforeSha, bytesBefore: before.bytesBefore, bytesAfter: after.bytesBefore } as any);
+          try { markCreatedBy(name, currentWriteOrigin()); } catch { /* best-effort */ }
+        }
         return r.ok
           ? { success: true, output: `✅ skill '${name}' 已写入 ${r.path}` }
           : { success: false, error: r.error };
@@ -1828,8 +1848,13 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     execute: async (args) => {
       try {
         const { updateSkill } = await import('./skill-writer.js');
+        const { reviewMayTouch, captureSkillBefore, appendLedger, currentWriteOrigin } = await import('./skill-ledger.js');
         const name = String(args.name || '').trim();
         if (!name) return { success: false, error: 'name 必填' };
+        // 2026-10-01 **写来源隔离**: 自审只许治理自己造出来的技能 ✓ —— 用户点名要的归用户 ✓
+        const may = reviewMayTouch(name);
+        if (!may.ok) return { success: false, error: `拒绝(写来源隔离): ${may.reason}` };
+        const before = captureSkillBefore(skillFilePath(name, 'user'));
         let triggers: string[] | undefined;
         try {
           const t = JSON.parse(String(args.triggers || '[]'));
@@ -1841,6 +1866,10 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
           body: args.body ? String(args.body) : undefined,
           triggers,
         });
+        if (r.ok) {
+          const after = captureSkillBefore(r.path || skillFilePath(name, 'user'));
+          appendLedger({ origin: currentWriteOrigin(), tool: 'update_skill', skill: name, file: r.path || skillFilePath(name, 'user'), beforeSha: before.beforeSha, afterSha: after.beforeSha, bytesBefore: before.bytesBefore, bytesAfter: after.bytesBefore });
+        }
         return r.ok
           ? { success: true, output: `✅ skill '${name}' 已更新 ${r.path}` }
           : { success: false, error: r.error };
