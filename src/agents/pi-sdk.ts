@@ -20,6 +20,7 @@ import { IterationBudget, isRefundableTool } from './iteration-budget.js';
 import { recordToolCall, argsFingerprint } from './tool-telemetry.js';
 import { capToolResult } from './tool-result-gate.js';
 import { renderToolListWithParams } from './tool-subset.js';
+import { codeWriteTarget, decideTypecheck, formatTypecheckResult } from './code-write-gate.js';
 // 2026-10-01: 身份解析必须**静态导入** —— 之前在函数体里用 require(), 而打包后是 ESM ⇒
 //   require 是 undefined ⇒ 抛错被 catch 静默吞掉 ⇒ "自愈"根本没跑, DID 一直是空的 ✗。
 import { loadOrCreateAgentIdentity } from './agent-identity.js';
@@ -290,6 +291,10 @@ export class PiAgentSession implements AgentSession {
   private lastToolSig: string | null = null;
   /** 最近一条用户消息 (按需子集档用来判 intent) */
   private lastUserIntent = '';
+  /** 本回合改过的 TS 文件 (回合收尾自动类型检查用) */
+  private tsTouchedThisTurn: string[] = [];
+  /** 本回合是否已跑过类型检查 (一轮只跑一次) */
+  private typecheckRanThisTurn = false;
 
   private iterBudget: any = null;
   private iterBudgetWarned: boolean = false;
@@ -1129,6 +1134,21 @@ export class PiAgentSession implements AgentSession {
       // 2026-06-16: runReActLoop 现在返回 { reply, aiFailed, aiFailureReason } — 这里只需 reply 字符串
       const loopResult = await this.runReActLoop(this.currentOnStream ?? undefined, options?.signal);
 
+      // 2026-10-01: **本回合改过 TS ⇒ 收尾自动类型检查** (一轮一次) —— 复用已有的 tsc_check 工具
+      if (decideTypecheck(this.tsTouchedThisTurn, this.typecheckRanThisTurn)) {
+        this.typecheckRanThisTurn = true;
+        try {
+          const tscTool: any = this.tools.get('tsc_check');
+          if (tscTool?.execute) {
+            const r: any = await tscTool.execute({});
+            const line = formatTypecheckResult(r?.success !== false && !/error TS\d+/.test(String(r?.output || '')), String(r?.output || ''));
+            this.currentOnStream?.({ type: 'status', content: `🔎 ${line}`, tool: 'system' } as any);
+          }
+        } catch (e: any) {
+          this.currentOnStream?.({ type: 'status', content: `🔎 类型检查没能跑起来: ${String(e?.message || e).slice(0, 100)} (改动已落盘, 记得自己跑一次)`, tool: 'system' } as any);
+        }
+        this.tsTouchedThisTurn = [];
+      }
       // 2026-10-01: **回合后自审 (纯旁路)** —— 沉淀可复用经验, 对应"结束后沉淀"那一段。
       //   纪律: fire-and-forget (不阻塞主回合) · 只写 ~/.bolloon/experience/ (**不碰主对话/prompt 缓存**)
       //        · 节流 (默认 10 分钟/agent) · 失败只记一行日志, 绝不影响本回合结果。
@@ -2570,6 +2590,11 @@ ${await this.renderActivePlansSection()}
                 console.warn(`[PiAgent] ${toolCall.name} 结果过长(${capped.originalChars})已截断` + (capped.spilledTo ? `, 完整内容: ${capped.spilledTo}` : ''));
               }
               // #4 写操作"读回自证": 写类工具成功后自动核一次(存在? 大小?) ⇒ "工具说成功≠任务成功"从规矩变成机制
+              // 2026-10-01: 改了 TS 源码就记账 ⇒ 回合收尾自动跑类型检查 (把"靠自觉"变成机制)
+              {
+                const tsFile = codeWriteTarget(toolCall.name, (toolCall as any).args);
+                if (tsFile && !this.tsTouchedThisTurn.includes(tsFile)) this.tsTouchedThisTurn.push(tsFile);
+              }
               const verified = verifyWriteOutcome(toolCall.name, (toolCall as any).args, this.cwd);
               if (verified) result.output = `${String(result.output ?? '')}\n${verified}`;
               // #3 遥测: 记一行(工具/指纹/耗时/成败/结果大小/是否与上一次同签名) ⇒ 重复率可算
