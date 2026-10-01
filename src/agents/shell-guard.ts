@@ -327,7 +327,7 @@ export function checkCommand(cmd: string, args: string[]): ShellCheckResult {
     auditShellCall('denied', cmd, args, `命令 '${cmd}' 不在白名单`);
     return {
       allowed: false,
-      reason: `命令 '${cmd}' 不在白名单. 允许: ${Array.from(allowSet).join(', ')}`,
+      reason: `命令 '${cmd}' 不在白名单. 允许的命令: ${shortRoots(Array.from(allowSet))}`,
       matchedBy: policy ? 'cmd-allowlist' : 'fallback-deny'
     };
   }
@@ -417,7 +417,7 @@ export function checkWritePath(targetPath: string): ShellCheckResult {
   auditShellCall('denied', '', [], `路径 '${targetPath}' 不在任何 allowlist 中`, targetPath);
   return {
     allowed: false,
-    reason: `路径 '${targetPath}' 不在白名单. 允许: ${allowlist.join(', ')}`,
+    reason: `路径 '${targetPath}' 不在白名单. 允许的根: ${shortRoots(allowlist)}`,   // 2026-10-01: 不再把整张白名单(含临时目录)塞进错误 ✓
     matchedBy: 'path-allowlist'
   };
 }
@@ -564,4 +564,17 @@ export function writePolicy(newPolicy: SelfImprovePolicy): boolean {
     console.error('[shell-guard] 写策略失败:', err);
     return false;
   }
+}
+
+/**
+ * 错误信息里的白名单**短形态** (2026-10-01)。
+ * 为什么: 原来把**整张白名单**拼进 `reason` ✗ ⇒ 这条报错随后被塞进
+ *   ① 反思框(用户看到一屏白名单 ✗) ② 最终回复框(看着像"回复不完整" ✗ —— 其实是白名单切片 ✗)
+ *   ③ 熔断判定(长文本撞上无关关键词 ⇒ 被误判成"鉴权类错误" ⇒ 直接熔断停在 needs_human ✗)。
+ * 做法: 滤掉临时目录噪音(不该出现在给人看的错误里 ✓) + 只列前若干条 + 给总数 ✓。
+ */
+function shortRoots(entries: readonly string[], max = 6): string {
+  const clean = entries.filter((e) => !/bolloon-bootstrap|\/var\/folders\/|\/tmp\//.test(e));
+  const shown = clean.slice(0, max).join(', ');
+  return clean.length > max ? `${shown} …(共 ${clean.length} 条)` : (shown || '(空)');
 }

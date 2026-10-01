@@ -18,7 +18,7 @@ export type ErrorClass =
   | 'bad_input'            // 参数格式错误, 文件不存在, 路径非法
   | 'api_error'            // LLM API 401/403/quota/rate-limit
   | 'internal_error'       // 工具内部异常 (非预期 crash)
-  | 'unknown';             // 兜底
+  | 'unknown' | 'policy';             // 兜底
 
 const ERROR_SIGNATURES: Array<{ pattern: RegExp; cls: ErrorClass; label: string }> = [
   { pattern: /unknown tool|未知工具|tool.*not found|is not a function/i, cls: 'tool_not_found', label: '工具不存在' },
@@ -29,6 +29,9 @@ const ERROR_SIGNATURES: Array<{ pattern: RegExp; cls: ErrorClass; label: string 
   //   (用户实测: list_files '~/.bolloon' ⇒ ENOENT, 却被标成"参数错误", 真原因被标签盖住)
   { pattern: /ENOENT|no such file|does not exist|not exist/i, cls: 'bad_input', label: '路径/文件不存在' },
   { pattern: /invalid path|bad argument|ERR_INVALID|参数/i, cls: 'bad_input', label: '参数错误' },
+  // 2026-10-01: **策略拒绝**必须单列且排在前面 —— 否则长文本里的无关关键词会把它误判成鉴权类 ⇒ 熔断 ✗
+  //   (现场: 「路径被护栏拒…」被当成"鉴权类错误不重试" ⇒ 停在 needs_human ✗)
+  { pattern: /路径被护栏拒|不在白名单|被护栏拒|denied by policy/i, cls: 'policy', label: '策略拒绝(护栏)' },
   { pattern: /401|403|quota|rate limit|API key|unauthorized|authentication/i, cls: 'api_error', label: 'API 认证错误' },
 ];
 
@@ -152,6 +155,12 @@ const ERROR_TO_STRATEGIES: Record<ErrorClass, StrategySuggestion[]> = {
     { action: 'retry', reason: '错误类型不确定', detail: '换个方式或参数再试一次' },
     { action: 'change_tool', reason: '原方法不可行', detail: '尝试用其他工具组合达成目标' },
   ],
+  // 2026-10-01: 护栏拒绝 ⇒ **别无脑重试同一条路径** ✓: 先改到允许的根下, 或问用户要目标位置 ✓
+  policy: [
+    { action: 'change_params', reason: '策略拒绝(护栏)', detail: '别原样重试: ① 换到白名单内的根(docs/** · src/web/** · *.md · ~/.bolloon/**); ② 或先问用户"这个文件该放哪"; ③ 若是工具/命令不在白名单, 换等价的白名单内工具' },
+    { action: 'change_tool', reason: '换等价工具', detail: '写文件用 write_file 到允许路径; 命令换白名单内的等价命令' },
+  ],
+
 };
 
 export function buildReflection(
