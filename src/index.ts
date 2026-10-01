@@ -221,22 +221,18 @@ const s = {
   },
 
   Thinking: () => {
-    const frames = ['(｀・ω・´)', '(´･_･`)', '(｡•́︿•̀｡)', 'ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ', '(◕‿◕)'];
-    let i = 0;
-    let dots = 0;
-    const frame = frames[0];
-    appendLine(`  ${frame} 思考...`);
-    return setInterval(() => {
-      i = (i + 1) % frames.length;
-      dots = (dots + 1) % 4;
-      const dotStr = '.'.repeat(dots || 1);
-      appendLine(`\r  ${frames[i]} 思考${dotStr}   `);
-    }, 600);
+    // 2026-10-01 (用户: 「颜文字被加载进去了」/「可能是 ink 渲染的问题」): **真凶在这里** ✗ ——
+    //   原来每一帧都走 `appendLine` ⇒ 而对话流是 Ink 的 `<Static>`(**写一次永不重绘** ✓)
+    //   ⇒ 于是每 600ms 就有一条「思考中...」被**永久烙进滚动区** ✗, 带 `\r` 也擦不掉 ✗,
+    //   滚出来的残影还能被框选/拖进输入框 ⇒ 混进上下文 ✓。
+    //   现在改成走 **Ink 的瞬时行**(footer 自己帧进动画 ✓, 只重绘一行 ✓, 不落进 Static ✓)。
+    inkSetThinking(true);
+    return setInterval(() => { /* 帧进由 Ink footer 负责; 这里只保留一个可被 clearInterval 的句柄 */ }, 600);
   },
 
   clearThinking: (interval: ReturnType<typeof setInterval>) => {
     clearInterval(interval);
-    process.stdout.write('\r' + ' '.repeat(40) + '\r');
+    inkSetThinking(false);
   },
 
   dialog: async (title: string, promptText: string): Promise<string> => {
