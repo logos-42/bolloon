@@ -221,6 +221,10 @@ export interface ToolRegistryContext {
    * 获取当前 channel 已加密存储的钱包信息 (用于自动支付).
    * 返回 null 表示未绑定或未加密存储私钥.
    */
+  /** 已装载技能 (2026-10-01: 技能发现用 —— 实测技能描述原先从不进提示 ✗) */
+  listSkills?: () => Array<{ name: string; description?: string }>;
+  /** 读某个技能全文 (走 Skill.execute({}) —— 它会返回 SKILL.md 的正文) */
+  getSkillBody?: (name: string) => Promise<string | null>;
   getChannelWallet?: () => Promise<{
     encryptedPrivateKey: string;
     encryptedPrivateKeyIv: string;
@@ -850,6 +854,43 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   //   与 shell_exec 的区别: 直接接受完整 shell 命令字符串, 更适合模型自主写命令.
   // 2026-10-01 (优化 #2 v1): **工具发现** —— 125 个工具不可能都记住, 给一个"按关键词找工具"的入口。
   // 空关键词只回**分类索引**(名称清单), 有关键词才回"名称+用途摘要" ⇒ 不刷屏。
+  // 2026-10-01 (用户: 「skills 教训学习, bolloon 有吗, 从 hermes 触发的方法是什么, 学一下」):
+  //   **实测缺口**: `skill-loader` 把 1300 个技能**注册**进注册表 ✓, 但 `describeSkill` 只 import 从没调用 ✗
+  //   ⇒ 技能**描述从不进提示** ⇒ 模型不知道它们存在 ⇒ 技能触发链**断在这里** ✗。
+  //   她那边的做法: 启动自动装载 + 按**描述**在提示里露面 + 需要时用 `skill_view` 读全文 ✓。
+  //   bolloon 有 1300 个(她百来号) ⇒ 全量注入会撑爆提示 ✗ ⇒ 改成**两个发现工具**(和 `list_tools` 同一思路 ✓)。
+  ctx.tools.set('list_skills', {
+    name: 'list_skills',
+    description: '用于**找技能**: 给关键词(中文/英文都行)⇒ 返回已装载技能的名字+说明(≤20 条); 不给关键词 ⇒ 先给总数与前若干条. 找到后用 read_skill 读全文再照做.',
+    parameters: { keyword: '可选: 关键词(名字或说明里出现的词); 省略则给概览' },
+    async execute(args: any) {
+      const kw = String(args?.keyword ?? '').trim().toLowerCase();
+      const all: any[] = typeof (ctx as any).listSkills === 'function' ? (ctx as any).listSkills() : [];
+      if (!all.length) return { success: true, output: '(当前没有装载技能)' };
+      if (!kw) {
+        return { success: true, output: `已装载 ${all.length} 个技能. 前 20 个:\n` + all.slice(0, 20).map((s) => `- ${s.name}: ${String(s.description || '').slice(0, 80)}`).join('\n') + '\n\n用 list_skills {keyword:"…"} 找具体的.' };
+      }
+      const hits = all.filter((s) => `${s.name} ${s.description || ''}`.toLowerCase().includes(kw));
+      if (!hits.length) return { success: true, output: `没有技能匹配 "${kw}"(共 ${all.length} 个). 换个更短的词试试.` };
+      return { success: true, output: hits.slice(0, 20).map((s) => `- ${s.name}: ${String(s.description || '').slice(0, 100)}`).join('\n') + (hits.length > 20 ? `\n…还有 ${hits.length - 20} 个` : '') };
+    },
+  });
+
+  ctx.tools.set('read_skill', {
+    name: 'read_skill',
+    description: '用于**读技能全文**(先 list_skills 找名字). 按里面的步骤/判据做事, 别只读个大概就动手; 内容长的会截断.',
+    parameters: { name: '技能名(必填, 来自 list_skills)' },
+    async execute(args: any) {
+      const name = String(args?.name ?? '').trim();
+      if (!name) return { success: false, error: '缺 name; 先用 list_skills 找' };
+      let body: string | null = null;
+      try { body = ctx.getSkillBody ? await ctx.getSkillBody(name) : null; } catch { body = null; }
+      if (!body) return { success: false, error: `没有这个技能: ${name}(用 list_skills 看有哪些)` };
+      const clipped = body.length > 8000 ? body.slice(0, 8000) + `\n…[已截断, 原文 ${body.length} 字符]` : body;
+      return { success: true, output: clipped };
+    },
+  });
+
   ctx.tools.set('list_tools', {
     name: 'list_tools',
     description: '找不到该用哪个工具时用这个: 给关键词(如 "文件"/"钱包"/"群" / "grep")⇒ 返回匹配工具的名字+用途摘要; 不给关键词 ⇒ 回全部分类索引. 你**先** list_tools 摸清工具, 再动手.',

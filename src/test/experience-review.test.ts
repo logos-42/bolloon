@@ -105,6 +105,12 @@ describe('挂点存在 (源级核对: 别只写了模块忘了接)', () => {
   it('pi-sdk 里 runExperienceReview 被调用, 且挂点在 runReActLoop 之后', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/agents/pi-sdk.ts'), 'utf-8');
     expect(src).toContain('runExperienceReview({');
-    expect(src).toContain('shouldReview(reviewNow');
+    expect(src).toContain('shouldReviewTask(reviewNow');
+      // 2026-10-01: 判定从"每 10 分钟一次"(shouldReview) 换成"**换任务就立刻复盘**(shouldReviewTask)" ——
+      //   用户要的是「自动每次做完任务都要总结经验」⇒ 门跟着核对**新契约**(不是留着老写法 ✗)
+      expect(src).toContain('taskSig');
+      // 同一条教训还要**接入判断力系统**(不只落经验文件)
+      expect(src).toContain('storeHumanJudgment(');
+      expect(src).toContain('onLesson');
   });
 });

@@ -15,7 +15,9 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { expandHomeArgs } from './tool-path-args.js';
-import { shouldReview, runExperienceReview } from './experience-review.js';
+import { createHash } from 'node:crypto';
+import { shouldReview, shouldReviewTask, runExperienceReview } from './experience-review.js';
+import { decideLessonSink, skillsFromDirs, logLessonSuggestions, routeLessonToSkill } from './lesson-to-skill.js';
 import { IterationBudget, isRefundableTool } from './iteration-budget.js';
 import { recordToolCall, argsFingerprint } from './tool-telemetry.js';
 import { capToolResult } from './tool-result-gate.js';
@@ -241,6 +243,8 @@ export const PROACTIVE_WORK_DISCIPLINE = `
 4. **被阻塞就如实说**: 讲清卡在哪一步、为什么、还缺什么; **绝不**用编造的结果顶替(编一个"看起来对"的输出比说"没做成"更糟)。
 5. **每一轮要么用工具推进, 要么给出结论**: 不要把"下一步我打算…"当成回答。
 6. **收尾时说三句**: 改了什么 · 验过什么(拿什么读到的) · 还剩什么。不重述过程。
+7.4 **技能是"要用时先读再照做"**: 库里有一批已装载技能(名字+说明), 用 list_skills <关键词> 找,
+    用 read_skill <名字> 读全文 —— **相关时先读它再动手**, 别凭印象做(技能里往往写着踩过的坑与判据 ✓)。
 7.5 **一轮里可以同时调多个独立工具** (并行执行已支持): 互不依赖的读取/查询**一次发出去**, 别一个一个来回 —
     零碎调用既慢又费预算(批量工具还会退还额度 ✓)。
 7.6 **收尾标记的语义**(别猜, 就按这条): 写完那个结束标记 = "**我已收尾, 且自己验过**(改了什么/拿什么验证的), 请复核"。
@@ -298,6 +302,8 @@ export class PiAgentSession implements AgentSession {
 
   private iterBudget: any = null;
   private iterBudgetWarned: boolean = false;
+  /** 上一次已复盘的**任务签名** (签名变了 ⇒ 立刻复盘, 对应"每次任务都总结" ✓) */
+  private lastReviewedTaskSig: string | undefined = undefined;
   /** 上一次回合后自审的时间 (节流; 0 = 从未) */
   private lastExperienceReviewAt: number = 0;
   /** 2026-06-30: 持久化层 — 默认走 ~/.bolloon/sessions/cache/, 测试可注入临时目录. */
@@ -802,6 +808,13 @@ export class PiAgentSession implements AgentSession {
     this._inboxMessages = [];
     const toolCtx: ToolRegistryContext = {
       tools: this.tools,
+      // 2026-10-01: 技能发现(list_skills / read_skill)的实现 —— 技能原先只注册不露面 ✗, 现在模型能自己找
+      listSkills: () => this.skillRegistry.list().map((sk: any) => ({ name: sk.name, description: String(sk.description || '') })),
+      getSkillBody: async (name: string) => {
+        const sk: any = this.skillRegistry.get(name);
+        if (!sk) return null;
+        try { return await sk.execute({}); } catch { return null; }
+      },
       cwd: this.cwd,
       identity: this.identity,
       persona: this.persona,
@@ -1154,9 +1167,14 @@ export class PiAgentSession implements AgentSession {
       //        · 节流 (默认 10 分钟/agent) · 失败只记一行日志, 绝不影响本回合结果。
       try {
         const reviewNow = Date.now();
-        if (shouldReview(reviewNow, this.lastExperienceReviewAt)) {
+        const turnSummary = `用户: ${String(this.currentUserInput || '').slice(0, 2000)}\n助手: ${String(loopResult?.reply || '').slice(0, 4000)}`;
+        // 任务签名: 用户这次要的东西 + 用了哪些工具 ⇒ 换任务立刻复盘(同一任务才节流) ✓
+        const taskSig = createHash('sha256')
+          .update(`${String(this.currentUserInput || '').slice(0, 300)}|${(this as any).totalToolCallsThisTurn || ''}`)
+          .digest('hex').slice(0, 12);
+        if (shouldReviewTask(reviewNow, this.lastExperienceReviewAt, this.lastReviewedTaskSig, taskSig)) {
           this.lastExperienceReviewAt = reviewNow; // 先记账, 免得多路并发各起一次
-          const turnSummary = `用户: ${String(this.currentUserInput || '').slice(0, 2000)}\n助手: ${String(loopResult?.reply || '').slice(0, 4000)}`;
+          this.lastReviewedTaskSig = taskSig;
           void runExperienceReview({
             turnSummary,
             chat: async (prompt: string) => {
@@ -1164,6 +1182,29 @@ export class PiAgentSession implements AgentSession {
               return typeof r === 'string' ? r : String(r?.content ?? r?.text ?? '');
             },
             log: (m: string) => console.warn(m),
+            // 2026-10-01: 写了经验之后再找"能沉淀进哪个已有技能"的候选 —— **只记候选, 不自动改技能** ✓
+            //   (实测: 拿真实教训撞真实 1300 个技能, 最高分只有 2 且 top 命中是瞎的 ✗ ⇒ 不替人决定 ✓)
+            onLesson: (lesson) => {
+              try {
+                // ⓐ 管理: 找"能沉淀进哪个已有技能"的候选(只记, 不自动改 ✗)
+                const dirs = defaultSkillPaths(os.homedir(), process.cwd());
+                const decision = decideLessonSink(lesson, skillsFromDirs(dirs));
+                logLessonSuggestions(lesson, decision);
+                // ⓐ' 用户要求「**都进去**」⇒ 每条教训都落进技能库: 强命中写那个技能 ✓, 否则写沉淀技能 `lessons-learned` ✓
+                routeLessonToSkill(lesson, skillsFromDirs(dirs));
+                // ⓑ 接入**判断力系统**: 同一条教训也进 HumanJudgment(带 source/confidence/revisable ⇒ 可被后续演化取代 ✓)
+                //    这样经验库与判断力库**同一份来源**, 判断力注入(gate)时就能用上 ✓
+                import('../pi-ecosystem-judgment/human-value-store.js').then((m) => m.storeHumanJudgment({
+                  decision: lesson.title,
+                  decision_type: 'modify',
+                  reasons: [lesson.body],
+                  values_derived: [],
+                  context: { domain: lesson.klass || 'general', complexity: 'simple', stakes: 'medium', time_pressure: 'low' },
+                  outcome: { approved: true },
+                  metadata: { source: 'trajectory', confidence: 0.7, revisable: true },
+                } as any)).catch(() => { /* 判断力写入失败不影响经验沉淀 */ });
+              } catch { /* 这一段整体是锦上添花, 绝不外泄错误 */ }
+            },
           }).catch(() => { /* 自审绝不外泄错误 */ });
         }
       } catch { /* 挂点自身失败也不影响主流程 */ }

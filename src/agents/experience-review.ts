@@ -58,6 +58,23 @@ export function shouldReview(
   return nowMs - lastAtMs >= minIntervalMs;
 }
 
+/**
+ * **每次任务都复盘** (2026-10-01, 用户: 「自动每次做完任务都要总结经验」)。
+ * 与 `shouldReview` 的区别: 那个是"每 10 分钟最多一次" ✗ —— 会漏掉"做完一个任务"这种**事件** ✓;
+ * 这条按**任务签名**判: 签名变了(换任务了) ⇒ **立刻复盘** ✓; 同一任务重复 ⇒ 才回到节流 ✓。
+ * (成本控制: 只在"这一回合真的干了活"时才算签名 —— 由调用方保证 ✓; 且复盘是 fire-and-forget ✓。)
+ */
+export function shouldReviewTask(
+  nowMs: number,
+  lastAtMs: number | undefined,
+  lastSig: string | undefined,
+  sig: string,
+  minIntervalMs: number = DEFAULT_MIN_INTERVAL_MS,
+): boolean {
+  if (sig && sig !== lastSig) return true;                 // ★ 换了任务 ⇒ 立刻复盘
+  return shouldReview(nowMs, lastAtMs, minIntervalMs);     // 同一任务 ⇒ 仍按节流, 免得反复审同一段
+}
+
 /** 现有库的目录 (喂给模型, 让它知道"已经有哪些类/条目", 从而倾向于改而不是加) */
 export function listExperienceIndex(home = os.homedir()): string {
   const dir = experienceDir(home);
@@ -177,6 +194,8 @@ export async function runExperienceReview(opts: {
   lastAtMs?: number;
   minIntervalMs?: number;
   log?: (msg: string) => void;
+  /** 写成功后把这条教训交出去(2026-10-01: 用来找"可沉淀进哪个技能"的候选 ✓ 只读不写 ✓) */
+  onLesson?: (lesson: { title: string; body: string; klass?: string }) => void;
 }): Promise<{ reviewed: boolean; applied: boolean; file?: string; updated?: boolean; reason?: string }> {
   const home = opts.home || os.homedir();
   const now = opts.nowMs ?? Date.now();
@@ -190,7 +209,10 @@ export async function runExperienceReview(opts: {
     const d = parseReviewDecision(raw);
     if (d.action !== 'write') return { reviewed: true, applied: false, reason: d.reason || 'none' };
     const r = applyExperience(d, home, new Date(now).toISOString());
-    if (r.wrote) log(`[experience] ${r.updated ? '更新' : '新增'} ${path.basename(r.file)} · ${d.title}`);
+    if (r.wrote) {
+      log(`[experience] ${r.updated ? '更新' : '新增'} ${path.basename(r.file)} · ${d.title}`);
+      try { opts.onLesson?.({ title: d.title!, body: d.body!, klass: d.klass }); } catch { /* 回调绝不影响落库 */ }
+    }
     return { reviewed: true, applied: r.wrote, file: r.wrote ? r.file : undefined, updated: r.wrote ? r.updated : undefined };
   } catch (e: any) {
     log(`[experience] 自审跳过(非致命): ${String(e?.message || e).slice(0, 120)}`);
