@@ -159,7 +159,20 @@ export function truncateSafe(s: string, maxWidth: number): string {
 
 
 /** 画线字符的**保守**宽度 (U+2500 属 East Asian Width = Ambiguous ⇒ 部分终端按 2 列渲染) */
-export const RULE_CHAR_SAFE_WIDTH = dispWidthSafe('─');
+/**
+ * 分界线默认字符 (2026-10-01, 用户报「输入框宽度变窄了」)。
+ *
+ * 上一版把 `─`(U+2500, East Asian Width = **Ambiguous**)按 **2 列**算字符数 ⇒ 在"真的按 2 列渲染"
+ * 的终端上不折行了 ✓, 但线只剩**一半长** ✗ —— 用户看到的就是"输入框变窄"。
+ * 两难: Ambiguous 字符的宽度**由终端决定**, 想既全宽又绝不折行, 只能用**宽度确定是 1 列**的字符。
+ * **用户要的是好看**: 所以默认就用 `─` 且按 1 列算 ⇒ **满宽实线** ✓ (2026-10-01 用户明确: 「我不要这样的虚线」)。
+ * 如果哪台终端的 `─` 是 2 列宽, 那它这种满宽线会折行 ⇒ 用 `BOLLOON_RULE_CHAR_WIDTH=2` 一键退回半宽。
+ */
+export function defaultRuleChar(): string {
+  const env = String(process.env.BOLLOON_RULE_CHAR || '').trim();
+  return env ? env.slice(0, 1) : '─';
+}
+export const RULE_CHAR_SAFE_WIDTH = dispWidthSafe(defaultRuleChar());
 
 /**
  * 生成一条**保证不折行**的水平线 (2026-10-01)。
@@ -171,8 +184,13 @@ export const RULE_CHAR_SAFE_WIDTH = dispWidthSafe('─');
  * 规矩: 一律按**保守宽度**(Ambiguous 当 2 列)算字符数 —— 宁可线短一点, 绝不超宽。
  *   另一端(终端真的按 1 列渲染)只会让线看起来短一半, 不会坏。
  */
-export function ruleFor(width: number, char = '─'): string {
-  const per = Math.max(1, dispWidthSafe(char));
+export function ruleFor(width: number, char: string = defaultRuleChar()): string {
+  // 2026-10-01 (用户: 「我不要这样的虚线」): 默认 `─` 且**按 1 列**算 ⇒ 满宽的实线 ✓
+  //   代价: 某些终端把 `─`(Ambiguous) 渲染成 2 列 ⇒ 这种全宽线会超过终端宽、触发折行(底栏重复打印)。
+  //   给那种机器留了一键开关:  BOLLOON_RULE_CHAR_WIDTH=2   ⇒ 按 2 列算(线短一半, 但不折行)。
+  //   也可以换字符:      BOLLOON_RULE_CHAR=-
+  const override = parseInt(String(process.env.BOLLOON_RULE_CHAR_WIDTH || ''), 10);
+  const per = Math.max(1, Number.isFinite(override) && override > 0 ? override : 1);
   const cells = Math.max(2, Math.floor(Math.max(0, width) / per));
   return char.repeat(cells);
 }
