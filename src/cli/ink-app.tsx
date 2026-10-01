@@ -12,7 +12,7 @@ import { ruleFor } from './status-segments.js';
 import { loadInputHistory, appendInputHistory, MEMORY_CAP } from './input-history.js';
 import * as fs from 'fs';
 import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import { collapsePaste, shouldCollapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, shouldSuppressMention, singleLine, PASTE_MENTION_SHIELD_MS } from './input-paste.js';
+import { collapsePaste, shouldCollapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, shouldSuppressMention, singleLine, logPopupEvent, PASTE_MENTION_SHIELD_MS } from './input-paste.js';
 import TextInput from 'ink-text-input';
 import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
@@ -227,6 +227,11 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   );
   const mentionKey = mention ? `${mention.kind}:${mention.start}` : null;
   const [items, setItems] = useState<MentionItem[]>([]);
+  // 2026-10-01: 弹窗观测 —— 只要 mention 命中或被抑制就记一行(下一次一读就知道是哪个弹窗 ✓)
+  useEffect(() => {
+    if (mention) void logPopupEvent({ ev: 'mention.hit', kind: mention.kind, trigger: mention.trigger, len: input.length, head: input });
+    else if (input.length > 0) void logPopupEvent({ ev: 'mention.none', len: input.length, head: input });
+  }, [mentionKey, input.length]);
   const [sel, setSel] = useState(0);
   const [dismissed, setDismissed] = useState<string | null>(null);
 

@@ -172,3 +172,20 @@ export function shouldSuppressMention(input: string, shieldUntil: number, now = 
   if (String(input ?? '').length > MENTION_MAX_INPUT_CHARS) return true;
   return Number(shieldUntil || 0) > now;
 }
+
+
+/**
+ * 补全弹窗**观测** (2026-10-01, 用户连报"还是跳出弹窗") —— 目的: 下一次粘贴一读日志就知道是**哪个**弹窗。
+ * 只记 事件名/类型/触发字符/输入长度/前 40 字符(足以定位, 不含大段正文) ✓; 上限 500 行 ✓; 失败静默 ✓。
+ */
+export function logPopupEvent(ev: { ev: string; kind?: string; trigger?: string; len: number; head?: string }, home = os.homedir()): void {
+  try {
+    const dir = path.join(home, '.bolloon', 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'popup-events.jsonl');
+    try {
+      if (fs.existsSync(file) && fs.readFileSync(file, 'utf-8').split('\n').length > 500) fs.writeFileSync(file, '', 'utf-8');
+    } catch { /* 忽略 */ }
+    fs.appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...ev, head: (ev.head || '').slice(0, 40) }) + '\n', 'utf-8');
+  } catch { /* 观测失败绝不影响输入 */ }
+}
