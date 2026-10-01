@@ -267,6 +267,9 @@ function resolve(ctx: ParseContext, name: string): string | null {
   return defaultResolveAlias(name, ctx.tools);
 }
 
+/** 诊断开关 (2026-10-01): 默认关 —— 这条 diag 在热路径上且上屏, 默认开会刷屏 */
+const PARSE_DIAG_ON = process.env.BOLLOON_PARSE_DIAG === '1' || process.env.BOLLOON_VERBOSE === '1';
+
 export function parseToolCall(content: string, ctx: ParseContext): ToolCall | null {
   if (!content) return null;
 
@@ -277,7 +280,7 @@ export function parseToolCall(content: string, ctx: ParseContext): ToolCall | nu
   //   怀疑 parseToolCall 没拿到正确的 name/args. 这里只打日志不改任何逻辑.
   //   日志形态: [parseToolCall diag] ok=true/false name=... argKeys=... rawHead=...
   //   用 console.warn 一行 JSON, 方便 grep + 排时间线.
-  try {
+  if (PARSE_DIAG_ON) try {
     const result = (function _diagProbe() {
       // 用与正文完全相同的解析路径,但提前跑一次,记录是否命中
       // 走完下面所有分支再覆盖回原值即可
@@ -300,6 +303,9 @@ export function parseToolCall(content: string, ctx: ParseContext): ToolCall | nu
       }
       return null;
     })();
+    // 2026-10-01: 这条诊断默认**不打** —— 它在 parseToolCall 热路径上且上屏,
+    //   用户实测每轮都刷 `[parseToolCall diag] rawLen=… rawHead=…` (仓规: 内部运行日志不进回复流)。
+    //   要排障显式开: BOLLOON_PARSE_DIAG=1 (或 BOLLOON_VERBOSE=1 / --verbose)。
     console.warn(
       '[parseToolCall diag] rawLen=' + content.length +
       ' strippedLen=' + strippedContent.length +

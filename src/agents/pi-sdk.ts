@@ -769,12 +769,28 @@ export class PiAgentSession implements AgentSession {
   }
 
   private createDefaultIdentity(): IdentityDoc {
-    return {
-      did: `did:pi:${this.peerId.substring(0, 16)}`,
-      name: `Agent-${this.peerId.substring(0, 8)}`,
-      publicKey: this.peerId,
-      createdAt: Date.now()
-    };
+    // 2026-10-01: 原先自造 `did:pi:<peerId>` —— **不是有效 DID** (仓里 server.ts 自己都把 did:pi:
+    //   当"待升级"占位; 用户实测 get_identity 报 did:pi:ch_1785668060213)。
+    //   改用仓里既有的真身份生成器 (agent-identity.loadOrCreateAgentIdentity, 同步, 产 did:key + 落盘密钥)。
+    const scope = this.currentAgentId || this.peerId || 'default';
+    try {
+      const { loadOrCreateAgentIdentity } = require('./agent-identity.js') as typeof import('./agent-identity.js');
+      const real = loadOrCreateAgentIdentity(scope);
+      return {
+        did: real.did,
+        name: `Agent-${this.peerId.substring(0, 8)}`,
+        publicKey: real.publicKey || this.peerId,
+        createdAt: Date.now(),
+      };
+    } catch {
+      // 真身份生成失败时**不编假 DID**: 如实留空, 由 /did 与 get_identity 报"未绑定"
+      return {
+        did: '',
+        name: `Agent-${this.peerId.substring(0, 8)}`,
+        publicKey: this.peerId,
+        createdAt: Date.now(),
+      };
+    }
   }
 
   private checkMinimax(): boolean {
