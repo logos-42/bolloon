@@ -186,8 +186,22 @@ const SHOW_CURSOR = '\x1b[?25h';
  *   Ink 在跑 ⇒ **一律走它自己的消息流**; 没跑(boot 期)⇒ 才直写 ✓。
  */
 function writeOut(line: string): void {
-  if (startupPanelReady) { try { appendLine(line); return; } catch { /* 落到直写 */ } }
+  if (startupPanelReady) { try { appendLine(line); return; } catch { /* 落到缓冲 */ } }
+  // 2026-10-01 (用户: 「iroh: … / ✓ [4/5] 启动 iroh P2P，没拦住？」):
+  //   启动步骤(第 425~503 行)比 Ink 起来(第 1366 行)**早 900 行** ⇒ 在那一刻装拦截器根本来不及 ✗。
+  //   所以: Ink 还没起 ⇒ **先进缓冲**(不直写, 不然会和启动面板交错 ✗)⇒ Ink 起来后**一次性灌进对话流** ✓。
+  //   缓冲有上限(免得异常路径无限攒 ✓); 真超限就退回直写(宁可难看也别丢日志 ✓)。
+  if (bootBuffer.length < 500) { bootBuffer.push(line); return; }
   console.log(line);
+}
+
+/** 启动期日志缓冲: Ink 起来之前攒着, `flushBootBuffer()` 一次性灌进对话流 ✓ */
+const bootBuffer: string[] = [];
+export function flushBootBuffer(): void {
+  while (bootBuffer.length) {
+    const line = bootBuffer.shift() as string;
+    try { appendLine(line); } catch { console.log(line); }
+  }
 }
 
 const s = {
@@ -1368,6 +1382,8 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
     initialStatus,
     getStatus,
   );
+  // 2026-10-01: Ink 起来了 ⇒ 把启动期缓冲的日志一次性灌进对话流(不丢, 也不跟面板交错 ✓)
+  flushBootBuffer();
 
   // 2026-08-10: 自动整理心跳 (CLI 侧, 与社交心跳并列) — 启动后立即"固定看一下 skills view"
   //   (扫描遗留 skills), 之后按周期 (默认 30min, env BOLLOON_ORGANIZE_HEARTBEAT_MS) 完整进化经验.
