@@ -12,6 +12,7 @@ import { ruleFor } from './status-segments.js';
 import { loadInputHistory, appendInputHistory, MEMORY_CAP } from './input-history.js';
 import * as fs from 'fs';
 import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
+import { collapsePaste } from './input-paste.js';
 import TextInput from 'ink-text-input';
 import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
@@ -465,8 +466,15 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     historyIdxRef.current = -1;
     draftRef.current = '';
     setInput('');
+    // 2026-10-01: 长输入/粘贴**折叠** —— 整段落文件, 对话流只留一行引用(指向文件 ⇒ 需要细节读得回来)
+    //   阈值: ≥8 行 或 ≥1200 字符; 短输入原样发送; 写盘失败退化成原样(绝不打断发送)。
+    let outgoing = trimmed;
+    try {
+      const collapsed = collapsePaste(trimmed);
+      if (collapsed.collapsed) outgoing = collapsed.sendText;
+    } catch { /* 折叠失败 = 原样发送 */ }
     // 用户消息由 processInput 统一通过 appendLine(renderUserMessage) 显示
-    onPrompt(trimmed);
+    onPrompt(outgoing);
   }, [onPrompt]);
 
   /**
