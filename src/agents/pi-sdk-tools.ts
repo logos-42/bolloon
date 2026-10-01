@@ -252,7 +252,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('summarize_document', {
     name: 'summarize_document',
-    description: '总结文档内容，分析并生成摘要',
+    description: '读一篇文档并生成摘要. 只想要摘要 ⇒ 这个; 想按你的要求改写 ⇒ improve_document; 想自己读原文 ⇒ read_document.',
     parameters: { path: '文件路径 (必填)', context: '可选, 总结上下文提示' },
     execute: async (args) => {
       try {
@@ -278,7 +278,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('improve_document', {
     name: 'improve_document',
-    description: '根据要求改进文档内容',
+    description: '按你的要求**改写**已有文档 (保留原意、改表达). 纯改写 ⇒ 用这个; 只想要摘要 ⇒ summarize_document; 全新写一份 ⇒ write_file.',
     parameters: { path: '文件路径 (必填)', requirements: '改进要求 (必填)' },
     execute: async (args) => {
       try {
@@ -304,7 +304,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('list_peers', {
     name: 'list_peers',
-    description: '列出已连接的对等节点',
+    description: '列**已连接**的 P2P 对等节点. 想找远端可发消息的 channel ⇒ list_remote_channels; 想看好友申请 ⇒ list_pending_friend_requests.',
     parameters: {},
     execute: async () => {
       const peers = p2pNetwork.getPeers();
@@ -317,7 +317,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('send_message', {
     name: 'send_message',
-    description: '向指定对等节点发送消息',
+    description: '给**一个**指定节点发消息 (需要它的 peerId). 不知道发谁 ⇒ 先 list_peers; 要广播 ⇒ broadcast_message.',
     parameters: { peer_id: '对等节点ID', message: '消息内容' },
     execute: async (args) => {
       try {
@@ -331,7 +331,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('broadcast_message', {
     name: 'broadcast_message',
-    description: '向所有对等节点广播消息',
+    description: '向**所有**已连接节点广播一条消息. 只发给某一个 ⇒ send_message; 发到某个远程 channel ⇒ send_to_remote_channel. 广播面广, 别拿它当日常通知用.',
     parameters: { message: '消息内容' },
     execute: async (args) => {
       try {
@@ -428,7 +428,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('p2p_broadcast', {
     name: 'p2p_broadcast',
-    description: '广播消息到所有连接的 P2P 节点',
+    description: '把一个 p2p channel 的地址**广播**给已连接节点. 单点发消息用 send_message, 别广播.',
     parameters: { message: '消息内容', type: '可选, 消息类型标签 (默认 agent-broadcast)' },
     execute: async (args) => {
       const msg = String(args.message || '').trim();
@@ -699,7 +699,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('get_identity', {
     name: 'get_identity',
-    description: '获取当前智能体身份信息',
+    description: '取当前智能体身份 (名称 + DID). 结果在**同一会话内恒定** —— 问过一次就够了, 重复调用不会变; 要改身份用 set_persona.',
     parameters: {},
     execute: async () => {
       const id = ctx.identity;
@@ -712,7 +712,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('set_persona', {
     name: 'set_persona',
-    description: '更新智能体的 persona 信息',
+    description: '设置**当前 agent** 的人格(名称/描述/性格). 只在用户明确要求改人格时用; 查身份用 get_identity.',
     parameters: { persona_json: 'Persona JSON 对象' },
     execute: async (args) => {
       try {
@@ -738,7 +738,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('get_operation_logs', {
     name: 'get_operation_logs',
-    description: '获取约束层的操作日志',
+    description: '取约束层(护栏)的操作日志: 最近哪些动作被拦、按什么规则拦的. 排查"我明明做了却没生效"时先看这里.',
     parameters: {},
     execute: async () => {
       const logs = ctx.constraintLayer.getLogs();
@@ -755,7 +755,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   // 文件系统工具
   ctx.tools.set('list_files', {
     name: 'list_files',
-    description: '列出目录中的文件',
+    description: '列目录 (看**有哪些**文件). 只需要**找**特定文件 ⇒ glob_files; 要在文件**内容**里搜 ⇒ grep_files; 要读某个文件内容 ⇒ read_file.',
     parameters: { path: '目录路径（可选，默认为当前目录）' },
     execute: async (args) => {
       try {
@@ -774,7 +774,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('read_directory', {
     name: 'read_directory',
-    description: '读取目录内容，返回文件列表和目录结构',
+    description: '列一个目录下的条目(含子目录). 只要文件名清单 ⇒ list_files; 按通配找 ⇒ glob_files.',
     parameters: { path: '目录路径（可选，默认为当前目录）' },
     execute: async (args) => {
       try {
@@ -850,7 +850,11 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   //   与 shell_exec 的区别: 直接接受完整 shell 命令字符串, 更适合模型自主写命令.
   ctx.tools.set('terminal', {
     name: 'terminal',
-    description: '执行完整 shell 命令 (支持管道/重定向/跑脚本; 也能重定向写文件, 但**造文件请优先用 write_file / execute_code** —— 她们有护栏、能核对写没写进去). 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据), 其余灵活放行. 适合: 写 HTML 文件、跑 python/node 脚本、查系统状态、装依赖. 多条命令用 commands 数组并行执行. 长命令 (服务器/构建/后台任务) 设 background=true 后台执行不阻塞对话. 也可直接传 code+language 自动写脚本执行 (便捷代码运行: python/js/ts/shell/html).',
+    description: '执行 shell 命令 (管道/重定向/跑脚本/装依赖/查系统状态). '
+      + '**上手前先看一眼这张对照表 —— 下面这些"终端习惯"都有专用工具, 用它们比敲 shell 更稳(有护栏、结果可核对)**: '
+      + 'grep/rg ⇒ grep_files · find/ls ⇒ glob_files / list_files · cat/head/tail ⇒ read_file · '
+      + 'sed/awk ⇒ edit_file · echo > 文件 / cat <<EOF ⇒ write_file(要一次性生成大量代码 ⇒ execute_code) · '
+      + 'curl 取网页正文 ⇒ fetch_url. 造文件请优先用 write_file / execute_code. 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据), 其余灵活放行. 适合: 写 HTML 文件、跑 python/node 脚本、查系统状态、装依赖. 多条命令用 commands 数组并行执行. 长命令 (服务器/构建/后台任务) 设 background=true 后台执行不阻塞对话. 也可直接传 code+language 自动写脚本执行 (便捷代码运行: python/js/ts/shell/html).',
     parameters: { command: '完整 shell 命令 (可选, 如: echo "<html>" > /tmp/site/index.html && ls /tmp/site)', commands: '可选: 多条命令数组 (并行执行), 每条独立字符串', code: '可选: 一段代码, 传 code+language 时自动写脚本执行 (便捷代码运行)', language: '可选: code 的语言 (python/js/ts/shell/html), 默认自动', timeoutMs: '超时毫秒, 默认 30000', background: '可选: true 后台执行, 立即返回 session_id (用 process 工具 poll/wait/kill)' },
     execute: async (args) => {
       const timeoutMs = Number(args.timeoutMs) || 30000;
@@ -1116,7 +1120,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('mkdir', {
     name: 'mkdir',
-    description: '创建一个或多个目录. 自动 mkdir -p.',
+    description: '新建一个目录(可带 -p 建多级). 只是**列**目录用 list_files / read_directory, 别用这个.',
     parameters: { path: '目录路径 (必填, 相对 cwd)' },
     execute: async (args) => {
       const relPath = String(args.path || '').trim();
@@ -1458,7 +1462,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('update_task', {
     name: 'update_task',
-    description: '更新任务的某一步状态.',
+    description: '更新任务的某一步 (标记 done/blocked + 备注). 改**整条计划**(目标/加步骤) ⇒ 用计划类工具; 只是查进度 ⇒ get_task.',
     parameters: { task_id: '任务 id', step_id: '步骤 id', status: '新状态', result_summary: '可选', error: '可选' },
     execute: async (args) => {
       const taskId = String(args.task_id || '').trim();
@@ -1488,7 +1492,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('get_task', {
     name: 'get_task',
-    description: '查任务的当前状态和步骤进度.',
+    description: '查一个任务的当前状态与步骤进度. 要看**每一步的细节输出** ⇒ get_operation_logs; 想改状态 ⇒ update_task.',
     parameters: { task_id: '任务 id (必填)' },
     execute: async (args) => {
       const taskId = String(args.task_id || '').trim();
@@ -1518,7 +1522,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('list_tasks', {
     name: 'list_tasks',
-    description: '列出最近 N 个任务 (默认 10).',
+    description: '列任务清单(默认只看未完成). 要看某个任务的步骤 ⇒ get_task; 想看执行细节 ⇒ get_operation_logs.',
     parameters: { limit: '可选, 默认 10' },
     execute: async (args) => {
       const limit = Number(args.limit) || 10;
@@ -3401,7 +3405,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('wallet_import', {
     name: 'wallet_import',
-    description: '导入已有 EVM 钱包 (用助记词或私钥)',
+    description: '从文件导入 EVM 钱包到本机台账(私钥值不会回显). 新建钱包 ⇒ 用创建类工具, 别拿它当通用入口.',
     parameters: { mnemonic: '可选, 12/15/18/21/24 词助记词', privateKey: '可选, 0x 开头的私钥' },
     execute: async (args) => {
       try {
@@ -3429,7 +3433,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('wallet_get_balance', {
     name: 'wallet_get_balance',
-    description: '查 EVM 钱包 ETH 余额.',
+    description: '查 EVM 钱包 ETH 余额. 想看**全部**资产/代币 ⇒ 用钱包总览类工具; 想转账 ⇒ 转账工具.',
     parameters: { address: '0x 开头的 EVM 地址 (必填)', rpcUrl: '可选 RPC URL (默认 eth.llamarpc.com)' },
     execute: async (args) => {
       try {
@@ -3480,7 +3484,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('wallet_transfer_token', {
     name: 'wallet_transfer_token',
-    description: '用 EVM 钱包转 ERC20 token.',
+    description: '转 ERC20 代币到指定地址(要合约地址+金额). 转**原生币**(ETH)用另一个工具; 先确认链和余额.',
     parameters: { privateKey: '私钥 (必填)', tokenAddress: 'ERC20 合约地址 (必填)', to: '接收地址 (必填)', amount: 'token 数量', decimals: '可选 token decimals', rpcUrl: '可选 RPC URL' },
     execute: async (args) => {
       try {
@@ -3523,7 +3527,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
   // Polymarket
   ctx.tools.set('polymarket_list_markets', {
     name: 'polymarket_list_markets',
-    description: '列出 Polymarket 预测市场.',
+    description: '列 Polymarket 预测市场(可按分类/状态筛). 查某个市场的**价格/盘口** ⇒ 用对应详情工具.',
     parameters: { limit: '可选 数量 (默认 50)', offset: '可选 偏移', closed: '可选 是否只显示已关闭' },
     execute: async (args) => {
       try {
@@ -3546,7 +3550,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
 
   ctx.tools.set('polymarket_get_market', {
     name: 'polymarket_get_market',
-    description: '获取单个 Polymarket 市场的详情.',
+    description: '查某个 Polymarket 市场的详情(题目/结算/盘口). 只是**列**市场 ⇒ polymarket_list_markets.',
     parameters: { marketId: '市场 ID (必填)' },
     execute: async (args) => {
       try {
@@ -3816,7 +3820,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
   // Safe
   ctx.tools.set('safe_deploy', {
     name: 'safe_deploy',
-    description: '部署 Safe 多签钱包.',
+    description: '部署 Gnosis Safe 多签钱包 (建钱包/加签名人). 只是**查**多签状态别用这个.',
     parameters: { owners: 'JSON 数组 owner 地址 (必填)', threshold: '需要几个签名 (必填)' },
     execute: async (args) => {
       try {
