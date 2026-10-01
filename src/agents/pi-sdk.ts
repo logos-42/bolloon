@@ -186,6 +186,19 @@ export function writeBackCurrentTurnInto(
   }
 }
 
+/** 工具参数指纹 (稳定序; 用于判定"同工具同参数"的重复调用) */
+export function argsFingerprint(args: unknown): string {
+  try {
+    // 只认普通对象: 字符串/数组/原始值不是工具参数 ⇒ 返回空 (避免 Object.keys('abc') 返回 '0','1'… 这种假指纹)
+    if (args === null || typeof args !== 'object' || Array.isArray(args)) return '';
+    const a = args as Record<string, unknown>;
+    const keys = Object.keys(a).sort();
+    return keys.map((k) => `${k}=${String(JSON.stringify(a[k])).slice(0, 120)}`).join('&');
+  } catch {
+    return '';
+  }
+}
+
 export class PiAgentSession implements AgentSession {
   private cwd: string;
   private peerId: string;
@@ -1667,6 +1680,8 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
     // 同一工具连续失败 3 次, 强制让 LLM 给出最终答案 (模块级常量 MAX_SAME_TOOL_FAILURES 也用它做熔断)
     // 2026-07-29: Hermes 风格硬限制 — 防死循环 (不再靠 soft hint)
     const MAX_IDEMPOTENT_TOOL = 5;  // 同工具成功调 5 次 → 注入 hint 强制 final gen
+    // 2026-10-01: 同工具**同参数**连续这么多次 ⇒ 直接硬收尾 (不再只是提示)
+    const REPEAT_HARD_STOP_TIMES = 3;
     const MAX_TOOL_CALLS_PER_LOOP = 25; // 单轮循环总工具调用上限 → 注入 hint
     let totalToolCallsThisLoop = 0;
     const lastNTools: string[] = []; // 最近 MAX_IDEMPOTENT_TOOL 次工具名, 检测重复
@@ -1856,8 +1871,28 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
         this.messageHistory.push({ role: 'system', content: `[注意] 你已连续调用 ${MAX_TOOL_CALLS_PER_LOOP} 次工具。请基于已有结果直接回答用户, 不要再次调用任何工具。在回答末尾加 <final gen> 标记结束。` });
         totalToolCallsThisLoop = 0;  // 重置计数器, 只防连续死循环
       }
+      // 2026-10-01 (用户报「一个任务不应该花这么多工具调用」):
+      //   原先这里是**软提示**(注入 hint 后重置计数) ⇒ 实测 deepseek-flash 无视提示,
+      //   同一个 get_identity 连调 10 次 ✗。现在改成**硬收尾**:
+      //   触发条件 = 同工具**同参数**连续 REPEAT_HARD_STOP_TIMES 次 (几乎永远无意义的行为);
+      //   动作 = 用仓里**现成**的强制收尾路径 (与累计错误那条同款) —— 汇总已成功的工具结果并 break,
+      //   不再指望模型自觉。同工具换参数 (逐文件读等) 不受影响。
+      if (lastNTools.length >= REPEAT_HARD_STOP_TIMES && new Set(lastNTools).size === 1) {
+        const repeatedKey = lastNTools[0];
+        const repeatedTool = repeatedKey.split('|')[0];
+        console.warn(`[PiAgent] 同工具同参数 ${repeatedTool} 连续 ${REPEAT_HARD_STOP_TIMES} 次 ⇒ 硬收尾 (软提示不管用, 不再重置计数等它自觉)`);
+        onStream?.({ type: 'error', content: `⛔ 工具 ${repeatedTool} 同参数重复 ${REPEAT_HARD_STOP_TIMES} 次, 已强制收尾并汇总已有结果`, tool: 'loop' });
+        if (this.successfulToolResults.length > 0) {
+          finalResponse = `⛔ 检测到 ${repeatedTool} 同参数重复调用 ${REPEAT_HARD_STOP_TIMES} 次 (无新信息), 已停止该循环并汇总已执行的结果:\n` +
+            this.successfulToolResults.map((r, i) => `  ${i + 1}. ${r.tool}: ${r.outputPreview}`).join('\n') +
+            `\n\n⚠️ 以上来自已成功执行的工具; 若信息不全, 请换个更具体的说法重问, 或直接指明要我读哪个文件/跑哪条命令。`;
+        } else {
+          finalResponse = finalResponse || `(检测到 ${repeatedTool} 同参数重复调用 ${REPEAT_HARD_STOP_TIMES} 次, 已结束本轮。)`;
+        }
+        break;
+      }
       if (lastNTools.length >= MAX_IDEMPOTENT_TOOL && new Set(lastNTools).size === 1) {
-        const repeatedTool = lastNTools[0];
+        const repeatedTool = lastNTools[0].split('|')[0];
         console.warn(`[PiAgent] 同工具 ${repeatedTool} 连续成功调 ${MAX_IDEMPOTENT_TOOL} 次, 注入 hint 让 LLM 总结`);
         onStream?.({ type: 'error', content: `⏹️ 工具 ${repeatedTool} 重复调用 ${MAX_IDEMPOTENT_TOOL} 次, 请基于已有结果回答`, tool: 'loop' });
         this.messageHistory.push({ role: 'system', content: `[注意] 你已连续 ${MAX_IDEMPOTENT_TOOL} 次调用 ${repeatedTool}。请基于已有结果直接回答用户, 不要再次调用任何工具。在回答末尾加 <final gen> 标记结束。` });
@@ -2382,7 +2417,9 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
             consecutiveErrors = 0;
             // 2026-07-29: Hermes 风格硬限制计数
             totalToolCallsThisLoop++;
-            lastNTools.push(toolCall.name);
+            // 2026-10-01: 窗口键改成 `工具名|参数指纹` —— 只把"同工具**同参数**"算重复,
+            //   同工具换参数的正常迭代 (例如逐文件 read_file) 不再被误判。
+            lastNTools.push(`${toolCall.name}|${argsFingerprint(toolCall.args)}`);
             if (lastNTools.length > MAX_IDEMPOTENT_TOOL) lastNTools.shift();
             if (result.output) { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: result.output.substring(0, 200) + (result.output.length > 200 ? '...' : '') }); }
             else { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: '(无输出)' }); }
