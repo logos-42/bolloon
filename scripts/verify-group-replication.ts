@@ -109,19 +109,18 @@ async function main(): Promise<void> {
   console.log(`   节点根目录: ${ROOT}  (每节点隔离 HOME: 独立身份/blockstore/随机端口; 供块方保持在线)`);
   console.log('');
 
-  // ── S3: 反事实 (整门**第一个**跑: 此时除了 A 还没有任何节点连过, 最能验"复制来自网络")
+  // ── S1: 100 条 (A 常驻)
+  const a1 = holdNode(path.join(ROOT, 's1-a'), { phase: 'create_and_send', group: 'p0-100', count: 100, from: 'A' });
+  const A1 = await a1.result;
+  // ── S3: 反事实 (在**任何别的节点拨号之前**跑: 此时只有 A 在线, 最能验"复制来自网络")
+  //    注意依赖: 它要用 A1 的地址 ⇒ 必须排在 A1 创建之后 (搬错位置会 ReferenceError, 已踩)
   // S3 反事实必须"真隔离": 关掉 mDNS (否则同机 peer 不拨号也会被自动发现, 这条判据既可能假红也可能假绿)
   const D3 = await runNode(path.join(ROOT, 's3-d'), { phase: 'join_and_wait', address: A1.address, dial: false, waitFor: 1, timeoutMs: 20000 }, 120000, { BOLLOON_ORBITDB_NO_MDNS: '1' });
   console.log('   S3 · 反事实 (不拨号 + 关 mDNS, 而 A 在线且在供块 ⇒ 只有"真没连上"才可能 seen=0)');
   console.log(`      D: seen=${D3.seen} 打不开=${D3.openError ? '是' : '否'}`);
   if (D3.openError) console.log(`      → 原文: ${String(D3.openError).slice(0, 200)}`);
   check('S3 不拨号必须看不见任何消息', Number(D3.seen) === 0, `seen=${D3.seen} (期望 0 = 复制确实来自网络)`);
-  a1.kill();
-  console.log('');
 
-  // ── S1: 100 条 (A 常驻)
-  const a1 = holdNode(path.join(ROOT, 's1-a'), { phase: 'create_and_send', group: 'p0-100', count: 100, from: 'A' });
-  const A1 = await a1.result;
   const B1 = await runNode(path.join(ROOT, 's1-b'), { phase: 'join_and_wait', address: A1.address, addrs: dialableAddrs(A1.addrs), waitFor: 101, timeoutMs: 120000 });
   console.log('   S1 · 100 条 (A 在线)');
   console.log(`      A: appended=${A1.appended} 发送=${A1.sendMs}ms 磁盘=${kb(A1.diskBytes)}`);
@@ -132,6 +131,8 @@ async function main(): Promise<void> {
   check('S1 B 拿到 A 的 101 条历史', Number(B1.seen) >= 101, `seen=${B1.seen} (期望 ≥101)`);
   check('S1 两侧集合指纹逐字相同', A1.keysHash === B1.keysHash && !!A1.keysHash, `A=${A1.keysHash} B=${B1.keysHash}`);
   console.log('');
+
+  a1.kill();   // S1/S3 的供块方退场 —— 必须排在 S1 的 B 之后 (否则 B 拉不到块, 且 S1 会假红)
 
   // ── S2: 1000 条 (迟到者拿长历史)
   const a2 = holdNode(path.join(ROOT, 's2-a'), { phase: 'create_and_send', group: 'p0-1000', count: 1000, from: 'A' }, 420000);
