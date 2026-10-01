@@ -124,8 +124,17 @@ export class DenyPipeline {
    *   实测日志 "write_file 被权限拦了" → LLM 只能绕道, 任务无法推进.
    */
   static permissionChecker(): DenyChecker {
+    /**
+     * 2026-10-01: **default 模式下只禁 `git_push`**(远端/不可逆那一个);
+     *   `git_commit` / `git_branch` 放行 —— 它们本来是"指定安全路径"(有护栏、只提交已暂存的 ✓)。
+     * 为什么改: 用户现场实录里, `git_commit` 被权限拦了 ⇒ 智能体**绕道裸跑 shell**
+     *   (`shell_exec` + **`git add -A`** ✗ —— 正是项目红线禁止的那条, 会卷走别的智能体在写的文件 ✗✗);
+     *   也就是说"拦住它"并没有更安全, 只是把它推去了**更危险**的路 ✗。
+     *   (本文件上面那段注释早就记过同类教训: "被权限拦了 → LLM 只能绕道, 任务无法推进" ✓。)
+     * acceptEdits 模式仍按原样: shell/git 一律受限(那是**显式**收紧, 不是默认 ✗)。
+     */
     const DEFAULT_DENY_TOOLS = new Set<string>([
-      'git_commit', 'git_push', 'git_branch',
+      'git_push',
     ]);
     return (ctx: DenyContext) => {
       if (ctx.permissionMode === 'bypassPermissions') {
@@ -142,7 +151,7 @@ export class DenyPipeline {
         }
         return { denied: false, reason: '', source: 'permission' };
       }
-      // default: 危险工具全禁
+      // default: 只禁不可逆的远端操作(见上)
       if (DEFAULT_DENY_TOOLS.has(ctx.toolName)) {
         return {
           denied: true,

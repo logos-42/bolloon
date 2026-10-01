@@ -949,10 +949,24 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   //   长命令不阻塞对话: terminal(background=true) 启动 → process 工具轮询/等待/终止.
   ctx.tools.set('process', {
     name: 'process',
-    description: '管理后台进程 (terminal background=true 启动的). action: poll(查状态, 不阻塞) / wait(等结束, 最多 timeoutMs) / kill(终止) / list(列全部). 长期运行命令的阻塞问题用它解决.',
+    description: '管理后台进程与常驻服务. action: poll(查状态, 不阻塞) / wait(等结束, 最多 timeoutMs) / kill(终止) / list(列全部 shell 后台进程) / **services(列常驻服务: 社交心跳·P2P·OrbitDB 群聊·文档接收)** / **service(启停某个常驻服务, 需 name + op)**. 长期运行命令与去中心化交流进程都用它管.',
     parameters: { session_id: '后台进程 session_id (必填, poll/wait/kill 用)', action: 'poll | wait | kill | list (默认 poll)', timeoutMs: 'wait 模式等待上限毫秒, 默认 30000' },
     execute: async (args) => {
       const action = String(args.action || 'poll').trim().toLowerCase();
+      // 2026-10-01 (用户: 「process 也要可以管理群聊和去中心化交流进程」):
+      //   services ⇒ 看常驻服务(社交心跳/P2P/OrbitDB 群聊/文档接收); service ⇒ 启停(只对真能启停的放行)
+      if (action === 'services') {
+        return { success: true, output: ctx.managedServices ? ctx.managedServices.describe() : '(没有注册常驻服务)' };
+      }
+      if (action === 'service') {
+        const nm = String(args.name || '').trim();
+        const op = String(args.op || '').trim().toLowerCase();
+        if (!nm || (op !== 'start' && op !== 'stop')) return { success: false, error: 'action=service 需要 name + op(start|stop)' };
+        if (!ctx.managedServices) return { success: false, error: '本进程没有注册常驻服务' };
+        const r = await ctx.managedServices.control(nm, op as 'start' | 'stop');
+        return r.ok ? { success: true, output: r.output } : { success: false, error: r.output };
+      }
+
       try {
         const { pollSession, waitSession, killSession, listSessions, isValidSessionId } = await import('./process-runner.js');
         if (action === 'list') {

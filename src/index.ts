@@ -16,6 +16,7 @@ import { getLastAiTiming, getLastAiUsage } from './llm/pi-ai.js';
 import { setHistoryScope } from './cli/input-history.js';
 import { statusSegments , fitSegments, rightAlignPad, dispWidthSafe, statusLineBudget } from './cli/status-segments.js';
 import { renderReasoning } from './cli/reasoning-view.js';
+import { traceLabel } from './cli/trace-line.js';
 import { loadWalletTool } from './agents/wallet-tools.js';
 import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
@@ -3753,7 +3754,9 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           //   改用 transient 行显示"正在执行"(消息流只在 done 时出现一次完成行).
           if (toolName !== 'system' && toolName !== 'loop' && toolName !== '?') {
             const activeNames = tuiToolCalls.map(c => c.tool).filter(t => t !== 'system' && t !== 'loop' && t !== '?');
-            const label = activeNames.length > 1 ? `执行 ${activeNames.length} 个工具: ${activeNames.join(', ')}` : `🔧 ${toolName}`;
+            const label = activeNames.length > 1
+              ? `执行 ${activeNames.length} 个工具: ${activeNames.join(', ')}`
+              : `🔧 ${traceLabel(toolName)}`;   // trace 执行描述: 写清这一步在做什么
             inkSetTransient(`${C_DIM}${label} 运行中...${RESET}`);
           }
         } else if (e.type === 'step_done' || e.type === 'step_error') {

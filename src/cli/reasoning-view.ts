@@ -57,18 +57,23 @@ export function formatReasoningForDisplay(
  *   off / 0      —— 不显示
  * 形态差别: short ⇒ 单行 dim 文本; full ⇒ 圆角框。
  */
-export type ReasoningMode = 'short' | 'full' | 'off';
+export type ReasoningMode = 'short' | 'full' | 'off' | 'trace';
 
 export function reasoningMode(env: NodeJS.ProcessEnv = process.env): ReasoningMode {
   const v = String(env.BOLLOON_SHOW_THINKING ?? '').trim().toLowerCase();
   if (v === 'full' || v === 'chain' || v === 'long') return 'full';
   if (v === '0' || v === 'false' || v === 'off' || v === 'no') return 'off';
-  return 'short';
+  if (v === 'short') return 'short';
+  if (v === 'trace') return 'trace';
+  // 2026-10-01 (用户: 「这里的思考能不能变成 trace 的执行描述」): 默认 = trace ——
+  //   不显示思维流(实测: 英文/重复四遍/还夹着错的推断), 改在工具行写这一步在做什么。
+  return 'trace';
 }
 
 /** 该模式下是否显示 (兼容旧 API: shouldShowReasoning) */
 export function isReasoningVisible(env: NodeJS.ProcessEnv = process.env): boolean {
-  return reasoningMode(env) !== 'off';
+  const m = reasoningMode(env);
+  return m !== 'off' && m !== 'trace';   // trace 模式不显示思维流(由工具行的执行描述替代)
 }
 
 /**
@@ -97,7 +102,8 @@ export function renderReasoning(
   opts: { mode?: ReasoningMode; maxChars?: number; maxLines?: number; summaryChars?: number } = {},
 ): { mode: ReasoningMode; text: string } {
   const mode = opts.mode ?? reasoningMode();
-  if (mode === 'off') return { mode, text: '' };
+  // off 与 trace 都不给思维流(trace 的执行描述在工具行上, 见 trace-line.ts)
+  if (mode === 'off' || mode === 'trace') return { mode, text: '' };
   if (mode === 'full') return { mode, text: formatReasoningForDisplay(text, { enabled: true, maxChars: opts.maxChars, maxLines: opts.maxLines }) };
   return { mode, text: summarizeReasoning(text, opts.summaryChars ?? 120) };
 }

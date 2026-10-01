@@ -37,8 +37,10 @@ describe('有界 + 空内容', () => {
 });
 
 describe('三档模式 (用户: 「我要的是那种短的思考, 长思维链可以不显示」)', () => {
-  it('默认 short; full/chain/long ⇒ full; 0/false/off/no ⇒ off', () => {
-    expect(reasoningMode({} as any)).toBe('short');
+  it('**默认 trace**(2026-10-01 用户: 「思考能不能变成 trace 的执行描述」); short/full/off 仍可按需开', () => {
+    // 默认从 short 改成 trace: 屏幕不再刷思维流, 改在工具行写"这一步在做什么" ✓
+    expect(reasoningMode({} as any)).toBe('trace');
+    expect(reasoningMode({ BOLLOON_SHOW_THINKING: 'short' } as any)).toBe('short');
     for (const v of ['full', 'chain', 'long']) expect(reasoningMode({ BOLLOON_SHOW_THINKING: v } as any)).toBe('full');
     for (const v of ['0', 'false', 'off', 'no']) expect(reasoningMode({ BOLLOON_SHOW_THINKING: v } as any)).toBe('off');
     expect(isReasoningVisible({ BOLLOON_SHOW_THINKING: '0' } as any)).toBe(false);

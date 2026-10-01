@@ -78,13 +78,32 @@ export function buildObservation(
   if (result.success) {
     const output = result.output || '(无输出)';
     obs.output = output;
-    obs.summary = `✅ ${tool} 成功 (${output.length}B)`;
+    // 2026-10-01 (用户: 「完整看一下这个反思模式，为啥一直出错？」):
+    //   原来只报 **字节数** ✗(`✅ terminal 成功 (1234B)`) ⇒ 模型不知道**发生了什么**, 只能猜 ⇒ 猜错 ✓
+    //   现在附一段**内容预览**(压平换行 ✓ 头部 160 字符 ✓) ⇒ 观察里就有事实 ✓。
+    const preview = output.replace(/\s+/g, ' ').trim().slice(0, 160);
+    obs.summary = `✅ ${tool} 成功 (${output.length}B)${preview ? `: ${preview}` : ''}`;
   } else {
     const errMsg = result.error || '未知失败';
     const cls = classifyError(errMsg);
     obs.errorClass = cls.cls;
     obs.errorLabel = cls.label;
-    obs.summary = `❌ ${tool} 失败: ${cls.label} — ${errMsg.slice(0, 120)}`;
+    // ② 2026-10-01: 退出码非零时**先不写"失败"** ✓(钩子/子命令常以非零退出而动作已生效);
+    // ③ 并附**输出尾部** —— 原来只截错误文本前 120 字符 ✗, 而 lefthook 那类"到底干了什么"恰在**尾部** ⇒ 必然误判 ✗
+    const __exit0 = Number((/exit\s+(\d+)/i.exec(result.error || '') || [])[1]);
+    const __tail = String(result.output || '').replace(/\s+/g, ' ').trim().slice(-200);
+    const __head = __exit0 && Number.isFinite(__exit0) && __exit0 !== 0 && tool === 'terminal'
+      ? `⚠️ ${tool} 退出码 ${__exit0}(结果待核, 不等于失败)`
+      : `❌ ${tool} 失败: ${cls.label}`;
+    obs.summary = `${__head} — ${errMsg.slice(0, 160)}${__tail ? ` · 输出尾部: ${__tail}` : ''}`;
+    // 2026-10-01 (用户: 「反思还是有错误」—— 现场实测: git 提交**已经成功**, 但那一行却写着
+    //   `Reflection: ❌ terminal 失败: — exit 1` ✗, 把 lefthook 的钩子退出码当成了任务失败 ✗):
+    //   **退出码非零 ≠ 任务失败** ✓ —— 用命令核一次事实再下结论, 别直接写"失败"。
+    const __exit = Number((/exit\s+(\d+)/i.exec(errMsg) || [])[1]);
+    if (tool === 'terminal' && Number.isFinite(__exit) && __exit !== 0) {
+      obs.summary = `${obs.summary} · ⚠️ 退出码 ${__exit} **不等于任务失败**(钩子/子命令常以非零退出而动作已生效)`
+        + ` —— 先核事实(git status / git log / read_file 看结果)再下结论, 别写成"失败"`;
+    }
     // 2026-10-01 (优化 #6): 顺手给出"下一步该干什么" —— 光有标签模型会原地重试同一条命令
     const __advice = suggestNextAction(`${cls.label} ${errMsg}`);
     if (__advice) obs.summary = `${obs.summary} · ${__advice}`;
@@ -142,6 +161,15 @@ export function buildReflection(
   sameToolFailCount: number,
 ): StrategySuggestion[] {
   if (!errorMsg) return ERROR_TO_STRATEGIES.unknown.slice(0, 1);
+  // ④ 2026-10-01: 退出码非零 ⇒ **先核事实**, 而不是按规则表给重试 ✗
+  //   (实测: git 提交已生效却因钩子退出码非零被判失败 ⇒ 模型又去重试/绕道, 越走越偏 ✗)
+  const __exitCode = Number((/exit\s+(\d+)/i.exec(errorMsg) || [])[1]);
+  if (Number.isFinite(__exitCode) && __exitCode !== 0) {
+    return [
+      { action: 'change_params', reason: `退出码 ${__exitCode} —— 结果待核(不等于失败)`, detail: '先用 git status / git log / read_file 核事实, 确认到底成没成, 再决定下一步; 别直接当失败重试' },
+      { action: 'change_tool', reason: '换法再试', detail: '若确未成功: 换参数/换工具/拆小步再执行' },
+    ];
+  }
   const cls = classifyError(errorMsg);
 
   // 阶梯升档: 根据连续失败次数选择更激进的策略
