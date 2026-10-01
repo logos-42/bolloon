@@ -902,6 +902,8 @@ export function startInk(
   const tw = process.stdout.columns || 80;
   const th = process.stdout.rows || 24;
   _lastInkArgs = { onPrompt, initialStatus, getStatusUpdate };
+  // 2026-10-01: 接管 console —— 别的模块(p2p/iroh 等)的直写也一律进 Ink 消息流, 不再推 footer ✓
+  installConsoleIntercept();
 
   _inkInstance = render(
     <InkApp
@@ -956,6 +958,7 @@ export function stopInk(): void {
     _inkInstance = null;
   }
   _lastInkArgs = null;
+  uninstallConsoleIntercept();   // 2026-10-01: 退出后把 console 还给系统(之后照常能打印 ✓)
 }
 
 export function inkAppendLine(line: string): void {
@@ -984,4 +987,60 @@ export function inkSetThinking(v: boolean): void {
 /** 2026-08-10: 设置/清除临时状态行 (自动整理/经验整理). 传 null 清空 → 显示为空 */
 export function inkSetTransient(v: string | null): void {
   setUiTransient(v);
+}
+
+/**
+ * **进程级 console 拦截** (2026-10-01, 用户: 「有新的需要拦截」)。
+ * 为什么: 上一轮只把 `src/index.ts` 的直写收口了 ✗ —— 但启动那几行(`iroh: …` · `主题: …` ·
+ *   `✓ [4/5] 启动 iroh P2P`)来自**别的模块** ✓(`src/network/p2p.ts` 24 处 · `iroh-integration.ts` 7 处 ✓),
+ *   它们绕过统一出口 ⇒ 照样把 footer 推下去(重复的提示行 ✓)。
+ * 做法: 在 **Ink 启动那一刻**接管 `console.log/info/warn/error` ✓ —— Ink 在跑 ⇒ 一律走它的消息流 ✓;
+ *   **绝不动 `process.stdout.write`** ✗(Ink 自己要用 ✓)。卸载时恢复原函数 ✓(退出后照样能打印 ✓)。
+ *   递归保护 + 长度上限 ✓(任何异常都退回原函数 ✓, 不许因为拦截而丢日志 ✓)。
+ */
+let _consoleOriginals: { log: any; info: any; warn: any; error: any } | null = null;
+let _interceptBusy = false;
+
+/** 把一串 console 参数压成一行(剥 ANSI · 对象用紧凑 JSON · 有上限 ✓) */
+export function formatConsoleArgs(args: unknown[]): string {
+  const one = (v: unknown): string => {
+    if (typeof v === 'string') return v;
+    if (v instanceof Error) return v.message;
+    try { return JSON.stringify(v); } catch { return String(v); }
+  };
+  return args.map(one).join(' ')
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 1000);
+}
+
+export function installConsoleIntercept(): void {
+  if (_consoleOriginals) return;                       // 已装过 ⇒ 幂等 ✓
+  _consoleOriginals = { log: console.log, info: console.info, warn: console.warn, error: console.error };
+  const route = (level: string) => (...args: unknown[]) => {
+    if (_interceptBusy) { _consoleOriginals!.log(...(args as any[])); return; }
+    const line = formatConsoleArgs(args);
+    if (!line) return;
+    _interceptBusy = true;
+    try {
+      // 归类前缀让来源一眼可辨 ✓(不猜内容, 只标级别 ✓)
+      appendMsg(level === 'log' || level === 'info' ? line : `${level === 'warn' ? '⚠ ' : '✗ '}${line}`);
+    } catch {
+      try { _consoleOriginals!.log(...(args as any[])); } catch { /* 真打不出去就算了 */ }
+    } finally { _interceptBusy = false; }
+  };
+  console.log = route('log');
+  console.info = route('info');
+  console.warn = route('warn');
+  console.error = route('error');
+}
+
+export function uninstallConsoleIntercept(): void {
+  if (!_consoleOriginals) return;
+  console.log = _consoleOriginals.log;
+  console.info = _consoleOriginals.info;
+  console.warn = _consoleOriginals.warn;
+  console.error = _consoleOriginals.error;
+  _consoleOriginals = null;
 }
