@@ -186,6 +186,8 @@ export function writeBackCurrentTurnInto(
   }
 }
 
+import { LoopStallState, observeToolCall } from './tool-loop-guard.js';
+
 export class PiAgentSession implements AgentSession {
   private cwd: string;
   private peerId: string;
@@ -1670,6 +1672,9 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
     const MAX_TOOL_CALLS_PER_LOOP = 25; // 单轮循环总工具调用上限 → 注入 hint
     let totalToolCallsThisLoop = 0;
     const lastNTools: string[] = []; // 最近 MAX_IDEMPOTENT_TOOL 次工具名, 检测重复
+    // 2026-10-01: 工具停滞观测状态 (分类 + 温和引导 + 重复结果引用) —— 见 agents/tool-loop-guard.ts
+    //   与上面的"同工具 5 次就提示"不同: 它按 (工具名 + 参数 + 结果) 签名判定, 并抓 A→B→A→B 的循环
+    const stallState = new LoopStallState();
     // 2026-08-10: unreported 循环逃生门 — LLM 反复不把工具结果写进回复时, 3 次后强制 final (不死板)
     const MAX_UNREPORTED_RETRIES = 3;
     let unreportedRetries = 0;
@@ -2347,6 +2352,27 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
             result = { ...result, output: `[harness output gate: 输出含敏感内容, 已屏蔽. 原因: ${after.outputBlocked.reason}]`, _harnessDenied: true } as typeof result;
           }
 
+          // 2026-10-01: 落库前做一次停滞观测 —— 命中的是"引导/引用", 不是"拒绝执行":
+          //   完全相同的返回从第 2 次起折叠成引用 (省上下文); 连续 3 次同参数同结果或检测到循环 ⇒
+          //   在结果尾部追加一条系统提示 (保留模型的选择权, 不硬停 —— 硬停那条已被用户否决)。
+          try {
+            const obs = observeToolCall(stallState, {
+              toolName: toolCall.name,
+              args: toolCall.args,
+              resultText: String(result.output || (result.success ? '' : String(result.error || ''))),
+              ok: !!result.success,
+              seenResultBefore: stallState.hasSeenResult(String(result.output || '')),
+            });
+            if (obs.stub) {
+              result = { ...result, output: obs.stub, _stubbed: true } as typeof result;
+            } else if (obs.notice) {
+              result = { ...result, output: `${String(result.output || '')}\n\n${obs.notice}` } as typeof result;
+            }
+            if (obs.action === 'warn') {
+              console.warn(`[PiAgent] 工具停滞引导 (${obs.code}, 第 ${obs.count} 次): ${toolCall.name}`);
+              onStream?.({ type: 'status', internal: true, content: `🩺 检测到重复调用 ${toolCall.name} (${obs.code}), 已提示模型换法`, tool: 'loop' });
+            }
+          } catch { /* 观测失败绝不影响主路径 */ }
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result, toolCallId: (toolCall as any).id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` });
           this.logToHarness(toolCall.name, toolCall.args, result);
 
