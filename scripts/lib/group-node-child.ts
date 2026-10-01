@@ -21,10 +21,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { OrbitDBAdapter, type OrbitDBStore } from '../../src/orbitdb/cid-database.js';
+import { appendEvent, listShards, manifestStoreName, readTail, waitForManifest } from '../../src/orbitdb/group-shards.js';
 
 interface Spec {
   home: string;
-  phase: 'create_and_send' | 'join_and_wait' | 'open_and_wait' | 'send_only' | 'probe_sync';
+  phase: 'create_and_send' | 'join_and_wait' | 'open_and_wait' | 'send_only' | 'probe_sync' | 'shard_append' | 'shard_tail';
   group?: string;
   address?: string;
   addrs?: string[];
@@ -135,6 +136,47 @@ async function main(): Promise<void> {
       await holdIfAsked(db);
       await db.close();
       process.exit(err === null ? 0 : 1);
+    }
+
+    if (spec.phase === 'shard_append') {
+      // 按分片写入 count 条: 每片最多 SHARD_SIZE 条, manifest 记各片地址
+      const group = spec.group || 'p0-shard';
+      const manifest = await db.openStore(manifestStoreName(group), 'keyvalue', { accessController: { write: ['*'] } });
+      const n = spec.count ?? 0;
+      const t0s = Date.now();
+      for (let i = 0; i < n; i++) {
+        await appendEvent(db, manifest, group, { from: spec.from || 'A', text: `e${i}`, seq: i, ts: Date.now() });
+      }
+      const shards = await listShards(manifest, group);
+      out({ ...base, ok: true, group, appended: n, shards, manifestAddress: manifest.address,
+            sendMs: Date.now() - t0s, peerId: db.peerId, addrs: db.listenAddrs(),
+            diskBytes: diskBytes(dataDir), totalMs: Date.now() - t0 });
+      await holdIfAsked(db);
+      await db.close();
+      process.exit(0);
+    }
+
+    if (spec.phase === 'shard_tail') {
+      // 新节点: 按地址打开 manifest (1 个 key) → 只打开**最后一片** → 量耗时
+      const group = spec.group || 'p0-shard';
+      for (const a of spec.addrs ?? []) {
+        try { await db.dial(a); } catch { /* 拨不通就如实继续 (会体现在耗时/失败里) */ }
+      }
+      const tM = Date.now();
+      const manifest = await db.openStoreByAddress(spec.address!, 'keyvalue', { accessController: { write: ['*'] } });
+      const manifestMs = Date.now() - tM;
+      if (!manifest) { out({ ...base, ok: false, error: 'manifest 打不开' }); process.exit(1); }
+      const w = await waitForManifest(manifest, group, { timeoutMs: 30000 });
+      const shards = w.manifest.shards;
+      const tail = await readTail(db, manifest, group, { waitMs: 90000 });
+      const tailMs = tail.waitedMs;
+      out({ ...base, ok: true, group, shardCount: shards.length, manifestWaitMs: w.waitedMs, manifestComplete: w.complete,
+            shards: shards.map((s) => ({ i: s.index, count: s.count })),
+            manifestMs, tailMs, tailEntries: tail.entries.length, tailComplete: tail.complete, openedShards: tail.openedShards,
+            peerId: db.peerId, addrs: db.listenAddrs(), diskBytes: diskBytes(dataDir), totalMs: Date.now() - t0 });
+      await holdIfAsked(db);
+      await db.close();
+      process.exit(0);
     }
 
     if (spec.phase === 'probe_sync') {
