@@ -33,3 +33,28 @@ describe('启动日志缓冲', () => {
     expect(fn![0]).toMatch(/console\.log\(line\)/);
   });
 });
+
+
+describe('启动期进度类**只落盘不上屏** (用户: 「继续，还没去掉」)', () => {
+  const CODE = RAW.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  it('writeOut 在 Ink 未起时必须走 bootLogOnly(不是缓冲、不是直写)', () => {
+    const fn = /function writeOut\(line: string\)[\s\S]*?\n\}/.exec(CODE);
+    expect(fn).toBeTruthy();
+    expect(fn![0]).toContain('bootLogOnly(line)');
+    expect(fn![0]).not.toContain('bootBuffer.push');
+  });
+  it('警告/错误仍要上屏(不许把问题藏起来)', () => {
+    const fn = /function writeOutWarn\(line: string\)[\s\S]*?\n\}/.exec(CODE);
+    expect(fn).toBeTruthy();
+    expect(fn![0]).toMatch(/bootBuffer\.push|appendLine/);
+    // s.warn / s.error 必须接 writeOutWarn
+    expect(CODE).toMatch(/warn: \(text: string\) => writeOutWarn\(/);
+    expect(CODE).toMatch(/error: \(text: string\) => writeOutWarn\(/);
+  });
+  it('bootLogOnly 必须真落盘(startupLogPath)且剥 ANSI', () => {
+    const fn = /function bootLogOnly\(line: string\)[\s\S]*?\n\}/.exec(CODE);
+    expect(fn).toBeTruthy();
+    expect(fn![0]).toContain('startupLogPath()');
+    expect(fn![0]).toMatch(/x1b\\\[/);
+  });
+});

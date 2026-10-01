@@ -186,16 +186,38 @@ const SHOW_CURSOR = '\x1b[?25h';
  *   Ink 在跑 ⇒ **一律走它自己的消息流**; 没跑(boot 期)⇒ 才直写 ✓。
  */
 function writeOut(line: string): void {
+  // 2026-10-01 (用户: 「时间好像是面板后面启动的」+「继续，还没去掉」):
+  //   **关键**: 启动那几步**不是 await 的** ✗(fire-and-forget)⇒ 它们常在 `startupPanelReady = true`
+  //   **之后**才打印 ✓ ⇒ 用"面板好了没"当判据必然漏 ✗(我上一版就栽在这 ✓)。
+  //   改成**独立的启动期标志** `bootPhase` ✓: 启动期内的**进度类**输出一律只落盘 ✓, 与面板状态无关 ✓。
+  if (bootPhase) { bootLogOnly(line); return; }
+  if (startupPanelReady) { try { appendLine(line); return; } catch { /* 落到落盘 */ } }
+  // 2026-10-01 (用户: 「启动那几行……继续，还没去掉」): **启动期的"进度类"输出直接不进屏** ✓
+  //   上一版我把它们**搬进对话流**了 ✗ —— 但用户要的是**去掉** ✓(面板已经把版本/模型/技能这些要点画了 ✓,
+  //   而 `复用 DID` / `iroh:` / `主题:` / `[N/5]` 这类属于**过程细节** ✓)。
+  //   现在: 启动期 ⇒ **只落日志**(~/.bolloon/logs/startup.log ✓ 事后照样能查 ✓), 不上屏 ✓。
+  bootLogOnly(line);
+}
+
+/**
+ * 启动期**警告/错误**仍然要上屏 ✓ (不许因为"想干净"把问题藏起来 ✗):
+ *   Ink 没起 ⇒ 先缓冲, `flushBootBuffer()` 在 Ink 起来后灌进对话流 ✓; Ink 已在跑 ⇒ 直接进 ✓。
+ */
+function writeOutWarn(line: string): void {
   if (startupPanelReady) { try { appendLine(line); return; } catch { /* 落到缓冲 */ } }
-  // 2026-10-01 (用户: 「iroh: … / ✓ [4/5] 启动 iroh P2P，没拦住？」):
-  //   启动步骤(第 425~503 行)比 Ink 起来(第 1366 行)**早 900 行** ⇒ 在那一刻装拦截器根本来不及 ✗。
-  //   所以: Ink 还没起 ⇒ **先进缓冲**(不直写, 不然会和启动面板交错 ✗)⇒ Ink 起来后**一次性灌进对话流** ✓。
-  //   缓冲有上限(免得异常路径无限攒 ✓); 真超限就退回直写(宁可难看也别丢日志 ✓)。
   if (bootBuffer.length < 500) { bootBuffer.push(line); return; }
   console.log(line);
 }
 
-/** 启动期日志缓冲: Ink 起来之前攒着, `flushBootBuffer()` 一次性灌进对话流 ✓ */
+/** 启动期进度类输出: 只落盘(不上屏 ✓) */
+function bootLogOnly(line: string): void {
+  try {
+    const clean = String(line).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+    fsSync.appendFileSync(startupLogPath(), `[boot] ${clean}\n`);
+  } catch { /* 落盘失败也不上屏(它本来就是过程细节 ✓) */ }
+}
+
+/** 启动期"警告/错误"缓冲: Ink 起来之前攒着, `flushBootBuffer()` 一次性灌进对话流 ✓ */
 const bootBuffer: string[] = [];
 export function flushBootBuffer(): void {
   while (bootBuffer.length) {
@@ -219,8 +241,8 @@ const s = {
   },
 
   success: (text: string) => writeOut(`  ${GREEN}✓${RESET} ${text}`),
-  warn: (text: string) => writeOut(`  ${YELLOW}⚠${RESET} ${text}`),
-  error: (text: string) => writeOut(`  ${MAGENTA}✗${RESET} ${text}`),
+  warn: (text: string) => writeOutWarn(`  ${YELLOW}⚠${RESET} ${text}`),
+  error: (text: string) => writeOutWarn(`  ${MAGENTA}✗${RESET} ${text}`),
   info: (text: string) => writeOut(`  ${CYAN}●${RESET} ${text}`),
 
   section: (title: string) => {
@@ -294,6 +316,14 @@ const s = {
 let startupPanelFirst = false;
 /** 面板第一帧已经画出来了 (startCLI 取走面板提示之后): 晚到的降级提示直接追加进面板 */
 let startupPanelReady = false;
+/**
+ * **启动期**标志 (2026-10-01): 与 `startupPanelReady` **不是一回事** ✗ ——
+ *   启动那几步是 fire-and-forget, 打印时间常在面板之后 ✓ ⇒ 只有用独立标志才拦得住 ✓。
+ * 结束条件: **用户第一次发消息** ✓(他真正接管了)或启动后 **20s 兜底** ✓。
+ */
+let bootPhase = true;
+function endBootPhase(): void { bootPhase = false; }
+setTimeout(() => { bootPhase = false; }, 20_000).unref?.();
 /**
  * 2026-09-30: 启动面板 / 就绪行**各只许追加一次**.
  *   防任何重入路径 (会话切换 / 重复 boot / 恢复) 把面板再叠一条 —— leo 报的「顶框重复 14 次」那一类
@@ -1528,6 +1558,7 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
  * scheduler 的每个 tick 会先查 resolveDnd(), 处于勿扰时把 due job 记 deferred 并留到下一轮.
  */
 async function processInput(input: string, comm: HyperswarmCommunicator | null): Promise<void> {
+  endBootPhase();   // 用户已接管 ⇒ 启动期结束(之后的输出照常上屏 ✓)
   const gate = (globalThis as any).__bolloonMainTask;
   if (gate?.enterMainTask) {
     try { gate.enterMainTask('cli-turn'); } catch { /* 闸门失败不阻塞对话 */ }

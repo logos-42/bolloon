@@ -20,7 +20,8 @@ describe('UI 直写收口', () => {
     //   (那两处直写是**兜底语义** ✓: 缓冲满了 / 灌进去抛错 ⇒ 宁可难看也别丢日志 ✓)。
     //   契约改成更准的: 每一处裸直写都必须**落在兜底函数体内**, 别处一处不许有 ✓。
     const fnRanges: Array<[number, number]> = [];
-    for (const name of ['function writeOut', 'export function flushBootBuffer']) {
+    // 兜底函数白名单: 只许这几处有裸直写(writeOut 的兜底 / writeOutWarn 的兜底 / flushBootBuffer 的异常分支)
+    for (const name of ['function writeOut', 'function writeOutWarn', 'export function flushBootBuffer']) {
       const i = CODE.indexOf(name);
       if (i < 0) continue;
       // 函数体: 从名字后第一个 { 到匹配的 } (够用: 这两个函数没有嵌套花括号式子)
@@ -32,7 +33,7 @@ describe('UI 直写收口', () => {
       }
       fnRanges.push([i, end]);
     }
-    expect(fnRanges.length, '没定位到兜底函数').toBe(2);
+    expect(fnRanges.length, '没定位到兜底函数').toBe(3);
     const offenders: number[] = [];
     for (const m of CODE.matchAll(RAW_LOG)) {
       const at = m.index ?? 0;
