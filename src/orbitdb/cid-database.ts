@@ -206,6 +206,24 @@ export class OrbitDBAdapter implements CIDDatabase {
   }
 
   /**
+   * 当前与本节点**有连接**的对端 (诊断用只读口)。
+   * 用途: P0 门里 S3「不拨号必须看不见」不稳定 (关 mDNS、全静默档都仍 seen=101) ——
+   * 得先看清"是谁、通过什么连上的", 再谈判据。返回 `peerId ← 远端地址`。
+   */
+  peerConnections(): string[] {
+    const l = (this.node?.helia as any)?.libp2p;
+    try {
+      return (l?.getConnections?.() ?? []).map((c: any) => {
+        const p = c.remotePeer?.toString?.() ?? String(c.remotePeer);
+        const a = c.remoteAddr?.toString?.() ?? '';
+        return `${p} ← ${a}`;
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * 某个 pubsub 主题当前的订阅者 peerId (诊断用只读口)。
    * OrbitDB 的同步靠 pubsub: 新 peer 订阅 `address` 主题后, 已在线的 peer 会把 heads 发给它
    * (@orbitdb/core src/sync.js:143 的 join 事件)。所以"订阅者为 0"和"日志为空"是两回事, 必须分开看。

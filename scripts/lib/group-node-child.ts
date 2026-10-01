@@ -234,6 +234,8 @@ async function main(): Promise<void> {
     const hash = await keysHash(store);
     out({ ...base, ok: !w.timedOut, openError: null, dialed, dialErrors, openMs, ...w,
           keysHash: hash.hash, seen: hash.seen, peerId: db.peerId, addrs: db.listenAddrs(),
+          // 诊断: 没拨号的节点若仍看到消息, 这两项能说明它是怎么连上的
+          peerConnections: db.peerConnections(), subscribers: db.pubsubSubscribers(spec.address!).length,
           diskBytes: diskBytes(dataDir), totalMs: Date.now() - t0 });
     await holdIfAsked(db);
     await db.close();
