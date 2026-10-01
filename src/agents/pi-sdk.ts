@@ -16,6 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { expandHomeArgs } from './tool-path-args.js';
 import { shouldReview, runExperienceReview } from './experience-review.js';
+import { IterationBudget, isRefundableTool } from './iteration-budget.js';
 // 2026-10-01: 身份解析必须**静态导入** —— 之前在函数体里用 require(), 而打包后是 ESM ⇒
 //   require 是 undefined ⇒ 抛错被 catch 静默吞掉 ⇒ "自愈"根本没跑, DID 一直是空的 ✗。
 import { loadOrCreateAgentIdentity } from './agent-identity.js';
@@ -240,6 +241,9 @@ export class PiAgentSession implements AgentSession {
   /** M2.4: 缓存 persona section */
 
   private cachedPersonaSection: string = '';
+  /** 本轮迭代预算 (每轮重置; 批处理工具会退还 —— 见 iteration-budget.ts) */
+  private iterBudget: any = null;
+  private iterBudgetWarned: boolean = false;
   /** 上一次回合后自审的时间 (节流; 0 = 从未) */
   private lastExperienceReviewAt: number = 0;
   /** 2026-06-30: 持久化层 — 默认走 ~/.bolloon/sessions/cache/, 测试可注入临时目录. */
@@ -1920,7 +1924,17 @@ ${PROACTIVE_WORK_DISCIPLINE}
 
       // 停止条件 1: max turns (fail-safe 10000, 正常任务永远跑不到)
       //   2026-07-01 (v0.2.4 子任务 1): 委托给 react-loop.decideMaxIterations 纯函数
-      const maxIterDecision = decideMaxIterations(iteration, this.MAX_REACT_ITERATIONS);
+      // 2026-10-01 (落实②: 可退还的迭代预算): 惩罚零碎调用, **奖励批处理** ——
+      //   程序化工具(execute_code, 一次能顶多次)调用后归还一次迭代 ⇒ 有效寿命被延长。
+      //   退出条件仍由 decideMaxIterations 决定(读**净**用量), 不做硬刹车。
+      if (iteration === 0 || !this.iterBudget) this.iterBudget = new IterationBudget(this.MAX_REACT_ITERATIONS);
+      const iterBudget = this.iterBudget;
+      iterBudget.consume();
+      if (iterBudget.warn(0.8) && !this.iterBudgetWarned) {
+        this.iterBudgetWarned = true;
+        onStream?.({ type: 'status', internal: true, content: `⏳ 迭代预算已用 ${iterBudget.describe()} (批量工具会退还)` });
+      }
+      const maxIterDecision = decideMaxIterations(iterBudget.used, iterBudget.maxTotal);
       if (maxIterDecision.shouldExit) {
         console.warn(`[PiAgent] 达到最大循环数 ${this.MAX_REACT_ITERATIONS}, 强制终止 (fail-safe)`);
         onStream?.({ type: 'error', content: `⏹️ 达到最大循环数 (${this.MAX_REACT_ITERATIONS}, fail-safe)`, tool: 'loop' });
@@ -2492,6 +2506,11 @@ ${PROACTIVE_WORK_DISCIPLINE}
             consecutiveErrors = 0;
             // 2026-07-29: Hermes 风格硬限制计数
             totalToolCallsThisLoop++;
+            // 2026-10-01: 批处理工具(一次顶多次) ⇒ **退还**这次迭代 (奖励批处理, 压零碎调用)
+            if (this.iterBudget && isRefundableTool(toolCall.name)) {
+              this.iterBudget.refund();
+              console.warn(`[PiAgent] ${toolCall.name} 是批量工具 ⇒ 退还 1 次迭代 (现 ${this.iterBudget.describe()})`);
+            }
             lastNTools.push(toolCall.name);
             if (lastNTools.length > MAX_IDEMPOTENT_TOOL) lastNTools.shift();
             if (result.output) { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: result.output.substring(0, 200) + (result.output.length > 200 ? '...' : '') }); }
