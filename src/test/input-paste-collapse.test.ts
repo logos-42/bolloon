@@ -17,6 +17,8 @@ beforeAll(() => { TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-paste-'))
 afterAll(() => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 忽略 */ } });
 
 const LONG = Array.from({ length: 12 }, (_v, i) => `第 ${i + 1} 行 内容 abcdefghijklmnop`).join('\n');
+/** 真实数据量级的粘贴: 479 字符 + 一个有换行 (用户实测的那次) */
+const REAL = '这是一段粘贴进来的内容, '.repeat(29) + '\n' + '第二行继续 '.repeat(18);
 
 describe('长输入折叠', () => {
   it('① 短输入不动 (阈值以下)', () => {
@@ -77,7 +79,12 @@ describe('粘贴的真实形态 (弹窗/进不去输入框 的根因)', () => {
   });
   it('"像粘贴"的判断覆盖三种真实块: 带标记 / 含换行 / 够长', () => {
     expect(looksLikePasteChunk('\u001b[200~x\u001b[201~')).toBe(true);   // 带标记
-    expect(looksLikePasteChunk('a\nb')).toBe(true);                       // 逐行成块
+    // ⚠️ 回车(单个 \n)绝不是粘贴 —— 否则 Enter 会被吞掉、提交不了(实测踩过 ✗)
+    expect(looksLikePasteChunk('\n')).toBe(false);
+    expect(looksLikePasteChunk('\r')).toBe(false);
+    expect(looksLikePasteChunk('a\n')).toBe(false);
+    expect(looksLikePasteChunk('\t')).toBe(false);
+    expect(looksLikePasteChunk('x'.repeat(PASTE_CHUNK_MIN_CHARS - 1))).toBe(false);
     expect(looksLikePasteChunk('x'.repeat(PASTE_CHUNK_MIN_CHARS))).toBe(true);
     expect(looksLikePasteChunk('你好')).toBe(false);                        // 手敲短词不是粘贴
     expect(looksLikePasteChunk('')).toBe(false);
@@ -108,5 +115,24 @@ describe('输入框恒单行 (用户: 「发送框也会分成好几行」)', ()
     expect(singleLine(r.inputText)).toBe(r.inputText);            // 输入框那份本来就没换行
     expect(fs.readFileSync(r.path!, 'utf-8')).toBe(LONG);          // 盘上仍是原文
     expect(r.sendText.split('\n').length).toBeGreaterThan(1);      // 发给模型的那份仍可多行
+  });
+});
+
+
+describe('阈值必须按**真实数据**定 (旧阈值 8 行/1200 字符漏掉了用户真实的粘贴)', () => {
+  it('实测那一次的形态(479 字符 + 一个换行)必须被折叠', () => {
+    expect(REAL.length).toBeGreaterThan(400);
+    expect(pasteLineCount(REAL)).toBe(2);                       // 只有 2 行 ⇒ 旧阈值(8 行)判 false ✗
+    expect(REAL.length).toBeLessThan(1200);                     // 也没到 1200 ⇒ 旧阈值两个都没过 ✗
+    expect(shouldCollapsePaste(REAL), '这种真实粘贴必须折叠').toBe(true);
+    const r = collapsePaste(REAL, { home: TMP, counter: 21 });
+    expect(r.collapsed).toBe(true);
+    expect(r.inputText).toContain('[粘贴 21 · 2 行]');
+    expect(fs.readFileSync(r.path!, 'utf-8')).toBe(REAL);
+  });
+  it('单行到 300 字符也折叠; 短输入仍然不动', () => {
+    expect(shouldCollapsePaste('x'.repeat(300))).toBe(true);
+    expect(shouldCollapsePaste('x'.repeat(299))).toBe(false);
+    expect(shouldCollapsePaste('你好, 帮我看下这个')).toBe(false);
   });
 });

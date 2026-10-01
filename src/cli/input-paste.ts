@@ -13,9 +13,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-/** 折叠阈值: ≥ 这么多行 或 ≥ 这么多字符 */
-export const PASTE_MIN_LINES = 8;
-export const PASTE_MIN_CHARS = 1200;
+/**
+ * 折叠阈值。**按真实数据定的** (2026-10-01 实测: 用户的一次粘贴 = 479 + 137 两块的纯文本,
+ * 旧阈值 8 行 / 1200 字符**两个都没到** ⇒ 不折叠 ⇒ 原文进输入框 ⇒ 里面 '/'/'@'/'#' 触发弹窗
+ * ⇒ "没编号 + 有弹窗" 同一个根因 ✓)。
+ * 新口径: **只要是多行(含换行)就折叠** ✓ —— 输入框里本来不可能有换行(回车即提交 ✓) ⇒ 含换行必是粘贴 ✓;
+ *   单行则到 300 字符就折叠 ✓。Enter 本身是单个 '\n' ⇒ 但 `looksLikePasteChunk` 已按长度排除 ⇒ 不会误解 ✓。
+ */
+export const PASTE_MIN_LINES = 2;
+export const PASTE_MIN_CHARS = 300;
 
 export function pastesDir(home = os.homedir()): string {
   return path.join(home, '.bolloon', 'pastes');
@@ -111,9 +117,12 @@ export const PASTE_CHUNK_MIN_CHARS = 40;
 export function looksLikePasteChunk(chunk: string): boolean {
   const s = String(chunk ?? '');
   if (!s) return false;
-  if (hasBracketedPasteMarker(s)) return true;
-  if (s.includes('\n') || s.includes('\r')) return true;
-  return s.length >= PASTE_CHUNK_MIN_CHARS;
+  // ⚠️ 2026-10-01 修正: **单个 \n 就是回车** —— 早先"含换行即粘贴"会把回车吞掉 ✗(Enter 提交不了 ✗)。
+  //   现在: 长度够才算粘贴; 换行只在"已经够长"时作为辅助信号; 括号粘贴标记也要有实际内容。
+  if (s.length >= PASTE_CHUNK_MIN_CHARS) return true;
+  // 带括号粘贴标记 ⇒ 只要剥掉标记后**有内容**就是粘贴(标记只可能来自终端的粘贴路径 ✓)
+  if (hasBracketedPasteMarker(s) && s.replace(/\u001b\[20[01]~/g, '').length > 0) return true;
+  return false;
 }
 
 /** 攒块的静默窗口: 这么久没有新块 ⇒ 认为"这次粘贴结束了" */
@@ -125,7 +134,7 @@ export const PASTE_BURST_IDLE_MS = 80;
  * 为什么留它: 这次"弹窗/进不去输入框"连报三轮, 全靠**猜** chunk 形态 ✗ ⇒ 以后一眼能看出真实形态 ✓。
  * 纪律: best-effort(失败静默) · 只记 长度/有无括号标记/有无换行/有无 ESC · 上限 500 行(超了就重写)。
  */
-export function logPasteChunk(info: { len: number; marker: boolean; nl: boolean; esc: boolean }, home = os.homedir()): void {
+export function logPasteChunk(info: { len: number; marker: boolean; nl: boolean; esc: boolean; tab?: boolean }, home = os.homedir()): void {
   try {
     const dir = path.join(home, '.bolloon', 'logs');
     fs.mkdirSync(dir, { recursive: true });
@@ -146,4 +155,20 @@ export function logPasteChunk(info: { len: number; marker: boolean; nl: boolean;
  */
 export function singleLine(text: string): string {
   return String(text ?? '').replace(/[\r\n]+/g, ' ').replace(/[\t]/g, ' ');
+}
+
+
+/**
+ * 粘贴后**短暂封住补全弹窗**的判定 (2026-10-01, 按真实数据收尾)。
+ * 实测: 一次粘贴是**一整块 762 字符纯文本** ✓(无括号标记/无换行) ⇒ 它的最后一个 token 只要以 '/' 开头,
+ *   或含不在字母数字后面的 '@'/'#' ⇒ `getMention` 就会返回命中 ⇒ 弹窗 ⇒ **抢走输入焦点** ✗。
+ * 双保险: ① 超长输入(>400 字符)本来就不该当 mention 来源 ✓; ② 粘贴后 **1.5 秒内** 一律不弹 ✓
+ *   —— 封禁期一过(或用户手动敲键)立刻恢复, 免得影响正常的 '@'/'/'/'#' 补全 ✓。
+ */
+export const PASTE_MENTION_SHIELD_MS = 1500;
+export const MENTION_MAX_INPUT_CHARS = 400;
+
+export function shouldSuppressMention(input: string, shieldUntil: number, now = Date.now()): boolean {
+  if (String(input ?? '').length > MENTION_MAX_INPUT_CHARS) return true;
+  return Number(shieldUntil || 0) > now;
 }

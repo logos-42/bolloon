@@ -12,7 +12,7 @@ import { ruleFor } from './status-segments.js';
 import { loadInputHistory, appendInputHistory, MEMORY_CAP } from './input-history.js';
 import * as fs from 'fs';
 import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import { collapsePaste, shouldCollapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, singleLine } from './input-paste.js';
+import { collapsePaste, shouldCollapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, shouldSuppressMention, singleLine, PASTE_MENTION_SHIELD_MS } from './input-paste.js';
 import TextInput from 'ink-text-input';
 import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
@@ -187,6 +187,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const pasteRawRef = useRef('');
   /** 同一次粘贴复用同一个文件序号(避免每块都新开一个文件) */
   const pasteSeqRef = useRef<number | null>(null);
+  /** 粘贴后短暂封住补全弹窗(免得粘贴内容里的 '@'/'/'/'#' 弹窗抢焦点) */
+  const pasteShieldUntilRef = useRef(0);
   /** 本次粘贴的**文件路径** —— 输入框那份不带路径(@/'/'/'#' 会触发弹窗 ✗), 提交时用它补上 ✓ */
   const pastePathRef = useRef<string | null>(null);
   // 2026-08-07: inputRef 同步镜像 input — useInput 回调拿最新值 (闭包里的 input 是陈旧的)
@@ -217,8 +219,12 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const C_WARN_ANSI = fg(THEME.warn); // #f59e0b
 
   // ── @ / # 弹出窗状态 ──────────────────────────────────────────────────────
-  // 2026-10-01: 超长输入不当成 mention 来源(纯长度判断 ⇒ 不需要状态开关 ⇒ 不会因为开关而抖 ✓)
-  const mention = useMemo(() => (input.length > 400 ? null : getMention(input)), [input]);
+  // 2026-10-01: 超长输入 + "刚粘贴过"一律不当 mention 来源 (纯判断 ⇒ 弹窗**根本不会开** ⇒ 也就没有抢焦点/抖动 ✓)
+  const [pastedTick, setPastedTick] = useState(0);
+  const mention = useMemo(
+    () => (shouldSuppressMention(input, pasteShieldUntilRef.current) ? null : getMention(input)),
+    [input, pastedTick],
+  );
   const mentionKey = mention ? `${mention.kind}:${mention.start}` : null;
   const [items, setItems] = useState<MentionItem[]>([]);
   const [sel, setSel] = useState(0);
@@ -522,6 +528,36 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       return;
     }
 
+    // ── ① 粘贴块**最先**处理 (2026-10-01) ──
+    //   必须在弹窗/picker/历史之前: 否则粘贴内容里的 TAB 会先被补全弹窗吃掉 ⇒ 弹窗打开 + 抢焦点 ✗(实测)。
+    //   实测形态: 一整块 762 字符纯文本(无括号标记/无换行) ⇒ 同步落文件 + 输入框整段设成"零触发字符"的引用 ✓。
+      // 2026-10-01 (第五版, 最终简化): **粘贴块 ⇒ 同步折叠成一个引用**。
+      //   为什么砍掉前面那套(定时器 + burst 状态 + 兜底冲洗): 真机上 80ms 定时器会**抖**(输入框变窄一下 ✗)
+      //   而且没冲上就**什么都看不到** ✗。现在: 不用定时器 ✗ 不用状态开关 ✗ ——
+      //   攒到的原文先落文件, 输入框**整段设成那一个引用**(不是追加) ⇒ 永远只有一行 ✓ 永远看得见 ✓
+      //   引用零触发字符 ⇒ 补全弹窗根本不会开 ✓ 也就没有"变窄"的位移 ✓。
+    {
+        const piece = stripBracketedPaste(_input);
+        if (piece && looksLikePasteChunk(_input)) {
+          pasteRawRef.current += piece;
+          let shown = singleLine(piece);
+          try {
+            const c = collapsePaste(pasteRawRef.current, { counter: pasteSeqRef.current ?? undefined });
+            if (c.collapsed) {
+              if (!pasteSeqRef.current) pasteSeqRef.current = Number((/\d+/.exec(c.inputText) || ['0'])[0]) || null;
+              pastePathRef.current = c.path ?? null;
+              shown = c.inputText;
+            }
+          } catch { /* 折叠失败 ⇒ 原样显示(至少看得见) */ }
+          pasteShieldUntilRef.current = Date.now() + PASTE_MENTION_SHIELD_MS;
+          setPastedTick(t => t + 1);
+          setInput(() => shown);
+          void logPasteChunk({ len: _input.length, marker: _input !== piece, nl: /[\n\r]/.test(_input), esc: _input.includes('\u001b'), tab: _input.includes('\t') });
+          return;
+        }
+      }
+
+
     // ── 输入历史优先 (比补全弹窗更优先) ──
     //   规则: 空输入, 或已经在历史态 (historyIdx !== -1) ⇒ ↑/↓ 归历史, 弹窗/选择器都让路。
     //   只有"用户自己敲了内容且不在历史态"时, 补全弹窗才拥有 ↑/↓。
@@ -590,29 +626,6 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       //   ② 混合 chunk (退格+控制符, 含 ESC 序列) → 退格部分生效, ESC 序列忽略
       //   ③ 可打印 chunk (CJK/粘贴) → 整串追加
       // 全部用函数式更新 — useInput 闭包可能陈旧 (实测), 函数式取最新 state
-      // 2026-10-01 (第五版, 最终简化): **粘贴块 ⇒ 同步折叠成一个引用**。
-      //   为什么砍掉前面那套(定时器 + burst 状态 + 兜底冲洗): 真机上 80ms 定时器会**抖**(输入框变窄一下 ✗)
-      //   而且没冲上就**什么都看不到** ✗。现在: 不用定时器 ✗ 不用状态开关 ✗ ——
-      //   攒到的原文先落文件, 输入框**整段设成那一个引用**(不是追加) ⇒ 永远只有一行 ✓ 永远看得见 ✓
-      //   引用零触发字符 ⇒ 补全弹窗根本不会开 ✓ 也就没有"变窄"的位移 ✓。
-      {
-        const piece = stripBracketedPaste(_input);
-        if (piece && looksLikePasteChunk(_input)) {
-          pasteRawRef.current += piece;
-          let shown = singleLine(piece);
-          try {
-            const c = collapsePaste(pasteRawRef.current, { counter: pasteSeqRef.current ?? undefined });
-            if (c.collapsed) {
-              if (!pasteSeqRef.current) pasteSeqRef.current = Number((/\d+/.exec(c.inputText) || ['0'])[0]) || null;
-              pastePathRef.current = c.path ?? null;
-              shown = c.inputText;
-            }
-          } catch { /* 折叠失败 ⇒ 原样显示(至少看得见) */ }
-          setInput(() => shown);
-          void logPasteChunk({ len: _input.length, marker: _input !== piece, nl: /[\n\r]/.test(_input), esc: _input.includes('\u001b') });
-          return;
-        }
-      }
       if (/^\x7f+$/.test(_input)) { setInput(cur => cur.slice(0, Math.max(0, cur.length - _input.length))); return; }
       if (/[\x00-\x1f\x7f]/.test(_input)) {
         // 混合 chunk (退格+可打印): 逐字符处理; 含 ESC 序列 → 忽略整块 (箭头等由 TextInput 处理)
@@ -628,7 +641,11 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
         });
         return;
       }
-      if (_input && !key.ctrl && !key.meta && !key.return) { setInput(cur => cur + _input); return; }
+      if (_input && !key.ctrl && !key.meta && !key.return) {
+        if (pasteShieldUntilRef.current) { pasteShieldUntilRef.current = 0; setPastedTick(t => t + 1); }
+        setInput(cur => cur + _input);
+        return;
+      }
       return; // 其余键忽略 (return/tab/esc 等由 TextInput 或上层处理)
     }
 
