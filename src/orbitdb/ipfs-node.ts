@@ -101,6 +101,11 @@ export async function createBolloonIpfs(dataDir?: string): Promise<BolloonIpfs> 
   // 2026-10-01: 反事实需要"真隔离"。节点默认带 mDNS ⇒ 同机/同网的 peer **不拨号也会被自动发现并连上**
   //   ⇒ P0 的 S3(「不拨号必须看不见」)曾经假红/假绿都出现过。做隔离实验时打开这个开关。
   const noMdns = process.env.BOLLOON_ORBITDB_NO_MDNS === '1' || process.env.BOLLOON_ORBITDB_NO_MDNS === 'true';
+  // 2026-10-01: "全静默"隔离档。S3 那条反事实(不拨号必须看不见)在只关 mDNS 时**不稳定**
+  //   (同一份代码一轮 seen=0 一轮 seen=101) ⇒ 说明还有服务在自发建连。这一档只留
+  //   pubsub + identify + ping, 其余(autoNAT/relay/dcutr/upnp/mdns/dht/delegated/autoTLS)全关。
+  //   用途: 反事实隔离实验, 以及"最小可用节点"的形态参考。
+  const isolated = process.env.BOLLOON_ORBITDB_ISOLATED === '1' || process.env.BOLLOON_ORBITDB_ISOLATED === 'true';
 
   const heliaWithLibp2p = withLibp2p(createHeliaLight({
     blockstore,
@@ -111,10 +116,15 @@ export async function createBolloonIpfs(dataDir?: string): Promise<BolloonIpfs> 
     // 显式列出服务: createLibp2p 浅合并会覆盖默认 services
     services: {
       pubsub: gossipsub({ emitSelf: true }), // OrbitDB 同步必需; emitSelf 让单机也能 publish (否则 NoPeersSubscribedToTopic)
-      autoNAT: autoNAT(),
-      ...(leanRouting ? {} : { autoTLS: autoTLS() }),
-      dcutr: dcutr(),
-      ...(leanRouting ? {} : {
+      ...(isolated ? {} : {
+        autoNAT: autoNAT(),
+        dcutr: dcutr(),
+        relay: circuitRelayServer(),
+        upnp: uPnPNAT(),
+        http: http(),
+      }),
+      ...(isolated || leanRouting ? {} : { autoTLS: autoTLS() }),
+      ...(isolated || leanRouting ? {} : {
         delegatedPeerRouting: delegatedRoutingV1HttpApiClientPeerRouting(delegatedHTTPRoutingDefaults()),
         delegatedContentRouting: delegatedRoutingV1HttpApiClientContentRouting(delegatedHTTPRoutingDefaults()),
         dht: kadDHT(),
@@ -123,10 +133,7 @@ export async function createBolloonIpfs(dataDir?: string): Promise<BolloonIpfs> 
       identifyPush: identifyPush(),
       keychain: keychain({ pass: 'bolloon-orbitdb-keychain-pass-2026' }),
       ping: ping(),
-      relay: circuitRelayServer(),
-      upnp: uPnPNAT(),
-      ...(noMdns ? {} : { mdns: mdns() }),
-      http: http(),
+      ...(isolated || noMdns ? {} : { mdns: mdns() }),
     },
   } as any);
 
