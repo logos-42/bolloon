@@ -214,7 +214,7 @@ const EXPLICIT_C = '第三条: 追加的这条也是真的';
 async function stageCreate(argv: string[]): Promise<number> {
   const name = flag(argv, '--name') || `durable-${Date.now().toString(36)}`;
   const GG: any = await import('../src/agents/gateway-group.js');
-  const r = await GG.createGroup(name, { from: 'did:diap:owner-A', hello: '群建好了' });
+  const r = await GG.createGroup(name, { from: 'did:diap:owner-A', hello: '群建好了' }, acl: 'open' }); // 2026-10-01: 建群默认已收紧成创建者独占; 本门依赖「任何人可写」的旧语义 ⇒ 显式声明
   if (!r.ok || !r.group) {
     emit({ ok: false, step: 'createGroup', error: r.error });
     return 1;
@@ -366,7 +366,7 @@ async function stageOpenAddr(argv: string[]): Promise<number> {
 async function stageHang(argv: string[]): Promise<number> {
   const name = flag(argv, '--name') || `hang-${Date.now().toString(36)}`;
   const GG: any = await import('../src/agents/gateway-group.js');
-  const r = await GG.createGroup(name, { from: 'did:diap:owner-E', hello: '脏退出群' });
+  const r = await GG.createGroup(name, { from: 'did:diap:owner-E', hello: '脏退出群' }, acl: 'open' }); // 2026-10-01: 建群默认已收紧成创建者独占; 本门依赖「任何人可写」的旧语义 ⇒ 显式声明
   if (!r.ok || !r.group) { emit({ ok: false, step: 'createGroup', error: r.error }); return 1; }
   const id = r.group.id as string;
   for (const t of EXPLICIT_A) {

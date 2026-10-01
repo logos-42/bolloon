@@ -572,10 +572,20 @@ async function getAgent() {
     ? `${targetChannelId}:${chIdentity?.currentSessionId || 'default'}`
     : undefined;
 
+  // 2026-10-01: 确保该 agent 名下有身份文档 (此前仓里没有任何"建文档"的路径 ⇒
+  //   用户四个 agent 的 persona/<agentId>/ 全空 ⇒ loadPersonaDocs 读回空 ⇒ 所有智能体一个样)。
+  //   挂在这里 = 建 agent / 切 channel 两条路都会走到; 幂等, 已存在的不覆盖。
+  if (chIdentity?.agentId) {
+    try {
+      const { ensurePersonaDocs } = await import('./bootstrap/persona-init.js');
+      const r = await ensurePersonaDocs(chIdentity.agentId, { name: chIdentity.name });
+      if (r.created.length) console.warn(`[persona] 已为 ${r.agentId} 生成 ${r.created.length} 份起步身份文档: ${r.created.join(' · ')} → ${r.dir}`);
+    } catch { /* 非致命 */ }
+  }
+
   agent = await createAgentSession({
     cwd: process.cwd(),
     peerId: targetChannelId ?? 'harness',
-    identityDoc,
     // 2026-08-09: 透传 channel.agentId → persona docs 按 agent 加载 (身份真正变化)
     agentId: chIdentity?.agentId || (targetChannelId ? undefined : agentIdentity?.name),
     loadSessionKey,
@@ -1462,7 +1472,23 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       const extra = prev && prev.name !== r.identity.name ? ` (从 ${prev.name} 切换)` : '';
       appendLine(`${C_ACCENT}→ 当前智能体: ${r.identity.name}${RESET}${extra}`);
       appendLine(`${C_DIM}  channel: ${r.channel.id}  [${r.match}]${RESET}`);
-      appendLine(`${C_DIM}  persona: ${r.channel.persona?.description || r.channel.persona?.personality || '无'}${RESET}`);
+      // 2026-10-01: 这行原先读 channels.json 里**内联的 metadata** (你四条 channel 都空 ⇒ 恒打"无"),
+      //   而身份真源是 ~/.bolloon/persona/<agentId>/ 的 6 份文档 ⇒ 改读真源, 如实报"加载到几份"。
+      try {
+        const { loadPersonaDocs, PERSONA_DOC_FILES_HINT } = await import('./bootstrap/persona-loader.js').then(
+          async (m) => ({ loadPersonaDocs: m.loadPersonaDocs, PERSONA_DOC_FILES_HINT: ['soul', 'identity', 'project', 'user', 'agent', 'wiki'] }),
+        );
+        const agentId = r.channel.agentId || '';
+        const docs = agentId ? await loadPersonaDocs(agentId) : null;
+        const loaded = docs ? PERSONA_DOC_FILES_HINT.filter((k) => String((docs as any)[k] || '').trim().length > 0) : [];
+        appendLine(agentId
+          ? (loaded.length
+            ? `${C_DIM}  persona: ${loaded.length}/6 份身份文档 (${loaded.join(' · ')}) · agentId=${agentId}${RESET}`
+            : `${C_DIM}  persona: 未初始化 (agentId=${agentId}, 目录 ${'~/.bolloon/persona/' + agentId}/ 为空 — 下次加载会自动生成起步模板)${RESET}`)
+          : `${C_DIM}  persona: 该 channel 没有 agentId ⇒ 无法按 agent 加载身份文档${RESET}`);
+      } catch {
+        appendLine(`${C_DIM}  persona: (读身份文档失败, 不影响本次切换)${RESET}`);
+      }
     } catch (e: any) {
       appendLine(`${C_ERROR}/channel 失败: ${String(e.message || e).slice(0, 200)}${RESET}`);
     }

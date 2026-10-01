@@ -116,7 +116,7 @@ async function main() {
   console.log('\n[8] P2P 群组 (微信群聊式)');
   const { createGroup, joinGroup, groupSend, groupMessages, groupMembers, listGroups, groupInfo, restoreGroups } =
     await import('../src/agents/gateway-group.js');
-  const g = await createGroup('验证群', { from: 'did:diap:verify-node' });
+  const g = await createGroup('验证群', { from: 'did:diap:verify-node', acl: 'open' }); // 2026-10-01: 建群默认已收紧成创建者独占; 本门依赖「任何人可写」的旧语义 ⇒ 显式声明
   check('createGroup ok', g.ok, g.error || '');
   check('群组链接含 type=group', g.group?.link.includes('type=group'), g.group?.link || '');
   const snd = await groupSend(g.group!.id, '你好, 我是验证节点', 'did:diap:verify-node');
