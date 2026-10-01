@@ -40,6 +40,7 @@
 | [chain-settlement-design.md](./chain-settlement-design.md) | **链上化设计 v2**(设计): 数据权威划分 + AgentEscrow 主路径 + AgentDirectory 注册承诺 + 连接层八模块 + 五条上链硬规则 | draft |
 - [long-term-collaboration-plan.md](long-term-collaboration-plan.md) — 长期合作方案 —— 用 Bolloon 托管"可核验的研究委托" (交付物标准 / 验收协议 / 结算 / 接单通道缺口)
 | [chain-model-freeze.md](./chain-model-freeze.md) | **链上模型冻结 (P1)**: 合约盘点(Foundry/Hardhat/Solana 三项目) + AgentEscrow 主合约缺口 11 字段 + Treasury onlyOwner 边界 + Directory 新增/Ledger 不新增 + 事件与 hash 切径冻结 + chainId/token/确认数 + §3 五条硬规则差距表 + 必须先改清单 | current |
+| [agent-event-network-plan.md](./agent-event-network-plan.md) | v2 plan | **Agent Event Network (计划)**: 1 万智能体协作的共享事件与记忆层 —— 现状基线 (记录形状已是元数据+CID+按需拉块 · 群已是 OrbitDB events store · 测试全走 fake 无真两节点) + 四个真缺口 (ACL `write:'*'` / 跨机复制从未真验 / 无查询面 / 全量复制 vs 轻量) + 核心命题 (×100 规模下本地占用·带宽·查询延迟须 O(1)/O(log N)) + P0–P5 每阶段判据门 | plan |
 | [network-ledger-design.md](./network-ledger-design.md) | **Bolloon Network Ledger**(设计): 签名区块 DAG + 三层最终性 + 账本重放派生 Pulse/任务/交易 + Explorer 增量加载 | draft |
 | [pulse-ledger-design.md](./pulse-ledger-design.md) | 链式活动账本 + 链上锚定 (设计计划): 哈希链/Merkle 根/最终性/由链派生的公开投影/跟区块头轮转 | proposed |
 | [network-pulse.md](./network-pulse.md) | v1 (2026-09-22 加 `confirmed_activity`; **2026-09-24 顶部计数逐字段定源**) | **网络脉冲**: 匿名可验证的公开观察投影 (事件白名单 · 去重 · 隐私阈值 · live/stale/unavailable · `GET /api/public/network/progress` · **冻结形状 `confirmed_activity` = 真实任务/链上活动行, 来源 chain-index/pulse-events/none**) · **`totals_scope.fields` 逐字段口径 + 「无源 = null = 页面写未接入」+ 同一概念不变量门 (顶部计数 vs 表格)** |

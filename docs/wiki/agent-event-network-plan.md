@@ -1,0 +1,117 @@
+---
+title: Agent Event Network — 1 万智能体协作的共享事件与记忆层 (计划)
+source: session (leo 2026-09-30 目标陈述 + 外部方案两份 + 本仓现状复核)
+created: 2026-09-30
+last_confirmed: 2026-09-30
+schema_version: 2
+audience: self
+stage: plan
+status: draft
+confidence: medium
+entity_type: chapter
+tags: [plan, orbitdb, group, event-network, scaling, memory, query, acl, replication]
+---
+
+# Agent Event Network — 计划 (不是"去中心化群聊")
+
+## 0. 定位
+
+leo 的目标重新定义为:
+
+> **让 10,000+ 智能体参与协作的去中心化 Agent Communication + Memory 网络。**
+> OrbitDB 负责**可验证的共享事件记录与状态同步**; 每个 Agent **本地只保留自己需要的状态**, 历史按需取回。
+
+**群聊只是这个网络的一种 UI**, 不是本体。因此本计划**先不做聊天界面**。
+
+## 1. 现状基线 (逐条对着仓里真代码)
+
+### 1.1 已经建成 (外部方案当成"待建"的三处, 实为现成)
+
+| 方案里的主张 | 仓里现状 | 证据 |
+| --- | --- | --- |
+| L2 元数据在 OrbitDB / L3 大内容在 IPFS, 按需 fetch | **就是现在的设计**: 记录 = `{id: CID, type, content, parentId}` (版本链) · `load(cid)` 先查 KV, **找不到再从 helia 网络拉块解码** · `share(cid)` 才把块放进 helia | `src/orbitdb/cid-database.ts:63,84,86,94` |
+| "OrbitDB 当共享状态层, 不是聊天库" | **已经在跑**: 群 = OrbitDB **events store**, 成员间经 pubsub 实时复制, oplog 真落盘 `~/.bolloon/orbitdb/ipfs/{blocks,datastore}` | `src/agents/gateway-group.ts:4,11` |
+| "message/task/result/… 都统一成 event" | 已有: 记录类型 `memory/context/state/ui/knowledge` + 任务留痕五种 `announce/claim/deliver/screen/final` + 共享记忆 | `cid-database.ts:46` · `task-group.ts:59` |
+| 身份/信任/支付不由 OrbitDB 解决 | 仓里已有: DID + 地址↔DID **双侧签名**绑定 · x402 真钱闭环 · 任务协议 14 态 | `diap-address-binding.md` · `task-protocol.md` |
+
+### 1.2 真缺口 (方案没点到或点偏的)
+
+| # | 缺口 | 现状证据 | 为什么比"分片"更急 |
+| --- | --- | --- | --- |
+| A | **写权限是 `write:'*'`** —— 群公开可写 | `gateway-group.ts:4` | 1 万智能体下这是**刷屏与签名验证成本的敞口**, 比存储更急; 且"谁能说话"没有授权 |
+| B | **跨机复制从未被真验过** | `src/test/` 里 5 个多节点测试全走 **fake CIDDatabase**; **0 个真两节点测试**; 全仓 grep 不到 `bitswap/backfill/历史同步` | 迟到者能不能拿到旧历史**未知** ⇒ 一切规模讨论都建在未验的假设上 |
+| C | **无查询面** | OrbitDB 只给 key/oplog 迭代; 仓里有 `load/list(filter)` 但无 topic/capability/时间维度的索引 | "记录可被查询和调用"是目标的一半 |
+| D | **全量复制 vs 轻量本地** | 成员默认复制整条 oplog; 本机 3 个小群已 **35MB** (`~/.bolloon/orbitdb`) | 与"本地更轻"直接冲突; 需要一个可量的保留口径 |
+
+### 1.3 方案判断偏保守的一处
+
+方案把"1 万 Agent 不能进同一个 gossip 网络"当作主要工作量。**分片其实已经天然存在** —— 一群 = 一个独立的 OrbitDB store (一群一地址), 不存在"全网一个大群"。
+
+⇒ 真正要解决的不是"怎么分片", 而是 **A(权限) · B(复制可验) · C(查询) · D(轻量)** 四件。
+
+## 2. 核心命题 (可测, 不是口号)
+
+> 当 Agent 数量从 100 涨到 10,000 (**×100**) 时, **单个 Agent 的本地占用 / 事件带宽 / 查询延迟**
+> 必须近似 **O(1) 或 O(log N)**, 不允许 O(N)。
+
+四个可量化的量 (每个都要真跑数字, 不许估):
+
+1. 本地磁盘占用 / agent (目标: 与"我加入多少群"近似正比, 与**全网** agent 数无关)
+2. 事件带宽 / agent / 分钟 (与订阅的 topic 数相关, 与全网事件率**无关**)
+3. 查询延迟 P50/P95 (目标 <1s @ 结构化索引)
+4. 迟到者拿到 N 条历史的耗时与字节
+
+## 3. 待 leo 拍板的三个决定 (会改变架构)
+
+| # | 问题 | 我的建议 |
+| --- | --- | --- |
+| Q1 | "1 万智能体" = 1 万个**独立节点**, 还是 1 万个**身份**跑在少数节点? | 先按 **身份数** 设计(1 节点多身份), 但**每身份独立密钥 + 独立订阅集**; 节点数后置 |
+| Q2 | 轻量口径: 只留"我参与的 + 最近 N 条"够吗, 还是必须能查全量历史? | **本地只留参与过的 + 最近 N 条**; 全量历史靠 CID 按需取 (与 §1.1 现成的 lazy fetch 一致) |
+| Q3 | "可被调用" = 可检索, 还是"可执行群聊"(事件即委托 → 真执行 → 结算)? | 两者分阶段: 先**可检索可复现**, 后接委托执行(零件已有: task 协议 + delegate + x402) |
+
+## 4. 执行路径 (每阶段都有自己的判据门; 没有门不算做完)
+
+### P0 · 真两节点复制基线 (最关键, 也是唯一完全没验过的)
+**做什么**: 起两个真 OrbitDB 节点 (不同端口/不同 HOME) → A 建群发 N 条事件 → B 用 `orbitdb://<addr>?type=group&name=…` 加入 → **真拿到**这些历史。
+**门 `scripts/verify-group-replication.ts`** (真进程, 不许 fake):
+- N=100 条: B 到达"看见 100 条"的耗时 / 传输字节 / 双方磁盘增量
+- N=1000 条: 同上 + 单条重放开销 (是否随历史线性退化)
+- 反事实: 不加入的节点**必须看不见** (否则门是假绿)
+- 断网 30s → 双方各发 10 条 → 重连 → **两侧收敛到同一 oplog 顺序**(逐条比对)
+**产出**: 一张真数字表 (这决定后面所有设计)。
+
+### P1 · 写权限: `write:'*'` → DID 门控
+**做什么**: 群 accessController 从 `write:'*'` 改为按成员 DID 白名单 (或自定义 controller); 邀请加入 = 把 DID 加进白名单的事件。
+**门**: ① 非成员节点写入**必须被拒**(真两节点) ② 成员写入照常 ③ 白名单变更本身是一条可验签事件 ④ 反向: 白名单移除后**新**写入被拒、旧历史仍可读。
+
+### P2 · 事件统一 + 索引层
+**做什么**: 把 message / delegation / proposal / result / payment / discovery 统一成一种 event 外壳 (`{id, type, actor, group, ts, refs, summary, cid}`), 事件本体只放**元数据 + CID**; 建三个索引 store: `by-topic` · `by-capability` · `by-time` (keyvalue, 天然可增量复制)。
+**门**: ① 同一语义事件跨库字段一致 ② 索引可由事件流**重建**(删掉索引 → 重放 → 逐字节相同) ③ 老记录向后兼容可读。
+
+### P3 · 轻量化 (量化, 不靠感觉)
+**做什么**: 大内容只出 CID (share 按需) + 保留口径 (最近 N / 我参与的) + 可选裁剪。
+**门**: 同一台机器上, 从 1 群 → 10 群 → 100 群(同一事件量), 量"本地占用/agent"的曲线; **必须与群数近似正比、与全网 agent 数无关**; 并给出"删掉本地大块后仍能按 CID 取回"的真跑证据。
+
+### P4 · 查询面 (先结构化, 语义后置)
+**做什么**: 一个 `query(topic?, capability?, since?, actor?, group?)` 的读口 —— 走 P2 的索引 store, 返回 `{event_id, cid, summary, actor, ts}` 列表 (不返回大内容); 复用 `src/web/server.ts` 与链上索引的既有形状。
+**门**: ① 同一查询在**两个不同节点**返回同一集合 (逐条比对) ② 查询**不触发**全量下载 (用字节数证明) ③ 断网时降级为本地索引 + 如实标注"仅本地"。
+**不做**: 本轮不上 embedding/语义检索 (判据难做门, 且仓里无 embedding 设施) —— 语义放 P5 之后单独论证。
+
+### P5 · N-agent 规模压测 (100 → 500 → 1000)
+**做什么**: 复用仓里既有的真子进程夹具 (`scripts/lib/*-child.ts`) 起 N 个 agent (各自 HOME/端口/身份), 跑"发布事件 → 查询 → 取 CID → 本地执行 → 回写结果"。
+**门**: 依次给出 100/500/1000 三档的 §2 四个量, 并**判定 O(·)** —— 若某量随 N 线性增长, 必须**如实写出**并归因, 不许挑好看的档位汇报。
+
+## 5. 明确不做 (本计划边界)
+
+- 不做聊天 UI (先有网络, 再有界面)
+- 不做"每节点全量复制"(与目标冲突)
+- 不引入中心化索引/SQL (与去中心化冲突; 查询必须能在任一节点独立可答)
+- 不重造身份/支付/任务协议 (已有 DID · x402 · 14 态任务协议)
+- 不改冻结面 `goal-flywheel/types.ts` 与既有调用方
+
+## 6. 没验的部分 (如实)
+
+- 迟到者的历史回填**能力未知** (P0 才知道)
+- 真两节点下的 CRDT 收敛速度与字节成本**未知**(现有测试全是 fake)
+- `src/orbitdb/orbitdb-core.d.ts` 只声明了 `keyvalue` 子集, 而实际用法含 `events` + `openStoreByAddress` ⇒ **类型面比用法窄**, 大改前需补齐 (否则 tsc 放行、运行期裸奔)
+- 1 万 agent 的 gossip 带宽上限**没有实测数据**; 本计划只承诺把 100→1000 三档量清
