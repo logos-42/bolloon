@@ -15,6 +15,7 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { expandHomeArgs } from './tool-path-args.js';
+import { shouldReview, runExperienceReview } from './experience-review.js';
 // 2026-10-01: 身份解析必须**静态导入** —— 之前在函数体里用 require(), 而打包后是 ESM ⇒
 //   require 是 undefined ⇒ 抛错被 catch 静默吞掉 ⇒ "自愈"根本没跑, DID 一直是空的 ✗。
 import { loadOrCreateAgentIdentity } from './agent-identity.js';
@@ -239,6 +240,8 @@ export class PiAgentSession implements AgentSession {
   /** M2.4: 缓存 persona section */
 
   private cachedPersonaSection: string = '';
+  /** 上一次回合后自审的时间 (节流; 0 = 从未) */
+  private lastExperienceReviewAt: number = 0;
   /** 2026-06-30: 持久化层 — 默认走 ~/.bolloon/sessions/cache/, 测试可注入临时目录. */
   private _sessionStore: SessionStore;
   /** 构造期间 fire-and-forget 任务的 promise — whenReady() 等它 */
@@ -1069,6 +1072,25 @@ export class PiAgentSession implements AgentSession {
     try {
       // 2026-06-16: runReActLoop 现在返回 { reply, aiFailed, aiFailureReason } — 这里只需 reply 字符串
       const loopResult = await this.runReActLoop(this.currentOnStream ?? undefined, options?.signal);
+
+      // 2026-10-01: **回合后自审 (纯旁路)** —— 沉淀可复用经验, 对应"结束后沉淀"那一段。
+      //   纪律: fire-and-forget (不阻塞主回合) · 只写 ~/.bolloon/experience/ (**不碰主对话/prompt 缓存**)
+      //        · 节流 (默认 10 分钟/agent) · 失败只记一行日志, 绝不影响本回合结果。
+      try {
+        const reviewNow = Date.now();
+        if (shouldReview(reviewNow, this.lastExperienceReviewAt)) {
+          this.lastExperienceReviewAt = reviewNow; // 先记账, 免得多路并发各起一次
+          const turnSummary = `用户: ${String(this.currentUserInput || '').slice(0, 2000)}\n助手: ${String(loopResult?.reply || '').slice(0, 4000)}`;
+          void runExperienceReview({
+            turnSummary,
+            chat: async (prompt: string) => {
+              const r: any = await getMinimax().chat(prompt);
+              return typeof r === 'string' ? r : String(r?.content ?? r?.text ?? '');
+            },
+            log: (m: string) => console.warn(m),
+          }).catch(() => { /* 自审绝不外泄错误 */ });
+        }
+      } catch { /* 挂点自身失败也不影响主流程 */ }
       this.finishTrajectory(trajRec, loopResult.reply, loopResult.aiFailed ? 'error' : 'ok');
       return loopResult.reply;
     } finally {
