@@ -177,6 +177,19 @@ const CLEAR_LINE = '\x1b[2K';
 const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
 
+/**
+ * 统一出口 (2026-10-01, 用户: 「还是UI有污染」)。
+ * 为什么: Ink 被显式设成 `patchConsole: false` ⇒ **不接管 console** ✗ ⇒ 运行期任何 `console.log`
+ *   都写在 Ink 托管区**之外** ⇒ 每次直写都把正在渲染的 footer(提示行 + 分界线)往下推一份 ✗
+ *   ⇒ 屏幕上重复出现「· 回车发送 · ↑↓ 历史 · PgUp 回看 · Esc 双击退出」✓(真机实测就是这个)。
+ * 判据复用已有的 `startupPanelReady`(启动面板画好了 = Ink 已在跑 ✓):
+ *   Ink 在跑 ⇒ **一律走它自己的消息流**; 没跑(boot 期)⇒ 才直写 ✓。
+ */
+function writeOut(line: string): void {
+  if (startupPanelReady) { try { appendLine(line); return; } catch { /* 落到直写 */ } }
+  console.log(line);
+}
+
 const s = {
   banner: () => {
     printBanner(_BOLLOON_VERSION);
@@ -188,36 +201,36 @@ const s = {
                   status === 'warn' ? `${YELLOW}⚠` :
                   status === 'error' ? `${MAGENTA}✗` :
                   `${CYAN}●`;
-    console.log(`  ${check} ${WHITE}[${num}/${total}]${GRAY} ${text}${RESET}`);
+    writeOut(`  ${check} ${WHITE}[${num}/${total}]${GRAY} ${text}${RESET}`);
   },
 
-  success: (text: string) => console.log(`  ${GREEN}✓${RESET} ${text}`),
-  warn: (text: string) => console.log(`  ${YELLOW}⚠${RESET} ${text}`),
-  error: (text: string) => console.log(`  ${MAGENTA}✗${RESET} ${text}`),
-  info: (text: string) => console.log(`  ${CYAN}●${RESET} ${text}`),
+  success: (text: string) => writeOut(`  ${GREEN}✓${RESET} ${text}`),
+  warn: (text: string) => writeOut(`  ${YELLOW}⚠${RESET} ${text}`),
+  error: (text: string) => writeOut(`  ${MAGENTA}✗${RESET} ${text}`),
+  info: (text: string) => writeOut(`  ${CYAN}●${RESET} ${text}`),
 
   section: (title: string) => {
-    console.log(`\n${BLUE}━━━ ${WHITE}${BOLD}${title}${RESET} ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}`);
+    writeOut(`\n${BLUE}━━━ ${WHITE}${BOLD}${title}${RESET} ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}`);
   },
 
-  divider: () => console.log(`\n${GRAY}${'─'.repeat(50)}${RESET}\n`),
+  divider: () => writeOut(`\n${GRAY}${'─'.repeat(50)}${RESET}\n`),
 
-  prompt: (text: string) => console.log(`\n${CYAN}❯ ${WHITE}${text}${RESET}`),
+  prompt: (text: string) => writeOut(`\n${CYAN}❯ ${WHITE}${text}${RESET}`),
 
   response: (label: string, content: string) => {
-    console.log(`\n${GREEN}${label}${RESET}\n${content}\n`);
+    writeOut(`\n${GREEN}${label}${RESET}\n${content}\n`);
   },
 
   agentCard: (agent: { name: string; id: string; status: string; capabilities: string[]; did?: string }) => {
     const statusColor = agent.status === 'active' ? GREEN :
                         agent.status === 'idle' ? YELLOW :
                         agent.status === 'busy' ? MAGENTA : GRAY;
-    console.log(`  ${WHITE}${BOLD}${agent.name}${RESET}`);
-    console.log(`    ${GRAY}ID:${RESET} ${agent.id}`);
-    console.log(`    ${GRAY}状态:${RESET} ${statusColor}${agent.status}${RESET}`);
-    console.log(`    ${GRAY}能力:${RESET} ${agent.capabilities.join(', ')}`);
-    if (agent.did) console.log(`    ${GRAY}DID:${RESET} ${agent.did}`);
-    console.log();
+    writeOut(`  ${WHITE}${BOLD}${agent.name}${RESET}`);
+    writeOut(`    ${GRAY}ID:${RESET} ${agent.id}`);
+    writeOut(`    ${GRAY}状态:${RESET} ${statusColor}${agent.status}${RESET}`);
+    writeOut(`    ${GRAY}能力:${RESET} ${agent.capabilities.join(', ')}`);
+    if (agent.did) writeOut(`    ${GRAY}DID:${RESET} ${agent.did}`);
+    writeOut('');
   },
 
   Thinking: () => {
@@ -237,7 +250,7 @@ const s = {
 
   dialog: async (title: string, promptText: string): Promise<string> => {
     return new Promise((resolve) => {
-      console.log(renderDialog({ title, prompt: promptText }));
+      writeOut(renderDialog({ title, prompt: promptText }));
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
@@ -365,8 +378,8 @@ async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPa
   const username = getUserName();
   const suffix = did.split(':').pop()?.substring(0, 4);
   const name = `blln-${username}-${suffix}`;
-  console.log(`     ${reused ? GRAY+'复用 ' : ''}${GRAY}DID:${RESET} ${did}`);
-  console.log(`     ${GRAY}名称:${RESET} ${name}`);
+  writeOut(`     ${reused ? GRAY+'复用 ' : ''}${GRAY}DID:${RESET} ${did}`);
+  writeOut(`     ${GRAY}名称:${RESET} ${name}`);
   s.step(1, 5, reused ? '复用 DIAP 身份' : '生成 DIAP 身份', 'ok');
   return { keypair: kp, did, name };
 }
@@ -437,7 +450,7 @@ async function bootstrapP2P(
   await comm.start();
   const topic = createTopic('bolloon-agent-harness') as Buffer;
   await comm.joinTopic(topic);
-  console.log(`     ${GRAY}主题:${RESET} ${topic.slice(0, 8).toString('hex')}...`);
+  writeOut(`     ${GRAY}主题:${RESET} ${topic.slice(0, 8).toString('hex')}...`);
   s.step(3, 5, '启动 P2P 网络', 'ok');
   return comm;
 }
@@ -461,7 +474,7 @@ async function bootstrapIroh(keypair: any, name: string): Promise<void> {
 
   try {
     const node = await irohTransport.start();
-    console.log(`     ${GRAY}iroh:${RESET} ${node.nodeId.substring(0, 16)}...`);
+    writeOut(`     ${GRAY}iroh:${RESET} ${node.nodeId.substring(0, 16)}...`);
 
     hybridMessenger = new HybridMessenger({
       preferIrohForLarge: true,
@@ -470,15 +483,15 @@ async function bootstrapIroh(keypair: any, name: string): Promise<void> {
     });
 
     hybridMessenger.onMessage('task', async (msg) => {
-      console.log(`[iroh] Task from ${msg.from.substring(0, 12)}...: ${new TextDecoder().decode(msg.payload).substring(0, 50)}...`);
+      writeOut(`[iroh] Task from ${msg.from.substring(0, 12)}...: ${new TextDecoder().decode(msg.payload).substring(0, 50)}...`);
     });
 
     hybridMessenger.onMessage('blob', async (msg) => {
-      console.log(`[iroh] Blob from ${msg.from.substring(0, 12)}...: ${msg.payload.length} bytes`);
+      writeOut(`[iroh] Blob from ${msg.from.substring(0, 12)}...: ${msg.payload.length} bytes`);
     });
 
     hybridMessenger.onMessage('response', async (msg) => {
-      console.log(`[iroh] Response from ${msg.from.substring(0, 12)}...`);
+      writeOut(`[iroh] Response from ${msg.from.substring(0, 12)}...`);
     });
 
     if (agentIdentity) {
@@ -488,8 +501,8 @@ async function bootstrapIroh(keypair: any, name: string): Promise<void> {
     s.step(4, 5, '启动 iroh P2P', 'ok');
   } catch (e: any) {
     s.step(4, 5, '启动 iroh P2P', 'warn');
-    console.log(`     ${YELLOW}iroh 启动失败: ${e.message}${RESET}`);
-    console.log(`     ${GRAY}继续使用 Hyperswarm P2P${RESET}`);
+    writeOut(`     ${YELLOW}iroh 启动失败: ${e.message}${RESET}`);
+    writeOut(`     ${GRAY}继续使用 Hyperswarm P2P${RESET}`);
   }
 }
 
@@ -761,7 +774,7 @@ async function dispatchTask(raw: string): Promise<string> {
   const task = safeParse<RpcTask>(body);
   if (!task) return `ERR|${JSON.stringify({ code: 'bad_format' })}`;
 
-  console.log(`\n📥 [${task.type}]  from=${task.from?.substring(0, 18)}...  id=${task.id}`);
+  writeOut(`\n📥 [${task.type}]  from=${task.from?.substring(0, 18)}...  id=${task.id}`);
   try {
     switch (task.type) {
       case 'summarize':
@@ -780,7 +793,7 @@ async function handleSummarize(task: RpcTask): Promise<string> {
   if (!task.documentPath) return `ERR|${JSON.stringify({ code: 'no_path' })}`;
   const a = await getAgent();
   const { summary, qualityScore } = await a.summarizeDocument(task.documentPath);
-  console.log(`     ✅ 质量=${(qualityScore * 10).toFixed(1)}/10`);
+  writeOut(`     ✅ 质量=${(qualityScore * 10).toFixed(1)}/10`);
   return `OK|${JSON.stringify({ id: task.id, type: 'summarize', qualityScore, summary })}`;
 }
 
@@ -795,7 +808,7 @@ async function handleImprove(task: RpcTask): Promise<string> {
     context: `来自节点: ${task.from}`,
   });
   const ok = res.improved ?? false;
-  console.log(`     ✅ 改进${ok ? '成功' : '失败'}  质量=${(res.qualityScore * 10).toFixed(1)}/10  自动发送=${res.shouldAutoSend}`);
+  writeOut(`     ✅ 改进${ok ? '成功' : '失败'}  质量=${(res.qualityScore * 10).toFixed(1)}/10  自动发送=${res.shouldAutoSend}`);
   return `OK|${JSON.stringify({
     id: task.id, type: 'improve', improved: ok,
     qualityScore: res.qualityScore, shouldAutoSend: res.shouldAutoSend,
@@ -1721,7 +1734,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           });
         }
         await fs.writeFile(agentsPath, JSON.stringify(arr, null, 2), 'utf-8');
-        console.log(`[创建频道] agent 同步进 agents.json: ${agentId} → channel ${id}`);
+        writeOut(`[创建频道] agent 同步进 agents.json: ${agentId} → channel ${id}`);
       } catch { /* agents.json 写失败不阻塞创建 */ }
       // 刷新 store 缓存 (updateChannels 走了 server-storage, store 内存还是旧的)
       await store.load();
@@ -4897,16 +4910,16 @@ break;
       error,
       metadata
     };
-    console.log(JSON.stringify(result, null, 2));
+    writeOut(JSON.stringify(result, null, 2));
   } else {
     if (error) {
       s.divider();
-      console.log(`${MAGENTA}${error}${RESET}\n`);
+      writeOut(`${MAGENTA}${error}${RESET}\n`);
     } else {
       s.divider();
-      console.log(`${response}\n`);
+      writeOut(`${response}\n`);
     }
-    console.log(`${GRAY}耗时: ${metadata.duration}ms${RESET}`);
+    writeOut(`${GRAY}耗时: ${metadata.duration}ms${RESET}`);
   }
 }
 
@@ -4927,12 +4940,12 @@ async function runNonInteractive(
       await runToolCommand(tool, toolArgs, false, comm, args.model, prompt, args.goal);
     } else if (prompt) {
       const a = await getAgent();
-      console.log(await a.prompt(prompt));
+      writeOut(await a.prompt(prompt));
     }
 
     console.log = originalLog;
     await fs.writeFile(output, outputBuffer.trim(), 'utf-8');
-    console.log(`✅ 结果已保存到: ${output}`);
+    writeOut(`✅ 结果已保存到: ${output}`);
     return;
   }
 
@@ -4945,17 +4958,17 @@ async function runNonInteractive(
       const response = await a.prompt(prompt);
       const elapsed = Date.now() - startTime;
       if (json) {
-        console.log(JSON.stringify({ success: true, response, elapsedMs: elapsed }, null, 2));
+        writeOut(JSON.stringify({ success: true, response, elapsedMs: elapsed }, null, 2));
       } else {
-        console.log(response);
-        console.log(`\n耗时: ${elapsed}ms`);
+        writeOut(response);
+        writeOut(`\n耗时: ${elapsed}ms`);
       }
     } catch (e: any) {
       const error = e?.message || String(e);
       if (json) {
-        console.log(JSON.stringify({ success: false, error }, null, 2));
+        writeOut(JSON.stringify({ success: false, error }, null, 2));
       } else {
-        console.log(`\n错误: ${error}`);
+        writeOut(`\n错误: ${error}`);
       }
       process.exit(1);
     }
@@ -4984,9 +4997,9 @@ async function runNonInteractive(
         error: response.startsWith('错误:') ? response : undefined,
         metadata: { duration, peers }
       };
-      console.log(JSON.stringify(result, null, 2));
+      writeOut(JSON.stringify(result, null, 2));
     } else {
-      console.log(response);
+      writeOut(response);
     }
   }
 }
@@ -5353,7 +5366,7 @@ function parseArgs(): ParsedArgs {
 }
 
 function printHelp(): void {
-  console.log(`
+  writeOut(`
 🤖 Bolloon Agent - AI 可调用文档处理智能体
 
 用法:
@@ -5587,18 +5600,18 @@ async function main() {
     const res = await runStandaloneSupervisorHost({
       once: !!args.superviseOnce,
       dryRun: !!args.superviseDryRun,
-      log: (m: string) => console.log(m),
+      log: (m: string) => writeOut(m),
     });
     if (args.superviseOnce) {
       const rep = res.lastReport as any;
       if (rep) {
-        console.log(`调度周期 #${rep.tick}: 认领 ${rep.claimed.length} · 执行 ${rep.executed.length} · 跳过 ${rep.skipped.length}${rep.errors.length ? ` · 错误 ${rep.errors.length}` : ''}`);
-        for (const s of rep.skipped.slice(0, 8)) console.log(`  跳过 ${s.goalId}: ${s.reason}`);
-        for (const e of rep.executed) console.log(`  ▶ ${e.goalId} → run=${e.runId || '-'} ${e.status || ''}${e.error ? ` (${e.error})` : ''}`);
+        writeOut(`调度周期 #${rep.tick}: 认领 ${rep.claimed.length} · 执行 ${rep.executed.length} · 跳过 ${rep.skipped.length}${rep.errors.length ? ` · 错误 ${rep.errors.length}` : ''}`);
+        for (const s of rep.skipped.slice(0, 8)) writeOut(`  跳过 ${s.goalId}: ${s.reason}`);
+        for (const e of rep.executed) writeOut(`  ▶ ${e.goalId} → run=${e.runId || '-'} ${e.status || ''}${e.error ? ` (${e.error})` : ''}`);
       }
-      console.log(`supervisor 宿主: owner=${res.state.owner} worker=${res.state.workerId} ticks=${res.ticks} 状态文件=~/.bolloon/supervisor.json`);
+      writeOut(`supervisor 宿主: owner=${res.state.owner} worker=${res.state.workerId} ticks=${res.ticks} 状态文件=~/.bolloon/supervisor.json`);
     } else {
-      console.log(`[supervisor] 常驻宿主已启动 (owner=${res.state.owner}, worker=${res.state.workerId}); Ctrl-C 优雅停止`);
+      writeOut(`[supervisor] 常驻宿主已启动 (owner=${res.state.owner}, worker=${res.state.workerId}); Ctrl-C 优雅停止`);
     }
     return;
   }
@@ -5852,7 +5865,7 @@ async function main() {
     // 默认用户模式: 不自迭代, 自改卡片不自动出现, 仍可 POST /api/self-improve/trigger 手动触发
     const selfImprove = process.env.BOLLOON_DEV_MODE === '1' || process.env.BOLLOON_DEV_MODE === 'true';
     if (selfImprove) {
-      console.log('[startup] BOLLOON_DEV_MODE=1, 开发者模式: 自迭代已启用');
+      writeOut('[startup] BOLLOON_DEV_MODE=1, 开发者模式: 自迭代已启用');
     }
     const { createWebServer, openBrowser } = await import('./web/server.js');
 
@@ -5868,7 +5881,7 @@ async function main() {
     console.info = originalInfo;
     process.stdout.write = originalStdoutWrite;
     s.info('执行命令...');
-    console.log();
+    writeOut('');
     await runNonInteractive(args, comm!);
     comm?.stop();
     // chat-watch / chat-p2p-listen 是长循环, 不会自然 return, 走 SIGINT 自然退出
