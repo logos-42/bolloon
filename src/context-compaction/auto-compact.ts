@@ -116,10 +116,12 @@ export async function autoCompact(history: Message[], opts: StageOptions = {}): 
       role: 'system',
       content: `[Auto-Compact Summary] ${summary}`,
     } as any;
+    // 2026-10-01: **摘要后面紧跟一条"保目标"锚点** ✓ —— 摘要丢目标它还在(详见 buildGoalAnchor ✓)
+    const anchor = buildGoalAnchor(toCollapse, remaining);
     return {
-      history: [summaryMsg, ...remaining],
+      history: [summaryMsg, ...(anchor ? [anchor] : []), ...remaining],
       applied: true,
-      detail: `collapsed ${cutTo} messages into 1 summary (cache key: ${key})`,
+      detail: `collapsed ${cutTo} messages into 1 summary (cache key: ${key})${anchor ? ' + 保目标锚点' : ''}`,
     };
   } catch (err) {
     console.warn('[compactor] autoCompact failed (silent, returning original):', err);
@@ -150,4 +152,39 @@ function formatForSummary(messages: Message[]): string {
 export function _resetAutoCompactCacheForTest(): void {
   // 实际缓存由 readCache/writeCache 管理, 这里只暴露接口
   // 测试可以走 fs.rm CACHE_DIR() 清理
+}
+
+/**
+ * **压缩前后"保目标"锚点** (2026-10-01, 用户: 「压缩前后保目标」)。
+ * 为什么: auto-compact 会把较早的历史**整段换成一句摘要** ✗ —— 摘要写给"过去发生了什么",
+ *   而**当前目标**往往丢在里面 ⇒ 压完模型醒过来半失忆 ⇒ 答非所问 / 重头问 / 改目标 ✓(真机实测 ✓)。
+ * 做法: 折叠前从历史里**确定性**抽出三件事(用户要什么 · 已经做到哪 · 下一步 ✓)+ 落成一条 system 消息
+ *   **紧跟摘要**放回 ⇒ 摘要丢了目标它也还在 ✓。不调模型(便宜 ✓ 可测 ✓)。
+ */
+export function buildGoalAnchor(collapsed: Message[], remaining: Message[] = []): Message | null {
+  const all = [...collapsed, ...remaining];
+  if (!all.length) return null;
+  const clip = (s: string, n: number) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
+
+  // ⓐ 用户当前要的(最近一条 user ✓ —— 若在 remaining 里也没关系, 取全局最后一条 ✓)
+  const lastUser = [...all].reverse().find((m) => m.role === 'user');
+  const ask = lastUser ? clip(String((lastUser as any).content || ''), 300) : '';
+  // ⓑ 已经做到哪: 最近 3 个工具动作(名字 + 结果要点 ✓)
+  const tools = all.filter((m) => m.role === 'tool').slice(-3).map((m) => {
+    const r: any = (m as any).toolResult;
+    const head = clip(String(r?.error || r?.output || (m as any).content || ''), 80);
+    return `  · ${(m as any).tool || 'tool'}: ${head}`;
+  });
+  // ⓒ 助手最后说的一句话(它的意图/下一步 ✓)
+  const lastAssistant = [...all].reverse().find((m) => m.role === 'assistant' && String((m as any).content || '').trim());
+  const said = lastAssistant ? clip(String((lastAssistant as any).content || ''), 200) : '';
+
+  const body = [
+    '【压缩前的现场 · 别丢】',
+    ask ? `用户当前要的: ${ask}` : '用户当前要的: (未捕捉到 —— 若不确定, 先按最近的目标继续, 别改题)',
+    tools.length ? `已经做过:\n${tools.join('\n')}` : '',
+    said ? `我上一步说的是: ${said}` : '',
+    '下一步: 接着把上面这件事**做完** —— 不要重头问、不要换目标、不要重复已完成的步骤。',
+  ].filter(Boolean).join('\n');
+  return { role: 'system', content: body } as any;
 }
