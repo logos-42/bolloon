@@ -245,7 +245,19 @@ export interface IndexStoreOpener {
 }
 
 /** 群/网络共用: 任何成员都可写 (与 gateway-group 的 write:['*'] 一致) */
-export const INDEX_ACCESS = { accessController: { write: ['*'] } } as const;
+/**
+ * 索引 store 的访问控制 (2026-10-01 收紧)。
+ *
+ * 之前是 `write: ['*']` —— 任何人可写。索引是**派生数据**, 而且**查询面读的正是它** (event-query.ts)
+ * ⇒ 放开的后果不是"多几行垃圾", 而是**查询结果可被投毒**。所以默认收紧成**创建者独占**
+ * (@orbitdb/core 的默认语义: 不传 write 列表 ⇒ write=[创建者身份 id])。
+ *
+ * 要与别人共享同一份索引 (例如由一个可信索引者统一派生、其他人只读), 由调用方显式传写身份。
+ *
+ * 如实记一条**未做**: 查询面目前**不校验**索引项与事件流的一致性 (P2 的 rebuildIndexes 能重建,
+ * 但"读到一份被改过的索引"这件事现在无法被查询侧发现)。要么后续加校验, 要么索引只由本节点自己派生。
+ */
+export const INDEX_ACCESS = {} as const;
 
 export async function openIndexStores(
   opener: IndexStoreOpener,

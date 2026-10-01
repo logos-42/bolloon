@@ -22,6 +22,22 @@ import type { OrbitDBStore } from './cid-database.js';
 export const SHARD_SIZE = 200;
 
 /**
+ * 片 store 的写入白名单 (2026-10-01 收紧)。
+ * 之前分片模块硬写 `write: ['*']` (任何人可写) —— 那是 P0 阶段为了让"非创建者也能验证"留下的口子,
+ * 在 1 万 agent 场景下是**真敞口**。现在改成显式参数:
+ *   · 不传 (默认) ⇒ **创建者独占** (不传 write 列表给 IPFSAccessController ⇒ 它落到 write=[创建者身份 id],
+ *     这正是 @orbitdb/core 的默认语义);
+ *   · 要允许多成员写, 由调用方显式传各自的 **OrbitDB 写身份** (见 group-access.ts 的白名单派生)。
+ * 注意: 打开**既有**地址时 ACL 来自 manifest, 传什么都不改变既有片的权限 (只能新建时收紧)。
+ */
+export interface ShardWritePolicy {
+  /** 允许写入这些 OrbitDB 写身份; 省略 = 只有创建者可写 */
+  writeList?: string[];
+}
+const aclOf = (policy?: ShardWritePolicy): { accessController?: { write: string[] } } =>
+  policy?.writeList && policy.writeList.length ? { accessController: { write: policy.writeList } } : {};
+
+/**
  * 片级 store 缓存 (与 src/agents/gateway-group.ts 的 storeCache 同一套 idiom)。
  * 没有它, `appendEvent` 每写一条都会再 openStore 一次 —— 1000 条 = 1000 次重复打开,
  * 既慢又可能把同一个库开出多个句柄。
@@ -104,9 +120,10 @@ export async function appendEvent(
   group: string,
   event: unknown,
   now = Date.now(),
+  policy?: ShardWritePolicy,
 ): Promise<{ shard: ShardInfo; address: string; index: number }> {
   const manifest = await readManifest(manifestStore, group);
-  const openShardByName = (name: string) => cached(name, () => db.openStore(name, 'events', { accessController: { write: ['*'] } }));
+  const openShardByName = (name: string) => cached(name, () => db.openStore(name, 'events', aclOf(policy)));
 
   /** 片真实长度: 首次对齐后用缓存自增 */
   const lenOf = async (store: OrbitDBStore, name: string): Promise<number> => {
@@ -161,14 +178,14 @@ export async function readTail(
   db: { openStoreByAddress(address: string, type: 'keyvalue' | 'events', opts?: { replica?: boolean; accessController?: { write: string[] } }): Promise<OrbitDBStore | null> },
   manifestStore: OrbitDBStore,
   group: string,
-  opts: { skipShards?: number; waitMs?: number; pollMs?: number; settleMs?: number } = {},
+  opts: { skipShards?: number; waitMs?: number; pollMs?: number; settleMs?: number; policy?: ShardWritePolicy } = {},
 ): Promise<{ entries: Array<{ key: string; value: unknown }>; shard: ShardInfo | null; openedShards: number; waitedMs: number; complete: boolean }> {
   const shards = await listShards(manifestStore, group);
   const skip = opts.skipShards ?? 0;
   const target = shards[shards.length - 1 - skip] ?? null;
   if (!target) return { entries: [], shard: null, openedShards: 0, waitedMs: 0, complete: false };
   const store = await cached(`addr:${target.address}`, async () => {
-    const st = await db.openStoreByAddress(target.address, 'events', { accessController: { write: ['*'] } });
+    const st = await db.openStoreByAddress(target.address, 'events', aclOf(opts.policy));
     if (!st) throw new Error(`分片 ${target.index} 打不开 (${target.address})`);
     return st;
   });
@@ -193,7 +210,8 @@ export async function openShard(
   db: { openStore(name: string, type: 'keyvalue' | 'events', opts?: { accessController?: { write: string[] } }): Promise<OrbitDBStore> },
   group: string,
   index: number,
+  policy?: ShardWritePolicy,
 ): Promise<OrbitDBStore> {
   const name = shardStoreName(group, index);
-  return cached(name, () => db.openStore(name, 'events', { accessController: { write: ['*'] } }));
+  return cached(name, () => db.openStore(name, 'events', aclOf(policy)));
 }
