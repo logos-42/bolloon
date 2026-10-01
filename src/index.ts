@@ -584,6 +584,21 @@ async function getAgent() {
     identityDoc = undefined;
   }
 
+  // 2026-10-01: **身份取值自证** —— 只在"可疑"时打一行事实 (不是刷屏):
+  //   缺 did / 假 did / channel 有 agentId 却没被用上 ⇒ 打出来, 免得靠猜。
+  //   用户实测过 DID 为空、名字串台、以及一个数据里根本不存在的 did ⇒ 这行能直接指认哪条分支被走了。
+  try {
+    const d = String(identityDoc?.did ?? '');
+    const suspicious = !d || /^did:(local|pi):/i.test(d) || (!chIdentity?.agentId && !!targetChannelId);
+    if (suspicious) {
+      console.warn(
+        `[identity] 身份可疑: channel=${targetChannelId ?? '(无)'} · channel.agentId=${chIdentity?.agentId ?? '(无)'} · ` +
+        `分支=${channelIdentityUsable(chIdentity) ? 'channel 自带' : perAgentIdentity ? 'per-agent' : agentIdentity ? '**共享 agentIdentity**' : '默认'} · ` +
+        `did=${d ? d.slice(0, 30) : '(空)'} · name=${String(identityDoc?.name ?? '(空)')}`,
+      );
+    }
+  } catch { /* 自证失败不影响主流程 */ }
+
   const loadSessionKey = targetChannelId
     ? `${targetChannelId}:${chIdentity?.currentSessionId || 'default'}`
     : undefined;
