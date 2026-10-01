@@ -18,6 +18,7 @@ import { expandHomeArgs } from './tool-path-args.js';
 import { createHash } from 'node:crypto';
 import { shouldReview, shouldReviewTask, runExperienceReview } from './experience-review.js';
 import { decideLessonSink, skillsFromDirs, logLessonSuggestions, routeLessonToSkill } from './lesson-to-skill.js';
+import { managedServices } from './managed-services.js';
 import { IterationBudget, isRefundableTool } from './iteration-budget.js';
 import { recordToolCall, argsFingerprint } from './tool-telemetry.js';
 import { capToolResult } from './tool-result-gate.js';
@@ -808,6 +809,34 @@ export class PiAgentSession implements AgentSession {
     this._inboxMessages = [];
     const toolCtx: ToolRegistryContext = {
       tools: this.tools,
+      // 2026-10-01 (用户: 「process 也要可以管理群聊和去中心化交流进程」):
+      //   把**常驻的交流类服务**也挂进 process —— 能启停的给启停(社交心跳 ✓), 只能看的如实标"仅状态" ✓(不假装能停 ✗)
+      managedServices: (() => {
+        const ms = managedServices;
+        ms.register({
+          name: 'social-heartbeat',
+          description: '社交心跳: 主动发现节点/发起对话/组织群聊的常驻循环(去中心化交流用)',
+          status: () => (this.socialHeartbeat ? '运行中' : '已停止'),
+          start: () => this.startSocialHeartbeat(),
+          stop: () => this.stopSocialHeartbeat(),
+        });
+        ms.register({
+          name: 'p2p-network',
+          description: 'P2P 网络: 与其他 bolloon 节点的连接(群聊/消息都走它)',
+          status: () => { try { const peers = this.getPeers?.() ?? []; return `已连接 ${peers.length} 个节点`; } catch { return '状态不可用'; } },
+        });
+        ms.register({
+          name: 'orbitdb-groups',
+          description: 'OrbitDB 群聊存储: 本地群列表与消息持久化',
+          status: () => { try { const g = (this as any).listGroupsShallow?.(); return g ? `本地群 ${g}` : '已就绪(用 /group 看列表)'; } catch { return '状态不可用'; } },
+        });
+        ms.register({
+          name: 'document-receiver',
+          description: '文档接收器: 监听并接收其他节点发来的文档分片',
+          status: () => '监听中(随进程启动)',
+        });
+        return ms;
+      })(),
       // 2026-10-01: 技能发现(list_skills / read_skill)的实现 —— 技能原先只注册不露面 ✗, 现在模型能自己找
       listSkills: () => this.skillRegistry.list().map((sk: any) => ({ name: sk.name, description: String(sk.description || '') })),
       getSkillBody: async (name: string) => {

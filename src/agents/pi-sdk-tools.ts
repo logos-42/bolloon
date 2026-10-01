@@ -221,6 +221,8 @@ export interface ToolRegistryContext {
    * 获取当前 channel 已加密存储的钱包信息 (用于自动支付).
    * 返回 null 表示未绑定或未加密存储私钥.
    */
+  /** 常驻服务视图 (2026-10-01: 群聊/去中心化交流进程也要能被 process 管 ✓) */
+  managedServices?: { describe: () => string; control: (name: string, op: 'start' | 'stop') => Promise<{ ok: boolean; output: string }> };
   /** 已装载技能 (2026-10-01: 技能发现用 —— 实测技能描述原先从不进提示 ✗) */
   listSkills?: () => Array<{ name: string; description?: string }>;
   /** 读某个技能全文 (走 Skill.execute({}) —— 它会返回 SKILL.md 的正文) */

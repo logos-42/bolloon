@@ -11,6 +11,7 @@ import {
   routeLessonToSkill, ensureSinkSkill, SINK_SKILL_NAME, sinkSkillDir,
 } from '../agents/lesson-to-skill.js';
 import { shouldReviewTask, DEFAULT_MIN_INTERVAL_MS } from '../agents/experience-review.js';
+import { processesPath, persistSessions, restoreSessions, isPidAlive, listSessions } from '../agents/process-runner.js';
 
 let TMP = '';
 beforeAll(() => { TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-lesson-')); });
@@ -137,5 +138,32 @@ describe('每条教训都必须进技能库 (用户: 「改为都进去进入技
   });
   it('沉淀技能位置在用户级技能库 (~/.bolloon/skills/lessons-learned)', () => {
     expect(sinkSkillDir(TMP)).toBe(path.join(TMP, '.bolloon', 'skills', 'lessons-learned'));
+  });
+});
+
+
+describe('后台进程: 落盘 + 回来管理 (用户: 「后台开进程后无法回来进行管理」)', () => {
+  it('落盘: 会话表写到 ~/.bolloon/processes.json', () => {
+    persistSessions(TMP);
+    const f = processesPath(TMP);
+    expect(fs.existsSync(f)).toBe(true);
+    expect(Array.isArray(JSON.parse(fs.readFileSync(f, 'utf-8')))).toBe(true);
+  });
+  it('★ 懒恢复: 盘上有记录 ⇒ list 能看见(重启后不再"忘了")', () => {
+    fs.mkdirSync(path.dirname(processesPath(TMP)), { recursive: true });
+    fs.writeFileSync(processesPath(TMP), JSON.stringify([
+      { id: 'proc-restored-dead', cmd: 'sleep 1', cwd: TMP, startedAt: Date.now(), status: 'running', exitCode: null, pid: 999999999 },
+    ]), 'utf-8');
+    const n = restoreSessions(TMP);
+    expect(n).toBeGreaterThan(0);
+    const list = listSessions();
+    expect(list.some((s) => s.id === 'proc-restored-dead')).toBe(true);
+    // 死 pid ⇒ 不再假装 running(诚实 ✓)
+    expect(list.find((s) => s.id === 'proc-restored-dead')!.status).not.toBe('running');
+  });
+  it('探活: 本进程 pid 活着; 不存在的 pid 判死', () => {
+    expect(isPidAlive(process.pid)).toBe(true);
+    expect(isPidAlive(999999999)).toBe(false);
+    expect(isPidAlive(undefined)).toBe(false);
   });
 });

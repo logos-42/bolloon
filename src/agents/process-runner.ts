@@ -10,6 +10,8 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process';
+import os from 'node:os';
+import fs from 'node:fs';
 import * as path from 'path';
 
 export interface BackgroundSession {
@@ -22,6 +24,10 @@ export interface BackgroundSession {
   output: string;
   error?: string;
   proc: ChildProcess | null;
+  /** 系统 pid (落盘后重启也能按它探活 ✓) */
+  pid?: number;
+  /** true = 本进程不是它的父进程(重启后从盘上恢复的) ⇒ 只能 poll/kill 按 pid 来 ✓ */
+  detached?: boolean;
 }
 
 const sessions = new Map<string, BackgroundSession>();
@@ -46,10 +52,12 @@ export function spawnBackground(raw: string, cwd: string = process.cwd()): Backg
   try {
     const proc = spawn(shell, shellArgs, { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, windowsHide: true });
     session.proc = proc;
+    session.pid = proc.pid;
+    persistSessions();
     proc.stdout.on('data', (d) => { session.output = (session.output + d.toString()).slice(-16000); });
     proc.stderr.on('data', (d) => { session.output = (session.output + d.toString()).slice(-16000); });
-    proc.on('close', (code) => { session.exitCode = code; session.status = 'exited'; });
-    proc.on('error', (e) => { session.status = 'error'; session.error = e.message; });
+    proc.on('close', (code) => { session.exitCode = code; session.status = 'exited'; persistSessions(); });
+    proc.on('error', (e) => { session.status = 'error'; session.error = e.message; persistSessions(); });
   } catch (e: any) {
     session.status = 'error';
     session.error = e?.message;
@@ -116,4 +124,57 @@ export function isValidSessionId(id: string): boolean {
 
 export function sessionIdFromPath(p: string): string {
   return path.basename(String(p || '').trim());
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-10-01 (用户: 「bolloon 后台开进程后无法回来进行管理」):
+//   实测根因: 会话表是**内存 Map** ✗ 且不落盘 ⇒ 重启/换一轮后 bolloon **忘了**后台进程 ✗
+//   ⇒ `process list` 空的 ⇒ "回不来管理" ✓。修: 落盘 `~/.bolloon/processes.json` +
+//   **懒恢复**(list/poll 时若表里没有就从盘上读 ✓) + 按 pid 探活(活着 ⇒ detached=true 仍可 kill ✓; 死了 ⇒ lost ✓)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function processesPath(home = os.homedir()): string {
+  return path.join(home, '.bolloon', 'processes.json');
+}
+
+/** 探活: 只发 0 号信号, 真 kill 什么都不做 ✓ (EPERM 也算活着 ✓) */
+export function isPidAlive(pid: number | undefined): boolean {
+  if (!pid || !Number.isFinite(pid)) return false;
+  try { process.kill(pid, 0); return true; } catch (e: any) { return e?.code === 'EPERM'; }
+}
+
+/** 把当前的会话表写到盘上 (best-effort, 绝不影响命令执行 ✓) */
+export function persistSessions(home = os.homedir()): void {
+  try {
+    const rows = [...sessions.values()].map((s) => ({
+      id: s.id, cmd: s.cmd, cwd: s.cwd, startedAt: s.startedAt,
+      status: s.status, exitCode: s.exitCode, pid: s.pid ?? null,
+    }));
+    fs.mkdirSync(path.dirname(processesPath(home)), { recursive: true });
+    fs.writeFileSync(processesPath(home), JSON.stringify(rows, null, 0), 'utf-8');
+  } catch { /* 落盘失败不影响执行 */ }
+}
+
+/** 懒恢复: 表里没有的就从盘上读回来, 并按 pid 探活 ✓ */
+export function restoreSessions(home = os.homedir()): number {
+  let n = 0;
+  try {
+    const file = processesPath(home);
+    if (!fs.existsSync(file)) return 0;
+    const rows = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    for (const r of Array.isArray(rows) ? rows : []) {
+      if (!r?.id || sessions.has(r.id)) continue;
+      const alive = isPidAlive(Number(r.pid));
+      sessions.set(r.id, {
+        id: String(r.id), cmd: String(r.cmd || ''), cwd: String(r.cwd || process.cwd()),
+        startedAt: Number(r.startedAt) || Date.now(), exitCode: r.exitCode ?? null,
+        status: r.status === 'running' ? (alive ? 'running' : 'exited') : (r.status || 'exited'),
+        output: alive ? '(重启后恢复: 进程仍在跑, 输出不再采集 —— 需要结果就重新跑或用文件落盘)' : '',
+        proc: null, pid: Number(r.pid) || undefined, detached: true,
+      } as any);
+      n++;
+    }
+  } catch { /* 坏文件忽略 */ }
+  return n;
 }
