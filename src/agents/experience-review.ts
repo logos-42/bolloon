@@ -122,7 +122,20 @@ export function buildReviewPrompt(turnSummary: string, existingIndex: string): s
 export function parseReviewDecision(text: string): ReviewDecision {
   const raw = String(text || '');
   const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) return { action: 'none', reason: '没找到 JSON' };
+  // 2026-10-01 (用户: 「卡在这就不动了」现场: 日志里连着出现 "审了但没写: 没找到 JSON" ✗ ⇒ 复盘白跑):
+  //   模型 Often 不给严格 JSON ⇒ 原来直接当"没写" ✗。现在: ① 没花括号时**宽解析**(从文本里抠字段 ✓);
+  //   ② 仍解析不出 ⇒ 把**原文头部**记进日志(才能知道它到底回了什么 ✓, 不再瞎 ✗)。
+  if (!m) {
+    const act = /(?:^|["'\s])action["'\s:：]*["']?([a-z_]+)/i.exec(raw)?.[1]
+      || (/\bwrite\b/i.test(raw) ? 'write' : (/\bnone\b|不用|无需/i.test(raw) ? 'none' : ''));
+    if (act === 'write') {
+      const title = /(?:title|标题)["'\s:：]*["']?([^"'\n]{2,80})/i.exec(raw)?.[1]?.trim() || '未命名教训';
+      const body = /(?:body|内容|教训)["'\s:：]*["']?([\s\S]{20,1200}?)(?:["'\n]|$)/i.exec(raw)?.[1]?.trim() || raw.slice(0, 400);
+      if (body.length >= 20) return { action: 'write', file: 'lessons.md', title, body, klass: 'general', reason: '宽解析' } as any;
+    }
+    if (act === 'none') return { action: 'none', reason: '模型判定无需记录(宽解析)' };
+    return { action: 'none', reason: `没找到 JSON(模型原文头部: ${raw.replace(/\s+/g, ' ').slice(0, 120)})` };
+  }
   try {
     const j = JSON.parse(m[0]);
     if (String(j?.action || '').toLowerCase() !== 'write') return { action: 'none' };
@@ -207,7 +220,18 @@ export async function runExperienceReview(opts: {
     const summary = String(opts.turnSummary || '').trim();
     if (summary.length < 40) return { reviewed: false, applied: false, reason: '回合太短, 不值得审' };
     const prompt = buildReviewPrompt(summary, listExperienceIndex(home));
-    const raw = await opts.chat(prompt);
+    // 2026-10-01 (用户: 「卡在这就不动了」+ 复盘日志里 "开始" 之后没有下文 ✗):
+    //   review 的 chat 调用**原来没有超时** ⇒ 一旦 provider 慢/挂, 这条就永远不返回 ✓。
+    //   现在给**硬超时**(默认 25s, 可配 ✓), 超时如实记一条并放行 ✓ —— 复盘是锦上添花, 绝不许拖住主流程 ✓。
+    const chatTimeoutMs = Number(process.env.BOLLOON_REVIEW_TIMEOUT_MS) || 25_000;
+    const raw = await Promise.race([
+      opts.chat(prompt),
+      new Promise<string>((resolve) => setTimeout(() => resolve('__TIMEOUT__'), chatTimeoutMs)),
+    ]);
+    if (raw === '__TIMEOUT__') {
+      log(`审查超时(${chatTimeoutMs}ms) —— 本轮不复盘, 已放行(绝不拖住主流程)`);
+      return { reviewed: false, applied: false, reason: 'chat-timeout' };
+    }
     const d = parseReviewDecision(raw);
     if (d.action !== 'write') return { reviewed: true, applied: false, reason: d.reason || 'none' };
     const r = applyExperience(d, home, new Date(now).toISOString());

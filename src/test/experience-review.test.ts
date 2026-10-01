@@ -114,3 +114,20 @@ describe('挂点存在 (源级核对: 别只写了模块忘了接)', () => {
       expect(src).toContain('onLesson');
   });
 });
+
+
+describe('复盘的两条保命线 (用户: 「卡在这就不动了」)', () => {
+  it('① chat 超时 ⇒ 如实放行, 绝不许挂死', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-timeout-'));
+    const hang = () => new Promise<string>(() => { /* 永不返回 */ });
+    const r = await runExperienceReview({ turnSummary: 'x'.repeat(120), chat: hang as any, home, force: true, nowMs: 10, log: () => {} });
+    expect(r.reviewed).toBe(false);
+    expect(r.reason).toBe('chat-timeout');
+  }, 40_000);
+  it('② 模型给散文而非 JSON ⇒ 宽解析仍能拿到 write(不再白跑)', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-lenient-'));
+    const prose = async () => '我的判断是 action: write\ntitle: 提交后先等钩子跑完\nbody: 钩子在后台跑时改源码会被卷进那条提交, 先 wait 再动代码。';
+    const r = await runExperienceReview({ turnSummary: 'y'.repeat(120), chat: prose, home, force: true, nowMs: 20, log: () => {} });
+    expect(r.applied).toBe(true);
+  });
+});
