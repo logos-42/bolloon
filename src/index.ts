@@ -545,14 +545,30 @@ async function getAgent() {
   }
 
   let identityDoc: any;
-  if (chIdentity?.did && chIdentity.publicKey) {
-    // channel 已有持久 DID → 用 channel 身份
+  // 2026-10-01 (用户实测: 两个不同 channel 都答同一个名字, get_identity 的 DID 为空):
+  //   旧逻辑要求 channel 记录**同时**有 did + publicKey, 否则落到 `agentIdentity`(进程级**共享**) ⇒
+  //   多个 channel 共用一个身份 ✗; 且 channel 里可能存着假 DID (did:local:…) 或干脆没有 did。
+  //   现在: 归属以 channel 的 agentId 为准 —— 现取现造**该 agent 的**真 did:key, 名字用**它自己的** persona。
+  const { channelIdentityUsable, nameForChannel } = await import('./agents/channel-identity.js');
+  let perAgentIdentity: { did: string; publicKey?: string; name: string } | undefined;
+  if (chIdentity?.agentId) {
+    try {
+      const { loadOrCreateAgentIdentity } = await import('./agents/agent-identity.js');
+      const mine = loadOrCreateAgentIdentity(chIdentity.agentId);
+      if (mine?.did) perAgentIdentity = { did: mine.did, publicKey: mine.publicKey, name: nameForChannel(chIdentity, chIdentity.agentId) };
+    } catch { /* 退回落 */ }
+  }
+  if (channelIdentityUsable(chIdentity)) {
+    // channel 自带**可用**的持久 DID (真 did:key) → 用它, 名字仍按该 agent 取 (不再用共享名)
     identityDoc = {
-      did: chIdentity.did,
-      name: chIdentity.persona?.name || chIdentity.name || 'agent',
-      publicKey: chIdentity.publicKey,
+      did: chIdentity!.did,
+      name: nameForChannel(chIdentity, chIdentity!.agentId),
+      publicKey: chIdentity!.publicKey,
       createdAt: Date.now(),
     };
+  } else if (perAgentIdentity) {
+    // channel 缺身份 / 只有假 DID ⇒ 用**该 agent 自己的**真身份 (按 agentId 落盘密钥, 稳定)
+    identityDoc = { ...perAgentIdentity, createdAt: Date.now() };
   } else if (agentIdentity) {
     identityDoc = {
       did: agentIdentity.did,
