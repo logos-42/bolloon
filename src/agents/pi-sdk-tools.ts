@@ -850,7 +850,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   //   与 shell_exec 的区别: 直接接受完整 shell 命令字符串, 更适合模型自主写命令.
   ctx.tools.set('terminal', {
     name: 'terminal',
-    description: '执行完整 shell 命令 (支持管道/重定向/写文件/跑脚本). 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据), 其余灵活放行. 适合: 写 HTML 文件、跑 python/node 脚本、查系统状态、装依赖. 多条命令用 commands 数组并行执行. 长命令 (服务器/构建/后台任务) 设 background=true 后台执行不阻塞对话. 也可直接传 code+language 自动写脚本执行 (便捷代码运行: python/js/ts/shell/html).',
+    description: '执行完整 shell 命令 (支持管道/重定向/跑脚本; 也能重定向写文件, 但**造文件请优先用 write_file / execute_code** —— 她们有护栏、能核对写没写进去). 护栏只挡高危破坏操作 (sudo/格式化/rm -rf 根目录/写 ~/.bolloon 数据), 其余灵活放行. 适合: 写 HTML 文件、跑 python/node 脚本、查系统状态、装依赖. 多条命令用 commands 数组并行执行. 长命令 (服务器/构建/后台任务) 设 background=true 后台执行不阻塞对话. 也可直接传 code+language 自动写脚本执行 (便捷代码运行: python/js/ts/shell/html).',
     parameters: { command: '完整 shell 命令 (可选, 如: echo "<html>" > /tmp/site/index.html && ls /tmp/site)', commands: '可选: 多条命令数组 (并行执行), 每条独立字符串', code: '可选: 一段代码, 传 code+language 时自动写脚本执行 (便捷代码运行)', language: '可选: code 的语言 (python/js/ts/shell/html), 默认自动', timeoutMs: '超时毫秒, 默认 30000', background: '可选: true 后台执行, 立即返回 session_id (用 process 工具 poll/wait/kill)' },
     execute: async (args) => {
       const timeoutMs = Number(args.timeoutMs) || 30000;
@@ -922,13 +922,17 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   // write_file / edit_file / git_*
   ctx.tools.set('write_file', {
     name: 'write_file',
-    description: '写入一个文件. 路径必须在白名单. 大文件 (> 100KB) 会被拒. 命中护栏黑名单会拒.',
-    parameters: { path: '相对路径 (必填, 相对 cwd)', content: '文件内容 (必填)' },
+    description: '写入**一个**文件 (整文件覆盖). 路径须在白名单内, 命中护栏黑名单会拒. '
+      + '**要写大量代码时按这个分工**: 一个文件 ⇒ 就用本工具(单文件上限 2MB) · '
+      + '**多个文件 / 要生成成套代码** ⇒ 用 execute_code 一次写完(一次调用写 N 个文件, 不逐个来回) · '
+      + '别用 terminal 的 heredoc/echo 来造文件(容易转义出错、也看不出写了什么).',
+    parameters: { path: '相对路径 (必填, 相对 cwd)', content: '文件内容 (必填; 单文件上限 2MB)' },
     execute: async (args) => {
       const relPath = String(args.path || '').trim();
       const content = String(args.content ?? '');
       if (!relPath) return { success: false, error: 'path 必填' };
-      if (content.length > 100_000) return { success: false, error: `内容过大 (${content.length} > 100000 字节), 请分块写` };
+      // 2026-10-01: 上限 100KB → 2MB —— 原来的上限让"写一个大文件"只能分块, 反而促成了碎片化的多次调用
+      if (content.length > 2_000_000) return { success: false, error: `内容过大 (${content.length} > 2000000 字节): 请用 execute_code 在脚本里分块写, 或拆成多个文件` };
       const pathResult = checkWritePath(relPath);
       if (!pathResult.allowed) {
         return { success: false, error: `路径被护栏拒: ${pathResult.reason}` };
@@ -3235,7 +3239,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   // execute_code — 独立代码执行工具 (与 terminal 的 code 便捷路径同源, 这里给独立入口)
   ctx.tools.set('execute_code', {
     name: 'execute_code',
-    description: '写一段代码并执行, 拿回 stdout/stderr/退出码。适合计算、数据处理、试算法、快速验证想法。支持 python / js / ts / shell / html。需要多步 shell 操作用 terminal; 需要长期进程用 terminal background=true。',
+    description: '写一段代码并执行, 拿回 stdout/stderr/退出码。适合: 计算 · 数据处理 · 试算法 · 快速验证想法 · **一次生成大量代码**(在脚本里循环写多个文件 —— 这是"成套代码/多文件"的**推荐路径**, 一次调用顶几十次 write_file)。支持 python / js / ts / shell / html。需要多步 shell 操作用 terminal; 需要长期进程用 terminal background=true。',
     parameters: {
       code: '要执行的代码 (必填)',
       language: '语言: python | js | ts | shell (默认 python)',
