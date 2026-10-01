@@ -4,7 +4,7 @@
  *   真原因明明拿到了, 被标签盖住; 还有一类直接显示「未知错误 — …」✗。
  */
 import { describe, it, expect } from 'vitest';
-import { classifyError, buildObservation } from '../agents/error-classifier.js';
+import { classifyError, buildObservation, buildReflection } from '../agents/error-classifier.js';
 
 describe('错误分类: 真原因优先', () => {
   it('ENOENT ⇒ 「路径/文件不存在」(不是"参数错误")', () => {
@@ -33,5 +33,29 @@ describe('退出码非零 ≠ 任务失败 (用户报: 提交成功却写着 ❌
   it('没有退出码的失败(如 read_file ENOENT) 不受影响', () => {
     const obs = buildObservation('read_file', {}, { success: false, error: 'ENOENT: no such file or directory' } as any);
     expect(obs.summary).not.toContain('不等于任务失败');
+  });
+});
+
+
+describe('反思模式的四类错误 (用户: 「完整看一下这个反思模式，为啥一直出错？」)', () => {
+  it('① 成功也带内容预览 —— 不再只有字节数(否则模型只能猜)', () => {
+    const obs = buildObservation('terminal', {}, { success: true, output: 'On branch master\nnothing to commit, working tree clean' } as any);
+    expect(obs.summary).toContain('成功');
+    expect(obs.summary).toContain('nothing to commit');
+  });
+  it('② 退出码非零 ⇒ 不写"失败", 而是"结果待核"', () => {
+    const obs = buildObservation('terminal', {}, { success: false, error: ' - exit 1: Command failed: git commit -m x', output: 'lefthook hook 输出' } as any);
+    expect(obs.summary).not.toMatch(/❌.*失败/);
+    expect(obs.summary).toContain('结果待核');
+  });
+  it('③ 失败附输出尾部 —— 原来只截错误前 120 字符, 恰好丢掉"到底干了什么"', () => {
+    const obs = buildObservation('terminal', {}, { success: false, error: 'boom', output: 'A'.repeat(300) + ' 关键尾部FF' } as any);
+    expect(obs.summary).toContain('输出尾部');
+    expect(obs.summary).toContain('关键尾部FF');
+  });
+  it('④ 反思建议: 退出码非零 ⇒ 先核事实(不是重试)', () => {
+    const r = buildReflection('terminal', ' - exit 1: Command failed: git commit', 1, 1);
+    expect(r[0].detail).toContain('核事实');
+    expect(r[0].reason).toContain('不等于失败');
   });
 });
