@@ -662,6 +662,9 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   });
 
   // delegate_to_engine — 把编码任务委派给本机已安装的其他 AI 编码智能体 CLI
+  //   2026-10-01: **它是同步等待** (默认 120s 超时, 超时杀进程) ⇒ 长活别用它 ✗ —
+  //     要"起完就走、以后回来收"的长任务 ⇒ `terminal(background:true)` + `process poll/wait/kill` ✓(今天已给后台进程加了落盘/懒恢复 ✓)。
+
   // (codex / claude-code / opencode / openclaw / hermes). 它们必须已安装且可达 PATH.
   // 实验 API 引擎 (experiment:xxx) 是供应商不是 CLI, 不支持委派, 工具会提示改用 import.
   ctx.tools.set('delegate_to_engine', {
@@ -671,7 +674,8 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         engine: "引擎 id: codex / claude-code / opencode / openclaw / hermes (实验 API 不支持委派)",
         prompt: '派发的任务描述 (作为单参数传给该引擎 CLI)',
         model: '可选, 强制指定模型 (如 deepseek/deepseek-v4-flash), 需引擎支持',
-        cwd: '可选, 工作目录, 默认当前目录'
+        cwd: '可选, 工作目录, 默认当前目录',
+        timeoutMs: '可选, 等待上限毫秒(默认 120000=2 分钟, 超时会**终止**该引擎进程). 小活给 20000~30000, 大活别用委派(见描述)'
       },
       execute: async (args) => {
         const engine = String(args.engine || '').trim();
@@ -684,14 +688,22 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         // correlationId 幂等去重 (同一 agent 重复 correlation 只应出现一次)
         const ownerDid = ctx.identity?.did || 'unknown';
         const correlationId = `delegate:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+        const timeoutMs = Number(args.timeoutMs) || undefined;
         const result = await delegateToEngine(engine, prompt, {
           cwd: cwd || undefined,
           ...(model ? { model } : {}),
+          ...(timeoutMs ? { timeoutMs } : {}),
           ownerDid,
           correlationId,
         });
       if (!result.success) {
-        return { success: false, error: result.error, output: result.output };
+        // 2026-10-01 (用户: 「开展子智能体后，bolloon 没有回归」):
+        //   实测体验 = 卡整整 2 分钟(默认超时)然后**白干**(进程被杀、活丢了) ✗ ⇒ 这里把话说清、给出可操作下一步 ✓
+        const timedOut = /超时/.test(String(result.error || ''));
+        const hint = timedOut
+          ? '\n⇒ 这不是"坏了", 是**该换法**: ① 拆成更小的委派(每次 ≤ 1~2 分钟); ② 或改用 `terminal(background:true)` 起长活, 再用 `process poll/wait/kill` 管(后台进程能一直活着, 不会因为超时被丢 ✓); ③ 别在原样重试同一条委派。'
+          : '';
+        return { success: false, error: `${result.error}${hint}`, output: result.output };
       }
       const handleLine = result.handle
         ? `\n[delegate handle] contractVersion=${result.handle.contractVersion} delegateId=${result.handle.delegateId} ownerDid=${result.handle.ownerDid} correlationId=${result.handle.correlationId ?? '-'} capability=${result.handle.capability.slice(0, 16)}...`
