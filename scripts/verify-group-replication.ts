@@ -8,6 +8,8 @@
  * 四个场景:
  *   S1  100 条  : A 建群发 100 (A **保持在线**) → B(新节点) dial + 按地址打开 → 拿到全部? 耗时/磁盘?
  *   S3  反事实  : D 打开同一地址但**不 dial** (A 此刻在线且供块) → 必须看不见
+ *                (2026-10-01: 只给 D 关 mDNS 不够 —— A 那侧开着也会反向发现 D ⇒ 整门都用
+ *                 BOLLOON_ORBITDB_NO_MDNS=1 跑, 让"连接必须来自显式拨号"这件事成立)
  *   S2  1000 条 : 迟到者拿长历史 (全仓最没被验过的一条)
  *   S4  断网分叉: A 建群 → B 加入 → A 退出 → B 离线写 10 条 → A 重启(dial B) → 两侧收敛?
  *                  (顺带验 write:['*'] 对**非创建者**是否真生效)
@@ -37,11 +39,11 @@ interface Res { ok: boolean; [k: string]: unknown }
 interface BgNode { kill: () => void; result: Promise<Res> }
 const live: ChildProcess[] = [];
 
-function startNode(home: string, spec: Record<string, unknown>, timeoutMs = 300000) {
+function startNode(home: string, spec: Record<string, unknown>, timeoutMs = 300000, extraEnv: Record<string, string> = {}) {
   fs.mkdirSync(home, { recursive: true });
   const specPath = path.join(home, 'spec.json');
   fs.writeFileSync(specPath, JSON.stringify({ home, ...spec }));
-  const p = spawn(TSX, [CHILD, specPath], { cwd: REPO, env: { ...process.env, HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const p = spawn(TSX, [CHILD, specPath], { cwd: REPO, env: { ...process.env, HOME: home, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
   live.push(p);
   let out = '', err = '';
   let firstResult: Res | null = null;      // 首个阶段结果 (hold 型节点靠它提前放行)
@@ -51,6 +53,8 @@ function startNode(home: string, spec: Record<string, unknown>, timeoutMs = 3000
     if (!line.startsWith('@@OUT ')) return;
     try {
       const obj = JSON.parse(line.slice(6)) as Res;
+      // 探针的每 5s 一行: 打出来 (否则失败时看不到"有没有在长")
+      if (obj.tick) { console.log(`         · 探针 t=${(obj.tick as any).t}s 日志=${(obj.tick as any).seen} 订阅者=${(obj.tick as any).subscribers} 磁盘=${(obj.tick as any).diskKB}KB`); return; }
       if (!firstResult && !('hold' in obj)) { firstResult = obj; resolveFirst?.(obj); }
     } catch { /* 忽略坏行 */ }
   };
@@ -73,8 +77,8 @@ function startNode(home: string, spec: Record<string, unknown>, timeoutMs = 3000
 }
 
 /** 短命节点 (跑完即退) */
-async function runNode(home: string, spec: Record<string, unknown>, timeoutMs = 300000): Promise<Res> {
-  return startNode(home, spec, timeoutMs).closed;
+async function runNode(home: string, spec: Record<string, unknown>, timeoutMs = 300000, extraEnv: Record<string, string> = {}): Promise<Res> {
+  return startNode(home, spec, timeoutMs, extraEnv).closed;
 }
 /** 常驻节点 (供块方必须活着): 拿到阶段结果就继续, 进程留着 */
 function holdNode(home: string, spec: Record<string, unknown>, timeoutMs = 300000): BgNode {
@@ -89,7 +93,11 @@ function holdNode(home: string, spec: Record<string, unknown>, timeoutMs = 30000
 function dialableAddrs(addrs: unknown): string[] {
   const list = Array.isArray(addrs) ? (addrs as string[]) : [];
   const loopback = list.filter((a) => a.includes('/ip4/127.0.0.1/tcp/'));
-  return loopback.length ? loopback.slice(0, 1) : list.filter((a) => !a.includes('webrtc-direct')).slice(0, 1);
+  if (loopback.length) return loopback.slice(0, 1);
+  // 回退必须**排除 /p2p-circuit/** (2026-10-01 实测踩过: 挑到中继地址 ⇒ 拨号得到
+  // "Database failed to open" ⇒ S4 的 B 侧看似"没同步", 其实是拨错了地址 ✗)
+  const direct = list.filter((a) => !a.includes('webrtc-direct') && !a.includes('/p2p-circuit/'));
+  return direct.slice(0, 1);
 }
 
 const checks: { name: string; pass: boolean; detail: string }[] = [];
@@ -116,8 +124,9 @@ async function main(): Promise<void> {
   console.log('');
 
   // ── S3: 反事实 (A 仍在线供块 ⇒ 不拨号必须看不见)
-  const D3 = await runNode(path.join(ROOT, 's3-d'), { phase: 'join_and_wait', address: A1.address, dial: false, waitFor: 1, timeoutMs: 20000 });
-  console.log('   S3 · 反事实 (不拨号, 而 A 在线且在供块)');
+  // S3 反事实必须"真隔离": 关掉 mDNS (否则同机 peer 不拨号也会被自动发现, 这条判据既可能假红也可能假绿)
+  const D3 = await runNode(path.join(ROOT, 's3-d'), { phase: 'join_and_wait', address: A1.address, dial: false, waitFor: 1, timeoutMs: 20000 }, 120000, { BOLLOON_ORBITDB_NO_MDNS: '1' });
+  console.log('   S3 · 反事实 (不拨号 + 关 mDNS, 而 A 在线且在供块 ⇒ 只有"真没连上"才可能 seen=0)');
   console.log(`      D: seen=${D3.seen} 打不开=${D3.openError ? '是' : '否'}`);
   if (D3.openError) console.log(`      → 原文: ${String(D3.openError).slice(0, 200)}`);
   check('S3 不拨号必须看不见任何消息', Number(D3.seen) === 0, `seen=${D3.seen} (期望 0 = 复制确实来自网络)`);
@@ -149,17 +158,30 @@ async function main(): Promise<void> {
   // A 重启 (同 HOME ⇒ 同身份/同 blockstore), 拨 B; B 常驻供块
   const a4b = holdNode(path.join(ROOT, 's4-a'), { phase: 'open_and_wait', address: A4.address, addrs: dialableAddrs(B4b.addrs), waitFor: 21, timeoutMs: 180000 }, 300000);
   const a4bRes = await a4b.result;
-  const B4c = await runNode(path.join(ROOT, 's4-b'), { phase: 'open_and_wait', address: A4.address, addrs: dialableAddrs(a4bRes.addrs), waitFor: 21, timeoutMs: 180000 }, 300000);
+  // 2026-10-01 踩的坑: B 的上一个进程 (离线写那次 hold) 必须**先退出** —— 同一 HOME 上两个进程
+  // 同时开同一个库会撞 LevelDB 锁, 表现为 openStoreByAddress 报 "Database failed to open"
+  // (我修过 A 的同类问题, 漏了 B)。所以这里先 kill 再起 B 的下一个进程。
+  b4.kill();
+  await new Promise((r) => setTimeout(r, 1500));
+  // B 的第二次: 用 open_and_wait (断言需要 seen/keysHash 形状); 若没看到, 再补一个探针拿时间曲线
+  let B4c = await runNode(path.join(ROOT, 's4-b'), { phase: 'open_and_wait', address: A4.address, addrs: dialableAddrs(a4bRes.addrs), waitFor: 21, timeoutMs: 180000 }, 300000);
+  if (Number(B4c.seen) < 21) {
+    console.log('      (B 侧没看到 21 条 ⇒ 补跑探针拿曲线)');
+    await runNode(path.join(ROOT, 's4-b'), { phase: 'probe_sync', address: A4.address, addrs: dialableAddrs(a4bRes.addrs), waitFor: 21, count: 12 }, 300000);
+    B4c = { ...B4c, probedAfter: true };
+  }
   const A4b = a4bRes;
   console.log('   S4 · 断网分叉 + 重连收敛');
   console.log(`      A 建群 appended=${A4.appended} · B 加入 seen=${B4a.seen}`);
   console.log(`      A 退出后 B 离线写: written=${B4b.written} ok=${B4b.ok}${B4b.error ? ' 错误=' + String(B4b.error).slice(0, 150) : ''}`);
   console.log(`      A 重启: seen=${A4b.seen} 等=${A4b.waitedMs}ms · B(新进程): seen=${B4c.seen} 等=${B4c.waitedMs}ms`);
   console.log(`      指纹: A=${A4b.keysHash} B=${B4c.keysHash}`);
+  if (B4c.openError) console.log(`      B 打开失败原文: ${String(B4c.openError).slice(0, 200)}`);
+  if (B4c.dialErrors) console.log(`      B 拨号: ${JSON.stringify(B4c.dialErrors).slice(0, 200)}`);
   check('S4 非创建者离线写入成功 (write:* 真生效)', Number(B4b.written) === 10, `written=${B4b.written} (期望 10)${B4b.error ? ' · ' + String(B4b.error).slice(0, 130) : ''}`);
   check('S4 重连后两侧都看到 21 条', Number(A4b.seen) >= 21 && Number(B4c.seen) >= 21, `A=${A4b.seen} B=${B4c.seen} (期望 ≥21)`);
   check('S4 收敛后指纹逐字相同', A4b.keysHash === B4c.keysHash && !!A4b.keysHash, `A=${A4b.keysHash} B=${B4c.keysHash}`);
-  b4.kill(); a4b.kill();
+  a4b.kill();
   console.log('');
 
   // ── P0 数字表 (方案 §2 四个量里的三个; 线上字节未单独采集, 如实注明)

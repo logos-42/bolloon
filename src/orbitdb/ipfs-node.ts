@@ -98,6 +98,9 @@ export async function createBolloonIpfs(dataDir?: string): Promise<BolloonIpfs> 
   //   打开 BOLLOON_ORBITDB_LEAN_ROUTING=1 ⇒ 不带 DHT/delegated/autoTLS, 只留 pubsub+identify+ping+relay。
   //   这既是一个诊断开关, 也是"轻量客户端"该有的形态 (手机/低配节点不需要当 DHT 服务器)。
   const leanRouting = process.env.BOLLOON_ORBITDB_LEAN_ROUTING === '1' || process.env.BOLLOON_ORBITDB_LEAN_ROUTING === 'true';
+  // 2026-10-01: 反事实需要"真隔离"。节点默认带 mDNS ⇒ 同机/同网的 peer **不拨号也会被自动发现并连上**
+  //   ⇒ P0 的 S3(「不拨号必须看不见」)曾经假红/假绿都出现过。做隔离实验时打开这个开关。
+  const noMdns = process.env.BOLLOON_ORBITDB_NO_MDNS === '1' || process.env.BOLLOON_ORBITDB_NO_MDNS === 'true';
 
   const heliaWithLibp2p = withLibp2p(createHeliaLight({
     blockstore,
@@ -122,7 +125,7 @@ export async function createBolloonIpfs(dataDir?: string): Promise<BolloonIpfs> 
       ping: ping(),
       relay: circuitRelayServer(),
       upnp: uPnPNAT(),
-      mdns: mdns(),
+      ...(noMdns ? {} : { mdns: mdns() }),
       http: http(),
     },
   } as any);
