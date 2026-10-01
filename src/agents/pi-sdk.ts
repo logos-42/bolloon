@@ -15,6 +15,7 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { expandHomeArgs } from './tool-path-args.js';
+import { renderDelegateNotices } from './background-notices.js';
 import { createHash } from 'node:crypto';
 import { shouldReview, shouldReviewTask, runExperienceReview } from './experience-review.js';
 import { decideLessonSink, skillsFromDirs, logLessonSuggestions, routeLessonToSkill } from './lesson-to-skill.js';
@@ -276,17 +277,22 @@ export class PiAgentSession implements AgentSession {
   private cachedToolDefinitions: string = '';
   /** M2.4: 缓存 persona section */
 
-/**
+  /**
    * 当前活跃计划 (待办) 的**重注入段** (2026-10-01 落实④)。
    * 每轮都带 —— 因为上下文压缩会把早先注入的计划文本丢掉, 一次性注入等于"压完就忘"。
    * 有界 (条数/字符都封顶); 读不到就返回空串, 绝不影响主流程。
    */
   private async renderActivePlansSection(): Promise<string> {
+    // 2026-10-01: 后台委派的结果**自动回灌** —— 完成后的第一轮在这里给一行提示(只提一次)
+    let bg = '';
+    try { bg = renderDelegateNotices(); } catch { /* 提示失败不打断主流程 */ }
+    let plans = '';
     try {
       const { listActivePlans, formatPlansForPrompt } = await import('./plan-store.js');
-      const plans = await listActivePlans();
-      return formatPlansForPrompt(plans, { maxChars: 1200, maxItems: 3 });
-    } catch { return ''; }
+      const list = await listActivePlans();
+      plans = formatPlansForPrompt(list, { maxChars: 1200, maxItems: 3 });
+    } catch { return bg; }
+    return bg ? `${bg}\n${plans}` : plans;
   }
 
   private cachedPersonaSection: string = '';

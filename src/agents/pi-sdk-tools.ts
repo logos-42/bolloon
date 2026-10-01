@@ -12,7 +12,9 @@ import { runSelfImproveLoop } from './pi-sdk-session-factory.js';
 import type { Tool, ToolResult } from './pi-sdk-types.js';
 import type { PersonaDoc } from '../social/heartbeat.js';
 import { getMinimax } from '../constraints/index.js';
-import { delegateToEngine } from '../external-engines/delegate.js';
+import { delegateToEngine, buildDelegateCommand } from '../external-engines/delegate.js';
+import { spawnBackground } from './process-runner.js';
+import { DELEGATE_ENV_MARK } from './background-notices.js';
 // 2026-09-13: 下一代工具集 (人机问答 / 精确补丁 / 桌面操作 / 技能分享)
 import { userQuestions, DEFAULT_QUESTION_TIMEOUT_MS } from './user-questions.js';
 import { registerPatchTools } from './patch-tool.js';
@@ -675,7 +677,8 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         prompt: '派发的任务描述 (作为单参数传给该引擎 CLI)',
         model: '可选, 强制指定模型 (如 deepseek/deepseek-v4-flash), 需引擎支持',
         cwd: '可选, 工作目录, 默认当前目录',
-        timeoutMs: '可选, 等待上限毫秒(默认 120000=2 分钟, 超时会**终止**该引擎进程). 小活给 20000~30000, 大活别用委派(见描述)'
+        timeoutMs: '可选, 等待上限毫秒(默认 120000=2 分钟, 超时会**终止**该引擎进程). 小活给 20000~30000, 大活别用委派(见描述)',
+        background: '可选, **默认 true** —— 起完就走(后台 session), 结果会在完成后的**下一轮自动回灌**给你; 想拿完整输出用 process poll <session>。只有确实要"现在就等它的结果"才传 false'
       },
       execute: async (args) => {
         const engine = String(args.engine || '').trim();
@@ -688,6 +691,27 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         // correlationId 幂等去重 (同一 agent 重复 correlation 只应出现一次)
         const ownerDid = ctx.identity?.did || 'unknown';
         const correlationId = `delegate:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+        // 2026-10-01 (用户: 「开展子智能体后，bolloon 没有回归」/「还是卡住了，学 hermes」):
+        //   **默认后台** ✓ —— 起完立刻返回(带 session id), 父智能体继续干别的 ✓;
+        //   它跑完的结果由 background-notices 在下一轮**自动回灌** ✓ ⇒ 不再"卡满 120s 然后白干" ✗。
+        const wantBackground = String(args.background ?? '') !== 'false';   // 默认 true(起完就走 ✓)
+        if (wantBackground) {
+          try {
+            const cmd = await buildDelegateCommand(engine, prompt, { ...(model ? { model } : {}), ...(cwd ? { cwd } : {}) });
+            if (cmd) {
+              const shellCmd = `${DELEGATE_ENV_MARK} ${JSON.stringify(cmd.cliPath)} ${cmd.args.map((a) => JSON.stringify(a)).join(' ')}`;
+              const sess = spawnBackground(shellCmd, cmd.cwd);
+              return {
+                success: true,
+                output: `🚀 已在**后台**起 ${engine} (session ${sess.id}) —— 你可以继续干别的 ✓。`
+                  + `\n它跑完的结果会**自动回灌**到下一轮(或随时 \`process poll ${sess.id}\` 取完整输出; \`process kill ${sess.id}\` 可停)。`
+                  + `\n❗别在原地等它, 也别重复发同一条委派。`
+              };
+            }
+          } catch {
+            /* 造不出命令/起不来 ⇒ 退回下面的同步委派 ✓ */
+          }
+        }
         const timeoutMs = Number(args.timeoutMs) || undefined;
         const result = await delegateToEngine(engine, prompt, {
           cwd: cwd || undefined,

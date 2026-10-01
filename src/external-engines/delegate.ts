@@ -204,3 +204,25 @@ export async function delegateToEngine(
     });
   });
 }
+
+/**
+ * 2026-10-01 (用户: 「开展子智能体后，bolloon 没有回归」+「还是卡住了，学 hermes」):
+ *   把"造命令"这一步单独导出 ⇒ 委派可以**起完就走**(后台 session ✓), 而不是 `await` 到超时被杀 ✗。
+ * 返回 null 表示该引擎不可用/没模板(调用方照原样退回同步委派 ✓)。
+ */
+export async function buildDelegateCommand(
+  id: EngineId,
+  prompt: string,
+  opts: { model?: string; cwd?: string } = {}
+): Promise<{ cliPath: string; args: string[]; cwd: string } | null> {
+  const trimmedId = String(id || '').trim();
+  const trimmedPrompt = String(prompt || '').trim();
+  if (!trimmedId || !trimmedPrompt) return null;
+  if (trimmedId.startsWith('experiment:')) return null;
+  const engines = await discoverEngines();
+  const engine = engines.find((e) => e.id === trimmedId);
+  if (!engine || !engine.installed || !engine.cliPath) return null;
+  const argv = buildDelegateArgs(trimmedId, trimmedPrompt, opts.model);
+  if (!argv) return null;
+  return { cliPath: engine.cliPath, args: argv, cwd: opts.cwd || process.cwd() };
+}
