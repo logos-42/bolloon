@@ -3078,7 +3078,13 @@ lastQualityScore = this.estimateResponseQuality(reply);
         //   currentTurnContext 是调用方自己的当前轮易变段 (循环进度/改进提示), 走 CURRENT TURN 区.
         // 2026-09-28: 回带最终 wire messages (含注入后的当前轮) → 上层据此写回 messageHistory.
         const response = await llm.chat(contextOrMessages, systemPrompt, signal, tools, 'main-agent', 'react-loop', undefined, currentTurnContext);
-        // 2026-06-30: 透传 toolCalls (OpenAI 协议 native) 给上层, 让 assistant message 能 emit 真 id
+
+        // 2026-10-01 (用户: 「思考的记录可以也显示出来吗」): 思考模型的思维链原先只被"存起来回带",
+      //   **不显示** ✗。这里把它往流里送一份 —— 显示与否由 CLI 侧决定(BOLLOON_SHOW_THINKING, 默认显示) ✓。
+      try {
+        const rc = String((response as any)?.reasoningContent || '').trim();
+        if (rc) this.currentOnStream?.({ type: 'reasoning', content: rc } as any);
+      } catch { /* 送不出去不影响主流程 */ }        // 2026-06-30: 透传 toolCalls (OpenAI 协议 native) 给上层, 让 assistant message 能 emit 真 id
         return { reply: response.reply || '', toolCalls: response.toolCalls, messages: response.messages };
       } catch (err: any) {
         // 用户主动 abort: 不重试, 立即抛

@@ -109,6 +109,8 @@ export interface StreamCallback {
 export interface StreamEvent {
   type: 'status' | 'thinking' | 'tool' | 'token' | 'done' | 'error'
       | 'step_start' | 'step_done' | 'step_error'
+      /** 2026-10-01: 思考模型的思维链片段 (用户要求显示思考记录) */
+      | 'reasoning'
       | 'reply-preview';
   content: string;
   tool?: string;

@@ -15,6 +15,7 @@ import { irohTransport } from './network/iroh-transport.js';
 import { getLastAiTiming, getLastAiUsage } from './llm/pi-ai.js';
 import { setHistoryScope } from './cli/input-history.js';
 import { statusSegments , fitSegments, rightAlignPad, dispWidthSafe, statusLineBudget } from './cli/status-segments.js';
+import { formatReasoningForDisplay } from './cli/reasoning-view.js';
 import { loadWalletTool } from './agents/wallet-tools.js';
 import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
@@ -3681,6 +3682,11 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         //   (thinking / status / phase / Reflection) 全被丢弃 → 用户只能看到输入和最终输出
         // 用户偏好 (2026-08-07): 思考过程 = 圆角框渲染 (和回复同路径 renderMessageBox),
         //   颜文字动画 (inkSetThinking) 只表示"正在运行", 不承载思考内容
+        // 2026-10-01: 思考记录 (模型的思维链) —— 暗色块 + 明确标注"未验证", 与正式回答分开 ✓
+        if (e.type === 'reasoning' && e.content) {
+          const view = formatReasoningForDisplay(String(e.content));
+          if (view) appendLine(renderMessageBox({ title: '💭 思考 (未验证)', body: view, color: C_DIM, maxLines: 16 }));
+        }
         if (e.type === 'thinking' && e.content) {
           // thinking 事件只有 "🤔 开始思考..." 占位 → 不 appendLine, 运行过程由动画表示;
           //   真正思考内容在 status 的 Reflection/💡 事件 → 下方框渲染
