@@ -727,6 +727,12 @@ async function getAgent() {
     peerId: targetChannelId ?? 'harness',
     // 2026-08-09: 透传 channel.agentId → persona docs 按 agent 加载 (身份真正变化)
     agentId: chIdentity?.agentId || (targetChannelId ? undefined : agentIdentity?.name),
+    // 2026-10-01 ★ **必须传 identityDoc** —— 之前漏了 ✗, 后果有两层:
+    //   ① 上面按频道算好的身份(名字 + 该 agent 自己的 did)被**丢掉**, session 用自己造/复用的;
+    //   ② session 工厂的更新路径 (pi-sdk-session-factory.updateIdentity) 以 `config.identityDoc?.did`
+    //      为条件 ⇒ 缺它 **永不触发** ⇒ 切频道时复用同一个 session 实例, 身份却**不换** ✗✗
+    //   (实测: 233→智能体 后答 233 的身份; 智能体→233 后答 智能体的身份 = 身份"差一格" ✓ 根因在此)
+    identityDoc,
     loadSessionKey,
   });
   agentBoundChannelId = targetChannelId;
