@@ -5,7 +5,7 @@ created: 2026-09-30
 last_confirmed: 2026-09-30
 schema_version: 2
 audience: self
-stage: plan
+stage: draft
 status: draft
 confidence: medium
 entity_type: chapter
