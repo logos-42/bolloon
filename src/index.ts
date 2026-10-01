@@ -693,6 +693,17 @@ async function getAgent() {
   //   否则它会读全局 persona.json, 于是 get_identity 已是「小龙」而上下文里还写着「小宝」✗。
   if (chIdentity?.agentId) process.env.BOLLOON_ACTIVE_AGENT_ID = chIdentity.agentId;
 
+  // 2026-10-01: **身份取值一行事实** —— 每次**建/切 agent** 打一行(不是每回合, 不刷屏)。
+  //   用户报「xiaomi 频道却拿到 233 的 DID + 小龙」而可疑判据没触发 ⇒ 猜不动了, 让代码直说。
+  try {
+    console.warn(
+      `[identity] channel=${targetChannelId ?? '(无)'} · 查到=${chIdentity ? 'yes' : '**no**'} · ` +
+      `channel.agentId=${chIdentity?.agentId ?? '(无)'} · channel.did=${String(chIdentity?.did ?? '(无)').slice(0, 26)} · ` +
+      `分支=${channelIdentityUsable(chIdentity) ? 'channel自带' : perAgentIdentity ? 'per-agent' : agentIdentity ? '**共享' : '默认'} · ` +
+      `结果 did=${String(identityDoc?.did ?? '(空)').slice(0, 26)} name=${String(identityDoc?.name ?? '(空)')}`,
+    );
+  } catch { /* 自证失败不影响主流程 */ }
+
   const loadSessionKey = targetChannelId
     ? `${targetChannelId}:${chIdentity?.currentSessionId || 'default'}`
     : undefined;
