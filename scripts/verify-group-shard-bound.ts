@@ -122,11 +122,15 @@ async function main(): Promise<void> {
 
   const T1 = Number(t1.tailMs), T2 = Number(t2.tailMs);
   const ok1 = Number(t1.tailEntries) === 200 && Number(t2.tailEntries) === 200;
-  const ok2 = Number.isFinite(T1) && Number.isFinite(T2) && T2 <= Math.max(T1 * 1.5, T1 + 5000);
+  // 2026-09-30 自己踩的假绿: 大群那次返回 0 条 / 0ms, 也"通过"了比值判据 —— 计时只在该侧**真读到**
+  // 时才有意义。所以先要求两侧都 complete 且条数对得上, 再比时间; 否则这条判据直接判红并说明。
+  const bothComplete = t1.tailComplete === true && t2.tailComplete === true && Number(t1.tailEntries) === 200 && Number(t2.tailEntries) === 200;
+  const ok2 = bothComplete && T2 <= Math.max(T1 * 1.5, T1 + 5000);
   check('两个群的尾部都读回 200 条 (整片, 且完整)', ok1 && t1.tailComplete === true && t2.tailComplete === true,
         `小群=${t1.tailEntries}(完整=${t1.tailComplete}) 大群=${t2.tailEntries}(完整=${t2.tailComplete}) (期望各 200 且完整)`);
   check('大群(1000 条/5 片)尾部打开不显著慢于小群(200 条/1 片) ⇒ 打开成本与总历史解耦', ok2,
-        `小群 ${T1}ms vs 大群 ${T2}ms (判据: 大群 <= max(1.5×小群, 小群+5s))`);
+        bothComplete ? `小群 ${T1}ms vs 大群 ${T2}ms (判据: 大群 <= max(1.5×小群, 小群+5s))`
+                     : `两侧都不是"真读到 200 条", 时间不可比 (小群 ${T1}ms/${t1.tailEntries} 条 complete=${t1.tailComplete}; 大群 ${T2}ms/${t2.tailEntries} 条 complete=${t2.tailComplete}) ⇒ 判红`);
   check('尾部只打开 1 片 (不扫全历史)', Number(t1.openedShards) === 1 && Number(t2.openedShards) === 1,
         `小群 openedShards=${t1.openedShards} · 大群 openedShards=${t2.openedShards}`);
   console.log('   与老路径的对照 (不作为判据, 作为"分片要解决什么"的证据):');

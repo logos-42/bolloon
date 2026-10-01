@@ -92,6 +92,13 @@ export async function createBolloonIpfs(dataDir?: string): Promise<BolloonIpfs> 
   // createHeliaLight 无 libp2p → withLibp2p 手动装配 (可传 services)
   // codecs/hashers 照抄 createHelia 默认: OrbitDB 的 log entry 用 dag-cbor (codec 113),
   // 不注册会报 "Could not load codec for 113"
+  // 2026-09-30 (P0b 实验): "轻客户端"开关。P0b 实测到一个**与条数无关的 ~25-30s 固定停顿**
+  //   (连"只有 1 条的 keyvalue store"新节点都要 25.3s 才看见内容; 历次出现 打开=30002ms),
+  //   怀疑是每次取块前的提供者查找 (kadDHT / delegated routing 两个客户端) 在超时。
+  //   打开 BOLLOON_ORBITDB_LEAN_ROUTING=1 ⇒ 不带 DHT/delegated/autoTLS, 只留 pubsub+identify+ping+relay。
+  //   这既是一个诊断开关, 也是"轻量客户端"该有的形态 (手机/低配节点不需要当 DHT 服务器)。
+  const leanRouting = process.env.BOLLOON_ORBITDB_LEAN_ROUTING === '1' || process.env.BOLLOON_ORBITDB_LEAN_ROUTING === 'true';
+
   const heliaWithLibp2p = withLibp2p(createHeliaLight({
     blockstore,
     datastore,
@@ -102,11 +109,13 @@ export async function createBolloonIpfs(dataDir?: string): Promise<BolloonIpfs> 
     services: {
       pubsub: gossipsub({ emitSelf: true }), // OrbitDB 同步必需; emitSelf 让单机也能 publish (否则 NoPeersSubscribedToTopic)
       autoNAT: autoNAT(),
-      autoTLS: autoTLS(),
+      ...(leanRouting ? {} : { autoTLS: autoTLS() }),
       dcutr: dcutr(),
-      delegatedPeerRouting: delegatedRoutingV1HttpApiClientPeerRouting(delegatedHTTPRoutingDefaults()),
-      delegatedContentRouting: delegatedRoutingV1HttpApiClientContentRouting(delegatedHTTPRoutingDefaults()),
-      dht: kadDHT(),
+      ...(leanRouting ? {} : {
+        delegatedPeerRouting: delegatedRoutingV1HttpApiClientPeerRouting(delegatedHTTPRoutingDefaults()),
+        delegatedContentRouting: delegatedRoutingV1HttpApiClientContentRouting(delegatedHTTPRoutingDefaults()),
+        dht: kadDHT(),
+      }),
       identify: identify(),
       identifyPush: identifyPush(),
       keychain: keychain({ pass: 'bolloon-orbitdb-keychain-pass-2026' }),
