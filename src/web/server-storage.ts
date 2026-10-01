@@ -14,6 +14,7 @@
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
+import { channelsPaths, assertTestWriteTarget } from '../agents/agent-identity-store.js';
 import {
   CHANNELS_PATH,
   SESSION_CACHE_PATH,
@@ -57,24 +58,40 @@ export async function updateChannels(fn: (channels: Channel[]) => Channel[]): Pr
 
 async function rawLoadChannels(): Promise<Channel[]> {
   try {
-    const data = await fs.readFile(CHANNELS_PATH, 'utf-8');
+    const data = await fs.readFile(channelsPathNow(), 'utf-8');
     return JSON.parse(data);
   } catch (readErr: any) {
     // 2026-07-24: 主文件损坏时尝试从 .tmp 恢复
     if (readErr?.code !== 'ENOENT') {
       console.warn('[loadChannels] channels.json 解析失败, 尝试从 .tmp 恢复:', readErr?.message?.slice(0, 80));
       try {
-        const tmpData = await fs.readFile(CHANNELS_PATH + '.tmp', 'utf-8');
+        const tmpData = await fs.readFile(channelsPathNow() + '.tmp', 'utf-8');
         const recovered = JSON.parse(tmpData);
         console.log(`[loadChannels] 从 .tmp 恢复成功: ${recovered.length} 个 channel`);
         // 立即把恢复的内容写回主文件
-        await fs.writeFile(CHANNELS_PATH, tmpData, 'utf-8');
+        await fs.writeFile(channelsPathNow(), tmpData, 'utf-8');
         return recovered;
       } catch (tmpErr: any) {
         console.warn('[loadChannels] .tmp 恢复也失败:', tmpErr?.message?.slice(0, 80));
       }
     }
     return [];
+  }
+}
+
+/**
+ * channels.json 的路径**每次调用时**解析 (2026-10-01, 数据事故修复)。
+ *
+ * 事故: `server-types.CHANNELS_PATH` 是 import 时定死的常量 (按那一刻的 HOME 解析),
+ *   于是测试里后设的 process.env.HOME **完全不起作用** ⇒ 测试夹具把用户的真实
+ *   ~/.bolloon/sessions/channels.json 整表覆盖 (4 个智能体只剩 1 条)。
+ *   现在改成按**当前** HOME 解析 (与 CLI 侧 agent-identity-store.channelsPaths 同一口径)。
+ */
+function channelsPathNow(): string {
+  try {
+    return channelsPaths()[0];
+  } catch {
+    return CHANNELS_PATH;
   }
 }
 
@@ -88,9 +105,12 @@ async function rawSaveChannels(channels: Channel[]): Promise<void> {
   lastChannelsJson = jsonStr;
   console.log('[saveChannels] 保存频道数据, 数量:', sanitized.length);
   // 2026-07-24: 原子写入 — 先写 .tmp 再 rename, 防止崩溃导致 channels.json 损坏
-  const tmpPath = CHANNELS_PATH + '.tmp';
+  const target = channelsPathNow();
+  // 测试进程只允许写临时目录 —— 真实数据目录一律拒绝 (第二道闸)
+  assertTestWriteTarget(path.dirname(path.dirname(target)), 'channels.json');
+  const tmpPath = target + '.tmp';
   await fs.writeFile(tmpPath, jsonStr, 'utf-8');
-  await fs.rename(tmpPath, CHANNELS_PATH);
+  await fs.rename(tmpPath, target);
   lastChannelsWriteAt = Date.now();
 }
 

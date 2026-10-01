@@ -76,11 +76,11 @@ export function statusSegments(f: StatusFacts): string[] {
  *   规则: 丢的顺序 = ↑ → ◎ → ✓ → ◷ (⚙ 永不丢 —— 它最短, 且"有没有在跑工具"最有信息量);
  *   每一段都按显示宽算 (中文 2 列)。
  */
-export function fitSegments(segs: string[], avail: number): string[] {
+export function fitSegments(segs: string[], avail: number, widthFn: (s: string) => number = dispWidth): string[] {
   // 2026-09-30: 宽度一律用 loading-tui 的 dispWidth (按 East Asian Width 表) ——
   //   之前这里和 getStatus 各写了一份 "charCode > 255 ⇒ 2" 的启发式, 它把 `│ ░ ◷ ▸ ◎ ✓ ↑ ⚙`
   //   这些**单宽**符号都算成 2 列 ⇒ 右对齐时每行凭空多占十几列 (leo: 「没有完全右对齐」)。
-  const w = (s: string) => dispWidth(s);
+  const w = (s: string) => widthFn(s);
   const dropOrder = ['↑', '◎', '✓', '◷'];       // 先丢谁 (从重要性的低到高; ⚙ 永不丢)
   let cur = [...segs];
   const total = () => cur.reduce((n, s) => n + w(s), 0) + Math.max(0, cur.length - 1) * 3;   // 3 = ' │ '
@@ -104,4 +104,55 @@ export function fitSegments(segs: string[], avail: number): string[] {
 export function rightAlignPad(usedWidth: number, noteWidth: number, width: number): number | null {
   const pad = (width - 1) - usedWidth - noteWidth;
   return pad >= 1 ? pad : null;
+}
+
+/**
+ * **保守测宽** (2026-10-01, 修"底栏整块重复打印")。
+ *
+ * 背景: `dispWidth` 按 East Asian Width 只把 **W/F 区**算 2 列, 而我们在底栏实际用了一批
+ * **Ambiguous(A) 区**的字符 —— `·`(00B7) `↑`(2191) `◎`(25CE) `≈`(2248) `│`(2502)
+ * `—`(2014) `─`(2500) 等。它们在**部分终端/字体**下占 **2 列**, 我们按 1 列算 ⇒ 整行可能
+ * 超宽 1–2 列 ⇒ 终端**自动折行**多出一行 ⇒ Ink 的光标数学被打乱 ⇒ **整个底栏被重复打印**
+ * (用户屏上同一条状态栏出现三份, 只有计时在变)。也正因为 `◎`/`↑` 不是每屏都有, 症状是"偶尔"。
+ *
+ * 口径: 这里把这些**我们确实用到的** Ambiguous 字符一律按 **2 列**算 (宁可短一列, 绝不超宽)。
+ * 取的是**保守子集** —— 不追求覆盖全部 A 区, 只覆盖底栏/状态栏里会出现的那些; 新增符号时补进来。
+ */
+const AMBIGUOUS_AS_WIDE = new Set<string>([
+  '·', '↑', '↓', '◎', '≈', '│', '─', '—', '↕', '§', '¶', '×', '÷', '±', '°', 'µ', '∞', '≠',
+]);
+
+/** 保守宽度: dispWidth + Ambiguous 字符每个再加 1 列 (即按 2 列算) */
+export function dispWidthSafe(s: string): number {
+  const plain = String(s || '');
+  let extra = 0;
+  for (const ch of plain) if (AMBIGUOUS_AS_WIDE.has(ch)) extra += 1;
+  return dispWidth(plain) + extra;
+}
+
+
+/**
+ * 底栏左段的**可用宽度预算** (2026-10-01)。
+ * 不变量: 保守宽度(left) + 至少 1 格 + 保守宽度(title) ≤ width - 1
+ * ⇒ 在任何终端字体下都不会因为"正好等于终端宽"而自动折行 (折行会让 Ink 光标数学错位,
+ *   表现就是整块底栏被重复打印)。
+ */
+export function statusLineBudget(width: number, leftPlainWidth: number, notePlain: string, margin = 8): number {
+  const room = width - 1 - dispWidthSafe(notePlain) - 1 - Math.max(0, leftPlainWidth) - margin;
+  return Math.max(20, room);
+}
+
+/** 按**保守宽度**截断 (兜底: 即便有没登记进表的歧义字符, 也不会把行撑出终端) */
+export function truncateSafe(s: string, maxWidth: number): string {
+  const text = String(s || '');
+  if (dispWidthSafe(text) <= maxWidth) return text;
+  let out = '';
+  let w = 0;
+  for (const ch of text) {
+    const cw = dispWidthSafe(ch);
+    if (w + cw > Math.max(0, maxWidth - 1)) break;
+    out += ch;
+    w += cw;
+  }
+  return `${out}…`;
 }

@@ -194,9 +194,47 @@ export class AgentIdentityStore {
   }
 }
 
-let _store: AgentIdentityStore | null = null;
-/** 单例 (CLI / server 共用; 测试可 new AgentIdentityStore(tmpHome)) */
+// 2026-10-01 (数据事故修复): 单例**按 home 分桶**, 不再把 HOME 绑死在一个实例上。
+//
+// 事故经过 (真事, 用户丢了 4 个智能体): 测试 `channel-not-found.test.ts` 设了隔离 HOME
+// (process.env.HOME = TMP_HOME), 但 vitest 复用 worker —— 同 worker 里**别的测试先**碰过
+// getIdentityStore() ⇒ 单例已按**真实** HOME 构造 ⇒ 该测试的夹具 channel
+// ("real test msg"/"test-agent") 直接写进真实的 ~/.bolloon/sessions/channels.json,
+// 而且是**整表覆盖** ⇒ 用户 4 个 channel 只剩 1 条。
+// 根因就是这里: `new AgentIdentityStore()` 的默认参数 `home = HOME()` 只在**构造那一刻**取值,
+// 之后 process.env.HOME 再怎么变都影响不到它。
+const _storesByHome = new Map<string, AgentIdentityStore>();
+
+/** 单例 (CLI / server 共用, **按当前 HOME 分桶**; 改过 HOME 的测试会自然拿到自己的实例) */
 export function getIdentityStore(): AgentIdentityStore {
-  if (!_store) _store = new AgentIdentityStore();
-  return _store;
+  const home = HOME();
+  let st = _storesByHome.get(home);
+  if (!st) { st = new AgentIdentityStore(home); _storesByHome.set(home, st); }
+  return st;
+}
+
+/** 仅供测试: 丢弃所有缓存实例 (改完 HOME 后强制重建) */
+export function resetIdentityStoreSingletons(): void {
+  _storesByHome.clear();
+}
+
+/**
+ * 测试期写盘硬保护 (2026-10-01, 数据事故后的第二道闸)。
+ *
+ * 事故: 测试夹具把用户的真实 channels.json 整表覆盖 (4 个智能体只剩 1 条)。
+ * 第一道修的是根因 (单例按 HOME 分桶); 这道是**兜底**: 只要进程带着测试标志,
+ * 就**只允许**写临时目录下的数据 —— 真实 HOME (~/.bolloon) 一律拒绝并抛错。
+ * 宁可让测试红, 也不能再动用户的数据。
+ */
+export function assertTestWriteTarget(home: string, what = '数据'): void {
+  const isTest = !!process.env.VITEST || process.env.NODE_ENV === 'test';
+  if (!isTest) return;
+  const h = String(home || '').replace(/\/+$/, '');
+  const tmpLike = h.startsWith('/tmp/') || h.startsWith('/var/folders/') || h.startsWith('/private/var/folders/') || /bolloon[-_].*test/i.test(h);
+  if (!tmpLike) {
+    throw new Error(
+      `[test-guard] 测试进程拒绝写非临时目录的${what}: ${h} —— ` +
+      `真实数据目录只能在正常 CLI/服务进程中写 (这道闸就是为防上次"夹具覆盖真实 channels.json"的事故)`,
+    );
+  }
 }

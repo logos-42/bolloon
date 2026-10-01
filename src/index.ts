@@ -12,7 +12,7 @@ import {
 import { irohTransport } from './network/iroh-transport.js';
 import { getLastAiTiming, getLastAiUsage } from './llm/pi-ai.js';
 import { setHistoryScope } from './cli/input-history.js';
-import { statusSegments , fitSegments, rightAlignPad } from './cli/status-segments.js';
+import { statusSegments , fitSegments, rightAlignPad, dispWidthSafe, statusLineBudget } from './cli/status-segments.js';
 import { loadWalletTool } from './agents/wallet-tools.js';
 import { HybridMessenger } from './network/hybrid-messenger.js';
 import * as ed25519 from '@noble/ed25519';
@@ -802,7 +802,12 @@ function getStatus(): string {
       return `${C_DIM}${icon}${RESET} ${color}${val}${RESET}`;
     });
     // 按剩余宽度取舍 (真机 112 列时右段被截 ⇒ 看着像没出现)
-    const __segsFit = fitSegments(__segs.map(x => x.replace(/\x1b\[[0-9;]*m/g, '')), Math.max(20, termWidth() - 2 - __leftPlainLen - 6));
+    // 2026-10-01: 底栏一律用**保守测宽** (Ambiguous 字符按 2 列) —— 超 1 列就会让终端折行、
+    //   进而打破 Ink 光标数学, 表现是整块底栏被重复打印 (见 status-segments.dispWidthSafe 注释)
+    // 2026-10-01: 预算按**保守宽度**给 (left + ≥1 格 + title ≤ width-1) ⇒ 任何字体下都不折行
+    const __notePlain = (cliSessionPreview && cliSessionTitleKey === cliSessionKey) ? `▸ ${cliSessionPreview}` : '';
+    const __budget = statusLineBudget(termWidth(), __leftPlainLen, String(__notePlain || ''));
+    const __segsFit = fitSegments(__segs.map(x => x.replace(/\x1b\[[0-9;]*m/g, '')), __budget, dispWidthSafe);
     const __live = __segsFit.length
       ? ` ${C_DIM}│${RESET} ` + __segsFit.map(x => {
           const m = /^(\S+)\s(.*)$/.exec(x);
@@ -812,13 +817,13 @@ function getStatus(): string {
       : '';
   // 2026-09-30 (leo: 「这个 title 需要顶格右侧」): 会话 Title **右对齐**贴右边缘 ——
   //   先算左半边+活数据段的显示宽, 再补空格把 `▸ 标题` 推到 width-1 处; 放不下就不显示 (不挤坏这一行)。
-  const __notePlain = (cliSessionPreview && cliSessionTitleKey === cliSessionKey) ? `▸ ${cliSessionPreview}` : '';
   let __noteStr = '';
   if (__notePlain) {
     // 宽度必须用 dispWidth (East Asian Width 表): 行内的 `│ ░ ◷ ▸ ◎ ✓ ↑ ⚙` 都是**单宽**,
     //   用 "charCode > 255 ⇒ 2" 的启发式会每行多算十几列 ⇒ 右对齐留一大截 (leo: 「没有完全右对齐」)。
-    const used = dispWidth(`${__left}${__live}`);
-    const pad = rightAlignPad(used, dispWidth(__notePlain), termWidth());
+    const used = dispWidthSafe(`${__left}${__live}`);
+    // 保守测宽 (同上): 右对齐后整行最多到 width-1, 在任何终端字体下都不会折行
+    const pad = rightAlignPad(used, dispWidthSafe(__notePlain), termWidth());
     if (pad !== null) __noteStr = ' '.repeat(pad) + `${C_DIM}${__notePlain}${RESET}`;
   }
   return `${__left}${__live}${__noteStr}`;

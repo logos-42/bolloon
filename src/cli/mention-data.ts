@@ -51,6 +51,10 @@ const CLI_COMMANDS: MentionItem[] = [
   { kind: 'command', label: 'skill', hint: '技能候选', insert: 'skill' },
   { kind: 'command', label: 'mcp', hint: 'MCP 服务器列表', insert: 'mcp' },
   { kind: 'command', label: 'agent', hint: '当前智能体', insert: 'agent' },
+  // 2026-10-01 (用户报「/channel 没加入 cli 命令栏, 无法选中」): 有处理器但没有条目 ⇒ 打 / 选不到。
+  //   一并补上同样漏掉的 /fork (会话分叉)。
+  { kind: 'command', label: 'channel', hint: '切换智能体 (无参=列出所有)', insert: 'channel' },
+  { kind: 'command', label: 'fork', hint: '从第 N 条会话分叉 (/fork <#>)', insert: 'fork' },
   { kind: 'command', label: 'did', hint: 'DID 身份', insert: 'did' },
   { kind: 'command', label: 'ipfs', hint: 'Kubo 状态', insert: 'ipfs' },
   { kind: 'command', label: 'ipns', hint: 'IPNS keys', insert: 'ipns' },
