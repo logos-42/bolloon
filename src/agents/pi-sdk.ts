@@ -15,7 +15,7 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { expandHomeArgs } from './tool-path-args.js';
-import { renderDelegateNotices } from './background-notices.js';
+import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
 import { createHash } from 'node:crypto';
 import { shouldReview, shouldReviewTask, runExperienceReview } from './experience-review.js';
 import { decideLessonSink, skillsFromDirs, logLessonSuggestions, routeLessonToSkill } from './lesson-to-skill.js';
@@ -286,6 +286,10 @@ export class PiAgentSession implements AgentSession {
     // 2026-10-01: 后台委派的结果**自动回灌** —— 完成后的第一轮在这里给一行提示(只提一次)
     let bg = '';
     try { bg = renderDelegateNotices(); } catch { /* 提示失败不打断主流程 */ }
+    try {
+      const block = renderNoticeBlock();   // 通用回流(复盘产出/后台任务) —— 空闲排空 ⇒ 新一轮 ✓
+      if (block) bg = bg ? `${bg}\n${block}` : block;
+    } catch { /* 回流失败不打断 */ }
     let plans = '';
     try {
       const { listActivePlans, formatPlansForPrompt } = await import('./plan-store.js');
@@ -1244,6 +1248,9 @@ export class PiAgentSession implements AgentSession {
                 logLessonSuggestions(lesson, decision);
                 // ⓐ' 用户要求「**都进去**」⇒ 每条教训都落进技能库: 强命中写那个技能 ✓, 否则写沉淀技能 `lessons-learned` ✓
                 routeLessonToSkill(lesson, skillsFromDirs(dirs));
+                // 2026-10-01 (用户: 「复盘任务能否触发 loop?」): 教训**回流成下一轮的任务源** ✓ ——
+                //   只"记下来"等于闭环断在这 ✗; 投进共享队列 ⇒ 空闲时排空 ⇒ 以**新一轮**浮现 ✓(绝不中途插队 ✓)。
+                try { pushNotice('review', `${lesson.title} —— ${String(lesson.body || '').replace(/\s+/g, ' ').slice(0, 120)}`); } catch { /* 回流失败不打断 */ }
                 // ⓑ 接入**判断力系统**: 同一条教训也进 HumanJudgment(带 source/confidence/revisable ⇒ 可被后续演化取代 ✓)
                 //    这样经验库与判断力库**同一份来源**, 判断力注入(gate)时就能用上 ✓
                 import('../pi-ecosystem-judgment/human-value-store.js').then((m) => m.storeHumanJudgment({

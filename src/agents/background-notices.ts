@@ -67,3 +67,51 @@ export function renderDelegateNotices(home?: string): string {
   const lines = collectDelegateNotices(home);
   return lines.length ? lines.join('\n') : '';
 }
+
+/**
+ * 通用"待回流"队列 (2026-10-01, 学 async_delegation 的形态)。
+ * 形态要点(照抄口径, 不抄实现): 后台产物 ⇒ 投进一个**共享队列** ⇒ 前台**空闲时排空** ⇒
+ *   以**新一轮**浮现(**绝不中途插队**)✓; 同一条只浮现一次(落盘记号 ✓); 排空失败不打断主流程 ✓。
+ * 用途: 后台委派完成 ✓ · 复盘产出教训(可回流成下一轮的任务源 ✓)。
+ */
+export interface PendingNotice { kind: 'delegate' | 'review'; text: string; at: number }
+
+export function noticesQueuePath(home: string = os.homedir()): string {
+  return path.join(home, '.bolloon', 'notices-queue.jsonl');
+}
+
+/** 投递一条(后台线程/异步回调都能安全调 ✓; 失败只吞不抛 ✓) */
+export function pushNotice(kind: PendingNotice['kind'], text: string, home: string = os.homedir()): void {
+  try {
+    const p = noticesQueuePath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.appendFileSync(p, JSON.stringify({ kind, text, at: Date.now() } satisfies PendingNotice) + '\n');
+  } catch { /* 丢一条提示不该打断主流程 */ }
+}
+
+/** 空闲时排空(读走即清空 ✓): 返回"上一轮之后攒下的"通知, 供本轮开头一次性交代 ✓ */
+export function drainNotices(home: string = os.homedir()): PendingNotice[] {
+  const p = noticesQueuePath(home);
+  let raw = '';
+  try { raw = fs.readFileSync(p, 'utf-8'); } catch { return []; }
+  const out: PendingNotice[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const o = JSON.parse(line);
+      if (o && typeof o.text === 'string' && (o.kind === 'delegate' || o.kind === 'review')) out.push(o as PendingNotice);
+    } catch { /* 坏行跳过 */ }
+  }
+  try { fs.writeFileSync(p, '', { mode: 0o600 }); } catch { /* 清空失败 ⇒ 下轮可能重复一次, 可接受 */ }
+  return out;
+}
+
+/** 拼成一段"任务源块"(自包含 ✓: 说明是什么 + 现在该做什么 + 别重复) */
+export function renderNoticeBlock(home: string = os.homedir()): string {
+  const items = drainNotices(home);
+  if (!items.length) return '';
+  const lines = items.map((n) => n.kind === 'review'
+    ? `- [复盘产出] ${n.text}\n  ⇒ 若它意味着要**改代码/改技能**, 现在就把这一步做掉(别只记下来); 若只是知识, 说明它已入库即可。`
+    : `- [后台任务完成] ${n.text}`);
+  return `【后台回流 · 这是新一轮】上一轮之后攒下 ${items.length} 条, 请在本轮一并处理:\n${lines.join('\n')}`;
+}
