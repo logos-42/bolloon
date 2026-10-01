@@ -448,13 +448,21 @@ export class PiAgentSession implements AgentSession {
     try {
       if (this.currentAgentId) {
         const cur: any = this.identity || {};
-        const badDid = !cur.did || /^did:(local|pi):/i.test(String(cur.did));
+        const curDid = String(cur.did || '');
+        const badDid = !curDid || /^did:(local|pi):/i.test(curDid);
         const missingName = !String(cur.name || '').trim();
-        if (badDid || missingName) {
-          const mine = loadOrCreateAgentIdentity(this.currentAgentId);
+        // 2026-10-01 加固: **did 与本人密钥不符** 也算坏 —— 用户实测 get_identity 返回一个
+        //   数据里根本不存在的 did (按 peerId 当 scope 新造的), 而它非空、非假值 ⇒ 上一版判据漏过 ✗。
+        //   规矩: 只要 currentAgentId 有值, 身份的 did 就必须等于该 agent 自己的密钥 did。
+        const mine = loadOrCreateAgentIdentity(this.currentAgentId);
+        const mismatch = !!mine?.did && !!curDid && curDid !== mine.did;
+        if (badDid || missingName || mismatch) {
+          if (badDid || mismatch) {
+            console.warn(`[identity] 身份纠正: ${this.currentAgentId} 的 did ${curDid ? curDid.slice(0, 26) : '(空)'} ⇒ ${mine.did.slice(0, 26)} (以该 agent 自己的密钥为准)`);
+          }
           this.identity = {
             ...cur,
-            ...(badDid && mine?.did ? { did: mine.did, publicKey: cur.publicKey || mine.publicKey } : {}),
+            ...(mine?.did ? { did: mine.did, publicKey: mine.publicKey || cur.publicKey } : {}),
             ...(missingName ? { name: agentPersonaName(this.currentAgentId) || this.currentAgentId } : {}),
           } as any;
         }
