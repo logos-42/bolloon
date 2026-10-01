@@ -240,6 +240,19 @@ export class PiAgentSession implements AgentSession {
   private cachedToolDefinitions: string = '';
   /** M2.4: 缓存 persona section */
 
+/**
+   * 当前活跃计划 (待办) 的**重注入段** (2026-10-01 落实④)。
+   * 每轮都带 —— 因为上下文压缩会把早先注入的计划文本丢掉, 一次性注入等于"压完就忘"。
+   * 有界 (条数/字符都封顶); 读不到就返回空串, 绝不影响主流程。
+   */
+  private async renderActivePlansSection(): Promise<string> {
+    try {
+      const { listActivePlans, formatPlansForPrompt } = await import('./plan-store.js');
+      const plans = await listActivePlans();
+      return formatPlansForPrompt(plans, { maxChars: 1200, maxItems: 3 });
+    } catch { return ''; }
+  }
+
   private cachedPersonaSection: string = '';
   /** 本轮迭代预算 (每轮重置; 批处理工具会退还 —— 见 iteration-budget.ts) */
   private iterBudget: any = null;
@@ -1466,6 +1479,8 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
 
 ${PROACTIVE_WORK_DISCIPLINE}
 
+${await this.renderActivePlansSection()}
+
 工作模式:
 1. 理解用户自然语言请求
 2. 分析需要哪些工具来完成
@@ -2075,6 +2090,8 @@ ${toolDefs}
 ${PiAgentSession.TOOL_SELECTION_GUIDE}
 
 ${PROACTIVE_WORK_DISCIPLINE}
+
+${await this.renderActivePlansSection()}
 
 工作模式:
 1. 理解用户自然语言请求

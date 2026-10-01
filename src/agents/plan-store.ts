@@ -54,6 +54,12 @@ export interface Plan {
   /** plan 状态: active / done / abandoned */
   status: 'active' | 'done' | 'abandoned';
   updatedAt: string;
+  /**
+   * 2026-10-01 (落实④): **单调递增版本号** —— 每次写入 +1。
+   * 作用: 并发写入方可以带 `expectedRev` 提交, 版本对不上就**拒收**(而不是默默覆盖别人的更新)。
+   * 也供 UI 侧丢弃过期快照。
+   */
+  rev: number;
 }
 
 // ============================================================
@@ -92,6 +98,8 @@ export async function createPlan(input: CreatePlanInput, home?: string): Promise
   const now = new Date().toISOString();
   const planId = `plan_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const plan: Plan = {
+    // 初始版本 (落实④: 单调递增版本号, 供乐观并发)
+    rev: 1,
     planId,
     goal,
     createdBy: input.createdBy || 'agent',
@@ -109,7 +117,7 @@ export async function createPlan(input: CreatePlanInput, home?: string): Promise
   try {
     const dir = getPlansDir(home);
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(getPlanPath(planId, home), JSON.stringify(plan, null, 2), 'utf-8');
+      await fs.writeFile(getPlanPath(planId, home), JSON.stringify(plan, null, 2), 'utf-8');
     return { ok: true, plan };
   } catch (e: any) {
     return { ok: false, error: `写入失败: ${e?.message || String(e)}` };
@@ -139,11 +147,24 @@ export interface UpdatePlanInput {
   appendSteps?: string[];
   /** 结束计划 */
   finish?: boolean;
+  /**
+   * 2026-10-01: 乐观并发 —— 传了就要求与当前 rev 一致, 不一致 ⇒ 拒绝并报"已被他人更新"。
+   * 不传 = 保持旧行为(无条件写), 兼容既有调用方。
+   */
+  expectedRev?: number;
 }
 
 export async function updatePlan(planId: string, input: UpdatePlanInput, home?: string): Promise<{ ok: boolean; plan?: Plan; error?: string }> {
   const plan = await loadPlan(planId, home);
   if (!plan) return { ok: false, error: `plan '${planId}' 不存在` };
+
+  // 2026-10-01 (落实④): 乐观并发校验 —— 带 expectedRev 且对不上 ⇒ **拒收**, 绝不默默覆盖
+  if (typeof input.expectedRev === 'number' && Number.isFinite(input.expectedRev)) {
+    const cur = Number((plan as any).rev ?? 1);
+    if (input.expectedRev !== cur) {
+      return { ok: false, error: `plan '${planId}' 已被更新 (期望 rev=${input.expectedRev}, 实际 rev=${cur}) —— 请重新读取后再改` };
+    }
+  }
 
   if (input.stepId && input.status) {
     const step = plan.steps.find(s => s.id === input.stepId);
@@ -168,6 +189,10 @@ export async function updatePlan(planId: string, input: UpdatePlanInput, home?: 
       if (s.status === 'pending') s.status = 'blocked';
     }
   }
+
+  // 2026-10-01 (落实④): 每次成功更新 ⇒ rev **单调递增** (乐观并发的基础; 也供 UI 丢弃过期快照)
+  plan.rev = Number((plan as any).rev ?? 1) + 1;
+  plan.updatedAt = new Date().toISOString();
 
   try {
     await savePlan(plan, home);
@@ -228,4 +253,29 @@ export function planToContext(plan: Plan): string {
     lines.push(`  📝 审查: ${plan.review.summary} (${plan.review.completedSteps}/${plan.review.totalSteps} 步)`);
   }
   return lines.join('\n');
+}
+
+
+/**
+ * 待办/计划重注入 (2026-10-01 落实④)。
+ *
+ * 为什么必须**每轮**注入: 上下文压缩会把早先注入的计划文本丢掉 —— 一旦丢了, 智能体就"忘了自己在做什么"。
+ * 所以注入不是一次性动作, 而是每轮带上**当前**计划(有界: 条数与字符都封顶, 免得计划本身吃爆上下文)。
+ * 与既有 `planToContext` 的分工: 那个给单条 plan 用; 这个给"当前活跃计划一览"用。
+ */
+export function formatPlansForPrompt(plans: Plan[], opts: { maxChars?: number; maxItems?: number } = {}): string {
+  const maxChars = Number.isFinite(opts.maxChars) && (opts.maxChars as number) > 0 ? Math.floor(opts.maxChars as number) : 1200;
+  const maxItems = Number.isFinite(opts.maxItems) && (opts.maxItems as number) > 0 ? Math.floor(opts.maxItems as number) : 3;
+  const active = (plans || []).filter((p) => p && p.status === 'active').slice(0, maxItems);
+  if (!active.length) return '';
+  const lines: string[] = ['## 我在做的 (每轮重注入, 压缩后也不会丢)'];
+  for (const p of active) {
+    const done = p.steps.filter((x) => x.status === 'done').length;
+    lines.push(`- [${done}/${p.steps.length}] ${p.goal}  (rev ${Number((p as any).rev ?? 1)})`);
+    for (const st of p.steps.filter((x) => x.status !== 'done').slice(0, 5)) {
+      lines.push(`    · (${st.status}) ${st.description}`);
+    }
+  }
+  const out = lines.join('\n');
+  return out.length <= maxChars ? out : out.slice(0, maxChars) + '\n…[计划列表已截断]';
 }

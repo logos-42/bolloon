@@ -12,6 +12,7 @@
  *     任何 channel 即使无 persona 文件也有纪律约束.
  */
 
+import { sanitizeForLlm } from '../agents/egress-sanitize.js';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -172,6 +173,10 @@ const OUTPUT_ORDER: FileKey[] = ['identity', 'soul', 'project', 'user', 'agent',
  *   纪律段不参与动态预算 — 即使没有 persona 文件也有纪律约束.
  */
 export function formatPersonaForSystemPrompt(docs: PersonaDocs, maxChars?: number): string {
+  // 2026-10-01 (落实③): 身份文档最终会**拼进给模型的提示** ⇒ 过**唯一出口**: 先脱敏(凭证一律打码)
+  //   再按上限中间省略。文档是用户/智能体自己写的, 里面完全可能出现私钥/助记词/URL 带密码。
+  const __sanitize = sanitizeForLlm;
+
   const cap = maxChars ?? DEFAULT_MAX_CHARS;
 
   // 段: 标识 + 字段值 (空字段跳过)
@@ -217,5 +222,5 @@ export function formatPersonaForSystemPrompt(docs: PersonaDocs, maxChars?: numbe
     const truncateMarker = '\n... (截断)';
     result = result.substring(0, Math.max(0, cap - truncateMarker.length)) + truncateMarker;
   }
-  return result;
+  return __sanitize(String(result), 8000);
 }
