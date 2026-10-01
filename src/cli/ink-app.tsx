@@ -12,7 +12,7 @@ import { ruleFor } from './status-segments.js';
 import { loadInputHistory, appendInputHistory, MEMORY_CAP } from './input-history.js';
 import * as fs from 'fs';
 import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import { collapsePaste, shouldCollapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, singleLine, PASTE_BURST_IDLE_MS } from './input-paste.js';
+import { collapsePaste, shouldCollapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, singleLine } from './input-paste.js';
 import TextInput from 'ink-text-input';
 import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
@@ -183,8 +183,12 @@ interface InkAppProps {
 
 const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdate, terminalW, terminalH }) => {
   const [input, setInput] = useState('');
-  const pasteBufRef = useRef('');
-  const pasteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 本次粘贴攒到的**原文**(只进文件, 不进输入框 ⇒ 输入框那份是引用) */
+  const pasteRawRef = useRef('');
+  /** 同一次粘贴复用同一个文件序号(避免每块都新开一个文件) */
+  const pasteSeqRef = useRef<number | null>(null);
+  /** 本次粘贴的**文件路径** —— 输入框那份不带路径(@/'/'/'#' 会触发弹窗 ✗), 提交时用它补上 ✓ */
+  const pastePathRef = useRef<string | null>(null);
   // 2026-08-07: inputRef 同步镜像 input — useInput 回调拿最新值 (闭包里的 input 是陈旧的)
   const inputRef = useRef('');
   useEffect(() => {
@@ -213,10 +217,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const C_WARN_ANSI = fg(THEME.warn); // #f59e0b
 
   // ── @ / # 弹出窗状态 ──────────────────────────────────────────────────────
-  /** 正在来一串粘贴块 ⇒ 抑制补全弹窗 + 攒块 (2026-10-01) —— 必须在 mention 之前声明 */
-  const [pasteBurst, setPasteBurst] = useState(false);
-  // 粘贴进行中不当成 mention 来源 (否则粘进来的 '@'/'#' 会弹窗, 而且弹窗会吃掉后续按键)
-  const mention = useMemo(() => (pasteBurst ? null : getMention(input)), [input, pasteBurst]);
+  // 2026-10-01: 超长输入不当成 mention 来源(纯长度判断 ⇒ 不需要状态开关 ⇒ 不会因为开关而抖 ✓)
+  const mention = useMemo(() => (input.length > 400 ? null : getMention(input)), [input]);
   const mentionKey = mention ? `${mention.kind}:${mention.start}` : null;
   const [items, setItems] = useState<MentionItem[]>([]);
   const [sel, setSel] = useState(0);
@@ -565,8 +567,15 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       }
       if ((key.return || /[\n\r]/.test(_input)) && filtered.length === 0) {
         // 弹窗无匹配项: Enter = 提交当前输入 (否则 /channel 无参 + Enter 永远提交不了 — 2026-08-06)
-        const v = input.trim();
-        if (v) onSubmit(v);
+        // 输入框里是**不含路径**的引用(@/'/'/'#' 会触发弹窗 ✗) ⇒ 提交时把路径与"要看细节读它"补上 ✓
+        const refText = input.trim();
+        const full = (pastePathRef.current && /^\[粘贴[^\]]*\]$/.test(refText))
+          ? `${refText}\n(整段已存到 ${pastePathRef.current} —— 需要看细节就 read_file 读它, 不用我重述)`
+          : refText;
+        pasteRawRef.current = '';
+        pasteSeqRef.current = null;
+        pastePathRef.current = null;
+        if (full) onSubmit(full);
         else setDismissed(mentionKey);
         return;
       }
@@ -581,35 +590,27 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       //   ② 混合 chunk (退格+控制符, 含 ESC 序列) → 退格部分生效, ESC 序列忽略
       //   ③ 可打印 chunk (CJK/粘贴) → 整串追加
       // 全部用函数式更新 — useInput 闭包可能陈旧 (实测), 函数式取最新 state
-      // 2026-10-01: **粘贴 = 攒块 + 整段折叠** (用户连报三次"有弹窗/进不去输入框"后的稳健版)。
-      //   ① 先剥**括号粘贴标记**(终端自动包的 \x1b[200~…\x1b[201~ ⇒ 原来被"含 ESC 就放弃"误杀 ✗);
-      //   ② 像粘贴的块(长/含换行/带标记)⇒ 先**攒起来**, 静默 80ms 才认为"这次粘贴结束" ⇒ 整段折叠 ✓
-      //      (逐行成块的多行粘贴也就能被当成**一次**粘贴 ✓);
-      //   ③ 粘贴期间**抑制补全弹窗** ✓ —— 粘进来的 '@'/'/'/'#' 不该弹窗(弹了还会把后续按键吃掉 ✗)。
+      // 2026-10-01 (第五版, 最终简化): **粘贴块 ⇒ 同步折叠成一个引用**。
+      //   为什么砍掉前面那套(定时器 + burst 状态 + 兜底冲洗): 真机上 80ms 定时器会**抖**(输入框变窄一下 ✗)
+      //   而且没冲上就**什么都看不到** ✗。现在: 不用定时器 ✗ 不用状态开关 ✗ ——
+      //   攒到的原文先落文件, 输入框**整段设成那一个引用**(不是追加) ⇒ 永远只有一行 ✓ 永远看得见 ✓
+      //   引用零触发字符 ⇒ 补全弹窗根本不会开 ✓ 也就没有"变窄"的位移 ✓。
       {
-        const raw = _input;
-        if (raw && looksLikePasteChunk(raw)) {
-          const hadMarker = raw.includes('\u001b[200~') || raw.includes('\u001b[201~');
-          const piece = stripBracketedPaste(raw);
-          if (hadMarker || piece.length > 0) {
-            pasteBufRef.current += piece;
-            setPasteBurst(true);
-            // 观测(有界): 只记粘贴形态, 不记正文 ⇒ 下一次出问题能一眼看出 chunk 长什么样
-            void logPasteChunk({ len: raw.length, marker: hadMarker, nl: /[\n\r]/.test(raw), esc: raw.includes('\u001b') });
-            if (pasteTimerRef.current) clearTimeout(pasteTimerRef.current);
-            pasteTimerRef.current = setTimeout(() => {
-              const buf = pasteBufRef.current;
-              pasteBufRef.current = '';
-              if (buf) {
-                let ins = buf;
-                try { const c = collapsePaste(buf); if (c.collapsed) ins = c.inputText; } catch { /* 折叠失败 ⇒ 原样 */ }
-                // ★ 进输入框的一律**压成单行** —— 否则 Ink 会把输入栏撑成好几行(用户实测 ✗)
-                setInput(cur => singleLine((cur ? cur + ' ' : '') + ins));
-              }
-              setPasteBurst(false);
-            }, PASTE_BURST_IDLE_MS);
-            return;
-          }
+        const piece = stripBracketedPaste(_input);
+        if (piece && looksLikePasteChunk(_input)) {
+          pasteRawRef.current += piece;
+          let shown = singleLine(piece);
+          try {
+            const c = collapsePaste(pasteRawRef.current, { counter: pasteSeqRef.current ?? undefined });
+            if (c.collapsed) {
+              if (!pasteSeqRef.current) pasteSeqRef.current = Number((/\d+/.exec(c.inputText) || ['0'])[0]) || null;
+              pastePathRef.current = c.path ?? null;
+              shown = c.inputText;
+            }
+          } catch { /* 折叠失败 ⇒ 原样显示(至少看得见) */ }
+          setInput(() => shown);
+          void logPasteChunk({ len: _input.length, marker: _input !== piece, nl: /[\n\r]/.test(_input), esc: _input.includes('\u001b') });
+          return;
         }
       }
       if (/^\x7f+$/.test(_input)) { setInput(cur => cur.slice(0, Math.max(0, cur.length - _input.length))); return; }
