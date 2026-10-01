@@ -107,3 +107,52 @@ export async function ensurePersonaDocs(
   }
   return out;
 }
+
+
+/** agent 自己写的人格在文档里的标记区 (手写的部分在标记外, 永不覆盖) */
+export const PERSONA_AUTO_BEGIN = '<!-- persona:auto:begin -->';
+export const PERSONA_AUTO_END = '<!-- persona:auto:end -->';
+
+/**
+ * **写透**: 把 agent 自己设的 persona 落进它的身份文档 (2026-10-01)。
+ *
+ * 为什么必须做: 有身份文档的 agent 不再套用 persona.json ⇒ 身份由 6 份文档承担。
+ * 而 `set_persona` 原先只写 persona.json ⇒ **agent 自己改的人格根本不进系统提示**,
+ * 用户的感受就是"每次让智能体改, 都是同一个"(各 agent 的文档还都是同一份模板)。
+ *
+ * 规矩: 只重写 `<!-- persona:auto -->` 标记**之内**的内容 —— 标记外是你手写的, 一个字都不动。
+ * 落在 `soul.md` (人格/基调) 与 `identity.md` (身份/边界) 两份里。
+ */
+export async function applyPersonaToDocs(
+  agentId: string,
+  persona: { name?: string; description?: string; personality?: string; capabilities?: string[]; interests?: string[]; greeting?: string },
+  opts: { home?: string } = {},
+): Promise<string[]> {
+  const id = String(agentId || '').trim();
+  if (!id) return [];
+  const dir = personaDirOf(id, opts.home);
+  // 目录可能还不存在 (该 agent 还没生成过身份文档) ⇒ 先建, 否则两份都写失败、静默返回空
+  try { await fs.mkdir(dir, { recursive: true }); } catch { return []; }
+  const block = [
+    PERSONA_AUTO_BEGIN,
+    `- 名字: ${persona.name || id}`,
+    persona.description ? `- 定位: ${persona.description}` : '',
+    persona.personality ? `- 性恪/基调: ${persona.personality}` : '',
+    persona.greeting ? `- 打招呼: ${persona.greeting}` : '',
+    persona.capabilities?.length ? `- 我能做: ${persona.capabilities.join(' · ')}` : '',
+    persona.interests?.length ? `- 我关心: ${persona.interests.join(' · ')}` : '',
+    PERSONA_AUTO_END,
+  ].filter(Boolean).join('\n');
+  const written: string[] = [];
+  for (const name of ['soul', 'identity'] as const) {
+    const file = path.join(dir, `${name}.md`);
+    let cur = '';
+    try { cur = await fs.readFile(file, 'utf-8'); } catch { cur = ''; }
+    const wrapped = /<!-- persona:auto:begin -->[\s\S]*?<!-- persona:auto:end -->/;
+    const next = wrapped.test(cur)
+      ? cur.replace(wrapped, block)
+      : `${cur.trimEnd()}\n\n${block}\n`;
+    try { await fs.writeFile(file, next, 'utf-8'); written.push(name); } catch { /* 单份写失败不影响另一份 */ }
+  }
+  return written;
+}

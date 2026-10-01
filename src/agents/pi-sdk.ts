@@ -3565,6 +3565,15 @@ ${this.extractOperationsFromRef(operationsRef)}
 
   async setPersona(persona: PersonaDoc): Promise<void> {
     await this.sessionManager.savePersona(persona);
+    // 2026-10-01: **写透** —— 有身份文档的 agent 不套 persona.json, 只写 JSON 等于没改
+    //   (用户报"每次让智能体改都是同一个") ⇒ 同步落进它自己的身份文档 (标记区内)
+    if (this.currentAgentId) {
+      try {
+        const { applyPersonaToDocs } = await import('../bootstrap/persona-init.js');
+        const wrote = await applyPersonaToDocs(this.currentAgentId, persona as any);
+        if (wrote.length) console.warn(`[persona] 已把 ${this.currentAgentId} 的 persona 写进身份文档: ${wrote.join(' · ')}`);
+      } catch { /* 非致命 */ }
+    }
     this.persona = persona;
     if (persona.name) {
       this.identity.name = persona.name;
