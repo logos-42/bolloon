@@ -599,6 +599,10 @@ async function getAgent() {
     }
   } catch { /* 自证失败不影响主流程 */ }
 
+  // 2026-10-01: 把当前 agent 告诉进程 —— 项目上下文(context-collector)据此取**该 agent 的** persona,
+  //   否则它会读全局 persona.json, 于是 get_identity 已是「小龙」而上下文里还写着「小宝」✗。
+  if (chIdentity?.agentId) process.env.BOLLOON_ACTIVE_AGENT_ID = chIdentity.agentId;
+
   const loadSessionKey = targetChannelId
     ? `${targetChannelId}:${chIdentity?.currentSessionId || 'default'}`
     : undefined;

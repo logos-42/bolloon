@@ -145,20 +145,51 @@ async function collectGit(cwd: string, limit: number): Promise<BolloonContext['g
   };
 }
 
-async function collectPersona(): Promise<BolloonContext['persona']> {
-  const home = process.env.HOME || os.homedir() || '/tmp';
+/**
+ * 按 agent 取 persona (2026-10-01)。
+ *
+ * 用户实测: 233 会话的 get_identity 已经是「小龙」✓, 但**项目上下文**里仍显示 `## Persona: 小宝` ✗
+ *   —— 那是**全局** `~/.bolloon/persona.json`(8/10 的老文件), 这里原先**无条件**读它 ✗。
+ * 规矩 (与 session-manager 的分流一致):
+ *   ① 该 agent 有自己的 persona.json ⇒ 用它;
+ *   ② 该 agent 有身份文档目录(persona/<agentId>/*.md) ⇒ **不注入 persona** (身份由文档承担, 别把全局名漏进来 ✗);
+ *   ③ 既没 scope 又什么都没有 ⇒ 才回落全局 (兼容老流程)。
+ */
+export async function resolvePersonaForScope(
+  home: string,
+  scopeId?: string,
+): Promise<{ name: string; description: string; personality: string } | null> {
+  const scope = String(scopeId || '').trim();
+  if (scope) {
+    const safe = scope.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const dir = path.join(home, '.bolloon', 'persona', safe);
+    const own = await safeReadFile(path.join(dir, 'persona.json'), 5000);
+    if (own) {
+      try {
+        const p = JSON.parse(own);
+        return { name: String(p.name || 'unknown'), description: String(p.description || ''), personality: String(p.personality || '') };
+      } catch { /* 坏了就往下走 */ }
+    }
+    // 有身份文档 ⇒ 不注入 persona (否则全局名会盖过该 agent 的身份 ✗)
+    try {
+      const entries = await fs.readdir(dir);
+      if (entries.some((f) => f.endsWith('.md'))) return null;
+    } catch { /* 目录不存在 ⇒ 往下走 */ }
+  }
   const raw = await safeReadFile(path.join(home, '.bolloon', 'persona.json'), 5000);
   if (!raw) return null;
   try {
     const p = JSON.parse(raw);
-    return {
-      name: String(p.name || 'unknown'),
-      description: String(p.description || ''),
-      personality: String(p.personality || ''),
-    };
+    return { name: String(p.name || 'unknown'), description: String(p.description || ''), personality: String(p.personality || '') };
   } catch {
     return null;
   }
+}
+
+async function collectPersona(): Promise<BolloonContext['persona']> {
+  const home = process.env.HOME || os.homedir() || '/tmp';
+  // 当前 agent 由会话侧注入 (CLI 建/切 agent 时设置) ⇒ 项目上下文里的 persona 与之对齐
+  return resolvePersonaForScope(home, process.env.BOLLOON_ACTIVE_AGENT_ID);
 }
 
 async function collectJudgmentsSummary(topN: number): Promise<BolloonContext['judgmentsSummary']> {
