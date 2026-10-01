@@ -156,3 +156,23 @@ export function truncateSafe(s: string, maxWidth: number): string {
   }
   return `${out}…`;
 }
+
+
+/** 画线字符的**保守**宽度 (U+2500 属 East Asian Width = Ambiguous ⇒ 部分终端按 2 列渲染) */
+export const RULE_CHAR_SAFE_WIDTH = dispWidthSafe('─');
+
+/**
+ * 生成一条**保证不折行**的水平线 (2026-10-01)。
+ *
+ * 用户实测: 底栏那块(输入提示行 + 三条分界线)整块被**重复打印 4 次** ✗。
+ * 根因: 分界线写的是 `'─'.repeat(W - 1)` —— `─`(U+2500) 是 **Ambiguous 宽度**:
+ *   按 1 列算应该是 W-1 个, 但很多终端按 **2 列**渲染 ⇒ 整行变成 2×(W-1) 列 ✗✗
+ *   ⇒ 超出终端宽 ⇒ 终端**自动折行** ⇒ Ink 光标数学错乱 ⇒ 整块反复重打。
+ * 规矩: 一律按**保守宽度**(Ambiguous 当 2 列)算字符数 —— 宁可线短一点, 绝不超宽。
+ *   另一端(终端真的按 1 列渲染)只会让线看起来短一半, 不会坏。
+ */
+export function ruleFor(width: number, char = '─'): string {
+  const per = Math.max(1, dispWidthSafe(char));
+  const cells = Math.max(2, Math.floor(Math.max(0, width) / per));
+  return char.repeat(cells);
+}

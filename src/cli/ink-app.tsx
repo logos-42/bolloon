@@ -8,6 +8,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { ruleFor } from './status-segments.js';
 import { loadInputHistory, appendInputHistory, MEMORY_CAP } from './input-history.js';
 import * as fs from 'fs';
 import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
@@ -780,14 +781,14 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
           )}
         </Box>
 
-        <Box>
-          <Text bold color={THEME.accent}>{'─'.repeat(Math.max(10, W - 1))}</Text>
+        <Box width={budget.cols} height={1} overflow="hidden">
+          <Text bold color={THEME.accent}>{ruleFor(Math.max(10, budget.cols - 1))}</Text>
         </Box>
         <Box height={1} width={budget.cols} overflow="hidden">
           <Text>{status}</Text>
         </Box>
-        <Box>
-          <Text bold color={THEME.accent}>{'─'.repeat(Math.max(10, W - 1))}</Text>
+        <Box width={budget.cols} height={1} overflow="hidden">
+          <Text bold color={THEME.accent}>{ruleFor(Math.max(10, budget.cols - 1))}</Text>
         </Box>
         <Box width={budget.cols} height={1} overflow="hidden">
           <Text bold color={THEME.accent}>❯ </Text>
@@ -802,8 +803,8 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
             />
           </Box>
         </Box>
-        <Box>
-          <Text bold color={THEME.accent}>{'─'.repeat(Math.max(10, W - 1))}</Text>
+        <Box width={budget.cols} height={1} overflow="hidden">
+          <Text bold color={THEME.accent}>{ruleFor(Math.max(10, budget.cols - 1))}</Text>
         </Box>
       </Box>
     </>
