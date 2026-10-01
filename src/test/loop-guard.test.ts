@@ -1,3 +1,4 @@
+import { LoopStallState, observeToolCall } from '../agents/tool-loop-guard.js';
 import { describe, it, expect } from 'vitest';
 import {
   detectRepeatingCalls,
@@ -66,5 +67,22 @@ describe('完成契约 (Hermes completion contract: 宣布完成必须展示证�
     });
     expect(hint).toContain('1. t1(--a) → ✓ ok');
     expect(hint).toContain('2. t2 → ✗ failed');
+  });
+});
+
+describe('恒定结果工具: 第 2 次起换标准答复 (用户报 get_identity 连调 3-4 次)', () => {
+  it('get_identity 同参数同结果第二次 ⇒ 给出「结果恒定」的标准答复', () => {
+    const st = new LoopStallState();
+    const input = { toolName: 'get_identity', args: {}, resultText: '{"success":true,"output":"DID: x\\n名称: 小龙\\n"}', ok: true };
+    observeToolCall(st, input);
+    const second = observeToolCall(st, input);
+    expect(second.stub || '').toContain('恒定');
+    expect(second.action).toBe('allow'); // **不做硬刹车** —— 只换答复
+  });
+  it('换了参数 (不同工具/不同实参) 就不算重复', () => {
+    const st = new LoopStallState();
+    observeToolCall(st, { toolName: 'get_identity', args: {}, resultText: 'A', ok: true });
+    const other = observeToolCall(st, { toolName: 'read_file', args: { path: 'x' }, resultText: 'A', ok: true });
+    expect(other.stub || '').not.toContain('恒定');
   });
 });

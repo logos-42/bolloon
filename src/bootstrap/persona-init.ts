@@ -14,6 +14,7 @@
  * 提示用户去编辑; 不同 agent 生成的正文必然不同 (有名字/agentId), 所以"所有人格一个样"从结构上就不成立。
  */
 import * as fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -31,6 +32,17 @@ export function personaDirOf(agentId: string, home?: string): string {
   return path.join(root, '.bolloon', 'persona', sanitizePersonaAgentId(agentId));
 }
 
+/** 该 agent 自己的 persona.json 里的名字 (同步读; 没有就 undefined) */
+export function readPersonaNameSync(agentId: string, home?: string): string | undefined {
+  try {
+    const p = path.join(personaDirOf(agentId, home), 'persona.json');
+    const j = JSON.parse(readFileSync(p, 'utf-8'));
+    return String(j?.name || '').trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const TITLES: Record<PersonaDocFile, string> = {
   soul: 'soul — 我是谁 / 我认什么',
   identity: 'identity — 身份与边界',
@@ -45,6 +57,8 @@ function starter(file: PersonaDocFile, agentId: string, name: string): string {
   const body: Record<PersonaDocFile, string> = {
     soul: `# ${name} 的 soul\n\n`
       + `> 这是**起步模板** (由 bolloon 在建/切 agent 时自动生成, 只生成一次)。请把它改成你自己的。\n\n`
+      // 2026-10-01: 标题行必须与**该 agent 自己的 persona.json** 一致 ——
+      //   之前用渠道名生成, 于是 soul.md 写「我是 233」而 persona.json 写「小龙」⇒ 用户看到"身份没匹配上" ✗
       + `我是 **${name}**。\n\n`
       + `- 我认什么: (待写 — 我的判断准则、我拒绝做什么)\n`
       + `- 我说话的方式: (待写 — 语气/详略/爱用的结构)\n`
@@ -87,6 +101,7 @@ export async function ensurePersonaDocs(
   agentId: string,
   opts: { name?: string; home?: string } = {},
 ): Promise<EnsurePersonaResult> {
+
   const id = String(agentId || '').trim();
   const dir = personaDirOf(id, opts.home);
   const out: EnsurePersonaResult = { agentId: sanitizePersonaAgentId(id), dir, created: [], kept: [] };

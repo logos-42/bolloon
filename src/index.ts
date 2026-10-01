@@ -3484,7 +3484,9 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           // Reflection / 反思 / 💡 → 圆角思考框 (和回复一样走 renderMessageBox, 白字+亮边框)
           else if (content.includes('Reflection') || content.includes('反思') || content.includes('💡')) {
             const body = content.replace(/^💡\s*/, '').slice(0, 1500);
-            if (body.trim()) appendLine(renderMessageBox({ title: '💡 反思', body, color: C_WARN }));
+            // 2026-10-01: 只有标记词 (Reflection: / 反思 / 💡) 而无正文 ⇒ **不渲染**, 免得出空框 ✗
+              const onlyMarker = /^(?:reflection|反思)\s*[:：\-—]?\s*$/i.test(body.trim());
+              if (body.trim() && !onlyMarker) appendLine(renderMessageBox({ title: '💡 反思', body, color: C_WARN }));
           } else if (!content.includes('🔄 循环') && !content.includes('📋 参数')
               && !content.includes('🔍 任务复杂度') && !content.includes('⚙️ 动态配置')
               && !content.includes('⏹️ pivot loop')

@@ -25,7 +25,10 @@ const ERROR_SIGNATURES: Array<{ pattern: RegExp; cls: ErrorClass; label: string 
   { pattern: /PreToolUse 拒绝|Harness.*拒绝|permission|not allowed|denied/i, cls: 'permission_denied', label: '权限拒绝' },
   { pattern: /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|network|connect.*fail|fetch.*fail/i, cls: 'network_error', label: '网络错误' },
   { pattern: /timeout|timed out/i, cls: 'timeout', label: '执行超时' },
-  { pattern: /ENOENT|not found|no such file|does not exist|invalid path|bad argument|ERR_INVALID/i, cls: 'bad_input', label: '参数错误' },
+  // 2026-10-01: ENOENT 单独一条 —— 原先和 bad argument 挤在一起 ⇒ 路径不存在被报成"参数错误" ✗
+  //   (用户实测: list_files '~/.bolloon' ⇒ ENOENT, 却被标成"参数错误", 真原因被标签盖住)
+  { pattern: /ENOENT|no such file|does not exist|not exist/i, cls: 'bad_input', label: '路径/文件不存在' },
+  { pattern: /invalid path|bad argument|ERR_INVALID|参数/i, cls: 'bad_input', label: '参数错误' },
   { pattern: /401|403|quota|rate limit|API key|unauthorized|authentication/i, cls: 'api_error', label: 'API 认证错误' },
 ];
 
@@ -37,7 +40,7 @@ export interface ErrorClassification {
 }
 
 export function classifyError(errorMsg: string): ErrorClassification {
-  if (!errorMsg) return { cls: 'unknown', label: '未知错误', severity: 'medium', recoverable: true };
+  if (!errorMsg) return { cls: 'unknown', label: '', severity: 'medium', recoverable: true };
   for (const sig of ERROR_SIGNATURES) {
     if (sig.pattern.test(errorMsg)) {
       const severity = sig.cls === 'api_error' ? 'high'
@@ -50,7 +53,7 @@ export function classifyError(errorMsg: string): ErrorClassification {
       return { cls: sig.cls, label: sig.label, severity, recoverable };
     }
   }
-  return { cls: 'unknown', label: '未知错误', severity: 'medium', recoverable: true };
+  return { cls: 'unknown', label: '', severity: 'medium', recoverable: true };
 }
 
 // ==================== Observation ====================

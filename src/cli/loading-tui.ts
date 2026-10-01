@@ -12,6 +12,7 @@
  *   LoadingTUI             原地刷新的启动仪表盘类
  */
 
+import { truncateSafe } from './status-segments.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -521,7 +522,8 @@ function colorizeDiff(text: string): string {
 export function renderToolCallListItem(item: ToolCallListItem, index: number, total: number): string {
   const dur = item.durationMs != null ? ` ${C_DIM}${item.durationMs}ms${RESET}` : '';
   const label = item.status === 'error' ? `${C_ERROR}${item.tool}${RESET}` : `${C_ACCENT}${item.tool}${RESET}`;
-  return `  🔧 ${label}${dur}`;
+  // 2026-10-01: 工具行也按**保守宽度**截断 —— 超宽会让终端折行、打乱 Ink 光标 (底栏那块就是这么坏的)
+  return truncateSafe(`  🔧 ${label}${dur}`, Math.max(20, (process.stdout.columns || 100) - 1));
 }
 
 /** 紧凑渲染工具输出 (检测到 diff 则着色, 否则普通截断) — 当前不显示 body */

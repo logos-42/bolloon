@@ -20,6 +20,17 @@
 import { createHash } from 'node:crypto';
 
 /** 幂等只读类: 同参数重复调用不会产生新信息 (但允许换参数继续用) */
+/**
+ * **结果恒定**的工具 (2026-10-01): 同一会话内反复调, 返回**永远一样**, 且答案本身很短。
+ *   用户实测: `get_identity` 连调 3–4 次 ✗ —— 原有"引用 stub"有字符数门槛, 而它的输出才 ~90 字符
+ *   ⇒ 门槛拦不住 ⇒ 模型看不出"再问也一样"。
+ * 规矩 (工具设置层, 不做硬刹车): 从**第 2 次**完全相同的调用起, 直接把结果换成一句标准答复,
+ *   明确告诉模型"答案就在上面那次返回里, 再调不会变" ⇒ 去掉它重复调的理由。
+ */
+export const CONSTANT_RESULT_TOOLS: ReadonlySet<string> = new Set([
+  'get_identity', 'bolloon_config_get', 'get_agent_info', 'whoami',
+]);
+
 export const IDEMPOTENT_TOOLS: ReadonlySet<string> = new Set([
   'read_file', 'list_files', 'search_files', 'get_identity', 'get_operation_logs',
   'list_remote_channels', 'list_context_layers', 'read_context_assets', 'get_balance', 'wallet_list',
@@ -139,6 +150,19 @@ export function observeToolCall(state: LoopStallState, input: ObserveInput): Gua
     return { action: 'allow', code: 'allow', count: state.streak };
   }
 
+
+  // ③.5 恒定结果工具 (get_identity 这类): 从第 2 次起换标准答复 —— 不管结果长短
+  if (sameAsPrev && CONSTANT_RESULT_TOOLS.has(input.toolName) && ok) {
+    return {
+      action: 'allow',
+      code: 'allow',
+      count: state.streak,
+      stub:
+        `[已答] ${input.toolName} 的结果在本次会话内**恒定不变**(它读的是固定身份/配置, 不是活数据)。` +
+        `上面那一次返回就是答案, 直接用它作答即可; 再调一次只会得到同样的内容。` +
+        `若确实需要变化, 请改用写类工具(如 set_persona / 相应 update 工具)。`,
+    };
+  }
 
   // ④ 结果引用 stub: 从**第 2 次**完全相同的返回起 (够长才替代; 失败永不替代)
   let stub: string | undefined;

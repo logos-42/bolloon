@@ -32,9 +32,12 @@ describe('连续相同调用', () => {
   it(`第 ${IDENTICAL_CALL_THRESHOLD} 次同参数同结果 ⇒ 出引导 (前两次不出声)`, () => {
     const st = new LoopStallState();
     const args = { x: 1 };
-    expect(call(st, 'get_identity', args, 'DID: d\n名称: A').action).toBe('allow');
-    expect(call(st, 'get_identity', args, 'DID: d\n名称: A').action).toBe('allow');
-    const third = call(st, 'get_identity', args, 'DID: d\n名称: A');
+    // 2026-10-01: 这条原用 get_identity —— 但它现在是**恒定结果**工具 ⇒ **第 2 次**就被换成
+    //   "结果恒定"的标准答复(见 loop-guard.test.ts 新门), 走不到第 3 次 warn ⇒ 原断言过时 ✗。
+    //   改用非恒定工具 (read_file) ⇒ **保住 warn 路径的覆盖** ✓。
+    expect(call(st, 'read_file', args, 'A').action).toBe('allow');
+    expect(call(st, 'read_file', args, 'A').action).toBe('allow');
+    const third = call(st, 'read_file', args, 'A');
     expect(third.action).toBe('warn');
     expect(third.code).toBe('identical_call_streak');
     expect(third.notice).toContain('不会得到新信息');
