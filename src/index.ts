@@ -594,7 +594,9 @@ async function getAgent() {
   if (chIdentity?.agentId) {
     try {
       const { ensurePersonaDocs } = await import('./bootstrap/persona-init.js');
-      const r = await ensurePersonaDocs(chIdentity.agentId, { name: chIdentity.name });
+      // 2026-10-01: 名字必须和该 agent 的 persona.json 一致 —— 之前传的是**渠道名**,
+        //   于是 soul.md 写「我是 233」而 persona.json 写「小龙」⇒ 用户看到"身份没匹配上" ✗。
+        const r = await ensurePersonaDocs(chIdentity.agentId, { name: nameForChannel(chIdentity, chIdentity.agentId) });
       if (r.created.length) console.warn(`[persona] 已为 ${r.agentId} 生成 ${r.created.length} 份起步身份文档: ${r.created.join(' · ')} → ${r.dir}`);
     } catch { /* 非致命 */ }
   }

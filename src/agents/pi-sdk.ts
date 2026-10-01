@@ -436,6 +436,29 @@ export class PiAgentSession implements AgentSession {
     this.minimaxAvailable = this.checkMinimax();
     // 2026-07-04: 透传 agentId (server.ts 通过 createAgentSession 选项注入)
     this.currentAgentId = config.agentId || '';
+    // 2026-10-01 **身份自愈** (用户实测: get_identity 返回 "DID: " 空 + 各 channel 名字串台):
+    //   工具上下文里的身份来自 this.identity, 而它可能是 config.identityDoc 与 session 实例身份的
+    //   合并结果 —— **空 did 会盖掉真 did** ✗; 名字也可能缺失或被别处覆盖。
+    //   规矩: 缺 did / 名字时, 按 **currentAgentId** 从真身份生成器补齐 (did:key + 落盘密钥),
+    //   名字优先取该 agent 自己的 persona.json。绝不回落到全局/用户身份名。
+    try {
+      if (this.currentAgentId) {
+        const cur: any = this.identity || {};
+        const badDid = !cur.did || /^did:(local|pi):/i.test(String(cur.did));
+        const missingName = !String(cur.name || '').trim();
+        if (badDid || missingName) {
+          // 构造函数不能 await ⇒ 用仓里既有的同步 require 写法 (与 780 行同一套路)
+          const { loadOrCreateAgentIdentity } = require('./agent-identity.js') as typeof import('./agent-identity.js');
+          const { agentPersonaName } = require('./channel-identity.js') as typeof import('./channel-identity.js');
+          const mine = loadOrCreateAgentIdentity(this.currentAgentId);
+          this.identity = {
+            ...cur,
+            ...(badDid && mine?.did ? { did: mine.did, publicKey: cur.publicKey || mine.publicKey } : {}),
+            ...(missingName ? { name: agentPersonaName(this.currentAgentId) || this.currentAgentId } : {}),
+          } as any;
+        }
+      }
+    } catch { /* 自愈失败不致命 */ }
     // 2026-06-30: 持久化层可注入 — 测试传 tmpDir, 业务用默认 ~/.bolloon/sessions/cache/
     this._sessionStore = (config as any).sessionStore ?? defaultSessionStore;
     this.constraintLayer = new ConstraintLayer();
