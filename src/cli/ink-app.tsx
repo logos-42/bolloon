@@ -12,7 +12,7 @@ import { ruleFor } from './status-segments.js';
 import { loadInputHistory, appendInputHistory, MEMORY_CAP } from './input-history.js';
 import * as fs from 'fs';
 import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import { collapsePaste, shouldCollapsePaste } from './input-paste.js';
+import { collapsePaste, shouldCollapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, singleLine, PASTE_BURST_IDLE_MS } from './input-paste.js';
 import TextInput from 'ink-text-input';
 import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
@@ -183,6 +183,8 @@ interface InkAppProps {
 
 const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdate, terminalW, terminalH }) => {
   const [input, setInput] = useState('');
+  const pasteBufRef = useRef('');
+  const pasteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 2026-08-07: inputRef 同步镜像 input — useInput 回调拿最新值 (闭包里的 input 是陈旧的)
   const inputRef = useRef('');
   useEffect(() => {
@@ -211,11 +213,15 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const C_WARN_ANSI = fg(THEME.warn); // #f59e0b
 
   // ── @ / # 弹出窗状态 ──────────────────────────────────────────────────────
-  const mention = useMemo(() => getMention(input), [input]);
+  /** 正在来一串粘贴块 ⇒ 抑制补全弹窗 + 攒块 (2026-10-01) —— 必须在 mention 之前声明 */
+  const [pasteBurst, setPasteBurst] = useState(false);
+  // 粘贴进行中不当成 mention 来源 (否则粘进来的 '@'/'#' 会弹窗, 而且弹窗会吃掉后续按键)
+  const mention = useMemo(() => (pasteBurst ? null : getMention(input)), [input, pasteBurst]);
   const mentionKey = mention ? `${mention.kind}:${mention.start}` : null;
   const [items, setItems] = useState<MentionItem[]>([]);
   const [sel, setSel] = useState(0);
   const [dismissed, setDismissed] = useState<string | null>(null);
+
   const [loadingFiles, setLoadingFiles] = useState(false);
   // Tab 补齐弹窗 (非 @ / # 触发的普通 token 补齐): { start, items }
   const [tabState, setTabState] = useState<{ start: number; items: MentionItem[] } | null>(null);
@@ -575,15 +581,36 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       //   ② 混合 chunk (退格+控制符, 含 ESC 序列) → 退格部分生效, ESC 序列忽略
       //   ③ 可打印 chunk (CJK/粘贴) → 整串追加
       // 全部用函数式更新 — useInput 闭包可能陈旧 (实测), 函数式取最新 state
-      // 2026-10-01: **长粘贴当场折叠** —— 输入框里立刻变成一行引用(原文落文件 ⇒ 要细节读得回来)。
-      //   为什么必须在**这里**(不是提交时): 粘贴的那一刻就该"暂留"成引用, 否则输入框被一大段糊满,
-      //   而且多行粘贴原本会走下面的混合分支(换行被当控制符丢掉) ⇒ 先折叠, 原文不进输入框。
-      //   含 ESC 的 chunk (方向键等) 一律不当粘贴 ✓; 折叠失败 ⇒ 走原路径(绝不吞输入) ✓。
-      if (_input && _input.length > 1 && !_input.includes('\u001b') && shouldCollapsePaste(_input)) {
-        try {
-          const c = collapsePaste(_input);
-          if (c.collapsed) { setInput(cur => (cur ? cur + ' ' : '') + c.inputText); return; }
-        } catch { /* 折叠失败 = 原样走下面的分支 */ }
+      // 2026-10-01: **粘贴 = 攒块 + 整段折叠** (用户连报三次"有弹窗/进不去输入框"后的稳健版)。
+      //   ① 先剥**括号粘贴标记**(终端自动包的 \x1b[200~…\x1b[201~ ⇒ 原来被"含 ESC 就放弃"误杀 ✗);
+      //   ② 像粘贴的块(长/含换行/带标记)⇒ 先**攒起来**, 静默 80ms 才认为"这次粘贴结束" ⇒ 整段折叠 ✓
+      //      (逐行成块的多行粘贴也就能被当成**一次**粘贴 ✓);
+      //   ③ 粘贴期间**抑制补全弹窗** ✓ —— 粘进来的 '@'/'/'/'#' 不该弹窗(弹了还会把后续按键吃掉 ✗)。
+      {
+        const raw = _input;
+        if (raw && looksLikePasteChunk(raw)) {
+          const hadMarker = raw.includes('\u001b[200~') || raw.includes('\u001b[201~');
+          const piece = stripBracketedPaste(raw);
+          if (hadMarker || piece.length > 0) {
+            pasteBufRef.current += piece;
+            setPasteBurst(true);
+            // 观测(有界): 只记粘贴形态, 不记正文 ⇒ 下一次出问题能一眼看出 chunk 长什么样
+            void logPasteChunk({ len: raw.length, marker: hadMarker, nl: /[\n\r]/.test(raw), esc: raw.includes('\u001b') });
+            if (pasteTimerRef.current) clearTimeout(pasteTimerRef.current);
+            pasteTimerRef.current = setTimeout(() => {
+              const buf = pasteBufRef.current;
+              pasteBufRef.current = '';
+              if (buf) {
+                let ins = buf;
+                try { const c = collapsePaste(buf); if (c.collapsed) ins = c.inputText; } catch { /* 折叠失败 ⇒ 原样 */ }
+                // ★ 进输入框的一律**压成单行** —— 否则 Ink 会把输入栏撑成好几行(用户实测 ✗)
+                setInput(cur => singleLine((cur ? cur + ' ' : '') + ins));
+              }
+              setPasteBurst(false);
+            }, PASTE_BURST_IDLE_MS);
+            return;
+          }
+        }
       }
       if (/^\x7f+$/.test(_input)) { setInput(cur => cur.slice(0, Math.max(0, cur.length - _input.length))); return; }
       if (/[\x00-\x1f\x7f]/.test(_input)) {
@@ -813,7 +840,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
           <Box width={Math.max(10, budget.cols - 2)} height={1} overflow="hidden" flexShrink={0}>
             <TextInput
               key={tiKey}
-              value={input}
+              value={singleLine(input)}
               onChange={setInput}
               onSubmit={onSubmit}
               focus={!popupOpenNow}

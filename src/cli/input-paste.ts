@@ -80,3 +80,70 @@ export function collapsePaste(
     return base;
   }
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 粘贴"真实形态"处理 (2026-10-01, 用户连报三次「还是会有弹窗，无法进入输入框」后补)
+//
+// 教训: 我先前假设"一次粘贴 = 一个 chunk" ✗ —— 真实终端里至少两种形态会打脸:
+//   ① **括号粘贴**: 终端把整段包在 `\x1b[200~ … \x1b[201~` 里 ⇒ 我的"含 ESC 就不当粘贴"直接放弃 ✗
+//      ⇒ 原文进了输入框 ⇒ 里面的 '@'/'/'/'#' 触发补全弹窗 ⇒ 弹窗又把后续按键吃掉 ⇒ "无法进入输入框" ✗;
+//   ② **逐行成块**: 多行粘贴可能一行一个 chunk ⇒ 每块都短 ⇒ 都不够折叠阈值 ✗。
+// 对策: 先剥括号标记 ⇒ 再判断"像不像粘贴" ⇒ 把**一串**粘贴块**攒起来**(80ms 静默算一次粘贴结束) ⇒ 整段折叠 ✓;
+//   并且在粘贴进行期间**抑制补全弹窗** ✓(粘进来的文本不该弹窗 ✓)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 括号粘贴标记 (终端自动加的, 必须剥掉再判断) */
+const PASTE_START = '\u001b[200~';
+const PASTE_END = '\u001b[201~';
+
+export function stripBracketedPaste(text: string): string {
+  return String(text ?? '').split(PASTE_START).join('').split(PASTE_END).join('');
+}
+
+export function hasBracketedPasteMarker(text: string): boolean {
+  const s = String(text ?? '');
+  return s.includes(PASTE_START) || s.includes(PASTE_END);
+}
+
+/** 一个 chunk 是否"像粘贴"(而不是手敲/方向键): 长、含换行、或带括号粘贴标记 */
+export const PASTE_CHUNK_MIN_CHARS = 40;
+export function looksLikePasteChunk(chunk: string): boolean {
+  const s = String(chunk ?? '');
+  if (!s) return false;
+  if (hasBracketedPasteMarker(s)) return true;
+  if (s.includes('\n') || s.includes('\r')) return true;
+  return s.length >= PASTE_CHUNK_MIN_CHARS;
+}
+
+/** 攒块的静默窗口: 这么久没有新块 ⇒ 认为"这次粘贴结束了" */
+export const PASTE_BURST_IDLE_MS = 80;
+
+
+/**
+ * 粘贴形态**观测** (有界, 只记形态不记正文) ⇒ `~/.bolloon/logs/input-chunks.jsonl`。
+ * 为什么留它: 这次"弹窗/进不去输入框"连报三轮, 全靠**猜** chunk 形态 ✗ ⇒ 以后一眼能看出真实形态 ✓。
+ * 纪律: best-effort(失败静默) · 只记 长度/有无括号标记/有无换行/有无 ESC · 上限 500 行(超了就重写)。
+ */
+export function logPasteChunk(info: { len: number; marker: boolean; nl: boolean; esc: boolean }, home = os.homedir()): void {
+  try {
+    const dir = path.join(home, '.bolloon', 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'input-chunks.jsonl');
+    try {
+      if (fs.existsSync(file) && fs.readFileSync(file, 'utf-8').split('\n').length > 500) fs.writeFileSync(file, '', 'utf-8');
+    } catch { /* 忽略 */ }
+    fs.appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...info }) + '\n', 'utf-8');
+  } catch { /* 观测失败绝不影响输入 */ }
+}
+
+
+/**
+ * **输入框只能是单行** (2026-10-01, 用户: 「发送框也会分成好几行」)。
+ * 为什么必须净化: Ink 的输入组件拿到带 `\n` 的值就会**撑成多行** ⇒ 底部输入栏被顶高、
+ *   内容置顶的布局跟着抖 ✗。所以: 值进输入框之前一律把换行压成空格 ✓(原文照旧进文件/照旧发出去 ✓,
+ *   只是**显示**单行 —— 显示单行不等于内容丢 ✓)。
+ */
+export function singleLine(text: string): string {
+  return String(text ?? '').replace(/[\r\n]+/g, ' ').replace(/[\t]/g, ' ');
+}
