@@ -34,6 +34,16 @@ describe('长输入折叠', () => {
     expect(r.sendText).toContain('paste_7_');
     // 真正的性质: 发送文本里**不该再含正文**(正文去文件里了), 且超大粘贴要缩到个位数百分比
     expect(r.sendText.includes('abcdefghijklmnop')).toBe(false);
+    // 输入框版本: **只有一行引用**(不带解释), 这样它才能"暂留"在输入框里不碍事
+    expect(r.inputText.split('\n').length).toBe(1);
+    expect(r.inputText).toContain('[粘贴 7 · 12 行]');
+    expect(r.inputText.length).toBeLessThan(60);
+    // ★ 输入框那份**不许含任何补全触发字符** —— '@'/'/'/'#' 会让补全弹窗在粘贴后冒出来 ✗
+    for (const bad of ['@', '/', '#']) {
+      expect(r.inputText.includes(bad), `输入框引用不该含 ${bad}(会触发弹窗)`).toBe(false);
+    }
+    // 而**发送出去**的那份必须带完整路径(要细节读得回来)
+    expect(r.sendText).toContain(r.path!);
     const huge = Array.from({ length: 500 }, (_v, i) => `第 ${i} 行 ` + 'y'.repeat(40)).join('\n');
     const rh = collapsePaste(huge, { home: TMP, counter: 9 });
     expect(rh.sendText.length).toBeLessThan(huge.length * 0.05);

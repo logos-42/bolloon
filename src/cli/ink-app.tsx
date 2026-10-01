@@ -12,7 +12,7 @@ import { ruleFor } from './status-segments.js';
 import { loadInputHistory, appendInputHistory, MEMORY_CAP } from './input-history.js';
 import * as fs from 'fs';
 import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import { collapsePaste } from './input-paste.js';
+import { collapsePaste, shouldCollapsePaste } from './input-paste.js';
 import TextInput from 'ink-text-input';
 import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
@@ -575,6 +575,16 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       //   ② 混合 chunk (退格+控制符, 含 ESC 序列) → 退格部分生效, ESC 序列忽略
       //   ③ 可打印 chunk (CJK/粘贴) → 整串追加
       // 全部用函数式更新 — useInput 闭包可能陈旧 (实测), 函数式取最新 state
+      // 2026-10-01: **长粘贴当场折叠** —— 输入框里立刻变成一行引用(原文落文件 ⇒ 要细节读得回来)。
+      //   为什么必须在**这里**(不是提交时): 粘贴的那一刻就该"暂留"成引用, 否则输入框被一大段糊满,
+      //   而且多行粘贴原本会走下面的混合分支(换行被当控制符丢掉) ⇒ 先折叠, 原文不进输入框。
+      //   含 ESC 的 chunk (方向键等) 一律不当粘贴 ✓; 折叠失败 ⇒ 走原路径(绝不吞输入) ✓。
+      if (_input && _input.length > 1 && !_input.includes('\u001b') && shouldCollapsePaste(_input)) {
+        try {
+          const c = collapsePaste(_input);
+          if (c.collapsed) { setInput(cur => (cur ? cur + ' ' : '') + c.inputText); return; }
+        } catch { /* 折叠失败 = 原样走下面的分支 */ }
+      }
       if (/^\x7f+$/.test(_input)) { setInput(cur => cur.slice(0, Math.max(0, cur.length - _input.length))); return; }
       if (/[\x00-\x1f\x7f]/.test(_input)) {
         // 混合 chunk (退格+可打印): 逐字符处理; 含 ESC 序列 → 忽略整块 (箭头等由 TextInput 处理)

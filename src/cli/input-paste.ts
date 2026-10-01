@@ -32,6 +32,8 @@ export function shouldCollapsePaste(text: string, opts: { minLines?: number; min
 }
 
 export interface CollapsedPaste {
+  /** **输入框里显示**的短引用 (只有一行, 不带解释) */
+  inputText: string;
   /** 真正发给模型/落进对话流的文本 (短引用 + 取全文的指引) */
   sendText: string;
   /** 全文落盘位置 (失败时为空 ⇒ 调用方原样发送) */
@@ -50,7 +52,7 @@ export function collapsePaste(
 ): CollapsedPaste {
   const s = String(text ?? '');
   const lines = pasteLineCount(s);
-  const base: CollapsedPaste = { sendText: s, lines, chars: s.length, collapsed: false };
+  const base: CollapsedPaste = { inputText: s, sendText: s, lines, chars: s.length, collapsed: false };
   if (!shouldCollapsePaste(s, opts)) return base;
   try {
     const home = opts.home || os.homedir();
@@ -62,8 +64,13 @@ export function collapsePaste(
     const hhmmss = (opts.now || new Date()).toTimeString().slice(0, 8).replace(/:/g, '');
     const file = path.join(dir, `paste_${n}_${hhmmss}.txt`);
     fs.writeFileSync(file, s, { encoding: 'utf-8', mode: 0o600 });
+    // 输入框那份**不能带 '@' '/' '#'** —— 它们会触发补全弹窗(实测: 粘贴后弹窗冒出来 ✗)。
+    //   所以输入框只放"序号 + 行数"; **完整路径只出现在发送出去的那份**(sendText)里 ✓。
+    const inputRef = `[粘贴 ${n} · ${lines} 行]`;
+    const ref = `[粘贴 #${n}: ${lines} 行 → ${file}]`;
     return {
-      sendText: `[粘贴 #${n}: ${lines} 行 → ${file}]\n(整段已存到上面这个文件 —— 需要看细节就 read_file 读它, 不用我重述)`,
+      inputText: inputRef,
+      sendText: `${ref}\n(整段已存到上面这个文件 —— 需要看细节就 read_file 读它, 不用我重述)`,
       path: file,
       lines,
       chars: s.length,
