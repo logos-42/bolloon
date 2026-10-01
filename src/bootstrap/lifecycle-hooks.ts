@@ -39,15 +39,24 @@ export interface SessionStartResult {
 }
 
 let lastSessionStartAt = 0;
-const MIN_INTERVAL_MS = 5000; // 同一进程 5s 内最多触发一次, 防止循环
+let lastIdentityKey = ''; // 上一次计算时的身份键 (agentId + channelId)
+const MIN_INTERVAL_MS = 5000; // 同一身份 5s 内最多触发一次, 防止循环
 
 export async function onSessionStart(opts: SessionStartOptions = {}): Promise<SessionStartResult> {
   const start = Date.now();
-  if (start - lastSessionStartAt < MIN_INTERVAL_MS) {
-    // 限流: 返回空 (调用方已经有缓存, 不需要重算)
+  // 节流必须**按身份**生效 (2026-10-01 修复):
+  //   旧实现只按时间节流 —— 5s 内第二次调用直接 `return { systemAddition: '' }`,
+  //   而 /channel 切换后重建 agent 只要几毫秒 ⇒ 新 agent 几乎必然落在窗口里,
+  //   拿到的**身份文档是空的** (persona 一个字都没有), 用户看到的就是
+  //   「切了智能体, 身份文档没换」。切了 agent/channel = 身份变了 ⇒ 必须重算。
+  //   同一身份连来两次仍走节流 (原意: 防循环); 上下文本身还有 cwd 级缓存兜底。
+  const identityKey = `${opts.agentId || ''}\u0000${opts.channelId || ''}`;
+  if (identityKey === lastIdentityKey && start - lastSessionStartAt < MIN_INTERVAL_MS) {
+    // 限流: 身份没变, 调用方此刻手里的就是这份身份的加法 (不需要重算)
     return { systemAddition: '', collectMs: 0, truncated: false };
   }
   lastSessionStartAt = start;
+  lastIdentityKey = identityKey;
 
   try {
     const ctx = await getCachedBolloonContext(
