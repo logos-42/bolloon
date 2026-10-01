@@ -1616,6 +1616,17 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       const extra = prev && prev.name !== r.identity.name ? ` (从 ${prev.name} 切换)` : '';
       appendLine(`${C_ACCENT}→ 当前智能体: ${r.identity.name}${RESET}${extra}`);
       appendLine(`${C_DIM}  channel: ${r.channel.id}  [${r.match}]${RESET}`);
+
+      // 2026-10-01 (用户报「切换身份还没有成功」): 把**CLI 认为的身份**打进对话流 —— 之前用 console.warn,
+      //   在这套 TUI 里被吞掉, 用户从来看不到 ✗。切频道才一行, 不刷屏。
+      try {
+        const live: any = (agent as any)?.getIdentity?.() ?? null;
+        appendLine(
+          `${C_DIM}  [identity] 频道身份=${r.identity.name} (did=${String((r.identity as any)?.did ?? '(无)').slice(0, 26)})` +
+          ` · agent 当前身份=${live?.name ?? '(读不到)'} (did=${String(live?.did ?? '(无)').slice(0, 26)})` +
+          ` · agentId=${r.channel.agentId ?? '(无)'}${RESET}`,
+        );
+      } catch { /* 自证失败不影响切换 */ }
       // 2026-10-01: 这行原先读 channels.json 里**内联的 metadata** (你四条 channel 都空 ⇒ 恒打"无"),
       //   而身份真源是 ~/.bolloon/persona/<agentId>/ 的 6 份文档 ⇒ 改读真源, 如实报"加载到几份"。
       try {
