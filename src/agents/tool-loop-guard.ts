@@ -363,3 +363,23 @@ export function trackProgress(
 
   return { action: 'allow', code: 'allow', count: 0 };
 }
+
+/**
+ * 2026-10-01 (用户: 「为什么这么慢」): 量到的事实 —— 每次 LLM 往返平均 **3338ms**, 而
+ *   `toolCalls>1`(一轮发多个工具)**只占 12/63** ✗ ⇒ 回合时长 ≈ 往返次数 × 3.3s ✓;
+ *   也就是说"慢"主要不是工具慢(工具合计仅占 4% ✗), 而是**同一轮只干一件事**、来回跑 ✓。
+ * 做法: 一轮只调了一个**只读**工具时, 在结果后附一句**带代价**的提醒(不是口号 ✓)。
+ * 只读工具才提醒(写类工具串行更安全 ✓ 不催)。
+ */
+const BATCHABLE_HINT_TOOLS = new Set([
+  'read_file', 'grep_files', 'glob_files', 'list_files', 'read_document',
+  'git_status', 'git_log', 'git_diff', 'get_identity', 'list_tools', 'list_skills',
+  'process', 'list_local_channels', 'get_balance',
+]);
+
+export function batchHint(toolName: string, toolCallsThisRound: number): string {
+  if (toolCallsThisRound !== 1) return '';
+  if (!BATCHABLE_HINT_TOOLS.has(String(toolName || ''))) return '';
+  return '\n⚡ 若你接下来还要查别的(或还要读别的文件), **同一轮可以一次发多个工具** —— '
+    + '每次来回约 3.3 秒, 分成多轮就是纯等待; 独立的读操作请并成一轮发。';
+}

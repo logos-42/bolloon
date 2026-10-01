@@ -12,9 +12,10 @@ import { ruleFor } from './status-segments.js';
 import { loadInputHistory, appendInputHistory, MEMORY_CAP } from './input-history.js';
 import * as fs from 'fs';
 import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import { collapsePaste, shouldCollapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, shouldSuppressMention, isPasteRef, singleLine, logPopupEvent, PASTE_MENTION_SHIELD_MS } from './input-paste.js';
+import { stripUiNoise, collapsePaste, shouldCollapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, shouldSuppressMention, isPasteRef, singleLine, logPopupEvent, PASTE_MENTION_SHIELD_MS } from './input-paste.js';
 import TextInput from 'ink-text-input';
 import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
+import { reasoningMode } from './reasoning-view.js';
 import type { ToolCallListItem } from './loading-tui.js';
 import { THEME, fg } from './theme.js';
 import { COMPOSER_PLACEHOLDER, CHAR_EXIT_HINT, POPUP_TITLE_TAB, POPUP_TITLE_AGENT, POPUP_TITLE_FILE, POPUP_TITLE_COMMAND } from './content.js';
@@ -489,7 +490,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
     setInput('');
     // 2026-10-01: 长输入/粘贴**折叠** —— 整段落文件, 对话流只留一行引用(指向文件 ⇒ 需要细节读得回来)
     //   阈值: ≥8 行 或 ≥1200 字符; 短输入原样发送; 写盘失败退化成原样(绝不打断发送)。
-    let outgoing = trimmed;
+    let outgoing = stripUiNoise(trimmed);   // 防 UI 残影(颜文字/思考中/ANSI)进上下文
     try {
       const collapsed = collapsePaste(trimmed);
       if (collapsed.collapsed) outgoing = collapsed.sendText;
@@ -845,7 +846,11 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
           {transient ? (
             <Text>{transient}</Text>
           ) : thinking ? (
-            <Text color="yellow">{KAOMOJI[thinkingIdx.current]} 思考中...</Text>
+            // 2026-10-01 (用户: 「颜文字被加载进去了，防一下」+「可能是 ink 渲染的问题」):
+            //   trace 模式(默认)不画颜文字 —— 颜文字帧会被 Ink 重绘**留进滚动区** ✗, 于是能被拖进输入框、
+            //   甚至混进上下文 ✗。trace 下只留一行朴素文字(不逐帧重绘 ⇒ 没有可拖的残影 ✓);
+            //   想看动画: BOLLOON_SHOW_THINKING=short|full ✓。
+            <Text color="yellow">{reasoningMode() === 'trace' ? '思考中...' : `${KAOMOJI[thinkingIdx.current]} 思考中...`}</Text>
           ) : (
             <Text color={THEME.muted}>{'· 回车发送 · ↑↓ 历史 · PgUp 回看 · Esc 双击退出'}</Text>
           )}

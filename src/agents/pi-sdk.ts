@@ -201,7 +201,7 @@ export function writeBackCurrentTurnInto(
   }
 }
 
-import { LoopStallState, observeToolCall } from './tool-loop-guard.js';
+import { LoopStallState, observeToolCall, batchHint } from './tool-loop-guard.js';
 
 /**
  * 写操作"读回自证" (2026-10-01 优化 #4): 写类工具成功后**自动**核一次, 把事实拼进结果。
@@ -2625,6 +2625,13 @@ ${await this.renderActivePlansSection()}
             }
           } catch { /* 观测失败绝不影响主路径 */ }
           this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result, toolCallId: (toolCall as any).id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` });
+          // 2026-10-01 (用户: 「为什么这么慢」): 量到的事实 —— 每次 LLM 往返平均 3338ms,
+          //   而"一轮发多个工具"(toolCalls>1) 只占 12/63 ✗ ⇒ 回合时长 ≈ 往返次数 × 3.3 秒 ✓。
+          //   本回合**第一次**且**只发一个**工具时, 附一句带代价的提醒(不是口号 ✓), 只提一次免得刷屏。
+          if (toolCalls.length === 1 && this.successfulToolResults.length <= 1) {   // 本回合头一次(免得每轮刷屏)
+            const __batchHint = batchHint(toolCall.name, 1);
+            if (__batchHint) this.messageHistory.push({ role: 'system', content: __batchHint.trim() });
+          }
           this.logToHarness(toolCall.name, toolCall.args, result);
 
           // 2026-08-09: 记录到本轮行动日志 (循环进度 + final 前目标核查用)

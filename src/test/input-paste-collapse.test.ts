@@ -15,8 +15,7 @@ import path from 'node:path';
 import {
   collapsePaste, shouldCollapsePaste, pasteLineCount, pastesDir,
   PASTE_MIN_CHARS, PASTE_MIN_LINES, stripBracketedPaste, hasBracketedPasteMarker,
-  looksLikePasteChunk, logPasteChunk, PASTE_CHUNK_MIN_CHARS, singleLine, isPasteRef, shouldSuppressMention,
-} from '../cli/input-paste.js';
+  looksLikePasteChunk, logPasteChunk, PASTE_CHUNK_MIN_CHARS, singleLine, isPasteRef, shouldSuppressMention, stripUiNoise } from '../cli/input-paste.js';
 
 let TMP = '';
 beforeAll(() => { TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-paste-')); });
@@ -110,5 +109,24 @@ describe('⑥⑦ 失败降级 / 单行化 / 观测', () => {
     expect(body).not.toContain('正文');
     expect(logPasteChunk({ len: 1, marker: false, nl: false, esc: false }, '/proc/nonexistent-xyz')).toBeUndefined();
     expect(fs.existsSync(pastesDir(TMP))).toBe(true);
+  });
+});
+
+describe('UI 残影净化 (用户: 「颜文字被加载进去了，防一下」)', () => {
+  it('纯状态行(颜文字 + 思考中) => 整行丢掉, 不当正文发给模型', () => {
+    expect(stripUiNoise('(◕‿◕) 思考中...')).toBe('');
+    expect(stripUiNoise('ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ 思考中...')).toBe('');
+    expect(stripUiNoise('🔧 terminal 21412ms 运行中...')).toBe('');
+  });
+  it('真输入里的状态行被剔除, 用户自己的字原样保留', () => {
+    const input = '帮我看看这个\n(｀・ω・´) 思考中...\n然后提交';
+    const out = stripUiNoise(input);
+    expect(out).toContain('帮我看看这个');
+    expect(out).toContain('然后提交');
+    expect(out).not.toContain('思考中');
+  });
+  it('ANSI 控制符被剥掉', () => {
+    const esc = String.fromCharCode(27);
+    expect(stripUiNoise(esc + '[38;2;0;0;0m正常文本' + esc + '[0m')).toBe('正常文本');
   });
 });

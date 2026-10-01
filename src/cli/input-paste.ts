@@ -202,3 +202,34 @@ export function logPopupEvent(ev: { ev: string; kind?: string; trigger?: string;
     fs.appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...ev, head: (ev.head || '').slice(0, 40) }) + '\n', 'utf-8');
   } catch { /* 观测失败绝不影响输入 */ }
 }
+
+/**
+ * 剥掉 UI 残影 (2026-10-01, 用户: 「颜文字被加载进去了，防一下」)。
+ * 为什么: 思考动画/状态行是**屏幕上的东西**, 但它们会被 Ink 重绘留进滚动区 ⇒ 用户框选/拖拽时
+ *   会把 `(◕‿◕) 思考中...`、`🔧 … 运行中...`、ANSI 控制符一起带进输入框 ⇒ 混进送给模型的正文 ✗。
+ * 做法: 只在**发送前**清洗(不碰用户真正打的字 ✓): 去 ANSI · 去行首颜文字 + "思考中/运行中" 状态片段 ✓。
+ */
+/**
+ * 判"整行只是状态残影" —— **按语义判, 不靠字符类** ✓:
+ *   把非字母数字的装饰(颜文字/组合变音符/符号)全部拿掉, 剩下的如果只有"思考中/运行中/自动整理经验中"
+ *   ⇒ 这行就是状态行 ⇒ 丢掉 ✓(实测 `ᕙ(▀̿̿Ĺ̯̿̿▀̿ ̿)ᕗ 思考中...` 带**组合变音符**, 用字符类必漏 ✗)。
+ */
+const STATUS_WORD = /(思考中|运行中|自动整理经验中)/;
+function isStatusOnlyLine(line: string): boolean {
+  const t = line.trim();
+  if (!t) return false;
+  const core = t.replace(/[^\p{Script=Han}]/gu, '');   // 只看汉字: 颜文字里的 Ĺ/ᕙ 也是\p{L} ⇒ 用\p{L} 会漏 ✗
+  return STATUS_WORD.test(core) && /^(思考中|运行中|自动整理经验中)+$/.test(core);
+}
+
+export function stripUiNoise(text: string): string {
+  let out = String(text ?? '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+  const kept: string[] = [];
+  for (const line of out.split('\n')) {
+    const t = line.trim();
+    if (isStatusOnlyLine(t)) continue;                        // 纯状态行 ⇒ 整行丢掉(不管前面挂什么颜文字)
+    if (/^🔧\s+.*运行中[.．。…\s]*$/u.test(t)) continue;        // 工具运行中行 ⇒ 丢掉
+    kept.push(line.replace(/^\s*[\u2190-\u2bff\u3000-\u303f]{1,3}\s*(思考中|运行中)[.．。…\s]*/u, ''));
+  }
+  return kept.join('\n');
+}

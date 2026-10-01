@@ -3785,7 +3785,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           const remaining = tuiToolCalls.filter(c => c.tool !== 'system' && c.tool !== 'loop' && c.tool !== '?');
             cliTurnToolCount = remaining.length;   // ⚙ 状态栏用 (模块级)
           if (remaining.length > 0) {
-            const label = remaining.length > 1 ? `执行 ${remaining.length} 个工具: ${remaining.map(c => c.tool).join(', ')}` : `🔧 ${remaining[0].tool}`;
+            const label = remaining.length > 1 ? `执行 ${remaining.length} 个工具: ${remaining.map(c => c.tool).join(', ')}` : `🔧 ${traceLabel(remaining[0].tool)}`;   // trace 执行描述
             inkSetTransient(`${C_DIM}${label} 运行中...${RESET}`);
           } else {
             inkSetTransient(null);
