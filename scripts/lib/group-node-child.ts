@@ -37,6 +37,8 @@ interface Spec {
   pollMs?: number;
   /** 阶段完成后**保持节点在线**多久 (ms) —— 真两节点验收里, 供块的节点必须活着 */
   holdMs?: number;
+  /** shard_append 用: 造多少个**不同身份** (actorId) 的事件 —— P5 压测要 N 个 agent 而不是 N 条同源消息 */
+  distinctActors?: number;
 }
 
 const specPath = process.argv[2];
@@ -144,8 +146,18 @@ async function main(): Promise<void> {
       const manifest = await db.openStore(manifestStoreName(group), 'keyvalue', { accessController: { write: ['*'] } });
       const n = spec.count ?? 0;
       const t0s = Date.now();
+      const actors = Math.max(1, spec.distinctActors ?? 1);
       for (let i = 0; i < n; i++) {
-        await appendEvent(db, manifest, group, { from: spec.from || 'A', text: `e${i}`, seq: i, ts: Date.now() });
+        const a = i % actors;
+        await appendEvent(db, manifest, group, {
+          from: spec.from || 'A',
+          text: `e${i}`,
+          seq: i,
+          ts: Date.now(),
+          // N 个**不同身份** (P5 要"N 个 agent", 不是 N 条同源消息)
+          actorId: `did:key:z6MkAgent${String(a).padStart(6, '0')}`,
+          actor: `agent-${a}`,
+        });
       }
       const shards = await listShards(manifest, group);
       out({ ...base, ok: true, group, appended: n, shards, manifestAddress: manifest.address,

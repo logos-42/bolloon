@@ -27,6 +27,13 @@ export const SHARD_SIZE = 200;
  * 既慢又可能把同一个库开出多个句柄。
  */
 const shardCache = new Map<string, OrbitDBStore>();
+/**
+ * 片内条数缓存 (2026-10-01 回归修复)。
+ * 轮转判据**必须**用这里 (片自己的真实长度), 不能用 manifest 里的 count ——
+ * 我为了消掉 manifest 的 O(N) 把它改成"只在轮转时落盘", 结果 count 永远停在旧值 ⇒ 再也不开新片 (实测 1000 条只有 1 片)。
+ * 首次碰到某片时用 `all().length` 对齐一次, 之后逐条自增 (不每条都读一遍)。
+ */
+const countCache = new Map<string, number>();
 function cached(key: string, make: () => Promise<OrbitDBStore>): Promise<OrbitDBStore> {
   const hit = shardCache.get(key);
   if (hit) return Promise.resolve(hit);
@@ -99,22 +106,46 @@ export async function appendEvent(
   now = Date.now(),
 ): Promise<{ shard: ShardInfo; address: string; index: number }> {
   const manifest = await readManifest(manifestStore, group);
+  const openShardByName = (name: string) => cached(name, () => db.openStore(name, 'events', { accessController: { write: ['*'] } }));
+
+  /** 片真实长度: 首次对齐后用缓存自增 */
+  const lenOf = async (store: OrbitDBStore, name: string): Promise<number> => {
+    if (!countCache.has(name)) countCache.set(name, (await store.all()).length);
+    return countCache.get(name)!;
+  };
+
   let last = manifest.shards[manifest.shards.length - 1];
-  if (!last || last.count >= SHARD_SIZE) {
-    const index = last ? last.index + 1 : 0;
-    const name = shardStoreName(group, index);
-    const store = await cached(name, () => db.openStore(name, 'events', { accessController: { write: ['*'] } }));
-    last = { index, name, address: store.address, count: 0, fromTs: now, toTs: now };
+  if (!last) {
+    const name = shardStoreName(group, 0);
+    const store = await openShardByName(name);
+    countCache.set(name, 0);
+    last = { index: 0, name, address: store.address, count: 0, fromTs: now, toTs: now };
     manifest.shards.push(last);
+    manifest.updatedAt = now;
+    await manifestStore.put('manifest', JSON.parse(JSON.stringify(manifest)));
   }
-  const store = await cached(last.name, () => db.openStore(last.name, 'events', { accessController: { write: ['*'] } }));
-  const before = last.count;
+
+  let store = await openShardByName(last.name);
+  let len = await lenOf(store, last.name);
+  if (len >= SHARD_SIZE) {
+    // 轮转: 开新片 + **这时才落盘 manifest** (每 SHARD_SIZE 条一次 ⇒ manifest oplog 是 O(片数))
+    const index = last.index + 1;
+    const name = shardStoreName(group, index);
+    const st = await openShardByName(name);
+    countCache.set(name, 0);
+    last = { index, name, address: st.address, count: 0, fromTs: now, toTs: now };
+    manifest.shards.push(last);
+    manifest.updatedAt = now;
+    await manifestStore.put('manifest', JSON.parse(JSON.stringify(manifest)));
+    store = st;
+    len = 0;
+  }
+
   await store.add(event);
-  last.count = before + 1;
+  countCache.set(last.name, len + 1);
+  last.count = len + 1;
   last.toTs = now;
-  manifest.updatedAt = now;
-  await manifestStore.put('manifest', JSON.parse(JSON.stringify(manifest)));
-  return { shard: last, address: last.address, index: last.count - 1 };
+  return { shard: last, address: last.address, index: len };
 }
 
 /** 列出各片 (只读 manifest, **不打开任何片**) */
@@ -130,7 +161,7 @@ export async function readTail(
   db: { openStoreByAddress(address: string, type: 'keyvalue' | 'events', opts?: { replica?: boolean; accessController?: { write: string[] } }): Promise<OrbitDBStore | null> },
   manifestStore: OrbitDBStore,
   group: string,
-  opts: { skipShards?: number; waitMs?: number; pollMs?: number } = {},
+  opts: { skipShards?: number; waitMs?: number; pollMs?: number; settleMs?: number } = {},
 ): Promise<{ entries: Array<{ key: string; value: unknown }>; shard: ShardInfo | null; openedShards: number; waitedMs: number; complete: boolean }> {
   const shards = await listShards(manifestStore, group);
   const skip = opts.skipShards ?? 0;
@@ -144,11 +175,14 @@ export async function readTail(
   // 同样是有界等待: 只等**这一片** (片大小有上界 ⇒ 等待时间有上界, 与总历史无关)
   const timeoutMs = opts.waitMs ?? 60000;
   const pollMs = opts.pollMs ?? 250;
-  const want = Math.max(1, target.count);
+  const settleMs = opts.settleMs ?? 2000;   // 连续这么久没有新条目 ⇒ 认为这片同步完了
   const t0 = Date.now();
+  let lastCount = -1, lastGrowthAt = Date.now();
   for (;;) {
     const entries = await store.all();
-    if (entries.length >= want) return { entries, shard: target, openedShards: 1, waitedMs: Date.now() - t0, complete: true };
+    if (entries.length !== lastCount) { lastCount = entries.length; lastGrowthAt = Date.now(); }
+    const settled = lastCount > 0 && Date.now() - lastGrowthAt >= settleMs;
+    if (settled) return { entries, shard: target, openedShards: 1, waitedMs: Date.now() - t0, complete: true };
     if (Date.now() - t0 >= timeoutMs) return { entries, shard: target, openedShards: 1, waitedMs: Date.now() - t0, complete: false };
     await new Promise((r) => setTimeout(r, pollMs));
   }
