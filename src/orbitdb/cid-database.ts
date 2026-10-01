@@ -186,6 +186,32 @@ export class OrbitDBAdapter implements CIDDatabase {
     return this.node?.paths ?? null;
   }
 
+  // ============ P2P 观测/接入口 (2026-09-30, 为真两节点复制验证加的) ============
+  // 之前 helia/libp2p 完全藏在私有字段里 —— 于是所有多节点测试只能注入 fake CIDDatabase,
+  // 「真两节点能不能同步」从来没被验过。这三个口只读/只拨号, 不改变任何既有行为。
+
+  /** 本节点 peerId (未初始化时 null; 验收/诊断用) */
+  get peerId(): string | null {
+    return this.node?.peerId ?? null;
+  }
+
+  /** 本节点当前监听地址 (multiaddr 字符串; 未初始化时 []) */
+  listenAddrs(): string[] {
+    const l = (this.node?.helia as any)?.libp2p;
+    try {
+      return (l?.getMultiaddrs?.() ?? []).map((m: any) => m.toString());
+    } catch {
+      return [];
+    }
+  }
+
+  /** 拨号到另一个真节点 (验收/群组接入用)。失败原样抛, 不吞。 */
+  async dial(addr: string): Promise<void> {
+    await this.ensure();
+    const { multiaddr } = await import('@multiformats/multiaddr');
+    await (this.node!.helia as any).libp2p.dial(multiaddr(addr));
+  }
+
   /** 懒初始化: 首次使用时启动 helia + OrbitDB + 打开 keyvalue store */
   private async ensure(): Promise<void> {
     if (this.db) return;

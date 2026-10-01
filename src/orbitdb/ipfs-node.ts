@@ -29,6 +29,7 @@
 
 import { createHeliaLight, type Helia } from 'helia';
 import { withLibp2p } from '@helia/libp2p';
+import { withBitswap } from '@helia/bitswap';
 import { FsBlockstore } from 'blockstore-fs';
 import { FsDatastore } from 'datastore-fs';
 import * as dagCbor from '@ipld/dag-cbor';
@@ -91,7 +92,7 @@ export async function createBolloonIpfs(dataDir?: string): Promise<BolloonIpfs> 
   // createHeliaLight 无 libp2p → withLibp2p 手动装配 (可传 services)
   // codecs/hashers 照抄 createHelia 默认: OrbitDB 的 log entry 用 dag-cbor (codec 113),
   // 不注册会报 "Could not load codec for 113"
-  const helia = withLibp2p(createHeliaLight({
+  const heliaWithLibp2p = withLibp2p(createHeliaLight({
     blockstore,
     datastore,
     codecs: [dagCbor, dagJson, json],
@@ -116,6 +117,13 @@ export async function createBolloonIpfs(dataDir?: string): Promise<BolloonIpfs> 
       http: http(),
     },
   } as any);
+
+  // 2026-09-30 (P0 真两节点验收照出的根因): 在此之前节点**没有任何 block broker** ——
+  //   新节点按地址打开群时连 manifest/oplog 的块都拉不到, 报
+  //   "No block brokers capable of retrieving blocks are configured, the CID bafyrei… cannot be fetched",
+  //   也就是「跨机群消息复制」从来就不可能。此前 5 个"多节点"测试都注入 fake CIDDatabase, 照不出来。
+  //   createHeliaLight 不带 bitswap, withLibp2p 也不加 ⇒ 必须显式 withBitswap (顺序: 在 libp2p 之后)。
+  const helia = withBitswap(heliaWithLibp2p);
 
   await helia.start();
   const peerId = (helia as any).libp2p.peerId.toString();

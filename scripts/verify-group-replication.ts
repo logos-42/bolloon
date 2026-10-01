@@ -1,0 +1,184 @@
+/**
+ * verify-group-replication.ts — P0 门: **真两节点** OrbitDB 复制基线 (2026-09-30)
+ *
+ * 为什么有这道门: 全仓 5 个"多节点"测试都注入 fake CIDDatabase, 真复制从来没被验过。
+ * 本门起**真子进程**(每个 = 一个真 helia/libp2p/OrbitDB 节点, 各自 HOME/身份/随机端口),
+ * 走真 dial + 真 pubsub + 真 bitswap 块交换, 并把量如实报出来。
+ *
+ * 四个场景:
+ *   S1  100 条  : A 建群发 100 (A **保持在线**) → B(新节点) dial + 按地址打开 → 拿到全部? 耗时/磁盘?
+ *   S3  反事实  : D 打开同一地址但**不 dial** (A 此刻在线且供块) → 必须看不见
+ *   S2  1000 条 : 迟到者拿长历史 (全仓最没被验过的一条)
+ *   S4  断网分叉: A 建群 → B 加入 → A 退出 → B 离线写 10 条 → A 重启(dial B) → 两侧收敛?
+ *                  (顺带验 write:['*'] 对**非创建者**是否真生效)
+ *
+ * 判据: 集合指纹 keysHash (排序 key 的 sha256) 相同 = 两侧看到的 oplog 集合逐条一致。
+ * 跑法: npx tsx scripts/verify-group-replication.ts
+ *
+ * 两次失败留下的教训 (写进门里, 免得下次重踩):
+ *   ① 节点没有 block broker 时按地址打开**必挂** (报 "No block brokers ... cannot be fetched")
+ *      ⇒ 根因是 src/orbitdb/ipfs-node.ts 缺 withBitswap, 已修。
+ *   ② 阶段结束就退出的节点, 对端只会得到 ECONNREFUSED / "Failed to load block"
+ *      ⇒ **供块的节点必须活着**, 故本门用 holdMs 让 A 常驻。
+ */
+import { spawn, type ChildProcess } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+
+// 仓里 ts 脚本的既有写法 (verify-cli-panel / verify-model-selector 同款): 从 cwd 取仓根
+const REPO = process.cwd();
+const TSX = path.join(REPO, 'node_modules', '.bin', 'tsx');
+const CHILD = path.join(REPO, 'scripts', 'lib', 'group-node-child.ts');
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-p0-'));
+const HOLD_MS = 600000;
+
+interface Res { ok: boolean; [k: string]: unknown }
+interface BgNode { kill: () => void; result: Promise<Res> }
+const live: ChildProcess[] = [];
+
+function startNode(home: string, spec: Record<string, unknown>, timeoutMs = 300000) {
+  fs.mkdirSync(home, { recursive: true });
+  const specPath = path.join(home, 'spec.json');
+  fs.writeFileSync(specPath, JSON.stringify({ home, ...spec }));
+  const p = spawn(TSX, [CHILD, specPath], { cwd: REPO, env: { ...process.env, HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] });
+  live.push(p);
+  let out = '', err = '';
+  let firstResult: Res | null = null;      // 首个阶段结果 (hold 型节点靠它提前放行)
+  let resolveFirst: ((r: Res) => void) | null = null;
+  const first = new Promise<Res>((r) => { resolveFirst = r; });
+  const onLine = (line: string): void => {
+    if (!line.startsWith('@@OUT ')) return;
+    try {
+      const obj = JSON.parse(line.slice(6)) as Res;
+      if (!firstResult && !('hold' in obj)) { firstResult = obj; resolveFirst?.(obj); }
+    } catch { /* 忽略坏行 */ }
+  };
+  p.stdout.on('data', (d) => { const s = d.toString(); out += s; for (const l of s.split('\n')) onLine(l); });
+  p.stderr.on('data', (d) => { err += d.toString(); });
+  const timeout = setTimeout(() => { try { p.kill('SIGKILL'); } catch { /* 忽略 */ } }, timeoutMs);
+  const closed = new Promise<Res>((resolve) => {
+    p.on('close', () => {
+      clearTimeout(timeout);
+      // 2026-09-30 自己踩的 bug: 这里原来写 `if (settled) return;` —— 短命节点的 @@OUT 一到
+      // settled 就是 true, 于是 closed **永远不 resolve**, await 挂死 (门看着像"卡住没输出")。
+      // 正确做法: 把已经解析到的那个结果交给 closed (第一次调用的语义就是"我要这个阶段的结果")。
+      if (firstResult) return resolve(firstResult);
+      const line = out.split('\n').find((l) => l.startsWith('@@OUT '));
+      if (!line) return resolve({ ok: false, fatal: 'child 没输出 @@OUT', stderrTail: err.split('\n').slice(-4).join(' | ').slice(0, 400) });
+      try { resolve(JSON.parse(line.slice(6))); } catch (e) { resolve({ ok: false, fatal: `解析 @@OUT 失败: ${String(e)}` }); }
+    });
+  });
+  return { first, closed, kill: () => { try { p.kill('SIGTERM'); } catch { /* 忽略 */ } } };
+}
+
+/** 短命节点 (跑完即退) */
+async function runNode(home: string, spec: Record<string, unknown>, timeoutMs = 300000): Promise<Res> {
+  return startNode(home, spec, timeoutMs).closed;
+}
+/** 常驻节点 (供块方必须活着): 拿到阶段结果就继续, 进程留着 */
+function holdNode(home: string, spec: Record<string, unknown>, timeoutMs = 300000): BgNode {
+  const n = startNode(home, { ...spec, holdMs: HOLD_MS }, timeoutMs);
+  return { kill: n.kill, result: n.first };
+}
+
+/**
+ * 拨号地址筛选: 本机有 ClashX fake-ip, 节点的监听列表里会混进 100.100.x / 198.18.x 这类
+ * **拨不通的假地址** —— 全拨会在假地址上挂到超时。优先 127.0.0.1 (同机两节点), 取不到才退全部。
+ */
+function dialableAddrs(addrs: unknown): string[] {
+  const list = Array.isArray(addrs) ? (addrs as string[]) : [];
+  const loopback = list.filter((a) => a.includes('/ip4/127.0.0.1/tcp/'));
+  return loopback.length ? loopback.slice(0, 1) : list.filter((a) => !a.includes('webrtc-direct')).slice(0, 1);
+}
+
+const checks: { name: string; pass: boolean; detail: string }[] = [];
+function check(name: string, pass: boolean, detail: string): void { checks.push({ name, pass, detail }); }
+const kb = (n: unknown) => `${(Number(n || 0) / 1024).toFixed(1)}KB`;
+
+async function main(): Promise<void> {
+  console.log('P0 · 真两节点 OrbitDB 复制基线');
+  console.log(`   节点根目录: ${ROOT}  (每节点隔离 HOME: 独立身份/blockstore/随机端口; 供块方保持在线)`);
+  console.log('');
+
+  // ── S1: 100 条 (A 常驻)
+  const a1 = holdNode(path.join(ROOT, 's1-a'), { phase: 'create_and_send', group: 'p0-100', count: 100, from: 'A' });
+  const A1 = await a1.result;
+  const B1 = await runNode(path.join(ROOT, 's1-b'), { phase: 'join_and_wait', address: A1.address, addrs: dialableAddrs(A1.addrs), waitFor: 101, timeoutMs: 120000 });
+  console.log('   S1 · 100 条 (A 在线)');
+  console.log(`      A: appended=${A1.appended} 发送=${A1.sendMs}ms 磁盘=${kb(A1.diskBytes)}`);
+  console.log(`      B: seen=${B1.seen} 打开=${B1.openMs}ms 等齐=${B1.waitedMs}ms timedOut=${B1.timedOut} 磁盘=${kb(B1.diskBytes)}`);
+  console.log(`      指纹: A=${A1.keysHash} B=${B1.keysHash}`);
+  if (B1.dialErrors) console.log(`      拨号: ${JSON.stringify(B1.dialErrors).slice(0, 200)}`);
+  if (B1.openError) console.log(`      打开失败: ${String(B1.openError).slice(0, 220)}`);
+  check('S1 B 拿到 A 的 101 条历史', Number(B1.seen) >= 101, `seen=${B1.seen} (期望 ≥101)`);
+  check('S1 两侧集合指纹逐字相同', A1.keysHash === B1.keysHash && !!A1.keysHash, `A=${A1.keysHash} B=${B1.keysHash}`);
+  console.log('');
+
+  // ── S3: 反事实 (A 仍在线供块 ⇒ 不拨号必须看不见)
+  const D3 = await runNode(path.join(ROOT, 's3-d'), { phase: 'join_and_wait', address: A1.address, dial: false, waitFor: 1, timeoutMs: 20000 });
+  console.log('   S3 · 反事实 (不拨号, 而 A 在线且在供块)');
+  console.log(`      D: seen=${D3.seen} 打不开=${D3.openError ? '是' : '否'}`);
+  if (D3.openError) console.log(`      → 原文: ${String(D3.openError).slice(0, 200)}`);
+  check('S3 不拨号必须看不见任何消息', Number(D3.seen) === 0, `seen=${D3.seen} (期望 0 = 复制确实来自网络)`);
+  a1.kill();
+  console.log('');
+
+  // ── S2: 1000 条 (迟到者拿长历史)
+  const a2 = holdNode(path.join(ROOT, 's2-a'), { phase: 'create_and_send', group: 'p0-1000', count: 1000, from: 'A' }, 420000);
+  const A2 = await a2.result;
+  const C2 = await runNode(path.join(ROOT, 's2-c'), { phase: 'join_and_wait', address: A2.address, addrs: dialableAddrs(A2.addrs), waitFor: 1001, timeoutMs: 300000 }, 420000);
+  console.log('   S2 · 1000 条 (迟到者)');
+  console.log(`      A: appended=${A2.appended} 发送=${A2.sendMs}ms 磁盘=${kb(A2.diskBytes)}`);
+  console.log(`      C: seen=${C2.seen} 打开=${C2.openMs}ms 等齐=${C2.waitedMs}ms timedOut=${C2.timedOut} 磁盘=${kb(C2.diskBytes)}`);
+  console.log(`      指纹: A=${A2.keysHash} C=${C2.keysHash}`);
+  if (C2.openError) console.log(`      打开失败: ${String(C2.openError).slice(0, 220)}`);
+  check('S2 迟到者拿到 1001 条历史', Number(C2.seen) >= 1001, `seen=${C2.seen} (期望 ≥1001)`);
+  check('S2 指纹逐字相同', A2.keysHash === C2.keysHash && !!A2.keysHash, `A=${A2.keysHash} C=${C2.keysHash}`);
+  a2.kill();
+  console.log('');
+
+  // ── S4: 断网分叉 + 重连收敛 (+ 非创建者写入)
+  const a4 = holdNode(path.join(ROOT, 's4-a'), { phase: 'create_and_send', group: 'p0-offline', count: 10, from: 'A' });
+  const A4 = await a4.result;
+  const B4a = await runNode(path.join(ROOT, 's4-b'), { phase: 'join_and_wait', address: A4.address, addrs: dialableAddrs(A4.addrs), waitFor: 11, timeoutMs: 120000 });
+  a4.kill(); // A 离线
+  // B 离线写 10 条 (拨不到 A) —— 顺带验 write:['*'] 对**非创建者**是否真生效
+  const b4 = holdNode(path.join(ROOT, 's4-b'), { phase: 'send_only', address: A4.address, count: 10, from: 'B' });
+  const B4b = await b4.result;
+  // A 重启 (同 HOME ⇒ 同身份/同 blockstore), 拨 B; B 常驻供块
+  const a4b = holdNode(path.join(ROOT, 's4-a'), { phase: 'open_and_wait', address: A4.address, addrs: dialableAddrs(B4b.addrs), waitFor: 21, timeoutMs: 180000 }, 300000);
+  const a4bRes = await a4b.result;
+  const B4c = await runNode(path.join(ROOT, 's4-b'), { phase: 'open_and_wait', address: A4.address, addrs: dialableAddrs(a4bRes.addrs), waitFor: 21, timeoutMs: 180000 }, 300000);
+  const A4b = a4bRes;
+  console.log('   S4 · 断网分叉 + 重连收敛');
+  console.log(`      A 建群 appended=${A4.appended} · B 加入 seen=${B4a.seen}`);
+  console.log(`      A 退出后 B 离线写: written=${B4b.written} ok=${B4b.ok}${B4b.error ? ' 错误=' + String(B4b.error).slice(0, 150) : ''}`);
+  console.log(`      A 重启: seen=${A4b.seen} 等=${A4b.waitedMs}ms · B(新进程): seen=${B4c.seen} 等=${B4c.waitedMs}ms`);
+  console.log(`      指纹: A=${A4b.keysHash} B=${B4c.keysHash}`);
+  check('S4 非创建者离线写入成功 (write:* 真生效)', Number(B4b.written) === 10, `written=${B4b.written} (期望 10)${B4b.error ? ' · ' + String(B4b.error).slice(0, 130) : ''}`);
+  check('S4 重连后两侧都看到 21 条', Number(A4b.seen) >= 21 && Number(B4c.seen) >= 21, `A=${A4b.seen} B=${B4c.seen} (期望 ≥21)`);
+  check('S4 收敛后指纹逐字相同', A4b.keysHash === B4c.keysHash && !!A4b.keysHash, `A=${A4b.keysHash} B=${B4c.keysHash}`);
+  b4.kill(); a4b.kill();
+  console.log('');
+
+  // ── P0 数字表 (方案 §2 四个量里的三个; 线上字节未单独采集, 如实注明)
+  console.log('   P0 数字表 (真两节点, 单机 loopback):');
+  console.log('      场景                    N      对端拿齐耗时   对端磁盘    供块方磁盘');
+  console.log(`      S1 新节点拿全量       101   ${String(B1.waitedMs ?? '-').padStart(8)}ms   ${kb(B1.diskBytes).padStart(9)}   ${kb(A1.diskBytes).padStart(9)}`);
+  console.log(`      S2 迟到者拿长历史    1001   ${String(C2.waitedMs ?? '-').padStart(8)}ms   ${kb(C2.diskBytes).padStart(9)}   ${kb(A2.diskBytes).padStart(9)}`);
+  console.log('      (线上字节数未单独采集 —— libp2p 计数器没接; 磁盘增量是它的可核验代理)');
+  console.log('');
+
+  const bad = checks.filter((c) => !c.pass);
+  console.log('   判据:');
+  for (const c of checks) console.log(`      ${c.pass ? '✓' : '✗'} ${c.name} — ${c.detail}`);
+  console.log('');
+  console.log(`   结论: ${checks.length - bad.length}/${checks.length} 通过` + (bad.length ? ' —— 有真失败, 见上' : ''));
+  console.log(`   节点数据留档: ${ROOT}  (每节点 .bolloon/orbitdb 下可看 blocks/ 与 stores/)`);
+  for (const p of live) { try { p.kill('SIGTERM'); } catch { /* 忽略 */ } }
+  if (!bad.length) { try { fs.rmSync(ROOT, { recursive: true, force: true }); console.log('   (全绿, 临时节点目录已清理)'); } catch { /* 忽略 */ } }
+  process.exit(bad.length ? 1 : 0);
+}
+
+void main();
