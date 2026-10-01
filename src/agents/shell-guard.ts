@@ -402,6 +402,20 @@ export const SHELL_SANDBOX_CWD = path.resolve(process.cwd(), '.bolloon-shell-san
 //   只挡"高危破坏/碰核心数据"模式. 用户明确: 灵活一点, 少围栏, 核心的东西不碰不搞乱.
 // ============================================================================
 
+/**
+ * 自生命周期模式 (唯一的归类依据, 2026-10-01)。
+ * 为什么单列: 报错文案要按"是不是自生命周期"分岔, 原先用"模式串里有没有 bolloon 等词"猜 ⇒
+ * 数据目录那条 (串里含 .bolloon) 被误判, 把只读命令报成"会杀死宿主服务" ✗。
+ */
+const SELF_LIFECYCLE_PATTERNS: ReadonlyArray<RegExp> = [
+  /\b(bolloon|bolloon-agent|bolloon-agent-service)\s+(restart|stop|kill|quit|shutdown)\b/i,
+  /\bpm2\s+(restart|stop|delete|kill)\s+[\w./-]*bolloon\b/i,
+  /\b(systemctl|service)\s+(restart|stop|kill)\s+[\w.-]*bolloon\b/i,
+  /\bpkill\s+(-[a-z]+\s+)*(-f\s+)?[\w./-]*bolloon\b/i,
+  /\btaskkill\s+[^|]*\/IM\s+[\w-]*bolloon\b/i,
+  /\btaskkill\s+[^|]*\/FI\s+\"?[^\"]*bolloon/i,
+];
+
 const TERMINAL_DENY_PATTERNS: ReadonlyArray<RegExp> = [
   /\bsudo\b/,                          // 提权
   /\bsu\b/,
@@ -414,8 +428,15 @@ const TERMINAL_DENY_PATTERNS: ReadonlyArray<RegExp> = [
   /\bwget\b[^|]*\|\s*(sh|bash)\b/,
   /\b:\(\)\s*\{[^}]*\}\s*;\s*:/,       // fork bomb
   /\b(>|>>)\s*(\/etc\/|\/usr\/|\/System\/|\/bin\/|\/sbin\/)/, // 写系统目录
-  /[\/\s]\.bolloon\b/,                  // Bolloon 数据 (sessions/persona/keys; 覆盖 ~/.bolloon, $HOME/.bolloon, 空格.bolloon)
-  /[\/\s]\.(diap|hermes|openclaw)\b/,   // 其他 agent 数据
+  // 2026-10-01 (用户报「偶尔会出反水 bug」): 原先 /[\/\s]\.bolloon\b/ 会匹配**任何**含 .bolloon 的路径
+  //   ⇒ 连 `ls ~/.bolloon/`、`cat .bolloon/x`、`grep -rn x .bolloon/` 这种**只读**命令都被拒;
+  //   而且因为模式串里带 "bolloon", 还会被下面的分类逻辑误判成"自生命周期命令", 打出
+  //   "命令会重启或杀死 bolloon 宿主服务" —— 门在打自己的脚。
+  //   收窄口径: **只在删/移/截断/重定向写入**这些数据目录时拒; 读 (ls/cat/grep/find/du/stat/mkdir -p) 一律放行。
+  /\b(rm|rmdir|mv|truncate|shred)\b[^|;]*[\s/]\.bolloon\b/,
+  /(>|>>)\s*[^\s]*[\s/]?\.bolloon\b/,
+  /\b(rm|rmdir|mv|truncate|shred)\b[^|;]*[\s/]\.(diap|hermes|openclaw)\b/,   // 其他 agent 数据 (同样只拦写/删)
+  /(>|>>)\s*[^\s]*[\s/]?\.(diap|hermes|openclaw)\b/,
   /\brm\s+-rf\s+(\/|~|\*|\.|\$HOME)\b/,  // 删根/家/通配
   /\bgit\s+push\b[^|]*\s+(-f|--force)/,  // 强推
   /\bgit\s+reset\s+--hard\b/,
@@ -423,13 +444,9 @@ const TERMINAL_DENY_PATTERNS: ReadonlyArray<RegExp> = [
   // 2026-08-11 (Hermes cron/lifecycle_guard 模式): 自生命周期命令 — agent 通过 terminal
   // 重启/杀掉自己宿主服务 (bolloon) 会形成复活循环: 服务死 → supervisor 复活 → 自动 resume
   // → 同一命令再自杀. 策略: 命令形状锚定 (只匹配真实命令标识符, 不匹配散文, 误报率低).
-  /\b(bolloon|bolloon-agent|bolloon-agent-service)\s+(restart|stop|kill|quit|shutdown)\b/i,
-  /\bpm2\s+(restart|stop|delete|kill)\s+[\w./-]*bolloon\b/i,
-  /\b(systemctl|service)\s+(restart|stop|kill)\s+[\w.-]*bolloon\b/i,
-  /\bpkill\s+(-[a-z]+\s+)*(-f\s+)?[\w./-]*bolloon\b/i,
-  /\btaskkill\s+[^|]*\/IM\s+[\w-]*bolloon\b/i,
-  /\btaskkill\s+[^|]*\/FI\s+"?[^"]*bolloon/i,
+  ...SELF_LIFECYCLE_PATTERNS,
 ];
+
 
 /** 检查完整 shell 命令 (terminal 工具用). denylist-only: 命中高危模式即拒, 否则放行. */
 export function checkTerminalCommand(rawCmd: string): ShellCheckResult {
@@ -441,7 +458,9 @@ export function checkTerminalCommand(rawCmd: string): ShellCheckResult {
       // 2026-08-11: 用户可见静态文案走 i18n 目录 (Hermes locales 模式); 目录不可用时中文直出
       let reason: string;
       try {
-        const isSelfLifecycle = /(bolloon|pm2|systemctl|service|pkill|taskkill)/.test(pattern.source);
+        // 2026-10-01: 归类改成**显式名单** —— 原先靠"模式串里有没有 bolloon 等词"猜, 于是
+        // 数据目录那条 (串里含 .bolloon) 被误判成自生命周期, 报错文案完全指错方向 ✗。
+        const isSelfLifecycle = SELF_LIFECYCLE_PATTERNS.includes(pattern);
         reason = isSelfLifecycle
           ? i18nT('guard.self_lifecycle_reason', undefined, { pattern: String(pattern) })
           : i18nT('guard.deny_reason', undefined, { pattern: String(pattern) });
