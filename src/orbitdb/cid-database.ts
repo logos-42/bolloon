@@ -205,6 +205,20 @@ export class OrbitDBAdapter implements CIDDatabase {
     }
   }
 
+  /**
+   * 某个 pubsub 主题当前的订阅者 peerId (诊断用只读口)。
+   * OrbitDB 的同步靠 pubsub: 新 peer 订阅 `address` 主题后, 已在线的 peer 会把 heads 发给它
+   * (@orbitdb/core src/sync.js:143 的 join 事件)。所以"订阅者为 0"和"日志为空"是两回事, 必须分开看。
+   */
+  pubsubSubscribers(topic: string): string[] {
+    const ps = (this.node?.helia as any)?.libp2p?.services?.pubsub;
+    try {
+      return (ps?.getSubscribers?.(topic) ?? []).map((x: any) => x.toString());
+    } catch {
+      return [];
+    }
+  }
+
   /** 拨号到另一个真节点 (验收/群组接入用)。失败原样抛, 不吞。 */
   async dial(addr: string): Promise<void> {
     await this.ensure();

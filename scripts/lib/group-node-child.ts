@@ -24,7 +24,7 @@ import { OrbitDBAdapter, type OrbitDBStore } from '../../src/orbitdb/cid-databas
 
 interface Spec {
   home: string;
-  phase: 'create_and_send' | 'join_and_wait' | 'open_and_wait' | 'send_only';
+  phase: 'create_and_send' | 'join_and_wait' | 'open_and_wait' | 'send_only' | 'probe_sync';
   group?: string;
   address?: string;
   addrs?: string[];
@@ -135,6 +135,33 @@ async function main(): Promise<void> {
       await holdIfAsked(db);
       await db.close();
       process.exit(err === null ? 0 : 1);
+    }
+
+    if (spec.phase === 'probe_sync') {
+      // 诊断相位: dial → 按地址打开 → 每 5s 打一次「日志长度 / pubsub 订阅者 / 磁盘」, 看它卡在哪一环。
+      const dialed: string[] = [];
+      for (const a of spec.addrs ?? []) {
+        try { await db.dial(a); dialed.push(a); } catch (e: any) { dialed.push(`✗ ${String(e?.message || e).slice(0, 80)}`); }
+      }
+      let store: OrbitDBStore | null = null;
+      let openError: string | null = null;
+      const tOpen = Date.now();
+      try { store = await db.openStoreByAddress(spec.address!, 'events', { accessController: { write: ['*'] } }); }
+      catch (e: any) { openError = `${e?.name}: ${String(e?.message || e).slice(0, 160)}`; }
+      const ticks: Array<Record<string, unknown>> = [];
+      const n = spec.count ?? 12;
+      for (let i = 0; i < n; i++) {
+        const seen = store ? (await store.all().catch(() => [])).length : -1;
+        const subs = db.pubsubSubscribers(spec.address!);
+        const tick = { t: i * 5, seen, subscribers: subs.length, diskKB: Math.round(diskBytes(dataDir) / 1024) };
+        ticks.push(tick);
+        out({ ...base, tick });
+        if (seen >= (spec.waitFor ?? 1)) break;
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+      out({ ...base, ok: true, dialed, openError, openMs: Date.now() - tOpen, ticks, peerId: db.peerId });
+      await db.close();
+      process.exit(0);
     }
 
     // join_and_wait / open_and_wait
