@@ -25,5 +25,10 @@ describe('parseGroupSub', () => {
     expect(r.sub).toBe('help');
     expect(r.arg).toBe('乱写');
   });
+  it('**裸序号 ⇒ 选中该群** (用户: 「无法选中进群, 要可以选中」)', () => {
+    expect(parseGroupSub('/group 2')).toEqual({ sub: 'use', arg: '2' });
+    expect(parseGroupSub('/group 13')).toEqual({ sub: 'use', arg: '13' });
+  });
+  it('use 也认序号', () => expect(parseGroupSub('/group use 3')).toEqual({ sub: 'use', arg: '3' }));
   it('大小写不敏感', () => expect(parseGroupSub('/GROUP New X').sub).toBe('new'));
 });

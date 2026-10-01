@@ -76,6 +76,9 @@ export function parseGroupSub(input: string): GroupSub {
   const arg = sp === -1 ? '' : rest.slice(sp + 1).trim();
   const aliases: Record<string, string> = { ls: 'list', l: 'list', n: 'new', create: 'new', add: 'join', msg: 'send', history: 'log', use_: 'use' };
   const sub = aliases[head] || head;
+  // 2026-10-01 (用户: 「group 命令无法选中进群, 要可以选中」): 裸序号 ⇒ 直接选中该群
+  //   与 `/channel <序号>` 同一个习惯 ✓ (列表里就带序号)
+  if (/^\d+$/.test(head)) return { sub: 'use', arg: head };
   const known = ['list', 'new', 'join', 'leave', 'use', 'send', 'log', 'members', 'help'];
   return { sub: known.includes(sub) ? sub : 'help', arg: known.includes(sub) ? arg : rest };
 }
@@ -3450,11 +3453,14 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         const gs = await gg.listGroups();
         if (!gs.length) { dim('本地还没有群 —— 用 /group new <名字> 建一个'); return; }
         const rows: string[] = [];
-        for (const g of gs) {
+        gs.forEach((g, i) => {
           const cur = currentGroupId === g.id ? '●' : '○';
-          rows.push(`${cur} ${g.name}  ${String(g.id).slice(0, 18)}…  ${g.address ? '' : ''}`);
-        }
-        appendLine(renderMessageBox({ title: 'OrbitDB 群', body: rows.join('\n'), color: C_ACCENT, maxLines: 20 }));
+          const n = String(i + 1).padStart(2, ' ');
+          rows.push(`${n}. ${cur} ${g.name}  ${String(g.id).slice(0, 18)}…`);
+        });
+        rows.push('');
+        rows.push('选中进群: /group <序号>   (或 /group use <名字|id>)');
+        appendLine(renderMessageBox({ title: 'OrbitDB 群', body: rows.join('\n'), color: C_ACCENT, maxLines: 24 }));
         return;
       }
       if (sub === 'new') {
@@ -3482,10 +3488,12 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       if (sub === 'use') {
         if (!arg) { dim('用法: /group use <名字|id>'); return; }
         const gs = await gg.listGroups();
-        const hit = gs.find((g) => g.id === arg || g.name === arg) || gs.find((g) => String(g.name).includes(arg));
-        if (!hit) { appendLine(`${C_WARN}没找到群: ${arg}${RESET}`); return; }
+        // 序号 (与 /group 列表里的编号一致) → 名字 → id → 名字子串
+        let hit = /^\d+$/.test(arg) ? gs[parseInt(arg, 10) - 1] : undefined;
+        if (!hit) hit = gs.find((g) => g.id === arg || g.name === arg) || gs.find((g) => String(g.name).includes(arg));
+        if (!hit) { appendLine(`${C_WARN}没找到群: ${arg}${RESET}${C_DIM} —— 先 /group 看编号${RESET}`); return; }
         currentGroupId = hit.id;
-        appendLine(`${C_ACCENT}当前群: ${hit.name} (${String(hit.id).slice(0, 18)}…)${RESET}`);
+        appendLine(`${C_ACCENT}✓ 当前群: ${hit.name} (${String(hit.id).slice(0, 18)}…)${RESET}${C_DIM}  现在可以 /group send <文本> 或 /group log${RESET}`);
         return;
       }
       if (sub === 'send') {
