@@ -68,15 +68,19 @@ export function collapsePaste(
       try { return fs.readdirSync(dir).filter((f) => f.startsWith('paste_')).length + 1; } catch { return 1; }
     })();
     const hhmmss = (opts.now || new Date()).toTimeString().slice(0, 8).replace(/:/g, '');
-    const file = path.join(dir, `paste_${n}_${hhmmss}.txt`);
+    const file = path.join(dir, `p${n}_${hhmmss}.txt`);
     fs.writeFileSync(file, s, { encoding: 'utf-8', mode: 0o600 });
     // 输入框那份**不能带 '@' '/' '#'** —— 它们会触发补全弹窗(实测: 粘贴后弹窗冒出来 ✗)。
     //   所以输入框只放"序号 + 行数"; **完整路径只出现在发送出去的那份**(sendText)里 ✓。
-    const inputRef = `[粘贴 ${n} · ${lines} 行]`;
-    const ref = `[粘贴 #${n}: ${lines} 行 → ${file}]`;
+    // 2026-10-01 用户指定形态(并要求"比这个短一点"): `[粘贴 #N: M 行 → 路径]` ✓
+    //   · 路径**必须留着** ✓ —— 所以"路径里的 '/' + '#N' 会触发补全弹窗"不能靠摘路径来躲 ✗,
+    //     改为**确定性判断**: 输入框里只要是"粘贴引用"就一律不当补全来源 ✓(见 `isPasteRef` ✓)。
+    //   · 短一点: 文件名从 `paste_<n>_<HHMMSS>` 缩成 `p<n>_<HHMMSS>` ✓; 家目录显示成 `~` ✓。
+    const shortFile = `~/${path.relative(home, file).split(path.sep).join('/')}`;
+    const ref = `[粘贴 #${n}: ${lines} 行 → ${shortFile}]`;
     return {
-      inputText: inputRef,
-      sendText: `${ref}\n(整段已存到上面这个文件 —— 需要看细节就 read_file 读它, 不用我重述)`,
+      inputText: ref,
+      sendText: ref,
       path: file,
       lines,
       chars: s.length,
@@ -168,7 +172,16 @@ export function singleLine(text: string): string {
 export const PASTE_MENTION_SHIELD_MS = 1500;
 export const MENTION_MAX_INPUT_CHARS = 400;
 
+/**
+ * 输入框里是不是"粘贴引用"本身(形态: `[粘贴 #N: M 行 → ~/.bolloon/pastes/pN_…txt]`)。
+ * 是引用 ⇒ **一律不当补全来源** ✓ —— 这样引用里可以放心带 `#` 与路径的 `/` ✓(不必为躲弹窗牺牲信息 ✓)。
+ */
+export function isPasteRef(text: string): boolean {
+  return /^\s*\[\s*粘贴\s*#?\d+\s*[:：]\s*\d+\s*行\s*→\s*\S+\s*\]\s*$/.test(String(text ?? ''));
+}
+
 export function shouldSuppressMention(input: string, shieldUntil: number, now = Date.now()): boolean {
+  if (isPasteRef(input)) return true;                                  // 确定性抑制(不靠时间窗) ✓
   if (String(input ?? '').length > MENTION_MAX_INPUT_CHARS) return true;
   return Number(shieldUntil || 0) > now;
 }

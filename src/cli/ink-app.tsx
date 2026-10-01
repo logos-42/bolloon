@@ -12,7 +12,7 @@ import { ruleFor } from './status-segments.js';
 import { loadInputHistory, appendInputHistory, MEMORY_CAP } from './input-history.js';
 import * as fs from 'fs';
 import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import { collapsePaste, shouldCollapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, shouldSuppressMention, singleLine, logPopupEvent, PASTE_MENTION_SHIELD_MS } from './input-paste.js';
+import { collapsePaste, shouldCollapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, shouldSuppressMention, isPasteRef, singleLine, logPopupEvent, PASTE_MENTION_SHIELD_MS } from './input-paste.js';
 import TextInput from 'ink-text-input';
 import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
 import type { ToolCallListItem } from './loading-tui.js';
@@ -219,7 +219,7 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   const C_WARN_ANSI = fg(THEME.warn); // #f59e0b
 
   // ── @ / # 弹出窗状态 ──────────────────────────────────────────────────────
-  // 2026-10-01: 超长输入 + "刚粘贴过"一律不当 mention 来源 (纯判断 ⇒ 弹窗**根本不会开** ⇒ 也就没有抢焦点/抖动 ✓)
+  // 2026-10-01: 粘贴引用本身 / 超长输入 / "刚粘贴过" 一律不当 mention 来源 (纯判断 ⇒ 弹窗**根本不会开** ⇒ 也就没有抢焦点/抖动 ✓)
   const [pastedTick, setPastedTick] = useState(0);
   const mention = useMemo(
     () => (shouldSuppressMention(input, pasteShieldUntilRef.current) ? null : getMention(input)),
@@ -227,7 +227,9 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   );
   const mentionKey = mention ? `${mention.kind}:${mention.start}` : null;
   const [items, setItems] = useState<MentionItem[]>([]);
-  // 2026-10-01: 弹窗观测 —— 只要 mention 命中或被抑制就记一行(下一次一读就知道是哪个弹窗 ✓)
+  // 2026-10-01: 弹窗观测 —— 实测证明 **mention 从未命中**(全 mention.none ✓); 且用户确认那个弹窗是
+  //   **macOS 终端自己的"多行粘贴确认"** ✓(不是 bolloon 画的 ✗) ⇒ 所以只保留 mention 这一条观测即可 ✓
+  //   (曾试过把 items/tabState/picker 也记上, 已撤掉: 目标已被证伪, 留着只是噪音 ✗ —— 减法 ✓)。
   useEffect(() => {
     if (mention) void logPopupEvent({ ev: 'mention.hit', kind: mention.kind, trigger: mention.trigger, len: input.length, head: input });
     else if (input.length > 0) void logPopupEvent({ ev: 'mention.none', len: input.length, head: input });
