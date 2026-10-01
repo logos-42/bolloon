@@ -1,8 +1,8 @@
 /**
  * gateway-group.ts — Agent Gateway P2P 群组 (2026-08-14)
  *
- * 群组 = OrbitDB events store (accessController write:'*'), 任何成员可广播消息,
- * 全成员通过 OrbitDB pubsub 复制实时同步. 链接: orbitdb://<addr>?type=group&name=<群名>.
+ * 群组 = OrbitDB events store, 全成员通过 OrbitDB pubsub 复制实时同步.
+ * 链接: orbitdb://<addr>?type=group&name=<群名>.
  *
  * 符合用户习惯: 群组 = 微信式群聊 — 加入链接即进群, 发消息全网同步.
  * 持久化: ~/.bolloon/gateway-groups.json (重启后仍是群成员, 自动重开 store).
@@ -14,6 +14,15 @@
  *     (修复前: 区块只在内存, 新进程一开就报 "No block brokers capable of retrieving blocks")
  *   · 读不到必须报读不到: `groupMessages` 在 store 打不开时**抛 GroupStoreUnreachableError**,
  *     不再返回 `[]`。把"读不到"显示成"群里没有消息"是骗人, 本条不可回退。
+ *
+ * 2026-10-01 (P1) DID 门控:
+ *   · `createGroup(name, { gate: { owner, members?, membershipEvents? } })` 建的是**门控群**:
+ *     写入白名单 = 群主 OrbitDB 写身份 + 显式成员, 非名单成员 add 会被拒。
+ *   · 不给 `gate` → 行为**一字不变** (write:['*']); 默认翻成门控需要先迁移全部既有调用点。
+ *   · 成员变更 = `MembershipEvent` (成员自签 + 群主签, 双侧 Ed25519 验签), 读写入口
+ *     `recordMembershipEvent` / `groupMembershipEvents` / `groupWriteList`。
+ *   · **白名单不能就地改** (IPFS 型 AC 的白名单在内容寻址的 ACL 块里, 改它 = 换 store 地址),
+ *     所以"改成员"= 重建 store; 代价清单见 `group-access.ts` 的 `aclChangePlan()`。
  */
 
 import * as os from 'os';
@@ -22,6 +31,21 @@ import { getCIDDatabase, type CIDDatabase, type OrbitDBStore } from '../orbitdb/
 // 2026-09-28: 交流语言 (Efficode 是可选项, 不是默认项) —— 只有双方都声明才用
 import { decodeFromPeer, encodeForPeer, recordLangDecision, type IncomingResult } from '../efficode/negotiate.js';
 import type { AgentLang, OpSymbol } from '../efficode/types.js';
+// 2026-10-01 (P1): **DID 门控** —— 群写入白名单从 write:['*'] 收紧成成员白名单。
+// 白名单里放的是 **OrbitDB 写身份 id** (66 位压缩 secp256k1 公钥 hex), 不是 DID 字符串
+// (canAppend 只比 identity.id; 放 DID 会永远匹配不上 → 谁都写不了)。
+// 成员变更 = 一条**双侧 Ed25519 验签**的群事件 (成员自签 + 群主签), 细节见 group-access.ts。
+import {
+  applyMembershipEvents,
+  groupAccessOptions,
+  membershipEntryOf,
+  normalizeWriteList,
+  verifyMembershipEvent,
+  GROUP_MEMBERSHIP_KIND,
+  type MemberRef,
+  type MembershipEntry,
+  type MembershipEvent,
+} from '../orbitdb/group-access.js';
 
 // ============ 依赖注入 (测试用, 避免单测起真实 OrbitDB 节点) ============
 
@@ -60,6 +84,27 @@ export interface GroupInfo {
   lastSyncAt?: string;
   messageCount?: number;
   memberCount?: number;
+  /**
+   * 2026-10-01: DID 门控信息 (只有走 `gate` 建的群才有; 老群/未门控群是 undefined)。
+   * `aclWrite` 是**建群时烧进 manifest 的写白名单** —— 打开既有地址时以 manifest 为准,
+   * 这里存的是本机快照, 用于展示/自检, 不用它做权限判定。
+   */
+  gated?: boolean;
+  ownerDid?: string;
+  aclWrite?: string[];
+}
+
+/**
+ * 2026-10-01: 走 DID 门控建群要提供的东西。
+ * `membershipEvents` 会**重新验签** —— 验不过就拒绝据此建群 (绝不静默降级成 '*' 或默认名单)。
+ */
+export interface GroupGateInput {
+  /** 群主 (DID + Ed25519 公钥 + OrbitDB 写身份) */
+  owner: MemberRef;
+  /** 直接点名加入的成员 (与 membershipEvents 的 add 取并集) */
+  members?: MemberRef[];
+  /** 已签名的成员变更事件; createGroup 会重新验签后才采纳 */
+  membershipEvents?: MembershipEvent[];
 }
 
 export interface JoinGroupResult {
@@ -155,9 +200,15 @@ function groupIdOf(address: string): string {
 }
 
 /**
- * 打开群组 store (缓存) — 可写 (replica=false, write:'*')。
+ * 打开群组 store (缓存)。
  * 打不开 → 记下原始原因 + 返回 null (不抛: 调用方各自决定用什么话术报)。
  * 2026-09-24: 必须 try/catch —— openStoreByAddress 现在抛 OrbitDBStoreUnreachableError。
+ *
+ * 2026-10-01 (P1): **不再传 `accessController`**。打开一个**合法已存在地址**时, OrbitDB
+ * 从 manifest 里取回 ACL 并覆盖入参 (`@orbitdb/core` src/orbitdb.js:129-131), 所以这里
+ * 传 `write:['*']` 是**死代码** —— 之前那行会让人误以为"打开时放开成任何人可写"。
+ * 真正的写权限 = 建群时烧进 manifest 的白名单 (DID 门控群 = 成员白名单)。
+ * 能不能写由 manifest 决定 + 调用方是否 add/put 决定; 本函数不做权限判定。
  */
 async function openGroupStore(address: string): Promise<OrbitDBStore | null> {
   const id = groupIdOf(address);
@@ -165,13 +216,7 @@ async function openGroupStore(address: string): Promise<OrbitDBStore | null> {
   const db = getDb();
   let store: OrbitDBStore | null = null;
   try {
-    // 2026-09-24: 不再传 `replica` —— `@orbitdb/core` 4.0.0 的 open() 没有这个参数
-    // (src/orbitdb.js:118), 传了被丢; 之前那行是"不存在的语义"。
-    // 可写与否由 manifest 里的 ACL 决定, 且**打开既有地址时 ACL 从 manifest 取回、
-    // 入参 accessController 被覆盖** (src/orbitdb.js:129-131) —— 所以这里传什么都不改变权限。
-    store = await db.openStoreByAddress(address, 'events', {
-      accessController: { write: ['*'] },
-    });
+    store = await db.openStoreByAddress(address, 'events', {});
   } catch (e) {
     openFailures.set(id, e);
     return null;
@@ -203,15 +248,52 @@ export function onGroupMessage(groupId: string, fn: (msg: GroupMessage) => void)
 // ============ 群组操作 ============
 
 /**
- * 创建群组: 新 events store (write:'*') + 持久化 + 生成邀请链接.
+ * 创建群组: 新 events store + 持久化 + 生成邀请链接.
+ *
+ * 权限两条路 (2026-10-01, P1):
+ *   · 不给 `opts.gate` → **老行为**: `write:['*']` (任何人可写, 微信式群聊). 保留是为了
+ *     不悄悄改掉既有调用点 (mobile / cli / verify-* 脚本), 迁移清单见 group-access.ts 的报告.
+ *   · 给 `opts.gate` → **DID 门控**: 白名单 = 群主 OrbitDB 写身份 + 显式成员 (+ 已验签
+ *     add 事件里的成员). 非名单成员的 `add` 会被 OrbitDB 的 `canAppend` 拒掉
+ *     ("Key … is not allowed to write to the log").
+ *   成员事件在**重新验签通过后**才写进 store; 有一条验不过 → **不建群** (不静默降级).
  */
-export async function createGroup(name: string, opts?: { from?: string; hello?: string }): Promise<JoinGroupResult> {
+export async function createGroup(
+  name: string,
+  opts?: { from?: string; hello?: string; gate?: GroupGateInput }
+): Promise<JoinGroupResult> {
   const groupName = String(name || '').trim() || `group-${Date.now().toString(36).slice(-4)}`;
   try {
     const db = getDb();
-    const store = await db.openStore(`bolloon-gw-group-${groupName}`, 'events', {
-      accessController: { write: ['*'] },
-    });
+
+    // ---- 门控分支: 先派生白名单 (验签不过就直接拒), 再建 store ----
+    let writeList: string[] = ['*'];
+    let gateInfo: Pick<GroupInfo, 'gated' | 'ownerDid' | 'aclWrite'> = {};
+    let membershipEntries: MembershipEntry[] = [];
+    if (opts?.gate) {
+      const gate = opts.gate;
+      const applied = await applyMembershipEvents({
+        owner: gate.owner,
+        events: gate.membershipEvents ?? [],
+      });
+      if (applied.rejected.length > 0) {
+        return {
+          ok: false,
+          error: `拒绝据此建群: ${applied.rejected.length} 条成员事件未通过验签/授权 —— ${applied.rejected[0].reason}`,
+        };
+      }
+      // 白名单 = 群主 ∪ 事件派生成员 ∪ 直接点名成员
+      const ids = [
+        gate.owner.orbitdbId,
+        ...applied.members.map((m) => m.orbitdbId),
+        ...(gate.members ?? []).map((m) => m.orbitdbId),
+      ];
+      writeList = normalizeWriteList(ids);
+      gateInfo = { gated: true, ownerDid: gate.owner.did, aclWrite: writeList };
+      membershipEntries = applied.accepted.map(membershipEntryOf);
+    }
+
+    const store = await db.openStore(`bolloon-gw-group-${groupName}`, 'events', groupAccessOptions(writeList));
     const address = store.address;
     const id = groupIdOf(address);
     const link = `orbitdb://${address}?type=group&name=${encodeURIComponent(groupName)}`;
@@ -219,10 +301,13 @@ export async function createGroup(name: string, opts?: { from?: string; hello?: 
       id, name: groupName, address, link,
       createdAt: new Date().toISOString(),
       lastSyncAt: new Date().toISOString(),
+      ...gateInfo,
     };
     storeCache.set(id, store);
+    // 成员变更事件先落库 (它们是"谁能写"的凭证; 带 kind 字段, 不会被当成聊天消息)
+    for (const entry of membershipEntries) await store.add(entry);
     // 欢迎消息 (群主自我介绍)
-    const from = opts?.from || 'group-owner';
+    const from = opts?.from || gateInfo.ownerDid || 'group-owner';
     await store.add({ from, text: opts?.hello || `📢 群主创建了群「${groupName}」, 分享链接邀请成员加入`, ts: Date.now() });
     const groups = await loadGroups();
     await saveGroups([...groups.filter((g) => g.id !== id), info]);
@@ -328,6 +413,97 @@ export async function groupMessages(groupId: string, limit = 50): Promise<GroupM
 export async function groupMembers(groupId: string): Promise<string[]> {
   const msgs = await groupMessages(groupId, 500);
   return Array.from(new Set(msgs.map((m) => m.from)));
+}
+
+// ============ 2026-10-01 (P1): DID 门控 —— 成员事件读写 / 白名单自检 ============
+
+/** 读群 store 的**原始条目** (含非消息条目, 如成员事件)。打不开 → 抛 (与 groupMessages 同规矩) */
+async function allRawEntries(groupId: string): Promise<Array<{ key: string; value: unknown }>> {
+  let store: OrbitDBStore | null = storeCache.get(groupId) ?? null;
+  if (!store) {
+    const groups = await loadGroups();
+    const g = groups.find((x) => x.id === groupId);
+    if (!g) return [];
+    store = await openGroupStore(g.address);
+    if (!store) throw new GroupStoreUnreachableError(groupId, g.address, openFailures.get(groupId));
+  }
+  return store.all();
+}
+
+/**
+ * 读本群的全部成员变更事件, 并**逐条重新验签**。
+ * 没验过的事件**不算数** (进 rejected, 不进 accepted) —— 别把"库里有一条"当成"它是真的"。
+ */
+export async function groupMembershipEvents(groupId: string): Promise<{
+  accepted: MembershipEvent[];
+  rejected: Array<{ event: unknown; ok: boolean; reason: string }>;
+}> {
+  const raw = await allRawEntries(groupId);
+  const accepted: MembershipEvent[] = [];
+  const rejected: Array<{ event: unknown; ok: boolean; reason: string }> = [];
+  for (const e of raw) {
+    const v = e.value as any;
+    if (!v || typeof v !== 'object' || v.kind !== GROUP_MEMBERSHIP_KIND) continue;
+    const ev = v.event as MembershipEvent;
+    const r = await verifyMembershipEvent(ev);
+    if (r.ok) accepted.push(ev);
+    else {
+      rejected.push({ event: ev, ok: false, reason: r.checks.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`).join(' | ') });
+    }
+  }
+  accepted.sort((a, b) => a.ts - b.ts);
+  return { accepted, rejected };
+}
+
+/**
+ * 落一条成员变更事件 (验签不过 → 拒写, 返回 error)。
+ * 注意: 能写这个 store 本身就要求调用者在白名单里 —— 本函数不代替 ACL, 只是入口处的形状/签名闸门。
+ */
+export async function recordMembershipEvent(
+  groupId: string,
+  event: MembershipEvent
+): Promise<{ ok: boolean; error?: string }> {
+  const v = await verifyMembershipEvent(event);
+  if (!v.ok) {
+    return { ok: false, error: `成员事件验签不过: ${v.checks.filter((c) => !c.ok).map((c) => c.name).join(',')}` };
+  }
+  let store: OrbitDBStore | null = storeCache.get(groupId) ?? null;
+  if (!store) {
+    const groups = await loadGroups();
+    const g = groups.find((x) => x.id === groupId);
+    if (!g) return { ok: false, error: '群组不存在 (先 joinGroup/createGroup)' };
+    store = await openGroupStore(g.address);
+    if (!store) return { ok: false, error: `群组 store 不可达: ${unreachableReason(openFailures.get(groupId))}` };
+  }
+  try {
+    await store.add(membershipEntryOf(event));
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: `写成员事件失败: ${String(e?.message || e).slice(0, 160)}` };
+  }
+}
+
+/**
+ * 从本群库里的成员事件**派生**写白名单 (群主 + add − remove)。
+ * 这就是"当前这条群地址的 ACL 应该长什么样"的**可核验答案**:
+ * 拿它去和 manifest 里真正的白名单比对 (或拿它去重建一个新 store)。
+ */
+export async function groupWriteList(
+  groupId: string,
+  owner: MemberRef
+): Promise<{ write: string[]; members: MemberRef[]; rejectedCount: number; gated: boolean }> {
+  const groups = await loadGroups();
+  const g = groups.find((x) => x.id === groupId);
+  const raw = await allRawEntries(groupId);
+  const events: MembershipEvent[] = [];
+  for (const e of raw) {
+    const v = e.value as any;
+    if (v && typeof v === 'object' && v.kind === GROUP_MEMBERSHIP_KIND && v.event) events.push(v.event as MembershipEvent);
+  }
+  const applied = await applyMembershipEvents({ owner, events });
+  const gated = !!(g?.gated || applied.accepted.length > 0);
+  // 非门控的老群 (write:['*']) 派生不出成员白名单 —— 如实标 gated:false, 不硬凑
+  return { write: applied.write, members: applied.members, rejectedCount: applied.rejected.length, gated };
 }
 
 /** 发送群消息 (广播给所有成员) */
