@@ -8,7 +8,7 @@
  * 口径: 底栏一律用 **保守测宽** dispWidthSafe (这些字符按 2 列算) ⇒ 宁可短一列, 绝不超宽。
  */
 import { describe, it, expect } from 'vitest';
-import { dispWidthSafe, fitSegments, rightAlignPad } from '../cli/status-segments.js';
+import { dispWidthSafe, fitSegments, rightAlignPad, statusLineBudget } from '../cli/status-segments.js';
 
 describe('保守测宽 (dispWidthSafe)', () => {
   it('Ambiguous 字符按 2 列算 (这就是防折行的关键)', () => {
@@ -26,16 +26,33 @@ describe('保守测宽 (dispWidthSafe)', () => {
     expect(dispWidthSafe('a中')).toBe(3);
   });
 
-  it('真实状态栏样例: 保守宽度必须 <= 终端宽 - 1 (那才是"绝不折行"的判据)', () => {
+  it('真实状态栏样例: **经过 fitSegments 取舍后** 保守宽度必须 <= 终端宽 - 1', () => {
+    // 修 (2026-10-01): 上一版的样例手搓了一条"含全部段"的左串 (约 134 列) 却没有先过 fitSegments,
+    //   那个场景在真机上根本不会出现 (fitSegments 会按预算丢段) ⇒ 判据不成立、把正确实现判红 ✗。
+    //   现在按真实链路测: 预算(statusLineBudget) → 取舍(fitSegments) → 右对齐(rightAlignPad)。
     const width = 110;
-    const left = 'deepseek-flash v0.5.4  │ 智能体 (ch:ch_1785668) │ ⏱ 7m 46s │ 0/1M │ [░░░░░░░░░░] 0.00% │ ✓ 7.5s │ ↑ ≈23 t/s │ ◎ 89.2% │ ⚙ 0';
-    const title = '询问 AI 身份并了解小红';
-    for (const [l, t] of [[left, title], [left, ''], [left.slice(0, 40), title]] as const) {
-      const used = dispWidthSafe(l);
-      const pad = rightAlignPad(used, dispWidthSafe(t), width);
-      const total = pad === null ? used : used + pad + dispWidthSafe(t);
-      expect(total, `这行在 ${width} 列终端里超了: ${total}`).toBeLessThanOrEqual(width - 1);
+    const leftPrefix = 'deepseek-flash v0.5.4  │ 智能体 (ch:ch_1785668) │ ⏱ 7m 46s';
+    const segs = ['0/1M', '[░░░░░░░░░░] 0.00%', '✓ 7.5s', '↑ ≈23 t/s', '◎ 89.2%', '⚙ 0'];
+    for (const title of ['询问 AI 身份并了解小红', '']) {
+      const budget = statusLineBudget(width, dispWidthSafe(leftPrefix), title);
+      const kept = fitSegments(segs, budget, dispWidthSafe);
+      const left = kept.length ? `${leftPrefix} │ ${kept.join(' │ ')}` : leftPrefix;
+      const used = dispWidthSafe(left);
+      const pad = rightAlignPad(used, dispWidthSafe(title), width);
+      const total = pad === null ? used : used + pad + dispWidthSafe(title);
+      expect(total, `title=「${title}」超了: ${total} > ${width - 1}`).toBeLessThanOrEqual(width - 1);
     }
+  });
+
+  it('*** 反向: 段全给上时, 预算会逼 fitSegments 丢掉尾巴 (否则就会超宽)', () => {
+    const width = 110;
+    const leftPrefix = 'deepseek-flash v0.5.4  │ 智能体 (ch:ch_1785668) │ ⏱ 7m 46s';
+    const segs = ['0/1M', '[░░░░░░░░░░] 0.00%', '✓ 7.5s', '↑ ≈23 t/s', '◎ 89.2%', '⚙ 0'];
+    const budget = statusLineBudget(width, dispWidthSafe(leftPrefix), '询问 AI 身份并了解小红');
+    const kept = fitSegments(segs, budget, dispWidthSafe);
+    expect(kept.length, '预算这么紧, 不该把所有段都留下').toBeLessThan(segs.length);
+    // 而 ⚙ 按取舍规矩永不丢
+    expect(kept).toContain('⚙ 0');
   });
 
   it('fitSegments 支持注入保守测宽 ⇒ 取舍结果一定放得下', () => {
