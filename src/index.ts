@@ -1,4 +1,6 @@
 import {
+
+
   HyperswarmCommunicator,
   createHyperswarmCommunicator,
   createTopic,
@@ -53,6 +55,88 @@ import * as dbgFs from 'fs';
 // 启动自动检查更新：后台、节流、检测到新版本自动安装（可被 --no-update / BOLLOON_SKIP_UPDATE 关闭）
 
 import { createRequire } from 'module';
+
+/**
+ * CLI 已知命令**白名单** (2026-10-01)。
+ *
+ * 用户实测: 输入 `/group` ⇒ 它**不是**命令, 却没有任何兜底 ⇒ 直接被当成用户消息发给模型 ✗
+ *   (白烧一轮: 模型立刻去调 list_remote_channels / list_pending_friend_requests …)。
+ * 规矩: 以 `/` 开头但不在白名单里的输入 ⇒ 打一句提示 (**列出可选项**) 并**不发送** —— 别让错拼的命令
+ *   变成一次 LLM 调用。
+ * 维护: 这张表是从分发链里的命令字面量**机械抽出**的, 并有门把关 (新增命令忘了登记 ⇒ 门红),
+ *   见 src/test/cli-command-whitelist.test.ts。
+ */
+/** `/group` 的子命令解析 (纯函数, 便于门测; 2026-10-01 用户要求把 /group 做成 orbitdb 群聊指令) */
+export type GroupSub = { sub: string; arg: string };
+export function parseGroupSub(input: string): GroupSub {
+  const rest = String(input || '').replace(/^\/group\b/i, '').trim();
+  if (!rest) return { sub: 'list', arg: '' };
+  const sp = rest.indexOf(' ');
+  const head = (sp === -1 ? rest : rest.slice(0, sp)).toLowerCase();
+  const arg = sp === -1 ? '' : rest.slice(sp + 1).trim();
+  const aliases: Record<string, string> = { ls: 'list', l: 'list', n: 'new', create: 'new', add: 'join', msg: 'send', history: 'log', use_: 'use' };
+  const sub = aliases[head] || head;
+  const known = ['list', 'new', 'join', 'leave', 'use', 'send', 'log', 'members', 'help'];
+  return { sub: known.includes(sub) ? sub : 'help', arg: known.includes(sub) ? arg : rest };
+}
+
+export const CLI_KNOWN_COMMAND_HEADS: ReadonlySet<string> = new Set([
+  '/group',
+  '/agent',
+  '/answer',
+  '/approve',
+  '/contacts',
+  '/copy',
+  '/criteria',
+  '/cron',
+  '/dequeue',
+  '/did',
+  '/dq',
+  '/dream',
+  '/email',
+  '/fork',
+  '/goal',
+  '/goals',
+  '/help',
+  '/insight',
+  '/ipfs',
+  '/ipns',
+  '/judgement',
+  '/judgments',
+  '/login',
+  '/logout',
+  '/loop',
+  '/mcp',
+  '/memory',
+  '/model',
+  '/net',
+  '/now',
+  '/p2p',
+  '/pause',
+  '/payments',
+  '/plan',
+  '/q',
+  '/questions',
+  '/queue',
+  '/reject',
+  '/resume',
+  '/runs',
+  '/session',
+  '/sessions',
+  '/setup',
+  '/skill',
+  '/skills',
+  '/suggestions',
+  '/supervise',
+  '/todo',
+  '/tools',
+  '/trace',
+  '/tx',
+  '/wake',
+  '/wallet',
+  '/wiki',
+  '/x402',
+]);
 const _require = createRequire(import.meta.url);
 const _BOLLOON_VERSION = ((): string => {
   try { return _require('../package.json').version || '0.0.0'; }
@@ -411,6 +495,9 @@ async function bootstrapIroh(keypair: any, name: string): Promise<void> {
 // ---------------------------------------------------------------------------
 // Agent 懒加载
 // ---------------------------------------------------------------------------
+
+// 2026-10-01: /group 的"当前群"(进程内; 重启后需重新 /group use)
+let currentGroupId: string | undefined;
 
 let agent: Awaited<ReturnType<typeof createAgentSession>> | null = null;
 
@@ -1690,6 +1777,16 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   //   不能全局改成"首词" —— 同文件里 `/email clear` 这类多词命令就是靠整行匹配的。
   //   所以加一个**首词**给"带参数的命令"用 (cmd 保持原样给多词命令用)。
   const cmdHead = cmd.split(/\s+/)[0];
+
+  // 2026-10-01: **未知命令兜底** —— 以 / 开头但不在白名单里的输入, 不当消息发下去 ✗
+  //   (用户实测: /group 不是命令 ⇒ 却发给模型, 白烧一轮工具调用)
+  if (cmd.startsWith('/') && !CLI_KNOWN_COMMAND_HEADS.has(cmdHead)) {
+    const near = [...CLI_KNOWN_COMMAND_HEADS].filter((h) => h.includes(cmdHead.slice(1)) || cmdHead.includes(h.slice(1))).slice(0, 6);
+    appendLine(`${C_WARN}未知命令 ${cmdHead}${RESET}${C_DIM} —— 输入${RESET} / ${C_DIM}看命令列表, 或 /help 看用法${RESET}`
+      + (near.length ? `${C_DIM} · 你是不是想用: ${near.join(' / ')}${RESET}` : ''));
+    return;
+  }
+
 
   // /net — Agent 网络快捷命令 (join/status/ctx, 2026-09-08)
   if (cmd === '/net' || cmd.startsWith('/net ')) {
@@ -3321,6 +3418,110 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     return;
   }
 
+  // 「当前群」的取用: 没选过时, 只有恰好一个群就自动用它; 否则提示先 /group use
+  const ensureCurrentGroup = async (gg: any): Promise<string | undefined> => {
+    if (currentGroupId) return currentGroupId;
+    const gs = await gg.listGroups();
+    if (gs.length === 1) { currentGroupId = gs[0].id; return currentGroupId; }
+    if (!gs.length) { appendLine(`${C_DIM}本地还没有群 —— 用 /group new <名字> 建一个${RESET}`); return undefined; }
+    appendLine(`${C_DIM}本地有 ${gs.length} 个群, 先 /group use <名字|id> 选一个${RESET}`);
+    return undefined;
+  };
+
+  // /group — OrbitDB 群聊 (2026-10-01; 接 gateway-group 那套: 建群/加入/收发/成员/日志)
+  if (cmd === '/group' || cmd.startsWith('/group ')) {
+    const { sub, arg } = parseGroupSub(trimmed);
+    const gg = await import('./agents/gateway-group.js');
+    const dim = (t: string) => appendLine(`${C_DIM}${t}${RESET}`);
+    try {
+      if (sub === 'help') {
+        appendLine(`${C_ACCENT}/group${RESET} —— OrbitDB 群聊`);
+        dim('  /group                    列出本地群');
+        dim('  /group new <名字>          建群 (默认创建者独占写; 会打印可分享地址)');
+        dim('  /group join <链接|地址>     加入');
+        dim('  /group leave <名字|id>     退出');
+        dim('  /group use <名字|id>       选定当前群 (之后 send/log/members 都指它)');
+        dim('  /group send <文本>         往当前群发一条');
+        dim('  /group log [N]             看当前群最近 N 条 (默认 10)');
+        dim('  /group members             列当前群成员');
+        return;
+      }
+      if (sub === 'list') {
+        const gs = await gg.listGroups();
+        if (!gs.length) { dim('本地还没有群 —— 用 /group new <名字> 建一个'); return; }
+        const rows: string[] = [];
+        for (const g of gs) {
+          const cur = currentGroupId === g.id ? '●' : '○';
+          rows.push(`${cur} ${g.name}  ${String(g.id).slice(0, 18)}…  ${g.address ? '' : ''}`);
+        }
+        appendLine(renderMessageBox({ title: 'OrbitDB 群', body: rows.join('\n'), color: C_ACCENT, maxLines: 20 }));
+        return;
+      }
+      if (sub === 'new') {
+        const r = await gg.createGroup(arg || '');
+        if (!r.ok) { appendLine(`${C_WARN}建群失败: ${r.error}${RESET}`); return; }
+        currentGroupId = r.group?.id || currentGroupId;
+        appendLine(renderMessageBox({ title: '✅ 群已建立', body: `名字: ${r.group?.name || arg}\nid: ${r.group?.id || '-'}\n地址: ${r.group?.link || r.group?.address || '(未返回地址)'}\n\n把地址发给同伴, 用 /group join <地址> 加入`, color: C_ACCENT, maxLines: 12 }));
+        return;
+      }
+      if (sub === 'join') {
+        if (!arg) { dim('用法: /group join <链接|地址>'); return; }
+        const r = await gg.joinGroup(arg);
+        if (!r.ok) { appendLine(`${C_WARN}加入失败: ${r.error}${RESET}`); return; }
+        currentGroupId = r.group?.id || currentGroupId;
+        appendLine(`${C_ACCENT}✓ 已加入 ${r.group?.name || arg}${RESET}`);
+        return;
+      }
+      if (sub === 'leave') {
+        if (!arg) { dim('用法: /group leave <名字|id>'); return; }
+        const r = await gg.leaveGroup(arg);
+        appendLine(r.ok ? `${C_ACCENT}✓ 已退出 ${r.removed || arg}${RESET}` : `${C_WARN}退出失败: ${r.error}${RESET}`);
+        if (r.ok && currentGroupId === arg) currentGroupId = undefined;
+        return;
+      }
+      if (sub === 'use') {
+        if (!arg) { dim('用法: /group use <名字|id>'); return; }
+        const gs = await gg.listGroups();
+        const hit = gs.find((g) => g.id === arg || g.name === arg) || gs.find((g) => String(g.name).includes(arg));
+        if (!hit) { appendLine(`${C_WARN}没找到群: ${arg}${RESET}`); return; }
+        currentGroupId = hit.id;
+        appendLine(`${C_ACCENT}当前群: ${hit.name} (${String(hit.id).slice(0, 18)}…)${RESET}`);
+        return;
+      }
+      if (sub === 'send') {
+        if (!arg) { dim('用法: /group send <文本>'); return; }
+        const gid = await ensureCurrentGroup(gg);
+        if (!gid) return;
+        const r = await gg.groupSend(gid, arg, String((agentIdentity as any)?.did || 'cli')).catch((e: any) => ({ ok: false, error: String(e?.message || e) }));
+        appendLine((r as any).ok === false ? `${C_WARN}发送失败: ${(r as any).error}${RESET}` : `${C_ACCENT}✓ 已发到群${RESET}`);
+        return;
+      }
+      if (sub === 'log') {
+        const gid = await ensureCurrentGroup(gg);
+        if (!gid) return;
+        const n = Math.max(1, Math.min(100, parseInt(arg || '10', 10) || 10));
+        const msgs = await gg.groupMessages(gid, n);
+        if (!msgs.length) { dim('这个群还没有消息'); return; }
+        appendLine(renderMessageBox({ title: `群消息 (最近 ${msgs.length})`, body: msgs.map((m) => `${m.from ? String(m.from).slice(0, 10) : '?'}: ${String(m.text || '').slice(0, 200)}`).join('\n'), color: C_ACCENT, maxLines: 24 }));
+        return;
+      }
+      if (sub === 'members') {
+        const gid = await ensureCurrentGroup(gg);
+        if (!gid) return;
+        const ms = await gg.groupMembers(gid);
+        dim(ms.length ? ms.join('\n') : '(暂无成员记录)');
+        return;
+      }
+      dim('用法: /group help');
+    } catch (e: any) {
+      // GroupStoreUnreachableError 等: 说清"本地群存储没起来", 不要笼统报错
+      const msg = String(e?.message || e);
+      const unreachable = e?.name === 'GroupStoreUnreachableError' || /unreachable|not open|未就绪/i.test(msg);
+      appendLine(`${C_WARN}${unreachable ? '本地群存储未就绪 —— 需要本机服务/OrbitDB 起来后才行' : '群操作失败'}: ${msg}${RESET}`);
+    }
+    return;
+  }
+
   if (trimmed.toLowerCase() === '/help' || trimmed === 'help') {
     appendLine(`${C_DIM}命令:${RESET}`);
     appendLine(`  ${C_ACCENT}!<cmd>${RESET}  执行终端命令  ${C_DIM}如 !ls -la${RESET}`);
@@ -3485,8 +3686,9 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           else if (content.includes('Reflection') || content.includes('反思') || content.includes('💡')) {
             const body = content.replace(/^💡\s*/, '').slice(0, 1500);
             // 2026-10-01: 只有标记词 (Reflection: / 反思 / 💡) 而无正文 ⇒ **不渲染**, 免得出空框 ✗
-              const onlyMarker = /^(?:reflection|反思)\s*[:：\-—]?\s*$/i.test(body.trim());
-              if (body.trim() && !onlyMarker) appendLine(renderMessageBox({ title: '💡 反思', body, color: C_WARN }));
+              const plain = body.replace(/\x1b\[[0-9;]*m/g, '').trim(); // 2026-10-01: 先剥 ANSI —— 只有彩色控制符的正文看着就是**空框** ✗
+              const onlyMarker = /^(?:reflection|反思)\s*[:：\-—]?\s*$/i.test(plain);
+              if (plain && !onlyMarker) appendLine(renderMessageBox({ title: '💡 反思', body, color: C_WARN }));
           } else if (!content.includes('🔄 循环') && !content.includes('📋 参数')
               && !content.includes('🔍 任务复杂度') && !content.includes('⚙️ 动态配置')
               && !content.includes('⏹️ pivot loop')
