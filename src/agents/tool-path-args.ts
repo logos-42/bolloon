@@ -23,14 +23,27 @@ export function expandTilde(p: string, home: string = os.homedir()): string {
   return s;
 }
 
+/**
+ * 已知别名: `.bolloon` 指的就是数据目录 (~/.bolloon)。
+ * 2026-10-01 用户实测: 智能体写 `list_files { path: ".bolloon" }` ⇒ `ENOENT: scandir '.bolloon'` ✗
+ *   (它连 `~` 都没写, 是相对路径 ⇒ 按 cwd 解析必然不存在)。只映射**恰好的**那个别名:
+ *   `.bolloon` / `.bolloon/...`; `foo/.bolloon` 之类一律不碰 (避免误伤真的同名目录)。
+ */
+export function expandKnownAliases(p: string, home: string = os.homedir()): string {
+  const s = String(p ?? '');
+  if (s === '.bolloon') return path.join(home, '.bolloon');
+  if (s.startsWith('.bolloon/') || s.startsWith('.bolloon' + path.sep)) return path.join(home, '.bolloon', s.slice('.bolloon/'.length));
+  return s;
+}
+
 export function expandHomeArgs(args: Record<string, any>, home?: string): Record<string, any> {
   if (!args || typeof args !== 'object') return args;
   const out: Record<string, any> = { ...args };
   for (const key of Object.keys(out)) {
     if (!PATH_ARG_KEYS.includes(key)) continue;
     const v = out[key];
-    if (typeof v === 'string') out[key] = expandTilde(v, home);
-    else if (Array.isArray(v)) out[key] = v.map((x) => (typeof x === 'string' ? expandTilde(x, home) : x));
+    if (typeof v === 'string') out[key] = expandKnownAliases(expandTilde(v, home), home);
+    else if (Array.isArray(v)) out[key] = v.map((x) => (typeof x === 'string' ? expandKnownAliases(expandTilde(x, home), home) : x));
   }
   return out;
 }

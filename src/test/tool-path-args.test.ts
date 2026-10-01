@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
-import { expandTilde, expandHomeArgs } from '../agents/tool-path-args.js';
+import { expandTilde, expandHomeArgs, expandKnownAliases } from '../agents/tool-path-args.js';
 
 const H = os.homedir();
 
@@ -20,6 +20,19 @@ describe('expandTilde', () => {
   it('单独的 `~` ⇒ HOME', () => expect(expandTilde('~')).toBe(H));
   it('**不碰**: `~user` · 中间的 `~` · 绝对路径 · 相对路径', () => {
     for (const s of ['~root/x', 'a~b', '/tmp/x', './x', 'src/agents/a.ts', '']) expect(expandTilde(s)).toBe(s);
+  });
+});
+
+describe('已知别名 .bolloon (用户实测 list_files 「.bolloon」 报 ENOENT)', () => {
+  it('.bolloon / .bolloon/... ⇒ 数据目录', () => {
+    expect(expandKnownAliases('.bolloon')).toBe(path.join(H, '.bolloon'));
+    expect(expandKnownAliases('.bolloon/sessions/channels.json')).toBe(path.join(H, '.bolloon/sessions/channels.json'));
+  });
+  it('**不碰** foo/.bolloon (避免误伤同名目录) 与其他相对路径', () => {
+    for (const s of ['foo/.bolloon', './x', 'a.bolloon', '']) expect(expandKnownAliases(s)).toBe(s);
+  });
+  it('经 expandHomeArgs 也生效', () => {
+    expect(expandHomeArgs({ path: '.bolloon' }).path).toBe(path.join(H, '.bolloon'));
   });
 });
 

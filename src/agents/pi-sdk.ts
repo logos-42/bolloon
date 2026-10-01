@@ -15,6 +15,10 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { expandHomeArgs } from './tool-path-args.js';
+// 2026-10-01: 身份解析必须**静态导入** —— 之前在函数体里用 require(), 而打包后是 ESM ⇒
+//   require 是 undefined ⇒ 抛错被 catch 静默吞掉 ⇒ "自愈"根本没跑, DID 一直是空的 ✗。
+import { loadOrCreateAgentIdentity } from './agent-identity.js';
+import { agentPersonaName } from './channel-identity.js';
 import { getContextManager } from '../bootstrap/context-manager.js';
 import { createRequire } from 'module';
 import { currentPackageRoot } from '../utils/version-info.js';
@@ -447,9 +451,6 @@ export class PiAgentSession implements AgentSession {
         const badDid = !cur.did || /^did:(local|pi):/i.test(String(cur.did));
         const missingName = !String(cur.name || '').trim();
         if (badDid || missingName) {
-          // 构造函数不能 await ⇒ 用仓里既有的同步 require 写法 (与 780 行同一套路)
-          const { loadOrCreateAgentIdentity } = require('./agent-identity.js') as typeof import('./agent-identity.js');
-          const { agentPersonaName } = require('./channel-identity.js') as typeof import('./channel-identity.js');
           const mine = loadOrCreateAgentIdentity(this.currentAgentId);
           this.identity = {
             ...cur,
@@ -800,7 +801,7 @@ export class PiAgentSession implements AgentSession {
     //   改用仓里既有的真身份生成器 (agent-identity.loadOrCreateAgentIdentity, 同步, 产 did:key + 落盘密钥)。
     const scope = this.currentAgentId || this.peerId || 'default';
     try {
-      const { loadOrCreateAgentIdentity } = require('./agent-identity.js') as typeof import('./agent-identity.js');
+      
       const real = loadOrCreateAgentIdentity(scope);
       return {
         did: real.did,
