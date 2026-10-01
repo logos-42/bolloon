@@ -437,7 +437,7 @@ export class PiAgentSession implements AgentSession {
     this._sessionStore = (config as any).sessionStore ?? defaultSessionStore;
     this.constraintLayer = new ConstraintLayer();
     this.workflowEngine = new WorkflowEngine(this.constraintLayer);
-    this.sessionManager = new PiSessionManager(this.identity.did, this.cwd);
+    this.sessionManager = new PiSessionManager(this.identity.did, this.cwd, this.currentAgentId);
     this.agentsManager = new DiscoveredAgentsManager();
     this.usePivotLoop = config.usePivotLoop ?? false;
     this.pivotLoopConfig = config.pivotLoopConfig;
