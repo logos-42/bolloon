@@ -150,6 +150,21 @@ describe('K7 台账门: Harness 唯一系统调用门', () => {
     expect(checkHarnessLedgerHygiene({ ...good, progress: { bypasses: 999 } })[0]).toMatch(/开着的旁路数/);
   });
 
+  it('② K7 定性 (机械): B 类 12 处直连**不是门旁路** —— 每个动态 import 都在注册工具的 execute 体内', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'src/agents/pi-sdk-tools.ts'), 'utf8');
+    const imports = [...src.matchAll(/await import\('\.\.\/constraint-runtime\/[^']*(?:PolymarketSDK|SafeSDK)[^']*'\)/g)];
+    expect(imports.length).toBeGreaterThanOrEqual(6);   // 6 个工具 × (dist 优先 + src 回落)
+    const setIdx = [...src.matchAll(/ctx\.tools\.set\('/g)].map((m) => m.index ?? 0);
+    for (const m of imports) {
+      const i = m.index ?? 0;
+      const enclosing = setIdx.filter((s) => s < i).pop();
+      expect(enclosing).toBeDefined();                                  // 前面有注册
+      const seg = src.slice(enclosing as number, i);
+      expect(seg).toContain('execute:');                                // 且落在它的 execute 体内
+      // 强调: 在 execute 体内 ⇒ 该 import 是被门放行后才跑到的 (不是绕过门的第二条路)
+    }
+  });
+
   it('② K7 系统自检 (tsc_check) 也过门: 判定在 execute 之前 + 拒绝分支不执行 + 拒绝可见 (机械)', () => {
     const sdk = fs.readFileSync(path.join(ROOT, 'src/agents/pi-sdk.ts'), 'utf8');
     const gateIdx = sdk.indexOf("const tscTool: any = this.tools.get('tsc_check');");

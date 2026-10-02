@@ -1839,5 +1839,5 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 - ❌ **未过门的原始出口 `getSkillRegistry()`**: 已标 `@deprecated` 并**登记为开放旁路条目** (拿到它直调 `.execute()` 仍绕过 Harness) —— 不许无声删 (公开兼容面), 也不许不登记; 处置需定夺是否动公开返回类型 (改为受门包装)
 - ❌ 全仓 skill 零旁路 (尚有一条公开 API + 一条内部路径)
 - ❌ `pi-sdk.ts` 内置 `tsc_check` 自检: **接线已落 + 机械/变异证据**, 但**端到端未单独取证** (该路径由"本回合改过 TS"的收尾自检触发, 需真 LLM 回合) ⇒ 条目保持 open
-- ❌ 其他 Tool Capability 直连欠账 (B 类 12 处, 排期 K7)
+- ⚠️ **B 类 12 处直连 (2026-10-02 定性修正: 它们\*\*不是\*\*门旁路)** —— 6 个工具 (`polymarket_list_markets/get_market/get_orders/create_order/cancel_order` + `safe_deploy`) 各自在 `ctx.tools.set(...)` 的 **`execute` 体内**动态 import `constraint-runtime` 的 SDK (dist 优先 + src 回落 ⇒ 12 处)。因为跑在 `execute` 里, 它们**只在门放行之后**才会被执行 ⇒ 不威胁"唯一系统调用门"; 真正的问题是**分层**(B 类领域模块被 prod 直接 import, 而不是经 Tool Capability 层) ⇒ 属 **K1 遗留欠账**, 排期 K7 但仍挂在 K1 名下。机械判据: 每个 import 都在某个 `ctx.tools.set(` 之后且其片段含 `execute:`。
 
