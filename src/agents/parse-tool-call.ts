@@ -268,7 +268,12 @@ function resolve(ctx: ParseContext, name: string): string | null {
 }
 
 /** 诊断开关 (2026-10-01): 默认关 —— 这条 diag 在热路径上且上屏, 默认开会刷屏 */
-const PARSE_DIAG_ON = process.env.BOLLOON_PARSE_DIAG === '1' || process.env.BOLLOON_VERBOSE === '1';
+// 2026-10-02: 必须守卫 process —— 本文件被浏览器侧模块链引用
+//   (/ui/message-renderer.js → /agents/chat-segmenter.js → 这里);
+//   顶层裸读 process.env 会让该模块在浏览器抛 ReferenceError, 静默废掉整条渲染链。
+const _parseEnv = typeof process !== 'undefined' ? process.env : undefined;
+const PARSE_DIAG_ON = !!_parseEnv
+  && (_parseEnv.BOLLOON_PARSE_DIAG === '1' || _parseEnv.BOLLOON_VERBOSE === '1');
 
 export function parseToolCall(content: string, ctx: ParseContext): ToolCall | null {
   if (!content) return null;

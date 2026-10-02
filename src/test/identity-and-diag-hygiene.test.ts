@@ -14,10 +14,17 @@ import path from 'node:path';
 const read = (rel: string) => fs.readFileSync(path.join(process.cwd(), rel), 'utf-8');
 
 describe('不该上屏 / 不该编假 DID', () => {
-  it('① parseToolCall diag 必须被开关挡住 (默认关)', () => {
+  it('① parseToolCall diag 必须被开关挡住 (默认关, 且开关必须浏览器安全)', () => {
     const src = read('src/agents/parse-tool-call.ts');
     expect(src).toContain('const PARSE_DIAG_ON =');
-    expect(src).toContain("process.env.BOLLOON_PARSE_DIAG === '1'");
+    // 开关读 env — 仍要能读到这两个变量
+    expect(src).toContain(".BOLLOON_PARSE_DIAG === '1'");
+    expect(src).toContain(".BOLLOON_VERBOSE === '1'");
+    // 2026-10-02 增: 必须带 process 守卫 —— 本文件在浏览器侧模块链上
+    //   (/ui/message-renderer.js → chat-segmenter.js → 这里), 顶层裸读 process 会让
+    //   整个渲染模块抛 ReferenceError ⇒ window.MR 不挂载 ⇒ 界面静默不渲染。
+    expect(src).toMatch(/typeof process !== 'undefined'\s*\?\s*process\.env/);
+    expect(src).not.toMatch(/const PARSE_DIAG_ON = process\.env/);
     // 打印那行必须在守卫之内 (用 if (PARSE_DIAG_ON) try { 包住)
     const i = src.indexOf('if (PARSE_DIAG_ON) try {');
     const j = src.indexOf("'[parseToolCall diag] rawLen='");
