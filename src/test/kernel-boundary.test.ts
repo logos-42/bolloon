@@ -21,6 +21,8 @@ import {
   KERNEL_FILES,
   KERNEL_LINE_BUDGET,
   KERNEL_LINE_BUDGET_FROZEN_AT,
+  KERNEL_PLAN_LINE_BUDGET,
+  KERNEL_PLAN_LINE_BUDGET_FROZEN_AT,
 } from '../kernel/roster.js';
 import { type SourceFile, countCodeLines, scanKernelImports } from '../kernel/gate-scan.js';
 
@@ -113,28 +115,53 @@ describe('K1 目录边界门 —— 内核目录不许 import 业务模块', () 
   });
 });
 
-describe('K3 行数棘轮门 —— kernel 目录只许减不许增', () => {
-  it('真实行数 ≤ 预算', () => {
-    const lines = countCodeLines(KERNEL_SRC);
+describe('K3 行数棘轮门 —— 代码与台账各一档, 都只许减不许增', () => {
+  // 分档理由见 roster.ts KERNEL_PLAN_LINE_BUDGET 的注释: 防的是「逻辑回流到内核代码」,
+  // 台账是数据 —— 混在一起会逼着人抬代码上限, 棘轮的信号就废了。
+  const CODE_SRC = KERNEL_SRC.filter((f) => !f.path.endsWith('/plan.ts'));
+  const PLAN_SRC = KERNEL_SRC.filter((f) => f.path.endsWith('/plan.ts'));
+
+  it('两档都非空 (分档不是拿来绕预算的)', () => {
+    expect(CODE_SRC.length).toBeGreaterThan(0);
+    expect(PLAN_SRC.length).toBe(1);
+  });
+
+  it('代码档: 真实行数 ≤ 预算', () => {
+    const lines = countCodeLines(CODE_SRC);
     expect(lines).toBeGreaterThan(0);
     expect(lines).toBeLessThanOrEqual(KERNEL_LINE_BUDGET);
   });
 
-  it('棘轮: 预算 ≤ 冻结值 (想抬预算就得同时改两个数字 → 一次显式动作)', () => {
+  it('台账档: 真实行数 ≤ 预算', () => {
+    const lines = countCodeLines(PLAN_SRC);
+    expect(lines).toBeGreaterThan(0);
+    expect(lines).toBeLessThanOrEqual(KERNEL_PLAN_LINE_BUDGET);
+  });
+
+  it('棘轮: 两档的预算都 ≤ 各自的冻结值 (想抬就得同时改两个数字 → 一次显式动作)', () => {
     expect(KERNEL_LINE_BUDGET).toBeLessThanOrEqual(KERNEL_LINE_BUDGET_FROZEN_AT);
+    expect(KERNEL_PLAN_LINE_BUDGET).toBeLessThanOrEqual(KERNEL_PLAN_LINE_BUDGET_FROZEN_AT);
   });
 
   it('判别力自证: 预算不是装饰 (人造超长文件必定超)', () => {
     const fat: SourceFile[] = [{ path: 'kernel/fat.ts', text: 'x\n'.repeat(KERNEL_LINE_BUDGET + 1) }];
     expect(countCodeLines(fat)).toBeGreaterThan(KERNEL_LINE_BUDGET);
+    const fatPlan: SourceFile[] = [{ path: 'kernel/plan.ts', text: 'x\n'.repeat(KERNEL_PLAN_LINE_BUDGET + 1) }];
+    expect(countCodeLines(fatPlan)).toBeGreaterThan(KERNEL_PLAN_LINE_BUDGET);
   });
 
-  it('变异: 拿真实 kernel 文件追加一行 ⇒ 必须超预算判红', () => {
-    const victim = KERNEL_SRC[0];
+  it('变异: 代码档追加一行 ⇒ 超预算判红', () => {
+    const victim = CODE_SRC[0];
     const mutated: SourceFile = { path: victim.path, text: `${victim.text}\n// 顺手加的一行\n` };
-    const before = countCodeLines(KERNEL_SRC);
-    const after = countCodeLines([mutated, ...KERNEL_SRC.slice(1)]);
+    const before = countCodeLines(CODE_SRC);
+    const after = countCodeLines([mutated, ...CODE_SRC.slice(1)]);
     expect(before).toBeLessThanOrEqual(KERNEL_LINE_BUDGET);
     expect(after).toBeGreaterThan(KERNEL_LINE_BUDGET);
+  });
+
+  it('变异: 台账档追加一行 ⇒ 超预算判红', () => {
+    const victim = PLAN_SRC[0];
+    const mutated: SourceFile = { path: victim.path, text: `${victim.text}\n// 顺手加的一行\n` };
+    expect(countCodeLines([mutated])).toBeGreaterThan(KERNEL_PLAN_LINE_BUDGET);
   });
 });

@@ -40,7 +40,9 @@ export function isCommentOnly(line: string): boolean {
   return s.startsWith('//') || s.startsWith('*') || s.startsWith('/*') || s.startsWith('*/');
 }
 
-const FROM_RE = /\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+// 2026-10-02 修真缺陷: 原先只认 `from '...'` 与动态 `import('...')`,
+//   漏掉**副作用 import** (`import './x.js';` —— 既无 from 也无括号) ⇒ 入边被少算 ⇒ 删除候选虚高。
+const FROM_RE = /\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)|\bimport\s+['"]([^'"]+)['"]/g;
 
 /** 抽出所有 import/export-from/动态 import 的说明符 + 行号 */
 export function importSpecifiers(text: string): Array<{ line: number; spec: string }> {
@@ -51,7 +53,7 @@ export function importSpecifiers(text: string): Array<{ line: number; spec: stri
     FROM_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = FROM_RE.exec(line)) !== null) {
-      const spec = m[1] ?? m[2];
+      const spec = m[1] ?? m[2] ?? m[3];
       if (spec) out.push({ line: i + 1, spec });
     }
   });
@@ -177,4 +179,126 @@ export function debtDiff(
 /** K3 —— 行数 (整文件行数; 空行也算, 因为预算量的是「文件有多大」) */
 export function countCodeLines(files: SourceFile[]): number {
   return files.reduce((n, f) => n + f.text.split('\n').filter((_, i, a) => i < a.length - (a[a.length - 1] === '' ? 1 : 0)).length, 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K0 ② 模块 owner 覆盖
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface OwnerEntry {
+  key: string;
+  module: string;
+  owner: string;
+  disposition: string;
+  phase: string;
+  note: string;
+}
+
+/** 归属判定 = **最长前缀** (目录键以 / 结尾按前缀, 文件键按相等)。null = 无归属 ⇒ 门判红。 */
+export function ownerOfFile(rel: string, owners: readonly OwnerEntry[]): OwnerEntry | null {
+  let best: OwnerEntry | null = null;
+  for (const o of owners) {
+    const hit = o.key.endsWith('/') ? rel.startsWith(o.key) : rel === o.key;
+    if (hit && (!best || o.key.length > best.key.length)) best = o;
+  }
+  return best;
+}
+
+export function scanOwnerCoverage(files: SourceFile[], owners: readonly OwnerEntry[]): Finding[] {
+  const out: Finding[] = [];
+  for (const f of files) {
+    if (!ownerOfFile(f.path, owners)) out.push({ rule: 'owner-coverage', file: f.path, line: 1, what: '无 owner' });
+  }
+  return out;
+}
+
+/** owner 名册里声明了但盘上不存在的键 (空承诺) —— 先例: 冻结门的「名册路径必须真实存在」 */
+export function scanOwnerPromises(owners: readonly OwnerEntry[], exists: (rel: string) => boolean): Finding[] {
+  return owners
+    .filter((o) => !exists(o.key))
+    .map((o) => ({ rule: 'owner-promise', file: o.key, line: 1, what: '名册声明但盘上不存在' }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K0 ③ 入口调用关系图
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface EntrySite {
+  file: string;
+  kind: 'agent-entry' | 'adapter-internal' | 'readline-tui';
+  method: string;
+  count: number;
+}
+
+const PROMPT_CALL_RE = /([\w\.\)\]]+)\s*\.\s*(prompt|promptStream|promptWithPivotLoop)\s*\(/;
+const PROMPT_DEF_RE = /^(export\s+)?(async\s+)?(prompt|promptStream|promptWithPivotLoop)\s*\(/;
+
+/** 重算全仓入口调用点 (与 ENTRY_GRAPH 逐字比对; 任何新旁路都会浮出来) */
+export function scanEntrySites(files: SourceFile[], adapterFiles: readonly string[] = ['agents/pi-sdk.ts']): EntrySite[] {
+  const m = new Map<string, EntrySite>();
+  for (const f of files) {
+    f.text.split('\n').forEach((raw) => {
+      if (isCommentOnly(raw)) return;
+      const line = stripLineComment(raw);
+      if (PROMPT_DEF_RE.test(line.trim())) return;
+      const hit = PROMPT_CALL_RE.exec(line);
+      if (!hit) return;
+      const recv = hit[1];
+      const kind: EntrySite['kind'] = adapterFiles.includes(f.path)
+        ? 'adapter-internal'
+        : recv === 'this' ? 'readline-tui' : 'agent-entry';
+      const key = `${f.path}|${kind}|${hit[2]}`;
+      const prev = m.get(key);
+      m.set(key, { file: f.path, kind, method: hit[2], count: (prev?.count ?? 0) + 1 });
+    });
+  }
+  return [...m.values()].sort((a, b) => `${a.file}|${a.kind}|${a.method}`.localeCompare(`${b.file}|${b.kind}|${b.method}`));
+}
+
+export function entryGraphDiff(actual: EntrySite[], declared: readonly { file: string; kind: string; method: string; count: number }[]) {
+  const key = (e: { file: string; kind: string; method: string; count: number }) => `${e.file}|${e.kind}|${e.method}|${e.count}`;
+  const got = actual.map(key).sort();
+  const want = declared.map(key).sort();
+  return { extra: got.filter((g) => !want.includes(g)), missing: want.filter((w) => !got.includes(w)) };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K0 ④ 旧代码删除台账
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DELETION_FIELDS = [
+  'target', 'oldEntry', 'replacement', 'remainingRefs',
+  'runtimeHits', 'acceptance', 'rollbackCommit', 'deletedAt',
+] as const;
+
+/** 8 字段缺一律红 (leo 的五个删除条件之 ②: 剩余引用必须为 0) */
+export function validateDeletionRecord(rec: Record<string, unknown>): string[] {
+  const bad: string[] = [];
+  for (const f of DELETION_FIELDS) {
+    const v = rec[f];
+    if (v === undefined || v === null || v === '') bad.push(f);
+    if (f === 'remainingRefs' && v !== 0) bad.push('remainingRefs≠0');
+  }
+  return bad;
+}
+
+/** 第一批删除候选 = 产品码里 **0 入边引用** 且非入口形态 (机械派生, 不手写) */
+const ENTRY_SHAPE_RE = /(index\.ts$|cli-entry\.ts$|electron\.ts$|\.d\.ts$|server\.ts$|main\.ts$|route|command|register|setup|bootstrap|migration|types\.ts$|constants?\.ts$|config)/;
+
+export function deletionCandidates(files: SourceFile[]): string[] {
+  const paths = new Set(files.map((f) => f.path));
+  const inbound = new Map<string, number>();
+  for (const f of files) {
+    for (const { spec } of importSpecifiers(f.text)) {
+      const rel = resolveFrom(f.path, spec);
+      if (!rel) continue;
+      for (const c of [rel + '.ts', rel + '.tsx', rel + '/index.ts']) {
+        if (paths.has(c)) inbound.set(c, (inbound.get(c) ?? 0) + 1);
+      }
+    }
+  }
+  return files
+    .map((f) => f.path)
+    .filter((p) => (inbound.get(p) ?? 0) === 0 && !ENTRY_SHAPE_RE.test(p))
+    .sort();
 }

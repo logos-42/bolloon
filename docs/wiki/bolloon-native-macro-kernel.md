@@ -140,21 +140,21 @@ K3 行数棘轮门   kernel 目录行数上限, 只许减不许增; 要加就得
 
 | # | 交付物 | 状态 |
 | --- | --- | --- |
-| ① | Kernel 模块清单 | 🟡 部分 (8 层划分已入 `roster.ts`; 「每段代码属哪个模块」尚未逐文件覆盖) |
-| ② | 每个模块唯一 owner | ❌ 缺 |
-| ③ | 入口调用关系图 | ❌ 缺 |
-| ④ | 旧代码删除台账 | ❌ 缺 |
+| ① | Kernel 模块清单 | ✅ `plan.ts` **59 条 owner** 覆盖 **574 个产品码文件**(层划分在 `roster.ts`) |
+| ② | 每个模块唯一 owner | ✅ 角色线 owner + disposition(keep/converge/freeze/…) + phase; 门判「每文件恰好命中一条」 |
+| ③ | 入口调用关系图 | ✅ **9 行 / 27 调用点**(直调 24 · readline 3); 门重扫全仓 `prompt*(` 必须逐字相等 |
+| ④ | 旧代码删除台账 | ✅ 8 字段格式门 + **第一批候选 96 条**用**集合 sha256** 冻结 (增/删/替换都判红) |
 | ⑤ | Kernel import 白名单 | ✅ `KERNEL_ALLOWED_IMPORT_PREFIXES` + K1 门 |
 | ⑥ | 模块越权检测 | ✅ K2 门 (五条禁令 +1 派生; 实测 4 处欠账) |
 | ⑦ | Kernel 行数棘轮 | ✅ K3 门 (预算 450 / 冻结 450) |
 
-⇒ **K0 = 3/7 完成** (⑤⑥⑦)。按修订后的定义, K0 尚未结束。
+⇒ **K0 = 7/7 完成** (2026-10-02 第三批, 提交见 §12; ②③④ 与它们的门 + 真盘变异 4/4 一起交付)。
 
 ### 7.2 阶段表 (修订编号)
 
 | 阶段 | 内容 | 判据 / 完成标准 | 完成度 |
 | --- | --- | --- | --- |
-| **K0 冻结架构与删除台账** | 7 项交付物 (§7.1) | 能说清每段代码属哪个模块 · 能说清哪些准备删除 · **没有任何「以后再看」的核心事实来源** | 🟡 3/7 |
+| **K0 冻结架构与删除台账** | 7 项交付物 (§7.1) | 能说清每段代码属哪个模块 · 能说清哪些准备删除 · **没有任何「以后再看」的核心事实来源** | ✅ **7/7** |
 | **K1 清理 constraint-runtime** | 拆三层 `primitives` (Budget/Permission/Capability/Cancellation) / `runtime-adapters` (Session/Tool/Model) / `domain-libraries` (Wallet/Safe/Polymarket/Remote/OpenCLI); 按 5 步顺序删 (§7.3) | Kernel 只依赖 primitives · 领域能力**只能经 Tool Capability 接入** · archive/reference/test fixture 不进运行时包 · 无调用模块已移除 · 假连接/placeholder 已删 · 现有测试全绿 | ❌ 未开始 |
 | **K2 Pi 可变状态外置** | message history / stream callback / signal / failed tool / channel identity / run identity / loop state → `RunContext` 或 `ChannelContext` | Pi 不持有 Goal·Run 状态/长期恢复/Channel 全局/Model 全局配置/Tool 权限; **完成此步后才允许删 Pi 对应字段与旧辅助方法** | ❌ 未开始 |
 | **K3 统一所有入口队列** | 8 个入口 (Web/CLI/P2P/cron/followup/social heartbeat/supervisor/独立宿主) 只能投递事件: `External Event → ChannelMailbox.enqueue() → ChannelActor → Kernel Loop → Run/Goal/Evidence` | 同 Channel 只允许一个执行循环 · 不同 Channel 可并发 · **所有入口只能投递, 不能直接调 `prompt()`** · 外部事件不能直接改 Goal · CLI 与 Web 不各维护一套循环 | ❌ 未开始 |
@@ -273,3 +273,31 @@ model-selection 协议 · transaction evidence · contact consent · durable rec
 
 **欠账台账 (棘轮)**: 3 条 / 4 处调用, 全部标明由 **K5** 还清; 条数冻结值 3, 只许减不许增。
 **执行行为**: **一字未改** —— `grep` 证 `src/kernel/` 无任何业务模块引用 (K0 只立门, 不搬代码)。
+
+## 13. K0 第三批验收 (②③④ + 三道新门, 2026-10-02 真跑证据)
+
+**交付物**: `src/kernel/plan.ts` (143 行, 台账数据) · `src/kernel/gate-scan.ts` 追加判据 · `src/test/kernel-plan.test.ts` (K4/K5/K6)。
+
+**K0 ②③④ 的实际内容** (全部机械生成, 不手写):
+
+| 交付物 | 内容 | 判据 |
+| --- | --- | --- |
+| ② 模块 owner | **59 条 owner** 覆盖 **574 个产品码文件** (最长前缀匹配; 角色线 owner + `disposition` ∈ keep/converge/migrate/freeze + `phase`) | 每文件**恰好**命中一条 · 键不重复 · 键在盘上真实存在(空承诺判红) |
+| ③ 入口调用关系图 | **9 行 / 27 调用点**: 直调 24 (`web/server.ts` 11 · `index.ts` 8 · `runner-resolver.ts` 1 · `routes-tasks.ts` 1) + 适配器内部 3 (`pi-sdk.ts` pivot 分派) + readline 提示 3 (`cli/interface.ts`) | 门重扫全仓 `prompt*(` 的 (file,kind,method,count) 多重集必须**逐字相等** ⇒ 新旁路当场红 |
+| ④ 删除台账 | 8 字段格式门 (`validateDeletionRecord`, `remainingRefs` 必须为 0) + **第一批候选 96 条** | 候选集用**集合 sha256** 冻结 (增/删/替换任一都判红); 目录分布同时冻结 |
+
+**真跑**: 三门 **61/61** · `tsc --noEmit` 0 错 · **双档预算定点** (代码 585 / 台账 143, 各自 `= frozen`)。
+**真盘变异 4/4 符合预期** (探针**先断言基线全绿**, 再逐例注入 → 红 → 逐字节还原 + sha256):
+
+| 变异 | 结果 |
+| --- | --- |
+| K4: `plan.ts` 删掉 `llm/` owner 条目 | 判红 (K4 覆盖门报无归属) · 还原相同 |
+| K5: `web/i18n.ts` 注入 `await agent.prompt('x')` | 判红 (入口图报新旁路) · 还原相同 |
+| K6: 给候选文件注入副作用 `import './x.js'` | 判红 (候选集变 ⇒ sha 不等) · 还原相同 |
+| **阴性对照**: 非 kernel 文件加无害注释 | **仍绿** · 还原相同 |
+
+**过程中修掉的 2 个真缺陷 (探针/阴性对照照出来的)**:
+1. **判据漏「副作用 import」** —— `import './x.js';` 既无 `from` 也无括号, 原先的说明符正则看不见它 ⇒ 入边少算 ⇒ **删除候选虚高**。已修 (`FROM_RE` 加第三分支) 并用一条专门用例锁住。修完重算: 候选集**未变** (该形态在相关文件里本就不存在), 但判据从此完整。
+2. **我改了判据却没重设行数预算** —— 加完分支后 kernel 代码从 583 涨到 585, 而预算还冻结在 583 ⇒ 门红。**是"阴性对照必须先断言基线全绿"这一步把它照出来的** (我第一版探针没做基线断言, 差点把"本来就红"当成"变异后红")。已把基线断言写进探针, 并重设双档预算。
+
+**顺带量出的事实 (交给 K1/第一批清理用)**: 96 个 0 入边候选里 **61 个在 `src/bollharness/`** —— 那是**另一个项目的镜像**(带自己的 `.boll/skills` 与 `scripts/checks/*`), 却住在 Bolloon 的 `src/` 里; 它是"第一批立即可清"的头号目标。
