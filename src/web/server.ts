@@ -2548,7 +2548,8 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                   new Promise<null>((res) => setTimeout(() => res(null), 8000)),
                 ]);
                 if (agent && typeof (agent as any).promptStream === 'function') {
-                  llm = (p: string) => deliverThroughActor(agent as any, () => (agent as any).promptStream(p, () => {}, undefined, local.id));
+                  // 2026-10-02 (K8): 经唯一入口 (零差量: channelId=local.id 与旧调用同一个)
+                  llm = (p: string) => deliverThroughActor(agent as any, () => requireRunExecution(agent as any)({ input: p, onStream: () => {}, channelId: local.id }));
                 }
               }
             } catch { /* 无 agent → 仅扫描 */ }
@@ -2593,7 +2594,8 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
               throw new Error('无可用 agent, 跳过定时任务');
             }
             // 前缀 [cron] 标记后台执行来源 (供审计/日志区分人类消息与定时任务)
-            await deliverThroughActor(agent as any, () => (agent as any).promptStream(`[cron] ${job.name}: ${job.prompt}`, () => {}, undefined, target.id));
+            // 2026-10-02 (K8): 经唯一入口 (零差量: channelId=target.id)
+            await deliverThroughActor(agent as any, () => requireRunExecution(agent as any)({ input: `[cron] ${job.name}: ${job.prompt}`, onStream: () => {}, channelId: target.id }));
           },
         });
         (global as any).cronScheduler = cronHandle;
@@ -2650,7 +2652,8 @@ ${goalDesc}
 现在是否要主动联系其中某个智能体? 只输出一个 JSON 对象, 不要任何其他文字:
 {"initiate": true 或 false, "goalAchieved": true 或 false, "targetPeerPublicKey": "对方 pk", "targetChannelId": "对方渠道 id", "message": "你要说的话"}
 若不想发起, 输出 {"initiate": false}。`;
-          const raw = await deliverThroughActor(agent, () => agent.promptStream(prompt, () => {}, undefined, local.id));
+          // 2026-10-02 (K8): 经唯一入口 (零差量: channelId=local.id)
+          const raw = await deliverThroughActor(agent, () => requireRunExecution(agent)({ input: prompt, onStream: () => {}, channelId: local.id }));
           const m = raw.match(/\{[\s\S]*\}/);
           if (!m) return { initiate: false };
           const obj = JSON.parse(m[0]);
@@ -5700,7 +5703,8 @@ fetchState();
       // 4) promptStream
       const markedPrompt = `【本轮用户请求】\n${text}\n【请求结束】\n\n${contextHint}`;
       const agentForRun = agent;
-      const fullResponse = await deliverThroughActor(agentForRun, () => agentForRun.promptStream(markedPrompt, () => {}, runState.abortController?.signal, channelId));
+    // 2026-10-02 (K8): 经唯一入口 (零差量: signal + channelId 原样传)
+      const fullResponse = await deliverThroughActor(agentForRun, () => requireRunExecution(agentForRun)({ input: markedPrompt, onStream: () => {}, signal: runState.abortController?.signal, channelId }));
 
       if (!fullResponse.trim()) {
         broadcast({ type: 'error', content: '⚠️ AI 未返回内容' }, channelId);

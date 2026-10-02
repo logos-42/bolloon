@@ -114,7 +114,6 @@ export const ENTRY_GRAPH: readonly EntryPoint[] = [
   { file: 'index.ts', kind: 'agent-entry', method: 'prompt', count: 7, path: 'direct', targetPhase: 'K3', note: "CLI 装配点" },
   { file: 'index.ts', kind: 'agent-entry', method: 'promptStream', count: 1, path: 'direct', targetPhase: 'K3', note: "CLI 装配点" },
   { file: 'web/server.ts', kind: 'agent-entry', method: 'prompt', count: 3, path: 'direct', targetPhase: 'K3', note: "Web 主入口 (非流式 3 处仍直调)" },
-  { file: 'web/server.ts', kind: 'agent-entry', method: 'promptStream', count: 4, path: 'direct', targetPhase: 'K3', note: "Web 主入口 (2026-10-02 K8 第二/三步: 3 处改走 runExecution ⇒ 10 → 4 直调)" },
 ];
 
 /**
@@ -122,7 +121,7 @@ export const ENTRY_GRAPH: readonly EntryPoint[] = [
  * ⚠️ 24 → **25** (2026-10-02, K5 步骤⑦): `runExecution` 内部新增 `prompt`/`promptStream` 派发各 1 处 (+2),
  *    web/server.ts 用户消息路径改成请求式 (-1)。**这是"形态变化"不是"旁路复活"** —— 见 ENTRY_GRAPH 的两行 adapter-internal。
  */
-export const ENTRY_DIRECT_CALLS_FROZEN_AT = 20;   // 2026-10-02: 25 → 20 (K8: 5 处改走 runExecution; 棘轮只许降)
+export const ENTRY_DIRECT_CALLS_FROZEN_AT = 16;   // 2026-10-02: 20 → 16 (K8 第四步: server.ts 4 处流式调用改走 runExecution)   // 2026-10-02: 25 → 20 (K8: 5 处改走 runExecution; 棘轮只许降)
 
 /**
  * ④ 旧代码删除台账 (leo 的 8 字段; 每批删除必写一条)。目前为空 —— 但**不是空门**:
