@@ -79,7 +79,7 @@ export interface ExecSite {
 
 /** 实测 (2026-10-02, 剥注释后共 17 处) —— 数的口径写在 countHarnessExecSites 里, 判据会重算比对 */
 export const HARNESS_EXEC_SITES: readonly ExecSite[] = [
-  { file: 'src/agents/pi-sdk.ts', count: 5, kinds: ['main', 'skill', 'bypass', 'homonym'], why: '主执行点 1 (2715) · skill 2 (989 `sk.execute` / 4144 `skillRegistry.execute`) · 内置 tscTool 直调 1 (1330, bypass) · loop.execute 1 (1831, homonym)' },
+  { file: 'src/agents/pi-sdk.ts', count: 6, kinds: ['main', 'skill', 'bypass', 'homonym', 'registry'], why: '主执行点 1 · skill 2 (989 `sk.execute` / 4144 `skillRegistry.execute`) · 内置 tscTool 直调 1 (1330, bypass) · loop.execute 1 (1831, homonym) · **K7 第二步 b 新增 1**: pivot loop 的 `guardedExecute` 端口内 `return tool.execute(args)` (该执行**在门之后**, 属同一扇门的通过分支, 不是旁路)' },
   { file: 'src/agents/workflow-pivot-loop.ts', count: 2, kinds: ['bypass', 'homonym'], why: '**pivot loop 直接执行工具** 1 (613, bypass) · loop.execute 1 (1129, homonym)' },
   { file: 'src/agents/tool-registry.ts', count: 1, kinds: ['registry'], why: '注册表统一执行口 (唯一咽喉候选)' },
   { file: 'src/agents/pi-sdk-tools.ts', count: 1, kinds: ['mcp'], why: 'MCP executeTool 1 (2570)' },
@@ -126,6 +126,6 @@ export interface K7Progress {
 
 export const K7_PROGRESS: K7Progress = {
   stage: 'ledger-landed',
-  execSitesTotal: 17,
+  execSitesTotal: 18,   // 17 (普查基线) + 1 (K7 第二步 b: pivot loop 的端口内执行, 在门之后)
   bypasses: 3,
 };

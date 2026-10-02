@@ -1738,7 +1738,39 @@ export class PiAgentSession implements AgentSession {
     }
 
     const llm = getMinimax();
-    const loopConfig = config || this.pivotLoopConfig || createDefaultPivotConfig();
+    const baseConfig = config || this.pivotLoopConfig || createDefaultPivotConfig();
+    // 2026-10-02 (K7 第二步 b): pivot loop 的工具执行**必须与主路径同一个门**。
+    //   接线前: pivot loop 在 workflow-pivot-loop.ts:613 直调 tool.execute —— 那条路径上
+    //   没有任何 harness 调用 (K7 台账里的**真旁路** ①); 主路径则在 runReActLoop 内先过
+    //   `beforeToolCall` (顺序: deny → pre-tool-validator(4 步链) → react-harness(8-gate))。
+    //   这里把同一个判定包成端口注入 ⇒ 两处执行共用一扇门。
+    //   **fail-closed**: 门面抛错 ⇒ 拒绝执行 (绝不回落成直调; 旧实现有过两条 fail-open 路径)。
+    const loopConfig: PivotLoopConfig = {
+      ...baseConfig,
+      guardedExecute: async (tool, args) => {
+        let decision: ToolDecision;
+        try {
+          decision = await this.piHarness().beforeToolCall({
+            tool: tool.name,
+            args,
+            ctx: this.harnessCtx(),
+            permissionMode: this.currentPermissionMode,
+          });
+        } catch (err) {
+          return {
+            success: false,
+            error: `拒绝: [harness-error] Harness 门面异常: ${String((err as Error)?.message || err).slice(0, 150)}`,
+          };
+        }
+        if (!decision.allow) {
+          return {
+            success: false,
+            error: `拒绝: [${decision.rejectedBy || decision.source || 'unknown'}] ${decision.reason}`,
+          };
+        }
+        return tool.execute(args);
+      },
+    };
     const loop = new WorkflowPivotLoop(loopConfig);
 
     for (const tool of this.tools.values()) {

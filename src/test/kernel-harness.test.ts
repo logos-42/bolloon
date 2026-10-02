@@ -36,11 +36,11 @@ describe('K7 台账门: Harness 唯一系统调用门', () => {
     expect(findings.map((x) => x.what)).toEqual([]);
   });
 
-  it('①b 台账自洽: 9 阶段 / 9 覆盖面 / 执行点合计 == 17 / 旁路 3', () => {
+  it('①b 台账自洽: 9 阶段 / 9 覆盖面 / 执行点合计 == 18 / 旁路 3', () => {
     expect(HARNESS_STAGES.map((s) => s.stage)).toEqual([...HARNESS_STAGE_ORDER]);
     expect(HARNESS_SURFACES).toHaveLength(9);
     const total = HARNESS_EXEC_SITES.reduce((n, s) => n + s.count, 0);
-    expect(total).toBe(17);
+    expect(total).toBe(18);   // 17 普查基线 + 1 (K7 第二步 b 端口内执行)
     expect(total).toBe(K7_PROGRESS.execSitesTotal);
     expect(K7_BYPASS_CANDIDATES).toHaveLength(3);
     expect(K7_PROGRESS.bypasses).toBe(3);
@@ -70,16 +70,19 @@ describe('K7 台账门: Harness 唯一系统调用门', () => {
   });
 
   it('② 判别力: 执行点数被改 (盘上没改) ⇒ 红', () => {
+    // 注意: 这里刻意用 **+2** 而不是 +1 —— 盘上数字会随实现变化, 用 +1 时一旦盘上真的
+    //   长到 ledger+1, "坏样本"就恰好等于真值 ⇒ 用例静默失效 (本仓已记过同类 6 次)。
     const bad = {
       ...REAL_LEDGER,
-      execSites: HARNESS_EXEC_SITES.map((s, i) => (i === 0 ? { ...s, count: s.count + 1 } : s)),
+      execSites: HARNESS_EXEC_SITES.map((s, i) => (i === 0 ? { ...s, count: s.count + 2 } : s)),
     };
     const f = scanHarnessLedger(bad, { readFile, planFileExists });
-    expect(f.some((x) => /台账=/.test(x.what))).toBe(true);
+    expect(f.some((x) => /盘上=/.test(x.what))).toBe(true);
   });
 
   it('② 判别力: 合计与 progress 不一致 ⇒ 红', () => {
-    const bad = { ...REAL_LEDGER, progress: { ...K7_PROGRESS, execSitesTotal: 18 } };
+    // 用 999 而不是"当前值±1" —— 坏样本若用接近真值的数字, 实现一变它就可能变成真值而失效。
+    const bad = { ...REAL_LEDGER, progress: { ...K7_PROGRESS, execSitesTotal: 999 } };
     const f = scanHarnessLedger(bad, { readFile, planFileExists });
     expect(f.some((x) => /普查合计/.test(x.what))).toBe(true);
   });
@@ -104,6 +107,23 @@ describe('K7 台账门: Harness 唯一系统调用门', () => {
       stages: HARNESS_STAGES.map((s, i) => (i === 1 ? { ...s, gate: 'agents/does-not-exist.ts' } : s)),
     };
     expect(scanHarnessLedger(bad, { readFile, planFileExists }).some((x) => /不存在/.test(x.what))).toBe(true);
+  });
+
+
+  it('② K7 第二步 b 接线在盘上: pivot loop 的配置里注入了同一个门 (机械)', () => {
+    const sdk = fs.readFileSync(path.join(ROOT, 'src/agents/pi-sdk.ts'), 'utf8');
+    // 端口必须在 pivot loop 构造之前被放进配置, 且判定走的是主路径同一个 beforeToolCall
+    const portIdx = sdk.indexOf('guardedExecute: async (tool, args) =>');
+    const ctorIdx = sdk.indexOf('new WorkflowPivotLoop(loopConfig)');
+    expect(portIdx).toBeGreaterThan(0);
+    expect(ctorIdx).toBeGreaterThan(portIdx);
+    const seg = sdk.slice(portIdx, ctorIdx);
+    expect(seg).toContain('this.piHarness().beforeToolCall(');
+    expect(seg).toContain('permissionMode: this.currentPermissionMode');
+    expect(seg).toContain('harness-error');
+    // 未通过 ⇒ 拒收; 通过 ⇒ 才执行 (返 tool.execute(args))
+    expect(seg).toContain('decision.allow');
+    expect(seg).toContain('return tool.execute(args);');
   });
 
   it('② 判别力: 说"未开始"但台账文件已在盘上 ⇒ 红 (半搬状态)', () => {
