@@ -4186,6 +4186,11 @@ ${this.extractOperationsFromRef(operationsRef)}
     }
   }
 
+  /**
+   * @deprecated 2026-10-02 (K7): **未过门**的原始出口 —— 拿到它直调 `.execute()` 会绕过 Harness 判定。
+   *   上层一律用 `executeSkill()` (判定经 Harness)。本方法保留只为**只读列举 / 兼容**用途;
+   *   它作为"未经门的 skill 出入口"已登记在 K7 台账 (覆盖面 `skill` 的剩余缺口)。
+   */
   getSkillRegistry(): SkillRegistry {
     return this.skillRegistry;
   }
@@ -4194,7 +4199,23 @@ ${this.extractOperationsFromRef(operationsRef)}
     this.skillRegistry.register(skill);
   }
 
+  /**
+   * 2026-10-02 (K7) **唯一 skill 执行口**:
+   *   判定一律经 Harness (`createSkillGuard()` ⇒ `piHarness().beforeToolCall`, 身份带 runId/goalId/agentId/channelId);
+   *   执行落在本会话 registry 的**唯一**调用点 (**恰一次**)。
+   *   **fail-closed**: 门抛错 ⇒ 返回 `拒绝: [harness-error] …`, **绝不回落**直调 registry。
+   *   公开签名不变 (仍返回 string) ⇒ 不破坏已发布契约 (leo 的方案 a: 保留 API, 内部降为经门转发)。
+   */
   async executeSkill(name: string, params: Record<string, unknown>): Promise<string> {
+    let decision: { allow: boolean; reason?: string; rejectedBy?: string };
+    try {
+      decision = await this.createSkillGuard()(name, params);
+    } catch (guardErr) {
+      return `拒绝: [harness-error] ${String((guardErr as Error)?.message ?? guardErr)}`;
+    }
+    if (!decision.allow) {
+      return `拒绝: [${decision.rejectedBy || 'harness'}] ${decision.reason || '未说明理由'}`;
+    }
     return this.skillRegistry.execute(name, params);
   }
 

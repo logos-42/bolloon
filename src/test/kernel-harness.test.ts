@@ -64,9 +64,10 @@ describe('K7 台账门: Harness 唯一系统调用门', () => {
     const total = HARNESS_EXEC_SITES.reduce((n, s) => n + s.count, 0);
     expect(total).toBe(18);   // 17 普查基线 + 1 (K7 第二步 b 端口内执行)
     expect(K7_PROGRESS.bypasses).toBe(2);   // 3 → 2: pivot loop 那条已收敛
-    expect(K7_BYPASS_CANDIDATES.filter((b) => b.status === 'converged')).toHaveLength(1);
+    // 2026-10-02: pivot loop + skill 两条已收敛 (skill 的公开出口 `getSkillRegistry` 另立开放条目)
+    expect(K7_BYPASS_CANDIDATES.filter((b) => b.status === 'converged')).toHaveLength(2);
     expect(total).toBe(K7_PROGRESS.execSitesTotal);
-    expect(K7_BYPASS_CANDIDATES).toHaveLength(3);
+    expect(K7_BYPASS_CANDIDATES).toHaveLength(4);   // pivot(收敛) · tscTool(开放) · skill(收敛) · getSkillRegistry(开放: 未过门的原始出口)
     expect(K7_PROGRESS.bypasses).toBe(2);   // 3 → 2 (pivot loop 已收敛, 见 K7_BYPASS_CANDIDATES)
   });
 

@@ -1816,7 +1816,7 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 | **K4-B** | Kernel Loop —— 合并两套 Agent Loop (ReAct / Pivot / 旧 loop) | ❌ |
 | K5 | Channel Actor | ✅ |
 | K6 | ModelRuntime (并发/熔断/能力) | ✅ 能力 9/9 (`capabilities-done`) |
-| **K7** | Harness 唯一系统调用门 | 🟡 |
+| **K7** | Harness 唯一系统调用门 | 🟡 (旁路 3 → 1 开通 + 1 已收敛: pivot ✅ · skill ✅ · tscTool ❌ · getSkillRegistry ❌) |
 
 > `AUTHORITY_DEBT` 的还清动作今后叫 **K4-A**, 不再单独叫 "K4"; 设计页原"合并两套 Loop"即 **K4-B**。
 > (权威台账是 `src/kernel/roster.ts` 的 `STAGE_STATUS` —— 2026-10-02 修正了两处滞后: K6 从 `not-started` 改 `done`, K7 从 `not-started` 改 `partial`。)
@@ -1834,7 +1834,8 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 **未完成 (因此不得标 converged)**
 - ✅ skill 端到端 **allow + deny 两路都取得真跑证据** (`k7-skill-denylist-e2e.test.ts`, 走真链: 真 session → 真 Harness deny-list checker → integration → adapter → registry): allow 基线不被拒 · `skill:arch` 入拒绝列表 ⇒ `拒绝: [deny-list]` 且**拿不到 skill 真实输出** (无副作用) · 重试仍被拒 · 放开名单 ⇒ 又能执行; **变异**拆掉 adapter 门分支 ⇒ 判红, 还原 ⇒ 回绿无 diff ⇒ 用例**承重**。
   (读法教训: CLI 侧响应被**启动期日志闸门**写进 `~/.bolloon/logs/startup.log` (前缀 `[boot] 🎯`), **stdout 看不到** —— 我上一轮据 stdout 误判"没走到分发器", 是假阴性。)
-- ❌ `PiAgentSession.executeSkill` 公开兼容 API 未收敛 (方案 a: 保留 API 但降为**兼容转发** ⇒ 唯一 `SkillExecutionPort` ⇒ Harness)
+- ✅ `PiAgentSession.executeSkill` 已按**方案 a** 收敛: 公开签名不变, 内部改为**判定经 Harness → 恰一次执行** (`k7-session-skill-gate.test.ts`: 探针 skill 计数 —— 允许**恰 1 次**执行返回标记 · deny **零执行** · 重试仍拒 · 放开又能执行; 变异"门永远放行" ⇒ 判红: `expected 'PROBE_EXECUTED' to match /^拒绝: \[deny-list\]/` ⇒ 用例承重)
+- ❌ **未过门的原始出口 `getSkillRegistry()`**: 已标 `@deprecated` 并**登记为开放旁路条目** (拿到它直调 `.execute()` 仍绕过 Harness) —— 不许无声删 (公开兼容面), 也不许不登记; 处置需定夺是否动公开返回类型 (改为受门包装)
 - ❌ 全仓 skill 零旁路 (尚有一条公开 API + 一条内部路径)
 - ❌ 其他 Tool Capability 直连欠账 (B 类 12 处, 排期 K7)
 
