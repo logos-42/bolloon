@@ -1182,3 +1182,107 @@ export function scanModelRuntimeFile(
   if (opts.progress.capabilitiesDone !== done) f(`capabilitiesDone=${opts.progress.capabilitiesDone} ≠ 清单里 done 的条数 ${done}`);
   return out;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K7: Harness 唯一系统调用门 (台账 + 执行点普查)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 剥掉块注释 (保留换行, 不破坏行号) 与行注释 —— 判据吃源码文本前必须先剥注释 (K2 教训) */
+export function stripJsComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .split('\n')
+    .map((l) => l.replace(/\/\/.*$/, ''))
+    .join('\n');
+}
+
+/**
+ * 执行点计数 (K7 的唯一口径): 剥注释后数 `\.execute\s*\(` 与 `executeTool` 的**匹配次数**。
+ * 口径必须是**纯函数 + 可重算**, 否则台账与盘上事实会对不上。
+ */
+export function countHarnessExecSites(src: string): number {
+  const s = stripJsComments(src);
+  return (s.match(/\.execute\s*\(/g) || []).length + (s.match(/executeTool/g) || []).length;
+}
+
+/** K7 台账的形状 (判据只吃这些字段, 不 import 台账 ⇒ 可注入坏样本做判别力) */
+export interface HarnessLedgerLike {
+  stages: readonly { stage: string; gate: string; why: string }[];
+  surfaces: readonly { surface: string; canonical: string; why: string }[];
+  execSites: readonly { file: string; count: number; kinds: readonly string[]; why: string }[];
+  bypasses: readonly { target: string; replacesWith: string; why: string }[];
+  progress: { stage: string; execSitesTotal: number; bypasses: number };
+}
+
+/** 阶段顺序即契约 (与设计页 §7 第 164 行逐字一致) */
+export const HARNESS_STAGE_ORDER: readonly string[] = [
+  'discover', 'permission', 'policy', 'budget', 'idempotency', 'execute', 'verify', 'evidence', 'event',
+];
+
+const EXEC_KINDS = ['main', 'skill', 'mcp', 'registry', 'bypass', 'homonym', 'decl', 'import', 'ledger-string'];
+
+/**
+ * 再核对整本 K7 台账:
+ * ① 9 阶段顺序/唯一/gate 指向的文件真存在 ② 9 覆盖面 canonical 真存在
+ * ③ 执行点**逐文件重算**并与台账一致, 合计 == progress.execSitesTotal
+ * ④ 旁路候选逐条有替代路径且目标文件存在; 旁路数 == 台账 progress.bypasses == kinds 含 bypass 的条目所声明的数量
+ * ⑤ 拿不到事实 (文件读不出来) ⇒ 拒跑, 不许跳过
+ */
+export function scanHarnessLedger(
+  ledger: HarnessLedgerLike,
+  opts: { readFile: (rel: string) => string | null; planFileExists: boolean },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'harness-ledger', file: 'kernel/plan-harness.ts', line: 1, what });
+
+  // ① 阶段
+  if (ledger.stages.length !== 9) f(`阶段数 ${ledger.stages.length} ≠ 9`);
+  const names = ledger.stages.map((s) => s.stage);
+  if (new Set(names).size !== names.length) f('阶段名有重复');
+  if (names.join(',') !== HARNESS_STAGE_ORDER.join(',')) f(`阶段顺序不等于契约顺序: ${names.join(' → ')}`);
+  for (const s of ledger.stages) {
+    if (!s.gate?.trim()) f(`阶段 ${s.stage} 没写 gate (谁承担它)`);
+    if ((s.why ?? '').trim().length < 6) f(`阶段 ${s.stage} 的 why 太短 (要能说清为什么)`);
+    for (const m of s.gate.match(/[\w./-]+\.ts/g) || []) {
+      if (opts.readFile(m) === null) f(`阶段 ${s.stage} 的 gate 指向的文件不存在: ${m}`);
+    }
+  }
+
+  // ② 覆盖面
+  if (ledger.surfaces.length !== 9) f(`覆盖面数 ${ledger.surfaces.length} ≠ 9`);
+  const surf = ledger.surfaces.map((s) => s.surface);
+  if (new Set(surf).size !== surf.length) f('覆盖面名有重复');
+  for (const s of ledger.surfaces) {
+    if (opts.readFile(s.canonical) === null) f(`覆盖面 ${s.surface} 的 canonical 文件不存在: ${s.canonical}`);
+  }
+
+  // ③ 执行点逐文件重算
+  let total = 0;
+  for (const site of ledger.execSites) {
+    const code = opts.readFile(site.file);
+    if (code === null) { f(`执行点普查里的文件读不出来 ⇒ 拒跑: ${site.file}`); continue; }
+    const real = countHarnessExecSites(code);
+    if (real !== site.count) f(`${site.file} 执行点 台账=${site.count} 盘上=${real} (增=新旁路未登记 · 减=改了盘没改账)`);
+    for (const k of site.kinds) if (!EXEC_KINDS.includes(k)) f(`${site.file} 未知 kind: ${k}`);
+    total += site.count;
+  }
+  if (total !== ledger.progress.execSitesTotal) f(`普查合计 ${total} ≠ progress.execSitesTotal ${ledger.progress.execSitesTotal}`);
+
+  // ④ 旁路候选
+  if (ledger.bypasses.length !== ledger.progress.bypasses) f(`旁路候选 ${ledger.bypasses.length} ≠ progress.bypasses ${ledger.progress.bypasses}`);
+  const bypassKinds = ledger.execSites.filter((s) => s.kinds.includes('bypass')).length;
+  if (bypassKinds === 0 && ledger.bypasses.length > 0) f('登记了旁路候选, 但普查里没有任何条目标 bypass');
+  for (const b of ledger.bypasses) {
+    if (!/\.ts:\d+/.test(b.target)) f(`旁路候选要写成 文件:行 形态: ${b.target}`);
+    const file = b.target.split(':')[0];
+    if (opts.readFile(file) === null) f(`旁路目标文件不存在: ${file}`);
+    if (!b.replacesWith?.trim()) f(`旁路 ${b.target} 没写替代路径 (五条件第 ① 条)`);
+    if ((b.why ?? '').trim().length < 6) f(`旁路 ${b.target} 的 why 太短`);
+  }
+
+  // ⑤ 台账自报与盘上一致: 说"台账已落"就必须真存在
+  if (ledger.progress.stage === 'ledger-landed' && !opts.planFileExists) f('progress 说台账已落, 但 plan-harness.ts 不存在');
+  if (ledger.progress.stage === 'not-started' && opts.planFileExists) f('progress 说未开始, 但台账文件已存在 (半搬状态)');
+
+  return out;
+}
