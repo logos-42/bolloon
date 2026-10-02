@@ -1629,3 +1629,33 @@ cancellation (20ms 后 abort ⇒ `ModelAbortError`; 已取消的 signal 立刻�
 并发上限 `maxConcurrency=1` 不重叠 (峰值 1 + `concurrencyWaits=1`) · `=3` 真重叠 (峰值 3 且无排队) · **排队可取消** (排队者从未发起) ·
 429 两次后成功 (`retries=2` · 退避序列 **`[200,400]`** 在 jitter 归零时可精确断言) · 一直 429 ⇒ 用尽即失败 (`retries=3`) ·
 退避期间取消 ⇒ 立刻抛 · 纯函数退避曲线 (含封顶 5000 与 `Retry-After` 取最大) · `isRateLimited` 三向。
+
+## 55. K6 第四步: 熔断 (三态) + 能力检查 (能力 5/9 → 7/9)
+
+### 55.1 熔断
+
+| 项 | 内容 |
+| --- | --- |
+| 策略 (数据) | **`BREAKER_POLICY`**: 阈值 3 次 · 冷却 30s · 半开探测 1 个 |
+| 三态 | `closed` → (连续失败达阈值) → `open` → (冷却到) → `half-open` → (探测成功) `closed` / (探测失败) **立刻重新开路并重新计时** |
+| 快速失败 | 开路且未到冷却 ⇒ 抛 `ModelCircuitOpenError` 并**不发起调用、不排队** (fail fast 才有意义) |
+| 什么算失败 | **`countsTowardBreaker`**: 取消 (调用方) ✗ · 429 (交给退避) ✗ · 超时 ✓ · 其它故障 ✓ |
+| 诊断 | `breakerStates()` 逐 key 只读状态 · `stats.circuitOpened / failFast / halfOpenProbes / breakerClosed` |
+
+**一处口径必须写清楚 (否则用例会自己骗自己)**: 端口**自己**抛 `AbortError` 而**运行时的 signal 没被取消**, 那是"供应商侧中止" ⇒ **计入熔断**;
+只有"运行时 signal 被取消"(外部 signal 或超时) 才归一化成 `ModelAbortError` 而**不计入**。
+⇒ 所以"调用方取消不计入熔断"这条用例必须用**外部 signal** 制造取消 (第一版用端口自抛的 AbortError, 结果熔断被打开了 —— 是**用例的场景不真实**, 不是实现错)。
+
+### 55.2 能力检查 (直接怼 K6 红线的一项)
+
+`acquire(snapshot, { require: ['vision'] })`:
+- snapshot **声明了** `capabilities` ⇒ 缺一个就拒 (`ModelCapabilityError` 列出缺哪些);
+- snapshot **没声明** `capabilities` ⇒ **不许猜**: 拒并写明"未知能力 (snapshot 未声明 capabilities)";
+- **拒在开连接之前** ⇒ 真跑断言 `opened === 0` (不浪费一次连接);
+- 只读: 不写 snapshot / 不改任何 provider 配置 (冻结的 `capabilities` 数组跑完仍原样) —— 这正是"不自行改 provider 配置 / API key / 默认 URL / Global model / Run snapshot"那条红线的具体形态。
+
+### 55.3 真跑用例 (4 条 12 个断言组)
+
+开路 → 快速失败 (断言**调用计数没涨**) → 冷却未到仍快速失败 → 冷却到放探测 → 成功闭合 (半开/闭合计数各 1) ·
+半开探测失败 ⇒ 重新开路 (开路次数 2) · 不计入熔断三类 (外部取消 ✗ · 429 ✗ · 故障 ✓, 含四个纯函数断言) ·
+能力检查两向 + 连接零开销 + 冻结数组原样。

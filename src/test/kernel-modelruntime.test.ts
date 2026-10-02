@@ -16,7 +16,7 @@ import {
   MODEL_WRITE_PORTS,
   MODEL_WRITE_PORTS_FROZEN_AT,
 } from '../kernel/plan-modelruntime.js';
-import { ModelAbortError, ModelRuntime, ModelTimeoutError, backoffDelayMs, isRateLimited, type ModelRuntimePorts } from '../kernel/model-runtime.js';
+import { ModelAbortError, ModelCapabilityError, ModelCircuitOpenError, ModelRuntime, ModelTimeoutError, backoffDelayMs, countsTowardBreaker, isRateLimited, type ModelRuntimePorts } from '../kernel/model-runtime.js';
 import { countModelWritePortCalls, scanModelRuntimeFile, scanModelRuntimeLedger, type SourceTextFile } from '../kernel/gate-scan.js';
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -310,5 +310,127 @@ describe('K6 第三步: 多供应商并发 + 429 退避 (真跑, 睡眠注入 �
     expect(isRateLimited({ status: 429 })).toBe(true);
     expect(isRateLimited({ error: 'HTTP 429 rate limit' })).toBe(true);
     expect(isRateLimited({ ok: false, error: 'boom' })).toBe(false);
+  });
+});
+
+describe('K6 第四步: 熔断 (三态) + 能力检查 (拒在开连接之前)', () => {
+  const mkBreaker = (script: Array<'ok' | 'fail' | '429' | 'abort' | 'timeout'>) => {
+    let idx = 0; let opened = 0; let now = 1_000_000;
+    const ports: ModelRuntimePorts = {
+      now: () => now,
+      sleep: async () => {},
+      random: () => 0.5,
+      async openConnection() {
+        opened += 1;
+        return {
+          id: `c${opened}`,
+          async call() {
+            const kind = script[Math.min(idx, script.length - 1)]; idx += 1;
+            if (kind === 'ok') return { ok: true, raw: { n: idx } };
+            if (kind === '429') return { ok: false, status: 429, error: 'HTTP 429' };
+            if (kind === 'abort') { const e: any = new Error('aborted'); e.name = 'AbortError'; throw e; }
+            if (kind === 'timeout') { await new Promise((r) => setTimeout(r, 30)); return { ok: true }; }
+            return { ok: false, error: 'provider 500' };
+          },
+          async close() {},
+        };
+      },
+    };
+    return { ports, advance: (ms: number) => { now += ms; }, openedCount: () => opened, calls: () => idx };
+  };
+
+  it('熔断三态: 连 3 次失败 ⇒ 开路并**快速失败** (不再发起调用) ⇒ 冷却后放一个探测 ⇒ 成功即闭合', async () => {
+    const m = mkBreaker(['fail', 'fail', 'fail', 'ok']);
+    const rt = new ModelRuntime(m.ports, 5000, 1);
+    const lease = await rt.acquire({ provider: 'p', model: 'm', timeoutMs: 5000 });
+    for (let i = 0; i < 3; i += 1) expect((await lease.call({})).ok).toBe(false);
+    expect(rt.breakerStates()['p::m::'].state).toBe('open');
+    const callsBefore = m.calls();
+    await expect(lease.call({})).rejects.toThrow(ModelCircuitOpenError);   // 快速失败
+    expect(m.calls()).toBe(callsBefore);                                   // **没有发起调用**
+    expect(rt.snapshotStats().failFast).toBe(1);
+    // 冷却还没到 ⇒ 仍快速失败
+    m.advance(10_000);
+    await expect(lease.call({})).rejects.toThrow(ModelCircuitOpenError);
+    // 冷却已到 ⇒ 放一个探测 (脚本下一步是 ok) ⇒ 闭合
+    m.advance(60_000);
+    expect((await lease.call({})).ok).toBe(true);
+    expect(rt.breakerStates()['p::m::'].state).toBe('closed');
+    expect(rt.snapshotStats().halfOpenProbes).toBe(1);
+    expect(rt.snapshotStats().breakerClosed).toBe(1);
+    await rt.closeAll();
+  });
+
+  it('半开探测失败 ⇒ 立刻重新开路 (冷却重新计时)', async () => {
+    const m = mkBreaker(['fail', 'fail', 'fail', 'fail']);
+    const rt = new ModelRuntime(m.ports, 5000, 1);
+    const lease = await rt.acquire({ provider: 'p', model: 'm', timeoutMs: 5000 });
+    for (let i = 0; i < 3; i += 1) await lease.call({});
+    m.advance(60_000);
+    expect((await lease.call({})).ok).toBe(false);          // 探测失败
+    expect(rt.breakerStates()['p::m::'].state).toBe('open');
+    expect(rt.snapshotStats().circuitOpened).toBe(2);
+    await rt.closeAll();
+  });
+
+  it('不计入熔断的失败: **调用方**取消与 429 都不许把熔断打开', async () => {
+    // "调用方取消"要用**外部 signal** 制造 (运行时的 signal 被取消 ⇒ 归一化成 ModelAbortError ⇒ 不计入)。
+    //   端口自己抛 AbortError 而运行时 signal 没被取消 = 供应商侧中止 ⇒ 那是**该计入**的失败 (口径写在 countsTowardBreaker)。
+    let live = 0;
+    const ports: ModelRuntimePorts = {
+      sleep: async () => {},
+      random: () => 0.5,
+      async openConnection() {
+        return {
+          id: 'c1',
+          async call(_req, sig) {
+            live += 1;
+            for (let i = 0; i < 40; i += 1) {
+              if (sig.aborted) { const e: any = new Error('aborted'); e.name = 'AbortError'; throw e; }
+              await new Promise((r) => setTimeout(r, 5));
+            }
+            live -= 1;
+            return { ok: true };
+          },
+          async close() {},
+        };
+      },
+    };
+    const rt = new ModelRuntime(ports, 5000, 1);
+    const lease = await rt.acquire({ provider: 'p', model: 'm', timeoutMs: 5000 });
+    for (let i = 0; i < 4; i += 1) {
+      const ctl = new AbortController();
+      const p = lease.call({}, { signal: ctl.signal });
+      setTimeout(() => ctl.abort(), 5);
+      await expect(p).rejects.toThrow(ModelAbortError);
+    }
+    expect(rt.breakerStates()['p::m::']?.state ?? 'closed').toBe('closed');
+    expect(rt.snapshotStats().circuitOpened).toBe(0);
+    // 429: 走退避, 用尽后也不该开路 (那是限流不是故障)
+    const m2 = mkBreaker(['429']);
+    const rt2 = new ModelRuntime(m2.ports, 5000, 1);
+    const l2 = await rt2.acquire({ provider: 'p', model: 'm', timeoutMs: 5000 });
+    expect((await l2.call({})).ok).toBe(false);
+    expect(rt2.snapshotStats().circuitOpened).toBe(0);
+    expect(countsTowardBreaker({ ok: false, status: 429 })).toBe(false);
+    expect(countsTowardBreaker(new Error('500'))).toBe(true);
+    expect(countsTowardBreaker(new ModelAbortError())).toBe(false);
+    expect(countsTowardBreaker(new ModelTimeoutError(5))).toBe(true);
+    await rt.closeAll(); await rt2.closeAll();
+  });
+
+  it('能力检查: 缺能力 / 能力未知 ⇒ **拒在开连接之前** (opened 仍为 0)', async () => {
+    const m = mkBreaker(['ok']);
+    const rt = new ModelRuntime(m.ports, 5000, 1);
+    await expect(rt.acquire({ provider: 'p', model: 'm', capabilities: ['tools'] }, { require: ['vision'] })).rejects.toThrow(ModelCapabilityError);
+    await expect(rt.acquire({ provider: 'p', model: 'm' }, { require: ['vision'] })).rejects.toThrow(/未知能力/);
+    expect(m.openedCount()).toBe(0);                     // **一次连接都没开**
+    expect(rt.snapshotStats().capabilityRejects).toBe(2);
+    // 声明齐了 ⇒ 正常放行 (且冻结的 capabilities 数组没被动过)
+    const caps = Object.freeze(['tools', 'vision']);
+    const lease = await rt.acquire(Object.freeze({ provider: 'p', model: 'm', timeoutMs: 5000, capabilities: caps }), { require: ['vision'] });
+    expect((await lease.call({})).ok).toBe(true);
+    expect(caps).toEqual(['tools', 'vision']);
+    await rt.closeAll();
   });
 });

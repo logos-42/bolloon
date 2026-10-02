@@ -102,6 +102,36 @@ export function backoffDelayMs(n: number, opts?: { retryAfterMs?: number; random
   return Math.max(0, Math.round(Math.max(jittered, opts?.retryAfterMs ?? 0)));
 }
 
+/**
+ * **熔断策略** (数据; 实现与测试共用)。按 pool key 记连续失败 ⇒ 开路 ⇒ 冷却后半开探测。
+ *   **什么算失败**: 网络/供应商故障类; **不算**: 取消 (调用方的选择) 与 429 (那是退避的活), 见 `countsTowardBreaker`。
+ */
+export const BREAKER_POLICY = {
+  failureThreshold: 3,
+  cooldownMs: 30_000,
+  /** 半开时允许几个探测 */
+  halfOpenProbes: 1,
+  why: '连续失败 ⇒ 开路 (fail fast, 不把故障放大) · 冷却后放一个探测 ⇒ 成功闭合, 失败重新开路',
+} as const;
+
+/** 这次失败该不该计入熔断 */
+export function countsTowardBreaker(err: unknown): boolean {
+  if (err instanceof ModelAbortError) return false;      // 调用方取消 ⇒ 不是供应商的错
+  if (err instanceof ModelTimeoutError) return true;     // 超时是供应商侧症状
+  if (isRateLimited(err)) return false;                  // 限流交给退避, 不熔断
+  return true;
+}
+
+export class ModelCircuitOpenError extends Error {
+  constructor(public readonly retryAtMs: number) { super(`熔断中 (冷却至 ${retryAtMs})`); this.name = 'ModelCircuitOpenError'; }
+}
+export class ModelCapabilityError extends Error {
+  constructor(public readonly missing: readonly string[], public readonly unknown = false) {
+    super(unknown ? `未知能力 (snapshot 未声明 capabilities, 无法确认 ${missing.join(', ')})` : `缺能力: ${missing.join(', ')}`);
+    this.name = 'ModelCapabilityError';
+  }
+}
+
 export class ModelTimeoutError extends Error {
   constructor(public readonly budgetMs: number) { super(`模型调用超时 (${budgetMs}ms)`); this.name = 'ModelTimeoutError'; }
 }
@@ -137,13 +167,23 @@ export interface ModelRuntimeStats {
   rateLimited: number;
   retries: number;
   lastBackoffMs: number;
+  /** 熔断: 开路次数 / 因开路而"快速失败"的次数 */
+  circuitOpened: number;
+  failFast: number;
+  /** 能力检查拒收次数 (拒在开连接之前, 不浪费一次连接) */
+  capabilityRejects: number;
+  /** 半开探测次数 / 探测成功 (闭合) 次数 */
+  halfOpenProbes: number;
+  breakerClosed: number;
   /** 默认预算 (ms) */
   defaultTimeoutMs: number;
 }
 
 export class ModelRuntime {
   private pool = new Map<string, PooledConnection>();
-  private stats = { reused: 0, opened: 0, timeouts: 0, aborts: 0, concurrencyWaits: 0, maxObservedConcurrency: 0, rateLimited: 0, retries: 0, lastBackoffMs: 0 };
+  private stats = { reused: 0, opened: 0, timeouts: 0, aborts: 0, concurrencyWaits: 0, maxObservedConcurrency: 0, rateLimited: 0, retries: 0, lastBackoffMs: 0, circuitOpened: 0, failFast: 0, capabilityRejects: 0, halfOpenProbes: 0, breakerClosed: 0 };
+  /** 逐 key 熔断状态 */
+  private breakers = new Map<string, { failures: number; state: 'closed' | 'open' | 'half-open'; openUntil: number; probes: number }>();
   /** 每 key 当前在飞的调用数 + 等待队列 (多供应商并发: 各 key 各自算) */
   private active = new Map<string, number>();
   /** 等待者 → 它的 granted 标记 (转让路径用; 见 acquireSlot) */
@@ -160,10 +200,18 @@ export class ModelRuntime {
   }
 
   /** **只读入口**: 取一个租约 (可能需要先开连接; 同一 pool key 复用) */
-  async acquire(snapshot: ModelSnapshot): Promise<ModelLease> {
+  async acquire(snapshot: ModelSnapshot, opts?: { require?: readonly string[] }): Promise<ModelLease> {
     if (!snapshot?.provider || !snapshot?.model) throw new Error('acquire 需要 provider + model (缺了不许猜)');
     // **只读**: 只读这些字段, 一个都不写回 (snapshot 常被上层冻结; 写它会当场抛)
     const frozen: Readonly<ModelSnapshot> = snapshot;
+    // ① 能力检查 (**拒在开连接之前** ⇒ 不浪费一次连接; 只读 snapshot.capabilities, 不改任何东西)
+    const need = opts?.require ?? [];
+    if (need.length > 0) {
+      if (!frozen.capabilities) { this.stats.capabilityRejects += 1; throw new ModelCapabilityError(need, true); }
+      const have = new Set(frozen.capabilities);
+      const missing = need.filter((c) => !have.has(c));
+      if (missing.length > 0) { this.stats.capabilityRejects += 1; throw new ModelCapabilityError(missing); }
+    }
     const key = modelPoolKey(frozen);
     let slot = this.pool.get(key);
     if (slot) this.stats.reused += 1;
@@ -200,13 +248,25 @@ export class ModelRuntime {
         const external = opts?.signal;
         if (external?.aborted) { this.stats.aborts += 1; throw new ModelAbortError(); }
         const started = (this.ports.now ?? Date.now)();
-        // ① 并发槽: 逐 key 计数 (多供应商并发互不阻塞); 排队期间可被取消
+        // ① 熔断门: 开路期内**快速失败** (不发起调用, 也不排队)
+        const gate = this.breakerGate(key);
+        if (gate) { this.stats.failFast += 1; throw new ModelCircuitOpenError(gate); }
+        // ② 并发槽: 逐 key 计数 (多供应商并发互不阻塞); 排队期间可被取消
         await this.acquireSlot(key, external);
         try {
           // ② 429 退避重试: 退避期间**可取消**; 超过 maxRetries 即如实失败 (不许无限重试)
           for (let attempt = 0; ; attempt += 1) {
-            const result = await this.callOnce(conn, req, external, budget);
-            if (result.ok || !isRateLimited(result)) {
+            let result: ModelCallResult;
+            try {
+              result = await this.callOnce(conn, req, external, budget);
+            } catch (err) {
+              if (countsTowardBreaker(err)) this.onFailure(key); else this.onSuccess(key);
+              throw err;
+            }
+            if (result.ok) { this.onSuccess(key); return { ...result, reused: (this.pool.get(key)?.leases ?? 0) > 1, ms: (this.ports.now ?? Date.now)() - started }; }
+            if (!isRateLimited(result)) {
+              // 非限流失败 (供应商故障类) ⇒ 计入熔断
+              if (countsTowardBreaker(result)) this.onFailure(key); else this.onSuccess(key);
               return { ...result, reused: (this.pool.get(key)?.leases ?? 0) > 1, ms: (this.ports.now ?? Date.now)() - started };
             }
             this.stats.rateLimited += 1;
@@ -266,6 +326,50 @@ export class ModelRuntime {
     } finally {
       if (onAbort) signal?.removeEventListener?.('abort', onAbort);
     }
+  }
+
+  /** 熔断门: 开路且未到冷却 ⇒ 返回"何时可再试" (调用方快速失败); 冷却已过 ⇒ 转半开并放行探测 */
+  private breakerGate(key: string): number | null {
+    const b = this.breakers.get(key);
+    if (!b || b.state === 'closed') return null;
+    const nowMs = (this.ports.now ?? Date.now)();
+    if (b.state === 'open' && nowMs >= b.openUntil) {
+      b.state = 'half-open'; b.probes = 0;
+    }
+    if (b.state === 'open') return b.openUntil;
+    if (b.probes >= BREAKER_POLICY.halfOpenProbes) return b.openUntil;   // 半开探测名额用完 ⇒ 仍然快速失败
+    b.probes += 1;
+    this.stats.halfOpenProbes += 1;
+    return null;
+  }
+
+  /** 成功: 半开 ⇒ 闭合 (清零); 闭合态失败计数清零 */
+  private onSuccess(key: string): void {
+    const b = this.breakers.get(key);
+    if (!b) return;
+    if (b.state === 'half-open') { b.state = 'closed'; b.failures = 0; b.probes = 0; this.stats.breakerClosed += 1; return; }
+    b.failures = 0;
+  }
+
+  /** 失败: 累计; 达阈值 ⇒ 开路; 半开里失败 ⇒ 立刻重新开路 (冷却重新计时) */
+  private onFailure(key: string): void {
+    const b = this.breakers.get(key) ?? { failures: 0, state: 'closed' as const, openUntil: 0, probes: 0 };
+    b.failures += 1;
+    const halfOpenFail = b.state === 'half-open';
+    if (halfOpenFail || b.failures >= BREAKER_POLICY.failureThreshold) {
+      b.state = 'open';
+      b.openUntil = (this.ports.now ?? Date.now)() + BREAKER_POLICY.cooldownMs;
+      b.probes = 0;
+      this.stats.circuitOpened += 1;
+    }
+    this.breakers.set(key, b);
+  }
+
+  /** 只读: 逐 key 熔断状态 (诊断/测试) */
+  breakerStates(): Record<string, { failures: number; state: string; openUntil: number }> {
+    const out: Record<string, { failures: number; state: string; openUntil: number }> = {};
+    for (const [k, v] of this.breakers) out[k] = { failures: v.failures, state: v.state, openUntil: v.openUntil };
+    return out;
   }
 
   /** 取并发槽 (逐 key; 排队可取消) */
