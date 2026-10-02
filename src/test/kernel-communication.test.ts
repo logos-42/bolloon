@@ -30,7 +30,7 @@ describe('K8 台账门: Communication Runtime 收口', () => {
     expect(K8_TRANSPORT_AGENT_SITES.reduce((n, s) => n + s.count, 0)).toBe(K8_PROGRESS.directSites);
     expect(K8_PER_CHANNEL_STATE).toHaveLength(K8_PROGRESS.perChannelStateFiles);
     expect(K8_PROGRESS.directSites).toBeLessThanOrEqual(12);   // 棘轮: 量测基线 12, 只许减 (2026-10-02 已迁 2 处 ⇒ 10)
-    expect(K8_PROGRESS.directSites).toBe(10);
+    expect(K8_PROGRESS.directSites).toBe(7);   // 第三步: server.ts 3 处零差量迁走 (12 → 10 → 7)
     expect(K8_TRANSPORT_AGENT_SITES.filter((s) => s.status === 'migrated')).toHaveLength(2);
     expect(K8_ACCEPTANCE.length).toBeGreaterThanOrEqual(4);
   });

@@ -829,7 +829,9 @@ export function countEntryExecutionPoints(
     for (const m of methods) {
       // `[!?]?` 允许非空断言 / 可选调用: `session.runExecution!(req)` 也是执行点
       //   (实测: 不带这一段, 改成请求式的站点会从计数里消失 ⇒ 该文件 total 从 11 掉到 10)
-      const rx = new RegExp(`\\.\\s*${m}\\s*[!?]?\\s*\\(`, 'g');
+      // 2026-10-02 (K8): 也认**助手形态** `requireRunExecution(agent)(req)` —— 它是"响亮检查 + 调入口"的等价执行点。
+      //   不认它 ⇒ 迁移后的站点从 total 里消失, 而 wired(deliverThroughActor 数) 不变 ⇒ 破坏 `wired ≤ total` 不变量 (门当场拒了)。
+      const rx = new RegExp(`\\.\\s*${m}\\s*[!?]?\\s*\\(|require${m[0].toUpperCase()}${m.slice(1)}\\s*\\(`, 'g');
       if (!rx.test(l)) continue;
       const recv = new RegExp(`([A-Za-z_$][\\w$]*|this)\\s*\\.\\s*${m}\\s*[!?]?\\s*\\(`).exec(l);
       if (recv && excludeReceivers.includes(recv[1])) continue;        // 已核实的非执行点
@@ -949,7 +951,8 @@ export function scanExecutionRequest(
     for (const raw of s.text.split(/\r?\n/)) {
       const l = raw.replace(/\/\/.*$/, '');
       if (/^\s*\*/.test(l)) continue;
-      converted += (l.match(/runExecution[!?]?\(/g) ?? []).length;
+      // 2026-10-02 (K8): 也认助手形态 `requireRunExecution(agent)(...)` —— 它是"响亮检查 + 调入口"的等价形状
+      converted += (l.match(/runExecution[!?]?\(|requireRunExecution\s*\(/g) ?? []).length;
     }
   }
   if (converted !== req.converted) f(`请求式投递 盘上 ${converted} 处 ≠ 台账 ${req.converted}`);

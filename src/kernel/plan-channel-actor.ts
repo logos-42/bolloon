@@ -56,6 +56,8 @@ export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'fi
  *     (用户消息 / 第二条路径 / 重新生成), `web/server.ts` 里共 8 处入口执行点 ⇒ `entrySites { total: 8, wired: 3 }`,
  *     两个数字都由判据 `scanEntryDelivery` **从盘上重算**, 自报无效。
  *     四个**粗粒度**入口 (web / CLI / P2P / Supervisor) 的 `entriesWired` 仍 **0/4** —— 一条入口要全部执行点接完才算。
+ *   · 2026-10-02 (K8 第二步/第三步): server.ts 11 → **8** —— 3 处 `promptStream(...)` 改走 `runExecution` (统一入口),
+ *     它们不再是"通道直呼 agent"的执行点 ⇒ 逐文件表跟着重建 (仍全部 wired)。
  *   · 2026-10-02 **步骤④ 完成**: web (server.ts 11/11 + routes-tasks 1/1) · CLI (index.ts) · P2P 入站 · Supervisor/子Agent
  *     (runner-resolver.ts 1/1) ⇒ `entriesWired **4/4**`。
  *     **关键发现 (口径漏了一整类入口)**: P2P 入站调的是 `a.summarizeDocument(...)` / `a.improveDocument(...)` ——
@@ -236,9 +238,9 @@ export const K5_EXECUTION_REQUEST = {
   methodAdded: true,
   // 2026-10-02 (K8 第二步): 1 → 3 —— routes-tasks.ts / runner-resolver.ts 两处改走 `runExecution`
   //   (K5 这张台账记的正是"请求式投递的收敛进度", K8 的迁移会推进它 ⇒ 跨台账必须同步)
-  converted: 3,
+  converted: 6,   // 2026-10-02 (K8 第三步): +3 —— web/server.ts 三处流式调用改走 runExecution
   wiredTotal: 24,
-  remaining: 21,
+  remaining: 18,
 } as const;
 
 /** 入口 → 文件分组 (判据做**双向**校验: 说完成 ⇒ 其文件必须全接完; 说没完成 ⇒ 必须真有文件没接完) */
@@ -288,8 +290,11 @@ export const K5_PROGRESS = {
   entrySites: [
     // `excludeReceivers` 是**已核实的非执行点 receiver** (台账数据, 冻结; 改动会出现在 diff 里):
     //   `this` = CLI readline 提示 (`this.prompt('> ')`);  `s` = index.ts 里的 UI 打印助手 (`s.prompt('📩 …')`)
+    // 2026-10-02 (K8 第二/三步): 3 处 `promptStream(...)` 改走唯一入口 `runExecution`。
+    //   口径说明: `runExecution` 也在方法名单里, 且**助手形态** `requireRunExecution(...)` 也被认作执行点
+    //   ⇒ 迁移前后 total/wired 都不变 (11/11); 真正在变的是 K8 台账的"通道直呼 prompt"直连数 (10 → 7)。
     { file: 'web/server.ts', total: 11, wired: 11, excludeReceivers: ['this'] },            // web 用户/中继/任务/心跳
-    { file: 'web/routes-tasks.ts', total: 1, wired: 1, excludeReceivers: ['this'] },        // web 任务路由
+    { file: 'web/routes-tasks.ts', total: 1, wired: 1, excludeReceivers: ['this'] },        // web 任务路由 (K8 后是请求式点; total 不降)
     { file: 'index.ts', total: 11, wired: 11, excludeReceivers: ['this', 's'] },            // CLI 主入口 + P2P 入站 (含文档摘要/改写)
     { file: 'cli/interface.ts', total: 0, wired: 0, excludeReceivers: ['this'] },           // readline ⇒ 无执行点
     { file: 'agents/runner-resolver.ts', total: 1, wired: 1, excludeReceivers: ['this'] },  // 子 Agent / Supervisor 面

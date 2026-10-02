@@ -1,3 +1,4 @@
+import type { ExecutionRequest } from '../kernel/channel-actor.js';   // K8: 通道交请求用的真类型
 import express from 'express';
 import { createServer } from 'http';
 import { join, dirname } from 'path';
@@ -141,6 +142,18 @@ import { verifyMessage, isAddress, getAddress } from 'viem';
 import * as peerFs from '../network/peer-fs.js';
 import { buildManifestPayload, type AgentManifest, type AgentManifestEntry, type ManifestGroup, type ManifestFunction, type ManifestExportment, type ManifestScience } from '../agents/agent-manifest-protocol.js';
 import { loadLocalResources, writeRemoteResources } from '../network/peer-resource-bridge.js';
+
+/**
+ * 2026-10-02 (K8): 通道拿**唯一执行入口**的统一姿势 —— `runExecution` 在 `AgentSession` 上是**可选**的
+ * (接口允许实现自定义), 所以直接调会报 possibly-undefined。这里**响亮失败**而不是 `!` 断言:
+ * 拿不到入口就说明"通道又要直呼 prompt 了", 必须当场炸掉, 不许静默回落 (否则收口只剩纸面)。
+ */
+function requireRunExecution<T extends { runExecution?: (req: ExecutionRequest) => Promise<string> }>(agent: T): (req: ExecutionRequest) => Promise<string> {
+  if (typeof agent.runExecution !== 'function') {
+    throw new Error('K8: 该 session 未提供 runExecution (唯一执行入口) ⇒ 拒绝直呼 prompt');
+  }
+  return agent.runExecution;
+}
 
 // 前端资源路径: 兼容 src 运行 + dist 运行 + npm 全局安装
 // - src 跑 (tsx):   __dirname = .../src/web  →  .../dist/web
@@ -665,7 +678,8 @@ async function triggerRemoteFollowup(
       }
     };
 
-    const fullResponse = await deliverThroughActor(agent, () => agent.promptStream(markedPrompt, streamCallback, undefined, channelId));
+    // 2026-10-02 (K8): 经唯一入口 `runExecution` —— 参数与派发**完全一致** ⇒ 按构造零行为改变
+    const fullResponse = await deliverThroughActor(agent, () => requireRunExecution(agent)({ input: markedPrompt, onStream: streamCallback, channelId }));
     if (!fullResponse.trim()) return;
 
     // 广播续看结果给 UI
@@ -992,7 +1006,8 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         }
       };
       const agent = await getAgentForChannel(channelId, ch.did || '', ch.name, ch.didDocRef);
-      fullResponse = await deliverThroughActor(agent, () => agent.promptStream(fullPrompt, streamCallback, undefined, channelId));
+      // 2026-10-02 (K8): 同上 (零差量)
+      fullResponse = await deliverThroughActor(agent, () => requireRunExecution(agent)({ input: fullPrompt, onStream: streamCallback, channelId }));
 
       // 2026-07-06: 防御性兜底
       if (!fullResponse.trim()) {
@@ -6865,7 +6880,8 @@ app.post('/active-channel', async (req, res) => {
       // 2026-06-15: 同 /message 路径, 用显式 marker 包裹 userMessage, 避免 LLM 把它当背景信息
       const regenHint = await buildJudgmentHint(channel, channelId);
       const markedRegen = `${regenHint}\n\n【本轮用户请求】\n${userMessage}\n【请求结束】\n`;
-      fullResponse = await deliverThroughActor(agent, () => agent.promptStream(markedRegen, streamCallback, undefined, channelId));
+      // 2026-10-02 (K8): 同上 (零差量)
+      fullResponse = await deliverThroughActor(agent, () => requireRunExecution(agent)({ input: markedRegen, onStream: streamCallback, channelId }));
 
       // 2026-07-06: 防御性兜底 — 同 /message 路径
       if (!fullResponse.trim()) {
