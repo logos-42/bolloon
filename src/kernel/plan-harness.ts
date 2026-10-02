@@ -65,6 +65,7 @@ export type ExecKind =
   | 'registry'      // 注册表统一执行口
   | 'bypass'        // **真旁路**: 第二条执行路径, K7 要收敛
   | 'homonym'       // 同名不同物 (loop.execute / session.execute / params.execute …)
+  | 'port-callback' // **注入的执行器端口被调用** (执行发生在注入方那一侧, 不是这里)
   | 'decl'          // 函数**定义**
   | 'import'        // import 列表里的名字
   | 'ledger-string'; // 台账/文档字符串里的字面
@@ -85,7 +86,7 @@ export const HARNESS_EXEC_SITES: readonly ExecSite[] = [
   { file: 'src/bollharness-integration/skill-adapter.ts', count: 1, kinds: ['skill'], why: 'skill 第二条路径 (registry.execute, 673)' },
   { file: 'src/agents/browser-cdp.ts', count: 1, kinds: ['homonym'], why: 'CDP `session.execute` (799) —— 浏览器命令, 不是工具执行' },
   { file: 'src/agents/chain/chain-wallet.ts', count: 1, kinds: ['homonym'], why: '`params.execute(signer)` (246) —— 钱包动作, 不是工具执行' },
-  { file: 'src/web/agent-delegate-server.ts', count: 1, kinds: ['homonym'], why: '`options.execute({...})` (200) —— 待确认: 若它真去执行工具则归 bypass' },
+  { file: 'src/web/agent-delegate-server.ts', count: 1, kinds: ['port-callback'], why: '`options.execute({...})` (200) —— 2026-10-02 定性: 它是**注入的执行器端口** (`execute?: (req: DelegateExecutionRequest) => Promise<DelegateExecutionResult>`, 见该文件 66 行), 委派服务器**自己不执行工具** ⇒ 不是旁路; 但"注入的那个执行器有没有走门"是 delegate 覆盖面(K7 覆盖面清单)的事, 不在这条普查里' },
   { file: 'src/bollharness-integration/index.ts', count: 1, kinds: ['import'], why: 'import 列表里的名字 (53)' },
   { file: 'src/pi-ecosystem/index.ts', count: 1, kinds: ['import'], why: 'import 列表里的名字 (38)' },
   { file: 'src/pi-ecosystem-mcp/index.ts', count: 1, kinds: ['decl'], why: '`export async function executeTool(` (272) —— 定义' },

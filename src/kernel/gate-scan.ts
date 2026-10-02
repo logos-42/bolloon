@@ -1219,7 +1219,7 @@ export const HARNESS_STAGE_ORDER: readonly string[] = [
   'discover', 'permission', 'policy', 'budget', 'idempotency', 'execute', 'verify', 'evidence', 'event',
 ];
 
-const EXEC_KINDS = ['main', 'skill', 'mcp', 'registry', 'bypass', 'homonym', 'decl', 'import', 'ledger-string'];
+const EXEC_KINDS = ['main', 'skill', 'mcp', 'registry', 'bypass', 'homonym', 'port-callback', 'decl', 'import', 'ledger-string'];
 
 /**
  * 再核对整本 K7 台账:

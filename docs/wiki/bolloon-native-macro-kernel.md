@@ -1744,3 +1744,33 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 
 3 条旁路**尚未真收敛** (本步只登记 + 立判据) · 9 个覆盖面**尚未逐个走门** (现在只是"说得清谁管") ·
 `scanHarnessLedger` 目前只核"台账与盘上一致", 还不能证明"执行路径真的只有一条" —— 那要等旁路收敛后由新的判据承担。
+
+### 57.7 第二步 (待做) 的收敛计划 —— 锚点已实测, 下一个窗口可直接开工
+
+**目标旁路**: `src/agents/workflow-pivot-loop.ts:613` `const result = await tool.execute(toolCall.args ?? {});`
+(它就在"重复工具调用检测"之后 —— 与主路径 `pi-sdk.ts:2715` 的
+`await ((toolCall as any).__t0 = Date.now(), tool.execute(expandHomeArgs(toolCall.args)))` **是两处独立执行**。)
+
+**先要读清的一件事 (第二步的第一刀)**: 主路径在执行前**确实跑过门链**吗? 要在 `pi-sdk.ts` 里定位
+deny/pre-tool-validator 的调用点与 `2715` 的相对位置 (门在同一个函数体内、且在 `tool.execute` 之前 ⇒ 才算"经门链");
+若门也只在别处、不在执行前, 那主路径本身也算旁路 ⇒ **两条都要收敛, 台账的 `bypass` 数要跟着改**。
+⇒ 这正是「数出来 ≠ 判定了」的分界: 本步只做了"数 + 分类", 收敛前必须先把门链与执行点的**先后关系**读实。
+
+**收敛手法 (倾向, 未定案)**: 让 pivot loop 与主路径共用**同一个执行入口**(最自然是 `tool-registry.ts:153` 那个
+"唯一咽喉候选"), 由它内部串 `deny → pre-tool-validator → execute → 读回自证`; 两处调用点只传参。
+这样"执行只有一条咽喉"是可以被判据核的 (核调用点数: 除注册表自身外, 其它文件 `tool.execute(` 应为 0)。
+
+**必须按五删除条件做**: ① 唯一替代路径=注册表 ② 全仓无有效引用 (逐文件 `grep` 到 0)
+③ 真跑覆盖旧能力 (pivot loop 的工具调用要有真跑用例) ④ 一次完整回归 + 一次故障恢复
+⑤ 留可回滚提交点。**8 字段删除记录**照 K1 的格式写。
+
+**3 条旁路的处置预案**: ① pivot loop ⇒ 走上表咽喉 ② `pi-sdk.ts:1330` 内置 tscTool ⇒ 要么走门, 要么在
+`K7_BYPASS_CANDIDATES` 里改成"显式诊断白名单"(写明理由与不可被模型触达的证据) ③ skill 两条路径
+(`pi-sdk.ts:4144` 与 `skill-adapter.ts:673`) ⇒ 收敛成一条。
+
+### 57.8 一处定性闭环 (2026-10-02 当天补)
+
+普查里最后一条"待确认"已定性: `src/web/agent-delegate-server.ts:200` 的 `options.execute({...})` 是
+**注入的执行器端口** (`execute?: (req: DelegateExecutionRequest) => Promise<DelegateExecutionResult>`, 见该文件 66 行) ——
+委派服务器**自己不执行工具** ⇒ **不是旁路**, 新增 kind `port-callback` 归它, 并写明
+"注入的那个执行器有没有走门"属于 delegate 覆盖面的事, 不在执行点普查里。
