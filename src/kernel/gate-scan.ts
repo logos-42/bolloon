@@ -485,3 +485,54 @@ export function scanDeletionVerdictSync(
   }
   return out;
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K2 门: RunContext 状态外置 —— 实例字段访问计数(棘轮) + 假完成检测
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface RunStateFieldLike {
+  name: string;
+  accesses: number;
+  into: string;
+  migrated: boolean;
+}
+
+/**
+ * 判据 (吃源码文本, **先剥注释**):
+ *   · 逐字段 `this.<name>` 实测计数必须与冻结值**双向相等**
+ *     —— 多一处 = 新增泄漏; 少一处 = 改了代码没改账 (要求显式 rebase, 迁移必须是看得见的动作);
+ *   · `migrated: true` 的字段访问必须为 0 —— 否则是假完成;
+ *   · 每个字段的 `into` 必须落在 RunContext 目标清单里 —— 不然"外置"没有落点。
+ */
+export function scanRunContextLeaks(
+  files: readonly SourceFile[],
+  fields: readonly RunStateFieldLike[],
+  opts: { target: readonly string[] },
+): Finding[] {
+  const out: Finding[] = [];
+  for (const f of fields) {
+    if (!opts.target.includes(f.into)) {
+      out.push({ rule: 'runcontext-field-without-home', file: f.name, line: 1, what: `into='${f.into}' 不在 RunContext 目标清单里` });
+    }
+    const rx = new RegExp(`this\\.${f.name}\\b`);
+    let actual = 0;
+    for (const file of files) {
+      for (const raw of file.text.split('\n')) {
+        if (rx.test(stripLineComment(raw))) actual += 1;
+      }
+    }
+    if (actual !== f.accesses) {
+      out.push({
+        rule: 'runcontext-access-drift',
+        file: f.name,
+        line: 1,
+        what: `实测 ${actual} 处 ≠ 冻结 ${f.accesses} 处 (${actual > f.accesses ? '新增泄漏' : '已减少 ⇒ 必须把台账下调到实测值'})`,
+      });
+    }
+    if (f.migrated && actual > 0) {
+      out.push({ rule: 'runcontext-migrated-but-leaking', file: f.name, line: 1, what: `标了 migrated 但还有 ${actual} 处 this. 访问` });
+    }
+  }
+  return out;
+}

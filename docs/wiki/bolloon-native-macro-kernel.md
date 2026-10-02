@@ -453,3 +453,42 @@ K1 的完成标准写着「现有 constraint-runtime 测试继续全绿」。实
 K1-f 第一版**判据红了, 但红在错的原因上**: 它用 `not.toContain("'**/constraint-runtime/**'")` 读 `vitest.config.ts`, 而**我自己的注释里引用了这个被禁的串** ⇒ 判据把注释当成真配置。
 修法落在判据里: **先剥注释再判** (`stripLineComment` 逐行映射; 注意它是**逐行**的, 传整文只会截到第一个 `//`)。
 ⇒ 这是同一个根因的第三次出现 (前两次: 本门测试里的人造引用串被当成真引用; 快照点名被静态分析漏掉)。**规矩**: 判据吃源码文本前先剥注释; 判据的范围里不能包含判据自己。
+
+## 18. K2 门落地 (先落门再动代码) —— RunContext 状态外置
+
+### 18.1 真读数 (2026-10-02, 剥注释后)
+
+`agents/pi-sdk.ts` **4099 行**里, Pi 实例上挂着 **8 个可变运行状态字段 / 共 182 处 `this.` 访问**:
+
+| 字段 | 声明行 | `this.` 访问 | 该搬进 RunContext 的哪个位置 |
+| --- | --- | --- | --- |
+| `messageHistory` | 272 | **53** | `history` |
+| `currentRunId` | 471 | **36** | `runId` |
+| `currentChannelId` | 458 | 21 | `channelId` |
+| `currentAgentId` | 460 | 20 | `agentId` |
+| `currentGoalId` | 1725 | 19 | `goalId` |
+| `currentOnStream` | 442 | 15 | `eventSink` |
+| `currentIntent` | 463 | 10 | `intent` |
+| `currentSignal` | 443 | 8 | `abortSignal` |
+
+**症结**: `runReActLoop(onStream?, signal?)` (`pi-sdk.ts:1923`) 只收 2 个参数, 却隐式依赖上面 8 个字段 ⇒ 两个 Run 只要共用实例就必然互相污染 (这正是 K2 要拆的东西)。目标签名: `runReActLoop(ctx: RunContext)`。
+
+### 18.2 门的三条口径 (`src/test/kernel-runcontext.test.ts`, 6 道门合计 91/91 绿)
+
+1. **逐字段计数必须与冻结值双向相等** —— 多一处 = 新增泄漏; 少一处 = 改了代码没改账 ⇒ 必须**显式 rebase 台账** (迁移必须是看得见的动作);
+2. **`migrated: true` 的字段访问必须为 0** —— 假完成判红;
+3. **每个字段都要有 RunContext 落点** —— 不然"外置"没有落点。
+
+**RunContext 目标清单** = leo 点名的 11 项 + **`intent`** (我自己加的: `currentIntent` 也得有家, 否则第 ③ 条判红 —— 这是对 leo 清单的一处补充, 已记录)。
+
+**判别力自证 (4 种坏形状)** + **真盘变异 (2 例)**: 基线绿 → 往 `pi-sdk.ts` 真加一处 `this.currentRunId` / `this.messageHistory` 访问 ⇒ 各自判红 (`runcontext-access-drift`) → **逐字节还原** (sha256 相同) → 绿。
+
+### 18.3 台账 (逐字段一条, 全部 `migrated: false` —— K2 尚未开工)
+
+`src/kernel/plan-runcontext.ts`: 8 条 `RunStateField` (name / declaredAt / accesses / into / migrated / payDownIn) + `RUN_CONTEXT_TARGET` (12 项) + `RUN_CONTEXT_ACCESS_TOTAL = 182` + 循环入口登记 (`pi-sdk.ts:1923` 现状签名与目标签名)。
+
+**下一步 (K2 主体)**: 先挑**面最小的一个字段做样例迁移** (`currentOnStream` 15 处 → `ctx.eventSink`), 走通"迁移一格 ⇒ 台账降一格 ⇒ 门保持绿"的流程, 再推进其余 7 个。
+
+### 18.4 一处自效果 (记下来免得下次惊讶)
+
+每加一个台账文件, **K6 删除候选就多一条** (`plan-runcontext.ts` 是新的 0 入边产物 ⇒ 候选 98→99)。台账文件在"谁 import 它"这件事上天然是孤岛 —— 判据按 0 入边算候选时, **台账/名册类文件要靠 OWNER 名册豁免**, 不能真当删除对象。
