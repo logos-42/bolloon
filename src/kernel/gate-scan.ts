@@ -607,7 +607,13 @@ export interface K5LedgerLike {
   steps: readonly string[];
   preconditions: readonly string[];
   inheritedFields: readonly { name: string; into: string; accesses: number }[];
-  progress: { stage: string; containerPath: string; fieldsMigrated: number; fieldsTotal: number; entriesWired: number; entriesTotal: number };
+  progress: {
+    stage: string; containerPath: string;
+    fieldsMigrated: number; fieldsTotal: number;
+    /** 已迁字段名单 —— 必须与 fieldsMigrated 数量一致 (见判据 ③b) */
+    migratedFieldNames?: readonly string[];
+    entriesWired: number; entriesTotal: number;
+  };
 }
 
 /**
@@ -653,6 +659,19 @@ export function scanActorLedger(
   if (ledger.progress.entriesWired > ledger.progress.entriesTotal) f('actor-entries-overflow', 'entriesWired > entriesTotal');
   if (ledger.progress.stage === 'not-started' && (ledger.progress.fieldsMigrated !== 0 || ledger.progress.entriesWired !== 0)) {
     f('actor-progress-premature', 'not-started 阶段不许有非零进度');
+  }
+  // ③b 进度位不许自说自话: 迁了几个字段, 就得逐个点名 (名字还必须都在移交字段里)
+  const migrated = ledger.progress.migratedFieldNames ?? [];
+  if (migrated.length !== ledger.progress.fieldsMigrated) {
+    f('actor-fieldnames-mismatch', `fieldsMigrated=${ledger.progress.fieldsMigrated} 但名单 ${migrated.length} 个 ⇒ 进度位与名单不一致`);
+  }
+  for (const n of migrated) {
+    if (!ledger.inheritedFields.some((x) => x.name === n)) {
+      f('actor-fieldnames-unknown', `已迁名单里的 ${n} 不在移交字段 (K5_INHERITED_FIELDS) 里`);
+    }
+  }
+  if (ledger.progress.stage === 'fields-migrated' && ledger.progress.fieldsMigrated !== ledger.progress.fieldsTotal) {
+    f('actor-stage-ahead', `stage=fields-migrated 但 fieldsMigrated=${ledger.progress.fieldsMigrated}/${ledger.progress.fieldsTotal} ⇒ 阶段名超前`);
   }
 
   // ④ 跨台账一致 (K2 → K5)

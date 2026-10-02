@@ -797,3 +797,51 @@ entriesWired   仍 0/4    —— 没有任何入口把执行投递进 mailbox (s
 ### 27.5 回归面
 
 工厂动过 ⇒ 跑了**所有提到 `createAgentSession` / `pi-sdk-session-factory` 的测试**: `pi-sdk` · `session-resume-e2e` · `persistence-e2e-flow` · `full-loop-e2e` · `workflow-pivot-loop` · `session-gets-identity-doc` · `pi-sdk-tools-validation` 等 + 8 个 kernel 门 = **15 文件 / 179 测试全绿**。
+
+## 28. K5 第 4 步第一版: 被全量回归否掉, 已回退 (证据 + 钉住的反例)
+
+### 28.1 我做了什么 (已回退)
+
+把 history 的**本体**搬进 `actor.state.messageHistory`:
+`PiAgentSession.messageHistory` 从实例字段改成**访问器** (绑定 actor 后读写全落 actor 的数组) + `attachActor()` 收养绑定前已有的历史。想法是「所有权真转移, 调用点零改动」。
+
+### 28.2 全量回归怎么否掉它
+
+```
+全量 4742 测试 ⇒ 6 红 (3 文件)
+① 会话隔离被打破 (5 红): persistence-e2e-flow ×2 · session-resume-e2e ×3
+   症状一致: **新构造的 session 已经看见别人的 history** (`expected 2 to be 0`, `expected 6 to be 0`, `expected 5 to be 0`)
+   根因: actor 注册键 = `peerId` 的 `:` 前段 (或 `default`), 而**会话身份 (SessionStore key) 在 hydrate 时才出现**
+        ⇒ 两个独立 session 共用同一个 actor ⇒ history 串台
+② K2 门拦下 (1 红): pi-run-context-wiring「session 级字段必须**仍是实例字段**」
+   —— 第 4 步没落地前不许留半搬状态 (门是对的)
+```
+
+### 28.3 结论 (写进 K5 约束, 不是"下次注意")
+
+| 约束 | 依据 |
+| --- | --- |
+| **history 归属不能按 channel 前缀** —— 必须按**会话身份** (SessionStore key) | 5 红全出自"同 channel 前缀、不同会话身份"这一形状 |
+| **归属转移点必须挪到 hydrate/resume** —— 身份在那时才解析; 构造期拿不到身份 | 构造期只有 `peerId`/`default`, 信息不足 |
+| **一个 Pi 实例用多个 key 时不许串** (测试里真实存在: `resume('cli:a')` 后 `save('cli:b')`) | persistence / session-resume 的既有用法 |
+| K2 ↔ K5 的**中间态不允许存在**: 要么字段还在实例上, 要么整块搬完 | K2 镜像门 |
+
+### 28.4 钉住的反例 (这一刀留下的最有价值的东西)
+
+新增门用例: **同 channel 前缀的两个独立 session 不许看见彼此 history** —— A 先 `resume` 出 2 条, B 随后构造时必须**仍是 0**, 只有 B 自己 resume 那个 key 之后才看得到。
+⇒ 谁再按"channel 前缀"共享 history, 这条立刻红 (不必等全量)。
+
+### 28.5 已回退到绿
+
+```
+回退: pi-sdk.ts 恢复 `private messageHistory: Message[] = []` · 去掉 attachActor/访问器
+      pi-sdk-types.ts 去掉 attachActor · 工厂改回直接赋 `session.actor`
+      台账: fieldsMigrated 回到 0, migratedFieldNames 回到 [] (进度位不许虚报)
+全量: **316 文件 / 4742 测试全绿** · tsc 0 错 · K5 门 17/17
+保留: 注册表 + 会话工厂绑定 (第 3 步) · 判据 ③b (进度位与名单必须一致) · 钉住的反例 · 门 ③b 的三条判别力用例
+```
+
+### 28.6 一条操作教训
+
+回退一个代码段落时, 我用 `find(首次出现的结尾标记)` 定位段落末尾 —— 结果**留了一个多余的 `}`**, 让 pi-sdk.ts 出现数千个语法错误 (tsc 直接把整file 判废)。
+⇒ 规矩: **删段落要用语法结构定位 (花括号配平/整块函数边界), 不要用"某个字符串的首次出现"**; 删完立刻 `tsc` 验。

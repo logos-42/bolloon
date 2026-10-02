@@ -10,7 +10,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { SessionStore } from '../agents/session-store.js';
+import { createAgentSession } from '../agents/pi-sdk-session-factory.js';
 
 import {
   ACTOR_STATE_ITEMS,
@@ -79,8 +82,9 @@ describe('K5 门: Channel Actor 台账', () => {
   it('台账与盘上事实一致: 标了 registry-built ⇒ 容器文件必须真的存在', () => {
     expect(K5_PROGRESS.stage).toBe('registry-built');
     expect(fs.existsSync(path.join(SRC, K5_PROGRESS.containerPath))).toBe(true);
-    // 容器建了 ≠ 字段迁了 / 入口接了 (两个计数仍必须是 0)
+    // 容器建了 ≠ 字段迁了 / 入口接了 (第 4 步第一版被全量回归否掉并回退 ⇒ 两个计数都必须是 0)
     expect(K5_PROGRESS.fieldsMigrated).toBe(0);
+    expect(K5_PROGRESS.migratedFieldNames).toEqual([]);
     expect(K5_PROGRESS.entriesWired).toBe(0);
   });
 
@@ -176,6 +180,51 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(sb.actor!.state.messageHistory).toEqual([]);
     resetActors();
   }, 60000);
+
+  it('★ 钉住反例 (全量回归实证): 同 channel 前缀的两个独立 session 不许看见彼此 history', async () => {
+    // 2026-10-02: 第 4 步第一版 (把 history 本体按 channel 前缀挂进 actor) 被全量回归否掉 ——
+    //   6 红, 其中 5 红就是这条: 新 session 一构造就看到别人的 history (`expected 2 to be 0`)。
+    //   根因: actor 的键是 peerId 的 `:` 前段 (或 default), 而**会话身份 (SessionStore key) 在 hydrate 时才出现**。
+    //   ⇒ 这条不变量在这里钉死: 谁再按"channel 前缀"共享 history, 立刻红。
+    resetActors();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'k5-iso-'));
+    try {
+      const store = new SessionStore({ cacheDir: tmpDir });
+      await store.saveMessages('k5iso:conv-1', [
+        { role: 'user', content: 'iso-1', timestamp: 1, source: 'test' },
+        { role: 'assistant', content: 'iso-2', timestamp: 2, source: 'test' },
+      ] as any);
+      // A 与 B 的 peerId **同 channel 前缀** (k5iso) —— 正是当年泄漏的形状
+      const sA: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5iso:s1', sessionStore: store });
+      const nA = await sA.resumeSession('k5iso:conv-1');
+      expect(nA).toBe(2);
+      expect((sA as any).messageHistory.length).toBe(2);
+      // B 是**独立会话** ⇒ 不许看到 A 刚灌进来的历史 (无论 actor 是否按 channel 共享)
+      const sB: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5iso:s2', sessionStore: store });
+      expect((sB as any).messageHistory.length).toBe(0);
+      // 只有 B 自己 resume 那个 key 之后才看得到内容
+      const nB = await sB.resumeSession('k5iso:conv-1');
+      expect(nB).toBe(2);
+      expect((sB as any).messageHistory.length).toBe(2);
+    } finally {
+      resetActors();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 90000);
+
+  it('★ 判据 ③b: 进度位与名单必须一致 (迁了几个字段就得逐个点名)', () => {
+    const clone = (over: any = {}) => ({ ...LEDGER, ...over } as any);
+    const base = { exists, k2SessionFields: K2_SESSION };
+    // 名字不在移交字段里 ⇒ 红
+    const bad1 = clone({ progress: { ...K5_PROGRESS, migratedFieldNames: ['messageHistory', '不存在的字段'] } });
+    expect(scanActorLedger(bad1, base).some((f) => f.rule === 'actor-fieldnames-unknown')).toBe(true);
+    // 数量对不上 ⇒ 红
+    const bad2 = clone({ progress: { ...K5_PROGRESS, fieldsMigrated: 2, migratedFieldNames: ['messageHistory'] } });
+    expect(scanActorLedger(bad2, base).some((f) => f.rule === 'actor-fieldnames-mismatch')).toBe(true);
+    // 阶段名超前 (fields-migrated 但只迁了 1/4) ⇒ 红
+    const bad3 = clone({ progress: { ...K5_PROGRESS, stage: 'fields-migrated' } });
+    expect(scanActorLedger(bad3, base).some((f) => f.rule === 'actor-stage-ahead')).toBe(true);
+  });
 
   it('容器语义: 未给的字段显式置空 (镜像 K2 的「不继承残留」)', () => {
     const st = createActorState();

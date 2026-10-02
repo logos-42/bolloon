@@ -19,6 +19,15 @@ export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'fi
  *   · 2026-10-02 container-built → **registry-built**: 注册表 `getOrCreateActor(peekActor/actorCount/resetActors)`
  *     落地, 并由 **session factory** 在会话创建时按 channel 绑定 (`attachActor`) ⇒ 一个 channel 一个 actor 成立;
  *     `fieldsMigrated` 仍 0/4 · `entriesWired` 仍 0/4 (只做归属, 没有把执行投递进 mailbox, 状态仍在 Pi 实例上)。
+ *   · 2026-10-02 **第 4 步第一版被全量回归否掉, 已回退** (证据留在 §28):
+ *     曾把 history 本体搬进 `actor.state.messageHistory` (Pi 侧改成访问器 + `attachActor` 收养)。
+ *     全量 **4742 测试 ⇒ 6 红**, 两类根因:
+ *       ① **会话隔离被打破** (5 红): actor 的注册键是 `peerId` 的 `:` 前段 (或 `default`), 而
+ *          **会话身份 (SessionStore key) 在 hydrate 时才出现** ⇒ 两个独立 session 共用同一个 actor,
+ *          新 session 一构造就看到别人的 history (测试实测 `expected 2 to be 0`)。
+ *       ② **K2 门拦下** (1 红): 「session 级字段必须**仍是实例字段**」—— 第 4 步落地前不许留半搬状态。
+ *     ⇒ **结论 (写进 K5 约束)**: history 归属**不能按 channel 前缀**, 必须按**会话身份**;
+ *       且身份在 hydrate 阶段才解析 ⇒ 归属转移点必须挪到 hydrate, 并且一个 Pi 实例换 key 时不许串。
  */
 
 export interface ActorStateItem { name: string; why: string; owner: string }
@@ -83,6 +92,8 @@ export const K5_PROGRESS = {
   /** Actor 容器文件路径 (存在性由门真读盘核对) */
   containerPath: 'kernel/channel-actor.ts',
   fieldsMigrated: 0,
+  /** 已迁字段名单 —— 门强制 `length === fieldsMigrated` 且每个名字都在 K5_INHERITED_FIELDS 里 */
+  migratedFieldNames: [],
   fieldsTotal: 4,
   entriesWired: 0,
   entriesTotal: 4,
