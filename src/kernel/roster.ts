@@ -250,9 +250,9 @@ export interface DebtEntry {
  * 条数另有 `AUTHORITY_DEBT_FROZEN_AT` 冻死, **只许减不许增**。
  */
 export const AUTHORITY_DEBT: readonly DebtEntry[] = [
-  { prohibition: 'channel-must-not-write-goal', file: 'web/server.ts', call: 'setContinuation', count: 1, payDownIn: 'K4' },
-  { prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'setRunStatus', count: 2, payDownIn: 'K4' },
-  { prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'recordRecovery', count: 1, payDownIn: 'K4' },
+  { prohibition: 'channel-must-not-write-goal', file: 'web/server.ts', call: 'setContinuation', count: 1, payDownIn: 'K5' },
+  { prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'setRunStatus', count: 2, payDownIn: 'K5' },
+  { prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'recordRecovery', count: 1, payDownIn: 'K5' },
 ];
 
 /** 欠账条数冻结值 (只许减; 要加必须同时改这里 → 在 diff 里是一次显式动作) */
