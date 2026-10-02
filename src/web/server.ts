@@ -1871,6 +1871,10 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     }
   })();
 
+  // 2026-07-28: 用户 DID 身份端点 — 静默生成/加载, 持久化到 ~/.bolloon/identity/user.json
+  let userIdentityCache: Record<string, string> | null = null;
+  const IDENTITY_DIR = `${process.env.HOME || '/tmp'}/.bolloon/identity`;
+
   // 2026-08-08: DID 目录启动接入 — 回填既有磁盘数据 + 启动 OrbitDB 自动复制.
   //   fire-and-forget: 不阻塞启动; 失败静默 (catalog 是增强层, 原磁盘路径永远可用).
   (async () => {
@@ -4248,8 +4252,11 @@ fetchState();
   });
 
   // 2026-07-28: 用户 DID 身份端点 — 静默生成/加载, 持久化到 ~/.bolloon/identity/user.json
-  let userIdentityCache: Record<string, string> | null = null;
-  const IDENTITY_DIR = `${process.env.HOME || '/tmp'}/.bolloon/identity`;
+  // 2026-10-02: **声明位置有硬约束** —— 必须早于下面 did-catalog 的启动 IIFE。
+  //   踩过一次: `loadOrCreateUserIdentity()` 在 did-catalog 的 IIFE (1876 附近) 里被 `await` 调用,
+  //   而 `let` 声明在 4200+ 行之外 ⇒ 微任务先跑到那次调用 ⇒ **TDZ** ("Cannot access 'userIdentityCache'
+  //   before initialization") ⇒ 开机时 **OrbitDB 复制根本没起来**, 只在日志里留了一条"非致命"。
+  //   修法: 把声明挪到**首次使用之前** (同作用域, 语义不变); 位置由下面的门锁住。
 
   async function loadOrCreateUserIdentity() {
     if (userIdentityCache) return userIdentityCache;
