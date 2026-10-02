@@ -227,3 +227,13 @@ describe('K8 大目标门: channelRunState 迁移工作面 (台账 == 盘上, �
     expect(scanRunStateConsolidation(K8_CHANNEL_RUNSTATE, K8_PROGRESS, { readFile })).toEqual([]);   // 未变异 ⇒ 仍绿
   });
 });
+
+describe('K8 批次① 前哨: channel 消息 drain 已合一 + 经内核邮箱 (通道不再兼任调度器)', () => {
+  it('⑤ 机械: 只有一处 finishChannelRun 实现 · 两个出口都走它 · 不再 setImmediate 裸跑 · 经 getChannelQueue().submit', () => {
+    const src = readFile('src/web/server.ts')!;
+    expect((src.match(/function finishChannelRun\(/g) || []).length).toBe(1);            // 两份实现 → 一处
+    expect((src.match(/finishChannelRun\(channelId, runState\)/g) || []).length).toBe(2); // /message + runMessageFromQueue
+    expect(src).not.toMatch(/setImmediate\(\(\) => \{\s*void runMessageFromQueue/);   // 不再裸跑
+    expect(src).toMatch(/getChannelQueue\(channelId\)\.submit\(\(\) => runMessageFromQueue/); // 投进内核邮箱
+  });
+});

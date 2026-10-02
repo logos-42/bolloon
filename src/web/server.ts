@@ -5544,28 +5544,7 @@ fetchState();
       //   能直接拿到引用.
       clearTimeout(forceTimeout);
 
-      // queue dequeue: 跑完或失败都要清状态
-      runState.running = false;
-      runState.abortController = null;
-      broadcastQueueUpdate(channelId);
-
-      // 2026-07-15 修 Bug 8: 队列自动 drain — 之前只清状态不抽下一条, 用户连续发的所有
-      //   第二轮起全卡在 queue 里出不来, 表现"第二轮没反应".
-      //   修复: finally 里查 queue, 非空就异步 fire-and-forget 起下一轮.
-      //   实现要点:
-      //     1. 用 setImmediate / Promise.resolve() 让 res.headersSent 干净
-      //     2. 不能 await (否则阻塞 finally 后面的 saveSession; 而且这就是 fire-and-forget)
-      //     3. 重新 build contextHint, 走相同 LLM 路径
-      if (runState.queue.length > 0) {
-        const next = runState.queue.shift()!;
-        console.log(`[queue-drain] channel=${next.channelId} text="${next.text.slice(0, 30)}" attach=${(next.attachments?.length ?? 0)}`);
-        // 异步跑下一条 (fire-and-forget)
-        setImmediate(() => {
-          void runMessageFromQueue(next).catch((e: any) => {
-            console.error('[queue-drain] error:', e?.message?.slice(0, 200));
-          });
-        });
-      }
+      finishChannelRun(channelId, runState);
 
       // 2026-07-01 (v0.2.5): 持久化当前 messageHistory — 让 web 用户跨刷新保留对话.
       //   saveCurrentSession 失败静默, 不阻塞 channel 状态清理.
@@ -5738,24 +5717,36 @@ fetchState();
       broadcast({ type: 'error', content: 'queue-drain: ' + (err?.message || 'failed') }, channelId);
     } finally {
       clearTimeout(forceTimeout);
-      runState.running = false;
-      runState.abortController = null;
-      broadcastQueueUpdate(channelId);
-
-      // 递归 drain — 同 /message 主路径 finally 行为保持一致
-      if (runState.queue.length > 0) {
-        const next = runState.queue.shift()!;
-        console.log(`[queue-drain-recursive] channel=${next.channelId} text="${next.text.slice(0, 30)}"`);
-        setImmediate(() => {
-          void runMessageFromQueue(next).catch((e: any) => {
-            console.error('[queue-drain-recursive] error:', e?.message?.slice(0, 200));
-          });
-        });
-      }
+      finishChannelRun(channelId, runState);
 
       if (agent) {
         try { await agent.saveCurrentSession(sessionKey); } catch {}
       }
+    }
+  }
+
+  /**
+   * 一轮跑完的收尾 (2026-10-02 K8)。
+   *
+   * **原先 /message 主路径与 `runMessageFromQueue` 各写了一份完全同型的 drain** (清状态 → 广播 → 抽下一条 → 异步跑),
+   * 只在日志前缀上不同 —— 两份实现 = 必然有一天只改一处。现在合成**一处**。
+   *
+   * 另一件事: 抽下一条**不再 `setImmediate` 裸跑**, 而是投进该 channel 的**内核邮箱**
+   * (`getChannelQueue(channelId).submit`) —— 同通道串行 / 跨通道并行由内核保证 (与 K5 同一条语义),
+   * 通道自己不再兼任调度器。(微差: 原 `setImmediate` 是宏任务, 现在是邮箱的微任务续体 ⇒ 起跑略早;
+   * 串行性与顺序不变。)
+   */
+  function finishChannelRun(channelId: string, runState: ChannelRunState): void {
+    runState.running = false;
+    runState.abortController = null;
+    broadcastQueueUpdate(channelId);
+
+    if (runState.queue.length > 0) {
+      const next = runState.queue.shift()!;
+      console.log(`[queue-drain] channel=${next.channelId} text="${String(next.text).slice(0, 30)}" attach=${(next.attachments?.length ?? 0)}`);
+      void getChannelQueue(channelId).submit(() => runMessageFromQueue(next)).catch((e: any) => {
+        console.error('[queue-drain] error:', e?.message?.slice(0, 200));
+      });
     }
   }
 
