@@ -1025,3 +1025,32 @@ export function scanPreconditionBacking(
   }
   return out;
 }
+
+/**
+ * **K5 步骤⑧ 完成判据** —— 声明必须与**从盘上重算**的事实一致 (双向):
+ *   条件 A: 5 个访问器在 pi-sdk 侧 0 引用;
+ *   条件 B: 5 个"绑定前暂存"字段的 `private <name>` 声明不存在;
+ *   条件 C: 入口投递 wired === total。
+ *   声明完成而任一条件不成立 ⇒ 红; 事实三条全成立而台账说没完成 ⇒ 红 (台账要跟上)。
+ */
+export function scanStep8Completion(
+  piCode: string,
+  step8: { claimedComplete: boolean; entriesWired: number; entriesTotal: number },
+  surface: { accessorFields: readonly string[]; frozenInPiSdk: Record<string, number> },
+  fieldDeletion: { sourceFields: readonly string[]; deletedStagingFields: readonly string[] },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'step8-completion', file: 'kernel/plan-channel-actor.ts', line: 1, what });
+  const liveAccessors = scanAccessorSurface(piCode, surface).map((x) => x.what);
+  const stagingStillDeclared = fieldDeletion.sourceFields.filter((n) => new RegExp(`private\\s+${n}\\b`).test(piCode));
+  const entriesOk = step8.entriesTotal > 0 && step8.entriesWired === step8.entriesTotal;
+  const conditionsHold = liveAccessors.length === 0 && stagingStillDeclared.length === 0 && entriesOk;
+  if (step8.claimedComplete) {
+    if (liveAccessors.length > 0) f(`声明⑧ 完成, 但访问器仍非 0 引用: ${liveAccessors.join(' / ')}`);
+    if (stagingStillDeclared.length > 0) f(`声明⑧ 完成, 但暂存字段仍在: ${stagingStillDeclared.join(', ')}`);
+    if (!entriesOk) f(`声明⑧ 完成, 但入口投递 ${step8.entriesWired}/${step8.entriesTotal}`);
+  } else if (conditionsHold) {
+    f('三条完成条件都已成立, 台账却说⑧ 未完成 ⇒ 台账该跟上 (事实优先)');
+  }
+  return out;
+}

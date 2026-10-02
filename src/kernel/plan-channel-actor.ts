@@ -9,7 +9,7 @@
  *   标了"容器未建"就必须真的不存在 `src/kernel/channel-actor.ts`; 进度只许增; 未建/未迁的不许标成已完成。
  */
 
-export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'fields-migrated' | 'entries-wired' | 'done';
+export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'field-deletion-complete' | 'fields-migrated' | 'entries-wired' | 'done';
 
 /**
  * 进度历史 (台账只许前进, 每次前进都要留下日期与"这一步交付了什么"):
@@ -248,8 +248,25 @@ export const K5_ENTRY_GROUPS: readonly { entry: string; files: readonly string[]
 ];
 
 /** 进度位 —— 门强制与盘上事实同步 (进度只许增; 未建的不许标已建) */
+/**
+ * **K5 步骤⑧ 的终态声明** —— "删字段"这一步做完了。
+ *   声明**不是自报**: 判据 `scanStep8Completion` 会把三个条件**从盘上重算** (访问器引用数 / 暂存字段声明 / 入口投递),
+ *   任何一条不成立 ⇒ 红; 反过来"事实已完成而台账说没完成" ⇒ 也红 (双向, 台账必须与事实同步)。
+ */
+export const K5_STEP8 = {
+  claimedComplete: true,
+  /** ① 5 个访问器在 pi-sdk 侧 0 引用 (由 scanAccessorSurface 从盘上重算) */
+  accessorRefsFrozenAtZero: K5_ACCESSOR_SURFACE.accessorFields.length,
+  /** ② 5 个"绑定前暂存"字段的声明不存在 (由 scanStagingFieldDeletion 的双向判据核) */
+  stagingFieldsDeleted: K5_FIELD_DELETION.deletedStagingFields.length,
+  /** ③ 入口投递 4/4 (由 scanEntryDelivery 从盘上重算) */
+  entriesWired: 4,
+  entriesTotal: 4,
+  why: '⑧ 完成的三个可数条件 —— 声明即需条件成立, 判据从盘上重算; 任一不成立或"事实已完成而台账说没完成"都判红',
+} as const;
+
 export const K5_PROGRESS = {
-  stage: 'registry-built' as K5Stage,
+  stage: 'field-deletion-complete' as K5Stage,
   /** Actor 容器文件路径 (存在性由门真读盘核对) */
   containerPath: 'kernel/channel-actor.ts',
   fieldsMigrated: 4,

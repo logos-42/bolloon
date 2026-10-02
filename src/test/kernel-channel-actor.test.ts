@@ -15,10 +15,10 @@ import path from 'node:path';
 import { SessionStore } from '../agents/session-store.js';
 import { createAgentSession } from '../agents/pi-sdk-session-factory.js';
 
-import { ACTOR_STATE_ITEMS, HISTORY_WRITE_FUNNEL, K5_ACCEPTANCE, K5_ACCESSOR_SURFACE, K5_CHANNEL_LOCK, K5_DELETION_PRECONDITIONS, K5_EXECUTION_REQUEST, K5_GOAL_BINDING_RULE, K5_INHERITED_FIELDS, K5_PROGRESS, K5_RUN_BOUNDARY, K5_STEPS } from '../kernel/plan-channel-actor.js';
+import { ACTOR_STATE_ITEMS, HISTORY_WRITE_FUNNEL, K5_ACCEPTANCE, K5_ACCESSOR_SURFACE, K5_CHANNEL_LOCK, K5_DELETION_PRECONDITIONS, K5_EXECUTION_REQUEST, K5_FIELD_DELETION, K5_GOAL_BINDING_RULE, K5_INHERITED_FIELDS, K5_PROGRESS, K5_RUN_BOUNDARY, K5_STEP8, K5_STEPS } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
 import { ChannelActor, SerialMailbox, actorCount, actorCount as registrySize, channelQueueCount, createActorState, currentActorContext, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
-import { countEntryExecutionPoints, scanAccessorSurface, scanActorLedger, scanChannelLock, scanEntryDelivery, scanExecutionRequest, scanHistoryWriteSites, scanPreconditionBacking, scanRunBoundaryResidence, type K5LedgerLike } from '../kernel/gate-scan.js';
+import { countEntryExecutionPoints, scanAccessorSurface, scanActorLedger, scanChannelLock, scanEntryDelivery, scanExecutionRequest, scanHistoryWriteSites, scanPreconditionBacking, scanRunBoundaryResidence, scanStep8Completion, type K5LedgerLike } from '../kernel/gate-scan.js';
 import * as gateScan from '../kernel/gate-scan.js';
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -39,6 +39,22 @@ const K2_SESSION = RUN_CONTEXT_FIELDS.filter((f) => f.scope === 'session').map((
 // K5 步骤⑧ 新增: 访问器棘轮 + 前置背书
 const PI_SRC_TEXT = fs.readFileSync(path.join(SRC, 'agents/pi-sdk.ts'), 'utf-8');
 const JUDGE_NAMES = Object.keys(gateScan).filter((k) => k.startsWith('scan'));
+
+it('★ 判据: 步骤⑧ "完成"必须能从盘上重算 (三条件 · 双向 · 判别力)', () => {
+    // 直接接**台账本体** (不让测试绕开它): 声明 + 两个派生计数都要自洽
+    const base = { claimedComplete: K5_STEP8.claimedComplete, entriesWired: K5_STEP8.entriesWired, entriesTotal: K5_STEP8.entriesTotal };
+    expect(K5_STEP8.stagingFieldsDeleted).toBe((K5_FIELD_DELETION as any).sourceFields.length);
+    expect(K5_STEP8.accessorRefsFrozenAtZero).toBe(K5_ACCESSOR_SURFACE.accessorFields.length);
+    // 盘上真事实 ⇒ 绿
+    expect(scanStep8Completion(PI_SRC_TEXT, base, K5_ACCESSOR_SURFACE, K5_FIELD_DELETION as any)).toEqual([]);
+    // 判别力 ①: 注入一处访问器引用 ⇒ 红
+    expect(scanStep8Completion('const x = this.messageHistory;\n' + PI_SRC_TEXT, base, K5_ACCESSOR_SURFACE, K5_FIELD_DELETION as any).length).toBeGreaterThan(0);
+    // 判别力 ②: 暂存字段回来 (private _history) ⇒ 红
+    expect(scanStep8Completion(PI_SRC_TEXT + '\n  private _history: any[] = [];\n', base, K5_ACCESSOR_SURFACE, K5_FIELD_DELETION as any).length).toBeGreaterThan(0);
+    // 判别力 ③: 入口没接完却说完成 ⇒ 红 · ④ 事实已完成却说没完成 ⇒ 红 (双向)
+    expect(scanStep8Completion(PI_SRC_TEXT, { claimedComplete: true, entriesWired: 3, entriesTotal: 4 }, K5_ACCESSOR_SURFACE, K5_FIELD_DELETION as any).length).toBe(1);
+    expect(scanStep8Completion(PI_SRC_TEXT, { claimedComplete: false, entriesWired: 4, entriesTotal: 4 }, K5_ACCESSOR_SURFACE, K5_FIELD_DELETION as any).length).toBe(1);
+  });
 
 describe('K5 步骤⑧ 门: 访问器棘轮 + 前置背书', () => {
   it('★ 判据: pi-sdk 对已迁字段访问器的引用数 == 台账 (全 0; 任何一处引用都判红)', () => {
@@ -99,8 +115,10 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(K5_GOAL_BINDING_RULE).toContain('不许靠裸字段');
   });
 
-  it('台账与盘上事实一致: 标了 registry-built ⇒ 容器文件必须真的存在', () => {
-    expect(K5_PROGRESS.stage).toBe('registry-built');
+  it('台账与盘上事实一致: 阶段已过容器 ⇒ 容器文件必须真的存在', () => {
+    // 阶段随事实前推 (⑧ 完成 ⇒ 'field-deletion-complete'); 意图不变: 阶段已过 container-built ⇒ 容器文件必须真的在
+    expect(K5_PROGRESS.stage).toBe('field-deletion-complete');
+    expect(fs.existsSync(path.join(SRC, K5_PROGRESS.containerPath))).toBe(true);
     expect(fs.existsSync(path.join(SRC, K5_PROGRESS.containerPath))).toBe(true);
     // 容器建了 ≠ 字段迁了 / 入口接了 (第 4 步第一版被全量回归否掉并回退 ⇒ 两个计数都必须是 0)
     expect(K5_PROGRESS.fieldsMigrated).toBe(4);
