@@ -66,6 +66,18 @@ export function truncateToolOutput(output: string | undefined, max: number = TOO
   return s.slice(0, max) + `\n… [truncated, ${s.length - max} chars omitted]`;
 }
 
+/**
+ * 2026-10-02 (K7): **受门执行端口** —— 注入后, pivot loop 不再自己调 `tool.execute`,
+ * 而是把执行交给注入方 (pi-sdk 把同一个 harness 判定包进来) ⇒ 与主路径共用一套门。
+ *
+ * 语义契约 (三条, 由测试钉住):
+ *  ① 未注入 ⇒ 行为与以前**一字不差** (向后兼容, 便于灰阶上线)
+ *  ② 注入 ⇒ 执行只走端口; 端口返回 `success:false` 即"被拒", pivot loop **不得**再回落执行
+ *  ③ **fail-closed**: 端口抛错 ⇒ 记为 `拒绝: [harness-error] …` 并**不执行** ——
+ *     门坏掉若静默变成"没门", 比没有门更危险 (旧实现有过两条路径 fail-open, 见 pi-sdk 注释)
+ */
+export type GuardedExecute = (tool: Tool, args: Record<string, string>) => Promise<ToolResult>;
+
 export interface PivotLoopConfig {
   maxIterations: number;
   minIterations?: number;
@@ -73,7 +85,18 @@ export interface PivotLoopConfig {
   maxConsecutiveNoProgress?: number;
   maxTokenBudget?: number;
   complexity?: TaskComplexity;
+  /** 可选: 受门执行端口 (K7 旁路收敛用; 不注入 = 旧行为) */
+  guardedExecute?: GuardedExecute;
 }
+
+/**
+ * 解析后的配置: 除 `guardedExecute` 外全部必填 (端口保持可选)。
+ * 用命名类型而不是到处写 `ResolvedPivotConfig` —— 后者会把可选的端口也变成必填,
+ * 于是"允许注入端口"这件事在类型上就做不到了 (K7 端口落地时 tsc 当场报的三处就在这)。
+ */
+export type ResolvedPivotConfig = Required<Omit<PivotLoopConfig, 'guardedExecute'>> & {
+  guardedExecute?: GuardedExecute;
+};
 
 export interface PivotLoopState {
   iteration: number;
@@ -187,7 +210,7 @@ function analyzeTaskComplexity(input: string): TaskProfile {
  * WorkflowPivotLoop - Main loop controller
  */
 export class WorkflowPivotLoop {
-  private config: Required<PivotLoopConfig>;
+  private config: ResolvedPivotConfig;
   private state: PivotLoopState;
   private tools: Map<string, Tool>;
   private messageHistory: Array<{ role: string; content: string; toolCall?: ToolDefinition; toolResult?: ToolResult }>;
@@ -215,7 +238,7 @@ export class WorkflowPivotLoop {
     this.tools = new Map();
     
     // Default configuration based on task complexity if not provided
-    const defaults: Required<PivotLoopConfig> = {
+    const defaults: ResolvedPivotConfig = {
       maxIterations: config.maxIterations || 1000,  // 2026-07-06: 持久循环 (旧 50)
       minIterations: config.minIterations || 2,
       qualityThreshold: config.qualityThreshold || 0.7,
@@ -223,7 +246,10 @@ export class WorkflowPivotLoop {
       maxTokenBudget: config.maxTokenBudget || 50000,
       complexity: config.complexity || 'moderate'
     };
-    
+    // 2026-10-02 (K7): 端口必须**显式带过来** —— 上面这套 defaults 会重建配置对象,
+    //   漏一行就等于"注入了但没人接"(本仓踩过 defaults 静默丢字段的同类坑)。
+    if (config.guardedExecute) defaults.guardedExecute = config.guardedExecute;
+
     this.config = defaults;
     
     this.state = this.createInitialState();
@@ -610,7 +636,22 @@ export class WorkflowPivotLoop {
               });
             }
 
-            const result = await tool.execute(toolCall.args ?? {});
+            // 2026-10-02 (K7): 执行改**门端口优先** —— 注入时由端口串
+            //   deny → pre-tool-validator → execute → 读回自证 (与主路径共用同一 harness 判定),
+            //   未注入时与以前一字不差。
+            //   **fail-closed**: 端口抛错 ⇒ 记拒执行文案且**绝不回落** `tool.execute` ——
+            //   门坏掉若静默变成"没门"(旧实现那两条 fail-open 路径), 比没有门更危险。
+            let result: ToolResult;
+            if (this.config.guardedExecute) {
+              try {
+                result = await this.config.guardedExecute(tool, toolCall.args ?? {});
+              } catch (guardErr) {
+                const msg = String((guardErr as Error)?.message ?? guardErr);
+                result = { success: false, error: `拒绝: [harness-error] ${msg}` } as ToolResult;
+              }
+            } else {
+              result = await tool.execute(toolCall.args ?? {});
+            }
 
             // 2026-08-11: 输出过大 → 续跑提示 (Hermes dropped-tools continuation 模式),
             //   上下文后续可能被压缩, 提醒 LLM 需要精确数据时缩小范围重查
@@ -693,7 +734,7 @@ export class WorkflowPivotLoop {
   /**
    * Determine if loop should continue
    */
-  private shouldContinue(config: Required<PivotLoopConfig>): boolean {
+  private shouldContinue(config: ResolvedPivotConfig): boolean {
     // Hard stop: max iterations reached
     if (this.state.iteration >= config.maxIterations) {
       this.emit({
@@ -718,7 +759,7 @@ export class WorkflowPivotLoop {
   /**
    * Adapt configuration based on task profile
    */
-  private adaptConfigForTask(profile: TaskProfile): Required<PivotLoopConfig> {
+  private adaptConfigForTask(profile: TaskProfile): ResolvedPivotConfig {
     return {
       ...this.config,
       maxIterations: Math.min(this.config.maxIterations, profile.suggestedMaxIterations),
@@ -1021,7 +1062,7 @@ ${identityLine ? identityLine + '\n' : ''}当前 step 别再读 persona 全文, 
   /**
    * Determine why loop exited
    */
-  private determineExitReason(config: Required<PivotLoopConfig>): ExitReason {
+  private determineExitReason(config: ResolvedPivotConfig): ExitReason {
     if (this.state.iteration >= config.maxIterations) {
       return 'max_iterations';
     }

@@ -2,6 +2,8 @@ import { config } from 'dotenv';
 import { describe, it, expect, beforeAll } from 'vitest';
 import { WorkflowPivotLoop, createDefaultPivotConfig, runPivotLoop } from '../agents/workflow-pivot-loop.js';
 import type { Tool } from '../agents/pi-sdk.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 config();
 
@@ -391,5 +393,71 @@ describe('PiSDK PivotLoop Integration', () => {
         expect(d.function.description).toBe(`desc_${n}`);
       }
     });
+  });
+});
+
+
+// ============================================================================
+// 2026-10-02 (K7): 受门执行端口 —— pivot loop 的执行点可被"门"接管
+//   (旁路收敛的前置: 台账 K7_BYPASS_CANDIDATES ① workflow-pivot-loop.ts:613)
+//   三条契约: ① 未注入 ⇒ 旧行为一字不差 ② 注入 ⇒ 执行只走端口
+//             ③ 端口抛错 ⇒ **fail-closed** (拒执行, 绝不回落 tool.execute)
+// ============================================================================
+describe('K7: pivot loop 的受门执行端口 (guardedExecute)', () => {
+  function toolWithCounter() {
+    const calls: string[] = [];
+    const tool: Tool = {
+      name: 'list_files',
+      description: '列出文件',
+      parameters: {},
+      execute: async () => { calls.push('executed'); return { success: true, output: 'file1.txt' }; },
+    };
+    return { tool, calls };
+  }
+  const mkLLM = () => createMockLLM({ callCount: 0, shouldReturnFinal: false, finalResponse: '完成' });
+
+  it('① 未注入端口 ⇒ 仍旧直调 tool.execute (行为不变, 向后兼容)', async () => {
+    const { tool, calls } = toolWithCounter();
+    const loop = new WorkflowPivotLoop(createDefaultPivotConfig());
+    loop.registerTool(tool);
+    await loop.execute('列出文件', mkLLM() as any, 'sys');
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it('② 注入端口 ⇒ 执行只走端口, 旁路本体 tool.execute 一次都不许被调', async () => {
+    const { tool, calls } = toolWithCounter();
+    const portCalls: string[] = [];
+    const loop = new WorkflowPivotLoop({
+      ...createDefaultPivotConfig(),
+      guardedExecute: async (t) => { portCalls.push(String(t.name)); return { success: true, output: '由端口执行' }; },
+    });
+    loop.registerTool(tool);
+    await loop.execute('列出文件', mkLLM() as any, 'sys');
+    expect(portCalls.length).toBeGreaterThan(0);
+    expect(calls).toEqual([]);
+  });
+
+  it('③ 端口抛错 ⇒ fail-closed: 不执行工具 (门坏了不等于没门)', async () => {
+    const { tool, calls } = toolWithCounter();
+    let portCalled = 0;
+    const loop = new WorkflowPivotLoop({
+      ...createDefaultPivotConfig(),
+      guardedExecute: async () => { portCalled++; throw new Error('deny 判定崩了'); },
+    });
+    loop.registerTool(tool);
+    await loop.execute('列出文件', mkLLM() as any, 'sys');
+    expect(portCalled).toBeGreaterThan(0);
+    expect(calls).toEqual([]);
+  });
+
+  it('④ 机械: fail-closed 的落地形态在源码里 (端口抛错 ⇒ 记 harness-error 且不回落)', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/agents/workflow-pivot-loop.ts'), 'utf8');
+    expect(src).toContain('拒绝: [harness-error]');
+    // 端口分支必须在 try 内, 且 else 分支才是旧的 tool.execute ⇒ 不许两处都执行
+    const portIdx = src.indexOf('this.config.guardedExecute(tool');
+    const fallbackIdx = src.indexOf('result = await tool.execute(');
+    expect(portIdx).toBeGreaterThan(0);
+    expect(fallbackIdx).toBeGreaterThan(portIdx);
+    expect(src.slice(portIdx, fallbackIdx)).toContain('harness-error');
   });
 });
