@@ -161,7 +161,7 @@ K3 行数棘轮门   kernel 目录行数上限, 只许减不许增; 要加就得
 | **K4 合并两套 Agent Loop** | `KernelLoop`: prepare → model call → harness tool call → checkpoint → reducer → continuation → finish; Pi 只做 `messages → model response`; Pivot/ReAct/旧 loop 降为策略或 Adapter | CLI/Web 同一任务产生一致的 Run/Goal 事实 · pause/SIGKILL/预算耗尽/模型切换行为一致 · 旧 loop 无任何入口引用 · 真跑长期任务通过后才删旧分支 | ❌ **未开始** (判据: 仓内无 `kernel/kernel-loop.ts`; 本行要的是"合并两套 Agent Loop", 与 §49–§51/log 里被称作 "K4" 的 `AUTHORITY_DEBT` 越权欠账**不是同一件事** —— 按本表 K5 行注释, 那三条欠账属 "K0 的 4 处欠账"。⚠️ 编号用词待与 leo 对齐, 不自行改名) |
 | **K5 Channel Actor Runtime** | mailbox / session context / model binding / cancellation / outbound queue / heartbeat / backpressure / close-restart; **目标不是多线程, 而是隔离状态** | 16 channel 并发 · 同 channel 10 条消息不乱序 · Web/CLI/P2P 同输不串台 · 一个 channel 卡住不拖死其他 · 页面关闭后仍由 Supervisor 接管 | ✅ **八步做完** (`K5_STEP8.claimedComplete=true` · stage=`field-deletion-complete` · 5 访问器归零 · 5 暂存字段已删 · 入口 4/4; 判据 `scanStep8Completion`/`scanAccessorSurface`/`scanStagingFieldDeletion`。**如实**: "16 channel 并发 / 页面关闭后 Supervisor 接管"这条验收矩阵尚未逐条真跑) |
 | **K6 ModelRuntime** | `acquire(modelSnapshot)` **只读**; 多供应商并发 · 连接池 · timeout · cancellation · 429 退避 · circuit breaker · capability 检查 · provider fallback · usage 记录; **已有的 `selectModel`/registry/catalog/Run snapshot 继续保留, 不重做** | 不自行改 provider 配置 · API key · 默认 URL · Global model · Run snapshot | ✅ **能力 9/9** (stage=`capabilities-done`: 连接复用 · timeout · 取消 · 多供应商并发 · 429 退避 · 熔断 · 能力检查 · provider 回退 · usage 记录; 判据 `scanModelRuntimeFile`/`scanModelRuntimeLedger`; **如实**: 只做了单元/真跑级验证, 未接进真实调用路径的端到端压测) |
-| **K7 Harness 唯一系统调用门** | `discover → permission → policy → budget → idempotency → execute → verify → evidence → event`; 覆盖 普通工具/MCP/Skill/delegate/子 Agent/联系人/支付/文件写入/外部通信 | **任何绕过 Harness 的代码都视为架构缺陷**; 工具旁路全删 | ❌ 未开始 |
+| **K7 Harness 唯一系统调用门** | `discover → permission → policy → budget → idempotency → execute → verify → evidence → event`; 覆盖 普通工具/MCP/Skill/delegate/子 Agent/联系人/支付/文件写入/外部通信 | **任何绕过 Harness 的代码都视为架构缺陷**; 工具旁路全删 | 🟡 **第一步完成 (台账 + 门, 行为零改变)**: 9 阶段/9 覆盖面清单化 (§57) · 执行点**逐点分类**普查 17 处 (1 主执行 · 2 skill · 1 MCP · 1 注册表 · **3 旁路候选** · 其余同名不同物/import/定义) · 判据 `scanHarnessLedger`/`countHarnessExecSites` (纯函数, 按盘重算 + 双向) · 11 条测试含 9 条判别力。**未做**: 3 条旁路真收敛 · 覆盖面逐个走门 |
 | **K8 Communication Runtime 收口** | `transport → router → channel mailbox`; **绝不能** `transport → agent.promptStream()`; 统一 Web/CLI/P2P/手机/联系人回复/外部唤醒/cron/Supervisor 事件 | 通信层无直接 Agent 调用 · 无各通道自己的重试/任务恢复/outbound 状态 | ❌ 未开始 |
 | **K9 第二个非 Pi Adapter** | 最小 Native Adapter: model call · tool call · stream · cancellation · checkpoint · finish; 必须通过与 Pi **完全相同**的五套验收 (Harness / Durable Run / Supervisor / CLI·Web 双面 / 多模型并发) | 两个 Adapter 都过 ⇒ 才证明 Kernel 真正独立 | ❌ 未开始 |
 | **K10 删除 Pi 旧职责** | 8 步删除顺序 (§7.3); Pi 终态 ≈ prompt assembly + provider request + response parsing + stream translation | 迁移后 Pi 职责**仍超原来 30%** ⇒ 不许宣称替换成功 | ❌ 未开始 |
@@ -1690,3 +1690,57 @@ if (gate) { if (ci + 1 < candidates.length) { fallback; } else throw new ModelCi
 回退 (只读断言 + `opened === ['p1','p2']`) · 无备用 ⇒ 行为与以前一致 · 全候选失败 ⇒ 写明试过哪些 · **取消不回退** ·
 usage 两向 (含端口抛错) · **429 用尽也可回退** (容量问题不是 bug; 且断言限流不开路)。
 另: 判据用例里"`capabilitiesDone=9` 应判红"在 **9/9 全做完后变成恒真** (9 == 9 不再报) ⇒ 换成 `3` 才构造得出坏形状 —— 与"判别力用例随事实失效"同类 (第 6 次)。
+
+## 57. K7 第一步: Harness 唯一系统调用门的台账与执行点普查 (门先于实现)
+
+### 57.1 开工前的关键判断 (决定这一步该做什么)
+
+设计页 §7 K7 目标形态 = `discover → permission → policy → budget → idempotency → execute → verify → evidence → event`,
+覆盖普通工具/MCP/Skill/delegate/子 Agent/联系人/支付/文件写入/外部通信; 判据 = **任何绕过 Harness 的代码都视为架构缺陷**。
+
+**判断: Harness 作系统调用门是「提升」不是「新建」** —— `deny → pre-tool-validator → react-harness` 这条顺序**已经存在**,
+且被源码级断言锁着 (`src/test/pi-harness.test.ts`: "那唯一一处对 pre-tool-validator 的引用在门面内部 (注入), 不在调用点";
+`pre-tool-validator` 在调用点匹配数 **0**, 真身是 `validatePreToolUse` 且只在 `pi-harness.ts` 出现)。
+⇒ K7 要补的不是"再写一个门", 而是三件: ① 9 阶段 + 9 覆盖面**清单化** (每项写清"现在谁承担它")
+② 把"谁在执行"**数出来并逐点分类** ③ 收敛旁路。
+
+### 57.2 执行点普查 (口径必须写成纯函数, 否则台账与盘上必然对不上)
+
+口径 = **剥掉块注释 (保留换行) 与行注释之后**, 数 `\.execute\s*\(` 与 `executeTool` 的**匹配次数**。
+先量后判: 原始匹配置信 17 处, **逐点分类**后得到真形状:
+
+| 类别 | 处 | 说明 |
+| `main` | 1 | `pi-sdk.ts:2715` 主执行点 (经门链) |
+| `skill` | 2 | `pi-sdk.ts:989 sk.execute` · `pi-sdk.ts:4144 skillRegistry.execute` (+ `skill-adapter.ts:673` 第二条路径) |
+| `mcp` | 1 | `pi-sdk-tools.ts:2570 mcp.executeTool` |
+| `registry` | 1 | `tool-registry.ts:153` (唯一咽喉候选) |
+| **`bypass`** | **3** | `workflow-pivot-loop.ts:613` 直执行 · `pi-sdk.ts:1330` 内置 tscTool 直调 · skill 的第二条路径 |
+| `homonym` | 4 | `loop.execute` (`pi-sdk.ts:1831` / `workflow-pivot-loop.ts:1129`) · `session.execute` (`browser-cdp.ts:799`) · `params.execute` (`chain-wallet.ts:246`) · `options.execute` (`agent-delegate-server.ts:200`) |
+| `decl` / `import` / `ledger-string` | 4 | `pi-ecosystem-mcp/index.ts:272` 定义 · 两处 import 列表 · `plan-deletion.ts:32` 台账字符串 |
+
+**为什么必须分类**: 不分类就会把 17 处一律当"工具执行", 得出完全错误的缺口数 (同名不同物 4 处 + 定义/import/台账 4 处 = 8 处根本不是执行点)。
+
+### 57.3 判据 (`kernel/gate-scan.ts`)
+
+`stripJsComments(src)` (块注释按行占位, 不破坏行号) + `countHarnessExecSites(src)` (唯一口径) +
+`scanHarnessLedger(ledger, { readFile, planFileExists })`:
+9 阶段顺序/唯一/gate 文件真存在 · 9 覆盖面 canonical 真存在 · 执行点**逐文件重算**并与台账相等 (增=新旁路未登记 / 减=改了盘没改账) ·
+合计 == `progress.execSitesTotal` · 旁路逐条有替代路径 (五条件第 ① 条) 且目标文件真在 · 台账自报与盘上**双向**一致 ·
+**文件读不出来 ⇒ 拒跑** (不许跳过)。
+
+### 57.4 门当场抓到我自己的三处错 (真跑才发现)
+
+① 路径口径混用 (gate 写仓根相对、普查写 `src/` 相对) ⇒ 11 条 finding;
+② 我**凭空写了一个不存在的 `goal-flywheel/limits.ts`** —— HardLimits 真身在 `src/agents/goal-flywheel/run-closure.ts`;
+③ 旁路 target 写成带括注的自由文本 (`skill 的两条执行路径 (pi-sdk.ts:4144 ...)`) ⇒ 文件解析失败。
+⇒ 教训: **台账里的每个路径都是"必须存在的断言", 写着它的时候就要能被判据核**; 自由文本式引用会被判据当场拆掉。
+
+### 57.5 代价与验证
+
+K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按纪律同步冻结值 (加门真涨行数, 写进日志让 diff 可见)。
+验证: 10 个内核门 **181/181 全绿** · tsc 0 错 · 提交 `366c271`。
+
+### 57.6 未做 (如实)
+
+3 条旁路**尚未真收敛** (本步只登记 + 立判据) · 9 个覆盖面**尚未逐个走门** (现在只是"说得清谁管") ·
+`scanHarnessLedger` 目前只核"台账与盘上一致", 还不能证明"执行路径真的只有一条" —— 那要等旁路收敛后由新的判据承担。
