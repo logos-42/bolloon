@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-10-02 | docs | **Bolloon Native Macro-Kernel 方向冻结 (leo 意图层决定: 进程内 Agent 内核, Pi 降为可替换推理适配器)** —— 先真读再判断 ✓: `pi-sdk.ts` **4099 行** · `pi-sdk-tools.ts` 4122 · `pi-ai.ts` 1723 (合计 ~11k) · **48 个非测试源码文件 + 32 个测试文件** 引用 pi-sdk* · **95 道 `scripts/verify-*.ts` 里 21 道**钉在 pi 上 · 近 60 天 `pi-sdk.ts` 被改 **54 次**。**归因 (不靠猜)**: 用户点名的三件事只有一件真是缺模块 —— 多通道并发卡在 `getAgentForChannel` 的 **per-channel 可变单例** + **6/7 入口绕过排队** (只有 Web `/api/message` 有 queue; P2P 入站 `server.ts:993` · 远端 followup `:666` · 社交心跳 `:2636` · cron `:2579` · CLI 输入 `index.ts:3753` · `runner-resolver.ts:236` 全部直调 `prompt*`) ⇒ 同实例并发循环互相覆盖; 多供应商并发卡在 `src/llm/` **没有网关** (并发/熔断/路由 grep 只命中 model-discovery); 通信性能与 pi **不在同一条链上** (P2P 走 iroh/OrbitDB), 换内核 **0/3 命中**。**8 模块对账**: 5 项已有地基 · 2 项分层收口 · **只有 ModelRuntime 并发 + 通道 Actor 是真新建**。**三处修正 (防重造/防回归)**: ① `ModelRuntime.acquire()` **必须只读** —— 模型侧已有唯一写口 `selectModel` + 跨进程锁 + 每 Run 快照 + 16/16 验收, 多一个写口 = 那套验收全部作废且**没有任何门会报警** ② Harness 作系统调用门**已存在** (`pi-harness.ts` 的 `deny → pre-tool-validator → react-harness` 顺序 + **pi-sdk 零直连 gate 的源码级断言**), **是提升不是新建**, 缺的只是把 `tool-gate` 纳入门面 ③ 持久化只在边界 **也已存在** (`core`/`observational` 分级 + `RunPersistenceError` 硬闸 + 原子写 + `.bak`)。**补第⑤风险 (leo 列了 4 条, 这条最要紧)**: Kernel 自己会变成下一个巨型单体 ⇒ **开工前**先落 **K1 目录边界门 (内核目录禁 import 业务模块) / K2 名册越权门 / K3 行数棘轮** (照 `SEAM_ROSTER` + `goal-flywheel-wiring-freeze.test.ts` 的机器校验手法)。**如实**: M0–M5 **全部 0 行代码**, 本页只冻方向/禁令/判据; 撤换 Pi **按判据不按时间** (>30% 改动仍必须落进 pi-sdk 内部 / 存在第二个实现过同一套门 / 支撑 1 万智能体那条线)。 | docs/wiki/bolloon-native-macro-kernel.md (新) · docs/wiki/index.md · docs/wiki/current-status.md · docs/wiki/log.md |
 | 2026-10-01 | release | **npm 0.5.5 发布完成 + GitHub Release v0.5.5** (用户: 「发布 npm 新版0.5.5」+「记得发布 release」) —— **发布前门**(按发布 skill 的判据链 ✓): `whoami=leoyoge` ✓ · 线上现状 `latest=0.5.4` ✓ · **CJS(electron)链 `--noEmit` exit=0** ✓(今天新增模块必须过这条, `import.meta` 会 TS1343 挂 prepublishOnly ✓) · `MUTATION` 残留 **0** ✓ · 工作区净 ✓ · **全量 304 文件 / 4609 用例全绿** ✓(先绿后改版本号 ✓)。**发布**: `npm version patch --no-git-tag-version` ⇒ **0.5.5**(package.json + lock 两处 ✓)→ 提交 `02aa1a6` ✓; `npm publish` **exit=0** ✓ · `+ @bolloon/bolloon-agent@0.5.5` ✓ · 20.1MB / 解包 49.3MB / **1711 文件** ✓ · shasum `87af81ea332820b65dce87418e748b15bd5b568b` ✓ · registry 回 "being processed" ✓。**放行**: 有界轮询(直连 packument, 20s × 60 ✓)—— 21:07 发出 ⇒ **21:30:09 放行**(≈23 分钟 ✓, 与"大包慢放行"的记载吻合 ✓); 期间 **绝不重发、绝不轮换 token** ✓。**判据链全过** ✓: ① `dist-tags.latest=0.5.5` ✓ + 版本直连 **200** ✓ + `time["0.5.5"]=2026-10-01T13:30:09.770Z` ✓; ② 从 packument 取**真 URL** 下载 ⇒ 本地 shasum 与 `dist.shasum` **逐字相同** ✓(两侧都断言非空 ✓, 避免"两边同时为空"的假绿 ✓); ③ 拆包 1711 条目 ⇒ 关键入口 + **今天新增的 8 个模块全在包里** ✓(trace-line/skill-ledger/skill-health/background-notices/auto-compact/log-gate ✓)+ 今天修复字样逐条命中(`bootLogOnly`/`traceLabel`/`flushBootBuffer`/`iroh:` ✓)+ **MUTATION 0** ✓; ④ **全新目录**消费者复验:`npm install` exit=0 · **`npm warn` = 0** ✓ · 版本 0.5.5 ✓ · bin 可执行 ✓ · **真跑** `--version` 与 `setup status` 均 exit 0 ✓; ⑤ tag `v0.5.5`(annotated ✓ 指向 `02aa1a6` ✓)已显式推 ✓; ⑥ **GitHub Release** 按仓里体例发 ✓(名==tag==`v0.5.5` ✓ · 无资产 ✓ · `gh release view` 回读 name/tag/draft/prerelease 四字段 ✓ · `gh release list` 显示 **Latest** ✓)。**如实**: 显示层修复需**重启 CLI** 才生效 ✓; notes 里已写明这一点 + 自检命令 ✓。 | docs/wiki/log.md |
 | 2026-10-01 | fix | **「iroh: … / 主题: …」的真正漏点: 无标签自述行不在闸门判据里** (用户连续三次: 「继续，还没去掉」) —— **先排除法定位** ✓: ① 我上一版"搬进对话流" ✗(用户要的是去掉 ✓, 已改成启动期只落盘 ✓); ② 启动那几步是 **fire-and-forget** ✓ ⇒ 常在 `startupPanelReady = true` **之后**才打印 ✗ ⇒ 用"面板好了没"当判据必漏 ✓(已改成**独立启动期标志** `bootPhase` ✓, 用户第一次发的「时间好像是面板后面启动的」正是这条线索 ✓); ③ **最后一处真漏点(本次修)**: 你贴的 `     iroh: 3c2eeee23cc2d276...` / `     主题: 626f6c6c6f6f6e2d...` **不带模块标签、也不带 ISO 时间戳** ✗ ⇒ 既不是 `[Tag]` ✓ 也不是 `时间戳 [info]:` ✓ ⇒ **不在任何判据里** ✓ ⇒ 闸门(`log-gate`) · console 拦截 · `writeOut` **三道全都拦不住** ✓✓。**修法**: 按这个文件自己的规矩(「每条 pattern 都按行首锚定, 只覆盖实测观察到的那几句, 不做宽泛匹配」✓)补 4 条**实测形状** ✓: `iroh: <hex>` ✓ · `主题: <hex>` ✓ · `复用 DID: did:` ✓ · 缩进 + 短值的 `名称: ` ✓(带缩进也认 ✓)。判据: 新门 `log-gate-narration` ✓(实测形状必须判为加载日志 ✓ · **普通正文不许被误吞** ✓ —— `名称: <长中文说明>` 这类保持放行 ✓) · tsc 0 错 ✓ · build exit=0 ✓ · dist 核对 ✓。**如实**: ① 这次是**第四层**, 前三层(思考动画/index.ts 直写/别模块直写)都是"通道", 这一层是"**判据**"—— 通道再对, 判据不认它照样漏 ✓; ② 重启才生效 ✓; ③ 想看细节: `tail -f ~/.bolloon/logs/startup.log` ✓(`BOLLOON_VERBOSE=1` 可全量回放 ✓)。 | src/cli/log-gate.ts · src/test/log-gate-narration.test.ts (新) · src/index.ts · docs/wiki/log.md |
 | 2026-10-01 | fix | **启动期"进度类"输出改成只落盘、不上屏(用户要的是"去掉", 不是我上次的"搬进对话流")** (用户: 重启后贴启动那几行 + 「继续，还没去掉」) —— **先认错定位** ✓: 其中一半是**我上一版的设计** ✗ —— 我把启动日志"**搬进对话流**"了 ✓, 于是照样看得见 ✓; 而用户要的是"**去掉**" ✓。**逐行溯源**(不猜 ✓): `主题: …` = `src/index.ts:467` ✓ · `iroh: …` = 同一启动链(index.ts:464 附近 ✓) · `复用 DID / 名称` = `index.ts:380~400` ✓ —— 都在启动阶段、都走 `writeOut` ✓。**修法**: 启动期(Ink 未起)**进度类**输出 ⇒ `bootLogOnly()` ✓ **只落 `~/.bolloon/logs/startup.log`**(带 `[boot]` 前缀 + 剥 ANSI ✓), **不上屏** ✓ —— 面板已经把要点(版本/模型/分支/技能 ✓)画了 ✓, `复用 DID`/`iroh:`/`主题:`/`[N/5]` 属过程细节 ✓; **但警告/错误照旧上屏** ✓(`writeOutWarn()` ✓: Ink 未起先缓冲 ⇒ 起来后灌进对话流 ✓) —— **不许因为"想干净"把问题藏起来** ✗。判据: 三条门合计 **11/11** ✓ —— 新增 `boot-log-buffer` 三条断言(① writeOut 在 Ink 未起必须走 `bootLogOnly` 且**不许**进缓冲 ✓ · ② 警告/错误必须仍上屏且 `s.warn/s.error` 接的是 `writeOutWarn` ✓ · ③ `bootLogOnly` 必须真落盘 + 剥 ANSI ✓); `ui-write-choke-point` 的兜底函数白名单同步加 `writeOutWarn` ✓(**这个门今天已经正确拦下我两次新加的裸直写** ✓); tsc 0 错 ✓ · build exit=0 ✓ · dist 核对 ✓。**如实**: ① 重启才生效 ✓; ② 想看这些细节: `tail -f ~/.bolloon/logs/startup.log` ✓ 或 `BOLLOON_VERBOSE=1` ✓; ③ 若重启后仍冒, 说明它们走的是**子进程直写 tty**(不走 node 的 console ✓), 下一层要截 stderr ✓。 | src/index.ts · src/test/boot-log-buffer.test.ts · src/test/ui-write-choke-point.test.ts · docs/wiki/log.md |
@@ -486,6 +487,62 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+### [2026-10-02] docs | Bolloon Native Macro-Kernel 方向冻结 (意图层决定 + 现状真读对账)
+
+**触发**: leo 提出「重新设计一个核心来优化 pi 和替换 pi」, 并给出完整架构判断 —— 借用 Linux 宏内核思想
+(进程内 · 低开销 · 共享状态 · 统一调度; 能力以模块插入核心但**不许互相越权**), 定义
+「Bolloon Native Macro-Kernel: 一个进程内的高性能 Agent 操作系统核心, 内部模块化、统一调度、共享状态受控;
+Pi 只是暂时的兼容执行器」。本页把该方向连同**现状对账**一起冻结, 避免下一轮把它当成"从零重写"。
+
+**判断前先真读 (不猜)**: `src/agents/pi-sdk.ts` **4099 行** · `pi-sdk-tools.ts` **4122** · `llm/pi-ai.ts` **1723**
+(+ `pi-harness` 345 · `session-manager` 432 · `factory` 128) ≈ **11k 行**; **48 个非测试源码文件** + **32 个测试文件**引用
+`pi-sdk*`; **95 道 `scripts/verify-*.ts` 里 21 道**钉在 pi 上; 近 60 天 `pi-sdk.ts` **54 次提交** (高频演化区 ⇒
+大爆炸替换会与在途改动对撞)。
+
+**归因 (三件事各有证据, 只有一件是真缺模块)**:
+
+| 诉求 | 真卡在哪 (证据) | 该落在哪一层 |
+| --- | --- | --- |
+| 多通道并发 | `getAgentForChannel` 的 **per-channel 可变单例** (`messageHistory`/`currentOnStream`/`currentSignal`/`lastFailedTool` 全是实例字段); **6/7 入口绕过排队** —— 只有 Web `/api/message` 有 per-channel queue, P2P 入站 `server.ts:993` · 远端 followup `:666` · 社交心跳 `:2636` · cron `:2579` · CLI `index.ts:3753` · `runner-resolver.ts:236` 全部直调 `prompt*` | per-Run `RunContext` + 入口唯一入队 |
+| 多供应商并发 | `src/llm/` **没有网关** (并发上限/熔断/路由/in-flight grep 只命中 `model-discovery`); `PiAIModel.chat` 是"一次调用"的适配器, 无并发视图 | **新增模块** (`ModelRuntime`), `pi-ai` 降为 adapter |
+| 通信性能 | P2P 走 iroh/OrbitDB/链上索引, **与 pi 不在同一条链上**; 唯一耦合是 inbound 事件同步调 `promptStream` | transport + 入站事件队列; pi 只应看见事件 |
+
+⇒ **换内核 0/3 命中**; **8 项目标里 5 项已有地基** (supervisor/lease · run/goal store · pi-harness 门面 ·
+`selectModel`+Run 快照 · 通信), 2 项是"分层/收口" (`tool-gate` 纳入门面 · pi-sdk 直写 Goal 旧路径),
+**只有 ModelRuntime 并发 + 通道 Actor 是真新建** ⇒ **重写的理由不成立**。
+
+**三处修正 (本页的核心增量)**:
+
+1. **`ModelRuntime.acquire(modelSnapshot)` 必须只读** —— 每请求自带 provider/model/baseUrl/capabilities/configHash
+   的形状正确, 但它只能**读**「有效模型配置」。本仓模型侧已有唯一写口 (`selectModel` + `bolloon-config.lock` 跨进程锁 +
+   每 Run 快照 + **16/16 端到端验收**); 多一个写口 = 那套验收全部作废, 而且**不会有任何门报警** —— 这是最贵的一类回归。
+2. **Harness 作系统调用门: 已存在, 是提升不是新建** —— `pi-harness.ts` 的 `beforeToolCall` 顺序
+   (`deny-pipeline → pre-tool-validator(4 步) → react-harness(8-gate)`, 第一层拒绝即止) 就是那个形状, 且
+   **pi-sdk 零直连 gate 由源码级断言锁着**。要补的是 ① `tool-gate` 纳入门面 ② `budget`/`idempotency`/`evidence`
+   三段进同一顺序 ③ 覆盖 delegate/MCP/子 Agent 路径。
+3. **持久化只在边界: 分级已存在, 别重造** —— `core`/`observational` 两级 + `RunPersistenceError` 硬闸 (停且不重试)
+   + 原子写 + `.bak` 损坏回退 + 跨进程 run 锁都在。要补的是**边界清单化**。
+
+**补第⑤风险 (leo 列了 4 条: 拖垮进程 / 隐式耦合 / 长跑泄漏 / 第三方扩面; 这条最要紧)**:
+**Kernel 自己会变成下一个巨型单体** —— 这不是万一, 是默认结局。三条**机器核验**的门必须在**开工前**落地,
+不能收尾补: `K1` 目录边界门 (内核目录禁 import 业务模块, 源码级 import 白名单) · `K2` 名册越权门
+(模块 A 直摸模块 B 私有状态 ⇒ 判红) · `K3` 行数棘轮 (内核目录行数上限, 只许减不许增)。
+手法照仓里已验证的先例: `SEAM_ROSTER` + `src/test/goal-flywheel-wiring-freeze.test.ts`。
+
+**台账 (M0–M5)**: M0 冻结+三门 · M1 状态外置 (`RunContext`) · M2 入口收口 (per-session 互斥队列) ·
+M3 单循环 (收敛 `usePivotLoop` 分叉, 行为变更逐条写明理由) · M4 通道 Actor · M5 ModelRuntime。
+**M1–M3 不重写就能做**; **全部阶段 0 行代码**。
+
+**撤换 Pi 的判据 (不按时间)**: ① M1–M5 后仍有 **>30% 的改动必须落进 `pi-sdk.ts` 内部** ⇒ 边界抽不干净, 那时重写有真凭据;
+② 存在**第二个**推理适配器实现能过同一套门 (`verify-pi-harness` / `verify-durable-runs` / 双面循环门) ⇒ 才叫"可替换";
+③ 支撑「1 万智能体」那条线时 (见 [agent-event-network-plan.md](./agent-event-network-plan.md)) 单进程 N 个可变 session
+实例必然不成立 ⇒ 内核须变「纯函数 run state + 事件溯源」, **那才是重写的正当触发点, 且属于那条线的里程碑**。
+
+**未做 (如实)**: 本页**只冻结方向/禁令/判据**, 一行代码未改; K1–K3 未落地; M1–M5 未开始;
+与既有验收的关系 = **在其上加层**, 保留 16/16 模型验收 · 飞轮冻结门 34/34 · pi-harness 源码级断言。
+
+- 新页: [bolloon-native-macro-kernel.md](./bolloon-native-macro-kernel.md)
+- 索引 / 状态 / 日志: [index.md](./index.md) · [current-status.md](./current-status.md) · 本页
 ### [2026-09-30] release | 发 `@bolloon/bolloon-agent@0.5.4` (npm + GitHub Release + tag)
 
 **触发**: leo 逐字「发布 npm 新版0.5.4」→「发布成功了」→「发一下 release 到 GitHub」。
