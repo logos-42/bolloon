@@ -3337,6 +3337,8 @@ lastQualityScore = this.estimateResponseQuality(reply);
       console.warn(`[PiAgent] reactive compaction pre-check (${estimated} tokens > 80% threshold)`);
       onStream?.({ type: 'status', internal: true, content: '⚠️ reactive compaction 预检触发', tool: 'recovery' });
       try {
+        // 同步压缩: 取快照与替换在**同一拍相邻两行** (中间没有 await) ⇒ 不存在"变换期间被追加"的窗口。
+        //   若哪天这里插入 await, 必须改成 `actor.rebaseHistory(…, snapshotLen)` (见 channel-actor.ts)。
         const compacted = this.compressHistorySync(this.messageHistory);
         this.replaceHistory(compacted);
         if (this.estimateHistoryTokens() > this.maxContextTokens() * 0.8) {
@@ -3515,6 +3517,9 @@ lastQualityScore = this.estimateResponseQuality(reply);
     const beforeTokens = this.estimateHistoryTokens();
 
     const { compactPipeline, isContextCollapseEnabled } = await import('../context-compaction/index.js');
+    // **K5 第 4 步**: 记下取快照时的长度 —— 压缩是 async, 从这一拍到 "落地" 之间是 await 窗口;
+    //   期间 append 进来的消息必须由 `actor.rebaseHistory(…, snapshotLen)` 接回去, 否则会被整块替换丢掉。
+    const snapshotLen = this.messageHistory.length;
     const result = await compactPipeline(this.messageHistory as any, {
       maxTokens,
       llmChat,
@@ -3540,7 +3545,16 @@ lastQualityScore = this.estimateResponseQuality(reply);
         this.projectedHistory = result.history as Message[];  // buildContext 用
         // messageHistory 不变 (非破坏)
       } else {
-        this.replaceHistory(result.history as Message[]);  // 真破坏性更新
+        // 真破坏性更新 —— **K5 第 4 步**: 绑定了 actor 就交它落地 (rebase: 保住变换期间的追加);
+        //   未绑定的会话走原路径 (行为不变)。
+        if (this.actor) {
+          const { keptTail } = await this.actor.rebaseHistory<Message>(result.history as Message[], snapshotLen);
+          if (keptTail > 0) {
+            console.warn(`[PiAgent] 压缩落地: 保住变换期间新追加的 ${keptTail} 条消息 (快照后到达)`);
+          }
+        } else {
+          this.replaceHistory(result.history as Message[]);
+        }
         this.projectedHistory = null;
       }
       // 2026-08-06: snapshot 记录 before/after + 摘要 (供恢复/调试/UI), 事件广播

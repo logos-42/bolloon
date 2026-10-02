@@ -166,6 +166,24 @@ export class ChannelActor {
     return (this.state.messageHistory as T[]).pop() as T | undefined;
   }
 
+  /**
+   * **K5 第 4 步 — compact 的落地拍 (rebase)**: 用压缩结果替换 history, 但**保住**变换期间新追加的尾部。
+   *
+   * 为什么必须有这一拍: 压缩流水线是 **async** —— 从"取快照"(`snapshotLen`) 到"落地"之间是 await 窗口,
+   * 期间 append 进来的消息会被整块替换**丢掉** (lost update)。这里把尾部原样接回去。
+   * (同步压缩路径不受影响: 取快照与替换在同一拍相邻两行, 没有窗口 —— 见 pi-sdk 的注释。)
+   */
+  rebaseHistory<T>(compacted: T[], snapshotLen: number): Promise<{ keptTail: number }> {
+    return this.mailbox.submit(() => {
+      const arr = this.state.messageHistory as T[];
+      const at = Math.max(0, Math.min(snapshotLen, arr.length));
+      const tail = arr.slice(at);
+      arr.length = 0;
+      arr.push(...compacted, ...tail);
+      return { keptTail: tail.length };
+    });
+  }
+
   /** **K5 第 4 步 — 整体替换漏斗** (hydrate 回灌 / 压缩后的整体赋值都走这里) */
   replaceHistory<T>(next: T[]): void {
     const arr = this.state.messageHistory as T[];

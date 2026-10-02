@@ -950,3 +950,34 @@ this.messageHistory = …       × 3   (hydrate 回灌 / 两次压缩后的整�
 
 在被 Python 字符串包住的补丁里写 TS 的 `'\n'`，会被 Python 先吃掉一层转义 ⇒ 落盘成**真换行**，语法直接破。
 ⇒ 规矩: 写这类补丁时**别在字符串字面量里写字面量换行** —— 用 `split(/\r?\n/)` 正则可省一处，`join(String.fromCharCode(10))` 可省另一处。
+
+## 32. K5 第 4 步收官: compact 落地拍 (rebase) — history 操作 4/4
+
+### 32.1 先做分析, 再决定动哪里 (两处压缩路径性质不同)
+
+| 路径 | 形状 | 有没有窗口 |
+| --- | --- | --- |
+| **同步压缩** (`compressHistorySync` + `replaceHistory`) | 取快照与替换是**同一拍相邻两行**, 中间没有 await | **没有** ⇒ 不需要改, 只留注释警戒 ("若哪天插入 await, 必须改成 rebaseHistory") |
+| **异步压缩** (`await compactPipeline(...)` → 落地) | 取快照 … await … 整块替换 | **有** ⇒ 期间的 append 会被替换**丢掉** (lost update) |
+
+### 32.2 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| `channel-actor.ts` | **`rebaseHistory(compacted, snapshotLen)`**: 走邮箱 + 把**快照之后新追加的尾部原样接回** (`arr = [...compacted, ...tail]`), 返回 `{ keptTail }`; 越界快照长度不炸 (防御) |
+| `agents/pi-sdk.ts` | 异步压缩前记 `snapshotLen = this.messageHistory.length`; 落地时**绑定 actor 就交它 rebase** (并在 `keptTail > 0` 时 warn), 未绑定走原路径 |
+| `plan-channel-actor.ts` | `historyOpsMigrated **4/4**` (hydrate · append · compact · persist) |
+
+### 32.3 真跑验证
+
+| 用例 | 断言 |
+| --- | --- |
+| **尾部不被吃掉** (决定性) | 2 条历史 → 取快照 (`snapshotLen=2`) → 提交 rebase (压缩结果 1 条) → **同时**用 `appendMessageSync` 追加 1 条 (模拟循环里的同步 push) ⇒ `keptTail=1`, 最终 `['C1','m3']` |
+| **反例对照** | 同样的场景若用"整块替换"(`replaceHistory`), 那条新消息**确实没了** (实现里同时断言了这一点 —— 说明本拍修的是真行为) |
+| **防御** | `snapshotLen=999` (压缩期间 history 变短) ⇒ `keptTail=0`, 不乱吞 |
+| **落地拍必须在盘上** | 判据断言源码里有 `this.actor.rebaseHistory<Message>(` (防止有人把接线回退掉) |
+
+### 32.4 台账又被门抓了一次 (同一条判据第二次生效)
+
+加 `snapshotLen = this.messageHistory.length` ⇒ `messageHistory` 访问数 21 → **22** ⇒ K2 门立刻红 ("改了盘上没改账")。
+⇒ 两本台账同步 (K2 22 + 总量 127; K5 移交字段 22), 并在台账里写明"**门已两次拦下这类不同步**"。

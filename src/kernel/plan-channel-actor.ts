@@ -41,7 +41,11 @@ export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'fi
  *     全部收敛到唯一漏斗 `pushHistory` / `popHistory` / `replaceHistory` ⇒ 每个直写模式只剩漏斗自身 1 处,
  *     判据 `scanHistoryWriteSites` 断言这一点。**漏斗有意做成同步**: 调用点写完立刻要读 (length/索引/slice),
  *     改成 await 会改变同拍可见性 —— 它交付的是**归属与可数性**, 并发安全由入口投递负责 (K5 第 5 步)。
- *     `historyOpsMigrated 3/4` (hydrate · append · persist); compact 留后续。
+ *     `historyOpsMigrated 3/4` (hydrate · append · persist)。
+ *   · 2026-10-02 同格收官: **compact 落地拍** —— 压缩是 async, 从取快照到落地之间有 await 窗口,
+ *     期间 append 的消息原先会被整块替换**丢掉** (lost update) ⇒ 新增 `actor.rebaseHistory(compacted, snapshotLen)`
+ *     (走邮箱 + 把快照之后的尾部原样接回); 同步压缩路径经核实是"同一拍相邻两行"(无窗口), 只留注释警戒。
+ *     `historyOpsMigrated **4/4**` (hydrate · append · compact · persist)。
  */
 
 /** K5 第 4 步: 四个 history 操作 (唯一来源; 台账 `historyOpsNames` 必须 ⊆ 这里, 且数量与进度位一致) */
@@ -97,7 +101,7 @@ export const K5_DELETION_PRECONDITIONS: readonly string[] = [
 
 /** 从 K2 移交的 4 个 session 字段 (现仍是 Pi 实例字段, match 口径冻结值) */
 export const K5_INHERITED_FIELDS: readonly { name: string; into: string; accesses: number }[] = [
-  { name: 'messageHistory', into: 'actor.messageHistory', accesses: 21 },
+  { name: 'messageHistory', into: 'actor.messageHistory', accesses: 22 },
   { name: 'currentChannelId', into: 'actor.channelId', accesses: 24 },
   { name: 'currentAgentId', into: 'actor.agentId', accesses: 21 },
   { name: 'currentGoalId', into: 'actor.goalBinding', accesses: 22 },
@@ -105,9 +109,10 @@ export const K5_INHERITED_FIELDS: readonly { name: string; into: string; accesse
 
 /**
  * 从 K2 移交的四个 session 字段的**当前**访问数 (match 口径, 与 K2 台账逐字相等 —— 跨台账判据强制)。
- * ⚠️ `messageHistory` 由 56 降到 **21**: K5 第 4 步把 35 处写入 (push 31 · pop 1 · 整体赋值 3)
- *    收敛进唯一漏斗 (`pushHistory`/`popHistory`/`replaceHistory`) 后, 这些点不再直接访问实例字段。
- *    这不是"泄漏消失", 是**迁移动作的可见痕迹** —— 数字对不上就必须回去核。
+ * ⚠️ `messageHistory` 由 56 降到 **22**: K5 第 4 步把 35 处写入 (push 31 · pop 1 · 整体赋值 3)
+ *    收敛进唯一漏斗 (`pushHistory`/`popHistory`/`replaceHistory`) 后这些点不再直接访问实例字段;
+ *    随后 compact 落地又**加了 1 处** (`snapshotLen = this.messageHistory.length`, 压缩的取快照拍)。
+ *    这不是"泄漏消失", 是**迁移动作的可见痕迹** —— 数字对不上就必须回去核 (门已两次拦下这类不同步)。
  */
 
 /** 进度位 —— 门强制与盘上事实同步 (进度只许增; 未建的不许标已建) */
@@ -122,10 +127,10 @@ export const K5_PROGRESS = {
   entriesWired: 0,
   entriesTotal: 4,
   /** K5 第 4 步里的 history **操作**搬迁 (4 个: hydrate/append/compact/persist) */
-  historyOpsMigrated: 3,
+  historyOpsMigrated: 4,
   historyOpsTotal: 4,
   /** 已搬操作名单 —— 门强制 `length === historyOpsMigrated` 且每个名字都在 HISTORY_OPS 里 */
-  historyOpsNames: ['hydrate', 'append', 'persist'],
+  historyOpsNames: ['hydrate', 'append', 'compact', 'persist'],
 } as const;
 
 /** 四个入口 (leo 点名的) —— 全部要进同一 mailbox */

@@ -271,6 +271,32 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(scanHistoryWriteSites(injected).some((f) => f.rule === 'history-direct-push')).toBe(true);
     // 漏斗方法被删 ⇒ 红
     expect(scanHistoryWriteSites('const x = 1;').some((f) => f.rule === 'history-funnel-missing')).toBe(true);
+    // 异步压缩的落地拍必须在盘上 (rebase 是"变换期间追加不被吃掉"的唯一保障)
+    expect(base.includes('this.actor.rebaseHistory<Message>(')).toBe(true);
+  });
+
+  it('★ 真跑: compact 落地拍 (rebase) —— 变换期间追加的消息**不许被压缩吃掉**', async () => {
+    const actor = new ChannelActor({ channelId: 'k5cmp' });
+    await actor.appendMessage({ role: 'user', content: 'm1' });
+    await actor.appendMessage({ role: 'assistant', content: 'm2' });
+    const snapshotLen = (await actor.historySnapshot<{ role: string; content: string }>()).length;
+    expect(snapshotLen).toBe(2);
+    // 模拟真实形状: 压缩流水线 await 期间, ReAct 循环里有人**同步**追加了一条
+    const landing = actor.rebaseHistory([{ role: 'user', content: 'C1' }], snapshotLen);
+    actor.appendMessageSync({ role: 'user', content: 'm3' });
+    const r = await landing;
+    expect(r.keptTail).toBe(1);                                  // 接住了那一条
+    expect((await actor.historySnapshot<{ role: string; content: string }>()).map((m) => m.content))
+      .toEqual(['C1', 'm3']);                                    // 压缩结果 + 没丢的尾部
+    // 反例对照: 若用"整块替换"(不带 rebase), 那条新消息就没了 —— 这正是本拍要修的行为
+    const naive = new ChannelActor();
+    await naive.appendMessage({ role: 'user', content: 'a' });
+    await naive.replaceHistory([{ role: 'user', content: 'C1' }]);
+    expect((await naive.historySnapshot<{ role: string; content: string }>()).map((m) => m.content)).toEqual(['C1']);
+    // 快照长度越界也不炸 (防御: 压缩期间 history 变短)
+    const r2 = await actor.rebaseHistory([{ role: 'user', content: 'X' }], 999);
+    expect(r2.keptTail).toBe(0);
+    expect((await actor.historySnapshot<{ role: string; content: string }>()).map((m) => m.content)).toEqual(['X']);
   });
 
   it('★ 真跑 (Pi 侧): resume/save 确实走了 Actor 的邮箱 (委托证据, 不是"看起来像")', async () => {
