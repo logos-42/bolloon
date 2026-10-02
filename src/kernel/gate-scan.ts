@@ -1432,3 +1432,39 @@ export function scanChannelStateLedger(
   }
   return out;
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// K8 收口实证: "通道自己的调度"必须已交内核邮箱 (不是台账上写"已收口")
+//
+// 为什么不能只看台账: 台账能核"符号在不在", 核不了"执行到底经谁串行"。
+// 这条直接读源码: ① 全局单飞字段必须**没了** ② 执行必须经 `getChannelQueue(` ③ 下一个目标若消失也要报。
+// ════════════════════════════════════════════════════════════════════════════════
+
+export interface DidFixConsolidationSpec {
+  /** server.ts 源码 */
+  src: string;
+  /** 已删除的"通道自己的单飞"字段名 (剥注释后必须为 0 次) */
+  removedFlag: string;
+  /** 必须出现的内核邮箱调用 */
+  mustUse: string;
+  /** 仍存在(下一目标)的符号 —— 它若消失说明台账该更新, 不许静默 */
+  nextTargetSymbol: string;
+}
+
+export function scanDidFixConsolidation(spec: DidFixConsolidationSpec): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'k8-consolidation', file: 'web/server.ts', line: 1, what });
+  const code = stripJsComments(spec.src);
+  // 用字符串拼接造正则, 避开模板字面量里的多层转义 (踩过: 写出过非法 TS)
+  const wordy = (sym: string) => new RegExp('(^|[^\\w$])' + sym + '([^\\w$]|$)');
+  if (wordy(spec.removedFlag).test(code)) {
+    f(spec.removedFlag + ' 仍在代码里 (通道自己的全局单飞) ⇒ 收口没真生效');
+  }
+  if (!code.includes(spec.mustUse + '(')) {
+    f('没看到 ' + spec.mustUse + '( ⇒ 待办执行没走内核邮箱');
+  }
+  if (!wordy(spec.nextTargetSymbol).test(code)) {
+    f(spec.nextTargetSymbol + ' 不见了 ⇒ 台账必须同步 (它是**下一目标**或已收口, 两种都要显式登记)');
+  }
+  return out;
+}

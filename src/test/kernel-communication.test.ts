@@ -5,7 +5,15 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { K8_EVENT_FACES, K8_TRANSPORT_AGENT_SITES, K8_PER_CHANNEL_STATE, K8_PROGRESS, K8_ACCEPTANCE } from '../kernel/plan-communication.js';
-import { scanCommunicationLedger, countTransportAgentSites, K8_SITE_KINDS, scanChannelStateLedger, countChannelStateSymbols } from '../kernel/gate-scan.js';
+import { scanCommunicationLedger, countTransportAgentSites, K8_SITE_KINDS, scanChannelStateLedger, countChannelStateSymbols, scanDidFixConsolidation } from '../kernel/gate-scan.js';
+
+/** 把文本**真写进临时文件**再读回 —— 变异必须每次真做, 不是在内存里假装 */
+function realTmp(name: string, text: string): string {
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'k8-mut-'));
+  const p = path.join(dir, name);
+  fs.writeFileSync(p, text, 'utf8');
+  return fs.readFileSync(p, 'utf8');
+}
 
 const ROOT = process.cwd();
 const readFile = (rel: string): string | null => {
@@ -69,7 +77,8 @@ describe('K8 第二步门: 各通道自带状态台账 (按符号核, 不按行�
   it('① 真跑: 35 个状态符号**逐个**在盘上真实存在 (零 finding)', () => {
     expect(scanChannelStateLedger(STATE, { readFile })).toEqual([]);
     // 口径: 35 个是"文件里出现的状态符号", 其中 **31 个**才是 K8 要收口的对象
-    expect(countChannelStateSymbols(STATE)).toEqual({ total: 35, target: 31 });
+    // 2026-10-02 补登 (漏了两个真状态: channelRunState / didFixTimer) ⇒ 35/31 → 37/33
+    expect(countChannelStateSymbols(STATE)).toEqual({ total: 37, target: 33 });
     expect(countChannelStateSymbols(STATE).total).toBe(K8_PROGRESS.perChannelStateSymbols);
     expect(countChannelStateSymbols(STATE).target).toBe(K8_PROGRESS.k8TargetSymbols);
     expect(K8_PER_CHANNEL_STATE).toHaveLength(10);
@@ -121,6 +130,29 @@ describe('K8 第二步门: 各通道自带状态台账 (按符号核, 不按行�
   it('② 判别力: scope 非法 ⇒ 判红', () => {
     const bad = { sites: [{ ...K8_PER_CHANNEL_STATE[3], symbols: [{ name: 'didFixQueue', scope: 'whatever' }] }], progress: { perChannelStateFiles: 1, perChannelStateSymbols: 1, k8TargetSymbols: 1 } };
     expect(scanChannelStateLedger(bad, { readFile }).some((x) => /scope 非法/.test(x.what))).toBe(true);
+  });
+
+  it('④ 收口实证: DID 修复待办执行**经内核邮箱**, 且通道自己的全局单飞已删 (直接读源码)', () => {
+    const src = readFile('src/web/server.ts');
+    expect(src).not.toBeNull();
+    expect(scanDidFixConsolidation({ src: src!, removedFlag: 'didFixRunning', mustUse: 'getChannelQueue', nextTargetSymbol: 'channelRunState' })).toEqual([]);
+    // 必须是**真调用** + 从内核 import 进来 (不是只写在注释里 / 不是本地同名函数)
+    expect((src!.match(/getChannelQueue\s*\(/g) || []).length).toBeGreaterThanOrEqual(1);   // 调用点
+    expect(src!).toMatch(/import \{[^}]*getChannelQueue[^}]*\} from '\.\.\/kernel\/channel-actor\.js'/);
+  });
+
+  it('④ ★ 真盘变异: 把 `getChannelQueue(` 从副本里换掉 ⇒ 判红; 把全局单飞字段塞回代码 ⇒ 判红', () => {
+    const src = readFile('src/web/server.ts')!;
+    // 变异 A: 邮箱调用被换掉 ⇒ "没走内核邮箱"
+    const mutA = realTmp('server-mutA.ts', src.replace(/getChannelQueue/g, 'plainQueue__x'));
+    expect(scanDidFixConsolidation({ src: mutA, removedFlag: 'didFixRunning', mustUse: 'getChannelQueue', nextTargetSymbol: 'channelRunState' })
+      .some((x) => /没走内核邮箱/.test(x.what))).toBe(true);
+    // 变异 B: 全局单飞字段塞回**代码**里 (非注释) ⇒ "收口没真生效"
+    const mutB = realTmp('server-mutB.ts', src.replace('  const didFixQueue = new Set<string>();', '  let didFixRunning = false;\n  const didFixQueue = new Set<string>();'));
+    expect(scanDidFixConsolidation({ src: mutB, removedFlag: 'didFixRunning', mustUse: 'getChannelQueue', nextTargetSymbol: 'channelRunState' })
+      .some((x) => /收口没真生效/.test(x.what))).toBe(true);
+    // 未变异 ⇒ 仍绿
+    expect(scanDidFixConsolidation({ src, removedFlag: 'didFixRunning', mustUse: 'getChannelQueue', nextTargetSymbol: 'channelRunState' })).toEqual([]);
   });
 
   it('③ ★ 真盘变异: 把符号从**盘上副本**里删掉 ⇒ 门必须判红 (证明它读的是源码, 不是台账)', () => {

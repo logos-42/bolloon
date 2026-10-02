@@ -103,12 +103,14 @@ export const K8_PER_CHANNEL_STATE: readonly K8PerChannelState[] = [
     symbols: [
       T('didFixQueue'),
       T('deliveryLedger'),   // SSE ping 用的 per-client 连败计数 ⇒ 真出站状态
+      { name: 'didFixTimer', scope: 'k8-target', note: '2s 节流定时器 —— 保留为**调度策略** (执行已交内核邮箱); 它本身仍是通道自己的调度状态' },
+      { name: 'channelRunState', scope: 'k8-target', note: '**下一个(大)目标**: 模块级 `Map<channelId, {running, queue, abortController}>` (24 处用法) —— 通道自己的消息队列 + 串行 flag + abort, 与内核邮箱**功能重复**' },
       { name: 'messageQueue', scope: 'ui-state', note: '`(global as any)` 上的 **Web UI 通知列表** (pending/已读) ⇒ 展示状态, 不是 outbound/重试/恢复' },
       { name: 'pendingFriendRequests', scope: 'domain-pending', note: '**好友申请待办** (业务审批数据, 落盘恢复) ⇒ 业务状态, 不是投递状态' },
       { name: 'PENDING_FRIEND_REQ_FILE', scope: 'domain-pending', note: '同上: 好友申请待办的落盘文件' },
       { name: 'maxAttempts', scope: 'infra-retry', note: 'HTTP `listen` 的 **EADDRINUSE 重试上限** ⇒ 进程启动基础设施, 不是通道出站' },
     ],
-    why: 'web 通道内联的真状态: 待修复 channelId 队列 + SSE 投递连败计数 (其余三个符号经逐个定性后**不属于** K8 收口范围, 逐条写明原因)' },
+    why: 'web 通道内联的真状态: 待修复 channelId 队列(执行已交内核邮箱) + SSE 投递连败计数 + 通道自己的消息队列 channelRunState; 三个符号经定性**不属** K8 收口范围, 逐条写明原因' },
   { file: 'src/cli-entry.ts', kind: 'resume',
     symbols: [T('resumeId')],
     why: 'CLI 侧会话恢复' },
@@ -152,6 +154,9 @@ export const K8_PROGRESS: K8Progress = {
   stage: 'ledger-landed',
   directSites: 0,   // 12 → 10 (K8 第二步) → 7 (第三步: server.ts 3 处零差量迁移) (2026-10-02: routes-tasks / runner-resolver 两处已走唯一入口; 棘轮只许减)
   perChannelStateFiles: 10,
-  perChannelStateSymbols: 35,   // 2026-10-02 量测: 10 文件 / 35 个状态符号 (含 4 个范围外)
-  k8TargetSymbols: 31,          // 其中 **31** 个属 K8 收口对象 (棘轮只许减); 4 个经定性不属范围
+  // ⚠️ 2026-10-02 **补登**: 上一版漏了两个真状态符号 (`channelRunState` / `didFixTimer`) ⇒ 35 → 37。
+  //    这是**纠正漏登**不是范围扩张 (棘轮拦的是"通道自己状态变多", 不是"把已存在的登记上来")。
+  //    同一次提交里 `didFixRunning` (通道自己的全局单飞) 被**真删掉** —— 收口本身是减项, 只是它先前没被登记。
+  perChannelStateSymbols: 37,   // 10 文件 / 37 个状态符号 (含 4 个范围外)
+  k8TargetSymbols: 33,          // 其中 **33** 个属 K8 收口对象 (棘轮: 只许减)
 };

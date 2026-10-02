@@ -130,7 +130,7 @@ import { documentReader } from '../documents/reader.js';
 import { initMinimax, getMinimax } from '../constraints/index.js';
 import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
 // **K5 步骤④ (入口投递)**: 把一次入口执行投进会话 Actor 的 mailbox ⇒ 同一会话身份的输入排队执行
-import { deliverThroughActor } from '../kernel/channel-actor.js';
+import { deliverThroughActor, getChannelQueue } from '../kernel/channel-actor.js';   // K8: 待办执行经内核邮箱串行
 import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
 import { videoConfigStore, type VideoProvider } from '../llm/video-config-store.js';
 import { audioConfigStore, type AudioProvider } from '../llm/audio-config-store.js';
@@ -5605,8 +5605,7 @@ fetchState();
   // 关键点: 旧实现会在每次 GET /channels 时同步执行 KeyManager.generate() + IPFS POST,
   // 多频道场景下持续分配密钥对 + 发起 HTTP 请求, 几轮就会把 Node 内存撑爆。
   // 新实现: 入队 + 节流(2s) + 单飞, 立刻返回当前 channels, 修复异步进行。
-  const didFixQueue = new Set<string>(); // 待修复的 channelId
-  let didFixRunning = false;
+  const didFixQueue = new Set<string>(); // 待修复的 channelId (调度节流的**入队缓冲**, 执行已交内核邮箱)
   let didFixTimer: NodeJS.Timeout | null = null;
 
   // ---------- per-channel 消息 queue + abort 状态 ----------
@@ -5776,22 +5775,27 @@ fetchState();
     }, 2000);
   }
 
+  /**
+   * K8 收口 (2026-10-02): 待办**不再由通道自己单飞**。
+   *
+   * 旧写法 = `didFixRunning` 全局单飞 + while 循环自己取件 ⇒ "各通道自己的调度状态"。
+   * 新写法 = 执行投进该 channel 的**内核邮箱** (`getChannelQueue`), 由 `SerialMailbox` 串行:
+   *   · 同 channel 的修复**串行** (不会两个 repairs 同时 load/save 同一份 channels)
+   *   · 跨 channel 可并行 (K5 既定语义: 同通道串行 / 跨通道并行)
+   * 2s 节流 + 入队 Set 保留 (那是**调度策略**, 不是执行机制)。
+   *
+   * ⚠️ 行为差量 (如实记): 旧实现全局一次一个 repair; 新实现同通道串行、跨通道可并行。
+   */
   async function runDidFixOnce(): Promise<void> {
-    if (didFixRunning) return;
-    didFixRunning = true;
-    try {
-      while (didFixQueue.size > 0) {
-        const id = didFixQueue.values().next().value as string;
-        didFixQueue.delete(id);
-        try {
-          await fixOneChannelDID(id);
-        } catch (e) {
-          console.log(`[DID 修复] ${id} 失败: ${(e as Error).message}`);
-        }
+    const ids = [...didFixQueue];
+    didFixQueue.clear();
+    await Promise.all(ids.map((id) => getChannelQueue(id).submit(async () => {
+      try {
+        await fixOneChannelDID(id);
+      } catch (e) {
+        console.log(`[DID 修复] ${id} 失败: ${(e as Error).message}`);
       }
-    } finally {
-      didFixRunning = false;
-    }
+    })));
   }
 
   async function fixOneChannelDID(channelId: string): Promise<void> {

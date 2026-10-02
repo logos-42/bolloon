@@ -1879,6 +1879,24 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 
 **如实**: 本步**只做量测 + 记账**, 通信行为零改变; router 层与"各通道状态归一"是后续刀。
 
+### K8 收口第一刀 (`didFixQueue` → 内核邮箱 · 2026-10-02)
+
+**盘上事实**: 频道元数据后台修复 = `didFixQueue: Set<channelId>` (2s 节流) + `didFixRunning` (**全局单飞**) + while 循环自己取件。
+这就是"**各通道自己的调度状态**": 待办自己存、单飞自己管、取件自己循环。
+
+**收口**: 执行交给该 channel 的**内核邮箱** `getChannelQueue(channelId).submit(...)` ⇒
+· 同 channel 的修复由 `SerialMailbox` **串行** (不会两个 repair 同时 load/save 同一份 channels);
+· 跨 channel 可并行 (**K5 既定语义**: 同通道串行 / 跨通道并行);
+· `didFixRunning` (全局单飞) **真删掉**; 2s 节流 + 入队 Set 保留 —— 那是**调度策略**, 不是执行机制。
+
+**⚠️ 行为差量 (如实记)**: 旧实现全局一次一个 repair; 新实现同通道串行、跨通道可并行。**不当作"零差量"**。
+
+**证据边界 (如实)**: ① "server.ts 确实经邮箱" = **机械判据** (`scanDidFixConsolidation`: 剥注释后全局单飞字段必须 0 次 + 必须从内核 import 且真调用) + **真盘变异** (换掉 `getChannelQueue` ⇒ 判红; 把 `didFixRunning` 塞回代码 ⇒ 判红);
+② "邮箱真的串行" = **K5 门真跑** (已有); ③ **路由级真跑未取** (web 服务起不来, 卡在 IPFS/IPNS 引导) —— 这条缺口登记在案。
+
+**台账同步**: 同时**补登**两个上一版漏掉的真状态 (`channelRunState` 模块级 `Map<channelId,{running,queue,abortController}>` 24 处用法 · `didFixTimer`) ⇒ 35→37 / 31→33。
+`channelRunState` 是**下一个(大)目标**: 它与内核邮箱**功能重复** (通道自己的队列 + 串行 flag + abort)。
+
 ### K8 口径修正 (逐符号定性 · 2026-10-02)
 
 台账里"文件里出现的状态符号" **不等于** "通道自己的 outbound/重试/恢复"。逐符号读源码后定性:
