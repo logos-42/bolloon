@@ -585,3 +585,32 @@ K1-f 第一版**判据红了, 但红在错的原因上**: 它用 `not.toContain(
 
 `currentGoalId` (19) → `currentAgentId` (20) → `currentChannelId` (21) → `currentRunId` (36) → `messageHistory` (53)。
 最后两格是硬骨头: `currentRunId` 要接 Run 生命周期 (落盘/恢复), `messageHistory` 是 K2 验收标准「两个并发 Run 的 history 不互相污染」的落点。
+
+## 22. K2 第 4 格: `currentGoalId` —— **改判, 不搬** (台账第一次拒绝迁移)
+
+### 22.1 证据 (2026-10-02 真读 `pi-sdk.ts`)
+
+| 面 | 事实 |
+| --- | --- |
+| 写入口① | `setGoalId(goalId)` (行 1747) —— **公开 API**, CLI/Web/runner 在 run **之前**注入 ("有 goalId 就在该 Goal 下执行") |
+| 写入口② | run 内部 (行 2024 / 1091): 未绑定时 `findActiveGoal` 或 `createGoal`, 然后 `startRun({ goalId })` —— **run 会写它, 且必须活到下一个 run** |
+| 读出口 | harness 上下文 (1914) · 轨迹/报告 (2866 / 2995 / 3006 / 3023) · `bindExternalWait` (1804-1806) |
+| 另有 | 1081/1091 · 2003/2024 的「暂存-重绑-还原」模式 (跨块共享) |
+
+**⇒ 它是会话级绑定 (跨 Run 存活), 不是"每轮 Run 状态"。**
+
+### 22.2 为什么"入口 copy 一份进 Context"是错的
+
+run 内的写会落进 **per-run** Context ⇒ 会话字段不被更新 ⇒ **下一个 run 走"未绑定 ⇒ 重新 `findActiveGoal`"分支** ⇒ 行为改变 (旧行为是复用同一绑定)。
+⇒ 它该收进的是**会话/通道级持有者** (K5 Channel Actor 的 actor 状态), 不是 RunContext。**K2 不碰它。**
+
+### 22.3 落成的东西
+
+1. **台账加 `scope` 栏** (`'run' | 'session'`): 7 个 `run` 级 = K2 的外置面; 1 个 `session` 级 (`currentGoalId`, 19 处访问, **不迁移**)。
+   `RUN_CONTEXT_RUN_SCOPED = 7` + `RUN_CONTEXT_SESSION_SCOPED_NOTE` (写清证据与"为什么不能搬")。
+2. **双向规则** (两条镜像, 各配判据):
+   - 已迁移字段 ⇒ **不许**再以实例字段形式存在, 且 `this.<field>` 访问必须为 0 (旧规则);
+   - session 级字段 ⇒ **必须仍是实例字段**, 且不许出现在 `DONE` 清单里 (新规则)。
+3. 判据: `kernel-runcontext.test.ts` + `pi-run-context-wiring.test.ts` 各加一条 (共 **17/17** 绿); `tsc` 0 错。
+
+**这一格的价值**: 台账第一次**拒绝**迁移, 而不是硬搬。冻结值 (19) 保持不变 —— 它不是"没迁完", 是"不该迁"。

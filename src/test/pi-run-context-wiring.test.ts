@@ -84,6 +84,18 @@ describe('K2 接线门: RunContext 行为级接线', () => {
     expect(ctx.abortSignal?.aborted).toBe(true);
   });
 
+  it('session 级字段必须**仍是实例字段** (镜像规则: 已迁移的必须消失, session 级的不许被搬)', () => {
+    // `currentGoalId` 是跨 Run 的会话级绑定 (setGoalId 外部注入; run 内可能重绑并需活到下一轮)。
+    // 它必须留在实例上 —— 被塞进"每次入口新建"的 Context 会让 run 内的写丢掉。
+    const code = strip(PI);
+    const session = RUN_CONTEXT_FIELDS.filter((f) => f.scope === 'session');
+    expect(session.length).toBeGreaterThan(0);
+    for (const f of session) {
+      expect(new RegExp(`private\\s+${f.name}\\s*[=:]`).test(code)).toBe(true);
+      expect(RUN_CONTEXT_DONE).not.toContain(f.name);
+    }
+  });
+
   it('判别力自证: 把旧字段声明注回源码 ⇒ 必须判红', () => {
     const mutated = PI.replace('private runCtx: RunContext = createRunContext();',
       'private runCtx: RunContext = createRunContext();\n  private currentSignal: AbortSignal | null = null;');

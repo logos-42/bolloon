@@ -10,8 +10,18 @@
  *   · 8 个字段必须都能在 RunContext 目标清单里找到位置 (不然外置到哪里去)。
  */
 
+export type RunStateScope = 'run' | 'session';
+
 export interface RunStateField {
   name: string;
+  /**
+   * **作用域** —— 这一栏是 K2 第 4 格逼出来的:
+   *   `run`     = 每轮 Run 的状态, 归 RunContext (逐格外置);
+   *   `session` = **跨 Run 存活**的会话级绑定, **不进 RunContext**。
+   * 判错的代价: 会话级字段被搬进"每次入口新建"的 Context ⇒ run 内的写落进 per-run ctx ⇒
+   * 会话字段不被更新 ⇒ 下一个 run 走"未绑定 ⇒ 重新 findActiveGoal"分支 ⇒ **行为改变**。
+   */
+  scope: RunStateScope;
   /** 声明处 (文件:行, 便于人工核对) */
   declaredAt: string;
   /** 冻结的 `this.` 访问次数 (棘轮: 迁移一格就往下调一格, 只许减) */
@@ -28,14 +38,14 @@ export const RUN_CONTEXT_FROZEN_AT = '2026-10-02';
 export const RUN_CONTEXT_ENTRY = 'agents/pi-sdk.ts:1923 runReActLoop(onStream?, signal?) —— 目标签名: runReActLoop(ctx: RunContext)'
 
 export const RUN_CONTEXT_FIELDS: readonly RunStateField[] = [
-  { name: 'messageHistory', declaredAt: 'agents/pi-sdk.ts:272', accesses: 53, into: 'history', migrated: false, payDownIn: 'K2' },
-  { name: 'currentOnStream', declaredAt: 'agents/pi-sdk.ts:442', accesses: 0, into: 'eventSink', migrated: true, payDownIn: 'K2' },
-  { name: 'currentSignal', declaredAt: 'agents/pi-sdk.ts:443', accesses: 0, into: 'abortSignal', migrated: true, payDownIn: 'K2' },
-  { name: 'currentChannelId', declaredAt: 'agents/pi-sdk.ts:458', accesses: 21, into: 'channelId', migrated: false, payDownIn: 'K2' },
-  { name: 'currentRunId', declaredAt: 'agents/pi-sdk.ts:471', accesses: 36, into: 'runId', migrated: false, payDownIn: 'K2' },
-  { name: 'currentIntent', declaredAt: 'agents/pi-sdk.ts:463', accesses: 0, into: 'intent', migrated: true, payDownIn: 'K2' },
-  { name: 'currentGoalId', declaredAt: 'agents/pi-sdk.ts:1725', accesses: 19, into: 'goalId', migrated: false, payDownIn: 'K2' },
-  { name: 'currentAgentId', declaredAt: 'agents/pi-sdk.ts:460', accesses: 20, into: 'agentId', migrated: false, payDownIn: 'K2' },
+  { name: 'messageHistory', declaredAt: 'agents/pi-sdk.ts:272', scope: 'run', accesses: 53, into: 'history', migrated: false, payDownIn: 'K2' },
+  { name: 'currentOnStream', declaredAt: 'agents/pi-sdk.ts:442', scope: 'run', accesses: 0, into: 'eventSink', migrated: true, payDownIn: 'K2' },
+  { name: 'currentSignal', declaredAt: 'agents/pi-sdk.ts:443', scope: 'run', accesses: 0, into: 'abortSignal', migrated: true, payDownIn: 'K2' },
+  { name: 'currentChannelId', declaredAt: 'agents/pi-sdk.ts:458', scope: 'run', accesses: 21, into: 'channelId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentRunId', declaredAt: 'agents/pi-sdk.ts:471', scope: 'run', accesses: 36, into: 'runId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentIntent', declaredAt: 'agents/pi-sdk.ts:463', scope: 'run', accesses: 0, into: 'intent', migrated: true, payDownIn: 'K2' },
+  { name: 'currentGoalId', declaredAt: 'agents/pi-sdk.ts:1725', scope: 'session', accesses: 19, into: 'goalId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentAgentId', declaredAt: 'agents/pi-sdk.ts:460', scope: 'run', accesses: 20, into: 'agentId', migrated: false, payDownIn: 'K2' },
 ];
 
 /** RunContext 必须带的字段 (leo 的 K2 清单) */
@@ -53,3 +63,24 @@ export const RUN_CONTEXT_MIGRATED_FROZEN = 3;
  *     (入口 `createRunContext({ eventSink })` 快照; 清空 = 换一个空 Context; 15 处访问归零)
  */
 export const RUN_CONTEXT_DONE: readonly string[] = ['currentOnStream', 'currentSignal', 'currentIntent'];
+
+/** K2 的 per-run 外置面 = scope:'run' 的字段数 (session 级的不算) */
+export const RUN_CONTEXT_RUN_SCOPED = 7;
+
+/**
+ * **K2 第 4 格改判记录: `currentGoalId` 是 session 级, 不搬进 RunContext。**
+ *
+ * 证据 (2026-10-02 真读 `pi-sdk.ts`):
+ *   · 写入口① `setGoalId(goalId)` (行 1747) —— **公开 API**, CLI/Web/runner 在 run **之前**注入
+ *     ("有 goalId 就在该 Goal 下执行" ⇒ 这是会话绑定, 不是本轮状态);
+ *   · 写入口② run 内部 (行 2024 / 1091): 未绑定时 `findActiveGoal` 或 `createGoal` 再 `startRun({ goalId })`
+ *     —— **run 会写它, 且必须活到下一个 run**;
+ *   · 读出口: harness 上下文 (行 1914) · 轨迹/报告 (行 2866/2995/3006/3023) · `bindExternalWait` (1804-1806);
+ *   · 行 1081/1091 · 2003/2024 有 "暂存-重绑-还原" 模式 (跨块共享)。
+ *
+ * 为什么不能"入口 copy 一份进 Context": run 内的写会落进 per-run ctx ⇒ 会话字段不被更新 ⇒
+ * 下一个 run 走"未绑定 ⇒ 重新 findActiveGoal"分支 ⇒ **行为改变** (旧行为是复用同一绑定)。
+ *
+ * 结论: 它该收进的是**会话/通道级持有者** (K5 Channel Actor 的 actor 状态), 不是 RunContext。K2 不碰它。
+ */
+export const RUN_CONTEXT_SESSION_SCOPED_NOTE = 'currentGoalId: 会话级绑定 (setGoalId 外部注入 + run 内可能重绑), 归 K5 actor 状态, 不进 RunContext';
