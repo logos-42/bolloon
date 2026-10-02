@@ -1436,3 +1436,36 @@ channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代�
 
 三条条件全部可数: 访问器引用 0 处 · 暂存字段声明 0 个 · 入口 4/4。任何后来的改动只要让其中一条不成立, 门立刻红;
 反过来, 谁想把 `claimedComplete` 改回 `false`(退出声明), 也会红 —— 台账必须与事实同步。
+
+## 49. K4 第一步: 越权欠账的**排期过期**变成门能抓的东西 (3 条欠账逐条对盘 + 重排)
+
+### 49.1 逐条对盘 (只读核实)
+
+`AUTHORITY_DEBT` 实际是 **3 条** (K1 那本"12 处 B 类直连"是 `plan-constraint.ts` 的另一本账, 别混):
+
+| 禁令 | 文件 | 调用 | 台账 | 盘上实测 |
+| --- | --- | --- | --- | --- |
+| channel-must-not-write-goal | web/server.ts | setContinuation | 1 | **1** (3401, 唤醒 Goal 自动继续) |
+| channel-must-not-write-run | web/server.ts | setRunStatus | 2 | **2** (3463 变更注入 / 3598 外部 approve-resume) |
+| channel-must-not-write-run | web/server.ts | recordRecovery | 1 | **1** (3580 人工批准后继续) |
+
+结论: **台账与盘上逐字一致** (双向判据本身也在跑)。四处都是**用户发起的控制动作** (唤醒 / 变更注入 / 批准继续) —— 按内核口径应由**内核控制面**执行写, channel 只提交请求。
+
+### 49.2 发现的真问题: 排期过期 ("欠账烂在账上")
+
+三条都写着 `payDownIn: 'K5'`, 而 **K5 已收工** (有 `K5_STEP8` + `scanStep8Completion` 作证) —— 欠账没还, 承诺却已经过期。
+台账自己的注释就写着"不许台账烂在上面", 但**没有任何判据在管这件事** ⇒ 它只能靠人记得。
+
+### 49.3 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| `roster.ts` | **`STAGE_STATUS`** (数据): 各 K 阶段的完工状态 (`K0/K2/K3/K5 done` · `K1 partial` · 其余 `not-started`) |
+| `roster.ts` | `DebtEntry` 加 **`note`** (重排/还款路径必须写明); 三条欠账 **`payDownIn: 'K5' → 'K4'`** + note 写明"K5 的目标是字段/入口收口, 未含跨层写"与还款路径 (内核控制面代为写) |
+| `gate-scan.ts` | **`scanDebtPaydownStaleness(debt, stageStatus)`** —— ① 排期指向**已收工**的阶段 ⇒ 红 ② 没排期 ⇒ 红 ③ 没写还款路径 (note < 10 字) ⇒ 红 |
+| `kernel-authority.test.ts` | 4 条判别力: 过期排期 / 缺 note / 缺排期 / 阶段状态本身必须与事实一致 (`K5 === 'done'`, `K4 !== 'done'`) |
+
+### 49.4 为什么这条小而有价值
+
+"排期过期"是一类**没有载荷的承诺**: 它让报告与台账看起来在推进, 实际那条欠账已经**无主**。
+现在把"无主"变成可判的: 谁想把 K4 标成 `done` 而不还欠账, 门立刻红; 谁想静悄悄把 `payDownIn` 指向下一个阶段而不写原因, 也红。

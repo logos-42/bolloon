@@ -19,20 +19,8 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import {
-  AUTHORITY_DEBT,
-  AUTHORITY_DEBT_FROZEN_AT,
-  LAYERS,
-  PROHIBITIONS,
-  type LayerId,
-} from '../kernel/roster.js';
-import {
-  type SourceFile,
-  layerOf,
-  scanProhibition,
-  debtDiff,
-  groupFindings,
-} from '../kernel/gate-scan.js';
+import { AUTHORITY_DEBT, AUTHORITY_DEBT_FROZEN_AT, LAYERS, PROHIBITIONS, STAGE_STATUS, type LayerId } from '../kernel/roster.js';
+import { debtDiff, groupFindings, layerOf, scanDebtPaydownStaleness, scanProhibition, type SourceFile } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
 
@@ -186,5 +174,27 @@ describe('K2 变异 —— 每条禁令拿真实源码注入违规必须判红',
     expect(missing.length).toBeGreaterThan(0);
     // 而同一份判据在未变异的真实源码上是清的 ⇒ 门不是恒真/恒假
     expect(groupFindings(scanProhibition(files, p))).toEqual([]);
+  });
+});
+
+describe('K4 欠账不许烂在账上: 排期过期 / 无还款路径 都要被抓', () => {
+  it('★ 判据: 盘上台账与阶段状态一致 (无过期排期 · 每条都写明还款路径)', () => {
+    expect(scanDebtPaydownStaleness(AUTHORITY_DEBT, STAGE_STATUS)).toEqual([]);
+  });
+
+  it('★ 判别力: 四种坏形状都必须判红', () => {
+    const base = AUTHORITY_DEBT.map((d) => ({ ...d }));
+    // ① 排期指向已收工的阶段 ⇒ 过期
+    const stale = base.map((d, i) => (i === 0 ? { ...d, payDownIn: 'K5' } : d));
+    expect(scanDebtPaydownStaleness(stale, STAGE_STATUS).some((f) => f.rule === 'debt-paydown-stale')).toBe(true);
+    // ② 没写还款路径 ⇒ 红
+    const noNote = base.map((d, i) => (i === 1 ? { ...d, note: undefined } : d));
+    expect(scanDebtPaydownStaleness(noNote, STAGE_STATUS).some((f) => f.rule === 'debt-note-missing')).toBe(true);
+    // ③ 没排期 ⇒ 红
+    const unassigned = base.map((d, i) => (i === 2 ? { ...d, payDownIn: undefined } : d));
+    expect(scanDebtPaydownStaleness(unassigned, STAGE_STATUS).some((f) => f.rule === 'debt-unassigned')).toBe(true);
+    // ④ 阶段状态本身也要与事实一致: K5 已收工 ⇒ 不许写成 not-started
+    expect(STAGE_STATUS.K5).toBe('done');
+    expect(STAGE_STATUS.K4).not.toBe('done');   // 还没收工 ⇒ 重排到这里才是诚实的排期
   });
 });

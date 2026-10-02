@@ -1054,3 +1054,31 @@ export function scanStep8Completion(
   }
   return out;
 }
+
+/**
+ * **越权欠账不许"烂在账上"**: 若某条欠账写着 `payDownIn: <K>`, 而 `<K>` 已按台账收工 (`STAGE_STATUS[K] === 'done'`),
+ *   那就说明"记着让那个阶段还, 而那个阶段过完了" —— 必须二选一: 立刻还清, 或把 `payDownIn` 重排并写明 `note`。
+ *   (台账自己的注释就写着"不许台账烂在上面", 但没有判据 ⇒ 这条规则让它可被抓。)
+ */
+export function scanDebtPaydownStaleness(
+  debt: readonly { prohibition: string; file: string; call: string; count: number; payDownIn?: string; note?: string }[],
+  stageStatus: Readonly<Record<string, string>>,
+): Finding[] {
+  const out: Finding[] = [];
+  for (const d of debt) {
+    if (!d.payDownIn) {
+      out.push({ rule: 'debt-unassigned', file: d.file, line: 1, what: `欠账 ${d.call} 没排期 (payDownIn 为空)` });
+      continue;
+    }
+    if (stageStatus[d.payDownIn] === 'done') {
+      out.push({
+        rule: 'debt-paydown-stale', file: d.file, line: 1,
+        what: `欠账 ${d.call} 记着由 ${d.payDownIn} 还清, 而 ${d.payDownIn} 已收工 —— 要么现在还清, 要么重排并写明 note`,
+      });
+    }
+    if (!d.note || d.note.trim().length < 10) {
+      out.push({ rule: 'debt-note-missing', file: d.file, line: 1, what: `欠账 ${d.call} 没有写明还款路径/重排原因 (note)` });
+    }
+  }
+  return out;
+}
