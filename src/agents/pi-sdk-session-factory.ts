@@ -35,8 +35,8 @@ function attachActor(session: AgentSession, config: AgentSessionConfig): AgentSe
   const identity = String(config.loadSessionKey || config.peerId || '');
   // **没有身份就不归属** —— 没有 'default' 兜底桶, 宁可不共享也不许串台。
   if (!identity) return session;
-  const channelId = String(config.peerId || '').split(':')[0] || identity;
-  const actor = getOrCreateActor(identity, { agentId: config.agentId || '', channelId });
+  // 只预置 agentId (它是构造入参, 本来就属于会话); **channelId 不预置** —— 等 prompt/入口设置
+  const actor = getOrCreateActor(identity, { agentId: config.agentId || '' });
   if (typeof session.attachActor === 'function') session.attachActor(actor);
   else session.actor = actor;
   return session;

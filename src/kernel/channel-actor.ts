@@ -235,7 +235,10 @@ export function getOrCreateActor(actorKey: string, init: Partial<ActorState> = {
   const key = actorKey;
   const existing = actors.get(key);
   if (existing) return existing;
-  const created = new ChannelActor({ ...init, channelId: init.channelId ?? key });
+  // ⚠️ **不拿身份键当 channel 绑定**: `state.channelId` 的语义 = 会话当前绑定的 channel
+  //    (与 Pi 的 currentChannelId 一致, 由 prompt/入口设置)。工厂若预置成 peerId 前缀,
+  //    会让会话在入口设置之前就读到非空值 (snapshot / compaction cacheScope 都会跟着变) —— 静默行为变化。
+  const created = new ChannelActor({ ...init });
   actors.set(key, created);
   return created;
 }

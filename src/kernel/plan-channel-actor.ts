@@ -46,6 +46,11 @@ export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'fi
  *     期间 append 的消息原先会被整块替换**丢掉** (lost update) ⇒ 新增 `actor.rebaseHistory(compacted, snapshotLen)`
  *     (走邮箱 + 把快照之后的尾部原样接回); 同步压缩路径经核实是"同一拍相邻两行"(无窗口), 只留注释警戒。
  *     `historyOpsMigrated **4/4**` (hydrate · append · compact · persist)。
+ *   · 2026-10-02 **步骤③ (三个会话绑定迁入 Actor)**: `currentChannelId` / `currentAgentId` / `currentGoalId`
+ *     的本体住进 `actor.state.channelId` / `.agentId` / `.goalBinding` (Pi 侧改成访问器 + `attachActor` 收养
+ *     构造期已设的值)。**这三个字段的访问数不变** (24 / 21 / 22) —— 迁的是**所有权**而非删访问,
+ *     所以本次**不动** K2 台账的冻结值 (判据的"少一处才红"在这里不适用, 因为一处也没少)。
+ *     `fieldsMigrated **4/4**`。
  */
 
 /** K5 第 4 步: 四个 history 操作 (唯一来源; 台账 `historyOpsNames` 必须 ⊆ 这里, 且数量与进度位一致) */
@@ -120,9 +125,9 @@ export const K5_PROGRESS = {
   stage: 'registry-built' as K5Stage,
   /** Actor 容器文件路径 (存在性由门真读盘核对) */
   containerPath: 'kernel/channel-actor.ts',
-  fieldsMigrated: 1,
+  fieldsMigrated: 4,
   /** 已迁字段名单 —— 门强制 `length === fieldsMigrated` 且每个名字都在 K5_INHERITED_FIELDS 里 */
-  migratedFieldNames: ['messageHistory'],
+  migratedFieldNames: ['messageHistory', 'currentChannelId', 'currentAgentId', 'currentGoalId'],
   fieldsTotal: 4,
   entriesWired: 0,
   entriesTotal: 4,

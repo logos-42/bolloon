@@ -83,8 +83,8 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(K5_PROGRESS.stage).toBe('registry-built');
     expect(fs.existsSync(path.join(SRC, K5_PROGRESS.containerPath))).toBe(true);
     // 容器建了 ≠ 字段迁了 / 入口接了 (第 4 步第一版被全量回归否掉并回退 ⇒ 两个计数都必须是 0)
-    expect(K5_PROGRESS.fieldsMigrated).toBe(1);
-    expect(K5_PROGRESS.migratedFieldNames).toEqual(['messageHistory']);
+    expect(K5_PROGRESS.fieldsMigrated).toBe(4);
+    expect(K5_PROGRESS.migratedFieldNames).toEqual(['messageHistory', 'currentChannelId', 'currentAgentId', 'currentGoalId']);
     expect(K5_PROGRESS.entriesWired).toBe(0);
   });
 
@@ -152,8 +152,8 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(a1.state.channelId).toBe('cli');               // channel 归属可以相同
     expect(a3.state.channelId).toBe('cli');
     expect(actorCount()).toBe(2);
-    // 没给 channelId 时退回用身份当 channelId
-    expect(getOrCreateActor('chanZ').state.channelId).toBe('chanZ');
+    // **身份键 ≠ channel 绑定**: 不预置 channelId ⇒ 新建时为空 (由会话/入口设置)
+    expect(getOrCreateActor('chanZ').state.channelId).toBe('');
     // 已有的 actor 不被后来的 init 覆盖
     const again = getOrCreateActor('cli:conv-1', { agentId: '不该生效' });
     expect(again).toBe(a1);
@@ -174,9 +174,8 @@ describe('K5 门: Channel Actor 台账', () => {
     const s1: any = await mk({ peerId: 'k5probe-a:s1' });
     const s2: any = await mk({ peerId: 'k5probe-a:s2' });
     expect(s1.actor).toBeTruthy();
-    expect(s1.actor.state.channelId).toBe('k5probe-a');   // channel 归属取自 `:` 前段
-    expect(s2.actor.state.channelId).toBe('k5probe-a');
-    expect(s1.actor).not.toBe(s2.actor);                  // 但**身份不同 ⇒ 不同 actor**
+    expect(s1.actor.state.channelId).toBe('');            // channel 绑定由入口设置 ⇒ 新建时为空 (不预置)
+    expect(s1.actor).not.toBe(s2.actor);                  // **身份不同 ⇒ 不同 actor** (同前缀也隔离)
     // ③ 同身份 (同 loadSessionKey) ⇒ 同一个 actor, 同一份 history
     const s3: any = await mk({ peerId: 'k5probe-c:one', loadSessionKey: 'k5probe-c:conv' });
     const s4: any = await mk({ peerId: 'k5probe-c:two', loadSessionKey: 'k5probe-c:conv' });
@@ -274,6 +273,36 @@ describe('K5 门: Channel Actor 台账', () => {
     // 异步压缩的落地拍必须在盘上 (rebase 是"变换期间追加不被吃掉"的唯一保障)
     expect(base.includes('this.actor.rebaseHistory<Message>(')).toBe(true);
   });
+
+  it('★ 真跑: 三个会话绑定 (channelId/agentId/goalBinding) 的本体住进 Actor (含构造期收养)', async () => {
+    resetActors();
+    const s: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5bind:s1', agentId: 'agent-A' });
+    expect(s.actor).toBeTruthy();
+    // ① **构造期收养**: 构造里设的 agentId 必须已经搬进 actor, 且实例侧暂存清空 (不许两份真相)
+    expect(s.actor.state.agentId).toBe('agent-A');
+    expect(s._agentId).toBe('');
+    // ② 写入落到 actor
+    s.currentChannelId = 'ch-x';
+    s.currentGoalId = 'goal-1';
+    expect(s.actor.state.channelId).toBe('ch-x');
+    expect(s.actor.state.goalBinding).toBe('goal-1');
+    // ③ 读也来自 actor (直接改 actor ⇒ 实例读得到)
+    s.actor.state.channelId = 'ch-y';
+    expect(s.currentChannelId).toBe('ch-y');
+    // ④ 同会话身份的另一个 session 共享这三处绑定
+    const s2: any = await createAgentSession({
+      cwd: process.cwd(), peerId: 'k5bind:s2', loadSessionKey: 'k5bind:s1', agentId: 'agent-A',
+    });
+    expect(s2.actor).toBe(s.actor);
+    expect(s2.currentChannelId).toBe('ch-y');
+    expect(s2.currentGoalId).toBe('goal-1');
+    // ⑤ 不同会话身份完全隔离 (别人的绑定看不到)
+    const s3: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5bind:other' });
+    expect(s3.actor).not.toBe(s.actor);
+    expect(s3.currentChannelId).toBe('');
+    expect(s3.currentGoalId).toBe('');
+    resetActors();
+  }, 90000);
 
   it('★ 真跑: compact 落地拍 (rebase) —— 变换期间追加的消息**不许被压缩吃掉**', async () => {
     const actor = new ChannelActor({ channelId: 'k5cmp' });
@@ -415,8 +444,8 @@ describe('K5 门: Channel Actor 台账', () => {
     // 数量对不上 ⇒ 红
     const bad2 = clone({ progress: { ...K5_PROGRESS, fieldsMigrated: 2, migratedFieldNames: ['messageHistory'] } });
     expect(scanActorLedger(bad2, base).some((f) => f.rule === 'actor-fieldnames-mismatch')).toBe(true);
-    // 阶段名超前 (fields-migrated 但只迁了 1/4) ⇒ 红
-    const bad3 = clone({ progress: { ...K5_PROGRESS, stage: 'fields-migrated' } });
+    // 阶段名超前 (stage 说迁完了, 计数却只到 2/4) ⇒ 红 —— 现在真实是 4/4, 所以要把计数显式改小才测得到
+    const bad3 = clone({ progress: { ...K5_PROGRESS, stage: 'fields-migrated', fieldsMigrated: 2, migratedFieldNames: ['messageHistory', 'currentChannelId'] } });
     expect(scanActorLedger(bad3, base).some((f) => f.rule === 'actor-stage-ahead')).toBe(true);
   });
 

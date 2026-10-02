@@ -332,9 +332,17 @@ export class PiAgentSession implements AgentSession {
    */
   attachActor(actor: ChannelActor): void {
     this.actor = actor;
+    // 收养 history (actor 侧为空时才搬)
     const arr = actor.state.messageHistory as Message[];
     if (this._history.length > 0 && arr.length === 0) arr.push(...this._history);
     this._history = [];
+    // **收养三个会话绑定** (构造期/入参已设的值不能被丢掉; actor 侧已有值时不覆盖 —— 同一会话身份以先到者为准)
+    if (!actor.state.channelId && this._channelId) actor.state.channelId = this._channelId;
+    if (!actor.state.agentId && this._agentId) actor.state.agentId = this._agentId;
+    if (!actor.state.goalBinding && this._goalId) actor.state.goalBinding = this._goalId;
+    this._channelId = '';
+    this._agentId = '';
+    this._goalId = '';
   }
   private tools: Map<string, Tool> = new Map();
   /** 2026-06-30: tool registry 模块 — 独立 alias resolve, 测试可消融. */
@@ -540,10 +548,37 @@ export class PiAgentSession implements AgentSession {
 - 每步只选一个最合适的工具, 先读后写, 写完验证 (跑 tsc/vitest 或读回文件).`;
   /** 当前 prompt 开始时间 (供 Stop hook 计算 durationMs) */
   private promptStartTime: number = 0;
+  /**
+   * **K5 步骤③ (会话绑定迁入 Actor)**: 三处绑定 (channelId / agentId / goalBinding) 的本体住进
+   * `actor.state`, 实例上只留**绑定前的暂存** (`_channelId` 等), 由 `attachActor()` 收养后清空。
+   * 用访问器而不是改调用点: 写入点 (prompt 入口 / Goal 绑定 / snapshot) 分散且语义各异, 逐个改风险大;
+   * 访问器让所有读写自动落到 actor (同一个值对象), 调用点零改动。
+   * 注意: 这三个字段的**访问数不变** (台账按 "self.currentX" 形态计数) —— 迁的是**所有权**, 不是删访问。
+   *   本注释刻意不写出那种带 `this.` 前缀的字面形态: 计数口径只剥 `//` 行注释, 块注释里的同形串会被算进去
+   *   (曾因此把 currentChannelId 的计数虚增 1, 被门照出)。
+   */
+  private _channelId = '';
+
   /** 当前 channel id (由 getAgentForChannel / prompt 4 参注入, 供 hook / log 使用) */
-  private currentChannelId: string = '';
+  private get currentChannelId(): string {
+    return this.actor ? this.actor.state.channelId : this._channelId;
+  }
+
+  private set currentChannelId(v: string) {
+    if (this.actor) this.actor.state.channelId = v;
+    else this._channelId = v;
+  }
   /** 2026-07-04: 当前 agentId (server.ts 通过 createAgentSession 选项注入), 供 onSessionStart 加载 persona docs */
-  private currentAgentId: string = '';
+  private _agentId = '';
+
+  private get currentAgentId(): string {
+    return this.actor ? this.actor.state.agentId : this._agentId;
+  }
+
+  private set currentAgentId(v: string) {
+    if (this.actor) this.actor.state.agentId = v;
+    else this._agentId = v;
+  }
 
   // M2.2 intent 已外置到 runCtx.intent (K2); 拼 systemPrompt 时读 this.runCtx.intent
   /** 2026-08-10: 本轮用户原始输入 (loop-review 任务动词兜底检测用) */
@@ -1818,7 +1853,21 @@ ${await this.renderActivePlansSection()}
    */
   private _harness: PiAgentHarness | null = null;
   /** M2 绑定 GoalStore 后填真值; 在此之前为空 (事件里 goalId 字段已就位) */
-  private currentGoalId = '';
+  private _goalId = '';
+
+  /**
+   * **K5 步骤③**: 会话的 Goal **默认绑定** ⇒ 本体是 `actor.state.goalBinding`。
+   * (leo 口径: 这只是默认值; 每次执行开始必须把最终绑定写进 RunContext/Run 记录,
+   *  运行中重绑必须走显式 Goal Binding 操作, 不许靠裸字段隐式生效)
+   */
+  private get currentGoalId(): string {
+    return this.actor ? this.actor.state.goalBinding : this._goalId;
+  }
+
+  private set currentGoalId(v: string) {
+    if (this.actor) this.actor.state.goalBinding = v;
+    else this._goalId = v;
+  }
   /** 2026-09-16 (M2): 本次执行是"从 checkpoint 恢复"的 runId (非空 = 恢复模式, 不再新建 run) */
   private resumeRunId = '';
   private resumePlan: ResumePlan | null = null;

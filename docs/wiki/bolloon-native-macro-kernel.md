@@ -981,3 +981,40 @@ this.messageHistory = …       × 3   (hydrate 回灌 / 两次压缩后的整�
 
 加 `snapshotLen = this.messageHistory.length` ⇒ `messageHistory` 访问数 21 → **22** ⇒ K2 门立刻红 ("改了盘上没改账")。
 ⇒ 两本台账同步 (K2 22 + 总量 127; K5 移交字段 22), 并在台账里写明"**门已两次拦下这类不同步**"。
+
+## 33. K5 步骤③: 三个会话绑定迁入 Actor (fields 4/4)
+
+### 33.1 落地物
+
+`currentChannelId` / `currentAgentId` / `currentGoalId` 三个会话绑定的**本体**住进 `actor.state.channelId` / `.agentId` / `.goalBinding`:
+Pi 侧改为**访问器** (与 `messageHistory` 同一手法: 调用点零改动, 写入点一个没删), `attachActor()` **收养**构造期/入参已设的值 (actor 侧已有值时不覆盖 —— 同一会话身份以先到者为准)。
+
+### 33.2 这一格的关键判断: 访问数**不变** (与 messageHistory 那格相反)
+
+| 字段 | 访问数 | 说明 |
+| --- | --- | --- |
+| `messageHistory` | 56 → **22** | 上一格把 35 处写入收敛进漏斗 ⇒ 访问数真的降了 (必须同步 K2 冻结值) |
+| `currentChannelId` / `currentAgentId` / `currentGoalId` | **24 / 21 / 22 不变** | 只换**所有权** (值住哪), 没删任何访问点 ⇒ **不动** K2 台账 |
+
+⇒ 判据的"少一处才红"在这里**不该**触发, 一处也没少 (实测总量 127 = 台账 127 ✓)。
+
+### 33.3 测试逼出来的一个**静默行为变化** (已修)
+
+第一版让工厂把 `state.channelId` 预置成 `peerId` 的 `:` 前段 —— 结果会话在入口设置之前就读到非空值, 而 `currentChannelId` 原先一直是 `''` 直到 prompt/入口注入。
+受影响面: `cm.makeSnapshot({channelId})` · compaction 的 `cacheScope: this.currentChannelId || 'default'`。
+⇒ 修: **工厂不预置 channelId** (只预置 `agentId`, 那是构造入参); 注册表也不再"没给 channelId 就拿身份键当 channel"。
+⇒ 语义定清: **注册键 = 会话身份; `state.channelId` = 会话当前绑定的 channel** (由入口设置), 两者解耦。
+
+### 33.4 真跑验证
+
+| 用例 | 断言 |
+| --- | --- |
+| **构造期收养** | `createAgentSession({agentId:'agent-A'})` ⇒ `actor.state.agentId === 'agent-A'` 且实例侧暂存 `_agentId === ''` (不许两份真相) |
+| **写入落 actor** | `s.currentChannelId='ch-x'` / `s.currentGoalId='goal-1'` ⇒ actor 侧可见; 直接改 actor ⇒ 实例读得到 |
+| **同身份共享** | 同 `loadSessionKey` 的另一个 session ⇒ 同一 actor, 三处绑定一致 |
+| **跨身份隔离** | 另一个身份 ⇒ 自己的 actor, 三处绑定为 `''` |
+
+### 33.5 一条判据口径的坑 (顺手记下)
+
+K2 的访问计数**只剥 `//` 行注释, 不剥 `*` 块注释** —— 我在块注释里写了带 `this.` 前缀的字段名, 计数就虚增 1, 被门照出。
+⇒ 规矩: **别在注释里写出"台账计数的那种字面形态"**。计数口径量的是**代码**访问; 拿注释去凑数或补注释凑数都是错的。
