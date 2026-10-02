@@ -1751,10 +1751,17 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 (它就在"重复工具调用检测"之后 —— 与主路径 `pi-sdk.ts:2715` 的
 `await ((toolCall as any).__t0 = Date.now(), tool.execute(expandHomeArgs(toolCall.args)))` **是两处独立执行**。)
 
-**先要读清的一件事 (第二步的第一刀)**: 主路径在执行前**确实跑过门链**吗? 要在 `pi-sdk.ts` 里定位
-deny/pre-tool-validator 的调用点与 `2715` 的相对位置 (门在同一个函数体内、且在 `tool.execute` 之前 ⇒ 才算"经门链");
-若门也只在别处、不在执行前, 那主路径本身也算旁路 ⇒ **两条都要收敛, 台账的 `bypass` 数要跟着改**。
-⇒ 这正是「数出来 ≠ 判定了」的分界: 本步只做了"数 + 分类", 收敛前必须先把门链与执行点的**先后关系**读实。
+**先要读清的一件事 (第二步的第一刀)** —— **2026-10-02 已实测并给定论**:
+主路径**确实经门链**。证据 (全在 `src/agents/pi-sdk.ts`):
+- 执行点 `2715` 位于 `private async runReActLoop(...)` (**2055** 起) 之内;
+- 该函数内 ~2622 处有实调 `this.harness.*`(`ctx: this.harnessCtx()`), 注释逐字写着顺序
+  `deny-pipeline → pre-tool-validator(4 步链) → react-harness(8-gate)`, 并按 `toolDecision.rejectedBy`
+  分派拒收文案(`deny-pipeline` / `react-harness` / `harness-error`);
+- 同一处注释记着旧账: **"旧实现是这三处在不同位置各自调用 (且有两条路径 fail-open); 现在 pi-sdk 不再散调任何 gate"**
+  ⇒ 主路径的门是**前置且唯一**的。
+⇒ 定论: **旁路数维持 3**, `workflow-pivot-loop.ts:613` 是**真旁路** (它在另一个类里执行工具, 那条路径上没有 harness 调用)。
+⇒ 收敛工作量因此明确: 给 pivot loop 注入一个"每次工具调用前先过门"的**端口回调**(与 pi-sdk 用同一个 harness 实例),
+让它与主路径共用判定, 而不是自己直调 `tool.execute`。
 
 **收敛手法 (倾向, 未定案)**: 让 pivot loop 与主路径共用**同一个执行入口**(最自然是 `tool-registry.ts:153` 那个
 "唯一咽喉候选"), 由它内部串 `deny → pre-tool-validator → execute → 读回自证`; 两处调用点只传参。
