@@ -1303,3 +1303,39 @@ channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代�
 - `scanStagingFieldDeletion` 双向判 (删了却还在 / 没了却没登记);
 - `scanHistoryWriteSites` 仍要求"直写 0 处" —— 三个漏斗改成只走 actor 后依旧满足 ✓;
 - K5 门全套 (35 用例) 通过。
+
+## 42. K5 步骤⑧ 后半: 访问器**不硬删**, 改成棘轮 + 逐条核 7 条删除前置
+
+### 42.1 量过才决定: 删访问器 = 大范围改名
+
+实测 pi-sdk **内部**对 5 个已迁字段访问器的引用: `messageHistory 21` · `currentChannelId 25` · `currentAgentId 22` · `currentGoalId 23` · `currentRunId 38` = **129 处**; 外部还有 10 个文件引用 (index.ts / web/ / workflow-pivot-loop / snip-collapse / execution-supervisor / goal-flywheel-wiring / goal-store …)。
+⇒ 一次性硬删就是**大范围改名**, 与本仓纪律 (删除必须有依据 + 不做大爆炸重构) 相冲。
+
+### 42.2 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| `plan-channel-actor.ts` | `K5_ACCESSOR_SURFACE { accessorFields, frozenInPiSdk, where, why }` —— **棘轮**: 引用数只许减 |
+| `gate-scan.ts` | `scanAccessorSurface` —— 从盘上重算, 与台账**逐字相等** (增 ⇒ 迁移回退; 减 ⇒ 改了盘没改账) |
+| `plan-channel-actor.ts` | `K5_DELETION_PRECONDITIONS` 从 `string[]` 升级成 `{ text, backedBy }[]` —— **每条前置必须点名背书** |
+| `gate-scan.ts` | `scanPreconditionBacking` —— 背书必须是**盘上存在的文件** 或 gate-scan 里存在的判据名 (只核背书存在, **不代替真跑**) |
+
+### 42.3 7 条前置的背书 (核过, 名副其实)
+
+| 前置 | 背书 (真跑在) |
+| --- | --- |
+| Pi 不再拥有 session 状态 | `K5_FIELD_DELETION` + 门 37 用例 |
+| 所有入口经过 Actor | `scanEntryDelivery` (wiredTotal === total) |
+| 同 Channel 串行 / 跨 Channel 并发真跑 | 门 114 串行 · 315 跨身份并行 · 367 跨 channel 并行 |
+| 重启后 history/Goal/Run 恢复 | `session-resume-e2e` · `persistence-e2e-flow` |
+| currentRunId 不再由 Pi 播种 | `scanRunIdSeed` |
+| Pi 字段访问只剩推理临时变量 | `K5_ACCESSOR_SURFACE` |
+| 旧字段零引用门禁 | `scanStagingFieldDeletion` (双向) |
+
+### 42.4 钉住静默丢数据 (步骤⑧ 实测过的那条)
+
+新增回归用例: 带 `loadSessionKey` 的 session 构造后, 断言 ① `actor.state.messageHistory.length === 2` ② `s.actor === peekActor(会话身份)` —— 即回灌必须落进**注册表里的那个身份 actor**, 不许落进"被遗弃的私有 actor"(第一版 bug 的形状)。
+
+### 42.5 代价可见
+
+加这两条判据 + 棘轮台账 ⇒ 内核**代码**行数 1650 → **1698** · 台账 915 → **952**, K3 行数棘轮门当场判红 ⇒ 冻结值同步 (改动现于 diff, 不是偷偷涨)。

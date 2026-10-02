@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 /**
  * Bolloon Native Macro-Kernel —— K0 门的**判据** (纯函数: 吃源码文本, 出违规清单)
  *
@@ -606,7 +608,7 @@ export interface K5LedgerLike {
   stateItems: readonly ActorStateItemLike[];
   acceptance: readonly string[];
   steps: readonly string[];
-  preconditions: readonly string[];
+  preconditions: readonly { text: string }[];   // K5 步骤⑧: 前置升级成[含背书]的对象
   inheritedFields: readonly { name: string; into: string; accesses: number }[];
   progress: {
     stage: string; containerPath: string;
@@ -958,6 +960,52 @@ export function scanStagingFieldDeletion(
     const claimedDeleted = del.deletedStagingFields.includes(name);
     if (claimedDeleted && declared) f(`${name} 台账说已删, 源码里还在`);
     if (!claimedDeleted && !declared) f(`${name} 源码里已不存在, 台账却没登记删除`);
+  }
+  return out;
+}
+
+/**
+ * **K5 步骤⑧ 棘轮判据**: 盘上重算 pi-sdk 对已迁字段访问器的引用数, 与台账**逐字相等**。
+ *   增 ⇒ 迁移回退; 减 ⇒ 改了盘上没改账 (账必须与事实同步)。两侧都是真发现。
+ */
+export function scanAccessorSurface(
+  piCode: string,
+  surface: { accessorFields: readonly string[]; frozenInPiSdk: Record<string, number> },
+): Finding[] {
+  const out: Finding[] = [];
+  const lines = piCode.split('\n').filter((l) => !/^\s*\*/.test(l));
+  for (const f of surface.accessorFields) {
+    const rx = new RegExp(`this\\.${f}\\b`, 'g');
+    let n = 0;
+    for (const l of lines) n += (l.replace(/\/\/.*$/, '').match(rx) ?? []).length;
+    const frozen = surface.frozenInPiSdk[f];
+    if (frozen === undefined) out.push({ rule: 'accessor-surface', file: 'agents/pi-sdk.ts', line: 1, what: `${f} 没有冻结值` });
+    else if (n > frozen) out.push({ rule: 'accessor-surface', file: 'agents/pi-sdk.ts', line: 1, what: `${f} 引用数 ${n} > 冻结 ${frozen} (迁移回退)` });
+    else if (n < frozen) out.push({ rule: 'accessor-surface', file: 'agents/pi-sdk.ts', line: 1, what: `${f} 引用数 ${n} < 冻结 ${frozen} (盘上变了账没跟上)` });
+  }
+  return out;
+}
+
+/**
+ * **前置必须点名背书**: 每条删除前置都要有 `backedBy`, 且每个背书要么是盘上存在的文件, 要么是 gate-scan 里存在的判据函数名。
+ *   (只核"背书存在", 不代替真跑 —— 判据不谎称可验证性。)
+ */
+export function scanPreconditionBacking(
+  preconditions: readonly { text: string; backedBy: readonly string[] }[],
+  opts: { repoRoot: string; judgeNames: readonly string[] },
+): Finding[] {
+  const out: Finding[] = [];
+  if (preconditions.length === 0) out.push({ rule: 'precondition-backing', file: 'kernel/plan-channel-actor.ts', line: 1, what: '前置清单为空 (拿不到事实就拒跑)' });
+  for (const p of preconditions) {
+    if (!p.backedBy || p.backedBy.length === 0) {
+      out.push({ rule: 'precondition-backing', file: 'kernel/plan-channel-actor.ts', line: 1, what: `前置没有背书: ${p.text}` });
+      continue;
+    }
+    for (const b of p.backedBy) {
+      const isFile = b.includes('/') || b.endsWith('.test.ts');
+      const ok = isFile ? fs.existsSync(path.join(opts.repoRoot, b)) : opts.judgeNames.includes(b) || b.startsWith('K5_');
+      if (!ok) out.push({ rule: 'precondition-backing', file: 'kernel/plan-channel-actor.ts', line: 1, what: `背书不存在: ${b} (前置: ${p.text})` });
+    }
   }
   return out;
 }

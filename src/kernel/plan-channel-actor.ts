@@ -104,15 +104,52 @@ export const K5_STEPS: readonly string[] = [
 ];
 
 /** 删除旧字段的 7 条前置条件 (全满足才许删 —— 对应 §7.3 删除条件的 K5 细化) */
-export const K5_DELETION_PRECONDITIONS: readonly string[] = [
-  'PiAgentSession 不再拥有 session 状态',
-  '所有入口都经过 Channel Actor',
-  '同 Channel 串行、跨 Channel 并发**真跑通过**',
-  '重启后 history / Goal / Run 仍能正确恢复',
-  'currentRunId 不再由 Pi 负责播种',
-  'Pi 的字段访问只剩推理所需的临时变量',
-  '旧字段零引用门禁通过',
+/**
+ * K5 的 7 条删除前置。每条**必须点名"谁证明它"** (`backedBy`) —— 说"已验证"却没点名, 或点了一个盘上不存在的文件/判据,
+ * 都由 `scanPreconditionBacking` 判红 (不谎称可验证性: 判据只核"背书存在", 不代替真跑)。
+ */
+export const K5_DELETION_PRECONDITIONS: readonly { text: string; backedBy: readonly string[] }[] = [
+  {
+    text: 'PiAgentSession 不再拥有 session 状态',
+    backedBy: ['src/test/kernel-channel-actor.test.ts', 'K5_FIELD_DELETION'],
+  },
+  {
+    text: '所有入口都经过 Channel Actor',
+    backedBy: ['src/test/kernel-channel-actor.test.ts'],   // scanEntryDelivery: wiredTotal === total
+  },
+  {
+    text: '同 Channel 串行、跨 Channel 并发**真跑通过**',
+    backedBy: ['src/test/kernel-channel-actor.test.ts'],   // 串行语义 + ALS 防重入自锁
+  },
+  {
+    text: '重启后 history / Goal / Run 仍能正确恢复',
+    backedBy: ['src/test/session-resume-e2e.test.ts', 'src/test/persistence-e2e-flow.test.ts'],
+  },
+  {
+    text: 'currentRunId 不再由 Pi 负责播种',
+    backedBy: ['scanRunIdSeed'],                           // CURRENT_RUN_ID_SEED_READS/_SEED_SITES
+  },
+  {
+    text: 'Pi 的字段访问只剩推理所需的临时变量',
+    backedBy: ['K5_ACCESSOR_SURFACE'],
+  },
+  {
+    text: '旧字段零引用门禁通过',
+    backedBy: ['K5_FIELD_DELETION'],                       // scanStagingFieldDeletion 双向
+  },
 ];
+
+/**
+ * **K5 步骤⑧ 的棘轮**: "本体已进 actor"之后, pi-sdk 里对这批**访问器**的引用数只许减、不许再增。
+ *   删访问器本身要改 ~129 处 + 10 个文件 (跨 web/CLI/agents), 属大范围改名 ⇒ 立棘轮而不是硬改。
+ *   计数变化 ⇒ 台账必须在**同一次提交**里跟上 (台账与盘上事实必须同步)。
+ */
+export const K5_ACCESSOR_SURFACE = {
+  accessorFields: ['messageHistory', 'currentChannelId', 'currentAgentId', 'currentGoalId', 'currentRunId'],
+  frozenInPiSdk: { messageHistory: 21, currentChannelId: 25, currentAgentId: 22, currentGoalId: 23, currentRunId: 38 },
+  where: 'src/agents/pi-sdk.ts',
+  why: '字段本体已删 (K5_FIELD_DELETION); 这些访问器只剩"读门面"作用 ⇒ 只许减',
+} as const;
 
 /** 从 K2 移交的 4 个 session 字段 (现仍是 Pi 实例字段, match 口径冻结值) */
 export const K5_INHERITED_FIELDS: readonly { name: string; into: string; accesses: number }[] = [

@@ -15,22 +15,13 @@ import path from 'node:path';
 import { SessionStore } from '../agents/session-store.js';
 import { createAgentSession } from '../agents/pi-sdk-session-factory.js';
 
-import {
-  ACTOR_STATE_ITEMS,
-  K5_ACCEPTANCE,
-  K5_CHANNEL_LOCK,
-  K5_DELETION_PRECONDITIONS,
-  K5_EXECUTION_REQUEST,
-  K5_RUN_BOUNDARY,
-  K5_GOAL_BINDING_RULE,
-  K5_INHERITED_FIELDS,
-  K5_PROGRESS,
-  K5_STEPS,
-} from '../kernel/plan-channel-actor.js';
+import { ACTOR_STATE_ITEMS, K5_ACCEPTANCE, K5_ACCESSOR_SURFACE, K5_CHANNEL_LOCK, K5_DELETION_PRECONDITIONS, K5_EXECUTION_REQUEST, K5_GOAL_BINDING_RULE, K5_INHERITED_FIELDS, K5_PROGRESS, K5_RUN_BOUNDARY, K5_STEPS } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
 import { ChannelActor, SerialMailbox, actorCount, actorCount as registrySize, channelQueueCount, createActorState, currentActorContext, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
-import { type K5LedgerLike, countEntryExecutionPoints, scanActorLedger, scanChannelLock, scanEntryDelivery, scanExecutionRequest, scanHistoryWriteSites, scanRunBoundaryResidence } from '../kernel/gate-scan.js';
+import { countEntryExecutionPoints, scanAccessorSurface, scanActorLedger, scanChannelLock, scanEntryDelivery, scanExecutionRequest, scanHistoryWriteSites, scanPreconditionBacking, scanRunBoundaryResidence, type K5LedgerLike } from '../kernel/gate-scan.js';
+import * as gateScan from '../kernel/gate-scan.js';
 
+const ROOT = path.join(__dirname, '..', '..');
 const SRC = path.join(process.cwd(), 'src');
 const KERNEL = path.join(SRC, 'kernel');
 /** 台账里的路径是**相对 src** 的 (containerPath = 'kernel/channel-actor.ts') ⇒ 拼 SRC, 不是拼 KERNEL */
@@ -45,6 +36,30 @@ const LEDGER: K5LedgerLike = {
   progress: K5_PROGRESS,
 };
 const K2_SESSION = RUN_CONTEXT_FIELDS.filter((f) => f.scope === 'session').map((f) => ({ name: f.name, accesses: f.accesses }));
+// K5 步骤⑧ 新增: 访问器棘轮 + 前置背书
+const PI_SRC_TEXT = fs.readFileSync(path.join(SRC, 'agents/pi-sdk.ts'), 'utf-8');
+const JUDGE_NAMES = Object.keys(gateScan).filter((k) => k.startsWith('scan'));
+
+describe('K5 步骤⑧ 门: 访问器棘轮 + 前置背书', () => {
+  it('★ 判据: pi-sdk 对已迁字段访问器的引用数 == 台账 (增=回退, 减=改了盘没改账)', () => {
+    expect(scanAccessorSurface(PI_SRC_TEXT, K5_ACCESSOR_SURFACE)).toEqual([]);
+    const bumped = PI_SRC_TEXT.replace(/(\n\s*private get currentAgentId)/, '\n    const _x = this.currentAgentId;$1');
+    expect(scanAccessorSurface(bumped, K5_ACCESSOR_SURFACE).length).toBeGreaterThan(0);
+    const shaved = PI_SRC_TEXT.replace('this.currentGoalId', 'this.actor!.state.goalBinding');
+    expect(scanAccessorSurface(shaved, K5_ACCESSOR_SURFACE).some((f: any) => f.what.includes('盘上变了账没跟上'))).toBe(true);
+    expect(scanAccessorSurface(PI_SRC_TEXT, { accessorFields: ['messageHistory'], frozenInPiSdk: {} }).length).toBe(1);
+  });
+
+  it('★ 判据: 每条删除前置都点名了[盘上存在]的背书 (只核背书存在, 不代替真跑)', () => {
+    expect(scanPreconditionBacking(K5_DELETION_PRECONDITIONS as any, { repoRoot: ROOT, judgeNames: JUDGE_NAMES })).toEqual([]);
+    const bogus = K5_DELETION_PRECONDITIONS.map((p: any, i: number) => (i === 3 ? { ...p, backedBy: ['src/test/no-such-file.test.ts'] } : p));
+    expect(scanPreconditionBacking(bogus as any, { repoRoot: ROOT, judgeNames: JUDGE_NAMES }).length).toBe(1);
+    const bogus2 = K5_DELETION_PRECONDITIONS.map((p: any, i: number) => (i === 4 ? { ...p, backedBy: ['scanNoSuchJudge'] } : p));
+    expect(scanPreconditionBacking(bogus2 as any, { repoRoot: ROOT, judgeNames: JUDGE_NAMES }).length).toBe(1);
+    expect(scanPreconditionBacking([{ text: 'x', backedBy: [] }] as any, { repoRoot: ROOT, judgeNames: JUDGE_NAMES }).length).toBe(1);
+    expect(scanPreconditionBacking([] as any, { repoRoot: ROOT, judgeNames: JUDGE_NAMES }).length).toBe(1);
+  });
+});
 
 describe('K5 门: Channel Actor 台账', () => {
   it('扫描面非空 (门不许空转)', () => {
@@ -648,6 +663,33 @@ describe('K5 门: Channel Actor 台账', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 90000);
+
+
+  it('★ 钉住反例 (步骤⑧ 实测过): 构造期异步回灌必须落进**身份 actor**, 不许落进"被遗弃的私有 actor"', async () => {
+    resetActors();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'k5hyd-'));
+    try {
+      const store = new SessionStore({ cacheDir: dir });
+      await (store as any).saveMessages('cli:hyd-probe', [
+        { role: 'user', content: 'u1', timestamp: 1, source: 'test' },
+        { role: 'assistant', content: 'a1', timestamp: 2, source: 'test' },
+      ]);
+      const s: any = await createAgentSession(
+        { cwd: process.cwd(), peerId: 'k5hyd:s1', loadSessionKey: 'cli:hyd-probe', sessionStore: store },
+        true,
+      );
+      await s.whenReady();
+      // ① 回灌必须在**这个** actor 上 (第一版 bug: 日志说回灌 2 条, 这里却是 0)
+      expect(s.actor.state.messageHistory.length).toBe(2);
+      expect(s.messageHistory.length).toBe(2);
+      // ② 而且必须是**注册表里那个**身份 actor (不是私有 actor 的残留)
+      expect(s.actor).toBe(peekActor('cli:hyd-probe'));
+      expect(s.actor.state.messageHistory.map((m: any) => m.content)).toEqual(['u1', 'a1']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      resetActors();
+    }
+  }, 60000);
 
   it('★ 钉住反例 (全量回归实证): 同 channel 前缀的两个独立 session 不许看见彼此 history', async () => {
     // 2026-10-02: 第 4 步第一版 (把 history 本体按 channel 前缀挂进 actor) 被全量回归否掉 ——
