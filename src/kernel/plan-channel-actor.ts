@@ -56,6 +56,11 @@ export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'fi
  *     (用户消息 / 第二条路径 / 重新生成), `web/server.ts` 里共 8 处入口执行点 ⇒ `entrySites { total: 8, wired: 3 }`,
  *     两个数字都由判据 `scanEntryDelivery` **从盘上重算**, 自报无效。
  *     四个**粗粒度**入口 (web / CLI / P2P / Supervisor) 的 `entriesWired` 仍 **0/4** —— 一条入口要全部执行点接完才算。
+ *   · 2026-10-02 **步骤④ 完成**: web (server.ts 11/11 + routes-tasks 1/1) · CLI (index.ts) · P2P 入站 · Supervisor/子Agent
+ *     (runner-resolver.ts 1/1) ⇒ `entriesWired **4/4**`。
+ *     **关键发现 (口径漏了一整类入口)**: P2P 入站调的是 `a.summarizeDocument(...)` / `a.improveDocument(...)` ——
+ *     不叫 `prompt`, 只数 prompt/promptStream 会让这条入口**永远数不到** (实测 index.ts 漏 4 处)。
+ *     ⇒ 口径的方法名单 `AGENT_ENTRY_METHODS` 也做成台账数据 (冻结), 并配判别力用例。
  */
 
 /** K5 第 4 步: 四个 history 操作 (唯一来源; 台账 `historyOpsNames` 必须 ⊆ 这里, 且数量与进度位一致) */
@@ -125,6 +130,25 @@ export const K5_INHERITED_FIELDS: readonly { name: string; into: string; accesse
  *    这不是"泄漏消失", 是**迁移动作的可见痕迹** —— 数字对不上就必须回去核 (门已两次拦下这类不同步)。
  */
 
+/**
+ * **启动一次执行的 AgentSession 方法名单** (判据口径的数据来源, 冻结)。
+ * 为什么必须列全: 只数 `prompt/promptStream` 会让"走文档摘要/改写进来的入口"(P2P 入站)
+ * **永远数不到** —— 实测 `index.ts` 因此漏了 4 处 (`summarizeDocument` ×2 · `improveDocument` ×2)。
+ * 故意不计的: `readDocument` (纯 IO) · `suggestRename` (单次小调用, 不写会话历史) ·
+ *   `runWorkflow` (内部会再调 prompt ⇒ 计入会双算)。
+ */
+export const AGENT_ENTRY_METHODS: readonly string[] = [
+  'prompt', 'promptStream', 'promptWithPivotLoop', 'summarizeDocument', 'improveDocument',
+];
+
+/** 入口 → 文件分组 (判据做**双向**校验: 说完成 ⇒ 其文件必须全接完; 说没完成 ⇒ 必须真有文件没接完) */
+export const K5_ENTRY_GROUPS: readonly { entry: string; files: readonly string[]; wired: boolean }[] = [
+  { entry: 'web', files: ['web/server.ts', 'web/routes-tasks.ts'], wired: true },
+  { entry: 'CLI', files: ['index.ts', 'cli/interface.ts'], wired: true },
+  { entry: 'P2P 入站', files: ['index.ts'], wired: true },
+  { entry: 'Supervisor/子 Agent', files: ['agents/runner-resolver.ts'], wired: true },
+];
+
 /** 进度位 —— 门强制与盘上事实同步 (进度只许增; 未建的不许标已建) */
 export const K5_PROGRESS = {
   stage: 'registry-built' as K5Stage,
@@ -134,8 +158,12 @@ export const K5_PROGRESS = {
   /** 已迁字段名单 —— 门强制 `length === fieldsMigrated` 且每个名字都在 K5_INHERITED_FIELDS 里 */
   migratedFieldNames: ['messageHistory', 'currentChannelId', 'currentAgentId', 'currentGoalId'],
   fieldsTotal: 4,
-  entriesWired: 3,
+  entriesWired: 4,
   entriesTotal: 4,
+  /** 判据口径用的方法名单 (数据; 见 AGENT_ENTRY_METHODS 的说明) */
+  entryMethods: AGENT_ENTRY_METHODS,
+  /** 入口分组 (判据做双向校验: 说完成 ⇒ 文件必须全接完) */
+  entryGroups: K5_ENTRY_GROUPS,
   /**
    * K5 步骤④ 的细粒度进度: **全部入口面的执行点清单**。
    * 两个数字都由判据 `scanEntryDelivery` 用同一口径**从盘上重算** (剥注释 / 排除 `this.prompt` / 非流式也算), 自报无效。
@@ -145,7 +173,7 @@ export const K5_PROGRESS = {
     //   `this` = CLI readline 提示 (`this.prompt('> ')`);  `s` = index.ts 里的 UI 打印助手 (`s.prompt('📩 …')`)
     { file: 'web/server.ts', total: 11, wired: 11, excludeReceivers: ['this'] },            // web 用户/中继/任务/心跳
     { file: 'web/routes-tasks.ts', total: 1, wired: 1, excludeReceivers: ['this'] },        // web 任务路由
-    { file: 'index.ts', total: 7, wired: 7, excludeReceivers: ['this', 's'] },              // CLI 主入口 (含 --prompt 直调)
+    { file: 'index.ts', total: 11, wired: 11, excludeReceivers: ['this', 's'] },            // CLI 主入口 + P2P 入站 (含文档摘要/改写)
     { file: 'cli/interface.ts', total: 0, wired: 0, excludeReceivers: ['this'] },           // readline ⇒ 无执行点
     { file: 'agents/runner-resolver.ts', total: 1, wired: 1, excludeReceivers: ['this'] },  // 子 Agent / Supervisor 面
   ],

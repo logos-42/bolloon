@@ -796,17 +796,25 @@ export function scanHistoryWriteSites(code: string): Finding[] {
  *      `this` = CLI readline (`this.prompt('> ')`); `s` = index.ts 的 UI 打印助手 (`s.prompt('📩 …')`)。
  *      名单改动会出现在 diff 里 ⇒ 不能拿它偷偷把执行点数变小。
  */
-export function countEntryExecutionPoints(code: string, excludeReceivers: readonly string[] = ['this']): number {
+export function countEntryExecutionPoints(
+  code: string,
+  opts: { excludeReceivers?: readonly string[]; methods?: readonly string[] } = {},
+): number {
+  const excludeReceivers = opts.excludeReceivers ?? ['this'];
+  // **方法名单也是台账数据**: 启动一次执行的 AgentSession 方法 (不只是 prompt)
+  //   —— 漏掉它会让 P2P 入站那种走 `summarizeDocument/improveDocument` 的入口永远数不到 (实测漏过 4 处)。
+  const methods = opts.methods ?? ['prompt', 'promptStream'];
   let n = 0;
   for (const raw of code.split(/\r?\n/)) {
     const l = raw.replace(/\/\/.*$/, '');
     if (/^\s*\*/.test(l)) continue;                                  // 块注释行
-    const hits = l.match(/\.prompt(Stream)?\(/g) ?? [];
-    if (hits.length === 0) continue;
-    // 该行调用的 receiver (实测每行至多一个执行点; 取第一个 receiver 判定即可)
-    const m = /([A-Za-z_$][\w$]*|this)\s*\.\s*prompt(Stream)?\(/.exec(l);
-    if (m && excludeReceivers.includes(m[1])) continue;               // 已核实的非执行点
-    n += hits.length;
+    for (const m of methods) {
+      const rx = new RegExp(`\\.\\s*${m}\\s*\\(`, 'g');
+      if (!rx.test(l)) continue;
+      const recv = new RegExp(`([A-Za-z_$][\\w$]*|this)\\s*\\.\\s*${m}\\s*\\(`).exec(l);
+      if (recv && excludeReceivers.includes(recv[1])) continue;        // 已核实的非执行点
+      n += 1;
+    }
   }
   return n;
 }
@@ -822,18 +830,37 @@ export function countDeliveredPoints(code: string): number {
  */
 export function scanEntryDelivery(
   sources: readonly { file: string; text: string }[],
-  sites: readonly { file: string; total: number; wired: number; excludeReceivers?: readonly string[] }[],
+  progressLike: {
+    entrySites: readonly { file: string; total: number; wired: number; excludeReceivers?: readonly string[] }[];
+    entryGroups?: readonly { entry: string; files: readonly string[]; wired: boolean }[];
+    entriesWired?: number;
+    entryMethods?: readonly string[];
+  },
 ): Finding[] {
   const out: Finding[] = [];
   const f = (file: string, what: string) => out.push({ rule: 'entry-delivery-mismatch', file, line: 1, what });
-  for (const s of sites) {
+  const methods = progressLike.entryMethods ?? ['prompt', 'promptStream'];
+  const complete = new Set<string>();
+  for (const s of progressLike.entrySites) {
     const src = sources.find((x) => x.file === s.file);
     if (!src) { f(s.file, `台账登记的文件在扫描面里不存在 ⇒ 口径不可信`); continue; }
-    const total = countEntryExecutionPoints(src.text, s.excludeReceivers ?? ['this']);
+    const total = countEntryExecutionPoints(src.text, { excludeReceivers: s.excludeReceivers ?? ['this'], methods });
     const wired = countDeliveredPoints(src.text);
     if (total !== s.total) f(s.file, `入口执行点盘上 ${total} 处 ≠ 台账 ${s.total} ⇒ 新增/删除没登记`);
     if (wired !== s.wired) f(s.file, `已投递盘上 ${wired} 处 ≠ 台账 ${s.wired} ⇒ 进度对不上事实`);
     if (s.wired > s.total) f(s.file, `wired ${s.wired} > total ${s.total}`);
+    // `total === 0` (该文件没有执行点) 算**空真完成** —— 否则"入口声明完成"会因为它永远判红
+    if (s.total === s.wired) complete.add(s.file);
+  }
+  // **入口级声明双向校验** (两侧都能判): 说完成了 ⇒ 它的文件必须全接完; 说没完成 ⇒ 必须真有文件没接完。
+  const groups = progressLike.entryGroups ?? [];
+  for (const g of groups) {
+    const all = g.files.every((x) => complete.has(x));
+    if (g.wired && !all) f(g.files[0], `入口「${g.entry}」标完成, 但 ${g.files.filter((x) => !complete.has(x)).join('/')} 还没接完`);
+    if (!g.wired && all) f(g.files[0], `入口「${g.entry}」的文件都接完了, 却还标着未完成 ⇒ 台账该前进`);
+  }
+  if (progressLike.entriesWired !== undefined && progressLike.entriesWired !== groups.filter((g) => g.wired).length) {
+    f('kernel/plan-channel-actor.ts', `entriesWired=${progressLike.entriesWired} ≠ 标完成的入口数 ${groups.filter((g) => g.wired).length}`);
   }
   return out;
 }

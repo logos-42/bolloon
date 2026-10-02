@@ -1116,3 +1116,40 @@ web/server.ts  promptStream( 执行点共 **8** 处; 已投递 **3** 处 (用户
 
 判据里**动态拼正则** (`new RegExp` 由 receiver 名单生成) 被转义吃坏 (经 Python 补丁写入后语法直接破) ⇒ 改成**不用动态正则**: 先 `match` 出调用, 再用 `excludeReceivers.includes(recv)` 判定。
 ⇒ 规矩: 判据/口径这类要长命的小函数, **避开动态正则与转义** —— 正则字面量 + `includes` 更稳。
+
+## 37. K5 步骤④ 完成: 入口投递 4/4 (web · CLI · P2P 入站 · Supervisor)
+
+### 37.1 关键发现: 原口径漏了**一整类**入口
+
+P2P 入站处理的是 `summarize` / `improve` 任务, 它调的是 **`a.summarizeDocument(...)` / `a.improveDocument(...)`** —— 不叫 `prompt`。
+⇒ 只数 `prompt/promptStream` 会让这条入口**永远数不到** (实测 `index.ts` 因此漏 4 处)。
+⇒ 修: 口径的**方法名单也做成台账数据** (`AGENT_ENTRY_METHODS`, 冻结), 并写明**故意不计**的三种 (`readDocument` 纯 IO · `suggestRename` 单次小调用不写历史 · `runWorkflow` 内部会再调 prompt ⇒ 计入会双算)。若哪天它们变成"启动一次执行", **先改台账再改代码**。
+
+### 37.2 最终清单 (两个数字都由门从盘上重算)
+
+| 文件 | 执行点 | 已投递 | 入口 |
+| --- | --- | --- | --- |
+| `web/server.ts` | 11 | 11 | web |
+| `web/routes-tasks.ts` | 1 | 1 | web |
+| `index.ts` | **11** | **11** | CLI 主入口 + **P2P 入站** (含文档摘要/改写) |
+| `cli/interface.ts` | 0 | 0 | (readline, 无执行点 ⇒ **空真完成**) |
+| `agents/runner-resolver.ts` | 1 | 1 | Supervisor / 子 Agent |
+
+### 37.3 入口级声明做成**双向**判据
+
+`K5_ENTRY_GROUPS` (入口 → 文件) + 判据:
+* 说完成 ⇒ 它的文件必须**全部** `total === wired`; 文件都有执行点却没接完 ⇒ 红;
+* 说没完成 ⇒ 必须**真有**文件没接完 (都接完了还标未完成 ⇒ 红, 逼台账前进);
+* `entriesWired` 必须等于"标完成的入口数" ⇒ 数字与分组不许各自为政。
+
+⇒ **`entriesWired 3/4 → 4/4`**: 四个入口 (web · CLI · P2P 入站 · Supervisor/子Agent) 全部执行点已投进 Actor mailbox。
+
+### 37.4 一处判据语义修正
+
+`total === 0` 的文件 (如 `cli/interface.ts`) 必须算**空真完成** —— 否则"入口声明完成"会因为它永远判红 (实测被自己的判据拦下过一次)。
+
+### 37.5 一次自伤与恢复 (记下来)
+
+用行号手术搬移台账里的常量块时把文件**改坏了两轮** (注释头被吃、声明重复、大段内容被删)。
+⇒ 正确的收尾方式: **`git checkout HEAD -- <file>` 恢复该文件到上一提交, 再按正确顺序重落改动**。
+   ⚠️ 注意 `git checkout -- <file>` 是**从索引恢复** —— 若坏内容已被 `git add` 过, 它不会回退; 必须显式写 `HEAD`。

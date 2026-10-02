@@ -87,7 +87,9 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(K5_PROGRESS.migratedFieldNames).toEqual(['messageHistory', 'currentChannelId', 'currentAgentId', 'currentGoalId']);
     // web 入口已全部执行点投递 (server.ts 11/11 + routes-tasks 1/1) ⇒ 四入口里完成 1 条
     // web (2 面) + CLI 主入口 + 子 Agent/Supervisor 面 的执行点都已投递 ⇒ 四入口里完成 3 条
-    expect(K5_PROGRESS.entriesWired).toBe(3);
+    // 四条入口 (web / CLI / P2P 入站 / Supervisor·子Agent) 的执行点都已投递
+    expect(K5_PROGRESS.entriesWired).toBe(4);
+    expect(K5_PROGRESS.entryGroups.length).toBe(4);
     expect(K5_PROGRESS.entrySites.filter((s) => s.total > 0 && s.total === s.wired).length).toBe(4);
   });
 
@@ -332,7 +334,7 @@ describe('K5 门: Channel Actor 台账', () => {
   it('★ 判据: 入口投递的进度必须能**从盘上重算** (自报无效 · 逐文件表)', () => {
     const sources = K5_PROGRESS.entrySites.map((s) => ({ file: s.file, text: fs.readFileSync(path.join(SRC, s.file), 'utf-8') }));
     // 台账写的必须就是盘上算出来的
-    expect(scanEntryDelivery(sources, K5_PROGRESS.entrySites)).toEqual([]);
+    expect(scanEntryDelivery(sources, K5_PROGRESS)).toEqual([]);
     // 口径自证: 精确计数必须排除 `this.prompt(` (CLI readline) 与注释里的示例
     expect(countEntryExecutionPoints('this.prompt("> ");')).toBe(0);
     expect(countEntryExecutionPoints('// await agent.prompt(x)')).toBe(0);
@@ -341,20 +343,27 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(countEntryExecutionPoints('await agent.promptStream(y, cb);')).toBe(1);
     // 排除 receiver 名单是**数据**: 不排除时 `s.prompt(...)` 会被算成执行点; 排除后归 0 (它就是 UI 打印助手)
     expect(countEntryExecutionPoints('s.prompt(`📩 ${x}`);')).toBe(1);
-    expect(countEntryExecutionPoints('s.prompt(`📩 ${x}`);', ['this', 's'])).toBe(0);
+    expect(countEntryExecutionPoints('s.prompt(`📩 ${x}`);', { excludeReceivers: ['this', 's'] })).toBe(0);
     // 每条入口面的执行点都必须「登记 == 已投递」才能算完 (web / CLI / 子Agent·Supervisor 三条已完成)
     const done = K5_PROGRESS.entrySites.filter((s) => s.total > 0 && s.total === s.wired);
     expect(done.map((s) => s.file).sort()).toEqual(['agents/runner-resolver.ts', 'index.ts', 'web/routes-tasks.ts', 'web/server.ts']);
-    expect(K5_PROGRESS.entriesWired).toBe(3);
+    expect(K5_PROGRESS.entriesWired).toBe(4);
+    expect(K5_PROGRESS.entryGroups.every((g) => g.wired)).toBe(true);
     // 判别力: 少包一处却把 wired 写大 ⇒ 红; 新增执行点不登记 ⇒ 红; wired > total ⇒ 红; 文件不在扫描面 ⇒ 红
     const first = K5_PROGRESS.entrySites[0];
-    expect(scanEntryDelivery(sources, [{ ...first, wired: first.wired + 1 }])
+    const withSites = (sites: any, over: any = {}) => ({ ...K5_PROGRESS, entrySites: sites, ...over });
+    expect(scanEntryDelivery(sources, withSites([{ ...first, wired: first.wired + 1 }]))
       .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
-    expect(scanEntryDelivery(sources, [{ ...first, total: first.total + 1 }])
+    expect(scanEntryDelivery(sources, withSites([{ ...first, total: first.total + 1 }]))
       .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
-    expect(scanEntryDelivery(sources, [{ file: 'web/server.ts', total: 1, wired: 99 }])
+    expect(scanEntryDelivery(sources, withSites([{ file: 'web/server.ts', total: 1, wired: 99 }]))
       .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
-    expect(scanEntryDelivery(sources, [{ file: '不存在.ts', total: 0, wired: 0 }])
+    expect(scanEntryDelivery(sources, withSites([{ file: '不存在.ts', total: 0, wired: 0 }]))
+      .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
+    // **入口级双向校验**: 说完成但文件没接完 ⇒ 红; 文件全接完却说没完成 ⇒ 红; entriesWired 与分组不一致 ⇒ 红
+    expect(scanEntryDelivery(sources, withSites(K5_PROGRESS.entrySites, { entryGroups: [{ entry: 'x', files: ['index.ts'], wired: false }] }))
+      .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
+    expect(scanEntryDelivery(sources, withSites(K5_PROGRESS.entrySites, { entryGroups: [{ entry: 'y', files: ['index.ts'], wired: true }], entriesWired: 0 }))
       .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
   });
 

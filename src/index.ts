@@ -838,7 +838,8 @@ async function dispatchTask(raw: string): Promise<string> {
 async function handleSummarize(task: RpcTask): Promise<string> {
   if (!task.documentPath) return `ERR|${JSON.stringify({ code: 'no_path' })}`;
   const a = await getAgent();
-  const { summary, qualityScore } = await a.summarizeDocument(task.documentPath);
+  const docPath = task.documentPath;   // 闭包里 TS 不保留收窄 ⇒ 先收成局部 const
+  const { summary, qualityScore } = await deliverThroughActor(a, () => a.summarizeDocument(docPath));
   writeOut(`     ✅ 质量=${(qualityScore * 10).toFixed(1)}/10`);
   return `OK|${JSON.stringify({ id: task.id, type: 'summarize', qualityScore, summary })}`;
 }
@@ -848,11 +849,14 @@ async function handleImprove(task: RpcTask): Promise<string> {
     return `ERR|${JSON.stringify({ code: 'no_path_or_req' })}`;
   }
   const a = await getAgent();
-  const res = await a.improveDocument({
-    originalPath: task.documentPath,
-    requirements: task.requirements,
+  // 闭包里 TS 不保留收窄 ⇒ 先把两个字段收成局部 const
+  const docPath = task.documentPath;
+  const reqs = task.requirements;
+  const res = await deliverThroughActor(a, () => a.improveDocument({
+    originalPath: docPath,
+    requirements: reqs,
     context: `来自节点: ${task.from}`,
-  });
+  }));
   const ok = res.improved ?? false;
   writeOut(`     ✅ 改进${ok ? '成功' : '失败'}  质量=${(res.qualityScore * 10).toFixed(1)}/10  自动发送=${res.shouldAutoSend}`);
   return `OK|${JSON.stringify({
@@ -4131,7 +4135,7 @@ async function runToolCommand(
           error = response;
           break;
         }
-        const result = await a.summarizeDocument(filePath, ctx.join(' '));
+        const result = await deliverThroughActor(a, () => a.summarizeDocument(filePath, ctx.join(' ')));
         response = `📝 摘要:\n${result.summary}\n\n质量评分: ${(result.qualityScore * 10).toFixed(1)}/10`;
         metadata.qualityScore = result.qualityScore;
         break;
@@ -4144,10 +4148,10 @@ async function runToolCommand(
           error = response;
           break;
         }
-        const result = await a.improveDocument({
+        const result = await deliverThroughActor(a, () => a.improveDocument({
           originalPath: filePath,
           requirements: req.join(' ')
-        });
+        }));
         response = result.newContent || '';
         if (!result.improved) {
           response = '错误: 改进失败';
