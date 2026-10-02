@@ -274,6 +274,15 @@ export class BollharnessIntegration {
   // ==================== Skill Methods ====================
 
   /**
+   * 2026-10-02 (K7): **受门端口的透传口** —— 本层对高层 (`agents/pi-harness` · `pi-sdk`)
+   * **零依赖** (分层干净, 不许反向 import), 所以门只能由**高层注入**到这里, 再透传给 adapter。
+   * 未注入 ⇒ skill 执行与以前一字不差。
+   */
+  setSkillGuard(guard: (name: string, params: Record<string, unknown>) => Promise<string>): void {
+    this.skillAdapter.setGuardedExecute(guard);
+  }
+
+  /**
    * Execute a bollharness skill
    */
   async executeSkill(skillName: string, params: Record<string, unknown>): Promise<{
