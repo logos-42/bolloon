@@ -50,7 +50,11 @@ case "$CMD" in
     PATTERNS=$(echo "$PATTERNS" | sed 's/^|//')
     SELECTED=$(find src/test -name '*.test.ts' -o -name '*.test.tsx' 2>/dev/null | sort | \
       xargs grep -lE "$PATTERNS" 2>/dev/null || true)
-    COUNT=$(echo "$SELECTED" | grep -c . || echo 0)
+    # 2026-10-02 修 bug: `grep -c .` 在无匹配时既输出 "0" 又 exit 1 ⇒ `|| echo 0` 再补一行
+    # ⇒ COUNT="0\n0" ⇒ `[ "$COUNT" = "0" ]` 为假、`[ "$COUNT" -gt 120 ]` 报 "integer expression expected",
+    # 结果是**带着空的文件列表**去跑 vitest (看起来像"跑了", 其实聚焦失效)。改成显式初始化。
+    COUNT=0
+    if [ -n "$SELECTED" ]; then COUNT=$(printf '%s\n' "$SELECTED" | grep -c .); fi
     if [ "$COUNT" = "0" ]; then
       echo "[skip] vitest-bail (没有测试提到本次改动的文件)"
       exit 0

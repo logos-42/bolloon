@@ -155,7 +155,7 @@ K3 行数棘轮门   kernel 目录行数上限, 只许减不许增; 要加就得
 | 阶段 | 内容 | 判据 / 完成标准 | 完成度 |
 | --- | --- | --- | --- |
 | **K0 冻结架构与删除台账** | 7 项交付物 (§7.1) | 能说清每段代码属哪个模块 · 能说清哪些准备删除 · **没有任何「以后再看」的核心事实来源** | ✅ **7/7** |
-| **K1 清理 constraint-runtime** | 拆三层 `primitives` / `runtime-adapters` / `domain-libraries`; 按 5 步顺序删 (§7.3) | Kernel 只依赖 primitives · 领域能力**只能经 Tool Capability 接入** · archive/reference/test fixture 不进运行时包 · 无调用模块已移除 · 假连接/placeholder 已删 · 现有测试全绿 | 🟡 **①完成 · ②已开两刀 (共删 35 个文件/547 行)** (§14/§15/§16); ③删 placeholder ④改 Tool Provider ⑤删旧导出 **未做** |
+| **K1 清理 constraint-runtime** | 拆三层 `primitives` / `runtime-adapters` / `domain-libraries`; 按 5 步顺序删 (§7.3) | Kernel 只依赖 primitives · 领域能力**只能经 Tool Capability 接入** · archive/reference/test fixture 不进运行时包 · 无调用模块已移除 · 假连接/placeholder 已删 · 现有测试全绿 | 🟡 **①完成 · ②已开两刀 + 测试面接入** (删 35 文件/547 行, §14/§15/§16/§17); ③删 placeholder ④改 Tool Provider ⑤删旧导出 **未做** |
 | **K2 Pi 可变状态外置** | message history / stream callback / signal / failed tool / channel identity / run identity / loop state → `RunContext` 或 `ChannelContext` | Pi 不持有 Goal·Run 状态/长期恢复/Channel 全局/Model 全局配置/Tool 权限; **完成此步后才允许删 Pi 对应字段与旧辅助方法** | ❌ 未开始 |
 | **K3 统一所有入口队列** | 8 个入口 (Web/CLI/P2P/cron/followup/social heartbeat/supervisor/独立宿主) 只能投递事件: `External Event → ChannelMailbox.enqueue() → ChannelActor → Kernel Loop → Run/Goal/Evidence` | 同 Channel 只允许一个执行循环 · 不同 Channel 可并发 · **所有入口只能投递, 不能直接调 `prompt()`** · 外部事件不能直接改 Goal · CLI 与 Web 不各维护一套循环 | ❌ 未开始 |
 | **K4 合并两套 Agent Loop** | `KernelLoop`: prepare → model call → harness tool call → checkpoint → reducer → continuation → finish; Pi 只做 `messages → model response`; Pivot/ReAct/旧 loop 降为策略或 Adapter | CLI/Web 同一任务产生一致的 Run/Goal 事实 · pause/SIGKILL/预算耗尽/模型切换行为一致 · 旧 loop 无任何入口引用 · 真跑长期任务通过后才删旧分支 | ❌ 未开始 |
@@ -420,3 +420,36 @@ model-selection 协议 · transaction evidence · contact consent · durable rec
 
 - `CR/dist` —— 删它断 B 类工具与包入口 (`pi-sdk-tools` 动态 import + `Dockerfile:167` COPY + `main/exports` 指向它);
 - `CR/src/reference_data/` —— 同目录混着**运行期派发台账** (`tools_snapshot.json`) ⇒ 不能整目录删; `subsystems/*.json` 在 26 个壳删掉后已成**孤立数据**, 要单独决定。
+
+## 17. K1-f: 把「现有 constraint-runtime 测试继续全绿」从空话变成真门
+
+### 17.1 发现: 那条验收标准当时是**空的**
+
+K1 的完成标准写着「现有 constraint-runtime 测试继续全绿」。实测:
+- CR 自带 **4 个测试 / 117 行**, 测的正是 **A 类原语** (`AgentCoordinator` / `ToolPermissionContext` / `BudgetTracker` / `SkillRegistry` / `DeepThinkingEngine`);
+- 跑起来 **13/13 全绿, 393ms**;
+- 但主仓 `vitest.config.ts` 里 `include` 只有 `src/test/**`, `exclude` 又有 `**/constraint-runtime/**` ⇒ **它们从来没有跑过**。
+
+⇒ 一条"永远绿"的标准等于没有标准。**测试面为空就是拿不到事实**, 按本仓的规矩应当拒跑而不是默认通过。
+
+### 17.2 处置: 接进默认套件 + 把这件事本身做成门
+
+`vitest.config.ts`: `include` 加 `src/constraint-runtime/tests/**/*.test.ts`, 去掉整目录 exclude (保留 `**/dist/**`)。默认配置下实测 **4 files / 13 tests 绿**。
+
+新门 **K1-f** (`kernel-constraint.test.ts`) 判三件事:
+1. `include` 必须覆盖 CR 的测试;
+2. `exclude` **不许**再把整个 `constraint-runtime` 排除掉;
+3. 4 个测试文件 + 5 个被测源文件必须**真实存在** (空承诺判红)。
+
+**真盘变异双验** (基线 84/84 绿):
+| 变异 | 结果 |
+| --- | --- |
+| 把 `'**/constraint-runtime/**'` 加回 exclude | K1-f **红** ✓ |
+| 把 include 里的 CR 测试glob 去掉 | K1-f **红** ✓ |
+| 还原 | 16/16 绿 ✓ |
+
+### 17.3 判据自己踩的坑 (本仓第三次同款)
+
+K1-f 第一版**判据红了, 但红在错的原因上**: 它用 `not.toContain("'**/constraint-runtime/**'")` 读 `vitest.config.ts`, 而**我自己的注释里引用了这个被禁的串** ⇒ 判据把注释当成真配置。
+修法落在判据里: **先剥注释再判** (`stripLineComment` 逐行映射; 注意它是**逐行**的, 传整文只会截到第一个 `//`)。
+⇒ 这是同一个根因的第三次出现 (前两次: 本门测试里的人造引用串被当成真引用; 快照点名被静态分析漏掉)。**规矩**: 判据吃源码文本前先剥注释; 判据的范围里不能包含判据自己。

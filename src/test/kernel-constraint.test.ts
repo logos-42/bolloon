@@ -40,6 +40,7 @@ import {
   scanConstraintUses,
   constraintUseDiff,
   scanConstraintViolations,
+  stripLineComment,
 } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
@@ -123,6 +124,25 @@ describe('K1-a constraint-runtime 三层分类覆盖', () => {
     const srcData = path.join(SRC, CONSTRAINT_ROOT, 'src', 'reference_data');
     const srcFiles = fs.readdirSync(srcData).filter((f) => f.endsWith('.json'));
     for (const f of srcFiles) expect(fs.existsSync(path.join(dataDir, f))).toBe(true);
+  });
+
+  it('K1-f constraint-runtime 自带的测试必须接进默认套件 (测试面不许静默缩水)', () => {
+    // 背景: 这 4 个测试测的是 A 类原语, 实测全绿 —— 但此前被 vitest.config 的
+    // '**/constraint-runtime/**' 整目录排除, 从来没有跑过。门的要求:
+    //   ① include 必须覆盖它们; ② exclude 不许再把整个 constraint-runtime 排除掉;
+    //   ③ 这些测试文件与其被测源文件都必须真实存在 (空承诺判红)。
+    const raw = fs.readFileSync(path.join(process.cwd(), 'vitest.config.ts'), 'utf8');
+    // ★ 必须**先剥注释再判**: 本仓老坑第 3 次 —— 注释里引用被禁的串, 判据把它当成真配置 (自证伪红)。
+    const cfg = raw.split('\n').map(stripLineComment).join('\n');
+    expect(cfg).toContain('src/constraint-runtime/tests/**/*.test.ts');
+    expect(cfg).not.toContain("'**/constraint-runtime/**'");
+    const crTests = ['agent', 'constraint', 'skill', 'thinking'].map((n) => `constraint-runtime/tests/${n}.test.ts`);
+    for (const t of crTests) expect(fs.existsSync(path.join(SRC, t))).toBe(true);
+    // 被测源 (A 类原语) 必须还在
+    for (const m of ['src/agent/coordinator.ts', 'src/constraint/permission.ts', 'src/constraint/budget.ts',
+                     'src/skills/skill-registry.ts', 'src/thinking/engine.ts']) {
+      expect(fs.existsSync(path.join(SRC, 'constraint-runtime', m))).toBe(true);
+    }
   });
 
   it('判别力自证: 未登记路径必须报未分类', () => {
