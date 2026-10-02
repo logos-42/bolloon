@@ -159,6 +159,19 @@ export const K5_CHANNEL_LOCK = {
   evidence: 'web/server.ts:1566-1567 — channel.currentSessionId ⇒ sessionKey = <channelId>:<currentSessionId>',
 } as const;
 
+/**
+ * **K5 步骤⑥**: Run 身份的归属 (run-boundary 作用域, 从 K2 的"唯一播种读取"收口过来)。
+ *   `currentRunId` 的本体从 Pi 实例字段搬进 `actor.state.activeRun` —— 判据 `scanRunBoundaryResidence`
+ *   会核对盘上源码里**是否还有** `private currentRunId` 声明 (双向: 声明了却没标未迁 · 没声明却标未迁, 都红)。
+ */
+export const K5_RUN_BOUNDARY = {
+  field: 'currentRunId',
+  into: 'actor.activeRun',
+  migrated: true,
+  /** K2 留下的唯一播种读取 (不因本步而增加; 由 K2 的门强制) */
+  seedReads: 1,
+} as const;
+
 /** 入口 → 文件分组 (判据做**双向**校验: 说完成 ⇒ 其文件必须全接完; 说没完成 ⇒ 必须真有文件没接完) */
 export const K5_ENTRY_GROUPS: readonly { entry: string; files: readonly string[]; wired: boolean }[] = [
   { entry: 'web', files: ['web/server.ts', 'web/routes-tasks.ts'], wired: true },

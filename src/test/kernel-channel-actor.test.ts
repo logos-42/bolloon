@@ -20,6 +20,7 @@ import {
   K5_ACCEPTANCE,
   K5_CHANNEL_LOCK,
   K5_DELETION_PRECONDITIONS,
+  K5_RUN_BOUNDARY,
   K5_GOAL_BINDING_RULE,
   K5_INHERITED_FIELDS,
   K5_PROGRESS,
@@ -27,7 +28,7 @@ import {
 } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
 import { ChannelActor, SerialMailbox, actorCount, channelQueueCount, createActorState, currentActorContext, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
-import { type K5LedgerLike, countEntryExecutionPoints, scanActorLedger, scanChannelLock, scanEntryDelivery, scanHistoryWriteSites } from '../kernel/gate-scan.js';
+import { type K5LedgerLike, countEntryExecutionPoints, scanActorLedger, scanChannelLock, scanEntryDelivery, scanHistoryWriteSites, scanRunBoundaryResidence } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
 const KERNEL = path.join(SRC, 'kernel');
@@ -396,6 +397,37 @@ describe('K5 门: Channel Actor 台账', () => {
       .some((f) => f.rule === 'channel-lock-mismatch')).toBe(true);
     expect(scanChannelLock([{ file: 'x.ts', text: 'deliverThroughActor(a, r, { serializeByChannel: true });' }], { enabled: true, callSites: 2 })
       .some((f) => f.rule === 'channel-lock-mismatch')).toBe(true);
+  });
+
+  it('★ 真跑: Run 身份 (currentRunId) 的本体住进 actor.activeRun (K5 步骤⑥)', async () => {
+    resetActors();
+    const s: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5run:s1' });
+    expect(s.actor).toBeTruthy();
+    expect(s.actor.state.activeRun).toBe('');
+    s.currentRunId = 'run-x';                              // 写入落 actor
+    expect(s.actor.state.activeRun).toBe('run-x');
+    s.actor.state.activeRun = 'run-y';                     // 直改 actor ⇒ 实例读得到 (同一个值)
+    expect(s.currentRunId).toBe('run-y');
+    // 播种读取 (K2 的唯一入口) 必须读到 actor 里的值 —— 它是 e2e 的 runId 来源
+    expect(s.seedRunContext().runId).toBe('run-y');
+    // 未绑定 actor 的会话走本地暂存, 行为不变
+    const plain: any = await createAgentSession({ cwd: process.cwd() });
+    expect(plain.actor).toBeUndefined();
+    plain.currentRunId = 'run-local';
+    expect(plain.currentRunId).toBe('run-local');
+    expect(plain.seedRunContext().runId).toBe('run-local');
+    resetActors();
+  }, 90000);
+
+  it('★ 判据: Run 身份的归属与盘上源码双向一致 (步骤⑥)', () => {
+    const PI_SRC = fs.readFileSync(path.join(SRC, 'agents/pi-sdk.ts'), 'utf-8');
+    expect(scanRunBoundaryResidence(PI_SRC, K5_RUN_BOUNDARY)).toEqual([]);
+    expect(K5_RUN_BOUNDARY.migrated).toBe(true);
+    // 判别力: 把实例字段声明注回去 ⇒ 红; 台账说没迁 ⇒ 红
+    expect(scanRunBoundaryResidence(PI_SRC + '\n  private currentRunId: string = "";\n', K5_RUN_BOUNDARY)
+      .some((f) => f.rule === 'run-boundary-residence')).toBe(true);
+    expect(scanRunBoundaryResidence(PI_SRC, { ...K5_RUN_BOUNDARY, migrated: false })
+      .some((f) => f.rule === 'run-boundary-residence')).toBe(true);
   });
 
   it('★ 判据: 入口投递的进度必须能**从盘上重算** (自报无效 · 逐文件表)', () => {

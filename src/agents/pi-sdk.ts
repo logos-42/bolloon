@@ -340,9 +340,12 @@ export class PiAgentSession implements AgentSession {
     if (!actor.state.channelId && this._channelId) actor.state.channelId = this._channelId;
     if (!actor.state.agentId && this._agentId) actor.state.agentId = this._agentId;
     if (!actor.state.goalBinding && this._goalId) actor.state.goalBinding = this._goalId;
+    // Run 身份也收养 (绑定前若已有活跃 Run —— 例如从 checkpoint 恢复 —— 不许丢)
+    if (!actor.state.activeRun && this._runId) actor.state.activeRun = this._runId;
     this._channelId = '';
     this._agentId = '';
     this._goalId = '';
+    this._runId = '';
   }
   private tools: Map<string, Tool> = new Map();
   /** 2026-06-30: tool registry 模块 — 独立 alias resolve, 测试可消融. */
@@ -588,7 +591,25 @@ export class PiAgentSession implements AgentSession {
    * 之前只有"跑完才写"的轨迹 (trajectory-store, fire-and-forget, 崩了就没有), 没有跨重载可见的
    * 运行事实, 也没有预算闸门/失速巡检; 这里补的就是那一层。
    */
-  private currentRunId: string = '';
+  /**
+   * **K5 步骤⑥ (Run 身份归属 Actor)**: 本体是 `actor.state.activeRun`。
+   *   · 未绑定 actor ⇒ 住在这里 (`_runId`, 绑定前的暂存);
+   *   · 绑定后 ⇒ 读写全落 actor (同一个值), 由 `attachActor()` 收养绑定前的值。
+   * 语义: "本会话当前活跃的 Run" —— 一个会话身份同时只有一个活跃 Run ✓ 与 Actor 的粒度一致。
+   * 注意: 访问数**不变** —— 迁的是**所有权**不是删访问 (与步骤③同理)。
+   *   本注释刻意不写出"带 self. 前缀 + 该字段名"的那种字面形态: K2 的计数只剥 `//` 行注释,
+   *   块注释里的同形串会被算进去 (同类踩过三次, 每次都被门照出)。
+   */
+  private _runId = '';
+
+  private get currentRunId(): string {
+    return this.actor ? this.actor.state.activeRun : this._runId;
+  }
+
+  private set currentRunId(v: string) {
+    if (this.actor) this.actor.state.activeRun = v;
+    else this._runId = v;
+  }
   /** 上一次运行的 runId (收尾不清空; 见 getLastRunId) */
   private lastRunId: string = '';
   private runSurface: RunSurface = 'cli';

@@ -1191,3 +1191,33 @@ channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代�
 
 新用例第一版全红: 我把 **actor 本身**当成 holder 传进去 (`deliverThroughActor(actor, …)`) —— 而该函数收的是**带 `.actor` 的 holder** (生产里传的是 agent session)。
 ⇒ 症状是"开了锁却不排队, 连 mailbox 都没走" (`pending` 全 0)。教训: **症状指向"没进队"时, 先怀疑参数形状, 再怀疑队列实现**; 并补了一条"holder 语义守门"用例把这种误用钉住。
+
+## 39. K5 步骤⑥: Run 身份归属 Actor (`currentRunId` → `actor.activeRun`)
+
+### 39.1 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| `agents/pi-sdk.ts` | `currentRunId` 由实例字段改成**访问器**: 未绑定 actor ⇒ 本地暂存 `_runId`; 绑定后 ⇒ 本体是 `actor.state.activeRun` (与步骤③三个会话绑定同一手法)。`seedRunContext()` (K2 留下的**唯一播种读取**) 自动读到 actor 里的值 ⇒ 两种口径下 runId 来源一致 |
+| `channel-actor.ts` | `attachActor()` 增加 Run 身份**收养** (绑定前若已有活跃 Run —— 例如从 checkpoint 恢复 —— 不许丢) |
+| `plan-channel-actor.ts` | `K5_RUN_BOUNDARY = { field: 'currentRunId', into: 'actor.activeRun', migrated: true, seedReads: 1 }` |
+| `gate-scan.ts` | `scanRunBoundaryResidence(code, rb)` —— **双向**: 标已迁 ⇒ 源码里**不许再有** `private currentRunId [=:]`; 标未迁 ⇒ 必须还有 ⇒ 半搬状态判红 |
+
+### 39.2 为什么访问数**不变** (与 messageHistory 那格对照)
+
+`currentRunId` 的 38 处访问**全部保留** (只是值住到了 actor 里) ⇒ K2 台账**不动** (实测 38 = 38)。
+反之 `messageHistory` 那格是把 35 处写入收敛进漏斗 ⇒ 访问数真降 ⇒ 必须同步冻结值。**两种迁移痕迹不同, 先算再改。**
+
+### 39.3 真跑验证
+
+| 用例 | 断言 |
+| --- | --- |
+| **本体住进 actor** | `s.currentRunId = 'run-x'` ⇒ `actor.state.activeRun === 'run-x'`; 直改 actor ⇒ 实例读得到 |
+| **播种读到 actor 的值** | `s.seedRunContext().runId === 'run-y'` (K2 的唯一入口在两种口径下都成立) |
+| **未绑定会话** | 走本地暂存, `seedRunContext().runId` 仍是本地值 (行为不变) |
+| **判据双向判别力** | 把实例字段声明注回去 ⇒ 红; 台账标未迁而源码已迁 ⇒ 红 |
+
+### 39.4 同一类坑第三次踩到 (已升级为规矩)
+
+我在**块注释**里写了"带 self. 前缀 + 字段名"的字面形态来讲解"访问数不变", 结果 K2 计数**虚增 1** (38→39) 被门当场照出。
+⇒ 规矩 (第三次): **注释里不许出现台账计数的字面形态** —— K2 的口径只剥 `//` 行注释, **不剥 `*` 块注释**; 而且**讲解计数的注释**最容易被写进去 (三次里有两次是讲解口径本身)。

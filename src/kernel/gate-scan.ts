@@ -890,3 +890,20 @@ export function scanChannelLock(
   if (!lock.enabled && sites > 0) f('台账说未启用, 但盘上已有调用点启用 ⇒ 台账落后于代码');
   return out;
 }
+
+/**
+ * **K5 步骤⑥ — Run 身份的归属判据** (双向):
+ *   标 `migrated: true` ⇒ 盘上源码**不许再有** `private currentRunId [=:]` (它已变成访问器, 本体在 actor);
+ *   标 `migrated: false` ⇒ 必须**还有**那个声明 (不许偷偷搬走却不改账)。
+ */
+export function scanRunBoundaryResidence(
+  code: string,
+  rb: { field: string; into: string; migrated: boolean },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'run-boundary-residence', file: 'agents/pi-sdk.ts', line: 1, what });
+  const declared = new RegExp(`private\\s+${rb.field}\\s*[=:]`).test(code);
+  if (rb.migrated && declared) f(`${rb.field} 仍以实例字段存在 (${rb.into} 已接管却被留下 ⇒ 两份真相)`);
+  if (!rb.migrated && !declared) f(`${rb.field} 不见了, 台账却说没迁 (migrated=false) ⇒ 半搬状态`);
+  return out;
+}
