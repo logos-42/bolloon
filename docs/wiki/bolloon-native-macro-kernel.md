@@ -1469,3 +1469,34 @@ channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代�
 
 "排期过期"是一类**没有载荷的承诺**: 它让报告与台账看起来在推进, 实际那条欠账已经**无主**。
 现在把"无主"变成可判的: 谁想把 K4 标成 `done` 而不还欠账, 门立刻红; 谁想静悄悄把 `payDownIn` 指向下一个阶段而不写原因, 也红。
+
+## 50. K4 第二步: 内核控制面 (RunControl) 落地 + 真还第一条债 (`recordRecovery`)
+
+### 50.1 形状 (先打通一条, 再批量搬)
+
+| 位置 | 内容 |
+| --- | --- |
+| **新增** `kernel/control.ts` (~130 行) | `submitRunControl(req, ports)` —— **唯一入口**: 校验 (kind 合法 / 定位字段齐 / `origin` 非空不许匿名) → 派发到注入的 port → **记审计**; 一律**返回结果对象**, 不抛 (禁用异常表达"拒了") |
+| 同上 | `RUN_CONTROL_KINDS` (3 种) + `RUN_CONTROL_REQUIRED` (每种必填 runId/goalId) —— **数据**, 判据与实现共用一份 |
+| 同上 | `runControlAudit()` 环形 200 条: **拒收也留痕** (否则"谁被拒过"无从追) |
+| `roster.ts` | `KERNEL_FILES` 登记 `kernel/control.ts` (双向判据: 盘上多一个未登记内核文件 ⇒ 红) |
+| `web/server.ts` (approve 路由) | 不再直接调 `recordRecovery` —— 改为 `submitRunControl({kind:'record-recovery', origin:'web', …}, { recordRecovery })`; 拒绝时回 500 并带上 `outcome.detail` |
+| `AUTHORITY_DEBT` | **删掉 `recordRecovery` 那条**; `AUTHORITY_DEBT_FROZEN_AT` **3 → 2** (棘轮下调, diff 里可见) |
+
+### 50.2 为什么"还债"是机器可验的
+
+`kernel-authority.test.ts` 的欠账判据是**双向**的 (`debtDiff`: missing / extra 都必须为空):
+- 删了台账条目而 channel 侧**还有**调用 ⇒ `missing` 非空 ⇒ 红;
+- 调用真没了而台账**还留着** ⇒ `extra` 非空 ⇒ 红。
+⇒ 欠账从 3 降到 2 这件事**不是声明**, 是被判据逼出来的。
+
+### 50.3 边界与诚实的说明
+
+- 内核**不许 import 业务模块** (`KERNEL_ALLOWED_IMPORT_PREFIXES = ['kernel/']`) ⇒ 写原语由 **ports 注入** (依赖倒置)。
+- 因此 channel 里**仍保留** `import('../agents/run-store.js')` 的 import 边 —— 那是**端口绑定 (wiring)**, 不是写调用;
+  禁令的检测模式是 `write-call` (只数调用), 口径差写在债条的 `note` 里。若要连 import 边也去掉, 得把 wiring 挪到组合根 (下一批可选)。
+- 新增 `src/test/kernel-control.test.ts`: 派发 (3 种 kind 各走自己的 port) · 拒收 7 种坏形状全返回 `ok=false` 且不抛 · 审计留痕 (含拒收) · 台账一致性 (欠账里不许再有 recordRecovery, 冻结值已随还款下调)。
+
+### 50.4 代价可见
+
+新增内核文件 ⇒ 代码档预算 1800 → **1924** (K3 棘轮当场拦, 同步冻结值)。

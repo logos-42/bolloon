@@ -120,7 +120,7 @@ export const KERNEL_ALLOWED_IMPORT_PREFIXES: readonly string[] = ['kernel/'];
  * 判据是**双向相等**: 盘上多一个未登记文件 ⇒ 红; 名册有而盘上没有 ⇒ 红。
  * (先例: SEAM_ROSTER 的「名册外无人越界」)
  */
-export const KERNEL_FILES: readonly string[] = ['kernel/channel-actor.ts', 'kernel/gate-scan.ts', 'kernel/plan-constraint.ts', 'kernel/plan-channel-actor.ts', 'kernel/plan-deletion.ts', 'kernel/plan-runcontext.ts', 'kernel/plan.ts', 'kernel/roster.ts'];
+export const KERNEL_FILES: readonly string[] = ['kernel/channel-actor.ts', 'kernel/control.ts', 'kernel/gate-scan.ts', 'kernel/plan-constraint.ts', 'kernel/plan-channel-actor.ts', 'kernel/plan-deletion.ts', 'kernel/plan-runcontext.ts', 'kernel/plan.ts', 'kernel/roster.ts'];
 
 export type DetectionMode = 'import-edge' | 'write-call';
 
@@ -278,14 +278,10 @@ export const AUTHORITY_DEBT: readonly DebtEntry[] = [
     prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'setRunStatus', count: 2, payDownIn: 'K4',
     note: '同上重排 (K5 未还)。两处都是**用户发起的控制动作** (变更注入 / 外部 approve-resume), 应由内核控制面执行写。',
   },
-  {
-    prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'recordRecovery', count: 1, payDownIn: 'K4',
-    note: '同上重排 (K5 未还)。人工批准后继续 —— 属 Run 生命周期, 该走内核控制面。',
-  },
 ];
 
 /** 欠账条数冻结值 (只许减; 要加必须同时改这里 → 在 diff 里是一次显式动作) */
-export const AUTHORITY_DEBT_FROZEN_AT = 3;
+export const AUTHORITY_DEBT_FROZEN_AT = 2;   // 3 → 2 (K4 用内核控制面还清 recordRecovery)
 
 /**
  * K3 —— kernel 目录行数预算 (棘轮, 只许减不许增)。
@@ -293,10 +289,10 @@ export const AUTHORITY_DEBT_FROZEN_AT = 3;
  * 目的只有一个: **不许所有逻辑回流到 kernel.ts**。要加就得显式抬这个数字, 留下痕迹。
  * 数值 = 当前 kernel 目录真实行数, 不留余量。
  */
-export const KERNEL_LINE_BUDGET = 1800;
+export const KERNEL_LINE_BUDGET = 1924;
 
 /** 预算冻结值 (棘轮: 只许减; 想抬预算必须同时改上面那个数字 ⇒ 一次显式动作, diff 里看得见) */
-export const KERNEL_LINE_BUDGET_FROZEN_AT = 1800;
+export const KERNEL_LINE_BUDGET_FROZEN_AT = 1924;
 
 /**
  * K3b —— **台账数据**单独一档预算 (`src/kernel/plan.ts`)。

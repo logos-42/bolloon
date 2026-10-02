@@ -3577,7 +3577,19 @@ fetchState();
       const run = await readRun(runId);
       if (!run) { res.status(404).json({ error: `run 不存在: ${runId}` }); return; }
       if (run.status !== 'needs_human') { res.status(409).json({ error: `只有 needs_human 的运行需要批准 (当前 ${run.status})` }); return; }
-      await recordRecovery(runId, { errorClass: (run.errorClass as any) || 'unknown', message: '人工批准后继续', action: 'resume' });
+      // **K4**: channel 不直接写 Run —— 提交控制请求, 由内核控制面执行 (这里只做 ports wiring)
+      const { submitRunControl } = await import('../kernel/control.js');
+      const outcome = await submitRunControl(
+        {
+          kind: 'record-recovery',
+          origin: 'web',
+          runId,
+          reason: '人工批准后继续',
+          payload: { errorClass: (run.errorClass as any) || 'unknown', message: '人工批准后继续', action: 'resume' },
+        },
+        { recordRecovery },
+      );
+      if (!outcome.ok) { res.status(500).json({ error: `控制面拒绝: ${outcome.detail}` }); return; }
       if (!run.channelId) { res.status(400).json({ error: '该 run 没有 channelId, 请在 CLI 用 /approve' }); return; }
       const agent: any = await getAgentForChannel(run.channelId, run.channelId, run.agentId, {});
       if (!agent?.resumeRun) { res.status(409).json({ error: '该 channel 的 agent 不支持 resumeRun' }); return; }
