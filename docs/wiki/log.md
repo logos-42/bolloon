@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-10-02 | feat | **K0 落地: 三道边界门 (K1 目录边界 / K2 模块越权 / K3 行数棘轮) —— goal = K0–K10 全阶段完成 (leo)** —— **先量再判** ✓: 层间 import 真实图先算出来 (8 层 · 22 条边 · 逐条落到具体文件), 否则门要么查空集要么一开工就假红。**交付**: `src/kernel/roster.ts`(冻结面, **数据零 import** —— 它自己就是 K1 的样本) + `src/kernel/gate-scan.ts`(判据 = **纯函数吃源码文本**, 故变异能把改坏的源码喂给同一份判据) + `src/test/kernel-boundary.test.ts`(K1+K3, 12 条) + `src/test/kernel-authority.test.ts`(K2, 25 条)。**K2 的关键设计**: 禁令落在**写/改入口**上而不是"整层不许 import" —— 实测 `tools→shell-guard` 3 处全是**只读**校验, 若按整层禁则门一开工就假红。**真跑**: 两门 **37/37** ✓ · `tsc --noEmit` **0 错** ✓ · 相邻面 (`pi-harness` + `run-store`) **56/56** ✓ 未回归。**真盘变异 4/4 符合预期** (真实文件注入 → 门红 → 逐字节还原 + sha256 核验): K1 注入禁 import ⇒ **4 failed** ✓ · K2 在 `web/i18n.ts` 注入 `setRunStatus(...)` ⇒ **1 failed** ✓ · K3 追加一行 ⇒ **2 failed** ✓ · **阴性对照** (非 kernel 文件加无害注释) ⇒ **仍绿 25/25** ✓ (证明门不是"任何改动都红")。**门首次量出的真实事实** (这才是价值): Model→Tool **0** · Provider→Run **0** (唯一 `llm→state` 是 `model-selection.ts:1521` 调 `readRun` **只读**且有注释说明) · Tool→权限 **0** · 子 Agent→结束 Goal **0**; **Channel→Goal 1 处** + **Channel→Run 3 处** = **4 处欠账** (全在 `web/server.ts`, 台账登记 + 标明由 **K4** 还清, 条数冻结 3 只许减不许增)。**执行行为一字未改** ✓(`grep` 证 `src/kernel/` 无任何业务模块引用)。**欠账还清点**: K4。 | src/kernel/roster.ts (新) · src/kernel/gate-scan.ts (新) · src/test/kernel-boundary.test.ts (新) · src/test/kernel-authority.test.ts (新) · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/index.md · docs/wiki/current-status.md · docs/wiki/log.md |
 | 2026-10-02 | docs | **Bolloon Native Macro-Kernel 方向冻结 (leo 意图层决定: 进程内 Agent 内核, Pi 降为可替换推理适配器)** —— 先真读再判断 ✓: `pi-sdk.ts` **4099 行** · `pi-sdk-tools.ts` 4122 · `pi-ai.ts` 1723 (合计 ~11k) · **48 个非测试源码文件 + 32 个测试文件** 引用 pi-sdk* · **95 道 `scripts/verify-*.ts` 里 21 道**钉在 pi 上 · 近 60 天 `pi-sdk.ts` 被改 **54 次**。**归因 (不靠猜)**: 用户点名的三件事只有一件真是缺模块 —— 多通道并发卡在 `getAgentForChannel` 的 **per-channel 可变单例** + **6/7 入口绕过排队** (只有 Web `/api/message` 有 queue; P2P 入站 `server.ts:993` · 远端 followup `:666` · 社交心跳 `:2636` · cron `:2579` · CLI 输入 `index.ts:3753` · `runner-resolver.ts:236` 全部直调 `prompt*`) ⇒ 同实例并发循环互相覆盖; 多供应商并发卡在 `src/llm/` **没有网关** (并发/熔断/路由 grep 只命中 model-discovery); 通信性能与 pi **不在同一条链上** (P2P 走 iroh/OrbitDB), 换内核 **0/3 命中**。**8 模块对账**: 5 项已有地基 · 2 项分层收口 · **只有 ModelRuntime 并发 + 通道 Actor 是真新建**。**三处修正 (防重造/防回归)**: ① `ModelRuntime.acquire()` **必须只读** —— 模型侧已有唯一写口 `selectModel` + 跨进程锁 + 每 Run 快照 + 16/16 验收, 多一个写口 = 那套验收全部作废且**没有任何门会报警** ② Harness 作系统调用门**已存在** (`pi-harness.ts` 的 `deny → pre-tool-validator → react-harness` 顺序 + **pi-sdk 零直连 gate 的源码级断言**), **是提升不是新建**, 缺的只是把 `tool-gate` 纳入门面 ③ 持久化只在边界 **也已存在** (`core`/`observational` 分级 + `RunPersistenceError` 硬闸 + 原子写 + `.bak`)。**补第⑤风险 (leo 列了 4 条, 这条最要紧)**: Kernel 自己会变成下一个巨型单体 ⇒ **开工前**先落 **K1 目录边界门 (内核目录禁 import 业务模块) / K2 名册越权门 / K3 行数棘轮** (照 `SEAM_ROSTER` + `goal-flywheel-wiring-freeze.test.ts` 的机器校验手法)。**如实**: M0–M5 **全部 0 行代码**, 本页只冻方向/禁令/判据; 撤换 Pi **按判据不按时间** (>30% 改动仍必须落进 pi-sdk 内部 / 存在第二个实现过同一套门 / 支撑 1 万智能体那条线)。 | docs/wiki/bolloon-native-macro-kernel.md (新) · docs/wiki/index.md · docs/wiki/current-status.md · docs/wiki/log.md |
 | 2026-10-01 | release | **npm 0.5.5 发布完成 + GitHub Release v0.5.5** (用户: 「发布 npm 新版0.5.5」+「记得发布 release」) —— **发布前门**(按发布 skill 的判据链 ✓): `whoami=leoyoge` ✓ · 线上现状 `latest=0.5.4` ✓ · **CJS(electron)链 `--noEmit` exit=0** ✓(今天新增模块必须过这条, `import.meta` 会 TS1343 挂 prepublishOnly ✓) · `MUTATION` 残留 **0** ✓ · 工作区净 ✓ · **全量 304 文件 / 4609 用例全绿** ✓(先绿后改版本号 ✓)。**发布**: `npm version patch --no-git-tag-version` ⇒ **0.5.5**(package.json + lock 两处 ✓)→ 提交 `02aa1a6` ✓; `npm publish` **exit=0** ✓ · `+ @bolloon/bolloon-agent@0.5.5` ✓ · 20.1MB / 解包 49.3MB / **1711 文件** ✓ · shasum `87af81ea332820b65dce87418e748b15bd5b568b` ✓ · registry 回 "being processed" ✓。**放行**: 有界轮询(直连 packument, 20s × 60 ✓)—— 21:07 发出 ⇒ **21:30:09 放行**(≈23 分钟 ✓, 与"大包慢放行"的记载吻合 ✓); 期间 **绝不重发、绝不轮换 token** ✓。**判据链全过** ✓: ① `dist-tags.latest=0.5.5` ✓ + 版本直连 **200** ✓ + `time["0.5.5"]=2026-10-01T13:30:09.770Z` ✓; ② 从 packument 取**真 URL** 下载 ⇒ 本地 shasum 与 `dist.shasum` **逐字相同** ✓(两侧都断言非空 ✓, 避免"两边同时为空"的假绿 ✓); ③ 拆包 1711 条目 ⇒ 关键入口 + **今天新增的 8 个模块全在包里** ✓(trace-line/skill-ledger/skill-health/background-notices/auto-compact/log-gate ✓)+ 今天修复字样逐条命中(`bootLogOnly`/`traceLabel`/`flushBootBuffer`/`iroh:` ✓)+ **MUTATION 0** ✓; ④ **全新目录**消费者复验:`npm install` exit=0 · **`npm warn` = 0** ✓ · 版本 0.5.5 ✓ · bin 可执行 ✓ · **真跑** `--version` 与 `setup status` 均 exit 0 ✓; ⑤ tag `v0.5.5`(annotated ✓ 指向 `02aa1a6` ✓)已显式推 ✓; ⑥ **GitHub Release** 按仓里体例发 ✓(名==tag==`v0.5.5` ✓ · 无资产 ✓ · `gh release view` 回读 name/tag/draft/prerelease 四字段 ✓ · `gh release list` 显示 **Latest** ✓)。**如实**: 显示层修复需**重启 CLI** 才生效 ✓; notes 里已写明这一点 + 自检命令 ✓。 | docs/wiki/log.md |
 | 2026-10-01 | fix | **「iroh: … / 主题: …」的真正漏点: 无标签自述行不在闸门判据里** (用户连续三次: 「继续，还没去掉」) —— **先排除法定位** ✓: ① 我上一版"搬进对话流" ✗(用户要的是去掉 ✓, 已改成启动期只落盘 ✓); ② 启动那几步是 **fire-and-forget** ✓ ⇒ 常在 `startupPanelReady = true` **之后**才打印 ✗ ⇒ 用"面板好了没"当判据必漏 ✓(已改成**独立启动期标志** `bootPhase` ✓, 用户第一次发的「时间好像是面板后面启动的」正是这条线索 ✓); ③ **最后一处真漏点(本次修)**: 你贴的 `     iroh: 3c2eeee23cc2d276...` / `     主题: 626f6c6c6f6f6e2d...` **不带模块标签、也不带 ISO 时间戳** ✗ ⇒ 既不是 `[Tag]` ✓ 也不是 `时间戳 [info]:` ✓ ⇒ **不在任何判据里** ✓ ⇒ 闸门(`log-gate`) · console 拦截 · `writeOut` **三道全都拦不住** ✓✓。**修法**: 按这个文件自己的规矩(「每条 pattern 都按行首锚定, 只覆盖实测观察到的那几句, 不做宽泛匹配」✓)补 4 条**实测形状** ✓: `iroh: <hex>` ✓ · `主题: <hex>` ✓ · `复用 DID: did:` ✓ · 缩进 + 短值的 `名称: ` ✓(带缩进也认 ✓)。判据: 新门 `log-gate-narration` ✓(实测形状必须判为加载日志 ✓ · **普通正文不许被误吞** ✓ —— `名称: <长中文说明>` 这类保持放行 ✓) · tsc 0 错 ✓ · build exit=0 ✓ · dist 核对 ✓。**如实**: ① 这次是**第四层**, 前三层(思考动画/index.ts 直写/别模块直写)都是"通道", 这一层是"**判据**"—— 通道再对, 判据不认它照样漏 ✓; ② 重启才生效 ✓; ③ 想看细节: `tail -f ~/.bolloon/logs/startup.log` ✓(`BOLLOON_VERBOSE=1` 可全量回放 ✓)。 | src/cli/log-gate.ts · src/test/log-gate-narration.test.ts (新) · src/index.ts · docs/wiki/log.md |
@@ -487,6 +488,69 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+### [2026-10-02] feat | K0 落地 —— 三道边界门 + K0–K10 台账冻结 (goal: 全阶段完成)
+
+**触发**: leo 两轮架构陈述后给出最终路线与目标 ——「以 Bolloon Native Macro-Kernel 为目标; `constraint-runtime`
+作为底层约束/能力库; Pi 作为过渡适配器; 不一次性重写」, 并明确「把 K0–K10 的所有阶段完成, 这是 goal」。
+本轮只做 **K0** (边界冻结与安全门), 因为路线自己规定「先不改执行行为」。
+
+**先量再判 (这一轮最要紧的方法)** —— 动手前先把**层间 import 真实图**算出来 (自己写探针扫全 `src/`,
+解析说明符 → 绝对路径 → 归层), 得到 **8 层 / 22 条边**, 逐条落到具体文件与行号。理由:
+门如果不基于真实图写, 要么检查空集 (装饰), 要么一开工就假红 (把合法边当违规)。实测踩到的两个坑:
+① 本仓 ESM 说明符带 `.js` 后缀 ⇒ 解析时必须剥掉再补 `.ts`, 否则一条边都算不出来;
+② `src/web/i18n.ts` 这类**通用工具**住在 `web/` 目录里 ⇒ 「按目录分层后整层禁 import」必然误伤
+(`shell-guard → web/i18n` 是合法依赖) ⇒ 禁令必须落到**具体模块的写入口**, 不是整层。
+
+**交付物** (提交 `26ffa6d`):
+
+| 文件 | 作用 |
+| --- | --- |
+| `src/kernel/roster.ts` | 冻结面 —— **数据, 零 import**: 8 层划分 · 五条禁令 + 1 条派生 · 欠账台账 · 行数预算。零 import 是刻意的: 它自己就是 K1 的第一个样本 |
+| `src/kernel/gate-scan.ts` | 判据 —— **纯函数吃源码文本** (`scanKernelImports` / `scanProhibition` / `debtDiff` / `countCodeLines`)。只有这样变异验证才能把改坏的源码喂给**同一份**判据 |
+| `src/test/kernel-boundary.test.ts` | K1 目录边界门 + K3 行数棘轮门 (12 条, 含判别力自证与变异) |
+| `src/test/kernel-authority.test.ts` | K2 模块越权门 (25 条: 逐条禁令 + 扫描面自证 + 反例 + 变异) |
+
+**K2 的三处设计 (决定这道门是真门还是装饰)**:
+① 禁令落**写/改入口** —— 实测 `tools→shell-guard` 3 处全是只读校验 (`checkTerminalCommand`/`checkWritePath`),
+   若按「整层不许 import」写, 门一开工就假红; `tools→allowTool()/denyTool()` 才是越权 (实测 0 处)。
+② 台账**双向相等**: 实际违规多重集必须逐字等于 `AUTHORITY_DEBT` —— 多一条红; **修掉一条却没同步减也红**
+   (强制台账与事实同步, 不许台账烂在上面)。
+③ 条数另有 `AUTHORITY_DEBT_FROZEN_AT` 冻死,**只许减不许增**; 要加必须改两个数字 ⇒ diff 里看得见。
+
+**真跑**: `npx vitest run src/test/kernel-boundary.test.ts src/test/kernel-authority.test.ts` → **37/37** ✓ ·
+`npx tsc --noEmit` → **0 错** ✓ · 相邻面 `pi-harness.test.ts` + `run-store.test.ts` → **56/56** ✓ (未回归)。
+
+**真盘变异 4/4 符合预期** (探针在**真实文件**上注入 → 跑聚焦门 → 门红 → 逐字节还原 + sha256 核验;
+阴性对照证明门不是"任何改动都红"):
+
+| 变异 | 结果 |
+| --- | --- |
+| K1: `src/kernel/gate-scan.ts` 注入 `import { serve } from '../web/server.js'` | **判红** (4 failed) · 还原 sha256 相同 |
+| K2: `src/web/i18n.ts` 注入 `setRunStatus('r1','running')` | **判红** (1 failed) · 还原 sha256 相同 |
+| K3: `src/kernel/gate-scan.ts` 追加一行 | **判红** (2 failed) · 还原 sha256 相同 |
+| **阴性对照**: 非 kernel 文件加一句无害注释 | **仍绿** (25/25) |
+
+**门首次量出的真实事实** (这道门的价值在"它说了什么", 不在"它绿了"):
+
+| 禁令 | 现状 |
+| --- | --- |
+| Model 不能直接执行 Tool | ✅ 0 违规 |
+| Provider 不能直接写 Run | ✅ 0 违规 (唯一 `llm→state` = `model-selection.ts:1521` 动态 import, 调 `readRun` **只读**, 源码注释写明「避免双向静态依赖」) |
+| Tool 不能直接改权限 | ✅ 0 违规 |
+| Channel 不能直接改 Goal | ⚠️ **1 处**: `web/server.ts:3399` `setContinuation()` |
+| Channel 不能直接写 Run (派生, 来自 K3 入口收口) | ⚠️ **3 处**: `web/server.ts` `setRunStatus()` ×2 · `recordRecovery()` ×1 |
+| 子 Agent 不能直接结束 Goal | ✅ 0 违规 (`runner-resolver.ts` 只 `readGoal`) |
+
+⇒ **欠账 3 条 / 4 处调用**, 全部登记并标明由 **K4** 还清。
+
+**执行行为**: **一字未改** ✓ —— `grep -rn 'kernel/roster|kernel/gate-scan' src` 排除 kernel 自身与门文件后为空,
+即 `src/kernel/` 没有任何业务模块引用 (K0 只立门, 不搬代码)。
+
+**下一刀**: K1 —— `constraint-runtime` 清点 (A 原语 / B 领域工具 / C 不进 Kernel), 判据 = Kernel 只依赖 A 类 ·
+B 类走 capability adapter · C 类不再被 import · 现有测试全绿。
+
+- 设计页 (含 K0–K10 台账与 §12 验收证据): [bolloon-native-macro-kernel.md](./bolloon-native-macro-kernel.md)
+- 索引 / 状态 / 本页: [index.md](./index.md) · [current-status.md](./current-status.md) · 本页
 ### [2026-10-02] docs | Bolloon Native Macro-Kernel 方向冻结 (意图层决定 + 现状真读对账)
 
 **触发**: leo 提出「重新设计一个核心来优化 pi 和替换 pi」, 并给出完整架构判断 —— 借用 Linux 宏内核思想
