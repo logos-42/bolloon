@@ -1832,7 +1832,7 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 - 高层↔低层依赖方向正确 (`bollharness-integration` 对高层零依赖, 门只由高层注入)
 
 **未完成 (因此不得标 converged)**
-- ❌ skill 端到端 **deny/allow 无证据**: 真跑 `node dist/cli-entry.js --harness-skill …` **没有走到 skill 分发器** (落在 chat/LLM 路径), 待查该命令真实调用形态
+- ⚠️ skill 端到端 **allow 路已通 · deny 路无证据**: 真跑 `node dist/index.js --harness-skill arch get_gate` → skill **真执行并返回真实输出** (读法: 响应被"启动期日志闸门"写进 `~/.bolloon/logs/startup.log`, 前缀 `[boot] 🎯`, **stdout 看不到** —— 我上一轮据 stdout 误判"没走到分发器", 是**假阴性**, 已修正); 无 `[K7] skill 门未能建立` 警告 ⇒ 门建起来了。**deny 路仍缺**: `arch` 是只读分析 skill, 把 `rm -rf /` 当分析输入时放行合理 ⇒ 需换真能触发 deny-pipeline/pre-tool-validator 的输入
 - ❌ `PiAgentSession.executeSkill` 公开兼容 API 未收敛 (方案 a: 保留 API 但降为**兼容转发** ⇒ 唯一 `SkillExecutionPort` ⇒ Harness)
 - ❌ 全仓 skill 零旁路 (尚有一条公开 API + 一条内部路径)
 - ❌ 其他 Tool Capability 直连欠账 (B 类 12 处, 排期 K7)
