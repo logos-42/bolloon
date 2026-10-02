@@ -14,6 +14,8 @@ import path from 'node:path';
 
 import {
   RUN_CONTEXT_ACCESS_TOTAL,
+  RUN_CONTEXT_DONE,
+  RUN_CONTEXT_MIGRATED_FROZEN,
   RUN_CONTEXT_FIELDS,
   RUN_CONTEXT_FILES,
   RUN_CONTEXT_TARGET,
@@ -50,8 +52,12 @@ describe('K2 门: RunContext 状态外置', () => {
     }
   });
 
-  it('K2 尚未开工: 当前 migrated 全为 false (不许提前标完成)', () => {
-    expect(RUN_CONTEXT_FIELDS.every((f) => f.migrated === false)).toBe(true);
+  it('外置进度是棘轮: 已迁移字段数 == 冻结值, 且与 DONE 清单一致 (进度只许增)', () => {
+    const migrated = RUN_CONTEXT_FIELDS.filter((f) => f.migrated);
+    expect(migrated.length).toBe(RUN_CONTEXT_MIGRATED_FROZEN);
+    expect(migrated.map((f) => f.name).sort()).toEqual([...RUN_CONTEXT_DONE].sort());
+    // 还没搬的字段不许被标成已搬 (假完成)
+    for (const f of RUN_CONTEXT_FIELDS) if (!RUN_CONTEXT_DONE.includes(f.name)) expect(f.migrated).toBe(false);
   });
 
   it('判别力自证: 三种坏形状都必须判红', () => {

@@ -14,6 +14,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { type RunContext, createRunContext } from './run-context.js';
 import { expandHomeArgs } from './tool-path-args.js';
 import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
 import { runWithWriteOrigin } from './skill-ledger.js';
@@ -436,10 +437,11 @@ export class PiAgentSession implements AgentSession {
   private contextHintAddition: string = '';
 
   /**
-   * 当前 onStream 引用 + abort signal (computeJudgmentGate 需要 onStream 广播 phase)
-   * 每次 prompt / promptStream / promptWithPivotLoop 入口设置, 用完即清
+   * **K2 迁移中**: 一次 Run 的显式状态载体 (见 src/agents/run-context.ts)。
+   * 入口 (prompt / promptStream / promptWithPivotLoop) 用 createRunContext() 快照一次, 用完即清。
+   * 已完成外置: `eventSink` (原 `currentOnStream`)。其余字段仍以本类实例字段为准, 逐格迁移。
    */
-  private currentOnStream: StreamCallback | null = null;
+  private runCtx: RunContext = createRunContext();
   private currentSignal: AbortSignal | null = null;
   /** Bootstrap SessionStart 拼的 system prompt 片段 (用完即清) */
   private bootstrapAddition: string = '';
@@ -487,14 +489,14 @@ export class PiAgentSession implements AgentSession {
 
   /**
    * 算 judgment 注入门: 失败静默, 不阻塞主对话
-   * 期间通过 currentOnStream 广播 phase 事件, 前端可显示 "正在检索判断力..." 状态
+   * 期间通过 runCtx.eventSink 广播 phase 事件, 前端可显示 "正在检索判断力..." 状态
    * 调用方负责用完即清 (judgmentGateAddition='')
    */
   private async computeJudgmentGate(input: string): Promise<void> {
     const safePhase = (phase: string, extra: Record<string, unknown> = {}) => {
       try {
-        if (this.currentOnStream) {
-          this.currentOnStream({ type: 'phase', phase, ...extra, content: '' } as any);
+        if (this.runCtx.eventSink) {
+          this.runCtx.eventSink({ type: 'phase', phase, ...extra, content: '' } as any);
         }
       } catch { /* 静默 */ }
     };
@@ -1139,7 +1141,9 @@ export class PiAgentSession implements AgentSession {
 
     // P0 注入门
     this.currentSignal = options?.signal ?? null;
-    this.currentOnStream = options?.onStream ?? null;
+    // K2: eventSink 已外置。其余字段**不在这里抄一份** —— 抄写会新增对旧实例字段的读,
+    //   违反方向判据「新层出现后旧写口调用点数只许不变或减少」。逐字段迁移时再各自搬进来。
+    this.runCtx = createRunContext({ eventSink: options?.onStream ?? null, abortSignal: options?.signal ?? null });
     await this.computeJudgmentGate(input);
 
     // M2.2 (2026-06-17): intent 分类 — prompt() 路径也跑 (跟 promptStream 对齐)
@@ -1178,14 +1182,14 @@ export class PiAgentSession implements AgentSession {
         }
         this.clearJudgmentGate();
         this.currentSignal = null;
-        this.currentOnStream = null;
+        this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
         this.reportUsageToContextManager();
       }
     }
 
     try {
       // 2026-06-16: runReActLoop 现在返回 { reply, aiFailed, aiFailureReason } — 这里只需 reply 字符串
-      const loopResult = await this.runReActLoop(this.currentOnStream ?? undefined, options?.signal);
+      const loopResult = await this.runReActLoop(this.runCtx.eventSink ?? undefined, options?.signal);
 
       // 2026-10-01: **本回合改过 TS ⇒ 收尾自动类型检查** (一轮一次) —— 复用已有的 tsc_check 工具
       if (decideTypecheck(this.tsTouchedThisTurn, this.typecheckRanThisTurn)) {
@@ -1195,10 +1199,10 @@ export class PiAgentSession implements AgentSession {
           if (tscTool?.execute) {
             const r: any = await tscTool.execute({});
             const line = formatTypecheckResult(r?.success !== false && !/error TS\d+/.test(String(r?.output || '')), String(r?.output || ''));
-            this.currentOnStream?.({ type: 'status', content: `🔎 ${line}`, tool: 'system' } as any);
+            this.runCtx.eventSink?.({ type: 'status', content: `🔎 ${line}`, tool: 'system' } as any);
           }
         } catch (e: any) {
-          this.currentOnStream?.({ type: 'status', content: `🔎 类型检查没能跑起来: ${String(e?.message || e).slice(0, 100)} (改动已落盘, 记得自己跑一次)`, tool: 'system' } as any);
+          this.runCtx.eventSink?.({ type: 'status', content: `🔎 类型检查没能跑起来: ${String(e?.message || e).slice(0, 100)} (改动已落盘, 记得自己跑一次)`, tool: 'system' } as any);
         }
         this.tsTouchedThisTurn = [];
       }
@@ -1228,7 +1232,7 @@ export class PiAgentSession implements AgentSession {
                 .then(() => fs.appendFile(p, line + '\n'))
                 .catch(() => { /* 落日志失败不影响主流程 */ });
             } catch { /* 落日志失败不影响主流程 */ }
-            try { this.currentOnStream?.({ type: 'status', content: `📚 复盘: ${m}`, tool: 'system' } as any); } catch { /* 上屏失败不打断 */ }
+            try { this.runCtx.eventSink?.({ type: 'status', content: `📚 复盘: ${m}`, tool: 'system' } as any); } catch { /* 上屏失败不打断 */ }
           };
           reviewLog('开始(换了任务 ⇒ 立刻复盘)');
           void runExperienceReview({
@@ -1292,7 +1296,7 @@ export class PiAgentSession implements AgentSession {
       }
       this.clearJudgmentGate();
       this.currentSignal = null;
-      this.currentOnStream = null;
+      this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
       this.reportUsageToContextManager();
     }
   }
@@ -1344,8 +1348,10 @@ export class PiAgentSession implements AgentSession {
       return response;
     }
 
-    // P0 注入门: 缓存 onStream + signal, computeJudgmentGate 用 currentOnStream 广播 phase
-    this.currentOnStream = onStream;
+    // P0 注入门: 缓存 onStream + signal, computeJudgmentGate 用 runCtx.eventSink 广播 phase
+    // K2: 同上 —— 只搬已外置的字段, 不抄未迁移的
+    // K2: 只搬 eventSink (读 this.currentSignal 也算对旧字段的新增读 ⇒ 等它自己迁)
+    this.runCtx = createRunContext({ eventSink: onStream });
     this.currentSignal = signal ?? null;
     await this.computeJudgmentGate(userText);
 
@@ -1476,7 +1482,7 @@ export class PiAgentSession implements AgentSession {
           usedJudgmentIds: [...this.judgmentGateUsedIds],
         }).catch((err) => console.warn('[PiAgent] onStop failed:', err));
         this.clearJudgmentGate();
-        this.currentOnStream = null;
+        this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
         this.currentSignal = null;
         this.bootstrapAddition = '';
         this.contextHintAddition = '';
@@ -1505,7 +1511,7 @@ export class PiAgentSession implements AgentSession {
         lastAiFailureReason = loopResult.aiFailureReason || 'AI 调用失败';
       } catch (err: any) {
         // abort 失败: 视作"已中断", 抛错让上层用 partial 兜底
-        this.currentOnStream = null;
+        this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
         this.currentSignal = null;
         throw err;
       }
@@ -1572,7 +1578,7 @@ export class PiAgentSession implements AgentSession {
 
     // 用完即清, 避免污染下一轮
     this.clearJudgmentGate();
-    this.currentOnStream = null;
+    this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
     this.reportUsageToContextManager();
     this.currentSignal = null;
     this.bootstrapAddition = '';
@@ -1671,7 +1677,7 @@ ${await this.renderActivePlansSection()}
 - 工具调用后必须等结果, 不要在同一个回复里继续输出
 - <final gen> 只在**真完成所有任务**时输出, 不要在工具调用前/中输出${this.judgmentGateAddition}${this.contextHintAddition}`;
 
-    // 2026-06-15: 把 currentOnStream 传给 loop, 让 step-timeline 在 pivot 循环里也能 emit step_start/done
+    // 2026-06-15: 把 runCtx.eventSink 传给 loop, 让 step-timeline 在 pivot 循环里也能 emit step_start/done
     //   之前 loop.execute() 不接 streamCallback, 导致 step-timeline 只能看到老 runReActLoop 路径
     //   promptWithPivotLoop 路径 0 step events — UI 显示 timeline 但永远是空
     // 2026-06-17: 透传 signal 让 abort 工作 — loop.execute() 当前不接 signal 参数,
@@ -1698,7 +1704,7 @@ ${await this.renderActivePlansSection()}
     const onCompact = async () => {
       // no-op (best-effort hook for future pi-sdk/pivot history sync)
     };
-    const result = await loop.execute(input, llm, systemPrompt + historyBlock, this.currentOnStream ?? undefined, this.currentSignal ?? undefined, onCompact);
+    const result = await loop.execute(input, llm, systemPrompt + historyBlock, this.runCtx.eventSink ?? undefined, this.currentSignal ?? undefined, onCompact);
 
     if (result.response) {
       this.messageHistory.push({ role: 'assistant', content: result.response });
@@ -3296,7 +3302,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
       //   **不显示** ✗。这里把它往流里送一份 —— 显示与否由 CLI 侧决定(BOLLOON_SHOW_THINKING, 默认显示) ✓。
       try {
         const rc = String((response as any)?.reasoningContent || '').trim();
-        if (rc) this.currentOnStream?.({ type: 'reasoning', content: rc } as any);
+        if (rc) this.runCtx.eventSink?.({ type: 'reasoning', content: rc } as any);
       } catch { /* 送不出去不影响主流程 */ }        // 2026-06-30: 透传 toolCalls (OpenAI 协议 native) 给上层, 让 assistant message 能 emit 真 id
         return { reply: response.reply || '', toolCalls: response.toolCalls, messages: response.messages };
       } catch (err: any) {

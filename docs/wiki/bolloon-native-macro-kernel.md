@@ -492,3 +492,36 @@ K1-f 第一版**判据红了, 但红在错的原因上**: 它用 `not.toContain(
 ### 18.4 一处自效果 (记下来免得下次惊讶)
 
 每加一个台账文件, **K6 删除候选就多一条** (`plan-runcontext.ts` 是新的 0 入边产物 ⇒ 候选 98→99)。台账文件在"谁 import 它"这件事上天然是孤岛 —— 判据按 0 入边算候选时, **台账/名册类文件要靠 OWNER 名册豁免**, 不能真当删除对象。
+
+## 19. K2 第一格状态迁移: `currentOnStream` → `RunContext.eventSink` (已落地)
+
+### 19.1 做了什么
+
+1. 新模块 `src/agents/run-context.ts`: `RunContext` 接口 (leo 的 11 项 + `intent`) + `createRunContext()` 工厂 (**未给的字段一律显式置空, 不继承上一个 Run 的残留**)。
+2. `pi-sdk.ts`: 删掉实例字段 `currentOnStream`, 改挂 `private runCtx: RunContext`; **15 处 `this.currentOnStream` 全部改为 `this.runCtx.eventSink`**; 两个入口 (`promptStream` / `promptWithPivotLoop`) 改用 `createRunContext({ eventSink })` 建立本轮 Context; 5 个清空点改成「换一个空 Context」。
+3. 台账下调: `currentOnStream` 15 → **0**, `migrated: true`; `RUN_CONTEXT_ACCESS_TOTAL` 182 → **167**; 新增 `RUN_CONTEXT_MIGRATED_FROZEN = 1` + `RUN_CONTEXT_DONE` 清单; 测试里的「K2 尚未开工」断言改成**棘轮** (已迁移字段数 == 冻结值, 且与 DONE 清单一致, 未搬的字段不许被标成已搬)。
+
+### 19.2 这一刀被自己的判据拦了一次 (值得记)
+
+我第一版在入口用「快照式」把 6 个**尚未迁移**的字段也抄进 Context (`channelId: this.currentChannelId` …) —— 结果 6 个字段各 +2 处读, 总量从 182 只降到 178。
+这违反了 leo 定的方向判据: **「新层出现后, 旧写口的调用点数只许不变或减少」**。改成只搬 `eventSink` 之后:
+
+| | 迁移前 | 迁移后 |
+| --- | --- | --- |
+| `currentOnStream` | 15 | **0** |
+| 其余 7 个字段 | 167 | **167 (一处没动)** |
+| 合计 | 182 | **167 (纯减)** |
+
+`currentSignal` 也顺手削掉了一处 (`createRunContext({ abortSignal: this.currentSignal })` 这个读也算新增) —— 这一刀必须**纯减**, 一个"过渡期读数装置"都不许留。
+
+### 19.3 验证 (真跑)
+
+- `npx tsc --noEmit` ⇒ **0 错**;
+- 6 道 kernel 门 ⇒ **91/91**;
+- 覆盖 stream / loop / persistence 的 6 个测试文件 (`react-loop` · `persistence-e2e-flow` · `session-resume-e2e` · `web-server-session` · `parse-tool-call-loop` · `pi-sdk`) ⇒ **87/87**;
+- 端到端消融 `npx tsx scripts/ablation/run.ts` ⇒ **15/16**; 唯一失败的 `[C2] 搜索 prompt × 3 次` **在把 pi-sdk.ts 换回 HEAD 的基线对照下同样失败** (answerRate 2/3 vs 我的 1/3) ⇒ **与本次迁移无关** (LLM 冷启动波动), 不算回归。
+
+### 19.4 下一格
+
+按面从小到大: `currentSignal` (8) → `currentIntent` (10) → `currentGoalId` (19) → `currentAgentId` (20) → `currentChannelId` (21) → `currentRunId` (36) → `messageHistory` (53)。每格都要: 迁移 ⇒ 台账下调 ⇒ 门保持绿 ⇒ 真跑一次。
+`currentSignal` 那格会引入一个新问题: 它是 `AbortSignal`, 迁移后 `ctx.abortSignal` 才是唯一出处, 取消语义要跟上 (`RunContext` 里的取消位)。

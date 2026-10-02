@@ -29,7 +29,7 @@ export const RUN_CONTEXT_ENTRY = 'agents/pi-sdk.ts:1923 runReActLoop(onStream?, 
 
 export const RUN_CONTEXT_FIELDS: readonly RunStateField[] = [
   { name: 'messageHistory', declaredAt: 'agents/pi-sdk.ts:272', accesses: 53, into: 'history', migrated: false, payDownIn: 'K2' },
-  { name: 'currentOnStream', declaredAt: 'agents/pi-sdk.ts:442', accesses: 15, into: 'eventSink', migrated: false, payDownIn: 'K2' },
+  { name: 'currentOnStream', declaredAt: 'agents/pi-sdk.ts:442', accesses: 0, into: 'eventSink', migrated: true, payDownIn: 'K2' },
   { name: 'currentSignal', declaredAt: 'agents/pi-sdk.ts:443', accesses: 8, into: 'abortSignal', migrated: false, payDownIn: 'K2' },
   { name: 'currentChannelId', declaredAt: 'agents/pi-sdk.ts:458', accesses: 21, into: 'channelId', migrated: false, payDownIn: 'K2' },
   { name: 'currentRunId', declaredAt: 'agents/pi-sdk.ts:471', accesses: 36, into: 'runId', migrated: false, payDownIn: 'K2' },
@@ -42,4 +42,14 @@ export const RUN_CONTEXT_FIELDS: readonly RunStateField[] = [
 export const RUN_CONTEXT_TARGET: readonly string[] = ["requestId", "channelId", "agentId", "goalId", "runId", "intent", "modelSnapshot", "history", "abortSignal", "budget", "eventSink", "harnessContext"];
 
 /** 冻结总量 (棘轮只许减) */
-export const RUN_CONTEXT_ACCESS_TOTAL = 182;
+export const RUN_CONTEXT_ACCESS_TOTAL = 167;
+
+/** 已外置字段数 (棘轮: 只许增)。改动这里 = 明确宣告"又搬完一个字段" */
+export const RUN_CONTEXT_MIGRATED_FROZEN = 1;
+
+/**
+ * 已迁移字段的落地位置 (便于人工复核"搬去哪了"):
+ *   · currentOnStream → `src/agents/run-context.ts` 的 `RunContext.eventSink`
+ *     (入口 `createRunContext({ eventSink })` 快照; 清空 = 换一个空 Context; 15 处访问归零)
+ */
+export const RUN_CONTEXT_DONE: readonly string[] = ['currentOnStream'];

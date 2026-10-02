@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-19T06:01:55.039Z",
+  "timestamp": "2026-10-02T01:52:40.649Z",
   "results": {
     "documents": {
       "name": "documents",
@@ -38,7 +38,7 @@
           "withMeta": 12,
           "withoutMeta": [],
           "note": "parseFrontmatter 失败 → meta=null 但 body 保留 (registry.ts:78-106)",
-          "compileOut": "[HumanValueStore] Initialized at /Users/apple/.bolloon/human-values\nCHARS=8520\nTIME=664\nHAS_BODY=true",
+          "compileOut": "[HumanValueStore] Initialized at /Users/apple/.bolloon/human-values\nCHARS=8520\nTIME=2237\nHAS_BODY=true",
           "compileErr": "",
           "compiledChars": 8520,
           "pass": true
@@ -63,18 +63,18 @@
         {
           "c": "C2",
           "desc": "loadSkillsFromPaths(defaultSkillPaths) → 有 N 个",
-          "out": "PATHS=[\"/Users/apple/.bolloon/skills\",\"/Users/apple/Downloads/bolloon/.bolloon/skills\",\"/Users/apple/.boll/skills\"]\nLEN=1258\nNAMES=AgentROI结构,HBS公理创生,NODS,ablation-test,academic-deep-research,agent-identity-bootstrap,agent-identity-setup,agent-ops-status-check,agent-self-status-check,agent-status-check,agent-workspace-bootstrap,apple-notes,apple-reminders,findmy,imessage,arxiv-physics,Astronomy,claude-code,codex,computer-use,hermes-agent,hibs-strategy-evolution,merge-reconciler,opencode,p2p-auto-discovery,cli-developer,Code,code-review,codebase-recon-before-p2p-module,context-asset-ipfs-flow,a",
+          "out": "PATHS=[\"/Users/apple/.bolloon/skills\",\"/Users/apple/Downloads/bolloon/.bolloon/skills\",\"/Users/apple/.boll/skills\"]\nLEN=1263\nNAMES=AgentROI结构,HBS公理创生,NODS,ablation-test,academic-deep-research,agent-identity-bootstrap,agent-identity-setup,agent-ops-status-check,agent-self-status-check,agent-status-check,agent-workspace-bootstrap,apple-notes,apple-reminders,findmy,imessage,arxiv-physics,Astronomy,claude-code,codex,computer-use,hermes-agent,hibs-strategy-evolution,merge-reconciler,opencode,p2p-auto-discovery,cli-developer,Code,code-review,codebase-recon-before-p2p-module,context-asset-ipfs-flow,a",
           "err": "",
-          "count": 1258,
+          "count": 1263,
           "pass": true
         },
         {
           "c": "C3",
           "desc": "坏 skill.md 不阻断其他加载",
-          "out": "LEN=1258",
+          "out": "LEN=1263",
           "err": "",
-          "count": 1258,
-          "c2Count": 1258,
+          "count": 1263,
+          "c2Count": 1263,
           "pass": true
         }
       ],
@@ -83,67 +83,97 @@
     "tool_loop": {
       "name": "tool_loop",
       "attempts": 4,
-      "successCount": 0,
-      "failCount": 4,
+      "successCount": 3,
+      "failCount": 1,
       "samples": [
         {
           "c": "C1",
           "desc": "极简 prompt → 直接回答, 无 tool",
-          "duration_ms": 43,
-          "status": 503,
-          "pass": false
+          "duration_ms": 20,
+          "status": 202,
+          "asyncAck": true,
+          "ok": true,
+          "pass": true
         },
         {
           "c": "C2",
           "desc": "搜索 prompt × 3 次独立运行 (假阳性检查, 监听 SSE)",
           "subs": [
             {
-              "error": "/message not 202: 503"
+              "duration_ms": 2409,
+              "postStatus": 202,
+              "asyncOk": true,
+              "messages": 1,
+              "toolSeen": true,
+              "aiTextLen": 2,
+              "tokenTextLen": 2,
+              "totalTextLen": 4,
+              "eventTypes": "user,queue_update,stream:thinking,workflow_step,phase,phase,status,workflow_step,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,reply-preview,status",
+              "textPreview": "okok"
             },
             {
-              "error": "/message not 202: 503"
+              "duration_ms": 5738,
+              "postStatus": 202,
+              "asyncOk": true,
+              "messages": 1,
+              "toolSeen": false,
+              "aiTextLen": 178,
+              "tokenTextLen": 0,
+              "totalTextLen": 178,
+              "eventTypes": "user,queue_update,user,cron,ai,done",
+              "textPreview": "**Bolloon agent** 是一个本地优先、可 P2P 互联的 AI 智能体——每台机器运行一个 bolloon 进程（Web Server + LLM 推理 + 判断力库 + P2P 网络）"
             },
             {
-              "error": "/message not 202: 503"
+              "duration_ms": 2604,
+              "postStatus": 202,
+              "asyncOk": true,
+              "messages": 1,
+              "toolSeen": false,
+              "aiTextLen": 132,
+              "tokenTextLen": 0,
+              "totalTextLen": 132,
+              "eventTypes": "user,user,queue_update,ai,done",
+              "textPreview": "**Bolloon agent** 是一个本地优先、通过 P2P 互联的 AI 智能体——每台机器运行一个 bolloon 进程（Web Server + LLM 推理 + 判断力库 + P2P 网络"
             }
           ],
-          "toolLoopVisible": "0/3",
-          "toolCallCorrect": "0/3",
+          "toolLoopVisible": "1/3",
+          "toolCallCorrect": "2/3",
           "pass": false,
-          "successRate": "0/3",
-          "answerRate": "0/3"
+          "successRate": "3/3",
+          "answerRate": "2/3"
         },
         {
           "c": "C3",
           "desc": "异常 prompt (无意义字符串) → 不崩, 显式错误或回答",
-          "duration_ms": 4,
-          "status": 503,
-          "pass": false
+          "duration_ms": 19,
+          "status": 202,
+          "asyncAck": true,
+          "pass": true
         }
       ],
-      "notes": "using channel real-msg-1789797041201 (real test msg)"
+      "notes": "using channel real-msg-1790848645621 (real test msg)"
     },
     "p2p": {
       "name": "p2p",
       "attempts": 5,
-      "successCount": 4,
-      "failCount": 1,
+      "successCount": 5,
+      "failCount": 0,
       "samples": [
         {
           "c": "C1",
           "desc": "/api/p2p-peers 端点响应",
           "status": 200,
           "hasPeersField": true,
-          "peerCount": 8,
+          "peerCount": 9,
           "pass": true
         },
         {
           "c": "C1-iroh",
           "desc": "iroh info + known_peers.json 持久化",
-          "irohInitialized": false,
+          "irohInitialized": true,
           "irohNodeIdShort": null,
-          "peersFromApi": 8,
-          "peersFromDisk": 8,
+          "peersFromApi": 9,
+          "peersFromDisk": 9,
           "peerNames": [
             "node",
             "discovered-9b6003fc",
@@ -152,7 +182,8 @@
             "discovered-3d2d97a3",
             "discovered-480e365e",
             "discovered-3e4886bf",
-            "discovered-411bf879"
+            "discovered-411bf879",
+            "discovered-be6cf6da"
           ],
           "pass": true
         },
@@ -174,7 +205,7 @@
               "n": 0
             }
           ],
-          "apiPeerCount": 10,
+          "apiPeerCount": 11,
           "pass": true
         },
         {
@@ -188,45 +219,43 @@
           "c": "C4",
           "desc": "/api/iroh/info 返回 irohNodeId (v3 fallback 或真值)",
           "status": 200,
-          "initialized": false,
-          "irohNodeIdLen": 0,
-          "irohNodeIdPrefix": "",
-          "pass": false
+          "initialized": true,
+          "irohNodeIdLen": 64,
+          "irohNodeIdSource": "iroh",
+          "irohNodeIdPrefix": "3c2eeee23cc2d276",
+          "pass": true
         }
       ],
       "notes": ""
     }
   },
   "serverLogTail": [
-    "[out] [heartbeat] 社交心跳已启动 (beacon=30000ms, social=120000ms, cooldown=600000ms, organize=1800000ms )\n",
-    "[out] [cron] 调度器已启动 (每 60s 一轮, tick 带锁 + DND)\n",
-    "[out] 2026-09-19T06:01:45.835Z [\u001b[32minfo\u001b[39m]: 🔧 Hyperswarm P2P 通信器已创建\n",
-    "[out] 2026-09-19T06:01:45.835Z [\u001b[32minfo\u001b[39m]:   服务器模式: true\n",
-    "[out] 2026-09-19T06:01:45.835Z [\u001b[32minfo\u001b[39m]:   客户端模式: true\n",
-    "[out] 2026-09-19T06:01:45.835Z [\u001b[32minfo\u001b[39m]:   最大连接数: 50\n",
-    "[out] 2026-09-19T06:01:45.835Z [\u001b[32minfo\u001b[39m]: 🚀 启动 Hyperswarm P2P 网络...\n",
-    "[out] 2026-09-19T06:01:45.835Z [\u001b[32minfo\u001b[39m]: ✅ Hyperswarm P2P 网络已启动\n",
-    "[out] 2026-09-19T06:01:45.836Z [\u001b[32minfo\u001b[39m]: 🔗 加入主题: 626f6c6c...\n",
-    "[out] [supervisor] goal=undefined 扫描后状态已变 (别的 worker 推进过) → 让路\n",
-    "[out] [supervisor-host] #4 认领 1 · 执行 1 · 跳过 1\n",
-    "[out] 2026-09-19T06:01:52.473Z [\u001b[32minfo\u001b[39m]: ✅ 已加入主题: 626f6c6c...\n",
+    "[err] [did-catalog] OrbitDB 复制启动失败 (非致命, 稍后可用 API 重试): Cannot access 'userIdentityCache' before initialization\n",
+    "[out] 2026-10-02T01:50:15.080Z [\u001b[33mwarn\u001b[39m]:   ipfs init 失败: Error: ipfs daemon is running. please stop it to run this command\nUse 'ipfs init --help' for informa\n",
+    "[out] \n",
+    "[out] \n",
+    "[out] P2P DID 已发布到 IPFS\n",
     "[out] P2P 老通道已就绪 (DHT bootstrap 帮 P2PDirect, 实际数据走 P2PDirect)\n",
-    "[out] [agent-delegate] 已挂载到 /api/agent (启动即用: local-manifest / register / pick / delegate, 真执行器已注入)\n",
     "[out] [24h] Heartbeat modules loaded\n",
     "[out] [24h] Health monitor periodic check (no self-improve)\n",
-    "[out] [self-improve] 用户模式, installSelfImproveHook 跳过 (可用 POST /api/self-improve/trigger 手动触发)\n",
     "[out] BOLLOON_PORT=54188\n",
-    "[out] BOLLOON_HOST=127.0.0.1\nWeb 服务器启动完成: http://127.0.0.1:54188\n",
+    "[out] BOLLOON_HOST=127.0.0.1\n",
+    "[out] Web 服务器启动完成: http://127.0.0.1:54188\n",
     "[out] 服务器已监听\n",
-    "[out]   \u001b[38;2;34;197;94m✓\u001b[0m 浏览器已打开 → http://127.0.0.1:54188\n",
-    "[out] [chat-bus] SSE bridge installed\n",
-    "[out] [channels] refresh, n=2, t=+1ms\n",
-    "[out] [SSE] 客户端连接 channelId=real-msg-1789797041201, 总数=1\n",
-    "[out] [SSE] 客户端连接 channelId=real-msg-1789797041201, 总数=2\n",
-    "[out] [SSE] 客户端连接 channelId=real-msg-1789797041201, 总数=3\n",
-    "[out] [SSE] 客户端断开 channelId=real-msg-1789797041201, 剩余=2\n",
-    "[out] [server] 收到 SIGTERM, 开始清理...\n",
-    "[out] [heartbeat] 社交心跳已停止 (定时器已清理)\n",
-    "[out] [supervisor-host] 已优雅停止 (signal:SIGTERM)\n"
+    "[out] [pi-ai timing] total=3115ms attempt=1 fetch=1519ms parse=667ms reply=4B toolCalls=0 model=deepseek-v4-flash prompt=136B\n",
+    "[out] [iroh API] 初始化 iroh...\n",
+    "[out] [iroh API] iroh 节点 ID: 3c2eeee23cc2d276e501...\n",
+    "[out] [iroh API] CID 发布成功: Qma6Boon4JdQjfhHESE3...\n",
+    "[out] [iroh API] 初始化完成: DID=did:key:z6MkfhHCsTG6yhanrcJenkH59NZaidMzUiRT3wUy3xK9w9xT, CID=Qma6Boon4JdQjfhHESE3jgbw7E1CEpTf13chSr7AFyUy1X\n",
+    "[out] [DID 修复] real test msg DID = did:key:z6Mko5XmBRpkjo2h3ThB49BnbLJiT9k1VmcHafnbMeWhrWvj (复用 agent 持久身份)\n",
+    "[out] [agent-gateway] 恢复 2/3 个群组 (失败 1)\n",
+    "[out] [supervisor-host] ⚠ tick #4 已运行 30s 仍未结束 (可能卡在 runner/session 创建)\n",
+    "[out] [pi-ai timing] total=803ms attempt=1 fetch=101ms parse=702ms reply=40B toolCalls=0 model=deepseek-v4-flash prompt=661B\n",
+    "[out] [D-hook real-msg-1790848645621] skipped: D1 skipped: 未表达偏好规则价值观\n",
+    "[out] [pi-ai timing] total=1108ms attempt=1 fetch=352ms parse=754ms reply=2B toolCalls=0 model=deepseek-v4-flash prompt=96368B\n",
+    "[out] [D-hook real-msg-1790848645621] throttled (within 5min)\n",
+    "[out] [pi-ai timing] total=948ms attempt=1 fetch=209ms parse=738ms reply=73B toolCalls=0 model=deepseek-v4-flash prompt=774B\n",
+    "[out] [pi-ai timing] total=4825ms attempt=1 fetch=238ms parse=4585ms reply=191B toolCalls=0 model=deepseek-v4-flash prompt=41164B\n",
+    "[out] [pi-ai timing] total=2479ms attempt=1 fetch=395ms parse=2082ms reply=132B toolCalls=0 model=deepseek-v4-flash prompt=89780B\n"
   ]
 }
