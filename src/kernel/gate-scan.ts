@@ -792,15 +792,21 @@ export function scanHistoryWriteSites(code: string): Finding[] {
  * **K5 步骤④ — 入口执行点的精确计数口径** (判据与台账必须用同一口径, 否则数字对不上):
  *   ① 只数 `.<promptStream>(` 与 `.<prompt>(` (**非流式也算** —— 它同样会启动一次执行);
  *   ② 先剥 `//` 行注释, 并丢掉 `*` 开头的块注释行 (否则注释里的示例会被当成执行点);
- *   ③ 排除 `this.prompt(...)` —— 那是 CLI 的 readline 提示, 不是执行点 (实测踩过: 虚增 3 处)。
+ *   ③ `excludeReceivers`: **已核实的非执行点 receiver** 名单 (台账里的数据, 冻结):
+ *      `this` = CLI readline (`this.prompt('> ')`); `s` = index.ts 的 UI 打印助手 (`s.prompt('📩 …')`)。
+ *      名单改动会出现在 diff 里 ⇒ 不能拿它偷偷把执行点数变小。
  */
-export function countEntryExecutionPoints(code: string): number {
+export function countEntryExecutionPoints(code: string, excludeReceivers: readonly string[] = ['this']): number {
   let n = 0;
   for (const raw of code.split(/\r?\n/)) {
     const l = raw.replace(/\/\/.*$/, '');
-    if (/^\s*\*/.test(l)) continue;
-    if (/\bthis\.prompt(Stream)?\(/.test(l)) continue;
-    n += (l.match(/\.prompt(Stream)?\(/g) ?? []).length;
+    if (/^\s*\*/.test(l)) continue;                                  // 块注释行
+    const hits = l.match(/\.prompt(Stream)?\(/g) ?? [];
+    if (hits.length === 0) continue;
+    // 该行调用的 receiver (实测每行至多一个执行点; 取第一个 receiver 判定即可)
+    const m = /([A-Za-z_$][\w$]*|this)\s*\.\s*prompt(Stream)?\(/.exec(l);
+    if (m && excludeReceivers.includes(m[1])) continue;               // 已核实的非执行点
+    n += hits.length;
   }
   return n;
 }
@@ -816,14 +822,14 @@ export function countDeliveredPoints(code: string): number {
  */
 export function scanEntryDelivery(
   sources: readonly { file: string; text: string }[],
-  sites: readonly { file: string; total: number; wired: number }[],
+  sites: readonly { file: string; total: number; wired: number; excludeReceivers?: readonly string[] }[],
 ): Finding[] {
   const out: Finding[] = [];
   const f = (file: string, what: string) => out.push({ rule: 'entry-delivery-mismatch', file, line: 1, what });
   for (const s of sites) {
     const src = sources.find((x) => x.file === s.file);
     if (!src) { f(s.file, `台账登记的文件在扫描面里不存在 ⇒ 口径不可信`); continue; }
-    const total = countEntryExecutionPoints(src.text);
+    const total = countEntryExecutionPoints(src.text, s.excludeReceivers ?? ['this']);
     const wired = countDeliveredPoints(src.text);
     if (total !== s.total) f(s.file, `入口执行点盘上 ${total} 处 ≠ 台账 ${s.total} ⇒ 新增/删除没登记`);
     if (wired !== s.wired) f(s.file, `已投递盘上 ${wired} 处 ≠ 台账 ${s.wired} ⇒ 进度对不上事实`);

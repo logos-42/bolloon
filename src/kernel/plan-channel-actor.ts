@@ -134,18 +134,20 @@ export const K5_PROGRESS = {
   /** 已迁字段名单 —— 门强制 `length === fieldsMigrated` 且每个名字都在 K5_INHERITED_FIELDS 里 */
   migratedFieldNames: ['messageHistory', 'currentChannelId', 'currentAgentId', 'currentGoalId'],
   fieldsTotal: 4,
-  entriesWired: 1,
+  entriesWired: 3,
   entriesTotal: 4,
   /**
    * K5 步骤④ 的细粒度进度: **全部入口面的执行点清单**。
    * 两个数字都由判据 `scanEntryDelivery` 用同一口径**从盘上重算** (剥注释 / 排除 `this.prompt` / 非流式也算), 自报无效。
    */
   entrySites: [
-    { file: 'web/server.ts', total: 11, wired: 11 },              // web 用户/中继/任务/心跳路径
-    { file: 'web/routes-tasks.ts', total: 1, wired: 1 },          // web 任务路由
-    { file: 'index.ts', total: 8, wired: 0 },                     // CLI 主入口 (未开始)
-    { file: 'cli/interface.ts', total: 0, wired: 0 },             // 它的 prompt 是 readline ⇒ 0 执行点
-    { file: 'agents/runner-resolver.ts', total: 1, wired: 0 },    // 子 Agent / Supervisor 面
+    // `excludeReceivers` 是**已核实的非执行点 receiver** (台账数据, 冻结; 改动会出现在 diff 里):
+    //   `this` = CLI readline 提示 (`this.prompt('> ')`);  `s` = index.ts 里的 UI 打印助手 (`s.prompt('📩 …')`)
+    { file: 'web/server.ts', total: 11, wired: 11, excludeReceivers: ['this'] },            // web 用户/中继/任务/心跳
+    { file: 'web/routes-tasks.ts', total: 1, wired: 1, excludeReceivers: ['this'] },        // web 任务路由
+    { file: 'index.ts', total: 7, wired: 7, excludeReceivers: ['this', 's'] },              // CLI 主入口 (含 --prompt 直调)
+    { file: 'cli/interface.ts', total: 0, wired: 0, excludeReceivers: ['this'] },           // readline ⇒ 无执行点
+    { file: 'agents/runner-resolver.ts', total: 1, wired: 1, excludeReceivers: ['this'] },  // 子 Agent / Supervisor 面
   ],
   /** K5 第 4 步里的 history **操作**搬迁 (4 个: hydrate/append/compact/persist) */
   historyOpsMigrated: 4,

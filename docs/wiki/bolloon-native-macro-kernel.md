@@ -1085,3 +1085,34 @@ web/server.ts  promptStream( 执行点共 **8** 处; 已投递 **3** 处 (用户
 
 1. 闭包里 TS **不保留收窄** (`let agent: AgentSession | null` / `if (task.description)`) ⇒ 两处都要先收成局部 `const`, 再进闭包。
 2. `deliverThroughActor` 的 holder 形参写 `{ actor?: ChannelActor }` 会触发 TS 弱类型检查 ("no properties in common with type…"), 因为调用点 receiver 类型五花八门 ⇒ 形参放宽成 `unknown`, 取值处运行时收窄 (取不到就直跑)。
+
+## 36. K5 步骤④: CLI 与子 Agent/Supervisor 两条面接完 (entriesWired 3/4)
+
+### 36.1 先认点, 再接线 (不能照正则批量替换)
+
+`index.ts` 按口径算出 8 处, 逐个认下来后发现 **1 处不是执行点**:
+`index.ts:489` 的 `s.prompt('📩 收到 …')` —— `s` 是文件顶部的 **UI 打印助手** (`banner/step/success/warn/error/info/prompt`), 它只打印, 不启动执行。
+⇒ 计数口径增加 **`excludeReceivers` (台账里的数据, 冻结)**: `this` = CLI readline (`this.prompt('> ')`); `s` = UI 打印助手。
+   名单改动会出现在 diff 里 ⇒ 不能拿它偷偷把执行点数变小; 判据里还配了判别力用例 (不排除时算 1, 排除后算 0)。
+
+### 36.2 接线结果 (两个数字仍由门从盘上重算)
+
+| 文件 | 执行点 | 已投递 | 归属入口 |
+| --- | --- | --- | --- |
+| `web/server.ts` | 11 | **11** | web (用户消息 / P2P 中继 / 任务 / cron / 心跳) |
+| `web/routes-tasks.ts` | 1 | **1** | web 任务路由 |
+| `index.ts` | **7** | **7** | **CLI 主入口** (交互式 + `--prompt` 直调 + 心跳 llm 回调) |
+| `cli/interface.ts` | 0 | 0 | readline ⇒ 无执行点 |
+| `agents/runner-resolver.ts` | 1 | **1** | **子 Agent / Supervisor 面** |
+
+⇒ **`entriesWired 1/4 → 3/4`** (web · CLI · 子Agent/Supervisor)。剩 **P2P 入站**: 它在 `index.ts` 里走 `comm.on('message') → dispatchTask(...)`, 而 `dispatchTask` 的 agent 调用面**尚未逐个认下来** ⇒ 不先宣布完成。
+
+### 36.3 一处多行调用怎么包
+
+`index.ts:3753` 的 `a.prompt(trimmed, { …30+ 行 options… })` 是**多行**调用 ⇒ 用**括号配平**定位收尾行 (实测 3753 → 3851), 再把收尾的 `});` 改成 `}));`。
+⇒ 规矩: 多行调用不能靠"找下一个 `});`"猜, 要用计数器配平 (否则很容易改到别人的收尾)。
+
+### 36.4 一处工具坑
+
+判据里**动态拼正则** (`new RegExp` 由 receiver 名单生成) 被转义吃坏 (经 Python 补丁写入后语法直接破) ⇒ 改成**不用动态正则**: 先 `match` 出调用, 再用 `excludeReceivers.includes(recv)` 判定。
+⇒ 规矩: 判据/口径这类要长命的小函数, **避开动态正则与转义** —— 正则字面量 + `includes` 更稳。

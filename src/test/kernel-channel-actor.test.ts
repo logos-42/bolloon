@@ -86,10 +86,9 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(K5_PROGRESS.fieldsMigrated).toBe(4);
     expect(K5_PROGRESS.migratedFieldNames).toEqual(['messageHistory', 'currentChannelId', 'currentAgentId', 'currentGoalId']);
     // web 入口已全部执行点投递 (server.ts 11/11 + routes-tasks 1/1) ⇒ 四入口里完成 1 条
-    expect(K5_PROGRESS.entriesWired).toBe(1);
-    const webSites = K5_PROGRESS.entrySites.filter((s) => s.file.startsWith('web/'));
-    expect(webSites.length).toBe(2);
-    expect(webSites.every((s) => s.total > 0 && s.total === s.wired)).toBe(true);
+    // web (2 面) + CLI 主入口 + 子 Agent/Supervisor 面 的执行点都已投递 ⇒ 四入口里完成 3 条
+    expect(K5_PROGRESS.entriesWired).toBe(3);
+    expect(K5_PROGRESS.entrySites.filter((s) => s.total > 0 && s.total === s.wired).length).toBe(4);
   });
 
   it('串行语义真跑: 同 Channel 内任务永不交错, 且按入队顺序执行', async () => {
@@ -340,10 +339,13 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(countEntryExecutionPoints('* await agent.prompt(x)')).toBe(0);
     expect(countEntryExecutionPoints('await agent.prompt(x);')).toBe(1);
     expect(countEntryExecutionPoints('await agent.promptStream(y, cb);')).toBe(1);
-    // web 入口已全部投递 (11 + 1 执行点), 另三条入口面尚未开始
-    const web = K5_PROGRESS.entrySites.filter((s) => s.file.startsWith('web/'));
-    expect(web.every((s) => s.total === s.wired)).toBe(true);
-    expect(K5_PROGRESS.entriesWired).toBe(1);
+    // 排除 receiver 名单是**数据**: 不排除时 `s.prompt(...)` 会被算成执行点; 排除后归 0 (它就是 UI 打印助手)
+    expect(countEntryExecutionPoints('s.prompt(`📩 ${x}`);')).toBe(1);
+    expect(countEntryExecutionPoints('s.prompt(`📩 ${x}`);', ['this', 's'])).toBe(0);
+    // 每条入口面的执行点都必须「登记 == 已投递」才能算完 (web / CLI / 子Agent·Supervisor 三条已完成)
+    const done = K5_PROGRESS.entrySites.filter((s) => s.total > 0 && s.total === s.wired);
+    expect(done.map((s) => s.file).sort()).toEqual(['agents/runner-resolver.ts', 'index.ts', 'web/routes-tasks.ts', 'web/server.ts']);
+    expect(K5_PROGRESS.entriesWired).toBe(3);
     // 判别力: 少包一处却把 wired 写大 ⇒ 红; 新增执行点不登记 ⇒ 红; wired > total ⇒ 红; 文件不在扫描面 ⇒ 红
     const first = K5_PROGRESS.entrySites[0];
     expect(scanEntryDelivery(sources, [{ ...first, wired: first.wired + 1 }])

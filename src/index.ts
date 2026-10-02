@@ -1,3 +1,5 @@
+import { deliverThroughActor } from './kernel/channel-actor.js';
+
 import {
 
 
@@ -1465,7 +1467,7 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
               new Promise<null>((res) => setTimeout(() => res(null), 8000)),
             ]);
             if (a && typeof (a as any).promptStream === 'function') {
-              llm = (p: string) => (a as any).promptStream(p, () => {}, undefined, cliActiveChannelId || undefined);
+              llm = (p: string) => deliverThroughActor(a, () => (a as any).promptStream(p, () => {}, undefined, cliActiveChannelId || undefined));
             }
           } catch { /* 无 agent → 仅扫描 */ }
         }
@@ -2210,7 +2212,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
             }
             (agent as any).setGoalId?.(req.goal.goalId);
             (agent as any).setContinuationGuards?.(req.guards || []);
-            await (agent as any).prompt(req.instruction);
+            await deliverThroughActor(agent, () => (agent as any).prompt(req.instruction));
             return { runId: (agent as any).getLastRunId?.() || (agent as any).getRunId?.(), status: 'done' };
           }
           : undefined;
@@ -3750,7 +3752,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     // 工具调用显示由 tui-shell 的 onStream handler 处理
 
     cliTurnStartedAt = Date.now(); cliTurnReplyBytes = 0; cliTurnToolCount = 0;
-      const response = await a.prompt(trimmed, {
+      const response = await deliverThroughActor(a, () => a.prompt(trimmed, {
       onStream: (e) => {
         // 2026-08-07: 中间思考/状态显示 — 之前只显示工具步骤, LLM 的思考过程
         //   (thinking / status / phase / Reflection) 全被丢弃 → 用户只能看到输入和最终输出
@@ -3848,7 +3850,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           }
         }
       }
-    });
+    }));
     // 智能体回复框
     appendLine(renderAgentMessage(response));
       try {
@@ -4324,7 +4326,7 @@ async function runToolCommand(
           error = response;
           break;
         }
-        response = await a.prompt(text);
+        response = await deliverThroughActor(a, () => a.prompt(text));
         break;
       }
 
@@ -4987,7 +4989,7 @@ async function runNonInteractive(
       await runToolCommand(tool, toolArgs, false, comm, args.model, prompt, args.goal);
     } else if (prompt) {
       const a = await getAgent();
-      writeOut(await a.prompt(prompt));
+      writeOut(await deliverThroughActor(a, () => a.prompt(prompt)));
     }
 
     console.log = originalLog;
@@ -5002,7 +5004,7 @@ async function runNonInteractive(
     const startTime = Date.now();
     const a = await getAgent();
     try {
-      const response = await a.prompt(prompt);
+      const response = await deliverThroughActor(a, () => a.prompt(prompt));
       const elapsed = Date.now() - startTime;
       if (json) {
         writeOut(JSON.stringify({ success: true, response, elapsedMs: elapsed }, null, 2));
@@ -5029,7 +5031,7 @@ async function runNonInteractive(
     const a = await getAgent();
     let response: string;
     try {
-      response = await a.prompt(prompt);
+      response = await deliverThroughActor(a, () => a.prompt(prompt));
     } catch (e: any) {
       response = `错误: ${e.message}`;
     }

@@ -16,6 +16,7 @@
  */
 
 import * as os from 'os';
+import { deliverThroughActor } from '../kernel/channel-actor.js';
 import * as path from 'path';
 import * as fsp from 'fs/promises';
 import { readGoal, type GoalRecord } from './goal-store.js';
@@ -233,7 +234,7 @@ export async function resolveGoalRunner(req: GoalExecutionRequest, opts: StagedR
     }
     agent.setGoalId?.(goal.goalId);
     agent.setContinuationGuards?.(r.guards || []);
-    const reply = await agent.prompt(r.instruction);
+    const reply = await deliverThroughActor(agent, () => agent.prompt(r.instruction));
     const runId = agent.getLastRunId?.() || agent.getRunId?.() || '';
     // 没有 Run = 这次执行没有事实记录: 如实报告, 不让上层把"没跑"当"跑完"
     if (!runId) {
