@@ -1402,3 +1402,16 @@ channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代�
 - **判据探针第二次搬家**: 棘轮判据的两条判别力用例 (bumped / shaved) 原锚在 `currentChannelId`, 该字段归零后又会命中 0 次 ⇒ 一起改锚到最后一个还没删的 `currentRunId`。
 - 账: `K5_ACCESSOR_SURFACE.currentChannelId 25 → 0` · K2 `accesses 25 → 0` · 总数 `63 → 38` · K5 移交 `25 → 0`。
 - 只剩 1 个 = 38 处 (`currentRunId`)。
+
+## 47. K5 步骤⑧ 批次 5 (收尾): `currentRunId` 访问器删除 —— 5 个访问器全部归零
+
+- pi-sdk 内 **38 处** (37 行) → `this.actor!.state.activeRun`; 访问器删除。**至此 pi-sdk 里 5 个 session 字段的访问器全清**
+  (`messageHistory` / `currentAgentId` / `currentGoalId` / `currentChannelId` / `currentRunId`), 129 处调用点全部改成直接读写本体。
+- **13 处外部命中全是 Goal 对象的同名字段** (`Goal.currentRunId`, 定义在 goal-store): `web/server.ts` · `goal-flywheel-wiring` ×5 · `goal-store` ×3 · `execution-supervisor` ×2 · `index.ts` ×1
+  ⇒ **一个都不许动**。这是"同名不同物"最大的一次 —— 只看名字会误伤 13 处。
+- **判据的夹具也要跟着换形态**: `scanRunIdSeed` 的播种模式原是 `runId: this.currentRunId,`, 源码改成读本体后该模式**命中 0** ⇒ 判据会假红。已把模式改成 `runId: this.actor!.state.activeRun` (语义不变: 恰好一处播种读取, 且在 `seedRunContext` 体内), 并把 `frozenTotal` 从 38 改成 **0** (名字已从 pi-sdk 消失)。
+- **棘轮判据的探针第三次重做**: 5 个字段全 0 之后, "从真实片段替换" 与 "减向 (count < frozen)" 都**失去前提**。按纪律把过时断言**改写成现在真正相信的性质**:
+  ① 探针改成"前置一行对已删字段的**假引用**" (判据是纯函数, 只吃文本, 不需要真实锚点) ⇒ 计数 0→1 必须红;
+  ② "减向"断言删除并写明原因 (0 不可能更少, 该方向在归零后无前提) —— 保留"缺失冻结值 ⇒ 红"与"盘上=台账"两条。
+- 账: `K5_ACCESSOR_SURFACE` 5 项**全部为 0** · K2 `accesses 38 → 0` · **`RUN_CONTEXT_ACCESS_TOTAL = 0`** (8 个字段全部迁出 Pi) · K5 移交字段 `38 → 0`。
+- K5 删除前置第 ⑥ 条 ("Pi 的字段访问只剩推理所需的临时变量") 现在有了**可数的证据**: 5 个字段在 pi-sdk 侧 0 引用。

@@ -45,7 +45,7 @@ export const RUN_CONTEXT_FIELDS: readonly RunStateField[] = [
   { name: 'currentOnStream', declaredAt: 'agents/pi-sdk.ts:442', scope: 'run', accesses: 0, into: 'eventSink', migrated: true, payDownIn: 'K2' },
   { name: 'currentSignal', declaredAt: 'agents/pi-sdk.ts:443', scope: 'run', accesses: 0, into: 'abortSignal', migrated: true, payDownIn: 'K2' },
   { name: 'currentChannelId', declaredAt: '(已删, 见 K5 步骤⑧ 批次4)', scope: 'session', accesses: 0, into: 'channelId', migrated: false, payDownIn: 'K2' },
-  { name: 'currentRunId', declaredAt: 'agents/pi-sdk.ts:471', scope: 'run-boundary', accesses: 38, into: 'runId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentRunId', declaredAt: '(已删, 见 K5 步骤⑧ 批次5)', scope: 'run-boundary', accesses: 0, into: 'runId', migrated: false, payDownIn: 'K2' },
   { name: 'currentIntent', declaredAt: 'agents/pi-sdk.ts:463', scope: 'run', accesses: 0, into: 'intent', migrated: true, payDownIn: 'K2' },
   { name: 'currentGoalId', declaredAt: '(已删, 见 K5 步骤⑧ 批次3)', scope: 'session', accesses: 0, into: 'goalId', migrated: false, payDownIn: 'K2' },
   { name: 'currentAgentId', declaredAt: '(已删, 见 K5 步骤⑧ 批次2)', scope: 'session', accesses: 0, into: 'agentId', migrated: false, payDownIn: 'K2' },
@@ -55,7 +55,7 @@ export const RUN_CONTEXT_FIELDS: readonly RunStateField[] = [
 export const RUN_CONTEXT_TARGET: readonly string[] = ["requestId", "channelId", "agentId", "goalId", "runId", "intent", "modelSnapshot", "history", "abortSignal", "budget", "eventSink", "harnessContext"];
 
 /** 冻结总量 (棘轮只许减) */
-export const RUN_CONTEXT_ACCESS_TOTAL = 38;
+export const RUN_CONTEXT_ACCESS_TOTAL = 0;   // 批次5: 8 个字段全部迁出 ⇒ Pi 侧 0 处访问
 
 /** 已外置字段数 (棘轮: 只许增)。改动这里 = 明确宣告"又搬完一个字段" */
 export const RUN_CONTEXT_MIGRATED_FROZEN = 3;
@@ -132,7 +132,7 @@ export const RUN_CONTEXT_REMAINING_NOTE = 'remaining 4: agentId/channelId/messag
  */
 export const CURRENT_RUN_ID_SEED_READS = 1;
 export const CURRENT_RUN_ID_SEED_SITES = 2;
-export const CURRENT_RUN_ID_SEED_NOTE = 'run-boundary 播种 (口径=判据同款/匹配次数): 37 历史 + 1 播种 = 38; 播种只在 seedRunContext 内, 循环内不得新增读取点';
+export const CURRENT_RUN_ID_SEED_NOTE = 'run-boundary 播种 (口径=判据同款/匹配次数): 批次5 后 pi-sdk 侧 currentRunId = 0 处 (名字已不存在); 播种读取只剩 seedRunContext 内一处, 读的是本体 actor.state.activeRun';
 
 /**
  * **K2 验收标准 (leo 2026-10-02 修订 —— 把 history 并发隔离移出)**

@@ -41,12 +41,14 @@ const PI_SRC_TEXT = fs.readFileSync(path.join(SRC, 'agents/pi-sdk.ts'), 'utf-8')
 const JUDGE_NAMES = Object.keys(gateScan).filter((k) => k.startsWith('scan'));
 
 describe('K5 步骤⑧ 门: 访问器棘轮 + 前置背书', () => {
-  it('★ 判据: pi-sdk 对已迁字段访问器的引用数 == 台账 (增=回退, 减=改了盘没改账)', () => {
+  it('★ 判据: pi-sdk 对已迁字段访问器的引用数 == 台账 (全 0; 任何一处引用都判红)', () => {
     expect(scanAccessorSurface(PI_SRC_TEXT, K5_ACCESSOR_SURFACE)).toEqual([]);
-    const bumped = PI_SRC_TEXT.replace(/(\n\s*private get currentRunId)/, '\n    const _x = this.currentRunId;$1');
+    // 批次5 后 5 个访问器全删 ⇒ 探针改成注入一处**对已删字段的假引用** (计数 0 → 1 ⇒ 必须红)
+    // 判据是**纯函数** (只吃源码文本) ⇒ 直接前置一行假引用即可, 不必依赖任何真实锚点
+    const bumped = 'const _x = this.currentRunId;\n' + PI_SRC_TEXT;
     expect(scanAccessorSurface(bumped, K5_ACCESSOR_SURFACE).length).toBeGreaterThan(0);
-    const shaved = PI_SRC_TEXT.replace('this.currentRunId', 'this.actor!.state.activeRun');
-    expect(scanAccessorSurface(shaved, K5_ACCESSOR_SURFACE).some((f: any) => f.what.includes('盘上变了账没跟上'))).toBe(true);
+    // "减向"在归零后**无前提** (0 不可能更少) ⇒ 改写成归零后真正相信的那条性质: 任何一处引用都判红
+    expect(scanAccessorSurface(PI_SRC_TEXT + '\nconst __leak = this.currentChannelId;\n', K5_ACCESSOR_SURFACE).length).toBe(1);
     expect(scanAccessorSurface(PI_SRC_TEXT, { accessorFields: ['messageHistory'], frozenInPiSdk: {} }).length).toBe(1);
   });
 
@@ -435,18 +437,18 @@ describe('K5 门: Channel Actor 台账', () => {
     const s: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5run:s1' });
     expect(s.actor).toBeTruthy();
     expect(s.actor.state.activeRun).toBe('');
-    s.currentRunId = 'run-x';                              // 写入落 actor
+    s.actor.state.activeRun = 'run-x';                              // 写入落 actor
     expect(s.actor.state.activeRun).toBe('run-x');
     s.actor.state.activeRun = 'run-y';                     // 直改 actor ⇒ 实例读得到 (同一个值)
-    expect(s.currentRunId).toBe('run-y');
+    expect(s.actor.state.activeRun).toBe('run-y');
     // 播种读取 (K2 的唯一入口) 必须读到 actor 里的值 —— 它是 e2e 的 runId 来源
     expect(s.seedRunContext().runId).toBe('run-y');
     // 无身份的会话走**私有 actor** (步骤⑧), 行为不变
     const plain: any = await createAgentSession({ cwd: process.cwd() }, true);
     expect(plain.actor).toBeTruthy();
     expect(plain.actor).not.toBe(s.actor);             // 私有 ⇒ 与有身份的 actor 不是同一个
-    plain.currentRunId = 'run-local';
-    expect(plain.currentRunId).toBe('run-local');
+    plain.actor.state.activeRun = 'run-local';
+    expect(plain.actor.state.activeRun).toBe('run-local');
     expect(plain.seedRunContext().runId).toBe('run-local');
     resetActors();
   }, 90000);

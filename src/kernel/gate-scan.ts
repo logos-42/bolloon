@@ -574,12 +574,13 @@ export function scanRunIdSeed(
 ): Finding[] {
   const out: Finding[] = [];
   const code = files.map((f) => f.text.split('\n').map(stripLineComment).join('\n')).join('\n');
-  const total = (code.match(/this\.currentRunId\b/g) || []).length;
+  const total = (code.match(/this\.currentRunId\b/g) || []).length;   // 批次5 后应为 0 (名字已从 pi-sdk 消失)
   if (total !== opts.frozenTotal) {
     out.push({ rule: 'runid-access-drift', file: 'agents/pi-sdk.ts', line: 1, what: `currentRunId 实测 ${total} 处 ≠ 冻结 ${opts.frozenTotal} (循环内不得新增读取点; 减少也要下调台账)` });
   }
   const helper = extractSeedHelper(code);
-  const seedInHelper = (helper.match(/runId: this\.currentRunId\b/g) || []).length;
+  // 批次5: 播种读取读的是**本体** (actor.state.activeRun) —— 语义不变 (仍是"恰好一处, 且在播种体内")
+  const seedInHelper = (helper.match(/runId: this\.actor!\.state\.activeRun\b/g) || []).length;
   const seedAnywhere = (code.match(/runId: this\.currentRunId\b/g) || []).length;
   if (seedInHelper !== opts.seedReads) {
     out.push({ rule: 'runid-seed-count', file: 'agents/pi-sdk.ts', line: 1, what: `seedRunContext 体内播种读取 ${seedInHelper} 处 ≠ 冻结 ${opts.seedReads}` });

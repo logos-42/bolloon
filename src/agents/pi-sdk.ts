@@ -526,7 +526,7 @@ export class PiAgentSession implements AgentSession {
    *   · K5 Channel Actor 完成后改为 `createRunContext({ runId: request.resumeRunId })`, 届时删除 `currentRunId` 字段本体。
    */
   private seedRunContext(extra: Partial<RunContext> = {}): RunContext {
-    return createRunContext({ runId: this.currentRunId, ...extra });
+    return createRunContext({ runId: this.actor!.state.activeRun, ...extra });
   }
 
   /**
@@ -583,13 +583,7 @@ export class PiAgentSession implements AgentSession {
    *   本注释刻意不写出"带 self. 前缀 + 该字段名"的那种字面形态: K2 的计数只剥 `//` 行注释,
    *   块注释里的同形串会被算进去 (同类踩过三次, 每次都被门照出)。
    */
-  private get currentRunId(): string {
-    return this.actor!.state.activeRun;
-  }
-
-  private set currentRunId(v: string) {
-    this.actor!.state.activeRun = v;
-  }
+  // **K5 步骤⑧ 批次5 (收尾)**: currentRunId 访问器已删 —— Run 身份的本体是 `actor.state.activeRun`, 直接读写本体。
   /** 上一次运行的 runId (收尾不清空; 见 getLastRunId) */
   private lastRunId: string = '';
   private runSurface: RunSurface = 'cli';
@@ -1905,12 +1899,12 @@ ${await this.renderActivePlansSection()}
    * 这是"错误恢复闭环"的运行时接线点 (此前 recordRecovery / repeatedFailureCount 只是数据结构)。
    */
   private async wireToolFailure(tool: string, errorText: string, args: unknown): Promise<void> {
-    if (!this.currentRunId) return;
+    if (!this.actor!.state.activeRun) return;
     const cls = classifyRunError(errorText);
     const digest = argsDigestOf(args);
     let repeats = 1;
     try {
-      const rec = await readRun(this.currentRunId);
+      const rec = await readRun(this.actor!.state.activeRun);
       // recordStep 已经把**这次**失败记进去了, 所以"连续失败次数"直接就是当前值 (不再 +1)
       const seen = rec ? repeatedFailureCount(rec, tool, digest) : 0;
       repeats = Math.max(seen, 1);
@@ -1921,7 +1915,7 @@ ${await this.renderActivePlansSection()}
         : cls === 'external_no_reply' ? 'pause'
           : 'retry';
     try {
-      await recordRecovery(this.currentRunId, {
+      await recordRecovery(this.actor!.state.activeRun, {
         errorClass: cls,
         message: `${tool}: ${errorText}`.slice(0, 200),
         action,
@@ -1929,20 +1923,20 @@ ${await this.renderActivePlansSection()}
         recovered: false,
       });
     } catch (err) {
-      await recordDegradation({ kind: 'core', op: 'pi-sdk.recordRecovery', runId: this.currentRunId, message: String((err as Error)?.message || err) }).catch(() => {});
+      await recordDegradation({ kind: 'core', op: 'pi-sdk.recordRecovery', runId: this.actor!.state.activeRun, message: String((err as Error)?.message || err) }).catch(() => {});
     }
 
     // 外部无响应 → awaiting_external (不算失败; 等回话后回到 running)
     if (cls === 'external_no_reply') {
       this.awaitingExternal = true;
-      await this.safeSetRunStatus(this.currentRunId, 'awaiting_external');
+      await this.safeSetRunStatus(this.actor!.state.activeRun, 'awaiting_external');
       // 2026-09-16 (2-C.4): 把"在等什么"写成持久化事实 (来源/关联/过期), 否则真实回包到了也不知道该唤醒谁。
       try {
         if (this.actor!.state.goalBinding) {
           const { bindExternalWait, newContinuationId, defaultWaitExpiry } = await import('./external-events.js');
           const isDelegate = /delegate/i.test(String(tool || ''));
           await bindExternalWait(this.actor!.state.goalBinding, {
-            requestId: this.pendingExternalRequestId || `${this.currentRunId}:${Date.now().toString(36)}`,
+            requestId: this.pendingExternalRequestId || `${this.actor!.state.activeRun}:${Date.now().toString(36)}`,
             continuationId: newContinuationId(this.actor!.state.goalBinding),
             expectedSource: isDelegate ? 'delegate' : 'p2p',
             expectedEvent: 'result',
@@ -1952,25 +1946,25 @@ ${await this.renderActivePlansSection()}
           });
         }
       } catch (e) {
-        await recordDegradation({ kind: 'core', op: 'pi-sdk.bindExternalWait', runId: this.currentRunId, message: String((e as Error)?.message || e) }).catch(() => {});
+        await recordDegradation({ kind: 'core', op: 'pi-sdk.bindExternalWait', runId: this.actor!.state.activeRun, message: String((e as Error)?.message || e) }).catch(() => {});
       }
       return;
     }
     // 鉴权类: 不重试, 直接交人
     if (cls === 'auth') {
       this.breakerReason = `鉴权类错误不重试 (${tool}): ${errorText.slice(0, 120)}`;
-      await this.safeSetRunStatus(this.currentRunId, 'needs_human');
+      await this.safeSetRunStatus(this.actor!.state.activeRun, 'needs_human');
       return;
     }
     // 重复失败熔断: 同一工具 + 同一组参数连续失败达 3 次
     if (repeats >= MAX_SAME_TOOL_FAILURES) {
       this.breakerReason = `同一工具 ${tool} 连续失败 ${repeats} 次 (${cls}) → 熔断, 不再重试`;
-      await this.safeSetRunStatus(this.currentRunId, 'needs_human');
+      await this.safeSetRunStatus(this.actor!.state.activeRun, 'needs_human');
     }
   }
 
   getRunId(): string {
-    return this.currentRunId;
+    return this.actor!.state.activeRun;
   }
 
   /**
@@ -1978,7 +1972,7 @@ ${await this.renderActivePlansSection()}
    * 而 Supervisor / 控制面要在运行结束后才知道"刚才跑的是哪条 run" (否则会拿旧 run 做决策)。
    */
   getLastRunId(): string {
-    return this.lastRunId || this.currentRunId;
+    return this.lastRunId || this.actor!.state.activeRun;
   }
 
   /**
@@ -2041,7 +2035,7 @@ ${await this.renderActivePlansSection()}
         // pre-tool-validator 4 步链 (modeGate/blacklist/shell-guard/schema), 经 human-value-pipeline 包装
         preToolUse: async (o) => onPreToolUse({ tool: o.tool, args: o.args, permissionMode: o.permissionMode as any }),
         // 事件写 Run: 观测级 (记账失败不改变已做出的决策)
-        events: (e) => { if (this.currentRunId) void recordHarnessEvent(this.currentRunId, e); },
+        events: (e) => { if (this.actor!.state.activeRun) void recordHarnessEvent(this.actor!.state.activeRun, e); },
       });
     }
     return this._harness;
@@ -2050,7 +2044,7 @@ ${await this.renderActivePlansSection()}
   /** 每个生命周期事件都带上的运行身份 (runId / goalId / agentId / channelId / surface) */
   private harnessCtx(): HarnessRunContext {
     return {
-      runId: this.currentRunId || undefined,
+      runId: this.actor!.state.activeRun || undefined,
       goalId: this.actor!.state.goalBinding || undefined,
       agentId: this.actor!.state.agentId || undefined,
       channelId: this.actor!.state.channelId || undefined,
@@ -2126,16 +2120,16 @@ ${await this.renderActivePlansSection()}
 
     if (this.resumeRunId) {
       // ── 恢复模式: 复用原来的 runId, 不新建 run (历史保留) ──
-      this.currentRunId = this.resumeRunId;
+      this.actor!.state.activeRun = this.resumeRunId;
       this.lastRunId = this.resumeRunId;
       try {
-        await markRunRunning(this.currentRunId);
+        await markRunRunning(this.actor!.state.activeRun);
       } catch (err) {
         runPersistenceFailure = `恢复时状态迁移失败 (recovering → running): ${String((err as Error)?.message || err).slice(0, 180)}`;
       }
       const doneN = this.resumePlan?.completedSteps.length ?? 0;
       const guards = this.resumePlan?.replayGuards.length ?? 0;
-      onStream?.({ type: 'status', internal: true, content: `♻️ 从 checkpoint 恢复运行 ${this.currentRunId} (已完成 ${doneN} 步, 非幂等重放守卫 ${guards} 条)`, tool: 'harness' });
+      onStream?.({ type: 'status', internal: true, content: `♻️ 从 checkpoint 恢复运行 ${this.actor!.state.activeRun} (已完成 ${doneN} 步, 非幂等重放守卫 ${guards} 条)`, tool: 'harness' });
     } else {
       // 2026-09-16 (M2): 目标绑定 —— 有 goalId 就在该 Goal 下执行; 没有就建 Goal 再建 Run。
       //   延续规则 (确定性, 不靠猜): 该 channel/agent 上已有 open/active Goal, 且它的上一次执行**没收尾**
@@ -2173,7 +2167,7 @@ ${await this.renderActivePlansSection()}
           agentId: this.actor!.state.agentId || undefined,
           modelConfig: await this.runModelSnapshot(),
         });
-        this.currentRunId = rec.runId;
+        this.actor!.state.activeRun = rec.runId;
         this.lastRunId = rec.runId;
         this.actor!.state.goalBinding = rec.goalId || this.actor!.state.goalBinding;
         if (this.actor!.state.goalBinding) {
@@ -2213,17 +2207,17 @@ ${await this.renderActivePlansSection()}
       }
 
       // 2026-09-16: 预算闸门 (持久化 harness 的约束面) —— 到点必须**如实**终止, 不许静默算完成
-      if (this.currentRunId) {
+      if (this.actor!.state.activeRun) {
         try {
-          const rec = await readRun(this.currentRunId);
-          if (!rec) throw new Error(`运行记录读不到: ${this.currentRunId}`);
+          const rec = await readRun(this.actor!.state.activeRun);
+          if (!rec) throw new Error(`运行记录读不到: ${this.actor!.state.activeRun}`);
           // 2026-09-16 (M5): 外部控制面 (CLI /pause /abort, Web API) 改过状态 → 如实停在那儿。
           //   不覆盖成 done/failed: 人按下暂停就是暂停, 人按下中止就是中止。
           if (rec.status === 'paused' || rec.status === 'aborted') {
             runExternallyPaused = rec.status === 'paused';
             runExternallyAborted = rec.status === 'aborted';
             runStopReason = `外部请求: ${rec.status}`;
-            onStream?.({ type: 'error', content: `⏹️ 运行被外部${rec.status === 'paused' ? '暂停' : '中止'} (run=${this.currentRunId})`, tool: 'harness' });
+            onStream?.({ type: 'error', content: `⏹️ 运行被外部${rec.status === 'paused' ? '暂停' : '中止'} (run=${this.actor!.state.activeRun})`, tool: 'harness' });
             finalResponse = finalResponse || `(运行已${rec.status === 'paused' ? '暂停' : '中止'})`;
             break;
           }
@@ -2727,18 +2721,18 @@ ${await this.renderActivePlansSection()}
           console.log(`[PiAgent] 工具 ${toolCall.name} 执行完成: success=${result.success} (${toolDurationMs}ms)`);
 
           // 2026-09-16 (M3): 失败接线 —— 分类 + recovery 留痕 + 熔断 / 外部等待
-          if (!result.success && this.currentRunId && !replaySkip) {
+          if (!result.success && this.actor!.state.activeRun && !replaySkip) {
             await this.wireToolFailure(toolCall.name, String(result.error || ''), toolCall.args);
-          } else if (result.success && this.currentRunId && this.awaitingExternal) {
+          } else if (result.success && this.actor!.state.activeRun && this.awaitingExternal) {
             // 外部回话了: awaiting_external → running (不是"恢复完成", 只是等待结束)
             this.awaitingExternal = false;
-            await this.safeSetRunStatus(this.currentRunId, 'running');
+            await this.safeSetRunStatus(this.actor!.state.activeRun, 'running');
           }
 
           // 2026-09-16: 持久化 run harness — 每步工具调用立即落盘 (崩在这里也能看到做到哪步)
-          if (this.currentRunId) {
+          if (this.actor!.state.activeRun) {
             try {
-              await recordStep(this.currentRunId, {
+              await recordStep(this.actor!.state.activeRun, {
                 tool: toolCall.name,
                 ok: !!result.success,
                 ms: toolDurationMs,
@@ -3002,7 +2996,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
             userIntent: this.currentUserInput,
             completedTools: Array.from(loopReviewCompletedTools),
             actionLog: loopActionLog,
-            runId: this.currentRunId || undefined,
+            runId: this.actor!.state.activeRun || undefined,
             goalId: this.actor!.state.goalBinding || undefined,
           }, DEFAULT_MAX_REVIEWS);
           if (reviewDecision.kind === 'continue-review') {
@@ -3075,11 +3069,11 @@ lastQualityScore = this.estimateResponseQuality(reply);
     await this.piHarness().sessionEnd(this.harnessCtx());
 
     // 2026-09-16: 收尾落盘 — done / failed / aborted / needs_human 如实写回 (不留幽灵 running)
-    if (this.currentRunId && !runExternallyPaused && !runExternallyAborted) {
+    if (this.actor!.state.activeRun && !runExternallyPaused && !runExternallyAborted) {
       try {
         // 2026-09-16 (M4): 完成门 —— "模型说完成"不等于"系统确认完成"。
         //   证据 = 成功步骤的事实摘要; 末尾还有失败步骤没被后续成功覆盖 → 不许 done。
-        const recBefore = await readRun(this.currentRunId).catch(() => null);
+        const recBefore = await readRun(this.actor!.state.activeRun).catch(() => null);
         const steps = recBefore?.steps || [];
         const evidence = steps.filter((s) => s.ok).map((s) => `${s.tool}: ${(s.summary || '').slice(0, 120)}`).slice(-10);
         const lastStep = steps[steps.length - 1];
@@ -3101,7 +3095,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
                 : (trailingFailure || noEvidence)
                   ? 'failed'
                   : 'done';
-        await finishRun(this.currentRunId, {
+        await finishRun(this.actor!.state.activeRun, {
           status,
           summary: finalResponse ? String(finalResponse).slice(0, 400) : undefined,
           error: errText
@@ -3113,7 +3107,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
         // 终态也写不下去: 这是最坏情况 —— 除了留痕, 没有别的自愈手段, 所以必须显眼
         const message = `收尾落盘失败 (状态无法写回, 记录会停在 running): ${String((err as Error)?.message || err).slice(0, 200)}`;
         console.error('[PiAgent] run-store finishRun 失败 (核心持久化):', message);
-        await recordDegradation({ kind: 'core', op: 'pi-sdk.finishRun', runId: this.currentRunId, message }).catch(() => {});
+        await recordDegradation({ kind: 'core', op: 'pi-sdk.finishRun', runId: this.actor!.state.activeRun, message }).catch(() => {});
         onStream?.({ type: 'error', content: `⚠️ ${message}`, tool: 'harness' });
       }
 
@@ -3133,7 +3127,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
           const nowIso = new Date().toISOString();
           const closed = await wiring.closeRunOnce({
             goalId: this.actor!.state.goalBinding,
-            runId: this.currentRunId,
+            runId: this.actor!.state.activeRun,
             caller: 'runner',
             now: nowIso,
             finalReview: finalResponse ? String(finalResponse).slice(0, 2000) : '',
@@ -3168,14 +3162,14 @@ lastQualityScore = this.estimateResponseQuality(reply);
             onStream?.({ type: 'status', content: `🎯 ${closed.reason}`, tool: 'harness' });
           }
         } catch (err) {
-          await recordDegradation({ kind: 'observational', op: 'pi-sdk.runClosure', runId: this.currentRunId, message: String((err as Error)?.message || err).slice(0, 160) }).catch(() => {});
+          await recordDegradation({ kind: 'observational', op: 'pi-sdk.runClosure', runId: this.actor!.state.activeRun, message: String((err as Error)?.message || err).slice(0, 160) }).catch(() => {});
         }
       }
-      this.currentRunId = '';
-    } else if (this.currentRunId) {
+      this.actor!.state.activeRun = '';
+    } else if (this.actor!.state.activeRun) {
       // 外部暂停/中止: 状态是人定的, 不覆盖 (paused 等 /resume; aborted 是终态)
       onStream?.({ type: 'status', content: `⏹️ 运行状态保持为 ${runExternallyPaused ? 'paused' : 'aborted'} (由外部控制面决定)`, tool: 'harness' });
-      this.currentRunId = '';
+      this.actor!.state.activeRun = '';
     }
 
     // 2026-06-16: 暴露 aiFailed 标志 — promptStream 据此决定是否自动重试整个 loop

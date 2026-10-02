@@ -146,7 +146,7 @@ export const K5_DELETION_PRECONDITIONS: readonly { text: string; backedBy: reado
  */
 export const K5_ACCESSOR_SURFACE = {
   accessorFields: ['messageHistory', 'currentChannelId', 'currentAgentId', 'currentGoalId', 'currentRunId'],
-  frozenInPiSdk: { messageHistory: 0, currentChannelId: 0, currentAgentId: 0, currentGoalId: 0, currentRunId: 38 },
+  frozenInPiSdk: { messageHistory: 0, currentChannelId: 0, currentAgentId: 0, currentGoalId: 0, currentRunId: 0 },   // 批次5: 5 个访问器全部归零
   where: 'src/agents/pi-sdk.ts',
   why: '字段本体已删 (K5_FIELD_DELETION); 这些访问器只剩"读门面"作用 ⇒ 只许减',
 } as const;
