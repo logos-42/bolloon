@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-10-02 | fix | **Web 端回复不渲染的根因锁定并修复 (浏览器侧模块链顶层裸读 `process.env`) + 手机端 web 层跨树引用 (打包树外 ⇒ 404)** —— 症状: 页面能开、消息能发、LLM 真回了 (pi-ai 多次真调用), 但聊天气泡**全部不上屏**, 控制台**零报错**。**定位链**: 客户端 `MR_*` 包装器 → `_getMR()` 找不到 `window.MR` 就**静默 no-op** → 动态 `import('/ui/message-renderer.js')` 复现真因 **`ReferenceError: process is not defined at /agents/parse-tool-call.js:288`** (`src/agents/parse-tool-call.ts:271` 顶层 `process.env.BOLLOON_PARSE_DIAG`; 注释写着 **2026-10-01** 加的诊断开关 —— 与症状出现时间吻合) ⇒ 该模块在浏览器求值即崩 ⇒ 整条渲染链失效。**修**: `typeof process !== 'undefined'` 守卫 (解引用与守卫分离成两行, 顺带让静态门可判)。**门**: 新增 `src/test/web-module-browser-safety.test.ts` (入口**从 `src/web/index.html` 的 `<script src>` 推导**, 浏览器可达图内禁止未守卫的 Node 全局; **真变异**: 拆守卫⇒红 / 还原⇒绿) + `identity-and-diag-hygiene.test.ts ①` 按同一主张改写并加两条 (开关必须带守卫 / 不许裸读)。**真浏览器证据 (54188)**: 修前 `typeof window.MR === 'undefined'` → 修后 `window.MR` **9 个方法** · 历史 **54 条**上屏 · 用户气泡 + 回复「2 + 2 = 4。」+ 操作按钮 + 流式「开始思考...」全正常 · 换自洽包后二次回归回复「收到」正常。**手机端 (同源第二个洞)**: `dist/web/ui/message-renderer.js` 里 `import "../../agents/chat-segmenter.js"` 是**跨树引用** —— 桌面端因 `dist/agents/**` 恰好也被服务而能跑, 手机端只打包 `dist/web/**` (Capacitor webDir + build-mobile-web-bundle) ⇒ 404 且静默; **前后对照**: 旧包 `bolloon-web-fb60ccf5…`(2026-09-26) 跨树 import 在、目标不在包内 / 新包 `bolloon-web-a4c9733…` 无跨树 import · 14 个浏览器可达文件全部包内自洽。**修**: `ui/*.ts` 的 esbuild 开 `bundle:true` (`message-renderer` 对 `./step-timeline.js` 设 **external** —— 它由 index.html 单独加载, 内联会变**两份模块状态**) + `scripts/build-web.ts` 末尾加**自洽门** (从 4 个 HTML 做可达闭包, 断言相对引用落在 `dist/web` 内且存在; 范围刻意排除 `dist/web/server.js` 等服务端产物; JS 侧只认带扩展名的 ESM 说明符以免误报; 门红样例: `ui/message-renderer.js → ../../agents/chat-segmenter.js ⚠ 逃出 dist/web`)。**验证**: `tsc --noEmit` 0 错 · 聚焦 8/8 · 手机端 10 文件 **153/153 全绿** · CLI 端到端 0 次「LLM 不可用」真回复 · wiki 四门 OK。 | src/agents/parse-tool-call.ts · src/test/{web-module-browser-safety,identity-and-diag-hygiene}.test.ts · scripts/build-web.ts · dist/web/ui/*.js (产物) · docs/wiki/log.md |
 | 2026-10-02 | feat | **K6 收尾: provider fallback + usage 记录 ⇒ 能力 9/9, K6 收口** —— **fallback**: `snapshot.fallbackProviders` (只读, 来自 Run snapshot) ⇒ 候选 = 主 + 备用, 每个候选**建副本**不改原对象 (真跑断言原 snapshot 的 provider 与备用列表**一字未改**); 逐候选各过熔断门/并发槽/429 退避; 全失败 ⇒ 结果写明 `全部候选失败 (p1 → p2)`; **取消不回退** (abort 就是不要了)。**收尾暴露的真问题**: 第一版把所有失败收敛成结果对象 ⇒ **timeout / 熔断开路在单候选场合从"抛出"变成"返回失败"**, 调用方的 `catch (ModelTimeoutError/ModelCircuitOpenError)` 被静默废掉 (3 个既有用例当场红) ⇒ 定为规则: **时机类拒绝与超时的"抛"只在没有下一个候选时保留** (有下一个才回退)。**usage 记录**: `recordUsage` **端口注入** (内核不碰 RunStore, 落盘/入账属 K4 控制面), 成功与全失败都记一条 (真实 provider/ms/attempts/fallback/透传 usage), **端口抛错不许影响调用结果** (只记 `usageDropped`, 真跑专测)。**真跑 6 条**: 回退(只读+`opened=['p1','p2']`) · 无备用行为不变 · 全候选失败写明试过哪些 · 取消不回退 · usage 两向 · 429 用尽也可回退(限流不开路)。另: 判据用例"`capabilitiesDone=9` 应判红"在 9/9 后**恒真失效** ⇒ 换值构造 (同类第 6 次)。**验证**: 全量 **318 文件 / 4802 测试全绿** (+6) · tsc 0 错 · K3 棘轮 (代码 2475→2555) 当场拦后同步。 | src/kernel/model-runtime.ts · src/kernel/plan-modelruntime.ts · src/kernel/roster.ts · src/test/kernel-modelruntime.test.ts · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md |
 | 2026-10-02 | feat | **K6 第四步: 熔断 (三态) + 能力检查 (能力 5/9→7/9)** —— **熔断**: `BREAKER_POLICY` (阈值 3 · 冷却 30s · 半开探测 1) + 三态 (`closed→open→half-open→closed`, 半开探测失败即**重新开路并重新计时**) + 开路期内抛 `ModelCircuitOpenError` **不发起调用也不排队**; `countsTowardBreaker` 口径: **取消(调用方) ✗ · 429(交给退避) ✗ · 超时 ✓ · 其它故障 ✓**; `breakerStates()` 逐 key 只读诊断。**能力检查**: `acquire(snapshot, {require})` —— 缺能力拒 · **未声明 capabilities ⇒ 不许猜 (拒并写明"未知能力")** · **拒在开连接之前** (真跑断言 `opened===0`) · 冻结的 capabilities 数组跑完原样。**一处口径要点**: 端口自抛 `AbortError` 而运行时 signal 未取消 = 供应商侧中止 ⇒ **计入**熔断; 只有运行时 signal 被取消才归一化成 `ModelAbortError` 不计入 ⇒ "调用方取消不计入"的用例必须用**外部 signal** 制造 (第一版用端口自抛, 熔断被打开 —— 是**用例场景不真实**, 不是实现错)。**真跑 4 条**: 开路→快速失败(调用计数不涨)→冷却未到→放探测→闭合 · 半开失败重新开路 · 三类不计入(含 4 个纯函数断言) · 能力两向+连接零开销+冻结数组原样。**验证**: 全量 **318 文件 / 4796 测试全绿** (+4) · tsc 0 错 · K3 棘轮 (代码 2371→2475) 当场拦后同步。 | src/kernel/model-runtime.ts · src/kernel/plan-modelruntime.ts · src/kernel/roster.ts · src/test/kernel-modelruntime.test.ts · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md |
 | 2026-10-02 | feat | **K6 第三步: 多供应商并发 + 429 退避 (能力 3/9→5/9)** —— 两者是一对 (退避=何时让出通道, 并发=同时开几条), 分开做会出假通过。**交付**: 逐 key 并发槽 (`active`/`waiters`, 排队**可取消**且不发起到连接, 还槽**直接转让**) · `isRateLimited` (返回值 `status:429` 或抛带 status 的错都认) · **`BACKOFF_POLICY`** 写成数据 (200ms·×2·封顶 5000·**jitter ±25%**·maxRetries 3) + **`backoffDelayMs(n,{retryAfterMs,random})` 纯函数** (抖动可注入 ⇒ 可精确断言) + **尊重上游 Retry-After (取最大)** · 退避用注入 sleep ⇒ 用例不真等 · 退避期间取消立刻抛 · 用尽即如实失败"限流重试用尽 (N 次)"。**真跑抓到真 bug**: 槽"转让"后等待者又自增 ⇒ `active` 虚高 (实测运行时统计 2 vs 端口真实峰值 1) —— **两条证据并排才照出来** (只看运行时统计会误以为并发上限没生效; 只看端口计数则看不到运行时的账错了) ⇒ 转让路径置 `granted` 不再自增。**一个用例自身失效 (第 5 次同类)**: "退避期间取消"原本注入**瞬时 sleep** ⇒ 重试循环在 abort 前跑完, 用例绿着却什么都没验 ⇒ 给该用例真占时间的 sleep。**8 条真跑用例** (含退避序列 `[200,400]` 在 jitter 归零时精确断言 · 峰值 1 vs 3 · 排队者从未发起)。**验证**: 全量 **318 文件 / 4792 测试全绿** (+7) · tsc 0 错 · K3 棘轮 (代码 2230→2371) 当场拦后同步。 | src/kernel/model-runtime.ts · src/kernel/plan-modelruntime.ts · src/kernel/roster.ts · src/test/kernel-modelruntime.test.ts · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md |
@@ -534,6 +535,67 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+### [2026-10-02] fix | Web 端回复不渲染: 根因是浏览器侧模块链顶层裸读 `process.env`
+
+### 触发
+leo 明确要求「确保 Web 渲染回复成功」。现场症状: 页面能开 (标题/侧栏/控件齐全)、消息**能发** (`POST /message` 真 202)、LLM **真被调用** (服务端日志有多次 pi-ai 真调用)、服务端 SSE **真播了** `stream`/`ai`/`done` 事件 —— 但聊天区**一个气泡都没有**, 控制台**零报错**。
+
+### 定位链 (每一跳都有真证据, 不是猜)
+1. 服务端侧排除: 用 `curl` 挂 `/events?channelId=…` 边发消息边收 ⇒ 事件类型统计里 **`ai` 1 条 · `stream` 2 条 · `done` 1 条** ⇒ 服务端**有**广播, 不是后端不产出。
+2. 浏览器侧现象: 客户端自己的日志显示 `[SSE] 收到消息: ai channelId: …` **确实收到了** ⇒ 断在**渲染那一步**。
+3. DOM 证据: `#channel-messages-<id>` 存在、`display:block`、**childElementCount = 0**; 整页 `innerHTML` 里**找不到**刚发的用户文本; `Node.prototype.appendChild` 上的探针**一次都没被调用** ⇒ `addMessage()` 连**用户气泡**都没上屏。
+4. 走到包装器: `src/web/client.ts:37` 是 `const MR_addMessage = (...args) => _getMR().addMessage?.(...args);`, 而 `_getMR()` 在拿不到 `window.MR` 时**返回 `{}`** ⇒ 所有 `MR_*` 变成**静默 no-op** (不报错、不打日志)。
+5. 抓真因: 页面里动态 `import('/ui/message-renderer.js')` ⇒
+   ```
+   IMPORT FAILED: ReferenceError: process is not defined
+       at http://127.0.0.1:54188/agents/parse-tool-call.js:288
+   ```
+   模块链是 `/ui/message-renderer.js → /agents/chat-segmenter.js → /agents/parse-tool-call.js`, 最后那个文件**顶层**读 `process.env`, 浏览器没有 `process` ⇒ **模块求值即崩** ⇒ `window.MR` 永不挂载。
+6. 与时间吻合: 该行注释写着 **2026-10-01** 加的「诊断开关默认关」, 正是回复开始不渲染的时间点。
+
+### 修 (一处源头, 但按"一类"审)
+- `src/agents/parse-tool-call.ts`: `const _parseEnv = typeof process !== 'undefined' ? process.env : undefined;` + 解引用该变量的第二行 —— **守卫与解引用分离**成两行, 这样静态门可以按行判定 (第一版写成续行, 被自己的门当场判红, 已改)。
+- 全仓扫过: 浏览器可达图**只有这一处**未守卫 (另有 `client.ts` 一处早已写成 `typeof process !== 'undefined' && …`, 保留其形)。
+
+### 门 (防复发, 且门是承重的)
+- 新增 `src/test/web-module-browser-safety.test.ts`:
+  - 入口**从 `src/web/index.html` 的 `<script src>` 推导** (不写死清单 —— 页面加脚本, 门自动跟上);
+  - 从入口做**可达闭包**, 断言图里没有任何**未守卫**的 Node 全局 (`process.*` / `require(` / `__dirname` / `__filename` / `Buffer.from`); 守卫形态 = 行内出现 `typeof process|require|window|globalThis|self`;
+  - 扫描面为空或 import 断裂 ⇒ **拒跑** (红), 不静默通过;
+  - **真变异**: 把守卫拆掉 ⇒ 门红 (2 用例失败); 还原 ⇒ 门绿 (3/3)。
+- `src/test/identity-and-diag-hygiene.test.ts ①` 原用**字面串**钉死 `process.env.BOLLOON_PARSE_DIAG === '1'`, 守卫改写后字面串不再连续 ⇒ 按**同一主张**改写 (开关仍须默认关 / 打印仍在 `if (PARSE_DIAG_ON) try {` 之内), 并**加两条**: 必须带 `typeof process` 守卫、不许 `const PARSE_DIAG_ON = process.env…`。
+
+### 真浏览器证据 (127.0.0.1:54188)
+| 项 | 修前 | 修后 |
+| `typeof window.MR` | `undefined` | `object` (9 个方法, `addMessage` 是函数) |
+| `import('/ui/message-renderer.js')` | `ReferenceError: process is not defined` | `OK` |
+| 历史消息 | 0 (空白) | **54 条**上屏, 渠道名从 `undefined` 恢复为 `real test msg` |
+| 用户气泡 | 无 | ✓ |
+| AI 回复 | 无 | ✓「2 + 2 = 4。」+ 复制/蒸馏为判断/重新回答 |
+| 流式 | 无 | ✓「🤔 开始思考...」出现并收尾 |
+
+### 手机端: 同源的第二个洞 (跨树引用)
+`dist/web/ui/message-renderer.js` 里 `import "../../agents/chat-segmenter.js"` —— **跨树引用**。桌面端因为服务端**恰好也服务 `dist/agents/**`** 所以能跑; 手机端只打包 `dist/web/**` (Capacitor `webDir` + `scripts/build-mobile-web-bundle.ts`) ⇒ 手机上**404**, 而**模块加载失败是静默的** ⇒ 手机界面同样不渲染。
+- **前后对照 (同一个检查, 两个真包)**: 旧包 `bolloon-web-fb60ccf5…tar.gz` (2026-09-26) ⇒ `跨树 import: ['../../agents/chat-segmenter.js']`, **包里不存在该目标**; 新包 `bolloon-web-a4c9733…tar.gz` (本轮) ⇒ **无跨树 import** · `ui/message-renderer.js` 挂 `window.MR` ✓ · 14 个浏览器可达文件的相对引用**全部在包内**。
+- **修**: `scripts/build-web.ts` 里 `message-renderer.ts`/`step-timeline.ts` 的 esbuild 开 `bundle:true`; `message-renderer` 对 `./step-timeline.js` 设 **`external`** —— 它由 `index.html` 单独加载, 内联会变成**两份模块状态** (时间线状态分叉)。
+- **门**: `scripts/build-web.ts` 末尾的**自洽门** —— 从 `index.html`/`mobile.html`/`explorer.html`/`api-config.html` 做可达闭包, 断言每个相对引用的目标 (a) 落在 `dist/web` 内 (b) 存在; 范围**刻意排除** `dist/web/server.js` 等 `build:main` 的服务端产物 (它们引用 `../agents/**` 是合法 Node 依赖); JS 侧**只认带扩展名的 ESM 说明符** (浏览器规范) 以免把代码里的示例字符串当 import 误报 (第一版误报 4 处, 已收窄)。门红时的真实输出样例:
+  ```
+  [build-web] ✗ 浏览器资源不自洽 —— 1 处相对引用在 dist/web 里找不到:
+      ui/message-renderer.js → ../../agents/chat-segmenter.js   ⚠ 逃出 dist/web (手机上必 404)
+  ```
+
+### 验证 (本轮真跑)
+- `npx tsc --noEmit` **0 错**; 聚焦测试 **8/8**; 手机端 10 个测试文件 **153/153 全绿**。
+- CLI 端到端: `node dist/cli-entry.js --prompt …` **0 次「LLM 不可用」**, 真回复 (deepseek-flash)。
+- `npm run build:web` 通过且**自洽门绿**; 手机端 dev 包解包后自洽检查通过。
+- wiki 四门: `wiki_check` / `wiki_lint --strict=v2` / `raw_manifest_check` / `supersede_check` 全 OK。
+- 提交: `a4c9733` (process 守卫 + 两类门) · `594d1d5` (bundle + 自洽门)。
+
+### 未做 / 如实
+- 手机端**真机/模拟器未跑** (本轮验到"产物自洽 + 手机端测试全绿 + 桌面同产物渲染正常"); 真机验收仍待装机。
+- `dist/web/server.js` 等服务端文件留在 `dist/web/` 是既有布局 (本门已划清范围), 未清理。
+- 本轮的 mobile dev 包身份 `0.5.5+dev.a4c9733` **会被手机端拒装** (本地 sha ≠ GitHub master HEAD, 因为还没 push) —— 属设计如此, push 后重打即可。
+
 ### [2026-10-02] test | K1-f: constraint-runtime 自带的测试接进默认套件
 
 **发现**: K1 完成标准里的「现有 constraint-runtime 测试继续全绿」**当时是空话** —— CR 自带 4 个测试 (117 行),
