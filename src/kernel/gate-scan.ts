@@ -1481,8 +1481,9 @@ export interface RunStateLedgerLike {
   file: string;
   symbol: string;
   sites: number;
-  fields: readonly { name: string; role: string; replacedBy?: string; note?: string }[];
+  fields: readonly { name: string; role: string; replacedBy?: string; note?: string; prerequisite?: string }[];
   plan: string;
+  prerequisite?: string;
 }
 
 export interface RunStateProgressLike { runStateSites?: number }
@@ -1523,5 +1524,15 @@ export function scanRunStateConsolidation(
 
   // ③ 计划必须有 (别只登记不动手)
   if ((ledger.plan ?? '').trim().length < 10) f('缺迁移计划 (台账不能只登记)');
+
+  // ④ 收口**前置**必须有, 且要点到机制 —— 否则下一个人会裸删字段把串行性搞坏
+  const pre = (ledger.prerequisite ?? '').trim();
+  if (pre.length < 20) f('缺收口总前置 (哪些字段不能裸删 / 为什么)');
+  else if (!pre.includes('getChannelQueue')) f('收口总前置必须点到机制 (`getChannelQueue`) ⇒ 否则只是空话');
+  for (const fld of ledger.fields) {
+    if (typeof fld.prerequisite === 'string' && fld.prerequisite.trim().length < 10) {
+      f(`字段 ${fld.name} 的 prerequisite 太短 (要写清先满足什么)`);
+    }
+  }
   return out;
 }

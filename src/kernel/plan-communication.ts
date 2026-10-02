@@ -182,7 +182,25 @@ export interface K8RunStateField {
   replacedBy?: string;
   /** role ≠ k8-target 时**必须**写为什么不算 (不许静默豁免) */
   note?: string;
+  /** 收口**前置**: 必须先满足什么才能删/搬这个字段 (没有它就等于埋雷) */
+  prerequisite?: string;
 }
+
+/**
+ * `channelRunState` 收口的**总前置** (2026-10-02 量出, 必须写在代码旁边而不是只写在提交里)。
+ *
+ * 为什么: `running` 同时是**主路径内联跑**与**排队路径**的串行权威。内核邮箱只认识"投给它的任务" ——
+ * 若只把排队项投进邮箱而主路径仍内联跑, 邮箱会在内联跑还没结束时**立刻起跑**排队项
+ * ⇒ 同一 channel **两条 run 并行** ⇒ 串行性被破坏 (K5 的"同通道串行"承诺失效)。
+ * 所以删 `queue`/`running` 的**前置**是: 主路径内联跑自己也进邮箱 (`await getChannelQueue(id).submit(...)`)。
+ *
+ * 另附一条**实测缺陷** (不是设计意图, 是真 bug): 主路径的 `if (runState.running) { 入队 } else { running = true }`
+ * 中间夹着多个 `await` ⇒ **check-then-set 不是原子的** ⇒ 两个并发 `/message` 可能**都**通过检查
+ * ⇒ 同通道双开 (串行性有洞)。修它需要把"检查+占位"做成原子 (邮箱天然提供), 这正是收口要解决的问题。
+ */
+export const K8_RUNSTATE_PREREQUISITE =
+  '主路径内联跑必须先进内核邮箱 (`await getChannelQueue(channelId).submit(...)`) 才能删 `queue`/`running`: ' +
+  '否则邮箱会与内联跑并行起跑排队项, 同通道双开 (K5 串行承诺失效)。另: 现有 check-then-set 夹在 await 之间 ⇒ 已存在并发双开洞。';
 
 export interface K8RunStateLedger {
   file: string;
@@ -191,6 +209,8 @@ export interface K8RunStateLedger {
   sites: number;
   fields: readonly K8RunStateField[];
   plan: string;
+  /** 收口的**总前置** (缺失 ⇔ 有人会裸删字段把串行性搞坏) */
+  prerequisite?: string;
 }
 
 export const K8_CHANNEL_RUNSTATE: K8RunStateLedger = {
@@ -199,9 +219,11 @@ export const K8_CHANNEL_RUNSTATE: K8RunStateLedger = {
   sites: 21,   // 2026-10-02 量: 剥注释后 21 处 (总出现 25, 含 4 处注释)
   fields: [
     { name: 'running', role: 'k8-target',
-      replacedBy: '`ChannelActor.mailbox` 的同键串行 —— 有了内核邮箱就不需要通道自己记"我在跑"' },
+      replacedBy: '`ChannelActor.mailbox` 的同键串行 —— 有了内核邮箱就不需要通道自己记"我在跑"',
+      prerequisite: '见 `K8_RUNSTATE_PREREQUISITE`: 主路径内联跑先进邮箱, 否则跨路径并行' },
     { name: 'queue', role: 'k8-target',
-      replacedBy: '内核邮箱的 `pending` (队列交给内核, 通道只递请求)' },
+      replacedBy: '内核邮箱的 `pending` (队列交给内核, 通道只递请求)',
+      prerequisite: '同 `K8_RUNSTATE_PREREQUISITE`; 另: `broadcastQueueUpdate` 的 `queueLength` 口径要显式映射 (邮箱 pending 含"正在跑的那条", 旧的 queue.length 不含)' },
     { name: 'abortController', role: 'k8-target',
       replacedBy: '`ExecutionRequest.signal` (K5 步骤⑦ 的请求面已有 `signal`) —— ⚠️ **abort 语义要单独定**, 不随队列一起顺手合并' },
     { name: 'lastSteps', role: 'observational', note: '供 `/api/loop/inspect` 的步骤累积 ⇒ 观测数据, 不是调度状态' },
@@ -211,4 +233,5 @@ export const K8_CHANNEL_RUNSTATE: K8RunStateLedger = {
     { name: 'remoteFollowup', role: 'domain-collab', note: '远端协作续看 (`rounds`/`maxRounds`/`remoteChannelId`) ⇒ **业务协作语义**, 不是通道调度' },
   ],
   plan: '按语义分三批, 每批独立提交: ① 队列+单飞 (`queue`/`running`) → 内核邮箱; ② `abort` → `ExecutionRequest.signal` (先定语义); ③ `last*` 观测数据搬出通道对象 (或显式标注"非调度")。',
+  prerequisite: K8_RUNSTATE_PREREQUISITE,
 };

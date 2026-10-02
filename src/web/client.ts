@@ -1599,6 +1599,19 @@ let lastUsedJudgmentIds = []; // 用于 finalizeTimelineAsMessage 给 addMessage
 //   type=ai 终文到达时清掉. 同一 channel 只保留一个.
 let currentPreviewBubble: HTMLElement | null = null;
 
+/**
+ * 2026-10-02 修「回复两层」: preview 气泡是**瞬时** UI 承诺 —— **任何终态事件都必须回收它**。
+ *
+ * 旧实现只在 `ai` 事件里清 preview (见 type==='ai' 分支)。若一轮以 `done` (或 `error`) 收尾而**没有** `ai`,
+ * preview 气泡会**残留**并与最终答复**同文并存** ⇒ 用户看到"同一段回复两层"
+ * (带虚线描边的那层就是 `.message-ai.preview`)。
+ */
+function retirePreviewBubbles(container: HTMLElement | null): void {
+  if (!container) return;
+  container.querySelectorAll('.message-ai.preview').forEach(el => el.remove());
+  currentPreviewBubble = null;
+}
+
 // ============================================================================
 // 2026-06-15: self_improve SSE handler — 之前 server 推 self_improve_triggered
 // / self_improve_result 但 client 完全没注册, 消息就丢了 (Bug 2).
@@ -1943,9 +1956,7 @@ function connect(channelId) {
         //   只产生一个最终气泡 — 避免 done 再 finalize 出第二个被截断到 100 字的气泡.
         //   非流式: 直接 addMessage.
         //   2026-07-15 修 Bug 5: final 到达前清掉 preview 残留气泡 (R1/R2/R3).
-        const allPreviews = container.querySelectorAll('.message-ai.preview');
-        allPreviews.forEach(el => el.remove());
-        currentPreviewBubble = null;
+        retirePreviewBubbles(container);
         if (!MR_hasStreamingText()) {
           addMessage(data.content || '', 'ai', true, container, lastUsedJudgmentIds || []);
         } else {
@@ -1961,8 +1972,7 @@ function connect(channelId) {
         //   修法: 先清所有 .message-ai.preview (按容器最新那条来加 .preview), 再以 container.lastElementChild 拿到刚加的 div 加 .preview.
         const previewContent = data.content || '';
         // 清掉所有老 preview — 上一次 reply-preview 加的也带 .preview
-        const oldPreviews = container.querySelectorAll('.message-ai.preview');
-        oldPreviews.forEach(el => el.remove());
+        retirePreviewBubbles(container);
         // 加新 preview
         addMessage(previewContent, 'ai', false, container, []);
         // 拿到刚加的那一条 — 它是 container 的最后一个 .message-ai
@@ -1998,6 +2008,8 @@ function connect(channelId) {
       } else if (data.type === 'done') {
         // AI 回复生成完, 从流式元素搬 token 文本到正式消息
         finalizeTimelineAsMessage();
+        // 2026-10-02 修「回复两层」: 终态必须回收 preview 气泡 (旧实现只在 `ai` 里清 ⇒ 以 done 收尾时会残留同文气泡)
+        retirePreviewBubbles(container);
         // 2026-06-16: 隐藏循环进度 status bar
         hideLoopStatusBar();
         // 2026-06-15: 切回 idle 模式 (用户可发下一条)
@@ -2016,6 +2028,8 @@ function connect(channelId) {
         //   之前: 走 toast 但前端 streaming 元素还会残留, 用户看不到 错误内容
         //   改成: 直接 addMessage 成 ai 气泡, 让用户清楚看到 LLM 失败原因
         const errContent = String(data.content || '未知错误');
+        // 2026-10-02 修「回复两层」: 错误也是终态, 同样要回收 preview
+        retirePreviewBubbles(container);
         addMessage(`⚠️ ${errContent}`, 'ai', false, container);
         // 顺便给个 toast (兼容旧逻辑)
         if (typeof showSimpleToast === 'function') {
