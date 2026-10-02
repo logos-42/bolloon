@@ -732,3 +732,34 @@ Actor 状态容器 (9 项): `channelId` · `agentId` · `goalBinding` · `messag
 
 K5 的变异用例原本在 `src/kernel/` 里**真建文件再删** —— 8 个测试文件并行跑时, 别的 worker 正在扫同一目录 ⇒ **采集期竞态** (表现为 `kernel-constraint.test.ts` 的并行假红; 单跑 16/16 绿)。
 ⇒ 规矩: **测试不许在被并行扫描的源码目录里做文件系统变异**。判据是纯函数, `exists` 就是它设计好的接缝 —— 注入即可; 盘上事实由另一条只读断言保证 (容器真的不存在)。
+
+## 26. K5 第 2 步: Actor 容器落地 (纯新增 · 行为零改变 · 串行真跑)
+
+### 26.1 交付物 `src/kernel/channel-actor.ts` (133 行)
+
+| 部件 | 内容 |
+| --- | --- |
+| `ActorState` | 9 项与台账逐条对应: `channelId` · `agentId` · `goalBinding` · `messageHistory` · `mailbox` · `activeRun` · `cancellation` · `outboundStream` (**`serialLock` 由 `SerialMailbox` 承担**) |
+| `createActorState()` | 未给的字段**显式置空** (镜像 K2 的「不继承残留」规矩) |
+| `SerialMailbox` | **同 Channel 串行邮箱**: `submit()` 立即返回 promise 但**排队执行**; 队列尾巴吞掉错误 ⇒ **一个任务抛错不毒化后续任务**; `pending`/`processed` 可观测; `drain()` 等空 |
+| `ChannelActor` | `state` + `mailbox` 绑定; `submit(fn)` 串行执行; `beginCancellation()/abort()` 取代 Pi 上的 `currentSignal` |
+| `ExecutionRequest` | K5 第 7 步的目标形态: Pi 只接收**一次性**请求 (`input`/`channelId`/`agentId?`/`goalId?`/`resumeRunId?`/`signal?`) |
+
+**行为零改变**: 目前**没有任何入口往里投递** —— 现有链路仍走 Pi 实例字段。容器只是先把"归宿"落实。
+
+### 26.2 真跑验证 (不是"看起来对")
+
+`kernel-channel-actor.test.ts` 13 用例 (其中 6 条是本步新增):
+
+| 用例 | 断言 |
+| --- | --- |
+| **串行语义** | 入队 a(30ms)/b(10ms)/c(1ms) —— 后入队者更短, **若并发必交错**; 实测执行序 `a:start a:end b:start b:end c:start c:end`, 结果 `['a','b','c']`, `pending=0 · processed=3` |
+| **抛错不阻塞** | 先 bad(throw)后 good(42): `bad` 以 `boom` reject · `good` 正常返回 42 · 队列跑空 |
+| **跨 Actor 隔离** | 两个 channel 各 push 自己的 history ⇒ 互不可见, `channelId` 不同 |
+| **取消位** | `beginCancellation()` → `aborted=false`; `abort()` → `aborted=true` 且 `cancellation=null` |
+| **容器语义** | 未给字段显式置空 (8 个字段逐个断言) |
+
+### 26.3 台账前进 + 两条判据同步更新
+
+`stage: 'not-started' → 'container-built'` (附进度历史与"这一步交付了什么"), 门的"与盘上事实同步"因此翻面: 现在要求 **容器必须真的存在**, 且 `fieldsMigrated/entriesWired` **必须仍是 0** (容器建了 ≠ 字段迁了 / 入口接了)。
+两个变异用例随之换方向 (镜像): ① 标 `not-started` 而容器存在 ⇒ 红; ② 标 `container-built` 而盘上没有 ⇒ 红。

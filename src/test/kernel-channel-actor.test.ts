@@ -22,6 +22,7 @@ import {
   K5_STEPS,
 } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
+import { ChannelActor, SerialMailbox, createActorState } from '../kernel/channel-actor.js';
 import { type K5LedgerLike, scanActorLedger } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
@@ -75,21 +76,87 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(K5_GOAL_BINDING_RULE).toContain('不许靠裸字段');
   });
 
-  it('K5 尚未开工: 容器不存在, 进度为 0 (台账与盘上事实一致)', () => {
-    expect(K5_PROGRESS.stage).toBe('not-started');
-    expect(fs.existsSync(path.join(SRC, K5_PROGRESS.containerPath))).toBe(false);
+  it('台账与盘上事实一致: 标了 container-built ⇒ 容器文件必须真的存在', () => {
+    expect(K5_PROGRESS.stage).toBe('container-built');
+    expect(fs.existsSync(path.join(SRC, K5_PROGRESS.containerPath))).toBe(true);
+    // 容器建了 ≠ 字段迁了 / 入口接了 (两个计数仍必须是 0)
     expect(K5_PROGRESS.fieldsMigrated).toBe(0);
     expect(K5_PROGRESS.entriesWired).toBe(0);
+  });
+
+  it('串行语义真跑: 同 Channel 内任务永不交错, 且按入队顺序执行', async () => {
+    const actor = new ChannelActor({ channelId: 'c1' });
+    const log: string[] = [];
+    const task = (name: string, gapMs: number) => async () => {
+      log.push(`${name}:start`);
+      await new Promise((r) => setTimeout(r, gapMs));
+      log.push(`${name}:end`);
+      return name;
+    };
+    // 故意让后入队的任务更短 —— 若并发, 它会先结束 (交错)
+    const results = await Promise.all([
+      actor.submit(task('a', 30)),
+      actor.submit(task('b', 10)),
+      actor.submit(task('c', 1)),
+    ]);
+    expect(results).toEqual(['a', 'b', 'c']);
+    expect(log).toEqual(['a:start', 'a:end', 'b:start', 'b:end', 'c:start', 'c:end']);
+    expect(actor.mailbox.pending).toBe(0);
+    expect(actor.mailbox.processed).toBe(3);
+  });
+
+  it('一个任务抛错不阻塞队列 (错误交给调用方, 队列继续)', async () => {
+    const mb = new SerialMailbox();
+    const ran: string[] = [];
+    const bad = mb.submit(async () => { ran.push('bad'); throw new Error('boom'); });
+    const good = mb.submit(async () => { ran.push('good'); return 42; });
+    await expect(bad).rejects.toThrow('boom');
+    await expect(good).resolves.toBe(42);
+    expect(ran).toEqual(['bad', 'good']);
+    await mb.drain();
+    expect(mb.pending).toBe(0);
+  });
+
+  it('跨 Actor 隔离: 两个 channel 的 history 互不可见', async () => {
+    const a = new ChannelActor({ channelId: 'a' });
+    const b = new ChannelActor({ channelId: 'b' });
+    await a.submit((st) => { st.messageHistory.push('A1'); });
+    await b.submit((st) => { st.messageHistory.push('B1'); });
+    expect(a.state.messageHistory).toEqual(['A1']);
+    expect(b.state.messageHistory).toEqual(['B1']);
+    expect(a.state.channelId).not.toBe(b.state.channelId);
+  });
+
+  it('取消位: beginCancellation/abort 语义 (取代 Pi 上的 currentSignal)', () => {
+    const actor = new ChannelActor();
+    expect(actor.state.cancellation).toBeNull();
+    const signal = actor.beginCancellation();
+    expect(signal.aborted).toBe(false);
+    actor.abort();
+    expect(signal.aborted).toBe(true);
+    expect(actor.state.cancellation).toBeNull();
+  });
+
+  it('容器语义: 未给的字段显式置空 (镜像 K2 的「不继承残留」)', () => {
+    const st = createActorState();
+    expect(st.channelId).toBe('');
+    expect(st.agentId).toBe('');
+    expect(st.goalBinding).toBe('');
+    expect(st.messageHistory).toEqual([]);
+    expect(st.activeRun).toBe('');
+    expect(st.cancellation).toBeNull();
+    expect(st.outboundStream).toBeNull();
+    expect(st.mailbox).toEqual({ pending: 0, processed: 0 });
   });
 
   it('判别力自证: 四种坏形状都必须判红', () => {
     const base = { exists, k2SessionFields: K2_SESSION };
     const clone = (o: Partial<K5LedgerLike>) => ({ ...LEDGER, ...o });
-    // ① 标 not-started 但容器已存在 (假账)
-    expect(scanActorLedger(clone({}), { exists: () => true, k2SessionFields: K2_SESSION })
+    // ① 标 not-started 但容器已存在 (假账) —— 现在容器的确是建了的, 所以要把 stage 显式改回 not-started 才测得到这条
+    expect(scanActorLedger(clone({ progress: { ...K5_PROGRESS, stage: 'not-started' } }), { exists: () => true, k2SessionFields: K2_SESSION })
       .some((f) => f.rule === 'actor-stage-stale')).toBe(true);
-    // ② 标了进度但容器不存在 (假进度)
-    expect(scanActorLedger(clone({ progress: { ...K5_PROGRESS, stage: 'container-built' } }), base)
+    // ② 标了进度但容器不存在 (假进度) —— 现在 stage 就是 container-built, 所以注入"盘上没有"
+    expect(scanActorLedger(clone({}), { exists: () => false, k2SessionFields: K2_SESSION })
       .some((f) => f.rule === 'actor-container-missing')).toBe(true);
     // ③ 移交字段访问数被抄错 (跨台账漂移)
     expect(scanActorLedger(clone({ inheritedFields: K5_INHERITED_FIELDS.map((f, i) => (i === 0 ? { ...f, accesses: f.accesses + 1 } : f)) }), base)
@@ -97,18 +164,18 @@ describe('K5 门: Channel Actor 台账', () => {
     // ④ 验收标准没接住从 K2 移来的那条
     expect(scanActorLedger(clone({ acceptance: K5_ACCEPTANCE.filter((a) => !a.includes('history')) }), base)
       .some((f) => f.rule === 'actor-handoff-missing')).toBe(true);
-    // ⑤ not-started 阶段不许有非零进度
-    expect(scanActorLedger(clone({ progress: { ...K5_PROGRESS, fieldsMigrated: 1 } }), base)
+    // ⑤ not-started 阶段不许有非零进度 (显式把 stage 改回 not-started 才测得到)
+    expect(scanActorLedger(clone({ progress: { ...K5_PROGRESS, stage: 'not-started', fieldsMigrated: 1 } }), base)
       .some((f) => f.rule === 'actor-progress-premature')).toBe(true);
   });
 
-  it('变异: 容器文件真被建出来 ⇒ 台账立刻变红 (逼着登记进度)', () => {
-    // **不许在 src/ 里真建文件再删** —— 8 个测试文件并行跑时, 别的 worker 正在扫这个目录,
-    //   会采集成竞态 (2026-10-02 实测: 造成 kernel-constraint.test.ts 的并行假红)。
-    //   判据本来就是纯函数, `exists` 是它设计好的接缝 ⇒ 在这里注入即可。
-    expect(fs.existsSync(path.join(SRC, K5_PROGRESS.containerPath))).toBe(false); // 盘上事实: 现在真的没有
-    const findings = scanActorLedger(LEDGER, { exists: (rel) => rel === K5_PROGRESS.containerPath, k2SessionFields: K2_SESSION });
-    expect(findings.some((f) => f.rule === 'actor-stage-stale')).toBe(true);
+  it('变异: 台账说容器已建、盘上却没有 ⇒ 立刻判红 (假进度)', () => {
+    // 镜像方向: 容器真的建了之后, 这条规则换成"标了进度却没有文件"才测得动。
+    // **不许在 src/ 里真建/真删文件** —— 多个测试文件并行跑时别的 worker 正在扫这个目录, 会采集成竞态
+    // (2026-10-02 实测: 造成 kernel-constraint.test.ts 的并行假红)。判据是纯函数, `exists` 就是它的接缝。
+    expect(fs.existsSync(path.join(SRC, K5_PROGRESS.containerPath))).toBe(true); // 盘上事实: 现在真的有
+    const findings = scanActorLedger(LEDGER, { exists: () => false, k2SessionFields: K2_SESSION });
+    expect(findings.some((f) => f.rule === 'actor-container-missing')).toBe(true);
     // 复原后仍绿
     expect(scanActorLedger(LEDGER, { exists, k2SessionFields: K2_SESSION })).toEqual([]);
   });

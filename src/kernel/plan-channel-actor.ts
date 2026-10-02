@@ -11,6 +11,13 @@
 
 export type K5Stage = 'not-started' | 'container-built' | 'fields-migrated' | 'entries-wired' | 'done';
 
+/**
+ * 进度历史 (台账只许前进, 每次前进都要留下日期与"这一步交付了什么"):
+ *   · 2026-10-02 not-started → **container-built**: `src/kernel/channel-actor.ts` 落地
+ *     (ActorState 9 项 · SerialMailbox 串行队列 · ChannelActor.submit/abort/beginCancellation);
+ *     串行语义由 `kernel-channel-actor.test.ts` **真跑**验证; **尚未接任何入口** ⇒ 行为零改变。
+ */
+
 export interface ActorStateItem { name: string; why: string; owner: string }
 
 /** Actor 状态容器必须承载的 9 项 (leo 定的清单) */
@@ -69,7 +76,7 @@ export const K5_INHERITED_FIELDS: readonly { name: string; into: string; accesse
 
 /** 进度位 —— 门强制与盘上事实同步 (进度只许增; 未建的不许标已建) */
 export const K5_PROGRESS = {
-  stage: 'not-started' as K5Stage,
+  stage: 'container-built' as K5Stage,
   /** Actor 容器文件路径 (存在性由门真读盘核对) */
   containerPath: 'kernel/channel-actor.ts',
   fieldsMigrated: 0,
