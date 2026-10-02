@@ -1327,9 +1327,32 @@ export class PiAgentSession implements AgentSession {
         try {
           const tscTool: any = this.tools.get('tsc_check');
           if (tscTool?.execute) {
-            const r: any = await tscTool.execute({});
-            const line = formatTypecheckResult(r?.success !== false && !/error TS\d+/.test(String(r?.output || '')), String(r?.output || ''));
-            this.runCtx.eventSink?.({ type: 'status', content: `🔎 ${line}`, tool: 'system' } as any);
+            // 2026-10-02 (K7): **系统自检也过门** —— 统一成"任何工具执行都走同一扇 Harness 门"。
+            //   这里不是模型发起的工具调用 (args 恒空, 是本回合改过 TS 后的收尾自检), 所以**更**不能例外:
+            //   例外一旦靠"没人知道它绕过"活着, 门就不再是唯一的执行咽喉。
+            //   语义: 被拒或门抛错 ⇒ **不执行** (fail-closed), 且**可见**地报出来 (拒绝不许静默)。
+            let tscAllowed = true;
+            let tscWhy = '';
+            try {
+              const d = await this.piHarness().beforeToolCall({
+                tool: 'tsc_check',
+                args: {},
+                ctx: this.harnessCtx(),
+                permissionMode: this.currentPermissionMode,
+              });
+              tscAllowed = d.allow;
+              tscWhy = d.reason || d.rejectedBy || '';
+            } catch (gateErr) {
+              tscAllowed = false;
+              tscWhy = `harness-error: ${String((gateErr as Error)?.message || gateErr)}`;
+            }
+            if (!tscAllowed) {
+              this.runCtx.eventSink?.({ type: 'status', content: `🔎 类型检查被门拒绝, 未执行: ${tscWhy.slice(0, 120)}`, tool: 'system' } as any);
+            } else {
+              const r: any = await tscTool.execute({});
+              const line = formatTypecheckResult(r?.success !== false && !/error TS\d+/.test(String(r?.output || '')), String(r?.output || ''));
+              this.runCtx.eventSink?.({ type: 'status', content: `🔎 ${line}`, tool: 'system' } as any);
+            }
           }
         } catch (e: any) {
           this.runCtx.eventSink?.({ type: 'status', content: `🔎 类型检查没能跑起来: ${String(e?.message || e).slice(0, 100)} (改动已落盘, 记得自己跑一次)`, tool: 'system' } as any);

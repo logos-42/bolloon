@@ -1824,6 +1824,7 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 ### K7 准确口径 (🟡) —— **不要把"透传完成"写成"skill 已经过门"**
 
 **已完成**
+- ✅ **系统自检也过门**: 回合末尾的 `tsc_check` TS 自检不再直调工具 —— 先问 `beforeToolCall({tool:'tsc_check', args:{}, ctx: harnessCtx(), permissionMode})`, 被拒/抛错 ⇒ **不执行**且**可见**报出 (拒绝不静默); 机械断言 (判定在 execute 之前 + `if (!tscAllowed)` 分支在 + 拒绝文案在) **经变异验证** (去掉 fail-closed 分支 ⇒ 判红)。
 - 执行点普查 (17 → 18 处, 逐点定性, 无残留"待确认")
 - 台账判据 + 卫生判据 (不写行号 · converged 必带证据 · 开着旁路数 == progress)
 - pivot loop 受门端口 + **pi-sdk 注入** (与主路径同一个 `beforeToolCall`) ⇒ 旁路 **3 → 2**
@@ -1837,5 +1838,6 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 - ✅ `PiAgentSession.executeSkill` 已按**方案 a** 收敛: 公开签名不变, 内部改为**判定经 Harness → 恰一次执行** (`k7-session-skill-gate.test.ts`: 探针 skill 计数 —— 允许**恰 1 次**执行返回标记 · deny **零执行** · 重试仍拒 · 放开又能执行; 变异"门永远放行" ⇒ 判红: `expected 'PROBE_EXECUTED' to match /^拒绝: \[deny-list\]/` ⇒ 用例承重)
 - ❌ **未过门的原始出口 `getSkillRegistry()`**: 已标 `@deprecated` 并**登记为开放旁路条目** (拿到它直调 `.execute()` 仍绕过 Harness) —— 不许无声删 (公开兼容面), 也不许不登记; 处置需定夺是否动公开返回类型 (改为受门包装)
 - ❌ 全仓 skill 零旁路 (尚有一条公开 API + 一条内部路径)
+- ❌ `pi-sdk.ts` 内置 `tsc_check` 自检: **接线已落 + 机械/变异证据**, 但**端到端未单独取证** (该路径由"本回合改过 TS"的收尾自检触发, 需真 LLM 回合) ⇒ 条目保持 open
 - ❌ 其他 Tool Capability 直连欠账 (B 类 12 处, 排期 K7)
 

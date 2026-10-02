@@ -150,6 +150,18 @@ describe('K7 台账门: Harness 唯一系统调用门', () => {
     expect(checkHarnessLedgerHygiene({ ...good, progress: { bypasses: 999 } })[0]).toMatch(/开着的旁路数/);
   });
 
+  it('② K7 系统自检 (tsc_check) 也过门: 判定在 execute 之前 + 拒绝分支不执行 + 拒绝可见 (机械)', () => {
+    const sdk = fs.readFileSync(path.join(ROOT, 'src/agents/pi-sdk.ts'), 'utf8');
+    const gateIdx = sdk.indexOf("const tscTool: any = this.tools.get('tsc_check');");
+    const execIdx = sdk.indexOf('const r: any = await tscTool.execute({});');
+    expect(gateIdx).toBeGreaterThan(0);
+    expect(execIdx).toBeGreaterThan(gateIdx);          // 判定在前
+    const seg = sdk.slice(gateIdx, execIdx);
+    expect(seg).toContain('beforeToolCall');
+    expect(seg).toContain('if (!tscAllowed)');
+    expect(seg).toContain('类型检查被门拒绝, 未执行');    // 拒绝**可见** (不许静默跳过)
+  });
+
   it('② K7 第二步 b 接线在盘上: pivot loop 的配置里注入了同一个门 (机械)', () => {
     const sdk = fs.readFileSync(path.join(ROOT, 'src/agents/pi-sdk.ts'), 'utf8');
     // 端口必须在 pivot loop 构造之前被放进配置, 且判定走的是主路径同一个 beforeToolCall
