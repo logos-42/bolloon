@@ -7,7 +7,7 @@ import path from 'node:path';
 import { K8_EVENT_FACES, K8_TRANSPORT_AGENT_SITES, K8_PER_CHANNEL_STATE, K8_PROGRESS, K8_ACCEPTANCE } from '../kernel/plan-communication.js';
 import {
   scanCommunicationLedger, countTransportAgentSites, K8_SITE_KINDS, scanChannelStateLedger,
-  countChannelStateSymbols, scanDidFixConsolidation, scanRunStateConsolidation, countSymbolOccurrences,
+  countChannelStateSymbols, scanDidFixConsolidation, scanRunStateConsolidation, countSymbolOccurrences, stripJsComments,
 } from '../kernel/gate-scan.js';
 import { K8_CHANNEL_RUNSTATE } from '../kernel/plan-communication.js';
 
@@ -178,15 +178,15 @@ function fs2_real(text: string): string {
 }
 
 describe('K8 大目标门: channelRunState 迁移工作面 (台账 == 盘上, 按符号不按行号)', () => {
-  it('① 真跑: 台账与盘上**完全一致** (21 处用法 / 8 个字段都在接口里)', () => {
+  it('① 真跑: 台账与盘上**完全一致** (21 处用法 / 7 个字段都在接口里; queue 已删 · running 降观测)', () => {
     expect(scanRunStateConsolidation(K8_CHANNEL_RUNSTATE, K8_PROGRESS, { readFile })).toEqual([]);
     const src = readFile('src/web/server.ts')!;
     expect(countSymbolOccurrences(src, 'channelRunState')).toBe(K8_CHANNEL_RUNSTATE.sites);
     expect(K8_CHANNEL_RUNSTATE.sites).toBe(K8_PROGRESS.runStateSites);          // 棘轮基线
-    expect(K8_CHANNEL_RUNSTATE.fields).toHaveLength(8);
-    // 三种语义分开登记: 3 个真收口 (队列/单飞/abort) + 4 观测 + 1 协作
-    expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'k8-target').map((f) => f.name)).toEqual(['running', 'queue', 'abortController']);
-    expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'observational')).toHaveLength(4);
+    expect(K8_CHANNEL_RUNSTATE.fields).toHaveLength(7);   // 8 → 7: `queue` 已删除 (2026-10-02 正刀)
+    // 三种语义分开登记: **1 个真收口** (只剩 abort) + 5 观测 (running 已从收口降为观测) + 1 协作
+    expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'k8-target').map((f) => f.name)).toEqual(['abortController']);
+    expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'observational')).toHaveLength(5);
     expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'domain-collab')).toHaveLength(1);
     for (const f of K8_CHANNEL_RUNSTATE.fields.filter((x) => x.role === 'k8-target')) {
       expect((f.replacedBy ?? '').length).toBeGreaterThan(9);   // 收口对象必须写替代机制
@@ -199,7 +199,7 @@ describe('K8 大目标门: channelRunState 迁移工作面 (台账 == 盘上, �
   });
 
   it('② 判别力: 收口字段没写替代机制 / 非收口字段没写理由 ⇒ 判红 (不许静默豁免)', () => {
-    const noReplace = { ...K8_CHANNEL_RUNSTATE, fields: K8_CHANNEL_RUNSTATE.fields.map((f) => (f.name === 'queue' ? { ...f, replacedBy: '' } : f)) };
+    const noReplace = { ...K8_CHANNEL_RUNSTATE, fields: K8_CHANNEL_RUNSTATE.fields.map((f) => (f.name === 'abortController' ? { ...f, replacedBy: '' } : f)) };
     expect(scanRunStateConsolidation(noReplace, K8_PROGRESS, { readFile }).some((x) => /没写替代机制/.test(x.what))).toBe(true);
     const noNote = { ...K8_CHANNEL_RUNSTATE, fields: K8_CHANNEL_RUNSTATE.fields.map((f) => (f.name === 'lastSummary' ? { ...f, note: '' } : f)) };
     expect(scanRunStateConsolidation(noNote, K8_PROGRESS, { readFile }).some((x) => /不许静默豁免/.test(x.what))).toBe(true);
@@ -228,12 +228,16 @@ describe('K8 大目标门: channelRunState 迁移工作面 (台账 == 盘上, �
   });
 });
 
-describe('K8 批次① 前哨: channel 消息 drain 已合一 + 经内核邮箱 (通道不再兼任调度器)', () => {
-  it('⑤ 机械: 只有一处 finishChannelRun 实现 · 两个出口都走它 · 不再 setImmediate 裸跑 · 经 getChannelQueue().submit', () => {
-    const src = readFile('src/web/server.ts')!;
+describe('K8 正刀: 每条消息都进内核邮箱 (通道不再兼任调度器, 重复的第二条路径已删)', () => {
+  it('⑤ 机械: 一处 finishChannelRun 实现 + 一处调用 · 简化版路径与通道队列都不存在 · 消息经 getChannelQueue().submit', () => {
+    // 注意: 形状判据只看**剥注释后**的代码 —— 注释里应当保留"删了什么、为什么删"的说明,
+    //   否则下次有人看到 `runMessageFromQueue` 这个名字会以为它还在 (文档与代码各说各话)。
+    const src = stripJsComments(readFile('src/web/server.ts')!);
     expect((src.match(/function finishChannelRun\(/g) || []).length).toBe(1);            // 两份实现 → 一处
-    expect((src.match(/finishChannelRun\(channelId, runState\)/g) || []).length).toBe(2); // /message + runMessageFromQueue
-    expect(src).not.toMatch(/setImmediate\(\(\) => \{\s*void runMessageFromQueue/);   // 不再裸跑
-    expect(src).toMatch(/getChannelQueue\(channelId\)\.submit\(\(\) => runMessageFromQueue/); // 投进内核邮箱
+    expect((src.match(/finishChannelRun\(channelId, runState\)/g) || []).length).toBe(1); // 只剩 finally 那一处 (drain 分支已删)
+    expect(src).not.toMatch(/runMessageFromQueue/);                       // **简化版第二条路径已删**
+    expect(src).not.toMatch(/runState\.queue/);                          // 通道不再持队列
+    expect(src).not.toMatch(/\[queue-drain\]/);                          // drain 日志随之消失
+    expect(src).toMatch(/getChannelQueue\(channelId\)\.submit\(runChannelMessage\)/);  // 每条消息都投邮箱
   });
 });

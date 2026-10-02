@@ -232,12 +232,10 @@ export const K8_CHANNEL_RUNSTATE: K8RunStateLedger = {
   symbol: 'channelRunState',
   sites: 21,   // 2026-10-02 量: 剥注释后 21 处 (总出现 25, 含 4 处注释)
   fields: [
-    { name: 'running', role: 'k8-target',
-      replacedBy: '`ChannelActor.mailbox` 的同键串行 —— 有了内核邮箱就不需要通道自己记"我在跑"',
-      prerequisite: '见 `K8_RUNSTATE_PREREQUISITE`: 主路径内联跑先进邮箱, 否则跨路径并行' },
-    { name: 'queue', role: 'k8-target',
-      replacedBy: '内核邮箱的 `pending` (队列交给内核, 通道只递请求)',
-      prerequisite: '同 `K8_RUNSTATE_PREREQUISITE`; 另: `broadcastQueueUpdate` 的 `queueLength` 口径要显式映射 (邮箱 pending 含"正在跑的那条", 旧的 queue.length 不含)' },
+    { name: 'running', role: 'observational',
+      note: '**2026-10-02 正刀后已降为观测口径**: 串行权威归内核邮箱 (`getChannelQueue(channelId).submit`), `running` 只剩"这一轮是否在飞"的展示/判定用途 (UI 的 `queue_update` · `remoteFollowup` 的 `!matchedRs.running` · `/api/loop/inspect` 文案), 不再参与任何"能不能起跑"的判断' },
+    // `queue` 字段 **已删除** (2026-10-02 正刀): 每条消息自己 `getChannelQueue(channelId).submit(...)`,
+    //   通道不再持有队列 (随之删掉 `PendingMessage` 接口与 `runMessageFromQueue` 那条简化路径)。
     { name: 'abortController', role: 'k8-target',
       replacedBy: '`ExecutionRequest.signal` (K5 步骤⑦ 的请求面已有 `signal`) —— ⚠️ **abort 语义要单独定**, 不随队列一起顺手合并' },
     { name: 'lastSteps', role: 'observational', note: '供 `/api/loop/inspect` 的步骤累积 ⇒ 观测数据, 不是调度状态' },

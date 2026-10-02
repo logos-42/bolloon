@@ -238,9 +238,9 @@ export const K5_EXECUTION_REQUEST = {
   methodAdded: true,
   // 2026-10-02 (K8 第二步): 1 → 3 —— routes-tasks.ts / runner-resolver.ts 两处改走 `runExecution`
   //   (K5 这张台账记的正是"请求式投递的收敛进度", K8 的迁移会推进它 ⇒ 跨台账必须同步)
-  converted: 13,  // 2026-10-02: 6 → 10 → 13 (K8 第二·三·四·五步: server.ts 7 处全部改走 runExecution)
-  wiredTotal: 24,
-  remaining: 11,
+  converted: 12,  // 2026-10-02: 6 → 10 → 13 → **12** (K8 正刀删掉 `runMessageFromQueue` 简化版路径 ⇒ 随它消失 1 处)
+  wiredTotal: 23,  // 2026-10-02 正刀: 24 → **23** (删掉的 `runMessageFromQueue` 自己也有一处请求式投递点)
+  remaining: 11,   // 派生: wiredTotal − converted = 23 − 12 = 11 (与盘上一致)
 } as const;
 
 /** 入口 → 文件分组 (判据做**双向**校验: 说完成 ⇒ 其文件必须全接完; 说没完成 ⇒ 必须真有文件没接完) */
@@ -293,7 +293,7 @@ export const K5_PROGRESS = {
     // 2026-10-02 (K8 第二/三步): 3 处 `promptStream(...)` 改走唯一入口 `runExecution`。
     //   口径说明: `runExecution` 也在方法名单里, 且**助手形态** `requireRunExecution(...)` 也被认作执行点
     //   ⇒ 迁移前后 total/wired 都不变 (11/11); 真正在变的是 K8 台账的"通道直呼 prompt"直连数 (10 → 7)。
-    { file: 'web/server.ts', total: 11, wired: 11, excludeReceivers: ['this'] },            // web 用户/中继/任务/心跳
+    { file: 'web/server.ts', total: 10, wired: 10, excludeReceivers: ['this'] },            // web 用户/中继/任务/心跳 (2026-10-02 正刀: 11 → 10, 简化版路径删除)
     { file: 'web/routes-tasks.ts', total: 1, wired: 1, excludeReceivers: ['this'] },        // web 任务路由 (K8 后是请求式点; total 不降)
     { file: 'index.ts', total: 11, wired: 11, excludeReceivers: ['this', 's'] },            // CLI 主入口 + P2P 入站 (含文档摘要/改写)
     { file: 'cli/interface.ts', total: 0, wired: 0, excludeReceivers: ['this'] },           // readline ⇒ 无执行点

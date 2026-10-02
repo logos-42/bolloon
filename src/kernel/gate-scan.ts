@@ -1518,9 +1518,14 @@ export function scanRunStateConsolidation(
     if (fld.role === 'k8-target' && !(fld.replacedBy ?? '').trim()) f(`字段 ${fld.name} 是收口对象却没写替代机制`);
     if (fld.role !== 'k8-target' && (fld.note ?? '').trim().length < 6) f(`字段 ${fld.name} 标了 ${fld.role} 却没写明理由 ⇒ 不许静默豁免`);
   }
-  if (ledger.fields.filter((x) => x.role === 'k8-target').length !== 3) {
-    f(`收口字段数应为 3 (running/queue/abortController), 实际 ${ledger.fields.filter((x) => x.role === 'k8-target').length}`);
+  // K8 正刀 (2026-10-02): 收口对象 **3 → 1** —— `queue` 已**删除** (每条消息自己进内核邮箱, 通道不再持队列),
+  //   `running` 已**降为观测** (串行权威归邮箱); 只剩 `abortController` (abort 语义要单独定, 不随队列顺手合并)。
+  //   棘轮: 只许减; 要加回来必须是一次显式动作 + 说明为什么。
+  if (ledger.fields.filter((x) => x.role === 'k8-target').length !== 1) {
+    f(`收口字段数应为 1 (只剩 abortController; queue 已删 · running 已降观测), 实际 ${ledger.fields.filter((x) => x.role === 'k8-target').length}`);
   }
+  // 反回归: 已收口的 `queue` 不许悄悄溜回接口 (删于 2026-10-02 正刀)
+  if (/(^|[^\w$])queue\s*:\s*\w+\[\]/.test(src)) f('已收口的字段 queue 又出现在接口里 (通道不该再持队列)');
 
   // ③ 计划必须有 (别只登记不动手)
   if ((ledger.plan ?? '').trim().length < 10) f('缺迁移计划 (台账不能只登记)');

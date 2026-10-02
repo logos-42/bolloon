@@ -4834,24 +4834,17 @@ fetchState();
     // 捕获外层 channel 到独立变量, 避免被 try 块内 (line 740+) 的 const channel 遮蔽
     const channelForJudgment = channel;
 
-    // per-channel queue 检查: 已在跑就入队, 等当前跑完自动接上
+    // K8 正刀 (2026-10-02): **每条消息都投内核邮箱** —— 取代原来的 check-then-set + 通道自带的 queue。
+    //   为什么 (三条, 按重要性):
+    //     (a) 同通道串行交给内核邮箱 (与 K5 同一条语义), 通道不再兼任调度器;
+    //     (b) 消灭 `finishChannelRun` **同步**置 `running = false` 后**异步** handoff 造成的**静默丢消息**窗口
+    //         (先行门 `src/test/k8-mailbox-scheduling.test.ts` ③ 已把该机制等价复刻并判红);
+    //     (c) 过去排队消息只能走 `runMessageFromQueue` 的**简化版** (无 judgment hint / persona / slash / 附件上下文),
+    //         现在每条消息都走**同一条**完整路径 —— 这是行为改善, **不是零差量** (已在 log 如实记)。
     const runState = getOrCreateRunState(channelId);
-    if (runState.running) {
-      // 2026-07-15 修 Bug 8: 入队时保留 attachments + channelDid, 否则下一轮执行时会丢附件
-      runState.queue.push({
-        channelId,
-        text,
-        boundWalletAddress,
-        autoToolsEnabled,
-        attachments: parsedAttachments,
-        channelDid,
-      });
-      broadcastQueueUpdate(channelId);
-      console.log(`[queue] /message 入队 channel=${channelId}, queue len=${runState.queue.length}, attach=${parsedAttachments.length}`);
-      return;
-    }
-    runState.running = true;
-    runState.abortController = new AbortController();
+    const runChannelMessage = async (): Promise<void> => {
+      runState.running = true;                     // 观测口径 (串行权威已归邮箱)
+      runState.abortController = new AbortController();
     // 2026-07-04: pivot loop safety net — 防止 LLM hang (minimax M3
     //   偶尔反复 think 不输出 <final gen>, pivot 连 5 次无进展时会 hang 在
     //   quality 评估). setTimeout 让 LLM 客户端收 signal 主动 break.
@@ -5585,6 +5578,15 @@ fetchState();
         }
       } catch { /* 非致命 */ }
     }
+    };
+
+    // 投进该 channel 的内核邮箱: 同通道 FIFO 串行 / 跨通道并行 (与 didFix 共用同一邮箱, 语义一致)。
+    // 失败必须**响亮** (不许静默吞掉一条没跑的消息)。
+    void getChannelQueue(channelId).submit(runChannelMessage).catch((e: any) => {
+      console.error('[K8] runChannelMessage 失败:', e?.message?.slice(0, 200));
+      try { broadcast({ type: 'error', content: `执行失败: ${String(e?.message || e).slice(0, 200)}` }, channelId); } catch { /* 广播失败不影响错误已记 */ }
+      try { broadcast({ type: 'done' }, channelId); } catch { /* 同上 */ }
+    });
   });
 
   // ---------- 频道元数据后台修复队列 ----------
@@ -5596,19 +5598,8 @@ fetchState();
 
   // ---------- per-channel 消息 queue + abort 状态 ----------
   // 同 channel 串行 (避免 LLM 调用互踩上下文), 跨 channel 互不干扰
-  interface PendingMessage {
-    channelId: string;
-    text: string;
-    boundWalletAddress?: string;
-    autoToolsEnabled?: boolean;
-    // 2026-07-15 修 Bug 8: 入队的消息保留 attachments, 不然第二轮发送文件会丢
-    attachments?: Array<{ attachmentId: string; filename?: string; mimeType?: string; size?: number }>;
-    // req 上传附件给 LLM 时需要的 channelDid 也得传过来
-    channelDid?: string;
-  }
   interface ChannelRunState {
     running: boolean;
-    queue: PendingMessage[];
     abortController: AbortController | null;
     // 2026-06-16: loop 检查 — 最近一轮的步骤/摘要/最终回复/token
     lastSteps?: Array<{ name: string; status: string; durationMs?: number; output?: string }>;
@@ -5623,144 +5614,41 @@ fetchState();
   function getOrCreateRunState(channelId: string): ChannelRunState {
     let s = channelRunState.get(channelId);
     if (!s) {
-      s = { running: false, queue: [], abortController: null, lastSteps: [], lastSummary: '', lastFinalReply: '', lastTokens: {} };
+      s = { running: false, abortController: null, lastSteps: [], lastSummary: '', lastFinalReply: '', lastTokens: {} };
       channelRunState.set(channelId, s);
     }
     return s;
   }
-
-  /** 抽离 attachment contextHint 出来 — 给 queue-drain 用; /message 主路径有 inline 等价版避免重复 hoist 错误 */
-  function buildAttachmentContextForQueue(parsedAttachments: any[]): string {
-    if (!parsedAttachments || parsedAttachments.length === 0) return '';
-    return `[系统上下文] 用户上传了 ${parsedAttachments.length} 个附件: ` +
-      parsedAttachments.map((a: any) => `${a.filename || a.attachmentId} (id=${a.attachmentId}, mime=${a.mimeType || '?'}, size=${a.size ?? '?'}B, URL=/api/attachments/${a.attachmentId})`).join('; ') +
-      `\n你可以调用文件读工具 (curl /api/attachments/<id>) 拉取真实内容。\n\n`;
-  }
+  // K8 正刀 (2026-10-02): `runMessageFromQueue` (排在队尾执行的**简化版**第二条路径) 与它专用的
+  //   `buildAttachmentContextForQueue` 一并删除 —— 每条消息现在都走 `runChannelMessage` 这**一条**完整路径,
+  //   通道自带的 queue 与异步 handoff 都不复存在 (旧 handoff 会静默丢消息, 见先行门 ③)。
 
   /**
-   * 2026-07-15 修 Bug 8: 队列消息的执行器 — finally 排空 queue 时调这里
-   * 跑下一条 queued 消息.
+   * 一轮跑完的收尾 (2026-10-02 K8 → K8 正刀)。
    *
-   * 设计: 这是个 fire-and-forget wrapper, 复用 /message 主路径的 broadcast / save / etc.
-   * 简化路径 (跟主路径 500 行 try 块相比):
-   *   - 不重新建载 judgment hint / persona / context — server.ts 这次明确把这些容
-   *     易"廉价放"在 /message 主路径, queue 路径只用基本标识
-   *   - 仍然是合法: agent.promptStream → broadcast(type:user) → broadcast(type:ai) → done
-   *   - 处理 attachments: 跟主路径一样
+   * **它现在只做三件事**: 清"在飞"标志 · 清 abort 句柄 · 广播状态。
+   * **不再排空队列** —— 正刀后每条消息一进来就投该 channel 的**内核邮箱**
+   * (`getChannelQueue(channelId).submit(runChannelMessage)`), 同通道 FIFO 串行由内核保证 (与 K5 同一条语义),
+   * 通道自己不再兼任调度器, 也不再有"同步置 `running = false` + 异步 handoff"这一步
+   * (正是那一步会让排队消息被静默丢掉 —— 见 `src/test/k8-mailbox-scheduling.test.ts` ③ 的机制复刻)。
    *
-   * 如果要 1:1 复刻主路径的所有 hooks (judgment hint / persona / manifest / etc),
-   * 后续可以把 /message 主路径的 try 块抽成 runPromptChannel 共享.
-   */
-  async function runMessageFromQueue(queued: any): Promise<void> {
-    const { channelId, text, attachments, channelDid: reqChannelDid, boundWalletAddress, autoToolsEnabled } = queued;
-    const runState = getOrCreateRunState(channelId);
-    if (runState.running) return; // 防重入 — queue 已经并发去重
-    runState.running = true;
-    runState.abortController = new AbortController();
-
-    const currentSessionId = (await loadChannels()).find(c => c.id === channelId)?.currentSessionId || 'default';
-    const realChannelDid = reqChannelDid || (await loadChannels()).find(c => c.id === channelId)?.did || '';
-
-    const parsedAttachments: Array<{ attachmentId: string; filename?: string; mimeType?: string; size?: number }> =
-      Array.isArray(attachments) ? attachments : [];
-    const attachmentContext = buildAttachmentContextForQueue(parsedAttachments);
-    const sessionKey = `${channelId}:${currentSessionId}`;
-
-    // 防 LLM hang 安全网
-    const PIVOT_FORCE_TIMEOUT_MS = 5 * 60 * 1000;
-    const forceTimeout = setTimeout(() => {
-      console.warn(`[server] queue-drain pivot 强制 timeout, aborting`);
-      runState.abortController?.abort();
-    }, PIVOT_FORCE_TIMEOUT_MS);
-
-    let agent: AgentSession | null = null;
-
-    try {
-      // 1) broadcast user 给前端 (跟主路径一致)
-      broadcast({ type: 'user', content: text }, channelId);
-
-      // 2) 取 agent + session
-      agent = await getAgentForChannel(channelId, currentSessionId).catch(() => null);
-      if (!agent) {
-        throw new Error(`No agent for channel=${channelId}`);
-      }
-
-      // 3) 重 build contextHint (基本版, 不全 500 行 hook)
-      //   原因: queue-drain 是常见调试路径, 全量 hooks 性能大. 关键是 attachments 带上.
-      const contextHint = attachmentContext + `[系统上下文] 队列消息 (auto-drain)\n`;
-      // 4) promptStream
-      const markedPrompt = `【本轮用户请求】\n${text}\n【请求结束】\n\n${contextHint}`;
-      const agentForRun = agent;
-    // 2026-10-02 (K8): 经唯一入口 (零差量: signal + channelId 原样传)
-      const fullResponse = await deliverThroughActor(agentForRun, () => requireRunExecution(agentForRun)({ input: markedPrompt, onStream: () => {}, signal: runState.abortController?.signal, channelId }));
-
-      if (!fullResponse.trim()) {
-        broadcast({ type: 'error', content: '⚠️ AI 未返回内容' }, channelId);
-      } else {
-        broadcast({ type: 'ai', content: fullResponse }, channelId);
-        // 落 session
-        try {
-          const existing = await loadSession(channelId, currentSessionId);
-          const session: any = existing || { channelId, sessionId: currentSessionId, messages: [], lastUpdated: new Date().toISOString() };
-          session.sessionId = currentSessionId;
-          // 跟主路径相同: 不重复 push user (主路径已 broadcast/push), 只 push ai
-          session.messages.push({
-            id: crypto.randomUUID(),
-            type: 'ai' as const,
-            content: fullResponse,
-            timestamp: new Date().toISOString(),
-            source: 'local' as any,
-          });
-          session.lastUpdated = new Date().toISOString();
-          await saveSession(session);
-        } catch (e: any) {
-          console.warn('[queue-drain] saveSession failed:', e?.message?.slice(0, 100));
-        }
-      }
-
-      broadcast({ type: 'done' }, channelId);
-    } catch (err: any) {
-      console.warn('[queue-drain] failed:', err?.message?.slice(0, 200));
-      broadcast({ type: 'error', content: 'queue-drain: ' + (err?.message || 'failed') }, channelId);
-    } finally {
-      clearTimeout(forceTimeout);
-      finishChannelRun(channelId, runState);
-
-      if (agent) {
-        try { await agent.saveCurrentSession(sessionKey); } catch {}
-      }
-    }
-  }
-
-  /**
-   * 一轮跑完的收尾 (2026-10-02 K8)。
-   *
-   * **原先 /message 主路径与 `runMessageFromQueue` 各写了一份完全同型的 drain** (清状态 → 广播 → 抽下一条 → 异步跑),
-   * 只在日志前缀上不同 —— 两份实现 = 必然有一天只改一处。现在合成**一处**。
-   *
-   * 另一件事: 抽下一条**不再 `setImmediate` 裸跑**, 而是投进该 channel 的**内核邮箱**
-   * (`getChannelQueue(channelId).submit`) —— 同通道串行 / 跨通道并行由内核保证 (与 K5 同一条语义),
-   * 通道自己不再兼任调度器。(微差: 原 `setImmediate` 是宏任务, 现在是邮箱的微任务续体 ⇒ 起跑略早;
-   * 串行性与顺序不变。)
+   * 顺带删掉的: `runMessageFromQueue` (排在队尾执行的**简化版第二条路径**, 没有 judgment hint / persona /
+   * slash 命令 / 附件上下文) 与它专用的 `buildAttachmentContextForQueue` —— 现在只有**一条**完整路径。
    */
   function finishChannelRun(channelId: string, runState: ChannelRunState): void {
+    // K8 正刀 (2026-10-02): **这里不再排空队列** —— 每条消息自己进内核邮箱, 通道不持有队列,
+    //   也就不存在"同步置 running=false + 异步 handoff"那一步 (那一步会静默丢消息, 见先行门 ③)。
     runState.running = false;
     runState.abortController = null;
     broadcastQueueUpdate(channelId);
-
-    if (runState.queue.length > 0) {
-      const next = runState.queue.shift()!;
-      console.log(`[queue-drain] channel=${next.channelId} text="${String(next.text).slice(0, 30)}" attach=${(next.attachments?.length ?? 0)}`);
-      void getChannelQueue(channelId).submit(() => runMessageFromQueue(next)).catch((e: any) => {
-        console.error('[queue-drain] error:', e?.message?.slice(0, 200));
-      });
-    }
   }
 
   function broadcastQueueUpdate(channelId: string): void {
     const s = channelRunState.get(channelId);
-    const queueLength = s ? s.queue.length : 0;
     const running = s ? s.running : false;
+    // K8 正刀 (2026-10-02): 队列长度改读**内核邮箱** (通道不再自己数) —— pending 含正在跑的那条, 减掉它才是"等待中"。
+    const pending = getChannelQueue(channelId).pending;
+    const queueLength = Math.max(0, pending - (running ? 1 : 0));
     try { broadcast({ type: 'queue_update', channelId, queueLength, running }, channelId); } catch { /* */ }
   }
 
