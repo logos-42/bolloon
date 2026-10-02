@@ -864,3 +864,29 @@ export function scanEntryDelivery(
   }
   return out;
 }
+
+/**
+ * **K5 步骤⑤ — channel 级串行锁的开关必须与盘上事实一致** (双向):
+ *   `enabled === true` ⇒ 必须真有调用点传了 `serializeByChannel: true`;
+ *   `enabled === false` ⇒ 一个都不许有 (否则"台账说没启用, 代码却启用了");
+ *   调用点数必须与台账 `callSites` 相等。
+ */
+export function scanChannelLock(
+  sources: readonly { file: string; text: string }[],
+  lock: { enabled: boolean; callSites: number },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'channel-lock-mismatch', file: 'kernel/plan-channel-actor.ts', line: 1, what });
+  let sites = 0;
+  for (const s of sources) {
+    for (const raw of s.text.split(/\r?\n/)) {
+      const l = raw.replace(/\/\/.*$/, '');
+      if (/^\s*\*/.test(l)) continue;
+      sites += (l.match(/serializeByChannel:\s*true/g) ?? []).length;
+    }
+  }
+  if (sites !== lock.callSites) f(`盘上 ${sites} 个调用点传了 serializeByChannel:true ≠ 台账 ${lock.callSites}`);
+  if (lock.enabled && sites === 0) f('台账说 channel 级串行已启用, 但盘上一个调用点都没传 ⇒ 假开关');
+  if (!lock.enabled && sites > 0) f('台账说未启用, 但盘上已有调用点启用 ⇒ 台账落后于代码');
+  return out;
+}

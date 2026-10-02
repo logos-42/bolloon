@@ -274,6 +274,7 @@ export function actorCount(): number {
 /** 清空注册表 —— **仅测试用** (避免测试之间互相污染) */
 export function resetActors(): void {
   actors.clear();
+  channelQueues.clear();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -310,17 +311,69 @@ export interface HydrateSpec<T> {
  * 为什么做成内核里的独立函数: 它是"入口 → 内核"的唯一接缝, 放在这里就能**不起 server 直接单测**
  * (测真语义: 排队 / 隔离 / 兜底), 而不是靠读源码断言。
  */
+export interface DeliveryOptions {
+  /**
+   * **K5 步骤⑤**: 是否按 **channel** 串行 (而不是按会话身份)。
+   * 默认 `false` —— 证据表明"活跃会话"上身份级串行已等价于 channel 级 (见 `K5_CHANNEL_LOCK`)。
+   * 打开后: 同 channel 的**所有**身份 (含切换后的旧会话 / P2P 多 agent) 会互相排队。
+   */
+  serializeByChannel?: boolean;
+}
+
 export async function deliverThroughActor<T>(
   // 形参故意放宽成 `unknown`: 调用点的 receiver 类型五花八门 (AgentSession / 结构子集 / any),
   //   写成 `{ actor?: ChannelActor }` 会触发 TS 的弱类型检查 ("no properties in common") 而误报。
   //   实际用法由下面这行运行时取值保证 (取不到 actor 就直跑)。
   holder: unknown,
   run: () => Promise<T> | T,
+  opts: DeliveryOptions = {},
 ): Promise<T> {
   const actor = (holder as { actor?: ChannelActor } | null | undefined)?.actor;
   if (!actor || typeof actor.submit !== 'function') return run();
   // **重入保护**: 已经跑在同一个 actor 的 mailbox 任务里 ⇒ 直跑。
   //   否则"运行中被调用的执行点"(LLM 回调 / judge / 工具内再问) 会往自己的队列尾投递 ⇒ **自锁**。
   if (actorCtx.getStore() === actor) return run();
+  // channel 级串行 (opt-in): 走 channel 队列; 同样要防重入 (已在同一 channel 队列任务里 ⇒ 直跑)
+  if (opts.serializeByChannel) {
+    const ch = actor.state.channelId;
+    if (ch) {
+      const q = getChannelQueue(ch);
+      if (channelCtx.getStore() === q) return run();
+      return q.submit(() => channelCtx.run(q, () => actor.submit(() => actorCtx.run(actor, () => run()))));
+    }
+  }
   return actor.submit(run);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// channel 级串行锁 (K5 步骤⑤) —— **能力先落地, 默认不启用**
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * channel 级队列注册表: `channelId → 串行队列`。
+ *
+ * 为什么要它 / 为什么默认不启用 (证据在 `plan-channel-actor.ts` 的 `K5_CHANNEL_LOCK`):
+ *   · **证据**: web 的 channel 只有一个 `currentSessionId` ⇒ 用户消息都投到**同一个会话身份**
+ *     ⇒ 身份级串行 (mailbox) **已经把该 channel 的输入串起来了** —— 验收①在活跃会话上已成立。
+ *   · **能力**: 会话切换 (`[新会话] 已切换`) 后旧会话仍在内存, 此时两个身份可能并行 —— 若要"跨会话切换也串行",
+ *     需要 channel 级锁。
+ *   · **代价**: 同 channel 的**多个 agent** (P2P 多智能体) 也会被串起来 ⇒ 吞吐下降。
+ *     ⇒ 是否全局启用是**意图层**的决定 (leo), 这里只把能力与证据备好, 由台账的 `enabled` 开关控制。
+ */
+const channelQueues = new Map<string, SerialMailbox>();
+
+/** 取(或建)某 channel 的串行队列 */
+export function getChannelQueue(channelId: string): SerialMailbox {
+  const key = channelId || 'default';
+  let q = channelQueues.get(key);
+  if (!q) { q = new SerialMailbox(); channelQueues.set(key, q); }
+  return q;
+}
+
+/** 当前 channel 队列数 (诊断用) */
+export function channelQueueCount(): number {
+  return channelQueues.size;
+}
+
+/** channel 队列上下文 (重入判定用; 与 actorCtx 同理 —— 不许自锁) */
+const channelCtx = new AsyncLocalStorage<SerialMailbox>();

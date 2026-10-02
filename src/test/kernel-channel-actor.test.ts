@@ -18,6 +18,7 @@ import { createAgentSession } from '../agents/pi-sdk-session-factory.js';
 import {
   ACTOR_STATE_ITEMS,
   K5_ACCEPTANCE,
+  K5_CHANNEL_LOCK,
   K5_DELETION_PRECONDITIONS,
   K5_GOAL_BINDING_RULE,
   K5_INHERITED_FIELDS,
@@ -25,8 +26,8 @@ import {
   K5_STEPS,
 } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
-import { ChannelActor, SerialMailbox, actorCount, createActorState, currentActorContext, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
-import { type K5LedgerLike, countEntryExecutionPoints, scanActorLedger, scanEntryDelivery, scanHistoryWriteSites } from '../kernel/gate-scan.js';
+import { ChannelActor, SerialMailbox, actorCount, channelQueueCount, createActorState, currentActorContext, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
+import { type K5LedgerLike, countEntryExecutionPoints, scanActorLedger, scanChannelLock, scanEntryDelivery, scanHistoryWriteSites } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
 const KERNEL = path.join(SRC, 'kernel');
@@ -329,6 +330,72 @@ describe('K5 门: Channel Actor 台账', () => {
     ]);
     expect(seq).toEqual(['1:start', '1:end', '2:start', '2:end']);
     resetActors();
+  });
+
+  it('★ 真跑: channel 级串行锁 (opt-in) —— 同 channel 跨身份排队 / 跨 channel 并行 / 重入不自锁', async () => {
+    resetActors();
+    // ⚠️ `deliverThroughActor` 收的是 **holder** (带 `.actor` 的对象), 不是 actor 本身 ——
+    //   生产调用点传的是 agent session (`session.actor` 由 factory 绑定); 直接传 actor 会走兜底直跑 (实测踩过)。
+    const mk = (ch: string) => { const a = new ChannelActor(); a.state.channelId = ch; return { actor: a }; };
+    const log: string[] = [];
+    const job = (tag: string, ms: number) => async () => {
+      log.push(`${tag}:start`);
+      await new Promise((r) => setTimeout(r, ms));
+      log.push(`${tag}:end`);
+      return tag;
+    };
+    // ① 同 channel、**不同身份** (两个 actor) + 开锁 ⇒ 必须排队 (这是身份锁做不到的那一半)
+    const a1 = mk('ch-1'), a2 = mk('ch-1');
+    await Promise.all([
+      deliverThroughActor(a1, job('x', 30), { serializeByChannel: true }),
+      deliverThroughActor(a2, job('y', 1), { serializeByChannel: true }),
+    ]);
+    expect(log).toEqual(['x:start', 'x:end', 'y:start', 'y:end']);
+    // ② 不开锁 (默认) ⇒ 各自身份各自跑, 短的可先结束 (说明默认没被过度串行化)
+    log.length = 0;
+    await Promise.all([
+      deliverThroughActor(mk('ch-1'), job('p', 30)),
+      deliverThroughActor(mk('ch-1'), job('q', 1)),
+    ]);
+    expect(log).toEqual(['p:start', 'q:start', 'q:end', 'p:end']);
+    // ③ 跨 channel 开锁 ⇒ 互不影响 (真并行)
+    log.length = 0;
+    await Promise.all([
+      deliverThroughActor(mk('ch-A'), job('m', 30), { serializeByChannel: true }),
+      deliverThroughActor(mk('ch-B'), job('n', 1), { serializeByChannel: true }),
+    ]);
+    expect(log).toEqual(['m:start', 'n:start', 'n:end', 'm:end']);
+    // ④ 重入: 已在同 channel 队列的任务里再投递 ⇒ 直跑 (否则自锁)
+    const nested = await deliverThroughActor(mk('ch-1'), async () => {
+      const inner = await deliverThroughActor(mk('ch-1'), async () => 'inner', { serializeByChannel: true });
+      return `outer(${inner})`;
+    }, { serializeByChannel: true });
+    expect(nested).toBe('outer(inner)');
+    // ⑤ channelId 为空的 actor 开锁也安全 (退回身份级)
+    expect(await deliverThroughActor({ actor: new ChannelActor() }, async () => 'ok', { serializeByChannel: true })).toBe('ok');
+    // ⑥ 把 actor **直接**当 holder 传 ⇒ 走兜底直跑 (不算投递) —— 这条守住"holder 语义"不被误用
+    const bare = new ChannelActor();
+    expect(await deliverThroughActor(bare, async () => 'bare', { serializeByChannel: true })).toBe('bare');
+    expect((bare as any).mailbox.processed).toBe(0);
+    resetActors();
+    expect(channelQueueCount()).toBe(0);
+  });
+
+  it('★ 判据: channel 级串行锁的开关必须与盘上事实一致 (双向)', () => {
+    const files = ['web/server.ts', 'web/routes-tasks.ts', 'index.ts', 'agents/runner-resolver.ts'];
+    const sources = files.map((file) => ({ file, text: fs.readFileSync(path.join(SRC, file), 'utf-8') }));
+    // 台账与盘上一致 (当前: 能力已备, 未启用)
+    expect(scanChannelLock(sources, K5_CHANNEL_LOCK)).toEqual([]);
+    expect(K5_CHANNEL_LOCK.available).toBe(true);
+    expect(K5_CHANNEL_LOCK.enabled).toBe(false);
+    expect(K5_CHANNEL_LOCK.callSites).toBe(0);
+    // 判别力: 台账说启用但盘上没有 ⇒ 红; 台账说没启用但盘上有 ⇒ 红; 数量不符 ⇒ 红
+    expect(scanChannelLock(sources, { enabled: true, callSites: 0 })
+      .some((f) => f.rule === 'channel-lock-mismatch')).toBe(true);
+    expect(scanChannelLock([{ file: 'x.ts', text: 'deliverThroughActor(a, r, { serializeByChannel: true });' }], { enabled: false, callSites: 0 })
+      .some((f) => f.rule === 'channel-lock-mismatch')).toBe(true);
+    expect(scanChannelLock([{ file: 'x.ts', text: 'deliverThroughActor(a, r, { serializeByChannel: true });' }], { enabled: true, callSites: 2 })
+      .some((f) => f.rule === 'channel-lock-mismatch')).toBe(true);
   });
 
   it('★ 判据: 入口投递的进度必须能**从盘上重算** (自报无效 · 逐文件表)', () => {

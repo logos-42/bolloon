@@ -141,6 +141,24 @@ export const AGENT_ENTRY_METHODS: readonly string[] = [
   'prompt', 'promptStream', 'promptWithPivotLoop', 'summarizeDocument', 'improveDocument',
 ];
 
+/**
+ * **K5 步骤⑤ channel 级串行锁的状态** (数据; 判据要求 `enabled` 与盘上调用点数一致):
+ *   · 证据 (为什么默认不启用): web 的 channel 只有一个 `currentSessionId` ⇒ 用户消息都投到**同一个会话身份**
+ *     ⇒ 身份级串行 (mailbox) **已经把这个 channel 的活跃会话串起来了** (验收①在活跃会话上已成立);
+ *   · 什么时候才需要它: 会话切换后旧会话仍在内存 ⇒ 两个身份可能并行 (**各写自己的 history, 无污染**);
+ *     若要"跨会话切换也串行", 才需要 channel 级锁;
+ *   · 代价: 同 channel 的**多个 agent** (P2P 多智能体) 也会被串起来 ⇒ 吞吐下降。
+ *   ⇒ 是否全局启用 = **意图层决定** (leo); 能力 (`deliverThroughActor(..., {serializeByChannel:true})`) 已备好。
+ */
+export const K5_CHANNEL_LOCK = {
+  available: true,
+  enabled: false,
+  /** 盘上真正传了 `serializeByChannel: true` 的调用点数量 (判据从盘上重算, 不许自报) */
+  callSites: 0,
+  /** 证据出处 (一 channel 一活跃会话身份) */
+  evidence: 'web/server.ts:1566-1567 — channel.currentSessionId ⇒ sessionKey = <channelId>:<currentSessionId>',
+} as const;
+
 /** 入口 → 文件分组 (判据做**双向**校验: 说完成 ⇒ 其文件必须全接完; 说没完成 ⇒ 必须真有文件没接完) */
 export const K5_ENTRY_GROUPS: readonly { entry: string; files: readonly string[]; wired: boolean }[] = [
   { entry: 'web', files: ['web/server.ts', 'web/routes-tasks.ts'], wired: true },

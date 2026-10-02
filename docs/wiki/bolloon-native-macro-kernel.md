@@ -1153,3 +1153,41 @@ P2P 入站处理的是 `summarize` / `improve` 任务, 它调的是 **`a.summari
 用行号手术搬移台账里的常量块时把文件**改坏了两轮** (注释头被吃、声明重复、大段内容被删)。
 ⇒ 正确的收尾方式: **`git checkout HEAD -- <file>` 恢复该文件到上一提交, 再按正确顺序重落改动**。
    ⚠️ 注意 `git checkout -- <file>` 是**从索引恢复** —— 若坏内容已被 `git add` 过, 它不会回退; 必须显式写 `HEAD`。
+
+## 38. K5 步骤⑤: channel 级串行锁 (能力落地 + 证据 + 明示开关, 不静默过度串行)
+
+### 38.1 先取证据, 再决定要不要真改行为
+
+| 事实 | 出处 |
+| --- | --- |
+| web 的 channel 只有**一个** `currentSessionId` ⇒ `sessionKey = <channelId>:<currentSessionId>` | `web/server.ts:1566-1567` |
+| 会话可切换 (`[新会话] 已切换到: …`), 旧会话仍留在内存 | `web/client.ts:1004` + `channelSessions` 缓存 |
+| 切换后两个身份**各写自己的 history** (无污染) —— 污染风险只来自"同身份并发" | K5 第 4 步: history 本体按**会话身份**归属 |
+
+⇒ **结论**: 活跃会话上, **身份级串行已经等价于 channel 级串行** (用户消息都投到同一个身份)。
+channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代价是**同 channel 的多 agent (P2P) 也被串起来**。
+⇒ 这一步**不静默改行为**: 把能力落地 + 证据写进台账 + 开关明示, 是否全局启用是**意图层**的决定。
+
+### 38.2 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| `channel-actor.ts` | `channelQueues` 注册表 + `getChannelQueue(channelId)` + `channelQueueCount()`; `channelCtx` (ALS) 防**重入自锁**; `deliverThroughActor(holder, run, { serializeByChannel })` (opt-in, 默认 false); `resetActors()` 一并清空 channel 队列 |
+| `plan-channel-actor.ts` | `K5_CHANNEL_LOCK = { available: true, enabled: false, callSites: 0, evidence: 'web/server.ts:1566-1567 …' }` |
+| `gate-scan.ts` | `scanChannelLock(sources, lock)` —— **双向**: 启用 ⇒ 必须真有调用点传 `serializeByChannel:true`; 未启用 ⇒ 一个都不许有; `callSites` 必须等于盘上计数 |
+
+### 38.3 真跑验证 (6 组)
+
+| 用例 | 断言 |
+| --- | --- |
+| **同 channel 跨身份排队** (身份锁做不到的那一半) | 两个 actor 同 `channelId` + 开锁 ⇒ `x:start x:end y:start y:end` |
+| **默认不开锁** | 同 channel 两个身份默认各跑各的 (短的先结束) ⇒ 证明**没有**被过度串行化 |
+| **跨 channel 开锁仍并行** | `m:start n:start n:end m:end` |
+| **重入不自锁** | 已在同 channel 队列的任务里再投递 ⇒ 直跑 (返回 `outer(inner)`) |
+| **空 channelId** | 开锁也安全 ⇒ 退回身份级 |
+| **holder 语义守门** | 把 **actor 本身**当 holder 传 ⇒ 走兜底直跑且 `mailbox.processed === 0` |
+
+### 38.4 一个自伤的测试 bug (值得记)
+
+新用例第一版全红: 我把 **actor 本身**当成 holder 传进去 (`deliverThroughActor(actor, …)`) —— 而该函数收的是**带 `.actor` 的 holder** (生产里传的是 agent session)。
+⇒ 症状是"开了锁却不排队, 连 mailbox 都没走" (`pending` 全 0)。教训: **症状指向"没进队"时, 先怀疑参数形状, 再怀疑队列实现**; 并补了一条"holder 语义守门"用例把这种误用钉住。
