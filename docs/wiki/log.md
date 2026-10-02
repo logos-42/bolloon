@@ -585,7 +585,8 @@ leo: 「完成 k0-k10 后, 确保 Web 渲染回复成功, cli 端正常, 手机�
 ### 未做 / 如实
 - **IPA 未重打** (本机无 Xcode) ⇒ `check-native-artifacts.mjs` 的 IPA 项仍红; Android APK 亦未在本机构建。
 - 发布件是 **npm + Release**; 没有推 APK / IPA 下载通道 (与 0.5.4/0.5.5 同形)。
-- `verify-release.mjs 0.6.0 --install-check` (消费端真装 + 0 警告) 结果见下表补记。
+- `verify-release.mjs 0.6.0 --install-check` (**发布后硬门, 真跑**): **硬门全过 (1 项提醒)** —— package.json 版本一致 · 工作区干净 · registry 有 0.6.0 (共 149 版) · `latest == 0.6.0` · shasum/integrity 对上 · tarball 可下载 200 · tarball 内版本一致 · 含 `dist/cli-entry.js` · **`npm install -g` 真装成功** · 装完 `bolloon --version json` 可解析且 `packageVersion=0.6.0` / `installMethod=npm-global` · `bolloon update --dry-run` 结构正确 (blockers=0)。
+  - 首跑时的提醒是「没有 v0.6.0 tag」—— **因为它比推 tag 早跑 2 分钟**(脚本 14:37 启动 / tag 14:39 推送); 重跑后该行变为「tag=85c140c HEAD=15d6c72」(tag 指向**版本提交**, HEAD 是之后的两笔 wiki 提交)⇒ 属预期, 三处对齐成立。
 
 ### [2026-10-02] fix | Web 端回复不渲染: 根因是浏览器侧模块链顶层裸读 `process.env`
 
