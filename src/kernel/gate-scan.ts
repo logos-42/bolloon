@@ -1308,8 +1308,8 @@ export type K8SiteKindName = (typeof K8_SITE_KINDS)[number];
 export interface K8LedgerLike {
   faces: readonly string[];
   sites: readonly { file: string; count: number; kind: string; faces: readonly string[]; why?: string }[];
-  perChannel: readonly { file: string; kind: string; why?: string }[];
-  progress: { directSites: number; perChannelStateFiles: number };
+  perChannel: readonly { file: string; kind: string; why?: string; symbols?: readonly string[] }[];
+  progress: { directSites: number; perChannelStateFiles: number; perChannelStateSymbols?: number };
 }
 
 /** transport→agent 直连的**唯一口径**: 剥注释后数 `.promptStream(` / `.prompt(` */
@@ -1348,6 +1348,65 @@ export function scanCommunicationLedger(
   }
   if (ledger.perChannel.length !== ledger.progress.perChannelStateFiles) {
     f(`各通道自带状态文件数 ${ledger.perChannel.length} ≠ progress.perChannelStateFiles ${ledger.progress.perChannelStateFiles}`);
+  }
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// K8 第二步: "各通道自带状态" 台账 —— 判据 (按**符号**核, 不按行号)
+//
+// 为什么按符号: 行号会随任何编辑漂 (K7 真发生过: 台账写 4144, 插 35 行后变 4176 而没人发现)。
+// 为什么每个符号都要真: "看起来该有" 不算 —— 台账里写一个盘上没有的符号 = 台账撒谎。
+// ════════════════════════════════════════════════════════════════════════════════
+
+export interface ChannelStateLedgerLike {
+  sites: readonly { file: string; kind: string; why?: string; symbols?: readonly string[] }[];
+  progress: { perChannelStateFiles: number; perChannelStateSymbols?: number };
+}
+
+/** 数"通道自带状态"的符号总数 (口径: 台账里登记过的符号个数) */
+export function countChannelStateSymbols(ledger: ChannelStateLedgerLike): number {
+  return ledger.sites.reduce((n, s) => n + (s.symbols?.length ?? 0), 0);
+}
+
+export function scanChannelStateLedger(
+  ledger: ChannelStateLedgerLike,
+  opts: { readFile: (rel: string) => string | null },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'k8-channel-state', file: 'kernel/plan-communication.ts', line: 1, what });
+
+  // 0) 台账文本里不许出现行号 (抓自然写法)
+  const LINE_REF = /\(\s*\d{2,5}\s*[,)]|:\d{2,5}\b|第\s*\d{2,5}\s*行/;
+  for (const s of ledger.sites) {
+    const text = `${s.file} ${s.kind} ${s.why ?? ''} ${(s.symbols ?? []).join(' ')}`;
+    if (LINE_REF.test(text)) f(`通道状态台账写了行号 ⇒ 改按符号记: ${s.file}`);
+  }
+
+  // 1) 逐符号核"真在该文件里"
+  let total = 0;
+  for (const s of ledger.sites) {
+    const src = opts.readFile(s.file);
+    if (src === null) { f(`各通道状态台账里的文件读不出来 ⇒ 拒跑: ${s.file}`); continue; }
+    const code = stripJsComments(src);
+    const syms = s.symbols ?? [];
+    if (syms.length === 0 && !/纯存储|无自带|none/i.test(s.why ?? '')) {
+      f(`${s.file} 符号表为空却没说清"无自带状态" (空表要显式声明, 不许静默留白)`);
+    }
+    for (const sym of syms) {
+      total += 1;
+      const re = new RegExp(`(^|[^\\w$])${sym.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w$]|$)`);
+      if (!re.test(code)) f(`${s.file} 的通道状态符号盘上找不到: ${sym} (台账=有 · 盘上=无)`);
+    }
+  }
+
+  // 2) 自洽: 文件数 == progress; 符号数 == progress (棘轮: 只许减)
+  if (ledger.sites.length !== ledger.progress.perChannelStateFiles) {
+    f(`各通道状态文件数 台账=${ledger.sites.length} progress=${ledger.progress.perChannelStateFiles}`);
+  }
+  const budget = ledger.progress.perChannelStateSymbols;
+  if (typeof budget === 'number' && total > budget) {
+    f(`通道自带状态符号数超棘轮: 盘上=${total} > 预算=${budget} (新增自带状态必须走 router/mailbox, 不许再长)`);
   }
   return out;
 }
