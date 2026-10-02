@@ -1879,6 +1879,22 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 
 **如实**: 本步**只做量测 + 记账**, 通信行为零改变; router 层与"各通道状态归一"是后续刀。
 
+### K8 口径修正 (逐符号定性 · 2026-10-02)
+
+台账里"文件里出现的状态符号" **不等于** "通道自己的 outbound/重试/恢复"。逐符号读源码后定性:
+
+| 符号 (web/server.ts) | 定性 | 为什么不属 K8 收口范围 |
+|---|---|---|
+| `messageQueue` | `ui-state` | `(global as any)` 上的 **Web UI 通知列表** (pending/已读) ⇒ 展示状态 |
+| `pendingFriendRequests` · `PENDING_FRIEND_REQ_FILE` | `domain-pending` | **好友申请待办** (业务审批数据, 落盘恢复) ⇒ 业务状态 |
+| `maxAttempts` | `infra-retry` | HTTP `listen` 的 **EADDRINUSE 重试上限** ⇒ 进程启动基础设施 |
+| `didFixQueue` · `deliveryLedger` | `k8-target` | 待修复 channelId 队列 · SSE 逐客户端连败计数 ⇒ **真出站/修复状态** |
+
+⇒ **35** 个状态符号中, **31** 个属 K8 收口对象 (`k8TargetSymbols: 31` 棘轮**只压在它上面**)。
+门强制: 标成范围外**必须写明理由** (不许拿 scope 当静默豁免) + scope 只能取四个合法值 + 符号总数与 progress 双向一致。
+
+把 UI 展示状态当收口对象是**伪收口** —— 那会把"收口目标"冲淡成"看起来在减"。
+
 ### K8 第二步 (router 层 · 2026-10-02)
 
 **关键发现: router 的"半身"已经存在** —— `PiAgentSession.runExecution(req: ExecutionRequest)` (K5 步骤⑦ 建的):

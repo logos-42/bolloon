@@ -68,20 +68,26 @@ describe('K8 台账门: Communication Runtime 收口', () => {
 describe('K8 第二步门: 各通道自带状态台账 (按符号核, 不按行号)', () => {
   it('① 真跑: 35 个状态符号**逐个**在盘上真实存在 (零 finding)', () => {
     expect(scanChannelStateLedger(STATE, { readFile })).toEqual([]);
-    expect(countChannelStateSymbols(STATE)).toBe(K8_PROGRESS.perChannelStateSymbols);
-    expect(countChannelStateSymbols(STATE)).toBe(35);
+    // 口径: 35 个是"文件里出现的状态符号", 其中 **31 个**才是 K8 要收口的对象
+    expect(countChannelStateSymbols(STATE)).toEqual({ total: 35, target: 31 });
+    expect(countChannelStateSymbols(STATE).total).toBe(K8_PROGRESS.perChannelStateSymbols);
+    expect(countChannelStateSymbols(STATE).target).toBe(K8_PROGRESS.k8TargetSymbols);
     expect(K8_PER_CHANNEL_STATE).toHaveLength(10);
+    // 范围外符号必须逐条写明理由 (不许静默豁免)
+    const outOfScope = K8_PER_CHANNEL_STATE.flatMap((e) => e.symbols).filter((s) => s.scope !== 'k8-target');
+    expect(outOfScope).toHaveLength(4);
+    for (const s of outOfScope) expect((s.note ?? '').length).toBeGreaterThan(5);
   });
 
   it('② 判别力: 坏样本用**不可能撞上真值**的符号 (__noSuchSymbol__) ⇒ 判红', () => {
-    const bad = { sites: [{ ...K8_PER_CHANNEL_STATE[0], symbols: ['__noSuchSymbol__'] }], progress: { perChannelStateFiles: 1, perChannelStateSymbols: 1 } };
+    const bad = { sites: [{ ...K8_PER_CHANNEL_STATE[0], symbols: [{ name: '__noSuchSymbol__', scope: 'k8-target' }] }], progress: { perChannelStateFiles: 1, perChannelStateSymbols: 1, k8TargetSymbols: 1 } };
     const fs2 = scanChannelStateLedger(bad, { readFile });
     expect(fs2.some((x) => /盘上找不到: __noSuchSymbol__/.test(x.what))).toBe(true);
     expect(fs2.some((x) => /盘上=无/.test(x.what))).toBe(true);
   });
 
   it('② 判别力: 文件读不出来 ⇒ **拒跑** (不是"跳过")', () => {
-    const bad = { sites: [{ file: 'src/__nope__.ts', kind: 'outbox', symbols: ['x'], why: 'x' }], progress: { perChannelStateFiles: 1, perChannelStateSymbols: 1 } };
+    const bad = { sites: [{ file: 'src/__nope__.ts', kind: 'outbox', symbols: [{ name: 'x', scope: 'k8-target' }], why: 'x' }], progress: { perChannelStateFiles: 1, perChannelStateSymbols: 1, k8TargetSymbols: 1 } };
     expect(scanChannelStateLedger(bad, { readFile }).some((x) => /拒跑/.test(x.what))).toBe(true);
   });
 
@@ -97,9 +103,24 @@ describe('K8 第二步门: 各通道自带状态台账 (按符号核, 不按行�
     expect(scanChannelStateLedger(bad, { readFile }).some((x) => /空表要显式声明/.test(x.what))).toBe(true);
   });
 
-  it('② 棘轮: 符号数超预算 ⇒ 判红 (新增自带状态必须走 router/mailbox)', () => {
-    const bad = { sites: K8_PER_CHANNEL_STATE, progress: { ...K8_PROGRESS, perChannelStateSymbols: 34 } };
+  it('② 棘轮: K8 收口对象符号数超预算 ⇒ 判红 (新增自带 outbound/重试/恢复必须走 router/mailbox)', () => {
+    const bad = { sites: K8_PER_CHANNEL_STATE, progress: { ...K8_PROGRESS, k8TargetSymbols: 30 } };
     expect(scanChannelStateLedger(bad, { readFile }).some((x) => /超棘轮/.test(x.what))).toBe(true);
+  });
+
+  it('② 判别力: 符号总数与 progress 不符 ⇒ 判红 (增了要登记, 减了要同步)', () => {
+    const bad = { sites: K8_PER_CHANNEL_STATE, progress: { ...K8_PROGRESS, perChannelStateSymbols: 99 } };
+    expect(scanChannelStateLedger(bad, { readFile }).some((x) => /符号总数/.test(x.what))).toBe(true);
+  });
+
+  it('② 判别力: 标成"范围外"却不写理由 ⇒ 判红 (不许拿 scope 当静默豁免)', () => {
+    const bad = { sites: [{ ...K8_PER_CHANNEL_STATE[3], symbols: [{ name: 'messageQueue', scope: 'ui-state' }] }], progress: { perChannelStateFiles: 1, perChannelStateSymbols: 1, k8TargetSymbols: 0 } };
+    expect(scanChannelStateLedger(bad, { readFile }).some((x) => /不许静默豁免/.test(x.what))).toBe(true);
+  });
+
+  it('② 判别力: scope 非法 ⇒ 判红', () => {
+    const bad = { sites: [{ ...K8_PER_CHANNEL_STATE[3], symbols: [{ name: 'didFixQueue', scope: 'whatever' }] }], progress: { perChannelStateFiles: 1, perChannelStateSymbols: 1, k8TargetSymbols: 1 } };
+    expect(scanChannelStateLedger(bad, { readFile }).some((x) => /scope 非法/.test(x.what))).toBe(true);
   });
 
   it('③ ★ 真盘变异: 把符号从**盘上副本**里删掉 ⇒ 门必须判红 (证明它读的是源码, 不是台账)', () => {

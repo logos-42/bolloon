@@ -1359,14 +1359,24 @@ export function scanCommunicationLedger(
 // 为什么每个符号都要真: "看起来该有" 不算 —— 台账里写一个盘上没有的符号 = 台账撒谎。
 // ════════════════════════════════════════════════════════════════════════════════
 
+export const K8_STATE_SCOPE_NAMES = ['k8-target', 'ui-state', 'domain-pending', 'infra-retry'] as const;
+export type K8StateScopeName = (typeof K8_STATE_SCOPE_NAMES)[number];
+
 export interface ChannelStateLedgerLike {
-  sites: readonly { file: string; kind: string; why?: string; symbols?: readonly string[] }[];
-  progress: { perChannelStateFiles: number; perChannelStateSymbols?: number };
+  sites: readonly {
+    file: string; kind: string; why?: string;
+    symbols?: readonly { name: string; scope: string; note?: string }[];
+  }[];
+  progress: { perChannelStateFiles: number; perChannelStateSymbols?: number; k8TargetSymbols?: number };
 }
 
-/** 数"通道自带状态"的符号总数 (口径: 台账里登记过的符号个数) */
-export function countChannelStateSymbols(ledger: ChannelStateLedgerLike): number {
-  return ledger.sites.reduce((n, s) => n + (s.symbols?.length ?? 0), 0);
+/** 数"通道自带状态"的符号数 (总 / 其中属 K8 收口对象的) */
+export function countChannelStateSymbols(ledger: ChannelStateLedgerLike): { total: number; target: number } {
+  let total = 0, target = 0;
+  for (const s of ledger.sites) {
+    for (const sym of s.symbols ?? []) { total += 1; if (sym.scope === 'k8-target') target += 1; }
+  }
+  return { total, target };
 }
 
 export function scanChannelStateLedger(
@@ -1379,12 +1389,12 @@ export function scanChannelStateLedger(
   // 0) 台账文本里不许出现行号 (抓自然写法)
   const LINE_REF = /\(\s*\d{2,5}\s*[,)]|:\d{2,5}\b|第\s*\d{2,5}\s*行/;
   for (const s of ledger.sites) {
-    const text = `${s.file} ${s.kind} ${s.why ?? ''} ${(s.symbols ?? []).join(' ')}`;
+    const text = `${s.file} ${s.kind} ${s.why ?? ''} ${(s.symbols ?? []).map((x) => `${x.name} ${x.note ?? ''}`).join(' ')}`;
     if (LINE_REF.test(text)) f(`通道状态台账写了行号 ⇒ 改按符号记: ${s.file}`);
   }
 
-  // 1) 逐符号核"真在该文件里"
-  let total = 0;
+  // 1) 逐符号核"真在该文件里" + 逐符号定性必须齐全
+  let total = 0, target = 0;
   for (const s of ledger.sites) {
     const src = opts.readFile(s.file);
     if (src === null) { f(`各通道状态台账里的文件读不出来 ⇒ 拒跑: ${s.file}`); continue; }
@@ -1395,18 +1405,30 @@ export function scanChannelStateLedger(
     }
     for (const sym of syms) {
       total += 1;
-      const re = new RegExp(`(^|[^\\w$])${sym.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w$]|$)`);
-      if (!re.test(code)) f(`${s.file} 的通道状态符号盘上找不到: ${sym} (台账=有 · 盘上=无)`);
+      if (sym.scope === 'k8-target') target += 1;
+      if (!K8_STATE_SCOPE_NAMES.includes(sym.scope as K8StateScopeName)) {
+        f(`${s.file} 的符号 ${sym.name} scope 非法: ${sym.scope} (只能是 ${K8_STATE_SCOPE_NAMES.join(' / ')})`);
+      }
+      // 范围外符号**必须**写明为什么不算 —— 不许拿"范围外"当静默豁免
+      if (sym.scope !== 'k8-target' && (sym.note ?? '').trim().length < 6) {
+        f(`${s.file} 的 ${sym.name} 标了 scope=${sym.scope} 却没写明理由 ⇒ 不许静默豁免`);
+      }
+      const re = new RegExp(`(^|[^\\w$])${sym.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w$]|$)`);
+      if (!re.test(code)) f(`${s.file} 的通道状态符号盘上找不到: ${sym.name} (台账=有 · 盘上=无)`);
     }
   }
 
-  // 2) 自洽: 文件数 == progress; 符号数 == progress (棘轮: 只许减)
+  // 2) 自洽 + 棘轮
   if (ledger.sites.length !== ledger.progress.perChannelStateFiles) {
     f(`各通道状态文件数 台账=${ledger.sites.length} progress=${ledger.progress.perChannelStateFiles}`);
   }
-  const budget = ledger.progress.perChannelStateSymbols;
-  if (typeof budget === 'number' && total > budget) {
-    f(`通道自带状态符号数超棘轮: 盘上=${total} > 预算=${budget} (新增自带状态必须走 router/mailbox, 不许再长)`);
+  const totalBudget = ledger.progress.perChannelStateSymbols;
+  if (typeof totalBudget === 'number' && total !== totalBudget) {
+    f(`通道状态符号总数 台账=${total} progress=${totalBudget} (增了要登记, 减了要同步)`);
+  }
+  const targetBudget = ledger.progress.k8TargetSymbols;
+  if (typeof targetBudget === 'number' && target > targetBudget) {
+    f(`K8 收口对象符号数超棘轮: 盘上=${target} > 预算=${targetBudget} (新增通道自带 outbound/重试/恢复必须走 router/mailbox)`);
   }
   return out;
 }

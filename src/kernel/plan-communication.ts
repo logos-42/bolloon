@@ -66,46 +66,66 @@ export const K8_TRANSPORT_AGENT_SITES: readonly K8Site[] = [
 /** 各通道自带的出站/重试/恢复状态 (K8 验收: "无各通道自己的重试/任务恢复/outbound 状态")
  *
  * 纪律: **按符号记, 不按行号** —— 行号会漂 (K7 已发生过一次), 门的核法 = "该符号真在该文件里"。
- * 每个符号都在盘上真实存在 (2026-10-02 量测), 不是"看起来该有"。
+ * 口径 (2026-10-02 逐符号定性, 修正过一次): 每个符号必须带 **scope** —— 因为"文件里出现的状态"
+ * 不等于"通道自己的 outbound/重试/恢复"。把 UI 展示状态当收口对象是**伪收口**。
  */
+export const K8_STATE_SCOPES = ['k8-target', 'ui-state', 'domain-pending', 'infra-retry'] as const;
+export type K8StateScope = (typeof K8_STATE_SCOPES)[number];
+
+export interface K8StateSymbol {
+  name: string;
+  scope: K8StateScope;
+  /** scope ≠ k8-target 时**必须**写清为什么不算 (不许静默豁免) */
+  note?: string;
+}
+
 export interface K8PerChannelState {
   file: string;
   kind: 'outbox' | 'retry' | 'resume' | 'delivery-ledger' | 'none';
-  /** 该文件里**真正承载**通道状态/重试/恢复的符号 (盘上实有) */
-  symbols: readonly string[];
+  /** 该文件里真正承载状态/重试/恢复的符号 (盘上实有) + 各自定性 */
+  symbols: readonly K8StateSymbol[];
   why: string;
 }
 
+const T = (name: string): K8StateSymbol => ({ name, scope: 'k8-target' });
+
 export const K8_PER_CHANNEL_STATE: readonly K8PerChannelState[] = [
   { file: 'src/network/p2p-outbox.ts', kind: 'outbox',
-    symbols: ['outbox', 'outboxFile', 'outboxStats', 'totalQueued', 'sendOrQueue', 'queueOnly', 'flushAllOutboxes'],
+    symbols: ['outbox', 'outboxFile', 'outboxStats', 'totalQueued', 'sendOrQueue', 'queueOnly', 'flushAllOutboxes'].map(T),
     why: 'P2P 出站队列 (通道自己的 outbound 状态 + 自己的 flush 时机)' },
   { file: 'src/web/delivery-ledger.ts', kind: 'delivery-ledger',
-    symbols: ['DeliveryLedger', 'DeliveryRecord', 'DeliveryState', 'LedgerStats'],
+    symbols: ['DeliveryLedger', 'DeliveryRecord', 'DeliveryState', 'LedgerStats'].map(T),
     why: '投递台账 (通道自己的投递状态机)' },
   { file: 'src/web/server-v3-p2p.ts', kind: 'retry',
-    symbols: ['v3PendingHistoryGets', 'getV3PendingHistoryGets'],
+    symbols: ['v3PendingHistoryGets', 'getV3PendingHistoryGets'].map(T),
     why: 'P2P 侧挂起的 history 取回 (通道自己的待办 + 恢复路径)' },
   { file: 'src/web/server.ts', kind: 'retry',
-    symbols: ['messageQueue', 'pendingFriendRequests', 'PENDING_FRIEND_REQ_FILE', 'didFixQueue', 'deliveryLedger', 'maxAttempts'],
-    why: 'web 通道内联的队列/待办/重试 (与上面两处并非同一套 ⇒ 典型"各通道一套")' },
+    symbols: [
+      T('didFixQueue'),
+      T('deliveryLedger'),   // SSE ping 用的 per-client 连败计数 ⇒ 真出站状态
+      { name: 'messageQueue', scope: 'ui-state', note: '`(global as any)` 上的 **Web UI 通知列表** (pending/已读) ⇒ 展示状态, 不是 outbound/重试/恢复' },
+      { name: 'pendingFriendRequests', scope: 'domain-pending', note: '**好友申请待办** (业务审批数据, 落盘恢复) ⇒ 业务状态, 不是投递状态' },
+      { name: 'PENDING_FRIEND_REQ_FILE', scope: 'domain-pending', note: '同上: 好友申请待办的落盘文件' },
+      { name: 'maxAttempts', scope: 'infra-retry', note: 'HTTP `listen` 的 **EADDRINUSE 重试上限** ⇒ 进程启动基础设施, 不是通道出站' },
+    ],
+    why: 'web 通道内联的真状态: 待修复 channelId 队列 + SSE 投递连败计数 (其余三个符号经逐个定性后**不属于** K8 收口范围, 逐条写明原因)' },
   { file: 'src/cli-entry.ts', kind: 'resume',
-    symbols: ['resumeId'],
+    symbols: [T('resumeId')],
     why: 'CLI 侧会话恢复' },
   { file: 'src/network/peer-fs.ts', kind: 'outbox',
-    symbols: ['OutboxEntry', 'enqueueOutbox', 'readOutbox', 'countOutbox', 'clearOutbox', 'getPeerOutboxPath'],
+    symbols: ['OutboxEntry', 'enqueueOutbox', 'readOutbox', 'countOutbox', 'clearOutbox', 'getPeerOutboxPath'].map(T),
     why: '文件传输侧出站 (落盘 outbox, 与 p2p-outbox 又一套)' },
   { file: 'src/agents/contacts/store.ts', kind: 'none', symbols: [],
     why: '纯存储: **无**自带出站/重试/恢复状态 (显式记 none, 不是"忘了填")' },
   { file: 'src/agents/contacts/providers.ts', kind: 'retry',
-    symbols: ['DeliverResult', 'OTP_MAX_ATTEMPTS', 'smtpDeliver'],
+    symbols: ['DeliverResult', 'OTP_MAX_ATTEMPTS', 'smtpDeliver'].map(T),
     why: '联系人通道自己的投递结果与重试上限' },
   { file: 'src/agents/p2p-chat-tools.ts', kind: 'outbox',
-    symbols: ['outboxPath', 'processPendingInbox'],
+    symbols: ['outboxPath', 'processPendingInbox'].map(T),
     why: 'P2P 聊天工具侧出站 + 待办处理' },
   { file: 'src/agents/task/task-runner.ts', kind: 'resume',
-    symbols: ['ResumeResult', 'resumeTask', 'redelivered', 'refetchDeliveredContent'],
-    why: '任务运行器自带恢复 (含"重投递"语义)' },
+    symbols: ['ResumeResult', 'resumeTask', 'redelivered', 'refetchDeliveredContent'].map(T),
+    why: '任务运行器自带恢复 (含 x402 内容重取/重投递语义)' },
 ];
 
 export const K8_ACCEPTANCE: readonly string[] = [
@@ -122,13 +142,16 @@ export interface K8Progress {
   directSites: number;
   /** 台账落地时"各通道自带状态"的文件数 (棘轮基线) */
   perChannelStateFiles: number;
-  /** 台账落地时"通道自带状态"的**符号数** (棘轮基线: 收口过程中只许减) */
+  /** 台账落地时"通道自带状态"的**符号数** (含范围外符号) */
   perChannelStateSymbols: number;
+  /** 只算 **k8-target**: 这才是 K8 要收口的对象 (棘轮: 只许减) */
+  k8TargetSymbols: number;
 }
 
 export const K8_PROGRESS: K8Progress = {
   stage: 'ledger-landed',
   directSites: 0,   // 12 → 10 (K8 第二步) → 7 (第三步: server.ts 3 处零差量迁移) (2026-10-02: routes-tasks / runner-resolver 两处已走唯一入口; 棘轮只许减)
   perChannelStateFiles: 10,
-  perChannelStateSymbols: 35,   // 2026-10-02 量测: 10 文件 / 35 个真状态符号 (棘轮只许减)
+  perChannelStateSymbols: 35,   // 2026-10-02 量测: 10 文件 / 35 个状态符号 (含 4 个范围外)
+  k8TargetSymbols: 31,          // 其中 **31** 个属 K8 收口对象 (棘轮只许减); 4 个经定性不属范围
 };
