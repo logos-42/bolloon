@@ -4394,6 +4394,24 @@ async function runToolCommand(
       case 'harness-skill': {
         if (!harness) {
           harness = createBollharnessIntegration();
+          // 2026-10-02 (K7): **生产活路径必须过门** —— 这条路径原先直调 registry (skill 旁路)。
+          //   门 = PiAgentSession 的 Harness 判定 (`createSkillGuard()`, 只给判定; 执行仍在 adapter 的唯一执行点)。
+          //   **fail-closed**: 门建不起来 ⇒ 注入 deny-all (拒绝执行), 绝不留"没门"状态 ——
+          //   "门坏了静默等于没门"比没门更危险 (与 pivot loop / adapter 同一条纪律)。
+          try {
+            const gateSession = await createAgentSession({ cwd: process.cwd(), peerId: 'harness-skill' });
+            if (typeof gateSession.createSkillGuard !== 'function') {
+              throw new Error('该 session 实现未提供 createSkillGuard');
+            }
+            harness.setSkillGuard(gateSession.createSkillGuard());
+          } catch (guardErr) {
+            console.warn(`[K7] skill 门未能建立 ⇒ fail-closed (拒绝执行): ${String((guardErr as Error)?.message || guardErr)}`);
+            harness.setSkillGuard(async () => ({
+              allow: false,
+              rejectedBy: 'harness-unavailable',
+              reason: `skill 门未能建立: ${String((guardErr as Error)?.message || guardErr).slice(0, 120)}`,
+            }));
+          }
         }
         const [skillName, action] = args;
         if (!skillName) {

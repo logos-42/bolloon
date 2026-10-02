@@ -172,6 +172,11 @@ export interface HeartbeatConfig {
 import type { ChannelActor, ExecutionRequest } from '../kernel/channel-actor.js';
 
 export interface AgentSession {
+  /**
+   * 2026-10-02 (K7): skill 门工厂 (**只给判定**, 不含执行)。可选: 不是每个实现都提供;
+   * 调用方拿不到必须 **fail-closed** (注入 deny-all), 不许因为"没门"就放行。
+   */
+  createSkillGuard?(): (name: string, params: Record<string, unknown>) => Promise<{ allow: boolean; reason?: string; rejectedBy?: string }>;
   /** K5: 本会话的 Actor (由 session factory 在**会话身份已知时**绑定; 状态迁移见 plan-channel-actor.ts) */
   actor?: ChannelActor;
   /** K5 第 4 步: 绑定 actor 并收养绑定前已有的本地历史 (注册键必须是会话身份) */

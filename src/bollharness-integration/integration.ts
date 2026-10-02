@@ -278,7 +278,7 @@ export class BollharnessIntegration {
    * **零依赖** (分层干净, 不许反向 import), 所以门只能由**高层注入**到这里, 再透传给 adapter。
    * 未注入 ⇒ skill 执行与以前一字不差。
    */
-  setSkillGuard(guard: (name: string, params: Record<string, unknown>) => Promise<string>): void {
+  setSkillGuard(guard: (name: string, params: Record<string, unknown>) => Promise<{ allow: boolean; reason?: string; rejectedBy?: string }>): void {
     this.skillAdapter.setGuardedExecute(guard);
   }
 

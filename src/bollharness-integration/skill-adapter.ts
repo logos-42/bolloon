@@ -596,6 +596,15 @@ export class TargetTrackerSkill extends BaseSkill {
 /**
  * Skill Adapter - Registers all bollharness skills with Bolloon's SkillRegistry
  */
+/** 门的**判定** (不含执行): 端口只回答"允不允许", 执行留在 SkillAdapter 里以保证恰一次 */
+export interface SkillGuardDecision {
+  allow: boolean;
+  /** 拒绝时的理由 (会原样回给调用方) */
+  reason?: string;
+  /** 拒绝来源 (deny-pipeline / pre-tool-validator / react-harness / harness-error …) */
+  rejectedBy?: string;
+}
+
 export class SkillAdapter {
   private registry: SkillRegistry;
   private harnessSkills: HarnessSkillMetadata[] = [];
@@ -678,19 +687,29 @@ export class SkillAdapter {
    * 注: 这里返回串而不是结构化结果, 是因为 `executeSkill` 的返回类型是 string (公开面); 调用方
    * 只需看前缀就能区分拒绝 (callers: `integration.ts` → `index.ts` 的 harness 入口)。
    */
-  private guardedExecute?: (name: string, params: Record<string, unknown>) => Promise<string>;
+  private guardedExecute?: (name: string, params: Record<string, unknown>) => Promise<SkillGuardDecision>;
 
-  setGuardedExecute(port: (name: string, params: Record<string, unknown>) => Promise<string>): void {
+  setGuardedExecute(port: (name: string, params: Record<string, unknown>) => Promise<SkillGuardDecision>): void {
     this.guardedExecute = port;
   }
 
+  /**
+   * 2026-10-02 (K7) 契约 (端口只给**判定**, 执行仍在本方法里, 恰一次):
+   *  ① 端口抛错 ⇒ **fail-closed**: 返回 `拒绝: [harness-error] …` 且**不进 registry**
+   *  ② 判定 allow=false ⇒ 返回 `拒绝: [来源] 理由` 且**不进 registry**
+   *  ③ 判定 allow=true ⇒ 落到**唯一**执行点 `registry.execute` (**恰一次**)
+   */
   async executeSkill(name: string, params: Record<string, unknown>): Promise<string> {
     if (this.guardedExecute) {
+      let decision: SkillGuardDecision;
       try {
-        return await this.guardedExecute(name, params);
+        decision = await this.guardedExecute(name, params);
       } catch (guardErr) {
         const msg = String((guardErr as Error)?.message ?? guardErr);
         return `拒绝: [harness-error] ${msg}`;
+      }
+      if (!decision.allow) {
+        return `拒绝: [${decision.rejectedBy || 'harness'}] ${decision.reason || '未说明理由'}`;
       }
     }
     return this.registry.execute(name, params);

@@ -2058,6 +2058,28 @@ ${await this.renderActivePlansSection()}
     }
   }
 
+  /**
+   * 2026-10-02 (K7): 把**本会话的 Harness 判定**包成 skill 门, 供 `BollharnessIntegration.setSkillGuard` 注入。
+   * - 只返回**判定**, 不执行 skill ⇒ "允许后执行"留在 SkillAdapter 的**唯一**执行点 (恰一次)。
+   * - 身份 (runId/goalId/agentId/channelId/surface) 由 `harnessCtx()` 带齐。
+   * - 不在这里 catch: 门面抛错由 adapter 侧 **fail-closed** 处理 (拒执行, 绝不回落 registry)。
+   */
+  createSkillGuard(): (name: string, params: Record<string, unknown>) => Promise<{ allow: boolean; reason?: string; rejectedBy?: string }> {
+    return async (name, params) => {
+      const decision = await this.piHarness().beforeToolCall({
+        tool: `skill:${name}`,
+        args: params,
+        ctx: this.harnessCtx(),
+        permissionMode: this.currentPermissionMode,
+      });
+      return {
+        allow: decision.allow,
+        reason: decision.reason,
+        rejectedBy: decision.rejectedBy || decision.source,
+      };
+    };
+  }
+
   private piHarness(): PiAgentHarness {
     if (!this._harness) {
       this._harness = new PiAgentHarness({
