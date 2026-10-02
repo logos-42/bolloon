@@ -43,7 +43,7 @@ const JUDGE_NAMES = Object.keys(gateScan).filter((k) => k.startsWith('scan'));
 describe('K5 步骤⑧ 门: 访问器棘轮 + 前置背书', () => {
   it('★ 判据: pi-sdk 对已迁字段访问器的引用数 == 台账 (增=回退, 减=改了盘没改账)', () => {
     expect(scanAccessorSurface(PI_SRC_TEXT, K5_ACCESSOR_SURFACE)).toEqual([]);
-    const bumped = PI_SRC_TEXT.replace(/(\n\s*private get currentAgentId)/, '\n    const _x = this.currentAgentId;$1');
+    const bumped = PI_SRC_TEXT.replace(/(\n\s*private get currentChannelId)/, '\n    const _x = this.currentChannelId;$1');
     expect(scanAccessorSurface(bumped, K5_ACCESSOR_SURFACE).length).toBeGreaterThan(0);
     const shaved = PI_SRC_TEXT.replace('this.currentGoalId', 'this.actor!.state.goalBinding');
     expect(scanAccessorSurface(shaved, K5_ACCESSOR_SURFACE).some((f: any) => f.what.includes('盘上变了账没跟上'))).toBe(true);

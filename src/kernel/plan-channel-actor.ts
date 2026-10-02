@@ -146,7 +146,7 @@ export const K5_DELETION_PRECONDITIONS: readonly { text: string; backedBy: reado
  */
 export const K5_ACCESSOR_SURFACE = {
   accessorFields: ['messageHistory', 'currentChannelId', 'currentAgentId', 'currentGoalId', 'currentRunId'],
-  frozenInPiSdk: { messageHistory: 0, currentChannelId: 25, currentAgentId: 22, currentGoalId: 23, currentRunId: 38 },
+  frozenInPiSdk: { messageHistory: 0, currentChannelId: 25, currentAgentId: 0, currentGoalId: 23, currentRunId: 38 },
   where: 'src/agents/pi-sdk.ts',
   why: '字段本体已删 (K5_FIELD_DELETION); 这些访问器只剩"读门面"作用 ⇒ 只许减',
 } as const;
@@ -156,7 +156,7 @@ export const K5_INHERITED_FIELDS: readonly { name: string; into: string; accesse
   { name: 'messageHistory', into: 'actor.messageHistory', accesses: 0 },   // 步骤⑧ 批次 1: pi-sdk 侧 0 引用
   // K5 步骤⑦ 起 +1: `applyExecutionRequest` 把请求里的绑定写进这三个字段 (各一处写)
   { name: 'currentChannelId', into: 'actor.channelId', accesses: 25 },
-  { name: 'currentAgentId', into: 'actor.agentId', accesses: 22 },
+  { name: 'currentAgentId', into: 'actor.agentId', accesses: 0 },   // 步骤⑧ 批次2: pi-sdk 侧 0 引用
   { name: 'currentGoalId', into: 'actor.goalBinding', accesses: 23 },
 ];
 

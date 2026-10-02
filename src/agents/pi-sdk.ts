@@ -313,7 +313,7 @@ export class PiAgentSession implements AgentSession {
    */
   applyExecutionRequest(req: ExecutionRequest): void {
     if (req.channelId) this.currentChannelId = req.channelId;
-    if (req.agentId) this.currentAgentId = req.agentId;
+    if (req.agentId) this.actor!.state.agentId = req.agentId;
     if (req.goalId) this.currentGoalId = req.goalId;
     if (req.resumeRunId) this.resumeRunId = req.resumeRunId;
   }
@@ -573,15 +573,6 @@ export class PiAgentSession implements AgentSession {
   private set currentChannelId(v: string) {
     this.actor!.state.channelId = v;
   }
-  /** 2026-07-04: 当前 agentId (server.ts 通过 createAgentSession 选项注入), 供 onSessionStart 加载 persona docs */
-  private get currentAgentId(): string {
-    return this.actor!.state.agentId;
-  }
-
-  private set currentAgentId(v: string) {
-    this.actor!.state.agentId = v;
-  }
-
   // M2.2 intent 已外置到 runCtx.intent (K2); 拼 systemPrompt 时读 this.runCtx.intent
   /** 2026-08-10: 本轮用户原始输入 (loop-review 任务动词兜底检测用) */
   private currentUserInput: string = '';
@@ -684,14 +675,14 @@ export class PiAgentSession implements AgentSession {
     this.identity = config.identityDoc || this.createDefaultIdentity();
     this.minimaxAvailable = this.checkMinimax();
     // 2026-07-04: 透传 agentId (server.ts 通过 createAgentSession 选项注入)
-    this.currentAgentId = config.agentId || '';
+    this.actor!.state.agentId = config.agentId || '';
     // 2026-10-01 **身份自愈** (用户实测: get_identity 返回 "DID: " 空 + 各 channel 名字串台):
     //   工具上下文里的身份来自 this.identity, 而它可能是 config.identityDoc 与 session 实例身份的
     //   合并结果 —— **空 did 会盖掉真 did** ✗; 名字也可能缺失或被别处覆盖。
     //   规矩: 缺 did / 名字时, 按 **currentAgentId** 从真身份生成器补齐 (did:key + 落盘密钥),
     //   名字优先取该 agent 自己的 persona.json。绝不回落到全局/用户身份名。
     try {
-      if (this.currentAgentId) {
+      if (this.actor!.state.agentId) {
         const cur: any = this.identity || {};
         const curDid = String(cur.did || '');
         const badDid = !curDid || /^did:(local|pi):/i.test(curDid);
@@ -699,17 +690,17 @@ export class PiAgentSession implements AgentSession {
         // 2026-10-01 加固: **did 与本人密钥不符** 也算坏 —— 用户实测 get_identity 返回一个
         //   数据里根本不存在的 did (按 peerId 当 scope 新造的), 而它非空、非假值 ⇒ 上一版判据漏过 ✗。
         //   规矩: 只要 currentAgentId 有值, 身份的 did 就必须等于该 agent 自己的密钥 did。
-        const mine = loadOrCreateAgentIdentity(this.currentAgentId);
+        const mine = loadOrCreateAgentIdentity(this.actor!.state.agentId);
         const mismatch = !!mine?.did && !!curDid && curDid !== mine.did;
         if (badDid || missingName || mismatch) {
           if (badDid || mismatch) {
-            console.warn(`[identity] 身份纠正: ${this.currentAgentId} 的 did ${curDid ? curDid.slice(0, 26) : '(空)'} ⇒ ${mine.did.slice(0, 26)} (以该 agent 自己的密钥为准)`);
+            console.warn(`[identity] 身份纠正: ${this.actor!.state.agentId} 的 did ${curDid ? curDid.slice(0, 26) : '(空)'} ⇒ ${mine.did.slice(0, 26)} (以该 agent 自己的密钥为准)`);
           }
           // 2026-10-01: 同样必须**原地改** —— 这段在 registerTools() **之后**跑, 工具上下文已经按引用
           //   捕获了 this.identity; 换对象 ⇒ 工具看不到纠正结果 ✗ (同类 bug, 一并修)
           Object.assign(this.identity, {
             ...(mine?.did ? { did: mine.did, publicKey: mine.publicKey || cur.publicKey } : {}),
-            ...(missingName ? { name: agentPersonaName(this.currentAgentId) || this.currentAgentId } : {}),
+            ...(missingName ? { name: agentPersonaName(this.actor!.state.agentId) || this.actor!.state.agentId } : {}),
           });
         }
       }
@@ -718,7 +709,7 @@ export class PiAgentSession implements AgentSession {
     this._sessionStore = (config as any).sessionStore ?? defaultSessionStore;
     this.constraintLayer = new ConstraintLayer();
     this.workflowEngine = new WorkflowEngine(this.constraintLayer);
-    this.sessionManager = new PiSessionManager(this.identity.did, this.cwd, this.currentAgentId);
+    this.sessionManager = new PiSessionManager(this.identity.did, this.cwd, this.actor!.state.agentId);
     this.agentsManager = new DiscoveredAgentsManager();
     this.usePivotLoop = config.usePivotLoop ?? false;
     this.pivotLoopConfig = config.pivotLoopConfig;
@@ -1104,7 +1095,7 @@ export class PiAgentSession implements AgentSession {
     // 2026-10-01: 原先自造 `did:pi:<peerId>` —— **不是有效 DID** (仓里 server.ts 自己都把 did:pi:
     //   当"待升级"占位; 用户实测 get_identity 报 did:pi:ch_1785668060213)。
     //   改用仓里既有的真身份生成器 (agent-identity.loadOrCreateAgentIdentity, 同步, 产 did:key + 落盘密钥)。
-    const scope = this.currentAgentId || this.peerId || 'default';
+    const scope = this.actor!.state.agentId || this.peerId || 'default';
     try {
       
       const real = loadOrCreateAgentIdentity(scope);
@@ -1164,7 +1155,7 @@ export class PiAgentSession implements AgentSession {
       const did = await resolveUserDid();
       const model = (this as any).llmConfig?.model || (this as any).model || '';
       return new TrajectoryRecorder({
-        agentId: this.currentAgentId || 'default',
+        agentId: this.actor!.state.agentId || 'default',
         input,
         channelId: channelId || this.currentChannelId,
         did: did || undefined,
@@ -1237,7 +1228,7 @@ export class PiAgentSession implements AgentSession {
           const g = await createGoal({
             objective: this.currentUserInput || input.slice(0, 200),
             channelId: this.currentChannelId || undefined,
-            agentId: this.currentAgentId || undefined,
+            agentId: this.actor!.state.agentId || undefined,
             createdBy: this.runSurface,
           });
           boundGoalId = g.goalId;
@@ -1248,7 +1239,7 @@ export class PiAgentSession implements AgentSession {
           goal: this.currentUserInput || input.slice(0, 200),
           goalId: boundGoalId,
           channelId: this.currentChannelId || undefined,
-          agentId: this.currentAgentId || undefined,
+          agentId: this.actor!.state.agentId || undefined,
           modelConfig: await this.runModelSnapshot(),
         });
         this.lastRunId = rec.runId;
@@ -1482,7 +1473,7 @@ export class PiAgentSession implements AgentSession {
     //   让 agent 能"回忆起"之前 session 的记忆 (自动获取之前 session), 而非只靠启动时批量压缩.
     try {
       const { recallMemory } = await import('./memory-recall.js');
-      const recalled = await recallMemory({ query: userText, agentId: this.currentAgentId || this.peerId || '' });
+      const recalled = await recallMemory({ query: userText, agentId: this.actor!.state.agentId || this.peerId || '' });
       if (recalled) {
         this.contextHintAddition = [this.contextHintAddition, recalled].filter(Boolean).join('\n\n');
       }
@@ -1534,7 +1525,7 @@ export class PiAgentSession implements AgentSession {
     try {
       const ss = await onSessionStart({
         channelId: this.currentChannelId || undefined,
-        agentId: this.currentAgentId || undefined,
+        agentId: this.actor!.state.agentId || undefined,
       });
       bootstrapAddition = ss.systemAddition || '';
     } catch (err) {
@@ -2077,7 +2068,7 @@ ${await this.renderActivePlansSection()}
     return {
       runId: this.currentRunId || undefined,
       goalId: this.currentGoalId || undefined,
-      agentId: this.currentAgentId || undefined,
+      agentId: this.actor!.state.agentId || undefined,
       channelId: this.currentChannelId || undefined,
       surface: this.runSurface,
     };
@@ -2168,7 +2159,7 @@ ${await this.renderActivePlansSection()}
       let boundGoalId = this.currentGoalId;
       if (!boundGoalId) {
         try {
-          const active = await findActiveGoal({ channelId: this.currentChannelId || undefined, agentId: this.currentAgentId || undefined });
+          const active = await findActiveGoal({ channelId: this.currentChannelId || undefined, agentId: this.actor!.state.agentId || undefined });
           if (active?.currentRunId) {
             const prev = await readRun(active.currentRunId);
             const unfinished = prev && ['interrupted', 'stalled', 'needs_human', 'paused', 'awaiting_external', 'recovering'].includes(prev.status);
@@ -2180,7 +2171,7 @@ ${await this.renderActivePlansSection()}
             const g = await createGoal({
               objective: this.currentUserInput || '(未记录目标)',
               channelId: this.currentChannelId || undefined,
-              agentId: this.currentAgentId || undefined,
+              agentId: this.actor!.state.agentId || undefined,
               createdBy: this.runSurface,
             });
             boundGoalId = g.goalId;
@@ -2195,7 +2186,7 @@ ${await this.renderActivePlansSection()}
           goal: this.currentUserInput || '(未记录目标)',
           goalId: boundGoalId || undefined,
           channelId: this.currentChannelId || undefined,
-          agentId: this.currentAgentId || undefined,
+          agentId: this.actor!.state.agentId || undefined,
           modelConfig: await this.runModelSnapshot(),
         });
         this.currentRunId = rec.runId;
@@ -3634,7 +3625,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
           preservedMemory: [
             ...(this.actor!.state.messageHistory as Message[]).filter(m => m.role === 'user').slice(-3).map(m => (m.content || '').slice(0, 80)),
           ],
-          agentId: this.currentAgentId,
+          agentId: this.actor!.state.agentId,
           channelId: this.currentChannelId,
         });
         cm.markCompressComplete(snap);
@@ -4090,11 +4081,11 @@ ${this.extractOperationsFromRef(operationsRef)}
     await this.sessionManager.savePersona(persona);
     // 2026-10-01: **写透** —— 有身份文档的 agent 不套 persona.json, 只写 JSON 等于没改
     //   (用户报"每次让智能体改都是同一个") ⇒ 同步落进它自己的身份文档 (标记区内)
-    if (this.currentAgentId) {
+    if (this.actor!.state.agentId) {
       try {
         const { applyPersonaToDocs } = await import('../bootstrap/persona-init.js');
-        const wrote = await applyPersonaToDocs(this.currentAgentId, persona as any);
-        if (wrote.length) console.warn(`[persona] 已把 ${this.currentAgentId} 的 persona 写进身份文档: ${wrote.join(' · ')}`);
+        const wrote = await applyPersonaToDocs(this.actor!.state.agentId, persona as any);
+        if (wrote.length) console.warn(`[persona] 已把 ${this.actor!.state.agentId} 的 persona 写进身份文档: ${wrote.join(' · ')}`);
       } catch { /* 非致命 */ }
     }
     this.persona = persona;

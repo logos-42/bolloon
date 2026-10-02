@@ -3139,7 +3139,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       const a = await getAgent();
       appendLine(`${C_ACCENT}智能体:${RESET}`);
       appendLine(`  ${C_DIM}名称:${RESET} ${cliAgentName}`);
-      appendLine(`  ${C_DIM}agentId:${RESET} ${(a as any).currentAgentId || '—'}`);
+      appendLine(`  ${C_DIM}agentId:${RESET} ${(a as any).actor?.state?.agentId || '—'}`);   // K5 步骤⑧: 本体在 actor
       appendLine(`  ${C_DIM}channel:${RESET} ${cliActiveChannelId || '—'}`);
     } catch { /* 静默 */ }
     return;

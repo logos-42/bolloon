@@ -1374,3 +1374,12 @@ channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代�
 - 机械改名**必须先量"同名不同物"的处数** (假对象、夹具源码文本、注释散文), 再决定替换范围;
 - `tsc` 绿**不等于**能跑: 语法结构错在 vite/oxc 那层才崩 —— 改完要看**能不能真跑**, 不看单个静态检查;
 - 兜底/回退是你自己的工具: 批量改名一律**先 `git checkout HEAD -- <文件集>`** 再换算法重做, 不要在坏版本上打补丁。
+
+## 44. K5 步骤⑧ 批次 2: `currentAgentId` 访问器删除 (22 → 0)
+
+- pi-sdk 内 22 处 (2 写: `applyExecutionRequest` / 构造器 · 20 读) → `this.actor!.state.agentId`; 访问器 getter/setter 删除。
+- **外部读 1 处**: `index.ts` 的 CLI 状态行 `(a as any).currentAgentId` —— 删访问器后会**静默变成 `—`** (TS `private` 只是编译期, 运行时本来可达, 所以它一直"能用")。
+  改成 `(a as any).actor?.state?.agentId` (**读本体**)。教训: 删一个字段前, 必须把**全仓**同名引用找全 —— 外部通过 `as any` 读私有成员是隐形的耦合。
+- 判据探针换到仍存在的访问器 (`private get currentChannelId`) —— 否则棘轮判据的判别力用例会静默失效 (它靠"注入一处引用 ⇒ 必须红")。
+- 账: `K5_ACCESSOR_SURFACE.currentAgentId 22 → 0` · K2 `accesses 22 → 0` · 总数 `108 → 86` · K5 移交 `22 → 0`。
+- 剩余 3 个访问器 = 86 处 (`currentChannelId 25` · `currentGoalId 23` · `currentRunId 38`)。
