@@ -162,7 +162,7 @@ K3 行数棘轮门   kernel 目录行数上限, 只许减不许增; 要加就得
 | **K5 Channel Actor Runtime** | mailbox / session context / model binding / cancellation / outbound queue / heartbeat / backpressure / close-restart; **目标不是多线程, 而是隔离状态** | 16 channel 并发 · 同 channel 10 条消息不乱序 · Web/CLI/P2P 同输不串台 · 一个 channel 卡住不拖死其他 · 页面关闭后仍由 Supervisor 接管 | ✅ **八步做完** (`K5_STEP8.claimedComplete=true` · stage=`field-deletion-complete` · 5 访问器归零 · 5 暂存字段已删 · 入口 4/4; 判据 `scanStep8Completion`/`scanAccessorSurface`/`scanStagingFieldDeletion`。**如实**: "16 channel 并发 / 页面关闭后 Supervisor 接管"这条验收矩阵尚未逐条真跑) |
 | **K6 ModelRuntime** | `acquire(modelSnapshot)` **只读**; 多供应商并发 · 连接池 · timeout · cancellation · 429 退避 · circuit breaker · capability 检查 · provider fallback · usage 记录; **已有的 `selectModel`/registry/catalog/Run snapshot 继续保留, 不重做** | 不自行改 provider 配置 · API key · 默认 URL · Global model · Run snapshot | ✅ **能力 9/9** (stage=`capabilities-done`: 连接复用 · timeout · 取消 · 多供应商并发 · 429 退避 · 熔断 · 能力检查 · provider 回退 · usage 记录; 判据 `scanModelRuntimeFile`/`scanModelRuntimeLedger`; **如实**: 只做了单元/真跑级验证, 未接进真实调用路径的端到端压测) |
 | **K7 Harness 唯一系统调用门** | `discover → permission → policy → budget → idempotency → execute → verify → evidence → event`; 覆盖 普通工具/MCP/Skill/delegate/子 Agent/联系人/支付/文件写入/外部通信 | **任何绕过 Harness 的代码都视为架构缺陷**; 工具旁路全删 | 🟡 **第一步完成 (台账 + 门, 行为零改变)**: 9 阶段/9 覆盖面清单化 (§57) · 执行点**逐点分类**普查 17 处 (1 主执行 · 2 skill · 1 MCP · 1 注册表 · **3 旁路候选** · 其余同名不同物/import/定义) · 判据 `scanHarnessLedger`/`countHarnessExecSites` (纯函数, 按盘重算 + 双向) · 11 条测试含 9 条判别力。**未做**: 3 条旁路真收敛 · 覆盖面逐个走门 |
-| **K8 Communication Runtime 收口** | `transport → router → channel mailbox`; **绝不能** `transport → agent.promptStream()`; 统一 Web/CLI/P2P/手机/联系人回复/外部唤醒/cron/Supervisor 事件 | 通信层无直接 Agent 调用 · 无各通道自己的重试/任务恢复/outbound 状态 | ❌ 未开始 |
+| **K8 Communication Runtime 收口** | `transport → router → channel mailbox`; **绝不能** `transport → agent.promptStream()`; 统一 Web/CLI/P2P/手机/联系人回复/外部唤醒/cron/Supervisor 事件 | 通信层无直接 Agent 调用 · 无各通道自己的重试/任务恢复/outbound 状态 | 🟡 **第一步(台账+门)完成** (2026-10-02) |
 | **K9 第二个非 Pi Adapter** | 最小 Native Adapter: model call · tool call · stream · cancellation · checkpoint · finish; 必须通过与 Pi **完全相同**的五套验收 (Harness / Durable Run / Supervisor / CLI·Web 双面 / 多模型并发) | 两个 Adapter 都过 ⇒ 才证明 Kernel 真正独立 | ❌ 未开始 |
 | **K10 删除 Pi 旧职责** | 8 步删除顺序 (§7.3); Pi 终态 ≈ prompt assembly + provider request + response parsing + stream translation | 迁移后 Pi 职责**仍超原来 30%** ⇒ 不许宣称替换成功 | ❌ 未开始 |
 
@@ -1850,7 +1850,31 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 > 也被算成"有消费", 数字虚高成 19 消费 / 19 零消费。**只有 `import { X } from '…constraint-runtime…'` 才算消费** (命名空间 import 也解析)。
 > 修正后多出来的 6 个正是 `HistoryEvent` · `runParityAudit` · `runRemoteMode` · `runSetup` · `runSshMode` · `runTeleportMode` —— **它们只在台账里被提到过**。
 
+> **用户口径 (2026-10-02, leo) —— 已决策**: **保持 0.1.x 导出面不动**; 25 个零消费项**只登记备查**。
+> ⇒ K1 ⑤「删旧导出」在本阶段**封存**(按口径**不删**, 不是"未做"); 若要收窄必须**另开口径**或走**主版本号**。
+> 这条口径与判据一起冻结: 判据仍每次重算比对 ⇒ 未来任何导出面变化都会被看见, 只是**默认动作是不动**。
+>
 > **零引用 ≠ 死代码, 更 ≠ 可删**。本包**已发布到 npm (0.1.1)**, 导出面是**对外承诺**: 删它属破坏性变更
 > ⇒ 要么等**用户口径** (收窄口径), 要么走**主版本号**。仓规也明写「不许以『看起来没用』为依据」删除。
 > 因此本步只做**量测 + 记账**: 判据 `src/test/constraint-exports-consumption.test.ts` 会**重算**这份清单并与冻结值逐字比对
 > —— 任何导出面变化 (新增引用 ⇒ 清单变短 / 新增未被引用的导出 ⇒ 变长) 都必须显式过账, 不靠人肉 grep。
+
+### K8 第一步 (台账 + 门, 行为零改变 · 2026-10-02)
+
+**量测 (口径 = 剥注释后数 `\.promptStream\(` / `\.prompt\(`)**:
+
+| 文件 | 直连数 | 形态 | 事件面 |
+|---|---|---|---|
+| `src/web/server.ts` | **10** | `via-actor` (经 K5 的 `deliverThroughActor` 串行化, 但仍是**通道直呼 agent**, 缺 router 层) | web-message / web-stream / web-regen / cron / supervisor / external-wake |
+| `src/web/routes-tasks.ts` | 1 | `via-actor` | contacts-reply |
+| `src/agents/runner-resolver.ts` | 1 | `via-actor` | external-wake |
+| `src/cli-entry.ts` · `src/web/mobile-core.ts` | **0** | — | (这两条通道自己不再直呼 agent) |
+
+合计 **12 处直连** (棘轮基线) · 各通道自带出站/重试/恢复状态的**文件 10 个** (`network/p2p-outbox.ts` · `web/delivery-ledger.ts` · `web/server-v3-p2p.ts` · `web/server.ts` · `cli-entry.ts` · `network/peer-fs.ts` · `contacts/{store,providers}.ts` · `p2p-chat-tools.ts` · `task/task-runner.ts`)。
+
+**判据** (`src/kernel/plan-communication.ts` 台账 + `gate-scan.ts` 的 `countTransportAgentSites` / `scanCommunicationLedger` + `src/test/kernel-communication.test.ts`):
+10 个事件面不重复 · 逐文件重算 == 台账 · 合计 == `progress.directSites` · 各通道状态文件真存在且计数一致 ·
+**读不出来就拒跑** (不许跳过) · 台账里**不许写行号** (含 `第 N 行` 自然写法)。
+**变异验证**: 在 `web/server.ts` 加一处 `.prompt(` ⇒ 真跑用例**判红** (台账承重); 还原 ⇒ 回绿。
+
+**如实**: 本步**只做量测 + 记账**, 通信行为零改变; router 层与"各通道状态归一"是后续刀。

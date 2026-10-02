@@ -120,7 +120,7 @@ export const KERNEL_ALLOWED_IMPORT_PREFIXES: readonly string[] = ['kernel/'];
  * 判据是**双向相等**: 盘上多一个未登记文件 ⇒ 红; 名册有而盘上没有 ⇒ 红。
  * (先例: SEAM_ROSTER 的「名册外无人越界」)
  */
-export const KERNEL_FILES: readonly string[] = ['kernel/channel-actor.ts', 'kernel/control.ts', 'kernel/gate-scan.ts', 'kernel/model-runtime.ts', 'kernel/plan-harness.ts', 'kernel/plan-modelruntime.ts', 'kernel/plan-constraint.ts', 'kernel/plan-channel-actor.ts', 'kernel/plan-deletion.ts', 'kernel/plan-runcontext.ts', 'kernel/plan.ts', 'kernel/roster.ts'];
+export const KERNEL_FILES: readonly string[] = ['kernel/channel-actor.ts', 'kernel/control.ts', 'kernel/gate-scan.ts', 'kernel/model-runtime.ts', 'kernel/plan-harness.ts', 'kernel/plan-modelruntime.ts', 'kernel/plan-constraint.ts', 'kernel/plan-channel-actor.ts', 'kernel/plan-deletion.ts', 'kernel/plan-runcontext.ts', 'kernel/plan-communication.ts', 'kernel/plan.ts', 'kernel/roster.ts'];
 
 export type DetectionMode = 'import-edge' | 'write-call';
 
@@ -286,10 +286,10 @@ export const AUTHORITY_DEBT_FROZEN_AT = 0;   // 3 → 0 (K4 用内核控制面�
  * 目的只有一个: **不许所有逻辑回流到 kernel.ts**。要加就得显式抬这个数字, 留下痕迹。
  * 数值 = 当前 kernel 目录真实行数, 不留余量。
  */
-export const KERNEL_LINE_BUDGET = 2669;   // 2026-10-02: +2 (STAGE_STATUS 拆 K4-A/K4-B + K6/K7 如实修正)
+export const KERNEL_LINE_BUDGET = 2723;   // 2026-10-02: +54 (K8: gate-scan 加 K8 判据)   // 2026-10-02: +2 (STAGE_STATUS 拆 K4-A/K4-B + K6/K7 如实修正)
 
 /** 预算冻结值 (棘轮: 只许减; 想抬预算必须同时改上面那个数字 ⇒ 一次显式动作, diff 里看得见) */
-export const KERNEL_LINE_BUDGET_FROZEN_AT = 2669;   // 同步至 2026-10-02 真实值
+export const KERNEL_LINE_BUDGET_FROZEN_AT = 2723;   // 同步至 2026-10-02 真实值
 
 /**
  * K3b —— **台账数据**单独一档预算 (`src/kernel/plan.ts`)。
@@ -297,7 +297,7 @@ export const KERNEL_LINE_BUDGET_FROZEN_AT = 2669;   // 同步至 2026-10-02 真�
  * 为什么分开: K3 要防的是「逻辑回流到内核代码」; 台账是**数据** (owner 名册 / 入口图 / 删除候选),
  * 把它算进代码预算会逼着人抬代码上限, 棘轮的信号就废了。两档各自冻结, 都只许减。
  */
-export const KERNEL_PLAN_LINE_BUDGET = 1187;   // 2026-10-02: 1187 (K1 ④ 删 12 行陈旧登记后同步; 棘轮只许降)   // 2026-10-02: +12 (K7 第二步 b: 旁路 status/symbol/evidence 字段 + 卫生规则注释 + 防漂用例)
+export const KERNEL_PLAN_LINE_BUDGET = 1278;   // 2026-10-02: +91 (K8 台账 plan-communication.ts 落地)   // 2026-10-02: +12 (K7 第二步 b: 旁路 status/symbol/evidence 字段 + 卫生规则注释 + 防漂用例)
 
 /** 台账预算冻结值 (棘轮: 只许减) */
-export const KERNEL_PLAN_LINE_BUDGET_FROZEN_AT = 1187;   // 同步至 2026-10-02 真实值
+export const KERNEL_PLAN_LINE_BUDGET_FROZEN_AT = 1278;   // 同步至 2026-10-02 真实值

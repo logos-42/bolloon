@@ -1294,3 +1294,57 @@ export function scanHarnessLedger(
 
   return out;
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// K8: Communication Runtime 收口 —— 判据 (口径唯一: 剥注释后数 `.promptStream(`/`.prompt(`)
+// ════════════════════════════════════════════════════════════════════════════════
+
+export const K8_SITE_KINDS = ['direct-prompt', 'via-actor'] as const;
+export type K8SiteKindName = (typeof K8_SITE_KINDS)[number];
+
+export interface K8LedgerLike {
+  faces: readonly string[];
+  sites: readonly { file: string; count: number; kind: string; faces: readonly string[]; why?: string }[];
+  perChannel: readonly { file: string; kind: string; why?: string }[];
+  progress: { directSites: number; perChannelStateFiles: number };
+}
+
+/** transport→agent 直连的**唯一口径**: 剥注释后数 `.promptStream(` / `.prompt(` */
+export function countTransportAgentSites(src: string): number {
+  return (stripJsComments(src).match(/\.promptStream\s*\(|\.prompt\s*\(/g) || []).length;
+}
+
+export function scanCommunicationLedger(
+  ledger: K8LedgerLike,
+  opts: { readFile: (rel: string) => string | null },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'k8-communication', file: 'kernel/plan-communication.ts', line: 1, what });
+  // 行号的**自然写法**都要抓: `(668,`/`(668)`/`:668`/`第 668 行`
+  const LINE_REF = /\(\s*\d{2,5}\s*[,)]|:\d{2,5}\b|第\s*\d{2,5}\s*行/;
+
+  if (ledger.faces.length !== 10) f(`事件面数 ${ledger.faces.length} ≠ 10`);
+  if (new Set(ledger.faces).size !== ledger.faces.length) f('事件面有重复');
+
+  let total = 0;
+  for (const s of ledger.sites) {
+    const code = opts.readFile(s.file);
+    if (code === null) { f(`直连普查里的文件读不出来 ⇒ 拒跑: ${s.file}`); continue; }
+    const real = countTransportAgentSites(code);
+    if (real !== s.count) f(`${s.file} 直连 台账=${s.count} 盘上=${real} (增=新直连未登记 · 减=改了盘没改账)`);
+    if (!K8_SITE_KINDS.includes(s.kind as K8SiteKindName)) f(`${s.file} 未知 kind: ${s.kind}`);
+    if (!s.faces?.length) f(`${s.file} 没写属于哪个事件面`);
+    if (s.why && LINE_REF.test(s.why)) f(`${s.file} why 里写了行号 (行号会漂 ⇒ 按符号写)`);
+    total += s.count;
+  }
+  if (total !== ledger.progress.directSites) f(`直连合计 ${total} ≠ progress.directSites ${ledger.progress.directSites}`);
+
+  for (const p of ledger.perChannel) {
+    if (opts.readFile(p.file) === null) f(`各通道自带状态的文件不存在: ${p.file}`);
+    if (p.why && LINE_REF.test(p.why)) f(`${p.file} why 里写了行号`);
+  }
+  if (ledger.perChannel.length !== ledger.progress.perChannelStateFiles) {
+    f(`各通道自带状态文件数 ${ledger.perChannel.length} ≠ progress.perChannelStateFiles ${ledger.progress.perChannelStateFiles}`);
+  }
+  return out;
+}
