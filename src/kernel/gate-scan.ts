@@ -687,3 +687,42 @@ export function scanActorLedger(
   }
   return out;
 }
+
+/**
+ * **K2 ↔ K5 交接契约** (2026-10-02 定): session 级字段必须**仍是实例字段**,
+ * **除非 K5 台账 (migratedFieldNames) 声明它已迁**。
+ *
+ * 为什么需要这条: K2 的镜像规则原本是"session 级字段一律不许离开实例" —— 那是 K2 阶段的口径;
+ * K5 第 4 步要做的事正是把 `messageHistory` 迁走。若把禁令写死, K5 一到就得改门 (门就成了橡皮章);
+ * 若把禁令删掉, 半搬状态没人拦。⇒ 让**台账**当唯一的开关: 声明了才放行, 声明了不存在的字段也判红。
+ */
+export function scanSessionFieldResidence(
+  code: string,
+  sessionFields: readonly { name: string }[],
+  migratedByK5: readonly string[],
+): Finding[] {
+  const out: Finding[] = [];
+  const migrated = new Set(migratedByK5);
+  for (const f of sessionFields) {
+    if (migrated.has(f.name)) continue;   // K5 已声明迁移 ⇒ 允许离开实例
+    if (!new RegExp(`private\\s+${f.name}\\s*[=:]`).test(code)) {
+      out.push({
+        rule: 'session-field-vanished',
+        file: 'agents/pi-sdk.ts',
+        line: 1,
+        what: `session 级字段 ${f.name} 既不在实例上, K5 台账也没声明迁移它 ⇒ 半搬状态`,
+      });
+    }
+  }
+  for (const n of migratedByK5) {
+    if (!sessionFields.some((f) => f.name === n)) {
+      out.push({
+        rule: 'k5-migration-unknown-field',
+        file: 'kernel/plan-channel-actor.ts',
+        line: 1,
+        what: `K5 声明迁移了 ${n}, 但它不是 K2 的 session 级字段`,
+      });
+    }
+  }
+  return out;
+}

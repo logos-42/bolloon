@@ -83,8 +83,8 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(K5_PROGRESS.stage).toBe('registry-built');
     expect(fs.existsSync(path.join(SRC, K5_PROGRESS.containerPath))).toBe(true);
     // 容器建了 ≠ 字段迁了 / 入口接了 (第 4 步第一版被全量回归否掉并回退 ⇒ 两个计数都必须是 0)
-    expect(K5_PROGRESS.fieldsMigrated).toBe(0);
-    expect(K5_PROGRESS.migratedFieldNames).toEqual([]);
+    expect(K5_PROGRESS.fieldsMigrated).toBe(1);
+    expect(K5_PROGRESS.migratedFieldNames).toEqual(['messageHistory']);
     expect(K5_PROGRESS.entriesWired).toBe(0);
   });
 
@@ -141,45 +141,92 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(actor.state.cancellation).toBeNull();
   });
 
-  it('★ 注册表: 一个 channel 一个 actor, 跨 channel 隔离 (K5 第 3 步)', () => {
+  it('★ 注册表: 键是**会话身份** (不是 channel 前缀), 同身份幂等 / 跨身份隔离', () => {
     resetActors();
     expect(actorCount()).toBe(0);
-    const a1 = getOrCreateActor('chanA');
-    const a2 = getOrCreateActor('chanA');
-    const b = getOrCreateActor('chanB');
-    expect(a1).toBe(a2);                    // 同 channel 幂等
-    expect(a1).not.toBe(b);                 // 跨 channel 隔离
-    expect(a1.state.channelId).toBe('chanA');
-    expect(b.state.channelId).toBe('chanB');
+    const a1 = getOrCreateActor('cli:conv-1', { channelId: 'cli' });
+    const a2 = getOrCreateActor('cli:conv-1', { channelId: 'cli' });
+    const a3 = getOrCreateActor('cli:conv-2', { channelId: 'cli' });
+    expect(a1).toBe(a2);                                  // 同身份幂等
+    expect(a1).not.toBe(a3);                              // **同 channel 不同会话身份必须隔离** (全量回归实证)
+    expect(a1.state.channelId).toBe('cli');               // channel 归属可以相同
+    expect(a3.state.channelId).toBe('cli');
     expect(actorCount()).toBe(2);
-    // 已有的 actor 不会被后来的 init 覆盖
-    const a3 = getOrCreateActor('chanA', { agentId: '不该生效' });
-    expect(a3).toBe(a1);
+    // 没给 channelId 时退回用身份当 channelId
+    expect(getOrCreateActor('chanZ').state.channelId).toBe('chanZ');
+    // 已有的 actor 不被后来的 init 覆盖
+    const again = getOrCreateActor('cli:conv-1', { agentId: '不该生效' });
+    expect(again).toBe(a1);
     expect(a1.state.agentId).toBe('');
-    // 空 channelId 落 default 桶
-    expect(getOrCreateActor('').state.channelId).toBe('default');
-    expect(peekActor('chanZ')).toBeUndefined();
+    expect(peekActor('不存在')).toBeUndefined();
     resetActors();
     expect(actorCount()).toBe(0);
   });
 
-  it('★ 真跑: 按 channel 造 session ⇒ 各自绑到自己的 actor (一个 channel 一个 actor 成立)', async () => {
+  it('★ 真跑: 会话身份决定归属 —— 同身份共享 actor, 不同身份隔离, 无身份不归属', async () => {
     resetActors();
     const { createAgentSession } = await import('../agents/pi-sdk-session-factory.js');
-    const mk = (peer: string) => createAgentSession({ cwd: process.cwd(), peerId: peer });
-    const sa1 = await mk('k5probe-a:s1');
-    const sa2 = await mk('k5probe-a:s2');   // 同 channel, 不同 session 后缀
-    const sb = await mk('k5probe-b:s1');
-    expect(sa1.actor).toBeTruthy();
-    expect(sa1.actor!.state.channelId).toBe('k5probe-a');   // channelId 取自 peerId 的 `:` 前段
-    expect(sa2.actor).toBe(sa1.actor);                       // 同 channel ⇒ 同一个 actor
-    expect(sb.actor).not.toBe(sa1.actor);                    // 跨 channel 隔离
-    // 状态仍在 Pi 实例上 (这一步只做归属, 没搬字段)
-    await sa1.actor!.submit((st) => { st.messageHistory.push('actor-owned'); });
-    expect(sa1.actor!.state.messageHistory).toEqual(['actor-owned']);
-    expect(sb.actor!.state.messageHistory).toEqual([]);
+    const mk = (cfg: any) => createAgentSession({ cwd: process.cwd(), ...cfg });
+    // ① 无身份 (既无 peerId 也无 loadSessionKey) ⇒ **不归属** (没有 default 兜底桶)
+    const sNone: any = await mk({});
+    expect(sNone.actor).toBeUndefined();
+    // ② 同 channel 前缀、不同会话身份 ⇒ 各自 actor, history 互不可见 (当年泄漏的形状)
+    const s1: any = await mk({ peerId: 'k5probe-a:s1' });
+    const s2: any = await mk({ peerId: 'k5probe-a:s2' });
+    expect(s1.actor).toBeTruthy();
+    expect(s1.actor.state.channelId).toBe('k5probe-a');   // channel 归属取自 `:` 前段
+    expect(s2.actor.state.channelId).toBe('k5probe-a');
+    expect(s1.actor).not.toBe(s2.actor);                  // 但**身份不同 ⇒ 不同 actor**
+    // ③ 同身份 (同 loadSessionKey) ⇒ 同一个 actor, 同一份 history
+    const s3: any = await mk({ peerId: 'k5probe-c:one', loadSessionKey: 'k5probe-c:conv' });
+    const s4: any = await mk({ peerId: 'k5probe-c:two', loadSessionKey: 'k5probe-c:conv' });
+    expect(s3.actor).toBe(s4.actor);
+    await s3.actor.submit((st: any) => { st.messageHistory.push('shared'); });
+    expect(s4.actor.state.messageHistory).toEqual(['shared']);
     resetActors();
-  }, 60000);
+  }, 90000);
+
+  it('★ 真跑: history 本体住进 Actor —— 所有权真转移 (hydrate/persist 都落在 actor 的数组上)', async () => {
+    resetActors();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'k5-own-'));
+    try {
+      const store = new SessionStore({ cacheDir: tmpDir });
+      await store.saveMessages('k5own:conv', [
+        { role: 'user', content: 'own-1', timestamp: 1, source: 'test' },
+        { role: 'assistant', content: 'own-2', timestamp: 2, source: 'test' },
+      ] as any);
+      const s: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5own:s1', sessionStore: store });
+      expect(s.actor).toBeTruthy();
+      expect(s.actor.state.messageHistory.length).toBe(0);
+
+      // ① hydrate 走**写路径** ⇒ 必须落进 actor
+      const loaded = await s.resumeSession('k5own:conv');
+      expect(loaded).toBe(2);
+      expect(s.actor.state.messageHistory.length).toBe(2);
+
+      // ② 直接改 actor 的数组 ⇒ persist 读到的必须就是它 (同一个数组对象, 不是副本)
+      s.actor.state.messageHistory.push({ role: 'user', content: 'actor-only-marker' });
+      await s.saveCurrentSession('k5own-out');
+      const back = (await store.loadMessages('k5own-out')) as any[];
+      expect(back.some((m) => m.content === 'actor-only-marker')).toBe(true);
+      expect(back.length).toBe(3);
+
+      // ③ **同会话身份**的另一个 session ⇒ 共享同一 actor 与同一份 history
+      const s2: any = await createAgentSession({
+        cwd: process.cwd(), peerId: 'k5own:s2', loadSessionKey: 'k5own:s1', sessionStore: store,
+      });
+      expect(s2.actor).toBe(s.actor);
+      expect(s2.actor.state.messageHistory.length).toBe(3);
+
+      // ④ **不同会话身份** ⇒ 自己的 actor, 看不到别人的 history
+      const s3: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5own:other', sessionStore: store });
+      expect(s3.actor).not.toBe(s.actor);
+      expect(s3.actor.state.messageHistory.length).toBe(0);
+    } finally {
+      resetActors();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 90000);
 
   it('★ 钉住反例 (全量回归实证): 同 channel 前缀的两个独立 session 不许看见彼此 history', async () => {
     // 2026-10-02: 第 4 步第一版 (把 history 本体按 channel 前缀挂进 actor) 被全量回归否掉 ——

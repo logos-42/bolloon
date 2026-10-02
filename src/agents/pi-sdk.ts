@@ -271,7 +271,45 @@ export class PiAgentSession implements AgentSession {
   private sessionManager: PiSessionManager;
   private agentsManager: DiscoveredAgentsManager;
   private socialHeartbeat: SocialHeartbeat | null = null;
-  private messageHistory: Message[] = [];
+  /**
+   * **K5 第 4 步 (所有权转移)**: history 的**本体**。
+   *   · 未绑定 actor ⇒ 本体在这里 (绑定前的暂存);
+   *   · 绑定 actor 后 ⇒ 本体是 `actor.state.messageHistory`, 本地那份被**收养**并清空。
+   * 绑定由 `attachActor()` 做, 且**只在会话身份已知时**发生 (见 session factory) —— 没有身份就不归属。
+   */
+  private _history: Message[] = [];
+
+  /**
+   * `messageHistory` 访问器 (K5 第 4 步)。
+   * 为什么用访问器而不是逐个改 ~25 个 `push` 点: 写入点遍布 ReAct 循环 / 工具回灌 / 压缩 / 投影,
+   * 逐个改会制造大面积无关 diff 且容易漏。访问器让**所有**读写 (push / pop / length / 索引 / slice /
+   * 整体赋值) 自动落到 actor 的数组上 —— 所有权是真的转移 (同一个数组对象), 调用点零改动。
+   */
+  private get messageHistory(): Message[] {
+    return this.actor ? (this.actor.state.messageHistory as Message[]) : this._history;
+  }
+
+  private set messageHistory(v: Message[]) {
+    if (this.actor) {
+      const arr = this.actor.state.messageHistory as Message[];
+      arr.length = 0;
+      arr.push(...v);
+    } else {
+      this._history = v;
+    }
+  }
+
+  /**
+   * **K5 第 4 步**: 绑定 actor 并**收养**绑定前已存在的本地历史。
+   * 收养规则: actor 侧为空 且 本地非空 ⇒ 搬过去 (任何绑定时序都不丢历史); 收养后清空本地。
+   * 约束 (全量回归打出来的): 调用方必须用**会话身份**当注册键; 没有身份就**不要调**这个方法。
+   */
+  attachActor(actor: ChannelActor): void {
+    this.actor = actor;
+    const arr = actor.state.messageHistory as Message[];
+    if (this._history.length > 0 && arr.length === 0) arr.push(...this._history);
+    this._history = [];
+  }
   private tools: Map<string, Tool> = new Map();
   /** 2026-06-30: tool registry 模块 — 独立 alias resolve, 测试可消融. */
   private _toolRegistry: ToolRegistry = new ToolRegistry();

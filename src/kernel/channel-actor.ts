@@ -137,10 +137,14 @@ export class ChannelActor {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 进程内注册表: `channelId → ChannelActor`。
+ * 进程内注册表: **会话身份 → ChannelActor**。
  *
- * 为什么需要它: `messageHistory` 要"迁入 Actor", 前提是**每个 channel 有自己的 actor** ——
- * 否则"history 存哪"没有落点。这里先把"落点"建起来。
+ * ⚠️ 键是**会话身份** (SessionStore key / 整条 peerId), **不是** channel 前缀 —— 这条是被全量回归打出来的:
+ *   第一版取 `peerId` 的 `:` 前段当键 ⇒ 同一 channel 下不同会话落进同一个桶 ⇒ 新 session 一构造
+ *   就看到别人的 history (4742 测试里 5 红, 症状统一 `expected 2/5/6 to be 0`)。
+ *   隔离粒度必须与被迁移状态原有的粒度一致: history 属于**会话**, 不属于 channel 前缀。
+ *
+ * ⚠️ **没有身份就不归属** (没有 'default' 兜底桶) —— 宁可不共享, 不许串台。这里先把"落点"建起来。
  *
  * ⚠️ 现在的定位 (不许夸大):
  *   · 只做**归属**: 同一 channelId 永远拿到同一个 actor 实例, 不同 channelId 互不相干;
@@ -154,18 +158,18 @@ const actors = new Map<string, ChannelActor>();
  * 取(或建)某 channel 的 actor。
  * `init` **只在新建时生效** (既有 actor 不会被 init 覆盖 —— 避免"后到的调用把先建的会话状态冲掉")。
  */
-export function getOrCreateActor(channelId: string, init: Partial<ActorState> = {}): ChannelActor {
-  const key = channelId || 'default';
+export function getOrCreateActor(actorKey: string, init: Partial<ActorState> = {}): ChannelActor {
+  const key = actorKey;
   const existing = actors.get(key);
   if (existing) return existing;
-  const created = new ChannelActor({ ...init, channelId: key });
+  const created = new ChannelActor({ ...init, channelId: init.channelId ?? key });
   actors.set(key, created);
   return created;
 }
 
 /** 只读探查 (不建) —— 测试与诊断用 */
-export function peekActor(channelId: string): ChannelActor | undefined {
-  return actors.get(channelId || 'default');
+export function peekActor(actorKey: string): ChannelActor | undefined {
+  return actors.get(actorKey);
 }
 
 /** 当前 actor 数 (诊断用) */

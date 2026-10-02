@@ -19,7 +19,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { createRunContext } from '../agents/run-context.js';
-import { RUN_CONTEXT_DONE, RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
+import { RUN_CONTEXT_FIELDS, RUN_CONTEXT_DONE } from '../kernel/plan-runcontext.js';
+import { K5_PROGRESS } from '../kernel/plan-channel-actor.js';
+import { scanSessionFieldResidence } from '../kernel/gate-scan.js';
 import { stripLineComment } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
@@ -84,16 +86,29 @@ describe('K2 接线门: RunContext 行为级接线', () => {
     expect(ctx.abortSignal?.aborted).toBe(true);
   });
 
-  it('session 级字段必须**仍是实例字段** (镜像规则: 已迁移的必须消失, session 级的不许被搬)', () => {
+  it('session 级字段必须**仍是实例字段** —— 除非 K5 台账声明已迁 (K2↔K5 交接契约)', () => {
     // `currentGoalId` 是跨 Run 的会话级绑定 (setGoalId 外部注入; run 内可能重绑并需活到下一轮)。
     // 它必须留在实例上 —— 被塞进"每次入口新建"的 Context 会让 run 内的写丢掉。
+    // 2026-10-02: 唯一开关是 **K5 台账** —— 声明了才放行 (K5 第 4 步要迁 messageHistory),
+    //   没声明就消失则判红 (防"半搬状态"偷偷溜过)。
     const code = strip(PI);
     const session = RUN_CONTEXT_FIELDS.filter((f) => f.scope === 'session');
     expect(session.length).toBeGreaterThan(0);
-    for (const f of session) {
-      expect(new RegExp(`private\\s+${f.name}\\s*[=:]`).test(code)).toBe(true);
-      expect(RUN_CONTEXT_DONE).not.toContain(f.name);
-    }
+    expect(scanSessionFieldResidence(code, session, K5_PROGRESS.migratedFieldNames ?? [])).toEqual([]);
+    for (const f of session) expect(RUN_CONTEXT_DONE).not.toContain(f.name);
+  });
+
+  it('★ 交接契约的判别力: 没声明却消失 ⇒ 红; 声明了不存在的字段 ⇒ 红', () => {
+    const code = strip(PI);
+    const session = RUN_CONTEXT_FIELDS.filter((f) => f.scope === 'session');
+    // ① 真实源码 + **空**迁移名单 ⇒ messageHistory 已不在实例上 (访问器) ⇒ 必须报红
+    expect(scanSessionFieldResidence(code, session, [])
+      .some((x) => x.rule === 'session-field-vanished')).toBe(true);
+    // ② 声明迁移一个 K2 里不存在的字段 ⇒ 红
+    expect(scanSessionFieldResidence(code, session, ['不存在的字段'])
+      .some((x) => x.rule === 'k5-migration-unknown-field')).toBe(true);
+    // ③ 盘上真实台账名单 ⇒ 绿
+    expect(scanSessionFieldResidence(code, session, K5_PROGRESS.migratedFieldNames ?? [])).toEqual([]);
   });
 
   it('判别力自证: 把旧字段声明注回源码 ⇒ 必须判红', () => {

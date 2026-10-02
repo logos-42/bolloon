@@ -26,8 +26,12 @@ export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'fi
  *          **会话身份 (SessionStore key) 在 hydrate 时才出现** ⇒ 两个独立 session 共用同一个 actor,
  *          新 session 一构造就看到别人的 history (测试实测 `expected 2 to be 0`)。
  *       ② **K2 门拦下** (1 红): 「session 级字段必须**仍是实例字段**」—— 第 4 步落地前不许留半搬状态。
- *     ⇒ **结论 (写进 K5 约束)**: history 归属**不能按 channel 前缀**, 必须按**会话身份**;
- *       且身份在 hydrate 阶段才解析 ⇒ 归属转移点必须挪到 hydrate, 并且一个 Pi 实例换 key 时不许串。
+ *     ⇒ **结论 (写进 K5 约束)**: history 归属**不能按 channel 前缀**, 必须按**会话身份**。
+ *   · 2026-10-02 **第二版 (按约束重做, 成功)**: 注册键改成**会话身份** (`loadSessionKey` 优先, 否则整条 `peerId`),
+ *     **不做前缀归并, 也没有 default 兜底桶** (没有身份 ⇒ 不归属: 宁可不共享, 不许串台);
+ *     `messageHistory` 本体搬进 `actor.state.messageHistory` (Pi 侧访问器 + `attachActor` 收养当地历史)。
+ *     同时把 K2 门那条「session 级字段必须仍是实例字段」改成**读 K5 台账**的交接契约 (声明了才放行)。
+ *     `fieldsMigrated` 0 → **1/4** (messageHistory); `entriesWired` 仍 0/4。
  */
 
 export interface ActorStateItem { name: string; why: string; owner: string }
@@ -91,9 +95,9 @@ export const K5_PROGRESS = {
   stage: 'registry-built' as K5Stage,
   /** Actor 容器文件路径 (存在性由门真读盘核对) */
   containerPath: 'kernel/channel-actor.ts',
-  fieldsMigrated: 0,
+  fieldsMigrated: 1,
   /** 已迁字段名单 —— 门强制 `length === fieldsMigrated` 且每个名字都在 K5_INHERITED_FIELDS 里 */
-  migratedFieldNames: [],
+  migratedFieldNames: ['messageHistory'],
   fieldsTotal: 4,
   entriesWired: 0,
   entriesTotal: 4,

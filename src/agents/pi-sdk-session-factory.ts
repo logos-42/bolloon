@@ -23,13 +23,22 @@ import type { AgentSession, AgentSessionConfig } from './pi-sdk-types.js';
 
 /**
  * **K5 第 3 步**: 会话创建时绑定它所属 channel 的 Actor —— 只做**归属**。
- *   · channelId 取 `config.peerId` 的 `:` 前段 (per-channel session key 的形状就是 `<channel>:<sessionId>`);
+ *   · **注册键取会话身份** (`loadSessionKey` 优先, 否则整条 `peerId`); `channelId` 另取 `peerId` 的 `:` 前段;
+ *   · 没有身份 ⇒ **不绑定** (不许有 default 兜底桶);
  *   · 状态 (messageHistory / channelId / agentId / goalId) **仍在 Pi 实例字段上**, 逐项迁入见 8 步台账;
  *   · 绑定是**幂等**的: 同一 channelId 永远拿到同一个 actor (`getOrCreateActor`)。
  */
 function attachActor(session: AgentSession, config: AgentSessionConfig): AgentSession {
-  const channelId = String(config.peerId || '').split(':')[0] || 'default';
-  session.actor = getOrCreateActor(channelId, { agentId: config.agentId || '' });
+  // **注册键 = 会话身份** (SessionStore key 优先, 否则整条 peerId)。
+  //   不许取 `:` 前段: 同一 channel 下不同会话会落进同一个桶 ⇒ history 串台
+  //   (2026-10-02 全量回归实证: 5 红)。
+  const identity = String(config.loadSessionKey || config.peerId || '');
+  // **没有身份就不归属** —— 没有 'default' 兜底桶, 宁可不共享也不许串台。
+  if (!identity) return session;
+  const channelId = String(config.peerId || '').split(':')[0] || identity;
+  const actor = getOrCreateActor(identity, { agentId: config.agentId || '', channelId });
+  if (typeof session.attachActor === 'function') session.attachActor(actor);
+  else session.actor = actor;
   return session;
 }
 

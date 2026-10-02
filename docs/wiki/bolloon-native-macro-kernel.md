@@ -845,3 +845,43 @@ entriesWired   仍 0/4    —— 没有任何入口把执行投递进 mailbox (s
 
 回退一个代码段落时, 我用 `find(首次出现的结尾标记)` 定位段落末尾 —— 结果**留了一个多余的 `}`**, 让 pi-sdk.ts 出现数千个语法错误 (tsc 直接把整file 判废)。
 ⇒ 规矩: **删段落要用语法结构定位 (花括号配平/整块函数边界), 不要用"某个字符串的首次出现"**; 删完立刻 `tsc` 验。
+
+## 29. K5 第 4 步第二版: 按约束重做, 成功 (messageHistory 所有权转移)
+
+### 29.1 改了什么 (相对被否的第一版)
+
+| 维度 | 第一版 (否掉) | 第二版 (本次) |
+| --- | --- | --- |
+| actor 注册键 | `peerId` 的 `:` **前段** (channel 前缀) | **会话身份**: `loadSessionKey` 优先, 否则**整条** `peerId` |
+| 无身份时 | 落 `default` 兜底桶 | **不归属** (没有 actor, history 仍归实例) —— 宁可不共享, 不许串台 |
+| `state.channelId` | = 键 | **另取** `peerId` 的 `:` 前段 (channel 归属与身份键解耦) |
+| K2 门 | 逐字段正则写死「session 级字段必须仍是实例字段」 | **读 K5 台账**的交接契约: 声明了才放行, 声明了不存在的字段也判红 |
+
+### 29.2 落地物
+
+```
+src/kernel/channel-actor.ts       getOrCreateActor(actorKey, init) —— 键=会话身份; channelId = init.channelId ?? key
+src/agents/pi-sdk.ts              `messageHistory` 实例字段 → **访问器** (绑定 actor 后读写全落 actor 的数组)
+                                  + `attachActor()` (收养绑定前已有的本地历史, 防两份历史)
+src/agents/pi-sdk-types.ts        AgentSession.attachActor?(actor)
+src/agents/pi-sdk-session-factory.ts  attachActor(): 身份 = loadSessionKey || peerId; 无身份 ⇒ 不绑定
+src/kernel/gate-scan.ts           scanSessionFieldResidence(code, sessionFields, migratedByK5) —— K2↔K5 交接契约 (纯函数)
+src/kernel/plan-channel-actor.ts  fieldsMigrated 0 → **1/4** · migratedFieldNames ['messageHistory']
+```
+
+### 29.3 真跑验证 (全部行为级, 不看源码断言)
+
+| 用例 | 断言 |
+| --- | --- |
+| **无身份 ⇒ 不归属** | `createAgentSession({})` ⇒ `session.actor === undefined` (没有 default 兜底桶) |
+| **同前缀不同身份 ⇒ 隔离** | `peerId='k5probe-a:s1'` vs `'k5probe-a:s2'`: 两者 `channelId` 都是 `k5probe-a`, 但 **actor 不同** |
+| **同身份 ⇒ 共享** | 两个 session 同 `loadSessionKey` ⇒ **同一 actor**; 向一个写 history, 另一个立刻看见 |
+| **所有权真转移** | `resumeSession()` 灌进来的历史**落在 `actor.state.messageHistory`**; 直接往 actor 数组 push, `saveCurrentSession()` 写出的就是它 (同一个数组对象, 不是副本) |
+| **不同身份隔离** | 另一个身份 ⇒ 自己的 actor, history 为 0 |
+| **钉住的反例** (第 4 步第一版留下的) | 同 channel 前缀的两个独立 session **不许看见彼此 history** —— 仍然绿 |
+| **K2↔K5 交接契约** | ① 真实源码 + 空迁移名单 ⇒ 判红 (`session-field-vanished`) ② 声明一个 K2 里不存在的字段 ⇒ 判红 ③ 盘上真实台账 ⇒ 绿 |
+
+### 29.4 为什么这一版能过而第一版不能
+
+被否的第一版把**channel 前缀**当成了 history 的隔离粒度 —— 而仓库里 history 的隔离粒度是**会话** (SessionStore key)。第二版把键换成会话身份, 并**取消了兜底桶**(没有身份就不共享), 于是"同 channel 下不同会话"再也不会落进同一个桶。
+K2 门则从"写死的禁令"改成"**由台账开关的交接契约**" —— 门不再需要为 K5 让路而变橡皮章: 没声明就消失照样红。
