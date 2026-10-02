@@ -290,7 +290,11 @@ const ENTRY_SHAPE_RE = /(index\.ts$|cli-entry\.ts$|electron\.ts$|\.d\.ts$|server
  * **不算删除候选**。它们是台账/名册, 在"0 入边"口径下天然是孤岛, 每加一个台账就会让候选集变一次
  * (已因此被迫改过三次 sha)。删除台账不是"删死代码", 走的是它自己的 8 字段记录流程。
  */
-const LEDGER_SELF_EXEMPT = /^kernel\/(roster|plan[^/]*)\.ts$/;
+// 2026-10-02 (第 4 次候选集漂移后定的根规则): **kernel 冻结面整体不算删除候选**。
+//   理由: ① 台账/名册在"0 入边"口径下天然是孤岛, 每加一个就改一次 sha (已四次);
+//        ② 只被测试 import 的产品文件 (如 channel-actor.ts 这种"先落容器、后接线"的基建) 同样会被误判成死码;
+//        ③ kernel 内部要删东西, 走的是它自己的 8 字段删除记录流程, 不是"删死代码"。
+const LEDGER_SELF_EXEMPT = /^kernel\//;
 
 export function deletionCandidates(files: SourceFile[]): string[] {
   const paths = new Set(files.map((f) => f.path));
