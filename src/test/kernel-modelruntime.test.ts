@@ -16,7 +16,7 @@ import {
   MODEL_WRITE_PORTS,
   MODEL_WRITE_PORTS_FROZEN_AT,
 } from '../kernel/plan-modelruntime.js';
-import { ModelAbortError, ModelRuntime, ModelTimeoutError, type ModelRuntimePorts } from '../kernel/model-runtime.js';
+import { ModelAbortError, ModelRuntime, ModelTimeoutError, backoffDelayMs, isRateLimited, type ModelRuntimePorts } from '../kernel/model-runtime.js';
 import { countModelWritePortCalls, scanModelRuntimeFile, scanModelRuntimeLedger, type SourceTextFile } from '../kernel/gate-scan.js';
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -201,5 +201,114 @@ describe('K6 运行时骨架: acquire 只读 + 连接复用 + timeout + cancella
     expect(scanModelRuntimeFile(code, { writePortNames: names, progress: { capabilitiesDone: 9 }, capabilities: MODEL_RUNTIME_CAPABILITIES }).length).toBe(1);
     // 空文件 ⇒ 拒跑 (不许跳过)
     expect(scanModelRuntimeFile('   ', { writePortNames: names, progress: K6_PROGRESS, capabilities: MODEL_RUNTIME_CAPABILITIES })[0].what).toContain('拒跑');
+  });
+});
+
+describe('K6 第三步: 多供应商并发 + 429 退避 (真跑, 睡眠注入 ⇒ 不真等)', () => {
+  /** 端口: 记录并发峰值 / 按脚本返回限流 */
+  const mk = (script: Array<'ok' | '429'>, opts?: { holdMs?: number }) => {
+    const hold = opts?.holdMs ?? 20;
+    let live = 0; let peak = 0; const calls: number[] = []; const sleeps: number[] = [];
+    let idx = 0;
+    const ports: ModelRuntimePorts = {
+      random: () => 0.5,                                  // 抖动因子 = 0 ⇒ 退避时长可精确断言
+      sleep: async (ms: number) => { sleeps.push(ms); },
+      async openConnection() {
+        return {
+          id: 'c1',
+          async call() {
+            idx += 1; live += 1; peak = Math.max(peak, live);
+            const kind = script[Math.min(idx - 1, script.length - 1)];
+            await new Promise((r) => setTimeout(r, hold));
+            live -= 1;
+            calls.push(idx);
+            return kind === '429' ? { ok: false, status: 429, error: 'HTTP 429 rate limit' } : { ok: true, raw: { n: idx } };
+          },
+          async close() {},
+        };
+      },
+    };
+    return { ports, peak: () => peak, calls, sleeps };
+  };
+
+  it('并发上限逐 key: maxConcurrency=1 ⇒ 两次并发调用**不重叠** (峰值 1, 有人排队)', async () => {
+    const m = mk(['ok', 'ok']);
+    const rt = new ModelRuntime(m.ports, 5000, 1);
+    const lease = await rt.acquire({ provider: 'p', model: 'm', timeoutMs: 5000 });
+    await Promise.all([lease.call({ i: 1 }), lease.call({ i: 2 })]);
+    expect(m.peak()).toBe(1);
+    expect(rt.snapshotStats().concurrencyWaits).toBe(1);
+    expect(rt.snapshotStats().maxObservedConcurrency).toBe(1);
+    await rt.closeAll();
+  });
+
+  it('并发上限逐 key: maxConcurrency=3 ⇒ 三次并发**真重叠** (峰值 3) 且不同 key 互不阻塞', async () => {
+    const m = mk(['ok', 'ok', 'ok']);
+    const rt = new ModelRuntime(m.ports, 5000, 3);
+    const lease = await rt.acquire({ provider: 'p', model: 'm', timeoutMs: 5000 });
+    await Promise.all([lease.call({}), lease.call({}), lease.call({})]);
+    expect(m.peak()).toBe(3);
+    expect(rt.snapshotStats().concurrencyWaits).toBe(0);
+    await rt.closeAll();
+  });
+
+  it('排队可取消: 等槽期间 abort ⇒ ModelAbortError, 且**不发起到连接**', async () => {
+    const m = mk(['ok', 'ok'], { holdMs: 60 });
+    const rt = new ModelRuntime(m.ports, 5000, 1);
+    const lease = await rt.acquire({ provider: 'p', model: 'm', timeoutMs: 5000 });
+    const ctl = new AbortController();
+    const first = lease.call({});
+    const queued = lease.call({}, { signal: ctl.signal });
+    setTimeout(() => ctl.abort(), 10);
+    await expect(queued).rejects.toThrow(ModelAbortError);
+    await first;
+    expect(m.calls).toHaveLength(1);                        // 排队那个从未发起
+    await rt.closeAll();
+  });
+
+  it('429 退避: 两次限流后成功 ⇒ retries=2, 退避序列按指数上升 (jitter 归零 ⇒ 可精确断言)', async () => {
+    const m = mk(['429', '429', 'ok'], { holdMs: 1 });
+    const rt = new ModelRuntime(m.ports, 5000, 1);
+    const lease = await rt.acquire({ provider: 'p', model: 'm', timeoutMs: 5000 });
+    const res = await lease.call({});
+    expect(res.ok).toBe(true);
+    expect(rt.snapshotStats().retries).toBe(2);
+    expect(rt.snapshotStats().rateLimited).toBe(2);
+    expect(m.sleeps).toEqual([200, 400]);                   // 200 * 2^n (jitter=0)
+    await rt.closeAll();
+  });
+
+  it('429 用尽: 一直限流 ⇒ 重试到上限即如实失败 (不无限重试)', async () => {
+    const m = mk(['429'], { holdMs: 1 });
+    const rt = new ModelRuntime(m.ports, 5000, 1);
+    const lease = await rt.acquire({ provider: 'p', model: 'm', timeoutMs: 5000 });
+    const res = await lease.call({});
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('限流重试用尽');
+    expect(rt.snapshotStats().retries).toBe(3);             // maxRetries=3
+    await rt.closeAll();
+  });
+
+  it('退避期间取消 ⇒ 立刻抛 ModelAbortError (不再重试)', async () => {
+    const m = mk(['429', '429', 'ok'], { holdMs: 1 });
+    // 这个用例必须让退避**真的占住时间**, 否则整个重试循环会在 abort 之前跑完 (用例本身失效)
+    m.ports.sleep = async (ms: number) => { await new Promise((r) => setTimeout(r, Math.min(ms, 60))); };
+    const rt = new ModelRuntime(m.ports, 5000, 1);
+    const lease = await rt.acquire({ provider: 'p', model: 'm', timeoutMs: 5000 });
+    const ctl = new AbortController();
+    const p = lease.call({}, { signal: ctl.signal });
+    setTimeout(() => ctl.abort(), 15);
+    await expect(p).rejects.toThrow(ModelAbortError);
+    await rt.closeAll();
+  });
+
+  it('退避曲线是纯函数且尊重 Retry-After (取最大值)', () => {
+    expect(backoffDelayMs(0, { random: () => 0.5 })).toBe(200);
+    expect(backoffDelayMs(1, { random: () => 0.5 })).toBe(400);
+    expect(backoffDelayMs(9, { random: () => 0.5 })).toBe(5000);                    // 封顶
+    expect(backoffDelayMs(0, { retryAfterMs: 1200, random: () => 0.5 })).toBe(1200); // 尊重上游
+    expect(isRateLimited({ status: 429 })).toBe(true);
+    expect(isRateLimited({ error: 'HTTP 429 rate limit' })).toBe(true);
+    expect(isRateLimited({ ok: false, error: 'boom' })).toBe(false);
   });
 });

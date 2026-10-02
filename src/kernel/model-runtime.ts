@@ -35,6 +35,10 @@ export interface ModelRuntimePorts {
   openConnection(snapshot: Readonly<ModelSnapshot>, signal: AbortSignal): Promise<ModelConnection>;
   /** 时钟注入 (测试可控; 缺省 Date.now) */
   now?(): number;
+  /** 睡眠注入 (退避可确定性测试: 真跑用例不必真等) */
+  sleep?(ms: number, signal?: AbortSignal): Promise<void>;
+  /** 随机注入 (抖动可确定性测试; 缺省 Math.random) */
+  random?(): number;
 }
 
 export interface ModelConnection {
@@ -68,6 +72,36 @@ export interface ModelLease {
   release(): void;
 }
 
+/** 429 识别 (端口可以把限流表达成返回值 status=429, 或抛一个带 status 的错) */
+export function isRateLimited(x: unknown): boolean {
+  if (!x || typeof x !== 'object') return false;
+  const o = x as { status?: unknown; error?: unknown; name?: unknown };
+  if (o.status === 429 || o.status === '429') return true;
+  if (typeof o.error === 'string' && /\b429\b|rate ?limit/i.test(o.error)) return true;
+  return false;
+}
+
+/** 退避参数 (写成数据; 实现与测试共用) */
+export const BACKOFF_POLICY = {
+  baseMs: 200,
+  factor: 2,
+  maxMs: 5_000,
+  /** 抖动比例 (±) —— 防止多个调用方同拍重试 */
+  jitter: 0.25,
+  maxRetries: 3,
+} as const;
+
+/**
+ * 计算第 n 次重试的等待时长 (n 从 0 起): `min(base * factor^n, max)` 再乘 ±jitter。
+ * `retryAfterMs` (供应商给的 Retry-After) 存在时**取最大值** —— 尊重上游而不只是听自己的退避曲线。
+ */
+export function backoffDelayMs(n: number, opts?: { retryAfterMs?: number; random?: () => number }): number {
+  const exp = Math.min(BACKOFF_POLICY.baseMs * BACKOFF_POLICY.factor ** n, BACKOFF_POLICY.maxMs);
+  const r = opts?.random ?? Math.random;
+  const jittered = exp * (1 + BACKOFF_POLICY.jitter * (2 * r() - 1));
+  return Math.max(0, Math.round(Math.max(jittered, opts?.retryAfterMs ?? 0)));
+}
+
 export class ModelTimeoutError extends Error {
   constructor(public readonly budgetMs: number) { super(`模型调用超时 (${budgetMs}ms)`); this.name = 'ModelTimeoutError'; }
 }
@@ -96,17 +130,31 @@ export interface ModelRuntimeStats {
   /** 累计超时 / 取消次数 */
   timeouts: number;
   aborts: number;
+  /** 累计"因并发上限而排队"次数 + 观测到的最大并发 */
+  concurrencyWaits: number;
+  maxObservedConcurrency: number;
+  /** 累计限流命中 / 重试次数 + 最近一次退避时长 */
+  rateLimited: number;
+  retries: number;
+  lastBackoffMs: number;
   /** 默认预算 (ms) */
   defaultTimeoutMs: number;
 }
 
 export class ModelRuntime {
   private pool = new Map<string, PooledConnection>();
-  private stats = { reused: 0, opened: 0, timeouts: 0, aborts: 0 };
+  private stats = { reused: 0, opened: 0, timeouts: 0, aborts: 0, concurrencyWaits: 0, maxObservedConcurrency: 0, rateLimited: 0, retries: 0, lastBackoffMs: 0 };
+  /** 每 key 当前在飞的调用数 + 等待队列 (多供应商并发: 各 key 各自算) */
+  private active = new Map<string, number>();
+  /** 等待者 → 它的 granted 标记 (转让路径用; 见 acquireSlot) */
+  private grantedProbe = new WeakMap<object, { value: boolean }>();
+  private waiters = new Map<string, { resolve: () => void; reject: (e: Error) => void; signal?: AbortSignal; granted?: boolean }[]>();
 
   constructor(
     private readonly ports: ModelRuntimePorts,
     private readonly defaultTimeoutMs = 30_000,
+    /** 每个 key 的最大并发 (多供应商并发: 逐 key 计数, 互不阻塞) */
+    private readonly maxConcurrency = 4,
   ) {
     if (typeof ports?.openConnection !== 'function') throw new Error('ModelRuntime 需要 openConnection 端口');
   }
@@ -151,29 +199,122 @@ export class ModelRuntime {
         const budget = snapshotReadonly.timeoutMs ?? this.defaultTimeoutMs;
         const external = opts?.signal;
         if (external?.aborted) { this.stats.aborts += 1; throw new ModelAbortError(); }
-        // 每次调用一个受控 AbortController: 超时与外部取消都走它 (底层调用只认一个 signal)
-        const ctl = new AbortController();
-        const onExternalAbort = () => ctl.abort();
-        external?.addEventListener?.('abort', onExternalAbort, { once: true });
         const started = (this.ports.now ?? Date.now)();
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => { this.stats.timeouts += 1; ctl.abort(); reject(new ModelTimeoutError(budget)); }, budget);
-        });
+        // ① 并发槽: 逐 key 计数 (多供应商并发互不阻塞); 排队期间可被取消
+        await this.acquireSlot(key, external);
         try {
-          const res = await Promise.race([conn.call(req, ctl.signal), timeoutPromise]);
-          const out = (res ?? { ok: true }) as ModelCallResult;
-          return { ...out, reused: slot!.leases > 1, ms: (this.ports.now ?? Date.now)() - started };
-        } catch (err) {
-          if (err instanceof ModelTimeoutError) throw err;
-          if (ctl.signal.aborted && !(err instanceof ModelTimeoutError)) { this.stats.aborts += 1; throw new ModelAbortError(); }
-          throw err;
+          // ② 429 退避重试: 退避期间**可取消**; 超过 maxRetries 即如实失败 (不许无限重试)
+          for (let attempt = 0; ; attempt += 1) {
+            const result = await this.callOnce(conn, req, external, budget);
+            if (result.ok || !isRateLimited(result)) {
+              return { ...result, reused: (this.pool.get(key)?.leases ?? 0) > 1, ms: (this.ports.now ?? Date.now)() - started };
+            }
+            this.stats.rateLimited += 1;
+            if (attempt >= BACKOFF_POLICY.maxRetries) {
+              return { ...result, reused: (this.pool.get(key)?.leases ?? 0) > 1, ms: (this.ports.now ?? Date.now)() - started,
+                error: `限流重试用尽 (${attempt + 1} 次): ${String(result.error ?? '')}` };
+            }
+            const wait = backoffDelayMs(attempt, {
+              retryAfterMs: Number((result as { retryAfterMs?: unknown }).retryAfterMs ?? 0) || undefined,
+              random: this.ports.random,
+            });
+            this.stats.retries += 1;
+            this.stats.lastBackoffMs = wait;
+            await this.sleepOrAbort(wait, external);   // 退避期间取消 ⇒ 立刻抛
+          }
         } finally {
-          if (timer) clearTimeout(timer);
-          external?.removeEventListener?.('abort', onExternalAbort);
+          this.releaseSlot(key);
         }
       },
     };
+  }
+
+  /** 一次尝试 (超时与取消都走受控 controller; 底层只认一个 signal) */
+  private async callOnce(conn: ModelConnection, req: ModelCallRequest, external: AbortSignal | undefined, budget: number): Promise<ModelCallResult> {
+    const ctl = new AbortController();
+    const onExternalAbort = () => ctl.abort();
+    external?.addEventListener?.('abort', onExternalAbort, { once: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { this.stats.timeouts += 1; ctl.abort(); reject(new ModelTimeoutError(budget)); }, budget);
+    });
+    try {
+      const res = await Promise.race([conn.call(req, ctl.signal), timeoutPromise]);
+      return (res ?? { ok: true }) as ModelCallResult;
+    } catch (err) {
+      if (err instanceof ModelTimeoutError) throw err;
+      if (ctl.signal.aborted) { this.stats.aborts += 1; throw new ModelAbortError(); }
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+      external?.removeEventListener?.('abort', onExternalAbort);
+    }
+  }
+
+  /** 退避睡眠 (可取消; 不真等领域: 端口注入 sleep) */
+  private async sleepOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) { this.stats.aborts += 1; throw new ModelAbortError(); }
+    const sleep = this.ports.sleep ?? ((d: number) => new Promise<void>((r) => setTimeout(r, d)));
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<never>((_, reject) => {
+      if (!signal) return;
+      onAbort = () => { this.stats.aborts += 1; reject(new ModelAbortError()); };
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      await Promise.race([sleep(ms, signal), aborted]);
+    } finally {
+      if (onAbort) signal?.removeEventListener?.('abort', onAbort);
+    }
+  }
+
+  /** 取并发槽 (逐 key; 排队可取消) */
+  private async acquireSlot(key: string, signal?: AbortSignal): Promise<void> {
+    const cur = this.active.get(key) ?? 0;
+    if (cur < this.maxConcurrency) {
+      this.active.set(key, cur + 1);
+      this.stats.maxObservedConcurrency = Math.max(this.stats.maxObservedConcurrency, cur + 1);
+      return;
+    }
+    if (signal?.aborted) { this.stats.aborts += 1; throw new ModelAbortError(); }
+    this.stats.concurrencyWaits += 1;
+    const granted: { value: boolean } = { value: false };
+    await new Promise<void>((resolve, reject) => {
+      const list = this.waiters.get(key) ?? [];
+      const entry: { resolve: () => void; reject: (e: Error) => void; signal?: AbortSignal; granted?: boolean } = { resolve, reject, signal };
+      const onAbort = () => {
+        const i = list.indexOf(entry);
+        if (i >= 0) list.splice(i, 1);
+        this.stats.aborts += 1;
+        reject(new ModelAbortError());
+      };
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+      list.push(entry);
+      this.waiters.set(key, list);
+      const wrappedResolve = () => { if (signal) signal.removeEventListener('abort', onAbort); resolve(); };
+      entry.resolve = wrappedResolve;
+      // 槽是**转让**来的 (releaseSlot 直接 resolve 并置 granted) ⇒ 不再自增, 否则并发账虚高 (实测踩到)
+      this.grantedProbe.set(entry, granted);
+    });
+    if (!granted.value) {
+      this.active.set(key, (this.active.get(key) ?? 0) + 1);
+      this.stats.maxObservedConcurrency = Math.max(this.stats.maxObservedConcurrency, this.active.get(key)!);
+    }
+  }
+
+  /** 还槽: 有排队者就交给它 (不释放额度, 直接转让) */
+  private releaseSlot(key: string): void {
+    const list = this.waiters.get(key) ?? [];
+    const next = list.shift();
+    if (next) {
+      if (!this.waiters.get(key)?.length) this.waiters.delete(key);
+      const probe = this.grantedProbe.get(next);
+      if (probe) probe.value = true;
+      next.resolve();
+      return;
+    }
+    const cur = this.active.get(key) ?? 0;
+    if (cur <= 1) this.active.delete(key); else this.active.set(key, cur - 1);
   }
 
   /** 只读统计 (诊断/门用) */
