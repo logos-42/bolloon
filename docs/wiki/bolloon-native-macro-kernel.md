@@ -1816,12 +1816,12 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 | **K4-B** | Kernel Loop —— 合并两套 Agent Loop (ReAct / Pivot / 旧 loop) | ❌ |
 | K5 | Channel Actor | ✅ |
 | K6 | ModelRuntime (并发/熔断/能力) | ✅ 能力 9/9 (`capabilities-done`) |
-| **K7** | Harness 唯一系统调用门 | 🟡 (旁路 3 → 1 开通 + 1 已收敛: pivot ✅ · skill ✅ · tscTool ❌ · getSkillRegistry ❌) |
+| **K7** | Harness 唯一系统调用门 | ✅ (**旁路 3 → 0**: pivot ✅ · skill ✅ · tscTool ✅ · getSkillRegistry ✅) |
 
 > `AUTHORITY_DEBT` 的还清动作今后叫 **K4-A**, 不再单独叫 "K4"; 设计页原"合并两套 Loop"即 **K4-B**。
 > (权威台账是 `src/kernel/roster.ts` 的 `STAGE_STATUS` —— 2026-10-02 修正了两处滞后: K6 从 `not-started` 改 `done`, K7 从 `not-started` 改 `partial`。)
 
-### K7 准确口径 (🟡) —— **不要把"透传完成"写成"skill 已经过门"**
+### K7 准确口径 (✅) —— **不要把"透传完成"写成"skill 已经过门"**
 
 **已完成**
 - ✅ **系统自检也过门**: 回合末尾的 `tsc_check` TS 自检不再直调工具 —— 先问 `beforeToolCall({tool:'tsc_check', args:{}, ctx: harnessCtx(), permissionMode})`, 被拒/抛错 ⇒ **不执行**且**可见**报出 (拒绝不静默); 机械断言 (判定在 execute 之前 + `if (!tscAllowed)` 分支在 + 拒绝文案在) **经变异验证** (去掉 fail-closed 分支 ⇒ 判红)。
@@ -1836,9 +1836,9 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 - ✅ skill 端到端 **allow + deny 两路都取得真跑证据** (`k7-skill-denylist-e2e.test.ts`, 走真链: 真 session → 真 Harness deny-list checker → integration → adapter → registry): allow 基线不被拒 · `skill:arch` 入拒绝列表 ⇒ `拒绝: [deny-list]` 且**拿不到 skill 真实输出** (无副作用) · 重试仍被拒 · 放开名单 ⇒ 又能执行; **变异**拆掉 adapter 门分支 ⇒ 判红, 还原 ⇒ 回绿无 diff ⇒ 用例**承重**。
   (读法教训: CLI 侧响应被**启动期日志闸门**写进 `~/.bolloon/logs/startup.log` (前缀 `[boot] 🎯`), **stdout 看不到** —— 我上一轮据 stdout 误判"没走到分发器", 是假阴性。)
 - ✅ `PiAgentSession.executeSkill` 已按**方案 a** 收敛: 公开签名不变, 内部改为**判定经 Harness → 恰一次执行** (`k7-session-skill-gate.test.ts`: 探针 skill 计数 —— 允许**恰 1 次**执行返回标记 · deny **零执行** · 重试仍拒 · 放开又能执行; 变异"门永远放行" ⇒ 判红: `expected 'PROBE_EXECUTED' to match /^拒绝: \[deny-list\]/` ⇒ 用例承重)
-- ❌ **未过门的原始出口 `getSkillRegistry()`**: 已标 `@deprecated` 并**登记为开放旁路条目** (拿到它直调 `.execute()` 仍绕过 Harness) —— 不许无声删 (公开兼容面), 也不许不登记; 处置需定夺是否动公开返回类型 (改为受门包装)
-- ❌ 全仓 skill 零旁路 (尚有一条公开 API + 一条内部路径)
-- ❌ `pi-sdk.ts` 内置 `tsc_check` 自检: **接线已落 + 机械/变异证据**, 但**端到端未单独取证** (该路径由"本回合改过 TS"的收尾自检触发, 需真 LLM 回合) ⇒ 条目保持 open
+- ✅ **`getSkillRegistry()` 已按 leo 口径 (b) 收口** (2026-10-02): 返回**受门包装** (`GuardedSkillRegistry`) —— `execute` / `get().execute` / `list()[].execute` **三条**绕门路径全堵; 真跑 ⑥ (allow 时三条各恰 1 次 · `denyTool` 后三条**全零执行**) + 两条真变异 (`list` 裸透传 / `get` 裸透传 ⇒ 判红)。**如实记两条**: ① 调用方**自己 `register(skill)`** 传入的对象仍带裸 `execute` (不属本出口能管的面) ② 行为变更 —— 被拒时**不再执行**、改返回拒绝串 (源码级兼容, 可能属破坏性) ⇒ 已入台账 (`5483e3a`)
+- ✅ 全仓 skill 旁路清零 (公开出海口已受门; 只剩"调用方自传对象"这条本出口管不到的面, 已如实登记)
+- ✅ `pi-sdk.ts` 内置 `tsc_check` 自检 **端到端已取证** (2026-10-02, `src/test/k7-tsc-tool-e2e.test.ts`): 真 LLM 回合 + 真门实例包裹 ⇒ 允许路 (门被问过 `tsc_check` 且恰执行一次 · `🔎 类型检查` 进对话流) 与拒绝路 (被拒 ⇒ **零执行** + 拒绝文案带理由进对话流) 都真跑; 两条变异 (问门工具名改掉 / fail-open) 各自判红。**边界如实记**: 拒绝路的"拒绝"判定是测试注入 (沿用端口注入法), 产品侧被证的是"先问门、被拒后不执行"这一半
 - ⚠️ **B 类 12 处直连 (2026-10-02 定性修正: 它们\*\*不是\*\*门旁路)** —— 6 个工具 (`polymarket_list_markets/get_market/get_orders/create_order/cancel_order` + `safe_deploy`) 各自在 `ctx.tools.set(...)` 的 **`execute` 体内**动态 import `constraint-runtime` 的 SDK (dist 优先 + src 回落 ⇒ 12 处)。因为跑在 `execute` 里, 它们**只在门放行之后**才会被执行 ⇒ 不威胁"唯一系统调用门"; 真正的问题是**分层**(B 类领域模块被 prod 直接 import, 而不是经 Tool Capability 层) ⇒ 属 **K1 遗留欠账**, 排期 K7 但仍挂在 K1 名下。机械判据: 每个 import 都在某个 `ctx.tools.set(` 之后且其片段含 `execute:`。
   ⇒ **2026-10-02 K1 ④ 已收敛**: 6 个工具改经 **Tool Capability 层** (`src/agents/tool-capability/index.ts`, 领域 SDK 路径唯一出海口) · 判据棘轮 **12 → 0** · `B_DIRECT_IMPORT_FROZEN_AT` **12 → 0** · 真跑 4/4 (6 个目标真加载) · 变异验证 (退回直连 ⇒ 判红)。
 

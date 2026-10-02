@@ -81,3 +81,5 @@ docs/copyright/out/
 # 小工具打包产物 (由 minitools/build.mjs 生成)
 minitools/dist/
 .skill/
+# K7 端到端门用的临时探针 (真回合改它才触发收尾自检)
+src/test/tmp/
