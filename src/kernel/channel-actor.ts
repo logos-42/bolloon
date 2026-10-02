@@ -118,6 +118,38 @@ export class ChannelActor {
     return this.mailbox.submit(() => fn(this.state));
   }
 
+  /**
+   * **K5 第 4 步 — hydrate**: 实现体 (load → filter → 截断 → 替换) 住在 Actor, 业务侧只给纯变换。
+   * 走邮箱 ⇒ 与 append / persist 串行, 不会再出现"读-改-写"三拍被并发踩掉。
+   * 返回灌入条数 (0 = 没历史 / 空 / 加载失败由调用方处理)。
+   */
+  hydrateHistory<T>(spec: HydrateSpec<T>): Promise<number> {
+    return this.mailbox.submit(async () => {
+      const loaded = await spec.load();
+      if (!loaded) return 0;
+      const next = spec.filter(loaded).slice(-spec.maxMessages);
+      if (next.length === 0) return 0;
+      const arr = this.state.messageHistory as T[];
+      arr.length = 0;
+      arr.push(...next);
+      return next.length;
+    });
+  }
+
+  /**
+   * **K5 第 4 步 — persist 的取数拍**: 取一份快照 (浅拷贝)。
+   * 走邮箱 ⇒ 拿到的是一致的 history, 不会与正在进行的 append 交错 (原来的 `this.messageHistory.map(...)`
+   * 是"边写边读", 压缩/工具回灌并发时可能落盘到半截状态)。
+   */
+  historySnapshot<T>(): Promise<T[]> {
+    return this.mailbox.submit(() => [...(this.state.messageHistory as T[])]);
+  }
+
+  /** **K5 第 4 步 — append**: 串行追加 (同 Channel 内排队; 供后续把 25 个 push 点接过来用) */
+  appendMessage<T>(msg: T): Promise<void> {
+    return this.mailbox.submit(() => { (this.state.messageHistory as T[]).push(msg); });
+  }
+
   /** 取消当前任务: 中断 signal, 队列继续 (后续任务看到的是新的 controller) */
   abort(reason = 'aborted'): void {
     this.state.cancellation?.abort(reason);
@@ -181,3 +213,24 @@ export function actorCount(): number {
 export function resetActors(): void {
   actors.clear();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// history 操作 (K5 第 4 步): 实现体住在 Actor 里, 业务侧只提供"纯变换"
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 一次 hydrate: `load → filter → 截断 → 替换 history`。
+ *
+ * 为什么要住在这里 (而不是留在业务侧): 这三步之前是"读-改-写"三拍, 与 append/persist
+ * **并发时会互相踩**。放进邮箱 ⇒ 同一 Channel 内天然串行。
+ * 业务侧只提供两个**纯**回调 (`load` / `filter`), 内核不 import 业务模块 (边界门).
+ */
+export interface HydrateSpec<T> {
+  /** 从存储读 (通常是 SessionStore.loadMessages) */
+  load: () => Promise<unknown[] | null>;
+  /** 把存储形状映射成消息数组 (业务侧的知识: roles / toolCall 等) */
+  filter: (loaded: unknown[]) => T[];
+  /** 只保留最后 N 条 */
+  maxMessages: number;
+}
+

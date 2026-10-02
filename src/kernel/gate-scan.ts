@@ -12,6 +12,7 @@ import {
   type Prohibition,
   LAYERS,
 } from './roster.js';
+import { HISTORY_OPS } from './plan-channel-actor.js';
 
 /** 一个源文件 (path 相对 src/) —— 判据只认这两个字段, 不碰磁盘 */
 export interface SourceFile {
@@ -613,6 +614,9 @@ export interface K5LedgerLike {
     /** 已迁字段名单 —— 必须与 fieldsMigrated 数量一致 (见判据 ③b) */
     migratedFieldNames?: readonly string[];
     entriesWired: number; entriesTotal: number;
+    /** K5 第 4 步的 history 操作搬迁位 (与 historyOpsNames 数量必须一致) */
+    historyOpsMigrated: number; historyOpsTotal: number;
+    historyOpsNames?: readonly string[];
   };
 }
 
@@ -672,6 +676,15 @@ export function scanActorLedger(
   }
   if (ledger.progress.stage === 'fields-migrated' && ledger.progress.fieldsMigrated !== ledger.progress.fieldsTotal) {
     f('actor-stage-ahead', `stage=fields-migrated 但 fieldsMigrated=${ledger.progress.fieldsMigrated}/${ledger.progress.fieldsTotal} ⇒ 阶段名超前`);
+  }
+  // ③c history 操作搬迁位: 搬了几个操作就得逐个点名, 名字必须 ∈ HISTORY_OPS, 且不许超总量
+  const ops = ledger.progress.historyOpsNames ?? [];
+  if (ops.length !== ledger.progress.historyOpsMigrated) {
+    f('actor-ops-mismatch', `historyOpsMigrated=${ledger.progress.historyOpsMigrated} 但名单 ${ops.length} 个 ⇒ 进度位与名单不一致`);
+  }
+  if (ledger.progress.historyOpsMigrated > ledger.progress.historyOpsTotal) f('actor-ops-overflow', 'historyOpsMigrated > historyOpsTotal');
+  for (const n of ops) {
+    if (!HISTORY_OPS.includes(n)) f('actor-ops-unknown', `已搬操作 ${n} 不在 HISTORY_OPS 里`);
   }
 
   // ④ 跨台账一致 (K2 → K5)

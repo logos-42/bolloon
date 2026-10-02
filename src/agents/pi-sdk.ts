@@ -728,6 +728,17 @@ export class PiAgentSession implements AgentSession {
    */
   private async hydrateMessageHistory(sessionKey: string, maxMessages: number): Promise<void> {
     try {
+      // **K5 第 4 步**: 实现体 (load → filter → 截断 → 替换) 已搬进 Actor —— 走邮箱 ⇒ 与 append/persist 串行。
+      //   业务侧只交两个**纯回调** (内核因此不必 import 业务模块); 未绑定 actor 的会话走下面原路径 (行为不变)。
+      if (this.actor) {
+        const n = await this.actor.hydrateHistory<Message>({
+          load: () => this._sessionStore.loadMessages(sessionKey),
+          filter: (loaded) => this._filterToMessage(loaded as PersistedMessage[]),
+          maxMessages,
+        });
+        if (n > 0) console.log(`[PiAgent] 从 ${sessionKey} 回灌 ${n} 条历史 (经 Channel Actor)`);
+        return;
+      }
       const loaded = await this._sessionStore.loadMessages(sessionKey);
       if (!loaded) {
         console.log(`[PiAgent] hydrate: 没有 ${sessionKey} 的历史`);
@@ -755,7 +766,10 @@ export class PiAgentSession implements AgentSession {
    *   即可获得"重启 / 跨进程接续"的语义.
    */
   async saveCurrentSession(key: string): Promise<void> {
-    const persisted: PersistedMessage[] = this.messageHistory.map((m) => ({
+    // **K5 第 4 步**: 取数拍走 Actor 的快照 (走邮箱 ⇒ 与 append 串行, 不会抓到"边写边读"的半截状态);
+    //   未绑定 actor 的会话走原路径 (行为不变)。
+    const source: Message[] = this.actor ? await this.actor.historySnapshot<Message>() : this.messageHistory;
+    const persisted: PersistedMessage[] = source.map((m) => ({
       role: m.role,
       content: m.content,
       toolCall: m.toolCall,

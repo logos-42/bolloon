@@ -885,3 +885,30 @@ src/kernel/plan-channel-actor.ts  fieldsMigrated 0 → **1/4** · migratedFieldN
 
 被否的第一版把**channel 前缀**当成了 history 的隔离粒度 —— 而仓库里 history 的隔离粒度是**会话** (SessionStore key)。第二版把键换成会话身份, 并**取消了兜底桶**(没有身份就不共享), 于是"同 channel 下不同会话"再也不会落进同一个桶。
 K2 门则从"写死的禁令"改成"**由台账开关的交接契约**" —— 门不再需要为 K5 让路而变橡皮章: 没声明就消失照样红。
+
+## 30. K5 第 4 步续: hydrate / persist 的实现体搬进 Actor (操作搬迁 2/4)
+
+### 30.1 为什么"所有权转移"还不够
+
+第 4 步第一段把 history 的**本体**搬进了 actor (读写都落到 actor 的数组), 但三个操作的**实现体**还挂在 Pi 里:
+`hydrate` 是「load → filter → 截断 → 替换」**读-改-写三拍**; `persist` 是「边写边读」地 `map` 出落盘形状。
+两者与 `append` 并发时互相踩 —— 压缩 / 工具回灌期间落盘可能抓到半截 history。
+
+### 30.2 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| `channel-actor.ts` | `hydrateHistory<T>({load, filter, maxMessages})` —— 三步全在**邮箱内**执行; `historySnapshot<T>()` —— persist 的取数拍 (走邮箱 ⇒ 一致快照); `appendMessage<T>(msg)` —— 串行追加 (备用, 供后续接 25 个 push 点) |
+| `plan-channel-actor.ts` | `HISTORY_OPS` = `['hydrate','append','compact','persist']` (**唯一来源**) + 进度 `historyOpsMigrated 2/4` · `historyOpsNames ['hydrate','persist']` |
+| `gate-scan.ts` | 判据 **③c**: 操作搬迁位与名单必须一致 · 名字必须 ∈ `HISTORY_OPS` · 不许超总量 |
+| `agents/pi-sdk.ts` | `hydrateMessageHistory` / `saveCurrentSession` **绑定 actor 时委托**给 Actor (业务侧只交**纯回调** `load`/`filter`, 内核不 import 业务模块); **未绑定 actor 的会话走原路径 ⇒ 行为不变** |
+
+### 30.3 真跑验证
+
+| 用例 | 断言 |
+| --- | --- |
+| **串行 (决定性)** | 先提交 hydrate (其 `load` 故意慢 25ms), 紧接着提交 snapshot ⇒ **snapshot 看得见刚灌进去的 2 条** (若并发则必为空) |
+| **截断规则** | `maxMessages: 1` ⇒ 只剩最后 1 条 |
+| **空历史不破坏现状** | `load → null` ⇒ 返回 0, 现有 history 不动 |
+| **委托证据 (Pi 侧)** | `resumeSession` + `saveCurrentSession` 之后 `actor.mailbox.processed` **增加 ≥2 拍** ⇒ 确实走了 actor (不是"看起来像"), 且落盘内容 round-trip 一致 |
+| **判据 ③c 判别力** | 计数与名单不一致 ⇒ 红 · 名字不在 `HISTORY_OPS` ⇒ 红 · 超总量 ⇒ 红 |

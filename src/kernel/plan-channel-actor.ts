@@ -32,7 +32,15 @@ export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'fi
  *     `messageHistory` 本体搬进 `actor.state.messageHistory` (Pi 侧访问器 + `attachActor` 收养当地历史)。
  *     同时把 K2 门那条「session 级字段必须仍是实例字段」改成**读 K5 台账**的交接契约 (声明了才放行)。
  *     `fieldsMigrated` 0 → **1/4** (messageHistory); `entriesWired` 仍 0/4。
+ *   · 2026-10-02 同一格继续: **history 的 hydrate / persist 实现体搬进 Actor**
+ *     (`hydrateHistory` = load→filter→截断→替换, `historySnapshot` = persist 的取数拍, `appendMessage` 备用),
+ *     业务侧只交**纯回调** (内核不 import 业务模块) —— 三个操作**走邮箱** ⇒ 同 Channel 内与 append 串行,
+ *     不再有"读-改-写三拍被并发踩掉"和"边写边读抓到半截状态"。
+ *     `historyOpsMigrated 2/4` (hydrate · persist); append 的 25 个调用点与 compact 留后续。
  */
+
+/** K5 第 4 步: 四个 history 操作 (唯一来源; 台账 `historyOpsNames` 必须 ⊆ 这里, 且数量与进度位一致) */
+export const HISTORY_OPS: readonly string[] = ['hydrate', 'append', 'compact', 'persist'];
 
 export interface ActorStateItem { name: string; why: string; owner: string }
 
@@ -101,6 +109,11 @@ export const K5_PROGRESS = {
   fieldsTotal: 4,
   entriesWired: 0,
   entriesTotal: 4,
+  /** K5 第 4 步里的 history **操作**搬迁 (4 个: hydrate/append/compact/persist) */
+  historyOpsMigrated: 2,
+  historyOpsTotal: 4,
+  /** 已搬操作名单 —— 门强制 `length === historyOpsMigrated` 且每个名字都在 HISTORY_OPS 里 */
+  historyOpsNames: ['hydrate', 'persist'],
 } as const;
 
 /** 四个入口 (leo 点名的) —— 全部要进同一 mailbox */

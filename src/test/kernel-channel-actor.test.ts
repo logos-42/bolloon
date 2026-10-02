@@ -186,6 +186,70 @@ describe('K5 门: Channel Actor 台账', () => {
     resetActors();
   }, 90000);
 
+  it('★ 真跑: hydrate / persist / append 走邮箱 ⇒ 与 append 串行 (读-改-写不再被并发踩)', async () => {
+    const actor = new ChannelActor({ channelId: 'k5ops' });
+    // ① hydrate 的 load 故意慢 25ms; 紧接着提交 snapshot ⇒ 若并发, snapshot 会看到**空**
+    const p = actor.hydrateHistory<{ role: string; content: string }>({
+      load: async () => {
+        await new Promise((r) => setTimeout(r, 25));
+        return [{ role: 'user', content: 'h1' }, { role: 'assistant', content: 'h2' }];
+      },
+      filter: (l) => l as { role: string; content: string }[],
+      maxMessages: 10,
+    });
+    const snap = actor.historySnapshot<{ role: string; content: string }>();
+    expect(await p).toBe(2);
+    expect((await snap).map((m) => m.content)).toEqual(['h1', 'h2']);   // 串行的证据: 看得见刚灌进去的
+    // ② append 也排队: 先 append 再 snapshot ⇒ 一定看得见
+    await actor.appendMessage({ role: 'user', content: 'a1' });
+    expect((await actor.historySnapshot<{ role: string; content: string }>()).map((m) => m.content))
+      .toEqual(['h1', 'h2', 'a1']);
+    // ③ 截断规则: maxMessages 生效 (只留最后 N 条)
+    await actor.hydrateHistory<{ role: string; content: string }>({
+      load: async () => [{ role: 'user', content: 'old' }, { role: 'user', content: 'new' }],
+      filter: (l) => l as { role: string; content: string }[],
+      maxMessages: 1,
+    });
+    expect((await actor.historySnapshot<{ role: string; content: string }>()).map((m) => m.content)).toEqual(['new']);
+    // ④ 空/无历史不破坏现状
+    expect(await actor.hydrateHistory({ load: async () => null, filter: () => [], maxMessages: 5 })).toBe(0);
+    expect((await actor.historySnapshot<{ role: string; content: string }>()).length).toBe(1);
+  });
+
+  it('★ 真跑 (Pi 侧): resume/save 确实走了 Actor 的邮箱 (委托证据, 不是"看起来像")', async () => {
+    resetActors();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'k5-ops-'));
+    try {
+      const store = new SessionStore({ cacheDir: tmpDir });
+      await store.saveMessages('k5ops:conv', [
+        { role: 'user', content: 'p1', timestamp: 1, source: 'test' },
+        { role: 'assistant', content: 'p2', timestamp: 2, source: 'test' },
+      ] as any);
+      const s: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5ops:s1', sessionStore: store });
+      const before = s.actor.mailbox.processed;
+      expect(await s.resumeSession('k5ops:conv')).toBe(2);
+      await s.saveCurrentSession('k5ops:out');
+      const after = s.actor.mailbox.processed;
+      expect(after - before).toBeGreaterThanOrEqual(2);   // hydrate 一拍 + snapshot 一拍
+      const back = (await store.loadMessages('k5ops:out')) as any[];
+      expect(back.map((m: any) => m.content)).toEqual(['p1', 'p2']);   // round-trip 内容不变
+    } finally {
+      resetActors();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 90000);
+
+  it('★ 判据 ③c: history 操作搬迁位与名单必须一致', () => {
+    const clone = (over: any = {}) => ({ ...LEDGER, ...over } as any);
+    const base = { exists, k2SessionFields: K2_SESSION };
+    expect(scanActorLedger(clone({ progress: { ...K5_PROGRESS, historyOpsMigrated: 3, historyOpsNames: ['hydrate'] } }), base)
+      .some((f) => f.rule === 'actor-ops-mismatch')).toBe(true);
+    expect(scanActorLedger(clone({ progress: { ...K5_PROGRESS, historyOpsNames: ['hydrate', '不存在的操作'] } }), base)
+      .some((f) => f.rule === 'actor-ops-unknown')).toBe(true);
+    expect(scanActorLedger(clone({ progress: { ...K5_PROGRESS, historyOpsMigrated: 9, historyOpsNames: ['hydrate', 'append', 'compact', 'persist', 'a', 'b', 'c', 'd', 'e'] } }), base)
+      .some((f) => f.rule === 'actor-ops-overflow')).toBe(true);
+  });
+
   it('★ 真跑: history 本体住进 Actor —— 所有权真转移 (hydrate/persist 都落在 actor 的数组上)', async () => {
     resetActors();
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'k5-own-'));
