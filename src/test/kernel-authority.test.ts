@@ -191,7 +191,7 @@ describe('K4 欠账不许烂在账上: 排期过期 / 无还款路径 都要被�
     const noNote = base.map((d, i) => (i === 1 ? { ...d, note: undefined } : d));
     expect(scanDebtPaydownStaleness(noNote, STAGE_STATUS).some((f) => f.rule === 'debt-note-missing')).toBe(true);
     // ③ 没排期 ⇒ 红
-    const unassigned = base.map((d, i) => (i === 2 ? { ...d, payDownIn: undefined } : d));
+    const unassigned = base.map((d, i) => (i === base.length - 1 ? { ...d, payDownIn: undefined } : d));
     expect(scanDebtPaydownStaleness(unassigned, STAGE_STATUS).some((f) => f.rule === 'debt-unassigned')).toBe(true);
     // ④ 阶段状态本身也要与事实一致: K5 已收工 ⇒ 不许写成 not-started
     expect(STAGE_STATUS.K5).toBe('done');
