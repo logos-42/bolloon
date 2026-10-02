@@ -1832,7 +1832,8 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 - 高层↔低层依赖方向正确 (`bollharness-integration` 对高层零依赖, 门只由高层注入)
 
 **未完成 (因此不得标 converged)**
-- ⚠️ skill 端到端 **allow 路已通 · deny 路无证据**: 真跑 `node dist/index.js --harness-skill arch get_gate` → skill **真执行并返回真实输出** (读法: 响应被"启动期日志闸门"写进 `~/.bolloon/logs/startup.log`, 前缀 `[boot] 🎯`, **stdout 看不到** —— 我上一轮据 stdout 误判"没走到分发器", 是**假阴性**, 已修正); 无 `[K7] skill 门未能建立` 警告 ⇒ 门建起来了。**deny 路仍缺**: `arch` 是只读分析 skill, 把 `rm -rf /` 当分析输入时放行合理 ⇒ 需换真能触发 deny-pipeline/pre-tool-validator 的输入
+- ✅ skill 端到端 **allow + deny 两路都取得真跑证据** (`k7-skill-denylist-e2e.test.ts`, 走真链: 真 session → 真 Harness deny-list checker → integration → adapter → registry): allow 基线不被拒 · `skill:arch` 入拒绝列表 ⇒ `拒绝: [deny-list]` 且**拿不到 skill 真实输出** (无副作用) · 重试仍被拒 · 放开名单 ⇒ 又能执行; **变异**拆掉 adapter 门分支 ⇒ 判红, 还原 ⇒ 回绿无 diff ⇒ 用例**承重**。
+  (读法教训: CLI 侧响应被**启动期日志闸门**写进 `~/.bolloon/logs/startup.log` (前缀 `[boot] 🎯`), **stdout 看不到** —— 我上一轮据 stdout 误判"没走到分发器", 是假阴性。)
 - ❌ `PiAgentSession.executeSkill` 公开兼容 API 未收敛 (方案 a: 保留 API 但降为**兼容转发** ⇒ 唯一 `SkillExecutionPort` ⇒ Harness)
 - ❌ 全仓 skill 零旁路 (尚有一条公开 API + 一条内部路径)
 - ❌ 其他 Tool Capability 直连欠账 (B 类 12 处, 排期 K7)
