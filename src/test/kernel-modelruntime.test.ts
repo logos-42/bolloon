@@ -16,7 +16,8 @@ import {
   MODEL_WRITE_PORTS,
   MODEL_WRITE_PORTS_FROZEN_AT,
 } from '../kernel/plan-modelruntime.js';
-import { countModelWritePortCalls, scanModelRuntimeLedger, type SourceTextFile } from '../kernel/gate-scan.js';
+import { ModelAbortError, ModelRuntime, ModelTimeoutError, type ModelRuntimePorts } from '../kernel/model-runtime.js';
+import { countModelWritePortCalls, scanModelRuntimeFile, scanModelRuntimeLedger, type SourceTextFile } from '../kernel/gate-scan.js';
 
 const ROOT = path.join(__dirname, '..', '..');
 const SRC = path.join(ROOT, 'src');
@@ -84,7 +85,8 @@ describe('K6 门: ModelRuntime 台账', () => {
     // ④ 越界清单被缩减
     expect(scanModelRuntimeLedger({ ...LEDGER, outOfScope: MODEL_RUNTIME_OUT_OF_SCOPE.slice(0, 3) } as any, FILES, { runtimeExists: RUNTIME_EXISTS }).some((f) => f.what.includes('明确不做'))).toBe(true);
     // ⑤ 假进度: 标 not-started 却说文件在 / 标 runtime-built 却说文件不在
-    expect(scanModelRuntimeLedger(LEDGER as any, FILES, { runtimeExists: true }).some((f) => f.what.includes('台账该改'))).toBe(true);
+    // 阶段已前推 ⇒ 用"把账硬写回 not-started"来构造这个坏形状 (文件真在 ⇒ 必须红)
+    expect(scanModelRuntimeLedger({ ...LEDGER, progress: { ...K6_PROGRESS, stage: 'not-started' } } as any, FILES, { runtimeExists: true }).some((f) => f.what.includes('台账该改'))).toBe(true);
     expect(scanModelRuntimeLedger({ ...LEDGER, progress: { ...K6_PROGRESS, stage: 'runtime-built' } } as any, FILES, { runtimeExists: false }).some((f) => f.what.includes('假进度'))).toBe(true);
     // ⑥ 只读要求被拿掉
     expect(scanModelRuntimeLedger({ ...LEDGER, acquireRule: { ...MODEL_RUNTIME_ACQUIRE_RULE, readOnly: false } } as any, FILES, { runtimeExists: RUNTIME_EXISTS }).some((f) => f.what.includes('只读要求'))).toBe(true);
@@ -94,5 +96,110 @@ describe('K6 门: ModelRuntime 台账', () => {
     expect(MODEL_RUNTIME_CAPABILITIES).toHaveLength(9);
     for (const c of MODEL_RUNTIME_CAPABILITIES) expect(c.why.length).toBeGreaterThan(3);
     expect(MODEL_RUNTIME_OUT_OF_SCOPE).toHaveLength(5);
+  });
+});
+
+describe('K6 运行时骨架: acquire 只读 + 连接复用 + timeout + cancellation (真跑)', () => {
+  const mkPorts = () => {
+    let opened = 0;
+    const closed: string[] = [];
+    const seen: { signal?: AbortSignal } = {};
+    const ports: ModelRuntimePorts = {
+      async openConnection(_snap, signal) {
+        opened += 1;
+        const id = `conn-${opened}`;
+        seen.signal = signal;
+        return {
+          id,
+          async call(_req, sig) {
+            // 模拟一次"慢调用": 每 5ms 检查一次取消/中止
+            for (let i = 0; i < 200; i += 1) {
+              if (sig.aborted) { const e: any = new Error('aborted by runtime'); e.name = 'AbortError'; throw e; }
+              await new Promise((r) => setTimeout(r, 5));
+              if (i >= 40) break;   // 正常返回 (200ms 上限)
+            }
+            return { ok: true, raw: { id } };
+          },
+          async close() { closed.push(id); },
+        };
+      },
+    };
+    return { ports, openedCount: () => opened, closed };
+  };
+
+  it('只读: 冻结的 snapshot 上 acquire+call 一路不抛 (运行时只读这些字段, 一个都不回写)', async () => {
+    const { ports } = mkPorts();
+    const rt = new ModelRuntime(ports);
+    const snap = Object.freeze({ provider: 'p', model: 'm', timeoutMs: 500, capabilities: Object.freeze(['tools']) });
+    const lease = await rt.acquire(snap as any);
+    const res = await lease.call({ messages: [] });
+    expect(res.ok).toBe(true);
+    expect(lease.snapshot).toBe(snap);            // 同一对象 (没被拷贝改写)
+    lease.release();
+    await rt.closeAll();
+  });
+
+  it('连接复用: 同一 snapshot 两次 acquire ⇒ 只开一条连接 (opened=1, reused=1)', async () => {
+    const { ports, openedCount } = mkPorts();
+    const rt = new ModelRuntime(ports);
+    const snap = { provider: 'p', model: 'm', timeoutMs: 300 };
+    const a = await rt.acquire(snap);
+    const b = await rt.acquire(snap);
+    expect(openedCount()).toBe(1);
+    expect(rt.snapshotStats().reused).toBe(1);
+    expect(rt.snapshotStats().connections).toBe(1);
+    // 不同 model ⇒ 另一个 key ⇒ 另开一条
+    await rt.acquire({ provider: 'p', model: 'm2', timeoutMs: 300 });
+    expect(openedCount()).toBe(2);
+    a.release(); b.release();
+    await rt.closeAll();
+  });
+
+  it('timeout: 超预算 ⇒ 抛 ModelTimeoutError, 且底层调用被**中止** (不是干等)', async () => {
+    const { ports } = mkPorts();
+    const rt = new ModelRuntime(ports);
+    const lease = await rt.acquire({ provider: 'p', model: 'slow', timeoutMs: 30 });   // 30ms 预算 vs ~200ms 调用
+    await expect(lease.call({})).rejects.toThrow(ModelTimeoutError);
+    expect(rt.snapshotStats().timeouts).toBe(1);
+    lease.release();
+    await rt.closeAll();
+  });
+
+  it('cancellation: 外部 AbortSignal ⇒ 抛 ModelAbortError; 已取消的 signal 立刻抛不发起调用', async () => {
+    const { ports } = mkPorts();
+    const rt = new ModelRuntime(ports);
+    const lease = await rt.acquire({ provider: 'p', model: 'cancel', timeoutMs: 5000 });
+    const ctl = new AbortController();
+    const p = lease.call({}, { signal: ctl.signal });
+    setTimeout(() => ctl.abort(), 20);
+    await expect(p).rejects.toThrow(ModelAbortError);
+    expect(rt.snapshotStats().aborts).toBeGreaterThanOrEqual(1);
+    const pre = new AbortController(); pre.abort();
+    await expect(lease.call({}, { signal: pre.signal })).rejects.toThrow(ModelAbortError);
+    lease.release();
+    await rt.closeAll();
+  });
+
+  it('归还后不许再用 (租约不是永久句柄)', async () => {
+    const { ports } = mkPorts();
+    const rt = new ModelRuntime(ports);
+    const lease = await rt.acquire({ provider: 'p', model: 'm', timeoutMs: 500 });
+    lease.release();
+    const res = await lease.call({});
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('租约已归还');
+    await rt.closeAll();
+  });
+
+  it('★ 判据: 运行时文件读写分离 + 能力计数一致 (含判别力)', () => {
+    const code = fs.readFileSync(path.join(SRC, 'kernel/model-runtime.ts'), 'utf-8');
+    const names = MODEL_WRITE_PORTS.map((p) => p.name);
+    expect(scanModelRuntimeFile(code, { writePortNames: names, progress: K6_PROGRESS, capabilities: MODEL_RUNTIME_CAPABILITIES })).toEqual([]);
+    // 判别力: 塞一个旧写口名进去 ⇒ 红 · 去掉 acquire ⇒ 红 · 能力计数对不上 ⇒ 红
+    expect(scanModelRuntimeFile(code + '\nsetCustomProviderSnapshot(x);\n', { writePortNames: names, progress: K6_PROGRESS, capabilities: MODEL_RUNTIME_CAPABILITIES }).length).toBeGreaterThan(0);
+    expect(scanModelRuntimeFile('export const x = 1;\n', { writePortNames: names, progress: K6_PROGRESS, capabilities: MODEL_RUNTIME_CAPABILITIES }).length).toBeGreaterThan(0);
+    expect(scanModelRuntimeFile(code, { writePortNames: names, progress: { capabilitiesDone: 9 }, capabilities: MODEL_RUNTIME_CAPABILITIES }).length).toBe(1);
+    // 空文件 ⇒ 拒跑 (不许跳过)
+    expect(scanModelRuntimeFile('   ', { writePortNames: names, progress: K6_PROGRESS, capabilities: MODEL_RUNTIME_CAPABILITIES })[0].what).toContain('拒跑');
   });
 });

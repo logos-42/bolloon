@@ -1158,3 +1158,27 @@ export function scanModelRuntimeLedger(
   if (!ledger.acquireRule.ratchet.includes('只许不变或减少')) f('ratchet 口径文案被改 (必须写明"只许不变或减少")');
   return out;
 }
+
+/**
+ * **K6 读写分离: 运行时文件里不许出现任何旧写口名** —— 这是"只读"最机械的那半证据
+ *   (另一半是真跑: 冻结的 snapshot 上调用不许抛 / 不许触发注入的写端口)。
+ *   同时核: 文件必须真的含 `acquire(` 与 AbortController (否则"实现了"是空话),
+ *   以及 `capabilitiesDone` 必须等于能力清单里 status==='done' 的条数 (台账不许自报)。
+ */
+export function scanModelRuntimeFile(
+  code: string,
+  opts: { writePortNames: readonly string[]; progress: { capabilitiesDone: number }; capabilities: readonly { key: string; status: string }[] },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'modelruntime-file', file: 'kernel/model-runtime.ts', line: 1, what });
+  if (code.trim().length === 0) { f('运行时文件为空 ⇒ 拒跑 (不许跳过)'); return out; }
+  for (const name of opts.writePortNames) {
+    if (new RegExp(`\\b${name}\\b`).test(code)) f(`运行时文件里出现旧写口 ${name} ⇒ 读写没分开 (K6 只读红线)`);
+  }
+  if (!/\bacquire\s*\(/.test(code)) f('没有 acquire( ⇒ 入口没实现');
+  if (!/AbortController/.test(code)) f('没有 AbortController ⇒ 取消/超时没有真做到 (只"等"不"中止")');
+  if (!/clearTimeout/.test(code)) f('没有 clearTimeout ⇒ 超时定时器会泄漏 (调用成功也留着)');
+  const done = opts.capabilities.filter((c) => c.status === 'done').length;
+  if (opts.progress.capabilitiesDone !== done) f(`capabilitiesDone=${opts.progress.capabilitiesDone} ≠ 清单里 done 的条数 ${done}`);
+  return out;
+}

@@ -1556,3 +1556,42 @@ K6 要动多供应商并发, 最大的风险不是"写得慢", 而是"新层顺�
 
 - **声明行会被算成调用点**: 第一版口径把 `export function addCustomProvider(` 自己那行算了一个调用点, 额度虚高 ⇒ 口径加"去掉含 `function name` 的声明行", 并配一条反例断言。
 - **判别力用例的方向**: "回退"必须在**盘上**制造新调用 (不是改账里的数字); "账没跟上"要让**盘上少**调用。方向写反的用例会绿着却什么都没验。
+
+## 53. K6 第二步: `kernel/model-runtime.ts` 只读骨架 (连接复用 · timeout · cancellation)
+
+### 53.1 形状
+
+```
+acquire(snapshot) -> ModelLease
+  · 只读: 只读 provider/model/baseUrl/timeoutMs/capabilities, 一个都不回写 (snapshot 常被上层冻结, 写它会当场抛)
+  · 池: key = provider::model::baseUrl ⇒ 同一 key 只开一条连接 (再 acquire 记 reused)
+  · call(req, {signal}): 每次调用一个**受控 AbortController** —— 超时与外部取消都走它 (底层只认一个 signal)
+      超时 ⇒ ModelTimeoutError 且**中止**底层调用 (不是干等); finally 里 clearTimeout (否则定时器泄漏)
+      外部取消 ⇒ ModelAbortError; 已取消的 signal ⇒ 立刻拒, 不发起调用
+  · release(): 归还租约 (不关连接, 连接归池); 归还后再 call ⇒ 明确报"租约已归还"
+  · closeAll(): 进程收尾关所有连接
+```
+
+`ModelRuntimePorts.openConnection(snapshot, signal)` 由外部注入 ⇒ **内核不 import 业务模块** (KERNEL_ALLOWED_IMPORT_PREFIXES)。
+
+### 53.2 只读的两半证据
+
+| 半 | 判据/测试 |
+| --- | --- |
+| 机械半 | **`scanModelRuntimeFile`**: 运行时文件里**不许出现任何旧写口名** (9 个), 且必须真含 `acquire(` / `AbortController` / `clearTimeout`, `capabilitiesDone` == 清单里 done 的条数 |
+| 真跑半 | **冻结 snapshot 上 acquire+call 一路不抛** (`Object.freeze` + 严格模式 ⇒ 任何回写都会抛) · 端口调用计数证明"只读路径不碰写口" |
+
+### 53.3 能力状态推进 (只许按事实)
+
+`connection-pool` / `timeout` / `cancellation` → `done` (3/9); `K6_PROGRESS.stage` `not-started → runtime-built`;
+`capabilitiesDone = 3` 由判据机械核 (和清单里 done 的条数必须相等 ⇒ 不许自报)。
+
+### 53.4 真跑用例 (6 条)
+
+只读 (冻结 snapshot) · 连接复用 (`opened=1` · `reused=1` · 不同 model 另开) · timeout (30ms 预算 vs ~200ms 调用 ⇒ `ModelTimeoutError` + `timeouts=1`) ·
+cancellation (20ms 后 abort ⇒ `ModelAbortError`; 已取消的 signal 立刻拒) · 归还后不可用 · 判据读写分离 (含 4 条判别力, 含"空文件 ⇒ 拒跑")。
+
+### 53.5 一个随阶段前推而失效的判别力用例
+
+坏形状 ⑤ 原本是"标 `not-started` 而文件在" —— 阶段前推到 `runtime-built` 后它就**不成立了** ⇒ 改成**把账硬写回 `not-started`** 来构造同一个坏形状。
+(同类修正已第四次: **断言的前提会随事实变化, 改了事实就要回头改断言的构造方式**, 而不是把断言删掉。)

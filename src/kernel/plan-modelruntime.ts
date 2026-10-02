@@ -48,9 +48,9 @@ export const MODEL_RUNTIME_ACQUIRE_RULE = {
 export interface ModelRuntimeCapability { key: string; why: string; status: 'not-started' | 'in-progress' | 'done' }
 export const MODEL_RUNTIME_CAPABILITIES: readonly ModelRuntimeCapability[] = [
   { key: 'multi-provider-concurrency', why: '多供应商并发调用 (各 provider 各自限流)', status: 'not-started' },
-  { key: 'connection-pool', why: '连接复用 (keep-alive), 不每次新建', status: 'not-started' },
-  { key: 'timeout', why: '单次调用超时 (按 snapshot 的预算)', status: 'not-started' },
-  { key: 'cancellation', why: '取消传播 (AbortSignal 透传)', status: 'not-started' },
+  { key: 'connection-pool', why: '连接复用 (keep-alive), 不每次新建', status: 'done' },
+  { key: 'timeout', why: '单次调用超时 (按 snapshot 的预算)', status: 'done' },
+  { key: 'cancellation', why: '取消传播 (AbortSignal 透传)', status: 'done' },
   { key: 'rate-limit-backoff', why: '429 退避 (指数 + 抖动, 不许重试风暴)', status: 'not-started' },
   { key: 'circuit-breaker', why: '连续失败熔断 (半开探测)', status: 'not-started' },
   { key: 'capability-check', why: '能力检查 (该 provider 是否支持所需能力: 工具/vision/长上下文)', status: 'not-started' },
@@ -69,8 +69,9 @@ export const MODEL_RUNTIME_OUT_OF_SCOPE: readonly string[] = [
 
 /** K6 进度 (与 K5 的 stage/container 同款: 声明未实现 ⇒ 运行时文件**必须不存在**) */
 export const K6_PROGRESS = {
-  stage: 'not-started' as 'not-started' | 'runtime-built' | 'capabilities-done',
+  stage: 'runtime-built' as 'not-started' | 'runtime-built' | 'capabilities-done',
   runtimePath: 'kernel/model-runtime.ts',
-  capabilitiesDone: 0,
+  /** 必须等于 `MODEL_RUNTIME_CAPABILITIES` 里 status==='done' 的条数 (判据机械核, 不许自报) */
+  capabilitiesDone: 3,
   capabilitiesTotal: MODEL_RUNTIME_CAPABILITIES.length,
 } as const;
