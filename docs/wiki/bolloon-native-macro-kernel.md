@@ -1525,3 +1525,34 @@ pause/abort 路由**依赖 port 的返回值** (`setRunStatus` 返回 `{ ok:fals
 - `AUTHORITY_DEBT` **清空** (`AUTHORITY_DEBT_FROZEN_AT` 3 → 0); `STAGE_STATUS.K4` → `'partial'` (欠账已归零, 但模块边界收口未完)。
 - **空台账是被判据盯住的事实**: 双向欠账判据在空台账下通过 ⇒ 说明三条禁令在 channel 侧**零违规**; 任何一处新的直写都会立刻让 `missing` 非空 ⇒ 红。
 - 顺带修一处**夹具依赖实时台账**的坏味道: 判别力用例原从 `AUTHORITY_DEBT` 取样本, 台账归零后用例自己失效 ⇒ 改成**自造样本** (判别力不该随台账长度变化)。
+
+## 52. K6 第一步: ModelRuntime 台账 + 门 (先立判据再写运行时)
+
+### 52.1 先纠正一处顺序错误
+
+上一轮我建议"跳去 K7 还 B 类直连账", 但设计页写明 **交付顺序不许跳: K0 → … → K5 → K6 → K7 → …** ⇒ K6 在前。
+(K7 那本 `B_DIRECT_IMPORT_DEBT` = 6 个 target × 2 次匹配 = 12, 已对盘一致; 它的修法要**动 CR 包导出面**, 属挂起的"公开契约"口径 ⇒ 更该等 K6 之后按顺序做。)
+
+### 52.2 为什么 K6 第一件事不是写运行时
+
+K2 的实操证明过一条通用判据: **新层出现后, 旧写口的调用点数只许不变或减少** —— 它**拦回过一次 assistant 的实现**。
+K6 要动多供应商并发, 最大的风险不是"写得慢", 而是"新层顺手把 provider 配置 / API key / 全局 model 也改了",
+于是同一份状态有了两个写口 —— 那不是新能力, 是**回归**。所以先量、先冻、先用判据把"只读"钉住。
+
+### 52.3 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| **新增** `kernel/plan-modelruntime.ts` (105 行数据) | `MODEL_WRITE_PORTS` (9 个旧写口 + 实测调用点数, **合计 11**) · `MODEL_WRITE_PORTS_FROZEN_AT = 11` · `MODEL_RUNTIME_ACQUIRE_RULE` (只读 + ratchet 口径文案) · `MODEL_RUNTIME_CAPABILITIES` (9 项能力, 每项带 why + status) · `MODEL_RUNTIME_OUT_OF_SCOPE` (5 条红线: 不改 provider 配置/API key/默认 URL/Global model/Run snapshot) · `K6_PROGRESS` (stage + runtimePath) |
+| `gate-scan.ts` | **`countModelWritePortCalls(files, name)`** —— **台账与判据共用的唯一口径** (全仓排除 `test/` `kernel/`, `name(` 匹配数, **去掉含 `function name` 的声明行**) · **`scanModelRuntimeLedger(...)`** 五条规则 (棘轮逐口重算 / 合计自洽 / 能力与越界清单 / 假进度 / 只读要求) |
+| **新增** `test/kernel-modelruntime.test.ts` | 5 用例: 扫描面非空 (门不许空转) · 盘上台账一致 · **口径抽查三条** · **6 种坏形状判别力** · 清单不是空壳 |
+
+### 52.4 实测到的两个事实
+
+1. **旧写口 11 个调用点**, 其中 `setCustomProviderSnapshot` 自己占 5 处 (config-store 3 + custom-provider-store 2);
+2. **3 个写口在主仓零调用** (`addCustomProvider` / `updateCustomProvider` / `removeCustomProvider`) —— 登记为"零调用写口", 棘轮只许不变或减 (将来要么收进控制面, 要么删)。
+
+### 52.5 口径与判别力的两个坑 (都在写门时暴露)
+
+- **声明行会被算成调用点**: 第一版口径把 `export function addCustomProvider(` 自己那行算了一个调用点, 额度虚高 ⇒ 口径加"去掉含 `function name` 的声明行", 并配一条反例断言。
+- **判别力用例的方向**: "回退"必须在**盘上**制造新调用 (不是改账里的数字); "账没跟上"要让**盘上少**调用。方向写反的用例会绿着却什么都没验。

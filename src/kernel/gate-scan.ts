@@ -1082,3 +1082,79 @@ export function scanDebtPaydownStaleness(
   }
   return out;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K6 门: ModelRuntime 台账 (旧写口棘轮 + 能力清单 + "声明未实现 ⇒ 文件不许存在")
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface SourceTextFile { path: string; text: string }
+
+/**
+ * **旧写口调用点数的唯一口径** (台账与判据共用同一函数 —— 口径不一致会让两侧各报一个数):
+ *   全仓给定文件集 (调用方**排除** `test/` 与 `kernel/`) 里 `name(` 的匹配次数, **去掉含 `function name` 的声明行**。
+ *   为什么去声明行: 否则"函数自己那行"会被算成一个调用点, 额度虚高。
+ */
+export function countModelWritePortCalls(files: readonly SourceTextFile[], name: string): number {
+  const rx = new RegExp(`\\b${name}\\s*\\(`);
+  const decl = new RegExp(`\\bfunction\\s+${name}\\b`);
+  let n = 0;
+  for (const f of files) {
+    for (const line of f.text.split('\n')) {
+      if (decl.test(line)) continue;
+      n += (line.match(rx) || []).length;
+    }
+  }
+  return n;
+}
+
+export interface ModelRuntimeLedgerLike {
+  writePorts: readonly { name: string; module: string; callSites: number; note?: string }[];
+  writePortsFrozenAt: number;
+  acquireRule: { readOnly: boolean; rule: string; ratchet: string };
+  capabilities: readonly { key: string; why: string; status: string }[];
+  outOfScope: readonly string[];
+  progress: { stage: string; runtimePath: string; capabilitiesDone: number; capabilitiesTotal: number };
+}
+
+/**
+ * **K6 门**:
+ *   ① 旧写口棘轮: 每个写口的调用点数**从盘上重算**, 与台账逐字相等
+ *      (增 ⇒ 新层偷偷改旧状态 = 回退; 减 ⇒ 改了盘没改账);
+ *   ② 合计自洽: 各项之和 == 冻结值, 且冻结值 == 台账里的合计;
+ *   ③ 能力清单每项都有非空 why + 合法 status; 明确不做清单 5 条齐全 (防越界);
+ *   ④ **"声明未实现 ⇒ 运行时文件必须不存在"** (与 K5 的容器规则同款, 防假进度);
+ *   ⑤ `acquire` 只读要求必须记为 `readOnly: true` 且写着 ratchet 口径。
+ */
+export function scanModelRuntimeLedger(
+  ledger: ModelRuntimeLedgerLike,
+  files: readonly SourceTextFile[],
+  opts: { runtimeExists: boolean },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'modelruntime-ledger', file: 'kernel/plan-modelruntime.ts', line: 1, what });
+
+  // ① 逐写口重算
+  for (const p of ledger.writePorts) {
+    const actual = countModelWritePortCalls(files, p.name);
+    if (actual > p.callSites) f(`${p.name} 调用点 ${actual} > 冻结 ${p.callSites} ⇒ 新层在增加旧写口调用 (回退)`);
+    else if (actual < p.callSites) f(`${p.name} 调用点 ${actual} < 冻结 ${p.callSites} ⇒ 盘上变了账没跟上`);
+  }
+  // ② 合计自洽
+  const sum = ledger.writePorts.reduce((a, b) => a + b.callSites, 0);
+  if (sum !== ledger.writePortsFrozenAt) f(`写口调用点合计 ${sum} ≠ 冻结值 ${ledger.writePortsFrozenAt}`);
+  // ③ 能力清单 + 越界清单
+  if (ledger.capabilities.length === 0) f('能力清单为空 (拿不到事实就拒跑)');
+  for (const c of ledger.capabilities) {
+    if (!c.why || c.why.length < 4) f(`能力 ${c.key} 没写"为什么"(why)`);
+    if (!['not-started', 'in-progress', 'done'].includes(c.status)) f(`能力 ${c.key} 状态非法: ${c.status}`);
+  }
+  if (ledger.outOfScope.length !== 5) f(`"明确不做"清单 ${ledger.outOfScope.length} 条 ≠ 5 (防越界清单不许缩减)`);
+  // ④ 假进度
+  const declaredNotStarted = ledger.progress.stage === 'not-started';
+  if (declaredNotStarted && opts.runtimeExists) f(`标了 not-started 但 ${ledger.progress.runtimePath} 已存在 ⇒ 台账该改`);
+  if (!declaredNotStarted && !opts.runtimeExists) f(`stage=${ledger.progress.stage} 但 ${ledger.progress.runtimePath} 不存在 ⇒ 假进度`);
+  // ⑤ 只读要求
+  if (ledger.acquireRule.readOnly !== true) f('acquire 的只读要求被拿掉了 (这是 K6 的核心不变量)');
+  if (!ledger.acquireRule.ratchet.includes('只许不变或减少')) f('ratchet 口径文案被改 (必须写明"只许不变或减少")');
+  return out;
+}
