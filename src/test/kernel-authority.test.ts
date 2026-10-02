@@ -182,19 +182,22 @@ describe('K4 欠账不许烂在账上: 排期过期 / 无还款路径 都要被�
     expect(scanDebtPaydownStaleness(AUTHORITY_DEBT, STAGE_STATUS)).toEqual([]);
   });
 
-  it('★ 判别力: 四种坏形状都必须判红', () => {
-    const base = AUTHORITY_DEBT.map((d) => ({ ...d }));
+  it('★ 判别力: 四种坏形状都必须判红 (夹具自造 —— 不依赖实时台账长度)', () => {
+    // 台账现在按设计是**空的** ⇒ 判别力必须用**自造样本**, 否则用例会随台账归零而失效
+    const sample = [
+      { prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'setRunStatus', count: 1, payDownIn: 'K4', note: '内核控制面代为写 (示例)' },
+    ];
     // ① 排期指向已收工的阶段 ⇒ 过期
-    const stale = base.map((d, i) => (i === 0 ? { ...d, payDownIn: 'K5' } : d));
-    expect(scanDebtPaydownStaleness(stale, STAGE_STATUS).some((f) => f.rule === 'debt-paydown-stale')).toBe(true);
+    expect(scanDebtPaydownStaleness([{ ...sample[0], payDownIn: 'K5' }], STAGE_STATUS).some((f) => f.rule === 'debt-paydown-stale')).toBe(true);
     // ② 没写还款路径 ⇒ 红
-    const noNote = base.map((d, i) => (i === 1 ? { ...d, note: undefined } : d));
-    expect(scanDebtPaydownStaleness(noNote, STAGE_STATUS).some((f) => f.rule === 'debt-note-missing')).toBe(true);
+    expect(scanDebtPaydownStaleness([{ ...sample[0], note: undefined }], STAGE_STATUS).some((f) => f.rule === 'debt-note-missing')).toBe(true);
     // ③ 没排期 ⇒ 红
-    const unassigned = base.map((d, i) => (i === base.length - 1 ? { ...d, payDownIn: undefined } : d));
-    expect(scanDebtPaydownStaleness(unassigned, STAGE_STATUS).some((f) => f.rule === 'debt-unassigned')).toBe(true);
-    // ④ 阶段状态本身也要与事实一致: K5 已收工 ⇒ 不许写成 not-started
+    expect(scanDebtPaydownStaleness([{ ...sample[0], payDownIn: undefined }], STAGE_STATUS).some((f) => f.rule === 'debt-unassigned')).toBe(true);
+    // ④ 形状齐全 (排期未收工 + 有 note) ⇒ 绿 —— 反面对照
+    expect(scanDebtPaydownStaleness(sample, STAGE_STATUS)).toEqual([]);
+    // ⑤ 阶段状态本身也要与事实一致: K5 已收工 ⇒ 不许写成 not-started; K4 未收工 ⇒ 重排到它才诚实
     expect(STAGE_STATUS.K5).toBe('done');
-    expect(STAGE_STATUS.K4).not.toBe('done');   // 还没收工 ⇒ 重排到这里才是诚实的排期
+    expect(STAGE_STATUS.K4).not.toBe('done');
   });
+
 });

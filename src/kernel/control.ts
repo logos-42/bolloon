@@ -44,6 +44,22 @@ export interface RunControlOutcome {
   detail?: string;
   /** 实际派发到的 port 名 (ok=true 时必有) */
   port?: string;
+  /** 端口原样返回值 (调用方可能依赖它, 例如 store 的 { ok, reason }) */
+  result?: unknown;
+}
+
+/**
+ * 端口**不抛异常但明确拒绝** (`{ ok: false, reason }`) 的归一化判定。
+ *   为什么必须有: store 类原语用返回值表达"状态迁移被拒绝", 而控制面若只看"有没有抛",
+ *   就会把**被拒当成成功** (实测: pause/abort 路由依赖 `r.ok`/`r.reason` 回 409)。
+ *   ⇒ 约定: 端口返回 `{ ok: false }` ⇒ 控制面也报 ok=false, detail = `端口拒绝: <reason>`。
+ */
+function portRefusal(res: unknown): string | null {
+  if (res && typeof res === 'object' && 'ok' in (res as Record<string, unknown>)) {
+    const r = res as { ok?: unknown; reason?: unknown };
+    if (r.ok === false) return `端口拒绝: ${String(r.reason ?? '未给原因')}`;
+  }
+  return null;
 }
 
 interface AuditEntry {
@@ -76,7 +92,7 @@ export async function submitRunControl(
   ports: RunControlPorts,
 ): Promise<RunControlOutcome> {
   const kind = req?.kind as RunControlKind;
-  const finish = (ok: boolean, detail?: string, port?: string): RunControlOutcome => {
+  const finish = (ok: boolean, detail?: string, port?: string, result?: unknown): RunControlOutcome => {
     audit.push({
       at: Date.now(),
       kind,
@@ -86,7 +102,7 @@ export async function submitRunControl(
       detail,
     });
     if (audit.length > AUDIT_MAX) audit.splice(0, audit.length - AUDIT_MAX);
-    return { ok, kind, via: 'kernel-control', detail, port };
+    return { ok, kind, via: 'kernel-control', detail, port, result };
   };
 
   if (!RUN_CONTROL_KINDS.includes(kind)) return finish(false, `未知请求类型: ${String(req?.kind)}`);
@@ -99,8 +115,9 @@ export async function submitRunControl(
   if (kind === 'record-recovery') {
     if (typeof ports.recordRecovery !== 'function') return finish(false, 'port 未注入: recordRecovery');
     try {
-      await ports.recordRecovery(target, req.payload ?? {});
-      return finish(true, undefined, 'recordRecovery');
+      const res = await ports.recordRecovery(target, req.payload ?? {});
+      const refusal = portRefusal(res);
+      return refusal ? finish(false, refusal, 'recordRecovery', res) : finish(true, undefined, 'recordRecovery', res);
     } catch (err) {
       return finish(false, `recordRecovery 失败: ${String((err as Error)?.message ?? err).slice(0, 160)}`);
     }
@@ -111,8 +128,9 @@ export async function submitRunControl(
     const status = String(req.payload?.status ?? '');
     if (!status) return finish(false, 'set-run-status 缺少 payload.status');
     try {
-      await ports.setRunStatus(target, status, req.payload);
-      return finish(true, undefined, 'setRunStatus');
+      const res = await ports.setRunStatus(target, status, req.payload);
+      const refusal = portRefusal(res);
+      return refusal ? finish(false, refusal, 'setRunStatus', res) : finish(true, undefined, 'setRunStatus', res);
     } catch (err) {
       return finish(false, `setRunStatus 失败: ${String((err as Error)?.message ?? err).slice(0, 160)}`);
     }
@@ -120,8 +138,9 @@ export async function submitRunControl(
 
   if (typeof ports.setContinuation !== 'function') return finish(false, 'port 未注入: setContinuation');
   try {
-    await ports.setContinuation(target, req.payload ?? {});
-    return finish(true, undefined, 'setContinuation');
+    const res = await ports.setContinuation(target, req.payload ?? {});
+    const refusal = portRefusal(res);
+    return refusal ? finish(false, refusal, 'setContinuation', res) : finish(true, undefined, 'setContinuation', res);
   } catch (err) {
     return finish(false, `setContinuation 失败: ${String((err as Error)?.message ?? err).slice(0, 160)}`);
   }

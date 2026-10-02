@@ -3398,7 +3398,16 @@ fetchState();
       if (!woke) {
         // 没在等外部事件也要如实回答 (可能它其实在等人/在跑), 但允许显式加急
         if (req.body?.force) {
-          await setContinuation(goalId, { wakeReason: 'active', autoContinue: true, wakeAt: undefined, needsExternal: undefined });
+          // **K4**: channel 不直接写 Goal —— 提交控制请求, 由内核控制面执行
+          const { submitRunControl } = await import('../kernel/control.js');
+          const outcome = await submitRunControl(
+            {
+              kind: 'wake-goal', origin: 'web', goalId, reason: 'force 加急唤醒',
+              payload: { wakeReason: 'active', autoContinue: true, wakeAt: undefined, needsExternal: undefined },
+            },
+            { setContinuation },
+          );
+          if (!outcome.ok) { res.status(500).json({ error: `控制面拒绝: ${outcome.detail}` }); return; }
           res.json({ ok: true, goalId, woke: false, forced: true, note: `原状态 ${g.status} (不在等外部事件), 已按 force 加急` });
           return;
         }
@@ -3456,12 +3465,20 @@ fetchState();
       let boundary = view.runBoundary;
       if (boundary.action === 'stop_running_run' && !boundary.stopped) {
         const { setRunStatus } = await import('../agents/run-store.js');
+        const { submitRunControl } = await import('../kernel/control.js');
         boundary = await seam.applyRunBoundary({
           plan: view.plan,
           now,
           stop: async (i) => {
-            const r = await setRunStatus(i.runId, i.runStatus, { error: `变更注入 (${i.goalId}): ${String(i.reason).slice(0, 120)}` });
-            return { ok: !!r.ok, reason: r.reason || '' };
+            // **K4**: 提交控制请求 (端口返回值里的"拒绝"会被控制面归一化成 ok=false + detail)
+            const outcome = await submitRunControl(
+              {
+                kind: 'set-run-status', origin: 'web', runId: i.runId, reason: `变更注入 (${i.goalId})`,
+                payload: { status: i.runStatus, error: `变更注入 (${i.goalId}): ${String(i.reason).slice(0, 120)}` },
+              },
+              { setRunStatus },
+            );
+            return { ok: outcome.ok, reason: outcome.ok ? '' : String(outcome.detail ?? '') };
           },
         });
       }
@@ -3607,8 +3624,13 @@ fetchState();
       const runId = String(req.params.runId);
       try {
         const { setRunStatus } = await import('../agents/run-store.js');
-        const r = await setRunStatus(runId, to as any, { error: `外部请求 (${suffix})` });
-        if (!r.ok) { res.status(409).json({ error: r.reason || '状态迁移被拒绝' }); return; }
+        const { submitRunControl } = await import('../kernel/control.js');
+        const outcome = await submitRunControl(
+          { kind: 'set-run-status', origin: 'web', runId, reason: `外部请求 (${suffix})`, payload: { status: to, error: `外部请求 (${suffix})` } },
+          { setRunStatus },
+        );
+        // 语义不变: 端口/store 拒绝 ⇒ 409 (原因由控制面归一化进 detail)
+        if (!outcome.ok) { res.status(409).json({ error: String(outcome.detail ?? '状态迁移被拒绝').replace(/^端口拒绝: /, '') }); return; }
         res.json({ ok: true, runId, status: to, note: '运行中的 agent 会在下一轮循环检查时停下 (轮内不打断)' });
       } catch (err) {
         res.status(500).json({ error: String((err as Error)?.message || err).slice(0, 200) });

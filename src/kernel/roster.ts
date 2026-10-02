@@ -255,7 +255,7 @@ export const STAGE_STATUS: Readonly<Record<string, 'done' | 'partial' | 'not-sta
   K2: 'done',
   K3: 'done',
   K5: 'done',
-  K4: 'not-started',
+  K4: 'partial',   // 模块边界收口进行中: 越权欠账已归零, 还有 K1 遗留的领域直连欠账
   K6: 'not-started',
   K7: 'not-started',
   K8: 'not-started',
@@ -270,18 +270,13 @@ export const STAGE_STATUS: Readonly<Record<string, 'done' | 'partial' | 'not-sta
  * 条数另有 `AUTHORITY_DEBT_FROZEN_AT` 冻死, **只许减不许增**。
  */
 export const AUTHORITY_DEBT: readonly DebtEntry[] = [
-  {
-    prohibition: 'channel-must-not-write-goal', file: 'web/server.ts', call: 'setContinuation', count: 1, payDownIn: 'K4',
-    note: '原记 K5 还清 —— K5 的目标是"字段/入口收口", 未含跨层写; 重排到 K4 (模块边界收口)。还款路径: 由内核控制面代为写 (channel 只提交请求)。',
-  },
-  {
-    prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'setRunStatus', count: 2, payDownIn: 'K4',
-    note: '同上重排 (K5 未还)。两处都是**用户发起的控制动作** (变更注入 / 外部 approve-resume), 应由内核控制面执行写。',
-  },
+  // **K4 已全部还清 (3 → 0)**: 三条越权写 (setContinuation / setRunStatus ×2 / recordRecovery)
+  //   都改成"channel 提交请求 → 内核控制面执行写" (kernel/control.ts)。
+  //   这张表保持**空**是有判据盯着的事实: 任何一处新的 channel 直写都会让双向判据报 missing ⇒ 立刻红。
 ];
 
 /** 欠账条数冻结值 (只许减; 要加必须同时改这里 → 在 diff 里是一次显式动作) */
-export const AUTHORITY_DEBT_FROZEN_AT = 2;   // 3 → 2 (K4 用内核控制面还清 recordRecovery)
+export const AUTHORITY_DEBT_FROZEN_AT = 0;   // 3 → 0 (K4 用内核控制面还清全部三条越权写)
 
 /**
  * K3 —— kernel 目录行数预算 (棘轮, 只许减不许增)。
@@ -289,10 +284,10 @@ export const AUTHORITY_DEBT_FROZEN_AT = 2;   // 3 → 2 (K4 用内核控制面�
  * 目的只有一个: **不许所有逻辑回流到 kernel.ts**。要加就得显式抬这个数字, 留下痕迹。
  * 数值 = 当前 kernel 目录真实行数, 不留余量。
  */
-export const KERNEL_LINE_BUDGET = 1924;
+export const KERNEL_LINE_BUDGET = 1938;
 
 /** 预算冻结值 (棘轮: 只许减; 想抬预算必须同时改上面那个数字 ⇒ 一次显式动作, diff 里看得见) */
-export const KERNEL_LINE_BUDGET_FROZEN_AT = 1924;
+export const KERNEL_LINE_BUDGET_FROZEN_AT = 1938;
 
 /**
  * K3b —— **台账数据**单独一档预算 (`src/kernel/plan.ts`)。

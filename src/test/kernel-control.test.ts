@@ -68,6 +68,21 @@ describe('K4 内核控制面 (RunControl) —— 真跑', () => {
     expect(runControlAudit().filter((e) => !e.ok)).toHaveLength(7);
   });
 
+it('端口"不抛但明确拒绝"必须传出来 ({ ok:false, reason } ⇒ 控制面 ok=false, 原因进 detail)', async () => {
+    const refused = await submitRunControl({ kind: 'set-run-status', origin: 'web', runId: 'r9', payload: { status: 'aborted' } }, {
+      setRunStatus: async () => ({ ok: false, reason: '状态迁移被拒绝: needs_human → aborted' }),
+    });
+    expect(refused.ok).toBe(false);
+    expect(refused.detail).toContain('端口拒绝');
+    expect(refused.detail).toContain('状态迁移被拒绝');
+    expect(refused.result).toMatchObject({ ok: false });   // 原样带上, 调用方可继续用它
+    // 正面: 端口返回 { ok:true } ⇒ 照常 ok
+    const fine = await submitRunControl({ kind: 'set-run-status', origin: 'web', runId: 'r9', payload: { status: 'paused' } }, {
+      setRunStatus: async () => ({ ok: true }),
+    });
+    expect(fine.ok).toBe(true);
+  });
+
   it('台账↔代码一致: 每种 kind 都声明了必填定位字段, 且审计上限可控', () => {
     for (const k of RUN_CONTROL_KINDS) {
       expect(['runId', 'goalId']).toContain(RUN_CONTROL_REQUIRED[k]);
@@ -78,11 +93,12 @@ describe('K4 内核控制面 (RunControl) —— 真跑', () => {
 
 describe('K4 控制面与欠账台账的关系', () => {
   it('recordRecovery 那条欠账已还清并**从台账删掉** (双向判据会自己证明 channel 侧 0 调用)', () => {
-    expect(AUTHORITY_DEBT.some((d) => d.call === 'recordRecovery')).toBe(false);
+    expect(AUTHORITY_DEBT).toHaveLength(0);   // 三条越权写全部改走内核控制面
+    expect(AUTHORITY_DEBT_FROZEN_AT).toBe(0);
   });
 
   it('欠账棘轮: 条数 ≤ 冻结值, 且冻结值已随还款下调', () => {
     expect(AUTHORITY_DEBT.length).toBeLessThanOrEqual(AUTHORITY_DEBT_FROZEN_AT);
-    expect(AUTHORITY_DEBT_FROZEN_AT).toBe(2);   // 3 → 2 (recordRecovery 已还)
+    expect(AUTHORITY_DEBT_FROZEN_AT).toBe(0);   // 3 → 0 (K4 全还清: channel 侧零裸写调用)
   });
 });

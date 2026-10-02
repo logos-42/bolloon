@@ -1500,3 +1500,28 @@ channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代�
 ### 50.4 代价可见
 
 新增内核文件 ⇒ 代码档预算 1800 → **1924** (K3 棘轮当场拦, 同步冻结值)。
+
+## 51. K4 第三步: 剩下 2 条债搬完 ⇒ `AUTHORITY_DEBT` 归零 (3 → 0)
+
+### 51.1 一个必须先补的语义 (否则会把"被拒"当"成功")
+
+pause/abort 路由**依赖 port 的返回值** (`setRunStatus` 返回 `{ ok:false, reason }` 表示状态迁移被拒, 入口据此回 409),
+而第一版控制面只看"port 有没有抛异常" ⇒ **被拒会被当成成功** (409 变 200)。
+⇒ 控制面补 **`portRefusal(res)`**: 端口返回 `{ ok:false }` ⇒ 控制面也报 `ok=false`, `detail = '端口拒绝: <reason>'`, 并把
+`result` **原样带上** (调用方可能还要用它)。这条语义有专测 (端口拒绝 / 端口正常两向)。
+
+### 51.2 三处搬迁 (channel 只提交请求)
+
+| 入口 | 原写法 | 现写法 |
+| --- | --- | --- |
+| `/api/goals/:goalId/wake` (force 加急) | `await setContinuation(goalId, {...})` | `submitRunControl({ kind:'wake-goal', origin:'web', goalId, payload:{...} }, { setContinuation })` |
+| 变更注入的停止 (seam 回调) | `const r = await setRunStatus(...)` | `submitRunControl({ kind:'set-run-status', … }, { setRunStatus })` ⇒ `{ ok, reason: detail }` |
+| `/api/runs/:runId/{pause,abort}` | `const r = await setRunStatus(...)` + 409 | `submitRunControl(...)` + 409 (**语义不变**: `detail` 去掉 `端口拒绝: ` 前缀后就是原来的 `reason`) |
+
+搬完 `grep` 确认: `web/server.ts` 里**零裸调用** (`setRunStatus` / `setContinuation` / `recordRecovery` 都只在 ports 绑定处出现)。
+
+### 51.3 收尾
+
+- `AUTHORITY_DEBT` **清空** (`AUTHORITY_DEBT_FROZEN_AT` 3 → 0); `STAGE_STATUS.K4` → `'partial'` (欠账已归零, 但模块边界收口未完)。
+- **空台账是被判据盯住的事实**: 双向欠账判据在空台账下通过 ⇒ 说明三条禁令在 channel 侧**零违规**; 任何一处新的直写都会立刻让 `missing` 非空 ⇒ 红。
+- 顺带修一处**夹具依赖实时台账**的坏味道: 判别力用例原从 `AUTHORITY_DEBT` 取样本, 台账归零后用例自己失效 ⇒ 改成**自造样本** (判别力不该随台账长度变化)。
