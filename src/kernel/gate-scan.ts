@@ -417,7 +417,7 @@ export function scanConstraintViolations(
 export interface DeletionVerdictLike {
   group: string;
   target: string;
-  verdict: 'ready' | 'blocked' | 'done';
+  verdict: 'ready' | 'blocked' | 'done' | 'not-deletable';
   blockers: readonly { file: string; why: string }[];
   reason: string;
   /** 判据用的判别名; 缺省取 target 的 basename。目录目标的 basename 常没判别力 (`src`) ⇒ 显式给真耦合名。 */
@@ -471,6 +471,12 @@ export function scanDeletionVerdictSync(
         const hit = scannable.find((f) => f.path === b.file && f.text.includes(basename));
         if (!hit) out.push({ rule: 'deletion-stale-blocker', file: b.file, line: 1, what: `blocker 已不再提到 ${basename} ⇒ 必须改判` });
       }
+      continue;
+    }
+    if (v.verdict === 'not-deletable') {
+      // 明确"不许删"的一类 (环境声明等): 必须给出 blocker 且文件在盘上
+      if (v.blockers.length === 0) out.push({ rule: 'deletion-blocked-without-evidence', file: v.target, line: 1, what: 'not-deletable 却没有依据' });
+      if (!opts.exists(v.target)) out.push({ rule: 'deletion-missing', file: v.target, line: 1, what: '标了 not-deletable 但盘上没了' });
       continue;
     }
     // done

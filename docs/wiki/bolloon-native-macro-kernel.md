@@ -155,7 +155,7 @@ K3 行数棘轮门   kernel 目录行数上限, 只许减不许增; 要加就得
 | 阶段 | 内容 | 判据 / 完成标准 | 完成度 |
 | --- | --- | --- | --- |
 | **K0 冻结架构与删除台账** | 7 项交付物 (§7.1) | 能说清每段代码属哪个模块 · 能说清哪些准备删除 · **没有任何「以后再看」的核心事实来源** | ✅ **7/7** |
-| **K1 清理 constraint-runtime** | 拆三层 `primitives` / `runtime-adapters` / `domain-libraries`; 按 5 步顺序删 (§7.3) | Kernel 只依赖 primitives · 领域能力**只能经 Tool Capability 接入** · archive/reference/test fixture 不进运行时包 · 无调用模块已移除 · 假连接/placeholder 已删 · 现有测试全绿 | 🟡 **①已完成 · ②已开刀** (§14/§15); ③删 placeholder ④改 Tool Provider ⑤删旧导出 **未做** |
+| **K1 清理 constraint-runtime** | 拆三层 `primitives` / `runtime-adapters` / `domain-libraries`; 按 5 步顺序删 (§7.3) | Kernel 只依赖 primitives · 领域能力**只能经 Tool Capability 接入** · archive/reference/test fixture 不进运行时包 · 无调用模块已移除 · 假连接/placeholder 已删 · 现有测试全绿 | 🟡 **①完成 · ②已开两刀 (共删 35 个文件/547 行)** (§14/§15/§16); ③删 placeholder ④改 Tool Provider ⑤删旧导出 **未做** |
 | **K2 Pi 可变状态外置** | message history / stream callback / signal / failed tool / channel identity / run identity / loop state → `RunContext` 或 `ChannelContext` | Pi 不持有 Goal·Run 状态/长期恢复/Channel 全局/Model 全局配置/Tool 权限; **完成此步后才允许删 Pi 对应字段与旧辅助方法** | ❌ 未开始 |
 | **K3 统一所有入口队列** | 8 个入口 (Web/CLI/P2P/cron/followup/social heartbeat/supervisor/独立宿主) 只能投递事件: `External Event → ChannelMailbox.enqueue() → ChannelActor → Kernel Loop → Run/Goal/Evidence` | 同 Channel 只允许一个执行循环 · 不同 Channel 可并发 · **所有入口只能投递, 不能直接调 `prompt()`** · 外部事件不能直接改 Goal · CLI 与 Web 不各维护一套循环 | ❌ 未开始 |
 | **K4 合并两套 Agent Loop** | `KernelLoop`: prepare → model call → harness tool call → checkpoint → reducer → continuation → finish; Pi 只做 `messages → model response`; Pivot/ReAct/旧 loop 降为策略或 Adapter | CLI/Web 同一任务产生一致的 Run/Goal 事实 · pause/SIGKILL/预算耗尽/模型切换行为一致 · 旧 loop 无任何入口引用 · 真跑长期任务通过后才删旧分支 | ❌ 未开始 |
@@ -313,7 +313,7 @@ model-selection 协议 · transaction evidence · contact consent · durable rec
 | --- | --- |
 | constraint-runtime **源码** | **94 文件 / 2492 行** —— A 原语 15 文件(401 行) · B 领域 24(797) · C 不进内核 55(1294) |
 | **空壳** (≤20 行 `index.ts`) | **33 个 / 460 行** —— 移植留下的骨架, 第一批清理的直接对象 |
-| **构建产物混进源码树** | `dist/` **89 文件 / 1164 行** 被 commit 进 `src/` (本身就不该在源码树里) |
+| ~~**构建产物混进源码树** `dist/` 被 commit~~ **← 这条我说错了 (§16.3 更正)** | `dist/` 其实被 `.gitignore` 忽略、**从未进 git**; 但它是**运行期必需**的 (内含 32 个快照 json, tsc 不复制) |
 | **自带测试从来不跑** | `tests/` 4 文件 —— 仓里 vitest 配置把整个 constraint-runtime 目录 exclude 掉 |
 | 主仓引用 | **30 点** (prod 19 / test 11) → 台账 **23 条** (prod 12 / test 11) |
 | 集中度 | prod 引用只落在 **7 个目标**: 包入口 + PolymarketSDK 5 模块 + SafeSDK/deploySafe |
@@ -371,3 +371,52 @@ model-selection 协议 · transaction evidence · contact consent · durable rec
 - `done` ⇒ 目标不在盘上**且台账里有删除记录** —— 删了必须留账。
 
 判据本身也修了一个缺陷: 对**目录目标**取 basename 没有判别力 (`src/constraint-runtime/src/` → `src`), 会让判据恒真 ⇒ 改成可显式给判别名 (`needle`)。另外证据面不能只有 `.ts` —— dist 的耦合证据在 `Dockerfile` / `package.json` 里。
+
+## 16. K1 第②步批二 —— 可达性闭包 + 快照派发盲区, 删 33 个文件 (判错 4 次, 每次都抓住了)
+
+### 16.1 换了个更有依据的工具: 从包入口算**可达闭包**
+
+`入口闭包 = 30 / 88 个源文件` ⇒ 58 个不可达 (1310 行)。但"不可达"只是**第一道**筛子, 后面还压着三道:
+
+| 筛子 | 剔除了什么 |
+| --- | --- |
+| ① 静态可达闭包 | 58 个不可达 |
+| ② 主仓**精确深路径**引用 | 13 个 (PolymarketSDK 6 · SafeSDK/deploySafe · OpenCLI…) —— 主仓走 `constraint-runtime/dist/tools/...` 动态 import |
+| ③ **`tools_snapshot.json` 的 208 条 source_hint** | **11 个** —— `tools.ts` 启动读快照 → `PORTED_TOOLS` (**实测 184 条**) → `executeToolFromSnapshot` 按 hint **数据驱动 import**。**静态分析完全看不见这条边** |
+| ④ 编译期依赖 (`platform.d.ts`) | 1 个 —— 见 16.2 |
+| ⇒ 真死代码 | **33 个 / 517 行** |
+
+### 16.2 这一次判错的地方 (4 次, 每次都留下判据)
+
+| 判错 | 怎么被抓出来 | 落成的判据 |
+| --- | --- | --- |
+| 把 `platform.d.ts` 当死代码删 | **CR `tsc` 报 TS7016** (它是 `declare module 'platform'` 环境声明: 没人 import, 但 `setup.ts` 靠它编译) | verdict 增加 `not-deletable` 类; 判据对 `.d.ts` **一律不判 ready** |
+| 把 11 个 `tools/**` 当死代码 | 读 `tools_snapshot.json` 发现它们是**派发目标** | "快照点名"升为删除前必查项 |
+| 上轮把 33 个存档壳叫"空壳可直删" | 它们引 `_archive_helper` → 读子系统快照 | 闭包分析取代形态判断 |
+| **干净重建把 dist 的 32 个 json 抹了** | **包入口真跑打出 `Snapshot not found`** (`PORTED_TOOLS` 184→0, 只有一行 warn, **无报错**) | 新门 **K1-e** (见 16.4) |
+
+### 16.3 更正 §14.1 的一处错误说法
+
+我先前写「`dist/` 89 文件被 commit 进 src/」—— **错的**。`.gitignore:2` 就有 `dist/`, 它**从未进 git**。真相是:
+`dist/` = 忽略的构建产物 **+ 运行期必需的 32 个快照 json** (`tools_snapshot` / `commands_snapshot` / `archive_surface_snapshot` / `subsystems/*.json`), 而 **CR 的 build 只有 `tsc` (不复制 .json)**。
+
+### 16.4 新门 K1-e: dist 存在则必须完整 (抓"静默降级")
+
+`dist/` 在 ⇒ 必须带 `reference_data/*.json` = **32** 个, 且源侧每个 json 在 dist 侧都存在。**真盘变异验证**: 挪走 `tools_snapshot.json` ⇒ 门红 (`expected 31 to be 32`); 还原 ⇒ 15/15 绿。
+判据对"本地没有构建的干净克隆"不判 (不背别人的锅)。
+
+### 16.5 本批真删 (33 个, 三组记录进 DELETION_LEDGER, 每条带逐个成员 `targets`)
+
+| 组 | 内容 | 依据 |
+| --- | --- | --- |
+| 26 个移植存档壳 | `assistant/`…`voice/` 各 15 行, 自述 "Python placeholder package" | 闭包外 + 主仓 0 引用 + 快照 0 点名 |
+| `_archive_helper.ts` | 只被上面 26 个调用 | 同上 |
+| 6 个根级移植残留 | `cost_hook` / `execution_registry` / `ink` / `port_manifest` / `query` / `system_init` | 同上 |
+
+**删除后真跑 (5 项)**: CR `tsc` 0 错 · 主仓 `tsc` 0 错 · 五道 kernel 门 **82/82** · 引用 CR 的两个主仓测试 **20/20** · **运行期真跑** 包入口 25 个导出完好 + `PORTED_TOOLS` 184 条。
+**连带冻结量重算 (删除的连锁反应)**: CR 源码 92→**59** 文件 / 2460→**1925** 行 · A15/B24/C55 → **A13/B24/C22** · stub 31→5 · dist 计数改为 `.d.ts` 口径 54/783 · 双档预算 768/445。
+
+### 16.6 还挡着的两条 (verdict = blocked, 各有真实 blocker)
+
+- `CR/dist` —— 删它断 B 类工具与包入口 (`pi-sdk-tools` 动态 import + `Dockerfile:167` COPY + `main/exports` 指向它);
+- `CR/src/reference_data/` —— 同目录混着**运行期派发台账** (`tools_snapshot.json`) ⇒ 不能整目录删; `subsystems/*.json` 在 26 个壳删掉后已成**孤立数据**, 要单独决定。

@@ -22,6 +22,7 @@ import {
   CONSTRAINT_CLASS_LINES,
   CONSTRAINT_DIST_FILES,
   CONSTRAINT_DIST_LINES,
+  CONSTRAINT_DIST_DATA_JSON,
   CONSTRAINT_NON_SOURCE,
   CONSTRAINT_ROOT,
   CONSTRAINT_RULES,
@@ -104,6 +105,24 @@ describe('K1-a constraint-runtime 三层分类覆盖', () => {
     expect(CR_DIST.length).toBe(CONSTRAINT_DIST_FILES);
     expect(CR_DIST.reduce((n, r) => n + fs.readFileSync(path.join(SRC, CONSTRAINT_ROOT, r), 'utf8').split('\n').length, 0))
       .toBe(CONSTRAINT_DIST_LINES);
+  });
+
+  it('K1-e dist 存在则必须完整 (抓"tsc 不复制 json"造成的静默降级)', () => {
+    // 背景: CR 的 build 只跑 tsc。`rm -rf dist && tsc` 会静默丢掉 reference_data/*.json,
+    // 而 tools.ts/commands.ts 启动时读它们 → PORTED_TOOLS 从 184 条变 0 (只有一行 warn, 无报错)。
+    // 判据: dist 在, 就必须带着快照数据; 拿不到 dist 就不判 (本地无构建的干净克隆不背这个锅)。
+    const distDir = path.join(SRC, CONSTRAINT_ROOT, 'dist');
+    if (!fs.existsSync(distDir)) return;
+    const dataDir = path.join(distDir, 'reference_data');
+    expect(fs.existsSync(dataDir)).toBe(true);
+    const data = fs.readdirSync(dataDir).filter((f) => f.endsWith('.json'));
+    const sub = path.join(dataDir, 'subsystems');
+    const subs = fs.existsSync(sub) ? fs.readdirSync(sub).filter((f) => f.endsWith('.json')) : [];
+    expect(data.length + subs.length).toBe(CONSTRAINT_DIST_DATA_JSON);
+    // 与源侧对齐: 源侧 reference_data 的 json 必须都在 dist 侧存在 (只多不少)
+    const srcData = path.join(SRC, CONSTRAINT_ROOT, 'src', 'reference_data');
+    const srcFiles = fs.readdirSync(srcData).filter((f) => f.endsWith('.json'));
+    for (const f of srcFiles) expect(fs.existsSync(path.join(dataDir, f))).toBe(true);
   });
 
   it('判别力自证: 未登记路径必须报未分类', () => {

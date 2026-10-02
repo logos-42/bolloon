@@ -67,8 +67,12 @@ describe('K1-d 删除就绪台账与盘上事实同步', () => {
     }
   });
 
-  it('删除记录 8 字段齐全且剩余引用为 0 (复用 K0 的格式门语义)', () => {
+  it('删除记录 8 字段齐全 + 成员逐个不在盘上 (组记录不许含糊)', () => {
     for (const rec of DELETION_LEDGER) {
+      if (rec.targets) {
+        expect(rec.targets.length).toBeGreaterThan(0);
+        for (const t of rec.targets) expect(exists(t)).toBe(false);
+      }
       expect(rec.target.length).toBeGreaterThan(0);
       expect(rec.remainingRefs).toBe(0);
       expect(rec.runtimeHits).toBeGreaterThanOrEqual(0);

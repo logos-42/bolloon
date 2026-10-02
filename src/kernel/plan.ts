@@ -126,6 +126,8 @@ export const ENTRY_DIRECT_CALLS_FROZEN_AT = 24;
  */
 export interface DeletionRecord {
   target: string;
+  /** 该条记录覆盖的**逐个文件** (相对仓根) —— 组记录必须列出成员, 便于逐条复核 */
+  targets?: readonly string[];
   oldEntry: string;
   replacement: string;
   remainingRefs: number;
@@ -154,6 +156,40 @@ export const DELETION_LEDGER: readonly DeletionRecord[] = [
     runtimeHits: 0,
     acceptance: 'tsc --noEmit 0 错 · 四道 kernel 门 75/75 · 引用面核验 0 处 · pre-commit 聚焦套件',
     rollbackCommit: '9808e8e',
+    deletedAt: '2026-10-02',
+  },
+
+  {
+    target: 'src/constraint-runtime/src/<26 个移植存档壳>/index.ts',
+    targets: ['src/constraint-runtime/src/assistant/index.ts', 'src/constraint-runtime/src/bootstrap/index.ts', 'src/constraint-runtime/src/bridge/index.ts', 'src/constraint-runtime/src/buddy/index.ts', 'src/constraint-runtime/src/cli/index.ts', 'src/constraint-runtime/src/components/index.ts', 'src/constraint-runtime/src/constants/index.ts', 'src/constraint-runtime/src/coordinator/index.ts', 'src/constraint-runtime/src/entrypoints/index.ts', 'src/constraint-runtime/src/hooks/index.ts', 'src/constraint-runtime/src/keybindings/index.ts', 'src/constraint-runtime/src/memdir/index.ts', 'src/constraint-runtime/src/moreright/index.ts', 'src/constraint-runtime/src/native_ts/index.ts', 'src/constraint-runtime/src/output_styles/index.ts', 'src/constraint-runtime/src/plugins/index.ts', 'src/constraint-runtime/src/schemas/index.ts', 'src/constraint-runtime/src/screens/index.ts', 'src/constraint-runtime/src/server/index.ts', 'src/constraint-runtime/src/services/index.ts', 'src/constraint-runtime/src/state/index.ts', 'src/constraint-runtime/src/types/index.ts', 'src/constraint-runtime/src/upstream_proxy/index.ts', 'src/constraint-runtime/src/utils/index.ts', 'src/constraint-runtime/src/vim/index.ts', 'src/constraint-runtime/src/voice/index.ts'],
+    oldEntry: '26 个 15 行移植存档壳 (assistant/bootstrap/bridge/.../voice): 每个 import _archive_helper 并读 reference_data/subsystems/<name>.json 快照, 自述为 "Python placeholder package"',
+    replacement: '无 (包入口闭包外 + 主仓 0 引用 + 不在任何快照的 source_hint 里)',
+    remainingRefs: 0,
+    runtimeHits: 0,
+    acceptance: 'CR tsc 0 错 · 主仓 tsc 0 错 · 五道 kernel 门全绿 · 引用 CR 的两个主仓测试 20/20 · 运行期真跑 require(dist/index.js) 25 个导出完好 · 干净重建 dist 保留文件逐字节一致',
+    rollbackCommit: '3b1bc42',
+    deletedAt: '2026-10-02',
+  },
+  {
+    target: 'src/constraint-runtime/src/_archive_helper.ts',
+    targets: ['src/constraint-runtime/src/_archive_helper.ts'],
+    oldEntry: 'loadArchiveMetadata(): 读 reference_data/subsystems/<name>.json —— 只被上面 26 个存档壳调用',
+    replacement: '无 (随存档壳一起消失; reference_data/subsystems/*.json 变为孤立数据, 待第③批处置)',
+    remainingRefs: 0,
+    runtimeHits: 0,
+    acceptance: '同上 (同一批)',
+    rollbackCommit: '3b1bc42',
+    deletedAt: '2026-10-02',
+  },
+  {
+    target: 'src/constraint-runtime/src/<6 个根级移植残留>.ts',
+    targets: ['src/constraint-runtime/src/_archive_helper.ts', 'src/constraint-runtime/src/cost_hook.ts', 'src/constraint-runtime/src/execution_registry.ts', 'src/constraint-runtime/src/ink.ts', 'src/constraint-runtime/src/port_manifest.ts', 'src/constraint-runtime/src/query.ts', 'src/constraint-runtime/src/system_init.ts'],
+    oldEntry: 'cost_hook / execution_registry / ink / port_manifest / query / system_init —— 移植快照的根级镜像文件',
+    replacement: '无 (闭包外 + 主仓 0 引用 + 快照 0 点名)',
+    remainingRefs: 0,
+    runtimeHits: 0,
+    acceptance: '同上 (同一批)',
+    rollbackCommit: '3b1bc42',
     deletedAt: '2026-10-02',
   },
 ];

@@ -9,7 +9,8 @@
  * K1 真读出来的四条事实 (写在这里, 免得下一轮重新发现):
  *   · 源码 **94 文件 / 2492 行** (A 15 / B 24 / C 55);
  *   · **33 个 ≤20 行的空壳 index.ts** (共 460 行) —— 移植留下的骨架;
- *   · **dist/ 里 89 个构建产物** (1164 行) 被 commit 进 src/ (本身不该在源码树里);
+ *   · **dist/ 是构建产物, 且被 .gitignore 忽略** (从未进 git) — 但它**运行期必需**:
+ *     里面除了编译产物还有 `reference_data/*.json` **32 个快照** (tsc 不复制) ⇒ 见 CONSTRAINT_DIST_DATA_JSON;
  *   · constraint-runtime **自带的 4 个测试从来不跑** —— 仓里 vitest 配置把整个 constraint-runtime 目录排除在外 (见 vitest.config.ts 的 exclude)。
  */
 
@@ -91,7 +92,7 @@ export const CONSTRAINT_RULES: readonly ConstraintRule[] = [
   { key: 'src/index.ts', cls: 'C', why: "移植层包入口 (Kernel 不用; 主仓用的是包入口的公开导出)", phase: '第一批' },
   { key: 'src/port_manifest.ts', cls: 'C', why: "移植清单", phase: '第一批' },
   { key: 'src/platform.d.ts', cls: 'C', why: "类型垫片", phase: '第一批' },
-  { key: 'dist/', cls: 'BUILD', why: "构建产物 (99 个 .d.ts/.js) —— **不该进 src/**; 不入三层名单, 单独冻结计数", phase: '第一批' },
+  { key: 'dist/', cls: 'BUILD', why: "构建产物 (git 忽略, 不入 git) + **运行期必需的 reference_data/*.json 快照**; 不入三层名单, 单独冻结计数", phase: '第一批' },
   { key: 'tests/', cls: 'C', why: "constraint-runtime 自带测试 (4 文件) —— 但 vitest 配置 `**/constraint-runtime/**` 把整个目录排除了 ⇒ **它们从来不跑** (K1 真发现)", phase: '第一批' },
   { key: 'package.json', cls: 'META', why: "包元数据", phase: 'K1' },
   { key: 'package-lock.json', cls: 'META', why: "锁文件", phase: 'K1' },
@@ -104,16 +105,24 @@ export const CONSTRAINT_ROOT = 'constraint-runtime/';
 export const CONSTRAINT_NON_SOURCE = ['dist/', 'node_modules/'];
 
 /** 冻结量: 源码 / 空壳 / 构建产物 (棘轮: 只许减) */
-export const CONSTRAINT_SRC_FILES = 92;
-export const CONSTRAINT_SRC_LINES = 2460;
-export const CONSTRAINT_STUB_FILES = 31;
-export const CONSTRAINT_STUB_LINES = 428;
-export const CONSTRAINT_DIST_FILES = 89;
-export const CONSTRAINT_DIST_LINES = 1164;
+export const CONSTRAINT_SRC_FILES = 59;
+export const CONSTRAINT_SRC_LINES = 1925;
+export const CONSTRAINT_STUB_FILES = 5;
+export const CONSTRAINT_STUB_LINES = 12;
+export const CONSTRAINT_DIST_FILES = 54;
+export const CONSTRAINT_DIST_LINES = 783;
+/**
+ * dist/reference_data/*.json —— **快照数据, 运行期真被读**:
+ *   tools.ts 启动时读 tools_snapshot.json → PORTED_TOOLS (实测 **184 条**) → executeToolFromSnapshot 按 source_hint 动态 import;
+ *   commands.ts 同理读 commands_snapshot.json。
+ * **陷阱**: CR 的 build 只有 `tsc`, 不复制 .json ⇒ 任何 `rm -rf dist && tsc` 都会静默丢掉它们
+ * (PORTED_TOOLS 变 0, 只有一行 warn, 无报错) —— 这是"静默降级路径", 见 kernel-constraint.test.ts 的 K1-e 门。
+ */
+export const CONSTRAINT_DIST_DATA_JSON = 32;
 
 /** 各层文件数 / 行数冻结值 */
-export const CONSTRAINT_CLASS_FILES: Readonly<Record<string, number>> = {"C": 53, "A": 15, "B": 24};
-export const CONSTRAINT_CLASS_LINES: Readonly<Record<string, number>> = {"C": 1262, "A": 401, "B": 797};
+export const CONSTRAINT_CLASS_FILES: Readonly<Record<string, number>> = {"A": 13, "C": 22, "B": 24};
+export const CONSTRAINT_CLASS_LINES: Readonly<Record<string, number>> = {"A": 352, "C": 776, "B": 797};
 
 /**
  * A 类原语的**接入说明** —— 不能自称「原语」就算数:
