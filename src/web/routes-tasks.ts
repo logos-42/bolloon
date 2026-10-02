@@ -6,6 +6,7 @@
  */
 
 import type { Express } from 'express';
+import { deliverThroughActor } from '../kernel/channel-actor.js';
 import { type Task } from './server-types.js';
 import { loadTaskQueue, saveTaskQueue, isTaskExecuting } from './server-storage.js';
 import { documentReader } from '../documents/reader.js';
@@ -350,7 +351,10 @@ async function executeTask(
       case 'chat':
         if (task.description) {
           broadcast({ type: 'status', content: `执行任务: ${task.title}` }, channelId);
-          result = await agent.prompt(task.description);
+          // 闭包里 TS 不保留收窄 ⇒ 先收成局部 const
+          const desc = task.description;
+          const agentForRun = agent;
+          result = await deliverThroughActor(agentForRun, () => agentForRun.prompt(desc));
         }
         break;
 

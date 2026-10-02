@@ -665,7 +665,7 @@ async function triggerRemoteFollowup(
       }
     };
 
-    const fullResponse = await agent.promptStream(markedPrompt, streamCallback, undefined, channelId);
+    const fullResponse = await deliverThroughActor(agent, () => agent.promptStream(markedPrompt, streamCallback, undefined, channelId));
     if (!fullResponse.trim()) return;
 
     // 广播续看结果给 UI
@@ -992,7 +992,7 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
         }
       };
       const agent = await getAgentForChannel(channelId, ch.did || '', ch.name, ch.didDocRef);
-      fullResponse = await agent.promptStream(fullPrompt, streamCallback, undefined, channelId);
+      fullResponse = await deliverThroughActor(agent, () => agent.promptStream(fullPrompt, streamCallback, undefined, channelId));
 
       // 2026-07-06: 防御性兜底
       if (!fullResponse.trim()) {
@@ -1145,7 +1145,7 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       // 临时用 channelId = "__collab__" 拿个一次性 agent
       const collabChannelId = `__collab_${senderKey.substring(0, 8)}__`;
       const agent = await getAgentForChannel(collabChannelId, '', `collab-${senderKey.substring(0, 8)}`, undefined);
-      const resultText = await agent.prompt(fullPrompt);
+      const resultText = await deliverThroughActor(agent, () => agent.prompt(fullPrompt));
       const reply = JSON.stringify({
         v: 3,
         op: 'agent.collab.reply',
@@ -1755,7 +1755,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
           // 跨预算继续: 新 Run 必须挂在同一个 Goal 下 (setGoalId), 并带上上一个 Run 的非幂等守卫
           agent.setGoalId?.(goal.goalId);
           agent.setContinuationGuards?.(r.guards || []);
-          const reply = await agent.prompt(r.instruction);
+          const reply = await deliverThroughActor(agent, () => agent.prompt(r.instruction));
           // 注意: prompt 收尾会清空 currentRunId → 必须读 lastRunId (否则会拿上一条 run 做决策)
           const runId = agent.getLastRunId?.() || agent.getRunId?.();
           return { runId, status: 'done', reply: typeof reply === 'string' ? reply.slice(0, 500) : undefined };
@@ -2533,7 +2533,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
                   new Promise<null>((res) => setTimeout(() => res(null), 8000)),
                 ]);
                 if (agent && typeof (agent as any).promptStream === 'function') {
-                  llm = (p: string) => (agent as any).promptStream(p, () => {}, undefined, local.id);
+                  llm = (p: string) => deliverThroughActor(agent as any, () => (agent as any).promptStream(p, () => {}, undefined, local.id));
                 }
               }
             } catch { /* 无 agent → 仅扫描 */ }
@@ -2578,7 +2578,7 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
               throw new Error('无可用 agent, 跳过定时任务');
             }
             // 前缀 [cron] 标记后台执行来源 (供审计/日志区分人类消息与定时任务)
-            await (agent as any).promptStream(`[cron] ${job.name}: ${job.prompt}`, () => {}, undefined, target.id);
+            await deliverThroughActor(agent as any, () => (agent as any).promptStream(`[cron] ${job.name}: ${job.prompt}`, () => {}, undefined, target.id));
           },
         });
         (global as any).cronScheduler = cronHandle;
@@ -2635,7 +2635,7 @@ ${goalDesc}
 现在是否要主动联系其中某个智能体? 只输出一个 JSON 对象, 不要任何其他文字:
 {"initiate": true 或 false, "goalAchieved": true 或 false, "targetPeerPublicKey": "对方 pk", "targetChannelId": "对方渠道 id", "message": "你要说的话"}
 若不想发起, 输出 {"initiate": false}。`;
-          const raw = await agent.promptStream(prompt, () => {}, undefined, local.id);
+          const raw = await deliverThroughActor(agent, () => agent.promptStream(prompt, () => {}, undefined, local.id));
           const m = raw.match(/\{[\s\S]*\}/);
           if (!m) return { initiate: false };
           const obj = JSON.parse(m[0]);
@@ -3838,7 +3838,7 @@ fetchState();
         req.docContent ? `\n资料内容:\n${req.docContent}` : '',
         `\n(来自 agent ${req.fromAgentId || 'unknown'})，请直接给出可交付结果。`,
       ].join('');
-      const out = await agent.prompt(task);
+      const out = await deliverThroughActor(agent, () => agent.prompt(task));
       const text = String(out || '').trim();
       if (!text || text.startsWith('❌') || text.startsWith('[AI 服务调用失败]')) {
         return { ok: false, summary: text.slice(0, 800) || '(空结果)', error: 'execution-failed' };

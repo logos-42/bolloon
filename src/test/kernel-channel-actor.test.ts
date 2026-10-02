@@ -25,8 +25,8 @@ import {
   K5_STEPS,
 } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
-import { ChannelActor, SerialMailbox, actorCount, createActorState, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
-import { type K5LedgerLike, scanActorLedger, scanEntryDelivery, scanHistoryWriteSites } from '../kernel/gate-scan.js';
+import { ChannelActor, SerialMailbox, actorCount, createActorState, currentActorContext, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
+import { type K5LedgerLike, countEntryExecutionPoints, scanActorLedger, scanEntryDelivery, scanHistoryWriteSites } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
 const KERNEL = path.join(SRC, 'kernel');
@@ -85,7 +85,11 @@ describe('K5 门: Channel Actor 台账', () => {
     // 容器建了 ≠ 字段迁了 / 入口接了 (第 4 步第一版被全量回归否掉并回退 ⇒ 两个计数都必须是 0)
     expect(K5_PROGRESS.fieldsMigrated).toBe(4);
     expect(K5_PROGRESS.migratedFieldNames).toEqual(['messageHistory', 'currentChannelId', 'currentAgentId', 'currentGoalId']);
-    expect(K5_PROGRESS.entriesWired).toBe(0);
+    // web 入口已全部执行点投递 (server.ts 11/11 + routes-tasks 1/1) ⇒ 四入口里完成 1 条
+    expect(K5_PROGRESS.entriesWired).toBe(1);
+    const webSites = K5_PROGRESS.entrySites.filter((s) => s.file.startsWith('web/'));
+    expect(webSites.length).toBe(2);
+    expect(webSites.every((s) => s.total > 0 && s.total === s.wired)).toBe(true);
   });
 
   it('串行语义真跑: 同 Channel 内任务永不交错, 且按入队顺序执行', async () => {
@@ -304,20 +308,51 @@ describe('K5 门: Channel Actor 台账', () => {
     resetActors();
   });
 
-  it('★ 判据: 入口投递的进度必须能**从盘上重算** (自报无效)', () => {
-    const WSRC = fs.readFileSync(path.join(SRC, 'web/server.ts'), 'utf-8');
-    // 盘上真实事实
-    const total = (WSRC.match(/promptStream\(/g) ?? []).length;
-    const wired = (WSRC.match(/deliverThroughActor\(/g) ?? []).length;
-    expect(scanEntryDelivery(WSRC, { file: 'web/server.ts', total, wired })).toEqual([]);
-    // 台账写的必须就是盘上算出来的 (否则红)
-    expect(scanEntryDelivery(WSRC, K5_PROGRESS.entrySites)).toEqual([]);
-    // 判别力: 少包一处却把 wired 写大 ⇒ 红; 新增入口点不登记 ⇒ 红; wired > total ⇒ 红
-    expect(scanEntryDelivery(WSRC, { file: 'web/server.ts', total, wired: wired + 1 })
+  it('★ 真跑: 重入不许自锁 —— 已在同一 actor 里跑的任务再投递 ⇒ 直跑 (否则死锁)', async () => {
+    resetActors();
+    const holder = { actor: new ChannelActor() };
+    // 若没有重入保护, 内层 submit 会排到"自己"后面 ⇒ 永远等不到 ⇒ 本用例超时红
+    const out = await deliverThroughActor(holder, async () => {
+      const inner = await deliverThroughActor(holder, async () => 'inner');
+      const deepest = await deliverThroughActor(holder, async () => 'deep');
+      return `outer(${inner},${deepest})`;
+    });
+    expect(out).toBe('outer(inner,deep)');
+    expect(currentActorContext()).toBeUndefined();          // 跑完上下文必须清干净
+    // 反向对照: 已在外层任务里 vs 外层不在 actor 里 —— 后者照常排队 (不因重入保护而失效)
+    const other = { actor: new ChannelActor() };
+    const seq: string[] = [];
+    await Promise.all([
+      deliverThroughActor(other, async () => { seq.push('1:start'); await new Promise((r) => setTimeout(r, 20)); seq.push('1:end'); }),
+      deliverThroughActor(other, async () => { seq.push('2:start'); seq.push('2:end'); }),
+    ]);
+    expect(seq).toEqual(['1:start', '1:end', '2:start', '2:end']);
+    resetActors();
+  });
+
+  it('★ 判据: 入口投递的进度必须能**从盘上重算** (自报无效 · 逐文件表)', () => {
+    const sources = K5_PROGRESS.entrySites.map((s) => ({ file: s.file, text: fs.readFileSync(path.join(SRC, s.file), 'utf-8') }));
+    // 台账写的必须就是盘上算出来的
+    expect(scanEntryDelivery(sources, K5_PROGRESS.entrySites)).toEqual([]);
+    // 口径自证: 精确计数必须排除 `this.prompt(` (CLI readline) 与注释里的示例
+    expect(countEntryExecutionPoints('this.prompt("> ");')).toBe(0);
+    expect(countEntryExecutionPoints('// await agent.prompt(x)')).toBe(0);
+    expect(countEntryExecutionPoints('* await agent.prompt(x)')).toBe(0);
+    expect(countEntryExecutionPoints('await agent.prompt(x);')).toBe(1);
+    expect(countEntryExecutionPoints('await agent.promptStream(y, cb);')).toBe(1);
+    // web 入口已全部投递 (11 + 1 执行点), 另三条入口面尚未开始
+    const web = K5_PROGRESS.entrySites.filter((s) => s.file.startsWith('web/'));
+    expect(web.every((s) => s.total === s.wired)).toBe(true);
+    expect(K5_PROGRESS.entriesWired).toBe(1);
+    // 判别力: 少包一处却把 wired 写大 ⇒ 红; 新增执行点不登记 ⇒ 红; wired > total ⇒ 红; 文件不在扫描面 ⇒ 红
+    const first = K5_PROGRESS.entrySites[0];
+    expect(scanEntryDelivery(sources, [{ ...first, wired: first.wired + 1 }])
       .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
-    expect(scanEntryDelivery(WSRC, { file: 'web/server.ts', total: total + 1, wired })
+    expect(scanEntryDelivery(sources, [{ ...first, total: first.total + 1 }])
       .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
-    expect(scanEntryDelivery(WSRC, { file: 'web/server.ts', total: 1, wired: 5 })
+    expect(scanEntryDelivery(sources, [{ file: 'web/server.ts', total: 1, wired: 99 }])
+      .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
+    expect(scanEntryDelivery(sources, [{ file: '不存在.ts', total: 0, wired: 0 }])
       .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
   });
 

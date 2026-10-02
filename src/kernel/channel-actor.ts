@@ -14,6 +14,23 @@
  */
 
 /** Actor 状态容器 —— 与 `ACTOR_STATE_ITEMS` 的 9 项一一对应 */
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+/**
+ * **当前正在哪个 Actor 的 mailbox 任务里跑** (K5 第 5 步的前置安全网)。
+ *
+ * 为什么必须有: `SerialMailbox` 是**无重入**的 —— 一个已在 mailbox 里跑的任务若再往同一个 mailbox
+ * 投递并 await, 就是**自锁** (新任务排在"自己"后面)。入口投递 (步骤④) 一旦覆盖到"运行中会被调用"
+ * 的执行点 (LLM 回调 / judge / 工具内再问一次), 就会踩到这条。
+ * ⇒ 用 ALS 记住"我在谁的上下文里", 同 actor 重入时**直跑**, 不同 actor 照常排队。
+ */
+const actorCtx = new AsyncLocalStorage<ChannelActor>();
+
+/** 当前是否正跑在某个 Actor 的 mailbox 任务内 (诊断用) */
+export function currentActorContext(): ChannelActor | undefined {
+  return actorCtx.getStore();
+}
+
 export interface ActorState {
   /** 会话绑定的通道 */
   channelId: string;
@@ -115,7 +132,8 @@ export class ChannelActor {
 
   /** 投递一次执行 (串行执行)。执行期间 `state.activeRun` 由调用方/后续步骤写入 */
   submit<T>(fn: (state: ActorState) => Promise<T> | T): Promise<T> {
-    return this.mailbox.submit(() => fn(this.state));
+    // 任务体内建立 ALS 上下文 ⇒ 任务内部的异步续体也能认出"自己在谁的上下文里"
+    return this.mailbox.submit(() => actorCtx.run(this, () => fn(this.state)));
   }
 
   /**
@@ -293,10 +311,16 @@ export interface HydrateSpec<T> {
  * (测真语义: 排队 / 隔离 / 兜底), 而不是靠读源码断言。
  */
 export async function deliverThroughActor<T>(
-  holder: { actor?: ChannelActor } | null | undefined,
+  // 形参故意放宽成 `unknown`: 调用点的 receiver 类型五花八门 (AgentSession / 结构子集 / any),
+  //   写成 `{ actor?: ChannelActor }` 会触发 TS 的弱类型检查 ("no properties in common") 而误报。
+  //   实际用法由下面这行运行时取值保证 (取不到 actor 就直跑)。
+  holder: unknown,
   run: () => Promise<T> | T,
 ): Promise<T> {
-  const actor = holder?.actor;
-  if (actor && typeof actor.submit === 'function') return actor.submit(run);
-  return run();
+  const actor = (holder as { actor?: ChannelActor } | null | undefined)?.actor;
+  if (!actor || typeof actor.submit !== 'function') return run();
+  // **重入保护**: 已经跑在同一个 actor 的 mailbox 任务里 ⇒ 直跑。
+  //   否则"运行中被调用的执行点"(LLM 回调 / judge / 工具内再问) 会往自己的队列尾投递 ⇒ **自锁**。
+  if (actorCtx.getStore() === actor) return run();
+  return actor.submit(run);
 }

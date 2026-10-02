@@ -1054,3 +1054,34 @@ web/server.ts  promptStream( 执行点共 **8** 处; 已投递 **3** 处 (用户
 
 闭包里 TS **不保留 null 收窄** (`let agent: AgentSession | null`) ⇒ wrapped 调用在闭包内报 `possibly null`。
 ⇒ 收成局部 `const agentForRun = agent;` 再进闭包 (比 `!` 干净)。
+
+## 35. K5 步骤④: web 入口投递完成 (entriesWired 1/4) + 重入安全网
+
+### 35.1 先修死锁风险, 再接入口 (顺序很重要)
+
+`SerialMailbox` 是**无重入**的: 已在 mailbox 里跑的任务若再往同一个 mailbox 投递并 await, 就是**自锁** (新任务排在自己后面)。入口投递一旦覆盖到"运行中会被调用"的执行点 (LLM 回调 / judge / 工具内再问) 就会踩到。
+⇒ `channel-actor.ts` 引入 **`AsyncLocalStorage` 记住"当前跑在哪个 actor 的上下文里"**: 同 actor 重入 ⇒ **直跑**; 不同 actor ⇒ 照常排队; `deliverThroughActor` 出口处据此分支。
+
+**真盘变异证明它是承重的**: 临时删掉那行判断 ⇒ 重入用例 `Test timed out in 5000ms` (真死锁); 加回 ⇒ 绿。
+
+### 35.2 入口执行点的精确口径 (判据与台账必须同一口径)
+
+计数规则 (`countEntryExecutionPoints`, 写成纯函数): 只数 `.<promptStream>(` 与 `.<prompt>(` (**非流式也算** —— 它同样启动一次执行); 先剥 `//` 行注释并丢掉 `*` 开头行; **排除 `this.prompt(...)`** (CLI 的 readline 提示)。
+⇒ 实测踩过两个污染: 注释里的示例 (虚增) 与 `this.prompt('> ')` (虚增 3)。
+
+### 35.3 全入口面清单 (逐文件, 两个数字都由门从盘上重算)
+
+| 文件 | 执行点 | 已投递 | 归属入口 |
+| --- | --- | --- | --- |
+| `web/server.ts` | **11** | **11** | web (用户消息 / P2P 中继 / 任务 / cron / 心跳) |
+| `web/routes-tasks.ts` | **1** | **1** | web 任务路由 |
+| `index.ts` | 8 | 0 | CLI 主入口 (未开始) |
+| `cli/interface.ts` | 0 | 0 | 它的 `prompt` 是 readline ⇒ 无执行点 |
+| `agents/runner-resolver.ts` | 1 | 0 | 子 Agent / Supervisor 面 (未开始) |
+
+⇒ **`entriesWired 0/4 → 1/4`** (web 入口全部执行点接完才算一条, 不给"接一部分就宣布"留口子)。
+
+### 35.4 顺带两个编译期坑
+
+1. 闭包里 TS **不保留收窄** (`let agent: AgentSession | null` / `if (task.description)`) ⇒ 两处都要先收成局部 `const`, 再进闭包。
+2. `deliverThroughActor` 的 holder 形参写 `{ actor?: ChannelActor }` 会触发 TS 弱类型检查 ("no properties in common with type…"), 因为调用点 receiver 类型五花八门 ⇒ 形参放宽成 `unknown`, 取值处运行时收窄 (取不到就直跑)。

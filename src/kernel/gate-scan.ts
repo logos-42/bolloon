@@ -789,21 +789,45 @@ export function scanHistoryWriteSites(code: string): Finding[] {
 }
 
 /**
- * **K5 步骤④ — 入口投递的进度不许自报**: 清单里的两个数字都能**从盘上重算**。
- *   · `total` = `serverCode` 里 `promptStream(` 的出现次数 (入口执行点总数);
- *   · `wired` = `deliverThroughActor(` 的出现次数 (真正投进 Actor 的点数)。
- * 加一处新的入口执行点 ⇒ total 必须同步登记 (否则红); 少包一处却把 wired 写大 ⇒ 红; wired > total ⇒ 红。
+ * **K5 步骤④ — 入口执行点的精确计数口径** (判据与台账必须用同一口径, 否则数字对不上):
+ *   ① 只数 `.<promptStream>(` 与 `.<prompt>(` (**非流式也算** —— 它同样会启动一次执行);
+ *   ② 先剥 `//` 行注释, 并丢掉 `*` 开头的块注释行 (否则注释里的示例会被当成执行点);
+ *   ③ 排除 `this.prompt(...)` —— 那是 CLI 的 readline 提示, 不是执行点 (实测踩过: 虚增 3 处)。
+ */
+export function countEntryExecutionPoints(code: string): number {
+  let n = 0;
+  for (const raw of code.split(/\r?\n/)) {
+    const l = raw.replace(/\/\/.*$/, '');
+    if (/^\s*\*/.test(l)) continue;
+    if (/\bthis\.prompt(Stream)?\(/.test(l)) continue;
+    n += (l.match(/\.prompt(Stream)?\(/g) ?? []).length;
+  }
+  return n;
+}
+
+/** 同一口径下**已投递**的点数 (`deliverThroughActor(` 的出现次数) */
+export function countDeliveredPoints(code: string): number {
+  return (code.match(/deliverThroughActor\(/g) ?? []).length;
+}
+
+/**
+ * **K5 步骤④ — 入口投递的进度不许自报**: 台账里的 `total` / `wired` 都必须**从盘上重算**得到。
+ *   少包一处却把 wired 写大 ⇒ 红; 新增执行点不登记 ⇒ 红; wired > total ⇒ 红; 台账里有盘上不存在的文件 ⇒ 红。
  */
 export function scanEntryDelivery(
-  serverCode: string,
-  sites: { file: string; total: number; wired: number },
+  sources: readonly { file: string; text: string }[],
+  sites: readonly { file: string; total: number; wired: number }[],
 ): Finding[] {
   const out: Finding[] = [];
-  const f = (what: string) => out.push({ rule: 'entry-delivery-mismatch', file: sites.file, line: 1, what });
-  const total = (serverCode.match(/promptStream\(/g) ?? []).length;
-  const wired = (serverCode.match(/deliverThroughActor\(/g) ?? []).length;
-  if (total !== sites.total) f(`入口执行点 ${total} 处 ≠ 台账登记 ${sites.total} ⇒ 新增/删除入口没登记`);
-  if (wired !== sites.wired) f(`已投递 ${wired} 处 ≠ 台账登记 ${sites.wired} ⇒ 进度对不上盘上事实`);
-  if (sites.wired > sites.total) f(`wired ${sites.wired} > total ${sites.total}`);
+  const f = (file: string, what: string) => out.push({ rule: 'entry-delivery-mismatch', file, line: 1, what });
+  for (const s of sites) {
+    const src = sources.find((x) => x.file === s.file);
+    if (!src) { f(s.file, `台账登记的文件在扫描面里不存在 ⇒ 口径不可信`); continue; }
+    const total = countEntryExecutionPoints(src.text);
+    const wired = countDeliveredPoints(src.text);
+    if (total !== s.total) f(s.file, `入口执行点盘上 ${total} 处 ≠ 台账 ${s.total} ⇒ 新增/删除没登记`);
+    if (wired !== s.wired) f(s.file, `已投递盘上 ${wired} 处 ≠ 台账 ${s.wired} ⇒ 进度对不上事实`);
+    if (s.wired > s.total) f(s.file, `wired ${s.wired} > total ${s.total}`);
+  }
   return out;
 }
