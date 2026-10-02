@@ -1267,3 +1267,39 @@ channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代�
 ⇒ 处置: ① `ENTRY_GRAPH` 加两行 `adapter-internal` (`runExecution` 的派发) 并把 `ENTRY_DIRECT_CALLS_FROZEN_AT` 24 → **25**, 注明"这是**形态变化**不是旁路复活";
 ② K2 三个字段计数 + 总量同步, 且 **K5 的移交字段表逐字跟上** (跨台账判据强制)。
 ⇒ 教训: **引入"新入口方法"会同时动两张账** (入口调用图 + 逐字段访问计数) —— 改形态时必须一次性把两张账都改掉。
+
+## 41. K5 步骤⑧: 删除实例侧"绑定前暂存"字段 (5 个) —— 前置是"每个 session 都有 actor"
+
+### 41.1 为什么先补前置, 而不是硬删
+
+要删 Pi 实例侧的暂存字段 (`_history` / `_channelId` / `_agentId` / `_goalId` / `_runId`), 前提是**任何 session 都有 actor**。当时的现实: 只有"有会话身份"的 session 才被 factory 绑定 actor; 没身份的 session 靠暂存字段活着。
+⇒ 造一个 **私有 actor** (`createPrivateActor()`, **不注册** ⇒ 别人拿不到) 给无身份的 session —— 隔离性比"猜一个共享键"更保守, 语义与暂存字段完全等价 (每个 session 自己一份)。
+
+### 41.2 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| `channel-actor.ts` | `createPrivateActor()` (不注册; `privateActorCount()` 供诊断) · `resetActors()` 一并清零 |
+| `agents/pi-sdk.ts` | **5 个暂存字段删除**; 访问器直接读写 `this.actor!.state.*`; 三个 history 漏斗只剩一条路径 (写 actor) ⇒ 顺带**彻底消灭了"兜底分支写错成自递归"的可能**; 构造器: `this.actor = config.actor ?? createPrivateActor()` |
+| `pi-sdk-types.ts` | `AgentSessionConfig.actor?` —— **工厂在构造前注入** |
+| `pi-sdk-session-factory.ts` | `withActor(config)`: 先算身份 → `getOrCreateActor(identity)` → 带 `actor` 构造。**构造期异步回灌因此直接落进身份 actor** |
+| `plan-channel-actor.ts` | `K5_FIELD_DELETION { sourceFields, deletedStagingFields }` |
+| `gate-scan.ts` | `scanStagingFieldDeletion(piCode, del)` —— **双向**: 台账说删了 ⇒ 源码不许再有 `private <field>`; 源码里没了却没登记 ⇒ 红 |
+
+### 41.3 踩到的真回归: 构造期回灌落进"被遗弃的私有 actor"
+
+第一版是"构造完再 `attachActor()` 换成身份 actor"。探针显示: 日志说 **"从 cli:probe 回灌 2 条历史 (经 Channel Actor)"**, 但 `actor.state.messageHistory.length === 0`。
+根因: 构造期回灌是**异步**的 —— 它绑的是**出生时的私有 actor** (`hydrateHistory` 走的是那一刻的 actor 的 mailbox), 而工厂随后把 `this.actor` 换成身份 actor ⇒ 那批回灌写进了**没人再看的私有 actor**。
+⇒ 修法: **把身份 actor 在构造前注入** (`config.actor`) ⇒ 回灌直接落在正确的家。
+⇒ 教训: 迁移"值住哪"时, **异步初始化 + 中途换家**是典型的静默丢数据形态; 正确姿势是**家先定好再出生**。
+
+### 41.4 两处测试卫生问题 (自己造的)
+
+1. 往共享单例 session 里 `push('only-mine')` (**裸字符串**, 没有 `.content`) ⇒ 后面用例读到 `[undefined, 'local1']`。修: 塞**消息对象**。
+2. 无身份用例拿的是工厂**单例** (会被同文件其它用例污染), 且 `forceNew` 是工厂的**第二参**, 塞进 config 不生效 ⇒ 用例不自足。修: `createAgentSession({cwd}, true)`。
+
+### 41.5 门与判据
+
+- `scanStagingFieldDeletion` 双向判 (删了却还在 / 没了却没登记);
+- `scanHistoryWriteSites` 仍要求"直写 0 处" —— 三个漏斗改成只走 actor 后依旧满足 ✓;
+- K5 门全套 (35 用例) 通过。

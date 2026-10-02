@@ -278,6 +278,7 @@ export function actorCount(): number {
 export function resetActors(): void {
   actors.clear();
   channelQueues.clear();
+  privateActorsCreated = 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -380,3 +381,26 @@ export function channelQueueCount(): number {
 
 /** channel 队列上下文 (重入判定用; 与 actorCtx 同理 —— 不许自锁) */
 const channelCtx = new AsyncLocalStorage<SerialMailbox>();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 私有 actor (K5 步骤⑧): 给"没有会话身份"的 session 用
+// ─────────────────────────────────────────────────────────────────────────────
+
+let privateActorsCreated = 0;
+
+/**
+ * 造一个**私有** actor: **不注册**进 `actors`, 所以别人拿不到它 ⇒ 不可能串台。
+ *
+ * 为什么需要它 (K5 步骤⑧ 的前提): 要删掉 Pi 实例侧的"绑定前暂存"字段, 就必须保证**任何 session 都有 actor**。
+ * 没有身份时不许猜键 (猜就会共享) —— 那就给它一个**谁也拿不到**的私有 actor:
+ * 隔离性比"共享"更保守, 语义与"暂存字段"完全等价 (每个 session 自己一份)。
+ */
+export function createPrivateActor(): ChannelActor {
+  privateActorsCreated += 1;
+  return new ChannelActor();
+}
+
+/** 已创建的私有 actor 数 (诊断/测试用: 证明"每个无身份 session 各拿一份") */
+export function privateActorCount(): number {
+  return privateActorsCreated;
+}

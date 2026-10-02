@@ -15,7 +15,7 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { type RunContext, createRunContext } from './run-context.js';
-import type { ChannelActor, ExecutionRequest } from '../kernel/channel-actor.js';
+import { createPrivateActor, type ChannelActor, type ExecutionRequest } from '../kernel/channel-actor.js';
 import { expandHomeArgs } from './tool-path-args.js';
 import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
 import { runWithWriteOrigin } from './skill-ledger.js';
@@ -277,26 +277,20 @@ export class PiAgentSession implements AgentSession {
    *   · 绑定 actor 后 ⇒ 本体是 `actor.state.messageHistory`, 本地那份被**收养**并清空。
    * 绑定由 `attachActor()` 做, 且**只在会话身份已知时**发生 (见 session factory) —— 没有身份就不归属。
    */
-  private _history: Message[] = [];
-
   /**
-   * `messageHistory` 访问器 (K5 第 4 步)。
+   * `messageHistory` 访问器 (K5 第 4 步; 步骤⑧ 起本体**只**在 actor)。
    * 为什么用访问器而不是逐个改 ~25 个 `push` 点: 写入点遍布 ReAct 循环 / 工具回灌 / 压缩 / 投影,
    * 逐个改会制造大面积无关 diff 且容易漏。访问器让**所有**读写 (push / pop / length / 索引 / slice /
    * 整体赋值) 自动落到 actor 的数组上 —— 所有权是真的转移 (同一个数组对象), 调用点零改动。
    */
   private get messageHistory(): Message[] {
-    return this.actor ? (this.actor.state.messageHistory as Message[]) : this._history;
+    return this.actor!.state.messageHistory as Message[];
   }
 
   private set messageHistory(v: Message[]) {
-    if (this.actor) {
-      const arr = this.actor.state.messageHistory as Message[];
-      arr.length = 0;
-      arr.push(...v);
-    } else {
-      this._history = v;
-    }
+    const arr = this.actor!.state.messageHistory as Message[];
+    arr.length = 0;
+    arr.push(...v);
   }
 
   /**
@@ -307,22 +301,19 @@ export class PiAgentSession implements AgentSession {
    */
   private pushHistory(...msgs: Message[]): void {
     for (const m of msgs) {
-      // 兜底分支必须写**本地数组** (_history) —— 不能回调自己 (机械替换曾把这里也换成 pushHistory ⇒ 无限递归)
-      if (this.actor) this.actor.appendMessageSync(m);
-      else this._history.push(m);
+      // 步骤⑧ 起**只有一条路径**: 写 actor (实例侧暂存字段已删除) —— 也彻底消除了"自递归"的可能
+      this.actor!.appendMessageSync(m);
     }
   }
 
   /** **K5 第 4 步 — history 写入漏斗 (pop)** —— 同 pushHistory 的性质 */
   private popHistory(): Message | undefined {
-    if (this.actor) return this.actor.popMessageSync<Message>();
-    return this._history.pop();
+    return this.actor!.popMessageSync<Message>();
   }
 
   /** **K5 第 4 步 — history 写入漏斗 (整体替换)**: hydrate 回灌 / 压缩后的整块赋值都走这里 */
   private replaceHistory(next: Message[]): void {
-    if (this.actor) this.actor.replaceHistory<Message>(next);
-    else this._history = next;
+    this.actor!.replaceHistory<Message>(next);
   }
 
   /**
@@ -355,21 +346,20 @@ export class PiAgentSession implements AgentSession {
    * 约束 (全量回归打出来的): 调用方必须用**会话身份**当注册键; 没有身份就**不要调**这个方法。
    */
   attachActor(actor: ChannelActor): void {
+    const prev = this.actor;
     this.actor = actor;
-    // 收养 history (actor 侧为空时才搬)
-    const arr = actor.state.messageHistory as Message[];
-    if (this._history.length > 0 && arr.length === 0) arr.push(...this._history);
-    this._history = [];
-    // **收养三个会话绑定** (构造期/入参已设的值不能被丢掉; actor 侧已有值时不覆盖 —— 同一会话身份以先到者为准)
-    if (!actor.state.channelId && this._channelId) actor.state.channelId = this._channelId;
-    if (!actor.state.agentId && this._agentId) actor.state.agentId = this._agentId;
-    if (!actor.state.goalBinding && this._goalId) actor.state.goalBinding = this._goalId;
-    // Run 身份也收养 (绑定前若已有活跃 Run —— 例如从 checkpoint 恢复 —— 不许丢)
-    if (!actor.state.activeRun && this._runId) actor.state.activeRun = this._runId;
-    this._channelId = '';
-    this._agentId = '';
-    this._goalId = '';
-    this._runId = '';
+    if (!prev || prev === actor) return;
+    // **收养**: 把上一个 actor (通常是"出生时的私有 actor") 的状态搬进新家。
+    //   新家已有值时不覆盖 —— 同一会话身份以先到者为准 (禁止"后到的调用把先建的状态冲掉")。
+    const from = prev.state;
+    const to = actor.state;
+    if (from.messageHistory.length > 0 && (to.messageHistory as unknown[]).length === 0) {
+      (to.messageHistory as unknown[]).push(...from.messageHistory);
+    }
+    if (from.channelId && !to.channelId) to.channelId = from.channelId;
+    if (from.agentId && !to.agentId) to.agentId = from.agentId;
+    if (from.goalBinding && !to.goalBinding) to.goalBinding = from.goalBinding;
+    if (from.activeRun && !to.activeRun) to.activeRun = from.activeRun;
   }
   private tools: Map<string, Tool> = new Map();
   /** 2026-06-30: tool registry 模块 — 独立 alias resolve, 测试可消融. */
@@ -584,27 +574,21 @@ export class PiAgentSession implements AgentSession {
    *   本注释刻意不写出那种带 `this.` 前缀的字面形态: 计数口径只剥 `//` 行注释, 块注释里的同形串会被算进去
    *   (曾因此把 currentChannelId 的计数虚增 1, 被门照出)。
    */
-  private _channelId = '';
-
   /** 当前 channel id (由 getAgentForChannel / prompt 4 参注入, 供 hook / log 使用) */
   private get currentChannelId(): string {
-    return this.actor ? this.actor.state.channelId : this._channelId;
+    return this.actor!.state.channelId;
   }
 
   private set currentChannelId(v: string) {
-    if (this.actor) this.actor.state.channelId = v;
-    else this._channelId = v;
+    this.actor!.state.channelId = v;
   }
   /** 2026-07-04: 当前 agentId (server.ts 通过 createAgentSession 选项注入), 供 onSessionStart 加载 persona docs */
-  private _agentId = '';
-
   private get currentAgentId(): string {
-    return this.actor ? this.actor.state.agentId : this._agentId;
+    return this.actor!.state.agentId;
   }
 
   private set currentAgentId(v: string) {
-    if (this.actor) this.actor.state.agentId = v;
-    else this._agentId = v;
+    this.actor!.state.agentId = v;
   }
 
   // M2.2 intent 已外置到 runCtx.intent (K2); 拼 systemPrompt 时读 this.runCtx.intent
@@ -624,15 +608,12 @@ export class PiAgentSession implements AgentSession {
    *   本注释刻意不写出"带 self. 前缀 + 该字段名"的那种字面形态: K2 的计数只剥 `//` 行注释,
    *   块注释里的同形串会被算进去 (同类踩过三次, 每次都被门照出)。
    */
-  private _runId = '';
-
   private get currentRunId(): string {
-    return this.actor ? this.actor.state.activeRun : this._runId;
+    return this.actor!.state.activeRun;
   }
 
   private set currentRunId(v: string) {
-    if (this.actor) this.actor.state.activeRun = v;
-    else this._runId = v;
+    this.actor!.state.activeRun = v;
   }
   /** 上一次运行的 runId (收尾不清空; 见 getLastRunId) */
   private lastRunId: string = '';
@@ -703,6 +684,10 @@ export class PiAgentSession implements AgentSession {
   }
 
   constructor(config: AgentSessionConfig) {
+    // **K5 步骤⑧**: actor 从出生就在 —— 工厂通常在**构造前**就把身份 actor 注进来 (`config.actor`);
+    //   没有身份时用一份**私有 actor** (不注册 ⇒ 谁也拿不到, 隔离性优先)。
+    //   ⇒ 实例侧不再需要"绑定前暂存"字段 (那些字段本步删除)。
+    this.actor = config.actor ?? createPrivateActor();
     this.cwd = config.cwd;
     this.peerId = config.peerId || 'local';
     this.identity = config.identityDoc || this.createDefaultIdentity();
@@ -1898,20 +1883,17 @@ ${await this.renderActivePlansSection()}
    */
   private _harness: PiAgentHarness | null = null;
   /** M2 绑定 GoalStore 后填真值; 在此之前为空 (事件里 goalId 字段已就位) */
-  private _goalId = '';
-
   /**
-   * **K5 步骤③**: 会话的 Goal **默认绑定** ⇒ 本体是 `actor.state.goalBinding`。
+   * **K5 步骤③**: 会话的 Goal **默认绑定** ⇒ 本体是 `actor.state.goalBinding`.
    * (leo 口径: 这只是默认值; 每次执行开始必须把最终绑定写进 RunContext/Run 记录,
    *  运行中重绑必须走显式 Goal Binding 操作, 不许靠裸字段隐式生效)
    */
   private get currentGoalId(): string {
-    return this.actor ? this.actor.state.goalBinding : this._goalId;
+    return this.actor!.state.goalBinding;
   }
 
   private set currentGoalId(v: string) {
-    if (this.actor) this.actor.state.goalBinding = v;
-    else this._goalId = v;
+    this.actor!.state.goalBinding = v;
   }
   /** 2026-09-16 (M2): 本次执行是"从 checkpoint 恢复"的 runId (非空 = 恢复模式, 不再新建 run) */
   private resumeRunId = '';

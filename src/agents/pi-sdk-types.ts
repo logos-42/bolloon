@@ -22,6 +22,13 @@ export interface AgentSessionConfig {
   sessionStore?: any;
   /** 2026-07-04: 当前 channel 的 agentId (来自 Channel.agentId), 用来加载 persona docs */
   agentId?: string;
+  /**
+   * **K5 步骤⑧**: 由工厂**在构造前**注入的 actor (已按会话身份取好)。
+   * 为什么要提前注入: 构造期回灌 (`loadSessionKey`) 是异步的, 它会把历史写进"当时绑定的 actor";
+   *   若等构造完再 attach, 那批回灌会落进**被遗弃的私有 actor** (实测: 日志说回灌成功, 新家却是空的)。
+   * 没给 ⇒ session 用自己那份**私有 actor** (无身份场景)。
+   */
+  actor?: ChannelActor;
 }
 
 export interface IdentityDoc {

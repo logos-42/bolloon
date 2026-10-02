@@ -28,7 +28,7 @@ import {
   K5_STEPS,
 } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
-import { ChannelActor, SerialMailbox, actorCount, channelQueueCount, createActorState, currentActorContext, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
+import { ChannelActor, SerialMailbox, actorCount, actorCount as registrySize, channelQueueCount, createActorState, currentActorContext, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
 import { type K5LedgerLike, countEntryExecutionPoints, scanActorLedger, scanChannelLock, scanEntryDelivery, scanExecutionRequest, scanHistoryWriteSites, scanRunBoundaryResidence } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
@@ -174,10 +174,22 @@ describe('K5 门: Channel Actor 台账', () => {
   it('★ 真跑: 会话身份决定归属 —— 同身份共享 actor, 不同身份隔离, 无身份不归属', async () => {
     resetActors();
     const { createAgentSession } = await import('../agents/pi-sdk-session-factory.js');
-    const mk = (cfg: any) => createAgentSession({ cwd: process.cwd(), ...cfg });
-    // ① 无身份 (既无 peerId 也无 loadSessionKey) ⇒ **不归属** (没有 default 兜底桶)
+    // ⚠️ `forceNew` 是工厂的**第二参**, 不是 config 里的字段 (塞进 config 不生效 ⇒ 会走单例)
+    const mk = (cfg: any, forceNew?: boolean) => createAgentSession({ cwd: process.cwd(), ...cfg }, forceNew);
+    // ① 无身份 (既无 peerId 也无 loadSessionKey) ⇒ 拿一个**私有 actor** (步骤⑧: 出生就有, 但不进注册表 ⇒ 不共享)
     const sNone: any = await mk({});
-    expect(sNone.actor).toBeUndefined();
+    expect(sNone.actor).toBeTruthy();
+    expect(actorCount()).toBe(0);                       // **注册表为空** ⇒ 谁也拿不到它 (不共享)
+    //   (注意: 无 peerId 走工厂**单例**路径 ⇒ 两次调用返回**同一个 session**, actor 自然也相同 —— 不是共享 bug)
+    expect((await mk({})).actor).toBe(sNone.actor);
+    // 真正要守的是"两个无身份 session 各拿一份": 用 forceNew 绕开单例
+    const sNone2: any = await mk({}, true);
+    expect(sNone2).not.toBe(sNone);
+    expect(sNone2.actor).not.toBe(sNone.actor);        // 各一份私有 actor (隔离)
+    expect(actorCount()).toBe(0);                      // 都还没进注册表
+    // 注意塞的是**消息对象**不是裸字符串 (塞字符串会让 `m.content` 变成 undefined —— 实测污染过共享单例)
+    await sNone.actor.submit((st: any) => { st.messageHistory.push({ role: 'user', content: 'only-mine' }); });
+    expect(sNone2.actor.state.messageHistory).toEqual([]);
     // ② 同 channel 前缀、不同会话身份 ⇒ 各自 actor, history 互不可见 (当年泄漏的形状)
     const s1: any = await mk({ peerId: 'k5probe-a:s1' });
     const s2: any = await mk({ peerId: 'k5probe-a:s2' });
@@ -238,10 +250,12 @@ describe('K5 门: Channel Actor 台账', () => {
     resetActors();
   }, 90000);
 
-  it('★ 真跑: 未绑定 actor 的会话走**本地数组**兜底分支 (曾经因机械替换变成自递归, 测试没覆盖到)', async () => {
+  it('★ 真跑: 无身份的会话走**私有 actor** (步骤⑧: 兜底暂存字段已删, 但隔离语义不变)', async () => {
     resetActors();
-    const s: any = await createAgentSession({ cwd: process.cwd() });   // 无身份 ⇒ 不归属
-    expect(s.actor).toBeUndefined();
+    // forceNew: 不拿工厂共享单例 (自足用例, 不受同文件其它用例影响)
+    const s: any = await createAgentSession({ cwd: process.cwd() }, true);   // 无身份 ⇒ 私有 actor
+    expect(s.actor).toBeTruthy();
+    expect(actorCount()).toBe(0);   // 私有 ⇒ 不在注册表
     s.pushHistory({ role: 'user', content: 'local1' });
     expect(s.messageHistory.map((m: any) => m.content)).toEqual(['local1']);
     expect(s.popHistory()?.content).toBe('local1');
@@ -273,7 +287,8 @@ describe('K5 门: Channel Actor 台账', () => {
     for (const [id, re] of direct) {
       expect(`${id}=${(base.match(re) ?? []).length}`).toBe(`${id}=0`);
     }
-    const injected = base.replace('else this._history.push(m);', 'else this.messageHistory.push(m);');
+    // 步骤⑧ 起漏斗里只有一条路径 (写 actor); 注入点改到那一条上
+    const injected = base.replace('this.actor!.appendMessageSync(m);', 'this.messageHistory.push(m);');
     expect(injected).not.toBe(base);
     expect(scanHistoryWriteSites(injected).some((f) => f.rule === 'history-direct-push')).toBe(true);
     // 漏斗方法被删 ⇒ 红
@@ -411,9 +426,10 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(s.currentRunId).toBe('run-y');
     // 播种读取 (K2 的唯一入口) 必须读到 actor 里的值 —— 它是 e2e 的 runId 来源
     expect(s.seedRunContext().runId).toBe('run-y');
-    // 未绑定 actor 的会话走本地暂存, 行为不变
-    const plain: any = await createAgentSession({ cwd: process.cwd() });
-    expect(plain.actor).toBeUndefined();
+    // 无身份的会话走**私有 actor** (步骤⑧), 行为不变
+    const plain: any = await createAgentSession({ cwd: process.cwd() }, true);
+    expect(plain.actor).toBeTruthy();
+    expect(plain.actor).not.toBe(s.actor);             // 私有 ⇒ 与有身份的 actor 不是同一个
     plain.currentRunId = 'run-local';
     expect(plain.currentRunId).toBe('run-local');
     expect(plain.seedRunContext().runId).toBe('run-local');
@@ -507,9 +523,9 @@ describe('K5 门: Channel Actor 台账', () => {
     resetActors();
     const s: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5bind:s1', agentId: 'agent-A' });
     expect(s.actor).toBeTruthy();
-    // ① **构造期收养**: 构造里设的 agentId 必须已经搬进 actor, 且实例侧暂存清空 (不许两份真相)
+    // ① **构造期收养**: 构造里设的 agentId (落在出生时的私有 actor 上) 必须已搬进身份 actor
     expect(s.actor.state.agentId).toBe('agent-A');
-    expect(s._agentId).toBe('');
+    expect(registrySize()).toBe(1);   // 只有身份 actor 进注册表 (私有那个不进)
     // ② 写入落到 actor
     s.currentChannelId = 'ch-x';
     s.currentGoalId = 'goal-1';

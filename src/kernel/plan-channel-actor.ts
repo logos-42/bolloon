@@ -177,7 +177,19 @@ export const K5_RUN_BOUNDARY = {
 } as const;
 
 /**
- * **K5 步骤⑦**: 一次性 `ExecutionRequest` 的收敛进度。
+ /**
+  * **K5 步骤⑧ — 实例侧"绑定前暂存"字段已删除** (data; 判据核对盘上是否真的没有它们)。
+  *   Pi 出生就带一个**私有 actor** (未注册 ⇒ 谁也拿不到), 工厂知道会话身份时再升级成身份键 actor 并**收养**状态
+  *   ⇒ 实例侧不再需要暂存字段。删掉它们同时消灭了两类隐患: "两份真相" 与 "兜底分支写错成自递归"。
+  */
+ export const K5_FIELD_DELETION = {
+   /** 本源里曾经有过的暂存字段全清单 (双向判据的另一半: 少登记一个 ⇒ 红) */
+   sourceFields: ['_history', '_channelId', '_agentId', '_goalId', '_runId'],
+   deletedStagingFields: ['_history', '_channelId', '_agentId', '_goalId', '_runId'],
+   why: 'actor 从出生就在 (私有无身份 / 身份键有身份), 暂存那份多余; 删掉即"删字段"这一步的可见痕迹',
+ } as const;
+
+ /** K5 步骤⑦: 一次性 `ExecutionRequest` 的收敛进度。
  *   Pi 侧已加唯一入口 (`applyExecutionRequest` 落绑定 · `runExecution` 派发);
  *   入口面 **converted = 1** (web 用户消息路径)。
  *   `remaining` 是**派生值** (已投递点数 − converted) —— 位置式形态太多, 行级正则数不准,

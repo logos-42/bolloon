@@ -942,3 +942,22 @@ export function scanExecutionRequest(
   if (!req.methodAdded && hasRun) f('pi-sdk 里已有 runExecution, 台账却说没加');
   return out;
 }
+
+/**
+ * **K5 步骤⑧ — "暂存字段已删"必须与盘上双向一致**: 台账说删了 ⇒ 源码里不许再有那些 `private <field>` 声明;
+ * 台账没列而源码里也没有 ⇒ 说明有字段被删了却没登记 (迁移必须看得见)。
+ */
+export function scanStagingFieldDeletion(
+  piCode: string,
+  del: { deletedStagingFields: readonly string[]; sourceFields: readonly string[] },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'staging-field-deletion', file: 'agents/pi-sdk.ts', line: 1, what });
+  for (const name of del.sourceFields) {
+    const declared = new RegExp(`private\\s+${name}\\b`).test(piCode);
+    const claimedDeleted = del.deletedStagingFields.includes(name);
+    if (claimedDeleted && declared) f(`${name} 台账说已删, 源码里还在`);
+    if (!claimedDeleted && !declared) f(`${name} 源码里已不存在, 台账却没登记删除`);
+  }
+  return out;
+}

@@ -42,6 +42,15 @@ function attachActor(session: AgentSession, config: AgentSessionConfig): AgentSe
   return session;
 }
 
+function withActor(config: AgentSessionConfig): AgentSessionConfig {
+  // **K5 步骤⑧**: 先把会话身份算出来、把 actor 取好, 再构造 session ——
+  //   这样构造期的异步回灌 (`loadSessionKey`) 直接落在身份 actor 上, 不会先落进私有 actor 再换家。
+  //   没身份 ⇒ 不注入 (session 自己用私有 actor)。
+  const identity = String(config.loadSessionKey || config.peerId || '');
+  if (!identity) return config;
+  return { ...config, actor: getOrCreateActor(identity, { agentId: config.agentId || '' }) };
+}
+
 let sessionInstance: AgentSession | null = null;
 let lastIdentityDid: string | null = null;
 
@@ -58,7 +67,7 @@ export async function createAgentSession(config: AgentSessionConfig, forceNew?: 
       await existing.whenReady();
       return existing;
     }
-    const session = attachActor(new PiAgentSession(config), config);
+    const session = attachActor(new PiAgentSession(withActor(config)), config);
     independentSessions.set(key, session);
     console.log(`[createAgentSession] 创建独立 session, key=${key}, DID=${incomingDid}`);
     await session.whenReady();
@@ -67,7 +76,7 @@ export async function createAgentSession(config: AgentSessionConfig, forceNew?: 
 
   if (forceNew) {
     const key = `force:${Date.now()}`;
-    const session = attachActor(new PiAgentSession(config), config);
+    const session = attachActor(new PiAgentSession(withActor(config)), config);
     independentSessions.set(key, session);
     console.log(`[createAgentSession] 创建强制新 session, key=${key}`);
     await session.whenReady();
@@ -94,7 +103,7 @@ export async function createAgentSession(config: AgentSessionConfig, forceNew?: 
     return sessionInstance;
   }
 
-  const newSession = attachActor(new PiAgentSession(config), config);
+  const newSession = attachActor(new PiAgentSession(withActor(config)), config);
   sessionInstance = newSession;
   lastIdentityDid = config.identityDoc?.did || null;
   console.log(`[createAgentSession] 新建 session, DID=${lastIdentityDid}`);
