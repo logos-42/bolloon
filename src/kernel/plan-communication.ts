@@ -148,6 +148,8 @@ export interface K8Progress {
   perChannelStateSymbols: number;
   /** 只算 **k8-target**: 这才是 K8 要收口的对象 (棘轮: 只许减) */
   k8TargetSymbols: number;
+  /** `channelRunState` 迁移工作面基线 (剥注释后的用法数; 棘轮只许减) */
+  runStateSites: number;
 }
 
 export const K8_PROGRESS: K8Progress = {
@@ -159,4 +161,54 @@ export const K8_PROGRESS: K8Progress = {
   //    同一次提交里 `didFixRunning` (通道自己的全局单飞) 被**真删掉** —— 收口本身是减项, 只是它先前没被登记。
   perChannelStateSymbols: 37,   // 10 文件 / 37 个状态符号 (含 4 个范围外)
   k8TargetSymbols: 33,          // 其中 **33** 个属 K8 收口对象 (棘轮: 只许减)
+  runStateSites: 21,            // 下一大目标的迁移工作面 (棘轮: 只许减)
+};
+
+// ════════════════════════════════════════════════════════════════════════════════
+// K8 下一个大目标: `web/server.ts` 的 `channelRunState` (通道自己的消息队列 + 串行 flag + abort)
+//
+// 为什么它是"最大的一刀": 它与内核邮箱**功能重复** —— 通道自己存队列、自己管 running、自己管 abort。
+// 为什么先落台账不直接改: 21 处用法 (剥注释后, 2026-10-02 量) + 三种语义混在一个对象里
+//   (调度 / 观测 / 协作续看), 直接改必然把观测与业务语义一起搅进去。
+// ════════════════════════════════════════════════════════════════════════════════
+
+export const K8_RUNSTATE_ROLES = ['k8-target', 'observational', 'domain-collab'] as const;
+export type K8RunStateRole = (typeof K8_RUNSTATE_ROLES)[number];
+
+export interface K8RunStateField {
+  name: string;
+  role: K8RunStateRole;
+  /** role = k8-target 时**必须**写替代机制 (收口方案) */
+  replacedBy?: string;
+  /** role ≠ k8-target 时**必须**写为什么不算 (不许静默豁免) */
+  note?: string;
+}
+
+export interface K8RunStateLedger {
+  file: string;
+  symbol: string;
+  /** 盘上(剥注释)该符号出现次数 = 迁移工作面; 必须**等于**盘上事实, 迁移后同步下调 */
+  sites: number;
+  fields: readonly K8RunStateField[];
+  plan: string;
+}
+
+export const K8_CHANNEL_RUNSTATE: K8RunStateLedger = {
+  file: 'src/web/server.ts',
+  symbol: 'channelRunState',
+  sites: 21,   // 2026-10-02 量: 剥注释后 21 处 (总出现 25, 含 4 处注释)
+  fields: [
+    { name: 'running', role: 'k8-target',
+      replacedBy: '`ChannelActor.mailbox` 的同键串行 —— 有了内核邮箱就不需要通道自己记"我在跑"' },
+    { name: 'queue', role: 'k8-target',
+      replacedBy: '内核邮箱的 `pending` (队列交给内核, 通道只递请求)' },
+    { name: 'abortController', role: 'k8-target',
+      replacedBy: '`ExecutionRequest.signal` (K5 步骤⑦ 的请求面已有 `signal`) —— ⚠️ **abort 语义要单独定**, 不随队列一起顺手合并' },
+    { name: 'lastSteps', role: 'observational', note: '供 `/api/loop/inspect` 的步骤累积 ⇒ 观测数据, 不是调度状态' },
+    { name: 'lastSummary', role: 'observational', note: '同上: 最近一轮摘要 (检查接口用)' },
+    { name: 'lastFinalReply', role: 'observational', note: '同上: 最近一次最终回复 (检查接口用)' },
+    { name: 'lastTokens', role: 'observational', note: '同上: token 计数 (用量展示)' },
+    { name: 'remoteFollowup', role: 'domain-collab', note: '远端协作续看 (`rounds`/`maxRounds`/`remoteChannelId`) ⇒ **业务协作语义**, 不是通道调度' },
+  ],
+  plan: '按语义分三批, 每批独立提交: ① 队列+单飞 (`queue`/`running`) → 内核邮箱; ② `abort` → `ExecutionRequest.signal` (先定语义); ③ `last*` 观测数据搬出通道对象 (或显式标注"非调度")。',
 };

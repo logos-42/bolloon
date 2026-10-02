@@ -1879,6 +1879,25 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 
 **如实**: 本步**只做量测 + 记账**, 通信行为零改变; router 层与"各通道状态归一"是后续刀。
 
+### K8 大目标台账: `channelRunState` (下一刀 · 2026-10-02)
+
+**盘上事实**（剥注释后 **21 处**用法 / 8 个字段，2026-10-02 量）：`web/server.ts` 的模块级
+`Map<channelId, { running, queue, abortController, lastSteps, lastSummary, lastFinalReply, lastTokens, remoteFollowup }>`
+—— 通道自己存队列、自己管 running、自己管 abort，与内核邮箱**功能重复**。
+
+**8 个字段按语义分三类**（不分类就动手，必然把观测与业务语义一起搅进队列迁移里）：
+
+| role | 字段 | 处置 |
+|---|---|---|
+| `k8-target` (3) | `running` · `queue` · `abortController` | 队列+单飞 → **内核邮箱**; `abort` → **`ExecutionRequest.signal`**（⚠️ **语义要单独定，不随队列顺手合并**） |
+| `observational` (4) | `lastSteps` · `lastSummary` · `lastFinalReply` · `lastTokens` | 供 `/api/loop/inspect` 的观测数据 ⇒ **不是调度状态** |
+| `domain-collab` (1) | `remoteFollowup` | 远端协作续看（`rounds`/`maxRounds`）⇒ **业务协作语义** |
+
+**门 `scanRunStateConsolidation`**: 用法数 台账 **==** 盘上（21，剥注释，按符号不按行号） · 字段必须真在接口里（不许凭空造字段） · 收口字段必须写替代机制 · 非收口字段必须写理由（不许静默豁免） · 收口字段数 == 3 · 计划必须有 · 读不出源码**拒跑**。
+**真盘变异**: 往副本里插**一处**新用法 ⇒ 台账立刻过期判红（证明它数的是盘上代码）。
+
+**迁移分三批**（每批独立提交，可回滚）: ① `queue`+`running` → 邮箱; ② `abort` → `signal`（先定语义）; ③ `last*` 观测数据搬出通道对象。
+
 ### K8 收口第一刀 (`didFixQueue` → 内核邮箱 · 2026-10-02)
 
 **盘上事实**: 频道元数据后台修复 = `didFixQueue: Set<channelId>` (2s 节流) + `didFixRunning` (**全局单飞**) + while 循环自己取件。

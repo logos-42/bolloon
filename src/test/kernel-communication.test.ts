@@ -5,7 +5,11 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { K8_EVENT_FACES, K8_TRANSPORT_AGENT_SITES, K8_PER_CHANNEL_STATE, K8_PROGRESS, K8_ACCEPTANCE } from '../kernel/plan-communication.js';
-import { scanCommunicationLedger, countTransportAgentSites, K8_SITE_KINDS, scanChannelStateLedger, countChannelStateSymbols, scanDidFixConsolidation } from '../kernel/gate-scan.js';
+import {
+  scanCommunicationLedger, countTransportAgentSites, K8_SITE_KINDS, scanChannelStateLedger,
+  countChannelStateSymbols, scanDidFixConsolidation, scanRunStateConsolidation, countSymbolOccurrences,
+} from '../kernel/gate-scan.js';
+import { K8_CHANNEL_RUNSTATE } from '../kernel/plan-communication.js';
 
 /** 把文本**真写进临时文件**再读回 —— 变异必须每次真做, 不是在内存里假装 */
 function realTmp(name: string, text: string): string {
@@ -172,3 +176,54 @@ function fs2_real(text: string): string {
   fs.writeFileSync(p, text, 'utf8');
   return fs.readFileSync(p, 'utf8');
 }
+
+describe('K8 大目标门: channelRunState 迁移工作面 (台账 == 盘上, 按符号不按行号)', () => {
+  it('① 真跑: 台账与盘上**完全一致** (21 处用法 / 8 个字段都在接口里)', () => {
+    expect(scanRunStateConsolidation(K8_CHANNEL_RUNSTATE, K8_PROGRESS, { readFile })).toEqual([]);
+    const src = readFile('src/web/server.ts')!;
+    expect(countSymbolOccurrences(src, 'channelRunState')).toBe(K8_CHANNEL_RUNSTATE.sites);
+    expect(K8_CHANNEL_RUNSTATE.sites).toBe(K8_PROGRESS.runStateSites);          // 棘轮基线
+    expect(K8_CHANNEL_RUNSTATE.fields).toHaveLength(8);
+    // 三种语义分开登记: 3 个真收口 (队列/单飞/abort) + 4 观测 + 1 协作
+    expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'k8-target').map((f) => f.name)).toEqual(['running', 'queue', 'abortController']);
+    expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'observational')).toHaveLength(4);
+    expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'domain-collab')).toHaveLength(1);
+    for (const f of K8_CHANNEL_RUNSTATE.fields.filter((x) => x.role === 'k8-target')) {
+      expect((f.replacedBy ?? '').length).toBeGreaterThan(9);   // 收口对象必须写替代机制
+    }
+  });
+
+  it('② 判别力: 用法数被改成不可能撞上的值 (999) ⇒ 判红', () => {
+    const bad = { ...K8_CHANNEL_RUNSTATE, sites: 999 };
+    expect(scanRunStateConsolidation(bad, K8_PROGRESS, { readFile }).some((x) => /用法数 台账=999/.test(x.what))).toBe(true);
+  });
+
+  it('② 判别力: 收口字段没写替代机制 / 非收口字段没写理由 ⇒ 判红 (不许静默豁免)', () => {
+    const noReplace = { ...K8_CHANNEL_RUNSTATE, fields: K8_CHANNEL_RUNSTATE.fields.map((f) => (f.name === 'queue' ? { ...f, replacedBy: '' } : f)) };
+    expect(scanRunStateConsolidation(noReplace, K8_PROGRESS, { readFile }).some((x) => /没写替代机制/.test(x.what))).toBe(true);
+    const noNote = { ...K8_CHANNEL_RUNSTATE, fields: K8_CHANNEL_RUNSTATE.fields.map((f) => (f.name === 'lastSummary' ? { ...f, note: '' } : f)) };
+    expect(scanRunStateConsolidation(noNote, K8_PROGRESS, { readFile }).some((x) => /不许静默豁免/.test(x.what))).toBe(true);
+  });
+
+  it('② 判别力: 字段在接口里找不到 ⇒ 判红 (台账不许凭空造字段)', () => {
+    const ghost = { ...K8_CHANNEL_RUNSTATE, fields: [...K8_CHANNEL_RUNSTATE.fields, { name: '__ghostField__', role: 'observational', note: '凭空造的字段' }] };
+    const found = scanRunStateConsolidation(ghost, K8_PROGRESS, { readFile }).map((x) => x.what);
+    expect({ found, 命中: found.some((w) => /__ghostField__/.test(w)) }).toEqual({ found: expect.anything(), 命中: true });
+  });
+
+  it('② 判别力: 读不出源码 ⇒ 拒跑 (不是"跳过")', () => {
+    const bad = { ...K8_CHANNEL_RUNSTATE, file: 'src/__nope__.ts' };
+    expect(scanRunStateConsolidation(bad, K8_PROGRESS, { readFile }).some((x) => /拒跑/.test(x.what))).toBe(true);
+  });
+
+  it('③ ★ 真盘变异: 往副本里**插一处**新用法 ⇒ 台账立刻过期判红 (证明它数的是盘上代码)', () => {
+    const src = readFile('src/web/server.ts')!;
+    const mut = realTmp('server-runstate-mut.ts', src.replace(
+      '  function getOrCreateRunState(channelId: string): ChannelRunState {',
+      '  function __probeExtraUse(): number { return channelRunState.size; }\n  function getOrCreateRunState(channelId: string): ChannelRunState {'));
+    expect(countSymbolOccurrences(mut, 'channelRunState')).toBe(K8_CHANNEL_RUNSTATE.sites + 1);
+    const io = { readFile: (rel: string) => (rel === 'src/web/server.ts' ? mut : readFile(rel)) };
+    expect(scanRunStateConsolidation(K8_CHANNEL_RUNSTATE, K8_PROGRESS, io).some((x) => /用法数 台账=21 盘上=22/.test(x.what))).toBe(true);
+    expect(scanRunStateConsolidation(K8_CHANNEL_RUNSTATE, K8_PROGRESS, { readFile })).toEqual([]);   // 未变异 ⇒ 仍绿
+  });
+});

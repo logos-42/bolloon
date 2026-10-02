@@ -1468,3 +1468,60 @@ export function scanDidFixConsolidation(spec: DidFixConsolidationSpec): Finding[
   }
   return out;
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// K8 大目标门: `channelRunState` 迁移工作面 —— 台账必须**等于**盘上事实
+//
+// 纪律: ① 用法数按**符号**数 (剥注释), 不按行号; ② 字段必须真在接口里;
+//      ③ k8-target 字段必须写替代机制; ④ 非 target 字段必须写"为什么不算" (不许静默豁免);
+//      ⑤ 拿不到源码 ⇒ 拒跑。
+// ════════════════════════════════════════════════════════════════════════════════
+
+export interface RunStateLedgerLike {
+  file: string;
+  symbol: string;
+  sites: number;
+  fields: readonly { name: string; role: string; replacedBy?: string; note?: string }[];
+  plan: string;
+}
+
+export interface RunStateProgressLike { runStateSites?: number }
+
+/** 剥注释后数某符号出现次数 (迁移工作面的唯一口径) */
+export function countSymbolOccurrences(src: string, symbol: string): number {
+  return (stripJsComments(src).match(new RegExp('(^|[^\\w$])' + symbol + '([^\\w$]|$)', 'g')) || []).length;
+}
+
+export function scanRunStateConsolidation(
+  ledger: RunStateLedgerLike,
+  progress: RunStateProgressLike,
+  opts: { readFile: (rel: string) => string | null },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'k8-runstate', file: 'kernel/plan-communication.ts', line: 1, what });
+  const src = opts.readFile(ledger.file);
+  if (src === null) { f(`读不出源码 ⇒ 拒跑: ${ledger.file}`); return out; }
+
+  // ① 用法数: 台账 == 盘上 (迁移后同步下调)
+  const real = countSymbolOccurrences(src, ledger.symbol);
+  if (real !== ledger.sites) f(`${ledger.symbol} 用法数 台账=${ledger.sites} 盘上=${real} (增=新用法未登记 · 减=改了盘没改账)`);
+  // 棘轮: 不许比基线更多
+  const base = progress.runStateSites;
+  if (typeof base === 'number' && real > base) f(`${ledger.symbol} 用法数超棘轮: 盘上=${real} > 基线=${base}`);
+
+  // ② 字段必须真在接口里
+  for (const fld of ledger.fields) {
+    const re = new RegExp('(^|[^\\w$])' + fld.name + '\\??\\s*:', 'm');
+    if (!re.test(src)) f(`字段 ${fld.name} 在 ${ledger.file} 的接口里找不到`);
+    if (!['k8-target', 'observational', 'domain-collab'].includes(fld.role)) f(`字段 ${fld.name} role 非法: ${fld.role}`);
+    if (fld.role === 'k8-target' && !(fld.replacedBy ?? '').trim()) f(`字段 ${fld.name} 是收口对象却没写替代机制`);
+    if (fld.role !== 'k8-target' && (fld.note ?? '').trim().length < 6) f(`字段 ${fld.name} 标了 ${fld.role} 却没写明理由 ⇒ 不许静默豁免`);
+  }
+  if (ledger.fields.filter((x) => x.role === 'k8-target').length !== 3) {
+    f(`收口字段数应为 3 (running/queue/abortController), 实际 ${ledger.fields.filter((x) => x.role === 'k8-target').length}`);
+  }
+
+  // ③ 计划必须有 (别只登记不动手)
+  if ((ledger.plan ?? '').trim().length < 10) f('缺迁移计划 (台账不能只登记)');
+  return out;
+}
