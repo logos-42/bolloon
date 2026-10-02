@@ -30,20 +30,44 @@ const REAL_LEDGER = {
   progress: K7_PROGRESS,
 };
 
+/** 台账卫生判据 (纯函数, 只吃台账对象): 台账**不许撒谎**, 也不许写过期的行号 */
+function checkHarnessLedgerHygiene(ledger: {
+  execSites: readonly { file: string; why: string }[];
+  bypasses: readonly { target: string; why: string; status: string; evidence?: string; replacesWith?: string }[];
+  progress: { bypasses: number };
+}): string[] {
+  const f: string[] = [];
+  const LINE_REF = /\(\s*\d{2,5}\s*[,)]|:\d{2,5}\b/;
+  for (const site of ledger.execSites) {
+    if (LINE_REF.test(site.why)) f.push(`${site.file} why 写了行号`);
+  }
+  for (const b of ledger.bypasses) {
+    const who = b.target.slice(0, 44);
+    if (LINE_REF.test(b.target) || LINE_REF.test(b.why)) f.push(`${who} 写了行号`);
+    if (b.status === 'converged' && !b.evidence) f.push(`${who} 标 converged 却没证据`);
+    if (b.status === 'open' && !b.replacesWith) f.push(`${who} 开着却没写替代路径`);
+  }
+  const open = ledger.bypasses.filter((b) => b.status === 'open').length;
+  if (open !== ledger.progress.bypasses) f.push(`开着的旁路数 台账=${ledger.progress.bypasses} 实际=${open}`);
+  return f;
+}
+
 describe('K7 台账门: Harness 唯一系统调用门', () => {
   it('① 真跑: 台账与盘上事实一致 (零 finding)', () => {
     const findings = scanHarnessLedger(REAL_LEDGER, { readFile, planFileExists });
     expect(findings.map((x) => x.what)).toEqual([]);
   });
 
-  it('①b 台账自洽: 9 阶段 / 9 覆盖面 / 执行点合计 == 18 / 旁路 3', () => {
+  it('①b 台账自洽: 9 阶段 / 9 覆盖面 / 执行点合计 == 18 / 开着旁路 2', () => {
     expect(HARNESS_STAGES.map((s) => s.stage)).toEqual([...HARNESS_STAGE_ORDER]);
     expect(HARNESS_SURFACES).toHaveLength(9);
     const total = HARNESS_EXEC_SITES.reduce((n, s) => n + s.count, 0);
     expect(total).toBe(18);   // 17 普查基线 + 1 (K7 第二步 b 端口内执行)
+    expect(K7_PROGRESS.bypasses).toBe(2);   // 3 → 2: pivot loop 那条已收敛
+    expect(K7_BYPASS_CANDIDATES.filter((b) => b.status === 'converged')).toHaveLength(1);
     expect(total).toBe(K7_PROGRESS.execSitesTotal);
     expect(K7_BYPASS_CANDIDATES).toHaveLength(3);
-    expect(K7_PROGRESS.bypasses).toBe(3);
+    expect(K7_PROGRESS.bypasses).toBe(2);   // 3 → 2 (pivot loop 已收敛, 见 K7_BYPASS_CANDIDATES)
   });
 
   it('①c 口径: 注释里的 .execute 不算执行点 (块注释 + 行注释都要剥)', () => {
@@ -109,6 +133,21 @@ describe('K7 台账门: Harness 唯一系统调用门', () => {
     expect(scanHarnessLedger(bad, { readFile, planFileExists }).some((x) => /不存在/.test(x.what))).toBe(true);
   });
 
+
+  it('①c 台账卫生: 不写行号 (行号会漂) · 开着的旁路数 == progress · converged 必须带证据', () => {
+    expect(checkHarnessLedgerHygiene({ execSites: HARNESS_EXEC_SITES, bypasses: K7_BYPASS_CANDIDATES, progress: K7_PROGRESS })).toEqual([]);
+  });
+
+  it('② 判别力: 台账卫生三条各自都能判红', () => {
+    const good = { execSites: HARNESS_EXEC_SITES, bypasses: K7_BYPASS_CANDIDATES, progress: K7_PROGRESS };
+    // ① 写了行号
+    expect(checkHarnessLedgerHygiene({ ...good, execSites: [{ file: 'x.ts', why: '主执行点 (2715, 经门链)' }] })).toHaveLength(1);
+    // ② converged 没证据
+    const conv = [{ target: 'a', why: 'w', status: 'converged', replacesWith: 'r' }];
+    expect(checkHarnessLedgerHygiene({ ...good, bypasses: conv, progress: { bypasses: 0 } })[0]).toMatch(/没证据/);
+    // ③ 开着的旁路数与 progress 不符 (用 999, 不写"当前值±1"以免随事实失效)
+    expect(checkHarnessLedgerHygiene({ ...good, progress: { bypasses: 999 } })[0]).toMatch(/开着的旁路数/);
+  });
 
   it('② K7 第二步 b 接线在盘上: pivot loop 的配置里注入了同一个门 (机械)', () => {
     const sdk = fs.readFileSync(path.join(ROOT, 'src/agents/pi-sdk.ts'), 'utf8');

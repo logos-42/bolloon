@@ -1771,6 +1771,9 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 | `src/agents/pi-sdk.ts:446/:702` `pivotLoopConfig` | 配置的来源 | 注入端口时把 `this.harness` + `this.harnessCtx()` 包进去 (与主路径 `~2622` 处同一实例、同一 ctx) |
 | `src/agents/pi-sdk.ts:1301+` `promptWithPivotLoop` | 构造/调用 pivot loop 的地方 | 注入点上线的唯一位置 |
 
+> **2026-10-02 追加 (台账卫生, 两条会撒谎的地方已堵)**: ① 上一提交的措辞"台账 `bypass 3 → 2`"当时**只是声称** —— 盘上 `K7_PROGRESS.bypasses` 仍是 3 (台账撒谎), 现已落成 `bypasses: 2`; ② 台账 `why` 里写的**行号会漂** —— 我在 `pi-sdk.ts` 插入 ~35 行后, 台账里的 `4144` 实际已变 `4176`, 而判据只核**计数**不核行号 ⇒ **行号写进台账就是等着指向错的地方**。
+> 两条修法 (都是"把会撒谎的东西变成可判的"): **(a) 台账按符号不按行号** —— 旁路条目改 `target` = 文件路径 + 新增 `symbol` 字段, 判据核 **`symbol` 真出现在该文件里** (防漂, 且比行号更强); `progress.bypasses` 改核"**开着**的旁路数"(收敛掉的条目**留在台账当记录**, 否则收敛历史随进度条一起消失)。**(b) 卫生判据**: 台账 `why`/`target` 不许出现 `(\d{2,5}[,)])`/`:\d+` 形态的行号 · `converged` 必须带 `evidence` · 开着的旁路数必须等于 `progress.bypasses` —— 三条各配判别力用例 (坏样本用 **999/+2**, 不用"当前值±1", 理由同上一条)。
+
 **进度 (2026-10-02)**: 第二步 a **已完成** (`044cde2`): 端口落地 + 三条契约用例 (未注入行为不变 / 注入后 `tool.execute` 计数 0 / 端口抛错不执行) + 一条机械断言。
 第二步 b **也已完成**: `pi-sdk.ts:1741` 处注入端口 (与主路径同一个 `piHarness().beforeToolCall`, catch ⇒ fail-closed), 并新增一条**机械接线断言** (端口在 `new WorkflowPivotLoop` 之前、判定走 `beforeToolCall`、含 `decision.allow` 与 `return tool.execute(args)`)。
 

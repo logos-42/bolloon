@@ -1210,7 +1210,7 @@ export interface HarnessLedgerLike {
   stages: readonly { stage: string; gate: string; why: string }[];
   surfaces: readonly { surface: string; canonical: string; why: string }[];
   execSites: readonly { file: string; count: number; kinds: readonly string[]; why: string }[];
-  bypasses: readonly { target: string; replacesWith: string; why: string }[];
+  bypasses: readonly { target: string; symbol?: string; status?: string; evidence?: string; replacesWith?: string; why?: string; }[];
   progress: { stage: string; execSitesTotal: number; bypasses: number };
 }
 
@@ -1269,13 +1269,21 @@ export function scanHarnessLedger(
   if (total !== ledger.progress.execSitesTotal) f(`普查合计 ${total} ≠ progress.execSitesTotal ${ledger.progress.execSitesTotal}`);
 
   // ④ 旁路候选
-  if (ledger.bypasses.length !== ledger.progress.bypasses) f(`旁路候选 ${ledger.bypasses.length} ≠ progress.bypasses ${ledger.progress.bypasses}`);
+  // 2026-10-02: 核"**开着**的旁路数"而不是"候选项个数" —— 收敛掉的旁路要留在台账里当记录,
+  //   否则收敛历史随进度条一起消失 (而 progress.bypasses 是棘轮基线: 只许减)。
+  const openBypasses = ledger.bypasses.filter((b) => b.status !== 'converged').length;
+  if (openBypasses !== ledger.progress.bypasses) f(`开着的旁路 ${openBypasses} ≠ progress.bypasses ${ledger.progress.bypasses}`);
   const bypassKinds = ledger.execSites.filter((s) => s.kinds.includes('bypass')).length;
   if (bypassKinds === 0 && ledger.bypasses.length > 0) f('登记了旁路候选, 但普查里没有任何条目标 bypass');
   for (const b of ledger.bypasses) {
-    if (!/\.ts:\d+/.test(b.target)) f(`旁路候选要写成 文件:行 形态: ${b.target}`);
-    const file = b.target.split(':')[0];
-    if (opts.readFile(file) === null) f(`旁路目标文件不存在: ${file}`);
+    // 2026-10-02: target 只许是**文件路径**, 指位置靠 `symbol` —— 行号会随任何编辑漂移,
+    //   而旧 clause 要求 `文件:行` 却只核"文件存在", 等于**把一个会过期的东西写进台账而没人核它**。
+    //   现在改核 `symbol` 是否**真出现在该文件里** (防漂, 且比行号更强)。
+    if (!/\.tsx?$/.test(b.target)) f(`旁路 target 要写成文件路径 (行号会漂, 不许 file:line): ${b.target}`);
+    if (opts.readFile(b.target) === null) f(`旁路目标文件不存在: ${b.target}`);
+    if (!b.symbol?.trim()) f(`旁路 ${b.target} 没写 symbol (指位置要有可在文件里被找到的记号)`);
+    else if (!(opts.readFile(b.target) ?? '').includes(b.symbol)) f(`旁路 symbol 在该文件里找不到 ⇒ 台账已过期: ${b.symbol}`);
+    if (b.status === 'converged' && !b.evidence?.trim()) f(`旁路 ${b.target} 标了 converged 却没写证据`);
     if (!b.replacesWith?.trim()) f(`旁路 ${b.target} 没写替代路径 (五条件第 ① 条)`);
     if ((b.why ?? '').trim().length < 6) f(`旁路 ${b.target} 的 why 太短`);
   }

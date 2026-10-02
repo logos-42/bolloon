@@ -77,20 +77,26 @@ export interface ExecSite {
   why: string;
 }
 
-/** 实测 (2026-10-02, 剥注释后共 17 处) —— 数的口径写在 countHarnessExecSites 里, 判据会重算比对 */
+/**
+ * 实测 (2026-10-02, 剥注释后共 18 处) —— 数的口径写在 countHarnessExecSites 里, 判据会重算比对。
+ *
+ * **规则 (2026-10-02 立): 台账按「符号」不按「行号」。** 行号会随任何一次编辑漂移, 而判据只核**计数**
+ *   不核行号 ⇒ 行号一旦写进台账, 它迟早会**指向错的位置而没人发现** (K7 第二步 b 当场发生:
+ *   在 pi-sdk 插入 ~35 行后, 台账里的 4144 实际已变 4176)。说清"是哪一处"用函数名/类名/调用形态。
+ */
 export const HARNESS_EXEC_SITES: readonly ExecSite[] = [
-  { file: 'src/agents/pi-sdk.ts', count: 6, kinds: ['main', 'skill', 'bypass', 'homonym', 'registry'], why: '主执行点 1 · skill 2 (989 `sk.execute` / 4144 `skillRegistry.execute`) · 内置 tscTool 直调 1 (1330, bypass) · loop.execute 1 (1831, homonym) · **K7 第二步 b 新增 1**: pivot loop 的 `guardedExecute` 端口内 `return tool.execute(args)` (该执行**在门之后**, 属同一扇门的通过分支, 不是旁路)' },
-  { file: 'src/agents/workflow-pivot-loop.ts', count: 2, kinds: ['bypass', 'homonym'], why: '**pivot loop 直接执行工具** 1 (613, bypass) · loop.execute 1 (1129, homonym)' },
+  { file: 'src/agents/pi-sdk.ts', count: 6, kinds: ['main', 'skill', 'bypass', 'homonym', 'registry'], why: '主执行点 1 (`runReActLoop` 内的执行, 经门链) · skill 2 (`getSkillRegistry()` 暴露的 `skillRegistry.execute` + 内置 `sk.execute`) · 内置 tscTool 直调 1 (bypass) · `loop.execute` 1 (homonym) · **K7 第二步 b 新增 1**: pivot loop 的 `guardedExecute` 端口内 `return tool.execute(args)` (在门之后, 属同一扇门的通过分支, 不是旁路)' },
+  { file: 'src/agents/workflow-pivot-loop.ts', count: 2, kinds: ['bypass', 'homonym'], why: '**pivot loop 直接执行工具** 1 (bypass —— 2026-10-02 已收敛: 走注入的 `guardedExecute` 门端口) · `loop.execute` 1 (homonym)' },
   { file: 'src/agents/tool-registry.ts', count: 1, kinds: ['registry'], why: '注册表统一执行口 (唯一咽喉候选)' },
-  { file: 'src/agents/pi-sdk-tools.ts', count: 1, kinds: ['mcp'], why: 'MCP executeTool 1 (2570)' },
-  { file: 'src/bollharness-integration/skill-adapter.ts', count: 1, kinds: ['skill'], why: 'skill 第二条路径 (registry.execute, 673)' },
-  { file: 'src/agents/browser-cdp.ts', count: 1, kinds: ['homonym'], why: 'CDP `session.execute` (799) —— 浏览器命令, 不是工具执行' },
-  { file: 'src/agents/chain/chain-wallet.ts', count: 1, kinds: ['homonym'], why: '`params.execute(signer)` (246) —— 钱包动作, 不是工具执行' },
-  { file: 'src/web/agent-delegate-server.ts', count: 1, kinds: ['port-callback'], why: '`options.execute({...})` (200) —— 2026-10-02 定性: 它是**注入的执行器端口** (`execute?: (req: DelegateExecutionRequest) => Promise<DelegateExecutionResult>`, 见该文件 66 行), 委派服务器**自己不执行工具** ⇒ 不是旁路; 但"注入的那个执行器有没有走门"是 delegate 覆盖面(K7 覆盖面清单)的事, 不在这条普查里' },
-  { file: 'src/bollharness-integration/index.ts', count: 1, kinds: ['import'], why: 'import 列表里的名字 (53)' },
-  { file: 'src/pi-ecosystem/index.ts', count: 1, kinds: ['import'], why: 'import 列表里的名字 (38)' },
-  { file: 'src/pi-ecosystem-mcp/index.ts', count: 1, kinds: ['decl'], why: '`export async function executeTool(` (272) —— 定义' },
-  { file: 'src/kernel/plan-deletion.ts', count: 1, kinds: ['ledger-string'], why: '台账字符串里的字面 (32)' },
+  { file: 'src/agents/pi-sdk-tools.ts', count: 1, kinds: ['mcp'], why: 'MCP `executeTool` 1' },
+  { file: 'src/bollharness-integration/skill-adapter.ts', count: 1, kinds: ['skill'], why: 'skill 第二条路径 (`SkillAdapter.executeSkill` → `registry.execute`)' },
+  { file: 'src/agents/browser-cdp.ts', count: 1, kinds: ['homonym'], why: 'CDP `session.execute` —— 浏览器命令, 不是工具执行' },
+  { file: 'src/agents/chain/chain-wallet.ts', count: 1, kinds: ['homonym'], why: '`params.execute(signer)` —— 钱包动作, 不是工具执行' },
+  { file: 'src/web/agent-delegate-server.ts', count: 1, kinds: ['port-callback'], why: '`options.execute({...})` —— 2026-10-02 定性: 它是**注入的执行器端口** (`execute?: (req: DelegateExecutionRequest) => Promise<DelegateExecutionResult>`, 见该文件顶部接口定义), 委派服务器**自己不执行工具** ⇒ 不是旁路; 但"注入的那个执行器有没有走门"属 delegate 覆盖面的事, 不在这条普查里' },
+  { file: 'src/bollharness-integration/index.ts', count: 1, kinds: ['import'], why: 'import 列表里的名字' },
+  { file: 'src/pi-ecosystem/index.ts', count: 1, kinds: ['import'], why: 'import 列表里的名字' },
+  { file: 'src/pi-ecosystem-mcp/index.ts', count: 1, kinds: ['decl'], why: '`export async function executeTool(` —— 函数定义' },
+  { file: 'src/kernel/plan-deletion.ts', count: 1, kinds: ['ledger-string'], why: '台账字符串里的字面' },
 ];
 
 /** K7 要收敛的**真旁路** (每条都要写清拿什么替代 —— 五条件里第 ① 条) */
@@ -99,12 +105,18 @@ export interface HarnessBypass {
   /** 收敛到哪 (替代路径) */
   replacesWith: string;
   why: string;
+  /** 指位置用的记号 (判据会核它**真出现在 target 文件里**) —— 行号会漂, 符号不会 */
+  symbol: string;
+  /** 收敛状态; `converged` 必须带 evidence (判据会核) */
+  status: 'open' | 'converged';
+  /** 收敛的证据 (提交/测试/判据名); converged 时不许为空 */
+  evidence?: string;
 }
 
 export const K7_BYPASS_CANDIDATES: readonly HarnessBypass[] = [
-  { target: 'src/agents/workflow-pivot-loop.ts:613 `tool.execute(toolCall.args ?? {})`', replacesWith: '走 Harness 门链 (与 pi-sdk 主执行点同一条咽喉)', why: 'pivot loop 是第二条工具执行路径 ⇒ 未经 deny/policy 就能执行工具 (架构缺陷定义的那一类)' },
-  { target: 'src/agents/pi-sdk.ts:1330 `tscTool.execute({})`', replacesWith: '经门链执行, 或在台账里登记为"内部诊断白名单"并写明理由', why: '内置诊断工具直调: 要么走门, 要么**显式登记**为白名单 —— 不许处于"没人知道它绕过"的状态' },
-  { target: 'src/agents/pi-sdk.ts:4144 (skillRegistry.execute)', replacesWith: '与 src/bollharness-integration/skill-adapter.ts:673 (registry.execute) 收敛成唯一 skill 执行入口', why: 'skill 有两条执行路径 ⇒ 必然一条有门一条没有 ("同一个能力只许有一套实现" 的同型教训)' },
+  { target: 'src/agents/workflow-pivot-loop.ts', symbol: 'guardedExecute', replacesWith: '走 Harness 门链 (与 pi-sdk 主执行点同一条咽喉)', why: 'pivot loop 是第二条工具执行路径 ⇒ 未经 deny/policy 就能执行工具 (架构缺陷定义的那一类)', status: 'converged', evidence: '2026-10-02: `PivotLoopConfig.guardedExecute` 端口 (`044cde2`) + pi-sdk 在 `promptWithPivotLoop` 注入同一 `piHarness().beforeToolCall` (`69397f6`); 用例: 未注入行为不变 / 注入后 `tool.execute` 计数 0 / 端口抛错不执行 / 机械接线断言' },
+  { target: 'src/agents/pi-sdk.ts', symbol: 'tscTool.execute', status: 'open', replacesWith: '经门链执行, 或在台账里登记为"内部诊断白名单"并写明理由', why: '内置诊断工具直调: 要么走门, 要么**显式登记**为白名单 —— 不许处于"没人知道它绕过"的状态' },
+  { target: 'src/bollharness-integration/skill-adapter.ts', symbol: 'registry.execute', replacesWith: '收敛成唯一 skill 执行入口 (且该入口经门)', status: 'open', why: 'skill 有两条执行路径 ⇒ 必然一条有门一条没有 ("同一个能力只许有一套实现" 的同型教训)' },
 ];
 
 /** K7 验收 (与设计页 §7 的判据对应) */
@@ -127,5 +139,5 @@ export interface K7Progress {
 export const K7_PROGRESS: K7Progress = {
   stage: 'ledger-landed',
   execSitesTotal: 18,   // 17 (普查基线) + 1 (K7 第二步 b: pivot loop 的端口内执行, 在门之后)
-  bypasses: 3,
+  bypasses: 2,          // 3 → 2: pivot loop 那条已收敛 (见 K7_BYPASS_CANDIDATES[0].status === 'converged')
 };

@@ -284,10 +284,10 @@ export const AUTHORITY_DEBT_FROZEN_AT = 0;   // 3 → 0 (K4 用内核控制面�
  * 目的只有一个: **不许所有逻辑回流到 kernel.ts**。要加就得显式抬这个数字, 留下痕迹。
  * 数值 = 当前 kernel 目录真实行数, 不留余量。
  */
-export const KERNEL_LINE_BUDGET = 2659;
+export const KERNEL_LINE_BUDGET = 2667;   // 2026-10-02: +8 (K7: gate-scan 旁路 target/symbol 防漂 clause)
 
 /** 预算冻结值 (棘轮: 只许减; 想抬预算必须同时改上面那个数字 ⇒ 一次显式动作, diff 里看得见) */
-export const KERNEL_LINE_BUDGET_FROZEN_AT = 2659;
+export const KERNEL_LINE_BUDGET_FROZEN_AT = 2667;   // 同步至 2026-10-02 真实值
 
 /**
  * K3b —— **台账数据**单独一档预算 (`src/kernel/plan.ts`)。
@@ -295,7 +295,7 @@ export const KERNEL_LINE_BUDGET_FROZEN_AT = 2659;
  * 为什么分开: K3 要防的是「逻辑回流到内核代码」; 台账是**数据** (owner 名册 / 入口图 / 删除候选),
  * 把它算进代码预算会逼着人抬代码上限, 棘轮的信号就废了。两档各自冻结, 都只许减。
  */
-export const KERNEL_PLAN_LINE_BUDGET = 1185;
+export const KERNEL_PLAN_LINE_BUDGET = 1197;   // 2026-10-02: +12 (K7 第二步 b: 旁路 status/symbol/evidence 字段 + 卫生规则注释 + 防漂用例)
 
 /** 台账预算冻结值 (棘轮: 只许减) */
-export const KERNEL_PLAN_LINE_BUDGET_FROZEN_AT = 1185;
+export const KERNEL_PLAN_LINE_BUDGET_FROZEN_AT = 1197;   // 同步至 2026-10-02 真实值
