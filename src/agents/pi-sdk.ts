@@ -259,6 +259,21 @@ export const PROACTIVE_WORK_DISCIPLINE = `
    并给出你建议的下一步 —— 主动是指"想在你前面", 不是"多问几句"。
 `;
 
+/**
+ * 受门包装的 skill 面 (2026-10-02, leo 口径 (b)): **任何执行路径都经 Harness**。
+ * 与裸 `SkillRegistry` 的差别: `execute` / `get().execute` / `list()[].execute` 三条都受门。
+ */
+export interface GuardedSkillRegistry {
+  register(skill: Skill): void;
+  unregister(name: string): boolean;
+  has(name: string): boolean;
+  /** 返回的 `Skill` 的 `execute` **也受门** (不是裸 skill) */
+  get(name: string): Skill | undefined;
+  /** 同上: 列表里每个 `execute` 都受门 */
+  list(): Skill[];
+  execute(name: string, params: Record<string, unknown>): Promise<string>;
+}
+
 export class PiAgentSession implements AgentSession {
   private cwd: string;
   private peerId: string;
@@ -4210,12 +4225,35 @@ ${this.extractOperationsFromRef(operationsRef)}
   }
 
   /**
-   * @deprecated 2026-10-02 (K7): **未过门**的原始出口 —— 拿到它直调 `.execute()` 会绕过 Harness 判定。
-   *   上层一律用 `executeSkill()` (判定经 Harness)。本方法保留只为**只读列举 / 兼容**用途;
-   *   它作为"未经门的 skill 出入口"已登记在 K7 台账 (覆盖面 `skill` 的剩余缺口)。
+   * **受门包装**的 skill 面 (2026-10-02 · leo 口径 (b): 原裸出口已收口)。
+   *
+   * 为什么不能返回裸 registry: 拿到裸 registry 就有**三条**绕过 Harness 的路径 ——
+   *   ① `registry.execute(n, p)` ② `registry.get(n).execute(p)` ③ `registry.list()[i].execute(p)`
+   *   (后两条藏在返回的 `Skill` 对象里, 只看方法名看不出来)。
+   * 现在三条**都**经本会话唯一受门口: `executeSkill` ⇒ `createSkillGuard()` ⇒ `piHarness().beforeToolCall()`,
+   * 执行落在 registry 的唯一调用点 (**恰一次**), 被拒 ⇒ **零执行** 且返回 `拒绝: [rejectedBy] reason`。
+   *
+   * ⚠️ **行为变更 (可能属破坏性)**: 旧用法 `.execute('x', p)` 在**被拒时不再执行**, 改为返回拒绝串
+   * (与 `executeSkill` 同形)。方法名/签名不变 ⇒ **源码级兼容**; 但"被拒即不执行"是新约定。
+   *
+   * **管不到的一条 (如实记)**: 调用方**自己**在 `register(skill)` 时传入的那个 skill 对象仍有裸 `execute`
+   * —— 那是调用方的对象, 不属本出口能管的面。收口管的是**本出口给出的任何引用**。
    */
-  getSkillRegistry(): SkillRegistry {
-    return this.skillRegistry;
+  getSkillRegistry(): GuardedSkillRegistry {
+    // 任何被交出去的 Skill 引用, 其 execute 都换成受门版本 (堵 ②③ 两条隐藏路径)
+    const guarded = (sk: Skill): Skill => ({
+      name: sk.name,
+      description: sk.description,
+      execute: (params: Record<string, unknown>) => this.executeSkill(sk.name, params),
+    });
+    return {
+      register: (sk: Skill) => this.skillRegistry.register(sk),
+      unregister: (name: string) => this.skillRegistry.unregister(name),
+      has: (name: string) => this.skillRegistry.has(name),
+      get: (name: string) => { const sk = this.skillRegistry.get(name); return sk ? guarded(sk) : undefined; },
+      list: () => this.skillRegistry.list().map(guarded),
+      execute: (name: string, params: Record<string, unknown>) => this.executeSkill(name, params),
+    };
   }
 
   registerSkill(skill: Skill): void {

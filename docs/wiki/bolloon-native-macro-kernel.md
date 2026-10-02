@@ -1879,6 +1879,29 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 
 **如实**: 本步**只做量测 + 记账**, 通信行为零改变; router 层与"各通道状态归一"是后续刀。
 
+### K7 `getSkillRegistry()` **收口** (leo 口径 **(b)** · 2026-10-02)
+
+**已决策 (leo 原话)**: 「(b) 改返回受门包装（可能属破坏性变更）」—— 不采用 (a) 的"纸面约定仅只读/兼容"。
+
+**为什么只堵 `execute` 不够**: 裸 registry 有**三条**绕过 Harness 的路径 ——
+① `registry.execute(n, p)` ② `registry.get(n).execute(p)` ③ `registry.list()[i].execute(p)`
+（后两条藏在返回的 `Skill` 对象里，只看方法名看不出来）。
+
+**落地**: `getSkillRegistry(): GuardedSkillRegistry` —— 任何被交出去的 `Skill` 引用，其 `execute` 都换成受门版本
+（⇒ `executeSkill` ⇒ `createSkillGuard()` ⇒ `piHarness().beforeToolCall()`，执行落在 registry 唯一调用点、恰一次，
+被拒 ⇒ **零执行** + `拒绝: [rejectedBy] reason`）。`register`/`has`/`unregister` 只读式透传（不执行）。
+
+**证据**: 真跑 `k7-session-skill-gate.test.ts` ⑥ —— allow 时三条各恰一次（计数 3）；`denyTool` 后**三条全零执行**（计数仍 3）。
+**真变异两条**（`list` 裸透传 / `get` 裸透传）均判红 `expected FACADE_EXECUTED to match /^拒绝: /`，还原回绿。
+机械断言: 方法体内无 `return this.skillRegistry;`、`list` 过 `guarded` 映射、**零** `this.skillRegistry.execute(` 直连。
+K7 旁路 **2 → 1**（剩 `tscTool` 端到端未取证）。
+
+**⚠️ 行为变更（可能属破坏性，leo 已知并裁定）**: 旧 `.execute()` 被拒时**不再执行**，改为返回拒绝串；
+方法名/签名不变 ⇒ 源码级兼容，但"被拒即不执行"是新约定。
+
+**管不到的一条（如实记）**: 调用方**自己**在 `register(skill)` 时传入的那个对象仍有裸 `execute` —— 那是调用方的对象，
+不属本出口能管的面。收口管的是**本出口给出的任何引用**。
+
 ### K8 大目标台账: `channelRunState` (下一刀 · 2026-10-02)
 
 **盘上事实**（剥注释后 **21 处**用法 / 8 个字段，2026-10-02 量）：`web/server.ts` 的模块级
