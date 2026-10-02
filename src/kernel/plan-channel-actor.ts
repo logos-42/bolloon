@@ -146,14 +146,14 @@ export const K5_DELETION_PRECONDITIONS: readonly { text: string; backedBy: reado
  */
 export const K5_ACCESSOR_SURFACE = {
   accessorFields: ['messageHistory', 'currentChannelId', 'currentAgentId', 'currentGoalId', 'currentRunId'],
-  frozenInPiSdk: { messageHistory: 21, currentChannelId: 25, currentAgentId: 22, currentGoalId: 23, currentRunId: 38 },
+  frozenInPiSdk: { messageHistory: 0, currentChannelId: 25, currentAgentId: 22, currentGoalId: 23, currentRunId: 38 },
   where: 'src/agents/pi-sdk.ts',
   why: '字段本体已删 (K5_FIELD_DELETION); 这些访问器只剩"读门面"作用 ⇒ 只许减',
 } as const;
 
 /** 从 K2 移交的 4 个 session 字段 (现仍是 Pi 实例字段, match 口径冻结值) */
 export const K5_INHERITED_FIELDS: readonly { name: string; into: string; accesses: number }[] = [
-  { name: 'messageHistory', into: 'actor.messageHistory', accesses: 22 },
+  { name: 'messageHistory', into: 'actor.messageHistory', accesses: 0 },   // 步骤⑧ 批次 1: pi-sdk 侧 0 引用
   // K5 步骤⑦ 起 +1: `applyExecutionRequest` 把请求里的绑定写进这三个字段 (各一处写)
   { name: 'currentChannelId', into: 'actor.channelId', accesses: 25 },
   { name: 'currentAgentId', into: 'actor.agentId', accesses: 22 },
@@ -290,7 +290,15 @@ export const K5_PROGRESS = {
 export const HISTORY_WRITE_SITES = { push: 31, pop: 1, assign: 3 } as const;
 
 /** history 写入的**唯一漏斗** (三个方法名; 判据要求它们真的存在) */
-export const HISTORY_WRITE_FUNNEL = ['pushHistory', 'popHistory', 'replaceHistory'] as const;
+/**
+ * history 写入的三个唯一漏斗。**可见性也是台账的一部分** —— 判据的语义是"漏斗存在且形态与账一致",
+ * 所以把 `replaceHistory` 升成公开 (步骤⑧: 它是唯一的"种历史"入口, 上层/测试必须能调) 也必须现形于此。
+ */
+export const HISTORY_WRITE_FUNNEL: readonly { name: string; vis: 'private' | 'public'; why?: string }[] = [
+  { name: 'pushHistory', vis: 'private' },
+  { name: 'popHistory', vis: 'private' },
+  { name: 'replaceHistory', vis: 'public', why: '步骤⑧: 唯一的"种历史"入口 (直接赋数组会换掉数组身份 ⇒ 静默丢数据)' },
+];
 
 export const K5_ENTRIES: readonly string[] = ['web/server.ts', 'src/cli', 'P2P 入站', 'Supervisor'];
 

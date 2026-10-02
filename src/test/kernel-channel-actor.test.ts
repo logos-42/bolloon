@@ -15,7 +15,7 @@ import path from 'node:path';
 import { SessionStore } from '../agents/session-store.js';
 import { createAgentSession } from '../agents/pi-sdk-session-factory.js';
 
-import { ACTOR_STATE_ITEMS, K5_ACCEPTANCE, K5_ACCESSOR_SURFACE, K5_CHANNEL_LOCK, K5_DELETION_PRECONDITIONS, K5_EXECUTION_REQUEST, K5_GOAL_BINDING_RULE, K5_INHERITED_FIELDS, K5_PROGRESS, K5_RUN_BOUNDARY, K5_STEPS } from '../kernel/plan-channel-actor.js';
+import { ACTOR_STATE_ITEMS, HISTORY_WRITE_FUNNEL, K5_ACCEPTANCE, K5_ACCESSOR_SURFACE, K5_CHANNEL_LOCK, K5_DELETION_PRECONDITIONS, K5_EXECUTION_REQUEST, K5_GOAL_BINDING_RULE, K5_INHERITED_FIELDS, K5_PROGRESS, K5_RUN_BOUNDARY, K5_STEPS } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
 import { ChannelActor, SerialMailbox, actorCount, actorCount as registrySize, channelQueueCount, createActorState, currentActorContext, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
 import { countEntryExecutionPoints, scanAccessorSurface, scanActorLedger, scanChannelLock, scanEntryDelivery, scanExecutionRequest, scanHistoryWriteSites, scanPreconditionBacking, scanRunBoundaryResidence, type K5LedgerLike } from '../kernel/gate-scan.js';
@@ -272,11 +272,11 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(s.actor).toBeTruthy();
     expect(actorCount()).toBe(0);   // 私有 ⇒ 不在注册表
     s.pushHistory({ role: 'user', content: 'local1' });
-    expect(s.messageHistory.map((m: any) => m.content)).toEqual(['local1']);
+    expect(s.actor.state.messageHistory.map((m: any) => m.content)).toEqual(['local1']);
     expect(s.popHistory()?.content).toBe('local1');
-    expect(s.messageHistory.length).toBe(0);
+    expect(s.actor.state.messageHistory.length).toBe(0);
     s.replaceHistory([{ role: 'system', content: 'local2' }] as any);
-    expect(s.messageHistory.map((m: any) => m.content)).toEqual(['local2']);
+    expect(s.actor.state.messageHistory.map((m: any) => m.content)).toEqual(['local2']);
     resetActors();
   }, 90000);
 
@@ -290,7 +290,7 @@ describe('K5 门: Channel Actor 台账', () => {
       .map((l) => l.replace(/\/\/.*$/, ''))
       .filter((l) => !/^\s*\*/.test(l))
       .join(NL);
-    expect(scanHistoryWriteSites(strip(PI_SRC))).toEqual([]);      // 盘上真实源码 ⇒ 绿
+    expect(scanHistoryWriteSites(strip(PI_SRC), HISTORY_WRITE_FUNNEL)).toEqual([]);      // 盘上真实源码 ⇒ 绿
     // 判别力: 在漏斗之外注入一处直写 ⇒ 必须判红
     const base = strip(PI_SRC);
     // 三个直写模式在盘上源码里必须是 0 处
@@ -305,9 +305,9 @@ describe('K5 门: Channel Actor 台账', () => {
     // 步骤⑧ 起漏斗里只有一条路径 (写 actor); 注入点改到那一条上
     const injected = base.replace('this.actor!.appendMessageSync(m);', 'this.messageHistory.push(m);');
     expect(injected).not.toBe(base);
-    expect(scanHistoryWriteSites(injected).some((f) => f.rule === 'history-direct-push')).toBe(true);
+    expect(scanHistoryWriteSites(injected, HISTORY_WRITE_FUNNEL).some((f) => f.rule === 'history-direct-push')).toBe(true);
     // 漏斗方法被删 ⇒ 红
-    expect(scanHistoryWriteSites('const x = 1;').some((f) => f.rule === 'history-funnel-missing')).toBe(true);
+    expect(scanHistoryWriteSites('const x = 1;', HISTORY_WRITE_FUNNEL).some((f) => f.rule === 'history-funnel-missing')).toBe(true);
     // 异步压缩的落地拍必须在盘上 (rebase 是"变换期间追加不被吃掉"的唯一保障)
     expect(base.includes('this.actor.rebaseHistory<Message>(')).toBe(true);
   });
@@ -681,7 +681,7 @@ describe('K5 门: Channel Actor 台账', () => {
       await s.whenReady();
       // ① 回灌必须在**这个** actor 上 (第一版 bug: 日志说回灌 2 条, 这里却是 0)
       expect(s.actor.state.messageHistory.length).toBe(2);
-      expect(s.messageHistory.length).toBe(2);
+      expect(s.actor.state.messageHistory.length).toBe(2);
       // ② 而且必须是**注册表里那个**身份 actor (不是私有 actor 的残留)
       expect(s.actor).toBe(peekActor('cli:hyd-probe'));
       expect(s.actor.state.messageHistory.map((m: any) => m.content)).toEqual(['u1', 'a1']);
@@ -708,14 +708,14 @@ describe('K5 门: Channel Actor 台账', () => {
       const sA: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5iso:s1', sessionStore: store });
       const nA = await sA.resumeSession('k5iso:conv-1');
       expect(nA).toBe(2);
-      expect((sA as any).messageHistory.length).toBe(2);
+      expect((sA as any).actor.state.messageHistory.length).toBe(2);
       // B 是**独立会话** ⇒ 不许看到 A 刚灌进来的历史 (无论 actor 是否按 channel 共享)
       const sB: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5iso:s2', sessionStore: store });
-      expect((sB as any).messageHistory.length).toBe(0);
+      expect((sB as any).actor.state.messageHistory.length).toBe(0);
       // 只有 B 自己 resume 那个 key 之后才看得到内容
       const nB = await sB.resumeSession('k5iso:conv-1');
       expect(nB).toBe(2);
-      expect((sB as any).messageHistory.length).toBe(2);
+      expect((sB as any).actor.state.messageHistory.length).toBe(2);
     } finally {
       resetActors();
       fs.rmSync(tmpDir, { recursive: true, force: true });

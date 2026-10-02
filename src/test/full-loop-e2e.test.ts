@@ -191,7 +191,7 @@ describe('Full Loop — LLM 输出 → segmenter → tool → store → resume',
       peerId: `tA-${Date.now()}:`,
       sessionStore: testStore,
     });
-    (sessionA as any).messageHistory = history;
+    sessionA.replaceHistory(history);
     await sessionA.saveCurrentSession(sessionKey);
 
     // 跨 session resume
@@ -203,7 +203,7 @@ describe('Full Loop — LLM 输出 → segmenter → tool → store → resume',
     const resumed = await sessionB.resumeSession(sessionKey);
     expect(resumed).toBe(4);
 
-    const restored = (sessionB as any).messageHistory as PersistedMessage[];
+    const restored = (sessionB as any).actor.state.messageHistory as PersistedMessage[];
     expect(restored).toHaveLength(4);
     expect(restored[0].content).toBe('看下 git 状态');
     expect(restored[1].toolCall?.name).toBe('shell_exec');
@@ -219,14 +219,14 @@ describe('Full Loop — LLM 输出 → segmenter → tool → store → resume',
       peerId: `tA2-${Date.now()}:`,
       sessionStore: testStore,
     });
-    (sessionA as any).messageHistory = [
+    sessionA.replaceHistory([
       { role: 'user', content: '执行 ls' },
       {
         role: 'assistant',
         content: MOCK_LLM_TURN_1, // 这是 LLM 原始 content, 含 think/invoke
         timestamp: 1100,
       },
-    ];
+    ]);
     await sessionA.saveCurrentSession('full-loop:resume-check');
 
     // resume
@@ -236,7 +236,7 @@ describe('Full Loop — LLM 输出 → segmenter → tool → store → resume',
       sessionStore: testStore,
     });
     await sessionB.resumeSession('full-loop:resume-check');
-    const restored = (sessionB as any).messageHistory as PersistedMessage[];
+    const restored = (sessionB as any).actor.state.messageHistory as PersistedMessage[];
 
     // 重新切 resume 后的 assistant content
     const assistantContent = restored[1].content;

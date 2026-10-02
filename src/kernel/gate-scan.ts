@@ -761,9 +761,14 @@ export const HISTORY_WRITE_PATTERNS: readonly { id: string; src: string }[] = [
   { id: 'assign', src: 'this\\.messageHistory\\s*=\\s' },
 ];
 
-export const HISTORY_WRITE_FUNNEL: readonly string[] = ['pushHistory', 'popHistory', 'replaceHistory'];
-
-export function scanHistoryWriteSites(code: string): Finding[] {
+/**
+ * 漏斗判据 —— 漏斗清单**由台账传入** (`plan-channel-actor.ts` 的 `HISTORY_WRITE_FUNNEL`): 台账是数据, 判据是纯函数。
+ *   (曾经这里另抄了一份同名常量 = 两份真相, 改台账不改它就会让判据看着还绿。)
+ */
+export function scanHistoryWriteSites(
+  code: string,
+  funnel: readonly { name: string; vis: 'private' | 'public' }[],
+): Finding[] {
   const out: Finding[] = [];
   for (const p of HISTORY_WRITE_PATTERNS) {
     const n = (code.match(new RegExp(p.src, 'g')) ?? []).length;
@@ -777,14 +782,24 @@ export function scanHistoryWriteSites(code: string): Finding[] {
       });
     }
   }
-  for (const name of HISTORY_WRITE_FUNNEL) {
-    if (!new RegExp(`private\\s+${name}\\(`).test(code)) {
-      out.push({
-        rule: 'history-funnel-missing',
-        file: 'agents/pi-sdk.ts',
-        line: 1,
-        what: `写入漏斗 ${name} 不见了 (调用点会全部落到直写或编译失败)`,
-      });
+  // 拿不到事实就拒跑 (不许"跳过")
+  if (!funnel || funnel.length === 0) {
+    return [{ rule: 'history-funnel-missing', file: 'agents/pi-sdk.ts', line: 1, what: '漏斗清单为空/拿不到 ⇒ 拒跑 (不许跳过)' }];
+  }
+  for (const f of funnel) {
+    // ① 声明必须在 (类方法声明: 行首缩进 + 可选可见性修饰符 + 名字 + "(")
+    const declared = new RegExp(`^\\s*(?:private\\s+|public\\s+)?${f.name}\\(`, 'm').test(code);
+    // ② 可见性必须与账一致 —— TS 里 public 是**默认**, 所以判"没有 private 修饰符"而不是"有 public"
+    const isPrivate = new RegExp(`^\\s*private\\s+${f.name}\\(`, 'm').test(code);
+    if (!declared) {
+      out.push({ rule: 'history-funnel-missing', file: 'agents/pi-sdk.ts', line: 1,
+        what: `写入漏斗 ${f.name} 不见了 (调用点会全部落到直写或编译失败)` });
+    } else if (f.vis === 'private' && !isPrivate) {
+      out.push({ rule: 'history-funnel-missing', file: 'agents/pi-sdk.ts', line: 1,
+        what: `漏斗 ${f.name} 账上是 private, 盘上已不是 (可见性改动必须现形于台账)` });
+    } else if (f.vis === 'public' && isPrivate) {
+      out.push({ rule: 'history-funnel-missing', file: 'agents/pi-sdk.ts', line: 1,
+        what: `漏斗 ${f.name} 账上是 public (唯一"种历史"入口), 盘上仍标 private` });
     }
   }
   return out;

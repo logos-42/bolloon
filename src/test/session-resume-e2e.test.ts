@@ -41,12 +41,12 @@ describe('PiAgentSession.saveCurrentSession', { timeout: 30000 }, () => {
       sessionStore: testStore,
     });
 
-    (session as any).messageHistory = [
+    session.replaceHistory([
       { role: 'user', content: '用户问题 1', timestamp: 1000 },
       { role: 'assistant', content: 'AI 回复 1', timestamp: 1100 },
       { role: 'user', content: '用户问题 2', timestamp: 1200 },
       { role: 'assistant', content: 'AI 回复 2', timestamp: 1300 },
-    ];
+    ]);
 
     await session.saveCurrentSession('cli:e2e-1');
 
@@ -85,7 +85,7 @@ describe('PiAgentSession.saveCurrentSession', { timeout: 30000 }, () => {
       },
       { role: 'assistant', content: '跑通了', timestamp: 1400 },
     ];
-    (sessionA as any).messageHistory = messages;
+    sessionA.replaceHistory(messages);
     await sessionA.saveCurrentSession('cli:resume-e2e');
 
     // Phase 2: 新 session (用同一个 store = 同一目录)
@@ -104,7 +104,7 @@ describe('PiAgentSession.saveCurrentSession', { timeout: 30000 }, () => {
     expect(peeked[3].toolResult?.success).toBe(true);
 
     // peek 不应改 messageHistory
-    expect((sessionB as any).messageHistory.length).toBe(0);
+    expect((sessionB as any).actor.state.messageHistory.length).toBe(0);
   });
 
   it('resumeSession 把历史灌进 messageHistory', async () => {
@@ -113,10 +113,10 @@ describe('PiAgentSession.saveCurrentSession', { timeout: 30000 }, () => {
       peerId: testPrefix + 'D',
       sessionStore: testStore,
     });
-    (sessionA as any).messageHistory = [
+    sessionA.replaceHistory([
       { role: 'user', content: 'first', timestamp: 1000 },
       { role: 'assistant', content: 'reply', timestamp: 1100 },
-    ];
+    ]);
     await sessionA.saveCurrentSession('cli:resume-msg');
 
     const sessionB = await createAgentSession({
@@ -124,11 +124,11 @@ describe('PiAgentSession.saveCurrentSession', { timeout: 30000 }, () => {
       peerId: testPrefix + 'E',
       sessionStore: testStore,
     });
-    expect((sessionB as any).messageHistory.length).toBe(0);
+    expect((sessionB as any).actor.state.messageHistory.length).toBe(0);
 
     const n = await sessionB.resumeSession('cli:resume-msg');
     expect(n).toBe(2);
-    const history = (sessionB as any).messageHistory;
+    const history = (sessionB as any).actor.state.messageHistory;
     expect(history.length).toBe(2);
     expect(history[0].content).toBe('first');
     expect(history[1].content).toBe('reply');
@@ -143,7 +143,7 @@ describe('PiAgentSession.saveCurrentSession', { timeout: 30000 }, () => {
     const n = await session.resumeSession('cli:never-existed');
     expect(n).toBe(0);
     // messageHistory 初始为空, resume 无 key 应该仍为空
-    expect((session as any).messageHistory.length).toBe(0);
+    expect((session as any).actor.state.messageHistory.length).toBe(0);
   });
 
   it('resumeSession 限制 maxMessages', async () => {
@@ -152,10 +152,10 @@ describe('PiAgentSession.saveCurrentSession', { timeout: 30000 }, () => {
       peerId: testPrefix + 'G',
       sessionStore: testStore,
     });
-    (sessionA as any).messageHistory = Array.from({ length: 50 }, (_, i) => ({
+    sessionA.replaceHistory(Array.from({ length: 50 }, (_, i) => ({
       role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
       content: `msg-${i}`,
-    }));
+    })));
     await sessionA.saveCurrentSession('cli:limit');
 
     const sessionB = await createAgentSession({
@@ -164,7 +164,7 @@ describe('PiAgentSession.saveCurrentSession', { timeout: 30000 }, () => {
       sessionStore: testStore,
     });
     await sessionB.resumeSession('cli:limit', 10);
-    const history = (sessionB as any).messageHistory;
+    const history = (sessionB as any).actor.state.messageHistory;
     expect(history).toHaveLength(10);
     expect(history[0].content).toBe('msg-40');
     expect(history[9].content).toBe('msg-49');
@@ -176,18 +176,18 @@ describe('PiAgentSession.saveCurrentSession', { timeout: 30000 }, () => {
       peerId: testPrefix + 'I',
       sessionStore: testStore,
     });
-    (session as any).messageHistory = [
+    session.replaceHistory([
       { role: 'user', content: 'first' },
       { role: 'assistant', content: 'first reply' },
-    ];
+    ]);
     await session.saveCurrentSession('cli:incremental');
 
     // 模拟新 prompt 进入 → messageHistory 包含旧 + 新
-    (session as any).messageHistory = [
-      ...(session as any).messageHistory,
+    session.replaceHistory([
+      ...(session as any).actor.state.messageHistory,
       { role: 'user', content: 'second' },
       { role: 'assistant', content: 'second reply' },
-    ];
+    ]);
     await session.saveCurrentSession('cli:incremental');
 
     const restored = await testStore.loadMessages('cli:incremental');
@@ -208,10 +208,10 @@ describe('PiAgentSession — peekSessionHistory (不修改状态)', { timeout: 3
       peerId: testPrefix + 'J',
       sessionStore: testStore,
     });
-    (writer as any).messageHistory = [
+    writer.replaceHistory([
       { role: 'user', content: 'peek test', timestamp: 1 },
       { role: 'assistant', content: 'hi', timestamp: 2 },
-    ];
+    ]);
     await writer.saveCurrentSession('cli:peek');
 
     const reader = await createAgentSession({
@@ -219,15 +219,15 @@ describe('PiAgentSession — peekSessionHistory (不修改状态)', { timeout: 3
       peerId: testPrefix + 'K',
       sessionStore: testStore,
     });
-    expect((reader as any).messageHistory.length).toBe(0);
+    expect((reader as any).actor.state.messageHistory.length).toBe(0);
 
     const peeked = await reader.peekSessionHistory('cli:peek');
     expect(peeked).toHaveLength(2);
-    expect((reader as any).messageHistory.length).toBe(0); // peek 不改
+    expect((reader as any).actor.state.messageHistory.length).toBe(0); // peek 不改
 
     const resumed = await reader.resumeSession('cli:peek');
     expect(resumed).toBe(2);
-    expect((reader as any).messageHistory.length).toBe(2); // resume 改
+    expect((reader as any).actor.state.messageHistory.length).toBe(2); // resume 改
   });
 
   it('peek 不存在的 key → 返回空数组 (不抛错)', async () => {
@@ -276,10 +276,10 @@ describe('PiAgentSession — integration with loadSessionKey (构造时读)', { 
       peerId: testPrefix + 'N',
       sessionStore: testStore,
     });
-    (sessionA as any).messageHistory = [
+    sessionA.replaceHistory([
       { role: 'user', content: 'recovery test', timestamp: 1000 },
       { role: 'assistant', content: 'recovered!', timestamp: 1100 },
-    ];
+    ]);
     await sessionA.saveCurrentSession('cli:new-schema');
 
     // 新建 session B + 用构造参数 loadSessionKey
@@ -289,7 +289,7 @@ describe('PiAgentSession — integration with loadSessionKey (构造时读)', { 
       sessionStore: testStore,
       loadSessionKey: 'cli:new-schema',
     });
-    const history = (sessionB as any).messageHistory;
+    const history = (sessionB as any).actor.state.messageHistory;
     expect(history).toHaveLength(2);
     expect(history[0].content).toBe('recovery test');
     expect(history[1].content).toBe('recovered!');
@@ -315,6 +315,6 @@ describe('PiAgentSession — integration with loadSessionKey (构造时读)', { 
     });
     // 旧 schema 没有 role 字段, _filterToMessage 会跳过 (role !== user/assistant/tool/system)
     // 结果: messageHistory 保持初始 0 条
-    expect((session as any).messageHistory).toHaveLength(0);
+    expect((session as any).actor.state.messageHistory).toHaveLength(0);
   });
 });

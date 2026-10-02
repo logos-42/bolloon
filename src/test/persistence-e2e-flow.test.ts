@@ -91,7 +91,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
         timestamp: 1500,
       },
     ];
-    (session as any).messageHistory = simulatedHistory;
+    session.replaceHistory(simulatedHistory);
 
     await session.saveCurrentSession('e2e:tool-call-roundtrip');
 
@@ -119,7 +119,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
       peerId: prefix + 'writer',
       sessionStore: testStore,
     });
-    (writer as any).messageHistory = [
+    writer.replaceHistory([
       { role: 'user', content: 'step1' },
       {
         role: 'assistant',
@@ -144,7 +144,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
         toolResult: { success: true, output: 'content of file1' },
       },
       { role: 'assistant', content: '完成' },
-    ];
+    ]);
     await writer.saveCurrentSession('e2e:link');
 
     // 跨 session resume
@@ -154,13 +154,13 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
       sessionStore: testStore,
       // 不传 loadSessionKey — 让初始 messageHistory 空
     });
-    expect((reader as any).messageHistory.length).toBe(0);
+    expect((reader as any).actor.state.messageHistory.length).toBe(0);
 
     const resumedCount = await reader.resumeSession('e2e:link');
     expect(resumedCount).toBe(6);
 
     // 验证 history 完整恢复
-    const history = (reader as any).messageHistory;
+    const history = (reader as any).actor.state.messageHistory;
     expect(history).toHaveLength(6);
     expect(history[0].content).toBe('step1');
     expect(history[5].content).toBe('完成');
@@ -182,10 +182,10 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
       peerId: prefix + 'peek-writer',
       sessionStore: testStore,
     });
-    (writer as any).messageHistory = [
+    writer.replaceHistory([
       { role: 'user', content: 'hi' },
       { role: 'assistant', content: 'world' },
-    ];
+    ]);
     await writer.saveCurrentSession('e2e:peek');
 
     const reader = await createAgentSession({
@@ -193,13 +193,13 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
       peerId: prefix + 'peek-reader',
       sessionStore: testStore,
     });
-    const beforeLen = (reader as any).messageHistory.length;
+    const beforeLen = (reader as any).actor.state.messageHistory.length;
     expect(beforeLen).toBe(0);
 
     const peeked = await reader.peekSessionHistory('e2e:peek');
     expect(peeked).toHaveLength(2);
 
-    const afterLen = (reader as any).messageHistory.length;
+    const afterLen = (reader as any).actor.state.messageHistory.length;
     expect(afterLen).toBe(0); // peek 不应改 messageHistory
   });
 
@@ -210,7 +210,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
       peerId: prefix + 'fb-writer',
       sessionStore: testStore,
     });
-    (writer as any).messageHistory = [
+    writer.replaceHistory([
       { role: 'user', content: 'pre' },
       {
         role: 'assistant',
@@ -224,7 +224,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
         toolResult: { success: true, output: 'On branch master' },
       },
       { role: 'assistant', content: '在 master 分支' },
-    ];
+    ]);
     await writer.saveCurrentSession('e2e:fallback');
 
     // 续接 + 验证 handleFallback 可调
@@ -234,7 +234,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
       sessionStore: testStore,
     });
     await reader.resumeSession('e2e:fallback');
-    expect((reader as any).messageHistory.length).toBe(4);
+    expect((reader as any).actor.state.messageHistory.length).toBe(4);
 
     // 直接调 handleFallback — 这是 LLM-disabled 时 prompt 走的实际路径
     const fallbackResult = await (reader as any).handleFallback('identity');
@@ -251,18 +251,18 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
     });
 
     // 第一次: 3 条
-    (session as any).messageHistory = [
+    session.replaceHistory([
       { role: 'user', content: 'first' },
       { role: 'assistant', content: 'reply 1' },
       { role: 'user', content: 'second' },
-    ];
+    ]);
     await session.saveCurrentSession('e2e:incr');
     const after1 = await testStore.loadMessages('e2e:incr');
     expect(after1).toHaveLength(3);
 
     // 模拟新 prompt: 在已有 history 上追加
-    (session as any).messageHistory = [
-      ...(session as any).messageHistory,
+    session.replaceHistory([
+      ...(session as any).actor.state.messageHistory,
       {
         role: 'assistant',
         content: '',
@@ -275,7 +275,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
         toolResult: { success: true, output: 'a\nb\nc' },
       },
       { role: 'assistant', content: '列表完成' },
-    ];
+    ]);
     await session.saveCurrentSession('e2e:incr');
 
     const after2 = await testStore.loadMessages('e2e:incr');
@@ -290,7 +290,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
       peerId: prefix + 'list',
       sessionStore: testStore,
     });
-    (session as any).messageHistory = [{ role: 'user', content: 'hi' }];
+    session.replaceHistory([{ role: 'user', content: 'hi' }]);
     await session.saveCurrentSession('e2e:listA');
 
     const another = await createAgentSession({
@@ -298,7 +298,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
       peerId: prefix + 'list2',
       sessionStore: testStore,
     });
-    (another as any).messageHistory = [{ role: 'user', content: 'hi2' }];
+    another.replaceHistory([{ role: 'user', content: 'hi2' }]);
     await another.saveCurrentSession('e2e:listB');
 
     const keys = await testStore.listKeys();
@@ -321,7 +321,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
       peerId: prefix + 'complex',
       sessionStore: testStore,
     });
-    (session as any).messageHistory = [
+    session.replaceHistory([
       { role: 'user', content: 'run tests with timeout' },
       {
         role: 'assistant',
@@ -342,7 +342,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
         toolCallId: 'call_vitest',
         toolResult: { success: true, output: 'All tests passed (35)' },
       },
-    ];
+    ]);
     await session.saveCurrentSession('e2e:complex');
 
     // 重新打开并 resume
@@ -352,7 +352,7 @@ describe('Persistence E2E flow — 完整 tool call 链路 round-trip', { timeou
       sessionStore: testStore,
     });
     await reader.resumeSession('e2e:complex');
-    const history = (reader as any).messageHistory;
+    const history = (reader as any).actor.state.messageHistory;
 
     // 验证 toolCall.args 完整
     const tc = history[1].toolCall;
@@ -377,7 +377,7 @@ describe('Persistence E2E flow — Schema 容错与错误处理', { timeout: 300
       content: `message #${i} payload`,
       timestamp: 1000 + i * 10,
     }));
-    (session as any).messageHistory = big;
+    session.replaceHistory(big);
     await session.saveCurrentSession('e2e:bulk');
 
     const reader = await createAgentSession({
@@ -386,8 +386,8 @@ describe('Persistence E2E flow — Schema 容错与错误处理', { timeout: 300
       sessionStore: testStore,
     });
     await reader.resumeSession('e2e:bulk', 200); // 拉全部
-    expect((reader as any).messageHistory).toHaveLength(100);
-    expect((reader as any).messageHistory[99].content).toBe('message #99 payload');
+    expect((reader as any).actor.state.messageHistory).toHaveLength(100);
+    expect((reader as any).actor.state.messageHistory[99].content).toBe('message #99 payload');
   });
 
   it('save 路径不污染 ~/.bolloon/ (使用注入 tmpDir)', async () => {
@@ -406,7 +406,7 @@ describe('Persistence E2E flow — Schema 容错与错误处理', { timeout: 300
       peerId: prefix + 'iso',
       sessionStore: testStore,
     });
-    (session as any).messageHistory = [{ role: 'user', content: 'iso test' }];
+    session.replaceHistory([{ role: 'user', content: 'iso test' }]);
     await session.saveCurrentSession('e2e:isolated');
 
     let afterFiles: string[] = [];

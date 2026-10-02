@@ -277,21 +277,6 @@ export class PiAgentSession implements AgentSession {
    *   · 绑定 actor 后 ⇒ 本体是 `actor.state.messageHistory`, 本地那份被**收养**并清空。
    * 绑定由 `attachActor()` 做, 且**只在会话身份已知时**发生 (见 session factory) —— 没有身份就不归属。
    */
-  /**
-   * `messageHistory` 访问器 (K5 第 4 步; 步骤⑧ 起本体**只**在 actor)。
-   * 为什么用访问器而不是逐个改 ~25 个 `push` 点: 写入点遍布 ReAct 循环 / 工具回灌 / 压缩 / 投影,
-   * 逐个改会制造大面积无关 diff 且容易漏。访问器让**所有**读写 (push / pop / length / 索引 / slice /
-   * 整体赋值) 自动落到 actor 的数组上 —— 所有权是真的转移 (同一个数组对象), 调用点零改动。
-   */
-  private get messageHistory(): Message[] {
-    return this.actor!.state.messageHistory as Message[];
-  }
-
-  private set messageHistory(v: Message[]) {
-    const arr = this.actor!.state.messageHistory as Message[];
-    arr.length = 0;
-    arr.push(...v);
-  }
 
   /**
    * **K5 第 4 步 — history 写入的唯一漏斗 (push)**。
@@ -312,7 +297,13 @@ export class PiAgentSession implements AgentSession {
   }
 
   /** **K5 第 4 步 — history 写入漏斗 (整体替换)**: hydrate 回灌 / 压缩后的整块赋值都走这里 */
-  private replaceHistory(next: Message[]): void {
+  /**
+   * **整体替换**历史 —— 唯一漏斗之一, 步骤⑧ 起是**唯一**的"种历史"入口 (公开)。
+   *   公开的理由: 上层/测试要种一份历史时必须走这里; 直接给对象赋一个新数组会**换掉数组身份**
+   *   (actor 里那份仍是空的) —— 那是静默丢数据 (实测: 删掉 setter 后 `session.messageHistory = [...]`
+   *   变成写在一个凭空出现的自有属性上, 测试于是看到 0 条)。
+   */
+  replaceHistory(next: Message[]): void {
     this.actor!.replaceHistory<Message>(next);
   }
 
@@ -859,7 +850,7 @@ export class PiAgentSession implements AgentSession {
   async saveCurrentSession(key: string): Promise<void> {
     // **K5 第 4 步**: 取数拍走 Actor 的快照 (走邮箱 ⇒ 与 append 串行, 不会抓到"边写边读"的半截状态);
     //   未绑定 actor 的会话走原路径 (行为不变)。
-    const source: Message[] = this.actor ? await this.actor.historySnapshot<Message>() : this.messageHistory;
+    const source: Message[] = this.actor ? await this.actor.historySnapshot<Message>() : (this.actor!.state.messageHistory as Message[]);
     const persisted: PersistedMessage[] = source.map((m) => ({
       role: m.role,
       content: m.content,
@@ -878,9 +869,9 @@ export class PiAgentSession implements AgentSession {
    * 与 loadSessionKey (构造时读) 不同: 这个是 session 已建好后再读.
    */
   async resumeSession(key: string, maxMessages: number = 30): Promise<number> {
-    const before = this.messageHistory.length;
+    const before = (this.actor!.state.messageHistory as Message[]).length;
     await this.hydrateMessageHistory(key, maxMessages);
-    return this.messageHistory.length - before;
+    return (this.actor!.state.messageHistory as Message[]).length - before;
   }
 
   /**
@@ -1706,7 +1697,7 @@ export class PiAgentSession implements AgentSession {
       // 因为 messageHistory.push({role:'user'}) 在 promptStream 顶部已经做过, 重跑 runReActLoop 不会重复 push,
       // 但 assistant 失败那条也别留 (留了会污染下一轮 LLM context).
       // 简化: 重试前 pop 一次 assistant (如果最后一条是 assistant)
-      if (this.messageHistory.length > 0 && this.messageHistory[this.messageHistory.length - 1].role === 'assistant') {
+      if ((this.actor!.state.messageHistory as Message[]).length > 0 && (this.actor!.state.messageHistory as Message[])[(this.actor!.state.messageHistory as Message[]).length - 1].role === 'assistant') {
         this.popHistory();
       }
     }
@@ -1838,15 +1829,15 @@ ${await this.renderActivePlansSection()}
     // 2026-06-17: 透传 signal 让 abort 工作 — loop.execute() 当前不接 signal 参数,
     //   所以 abort 行为通过 this.currentSignal 共享给 loop 内部读 (后续 M3.2 接 task plan 时一起加)
     // 2026-07-06: pivot 内 token 累计到 ~70% 时回调 (workflow-pivot-loop.ts line 270+).
-    //   pivot 的 messageHistory 是 process-local, 不和 pi-sdk 的 this.messageHistory 同步.
+    //   pivot 的 messageHistory 是 process-local, 不和 pi-sdk 的 actor 的 messageHistory 同步.
     //   真正折叠需要把 pi-sdk 历史灌回 pivot 的 history 数组 — 侵入较大.
     //   当前 priority: 临时传空实现, 让 budget 公式放够 (workflow-pivot-loop.ts line 220)
     //   不再撞预算. 这条路径留作技术债.
     // 2026-07-17 Bug 1 修: 注入 messageHistory (hydrateMessageHistory 从 session JSON 回灌的) 到 system prompt
-    //   pivot loop execute() 内部自己维护 messageHistory, 跟 pi-sdk 的 this.messageHistory 隔离,
+    //   pivot loop execute() 内部自己维护 messageHistory, 跟 pi-sdk 的 actor 的 messageHistory 隔离,
     //   不注入的话 LLM 看不到历史对话, 每次都是新对话.
     const historyLines: string[] = [];
-    const historyToInject = this.messageHistory.slice(-20, -1);
+    const historyToInject = (this.actor!.state.messageHistory as Message[]).slice(-20, -1);
     for (const m of historyToInject) {
       const roleLabel = m.role === 'user' ? '用户' : m.role === 'assistant' ? '你' : m.role === 'tool' ? '工具结果' : m.role;
       const text = (m.content || '').slice(0, 2000);
@@ -3274,7 +3265,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
     // 失败静默: 任何 stage 抛错 → 走老 slice(-10) 逻辑
     //
     // P1.2: 如果 maybeAutoCompact 算过 Context Collapse 投影, 用 this.projectedHistory (读时投影, 非破坏)
-    const source = this.projectedHistory ?? this.messageHistory;
+    const source = this.projectedHistory ?? (this.actor!.state.messageHistory as Message[]);
     const recentMessages = this.compressHistorySync(source).slice(-10);
     return recentMessages.map(m => {
       if (m.role === 'user') return `用户: ${m.content}`;
@@ -3300,7 +3291,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
       // 2026-08-06: 来源优先用 projectedHistory (Context Collapse 投影, 非破坏) —
       //   与 buildContext 一致; 之前只让字符串路径用投影, messages 数组路径被跳过,
       //   导致 LLM 实际看到的还是未压缩的历史.
-      const source = this.projectedHistory ?? this.messageHistory;
+      const source = this.projectedHistory ?? (this.actor!.state.messageHistory as Message[]);
       const WINDOW = 15;
       const out: Array<{ role: string; content: string; reasoningContent?: string }> = [];
 
@@ -3365,11 +3356,11 @@ lastQualityScore = this.estimateResponseQuality(reply);
   /**
    * 2026-09-28 (前缀 KV 可命中): 把 chat() 回带的当前轮写回自己的 messageHistory.
    * 逻辑在模块级 `writeBackCurrentTurnInto` (纯函数, 门可以直接驱它断言);
-   * 这里只负责接到 `this.messageHistory` 上, 并保证任何异常都静默 (写回失败不影响对话).
+   * 这里只负责接到 `actor 的 messageHistory` 上, 并保证任何异常都静默 (写回失败不影响对话).
    */
   private writeBackCurrentTurn(wire?: Array<{ role: string; content?: string }>): number {
     try {
-      return writeBackCurrentTurnInto(this.messageHistory, wire);
+      return writeBackCurrentTurnInto((this.actor!.state.messageHistory as Message[]), wire);
     } catch (err) {
       console.warn('[PiAgent] writeBackCurrentTurn failed (silent):', err);
       return 0;
@@ -3383,7 +3374,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
   private estimateHistoryTokens(): number {
     try {
       const { estimateTokens } = _piRequire('../context-compaction/index.js') as typeof import('../context-compaction/index.js');
-      return estimateTokens(this.messageHistory as any);
+      return estimateTokens((this.actor!.state.messageHistory as Message[]) as any);
     } catch {
       return 0;
     }
@@ -3415,7 +3406,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
       try {
         // 同步压缩: 取快照与替换在**同一拍相邻两行** (中间没有 await) ⇒ 不存在"变换期间被追加"的窗口。
         //   若哪天这里插入 await, 必须改成 `actor.rebaseHistory(…, snapshotLen)` (见 channel-actor.ts)。
-        const compacted = this.compressHistorySync(this.messageHistory);
+        const compacted = this.compressHistorySync((this.actor!.state.messageHistory as Message[]));
         this.replaceHistory(compacted);
         if (this.estimateHistoryTokens() > this.maxContextTokens() * 0.8) {
           await this.maybeAutoCompact(onStream, signal);
@@ -3504,8 +3495,8 @@ lastQualityScore = this.estimateResponseQuality(reply);
           if (Array.isArray(contextOrMessages)) {
             contextOrMessages = this.buildContext();
             // 也清除最近一轮的 toolCalls, 防止再触发
-            if (this.messageHistory.length > 1) {
-              const last = this.messageHistory[this.messageHistory.length - 1];
+            if ((this.actor!.state.messageHistory as Message[]).length > 1) {
+              const last = (this.actor!.state.messageHistory as Message[])[(this.actor!.state.messageHistory as Message[]).length - 1];
               if (last.role === 'assistant' && (last as any).toolCalls) {
                 delete (last as any).toolCalls;
               }
@@ -3571,7 +3562,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
     onStream?: (chunk: any) => void,
     signal?: AbortSignal
   ): Promise<void> {
-    if (this.messageHistory.length < 10) return;  // 历史太短, 不值得压
+    if ((this.actor!.state.messageHistory as Message[]).length < 10) return;  // 历史太短, 不值得压
 
     onStream?.({ type: 'status', internal: true, content: '🗜️ 评估是否需要压缩上下文...', tool: 'compactor' });
 
@@ -3595,16 +3586,16 @@ lastQualityScore = this.estimateResponseQuality(reply);
     const { compactPipeline, isContextCollapseEnabled } = await import('../context-compaction/index.js');
     // **K5 第 4 步**: 记下取快照时的长度 —— 压缩是 async, 从这一拍到 "落地" 之间是 await 窗口;
     //   期间 append 进来的消息必须由 `actor.rebaseHistory(…, snapshotLen)` 接回去, 否则会被整块替换丢掉。
-    const snapshotLen = this.messageHistory.length;
-    const result = await compactPipeline(this.messageHistory as any, {
+    const snapshotLen = (this.actor!.state.messageHistory as Message[]).length;
+    const result = await compactPipeline((this.actor!.state.messageHistory as Message[]) as any, {
       maxTokens,
       llmChat,
       collapseLlmChat: llmChat,  // P1.2: Context Collapse 投影也用同一 LLM
       cacheScope: this.currentChannelId || 'default',
     });
 
-    if (result.compacted && result.history.length < this.messageHistory.length) {
-      const saved = this.messageHistory.length - result.history.length;
+    if (result.compacted && result.history.length < (this.actor!.state.messageHistory as Message[]).length) {
+      const saved = (this.actor!.state.messageHistory as Message[]).length - result.history.length;
       const stagesApplied = result.stages.filter((s) => s.applied).map((s) => s.stage).join(' → ');
       const afterTokens = this.estimateHistoryTokens();
       const savedTokens = Math.max(0, beforeTokens - afterTokens);
@@ -3641,7 +3632,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
           afterTokens,
           summary: `压缩管道: ${summaryLine}; 节省 ${savedTokens} tokens / ${saved} 条消息`,
           preservedMemory: [
-            ...this.messageHistory.filter(m => m.role === 'user').slice(-3).map(m => (m.content || '').slice(0, 80)),
+            ...(this.actor!.state.messageHistory as Message[]).filter(m => m.role === 'user').slice(-3).map(m => (m.content || '').slice(0, 80)),
           ],
           agentId: this.currentAgentId,
           channelId: this.currentChannelId,
