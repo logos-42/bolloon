@@ -1821,6 +1821,45 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 > `AUTHORITY_DEBT` 的还清动作今后叫 **K4-A**, 不再单独叫 "K4"; 设计页原"合并两套 Loop"即 **K4-B**。
 > (权威台账是 `src/kernel/roster.ts` 的 `STAGE_STATUS` —— 2026-10-02 修正了两处滞后: K6 从 `not-started` 改 `done`, K7 从 `not-started` 改 `partial`。)
 
+### K8 收口正刀 (计划 · 2026-10-02 量出) —— **每条消息都进邮箱, 顺带删掉重复的第二条路径**
+
+**为什么要动**: 现在同一条 channel 上并存**两条执行路径** —— `/message` 的 684 行内联体 (带全套 hooks:
+judgment hint / persona / manifest / slash 命令 / 附件上下文) 与 `runMessageFromQueue` 的**简化版**
+(自己的注释就写着"不重新建载 judgment hint / persona / context")。两条路径 = 早晚只改一处;
+更现实的是 `finishChannelRun` 的 handoff 会**静默丢消息** (见 `K8_RUNSTATE_PREREQUISITE` 的自纠说明)。
+
+**目标形态**: `transport → router → channel mailbox` —— 每条消息 (含过去的内联主路径) 都
+`getChannelQueue(channelId).submit(() => runChannelMessage(job))`; `running` / `queue` 从**串行权威**降为
+**观测** (UI 的 queueLength 改用 `SerialMailbox.pending`)。
+
+**已量出的耦合 (机械搬的前提)**: 内联体 (server.ts 4872–5556) 只用到前置区 (4736–4871) 17 个名字 ——
+`channelId` · `text` · `boundWalletAddress` · `autoToolsEnabled` · `attachments` · `channelDid` ·
+`channel` · `channelForJudgment` · `channels` · `currentSessionId` · `realChannelDid/Name/DidDoc` ·
+`runState` · `agent` · `forceTimeout` · `attachmentContext` · `slashCommandHint`。
+⇒ 这些都**可从 `channelId` + `text` 重算** (而 `runMessageFromQueue` 已经示范了配方: `loadChannels()` 取
+`currentSessionId` / `realChannelDid`, `buildAttachmentContextForQueue` 建附件上下文) ⇒ 可搬, 无需新状态。
+
+**待删清单 (走五条件, 每条都要 8 字段记录)**
+| 删除对象 | 旧入口 | 替代入口 | 剩余引用 | 覆盖的验收 |
+| --- | --- | --- | --- | --- |
+| `runState.queue` (push/shift/length) | `/message` 入队分支 + `finishChannelRun` drain | 内核邮箱 FIFO | 4 处 (4841/4850/5751/5752) | 新门: 同通道 3 条消息全有回复 + FIFO 顺序 + 并发重叠计数 0 |
+| `runState.running` (作为串行权威) | 两处 check-then-set | 邮箱 | 8 处 (含 2167 的 `!matchedRs.running` 观测用法) | 同上 + 现有 `k8-*` 用例 |
+| `runMessageFromQueue` (整函数) | `finishChannelRun` 的 drain | `runChannelMessage(job)` 同一条路径 | 1 处 | 真跑: 排队消息也能拿到全套 hooks (原来拿不到) |
+| `finishChannelRun` 的 drain 分支 | 同上 | 邮箱自动续跑 | 1 处 | 同上 |
+
+**门清单 (先写门后动刀)**
+1. **真跑并发/顺序门** (新): 真 express + 真 HTTP + 同通道连发 3 条 (假 agent 记录 enter/exit) ⇒
+   ① 3 条都有回复 ② 严格 FIFO ③ **并发重叠计数 = 0** ④ 邮箱被前序任务占住时**不丢消息**。
+2. 机械: `runState.queue` 在盘上为 0 次 · `runMessageFromQueue` 符号不存在 · `running = true` 不再出现在
+   `/message` 的调度位置 · 每条消息都必须经 `getChannelQueue(...).submit`。
+3. 台账: `K8_RUNSTATE_FIELDS` 里 `queue`/`running` 的 `role` 从 `k8-target` 移除 (或 `sites` 下调到观测口径)。
+
+**行为差量 (如实预告)**: 排队消息会**第一次拿到全套 hooks** (judgment hint / persona / slash / 附件上下文) ⇒
+这是"修好", 但它**不是零差量**, 提交时必须写明 (与 K8 收口第一刀同样的记法)。
+
+**为什么不在这轮顺手做**: 这是 684 行内联体的整体搬迁 + 两条路径合并, 属"独立一刀、独立门、独立提交";
+在半程状态停下会让最重的那个 handler 处于半拆状态 —— 宁可按计划下一刀做完。
+
 ### K7 准确口径 (✅) —— **不要把"透传完成"写成"skill 已经过门"**
 
 **已完成**
