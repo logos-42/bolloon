@@ -55,7 +55,8 @@ export interface K8Site {
  *     改走 `runExecution({ input, onStream, channelId })`: 参数与派发**完全一致** ⇒ **按构造零差量** (不新增任何绑定)。
  */
 export const K8_TRANSPORT_AGENT_SITES: readonly K8Site[] = [
-  { file: 'src/web/server.ts', count: 3, kind: 'via-actor', faces: ['web-message', 'web-stream', 'web-regen', 'cron', 'supervisor', 'external-wake'], status: 'open', why: 'web 通道 (消息/流式/重生成/cron/Supervisor/外部唤醒)' },
+  // K8 第五步: 10 → 7 → 3 → 0 (★ server.ts 已零直连)
+  { file: 'src/web/server.ts', count: 0, kind: 'via-actor', faces: ['web-message', 'web-stream', 'web-regen', 'cron', 'supervisor', 'external-wake'], status: 'open', why: 'web 通道 (消息/流式/重生成/cron/Supervisor/外部唤醒)' },
   { file: 'src/web/routes-tasks.ts', count: 0, kind: 'via-actor', status: 'migrated', evidence: '改经 runExecution({input}) —— 行为等价 (applyExecutionRequest 只覆盖显式给出的字段)', faces: ['contacts-reply'], why: 'task 路由' },
   { file: 'src/agents/runner-resolver.ts', count: 0, kind: 'via-actor', status: 'migrated', evidence: '同上; **待真跑核验**: routes-tasks 那处由隐式绑定改为显式传 channelId (ExecutionRequest 要求)', faces: ['external-wake'], why: '独立宿主 runner' },
   { file: 'src/cli-entry.ts', count: 0, kind: 'direct-prompt', status: 'open', faces: ['cli'], why: 'CLI 通道' },
@@ -100,6 +101,6 @@ export interface K8Progress {
 
 export const K8_PROGRESS: K8Progress = {
   stage: 'ledger-landed',
-  directSites: 3,   // 12 → 10 (K8 第二步) → 7 (第三步: server.ts 3 处零差量迁移) (2026-10-02: routes-tasks / runner-resolver 两处已走唯一入口; 棘轮只许减)
+  directSites: 0,   // 12 → 10 (K8 第二步) → 7 (第三步: server.ts 3 处零差量迁移) (2026-10-02: routes-tasks / runner-resolver 两处已走唯一入口; 棘轮只许减)
   perChannelStateFiles: 10,
 };

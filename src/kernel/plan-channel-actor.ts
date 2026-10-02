@@ -238,9 +238,9 @@ export const K5_EXECUTION_REQUEST = {
   methodAdded: true,
   // 2026-10-02 (K8 第二步): 1 → 3 —— routes-tasks.ts / runner-resolver.ts 两处改走 `runExecution`
   //   (K5 这张台账记的正是"请求式投递的收敛进度", K8 的迁移会推进它 ⇒ 跨台账必须同步)
-  converted: 10,  // 2026-10-02: 6 → 10 (K8 第二步 +3 / 第三步 +3 / 第四步 +4: server.ts 四处流式调用改走 runExecution)
+  converted: 13,  // 2026-10-02: 6 → 10 → 13 (K8 第二·三·四·五步: server.ts 7 处全部改走 runExecution)
   wiredTotal: 24,
-  remaining: 14,
+  remaining: 11,
 } as const;
 
 /** 入口 → 文件分组 (判据做**双向**校验: 说完成 ⇒ 其文件必须全接完; 说没完成 ⇒ 必须真有文件没接完) */

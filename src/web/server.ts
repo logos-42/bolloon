@@ -1160,7 +1160,8 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
       // 临时用 channelId = "__collab__" 拿个一次性 agent
       const collabChannelId = `__collab_${senderKey.substring(0, 8)}__`;
       const agent = await getAgentForChannel(collabChannelId, '', `collab-${senderKey.substring(0, 8)}`, undefined);
-      const resultText = await deliverThroughActor(agent, () => agent.prompt(fullPrompt));
+      // 2026-10-02 (K8): 经唯一入口 (零差量: channelId 就是取这个 agent 用的 collabChannelId)
+        const resultText = await deliverThroughActor(agent, () => requireRunExecution(agent)({ input: fullPrompt, channelId: collabChannelId }));
       const reply = JSON.stringify({
         v: 3,
         op: 'agent.collab.reply',
@@ -1770,7 +1771,8 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
           // 跨预算继续: 新 Run 必须挂在同一个 Goal 下 (setGoalId), 并带上上一个 Run 的非幂等守卫
           agent.setGoalId?.(goal.goalId);
           agent.setContinuationGuards?.(r.guards || []);
-          const reply = await deliverThroughActor(agent, () => agent.prompt(r.instruction));
+          // 2026-10-02 (K8): 经唯一入口 (零差量: agent 本来就是按 goal.channelId 解析的)
+          const reply = await deliverThroughActor(agent, () => requireRunExecution(agent)({ input: r.instruction, channelId: goal.channelId }));
           // 注意: prompt 收尾会清空 currentRunId → 必须读 lastRunId (否则会拿上一条 run 做决策)
           const runId = agent.getLastRunId?.() || agent.getRunId?.();
           return { runId, status: 'done', reply: typeof reply === 'string' ? reply.slice(0, 500) : undefined };
@@ -3890,7 +3892,8 @@ fetchState();
         req.docContent ? `\n资料内容:\n${req.docContent}` : '',
         `\n(来自 agent ${req.fromAgentId || 'unknown'})，请直接给出可交付结果。`,
       ].join('');
-      const out = await deliverThroughActor(agent, () => agent.prompt(task));
+      // 2026-10-02 (K8): 经唯一入口 (零差量: agent 就是按 ch.id 取的)
+      const out = await deliverThroughActor(agent, () => requireRunExecution(agent)({ input: task, channelId: ch.id }));
       const text = String(out || '').trim();
       if (!text || text.startsWith('❌') || text.startsWith('[AI 服务调用失败]')) {
         return { ok: false, summary: text.slice(0, 800) || '(空结果)', error: 'execution-failed' };
