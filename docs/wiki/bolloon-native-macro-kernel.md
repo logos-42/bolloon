@@ -1393,3 +1393,12 @@ channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代�
   `currentGoalId 访问数 K5=0 ≠ K2=23 (两个台账必须逐字相等)`。**用盘上原文改**, 不要凭记忆拼台账行。
 - 账: `K5_ACCESSOR_SURFACE.currentGoalId 23 → 0` · K2 `accesses 23 → 0` · 总数 `86 → 63` · K5 移交 `23 → 0`。
 - 剩 2 个 = 63 处 (`currentChannelId 25` · `currentRunId 38`)。
+
+## 46. K5 步骤⑧ 批次 4: `currentChannelId` 访问器删除 (25 → 0)
+
+- pi-sdk 内 **25 处** (22 行 — 有几行出现两次) → `this.actor!.state.channelId`; 访问器删除。
+- **全仓同名命中分三类**, 只有一类要改: ① `web/ui/message-renderer.ts` 的 `ctx.currentChannelId` 是**另一个对象** (渲染上下文) ② `web/client-loop-status.ts` 的 `(window as any).currentChannelId` 是**浏览器全局** ③ `index.ts` 两处 `agent.currentChannelId` / `(a as any).currentChannelId` 才是 session 私有读 ⇒ 改成读本体。
+- **`index.ts:1992` 是一处真安全逻辑**: `/resume` 前比对"这个 run 属于哪个 channel 与本会话当前 channel 是否一致"。删掉访问器后 `active` 会**静默变成 `''`** ⇒ 判断直接通过 ⇒ **那道闸无声消失**。这类"删字段会静默跳过一段逻辑"的位置比"读出来显示成 —"更危险。
+- **判据探针第二次搬家**: 棘轮判据的两条判别力用例 (bumped / shaved) 原锚在 `currentChannelId`, 该字段归零后又会命中 0 次 ⇒ 一起改锚到最后一个还没删的 `currentRunId`。
+- 账: `K5_ACCESSOR_SURFACE.currentChannelId 25 → 0` · K2 `accesses 25 → 0` · 总数 `63 → 38` · K5 移交 `25 → 0`。
+- 只剩 1 个 = 38 处 (`currentRunId`)。

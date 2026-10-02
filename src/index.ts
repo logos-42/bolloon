@@ -1989,7 +1989,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       const rec = await readRun(runId);
       if (!rec) { appendLine(`${C_ERROR}没有这个运行: ${runId}${RESET}`); return; }
       const agent: any = await getAgent();
-      const active = String(agent?.currentChannelId || '');
+      const active = String(agent?.actor?.state?.channelId || '');   // K5 步骤⑧: 本体在 actor (删访问器后这里曾静默变空 ⇒ 安全检查失效)
       if (rec.channelId && active && rec.channelId !== active) {
         appendLine(`${C_ERROR}该运行属于 channel ${rec.channelId} (当前 ${active}) — 先 /channel 切过去再 /resume${RESET}`);
         return;
@@ -2717,7 +2717,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       const a = await getAgent();
       const h = (a as any).messageHistory ?? [];
       appendLine(`${C_ACCENT}当前会话:${RESET} ${C_DIM}${cliSessionKey || '—'}${RESET}`);
-      appendLine(`  ${C_DIM}channel:${RESET} ${(a as any).currentChannelId || cliActiveChannelId || '—'}  ${C_DIM}agent:${RESET} ${(a as any).currentAgentId || cliAgentId || '—'}`);
+      appendLine(`  ${C_DIM}channel:${RESET} ${(a as any).actor?.state?.channelId || cliActiveChannelId || '—'}  ${C_DIM}agent:${RESET} ${(a as any).currentAgentId || cliAgentId || '—'}`);
       appendLine(`  ${C_DIM}消息:${RESET} ${h.length} 条 ${h.length > 15 ? `${C_DIM}(${h.length - 15} 条已压缩)${RESET}` : ''}`);
     } catch (e: any) {
       appendLine(`${C_WARN}⚠ 读当前会话失败: ${String(e?.message || e).slice(0, 120)}${RESET}`);

@@ -43,9 +43,9 @@ const JUDGE_NAMES = Object.keys(gateScan).filter((k) => k.startsWith('scan'));
 describe('K5 步骤⑧ 门: 访问器棘轮 + 前置背书', () => {
   it('★ 判据: pi-sdk 对已迁字段访问器的引用数 == 台账 (增=回退, 减=改了盘没改账)', () => {
     expect(scanAccessorSurface(PI_SRC_TEXT, K5_ACCESSOR_SURFACE)).toEqual([]);
-    const bumped = PI_SRC_TEXT.replace(/(\n\s*private get currentChannelId)/, '\n    const _x = this.currentChannelId;$1');
+    const bumped = PI_SRC_TEXT.replace(/(\n\s*private get currentRunId)/, '\n    const _x = this.currentRunId;$1');
     expect(scanAccessorSurface(bumped, K5_ACCESSOR_SURFACE).length).toBeGreaterThan(0);
-    const shaved = PI_SRC_TEXT.replace('this.currentChannelId', 'this.actor!.state.channelId');
+    const shaved = PI_SRC_TEXT.replace('this.currentRunId', 'this.actor!.state.activeRun');
     expect(scanAccessorSurface(shaved, K5_ACCESSOR_SURFACE).some((f: any) => f.what.includes('盘上变了账没跟上'))).toBe(true);
     expect(scanAccessorSurface(PI_SRC_TEXT, { accessorFields: ['messageHistory'], frozenInPiSdk: {} }).length).toBe(1);
   });
@@ -542,24 +542,24 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(s.actor.state.agentId).toBe('agent-A');
     expect(registrySize()).toBe(1);   // 只有身份 actor 进注册表 (私有那个不进)
     // ② 写入落到 actor
-    s.currentChannelId = 'ch-x';
+    s.actor.state.channelId = 'ch-x';
     s.actor.state.goalBinding = 'goal-1';
     expect(s.actor.state.channelId).toBe('ch-x');
     expect(s.actor.state.goalBinding).toBe('goal-1');
     // ③ 读也来自 actor (直接改 actor ⇒ 实例读得到)
     s.actor.state.channelId = 'ch-y';
-    expect(s.currentChannelId).toBe('ch-y');
+    expect(s.actor.state.channelId).toBe('ch-y');
     // ④ 同会话身份的另一个 session 共享这三处绑定
     const s2: any = await createAgentSession({
       cwd: process.cwd(), peerId: 'k5bind:s2', loadSessionKey: 'k5bind:s1', agentId: 'agent-A',
     });
     expect(s2.actor).toBe(s.actor);
-    expect(s2.currentChannelId).toBe('ch-y');
+    expect(s2.actor.state.channelId).toBe('ch-y');
     expect(s2.actor.state.goalBinding).toBe('goal-1');
     // ⑤ 不同会话身份完全隔离 (别人的绑定看不到)
     const s3: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5bind:other' });
     expect(s3.actor).not.toBe(s.actor);
-    expect(s3.currentChannelId).toBe('');
+    expect(s3.actor.state.channelId).toBe('');
     expect(s3.actor.state.goalBinding).toBe('');
     resetActors();
   }, 90000);

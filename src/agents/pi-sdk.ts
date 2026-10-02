@@ -312,7 +312,7 @@ export class PiAgentSession implements AgentSession {
    * 写入都走访问器 ⇒ 本体落进 `actor.state` (步骤③ 起就是这样); 没给的不覆盖 (与环境变量"只覆盖显式给出的"同秩)。
    */
   applyExecutionRequest(req: ExecutionRequest): void {
-    if (req.channelId) this.currentChannelId = req.channelId;
+    if (req.channelId) this.actor!.state.channelId = req.channelId;
     if (req.agentId) this.actor!.state.agentId = req.agentId;
     if (req.goalId) this.actor!.state.goalBinding = req.goalId;
     if (req.resumeRunId) this.resumeRunId = req.resumeRunId;
@@ -565,14 +565,7 @@ export class PiAgentSession implements AgentSession {
    *   本注释刻意不写出那种带 `this.` 前缀的字面形态: 计数口径只剥 `//` 行注释, 块注释里的同形串会被算进去
    *   (曾因此把 currentChannelId 的计数虚增 1, 被门照出)。
    */
-  /** 当前 channel id (由 getAgentForChannel / prompt 4 参注入, 供 hook / log 使用) */
-  private get currentChannelId(): string {
-    return this.actor!.state.channelId;
-  }
-
-  private set currentChannelId(v: string) {
-    this.actor!.state.channelId = v;
-  }
+  // **K5 步骤⑧ 批次4**: channelId 的访问器已删 —— 本体 `actor.state.channelId`, 直接影响本体。
   // M2.2 intent 已外置到 runCtx.intent (K2); 拼 systemPrompt 时读 this.runCtx.intent
   /** 2026-08-10: 本轮用户原始输入 (loop-review 任务动词兜底检测用) */
   private currentUserInput: string = '';
@@ -1014,7 +1007,7 @@ export class PiAgentSession implements AgentSession {
           const { CHANNELS_PATH } = await import('../web/server-types.js');
           const { loadChannels } = await import('../web/server-storage.js');
           const channels = await loadChannels();
-          const ch = channels.find((c: any) => c.id === this.currentChannelId);
+          const ch = channels.find((c: any) => c.id === this.actor!.state.channelId);
           if (ch && ch.encryptedPrivateKey && ch.encryptedPrivateKeyIv && ch.walletAddress) {
             return {
               encryptedPrivateKey: ch.encryptedPrivateKey,
@@ -1157,7 +1150,7 @@ export class PiAgentSession implements AgentSession {
       return new TrajectoryRecorder({
         agentId: this.actor!.state.agentId || 'default',
         input,
-        channelId: channelId || this.currentChannelId,
+        channelId: channelId || this.actor!.state.channelId,
         did: did || undefined,
         model: typeof model === 'string' && model ? model : undefined,
       });
@@ -1204,7 +1197,7 @@ export class PiAgentSession implements AgentSession {
       } catch { /* 门禁自身异常 → 按"不能判定"处理会阻塞一切; 这里只在能读到状态时才拦 */ }
     }
     this.minimaxAvailable = this.checkMinimax();
-    this.currentChannelId = options?.channelId ?? this.currentChannelId;
+    this.actor!.state.channelId = options?.channelId ?? this.actor!.state.channelId;
 
     // 2026-08-08: 运行轨迹采集 (落盘 + OrbitDB, 失败静默) — 包裹 onStream 收集步骤事件
     const trajRec = await this.createTrajectoryRecorder(input, options?.channelId);
@@ -1227,7 +1220,7 @@ export class PiAgentSession implements AgentSession {
         if (!boundGoalId) {
           const g = await createGoal({
             objective: this.currentUserInput || input.slice(0, 200),
-            channelId: this.currentChannelId || undefined,
+            channelId: this.actor!.state.channelId || undefined,
             agentId: this.actor!.state.agentId || undefined,
             createdBy: this.runSurface,
           });
@@ -1238,7 +1231,7 @@ export class PiAgentSession implements AgentSession {
           surface: this.runSurface,
           goal: this.currentUserInput || input.slice(0, 200),
           goalId: boundGoalId,
-          channelId: this.currentChannelId || undefined,
+          channelId: this.actor!.state.channelId || undefined,
           agentId: this.actor!.state.agentId || undefined,
           modelConfig: await this.runModelSnapshot(),
         });
@@ -1447,7 +1440,7 @@ export class PiAgentSession implements AgentSession {
     console.log(`[PiAgent.promptStream] ENTRY, channelId=${channelId}, input chars=${input.length}`);
     this.minimaxAvailable = this.checkMinimax();
     console.log(`[PiAgent.promptStream] minimaxAvailable=${this.minimaxAvailable}`);
-    this.currentChannelId = channelId ?? this.currentChannelId;
+    this.actor!.state.channelId = channelId ?? this.actor!.state.channelId;
 
     // 2026-08-08: 运行轨迹采集 (落盘 + OrbitDB, 失败静默) — 包裹 onStream 收集步骤事件
     const trajRec = await this.createTrajectoryRecorder(input, channelId);
@@ -1524,7 +1517,7 @@ export class PiAgentSession implements AgentSession {
     let bootstrapAddition = '';
     try {
       const ss = await onSessionStart({
-        channelId: this.currentChannelId || undefined,
+        channelId: this.actor!.state.channelId || undefined,
         agentId: this.actor!.state.agentId || undefined,
       });
       bootstrapAddition = ss.systemAddition || '';
@@ -1534,10 +1527,10 @@ export class PiAgentSession implements AgentSession {
 
     // 2026-07-07 P1-B: 注入最近 5 条项目事件日志 (L2) — 让 LLM 知道项目状态/feature 变化
     // 失败静默, append 到 bootstrapAddition 末尾 (超 800 字截断)
-    if (this.currentChannelId) {
+    if (this.actor!.state.channelId) {
       try {
         const { getRecentEvents } = await import('../bootstrap/event-log.js');
-        const events = await getRecentEvents(this.currentChannelId, 5);
+        const events = await getRecentEvents(this.actor!.state.channelId, 5);
         if (events.length > 0) {
           const eventBlock = [
             '## 最近项目事件 (最近 5 条, 倒序)',
@@ -1552,7 +1545,7 @@ export class PiAgentSession implements AgentSession {
       // 2026-07-07 P2-C: 注入项目当前状态 (L3) — 目标/约束/待办/已完成
       try {
         const { readState, formatStateForPrompt } = await import('../bootstrap/project-state.js');
-        const state = await readState({ channelId: this.currentChannelId });
+        const state = await readState({ channelId: this.actor!.state.channelId });
         const stateText = formatStateForPrompt(state);
         if (stateText) {
           bootstrapAddition = (bootstrapAddition + '\n\n' + stateText).slice(-2500);
@@ -1564,7 +1557,7 @@ export class PiAgentSession implements AgentSession {
       // 2026-07-07 P2-C: 向量检索 top-3 (L4) — 按当前 channelId + userText 找历史相关片段
       try {
         const { searchIndex } = await import('../bootstrap/vector-index.js');
-        const indexName = `channel-${this.currentChannelId}`;
+        const indexName = `channel-${this.actor!.state.channelId}`;
         const results = await searchIndex({
           indexName,
           query: userText,
@@ -1617,7 +1610,7 @@ export class PiAgentSession implements AgentSession {
         monitorAfterReply(userText, pivotResult);
         const stopStartTime = this.promptStartTime || Date.now();
         onStop({
-          channelId: this.currentChannelId || 'unknown',
+          channelId: this.actor!.state.channelId || 'unknown',
           durationMs: Date.now() - stopStartTime,
           usedJudgmentIds: [...this.judgmentGateUsedIds],
         }).catch((err) => console.warn('[PiAgent] onStop failed:', err));
@@ -1709,7 +1702,7 @@ export class PiAgentSession implements AgentSession {
     // Bootstrap Stop hook: fire-and-forget 写本次 session 摘要
     const stopStartTime = this.promptStartTime || Date.now();
     onStop({
-      channelId: this.currentChannelId || 'unknown',
+      channelId: this.actor!.state.channelId || 'unknown',
       durationMs: Date.now() - stopStartTime,
       usedJudgmentIds: [...this.judgmentGateUsedIds],
     }).catch((err) => console.warn('[PiAgent] onStop failed:', err));
@@ -1728,7 +1721,7 @@ export class PiAgentSession implements AgentSession {
   }
 
   async promptWithPivotLoop(input: string, config?: PivotLoopConfig, channelId?: string): Promise<LoopResult> {
-    this.currentChannelId = channelId ?? this.currentChannelId;
+    this.actor!.state.channelId = channelId ?? this.actor!.state.channelId;
     if (!this.minimaxAvailable) {
       const response = await this.handleFallback(input);
       return {
@@ -2060,7 +2053,7 @@ ${await this.renderActivePlansSection()}
       runId: this.currentRunId || undefined,
       goalId: this.actor!.state.goalBinding || undefined,
       agentId: this.actor!.state.agentId || undefined,
-      channelId: this.currentChannelId || undefined,
+      channelId: this.actor!.state.channelId || undefined,
       surface: this.runSurface,
     };
   }
@@ -2150,7 +2143,7 @@ ${await this.renderActivePlansSection()}
       let boundGoalId = this.actor!.state.goalBinding;
       if (!boundGoalId) {
         try {
-          const active = await findActiveGoal({ channelId: this.currentChannelId || undefined, agentId: this.actor!.state.agentId || undefined });
+          const active = await findActiveGoal({ channelId: this.actor!.state.channelId || undefined, agentId: this.actor!.state.agentId || undefined });
           if (active?.currentRunId) {
             const prev = await readRun(active.currentRunId);
             const unfinished = prev && ['interrupted', 'stalled', 'needs_human', 'paused', 'awaiting_external', 'recovering'].includes(prev.status);
@@ -2161,7 +2154,7 @@ ${await this.renderActivePlansSection()}
           try {
             const g = await createGoal({
               objective: this.currentUserInput || '(未记录目标)',
-              channelId: this.currentChannelId || undefined,
+              channelId: this.actor!.state.channelId || undefined,
               agentId: this.actor!.state.agentId || undefined,
               createdBy: this.runSurface,
             });
@@ -2176,7 +2169,7 @@ ${await this.renderActivePlansSection()}
           surface: this.runSurface,
           goal: this.currentUserInput || '(未记录目标)',
           goalId: boundGoalId || undefined,
-          channelId: this.currentChannelId || undefined,
+          channelId: this.actor!.state.channelId || undefined,
           agentId: this.actor!.state.agentId || undefined,
           modelConfig: await this.runModelSnapshot(),
         });
@@ -3573,7 +3566,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
       maxTokens,
       llmChat,
       collapseLlmChat: llmChat,  // P1.2: Context Collapse 投影也用同一 LLM
-      cacheScope: this.currentChannelId || 'default',
+      cacheScope: this.actor!.state.channelId || 'default',
     });
 
     if (result.compacted && result.history.length < (this.actor!.state.messageHistory as Message[]).length) {
@@ -3617,7 +3610,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
             ...(this.actor!.state.messageHistory as Message[]).filter(m => m.role === 'user').slice(-3).map(m => (m.content || '').slice(0, 80)),
           ],
           agentId: this.actor!.state.agentId,
-          channelId: this.currentChannelId,
+          channelId: this.actor!.state.channelId,
         });
         cm.markCompressComplete(snap);
       } catch (snapErr) {
@@ -4053,7 +4046,7 @@ ${this.extractOperationsFromRef(operationsRef)}
   }
 
   setCurrentChannelId(channelId: string): void {
-    this.currentChannelId = channelId;
+    this.actor!.state.channelId = channelId;
   }
 
   getSessionState(): PiSessionState {
