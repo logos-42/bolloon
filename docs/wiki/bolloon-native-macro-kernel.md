@@ -525,3 +525,36 @@ K1-f 第一版**判据红了, 但红在错的原因上**: 它用 `not.toContain(
 
 按面从小到大: `currentSignal` (8) → `currentIntent` (10) → `currentGoalId` (19) → `currentAgentId` (20) → `currentChannelId` (21) → `currentRunId` (36) → `messageHistory` (53)。每格都要: 迁移 ⇒ 台账下调 ⇒ 门保持绿 ⇒ 真跑一次。
 `currentSignal` 那格会引入一个新问题: 它是 `AbortSignal`, 迁移后 `ctx.abortSignal` 才是唯一出处, 取消语义要跟上 (`RunContext` 里的取消位)。
+
+## 20. K2 第 2 格: `currentSignal` → `RunContext.abortSignal` (已落地)
+
+### 20.1 迁移 (8 处 → 0)
+
+| 原处 | 处置 |
+| --- | --- |
+| `promptStream` 入口 `this.currentSignal = options?.signal ?? null;` | **删除** —— Context 已经在同一行建好 (`createRunContext({ eventSink, abortSignal })`) |
+| `promptWithPivotLoop` 入口 `this.currentSignal = signal ?? null;` | **折进 Context** (`createRunContext({ eventSink: onStream, abortSignal: signal ?? null })`) |
+| 5 个「用完即清」点的 `this.currentSignal = null;` | **删除** —— 复位改成「换一个空 Context」(`createRunContext()` 的 abortSignal 本来就是 null) |
+| pivot `loop.execute(..., this.currentSignal ?? undefined, ...)` | 改读 **`this.runCtx.abortSignal ?? undefined`** |
+
+台账: `currentSignal` 8 → **0** (`migrated: true`) · `RUN_CONTEXT_ACCESS_TOTAL` 167 → **159** · `MIGRATED_FROZEN` 1 → **2** · `DONE` 清单加 `currentSignal`。
+**其余 6 个字段一处没动** (messageHistory 53 / currentRunId 36 / currentChannelId 21 / currentAgentId 20 / currentGoalId 19 / currentIntent 10) —— 仍然是纯减。
+
+### 20.2 补了一个**此前不存在的**测试: `pi-run-context-wiring.test.ts` (8 用例)
+
+为什么必须补: 取消/推流这两个语义原来靠实例字段**隐式**共享给两个循环, 搬进 Context 后**漏接一处不会编译报错, 症状只会是"取消不生效 / 流断在半路"**; 而仓里此前**没有任何测试覆盖 `promptStream` 的取消语义** (`pi-sdk.test.ts` 里那个 AbortController 自己标注为"装饰性")。
+
+判据 (源码级 + 单元级, **剥注释**):
+1. 已迁移字段不许再以 `private <field>:` 形式出现;
+2. 两个入口必须把 `eventSink` / `abortSignal` 建进 Context;
+3. 两个循环必须从 Context 取值 (`this.runCtx.eventSink` / `this.runCtx.abortSignal`);
+4. 已迁移字段不许再有 `this.<field>` 访问;
+5. 「用完即清」必须是"换空 Context" (`createRunContext()` 复位 ≥5 处);
+6. 单元: `createRunContext` 未给字段**显式置空** (不继承上一个 Run 的残留) + `AbortSignal` 语义真的透传 (abort 后 `ctx.abortSignal.aborted === true`)。
+
+**变异自证 3 例** (内存里改源码文本, 不动盘): ① 把 `private currentSignal` 注回 ⇒ 红; ② 入口漏建 `abortSignal` ⇒ 红; ③ 循环改回读 `this.currentSignal` ⇒ 红; ④ 注释里提到旧字段名 ⇒ **不红** (剥注释)。
+
+### 20.3 下一格
+
+`currentIntent` (10) → `currentGoalId` (19) → `currentAgentId` (20) → `currentChannelId` (21) → `currentRunId` (36) → `messageHistory` (53)。
+`messageHistory` 那格是真正的大头 (53 处), 也是"两个并发 Run 的 history 不互相污染"这条 K2 验收标准的落点。

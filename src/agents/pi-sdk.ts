@@ -439,10 +439,10 @@ export class PiAgentSession implements AgentSession {
   /**
    * **K2 迁移中**: 一次 Run 的显式状态载体 (见 src/agents/run-context.ts)。
    * 入口 (prompt / promptStream / promptWithPivotLoop) 用 createRunContext() 快照一次, 用完即清。
-   * 已完成外置: `eventSink` (原 `currentOnStream`)。其余字段仍以本类实例字段为准, 逐格迁移。
+   * **已外置**: `eventSink` (原 currentOnStream) · `abortSignal` (原 currentSignal)。
+   * 其余 6 个字段仍以本类实例字段为准, 逐格迁移。
    */
   private runCtx: RunContext = createRunContext();
-  private currentSignal: AbortSignal | null = null;
   /** Bootstrap SessionStart 拼的 system prompt 片段 (用完即清) */
   private bootstrapAddition: string = '';
   /** 2026-08-12 (Task3 认知卸载): 工具选择与认知卸载指南 — 注入 system prompt, 降低"模型不触发 write/edit/read"率. */
@@ -1140,9 +1140,9 @@ export class PiAgentSession implements AgentSession {
     }
 
     // P0 注入门
-    this.currentSignal = options?.signal ?? null;
-    // K2: eventSink 已外置。其余字段**不在这里抄一份** —— 抄写会新增对旧实例字段的读,
-    //   违反方向判据「新层出现后旧写口调用点数只许不变或减少」。逐字段迁移时再各自搬进来。
+    // K2: eventSink + abortSignal 已外置, 入口一次建好本轮 Context。
+    //   其余字段**不在这里抄一份** —— 抄写会新增对旧实例字段的读, 违反方向判据
+    //   「新层出现后旧写口调用点数只许不变或减少」。逐字段迁移时再各自搬进来。
     this.runCtx = createRunContext({ eventSink: options?.onStream ?? null, abortSignal: options?.signal ?? null });
     await this.computeJudgmentGate(input);
 
@@ -1181,7 +1181,6 @@ export class PiAgentSession implements AgentSession {
           );
         }
         this.clearJudgmentGate();
-        this.currentSignal = null;
         this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
         this.reportUsageToContextManager();
       }
@@ -1295,7 +1294,6 @@ export class PiAgentSession implements AgentSession {
         );
       }
       this.clearJudgmentGate();
-      this.currentSignal = null;
       this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
       this.reportUsageToContextManager();
     }
@@ -1349,10 +1347,8 @@ export class PiAgentSession implements AgentSession {
     }
 
     // P0 注入门: 缓存 onStream + signal, computeJudgmentGate 用 runCtx.eventSink 广播 phase
-    // K2: 同上 —— 只搬已外置的字段, 不抄未迁移的
-    // K2: 只搬 eventSink (读 this.currentSignal 也算对旧字段的新增读 ⇒ 等它自己迁)
-    this.runCtx = createRunContext({ eventSink: onStream });
-    this.currentSignal = signal ?? null;
+    // K2: eventSink + abortSignal 一起建进本轮 Context (只搬已外置的字段, 不抄未迁移的)
+    this.runCtx = createRunContext({ eventSink: onStream, abortSignal: signal ?? null });
     await this.computeJudgmentGate(userText);
 
     // M2.2 (2026-06-17): intent 分类 — 0 LLM 成本, 5 行 keyword 匹配
@@ -1483,7 +1479,6 @@ export class PiAgentSession implements AgentSession {
         }).catch((err) => console.warn('[PiAgent] onStop failed:', err));
         this.clearJudgmentGate();
         this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
-        this.currentSignal = null;
         this.bootstrapAddition = '';
         this.contextHintAddition = '';
         this.promptStartTime = 0;
@@ -1512,7 +1507,6 @@ export class PiAgentSession implements AgentSession {
       } catch (err: any) {
         // abort 失败: 视作"已中断", 抛错让上层用 partial 兜底
         this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
-        this.currentSignal = null;
         throw err;
       }
       attempt++;
@@ -1580,7 +1574,6 @@ export class PiAgentSession implements AgentSession {
     this.clearJudgmentGate();
     this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
     this.reportUsageToContextManager();
-    this.currentSignal = null;
     this.bootstrapAddition = '';
     this.promptStartTime = 0;
 
@@ -1704,7 +1697,7 @@ ${await this.renderActivePlansSection()}
     const onCompact = async () => {
       // no-op (best-effort hook for future pi-sdk/pivot history sync)
     };
-    const result = await loop.execute(input, llm, systemPrompt + historyBlock, this.runCtx.eventSink ?? undefined, this.currentSignal ?? undefined, onCompact);
+    const result = await loop.execute(input, llm, systemPrompt + historyBlock, this.runCtx.eventSink ?? undefined, this.runCtx.abortSignal ?? undefined, onCompact);
 
     if (result.response) {
       this.messageHistory.push({ role: 'assistant', content: result.response });
