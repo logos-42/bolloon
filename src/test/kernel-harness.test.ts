@@ -150,19 +150,20 @@ describe('K7 台账门: Harness 唯一系统调用门', () => {
     expect(checkHarnessLedgerHygiene({ ...good, progress: { bypasses: 999 } })[0]).toMatch(/开着的旁路数/);
   });
 
-  it('② K7 定性 (机械): B 类 12 处直连**不是门旁路** —— 每个动态 import 都在注册工具的 execute 体内', () => {
-    const src = fs.readFileSync(path.join(ROOT, 'src/agents/pi-sdk-tools.ts'), 'utf8');
-    const imports = [...src.matchAll(/await import\('\.\.\/constraint-runtime\/[^']*(?:PolymarketSDK|SafeSDK)[^']*'\)/g)];
-    expect(imports.length).toBeGreaterThanOrEqual(6);   // 6 个工具 × (dist 优先 + src 回落)
-    const setIdx = [...src.matchAll(/ctx\.tools\.set\('/g)].map((m) => m.index ?? 0);
-    for (const m of imports) {
-      const i = m.index ?? 0;
-      const enclosing = setIdx.filter((s) => s < i).pop();
-      expect(enclosing).toBeDefined();                                  // 前面有注册
-      const seg = src.slice(enclosing as number, i);
-      expect(seg).toContain('execute:');                                // 且落在它的 execute 体内
-      // 强调: 在 execute 体内 ⇒ 该 import 是被门放行后才跑到的 (不是绕过门的第二条路)
-    }
+  it('② K1 ④ (机械, 棘轮 12 → 0): 领域 SDK 不许被工具文件直接 import —— 只能走 Tool Capability 层', () => {
+    // 历史: pi-sdk-tools.ts 里 6 个工具各自动态 import 领域 SDK (dist+src 两路 = 12 处)。
+    // 2026-10-02: 全部改经 `src/agents/tool-capability/index.ts`。此判据锁住"不许退回去"。
+    const tools = fs.readFileSync(path.join(ROOT, 'src/agents/pi-sdk-tools.ts'), 'utf8');
+    expect(tools).not.toMatch(/await import\('[^']*constraint-runtime[^']*'\)/);   // 零直连 (棘轮)
+    expect(tools).toContain("from './tool-capability/index.js'");
+
+    const cap = fs.readFileSync(path.join(ROOT, 'src/agents/tool-capability/index.ts'), 'utf8');
+    // 唯一入口: 目标清单是单一事实源, 且 dist/src 两路只在这里拼
+    expect(cap).toMatch(/export const DOMAIN_TARGETS = \[/);
+    expect((cap.match(/^\s+'[A-Za-z]+\/[A-Za-z]+',?$/gm) || []).length).toBeGreaterThanOrEqual(6);
+    expect(cap).toContain('constraint-runtime/dist/tools/');
+    expect(cap).toContain('constraint-runtime/src/tools/');
+    expect(cap).toContain('getLastLoadSource');           // 走了哪一路必须可观测
   });
 
   it('② K7 系统自检 (tsc_check) 也过门: 判定在 execute 之前 + 拒绝分支不执行 + 拒绝可见 (机械)', () => {

@@ -151,12 +151,6 @@ export interface ConstraintUse { file: string; target: string; count: number; ki
 export const CONSTRAINT_USES: readonly ConstraintUse[] = [
   { file: 'agents/constraint-layer.ts', target: '__pkg_entry__', count: 1, kind: 'prod', cls: 'A' },
   { file: 'agents/pi-sdk-session-manager.ts', target: '__pkg_entry__', count: 1, kind: 'prod', cls: 'A' },
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/PolymarketSDK/cancelOrder', count: 2, kind: 'prod', cls: 'B' },
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/PolymarketSDK/createOrder', count: 2, kind: 'prod', cls: 'B' },
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/PolymarketSDK/getMarket', count: 2, kind: 'prod', cls: 'B' },
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/PolymarketSDK/getOrders', count: 2, kind: 'prod', cls: 'B' },
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/PolymarketSDK/listMarkets', count: 2, kind: 'prod', cls: 'B' },
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/SafeSDK/deploySafe', count: 2, kind: 'prod', cls: 'B' },
   { file: 'agents/pi-sdk.ts', target: '__pkg_entry__', count: 2, kind: 'prod', cls: 'A' },
   { file: 'agents/skill-loader.ts', target: '__pkg_entry__', count: 1, kind: 'prod', cls: 'A' },
   { file: 'bollharness-integration/gate-state-machine.ts', target: '__pkg_entry__', count: 1, kind: 'prod', cls: 'A' },
@@ -180,14 +174,8 @@ export const CONSTRAINT_USES: readonly ConstraintUse[] = [
  */
 export interface BDirectImport { file: string; target: string; count: number; payDownIn: 'K7'; }
 export const B_DIRECT_IMPORT_DEBT: readonly BDirectImport[] = [
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/PolymarketSDK/cancelOrder', count: 2, payDownIn: 'K7' },
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/PolymarketSDK/createOrder', count: 2, payDownIn: 'K7' },
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/PolymarketSDK/getMarket', count: 2, payDownIn: 'K7' },
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/PolymarketSDK/getOrders', count: 2, payDownIn: 'K7' },
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/PolymarketSDK/listMarkets', count: 2, payDownIn: 'K7' },
-  { file: 'agents/pi-sdk-tools.ts', target: 'tools/SafeSDK/deploySafe', count: 2, payDownIn: 'K7' },
 ];
-export const B_DIRECT_IMPORT_FROZEN_AT = 12;
+export const B_DIRECT_IMPORT_FROZEN_AT = 0;   // 12 → 0 (2026-10-02 K1 ④: 领域 SDK 直连改经 Tool Capability 层, 欠账还清)
 
 /**
  * 引用台账的扫描面**排除名单** (冻结, 只许减):

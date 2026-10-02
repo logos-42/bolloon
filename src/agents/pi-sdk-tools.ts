@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import { loadDomainModule } from './tool-capability/index.js';   // K1 ④: 领域能力唯一入口
 import { loadWalletTool } from './wallet-tools.js';
 import * as fsSync from 'fs';
 import * as path from 'path';
@@ -3684,7 +3685,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     parameters: { limit: '可选 数量 (默认 50)', offset: '可选 偏移', closed: '可选 是否只显示已关闭' },
     execute: async (args) => {
       try {
-        const { listMarkets } = await import('../constraint-runtime/dist/tools/PolymarketSDK/listMarkets.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/listMarkets.js'));
+        const { listMarkets } = await loadDomainModule<any>('PolymarketSDK/listMarkets');
         const markets = await listMarkets({
           limit: args.limit ? Number(args.limit) : 50,
           offset: args.offset ? Number(args.offset) : 0,
@@ -3707,7 +3708,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     parameters: { marketId: '市场 ID (必填)' },
     execute: async (args) => {
       try {
-        const mod: any = await import('../constraint-runtime/dist/tools/PolymarketSDK/getMarket.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/getMarket.js'));
+        const mod: any = await loadDomainModule<any>('PolymarketSDK/getMarket');
         const fn = mod.getMarket || mod.default;
         const m: any = await fn(String(args.marketId));
         if (!m) return { success: false, error: '市场不存在' };
@@ -3731,7 +3732,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     },
     execute: async (args) => {
       try {
-        const { getOrders } = await import('../constraint-runtime/dist/tools/PolymarketSDK/getOrders.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/getOrders.js'));
+        const { getOrders } = await loadDomainModule<any>('PolymarketSDK/getOrders');
         const orders = await getOrders({
           privateKey: String(args.privateKey),
           marketId: args.marketId ? String(args.marketId) : undefined,
@@ -3766,7 +3767,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     },
     execute: async (args) => {
       try {
-        const { createOrder } = await import('../constraint-runtime/dist/tools/PolymarketSDK/createOrder.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/createOrder.js'));
+        const { createOrder } = await loadDomainModule<any>('PolymarketSDK/createOrder');
         const r: any = await createOrder({
           privateKey: String(args.privateKey),
           marketId: String(args.marketId),
@@ -3802,7 +3803,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     },
     execute: async (args) => {
       try {
-        const { cancelOrder } = await import('../constraint-runtime/dist/tools/PolymarketSDK/cancelOrder.js').catch(() => import('../constraint-runtime/src/tools/PolymarketSDK/cancelOrder.js'));
+        const { cancelOrder } = await loadDomainModule<any>('PolymarketSDK/cancelOrder');
         const r = await cancelOrder({
           privateKey: String(args.privateKey),
           orderId: String(args.orderId),
@@ -3977,7 +3978,7 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     parameters: { owners: 'JSON 数组 owner 地址 (必填)', threshold: '需要几个签名 (必填)' },
     execute: async (args) => {
       try {
-        const { deploySafe } = await import('../constraint-runtime/dist/tools/SafeSDK/deploySafe.js').catch(() => import('../constraint-runtime/src/tools/SafeSDK/deploySafe.js'));
+        const { deploySafe } = await loadDomainModule<any>('SafeSDK/deploySafe');
         const owners = Array.isArray(args.owners) ? args.owners : JSON.parse(String(args.owners));
         const r = await deploySafe({ owners, threshold: Number(args.threshold) });
         return { success: true, output: `✅ Safe 部署: ${JSON.stringify(r)}` };
