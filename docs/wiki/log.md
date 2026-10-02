@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-10-02 | chore | **发 `@bolloon/bolloon-agent@0.6.0`: npm `latest` + GitHub Release + tag `v0.6.0` 三处一致** —— 三处回读: npm 版本直连 **200** (14:37:07 放行, 第 16 次轮询) · `dist-tags.latest = 0.6.0` · Release `Bolloon Agent v0.6.0`(Latest, 无资产) · annotated tag 指向 `85c140c`(版本提交)。**发布件字节核验**: 从 packument 的 `dist.tarball` 下载重算 sha1 = **`e56bd6b0ed64a08829f1064e29ec2d2c1286e6f1`** 与 registry `dist.shasum` **逐字相同**; 20,161,745 B / **1657 文件** / 解包 49.5MB / 发布时刻 `2026-10-02T06:36:51Z`。**内容核验 (拆包)**: 7 个关键产物全在; 包内 `dist/web/ui/message-renderer.js` **无跨树 import**、`window.MR` 已挂、且第 56 行带 Node 全局守卫 (`typeof process !== "undefined" ? process.env : void 0`) ⇒ 本版修的两个静默失效**真在发布件里**; `MUTATION` 残留 0。**版本面**: `npm version 0.6.0 --no-git-tag-version`(package.json + lock 两处) + Android `600/0.6.0` + iOS `0.6.0/600` ⇒ `check-native-artifacts.mjs` 版本相关四项全绿 (0.5.4/0.5.5 只发 npm, 壳停在 0.5.3, 本版一并归位)。**门**: 发布前全量 **319 文件 / 4805 测试全绿** · `tsc --noEmit` 0 错 · `tsc -p tsconfig.electron.json` 0 错 · `build:web` 自洽门绿(构建戳 0.6.0 / sw 缓存名 `bolloon-mobile-v0.6.0`) · wiki 四门 OK; 发布后 `verify-release.mjs 0.6.0 --install-check` 见详细段。**手机端**: 重打 dev web bundle 身份 `0.6.0+dev.85c140c`(与 GitHub master HEAD 一致, 可被手机端接受), 解包自洽检查通过。**如实**: IPA 仍是 0.5.0 旧产物(本机无 Xcode 重打)⇒ 原生门该项仍红; Android APK 未在本机构建。 | package.json · package-lock.json · android/app/build.gradle · ios/App/App.xcodeproj/project.pbxproj · docs/wiki/log.md · https://github.com/logos-42/bolloon/releases/tag/v0.6.0 |
 | 2026-10-02 | fix | **Web 端回复不渲染的根因锁定并修复 (浏览器侧模块链顶层裸读 `process.env`) + 手机端 web 层跨树引用 (打包树外 ⇒ 404)** —— 症状: 页面能开、消息能发、LLM 真回了 (pi-ai 多次真调用), 但聊天气泡**全部不上屏**, 控制台**零报错**。**定位链**: 客户端 `MR_*` 包装器 → `_getMR()` 找不到 `window.MR` 就**静默 no-op** → 动态 `import('/ui/message-renderer.js')` 复现真因 **`ReferenceError: process is not defined at /agents/parse-tool-call.js:288`** (`src/agents/parse-tool-call.ts:271` 顶层 `process.env.BOLLOON_PARSE_DIAG`; 注释写着 **2026-10-01** 加的诊断开关 —— 与症状出现时间吻合) ⇒ 该模块在浏览器求值即崩 ⇒ 整条渲染链失效。**修**: `typeof process !== 'undefined'` 守卫 (解引用与守卫分离成两行, 顺带让静态门可判)。**门**: 新增 `src/test/web-module-browser-safety.test.ts` (入口**从 `src/web/index.html` 的 `<script src>` 推导**, 浏览器可达图内禁止未守卫的 Node 全局; **真变异**: 拆守卫⇒红 / 还原⇒绿) + `identity-and-diag-hygiene.test.ts ①` 按同一主张改写并加两条 (开关必须带守卫 / 不许裸读)。**真浏览器证据 (54188)**: 修前 `typeof window.MR === 'undefined'` → 修后 `window.MR` **9 个方法** · 历史 **54 条**上屏 · 用户气泡 + 回复「2 + 2 = 4。」+ 操作按钮 + 流式「开始思考...」全正常 · 换自洽包后二次回归回复「收到」正常。**手机端 (同源第二个洞)**: `dist/web/ui/message-renderer.js` 里 `import "../../agents/chat-segmenter.js"` 是**跨树引用** —— 桌面端因 `dist/agents/**` 恰好也被服务而能跑, 手机端只打包 `dist/web/**` (Capacitor webDir + build-mobile-web-bundle) ⇒ 404 且静默; **前后对照**: 旧包 `bolloon-web-fb60ccf5…`(2026-09-26) 跨树 import 在、目标不在包内 / 新包 `bolloon-web-a4c9733…` 无跨树 import · 14 个浏览器可达文件全部包内自洽。**修**: `ui/*.ts` 的 esbuild 开 `bundle:true` (`message-renderer` 对 `./step-timeline.js` 设 **external** —— 它由 index.html 单独加载, 内联会变**两份模块状态**) + `scripts/build-web.ts` 末尾加**自洽门** (从 4 个 HTML 做可达闭包, 断言相对引用落在 `dist/web` 内且存在; 范围刻意排除 `dist/web/server.js` 等服务端产物; JS 侧只认带扩展名的 ESM 说明符以免误报; 门红样例: `ui/message-renderer.js → ../../agents/chat-segmenter.js ⚠ 逃出 dist/web`)。**验证**: `tsc --noEmit` 0 错 · 聚焦 8/8 · 手机端 10 文件 **153/153 全绿** · CLI 端到端 0 次「LLM 不可用」真回复 · wiki 四门 OK。 | src/agents/parse-tool-call.ts · src/test/{web-module-browser-safety,identity-and-diag-hygiene}.test.ts · scripts/build-web.ts · dist/web/ui/*.js (产物) · docs/wiki/log.md |
 | 2026-10-02 | feat | **K6 收尾: provider fallback + usage 记录 ⇒ 能力 9/9, K6 收口** —— **fallback**: `snapshot.fallbackProviders` (只读, 来自 Run snapshot) ⇒ 候选 = 主 + 备用, 每个候选**建副本**不改原对象 (真跑断言原 snapshot 的 provider 与备用列表**一字未改**); 逐候选各过熔断门/并发槽/429 退避; 全失败 ⇒ 结果写明 `全部候选失败 (p1 → p2)`; **取消不回退** (abort 就是不要了)。**收尾暴露的真问题**: 第一版把所有失败收敛成结果对象 ⇒ **timeout / 熔断开路在单候选场合从"抛出"变成"返回失败"**, 调用方的 `catch (ModelTimeoutError/ModelCircuitOpenError)` 被静默废掉 (3 个既有用例当场红) ⇒ 定为规则: **时机类拒绝与超时的"抛"只在没有下一个候选时保留** (有下一个才回退)。**usage 记录**: `recordUsage` **端口注入** (内核不碰 RunStore, 落盘/入账属 K4 控制面), 成功与全失败都记一条 (真实 provider/ms/attempts/fallback/透传 usage), **端口抛错不许影响调用结果** (只记 `usageDropped`, 真跑专测)。**真跑 6 条**: 回退(只读+`opened=['p1','p2']`) · 无备用行为不变 · 全候选失败写明试过哪些 · 取消不回退 · usage 两向 · 429 用尽也可回退(限流不开路)。另: 判据用例"`capabilitiesDone=9` 应判红"在 9/9 后**恒真失效** ⇒ 换值构造 (同类第 6 次)。**验证**: 全量 **318 文件 / 4802 测试全绿** (+6) · tsc 0 错 · K3 棘轮 (代码 2475→2555) 当场拦后同步。 | src/kernel/model-runtime.ts · src/kernel/plan-modelruntime.ts · src/kernel/roster.ts · src/test/kernel-modelruntime.test.ts · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md |
 | 2026-10-02 | feat | **K6 第四步: 熔断 (三态) + 能力检查 (能力 5/9→7/9)** —— **熔断**: `BREAKER_POLICY` (阈值 3 · 冷却 30s · 半开探测 1) + 三态 (`closed→open→half-open→closed`, 半开探测失败即**重新开路并重新计时**) + 开路期内抛 `ModelCircuitOpenError` **不发起调用也不排队**; `countsTowardBreaker` 口径: **取消(调用方) ✗ · 429(交给退避) ✗ · 超时 ✓ · 其它故障 ✓**; `breakerStates()` 逐 key 只读诊断。**能力检查**: `acquire(snapshot, {require})` —— 缺能力拒 · **未声明 capabilities ⇒ 不许猜 (拒并写明"未知能力")** · **拒在开连接之前** (真跑断言 `opened===0`) · 冻结的 capabilities 数组跑完原样。**一处口径要点**: 端口自抛 `AbortError` 而运行时 signal 未取消 = 供应商侧中止 ⇒ **计入**熔断; 只有运行时 signal 被取消才归一化成 `ModelAbortError` 不计入 ⇒ "调用方取消不计入"的用例必须用**外部 signal** 制造 (第一版用端口自抛, 熔断被打开 —— 是**用例场景不真实**, 不是实现错)。**真跑 4 条**: 开路→快速失败(调用计数不涨)→冷却未到→放探测→闭合 · 半开失败重新开路 · 三类不计入(含 4 个纯函数断言) · 能力两向+连接零开销+冻结数组原样。**验证**: 全量 **318 文件 / 4796 测试全绿** (+4) · tsc 0 错 · K3 棘轮 (代码 2371→2475) 当场拦后同步。 | src/kernel/model-runtime.ts · src/kernel/plan-modelruntime.ts · src/kernel/roster.ts · src/test/kernel-modelruntime.test.ts · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md |
@@ -535,6 +536,57 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+### [2026-10-02] chore | 发 `@bolloon/bolloon-agent@0.6.0` (npm + GitHub Release + tag 三处一致)
+
+### 触发
+leo: 「完成 k0-k10 后, 确保 Web 渲染回复成功, cli 端正常, 手机端正常, 之后 push, 发布新版本包 0.6.0」。
+前三项已完成并单独记档 (§Web 渲染修复), 本条记**发布**这一步。
+
+### 发布前门 (全部真跑)
+| 门 | 结果 |
+| `npx vitest run` (全量) | **319 文件 / 4805 测试全绿** (113s) |
+| `npx tsc --noEmit` | 0 错 |
+| `npx tsc -p tsconfig.electron.json --noEmit` (CJS 目标门) | 0 错 (发布门 `prepublishOnly→build:all→build:electron` 的前置) |
+| `npm run build:web` + **自洽门** | 绿 (浏览器可达 14 文件全部在 `dist/web` 内) |
+| `node scripts/check-native-artifacts.mjs` | 版本相关四项全绿 (Android 600/0.6.0 · iOS 0.6.0/600 · 同一整数); **IPA 项仍红** (包里是 0.5.0 旧产物) |
+| `MUTATION` 残留 (`grep -rn src/`) | **0** |
+| wiki 四门 (check / lint --strict=v2 / raw_manifest_check / supersede_check) | OK |
+
+### 版本面四处对齐 (0.5.4/0.5.5 只发了 npm, 壳停在 0.5.3)
+`npm version 0.6.0 --no-git-tag-version` ⇒ package.json + package-lock.json (两处 version);
+`android/app/build.gradle` versionCode 503→**600** / versionName 0.5.3→**0.6.0**;
+`ios/App/App.xcodeproj/project.pbxproj` CURRENT_PROJECT_VERSION 503→**600** / MARKETING_VERSION 0.5.3→**0.6.0** (Debug/Release 各一处)。
+**为什么顺手做**: 壳版本与 npm 不对齐时, 手机端会出现「App 是 0.5.3 但 OTA 拉到 0.6.x」的错配 (仓内门 `check-native-artifacts.mjs` 就是为这条立的)。
+
+### 发布时序 (与 skill 里记的 0.5.4/0.5.5 一致)
+- 14:31:51 `npm publish` 受理: `+ @bolloon/bolloon-agent@0.6.0` · 20.2MB · **1657 文件** · shasum `e56bd6b0…` · registry 回 "being processed"。
+- 有界轮询 (20s × ≤90): 第 1–15 次 版本直连 **404** / `latest=0.5.5` ⇒ 第 **16 次 (14:37:07)** 版本直连 **200** / `latest=0.6.0` ⇒ 放行耗时 **约 5 分钟** (比 0.5.4/0.5.5 的 19/23 分钟快, 说明放行时间不稳定, **只能轮询, 不能按经验估**)。
+- 全程**未重发、未轮换 token、未改版本号**。
+
+### 发布件核验 (拆包, 强证据)
+| 项 | 值 |
+| 下载字节数 | 20,161,745 B |
+| 重算 sha1 | **`e56bd6b0ed64a08829f1064e29ec2d2c1286e6f1`** = registry `dist.shasum` (**逐字相同** ⇒ 我核的就是发出去的那份) |
+| `dist.tarball` | 从 packument 取真 URL (不手拼 —— `@scope/name` 的 tarball 文件名不含 scope) |
+| 关键产物 | 7/7 在包内 (`cli-entry.js` · `index.js` · `web/client.js` · `web/ui/message-renderer.js` · `agents/parse-tool-call.js` · `kernel/model-runtime.js` · `kernel/channel-actor.js`) |
+| 包内 `web/ui/message-renderer.js` | **无跨树 import** (`from "../.."` 命中 0) · `window.MR` 已挂 · 第 56 行 `var _parseEnv = typeof process !== "undefined" ? process.env : void 0;` ⇒ **本版修的两个静默失效真在发布件里** |
+| `MUTATION` (包内) | 0 |
+| 发布时间 (UTC) | `2026-10-02T06:36:51Z` |
+
+> 注: 我先前用**单引号**形态 grep `typeof process !== 'undefined'` 在包内命中 0 —— 那是 **grep 模式假象** (esbuild 把引号规范成 `"` 并把 `undefined` 写成 `void 0`), 不是缺件; 换成看 `process` 行明细即可见到守卫本行。**判发布件时先看行明细, 别只用一种字面形态 grep**。
+
+### tag 与 Release
+- `git tag -a v0.6.0 85c140c` (annotated; `85c140c` = 版本提交) → `git push origin refs/tags/v0.6.0` (lightweight tag 不会跟 `--follow-tags` 走, 必须显式推) → `git ls-remote --tags` 回读: 标签对象 `4aa15a8a…^{}` 指向 `85c140c` ✓。
+- `gh release create v0.6.0 --title "Bolloon Agent v0.6.0" --notes-file … --latest` (无资产) → 回读四字段: name `Bolloon Agent v0.6.0` · tagName `v0.6.0` · isDraft `false` · isPrerelease `false`; `gh release list` 显示为 **Latest** ✓。
+
+### 手机端 (与发布同批)
+重打 dev web bundle: 身份 **`0.6.0+dev.85c140c`** (sha 与 GitHub master HEAD 一致 ⇒ **不会被手机端拒装**, 与上一轮那个 `0.5.5+dev.a4c9733` 不同) · 8.21 MiB / 171 文件 · sha256 `0a52a93f…bb0c`; 解包后自洽检查通过 (14 文件, 无跨树引用)。
+
+### 未做 / 如实
+- **IPA 未重打** (本机无 Xcode) ⇒ `check-native-artifacts.mjs` 的 IPA 项仍红; Android APK 亦未在本机构建。
+- 发布件是 **npm + Release**; 没有推 APK / IPA 下载通道 (与 0.5.4/0.5.5 同形)。
+- `verify-release.mjs 0.6.0 --install-check` (消费端真装 + 0 警告) 结果见下表补记。
+
 ### [2026-10-02] fix | Web 端回复不渲染: 根因是浏览器侧模块链顶层裸读 `process.env`
 
 ### 触发
