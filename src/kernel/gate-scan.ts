@@ -739,3 +739,48 @@ export function scanSessionFieldResidence(
   }
   return out;
 }
+
+/**
+ * **K5 第 4 步 — history 写入的"唯一漏斗"判据**。
+ *
+ * 迁移前的盘上事实 (2026-10-02 实测, 记在台账 `HISTORY_WRITE_SITES`):
+ *   `this.messageHistory.push(` × 31 · `this.messageHistory.pop()` × 1 · 整体赋值 `this.messageHistory = ` × 3
+ * 迁移目标: 全部收敛到三个漏斗方法 —— `pushHistory` / `popHistory` / `replaceHistory`。
+ * ⇒ 判据: 每个直写模式在 `pi-sdk.ts` 里**必须是 0 处** (漏斗本体写 `this._history` / actor 方法, 不碰 `this.messageHistory`),
+ *    且三个漏斗方法必须真的存在。
+ * (注释必须先由调用方剥掉 —— 否则文档里的示例会被当成真写入。)
+ */
+export const HISTORY_WRITE_PATTERNS: readonly { id: string; src: string }[] = [
+  { id: 'push', src: 'this\\.messageHistory\\.push\\(' },
+  { id: 'pop', src: 'this\\.messageHistory\\.pop\\(\\)' },
+  { id: 'assign', src: 'this\\.messageHistory\\s*=\\s' },
+];
+
+export const HISTORY_WRITE_FUNNEL: readonly string[] = ['pushHistory', 'popHistory', 'replaceHistory'];
+
+export function scanHistoryWriteSites(code: string): Finding[] {
+  const out: Finding[] = [];
+  for (const p of HISTORY_WRITE_PATTERNS) {
+    const n = (code.match(new RegExp(p.src, 'g')) ?? []).length;
+    // 迁移后直写必须为 **0** —— 漏斗本体写的是 `this._history` / actor 的方法, 不碰 `this.messageHistory`
+    if (n > 0) {
+      out.push({
+        rule: `history-direct-${p.id}`,
+        file: 'agents/pi-sdk.ts',
+        line: 1,
+        what: `还有 ${n} 处 ${p.id} 直写 ⇒ 绕过了唯一漏斗 (pushHistory/popHistory/replaceHistory)`,
+      });
+    }
+  }
+  for (const name of HISTORY_WRITE_FUNNEL) {
+    if (!new RegExp(`private\\s+${name}\\(`).test(code)) {
+      out.push({
+        rule: 'history-funnel-missing',
+        file: 'agents/pi-sdk.ts',
+        line: 1,
+        what: `写入漏斗 ${name} 不见了 (调用点会全部落到直写或编译失败)`,
+      });
+    }
+  }
+  return out;
+}

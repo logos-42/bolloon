@@ -912,3 +912,41 @@ K2 门则从"写死的禁令"改成"**由台账开关的交接契约**" —— �
 | **空历史不破坏现状** | `load → null` ⇒ 返回 0, 现有 history 不动 |
 | **委托证据 (Pi 侧)** | `resumeSession` + `saveCurrentSession` 之后 `actor.mailbox.processed` **增加 ≥2 拍** ⇒ 确实走了 actor (不是"看起来像"), 且落盘内容 round-trip 一致 |
 | **判据 ③c 判别力** | 计数与名单不一致 ⇒ 红 · 名字不在 `HISTORY_OPS` ⇒ 红 · 超总量 ⇒ 红 |
+
+## 31. K5 第 4 步续: append 收敛 (history 写入的唯一漏斗 · 操作 3/4)
+
+### 31.1 迁移前的盘上事实 (实测, 写进台账)
+
+```
+this.messageHistory.push(…)  × 31
+this.messageHistory.pop()     × 1
+this.messageHistory = …       × 3   (hydrate 回灌 / 两次压缩后的整块替换)
+```
+
+### 31.2 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| `agents/pi-sdk.ts` | 三个**唯一漏斗**: `pushHistory(...msgs)` · `popHistory()` · `replaceHistory(next)`; 31+1+3 处调用点全部改为走漏斗。**漏斗有意做成同步**: 调用点写完立刻要读 (`length`/索引/`slice`), 改成 `await` 会改变同拍可见性 ⇒ 它交付的是**归属与可数性**, 并发安全由入口投递进 mailbox 负责 (K5 第 5 步) |
+| `channel-actor.ts` | `appendMessageSync` / `popMessageSync` / `replaceHistory` (同步写入面) + 原有的排队版 `appendMessage` |
+| `plan-channel-actor.ts` | `HISTORY_WRITE_SITES` (迁移前实测值) + `HISTORY_WRITE_FUNNEL` + 操作进度 **3/4** (hydrate · append · persist) |
+| `gate-scan.ts` | `scanHistoryWriteSites`: **每个直写模式在盘上必须为 0 处** + 三个漏斗方法必须存在 |
+
+### 31.3 两个被门抓到的真问题 (都不是测试抓到的)
+
+1. **自递归** —— 机械替换把漏斗**自身**的兜底分支也换掉了 (`else this.pushHistory(m)`)，成了无限递归。测试没抓到，因为只跑过"绑定了 actor"的分支；**是判据 `scanHistoryWriteSites` 的探针把它照出来的**。修: 兜底分支写 `this._history`；并**补了一条专测兜底分支的用例**。
+2. **改了盘上没改账** —— K2 台账冻结 `messageHistory: 56` 处访问，漏斗化后实为 **21** ⇒ K2 门红 ("少一处而不改账"). 这正是那条判据要的效果。修: 两本台账同步更新 (K2 的 `RUN_CONTEXT_FIELDS` 21 + `RUN_CONTEXT_ACCESS_TOTAL` 161→126；K5 移交字段 56→21)，并注明**这不是"泄漏消失"，是迁移动作的可见痕迹**。
+   **交叉验证**: 56 − 21 = **35** = 31 (push) + 1 (pop) + 3 (赋值) —— 两个独立的冻结数字互相对得上。
+
+### 31.4 真跑验证
+
+| 用例 | 断言 |
+| --- | --- |
+| **漏斗落到 actor** | 绑定 actor 的会话: `pushHistory(...)` 两条 ⇒ actor 的 history 增长; `popHistory()` 取回; `replaceHistory([...])` 整块换掉 |
+| **兜底分支** (曾藏递归洞) | 无身份的会话: `pushHistory/popHistory/replaceHistory` 全部落在**本地数组**上, 语义与迁移前一致 |
+| **判据判别力** | 盘上源码三模式**都为 0**; 注入一处直写 ⇒ 立刻红; 漏斗方法被删 ⇒ 红 |
+
+### 31.5 一处操作教训 (第 N 次: 引号/转义)
+
+在被 Python 字符串包住的补丁里写 TS 的 `'\n'`，会被 Python 先吃掉一层转义 ⇒ 落盘成**真换行**，语法直接破。
+⇒ 规矩: 写这类补丁时**别在字符串字面量里写字面量换行** —— 用 `split(/\r?\n/)` 正则可省一处，`join(String.fromCharCode(10))` 可省另一处。

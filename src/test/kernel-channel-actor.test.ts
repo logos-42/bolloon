@@ -26,7 +26,7 @@ import {
 } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
 import { ChannelActor, SerialMailbox, actorCount, createActorState, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
-import { type K5LedgerLike, scanActorLedger } from '../kernel/gate-scan.js';
+import { type K5LedgerLike, scanActorLedger, scanHistoryWriteSites } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
 const KERNEL = path.join(SRC, 'kernel');
@@ -214,6 +214,63 @@ describe('K5 门: Channel Actor 台账', () => {
     // ④ 空/无历史不破坏现状
     expect(await actor.hydrateHistory({ load: async () => null, filter: () => [], maxMessages: 5 })).toBe(0);
     expect((await actor.historySnapshot<{ role: string; content: string }>()).length).toBe(1);
+  });
+
+  it('★ 真跑: history 写入的唯一漏斗 (push/pop/替换) 都落到 Actor 上', async () => {
+    resetActors();
+    const s: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5fun:s1' });
+    expect(s.actor).toBeTruthy();
+    const before = s.actor.state.messageHistory.length;
+    // 私有漏斗通过 `as any` 直驱 (它们就是"所有写入的唯一入口")
+    s.pushHistory({ role: 'user', content: 'f1' }, { role: 'assistant', content: 'f2' });
+    expect(s.actor.state.messageHistory.slice(before).map((m: any) => m.content)).toEqual(['f1', 'f2']);
+    expect(s.popHistory()?.content).toBe('f2');
+    expect(s.actor.state.messageHistory.length).toBe(before + 1);
+    s.replaceHistory([{ role: 'system', content: 'r1' }] as any);
+    expect(s.actor.state.messageHistory.map((m: any) => m.content)).toEqual(['r1']);
+    resetActors();
+  }, 90000);
+
+  it('★ 真跑: 未绑定 actor 的会话走**本地数组**兜底分支 (曾经因机械替换变成自递归, 测试没覆盖到)', async () => {
+    resetActors();
+    const s: any = await createAgentSession({ cwd: process.cwd() });   // 无身份 ⇒ 不归属
+    expect(s.actor).toBeUndefined();
+    s.pushHistory({ role: 'user', content: 'local1' });
+    expect(s.messageHistory.map((m: any) => m.content)).toEqual(['local1']);
+    expect(s.popHistory()?.content).toBe('local1');
+    expect(s.messageHistory.length).toBe(0);
+    s.replaceHistory([{ role: 'system', content: 'local2' }] as any);
+    expect(s.messageHistory.map((m: any) => m.content)).toEqual(['local2']);
+    resetActors();
+  }, 90000);
+
+  it('★ 判据: 漏斗之外不许直写 history (唯一漏斗判据 + 判别力)', () => {
+    const PI_SRC = fs.readFileSync(path.join(SRC, 'agents/pi-sdk.ts'), 'utf-8');
+    // 剥注释 (judge 吃源码文本 ⇒ 必须先剥, 否则文档里的示例会被当成真写入)。
+    //   注意: 这里刻意用正则字面量与 String.fromCharCode(10) —— 避免把 \n 写进字符串字面量 (已被转义坑过一次)。
+    const NL = String.fromCharCode(10);
+    const strip = (t: string) => t
+      .split(/\r?\n/)
+      .map((l) => l.replace(/\/\/.*$/, ''))
+      .filter((l) => !/^\s*\*/.test(l))
+      .join(NL);
+    expect(scanHistoryWriteSites(strip(PI_SRC))).toEqual([]);      // 盘上真实源码 ⇒ 绿
+    // 判别力: 在漏斗之外注入一处直写 ⇒ 必须判红
+    const base = strip(PI_SRC);
+    // 三个直写模式在盘上源码里必须是 0 处
+    const direct: [string, RegExp][] = [
+      ['push', /this\.messageHistory\.push\(/g],
+      ['pop', /this\.messageHistory\.pop\(\)/g],
+      ['assign', /this\.messageHistory\s*=\s/g],
+    ];
+    for (const [id, re] of direct) {
+      expect(`${id}=${(base.match(re) ?? []).length}`).toBe(`${id}=0`);
+    }
+    const injected = base.replace('else this._history.push(m);', 'else this.messageHistory.push(m);');
+    expect(injected).not.toBe(base);
+    expect(scanHistoryWriteSites(injected).some((f) => f.rule === 'history-direct-push')).toBe(true);
+    // 漏斗方法被删 ⇒ 红
+    expect(scanHistoryWriteSites('const x = 1;').some((f) => f.rule === 'history-funnel-missing')).toBe(true);
   });
 
   it('★ 真跑 (Pi 侧): resume/save 确实走了 Actor 的邮箱 (委托证据, 不是"看起来像")', async () => {

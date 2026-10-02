@@ -36,7 +36,12 @@ export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'fi
  *     (`hydrateHistory` = load→filter→截断→替换, `historySnapshot` = persist 的取数拍, `appendMessage` 备用),
  *     业务侧只交**纯回调** (内核不 import 业务模块) —— 三个操作**走邮箱** ⇒ 同 Channel 内与 append 串行,
  *     不再有"读-改-写三拍被并发踩掉"和"边写边读抓到半截状态"。
- *     `historyOpsMigrated 2/4` (hydrate · persist); append 的 25 个调用点与 compact 留后续。
+ *     `historyOpsMigrated 2/4` (hydrate · persist)。
+ *   · 2026-10-02 同格继续: **append 收敛** —— `pi-sdk.ts` 里 history 的写入面 (实测 push 31 · pop 1 · 整体赋值 3)
+ *     全部收敛到唯一漏斗 `pushHistory` / `popHistory` / `replaceHistory` ⇒ 每个直写模式只剩漏斗自身 1 处,
+ *     判据 `scanHistoryWriteSites` 断言这一点。**漏斗有意做成同步**: 调用点写完立刻要读 (length/索引/slice),
+ *     改成 await 会改变同拍可见性 —— 它交付的是**归属与可数性**, 并发安全由入口投递负责 (K5 第 5 步)。
+ *     `historyOpsMigrated 3/4` (hydrate · append · persist); compact 留后续。
  */
 
 /** K5 第 4 步: 四个 history 操作 (唯一来源; 台账 `historyOpsNames` 必须 ⊆ 这里, 且数量与进度位一致) */
@@ -92,11 +97,18 @@ export const K5_DELETION_PRECONDITIONS: readonly string[] = [
 
 /** 从 K2 移交的 4 个 session 字段 (现仍是 Pi 实例字段, match 口径冻结值) */
 export const K5_INHERITED_FIELDS: readonly { name: string; into: string; accesses: number }[] = [
-  { name: 'messageHistory', into: 'actor.messageHistory', accesses: 56 },
+  { name: 'messageHistory', into: 'actor.messageHistory', accesses: 21 },
   { name: 'currentChannelId', into: 'actor.channelId', accesses: 24 },
   { name: 'currentAgentId', into: 'actor.agentId', accesses: 21 },
   { name: 'currentGoalId', into: 'actor.goalBinding', accesses: 22 },
 ];
+
+/**
+ * 从 K2 移交的四个 session 字段的**当前**访问数 (match 口径, 与 K2 台账逐字相等 —— 跨台账判据强制)。
+ * ⚠️ `messageHistory` 由 56 降到 **21**: K5 第 4 步把 35 处写入 (push 31 · pop 1 · 整体赋值 3)
+ *    收敛进唯一漏斗 (`pushHistory`/`popHistory`/`replaceHistory`) 后, 这些点不再直接访问实例字段。
+ *    这不是"泄漏消失", 是**迁移动作的可见痕迹** —— 数字对不上就必须回去核。
+ */
 
 /** 进度位 —— 门强制与盘上事实同步 (进度只许增; 未建的不许标已建) */
 export const K5_PROGRESS = {
@@ -110,13 +122,22 @@ export const K5_PROGRESS = {
   entriesWired: 0,
   entriesTotal: 4,
   /** K5 第 4 步里的 history **操作**搬迁 (4 个: hydrate/append/compact/persist) */
-  historyOpsMigrated: 2,
+  historyOpsMigrated: 3,
   historyOpsTotal: 4,
   /** 已搬操作名单 —— 门强制 `length === historyOpsMigrated` 且每个名字都在 HISTORY_OPS 里 */
-  historyOpsNames: ['hydrate', 'persist'],
+  historyOpsNames: ['hydrate', 'append', 'persist'],
 } as const;
 
 /** 四个入口 (leo 点名的) —— 全部要进同一 mailbox */
+/**
+ * history 写入面的**迁移前实测值** (2026-10-02 grep 计数, 见 `scanHistoryWriteSites`):
+ * 判据是"每个模式最多剩 1 处直写 (漏斗自身)" —— 若哪天这两个数字对不上盘上事实, 说明有人绕过漏斗。
+ */
+export const HISTORY_WRITE_SITES = { push: 31, pop: 1, assign: 3 } as const;
+
+/** history 写入的**唯一漏斗** (三个方法名; 判据要求它们真的存在) */
+export const HISTORY_WRITE_FUNNEL = ['pushHistory', 'popHistory', 'replaceHistory'] as const;
+
 export const K5_ENTRIES: readonly string[] = ['web/server.ts', 'src/cli', 'P2P 入站', 'Supervisor'];
 
 /** Goal 绑定必须是**显式操作**, 不许靠裸字段隐式生效 (leo 口径) */

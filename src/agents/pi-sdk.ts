@@ -300,6 +300,32 @@ export class PiAgentSession implements AgentSession {
   }
 
   /**
+   * **K5 第 4 步 — history 写入的唯一漏斗 (push)**。
+   * 为什么必须同步: 调用点遍布 ReAct 循环 / 工具回灌 / 压缩, 而且**写完立刻读** (length / 索引 / slice),
+   * 改成 await 会改变同拍可见性。所以这里有意识地**不排队** —— 归属收敛 + 可数 (门能断言"零处直写"),
+   * 并发安全由入口投递进 mailbox 负责 (K5 第 5 步)。
+   */
+  private pushHistory(...msgs: Message[]): void {
+    for (const m of msgs) {
+      // 兜底分支必须写**本地数组** (_history) —— 不能回调自己 (机械替换曾把这里也换成 pushHistory ⇒ 无限递归)
+      if (this.actor) this.actor.appendMessageSync(m);
+      else this._history.push(m);
+    }
+  }
+
+  /** **K5 第 4 步 — history 写入漏斗 (pop)** —— 同 pushHistory 的性质 */
+  private popHistory(): Message | undefined {
+    if (this.actor) return this.actor.popMessageSync<Message>();
+    return this._history.pop();
+  }
+
+  /** **K5 第 4 步 — history 写入漏斗 (整体替换)**: hydrate 回灌 / 压缩后的整块赋值都走这里 */
+  private replaceHistory(next: Message[]): void {
+    if (this.actor) this.actor.replaceHistory<Message>(next);
+    else this._history = next;
+  }
+
+  /**
    * **K5 第 4 步**: 绑定 actor 并**收养**绑定前已存在的本地历史。
    * 收养规则: actor 侧为空 且 本地非空 ⇒ 搬过去 (任何绑定时序都不丢历史); 收养后清空本地。
    * 约束 (全量回归打出来的): 调用方必须用**会话身份**当注册键; 没有身份就**不要调**这个方法。
@@ -746,7 +772,7 @@ export class PiAgentSession implements AgentSession {
       }
       const hydrated = this._filterToMessage(loaded).slice(-maxMessages);
       if (hydrated.length > 0) {
-        this.messageHistory = hydrated;
+        this.replaceHistory(hydrated);
         console.log(`[PiAgent] 从 ${sessionKey} 回灌 ${hydrated.length} 条历史`);
       }
     } catch (err) {
@@ -1123,8 +1149,8 @@ export class PiAgentSession implements AgentSession {
         if (gate !== 'ready') {
           const why = `初始化未就绪 (${gate}, 当前阶段 ${state.stage})${state.lastError ? ` — ${state.lastError.message}` : ''}`;
           const hint = (state.actions && state.actions[0]) || '运行 `bolloon setup` 完成初始化';
-          this.messageHistory.push({ role: 'user', content: input });
-          this.messageHistory.push({ role: 'assistant', content: `[初始化未就绪] ${why}\n${hint}` });
+          this.pushHistory({ role: 'user', content: input });
+          this.pushHistory({ role: 'assistant', content: `[初始化未就绪] ${why}\n${hint}` });
           console.warn(`[PiAgent] 拒绝执行: ${why}`);
           return `[初始化未就绪] ${why}\n${hint}`;
         }
@@ -1139,7 +1165,7 @@ export class PiAgentSession implements AgentSession {
       options = { ...options, onStream: this.wrapTrajectoryStream(options.onStream, trajRec) };
     }
 
-    this.messageHistory.push({
+    this.pushHistory({
       role: 'user',
       content: input
     });
@@ -1204,7 +1230,7 @@ export class PiAgentSession implements AgentSession {
       } catch (err) {
         await recordDegradation({ kind: 'core', op: 'pi-sdk.fallbackRun', runId: this.lastRunId || '', message: String((err as Error)?.message || err).slice(0, 160) }).catch(() => {});
       }
-      this.messageHistory.push({ role: 'assistant', content: response });
+      this.pushHistory({ role: 'assistant', content: response });
       this.reportUsageToContextManager();
       this.finishTrajectory(trajRec, response);
       return response;
@@ -1389,7 +1415,7 @@ export class PiAgentSession implements AgentSession {
     const contextHint = markerMatch ? input.replace(markerMatch[0], '').trim() : '';
     console.log(`[PiAgent.promptStream] marker matched=${!!markerMatch}, userText chars=${userText.length}, contextHint chars=${contextHint.length}`);
 
-    this.messageHistory.push({
+    this.pushHistory({
       role: 'user',
       content: userText
     });
@@ -1410,7 +1436,7 @@ export class PiAgentSession implements AgentSession {
 
     if (!this.minimaxAvailable) {
       const response = await this.handleFallback(userText);
-      this.messageHistory.push({ role: 'assistant', content: response });
+      this.pushHistory({ role: 'assistant', content: response });
       onStream({ type: 'done', content: '' });
       this.reportUsageToContextManager();
       this.finishTrajectory(trajRec, response);
@@ -1616,7 +1642,7 @@ export class PiAgentSession implements AgentSession {
       // 但 assistant 失败那条也别留 (留了会污染下一轮 LLM context).
       // 简化: 重试前 pop 一次 assistant (如果最后一条是 assistant)
       if (this.messageHistory.length > 0 && this.messageHistory[this.messageHistory.length - 1].role === 'assistant') {
-        this.messageHistory.pop();
+        this.popHistory();
       }
     }
     onStream({ type: 'done', content: '' });
@@ -1771,7 +1797,7 @@ ${await this.renderActivePlansSection()}
     const result = await loop.execute(input, llm, systemPrompt + historyBlock, this.runCtx.eventSink ?? undefined, this.runCtx.abortSignal ?? undefined, onCompact);
 
     if (result.response) {
-      this.messageHistory.push({ role: 'assistant', content: result.response });
+      this.pushHistory({ role: 'assistant', content: result.response });
     }
 
     // 回溯 + 清场
@@ -2208,14 +2234,14 @@ ${await this.renderActivePlansSection()}
       if (totalToolCallsThisLoop >= MAX_TOOL_CALLS_PER_LOOP) {
         console.warn(`[PiAgent] 单轮工具调用已达 ${MAX_TOOL_CALLS_PER_LOOP}, 注入 hint 让 LLM 总结`);
         onStream?.({ type: 'error', content: `⏹️ 工具调用已达上限 (${MAX_TOOL_CALLS_PER_LOOP}), 请基于已有结果回答`, tool: 'loop' });
-        this.messageHistory.push({ role: 'system', content: `[注意] 你已连续调用 ${MAX_TOOL_CALLS_PER_LOOP} 次工具。请基于已有结果直接回答用户, 不要再次调用任何工具。在回答末尾加 <final gen> 标记结束。` });
+        this.pushHistory({ role: 'system', content: `[注意] 你已连续调用 ${MAX_TOOL_CALLS_PER_LOOP} 次工具。请基于已有结果直接回答用户, 不要再次调用任何工具。在回答末尾加 <final gen> 标记结束。` });
         totalToolCallsThisLoop = 0;  // 重置计数器, 只防连续死循环
       }
       if (lastNTools.length >= MAX_IDEMPOTENT_TOOL && new Set(lastNTools).size === 1) {
         const repeatedTool = lastNTools[0];
         console.warn(`[PiAgent] 同工具 ${repeatedTool} 连续成功调 ${MAX_IDEMPOTENT_TOOL} 次, 注入 hint 让 LLM 总结`);
         onStream?.({ type: 'error', content: `⏹️ 工具 ${repeatedTool} 重复调用 ${MAX_IDEMPOTENT_TOOL} 次, 请基于已有结果回答`, tool: 'loop' });
-        this.messageHistory.push({ role: 'system', content: `[注意] 你已连续 ${MAX_IDEMPOTENT_TOOL} 次调用 ${repeatedTool}。请基于已有结果直接回答用户, 不要再次调用任何工具。在回答末尾加 <final gen> 标记结束。` });
+        this.pushHistory({ role: 'system', content: `[注意] 你已连续 ${MAX_IDEMPOTENT_TOOL} 次调用 ${repeatedTool}。请基于已有结果直接回答用户, 不要再次调用任何工具。在回答末尾加 <final gen> 标记结束。` });
         lastNTools.length = 0;  // 重置计数器
         // 不 break — 让 LLM 在下一轮用已有信息回答
       }
@@ -2432,7 +2458,7 @@ ${await this.renderActivePlansSection()}
         }
 
         // 把错误当成 tool 结果 push 进 history, 这样下一轮 LLM 看到错误能调整
-        this.messageHistory.push({
+        this.pushHistory({
           role: 'system',
           content: `[Loop 错误恢复 ${totalErrors}/${this.MAX_TOTAL_ERRORS}] ${aiFailureReason}\n\n请基于上轮工具结果继续完成任务, 不要重复调用同一失败操作. 如果工具已成功执行, 请基于 result.output 给用户总结; 如果工具失败, 请换其他方式或重试.`
         });
@@ -2511,7 +2537,7 @@ ${await this.renderActivePlansSection()}
 
       if (toolCalls.length > 0) {
         // 把原始 LLM 回复 push 进 history (仅一次)
-        this.messageHistory.push({
+        this.pushHistory({
           role: 'assistant',
           content: reply,
           toolCalls: toolCalls.length > 1 ? toolCalls : [toolCalls[0]],
@@ -2544,12 +2570,12 @@ ${await this.renderActivePlansSection()}
           consecutiveErrors++;
           totalErrors++;
           const errorResult: ToolResult = { success: false, error: `未知工具: ${toolCall.name}` };
-          this.messageHistory.push({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
+          this.pushHistory({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
           this.logToHarness(toolCall.name, toolCall.args, errorResult);
           // 2026-07-28: 注入 Reflection 帮助 LLM 理解错误
           const obs = buildObservation(toolCall.name, toolCall.args, errorResult);
           const ref = buildReflection(toolCall.name, errorResult.error, totalErrors, lastFailedToolCount);
-          this.messageHistory.push({ role: 'system', content: formatObservationWithReflection(obs, ref) });
+          this.pushHistory({ role: 'system', content: formatObservationWithReflection(obs, ref) });
           if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary}`, tool: 'system' });
           console.warn(`[PiAgent] 未知工具: ${toolCall.name} (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS})，跳过并继续`);
           return;
@@ -2583,7 +2609,7 @@ ${await this.renderActivePlansSection()}
             consecutiveErrors++;
             totalErrors++;
             const denyResultMsg: ToolResult = { success: false, error: `拒绝: [${toolDecision.rejectedBy || 'deny-pipeline'}] ${toolDecision.reason}` };
-            this.messageHistory.push({ role: 'tool', content: JSON.stringify(denyResultMsg), toolResult: denyResultMsg });
+            this.pushHistory({ role: 'tool', content: JSON.stringify(denyResultMsg), toolResult: denyResultMsg });
             this.logToHarness(toolCall.name, toolCall.args, denyResultMsg);
             return;
           }
@@ -2596,7 +2622,7 @@ ${await this.renderActivePlansSection()}
               ? `Harness gate 拒绝 (${toolDecision.rejectedBy}): ${toolDecision.reason || '未通过安全校验'}`
               : `PreToolUse 拒绝: ${toolDecision.reason || '未通过安全校验'}`,
           };
-          this.messageHistory.push({ role: 'tool', content: JSON.stringify(deniedResult), toolResult: deniedResult });
+          this.pushHistory({ role: 'tool', content: JSON.stringify(deniedResult), toolResult: deniedResult });
           this.logToHarness(toolCall.name, toolCall.args, deniedResult);
           if (onStream) {
             const gateName = isGateDeny ? `Harness ${toolDecision.rejectedBy}` : (isHarnessError ? '核心约束层' : 'PreToolUse');
@@ -2620,10 +2646,10 @@ ${await this.renderActivePlansSection()}
               ? `[注意] 连续 ${consecutiveErrors} 次工具调用因约束层失效被阻止. 请换其他工具或直接回答用户, 末尾加 <final gen>.`
               : `[注意] 连续 ${consecutiveErrors} 次工具调用被系统拒绝. 请换其他工具或直接回答用户, 末尾加 <final gen>.`;
           if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
-            this.messageHistory.push({ role: 'system', content: systemMaxMsg });
+            this.pushHistory({ role: 'system', content: systemMaxMsg });
             lastFailedTool = ''; lastFailedToolCount = 0; consecutiveErrors = 0;
           } else if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-            this.messageHistory.push({ role: 'system', content: systemConsecMsg });
+            this.pushHistory({ role: 'system', content: systemConsecMsg });
             consecutiveErrors = 0;
           }
           return;
@@ -2698,7 +2724,7 @@ ${await this.renderActivePlansSection()}
             ok: !!result.success,
           });
           if (after.routeHint?.systemAddition) {
-            this.messageHistory.push({ role: 'system', content: `[Harness Router Hint: ${after.routeHint.reason}]\n${after.routeHint.systemAddition}` });
+            this.pushHistory({ role: 'system', content: `[Harness Router Hint: ${after.routeHint.reason}]\n${after.routeHint.systemAddition}` });
           }
           if (after.outputBlocked) {
             if (onStream) { onStream({ type: 'error', content: `🛡️ Harness output 拒绝 ${toolCall.name}: ${after.outputBlocked.reason}`, tool: toolCall.name }); }
@@ -2728,13 +2754,13 @@ ${await this.renderActivePlansSection()}
               onStream?.({ type: 'status', internal: true, content: `🩺 检测到重复调用 ${toolCall.name} (${obs.code}), 已提示模型换法`, tool: 'loop' });
             }
           } catch { /* 观测失败绝不影响主路径 */ }
-          this.messageHistory.push({ role: 'tool', content: JSON.stringify(result), toolResult: result, toolCallId: (toolCall as any).id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` });
+          this.pushHistory({ role: 'tool', content: JSON.stringify(result), toolResult: result, toolCallId: (toolCall as any).id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` });
           // 2026-10-01 (用户: 「为什么这么慢」): 量到的事实 —— 每次 LLM 往返平均 3338ms,
           //   而"一轮发多个工具"(toolCalls>1) 只占 12/63 ✗ ⇒ 回合时长 ≈ 往返次数 × 3.3 秒 ✓。
           //   本回合**第一次**且**只发一个**工具时, 附一句带代价的提醒(不是口号 ✓), 只提一次免得刷屏。
           if (toolCalls.length === 1 && this.successfulToolResults.length <= 1) {   // 本回合头一次(免得每轮刷屏)
             const __batchHint = batchHint(toolCall.name, 1);
-            if (__batchHint) this.messageHistory.push({ role: 'system', content: __batchHint.trim() });
+            if (__batchHint) this.pushHistory({ role: 'system', content: __batchHint.trim() });
           }
           this.logToHarness(toolCall.name, toolCall.args, result);
 
@@ -2829,15 +2855,15 @@ ${await this.renderActivePlansSection()}
             // 2026-07-28: 注入 Observation + Reflection 替代旧 hardcode 提示
             const obs = buildObservation(toolCall.name, toolCall.args, { success: false, error: result.error });
             const ref = buildReflection(toolCall.name, result.error, totalErrors, lastFailedToolCount);
-            this.messageHistory.push({ role: 'system', content: formatObservationWithReflection(obs, ref) + SHELL_ESCAPE_HINT });
+            this.pushHistory({ role: 'system', content: formatObservationWithReflection(obs, ref) + SHELL_ESCAPE_HINT });
             if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary} → ${ref[0]?.action || '放弃'}`, tool: 'system' });
             if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
-              this.messageHistory.push({ role: 'system', content: `[注意] 工具 ${toolCall.name} 在这个上下文中不可用 (连续 ${MAX_SAME_TOOL_FAILURES} 次失败: ${result.error}). 请不要再次调用它, 直接用你已知的信息回答用户, 并在回答开头标记 <final gen>.` });
+              this.pushHistory({ role: 'system', content: `[注意] 工具 ${toolCall.name} 在这个上下文中不可用 (连续 ${MAX_SAME_TOOL_FAILURES} 次失败: ${result.error}). 请不要再次调用它, 直接用你已知的信息回答用户, 并在回答开头标记 <final gen>.` });
               lastFailedTool = ''; lastFailedToolCount = 0; consecutiveErrors = 0;
               return;
             }
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-              this.messageHistory.push({ role: 'system', content: `[注意] 前面的工具调用连续失败。请尝试其他工具或换一种方式完成用户请求, 或用 <final gen> 给出最终回答.` });
+              this.pushHistory({ role: 'system', content: `[注意] 前面的工具调用连续失败。请尝试其他工具或换一种方式完成用户请求, 或用 <final gen> 给出最终回答.` });
               consecutiveErrors = 0;
             }
           }
@@ -2845,11 +2871,11 @@ ${await this.renderActivePlansSection()}
           consecutiveErrors++;
           totalErrors++;
           const errorResult: ToolResult = { success: false, error: String(execError) };
-          this.messageHistory.push({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
+          this.pushHistory({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
           this.logToHarness(toolCall.name, toolCall.args, errorResult);
           const obs = buildObservation(toolCall.name, toolCall.args, errorResult);
           const ref = buildReflection(toolCall.name, errorResult.error, totalErrors, lastFailedToolCount);
-          this.messageHistory.push({ role: 'system', content: formatObservationWithReflection(obs, ref) + SHELL_ESCAPE_HINT });
+          this.pushHistory({ role: 'system', content: formatObservationWithReflection(obs, ref) + SHELL_ESCAPE_HINT });
           if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary}`, tool: 'system' });
           console.error(`[PiAgent] 工具执行异常 (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS}): ${execError}`);
         }
@@ -2858,7 +2884,7 @@ ${await this.renderActivePlansSection()}
         continue;
         } else {
         // LLM 返回的不是 tool call 格式
-        this.messageHistory.push({
+        this.pushHistory({
           role: 'assistant',
           content: reply,
           reasoningContent: (response as any)?.reasoningContent,
@@ -2894,7 +2920,7 @@ ${await this.renderActivePlansSection()}
             unreportedRetries++;
             const unreported = this.successfulToolResults.length;
             console.log(`[PiAgent] LLM 想 final_gen 但还有 ${unreported} 个工具结果未汇报 (${unreportedRetries}/${MAX_UNREPORTED_RETRIES}), push hint 让其继续`);
-            this.messageHistory.push({
+            this.pushHistory({
               role: 'system',
               content: `[dive-into stop condition] 你之前已成功执行了 ${unreported} 个工具, 但当前回复里没把它们的结果告诉用户. 请基于已有的工具结果 (在 history 里) 写一个完整总结回复给用户, 用 <final gen> 结尾. 不要再调工具.`
             });
@@ -2906,7 +2932,7 @@ ${await this.renderActivePlansSection()}
             // 反复提示仍未汇报超过上限 → 清空积压强制 final, 不再死循环
             console.log(`[PiAgent] unreported 循环超限 (${unreportedRetries} 次), 清空积压强制 final`);
             this.successfulToolResults = [];
-            this.messageHistory.push({
+            this.pushHistory({
               role: 'system',
               content: `[dive-into stop condition] 已多次提示汇报工具结果仍未完成 (超过 ${MAX_UNREPORTED_RETRIES} 次). 现在直接基于你已知的信息写最终回复给用户, 用 <final gen> 结尾, 不要再调任何工具.`
             });
@@ -2918,7 +2944,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
           // 2026-07-29: 质量门 — 即使 LLM 声称完成, 质量太低也继续
           if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) {
             console.log(`[PiAgent] final gen 质量 ${lastQualityScore.toFixed(2)} < ${this.QUALITY_THRESHOLD}, 注入 refine hint`);
-            this.messageHistory.push({ role: 'system', content: `[质量检查] 你的回答质量评分为 ${(lastQualityScore * 10).toFixed(1)}/10, 低于 ${(this.QUALITY_THRESHOLD * 10).toFixed(1)}/10 阈值。请提供更完整、详细的回答, 包含工具调用获取到的具体信息, 末尾加 <final gen>。` });
+            this.pushHistory({ role: 'system', content: `[质量检查] 你的回答质量评分为 ${(lastQualityScore * 10).toFixed(1)}/10, 低于 ${(this.QUALITY_THRESHOLD * 10).toFixed(1)}/10 阈值。请提供更完整、详细的回答, 包含工具调用获取到的具体信息, 末尾加 <final gen>。` });
             refineAttempts++;
             continue;
           }
@@ -2940,7 +2966,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
           if (reviewDecision.kind === 'continue-review') {
             loopReviewCount++;
             console.log(`[PiAgent] review ${loopReviewCount}/${DEFAULT_MAX_REVIEWS}: LLM 想 final 但先对齐需求深挖一次`);
-            this.messageHistory.push({ role: 'system', content: reviewDecision.hint });
+            this.pushHistory({ role: 'system', content: reviewDecision.hint });
             if (onStream) {
               onStream({ type: 'status', internal: true, content: `🔄 目标对齐 review ${loopReviewCount}/${DEFAULT_MAX_REVIEWS}: 深挖续跑`, tool: 'system' });
             }
@@ -3000,7 +3026,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
       onStream({ type: 'status', internal: true, content: `✅ 处理完成，共 ${iteration - 1} 次循环`, tool: 'system' });
     }
 
-    this.messageHistory.push({ role: 'assistant', content: finalResponse });
+    this.pushHistory({ role: 'assistant', content: finalResponse });
 
     // React Harness: 循环结束
     // 2026-09-16 (Milestone 1-B): 会话收尾走唯一门面
@@ -3312,7 +3338,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
       onStream?.({ type: 'status', internal: true, content: '⚠️ reactive compaction 预检触发', tool: 'recovery' });
       try {
         const compacted = this.compressHistorySync(this.messageHistory);
-        this.messageHistory = compacted;
+        this.replaceHistory(compacted);
         if (this.estimateHistoryTokens() > this.maxContextTokens() * 0.8) {
           await this.maybeAutoCompact(onStream, signal);
         }
@@ -3514,7 +3540,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
         this.projectedHistory = result.history as Message[];  // buildContext 用
         // messageHistory 不变 (非破坏)
       } else {
-        this.messageHistory = result.history as Message[];  // 真破坏性更新
+        this.replaceHistory(result.history as Message[]);  // 真破坏性更新
         this.projectedHistory = null;
       }
       // 2026-08-06: snapshot 记录 before/after + 摘要 (供恢复/调试/UI), 事件广播

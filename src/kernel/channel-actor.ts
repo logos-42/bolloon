@@ -145,9 +145,32 @@ export class ChannelActor {
     return this.mailbox.submit(() => [...(this.state.messageHistory as T[])]);
   }
 
-  /** **K5 第 4 步 — append**: 串行追加 (同 Channel 内排队; 供后续把 25 个 push 点接过来用) */
+  /** **K5 第 4 步 — append (排队版)**: 串行追加 (同 Channel 内排队) */
   appendMessage<T>(msg: T): Promise<void> {
     return this.mailbox.submit(() => { (this.state.messageHistory as T[]).push(msg); });
+  }
+
+  /**
+   * **K5 第 4 步 — append (同步漏斗版)**: 给"写完立刻要读到"的调用面用 (Pi 的 ReAct 循环里大量
+   * `push` 后马上读 `length`/索引) —— 不能改成 await, 否则会改变同拍可见性。
+   *
+   * 它提供的是**归属与可数性** (所有 history 写入收敛到唯一漏斗, 门可以断言"零处直写"),
+   * **不是并发安全** —— 并发安全由"入口投递进 mailbox"负责 (K5 第 5 步 / entriesWired)。
+   */
+  appendMessageSync<T>(msg: T): void {
+    (this.state.messageHistory as T[]).push(msg);
+  }
+
+  /** **K5 第 4 步 — pop 漏斗** (与 appendMessageSync 同性质: 归属可数, 不负责并发) */
+  popMessageSync<T>(): T | undefined {
+    return (this.state.messageHistory as T[]).pop() as T | undefined;
+  }
+
+  /** **K5 第 4 步 — 整体替换漏斗** (hydrate 回灌 / 压缩后的整体赋值都走这里) */
+  replaceHistory<T>(next: T[]): void {
+    const arr = this.state.messageHistory as T[];
+    arr.length = 0;
+    arr.push(...next);
   }
 
   /** 取消当前任务: 中断 signal, 队列继续 (后续任务看到的是新的 controller) */
