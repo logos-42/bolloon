@@ -58,7 +58,7 @@ export const K8_TRANSPORT_AGENT_SITES: readonly K8Site[] = [
   // K8 第五步: 10 → 7 → 3 → 0 (★ server.ts 已零直连)
   { file: 'src/web/server.ts', count: 0, kind: 'via-actor', faces: ['web-message', 'web-stream', 'web-regen', 'cron', 'supervisor', 'external-wake'], status: 'open', why: 'web 通道 (消息/流式/重生成/cron/Supervisor/外部唤醒)' },
   { file: 'src/web/routes-tasks.ts', count: 0, kind: 'via-actor', status: 'migrated', evidence: '改经 runExecution({input}) —— 行为等价 (applyExecutionRequest 只覆盖显式给出的字段)', faces: ['contacts-reply'], why: 'task 路由' },
-  { file: 'src/agents/runner-resolver.ts', count: 0, kind: 'via-actor', status: 'migrated', evidence: '同上; **待真跑核验**: routes-tasks 那处由隐式绑定改为显式传 channelId (ExecutionRequest 要求)', faces: ['external-wake'], why: '独立宿主 runner' },
+  { file: 'src/agents/runner-resolver.ts', count: 0, kind: 'via-actor', status: 'migrated', evidence: 'routes-tasks 那处由隐式绑定改为**显式**传 channelId —— **2026-10-02 真跑核验通过** (src/test/k8-routes-tasks-execution.test.ts: 两半 id 一致的自检不变量 + agent 无 prompt 也跑通 + 真变异判红)', faces: ['external-wake'], why: '独立宿主 runner' },
   { file: 'src/cli-entry.ts', count: 0, kind: 'direct-prompt', status: 'open', faces: ['cli'], why: 'CLI 通道' },
   { file: 'src/web/mobile-core.ts', count: 0, kind: 'direct-prompt', status: 'open', faces: ['mobile'], why: '手机端通道' }
 ];

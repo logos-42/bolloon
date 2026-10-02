@@ -372,7 +372,10 @@ async function executeTask(
           }
           // 注意: 这里**显式传 channelId** —— ExecutionRequest 要求它, 且语义上本就该绑定 task 的通道。
           // 与旧写法 (prompt(desc), 隐式走 actor 绑定) 相比这是一处**行为差量**: 绑定从隐式变显式。
-          // 按纪律记为待真跑核验项 (见 K8 台账), 不当作"零行为改变"。
+          // 按纪律记过"待真跑核验", **2026-10-02 已核验通过** (`src/test/k8-routes-tasks-execution.test.ts`,
+          // 真 express + 真 HTTP + 真任务队列): ① agent 只给 runExecution (无 prompt) 也能跑通 ⇒ 活路径唯一;
+          // ② **两半 id 一致** (解析 agent 用的 id == 绑 run 用的 id) 是自检不变量; ③ 无门时响亮失败且 prompt 调用 0 次。
+          // 真变异: 绑成 `channelId + '-mut'` ⇒ 判红; 回落直呼 `prompt` ⇒ 判红; 还原 ⇒ 回绿无残差。
           result = await deliverThroughActor(agentForRun, () => agentForRun.runExecution!({ input: desc, channelId }));
         }
         break;
