@@ -44,18 +44,18 @@ export const RUN_CONTEXT_FIELDS: readonly RunStateField[] = [
   { name: 'messageHistory', declaredAt: 'agents/pi-sdk.ts:272', scope: 'session', accesses: 22, into: 'history', migrated: false, payDownIn: 'K2' },
   { name: 'currentOnStream', declaredAt: 'agents/pi-sdk.ts:442', scope: 'run', accesses: 0, into: 'eventSink', migrated: true, payDownIn: 'K2' },
   { name: 'currentSignal', declaredAt: 'agents/pi-sdk.ts:443', scope: 'run', accesses: 0, into: 'abortSignal', migrated: true, payDownIn: 'K2' },
-  { name: 'currentChannelId', declaredAt: 'agents/pi-sdk.ts:458', scope: 'session', accesses: 24, into: 'channelId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentChannelId', declaredAt: 'agents/pi-sdk.ts:458', scope: 'session', accesses: 25, into: 'channelId', migrated: false, payDownIn: 'K2' },
   { name: 'currentRunId', declaredAt: 'agents/pi-sdk.ts:471', scope: 'run-boundary', accesses: 38, into: 'runId', migrated: false, payDownIn: 'K2' },
   { name: 'currentIntent', declaredAt: 'agents/pi-sdk.ts:463', scope: 'run', accesses: 0, into: 'intent', migrated: true, payDownIn: 'K2' },
-  { name: 'currentGoalId', declaredAt: 'agents/pi-sdk.ts:1725', scope: 'session', accesses: 22, into: 'goalId', migrated: false, payDownIn: 'K2' },
-  { name: 'currentAgentId', declaredAt: 'agents/pi-sdk.ts:460', scope: 'session', accesses: 21, into: 'agentId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentGoalId', declaredAt: 'agents/pi-sdk.ts:1725', scope: 'session', accesses: 23, into: 'goalId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentAgentId', declaredAt: 'agents/pi-sdk.ts:460', scope: 'session', accesses: 22, into: 'agentId', migrated: false, payDownIn: 'K2' },
 ];
 
 /** RunContext 必须带的字段 (leo 的 K2 清单) */
 export const RUN_CONTEXT_TARGET: readonly string[] = ["requestId", "channelId", "agentId", "goalId", "runId", "intent", "modelSnapshot", "history", "abortSignal", "budget", "eventSink", "harnessContext"];
 
 /** 冻结总量 (棘轮只许减) */
-export const RUN_CONTEXT_ACCESS_TOTAL = 127;
+export const RUN_CONTEXT_ACCESS_TOTAL = 130;
 
 /** 已外置字段数 (棘轮: 只许增)。改动这里 = 明确宣告"又搬完一个字段" */
 export const RUN_CONTEXT_MIGRATED_FROZEN = 3;

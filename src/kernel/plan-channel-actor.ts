@@ -117,9 +117,10 @@ export const K5_DELETION_PRECONDITIONS: readonly string[] = [
 /** 从 K2 移交的 4 个 session 字段 (现仍是 Pi 实例字段, match 口径冻结值) */
 export const K5_INHERITED_FIELDS: readonly { name: string; into: string; accesses: number }[] = [
   { name: 'messageHistory', into: 'actor.messageHistory', accesses: 22 },
-  { name: 'currentChannelId', into: 'actor.channelId', accesses: 24 },
-  { name: 'currentAgentId', into: 'actor.agentId', accesses: 21 },
-  { name: 'currentGoalId', into: 'actor.goalBinding', accesses: 22 },
+  // K5 步骤⑦ 起 +1: `applyExecutionRequest` 把请求里的绑定写进这三个字段 (各一处写)
+  { name: 'currentChannelId', into: 'actor.channelId', accesses: 25 },
+  { name: 'currentAgentId', into: 'actor.agentId', accesses: 22 },
+  { name: 'currentGoalId', into: 'actor.goalBinding', accesses: 23 },
 ];
 
 /**
@@ -139,6 +140,9 @@ export const K5_INHERITED_FIELDS: readonly { name: string; into: string; accesse
  */
 export const AGENT_ENTRY_METHODS: readonly string[] = [
   'prompt', 'promptStream', 'promptWithPivotLoop', 'summarizeDocument', 'improveDocument',
+  // K5 步骤⑦ 新增的唯一入口: 请求式投递 (`runExecution`) 也是**启动一次执行** ——
+  //   不列进来会让"改写成请求式"的站点从执行点计数里**消失** (实测: 一改成请求式, 该文件 total 就从 11 掉到 10)。
+  'runExecution',
 ];
 
 /**
@@ -170,6 +174,20 @@ export const K5_RUN_BOUNDARY = {
   migrated: true,
   /** K2 留下的唯一播种读取 (不因本步而增加; 由 K2 的门强制) */
   seedReads: 1,
+} as const;
+
+/**
+ * **K5 步骤⑦**: 一次性 `ExecutionRequest` 的收敛进度。
+ *   Pi 侧已加唯一入口 (`applyExecutionRequest` 落绑定 · `runExecution` 派发);
+ *   入口面 **converted = 1** (web 用户消息路径)。
+ *   `remaining` 是**派生值** (已投递点数 − converted) —— 位置式形态太多, 行级正则数不准,
+ *   与其编一个假精确的门, 不如把"请求式"这半钉死, 剩下用算术表示。
+ */
+export const K5_EXECUTION_REQUEST = {
+  methodAdded: true,
+  converted: 1,
+  wiredTotal: 24,
+  remaining: 23,
 } as const;
 
 /** 入口 → 文件分组 (判据做**双向**校验: 说完成 ⇒ 其文件必须全接完; 说没完成 ⇒ 必须真有文件没接完) */

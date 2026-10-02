@@ -809,9 +809,11 @@ export function countEntryExecutionPoints(
     const l = raw.replace(/\/\/.*$/, '');
     if (/^\s*\*/.test(l)) continue;                                  // 块注释行
     for (const m of methods) {
-      const rx = new RegExp(`\\.\\s*${m}\\s*\\(`, 'g');
+      // `[!?]?` 允许非空断言 / 可选调用: `session.runExecution!(req)` 也是执行点
+      //   (实测: 不带这一段, 改成请求式的站点会从计数里消失 ⇒ 该文件 total 从 11 掉到 10)
+      const rx = new RegExp(`\\.\\s*${m}\\s*[!?]?\\s*\\(`, 'g');
       if (!rx.test(l)) continue;
-      const recv = new RegExp(`([A-Za-z_$][\\w$]*|this)\\s*\\.\\s*${m}\\s*\\(`).exec(l);
+      const recv = new RegExp(`([A-Za-z_$][\\w$]*|this)\\s*\\.\\s*${m}\\s*[!?]?\\s*\\(`).exec(l);
       if (recv && excludeReceivers.includes(recv[1])) continue;        // 已核实的非执行点
       n += 1;
     }
@@ -905,5 +907,38 @@ export function scanRunBoundaryResidence(
   const declared = new RegExp(`private\\s+${rb.field}\\s*[=:]`).test(code);
   if (rb.migrated && declared) f(`${rb.field} 仍以实例字段存在 (${rb.into} 已接管却被留下 ⇒ 两份真相)`);
   if (!rb.migrated && !declared) f(`${rb.field} 不见了, 台账却说没迁 (migrated=false) ⇒ 半搬状态`);
+  return out;
+}
+
+/**
+ * **K5 步骤⑦ — 一次性 `ExecutionRequest` 的收敛进度** (只验**真数得到**的那一半, 不编造可验证性):
+ *   · `converted` = 入口面上 `runExecution` 调用数 (请求式投递; 允许非空断言 `runExecution!(`);
+ *   · 判据: `converted` 必须等于盘上计数 · 不许超过已投递点数 · Pi 侧必须真的有
+ *     `runExecution(` 与 `applyExecutionRequest(` (台账说加了就必须加, 反之亦然);
+ *   · **`remaining` 是派生值** (= 已投递点数 − converted), 台账里注明它是算出来的, 不假装被独立验证:
+ *     位置参数式的形态太多 (多行 / `as any` / 带参箭头), 行级正则会**数不准**; 与其编一个假精确的门,
+ *     不如把"请求式"这半钉死, 剩下那半用算术表示。
+ */
+export function scanExecutionRequest(
+  entrySources: readonly { file: string; text: string }[],
+  piCode: string,
+  req: { methodAdded: boolean; converted: number; wiredTotal: number },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'execution-request-mismatch', file: 'kernel/plan-channel-actor.ts', line: 1, what });
+  let converted = 0;
+  for (const s of entrySources) {
+    for (const raw of s.text.split(/\r?\n/)) {
+      const l = raw.replace(/\/\/.*$/, '');
+      if (/^\s*\*/.test(l)) continue;
+      converted += (l.match(/runExecution[!?]?\(/g) ?? []).length;
+    }
+  }
+  if (converted !== req.converted) f(`请求式投递 盘上 ${converted} 处 ≠ 台账 ${req.converted}`);
+  if (converted > req.wiredTotal) f(`请求式 ${converted} > 已投递点数 ${req.wiredTotal}`);
+  const hasRun = /runExecution\s*\(/.test(piCode);
+  const hasApply = /applyExecutionRequest\s*\(/.test(piCode);
+  if (req.methodAdded && (!hasRun || !hasApply)) f('台账说唯一入口已加, 但 pi-sdk 里缺 runExecution/applyExecutionRequest');
+  if (!req.methodAdded && hasRun) f('pi-sdk 里已有 runExecution, 台账却说没加');
   return out;
 }

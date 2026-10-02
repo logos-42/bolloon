@@ -106,19 +106,25 @@ export interface EntryPoint {
 }
 
 export const ENTRY_GRAPH: readonly EntryPoint[] = [
-  { file: 'agents/pi-sdk.ts', kind: 'adapter-internal', method: 'prompt', count: 1, path: 'direct', targetPhase: 'K4', note: "适配器内部 pivot 分派 (不是外部入口)" },
+  // K5 步骤⑦: `runExecution` (一次性请求的唯一入口) 内部派发 —— 新增 prompt/promptStream 各一处
+  { file: 'agents/pi-sdk.ts', kind: 'adapter-internal', method: 'prompt', count: 2, path: 'direct', targetPhase: 'K4', note: "适配器内部 pivot 分派 + runExecution 的非流式派发 (都不是外部入口)" },
+  { file: 'agents/pi-sdk.ts', kind: 'adapter-internal', method: 'promptStream', count: 1, path: 'direct', targetPhase: 'K4', note: "runExecution 的流式派发 (K5 步骤⑦ 新增)" },
   { file: 'agents/pi-sdk.ts', kind: 'adapter-internal', method: 'promptWithPivotLoop', count: 2, path: 'direct', targetPhase: 'K4', note: "适配器内部 pivot 分派 (不是外部入口)" },
   { file: 'agents/runner-resolver.ts', kind: 'agent-entry', method: 'prompt', count: 1, path: 'direct', targetPhase: 'K3', note: "独立宿主: 目前直调" },
   { file: 'cli/interface.ts', kind: 'readline-tui', method: 'prompt', count: 3, path: 'queued', targetPhase: 'K3', note: "readline 输入提示, 非 agent 入口" },
   { file: 'index.ts', kind: 'agent-entry', method: 'prompt', count: 7, path: 'direct', targetPhase: 'K3', note: "CLI 装配点" },
   { file: 'index.ts', kind: 'agent-entry', method: 'promptStream', count: 1, path: 'direct', targetPhase: 'K3', note: "CLI 装配点" },
   { file: 'web/routes-tasks.ts', kind: 'agent-entry', method: 'prompt', count: 1, path: 'direct', targetPhase: 'K3', note: "任务路由: 目前直调" },
-  { file: 'web/server.ts', kind: 'agent-entry', method: 'prompt', count: 3, path: 'direct', targetPhase: 'K3', note: "Web 主入口: 唯一有 per-channel queue, 但仍直调 11 处" },
-  { file: 'web/server.ts', kind: 'agent-entry', method: 'promptStream', count: 8, path: 'direct', targetPhase: 'K3', note: "Web 主入口: 唯一有 per-channel queue, 但仍直调 11 处" },
+  { file: 'web/server.ts', kind: 'agent-entry', method: 'prompt', count: 3, path: 'direct', targetPhase: 'K3', note: "Web 主入口 (非流式 3 处仍直调)" },
+  { file: 'web/server.ts', kind: 'agent-entry', method: 'promptStream', count: 7, path: 'direct', targetPhase: 'K3', note: "Web 主入口: 1 处已改请求式 (K5 步骤⑦), 余 10 处仍直调" },
 ];
 
-/** 直调 `prompt*()` 的调用点总数 (K3 只许把它压到 0; 棘轮只许减) */
-export const ENTRY_DIRECT_CALLS_FROZEN_AT = 24;
+/**
+ * 直调 `prompt*()` 的调用点总数 (K3 只许把它压到 0; 棘轮只许减)。
+ * ⚠️ 24 → **25** (2026-10-02, K5 步骤⑦): `runExecution` 内部新增 `prompt`/`promptStream` 派发各 1 处 (+2),
+ *    web/server.ts 用户消息路径改成请求式 (-1)。**这是"形态变化"不是"旁路复活"** —— 见 ENTRY_GRAPH 的两行 adapter-internal。
+ */
+export const ENTRY_DIRECT_CALLS_FROZEN_AT = 25;
 
 /**
  * ④ 旧代码删除台账 (leo 的 8 字段; 每批删除必写一条)。目前为空 —— 但**不是空门**:

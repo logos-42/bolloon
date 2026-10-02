@@ -5235,7 +5235,14 @@ fetchState();
         const markedPrompt = `${extraHint}【本轮用户请求】\n${text}\n【请求结束】\n\n${attachmentContext}${contextHint}`;
         // 闭包里 TS 不再保留 null 收窄 ⇒ 先收成局部 const
         const agentForRun = agent;
-        fullResponse = await deliverThroughActor(agentForRun, () => agentForRun.promptStream(markedPrompt, streamCallback, runState.abortController?.signal, channelId));
+        // **K5 步骤⑦**: 入口只交一个一次性 `ExecutionRequest` (绑定/流/取消都在请求里), Pi 侧 runExecution 统一派发
+        const request = {
+          input: markedPrompt,
+          channelId,
+          signal: runState.abortController?.signal,
+          onStream: streamCallback,
+        };
+        fullResponse = await deliverThroughActor(agentForRun, () => agentForRun.runExecution!(request));
       } catch (err: any) {
         // abort 抛错: 保留已输出的部分 (fullResponse 可能是空字符串)
         if (runState.abortController?.signal.aborted || err?.name === 'AbortError') {

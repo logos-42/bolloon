@@ -1221,3 +1221,49 @@ channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代�
 
 我在**块注释**里写了"带 self. 前缀 + 字段名"的字面形态来讲解"访问数不变", 结果 K2 计数**虚增 1** (38→39) 被门当场照出。
 ⇒ 规矩 (第三次): **注释里不许出现台账计数的字面形态** —— K2 的口径只剥 `//` 行注释, **不剥 `*` 块注释**; 而且**讲解计数的注释**最容易被写进去 (三次里有两次是讲解口径本身)。
+
+## 40. K5 步骤⑦: Pi 只接收一次性的 `ExecutionRequest`
+
+### 40.1 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| `channel-actor.ts` | `ExecutionRequest` 补齐 `onStream?` (给了走 `promptStream`, 不给走 `prompt`) —— 一次性请求的形状定死 |
+| `agents/pi-sdk.ts` | **`applyExecutionRequest(req)`**: 把请求里的绑定 (channelId/agentId/goalId/resumeRunId) 落到位 (走访问器 ⇒ 本体进 actor); **没给的不覆盖**。**`runExecution(req)`**: Pi 的**唯一执行入口** —— 先落位再派发 |
+| `agents/pi-sdk-types.ts` | 接口补 `applyExecutionRequest?` / `runExecution?` |
+| `web/server.ts` | 用户消息路径改成**请求式**: 构造 `{input, channelId, signal, onStream}` → `deliverThroughActor(session, () => session.runExecution!(req))` (**模板站点**) |
+| `plan-channel-actor.ts` | `K5_EXECUTION_REQUEST = { methodAdded: true, converted: 1, wiredTotal: 24, remaining: 23 }` (remaining 是**派生值**, 明示) |
+| `gate-scan.ts` | `scanExecutionRequest(...)` —— 请求式点数**从盘上重算** · 不许超总量 · Pi 侧必须真的有那两个方法 (双向) |
+
+### 40.2 判据只验"真数得到"的那一半 (不编造可验证性)
+
+位置参数式的形态太多 (多行调用 / `as any` / 带参箭头) ⇒ **行级正则数不准**。
+与其编一个假精确的门, 不如: **请求式 (converted) 钉死**, 剩下那半用 `remaining = wiredTotal − converted` 的**算术**表示, 并在台账里注明它是派生的。
+
+### 40.3 真跑验证
+
+| 用例 | 断言 |
+| --- | --- |
+| **绑定落位** | `applyExecutionRequest({channelId, agentId, goalId, resumeRunId})` ⇒ `actor.state.{channelId,agentId,goalBinding}` 全部到位; `resumeRunId` (run-boundary 值) 也设上 |
+| **没给的不覆盖** | 只给 `channelId` 再调一次 ⇒ agentId/goalBinding/resumeRunId 保持 |
+| **唯一入口存在** | `typeof session.runExecution === 'function'` |
+| **判据判别力** | 盘上请求式点数写错 ⇒ 红 · 台账说没加而 pi-sdk 里有 ⇒ 红 · 超总量 ⇒ 红 |
+
+### 40.4 顺带补上口径的一个洞 (被门当场抓出)
+
+把 web 用户路径改成请求式后, `web/server.ts` 的执行点计数从 **11 掉到 10** —— 因为口径的方法名单里没有 `runExecution` (新入口) ⇒ 门立刻红。
+⇒ 修: `AGENT_ENTRY_METHODS` 加上 `runExecution`, 并允许非空断言/可选调用 (`runExecution!(`) —— 否则"改写成请求式"的站点会从计数里**消失**。
+   **这条洞很有代表性: 引入新入口方法时, 口径的方法名单必须同步** (否则迁移看起来像"执行点凭空少了")。
+
+### 40.5 门当场抓到两条**真回归** (不是假红) —— 迁移必须同步的账
+
+改成请求式后, 全量立刻红了 4 条 (2 文件), 全是"改代码没改账":
+
+| 门 | 报了什么 | 为什么该报 |
+| --- | --- | --- |
+| **K0 ③ 入口调用关系图** | `表里有但盘上扫不到` + 直调总数 25 ≠ 冻结 24 | `runExecution` 内部**新增** 2 处派发 (`prompt` / `promptStream`), server.ts 用户路径**少** 1 处 ⇒ 表与冻结值都要更新 |
+| **K2 逐字段计数** | 三个绑定的访问数各 +1 (24/21/22 → 25/22/23), 总量 127 → 130 | `applyExecutionRequest` 把请求里的绑定写进这三个字段 (各一处写) —— 这是**真实新增访问** |
+
+⇒ 处置: ① `ENTRY_GRAPH` 加两行 `adapter-internal` (`runExecution` 的派发) 并把 `ENTRY_DIRECT_CALLS_FROZEN_AT` 24 → **25**, 注明"这是**形态变化**不是旁路复活";
+② K2 三个字段计数 + 总量同步, 且 **K5 的移交字段表逐字跟上** (跨台账判据强制)。
+⇒ 教训: **引入"新入口方法"会同时动两张账** (入口调用图 + 逐字段访问计数) —— 改形态时必须一次性把两张账都改掉。

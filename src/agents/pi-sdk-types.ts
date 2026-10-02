@@ -158,13 +158,17 @@ export interface HeartbeatConfig {
   greetingMessage?: string;
 }
 
-import type { ChannelActor } from '../kernel/channel-actor.js';
+import type { ChannelActor, ExecutionRequest } from '../kernel/channel-actor.js';
 
 export interface AgentSession {
   /** K5: 本会话的 Actor (由 session factory 在**会话身份已知时**绑定; 状态迁移见 plan-channel-actor.ts) */
   actor?: ChannelActor;
   /** K5 第 4 步: 绑定 actor 并收养绑定前已有的本地历史 (注册键必须是会话身份) */
   attachActor?(actor: ChannelActor): void;
+  /** K5 步骤⑦: 把一次性请求里的绑定落到位 (channelId/agentId/goalId/resumeRunId) */
+  applyExecutionRequest?(req: ExecutionRequest): void;
+  /** K5 步骤⑦: **Pi 的唯一执行入口** —— 只接收一次性 `ExecutionRequest` */
+  runExecution?(req: ExecutionRequest): Promise<string>;
   prompt(input: string, options?: { onStream?: StreamCallback; signal?: AbortSignal; channelId?: string }): Promise<string>;
   promptStream(input: string, onStream: StreamCallback, signal?: AbortSignal, channelId?: string): Promise<string>;
   /** 2026-09-16: 标记运行表面 (Durable Run 记录里的 surface 字段) — 可选, 老实现不关心 */

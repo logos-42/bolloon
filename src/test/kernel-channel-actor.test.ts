@@ -20,6 +20,7 @@ import {
   K5_ACCEPTANCE,
   K5_CHANNEL_LOCK,
   K5_DELETION_PRECONDITIONS,
+  K5_EXECUTION_REQUEST,
   K5_RUN_BOUNDARY,
   K5_GOAL_BINDING_RULE,
   K5_INHERITED_FIELDS,
@@ -28,7 +29,7 @@ import {
 } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
 import { ChannelActor, SerialMailbox, actorCount, channelQueueCount, createActorState, currentActorContext, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
-import { type K5LedgerLike, countEntryExecutionPoints, scanActorLedger, scanChannelLock, scanEntryDelivery, scanHistoryWriteSites, scanRunBoundaryResidence } from '../kernel/gate-scan.js';
+import { type K5LedgerLike, countEntryExecutionPoints, scanActorLedger, scanChannelLock, scanEntryDelivery, scanExecutionRequest, scanHistoryWriteSites, scanRunBoundaryResidence } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
 const KERNEL = path.join(SRC, 'kernel');
@@ -428,6 +429,42 @@ describe('K5 门: Channel Actor 台账', () => {
       .some((f) => f.rule === 'run-boundary-residence')).toBe(true);
     expect(scanRunBoundaryResidence(PI_SRC, { ...K5_RUN_BOUNDARY, migrated: false })
       .some((f) => f.rule === 'run-boundary-residence')).toBe(true);
+  });
+
+  it('★ 真跑: 一次性 ExecutionRequest 的绑定落位 (K5 步骤⑦)', async () => {
+    resetActors();
+    const s: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5req:s1' });
+    expect(s.actor).toBeTruthy();
+    s.applyExecutionRequest({ input: 'hi', channelId: 'ch-req', agentId: 'agent-req', goalId: 'goal-req', resumeRunId: 'run-req' });
+    // 绑定全部落进 actor (步骤③/⑥ 起它们就是访问器) —— 入口不再需要散着设字段
+    expect(s.actor.state.channelId).toBe('ch-req');
+    expect(s.actor.state.agentId).toBe('agent-req');
+    expect(s.actor.state.goalBinding).toBe('goal-req');
+    expect(s.resumeRunId).toBe('run-req');           // run-boundary 值 (恢复模式), 仍是实例字段
+    // **没给的不覆盖** (只覆盖显式给出的)
+    s.applyExecutionRequest({ input: 'hi2', channelId: 'ch-req' });
+    expect(s.actor.state.agentId).toBe('agent-req');
+    expect(s.actor.state.goalBinding).toBe('goal-req');
+    expect(s.resumeRunId).toBe('run-req');
+    // 唯一入口存在且可调 (派发到 prompt/promptStream 由既有测试覆盖)
+    expect(typeof s.runExecution).toBe('function');
+    resetActors();
+  }, 90000);
+
+  it('★ 判据: 一次性请求的收敛进度可数 (步骤⑦)', () => {
+    const entryFiles = K5_PROGRESS.entrySites.map((s) => s.file);
+    const sources = entryFiles.map((file) => ({ file, text: fs.readFileSync(path.join(SRC, file), 'utf-8') }));
+    const PI_SRC = fs.readFileSync(path.join(SRC, 'agents/pi-sdk.ts'), 'utf-8');
+    expect(scanExecutionRequest(sources, PI_SRC, K5_EXECUTION_REQUEST)).toEqual([]);
+    expect(K5_EXECUTION_REQUEST.methodAdded).toBe(true);
+    expect(K5_EXECUTION_REQUEST.remaining).toBe(K5_EXECUTION_REQUEST.wiredTotal - K5_EXECUTION_REQUEST.converted);
+    // 判别力: 盘上请求式点数写错 ⇒ 红; 台账说没加而 pi-sdk 里有 ⇒ 红; 超总量 ⇒ 红
+    expect(scanExecutionRequest(sources, PI_SRC, { ...K5_EXECUTION_REQUEST, converted: 3 })
+      .some((f) => f.rule === 'execution-request-mismatch')).toBe(true);
+    expect(scanExecutionRequest(sources, PI_SRC, { ...K5_EXECUTION_REQUEST, methodAdded: false })
+      .some((f) => f.rule === 'execution-request-mismatch')).toBe(true);
+    expect(scanExecutionRequest(sources, PI_SRC, { ...K5_EXECUTION_REQUEST, converted: 1, wiredTotal: 0 })
+      .some((f) => f.rule === 'execution-request-mismatch')).toBe(true);
   });
 
   it('★ 判据: 入口投递的进度必须能**从盘上重算** (自报无效 · 逐文件表)', () => {

@@ -114,6 +114,9 @@ export interface ExecutionRequest {
   /** 从 checkpoint 恢复时的 runId (取代 Pi 上的 "currentRunId 播种") */
   resumeRunId?: string;
   signal?: AbortSignal;
+  /** 流式回调 (给了就走 promptStream, 不给就走 prompt) —— **K5 步骤⑦**: 一次性请求的唯一入口。
+   *  事件类型用 `any`: 内核不该知道上层的事件联合类型 (形参放宽避免调用点的变体不兼容)。*/
+  onStream?: (event: any) => void;
 }
 
 /**

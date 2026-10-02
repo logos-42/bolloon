@@ -15,7 +15,7 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { type RunContext, createRunContext } from './run-context.js';
-import type { ChannelActor } from '../kernel/channel-actor.js';
+import type { ChannelActor, ExecutionRequest } from '../kernel/channel-actor.js';
 import { expandHomeArgs } from './tool-path-args.js';
 import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
 import { runWithWriteOrigin } from './skill-ledger.js';
@@ -323,6 +323,30 @@ export class PiAgentSession implements AgentSession {
   private replaceHistory(next: Message[]): void {
     if (this.actor) this.actor.replaceHistory<Message>(next);
     else this._history = next;
+  }
+
+  /**
+   * **K5 步骤⑦ — 把一次性请求里的绑定落到位** (入口不再散着设字段: 只交一个请求)。
+   * 写入都走访问器 ⇒ 本体落进 `actor.state` (步骤③ 起就是这样); 没给的不覆盖 (与环境变量"只覆盖显式给出的"同秩)。
+   */
+  applyExecutionRequest(req: ExecutionRequest): void {
+    if (req.channelId) this.currentChannelId = req.channelId;
+    if (req.agentId) this.currentAgentId = req.agentId;
+    if (req.goalId) this.currentGoalId = req.goalId;
+    if (req.resumeRunId) this.resumeRunId = req.resumeRunId;
+  }
+
+  /**
+   * **K5 步骤⑦ — Pi 的唯一执行入口**: 只接收一次性 `ExecutionRequest`。
+   * 有 `onStream` ⇒ 走 `promptStream` (流式); 否则走 `prompt`。绑定由 `applyExecutionRequest` 落位。
+   * 入口侧只需: `deliverThroughActor(session, () => session.runExecution(req))`。
+   */
+  async runExecution(req: ExecutionRequest): Promise<string> {
+    this.applyExecutionRequest(req);
+    if (req.onStream) {
+      return this.promptStream(req.input, req.onStream as StreamCallback, req.signal, req.channelId);
+    }
+    return this.prompt(req.input, { signal: req.signal, channelId: req.channelId });
   }
 
   /**
