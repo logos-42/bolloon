@@ -614,3 +614,34 @@ run 内的写会落进 **per-run** Context ⇒ 会话字段不被更新 ⇒ **�
 3. 判据: `kernel-runcontext.test.ts` + `pi-run-context-wiring.test.ts` 各加一条 (共 **17/17** 绿); `tsc` 0 错。
 
 **这一格的价值**: 台账第一次**拒绝**迁移, 而不是硬搬。冻结值 (19) 保持不变 —— 它不是"没迁完", 是"不该迁"。
+
+## 23. K2 第 5~8 格一次定性: **K2 的 per-run 外置面只有 3 个字段, 且已 100% 完成**
+
+### 23.1 逐字段按**写入点**定性 (不看名字, 看谁写/何时写)
+
+| 字段 | 访问 | 写入点证据 | 判定 |
+| --- | --- | --- | --- |
+| `messageHistory` | 53 | 3 个写入点**全是整体替换**: hydrate(680) / compact(3243) / 真破坏性更新(3445) | **session 级** —— 它就是"会话记忆"本身, 跨 Run 累积 |
+| `currentRunId` | 36 | 1989 行在 resume 里 `= this.resumeRunId` **然后才调 prompt**; 2036 在 run 内; 3034/3038 清空 | **run-boundary** —— 属 Run, 但值在入口**之前**就设好 |
+| `currentChannelId` | 21 | 4 个写入点全是 `= channelId ?? this.currentChannelId` —— **显式保留**上一轮的值; 3895 直设 | **session 级** —— 设计上就跨 Run 存活 |
+| `currentAgentId` | 20 | **只有 1 个**: 构造函数 547 行 `= config.agentId` (createAgentSession 注入) | **session 级** —— 会话创建时定 |
+| `currentGoalId` | 19 | §22 已定性 | **session 级** |
+| `currentOnStream` / `currentSignal` / `currentIntent` | 0 / 0 / 0 | — | **run 级 · 已迁移** |
+
+⇒ **K2 的 per-run 外置面 = 3 个字段 (`eventSink` / `abortSignal` / `intent`), 全部已迁移**
+   (`RUN_CONTEXT_RUN_SCOPED = 3` == `RUN_CONTEXT_DONE.length`, 由门强制相等)。
+   累计: `this.` 访问 **182 → 149**; 其余 5 个字段**一处没动** (不是"没迁完", 是"不该迁")。
+
+### 23.2 三条连带结论 (都需要 leo 的意图层确认)
+
+1. **`currentRunId` 是 `run-boundary`**: 迁它需要在入口**显式播种** (`createRunContext({ runId: this.currentRunId })`), 这**会新增对旧实例字段的读** ⇒ 与「只许不变或减少」判据冲突。它必须作为**独立一格**记账并说明理由, 不能混进"纯减"里。
+2. **4 个 session 级字段该归 K5 Channel Actor 的 actor 状态**, 不是 RunContext。硬搬会改行为 (goalId 那格已证: run 内的写会落进 per-run Context ⇒ 会话绑定不更新 ⇒ 下一轮重新 `findActiveGoal`)。
+3. **「两个并发 Run 的 history 不互相污染」这条 K2 验收标准, K2 达不成** —— `messageHistory` 是**会话记忆**, 共享是它的本质; 要"不互相污染"必须让**每个 channel 有自己的会话/history** (K5 Channel Actor), 或让每个 Run 在不可变基准上各写各自分支。**建议把这条验收标准的落点改判到 K5**, K2 保留的是"循环只吃显式 Context"这半条 (已由 3 个字段 + 接线门兑现)。
+
+### 23.3 门 (K2 收口的三条)
+
+1. `scope` 只能是 `run` / `run-boundary` / `session`;
+2. **`run` 级必须全部已迁移** (`runScoped.filter(!migrated) === []` 且 `runScoped.length === DONE.length`) ⇒ 这条一绿 = K2 外置面收工;
+3. **`session` / `run-boundary` 一律不许标 `migrated`**, 且 `session` 级必须**仍是实例字段** (镜像规则, 在接线门里判)。
+
+`tsc` 0 错 · **7 道门 101/101**。

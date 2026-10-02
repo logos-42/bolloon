@@ -275,7 +275,7 @@ export const KERNEL_LINE_BUDGET_FROZEN_AT = 819;
  * 为什么分开: K3 要防的是「逻辑回流到内核代码」; 台账是**数据** (owner 名册 / 入口图 / 删除候选),
  * 把它算进代码预算会逼着人抬代码上限, 棘轮的信号就废了。两档各自冻结, 都只许减。
  */
-export const KERNEL_PLAN_LINE_BUDGET = 531;
+export const KERNEL_PLAN_LINE_BUDGET = 559;
 
 /** 台账预算冻结值 (棘轮: 只许减) */
-export const KERNEL_PLAN_LINE_BUDGET_FROZEN_AT = 531;
+export const KERNEL_PLAN_LINE_BUDGET_FROZEN_AT = 559;

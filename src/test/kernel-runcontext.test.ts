@@ -53,14 +53,20 @@ describe('K2 门: RunContext 状态外置', () => {
     }
   });
 
-  it('作用域分类: run 级 = 7 个 (外置面), session 级 + 未迁移 (不许被塞进 RunContext)', () => {
+  it('作用域分类: run 级 = 3 个且全部已迁移 (外置面收工); session 级/run-boundary 不许被塞进 RunContext', () => {
     // 2026-10-02 (K2 第 4 格): `currentGoalId` 是**会话级绑定** (setGoalId 外部注入 + run 内可能重绑),
     // 搬进"每次入口新建"的 Context 会让 run 内的写丢掉 ⇒ 下个 run 走重新 findActiveGoal 分支 ⇒ 行为改变。
-    for (const f of RUN_CONTEXT_FIELDS) expect(['run', 'session']).toContain(f.scope);
+    for (const f of RUN_CONTEXT_FIELDS) expect(['run', 'run-boundary', 'session']).toContain(f.scope);
     const runScoped = RUN_CONTEXT_FIELDS.filter((f) => f.scope === 'run');
     const sessionScoped = RUN_CONTEXT_FIELDS.filter((f) => f.scope === 'session');
+    const boundaryScoped = RUN_CONTEXT_FIELDS.filter((f) => f.scope === 'run-boundary');
     expect(runScoped.length).toBe(RUN_CONTEXT_RUN_SCOPED);
-    expect(runScoped.length + sessionScoped.length).toBe(RUN_CONTEXT_FIELDS.length);
+    // K2 的 per-run 外置面 = scope:'run' 的字段, 它们必须**全部**已迁移 (这条一绿 = K2 的外置面收工)
+    expect(runScoped.filter((f) => !f.migrated).map((f) => f.name)).toEqual([]);
+    expect(runScoped.length).toBe(RUN_CONTEXT_DONE.length);
+    expect(runScoped.length + sessionScoped.length + boundaryScoped.length).toBe(RUN_CONTEXT_FIELDS.length);
+    // run-boundary 也不许被标 migrated (它需要"入口播种"这个独立动作, 混进纯减里会掩盖新增读)
+    for (const f of boundaryScoped) expect(f.migrated).toBe(false);
     // session 级的不许被标 migrated (它根本不该被搬), 也不许出现在 DONE 清单里
     for (const f of sessionScoped) {
       expect(f.migrated).toBe(false);

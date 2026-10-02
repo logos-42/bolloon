@@ -10,7 +10,10 @@
  *   · 8 个字段必须都能在 RunContext 目标清单里找到位置 (不然外置到哪里去)。
  */
 
-export type RunStateScope = 'run' | 'session';
+export type RunStateScope =
+  | 'run'          // 每轮 Run 状态 ⇒ 归 RunContext (K2 的外置面)
+  | 'run-boundary' // 语义属 Run, 但值在入口**之前**就设好 (resume 等) ⇒ 必须由入口显式播种进 Context, 不能直搬
+  | 'session';     // 跨 Run 存活的会话级绑定 ⇒ 该归会话/通道级持有者 (K5 actor), 不进 RunContext
 
 export interface RunStateField {
   name: string;
@@ -38,14 +41,14 @@ export const RUN_CONTEXT_FROZEN_AT = '2026-10-02';
 export const RUN_CONTEXT_ENTRY = 'agents/pi-sdk.ts:1923 runReActLoop(onStream?, signal?) —— 目标签名: runReActLoop(ctx: RunContext)'
 
 export const RUN_CONTEXT_FIELDS: readonly RunStateField[] = [
-  { name: 'messageHistory', declaredAt: 'agents/pi-sdk.ts:272', scope: 'run', accesses: 53, into: 'history', migrated: false, payDownIn: 'K2' },
+  { name: 'messageHistory', declaredAt: 'agents/pi-sdk.ts:272', scope: 'session', accesses: 53, into: 'history', migrated: false, payDownIn: 'K2' },
   { name: 'currentOnStream', declaredAt: 'agents/pi-sdk.ts:442', scope: 'run', accesses: 0, into: 'eventSink', migrated: true, payDownIn: 'K2' },
   { name: 'currentSignal', declaredAt: 'agents/pi-sdk.ts:443', scope: 'run', accesses: 0, into: 'abortSignal', migrated: true, payDownIn: 'K2' },
-  { name: 'currentChannelId', declaredAt: 'agents/pi-sdk.ts:458', scope: 'run', accesses: 21, into: 'channelId', migrated: false, payDownIn: 'K2' },
-  { name: 'currentRunId', declaredAt: 'agents/pi-sdk.ts:471', scope: 'run', accesses: 36, into: 'runId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentChannelId', declaredAt: 'agents/pi-sdk.ts:458', scope: 'session', accesses: 21, into: 'channelId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentRunId', declaredAt: 'agents/pi-sdk.ts:471', scope: 'run-boundary', accesses: 36, into: 'runId', migrated: false, payDownIn: 'K2' },
   { name: 'currentIntent', declaredAt: 'agents/pi-sdk.ts:463', scope: 'run', accesses: 0, into: 'intent', migrated: true, payDownIn: 'K2' },
   { name: 'currentGoalId', declaredAt: 'agents/pi-sdk.ts:1725', scope: 'session', accesses: 19, into: 'goalId', migrated: false, payDownIn: 'K2' },
-  { name: 'currentAgentId', declaredAt: 'agents/pi-sdk.ts:460', scope: 'run', accesses: 20, into: 'agentId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentAgentId', declaredAt: 'agents/pi-sdk.ts:460', scope: 'session', accesses: 20, into: 'agentId', migrated: false, payDownIn: 'K2' },
 ];
 
 /** RunContext 必须带的字段 (leo 的 K2 清单) */
@@ -65,7 +68,7 @@ export const RUN_CONTEXT_MIGRATED_FROZEN = 3;
 export const RUN_CONTEXT_DONE: readonly string[] = ['currentOnStream', 'currentSignal', 'currentIntent'];
 
 /** K2 的 per-run 外置面 = scope:'run' 的字段数 (session 级的不算) */
-export const RUN_CONTEXT_RUN_SCOPED = 7;
+export const RUN_CONTEXT_RUN_SCOPED = 3;
 
 /**
  * **K2 第 4 格改判记录: `currentGoalId` 是 session 级, 不搬进 RunContext。**
@@ -84,3 +87,28 @@ export const RUN_CONTEXT_RUN_SCOPED = 7;
  * 结论: 它该收进的是**会话/通道级持有者** (K5 Channel Actor 的 actor 状态), 不是 RunContext。K2 不碰它。
  */
 export const RUN_CONTEXT_SESSION_SCOPED_NOTE = 'currentGoalId: 会话级绑定 (setGoalId 外部注入 + run 内可能重绑), 归 K5 actor 状态, 不进 RunContext';
+
+/**
+ * **K2 第 5~8 格改判记录 (2026-10-02, 一次把剩下 4 个字段全定性)**
+ *
+ * 逐字段证据 (真读 `pi-sdk.ts` 的**写入点**, 不是看名字):
+ *
+ * | 字段 | 写入点 | 判定 |
+ * | --- | --- | --- |
+ * | `currentAgentId` (20) | **只有 1 个**: 构造函数 547 行 `= config.agentId` (createAgentSession 注入) | **session 级** —— 会话创建时定 |
+ * | `currentChannelId` (21) | 4 个, 全是 `= channelId ?? this.currentChannelId` (显式**保留**上一轮的值) / 3895 直设 | **session 级** —— 设计上就跨 Run 存活 |
+ * | `messageHistory` (53) | 3 个, 全是整体替换 (hydrate 680 / compact 3243 / 真破坏性更新 3445) | **session 级** —— 它就是"会话记忆"本身, 跨 Run 累积 |
+ * | `currentRunId` (36) | 1989 行在 resume 里 `= this.resumeRunId` **然后才调 prompt**; 2036 在 run 内; 3034/3038 清空 | **run-boundary** —— 属 Run, 但值在入口之前就设好 ⇒ 必须由入口**显式播种** |
+ *
+ * ⇒ **K2 的 per-run 外置面只有 3 个字段** (`eventSink` / `abortSignal` / `intent`), **且已 100% 完成**
+ *    (`RUN_CONTEXT_RUN_SCOPED = 3` == `RUN_CONTEXT_DONE.length`)。
+ *
+ * ⇒ 剩下 5 个不属于"每轮状态": 4 个 session 级该收进**会话/通道级持有者** (K5 Channel Actor 的 actor 状态);
+ *    1 个 run-boundary 需要一个**入口播种**动作 (在 `createRunContext(...)` 里显式带上 runId) ——
+ *    播种会新增对旧实例字段的读, 所以它必须作为**独立一格**记账并说明理由, 不能混在"纯减"里。
+ *
+ * ⇒ **连带结论 (对 K2 验收标准的影响)**: leo 写的「两个并发 Run 的 history 不互相污染」**不是 K2 能靠搬字段达成的**
+ *    —— `messageHistory` 是会话记忆, 共享是它的本质; 要"不互相污染"必须让**每个 channel 有自己的会话/history**
+ *    (K5 Channel Actor), 或让每个 Run 在不可变基准上各写各自的分支。**这条验收标准的落点应改判到 K5。**
+ */
+export const RUN_CONTEXT_REMAINING_NOTE = 'remaining 4: agentId/channelId/messageHistory = session 级 (K5 actor); runId = 入口播种 (独立一格)';
