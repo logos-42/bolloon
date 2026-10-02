@@ -1659,3 +1659,34 @@ cancellation (20ms 后 abort ⇒ `ModelAbortError`; 已取消的 signal 立刻�
 开路 → 快速失败 (断言**调用计数没涨**) → 冷却未到仍快速失败 → 冷却到放探测 → 成功闭合 (半开/闭合计数各 1) ·
 半开探测失败 ⇒ 重新开路 (开路次数 2) · 不计入熔断三类 (外部取消 ✗ · 429 ✗ · 故障 ✓, 含四个纯函数断言) ·
 能力检查两向 + 连接零开销 + 冻结数组原样。
+
+## 56. K6 收尾: provider fallback + usage 记录 ⇒ **能力 9/9, K6 收口**
+
+### 56.1 fallback: 只从 snapshot 派生候选, 绝不碰全局
+
+`snapshot.fallbackProviders` (只读, 来自 Run snapshot) ⇒ 候选清单 = `[主 provider, ...备用]`; 每个候选**各建副本** (`{...snapshot, provider: p}`) 而不是改原对象。
+入口 `acquire()` 的只读契约不变: 真跑断言**原 snapshot 的 provider 与备用列表跑完一字未改**。
+逐候选: 各自过熔断门 → 各自取并发槽 → 各自跑 429 退避 → 失败则下一个; 全失败 ⇒ 结果里写明 `全部候选失败 (p1 → p2)` (不假装成功)。
+**取消不回退**: 调用方 abort 就是不要了, 再去试别的 provider 是错的 (真跑断言 `fallbacks === 0`)。
+
+### 56.2 收尾时暴露的真问题: 加 fallback 会**悄悄改掉单候选的契约**
+
+第一版把所有失败都收敛成"结果对象", 于是 **timeout / 熔断开路**在**单候选**场合从"抛出"变成了"返回失败" —— 调用方原来靠 `catch (ModelTimeoutError / ModelCircuitOpenError)` 区分, 现在**静默拿不到**了 (3 个既有用例当场红)。
+⇒ 定成规则并写进实现注释: **时机类拒绝 (熔断开路) 与超时的"抛"只在没有下一个候选时保留**; 有下一个候选才回退。
+```ts
+if (err instanceof ModelTimeoutError) { if (ci + 1 < candidates.length) { fallback; } else throw err; }
+if (gate) { if (ci + 1 < candidates.length) { fallback; } else throw new ModelCircuitOpenError(gate); }
+```
+**教训**: 给一个老契约"加新路径"时, 先问"**单候选场合的行为有没有变**" —— 新能力最容易的代价就是把老调用方的 catch 悄悄废掉。
+
+### 56.3 usage 记录 (内核不碰 RunStore)
+
+`ModelRuntimePorts.recordUsage` **注入**: 成功与"全候选失败"都记一条 (真实 provider / model / ms / attempts / fallback 标记 / 结果里透传的 usage)。
+**记账端口抛错不许影响调用结果** (只记 `usageDropped`) —— 真跑用例专门让它抛一次, 断言调用照样成功。
+内核只读统计 (`usageRecorded / usageDropped`), 落盘/入账交给 K4 控制面那边的端口实现 ⇒ 不越界。
+
+### 56.4 真跑用例 (6 条) + 一个用例随事实失效
+
+回退 (只读断言 + `opened === ['p1','p2']`) · 无备用 ⇒ 行为与以前一致 · 全候选失败 ⇒ 写明试过哪些 · **取消不回退** ·
+usage 两向 (含端口抛错) · **429 用尽也可回退** (容量问题不是 bug; 且断言限流不开路)。
+另: 判据用例里"`capabilitiesDone=9` 应判红"在 **9/9 全做完后变成恒真** (9 == 9 不再报) ⇒ 换成 `3` 才构造得出坏形状 —— 与"判别力用例随事实失效"同类 (第 6 次)。

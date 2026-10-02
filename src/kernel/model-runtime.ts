@@ -24,6 +24,11 @@ export interface ModelSnapshot {
   timeoutMs?: number;
   /** 该 provider 支持的能力 (只读; 能力检查用) */
   capabilities?: readonly string[];
+  /**
+   * 备用 provider 列表 (**只读**; 来自 Run snapshot) —— 主 provider 失败后按顺序试。
+   *   红线: 运行时**只**从这份列表派生候选, 绝不改全局 provider 配置。
+   */
+  fallbackProviders?: readonly string[];
 }
 
 /** 注入的底层能力 (端口; 内核只认形状) */
@@ -39,6 +44,21 @@ export interface ModelRuntimePorts {
   sleep?(ms: number, signal?: AbortSignal): Promise<void>;
   /** 随机注入 (抖动可确定性测试; 缺省 Math.random) */
   random?(): number;
+  /**
+   * usage 记录端口 (**注入**; 内核不 import RunStore —— 记账属 K4 控制面那边的事)。
+   *   端口抛错**不许**影响调用结果 (只记 `usageDropped`)。
+   */
+  recordUsage?(entry: ModelUsageEntry): Promise<void> | void;
+}
+
+/** 一次调用的用量 (真实 provider / 是否回退 / 耗时 / 重试次数; usage 由结果透传) */
+export interface ModelUsageEntry {
+  provider: string;
+  model: string;
+  ms: number;
+  attempts: number;
+  fallback: boolean;
+  usage?: unknown;
 }
 
 export interface ModelConnection {
@@ -56,6 +76,10 @@ export interface ModelCallRequest {
 
 export interface ModelCallResult {
   ok: boolean;
+  /** 实际使用的 provider (回退后与请求的不同) */
+  provider?: string;
+  /** 是否用了回退 */
+  fallback?: boolean;
   /** 供应商原始响应 (透传) */
   raw?: unknown;
   error?: string;
@@ -175,13 +199,18 @@ export interface ModelRuntimeStats {
   /** 半开探测次数 / 探测成功 (闭合) 次数 */
   halfOpenProbes: number;
   breakerClosed: number;
+  /** 回退: 因主 provider 失败而切换到备用 provider 的次数 */
+  fallbacks: number;
+  /** usage 记录: 成功写入 / 写入失败被丢弃 */
+  usageRecorded: number;
+  usageDropped: number;
   /** 默认预算 (ms) */
   defaultTimeoutMs: number;
 }
 
 export class ModelRuntime {
   private pool = new Map<string, PooledConnection>();
-  private stats = { reused: 0, opened: 0, timeouts: 0, aborts: 0, concurrencyWaits: 0, maxObservedConcurrency: 0, rateLimited: 0, retries: 0, lastBackoffMs: 0, circuitOpened: 0, failFast: 0, capabilityRejects: 0, halfOpenProbes: 0, breakerClosed: 0 };
+  private stats = { reused: 0, opened: 0, timeouts: 0, aborts: 0, concurrencyWaits: 0, maxObservedConcurrency: 0, rateLimited: 0, retries: 0, lastBackoffMs: 0, circuitOpened: 0, failFast: 0, capabilityRejects: 0, halfOpenProbes: 0, breakerClosed: 0, fallbacks: 0, usageRecorded: 0, usageDropped: 0 };
   /** 逐 key 熔断状态 */
   private breakers = new Map<string, { failures: number; state: 'closed' | 'open' | 'half-open'; openUntil: number; probes: number }>();
   /** 每 key 当前在飞的调用数 + 等待队列 (多供应商并发: 各 key 各自算) */
@@ -213,11 +242,107 @@ export class ModelRuntime {
       if (missing.length > 0) { this.stats.capabilityRejects += 1; throw new ModelCapabilityError(missing); }
     }
     const key = modelPoolKey(frozen);
+    const { conn } = await this.ensureConnection(frozen);
+    const snapshotReadonly = frozen;
+    let released = false;
+    const self = this;
+    return {
+      snapshot: snapshotReadonly,
+      release: () => {
+        if (released) return;
+        released = true;
+        const cur = self.pool.get(key);
+        if (cur) cur.leases = Math.max(0, cur.leases - 1);
+      },
+      call: async (req, opts) => {
+        if (released) return { ok: false, error: '租约已归还' };
+        const budget = snapshotReadonly.timeoutMs ?? this.defaultTimeoutMs;
+        const external = opts?.signal;
+        if (external?.aborted) { self.stats.aborts += 1; throw new ModelAbortError(); }
+        const started = (self.ports.now ?? Date.now)();
+        // **候选清单 = 主 provider + 备用 (来自 snapshot, 只读)** —— 运行时绝不改全局配置
+        const candidates: Readonly<ModelSnapshot>[] = [snapshotReadonly];
+        for (const p of snapshotReadonly.fallbackProviders ?? []) {
+          if (p && p !== snapshotReadonly.provider) candidates.push({ ...snapshotReadonly, provider: p });
+        }
+        let last: ModelCallResult = { ok: false, error: '没有可用的 provider' };
+        let totalAttempts = 0;
+        for (let ci = 0; ci < candidates.length; ci += 1) {
+          const snapI = candidates[ci];
+          const keyI = modelPoolKey(snapI);
+          const isFallback = ci > 0;
+          if (isFallback) self.stats.fallbacks += 1;
+          try {
+            const gate = self.breakerGate(keyI);
+            if (gate) {
+              self.stats.failFast += 1;
+              // 熔断开路: **有下一个候选才回退**; 否则保持"抛出"的契约 (调用方能按类型区分快速失败)
+              if (ci + 1 < candidates.length) { last = { ok: false, provider: snapI.provider, fallback: isFallback, error: `熔断中 (冷却至 ${gate})` }; continue; }
+              throw new ModelCircuitOpenError(gate);
+            }
+            const connI = keyI === key ? conn : (await self.ensureConnection(snapI)).conn;
+            await self.acquireSlot(keyI, external);
+            try {
+              for (let attempt = 0; ; attempt += 1) {
+                totalAttempts += 1;
+                let result: ModelCallResult;
+                try {
+                  result = await self.callOnce(connI, req, external, budget);
+                } catch (err) {
+                  if (countsTowardBreaker(err)) self.onFailure(keyI); else self.onSuccess(keyI);
+                  throw err;                     // 取消/超时: 取消要立刻冒出去 (不回退), 超时由外层 catch 处理
+                }
+                if (result.ok) {
+                  self.onSuccess(keyI);
+                  const ms = (self.ports.now ?? Date.now)() - started;
+                  const out: ModelCallResult = { ...result, provider: snapI.provider, fallback: isFallback, reused: (self.pool.get(keyI)?.leases ?? 0) > 1, ms };
+                  await self.recordUsage(snapI, { provider: snapI.provider, model: snapI.model, ms, attempts: totalAttempts, fallback: isFallback, usage: (result as { usage?: unknown }).usage });
+                  return out;
+                }
+                if (!isRateLimited(result)) {
+                  if (countsTowardBreaker(result)) self.onFailure(keyI); else self.onSuccess(keyI);
+                  last = { ...result, provider: snapI.provider, fallback: isFallback, reused: (self.pool.get(keyI)?.leases ?? 0) > 1, ms: (self.ports.now ?? Date.now)() - started };
+                  break;                          // 非限流失败 ⇒ 交给下一个候选
+                }
+                self.stats.rateLimited += 1;
+                if (attempt >= BACKOFF_POLICY.maxRetries) {
+                  last = { ...result, provider: snapI.provider, fallback: isFallback, ms: (self.ports.now ?? Date.now)() - started, error: `限流重试用尽 (${attempt + 1} 次): ${String(result.error ?? '')}` };
+                  break;                          // 限流用尽 ⇒ 也可回退 (容量问题不是 bug)
+                }
+                const wait = backoffDelayMs(attempt, { retryAfterMs: Number((result as { retryAfterMs?: unknown }).retryAfterMs ?? 0) || undefined, random: self.ports.random });
+                self.stats.retries += 1;
+                self.stats.lastBackoffMs = wait;
+                await self.sleepOrAbort(wait, external);   // 退避期间取消 ⇒ 立刻抛
+              }
+            } finally {
+              self.releaseSlot(keyI);
+            }
+          } catch (err) {
+            if (err instanceof ModelAbortError) throw err;                 // 调用方取消 ⇒ 不回退, 直接冒出去
+            if (err instanceof ModelTimeoutError) {
+              // 超时: **有下一个候选才回退**; 最后一个候选的超时保持原有契约 (抛出, 调用方才能区分"超时"与"软失败")
+              if (ci + 1 < candidates.length) { last = { ok: false, provider: snapI.provider, fallback: isFallback, error: err.message }; continue; }
+              throw err;
+            }
+            throw err;
+          }
+        }
+        const tried = candidates.map((c) => c.provider).join(' → ');
+        last = { ...last, ms: (self.ports.now ?? Date.now)() - started, error: `全部候选失败 (${tried}): ${String(last.error ?? '')}` };
+        await self.recordUsage(candidates[candidates.length - 1], { provider: last.provider ?? '', model: candidates[candidates.length - 1].model, ms: last.ms ?? 0, attempts: totalAttempts, fallback: candidates.length > 1, usage: undefined });
+        return last;
+      },
+    };
+  }
+
+  /** 连接池: 同一 pool key 复用; 开不起来不留脏槽 */
+  private async ensureConnection(snapshot: Readonly<ModelSnapshot>): Promise<{ conn: ModelConnection; key: string }> {
+    const key = modelPoolKey(snapshot);
     let slot = this.pool.get(key);
     if (slot) this.stats.reused += 1;
     if (!slot) {
       const controller = new AbortController();   // 连接级取消 (租约级用各自的 signal)
-      const opening = this.ports.openConnection(frozen, controller.signal);
+      const opening = this.ports.openConnection(snapshot, controller.signal);
       this.stats.opened += 1;
       slot = { conn: undefined as unknown as ModelConnection, opening, leases: 0 };
       this.pool.set(key, slot);
@@ -230,63 +355,18 @@ export class ModelRuntime {
     } else if (!slot.conn) {
       slot.conn = await slot.opening;
     }
-    const conn = slot.conn;
-    slot.leases += 1;
-    const snapshotReadonly = frozen;
-    let released = false;
-    return {
-      snapshot: snapshotReadonly,
-      release: () => {
-        if (released) return;
-        released = true;
-        const cur = this.pool.get(key);
-        if (cur) cur.leases = Math.max(0, cur.leases - 1);
-      },
-      call: async (req, opts) => {
-        if (released) return { ok: false, error: '租约已归还' };
-        const budget = snapshotReadonly.timeoutMs ?? this.defaultTimeoutMs;
-        const external = opts?.signal;
-        if (external?.aborted) { this.stats.aborts += 1; throw new ModelAbortError(); }
-        const started = (this.ports.now ?? Date.now)();
-        // ① 熔断门: 开路期内**快速失败** (不发起调用, 也不排队)
-        const gate = this.breakerGate(key);
-        if (gate) { this.stats.failFast += 1; throw new ModelCircuitOpenError(gate); }
-        // ② 并发槽: 逐 key 计数 (多供应商并发互不阻塞); 排队期间可被取消
-        await this.acquireSlot(key, external);
-        try {
-          // ② 429 退避重试: 退避期间**可取消**; 超过 maxRetries 即如实失败 (不许无限重试)
-          for (let attempt = 0; ; attempt += 1) {
-            let result: ModelCallResult;
-            try {
-              result = await this.callOnce(conn, req, external, budget);
-            } catch (err) {
-              if (countsTowardBreaker(err)) this.onFailure(key); else this.onSuccess(key);
-              throw err;
-            }
-            if (result.ok) { this.onSuccess(key); return { ...result, reused: (this.pool.get(key)?.leases ?? 0) > 1, ms: (this.ports.now ?? Date.now)() - started }; }
-            if (!isRateLimited(result)) {
-              // 非限流失败 (供应商故障类) ⇒ 计入熔断
-              if (countsTowardBreaker(result)) this.onFailure(key); else this.onSuccess(key);
-              return { ...result, reused: (this.pool.get(key)?.leases ?? 0) > 1, ms: (this.ports.now ?? Date.now)() - started };
-            }
-            this.stats.rateLimited += 1;
-            if (attempt >= BACKOFF_POLICY.maxRetries) {
-              return { ...result, reused: (this.pool.get(key)?.leases ?? 0) > 1, ms: (this.ports.now ?? Date.now)() - started,
-                error: `限流重试用尽 (${attempt + 1} 次): ${String(result.error ?? '')}` };
-            }
-            const wait = backoffDelayMs(attempt, {
-              retryAfterMs: Number((result as { retryAfterMs?: unknown }).retryAfterMs ?? 0) || undefined,
-              random: this.ports.random,
-            });
-            this.stats.retries += 1;
-            this.stats.lastBackoffMs = wait;
-            await this.sleepOrAbort(wait, external);   // 退避期间取消 ⇒ 立刻抛
-          }
-        } finally {
-          this.releaseSlot(key);
-        }
-      },
-    };
+    return { conn: slot.conn, key };
+  }
+
+  /** usage 记录: 端口抛错**不许**影响调用结果 (只记 usageDropped) */
+  private async recordUsage(snapshot: Readonly<ModelSnapshot>, entry: ModelUsageEntry): Promise<void> {
+    if (typeof this.ports.recordUsage !== 'function') return;
+    try {
+      await this.ports.recordUsage(entry);
+      this.stats.usageRecorded += 1;
+    } catch {
+      this.stats.usageDropped += 1;
+    }
   }
 
   /** 一次尝试 (超时与取消都走受控 controller; 底层只认一个 signal) */

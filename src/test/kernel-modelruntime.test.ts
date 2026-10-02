@@ -198,7 +198,8 @@ describe('K6 运行时骨架: acquire 只读 + 连接复用 + timeout + cancella
     // 判别力: 塞一个旧写口名进去 ⇒ 红 · 去掉 acquire ⇒ 红 · 能力计数对不上 ⇒ 红
     expect(scanModelRuntimeFile(code + '\nsetCustomProviderSnapshot(x);\n', { writePortNames: names, progress: K6_PROGRESS, capabilities: MODEL_RUNTIME_CAPABILITIES }).length).toBeGreaterThan(0);
     expect(scanModelRuntimeFile('export const x = 1;\n', { writePortNames: names, progress: K6_PROGRESS, capabilities: MODEL_RUNTIME_CAPABILITIES }).length).toBeGreaterThan(0);
-    expect(scanModelRuntimeFile(code, { writePortNames: names, progress: { capabilitiesDone: 9 }, capabilities: MODEL_RUNTIME_CAPABILITIES }).length).toBe(1);
+    // 9/9 全做完后, 计数造假必须换个值才能构造 (用 3 —— 与清单里 done 的条数不等)
+    expect(scanModelRuntimeFile(code, { writePortNames: names, progress: { capabilitiesDone: 3 }, capabilities: MODEL_RUNTIME_CAPABILITIES }).length).toBe(1);
     // 空文件 ⇒ 拒跑 (不许跳过)
     expect(scanModelRuntimeFile('   ', { writePortNames: names, progress: K6_PROGRESS, capabilities: MODEL_RUNTIME_CAPABILITIES })[0].what).toContain('拒跑');
   });
@@ -431,6 +432,122 @@ describe('K6 第四步: 熔断 (三态) + 能力检查 (拒在开连接之前)',
     const lease = await rt.acquire(Object.freeze({ provider: 'p', model: 'm', timeoutMs: 5000, capabilities: caps }), { require: ['vision'] });
     expect((await lease.call({})).ok).toBe(true);
     expect(caps).toEqual(['tools', 'vision']);
+    await rt.closeAll();
+  });
+});
+
+describe('K6 第五步 (收尾): provider fallback + usage 记录 (能力 9/9)', () => {
+  const mkMulti = (behaviour: Record<string, 'ok' | 'fail' | '429'>) => {
+    const opened: string[] = []; const usage: any[] = []; let innerThrow = false;
+    const ports: ModelRuntimePorts = {
+      sleep: async () => {},
+      random: () => 0.5,
+      async recordUsage(e) { if (innerThrow) throw new Error('记账服务炸了'); usage.push(e); },
+      async openConnection(snap: any) {
+        opened.push(snap.provider);
+        return {
+          id: `c-${snap.provider}`,
+          async call() {
+            const kind = behaviour[snap.provider] ?? 'ok';
+            if (kind === '429') return { ok: false, status: 429, error: 'HTTP 429' };
+            if (kind === 'fail') return { ok: false, error: `${snap.provider} 500` };
+            return { ok: true, raw: { by: snap.provider }, usage: { tokens: 7 } };
+          },
+          async close() {},
+        };
+      },
+    };
+    return { ports, opened, usage, breakUsage: () => { innerThrow = true; } };
+  };
+
+  it('回退: 主 provider 失败 ⇒ 用 Run snapshot 里的备用 provider (且只读, 原 snapshot 不变)', async () => {
+    const m = mkMulti({ p1: 'fail', p2: 'ok' });
+    const rt = new ModelRuntime(m.ports, 5000, 2);
+    const snap = Object.freeze({ provider: 'p1', model: 'm', timeoutMs: 3000, fallbackProviders: Object.freeze(['p2', 'p3']) });
+    const lease = await rt.acquire(snap as any);
+    const res = await lease.call({});
+    expect(res.ok).toBe(true);
+    expect(res.provider).toBe('p2');
+    expect(res.fallback).toBe(true);
+    expect(rt.snapshotStats().fallbacks).toBe(1);
+    expect([...snap.fallbackProviders]).toEqual(['p2', 'p3']);   // 只读: 列表没被动
+    expect(snap.provider).toBe('p1');                             // 只读: 主 provider 没被改写
+    expect(m.opened).toEqual(['p1', 'p2']);
+    await rt.closeAll();
+  });
+
+  it('没有备用 ⇒ 行为与以前一致 (如实返回失败, 不改任何全局)', async () => {
+    const m = mkMulti({ p1: 'fail' });
+    const rt = new ModelRuntime(m.ports, 5000, 1);
+    const lease = await rt.acquire({ provider: 'p1', model: 'm', timeoutMs: 3000 });
+    const res = await lease.call({});
+    expect(res.ok).toBe(false);
+    expect(rt.snapshotStats().fallbacks).toBe(0);
+    expect(m.opened).toEqual(['p1']);
+    await rt.closeAll();
+  });
+
+  it('全部候选都失败 ⇒ 如实失败并写明试过哪些 provider (不假装成功)', async () => {
+    const m = mkMulti({ p1: 'fail', p2: 'fail' });
+    const rt = new ModelRuntime(m.ports, 5000, 2);
+    const lease = await rt.acquire({ provider: 'p1', model: 'm', timeoutMs: 3000, fallbackProviders: ['p2'] });
+    const res = await lease.call({});
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('全部候选失败');
+    expect(res.error).toContain('p1 → p2');
+    await rt.closeAll();
+  });
+
+  it('调用方取消 ⇒ **不回退** (取消了还要再试别的 provider 是错的)', async () => {
+    let live = 0;
+    const ports: ModelRuntimePorts = {
+      sleep: async () => {},
+      async openConnection() {
+        return {
+          id: 'c', async call(_r, sig) {
+            live += 1;
+            for (let i = 0; i < 40; i += 1) { if (sig.aborted) { const e: any = new Error('ab'); e.name = 'AbortError'; throw e; } await new Promise((r) => setTimeout(r, 5)); }
+            live -= 1; return { ok: false, error: 'x' };
+          }, async close() {},
+        };
+      },
+    };
+    const rt = new ModelRuntime(ports, 5000, 1);
+    const lease = await rt.acquire({ provider: 'p1', model: 'm', timeoutMs: 5000, fallbackProviders: ['p2'] });
+    const ctl = new AbortController();
+    const p = lease.call({}, { signal: ctl.signal });
+    setTimeout(() => ctl.abort(), 10);
+    await expect(p).rejects.toThrow(ModelAbortError);
+    expect(rt.snapshotStats().fallbacks).toBe(0);
+    await rt.closeAll();
+  });
+
+  it('usage: 每次成功/失败都记 (带真实 provider 与回退标记); 记账端口抛错**不影响调用结果**', async () => {
+    const m = mkMulti({ p1: 'fail', p2: 'ok' });
+    const rt = new ModelRuntime(m.ports, 5000, 2);
+    const lease = await rt.acquire({ provider: 'p1', model: 'm', timeoutMs: 3000, fallbackProviders: ['p2'] });
+    const res = await lease.call({});
+    expect(res.ok).toBe(true);
+    expect(m.usage).toHaveLength(1);
+    expect(m.usage[0]).toMatchObject({ provider: 'p2', model: 'm', fallback: true, usage: { tokens: 7 } });
+    expect(rt.snapshotStats().usageRecorded).toBe(1);
+    // 记账端口炸了 ⇒ 调用照样成功, 只记 usageDropped
+    m.breakUsage();
+    const res2 = await lease.call({});
+    expect(res2.ok).toBe(true);
+    expect(rt.snapshotStats().usageDropped).toBe(1);
+    await rt.closeAll();
+  });
+
+  it('429 用尽也可回退 (容量问题不是 bug); 但退避与熔断口径不变', async () => {
+    const m = mkMulti({ p1: '429', p2: 'ok' });
+    const rt = new ModelRuntime(m.ports, 5000, 2);
+    const lease = await rt.acquire({ provider: 'p1', model: 'm', timeoutMs: 3000, fallbackProviders: ['p2'] });
+    const res = await lease.call({});
+    expect(res.ok).toBe(true);
+    expect(res.provider).toBe('p2');
+    expect(rt.snapshotStats().retries).toBe(3);       // p1 上用尽重试
+    expect(rt.snapshotStats().circuitOpened).toBe(0); // 限流不开路
     await rt.closeAll();
   });
 });

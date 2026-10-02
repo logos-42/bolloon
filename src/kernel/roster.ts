@@ -284,10 +284,10 @@ export const AUTHORITY_DEBT_FROZEN_AT = 0;   // 3 → 0 (K4 用内核控制面�
  * 目的只有一个: **不许所有逻辑回流到 kernel.ts**。要加就得显式抬这个数字, 留下痕迹。
  * 数值 = 当前 kernel 目录真实行数, 不留余量。
  */
-export const KERNEL_LINE_BUDGET = 2475;
+export const KERNEL_LINE_BUDGET = 2555;
 
 /** 预算冻结值 (棘轮: 只许减; 想抬预算必须同时改上面那个数字 ⇒ 一次显式动作, diff 里看得见) */
-export const KERNEL_LINE_BUDGET_FROZEN_AT = 2475;
+export const KERNEL_LINE_BUDGET_FROZEN_AT = 2555;
 
 /**
  * K3b —— **台账数据**单独一档预算 (`src/kernel/plan.ts`)。

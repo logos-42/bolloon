@@ -54,8 +54,8 @@ export const MODEL_RUNTIME_CAPABILITIES: readonly ModelRuntimeCapability[] = [
   { key: 'rate-limit-backoff', why: '429 退避 (指数 + 抖动, 不许重试风暴)', status: 'done' },
   { key: 'circuit-breaker', why: '连续失败熔断 (半开探测)', status: 'done' },
   { key: 'capability-check', why: '能力检查 (该 provider 是否支持所需能力: 工具/vision/长上下文)', status: 'done' },
-  { key: 'provider-fallback', why: '失败回退到备用 provider (按 Run snapshot, 不改全局)', status: 'not-started' },
-  { key: 'usage-recording', why: 'usage 记录 (token/成本按 Run 记账)', status: 'not-started' },
+  { key: 'provider-fallback', why: '失败回退到备用 provider (按 Run snapshot, 不改全局)', status: 'done' },
+  { key: 'usage-recording', why: 'usage 记录 (token/成本按 Run 记账)', status: 'done' },
 ];
 
 /** **明确不做** (路线图红线; 判据核这几条名字都在, 防止实现时越界) */
@@ -69,9 +69,9 @@ export const MODEL_RUNTIME_OUT_OF_SCOPE: readonly string[] = [
 
 /** K6 进度 (与 K5 的 stage/container 同款: 声明未实现 ⇒ 运行时文件**必须不存在**) */
 export const K6_PROGRESS = {
-  stage: 'runtime-built' as 'not-started' | 'runtime-built' | 'capabilities-done',
+  stage: 'capabilities-done' as 'not-started' | 'runtime-built' | 'capabilities-done',
   runtimePath: 'kernel/model-runtime.ts',
   /** 必须等于 `MODEL_RUNTIME_CAPABILITIES` 里 status==='done' 的条数 (判据机械核, 不许自报) */
-  capabilitiesDone: 7,
+  capabilitiesDone: 9,
   capabilitiesTotal: MODEL_RUNTIME_CAPABILITIES.length,
 } as const;
