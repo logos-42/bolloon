@@ -120,7 +120,7 @@ export const KERNEL_ALLOWED_IMPORT_PREFIXES: readonly string[] = ['kernel/'];
  * 判据是**双向相等**: 盘上多一个未登记文件 ⇒ 红; 名册有而盘上没有 ⇒ 红。
  * (先例: SEAM_ROSTER 的「名册外无人越界」)
  */
-export const KERNEL_FILES: readonly string[] = ['kernel/gate-scan.ts', 'kernel/plan.ts', 'kernel/roster.ts'];
+export const KERNEL_FILES: readonly string[] = ['kernel/gate-scan.ts', 'kernel/plan-constraint.ts', 'kernel/plan.ts', 'kernel/roster.ts'];
 
 export type DetectionMode = 'import-edge' | 'write-call';
 
@@ -264,10 +264,10 @@ export const AUTHORITY_DEBT_FROZEN_AT = 3;
  * 目的只有一个: **不许所有逻辑回流到 kernel.ts**。要加就得显式抬这个数字, 留下痕迹。
  * 数值 = 当前 kernel 目录真实行数, 不留余量。
  */
-export const KERNEL_LINE_BUDGET = 585;
+export const KERNEL_LINE_BUDGET = 691;
 
 /** 预算冻结值 (棘轮: 只许减; 想抬预算必须同时改上面那个数字 ⇒ 一次显式动作, diff 里看得见) */
-export const KERNEL_LINE_BUDGET_FROZEN_AT = 585;
+export const KERNEL_LINE_BUDGET_FROZEN_AT = 691;
 
 /**
  * K3b —— **台账数据**单独一档预算 (`src/kernel/plan.ts`)。
@@ -275,7 +275,7 @@ export const KERNEL_LINE_BUDGET_FROZEN_AT = 585;
  * 为什么分开: K3 要防的是「逻辑回流到内核代码」; 台账是**数据** (owner 名册 / 入口图 / 删除候选),
  * 把它算进代码预算会逼着人抬代码上限, 棘轮的信号就废了。两档各自冻结, 都只许减。
  */
-export const KERNEL_PLAN_LINE_BUDGET = 143;
+export const KERNEL_PLAN_LINE_BUDGET = 331;
 
 /** 台账预算冻结值 (棘轮: 只许减) */
-export const KERNEL_PLAN_LINE_BUDGET_FROZEN_AT = 143;
+export const KERNEL_PLAN_LINE_BUDGET_FROZEN_AT = 331;

@@ -155,7 +155,7 @@ K3 行数棘轮门   kernel 目录行数上限, 只许减不许增; 要加就得
 | 阶段 | 内容 | 判据 / 完成标准 | 完成度 |
 | --- | --- | --- | --- |
 | **K0 冻结架构与删除台账** | 7 项交付物 (§7.1) | 能说清每段代码属哪个模块 · 能说清哪些准备删除 · **没有任何「以后再看」的核心事实来源** | ✅ **7/7** |
-| **K1 清理 constraint-runtime** | 拆三层 `primitives` (Budget/Permission/Capability/Cancellation) / `runtime-adapters` (Session/Tool/Model) / `domain-libraries` (Wallet/Safe/Polymarket/Remote/OpenCLI); 按 5 步顺序删 (§7.3) | Kernel 只依赖 primitives · 领域能力**只能经 Tool Capability 接入** · archive/reference/test fixture 不进运行时包 · 无调用模块已移除 · 假连接/placeholder 已删 · 现有测试全绿 | ❌ 未开始 |
+| **K1 清理 constraint-runtime** | 拆三层 `primitives` / `runtime-adapters` / `domain-libraries`; 按 5 步顺序删 (§7.3) | Kernel 只依赖 primitives · 领域能力**只能经 Tool Capability 接入** · archive/reference/test fixture 不进运行时包 · 无调用模块已移除 · 假连接/placeholder 已删 · 现有测试全绿 | 🟡 **第①步已完成** (统计+三层分类+三道判据, §14); ②移除无调用 ③删 placeholder ④改 Tool Provider ⑤删旧导出 **未做** |
 | **K2 Pi 可变状态外置** | message history / stream callback / signal / failed tool / channel identity / run identity / loop state → `RunContext` 或 `ChannelContext` | Pi 不持有 Goal·Run 状态/长期恢复/Channel 全局/Model 全局配置/Tool 权限; **完成此步后才允许删 Pi 对应字段与旧辅助方法** | ❌ 未开始 |
 | **K3 统一所有入口队列** | 8 个入口 (Web/CLI/P2P/cron/followup/social heartbeat/supervisor/独立宿主) 只能投递事件: `External Event → ChannelMailbox.enqueue() → ChannelActor → Kernel Loop → Run/Goal/Evidence` | 同 Channel 只允许一个执行循环 · 不同 Channel 可并发 · **所有入口只能投递, 不能直接调 `prompt()`** · 外部事件不能直接改 Goal · CLI 与 Web 不各维护一套循环 | ❌ 未开始 |
 | **K4 合并两套 Agent Loop** | `KernelLoop`: prepare → model call → harness tool call → checkpoint → reducer → continuation → finish; Pi 只做 `messages → model response`; Pivot/ReAct/旧 loop 降为策略或 Adapter | CLI/Web 同一任务产生一致的 Run/Goal 事实 · pause/SIGKILL/预算耗尽/模型切换行为一致 · 旧 loop 无任何入口引用 · 真跑长期任务通过后才删旧分支 | ❌ 未开始 |
@@ -301,3 +301,34 @@ model-selection 协议 · transaction evidence · contact consent · durable rec
 2. **我改了判据却没重设行数预算** —— 加完分支后 kernel 代码从 583 涨到 585, 而预算还冻结在 583 ⇒ 门红。**是"阴性对照必须先断言基线全绿"这一步把它照出来的** (我第一版探针没做基线断言, 差点把"本来就红"当成"变异后红")。已把基线断言写进探针, 并重设双档预算。
 
 **顺带量出的事实 (交给 K1/第一批清理用)**: 96 个 0 入边候选里 **61 个在 `src/bollharness/`** —— 那是**另一个项目的镜像**(带自己的 `.boll/skills` 与 `scripts/checks/*`), 却住在 Bolloon 的 `src/` 里; 它是"第一批立即可清"的头号目标。
+
+## 14. K1 第一批验收 (第①步: 统计真实 import + 三层分类, 2026-10-02 真跑证据)
+
+**交付物**: `src/kernel/plan-constraint.ts` (三层名册 + 引用台账 + 欠账) · `src/kernel/gate-scan.ts` 追加 K1 判据 · `src/test/kernel-constraint.test.ts`。
+**范围**: leo 的 5 步删除顺序里**只做完第 ① 步** (先统计真实 import)。②移除无调用 ③删假连接/placeholder ④领域模块改显式 Tool Provider ⑤删旧导出与兼容层 —— **都还没做**, 不许记成已完成。
+
+### 14.1 真读出来的六条事实
+
+| 事实 | 数字 |
+| --- | --- |
+| constraint-runtime **源码** | **94 文件 / 2492 行** —— A 原语 15 文件(401 行) · B 领域 24(797) · C 不进内核 55(1294) |
+| **空壳** (≤20 行 `index.ts`) | **33 个 / 460 行** —— 移植留下的骨架, 第一批清理的直接对象 |
+| **构建产物混进源码树** | `dist/` **89 文件 / 1164 行** 被 commit 进 `src/` (本身就不该在源码树里) |
+| **自带测试从来不跑** | `tests/` 4 文件 —— 仓里 vitest 配置把整个 constraint-runtime 目录 exclude 掉 |
+| 主仓引用 | **30 点** (prod 19 / test 11) → 台账 **23 条** (prod 12 / test 11) |
+| 集中度 | prod 引用只落在 **7 个目标**: 包入口 + PolymarketSDK 5 模块 + SafeSDK/deploySafe |
+
+### 14.2 三道判据 (真跑 4 门 75/75 · tsc 0 错 · 真盘变异 4/4)
+
+| 判据 | 现状 |
+| --- | --- |
+| **A 类必须可解释** | 15 条逐个写"接入说明": 5 条 `pkg-entry` (有引用者作证) · **5 条 `unused-debt`** (主仓 0 引用: execution_registry · tool_pool · cost_tracker · cost_hook · models) ⇒ 棘轮冻结, K1 复核后决定留/删 |
+| **B 类只能经 Tool Capability** | ⚠️ **12 处直连欠账** —— `pi-sdk-tools.ts` 直接 import PolymarketSDK×5 + SafeSDK×1 (各 2 处), 全部登记, **K7 还清** |
+| **C 类不许被 prod import** | ✅ **0 处** (立门防未来: 多一条就红) |
+| 台账逐字相等 | 重算 30 点必须与台账双向相等 ⇒ 任何新引用点当场红 (扫描面排除名单冻结为 1 条: 本门自己的探针文件) |
+
+### 14.3 本轮修掉的三个真缺陷 (都不是产品代码的错, 是门自己的)
+
+1. **块注释里写 `**/` 会提前闭合注释** —— 我在 JSDoc 里写 vitest 的 glob 路径 `**/constraint-runtime/**`, 其中的 `*/` 把注释截断, 后半句变成**裸标识符** ⇒ `ReferenceError: constraint is not defined`。**tsc 不报**(语法上合法), 只有在 import 时才炸。路径 glob 尤其容易踩。
+2. **判据的目标键与名册键扩展名不一致** —— 台账里 target 是模块名 (`tools/SafeSDK/deploySafe`), 名册键是文件路径 (`…/deploySafe.ts`) ⇒ 判据要三种写法都试, 否则 C 类越界会被误判成"未分类"。
+3. **本门自己测试文件里的人造引用串被当成真引用** —— 判别力自证会往测试里写 `import '…/constraint-runtime/…'`, 引用台账一算就多一条 ⇒ 落成**冻结的排除名单**(只许 1 条)。这正是本仓那条老规矩: 拿子串当判据前先排除自己刚写的东西。

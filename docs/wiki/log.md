@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-10-02 | feat | **K1 第①步: constraint-runtime 三层分类 (统计真实 import + 三道判据)** —— leo 的 5 步删除顺序里只做完第 ① 步 ✓(**②移除无调用 ③删 placeholder ④改 Tool Provider ⑤删旧导出 未做, 不许记成已完成**)。**真读数** ✓: 源码 **94 文件 / 2492 行** (A 原语 15/401 · B 领域 24/797 · C 不进内核 55/1294); **33 个 ≤20 行空壳 index.ts (460 行)**; **`dist/` 89 个构建产物 (1164 行) 被 commit 进 src/**; **自带 4 个测试从来不跑** (vitest 把整个 constraint-runtime 目录 exclude); 主仓引用 **30 点** (prod 19 / test 11) 只落在 **7 个目标** (包入口 + PolymarketSDK 5 模块 + SafeSDK/deploySafe)。**三道判据**: ① **A 类必须可解释** —— 15 条逐个写接入说明, 5 条 `pkg-entry`(有引用者作证) + **5 条 `unused-debt`**(主仓 0 引用: execution_registry · tool_pool · cost_tracker · cost_hook · models, 棘轮冻结待复核); ② **B 类只能经 Tool Capability** —— ⚠️ **12 处直连欠账** (`pi-sdk-tools.ts` 直接 import PolymarketSDK×5 + SafeSDK×1), 登记由 **K7** 还清; ③ **C 类不许被 prod import** —— ✅ **0 处** (立门防未来); ④ 台账**逐字相等** (重算 30 点 ↔ 台账双向), 扫描面排除名单冻结 1 条。**真跑**: 4 门 **75/75** ✓ · `tsc --noEmit` **0 错** ✓ · 双档预算定点 (代码 691 / 台账 331) ✓ · **真盘变异 4/4 符合预期** (基线先断言全绿): C 类被 prod import ⇒ 越界门红 ✓ · 新建未登记目录 ⇒ 覆盖门红 ✓ · 主仓多一个引用点 ⇒ 台账红 ✓ · **阴性对照** ⇒ 仍绿 ✓, 全部逐字节还原。**修掉 3 个门自身的真缺陷**: ① **块注释里写 `**/` 会提前闭合注释** ⇒ 后半句变裸标识符 ⇒ `ReferenceError` 而 **tsc 不报**(路径 glob 特有坑); ② 判据的**目标键(模块名)与名册键(文件路径)扩展名不一致** ⇒ C 类越界会被误判成"未分类"; ③ **本门自己测试里的人造引用串被当成真引用** ⇒ 落成冻结排除名单 (本仓老规矩: 拿子串当判据前先排除自己刚写的). | src/kernel/plan-constraint.ts (新) · src/kernel/gate-scan.ts · src/kernel/roster.ts · src/kernel/plan.ts · src/test/kernel-constraint.test.ts (新) · src/test/kernel-boundary.test.ts · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md |
 | 2026-10-02 | feat | **K0 补齐 ②③④ ⇒ K0 = 7/7 完成 (goal: K0–K10 全阶段)** —— 上一轮按修订定义记的是 3/7, 本轮把缺的三项交齐, 全部**机械生成 + 机器校验**。**② 模块 owner**: `src/kernel/plan.ts` **59 条 owner 覆盖 574 个产品码文件** (最长前缀匹配 · 角色线 owner · `disposition` ∈ keep/converge/migrate/freeze · `phase`), 门判「每文件**恰好**命中一条」+ 键不重复 + **键在盘上真实存在**(空承诺判红)。**③ 入口调用关系图**: **9 行 / 27 调用点** —— 直调 **24** (`web/server.ts` 11 · `index.ts` 8 · `runner-resolver.ts` 1 · `routes-tasks.ts` 1) + 适配器内部 3 (`pi-sdk.ts` 的 pivot 分派) + readline 提示 3 (`cli/interface.ts`); 门重扫全仓 `prompt*(` 的 (file,kind,method,count) 多重集必须**逐字相等** ⇒ 新旁路当场红。**④ 删除台账**: 8 字段格式门 (`remainingRefs` 必须为 0) + **第一批候选 96 条**用**集合 sha256** 冻结 (增/删/替换任一都判红, 目录分布同时冻结)。**K3 分档**: 代码 585 / 台账 143 两档各自冻结 —— 台账是**数据**, 混进代码预算会逼着人抬代码上限, 棘轮信号就废了。**真跑**: 三门 **61/61** ✓ · `tsc --noEmit` **0 错** ✓ · 双档预算定点达成 (`= frozen`) ✓。**真盘变异 4/4 符合预期** (探针**先断言基线全绿**再逐例注入 → 红 → 逐字节还原 + sha256): K4 删 `llm/` owner 条目 ⇒ 覆盖门红 ✓ · K5 在 `web/i18n.ts` 注入 `agent.prompt('x')` ⇒ 入口图报新旁路 ✓ · K6 给候选注入副作用 `import './x.js'` ⇒ 候选集变 ⇒ sha 不等 ✓ · **阴性对照** (非 kernel 文件加无害注释) ⇒ **仍绿** ✓。**过程中修掉 2 个真缺陷**: ① **判据漏「副作用 import」** (`import './x.js';` 既无 `from` 也无括号, 正则看不见 ⇒ 入边少算 ⇒ **删除候选虚高**) —— 已修 `FROM_RE` 并加专条用例锁住, 修完重算候选集**未变**(该形态在相关文件里本就不存在)但判据从此完整; ② **我改了判据却没重设行数预算** (583→585 而冻结在 583 ⇒ 门红) —— **是"阴性对照必须先断言基线"这一步照出来的**, 第一版探针没做基线断言, 差点把"本来就红"当成"变异后红"(已写进探针)。**顺带量出的事实**: 96 个 0 入边候选里 **61 个在 `src/bollharness/`** —— 那是**另一个项目的镜像**(自带 `.boll/skills` 与 `scripts/checks/*`)却住在 Bolloon `src/` 里 ⇒ **第一批立即可清的头号目标**。 | src/kernel/plan.ts (新) · src/kernel/gate-scan.ts · src/kernel/roster.ts · src/test/kernel-plan.test.ts (新) · src/test/kernel-boundary.test.ts · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md |
 | 2026-10-02 | docs | **迁移计划修订 + 我先前一句"K0 已完成"作废 (leo 给出完整迁移计划: "以删除为结果的内核迁移")** —— **改口径 (先说错在哪)** ✓: 我上一轮按**旧定义**记了「K0 ✅ 已完成」✗ —— 修订版把 K0 交付物从 3 项扩到 **7 项** (新增 ①每模块唯一 owner ②入口调用关系图 ③旧代码删除台账), 我实交 ⑤import 白名单 ⑥越权检测 ⑦行数棘轮 ⇒ **真实完成度 3/7**, 台账已改成 `🟡 3/7`, 旧结论就地作废 (没往下追加更正)。**三处修订** ✓: ① **「删除多余内容」升为正式交付物** (不再是收尾顺手清理) —— 落成 4 类分法 + **五个删除条件** (有唯一替代路径 / 全仓无有效 import·动态引用·CLI·Web 路由引用 / 真跑覆盖旧能力 / 一次完整回归 + 一次故障恢复 / 留可回滚提交点; **不许以"看起来没用"为依据**) + **8 字段删除记录** + 每批删除前后必跑的 8 项 + 三批删除顺序 + 「暂时不能删的 10 样最长板」; ② **阶段重编号**: 原「入口收口与单循环」拆成 **K3 统一入口队列** / **K4 合并两套 loop** ⇒ 自 K3 起顺延, **Channel Actor = K5** —— 连带修正 `src/kernel/roster.ts` 欠账台账的 `payDownIn: 'K4' → 'K5'` (3 条), 否则台账把还清点指到错的阶段 ✓; ③ §10 换成分阶段计划的 **6 条最终完成标准** + 「不做大爆炸式换内核」。**代码改动仅 3 字符级** ✓ (roster 里 3 处 `K4`→`K5`, 行数不变 ⇒ 行数棘轮 450/450 仍成立)。**下一刀** = 补 K0 缺的三项 (模块 owner · 入口调用关系图 · 旧代码删除台账), 之后才进 K1 (constraint-runtime 拆三层)。 | docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md · src/kernel/roster.ts · docs/wiki/current-status.md |
 | 2026-10-02 | feat | **K0 落地: 三道边界门 (K1 目录边界 / K2 模块越权 / K3 行数棘轮) —— goal = K0–K10 全阶段完成 (leo)** —— **先量再判** ✓: 层间 import 真实图先算出来 (8 层 · 22 条边 · 逐条落到具体文件), 否则门要么查空集要么一开工就假红。**交付**: `src/kernel/roster.ts`(冻结面, **数据零 import** —— 它自己就是 K1 的样本) + `src/kernel/gate-scan.ts`(判据 = **纯函数吃源码文本**, 故变异能把改坏的源码喂给同一份判据) + `src/test/kernel-boundary.test.ts`(K1+K3, 12 条) + `src/test/kernel-authority.test.ts`(K2, 25 条)。**K2 的关键设计**: 禁令落在**写/改入口**上而不是"整层不许 import" —— 实测 `tools→shell-guard` 3 处全是**只读**校验, 若按整层禁则门一开工就假红。**真跑**: 两门 **37/37** ✓ · `tsc --noEmit` **0 错** ✓ · 相邻面 (`pi-harness` + `run-store`) **56/56** ✓ 未回归。**真盘变异 4/4 符合预期** (真实文件注入 → 门红 → 逐字节还原 + sha256 核验): K1 注入禁 import ⇒ **4 failed** ✓ · K2 在 `web/i18n.ts` 注入 `setRunStatus(...)` ⇒ **1 failed** ✓ · K3 追加一行 ⇒ **2 failed** ✓ · **阴性对照** (非 kernel 文件加无害注释) ⇒ **仍绿 25/25** ✓ (证明门不是"任何改动都红")。**门首次量出的真实事实** (这才是价值): Model→Tool **0** · Provider→Run **0** (唯一 `llm→state` 是 `model-selection.ts:1521` 调 `readRun` **只读**且有注释说明) · Tool→权限 **0** · 子 Agent→结束 Goal **0**; **Channel→Goal 1 处** + **Channel→Run 3 处** = **4 处欠账** (全在 `web/server.ts`, 台账登记 + 标明由 **K4** 还清, 条数冻结 3 只许减不许增)。**执行行为一字未改** ✓(`grep` 证 `src/kernel/` 无任何业务模块引用)。**欠账还清点**: K4。 | src/kernel/roster.ts (新) · src/kernel/gate-scan.ts (新) · src/test/kernel-boundary.test.ts (新) · src/test/kernel-authority.test.ts (新) · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/index.md · docs/wiki/current-status.md · docs/wiki/log.md |
@@ -490,6 +491,58 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+### [2026-10-02] feat | K1 第①步: constraint-runtime 三层分类 (统计真实 import)
+
+**触发**: goal = 走完 K0–K10。K0 已 7/7, 本轮进 K1。leo 的 K1 是 5 步删除顺序:
+① 先统计真实 import ② 移除无调用模块 ③ 删假连接/假成功/placeholder API ④ 领域模块改显式 Tool Provider
+⑤ 最后删旧导出与兼容层。**本轮只做完第 ① 步**, 并把它做成机器可校验的名册 + 三道判据。
+
+**真读数 (六条, 都写进设计页 §14.1, 免得下一轮重新发现)**:
+
+| 事实 | 数字 |
+| --- | --- |
+| 源码 | **94 文件 / 2492 行** — A 原语 15(401) · B 领域 24(797) · C 不进内核 55(1294) |
+| 空壳 (≤20 行 index.ts) | **33 个 / 460 行** |
+| 构建产物混进源码树 | `dist/` **89 文件 / 1164 行** 被 commit 进 src/ |
+| 自带测试从来不跑 | `tests/` 4 文件 —— vitest 配置把整个 constraint-runtime 目录 exclude |
+| 主仓引用 | **30 点** (prod 19 / test 11) → 台账 23 条 |
+| 集中度 | prod 引用只落在 7 个目标: 包入口 + PolymarketSDK 5 模块 + SafeSDK/deploySafe |
+
+**三道判据 + 现状**:
+- **A 类必须可解释**: 15 条逐个写"接入说明" —— 5 条 `pkg-entry`(有引用者作证), **5 条 `unused-debt`**
+  (execution_registry / tool_pool / cost_tracker / cost_hook / models: 主仓 0 引用), 棘轮冻结;
+- **B 类只能经 Tool Capability**: ⚠️ **12 处直连欠账** (`pi-sdk-tools.ts` 直接 import PolymarketSDK×5 + SafeSDK×1,
+  各 2 处) —— 全部登记, **K7 还清**;
+- **C 类不许被 prod import**: ✅ **0 处** —— 立门, 多一条就红;
+- **台账逐字相等**: 重算 30 点 ↔ 台账双向相等, 扫描面排除名单冻结 1 条 (本门自己的探针文件)。
+
+**真跑**: 4 门 **75/75** ✓ · `tsc --noEmit` **0 错** ✓ · 双档预算定点 (代码 691 / 台账 331) ✓。
+**真盘变异 4/4 符合预期** (探针**先断言基线全绿**):
+
+| 变异 | 结果 |
+| --- | --- |
+| C 类被 prod import (`web/i18n.ts` 引 `remote/ssh`) | 判红 (越界门) · 还原干净 |
+| constraint-runtime 下新建未登记目录 | 判红 (覆盖门) · 还原干净 (含清理空目录) |
+| 主仓多一个引用点 (`agent-lang.ts` 引包入口) | 判红 (台账逐字相等) · 还原干净 |
+| **阴性对照** (无关文件加无害注释) | **仍绿** · 还原干净 |
+
+**本轮修掉的三个真缺陷 (都在门自己身上, 记下来因为会重犯)**:
+1. **块注释里写 `**/` 会提前闭合注释** —— 我在 JSDoc 里写了 vitest 的 glob 路径 `**/constraint-runtime/**`,
+   其中的 `*/` 把注释**提前截断**, 后半句 `constraint-runtime/** 排除了整个目录` 变成**裸标识符** ⇒
+   `ReferenceError: constraint is not defined`。**tsc 不报**(语法上完全合法), 只有 import 那一刻才炸。
+   诊断方式: 异常栈给到 `plan-constraint.ts:13:65` —— 正是那条注释。
+2. **判据的目标键与名册键扩展名不一致**: 台账里 target 是模块名 (`tools/SafeSDK/deploySafe`), 名册键是
+   文件路径 (`…/deploySafe.ts`) ⇒ `constraintRuleOfTarget` 必须三种写法都试 (裸名 / +.ts / +/index.ts),
+   否则 C 类越界会被误判成 "未分类" (判据红在错的原因上)。
+3. **本门自己测试里的人造引用串被当成真引用**: 判别力自证要往测试里写 `import '…/constraint-runtime/…'`,
+   引用台账一算就多一条 ⇒ 落成**冻结的排除名单** (只许 1 条)。这就是本仓那条老规矩在门自己身上的复现:
+   **拿子串当判据前, 先排除你自己刚写的东西**。
+
+**没做 (如实)**: ② 移除无调用模块 (33 个空壳 + 89 个 dist 产物是第一/第二批对象) · ③ 删假连接/placeholder
+(`remote_runtime.ts` / `remote/` / `upstream_proxy/` 已判 C 但还没删) · ④ 领域模块改显式 Tool Provider
+(B 类 12 处直连还挂在 `pi-sdk-tools.ts` 上) · ⑤ 删旧导出与兼容层。**没有一条删除记录写下来** —— 因为一条都没删。
+
+- 设计页 §14: [bolloon-native-macro-kernel.md](./bolloon-native-macro-kernel.md)
 ### [2026-10-02] feat | K0 补齐 ②③④ ⇒ **K0 = 7/7 完成**
 
 **触发**: leo 修订版 K0 的交付物是 7 项, 我上一轮只交了 ⑤import 白名单 ⑥越权检测 ⑦行数棘轮 (3/7)。

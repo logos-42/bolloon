@@ -138,6 +138,6 @@ export interface DeletionRecord {
 export const DELETION_LEDGER: readonly DeletionRecord[] = [];
 
 /** 第一批删除候选 = 产品码里 **0 入边引用** 且非入口形态 (机械派生, 不手写) */
-export const DELETION_CANDIDATE_COUNT = 96;
-export const DELETION_CANDIDATE_SHA256 = 'ae4eb58afef92c4923f4051080b36f2ac214749e1deae3994204ca1e24bca374';
-export const DELETION_CANDIDATE_DIRS: Readonly<Record<string, number>> = {"agents": 5, "bollharness-integration": 1, "bollharness": 61, "cli": 1, "(根)": 1, "judgeness": 3, "kernel": 2, "llm": 1, "network": 3, "orbitdb": 2, "scripts": 1, "social": 2, "utils": 3, "web": 10};
+export const DELETION_CANDIDATE_COUNT = 97;
+export const DELETION_CANDIDATE_SHA256 = '142b3f8241d9cb46ab2cda5e4a20160f2dc4bc509b8186185044c529de46b690';
+export const DELETION_CANDIDATE_DIRS: Readonly<Record<string, number>> = {"agents": 5, "bollharness-integration": 1, "bollharness": 61, "cli": 1, "(根)": 1, "judgeness": 3, "kernel": 3, "llm": 1, "network": 3, "orbitdb": 2, "scripts": 1, "social": 2, "utils": 3, "web": 10};

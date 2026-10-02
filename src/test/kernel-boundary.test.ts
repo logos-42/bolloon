@@ -118,12 +118,13 @@ describe('K1 目录边界门 —— 内核目录不许 import 业务模块', () 
 describe('K3 行数棘轮门 —— 代码与台账各一档, 都只许减不许增', () => {
   // 分档理由见 roster.ts KERNEL_PLAN_LINE_BUDGET 的注释: 防的是「逻辑回流到内核代码」,
   // 台账是数据 —— 混在一起会逼着人抬代码上限, 棘轮的信号就废了。
-  const CODE_SRC = KERNEL_SRC.filter((f) => !f.path.endsWith('/plan.ts'));
-  const PLAN_SRC = KERNEL_SRC.filter((f) => f.path.endsWith('/plan.ts'));
+  const PLAN_RE = /(^|\/)plan[^/]*\.ts$/; // 台账档 = kernel/plan*.ts (plan.ts · plan-constraint.ts …)
+  const CODE_SRC = KERNEL_SRC.filter((f) => !PLAN_RE.test(f.path));
+  const PLAN_SRC = KERNEL_SRC.filter((f) => PLAN_RE.test(f.path));
 
   it('两档都非空 (分档不是拿来绕预算的)', () => {
     expect(CODE_SRC.length).toBeGreaterThan(0);
-    expect(PLAN_SRC.length).toBe(1);
+    expect(PLAN_SRC.length).toBeGreaterThanOrEqual(1);
   });
 
   it('代码档: 真实行数 ≤ 预算', () => {
@@ -160,8 +161,14 @@ describe('K3 行数棘轮门 —— 代码与台账各一档, 都只许减不许
   });
 
   it('变异: 台账档追加一行 ⇒ 超预算判红', () => {
+    // 台账档是**整档**一个预算 (plan.ts + plan-constraint.ts + …), 变异必须落在档位上
     const victim = PLAN_SRC[0];
-    const mutated: SourceFile = { path: victim.path, text: `${victim.text}\n// 顺手加的一行\n` };
-    expect(countCodeLines([mutated])).toBeGreaterThan(KERNEL_PLAN_LINE_BUDGET);
+    const mutated = PLAN_SRC.map((f) =>
+      f.path === victim.path ? { path: f.path, text: `${f.text}\n// 顺手加的一行\n` } : f,
+    );
+    const before = countCodeLines(PLAN_SRC);
+    const after = countCodeLines(mutated);
+    expect(before).toBeLessThanOrEqual(KERNEL_PLAN_LINE_BUDGET);
+    expect(after).toBeGreaterThan(KERNEL_PLAN_LINE_BUDGET);
   });
 });

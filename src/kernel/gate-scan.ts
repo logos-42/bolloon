@@ -302,3 +302,109 @@ export function deletionCandidates(files: SourceFile[]): string[] {
     .filter((p) => (inbound.get(p) ?? 0) === 0 && !ENTRY_SHAPE_RE.test(p))
     .sort();
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K1 —— constraint-runtime 三层分类 / 主仓引用台账 / 越界引用
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ConstraintRuleLike { key: string; cls: string; why: string; phase: string }
+
+/** 归属 = 最长前缀; 入参 rel 相对 constraint-runtime/ */
+export function constraintClassOf(rel: string, rules: readonly ConstraintRuleLike[]): ConstraintRuleLike | null {
+  let best: ConstraintRuleLike | null = null;
+  for (const r of rules) {
+    const hit = r.key.endsWith('/') ? rel.startsWith(r.key) : rel === r.key;
+    if (hit && (!best || r.key.length > best.key.length)) best = r;
+  }
+  return best;
+}
+
+/** 每个源码文件必须恰好命中一条规则 (BUILD/META 子树另算) */
+export function scanConstraintCoverage(
+  sourceFiles: readonly string[],
+  rules: readonly ConstraintRuleLike[],
+): Finding[] {
+  const out: Finding[] = [];
+  for (const rel of sourceFiles) {
+    if (!constraintClassOf(rel, rules)) out.push({ rule: 'constraint-coverage', file: rel, line: 1, what: '未分类' });
+  }
+  return out;
+}
+
+/** 说明符 → 台账里的目标键 (包入口 / 去掉 src|dist 前缀与 .js) */
+export function constraintTargetOf(spec: string): string | null {
+  if (!spec.includes('constraint-runtime')) return null;
+  if (/^@bolloon\/constraint-runtime$/.test(spec)) return '__pkg_entry__';
+  const marker = 'constraint-runtime/';
+  const i = spec.lastIndexOf(marker);
+  if (i < 0) return '__pkg_entry__';
+  return spec.slice(i + marker.length).replace(/^(src|dist)\//, '').replace(/\.js$/, '');
+}
+
+/**
+ * 目标键 → 规则键。
+ * 台账里的 target 是**模块名**(无扩展名, 如 `tools/SafeSDK/deploySafe`), 而名册键是**文件路径**
+ * (如 `src/tools/SafeSDK/deploySafe.ts`) ⇒ 三种写法都试 (裸名 / +.ts / +/index.ts)。
+ */
+export function constraintRuleOfTarget(target: string, rules: readonly ConstraintRuleLike[]): ConstraintRuleLike | null {
+  if (target === '__pkg_entry__') return rules.find((r) => r.key === '__pkg_entry__') ?? null;
+  return constraintClassOf(`src/${target}`, rules)
+    ?? constraintClassOf(`src/${target}.ts`, rules)
+    ?? constraintClassOf(`src/${target}/index.ts`, rules);
+}
+
+export interface ConstraintUseRow { file: string; target: string; count: number; kind: 'prod' | 'test' }
+
+/** 重算主仓 (非 constraint-runtime 子树) 对 constraint-runtime 的全部引用点 */
+export function scanConstraintUses(
+  files: SourceFile[],
+  constraintRoot: string,
+): ConstraintUseRow[] {
+  const m = new Map<string, ConstraintUseRow>();
+  for (const f of files) {
+    if (f.path.startsWith(constraintRoot)) continue;
+    const kind: 'prod' | 'test' = f.path.startsWith('test/') ? 'test' : 'prod';
+    for (const { spec } of importSpecifiers(f.text)) {
+      const target = constraintTargetOf(spec);
+      if (!target) continue;
+      const key = `${f.path}|${target}|${kind}`;
+      const prev = m.get(key);
+      m.set(key, { file: f.path, target, count: (prev?.count ?? 0) + 1, kind });
+    }
+  }
+  return [...m.values()].sort((a, b) => key2(a).localeCompare(key2(b)));
+}
+function key2(r: ConstraintUseRow) { return `${r.file}|${r.target}|${r.kind}`; }
+
+export function constraintUseDiff(
+  actual: readonly ConstraintUseRow[],
+  declared: readonly { file: string; target: string; count: number; kind: string }[],
+) {
+  const k = (r: { file: string; target: string; count: number; kind: string }) => `${r.file}|${r.target}|${r.kind}|${r.count}`;
+  const got = actual.map(k).sort();
+  const want = declared.map(k).sort();
+  return { extra: got.filter((g) => !want.includes(g)), missing: want.filter((w) => !got.includes(w)) };
+}
+
+/**
+ * 越界引用 (K1 的核心判据):
+ *   · C 类被 **prod** 引用 ⇒ 违规 (不许被 Kernel 侧 import);
+ *   · B 类被 **prod** 直接引用 ⇒ 欠账 (只能经 Tool Capability 接入, K7 还清)。
+ */
+export function scanConstraintViolations(
+  uses: readonly ConstraintUseRow[],
+  rules: readonly ConstraintRuleLike[],
+): { cViolations: Finding[]; bDebt: ConstraintUseRow[] } {
+  const cViolations: Finding[] = [];
+  const bDebt: ConstraintUseRow[] = [];
+  for (const u of uses) {
+    if (u.kind !== 'prod') continue;
+    const rule = constraintRuleOfTarget(u.target, rules);
+    if (!rule) cViolations.push({ rule: 'constraint-unclassified-use', file: u.file, line: 1, what: u.target });
+    else if (rule.cls === 'C' || rule.cls === 'BUILD' || rule.cls === 'META')
+      cViolations.push({ rule: 'constraint-c-imported-by-prod', file: u.file, line: 1, what: `${u.target} (${rule.cls})` });
+    else if (rule.cls === 'B') bDebt.push(u);
+  }
+  return { cViolations, bDebt };
+}
