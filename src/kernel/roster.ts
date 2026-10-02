@@ -259,9 +259,8 @@ export const STAGE_STATUS: Readonly<Record<string, 'done' | 'partial' | 'not-sta
   'K4-A': 'done',         // 内核控制面 / Goal·Run 写权限收口 (AUTHORITY_DEBT 3 → 0, 经 kernel/control.ts)
   'K4-B': 'not-started',  // 合并两套 Agent Loop (ReAct / Pivot / 旧 loop)
   K6: 'done',             // 2026-10-02 修正: 能力 9/9 全 done (capabilities-done) —— 原写 not-started 是台账滞后
-  K7: 'partial',          // 台账+门已落 · 旁路 3→2 · skill 门"注入已落但**端到端未证**" ⇒ 不标 converged
-  // 2026-10-02 修正 (台账滞后): K8 实际已做到 —— 台账+门 (10 事件面/12 直连) · 直连 12 → **0** · 各通道自带状态台账 (37 符号/33 目标) · 收口第一刀 (didFixQueue 经内核邮箱) · **批次① 前哨** (drain 两份合一 + 经邮箱) ⇒ partial
-  K8: 'partial',
+  K7: 'done',             // 2026-10-02 收尾: 旁路 **3 → 0** (pivot ✅ · skill ✅ 两路端到端 · tscTool ✅ 端到端取证含两条变异 · getSkillRegistry ✅ 受门包装) — 提交 5483e3a / 1af7e46
+  K8: 'partial',          // 台账+门已落 · 直连 12 → **0** · 各通道状态 37/33 · didFixQueue 经邮箱 · **正刀已落地** (每条消息都进邮箱, 删掉重复的第二条路径, 提交 2fc197e, 真跑: 一条不丢/严格串行/FIFO) ⇒ 剩 `abortController` 语义定夺 (目标是 ExecutionRequest.signal), 显式留下不随队列顺手合并
   K9: 'not-started',
   K10: 'not-started',
 };

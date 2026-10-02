@@ -1821,7 +1821,19 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 > `AUTHORITY_DEBT` 的还清动作今后叫 **K4-A**, 不再单独叫 "K4"; 设计页原"合并两套 Loop"即 **K4-B**。
 > (权威台账是 `src/kernel/roster.ts` 的 `STAGE_STATUS` —— 2026-10-02 修正了两处滞后: K6 从 `not-started` 改 `done`, K7 从 `not-started` 改 `partial`。)
 
-### K8 收口正刀 (计划 · 2026-10-02 量出) —— **每条消息都进邮箱, 顺带删掉重复的第二条路径**
+### K8 收口正刀 (**2026-10-02 已落地** · 提交 `2fc197e`) —— 每条消息都进邮箱, 顺带删掉重复的第二条路径
+
+**落地结果**: `/message` 一律 `getChannelQueue(channelId).submit(runChannelMessage)` (闭包包裹, 不搬 684 行) ·
+`running` 降为观测 · **删除** `queue` 字段 + `PendingMessage` + `runMessageFromQueue` + `buildAttachmentContextForQueue` + drain 分支 ·
+`broadcastQueueUpdate` 的 queueLength 改读邮箱 `pending`。
+**真跑(新码)**: 同通道并发 3 条 ⇒ 一条不丢 · `ai/done` 严格成对零交错 · 回复顺序=到达顺序。
+**对照(旧码)**: 同样 3 条 ⇒ 1 条回答 + 2 条 `queue-drain` error + user 重复广播 5 次。
+**门**: 收口对象 3 → 1 (只剩 `abortController`) + 反回归 (queue 不许回接口) + ⑤ 机械断言改新形状 (剥注释后判)。
+**跨台账**: K5 `converted 13→12` · `wiredTotal 24→23` · `entrySites server.ts 11/11→10/10`; K3 代码档 2912→2917 / 台账档 1441→1439(收紧)。
+**未定项 (显式留下)**: `abortController` —— abort 语义要单独定 (不随队列顺手合并), 目标是 `ExecutionRequest.signal`。
+
+---
+以下为动刀前的计划原文 (留档: 它写清了耦合清单与门清单, 事后核对"计划与落地是否一致"):
 
 **为什么要动**: 现在同一条 channel 上并存**两条执行路径** —— `/message` 的 684 行内联体 (带全套 hooks:
 judgment hint / persona / manifest / slash 命令 / 附件上下文) 与 `runMessageFromQueue` 的**简化版**
