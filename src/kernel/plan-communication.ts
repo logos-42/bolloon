@@ -194,13 +194,27 @@ export interface K8RunStateField {
  * ⇒ 同一 channel **两条 run 并行** ⇒ 串行性被破坏 (K5 的"同通道串行"承诺失效)。
  * 所以删 `queue`/`running` 的**前置**是: 主路径内联跑自己也进邮箱 (`await getChannelQueue(id).submit(...)`)。
  *
- * 另附一条**实测缺陷** (不是设计意图, 是真 bug): 主路径的 `if (runState.running) { 入队 } else { running = true }`
- * 中间夹着多个 `await` ⇒ **check-then-set 不是原子的** ⇒ 两个并发 `/message` 可能**都**通过检查
- * ⇒ 同通道双开 (串行性有洞)。修它需要把"检查+占位"做成原子 (邮箱天然提供), 这正是收口要解决的问题。
+ * **2026-10-02 自纠: 下面这段早些时候写的"实测缺陷"是错的, 按盘上事实改正 (留着错的说法比没有更危险)。**
+ * 旧说法 = "主路径 check-then-set 夹在多个 `await` 之间 ⇒ 并发 `/message` 会都通过检查 ⇒ 同通道双开"。
+ * **盘上事实不成立**: `if (runState.running)` (server.ts 4839) 与 `running = true` (4853) 之间只有
+ * `queue.push` / `broadcastQueueUpdate` / `console.log` / `return` —— **没有 await**; 排空路径那对
+ * (`if (runState.running) return;` / `running = true`, 5657/5658) 更是**相邻两行**
+ * ⇒ 两处在 Node 单线程模型下都**是原子的**。
+ *
+ * 真正存在的洞是**同族的另一条** (`handoff 不是授权`): `finishChannelRun` 先**同步**置 `running = false`,
+ * 再把下一条**异步**交给邮箱 (`getChannelQueue(channelId).submit`) —— 而该邮箱**与 didFix 等任务共用**
+ * (`server.ts` 5790 用同一个 `getChannelQueue(id)`) ⇒ 邮箱里排着前序任务时 handoff 会延后, 这期间新到的
+ * `/message` 看到 `running === false` 就**内联起跑**; 等那条排队消息终于被跑到时, 它的防重入守卫
+ * `if (runState.running) return;` 直接返回 ⇒ **那条排队消息被静默丢掉** (不是双开, 是丢消息 —— 更糟),
+ * 且顺序也被打乱 (后到的先跑)。修法仍是同一个前置: **每条消息 (含主路径) 都投邮箱**, `running`/`queue` 降为观测。
  */
 export const K8_RUNSTATE_PREREQUISITE =
   '主路径内联跑必须先进内核邮箱 (`await getChannelQueue(channelId).submit(...)`) 才能删 `queue`/`running`: ' +
-  '否则邮箱会与内联跑并行起跑排队项, 同通道双开 (K5 串行承诺失效)。另: 现有 check-then-set 夹在 await 之间 ⇒ 已存在并发双开洞。';
+  '否则邮箱会与内联跑并行起跑排队项, 同通道双开 (K5 串行承诺失效)。' +
+  '**已核实的现网缺陷 (2026-10-02 自纠后)**: handoff 不是授权 —— `finishChannelRun` 同步置 running=false 后异步投邮箱, ' +
+  '邮箱与 didFix 共用 ⇒ 前序任务排队时 handoff 延后, 新 `/message` 见 running=false 就内联跑; ' +
+  '那条排队消息随后撞上 `if (runState.running) return;` ⇒ **被静默丢掉** (并打乱 FIFO)。' +
+  '(旧说法"check-then-set 夹 await ⇒ 并发双开"**不成立**, 已按盘上事实改正。)';
 
 export interface K8RunStateLedger {
   file: string;
