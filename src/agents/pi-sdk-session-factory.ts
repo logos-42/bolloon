@@ -18,7 +18,20 @@ import { getBranchPrefix, getCooldownMs } from './shell-guard.js';
  */
 
 import { PiAgentSession } from './pi-sdk.js';
+import { getOrCreateActor } from '../kernel/channel-actor.js';
 import type { AgentSession, AgentSessionConfig } from './pi-sdk-types.js';
+
+/**
+ * **K5 第 3 步**: 会话创建时绑定它所属 channel 的 Actor —— 只做**归属**。
+ *   · channelId 取 `config.peerId` 的 `:` 前段 (per-channel session key 的形状就是 `<channel>:<sessionId>`);
+ *   · 状态 (messageHistory / channelId / agentId / goalId) **仍在 Pi 实例字段上**, 逐项迁入见 8 步台账;
+ *   · 绑定是**幂等**的: 同一 channelId 永远拿到同一个 actor (`getOrCreateActor`)。
+ */
+function attachActor(session: AgentSession, config: AgentSessionConfig): AgentSession {
+  const channelId = String(config.peerId || '').split(':')[0] || 'default';
+  session.actor = getOrCreateActor(channelId, { agentId: config.agentId || '' });
+  return session;
+}
 
 let sessionInstance: AgentSession | null = null;
 let lastIdentityDid: string | null = null;
@@ -36,7 +49,7 @@ export async function createAgentSession(config: AgentSessionConfig, forceNew?: 
       await existing.whenReady();
       return existing;
     }
-    const session = new PiAgentSession(config);
+    const session = attachActor(new PiAgentSession(config), config);
     independentSessions.set(key, session);
     console.log(`[createAgentSession] 创建独立 session, key=${key}, DID=${incomingDid}`);
     await session.whenReady();
@@ -45,7 +58,7 @@ export async function createAgentSession(config: AgentSessionConfig, forceNew?: 
 
   if (forceNew) {
     const key = `force:${Date.now()}`;
-    const session = new PiAgentSession(config);
+    const session = attachActor(new PiAgentSession(config), config);
     independentSessions.set(key, session);
     console.log(`[createAgentSession] 创建强制新 session, key=${key}`);
     await session.whenReady();
@@ -72,7 +85,7 @@ export async function createAgentSession(config: AgentSessionConfig, forceNew?: 
     return sessionInstance;
   }
 
-  const newSession = new PiAgentSession(config);
+  const newSession = attachActor(new PiAgentSession(config), config);
   sessionInstance = newSession;
   lastIdentityDid = config.identityDoc?.did || null;
   console.log(`[createAgentSession] 新建 session, DID=${lastIdentityDid}`);

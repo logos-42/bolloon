@@ -763,3 +763,37 @@ K5 的变异用例原本在 `src/kernel/` 里**真建文件再删** —— 8 个
 
 `stage: 'not-started' → 'container-built'` (附进度历史与"这一步交付了什么"), 门的"与盘上事实同步"因此翻面: 现在要求 **容器必须真的存在**, 且 `fieldsMigrated/entriesWired` **必须仍是 0** (容器建了 ≠ 字段迁了 / 入口接了)。
 两个变异用例随之换方向 (镜像): ① 标 `not-started` 而容器存在 ⇒ 红; ② 标 `container-built` 而盘上没有 ⇒ 红。
+
+## 27. K5 第 3 步: Actor 注册表 + 会话工厂绑定 (一个 channel 一个 actor 成立)
+
+### 27.1 为什么先做这一步
+
+第 2 步只落了「容器类」, 但**没有落点**: `messageHistory` 要迁入 Actor, 前提是**每个 channel 有自己的 actor**。「history 存哪」必须先有答案, 否则第 4 步 (迁 history) 无处可迁。
+
+### 27.2 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| `src/kernel/channel-actor.ts` | **注册表**: `getOrCreateActor(channelId, init?)` · `peekActor` · `actorCount` · `resetActors` (测试用)。**幂等**: 同 channelId 永远同一个实例; `init` **只在新建时生效** (既有 actor 不被后来的 init 覆盖 —— 防止「后到的调用冲掉先建会话的状态」); 空 channelId 落 `default` 桶 |
+| `src/agents/pi-sdk-types.ts` | `AgentSession.actor?: ChannelActor` (契约里的一等字段, 免得工厂里做 `any` 转换) |
+| `src/agents/pi-sdk.ts` | `PiAgentSession.actor?: ChannelActor` —— 注释明写**现在只做归属**, 状态仍在实例字段上 |
+| `src/agents/pi-sdk-session-factory.ts` | `attachActor(session, config)` + **3 个创建点全部包装**。channelId 取 `config.peerId` 的 `:` **前段** (per-channel session key 的形状本就是 `<channel>:<sessionId>`) |
+
+### 27.3 这一步**没有**做的事 (不许夸大进度)
+
+```
+fieldsMigrated 仍 0/4    —— 没有搬任何字段 (messageHistory 仍在 Pi 实例上)
+entriesWired   仍 0/4    —— 没有任何入口把执行投递进 mailbox (submit() 尚未被业务调用)
+行为          零改变     —— 现有链路仍读 Pi 实例字段; actor 只是「存在的归属」
+```
+
+### 27.4 真跑验证
+
+| 用例 | 断言 |
+| --- | --- |
+| **注册表语义** | 同 channelId 两次拿到**同一实例**; 不同 channelId 隔离; `channelId` 正确落盘; `init` 不覆盖既有 actor; 空串落 `default`; `peekActor` 不建; `resetActors` 清空 |
+| **真跑 (会话工厂)** | `createAgentSession({peerId:'k5probe-a:s1'/'k5probe-a:s2'/'k5probe-b:s1'})` ⇒ ① `actor.state.channelId === 'k5probe-a'` (**从 peerId 里正确切出 channel**) ② 同 channel 的两个 session **共享同一 actor** ③ 跨 channel **不同 actor** ④ 向一个 actor 写 history, 另一个**确实为空** |
+
+### 27.5 回归面
+
+工厂动过 ⇒ 跑了**所有提到 `createAgentSession` / `pi-sdk-session-factory` 的测试**: `pi-sdk` · `session-resume-e2e` · `persistence-e2e-flow` · `full-loop-e2e` · `workflow-pivot-loop` · `session-gets-identity-doc` · `pi-sdk-tools-validation` 等 + 8 个 kernel 门 = **15 文件 / 179 测试全绿**。

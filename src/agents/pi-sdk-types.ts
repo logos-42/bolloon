@@ -158,7 +158,11 @@ export interface HeartbeatConfig {
   greetingMessage?: string;
 }
 
+import type { ChannelActor } from '../kernel/channel-actor.js';
+
 export interface AgentSession {
+  /** K5: 本会话所属 channel 的 Actor (由 session factory 创建时绑定; 状态迁移见 plan-channel-actor.ts) */
+  actor?: ChannelActor;
   prompt(input: string, options?: { onStream?: StreamCallback; signal?: AbortSignal; channelId?: string }): Promise<string>;
   promptStream(input: string, onStream: StreamCallback, signal?: AbortSignal, channelId?: string): Promise<string>;
   /** 2026-09-16: 标记运行表面 (Durable Run 记录里的 surface 字段) — 可选, 老实现不关心 */

@@ -9,13 +9,16 @@
  *   标了"容器未建"就必须真的不存在 `src/kernel/channel-actor.ts`; 进度只许增; 未建/未迁的不许标成已完成。
  */
 
-export type K5Stage = 'not-started' | 'container-built' | 'fields-migrated' | 'entries-wired' | 'done';
+export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'fields-migrated' | 'entries-wired' | 'done';
 
 /**
  * 进度历史 (台账只许前进, 每次前进都要留下日期与"这一步交付了什么"):
  *   · 2026-10-02 not-started → **container-built**: `src/kernel/channel-actor.ts` 落地
  *     (ActorState 9 项 · SerialMailbox 串行队列 · ChannelActor.submit/abort/beginCancellation);
  *     串行语义由 `kernel-channel-actor.test.ts` **真跑**验证; **尚未接任何入口** ⇒ 行为零改变。
+ *   · 2026-10-02 container-built → **registry-built**: 注册表 `getOrCreateActor(peekActor/actorCount/resetActors)`
+ *     落地, 并由 **session factory** 在会话创建时按 channel 绑定 (`attachActor`) ⇒ 一个 channel 一个 actor 成立;
+ *     `fieldsMigrated` 仍 0/4 · `entriesWired` 仍 0/4 (只做归属, 没有把执行投递进 mailbox, 状态仍在 Pi 实例上)。
  */
 
 export interface ActorStateItem { name: string; why: string; owner: string }
@@ -76,7 +79,7 @@ export const K5_INHERITED_FIELDS: readonly { name: string; into: string; accesse
 
 /** 进度位 —— 门强制与盘上事实同步 (进度只许增; 未建的不许标已建) */
 export const K5_PROGRESS = {
-  stage: 'container-built' as K5Stage,
+  stage: 'registry-built' as K5Stage,
   /** Actor 容器文件路径 (存在性由门真读盘核对) */
   containerPath: 'kernel/channel-actor.ts',
   fieldsMigrated: 0,

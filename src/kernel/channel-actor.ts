@@ -131,3 +131,49 @@ export class ChannelActor {
     return ac.signal;
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Actor 注册表 (K5 第 3 步): 一个 channel 一个 actor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 进程内注册表: `channelId → ChannelActor`。
+ *
+ * 为什么需要它: `messageHistory` 要"迁入 Actor", 前提是**每个 channel 有自己的 actor** ——
+ * 否则"history 存哪"没有落点。这里先把"落点"建起来。
+ *
+ * ⚠️ 现在的定位 (不许夸大):
+ *   · 只做**归属**: 同一 channelId 永远拿到同一个 actor 实例, 不同 channelId 互不相干;
+ *   · **还没有任何入口把执行投递进来** (`submit()` 尚未被业务调用) ⇒ K5 进度里
+ *     `entriesWired` 仍是 **0/4**, 行为与迁移前一致;
+ *   · 进程内 (非持久): 重启后 actor 表为空 —— 持久化是后续步骤 (history/Goal/Run 的恢复)。
+ */
+const actors = new Map<string, ChannelActor>();
+
+/**
+ * 取(或建)某 channel 的 actor。
+ * `init` **只在新建时生效** (既有 actor 不会被 init 覆盖 —— 避免"后到的调用把先建的会话状态冲掉")。
+ */
+export function getOrCreateActor(channelId: string, init: Partial<ActorState> = {}): ChannelActor {
+  const key = channelId || 'default';
+  const existing = actors.get(key);
+  if (existing) return existing;
+  const created = new ChannelActor({ ...init, channelId: key });
+  actors.set(key, created);
+  return created;
+}
+
+/** 只读探查 (不建) —— 测试与诊断用 */
+export function peekActor(channelId: string): ChannelActor | undefined {
+  return actors.get(channelId || 'default');
+}
+
+/** 当前 actor 数 (诊断用) */
+export function actorCount(): number {
+  return actors.size;
+}
+
+/** 清空注册表 —— **仅测试用** (避免测试之间互相污染) */
+export function resetActors(): void {
+  actors.clear();
+}

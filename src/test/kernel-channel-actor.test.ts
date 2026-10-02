@@ -22,7 +22,7 @@ import {
   K5_STEPS,
 } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
-import { ChannelActor, SerialMailbox, createActorState } from '../kernel/channel-actor.js';
+import { ChannelActor, SerialMailbox, actorCount, createActorState, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
 import { type K5LedgerLike, scanActorLedger } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
@@ -76,8 +76,8 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(K5_GOAL_BINDING_RULE).toContain('不许靠裸字段');
   });
 
-  it('台账与盘上事实一致: 标了 container-built ⇒ 容器文件必须真的存在', () => {
-    expect(K5_PROGRESS.stage).toBe('container-built');
+  it('台账与盘上事实一致: 标了 registry-built ⇒ 容器文件必须真的存在', () => {
+    expect(K5_PROGRESS.stage).toBe('registry-built');
     expect(fs.existsSync(path.join(SRC, K5_PROGRESS.containerPath))).toBe(true);
     // 容器建了 ≠ 字段迁了 / 入口接了 (两个计数仍必须是 0)
     expect(K5_PROGRESS.fieldsMigrated).toBe(0);
@@ -136,6 +136,46 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(signal.aborted).toBe(true);
     expect(actor.state.cancellation).toBeNull();
   });
+
+  it('★ 注册表: 一个 channel 一个 actor, 跨 channel 隔离 (K5 第 3 步)', () => {
+    resetActors();
+    expect(actorCount()).toBe(0);
+    const a1 = getOrCreateActor('chanA');
+    const a2 = getOrCreateActor('chanA');
+    const b = getOrCreateActor('chanB');
+    expect(a1).toBe(a2);                    // 同 channel 幂等
+    expect(a1).not.toBe(b);                 // 跨 channel 隔离
+    expect(a1.state.channelId).toBe('chanA');
+    expect(b.state.channelId).toBe('chanB');
+    expect(actorCount()).toBe(2);
+    // 已有的 actor 不会被后来的 init 覆盖
+    const a3 = getOrCreateActor('chanA', { agentId: '不该生效' });
+    expect(a3).toBe(a1);
+    expect(a1.state.agentId).toBe('');
+    // 空 channelId 落 default 桶
+    expect(getOrCreateActor('').state.channelId).toBe('default');
+    expect(peekActor('chanZ')).toBeUndefined();
+    resetActors();
+    expect(actorCount()).toBe(0);
+  });
+
+  it('★ 真跑: 按 channel 造 session ⇒ 各自绑到自己的 actor (一个 channel 一个 actor 成立)', async () => {
+    resetActors();
+    const { createAgentSession } = await import('../agents/pi-sdk-session-factory.js');
+    const mk = (peer: string) => createAgentSession({ cwd: process.cwd(), peerId: peer });
+    const sa1 = await mk('k5probe-a:s1');
+    const sa2 = await mk('k5probe-a:s2');   // 同 channel, 不同 session 后缀
+    const sb = await mk('k5probe-b:s1');
+    expect(sa1.actor).toBeTruthy();
+    expect(sa1.actor!.state.channelId).toBe('k5probe-a');   // channelId 取自 peerId 的 `:` 前段
+    expect(sa2.actor).toBe(sa1.actor);                       // 同 channel ⇒ 同一个 actor
+    expect(sb.actor).not.toBe(sa1.actor);                    // 跨 channel 隔离
+    // 状态仍在 Pi 实例上 (这一步只做归属, 没搬字段)
+    await sa1.actor!.submit((st) => { st.messageHistory.push('actor-owned'); });
+    expect(sa1.actor!.state.messageHistory).toEqual(['actor-owned']);
+    expect(sb.actor!.state.messageHistory).toEqual([]);
+    resetActors();
+  }, 60000);
 
   it('容器语义: 未给的字段显式置空 (镜像 K2 的「不继承残留」)', () => {
     const st = createActorState();

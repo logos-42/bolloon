@@ -15,6 +15,7 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { type RunContext, createRunContext } from './run-context.js';
+import type { ChannelActor } from '../kernel/channel-actor.js';
 import { expandHomeArgs } from './tool-path-args.js';
 import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
 import { runWithWriteOrigin } from './skill-ledger.js';
@@ -447,6 +448,13 @@ export class PiAgentSession implements AgentSession {
   private seedRunContext(extra: Partial<RunContext> = {}): RunContext {
     return createRunContext({ runId: this.currentRunId, ...extra });
   }
+
+  /**
+   * **K5 迁移中**: 本会话所属 channel 的 Actor (由 session factory 在创建时绑定)。
+   * 现在只做**归属** —— 会话状态 (messageHistory / channelId / agentId / goalId) **仍然**在实例字段上,
+   * 逐项迁入 Actor 见 `src/kernel/plan-channel-actor.ts` 的 8 步。
+   */
+  actor?: ChannelActor;
 
   /**
    * **K2 迁移中**: 一次 Run 的显式状态载体 (见 src/agents/run-context.ts)。
