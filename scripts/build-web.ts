@@ -53,6 +53,11 @@ async function main() {
 
   // 2026-06-15: 编译 message-renderer.ts (对话显示 UI 模块)
   //   esbuild 编译 .ts → dist/web/ui/message-renderer.js (ESM, 浏览器侧 <script type="module"> 加载)
+  // 2026-10-02: 开 bundle:true — 该模块 import "../../agents/chat-segmenter.js" (跨树!)。
+  //   桌面端靠 dist/agents/** 恰好也被服务而侥幸能跑, 但**手机端只打包 dist/web/**
+  //   ⇒ 手机上 404 ⇒ 模块加载失败是静默的 ⇒ window.MR 不挂载 ⇒ 界面不渲染 (真事故)。
+  //   把跨树依赖内联进来 = 这个文件自洽 (dist/web 内部可解析), 手机/桌面同一个产物。
+  //   step-timeline.js 必须 external: 它由 index.html 单独加载, 内联会变成**两份模块状态**。
   console.log('[build-web] 编译 message-renderer.ts...');
   await fs.mkdir(path.join(DIST_WEB, 'ui'), { recursive: true });
   await esbuild.build({
@@ -62,9 +67,13 @@ async function main() {
     target: 'es2022',
     platform: 'browser',
     minify: false,
+    bundle: true,
+    external: ['./step-timeline.js'],
+    charset: 'utf8',
   });
 
   // 2026-06-15: 编译 step-timeline.ts (气泡内 4 状态步骤条)
+  // 2026-10-02: bundle:true 同上 (自洽); 它目前不 import 任何跨树模块, 但开着可防将来又踩。
   console.log('[build-web] 编译 step-timeline.ts...');
   await esbuild.build({
     entryPoints: [path.join(ROOT, 'src/web/ui/step-timeline.ts')],
@@ -73,6 +82,8 @@ async function main() {
     target: 'es2022',
     platform: 'browser',
     minify: false,
+    bundle: true,
+    charset: 'utf8',
   });
 
   // 编译主客户端入口 (classic script, 非 module; 由 index.html 以 /client.js 加载)
@@ -218,4 +229,66 @@ async function main() {
   console.log('[build-web] 完成!');
 }
 
-main().catch(console.error);
+/**
+ * 自洽性门 (2026-10-02): **浏览器真会取的那些文件**里, 任何相对 import 都必须能在 dist/web 内解析。
+ *
+ * 为什么: 手机端 web 层只打包 `dist/web/**` (Capacitor webDir + scripts/build-mobile-web-bundle.ts),
+ * 跨树引用 (如 ui/message-renderer.js → ../../agents/chat-segmenter.js) 在桌面端因为 dist/agents/**
+ * 恰好也被服务而侥幸能跑, 到手机上就是 404 —— **模块加载失败是静默的** (整条渲染链变 no-op, 界面空白)。
+ * 真事故: 手机端/桌面端回复不渲染的根因之一就是这个跨树引用 (与 process.env 那条并列)。
+ *
+ * 范围 = 从 HTML 入口出发的可达闭包 (dist/web/server.js 等 build:main 的**服务端**产物不在其中,
+ * 它们引用 ../agents/** 是合法的 Node 侧依赖)。
+ */
+async function assertSelfContained(distWeb: string): Promise<void> {
+  const htmls = ['index.html', 'mobile.html', 'explorer.html', 'api-config.html'];
+  const queue: string[] = [];
+  for (const h of htmls) {
+    const p = path.join(distWeb, h);
+    try { await fs.access(p); } catch { continue; }
+    queue.push(p);
+  }
+  const seen = new Set<string>();
+  const missing: string[] = [];
+  while (queue.length > 0) {
+    const abs = queue.shift()!;
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    const src = await fs.readFile(abs, 'utf8').catch(() => '');
+    const specs: string[] = [];
+    if (abs.endsWith('.html')) {
+      for (const m of src.matchAll(/<script[^>]*\ssrc="([^"]+)"/g)) specs.push(m[1]);
+      for (const m of src.matchAll(/<link[^>]*\shref="([^"]+)"/g)) specs.push(m[1]);
+    } else {
+      for (const m of src.matchAll(/(?:from|import)\s*\(?\s*["']([^"']+)["']/g)) specs.push(m[1]);
+    }
+    for (const spec of specs) {
+      if (!spec.startsWith('.')) continue; // CDN / 绝对路径不在本门范围
+      const clean = spec.split('?')[0];
+      // HTML 的 src/href 不要求扩展名; JS 的 ESM 说明符**必须**带扩展名 (浏览器规范),
+      //   不带扩展名的一律是代码里的字符串/示例文本 (如 a2ui 文档串 './MyComponent'), 不是真 import。
+      if (!abs.endsWith('.html') && !/\.(js|mjs|json|css)$/.test(clean)) continue;
+      const target = path.resolve(path.dirname(abs), clean);
+      const rel = path.relative(distWeb, abs);
+      if (!(target === distWeb || target.startsWith(distWeb + path.sep))) {
+        missing.push(`${rel} → ${spec}   ⚠ 逃出 dist/web (手机上必 404)`);
+        continue;
+      }
+      const exists = await fs.access(target).then(() => true).catch(() => false);
+      if (!exists) { missing.push(`${rel} → ${spec}`); continue; }
+      if (/\.(js|mjs)$/.test(target)) queue.push(target);
+    }
+  }
+  if (missing.length > 0) {
+    console.error(`[build-web] ✗ 浏览器资源不自洽 —— ${missing.length} 处相对引用在 dist/web 里找不到:`);
+    for (const b of missing) console.error('    ' + b);
+    console.error('[build-web]   这些引用在手机端 (只打包 dist/web/**) 会 404, 且**模块加载失败是静默的**');
+    console.error('[build-web]   (整条渲染链变 no-op, 界面空白)。修法: 该入口 esbuild 开 bundle:true 内联依赖。');
+    process.exit(1);
+  }
+  console.log(`[build-web] ✓ 自洽性: 浏览器可达 ${seen.size} 个文件, 所有相对引用都在 dist/web 内`);
+}
+
+main().then(async () => {
+  await assertSelfContained(DIST_WEB);
+}).catch((e) => { console.error(e); process.exit(1); });
