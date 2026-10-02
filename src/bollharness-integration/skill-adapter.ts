@@ -669,7 +669,30 @@ export class SkillAdapter {
     return this.harnessSkills;
   }
 
+  /**
+   * 2026-10-02 (K7): **受门执行端口** —— 注入后 skill 执行不再自己落地, 而是交给注入方
+   * (由 `bollharness-integration/integration.ts` 注入 harness 判定) ⇒ skill 这条路径与
+   * 主工具路径**共用一扇门**。未注入 ⇒ 行为与以前一字不差 (便于灰阶上线)。
+   * **fail-closed**: 端口抛错 ⇒ 返回带 `拒绝: [harness-error]` 前缀的串并**绝不回落** ——
+   * 门坏掉若静默变成"没门"比没有门更危险 (同 pivot loop 的教训)。
+   * 注: 这里返回串而不是结构化结果, 是因为 `executeSkill` 的返回类型是 string (公开面); 调用方
+   * 只需看前缀就能区分拒绝 (callers: `integration.ts` → `index.ts` 的 harness 入口)。
+   */
+  private guardedExecute?: (name: string, params: Record<string, unknown>) => Promise<string>;
+
+  setGuardedExecute(port: (name: string, params: Record<string, unknown>) => Promise<string>): void {
+    this.guardedExecute = port;
+  }
+
   async executeSkill(name: string, params: Record<string, unknown>): Promise<string> {
+    if (this.guardedExecute) {
+      try {
+        return await this.guardedExecute(name, params);
+      } catch (guardErr) {
+        const msg = String((guardErr as Error)?.message ?? guardErr);
+        return `拒绝: [harness-error] ${msg}`;
+      }
+    }
     return this.registry.execute(name, params);
   }
 

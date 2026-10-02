@@ -85,7 +85,7 @@ export interface ExecSite {
  *   在 pi-sdk 插入 ~35 行后, 台账里的 4144 实际已变 4176)。说清"是哪一处"用函数名/类名/调用形态。
  */
 export const HARNESS_EXEC_SITES: readonly ExecSite[] = [
-  { file: 'src/agents/pi-sdk.ts', count: 6, kinds: ['main', 'skill', 'bypass', 'homonym', 'registry'], why: '主执行点 1 (`runReActLoop` 内的执行, 经门链) · skill 2 (`getSkillRegistry()` 暴露的 `skillRegistry.execute` + 内置 `sk.execute`) · 内置 tscTool 直调 1 (bypass) · `loop.execute` 1 (homonym) · **K7 第二步 b 新增 1**: pivot loop 的 `guardedExecute` 端口内 `return tool.execute(args)` (在门之后, 属同一扇门的通过分支, 不是旁路)' },
+  { file: 'src/agents/pi-sdk.ts', count: 6, kinds: ['main', 'skill', 'bypass', 'homonym', 'registry'], why: '主执行点 1 (`runReActLoop` 内的执行, 经门链) · skill 2 (`getSkillRegistry()` 暴露的 `skillRegistry.execute` + 内置 `sk.execute`; **2026-10-02 量到: 这两条在生产代码里零调用者** —— 但 `PiAgentSession.executeSkill`/`getSkillRegistry` 是**已发布 npm 包的公开方法** ⇒ 属"不擅动公开契约", 删/收口都要等用户口径) · 内置 tscTool 直调 1 (bypass) · `loop.execute` 1 (homonym) · **K7 第二步 b 新增 1**: pivot loop 的 `guardedExecute` 端口内 `return tool.execute(args)` (在门之后, 属同一扇门的通过分支, 不是旁路)' },
   { file: 'src/agents/workflow-pivot-loop.ts', count: 2, kinds: ['bypass', 'homonym'], why: '**pivot loop 直接执行工具** 1 (bypass —— 2026-10-02 已收敛: 走注入的 `guardedExecute` 门端口) · `loop.execute` 1 (homonym)' },
   { file: 'src/agents/tool-registry.ts', count: 1, kinds: ['registry'], why: '注册表统一执行口 (唯一咽喉候选)' },
   { file: 'src/agents/pi-sdk-tools.ts', count: 1, kinds: ['mcp'], why: 'MCP `executeTool` 1' },
@@ -116,7 +116,7 @@ export interface HarnessBypass {
 export const K7_BYPASS_CANDIDATES: readonly HarnessBypass[] = [
   { target: 'src/agents/workflow-pivot-loop.ts', symbol: 'guardedExecute', replacesWith: '走 Harness 门链 (与 pi-sdk 主执行点同一条咽喉)', why: 'pivot loop 是第二条工具执行路径 ⇒ 未经 deny/policy 就能执行工具 (架构缺陷定义的那一类)', status: 'converged', evidence: '2026-10-02: `PivotLoopConfig.guardedExecute` 端口 (`044cde2`) + pi-sdk 在 `promptWithPivotLoop` 注入同一 `piHarness().beforeToolCall` (`69397f6`); 用例: 未注入行为不变 / 注入后 `tool.execute` 计数 0 / 端口抛错不执行 / 机械接线断言' },
   { target: 'src/agents/pi-sdk.ts', symbol: 'tscTool.execute', status: 'open', replacesWith: '经门链执行, 或在台账里登记为"内部诊断白名单"并写明理由', why: '内置诊断工具直调: 要么走门, 要么**显式登记**为白名单 —— 不许处于"没人知道它绕过"的状态' },
-  { target: 'src/bollharness-integration/skill-adapter.ts', symbol: 'registry.execute', replacesWith: '收敛成唯一 skill 执行入口 (且该入口经门)', status: 'open', why: 'skill 有两条执行路径 ⇒ 必然一条有门一条没有 ("同一个能力只许有一套实现" 的同型教训)' },
+  { target: 'src/bollharness-integration/skill-adapter.ts', symbol: 'registry.execute', replacesWith: '收敛成唯一 skill 执行入口 (且该入口经门)', status: 'open', why: 'skill 有两条执行路径 ⇒ 必然一条有门一条没有 ("同一个能力只许有一套实现" 的同型教训). **2026-10-02 实测**: 活路径 = `SkillAdapter.executeSkill` (`bollharness-integration/integration.ts` ← `index.ts` 的 harness 入口); `PiAgentSession.executeSkill` **生产零调用者** (但属公开契约 ⇒ 删除待用户口径). 已给活路径加受门端口 (`setGuardedExecute`; 未注入零行为改变 · fail-closed) ⇒ 剩: integration 侧注入 + 两条路收敛口径' },
 ];
 
 /** K7 验收 (与设计页 §7 的判据对应) */
