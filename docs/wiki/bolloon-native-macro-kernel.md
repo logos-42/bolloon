@@ -1844,9 +1844,11 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 
 ### K1 ⑤ 前置量测 (2026-10-02 · 可重算台账)
 
-`@bolloon/constraint-runtime` **导出面 38 个符号** ⇒ 仓内被引用 **19** · **仓内零引用 19**。
+`@bolloon/constraint-runtime` **导出面 38 个符号** ⇒ 按 **import 消费** 口径: 被消费 **13** · **零消费 25**。
 
-仓内零引用 (19): `CostTracker` · `DirectModeReport` · `HistoryLog` · `ParityAuditResult` · `PortContext` · `RuntimeModeReport` · `RuntimeSession` · `SetupReport` · `ThinkStep` · `ToolPool` · `TranscriptStore` · `WorkspaceSetup` · `assembleToolPool` · `buildBootstrapGraph` · `buildCommandGraph` · `buildPortContext` · `buildSetup` · `runDeepLink` · `runDirectConnect`
+> **口径修正 (v2, 很重要)**: 初版把"文件里出现过这个名字"就当消费 ⇒ **台账/判据里提到**这些名字 (例如 K1/K7 台账写明 `runRemoteMode` 等)
+> 也被算成"有消费", 数字虚高成 19 消费 / 19 零消费。**只有 `import { X } from '…constraint-runtime…'` 才算消费** (命名空间 import 也解析)。
+> 修正后多出来的 6 个正是 `HistoryEvent` · `runParityAudit` · `runRemoteMode` · `runSetup` · `runSshMode` · `runTeleportMode` —— **它们只在台账里被提到过**。
 
 > **零引用 ≠ 死代码, 更 ≠ 可删**。本包**已发布到 npm (0.1.1)**, 导出面是**对外承诺**: 删它属破坏性变更
 > ⇒ 要么等**用户口径** (收窄口径), 要么走**主版本号**。仓规也明写「不许以『看起来没用』为依据」删除。

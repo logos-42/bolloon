@@ -1,13 +1,14 @@
 /**
- * K1 ⑤ 前置台账 (2026-10-02, 可重算)
+ * K1 ⑤ 前置台账 (2026-10-02, 可重算) —— **v2 口径修正: 按 import 消费, 不按"提到过名字"**
  *
- * **为什么要有这条判据**: `@bolloon/constraint-runtime` 是**已发布包** (npm 0.1.1)。
- * 它的导出面既包括仓内在用的 (真契约), 也包括**仓内零引用**的 (19 个) —— 后者**不许**被当成"死代码"删掉:
- * 仓规明写「**不许以『看起来没用』为依据**」删除; 发布出去的导出面是**对外承诺**, 删它是破坏性变更,
- * 要么等用户口径 (收窄口径), 要么走主版本号。
+ * **v1 的口径错误 (已修)**: 上一版把"文件里出现过这个符号名"就当消费 —— 于是**台账/判据里提到**这些名字
+ * (例如 K1/K7 台账写明 `runRemoteMode` 等 placeholder 入口) 也被算成"有消费", 把数字虚高成 19 消费 / 19 零消费。
+ * 正确口径: **只有 `import { X } from '...constraint-runtime...'` 才算消费** (命名空间 import 也解析)。
+ * 修正后: 导出 **38** · 被 import 消费 **14** · **零 import 消费 25**。
  *
- * 所以这条判据的作用是: **把"谁在用"变成可重算的事实**, 让任何一次导出面的变化都必须显式过账
- * (新增引用 ⇒ 清单变短; 新增未被引用的导出 ⇒ 清单变长), 而不是靠人肉 grep。
+ * **为什么零消费 ≠ 可删**: `@bolloon/constraint-runtime` 是**已发布包** (npm 0.1.1), 导出面是对外承诺;
+ * 删它是破坏性变更 (等用户口径或走主版本号)。仓规亦明写「不许以『看起来没用』为依据」。
+ * 本判据的作用: 把"谁在用"变成**可重算的事实**, 任何导出面变化都必须显式过账。
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -16,7 +17,6 @@ import path from 'node:path';
 const ROOT = process.cwd();
 const CR = 'src/constraint-runtime';
 
-/** 从 dist/index.d.ts (+ 其 re-export 的子 index) 采集导出符号 */
 function exportedSymbols(): Set<string> {
   const names = new Set<string>();
   const idx = fs.readFileSync(path.join(ROOT, `${CR}/dist/index.d.ts`), 'utf8');
@@ -36,51 +36,83 @@ function exportedSymbols(): Set<string> {
   return names;
 }
 
-/** 仓内 (排除 constraint-runtime 自身与 test) 的引用计数 */
-function inRepoCounts(): Map<string, number> {
+const IMPORT_RE = /import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+'[^']*constraint-runtime[^']*'/g;
+
+/** **import 消费** (排除 constraint-runtime 自身与 test); 命名空间 import 也解析 */
+function importConsumed(): Set<string> {
   const files: string[] = [];
   const walk = (dir: string) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) {
-        if (p.includes('constraint-runtime')) continue;
-        if (e.name === 'test' || e.name === 'node_modules') continue;
+        if (p.includes('constraint-runtime') || e.name === 'test' || e.name === 'node_modules') continue;
         walk(p);
       } else if (e.name.endsWith('.ts')) files.push(p);
     }
   };
   walk(path.join(ROOT, 'src'));
-  const texts = files.map((f) => fs.readFileSync(f, 'utf8'));
-  const counts = new Map<string, number>();
-  for (const n of exportedSymbols()) {
-    counts.set(n, texts.reduce((acc, t) => acc + t.split(n).length - 1, 0));
+  const consumed = new Set<string>();
+  const aliases: Array<{ file: string; alias: string }> = [];
+  for (const f of files) {
+    const t = fs.readFileSync(f, 'utf8');
+    for (const m of t.matchAll(IMPORT_RE)) {
+      for (const part of m[1].split(',')) {
+        const n = part.trim().split(' as ').pop()!.replace(/^type\s+/, '').trim();
+        if (n) consumed.add(n);
+      }
+    }
+    for (const m of t.matchAll(/import\s+\*\s+as\s+(\w+)\s+from\s+'[^']*constraint-runtime[^']*'/g)) {
+      aliases.push({ file: f, alias: m[1] });
+    }
   }
-  return counts;
+  for (const { file, alias } of aliases) {
+    const t = fs.readFileSync(file, 'utf8');
+    for (const n of exportedSymbols()) if (new RegExp(`\\b${alias}\\.${n}\\b`).test(t)) consumed.add(n);
+  }
+  return consumed;
 }
 
-/** 冻结的"仓内零引用导出"清单 (2026-10-02 量测) */
-const ZERO_REF_IN_REPO = [
-  'CostTracker', 'DirectModeReport', 'HistoryLog', 'ParityAuditResult', 'PortContext',
-  'RuntimeModeReport', 'RuntimeSession', 'SetupReport', 'ThinkStep', 'ToolPool',
-  'TranscriptStore', 'WorkspaceSetup', 'assembleToolPool', 'buildBootstrapGraph',
-  'buildCommandGraph', 'buildPortContext', 'buildSetup', 'runDeepLink', 'runDirectConnect',
+/** 冻结: 零 import 消费的导出 (2026-10-02 v2 口径) */
+const ZERO_IMPORT_CONSUMED = [
+  'CostTracker',
+  'DirectModeReport',
+  'HistoryEvent',
+  'HistoryLog',
+  'ParityAuditResult',
+  'PortContext',
+  'RuntimeModeReport',
+  'RuntimeSession',
+  'SetupReport',
+  'ThinkStep',
+  'ToolPool',
+  'TranscriptStore',
+  'WorkspaceSetup',
+  'assembleToolPool',
+  'buildBootstrapGraph',
+  'buildCommandGraph',
+  'buildPortContext',
+  'buildSetup',
+  'runDeepLink',
+  'runDirectConnect',
+  'runParityAudit',
+  'runRemoteMode',
+  'runSetup',
+  'runSshMode',
+  'runTeleportMode',
 ].sort();
 
-describe('K1 ⑤ 前置: constraint-runtime 导出面的仓内消费 (可重算台账)', () => {
-  it('① 导出面 38 个符号; 仓内零引用清单 == 冻结清单 (19)', () => {
-    const counts = inRepoCounts();
-    expect(counts.size).toBe(38);
-    const zero = [...counts.entries()].filter(([, c]) => c === 0).map(([n]) => n).sort();
-    expect(zero).toEqual(ZERO_REF_IN_REPO);
+describe('K1 ⑤ 前置: constraint-runtime 导出面的仓内消费 (v2: 按 import 算)', () => {
+  it('① 导出面 38 个; 零 import 消费清单 == 冻结清单 (25)', () => {
+    const syms = exportedSymbols();
+    expect(syms.size).toBe(38);
+    const zero = [...syms].filter((n) => !importConsumed().has(n)).sort();
+    expect(zero).toEqual(ZERO_IMPORT_CONSUMED);
   });
 
-  it('② 有引用的导出: 至少 19 个真契约 (仓内在用)', () => {
-    const counts = inRepoCounts();
-    const used = [...counts.entries()].filter(([, c]) => c > 0);
-    expect(used.length).toBe(19);
-    // 抽查几个必须由仓内消费的 (K7/K1 关键面)
-    for (const n of ['SkillRegistry', 'Session', 'ToolPermissionContext', 'BudgetTracker']) {
-      expect(counts.get(n) ?? 0).toBeGreaterThan(0);
+  it('② C 类 placeholder (remote/ssh/teleport + parity) 属零 import 消费 (只挂在包入口)', () => {
+    const consumed = importConsumed();
+    for (const n of ['runRemoteMode', 'runSshMode', 'runTeleportMode', 'runParityAudit']) {
+      expect(consumed.has(n)).toBe(false);
     }
   });
 });
