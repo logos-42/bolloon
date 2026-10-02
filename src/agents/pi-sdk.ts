@@ -437,6 +437,18 @@ export class PiAgentSession implements AgentSession {
   private contextHintAddition: string = '';
 
   /**
+   * **K2 收尾 (leo 2026-10-02 口径)**: **唯一一处**把"已有的恢复身份"播种进 RunContext。
+   *
+   *   · `currentRunId` 属 **run-boundary**, 不是循环内部的可变 RunContext 状态 ⇒ 只允许这一次显式播种读取;
+   *   · 冻结 `CURRENT_RUN_ID_SEED_READS = 1` (见 src/kernel/plan-runcontext.ts), 由门强制;
+   *   · 只发生在**进入一次 Run 时**; 不得在循环中新增读取点; 不得成为新的写入口;
+   *   · K5 Channel Actor 完成后改为 `createRunContext({ runId: request.resumeRunId })`, 届时删除 `currentRunId` 字段本体。
+   */
+  private seedRunContext(extra: Partial<RunContext> = {}): RunContext {
+    return createRunContext({ runId: this.currentRunId, ...extra });
+  }
+
+  /**
    * **K2 迁移中**: 一次 Run 的显式状态载体 (见 src/agents/run-context.ts)。
    * 入口 (prompt / promptStream / promptWithPivotLoop) 用 createRunContext() 快照一次, 用完即清。
    * **已外置**: `eventSink` (原 currentOnStream) · `abortSignal` (原 currentSignal)。
@@ -1142,7 +1154,7 @@ export class PiAgentSession implements AgentSession {
     // K2: eventSink + abortSignal 已外置, 入口一次建好本轮 Context。
     //   其余字段**不在这里抄一份** —— 抄写会新增对旧实例字段的读, 违反方向判据
     //   「新层出现后旧写口调用点数只许不变或减少」。逐字段迁移时再各自搬进来。
-    this.runCtx = createRunContext({ eventSink: options?.onStream ?? null, abortSignal: options?.signal ?? null });
+    this.runCtx = this.seedRunContext({ eventSink: options?.onStream ?? null, abortSignal: options?.signal ?? null });
     await this.computeJudgmentGate(input);
 
     // M2.2 (2026-06-17): intent 分类 — prompt() 路径也跑 (跟 promptStream 对齐)
@@ -1347,7 +1359,7 @@ export class PiAgentSession implements AgentSession {
 
     // P0 注入门: 缓存 onStream + signal, computeJudgmentGate 用 runCtx.eventSink 广播 phase
     // K2: eventSink + abortSignal 一起建进本轮 Context (只搬已外置的字段, 不抄未迁移的)
-    this.runCtx = createRunContext({ eventSink: onStream, abortSignal: signal ?? null });
+    this.runCtx = this.seedRunContext({ eventSink: onStream, abortSignal: signal ?? null });
     await this.computeJudgmentGate(userText);
 
     // M2.2 (2026-06-17): intent 分类 — 0 LLM 成本, 5 行 keyword 匹配

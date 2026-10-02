@@ -515,11 +515,13 @@ export function scanRunContextLeaks(
     if (!opts.target.includes(f.into)) {
       out.push({ rule: 'runcontext-field-without-home', file: f.name, line: 1, what: `into='${f.into}' 不在 RunContext 目标清单里` });
     }
-    const rx = new RegExp(`this\\.${f.name}\\b`);
+    // 口径: **匹配次数** (不是行数) —— 与 scanRunIdSeed 一致。一行含两处就读 2
+    //   (2026-10-02 踩过: 两个判据一个按行、一个按匹配 ⇒ 同一条台账给出 37 / 38 两个答案)
+    const rx = new RegExp(`this\\.${f.name}\\b`, 'g');
     let actual = 0;
     for (const file of files) {
       for (const raw of file.text.split('\n')) {
-        if (rx.test(stripLineComment(raw))) actual += 1;
+        actual += (stripLineComment(raw).match(rx) || []).length;
       }
     }
     if (actual !== f.accesses) {
@@ -534,5 +536,51 @@ export function scanRunContextLeaks(
       out.push({ rule: 'runcontext-migrated-but-leaking', file: f.name, line: 1, what: `标了 migrated 但还有 ${actual} 处 this. 访问` });
     }
   }
+  return out;
+}
+
+/** K2 收尾: 从 seedRunContext 助手体里数"播种读取" —— 只数**助手体内**, 不数全仓同形字符串 */
+export function extractSeedHelper(text: string): string {
+  const i = text.indexOf('private seedRunContext(');
+  if (i < 0) return '';
+  const j = text.indexOf('\n  }', i);
+  return j < 0 ? text.slice(i) : text.slice(i, j + 4);
+}
+
+/**
+ * 判据 (吃源码文本, **先剥注释**):
+ *   · `currentRunId` 总访问数 == 冻结值 (任何新读取点都判红, 含循环内部);
+ *   · 播种读取 (`runId: this.currentRunId`) 恰好 `seedReads` 处, **且只在 seedRunContext 助手体内**;
+ *   · 调用播种的入口数 == `seedSites` (且都必须在循环方法之外 —— 由"播种只存在于助手"间接保证);
+ *   · 复位点 (`this.runCtx = createRunContext()`) 不得带播种 (清空不许携带身份)。
+ */
+export function scanRunIdSeed(
+  files: readonly SourceFile[],
+  opts: { frozenTotal: number; seedReads: number; seedSites: number },
+): Finding[] {
+  const out: Finding[] = [];
+  const code = files.map((f) => f.text.split('\n').map(stripLineComment).join('\n')).join('\n');
+  const total = (code.match(/this\.currentRunId\b/g) || []).length;
+  if (total !== opts.frozenTotal) {
+    out.push({ rule: 'runid-access-drift', file: 'agents/pi-sdk.ts', line: 1, what: `currentRunId 实测 ${total} 处 ≠ 冻结 ${opts.frozenTotal} (循环内不得新增读取点; 减少也要下调台账)` });
+  }
+  const helper = extractSeedHelper(code);
+  const seedInHelper = (helper.match(/runId: this\.currentRunId\b/g) || []).length;
+  const seedAnywhere = (code.match(/runId: this\.currentRunId\b/g) || []).length;
+  if (seedInHelper !== opts.seedReads) {
+    out.push({ rule: 'runid-seed-count', file: 'agents/pi-sdk.ts', line: 1, what: `seedRunContext 体内播种读取 ${seedInHelper} 处 ≠ 冻结 ${opts.seedReads}` });
+  }
+  // 注: 这里**不**判"全文件播种模式出现几次" —— harness 上下文 / startRun 等处本就有同形字符串
+  // (`runId: this.currentRunId || undefined` 等), 那条规则会假阳性。别处偷偷加播种已由上面的
+  // "总访问数 == 冻结值" 覆盖 (任何新读取点都会让总数变)。2026-10-02 实测: 该规则误报 8 处后删除。
+  const sites = (code.match(/this\.seedRunContext\(/g) || []).length;
+  if (sites !== opts.seedSites) {
+    out.push({ rule: 'runid-seed-sites', file: 'agents/pi-sdk.ts', line: 1, what: `调用播种的入口 ${sites} 处 ≠ 冻结 ${opts.seedSites}` });
+  }
+  const resets = (code.match(/this\.runCtx = createRunContext\(\)/g) || []).length;
+  if ((code.match(/this\.runCtx = this\.seedRunContext\(\)/g) || []).length > 0) {
+    out.push({ rule: 'runid-seed-on-reset', file: 'agents/pi-sdk.ts', line: 1, what: '复位点带了播种 (清空不许携带身份)' });
+  }
+  if (resets < 5) out.push({ rule: 'runid-reset-missing', file: 'agents/pi-sdk.ts', line: 1, what: `复位点只剩 ${resets} 处 (期望 ≥5)` });
   return out;
 }

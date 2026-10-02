@@ -41,21 +41,21 @@ export const RUN_CONTEXT_FROZEN_AT = '2026-10-02';
 export const RUN_CONTEXT_ENTRY = 'agents/pi-sdk.ts:1923 runReActLoop(onStream?, signal?) —— 目标签名: runReActLoop(ctx: RunContext)'
 
 export const RUN_CONTEXT_FIELDS: readonly RunStateField[] = [
-  { name: 'messageHistory', declaredAt: 'agents/pi-sdk.ts:272', scope: 'session', accesses: 53, into: 'history', migrated: false, payDownIn: 'K2' },
+  { name: 'messageHistory', declaredAt: 'agents/pi-sdk.ts:272', scope: 'session', accesses: 56, into: 'history', migrated: false, payDownIn: 'K2' },
   { name: 'currentOnStream', declaredAt: 'agents/pi-sdk.ts:442', scope: 'run', accesses: 0, into: 'eventSink', migrated: true, payDownIn: 'K2' },
   { name: 'currentSignal', declaredAt: 'agents/pi-sdk.ts:443', scope: 'run', accesses: 0, into: 'abortSignal', migrated: true, payDownIn: 'K2' },
-  { name: 'currentChannelId', declaredAt: 'agents/pi-sdk.ts:458', scope: 'session', accesses: 21, into: 'channelId', migrated: false, payDownIn: 'K2' },
-  { name: 'currentRunId', declaredAt: 'agents/pi-sdk.ts:471', scope: 'run-boundary', accesses: 36, into: 'runId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentChannelId', declaredAt: 'agents/pi-sdk.ts:458', scope: 'session', accesses: 24, into: 'channelId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentRunId', declaredAt: 'agents/pi-sdk.ts:471', scope: 'run-boundary', accesses: 38, into: 'runId', migrated: false, payDownIn: 'K2' },
   { name: 'currentIntent', declaredAt: 'agents/pi-sdk.ts:463', scope: 'run', accesses: 0, into: 'intent', migrated: true, payDownIn: 'K2' },
-  { name: 'currentGoalId', declaredAt: 'agents/pi-sdk.ts:1725', scope: 'session', accesses: 19, into: 'goalId', migrated: false, payDownIn: 'K2' },
-  { name: 'currentAgentId', declaredAt: 'agents/pi-sdk.ts:460', scope: 'session', accesses: 20, into: 'agentId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentGoalId', declaredAt: 'agents/pi-sdk.ts:1725', scope: 'session', accesses: 22, into: 'goalId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentAgentId', declaredAt: 'agents/pi-sdk.ts:460', scope: 'session', accesses: 21, into: 'agentId', migrated: false, payDownIn: 'K2' },
 ];
 
 /** RunContext 必须带的字段 (leo 的 K2 清单) */
 export const RUN_CONTEXT_TARGET: readonly string[] = ["requestId", "channelId", "agentId", "goalId", "runId", "intent", "modelSnapshot", "history", "abortSignal", "budget", "eventSink", "harnessContext"];
 
 /** 冻结总量 (棘轮只许减) */
-export const RUN_CONTEXT_ACCESS_TOTAL = 149;
+export const RUN_CONTEXT_ACCESS_TOTAL = 161;
 
 /** 已外置字段数 (棘轮: 只许增)。改动这里 = 明确宣告"又搬完一个字段" */
 export const RUN_CONTEXT_MIGRATED_FROZEN = 3;
@@ -112,3 +112,92 @@ export const RUN_CONTEXT_SESSION_SCOPED_NOTE = 'currentGoalId: 会话级绑定 (
  *    (K5 Channel Actor), 或让每个 Run 在不可变基准上各写各自的分支。**这条验收标准的落点应改判到 K5。**
  */
 export const RUN_CONTEXT_REMAINING_NOTE = 'remaining 4: agentId/channelId/messageHistory = session 级 (K5 actor); runId = 入口播种 (独立一格)';
+
+/**
+ * **K2 收尾 (leo 2026-10-02 口径) —— 播种读取单独记账**
+ *
+ * `currentRunId` 属 **run-boundary**: 它对 Run 是真状态, 但值在**入口之前**就设好 (resume 路径
+ * `this.currentRunId = this.resumeRunId` 然后才调 prompt) ⇒ 循环内部不该再去读实例字段。
+ *
+ * 允许**一次**显式播种 (只在 `PiAgentSession.seedRunContext()` 里):
+ *     createRunContext({ runId: this.currentRunId, ...extra })
+ *
+ * 记账规则 (三条, 由门强制):
+ *   · `CURRENT_RUN_ID_SEED_READS = 1` —— 播种读取**恰好一处**, 且必须在 `seedRunContext` 体内;
+ *   · `CURRENT_RUN_ID_SEED_SITES = 2` —— 调用播种的入口恰好两个 (`prompt` / `promptStream`), 且都在循环之外;
+ *   · `currentRunId.accesses = 38 = 37(历史匹配) + 1(播种)` —— **不计进"必须下降"的纯迁移统计**, 也**不算 K2 未完成**。
+ *
+ * 性质: 只在进入一次 Run 时发生; 只把已有恢复身份播种给 RunContext; 不是循环内部重新读旧实例状态;
+ *       不得成为新的写入口。**K5 完成后**改为 `createRunContext({ runId: request.resumeRunId })`, 届时删除该字段本体。
+ */
+export const CURRENT_RUN_ID_SEED_READS = 1;
+export const CURRENT_RUN_ID_SEED_SITES = 2;
+export const CURRENT_RUN_ID_SEED_NOTE = 'run-boundary 播种 (口径=判据同款/匹配次数): 37 历史 + 1 播种 = 38; 播种只在 seedRunContext 内, 循环内不得新增读取点';
+
+/**
+ * **K2 验收标准 (leo 2026-10-02 修订 —— 把 history 并发隔离移出)**
+ *   ① 三个 run 级字段 (eventSink / abortSignal / intent) 全部迁移;
+ *   ② `RunContext` 接线完整 (入口建 Context · 循环从 Context 取值);
+ *   ③ 循环使用**显式** Context, 不再隐式读已迁移的 run 级实例字段;
+ *   ④ 已迁移字段零 `this.` 残留;
+ *   ⑤ 新 Run **不继承**上一 Run 的 event / signal / intent (未给字段显式置空);
+ *   ⑥ `currentRunId` 的播种读取**只有一个冻结入口** (`seedRunContext`);
+ *   ⑦ **不要求** K2 解决 session history 并发隔离 (那条移给 K5)。
+ */
+export const K2_ACCEPTANCE: readonly string[] = [
+  '① run 级 3 字段全迁移',
+  '② RunContext 接线完整 (入口建 · 循环从 Context 取)',
+  '③ 循环只吃显式 Context',
+  '④ 已迁移字段零 this. 残留',
+  '⑤ 新 Run 不继承上一 Run 的 event/signal/intent',
+  '⑥ currentRunId 播种只有一个冻结入口',
+  '⑦ 不含 history 并发隔离 (→ K5)',
+];
+
+/**
+ * **K5 验收标准 (leo 2026-10-02 增加 —— 承接从 K2 移出的部分)**
+ *   ① 同 Channel 消息串行 (输入只能排队, 不能并发改 history);
+ *   ② 不同 Channel history 不交叉 (完全隔离);
+ *   ③ 同一 Channel 的多个 Run 不互相污染 (靠 Actor 串行调度 + Run 边界隔离);
+ *   ④ 页面 / CLI / P2P / Supervisor 都进入同一 Actor mailbox;
+ *   ⑤ Actor 崩溃后可由 Supervisor 恢复;
+ *   ⑥ `messageHistory` 不再由 Pi 直接拥有。
+ */
+export const K5_ACCEPTANCE: readonly string[] = [
+  '① 同 Channel 串行 (排队, 不并发改 history)',
+  '② 不同 Channel history 完全隔离',
+  '③ 同 Channel 多 Run 不互相污染',
+  '④ 页面/CLI/P2P/Supervisor 进同一 mailbox',
+  '⑤ Actor 崩溃可由 Supervisor 恢复',
+  '⑥ messageHistory 不再由 Pi 拥有',
+];
+
+/** 两个百分比**不能合并** (leo 口径: 合并会产生误导) */
+export const K2_PROGRESS = {
+  runContextExternalized: '100%',
+  sessionActorization: '未开始',
+} as const;
+
+/**
+ * **口径统一说明 (2026-10-02, 必读, 否则会误读数字)**
+ *
+ * 判据原先按**行数**计 (`if (rx.test(line)) actual += 1`), 而 K2 收尾新加的播种判据按**匹配次数**计
+ * ⇒ 同一条台账在 1916 行那种"一行含两处"的地方给出 37 / 38 两个答案。**已统一为匹配次数**。
+ *
+ * 因此逐字段冻结值被整体重算过, session 级那几个"变大"**不是新增泄漏, 是口径变化**:
+ *
+ * | 字段 | 行数口径(旧) | 匹配口径(现) |
+ * | --- | --- | --- |
+ * | messageHistory | 53 | **56** |
+ * | currentChannelId | 21 | **24** |
+ * | currentGoalId | 19 | **22** |
+ * | currentAgentId | 20 | **21** |
+ * | currentRunId | 36(+1播种) | **38** |
+ *
+ * **同口径的迁移前/后对比** (用匹配口径回算提交 `04f64fb` = K2 第一次迁移之前):
+ *   迁移前 **193** → 现在 **161** (净 **-32**)。拆解: 三个 run 级字段 **-33** (15 + 8 + 10)
+ *   + run-boundary 播种 **+1** (记账例外: 不计入"必须下降"的纯迁移统计, 也不算 K2 未完成)。
+ *   三个 run 级字段: currentOnStream 15→0 · currentSignal 8→0 · currentIntent 10→0。
+ *   其余 5 个 session/run-boundary 字段在**同口径**下逐字未变 (变大纯属换口径)。
+ */
+export const RUN_CONTEXT_COUNT_METHOD = 'match-count (不是行数; 一行含两处记 2)';

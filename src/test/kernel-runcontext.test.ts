@@ -13,6 +13,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  CURRENT_RUN_ID_SEED_READS,
+  CURRENT_RUN_ID_SEED_SITES,
+  K2_ACCEPTANCE,
+  K2_PROGRESS,
+  K5_ACCEPTANCE,
   RUN_CONTEXT_ACCESS_TOTAL,
   RUN_CONTEXT_DONE,
   RUN_CONTEXT_MIGRATED_FROZEN,
@@ -21,7 +26,7 @@ import {
   RUN_CONTEXT_FILES,
   RUN_CONTEXT_TARGET,
 } from '../kernel/plan-runcontext.js';
-import { type SourceFile, scanRunContextLeaks, stripLineComment } from '../kernel/gate-scan.js';
+import { type SourceFile, scanRunContextLeaks, scanRunIdSeed, stripLineComment } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
 const SCAN: SourceFile[] = (RUN_CONTEXT_FILES as readonly string[]).map((rel) => ({
@@ -85,6 +90,43 @@ describe('K2 门: RunContext 状态外置', () => {
     expect(migrated.map((f) => f.name).sort()).toEqual([...RUN_CONTEXT_DONE].sort());
     // 还没搬的字段不许被标成已搬 (假完成)
     for (const f of RUN_CONTEXT_FIELDS) if (!RUN_CONTEXT_DONE.includes(f.name)) expect(f.migrated).toBe(false);
+  });
+
+  it('K2 收尾: currentRunId 播种三条规则 (恰好 1 处读取 / 2 个调用点 / 只在 seedRunContext 体内)', () => {
+    // leo 2026-10-02 口径: run-boundary 允许**一次**显式播种读取, 但必须单独记账, 不得混进"必须下降"的统计,
+    // 也不得在循环内新增读取点, 更不得成为新的写入口。
+    // 口径: 判据数的是**匹配次数** (不是行数) —— 有一行含两处 ⇒ 37 历史匹配 + 1 播种 = 38
+    const opts = { frozenTotal: 38, seedReads: CURRENT_RUN_ID_SEED_READS, seedSites: CURRENT_RUN_ID_SEED_SITES };
+    expect(scanRunIdSeed(SCAN, opts)).toEqual([]);
+
+    // 变异①: 助手里的播种被删 ⇒ 红
+    const noSeed = SCAN.map((f) => ({ ...f, text: f.text.replace('runId: this.currentRunId, ', '') }));
+    expect(scanRunIdSeed(noSeed, opts).some((x) => x.rule === 'runid-seed-count')).toBe(true);
+
+    // 变异②: 在助手里再补一处播种 ⇒ 红 (播种只许一处)
+    const doubleSeed = SCAN.map((f) => ({ ...f, text: f.text.replace('runId: this.currentRunId, ', 'runId: this.currentRunId, runId: this.currentRunId, ') }));
+    expect(scanRunIdSeed(doubleSeed, opts).some((x) => x.rule === 'runid-seed-count')).toBe(true);
+
+    // 变异③: 循环里新增一处 this.currentRunId 读取 ⇒ 红 (不得在循环中新增读取点)
+    const extraRead = SCAN.map((f) => ({ ...f, text: `${f.text}\n    if (this.currentRunId) { /* 循环内新读 */ }\n` }));
+    expect(scanRunIdSeed(extraRead, opts).some((x) => x.rule === 'runid-access-drift')).toBe(true);
+
+    // 变异④: 复位点带播种 ⇒ 红 (清空不许携带身份)
+    const seedOnReset = SCAN.map((f) => ({ ...f, text: f.text.replace('this.runCtx = createRunContext();', 'this.runCtx = this.seedRunContext();') }));
+    const f4 = scanRunIdSeed(seedOnReset, opts);
+    expect(f4.some((x) => x.rule === 'runid-seed-on-reset' || x.rule === 'runid-seed-sites' || x.rule === 'runid-reset-missing')).toBe(true);
+  });
+
+  it('K2/K5 验收标准各就各位 (history 并发隔离已从 K2 移到 K5)', () => {
+    expect(K2_ACCEPTANCE.length).toBeGreaterThanOrEqual(6);
+    expect(K2_ACCEPTANCE.some((x) => x.includes('history') && x.includes('K5'))).toBe(true);
+    expect(K5_ACCEPTANCE.length).toBeGreaterThanOrEqual(6);
+    for (const kw of ['串行', '隔离', 'mailbox', '恢复', 'messageHistory']) {
+      expect(K5_ACCEPTANCE.some((x) => x.includes(kw))).toBe(true);
+    }
+    // 两个百分比不许合并
+    expect(K2_PROGRESS.runContextExternalized).toBe('100%');
+    expect(K2_PROGRESS.sessionActorization).toBe('未开始');
   });
 
   it('判别力自证: 三种坏形状都必须判红', () => {

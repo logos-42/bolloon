@@ -645,3 +645,58 @@ run 内的写会落进 **per-run** Context ⇒ 会话字段不被更新 ⇒ **�
 3. **`session` / `run-boundary` 一律不许标 `migrated`**, 且 `session` 级必须**仍是实例字段** (镜像规则, 在接线门里判)。
 
 `tsc` 0 错 · **7 道门 101/101**。
+
+## 24. K2 收尾 (leo 2026-10-02 口径固化) —— 外置面 100% 完成, 不再搬字段
+
+### 24.1 口径原文落地
+
+| 口径 | 落地物 |
+| --- | --- |
+| ① 允许**一次入口播种读取** | `PiAgentSession.seedRunContext()` —— **唯一一处** `createRunContext({ runId: this.currentRunId, ...extra })`; 两个入口 (`prompt` / `promptStream`) 调它; 5 个复位点仍是**纯清空** (`createRunContext()`, 不携带身份) |
+| ② 单独记账 | `CURRENT_RUN_ID_SEED_READS = 1` · `CURRENT_RUN_ID_SEED_SITES = 2` · `CURRENT_RUN_ID_SEED_NOTE` |
+| ③ 不得混进"必须下降"的统计 | 台账 `currentRunId.accesses = 38 = 37(历史) + 1(播种)`, 并在注释里写明**净变化拆解** |
+| ④ 4 个 session 字段归 Channel Actor | 台账 `scope: 'session'` ×4 + `RUN_CONTEXT_REMAINING_NOTE` |
+| ⑤ K2/K5 验收标准重划 | `K2_ACCEPTANCE` (7 条) · `K5_ACCEPTANCE` (6 条) · `K2_PROGRESS = { runContextExternalized: '100%', sessionActorization: '未开始' }` |
+
+**每一条都由门强制** (新增 `scanRunIdSeed`, 4 条规则 + 4 个变异用例):
+1. `currentRunId` 总访问 == 冻结 38 ⇒ **循环内不得新增读取点** (任何新读取点都让总数变);
+2. 播种读取**恰好 1 处且只在 `seedRunContext` 体内**;
+3. 调用播种的入口**恰好 2 处**;
+4. 复位点**不得**带播种。
+
+### 24.2 这一格踩的两个坑 (都是"记账口径"类, 值得留档)
+
+1. **`open(G,"w").write(open(G).read()…)` 把我自己的 judge 文件截断** —— `open(G,"w")` 先截断, 再读就是空 ⇒ `gate-scan.ts` 掉了 538 行。这是**同一坑第二次** (§16.3 记过一次)。修法: 先读进变量再写。恢复靠 git + 重新正确追加。
+2. **两个判据用了两种计数口径** —— 逐字段判据按**行数** (`if (rx.test(line)) actual += 1`), 新播种判据按**匹配次数** ⇒ 同一台账在"一行含两处"(1916 行)处给出 37 / 38 两个答案。
+   修法: **统一为匹配次数**, 并**整体重算**逐字段冻结值。⇒ 由此暴露一条必须写清的账: session 级那几个字段"变大"**不是新增泄漏, 是换口径**:
+
+   | 字段 | 行数口径(旧) | 匹配口径(现) |
+   | --- | --- | --- |
+   | `messageHistory` | 53 | **56** |
+   | `currentChannelId` | 21 | **24** |
+   | `currentGoalId` | 19 | **22** |
+   | `currentAgentId` | 20 | **21** |
+   | `currentRunId` | 36 (+1 播种) | **38** |
+
+   **同口径的迁移前/后**: `04f64fb`(K2 第一次迁移之前) **193** → 现在 **161** (净 **-32**) = 三个 run 级字段 **-33** (15+8+10) **+ 播种 +1**。
+
+### 24.3 K2 完成定义 (正式口径)
+
+> **所有真正 run-scoped 的状态都进入 RunContext; session 状态和 run-boundary 状态不被错误搬迁。**
+
+```text
+K2 RunContext 外置面：100%   (eventSink ✅ · abortSignal ✅ · intent ✅ · currentRunId ✅ 入口播种)
+K2 Session Actor 化：未开始  (messageHistory / channelId / agentId / goalId ⏭ K5)
+```
+
+**这两个百分比不许合并** —— 合并就会把"外置面完成"读成"K2 完成", 而 K5 那半还没开始。
+
+### 24.4 交给 K5 的清单 (从 K2 移出)
+
+验收标准 (6 条): 同 Channel 串行 (排队, 不并发改 history) · 不同 Channel history 完全隔离 · 同 Channel 多 Run 不互相污染 · 页面/CLI/P2P/Supervisor 进同一 mailbox · Actor 崩溃可由 Supervisor 恢复 · `messageHistory` 不再由 Pi 拥有。
+
+Actor 状态容器 (9 项): `channelId` · `agentId` · `goalBinding` · `messageHistory` · `mailbox` · `activeRun` · `cancellation` · `outbound stream` (+ 串行执行锁)。
+
+迁移步骤 (8 步, leo 定): 建 Actor 状态容器 → `messageHistory` 的 hydrate/compact/append/persist 入 Actor → `channelId/agentId/goalId` 入 Actor → 所有入口改投递消息 → 每 Channel 串行锁 → `currentRunId` 改 Actor `activeRun`/ExecutionFrame → Pi 只接一次性 `ExecutionRequest` → 删除 Pi 中对应字段。
+
+**删除旧字段的前置条件 (7 条, 全满足才删)**: Pi 不再拥有 session 状态 · 所有入口经 Channel Actor · 同 Channel 串行/跨 Channel 并发**真跑通过** · 重启后 history/Goal/Run 仍能恢复 · `currentRunId` 不再由 Pi 播种 · Pi 的字段访问只剩推理所需临时变量 · 旧字段**零引用门禁通过**。
