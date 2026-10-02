@@ -1763,6 +1763,21 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 ⇒ 收敛工作量因此明确: 给 pivot loop 注入一个"每次工具调用前先过门"的**端口回调**(与 pi-sdk 用同一个 harness 实例),
 让它与主路径共用判定, 而不是自己直调 `tool.execute`。
 
+**施工单 (2026-10-02 现场勘察结果, 注入点已定位)**:
+| 位置 | 现状 | 要动什么 |
+| `src/agents/workflow-pivot-loop.ts:189` 类 / `:214` 构造 | `constructor(config: PivotLoopConfig)`, 配置里**没有**任何判定/执行回调 | 在 `PivotLoopConfig` 加一个注入端口 (名字待定, 如 `guardedExecute?: (tool, args) => Promise<ToolResult>`), **可选**: 不注入时保持现行为 (向后兼容, 也便于灰阶上线) |
+| `:256` `for (const tool of tools)` / `:557` `const tool = this.tools.get(toolCall.name)` | 工具由构造时传入的 `this.tools` (Map) 提供 | 不动 (名册来源不变) |
+| **`:613` `const result = await tool.execute(toolCall.args ?? {})`** | **旁路本体**: 直接执行, 该路径上没有任何 harness 调用 | 改成 `guardedExecute` 优先 (存在则走它), 否则回落到 `tool.execute` ⇒ 端口由 pi-sdk 注入时**与主路径共用同一个 harness 判定** |
+| `src/agents/pi-sdk.ts:446/:702` `pivotLoopConfig` | 配置的来源 | 注入端口时把 `this.harness` + `this.harnessCtx()` 包进去 (与主路径 `~2622` 处同一实例、同一 ctx) |
+| `src/agents/pi-sdk.ts:1301+` `promptWithPivotLoop` | 构造/调用 pivot loop 的地方 | 注入点上线的唯一位置 |
+
+**验收判据 (改完必须都能真跑)**:
+① **被拒的工具在 pivot loop 里也执行不了** —— 真跑: 用一个必被 deny 的工具名跑 pivot loop, 断言 `tool.execute` **未被调用**(用注入的假 tool 计调用数), 且收到与主路径同形的拒收文案;
+② **门链顺序不变** —— deny 先于 policy (与 `pi-harness` 的既有断言同源);
+③ **未注入端口时行为不变** (回归面: 既有 pivot loop 测试全绿);
+④ 收敛后**调用点数可判**: `workflow-pivot-loop.ts` 的 `tool.execute(` 应为 0 (台账 `HARNESS_EXEC_SITES` 跟着改 + `K7_BYPASS_CANDIDATES` 减一条 ⇒ 旁路 3 → 2);
+⑤ 五删除条件 + 8 字段删除记录 + 一次故障恢复 (deny 判定抛错时 pivot loop 必须**拒执行**而不是 fail-open —— 这是 K7 最该钉的一条)。
+
 **收敛手法 (倾向, 未定案)**: 让 pivot loop 与主路径共用**同一个执行入口**(最自然是 `tool-registry.ts:153` 那个
 "唯一咽喉候选"), 由它内部串 `deny → pre-tool-validator → execute → 读回自证`; 两处调用点只传参。
 这样"执行只有一条咽喉"是可以被判据核的 (核调用点数: 除注册表自身外, 其它文件 `tool.execute(` 应为 0)。
