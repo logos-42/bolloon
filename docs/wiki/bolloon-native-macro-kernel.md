@@ -700,3 +700,35 @@ Actor 状态容器 (9 项): `channelId` · `agentId` · `goalBinding` · `messag
 迁移步骤 (8 步, leo 定): 建 Actor 状态容器 → `messageHistory` 的 hydrate/compact/append/persist 入 Actor → `channelId/agentId/goalId` 入 Actor → 所有入口改投递消息 → 每 Channel 串行锁 → `currentRunId` 改 Actor `activeRun`/ExecutionFrame → Pi 只接一次性 `ExecutionRequest` → 删除 Pi 中对应字段。
 
 **删除旧字段的前置条件 (7 条, 全满足才删)**: Pi 不再拥有 session 状态 · 所有入口经 Channel Actor · 同 Channel 串行/跨 Channel 并发**真跑通过** · 重启后 history/Goal/Run 仍能恢复 · `currentRunId` 不再由 Pi 播种 · Pi 的字段访问只剩推理所需临时变量 · 旧字段**零引用门禁通过**。
+
+## 25. K5 第 1 步: Channel Actor 台账与门 (先落门, 容器未建)
+
+### 25.1 落地物
+
+`src/kernel/plan-channel-actor.ts` (85 行) + `src/test/kernel-channel-actor.test.ts` (门, 9 用例):
+
+| 台账内容 | 条数 |
+| --- | --- |
+| **Actor 状态项** | **9** (`channelId` · `agentId` · `goalBinding` · `messageHistory` · `mailbox` · `activeRun` · `cancellation` · `outboundStream` · `serialLock`) —— 每项带"为什么"与 owner |
+| **验收标准** | **6** (同 Channel 串行 / 跨 Channel 隔离 / 同 Channel 多 Run 不污染 / 四入口进同一 mailbox / Actor 崩溃可恢复 / `messageHistory` 不再由 Pi 拥有) |
+| **迁移步骤** | **8** (容器 → history 的 hydrate/compact/append/persist → 三个会话字段 → 入口投递 → 串行锁 → `activeRun` → Pi 只收 `ExecutionRequest` → 删字段) |
+| **删除前置** | **7** (Pi 不再拥有 session 状态 / 入口全经 Actor / 串行与跨 Channel 并发**真跑通过** / 重启后仍能恢复 / `currentRunId` 不再由 Pi 播种 / Pi 只剩推理临时变量 / 旧字段零引用门禁通过) |
+| **从 K2 移交的字段** | **4** (`messageHistory` 56 · `currentChannelId` 24 · `currentAgentId` 21 · `currentGoalId` 22, match 口径) |
+| **进度位** | `stage: 'not-started'` · `containerPath` · `fieldsMigrated 0/4` · `entriesWired 0/4` |
+
+### 25.2 门的三条硬要求 (本步重点)
+
+1. **完整性**: 9 状态项 (名字唯一 · 每项非空) · 验收 ≥6 · 步骤 =8 · 前置 =7 · 验收里**真接住了**从 K2 移来的「history 不互相污染」;
+2. **与盘上事实同步**: 标 `not-started` ⇒ 容器文件**必须真的不存在**; 反过来标了进度就必须有文件 (**真读盘核对**, 不是自说自话);
+3. **跨台账一致**: 移交的 4 个字段访问数必须与 K2 台账 (session 级) **逐字相等**, 数量也要一致 (4==4)。
+   ⇒ 两个台账各说各话会立刻判红。**5 个判别力用例 + 1 个变异用例**。
+
+### 25.3 顺带解掉一个循环 (豁免规则)
+
+每加一个台账文件, K6 删除候选集就变一次 (已因此被迫改过三次 sha: `plan-deletion` / `plan-runcontext` / `plan-channel-actor`)。根因: 台账/名册在"0 入边"口径下**天然是孤岛**。
+⇒ 落成规则: **`kernel/roster.ts` 与 `kernel/plan*.ts` 一律不算删除候选** (`LEDGER_SELF_EXEMPT`)。删除台账不是"删死代码", 走它自己的 8 字段记录流程。重算后候选 **100 → 95**。
+
+### 25.4 一条测试卫生教训
+
+K5 的变异用例原本在 `src/kernel/` 里**真建文件再删** —— 8 个测试文件并行跑时, 别的 worker 正在扫同一目录 ⇒ **采集期竞态** (表现为 `kernel-constraint.test.ts` 的并行假红; 单跑 16/16 绿)。
+⇒ 规矩: **测试不许在被并行扫描的源码目录里做文件系统变异**。判据是纯函数, `exists` 就是它设计好的接缝 —— 注入即可; 盘上事实由另一条只读断言保证 (容器真的不存在)。

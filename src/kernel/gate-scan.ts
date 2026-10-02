@@ -285,6 +285,13 @@ export function validateDeletionRecord(rec: Record<string, unknown>): string[] {
 /** 第一批删除候选 = 产品码里 **0 入边引用** 且非入口形态 (机械派生, 不手写) */
 const ENTRY_SHAPE_RE = /(index\.ts$|cli-entry\.ts$|electron\.ts$|\.d\.ts$|server\.ts$|main\.ts$|route|command|register|setup|bootstrap|migration|types\.ts$|constants?\.ts$|config)/;
 
+/**
+ * **豁免规则 (2026-10-02)**: 冻结面自身的文件 (KERNEL_FILES 成员 —— `kernel/roster.ts` / `kernel/plan*.ts`)
+ * **不算删除候选**。它们是台账/名册, 在"0 入边"口径下天然是孤岛, 每加一个台账就会让候选集变一次
+ * (已因此被迫改过三次 sha)。删除台账不是"删死代码", 走的是它自己的 8 字段记录流程。
+ */
+const LEDGER_SELF_EXEMPT = /^kernel\/(roster|plan[^/]*)\.ts$/;
+
 export function deletionCandidates(files: SourceFile[]): string[] {
   const paths = new Set(files.map((f) => f.path));
   const inbound = new Map<string, number>();
@@ -299,7 +306,7 @@ export function deletionCandidates(files: SourceFile[]): string[] {
   }
   return files
     .map((f) => f.path)
-    .filter((p) => (inbound.get(p) ?? 0) === 0 && !ENTRY_SHAPE_RE.test(p))
+    .filter((p) => (inbound.get(p) ?? 0) === 0 && !ENTRY_SHAPE_RE.test(p) && !LEDGER_SELF_EXEMPT.test(p))
     .sort();
 }
 
@@ -582,5 +589,78 @@ export function scanRunIdSeed(
     out.push({ rule: 'runid-seed-on-reset', file: 'agents/pi-sdk.ts', line: 1, what: '复位点带了播种 (清空不许携带身份)' });
   }
   if (resets < 5) out.push({ rule: 'runid-reset-missing', file: 'agents/pi-sdk.ts', line: 1, what: `复位点只剩 ${resets} 处 (期望 ≥5)` });
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K5 门: Channel Actor 台账 (完整性 + 与盘上事实同步 + 跨台账一致)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ActorStateItemLike { name: string; why: string; owner: string }
+export interface K5LedgerLike {
+  stateItems: readonly ActorStateItemLike[];
+  acceptance: readonly string[];
+  steps: readonly string[];
+  preconditions: readonly string[];
+  inheritedFields: readonly { name: string; into: string; accesses: number }[];
+  progress: { stage: string; containerPath: string; fieldsMigrated: number; fieldsTotal: number; entriesWired: number; entriesTotal: number };
+}
+
+/**
+ * 判据 (纯函数; 盘上事实由 `exists` 注入):
+ *   ① 清单完整: Actor 状态 9 项 (名字唯一) · 验收 ≥6 · 步骤 8 · 删除前置 7;
+ *   ② **与盘上事实同步**: 标 `not-started` ⇒ 容器文件**必须不存在**; 容器存在 ⇒ stage 必须已过 not-started;
+ *   ③ 进度棘轮: `fieldsMigrated ≤ fieldsTotal` · `entriesWired ≤ entriesTotal` · not-started ⇒ 两个计数都必须是 0;
+ *   ④ **跨台账一致**: 从 K2 移交的 4 个 session 字段, 其冻结访问数必须与 K2 台账逐字相等;
+ *   ⑤ 验收标准里必须真的接住从 K2 移过来的那条 (history 不互相污染)。
+ */
+export function scanActorLedger(
+  ledger: K5LedgerLike,
+  opts: { exists: (rel: string) => boolean; k2SessionFields: readonly { name: string; accesses: number }[] },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (rule: string, what: string) => out.push({ rule, file: 'kernel/plan-channel-actor.ts', line: 1, what });
+
+  // ① 完整性
+  if (ledger.stateItems.length !== 9) f('actor-state-count', `Actor 状态项 ${ledger.stateItems.length} 项 ≠ 9`);
+  const names = ledger.stateItems.map((i) => i.name);
+  if (new Set(names).size !== names.length) f('actor-state-dup', 'Actor 状态项有重名');
+  for (const i of ledger.stateItems) {
+    if (!i.name || !i.why || !i.owner) f('actor-state-shape', `状态项字段不全: ${i.name || '(空)'}`);
+  }
+  if (ledger.acceptance.length < 6) f('actor-acceptance-count', `验收标准 ${ledger.acceptance.length} 条 < 6`);
+  if (ledger.steps.length !== 8) f('actor-steps-count', `迁移步骤 ${ledger.steps.length} 步 ≠ 8`);
+  if (ledger.preconditions.length !== 7) f('actor-precond-count', `删除前置 ${ledger.preconditions.length} 条 ≠ 7`);
+  if (!ledger.acceptance.some((a) => a.includes('history') && (a.includes('污染') || a.includes('隔离')))) {
+    f('actor-handoff-missing', '验收标准没有接住从 K2 移来的「history 不互相污染」');
+  }
+
+  // ② 与盘上事实同步
+  const containerExists = opts.exists(ledger.progress.containerPath);
+  if (ledger.progress.stage === 'not-started' && containerExists) {
+    f('actor-stage-stale', `标了 not-started 但 ${ledger.progress.containerPath} 已存在 ⇒ 台账该改`);
+  }
+  if (ledger.progress.stage !== 'not-started' && !containerExists) {
+    f('actor-container-missing', `stage=${ledger.progress.stage} 但容器文件不存在 ⇒ 假进度`);
+  }
+
+  // ③ 进度棘轮
+  if (ledger.progress.fieldsMigrated > ledger.progress.fieldsTotal) f('actor-fields-overflow', 'fieldsMigrated > fieldsTotal');
+  if (ledger.progress.entriesWired > ledger.progress.entriesTotal) f('actor-entries-overflow', 'entriesWired > entriesTotal');
+  if (ledger.progress.stage === 'not-started' && (ledger.progress.fieldsMigrated !== 0 || ledger.progress.entriesWired !== 0)) {
+    f('actor-progress-premature', 'not-started 阶段不许有非零进度');
+  }
+
+  // ④ 跨台账一致 (K2 → K5)
+  for (const k5 of ledger.inheritedFields) {
+    const k2 = opts.k2SessionFields.find((x) => x.name === k5.name);
+    if (!k2) { f('actor-inherit-unknown', `移交字段 ${k5.name} 在 K2 台账里找不到`); continue; }
+    if (k2.accesses !== k5.accesses) {
+      f('actor-inherit-drift', `${k5.name} 访问数 K5=${k5.accesses} ≠ K2=${k2.accesses} (两个台账必须逐字相等)`);
+    }
+  }
+  if (ledger.inheritedFields.length !== opts.k2SessionFields.length) {
+    f('actor-inherit-count', `移交字段 ${ledger.inheritedFields.length} 个 ≠ K2 session 级 ${opts.k2SessionFields.length} 个`);
+  }
   return out;
 }
