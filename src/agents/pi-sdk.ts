@@ -461,8 +461,7 @@ export class PiAgentSession implements AgentSession {
   /** 2026-07-04: 当前 agentId (server.ts 通过 createAgentSession 选项注入), 供 onSessionStart 加载 persona docs */
   private currentAgentId: string = '';
 
-  /** M2.2 (2026-06-17): 当前轮的用户请求 intent, runReActLoop 拼 systemPrompt 时会读这个 */
-  private currentIntent: 'question' | 'code_edit' | 'multi_step' | 'chitchat' | 'document' = 'chitchat';
+  // M2.2 intent 已外置到 runCtx.intent (K2); 拼 systemPrompt 时读 this.runCtx.intent
   /** 2026-08-10: 本轮用户原始输入 (loop-review 任务动词兜底检测用) */
   private currentUserInput: string = '';
   /**
@@ -1149,12 +1148,12 @@ export class PiAgentSession implements AgentSession {
     // M2.2 (2026-06-17): intent 分类 — prompt() 路径也跑 (跟 promptStream 对齐)
     try {
       const { classifyIntent, intentHint } = await import('./intent-classifier.js');
-      this.currentIntent = classifyIntent(input);
-      this.currentIntentHint = intentHint(this.currentIntent);
+      this.runCtx.intent = classifyIntent(input);
+      this.currentIntentHint = intentHint(this.runCtx.intent);
       this.currentUserInput = input;
     } catch (err) {
       console.warn('[PiAgent] classifyIntent in prompt() failed:', err);
-      this.currentIntent = 'chitchat';
+      this.runCtx.intent = 'chitchat';
       this.currentIntentHint = '';
     }
 
@@ -1354,15 +1353,15 @@ export class PiAgentSession implements AgentSession {
     // M2.2 (2026-06-17): intent 分类 — 0 LLM 成本, 5 行 keyword 匹配
     try {
       const { classifyIntent, intentHint } = await import('./intent-classifier.js');
-      this.currentIntent = classifyIntent(userText);
-      this.currentIntentHint = intentHint(this.currentIntent);
+      this.runCtx.intent = classifyIntent(userText);
+      this.currentIntentHint = intentHint(this.runCtx.intent);
       this.currentUserInput = userText;
-      if (this.currentIntent !== 'chitchat') {
-        onStream({ type: 'phase', phase: 'intent_classified', detail: this.currentIntent, content: '' } as any);
+      if (this.runCtx.intent !== 'chitchat') {
+        onStream({ type: 'phase', phase: 'intent_classified', detail: this.runCtx.intent, content: '' } as any);
       }
     } catch (err) {
       console.warn('[PiAgent] classifyIntent failed (non-fatal):', err);
-      this.currentIntent = 'chitchat';
+      this.runCtx.intent = 'chitchat';
       this.currentIntentHint = '';
     }
 
@@ -1620,8 +1619,8 @@ export class PiAgentSession implements AgentSession {
     // M2.2 (2026-06-17): intent 分类 — pivot loop 也要拿到 hint
     try {
       const { classifyIntent, intentHint } = await import('./intent-classifier.js');
-      this.currentIntent = classifyIntent(input);
-      this.currentIntentHint = intentHint(this.currentIntent);
+      this.runCtx.intent = classifyIntent(input);
+      this.currentIntentHint = intentHint(this.runCtx.intent);
       this.currentUserInput = input;
     } catch (err) {
       console.warn('[PiAgent] classifyIntent in pivot failed:', err);

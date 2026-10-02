@@ -15,6 +15,9 @@
  */
 import type { StreamCallback } from './pi-sdk-types.js';
 
+/** 本轮用户意图 (与旧实例字段 `currentIntent` 的字面量集合一致) */
+export type RunIntent = 'question' | 'code_edit' | 'multi_step' | 'chitchat' | 'document';
+
 export interface RunContext {
   /** 一次请求的唯一 id (入口生成) */
   requestId: string;
@@ -24,8 +27,8 @@ export interface RunContext {
   goalId: string;
   /** 当前 Run id (K2 迁移中: 入口从实例字段快照) */
   runId: string;
-  /** 本轮用户意图 (question / code_edit / multi_step / chitchat / document) */
-  intent: string;
+  /** 本轮用户意图 —— 已外置 (原 `currentIntent`); 由入口 `classifyIntent()` 定 */
+  intent: RunIntent;
   /** 本轮模型快照 (K5 ModelRuntime 填; 现在为 null) */
   modelSnapshot: unknown | null;
   /** 会话历史 (迁移中: 仍以 Pi 实例的 messageHistory 为准) */
@@ -51,7 +54,8 @@ export function createRunContext(partial: Partial<RunContext> = {}): RunContext 
     agentId: partial.agentId ?? '',
     goalId: partial.goalId ?? '',
     runId: partial.runId ?? '',
-    intent: partial.intent ?? '',
+    // 'chitchat' 是中性默认, 与旧实例字段初值一致 (不是继承上一个 Run 的残留)
+    intent: partial.intent ?? 'chitchat',
     modelSnapshot: partial.modelSnapshot ?? null,
     history: partial.history ?? null,
     abortSignal: partial.abortSignal ?? null,

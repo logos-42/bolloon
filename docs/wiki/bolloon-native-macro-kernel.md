@@ -558,3 +558,30 @@ K1-f 第一版**判据红了, 但红在错的原因上**: 它用 `not.toContain(
 
 `currentIntent` (10) → `currentGoalId` (19) → `currentAgentId` (20) → `currentChannelId` (21) → `currentRunId` (36) → `messageHistory` (53)。
 `messageHistory` 那格是真正的大头 (53 处), 也是"两个并发 Run 的 history 不互相污染"这条 K2 验收标准的落点。
+
+## 21. K2 第 3 格: `currentIntent` → `RunContext.intent` (已落地)
+
+### 21.1 迁移 (10 处 → 0)
+
+`RunContext.intent` 用**联合类型** `RunIntent` (`question | code_edit | multi_step | chitchat | document`) —— 与旧实例字段的字面量集合一致, 不然 `!== 'chitchat'` 这类比较会失去类型约束。
+工厂默认 `'chitchat'`: 它是**中性默认值** (与旧字段初值相同), 不是"继承上一个 Run 的残留"。
+
+台账: `currentIntent` 10 → **0** (`migrated`) · `RUN_CONTEXT_ACCESS_TOTAL` 159 → **149** · `MIGRATED_FROZEN` 2 → **3** · `DONE` += `currentIntent`。其余 5 个字段一处没动。
+
+### 21.2 迁移途中抓到的两个真陷阱 (都靠"数一数"抓出来)
+
+1. **前缀误伤**: `this.currentIntent` 是 `this.currentIntentHint` 的**前缀** —— 机械改名把 7 处 `currentIntentHint` 也改成了 `this.runCtx.intentHint` (那个字段**不在**迁移名单里, 应该留在实例上)。
+   **抓法**: 改名处数 (17) ≠ 台账冻结值 (10) ⇒ 立刻回查。判据: **改名数必须等于台账数**, 不等就是误伤或漏改。
+2. **顺序陷阱 (差点成真)**: `prompt()` 里 `finally` 有一处「换空 Context」复位 —— 如果它落在 `runReActLoop(this.runCtx.eventSink …)` **之前**, 推流会被静默切断 (UI 表现为"没有回复")。
+   逐行核对后确认: 那次复位在 **pivot 分支的 `finally`** 里, 而该分支先 `return` 了 ⇒ 非 pivot 路径不会经过它 ✓。
+   顺带确认一个**刻意保留的原有怪癖**: `prompt()` 调 `promptWithPivotLoop(input, undefined, …)` 不传 onStream ⇒ pivot 路径的 eventSink 为 null —— 旧代码同样把 `currentOnStream` 覆盖成 null, 所以**行为等价**, 不是回归。
+   **没有**在 `promptWithPivotLoop` 入口重建 Context: 它在被 `prompt()`/`promptStream()` 调用时会冲掉刚建好的 eventSink/abortSignal (真回归); 而它被直接调用 (测试) 时, `this.runCtx` 正好是"上一轮清空后的空 Context", 与旧代码 `currentOnStream=null` 的状态等价。
+
+### 21.3 验证
+
+`tsc --noEmit` 0 错 · **7 道门 99/99** (接线门自动覆盖新字段 —— 它的"已迁移字段不许有 `this.<field>` 访问"是遍历 `RUN_CONTEXT_DONE` 的, 加一个字段就多一条检查) · `workflow-pivot-loop` + `pi-sdk` + `react-loop` **62/62**。
+
+### 21.4 下一格
+
+`currentGoalId` (19) → `currentAgentId` (20) → `currentChannelId` (21) → `currentRunId` (36) → `messageHistory` (53)。
+最后两格是硬骨头: `currentRunId` 要接 Run 生命周期 (落盘/恢复), `messageHistory` 是 K2 验收标准「两个并发 Run 的 history 不互相污染」的落点。
