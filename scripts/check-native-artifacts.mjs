@@ -83,6 +83,25 @@ if (!apks.length) {
   }
 }
 
+// ── 手机端 ⇄ PC 端 逻辑一致 (2026-10-02, leo 口径: 独立部署, 逻辑一条, 核共用) ──
+//   为什么放在原生发布门里: 出包前若壳里的 web 资源与源产物漂移, 用户装到的就是**旧一版逻辑**
+//   (实测发生过: client.js 与刚构建的产物 sha 不同而没人发现)。
+//   口径与本文件一致: "壳没同步过"(未构建) 与 "同步了但内容不对"(漂移) 是两种结论 ——
+//   前者 ⊘ 未同步, 后者 ❌ 漂移 (不放过)。
+const shellDirs = [path.join(ROOT, 'ios/App/App/public'), path.join(ROOT, 'android/app/src/main/assets/public')];
+if (!shellDirs.some((d) => fs.existsSync(d))) {
+  skip('手机端原生壳未同步过 (本机)', '同步入口: npm run ios:sync / npx cap copy android');
+} else {
+  try {
+    execFileSync(process.execPath, [path.join(ROOT, 'scripts/check-mobile-parity.mjs')], { encoding: 'utf8', stdio: 'pipe' });
+    ok('手机端 web 资源与 PC 端源产物逐字节一致', 'scripts/check-mobile-parity.mjs');
+  } catch (e) {
+    const out = String(e.stdout || '') + String(e.stderr || '');
+    const first = out.split('\n').find((l) => /✗/.test(l)) || out.slice(0, 120);
+    bad('手机端与 PC 端**逻辑漂移**', first.trim());
+  }
+}
+
 // ── 结论 ────────────────────────────────────────────────────────────────────
 console.log(`原生构建产物自检 (对齐基准: npm ${want} · versionCode ${wantCode})\n${lines.join('\n')}\n`);
 const built = [];
