@@ -614,6 +614,8 @@ export interface K5LedgerLike {
     /** 已迁字段名单 —— 必须与 fieldsMigrated 数量一致 (见判据 ③b) */
     migratedFieldNames?: readonly string[];
     entriesWired: number; entriesTotal: number;
+    /** K5 步骤④ 细粒度进度 (file/total/wired 都要与盘上重算结果一致) */
+    entrySites: { file: string; total: number; wired: number };
     /** K5 第 4 步的 history 操作搬迁位 (与 historyOpsNames 数量必须一致) */
     historyOpsMigrated: number; historyOpsTotal: number;
     historyOpsNames?: readonly string[];
@@ -661,6 +663,7 @@ export function scanActorLedger(
   // ③ 进度棘轮
   if (ledger.progress.fieldsMigrated > ledger.progress.fieldsTotal) f('actor-fields-overflow', 'fieldsMigrated > fieldsTotal');
   if (ledger.progress.entriesWired > ledger.progress.entriesTotal) f('actor-entries-overflow', 'entriesWired > entriesTotal');
+  if (ledger.progress.entrySites.wired > ledger.progress.entrySites.total) f('actor-entrysites-overflow', 'entrySites.wired > entrySites.total');
   if (ledger.progress.stage === 'not-started' && (ledger.progress.fieldsMigrated !== 0 || ledger.progress.entriesWired !== 0)) {
     f('actor-progress-premature', 'not-started 阶段不许有非零进度');
   }
@@ -782,5 +785,25 @@ export function scanHistoryWriteSites(code: string): Finding[] {
       });
     }
   }
+  return out;
+}
+
+/**
+ * **K5 步骤④ — 入口投递的进度不许自报**: 清单里的两个数字都能**从盘上重算**。
+ *   · `total` = `serverCode` 里 `promptStream(` 的出现次数 (入口执行点总数);
+ *   · `wired` = `deliverThroughActor(` 的出现次数 (真正投进 Actor 的点数)。
+ * 加一处新的入口执行点 ⇒ total 必须同步登记 (否则红); 少包一处却把 wired 写大 ⇒ 红; wired > total ⇒ 红。
+ */
+export function scanEntryDelivery(
+  serverCode: string,
+  sites: { file: string; total: number; wired: number },
+): Finding[] {
+  const out: Finding[] = [];
+  const f = (what: string) => out.push({ rule: 'entry-delivery-mismatch', file: sites.file, line: 1, what });
+  const total = (serverCode.match(/promptStream\(/g) ?? []).length;
+  const wired = (serverCode.match(/deliverThroughActor\(/g) ?? []).length;
+  if (total !== sites.total) f(`入口执行点 ${total} 处 ≠ 台账登记 ${sites.total} ⇒ 新增/删除入口没登记`);
+  if (wired !== sites.wired) f(`已投递 ${wired} 处 ≠ 台账登记 ${sites.wired} ⇒ 进度对不上盘上事实`);
+  if (sites.wired > sites.total) f(`wired ${sites.wired} > total ${sites.total}`);
   return out;
 }

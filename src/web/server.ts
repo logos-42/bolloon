@@ -128,6 +128,8 @@ import type { AgentVerificationManager } from '@diap/sdk';
 import { documentReader } from '../documents/reader.js';
 import { initMinimax, getMinimax } from '../constraints/index.js';
 import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
+// **K5 步骤④ (入口投递)**: 把一次入口执行投进会话 Actor 的 mailbox ⇒ 同一会话身份的输入排队执行
+import { deliverThroughActor } from '../kernel/channel-actor.js';
 import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
 import { videoConfigStore, type VideoProvider } from '../llm/video-config-store.js';
 import { audioConfigStore, type AudioProvider } from '../llm/audio-config-store.js';
@@ -5231,7 +5233,9 @@ fetchState();
         }
         // 2026-07-15 修 Bug 3: 拖拽附件 — attachmentContext 提到 contextHint 最前, LLM 第一眼看到文件清单
         const markedPrompt = `${extraHint}【本轮用户请求】\n${text}\n【请求结束】\n\n${attachmentContext}${contextHint}`;
-        fullResponse = await agent.promptStream(markedPrompt, streamCallback, runState.abortController?.signal, channelId);
+        // 闭包里 TS 不再保留 null 收窄 ⇒ 先收成局部 const
+        const agentForRun = agent;
+        fullResponse = await deliverThroughActor(agentForRun, () => agentForRun.promptStream(markedPrompt, streamCallback, runState.abortController?.signal, channelId));
       } catch (err: any) {
         // abort 抛错: 保留已输出的部分 (fullResponse 可能是空字符串)
         if (runState.abortController?.signal.aborted || err?.name === 'AbortError') {
@@ -5639,7 +5643,8 @@ fetchState();
       const contextHint = attachmentContext + `[系统上下文] 队列消息 (auto-drain)\n`;
       // 4) promptStream
       const markedPrompt = `【本轮用户请求】\n${text}\n【请求结束】\n\n${contextHint}`;
-      const fullResponse = await agent.promptStream(markedPrompt, () => {}, runState.abortController?.signal, channelId);
+      const agentForRun = agent;
+      const fullResponse = await deliverThroughActor(agentForRun, () => agentForRun.promptStream(markedPrompt, () => {}, runState.abortController?.signal, channelId));
 
       if (!fullResponse.trim()) {
         broadcast({ type: 'error', content: '⚠️ AI 未返回内容' }, channelId);
@@ -6819,7 +6824,7 @@ app.post('/active-channel', async (req, res) => {
       // 2026-06-15: 同 /message 路径, 用显式 marker 包裹 userMessage, 避免 LLM 把它当背景信息
       const regenHint = await buildJudgmentHint(channel, channelId);
       const markedRegen = `${regenHint}\n\n【本轮用户请求】\n${userMessage}\n【请求结束】\n`;
-      fullResponse = await agent.promptStream(markedRegen, streamCallback, undefined, channelId);
+      fullResponse = await deliverThroughActor(agent, () => agent.promptStream(markedRegen, streamCallback, undefined, channelId));
 
       // 2026-07-06: 防御性兜底 — 同 /message 路径
       if (!fullResponse.trim()) {

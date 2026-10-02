@@ -25,8 +25,8 @@ import {
   K5_STEPS,
 } from '../kernel/plan-channel-actor.js';
 import { RUN_CONTEXT_FIELDS } from '../kernel/plan-runcontext.js';
-import { ChannelActor, SerialMailbox, actorCount, createActorState, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
-import { type K5LedgerLike, scanActorLedger, scanHistoryWriteSites } from '../kernel/gate-scan.js';
+import { ChannelActor, SerialMailbox, actorCount, createActorState, deliverThroughActor, getOrCreateActor, peekActor, resetActors } from '../kernel/channel-actor.js';
+import { type K5LedgerLike, scanActorLedger, scanEntryDelivery, scanHistoryWriteSites } from '../kernel/gate-scan.js';
 
 const SRC = path.join(process.cwd(), 'src');
 const KERNEL = path.join(SRC, 'kernel');
@@ -272,6 +272,53 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(scanHistoryWriteSites('const x = 1;').some((f) => f.rule === 'history-funnel-missing')).toBe(true);
     // 异步压缩的落地拍必须在盘上 (rebase 是"变换期间追加不被吃掉"的唯一保障)
     expect(base.includes('this.actor.rebaseHistory<Message>(')).toBe(true);
+  });
+
+  it('★ 真跑: 入口投递 —— 同会话身份排队 / 跨身份并行 / 无身份直跑 (K5 步骤④)', async () => {
+    resetActors();
+    const mk = () => ({ actor: new ChannelActor() });
+    const log: string[] = [];
+    const job = (tag: string, ms: number) => async () => {
+      log.push(`${tag}:start`);
+      await new Promise((r) => setTimeout(r, ms));
+      log.push(`${tag}:end`);
+      return tag;
+    };
+    // ① 同一会话身份: 两个输入**排队** (第二个等第一个跑完) ⇒ 不并发改 history
+    const one = mk();
+    const both = await Promise.all([
+      deliverThroughActor(one, job('a', 30)),
+      deliverThroughActor(one, job('b', 1)),
+    ]);
+    expect(both).toEqual(['a', 'b']);
+    expect(log).toEqual(['a:start', 'a:end', 'b:start', 'b:end']);
+    // ② 跨会话身份: 各自独立 ⇒ 可以并行 (短的先结束)
+    log.length = 0;
+    await Promise.all([deliverThroughActor(mk(), job('c', 30)), deliverThroughActor(mk(), job('d', 1))]);
+    expect(log).toEqual(['c:start', 'd:start', 'd:end', 'c:end']);
+    // ③ 无身份 (没有 actor): 直跑, 行为不变
+    log.length = 0;
+    await deliverThroughActor({}, job('e', 1));
+    await deliverThroughActor(null, job('f', 1));
+    expect(log).toEqual(['e:start', 'e:end', 'f:start', 'f:end']);
+    resetActors();
+  });
+
+  it('★ 判据: 入口投递的进度必须能**从盘上重算** (自报无效)', () => {
+    const WSRC = fs.readFileSync(path.join(SRC, 'web/server.ts'), 'utf-8');
+    // 盘上真实事实
+    const total = (WSRC.match(/promptStream\(/g) ?? []).length;
+    const wired = (WSRC.match(/deliverThroughActor\(/g) ?? []).length;
+    expect(scanEntryDelivery(WSRC, { file: 'web/server.ts', total, wired })).toEqual([]);
+    // 台账写的必须就是盘上算出来的 (否则红)
+    expect(scanEntryDelivery(WSRC, K5_PROGRESS.entrySites)).toEqual([]);
+    // 判别力: 少包一处却把 wired 写大 ⇒ 红; 新增入口点不登记 ⇒ 红; wired > total ⇒ 红
+    expect(scanEntryDelivery(WSRC, { file: 'web/server.ts', total, wired: wired + 1 })
+      .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
+    expect(scanEntryDelivery(WSRC, { file: 'web/server.ts', total: total + 1, wired })
+      .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
+    expect(scanEntryDelivery(WSRC, { file: 'web/server.ts', total: 1, wired: 5 })
+      .some((f) => f.rule === 'entry-delivery-mismatch')).toBe(true);
   });
 
   it('★ 真跑: 三个会话绑定 (channelId/agentId/goalBinding) 的本体住进 Actor (含构造期收养)', async () => {

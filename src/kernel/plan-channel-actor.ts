@@ -51,6 +51,11 @@ export type K5Stage = 'not-started' | 'container-built' | 'registry-built' | 'fi
  *     构造期已设的值)。**这三个字段的访问数不变** (24 / 21 / 22) —— 迁的是**所有权**而非删访问,
  *     所以本次**不动** K2 台账的冻结值 (判据的"少一处才红"在这里不适用, 因为一处也没少)。
  *     `fieldsMigrated **4/4**`。
+ *   · 2026-10-02 **步骤④ 起手 (入口投递)**: `deliverThroughActor(holder, run)` 落进内核 —— 有 actor 就投进
+ *     它的 mailbox (同一会话身份的输入**排队**), 无 actor 直接跑 (行为不变)。**web 用户路径已接 3 处**
+ *     (用户消息 / 第二条路径 / 重新生成), `web/server.ts` 里共 8 处入口执行点 ⇒ `entrySites { total: 8, wired: 3 }`,
+ *     两个数字都由判据 `scanEntryDelivery` **从盘上重算**, 自报无效。
+ *     四个**粗粒度**入口 (web / CLI / P2P / Supervisor) 的 `entriesWired` 仍 **0/4** —— 一条入口要全部执行点接完才算。
  */
 
 /** K5 第 4 步: 四个 history 操作 (唯一来源; 台账 `historyOpsNames` 必须 ⊆ 这里, 且数量与进度位一致) */
@@ -131,6 +136,8 @@ export const K5_PROGRESS = {
   fieldsTotal: 4,
   entriesWired: 0,
   entriesTotal: 4,
+  /** K5 步骤④ 的细粒度进度: `web/server.ts` 里的入口执行点 (两个数字都由门从盘上重算, 不许自报) */
+  entrySites: { file: 'web/server.ts', total: 8, wired: 3 },
   /** K5 第 4 步里的 history **操作**搬迁 (4 个: hydrate/append/compact/persist) */
   historyOpsMigrated: 4,
   historyOpsTotal: 4,

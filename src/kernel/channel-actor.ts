@@ -278,3 +278,25 @@ export interface HydrateSpec<T> {
   maxMessages: number;
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 入口投递 (K5 步骤④)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * **把一次入口执行投进 Actor 的 mailbox**。
+ *
+ * 语义 (K5 验收①): 同一会话身份的**输入排队**执行 —— 第二个请求等第一个跑完, 不会并发改 history。
+ * 没有 actor (无身份的会话) 就直接跑 ⇒ 行为与迁移前一致。
+ *
+ * 为什么做成内核里的独立函数: 它是"入口 → 内核"的唯一接缝, 放在这里就能**不起 server 直接单测**
+ * (测真语义: 排队 / 隔离 / 兜底), 而不是靠读源码断言。
+ */
+export async function deliverThroughActor<T>(
+  holder: { actor?: ChannelActor } | null | undefined,
+  run: () => Promise<T> | T,
+): Promise<T> {
+  const actor = holder?.actor;
+  if (actor && typeof actor.submit === 'function') return actor.submit(run);
+  return run();
+}

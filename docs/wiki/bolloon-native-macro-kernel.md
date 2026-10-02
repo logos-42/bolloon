@@ -1018,3 +1018,39 @@ Pi 侧改为**访问器** (与 `messageHistory` 同一手法: 调用点零改动
 
 K2 的访问计数**只剥 `//` 行注释, 不剥 `*` 块注释** —— 我在块注释里写了带 `this.` 前缀的字段名, 计数就虚增 1, 被门照出。
 ⇒ 规矩: **别在注释里写出"台账计数的那种字面形态"**。计数口径量的是**代码**访问; 拿注释去凑数或补注释凑数都是错的。
+
+## 34. K5 步骤④ 起手: 入口投递 (web 用户路径 3/8 执行点)
+
+### 34.1 投递助手放在内核里 (为的是能真跑验证, 不是为好看)
+
+```
+kernel/channel-actor.ts  deliverThroughActor(holder, run)
+   有 actor ⇒ 投进它的 mailbox (同一会话身份的输入**排队**执行)
+   无 actor ⇒ 直接跑 (行为与迁移前一致)
+```
+放在内核的好处: 它是"入口 → 内核"的唯一接缝, 于是**不起 server 就能单测真语义** (排队 / 跨身份并行 / 无身份兜底), 而不是靠读源码断言。
+
+### 34.2 接线与进度 (两个数字都由门从盘上重算)
+
+```
+web/server.ts  promptStream( 执行点共 **8** 处; 已投递 **3** 处 (用户消息 / 第二条路径 / 重新生成)
+台账 entrySites { file: 'web/server.ts', total: 8, wired: 3 }
+判据 scanEntryDelivery: total 必须等于盘上 `promptStream(` 计数; wired 必须等于盘上 `deliverThroughActor(` 计数;
+                        wired ≤ total。⇒ **新增入口执行点不登记 ⇒ 红; 少包一处却把 wired 写大 ⇒ 红** (自报无效)
+```
+
+`entriesWired` 保持 **0/4**: 四个**粗粒度**入口 (web / CLI / P2P / Supervisor) 要**全部执行点接完**才算数 —— 不给"接了一部分就宣布一条入口完成"留口子。
+
+### 34.3 真跑验证
+
+| 用例 | 断言 |
+| --- | --- |
+| **同身份排队** (K5 验收①) | 同一 actor 两个输入 (慢 30ms + 快 1ms) ⇒ 实测 `a:start a:end b:start b:end`, 结果 `['a','b']` —— 第二个**等**第一个 |
+| **跨身份并行** | 各带自己的 actor ⇒ 实测 `c:start d:start d:end c:end` (短的先结束, 说明真并发) |
+| **无身份兜底** | `{}` / `null` ⇒ 直跑, 行为不变 |
+| **判据判别力** | 真实盘上 ⇒ 绿; wired 写大 / total 不登记 / wired>total ⇒ 各判红 |
+
+### 34.4 一处编译期坑
+
+闭包里 TS **不保留 null 收窄** (`let agent: AgentSession | null`) ⇒ wrapped 调用在闭包内报 `possibly null`。
+⇒ 收成局部 `const agentForRun = agent;` 再进闭包 (比 `!` 干净)。
