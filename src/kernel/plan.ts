@@ -135,9 +135,30 @@ export interface DeletionRecord {
   deletedAt: string;
 }
 
-export const DELETION_LEDGER: readonly DeletionRecord[] = [];
+export const DELETION_LEDGER: readonly DeletionRecord[] = [
+  {
+    target: 'src/constraint-runtime/src/migrations/',
+    oldEntry: '无 (0 引用; 不在 CR/src/index.ts 导出面)',
+    replacement: '无 (0 引用; 不在 CR/src/index.ts 导出面)',
+    remainingRefs: 0,
+    runtimeHits: 0,
+    acceptance: 'tsc --noEmit 0 错 · 四道 kernel 门 75/75 · 引用面核验 0 处 · pre-commit 聚焦套件',
+    rollbackCommit: '9808e8e',
+    deletedAt: '2026-10-02',
+  },
+  {
+    target: 'src/constraint-runtime/src/remote/',
+    oldEntry: '无 (0 引用; 不在 CR/src/index.ts 导出面)',
+    replacement: '无 (0 引用; 不在 CR/src/index.ts 导出面)',
+    remainingRefs: 0,
+    runtimeHits: 0,
+    acceptance: 'tsc --noEmit 0 错 · 四道 kernel 门 75/75 · 引用面核验 0 处 · pre-commit 聚焦套件',
+    rollbackCommit: '9808e8e',
+    deletedAt: '2026-10-02',
+  },
+];
 
 /** 第一批删除候选 = 产品码里 **0 入边引用** 且非入口形态 (机械派生, 不手写) */
-export const DELETION_CANDIDATE_COUNT = 97;
-export const DELETION_CANDIDATE_SHA256 = '142b3f8241d9cb46ab2cda5e4a20160f2dc4bc509b8186185044c529de46b690';
-export const DELETION_CANDIDATE_DIRS: Readonly<Record<string, number>> = {"agents": 5, "bollharness-integration": 1, "bollharness": 61, "cli": 1, "(根)": 1, "judgeness": 3, "kernel": 3, "llm": 1, "network": 3, "orbitdb": 2, "scripts": 1, "social": 2, "utils": 3, "web": 10};
+export const DELETION_CANDIDATE_COUNT = 98;
+export const DELETION_CANDIDATE_SHA256 = '2a65dd13518f42a60f7d5201717a1acf048644307e88f9780d03ade9d5bde9e6';
+export const DELETION_CANDIDATE_DIRS: Readonly<Record<string, number>> = {"agents": 5, "bollharness-integration": 1, "bollharness": 61, "cli": 1, "(根)": 1, "judgeness": 3, "kernel": 4, "llm": 1, "network": 3, "orbitdb": 2, "scripts": 1, "social": 2, "utils": 3, "web": 10};

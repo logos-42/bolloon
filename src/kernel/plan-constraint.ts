@@ -104,16 +104,16 @@ export const CONSTRAINT_ROOT = 'constraint-runtime/';
 export const CONSTRAINT_NON_SOURCE = ['dist/', 'node_modules/'];
 
 /** 冻结量: 源码 / 空壳 / 构建产物 (棘轮: 只许减) */
-export const CONSTRAINT_SRC_FILES = 94;
-export const CONSTRAINT_SRC_LINES = 2492;
-export const CONSTRAINT_STUB_FILES = 33;
-export const CONSTRAINT_STUB_LINES = 460;
+export const CONSTRAINT_SRC_FILES = 92;
+export const CONSTRAINT_SRC_LINES = 2460;
+export const CONSTRAINT_STUB_FILES = 31;
+export const CONSTRAINT_STUB_LINES = 428;
 export const CONSTRAINT_DIST_FILES = 89;
 export const CONSTRAINT_DIST_LINES = 1164;
 
 /** 各层文件数 / 行数冻结值 */
-export const CONSTRAINT_CLASS_FILES: Readonly<Record<string, number>> = {"C": 55, "A": 15, "B": 24};
-export const CONSTRAINT_CLASS_LINES: Readonly<Record<string, number>> = {"C": 1294, "A": 401, "B": 797};
+export const CONSTRAINT_CLASS_FILES: Readonly<Record<string, number>> = {"C": 53, "A": 15, "B": 24};
+export const CONSTRAINT_CLASS_LINES: Readonly<Record<string, number>> = {"C": 1262, "A": 401, "B": 797};
 
 /**
  * A 类原语的**接入说明** —— 不能自称「原语」就算数:
@@ -185,4 +185,4 @@ export const B_DIRECT_IMPORT_FROZEN_AT = 12;
  * 本门自己的测试文件里有"人造引用"探针串 (判别力自证用), 不排掉它就会被当成一条真引用
  * —— 这就是本仓那条老规矩: 拿子串当判据前, 先排除自己刚写的东西。
  */
-export const CONSTRAINT_SCAN_EXCLUSIONS: readonly string[] = ["test/kernel-constraint.test.ts"];
+export const CONSTRAINT_SCAN_EXCLUSIONS: readonly string[] = ['test/kernel-*.test.ts'];

@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-10-02 | feat | **K1 第②步 (移除无调用模块): 核验推翻直觉排序, 真删 2 项** —— 按 leo 的第①步先统计真实 import 再删。**核验把我上一轮排的"第一批优先级" 4 项打掉 3 项** ✓: ① `dist/` **不可删 —— 它才是运行期目标** (`pi-sdk-tools.ts` 动态 import dist 下 PolymarketSDK×5+SafeSDK×1 · `Dockerfile:167` COPY dist 进 node_modules · `CR/package.json` main/exports=dist/index.js); ② 33 个"空壳" index.ts **不是空壳, 是存档壳** (每个 import `loadArchiveMetadata` 读 `reference_data/subsystems/*.json` 快照); ③ C 类 placeholder (remote/ssh/teleport) **可达包入口** (`CR/src/index.ts:21-22` re-export + dist 编译副本 ⇒ 删要同时改 index.ts 并重建 dist); ④ `src/bollharness/` 是**第三方 vendored 框架** (`gen-copyright-source.ts:25` 明写版权属 bollharness contributors; `smoke-esm.mjs:38` 引用 dist/bollharness)。⇒ **真正 0 引用的只有 2 个 15 行 stub**: `CR/src/migrations/` · `CR/src/remote/` —— **已真删**, 8 字段删除记录写进 `plan.ts` 的 `DELETION_LEDGER` (remainingRefs=0)。**删除后 4 项真跑** ✓: `tsc --noEmit` 0 错 · 五道门 **82/82** · 引用 CR 的两个主仓测试 **20/20** · **运行期真跑** `require('dist/index.js')` 加载成功 25 个导出符号完好 (删 CR **源码** stub 对运行期零影响)。**新门 K1-d**: 删除就绪台账与盘上事实同步 (ready ⇒ 存在且 0 引用; blocked ⇒ blocker 现在还真的提到目标, 借口过期必须改判; done ⇒ 不在盘上且有记录), 7 条 verdict 带引用证据, **修判据缺陷**: 目录目标 basename 无判别力 ⇒ 显式 `needle`; 证据面不能只有 .ts (耦合证据在 Dockerfile/package.json 里)。 | src/kernel/plan-deletion.ts (新) · src/test/kernel-deletion.test.ts (新) · src/kernel/gate-scan.ts · src/kernel/plan.ts · src/kernel/plan-constraint.ts · src/kernel/roster.ts · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md · docs/wiki/current-status.md · (删) src/constraint-runtime/src/{migrations,remote}/ |
 | 2026-10-02 | feat | **K1 第①步: constraint-runtime 三层分类 (统计真实 import + 三道判据)** —— leo 的 5 步删除顺序里只做完第 ① 步 ✓(**②移除无调用 ③删 placeholder ④改 Tool Provider ⑤删旧导出 未做, 不许记成已完成**)。**真读数** ✓: 源码 **94 文件 / 2492 行** (A 原语 15/401 · B 领域 24/797 · C 不进内核 55/1294); **33 个 ≤20 行空壳 index.ts (460 行)**; **`dist/` 89 个构建产物 (1164 行) 被 commit 进 src/**; **自带 4 个测试从来不跑** (vitest 把整个 constraint-runtime 目录 exclude); 主仓引用 **30 点** (prod 19 / test 11) 只落在 **7 个目标** (包入口 + PolymarketSDK 5 模块 + SafeSDK/deploySafe)。**三道判据**: ① **A 类必须可解释** —— 15 条逐个写接入说明, 5 条 `pkg-entry`(有引用者作证) + **5 条 `unused-debt`**(主仓 0 引用: execution_registry · tool_pool · cost_tracker · cost_hook · models, 棘轮冻结待复核); ② **B 类只能经 Tool Capability** —— ⚠️ **12 处直连欠账** (`pi-sdk-tools.ts` 直接 import PolymarketSDK×5 + SafeSDK×1), 登记由 **K7** 还清; ③ **C 类不许被 prod import** —— ✅ **0 处** (立门防未来); ④ 台账**逐字相等** (重算 30 点 ↔ 台账双向), 扫描面排除名单冻结 1 条。**真跑**: 4 门 **75/75** ✓ · `tsc --noEmit` **0 错** ✓ · 双档预算定点 (代码 691 / 台账 331) ✓ · **真盘变异 4/4 符合预期** (基线先断言全绿): C 类被 prod import ⇒ 越界门红 ✓ · 新建未登记目录 ⇒ 覆盖门红 ✓ · 主仓多一个引用点 ⇒ 台账红 ✓ · **阴性对照** ⇒ 仍绿 ✓, 全部逐字节还原。**修掉 3 个门自身的真缺陷**: ① **块注释里写 `**/` 会提前闭合注释** ⇒ 后半句变裸标识符 ⇒ `ReferenceError` 而 **tsc 不报**(路径 glob 特有坑); ② 判据的**目标键(模块名)与名册键(文件路径)扩展名不一致** ⇒ C 类越界会被误判成"未分类"; ③ **本门自己测试里的人造引用串被当成真引用** ⇒ 落成冻结排除名单 (本仓老规矩: 拿子串当判据前先排除自己刚写的). | src/kernel/plan-constraint.ts (新) · src/kernel/gate-scan.ts · src/kernel/roster.ts · src/kernel/plan.ts · src/test/kernel-constraint.test.ts (新) · src/test/kernel-boundary.test.ts · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md |
 | 2026-10-02 | feat | **K0 补齐 ②③④ ⇒ K0 = 7/7 完成 (goal: K0–K10 全阶段)** —— 上一轮按修订定义记的是 3/7, 本轮把缺的三项交齐, 全部**机械生成 + 机器校验**。**② 模块 owner**: `src/kernel/plan.ts` **59 条 owner 覆盖 574 个产品码文件** (最长前缀匹配 · 角色线 owner · `disposition` ∈ keep/converge/migrate/freeze · `phase`), 门判「每文件**恰好**命中一条」+ 键不重复 + **键在盘上真实存在**(空承诺判红)。**③ 入口调用关系图**: **9 行 / 27 调用点** —— 直调 **24** (`web/server.ts` 11 · `index.ts` 8 · `runner-resolver.ts` 1 · `routes-tasks.ts` 1) + 适配器内部 3 (`pi-sdk.ts` 的 pivot 分派) + readline 提示 3 (`cli/interface.ts`); 门重扫全仓 `prompt*(` 的 (file,kind,method,count) 多重集必须**逐字相等** ⇒ 新旁路当场红。**④ 删除台账**: 8 字段格式门 (`remainingRefs` 必须为 0) + **第一批候选 96 条**用**集合 sha256** 冻结 (增/删/替换任一都判红, 目录分布同时冻结)。**K3 分档**: 代码 585 / 台账 143 两档各自冻结 —— 台账是**数据**, 混进代码预算会逼着人抬代码上限, 棘轮信号就废了。**真跑**: 三门 **61/61** ✓ · `tsc --noEmit` **0 错** ✓ · 双档预算定点达成 (`= frozen`) ✓。**真盘变异 4/4 符合预期** (探针**先断言基线全绿**再逐例注入 → 红 → 逐字节还原 + sha256): K4 删 `llm/` owner 条目 ⇒ 覆盖门红 ✓ · K5 在 `web/i18n.ts` 注入 `agent.prompt('x')` ⇒ 入口图报新旁路 ✓ · K6 给候选注入副作用 `import './x.js'` ⇒ 候选集变 ⇒ sha 不等 ✓ · **阴性对照** (非 kernel 文件加无害注释) ⇒ **仍绿** ✓。**过程中修掉 2 个真缺陷**: ① **判据漏「副作用 import」** (`import './x.js';` 既无 `from` 也无括号, 正则看不见 ⇒ 入边少算 ⇒ **删除候选虚高**) —— 已修 `FROM_RE` 并加专条用例锁住, 修完重算候选集**未变**(该形态在相关文件里本就不存在)但判据从此完整; ② **我改了判据却没重设行数预算** (583→585 而冻结在 583 ⇒ 门红) —— **是"阴性对照必须先断言基线"这一步照出来的**, 第一版探针没做基线断言, 差点把"本来就红"当成"变异后红"(已写进探针)。**顺带量出的事实**: 96 个 0 入边候选里 **61 个在 `src/bollharness/`** —— 那是**另一个项目的镜像**(自带 `.boll/skills` 与 `scripts/checks/*`)却住在 Bolloon `src/` 里 ⇒ **第一批立即可清的头号目标**。 | src/kernel/plan.ts (新) · src/kernel/gate-scan.ts · src/kernel/roster.ts · src/test/kernel-plan.test.ts (新) · src/test/kernel-boundary.test.ts · docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md |
 | 2026-10-02 | docs | **迁移计划修订 + 我先前一句"K0 已完成"作废 (leo 给出完整迁移计划: "以删除为结果的内核迁移")** —— **改口径 (先说错在哪)** ✓: 我上一轮按**旧定义**记了「K0 ✅ 已完成」✗ —— 修订版把 K0 交付物从 3 项扩到 **7 项** (新增 ①每模块唯一 owner ②入口调用关系图 ③旧代码删除台账), 我实交 ⑤import 白名单 ⑥越权检测 ⑦行数棘轮 ⇒ **真实完成度 3/7**, 台账已改成 `🟡 3/7`, 旧结论就地作废 (没往下追加更正)。**三处修订** ✓: ① **「删除多余内容」升为正式交付物** (不再是收尾顺手清理) —— 落成 4 类分法 + **五个删除条件** (有唯一替代路径 / 全仓无有效 import·动态引用·CLI·Web 路由引用 / 真跑覆盖旧能力 / 一次完整回归 + 一次故障恢复 / 留可回滚提交点; **不许以"看起来没用"为依据**) + **8 字段删除记录** + 每批删除前后必跑的 8 项 + 三批删除顺序 + 「暂时不能删的 10 样最长板」; ② **阶段重编号**: 原「入口收口与单循环」拆成 **K3 统一入口队列** / **K4 合并两套 loop** ⇒ 自 K3 起顺延, **Channel Actor = K5** —— 连带修正 `src/kernel/roster.ts` 欠账台账的 `payDownIn: 'K4' → 'K5'` (3 条), 否则台账把还清点指到错的阶段 ✓; ③ §10 换成分阶段计划的 **6 条最终完成标准** + 「不做大爆炸式换内核」。**代码改动仅 3 字符级** ✓ (roster 里 3 处 `K4`→`K5`, 行数不变 ⇒ 行数棘轮 450/450 仍成立)。**下一刀** = 补 K0 缺的三项 (模块 owner · 入口调用关系图 · 旧代码删除台账), 之后才进 K1 (constraint-runtime 拆三层)。 | docs/wiki/bolloon-native-macro-kernel.md · docs/wiki/log.md · src/kernel/roster.ts · docs/wiki/current-status.md |
@@ -491,6 +492,34 @@
 | 2026-07-06 | fix | server.ts 三处 (主 chat / regenerate / v3 P2P) 加 `fullResponse` 空内容兜底, abort 时设默认文本, 防止前端 segmentChatReply('') 返回 [] 导致气泡不渲染 | server.ts 各处 broadcast |
 
 ## 详细日志
+
+### [2026-10-02] feat | K1 第②步: 核验推翻直觉排序, 真删 2 项
+
+**这一轮的价值不在"删了 30 行", 在"证明其余 96% 现在不能删"** —— 我上一轮凭形态排的第一批优先级被真读 import 打掉 3/4:
+
+| 上轮排序 | 核验 | 依据 |
+| --- | --- | --- |
+| 1. dist/ 89 个构建产物 | ❌ 不可删 (**它才是运行期目标**) | `pi-sdk-tools.ts` 动态 import `dist/tools/{PolymarketSDK/*,SafeSDK/deploySafe}.js`; `Dockerfile:167` COPY `src/constraint-runtime/dist` 进 `node_modules/@bolloon/constraint-runtime/dist`; `CR/package.json` main/exports = `dist/index.js` |
+| 2. 33 个"空壳" index.ts | ❌ 是**存档壳** | 每个 import `loadArchiveMetadata` 并读 `reference_data/subsystems/<name>.json` |
+| 3. C 类 placeholder | ❌ 可达包入口 | `CR/src/index.ts:21-22` re-export runParityAudit/runRemoteMode/runSshMode/runTeleportMode + dist 编译副本 |
+| 4. src/bollharness/ | ❌ **第三方 vendored 框架** | `gen-copyright-source.ts:25` 版权属 bollharness contributors; `smoke-esm.mjs:38` 引用 dist/bollharness |
+| — | ✅ 真 0 引用: 2 个 15 行 stub | `CR/src/migrations/` · `CR/src/remote/` |
+
+这是 leo 把「先统计真实 import」放在 5 步删除顺序第 1 位的**实证**: 光看形态 (构建产物 / 空壳 / placeholder / 0 入边) 排出来的清理顺序, 4 项里 3 项会删错东西。
+
+**真删**: 2 个 stub (共 30 行), 8 字段删除记录进 `plan.ts` 的 `DELETION_LEDGER`。
+**删除后 4 项真跑**: tsc 0 错 · 五道 kernel 门 82/82 · 引用 CR 的两个主仓测试 20/20 ·
+**运行期真跑** `node -e require('dist/index.js')` ⇒ 25 个导出符号完好 (`runRemoteMode`/`runSshMode`/`runTeleportMode`/`runParityAudit` 全是 function)
+⇒ 结论: **删 CR 源码 stub 对运行期零影响, 因为运行期只加载 dist/** (这条也说明为什么 K7 之前 dist 动不得)。
+
+**新增 K1-d 门** (`plan-deletion.ts` + `kernel-deletion.test.ts`): 7 条 verdict 必带引用证据; `ready` 必须"存在且 0 引用",
+`blocked` 的 blocker 必须"现在还真的提到目标"(借口过期 ⇒ 强制改判 `ready`), `done` 必须有删除记录且盘上确实没有。
+**判据修的两个缺陷**: ① 目录目标 basename 无判别力 (`src/constraint-runtime/src/` → `src`, 判据恒真) ⇒ 显式 `needle`;
+② 证据面不能只扫 `.ts` —— dist 的耦合证据在 `Dockerfile` / `package.json` 里, 不扫就判 `blocked` 是假 blocker。
+
+**下一刀 (K1 第②步续)**: 剩下的删除对象都需要**先改接法再删**, 按依赖顺序:
+`CR/src/index.ts` 导出面瘦身 (先摘 C 类 re-export) → 重建 dist → 再删 parity_audit/remote_runtime/native_ts/upstream_proxy
+→ 33 个存档壳与 reference_data 一起处置 → `src/bollharness/` 定归属 (第三方框架该不该留在 src/) → dist/ 等到 K7。
 ### [2026-10-02] feat | K1 第①步: constraint-runtime 三层分类 (统计真实 import)
 
 **触发**: goal = 走完 K0–K10。K0 已 7/7, 本轮进 K1。leo 的 K1 是 5 步删除顺序:

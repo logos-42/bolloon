@@ -61,7 +61,8 @@ function allFiles(): SourceFile[] {
 
 const ALL = allFiles();
 /** 台账扫描面 = 全部文件 **减去** 本门自己的测试 (那里有人造引用探针串, 不排掉就会被当成真引用) */
-const USE_SURFACE = ALL.filter((f) => !CONSTRAINT_SCAN_EXCLUSIONS.includes(f.path));
+const EXCL_RE = CONSTRAINT_SCAN_EXCLUSIONS.map((g) => new RegExp('^' + g.replace(/[.]/g, '\\.').replace(/\*/g, '[^/]*') + '$'));
+const USE_SURFACE = ALL.filter((f) => !EXCL_RE.some((re) => re.test(f.path)));
 /** constraint-runtime 下**非注释**的源码文件 (相对 constraint-runtime/) */
 const CR_SRC = ALL.filter((f) => f.path.startsWith(CONSTRAINT_ROOT))
   .map((f) => f.path.slice(CONSTRAINT_ROOT.length))
@@ -129,7 +130,7 @@ describe('K1-b 主仓引用台账 (逐字相等)', () => {
   it('台账里每条都标了 A/B (C 类不该出现在台账里)', () => {
     expect(CONSTRAINT_USES.every((u) => u.cls === 'A' || u.cls === 'B')).toBe(true);
     // 排除名单本身也是冻结面: 只有本门自己的测试文件
-    expect([...CONSTRAINT_SCAN_EXCLUSIONS]).toEqual(['test/kernel-constraint.test.ts']);
+    expect([...CONSTRAINT_SCAN_EXCLUSIONS]).toEqual(['test/kernel-*.test.ts']);
     expect(CONSTRAINT_USES.some((u) => u.kind === 'prod')).toBe(true);
     expect(CONSTRAINT_USES.some((u) => u.kind === 'test')).toBe(true);
   });

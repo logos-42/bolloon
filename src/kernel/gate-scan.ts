@@ -408,3 +408,74 @@ export function scanConstraintViolations(
   }
   return { cViolations, bDebt };
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K1 删除就绪台账 —— verdict 必须与盘上引用面**同步** (不许烂成永久借口)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface DeletionVerdictLike {
+  group: string;
+  target: string;
+  verdict: 'ready' | 'blocked' | 'done';
+  blockers: readonly { file: string; why: string }[];
+  reason: string;
+  /** 判据用的判别名; 缺省取 target 的 basename。目录目标的 basename 常没判别力 (`src`) ⇒ 显式给真耦合名。 */
+  needle?: string;
+}
+
+/** 台账自身与门自身不算"引用" (否则会自己指自己) */
+function isGateOwnFile(rel: string): boolean {
+  return rel.startsWith('kernel/') || /^test\/kernel-[\w-]+\.test\.ts$/.test(rel);
+}
+
+/**
+ * verdict 同步判据:
+ *   ready   ⇒ 目标在盘上存在 **且** 仓内(排除门自身) 0 引用 —— 有引用就不许 ready;
+ *   blocked ⇒ 每个 blocker 文件存在 **且** 它现在还真的提到这个目标 —— blocker 消失就必须改判 ready;
+ *   done    ⇒ 目标不在盘上 **且** DELETION_LEDGER 里有对应记录 (删了必须留账)。
+ */
+export function scanDeletionVerdictSync(
+  files: SourceFile[],
+  verdicts: readonly DeletionVerdictLike[],
+  opts: { exists: (rel: string) => boolean; ledgerTargets: readonly string[] },
+): Finding[] {
+  const out: Finding[] = [];
+  const scannable = files.filter((f) => !isGateOwnFile(f.path) && !f.path.startsWith('constraint-runtime/dist/'));
+
+  for (const v of verdicts) {
+    // basename 去扩展名: 目标常写作路径 (.../remote_runtime.ts), 而引用处写作模块名 (remote_runtime.js)
+    const basename = v.needle ?? (v.target.replace(/\/$/, '').split('/').pop() as string).replace(/\.(tsx?|js|mjs|json|cjs)$/, '');
+    if (v.verdict === 'ready') {
+      if (!opts.exists(v.target)) {
+        out.push({ rule: 'deletion-ready-but-missing', file: v.target, line: 1, what: '标了 ready 但盘上不存在 (是不是已删? 那要改 done + 记台账)' });
+        continue;
+      }
+      const refs = scannable.filter((f) => !f.path.startsWith(v.target.replace(/^src\//, '')) && f.text.includes(basename));
+      for (const r of refs.slice(0, 5)) {
+        out.push({ rule: 'deletion-ready-with-refs', file: r.path, line: 1, what: `标了 ready 但这里提到 ${basename}` });
+      }
+      continue;
+    }
+    if (v.verdict === 'blocked') {
+      if (v.blockers.length === 0) {
+        out.push({ rule: 'deletion-blocked-without-evidence', file: v.target, line: 1, what: '标了 blocked 却给不出 blocker' });
+        continue;
+      }
+      for (const b of v.blockers) {
+        if (!opts.exists(b.file)) {
+          out.push({ rule: 'deletion-stale-blocker', file: b.file, line: 1, what: `blocker 文件已不存在 (blocker 该重算了)` });
+          continue;
+        }
+        // blocker 的"还成立吗"判据 = 该文件现在仍然提到这个目标 (扫得到就行; 扫不到 = 借口过期)
+        const hit = scannable.find((f) => f.path === b.file && f.text.includes(basename));
+        if (!hit) out.push({ rule: 'deletion-stale-blocker', file: b.file, line: 1, what: `blocker 已不再提到 ${basename} ⇒ 必须改判` });
+      }
+      continue;
+    }
+    // done
+    if (opts.exists(v.target)) out.push({ rule: 'deletion-done-but-present', file: v.target, line: 1, what: '标了 done 但盘上还在' });
+    if (!opts.ledgerTargets.includes(v.target)) out.push({ rule: 'deletion-done-without-record', file: v.target, line: 1, what: '标了 done 但没有删除记录' });
+  }
+  return out;
+}

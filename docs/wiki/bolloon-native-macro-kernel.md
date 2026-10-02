@@ -155,7 +155,7 @@ K3 行数棘轮门   kernel 目录行数上限, 只许减不许增; 要加就得
 | 阶段 | 内容 | 判据 / 完成标准 | 完成度 |
 | --- | --- | --- | --- |
 | **K0 冻结架构与删除台账** | 7 项交付物 (§7.1) | 能说清每段代码属哪个模块 · 能说清哪些准备删除 · **没有任何「以后再看」的核心事实来源** | ✅ **7/7** |
-| **K1 清理 constraint-runtime** | 拆三层 `primitives` / `runtime-adapters` / `domain-libraries`; 按 5 步顺序删 (§7.3) | Kernel 只依赖 primitives · 领域能力**只能经 Tool Capability 接入** · archive/reference/test fixture 不进运行时包 · 无调用模块已移除 · 假连接/placeholder 已删 · 现有测试全绿 | 🟡 **第①步已完成** (统计+三层分类+三道判据, §14); ②移除无调用 ③删 placeholder ④改 Tool Provider ⑤删旧导出 **未做** |
+| **K1 清理 constraint-runtime** | 拆三层 `primitives` / `runtime-adapters` / `domain-libraries`; 按 5 步顺序删 (§7.3) | Kernel 只依赖 primitives · 领域能力**只能经 Tool Capability 接入** · archive/reference/test fixture 不进运行时包 · 无调用模块已移除 · 假连接/placeholder 已删 · 现有测试全绿 | 🟡 **①已完成 · ②已开刀** (§14/§15); ③删 placeholder ④改 Tool Provider ⑤删旧导出 **未做** |
 | **K2 Pi 可变状态外置** | message history / stream callback / signal / failed tool / channel identity / run identity / loop state → `RunContext` 或 `ChannelContext` | Pi 不持有 Goal·Run 状态/长期恢复/Channel 全局/Model 全局配置/Tool 权限; **完成此步后才允许删 Pi 对应字段与旧辅助方法** | ❌ 未开始 |
 | **K3 统一所有入口队列** | 8 个入口 (Web/CLI/P2P/cron/followup/social heartbeat/supervisor/独立宿主) 只能投递事件: `External Event → ChannelMailbox.enqueue() → ChannelActor → Kernel Loop → Run/Goal/Evidence` | 同 Channel 只允许一个执行循环 · 不同 Channel 可并发 · **所有入口只能投递, 不能直接调 `prompt()`** · 外部事件不能直接改 Goal · CLI 与 Web 不各维护一套循环 | ❌ 未开始 |
 | **K4 合并两套 Agent Loop** | `KernelLoop`: prepare → model call → harness tool call → checkpoint → reducer → continuation → finish; Pi 只做 `messages → model response`; Pivot/ReAct/旧 loop 降为策略或 Adapter | CLI/Web 同一任务产生一致的 Run/Goal 事实 · pause/SIGKILL/预算耗尽/模型切换行为一致 · 旧 loop 无任何入口引用 · 真跑长期任务通过后才删旧分支 | ❌ 未开始 |
@@ -332,3 +332,42 @@ model-selection 协议 · transaction evidence · contact consent · durable rec
 1. **块注释里写 `**/` 会提前闭合注释** —— 我在 JSDoc 里写 vitest 的 glob 路径 `**/constraint-runtime/**`, 其中的 `*/` 把注释截断, 后半句变成**裸标识符** ⇒ `ReferenceError: constraint is not defined`。**tsc 不报**(语法上合法), 只有在 import 时才炸。路径 glob 尤其容易踩。
 2. **判据的目标键与名册键扩展名不一致** —— 台账里 target 是模块名 (`tools/SafeSDK/deploySafe`), 名册键是文件路径 (`…/deploySafe.ts`) ⇒ 判据要三种写法都试, 否则 C 类越界会被误判成"未分类"。
 3. **本门自己测试文件里的人造引用串被当成真引用** —— 判别力自证会往测试里写 `import '…/constraint-runtime/…'`, 引用台账一算就多一条 ⇒ 落成**冻结的排除名单**(只许 1 条)。这正是本仓那条老规矩: 拿子串当判据前先排除自己刚写的东西。
+
+## 15. K1 第②步 (移除无调用模块) —— 核验**推翻了直觉排序**, 真删 2 项
+
+### 15.1 核验结果: 我上一轮排的"第一批优先级" 4 项里错了 3 项
+
+| 我上轮的排序 | 核验结论 | 依据 |
+| --- | --- | --- |
+| 1. `dist/` 89 个构建产物 (最低风险) | ❌ **不可删 —— 它才是运行期目标** | `pi-sdk-tools.ts` 动态 import `…/constraint-runtime/dist/tools/{PolymarketSDK/*,SafeSDK/deploySafe}.js` (6 处); `Dockerfile:167` 把 `src/constraint-runtime/dist` COPY 进 `node_modules/@bolloon/constraint-runtime/dist`; `CR/package.json` 的 `main`/`exports` = `dist/index.js`, `files=['dist/**/*']`。**源码树不是运行期目标** ⇒ 删 dist 直接断 B 类工具与包入口 |
+| 2. 33 个"空壳" index.ts (460 行) | ❌ **它们不是空壳, 是"存档壳"** | 每个都 `import { loadArchiveMetadata }` 并读 `reference_data/subsystems/<name>.json` 快照 ⇒ 与 `_archive_helper.ts` / `reference_data/` 同生共死 |
+| 3. C 类 placeholder (remote/ssh/teleport) | ❌ **可达包入口, 不是纯删** | `CR/src/index.ts:21-22` re-export `runParityAudit` / `runRemoteMode` / `runSshMode` / `runTeleportMode`, `dist/index.js` 有编译副本 ⇒ 删除必须**同时改 index.ts + 重建 dist** |
+| 4. `src/bollharness/` (61 个 0 入边) | ❌ **是第三方 vendored 框架** | `scripts/gen-copyright-source.ts:25` 明写「版权属 bollharness contributors, 不进版权登记」; `scripts/smoke-esm.mjs:38` 引用 `dist/bollharness/...` ⇒ 处置要先定归属, 不是机械删 |
+| — | ✅ **真正 0 引用的只有 2 个 15 行 stub** | `CR/src/migrations/` · `CR/src/remote/` |
+
+**教训 (值得留档)**: 删除的难点不在"删", 在"删之前证明不欠别人"。我按"看着像构建垃圾 / 看着像空壳"排的序, 第 ① 步真读 import 之后 3 项全被推翻 —— 这正是 leo 把"先统计真实 import"放在 5 步里的第 1 位的原因。
+
+### 15.2 真删 (第一刀)
+
+| 目标 | 行数 | 引用 | 处置 |
+| --- | --- | --- | --- |
+| `src/constraint-runtime/src/migrations/` | 15 | 仓内 0 (含 CR 自身与 dist) · 不在 `CR/src/index.ts` 导出面 | ✅ 已删 |
+| `src/constraint-runtime/src/remote/` | 15 | 同上 | ✅ 已删 |
+
+8 字段删除记录写在 `src/kernel/plan.ts` 的 `DELETION_LEDGER` (target / oldEntry / replacement / remainingRefs=0 / runtimeHits=0 / acceptance / rollbackCommit / deletedAt)。
+
+**删除后的真跑 (4 项)**:
+1. `npx tsc --noEmit` ⇒ **0 错**;
+2. 五道 kernel 门 `kernel-{deletion,constraint,plan,boundary,authority}` ⇒ **82/82**;
+3. 引用 constraint-runtime 的两个主仓测试 (`wallet-polymarket-verify` / `econ-integration`) ⇒ **20/20**;
+4. **运行期真跑**: `require('./src/constraint-runtime/dist/index.js')` ⇒ 加载成功, 25 个导出符号完好 (`runRemoteMode`/`runSshMode`/`runTeleportMode`/`runParityAudit` 都是 function) —— 证明删 CR **源码** stub 对运行期**零影响**。
+
+### 15.3 新门: 删除就绪台账必须与盘上事实同步 (K1-d)
+
+`src/kernel/plan-deletion.ts` 记 7 条 verdict + 引用证据; `src/test/kernel-deletion.test.ts` 按三种形状判红:
+
+- `ready` ⇒ 目标在盘上**存在且 0 引用** —— 有引用就不许 ready;
+- `blocked` ⇒ blocker 文件存在**且现在还真的提到这个目标** —— 借口过期就必须改判 ready;
+- `done` ⇒ 目标不在盘上**且台账里有删除记录** —— 删了必须留账。
+
+判据本身也修了一个缺陷: 对**目录目标**取 basename 没有判别力 (`src/constraint-runtime/src/` → `src`), 会让判据恒真 ⇒ 改成可显式给判别名 (`needle`)。另外证据面不能只有 `.ts` —— dist 的耦合证据在 `Dockerfile` / `package.json` 里。
