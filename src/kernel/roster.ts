@@ -255,9 +255,11 @@ export const STAGE_STATUS: Readonly<Record<string, 'done' | 'partial' | 'not-sta
   K2: 'done',
   K3: 'done',
   K5: 'done',
-  K4: 'partial',   // 模块边界收口进行中: 越权欠账已归零, 还有 K1 遗留的领域直连欠账
-  K6: 'not-started',
-  K7: 'not-started',
+  // 2026-10-02 (leo 拍板): K4 = **Kernel Execution Core**, 拆两半, 不许两个含义共用一个编号
+  'K4-A': 'done',         // 内核控制面 / Goal·Run 写权限收口 (AUTHORITY_DEBT 3 → 0, 经 kernel/control.ts)
+  'K4-B': 'not-started',  // 合并两套 Agent Loop (ReAct / Pivot / 旧 loop)
+  K6: 'done',             // 2026-10-02 修正: 能力 9/9 全 done (capabilities-done) —— 原写 not-started 是台账滞后
+  K7: 'partial',          // 台账+门已落 · 旁路 3→2 · skill 门"注入已落但**端到端未证**" ⇒ 不标 converged
   K8: 'not-started',
   K9: 'not-started',
   K10: 'not-started',
@@ -284,10 +286,10 @@ export const AUTHORITY_DEBT_FROZEN_AT = 0;   // 3 → 0 (K4 用内核控制面�
  * 目的只有一个: **不许所有逻辑回流到 kernel.ts**。要加就得显式抬这个数字, 留下痕迹。
  * 数值 = 当前 kernel 目录真实行数, 不留余量。
  */
-export const KERNEL_LINE_BUDGET = 2667;   // 2026-10-02: +8 (K7: gate-scan 旁路 target/symbol 防漂 clause)
+export const KERNEL_LINE_BUDGET = 2669;   // 2026-10-02: +2 (STAGE_STATUS 拆 K4-A/K4-B + K6/K7 如实修正)
 
 /** 预算冻结值 (棘轮: 只许减; 想抬预算必须同时改上面那个数字 ⇒ 一次显式动作, diff 里看得见) */
-export const KERNEL_LINE_BUDGET_FROZEN_AT = 2667;   // 同步至 2026-10-02 真实值
+export const KERNEL_LINE_BUDGET_FROZEN_AT = 2669;   // 同步至 2026-10-02 真实值
 
 /**
  * K3b —— **台账数据**单独一档预算 (`src/kernel/plan.ts`)。

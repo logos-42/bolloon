@@ -1805,3 +1805,35 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 **注入的执行器端口** (`execute?: (req: DelegateExecutionRequest) => Promise<DelegateExecutionResult>`, 见该文件 66 行) ——
 委派服务器**自己不执行工具** ⇒ **不是旁路**, 新增 kind `port-callback` 归它, 并写明
 "注入的那个执行器有没有走门"属于 delegate 覆盖面的事, 不在执行点普查里。
+
+## §58 阶段台账口径 (2026-10-02 统一 · leo 拍板)
+
+**K4 不许两个含义共用一个编号** —— 拆两半, 已落地的事实与原始顺序都不破坏:
+
+| 阶段 | 含义 | 状态 |
+|---|---|---|
+| **K4-A** | Authority / Control Plane —— 内核控制面, Goal/Run 写权限收口 (`AUTHORITY_DEBT` 3 → 0, 经 `kernel/control.ts`) | ✅ |
+| **K4-B** | Kernel Loop —— 合并两套 Agent Loop (ReAct / Pivot / 旧 loop) | ❌ |
+| K5 | Channel Actor | ✅ |
+| K6 | ModelRuntime (并发/熔断/能力) | ✅ 能力 9/9 (`capabilities-done`) |
+| **K7** | Harness 唯一系统调用门 | 🟡 |
+
+> `AUTHORITY_DEBT` 的还清动作今后叫 **K4-A**, 不再单独叫 "K4"; 设计页原"合并两套 Loop"即 **K4-B**。
+> (权威台账是 `src/kernel/roster.ts` 的 `STAGE_STATUS` —— 2026-10-02 修正了两处滞后: K6 从 `not-started` 改 `done`, K7 从 `not-started` 改 `partial`。)
+
+### K7 准确口径 (🟡) —— **不要把"透传完成"写成"skill 已经过门"**
+
+**已完成**
+- 执行点普查 (17 → 18 处, 逐点定性, 无残留"待确认")
+- 台账判据 + 卫生判据 (不写行号 · converged 必带证据 · 开着旁路数 == progress)
+- pivot loop 受门端口 + **pi-sdk 注入** (与主路径同一个 `beforeToolCall`) ⇒ 旁路 **3 → 2**
+- skill: 端口**判定契约** (`{allow,reason?,rejectedBy?}`) + `BollharnessIntegration` 透传 + **`index.ts` 活路径注入** (门建不起来 ⇒ deny-all)
+- fail-closed 错误传递 (adapter / pivot loop / 入口三处一致)
+- 高层↔低层依赖方向正确 (`bollharness-integration` 对高层零依赖, 门只由高层注入)
+
+**未完成 (因此不得标 converged)**
+- ❌ skill 端到端 **deny/allow 无证据**: 真跑 `node dist/cli-entry.js --harness-skill …` **没有走到 skill 分发器** (落在 chat/LLM 路径), 待查该命令真实调用形态
+- ❌ `PiAgentSession.executeSkill` 公开兼容 API 未收敛 (方案 a: 保留 API 但降为**兼容转发** ⇒ 唯一 `SkillExecutionPort` ⇒ Harness)
+- ❌ 全仓 skill 零旁路 (尚有一条公开 API + 一条内部路径)
+- ❌ 其他 Tool Capability 直连欠账 (B 类 12 处, 排期 K7)
+
