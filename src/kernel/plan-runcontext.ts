@@ -47,7 +47,7 @@ export const RUN_CONTEXT_FIELDS: readonly RunStateField[] = [
   { name: 'currentChannelId', declaredAt: 'agents/pi-sdk.ts:458', scope: 'session', accesses: 25, into: 'channelId', migrated: false, payDownIn: 'K2' },
   { name: 'currentRunId', declaredAt: 'agents/pi-sdk.ts:471', scope: 'run-boundary', accesses: 38, into: 'runId', migrated: false, payDownIn: 'K2' },
   { name: 'currentIntent', declaredAt: 'agents/pi-sdk.ts:463', scope: 'run', accesses: 0, into: 'intent', migrated: true, payDownIn: 'K2' },
-  { name: 'currentGoalId', declaredAt: 'agents/pi-sdk.ts:1725', scope: 'session', accesses: 23, into: 'goalId', migrated: false, payDownIn: 'K2' },
+  { name: 'currentGoalId', declaredAt: '(已删, 见 K5 步骤⑧ 批次3)', scope: 'session', accesses: 0, into: 'goalId', migrated: false, payDownIn: 'K2' },
   { name: 'currentAgentId', declaredAt: '(已删, 见 K5 步骤⑧ 批次2)', scope: 'session', accesses: 0, into: 'agentId', migrated: false, payDownIn: 'K2' },
 ];
 
@@ -55,7 +55,7 @@ export const RUN_CONTEXT_FIELDS: readonly RunStateField[] = [
 export const RUN_CONTEXT_TARGET: readonly string[] = ["requestId", "channelId", "agentId", "goalId", "runId", "intent", "modelSnapshot", "history", "abortSignal", "budget", "eventSink", "harnessContext"];
 
 /** 冻结总量 (棘轮只许减) */
-export const RUN_CONTEXT_ACCESS_TOTAL = 86;
+export const RUN_CONTEXT_ACCESS_TOTAL = 63;
 
 /** 已外置字段数 (棘轮: 只许增)。改动这里 = 明确宣告"又搬完一个字段" */
 export const RUN_CONTEXT_MIGRATED_FROZEN = 3;

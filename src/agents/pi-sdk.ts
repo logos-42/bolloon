@@ -314,7 +314,7 @@ export class PiAgentSession implements AgentSession {
   applyExecutionRequest(req: ExecutionRequest): void {
     if (req.channelId) this.currentChannelId = req.channelId;
     if (req.agentId) this.actor!.state.agentId = req.agentId;
-    if (req.goalId) this.currentGoalId = req.goalId;
+    if (req.goalId) this.actor!.state.goalBinding = req.goalId;
     if (req.resumeRunId) this.resumeRunId = req.resumeRunId;
   }
 
@@ -1223,7 +1223,7 @@ export class PiAgentSession implements AgentSession {
       //   于是把"什么都没跑"当成一次正常执行 (这正是"agent 跑了但没记录"的老毛病在 fallback 路径的翻版)。
       const response = await this.handleFallback(input);
       try {
-        let boundGoalId = this.currentGoalId;
+        let boundGoalId = this.actor!.state.goalBinding;
         if (!boundGoalId) {
           const g = await createGoal({
             objective: this.currentUserInput || input.slice(0, 200),
@@ -1233,7 +1233,7 @@ export class PiAgentSession implements AgentSession {
           });
           boundGoalId = g.goalId;
         }
-        this.currentGoalId = boundGoalId;
+        this.actor!.state.goalBinding = boundGoalId;
         const rec = await startRun({
           surface: this.runSurface,
           goal: this.currentUserInput || input.slice(0, 200),
@@ -1865,18 +1865,9 @@ ${await this.renderActivePlansSection()}
    */
   private _harness: PiAgentHarness | null = null;
   /** M2 绑定 GoalStore 后填真值; 在此之前为空 (事件里 goalId 字段已就位) */
-  /**
-   * **K5 步骤③**: 会话的 Goal **默认绑定** ⇒ 本体是 `actor.state.goalBinding`.
-   * (leo 口径: 这只是默认值; 每次执行开始必须把最终绑定写进 RunContext/Run 记录,
-   *  运行中重绑必须走显式 Goal Binding 操作, 不许靠裸字段隐式生效)
-   */
-  private get currentGoalId(): string {
-    return this.actor!.state.goalBinding;
-  }
-
-  private set currentGoalId(v: string) {
-    this.actor!.state.goalBinding = v;
-  }
+  // **K5 步骤③/⑧**: 会话的 Goal 默认绑定本体在 `actor.state.goalBinding` (访问器已删, 直接读本体)。
+  //   leo 口径不变: 这只是默认值; 每次执行开始必须把最终绑定写进 RunContext/Run 记录,
+  //   运行中重绑必须走显式 Goal Binding 操作, 不许靠裸字段隐式生效。
   /** 2026-09-16 (M2): 本次执行是"从 checkpoint 恢复"的 runId (非空 = 恢复模式, 不再新建 run) */
   private resumeRunId = '';
   private resumePlan: ResumePlan | null = null;
@@ -1901,7 +1892,7 @@ ${await this.renderActivePlansSection()}
 
   /** CLI / Web 注入"当前目标" (有 goalId 就在该 Goal 下执行) */
   setGoalId(goalId: string): void {
-    this.currentGoalId = String(goalId || '');
+    this.actor!.state.goalBinding = String(goalId || '');
   }
 
   /** 核心状态迁移的兜底: 失败 → 记降级 + 交给循环顶部的持久化硬闸 (不吞错) */
@@ -1954,12 +1945,12 @@ ${await this.renderActivePlansSection()}
       await this.safeSetRunStatus(this.currentRunId, 'awaiting_external');
       // 2026-09-16 (2-C.4): 把"在等什么"写成持久化事实 (来源/关联/过期), 否则真实回包到了也不知道该唤醒谁。
       try {
-        if (this.currentGoalId) {
+        if (this.actor!.state.goalBinding) {
           const { bindExternalWait, newContinuationId, defaultWaitExpiry } = await import('./external-events.js');
           const isDelegate = /delegate/i.test(String(tool || ''));
-          await bindExternalWait(this.currentGoalId, {
+          await bindExternalWait(this.actor!.state.goalBinding, {
             requestId: this.pendingExternalRequestId || `${this.currentRunId}:${Date.now().toString(36)}`,
-            continuationId: newContinuationId(this.currentGoalId),
+            continuationId: newContinuationId(this.actor!.state.goalBinding),
             expectedSource: isDelegate ? 'delegate' : 'p2p',
             expectedEvent: 'result',
             createdAt: new Date().toISOString(),
@@ -2038,7 +2029,7 @@ ${await this.renderActivePlansSection()}
     }
     this.resumeRunId = runId;
     this.resumePlan = prep.plan;
-    this.currentGoalId = prep.plan.goalId || this.currentGoalId;
+    this.actor!.state.goalBinding = prep.plan.goalId || this.actor!.state.goalBinding;
     try {
       const reply = await this.prompt(buildResumeInstruction(prep.plan), {});
       return { ok: true, reply, ...(modelDrift ? { modelDrift } : {}), ...(modelApplied ? { modelApplied } : {}) };
@@ -2067,7 +2058,7 @@ ${await this.renderActivePlansSection()}
   private harnessCtx(): HarnessRunContext {
     return {
       runId: this.currentRunId || undefined,
-      goalId: this.currentGoalId || undefined,
+      goalId: this.actor!.state.goalBinding || undefined,
       agentId: this.actor!.state.agentId || undefined,
       channelId: this.currentChannelId || undefined,
       surface: this.runSurface,
@@ -2156,7 +2147,7 @@ ${await this.renderActivePlansSection()}
       // 2026-09-16 (M2): 目标绑定 —— 有 goalId 就在该 Goal 下执行; 没有就建 Goal 再建 Run。
       //   延续规则 (确定性, 不靠猜): 该 channel/agent 上已有 open/active Goal, 且它的上一次执行**没收尾**
       //   (interrupted/stalled/needs_human/paused/awaiting_external/recovering) → 继续该 Goal; 否则新建。
-      let boundGoalId = this.currentGoalId;
+      let boundGoalId = this.actor!.state.goalBinding;
       if (!boundGoalId) {
         try {
           const active = await findActiveGoal({ channelId: this.currentChannelId || undefined, agentId: this.actor!.state.agentId || undefined });
@@ -2177,7 +2168,7 @@ ${await this.renderActivePlansSection()}
             boundGoalId = g.goalId;
           } catch (err) { console.warn('[PiAgent] 创建 Goal 失败 (无目标也要有运行记录):', (err as Error)?.message); }
         }
-        this.currentGoalId = boundGoalId;
+        this.actor!.state.goalBinding = boundGoalId;
       }
 
       try {
@@ -2191,12 +2182,12 @@ ${await this.renderActivePlansSection()}
         });
         this.currentRunId = rec.runId;
         this.lastRunId = rec.runId;
-        this.currentGoalId = rec.goalId || this.currentGoalId;
-        if (this.currentGoalId) {
+        this.actor!.state.goalBinding = rec.goalId || this.actor!.state.goalBinding;
+        if (this.actor!.state.goalBinding) {
           // Run → Goal 反查链: runId → goalId → objective / success criteria
-          await attachRun(this.currentGoalId, rec.runId).catch((err) => console.warn('[PiAgent] attachRun 失败:', (err as Error)?.message));
+          await attachRun(this.actor!.state.goalBinding, rec.runId).catch((err) => console.warn('[PiAgent] attachRun 失败:', (err as Error)?.message));
         }
-        onStream?.({ type: 'status', internal: true, content: `🧷 运行已登记 (run=${rec.runId}${this.currentGoalId ? `, goal=${this.currentGoalId}` : ''}, 预算 ${rec.budget.maxSteps} 步 / ${Math.round(rec.budget.deadlineMs / 60000)} 分钟)`, tool: 'harness' });
+        onStream?.({ type: 'status', internal: true, content: `🧷 运行已登记 (run=${rec.runId}${this.actor!.state.goalBinding ? `, goal=${this.actor!.state.goalBinding}` : ''}, 预算 ${rec.budget.maxSteps} 步 / ${Math.round(rec.budget.deadlineMs / 60000)} 分钟)`, tool: 'harness' });
       } catch (err) {
         // 核心写失败: 不再 warn 后继续 —— 没有运行记录就不执行 (strict 模式默认如此)
         runPersistenceFailure = `无法创建运行记录: ${String((err as Error)?.message || err).slice(0, 200)}`;
@@ -3019,7 +3010,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
             completedTools: Array.from(loopReviewCompletedTools),
             actionLog: loopActionLog,
             runId: this.currentRunId || undefined,
-            goalId: this.currentGoalId || undefined,
+            goalId: this.actor!.state.goalBinding || undefined,
           }, DEFAULT_MAX_REVIEWS);
           if (reviewDecision.kind === 'continue-review') {
             loopReviewCount++;
@@ -3142,13 +3133,13 @@ lastQualityScore = this.estimateResponseQuality(reply);
       //
       // 现在: `closeRunOnce` (幂等) → 9 步收尾 → 产物落盘; 再由 Goal reducer 把"下一步是什么"
       // 落进 Goal (没有 Supervisor 宿主时 Runner 也要留下 continuation, 否则下一次还是从零开始)。
-      if (this.currentGoalId) {
+      if (this.actor!.state.goalBinding) {
         try {
           const wiring = await import('./goal-flywheel-wiring.js');
           const { reduceGoalState } = await import('./goal-state-reducer.js');
           const nowIso = new Date().toISOString();
           const closed = await wiring.closeRunOnce({
-            goalId: this.currentGoalId,
+            goalId: this.actor!.state.goalBinding,
             runId: this.currentRunId,
             caller: 'runner',
             now: nowIso,
@@ -3159,7 +3150,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
           } else if (closed.outcome) {
             const view = closed.outcome;
             const applied = await reduceGoalState({
-              goalId: this.currentGoalId,
+              goalId: this.actor!.state.goalBinding,
               intent: 'closure_outcome',
               now: nowIso,
               by: 'runner',
@@ -3176,7 +3167,7 @@ lastQualityScore = this.estimateResponseQuality(reply);
             onStream?.({
               type: 'status', internal: true,
               content: `${line}${applied.gateRejected ? ` [完成门拒绝: ${applied.gateRejected}]` : ''} `
-                + `(收尾 ${view.steps} 步 · memory ${view.memories} · skill 候选 ${view.candidates} · goal=${this.currentGoalId})`,
+                + `(收尾 ${view.steps} 步 · memory ${view.memories} · skill 候选 ${view.candidates} · goal=${this.actor!.state.goalBinding})`,
               tool: 'harness',
             });
           } else {

@@ -45,7 +45,7 @@ describe('K5 步骤⑧ 门: 访问器棘轮 + 前置背书', () => {
     expect(scanAccessorSurface(PI_SRC_TEXT, K5_ACCESSOR_SURFACE)).toEqual([]);
     const bumped = PI_SRC_TEXT.replace(/(\n\s*private get currentChannelId)/, '\n    const _x = this.currentChannelId;$1');
     expect(scanAccessorSurface(bumped, K5_ACCESSOR_SURFACE).length).toBeGreaterThan(0);
-    const shaved = PI_SRC_TEXT.replace('this.currentGoalId', 'this.actor!.state.goalBinding');
+    const shaved = PI_SRC_TEXT.replace('this.currentChannelId', 'this.actor!.state.channelId');
     expect(scanAccessorSurface(shaved, K5_ACCESSOR_SURFACE).some((f: any) => f.what.includes('盘上变了账没跟上'))).toBe(true);
     expect(scanAccessorSurface(PI_SRC_TEXT, { accessorFields: ['messageHistory'], frozenInPiSdk: {} }).length).toBe(1);
   });
@@ -543,7 +543,7 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(registrySize()).toBe(1);   // 只有身份 actor 进注册表 (私有那个不进)
     // ② 写入落到 actor
     s.currentChannelId = 'ch-x';
-    s.currentGoalId = 'goal-1';
+    s.actor.state.goalBinding = 'goal-1';
     expect(s.actor.state.channelId).toBe('ch-x');
     expect(s.actor.state.goalBinding).toBe('goal-1');
     // ③ 读也来自 actor (直接改 actor ⇒ 实例读得到)
@@ -555,12 +555,12 @@ describe('K5 门: Channel Actor 台账', () => {
     });
     expect(s2.actor).toBe(s.actor);
     expect(s2.currentChannelId).toBe('ch-y');
-    expect(s2.currentGoalId).toBe('goal-1');
+    expect(s2.actor.state.goalBinding).toBe('goal-1');
     // ⑤ 不同会话身份完全隔离 (别人的绑定看不到)
     const s3: any = await createAgentSession({ cwd: process.cwd(), peerId: 'k5bind:other' });
     expect(s3.actor).not.toBe(s.actor);
     expect(s3.currentChannelId).toBe('');
-    expect(s3.currentGoalId).toBe('');
+    expect(s3.actor.state.goalBinding).toBe('');
     resetActors();
   }, 90000);
 

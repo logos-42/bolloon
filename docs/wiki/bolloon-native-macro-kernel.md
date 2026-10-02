@@ -1383,3 +1383,13 @@ channel 级锁只在"跨会话切换"这一稀有时刻才有额外作用, 代�
 - 判据探针换到仍存在的访问器 (`private get currentChannelId`) —— 否则棘轮判据的判别力用例会静默失效 (它靠"注入一处引用 ⇒ 必须红")。
 - 账: `K5_ACCESSOR_SURFACE.currentAgentId 22 → 0` · K2 `accesses 22 → 0` · 总数 `108 → 86` · K5 移交 `22 → 0`。
 - 剩余 3 个访问器 = 86 处 (`currentChannelId 25` · `currentGoalId 23` · `currentRunId 38`)。
+
+## 45. K5 步骤⑧ 批次 3: `currentGoalId` 访问器删除 (23 → 0)
+
+- pi-sdk 内 23 处 (3 写: `applyExecutionRequest` / Goal 绑定 / Run 登记后回填) → `this.actor!.state.goalBinding`; 访问器删除, 原地留下口径注释 (leo 的"Goal 绑定必须显式"不变)。
+- 外部生产引用 **0** ✓ (只有判据/测试在用)。
+- **判据自己的探针要跟着换**: 棘轮判据有条判别力用例, 靠 `PI_SRC_TEXT.replace('this.currentGoalId', ...)` 模拟"改了盘没改账" ⇒ 该字段归零后这个替换**命中 0 次** ⇒ 用例会**静默失效**。已把探针换成仍存在的 `this.currentChannelId`。
+- **跨台账判据当场抓到一次漏改**: 我先猜了 K2 那行的 `declaredAt`, 猜错 ⇒ 只有 K5 那本改成 0, 判据报
+  `currentGoalId 访问数 K5=0 ≠ K2=23 (两个台账必须逐字相等)`。**用盘上原文改**, 不要凭记忆拼台账行。
+- 账: `K5_ACCESSOR_SURFACE.currentGoalId 23 → 0` · K2 `accesses 23 → 0` · 总数 `86 → 63` · K5 移交 `23 → 0`。
+- 剩 2 个 = 63 处 (`currentChannelId 25` · `currentRunId 38`)。
