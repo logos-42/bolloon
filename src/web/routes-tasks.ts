@@ -6,6 +6,7 @@
  */
 
 import type { Express } from 'express';
+import type { ExecutionRequest } from '../kernel/channel-actor.js';   // K8: 通道交请求用的真类型
 import { deliverThroughActor } from '../kernel/channel-actor.js';
 import { type Task } from './server-types.js';
 import { loadTaskQueue, saveTaskQueue, isTaskExecuting } from './server-storage.js';
@@ -14,7 +15,17 @@ import { applyCancelRequest, shouldFinalizeAsCancelled } from './task-cancel.js'
 import { applyReviewRequest, applyReviewApprove, applyReviewReject } from './task-review.js';
 
 type BroadcastFn = (event: any, channelId?: string) => void;
-type GetAgentFn = (channelId: string) => Promise<{ prompt: (text: string) => Promise<string> }>;
+/**
+ * 2026-10-02 (K8): 宽化 —— 通道拿到的 agent 必须至少能"接一个执行请求"。
+ * 原先这里手写了窄形状 `{ prompt }` ⇒ 通道只能直呼 prompt (正是 K8 要收口的形态)。
+ * 现在要求 `runExecution` (Pi 唯一执行入口, K5 步骤⑦): 通道**交请求**, 不再自己决定调哪个方法。
+ */
+type ExecutableAgent = {
+  prompt: (text: string) => Promise<string>;
+  /** 复用**真类型** (kernel/channel-actor 的 ExecutionRequest), 不另造形状 —— 否则与 AgentSession 不兼容 */
+  runExecution?: (req: ExecutionRequest) => Promise<string>;
+};
+type GetAgentFn = (channelId: string) => Promise<ExecutableAgent>;
 
 export function registerTaskRoutes(
   app: Express,
@@ -354,7 +365,15 @@ async function executeTask(
           // 闭包里 TS 不保留收窄 ⇒ 先收成局部 const
           const desc = task.description;
           const agentForRun = agent;
-          result = await deliverThroughActor(agentForRun, () => agentForRun.prompt(desc));
+          // 2026-10-02 (K8): 走 Pi 的**唯一执行入口** `runExecution` (K5 步骤⑦ 已建), 不再由通道自己直呼 prompt
+          if (typeof agentForRun.runExecution !== 'function') {
+            // K8 纪律: 拿不到唯一执行入口 ⇒ **响亮失败**, 不静默回落直呼 prompt (否则收口变成纸面的)
+            throw new Error('K8: 该 session 未提供 runExecution (唯一执行入口) ⇒ 拒绝直呼 prompt');
+          }
+          // 注意: 这里**显式传 channelId** —— ExecutionRequest 要求它, 且语义上本就该绑定 task 的通道。
+          // 与旧写法 (prompt(desc), 隐式走 actor 绑定) 相比这是一处**行为差量**: 绑定从隐式变显式。
+          // 按纪律记为待真跑核验项 (见 K8 台账), 不当作"零行为改变"。
+          result = await deliverThroughActor(agentForRun, () => agentForRun.runExecution!({ input: desc, channelId }));
         }
         break;
 

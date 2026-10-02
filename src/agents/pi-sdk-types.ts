@@ -173,6 +173,10 @@ import type { ChannelActor, ExecutionRequest } from '../kernel/channel-actor.js'
 
 export interface AgentSession {
   /**
+   * 2026-10-02 (K8): 提醒 —— 本接口**已有**可选的 `runExecution` (K5 步骤⑦, 见下方重载声明);
+   * 通道一律经它交请求, 不许自己决定调 `prompt` 还是 `promptStream`。
+   */
+  /**
    * 2026-10-02 (K7): skill 门工厂 (**只给判定**, 不含执行)。可选: 不是每个实现都提供;
    * 调用方拿不到必须 **fail-closed** (注入 deny-all), 不许因为"没门"就放行。
    */

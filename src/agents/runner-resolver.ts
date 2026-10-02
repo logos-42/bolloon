@@ -234,7 +234,8 @@ export async function resolveGoalRunner(req: GoalExecutionRequest, opts: StagedR
     }
     agent.setGoalId?.(goal.goalId);
     agent.setContinuationGuards?.(r.guards || []);
-    const reply = await deliverThroughActor(agent, () => agent.prompt(r.instruction));
+    // 2026-10-02 (K8): 同上 —— 经唯一入口 runExecution
+    const reply = await deliverThroughActor(agent, () => agent.runExecution({ input: r.instruction }));
     const runId = agent.getLastRunId?.() || agent.getRunId?.() || '';
     // 没有 Run = 这次执行没有事实记录: 如实报告, 不让上层把"没跑"当"跑完"
     if (!runId) {

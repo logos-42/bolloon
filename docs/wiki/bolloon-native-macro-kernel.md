@@ -1878,3 +1878,26 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 **变异验证**: 在 `web/server.ts` 加一处 `.prompt(` ⇒ 真跑用例**判红** (台账承重); 还原 ⇒ 回绿。
 
 **如实**: 本步**只做量测 + 记账**, 通信行为零改变; router 层与"各通道状态归一"是后续刀。
+
+### K8 第二步 (router 层 · 2026-10-02)
+
+**关键发现: router 的"半身"已经存在** —— `PiAgentSession.runExecution(req: ExecutionRequest)` (K5 步骤⑦ 建的):
+```
+runExecution(req) { applyExecutionRequest(req); if (req.onStream) return promptStream(...); return prompt(...) }
+```
+⇒ K8 的真问题不是"造 router", 而是 **12 处直连没走它**。
+
+**契约量测 (12 处逐点)**: 只有 4 种形态 —— 流式/非流式 × 带/不带 `channelId`; 仅 1 处带 `signal` (server.ts 5688);
+2 处 fire-and-forget (2536/2581); 返回值有 3 种消费方式 (`.trim()` / 正则抓 JSON / 直接用)。
+⇒ `ExecutionRequest` 的字段面**恰好覆盖**这 4 种形态 (input / onStream / signal / channelId) —— 不需要新接口。
+
+**已迁 2 处 (12 → 10)**: `routes-tasks.ts` (task 执行) · `runner-resolver.ts` (独立宿主唤醒)。
+改用 `deliverThroughActor(agent, () => agent.runExecution({ input, channelId }))`;
+`routes-tasks.ts` 的 `GetAgentFn` 由手写窄形状 `{ prompt }` **宽化**为至少能接 `ExecutionRequest`;
+拿不到 `runExecution` 时**响亮失败**(抛错), **不静默回落直呼 prompt**。
+
+> **如实: 一处行为差量** —— `routes-tasks` 那处由"隐式绑定 (prompt(desc))"改为"显式传 `channelId`"(`ExecutionRequest` 要求它)。
+> 按纪律**不当作零行为改变**, 记为**待真跑核验项** (下一步: 真跑一次 task 执行, 确认 channelId 绑定与旧行为一致)。
+
+**判据**: 台账站点加 `status: 'open' | 'migrated'` + `evidence`; 测试改**棘轮式** (`directSites <= 12`, 现值 10; `migrated` 计数)。
+**剩 10 处**: 全在 `web/server.ts` (含唯一带 `signal` 的那处) ⇒ 下一刀按"一处一提交"逐点迁移。

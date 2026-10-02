@@ -33,20 +33,26 @@ export type K8EventFace = (typeof K8_EVENT_FACES)[number];
  */
 export type K8SiteKind = 'direct-prompt' | 'via-actor';
 
+/** 收敛状态: `migrated` = 已改走唯一入口 `runExecution` (K5 步骤⑦) */
+export type K8SiteStatus = 'open' | 'migrated';
+
 export interface K8Site {
   file: string;
   count: number;
   kind: K8SiteKind;
+  /** 2026-10-02 起: 已迁移的条目 count=0 但**留在台账当记录** (收敛历史不许随进度条消失) */
+  status: K8SiteStatus;
+  evidence?: string;
   faces: readonly K8EventFace[];
   why: string;
 }
 
 export const K8_TRANSPORT_AGENT_SITES: readonly K8Site[] = [
-  { file: 'src/web/server.ts', count: 10, kind: 'via-actor', faces: ['web-message', 'web-stream', 'web-regen', 'cron', 'supervisor', 'external-wake'], why: 'web 通道 (消息/流式/重生成/cron/Supervisor/外部唤醒)' },
-  { file: 'src/web/routes-tasks.ts', count: 1, kind: 'via-actor', faces: ['contacts-reply'], why: 'task 路由' },
-  { file: 'src/agents/runner-resolver.ts', count: 1, kind: 'via-actor', faces: ['external-wake'], why: '独立宿主 runner' },
-  { file: 'src/cli-entry.ts', count: 0, kind: 'direct-prompt', faces: ['cli'], why: 'CLI 通道' },
-  { file: 'src/web/mobile-core.ts', count: 0, kind: 'direct-prompt', faces: ['mobile'], why: '手机端通道' }
+  { file: 'src/web/server.ts', count: 10, kind: 'via-actor', faces: ['web-message', 'web-stream', 'web-regen', 'cron', 'supervisor', 'external-wake'], status: 'open', why: 'web 通道 (消息/流式/重生成/cron/Supervisor/外部唤醒)' },
+  { file: 'src/web/routes-tasks.ts', count: 0, kind: 'via-actor', status: 'migrated', evidence: '改经 runExecution({input}) —— 行为等价 (applyExecutionRequest 只覆盖显式给出的字段)', faces: ['contacts-reply'], why: 'task 路由' },
+  { file: 'src/agents/runner-resolver.ts', count: 0, kind: 'via-actor', status: 'migrated', evidence: '同上; **待真跑核验**: routes-tasks 那处由隐式绑定改为显式传 channelId (ExecutionRequest 要求)', faces: ['external-wake'], why: '独立宿主 runner' },
+  { file: 'src/cli-entry.ts', count: 0, kind: 'direct-prompt', status: 'open', faces: ['cli'], why: 'CLI 通道' },
+  { file: 'src/web/mobile-core.ts', count: 0, kind: 'direct-prompt', status: 'open', faces: ['mobile'], why: '手机端通道' }
 ];
 
 /** 各通道自带的出站/重试/恢复状态 (K8 验收: "无各通道自己的重试/任务恢复/outbound 状态") */
@@ -87,6 +93,6 @@ export interface K8Progress {
 
 export const K8_PROGRESS: K8Progress = {
   stage: 'ledger-landed',
-  directSites: 12,
+  directSites: 10,   // 12 → 10 (2026-10-02: routes-tasks / runner-resolver 两处已走唯一入口; 棘轮只许减)
   perChannelStateFiles: 10,
 };

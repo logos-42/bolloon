@@ -510,7 +510,8 @@ describe('K5 门: Channel Actor 台账', () => {
     expect(K5_EXECUTION_REQUEST.methodAdded).toBe(true);
     expect(K5_EXECUTION_REQUEST.remaining).toBe(K5_EXECUTION_REQUEST.wiredTotal - K5_EXECUTION_REQUEST.converted);
     // 判别力: 盘上请求式点数写错 ⇒ 红; 台账说没加而 pi-sdk 里有 ⇒ 红; 超总量 ⇒ 红
-    expect(scanExecutionRequest(sources, PI_SRC, { ...K5_EXECUTION_REQUEST, converted: 3 })
+    // 坏样本一律用**不可能撞上真值**的数 (同类教训已记 8 次: 写"当前值±1"迟早会变成真值 ⇒ 用例静默失效)
+    expect(scanExecutionRequest(sources, PI_SRC, { ...K5_EXECUTION_REQUEST, converted: 999 })
       .some((f) => f.rule === 'execution-request-mismatch')).toBe(true);
     expect(scanExecutionRequest(sources, PI_SRC, { ...K5_EXECUTION_REQUEST, methodAdded: false })
       .some((f) => f.rule === 'execution-request-mismatch')).toBe(true);

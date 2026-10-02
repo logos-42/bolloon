@@ -96,6 +96,8 @@ describe('分阶段解析 — 通过路径', () => {
     const { gs, rr } = await mk();
     const g = await gs.createGoal({ objective: '能跑', channelId: 'ch-1', agentId: 'ag-1' });
     const fakeAgent = {
+      // K8 (2026-10-02): 通道/runner 现在走**唯一执行入口** `runExecution` ⇒ 夹具必须跟上契约
+      runExecution: async () => 'done',
       prompt: async () => 'done',
       getLastRunId: () => 'run-fake-1',
       setGoalId: () => {},
@@ -117,7 +119,7 @@ describe('分阶段解析 — 通过路径', () => {
   it('runner 拿不到 Run → 如实 failed (不把"没跑"当"跑完")', async () => {
     const { gs, rr } = await mk();
     const g = await gs.createGoal({ objective: '没建 Run', channelId: 'ch-1' });
-    const fakeAgent = { prompt: async () => '兜底文案', getLastRunId: () => '', getRunId: () => '', setGoalId: () => {}, setContinuationGuards: () => {} };
+    const fakeAgent = { runExecution: async () => '兜底文案', prompt: async () => '兜底文案', getLastRunId: () => '', getRunId: () => '', setGoalId: () => {}, setContinuationGuards: () => {} };
     const res = await rr.resolveGoalRunner(req(g), { probeLlm: OK_LLM, createAgent: () => fakeAgent });
     const out = await res.runner!(req(g));
     expect(out.status).toBe('failed');
