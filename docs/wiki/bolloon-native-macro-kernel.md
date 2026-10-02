@@ -1767,9 +1767,12 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 | 位置 | 现状 | 要动什么 |
 | `src/agents/workflow-pivot-loop.ts:189` 类 / `:214` 构造 | `constructor(config: PivotLoopConfig)`, 配置里**没有**任何判定/执行回调 | 在 `PivotLoopConfig` 加一个注入端口 (名字待定, 如 `guardedExecute?: (tool, args) => Promise<ToolResult>`), **可选**: 不注入时保持现行为 (向后兼容, 也便于灰阶上线) |
 | `:256` `for (const tool of tools)` / `:557` `const tool = this.tools.get(toolCall.name)` | 工具由构造时传入的 `this.tools` (Map) 提供 | 不动 (名册来源不变) |
-| **`:613` `const result = await tool.execute(toolCall.args ?? {})`** | **旁路本体**: 直接执行, 该路径上没有任何 harness 调用 | 改成 `guardedExecute` 优先 (存在则走它), 否则回落到 `tool.execute` ⇒ 端口由 pi-sdk 注入时**与主路径共用同一个 harness 判定** |
+| **`:613` 执行点** | **旁路本体**: 直接执行, 该路径上没有任何 harness 调用 | ✅ **2026-10-02 已完成 (第二步 a)**: 新增可选端口 `guardedExecute?`, 执行改端口优先、未注入时回落原行为; **fail-closed** (端口抛错 ⇒ 记 `拒绝: [harness-error] …` 且绝不回落) ⇒ 提交 `044cde2`。**剩第二步 b**: pi-sdk 侧注入 (把 `this.harness` + `harnessCtx()` 包进端口) |
 | `src/agents/pi-sdk.ts:446/:702` `pivotLoopConfig` | 配置的来源 | 注入端口时把 `this.harness` + `this.harnessCtx()` 包进去 (与主路径 `~2622` 处同一实例、同一 ctx) |
 | `src/agents/pi-sdk.ts:1301+` `promptWithPivotLoop` | 构造/调用 pivot loop 的地方 | 注入点上线的唯一位置 |
+
+**进度 (2026-10-02)**: 第二步 a **已完成** (`044cde2`): 端口落地 + 三条契约用例 (未注入行为不变 / 注入后 `tool.execute` 计数 0 / 端口抛错不执行) + 一条机械断言。
+两个当场踩到的真坑记档: ① 构造器用 `defaults` 重建配置 ⇒ 新字段不显式带过就被**静默丢掉** ② `Required<PivotLoopConfig>` 把可选端口变成必填 ⇒ tsc 3 处错 ⇒ 改命名类型 `ResolvedPivotConfig`。
 
 **验收判据 (改完必须都能真跑)**:
 ① **被拒的工具在 pivot loop 里也执行不了** —— 真跑: 用一个必被 deny 的工具名跑 pivot loop, 断言 `tool.execute` **未被调用**(用注入的假 tool 计调用数), 且收到与主路径同形的拒收文案;
