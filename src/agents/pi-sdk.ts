@@ -211,26 +211,13 @@ export function writeBackCurrentTurnInto(
 import { LoopStallState, observeToolCall, batchHint } from './tool-loop-guard.js';
 
 /**
- * 写操作"读回自证" (2026-10-01 优化 #4): 写类工具成功后**自动**核一次, 把事实拼进结果。
- * 为什么: 过程纪律写了"读回一次", 但**没人执行** ✗ ⇒ 现在由机制执行: "工具说成功 ≠ 任务成功"。
- * 只做**便宜**的核对(存在性/大小); 失败静默(核对不该把工具搞失败)。
+ * 写操作「读回自证」的实现已拆到 `./write-verify.js` (K10 ⑦):
+ *   - 要接进 `pi-sdk-tools.ts` 的写类工具 ⇒ 留在这里会形成循环 import;
+ *   - 原实现在函数体里用 `require('node:fs')`, 而产物是 ESM ⇒ 它此前**一次都没成功过**
+ *     (只会被 catch 吞成 `[未核对] … require is not defined`)。
+ * 这里保留**同名转出**, 老的 import 点不受影响。
  */
-export function verifyWriteOutcome(toolName: string, args: any, cwd: string): string | null {
-  try {
-    const fsMod = require('node:fs') as typeof import('node:fs');
-    const pathMod = require('node:path') as typeof import('node:path');
-    const WRITE = new Set(['write_file', 'edit_file', 'mkdir', 'move_file', 'copy_file']);
-    if (!WRITE.has(String(toolName))) return null;
-    const rel = String(args?.path ?? args?.to ?? args?.dir ?? '').trim();
-    if (!rel) return null;
-    const abs = pathMod.isAbsolute(rel) ? rel : pathMod.resolve(cwd, rel);
-    const st = fsMod.statSync(abs);
-    if (st.isDirectory()) return `[已核对] 目录存在: ${rel}`;
-    return `[已核对] 文件已落盘: ${rel} (${st.size} 字节, ${new Date(st.mtimeMs).toISOString()})`;
-  } catch (e: any) {
-    return `[未核对] 读回失败: ${String(e?.message || e).slice(0, 80)} —— 别急着说"已完成", 先确认路径/权限`;
-  }
-}
+export { verifyWriteOutcome, withWriteVerified, WRITE_TOOLS } from './write-verify.js';
 
 /**
  * 过程纪律 (2026-10-01, 用户: 「智能体回复方式没有主动性 … 在过程里面更加主动考虑」)。

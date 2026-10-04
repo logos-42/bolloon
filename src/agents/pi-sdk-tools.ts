@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import { loadDomainModule } from './tool-capability/index.js';   // K1 ④: 领域能力唯一入口
 import { loadWalletTool } from './wallet-tools.js';
+import { withWriteVerified } from './write-verify.js';   // K10 ⑦: 写类工具成功后拼读回事实
 import * as fsSync from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -1087,7 +1088,11 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         await stageWrite(relPath, before, content, action, ctx.cwd).catch(() => {});
         await fs.mkdir(path.dirname(absPath), { recursive: true });
         await fs.writeFile(absPath, content, 'utf-8');
-        return { success: true, output: `✅ wrote ${relPath} (${content.length} bytes)` };
+        // K10 ⑦: 写成功 ≠ 任务成功 —— 拼上读回事实 (`[已核对] …` / `[未核对] …`)
+        return withWriteVerified('write_file', { path: relPath }, ctx.cwd, {
+          success: true,
+          output: `✅ wrote ${relPath} (${content.length} bytes)`,
+        });
       } catch (e) {
         return { success: false, error: `写文件失败: ${String(e)}` };
       }
@@ -1119,7 +1124,11 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         const { stageWrite } = await import('./write-staging.js');
         await stageWrite(relPath, original, updated, 'edit', ctx.cwd).catch(() => {});
         await fs.writeFile(absPath, updated, 'utf-8');
-        return { success: true, output: `✅ edited ${relPath} (${oldText.length} → ${newText.length} 字节)` };
+        // K10 ⑦: 同上, 编辑也读回自证
+        return withWriteVerified('edit_file', { path: relPath }, ctx.cwd, {
+          success: true,
+          output: `✅ edited ${relPath} (${oldText.length} → ${newText.length} 字节)`,
+        });
       } catch (e) {
         return { success: false, error: `编辑文件失败: ${String(e)}` };
       }
