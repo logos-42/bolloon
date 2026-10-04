@@ -163,10 +163,17 @@ describe('D. 隐私闸管到 @ (mentions 里塞 DID/地址形态 ⇒ 整条拒�
 
 describe('E. 工具在册 (八个) + 关键接线', () => {
   const src = readFileSync(path.join(process.cwd(), 'src/agents/pi-sdk-tools.ts'), 'utf8');
-  it('group_join/list/read/say/reply/attach/branch/members 都注册了', () => {
-    for (const t of ['join', 'list', 'read', 'say', 'reply', 'attach', 'branch', 'members']) {
+  it('group_create/join/list/read/say/reply/attach/branch/members 九个都注册了', () => {
+    for (const t of ['create', 'join', 'list', 'read', 'say', 'reply', 'attach', 'branch', 'members']) {
       expect(src, `缺工具 group_${t}`).toMatch(new RegExp(`ctx\\.tools\\.set\\('group_${t}'`));
     }
+  });
+
+  it('group_create **不替调用方放开权限**: 只有显式 acl="open" 才 open, 其它一律走产品默认(创建者独占)', () => {
+    expect(src).toMatch(/const acl = String\(args\?\.acl \?\? ''\)\.trim\(\) === 'open' \? 'open' : undefined;/);
+    expect(src).toMatch(/createGroup\(name, \{ \.\.\.\(who\.ok \? \{ from: who\.tag \} : \{\}\), \.\.\.\(acl \? \{ acl \} : \{\}\) \}\)/);
+    // 建群没返回 groupId 时不许假装成功
+    expect(src).toMatch(/建群没返回 groupId（如实报告, 不假装成功）/);
   });
   it('发言/回复都走唯一出口 (带隐私闸), 附件走内容寻址 putBytes, 读带 branch 过滤', () => {
     expect(src).toMatch(/sendTrailMessage\(res\.group\.groupId, text, who\.tag, \{/);            // say 带富字段

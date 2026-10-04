@@ -26,7 +26,7 @@ import { registerSkillShareTools } from './skill-share.js';
 // 2026-09-13: 微支付信息服务 (x402 付费信息 + 验真信封)
 import { registerPaidInfoTools } from './x402/paid-info-tools.js';
 // 2026-10-02: 群聊的四个 AI 工具 —— 原语来自群模块与"唯一发送出口"(带隐私闸)
-import { joinGroup, listGroups, groupLink, groupMessages, groupMembers } from './gateway-group.js';
+import { createGroup, joinGroup, listGroups, groupLink, groupMessages, groupMembers } from './gateway-group.js';
 import { resolveGroupRef, resolveSenderTag, sendTrailMessage } from './task-group.js';
 // 2026-10-02: 群聊自主回路 (读 → 自己判断 → 自己发言) —— AI 用 group_autopilot 工具驱动
 import { loadAutopilotState, runGroupAutopilotOnce, startGroupAutopilot, type AutopilotHandle } from './group-autopilot.js';
@@ -1014,6 +1014,24 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   };
 
   // 2026-10-02 (leo: 希望人工智能自己搞定): 群聊工具 —— 原语来自群模块 + 唯一发送出口(带隐私闸)
+  ctx.tools.set('group_create', {
+    name: 'group_create',
+    description: '新建一个 OrbitDB 群聊并拿到邀请链接 —— **用于**你要开一个话题把别人拉进来（建好后把邀请链接发出去, 对方用 group_join 入群）。acl 默认 creator: 只有你自己能发言; 想让**谁拿到链接都能发言**就传 acl="open"（产品语义如此, 两种都合法）。',
+    parameters: { name: '群名（必填）', acl: 'creator | open —— 默认 creator(创建者独占写入); open = 谁拿链接都能发言', from: '你的署名（可选; 默认本机身份）' },
+    execute: async (args: Record<string, unknown>) => {
+      const name = String(args?.name ?? '').trim();
+      if (!name) return { success: false, error: 'name 必填（群名）' };
+      const who = await resolveSenderTag(null);
+      // 只认 'open'; 其它一律走产品默认 (创建者独占) —— 不猜、不替调用方放开权限
+      const acl = String(args?.acl ?? '').trim() === 'open' ? 'open' : undefined;
+      const r = await createGroup(name, { ...(who.ok ? { from: who.tag } : {}), ...(acl ? { acl } : {}) });
+      const g = (r as unknown as { group?: { id: string; name: string } }).group;
+      if (!g?.id) return { success: false, error: '建群没返回 groupId（如实报告, 不假装成功）' };
+      const link = await groupLink(g.id).catch(() => null);
+      return { success: true, output: `已建群「${g.name}」(${g.id})${acl ? ' · 开放写入(谁拿链接都能发言)' : ' · 创建者独占写入'}\n` + (link ? `邀请链接: ${link}\n把这个链接发给对方, 他用 group_join 入群。` : '(没拿到邀请链接 —— 用 group_list 再看一次)') };
+    },
+  });
+
   ctx.tools.set('group_join', {
     name: 'group_join',
     description: '加入一个 OrbitDB 群聊 —— **用于**拿到邀请链接后自助入群（幂等: 已在群里 ⇒ already）。link 传邀请链接（orbitdb:///orbitdb/<addr>?type=group&name=…）或 groupId。入群后先用 group_read 读消息、再用 group_say 发言。',
