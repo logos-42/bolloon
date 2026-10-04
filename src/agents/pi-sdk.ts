@@ -20,7 +20,7 @@ import { createPrivateActor, type ChannelActor, type ExecutionRequest } from '..
 //   一个回答"我这一轮发生了什么"; 失败语义也不同: 控制面被拒 → 409, 事实写不进 → 响亮失败)
 import { submitRunLifecycle, assertLifecycleOk } from '../kernel/run-lifecycle.js';
 // K10 ④: 通信发送入口经内核端口 (上层不再直接对某条传输说话; 换传输只改这一处注入)
-import { submitTransport, type TransportPorts } from '../kernel/transport.js';
+import { submitTransport, transportPeersSync, type TransportPorts } from '../kernel/transport.js';
 // K10 ①: run 状态迁移经内核**控制面**端口 (它本来就管"谁命令这条 run 改状态": 带 origin 审计 + 拒绝归一化)
 import { submitRunControl, type RunControlPorts } from '../kernel/control.js';
 import { expandHomeArgs } from './tool-path-args.js';
@@ -3109,11 +3109,14 @@ ${this.extractOperationsFromRef(operationsRef)}
       send: (peerId: string, kind: string, payload: string) => p2pNetwork.sendMessage(peerId, kind as any, payload),
       broadcast: (kind: string, payload: string) => p2pNetwork.broadcast(kind as any, payload),
       peers: () => p2pNetwork.getPeers(),
+      peersSync: () => p2pNetwork.getPeers(),
     };
   }
 
   private listPeers(): string {
-    const peers = p2pNetwork.getPeers();
+    // K10 ④ 后半: 同步读也经端口 (`transportPeersSync`); 端口未注入 ⇒ 明确说"读不到", 不假装"没有对端"
+    const peers = transportPeersSync(this.transportPorts());
+    if (peers === null) return '（通信端口未注入: 读不到对端列表 —— 不是"没有对端", 是没接上）';
     if (peers.length === 0) {
       return '当前无连接的对等节点';
     }
@@ -3121,6 +3124,10 @@ ${this.extractOperationsFromRef(operationsRef)}
   }
 
   getPeers(): string[] {
+    const peers = transportPeersSync(this.transportPorts());
+    if (peers !== null) return peers;
+    // 端口未注入时**回落到传输直读**并留痕: 同步读路径没有"拒绝"的余地, 静默返回空列表会被误读成"没有对端"
+    console.warn('[kernel-transport] peersSync 端口未注入 ⇒ 回落直读传输 (K10 ④ 未接线的调用点)');
     return p2pNetwork.getPeers();
   }
 

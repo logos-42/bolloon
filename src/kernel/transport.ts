@@ -41,6 +41,22 @@ export interface TransportPorts {
   send?(peerId: string, kind: string, payload: string): Promise<unknown>;
   broadcast?(kind: string, payload: string): Promise<unknown>;
   peers?(): string[] | Promise<string[]>;
+  /**
+   * **同步**读对端 —— 给调用方是同步签名的地方用 (`getPeers()` / `listPeers()` 在 Pi 上是同步的,
+   * 改成 async 会波及调用方) ⇒ 不硬塞进 async 的 `submitTransport`, 单独一个同步入口。
+   * 未注入 ⇒ 返回 `null` (调用方自己决定是空列表还是原样降级), 与 async 路径的"未注入即拒"呼应。
+   */
+  peersSync?(): string[];
+}
+
+/**
+ * 同步读对端 (K10 ④ 后半) —— 与 `submitTransport` 分开是因为**签名**而不是因为语义:
+ *   传输层是异步的, 但上层有同步调用点 (sync 签名不能凭空变 async)。
+ *   返回 `null` = 端口未注入 (调用方必须自己决定降级, 不许假装"没有对端" —— 那是两回事)。
+ */
+export function transportPeersSync(ports: TransportPorts): string[] | null {
+  if (typeof ports?.peersSync !== 'function') return null;
+  return ports.peersSync();
 }
 
 export interface TransportOutcome {

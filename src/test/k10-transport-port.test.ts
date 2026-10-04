@@ -100,6 +100,40 @@ describe('K10 ④-B. 真调方法体: 会话的 send/broadcast 经端口, 失败
   });
 });
 
+describe('K10 ④-B2. 同步读入口 (签名不变的那一半)', () => {
+  it('transportPeersSync: 注入 ⇒ 原样返回; 未注入 ⇒ **null** (不许假装"没有对端")', async () => {
+    const { transportPeersSync } = await import('../kernel/transport.js');
+    expect(transportPeersSync({ peersSync: () => ['p1', 'p2'] })).toEqual(['p1', 'p2']);
+    expect(transportPeersSync({}), '未注入 = 读不到 ⇒ null (与"空列表"是两回事)').toBeNull();
+  });
+
+  it('真调方法体: getPeers 经注入端口; 端口未注入 ⇒ 回落直读并**留痕**', async () => {
+    const { PiAgentSession } = await import('../agents/pi-sdk.js');
+    const proto: any = PiAgentSession.prototype;
+    const viaPort = { transportPorts: () => ({ peersSync: () => ['peer-1'] }) };
+    expect(proto.getPeers.call(viaPort)).toEqual(['peer-1']);
+
+    const { vi } = await import('vitest');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const noPort = { transportPorts: () => ({}) };
+    const r = proto.getPeers.call(noPort);          // 回落直读真传输 ⇒ 这里通常是空列表
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('peersSync 端口未注入')), '回落必须留痕').toBe(true);
+    expect(Array.isArray(r)).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('真调方法体: listPeers 未注入端口时明确说"读不到", 不假装"没有对端"', async () => {
+    const { PiAgentSession } = await import('../agents/pi-sdk.js');
+    const proto: any = PiAgentSession.prototype;
+    const s = proto.listPeers.call({ transportPorts: () => ({}) });
+    expect(String(s)).toMatch(/端口未注入|读不到/);
+    const s2 = proto.listPeers.call({ transportPorts: () => ({ peersSync: () => [] }) });
+    expect(String(s2)).toContain('当前无连接的对等节点');
+    const s3 = proto.listPeers.call({ transportPorts: () => ({ peersSync: () => ['a', 'b'] }) });
+    expect(String(s3)).toContain('已连接节点 (2)');
+  });
+});
+
 describe('K10 ④-C. 反回归: 上层不许再直接对传输说话', () => {
   it('pi-sdk 的 sendMessage/broadcast 经端口; 不许出现直接调 p2pNetwork 的发送', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/agents/pi-sdk.ts'), 'utf8');
