@@ -16,6 +16,9 @@ import * as os from 'os';
 import * as path from 'path';
 import { type RunContext, createRunContext } from './run-context.js';
 import { createPrivateActor, type ChannelActor, type ExecutionRequest } from '../kernel/channel-actor.js';
+// K10 ①: 运行生命周期写入经内核端口 (与 kernel/control.ts 的控制面分开 —— 一个回答"谁命令我停",
+//   一个回答"我这一轮发生了什么"; 失败语义也不同: 控制面被拒 → 409, 事实写不进 → 响亮失败)
+import { submitRunLifecycle, assertLifecycleOk } from '../kernel/run-lifecycle.js';
 import { expandHomeArgs } from './tool-path-args.js';
 import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
 import { runWithWriteOrigin } from './skill-ledger.js';
@@ -1241,21 +1244,39 @@ export class PiAgentSession implements AgentSession {
           boundGoalId = g.goalId;
         }
         this.actor!.state.goalBinding = boundGoalId;
-        const rec = await startRun({
-          surface: this.runSurface,
-          goal: this.currentUserInput || input.slice(0, 200),
-          goalId: boundGoalId,
-          channelId: this.actor!.state.channelId || undefined,
-          agentId: this.actor!.state.agentId || undefined,
-          modelConfig: await this.runModelSnapshot(),
-        });
+        // K10 ①: 三处写入均经内核端口; 写不进就 assertLifecycleOk 抛 (run-store strict: 写不进 = 这次运行在事实层面不存在)
+        const startOut = await submitRunLifecycle(
+          {
+            op: 'start-run',
+            origin: 'pi-session',
+            payload: {
+              surface: this.runSurface,
+              goal: this.currentUserInput || input.slice(0, 200),
+              goalId: boundGoalId,
+              channelId: this.actor!.state.channelId || undefined,
+              agentId: this.actor!.state.agentId || undefined,
+              modelConfig: await this.runModelSnapshot(),
+            },
+          },
+          { startRun: startRun as unknown as (p: Record<string, unknown>) => Promise<unknown> },
+        );
+        assertLifecycleOk(startOut);
+        const rec = startOut.result as { runId: string };
         this.lastRunId = rec.runId;
         await attachRun(boundGoalId, rec.runId).catch(() => null);
-        await recordStep(rec.runId, { tool: 'llm', ok: false, error: 'LLM 不可用 (provider 未初始化/无 apiKey) → 走了 fallback' });
-        await finishRun(rec.runId, {
-          status: 'needs_human',
-          error: 'LLM 不可用: provider 未初始化或无 apiKey (fallback 不是执行结果, 需要配置或人工处理)',
-        });
+        const stepOut = await submitRunLifecycle(
+          {
+            op: 'record-step',
+            origin: 'pi-session',
+            runId: rec.runId,
+            payload: { tool: 'llm', ok: false, error: 'LLM 不可用 (provider 未初始化/无 apiKey) → 走了 fallback' },
+          },
+          { recordStep: recordStep as unknown as (r: string, s: Record<string, unknown>) => Promise<unknown> },
+        );
+        assertLifecycleOk(stepOut);
+        // 收尾漏斗门的登记项按**单行**匹配 (seams.ts:564 `ls.find(...)`) ⇒ 这次调用刻意写成一行, 好让登记项能钉住它
+        const finOut = await submitRunLifecycle({ op: 'finish-run', origin: 'pi-session', runId: rec.runId, payload: { status: 'needs_human', error: 'LLM 不可用: provider 未初始化或无 apiKey (fallback 不是执行结果, 需要配置或人工处理)' } }, { finishRun: finishRun as unknown as (r: string, p: Record<string, unknown>) => Promise<unknown> });
+        assertLifecycleOk(finOut);
         // ★ M0: "工具/权限不可用"也是一条终止路径 → 同样进收尾漏斗 (规则 ④)。
         const wiring = await import('./goal-flywheel-wiring.js');
         const closed = await wiring.closeRunOnce({

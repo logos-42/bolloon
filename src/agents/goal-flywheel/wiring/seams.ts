@@ -467,7 +467,11 @@ export const TERMINAL_PATHS: readonly TerminalPath[] = [
   {
     path: '失败 / 中断恢复 (Runner 内 finishRun)',
     file: 'src/agents/pi-sdk.ts',
-    marker: /await\s+finishRun\s*\(/,
+    // 2026-10-02 (K10 ①): 该终止动作**改经内核生命周期端口** —— 直接 `await finishRun(` 已不存在,
+    //   现在写作 `submitRunLifecycle({ op: 'finish-run', runId, payload }, { finishRun })` + `assertLifecycleOk`。
+    //   登记项**跟着改形状, 不是放宽**: 端口未注入/被拒 ⇒ `assertLifecycleOk` 抛 ⇒ 终止照样走到收尾漏斗;
+    //   而"不许再出现直接调用"由 `src/test/k10-run-lifecycle-port.test.ts` 的反向断言钉住 (两处一起才成立)。
+    marker: /submitRunLifecycle\(\{[^}]*op:\s*'finish-run'/,
     via: FUNNEL_CALL_RE,
   },
   {

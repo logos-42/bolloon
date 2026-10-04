@@ -120,7 +120,7 @@ export const KERNEL_ALLOWED_IMPORT_PREFIXES: readonly string[] = ['kernel/'];
  * 判据是**双向相等**: 盘上多一个未登记文件 ⇒ 红; 名册有而盘上没有 ⇒ 红。
  * (先例: SEAM_ROSTER 的「名册外无人越界」)
  */
-export const KERNEL_FILES: readonly string[] = ['kernel/channel-actor.ts', 'kernel/control.ts', 'kernel/gate-scan.ts', 'kernel/model-runtime.ts', 'kernel/plan-harness.ts', 'kernel/plan-modelruntime.ts', 'kernel/plan-constraint.ts', 'kernel/plan-channel-actor.ts', 'kernel/plan-deletion.ts', 'kernel/plan-runcontext.ts', 'kernel/plan-communication.ts', 'kernel/plan.ts', 'kernel/roster.ts'];
+export const KERNEL_FILES: readonly string[] = ['kernel/channel-actor.ts', 'kernel/control.ts', 'kernel/run-lifecycle.ts', 'kernel/gate-scan.ts', 'kernel/model-runtime.ts', 'kernel/plan-harness.ts', 'kernel/plan-modelruntime.ts', 'kernel/plan-constraint.ts', 'kernel/plan-channel-actor.ts', 'kernel/plan-deletion.ts', 'kernel/plan-runcontext.ts', 'kernel/plan-communication.ts', 'kernel/plan.ts', 'kernel/roster.ts'];
 
 export type DetectionMode = 'import-edge' | 'write-call';
 
@@ -262,7 +262,7 @@ export const STAGE_STATUS: Readonly<Record<string, 'done' | 'partial' | 'not-sta
   K7: 'done',             // 2026-10-02 收尾: 旁路 **3 → 0** (pivot ✅ · skill ✅ 两路端到端 · tscTool ✅ 端到端取证含两条变异 · getSkillRegistry ✅ 受门包装) — 提交 5483e3a / 1af7e46
   K8: 'partial',          // 台账+门已落 · 直连 12 → **0** · 各通道状态 37/33 · didFixQueue 经邮箱 · **正刀已落地** (每条消息都进邮箱, 删掉重复的第二条路径, 提交 2fc197e, 真跑: 一条不丢/严格串行/FIFO) ⇒ 剩 `abortController` 语义定夺 (目标是 ExecutionRequest.signal), 显式留下不随队列顺手合并
   K9: 'partial',          // 2026-10-02: **不能算 done** —— 设计页的 K9 要求"最小 Native Adapter 必须通过与 Pi **完全相同**的五套验收"; 已过: model call (真端点 200+回复) · tool call 经 Harness 门恰一次/拒绝零执行 · CLI 非流式真跑 · 名字净化/回程还原 · 超时/退避/abort/4xx 不重试。**未过** (2026-10-02 第二次补门后缩减为): checkpoint/finish 经适配器的真跑 · Durable Run / Supervisor 两套验收 (适配器层的并发/取消/流式回调已由 ⑧⑨⑩ 覆盖: 3 条并发各自拿到自己的回复 · abort 中途打断且适配器之后仍可用 · 真 loop 的 onStream 收到 token/reply-preview)。以下是已落地部分:  **第二个 (非 Pi) 推理适配器** `src/llm/native-adapter.ts` (fetch 直连 OpenAI 兼容端点, 源码不 import 任何 Pi 模块) + 唯一选择点 `BOLLOON_NATIVE_ADAPTER=1`; 门 `k9-native-adapter.test.ts` **8/8** (机械: 不许是 Pi 的壳 · 行为: 回复/tokens · native tool_calls 原样 · 429 退避重试 · abort 透传 · 4xx 不重试 · **出程名字净化+回程还原** · **过同一套门**: 适配器的 tool_call 经受门端口恰执行一次, 拒绝⇒零执行); **真跑**: 非流式 `prompt` 走该适配器打真端点 ⇒ 回 `适配器切换成功` (HTTP 200)。**顺带修掉一处隐式 Pi 依赖**: pivot 入口的 `!minimaxAvailable ⇒ fallback` 改成问**当前适配器**。**如实范围**: 适配器只实现接口所需的 chat 契约 + 超时/退避/abort/名字净化; Pi 侧的 KV 前缀/轻量分流等属 Pi 自身特性, 不在接口面内
-  K10: 'partial',         // 2026-10-02 起手 (先量后删): pi-sdk.ts **3353 行**; 8 步现状 —— **⑤ 旧工具 gate ✅ (K7 已做)** · **⑥ 旧 loop ✅ (K4-B 删 runReActLoop 1123 行)** · **① Pi 的 Goal/Run 写入 = 已量, 替代路径存在但未接线**: 写点 4 处 (1244 `startRun` / 1254 `recordStep` / 1255 `finishRun` = 回退路径落 run 事实; 1999 在 `setGoalId` 里 = Pi 的 Goal 写入), 内核**已有控制面** `kernel/control.ts` (`RunControlRequest{kind,origin,runId,goalId,payload}` → `RunControlPorts{recordRecovery,setRunStatus,setContinuation}`), 但它是**命令式控制面** (供 web/cli/supervisor 发 pause/resume/abort/recover), **不是 run 生命周期写口** ⇒ ① 的正确下一刀 = **照 control.ts 的形状新增 run-lifecycle 端口** (`startRun/recordStep/finishRun/saveCheckpoint`, 同样端口注入 + 未注入即拒), 再把 4 处改经它 (禁直接调 run-store); 不许把生命周期写入硬塞进控制面的 `kind` 里 (语义不同: 一个是"谁命令我停", 一个是"我这一轮的事实") · **② 模型配置解析 10 处** · **③ Channel 状态 79 处** · **④ 通信入口 11 处** (均未接线, 内核侧替代物已在: channel-actor / model-runtime / plan-communication) · **⑦ 兼容层 6 个导出面** · **⑧ 是否删 Pi Adapter 本身 = 待定** (撤换判据: 迁移后 Pi 职责仍超原职责 30% ⇒ 不算替换成功)
+  K10: 'partial',         // 2026-10-02 起手 (先量后删): pi-sdk.ts **3353 行**; 8 步现状 —— **⑤ 旧工具 gate ✅ (K7 已做)** · **⑥ 旧 loop ✅ (K4-B 删 runReActLoop 1123 行)** · **① Pi 的 Goal/Run 写入 = 已接线 3/4 处** (端口 `kernel/run-lifecycle.ts` 落地 + 回退路径三处 `start-run/record-step/finish-run` 改经端口 + `assertLifecycleOk` 响失; 门 `k10-run-lifecycle-port.test.ts` 8/8 + 变异判红; **真跑待补**: 该分支需 `getMinimax()` 真抛, 本机模型总能构造 ⇒ 不可达; 剩 1 处 = `setGoalId` 里的 `setRunStatus` 属 goal 批次): 写点 4 处 (1244 `startRun` / 1254 `recordStep` / 1255 `finishRun` = 回退路径落 run 事实; 1999 在 `setGoalId` 里 = Pi 的 Goal 写入), 内核**已有控制面** `kernel/control.ts` (`RunControlRequest{kind,origin,runId,goalId,payload}` → `RunControlPorts{recordRecovery,setRunStatus,setContinuation}`), 但它是**命令式控制面** (供 web/cli/supervisor 发 pause/resume/abort/recover), **不是 run 生命周期写口** ⇒ ① 的正确下一刀 = **照 control.ts 的形状新增 run-lifecycle 端口** (`startRun/recordStep/finishRun/saveCheckpoint`, 同样端口注入 + 未注入即拒), 再把 4 处改经它 (禁直接调 run-store); 不许把生命周期写入硬塞进控制面的 `kind` 里 (语义不同: 一个是"谁命令我停", 一个是"我这一轮的事实") · **② 模型配置解析 10 处** · **③ Channel 状态 79 处** · **④ 通信入口 11 处** (均未接线, 内核侧替代物已在: channel-actor / model-runtime / plan-communication) · **⑦ 兼容层 6 个导出面** · **⑧ 是否删 Pi Adapter 本身 = 待定** (撤换判据: 迁移后 Pi 职责仍超原职责 30% ⇒ 不算替换成功)
 };
 
 /**
@@ -286,10 +286,10 @@ export const AUTHORITY_DEBT_FROZEN_AT = 0;   // 3 → 0 (K4 用内核控制面�
  * 目的只有一个: **不许所有逻辑回流到 kernel.ts**。要加就得显式抬这个数字, 留下痕迹。
  * 数值 = 当前 kernel 目录真实行数, 不留余量。
  */
-export const KERNEL_LINE_BUDGET = 2918;   // 2026-10-02: +1 (K4-B: gate-scan 复位阈值注释)   // 2026-10-02: +5 (K8 正刀: gate-scan 加"收口字段数 3→1"+ queue 反回归)   // 2026-10-02: +54 (K8: gate-scan 加 K8 判据)   // 2026-10-02: +2 (STAGE_STATUS 拆 K4-A/K4-B + K6/K7 如实修正)
+export const KERNEL_LINE_BUDGET = 3102;   // 2026-10-02 **显式抬档 +184** (K10 ①: 新增内核模块 kernel/run-lifecycle.ts —— 运行生命周期写口, 与 control.ts 的控制面分开; 预算 == 真实值)   // 2026-10-02: +1 (K4-B: gate-scan 复位阈值注释)   // 2026-10-02: +5 (K8 正刀: gate-scan 加"收口字段数 3→1"+ queue 反回归)   // 2026-10-02: +54 (K8: gate-scan 加 K8 判据)   // 2026-10-02: +2 (STAGE_STATUS 拆 K4-A/K4-B + K6/K7 如实修正)
 
 /** 预算冻结值 (棘轮: 只许减; 想抬预算必须同时改上面那个数字 ⇒ 一次显式动作, diff 里看得见) */
-export const KERNEL_LINE_BUDGET_FROZEN_AT = 2918;   // 同步至 2026-10-02 真实值
+export const KERNEL_LINE_BUDGET_FROZEN_AT = 3102;   // 同步至 2026-10-02 真实值 (K10 ① 新增 run-lifecycle.ts 后)
 
 /**
  * K3b —— **台账数据**单独一档预算 (`src/kernel/plan.ts`)。
