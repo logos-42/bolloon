@@ -23,6 +23,8 @@ import { submitRunLifecycle, assertLifecycleOk } from '../kernel/run-lifecycle.j
 import { submitTransport, transportPeersSync, type TransportPorts } from '../kernel/transport.js';
 // K10 ①: run 状态迁移经内核**控制面**端口 (它本来就管"谁命令这条 run 改状态": 带 origin 审计 + 拒绝归一化)
 import { submitRunControl, type RunControlPorts } from '../kernel/control.js';
+// K10 ②: 回合的模型经**内核运行时**只读取租约 (传输仍是 Pi 客户端 ⇒ 行为不变; 取不到如实回落)
+import { ModelRuntime, snapshotFromSelection, type ModelConnection, type ModelSnapshot } from '../kernel/model-runtime.js';
 import { expandHomeArgs } from './tool-path-args.js';
 import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
 import { runWithWriteOrigin } from './skill-ledger.js';
@@ -1714,7 +1716,80 @@ export class PiAgentSession implements AgentSession {
     return this.minimaxAvailable;
   }
 
-  private inferenceAdapter(): LLMInterface {
+  // ── K10 ②: 内核模型运行时的接缝 ────────────────────────────────────────────
+  /** 进程内的内核运行时 (懒建)。传输由 `openPiConnection` 注入 ⇒ 真传输仍是 Pi 的客户端 */
+  private runtimeSingleton?: ModelRuntime;
+
+  private kernelModelRuntime(): ModelRuntime {
+    if (!this.runtimeSingleton) {
+      this.runtimeSingleton = new ModelRuntime(
+        { openConnection: async (snapshot) => this.openPiConnection(snapshot) },
+        30_000,
+        4,
+      );
+    }
+    return this.runtimeSingleton;
+  }
+
+  /** 端口实现: "开一条连接" = 拿 Pi 的 LLM 客户端 (进程级单例, 由 installRuntime 装配) */
+  private async openPiConnection(snapshot: Readonly<ModelSnapshot>): Promise<ModelConnection> {
+    const client = getMinimax() as unknown as { chat: (...a: any[]) => Promise<unknown> };
+    return {
+      id: `${snapshot.provider}:${snapshot.model}`,
+      call: async (req) => {
+        try {
+          const raw = await client.chat(
+            (req as any).context, (req as any).systemPrompt, (req as any).signal,
+            (req as any).tools, (req as any).purpose, (req as any).source,
+          );
+          return { ok: true, provider: snapshot.provider, raw };
+        } catch (err) {
+          return { ok: false, provider: snapshot.provider, error: String((err as Error)?.message ?? err).slice(0, 300) };
+        }
+      },
+      // Pi 客户端是**进程级单例** ⇒ 不随连接关闭 (连接池负责复用/计数)
+      close: async () => { /* 见上 */ },
+    };
+  }
+
+  /**
+   * K10 ②: 用内核运行时取一个**租约**并适配成 `LLMInterface`。
+   *   拿不到有效快照 / acquire 失败 ⇒ 返回 null ⇒ 调用方**如实记**并回落 Pi 直连 (不假装走了内核)。
+   */
+  private async kernelLeaseAdapter(): Promise<LLMInterface | null> {
+    let snapshot: ModelSnapshot | null = null;
+    try {
+      const eff = await captureRunModelConfig();
+      snapshot = snapshotFromSelection({ provider: eff.provider, model: eff.model, baseUrl: eff.baseUrl });
+    } catch {
+      return null;
+    }
+    if (!snapshot) return null;
+    // ⚠️ 踩过的坑 (2026-10-02): 一开始在**适配器创建时**取一个租约、每次 chat 后 `lease.release()`
+    //   ⇒ 第二次 chat 撞上「租约已归还」(model-runtime.ts:278 的守卫) ⇒ 适配器抛错 ⇒ 回合在第 2 轮就死
+    //   (实测: k7-tsc-tool-e2e 允许路/拒绝路判红, 而强制 Pi 直连全绿)。
+    //   正确姿势: **每次调用现取租约** (连接由池复用, 取租约几乎零成本), 用完立刻归还。
+    const runtime = this.kernelModelRuntime();
+    return {
+      chat: async (context: string, systemPrompt: string, signal?: AbortSignal, tools?: unknown, purpose?: string, source?: string) => {
+        let lease;
+        try {
+          lease = await runtime.acquire(snapshot);
+        } catch (err) {
+          throw new Error(`[kernel-model-runtime] acquire 失败: ${String((err as Error)?.message ?? err).slice(0, 160)}`);
+        }
+        try {
+          const res = await lease.call({ context, systemPrompt, signal, tools, purpose, source }, { signal });
+          if (!res.ok) throw new Error(res.error || '内核模型调用失败');
+          return res.raw as any;
+        } finally {
+          lease.release();                          // 归还租约 (连接由池管理, 不关)
+        }
+      },
+    } as unknown as LLMInterface;
+  }
+
+  private async inferenceAdapter(): Promise<LLMInterface> {
     if (process.env.BOLLOON_NATIVE_ADAPTER === '1') {
       const a = nativeAdapterFromEnv();
       if (a) {
@@ -1723,6 +1798,14 @@ export class PiAgentSession implements AgentSession {
       }
       console.warn('[PiAgent] BOLLOON_NATIVE_ADAPTER=1 但没拿到 key ⇒ 回落 Pi 适配器 (不假装切换成功)');
     }
+    // K10 ②: 先向**内核运行时**取租约 (只读 `acquire(snapshot)`) —— 超时/取消/退避/熔断/回退/记账由内核负责;
+    //   传输仍是 Pi 客户端 (端口注入) ⇒ 行为不变。取不到就**如实记**并回落 Pi 直连 (不假装走了内核)。
+    const leased = await this.kernelLeaseAdapter();
+    if (leased) {
+      console.log('[PiAgent] 推理适配器 = kernel-model-runtime (只读 acquire 租约)');
+      return leased;
+    }
+    console.warn('[PiAgent] 内核租约不可用 ⇒ 回落 Pi 直连 (如实记, 不假装走了内核)');
     return getMinimax() as unknown as LLMInterface;
   }
 
@@ -1752,7 +1835,8 @@ export class PiAgentSession implements AgentSession {
       };
     }
 
-    const llm = this.inferenceAdapter();
+    const llm = await this.inferenceAdapter();   // K10 ②: 可能要向内核运行时取租约 (异步)
+
 
     // K4-B (2026-10-02): **每次模型调用也要过门面** —— `beforeModelCall`/`afterModelCall` 原先**只**由老
     //   `runReActLoop` 调用; 老 loop 删除后全仓零调用者, 而 pivot (生产: web/CLI 现在都走它) **从来没调过**

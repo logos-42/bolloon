@@ -97,6 +97,26 @@ export interface ModelLease {
 }
 
 /** 429 识别 (端口可以把限流表达成返回值 status=429, 或抛一个带 status 的错) */
+/**
+ * K10 ②: 把"有效选择"投影成内核的 `ModelSnapshot` —— **只读投影 + 校验**。
+ *   缺 provider/model ⇒ **返回 null** (调用方自己决定降级): 不许编一个假的填进去。
+ *   `acquire()` 自己也会拒, 但这里先拒能省掉一次"猜配置"的机会 (而且这个函数是纯的, 好判)。
+ */
+export function snapshotFromSelection(
+  sel: Partial<ModelSnapshot> | null | undefined,
+): ModelSnapshot | null {
+  const provider = String(sel?.provider ?? '').trim();
+  const model = String(sel?.model ?? '').trim();
+  if (!provider || !model) return null;
+  const out: ModelSnapshot = { provider, model };
+  const baseUrl = String(sel?.baseUrl ?? '').trim();
+  if (baseUrl) out.baseUrl = baseUrl;
+  if (typeof sel?.timeoutMs === 'number') out.timeoutMs = sel.timeoutMs;
+  if (sel?.capabilities) out.capabilities = sel.capabilities;
+  if (sel?.fallbackProviders) out.fallbackProviders = sel.fallbackProviders;
+  return out;
+}
+
 export function isRateLimited(x: unknown): boolean {
   if (!x || typeof x !== 'object') return false;
   const o = x as { status?: unknown; error?: unknown; name?: unknown };
