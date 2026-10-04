@@ -46,7 +46,8 @@ import { p2pNetwork } from '../network/p2p.js';
 import { ConstraintLayer, WorkflowContext } from './constraint-layer.js';
 import { WorkflowEngine, WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
 import { DeepThinkingEngine, AgentCoordinator, type ThinkResult, type AgentResult } from '@bolloon/constraint-runtime';
-import { WorkflowPivotLoop, createDefaultPivotConfig, type PivotLoopConfig, type LoopResult } from './workflow-pivot-loop.js';
+import { WorkflowPivotLoop, createDefaultPivotConfig, type PivotLoopConfig, type LoopResult, type LLMInterface } from './workflow-pivot-loop.js';
+import { nativeAdapterFromEnv } from '../llm/native-adapter.js';   // K9: 第二个 (非 Pi) 推理适配器
 import { p2pDocumentTools, initDocumentReceiver } from './p2p-document-tools.js';
 import { shellExec } from './shell-tool.js';
 import { startRun, recordStep, finishRun, readRun, budgetVerdict, recordDegradation, recordHarnessEvent, recordRecovery, setRunStatus, prepareResume, markRunRunning, buildResumeInstruction, argsDigestOf, repeatedFailureCount, classifyError as classifyRunError, type RunSurface, type RunStatus, type ResumePlan } from './run-store.js';
@@ -1679,9 +1680,40 @@ export class PiAgentSession implements AgentSession {
     return result;
   }
 
+  /**
+   * K9 (2026-10-02): 推理适配器的**唯一选择点** —— "用哪个适配器"只在这里决定一次。
+   *
+   *   `BOLLOON_NATIVE_ADAPTER=1` ⇒ 用**非 Pi** 的 native 适配器 (`src/llm/native-adapter.ts`,
+   *     源码里不 import 任何 Pi 模块, 只用 fetch 直连 OpenAI 兼容端点);
+   *   否则 ⇒ Pi 侧模型 (原行为, 默认不变)。
+   *
+   * 关键: 上层 (pivot loop / Harness 门 / Run / Channel) **一行都不用改** ——
+   * 这正是 K10 撤换判据里「**出现第二个推理适配器能过同一套门**」要证的东西。
+   */
+  /** K9: 当前适配器是否可用 (native 开关打开且拿到 key ⇒ 用它自己的判据, 不再借 Pi 的) */
+  private inferenceAvailable(): boolean {
+    if (process.env.BOLLOON_NATIVE_ADAPTER === '1' && nativeAdapterFromEnv()) return true;
+    return this.minimaxAvailable;
+  }
+
+  private inferenceAdapter(): LLMInterface {
+    if (process.env.BOLLOON_NATIVE_ADAPTER === '1') {
+      const a = nativeAdapterFromEnv();
+      if (a) {
+        console.log(`[PiAgent] 推理适配器 = ${a.providerId} (非 Pi: fetch 直连, 不 import Pi)`);
+        return a as unknown as LLMInterface;
+      }
+      console.warn('[PiAgent] BOLLOON_NATIVE_ADAPTER=1 但没拿到 key ⇒ 回落 Pi 适配器 (不假装切换成功)');
+    }
+    return getMinimax() as unknown as LLMInterface;
+  }
+
   async promptWithPivotLoop(input: string, config?: PivotLoopConfig, channelId?: string): Promise<LoopResult> {
     this.actor!.state.channelId = channelId ?? this.actor!.state.channelId;
-    if (!this.minimaxAvailable) {
+    // K9 (2026-10-02): **可用性判据必须问"当前适配器"**, 不能无条件问 Pi ——
+    //   原先这里是 `if (!this.minimaxAvailable)`, 于是"换成第二个(非 Pi)适配器"仍然被 **Pi 的可用性**卡死
+    //   (实跑现象: 适配器被选中、但 loop 一次都没跑、回复为空)。这类"隐式仍依赖 Pi"的点正是 K10 要清的。
+    if (!this.inferenceAvailable()) {
       const response = await this.handleFallback(input);
       return {
         success: false,
@@ -1702,7 +1734,7 @@ export class PiAgentSession implements AgentSession {
       };
     }
 
-    const llm = getMinimax();
+    const llm = this.inferenceAdapter();
 
     // K4-B (2026-10-02): **每次模型调用也要过门面** —— `beforeModelCall`/`afterModelCall` 原先**只**由老
     //   `runReActLoop` 调用; 老 loop 删除后全仓零调用者, 而 pivot (生产: web/CLI 现在都走它) **从来没调过**

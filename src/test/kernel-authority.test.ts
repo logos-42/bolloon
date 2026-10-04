@@ -184,10 +184,16 @@ describe('K4 欠账不许烂在账上: 排期过期 / 无还款路径 都要被�
 
   it('★ 判别力: 四种坏形状都必须判红 (夹具自造 —— 不依赖实时台账长度)', () => {
     // 台账现在按设计是**空的** ⇒ 判别力必须用**自造样本**, 否则用例会随台账归零而失效
+    // 夹具的意图是"排到**还没收工**的阶段才合法" ⇒ 阶段名**从台账里现算**, 不写死:
+    //   写死过一次 (K4-B → K9): 每收工一个阶段夹具就红一次 —— 那是夹具在追移动靶, 不是产品问题。
+    //   算不出"未收工阶段"就抛 (拒跑), 不许悄悄退化成"必然绿"的空夹具。
+    const NOT_DONE_STAGE = (() => {
+      const notDone = Object.entries(STAGE_STATUS).find(([, v]) => v !== 'done');
+      if (!notDone) throw new Error('夹具拒跑: 台账里没有未收工阶段 ⇒ "排期未过期"这一形状无法构造');
+      return notDone[0] as string;
+    })();
     const sample = [
-      // 2026-10-02 K4-B 收工后改指 K9 —— 夹具的意图是"排到**还没收工**的阶段才合法",
-      //   所以它必须指向一个仍未收工的阶段 (K4-A/K4-B/K5/K6/K7 都已 done)。
-      { prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'setRunStatus', count: 1, payDownIn: 'K9', note: '排到未开工阶段 (示例: K9) —— 排到已 done 的阶段会被判"排期过期"' },
+      { prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'setRunStatus', count: 1, payDownIn: NOT_DONE_STAGE, note: '排到未收工阶段 ⇒ 合法 (阶段名从台账现算, 不是写死的)' },
     ];
     // ① 排期指向已收工的阶段 ⇒ 过期
     expect(scanDebtPaydownStaleness([{ ...sample[0], payDownIn: 'K5' }], STAGE_STATUS).some((f) => f.rule === 'debt-paydown-stale')).toBe(true);
