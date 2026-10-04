@@ -28,6 +28,8 @@ import { registerPaidInfoTools } from './x402/paid-info-tools.js';
 // 2026-10-02: 群聊的四个 AI 工具 —— 原语来自群模块与"唯一发送出口"(带隐私闸)
 import { joinGroup, listGroups, groupLink, groupMessages, groupMembers } from './gateway-group.js';
 import { resolveGroupRef, resolveSenderTag, sendTrailMessage } from './task-group.js';
+// 2026-10-02: 群聊自主回路 (读 → 自己判断 → 自己发言) —— AI 用 group_autopilot 工具驱动
+import { loadAutopilotState, runGroupAutopilotOnce, startGroupAutopilot, type AutopilotHandle } from './group-autopilot.js';
 
 /**
  * Tools 模块 — 从 pi-sdk.ts 抽出的 registerTools() / _registerWalletTools() / _setupInboxListener()
@@ -251,6 +253,9 @@ export interface ToolRegistryContext {
     did: string;
   } | null>;
 }
+
+/** 2026-10-02: 群聊自主回路的常驻句柄 (同进程共享; stop 后置 null) */
+let autopilotHandle: AutopilotHandle | null = null;
 
 export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   ctx.tools.set('read_document', {
@@ -1196,6 +1201,55 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       return { success: true, output: members.length ? `群「${res.group.name ?? res.group.groupId}」成员/发言者 ${members.length} 个: ${members.join(' · ')}` : `（群「${res.group.name ?? res.group.groupId}」里还没有成员发过言）` };
     },
   });
+  ctx.tools.set('group_autopilot', {
+    name: 'group_autopilot',
+    description: '群聊自主回路 —— **用于**让 AI 自己读群、自己判断该不该开口、自己在群里发言（不用人盯着）。action: run(立刻跑一轮) / start(挂成常驻, 每 intervalMs 一轮) / stop / status。默认只在「被 @」或「有人提问/请人做事」时说话, 冷却 60s、每小时每群最多 6 次, 处理过的消息不会重复回应。',
+    parameters: { action: 'run | start | stop | status（必填）', intervalMs: '常驻时的间隔 ms（默认 60000）', group: '只盯某个群（groupId/链接/群名, 可选; 缺省 = 全部已加入的群）' },
+    execute: async (args: Record<string, unknown>) => {
+      const action = String(args?.action ?? 'run').trim();
+      const who = await resolveSenderTag(null);
+      if (!who.ok) return { success: false, error: who.message };
+      const only = String(args?.group ?? '').trim();
+      const state = loadAutopilotState();
+      const ports = {
+        me: who.tag,
+        listGroups: async () => {
+          const gs = await listGroups();
+          if (!only) return gs.map((g) => ({ id: g.id, name: g.name }));
+          const r = await resolveGroupRef(only);
+          return r.ok ? [{ id: r.group.groupId, name: r.group.name }] : [];
+        },
+        readMessages: (gid: string, limit: number) => groupMessages(gid, limit),
+        speak: (gid: string, text: string, opts?: { replyTo?: string; mentions?: string[] }) =>
+          sendTrailMessage(gid, text, who.tag, opts ?? {}),
+        state,
+      };
+      if (action === 'stop') {
+        if (!autopilotHandle) return { success: true, output: '没有在跑的常驻回路（无需停）' };
+        autopilotHandle.stop();
+        const runs = autopilotHandle.runs();
+        autopilotHandle = null;
+        return { success: true, output: `已停常驻回路（本次共跑 ${runs} 轮）` };
+      }
+      if (action === 'status') {
+        const last = autopilotHandle?.lastReport() ?? null;
+        return { success: true, output: autopilotHandle
+          ? `常驻回路在跑: 已 ${autopilotHandle.runs()} 轮；最近一轮: 发言 ${last?.spoke ?? 0} · 静默 ${last?.silent ?? 0}${last?.errors.length ? ' · 错误 ' + last.errors.length : ''}`
+          : `没有常驻回路在跑。状态文件: ${Object.keys(state.groups).length} 个群有记录` };
+      }
+      if (action === 'start') {
+        if (autopilotHandle) return { success: true, output: '常驻回路已经在跑了' };
+        const intervalMs = Number(args?.intervalMs ?? 60_000) || 60_000;
+        autopilotHandle = startGroupAutopilot({ ...ports, intervalMs });
+        return { success: true, output: `已挂常驻回路（每 ${Math.round(intervalMs / 1000)}s 一轮；被 @ 或在有人提问时发言）。要停用 group_autopilot action=stop。` };
+      }
+      const r = await runGroupAutopilotOnce(ports);
+      const head = `跑了一轮: 发言 ${r.spoke} · 静默 ${r.silent}${r.errors.length ? ` · 错误 ${r.errors.length}` : ''}`;
+      const tail = [...r.details, ...r.errors.map((e) => `⚠ ${e}`)].slice(0, 8).join('\n');
+      return { success: true, output: tail ? `${head}\n${tail}` : head };
+    },
+  });
+
   // 2026-08-12 (TaskD): process — 后台进程管理 (学 hermes terminal background session + poll/wait/kill).
   //   长命令不阻塞对话: terminal(background=true) 启动 → process 工具轮询/等待/终止.
   ctx.tools.set('process', {
