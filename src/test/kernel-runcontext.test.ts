@@ -100,11 +100,11 @@ describe('K2 门: RunContext 状态外置', () => {
     expect(scanRunIdSeed(SCAN, opts)).toEqual([]);
 
     // 变异①: 助手里的播种被删 ⇒ 红
-    const noSeed = SCAN.map((f) => ({ ...f, text: f.text.replace('runId: this.actor!.state.activeRun, ', '') }));
+    const noSeed = SCAN.map((f) => ({ ...f, text: f.text.replace('composeRunSeed(this.actor!.state.activeRun, extra', 'composeRunSeed(undefined, extra') }));
     expect(scanRunIdSeed(noSeed, opts).some((x) => x.rule === 'runid-seed-count')).toBe(true);
 
     // 变异②: 在助手里再补一处播种 ⇒ 红 (播种只许一处)
-    const doubleSeed = SCAN.map((f) => ({ ...f, text: f.text.replace('runId: this.actor!.state.activeRun, ', 'runId: this.currentRunId, runId: this.currentRunId, ') }));
+    const doubleSeed = SCAN.map((f) => ({ ...f, text: f.text.replace('composeRunSeed(this.actor!.state.activeRun, extra', 'composeRunSeed(this.actor!.state.activeRun, { ...extra, runId: this.actor!.state.activeRun },') }));
     expect(scanRunIdSeed(doubleSeed, opts).some((x) => x.rule === 'runid-seed-count')).toBe(true);
 
     // 变异③: 循环里新增一处 this.currentRunId 读取 ⇒ 红 (不得在循环中新增读取点)

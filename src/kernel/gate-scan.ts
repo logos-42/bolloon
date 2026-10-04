@@ -580,7 +580,11 @@ export function scanRunIdSeed(
   }
   const helper = extractSeedHelper(code);
   // 批次5: 播种读取读的是**本体** (actor.state.activeRun) —— 语义不变 (仍是"恰好一处, 且在播种体内")
-  const seedInHelper = (helper.match(/runId: this\.actor!\.state\.activeRun\b/g) || []).length;
+  // 2026-10-02 (K10 余项): 播种读取的形状从「对象字面量字段」变成「`composeRunSeed` 的实参」——
+  //   合并顺序 (runId 打底 · extra 覆盖) 已归内核 (`kernel/session-lifecycle.ts`), K2 的不变量**一字未松**:
+  //   两种形状**相加仍必须恰好 1 处**, 且仍只在 `seedRunContext` 体内 (循环内新增读取由上面的"总访问数 == 冻结值"覆盖)。
+  const seedInHelper = (helper.match(/composeRunSeed\(\s*this\.actor!\.state\.activeRun\b/g) || []).length
+    + (helper.match(/runId: this\.actor!\.state\.activeRun\b/g) || []).length;
   const seedAnywhere = (code.match(/runId: this\.currentRunId\b/g) || []).length;
   if (seedInHelper !== opts.seedReads) {
     out.push({ rule: 'runid-seed-count', file: 'agents/pi-sdk.ts', line: 1, what: `seedRunContext 体内播种读取 ${seedInHelper} 处 ≠ 冻结 ${opts.seedReads}` });

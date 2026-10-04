@@ -25,6 +25,11 @@ import { submitTransport, transportPeersSync, type TransportPorts } from '../ker
 import { submitRunControl, type RunControlPorts } from '../kernel/control.js';
 // K10 ②: 回合的模型经**内核运行时**只读取租约 (传输仍是 Pi 客户端 ⇒ 行为不变; 取不到如实回落)
 import { ModelRuntime, snapshotFromSelection, type ModelConnection, type ModelSnapshot } from '../kernel/model-runtime.js';
+// K10 余项: 会话生命周期的**规则**归内核 (落盘映射 · key 校验 · 读回过滤/水合 · 运行种子合并顺序), I/O 留本类经端口注入
+import {
+  submitSessionOp, assertSessionOk, composeRunSeed, filterSessionMessages, hydrateSessionMessages,
+  type SessionPorts, type PersistedLike,
+} from '../kernel/session-lifecycle.js';
 import { expandHomeArgs } from './tool-path-args.js';
 import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
 import { runWithWriteOrigin } from './skill-ledger.js';
@@ -538,7 +543,9 @@ export class PiAgentSession implements AgentSession {
    *   · K5 Channel Actor 完成后改为 `createRunContext({ runId: request.resumeRunId })`, 届时删除 `currentRunId` 字段本体。
    */
   private seedRunContext(extra: Partial<RunContext> = {}): RunContext {
-    return createRunContext({ runId: this.actor!.state.activeRun, ...extra });
+    // **K10 余项**: 合并顺序 (活跃运行打底 · extra 覆盖) 是内核规则 —— 与 `seed-run` 端口共用 `composeRunSeed`
+    //   "活跃运行"这一处读取仍**只在本方法体内** (K2 播种的唯一读点, 有门钉住); 合并顺序由内核给。
+    return createRunContext(composeRunSeed(this.actor!.state.activeRun, extra as Record<string, unknown>) as Partial<RunContext>);
   }
 
   /**
@@ -805,7 +812,7 @@ export class PiAgentSession implements AgentSession {
       if (this.actor) {
         const n = await this.actor.hydrateHistory<Message>({
           load: () => this._sessionStore.loadMessages(sessionKey),
-          filter: (loaded) => this._filterToMessage(loaded as PersistedMessage[]),
+          filter: (loaded) => filterSessionMessages(loaded as PersistedLike[]) as Message[],
           maxMessages,
         });
         if (n > 0) console.log(`[PiAgent] 从 ${sessionKey} 回灌 ${n} 条历史 (经 Channel Actor)`);
@@ -816,7 +823,7 @@ export class PiAgentSession implements AgentSession {
         console.log(`[PiAgent] hydrate: 没有 ${sessionKey} 的历史`);
         return;
       }
-      const hydrated = this._filterToMessage(loaded).slice(-maxMessages);
+      const hydrated = hydrateSessionMessages(loaded as PersistedLike[], maxMessages) as Message[];
       if (hydrated.length > 0) {
         this.replaceHistory(hydrated);
         console.log(`[PiAgent] 从 ${sessionKey} 回灌 ${hydrated.length} 条历史`);
@@ -837,20 +844,26 @@ export class PiAgentSession implements AgentSession {
    * 公开方法 — claude code / 外部 harness 在每次 prompt 完成后调一下,
    *   即可获得"重启 / 跨进程接续"的语义.
    */
+  /**
+   * **K10 余项**: 取数拍 (Actor 快照, 走邮箱 ⇒ 与 append 串行) 与真写入仍是本类的;
+   *   而「消息 → 持久形态」的**映射规则**与 key 校验搬进内核 (`submitSessionOp` 的 `save-session`)。
+   *   写不进 ⇒ 响亮失败 (`assertSessionOk`), 不静默继续。
+   */
   async saveCurrentSession(key: string): Promise<void> {
-    // **K5 第 4 步**: 取数拍走 Actor 的快照 (走邮箱 ⇒ 与 append 串行, 不会抓到"边写边读"的半截状态);
-    //   未绑定 actor 的会话走原路径 (行为不变)。
-    const source: Message[] = this.actor ? await this.actor.historySnapshot<Message>() : (this.actor!.state.messageHistory as Message[]);
-    const persisted: PersistedMessage[] = source.map((m) => ({
-      role: m.role,
-      content: m.content,
-      toolCall: m.toolCall,
-      toolResult: m.toolResult,
-      toolCallId: m.toolCallId,
-      timestamp: Date.now(),
-      source: 'pi-session',
-    }));
-    await this._sessionStore.saveMessages(key, persisted);
+    const out = await submitSessionOp({ op: 'save-session', origin: 'pi-session', key }, this.sessionPorts());
+    assertSessionOk(out);
+  }
+
+  /** K10 余项: 会话生命周期端口实现 —— I/O 留本类, 规则在内核 (`kernel/session-lifecycle.ts`) */
+  private sessionPorts(): SessionPorts {
+    return {
+      historySnapshot: () =>
+        (this.actor ? this.actor.historySnapshot<Message>() : (this.actor!.state.messageHistory as Message[])),
+      saveMessages: (key, messages) => this._sessionStore.saveMessages(key, messages as unknown as PersistedMessage[]),
+      loadMessages: (key) => this._sessionStore.loadMessages(key) as never,
+      // 注意: **故意不提供** `activeRunId` / `newRunContext` —— "活跃运行"的读取必须只有一处 (K2 播种唯一读点, 门钉住),
+      //   本类走的是**同步** `seedRunContext` + 内核的 `composeRunSeed`。异步 `seed-run` 端口留给别的调用方 (其语义由内核门覆盖)。
+    };
   }
 
   /**
@@ -870,42 +883,13 @@ export class PiAgentSession implements AgentSession {
    * 返回 Message[] 数组 (空数组表示无历史).
    */
   async peekSessionHistory(key: string, maxMessages: number = 30): Promise<Message[]> {
-    try {
-      const loaded = await this._sessionStore.loadMessages(key);
-      if (!loaded) return [];
-      return this._filterToMessage(loaded).slice(-maxMessages);
-    } catch {
-      return [];
-    }
+    // **K10 余项**: 读回过滤/水合规则归内核; 读失败 ⇒ 空数组, 但**原因进内核审计** (不再完全静默)
+    const out = await submitSessionOp({ op: 'peek-history', origin: 'pi-session', key, maxMessages }, this.sessionPorts());
+    return out.ok ? (out.result as Message[]) : [];
   }
 
-  /** hydrateMessageHistory 用的过滤逻辑 — 提到外面复用 */
-  private _filterToMessage(loaded: PersistedMessage[]): Message[] {
-    const hydrated: Message[] = [];
-    const VALID_ROLES = new Set(['user', 'assistant', 'tool', 'system']);
-    for (const m of loaded) {
-      // role 必须合法 (拒绝旧 schema {type:'user'} 没 role 字段的)
-      if (!VALID_ROLES.has(m.role as any)) continue;
-      // 跳过污染消息
-      if (typeof m.content === 'string' && m.content.startsWith('[AI 服务调用失败]')) continue;
-      if (typeof m.content === 'string' && m.content.startsWith('[错误:')) continue;
-      // 注意: '!m.content' 会跳过 content='' 的 tool call 消息 (assistant role + toolCall 字段),
-      //   这种是合法的 (LLM 输出只有 tool call, 没有正文) — 必须保留.
-      //   这里只跳过"无内容 + 也没 tool call/tool result"的废消息.
-      if (!m.content && !m.toolCall && !m.toolResult) continue;
-      // 跳过空 tool role (tool result 占位但没有任何内容)
-      if (m.role === 'tool' && !m.toolResult) continue;
-      hydrated.push({
-        role: m.role,
-        content: m.content ?? '',
-        toolCall: m.toolCall,
-        toolResult: m.toolResult,
-        toolCallId: m.toolCallId,
-      });
-    }
-    return hydrated;
-  }
-
+  // **K10 余项 (减法)**: 原来的 `_filterToMessage` (合法 role 白名单 · 剔污染消息 · 保留"只有 tool call 无正文"的合法消息)
+  //   已整条搬进内核 `kernel/session-lifecycle.ts` 的 `filterSessionMessages` —— 规则一处一份, 这里不再留副本。
   /** 暴露 store 给测试 / 高级集成用. */
   get sessionStoreInstance(): SessionStore {
     return this._sessionStore;
