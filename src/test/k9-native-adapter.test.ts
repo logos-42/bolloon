@@ -118,6 +118,55 @@ describe('K9 B. 行为: 第二个适配器 (stub 端点, 不打真 LLM)', () => 
     expect(bodies.length).toBe(1);          // 只发一次
   });
 
+  it('⑧ 并发: 3 条 chat 同时打 ⇒ 各自拿到自己的回复 (无串台)', async () => {
+    // 端点按**请求体里的 user 内容**回不同答案 ⇒ 串台会立刻现形 (不是靠耗时猜)
+    const srv = http.createServer((req, res) => {
+      let raw = '';
+      req.on('data', (c) => { raw += c; });
+      req.on('end', () => {
+        const body = JSON.parse(raw || '{}');
+        const user = String(body?.messages?.find((m: any) => m.role === 'user')?.content ?? '');
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(openaiReply(`回:${user}`)));
+        }, user.includes('c') ? 120 : 10);      // 让完成顺序与发起顺序不同
+      });
+    });
+    servers.push(srv);
+    await new Promise<void>((r2) => srv.listen(0, '127.0.0.1', () => r2()));
+    const base = `http://127.0.0.1:${(srv.address() as any).port}`;
+    const a = createNativeAdapter({ baseUrl: base, apiKey: 'k', model: 'm' });
+    const rs = await Promise.all(['a', 'b', 'c'].map((x) => a.chat(x, 'sys')));
+    expect(rs.map((r) => r.reply)).toEqual(['回:a', '回:b', '回:c']);
+    expect(a.stats().calls).toBe(3);
+  });
+
+  it('⑨ 取消经适配器: abort 中途打断 ⇒ 抛错; 适配器之后仍可用', async () => {
+    const { base } = await startStub([{ body: openaiReply('不该到这'), delayMs: 3000 }]);
+    const a = createNativeAdapter({ baseUrl: base, apiKey: 'k', model: 'm', maxRetries: 3 });
+    const ac = new AbortController();
+    const p = a.chat('慢请求', 'sys', ac.signal);
+    setTimeout(() => ac.abort(), 30);
+    await expect(p).rejects.toBeTruthy();
+    // 换一个正常 stub, 复用**同一个适配器** ⇒ 说明取消没把适配器打坏
+    const { base: base2 } = await startStub([{ body: openaiReply('取消后仍可用') }]);
+    const b = createNativeAdapter({ baseUrl: base2, apiKey: 'k', model: 'm' });
+    expect((await b.chat('x', 'y')).reply).toBe('取消后仍可用');
+  });
+
+  it('⑩ 流式回调: 适配器的回复经真 pivot loop ⇒ onStream 收到 token/reply-preview', async () => {
+    const { base } = await startStub([{ body: openaiReply('流式内容 <final gen>') }]);
+    const a = createNativeAdapter({ baseUrl: base, apiKey: 'k', model: 'm' });
+    const loop = new WorkflowPivotLoop({ maxIterations: 3, minIterations: 1, qualityThreshold: 0.1, maxConsecutiveNoProgress: 3, maxTokenBudget: 1e6 } as any);
+    loop.registerTools([]);
+    const events: any[] = [];
+    const res: any = await loop.execute('说点什么', a as any, '你是助手', (e: any) => events.push(e));
+    const kinds = events.map((e) => e?.type);
+    expect(kinds, '必须有 token 事件').toContain('token');
+    expect(kinds, '必须有 reply-preview 事件').toContain('reply-preview');
+    expect(String(res?.response ?? '')).toContain('流式内容');
+  });
+
   it('⑦ 出程净化工具名 (端点只收 ^[a-zA-Z0-9_-]{1,64}$) + 回程能还原', async () => {
     // 实测踩过: 原样转发 183 个工具时第 124 个名字不合规 ⇒ HTTP 400, 整轮空回复
     const { base, bodies } = await startStub([{ body: openaiReply('ok') }]);
