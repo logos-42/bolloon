@@ -274,6 +274,28 @@ export function actorCount(): number {
   return actors.size;
 }
 
+/**
+ * K8 收尾: **按 channel 中止** —— 给 UI 的终止按钮用 (`POST /api/chat/abort`)。
+ *
+ * 为什么是"扫描"而不是"按 channel 分桶": 注册表的键是**会话身份** (channel 前缀分桶曾被全量回归打红 ——
+ * 同 channel 下不同会话会互相看见 history)。终止只是**只读查找 + 动作**, 不改归属粒度 ⇒ 扫 `state.channelId` 即可。
+ *
+ * 返回**真的被中止了几个** —— 调用方据此回 `aborted: true/false`;
+ * 不许把"没找到 / 没在跑"说成"已中止" (那是谎报)。
+ */
+export function abortActorsOfChannel(channelId: string, reason = 'aborted'): number {
+  const cid = String(channelId || '');
+  if (!cid) return 0;
+  let aborted = 0;
+  for (const actor of actors.values()) {
+    if (actor.state.channelId !== cid) continue;
+    if (!actor.state.cancellation) continue;      // 没在跑 ⇒ 不算中止 (不强造一个 controller)
+    actor.abort(reason);
+    aborted += 1;
+  }
+  return aborted;
+}
+
 /** 清空注册表 —— **仅测试用** (避免测试之间互相污染) */
 export function resetActors(): void {
   actors.clear();

@@ -161,7 +161,7 @@ export const K8_PROGRESS: K8Progress = {
   //    同一次提交里 `didFixRunning` (通道自己的全局单飞) 被**真删掉** —— 收口本身是减项, 只是它先前没被登记。
   perChannelStateSymbols: 37,   // 10 文件 / 37 个状态符号 (含 4 个范围外)
   k8TargetSymbols: 33,          // 其中 **33** 个属 K8 收口对象 (棘轮: 只许减)
-  runStateSites: 21,            // 下一大目标的迁移工作面 (棘轮: 只许减)
+  runStateSites: 20,            // 下一大目标的迁移工作面 (棘轮: 只许减)
 };
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -230,14 +230,17 @@ export interface K8RunStateLedger {
 export const K8_CHANNEL_RUNSTATE: K8RunStateLedger = {
   file: 'src/web/server.ts',
   symbol: 'channelRunState',
-  sites: 21,   // 2026-10-02 量: 剥注释后 21 处 (总出现 25, 含 4 处注释)
+  sites: 20,   // 2026-10-02 收尾后真实值 20 (原 21; 中止位归 actor 时删掉 1 处用法) · 剥注释口径
   fields: [
     { name: 'running', role: 'observational',
       note: '**2026-10-02 正刀后已降为观测口径**: 串行权威归内核邮箱 (`getChannelQueue(channelId).submit`), `running` 只剩"这一轮是否在飞"的展示/判定用途 (UI 的 `queue_update` · `remoteFollowup` 的 `!matchedRs.running` · `/api/loop/inspect` 文案), 不再参与任何"能不能起跑"的判断' },
     // `queue` 字段 **已删除** (2026-10-02 正刀): 每条消息自己 `getChannelQueue(channelId).submit(...)`,
     //   通道不再持有队列 (随之删掉 `PendingMessage` 接口与 `runMessageFromQueue` 那条简化路径)。
-    { name: 'abortController', role: 'k8-target',
-      replacedBy: '`ExecutionRequest.signal` (K5 步骤⑦ 的请求面已有 `signal`) —— ⚠️ **abort 语义要单独定**, 不随队列一起顺手合并' },
+    // `abortController` 字段 **已删除** (2026-10-02 收尾): 中止位归**内核 actor** ——
+    //   `ChannelActor.beginCancellation()` 每次执行开一个新 controller (与邮箱串行一致) ·
+    //   `ChannelActor.abort(reason)` 中断它; UI 的终止按钮 (`POST /api/chat/abort`) 走
+    //   `abortActorsOfChannel(channelId, 'user abort')` (按 channel 扫描注册表, 返回**真的中止了几个**)。
+    //   ⇒ 通道状态里**不再留第二份**中止位 (该条原先挂在 `role: 'k8-target'` 下, 现已收口)。
     { name: 'lastSteps', role: 'observational', note: '供 `/api/loop/inspect` 的步骤累积 ⇒ 观测数据, 不是调度状态' },
     { name: 'lastSummary', role: 'observational', note: '同上: 最近一轮摘要 (检查接口用)' },
     { name: 'lastFinalReply', role: 'observational', note: '同上: 最近一次最终回复 (检查接口用)' },

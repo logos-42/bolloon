@@ -286,10 +286,10 @@ export const AUTHORITY_DEBT_FROZEN_AT = 0;   // 3 → 0 (K4 用内核控制面�
  * 目的只有一个: **不许所有逻辑回流到 kernel.ts**。要加就得显式抬这个数字, 留下痕迹。
  * 数值 = 当前 kernel 目录真实行数, 不留余量。
  */
-export const KERNEL_LINE_BUDGET = 3263;   // 2026-10-02 **显式抬档 +16** (K10 ④ 后半: transport.ts 加同步读入口 `transportPeersSync` + `peersSync` 端口)   // 2026-10-02 **显式抬档 +145** (K10 ④: 新增内核模块 kernel/transport.ts —— 通信入口端口)   // 2026-10-02 **显式抬档 +184** (K10 ①: 新增内核模块 kernel/run-lifecycle.ts —— 运行生命周期写口, 与 control.ts 的控制面分开; 预算 == 真实值)   // 2026-10-02: +1 (K4-B: gate-scan 复位阈值注释)   // 2026-10-02: +5 (K8 正刀: gate-scan 加"收口字段数 3→1"+ queue 反回归)   // 2026-10-02: +54 (K8: gate-scan 加 K8 判据)   // 2026-10-02: +2 (STAGE_STATUS 拆 K4-A/K4-B + K6/K7 如实修正)
+export const KERNEL_LINE_BUDGET = 3285;   // 2026-10-02 **显式抬档 +22** (K8 收尾: channel-actor 加 `abortActorsOfChannel` + 台账/门同步)   // 2026-10-02 **显式抬档 +16** (K10 ④ 后半: transport.ts 加同步读入口 `transportPeersSync` + `peersSync` 端口)   // 2026-10-02 **显式抬档 +145** (K10 ④: 新增内核模块 kernel/transport.ts —— 通信入口端口)   // 2026-10-02 **显式抬档 +184** (K10 ①: 新增内核模块 kernel/run-lifecycle.ts —— 运行生命周期写口, 与 control.ts 的控制面分开; 预算 == 真实值)   // 2026-10-02: +1 (K4-B: gate-scan 复位阈值注释)   // 2026-10-02: +5 (K8 正刀: gate-scan 加"收口字段数 3→1"+ queue 反回归)   // 2026-10-02: +54 (K8: gate-scan 加 K8 判据)   // 2026-10-02: +2 (STAGE_STATUS 拆 K4-A/K4-B + K6/K7 如实修正)
 
 /** 预算冻结值 (棘轮: 只许减; 想抬预算必须同时改上面那个数字 ⇒ 一次显式动作, diff 里看得见) */
-export const KERNEL_LINE_BUDGET_FROZEN_AT = 3263;   // 同步至 2026-10-02 真实值 (K10 ④ 新增 transport.ts 后)
+export const KERNEL_LINE_BUDGET_FROZEN_AT = 3285;   // 同步至 2026-10-02 真实值 (K10 ④ 新增 transport.ts 后)
 
 /**
  * K3b —— **台账数据**单独一档预算 (`src/kernel/plan.ts`)。
@@ -297,7 +297,7 @@ export const KERNEL_LINE_BUDGET_FROZEN_AT = 3263;   // 同步至 2026-10-02 真�
  * 为什么分开: K3 要防的是「逻辑回流到内核代码」; 台账是**数据** (owner 名册 / 入口图 / 删除候选),
  * 把它算进代码预算会逼着人抬代码上限, 棘轮的信号就废了。两档各自冻结, 都只许减。
  */
-export const KERNEL_PLAN_LINE_BUDGET = 1439;   // 2026-10-02: **收紧** -2 (queue 字段条目删除: 8 字段 → 7)   // 2026-10-02: +14 (K8 前置自纠: 把错的"check-then-set 非原子"换成已核实的"handoff 丢消息")   // 2026-10-02: K7 tscTool 端到端取证 (evidence 字段 + 变异/踩坑记录) ⇒ 显式抬档 +1   // 2026-10-02: K8 通道状态台账+门落地 ⇒ 显式抬档 (棘轮只许减, 抬档要一次显式动作)   // 真实值 (删 ENTRY_GRAPH 一行后); 变异用例要求预算 == 真实值   // 2026-10-02: +91 (K8 台账 plan-communication.ts 落地)   // 2026-10-02: +12 (K7 第二步 b: 旁路 status/symbol/evidence 字段 + 卫生规则注释 + 防漂用例)
+export const KERNEL_PLAN_LINE_BUDGET = 1442;   // 2026-10-02 **显式抬档 +3** (K8 收尾: plan-communication 把 abortController 条目改成删除说明)   // 2026-10-02: **收紧** -2 (queue 字段条目删除: 8 字段 → 7)   // 2026-10-02: +14 (K8 前置自纠: 把错的"check-then-set 非原子"换成已核实的"handoff 丢消息")   // 2026-10-02: K7 tscTool 端到端取证 (evidence 字段 + 变异/踩坑记录) ⇒ 显式抬档 +1   // 2026-10-02: K8 通道状态台账+门落地 ⇒ 显式抬档 (棘轮只许减, 抬档要一次显式动作)   // 真实值 (删 ENTRY_GRAPH 一行后); 变异用例要求预算 == 真实值   // 2026-10-02: +91 (K8 台账 plan-communication.ts 落地)   // 2026-10-02: +12 (K7 第二步 b: 旁路 status/symbol/evidence 字段 + 卫生规则注释 + 防漂用例)
 
 /** 台账预算冻结值 (棘轮: 只许减) */
-export const KERNEL_PLAN_LINE_BUDGET_FROZEN_AT = 1439;   // 同步至 2026-10-02 真实值
+export const KERNEL_PLAN_LINE_BUDGET_FROZEN_AT = 1442;   // 同步至 2026-10-02 真实值

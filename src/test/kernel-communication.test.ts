@@ -178,14 +178,19 @@ function fs2_real(text: string): string {
 }
 
 describe('K8 大目标门: channelRunState 迁移工作面 (台账 == 盘上, 按符号不按行号)', () => {
-  it('① 真跑: 台账与盘上**完全一致** (21 处用法 / 7 个字段都在接口里; queue 已删 · running 降观测)', () => {
+  it('① 真跑: 台账与盘上**完全一致** (20 处用法 / 6 个字段都在接口里; queue 已删 · running 降观测 · abortController 归 actor)', () => {
     expect(scanRunStateConsolidation(K8_CHANNEL_RUNSTATE, K8_PROGRESS, { readFile })).toEqual([]);
     const src = readFile('src/web/server.ts')!;
     expect(countSymbolOccurrences(src, 'channelRunState')).toBe(K8_CHANNEL_RUNSTATE.sites);
     expect(K8_CHANNEL_RUNSTATE.sites).toBe(K8_PROGRESS.runStateSites);          // 棘轮基线
-    expect(K8_CHANNEL_RUNSTATE.fields).toHaveLength(7);   // 8 → 7: `queue` 已删除 (2026-10-02 正刀)
+    // K8 收尾: 7 → 6 (abortController 条目已随收口改为注释说明)
+    expect(K8_CHANNEL_RUNSTATE.fields).toHaveLength(6);   // 8 → 7: `queue` 已删除 (2026-10-02 正刀)
     // 三种语义分开登记: **1 个真收口** (只剩 abort) + 5 观测 (running 已从收口降为观测) + 1 协作
-    expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'k8-target').map((f) => f.name)).toEqual(['abortController']);
+    // K8 收尾 (2026-10-02): 收口对象 **1 → 0** —— 最后一个 `abortController` 已归内核 actor
+    //   (`beginCancellation/abort`), 通道状态里不再留第二份中止位。
+    expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'k8-target').map((f) => f.name)).toEqual([]);
+    // 反回归 (只加不减): 字段名不许再出现 —— 回来了就说明中止位又被 web 自己持有了
+    expect(K8_CHANNEL_RUNSTATE.fields.map((f) => f.name)).not.toContain('abortController');
     expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'observational')).toHaveLength(5);
     expect(K8_CHANNEL_RUNSTATE.fields.filter((f) => f.role === 'domain-collab')).toHaveLength(1);
     for (const f of K8_CHANNEL_RUNSTATE.fields.filter((x) => x.role === 'k8-target')) {
@@ -199,7 +204,9 @@ describe('K8 大目标门: channelRunState 迁移工作面 (台账 == 盘上, �
   });
 
   it('② 判别力: 收口字段没写替代机制 / 非收口字段没写理由 ⇒ 判红 (不许静默豁免)', () => {
-    const noReplace = { ...K8_CHANNEL_RUNSTATE, fields: K8_CHANNEL_RUNSTATE.fields.map((f) => (f.name === 'abortController' ? { ...f, replacedBy: '' } : f)) };
+    // K8 收尾后**没有** k8-target 字段了 ⇒ 判别力夹具改为把**一个真实存在的接口字段**临时标成收口对象
+    //   (它必须仍能在接口里找到, 否则会先撞上"凭空造字段"那条)
+    const noReplace = { ...K8_CHANNEL_RUNSTATE, fields: K8_CHANNEL_RUNSTATE.fields.map((f) => (f.name === 'lastSummary' ? { ...f, role: 'k8-target' as const, replacedBy: '' } : f)) };
     expect(scanRunStateConsolidation(noReplace, K8_PROGRESS, { readFile }).some((x) => /没写替代机制/.test(x.what))).toBe(true);
     const noNote = { ...K8_CHANNEL_RUNSTATE, fields: K8_CHANNEL_RUNSTATE.fields.map((f) => (f.name === 'lastSummary' ? { ...f, note: '' } : f)) };
     expect(scanRunStateConsolidation(noNote, K8_PROGRESS, { readFile }).some((x) => /不许静默豁免/.test(x.what))).toBe(true);
@@ -223,7 +230,7 @@ describe('K8 大目标门: channelRunState 迁移工作面 (台账 == 盘上, �
       '  function __probeExtraUse(): number { return channelRunState.size; }\n  function getOrCreateRunState(channelId: string): ChannelRunState {'));
     expect(countSymbolOccurrences(mut, 'channelRunState')).toBe(K8_CHANNEL_RUNSTATE.sites + 1);
     const io = { readFile: (rel: string) => (rel === 'src/web/server.ts' ? mut : readFile(rel)) };
-    expect(scanRunStateConsolidation(K8_CHANNEL_RUNSTATE, K8_PROGRESS, io).some((x) => /用法数 台账=21 盘上=22/.test(x.what))).toBe(true);
+    expect(scanRunStateConsolidation(K8_CHANNEL_RUNSTATE, K8_PROGRESS, io).some((x) => /用法数 台账=20 盘上=21/.test(x.what))).toBe(true);
     expect(scanRunStateConsolidation(K8_CHANNEL_RUNSTATE, K8_PROGRESS, { readFile })).toEqual([]);   // 未变异 ⇒ 仍绿
   });
 });

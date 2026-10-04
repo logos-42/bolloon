@@ -1523,8 +1523,8 @@ export function scanRunStateConsolidation(
   // K8 正刀 (2026-10-02): 收口对象 **3 → 1** —— `queue` 已**删除** (每条消息自己进内核邮箱, 通道不再持队列),
   //   `running` 已**降为观测** (串行权威归邮箱); 只剩 `abortController` (abort 语义要单独定, 不随队列顺手合并)。
   //   棘轮: 只许减; 要加回来必须是一次显式动作 + 说明为什么。
-  if (ledger.fields.filter((x) => x.role === 'k8-target').length !== 1) {
-    f(`收口字段数应为 1 (只剩 abortController; queue 已删 · running 已降观测), 实际 ${ledger.fields.filter((x) => x.role === 'k8-target').length}`);
+  if (ledger.fields.filter((x) => x.role === 'k8-target').length !== 0) {
+    f(`收口字段数应为 0 (K8 收尾 2026-10-02: 最后一个 abortController 已归内核 actor —— beginCancellation/abort; queue 早前已删 · running 已降观测), 实际 ${ledger.fields.filter((x) => x.role === 'k8-target').length}`);
   }
   // 反回归: 已收口的 `queue` 不许悄悄溜回接口 (删于 2026-10-02 正刀)
   if (/(^|[^\w$])queue\s*:\s*\w+\[\]/.test(src)) f('已收口的字段 queue 又出现在接口里 (通道不该再持队列)');

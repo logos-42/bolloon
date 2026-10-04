@@ -130,7 +130,7 @@ import { documentReader } from '../documents/reader.js';
 import { initMinimax, getMinimax } from '../constraints/index.js';
 import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
 // **K5 步骤④ (入口投递)**: 把一次入口执行投进会话 Actor 的 mailbox ⇒ 同一会话身份的输入排队执行
-import { deliverThroughActor, getChannelQueue } from '../kernel/channel-actor.js';
+import { deliverThroughActor, getChannelQueue, abortActorsOfChannel } from '../kernel/channel-actor.js';
 import { requireRunExecution } from '../agents/execution-entry.js';   // K8 唯一执行入口的取用助手 (脱挂坑见该文件头)   // K8: 待办执行经内核邮箱串行
 import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
 import { videoConfigStore, type VideoProvider } from '../llm/video-config-store.js';
@@ -4842,7 +4842,9 @@ fetchState();
     const runState = getOrCreateRunState(channelId);
     const runChannelMessage = async (): Promise<void> => {
       runState.running = true;                     // 观测口径 (串行权威已归邮箱)
-      runState.abortController = new AbortController();
+      // K8 收尾 (2026-10-02): **中止位归内核 actor** —— `beginCancellation()` 每次执行开一个新 controller
+      //   (与邮箱串行一致), web 不再自己持 abortController。取到 agent 后立刻开户 (见下面 getAgentForChannel 之后)。
+      let abortSignal: AbortSignal | undefined;
     // 2026-07-04: pivot loop safety net — 防止 LLM hang (minimax M3
     //   偶尔反复 think 不输出 <final gen>, pivot 连 5 次无进展时会 hang 在
     //   quality 评估). setTimeout 让 LLM 客户端收 signal 主动 break.
@@ -4852,7 +4854,10 @@ fetchState();
     const PIVOT_FORCE_TIMEOUT_MS = 5 * 60 * 1000;
     const forceTimeout = setTimeout(() => {
       console.warn(`[server] /message pivot 强制 timeout (${PIVOT_FORCE_TIMEOUT_MS}ms), aborting`);
-      runState.abortController?.abort();
+      // K8 收尾: 中止经 actor; 拿不到 actor 就**如实记**"没能中止" (不静默)
+      const act = (agent as unknown as { actor?: { abort?: (r?: string) => void } } | null)?.actor;
+      if (act?.abort) act.abort('pivot 强制 timeout');
+      else console.warn('[K8] 强制 timeout 时没有 actor ⇒ 本次没能中止 (如实记)');
     }, PIVOT_FORCE_TIMEOUT_MS);
     broadcastQueueUpdate(channelId);
 
@@ -4862,6 +4867,8 @@ fetchState();
 
     try {
       agent = await getAgentForChannel(channelId, realChannelDid, realChannelName, realChannelDidDoc);
+      // K8 收尾: 这一次执行的取消位由 actor 开 (web 只持有它返回的 signal)
+      abortSignal = agent.actor ? agent.actor.beginCancellation() : undefined;
       let fullResponse = '';
       // P0.5: 注入门回传的 usedIds, 落 session message metadata, UI 可查
       let usedJudgmentIds: string[] = [];
@@ -5292,13 +5299,13 @@ fetchState();
         const request = {
           input: markedPrompt,
           channelId,
-          signal: runState.abortController?.signal,
+          signal: abortSignal,
           onStream: streamCallback,
         };
         fullResponse = await deliverThroughActor(agentForRun, () => agentForRun.runExecution!(request));
       } catch (err: any) {
         // abort 抛错: 保留已输出的部分 (fullResponse 可能是空字符串)
-        if (runState.abortController?.signal.aborted || err?.name === 'AbortError') {
+        if (abortSignal?.aborted || err?.name === 'AbortError') {
           console.log(`[chat] aborted channel=${channelId}`);
           // 2026-07-06: abort 时 fullResponse 可能为空 (LLM 还没输出), 必须给用户一个反馈
           if (!fullResponse.trim()) {
@@ -5318,7 +5325,7 @@ fetchState();
       const hasRealLlmOutput =
         fullResponse.trim().length > 0 &&
         !fullResponse.trimStart().startsWith('[AI 服务调用失败]');
-      if (runState.abortController?.signal.aborted && hasRealLlmOutput) {
+      if (abortSignal?.aborted && hasRealLlmOutput) {
         fullResponse = fullResponse + '\n\n_[生成已中断]_';
       }
 
@@ -5598,7 +5605,8 @@ fetchState();
   // 同 channel 串行 (避免 LLM 调用互踩上下文), 跨 channel 互不干扰
   interface ChannelRunState {
     running: boolean;
-    abortController: AbortController | null;
+    // K8 收尾 (2026-10-02): `abortController` 字段**已删除** —— 中止位归内核 actor
+    //   (`ChannelActor.beginCancellation()/abort()`), 通道状态里不再留第二份
     // 2026-06-16: loop 检查 — 最近一轮的步骤/摘要/最终回复/token
     lastSteps?: Array<{ name: string; status: string; durationMs?: number; output?: string }>;
     lastSummary?: string;
@@ -5612,7 +5620,7 @@ fetchState();
   function getOrCreateRunState(channelId: string): ChannelRunState {
     let s = channelRunState.get(channelId);
     if (!s) {
-      s = { running: false, abortController: null, lastSteps: [], lastSummary: '', lastFinalReply: '', lastTokens: {} };
+      s = { running: false, lastSteps: [], lastSummary: '', lastFinalReply: '', lastTokens: {} };
       channelRunState.set(channelId, s);
     }
     return s;
@@ -5637,7 +5645,7 @@ fetchState();
     // K8 正刀 (2026-10-02): **这里不再排空队列** —— 每条消息自己进内核邮箱, 通道不持有队列,
     //   也就不存在"同步置 running=false + 异步 handoff"那一步 (那一步会静默丢消息, 见先行门 ③)。
     runState.running = false;
-    runState.abortController = null;
+    // K8 收尾: 取消位不在这里复位 —— 它属于 actor, 下一次 beginCancellation() 自然换代
     broadcastQueueUpdate(channelId);
   }
 
@@ -7891,10 +7899,10 @@ app.post('/active-channel', async (req, res) => {
     try {
       const { channelId } = req.body as { channelId?: string };
       if (!channelId) return res.status(400).json({ error: 'channelId required' });
-      const s = channelRunState.get(channelId);
-      if (s?.abortController) {
-        s.abortController.abort();
-        console.log(`[abort] user aborted channel=${channelId}`);
+      // K8 收尾: 中止经内核 actor 注册表 (按 channel 扫描; 返回**真的中止了几个**)
+      const aborted = abortActorsOfChannel(channelId, 'user abort');
+      if (aborted > 0) {
+        console.log(`[abort] user aborted channel=${channelId} (${aborted} 个 actor)`);
         // 2026-08-02 fix: abort 后立即广播 done — 之前前端靠 1.5s 兜底 setTimeout 切回 idle,
         //   视觉上"点了没反应". 这里主动推 done, 前端 finalizeTimelineAsMessage + setSendMode('idle') 立刻生效.
         try {
