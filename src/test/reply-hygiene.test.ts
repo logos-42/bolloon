@@ -50,9 +50,19 @@ describe('发送点声明 — 这批行不许丢声明', () => {
   const TARGETS: { file: string; label: string; internal: string[]; visible: string[] }[] = [
     {
       file: PI_SDK,
-      label: 'pi-sdk (外层重试 + 收尾自检)',
+      label: 'pi-sdk (外层重试 + 收尾自检的转发端口)',
       internal: ['↻ 自动重试 loop ${attempt}/${MAX_LOOP_RETRIES}'],
-      visible: ['⛔ loop 自动重试 ${MAX_LOOP_RETRIES} 次后仍失败', '🔎 ${line}'],
+      // 2026-10-02 (K10 余项): `🔎 ${line}` 这条**用户可见状态行**随编排搬进了内核
+      //   (`kernel/turn-selfcheck.ts` 负责生成并 emit); pi-sdk 侧只剩**转发** ——
+      //   这里的 marker 改成转发口 (必须仍标 `type: 'status'`, 不许被吞成内部)。
+      visible: ['⛔ loop 自动重试 ${MAX_LOOP_RETRIES} 次后仍失败', "type: 'status', content: evt.content"],
+    },
+    {
+      file: path.resolve(__dirname, '..', 'kernel', 'turn-selfcheck.ts'),
+      label: 'kernel/turn-selfcheck (收尾自检的编排与政策)',
+      internal: [],
+      // 用户可见状态行在这里生成: 通过/没过一行 · 被门拒绝一行 (拒绝不静默)
+      visible: ['🔎 ${formatTypecheckResult(passed', '🔎 类型检查被门拒绝, 未执行', "type: 'status'"],
     },
     {
       file: path.resolve(__dirname, '..', 'agents', 'workflow-pivot-loop.ts'),

@@ -43,6 +43,8 @@ import { capToolResult } from './tool-result-gate.js';
 import { renderToolListWithParams } from './tool-subset.js';
 // K10 余项: 收尾自检的**规则**归内核 (`kernel/code-write-gate.ts`) —— 原来是 agents 侧的一个模块
 import { codeWriteTarget, decideTypecheck, formatTypecheckResult } from '../kernel/code-write-gate.js';
+// K10 余项: 收尾自检的**编排与政策**也归内核 (该不该跑 · 系统自检也过门 · 被拒不执行且可见 · 失败不影响回合)
+import { runTurnEndSelfCheck } from '../kernel/turn-selfcheck.js';
 // 2026-10-01: 身份解析必须**静态导入** —— 之前在函数体里用 require(), 而打包后是 ESM ⇒
 //   require 是 undefined ⇒ 抛错被 catch 静默吞掉 ⇒ "自愈"根本没跑, DID 一直是空的 ✗。
 import { loadOrCreateAgentIdentity } from './agent-identity.js';
@@ -2294,45 +2296,29 @@ ${await this.renderActivePlansSection()}
    * (`usePivotLoop: true`, `promptWithPivotLoop` 提前 return) ⇒ 这条"系统自检过门"在**生产根本没触发过**。
    * 抽成方法后两条 loop 路径都调它 (一次一轮, 由 `typecheckRanThisTurn` 保证)。
    */
+  /**
+   * **K10 余项**: 编排与政策归内核 (`kernel/turn-selfcheck.ts`) —— 这里只做三件事: 取工具 · 问门 · 上报。
+   *   语义 (该不该跑 · 系统自检也过门 · 被拒不执行且可见 · 失败不影响回合) 由内核拥有, 换入口不必各写一份。
+   *   状态维护 (一轮只跑一次 / 清空本回合触达) 跟内核的 `decided` 走: 与迁移前逐条一致。
+   */
   private async runTurnEndTypecheck(): Promise<void> {
-        // 2026-10-01: **本回合改过 TS ⇒ 收尾自动类型检查** (一轮一次) —— 复用已有的 tsc_check 工具
-        if (decideTypecheck(this.tsTouchedThisTurn, this.typecheckRanThisTurn)) {
-          this.typecheckRanThisTurn = true;
-          try {
-            const tscTool: any = this.tools.get('tsc_check');
-            if (tscTool?.execute) {
-              // 2026-10-02 (K7): **系统自检也过门** —— 统一成"任何工具执行都走同一扇 Harness 门"。
-              //   这里不是模型发起的工具调用 (args 恒空, 是本回合改过 TS 后的收尾自检), 所以**更**不能例外:
-              //   例外一旦靠"没人知道它绕过"活着, 门就不再是唯一的执行咽喉。
-              //   语义: 被拒或门抛错 ⇒ **不执行** (fail-closed), 且**可见**地报出来 (拒绝不许静默)。
-              let tscAllowed = true;
-              let tscWhy = '';
-              try {
-                const d = await this.piHarness().beforeToolCall({
-                  tool: 'tsc_check',
-                  args: {},
-                  ctx: this.harnessCtx(),
-                  permissionMode: this.currentPermissionMode,
-                });
-                tscAllowed = d.allow;
-                tscWhy = d.reason || d.rejectedBy || '';
-              } catch (gateErr) {
-                tscAllowed = false;
-                tscWhy = `harness-error: ${String((gateErr as Error)?.message || gateErr)}`;
-              }
-              if (!tscAllowed) {
-                this.runCtx.eventSink?.({ type: 'status', content: `🔎 类型检查被门拒绝, 未执行: ${tscWhy.slice(0, 120)}`, tool: 'system' } as any);
-              } else {
-                const r: any = await tscTool.execute({});
-                const line = formatTypecheckResult(r?.success !== false && !/error TS\d+/.test(String(r?.output || '')), String(r?.output || ''));
-                this.runCtx.eventSink?.({ type: 'status', content: `🔎 ${line}`, tool: 'system' } as any);
-              }
-            }
-          } catch (e: any) {
-            this.runCtx.eventSink?.({ type: 'status', content: `🔎 类型检查没能跑起来: ${String(e?.message || e).slice(0, 100)} (改动已落盘, 记得自己跑一次)`, tool: 'system' } as any);
-          }
-          this.tsTouchedThisTurn = [];
-        }
+    const out = await runTurnEndSelfCheck(
+      { touched: this.tsTouchedThisTurn, ranThisTurn: this.typecheckRanThisTurn },
+      {
+        getTool: (name) => this.tools.get(name) as { execute?: (args: Record<string, unknown>) => Promise<unknown> } | undefined,
+        askGate: async (req) => this.piHarness().beforeToolCall({
+          tool: req.tool,
+          args: req.args,
+          ctx: this.harnessCtx(),
+          permissionMode: this.currentPermissionMode,
+        }),
+        emit: (evt) => this.runCtx.eventSink?.({ type: 'status', content: evt.content, tool: 'system' } as any),
+      },
+    );
+    if (out.decided) {
+      this.typecheckRanThisTurn = true;
+      this.tsTouchedThisTurn = [];
+    }
   }
 
   // 2026-10-02 K4-B: 老 `runReActLoop` **已删除** (原 1123 行) —— 它曾经是"第二条 loop"

@@ -167,15 +167,21 @@ describe('K7 台账门: Harness 唯一系统调用门', () => {
   });
 
   it('② K7 系统自检 (tsc_check) 也过门: 判定在 execute 之前 + 拒绝分支不执行 + 拒绝可见 (机械)', () => {
-    const sdk = fs.readFileSync(path.join(ROOT, 'src/agents/pi-sdk.ts'), 'utf8');
-    const gateIdx = sdk.indexOf("const tscTool: any = this.tools.get('tsc_check');");
-    const execIdx = sdk.indexOf('const r: any = await tscTool.execute({});');
+    // 2026-10-02 (K10 余项): 编排与政策从 pi-sdk 的方法体搬进 `src/kernel/turn-selfcheck.ts`
+    //   ⇒ **形状跟着走, 不变量一条不松**: 判定在 execute 之前 · 拒绝分支存在且**执行前就 return** ·
+    //     拒绝文案存在 (拒绝不许静默) · 外加一条反向断言: pi-sdk 里旧形状不许回来。
+    const sc = fs.readFileSync(path.join(ROOT, 'src/kernel/turn-selfcheck.ts'), 'utf8');
+    const gateIdx = sc.indexOf('const d = await ports.askGate(');
+    const execIdx = sc.indexOf('const r = (await tool.execute({}))');
     expect(gateIdx).toBeGreaterThan(0);
     expect(execIdx).toBeGreaterThan(gateIdx);          // 判定在前
-    const seg = sdk.slice(gateIdx, execIdx);
-    expect(seg).toContain('beforeToolCall');
-    expect(seg).toContain('if (!tscAllowed)');
+    const seg = sc.slice(gateIdx, execIdx);
+    expect(seg).toContain('if (!allowed)');
     expect(seg).toContain('类型检查被门拒绝, 未执行');    // 拒绝**可见** (不许静默跳过)
+    expect(seg, '拒绝分支必须在执行之前 return (不执行才是 fail-closed)').toContain('return { ran: false');
+    const sdk = fs.readFileSync(path.join(ROOT, 'src/agents/pi-sdk.ts'), 'utf8');
+    expect(sdk, 'pi-sdk 里不许再直接取 tsc_check 工具').not.toContain("this.tools.get('tsc_check')");
+    expect(sdk, 'pi-sdk 里不许再直接执行 tsc 工具').not.toContain('tscTool.execute');
   });
 
   it('② K7 第二步 b 接线在盘上: pivot loop 的配置里注入了同一个门 (机械)', () => {
