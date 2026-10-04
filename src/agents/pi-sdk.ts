@@ -18,7 +18,7 @@ import { type RunContext, createRunContext } from './run-context.js';
 import { createPrivateActor, type ChannelActor, type ExecutionRequest } from '../kernel/channel-actor.js';
 // K10 ①: 运行生命周期写入经内核端口 (与 kernel/control.ts 的控制面分开 —— 一个回答"谁命令我停",
 //   一个回答"我这一轮发生了什么"; 失败语义也不同: 控制面被拒 → 409, 事实写不进 → 响亮失败)
-import { submitRunLifecycle, assertLifecycleOk } from '../kernel/run-lifecycle.js';
+import { submitRunLifecycle, assertLifecycleOk, decideResumeReinstall, pickRunIdForResume, type RunLifecyclePorts } from '../kernel/run-lifecycle.js';
 // K10 ④: 通信发送入口经内核端口 (上层不再直接对某条传输说话; 换传输只改这一处注入)
 import { submitTransport, transportPeersSync, type TransportPorts } from '../kernel/transport.js';
 // K10 ①: run 状态迁移经内核**控制面**端口 (它本来就管"谁命令这条 run 改状态": 带 origin 审计 + 拒绝归一化)
@@ -41,7 +41,8 @@ import { IterationBudget, isRefundableTool } from './iteration-budget.js';
 import { recordToolCall, argsFingerprint } from './tool-telemetry.js';
 import { capToolResult } from './tool-result-gate.js';
 import { renderToolListWithParams } from './tool-subset.js';
-import { codeWriteTarget, decideTypecheck, formatTypecheckResult } from './code-write-gate.js';
+// K10 余项: 收尾自检的**规则**归内核 (`kernel/code-write-gate.ts`) —— 原来是 agents 侧的一个模块
+import { codeWriteTarget, decideTypecheck, formatTypecheckResult } from '../kernel/code-write-gate.js';
 // 2026-10-01: 身份解析必须**静态导入** —— 之前在函数体里用 require(), 而打包后是 ESM ⇒
 //   require 是 undefined ⇒ 抛错被 catch 静默吞掉 ⇒ "自愈"根本没跑, DID 一直是空的 ✗。
 import { loadOrCreateAgentIdentity } from './agent-identity.js';
@@ -2182,7 +2183,8 @@ ${await this.renderActivePlansSection()}
    * 而 Supervisor / 控制面要在运行结束后才知道"刚才跑的是哪条 run" (否则会拿旧 run 做决策)。
    */
   getLastRunId(): string {
-    return this.lastRunId || this.actor!.state.activeRun;
+    // K10 余项: 取值优先级 (显式 lastRunId 优先 · 回落活跃运行) 是**内核规则**
+    return pickRunIdForResume(this.lastRunId, this.actor!.state.activeRun);
   }
 
   /**
@@ -2214,7 +2216,8 @@ ${await this.renderActivePlansSection()}
     //   否则这次恢复就是"带着漂移继续跑", 之后再存快照会把漂移固化成历史。
     //   只在"漂了"或"核对不了"时重装 (一致时运行时本来就是对的, 重装是白跑一趟)。
     //   装配只有一处实现: `applyRunModelConfigToRuntime` → `installRuntime` (这里不自己 initMinimax)。
-    if (modelDrift && (modelDrift.drifted || !modelDrift.verified)) {
+    // K10 余项: 「要不要按 Run 快照重装」是**内核规则** (`decideResumeReinstall`) —— 一致时不重装, 漂了/核对不了才装
+    if (modelDrift && decideResumeReinstall(modelDrift)) {
       try {
         const { applyRunModelConfigToRuntime } = await import('../llm/model-selection.js');
         modelApplied = await applyRunModelConfigToRuntime(modelDrift.snapshot);

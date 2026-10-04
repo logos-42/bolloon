@@ -39,6 +39,30 @@ export interface RunLifecycleRequest {
 }
 
 /** 写原语 (由调用方注入; 内核只认形状) —— 对应 run-store 的 startRun/recordStep/finishRun/saveCheckpoint */
+// ── K10 余项: 恢复相关的**纯规则** (从 pi-sdk 方法体里搬出来, 可单独判) ──────────
+
+/**
+ * 恢复一次运行前, **要不要按 Run 快照重装运行时**。
+ *   规则: 一致 (`drifted=false` 且 `verified=true`) ⇒ **不重装** (运行时本来就是对的, 重装是白跑一趟);
+ *   漂了 (`drifted`) 或**核对不了** (`verified!==true`) ⇒ 装 (带着漂移继续跑会把漂移固化成历史)。
+ *   没有核对结论 (`undefined`) ⇒ 不装 (核对失败不阻塞恢复, 与迁移前一致)。
+ */
+export function decideResumeReinstall(
+  drift: { drifted?: unknown; verified?: unknown } | null | undefined,
+): boolean {
+  if (!drift) return false;
+  return drift.drifted === true || drift.verified !== true;
+}
+
+/**
+ * "上一次运行"的取值规则: **显式记录的 lastRunId 优先**, 没有才回落当前活跃运行。
+ *   为什么是规则: Supervisor / 控制面要在运行结束后问"刚才跑的是哪条 run",
+ *   而重启一轮时活跃运行已经被清空 —— 二者优先级搞反会让上层拿旧 run 做决策。
+ */
+export function pickRunIdForResume(lastRunId: string | undefined, activeRunId: string | undefined): string {
+  return String(lastRunId || activeRunId || '');
+}
+
 export interface RunLifecyclePorts {
   startRun?(payload: Record<string, unknown>): Promise<unknown>;
   recordStep?(runId: string, step: Record<string, unknown>): Promise<unknown>;

@@ -102,6 +102,26 @@ describe('K10-A. 端口: 未注入即拒 / 派发 / 归一化 / 校验 / 审计'
   });
 });
 
+describe('K10 余项. 恢复规则 (纯函数, 从 pi-sdk 方法体搬来)', () => {
+  it('decideResumeReinstall: 一致不重装 · 漂了/核对不了要装 · 无结论不装', async () => {
+    const { decideResumeReinstall } = await import('../kernel/run-lifecycle.js');
+    expect(decideResumeReinstall({ drifted: false, verified: true })).toBe(false);   // 一致 ⇒ 不白跑一趟
+    expect(decideResumeReinstall({ drifted: true, verified: true })).toBe(true);     // 漂了 ⇒ 装
+    expect(decideResumeReinstall({ drifted: false, verified: false })).toBe(true);   // 核对不了 ⇒ 装
+    expect(decideResumeReinstall({ drifted: false })).toBe(true);                    // verified 缺失 = 核对不了
+    expect(decideResumeReinstall(undefined)).toBe(false);                            // 没有结论 ⇒ 不装 (不阻塞恢复)
+    expect(decideResumeReinstall(null)).toBe(false);
+  });
+
+  it('pickRunIdForResume: 显式 lastRunId 优先, 没有才回落活跃运行', async () => {
+    const { pickRunIdForResume } = await import('../kernel/run-lifecycle.js');
+    expect(pickRunIdForResume('run-last', 'run-active')).toBe('run-last');
+    expect(pickRunIdForResume('', 'run-active')).toBe('run-active');
+    expect(pickRunIdForResume(undefined, 'run-active')).toBe('run-active');
+    expect(pickRunIdForResume(undefined, undefined)).toBe('');
+  });
+});
+
 describe('K10-B. 接线不许退化: pi-sdk 的那三处只许经端口', () => {
   it('回退路径的 run 事实写入不再直接调 run-store 的 startRun/recordStep/finishRun', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/agents/pi-sdk.ts'), 'utf8');

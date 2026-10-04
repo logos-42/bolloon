@@ -5,7 +5,7 @@
  *   缺的是"**改完自动跑**" ⇒ 这条门锁住"自动"这条链路 ✓。
  */
 import { describe, it, expect } from 'vitest';
-import { codeWriteTarget, decideTypecheck, formatTypecheckResult, isTypeScriptFile } from '../agents/code-write-gate.js';
+import { codeWriteTarget, decideTypecheck, formatTypecheckResult, isTypeScriptFile } from '../kernel/code-write-gate.js';
 
 describe('代码写改 ⇒ 类型门', () => {
   it('只对 TS/TSX 源码生效 (改 md/py/json 不该触发 tsc)', () => {
