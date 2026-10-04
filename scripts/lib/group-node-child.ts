@@ -25,7 +25,13 @@ import { appendEvent, listShards, manifestStoreName, readTail, waitForManifest }
 
 interface Spec {
   home: string;
-  phase: 'create_and_send' | 'join_and_wait' | 'open_and_wait' | 'send_only' | 'probe_sync' | 'shard_append' | 'shard_tail';
+  phase: 'create_and_send' | 'join_and_wait' | 'open_and_wait' | 'send_only' | 'probe_sync' | 'shard_append' | 'shard_tail' | 'module_ops';
+  /** module_ops 用: create(建群+发 count 条) | join_read(拨号入群→等齐→回写) | read_only(只按 groupId 读) */
+  mode?: 'create' | 'join_read' | 'read_only';
+  /** module_ops create 用: 群写入权限。缺省 = 创建者独占 (2026-10-01 P1 起的默认); 'open' = 谁拿链接都能发言 */
+  acl?: 'open' | 'creator';
+  link?: string;
+  groupId?: string;
   group?: string;
   address?: string;
   addrs?: string[];
@@ -118,6 +124,91 @@ async function main(): Promise<void> {
             keysHash: hash.hash, seen: hash.seen, diskBytes: diskBytes(dataDir), totalMs: Date.now() - t0 });
       await holdIfAsked(db);
       await db.close();
+      process.exit(0);
+    }
+
+    if (spec.phase === 'module_ops') {
+      // 2026-10-02 (leo: 「跨节点读回要真验」): 走**群模块** —— 与 AI 的 group_read / group_say / group_autopilot
+      //   背后**同一批函数** (createGroup/joinGroup/groupMessages/groupSend), 不是裸 store 原语。
+      //   群模块的 dataDir 与 groups 文件都认本进程 HOME/BOLLOON_HOME (2026-10-02 才修) ⇒ 这里显式设成本节点 HOME。
+      process.env.BOLLOON_HOME = spec.home;
+      const gw = await import('../../src/agents/gateway-group.js');
+      // ⚠ 2026-10-02: 与群模块**共用同一个** CID/helia 节点 (模块的 getDb() = getCIDDatabase())。
+      //   同进程再起一个 adapter 会共用同一个 dataDir/keystore ⇒ 两个节点抢单写锁 ⇒ 出现「一绿一红」的假象。
+      const { getCIDDatabase } = await import('../../src/orbitdb/cid-database.js');
+      const cdb = getCIDDatabase();
+      const mode = spec.mode ?? 'create';
+      const fsum = (ms: Array<{ from: string; text: string }>): string =>
+        crypto.createHash('sha256').update(ms.map((m) => `${m.from}|${m.text}`).join('\n')).digest('hex').slice(0, 16);
+
+      if (mode === 'create') {
+        const r = await gw.createGroup(spec.group || 'p0-module', spec.acl ? { acl: spec.acl } : undefined);
+        const gid = (r as unknown as { group: { id: string } }).group.id;
+        // 邀请链接走模块自己的口 (group 对象不一定带 link) —— 与 CLI `task group link` 同口径
+        const link = await gw.groupLink(gid).catch(() => null);
+        const tSend = Date.now();
+        for (let i = 0; i < (spec.count ?? 0); i++) await gw.groupSend(gid, `m${i}`, spec.from || 'A');
+        const msgs = await gw.groupMessages(gid, 1000);
+        out({ ...base, ok: true, mode, groupId: gid, link,
+              seen: msgs.length, keysHash: fsum(msgs), sendMs: Date.now() - tSend,
+              peerId: cdb.peerId, addrs: cdb.listenAddrs(), diskBytes: diskBytes(dataDir), totalMs: Date.now() - t0 });
+        await holdIfAsked(db);
+        /* 与群模块共用同一节点 ⇒ 不在这里关 (进程退出即结束) */
+        process.exit(0);
+      }
+
+      if (mode === 'join_read') {
+        // 2026-10-02: 拨号**重试**且**一次都不许静默吞错** —— 上一版把拨号异常吞了,
+        //   红的时候完全看不出是"没连上"还是"连上了没落块"(违反仓里「失败有没有被吞」那条规矩)。
+        const dialErrors: string[] = [];
+        const dials = spec.addrs ?? [];
+        for (let attempt = 1; attempt <= 4; attempt++) {
+          let ok = 0;
+          for (const a of dials) {
+            try { await cdb.dial(a); ok++; } catch (e) { dialErrors.push(`try${attempt} ${a.slice(-24)}: ${String((e as Error)?.message ?? e).slice(0, 80)}`); }
+          }
+          if (ok > 0) break;
+          await new Promise((res) => setTimeout(res, 750 * attempt));
+        }
+        const j = await gw.joinGroup(spec.link!);
+        const gid = (j as unknown as { group?: { id: string } }).group?.id ?? spec.groupId!;
+        const want = spec.waitFor ?? 1;
+        const tWait = Date.now();
+        const deadline = Date.now() + (spec.timeoutMs ?? 60_000);
+        let seen = 0;
+        let lastError: string | null = null;
+        let attempts = 0;
+        while (Date.now() < deadline) {
+          attempts++;
+          try { seen = (await gw.groupMessages(gid, 1000)).length; lastError = null; }
+          catch (e) { lastError = String((e as Error)?.message ?? e).slice(0, 160); }
+          if (seen >= want) break;
+          await new Promise((res) => setTimeout(res, spec.pollMs ?? 500));
+        }
+        const spoke = await gw.groupSend(gid, `回写-${spec.from || 'B'}`, spec.from || 'B');
+        const after = await gw.groupMessages(gid, 1000);
+        out({ ...base, ok: seen >= want, mode, groupId: gid, seen, want, waitMs: Date.now() - tWait, polls: attempts,
+              dialAttempts: dials.length, dialErrors: dialErrors.slice(0, 6), lastError,
+              spoke: spoke.ok, spokeError: spoke.error ?? null, afterSeen: after.length, keysHash: fsum(after),
+              peerId: cdb.peerId, addrs: cdb.listenAddrs(), diskBytes: diskBytes(dataDir), totalMs: Date.now() - t0 });
+        await holdIfAsked(db);
+        /* 与群模块共用同一节点 ⇒ 不在这里关 (进程退出即结束) */
+        process.exit(seen >= want ? 0 : 1);
+      }
+
+      // read_only: 本节点重启后按 groupId 读 (验「对方写进来的, 我这边能读到」)
+      //   ⚠ 供块的节点必须活着, 且**读的一方要拨它** (门自己的规矩, S4 就是这么过的)
+      for (const a of spec.addrs ?? []) { try { await cdb.dial(a); } catch { /* 拨不通就靠 pubsub 发现 */ } }
+      const want2 = spec.waitFor ?? 1;
+      const dl2 = Date.now() + (spec.timeoutMs ?? 60_000);
+      let msgs = await gw.groupMessages(spec.groupId!, 1000);
+      while (msgs.length < want2 && Date.now() < dl2) {
+        await new Promise((res) => setTimeout(res, spec.pollMs ?? 500));
+        try { msgs = await gw.groupMessages(spec.groupId!, 1000); } catch { /* 还没落块 */ }
+      }
+      out({ ...base, ok: true, mode, groupId: spec.groupId, seen: msgs.length, keysHash: fsum(msgs),
+            peerId: cdb.peerId, addrs: cdb.listenAddrs(), diskBytes: diskBytes(dataDir), totalMs: Date.now() - t0 });
+      /* 与群模块共用同一节点 ⇒ 不在这里关 (进程退出即结束) */
       process.exit(0);
     }
 

@@ -189,6 +189,42 @@ async function main(): Promise<void> {
   console.log('');
 
   // ── P0 数字表 (方案 §2 四个量里的三个; 线上字节未单独采集, 如实注明)
+  // ── S5 (2026-10-02, leo「跨节点读回要真验」): 走**群模块** —— AI 的 group_read / group_say /
+  //   group_autopilot 背后**同一批函数** (createGroup / joinGroup / groupMessages / groupSend),
+  //   不是裸 store 原语。回环 = A 建群写 → B 拨号入群读 + 回写 → A 重启读回 B 那一条。
+  console.log('   S5 · 群模块跨节点 (A 建群写 → B 入群读+回写 → A 重启读回)');
+  //   ⚠ 建群默认 = **创建者独占** (2026-10-01 P1) ⇒ 要验"入群后能发言"必须建 acl:'open' 的群
+  //     (产品语义: 谁拿到邀请链接都能发言)。独占群下 B 写不进去是**正确行为**, 不是 bug。
+  const a5 = holdNode(path.join(ROOT, 's5-a'), { phase: 'module_ops', mode: 'create', group: 'p0-module', count: 50, from: 'A', acl: 'open' });
+  const A5 = await a5.result;
+  console.log(`      A(群模块): 建群 ${String(A5.groupId).slice(0, 16)}… 写 ${A5.seen} 条 用时 ${A5.sendMs}ms 磁盘=${kb(A5.diskBytes)}`);
+  if (!A5.link) console.log('      ⚠ A 没拿到邀请链接 (groupLink 返回空) —— B 只能靠 groupId, 会测不到"入群"这一步');
+  //   ⚠ B 必须**常驻**: 它写进去的那一条, 只有它在线时 A 才拿得到 (门自己的规矩: 供块方要活着)
+  const b5 = holdNode(path.join(ROOT, 's5-b'), {
+    phase: 'module_ops', mode: 'join_read', link: A5.link, groupId: A5.groupId,
+    addrs: dialableAddrs(A5.addrs), waitFor: 51, from: 'B', timeoutMs: 120000,
+  });
+  const B5 = await b5.result;
+  console.log(`      B(群模块): 入群后读到 ${B5.seen} 条 等 ${B5.waitMs}ms 回写=${B5.spoke} 回写后自见 ${B5.afterSeen} 条`);
+  if (B5.openError) console.log(`      读失败: ${String(B5.openError).slice(0, 160)}`);
+  // 2026-10-02: 红的时候必须能看出"没连上"还是"连上了没落块" —— 上一版这里什么都没有
+  console.log(`      拨号: ${(dialableAddrs(A5.addrs) as string[]).length} 个地址 · 错误 ${Array.isArray(B5.dialErrors) ? (B5.dialErrors as string[]).length : 0} 条 · 轮询 ${B5.polls ?? '?'} 次`);
+  if (Array.isArray(B5.dialErrors) && (B5.dialErrors as string[]).length) console.log(`      拨号错误样本: ${String((B5.dialErrors as string[])[0]).slice(0, 140)}`);
+  if (B5.lastError) console.log(`      最后一次读错: ${String(B5.lastError).slice(0, 160)}`);
+  check('S5 群模块: B 经 joinGroup + groupMessages 读到 A 的 51 条', Number(B5.seen) >= 51, `seen=${B5.seen} (期望 ≥51)`);
+  check('S5 群模块: B 用 groupSend 回写成功 (非创建者可写)', B5.spoke === true, `spoke=${B5.spoke}`);
+  a5.kill();
+  const A5b = await runNode(path.join(ROOT, 's5-a'), {
+    phase: 'module_ops', mode: 'read_only', groupId: A5.groupId,
+    addrs: dialableAddrs(B5.addrs), waitFor: 52, timeoutMs: 60000,
+  });
+  b5.kill();
+  console.log(`      A 重启(群模块只读): 读到 ${A5b.seen} 条 指纹=${A5b.keysHash}`);
+  check('S5 群模块: A 重启后读到 51 + B 回写 1 = 52 条', Number(A5b.seen) >= 52, `seen=${A5b.seen} (期望 ≥52)`);
+  check('S5 群模块: B 侧集合是 A 侧的超集 (回写那条确实进了同一 store)',
+    Number(B5.afterSeen) >= 52 && Number(A5b.seen) >= 52, `B=${B5.afterSeen} A=${A5b.seen}`);
+  console.log('');
+
   console.log('   P0 数字表 (真两节点, 单机 loopback):');
   console.log('      场景                    N      对端拿齐耗时   对端磁盘    供块方磁盘');
   console.log(`      S1 新节点拿全量       101   ${String(B1.waitedMs ?? '-').padStart(8)}ms   ${kb(B1.diskBytes).padStart(9)}   ${kb(A1.diskBytes).padStart(9)}`);
