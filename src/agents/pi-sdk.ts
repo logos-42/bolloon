@@ -21,6 +21,8 @@ import { createPrivateActor, type ChannelActor, type ExecutionRequest } from '..
 import { submitRunLifecycle, assertLifecycleOk } from '../kernel/run-lifecycle.js';
 // K10 ④: 通信发送入口经内核端口 (上层不再直接对某条传输说话; 换传输只改这一处注入)
 import { submitTransport, type TransportPorts } from '../kernel/transport.js';
+// K10 ①: run 状态迁移经内核**控制面**端口 (它本来就管"谁命令这条 run 改状态": 带 origin 审计 + 拒绝归一化)
+import { submitRunControl, type RunControlPorts } from '../kernel/control.js';
 import { expandHomeArgs } from './tool-path-args.js';
 import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
 import { runWithWriteOrigin } from './skill-ledger.js';
@@ -2003,16 +2005,35 @@ ${await this.renderActivePlansSection()}
     this.actor!.state.goalBinding = String(goalId || '');
   }
 
-  /** 核心状态迁移的兜底: 失败 → 记降级 + 交给循环顶部的持久化硬闸 (不吞错) */
+  /**
+   * K10 ①: 控制面的**注入面** —— 写原语来自 run-store, 但调用一律经 `submitRunControl`
+   *   (与 `transportPorts()` 同一个模式: 换实现只改这一处, 上层不直接对 store 说话)。
+   */
+  private runControlPorts(): RunControlPorts {
+    return {
+      setRunStatus: setRunStatus as unknown as (runId: string, status: string, meta?: Record<string, unknown>) => Promise<unknown>,
+      recordRecovery: recordRecovery as unknown as (runId: string, info: Record<string, unknown>) => Promise<unknown>,
+    };
+  }
+
+  /**
+   * 核心状态迁移的兜底: 失败 → 记降级 + 交给循环顶部的持久化硬闸 (不吞错)。
+   * K10 ①: 迁移动作经内核控制面; **口径不变** ——
+   *   `{ok:false}` 且原因是"端口拒绝"(状态迁移不合法) ⇒ 只返回 false (那不是持久化故障);
+   *   未注入 / 抛错 ⇒ 才算持久化失败, 记降级 (与旧实现同款)。
+   */
   private async safeSetRunStatus(runId: string, to: RunStatus): Promise<boolean> {
-    try {
-      const r = await setRunStatus(runId, to);
-      return !!r.ok;
-    } catch (err) {
-      this.persistenceFailure = `状态迁移失败 (${to}): ${String((err as Error)?.message || err).slice(0, 180)}`;
+    const out = await submitRunControl(
+      { kind: 'set-run-status', origin: 'pi-session', runId, payload: { status: to } },
+      this.runControlPorts(),
+    );
+    if (out.ok) return true;
+    const detail = String(out.detail || '未知原因');
+    if (!detail.startsWith('端口拒绝')) {
+      this.persistenceFailure = `状态迁移失败 (${to}): ${detail.slice(0, 180)}`;
       await recordDegradation({ kind: 'core', op: 'pi-sdk.setRunStatus', runId, message: this.persistenceFailure }).catch(() => {});
-      return false;
     }
+    return false;
   }
 
   /**
