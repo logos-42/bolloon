@@ -1,9 +1,9 @@
 # Bolloon 核心功能消融实验报告 (v0.2.7)
 
-> 生成时间: 2026-10-02T01:52:40.646Z
+> 生成时间: 2026-10-04T07:41:50.877Z
 > 实验 runner: scripts/ablation/run.ts
 > 服务端口: 54188 (web: dist/web + esbuild 编译 client.ts)
-> 节点: Windows 11, Node v24.15.0, LLM provider: minimax (MiniMax-M2.7)
+> 节点: darwin x64, Node v24.13.0, LLM provider: deepseek
 
 ## 一句话结论
 
@@ -70,7 +70,7 @@
 - note: parseFrontmatter 失败 → meta=null 但 body 保留 (registry.ts:78-106)
 - compileOut: [HumanValueStore] Initialized at /Users/apple/.bolloon/human-values
 CHARS=8520
-TIME=2237
+TIME=623
 HAS_BODY=true
 - compileErr: 
 - compiledChars: 8520
@@ -86,71 +86,71 @@ HAS_BODY=true
 
 ##### ✅ [C2] loadSkillsFromPaths(defaultSkillPaths) → 有 N 个
 - out: PATHS=["/Users/apple/.bolloon/skills","/Users/apple/Downloads/bolloon/.bolloon/skills","/Users/apple/.boll/skills"]
-LEN=1263
-NAMES=AgentROI结构,HBS公理创生,NODS,ablation-test,academic-deep-research,agent-identity-bootstrap,agent-identity-setup,agent-ops-status-check,agent-self-status-check,agent-status-ch
+LEN=1312
+NAMES=AgentROI结构,HBS公理创生,NODS,ablation-test,academic-deep-research,agent-connectivity-selfcheck,agent-env-selfcheck,agent-identity-and-home-layout-check,agent-identity-and-wor
 - err: 
-- count: 1263
+- count: 1312
 
 ##### ✅ [C3] 坏 skill.md 不阻断其他加载
-- out: LEN=1263
+- out: LEN=1312
 - err: 
-- count: 1263
-- c2Count: 1263
+- count: 1312
+- c2Count: 1312
 
 #### tool_loop
 
-- 尝试: **4** | 通过: **3** | 失败: **1** | 通过率: **75%**
+- 尝试: **4** | 通过: **4** | 失败: **0** | 通过率: **100%**
 - 备注: using channel real-msg-1790848645621 (real test msg)
 
 ##### ✅ [C1] 极简 prompt → 直接回答, 无 tool
-- duration_ms: 20
+- duration_ms: 18
 - status: 202
 - asyncAck: true
 - ok: true
 
-##### ❌ [C2] 搜索 prompt × 3 次独立运行 (假阳性检查, 监听 SSE)
-- subs: [{"duration_ms":2409,"postStatus":202,"asyncOk":true,"messages":1,"toolSeen":true,"aiTextLen":2,"tokenTextLen":2,"totalTextLen":4,"eventTypes":"user,queue_update,stream:thinking,workflow_step,phase,phase,status,workflow_step,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,reply-preview,status","textPreview":"okok"},{"duration_ms":5738,"postStat
-- toolLoopVisible: 1/3
+##### ✅ [C2] 搜索 prompt × 3 次独立运行 (假阳性检查, 监听 SSE)
+- subs: [{"duration_ms":4070,"postStatus":202,"asyncOk":true,"messages":1,"toolSeen":true,"aiTextLen":2,"tokenTextLen":2,"totalTextLen":4,"eventTypes":"user,stream:thinking,workflow_step,phase,phase,status,workflow_step,phase,phase,status,workflow_step,status,workflow_step,status,workflow_step,stream:token,workflow_step,reply-preview,status,workflow_step","textPreview":"okok"},{"duration_ms":4869,"postSta
+- toolLoopVisible: 3/3
 - toolCallCorrect: 2/3
 - successRate: 3/3
 - answerRate: 2/3
 
 ##### ✅ [C3] 异常 prompt (无意义字符串) → 不崩, 显式错误或回答
-- duration_ms: 19
+- duration_ms: 36
 - status: 202
 - asyncAck: true
 
 #### p2p
 
-- 尝试: **5** | 通过: **5** | 失败: **0** | 通过率: **100%**
+- 尝试: **5** | 通过: **4** | 失败: **1** | 通过率: **80%**
 
 ##### ✅ [C1] /api/p2p-peers 端点响应
 - status: 200
 - hasPeersField: true
-- peerCount: 9
+- peerCount: 19
 
 ##### ✅ [C1-iroh] iroh info + known_peers.json 持久化
-- irohInitialized: true
+- irohInitialized: false
 - irohNodeIdShort: null
-- peersFromApi: 9
-- peersFromDisk: 9
-- peerNames: ["node","discovered-9b6003fc","discovered-63f32c4f","discovered-6b2c559e","discovered-3d2d97a3","discovered-480e365e","discovered-3e4886bf","discovered-411bf879","discovered-be6cf6da"]
+- peersFromApi: 19
+- peersFromDisk: 19
+- peerNames: ["node","discovered-9b6003fc","discovered-63f32c4f","discovered-6b2c559e","discovered-3d2d97a3","discovered-480e365e","discovered-3e4886bf","discovered-411bf879","discovered-be6cf6da","discovered-4900308b","discovered-8cbe4d30","discovered-729d311e","discovered-cca6052a","discovered-6da628f3","discovered-241b73fd","discovered-4a94b6ab","discovered-9856193f","discovered-24e860a7","discovered-b3bed954"]
 
 ##### ✅ [C2] remote-channels 缓存 + API 一致
 - cachePeers: 3
 - cacheChannelsPerPeer: [{"pk":"d92489ca","n":2},{"pk":"70557416","n":1},{"pk":"d2e7473e","n":0}]
-- apiPeerCount: 11
+- apiPeerCount: 21
 
 ##### ✅ [C3] chat-send 到 fake peer → 显式 4xx 而非 500
 - status: 400
 - errCode: targetPublicKey, channelId, text required
 
-##### ✅ [C4] /api/iroh/info 返回 irohNodeId (v3 fallback 或真值)
+##### ❌ [C4] /api/iroh/info 返回 irohNodeId (v3 fallback 或真值)
 - status: 200
-- initialized: true
-- irohNodeIdLen: 64
-- irohNodeIdSource: iroh
-- irohNodeIdPrefix: 3c2eeee23cc2d276
+- initialized: false
+- irohNodeIdLen: 0
+- irohNodeIdSource: undefined
+- irohNodeIdPrefix: 
 
 ## 归因分析
 

@@ -13,6 +13,7 @@
  */
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';   // 同步读 (报告头读 llm-config 用; 别用 require —— ESM 产物里它不存在)
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -682,6 +683,19 @@ async function experiment4_p2p(): Promise<void> {
 }
 
 // ─── 报告 ────────────────────────────────────────────────────
+/** 真读当前生效的 provider/model (读不出就如实说, 不编) —— 给报告头用 */
+function describeProvider(): string {
+  try {
+    const p = path.join(os.homedir(), '.bolloon', 'llm-config.json');
+    const cfg: any = JSON.parse(readFileSync(p, 'utf8'));
+    const name = cfg?.activeProvider || cfg?.provider || '(未指定)';
+    const model = cfg?.model || cfg?.models?.[name]?.model || '';
+    return model ? `${name} (${model})` : String(name);
+  } catch (e: any) {
+    return `(读不出 llm-config: ${String(e?.message || e).slice(0, 60)})`;
+  }
+}
+
 function buildReport(): string {
   const lines: string[] = [];
   lines.push('# Bolloon 核心功能消融实验报告 (v0.2.7)');
@@ -689,7 +703,9 @@ function buildReport(): string {
   lines.push(`> 生成时间: ${new Date().toISOString()}`);
   lines.push(`> 实验 runner: scripts/ablation/run.ts`);
   lines.push(`> 服务端口: ${PORT} (web: dist/web + esbuild 编译 client.ts)`);
-  lines.push(`> 节点: Windows 11, Node v24.15.0, LLM provider: minimax (MiniMax-M2.7)`);
+  // 2026-10-02 修: 原来这里是**写死的**「Windows 11, Node v24.15.0, provider: minimax (MiniMax-M2.7)」——
+  //   报告于是在谎报环境 (本机是 macOS + deepseek)。改成真读本机 + 真读配置; 读不出就**如实说**, 不许编。
+  lines.push(`> 节点: ${process.platform} ${process.arch}, Node ${process.version}, LLM provider: ${describeProvider()}`);
   lines.push('');
   lines.push('## 一句话结论');
   lines.push('');
