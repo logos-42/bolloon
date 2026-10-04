@@ -125,6 +125,14 @@ export interface CIDDatabase {
   version(cid: string): Promise<CIDRecord[]>;
   /** 列出记录 (可按 agentId/type 过滤) */
   list(filter?: { agentId?: string; type?: CIDRecordType }): Promise<CIDRecord[]>;
+  /**
+   * 2026-10-02: 把**原始字节**放进内容寻址层 (群聊的图片/音频这类附件), 返回 CID。
+   *   与 `save` 同一套内容寻址 (sha256), 但用 **raw** 编码 (0x55) —— 二进制不该被包成 dag-cbor 记录。
+   */
+  putBytes?(bytes: Uint8Array<ArrayBuffer>): Promise<{ cid: string; bytes: number }>;
+  /** 按 CID 取原始字节 (取不到 ⇒ null; 不抛) */
+  getBytes?(cid: string): Promise<Uint8Array<ArrayBuffer> | null>;
+
   /** 分享: 把记录块放入 helia blockstore (可被网络拉取), 返回可分享标识 */
   share(cid: string): Promise<string>;
   /**
@@ -166,7 +174,7 @@ export interface OrbitDBStore {
   /** events: append 一个值 (key 参数忽略) */
   add(value: unknown): Promise<void>;
   /** 全量读取: [{key, value}] (events 的 key=hash, value=payload) */
-  all(): Promise<Array<{ key: string; value: unknown }>>;
+  all(): Promise<Array<{ key: string; /** 条目自带 hash/id —— 回复/分支的锚点 (拿不到则空串) */ id?: string; value: unknown }>>;
   /** keyvalue: 读单键 */
   get(key: string): Promise<unknown>;
   /** 订阅底层变更 (join/write/replicate), 返回退订函数 */
@@ -179,6 +187,12 @@ export async function contentToCid(obj: unknown): Promise<string> {
   const bytes = dagCbor.encode(cleaned);
   const hash = await sha256.digest(bytes);
   return CID.createV1(0x71, hash).toString();
+}
+
+/** 2026-10-02: 原始字节 → CID (raw 0x55 + sha256, 与 `contentToCid` 同一套内容寻址口径) */
+export async function bytesToCid(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const hash = await sha256.digest(bytes as never);
+  return CID.createV1(0x55, hash).toString();
 }
 
 const home = (): string => process.env.HOME || os.homedir() || '/tmp';
@@ -396,6 +410,25 @@ export class OrbitDBAdapter implements CIDDatabase {
       .sort((a, b) => a.timestamp - b.timestamp);
   }
 
+  async putBytes(bytes: Uint8Array<ArrayBuffer>): Promise<{ cid: string; bytes: number }> {
+    await this.ensure();
+    const cid = await bytesToCid(bytes);
+    await this.node!.helia.blockstore.put(CID.parse(cid), bytes as never);
+    return { cid, bytes: bytes.length };
+  }
+
+  async getBytes(cid: string): Promise<Uint8Array<ArrayBuffer> | null> {
+    await this.ensure();
+    try {
+      const stream = this.node!.helia.blockstore.get(CID.parse(cid)) as unknown as AsyncIterable<Uint8Array>;
+      let out = new Uint8Array(0) as Uint8Array<ArrayBuffer>;
+      for await (const chunk of stream) out = uint8Concat([out, chunk as Uint8Array<ArrayBuffer>]) as Uint8Array<ArrayBuffer>;
+      return out;
+    } catch {
+      return null;
+    }
+  }
+
   async share(cid: string): Promise<string> {
     await this.ensure();
     const rec = await this.load(cid);
@@ -416,6 +449,8 @@ export class OrbitDBAdapter implements CIDDatabase {
         // events store 的 all() 返回 { hash, payload } — 统一成 { key, value }
         return entries.map(e => ({
           key: String(e.key ?? e.hash ?? ''),
+          // 2026-10-02: 条目自带的 hash/id **透出来** —— 回复某条 / 建分支要的锚点 (拿不到才留空, 不假造)
+          id: String((e.hash ?? e.id ?? (e.payload as { key?: unknown } | undefined)?.key ?? '') || ''),
           value: e.payload !== undefined ? e.payload : e.value,
         }));
       },

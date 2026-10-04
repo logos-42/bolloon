@@ -63,10 +63,34 @@ export function resetGroupState(): void {
 
 // ============ 类型 ============
 
+/**
+ * 2026-10-02 (leo: 「群里的功能包括 @成员 / 回复某条 / 发图片音频 / 建分支」): 附件。
+ * 二进制走**内容寻址** —— 消息里只放 CID (字节在内容寻址层), 读的人按 CID 取。
+ * 老读者/老消息没有这个字段, 语义完全不变。
+ */
+export interface GroupAttachment {
+  kind: 'image' | 'audio' | 'file';
+  cid: string;
+  name?: string;
+  bytes?: number;
+}
+
 export interface GroupMessage {
   from: string;         // did / agentId
   text: string;
   ts: number;
+  /** store 条目自带的 id/hash —— 回复它时用 (老条目拿不到就缺字段, 不假造) */
+  id?: string;
+  /** @ 了谁 (短显示名/DID 都可以, 只当展示用) */
+  mentions?: string[];
+  /** 回复哪条 (被回复消息的 `id`) */
+  replyTo?: string;
+  /** 附件 (图片/音频/文件): 只放 CID, 字节在内容寻址层 */
+  attachments?: GroupAttachment[];
+  /** 属于哪个分支 (缺字段 = 主线) */
+  branch?: string;
+  /** 记录种类: 'message'(默认, 缺字段) / 'branch'(建分支的宣告) */
+  kind?: string;
   /**
    * 2026-09-28: 本条消息用哪种**交流语言**写的 (`natural` | `efficode`).
    * 缺字段 = 没声明 = 自然语言 (老消息/老节点语义完全不变).
@@ -420,6 +444,27 @@ export async function groupMessages(groupId: string, limit = 50): Promise<GroupM
       const m: GroupMessage = { from: v.from, text: v.text, ts: typeof v.ts === 'number' ? v.ts : 0 };
       // 只透传字符串形态的语言声明; 别的形状一律当"没声明"(不让脏值进到解码分派)
       if (typeof v.lang === 'string' && v.lang.trim()) m.lang = v.lang.trim();
+      // 2026-10-02: 新字段一律**先验形状再透传** (脏值当没声明, 不做修补)
+      const entryId = String((entry as any)?.hash ?? (entry as any)?.id ?? '').trim();
+      if (entryId) m.id = entryId;
+      if (Array.isArray(v.mentions)) {
+        const ms = v.mentions.map((x: unknown) => String(x ?? '').trim()).filter(Boolean);
+        if (ms.length) m.mentions = ms;
+      }
+      if (typeof v.replyTo === 'string' && v.replyTo.trim()) m.replyTo = v.replyTo.trim();
+      if (typeof v.branch === 'string' && v.branch.trim()) m.branch = v.branch.trim();
+      if (typeof v.kind === 'string' && v.kind.trim()) m.kind = v.kind.trim();
+      if (Array.isArray(v.attachments)) {
+        const at = v.attachments
+          .filter((a: any) => a && typeof a.cid === 'string' && /^(image|audio|file)$/.test(String(a.kind)))
+          .map((a: any) => ({
+            kind: a.kind as GroupAttachment['kind'],
+            cid: String(a.cid).trim(),
+            ...(typeof a.name === 'string' && a.name.trim() ? { name: a.name.trim().slice(0, 120) } : {}),
+            ...(typeof a.bytes === 'number' && Number.isFinite(a.bytes) ? { bytes: a.bytes } : {}),
+          }));
+        if (at.length) m.attachments = at;
+      }
       msgs.push(m);
     }
   }
@@ -529,8 +574,8 @@ export async function groupSend(
   groupId: string,
   text: string,
   from: string,
-  opts?: { lang?: string }
-): Promise<{ ok: boolean; error?: string }> {
+  opts?: { lang?: string; mentions?: string[]; replyTo?: string; attachments?: GroupAttachment[]; branch?: string; kind?: string }
+): Promise<{ ok: boolean; id?: string; error?: string }> {
   const msg = String(text || '').trim();
   if (!msg) return { ok: false, error: '消息不能为空' };
   let store: OrbitDBStore | null = storeCache.get(groupId) ?? null;
@@ -548,8 +593,33 @@ export async function groupSend(
     // 只有显式给了合法声明才写字段 —— 不给就不写 (老读者读到的东西一字不变)
     const lang = typeof opts?.lang === 'string' ? opts.lang.trim() : '';
     if (lang) record.lang = lang;
-    await store.add(record);
-    return { ok: true };
+    // 2026-10-02: 与 lang 同口径 —— **只有显式给了合法形状才写字段** (不给就不写, 老读者读到的一字不变)
+    const mentions = Array.isArray(opts?.mentions)
+      ? opts!.mentions!.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 20)
+      : [];
+    if (mentions.length) record.mentions = mentions;
+    const replyTo = typeof opts?.replyTo === 'string' ? opts.replyTo.trim() : '';
+    if (replyTo) record.replyTo = replyTo.slice(0, 200);
+    const branch = typeof opts?.branch === 'string' ? opts.branch.trim() : '';
+    if (branch) record.branch = branch.slice(0, 120);
+    const attachments = Array.isArray(opts?.attachments)
+      ? opts!.attachments!
+          .filter((a) => a && typeof a.cid === 'string' && a.cid.trim() && /^(image|audio|file)$/.test(String(a.kind)))
+          .slice(0, 8)
+          .map((a) => ({
+            kind: a.kind,
+            cid: String(a.cid).trim(),
+            ...(a.name ? { name: String(a.name).slice(0, 120) } : {}),
+            ...(typeof a.bytes === 'number' && Number.isFinite(a.bytes) ? { bytes: a.bytes } : {}),
+          }))
+      : [];
+    if (attachments.length) record.attachments = attachments;
+    const kind = typeof opts?.kind === 'string' ? opts.kind.trim() : '';
+    if (kind) record.kind = kind.slice(0, 40);
+    // 2026-10-02: 回传本条消息的 id —— 回复/建分支都要锚点 (拿不到就不给字段, 不假造)
+    const entry = (await store.add(record)) as { hash?: unknown; id?: unknown } | undefined;
+    const id = String(entry?.hash ?? entry?.id ?? '').trim();
+    return id ? { ok: true, id } : { ok: true };
   } catch (e: any) {
     return { ok: false, error: `发送失败: ${String(e?.message || e).slice(0, 160)}` };
   }

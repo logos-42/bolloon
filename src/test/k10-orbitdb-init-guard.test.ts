@@ -76,7 +76,8 @@ describe('群聊修复-D. 四个群工具已在册 (AI 能自己入群/读/发�
     for (const t of ['group_join', 'group_list', 'group_read', 'group_say']) {
       expect(src, `缺工具 ${t}`).toMatch(new RegExp(`ctx\\.tools\\.set\\('${t}'`));
     }
-    expect(src).toMatch(/sendTrailMessage\(res\.group\.groupId, text, who\.tag\)/);
+    // 2026-10-02: 出口现在带富字段 (mentions/replyTo/branch) ⇒ 形状跟着走, 不变量不松: 仍必须走 sendTrailMessage
+    expect(src).toMatch(/sendTrailMessage\(res\.group\.groupId, text, who\.tag[,)]/);
     expect(src).toMatch(/resolveSenderTag\(null\)/);
   });
 });

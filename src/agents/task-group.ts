@@ -463,12 +463,27 @@ export interface SendResult {
   text: string;
   error?: string;
   violations?: PrivacyViolation[];
+  /** 本条消息的 id (store 条目自带) —— 回复/建分支要的锚点; 拿不到就不给 */
+  id?: string;
   /** 明确写死: 本模块只会发进群, 不会退化成只写本地 */
   localFallback: false;
 }
 
 /** 唯一发送出口: 隐私闸 → groupSend。任何路径都不写本地副本 (本地副本 = 假痕迹) */
-export async function sendTrailMessage(groupId: string, text: string, from: string): Promise<SendResult> {
+export interface SendRichOpts {
+  mentions?: string[];
+  replyTo?: string;
+  attachments?: { kind: 'image' | 'audio' | 'file'; cid: string; name?: string; bytes?: number }[];
+  branch?: string;
+  kind?: string;
+}
+
+/**
+ * 2026-10-02: 富字段版 (leo: 「@成员 / 回复某条 / 图片音频 / 建分支」)。
+ *   **text 与 mentions 都过隐私闸** —— @ 的内容可能被写成 DID/地址形态, 一样不许出网。
+ *   附件只带 CID (字节在内容寻址层), CID 本身不是隐私形态。
+ */
+export async function sendTrailMessage(groupId: string, text: string, from: string, rich: SendRichOpts = {}): Promise<SendResult> {
   const gate = requirePublicText(text);
   if (!gate.ok) {
     return {
@@ -481,9 +496,22 @@ export async function sendTrailMessage(groupId: string, text: string, from: stri
   if (!g.ok) {
     return { ok: false, sent: false, text, error: `发送者标记命中隐私红线: ${g.violations.map((v) => v.rule).join(', ')}`, violations: g.violations, localFallback: false };
   }
-  const r = await groupSend(groupId, text, from);
+  const mentionList = Array.isArray(rich.mentions) ? rich.mentions.map((x) => String(x ?? '').trim()).filter(Boolean) : [];
+  for (const m of mentionList) {
+    const mg = requirePublicText(m);
+    if (!mg.ok) {
+      return { ok: false, sent: false, text, error: `@ 的内容命中隐私红线, 拒绝发送: ${mg.violations.map((v) => v.rule).join(', ')}`, violations: mg.violations, localFallback: false };
+    }
+  }
+  const r = await groupSend(groupId, text, from, {
+    ...(mentionList.length ? { mentions: mentionList } : {}),
+    ...(rich.replyTo ? { replyTo: rich.replyTo } : {}),
+    ...(rich.attachments?.length ? { attachments: rich.attachments } : {}),
+    ...(rich.branch ? { branch: rich.branch } : {}),
+    ...(rich.kind ? { kind: rich.kind } : {}),
+  });
   if (!r.ok) return { ok: false, sent: false, text, error: r.error || '群消息没发出去', localFallback: false };
-  return { ok: true, sent: true, text, localFallback: false };
+  return { ok: true, sent: true, text, ...(r.id ? { id: r.id } : {}), localFallback: false };
 }
 
 // ── 留痕回看 (trail) ────────────────────────────────────────────────────────

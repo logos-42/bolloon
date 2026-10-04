@@ -26,7 +26,7 @@ import { registerSkillShareTools } from './skill-share.js';
 // 2026-09-13: 微支付信息服务 (x402 付费信息 + 验真信封)
 import { registerPaidInfoTools } from './x402/paid-info-tools.js';
 // 2026-10-02: 群聊的四个 AI 工具 —— 原语来自群模块与"唯一发送出口"(带隐私闸)
-import { joinGroup, listGroups, groupLink, groupMessages } from './gateway-group.js';
+import { joinGroup, listGroups, groupLink, groupMessages, groupMembers } from './gateway-group.js';
 import { resolveGroupRef, resolveSenderTag, sendTrailMessage } from './task-group.js';
 
 /**
@@ -997,6 +997,17 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     }
   });
 
+  /**
+   * 2026-10-02: @ 的归一入口 —— 模型给 `['a','b']` / `'a,b'` / `'a b'` / `'a'` 都收
+   *   (别因为形状不符就把 @ 静默丢掉: 真机第一次跑, 模型传的正是字符串 ⇒ @ 丢了)。
+   *   trim + 去 `@` 前缀 + 去空 + 去重 + 上限 20 (与记录层同一口径)。
+   */
+  const normalizeMentions = (raw: unknown): string[] | undefined => {
+    const flat = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[,，;；\s]+/) : raw == null ? [] : [raw];
+    const out = Array.from(new Set((flat as unknown[]).map((x) => String(x ?? '').replace(/^@/, '').trim()).filter(Boolean))).slice(0, 20);
+    return out.length ? out : undefined;
+  };
+
   // 2026-10-02 (leo: 希望人工智能自己搞定): 群聊工具 —— 原语来自群模块 + 唯一发送出口(带隐私闸)
   ctx.tools.set('group_join', {
     name: 'group_join',
@@ -1037,14 +1048,30 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   ctx.tools.set('group_read', {
     name: 'group_read',
     description: '读一个群里的消息（最近 N 条, 默认 30）—— **用于**看群里发生过什么、拉取要阅读的内容。group 可直接给 groupId, 也可给邀请链接 / 群名。',
-    parameters: { group: 'groupId | 邀请链接 | 群名（必填）', limit: '最多读多少条, 默认 30' },
+    parameters: { group: 'groupId | 邀请链接 | 群名（必填）', limit: '最多读多少条, 默认 30', branch: '只看某个分支（可选; 缺省 = 全部）' },
     execute: async (args: Record<string, unknown>) => {
       const res = await resolveGroupRef(String(args?.group ?? ''));
       if (!res.ok) return { success: false, error: res.message };
       const limit = Number(args?.limit ?? 30) || 30;
-      const msgs = await groupMessages(res.group.groupId, limit);
-      if (!msgs.length) return { success: true, output: `（群「${res.group.name ?? res.group.groupId}」里还没有消息）` };
-      return { success: true, output: msgs.map((m: { ts: number; from: string; text: string }) => `[${new Date(m.ts).toLocaleString('zh-CN')}] ${m.from}: ${m.text}`).join('\n') };
+      let msgs = await groupMessages(res.group.groupId, limit);
+      const branch = String(args?.branch ?? '').trim();
+      if (branch) msgs = msgs.filter((m) => String(m.branch ?? '') === branch);
+      if (!msgs.length) return { success: true, output: `（群「${res.group.name ?? res.group.groupId}」里还没有消息${branch ? ` (分支 ${branch})` : ''}）` };
+      // 2026-10-02: 把 @/回复/附件/分支都渲染出来 —— 只给纯文本, 模型看不出结构就没法正确回复
+      const fmt = (m: typeof msgs[number]) => {
+        const bits = [`[${new Date(m.ts).toLocaleString('zh-CN')}]`];
+        if (m.id) bits.push(`#${m.id.slice(0, 8)}`);
+        if (m.kind === 'branch') bits.push('[分支]');
+        if (m.branch) bits.push(`⎇${m.branch}`);
+        if (m.replyTo) bits.push(`↩#${String(m.replyTo).slice(0, 8)}`);
+        bits.push(`${m.mentions?.length ? '@' + m.mentions.join(' @') + ' ' : ''}${m.from}:`);
+        bits.push(m.text);
+        if (m.attachments?.length) {
+          bits.push(m.attachments.map((a) => `[${a.kind === 'image' ? '图片' : a.kind === 'audio' ? '音频' : '文件'} ${a.cid.slice(0, 14)}${a.name ? ' ' + a.name : ''}]`).join(' '));
+        }
+        return bits.join(' ');
+      };
+      return { success: true, output: msgs.map(fmt).join('\n') };
     }
   });
 
@@ -1052,7 +1079,13 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   ctx.tools.set('group_say', {
     name: 'group_say',
     description: '在一个群里发言（写进 OrbitDB 群 store, 成员都能读到）—— **用于**把你的结论/请求讲给群成员。group 可直接给 groupId, 也可给邀请链接 / 群名。消息**先过隐私红线闸**: 不许出现地址 / DID / peerId / multiaddr / IP / 私钥形态。',
-    parameters: { group: 'groupId | 邀请链接 | 群名（必填）', text: '要说的内容（必填）' },
+    parameters: {
+      group: 'groupId | 邀请链接 | 群名（必填）',
+      text: '要说的内容（必填）',
+      mentions: '@ 谁 —— 短显示名数组, 例如 ["委托方","审稿人"]（可选）',
+      replyTo: '回复哪条 —— 该消息的 id（group_read 的输出里带）（可选）',
+      branch: '发到哪个分支（可选; 缺省 = 主线）',
+    },
     execute: async (args: Record<string, unknown>) => {
       const res = await resolveGroupRef(String(args?.group ?? ''));
       if (!res.ok) return { success: false, error: res.message };
@@ -1060,12 +1093,109 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       if (!text) return { success: false, error: 'text 不能为空' };
       const who = await resolveSenderTag(null);
       if (!who.ok) return { success: false, error: who.message };
-      const r = await sendTrailMessage(res.group.groupId, text, who.tag);
+      const mentions = normalizeMentions(args?.mentions);
+      const r = await sendTrailMessage(res.group.groupId, text, who.tag, {
+        ...(mentions?.length ? { mentions } : {}),
+        ...(args?.replyTo ? { replyTo: String(args.replyTo) } : {}),
+        ...(args?.branch ? { branch: String(args.branch) } : {}),
+      });
       if (!r.ok) return { success: false, error: r.error || '发送失败' };
-      return { success: true, output: `已发到群「${res.group.name ?? res.group.groupId}」（署名 ${who.tag}）: ${text}` };
+      const extra = mentions?.length ? `（@ ${mentions.join(' ')}）` : '';
+      return { success: true, output: `已发到群「${res.group.name ?? res.group.groupId}」（署名 ${who.tag}）${extra}: ${text}` };
     }
   });
 
+  ctx.tools.set('group_reply', {
+    name: 'group_reply',
+    description: '回复群里**某一条**消息（在群里形成对话）—— **用于**回答特定的人/特定那条话，而不是发一条孤立的消息。group 给 groupId/链接/群名；replyTo 给那条消息的 id（group_read 输出里的 `#xxxxxxxx`）。',
+    parameters: { group: 'groupId | 邀请链接 | 群名（必填）', replyTo: '被回复消息的 id（必填, group_read 输出里的 #xxxxxxxx）', text: '回复内容（必填）', mentions: '@ 谁（短显示名数组, 可选）' },
+    execute: async (args: Record<string, unknown>) => {
+      const res = await resolveGroupRef(String(args?.group ?? ''));
+      if (!res.ok) return { success: false, error: res.message };
+      const replyTo = String(args?.replyTo ?? '').trim().replace(/^#/, '');
+      const text = String(args?.text ?? '').trim();
+      if (!replyTo) return { success: false, error: 'replyTo 必填（被回复消息的 id）' };
+      if (!text) return { success: false, error: 'text 不能为空' };
+      const who = await resolveSenderTag(null);
+      if (!who.ok) return { success: false, error: who.message };
+      const mentions = normalizeMentions(args?.mentions);
+      const r = await sendTrailMessage(res.group.groupId, text, who.tag, { replyTo, ...(mentions?.length ? { mentions } : {}) });
+      if (!r.ok) return { success: false, error: r.error || '回复失败' };
+      return { success: true, output: `已回复 #${replyTo.slice(0, 8)}（署名 ${who.tag}）: ${text}` };
+    },
+  });
+  ctx.tools.set('group_attach', {
+    name: 'group_attach',
+    description: '往群里发**图片/音频/文件**（消息里只放内容寻址的 CID, 字节进内容寻址层, 成员按 CID 取）—— **用于**要把一张图/一段录音/一个文件交给群里的人。给 path（本机文件, 自动算 CID 并入库）或 cid（已经在内容寻址层里）。',
+    parameters: { group: 'groupId | 邀请链接 | 群名（必填）', path: '本机文件路径（与 cid 二选一）', cid: '已在内容寻址层的 CID（与 path 二选一）', kind: 'image | audio | file（默认 file; 给 path 时会按扩展名猜）', text: '随附件说的话（可选）', branch: '发到哪个分支（可选）' },
+    execute: async (args: Record<string, unknown>) => {
+      const res = await resolveGroupRef(String(args?.group ?? ''));
+      if (!res.ok) return { success: false, error: res.message };
+      const kindArg = String(args?.kind ?? '').trim();
+      let cid = String(args?.cid ?? '').trim();
+      let name = '';
+      let bytes: number | undefined;
+      let kind: 'image' | 'audio' | 'file' = /^(image|audio|file)$/.test(kindArg) ? (kindArg as 'image' | 'audio' | 'file') : 'file';
+      const p = String(args?.path ?? '').trim();
+      if (p) {
+        const fsp = await import('node:fs/promises');
+        const pathMod = await import('node:path');
+        try {
+          const buf = await fsp.readFile(p);
+          name = pathMod.basename(p);
+          if (!kindArg) {
+            const ext = pathMod.extname(p).toLowerCase();
+            kind = ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext) ? 'image' : ['.mp3', '.wav', '.m4a', '.ogg', '.aac'].includes(ext) ? 'audio' : 'file';
+          }
+          const { getCIDDatabase } = await import('../orbitdb/cid-database.js');
+          const db = getCIDDatabase();
+          if (!db.putBytes) return { success: false, error: '内容寻址层不支持 putBytes（该构建缺这个入口）' };
+          const put = await db.putBytes(new Uint8Array(buf) as Uint8Array<ArrayBuffer>);
+          cid = put.cid;
+          bytes = put.bytes;
+        } catch (e) {
+          return { success: false, error: `读取/入库失败: ${String((e as Error)?.message || e).slice(0, 160)}` };
+        }
+      }
+      if (!cid) return { success: false, error: 'path 或 cid 至少给一个' };
+      const who = await resolveSenderTag(null);
+      if (!who.ok) return { success: false, error: who.message };
+      const text = String(args?.text ?? '').trim() || `[${kind === 'image' ? '图片' : kind === 'audio' ? '音频' : '文件'}] ${name || cid.slice(0, 14)}`;
+      const r = await sendTrailMessage(res.group.groupId, text, who.tag, {
+        attachments: [{ kind, cid, ...(name ? { name } : {}), ...(typeof bytes === 'number' ? { bytes } : {}) }],
+        ...(args?.branch ? { branch: String(args.branch) } : {}),
+      });
+      if (!r.ok) return { success: false, error: r.error || '发送失败' };
+      return { success: true, output: `已发附件到群「${res.group.name ?? res.group.groupId}」: ${kind} ${cid.slice(0, 14)}${name ? ' (' + name + ')' : ''}${typeof bytes === 'number' ? ' ' + bytes + 'B' : ''}（署名 ${who.tag}）` };
+    },
+  });
+  ctx.tools.set('group_branch', {
+    name: 'group_branch',
+    description: '在群里**开一个分支话题**（像一条独立讨论线）—— **用于**一个群里同时聊多件事, 免得主线互相打断。之后用 group_say/group_reply 带 branch 参数就发进这个分支; group_read 带 branch 只看这一支。',
+    parameters: { group: 'groupId | 邀请链接 | 群名（必填）', title: '分支话题名（必填, 简短; 之后作为 branch 参数用它）' },
+    execute: async (args: Record<string, unknown>) => {
+      const res = await resolveGroupRef(String(args?.group ?? ''));
+      if (!res.ok) return { success: false, error: res.message };
+      const title = String(args?.title ?? '').trim();
+      if (!title) return { success: false, error: 'title 必填（分支话题名）' };
+      const who = await resolveSenderTag(null);
+      if (!who.ok) return { success: false, error: who.message };
+      const r = await sendTrailMessage(res.group.groupId, `分支话题: ${title}`, who.tag, { kind: 'branch', branch: title });
+      if (!r.ok) return { success: false, error: r.error || '建分支失败' };
+      return { success: true, output: `已开分支「${title}」${r.id ? ' #' + r.id.slice(0, 8) : ''} —— 之后 group_say/group_reply 带 branch="${title}" 发言即可, group_read 带 branch="${title}" 只看这一支。` };
+    },
+  });
+  ctx.tools.set('group_members', {
+    name: 'group_members',
+    description: '列一个群里出现过的成员（从消息里提取) —— **用于**想知道这个群有谁、要 @ 谁之前先看一眼。',
+    parameters: { group: 'groupId | 邀请链接 | 群名（必填）' },
+    execute: async (args: Record<string, unknown>) => {
+      const res = await resolveGroupRef(String(args?.group ?? ''));
+      if (!res.ok) return { success: false, error: res.message };
+      const members = await groupMembers(res.group.groupId);
+      return { success: true, output: members.length ? `群「${res.group.name ?? res.group.groupId}」成员/发言者 ${members.length} 个: ${members.join(' · ')}` : `（群「${res.group.name ?? res.group.groupId}」里还没有成员发过言）` };
+    },
+  });
   // 2026-08-12 (TaskD): process — 后台进程管理 (学 hermes terminal background session + poll/wait/kill).
   //   长命令不阻塞对话: terminal(background=true) 启动 → process 工具轮询/等待/终止.
   ctx.tools.set('process', {
