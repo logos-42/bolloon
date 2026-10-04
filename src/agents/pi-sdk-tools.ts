@@ -25,6 +25,9 @@ import { registerComputerUseTools } from './computer-use.js';
 import { registerSkillShareTools } from './skill-share.js';
 // 2026-09-13: 微支付信息服务 (x402 付费信息 + 验真信封)
 import { registerPaidInfoTools } from './x402/paid-info-tools.js';
+// 2026-10-02: 群聊的四个 AI 工具 —— 原语来自群模块与"唯一发送出口"(带隐私闸)
+import { joinGroup, listGroups, groupLink, groupMessages } from './gateway-group.js';
+import { resolveGroupRef, resolveSenderTag, sendTrailMessage } from './task-group.js';
 
 /**
  * Tools 模块 — 从 pi-sdk.ts 抽出的 registerTools() / _registerWalletTools() / _setupInboxListener()
@@ -991,6 +994,75 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       const commands = Array.isArray(args.commands) ? args.commands.map((c: any) => String(c || '').trim()).filter(Boolean) : [];
       if (!raw && commands.length === 0) return { success: false, error: 'command/code/commands 至少一个必填' };
       return await runTerminalCommand(raw, { timeoutMs, cwd: ctx.cwd, commands: commands.length > 0 ? commands : undefined, background: String(args.background).toLowerCase() === 'true' });
+    }
+  });
+
+  // 2026-10-02 (leo: 希望人工智能自己搞定): 群聊工具 —— 原语来自群模块 + 唯一发送出口(带隐私闸)
+  ctx.tools.set('group_join', {
+    name: 'group_join',
+    description: '加入一个 OrbitDB 群聊 —— **用于**拿到邀请链接后自助入群（幂等: 已在群里 ⇒ already）。link 传邀请链接（orbitdb:///orbitdb/<addr>?type=group&name=…）或 groupId。入群后先用 group_read 读消息、再用 group_say 发言。',
+    parameters: { link: '邀请链接 或 groupId（必填）' },
+    execute: async (args: Record<string, unknown>) => {
+      const link = String(args?.link ?? '').trim();
+      if (!link) return { success: false, error: '缺 link（邀请链接或 groupId）' };
+      const r = await joinGroup(link);
+      if (!r.ok) return { success: false, error: r.error || '入群失败' };
+      const g = r.group;
+      return {
+        success: true,
+        output: (r.already ? '已在群里「' : '已入群「') + String(g?.name ?? '') + '」(' + String(g?.id ?? '') + ')'
+          + (g?.link ? ' · 邀请链接 ' + g.link : ''),
+      };
+    }
+  });
+
+  // 2026-10-02 (leo: 希望人工智能自己搞定): 群聊工具 —— 原语来自群模块 + 唯一发送出口(带隐私闸)
+  ctx.tools.set('group_list', {
+    name: 'group_list',
+    description: '列出本机已加入的群（群名 / groupId / 加入时间 / 邀请链接）—— **用于**不知道有哪些群时先摸清楚。先用它拿 groupId, 再用 group_read / group_say。',
+    parameters: {},
+    execute: async (args: Record<string, unknown>) => {
+      const groups = await listGroups();
+      if (!groups.length) return { success: true, output: '（本机还没有加入任何群）' };
+      const lines: string[] = [];
+      for (const g of groups) {
+        const link = await groupLink(g.id).catch(() => null);
+        lines.push(`${g.name}  ${g.id}  加入于 ${g.createdAt}` + (link ? `\n  邀请链接: ${link}` : ''));
+      }
+      return { success: true, output: lines.join('\n') };
+    }
+  });
+
+  // 2026-10-02 (leo: 希望人工智能自己搞定): 群聊工具 —— 原语来自群模块 + 唯一发送出口(带隐私闸)
+  ctx.tools.set('group_read', {
+    name: 'group_read',
+    description: '读一个群里的消息（最近 N 条, 默认 30）—— **用于**看群里发生过什么、拉取要阅读的内容。group 可直接给 groupId, 也可给邀请链接 / 群名。',
+    parameters: { group: 'groupId | 邀请链接 | 群名（必填）', limit: '最多读多少条, 默认 30' },
+    execute: async (args: Record<string, unknown>) => {
+      const res = await resolveGroupRef(String(args?.group ?? ''));
+      if (!res.ok) return { success: false, error: res.message };
+      const limit = Number(args?.limit ?? 30) || 30;
+      const msgs = await groupMessages(res.group.groupId, limit);
+      if (!msgs.length) return { success: true, output: `（群「${res.group.name ?? res.group.groupId}」里还没有消息）` };
+      return { success: true, output: msgs.map((m: { ts: number; from: string; text: string }) => `[${new Date(m.ts).toLocaleString('zh-CN')}] ${m.from}: ${m.text}`).join('\n') };
+    }
+  });
+
+  // 2026-10-02 (leo: 希望人工智能自己搞定): 群聊工具 —— 原语来自群模块 + 唯一发送出口(带隐私闸)
+  ctx.tools.set('group_say', {
+    name: 'group_say',
+    description: '在一个群里发言（写进 OrbitDB 群 store, 成员都能读到）—— **用于**把你的结论/请求讲给群成员。group 可直接给 groupId, 也可给邀请链接 / 群名。消息**先过隐私红线闸**: 不许出现地址 / DID / peerId / multiaddr / IP / 私钥形态。',
+    parameters: { group: 'groupId | 邀请链接 | 群名（必填）', text: '要说的内容（必填）' },
+    execute: async (args: Record<string, unknown>) => {
+      const res = await resolveGroupRef(String(args?.group ?? ''));
+      if (!res.ok) return { success: false, error: res.message };
+      const text = String(args?.text ?? '').trim();
+      if (!text) return { success: false, error: 'text 不能为空' };
+      const who = await resolveSenderTag(null);
+      if (!who.ok) return { success: false, error: who.message };
+      const r = await sendTrailMessage(res.group.groupId, text, who.tag);
+      if (!r.ok) return { success: false, error: r.error || '发送失败' };
+      return { success: true, output: `已发到群「${res.group.name ?? res.group.groupId}」（署名 ${who.tag}）: ${text}` };
     }
   });
 

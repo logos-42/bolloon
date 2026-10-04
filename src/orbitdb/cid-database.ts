@@ -51,6 +51,41 @@ export type CIDRecordType = 'memory' | 'context' | 'state' | 'ui' | 'knowledge';
  * 2026-09-24: 原来 `openStoreByAddress` 失败返回 null, 上游 (gateway-group) 把它当"空群",
  * 于是"读不到"被显示成"没有消息"。改成**抛**: 打不开 ≠ 没内容。
  */
+/**
+ * **有界等待** (2026-10-02): 没有它时"打不开"会变成**永远卡住** ——
+ *   实测直接调 `createGroup` 的探针 300s 都没返回 (进程被强杀)。
+ *   超时抛出的错误**带卡点** (哪一步 · 等了多久), 上游才能给出可行动的话术。
+ */
+export async function withStageTimeout<T>(stage: string, ms: number, p: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`[orbitdb] ${stage} 超时 (${ms}ms) —— 这一步没能在预算内完成`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * 把底层错误翻成**可行动的原因** (2026-10-02)。
+ *   最常见的两种原文都毫无提示: `Database failed to open` 与裸的 `ELOCKED` ——
+ *   真身几乎总是"**另一个 bolloon 实例正握着 keystore 单写锁**"(同机同 dataDir 只允许一个进程写)。
+ */
+export function describeOrbitDbFailure(err: unknown): string {
+  // 有些底层库抛的是**没有 message 的对象** (只有 code, 如 `{ code: 'ELOCKED' }`) ⇒ 别让 String() 把它变成 `[object Object]`
+  const raw = String((err as Error)?.message ?? (err as { code?: unknown })?.code ?? err ?? '');
+  if (/Resource temporarily unavailable|ELOCKED|lock .*LOCK|Database failed to open/i.test(raw)) {
+    return 'OrbitDB 库被另一个进程占着 (同机同一 dataDir 只允许一个进程写; 常见原因: 另有一个 bolloon 实例在跑)。'
+      + ' 处理: 退出其它实例, 或设 `BOLLOON_HOME=<独立目录>` 跑一个隔离实例。原始错误: ' + raw.slice(0, 160);
+  }
+  if (/超时 \(\d+ms\)/.test(raw)) return raw.slice(0, 220);
+  return raw.slice(0, 200) || '未知原因';
+}
+
 export class OrbitDBStoreUnreachableError extends Error {
   readonly code = 'STORE_UNREACHABLE';
   constructor(readonly address: string, readonly cause?: unknown, readonly dataDir?: string) {
@@ -179,7 +214,13 @@ export class OrbitDBAdapter implements CIDDatabase {
   private _orbitdb: OrbitDB | null = null;
   readonly orbitdb: OrbitDB | undefined;
 
-  constructor(readonly dataDir: string = path.join(home(), '.bolloon', 'orbitdb')) {}
+  /**
+   * 2026-10-02: **必须认 `BOLLOON_HOME`** —— 原来只走 `home()` (≈ `$HOME`)，于是
+   *   `BOLLOON_HOME=/tmp/x` 的"隔离运行"其实还在开**真实** `~/.bolloon/orbitdb/…`
+   *   (实测: 隔离 HOME 下报的锁路径是 `/Users/apple/.bolloon/…`) ⇒ 隔离失效、测试会写真实库。
+   *   与仓里其它模块同一口径: `${BOLLOON_HOME:-~/.bolloon}`。
+   */
+  constructor(readonly dataDir: string = path.join(process.env.BOLLOON_HOME || path.join(home(), '.bolloon'), 'orbitdb')) {}
 
   /** 落盘位置 (未初始化时 null; 诊断/验收用) */
   get ipfsPaths(): BolloonIpfs['paths'] | null {
@@ -247,7 +288,10 @@ export class OrbitDBAdapter implements CIDDatabase {
   /** 懒初始化: 首次使用时启动 helia + OrbitDB + 打开 keyvalue store */
   private async ensure(): Promise<void> {
     if (this.db) return;
-    this.node = await createBolloonIpfs(path.join(this.dataDir, 'ipfs'));
+    // 2026-10-02: 默认 20s/步 —— 可调; 目的是"卡住"必须变成**可判定的失败**, 不许无声挂死
+    const stageMs = Number(process.env.BOLLOON_ORBITDB_STAGE_TIMEOUT_MS || 20_000);
+    try {
+    this.node = await withStageTimeout('启动 IPFS/helia 节点', stageMs, createBolloonIpfs(path.join(this.dataDir, 'ipfs')));
     // 2026-09-24: 身份必须**跨进程稳定**。不给 id 时 @orbitdb/core 用 createId()
     // (32 位随机串) 当 keystore 槽名 (src/orbitdb.js:43 `id = id || await createId()`
     // → :61 `createIdentity({ id })`) → 每个进程一对新密钥 → 新身份 → 写自己的 store
@@ -261,10 +305,14 @@ export class OrbitDBAdapter implements CIDDatabase {
       directory: path.join(this.dataDir, 'stores'),
       id: ORBITDB_IDENTITY_ID,
     };
-    this._orbitdb = await createOrbitDB(init);
-    this.db = await this._orbitdb.open('bolloon-cid-store', { type: 'keyvalue' });
+    this._orbitdb = await withStageTimeout('创建 OrbitDB 实例 (含 keystore)', stageMs, createOrbitDB(init));
+    this.db = await withStageTimeout('打开 CID 库', stageMs, this._orbitdb.open('bolloon-cid-store', { type: 'keyvalue' }));
     // 共享底层实例 (只读暴露)
     (this as any).orbitdb = this._orbitdb;
+    } catch (e) {
+      // 打不开 ⇒ 一句**可行动**的话 (锁被谁占着 / 卡在哪一步), 不再让 "Database failed to open" 误导人
+      throw new Error(describeOrbitDbFailure(e), { cause: e as Error });
+    }
   }
 
   async save(data: SaveOptions): Promise<CIDRecord> {
