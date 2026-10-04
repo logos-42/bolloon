@@ -1220,7 +1220,11 @@ export class PiAgentSession implements AgentSession {
       content: input
     });
 
-    if (!this.minimaxAvailable) {
+    // K9 (2026-10-02): 同 `promptWithPivotLoop` —— **回合入口的可用性判据必须问当前适配器**。
+    //   这类 `!minimaxAvailable` 闸一共 6 处: 1223(prompt)/1466(promptStream)/1714(pivot, 已修)
+    //   是**回合入口** ⇒ 全部改用 `inferenceAvailable()`; 其余三处是 Pi 自己的文档类功能
+    //   (`suggestRename`/`summarizeDocument`/`improveDocument`), 不在 `LLMInterface` 面内 ⇒ 如实保留。
+    if (!this.inferenceAvailable()) {
       // 2026-09-16 (2-C.2): fallback **也必须留下 Run 事实**。
       //   旧行为: 直接返回兜底文案, 连 Run 都不建 —— 上层 (独立宿主/Supervisor) 只看到"执行完成但没有 Run",
       //   于是把"什么都没跑"当成一次正常执行 (这正是"agent 跑了但没记录"的老毛病在 fallback 路径的翻版)。
@@ -1428,7 +1432,7 @@ export class PiAgentSession implements AgentSession {
   async promptStream(input: string, onStream: StreamCallback, signal?: AbortSignal, channelId?: string): Promise<string> {
     console.log(`[PiAgent.promptStream] ENTRY, channelId=${channelId}, input chars=${input.length}`);
     this.minimaxAvailable = this.checkMinimax();
-    console.log(`[PiAgent.promptStream] minimaxAvailable=${this.minimaxAvailable}`);
+    console.log(`[PiAgent.promptStream] minimaxAvailable=${this.minimaxAvailable} nativeAdapter=${process.env.BOLLOON_NATIVE_ADAPTER === '1'} usable=${this.inferenceAvailable()}`);
     this.actor!.state.channelId = channelId ?? this.actor!.state.channelId;
 
     // 2026-08-08: 运行轨迹采集 (落盘 + OrbitDB, 失败静默) — 包裹 onStream 收集步骤事件
@@ -1463,7 +1467,9 @@ export class PiAgentSession implements AgentSession {
 
     onStream({ type: 'thinking', content: '🤔 开始思考...' });
 
-    if (!this.minimaxAvailable) {
+    // K9: 流式入口同样问**当前适配器** (web/手机端就走这条路 —— 只修 pivot 那道闸时,
+    //   CLI 通了、web 仍然静默空回复, 现象是"适配器被选中但这条路一次没跑")。
+    if (!this.inferenceAvailable()) {
       const response = await this.handleFallback(userText);
       this.pushHistory({ role: 'assistant', content: response });
       onStream({ type: 'done', content: '' });
