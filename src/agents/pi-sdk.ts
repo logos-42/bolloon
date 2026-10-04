@@ -1364,7 +1364,9 @@ export class PiAgentSession implements AgentSession {
                 .then(() => fs.appendFile(p, line + '\n'))
                 .catch(() => { /* 落日志失败不影响主流程 */ });
             } catch { /* 落日志失败不影响主流程 */ }
-            try { this.runCtx.eventSink?.({ type: 'status', content: `📚 复盘: ${m}`, tool: 'system' } as any); } catch { /* 上屏失败不打断 */ }
+            // 2026-10-02 (leo: 「cli 的 UI 需要有渲染过滤」): 这条是**内部运行日志** (复盘过程), 不是用户要看的结论
+            //   ⇒ 不再进用户可见对话流; 走 console (由 CLI 的渲染过滤只落盘, `--verbose` 下照原样上屏)。
+            try { console.log(`📚 复盘: ${m}`); } catch { /* 上屏失败不打断 */ }
           };
           reviewLog('开始(换了任务 ⇒ 立刻复盘)');
           void runExperienceReview({

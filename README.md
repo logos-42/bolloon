@@ -7,7 +7,7 @@ Bolloon 是一台跑在你自己设备上的智能体。它有自己的身份（
 
 不是「又一个聊天框」，而是**一个可以互相接手工作的智能体网络**。
 
-> 官网 · https://bolloon.cn　｜　下载 · [npm](https://www.npmjs.com/package/@bolloon/bolloon-agent)　｜　当前版本 · `0.5.5`
+> 官网 · https://bolloon.cn　｜　安装 · `npm i -g @bolloon/bolloon-agent`（[npm 上的最新版](https://www.npmjs.com/package/@bolloon/bolloon-agent)）
 
 ---
 
@@ -140,7 +140,7 @@ and settle by result**.
 
 Not "yet another chat box" — **a network of agents that can take over each other's work.**
 
-> Website · https://bolloon.cn　｜　npm · [@bolloon/bolloon-agent](https://www.npmjs.com/package/@bolloon/bolloon-agent)　｜　Version · `0.5.5`
+> Website · https://bolloon.cn　｜　Install · `npm i -g @bolloon/bolloon-agent`（[latest on npm](https://www.npmjs.com/package/@bolloon/bolloon-agent)）
 
 ## Why
 

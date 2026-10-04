@@ -42,7 +42,7 @@ import { printBanner, termHeight, truncate, renderDashboard, renderDialog, rende
 import type { ToolCallListItem } from './cli/loading-tui.js';
 import { startInk, stopInk, suspendInk, resumeInk, inkAppendLine as appendLine, inkReplaceMatchingLine, inkSetStatus, inkSetThinking, inkSetTransient, bootPanelMaxLines, bootPanelRegionLines } from './cli/ink-app.js';
 // 2026-09-26: 启动期日志闸门 (默认静默加载日志 + 写文件 + verbose 全量回流 + 信号行不吞)
-import { installStartupLogGate, isStartupVerbose, startupLogPath, VERBOSE_ENV, carriesHumanSignal, logStartupLine, type StartupLogGateHandle } from './cli/log-gate.js';
+import { installStartupLogGate, isStartupVerbose, startupLogPath, VERBOSE_ENV, carriesHumanSignal, isInternalChatter, logStartupLine, type StartupLogGateHandle } from './cli/log-gate.js';
 // 2026-09-27: 回复流卫生 — 内部运行日志 (循环推进/运行登记/收尾计数…) 不进对话回复流, 改落日志文件
 import { isInternalRunLog, appendInternalRunLog } from './cli/reply-hygiene.js';
 // 2026-09-27: 启动**前言 / 就绪度报告**闸门 (默认不上屏 → 面板一行 + 显式查询命令; 失败折成面板提示)
@@ -188,6 +188,9 @@ const SHOW_CURSOR = '\x1b[?25h';
  *   Ink 在跑 ⇒ **一律走它自己的消息流**; 没跑(boot 期)⇒ 才直写 ✓。
  */
 function writeOut(line: string): void {
+  // 2026-10-02 (leo: 「cli 的 UI 需要有渲染过滤」): 内部诊断行**不进对话流** (仍一字不漏落日志文件;
+  //   `BOLLOON_VERBOSE=1` 下闸门不装 ⇒ 照原样上屏)。判据与启动期门同一套: 按行首模块标签锚定。
+  if (isInternalChatter(String(line))) { bootLogOnly(line); return; }
   // 2026-10-01 (用户: 「时间好像是面板后面启动的」+「继续，还没去掉」):
   //   **关键**: 启动那几步**不是 await 的** ✗(fire-and-forget)⇒ 它们常在 `startupPanelReady = true`
   //   **之后**才打印 ✓ ⇒ 用"面板好了没"当判据必然漏 ✗(我上一版就栽在这 ✓)。
@@ -206,6 +209,8 @@ function writeOut(line: string): void {
  *   Ink 没起 ⇒ 先缓冲, `flushBootBuffer()` 在 Ink 起来后灌进对话流 ✓; Ink 已在跑 ⇒ 直接进 ✓。
  */
 function writeOutWarn(line: string): void {
+  // 2026-10-02: 警告路同样过渲染过滤 —— 内部诊断行(带 ⚠ 也算)只落盘, 不占屏
+  if (isInternalChatter(String(line))) { bootLogOnly(line); return; }
   if (startupPanelReady) { try { appendLine(line); return; } catch { /* 落到缓冲 */ } }
   if (bootBuffer.length < 500) { bootBuffer.push(line); return; }
   console.log(line);

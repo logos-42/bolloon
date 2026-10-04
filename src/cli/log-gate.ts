@@ -58,6 +58,8 @@ export interface StartupLogGateStats {
   forwarded: number;
   /** 因带「错误/降级/需人介入」信号而被放行的行数 (是 forwarded 的子集) */
   signalKept: number;
+  /** 因是**内部诊断行** (模块标签命中渲染过滤) 而只落盘、不上屏的行数 —— 与 `suppressed` 分开便于诊断 */
+  internalSuppressed: number;
   /** 写进日志文件的行数 */
   fileLines: number;
   /** 日志文件不可写时的原因 (null = 正常) */
@@ -166,6 +168,34 @@ const OPTIONAL_BOOT_TASK = /(?:本地\s*IPNS\s*发布失败|IPNS\s*发布失败[
 //   `[info]` 里的 info 还会被 ANSI 染色 ⇒ 两条都让旧规则漏网, 于是
 //   `2026-09-30T10:22:44.768Z [info]:   结果: ❌ 失败 (30004ms)` 照样上屏 (leo 报过多次)。
 const SDK_DIAG_LINE = /^(?:\[[^\]]*\]\s*)?\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*\[(?:\x1b\[[0-9;]*m)*(?:info|debug)(?:\x1b\[[0-9;]*m)*\]:/i;
+
+/**
+ * **对话流渲染过滤** (2026-10-02, leo: 「cli 的 UI 需要有渲染过滤」)。
+ *
+ * 真机污染样本 (用户贴的原文): `⚠ [identity] channel=… · 查到=yes · …` ·
+ *   `[pi-ai timing] total=1143ms …` · `📚 复盘: 开始(换了任务 ⇒ 立刻复盘)` ·
+ *   `✗ [session-note] 已更新: …` · `[PiAgent] reviewFinal …` (含**被截断的 prompt 片段**)。
+ *
+ * 口径与启动期门同一套: **按行首模块标签锚定**, 不做宽泛匹配 (免得吞掉用户内容) ——
+ *   只认实测过的这些内部模块; **带 `⚠/✗` 字样也不例外** (它们是内部诊断, 不是"需人介入")。
+ * 去处: 仍**一字不漏落日志文件**; `BOLLOON_VERBOSE=1` 照原样上屏 ⇒ 诊断能力一点不丢。
+ * 这是把「要不要占屏」和「要不要留痕」分开, 不是把问题藏起来。
+ */
+// 允许标签前有一个**严重度字形** (`⚠ [identity] …` / `✗ [session-note] …` 真机就是这样) —— 只放这几个字形, 不做通配
+const INTERNAL_CHATTER_TAG =
+  /^[ \t]{0,8}[⚠✗✓!·]?[ \t]*\[(?:pi-ai(?:\s+timing)?|identity|session-note|react-harness|DocumentStore|DocumentReceiver|kv-server|loadSkills|v3-manifest|v3-async|supervisor-host|tool-telemetry|runs|abort|broadcast)\b[^\]\n]*\]/i;
+/** 没有 ASCII 标签、但实测属于内部运行日志的行 */
+const INTERNAL_CHATTER_LINE = [
+  /^\s*📚\s*复盘[:：]/,
+  /^\s*\[PiAgent\]\s*reviewFinal\b/,
+  /^\s*\[PiAgent\]\s*推理适配器\s*=/,
+];
+/** 这一行是不是**内部诊断** (只该进日志, 不该进对话流) */
+export function isInternalChatter(line: string): boolean {
+  if (!line) return false;
+  const l = String(line).replace(/\x1b\[[0-9;]*m/g, '');
+  return INTERNAL_CHATTER_TAG.test(l) || INTERNAL_CHATTER_LINE.some((re) => re.test(l));
+}
 
 /** 这一行是不是「错误 / 降级 / 需人介入」—— 是则任何模式下都不许被静默 */
 export function carriesHumanSignal(line: string): boolean {
@@ -288,7 +318,7 @@ export function installStartupLogGate(opts: StartupLogGateOptions = {}): Startup
   const writeFile = opts.writeFile !== false;
 
   const stats: StartupLogGateStats = {
-    suppressed: 0, forwarded: 0, signalKept: 0, fileLines: 0, fileError: null,
+    suppressed: 0, forwarded: 0, signalKept: 0, internalSuppressed: 0, fileLines: 0, fileError: null,
   };
   const filtering = !verbose && !disabled;
 
@@ -409,7 +439,10 @@ export function installStartupLogGate(opts: StartupLogGateOptions = {}): Startup
       const toFile: string[] = [];
       for (const line of text.split('\n')) {
         toFile.push(line);
-        if (carriesHumanSignal(line)) {
+        // 2026-10-02: **内部诊断行优先判** —— 只落盘, 一律不进对话流 (即便带 ⚠/✗ 字样也不会被当成"需人介入")
+        if (isInternalChatter(line)) {
+          stats.internalSuppressed++;
+        } else if (carriesHumanSignal(line)) {
           // 需人介入的信息必须可见: 交互 CLI 的 stdout 归 Ink, 所以走 stderr
           stats.signalKept++;
           origStderr(line + '\n');
@@ -424,9 +457,17 @@ export function installStartupLogGate(opts: StartupLogGateOptions = {}): Startup
   function makeConsoleError(): (...args: unknown[]) => void {
     return (...args: unknown[]) => {
       const text = formatConsoleArgs(args);
-      writeLines(text.split('\n'));
+      // 2026-10-02: error 里混进的**内部诊断行**同样只落盘 (`✗ [session-note] 已更新: …` 就是这么漏进对话流的);
+      //   真正的错误 (没有内部标签) 照旧一行不吞 —— 文件那份**全留**(留痕), 只有 stderr 这份过渲染过滤。
+      const lines = text.split('\n');
+      const passToScreen = lines.filter((l) => {
+        if (isInternalChatter(l)) { stats.internalSuppressed++; return false; }
+        return true;
+      });
+      writeLines(lines);
+      if (passToScreen.length === 0) return;
       stats.forwarded++;
-      origStderr(text + '\n');
+      origStderr(passToScreen.join('\n') + '\n');
     };
   }
 
