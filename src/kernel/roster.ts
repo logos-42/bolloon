@@ -257,7 +257,7 @@ export const STAGE_STATUS: Readonly<Record<string, 'done' | 'partial' | 'not-sta
   K5: 'done',
   // 2026-10-02 (leo 拍板): K4 = **Kernel Execution Core**, 拆两半, 不许两个含义共用一个编号
   'K4-A': 'done',         // 内核控制面 / Goal·Run 写权限收口 (AUTHORITY_DEBT 3 → 0, 经 kernel/control.ts)
-  'K4-B': 'partial',      // 合并两套 Agent Loop —— 已落: 默认切 pivot (所有入口一套) + 收尾自检抽成 runTurnEndTypecheck 挂**三条路径**(原先生产 pivot 路径从没跑过自检, 见 K7 evidence 补正); 待做: 删老 `runReActLoop` (~1100 行, 需先核清两条入口 finally/尾段差异)
+  'K4-B': 'done',         // 2026-10-02 合并完成: 老 `runReActLoop` (1123 行) **已删除**, 所有入口只跑 pivot (`usePivotLoop` 默认 true); 同时补回只存在于老 loop 的门面阶段 (sessionStart/sessionEnd/beforeModelCall/afterModelCall/afterToolCall) + TS 记账上移到唯一执行点 + 自检三路径。**如实两条边界**: ① `reviewFinal` 已恢复调用与留痕, 但它的判定**不参与流程** (pivot 收尾仍由自己的质量判定决定) ② 老 loop 的 `IterationBudget` (净用量+批处理退还) 随它退休, pivot 用复杂度画像预算 (行为差量)      // 合并两套 Agent Loop —— 已落: 默认切 pivot (所有入口一套) + 收尾自检抽成 runTurnEndTypecheck 挂**三条路径**(原先生产 pivot 路径从没跑过自检, 见 K7 evidence 补正); 待做: 删老 `runReActLoop` (~1100 行, 需先核清两条入口 finally/尾段差异)
   K6: 'done',             // 2026-10-02 修正: 能力 9/9 全 done (capabilities-done) —— 原写 not-started 是台账滞后
   K7: 'done',             // 2026-10-02 收尾: 旁路 **3 → 0** (pivot ✅ · skill ✅ 两路端到端 · tscTool ✅ 端到端取证含两条变异 · getSkillRegistry ✅ 受门包装) — 提交 5483e3a / 1af7e46
   K8: 'partial',          // 台账+门已落 · 直连 12 → **0** · 各通道状态 37/33 · didFixQueue 经邮箱 · **正刀已落地** (每条消息都进邮箱, 删掉重复的第二条路径, 提交 2fc197e, 真跑: 一条不丢/严格串行/FIFO) ⇒ 剩 `abortController` 语义定夺 (目标是 ExecutionRequest.signal), 显式留下不随队列顺手合并
@@ -286,10 +286,10 @@ export const AUTHORITY_DEBT_FROZEN_AT = 0;   // 3 → 0 (K4 用内核控制面�
  * 目的只有一个: **不许所有逻辑回流到 kernel.ts**。要加就得显式抬这个数字, 留下痕迹。
  * 数值 = 当前 kernel 目录真实行数, 不留余量。
  */
-export const KERNEL_LINE_BUDGET = 2917;   // 2026-10-02: +5 (K8 正刀: gate-scan 加"收口字段数 3→1"+ queue 反回归)   // 2026-10-02: +54 (K8: gate-scan 加 K8 判据)   // 2026-10-02: +2 (STAGE_STATUS 拆 K4-A/K4-B + K6/K7 如实修正)
+export const KERNEL_LINE_BUDGET = 2918;   // 2026-10-02: +1 (K4-B: gate-scan 复位阈值注释)   // 2026-10-02: +5 (K8 正刀: gate-scan 加"收口字段数 3→1"+ queue 反回归)   // 2026-10-02: +54 (K8: gate-scan 加 K8 判据)   // 2026-10-02: +2 (STAGE_STATUS 拆 K4-A/K4-B + K6/K7 如实修正)
 
 /** 预算冻结值 (棘轮: 只许减; 想抬预算必须同时改上面那个数字 ⇒ 一次显式动作, diff 里看得见) */
-export const KERNEL_LINE_BUDGET_FROZEN_AT = 2917;   // 同步至 2026-10-02 真实值
+export const KERNEL_LINE_BUDGET_FROZEN_AT = 2918;   // 同步至 2026-10-02 真实值
 
 /**
  * K3b —— **台账数据**单独一档预算 (`src/kernel/plan.ts`)。

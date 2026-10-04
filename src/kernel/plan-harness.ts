@@ -78,14 +78,14 @@ export interface ExecSite {
 }
 
 /**
- * 实测 (2026-10-02, 剥注释后共 18 处) —— 数的口径写在 countHarnessExecSites 里, 判据会重算比对。
+ * 实测 (2026-10-02, 剥注释后共 **17** 处 —— K4-B 删老 `runReActLoop` 前是 18) —— 数的口径写在 countHarnessExecSites 里, 判据会重算比对。
  *
  * **规则 (2026-10-02 立): 台账按「符号」不按「行号」。** 行号会随任何一次编辑漂移, 而判据只核**计数**
  *   不核行号 ⇒ 行号一旦写进台账, 它迟早会**指向错的位置而没人发现** (K7 第二步 b 当场发生:
  *   在 pi-sdk 插入 ~35 行后, 台账里的 4144 实际已变 4176)。说清"是哪一处"用函数名/类名/调用形态。
  */
 export const HARNESS_EXEC_SITES: readonly ExecSite[] = [
-  { file: 'src/agents/pi-sdk.ts', count: 6, kinds: ['main', 'skill', 'bypass', 'homonym', 'registry'], why: '主执行点 1 (`runReActLoop` 内的执行, 经门链) · skill 2 (`getSkillRegistry()` 暴露的 `skillRegistry.execute` + 内置 `sk.execute`; **2026-10-02 量到: 这两条在生产代码里零调用者** —— 但 `PiAgentSession.executeSkill`/`getSkillRegistry` 是**已发布 npm 包的公开方法** ⇒ 属"不擅动公开契约", 删/收口都要等用户口径) · 内置 tscTool 直调 1 (bypass) · `loop.execute` 1 (homonym) · **K7 第二步 b 新增 1**: pivot loop 的 `guardedExecute` 端口内 `return tool.execute(args)` (在门之后, 属同一扇门的通过分支, 不是旁路)' },
+  { file: 'src/agents/pi-sdk.ts', count: 5, kinds: ['main', 'skill', 'bypass', 'homonym', 'registry'], why: '**主执行点 1 = pivot 的 `guardedExecute` 端口内那次 `await tool.execute(args)`** (2026-10-02 K4-B: 老 `runReActLoop` 的执行点随 loop 删除, 端口成为唯一主执行点; 它先过 `beforeToolCall` 再执行、执行后过 `afterToolCall`) · skill 2 (`getSkillRegistry()` 暴露的 `skillRegistry.execute` + 内置 `sk.execute`; **2026-10-02 量到: 这两条在生产代码里零调用者** —— 但 `PiAgentSession.executeSkill`/`getSkillRegistry` 是**已发布 npm 包的公开方法** ⇒ 属"不擅动公开契约", 删/收口都要等用户口径) · 内置 tscTool 直调 1 (bypass, 已在 `runTurnEndTypecheck` 内先问门) · `loop.execute` 1 (homonym)' },
   { file: 'src/agents/workflow-pivot-loop.ts', count: 2, kinds: ['bypass', 'homonym'], why: '**pivot loop 直接执行工具** 1 (bypass —— 2026-10-02 已收敛: 走注入的 `guardedExecute` 门端口) · `loop.execute` 1 (homonym)' },
   { file: 'src/agents/tool-registry.ts', count: 1, kinds: ['registry'], why: '注册表统一执行口 (唯一咽喉候选)' },
   { file: 'src/agents/pi-sdk-tools.ts', count: 1, kinds: ['mcp'], why: 'MCP `executeTool` 1' },
@@ -140,6 +140,6 @@ export interface K7Progress {
 
 export const K7_PROGRESS: K7Progress = {
   stage: 'ledger-landed',
-  execSitesTotal: 18,   // 17 (普查基线) + 1 (K7 第二步 b: pivot loop 的端口内执行, 在门之后)
+  execSitesTotal: 17,   // 16 (普查基线) + 1 (K7 第二步 b: pivot loop 端口内执行, 在门之后) —— 2026-10-02 K4-B 删老 loop, 它那处执行点随之消失: 18 → 17
   bypasses: 0,          // 3 → 2 (pivot loop) → 1 (getSkillRegistry 受门包装, leo 口径 (b)) → **0** (tscTool 端到端取证完成: 允许路/拒绝路真回合 + 两条变异, 2026-10-02)
 };

@@ -185,7 +185,9 @@ describe('K4 欠账不许烂在账上: 排期过期 / 无还款路径 都要被�
   it('★ 判别力: 四种坏形状都必须判红 (夹具自造 —— 不依赖实时台账长度)', () => {
     // 台账现在按设计是**空的** ⇒ 判别力必须用**自造样本**, 否则用例会随台账归零而失效
     const sample = [
-      { prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'setRunStatus', count: 1, payDownIn: 'K4-B', note: '排到未开工阶段 (示例) —— K4-A 已 done, 排到 done 的阶段会被判"排期过期"' },
+      // 2026-10-02 K4-B 收工后改指 K9 —— 夹具的意图是"排到**还没收工**的阶段才合法",
+      //   所以它必须指向一个仍未收工的阶段 (K4-A/K4-B/K5/K6/K7 都已 done)。
+      { prohibition: 'channel-must-not-write-run', file: 'web/server.ts', call: 'setRunStatus', count: 1, payDownIn: 'K9', note: '排到未开工阶段 (示例: K9) —— 排到已 done 的阶段会被判"排期过期"' },
     ];
     // ① 排期指向已收工的阶段 ⇒ 过期
     expect(scanDebtPaydownStaleness([{ ...sample[0], payDownIn: 'K5' }], STAGE_STATUS).some((f) => f.rule === 'debt-paydown-stale')).toBe(true);
@@ -197,9 +199,9 @@ describe('K4 欠账不许烂在账上: 排期过期 / 无还款路径 都要被�
     expect(scanDebtPaydownStaleness(sample, STAGE_STATUS)).toEqual([]);
     // ⑤ 阶段状态本身也要与事实一致: K5 已收工 ⇒ 不许写成 not-started; K4 未收工 ⇒ 重排到它才诚实
     expect(STAGE_STATUS.K5).toBe('done');
-    // 2026-10-02: 编号拆成 K4-A (控制面, 已 done) / K4-B (合并两套 Loop, 未开工) ⇒ 断言按拆分后的语义
+    // 2026-10-02: 编号拆成 K4-A (控制面) / K4-B (合并两套 Loop) —— **两者都已收工** ⇒ 断言按事实写。
     expect(STAGE_STATUS['K4-A']).toBe('done');
-    expect(STAGE_STATUS['K4-B']).not.toBe('done');
+    expect(STAGE_STATUS['K4-B']).toBe('done');   // 2026-10-02: 合并两套 loop 完成 (删老 runReActLoop 1123 行)
   });
 
 });

@@ -1813,7 +1813,7 @@ K3 棘轮当场拦 (代码 2555 → **2659** · 台账 1054 → **1184**) 并按
 | 阶段 | 含义 | 状态 |
 |---|---|---|
 | **K4-A** | Authority / Control Plane —— 内核控制面, Goal/Run 写权限收口 (`AUTHORITY_DEBT` 3 → 0, 经 `kernel/control.ts`) | ✅ |
-| **K4-B** | Kernel Loop —— 合并两套 Agent Loop (ReAct / Pivot / 旧 loop) | ❌ |
+| **K4-B** | Kernel Loop —— 合并两套 Agent Loop (ReAct / Pivot / 旧 loop) | ✅ (2026-10-02: 老 `runReActLoop` 1123 行删除, 所有入口只跑 pivot; 补回只存在于老 loop 的门面阶段 sessionStart/sessionEnd/beforeModelCall/afterModelCall/afterToolCall/reviewFinal; `reviewFinal` 判定暂不参与流程 · `IterationBudget` 退还语义随老 loop 退休 = 两条如实边界) |
 | K5 | Channel Actor | ✅ |
 | K6 | ModelRuntime (并发/熔断/能力) | ✅ 能力 9/9 (`capabilities-done`) |
 | **K7** | Harness 唯一系统调用门 | ✅ (**旁路 3 → 0**: pivot ✅ · skill ✅ · tscTool ✅ · getSkillRegistry ✅) |

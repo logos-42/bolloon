@@ -58,11 +58,11 @@ describe('K7 台账门: Harness 唯一系统调用门', () => {
     expect(findings.map((x) => x.what)).toEqual([]);
   });
 
-  it('①b 台账自洽: 9 阶段 / 9 覆盖面 / 执行点合计 == 18 / 开着旁路 2', () => {
+  it('①b 台账自洽: 9 阶段 / 9 覆盖面 / 执行点合计 == 17 / 开着旁路 0', () => {
     expect(HARNESS_STAGES.map((s) => s.stage)).toEqual([...HARNESS_STAGE_ORDER]);
     expect(HARNESS_SURFACES).toHaveLength(9);
     const total = HARNESS_EXEC_SITES.reduce((n, s) => n + s.count, 0);
-    expect(total).toBe(18);   // 17 普查基线 + 1 (K7 第二步 b 端口内执行)
+    expect(total).toBe(17);   // 16 普查基线 + 1 (K7 第二步 b 端口内执行); K4-B 删老 loop 后 18 → 17
     expect(K7_PROGRESS.bypasses).toBe(0);   // 3 → 2 (pivot) → 1 (getSkillRegistry 受门包装) → **0** (tscTool 端到端取证完成, 2026-10-02)
     // 2026-10-02: pivot loop + skill 两条已收敛 (skill 的公开出口 `getSkillRegistry` 另立开放条目)
     expect(K7_BYPASS_CANDIDATES.filter((b) => b.status === 'converged')).toHaveLength(4);   // pivot · skill adapter · getSkillRegistry(受门包装) · **tscTool.execute** (2026-10-02 端到端取证)
@@ -191,7 +191,9 @@ describe('K7 台账门: Harness 唯一系统调用门', () => {
     expect(seg).toContain('harness-error');
     // 未通过 ⇒ 拒收; 通过 ⇒ 才执行 (返 tool.execute(args))
     expect(seg).toContain('decision.allow');
-    expect(seg).toContain('return tool.execute(args);');
+    // K4-B (2026-10-02): 端口内的形状变了 —— 执行结果先落到 `execResult`, 过 `afterToolCall` (输出门) 再返回。
+    expect(seg).toContain('await tool.execute(args)');
+    expect(seg).toContain('return execResult');
   });
 
   it('② 判别力: 说"未开始"但台账文件已在盘上 ⇒ 红 (半搬状态)', () => {

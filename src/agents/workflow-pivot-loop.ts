@@ -384,13 +384,13 @@ export class WorkflowPivotLoop {
     );
 
     this.emit({
-      type: 'status',
+      type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
       content: `🔍 任务复杂度: ${taskProfile.complexity} (预估 ${taskProfile.estimatedSteps} 步)`,
       tool: 'system'
     });
     
     this.emit({
-      type: 'status',
+      type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
       content: `⚙️ 动态配置: maxIterations=${effectiveConfig.maxIterations}, tokenBudget=${effectiveConfig.maxTokenBudget}`,
       tool: 'system'
     });
@@ -410,7 +410,7 @@ export class WorkflowPivotLoop {
       this.state.iteration++;
 
       this.emit({
-        type: 'status',
+        type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
         content: `🔄 循环 ${this.state.iteration}/${effectiveConfig.maxIterations}`,
         tool: 'loop'
       });
@@ -463,7 +463,7 @@ export class WorkflowPivotLoop {
         if (budgetRatio > 0.7 && this.onApproachingTokenBudget && !this.compactedThisRun && this.messageHistory.length >= 6) {
           this.compactedThisRun = true;
           this.emit({
-            type: 'status',
+            type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
             content: `🗜️ token ${this.state.totalTokens} 接近预算 (${(budgetRatio * 100).toFixed(0)}%), 尝试自动压缩上下文`,
             tool: 'compactor',
           });
@@ -472,7 +472,7 @@ export class WorkflowPivotLoop {
             // 重置 totalTokens 因为 compactor 折叠后本来就不准
             this.state.totalTokens = Math.ceil(systemPrompt.length * 0.5); // 粗略剩余量
             this.emit({
-              type: 'status',
+              type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
               content: `🗜️ 自动压缩完成, 继续循环 (剩余估算 ${this.state.totalTokens} chars)`,
               tool: 'compactor',
             });
@@ -507,7 +507,7 @@ export class WorkflowPivotLoop {
             const cleaned = reply.replace(/<final\s+gen\s*\/?>|<\/final\s+gen>/gi, '').trim();
             response = cleaned || reply;
             this.emit({
-              type: 'status',
+              type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
               content: `✅ 检测到 <final gen> 结束标记, 立即退出 (iter=${this.state.iteration})`,
               tool: 'system',
             });
@@ -528,7 +528,7 @@ export class WorkflowPivotLoop {
           // If there's tool call intent but no parsed tools, continue the loop
           if (containsToolCallIntent && this.state.iteration < effectiveConfig.maxIterations) {
             this.emit({
-              type: 'status',
+              type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
               content: `🔄 检测到工具调用意图但格式无法解析，继续循环...`,
               tool: 'system'
             });
@@ -544,7 +544,7 @@ export class WorkflowPivotLoop {
           this.state.qualityScores.push(quality);
           
           this.emit({
-            type: 'status',
+            type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
             content: `✅ 检测到最终回复 (质量: ${(quality * 10).toFixed(1)}/10)`,
             tool: 'system'
           });
@@ -565,7 +565,7 @@ export class WorkflowPivotLoop {
           // Too early, continue to see if we can improve
           this.state.consecutiveNoProgress++;
           this.emit({
-            type: 'status',
+            type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
             content: `📊 质量未达标 (${(quality * 10).toFixed(1)}/${(effectiveConfig.qualityThreshold * 10).toFixed(1)})，继续循环`,
             tool: 'system'
           });

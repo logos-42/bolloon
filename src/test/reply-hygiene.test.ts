@@ -40,27 +40,45 @@ describe('internalRunLogLine — 落盘行: 原文一字不改, 只加可 grep �
   });
 });
 
-describe('发送点声明 (pi-sdk) — 这批行不许丢声明', () => {
-  const src = fs.readFileSync(PI_SDK, 'utf8');
-  const lines = src.split('\n');
-  const INTERNAL_MARKERS = [
-    '🔄 开始 ReAct 循环...',
-    '🧷 运行已登记',
-    '🔄 目标对齐 review',
-    '✅ 处理完成，共 ${iteration - 1} 次循环',
-    '🔄 工具结果汇报超限, 强制收尾',
-    '✅ ${toolCall.name} 执行成功',
-    '🎯 目标已达成',
-  ];
-  const USER_VISIBLE_MARKERS = [
-    '⛔ loop 自动重试 ${MAX_LOOP_RETRIES} 次后仍失败',
-    '⚠️ AI 调用失败 ${totalErrors}/${this.MAX_TOTAL_ERRORS}',
-    '💡 Reflection:',
-    '⚠️ 收尾被拒 (不当作收过)',
+describe('发送点声明 — 这批行不许丢声明', () => {
+  /**
+   * 2026-10-02 K4-B: 这张表原先只查 **pi-sdk**, 而它列的内部文案**全部来自老 `runReActLoop`** ——
+   * 老 loop 删除后整张表失效, 门才"红给你看": 它同时暴露了一个真缺口 ——
+   * **pivot loop (现在唯一的 loop) 的内部运行行从来没有声明过 `internal: true`**
+   * (循环遥测会被当用户可见内容打进对话/状态栏)。所以现在按**文件**分别列, 两个文件都要查。
+   */
+  const TARGETS: { file: string; label: string; internal: string[]; visible: string[] }[] = [
+    {
+      file: PI_SDK,
+      label: 'pi-sdk (外层重试 + 收尾自检)',
+      internal: ['↻ 自动重试 loop ${attempt}/${MAX_LOOP_RETRIES}'],
+      visible: ['⛔ loop 自动重试 ${MAX_LOOP_RETRIES} 次后仍失败', '🔎 ${line}'],
+    },
+    {
+      file: path.resolve(__dirname, '..', 'agents', 'workflow-pivot-loop.ts'),
+      label: 'workflow-pivot-loop (唯一的 loop)',
+      internal: [
+        '🔍 任务复杂度:',
+        '⚙️ 动态配置:',
+        '🔄 循环 ${this.state.iteration}/',
+        '🗜️ token ${this.state.totalTokens} 接近预算',
+        '🗜️ 自动压缩完成',
+        '✅ 检测到 <final gen> 结束标记',
+        '🔄 检测到工具调用意图但格式无法解析',
+        '✅ 检测到最终回复 (质量:',
+        '📊 质量未达标',
+      ],
+      // 终止原因/中断这类要给人看见 (与老 loop 的 `⛔ 重试仍失败` 同一口径)
+      visible: [
+        '⏹️ pivot loop 被 abort',
+        '🛑 达到最大迭代次数',
+        '🛑 连续 ${config.maxConsecutiveNoProgress} 次无进展',
+      ],
+    },
   ];
 
   /** 事件对象里 `type: 'status'` 那一行 (标记行上下 6 行内最近的); allowMany = 允许多个发送点 */
-  function statusLineOf(marker: string, opts: { allowMany?: boolean } = {}): string[] {
+  function statusLineOf(lines: string[], marker: string, opts: { allowMany?: boolean } = {}): string[] {
     const idxs = lines.map((l, i) => (l.includes(marker) ? i : -1)).filter((i) => i >= 0);
     if (idxs.length === 0) return [];
     if (!opts.allowMany && idxs.length !== 1) return [];
@@ -77,15 +95,19 @@ describe('发送点声明 (pi-sdk) — 这批行不许丢声明', () => {
     return out;
   }
 
-  it.each(INTERNAL_MARKERS)('内部运行日志带 internal: true: %s', (marker) => {
-    const l = statusLineOf(marker);
-    expect(l.length, `pi-sdk 里找不到唯一发送点: ${marker}`).toBe(1);
-    expect(l[0]).toContain('internal: true');
-  });
+  for (const target of TARGETS) {
+    const lines = fs.readFileSync(target.file, 'utf8').split('\n');
 
-  it.each(USER_VISIBLE_MARKERS)('用户可见状态不许被标成内部: %s', (marker) => {
-    const l = statusLineOf(marker, { allowMany: true });
-    expect(l.length, `pi-sdk 里找不到发送点: ${marker}`).toBeGreaterThan(0);
-    for (const one of l) expect(one).not.toContain('internal: true');
-  });
+    it.each(target.internal)(`[${target.label}] 内部运行日志带 internal: true: %s`, (marker) => {
+      const l = statusLineOf(lines, marker);
+      expect(l.length, `${target.label} 里找不到唯一发送点: ${marker}`).toBe(1);
+      expect(l[0]).toContain('internal: true');
+    });
+
+    it.each(target.visible)(`[${target.label}] 用户可见状态不许被标成内部: %s`, (marker) => {
+      const l = statusLineOf(lines, marker, { allowMany: true });
+      expect(l.length, `${target.label} 里找不到发送点: ${marker}`).toBeGreaterThan(0);
+      for (const one of l) expect(one).not.toContain('internal: true');
+    });
+  }
 });

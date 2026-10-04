@@ -1313,32 +1313,20 @@ export class PiAgentSession implements AgentSession {
       this.currentPermissionMode = 'default';
     }
 
-    // M3.1 (2026-06-17): 跟 promptStream 一样, usePivotLoop 时走 pivotLoop 路径
-    //   之前 prompt() 永远跑老 runReActLoop, CLI/web 行为不一致
-    if (this.usePivotLoop) {
-      try {
-        const lr = await this.promptWithPivotLoop(input, undefined, options?.channelId);
-        // K4-B (2026-10-02): **收尾自检两条 loop 路径都要跑** —— 原先它只挂在老 `runReActLoop` 之后,
-        //   而生产里 web 走 pivot 路径 (`usePivotLoop: true` + 这里提前 return) ⇒ 那条"系统自检过门"
-        //   在生产**从来没触发过** (K7 的证据只在默认老 loop 上取到, 没覆盖生产形状)。这里补齐。
-        await this.runTurnEndTypecheck();
-        this.finishTrajectory(trajRec, lr.response || '');
-        return lr.response || '';
-      } finally {
-        if (this.judgmentGateUsedIds.length > 0) {
-          recordJudgmentUsage(this.judgmentGateUsedIds, { userInput: input }).catch((err) =>
-            console.warn('[PiAgent] recordJudgmentUsage failed:', err)
-          );
-        }
-        this.clearJudgmentGate();
-        this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
-        this.reportUsageToContextManager();
-      }
-    }
-
+    // K4-B (2026-10-02): **这条路已经只有一条** —— 原先这里有个 `if (this.usePivotLoop) { ... return ... }`
+    //   的提前返回分支, 它的 finally 只是**子集** (只记正极性用法), 而且**少跑了**:
+    //   回合后复盘 `runExperienceReview` · `monitorAfterReply`/`onStop` · `finishTrajectory(reply, ok|error)`
+    //   · 负极性用法记账 · `bootstrapAddition`/`promptStartTime` 清理。现在统一走下面那条完整收尾。
     try {
-      // 2026-06-16: runReActLoop 现在返回 { reply, aiFailed, aiFailureReason } — 这里只需 reply 字符串
-      const loopResult = await this.runReActLoop(this.runCtx.eventSink ?? undefined, options?.signal);
+      // K4-B (2026-10-02): **合并两套 loop ⇒ 只剩 pivot 这一套** (老 `runReActLoop` 已删除)。
+      //   这里保留一个与原签名同形的 `loopResult`, 让下面那段**完整收尾**(自检 → 复盘 → 轨迹 → 记账)
+      //   原样继续工作, 不搬家。
+      const lr = await this.promptWithPivotLoop(input, undefined, options?.channelId);
+      const loopResult = {
+        reply: lr.response || '',
+        aiFailed: !lr.success,
+        aiFailureReason: String(lr.exitReason || ''),
+      };
 
       // K4-B (2026-10-02): 收尾自检抽成方法, 两条 loop 路径都调 (原先只在老 loop 之后 ⇒ 生产 pivot 路径从没跑过)
       await this.runTurnEndTypecheck();
@@ -1587,46 +1575,11 @@ export class PiAgentSession implements AgentSession {
 
     this.promptStartTime = Date.now();
 
-    // M3.1 (2026-06-17): 走 WorkflowPivotLoop (usePivotLoop: true)
-    //   pivot loop 自带 quality scoring / 30 iter cap / complexity analysis — 比老 runReActLoop 鲁棒
-    if (this.usePivotLoop) {
-      let pivotResult = '';
-      try {
-        const lr = await this.promptWithPivotLoop(userText, undefined, channelId);
-        pivotResult = lr.response || '';
-        // K4-B (2026-10-02): **流式 pivot 路径**(web 实际入口)同样要跑收尾自检 ——
-        //   原先这条路径也只有"提前 return", 自检一次都没跑过。
-        await this.runTurnEndTypecheck();
-        onStream({ type: 'done', content: '' });
-      } catch (err: any) {
-        if (signal?.aborted || err?.name === 'AbortError') {
-          console.log(`[chat] pivot aborted channel=${channelId}`);
-        } else {
-          console.error(`[chat] pivot 失败 channel=${channelId}:`, err);
-          pivotResult = `[错误: pivot loop 失败] ${String(err?.message || err).slice(0, 300)}`;
-          try { onStream({ type: 'error', content: pivotResult, tool: 'system' }); } catch {}
-        }
-      } finally {
-        if (this.judgmentGateUsedIds.length > 0) {
-          try { onStream({ type: 'used_judgments', usedIds: this.judgmentGateUsedIds, content: '' } as any); } catch {}
-        }
-        monitorAfterReply(userText, pivotResult);
-        const stopStartTime = this.promptStartTime || Date.now();
-        onStop({
-          channelId: this.actor!.state.channelId || 'unknown',
-          durationMs: Date.now() - stopStartTime,
-          usedJudgmentIds: [...this.judgmentGateUsedIds],
-        }).catch((err) => console.warn('[PiAgent] onStop failed:', err));
-        this.clearJudgmentGate();
-        this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
-        this.bootstrapAddition = '';
-        this.contextHintAddition = '';
-        this.promptStartTime = 0;
-        this.reportUsageToContextManager();
-      }
-      this.finishTrajectory(trajRec, pivotResult);
-      return pivotResult;
-    }
+    // K4-B (2026-10-02): **流式路径也只剩一条** —— 原先这里有个 pivot 提前 return 分支,
+    //   它自己的 finally 是**子集** (且少了 `contextHintAddition` 清理)。现在统一走下面的
+    //   "外层重试 + 完整收尾", 而重试体里跑的是 pivot (老 `runReActLoop` 已删除)。
+    //   重试语义**刻意保留**: 临时网络抖动/配额瞬时超限可自愈, 且状态文案被
+    //   `reply-hygiene.test.ts` 与 `web-loop-status-bar.spec.ts` 两个用例锁着。
 
     // 2026-06-16: loop 自动重试 — runReActLoop 内部遇到 [AI 服务调用失败] sentinel 时,
     //   会设 aiFailed=true 并提前 break. 这里在外层重跑整个 loop (不是单次 LLM 调用),
@@ -1638,12 +1591,14 @@ export class PiAgentSession implements AgentSession {
     let lastAiFailureReason = '';
     while (attempt <= MAX_LOOP_RETRIES) {
       try {
-        const loopResult = await this.runReActLoop(onStream, signal);
-        result = loopResult.reply;
+        const lr = await this.promptWithPivotLoop(userText, undefined, channelId);
+        result = lr.response || '';
+        // K4-B: 收尾自检在**这条**路径上也要跑 (原先只有 pivot 分支跑, 而 pivot 分支已被合并掉)
+        await this.runTurnEndTypecheck();
         // 持久化失败不重试 (写不进去就是写不进去): 直接按本次结果收尾
         if (this.runPersistenceBlocked) break;
-        if (!loopResult.aiFailed) break; // 正常完成, 退出 retry 循环
-        lastAiFailureReason = loopResult.aiFailureReason || 'AI 调用失败';
+        if (lr.success) break;   // 正常完成, 退出 retry 循环
+        lastAiFailureReason = String(lr.exitReason || 'AI 调用失败');
       } catch (err: any) {
         // abort 失败: 视作"已中断", 抛错让上层用 partial 兜底
         this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
@@ -1715,6 +1670,7 @@ export class PiAgentSession implements AgentSession {
     this.runCtx = createRunContext(); // K2: 用完即清 (换新 Context, 不继承残留);
     this.reportUsageToContextManager();
     this.bootstrapAddition = '';
+    this.contextHintAddition = '';   // K4-B: 与被合并掉的那条分支对齐 (它清了这条, 老尾段漏了)
     this.promptStartTime = 0;
 
     // 2026-08-08: 轨迹收尾 — 落盘 + OrbitDB (失败静默, 不阻塞回复)
@@ -1747,6 +1703,24 @@ export class PiAgentSession implements AgentSession {
     }
 
     const llm = getMinimax();
+
+    // K4-B (2026-10-02): **每次模型调用也要过门面** —— `beforeModelCall`/`afterModelCall` 原先**只**由老
+    //   `runReActLoop` 调用; 老 loop 删除后全仓零调用者, 而 pivot (生产: web/CLI 现在都走它) **从来没调过**
+    //   ⇒ 模型调用的前后留痕一直是断的。这里把门面包在 `llm` **外面** ⇒ pivot 内部一行不用改。
+    //   ⚠️ 踩过的坑 (2026-10-02, 当场复现): 一开始把 `llm` 换成**纯函数**包一层 ⇒ 第 1 轮就空回复。
+    //     原因: pivot 调的是 **`llm.chat(...)`** (对象方法), 不是 `llm(...)` ⇒ 换掉对象等于把 `.chat` 抹了。
+    //     正确做法: 以**原型继承**造一个代理对象, 只覆写 `chat`, 其余成员照旧从原型上取。
+    const llmWithHarness = Object.create(llm as object) as typeof llm;
+    (llmWithHarness as any).chat = async (...args: any[]) => {
+      try { this.piHarness().beforeModelCall(this.harnessCtx()); } catch { /* 门面异常不改变模型调用本身 */ }
+      const __modelT0 = Date.now();
+      try {
+        return await (llm as any).chat(...args);
+      } finally {
+        try { this.piHarness().afterModelCall(this.harnessCtx(), { ms: Date.now() - __modelT0 }); } catch { /* 同上 */ }
+      }
+    };
+
     const baseConfig = config || this.pivotLoopConfig || createDefaultPivotConfig();
     // 2026-10-02 (K7 第二步 b): pivot loop 的工具执行**必须与主路径同一个门**。
     //   接线前: pivot loop 在 workflow-pivot-loop.ts:613 直调 tool.execute —— 那条路径上
@@ -1785,7 +1759,33 @@ export class PiAgentSession implements AgentSession {
           const tsFile = codeWriteTarget(tool.name, args);
           if (tsFile && !this.tsTouchedThisTurn.includes(tsFile)) this.tsTouchedThisTurn.push(tsFile);
         }
-        return tool.execute(args);
+        const execResult: any = await tool.execute(args);
+
+        // K4-B (2026-10-02): **工具执行后的门面阶段必须跟上** —— `afterToolCall` (输出门:
+        //   敏感信息拦截 / router hint) 原先**只**在老 `runReActLoop` 的工具分发里调用;
+        //   老 loop 删除后生产里**一个调用者都没有** ⇒ 输出门形同停用 (安全回归)。补在 pivot 的唯一执行点上。
+        //   门面内部对"gate 自己失败"的策略是**放行但留痕** (输出已产生, 拦不住源头) ⇒ 这里同样不改写结论。
+        try {
+          const after = await this.piHarness().afterToolCall({
+            tool: tool.name,
+            output: String(execResult?.output ?? ''),
+            ctx: this.harnessCtx(),
+            ok: execResult?.success !== false,
+          });
+          if (after?.outputBlocked) {
+            // API 契约: "输出被 gate 拦下 ⇒ 调用方要把 result.output 换掉"
+            const blocked = `[输出已被门拦下: ${after.outputBlocked.reason}] (原始输出未交付)`;
+            if (execResult && typeof execResult === 'object') execResult.output = blocked;
+          }
+          if (after?.routeHint?.systemAddition) {
+            // 差量如实记: 老 loop 把它拼进**下一轮的 system prompt**; pivot 没有对应的注入端口,
+            //   这里改拼进**工具结果文本** —— 模型同样能在下一步看到 (送达渠道不同, 效果等价)。
+            const hint = `\n[路由提示] ${after.routeHint.systemAddition}`;
+            if (execResult && typeof execResult === 'object') execResult.output = String(execResult.output ?? '') + hint;
+          }
+        } catch { /* 后置阶段失败不改变已做出的执行 (门面内部已按策略留痕) */ }
+
+        return execResult;
       },
     };
     const loop = new WorkflowPivotLoop(loopConfig);
@@ -1877,7 +1877,31 @@ ${await this.renderActivePlansSection()}
     const onCompact = async () => {
       // no-op (best-effort hook for future pi-sdk/pivot history sync)
     };
-    const result = await loop.execute(input, llm, systemPrompt + historyBlock, this.runCtx.eventSink ?? undefined, this.runCtx.abortSignal ?? undefined, onCompact);
+    // K4-B (2026-10-02): **run 生命周期也要过门面** —— `sessionStart`/`sessionEnd` 原先只由老
+    //   `runReActLoop` 调用 (删除后全仓零调用者), 而 pivot (生产) 从来没调过 ⇒ 这里恢复。
+    await this.piHarness().sessionStart(this.harnessCtx());
+    let result: any;
+    try {
+      result = await loop.execute(input, llmWithHarness, systemPrompt + historyBlock, this.runCtx.eventSink ?? undefined, this.runCtx.abortSignal ?? undefined, onCompact);
+    } finally {
+      try { await this.piHarness().sessionEnd(this.harnessCtx()); } catch { /* 收尾留痕失败不改变本次结论 */ }
+    }
+
+    // K4-B (2026-10-02): `reviewFinal` (收尾目标对齐审查) 原先同样只在老 loop 里调 ⇒ 恢复**调用与留痕**。
+    //   ⚠️ 如实记边界: pivot 的收尾仍由它自己的质量判定决定, 这里**不**按 review 的返回改流程
+    //   (老 loop 会据它自动续跑一轮); 且这里给的是 pivot 手上**真有的**数据 (工具调用计数),
+    //   `completedTools`/`actionLog` 的逐条清单 pivot 侧目前没有 ⇒ 传空并留 TODO, **不编数据**。
+    try {
+      const reviewDecision = this.piHarness().reviewFinal({
+        reviewsDone: 0,
+        userIntent: this.currentUserInput,
+        completedTools: [],
+        actionLog: [],
+        runId: this.actor!.state.activeRun || undefined,
+        goalId: this.actor!.state.goalBinding || undefined,
+      } as any);
+      console.log(`[PiAgent] reviewFinal (K4-B 恢复调用, 判定不参与流程): ${JSON.stringify(reviewDecision).slice(0, 160)}`);
+    } catch { /* 审查异常不改变本次结论 (门面内部对"审查失效"自有留痕策略) */ }
 
     if (result.response) {
       this.pushHistory({ role: 'assistant', content: result.response });
@@ -2171,1129 +2195,12 @@ ${await this.renderActivePlansSection()}
         }
   }
 
-  private async runReActLoop(onStream?: StreamCallback, signal?: AbortSignal): Promise<{ reply: string; aiFailed: boolean; aiFailureReason?: string }> {
-    const llm = getMinimax();
-    let iteration = 0;
-    let finalResponse = '';
-    let lastQualityScore = 0;
-    let refineAttempts = 0;
-    let consecutiveErrors = 0;
-    // 2026-06-16 新增: 累计错误数 (跨工具, 兜底防 LLM 轮换工具名死循环)
-    let totalErrors = 0;
-    let lastFailedTool = ''; // 跟踪最近一次失败的 tool name
-    let lastFailedToolCount = 0; // 最近失败工具的连续失败次数
-    // 2026-06-16: AI sentinel 标志 — runReActLoop 返回 aiFailed=true,
-    //   promptStream 据此自动重跑整个 loop 最多 N 次 (不是单次 LLM 重试)
-    let aiFailed = false;
-    let aiFailureReason = '';
-    const MAX_CONSECUTIVE_ERRORS = 3;
-    // 同一工具连续失败 3 次, 强制让 LLM 给出最终答案 (模块级常量 MAX_SAME_TOOL_FAILURES 也用它做熔断)
-    // 2026-07-29: Hermes 风格硬限制 — 防死循环 (不再靠 soft hint)
-    const MAX_IDEMPOTENT_TOOL = 5;  // 同工具成功调 5 次 → 注入 hint 强制 final gen
-    const MAX_TOOL_CALLS_PER_LOOP = 25; // 单轮循环总工具调用上限 → 注入 hint
-    let totalToolCallsThisLoop = 0;
-    const lastNTools: string[] = []; // 最近 MAX_IDEMPOTENT_TOOL 次工具名, 检测重复
-    // 2026-10-01: 工具停滞观测状态 (分类 + 温和引导 + 重复结果引用) —— 见 agents/tool-loop-guard.ts
-    //   与上面的"同工具 5 次就提示"不同: 它按 (工具名 + 参数 + 结果) 签名判定, 并抓 A→B→A→B 的循环
-    const stallState = new LoopStallState();
-    // 2026-08-10: unreported 循环逃生门 — LLM 反复不把工具结果写进回复时, 3 次后强制 final (不死板)
-    const MAX_UNREPORTED_RETRIES = 3;
-    let unreportedRetries = 0;
-    // 2026-08-10: 工具失败时的终端逃生引导 (shell_exec 白名单命令可诊断环境/推进任务)
-    const SHELL_ESCAPE_HINT = ' [逃生] 若工具无法响应/报错, 可用 shell_exec 跑终端命令诊断 (白名单: ls/cat/head/tail/pwd/git status/npm run test 等), 或调整参数换一种方式完成; 不要重复调用同一失败工具.';
-
-    // 2026-08-08: final 前 review 续跑 — 目标对齐 + 需求深挖 (见 loop-review.ts)
-    //   不潦草收尾: LLM 想 <final gen> 时先跑 1-2 次 review, 达成用户需求才放行.
-    //   上限=2 次 (用户要求"运行一两次"), 结束后按用户需求为准.
-    let loopReviewCount = 0;
-    const loopReviewCompletedTools = new Set<string>();
-    // 2026-08-09: 本轮行动日志 — 每轮工具执行都记录 (args + 结果摘要),
-    //   final 前 review 用逐条核查目标; 也注入 system prompt 让 LLM 看到连续进度
-    //   (防"每轮都像重启" — 之前 LLM 看不到自己已完成什么, 容易重复 react)
-    const loopActionLog: { tool: string; argsPreview: string; resultPreview: string; success: boolean }[] = [];
-
-    // 发送循环开始的事件
-    if (onStream) {
-      onStream({ type: 'status', internal: true, content: '🔄 开始 ReAct 循环...', tool: 'system' });
-    }
-
-    // React Harness: 循环开始 (重置 turn 计数 + 触发 harness sessionStart)
-    // 失败静默 (fail-open), 不阻塞主循环
-    // 2026-09-16 (Milestone 1-B): 会话开启走唯一门面 (react-harness 8-gate 复位 + hooks onLoopStart)
-    await this.piHarness().sessionStart(this.harnessCtx());
-
-    // 2026-09-16: 持久化 run harness — 本次运行立即落盘 (~/.bolloon/runs/<id>.json)。
-    //   之后每步工具调用都追加一条, 所以刷新页面/进程重载/崩溃都能看到"做到哪一步"。
-    let runStopReason = '';
-    // 2026-09-16 (Milestone 1): 持久化硬约束 —— 核心 run 状态写不进去时, 运行必须停。
-    //   理由: "agent 实际跑了但没记录" 比 "agent 没跑" 更危险 (UI 显示旧状态/重启后无从知晓/结果可能被错标 done)。
-    let runPersistenceFailure = '';
-    /** 2026-09-16 (M3): 熔断/需要人处置 → 收尾落 needs_human (不是 done, 也不是普通 failed) */
-    let runNeedsHuman = '';
-    /** 2026-09-16 (M5): 外部 (CLI/Web) 把 run 改成 paused/aborted → 如实停, 不再覆盖它的状态 */
-    let runExternallyPaused = false;
-    let runExternallyAborted = false;
-    this.runPersistenceBlocked = false;
-    this.breakerReason = '';
-    this.awaitingExternal = false;
-
-    if (this.resumeRunId) {
-      // ── 恢复模式: 复用原来的 runId, 不新建 run (历史保留) ──
-      this.actor!.state.activeRun = this.resumeRunId;
-      this.lastRunId = this.resumeRunId;
-      try {
-        await markRunRunning(this.actor!.state.activeRun);
-      } catch (err) {
-        runPersistenceFailure = `恢复时状态迁移失败 (recovering → running): ${String((err as Error)?.message || err).slice(0, 180)}`;
-      }
-      const doneN = this.resumePlan?.completedSteps.length ?? 0;
-      const guards = this.resumePlan?.replayGuards.length ?? 0;
-      onStream?.({ type: 'status', internal: true, content: `♻️ 从 checkpoint 恢复运行 ${this.actor!.state.activeRun} (已完成 ${doneN} 步, 非幂等重放守卫 ${guards} 条)`, tool: 'harness' });
-    } else {
-      // 2026-09-16 (M2): 目标绑定 —— 有 goalId 就在该 Goal 下执行; 没有就建 Goal 再建 Run。
-      //   延续规则 (确定性, 不靠猜): 该 channel/agent 上已有 open/active Goal, 且它的上一次执行**没收尾**
-      //   (interrupted/stalled/needs_human/paused/awaiting_external/recovering) → 继续该 Goal; 否则新建。
-      let boundGoalId = this.actor!.state.goalBinding;
-      if (!boundGoalId) {
-        try {
-          const active = await findActiveGoal({ channelId: this.actor!.state.channelId || undefined, agentId: this.actor!.state.agentId || undefined });
-          if (active?.currentRunId) {
-            const prev = await readRun(active.currentRunId);
-            const unfinished = prev && ['interrupted', 'stalled', 'needs_human', 'paused', 'awaiting_external', 'recovering'].includes(prev.status);
-            if (unfinished) boundGoalId = active.goalId;
-          }
-        } catch (err) { console.warn('[PiAgent] 查找进行中 Goal 失败 (按新建处理):', (err as Error)?.message); }
-        if (!boundGoalId) {
-          try {
-            const g = await createGoal({
-              objective: this.currentUserInput || '(未记录目标)',
-              channelId: this.actor!.state.channelId || undefined,
-              agentId: this.actor!.state.agentId || undefined,
-              createdBy: this.runSurface,
-            });
-            boundGoalId = g.goalId;
-          } catch (err) { console.warn('[PiAgent] 创建 Goal 失败 (无目标也要有运行记录):', (err as Error)?.message); }
-        }
-        this.actor!.state.goalBinding = boundGoalId;
-      }
-
-      try {
-        const rec = await startRun({
-          surface: this.runSurface,
-          goal: this.currentUserInput || '(未记录目标)',
-          goalId: boundGoalId || undefined,
-          channelId: this.actor!.state.channelId || undefined,
-          agentId: this.actor!.state.agentId || undefined,
-          modelConfig: await this.runModelSnapshot(),
-        });
-        this.actor!.state.activeRun = rec.runId;
-        this.lastRunId = rec.runId;
-        this.actor!.state.goalBinding = rec.goalId || this.actor!.state.goalBinding;
-        if (this.actor!.state.goalBinding) {
-          // Run → Goal 反查链: runId → goalId → objective / success criteria
-          await attachRun(this.actor!.state.goalBinding, rec.runId).catch((err) => console.warn('[PiAgent] attachRun 失败:', (err as Error)?.message));
-        }
-        onStream?.({ type: 'status', internal: true, content: `🧷 运行已登记 (run=${rec.runId}${this.actor!.state.goalBinding ? `, goal=${this.actor!.state.goalBinding}` : ''}, 预算 ${rec.budget.maxSteps} 步 / ${Math.round(rec.budget.deadlineMs / 60000)} 分钟)`, tool: 'harness' });
-      } catch (err) {
-        // 核心写失败: 不再 warn 后继续 —— 没有运行记录就不执行 (strict 模式默认如此)
-        runPersistenceFailure = `无法创建运行记录: ${String((err as Error)?.message || err).slice(0, 200)}`;
-        this.runPersistenceBlocked = true;
-        console.error('[PiAgent] run-store startRun 失败 (核心持久化) → 拒绝无记录执行:', runPersistenceFailure);
-        onStream?.({ type: 'error', content: `⛔ ${runPersistenceFailure} — 已停止 (不在没有记录的情况下执行)`, tool: 'harness' });
-      }
-    }
-
-    while (iteration < this.MAX_REACT_ITERATIONS) {
-      iteration++;
-
-      // 2026-09-16 (Milestone 1): 持久化失败硬闸 —— 到这一层说明记录已经不可信, 继续跑就是"无约束执行"
-      if (runPersistenceFailure || this.persistenceFailure) {
-        runPersistenceFailure = runPersistenceFailure || this.persistenceFailure;
-        this.runPersistenceBlocked = true;
-        aiFailed = true;
-        aiFailureReason = aiFailureReason || runPersistenceFailure;
-        finalResponse = finalResponse || `❌ 运行已停止: ${runPersistenceFailure}\n\n(运行记录无法写入/校验, 按协议停在 needs_human, 不假装完成)`;
-        break;
-      }
-
-      // 2026-09-16 (M3): 熔断硬闸 —— 同一工具连续失败达上限后, 不许再"自动重试成功"式地把运行放活
-      if (this.breakerReason) {
-        runNeedsHuman = this.breakerReason;
-        aiFailed = true;
-        aiFailureReason = aiFailureReason || this.breakerReason;
-        finalResponse = finalResponse || `❌ 已熔断: ${this.breakerReason}\n\n(重复失败不再重试, 按协议停在 needs_human 交人处置)`;
-        break;
-      }
-
-      // 2026-09-16: 预算闸门 (持久化 harness 的约束面) —— 到点必须**如实**终止, 不许静默算完成
-      if (this.actor!.state.activeRun) {
-        try {
-          const rec = await readRun(this.actor!.state.activeRun);
-          if (!rec) throw new Error(`运行记录读不到: ${this.actor!.state.activeRun}`);
-          // 2026-09-16 (M5): 外部控制面 (CLI /pause /abort, Web API) 改过状态 → 如实停在那儿。
-          //   不覆盖成 done/failed: 人按下暂停就是暂停, 人按下中止就是中止。
-          if (rec.status === 'paused' || rec.status === 'aborted') {
-            runExternallyPaused = rec.status === 'paused';
-            runExternallyAborted = rec.status === 'aborted';
-            runStopReason = `外部请求: ${rec.status}`;
-            onStream?.({ type: 'error', content: `⏹️ 运行被外部${rec.status === 'paused' ? '暂停' : '中止'} (run=${this.actor!.state.activeRun})`, tool: 'harness' });
-            finalResponse = finalResponse || `(运行已${rec.status === 'paused' ? '暂停' : '中止'})`;
-            break;
-          }
-          const verdict = budgetVerdict(rec);
-          if (verdict.exceeded) {
-            runStopReason = verdict.reason || '运行预算用尽';
-            onStream?.({ type: 'error', content: `⛔ 运行预算用尽: ${runStopReason} (已如实终止, 不假装完成)`, tool: 'harness' });
-            finalResponse = finalResponse || `(运行预算用尽: ${runStopReason})`;
-            break;
-          }
-        } catch (err) {
-          // 预算闸门读不到状态 = 约束失效, 不能"当作没超预算"继续跑
-          runPersistenceFailure = `预算闸门无法校验运行状态: ${String((err as Error)?.message || err).slice(0, 200)}`;
-          this.runPersistenceBlocked = true;
-          console.error('[PiAgent] run-store 预算检查失败 (核心持久化):', runPersistenceFailure);
-          onStream?.({ type: 'error', content: `⛔ ${runPersistenceFailure} — 已停止`, tool: 'harness' });
-          break;
-        }
-      }
-
-      // 停止条件 1: max turns (fail-safe 10000, 正常任务永远跑不到)
-      //   2026-07-01 (v0.2.4 子任务 1): 委托给 react-loop.decideMaxIterations 纯函数
-      // 2026-10-01 (落实②: 可退还的迭代预算): 惩罚零碎调用, **奖励批处理** ——
-      //   程序化工具(execute_code, 一次能顶多次)调用后归还一次迭代 ⇒ 有效寿命被延长。
-      //   退出条件仍由 decideMaxIterations 决定(读**净**用量), 不做硬刹车。
-      if (iteration === 0 || !this.iterBudget) this.iterBudget = new IterationBudget(this.MAX_REACT_ITERATIONS);
-      const iterBudget = this.iterBudget;
-      iterBudget.consume();
-      if (iterBudget.warn(0.8) && !this.iterBudgetWarned) {
-        this.iterBudgetWarned = true;
-        onStream?.({ type: 'status', internal: true, content: `⏳ 迭代预算已用 ${iterBudget.describe()} (批量工具会退还)` });
-      }
-      const maxIterDecision = decideMaxIterations(iterBudget.used, iterBudget.maxTotal);
-      if (maxIterDecision.shouldExit) {
-        console.warn(`[PiAgent] 达到最大循环数 ${this.MAX_REACT_ITERATIONS}, 强制终止 (fail-safe)`);
-        onStream?.({ type: 'error', content: `⏹️ 达到最大循环数 (${this.MAX_REACT_ITERATIONS}, fail-safe)`, tool: 'loop' });
-        finalResponse = finalResponse || maxIterDecision.finalAnswer;
-        break;
-      }
-
-      // 停止条件 2: signal.aborted (显式 abort / 用户中断)
-      if (signal?.aborted) {
-        console.warn('[PiAgent] runReActLoop aborted by signal');
-        onStream?.({ type: 'error', content: '⏹️ 用户中断', tool: 'loop' });
-        finalResponse = finalResponse || '(用户中断)';
-        break;
-      }
-
-      // 2026-07-29: Hermes 风格硬限制 (idempotent tool / total call cap)
-      if (totalToolCallsThisLoop >= MAX_TOOL_CALLS_PER_LOOP) {
-        console.warn(`[PiAgent] 单轮工具调用已达 ${MAX_TOOL_CALLS_PER_LOOP}, 注入 hint 让 LLM 总结`);
-        onStream?.({ type: 'error', content: `⏹️ 工具调用已达上限 (${MAX_TOOL_CALLS_PER_LOOP}), 请基于已有结果回答`, tool: 'loop' });
-        this.pushHistory({ role: 'system', content: `[注意] 你已连续调用 ${MAX_TOOL_CALLS_PER_LOOP} 次工具。请基于已有结果直接回答用户, 不要再次调用任何工具。在回答末尾加 <final gen> 标记结束。` });
-        totalToolCallsThisLoop = 0;  // 重置计数器, 只防连续死循环
-      }
-      if (lastNTools.length >= MAX_IDEMPOTENT_TOOL && new Set(lastNTools).size === 1) {
-        const repeatedTool = lastNTools[0];
-        console.warn(`[PiAgent] 同工具 ${repeatedTool} 连续成功调 ${MAX_IDEMPOTENT_TOOL} 次, 注入 hint 让 LLM 总结`);
-        onStream?.({ type: 'error', content: `⏹️ 工具 ${repeatedTool} 重复调用 ${MAX_IDEMPOTENT_TOOL} 次, 请基于已有结果回答`, tool: 'loop' });
-        this.pushHistory({ role: 'system', content: `[注意] 你已连续 ${MAX_IDEMPOTENT_TOOL} 次调用 ${repeatedTool}。请基于已有结果直接回答用户, 不要再次调用任何工具。在回答末尾加 <final gen> 标记结束。` });
-        lastNTools.length = 0;  // 重置计数器
-        // 不 break — 让 LLM 在下一轮用已有信息回答
-      }
-
-      // 2026-06-16 新增: 累计错误兜底 — 跨工具, 防 LLM 轮换工具名绕过 MAX_SAME_TOOL_FAILURES
-      if (totalErrors >= this.MAX_TOTAL_ERRORS) {
-        console.warn(`[PiAgent] 累计错误 ${totalErrors} >= ${this.MAX_TOTAL_ERRORS}, 强制终止 (防死循环)`);
-        onStream?.({ type: 'error', content: `⛔ 累计 ${totalErrors} 次错误, 强制终止 (防止 LLM 死循环)`, tool: 'loop' });
-        // 2026-06-19: 即使 LLM 一直失败, 也汇总之前成功执行的 tool result 给用户
-        if (this.successfulToolResults.length > 0) {
-          finalResponse = `✅ 之前步骤成功执行了 ${this.successfulToolResults.length} 个工具 (但 LLM 后续 ${totalErrors} 次调用失败):\n` +
-            this.successfulToolResults.map((r, i) => `  ${i+1}. ${r.tool}: ${r.outputPreview}`).join('\n') +
-            `\n\n⚠️ (LLM 连续失败, 可能是上游限流/网络问题, 工具已成功执行但 LLM 没能继续总结)`;
-        } else {
-          finalResponse = finalResponse || `(本轮 ReAct 循环累计 ${totalErrors} 次错误, 强制结束。请换个思路或简化任务重试。)`;
-        }
-        break;
-      }
-
-      // 2026-06-16 新增: loop 内自动压缩 — token 超 80% 阈值时跑一次
-      // compact 失败走 C 路径: 不强行 break, 让现有 60K 阈值兜底 (后面有检查)
-      //   2026-07-01 (v0.2.4 子任务 1): 触发判定走 shouldCompactBeforeIteration 纯函数
-      const compactThreshold = this.maxContextTokens() * this.LOOP_COMPACT_RATIO;
-      const estimatedTokensBefore = this.estimateHistoryTokens();
-      // 2026-08-06: 每轮上报 usage 到 ContextManager (CLI/Web 状态栏数据源, warning 事件触发点)
-      getContextManager().updateUsage(estimatedTokensBefore);
-      if (shouldCompactBeforeIteration(estimatedTokensBefore, compactThreshold)) {
-        const tokensBeforeCompact = estimatedTokensBefore;
-        console.log(`[PiAgent] loop 入口 token ${tokensBeforeCompact} > ${compactThreshold}, 触发自动压缩`);
-        onStream?.({ type: 'status', internal: true, content: `🗜️ loop 自动压缩 (token ${tokensBeforeCompact} > ${compactThreshold})`, tool: 'compactor' });
-        try {
-          await this.maybeAutoCompact(onStream, signal);
-        } catch (compactErr) {
-          // C 路径: compact 失败不 break, 让 token 阈值检查兜底
-          console.warn(`[PiAgent] loop 内 maybeAutoCompact 失败 (non-fatal, 继续走 token 阈值):`, compactErr);
-        }
-      }
-
-      // 停止条件 3: context overflow (compact 后还超, 强制终止)
-      //   2026-07-01 (v0.2.4 子任务 1): 委托给 react-loop.decideContextOverflow 纯函数
-      const estimatedTokens = this.estimateHistoryTokens();
-      const overflowDecision = decideContextOverflow(estimatedTokens, this.maxContextTokens());
-      if (overflowDecision.shouldExit) {
-        console.warn(`[PiAgent] context overflow (${estimatedTokens} tokens > ${this.maxContextTokens()})`);
-        onStream?.({ type: 'error', content: `⏹️ 上下文溢出 (${estimatedTokens} tokens, 阈值 ${this.maxContextTokens()})`, tool: 'loop' });
-        finalResponse = finalResponse || overflowDecision.finalAnswer;
-        break;
-      }
-
-      // 调试日志：显示每次循环开始
-      console.log(`[PiAgent] 循环 ${iteration}/${this.MAX_REACT_ITERATIONS} 开始`);
-      if (onStream) {
-        onStream({ type: 'status', internal: true, content: `🔄 循环 ${iteration}/${this.MAX_REACT_ITERATIONS}`, tool: 'loop' });
-      }
-
-      const context = this.buildContext();
-      // M3.5 (2026-06-17): 也构造 messages 数组版本, 让 LLM 看到结构化 tool 角色
-      //   buildContext() 把 history 序列化成字符串 — LLM 看不到 tool 调用的真实结果
-      //   新版用 messages 数组直接喂给 LLM, 保留 role 语义 (user/assistant/tool/system)
-      const messages = this.buildMessages();
-      const toolDefs = this.getToolDefinitions();
-
-      // 动态构建 refine 上下文
-      let refineContext = '';
-      if (refineAttempts > 0 && lastQualityScore < this.QUALITY_THRESHOLD) {
-        refineContext = `\n【改进提示】上轮结果质量分 ${(lastQualityScore * 10).toFixed(1)}/10，请改进回答。`;
-      }
-
-      // 连续错误时的额外提示
-      if (consecutiveErrors > 0) {
-        refineContext += `\n【错误提示】上轮发生 ${consecutiveErrors} 次错误，请重新分析问题或换一种方式处理。`;
-      }
-
-      // M2.4: persona section 缓存 — persona 在 loadPersona() 时一次设定, 此后不变
-      if (!this.cachedPersonaSection && this.persona) {
-        this.cachedPersonaSection = `
-角色描述: ${this.persona.description || '无'}
-性格特点: ${this.persona.personality || '无'}
-问候语: ${this.persona.greeting || '无'}
-`;
-      }
-      const personaSection = this.cachedPersonaSection;
-
-      // 2026-08-09: 循环进度段 — 让 LLM 看到本轮已完成的动作 (连续进度, 不重启)
-      //   Hermes 式 Agent Runtime: 循环是状态机, LLM 每次看到的是"第 N 步 + 已完成 X"
-      //   (之前每轮都是全新上下文, LLM 不知道做过什么 → 重复 react / 衔接差)
-      let loopProgressSection = '';
-      if (loopActionLog.length > 0) {
-        const actionLines = loopActionLog
-          .map((a, i) => {
-            const args = a.argsPreview ? `(${a.argsPreview.slice(0, 60)})` : '';
-            const res = a.success ? '✓' : '✗';
-            return `  ${i + 1}. ${res} ${a.tool}${args}`;
-          })
-          .join('\n');
-        loopProgressSection = `\n【本轮循环进度】你已完成以下 ${loopActionLog.length} 个动作, 这是连续执行的同一轮任务:\n${actionLines}\n请基于已有结果继续推进, 不要重复执行上面已成功的动作. 全部完成后用 <final gen> 结束.\n`;
-      }
-
-      // 2026-09-28 (前缀 KV 可命中): `refineContext` / `loopProgressSection` 是**每轮都在变**的段
-      //   (质量分 / 连续错误数 / 本轮已完成动作). 留在 system 里 = 每轮把 IMMUTABLE PREFIX 打碎 =
-      //   服务端前缀 KV 永远 miss. 移到 CURRENT TURN 区 (注入到最后一条 user 前部) —— 文本一字未改, 只换位置.
-      const currentTurnContext = `${refineContext}${loopProgressSection}`;
-
-      const systemPrompt = `${this.bootstrapAddition}你是 ${this.identity.name}，基于ReAct (Reasoning + Acting)模式工作。${personaSection}
-当前工作目录: ${this.cwd}
-当前身份: ${this.identity.name} (${this.identity.did})
-${this.currentIntentHint}
-
-${toolDefs}
-
-${PiAgentSession.TOOL_SELECTION_GUIDE}
-
-${PROACTIVE_WORK_DISCIPLINE}
-
-${await this.renderActivePlansSection()}
-
-工作模式:
-1. 理解用户自然语言请求
-2. 分析需要哪些工具来完成
-3. 按顺序调用工具并观察结果
-4. 根据观察结果决定下一步
-5. 最终给出完整回答
-
-重要:
-- 每次只调用一个工具
-- 仔细分析工具返回结果
-- 当任务完成时，必须在回答末尾添加 <final gen> 标记表示结束
-- 如果需要更多信息，继续调用工具${this.judgmentGateAddition}${this.contextHintAddition}`;
-
-      // 3 个恢复机制 (Claude Code 论文 9-step pipeline 内部):
-      //   1. max output token 升级 (最多 3 次, 每次 maxOutputTokens 翻倍)
-      //   2. reactive compaction (prompt 估算超阈值, 跑压缩)
-      //   3. prompt-too-long (LLM 报错 4xxx token 错误, 跑 reactive compaction 再试 1 次)
-      // 失败静默: 全部重试失败 → 空 reply (上层用 no tool_use 终止)
-      // Bug 5: pass tool IDs for native OpenAI tool calling — 2026-07-29: 过滤拒绝工具
-      const toolIds = Array.from(this.tools.keys()).filter(n => !this._deniedToolNames.has(n));
-      // 2026-07-29: 从 this.tools Map 生成 OpenAI 原生 tools 格式 (含参数 schema)
-      const openaiFormattedTools: any[] = [];
-      for (const [name, tool] of this.tools) {
-        if (this._deniedToolNames.has(name)) continue;
-        const params = (tool as any).parameters || {};
-        const properties: Record<string, any> = {};
-        const required: string[] = [];
-        for (const [pName, pDesc] of Object.entries(params)) {
-          properties[pName] = { type: 'string', description: String(pDesc) };
-          if (String(pDesc).includes('必填')) required.push(pName);
-        }
-        openaiFormattedTools.push({
-          type: 'function',
-          function: {
-            name,
-            description: (tool as any).description || name,
-            parameters: { type: 'object', properties, required },
-          },
-        });
-      }
-      // 2026-09-16 (Milestone 1-B): 模型调用前后走唯一门面 (扩展点 + 计数留痕; 默认不加新 hook 事件, 避免改变现有触发次数)
-      this.piHarness().beforeModelCall(this.harnessCtx());
-      const _modelCallT0 = Date.now();
-      const response = await this.callLlmWithRecovery(llm, messages, systemPrompt, signal, onStream, openaiFormattedTools, currentTurnContext);
-      // 2026-09-28 (前缀 KV 可命中): 把注入了 CURRENT TURN 的当前轮**原样写回自己的 messageHistory** ——
-      //   buildMessages() 每轮重建全新对象, 不写回的话下一轮那条 user 就退回注入前, 前缀从那里分叉.
-      //   用 chat() 回带的 wire (真正发出去的那一份), 而不是把 messages 再拼一遍.
-      this.writeBackCurrentTurn(response.messages);
-      this.piHarness().afterModelCall(this.harnessCtx(), { ms: Date.now() - _modelCallT0 });
-      const reply = (response.reply || '').trim();
-      // 2026-06-30: OpenAI 协议 native tool_calls (LLM 真产了 tool_call 时, minimax/M3 会返回 id)
-      const nativeToolCalls = response.toolCalls;
-
-      // 2026-06-19 架构 fix: 不再因 [AI 服务调用失败] break
-      //   旧逻辑: sentinel → aiFailed=true → break → 外层 retry 整个 loop (重置 history)
-      //   新逻辑: 把错误当 tool_result push 进 history → 下一轮 LLM 看到错误能反思重试
-      //   这是 dive-into 文档的"fail-open error recovery" — 错误进入 context, 不让 LLM 重复犯同样错
-      // 2026-07-06: 对不可恢复的 API 错误直接终止, 不再无限重试
-      if (reply.startsWith('[AI 服务调用失败]')) {
-        console.log(`[PiAgent] 收到 AI 错误 sentinel`);
-        console.log(`[sentinel DEBUG] 完整 reply: ${reply}`);
-        console.log(`[sentinel DEBUG] 上一轮 messages 数量: ${Array.isArray(messages) ? messages.length : 'N/A'}, systemPrompt 长度: ${systemPrompt.length}`);
-        aiFailureReason = reply.length > 200 ? reply.substring(0, 200) : reply;
-        totalErrors++;
-        consecutiveErrors++;
-
-        // 2026-07-06: 检测不可恢复的 API 错误 — 这些错误 LLM 无法通过反思修复, 重试无意义
-        const isFatalApiError =
-          reply.includes('chat content is empty') ||
-          reply.includes('invalid params') ||
-          reply.includes('401') ||
-          reply.includes('403') ||
-          reply.includes('quota') ||
-          reply.includes('rate limit') ||
-          reply.includes('API key') ||
-          reply.includes('authentication') ||
-          reply.includes('unauthorized');
-
-        if (isFatalApiError) {
-          console.log(`[PiAgent] 检测到不可恢复的 API 错误, 终止 loop: ${aiFailureReason}`);
-          if (onStream) {
-            onStream({ type: 'error', content: `⛔ API 错误无法恢复: ${aiFailureReason}`, tool: 'system' });
-          }
-          finalResponse = `❌ AI 服务调用失败: ${aiFailureReason}\n\n这是一个底层 API 错误, 不是任务本身的问题。请检查 API 配置或稍后重试。`;
-          aiFailed = true;
-          break;
-        }
-
-        // 连续错误过多也终止, 防止 LLM 陷入死循环
-        if (consecutiveErrors >= 3) {
-          console.log(`[PiAgent] 连续 ${consecutiveErrors} 次 AI 错误, 终止 loop`);
-          if (onStream) {
-            onStream({ type: 'error', content: `⛔ 连续 ${consecutiveErrors} 次 AI 错误, 终止循环`, tool: 'system' });
-          }
-          finalResponse = `❌ AI 连续调用失败 ${consecutiveErrors} 次, 已终止。\n\n失败原因: ${aiFailureReason}\n\n请检查 API 配置或简化任务后重试。`;
-          aiFailed = true;
-          break;
-        }
-
-        // 把错误当成 tool 结果 push 进 history, 这样下一轮 LLM 看到错误能调整
-        this.pushHistory({
-          role: 'system',
-          content: `[Loop 错误恢复 ${totalErrors}/${this.MAX_TOTAL_ERRORS}] ${aiFailureReason}\n\n请基于上轮工具结果继续完成任务, 不要重复调用同一失败操作. 如果工具已成功执行, 请基于 result.output 给用户总结; 如果工具失败, 请换其他方式或重试.`
-        });
-        if (onStream) {
-          onStream({ type: 'status', content: `⚠️ AI 调用失败 ${totalErrors}/${this.MAX_TOTAL_ERRORS}, 已 push 错误到 history 让 LLM 反思`, tool: 'system' });
-        }
-        // 退避 2s 后继续 — 临时上游限流避开, 不让 loop 终止
-        await new Promise<void>(resolve => setTimeout(resolve, 2000));
-        // 关键: 不设 aiFailed=true, 让外层不重试整个 loop (重置 history), 继续内层循环
-        continue;
-      }
-
-      console.log(`[PiAgent] LLM 回复长度: ${reply.length}, 内容预览: "${reply.substring(0, 80)}..."`);
-      console.log(`[PiAgent] LLM 完整回复:\n${reply}`);
-
-      // 通知前端：收到 LLM 回复 (2026-08-09: 不再截断 100 字符 — 前端流式渲染完整内容,
-      //   配合 Hermes 式回复框: 加载中显示完整文本, 完成后封闭底框)
-      if (onStream) {
-        onStream({ type: 'token', content: reply });
-      }
-
-      // 2026-06-19 架构 fix: parseToolCall 优先于 isFinalResponse
-      //   之前: 思考块里的 "<final gen>" 触发 isFinalResponse 提前 break, 工具从未真正执行
-      //   现在: 先尝试解析 tool_call, 有就执行; 没有才检查是不是真正的 final gen
-      // Bug 5 (2026-07-17): 优先用 LLM 的 native tool_calls (response.toolCalls), 再回退到文本解析
-      //   deepseek-v4-flash 用 OpenAI 协议 tools 时, 会真返回结构化 tool_calls 数组
-      //   之前 nativeToolCalls 被读了不用, 只查 reply 文本, 导致 LLM 明明选了工具但代码找不到
-      // 2026-07-28: 修复多工具调用 — 收集 ALL tool calls, 顺序执行后一次性返回
-      let toolCalls: ToolCall[] = [];
-
-      // 路径 A: native OpenAI 协议 tool_calls (可能多个)
-      if (nativeToolCalls && nativeToolCalls.length > 0) {
-        for (const nc of nativeToolCalls) {
-          try {
-            const args = typeof nc.function?.arguments === 'string'
-              ? JSON.parse(nc.function.arguments)
-              : (nc.function?.arguments || {});
-            toolCalls.push({
-              name: nc.function?.name,
-              args,
-              id: nc.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            } as any);
-          } catch (err) {
-            console.warn(`[PiAgent] 解析 native tool_call 失败: ${(err as Error).message?.slice(0, 100)}`);
-          }
-        }
-      }
-
-      // 路径 B: 文本解析 (parseAllToolCalls 收集全部)
-      if (toolCalls.length === 0) {
-        // 2026-09-26: 已知名集合 = 注册表原名 + 它们的 API 名 (净化后的).
-        //   出网时工具面给的是 API 名 (见 pi-ai.ts 的唯一净化边界), LLM 在文本里
-        //   回吐的也可能是 API 名 —— 只用原名集合过滤会把这类调用整个丢掉.
-        const knownTools = expandKnownToolNames(this.tools.keys());
-        toolCalls = parseAllToolCalls(reply, { tools: knownTools });
-      }
-
-      // 回退路径 C: 原生 parseToolCall (单个)
-      if (toolCalls.length === 0) {
-        const single = this.parseToolCall(reply);
-        if (single) toolCalls.push(single);
-      }
-
-      // 2026-09-26: **回程派发的唯一还原点** —— LLM 回吐的是 API 名 (净化过的), 这里
-      //   还原成注册表真名再交给 this.tools.get(); 原名 (LLM 照 system prompt 抄的) 原样穿透.
-      for (const tc of toolCalls) {
-        if (typeof tc.name === 'string' && tc.name) tc.name = resolveApiToolName(tc.name);
-      }
-
-      // 给每个 toolCall 分配稳定 id
-      for (const tc of toolCalls) {
-        if (!(tc as any).id) {
-          (tc as any).id = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        }
-      }
-
-      if (toolCalls.length > 0) {
-        // 把原始 LLM 回复 push 进 history (仅一次)
-        this.pushHistory({
-          role: 'assistant',
-          content: reply,
-          toolCalls: toolCalls.length > 1 ? toolCalls : [toolCalls[0]],
-          // 2026-09-15: 思考模式思维链原样存回 (下一轮带 tools 的请求必须回带, 否则 deepseek 400)
-          reasoningContent: (response as any)?.reasoningContent,
-        });
-
-        // 2026-08-09: 并发执行本轮所有工具 (Hermes 式 Agent Runtime: 一轮内多工具并行,
-        //   一轮没跑完之前不中断 — 工具执行不检查 abort, 全部完成才 continue 下一轮)
-        //   旧实现顺序 for 循环, 一个工具等一个, 慢; 且多工具时 LLM 要等全部串完才能看到结果.
-        await Promise.all(toolCalls.map(async (toolCall, ti) => {
-        const isMulti = toolCalls.length > 1;
-
-        // 通知前端
-        if (onStream) {
-          onStream({ type: 'tool', content: `🔧 调用工具 (${ti + 1}/${toolCalls.length}): ${toolCall.name}`, tool: toolCall.name });
-          if (toolCall.args && Object.keys(toolCall.args).length > 0) {
-            onStream({ type: 'status', internal: true, content: `📋 参数: ${JSON.stringify(toolCall.args)}`, tool: toolCall.name });
-          }
-          onStream({
-            type: 'step_start',
-            content: `调用 ${toolCall.name}${isMulti ? ` (${ti + 1}/${toolCalls.length})` : ''}`,
-            tool: toolCall.name,
-            args: toolCall.args || {},
-          });
-        }
-
-        const tool = this.tools.get(toolCall.name);
-        if (!tool) {
-          consecutiveErrors++;
-          totalErrors++;
-          const errorResult: ToolResult = { success: false, error: `未知工具: ${toolCall.name}` };
-          this.pushHistory({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
-          this.logToHarness(toolCall.name, toolCall.args, errorResult);
-          // 2026-07-28: 注入 Reflection 帮助 LLM 理解错误
-          const obs = buildObservation(toolCall.name, toolCall.args, errorResult);
-          const ref = buildReflection(toolCall.name, errorResult.error, totalErrors, lastFailedToolCount);
-          this.pushHistory({ role: 'system', content: formatObservationWithReflection(obs, ref) });
-          if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary}`, tool: 'system' });
-          console.warn(`[PiAgent] 未知工具: ${toolCall.name} (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS})，跳过并继续`);
-          return;
-        }
-
-        // 2026-09-16 (Milestone 1-B): 工具调用前的**唯一**约束入口。
-        //   顺序由 PiAgentHarness 决定: deny-pipeline → pre-tool-validator(4 步链) → react-harness(8-gate)。
-        //   旧实现是这三处在不同位置各自调用 (且有两条路径 fail-open); 现在 pi-sdk 不再散调任何 gate。
-        let toolDecision: ToolDecision;
-        try {
-          toolDecision = await this.piHarness().beforeToolCall({
-            tool: toolCall.name,
-            args: toolCall.args || {},
-            ctx: this.harnessCtx(),
-            permissionMode: this.currentPermissionMode,
-          });
-        } catch (err) {
-          // 门面自身抛错 = 核心约束失效 → fail-closed (不执行工具, 也不静默放行)
-          toolDecision = {
-            allow: false,
-            source: 'harness-error',
-            kind: 'core_constraint',
-            reason: `Harness 门面异常: ${String((err as Error)?.message || err).slice(0, 150)}`,
-          };
-        }
-
-        if (!toolDecision.allow) {
-          const src = toolDecision.source || 'unknown';
-          if (src === 'deny-pipeline') {
-            // 旧 deny-pipeline 分支: 不计连续失败计数, 文案 "拒绝: [source] reason"
-            consecutiveErrors++;
-            totalErrors++;
-            const denyResultMsg: ToolResult = { success: false, error: `拒绝: [${toolDecision.rejectedBy || 'deny-pipeline'}] ${toolDecision.reason}` };
-            this.pushHistory({ role: 'tool', content: JSON.stringify(denyResultMsg), toolResult: denyResultMsg });
-            this.logToHarness(toolCall.name, toolCall.args, denyResultMsg);
-            return;
-          }
-
-          const isGateDeny = src === 'react-harness';
-          const isHarnessError = src === 'harness-error';
-          const deniedResult: ToolResult = {
-            success: false,
-            error: isGateDeny
-              ? `Harness gate 拒绝 (${toolDecision.rejectedBy}): ${toolDecision.reason || '未通过安全校验'}`
-              : `PreToolUse 拒绝: ${toolDecision.reason || '未通过安全校验'}`,
-          };
-          this.pushHistory({ role: 'tool', content: JSON.stringify(deniedResult), toolResult: deniedResult });
-          this.logToHarness(toolCall.name, toolCall.args, deniedResult);
-          if (onStream) {
-            const gateName = isGateDeny ? `Harness ${toolDecision.rejectedBy}` : (isHarnessError ? '核心约束层' : 'PreToolUse');
-            onStream({ type: 'error', content: `🛡️ ${gateName} 拒绝 ${toolCall.name}: ${toolDecision.reason || '安全校验失败'}`, tool: toolCall.name });
-            onStream({ type: 'step_error', content: `${gateName} 拒绝 ${toolCall.name}`, tool: toolCall.name, error: toolDecision.reason || '安全校验失败' });
-          }
-          console.warn(`[PiAgent] 工具被拒 ${toolCall.name} (${src}${toolDecision.rejectedBy ? ':' + toolDecision.rejectedBy : ''}): ${toolDecision.reason}`);
-          consecutiveErrors++;
-          totalErrors++;
-          if (toolCall.name === lastFailedTool) { lastFailedToolCount++; }
-          else { lastFailedTool = toolCall.name; lastFailedToolCount = 1; }
-          // 达到同一工具连续失败上限 / 连续错误上限时的引导语 (按拒绝来源保持原有文案)
-          const systemMaxMsg = isGateDeny
-            ? `[注意] 工具 ${toolCall.name} 被 Harness 拒绝 (连续 ${MAX_SAME_TOOL_FAILURES} 次). 请不要再次尝试, 末尾加 <final gen>.`
-            : isHarnessError
-              ? `[注意] 工具 ${toolCall.name} 的约束校验层失效, 已按 fail-closed 阻止 (连续 ${MAX_SAME_TOOL_FAILURES} 次). 请换其他工具或直接回答用户, 末尾加 <final gen>.`
-              : `[注意] 工具 ${toolCall.name} 被系统拒绝 (连续 ${MAX_SAME_TOOL_FAILURES} 次). 请不要再次尝试, 直接用已有信息回答用户, 末尾加 <final gen>.`;
-          const systemConsecMsg = isGateDeny
-            ? `[注意] 连续 ${consecutiveErrors} 次工具调用被 Harness 拒绝. 请换其他工具或直接回答.`
-            : isHarnessError
-              ? `[注意] 连续 ${consecutiveErrors} 次工具调用因约束层失效被阻止. 请换其他工具或直接回答用户, 末尾加 <final gen>.`
-              : `[注意] 连续 ${consecutiveErrors} 次工具调用被系统拒绝. 请换其他工具或直接回答用户, 末尾加 <final gen>.`;
-          if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
-            this.pushHistory({ role: 'system', content: systemMaxMsg });
-            lastFailedTool = ''; lastFailedToolCount = 0; consecutiveErrors = 0;
-          } else if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-            this.pushHistory({ role: 'system', content: systemConsecMsg });
-            consecutiveErrors = 0;
-          }
-          return;
-        }
-
-        if (toolDecision.systemAddition) {
-          this.contextHintAddition += '\n' + toolDecision.systemAddition;
-        }
-
-        try {
-          const toolStart = Date.now();
-          // 2026-09-16 (M2): 恢复重放守卫 —— 中断前**已成功执行过的非幂等动作**恢复后不再重做,
-          //   直接复用当时的结果 (避免重复副作用: 重复写文件/重复提交/重复付款)。
-          //   (M2-B: 守卫也覆盖"上一个 Run 已做过的非幂等动作" —— 跨 Run 续跑同样不许重做)
-          let replaySkip: string | null = null;
-          const guards = [
-            ...(this.resumePlan?.replayGuards || []),
-            ...(this.continuationGuards || []),
-          ];
-          if (guards.length) {
-            const d = argsDigestOf(toolCall.args);
-            const hit = guards.find((g) => g.tool === toolCall.name && (!g.argsDigest || !d || g.argsDigest === d));
-            if (hit) replaySkip = hit.summary;
-          }
-          let result = replaySkip
-            ? { success: true, output: `[恢复保护] ${toolCall.name} 在中断前已成功执行过, 本次不重复执行 (避免重复副作用)。当时结果: ${replaySkip}`, _replaySkipped: true } as ToolResult
-            : await ((toolCall as any).__t0 = Date.now(), tool.execute(expandHomeArgs(toolCall.args)));
-          const toolDurationMs = Date.now() - toolStart;
-          if (replaySkip) {
-            console.log(`[PiAgent] 恢复重放守卫: 跳过已完成的非幂等工具 ${toolCall.name}`);
-            onStream?.({ type: 'status', internal: true, content: `🛡️ 恢复保护: ${toolCall.name} 此前已成功执行, 本次不重复执行`, tool: toolCall.name });
-          }
-          console.log(`[PiAgent] 工具 ${toolCall.name} 执行完成: success=${result.success} (${toolDurationMs}ms)`);
-
-          // 2026-09-16 (M3): 失败接线 —— 分类 + recovery 留痕 + 熔断 / 外部等待
-          if (!result.success && this.actor!.state.activeRun && !replaySkip) {
-            await this.wireToolFailure(toolCall.name, String(result.error || ''), toolCall.args);
-          } else if (result.success && this.actor!.state.activeRun && this.awaitingExternal) {
-            // 外部回话了: awaiting_external → running (不是"恢复完成", 只是等待结束)
-            this.awaitingExternal = false;
-            await this.safeSetRunStatus(this.actor!.state.activeRun, 'running');
-          }
-
-          // 2026-09-16: 持久化 run harness — 每步工具调用立即落盘 (崩在这里也能看到做到哪步)
-          if (this.actor!.state.activeRun) {
-            try {
-              await recordStep(this.actor!.state.activeRun, {
-                tool: toolCall.name,
-                ok: !!result.success,
-                ms: toolDurationMs,
-                args: toolCall.args,
-                summary: String(result.output || '').slice(0, 200),
-                error: result.error ? String(result.error) : undefined,
-              });
-            } catch (err) {
-              // 核心写失败 → 本轮工具批跑完即停 (循环顶部硬闸), 不再 warn 后继续
-              runPersistenceFailure = `工具步骤写盘失败 (${toolCall.name}): ${String((err as Error)?.message || err).slice(0, 200)}`;
-              this.runPersistenceBlocked = true;
-              console.error('[PiAgent] run-store recordStep 失败 (核心持久化):', runPersistenceFailure);
-              onStream?.({ type: 'error', content: `⛔ ${runPersistenceFailure} — 本轮结束后停止`, tool: 'harness' });
-            }
-          }
-
-          try { await onPostToolUse({ tool: toolCall.name, args: toolCall.args || {}, result: { success: result.success, output: result.output?.substring(0, 500), error: result.error }, durationMs: toolDurationMs }); }
-          catch (postErr) { console.warn('[PiAgent] onPostToolUse failed (non-fatal):', postErr); }
-
-          // 2026-09-16 (Milestone 1-B): 工具调用后的唯一入口 (router hint + 输出 gate 一起判定)
-          const after = await this.piHarness().afterToolCall({
-            tool: toolCall.name,
-            output: String(result.output || ''),
-            ctx: this.harnessCtx(),
-            ok: !!result.success,
-          });
-          if (after.routeHint?.systemAddition) {
-            this.pushHistory({ role: 'system', content: `[Harness Router Hint: ${after.routeHint.reason}]\n${after.routeHint.systemAddition}` });
-          }
-          if (after.outputBlocked) {
-            if (onStream) { onStream({ type: 'error', content: `🛡️ Harness output 拒绝 ${toolCall.name}: ${after.outputBlocked.reason}`, tool: toolCall.name }); }
-            console.warn(`[PiAgent] Harness output denied ${toolCall.name}: ${after.outputBlocked.reason}`);
-            result = { ...result, output: `[harness output gate: 输出含敏感内容, 已屏蔽. 原因: ${after.outputBlocked.reason}]`, _harnessDenied: true } as typeof result;
-          }
-
-          // 2026-10-01: 落库前做一次停滞观测 —— 命中的是"引导/引用", 不是"拒绝执行":
-          //   完全相同的返回从第 2 次起折叠成引用 (省上下文); 连续 3 次同参数同结果或检测到循环 ⇒
-          //   在结果尾部追加一条系统提示 (保留模型的选择权, 不硬停 —— 硬停那条已被用户否决)。
-          try {
-            const obs = observeToolCall(stallState, {
-              toolName: toolCall.name,
-              sameSignatureBefore: this.lastToolSig === argsFingerprint((toolCall as any).args),
-              args: toolCall.args,
-              resultText: String(result.output || (result.success ? '' : String(result.error || ''))),
-              ok: !!result.success,
-              seenResultBefore: stallState.hasSeenResult(String(result.output || '')),
-            });
-            if (obs.stub) {
-              result = { ...result, output: obs.stub, _stubbed: true } as typeof result;
-            } else if (obs.notice) {
-              result = { ...result, output: `${String(result.output || '')}\n\n${obs.notice}` } as typeof result;
-            }
-            if (obs.action === 'warn') {
-              console.warn(`[PiAgent] 工具停滞引导 (${obs.code}, 第 ${obs.count} 次): ${toolCall.name}`);
-              onStream?.({ type: 'status', internal: true, content: `🩺 检测到重复调用 ${toolCall.name} (${obs.code}), 已提示模型换法`, tool: 'loop' });
-            }
-          } catch { /* 观测失败绝不影响主路径 */ }
-          this.pushHistory({ role: 'tool', content: JSON.stringify(result), toolResult: result, toolCallId: (toolCall as any).id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` });
-          // 2026-10-01 (用户: 「为什么这么慢」): 量到的事实 —— 每次 LLM 往返平均 3338ms,
-          //   而"一轮发多个工具"(toolCalls>1) 只占 12/63 ✗ ⇒ 回合时长 ≈ 往返次数 × 3.3 秒 ✓。
-          //   本回合**第一次**且**只发一个**工具时, 附一句带代价的提醒(不是口号 ✓), 只提一次免得刷屏。
-          if (toolCalls.length === 1 && this.successfulToolResults.length <= 1) {   // 本回合头一次(免得每轮刷屏)
-            const __batchHint = batchHint(toolCall.name, 1);
-            if (__batchHint) this.pushHistory({ role: 'system', content: __batchHint.trim() });
-          }
-          this.logToHarness(toolCall.name, toolCall.args, result);
-
-          // 2026-08-09: 记录到本轮行动日志 (循环进度 + final 前目标核查用)
-          //   去重: 同一工具同 args 连续成功只记一次 (防 LLM 重复 react 刷屏)
-          const argsPreview = JSON.stringify(toolCall.args || {}).slice(0, 120);
-          const isDup = loopActionLog.some(
-            (a) => a.tool === toolCall.name && a.argsPreview === argsPreview && a.success === !!result.success
-          );
-          if (!isDup) {
-            loopActionLog.push({
-              tool: toolCall.name,
-              argsPreview,
-              resultPreview: result.success
-                ? String(result.output || '(无输出)').slice(0, 200)
-                : String(result.error || 'failed').slice(0, 200),
-              success: !!result.success,
-            });
-          }
-
-          if (onStream) {
-            if (result.success) {
-              onStream({ type: 'status', internal: true, content: `✅ ${toolCall.name} 执行成功`, tool: toolCall.name });
-              if (result.output) { onStream({ type: 'tool', content: `📤 结果: ${result.output.substring(0, 200)}${result.output.length > 200 ? '...' : ''}`, tool: toolCall.name }); }
-              onStream({ type: 'step_done', content: `${toolCall.name} 执行成功`, tool: toolCall.name, success: true, output: result.output });
-            } else {
-              onStream({ type: 'error', content: `❌ ${toolCall.name} 执行失败: ${result.error}`, tool: toolCall.name });
-              onStream({ type: 'step_error', content: `${toolCall.name} 执行失败`, tool: toolCall.name, error: result.error });
-            }
-          }
-
-          // 2026-10-01 (优化 #1/#3/#4): 工具结果的**进上下文闸** + **遥测** + **写操作读回自证**
-          {
-            const __ms = Date.now() - Number((toolCall as any).__t0 || Date.now());
-            try {
-              // #1 结果闸: 超上限 ⇒ 头尾 + 完整结果落文件(给路径) ⇒ 上下文不再被一条大输出长期占住
-              const capped = capToolResult(String(result.output ?? ''), { tool: toolCall.name });
-              if (capped.capped) {
-                result.output = capped.text;
-                console.warn(`[PiAgent] ${toolCall.name} 结果过长(${capped.originalChars})已截断` + (capped.spilledTo ? `, 完整内容: ${capped.spilledTo}` : ''));
-              }
-              // #4 写操作"读回自证": 写类工具成功后自动核一次(存在? 大小?) ⇒ "工具说成功≠任务成功"从规矩变成机制
-              // 2026-10-01: 改了 TS 源码就记账 ⇒ 回合收尾自动跑类型检查 (把"靠自觉"变成机制)
-              {
-                const tsFile = codeWriteTarget(toolCall.name, (toolCall as any).args);
-                if (tsFile && !this.tsTouchedThisTurn.includes(tsFile)) this.tsTouchedThisTurn.push(tsFile);
-              }
-              const verified = verifyWriteOutcome(toolCall.name, (toolCall as any).args, this.cwd);
-              if (verified) result.output = `${String(result.output ?? '')}\n${verified}`;
-              // #3 遥测: 记一行(工具/指纹/耗时/成败/结果大小/是否与上一次同签名) ⇒ 重复率可算
-              recordToolCall({
-                tool: toolCall.name,
-                sig: argsFingerprint((toolCall as any).args),
-                ms: __ms,
-                ok: true,
-                resultChars: String(result.output ?? '').length,
-                prevSig: this.lastToolSig ?? null,
-              });
-              this.lastToolSig = argsFingerprint((toolCall as any).args);
-            } catch { /* 任何优化项失败都不影响工具结果本身 */ }
-          }
-          if (result.success) {
-            consecutiveErrors = 0;
-            // 2026-07-29: Hermes 风格硬限制计数
-            totalToolCallsThisLoop++;
-            // 2026-10-01: 批处理工具(一次顶多次) ⇒ **退还**这次迭代 (奖励批处理, 压零碎调用)
-            if (this.iterBudget && isRefundableTool(toolCall.name)) {
-              this.iterBudget.refund();
-              console.warn(`[PiAgent] ${toolCall.name} 是批量工具 ⇒ 退还 1 次迭代 (现 ${this.iterBudget.describe()})`);
-            }
-            lastNTools.push(toolCall.name);
-            if (lastNTools.length > MAX_IDEMPOTENT_TOOL) lastNTools.shift();
-            if (result.output) { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: result.output.substring(0, 200) + (result.output.length > 200 ? '...' : '') }); }
-            else { this.successfulToolResults.push({ tool: toolCall.name, outputPreview: '(无输出)' }); }
-            loopReviewCompletedTools.add(toolCall.name);
-            lastQualityScore = this.estimateToolResultQuality(result);
-            if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) { refineAttempts++; }
-            if (onStream) { onStream({ type: 'status', internal: true, content: `🔄 工具执行完成，继续循环...`, tool: 'loop' }); }
-          } else {
-            consecutiveErrors++;
-            // 2026-10-01 (优化 #3): 失败也记一行(带错误类别) ⇒ "错工具率"从这类错误里看得出来
-            try {
-              const __cls = classifyError(String(result.error || '')).label || '未分类';
-              recordToolCall({ tool: toolCall.name, sig: argsFingerprint((toolCall as any).args), ms: 0,
-                ok: false, resultChars: 0, prevSig: this.lastToolSig ?? null, errorClass: __cls });
-              this.lastToolSig = argsFingerprint((toolCall as any).args);
-            } catch { /* 遥测失败不影响 */ }
-            totalErrors++;
-            if (toolCall.name === lastFailedTool) { lastFailedToolCount++; }
-            else { lastFailedTool = toolCall.name; lastFailedToolCount = 1; }
-            console.warn(`[PiAgent] 工具 ${toolCall.name} 执行失败 (${lastFailedToolCount}/${MAX_SAME_TOOL_FAILURES}, 累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS}): ${result.error}`);
-            // 2026-07-28: 注入 Observation + Reflection 替代旧 hardcode 提示
-            const obs = buildObservation(toolCall.name, toolCall.args, { success: false, error: result.error });
-            const ref = buildReflection(toolCall.name, result.error, totalErrors, lastFailedToolCount);
-            this.pushHistory({ role: 'system', content: formatObservationWithReflection(obs, ref) + SHELL_ESCAPE_HINT });
-            if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary} → ${ref[0]?.action || '放弃'}`, tool: 'system' });
-            if (lastFailedToolCount >= MAX_SAME_TOOL_FAILURES) {
-              this.pushHistory({ role: 'system', content: `[注意] 工具 ${toolCall.name} 在这个上下文中不可用 (连续 ${MAX_SAME_TOOL_FAILURES} 次失败: ${result.error}). 请不要再次调用它, 直接用你已知的信息回答用户, 并在回答开头标记 <final gen>.` });
-              lastFailedTool = ''; lastFailedToolCount = 0; consecutiveErrors = 0;
-              return;
-            }
-            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-              this.pushHistory({ role: 'system', content: `[注意] 前面的工具调用连续失败。请尝试其他工具或换一种方式完成用户请求, 或用 <final gen> 给出最终回答.` });
-              consecutiveErrors = 0;
-            }
-          }
-        } catch (execError) {
-          consecutiveErrors++;
-          totalErrors++;
-          const errorResult: ToolResult = { success: false, error: String(execError) };
-          this.pushHistory({ role: 'tool', content: JSON.stringify(errorResult), toolResult: errorResult });
-          this.logToHarness(toolCall.name, toolCall.args, errorResult);
-          const obs = buildObservation(toolCall.name, toolCall.args, errorResult);
-          const ref = buildReflection(toolCall.name, errorResult.error, totalErrors, lastFailedToolCount);
-          this.pushHistory({ role: 'system', content: formatObservationWithReflection(obs, ref) + SHELL_ESCAPE_HINT });
-          if (onStream) onStream({ type: 'status', content: `💡 Reflection: ${obs.summary}`, tool: 'system' });
-          console.error(`[PiAgent] 工具执行异常 (累计 ${totalErrors}/${this.MAX_TOTAL_ERRORS}): ${execError}`);
-        }
-        })); // end Promise.all(toolCalls.map(async ...))
-        // 所有工具执行完毕后, continue while 循环, 让 LLM 看到结果
-        continue;
-        } else {
-        // LLM 返回的不是 tool call 格式
-        this.pushHistory({
-          role: 'assistant',
-          content: reply,
-          reasoningContent: (response as any)?.reasoningContent,
-        });
-
-        // 通知前端收到非工具调用回复 (2026-08-09: 完整内容, 不再截断 150)
-        if (onStream) {
-          onStream({ type: 'token', content: reply });
-        }
-
-        // 2026-06-19 架构 fix: 只有 strip <think> 后才检查 isFinalResponse
-        //   (parseToolCall 已先尝试, 既然没解析出 tool_call, 现在检查 final gen 是否真的在最终回答区)
-        if (this.isFinalResponse(reply)) {
-          // 2026-06-19 dive-into 风格修复: 如果还有 successful tool results 没汇报,
-          //   LLM 不能提前 final_gen — harness 自动注入"请汇报剩余工具结果" hint 再 continue
-          //   这是 dive-into 文档"step 9 stop condition check" 的具体化:
-          //   stop condition = (有工具结果未汇报) ? continue : break
-          
-          // 检查回复是否包含工具结果内容（避免无限循环）
-          const hasToolResultContent = this.successfulToolResults.some(r => 
-            reply.includes(r.tool) || reply.includes(r.outputPreview.substring(0, 50))
-          );
-          
-          // 如果回复包含工具结果内容，清除 successfulToolResults
-          if (hasToolResultContent) {
-            console.log(`[PiAgent] 回复包含工具结果内容, 清除 successfulToolResults (${this.successfulToolResults.length} 个)`);
-            this.successfulToolResults = [];
-          }
-          
-          // 2026-08-10: 逃生门 — decideUnreported: 未达上限 → 再提示一次; 超限 → 清空积压强制 final (防死循环)
-          const unreportedDecision = decideUnreported(this.successfulToolResults.length, unreportedRetries, MAX_UNREPORTED_RETRIES);
-          if (unreportedDecision === 'retry' && iteration < this.MAX_REACT_ITERATIONS) {
-            unreportedRetries++;
-            const unreported = this.successfulToolResults.length;
-            console.log(`[PiAgent] LLM 想 final_gen 但还有 ${unreported} 个工具结果未汇报 (${unreportedRetries}/${MAX_UNREPORTED_RETRIES}), push hint 让其继续`);
-            this.pushHistory({
-              role: 'system',
-              content: `[dive-into stop condition] 你之前已成功执行了 ${unreported} 个工具, 但当前回复里没把它们的结果告诉用户. 请基于已有的工具结果 (在 history 里) 写一个完整总结回复给用户, 用 <final gen> 结尾. 不要再调工具.`
-            });
-            if (onStream) {
-              onStream({ type: 'status', internal: true, content: `🔄 还有 ${unreported} 个工具结果未汇报, 让 LLM 继续总结 (${unreportedRetries}/${MAX_UNREPORTED_RETRIES})`, tool: 'system' });
-            }
-            continue;
-          } else if (unreportedDecision === 'force-final') {
-            // 反复提示仍未汇报超过上限 → 清空积压强制 final, 不再死循环
-            console.log(`[PiAgent] unreported 循环超限 (${unreportedRetries} 次), 清空积压强制 final`);
-            this.successfulToolResults = [];
-            this.pushHistory({
-              role: 'system',
-              content: `[dive-into stop condition] 已多次提示汇报工具结果仍未完成 (超过 ${MAX_UNREPORTED_RETRIES} 次). 现在直接基于你已知的信息写最终回复给用户, 用 <final gen> 结尾, 不要再调任何工具.`
-            });
-            if (onStream) {
-              onStream({ type: 'status', internal: true, content: `🔄 工具结果汇报超限, 强制收尾`, tool: 'system' });
-            }
-          }
-lastQualityScore = this.estimateResponseQuality(reply);
-          // 2026-07-29: 质量门 — 即使 LLM 声称完成, 质量太低也继续
-          if (lastQualityScore < this.QUALITY_THRESHOLD && refineAttempts < this.MAX_REFINE_ATTEMPTS) {
-            console.log(`[PiAgent] final gen 质量 ${lastQualityScore.toFixed(2)} < ${this.QUALITY_THRESHOLD}, 注入 refine hint`);
-            this.pushHistory({ role: 'system', content: `[质量检查] 你的回答质量评分为 ${(lastQualityScore * 10).toFixed(1)}/10, 低于 ${(this.QUALITY_THRESHOLD * 10).toFixed(1)}/10 阈值。请提供更完整、详细的回答, 包含工具调用获取到的具体信息, 末尾加 <final gen>。` });
-            refineAttempts++;
-            continue;
-          }
-
-          // 2026-08-08: final 前目标对齐 review — 不潦草收尾 (见 loop-review.ts)
-          //   LLM 想 <final gen> 时, 先跑 1-2 次「目标对齐 + 需求深挖」review;
-          //   达成用户需求才放行真正结束. 达上限或无需深挖则以用户需求为准结束.
-          // 2026-09-16 (Milestone 1-B): 目标审查走唯一门面 (loop-review 是 Harness 的一个环节)
-          const reviewDecision = this.piHarness().reviewFinal({
-            reviewsDone: loopReviewCount,
-            // 2026-08-10: 传用户原始输入 (不是派生 intentHint) — LLM 对照原文自查完成度,
-            //   未完成 → 自动继续调工具 (自动触发后续步骤)
-            userIntent: this.currentUserInput,
-            completedTools: Array.from(loopReviewCompletedTools),
-            actionLog: loopActionLog,
-            runId: this.actor!.state.activeRun || undefined,
-            goalId: this.actor!.state.goalBinding || undefined,
-          }, DEFAULT_MAX_REVIEWS);
-          if (reviewDecision.kind === 'continue-review') {
-            loopReviewCount++;
-            console.log(`[PiAgent] review ${loopReviewCount}/${DEFAULT_MAX_REVIEWS}: LLM 想 final 但先对齐需求深挖一次`);
-            this.pushHistory({ role: 'system', content: reviewDecision.hint });
-            if (onStream) {
-              onStream({ type: 'status', internal: true, content: `🔄 目标对齐 review ${loopReviewCount}/${DEFAULT_MAX_REVIEWS}: 深挖续跑`, tool: 'system' });
-            }
-            continue; // 让 LLM 看到 hint, 深挖或确认完成后再次 final
-          }
-          finalResponse = this.extractFinalAnswer(reply);
-          break;
-        }
-
-        // 检查是否需要继续循环处理
-        // 更严格的判断：只有当回复明确表示需要更多信息时才继续
-        const containsToolCallIntent = reply.includes('调用工具') || reply.includes('tool(') ||
-          reply.includes('使用工具') || reply.includes('需要获取') || reply.includes('需要查看') ||
-          // 兼容 LLM 用对象字面量输出 tool call (上轮没解析成功时, 至少要继续)
-          reply.includes('tool =>') || reply.includes('[TOOL_CALL]') ||
-          // 2026-06-15 修: 兼容 LLM 用 XML 标签输出 tool call (<shell_exec>...</shell_exec>)
-          //   这时 parseToolCall 失败, 至少要让 loop 继续
-          /<\w+>[\s\S]*?<\/\w+>/.test(reply);
-        const hasError = ['不存在', '找不到', '无法找到', 'not found', 'does not exist',
-          '错误', 'error', '失败', 'failed'].some(k => reply.includes(k));
-        const isTooShort = reply.length < 50 && reply.length > 0;
-        const hasQuestion = reply.includes('?') && (reply.includes('怎么') || reply.includes('如何') || reply.includes('什么'));
-
-        const needsMoreWork = hasError || containsToolCallIntent || isTooShort || hasQuestion;
-
-        if (needsMoreWork && iteration < this.MAX_REACT_ITERATIONS) {
-          console.log(`[PiAgent] 继续循环处理 (${iteration}/${this.MAX_REACT_ITERATIONS}): needsMoreWork=${needsMoreWork}, hasError=${hasError}, containsToolCallIntent=${containsToolCallIntent}`);
-          if (onStream) {
-            onStream({ type: 'status', internal: true, content: `🔄 继续处理，循环 ${iteration}...`, tool: 'loop' });
-          }
-          continue;
-        }
-
-        // 否则把这个当作可能的最终回答
-        finalResponse = reply;
-        if (onStream) {
-          onStream({ type: 'status', internal: true, content: `📝 提取最终回答，长度 ${reply.length}`, tool: 'system' });
-        }
-        break;
-      }
-    }
-
-    if (!finalResponse) {
-      // 走到这里通常是 LLM 一直在调同一个不存在的工具, 没输出 <final gen>
-      // 把已知的失败信息也带回去, 让用户知道发生了什么
-      const reason = lastFailedTool
-        ? `(工具 ${lastFailedTool} 连续 ${MAX_SAME_TOOL_FAILURES} 次失败, 已放弃)`
-        : `(共 ${iteration - 1} 轮无最终输出)`;
-      finalResponse = `抱歉，任务未能完成 ${reason}。请换个方式提问，或明确告诉 agent 不要调用工具。`;
-      if (onStream) {
-        onStream({ type: 'error', content: `⚠️ 任务未完成: ${reason}`, tool: 'system' });
-      }
-    }
-
-    // 通知前端循环完成
-    if (onStream) {
-      onStream({ type: 'status', internal: true, content: `✅ 处理完成，共 ${iteration - 1} 次循环`, tool: 'system' });
-    }
-
-    this.pushHistory({ role: 'assistant', content: finalResponse });
-
-    // React Harness: 循环结束
-    // 2026-09-16 (Milestone 1-B): 会话收尾走唯一门面
-    await this.piHarness().sessionEnd(this.harnessCtx());
-
-    // 2026-09-16: 收尾落盘 — done / failed / aborted / needs_human 如实写回 (不留幽灵 running)
-    if (this.actor!.state.activeRun && !runExternallyPaused && !runExternallyAborted) {
-      try {
-        // 2026-09-16 (M4): 完成门 —— "模型说完成"不等于"系统确认完成"。
-        //   证据 = 成功步骤的事实摘要; 末尾还有失败步骤没被后续成功覆盖 → 不许 done。
-        const recBefore = await readRun(this.actor!.state.activeRun).catch(() => null);
-        const steps = recBefore?.steps || [];
-        const evidence = steps.filter((s) => s.ok).map((s) => `${s.tool}: ${(s.summary || '').slice(0, 120)}`).slice(-10);
-        const lastStep = steps[steps.length - 1];
-        const trailingFailure = !!lastStep && !lastStep.ok;
-        /** 有工具步骤却一条成功证据都没有 → 不算完成 (证据门槛, 不是文案) */
-        const noEvidence = steps.length > 0 && evidence.length === 0;
-
-        const errText = runPersistenceFailure || this.breakerReason || runNeedsHuman || runStopReason || aiFailureReason || '';
-        const cls = errText ? classifyRunError(errText) : 'unknown';
-        // 持久化失败 / 熔断 / 鉴权 → needs_human; 预算/中止 → aborted; 末尾仍失败或无证据 → failed (不许 done)
-        const status: 'done' | 'failed' | 'aborted' | 'needs_human' = runPersistenceFailure
-          ? 'needs_human'
-          : (this.breakerReason || runNeedsHuman)
-            ? 'needs_human'
-            : runStopReason
-              ? 'aborted'
-              : aiFailed
-                ? (cls === 'auth' ? 'needs_human' : 'failed')
-                : (trailingFailure || noEvidence)
-                  ? 'failed'
-                  : 'done';
-        await finishRun(this.actor!.state.activeRun, {
-          status,
-          summary: finalResponse ? String(finalResponse).slice(0, 400) : undefined,
-          error: errText
-            || (trailingFailure ? `末尾步骤失败 (${lastStep.tool}): ${(lastStep.error || '').slice(0, 150)}` : undefined)
-            || (noEvidence ? '有工具步骤但没有任何成功证据: 不许判 done' : undefined),
-          evidence,
-        });
-      } catch (err) {
-        // 终态也写不下去: 这是最坏情况 —— 除了留痕, 没有别的自愈手段, 所以必须显眼
-        const message = `收尾落盘失败 (状态无法写回, 记录会停在 running): ${String((err as Error)?.message || err).slice(0, 200)}`;
-        console.error('[PiAgent] run-store finishRun 失败 (核心持久化):', message);
-        await recordDegradation({ kind: 'core', op: 'pi-sdk.finishRun', runId: this.actor!.state.activeRun, message }).catch(() => {});
-        onStream?.({ type: 'error', content: `⚠️ ${message}`, tool: 'harness' });
-      }
-
-      // ★ 2026-09-25 (M0 接线冻结, 规则 ③ + ④): Run 结束**必过收尾漏斗**。
-      //
-      // 旧写法在这里另起了一套 Goal 侧收尾 (读证据 → `evaluateGoalCompletion` →
-      // `completeGoalIfEligible` / `setUnresolved`): 它**不收尾** —— 不写 Memory、不生成 Skill 候选、
-      // 不写权威 continuation、不留决策记录。于是同一条 Run 在 Supervisor 那里还会再收一次 (或反过来
-      // 这条路径根本不收), 全仓就有了两套"这一轮跑完意味着什么"。那一套已删除。
-      //
-      // 现在: `closeRunOnce` (幂等) → 9 步收尾 → 产物落盘; 再由 Goal reducer 把"下一步是什么"
-      // 落进 Goal (没有 Supervisor 宿主时 Runner 也要留下 continuation, 否则下一次还是从零开始)。
-      if (this.actor!.state.goalBinding) {
-        try {
-          const wiring = await import('./goal-flywheel-wiring.js');
-          const { reduceGoalState } = await import('./goal-state-reducer.js');
-          const nowIso = new Date().toISOString();
-          const closed = await wiring.closeRunOnce({
-            goalId: this.actor!.state.goalBinding,
-            runId: this.actor!.state.activeRun,
-            caller: 'runner',
-            now: nowIso,
-            finalReview: finalResponse ? String(finalResponse).slice(0, 2000) : '',
-          });
-          if (wiring.isRefusal(closed)) {
-            onStream?.({ type: 'status', content: `⚠️ 收尾被拒 (不当作收过): ${closed.reason}`, tool: 'harness' });
-          } else if (closed.outcome) {
-            const view = closed.outcome;
-            const applied = await reduceGoalState({
-              goalId: this.actor!.state.goalBinding,
-              intent: 'closure_outcome',
-              now: nowIso,
-              by: 'runner',
-              outcome: {
-                goalStatus: wiring.goalStatusFromDecision(view.decision),
-                continuation: wiring.toGoalStoreContinuation(view.continuation),
-                reason: view.decision.reason,
-              },
-              runId: view.runId,
-            });
-            const line = view.decision.decision === 'complete'
-              ? `🎯 目标已达成 (仍要过完成门): ${view.decision.reason}`
-              : `🎯 目标仍在进行 (未判完成): ${view.decision.reason}`;
-            onStream?.({
-              type: 'status', internal: true,
-              content: `${line}${applied.gateRejected ? ` [完成门拒绝: ${applied.gateRejected}]` : ''} `
-                + `(收尾 ${view.steps} 步 · memory ${view.memories} · skill 候选 ${view.candidates} · goal=${this.actor!.state.goalBinding})`,
-              tool: 'harness',
-            });
-          } else {
-            // 幂等: 别处 (或上一次) 已经收过尾 —— 事实读不回来就如实说, 不重收也不假装
-            onStream?.({ type: 'status', content: `🎯 ${closed.reason}`, tool: 'harness' });
-          }
-        } catch (err) {
-          await recordDegradation({ kind: 'observational', op: 'pi-sdk.runClosure', runId: this.actor!.state.activeRun, message: String((err as Error)?.message || err).slice(0, 160) }).catch(() => {});
-        }
-      }
-      this.actor!.state.activeRun = '';
-    } else if (this.actor!.state.activeRun) {
-      // 外部暂停/中止: 状态是人定的, 不覆盖 (paused 等 /resume; aborted 是终态)
-      onStream?.({ type: 'status', content: `⏹️ 运行状态保持为 ${runExternallyPaused ? 'paused' : 'aborted'} (由外部控制面决定)`, tool: 'harness' });
-      this.actor!.state.activeRun = '';
-    }
-
-    // 2026-06-16: 暴露 aiFailed 标志 — promptStream 据此决定是否自动重试整个 loop
-    return { reply: finalResponse, aiFailed, aiFailureReason: aiFailureReason || undefined };
-  }
+  // 2026-10-02 K4-B: 老 `runReActLoop` **已删除** (原 1123 行) —— 它曾经是"第二条 loop"
+  //   并行存在的根源 (与 `WorkflowPivotLoop` 各跑一套, 行为按入口分叉: web=pivot / CLI=老 loop)。
+  //   删除依据 (五条件): ① 唯一替代路径 = pivot (默认已切, 三处入口全走它) ② 全仓无引用 (只剩注释/测试名)
+  //   ③ 真跑覆盖 = CLI 非流式带工具改文件 ✓ · Web 流式改 TS + 自检 ✓ · 同通道并发 3 条 ✓ ④ 全量回归 ✓
+  //   ⑤ 可回滚提交点 = 本提交。
+  //   它独有的记账 (TS 触达) 已上移到 pivot 的唯一执行点 `guardedExecute`, 口径归一。
 
   async deepThink(prompt: string): Promise<{ result: ThinkResult; response: string }> {
     const result = await this.thinkingEngine.think(prompt);

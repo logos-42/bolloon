@@ -72,11 +72,23 @@ describe('caps (env 可覆盖, 坏值回落默认)', () => {
 });
 
 describe('接线存在 (源级核对: 别只写模块忘了接)', () => {
-  it('pi-sdk 的退出判定读**净**用量, 且批处理工具会退还', () => {
-    const src = fs.readFileSync(path.join(process.cwd(), 'src/agents/pi-sdk.ts'), 'utf-8');
-    expect(src).toContain('decideMaxIterations(iterBudget.used, iterBudget.maxTotal)');
-    expect(src).toContain('isRefundableTool(toolCall.name)');
-    expect(src).toContain('this.iterBudget.refund()');
+  /**
+   * 2026-10-02 K4-B 迁移说明 (旧断言为什么变了, 以及"差量是什么"):
+   *   旧断言查的是 pi-sdk 里**老 `runReActLoop`** 的三条接线:
+   *     `decideMaxIterations(iterBudget.used, iterBudget.maxTotal)` · `isRefundableTool(toolCall.name)` · `this.iterBudget.refund()`。
+   *   老 loop 已删除 (K4-B 合并两套 loop), 三条接线随之消失 ⇒ 断言迁移到**现在唯一的 loop**(pivot)的真机制上:
+   *     pivot 的迭代上限来自**复杂度画像** (`effectiveConfig.maxIterations`) + token 预算, 由 `shouldContinue()` 判定。
+   *   ⚠️ **行为差量 (如实记, 不是零差量)**: 老 loop 的"IterationBudget 净用量 + 批处理工具退还迭代"这套
+   *     在 pivot 上没有等价物 —— CLI 从此按 pivot 的画像预算走, **不再有"用 execute_code 退还迭代"这条**。
+   *     `src/agents/iteration-budget.ts` 模块**保留备查** (纯函数 + 有单测), 但目前**生产零消费**。
+   */
+  it('现在唯一的 loop (pivot) 用画像配置的迭代上限, 且老 loop 的退还接线确实已随它删除', () => {
+    const pivot = fs.readFileSync(path.join(process.cwd(), 'src/agents/workflow-pivot-loop.ts'), 'utf-8');
+    const sdk = fs.readFileSync(path.join(process.cwd(), 'src/agents/pi-sdk.ts'), 'utf-8');
+    expect(pivot).toContain('effectiveConfig.maxIterations');
+    expect(pivot).toContain('shouldContinue(');
+    expect(sdk).not.toContain('this.iterBudget.refund()');           // 老接线不许"复活"
+    expect(sdk).not.toContain('decideMaxIterations(iterBudget.used'); // 同上
   });
 });
 

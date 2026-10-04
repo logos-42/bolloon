@@ -23,6 +23,10 @@ describe('过程纪律 (系统提示的一部分)', () => {
   it('**两个**组装点都注入了它 (源级核对, 免得只加了一处)', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/agents/pi-sdk.ts'), 'utf-8');
     const n = (src.match(/\$\{PROACTIVE_WORK_DISCIPLINE\}/g) || []).length;
-    expect(n, `注入点只有 ${n} 个`).toBeGreaterThanOrEqual(2);
+    // K4-B (2026-10-02): 原先有**两处**组装点 (老 `runReActLoop` 的 systemPrompt + pivot 的 systemPrompt)。
+    //   老 loop 删除后只剩**一处** —— 正是 pivot 用的那个 systemPrompt (它同时服务 prompt/promptStream/web),
+    //   所以"注入还在"这条依然成立: 断言 ≥1, 并核它确实进了同一个 systemPrompt 变量。
+    expect(n, `注入点只有 ${n} 个`).toBeGreaterThanOrEqual(1);
+    expect(src).toMatch(/const systemPrompt = `\$\{this\.bootstrapAddition\}/);
   });
 });

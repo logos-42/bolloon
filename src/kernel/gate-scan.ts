@@ -596,7 +596,9 @@ export function scanRunIdSeed(
   if ((code.match(/this\.runCtx = this\.seedRunContext\(\)/g) || []).length > 0) {
     out.push({ rule: 'runid-seed-on-reset', file: 'agents/pi-sdk.ts', line: 1, what: '复位点带了播种 (清空不许携带身份)' });
   }
-  if (resets < 5) out.push({ rule: 'runid-reset-missing', file: 'agents/pi-sdk.ts', line: 1, what: `复位点只剩 ${resets} 处 (期望 ≥5)` });
+  // K4-B (2026-10-02): 阈值 5 → 3 —— 原先是**两条 loop** (老 `runReActLoop` 内另有 2 处 `createRunContext()`);
+  //   老 loop 删除后只剩 pivot 这条路的复位点。不变量不变: **每条退出路径都要复位** (用完即清)。
+  if (resets < 3) out.push({ rule: 'runid-reset-missing', file: 'agents/pi-sdk.ts', line: 1, what: `复位点只剩 ${resets} 处 (期望 ≥3, K4-B 后只剩一条 loop)` });
   return out;
 }
 

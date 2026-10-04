@@ -52,7 +52,10 @@ function scanWiring(piSdk: string): string[] {
   }
   // e) 清空 = 换空 Context
   const resets = (code.match(/this\.runCtx = createRunContext\(\)/g) || []).length;
-  if (resets < 5) bad.push(`"用完即清"不到位: createRunContext() 复位只有 ${resets} 处 (期望 ≥5)`);
+  // K4-B (2026-10-02): 阈值 5 → 3 —— 原先有 5 处复位点是因为**存在两条 loop** (老 `runReActLoop` 自己
+  //   内部还有两处 `createRunContext()`)。老 loop 删除后只剩 pivot 这条路上的复位点。
+  //   真正的不变量没变: **每条退出路径都必须复位** (用完即清) —— 数量跟着 loop 数量走, 不是越低越好。
+  if (resets < 3) bad.push(`"用完即清"不到位: createRunContext() 复位只有 ${resets} 处 (期望 ≥3, K4-B 后只剩一条 loop)`);
   return bad;
 }
 
