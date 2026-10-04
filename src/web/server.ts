@@ -130,7 +130,8 @@ import { documentReader } from '../documents/reader.js';
 import { initMinimax, getMinimax } from '../constraints/index.js';
 import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
 // **K5 步骤④ (入口投递)**: 把一次入口执行投进会话 Actor 的 mailbox ⇒ 同一会话身份的输入排队执行
-import { deliverThroughActor, getChannelQueue } from '../kernel/channel-actor.js';   // K8: 待办执行经内核邮箱串行
+import { deliverThroughActor, getChannelQueue } from '../kernel/channel-actor.js';
+import { requireRunExecution } from '../agents/execution-entry.js';   // K8 唯一执行入口的取用助手 (脱挂坑见该文件头)   // K8: 待办执行经内核邮箱串行
 import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
 import { videoConfigStore, type VideoProvider } from '../llm/video-config-store.js';
 import { audioConfigStore, type AudioProvider } from '../llm/audio-config-store.js';
@@ -148,12 +149,9 @@ import { loadLocalResources, writeRemoteResources } from '../network/peer-resour
  * (接口允许实现自定义), 所以直接调会报 possibly-undefined。这里**响亮失败**而不是 `!` 断言:
  * 拿不到入口就说明"通道又要直呼 prompt 了", 必须当场炸掉, 不许静默回落 (否则收口只剩纸面)。
  */
-function requireRunExecution<T extends { runExecution?: (req: ExecutionRequest) => Promise<string> }>(agent: T): (req: ExecutionRequest) => Promise<string> {
-  if (typeof agent.runExecution !== 'function') {
-    throw new Error('K8: 该 session 未提供 runExecution (唯一执行入口) ⇒ 拒绝直呼 prompt');
-  }
-  return agent.runExecution;
-}
+// 2026-10-02: 实现搬到 `src/agents/execution-entry.ts` (为了能被行为门测到 —— 那个"脱挂"坑源码看不出)。
+//   ⚠️ 曾经这里写的是 `return agent.runExecution;` (等于脱挂方法) ⇒ 调用时 this===undefined
+//   ⇒ 实例里 supervisor / 心跳 / 任务三条路径都报 `... reading 'applyExecutionRequest'`。
 
 // 前端资源路径: 兼容 src 运行 + dist 运行 + npm 全局安装
 // - src 跑 (tsx):   __dirname = .../src/web  →  .../dist/web
