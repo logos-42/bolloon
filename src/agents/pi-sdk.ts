@@ -45,6 +45,8 @@ import { renderToolListWithParams } from './tool-subset.js';
 import { codeWriteTarget, decideTypecheck, formatTypecheckResult } from '../kernel/code-write-gate.js';
 // K10 余项: 收尾自检的**编排与政策**也归内核 (该不该跑 · 系统自检也过门 · 被拒不执行且可见 · 失败不影响回合)
 import { runTurnEndSelfCheck } from '../kernel/turn-selfcheck.js';
+// K10 余项: 恢复一次运行的**编排与政策**也归内核 (漂移上报口径 · 只在漂了/核对不了时装 · 恢复态一定被清)
+import { resumeRunViaKernel } from '../kernel/run-resume.js';
 // 2026-10-01: 身份解析必须**静态导入** —— 之前在函数体里用 require(), 而打包后是 ESM ⇒
 //   require 是 undefined ⇒ 抛错被 catch 静默吞掉 ⇒ "自愈"根本没跑, DID 一直是空的 ✗。
 import { loadOrCreateAgentIdentity } from './agent-identity.js';
@@ -2200,45 +2202,32 @@ ${await this.renderActivePlansSection()}
    * 并把结论放进返回值 (`modelDrift`) 让调用方能上报; 一致时也有一句明确结论。
    * 判断失败 (读不到 Run 等) 不阻塞恢复。
    */
+  /**
+   * **K10 余项**: 编排与政策归内核 (`kernel/run-resume.ts`) —— 这里只做七件事:
+   *   核对漂移 · 准备 · 按需装配 · 落恢复态 · 驱动同一 runId 继续 · 清态 · 日志。
+   *   语义 (漂移上报口径 · 只在漂了/核对不了时装 · 装配失败不阻塞 · 恢复态一定被清) 由内核拥有。
+   */
   async resumeRun(runId: string): Promise<{ ok: boolean; reason?: string; reply?: string; modelDrift?: ConfigDriftReport; modelApplied?: EffectiveModelConfig }> {
-    let modelDrift: ConfigDriftReport | undefined;
-    let modelApplied: EffectiveModelConfig | undefined;
-    try {
-      const { detectRunConfigDrift } = await import('../llm/model-selection.js');
-      modelDrift = (await detectRunConfigDrift(runId)) || undefined;
-      if (modelDrift?.drifted) {
-        console.warn('[pi-sdk] 恢复时模型配置已偏离 Run 快照:', modelDrift.message);
-      } else if (modelDrift) {
-        console.log('[pi-sdk] 恢复前核对:', modelDrift.message);
-      }
-    } catch { /* 核对本身失败不阻塞恢复 */ }
-    const prep = await prepareResume(runId);
-    if (!prep.ok || !prep.plan) return { ok: false, reason: prep.reason, ...(modelDrift ? { modelDrift } : {}) };
-    // 2026-09-26 (P6 × P7): 恢复一个在跑的 Run, 用的是**它自己那份快照**, 不是盘上现在的全局默认 ——
-    //   否则这次恢复就是"带着漂移继续跑", 之后再存快照会把漂移固化成历史。
-    //   只在"漂了"或"核对不了"时重装 (一致时运行时本来就是对的, 重装是白跑一趟)。
-    //   装配只有一处实现: `applyRunModelConfigToRuntime` → `installRuntime` (这里不自己 initMinimax)。
-    // K10 余项: 「要不要按 Run 快照重装」是**内核规则** (`decideResumeReinstall`) —— 一致时不重装, 漂了/核对不了才装
-    if (modelDrift && decideResumeReinstall(modelDrift)) {
-      try {
+    const out = await resumeRunViaKernel(runId, {
+      detectDrift: async (id) => {
+        const { detectRunConfigDrift } = await import('../llm/model-selection.js');
+        return ((await detectRunConfigDrift(id)) || undefined) as never;
+      },
+      prepareResume: (id) => prepareResume(id) as never,
+      applySnapshot: async (snapshot) => {
         const { applyRunModelConfigToRuntime } = await import('../llm/model-selection.js');
-        modelApplied = await applyRunModelConfigToRuntime(modelDrift.snapshot);
-        console.log(`[pi-sdk] 已按 Run 快照装配运行时: ${modelApplied.provider}/${modelApplied.model} (configHash ${String(modelApplied.configHash).slice(0, 12)})`);
-      } catch (e) {
-        // 装配失败不阻塞恢复 (如实说; 调用方可以从返回值里看出没装成)
-        console.warn('[pi-sdk] 按 Run 快照装配运行时失败, 保持当前运行时:', String((e as Error)?.message || e).slice(0, 160));
-      }
-    }
-    this.resumeRunId = runId;
-    this.resumePlan = prep.plan;
-    this.actor!.state.goalBinding = prep.plan.goalId || this.actor!.state.goalBinding;
-    try {
-      const reply = await this.prompt(buildResumeInstruction(prep.plan), {});
-      return { ok: true, reply, ...(modelDrift ? { modelDrift } : {}), ...(modelApplied ? { modelApplied } : {}) };
-    } finally {
-      this.resumeRunId = '';
-      this.resumePlan = null;
-    }
+        return (await applyRunModelConfigToRuntime(snapshot as never)) as never;
+      },
+      applyPlan: (plan) => {
+        this.resumeRunId = runId;
+        this.resumePlan = plan as never;
+        this.actor!.state.goalBinding = plan.goalId || this.actor!.state.goalBinding;
+      },
+      continueRun: (plan) => this.prompt(buildResumeInstruction(plan as never), {}),
+      clearPlan: () => { this.resumeRunId = ''; this.resumePlan = null; },
+      log: (level, body) => (level === 'warn' ? console.warn('[pi-sdk] ' + body) : console.log('[pi-sdk] ' + body)),
+    });
+    return out as never;
   }
 
   /**
