@@ -19,6 +19,8 @@ import { createPrivateActor, type ChannelActor, type ExecutionRequest } from '..
 // K10 ①: 运行生命周期写入经内核端口 (与 kernel/control.ts 的控制面分开 —— 一个回答"谁命令我停",
 //   一个回答"我这一轮发生了什么"; 失败语义也不同: 控制面被拒 → 409, 事实写不进 → 响亮失败)
 import { submitRunLifecycle, assertLifecycleOk } from '../kernel/run-lifecycle.js';
+// K10 ④: 通信发送入口经内核端口 (上层不再直接对某条传输说话; 换传输只改这一处注入)
+import { submitTransport, type TransportPorts } from '../kernel/transport.js';
 import { expandHomeArgs } from './tool-path-args.js';
 import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
 import { runWithWriteOrigin } from './skill-ledger.js';
@@ -3077,6 +3079,18 @@ ${this.extractOperationsFromRef(operationsRef)}
     return this.constraintLayer.getLogs();
   }
 
+  /**
+   * K10 ④: 通信端口的**注入面** —— 传输实现仍在本仓网络层 (`src/network/**`), 内核只认形状。
+   *   换传输 (hyperswarm → iroh → …) 时只改这一处; 上层一律走 `submitTransport`。
+   */
+  private transportPorts(): TransportPorts {
+    return {
+      send: (peerId: string, kind: string, payload: string) => p2pNetwork.sendMessage(peerId, kind as any, payload),
+      broadcast: (kind: string, payload: string) => p2pNetwork.broadcast(kind as any, payload),
+      peers: () => p2pNetwork.getPeers(),
+    };
+  }
+
   private listPeers(): string {
     const peers = p2pNetwork.getPeers();
     if (peers.length === 0) {
@@ -3090,11 +3104,20 @@ ${this.extractOperationsFromRef(operationsRef)}
   }
 
   async sendMessage(peerId: string, message: string): Promise<void> {
-    await p2pNetwork.sendMessage(peerId, 'message', message);
+    // K10 ④: 经内核通信端口。发送有副作用 ⇒ 未注入/被拒**一律响亮** (静默丢消息比报错更糟)
+    const out = await submitTransport(
+      { op: 'send', origin: 'pi-session', peerId, kind: 'message', payload: message },
+      this.transportPorts(),
+    );
+    if (!out.ok) throw new Error(`[kernel-transport] send 未发出: ${out.detail ?? '未知原因'}`);
   }
 
   async broadcast(message: string): Promise<void> {
-    await p2pNetwork.broadcast('message', message);
+    const out = await submitTransport(
+      { op: 'broadcast', origin: 'pi-session', kind: 'message', payload: message },
+      this.transportPorts(),
+    );
+    if (!out.ok) throw new Error(`[kernel-transport] broadcast 未发出: ${out.detail ?? '未知原因'}`);
   }
 
   getIdentity(): IdentityDoc {

@@ -120,7 +120,7 @@ export const KERNEL_ALLOWED_IMPORT_PREFIXES: readonly string[] = ['kernel/'];
  * 判据是**双向相等**: 盘上多一个未登记文件 ⇒ 红; 名册有而盘上没有 ⇒ 红。
  * (先例: SEAM_ROSTER 的「名册外无人越界」)
  */
-export const KERNEL_FILES: readonly string[] = ['kernel/channel-actor.ts', 'kernel/control.ts', 'kernel/run-lifecycle.ts', 'kernel/gate-scan.ts', 'kernel/model-runtime.ts', 'kernel/plan-harness.ts', 'kernel/plan-modelruntime.ts', 'kernel/plan-constraint.ts', 'kernel/plan-channel-actor.ts', 'kernel/plan-deletion.ts', 'kernel/plan-runcontext.ts', 'kernel/plan-communication.ts', 'kernel/plan.ts', 'kernel/roster.ts'];
+export const KERNEL_FILES: readonly string[] = ['kernel/channel-actor.ts', 'kernel/control.ts', 'kernel/run-lifecycle.ts', 'kernel/transport.ts', 'kernel/gate-scan.ts', 'kernel/model-runtime.ts', 'kernel/plan-harness.ts', 'kernel/plan-modelruntime.ts', 'kernel/plan-constraint.ts', 'kernel/plan-channel-actor.ts', 'kernel/plan-deletion.ts', 'kernel/plan-runcontext.ts', 'kernel/plan-communication.ts', 'kernel/plan.ts', 'kernel/roster.ts'];
 
 export type DetectionMode = 'import-edge' | 'write-call';
 
@@ -286,10 +286,10 @@ export const AUTHORITY_DEBT_FROZEN_AT = 0;   // 3 → 0 (K4 用内核控制面�
  * 目的只有一个: **不许所有逻辑回流到 kernel.ts**。要加就得显式抬这个数字, 留下痕迹。
  * 数值 = 当前 kernel 目录真实行数, 不留余量。
  */
-export const KERNEL_LINE_BUDGET = 3102;   // 2026-10-02 **显式抬档 +184** (K10 ①: 新增内核模块 kernel/run-lifecycle.ts —— 运行生命周期写口, 与 control.ts 的控制面分开; 预算 == 真实值)   // 2026-10-02: +1 (K4-B: gate-scan 复位阈值注释)   // 2026-10-02: +5 (K8 正刀: gate-scan 加"收口字段数 3→1"+ queue 反回归)   // 2026-10-02: +54 (K8: gate-scan 加 K8 判据)   // 2026-10-02: +2 (STAGE_STATUS 拆 K4-A/K4-B + K6/K7 如实修正)
+export const KERNEL_LINE_BUDGET = 3247;   // 2026-10-02 **显式抬档 +145** (K10 ④: 新增内核模块 kernel/transport.ts —— 通信入口端口)   // 2026-10-02 **显式抬档 +184** (K10 ①: 新增内核模块 kernel/run-lifecycle.ts —— 运行生命周期写口, 与 control.ts 的控制面分开; 预算 == 真实值)   // 2026-10-02: +1 (K4-B: gate-scan 复位阈值注释)   // 2026-10-02: +5 (K8 正刀: gate-scan 加"收口字段数 3→1"+ queue 反回归)   // 2026-10-02: +54 (K8: gate-scan 加 K8 判据)   // 2026-10-02: +2 (STAGE_STATUS 拆 K4-A/K4-B + K6/K7 如实修正)
 
 /** 预算冻结值 (棘轮: 只许减; 想抬预算必须同时改上面那个数字 ⇒ 一次显式动作, diff 里看得见) */
-export const KERNEL_LINE_BUDGET_FROZEN_AT = 3102;   // 同步至 2026-10-02 真实值 (K10 ① 新增 run-lifecycle.ts 后)
+export const KERNEL_LINE_BUDGET_FROZEN_AT = 3247;   // 同步至 2026-10-02 真实值 (K10 ④ 新增 transport.ts 后)
 
 /**
  * K3b —— **台账数据**单独一档预算 (`src/kernel/plan.ts`)。
