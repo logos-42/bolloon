@@ -31,6 +31,15 @@ describe('CLI 渲染过滤-A. 污染样本必须被过滤 (逐行取自真机)',
     '[PiAgent] 推理适配器 = kernel-model-runtime (只读 acquire 租约)',
     '\x1b[33m[pi-ai timing]\x1b[0m total=1ms',                          // 带 ANSI 染色
     '    [v3-async] 处理 agent.manifest.exchange 失败: 连接不存在',      // 允许 0~8 空格缩进
+    // 2026-10-02 leo 追加: 「✅ 最终回复 (质量 8.5/10) · 🔄 循环 N/10 这类也去掉」
+    '✅ 最终回复 (质量 8.5/10)',
+    '✅ 检测到最终回复 (质量: 8.5/10)',
+    '🔄 循环 2/10',
+    '🔍 任务复杂度: moderate (预估 3 步)',
+    '⚙️ 动态配置: 2 个工具组',
+    '⏹️ pivot loop 结束',
+    '工具执行完成继续循环',
+    '继续总结上一段',
   ];
   it.each(polluted)('过滤: %s', (line) => {
     expect(isInternalChatter(line)).toBe(true);
@@ -50,6 +59,7 @@ describe('CLI 渲染过滤-B. 反例: 用户内容 / 需人介入 / 产品行 �
     '智能体列表: (当前: 233)',
     '',                                                       // 空行不算冲突
     '[这是用户自己写的一行，带中文方括号]',                    // 中文标签不在内部清单里 ⇒ 不吞
+    '好的, 继续总结一下',                                      // 只锚行首 ⇒ 句子中间出现"继续总结"不许被吞
   ];
   it.each(keep)('放行: %s', (line) => {
     expect(isInternalChatter(line)).toBe(false);

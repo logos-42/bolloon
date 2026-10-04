@@ -3804,12 +3804,14 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
               const plain = body.replace(/\x1b\[[0-9;]*m/g, '').trim(); // 2026-10-01: 先剥 ANSI —— 只有彩色控制符的正文看着就是**空框** ✗
               const onlyMarker = /^(?:reflection|反思)\s*[:：\-—]?\s*$/i.test(plain);
               if (plain && !onlyMarker) appendLine(renderMessageBox({ title: '💡 反思', body, color: C_WARN }));
-          } else if (!content.includes('🔄 循环') && !content.includes('📋 参数')
-              && !content.includes('🔍 任务复杂度') && !content.includes('⚙️ 动态配置')
-              && !content.includes('⏹️ pivot loop')
-              // 2026-08-12 (Task4): 循环过渡噪音 — "工具执行完成继续循环"/"继续总结" 是内部推进过程,
-              //   不是给用户看的内容, 一律静默丢弃 (用户抱怨"每次显示触发下一轮循环"的真凶).
-              && !content.includes('继续循环') && !content.includes('继续总结')) {
+          } else if (isInternalChatter(content)) {
+            // 2026-10-02 (leo: 「✅ 最终回复 (质量 …) · 🔄 循环 N/10 这类也去掉」):
+            //   老写法是一串 `content.includes(...)` 黑名单 —— 猜不完 (真机漏过), 且与 console 行各有一套判据。
+            //   现在与 console 行**共用同一个判据** (`isInternalChatter`); 同样"搬走不是删掉":
+            //   落盘 (`appendInternalRunLog`) + `--verbose` 原样上屏。
+            appendInternalRunLog(content, (e as { tool?: string }).tool);
+            if (isStartupVerbose()) appendLine(`${C_DIM}${content}${RESET}`);
+          } else {
             appendLine(`${C_DIM}${content}${RESET}`);
           }
         } else if (e.type === 'step_start') {

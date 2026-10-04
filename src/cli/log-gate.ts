@@ -184,17 +184,38 @@ const SDK_DIAG_LINE = /^(?:\[[^\]]*\]\s*)?\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*\[(?:\x1
 // 允许标签前有一个**严重度字形** (`⚠ [identity] …` / `✗ [session-note] …` 真机就是这样) —— 只放这几个字形, 不做通配
 const INTERNAL_CHATTER_TAG =
   /^[ \t]{0,8}[⚠✗✓!·]?[ \t]*\[(?:pi-ai(?:\s+timing)?|identity|session-note|react-harness|DocumentStore|DocumentReceiver|kv-server|loadSkills|v3-manifest|v3-async|supervisor-host|tool-telemetry|runs|abort|broadcast)\b[^\]\n]*\]/i;
-/** 没有 ASCII 标签、但实测属于内部运行日志的行 */
+/**
+ * 没有 ASCII 标签、但实测属于内部运行日志的行 (2026-10-02 leo 追加: 「✅ 最终回复 (质量 8.5/10) ·
+ * 🔄 循环 N/10 这类也去掉」)。
+ *
+ * 定位: 这批本来是**发送点自己声明** `internal: true` (见 `reply-hygiene.ts` / pivot loop 的遥测),
+ *   这里是**兜底** —— 历史/未标的同族事件、以及包一层后丢了标记的副本, 也要在同一处收口。
+ *   所以它**只认实测过的具体形状** (不做通配), 且与正向声明共用同一个判据函数。
+ */
 const INTERNAL_CHATTER_LINE = [
   /^\s*📚\s*复盘[:：]/,
   /^\s*\[PiAgent\]\s*reviewFinal\b/,
   /^\s*\[PiAgent\]\s*推理适配器\s*=/,
+  /^\s*[✅✓]\s*(?:检测到)?最终回复/,
+  /^\s*🔄\s*循环\s*\d+\s*[/／]\s*\d+/,
+  /^\s*🔍\s*任务复杂度[:：]/,
+  /^\s*⚙️?\s*动态配置[:：]/,
+  /^\s*⏹️?\s*pivot loop/,
+  /^\s*📋\s*参数/,
 ];
+/**
+ * 循环过渡噪音: **行首锚定**, 不算任意子串 —— 老黑名单用的是 `content.includes('继续循环')`,
+ *   那会把像"好的, 继续总结一下"这种正经状态行一起吞掉 (误吞比漏吞更糟, 见本文件头)。
+ *   实测的真身形状: `工具执行完成继续循环` · `继续总结上一段` 这类**以它开头**的推进过程行。
+ */
+const INTERNAL_CHATTER_SUBSTR = [/^\s*工具执行完成\s*继续循环/, /^\s*继续(?:循环|总结)/];
 /** 这一行是不是**内部诊断** (只该进日志, 不该进对话流) */
 export function isInternalChatter(line: string): boolean {
   if (!line) return false;
   const l = String(line).replace(/\x1b\[[0-9;]*m/g, '');
-  return INTERNAL_CHATTER_TAG.test(l) || INTERNAL_CHATTER_LINE.some((re) => re.test(l));
+  return INTERNAL_CHATTER_TAG.test(l)
+    || INTERNAL_CHATTER_LINE.some((re) => re.test(l))
+    || INTERNAL_CHATTER_SUBSTR.some((re) => re.test(l));
 }
 
 /** 这一行是不是「错误 / 降级 / 需人介入」—— 是则任何模式下都不许被静默 */
