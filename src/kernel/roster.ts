@@ -257,7 +257,7 @@ export const STAGE_STATUS: Readonly<Record<string, 'done' | 'partial' | 'not-sta
   K5: 'done',
   // 2026-10-02 (leo 拍板): K4 = **Kernel Execution Core**, 拆两半, 不许两个含义共用一个编号
   'K4-A': 'done',         // 内核控制面 / Goal·Run 写权限收口 (AUTHORITY_DEBT 3 → 0, 经 kernel/control.ts)
-  'K4-B': 'not-started',  // 合并两套 Agent Loop (ReAct / Pivot / 旧 loop)
+  'K4-B': 'partial',      // 合并两套 Agent Loop —— 已落: 默认切 pivot (所有入口一套) + 收尾自检抽成 runTurnEndTypecheck 挂**三条路径**(原先生产 pivot 路径从没跑过自检, 见 K7 evidence 补正); 待做: 删老 `runReActLoop` (~1100 行, 需先核清两条入口 finally/尾段差异)
   K6: 'done',             // 2026-10-02 修正: 能力 9/9 全 done (capabilities-done) —— 原写 not-started 是台账滞后
   K7: 'done',             // 2026-10-02 收尾: 旁路 **3 → 0** (pivot ✅ · skill ✅ 两路端到端 · tscTool ✅ 端到端取证含两条变异 · getSkillRegistry ✅ 受门包装) — 提交 5483e3a / 1af7e46
   K8: 'partial',          // 台账+门已落 · 直连 12 → **0** · 各通道状态 37/33 · didFixQueue 经邮箱 · **正刀已落地** (每条消息都进邮箱, 删掉重复的第二条路径, 提交 2fc197e, 真跑: 一条不丢/严格串行/FIFO) ⇒ 剩 `abortController` 语义定夺 (目标是 ExecutionRequest.signal), 显式留下不随队列顺手合并

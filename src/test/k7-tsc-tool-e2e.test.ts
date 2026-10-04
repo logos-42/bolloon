@@ -111,6 +111,25 @@ afterAll(() => {
     expect(statusText(events)).toMatch(/类型检查/);
   });
 
+  it('生产形状 (usePivotLoop 的流式路径): 收尾自检同样要过门 —— 这正是原先漏掉的一半', { timeout: 300000 }, async () => {
+    // 为什么单列一条: 上面两条用的是**默认配置**(老 `runReActLoop`), 而**生产里 web 走的是 pivot 路径**
+    //   (`usePivotLoop: true` + `promptStream`), 那条分支原先"提前 return", 收尾自检**一次都没跑过** ——
+    //   也就是说 K7 早先那条"系统自检过门"的证据**没有覆盖生产形状**。这条用例把那个缺口钉住。
+    const session: any = await createAgentSession({ cwd: process.cwd(), usePivotLoop: true });
+    const seen = spyGate(session);
+    const tsc = spyTscExec(session);
+    const events: any[] = [];
+    // 直接注入"本回合改过 TS" ⇒ 判据落在**接线** (pivot 路径是否真走到自检), 不依赖模型是否去编辑文件
+    session.tsTouchedThisTurn = ['src/test/tmp/k7-tsc-e2e.ts'];
+    session.typecheckRanThisTurn = false;
+
+    await session.promptStream('只回两个字: 好的', (e: any) => events.push(e));
+
+    expect(seen, 'pivot 流式路径必须先问门 (beforeToolCall) 再执行自检').toContain('tsc_check');
+    expect(tsc.count(), '允许 ⇒ 恰执行一次').toBe(1);
+    expect(statusText(events), '类型检查结论要对用户可见').toMatch(/类型检查/);
+  });
+
   it('拒绝路: 门拒绝 ⇒ 零执行 + 可见报出 (fail-closed)', { timeout: 240000 }, async () => {
     writeProbe(1);
     const session: any = await createAgentSession({ cwd: process.cwd() });

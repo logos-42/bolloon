@@ -457,7 +457,7 @@ export class PiAgentSession implements AgentSession {
   private harnessEnabled = false;
   /** 8-gate + 4-guard 集中调度 (防越权 / 防 prompt 注入) */
   private reactHarness: ReactHarness = new ReactHarness();
-  private usePivotLoop: boolean = false;
+  private usePivotLoop: boolean = true;   // K4-B (2026-10-02): 默认切到 pivot —— 所有入口只跑**一套** loop (老 ReAct loop 待删)
   private pivotLoopConfig?: PivotLoopConfig;
   /** P2: 当前会话的 permission mode (每次 promptStream 入口解析) */
   private currentPermissionMode: import('./permission-mode.js').PermissionMode = 'default';
@@ -713,7 +713,7 @@ export class PiAgentSession implements AgentSession {
     this.workflowEngine = new WorkflowEngine(this.constraintLayer);
     this.sessionManager = new PiSessionManager(this.identity.did, this.cwd, this.actor!.state.agentId);
     this.agentsManager = new DiscoveredAgentsManager();
-    this.usePivotLoop = config.usePivotLoop ?? false;
+    this.usePivotLoop = config.usePivotLoop ?? true;   // K4-B: 默认 true (K4-B 之前是 false ⇒ CLI 走老 loop, 与 web 分叉)
     this.pivotLoopConfig = config.pivotLoopConfig;
     this.initSession();
     initDocumentReceiver();
@@ -1318,6 +1318,10 @@ export class PiAgentSession implements AgentSession {
     if (this.usePivotLoop) {
       try {
         const lr = await this.promptWithPivotLoop(input, undefined, options?.channelId);
+        // K4-B (2026-10-02): **收尾自检两条 loop 路径都要跑** —— 原先它只挂在老 `runReActLoop` 之后,
+        //   而生产里 web 走 pivot 路径 (`usePivotLoop: true` + 这里提前 return) ⇒ 那条"系统自检过门"
+        //   在生产**从来没触发过** (K7 的证据只在默认老 loop 上取到, 没覆盖生产形状)。这里补齐。
+        await this.runTurnEndTypecheck();
         this.finishTrajectory(trajRec, lr.response || '');
         return lr.response || '';
       } finally {
@@ -1336,44 +1340,8 @@ export class PiAgentSession implements AgentSession {
       // 2026-06-16: runReActLoop 现在返回 { reply, aiFailed, aiFailureReason } — 这里只需 reply 字符串
       const loopResult = await this.runReActLoop(this.runCtx.eventSink ?? undefined, options?.signal);
 
-      // 2026-10-01: **本回合改过 TS ⇒ 收尾自动类型检查** (一轮一次) —— 复用已有的 tsc_check 工具
-      if (decideTypecheck(this.tsTouchedThisTurn, this.typecheckRanThisTurn)) {
-        this.typecheckRanThisTurn = true;
-        try {
-          const tscTool: any = this.tools.get('tsc_check');
-          if (tscTool?.execute) {
-            // 2026-10-02 (K7): **系统自检也过门** —— 统一成"任何工具执行都走同一扇 Harness 门"。
-            //   这里不是模型发起的工具调用 (args 恒空, 是本回合改过 TS 后的收尾自检), 所以**更**不能例外:
-            //   例外一旦靠"没人知道它绕过"活着, 门就不再是唯一的执行咽喉。
-            //   语义: 被拒或门抛错 ⇒ **不执行** (fail-closed), 且**可见**地报出来 (拒绝不许静默)。
-            let tscAllowed = true;
-            let tscWhy = '';
-            try {
-              const d = await this.piHarness().beforeToolCall({
-                tool: 'tsc_check',
-                args: {},
-                ctx: this.harnessCtx(),
-                permissionMode: this.currentPermissionMode,
-              });
-              tscAllowed = d.allow;
-              tscWhy = d.reason || d.rejectedBy || '';
-            } catch (gateErr) {
-              tscAllowed = false;
-              tscWhy = `harness-error: ${String((gateErr as Error)?.message || gateErr)}`;
-            }
-            if (!tscAllowed) {
-              this.runCtx.eventSink?.({ type: 'status', content: `🔎 类型检查被门拒绝, 未执行: ${tscWhy.slice(0, 120)}`, tool: 'system' } as any);
-            } else {
-              const r: any = await tscTool.execute({});
-              const line = formatTypecheckResult(r?.success !== false && !/error TS\d+/.test(String(r?.output || '')), String(r?.output || ''));
-              this.runCtx.eventSink?.({ type: 'status', content: `🔎 ${line}`, tool: 'system' } as any);
-            }
-          }
-        } catch (e: any) {
-          this.runCtx.eventSink?.({ type: 'status', content: `🔎 类型检查没能跑起来: ${String(e?.message || e).slice(0, 100)} (改动已落盘, 记得自己跑一次)`, tool: 'system' } as any);
-        }
-        this.tsTouchedThisTurn = [];
-      }
+      // K4-B (2026-10-02): 收尾自检抽成方法, 两条 loop 路径都调 (原先只在老 loop 之后 ⇒ 生产 pivot 路径从没跑过)
+      await this.runTurnEndTypecheck();
       // 2026-10-01: **回合后自审 (纯旁路)** —— 沉淀可复用经验, 对应"结束后沉淀"那一段。
       //   纪律: fire-and-forget (不阻塞主回合) · 只写 ~/.bolloon/experience/ (**不碰主对话/prompt 缓存**)
       //        · 节流 (默认 10 分钟/agent) · 失败只记一行日志, 绝不影响本回合结果。
@@ -1626,6 +1594,9 @@ export class PiAgentSession implements AgentSession {
       try {
         const lr = await this.promptWithPivotLoop(userText, undefined, channelId);
         pivotResult = lr.response || '';
+        // K4-B (2026-10-02): **流式 pivot 路径**(web 实际入口)同样要跑收尾自检 ——
+        //   原先这条路径也只有"提前 return", 自检一次都没跑过。
+        await this.runTurnEndTypecheck();
         onStream({ type: 'done', content: '' });
       } catch (err: any) {
         if (signal?.aborted || err?.name === 'AbortError') {
@@ -1805,6 +1776,14 @@ export class PiAgentSession implements AgentSession {
             success: false,
             error: `拒绝: [${decision.rejectedBy || decision.source || 'unknown'}] ${decision.reason}`,
           };
+        }
+        // K4-B (2026-10-02): **改过 TS 就记账** —— 这笔账原先只记在**老 loop 的工具分发**里,
+        //   pivot 路径没有 ⇒ 默认切 pivot 后 pivot 里编辑了 TS 却不记账 ⇒ 收尾自检永远不触发
+        //   (与"自检只挂在老 loop"同族的缺陷: 同一件事只在一套 loop 里实现)。
+        //   补在 pivot 的**唯一执行点**上 ⇒ 两条 loop 口径一致。
+        {
+          const tsFile = codeWriteTarget(tool.name, args);
+          if (tsFile && !this.tsTouchedThisTurn.includes(tsFile)) this.tsTouchedThisTurn.push(tsFile);
         }
         return tool.execute(args);
       },
@@ -2142,6 +2121,54 @@ ${await this.renderActivePlansSection()}
       channelId: this.actor!.state.channelId || undefined,
       surface: this.runSurface,
     };
+  }
+
+  /**
+   * 回合收尾的**受门类型自检** (K7 → K4-B 抽成方法)。
+   *
+   * 为什么必须抽出来: 它原先**只写在老 `runReActLoop` 之后** —— 而生产里 web 走的是 pivot 路径
+   * (`usePivotLoop: true`, `promptWithPivotLoop` 提前 return) ⇒ 这条"系统自检过门"在**生产根本没触发过**。
+   * 抽成方法后两条 loop 路径都调它 (一次一轮, 由 `typecheckRanThisTurn` 保证)。
+   */
+  private async runTurnEndTypecheck(): Promise<void> {
+        // 2026-10-01: **本回合改过 TS ⇒ 收尾自动类型检查** (一轮一次) —— 复用已有的 tsc_check 工具
+        if (decideTypecheck(this.tsTouchedThisTurn, this.typecheckRanThisTurn)) {
+          this.typecheckRanThisTurn = true;
+          try {
+            const tscTool: any = this.tools.get('tsc_check');
+            if (tscTool?.execute) {
+              // 2026-10-02 (K7): **系统自检也过门** —— 统一成"任何工具执行都走同一扇 Harness 门"。
+              //   这里不是模型发起的工具调用 (args 恒空, 是本回合改过 TS 后的收尾自检), 所以**更**不能例外:
+              //   例外一旦靠"没人知道它绕过"活着, 门就不再是唯一的执行咽喉。
+              //   语义: 被拒或门抛错 ⇒ **不执行** (fail-closed), 且**可见**地报出来 (拒绝不许静默)。
+              let tscAllowed = true;
+              let tscWhy = '';
+              try {
+                const d = await this.piHarness().beforeToolCall({
+                  tool: 'tsc_check',
+                  args: {},
+                  ctx: this.harnessCtx(),
+                  permissionMode: this.currentPermissionMode,
+                });
+                tscAllowed = d.allow;
+                tscWhy = d.reason || d.rejectedBy || '';
+              } catch (gateErr) {
+                tscAllowed = false;
+                tscWhy = `harness-error: ${String((gateErr as Error)?.message || gateErr)}`;
+              }
+              if (!tscAllowed) {
+                this.runCtx.eventSink?.({ type: 'status', content: `🔎 类型检查被门拒绝, 未执行: ${tscWhy.slice(0, 120)}`, tool: 'system' } as any);
+              } else {
+                const r: any = await tscTool.execute({});
+                const line = formatTypecheckResult(r?.success !== false && !/error TS\d+/.test(String(r?.output || '')), String(r?.output || ''));
+                this.runCtx.eventSink?.({ type: 'status', content: `🔎 ${line}`, tool: 'system' } as any);
+              }
+            }
+          } catch (e: any) {
+            this.runCtx.eventSink?.({ type: 'status', content: `🔎 类型检查没能跑起来: ${String(e?.message || e).slice(0, 100)} (改动已落盘, 记得自己跑一次)`, tool: 'system' } as any);
+          }
+          this.tsTouchedThisTurn = [];
+        }
   }
 
   private async runReActLoop(onStream?: StreamCallback, signal?: AbortSignal): Promise<{ reply: string; aiFailed: boolean; aiFailureReason?: string }> {
