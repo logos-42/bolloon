@@ -130,7 +130,7 @@ export function decideGroupAction(input: {
   const reply = input.makeReply ?? ((m: GroupMessage) => `收到 —— 关于「${String(m.text).slice(0, 40)}」，我这边跟进。`);
   const mode = policy.mode;
   const proactive = input.proactiveText?.trim() || (mode === 'maintenance'
-    ? `我来主动维护 Bolloon。遵循三条群规则：${BOLLOON_MAINTENANCE_RULES.join('；')} 先检查当前代码/测试状态，认领一个最小修复，完成后回报证据。`
+    ? `我来主动维护 Bolloon：使用本机已登录的 GitHub 权限处理 logos-42/bolloon，**只在 main 分支工作**。遵循三条群规则：${BOLLOON_MAINTENANCE_RULES.join('；')} 先检查代码/测试状态，认领一个最小修复，完成后回报证据。`
     : '我来主动推进这一轮工作：检查上下文、认领一个可执行事项并回报下一步。');
 
   // maintenance/active 优先主动认领 —— 不能因为消息长得像普通请求又退回被动模板
