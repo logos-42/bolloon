@@ -20,7 +20,11 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import type { GroupMessage } from './gateway-group.js';
 
+export type GroupAutopilotMode = 'quiet' | 'active' | 'maintenance';
+
 export interface GroupAutopilotPolicy {
+  /** 回路模式: quiet=仅被动回应, active=主动推进, maintenance=主动维护 Bolloon 项目 */
+  mode: GroupAutopilotMode;
   /** 同群两次发言的最小间隔 (ms) */
   cooldownMs: number;
   /** 每小时每群最多说几次 */
@@ -30,6 +34,7 @@ export interface GroupAutopilotPolicy {
 }
 
 export const DEFAULT_AUTOPILOT_POLICY: GroupAutopilotPolicy = {
+  mode: 'quiet',
   cooldownMs: 60_000,
   maxSpeaksPerHour: 6,
   readLimit: 50,
@@ -85,6 +90,8 @@ export function decideGroupAction(input: {
   policy?: Partial<GroupAutopilotPolicy>;
   /** 生成发言内容 (纯替换点, 默认模板) */
   makeReply?: (m: GroupMessage) => string;
+  /** active/maintenance 模式下的主动工作模板 */
+  proactiveText?: string;
 }): AutopilotDecision {
   const policy = { ...DEFAULT_AUTOPILOT_POLICY, ...(input.policy ?? {}) };
   const seen = new Set(input.state.seen);
@@ -109,8 +116,24 @@ export function decideGroupAction(input: {
   }
 
   const reply = input.makeReply ?? ((m: GroupMessage) => `收到 —— 关于「${String(m.text).slice(0, 40)}」，我这边跟进。`);
+  const mode = policy.mode;
+  const proactive = input.proactiveText?.trim() || (mode === 'maintenance'
+    ? '我来主动维护 Bolloon：先检查当前代码/测试状态，认领一个最小修复，完成后回报证据。'
+    : '我来主动推进这一轮工作：检查上下文、认领一个可执行事项并回报下一步。');
 
-  // ① @我 ⇒ 回那一条
+  // maintenance/active 优先主动认领 —— 不能因为消息长得像普通请求又退回被动模板
+  if (mode === 'active' || mode === 'maintenance') {
+    const target = fresh[fresh.length - 1];
+    return {
+      act: 'speak',
+      reason: mode === 'maintenance' ? '主动维护 Bolloon 项目' : '主动推进群内工作',
+      text: proactive,
+      mentions: [target.from],
+      ...(target.id ? { replyTo: target.id } : {}),
+    };
+  }
+
+  // ① @我 ⇒ 回他那一条
   const atMe = fresh.filter((m) => mentionsMe(m, me));
   if (atMe.length) {
     const target = atMe[atMe.length - 1];
@@ -185,6 +208,7 @@ export interface AutopilotPorts {
   policy?: Partial<GroupAutopilotPolicy>;
   log?: (line: string) => void;
   makeReply?: (m: GroupMessage, group: { id: string; name?: string | null }) => string;
+  proactiveText?: string;
 }
 
 export interface AutopilotRunReport {
@@ -219,6 +243,7 @@ export async function runGroupAutopilotOnce(ports: AutopilotPorts): Promise<Auto
       now: t,
       policy,
       ...(ports.makeReply ? { makeReply: (m) => ports.makeReply!(m, g) } : {}),
+      ...(ports.proactiveText ? { proactiveText: ports.proactiveText } : {}),
     });
     // 不论说不说, 这几条都算"处理过" (否则下一轮还会重新判它)
     for (const m of msgs) {

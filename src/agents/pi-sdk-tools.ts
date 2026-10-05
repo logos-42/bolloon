@@ -1222,7 +1222,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   ctx.tools.set('group_autopilot', {
     name: 'group_autopilot',
     description: '群聊自主回路 —— **用于**让 AI 自己读群、自己判断该不该开口、自己在群里发言（不用人盯着）。action: run(立刻跑一轮) / start(挂成常驻, 每 intervalMs 一轮) / stop / status。默认只在「被 @」或「有人提问/请人做事」时说话, 冷却 60s、每小时每群最多 6 次, 处理过的消息不会重复回应。',
-    parameters: { action: 'run | start | stop | status（必填）', intervalMs: '常驻时的间隔 ms（默认 60000）', group: '只盯某个群（groupId/链接/群名, 可选; 缺省 = 全部已加入的群）' },
+    parameters: { action: 'run | start | stop | status（必填）', intervalMs: '常驻时的间隔 ms（默认 60000）', mode: 'quiet | active | maintenance（可选; maintenance 专门维护 Bolloon）', group: '只盯某个群（groupId/链接/群名, 可选; 缺省 = 全部已加入的群）' },
     execute: async (args: Record<string, unknown>) => {
       const action = String(args?.action ?? 'run').trim();
       const who = await resolveSenderTag(null);
@@ -1241,6 +1241,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         speak: (gid: string, text: string, opts?: { replyTo?: string; mentions?: string[] }) =>
           sendTrailMessage(gid, text, who.tag, opts ?? {}),
         state,
+        policy: { mode: String(args?.mode ?? 'quiet') as 'quiet' | 'active' | 'maintenance' },
       };
       if (action === 'stop') {
         if (!autopilotHandle) return { success: true, output: '没有在跑的常驻回路（无需停）' };
