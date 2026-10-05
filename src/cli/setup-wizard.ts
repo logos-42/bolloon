@@ -32,7 +32,7 @@ import {
 } from '../llm/model-selection.js';
 import {
   buildProviderSummaries, formatProviderLine, formatProviderMenuRow, providerGroupSummary,
-  providerTierOf, providerTierCollapsedByDefault, orderProvidersForMenu, PROVIDER_GROUPS,
+  orderProvidersForMenu,
   type ProviderSummary,
 } from '../llm/model-catalog.js';
 import { runModelSelector, type SelectorChoice, type ModelSelectorResult } from './model-selector.js';
@@ -628,19 +628,11 @@ export function parseModelCommand(arg: string): ParsedModelCommand {
 async function providerLines(sessionKey?: string): Promise<string[]> {
   const summaries = await buildProviderSummaries({ sessionKey });
   // 2026-09-27 (目录驱动, 二改): 这里**列全量** (内置 13 + 自定义 + 目录全部), 并按第 1 步同一套
-  //   分组优先级排出分组标题 (带家数)。纯文本这条路没有视窗/折叠 (那是全屏选择器的事), 所以逐行列全 ——
+  //   分组优先级排序, **不再带分组分隔条** (全平铺)。纯文本这条路没有视窗/折叠 (那是全屏选择器的事), 所以逐行列全 ——
   //   门禁钉着"不许只给计数": 任何一家都要能在这份输出里被看见。
   const lines: string[] = [];
   const ordered = orderProvidersForMenu(summaries);
-  let lastGroup = '';
   for (const s of ordered) {
-    const tier = providerTierOf(s);
-    const g = PROVIDER_GROUPS[tier];
-    if (g !== lastGroup) {
-      lastGroup = g;
-      lines.push(`  ── ${g} (${ordered.filter((x) => providerTierOf(x) === tier).length} 家)`
-        + `${providerTierCollapsedByDefault(tier) ? ' · 全屏选择器里默认收起 (空格/→ 展开)' : ''}`);
-    }
     lines.push(`  ${formatProviderMenuRow(s)}`);
   }
   lines.push(`  ${providerGroupSummary(summaries)}`);

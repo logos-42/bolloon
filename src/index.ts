@@ -409,7 +409,7 @@ function getUserName(): string {
   return user.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPair; did: string; name: string }> {
+async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPair; did: string; name: string; created: boolean }> {
   s.step(1, 5, '生成 DIAP 身份', 'loading');
   const homeDir = process.env.HOME || process.env.USERPROFILE || os.homedir?.() || '.';
   const identityPath = path.join(homeDir, '.bolloon', 'identity.json');
@@ -432,7 +432,7 @@ async function bootstrapIdentity(): Promise<{ keypair: import('@diap/sdk').KeyPa
   writeOut(`     ${reused ? GRAY+'复用 ' : ''}${GRAY}DID:${RESET} ${did}`);
   writeOut(`     ${GRAY}名称:${RESET} ${name}`);
   s.step(1, 5, reused ? '复用 DIAP 身份' : '生成 DIAP 身份', 'ok');
-  return { keypair: kp, did, name };
+  return { keypair: kp, did, name, created: !reused };
 }
 
 function publishDID(name: string, kp: import('@diap/sdk').KeyPair): Promise<{ cid?: string; ipnsName?: string }> {
@@ -5821,7 +5821,7 @@ async function main() {
     }
   }
 
-  const { keypair, did, name } = await bootstrapIdentity();
+  const { keypair, did, name, created } = await bootstrapIdentity();
   agentIdentity = { did, name, publicKey: Buffer.from(keypair.publicKey).toString('hex') };
 
   // 2026-08-07: CLI 模式后台自动安装/启动本地 Kubo (web 模式 server.ts 已有, CLI 缺 → IPNS 发布后无法解析的根因)
@@ -5846,6 +5846,8 @@ async function main() {
     } catch (e: any) {
       bootNotice('warn', `Kubo 自动安装失败 (非致命): ${String(e?.message || e).slice(0, 120)}`);
     }
+    // DID 已存在时不重复发布；只有首次创建或显式要求刷新才发布。
+    if (!created && process.env.BOLLOON_REFRESH_DID !== '1') return;
     publishDID(name, keypair).then(({ cid, ipnsName }) => {
       if (cid) agentIdentity!.cid = cid;
       if (ipnsName) agentIdentity!.ipnsName = ipnsName;

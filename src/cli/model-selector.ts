@@ -4,9 +4,12 @@
  * 流程 (与命令面同一条路, 只是把参数逐步问出来):
  *
  * ```
- * 1 选择供应商 → 2 未配置则输 API key → 3 选择模型 (模糊搜索) → 4 reasoning/temperature
- *   → 5 Session 还是 Global → 6 测试连接 → 7 确认切换
+ * 1 选择供应商 → 2 (需要 key 则) 凭证 → 3 选择模型 (模糊搜索) → 4 确认 (连通测试+确认)
  * ```
+ *
+ * 2026-10-05 (leo: 不该七层嵌套): 从 7 步压成 4 步 —— 删掉单独的
+ * `生成参数` 与 `作用域` 两步 (一律走全局默认、沿用配置里的参数), 把 `测试连接`
+ * 与 `确认切换` 合并成第 4 步 (一次点完)。
  *
  * ## 两条硬纪律
  *
@@ -29,13 +32,14 @@
 
 import {
   buildProviderSummaries, listModelsFor, formatProviderLine, formatModelLine, formatModelMenuRow,
-  providerGroupSummary, providerTierOf, providerTierCollapsedByDefault, orderProvidersForMenu, PROVIDER_GROUPS,
+  providerGroupSummary, orderProvidersForMenu,
   providerRowTone, formatProviderMenuRow,
   unknownFootnote, searchModelEntries, capabilityZh, resolvedApiKeyOf,
   type ModelEntry, type ProviderSummary,
 } from '../llm/model-catalog.js';
 import {
   selectModel, probeSelection, credentialFingerprintOf, envKeyNamesOf as envKeysOf,
+  baseDefaultsOf,
   type EffectiveModelConfig, type SelectionFailureClass,
   type SelectModelRequest,
 } from '../llm/model-selection.js';
@@ -111,6 +115,12 @@ export interface RunModelSelectorOptions {
   sessionKey?: string;
   /** 供应商步的默认选中项 (会话内默认 = 当前生效的那家) */
   initialProvider?: string;
+  /**
+   * 切换作用域 (2026-10-05 4 步化后不再交互问作用域, 由这里显式传)。
+   * 不传 = `global` (与历史默认一致, 也符合 leo「不该七层嵌套」的减法)。
+   * `--session` 语义 = 传 `'session'` (只写会话绑定, 不动全局配置)。
+   */
+  scope?: 'global' | 'session';
   /**
    * 是否做连通校验 (默认 true)。`false` 时**第 6 步预检与第 7 步切换前校验一起关**
    * —— 这是 `--no-verify` 的语义, 只给离线自测用。
@@ -278,8 +288,8 @@ export async function runModelSelector(
     return done({ ok: false, reachedStep: 'provider', message: `读供应商列表失败: ${String(e?.message || e).slice(0, 160)}` });
   }
   const live = summaries.filter((s) => s.configured);
-  // "共 N 家" 从盘上真算 (内置 + 自定义 + 目录全部), 不写死 —— 验收门拿它跟盘上数字对。
-  push(`步骤 1/7 供应商 (共 ${summaries.length} 家登记: 内置+自定义+目录全部 · 可用 ${live.length} 家 · 分组可折叠)`);
+  // 2026-10-05 (leo: 不该七层嵌套 → 压成 4 步): 供应商 → 凭证(仅需 key) → 模型 → 确认(合并原测试/作用域/参数)
+  push(`步骤 1/4 供应商 (共 ${summaries.length} 家登记: 内置+自定义+目录全部 · 可用 ${live.length} 家 · 全部平铺可滚动)`);
   verbose(`  ${providerGroupSummary(summaries)}`);
   try {
     // 动态 import: 选择器 → provider-catalog 是单向的 (目录层不 import 选择器), 不构成环;
@@ -295,19 +305,14 @@ export async function runModelSelector(
   if (!summaries.length) return done({ ok: false, reachedStep: 'provider', message: '没有任何登记在册的供应商' });
 
   // 排序 = 分组优先级 (当前 → 可用 → 未配置凭据 → 需专用鉴权 → 无 api 基址);
-  //   **全部家都在候选数组里** (包括后三组), 只是它们的分组**默认收起** (标题上照写家数)。
+  //   全部家都是平铺的单选行 (固定高度视窗 + 滚动消化一屏放不下的部分), 不再分组折叠。
   const ordered = orderProvidersForMenu(summaries);
   const providerChoices: SelectorChoice[] = ordered.map((s) => {
-    const tier = providerTierOf(s);
     return {
       value: s.id,
       label: formatProviderMenuRow(s),
       hint: `${s.name}${s.providerReasoning === 'yes' ? ' · 登记支持 reasoning' : ''}${s.configuredModel ? ` · 配置里 model=${s.configuredModel}` : ''}`,
-      // 分组标题只在切换分组时印一次; 家数由选择器写在标题行上 (`── 名字 (N 家) ›`)
-      group: PROVIDER_GROUPS[tier],
-      // 后三组默认收起: 页面放得下, 而家数照样看得见 (`空格`/`→` 一键展开)
-      groupCollapsed: providerTierCollapsedByDefault(tier),
-      // 颜色只做**第二通道**: 语义本体是 label 里的符号 (●/○) 与分组标题 (special/无基址 → warn)
+      // 颜色只做**第二通道**: 语义本体是 label 里的符号 (●/○) 与分组 (special/无基址 → warn)
       tone: providerRowTone(s),
     };
   });
@@ -326,7 +331,7 @@ export async function runModelSelector(
     : summary.keyState === 'missing' ? '缺 key'
       : summary.keyState === 'env' ? '来自环境变量' : '已配置';
   const envKeys = envKeysOf(providerId);
-  push(`步骤 2/7 凭证 — ${providerId}: ${keyZh}${fp ? ` (指纹 ${fp})` : ''}`);
+  push(`步骤 2/4 凭证 — ${providerId}: ${keyZh}${fp ? ` (指纹 ${fp})` : ''}`);
   if (summary.requiresApiKey && io.askHidden) {
     const choices: SelectorChoice[] = [];
     if (summary.keyState !== 'missing') choices.push({ value: 'keep', label: `保持现有 (${fp || '已配置'})`, hint: '一个字节都不动', tone: 'ok' });
@@ -365,6 +370,40 @@ export async function runModelSelector(
     push(`沿用现有 key (指纹 ${fp || '已配置'})`);
   }
 
+  // ── 2.5) URL 怎么处理 (leo 2026-10-05: TUI 里要能管理 URL, 和 key 同级) ──────
+  // 展示口径: 当前值 + **官方默认**并排 —— 默认给官方来源, 用户再决定 保持/替换/清除。
+  let baseUrlAction: 'keep' | 'replace' | 'clear' = 'keep';
+  let pendingBaseUrl: string | undefined;
+  const officialUrl = (() => {
+    try { return baseDefaultsOf(providerId, null)?.baseUrl || ''; } catch { return ''; }
+  })();
+  const currentUrl = summary.baseUrl || officialUrl || '(无)';
+  if (io.choose || io.ask) {
+    const urlChoices: SelectorChoice[] = [
+      { value: 'keep', label: '[K]eep 保持当前 URL', hint: `当前: ${currentUrl}`, tone: 'ok' },
+      { value: 'replace', label: '[R]eplace 输入新 URL', hint: '覆盖配置里这一格', tone: 'accent' },
+      // 清除 = 回落官方默认 (目录家没有官方基址则这步会拦下)
+      { value: 'clear', label: '[C]lear 回落官方默认', hint: officialUrl ? `官方: ${officialUrl}` : '这家没有官方基址, 需自定义', tone: 'warn' },
+    ];
+    const urlAct = await pick(urlChoices, `URL 怎么处理 (当前: ${currentUrl} · 官方: ${officialUrl || '(无)'}):`);
+    if (!urlAct) return done({ ok: false, cancelled: true, reachedStep: 'key', message: '已取消, 未改动任何配置' });
+    if (urlAct === 'replace') {
+      const raw = await text(`输入 ${providerId} 的 base URL (含 https://, 不带 /v1 尾缀)`);
+      if (raw === null) { push(EOF_CANCEL); return done({ ok: false, cancelled: true, reachedStep: 'key', message: '输入已结束 (EOF/Ctrl-D) —— 未改动任何配置' }); }
+      if (!raw.trim()) { push('URL 为空 → 按保持当前处理'); }
+      else { pendingBaseUrl = raw.trim(); baseUrlAction = 'replace'; }
+    } else if (urlAct === 'clear') {
+      if (!officialUrl) {
+        push(`✗ ${providerId} 没有官方基址可回落 —— 只能保持或替换。未改动任何配置。`);
+      } else {
+        baseUrlAction = 'clear';
+        push(`将回落官方默认: ${officialUrl}`);
+      }
+    } else {
+      push(`保持当前 URL: ${currentUrl}`);
+    }
+  }
+
   // ── 3) 模型 (模糊搜索 + 当前置顶) ─────────────────────────
   let entries: ModelEntry[];
   try {
@@ -378,7 +417,7 @@ export async function runModelSelector(
       message: `${providerId} 没有可用模型 (无内置目录且配置为空) —— 请用 \`/model ${providerId} <model>\` 直接指定, 或先配好目录`,
     });
   }
-  push(`步骤 3/7 模型 — ${providerId}, ${entries.length} 个候选`);
+  push(`步骤 3/4 模型 — ${providerId}, ${entries.length} 个候选`);
   for (const f of unknownFootnote(entries)) verbose(`  ${f}`);
 
   let candidates = entries;
@@ -439,80 +478,19 @@ export async function runModelSelector(
         : '';
   push(`已选模型: ${chosenModelId}${srcTag}`);
 
-  // ── 4) 生成参数 (reasoning / temperature) ────────────────
+  // ── 4) 确认 (原 测试+作用域+参数 合并收进一步; 只写全局默认, 参数沿用配置) ──────
+  // 2026-10-05 (leo: 不该七层嵌套 → 压成 4 步): 参数/作用域不再单列 —— 参数沿用配置,
+  //   作用域由 opts.scope 显式传 (不传 = global; `--session` 语义靠它保留)。
   const params: { temperature?: number; reasoningMode?: boolean } = {};
-  push('步骤 4/7 生成参数');
-  // reasoning: 只有"登记为支持"时才提供开关; 能力未知就不给这一项 (不猜)
-  if (summary.providerReasoning === 'yes') {
-    const r = await pick([
-      { value: 'unset', label: '不设 (沿用配置里的值)' },
-      { value: 'on', label: '开 (请求推理/思考模式)' },
-      { value: 'off', label: '关' },
-    ], `${providerId} 登记支持 reasoning — 要不要开? (本机偏好, 不是模型能力数据)`);
-    if (r === 'on') params.reasoningMode = true;
-    else if (r === 'off') params.reasoningMode = false;
-  } else {
-    verbose(`reasoning: 该供应商的模型级能力未知 → 不提供开关, 也不写默认值`);
-  }
-
-  const temp = await pick([
-    { value: 'skip', label: '不设 (沿用配置里的值)' },
-    { value: '0', label: 'temperature = 0' },
-    { value: '0.3', label: 'temperature = 0.3' },
-    { value: '0.7', label: 'temperature = 0.7' },
-    { value: '1.0', label: 'temperature = 1.0' },
-    { value: '1.5', label: 'temperature = 1.5' },
-    ...(io.ask ? [{ value: '__custom__', label: '手工输入 (0~2)' }] : []),
-  ], 'temperature (0~2)');
-  if (temp === null) return done({ ok: false, cancelled: true, reachedStep: 'params', message: '已取消, 未改动任何配置' });
-  if (temp === '__custom__') {
-    const raw = await text('temperature (0~2)', '0.7');
-    if (raw === null) { push(EOF_CANCEL); return done({ ok: false, cancelled: true, reachedStep: 'params', message: '输入已结束 (EOF/Ctrl-D) —— 未改动任何配置' }); }
-    if (raw === '') {
-      push('没输入 → 本项不设');
-    } else {
-      const n = Number(raw);
-      if (!Number.isFinite(n) || n < 0 || n > 2) {
-        return done({ ok: false, reachedStep: 'params', failureClass: 'invalid_temperature', message: `temperature 只接受 0~2 的数字, 收到 '${raw}' — 未改动任何配置` });
-      }
-      params.temperature = n;
-    }
-  } else if (temp !== 'skip') {
-    params.temperature = Number(temp);
-  }
-  push(`temperature: ${params.temperature === undefined ? '不设' : params.temperature}`);
-
-  // ── 5) 作用域 ────────────────────────────────────────────
-  let scope: 'global' | 'session' = 'global';
-  push('步骤 5/7 作用域');
-  for (let round = 0; round < 2; round++) {
-    const s = await pick([
-      { value: 'global', label: '全局默认 (影响新会话 + 未绑定模型的任务)' },
-      { value: 'session', label: '仅当前会话 (不动全局默认)' },
-    ], '这次切换的作用域?');
-    if (s === null) return done({ ok: false, cancelled: true, reachedStep: 'scope', message: '已取消, 未改动任何配置' });
-    scope = s === 'session' ? 'session' : 'global';
-    if (scope === 'session' && pendingKey) {
-      push('✗ 会话级切换只做路由、不写凭证 —— 要么改成全局默认, 要么先 `bolloon model key ' + providerId + '` 再回来只切路由。');
-      continue;
-    }
-    break;
-  }
-  if (scope === 'session' && pendingKey) {
-    return done({
-      ok: false, reachedStep: 'scope', failureClass: 'credential_scope_conflict',
-      message: '会话级切换不写凭证 — 未改动任何配置 (请先配全局凭证, 再用 --session 只切路由)',
-    });
-  }
-  push(`作用域: ${scope === 'global' ? '全局默认' : '仅当前会话'}`);
-
+  const scope: 'global' | 'session' = opts.scope === 'session' ? 'session' : 'global';
   return await commit(done, push, confirm, verbose, {
-    providerId, summary, pendingKey, credentialAction, modelId: chosenModelId, baseUrl: summary.baseUrl, opts, params, scope,
+    providerId, summary, pendingKey, credentialAction, modelId: chosenModelId, baseUrl: summary.baseUrl,
+    baseUrlAction, pendingBaseUrl, opts, params, scope,
   });
 }
 
 // ============================================================
-// 6) 测试连接 → 7) 确认切换 (唯一写盘点)
+// 4) 确认 (唯一写盘点)
 // ============================================================
 
 interface CommitArgs {
@@ -523,6 +501,10 @@ interface CommitArgs {
   credentialAction: 'keep' | 'replace' | 'clear' | 'env';
   modelId: string;
   baseUrl: string;
+  /** URL 意图 (leo 2026-10-05): keep / replace / clear —— 与 key 同级, 由第 2.5 步收集 */
+  baseUrlAction?: 'keep' | 'replace' | 'clear';
+  /** replace 时新输入的 URL (未输入 = 保持) */
+  pendingBaseUrl?: string;
   params?: { temperature?: number; reasoningMode?: boolean };
   scope?: 'global' | 'session';
   opts: RunModelSelectorOptions;
@@ -538,11 +520,10 @@ async function commit(
   const params = a.params || {};
   const scope = a.scope || 'global';
 
-  // ── 6) 测试连接 (对**候选**配置探测; 不写任何东西) ─────────
-  // 版面: **失败就直接停**, 一行说清"什么错 + 怎么办" —— 不再问"还要不要继续"
-  //   (那种问句按 y 也照样被第 7 步拦下, 是假选择)。
+  // ── 4) 确认 (对**候选**配置连通测试, 一次直接到确认; 不写任何东西前置) ──────────
+  // 版面: **失败就直接停**, 一行说清"什么错 + 怎么办" —— 不再问"还要不要继续"。
   if (a.opts.verify === false) {
-    verbose('步骤 6/7 已按 --no-verify 跳过连通探测 (第 6 步预检与第 7 步切换前校验都关)');
+    verbose('步骤 4/4 已按 --no-verify 跳过连通探测 (预检与切换前校验都关)');
   } else if (!a.opts.skipProbe) {
     // 预检必须用**和落盘时同一份凭证**: 本次新输入的 key 优先, 否则用该供应商已配置/环境变量里的那一份。
     //   (拿不到 key 就不带鉴权头 —— 那确实是"这个供应商现在用不了", 如实报 401, 不假装探测通过。)
@@ -557,30 +538,31 @@ async function commit(
           + (probe.failureClass === 'model_not_found' ? ` 换个模型, 或用 \`bolloon model ${a.providerId} <model>\` 直接指定。` : ''),
       });
     }
-    push(`步骤 6/7 连通测试通过 (${a.modelId} @ ${a.baseUrl}, ${ms} ms)`
+    push(`步骤 4/4 连通测试通过 (${a.modelId} @ ${a.baseUrl}, ${ms} ms)`
       + (probe.modelAcceptedOutsideCatalog ? ' — 上游目录未列出, 但端点接受' : ''));
-    // 第 7 步的"确认"必须先把**要提交的东西**印出来 —— 否则用户是在确认一份看不见的配置。
-    //   版面压到最少: 供应商/模型/作用域/参数 (探测结论上一步已说, 不重复; 基址只在 verbose)。
-    push('步骤 7/7 确认');
+    // "确认"必须先把**要提交的东西**印出来 —— 否则用户是在确认一份看不见的配置。
+    //   版面压到最少: 供应商/模型/作用域 (参数沿用配置, 基址只在 verbose)。
     push(`  ${a.providerId} / ${a.modelId} · ${scope === 'global' ? '全局默认' : '仅当前会话'}`);
-    if (params.temperature !== undefined || params.reasoningMode !== undefined) {
-      push(`  参数: ${params.temperature === undefined ? '' : `temperature=${params.temperature}`}`
-        + `${params.reasoningMode === undefined ? '' : `${params.temperature === undefined ? '' : ' · '}reasoning=${params.reasoningMode ? '开' : '关'}`}`);
-    }
     verbose(`  基址: ${a.baseUrl}`);
     verbose(`  凭证: ${a.pendingKey ? '本次新输入的 key (掩码输入, 落盘为全局凭证)' : '沿用已配置 / 环境变量里的那一份'}`);
     const proceed = a.opts.assumeYes ? true : await confirm('确认按上面的配置切换?', true);
     if (!proceed) return done({ ok: false, cancelled: true, reachedStep: 'test', message: '已取消, 未改动任何配置' });
   } else {
-    verbose('步骤 6/7 已跳过预检 (skipProbe) —— 第 7 步的切换前校验仍在');
+    verbose('步骤 4/4 已跳过预检 (skipProbe) —— 切换前校验仍在');
   }
 
-  // ── 7) 唯一写盘点 ───────────────────────────────────────
+  // ── 唯一写盘点 (第 4 步确认后执行) ───────────────────────────
   const req: SelectModelRequest = {
     provider: a.providerId,
     model: a.modelId,
-    baseUrl: a.baseUrl,
     scope,
+    // URL 意图 (leo 2026-10-05): replace 用新输入的 URL; clear 让 selectModel 回落官方默认;
+    //   keep 则只带当前值 (与历史语义一致)。baseUrlAction 缺省时传 baseUrl 保持旧行为。
+    ...(a.baseUrlAction === 'replace' && a.pendingBaseUrl
+      ? { baseUrl: a.pendingBaseUrl, baseUrlAction: 'replace' as const }
+      : a.baseUrlAction === 'clear'
+        ? { baseUrlAction: 'clear' as const }
+        : { baseUrl: a.baseUrl }),
     ...(a.pendingKey ? { apiKey: a.pendingKey } : {}),
     ...(a.credentialAction !== 'keep' ? { credentialAction: a.credentialAction } : {}),
     ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),

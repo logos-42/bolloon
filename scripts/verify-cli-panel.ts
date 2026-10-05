@@ -346,15 +346,9 @@ function scenarioH(): PtyRun {
   keys.push({ at: 0.2, after: 1.0, keys: '\\r' });      // 提交 `/model`
   // 开窗要一两秒 (要读盘把家数算出来) —— 等"家登记"这行真出现在**当前帧**再开始按 ↓,
   //   否则会打在前面还没起来的那一帧上 (等于测了个空)。
-  // 阶段 1 (折叠态): 一路 ↓ 走到**行集末尾** (行集 = 展开的分组 + 折叠组各占 1 行 + Cancel)
+  // 2026-10-05 平铺化: 不再有折叠组要先展开 —— 全量 231 家都是候选行, 一路 ↓ 直达末尾 (候选 + Cancel)。
   keys.push({ at: 0.2, wait_for: '家登记', after: 0.6, keys: DOWN.repeat(100) });
-  for (let c = 0; c < 2; c++) keys.push({ at: 0.2, after: 0.5, keys: DOWN.repeat(100) });
-  // 阶段 2 (展开全部折叠组): 交替 `↓` `→` —— `→` 落在分组标题上就展开它, 落在成员行上只是
-  //   一句无害提示; 一路走到底 ⇒ 每个折叠组都被展开 (这就是"↓ 能到每个折叠组尾部"的操作路径)
-  const LEG = `${DOWN}\\u001b[C`.repeat(20);
-  for (let c = 0; c < 26; c++) keys.push({ at: 0.2, after: 0.2, keys: LEG });
-  // 阶段 3: 展开之后再一路 ↓ 压到底 (候选 231 家那个行集的末尾)
-  for (let c = 0; c < 4; c++) keys.push({ at: 0.2, after: 0.6, keys: DOWN.repeat(100) });
+  for (let c = 0; c < 8; c++) keys.push({ at: 0.2, after: 0.5, keys: DOWN.repeat(100) });
   return runPty({
     tag: 'H-model', rows: 30, cols: 100, secs: 55,
     env: { BOLLOON_SKIP_UPDATE: '1', BOLLOON_SKIP_KUBO: '1', BOLLOON_SKIP_SETUP: '1' },
@@ -679,18 +673,12 @@ async function main(): Promise<number> {
     hCount > 0 && hCount === diskCount,
     `屏上「共 ${hCount} 家登记」· 盘上真算 = ${diskCount} 家 (门直接调 buildProviderSummaries)`);
   const hSeen = [...hText.matchAll(/第\s*(\d+)\/(\d+)/g)].map((m) => [Number(m[1]), Number(m[2])] as [number, number]);
-  const folded = hSeen.filter((p) => p[1] <= 20);
-  const expanded = hSeen.filter((p) => p[1] > 200);
-  const foldedMax = folded.length ? Math.max(...folded.map((p) => p[0])) : -1;
-  const foldedN = folded.length ? folded[folded.length - 1][1] : -1;
-  const expMax = expanded.length ? Math.max(...expanded.map((p) => p[0])) : -1;
-  const expN = expanded.length ? expanded[expanded.length - 1][1] : -1;
-  assert('H2a 折叠态: 连续 ↓ 真能走到行集末尾 (i 走到 == N, 不是卡在窗口边界)',
-    folded.length > 2 && foldedMax === foldedN,
-    `折叠态采到 ${folded.length} 帧 · 最大 i=${foldedMax} / N=${foldedN}`);
-  assert('H2b 展开全部折叠组后: ↓ 真能走到候选末尾 (i == N > 200, 即盘上那 231 家那个行集)',
-    expanded.length > 2 && expN > 200 && expMax === expN,
-    `展开态采到 ${expanded.length} 帧 · 最大 i=${expMax} / N=${expN} (折叠态 N=${foldedN})`);
+  // 2026-10-05 平铺化: 不再有两段 (折叠态 → 展开态), 全程就是全量候选一条路 ↓ 到底。
+  const finalN = hSeen.length ? hSeen[hSeen.length - 1][1] : -1;
+  const maxI = hSeen.length ? Math.max(...hSeen.map((p) => p[0])) : -1;
+  assert('H2 平铺列表: 连续 ↓ 真能走到行集末尾 (i 走到 == N, 即盘上那 231 家 + Cancel 那个行集)',
+    hSeen.length > 2 && finalN > 200 && maxI === finalN,
+    `采到 ${hSeen.length} 帧 · 最大 i=${maxI} / N=${finalN} (平铺行集 = 全部家 + Cancel)`);
   // 选择器每次都从**头行** (`… 共 231 家 · 已筛 … 家`) 起手重绘 → 相邻两个头行之间的行数就是那一帧的高度。
   // ⚠ 不要用"相邻两条状态行"当界: 选择器是**原地重绘** (光标上移 + 擦除), 原始字节里两帧会黏在一行上。
   const hLines = stripAnsi(H.raw).replace(/\r/g, '').split('\n');

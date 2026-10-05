@@ -937,7 +937,7 @@ export class PiAIModel {
       // 2026-07-17: deepseek-chat (V3) 官方已下线, 迁 deepseek-v4-flash
       deepseek: this.config.model || process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash',
       kimi: this.config.model || process.env.KIMI_MODEL || process.env.MOONSHOT_MODEL || 'kimi-k3',
-      glm: this.config.model || process.env.GLM_MODEL || process.env.ZHIPU_MODEL || 'glm-5.2',
+      glm: this.config.model || process.env.GLM_MODEL || process.env.ZHIPU_MODEL || 'glm-5.3-flash',
       qwen: this.config.model || process.env.QWEN_MODEL || process.env.DASHSCOPE_MODEL || 'qwen3-max',
       // 小米 MiMo (openai 兼容) — env override 优先, 默认 mimo-v2.5-pro
       mimo: this.config.model || process.env.MIMO_MODEL || 'mimo-v2.5-pro',
@@ -1601,7 +1601,7 @@ function detectModel(provider: ModelProvider): string {
     // 2026-07-17: V3 官方下线, 迁 V4
     deepseek: 'deepseek-v4-flash',
     kimi: 'kimi-k3',
-    glm: 'glm-5.2',
+    glm: 'glm-5.3-flash',
     qwen: 'qwen3-max',
     // 小米 MiMo 默认走最新旗舰版 (v2.5-Pro); 2026-06 当前公开版
     mimo: 'mimo-v2.5-pro',

@@ -638,18 +638,10 @@ async function handleModelCommand(modelArgs: string[]): Promise<void> {
     if (eff) console.log(`  ${formatEffectiveModel(eff)}`);
     console.log('─'.repeat(58));
     // 非终端里没有"固定高度视窗 + 折叠"那套交互 (那是全屏 TUI 的事), 所以这里**整份列全**:
-    //   内置 13 + 自定义 + 目录全部 逐行出, 分组标题带家数。只给"分组计数"是这条线要修的病 ——
+    //   内置 13 + 自定义 + 目录全部 逐行出, 不再带分组分隔条。只给"分组计数"是这条线要修的病 ——
     //   脚本要能 grep 到任何一家 (含"需专用鉴权 (未支持)""无基址"的那些)。
     const ordered = mc.orderProvidersForMenu(summaries);
-    let lastGroup = '';
     for (const s of ordered) {
-      const tier = mc.providerTierOf(s);
-      const g = mc.PROVIDER_GROUPS[tier];
-      if (g !== lastGroup) {
-        lastGroup = g;
-        const n = ordered.filter((x: any) => mc.providerTierOf(x) === tier).length;
-        console.log(`  ── ${g} (${n} 家)${mc.providerTierCollapsedByDefault(tier) ? ' · 交互界面里默认收起, 空格/→ 展开' : ''}`);
-      }
       console.log(`  ${mc.formatProviderMenuRow(s)}`);
     }
     console.log(`  ${mc.providerGroupSummary(summaries)}`);

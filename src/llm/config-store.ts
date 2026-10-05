@@ -197,8 +197,8 @@ export const PROVIDER_INFO: Record<ModelProvider, { name: string; description: s
   // 2026-07-17: V3 系列 (deepseek-chat / deepseek-reasoner) 官方已下线, 改 V4
   deepseek: { name: 'DeepSeek', description: '深度求索大模型 (V4)', requiresApiKey: true, models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
   kimi: { name: 'Kimi (月之暗面)', description: 'Moonshot Kimi K 系列模型', requiresApiKey: true, models: ['kimi-k3', 'kimi-k2-0905', 'moonshot-v1-128k', 'moonshot-v1-32k'] },
-  glm: { name: 'GLM (智谱)', description: '智谱 GLM 系列模型', requiresApiKey: true, models: ['glm-5.2', 'glm-4.6', 'glm-4.5', 'glm-4-flash', 'glm-4'] },
-  qwen: { name: 'Qwen (通义千问)', description: '阿里云通义千问系列', requiresApiKey: true, models: ['qwen3-max', 'qwen-max', 'qwen-plus', 'qwen-turbo'] },
+  glm: { name: 'GLM (智谱)', description: '智谱 GLM 系列模型', requiresApiKey: true, models: ['glm-5.3-flash', 'glm-5.3', 'glm-5.2', 'glm-5', 'glm-4.6', 'glm-4.5', 'glm-4.7', 'glm-4-flash', 'glm-4'] },
+  qwen: { name: 'Qwen (通义千问)', description: '阿里云通义千问系列', requiresApiKey: true, models: ['qwen3.8-max', 'qwen3-max', 'qwen-max', 'qwen-plus', 'qwen-turbo'] },
   mimo: { name: 'MiMo (小米)', description: '小米 MiMo V2 系列 (openai 兼容)', requiresApiKey: true, models: ['mimo-v2.5-pro', 'mimo-v2-pro', 'mimo-v2-omni', 'mimo-v2-flash', 'mimo-v2.5-pro-ultraspeed'] },
   grok: { name: 'Grok (xAI)', description: 'xAI Grok 系列模型 (openai 兼容)', requiresApiKey: true, models: ['grok-4.5', 'grok-4', 'grok-4-fast'] },
   local: { name: '本地模型', description: '本地部署的模型服务', requiresApiKey: false }

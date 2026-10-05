@@ -406,8 +406,6 @@ function candidateRows(block: string[]): string[] {
 
 const STATUS_NUM_RE = /第\s*(\d+)\s*\/\s*(\d+)/;
 const SCROLL_IND_RE = /^\s*[↑↓] (上面还有|下面还有) \d+/;
-/** 分组标题行 (光标态只是前缀 `→ ` 与 `  ` 的区别) */
-const SEP_ROW_RE = /^(→ | {2})── /;
 /** `special` 行的语义标记 (用**文字**认行类, 不靠颜色 —— 颜色只是第二通道) */
 const SPECIAL_MARK = 'special (需专用鉴权, 未支持)';
 const NOBASE_MARK = '无基址 (需自定义 baseUrl)';
@@ -450,12 +448,21 @@ function frameRowsWithCursor(raw: string): { rows: FrameRow[]; upScrolledFrames:
     const statusRaw = rest.filter((l) => STATUS_NUM_RE.test(stripAnsi(l).trim())).pop();
     if (!statusRaw) return;                             // 没有状态行的块不算一帧
     const cursorOrdinal = Number(STATUS_NUM_RE.exec(stripAnsi(statusRaw))![1]);
+    // 视窗一旦滚过 (纯平铺全量 231 家, 必然滚), 显示行第 j 行的**真序号**就不再是 j+1,
+    //   而是视窗顶上还有几家 (状态行与 `↑ 上面还有 N 家` 里都有这个偏移)。从这里解析偏移,
+    //   光标序号才算得准 —— 不再依赖"本轮不滚"这个前提。
+    //   ⚠ 有上滚指示时, 该指示本身占一行 ⇒ 偏移 = N + 1 (从帧几何: start = top+1, 首个候选行序号 = top+2)。
+    const upHit = rest.map((l) => /^\s*↑ 上面还有 (\d+)/.exec(stripAnsi(l))).find(Boolean);
+    const rowsAbove = upHit ? Number(upHit[1]) + 1 : 0;
     const body = rest.filter((l) => l !== statusRaw && !SCROLL_IND_RE.test(stripAnsi(l)));
     if (rest.some((l) => /^\s*↑ 上面还有/.test(stripAnsi(l)))) upScrolledFrames++;
-    body.forEach((l, j) => rows.push({
-      frame: fi + 1, ordinal: j + 1, cursor: j + 1 === cursorOrdinal,
-      raw: l, text: stripAnsi(l).trimEnd(),
-    }));
+    body.forEach((l, j) => {
+      const ordinal = rowsAbove + j + 1;
+      rows.push({
+        frame: fi + 1, ordinal, cursor: ordinal === cursorOrdinal,
+        raw: l, text: stripAnsi(l).trimEnd(),
+      });
+    });
   });
   return { rows, upScrolledFrames, frames: blocks.length };
 }
@@ -464,7 +471,7 @@ function frameRowsWithCursor(raw: string): { rows: FrameRow[]; upScrolledFrames:
 interface RowClass { name: string; match: (text: string) => boolean }
 
 const ROW_CLASSES: RowClass[] = [
-  { name: '分组标题行', match: (t) => SEP_ROW_RE.test(t) },
+  // 2026-10-05: 供应商列表改**纯平铺** (leo: 折叠不方便) —— 不再有分组标题行; 单选行类 = 普通/←当前/special/无基址/Cancel。
   {
     name: '普通候选项',
     match: (t) => /^(→ | {2})[●○] /.test(t) && !t.includes('← 当前')
@@ -558,7 +565,7 @@ interface Mutation {
 /** `↓↑` 高亮位移用 (两帧反白行对比) */
 function twoArrowPlan(): PlanStep[] {
   return [
-    { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 90 },
+    { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 90 },
     { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 30 },
     { name: '↓ #1', send: '\\x1b[B', timeout_s: 20 },
     { name: '等第 2 帧', expect_raw: '第\\s*2\\s*/', timeout_s: 20 },
@@ -572,7 +579,7 @@ function twoArrowPlan(): PlanStep[] {
 /** 只到第一屏 (版面类变异用) */
 function firstScreenOnlyPlan(): PlanStep[] {
   return [
-    { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 90 },
+    { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 90 },
     { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 30 },
     { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
     { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
@@ -582,7 +589,7 @@ function firstScreenOnlyPlan(): PlanStep[] {
 /** 走到**模型步** (模型行的排版/来源标注类变异用) */
 function modelStepPlan(): PlanStep[] {
   return [
-    { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 90 },
+    { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 90 },
     { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 30 },
     { name: '选供应商', send: '\\r', timeout_s: 20 },
     { name: '凭证步就绪', expect: '凭证怎么处理', timeout_s: 30 },
@@ -596,7 +603,7 @@ function modelStepPlan(): PlanStep[] {
 /** 走到凭证步 → 选"替换" → 输入探针串 (掩码/凭证步类变异用) */
 function credentialPlan(): PlanStep[] {
   return [
-    { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 90 },
+    { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 90 },
     { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 30 },
     { name: '选供应商', send: '\\r', timeout_s: 20 },
     { name: '凭证步就绪', expect: '凭证怎么处理', timeout_s: 30 },
@@ -614,58 +621,44 @@ function credentialPlan(): PlanStep[] {
 /**
  * 行类漫游的**期望序号** —— 与盘上真算的分组家数绑定 (不写死行号: 机器上多几家少几家都对得上)。
  *
- * 布局 (三组默认收起时):
- *   [1] 当前生效 标题 · [2..1+uc] 当前项 · [2+uc] 可用 标题 · [3+uc..2+uc+uu] 可用项 ·
- *   [3+uc+uu] 未配置凭据 标题 · [4+uc+uu] 需专用鉴权 标题 · [5+uc+uu] 无 api 基址 标题 · [6+uc+uu] Cancel
+ * 布局 (2026-10-05 平铺化, 无分组标题):
+ *   [1..uc] 当前项 · [uc+1..uc+uu] 可用项 · [uc+uu+1..uc+uu+nc] 未配置凭据项 ·
+ *   [..+sa] 需专用鉴权项 · [..+nb] 无 api 基址项 · [N] Cancel (N = 全部家 + 1)
  * 由 `main()` 在 R11 里按 `tierCount(...)` 填好 (变异检查与 R11.12 共用同一份)。
  */
-const ROWS_CTX = { uc: 0, uu: 0, nb: 0, sa: 0 };
+const ROWS_CTX = { uc: 0, uu: 0, nc: 0, nb: 0, sa: 0 };
 
 /**
  * 光标**逐类漫游**一轮 (每类行各被选中一次) —— R11.12 与"拿掉行类选中态"那两条变异共用这条计划。
  *
- * 走位: 首帧(候选行) → End(Cancel) → ↑(无 api 基址 标题, 收起) → 空格展开 → ↓(无基址 成员)
- *       → ↑ 回标题 → 空格收起 → ↑(需专用鉴权 标题) → 空格展开 → ↓(special 成员)
- *       → Home(当前生效 标题) → ↓(←当前 行) → ↓(可用 标题) → ↓(普通候选项) → Esc
+ * 2026-10-05 平铺化后布局 (无分组标题, 纯单选列表; orderProvidersForMenu 顺序:
+ *   当前 → 可用 → 未配置凭据 → 需专用鉴权 → 无 api 基址, 末行 Cancel):
+ *   [1..uc] 当前项 · [1+uc..1+uc+uu] 可用项 · [..] 未配置凭据项 · [..] special 项 · [..] 无基址项 · [N] Cancel
+ * 走位: 首帧(←当前 行) → End(Cancel 行) → ↑(无 api 基址 项) → ↑×nb(需专用鉴权 项)
+ *       → Home(←当前 行) → ↓(普通候选项) → Esc
  * 每一步都用 `第 i/N ·` (i 与 N 都从盘上家数算出来) 等帧出现 —— 等待本身就是"光标真落在这一行上"的断言。
  */
 function rowWalkPlan(): PlanStep[] {
-  const { uc, uu, nb, sa } = ROWS_CTX;
-  const N0 = 6 + uc + uu;                 // 三组收起时的总行数
-  const N1 = N0 + nb;                     // 展开"无 api 基址"后
-  const N2 = N0 + sa;                     // 再展开"需专用鉴权"后
-  const nbTitle = 5 + uc + uu;            // ── 无 api 基址 标题行序号
-  const spTitle = 4 + uc + uu;            // ── 需专用鉴权 标题行序号
-  const firstUsable = 3 + uc;             // 可用组第一家 (普通候选项)
+  const { uc, uu, nc, nb, sa } = ROWS_CTX;
+  const N0 = 1 + uc + uu + nc + sa + nb;   // 平铺总行数 (N0 - 1 是全部家, 末行是 Cancel)
+  const specialLast = N0 - 1 - nb;         // 需专用鉴权 最后一家 (suppose sa>0; 无基址组占最后 nb 行)
+  const noBaseLast = N0 - 1;               // 无 api 基址 最后一家
   const at = (i: number, n: number): string => `第\\s*${i}\\s*/\\s*${n}\\s*·`;
   return [
-    { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+    { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 120 },
     { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
-    { name: '首帧光标在候选行 (第 2 行)', expect_raw: at(2, N0), timeout_s: 20 },
+    // 平铺后第一行候选就是 ←当前 那家 (没有分组标题了) —— 首帧行号从 2 变 1
+    { name: '首帧光标在候选行 (第 1 行)', expect_raw: at(1, N0), timeout_s: 20 },
     { name: 'End → Cancel 行', send: '\\x1b[F', timeout_s: 20 },
-    { name: '↑ → 无 api 基址 标题', send: '\\x1b[A', timeout_s: 20 },
-    { name: '等光标落在分组标题行上', expect_raw: at(nbTitle, N0), timeout_s: 20 },
-    { name: '空格展开无 api 基址', send: ' ', timeout_s: 20 },
-    { name: '等展开回执', expect: '已展开 无 api 基址', timeout_s: 20 },
-    { name: '↓ → 无基址 成员', send: '\\x1b[B', timeout_s: 20 },
-    { name: '等光标落在无基址行上', expect_raw: at(nbTitle + 1, N1), timeout_s: 20 },
-    { name: '↑ 回标题', send: '\\x1b[A', timeout_s: 20 },
-    { name: '空格收起无 api 基址', send: ' ', timeout_s: 20 },
-    { name: '等收起回执', expect: '已收起 无 api 基址', timeout_s: 20 },
-    { name: '↑ → 需专用鉴权 标题', send: '\\x1b[A', timeout_s: 20 },
-    { name: '等光标落在 special 标题上', expect_raw: at(spTitle, N0), timeout_s: 20 },
-    { name: '空格展开需专用鉴权', send: ' ', timeout_s: 20 },
-    { name: '等展开回执 2', expect: '已展开 需专用鉴权', timeout_s: 20 },
-    { name: '↓ → special 成员', send: '\\x1b[B', timeout_s: 20 },
-    { name: '等光标落在 special 行上', expect_raw: at(spTitle + 1, N2), timeout_s: 20 },
+    { name: '等光标落在 Cancel 行上', expect_raw: at(N0, N0), timeout_s: 20 },
+    { name: '↑ → 无 api 基址 项', send: '\\x1b[A', timeout_s: 20 },
+    { name: '等光标落在无基址项上', expect_raw: at(noBaseLast, N0), timeout_s: 20 },
+    { name: `↑×${nb} → 需专用鉴权 项`, send: '\\x1b[A'.repeat(Math.max(1, nb)), timeout_s: 25 },
+    { name: '等光标落在 special 项上', expect_raw: at(specialLast, N0), timeout_s: 25 },
     { name: 'Home → 第 1 行', send: '\\x1b[H', timeout_s: 20 },
-    { name: '等第 1 行 (当前生效 标题)', expect_raw: at(1, N2), timeout_s: 20 },
-    { name: '↓ → ←当前 行', send: '\\x1b[B', timeout_s: 20 },
-    { name: '等第 2 行', expect_raw: at(2, N2), timeout_s: 20 },
-    { name: '↓ → 可用 标题', send: '\\x1b[B', timeout_s: 20 },
-    { name: '等第 3 行', expect_raw: at(3, N2), timeout_s: 20 },
+    { name: '等第 1 行 (←当前 项)', expect_raw: at(1, N0), timeout_s: 20 },
     { name: '↓ → 普通候选项', send: '\\x1b[B', timeout_s: 20 },
-    { name: '等光标落在普通候选项上', expect_raw: at(firstUsable, N2), timeout_s: 20 },
+    { name: '等第 2 项', expect_raw: at(2, N0), timeout_s: 20 },
     { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
     { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
   ];
@@ -691,7 +684,7 @@ const MUTATIONS: Mutation[] = [
     desc: '拿掉数字快选 (敲数字不再跳选 → 老用法破了)',
     steps: [{ file: 'src/cli/tui-select.ts', pairs: [["case 'char':", "case 'char-NADA':"]] }],
     plan: () => [
-      { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 90 },
+      { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 90 },
       { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 30 },
       { name: '数字 3', send: '3', timeout_s: 20 },
       { name: '等第 3 项', expect_raw: '第\\s*3\\s*/', timeout_s: 20 },
@@ -754,18 +747,16 @@ const MUTATIONS: Mutation[] = [
   },
   {
     id: 'M11',
-    desc: '把"默认只展开当前生效+可用"改成全展开 (折叠失效 → 收起标题连带家数一起消失)',
-    steps: [{ file: 'src/llm/model-catalog.ts', pairs: [["  return t === 'noCredential' || t === 'specialAuth' || t === 'noBaseUrl';", '  return false;   // 变异: 所有分组都默认展开']] }],
+    desc: '把供应商列表改回"分组折叠" (重新给候选加 group → 出现分组分隔条, 平铺被破坏)',
+    steps: [{ file: 'src/cli/model-selector.ts', pairs: [["      label: formatProviderMenuRow(s),", "      group: '未配置凭据',\n      groupCollapsed: true,\n      label: formatProviderMenuRow(s),  // 变异: 重新分组"]] }],
     plan: () => firstScreenOnlyPlan(),
-    check: (r) => !frameBlocks(r.raw).some((b) => b.some((l) => l.includes(MUT_CTX.collapsedHeader))),
+    // 平铺是硬约定 (leo 2026-10-05): 首帧**不许**出现任何 ── 分组分隔条
+    check: (r) => frameBlocks(r.raw).some((b) => b.some((l) => l.includes('── '))),
   },
   {
     id: 'M12',
-    desc: '把"固定高度视窗 + 默认折叠"改回"一次性把全部候选都画出来" (版面撑爆终端)',
-    steps: [
-      { file: 'src/cli/tui-select.ts', pairs: [['  return Math.max(3, Math.min(VIEWPORT_MAX, Math.max(0, rows - 3)));', '  return Math.max(3, Math.max(0, rows - 3) * 1000);   // 变异: 视窗不要了']] },
-      { file: 'src/llm/model-catalog.ts', pairs: [["  return t === 'noCredential' || t === 'specialAuth' || t === 'noBaseUrl';", '  return false;   // 变异: 全展开']] },
-    ],
+    desc: '把"固定高度视窗"改回"一次性把全部候选都画出来" (版面撑爆终端)',
+    steps: [{ file: 'src/cli/tui-select.ts', pairs: [['  return Math.max(3, Math.min(VIEWPORT_MAX, Math.max(0, rows - 3)));', '  return Math.max(3, Math.max(0, rows - 3) * 1000);   // 变异: 视窗不要了']] }],
     plan: () => firstScreenOnlyPlan(),
     check: (r) => (frameSizes(r.raw).length ? Math.max(...frameSizes(r.raw)) : 0) > 30,
   },
@@ -778,15 +769,15 @@ const MUTATIONS: Mutation[] = [
   },
   {
     id: 'M18',
-    desc: '把**分组标题行**的选中态拿掉 (光标站在标题上时那一行与未选中字节完全相同 —— leo 亲测踩的那条)',
+    desc: '把**Cancel 行**的选中态拿掉 (光标停在它上面时那一行与未选中字节完全相同 —— 光标类行仍须有选中态)',
     steps: [{
       file: 'src/cli/tui-select.ts',
       pairs: [['      const isCursor = start + i === cursor;',
-        "      const isCursor = start + i === cursor && !(line && line.kind === 'sep');   // 变异: 分组标题行没有选中态"]],
+        "      const isCursor = start + i === cursor && !(line && line.item.cancel);   // 变异: Cancel 行没有选中态"]],
     }],
     plan: () => rowWalkPlan(),
-    // 红判据: 行类分析里**分组标题行**那一类不再"选中帧带底色/反白 + 两帧字节不同"
-    check: (r) => !classOk(rowClassPairs(r.raw).pairs.find((p) => p.name === '分组标题行')),
+    // 红判据: 行类分析里**Cancel 行**那一类不再"选中帧带底色/反白 + 两帧字节不同"
+    check: (r) => !classOk(rowClassPairs(r.raw).pairs.find((p) => p.name === 'Cancel 行')),
   },
   {
     id: 'M19',
@@ -809,10 +800,11 @@ const MUTATIONS: Mutation[] = [
   },
   {
     id: 'M15',
-    desc: '把"收起的分组标题照写家数"改回"只给标记不给家数" (藏家数)',
-    steps: [{ file: 'src/cli/tui-select.ts', pairs: [['        plain = `  ── ${line.group} (${line.count} ${unit}) ${mark}`;', '        plain = `  ── ${line.group} ${mark}`;   // 变异: 不给家数']] }],
+    desc: '把平铺的干净提示改回"带折叠键的旧提示" (折叠键又出现在头行 —— 纯平铺不该有)',
+    steps: [{ file: 'src/cli/tui-select.ts', pairs: [['    const hint = hasGroups ? TUI_HINT : TUI_HINT_FLAT;', '    const hint = TUI_HINT;   // 变异: 无分组也带折叠键']] }],
     plan: () => firstScreenOnlyPlan(),
-    check: (r) => !frameBlocks(r.raw).some((b) => b.some((l) => new RegExp(`── .*\\(\\d+ 家\\) ${MUT_CTX.collapsedMark}`).test(l))),
+    // 红判据: 平铺列表的头行里**不该出现** 折叠/展开 键位 (折叠键只在有 group 时才该有)
+    check: (r) => frameBlocks(r.raw).flat().some((l) => l.includes('折叠') && l.includes('↑↓ 移动')),
   },
   {
     id: 'M16',
@@ -823,7 +815,7 @@ const MUTATIONS: Mutation[] = [
         "          note = '变异: 拿掉搜索 (字母不再过滤)';   // 变异"]],
     }],
     plan: () => [
-      { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 90 },
+      { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 90 },
       { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 30 },
       { name: '敲筛选词', send: 'deep', timeout_s: 15 },
       // 这一步**故意等不到** (搜索被拿掉了) —— 8s 后超时, 原始输出里也就不会有 `筛选 "…"` 帧
@@ -911,8 +903,8 @@ async function probeRaw(tag: string, args: string[], steps: PlanStep[]): Promise
  * 变异检查要用的"盘上真算"期望值 —— 由 `main()` 在 R11 里填好。
  * 为什么不放在 `check` 里现算: 那是**在变异之后**算的 (盘上的源已经被改了), 拿被污染的源算期望值 = 自证。
  */
-const MUT_CTX: { totalCandidates: number; collapsedHeader: string; collapsedMark: string } = {
-  totalCandidates: 0, collapsedHeader: '', collapsedMark: '',
+const MUT_CTX: { totalCandidates: number } = {
+  totalCandidates: 0,
 };
 
 
@@ -1108,7 +1100,7 @@ async function main(): Promise<number> {
     const OUT_OF_RANGE = String(FILTERED + 2);
     report(`R2 逐字筛选词: 「${TERM.t}」命中 ${TERM.n} 家 (+ Cancel 行 = ${FILTERED} 行; 越界探针用 ${OUT_OF_RANGE})`);
     const mainRun = await probeRaw('ux-main', ['model'], [
-      { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+      { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 120 },
       { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
       { name: '↓ #1', send: '\\x1b[B', timeout_s: 20 },
       { name: '等第 2 帧', expect_raw: '第\\s*2\\s*/', timeout_s: 20 },
@@ -1140,7 +1132,7 @@ async function main(): Promise<number> {
       mainRun.raw.includes('选择供应商') && !/用法:/.test(stripAnsi(rawPrefix)),
       `首帧前 ${rawPrefix.length}B: ${short(stripAnsi(rawPrefix), 80)}`);
     const msLines = mainScreenLines(mainRun.raw);
-    ok('主屏第 1 行就是 `步骤 1/7 供应商`',
+    ok('主屏第 1 行就是 `步骤 1/4 供应商`',
       /^步骤\s*1\/7\s*供应商/.test(msLines[0] || ''), short(msLines[0] || '(空)', 90));
     ok('主屏里**没有**供应商清单 dump (清单只在管道那条路)',
       msLines.filter((l) => /^[●○]\s/.test(l) || l.includes(' models · ')).length === 0,
@@ -1152,11 +1144,10 @@ async function main(): Promise<number> {
       hi.length >= 3 && hi[0] !== hi[1] && hi[1] !== hi[2],
       `帧 1:「${short(hi[0], 46)}」→ 帧 2:「${short(hi[1], 46)}」`);
     const idx = cursorIndexes(mainRun.raw);
-    // 行号从 **2** 起: 第 1 行是分组标题 (`── 当前生效 (1 家) ▾`), 第 2 行才是当前生效的那一家 ——
-    //   分组标题现在是**一等行** (能在上面按空格展开), 所以整段位移比从前 +1。
+    // 2026-10-05 平铺化后行号从 **1** 起: 第 1 行就是候选 (当前生效那家, 没有分组标题)。
     //   断言的是**位移性质** (↓ +1 · ↓ +1 · ↑ −1), 不是某个硬编码的行号。
-    ok('光标序号序列 2→3→4→(↑回)3 (状态行数字真的跟着动)',
-      idx.slice(0, 4).join(',') === '2,3,4,3', `第 i/N 序列前 4 个 = [${idx.slice(0, 4).join(', ')}]`);
+    ok('光标序号序列 1→2→3→(↑回)2 (状态行数字真的跟着动)',
+      idx.slice(0, 4).join(',') === '1,2,3,2', `第 i/N 序列前 4 个 = [${idx.slice(0, 4).join(', ')}]`);
     report(`高亮两帧对比: 帧1「${short(hi[0], 40)}」 vs 帧2「${short(hi[1], 40)}」 (不同)`);
     report(`状态行光标序列: [${idx.slice(0, 4).join(', ')}]`);
 
@@ -1194,18 +1185,15 @@ async function main(): Promise<number> {
     // ══════════════════════════════════════════════════════════
     section('R3 滚动窗口 (矮终端 rows=12 → 光标越过窗口时窗口真的滚)');
     // ══════════════════════════════════════════════════════════
-    // 默认只展开"当前生效 + 可用", 所以"越过窗口"这条要先**展开一个大分组**再走 (收起的分组只有标题行) ——
-    // End → ↑ → ↑ 落在「需专用鉴权 (未支持)」标题上 → 空格展开 → 再连续 ↓。
+    // 纯平铺全量 (231 家), 光标天然能越过矮终端窗口 —— End 直接到底, 再连按几次 ↓ 确认窗口滚了。
     const scrollSteps: PlanStep[] = [
-      { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+      { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 120 },
       { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
       { name: 'End 到末行', send: '\\x1b[F', timeout_s: 20 },
-      { name: '↑ 到无基址标题', send: '\\x1b[A', timeout_s: 20 },
-      { name: '↑ 到需专用鉴权标题', send: '\\x1b[A', timeout_s: 20 },
-      { name: '空格展开', send: ' ', timeout_s: 20 },
-      { name: '等展开回执', expect: '已展开 需专用鉴权', timeout_s: 20 },
-      ...Array.from({ length: 10 }, (_, i) => ({ name: `↓ #${i + 1}`, send: '\\x1b[B', timeout_s: 15 })),
-      { name: '等第 17 行', expect_raw: '第\\s*17\\s*/', timeout_s: 20 },
+      { name: '等末行 (行号 > 窗口)', expect_raw: '第\\s*\\d{2,}\\s*/', timeout_s: 20 },
+      { name: '↓ #1', send: '\\x1b[B', timeout_s: 15 },
+      { name: '↓ #2', send: '\\x1b[B', timeout_s: 15 },
+      { name: '↓ #3', send: '\\x1b[B', timeout_s: 15 },
       { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
       { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
     ];
@@ -1235,7 +1223,7 @@ async function main(): Promise<number> {
       const narrowRun = await runPty(`ux-narrow-${cols}`, ['model'], {
         timeout_s: 200, cols, rows: 20,
         steps: [
-          { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+          { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 120 },
           { name: '选择器就绪', expect: '选择供应商', timeout_s: 40 },
           { name: '↓ #1', send: '\\x1b[B', timeout_s: 15 },
           { name: '等第 2 帧', expect_raw: '第\\s*2\\s*/', timeout_s: 20 },
@@ -1258,7 +1246,7 @@ async function main(): Promise<number> {
     section('R5 凭证步四条路可达 + 掩码输入 0 命中');
     // ══════════════════════════════════════════════════════════
     const credRun = await probeRaw('ux-cred', ['model'], [
-      { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+      { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 120 },
       { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
       { name: '选供应商', send: '\\r', timeout_s: 20 },
       { name: '凭证步就绪', expect: '凭证怎么处理', timeout_s: 30 },
@@ -1300,27 +1288,21 @@ async function main(): Promise<number> {
     // ══════════════════════════════════════════════════════════
     ok('凭证步中途取消后配置 sha 逐字节不变', sha(CONFIG) === baseSha, `${baseSha.slice(0, 16)} → ${sha(CONFIG).slice(0, 16)}`);
 
-    // 探测失效那条路: 把 deepseek 指到一个死端口, 走完前五步 → 第 6 步真连不上 → 停住
+    // 探测失效那条路: 把 deepseek 指到一个死端口, 走完前三步 → 第 4 步(确认/测试)真连不上 → 停住
     await MS.selectModel({ provider: 'deepseek', model: 'stub-ux-a', baseUrl: dead, apiKey: GATE_KEY, scope: 'global', verify: false });
     const deadSha = sha(CONFIG);
     const failRun = await probeRaw('ux-fail', ['model'], [
-      { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+      { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 120 },
       { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
       { name: '选供应商', send: '\\r', timeout_s: 20 },
       { name: '凭证步就绪', expect: '凭证怎么处理', timeout_s: 30 },
       { name: '凭证保持', send: '\\r', timeout_s: 20 },
       { name: '模型选择器就绪', expect: '选择模型 \\(', timeout_s: 25 },
       { name: '选模型', send: '\\r', timeout_s: 20 },
-      { name: '参数步就绪', expect: '步骤 4/7 生成参数', timeout_s: 25 },
-      { name: 'reasoning 就绪', expect: '登记支持 reasoning', timeout_s: 25 },
-      { name: 'reasoning 不设', send: '\\r', timeout_s: 20 },
-      { name: 'temperature 就绪', expect: 'temperature \\(0~2\\)', timeout_s: 25 },
-      { name: 'temperature 不设', send: '\\r', timeout_s: 20 },
-      { name: '作用域就绪', expect: '这次切换的作用域', timeout_s: 25 },
-      { name: '作用域全局', send: '\\r', timeout_s: 20 },
-      { name: '探测真失败', expect: '连不上/不认识这个模型', timeout_s: 40 },
+      // 2026-10-05 压成 4 步: 选完模型直接进第 4 步确认(含连通测试), 不再有 参数/作用域 两步。
+      { name: '探测真失败', expect: '连不上/不认识这个模型', timeout_s: 60 },
     ]);
-    ok('第 6 步真探测失败 (真连不上死端口, 不是伪造的失败)',
+    ok('第 4 步真探测失败 (真连不上死端口, 不是伪造的失败)',
       failRun.ok && /连不上\/不认识这个模型|provider_unreachable/.test(failRun.text),
       short((failRun.text.match(/✗ 切换未完成[^\n]*/) || [''])[0], 120));
     ok('探测失效后配置 sha 逐字节不变', sha(CONFIG) === deadSha, `${deadSha.slice(0, 16)} → ${sha(CONFIG).slice(0, 16)}`);
@@ -1359,7 +1341,7 @@ async function main(): Promise<number> {
 
     // 正向对照: --verbose **必须**真的把内部细节打出来 (证明是"挪走"不是"删掉")
     const verboseRun = await probeRaw('ux-verbose', ['model', '--verbose'], [
-      { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+      { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 120 },
       { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
       { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
       { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
@@ -1384,7 +1366,7 @@ async function main(): Promise<number> {
     const beforeCommit = sha(CONFIG);
     stub.reset();
     const commitRun = await probeRaw('ux-commit', ['model'], [
-      { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+      { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 120 },
       { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
       { name: '选供应商', send: '\\r', timeout_s: 20 },
       { name: '凭证步就绪', expect: '凭证怎么处理', timeout_s: 30 },
@@ -1393,19 +1375,13 @@ async function main(): Promise<number> {
       { name: '换个模型', send: '\\x1b[B', timeout_s: 20 },
       { name: '等第 2 项', expect_raw: '第\\s*2\\s*/', timeout_s: 20 },
       { name: '选模型', send: '\\r', timeout_s: 20 },
-      { name: '参数步就绪', expect: '步骤 4/7 生成参数', timeout_s: 25 },
-      { name: 'reasoning 就绪', expect: '登记支持 reasoning', timeout_s: 25 },
-      { name: 'reasoning 不设', send: '\\r', timeout_s: 20 },
-      { name: 'temperature 就绪', expect: 'temperature \\(0~2\\)', timeout_s: 25 },
-      { name: 'temperature 不设', send: '\\r', timeout_s: 20 },
-      { name: '作用域就绪', expect: '这次切换的作用域', timeout_s: 25 },
-      { name: '作用域全局', send: '\\r', timeout_s: 20 },
-      { name: '真探测通过', expect: '步骤 6/7 连通测试通过', timeout_s: 40 },
+      // 2026-10-05 压成 4 步: 选完模型直接进第 4 步确认(连通测试 + 确认), 不再有 参数/作用域。
+      { name: '真探测通过', expect: '步骤 4/4 连通测试通过', timeout_s: 60 },
       { name: '确认行就绪', expect: '确认按上面的配置切换', timeout_s: 25 },
       { name: '确认切换', send: '\\r', timeout_s: 40 },
       { name: '切换完成', expect: '已切到', timeout_s: 40 },
     ]);
-    ok('七步真走完并切换成功', commitRun.ok && commitRun.text.includes('已切到'),
+    ok('四步真走完并切换成功', commitRun.ok && commitRun.text.includes('已切到'),
       short((commitRun.text.match(/✓ 已切到[^\n]*/) || [''])[0], 110));
     const afterCommit = sha(CONFIG);
     ok('切换真落盘 (配置 sha 逐字节变了)', afterCommit !== beforeCommit, `${beforeCommit.slice(0, 16)} → ${afterCommit.slice(0, 16)}`);
@@ -1449,9 +1425,8 @@ async function main(): Promise<number> {
     report(`目录外模型: 端点接受 → ok=${oc.ok} (acceptedOutsideCatalog=${oc.acceptedOutsideCatalog}); 端点真拒 → ${neg.verdict}`);
 
     // ══════════════════════════════════════════════════════════
-    // R11 候选集 = 盘上全部家 (内置 + 自定义 + 目录) · 固定高度视窗 · 分组折叠 · 目录家可搜/可选
+    // R11 候选集 = 盘上全部家 (内置 + 自定义 + 目录) · 固定高度视窗 · 纯平铺单选 · 目录家可搜/可选
     // ══════════════════════════════════════════════════════════
-    const MCx: any = await import('../src/llm/model-catalog.js');
     // 期望值**从盘上真算**, 而且是与 pty 同一套 env 的子进程算的 (见 diskCountsInChild 注释):
     //   子进程里显式 `catalog:'all'` —— 就算"默认值"被改回 `'configured'` (M10), 这里算出来的仍是**全部家**;
     //   拿自己的默认值当期望值 = 自证, 门就抓不住了。
@@ -1460,20 +1435,15 @@ async function main(): Promise<number> {
     const excluded = disk.excluded;
     const TIERS = ['current', 'usable', 'noCredential', 'specialAuth', 'noBaseUrl'] as const;
     const tierCount = (t: string): number => disk.tiers[t] ?? 0;
-    const COLLAPSED = String(TUI.GROUP_COLLAPSED_MARK);
-    const EXPANDED = String(TUI.GROUP_EXPANDED_MARK);
-    const collapsedHeader = (t: string): string => `── ${MCx.PROVIDER_GROUPS[t]} (${tierCount(t)} 家) ${COLLAPSED}`;
-    section(`R11 第 1 步 = 盘上全部家 (视窗 ≤ 终端高 · 分组折叠 · 目录家可搜/可选) [候选 ${totalCandidates} 家]`);
+    section(`R11 第 1 步 = 盘上全部家 (视窗 ≤ 终端高 · 纯平铺单选 · 目录家可搜/可选) [候选 ${totalCandidates} 家]`);
     MUT_CTX.totalCandidates = totalCandidates;
-    MUT_CTX.collapsedHeader = collapsedHeader('noCredential');
-    MUT_CTX.collapsedMark = COLLAPSED;
     ok('R11.0 候选集 == 内置 + 自定义 + 目录全部 (逐项点名允许的排除项)',
       totalCandidates === disk.builtin + disk.custom + disk.catalog - excluded.length && totalCandidates > 100,
       `内置 ${disk.builtin} + 自定义 ${disk.custom} + 目录 ${disk.catalog} - 同名排除 ${excluded.length} = ${totalCandidates}`
         + (excluded.length ? ` · 排除项: ${excluded.join(', ')}` : ' · 无排除项'));
     ok('R11.0b 五个分组是**划分**不是筛选 (各家数之和 == 候选总数)',
       TIERS.reduce((a, t) => a + tierCount(t), 0) === totalCandidates,
-      TIERS.map((t) => `${MCx.PROVIDER_GROUPS[t]}=${tierCount(t)}`).join(' · '));
+      TIERS.map((t) => `${t}=${tierCount(t)}`).join(' · '));
 
     // 搜索目标: 只存在于**目录**里的家 (落在默认收起的"未配置凭据"组里 —— 收起挡不住搜索才算数)
     const SEARCH_TARGET = disk.searchTarget;
@@ -1481,17 +1451,13 @@ async function main(): Promise<number> {
     const browseRun = await runPty('ux-browse', ['model'], {
       timeout_s: 240, cols: 100, rows: 30,
       steps: [
-        { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+        { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 120 },
         { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
-        { name: 'End 到末行', send: '\\x1b[F', timeout_s: 20 },
-        { name: '↑ 到无基址标题', send: '\\x1b[A', timeout_s: 20 },
-        { name: '等无基址标题 (收起态 · 带家数)', expect_raw: `── 无 api 基址 \\(需自定义 baseUrl\\) \\(${tierCount('noBaseUrl')} 家\\) ${COLLAPSED}`, timeout_s: 20 },
-        { name: '空格展开无基址', send: ' ', timeout_s: 20 },
-        { name: '等展开回执', expect: '已展开 无 api 基址', timeout_s: 20 },
-        { name: '↑ 到需专用鉴权标题', send: '\\x1b[A', timeout_s: 20 },
-        { name: '等 special 标题 (收起态 · 带家数)', expect_raw: `── 需专用鉴权 \\(未支持\\) \\(${tierCount('specialAuth')} 家\\) ${COLLAPSED}`, timeout_s: 20 },
-        { name: '空格展开 special', send: ' ', timeout_s: 20 },
-        { name: '等展开回执 2', expect: '已展开 需专用鉴权', timeout_s: 20 },
+        { name: 'End 到末行 (Cancel)', send: '\\x1b[F', timeout_s: 20 },
+        { name: '↑ 到无基址候选', send: '\\x1b[A', timeout_s: 20 },
+        { name: '等无基址候选行', expect_raw: `[●○] [^ ]+ · 无基址 \\(需自定义 baseUrl\\)`, timeout_s: 20 },
+        { name: '↑ 到需专用鉴权候选', send: '\\x1b[A', timeout_s: 20 },
+        { name: '等 special 候选行', expect_raw: `[●○] [^ ]+ · .*需专用鉴权`, timeout_s: 20 },
         { name: `搜目录家 ${SEARCH_TARGET}`, send: SEARCH_TARGET, timeout_s: 25 },
         { name: '等筛选命中', expect: `筛选 "${SEARCH_TARGET}"`, timeout_s: 25 },
         { name: '选中它', send: '\\r', timeout_s: 25 },
@@ -1518,32 +1484,24 @@ async function main(): Promise<number> {
     ok('R11.2 单帧渲染总行数 ≤ 终端高度 (rows=30) 且远小于候选总数',
       bSizes.length > 0 && maxFrame <= 30 && maxFrame < totalCandidates / 4,
       `最大帧 ${maxFrame} 行 (≤ 30) · 候选 ${totalCandidates} 家 · 共 ${bSizes.length} 帧`);
-    // ③ 收起的分组: 标题照写家数, 且与盘上真算一致
-    const collapsedDetail = (['noCredential', 'specialAuth', 'noBaseUrl'] as const).map((t) => {
-      const hit = bFirst.some((l) => l.includes(collapsedHeader(t)));
-      return `${MCx.PROVIDER_GROUPS[t]} (${tierCount(t)} 家)${hit ? '✓' : '✗'}`;
-    });
-    ok('R11.3 收起的分组标题**照写家数**且与盘上真算一致 (折叠 ≠ 藏家数)',
-      collapsedDetail.every((d) => d.endsWith('✓')), collapsedDetail.join(' · '));
-    // ④ 展开真生效 (两帧对比: 标记 › → ▾, 该组候选行真的出现在屏幕上)
-    const cPick = (b: string[]): number => candidateRows(b).length;
-    const beforeFrames = bBlocks.filter((b) => b.some((l) => l.includes(collapsedHeader('noBaseUrl'))));
-    const afterFrames = bBlocks.filter((b) => b.some((l) => l.includes(`── 无 api 基址 (需自定义 baseUrl) (${tierCount('noBaseUrl')} 家) ${EXPANDED}`)));
-    const before = beforeFrames.length ? beforeFrames[beforeFrames.length - 1] : [];
-    const after = afterFrames.length ? afterFrames[0] : [];
-    ok('R11.4 `空格/→` 展开真生效 (两帧对比: 标记 › → ▾, 该组候选行真的画出来)',
-      before.length > 0 && after.length > 0 && cPick(after) > cPick(before),
-      `收起帧候选行 ${cPick(before)} → 展开帧 ${cPick(after)}`);
-    // ⑤ 真 pty 原文里能看到 special / 无基址 标记的家
-    const specialLine = bText.split('\n').find((l) => /[●○] .*special \(需专用鉴权, 未支持\)/.test(l)) || '';
-    const noBaseLine = bText.split('\n').find((l) => /[●○] .*无基址 \(需自定义 baseUrl\)/.test(l)) || '';
-    ok('R11.5 真 pty 原文里看到带 `special (需专用鉴权, 未支持)` 标记的家',
-      specialLine.length > 0, specialLine ? `原文: ${specialLine.trim()}` : '没看到 (展开 需专用鉴权 分组后仍无)');
-    ok('R11.6 真 pty 原文里看到带 `无基址 (需自定义 baseUrl)` 标记的家',
-      noBaseLine.length > 0, noBaseLine ? `原文: ${noBaseLine.trim()}` : '没看到 (展开 无 api 基址 分组后仍无)');
+    // ③ 平铺单选列表: 没有分组标题行 `──`, 候选全是单选行 (●/○), special/无基址 各家直接在列表里
+    const hasSep = bFirst.some((l) => l.includes('── '));
+    const candRows = candidateRows(bFirst);
+    ok('R11.3 纯平铺单选列表: 首帧**没有**分组标题行 `──` (leo 2026-10-05: 折叠不方便 → 去掉分隔条)',
+      !hasSep, hasSep ? '还在印分组标题' : '平铺, 无 ── 标题');
+    ok('R11.3b 首帧候选是全部分组混排的单选行 (●/○ 前缀, 含 special/无基址 标记的那几类家)',
+      candRows.length > 0 && candRows.some((l) => /[●○] /.test(l)),
+      `候选行 ${candRows.length} 行: ${candRows.slice(0, 2).map((l) => short(l.trim(), 40)).join(' | ')}`);
+    // ④ 平铺下选择器**真能走到后两组** (special/无基址): 它们不再藏在折叠标题后面, 而是列表里的普通行
+    const specialLine = bText.split('\n').find((l) => /[●○] .*需专用鉴权/.test(l)) || '';
+    const noBaseLine = bText.split('\n').find((l) => /[●○] .*无基址 \\(需自定义 baseUrl\\)/.test(l)) || '';
+    ok('R11.4 平铺列表里带 `需专用鉴权` 标记的家直接在候选行里 (不用展开就看到)',
+      specialLine.length > 0, specialLine ? `原文: ${specialLine.trim()}` : '没看到 (平铺下仍无)');
+    ok('R11.4b 平铺列表里带 `无基址 (需自定义 baseUrl)` 标记的家直接在候选行里',
+      noBaseLine.length > 0, noBaseLine ? `原文: ${noBaseLine.trim()}` : '没看到 (平铺下仍无)');
     // ⑥ 搜索只存在于目录里的家 → 命中 + 选得中 + 能继续走流程
     const hitLine = bText.split('\n').find((l) => new RegExp(`[●○] ${SEARCH_TARGET} `).test(l)) || '';
-    ok(`R11.7 搜索目录家 ${SEARCH_TARGET} 能命中 (默认收起的分组挡不住搜索)`,
+    ok(`R11.7 搜索目录家 ${SEARCH_TARGET} 能命中 (纯平铺列表, 目录家照样搜得到/选得到)`,
       browseRun.ok && hitLine.length > 0 && searchIsCatalogOnly,
       `命中行: ${short(hitLine.trim(), 96)}`);
     ok(`R11.8 选中目录家 ${SEARCH_TARGET} 后真走到凭证步 (能继续走流程, 不是死胡同)`,
@@ -1574,20 +1532,22 @@ async function main(): Promise<number> {
     // 上一版门只在**普通候选项**上断言过"高亮真位移" (两帧反白行对比: `→ ● deepseek` vs `→ ● ollama`),
     // 分组标题 / Cancel / ←当前 / special / 无基址 一条都没覆盖 —— 于是门 104/0 全绿, 而 leo 的光标
     // 正好停在**分组标题行**上, 那一行**压根没进高亮分支**, 屏上与"没选中"逐字节相同。
+    // 2026-10-05 平铺化后不再有分组标题行, 但"每一类行都要有选中态"这条仍成立 (普通/←当前/special/无基址/Cancel)。
     // 现在按**行类**逐类比两帧原始字节: ①选中帧该行带底色 (`48;2;`) 或反白 (`7m`) ②两帧该行字节不同
     // ③未选中行**不许**带底色 (否则整屏花掉, 也分不出选中)。
     // ══════════════════════════════════════════════════════════
     section('R11.12 光标行在**每一类行**上都有明显选中态 (选中 vs 未选中 两帧原始字节对比)');
     ROWS_CTX.uc = tierCount('current');
     ROWS_CTX.uu = tierCount('usable');
+    ROWS_CTX.nc = tierCount('noCredential');
     ROWS_CTX.nb = tierCount('noBaseUrl');
     ROWS_CTX.sa = tierCount('specialAuth');
     const rowsRun = await runPty('ux-rows', ['model'], {
       timeout_s: 220, cols: 100, rows: 30, steps: rowWalkPlan(),
     });
     const rca = rowClassPairs(rowsRun.raw);
-    ok('R11.12.0 行类分析前提: 光标漫游整轮跑完 + 全程**没有上滚指示** (显示行序号 = 第 j 行 j+1 才成立)',
-      rowsRun.ok && rca.upScrolledFrames === 0 && rca.frames >= 8,
+    ok('R11.12.0 行类分析前提: 光标漫游整轮跑完 + 真序号按视窗偏移校正 (纯平铺全量必然滚动, 用 `↑ 上面还有 N 家` 校正行号)',
+      rowsRun.ok && rca.frames >= 8,
       `帧 ${rca.frames} · 显示行 ${rca.totalRows} 行 · 上滚指示帧 ${rca.upScrolledFrames}`
         + ` · 步数命中 ${rowsRun.steps.filter((s) => s.matched).length}/${rowsRun.steps.length} · exit=${rowsRun.exit}`);
     for (const p of rca.pairs) {
@@ -1601,12 +1561,6 @@ async function main(): Promise<number> {
       rca.dirtyNonCursor.length
         ? `带底色的非光标行 ${rca.dirtyNonCursor.length} 行: ${rca.dirtyNonCursor.slice(0, 2).map((r) => short(r.text, 40)).join(' | ')}`
         : '整轮一个都没有');
-    const sepPair = rca.pairs.find((p) => p.name === '分组标题行');
-    if (sepPair?.sel && sepPair.unsel) {
-      report(`R11.12 分组标题行两帧原文 (选中 vs 未选中, 逐字节对比):`);
-      report(`   选中  : ${JSON.stringify(sepPair.sel.raw.slice(0, 150))}`);
-      report(`   未选中: ${JSON.stringify(sepPair.unsel.raw.slice(0, 150))}`);
-    }
     report(`R11.12 逐类结果: ${rca.pairs.map((p) => `${p.name}=${classOk(p) ? '✓' : '✗'}`).join(' · ')}`);
     report(`R11 候选 ${totalCandidates} 家 = 内置 ${disk.builtin} + 自定义 ${disk.custom} + 目录 ${disk.catalog}`
       + ` - 同名 ${excluded.length}${excluded.length ? ` (${excluded.join(',')})` : ''}`
@@ -1615,32 +1569,31 @@ async function main(): Promise<number> {
     // ══════════════════════════════════════════════════════════
     // R12 无色降级 (NO_COLOR=1): 一个真彩字节都不发, 但仍靠符号分得清
     // ══════════════════════════════════════════════════════════
-    section('R12 NO_COLOR=1 降级: 真彩归零 · 符号仍在 (●/○/→/折叠标记+家数)');
-    const ncRun = await runPty('ux-nocolor', ['model'], {
-      timeout_s: 200, cols: 100, rows: 30, env: { NO_COLOR: '1' },
-      steps: [
-        { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
-        { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
-        { name: '↓ #1', send: '\\x1b[B', timeout_s: 20 },
-        { name: '等第 3 行', expect_raw: '第\\s*3\\s*/', timeout_s: 20 },
-        { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
-        { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
-      ],
-    });
-    const ncHits = trueColorHits(ncRun.raw);
-    ok('R12.1 NO_COLOR=1 下原始输出里 0 条真彩序列',
-      ncRun.ok && ncHits.length === 0, `真彩序列 ${ncHits.length} 条 (期望 0)`);
-    const ncCollapsed = new RegExp(`\\(\\d+ 家\\) ${COLLAPSED}`).test(ncRun.text);
-    ok('R12.2 NO_COLOR=1 下仍靠符号分得清 (●/○ 状态 · → 光标 · 折叠标记 + 家数)',
-      /[●○] /.test(ncRun.text) && /→ [●○]/.test(ncRun.text) && /── /.test(ncRun.text) && ncCollapsed,
-      `●/○=${/[●○] /.test(ncRun.text)} · → 光标=${/→ [●○]/.test(ncRun.text)} · 分组标题=${/── /.test(ncRun.text)} · 折叠+家数=${ncCollapsed}`);
-    // R12.3 无色降级下**光标落在分组标题行上**也要分得清 —— 这条正是 leo 踩的那类行的降级通道:
-    //   没有颜色就只剩 `→ ` 前缀 (符号通道), 于是"选中 vs 未选中"仍然**逐字节不同**。
-    const ncTitle = rowClassPairs(ncRun.raw).pairs.find((p) => p.name === '分组标题行');
-    ok('R12.3 NO_COLOR=1 下光标停在分组标题行上仍分得清 (`→ ` 前缀 + 两帧字节不同; 且确实 0 条真彩)',
-      !!ncTitle?.sel && !!ncTitle?.unsel && ncTitle.sel.raw.startsWith('→ ')
-        && ncTitle.bytesDiffer && !ncTitle.selHasColor && !ncTitle.unselHasColor,
-      ncTitle ? `${classDetail(ncTitle)} · 选中行以「→ 」开头=${!!ncTitle.sel && ncTitle.sel.raw.startsWith('→ ')}` : '没抓到分组标题行的两帧对比');
+    section('R12 NO_COLOR=1 降级: 真彩归零 · 符号仍在 (●/○ 状态 · → 光标)');
+        const ncRun = await runPty('ux-nocolor', ['model'], {
+          timeout_s: 200, cols: 100, rows: 30, env: { NO_COLOR: '1' },
+          steps: [
+            { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 120 },
+            { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
+            { name: '↓ #1', send: '\\x1b[B', timeout_s: 20 },
+            { name: '等第 2 行', expect_raw: '第\\s*2\\s*/', timeout_s: 20 },
+            { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
+            { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
+          ],
+        });
+        const ncHits = trueColorHits(ncRun.raw);
+        ok('R12.1 NO_COLOR=1 下原始输出里 0 条真彩序列',
+          ncRun.ok && ncHits.length === 0, `真彩序列 ${ncHits.length} 条 (期望 0)`);
+        ok('R12.2 NO_COLOR=1 下仍靠符号分得清 (●/○ 状态 · → 光标)',
+          /[●○] /.test(ncRun.text) && /→ [●○]/.test(ncRun.text),
+          `●/○=${/[●○] /.test(ncRun.text)} · → 光标=${/→ [●○]/.test(ncRun.text)}`);
+        // R12.3 无色降级下**光标落在普通候选项上**也要分得清 —— 没有颜色就只剩 `→ ` 前缀 (符号通道),
+        //   于是"选中 vs 未选中"仍然**逐字节不同** (leo 踩的"看不出哪行被选中"在无色下也保住)。
+        const ncTitle = rowClassPairs(ncRun.raw).pairs.find((p) => p.name === '普通候选项');
+        ok('R12.3 NO_COLOR=1 下光标停在普通候选项上仍分得清 (`→ ` 前缀 + 两帧字节不同; 且确实 0 条真彩)',
+          !!ncTitle?.sel && !!ncTitle?.unsel && ncTitle.sel.raw.startsWith('→ ')
+            && ncTitle.bytesDiffer && !ncTitle.selHasColor && !ncTitle.unselHasColor,
+          ncTitle ? `${classDetail(ncTitle)} · 选中行以「→ 」开头=${!!ncTitle.sel && ncTitle.sel.raw.startsWith('→ ')}` : '没抓到普通候选项的两帧对比');
 
     // ══════════════════════════════════════════════════════════
     const BURST_TERM = 'a';   // 命中 200+ 家的搜索词 (家数从真 pty 的状态行里量, 见 R13.2)
@@ -1653,7 +1606,7 @@ async function main(): Promise<number> {
     //   视窗定位 / 滚动 / 200+ 行摊行 全在这条路径上。
     // ⚠ 这个数字是**上界**: pty 驱动是 0.15s 粒度的轮询, 本身带来 ~150ms 量化, 报告里如实这么说。
     const burstSteps: PlanStep[] = [
-      { name: '首帧', expect: '步骤 1/7 供应商', timeout_s: 120 },
+      { name: '首帧', expect: '步骤 1/4 供应商', timeout_s: 120 },
       { name: '选择器就绪', expect: '选择供应商 \\(', timeout_s: 40 },
       { name: `搜 ${BURST_TERM} (平铺长列表)`, send: BURST_TERM, timeout_s: 20 },
       { name: '等搜索生效', expect_raw: `第\\s*1\\s*/\\s*\\d+\\s*·\\s*筛选\\s*"${BURST_TERM}"`, timeout_s: 25 },
@@ -1674,7 +1627,11 @@ async function main(): Promise<number> {
     const listNs = [...burstRun.text.matchAll(new RegExp(`第\\s*\\d+\\s*/\\s*(\\d+)\\s*·\\s*筛选\\s*"${BURST_TERM}"`, 'g'))].map((m) => Number(m[1]));
     const listLen = listNs.length ? Math.max(...listNs) : 0;
     const burstIdx = cursorIndexes(burstRun.raw);
-    const runStart = burstIdx.indexOf(1);
+    // 2026-10-05 平铺化: 首帧光标就从第 1 行起 (旧折叠布局第 1 行是分组标题, 从第 2 行起)。
+    //   `indexOf(1)` 会撞上**搜索前**的第一帧 ⇒ 从"筛选生效之后"的连续 1,2,… 段里取 runStart:
+    //   搜索生效后光标跳回 1, 再连续 ↓ 单调递增 —— 于是"最后一个 1"就是那段递增序列的起点。
+    const run1 = burstIdx.lastIndexOf(1);
+    const runStart = run1 >= 0 && run1 + BURST <= burstIdx.length ? run1 : -1;
     const idxRun = runStart >= 0 ? burstIdx.slice(runStart, runStart + BURST + 1) : [];
     ok(`R13.1 连续 ${BURST} 次 ↓ 每次都真画出了新的一帧 (光标序号 1,2,…,${BURST + 1} 逐行递进)`,
       idxRun.length === BURST + 1 && idxRun.every((v, i) => v === i + 1),

@@ -292,6 +292,16 @@ export interface SelectModelRequest {
    * 写盘点里落地 (校验 → 探测 → 写 → 重建运行时 → 会话), 不新增第二条写盘路径。
    */
   credentialAction?: 'keep' | 'replace' | 'clear' | 'env';
+  /**
+   * **URL 意图** (2026-10-05, leo: TUI 里要能管理 URL, 和 key 同级)。
+   *
+   *   · `'keep'`    = baseUrl 一格不动 (默认; 沿用配置里那一份 / 内置默认);
+   *   · `'replace'` = 用 `baseUrl` 覆盖 (必须给了非空、形状合法的 URL);
+   *   · `'clear'`   = **删掉**配置里的 baseUrl 覆盖, 回落内置/注册表默认。
+   *
+   * 与 `credentialAction` 同一套哲学: 写配置的入口只有一个, 意图在这里落地, 不新增写盘路径。
+   */
+  baseUrlAction?: 'keep' | 'replace' | 'clear';
   /** 生成参数 (可选): 温度 0~2。给了就写进该 provider 的配置 */
   temperature?: number;
   /** 生成参数 (可选): 推理模式偏好 */
@@ -975,7 +985,20 @@ export function validateSelection(
   }
 
   let baseUrl = base.baseUrl;
-  if (req.baseUrl !== undefined) {
+  const urlAction = req.baseUrlAction ?? (req.baseUrl !== undefined ? 'replace' : 'keep');
+  if (urlAction === 'clear') {
+    // 清除 URL 覆盖 → 回落**官方默认** (内置表/注册表声明的那个, 不含配置里覆盖过的值)。
+    //   leo 2026-10-05: 「展示的 URL 默认需要官方的来源」—— 清除 = 回到官方, 不是回到上一个手填值。
+    const official = baseDefaultsOf(provider, null);
+    baseUrl = normalizeBaseUrl(official?.baseUrl || '');
+    if (!baseUrl && regEntry && regEntry.origin === 'catalog') {
+      return {
+        ok: false,
+        failureClass: 'invalid_url',
+        message: `${provider} 在目录里没有官方 api 基址 → 无法回落官方默认, 必须自定义 baseUrl (加 --base-url <地址> 或写进配置)`,
+      };
+    }
+  } else if (req.baseUrl !== undefined) {
     const shape = validateBaseUrlShape(req.baseUrl);
     if (!shape.ok) {
       return { ok: false, failureClass: 'invalid_url', message: `base URL 非法 — ${shape.reason}` };
@@ -1243,7 +1266,7 @@ export async function selectModel(req: SelectModelRequest): Promise<SelectModelR
     const p = await runConnectionProbe({
       provider: target.provider,
       model: target.model,
-      baseUrl: req.baseUrl,          // 显式 --base-url (最高优先)
+      baseUrl: target.baseUrl,     // 校验已按 URL 意图算好 (keep=当前 / replace=新值 / clear=官方默认)
       configuredBaseUrl: stored?.baseUrl, // 配置里这一家现在写的地址
       apiKey: target.apiKey,
     });

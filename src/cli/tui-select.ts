@@ -104,11 +104,21 @@ const CURSOR_SGR = `${REVERSE}${BOLD}${fg(THEME.cursor)}${bg(THEME.accent)}`;
  */
 export const TUI_HINT = '↑↓ 移动 · ←→/空格 折叠分组 · Enter 确认 · / 搜索 · 数字跳行 · Esc 取消';
 
+/**
+ * 纯平铺单选列表 (无分组) 的提示 —— 不带折叠键, 与参考的 provider 单选列表一致
+ * (leo 2026-10-05: `bolloon model` 显示一直折叠不方便 → 供应商列表改纯平铺)。
+ * 折叠键只在候选真的带分组 (有 `group` 字段) 时才出现在头行。
+ */
+export const TUI_HINT_FLAT = '↑↓ 移动 · Enter 确认 · / 搜索 · 数字跳行 · Esc 取消';
+
 /** 掩码字符 (屏幕上绝不出现明文) */
 export const MASK_CHAR = '•';
 
-/** 中间候选区的**固定高度上限** (每步可见行数 ≤ 12; 超出靠滚窗, 不是靠减少家数) */
-export const VIEWPORT_MAX = 12;
+/**
+ * 中间候选区的**固定高度上限** (每步可见行数上限; 实际视窗 = min(VIEWPORT_MAX, 终端高-头尾),
+ * leo 2026-10-05: 「选择高度窗口要扩大」→ 从 12 提到 40, 高终端下一屏能看到更多家, 超出靠滚窗)。
+ */
+export const VIEWPORT_MAX = 40;
 
 /** 分组收起的标记 (收起 = 只画标题 + 家数; 展开 = 标题 + 成员) */
 export const GROUP_COLLAPSED_MARK = '›';
@@ -219,7 +229,9 @@ export type KeyEvent =
   | { type: 'backspace' } | { type: 'tab' } | { type: 'ctrl-u' }
   | { type: 'char'; ch: string }
   /** 括号粘贴 (终端把整段粘贴包在 `\x1b[200~ … \x1b[201~` 里): 当作一串字符, **一个字节都不回显** */
-  | { type: 'paste'; text: string };
+  | { type: 'paste'; text: string }
+  /** 触控板/鼠标滚轮 (SGR 上报): dy=+1 向上滚动, dy=-1 向下滚动 —— 在列表里等价于 ↑/↓ */
+  | { type: 'wheel'; dy: 1 | -1 };
 
 /** 已知的"多字节转义序列"前缀 —— 尾巴停在这些前缀上时先别当 Esc, 等下一块数据 */
 const SEQ_PREFIXES = ['\x1b[', '\x1bO'];
@@ -236,6 +248,19 @@ function seqEvent(seq: string): KeyEvent | null {
     case '\x1b[F': case '\x1b[4~': case '\x1bOF': return { type: 'end' };
     default: return null;
   }
+}
+
+/**
+ * SGR 鼠标上报的滚轮码 (触控板两指滚动 / 鼠标滚轮)。
+ * 序列形如 `\x1b[<状态码;列;行M` (按下) 或 `…m` (释放, 滚轮无释放)。状态码 = 基准 + 修饰位：
+ *   · 64 = 滚轮上 / 65 = 滚轮下 (卷滚类没有"行坐标", 但上报仍带; 我们只用方向)
+ *   · 滚轮方向键 (向上滚 = 看更早内容 ⇒ 等价 ↑; 向下滚 = 看更后内容 ⇒ 等价 ↓)
+ * 注意: 只有卷滚状态码 (64-67) 会持续滚动期间反复出现; 按下类 (0-2) 是点击, 由调用方忽略。
+ */
+export function wheelFromSgr(code: number): { dy: 1 | -1 } | null {
+  if (code === 64) return { dy: 1 };   // 滚轮上 → 列表往上滚 (等价 ↑)
+  if (code === 65) return { dy: -1 };  // 滚轮下 → 列表往下滚 (等价 ↓)
+  return null;                          // 其它码 (左/中/右键、平移) 不当作滚动
 }
 
 /**
@@ -258,6 +283,22 @@ export function parseKeys(chunk: string, rest = ''): { events: KeyEvent[]; rest:
       continue;
     }
     if (buf.startsWith('\x1b')) {
+      // SGR 鼠标上报 (触控板/鼠标滚轮): `\x1b[<状态码;列;行M`(按下) 或 `…m`(释放)。
+      //   状态码前有个 `<`, 通用 `ESC[ 参数 终字符` 正则会把它吞掉, 所以要在这里单独吃。
+      //   只把滚轮 (64/65) 转成 `wheel` 事件; 点击/平移 (0-2 等) 就此忽略 —— 用户只要滚动翻列表。
+      if (buf.startsWith('\x1b[<')) {
+        const sm = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/.exec(buf);
+        if (sm) {
+          const w = wheelFromSgr(Number(sm[1]));
+          if (w) events.push({ type: 'wheel', dy: w.dy });
+          buf = buf.slice(sm[0].length);
+          continue;
+        }
+        // `\x1b[<` 或 `\x1b[<64` 这种不完整尾巴: 等下一块拼全 (别把数字当输入)
+        if (/^\x1b\[<[0-9;]*$/.test(buf)) break;
+        buf = buf.slice(1);
+        continue;
+      }
       // 尽量吃掉一个完整转义序列: ESC [ 参数 终字符 / ESC O 字符
       const m = /^\x1b\[([0-9;]*)([a-zA-Z~])/.exec(buf) || /^\x1b(O.)/.exec(buf);
       if (m) {
@@ -295,6 +336,9 @@ export function parseKeys(chunk: string, rest = ''): { events: KeyEvent[]; rest:
 /** 尾巴是不是"只差一块数据的转义前缀" (是的话不能立刻当成 Esc) */
 function tailIsEscapePrefix(rest: string): boolean {
   if (!rest.startsWith('\x1b')) return false;
+  // SGR 鼠标尾巴 (`\x1b[<`, `\x1b[<64`, …): 是不完整的上报序列, **不是**孤独 Esc —— 等完整 `…M/m` 来
+  //   再解析成滚轮/忽略。若 30ms 后仍不完整, 丢弃即可 (鼠标上报被终端自己保证成块到达)。
+  if (rest.startsWith('\x1b[<')) return true;
   return SEQ_PREFIXES.some((p) => p.startsWith(rest) || rest.startsWith(p));
 }
 
@@ -374,6 +418,9 @@ class RawSession {
       this.resizeFn = onResize;
       process.on('SIGWINCH', this.resizeFn);
     }
+    // 开 SGR 鼠标上报 (触控板/滚轮) —— 让终端把两指滚动当成 `\x1b[<64|65;…` 发进来,
+    //   `?1006h` = SGR 坐标格式, `?1000h` = 按下/释放事件。关闭时还原 (`close`)。
+    this.write(`${E}[?1006h${E}[?1000h`);
     this.write(HIDE_CURSOR);
   }
 
@@ -385,6 +432,8 @@ class RawSession {
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     if (this.dataFn) this.stdin.removeListener('data', this.dataFn);
     if (this.resizeFn) process.removeListener('SIGWINCH', this.resizeFn);
+    // 还原鼠标上报 + 显示光标 (退出后触控板/鼠标回到终端自己的行为: 能划选文本、能正常右键)
+    try { this.write(`${E}[?1000l${E}[?1006l`); } catch { /* 已关闭 */ }
     this.write(SHOW_CURSOR);
     try { this.stdin.setRawMode(false); } catch { /* 已恢复 */ }
     try { this.stdin.pause(); } catch { /* 无所谓 */ }
@@ -599,12 +648,16 @@ export function tuiSelect(
     const body = Math.max(1, H - (above ? 1 : 0) - (below ? 1 : 0));
     const start = top + (above ? 1 : 0);
 
-    // `已筛` = **命中筛选的家数** (与折叠无关: 收起只是不画成员行, 家数照数) ——
-    //   这是"折叠不是隐藏"的可读证据: 全量时 `共 231 家 · 已筛 231 家`, 收起 3 组也不变。
+    // `已筛` = **命中筛选的家数** ——
+    //   折叠是通用能力: 只在候选真的带分组时才出现在提示与状态里 (模型选择器现为纯平铺单选列表,
+    //   不带分组 → 提示里不出现折叠键, 与参考图一致)。折叠机制仍保留给需要分组的调用方用。
     const filteredItems = real.filter((c) => matchesQuery(c, query)).length;
     const collapsedGroups = [...collapsed].filter((g) => real.some((c) => c.group === g));
-    // 头行: 标题 + 计数 (共 N 家 · 已筛 M 家) + 键位提示 —— **不滚** (每帧都画)
-    const head = `${String(title).replace(/[::]\s*$/, '')} · 共 ${real.length} ${unit} · 已筛 ${filteredItems} ${unit}  ${TUI_HINT}`;
+    const hasGroups = real.some((c) => c.group);
+    // 头行: 标题 + 计数 (共 N 家 · 已筛 M 家) + 键位提示 —— **不滚** (每帧都画)。
+    //   提示按候选是否带分组裁剪: 无分组 (纯平铺) 时只给移动/确认/搜索/数字/Esc, 不带折叠键。
+    const hint = hasGroups ? TUI_HINT : TUI_HINT_FLAT;
+    const head = `${String(title).replace(/[::]\s*$/, '')} · 共 ${real.length} ${unit} · 已筛 ${filteredItems} ${unit}  ${hint}`;
     // 状态行: `第 i/N` 与 `筛选 "x"` 必须相邻 (既有验收门按这个形状钉"数字真的跟着动")
     const shownIdx = cursor + 1;
     const status = [
@@ -685,6 +738,13 @@ export function tuiSelect(
       }
       case 'down': {
         if (cursor < maxIdx) cursor++; else cursor = 0;
+        numBuf = ''; note = '';
+        break;
+      }
+      // 触控板两指滚动 / 鼠标滚轮 (SGR 上报): 滚上=↑, 滚下=↓ —— 和方向键同一套移动逻辑
+      case 'wheel': {
+        if (k.dy === 1) { if (cursor > 0) cursor--; else cursor = maxIdx; }
+        else { if (cursor < maxIdx) cursor++; else cursor = 0; }
         numBuf = ''; note = '';
         break;
       }

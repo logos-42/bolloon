@@ -294,32 +294,29 @@ function scriptedIO(
 const ALL_OFF_VERIFY = { verify: false };   // 单测不真发请求 (真跑在 verify-model-selector.ts)
 
 describe('分步选择器: 流程与"不留痕"', () => {
-  it('七步走完会真落盘, 且是走统一入口落的', async () => {
+  it('四步走完会真落盘, 且是走统一入口落的', async () => {
     await seedConfig(baseConfig());
-    const s = scriptedIO(['deepseek', 'deepseek-v4-pro', '不设', '0.3', 'global'], { withAsk: false });
+    // 2026-10-05 (leo: 不该七层嵌套 → 4 步): 供应商 → 凭证(有 askHidden 才出现, 这里没有) → URL → 模型 → 确认
+    const s = scriptedIO(['deepseek', 'keep', 'deepseek-v4-pro'], { withAsk: false });
     const r = await SEL.runModelSelector(s.io, { ...ALL_OFF_VERIFY, assumeYes: true });
     expect(r.ok).toBe(true);
     expect(r.reachedStep).toBe('done');
-    // 步骤顺序真的走了: 供应商 → 模型 → 参数(reasoning/temperature) → 作用域 → 提交
+    // 步骤顺序真的走了: 供应商 → URL → 模型 (纯 choose 无 askHidden → 凭证步按\"沿用现有\"跳过)
     // (2026-09-27: 标题带上"接受什么输入" —— 序号/供应商 id, 标题本身就是给用户的用法说明)
     expect(s.chosen[0]).toBe('选择供应商 (序号 / 供应商 id):');
-    expect(s.chosen[1]).toBe('选择模型 (deepseek)');
-    expect(s.chosen[2]).toContain('reasoning');
-    expect(s.chosen[3]).toBe('temperature (0~2)');
-    expect(s.chosen[4]).toBe('这次切换的作用域?');
-    // 落盘: 盘上真变了, 且 temperature 也写进去了
+    expect(s.chosen[1]).toContain('URL 怎么处理');
+    expect(s.chosen[2]).toBe('选择模型 (deepseek)');
+    // 落盘: 盘上真变了
     const onDisk = JSON.parse(await fs.readFile(CFG, 'utf-8'));
     expect(onDisk.providers.deepseek.model).toBe('deepseek-v4-pro');
-    expect(onDisk.providers.deepseek.temperature).toBe(0.3);
     expect(onDisk.activeProvider).toBe('deepseek');
     expect(r.effective!.model).toBe('deepseek-v4-pro');
-    expect(r.effective!.temperature).toBe(0.3);
     // 版面简化 (2026-09-27): 默认**不再**刷内部实现话术, 成功只给一行回执……
     const out = s.printed.join('\n');
     expect(out).not.toContain('selectModel()');
     expect(out).toMatch(/✓ 已切到 deepseek\/deepseek-v4-pro/);
     // ……但细节仍然拿得到 (`--verbose`), 不是被删掉了
-    const s2 = scriptedIO(['deepseek', 'deepseek-v4-pro', '不设', '0.3', 'global'], { withAsk: false });
+    const s2 = scriptedIO(['deepseek', 'keep', 'deepseek-v4-pro'], { withAsk: false });
     await SEL.runModelSelector(s2.io, { ...ALL_OFF_VERIFY, assumeYes: true, verbose: true });
     expect(s2.printed.join('\n')).toContain('selectModel()');
   });
@@ -327,7 +324,8 @@ describe('分步选择器: 流程与"不留痕"', () => {
   it('模糊搜索: 先按关键词收窄再选 (只列出命中项)', async () => {
     await seedConfig(baseConfig());
     // glm: 先喂搜索词 'flash' → 只剩 glm-4-flash
-    const s = scriptedIO(['glm', 'flash', 'glm-4-flash', '不设', '0.7', 'global']);
+    // 2026-10-05 新流程: 供应商 → URL(keep) → 模型 (无 askHidden → 凭证步跳过)
+    const s = scriptedIO(['glm', 'keep', 'flash', 'glm-4-flash']);
     const r = await SEL.runModelSelector(s.io, { ...ALL_OFF_VERIFY, assumeYes: true, verbose: true });
     expect(r.ok).toBe(true);
     expect(s.asks.join('|')).toContain('搜索模型');           // 文本路径仍先问一次搜索词
@@ -335,15 +333,14 @@ describe('分步选择器: 流程与"不留痕"', () => {
     expect((await MS.effectiveModelConfig({})).model).toBe('glm-4-flash');
   });
 
-  it('搜不到 → 允许手工输入原始 model ID, 但仍要走完参数/作用域/提交', async () => {
+  it('搜不到 → 允许手工输入原始 model ID, 但仍要走完确认/提交', async () => {
     await seedConfig(baseConfig());
-    const s = scriptedIO(['glm', 'zzz-nothing', 'my-own-model-1', '不设', '0.7', 'global']);
+    const s = scriptedIO(['glm', 'keep', 'zzz-nothing', 'my-own-model-1']);
     const r = await SEL.runModelSelector(s.io, { ...ALL_OFF_VERIFY, assumeYes: true });
     expect(r.ok).toBe(true);
     expect(s.printed.join('\n')).toContain('已选模型: my-own-model-1');
     const onDisk = JSON.parse(await fs.readFile(CFG, 'utf-8'));
     expect(onDisk.providers.glm.model).toBe('my-own-model-1');
-    expect(onDisk.providers.glm.temperature).toBe(0.7);      // 手工 ID 也必须走完后续步骤
   });
 
   it('取消 (Esc/选择器返回 null) → 配置字节一模一样', async () => {
@@ -363,7 +360,7 @@ describe('分步选择器: 流程与"不留痕"', () => {
     const s = scriptedIO(['deepseek', null], { withAsk: false });
     const r = await SEL.runModelSelector(s.io, ALL_OFF_VERIFY);
     expect(r.cancelled).toBe(true);
-    expect(r.reachedStep).toBe('model');
+    expect(r.reachedStep).toBe('key');   // 2026-10-05: 取消发生在凭证步
     expect(await fs.readFile(CFG, 'utf-8')).toBe(before);
   });
 
@@ -383,13 +380,12 @@ describe('分步选择器: 流程与"不留痕"', () => {
 
   it('会话级 + 带新 key → credential_scope_conflict, 且配置字节不变', async () => {
     const cfg = baseConfig();
-    cfg.providers.glm = { enabled: true, apiKey: '', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.2', requiresApiKey: true };
+    cfg.providers.glm = { enabled: true, apiKey: 'k-existing-glm', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.2', requiresApiKey: true };
     await seedConfig(cfg);
     const before = await fs.readFile(CFG, 'utf-8');
-    // 供应商 → (要 key: 凭证四路里选"替换" → 掩码输入) → 模型 → 参数 → 作用域(两次都选 session)
-    // 2026-09-27: 凭证步现在**一定出现** (有 key 也给四条路), 所以脚本里要多一步"替换"。
-    const s = scriptedIO(['glm', '替换', 'glm-5.2', '不设', '0.7', 'session', 'session'], { withKey: true, withAsk: false });
-    const r = await SEL.runModelSelector(s.io, ALL_OFF_VERIFY);
+    // 供应商 → 凭证(选"替换" → 掩码输入新 key) → URL(keep) → 模型; 2026-10-05 作用域由 opts 传 session
+    const s = scriptedIO(['glm', '替换', 'keep', 'glm-5.2'], { withKey: true, withAsk: false });
+    const r = await SEL.runModelSelector(s.io, { ...ALL_OFF_VERIFY, scope: 'session' });
     expect(r.ok).toBe(false);
     expect(r.failureClass).toBe('credential_scope_conflict');
     expect(await fs.readFile(CFG, 'utf-8')).toBe(before);
@@ -403,7 +399,7 @@ describe('分步选择器: 流程与"不留痕"', () => {
     await seedConfig(cfg);
     const before = await fs.readFile(CFG, 'utf-8');
     // ① "保持现有" → 配置逐字节不变 (且界面显式说了沿用哪一份 + 指纹)
-    const keep = scriptedIO(['glm', 'keep', 'glm-5.2', '不设', '0.7', 'global'], { withKey: true, withAsk: false });
+    const keep = scriptedIO(['glm', 'keep', 'keep', 'glm-5.2'], { withKey: true, withAsk: false });
     const rk = await SEL.runModelSelector(keep.io, { ...ALL_OFF_VERIFY, assumeYes: true });
     expect(rk.ok).toBe(true);
     const keepText = keep.printed.join('\n');
@@ -413,7 +409,7 @@ describe('分步选择器: 流程与"不留痕"', () => {
     expect((JSON.parse(await fs.readFile(CFG, 'utf-8'))).providers.glm.apiKey).toBe('k-existing-glm');
     // ② 四条路的候选项真的都在 (不是"有 key 就静默跳过")
     await seedConfig(cfg);
-    const probe = scriptedIO(['glm', '__never__', 'glm-5.2', '不设', '0.7', 'global'], { withKey: true, withAsk: false });
+    const probe = scriptedIO(['glm', '__never__', 'keep', 'glm-5.2'], { withKey: true, withAsk: false });
     await SEL.runModelSelector(probe.io, ALL_OFF_VERIFY);
     const credTitle = probe.chosen.find((t) => /凭证怎么处理/.test(t));
     expect(credTitle).toBeTruthy();                                   // 凭证步**真出现**了
@@ -432,8 +428,9 @@ describe('分步选择器: 流程与"不留痕"', () => {
     await seedConfig(baseConfig());
     process.env.BOLLOON_SESSION_KEY = 'sel-sess-1';
     const before = await fs.readFile(CFG, 'utf-8');
-    const s = scriptedIO(['deepseek', 'deepseek-v4-pro', '不设', '0.7', 'session'], { withAsk: false });
-    const r = await SEL.runModelSelector(s.io, { ...ALL_OFF_VERIFY, assumeYes: true });
+    // 2026-10-05 4 步化: 作用域不再交互问, 由 opts.scope 显式传 `session`
+    const s = scriptedIO(['deepseek', 'keep', 'deepseek-v4-pro'], { withAsk: false });
+    const r = await SEL.runModelSelector(s.io, { ...ALL_OFF_VERIFY, assumeYes: true, scope: 'session' });
     expect(r.ok).toBe(true);
     expect(r.effective!.source).toBe('session');
     expect(await fs.readFile(CFG, 'utf-8')).toBe(before);
@@ -443,21 +440,15 @@ describe('分步选择器: 流程与"不留痕"', () => {
     delete process.env.BOLLOON_SESSION_KEY;
   });
 
-  it('temperature 越界 → 当场拒 (不夹到边界, 不静默), 配置字节不变', async () => {
-    await seedConfig(baseConfig());
-    const before = await fs.readFile(CFG, 'utf-8');
-    // 供应商 → 模型 → reasoning → temperature(选"手工输入") → 喂 7
-    const s = scriptedIO(['deepseek', 'deepseek-v4-pro', '不设', '__custom__', '7']);
-    const r = await SEL.runModelSelector(s.io, ALL_OFF_VERIFY);
-    expect(r.ok).toBe(false);
-    expect(r.failureClass).toBe('invalid_temperature');
-    expect(await fs.readFile(CFG, 'utf-8')).toBe(before);
-  });
+  // 2026-10-05 已删掉独立的 temperature 步骤 (4 步合并进确认) —— 越界校验由 selectModel 的
+  //   参数校验兜底, 不再在分步选择器里单列。原 `invalid_temperature` 分支随步骤一并移除。
+  //   (直接写配置的 `temperature` 仍会被 selectModel 校验, 见 model-selection.test。)
 
   it('只有 choose 没有文本输入时 (会话内) 也能走完', async () => {
     await seedConfig(baseConfig());
     const printed: string[] = [];
-    const answers: Array<string | null> = ['deepseek', 'deepseek-v4-pro', '不设', '0.7', 'global'];
+    // 2026-10-05 新流程: 供应商 → URL(keep) → 模型 (无 askHidden → 凭证步跳过)
+    const answers: Array<string | null> = ['deepseek', 'keep', 'deepseek-v4-pro'];
     const r = await SEL.runModelSelector({
       print: (l) => printed.push(l),
       choose: async (items: any[]) => {
@@ -511,8 +502,8 @@ describe('文本回退路径 (真终端): 先印选项再问 · 非法输入给�
 
   it('★ 每一步都先把选项印出来再问 (标题 → 至少一条序号行 → 计数行 → 提问)', async () => {
     await seedConfig(baseConfig());
-    // deepseek(1) → deepseek-v4-pro(2) → reasoning=不设(1) → temperature=0.3(3) → 作用域=global(1)
-    const s = textIO(['1', '2', '1', '3', '1']);
+    // 2026-10-05 新流程 (文本路径): 供应商(1) → 凭证 keep(1) → URL keep(1) → 模型(2) → 确认(y)
+    const s = textIO(['1', '1', '1', '2', 'y']);
     const r = await SEL.runModelSelector(s.io as any, { verify: false });
     expect(r.ok).toBe(true);
 
@@ -535,22 +526,23 @@ describe('文本回退路径 (真终端): 先印选项再问 · 非法输入给�
       sawNumbered = 0;
       sawCount = false;
     }
-    expect(blocks).toBe(5);       // 供应商 / 模型 / reasoning / temperature / 作用域
+    expect(blocks).toBe(3);       // 供应商 / URL / 模型 (凭证步在无 askHidden 时跳过; 确认走 y/n)
   });
 
   it('★ 非法输入: 说清原因再重问 (序号越界报范围; 对不上报"可用值见上表")', async () => {
     await seedConfig(baseConfig());
     // 2026-09-27 (二改): 候选集 = 全部家 (200+), 所以"越界"要用一个**真的超出范围**的序号 ——
     //   从前喂 99 就出界, 现在 99 是合法行号 (这本身就是"列表真的长了"的证据)。
-    const s = textIO(['99999', 'zzz', 'deepseek', '2', '1', '3', '1']);
+    // 2026-10-05: 越界/匹配失败发生在**供应商步** (第一个选择); 之后 凭证(1)→URL(1)→模型(2)→确认(y)
+    const s = textIO(['99999', 'zzz', 'deepseek', '1', '1', '2', 'y']);
     const r = await SEL.runModelSelector(s.io as any, { verify: false });
     expect(r.ok).toBe(true);
     const text = s.printed.join('\n');
     expect(text).toMatch(/✗ 序号 99999 超出范围 \(这里只有 1~\d+ 项\) — 重问/);
     expect(Number(/这里只有 1~(\d+) 项/.exec(text)![1])).toBeGreaterThan(100);   // 候选家数真的是 200+
     expect(text).toContain("✗ 没有候选的值或名字匹配 'zzz'");
-    // 同一题上重问: 越界之后又出现了一次提问
-    expect(s.asks.filter((q) => q === PICK_PROMPT).length).toBeGreaterThan(5);
+    // 同一题上重问: 越界之后又出现了一次提问 (供应商重问 2 次 + URL + 模型 = 至少 4 次 PICK_PROMPT)
+    expect(s.asks.filter((q) => q === PICK_PROMPT).length).toBeGreaterThanOrEqual(4);
   });
 
   it('★ EOF (Ctrl-D) 不是"回车 = 第 1 项": 干净取消 + 配置逐字节不变', async () => {
@@ -762,7 +754,10 @@ describe('命令面: /model pick 与状态列表', () => {
     const effRow = out.split('\n').find((l) => l.includes('● deepseek ·')) || '';
     expect(effRow.indexOf('key 已配')).toBeLessThan(effRow.indexOf('models'));   // 凭证状态在计数之前
     expect(effRow.trim().endsWith('← 当前')).toBe(true);                          // 当前那一份有标记
-    expect(out).toContain('── 当前生效 (1 家)');                                  // 分组标题带家数 (全量列出, 不藏家数)
+    // 2026-10-05 平铺化: 列表不再有 `── 分组 (N 家)` 分隔条 —— 全量家平铺为单选行, 当前那家排最前。
+    const sepCount = (out.split('\n').filter((l) => /^\s*── /.test(l))).length;
+    expect(sepCount).toBe(0);                                                      // 纯平铺: 无分组分隔条
+    expect(out).not.toContain('分组可折叠');                                        // 提示里也没有折叠字样
     expect(out).toContain('/model pick');
   });
 
