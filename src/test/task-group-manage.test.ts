@@ -131,12 +131,13 @@ describe('bolloon task group (A) + bolloon identity (B)', () => {
 
   // ---------- (A) 命令面 ----------
 
-  it('task group 不带动作 → INVALID_ARGUMENT, 并给出 5 个动作用法', async () => {
+  it('task group 不带动作 → INVALID_ARGUMENT, 并给出全部动作用法', async () => {
     const r = await run(['group']);
     expect(r.envelope.ok).toBe(false);
     expect(r.envelope.code).toBe('INVALID_ARGUMENT');
     const accepted = (r.envelope.data as any).accepted;
-    expect(accepted).toEqual(['create', 'join', 'list', 'link', 'leave']);
+    // 2026-10-05 同步: 13844de 把 GROUP_ACTIONS 扩到 9 (加 invite/kick/privacy/status)
+    expect(accepted).toEqual(['create', 'join', 'list', 'link', 'leave', 'invite', 'kick', 'privacy', 'status']);
     expect(r.human).toContain('bolloon task group join');
   });
 
