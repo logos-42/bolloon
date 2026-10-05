@@ -16,6 +16,7 @@ import {
 import { segmentChatReply, type ChatSegment } from '../agents/chat-segmenter.js';
 import { registerJudgmentsRoutes } from './routes-judgments.js';
 import { registerLlmConfigRoutes } from './routes-llm-config.js';
+import { registerWorldRoutes } from './routes-world.js';
 import { registerExternalEngineRoutes } from './routes-external-engines.js';
 import { registerTaskRoutes } from './routes-tasks.js';
 // 2026-09-19: 联系方式 / 人工批准 / 手机—桌面配对 路由
@@ -6838,6 +6839,9 @@ app.post('/active-channel', async (req, res) => {
 
   // 2026-07-06: LLM/Video/Audio 配置路由抽到 ./routes-llm-config.ts
   registerLlmConfigRoutes(app);
+
+  // 2026-10-05 (leo 四端 Intent Network P1): World API — 意图声明 + 机会匹配 (Web/Mobile 共用)
+  registerWorldRoutes(app);
 
   // 2026-07-22: 外部编码智能体 (codex/claude-code/opencode/openclaw/hermes/实验 API)
   // 发现 + 配置为供应商 + 委派

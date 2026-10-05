@@ -34,6 +34,7 @@ import { runServiceGroup, GROUPS_HELP } from './cli/commands/index.js';
 import { runMcpCommand } from './cli/commands/mcp.js';
 import { legacyJson, parseFlags, runCommand, type Code, type NextAction } from './cli/protocol-envelope.js';
 import { identityCommand } from './cli/identity-command.js';
+import { intentCommand, opportunityCommand } from './cli/intent-command.js';
 import { createRequire } from 'module';
 const _require = createRequire(import.meta.url);
 
@@ -81,6 +82,10 @@ ${BOLD}命令:${RESET}
   bolloon identity show             看本机身份 (只出 DID/指纹, 绝不打印私钥)
   bolloon identity bind-address     登记「地址 ↔ DID」绑定 (链下登记·双侧签名·可离线验签)
   bolloon identity bindings         绑定库: list | show <file> | verify <file> | publish --out <path>
+  bolloon intent set "<正在做的事>"   声明意图 (Intent Console CLI 形态; ~/.bolloon/intents.json)
+  bolloon intent list|show|rm        看/归档意图
+  bolloon opportunity scan|list      匹配世界机会 → 卡片 (tag×0.5 + kw×0.3 + budget×0.2 透明打分)
+  bolloon opportunity accept|ignore  确认/忽略机会 (accept 转 task 执行)
   bolloon update [wait|force|--dry-run|status|history]   直接执行更新 (先打印计划与风险检查; 只看计划用 --dry-run)
   bolloon doctor                    安装入口 + 版本事实 + 更新状态自洽性诊断
   bolloon runtime [plan|install]    运行时 (Node/npm/Git/Python) 检查与安装
@@ -237,6 +242,10 @@ function parseArgs(): { mode: string; args: string[] } {
     // 2026-09-24: 非交互建本机身份 (`bolloon identity init` → ~/.bolloon/identity.json)
     case 'identity':
       return { mode: 'identity', args: args.slice(1) };
+    // 2026-10-05: Intent Network (声明意图 → 匹配机会)
+    case 'intent':
+    case 'opportunity':
+      return { mode: 'intent', args: args.slice(1) };
     case 'read':
     case 'summarize':
     case 'improve':
@@ -1071,6 +1080,14 @@ async function main() {
     // 2026-09-24: bolloon identity — 非交互建/看本机身份 (新机器/第二实例用; 幂等, 不打印私钥)
     case 'identity':
       process.exit(await runCommand(parseFlags(args), identityCommand));
+      break;
+
+    // 2026-10-05: bolloon intent / opportunity — Intent Network (声明意图 → 匹配机会)
+    case 'intent':
+      process.exit(await runCommand(parseFlags(args), intentCommand));
+      break;
+    case 'opportunity':
+      process.exit(await runCommand(parseFlags(args), opportunityCommand));
       break;
 
     case 'passthrough':
