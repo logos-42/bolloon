@@ -1189,7 +1189,14 @@ export class PiAgentSession implements AgentSession {
           console.warn(`[PiAgent] 拒绝执行: ${why}`);
           return `[初始化未就绪] ${why}\n${hint}`;
         }
-      } catch { /* 门禁自身异常 → 按"不能判定"处理会阻塞一切; 这里只在能读到状态时才拦 */ }
+      } catch (err) {
+        // fail-closed: 门禁异常不能绕过初始化，否则会出现"身份未就绪但 Agent 已调用工具"。
+        const why = `初始化门禁读取失败: ${String((err as Error)?.message ?? err).slice(0, 240)}`;
+        this.pushHistory({ role: 'user', content: input });
+        this.pushHistory({ role: 'assistant', content: `[初始化未就绪] ${why}\n请运行 bolloon setup status；修复后再重试。` });
+        console.warn(`[PiAgent] 拒绝执行: ${why}`);
+        return `[初始化未就绪] ${why}\n请运行 bolloon setup status；修复后再重试。`;
+      }
     }
     this.minimaxAvailable = this.checkMinimax();
     this.actor!.state.channelId = options?.channelId ?? this.actor!.state.channelId;
