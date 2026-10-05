@@ -4112,6 +4112,8 @@ const worldIntentsList = document.getElementById('world-intents-list');
 const worldOpportunities = document.getElementById('world-opportunities');
 const worldStats = document.getElementById('world-stats');
 const worldBadge = document.getElementById('world-badge');
+const worldProfileInput = document.getElementById('world-profile-input');
+const worldProfileSet = document.getElementById('world-profile-set');
 
 let worldLoaded = false;
 let worldPollTimer = null;
@@ -4254,6 +4256,31 @@ function hideWorldView() {
 if (worldBtn) worldBtn.addEventListener('click', showWorldView);
 if (worldViewClose) worldViewClose.addEventListener('click', hideWorldView);
 if (worldRefreshBtn) worldRefreshBtn.addEventListener('click', () => { fetchWorldIntents(); refreshWorldOpportunities(); });
+
+// 画像收集 → 存为常驻意图, 世界立刻按画像重新推送 (初始化阶段)
+if (worldProfileSet) worldProfileSet.addEventListener('click', async () => {
+  const text = (worldProfileInput && worldProfileInput.value || '').trim();
+  if (!text) { worldStatus('先写一句你是谁 / 在做什么'); return; }
+  if (worldProfileSet) worldProfileSet.disabled = true;
+  try {
+    const res = await fetch('/api/world/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: text, about: text, tags: (text.match(/[\u4e00-\u9fff]{2,}|[a-z][a-z0-9_-]{1,}/gi) || []).slice(0, 6) }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      worldStatus('画像保存失败: ' + (err.error || 'HTTP ' + res.status));
+      return;
+    }
+    worldStatus('画像已保存 — 世界开始按它推送');
+    await refreshWorldOpportunities(); // 画像即常驻意图, 立刻重推
+  } catch (e) {
+    worldStatus('画像保存失败: ' + (e && e.message ? e.message : e));
+  } finally {
+    if (worldProfileSet) worldProfileSet.disabled = false;
+  }
+});
 
 // 声明意图 → 自动触发匹配 (声明即流入, 世界立刻开始找)
 if (worldIntentSet) worldIntentSet.addEventListener('click', async () => {

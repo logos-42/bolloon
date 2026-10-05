@@ -12,6 +12,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { listIntents, worldDir, type IntentRecord } from './intent-store.js';
 import { listBoard, type BoardEntry } from './task-board.js';
+import { readProfile } from './world-profile.js';
 import type { TaskBudget } from './task-contract.js';
 
 export interface OpportunityCandidate {
@@ -179,6 +180,41 @@ export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: 
   const now = Date.now();
 
   if (!active.length) {
+    // 画像流: 有用户画像 → 画像标签当常驻意图 (reason=match, 初始化阶段的推送)
+    // 无画像 → 默认世界流 (新鲜度优先, 打开即有内容)
+    const profile = await readProfile();
+    const profileTags = profile?.tags?.filter((t) => t && t.length >= 2) ?? [];
+    if (profileTags.length) {
+      const matched: OpportunityCandidate[] = [];
+      for (const entry of openEntries) {
+        const oppText = `${entry.capability} ${entry.instructionPreview || ''}`;
+        const oppTags = tagsOf(oppText);
+        const to = tagOverlap(profileTags, oppTags);
+        const kh = keywordHit(profile?.about ?? '', oppText);
+        const bf = 0.5; // 画像无预算信息 → 中性
+        const score = 0.5 * to + 0.3 * kh + 0.2 * bf;
+        if (score < 0.15) continue;
+        matched.push(candidateOf(entry, null, Math.round(score * 100) / 100, 'match', profileTags.filter((t) => oppTags.includes(t))));
+      }
+      const matchedIds = new Set(matched.map((m) => m.sourceId));
+      const unmatched = openEntries
+        .filter((e) => !matchedIds.has(e.announcementId))
+        .map((e) => {
+          const ageDays = e.createdAt ? (now - e.createdAt) / 86400000 : 1;
+          const freshness = Math.max(0.3, Math.min(0.7, 1 - ageDays / 30));
+          return candidateOf(e, null, Math.round(freshness * 100) / 100, 'world', []);
+        });
+      const all = [...matched, ...unmatched].sort((a, b) => {
+        const rank = (r: string): number => (r === 'match' ? 0 : 1);
+        if (rank(a.reason) !== rank(b.reason)) return rank(a.reason) - rank(b.reason);
+        return b.score - a.score;
+      });
+      // 世界观察: 画像流看到的机会也记 memory
+      for (const c of all.filter((x) => x.reason === 'match').slice(0, 10)) {
+        void noteObservation({ ts: Date.now(), kind: 'opportunity-seen', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'match' });
+      }
+      return { ok: true, results: all.slice(0, limit) };
+    }
     // 默认世界流: 新鲜度优先
     const sorted = [...openEntries].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
     const out = sorted.slice(0, limit).map((e) => {

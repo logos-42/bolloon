@@ -119,6 +119,7 @@ bolloon doctor             # 安装入口 + 版本事实 + 更新状态自洽性
 **今天真实存在的 CLI 子命令** (`src/cli-entry.ts` parseArgs, 逐条核对, 不在表里的都是 `(planned)`):
 `--version` · `--help` · `--gui/-g` · `--web/-w` · `--cli/-c` · `setup|init` · `update` · `doctor` · `runtime` ·
 `model` · `trace` · `p2p` · `task` · `engine list|run` · `x402 fetch|balance` · `read|summarize|improve` ·
+`intent set|list|show|rm` · `opportunity scan|list|accept|ignore` · `world profile set|show` · `world watch status` (Intent Network, 见 §⑩) ·
 `network|agent|task|wallet|payment|trade` 六个命令组 (P3 统一信封) ·
 `chain status|escrow show|timeline|index status|stats|sync|trade create|submit-proof|release|recover` (**P6 链上能力**, 见 §⑨) ·
 `mcp serve|tools` (P4)。

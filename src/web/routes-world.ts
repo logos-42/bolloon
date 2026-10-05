@@ -13,7 +13,9 @@
  */
 import type { Express, Request, Response } from 'express';
 import { setIntent, listIntents, getIntent, removeIntent } from '../agents/intent-store.js';
-import { scanOpportunities, recordFeedback } from '../agents/opportunity-match.js';
+import { scanOpportunities, recordFeedback, readObservations } from '../agents/opportunity-match.js';
+import { readProfile, setProfile } from '../agents/world-profile.js';
+import { worldWatcherStatus } from '../agents/world-watcher.js';
 
 function json(res: Response, status: number, body: unknown): void {
   res.status(status).json(body);
@@ -91,5 +93,28 @@ export function registerWorldRoutes(app: Express): void {
     const sourceId = String(req.params.id).replace(/^opp_/, 'ann-');
     const r = await recordFeedback('accept', sourceId);
     json(res, r.ok ? 200 : 400, { ok: r.ok, opportunityId: req.params.id, accepted: r.ok, error: r.error });
+  });
+
+  // ── 用户画像 (leo 三条分发规划③: 初始化收集 → 常驻意图推送) ─────────────────
+  app.get('/api/world/profile', async (_req, res) => {
+    const profile = await readProfile();
+    json(res, 200, { ok: true, profile });
+  });
+
+  app.put('/api/world/profile', async (req, res) => {
+    const b = bodyOf(req);
+    const r = await setProfile({
+      name: typeof b.name === 'string' ? b.name : undefined,
+      about: typeof b.about === 'string' ? b.about : undefined,
+      tags: Array.isArray(b.tags) ? b.tags.filter((t: unknown): t is string => typeof t === 'string') : undefined,
+    });
+    json(res, r.ok ? 200 : 400, { ok: r.ok, profile: r.profile, error: r.error });
+  });
+
+  // ── 世界观察器状态 (自动触发机制可见性) ─────────────────────────────────────
+  app.get('/api/world/watch', async (_req, res) => {
+    const status = worldWatcherStatus();
+    const observations = await readObservations(20);
+    json(res, 200, { ok: true, watcher: status, recentObservations: observations });
   });
 }

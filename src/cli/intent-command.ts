@@ -22,8 +22,10 @@ import {
   setIntent, listIntents, removeIntent, getIntent, type IntentRecord,
 } from '../agents/intent-store.js';
 import {
-  scanOpportunities, matchOneIntentText,
+  scanOpportunities, matchOneIntentText, recordFeedback, readObservations,
 } from '../agents/opportunity-match.js';
+import { readProfile, setProfile } from '../agents/world-profile.js';
+import { worldWatcherStatus } from '../agents/world-watcher.js';
 
 function parseDeadline(v: string): number | null | undefined {
   const s = String(v || '').trim();
@@ -64,7 +66,9 @@ ${title('bolloon opportunity')}
 `;
 
 export async function intentCommand(flags: CliFlags): Promise<CommandResult> {
-  const action = String(flags.positionals[1] ?? '').trim();
+  // 2026-10-05 修正: parseArgs 已 slice(1) 剥掉命令名 → positionals[0] 就是动作
+  // (旧代码读 [1], 导致 `bolloon intent set "..."` 把正文当动作, 真机验证才暴露)
+  const action = String(flags.positionals[0] ?? '').trim();
   if (action === 'set') return intentSet(flags);
   if (action === 'list') return intentList(flags);
   if (action === 'rm') return intentRm(flags);
@@ -78,7 +82,7 @@ export async function intentCommand(flags: CliFlags): Promise<CommandResult> {
 
 async function intentSet(flags: CliFlags): Promise<CommandResult> {
   const head = 'bolloon intent set';
-  const text = String(flags.positionals[2] ?? '').trim() || String(opt(flags, '--text') ?? '').trim();
+  const text = String(flags.positionals[1] ?? '').trim() || String(opt(flags, '--text') ?? '').trim();
   if (!text) {
     return {
       envelope: failEnvelope('INVALID_ARGUMENT', '缺少意图文本', { usage: 'bolloon intent set "<一句话>"', accepted: ['bolloon intent set "建立聚变公司"'] }, [], 'needs_human'),
@@ -141,7 +145,7 @@ async function intentList(flags: CliFlags): Promise<CommandResult> {
 
 async function intentRm(flags: CliFlags): Promise<CommandResult> {
   const head = 'bolloon intent rm';
-  const id = String(flags.positionals[2] ?? '').trim();
+  const id = String(flags.positionals[1] ?? '').trim();
   if (!id) {
     return { envelope: failEnvelope('INVALID_ARGUMENT', '缺少意图 id', { usage: 'bolloon intent rm <id>', accepted: ['bolloon intent rm int_xxxx'] }, [], 'needs_human'), human: `${title(head)}\n  用法: bolloon intent rm <id> [--done]` };
   }
@@ -156,7 +160,7 @@ async function intentRm(flags: CliFlags): Promise<CommandResult> {
 
 async function intentShow(flags: CliFlags): Promise<CommandResult> {
   const head = 'bolloon intent show';
-  const id = String(flags.positionals[2] ?? '').trim();
+  const id = String(flags.positionals[1] ?? '').trim();
   if (!id) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺少意图 id', {}, [], 'needs_human'), human: `${title(head)}\n  用法: bolloon intent show <id>` };
   const r = await getIntent(id);
   if (!r.ok) return { envelope: failEnvelope('INTERNAL_ERROR', r.error || '', {}, [], 'needs_human'), human: `${title(head)}\n  ${r.error}` };
@@ -174,7 +178,8 @@ async function intentShow(flags: CliFlags): Promise<CommandResult> {
 }
 
 export async function opportunityCommand(flags: CliFlags): Promise<CommandResult> {
-  const action = String(flags.positionals[1] ?? '').trim();
+  // 2026-10-05 修正: 同 intentCommand, positionals[0] = 动作 (parseArgs 已剥命令名)
+  const action = String(flags.positionals[0] ?? '').trim();
   if (action === 'scan') return opportunityScan(flags);
   if (action === 'list') return opportunityList(flags);
   if (action === 'accept') return opportunityAccept(flags);
@@ -239,7 +244,7 @@ async function opportunityList(flags: CliFlags): Promise<CommandResult> {
 
 async function opportunityAccept(flags: CliFlags): Promise<CommandResult> {
   const head = 'bolloon opportunity accept';
-  const id = String(flags.positionals[2] ?? '').trim();
+  const id = String(flags.positionals[1] ?? '').trim();
   if (!id) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺少机会 id', { usage: 'bolloon opportunity accept <id>', accepted: ['bolloon opportunity accept opp_xxxx'] }, [], 'needs_human'), human: `${title(head)}\n  用法: bolloon opportunity accept <id> [--as-task]` };
   // v1: accept 的核心 = 给出「转成 action」的命令。--as-task 才真正转 (需要 board 有对应公告可 claim)
   const asTask = has(flags, '--as-task');
@@ -260,10 +265,90 @@ async function opportunityAccept(flags: CliFlags): Promise<CommandResult> {
 
 async function opportunityIgnore(flags: CliFlags): Promise<CommandResult> {
   const head = 'bolloon opportunity ignore';
-  const id = String(flags.positionals[2] ?? '').trim();
+  const id = String(flags.positionals[1] ?? '').trim();
   if (!id) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺少机会 id', {}, [], 'needs_human'), human: `${title(head)}\n  用法: bolloon opportunity ignore <id>` };
+  const sourceId = String(id).replace(/^opp_/, 'ann-');
+  const r = await recordFeedback('ignore', sourceId);
+  if (!r.ok) return { envelope: failEnvelope('INVALID_ARGUMENT', `忽略失败: ${r.error}`, {}, [], 'needs_human'), human: `${title(head)}\n  ${r.error}` };
   return {
-    envelope: okEnvelope('OK', `机会 ${id} 已忽略 (负证据, P3 Memory 回写降权)`, { ok: true, opportunityId: id, note: 'v1 只记录; 降权回写 P3' }, [id], null),
-    human: `${title(head)}\n  已忽略 ${id}\n\n  (v1 只标记; Memory 负证据回写是 P3)`,
+    envelope: okEnvelope('OK', `机会 ${id} 已忽略 (负证据, 同源不再流入)`, { ok: true, opportunityId: id, ignored: true }, [id], null),
+    human: `${title(head)}\n  已忽略 ${id}\n\n  (校准环: 同源公告不再流入世界流; 用 opportunity scan 看新的)`,
+  };
+}
+
+// ==================== `bolloon world` (2026-10-05, leo 三条分发规划) ====================
+// · `bolloon world profile set "<你是谁/在做什么>" [--name X] [--about Y] [--tag T ...]`  初始化收集画像
+// · `bolloon world profile show`                                                          看当前画像
+// · `bolloon world watch status`                                                          世界观察器状态 (自动触发可见性)
+export const WORLD_USAGE = [
+  'bolloon world — 世界 (自动观察 + 画像推送)',
+  '  用法:',
+  '    bolloon world profile set "<你是谁/在做什么>" [--name X] [--about Y] [--tag T ...]',
+  '    bolloon world profile show',
+  '    bolloon world watch status',
+].join('\n');
+
+export async function worldCommand(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon world';
+  // 2026-10-05 修正: parseArgs 已剥命令名 → positionals[0]=sub (profile/watch), [1]=verb
+  const sub = String(flags.positionals[0] ?? '').trim();
+  const verb = String(flags.positionals[1] ?? '').trim();
+  if (sub === 'profile' && verb === 'set') return worldProfileSet(flags);
+  if (sub === 'profile' && verb === 'show') return worldProfileShow();
+  if (sub === 'watch' && verb === 'status') return worldWatchStatus();
+  return { envelope: okEnvelope('OK', WORLD_USAGE.split('\n')[0], { world: true }, [], null), human: WORLD_USAGE };
+}
+
+async function worldProfileSet(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon world profile set';
+  const positional = String(flags.positionals[2] ?? '').trim();
+  if (!positional && !opt(flags, '--name') && !opt(flags, '--about') && !opt(flags, '--tag')) {
+    return { envelope: failEnvelope('INVALID_ARGUMENT', '缺画像内容', {}, [], 'needs_human'), human: `${title(head)}\n  用法: ${head} "<你是谁/在做什么>"` };
+  }
+  const r = await setProfile({
+    name: String(opt(flags, '--name') ?? '').trim() || (positional ? positional : undefined),
+    about: String(opt(flags, '--about') ?? '').trim() || undefined,
+    tags: flags.options.has('--tag') ? (flags.options.get('--tag') ?? []).map((t: string) => String(t).trim()).filter(Boolean) : undefined,
+  });
+  if (!r.ok) return { envelope: failEnvelope('INVALID_ARGUMENT', r.error ?? '画像写入失败', {}, [], 'needs_human'), human: `${title(head)}\n  ${r.error}` };
+  return {
+    envelope: okEnvelope('OK', '画像已保存 (常驻意图, 世界流开始按画像推送)', { ...r.profile }, [], null),
+    human: `${title(head)}\n  已保存画像:\n    ${r.profile.name}\n    ${r.profile.about}\n    标签: ${r.profile.tags.join(' · ') || '(无)'}\n\n  (无 active intent 时, 画像标签就是意图 —— 世界按它推送)`,
+  };
+}
+
+async function worldProfileShow(): Promise<CommandResult> {
+  const head = 'bolloon world profile show';
+  const p = await readProfile();
+  if (!p) {
+    return {
+      envelope: okEnvelope('OK', '还没有画像', { profile: null }, [], null),
+      human: `${title(head)}\n  (还没有画像)\n\n  ${hint('bolloon world profile set "<你是谁/在做什么>" --about "..." --tag AI --tag 物理')}`,
+    };
+  }
+  return {
+    envelope: okEnvelope('OK', '当前画像', { ...p }, [], null),
+    human: `${title(head)}\n  名字: ${p.name}\n  在做: ${p.about}\n  标签: ${p.tags.join(' · ') || '(无)'}\n  更新: ${new Date(p.updatedAt).toISOString().slice(0, 10)}`,
+  };
+}
+
+async function worldWatchStatus(): Promise<CommandResult> {
+  const head = 'bolloon world watch status';
+  const s = worldWatcherStatus();
+  const obs = await readObservations(5);
+  const lines = obs.length
+    ? obs.map((o) => `    · ${new Date(o.ts).toISOString().slice(11, 19)}  ${o.reason === 'match' ? '● 匹配' : '○ 变化'}  ${o.title.slice(0, 40)}`).join('\n')
+    : '    (暂无观察记录 — 世界安静, 或还没公告)';
+  return {
+    envelope: okEnvelope('OK', '世界观察器', { watcher: s, recent: obs }, [], null),
+    human: [
+      title(head),
+      `  运行中: ${s.running ? '是 (每 10 分钟自动扫描)' : '否'}`,
+      `  已扫描: ${s.ticks} 轮`,
+      '  最近观察:',
+      lines,
+      '',
+      hint('世界观察是自动的 —— 有公告进来, AI 就会看见并记录'),
+    ].join('\n'),
   };
 }

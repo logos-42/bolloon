@@ -108,6 +108,8 @@ const OPTIONS_WITH_VALUE = new Set([
   //   (名字先查过全仓: `--address/--label/--out/--chain-id/--bindings-dir/--address-key-file/--did-key-file/--expires-at`
   //    在其他 cli-entry 命令里都没有被当布尔开关用过 ⇒ 加进"带值选项"不会改变既有解析)
   '--address', '--label', '--out', '--chain-id', '--bindings-dir', '--address-key-file', '--did-key-file', '--expires-at',
+  // 2026-10-05: `bolloon world profile set` 的用户画像字段 (名/在做/标签, 带值)
+  '--name', '--about', '--tag',
 ]);
 
 export function parseFlags(args: string[]): CliFlags {
