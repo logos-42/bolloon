@@ -67,6 +67,18 @@ WORLD → 发现变化 → INTENT → 匹配网络 → AGENTS (人才/服务/信
 - 任何提示**用完即消失**, 不常驻 (否则眼镜变成脸上的手机)。
 - 最有价值层 = **Context**: 你在哪/在看什么/和谁说话/刚说了什么/你的 Intent/日程/Agent 状态 → World Context × User Intent = 实时分发。
 
+**实现边界 (2026-10-05 落定)**: 眼镜端不造第二套数据层 —— 复用 `~/.bolloon/world/` (intents/opportunities/memory) + World API (`/api/intents` `/api/opportunities` `/api/world/watch`)。眼镜端形态:
+- **自动流入**: 世界观察器 (`world-watcher.ts` 服务端 10 分钟扫描) 把新机会写观察日志 → 眼镜端「机会进入视野」= 从 `/api/world/watch` 拉最近观察, 瞬时一条提示 (用完即消失)。
+- **画像即意图**: 眼镜端初始化用 `world/profile.json` 的用户画像当常驻意图 (无 active intent 时 reason=match), 不要求人在眼镜上声明意图。
+- **现实落点**: 仓库已有 `rokid/glass/` Kotlin `RokidGlassesAdapter` (CXR-M SDK 已接入 `android/`, JNI 只发 arm .so; 真机联调待 Rokid 授权材料与设备)。眼镜端 UI = 1 秒瞬时提示卡, 无 App 概念, 提示文本直接来自机会卡片 title/summary (≤40 字)。
+- **诚实边界**: 真机联调未做 (无设备/授权); 眼镜端本地无执行能力 —— 所有动作回 CLI/Web 的 task 链路执行, 眼镜只负责「看见 + 决定要不要」。 
+
+## 5.5 Mobile = Agent Discovery (实现边界, 2026-10-05 落定)
+
+- **首页 = 世界机会流** (`#world-feed`): 打开即拉 `/api/opportunities` (默认世界流, 无意图也流入) + 45s 自动刷新; 卡片 = 标题/摘要/匹配度/看看/忽略; 忽略走 `POST /api/opportunities/:id/ignore` 校准环 (同源不再流入)。
+- **自动流入是主体**: 不是按钮式被动响应 —— 机会卡片在智能体卡片轨道上方自动流入; AI 持续观察 (服务端 watcher), 手机只是它的一个感知窗口。
+- **移动端独立 web 产物**: `dist/ios` (mobile.html) 走 `CAP_WEB_DIR=dist/ios npx cap sync ios`, 与 PC 版 `dist/web` 分离 (mobile-parity 门逐字节核对)。
+
 ## 6. 四层架构 (本体只有一个)
 
 ```text
