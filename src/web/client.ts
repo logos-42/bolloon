@@ -4094,6 +4094,205 @@ if (judgmentsModal) {
   });
 }
 
+// ==================== World (2026-10-05, leo Intent Network) ====================
+// 设计原则: 世界主动流入 (Twitter 式时间线), 不是按钮式被动响应。
+//   · 打开 World → 自动加载 + 启动持续流入轮询 (每 30s 自动刷新, 像 Twitter 时间线)
+//   · 页面加载后自动拉一次机会数 → 徽章自动更新 (世界在变化, 不用人进来看)
+//   · 声明意图 → 自动触发匹配 (声明即流入, 不要求再点「扫描」)
+const worldView = document.getElementById('world-view');
+const worldBtn = document.getElementById('world-btn');
+const worldViewClose = document.getElementById('world-view-close');
+const worldRefreshBtn = document.getElementById('world-refresh-btn');
+const worldIntentInput = document.getElementById('world-intent-input');
+const worldIntentPriority = document.getElementById('world-intent-priority');
+const worldIntentBudget = document.getElementById('world-intent-budget');
+const worldIntentSet = document.getElementById('world-intent-set');
+const worldError = document.getElementById('world-intent-error');
+const worldIntentsList = document.getElementById('world-intents-list');
+const worldOpportunities = document.getElementById('world-opportunities');
+const worldStats = document.getElementById('world-stats');
+const worldBadge = document.getElementById('world-badge');
+
+let worldLoaded = false;
+let worldPollTimer = null;
+const WORLD_POLL_MS = 30000; // 持续流入: 每 30s 自动刷新 (Twitter 时间线节奏)
+
+function worldStatus(msg) {
+  if (worldError) { worldError.textContent = msg || ''; worldError.style.display = msg ? '' : 'none'; }
+}
+
+async function fetchWorldIntents() {
+  try {
+    const res = await fetch('/api/intents');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    renderWorldIntents(data.intents || []);
+    if (worldStats) {
+      const active = (data.intents || []).filter((i) => i.status === 'active').length;
+      worldStats.textContent = `意图 ${active} 个活跃 · 世界持续观察中`;
+    }
+    return data.intents || [];
+  } catch (e) {
+    worldStatus('拉取意图失败: ' + (e && e.message ? e.message : e));
+    return [];
+  }
+}
+
+function renderWorldIntents(intents) {
+  if (!worldIntentsList) return;
+  if (!intents.length) {
+    worldIntentsList.innerHTML = '<div class="form-hint" style="font-size:11px;">(还没有意图 — 右边声明一个)</div>';
+    return;
+  }
+  const active = intents.filter((i) => i.status === 'active');
+  const rows = active.map((i) => {
+    const stars = '★'.repeat(i.priority) + '☆'.repeat(5 - i.priority);
+    return `<div class="world-intent-row" style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border:1px solid var(--border,#3a3a36);border-radius:8px;margin-bottom:6px;font-size:11px;">
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><b>${i.text.replace(/</g, '&lt;')}</b> <span style="color:#909088;">${stars}</span></span>
+      <button class="btn-secondary btn-sm" data-intent-rm="${i.id}" style="font-size:10px;padding:1px 6px;">✕</button>
+    </div>`;
+  }).join('');
+  worldIntentsList.innerHTML = rows;
+  worldIntentsList.querySelectorAll('[data-intent-rm]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try { await fetch('/api/intents/' + btn.dataset.intentRm, { method: 'DELETE' }); } catch (e) {}
+      fetchWorldIntents();
+    });
+  });
+}
+
+async function refreshWorldOpportunities() {
+  try {
+    const res = await fetch('/api/opportunities?min-score=0.4');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    renderWorldOpportunities(data.opportunities || []);
+    if (worldBadge) {
+      const n = (data.opportunities || []).length;
+      worldBadge.textContent = String(n);
+      worldBadge.style.display = n > 0 ? '' : 'none';
+    }
+    return data.opportunities || [];
+  } catch (e) {
+    worldStatus('扫描机会失败: ' + (e && e.message ? e.message : e));
+    return [];
+  }
+}
+
+function renderWorldOpportunities(opps) {
+  if (!worldOpportunities) return;
+  if (!opps.length) {
+    worldOpportunities.innerHTML = '<div class="form-hint">世界正在持续送来 — 稍等一下。</div>';
+    return;
+  }
+  const cards = opps.map((o) => {
+    const pct = Math.round(o.score * 100);
+    return `<div class="world-opp-card" style="border:1px solid var(--border,#3a3a36);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--bg-card,#222220);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <b style="font-size:14px;">${String(o.title || '').slice(0, 60).replace(/</g, '&lt;')}</b>
+        <span style="color:#c4d640;font-weight:700;font-size:14px;">${pct}%</span>
+      </div>
+      <div style="font-size:12px;color:#909088;margin-top:4px;">${String(o.summary || '').slice(0, 90).replace(/</g, '&lt;')}</div>
+      <div style="margin-top:8px;display:flex;gap:8px;">
+        <button class="btn-primary btn-sm" data-opp-action="accept" data-opp-id="${o.id}" style="font-size:11px;padding:3px 12px;">看看</button>
+        <button class="btn-secondary btn-sm" data-opp-action="ignore" data-opp-id="${o.id}" style="font-size:11px;padding:3px 12px;">忽略</button>
+      </div>
+    </div>`;
+  }).join('');
+  worldOpportunities.innerHTML = cards;
+  worldOpportunities.querySelectorAll('[data-opp-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.oppId;
+      if (btn.dataset.oppAction === 'ignore') {
+        try { await fetch('/api/opportunities/' + id + '/ignore', { method: 'POST' }); } catch (e) {}
+        btn.closest('.world-opp-card').style.opacity = '0.3';
+        btn.closest('.world-opp-card').style.filter = 'grayscale(1)';
+      } else {
+        try { await fetch('/api/opportunities/' + id + '/accept', { method: 'POST' }); } catch (e) {}
+        const srcId = id.replace(/^opp_/, 'ann-');
+        worldStatus('已记下: ' + srcId);
+        btn.closest('.world-opp-card').style.borderColor = '#c4d640';
+      }
+    });
+  });
+}
+
+async function loadWorld() {
+  worldLoaded = true;
+  worldStatus('');
+  await fetchWorldIntents();
+  await refreshWorldOpportunities();
+}
+
+function startWorldPoll() {
+  if (worldPollTimer) clearInterval(worldPollTimer);
+  worldPollTimer = setInterval(() => {
+    // 持续流入: 自动刷新机会, 不打扰用户操作
+    refreshWorldOpportunities();
+    fetchWorldIntents();
+  }, WORLD_POLL_MS);
+}
+
+function stopWorldPoll() {
+  if (worldPollTimer) { clearInterval(worldPollTimer); worldPollTimer = null; }
+}
+
+function showWorldView() {
+  if (worldView) {
+    worldView.hidden = false;
+    if (!worldLoaded) loadWorld();
+    else { fetchWorldIntents(); refreshWorldOpportunities(); }
+    startWorldPoll(); // 打开即持续流入
+  }
+}
+
+function hideWorldView() {
+  if (worldView) worldView.hidden = true;
+  stopWorldPoll(); // 离开停轮询 (省资源; 徽章仍由页面级自动刷新驱动)
+}
+
+if (worldBtn) worldBtn.addEventListener('click', showWorldView);
+if (worldViewClose) worldViewClose.addEventListener('click', hideWorldView);
+if (worldRefreshBtn) worldRefreshBtn.addEventListener('click', () => { fetchWorldIntents(); refreshWorldOpportunities(); });
+
+// 声明意图 → 自动触发匹配 (声明即流入, 世界立刻开始找)
+if (worldIntentSet) worldIntentSet.addEventListener('click', async () => {
+  const text = (worldIntentInput && worldIntentInput.value || '').trim();
+  if (!text) { worldStatus('先写一句你现在在做什么'); return; }
+  if (worldIntentSet) worldIntentSet.disabled = true;
+  try {
+    const body = { text, priority: Number(worldIntentPriority ? worldIntentPriority.value : 3) };
+    if (worldIntentBudget && worldIntentBudget.value.trim()) body.budget = worldIntentBudget.value.trim();
+    const res = await fetch('/api/intents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      worldStatus('声明失败: ' + (err.error || 'HTTP ' + res.status));
+      return;
+    }
+    if (worldIntentInput) worldIntentInput.value = '';
+    if (worldIntentBudget) worldIntentBudget.value = '';
+    await fetchWorldIntents();
+    await refreshWorldOpportunities(); // 声明即自动匹配 — 世界立刻开始为你找
+    if (worldPollTimer) { clearInterval(worldPollTimer); startWorldPoll(); } // 声明后重新计时
+  } catch (e) {
+    worldStatus('声明失败: ' + (e && e.message ? e.message : e));
+  } finally {
+    if (worldIntentSet) worldIntentSet.disabled = false;
+  }
+});
+if (worldIntentInput) {
+  worldIntentInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && worldIntentSet) worldIntentSet.click();
+  });
+}
+
+// 页面加载后自动拉一次机会数 → 徽章自动亮 (世界在变化, 不用人进来看)
+(async function autoWorldBadge() {
+  try {
+    await refreshWorldOpportunities();
+  } catch (e) { /* 失败静默 — 徽章只是提醒 */ }
+})();
+
 // --- 导入文件 (.json / .yaml / .md / .txt / .html) ---
 const judgmentImportBtn = document.getElementById('judgment-import-btn');
 const judgmentImportFile = document.getElementById('judgment-import-file');

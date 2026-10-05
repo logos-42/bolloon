@@ -186,14 +186,13 @@ export async function opportunityCommand(flags: CliFlags): Promise<CommandResult
   };
 }
 
-function cardRows(opts: { id: string; score: number; breakdown: { tagOverlap: number; keywordHit: number; budgetFit: number }; title: string; summary: string; budget: string | null; matchTags: string[] }): string[] {
+function cardRows(opts: { id: string; score: number; reason: 'match' | 'world'; title: string; summary: string; budget: string | null; matchTags: string[] }): string[] {
   const pct = Math.round(opts.score * 100);
+  const tag = opts.reason === 'match' ? '● 与你匹配' : '○ 世界变化';
   return [
-    `  ${pct}%  ${opts.title}`,
+    `  ${pct}% ${tag}  ${opts.title}`,
     `      ${opts.summary}`,
-    `      匹配标签: ${opts.matchTags.join(' · ') || '(无)'} · 预算: ${opts.budget ?? '未知'}`,
-    `      score=${opts.score} (tag×0.5=${opts.breakdown.tagOverlap} + kw×0.3=${opts.breakdown.keywordHit} + budget×0.2=${opts.breakdown.budgetFit})`,
-    `      id=${opts.id}`,
+    `      预算: ${opts.budget ?? '未知'} · id=${opts.id}`,
   ];
 }
 

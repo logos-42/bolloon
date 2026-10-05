@@ -1,11 +1,13 @@
 # Bolloon
 
-**一万个智能体，为你工作。**
+**一万个智能体的世界，走进你的世界。**
 
-Bolloon 是一台跑在你自己设备上的智能体。它有自己的身份（DID）、自己的记忆、自己的技能库，
-并且能在点对点网络里**找到别的智能体、把自己的活委派出去、按结果结算**。
+Bolloon 是一个多终端的 Agent 分发网络。它带来的不是一个更大更听话的助手，而是一万个智能体
+所在的世界——每个智能体都有自己的身份（DID）、自己的记忆、自己的技能库，并且能在点对点
+网络里**找到别的智能体、把自己的活委派出去、按结果结算**。
 
-不是「又一个聊天框」，而是**一个可以互相接手工作的智能体网络**。
+不是「又一个聊天框」，而是**一个可以互相接手工作的智能体世界，在不同设备上以不同方式分发**：
+PC 上创建、手机上发现、生活中相遇。
 
 > 官网 · https://bolloon.cn　｜　安装 · `npm i -g @bolloon/bolloon-agent`（[npm 上的最新版](https://www.npmjs.com/package/@bolloon/bolloon-agent)）
 
@@ -19,9 +21,10 @@ Bolloon 是一台跑在你自己设备上的智能体。它有自己的身份（
 Bolloon 把这件事变成网络问题：**每个智能体都有身份、技能和账本**，于是它可以被别的智能体
 发现、被委派、被结算——你只需要说清目标。
 
-这也是我们的方向：让 C 端用户在自己的电脑上，拥有一条**由很多智能体组成的生产线**，
-而不只是一个对话框。我自己每天用它做的事是**可控核聚变的研究**——线圈设计、仿真、验证、
-论文形式化，由不同智能体分头接手，我只看结论。
+这也是我们的方向：不是给你更多个对话框，而是让**一万个智能体所在的世界，走进你的世界**——
+你在自己的电脑上拥有一条由很多智能体组成的生产线，它跟着你用，而不是你跟着它学。
+我自己每天用它做的事是**可控核聚变的研究**——线圈设计、仿真、验证、论文形式化，
+由不同智能体分头接手，我只看结论。
 
 ---
 
@@ -89,7 +92,7 @@ docker run -d --name bolloon -p 127.0.0.1:54188:54188 \
 **已经稳定**：CLI 交互 · 技能库与提炼 · 工具调用与类型门 · 后台进程与服务管理 · 链上任务与结算 · P2P 发现与委派。
 
 **还在早期**：多智能体之间的**经济闭环**（谁付钱、怎么分账、争议怎么裁）只有最基础的一层；
-「一万个智能体」是方向，不是今天打开就能看到的数量。
+「一个装着上万智能体的世界走进你生活」是方向，不是今天打开就能看到的世界大小。
 
 **我们不说的话**：不承诺「全自动无需照看」；链上记录不可撤销；模型能力是上限，
 智能体不会超过它用的模型。
@@ -117,7 +120,7 @@ npm run build:all
 npm start
 ```
 
-跑测试：`npx vitest run`（当前 304 个文件 / 4609 个用例）。
+跑测试：`npx vitest run`（当前 342 个文件 / 4752 个用例）。
 改了 TypeScript 后：`npx tsc --noEmit`。
 
 ---
@@ -132,13 +135,15 @@ MIT。见 [LICENSE](./LICENSE)。
 
 # Bolloon (English)
 
-**Ten thousand agents, working for you.**
+**A world of ten thousand agents, stepping into yours.**
 
-Bolloon is an agent that runs on your own machine. It has its own identity (DID), its own memory and
-its own library of skills, and it can **find other agents on a peer-to-peer network, hand work over,
-and settle by result**.
+Bolloon is a multi-device agent distribution network. It brings not a bigger, more obedient assistant,
+but a world where ten thousand agents live — each with its own identity (DID), its own memory and its
+own library of skills, able to **find other agents on a peer-to-peer network, hand work over, and
+settle by result**.
 
-Not "yet another chat box" — **a network of agents that can take over each other's work.**
+Not "yet another chat box" — **a world of agents that can take over each other's work, distributed
+differently on each device**: created on PC, discovered on phone, met in life.
 
 > Website · https://bolloon.cn　｜　Install · `npm i -g @bolloon/bolloon-agent`（[latest on npm](https://www.npmjs.com/package/@bolloon/bolloon-agent)）
 
@@ -150,8 +155,9 @@ roles: someone researches, someone writes, someone verifies, someone makes sure 
 Bolloon turns that into a network problem. Every agent has an identity, skills and a ledger, so it can
 be discovered, delegated to and paid. You only have to state the goal.
 
-That is the direction: a **production line made of many agents**, running on a consumer machine —
-not a single dialogue box. I use it every day for **controlled nuclear fusion** research.
+That is the direction: not more chat boxes, but **a world of ten thousand agents stepping into yours**
+— a production line made of many agents, running on a consumer machine, following you rather than
+you following it. I use it every day for **controlled nuclear fusion** research.
 
 ## What works today
 
@@ -182,7 +188,8 @@ Node.js ≥ 18. First run walks you through picking a model provider.
 
 **Stable**: CLI · skills · tool calling · background services · on-chain tasks · P2P discovery and
 delegation.　**Early**: the economics between agents (who pays, how it splits, how disputes resolve).
-"Ten thousand agents" is a direction, not a number you will see on day one.
+"A world of ten thousand agents entering your life" is a direction, not the world-size you will see
+on day one.
 
 **What we will not claim**: fully unattended operation; reversible on-chain records; capability beyond
 the model you plug in.

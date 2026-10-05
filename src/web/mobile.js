@@ -506,6 +506,59 @@
   let currentCardIndex = 0;
   let allAgentCards = [];
 
+  // === 世界机会流 (2026-10-05, leo Intent Network) ===
+  // 设计: 自动流入 (打开首页即拉), 不是按钮式被动响应。ignore/accept 走 feedback 校准环。
+  let worldFeedShown = false;
+  let worldFeedTimer = null;
+  async function loadWorldFeed() {
+    const feed = $('#world-feed');
+    const cards = $('#world-feed-cards');
+    if (!feed || !cards) return;
+    try {
+      const res = await fetch('/api/opportunities?min-score=0.2&limit=10');
+      if (!res.ok) return;
+      const data = await res.json();
+      const opps = (data.opportunities || []).slice(0, 6);
+      if (!opps.length) { feed.hidden = true; return; }
+      feed.hidden = false;
+      worldFeedShown = true;
+      cards.innerHTML = opps.map((o) => {
+        const pct = Math.round(o.score * 100);
+        const tag = o.reason === 'match' ? '与你匹配' : '世界变化';
+        return `<div class="world-feed-card">
+          <div class="world-feed-card-top">
+            <span class="world-feed-title">${escapeHtml(String(o.title || '').slice(0, 34))}</span>
+            <span class="world-feed-pct">${pct}%<small> ${tag}</small></span>
+          </div>
+          <div class="world-feed-summary">${escapeHtml(String(o.summary || '').slice(0, 60))}</div>
+          <div class="world-feed-actions">
+            <button class="world-feed-btn" data-wf-action="accept" data-wf-id="${o.id}">看看</button>
+            <button class="world-feed-btn ghost" data-wf-action="ignore" data-wf-id="${o.id}">忽略</button>
+          </div>
+        </div>`;
+      }).join('');
+      cards.querySelectorAll('[data-wf-action]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.wfId;
+          const action = btn.dataset.wfAction;
+          try { await fetch('/api/opportunities/' + id + '/' + action, { method: 'POST' }); } catch (e) {}
+          const card = btn.closest('.world-feed-card');
+          if (card) {
+            card.style.opacity = '0.3';
+            card.style.filter = action === 'ignore' ? 'grayscale(1)' : 'none';
+            card.style.borderLeftColor = action === 'accept' ? '#c4d640' : 'transparent';
+          }
+        });
+      });
+    } catch (e) {
+      feed.hidden = true; // 拉不到就不显示世界区 (不阻塞首页)
+    }
+    // 持续流入: 世界区可见时每 45s 自动刷新 (AI 持续观察, 不是人刷新)
+    if (feed && !feed.hidden && worldFeedShown && !worldFeedTimer) {
+      worldFeedTimer = setInterval(() => { loadWorldFeed(); }, 45000);
+    }
+  }
+
   // === 卡片封面 (docs/fig 导出 → src/web/covers, 每个 agent 唯一不重复) ===
   let _coverList = null;
   async function loadCovers() {
@@ -533,6 +586,7 @@
   async function loadAgentCovers() {
     const track = $('#card-track');
     if (!track) return;
+    loadWorldFeed(); // 2026-10-05: 世界机会流自动流入 (不阻塞智能体卡片, fire-and-forget)
     await loadCovers();
     track.innerHTML = '<div class="card-loading">加载智能体卡片...</div>';
     try {

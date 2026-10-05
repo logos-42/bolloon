@@ -165,6 +165,15 @@
             </svg>
             <span id="wallet-badge" class="task-badge" style="display:none;">0</span>
           </button>
+          <!-- 2026-10-05: World (Intent Console + Opportunity) — PC=Create 工作台入口 -->
+          <button id="world-btn" class="header-action" title="World — 我的意图与世界机会">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M3 12h18"></path>
+              <path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"></path>
+            </svg>
+            <span id="world-badge" class="task-badge" style="display:none;">0</span>
+          </button>
           <button id="judgments-btn" class="header-action" title="我的判断">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M12 2L4 6v6c0 5 3.5 9.5 8 10 4.5-.5 8-5 8-10V6l-8-4z"></path>
@@ -410,6 +419,51 @@
               <div class="wallet-empty">暂未绑定钱包</div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- World View (2026-10-05, leo Intent Network) — Twitter 式整页: 中栏机会时间线自动流入 -->
+      <div id="world-view" hidden style="position:fixed;inset:0;z-index:999;background:var(--bg,#1a1a18);display:flex;flex-direction:column;">
+        <!-- 顶栏 -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 18px;border-bottom:1px solid var(--border,#3a3a36);">
+          <div style="font-weight:700;font-size:15px;">🌍 World <span style="color:#606058;font-weight:400;font-size:12px;">世界在给你送东西</span></div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button id="world-refresh-btn" class="btn-secondary btn-sm" style="font-size:12px;">⟳ 刷新</button>
+            <button id="world-view-close" class="btn-secondary btn-sm" style="font-size:12px;">← 回到聊天</button>
+          </div>
+        </div>
+        <!-- Twitter 式三栏 -->
+        <div style="display:flex;flex:1;overflow:hidden;">
+          <!-- 左栏: 我的意图 (nav 风格) -->
+          <aside style="width:240px;border-right:1px solid var(--border,#3a3a36);overflow-y:auto;padding:12px;flex-shrink:0;display:none;" id="world-left-col">
+            <div style="font-size:12px;color:#909088;font-weight:600;margin-bottom:8px;">我的意图 (Intent)</div>
+            <div id="world-intents-list" style="margin-bottom:12px;"><div class="form-hint">(还没有意图)</div></div>
+            <div style="font-size:12px;color:#909088;font-weight:600;margin-bottom:8px;">世界变化</div>
+            <div id="world-stats" style="font-size:12px;color:#606058;"></div>
+          </aside>
+          <!-- 中栏: 机会时间线 (Twitter feed 自动流入) -->
+          <main style="flex:1;overflow-y:auto;padding:16px;max-width:680px;margin:0 auto;width:100%;">
+            <div style="font-size:12px;color:#909088;margin-bottom:12px;">✦ 与你相关 (自动匹配, 持续流入)</div>
+            <div id="world-opportunities" style="min-height:120px;">
+              <div class="form-hint">世界正在观察… (等待意图声明或机会出现)</div>
+            </div>
+          </main>
+          <!-- 右栏: 声明意图 + 说明 -->
+          <aside style="width:280px;border-left:1px solid var(--border,#3a3a36);overflow-y:auto;padding:12px;flex-shrink:0;" id="world-right-col">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">我现在正在做什么</div>
+            <input type="text" id="world-intent-input" placeholder="例: 建立聚变创业项目 · 找科研合作" style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid var(--border,#3a3a36);background:var(--bg-card,#222220);color:var(--text);font-size:13px;">
+            <div style="display:flex;gap:8px;margin:8px 0;">
+              <select id="world-intent-priority" style="font-size:12px;padding:6px;background:var(--bg-card,#222220);color:var(--text);border:1px solid var(--border,#3a3a36);border-radius:6px;">
+                <option value="3">★★★</option><option value="5">★★★★★</option><option value="4">★★★★</option><option value="2">★★</option><option value="1">★</option>
+              </select>
+              <input type="text" id="world-intent-budget" placeholder="预算 ¥" style="font-size:12px;padding:6px;width:80px;background:var(--bg-card,#222220);color:var(--text);border:1px solid var(--border,#3a3a36);border-radius:6px;">
+            </div>
+            <button id="world-intent-set" class="btn-primary btn-sm" style="width:100%;padding:8px;font-size:13px;">声明 → 世界开始找</button>
+            <div id="world-intent-error" style="font-size:12px;color:#f59e0b;margin-top:8px;min-height:16px;"></div>
+            <div style="font-size:11px;color:#606058;margin-top:12px;line-height:1.6;">
+              世界会自己校准 —— 你「看看 / 忽略」的每个动作, 都让接下来的推送更准。
+            </div>
+          </aside>
         </div>
       </div>
 

@@ -13,7 +13,7 @@
  */
 import type { Express, Request, Response } from 'express';
 import { setIntent, listIntents, getIntent, removeIntent } from '../agents/intent-store.js';
-import { scanOpportunities } from '../agents/opportunity-match.js';
+import { scanOpportunities, recordFeedback } from '../agents/opportunity-match.js';
 
 function json(res: Response, status: number, body: unknown): void {
   res.status(status).json(body);
@@ -82,7 +82,14 @@ export function registerWorldRoutes(app: Express): void {
   });
 
   app.post('/api/opportunities/:id/ignore', async (req, res) => {
-    // v1: 只记录忽略动作 (P3 Memory 回写负证据时用 id)
-    json(res, 200, { ok: true, opportunityId: req.params.id, ignored: true, note: 'v1 只记录; Memory 负证据回写 P3' });
+    const sourceId = String(req.params.id).replace(/^opp_/, 'ann-');
+    const r = await recordFeedback('ignore', sourceId);
+    json(res, r.ok ? 200 : 400, { ok: r.ok, opportunityId: req.params.id, ignored: r.ok, error: r.error });
+  });
+
+  app.post('/api/opportunities/:id/accept', async (req, res) => {
+    const sourceId = String(req.params.id).replace(/^opp_/, 'ann-');
+    const r = await recordFeedback('accept', sourceId);
+    json(res, r.ok ? 200 : 400, { ok: r.ok, opportunityId: req.params.id, accepted: r.ok, error: r.error });
   });
 }

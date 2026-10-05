@@ -12,7 +12,7 @@ import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
 
 import { setIntent } from '../agents/intent-store.js';
-import { scanOpportunities } from '../agents/opportunity-match.js';
+import { scanOpportunities, recordFeedback } from '../agents/opportunity-match.js';
 import { saveAnnouncement } from '../agents/task-board.js';
 
 const tmpRoot = path.join(os.tmpdir(), 'bolloon-opp-test-' + Date.now());
@@ -63,14 +63,15 @@ describe('opportunity-match (透明打分 · 源=本地 board)', () => {
     }
   }
 
-  it('没有意图 → 无匹配, 不是错误', async () => {
+  it('没有意图 → 也流入世界变化流 (默认匹配状态, 不是空)', async () => {
     await seedBoards([{ capability: 'fusion-partner', instruction: '寻找磁约束合作' }]);
     const r = await scanOpportunities();
     expect(r.ok).toBe(true);
-    expect(r.results).toHaveLength(0);
+    expect(r.results.length).toBeGreaterThan(0); // 默认世界流: 最近的 open 公告直接流入
+    expect(r.results[0].reason).toBe('world'); // 无意图时标注为世界变化
   });
 
-  it('意图匹配到同标签公告 → 卡片带透明 score 构成', async () => {
+  it('意图匹配到同标签公告 → 卡片带 reason=match', async () => {
     await seedBoards([{ capability: 'fusion-partner', instruction: '寻找 magnetic control 磁约束 合作者' }]);
     await setIntent({ text: '建立聚变公司 找 fusion magnetic control 合作' });
     const r = await scanOpportunities();
@@ -78,26 +79,40 @@ describe('opportunity-match (透明打分 · 源=本地 board)', () => {
     expect(r.results.length).toBeGreaterThan(0);
     const top = r.results[0];
     expect(top.source).toBe('local'); // BoardEntry.source: 'local' | 'registry'
-    expect(top.breakdown).toHaveProperty('tagOverlap');
-    expect(top.breakdown).toHaveProperty('keywordHit');
-    expect(top.breakdown).toHaveProperty('budgetFit');
-    expect(top.score).toBeGreaterThanOrEqual(0.4);
+    expect(top.reason).toBe('match'); // 有意图 → 匹配项浮上来
+    expect(top.sourceId).toBeTruthy();
+    expect(top.score).toBeGreaterThanOrEqual(0.2);
   });
 
-  it('不匹配的公告不进候选 (关键词完全不同)', async () => {
+  it('不匹配的公告 → 仍作为世界变化流入 (并非消失)', async () => {
     await seedBoards([{ capability: 'cooking-recipes', instruction: '家常菜谱大全' }]);
     await setIntent({ text: '建立聚变创业公司 fusion plasma' });
     const r = await scanOpportunities();
-    expect(r.results).toHaveLength(0);
+    expect(r.ok).toBe(true);
+    expect(r.results.length).toBeGreaterThan(0);
+    expect(r.results[0].reason).toBe('world'); // 不匹配但不消失, 标注世界变化
   });
 
-  it('minScore 过滤: 高分才进', async () => {
+  it('ignore 反馈 → 同源公告不再流入 (校准环)', async () => {
+    const a = makeAnnouncement('fusion-partner', '寻找 magnetic control 合作');
+    saveAnnouncement(a as any, fakeHome);
+    await setIntent({ text: '建立聚变公司 fusion magnetic control' });
+    const before = await scanOpportunities();
+    expect(before.results.some((o) => o.sourceId === a.announcementId)).toBe(true);
+    // 忽略这条
+    const fb = await recordFeedback('ignore', a.announcementId);
+    expect(fb.ok).toBe(true);
+    const after = await scanOpportunities();
+    expect(after.results.some((o) => o.sourceId === a.announcementId)).toBe(false);
+  });
+
+  it('minScore: 高阈值只留世界流 (匹配被挡, 但世界不停)', async () => {
     await seedBoards([{ capability: 'fusion-partner', instruction: 'fusion magnetic control 磁约束 合作', budget: { maxAmount: '100000', currency: 'USDC', network: 'base' } }]);
     await setIntent({ text: '建立聚变公司 fusion 合作', budget: '100000' });
-    const all = await scanOpportunities({ minScore: 0 });
     const strict = await scanOpportunities({ minScore: 0.9 });
-    expect(all.results.length).toBeGreaterThan(0);
-    expect(strict.results.length).toBe(0); // 除非 score≥0.9, 否则空
+    // 匹配项被高阈值挡掉, 但同一公告仍作为世界变化流入 (默认匹配状态)
+    expect(strict.results.every((o) => o.reason === 'world')).toBe(true);
+    expect(strict.results.length).toBeGreaterThan(0);
   });
 
   it('预算是 TaskBudget 对象或 null 都处理 (不崩)', async () => {

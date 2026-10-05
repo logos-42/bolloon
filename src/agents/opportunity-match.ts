@@ -1,34 +1,34 @@
 /**
- * opportunity-match.ts — 意图 ↔ 机会 匹配引擎 (2026-10-05, leo 四端 Intent Network 设计 P0)
+ * opportunity-match.ts — 意图 ↔ 机会 匹配引擎 (2026-10-05, leo Intent Network P0)
  *
- * 机会源 (v1): task board (listBoard) —— 本机唯一现成的「别人发布的、可接的机会」。
- * 后续可加: 群 announce 公告 (C7)、x402 商品。
- *
- * 打分透明 (诚实原则, 不假装 ML):
- *   score = 0.5 × tagOverlap(intent.tags, opp.tags)
- *         + 0.3 × keywordHit(intent 正文 ↔ opp 文本)
- *         + 0.2 × budgetFit
- * 每个 score 都输出构成, 不许只给黑盒数字。
+ * ★ 设计原则 (leo 2026-10-05 三次纠偏): **自动校准, 不是「输入→扫描→结果」**。
+ *   · 默认就是匹配状态: 没有 intent 也流入**世界变化流** (最近的 open 公告, 按新鲜度),
+ *     不是「等待意图声明」的空态 —— 打开即有内容。
+ *   · 匹配随交互越来越准: ignore/accept 写 `world/memory/feedback.json` (负/正证据),
+ *     已忽略的同源公告不再流入; 是持续的校准环, 不依赖任何按钮。
+ *   · 机会源 v1: task board (listBoard, 本地 + 注册表)。后续: 群 announce / x402 商品。
  */
-import { listIntents, type IntentRecord } from './intent-store.js';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { listIntents, worldDir, type IntentRecord } from './intent-store.js';
 import { listBoard, type BoardEntry } from './task-board.js';
 import type { TaskBudget } from './task-contract.js';
 
 export interface OpportunityCandidate {
   id: string;
-  intentId: string;
+  intentId: string | null;
   source: string;
   sourceId: string;
   score: number;
-  /** score 构成 (透明) */
-  breakdown: { tagOverlap: number; keywordHit: number; budgetFit: number };
+  /** 为什么推给你: 'match' = 意图匹配 · 'world' = 世界变化 (UI 不啰嗦) */
+  reason: 'match' | 'world';
   title: string;
   summary: string;
   budget: string | null;
   matchTags: string[];
+  createdAt: number;
 }
 
-/** 从文本提取标签 (与 intent-store 同规则, 保持可对比) */
 function tagsOf(text: string): string[] {
   const src = String(text || '').toLowerCase();
   const words = src.match(/[a-z][a-z0-9_-]{1,}/g) || [];
@@ -56,8 +56,85 @@ function budgetFit(intentBudget: string | null, oppBudget: TaskBudget | null): n
   const i = Number(intentBudget) || 0;
   const o = Number(oppBudget.maxAmount) || 0;
   if (i <= 0 || o <= 0) return 0.5;
-  if (o <= i) return 1; // 机会预算 ≤ 意图预算 = 付得起
-  return Math.max(0, 1 - (o - i) / i); // 超出则线性衰减
+  if (o <= i) return 1;
+  return Math.max(0, 1 - (o - i) / i);
+}
+
+// ── Memory 反馈 (校准环) ─────────────────────────────────────────────────────
+// 落 world/memory/feedback.json: { ignored: [sourceId...], accepted: [sourceId...] }
+interface FeedbackFile { version: 1; ignored: string[]; accepted: string[] }
+
+const feedback = (): string => path.join(worldDir(), 'memory', 'feedback.json');
+
+// ── 世界观察日志 (2026-10-05, leo: 机会进入 AI 视野是主动性行为) ──────────────
+// 每次扫描 = AI 睁眼观察世界; 看到高分机会就记一条观察 (world/memory/events.jsonl)。
+// 这是「AI 自动观察」的落点: 不是人看了记, 是扫描这个动作自己留下视野记录。
+const eventsFile = (): string => path.join(worldDir(), 'memory', 'events.jsonl');
+
+export interface WorldObservation {
+  ts: number;
+  kind: 'opportunity-seen' | 'world-change';
+  sourceId: string;
+  title: string;
+  score: number;
+  reason: 'match' | 'world';
+}
+
+/** 追加一条观察 (尽力而为, 失败不阻断扫描) */
+export async function noteObservation(obs: WorldObservation): Promise<void> {
+  try {
+    await fs.mkdir(path.dirname(eventsFile()), { recursive: true });
+    await fs.appendFile(eventsFile(), JSON.stringify(obs) + '\n', { mode: 0o600 });
+  } catch { /* 观察记录失败不阻断 */ }
+}
+
+/** 读观察日志 (最近 N 条, 倒序) */
+export async function readObservations(limit = 50): Promise<WorldObservation[]> {
+  try {
+    const raw = await fs.readFile(eventsFile(), 'utf-8');
+    const lines = raw.split('\n').filter(Boolean).slice(-limit * 2);
+    const out: WorldObservation[] = [];
+    for (const l of lines) {
+      try {
+        const p = JSON.parse(l) as WorldObservation;
+        if (p && typeof p === 'object' && typeof p.sourceId === 'string') out.push(p);
+      } catch { /* 坏行跳过 */ }
+    }
+    return out.slice(-limit).reverse();
+  } catch { return []; }
+}
+
+async function readFeedback(): Promise<FeedbackFile> {
+  try {
+    const raw = await fs.readFile(feedback(), 'utf-8');
+    const parsed = JSON.parse(raw) as Partial<FeedbackFile>;
+    return { version: 1, ignored: Array.isArray(parsed.ignored) ? parsed.ignored : [], accepted: Array.isArray(parsed.accepted) ? parsed.accepted : [] };
+  } catch {
+    return { version: 1, ignored: [], accepted: [] };
+  }
+}
+
+async function writeFeedback(fb: FeedbackFile): Promise<void> {
+  try {
+    await fs.mkdir(path.dirname(feedback()), { recursive: true });
+    await fs.writeFile(feedback(), JSON.stringify(fb, null, 2) + '\n', { mode: 0o600 });
+  } catch { /* 反馈写失败不阻断 (尽力而为) */ }
+}
+
+/** 记录交互反馈 (校准环): ignore → 负证据 (同源不再流入), accept → 正证据 */
+export async function recordFeedback(action: 'ignore' | 'accept', sourceId: string): Promise<{ ok: boolean; error?: string }> {
+  const sid = String(sourceId || '').trim();
+  if (!sid) return { ok: false, error: '缺 sourceId' };
+  const fb = await readFeedback();
+  if (action === 'ignore') {
+    if (!fb.ignored.includes(sid)) fb.ignored.push(sid);
+    fb.accepted = fb.accepted.filter((s) => s !== sid);
+  } else {
+    if (!fb.accepted.includes(sid)) fb.accepted.push(sid);
+    fb.ignored = fb.ignored.filter((s) => s !== sid);
+  }
+  await writeFeedback(fb);
+  return { ok: true };
 }
 
 export interface MatchOptions {
@@ -65,19 +142,60 @@ export interface MatchOptions {
   limit?: number;
 }
 
-/** 对全部 active 意图跑匹配 (scan 入口; 无意图 → 无匹配, 不是错误) */
+function candidateOf(entry: BoardEntry, intentId: string | null, score: number, reason: 'match' | 'world', matchTags: string[]): OpportunityCandidate {
+  return {
+    id: `opp_${entry.announcementId.slice(0, 12)}`,
+    intentId,
+    source: entry.source || 'board',
+    sourceId: entry.announcementId,
+    score,
+    reason,
+    title: entry.capability || entry.announcementId,
+    summary: entry.instructionPreview || '(无预览)',
+    budget: entry.budget ? `${entry.budget.maxAmount} ${entry.budget.currency}` : null,
+    matchTags,
+    createdAt: entry.createdAt ?? Date.now(),
+  };
+}
+
+/**
+ * 扫描 = **默认世界流 + 意图校准** (leo: 默认匹配状态, 不用先声明)。
+ *   · 无意图: 流入最近 open 公告 (新鲜度优先) —— 打开即有内容
+ *   · 有意图: 匹配(`match`)优先浮上来, 其余世界变化按新鲜度垫底 (世界不停)
+ *   · 已忽略的同源公告不流入 (随交互越来越准)
+ */
 export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: boolean; results: OpportunityCandidate[]; error?: string }> {
-  const minScore = opts.minScore ?? 0.4;
   const limit = opts.limit ?? 50;
+  const minScore = opts.minScore ?? 0.2;
   const intents = await listIntents();
   if (!intents.ok) return { ok: false, results: [], error: intents.error };
   const active = intents.intents.filter((i) => i.status === 'active');
-  if (!active.length) return { ok: true, results: [], error: undefined };
+  const fb = await readFeedback();
 
   const board = await listBoard({ openOnly: true });
-  const openEntries = board.entries.filter((e) => e.claimable && e.status === 'open');
+  const openEntries = board.entries
+    .filter((e) => e.claimable && e.status === 'open')
+    .filter((e) => !fb.ignored.includes(e.announcementId)); // 校准: 忽略过的不再来
+  const now = Date.now();
 
-  const all: OpportunityCandidate[] = [];
+  if (!active.length) {
+    // 默认世界流: 新鲜度优先
+    const sorted = [...openEntries].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+    const out = sorted.slice(0, limit).map((e) => {
+      const ageDays = e.createdAt ? (now - e.createdAt) / 86400000 : 1;
+      const freshness = Math.max(0.5, Math.min(0.95, 1 - ageDays / 30));
+      return candidateOf(e, null, Math.round(freshness * 100) / 100, 'world', []);
+    });
+    out.sort((a, b) => b.createdAt - a.createdAt || b.score - a.score);
+    // 世界观察: AI 睁眼看到的变化, 记进 memory (自动, 不是人触发)
+    for (const c of out.slice(0, 10)) {
+      void noteObservation({ ts: Date.now(), kind: 'world-change', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'world' });
+    }
+    return { ok: true, results: out.slice(0, limit) };
+  }
+
+  // 有意图: 匹配打分, match 优先; 世界变化不消失
+  const matches: OpportunityCandidate[] = [];
   for (const intent of active) {
     for (const entry of openEntries) {
       const oppText = `${entry.capability} ${entry.instructionPreview || ''}`;
@@ -87,30 +205,30 @@ export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: 
       const bf = budgetFit(intent.budget, entry.budget ?? null);
       const score = 0.5 * to + 0.3 * kh + 0.2 * bf;
       if (score < minScore) continue;
-      all.push({
-        id: `opp_${entry.announcementId.slice(0, 12)}`,
-        intentId: intent.id,
-        source: entry.source || 'board',
-        sourceId: entry.announcementId,
-        score: Math.round(score * 100) / 100,
-        breakdown: {
-          tagOverlap: Math.round(to * 100) / 100,
-          keywordHit: Math.round(kh * 100) / 100,
-          budgetFit: Math.round(bf * 100) / 100,
-        },
-        title: entry.capability || entry.announcementId,
-        summary: entry.instructionPreview || '(无预览)',
-        budget: entry.budget ? `${entry.budget.maxAmount} ${entry.budget.currency}` : null,
-        matchTags: intent.tags.filter((t) => oppTags.includes(t)),
-      });
+      matches.push(candidateOf(entry, intent.id, Math.round(score * 100) / 100, 'match', intent.tags.filter((t) => oppTags.includes(t))));
     }
   }
-
-  all.sort((x, y) => y.score - x.score || x.id.localeCompare(y.id));
+  const matchedIds = new Set(matches.map((m) => m.sourceId));
+  const unmatched = openEntries
+    .filter((e) => !matchedIds.has(e.announcementId))
+    .map((e) => {
+      const ageDays = e.createdAt ? (now - e.createdAt) / 86400000 : 1;
+      const freshness = Math.max(0.3, Math.min(0.7, 1 - ageDays / 30));
+      return candidateOf(e, null, Math.round(freshness * 100) / 100, 'world', []);
+    });
+  const all = [...matches, ...unmatched].sort((a, b) => {
+    const rank = (r: string): number => (r === 'match' ? 0 : 1);
+    if (rank(a.reason) !== rank(b.reason)) return rank(a.reason) - rank(b.reason);
+    return b.score - a.score;
+  });
+  // 世界观察: 高分匹配 = AI 主动看到的机会 (自动记 memory)
+  for (const c of all.filter((x) => x.reason === 'match').slice(0, 10)) {
+    void noteObservation({ ts: Date.now(), kind: 'opportunity-seen', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'match' });
+  }
   return { ok: true, results: all.slice(0, limit) };
 }
 
-/** 对单个意图跑匹配 (list --intent 用) */
+/** 对单个意图即时匹配 (list --intent 用; 不走反馈过滤) */
 export async function matchOneIntentText(
   text: string,
   tags: string[],
@@ -131,23 +249,8 @@ export async function matchOneIntentText(
     const kh = keywordHit(intent.text, oppText);
     const bf = budgetFit(intent.budget, entry.budget ?? null);
     const score = 0.5 * to + 0.3 * kh + 0.2 * bf;
-    if (score < (opts.minScore ?? 0.4)) continue;
-    out.push({
-      id: `opp_${entry.announcementId.slice(0, 12)}`,
-      intentId: intent.id,
-      source: entry.source || 'board',
-      sourceId: entry.announcementId,
-      score: Math.round(score * 100) / 100,
-      breakdown: {
-        tagOverlap: Math.round(to * 100) / 100,
-        keywordHit: Math.round(kh * 100) / 100,
-        budgetFit: Math.round(bf * 100) / 100,
-      },
-      title: entry.capability || entry.announcementId,
-      summary: entry.instructionPreview || '(无预览)',
-      budget: entry.budget ? `${entry.budget.maxAmount} ${entry.budget.currency}` : null,
-      matchTags: intent.tags.filter((t) => oppTags.includes(t)),
-    });
+    if (score < (opts.minScore ?? 0.2)) continue;
+    out.push(candidateOf(entry, intent.id, Math.round(score * 100) / 100, 'match', intent.tags.filter((t) => oppTags.includes(t))));
   }
   out.sort((x, y) => y.score - x.score || x.id.localeCompare(y.id));
   return out.slice(0, opts.limit ?? 20);
