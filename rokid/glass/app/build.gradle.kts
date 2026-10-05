@@ -31,6 +31,18 @@ android {
     buildTypes.configureEach {
         buildConfigField("String", "ROKID_SDK_MODE", "\"$rokidSdkMode\"")
     }
+
+    // 2026-10-05: Java 编译默认 1.8 vs Kotlin 默认 21 → Inconsistent JVM-target 编译失败
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
 }
 
 dependencies {
