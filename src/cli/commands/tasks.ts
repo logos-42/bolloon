@@ -1983,7 +1983,7 @@ async function taskPost(flags: CliFlags): Promise<CommandResult> {
 //     → `list` 只出短事实 (groupId/群名/时间), 要链接就显式 `bolloon task group link <groupId>`。
 //   · `create` 的 `--name` 与 `list` 的**输出**都再过一遍 `scanNodeIdentity`: 命中 → 拒 (不静默脱敏)。
 
-const GROUP_ACTIONS = ['create', 'join', 'list', 'link', 'leave'] as const;
+const GROUP_ACTIONS = ['create', 'join', 'list', 'link', 'leave', 'invite', 'kick', 'privacy', 'status'] as const;
 
 const GROUP_USAGE = `
 ${title('bolloon task group')}
@@ -1999,6 +1999,14 @@ ${title('bolloon task group')}
       显式取回邀请链接 (list 里不放链接: 群 store 地址只在你要分享时打印)
   bolloon task group leave <groupId|群名> [--json]
       退群 (只摘本机记录; 群 store 是公共 append-only, 别人那边不会因为你退出而改)
+  bolloon task group invite <groupId|群名> <orbitdbId> [--json]
+      邀请成员进白名单 (仅门控群 gated; **重建群地址** —— IPFS 白名单不能就地改, 老链接作废, 其他成员需重新 join)
+  bolloon task group kick <groupId|群名> <orbitdbId> [--json]
+      把成员移出白名单 (仅门控群; 重建群地址; 协议上无法记"被踢者自签的 remove 事件", 不假装)
+  bolloon task group privacy <groupId|群名> on|off [--json]
+      隐私群标记 (建群默认隐私 = 创建者独占写; 只影响本机展示与建群默认 ACL 说明, 不改 OrbitDB 权限语义)
+  bolloon task group status <groupId|群名> [--json]
+      群状态快照: 成员数/消息数/写白名单/门控/隐私/群主/最后同步
 
 选项: --json · --quiet; --name/--from 见上
 说明: 群管理输出不含原始 DID / 钱包地址 / peerId / multiaddr / IP (脱敏口径与群消息同源);
@@ -2075,6 +2083,10 @@ async function taskGroup(flags: CliFlags): Promise<CommandResult> {
     list: taskGroupList,
     link: taskGroupLink,
     leave: taskGroupLeave,
+    invite: taskGroupInvite,
+    kick: taskGroupKick,
+    privacy: taskGroupPrivacy,
+    status: taskGroupStatus,
   };
   const fn = table[action];
   if (fn) return fn(flags);
@@ -2331,6 +2343,198 @@ async function taskGroupLeave(flags: CliFlags): Promise<CommandResult> {
       line('范围', '只摘本机记录 (~/.bolloon/gateway-groups.json)'),
       '',
       `  群 store 是公共 append-only: 别人那边不会因为你退出而改 (本命令没有踢人/解散权限, 也不假装有)`,
+    ].join('\n'),
+  };
+}
+
+// ── 2026-10-05 (leo): 群运营能力 —— 邀请/踢出/隐私/状态 (与 /group invite|kick|privacy|status 同源) ──
+
+/** `task group invite <groupId|群名> <orbitdbId>` —— 邀请成员进白名单 (门控群, 重建地址) */
+async function taskGroupInvite(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task group invite';
+  const GG: any = await import('../../agents/gateway-group.js');
+  const raw = String(flags.positionals[2] ?? '').trim();
+  const orbitdbId = String(flags.positionals[3] ?? '').trim();
+  if (!raw || !orbitdbId) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', '缺少 groupId (或群名) 或 orbitdbId',
+        { usage: 'bolloon task group invite <groupId|群名> <orbitdbId>', accepted: ['bolloon task group invite <groupId> <02…66hex>'], usage2: plain(GROUP_USAGE.trim()) }, [], 'needs_human'),
+      human: `${title(head)}\n  用法: bolloon task group invite <groupId|群名> <orbitdbId>\n\n${hint('orbitdbId = 对方的写身份 (66 位 hex); 门控群会用新白名单重建群地址')}`,
+    };
+  }
+  const loc = await resolveLocalGroup(raw);
+  if (!loc.ok) {
+    return {
+      envelope: failEnvelope('NOT_FOUND', `本机没有这个群: ${raw}`, { howTo: 'bolloon task group list' }, [], 'needs_human'),
+      human: `${title(head)}\n  本机没有这个群: ${raw}\n\n${hint('先 bolloon task group list 看有哪些群')}`,
+    };
+  }
+  const ginfo = await GG.groupInfo(loc.group.id);
+  if (!ginfo?.gated) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', `「${ginfo?.name || loc.group.name}」是开放群 (write:[*]), 没有白名单可改 — 邀请 = 把链接发给对方自行加入`,
+        { link: ginfo?.link || loc.group.link }, [], 'needs_human'),
+      human: `${title(head)}\n  开放群没有白名单 — 直接把链接发给对方加入:\n  ${ginfo?.link || loc.group.link}`,
+    };
+  }
+  const ref = { did: `did:key:z${orbitdbId.slice(0, 40)}`, publicKeyHex: '', orbitdbId };
+  const r = await GG.inviteMember(loc.group.id, ref);
+  if (!r.ok) {
+    return {
+      envelope: failEnvelope('INTERNAL_ERROR', `邀请失败: ${r.error}`, { result: false }, [], 'needs_human'),
+      human: `${title(head)}\n  ${r.error}`,
+    };
+  }
+  const data = { ok: true, group: { id: r.group?.id, name: r.group?.name, link: r.group?.link }, costs: r.costs?.slice(0, 3) };
+  return {
+    envelope: okEnvelope('OK', `已邀请 ${orbitdbId.slice(0, 12)}… 进「${r.group?.name}」白名单 (重建群地址)`,
+      data, [r.group?.id || loc.group.id], null),
+    human: [
+      title(head),
+      line('已邀请', `${orbitdbId.slice(0, 12)}…`),
+      line('新链接', r.group?.link || '(无)'),
+      '',
+      ...(r.costs || []).slice(0, 3).map((c: string) => `⚠ ${c}`),
+      '',
+      '  老链接作废; 其他成员要用新链接重新加入. 历史消息默认不回放.',
+    ].join('\n'),
+  };
+}
+
+/** `task group kick <groupId|群名> <orbitdbId>` —— 把成员移出白名单 (门控群, 重建地址) */
+async function taskGroupKick(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task group kick';
+  const GG: any = await import('../../agents/gateway-group.js');
+  const raw = String(flags.positionals[2] ?? '').trim();
+  const orbitdbId = String(flags.positionals[3] ?? '').trim();
+  if (!raw || !orbitdbId) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', '缺少 groupId (或群名) 或 orbitdbId',
+        { usage: 'bolloon task group kick <groupId|群名> <orbitdbId>', accepted: ['bolloon task group kick <groupId> <02…66hex>'], usage2: plain(GROUP_USAGE.trim()) }, [], 'needs_human'),
+      human: `${title(head)}\n  用法: bolloon task group kick <groupId|群名> <orbitdbId>\n\n${hint('orbitdbId = 对方写身份 (66 位 hex); 门控群会用新白名单重建群地址')}`,
+    };
+  }
+  const loc = await resolveLocalGroup(raw);
+  if (!loc.ok) {
+    return {
+      envelope: failEnvelope('NOT_FOUND', `本机没有这个群: ${raw}`, { howTo: 'bolloon task group list' }, [], 'needs_human'),
+      human: `${title(head)}\n  本机没有这个群: ${raw}\n\n${hint('先 bolloon task group list 看有哪些群')}`,
+    };
+  }
+  const ginfo = await GG.groupInfo(loc.group.id);
+  if (!ginfo?.gated) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', `「${ginfo?.name || loc.group.name}」是开放群 (write:[*]), 没有踢人语义 (人人可写)`,
+        {}, [], 'needs_human'),
+      human: `${title(head)}\n  开放群人人可写, 没有踢人语义.`,
+    };
+  }
+  const r = await GG.kickMember(loc.group.id, orbitdbId);
+  if (!r.ok) {
+    return {
+      envelope: failEnvelope('INTERNAL_ERROR', `踢出失败: ${r.error}`, { result: false }, [], 'needs_human'),
+      human: `${title(head)}\n  ${r.error}\n\n${hint('协议上无法记「被踢者自签的 remove 事件」— 踢出 = 群主单方重建白名单')}`,
+    };
+  }
+  const data = { ok: true, group: { id: r.group?.id, name: r.group?.name, link: r.group?.link }, costs: r.costs?.slice(0, 3) };
+  return {
+    envelope: okEnvelope('OK', `已把 ${orbitdbId.slice(0, 12)}… 移出「${r.group?.name}」白名单 (重建群地址)`,
+      data, [r.group?.id || loc.group.id], null),
+    human: [
+      title(head),
+      line('已移出', `${orbitdbId.slice(0, 12)}…`),
+      line('新链接', r.group?.link || '(无)'),
+      '',
+      ...(r.costs || []).slice(0, 3).map((c: string) => `⚠ ${c}`),
+      '',
+      '  老链接作废; 其他成员要用新链接重新加入. 历史消息默认不回放.',
+    ].join('\n'),
+  };
+}
+
+/** `task group privacy <groupId|群名> on|off` —— 隐私群标记 */
+async function taskGroupPrivacy(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task group privacy';
+  const GG: any = await import('../../agents/gateway-group.js');
+  const raw = String(flags.positionals[2] ?? '').trim();
+  const mode = String(flags.positionals[3] ?? '').trim().toLowerCase();
+  const on = mode === 'on' || mode === 'true' || mode === '1';
+  const off = mode === 'off' || mode === 'false' || mode === '0';
+  if (!raw || (!on && !off)) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', '缺乏 groupId (或群名) 或 on|off',
+        { usage: 'bolloon task group privacy <groupId|群名> on|off', accepted: ['bolloon task group privacy <groupId> on'], usage2: plain(GROUP_USAGE.trim()) }, [], 'needs_human'),
+      human: `${title(head)}\n  用法: bolloon task group privacy <groupId|群名> on|off`,
+    };
+  }
+  const loc = await resolveLocalGroup(raw);
+  if (!loc.ok) {
+    return {
+      envelope: failEnvelope('NOT_FOUND', `本机没有这个群: ${raw}`, { howTo: 'bolloon task group list' }, [], 'needs_human'),
+      human: `${title(head)}\n  本机没有这个群: ${raw}`,
+    };
+  }
+  const r = await GG.setGroupPrivacy(loc.group.id, on);
+  if (!r.ok) {
+    return {
+      envelope: failEnvelope('INTERNAL_ERROR', `设置失败: ${r.error}`, {}, [], 'needs_human'),
+      human: `${title(head)}\n  ${r.error}`,
+    };
+  }
+  return {
+    envelope: okEnvelope('OK', `隐私群 ${on ? '开启' : '关闭'}: ${r.group?.name}`,
+      { ok: true, groupId: loc.group.id, privacy: on }, [loc.group.id], null),
+    human: [title(head), line('隐私群', on ? '🔒 开启' : '公开'), line('群', r.group?.name || loc.group.name), '', `  (标记只影响本机展示与建群默认 ACL 说明; OrbitDB 权限语义由白名单决定, 不因这个标记改变)`].join('\n'),
+  };
+}
+
+/** `task group status <groupId|群名>` —— 群状态快照 */
+async function taskGroupStatus(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon task group status';
+  const GG: any = await import('../../agents/gateway-group.js');
+  const raw = String(flags.positionals[2] ?? '').trim() || String(opt(flags, '--group') ?? '').trim();
+  if (!raw) {
+    return {
+      envelope: failEnvelope('INVALID_ARGUMENT', '缺少 groupId (或群名)',
+        { usage: 'bolloon task group status <groupId|群名>', accepted: ['bolloon task group status <groupId>'], usage2: plain(GROUP_USAGE.trim()) }, [], 'needs_human'),
+      human: `${title(head)}\n  用法: bolloon task group status <groupId|群名>`,
+    };
+  }
+  const loc = await resolveLocalGroup(raw);
+  if (!loc.ok) {
+    return {
+      envelope: failEnvelope('NOT_FOUND', `本机没有这个群: ${raw}`, { howTo: 'bolloon task group list' }, [], 'needs_human'),
+      human: `${title(head)}\n  本机没有这个群: ${raw}`,
+    };
+  }
+  const s = await GG.groupStatus(loc.group.id);
+  if (!s.ok || !s.status) {
+    return {
+      envelope: failEnvelope('INTERNAL_ERROR', s.error || '状态读取失败', {}, [], 'needs_human'),
+      human: `${title(head)}\n  ${s.error}`,
+    };
+  }
+  const st = s.status;
+  const data = {
+    groupId: st.group.id, name: st.group.name,
+    privacy: st.privacy, gated: st.gated,
+    memberCount: st.memberCount, messageCount: st.messageCount,
+    writeListCount: st.writeList.length,
+    ownerDidShort: st.ownerDid ? String(st.ownerDid).slice(0, 20) + '…' : null,
+    lastSyncAt: st.lastSyncAt || null,
+  };
+  return {
+    envelope: okEnvelope('OK', `群状态: ${st.group.name}`, data, [st.group.id], null),
+    human: [
+      title(head),
+      line('群', st.group.name),
+      line('隐私', st.privacy ? '🔒 是' : '公开'),
+      line('门控', st.gated ? '是' : '否'),
+      line('成员', String(st.memberCount)),
+      line('消息', String(st.messageCount)),
+      line('白名单', `${st.writeList.length} 人 (${st.writeList.slice(0, 12).map((w: string) => w.slice(0, 12)).join(' ')}${st.writeList.length > 12 ? ' …' : ''})`),
+      line('群主', st.ownerDid ? String(st.ownerDid).slice(0, 32) + '…' : '-'),
+      line('最后同步', st.lastSyncAt || '-'),
     ].join('\n'),
   };
 }

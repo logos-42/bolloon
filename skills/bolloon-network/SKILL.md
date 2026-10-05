@@ -142,7 +142,7 @@ bolloon doctor             # 安装入口 + 版本事实 + 更新状态自洽性
 | **发布待接单任务** (公开招募) | `bolloon task publish --capability <c> --instruction "<正文>" --budget <n> [--currency USDC] [--network <net>] [--deadline +24h] [--reply-to <url>]` → 落盘 `~/.bolloon/tasks/board/<announcementId>.json` + 注册表公告 (`service.name=task.announce`) + 脉冲事件 `task_announced`; 正文只在本机, 对外只有 sha256 摘要 + 60 字预览 (**§⑤′**) | ✅ |
 | **看板 / 认领** | `bolloon task board [--capability <名>] [--open] [--local]` (本地 + 远端发现, 按 `announcementId` 去重) · `bolloon task claim <announcementId> [--price <n>] [--group <群>]` —— 只记**认领者 DID + 时间 + 声明价格**, **不执行 / 不付款 / 不标 verified** (**§⑤′**) | ✅ |
 | **群聊过程留痕** (C7) | `bolloon task announce\|trail\|post --group <群> …` —— 公告 / 接单 / 交付(只贴哈希) / 初筛 / 终审; 群消息**不许**出现地址/DID/peerId/multiaddr/IP/私钥形态 (**§⑤″**) | ✅ 源码 / ⚠️ 发行版边界见 §⑤″ |
-| **建群 / 自助入群** | `bolloon task group create\|join\|list\|link\|leave` (`join` 幂等) · 群 ACL 落 `~/.bolloon/gateway-groups.json` (**§⑤″**) | ✅ 源码 / ⚠️ **0.4.33 没有 `group`** |
+| **建群 / 自助入群 / 群运营** | `bolloon task group create|join|list|link|leave|invite|kick|privacy|status` (`join` 幂等; `invite/kick` 仅门控群且**重建群地址**; `privacy` 标记隐私群; `status` 状态快照) · 群 ACL 落 `~/.bolloon/gateway-groups.json` (**§⑤″**) | ✅ 源码 / ⚠️ **0.4.33 没有 `group`** |
 | **报价** | 契约层 `TaskQuote` + 自洽校验 `validateQuoteAgainstRequest` (`task-contract.ts:139-151`, `:249-267`); 报价随 `task accept` 帧回传 | ✅ |
 | **自主支付** | 放行闸 `authorizeWalletSignature` (fail-closed, 9 项检查); CLI 入口: `bolloon wallet sign --message <payload>` / `bolloon wallet policy` (`bolloon wallet set-policy` 只允许本机用户改) | ✅ |
 | **验真** | 八项 verified 门 (`settlement-state.ts:385-407`) + 交付正文落盘 `~/.bolloon/x402/deliveries/<transactionId>.txt` | ✅ (交易层) |
@@ -307,6 +307,10 @@ bolloon task group join <群链接|groupId> [--json]                       # 自
 bolloon task group list [--json]                                        # 本机已加入的群 (groupId · 群名 · 加入时间)
 bolloon task group link <groupId|群名>                                  # 显式取回邀请链接 (list 里不放链接)
 bolloon task group leave <groupId|群名>                                 # 退群 (只摘本机记录)
+bolloon task group invite <groupId|群名> <orbitdbId>                    # 邀请成员进白名单 (仅门控群; 重建群地址, 老链接作废)
+bolloon task group kick <groupId|群名> <orbitdbId>                      # 移出白名单 (仅门控群; 重建群地址; 无法记"被踢者自签的 remove 事件")
+bolloon task group privacy <groupId|群名> on|off                        # 隐私群标记 (建群默认隐私 = 创建者独占写)
+bolloon task group status <groupId|群名> [--json]                       # 群状态快照: 成员/消息/白名单/门控/隐私/群主/最后同步
 
 bolloon task announce --group <群> [--announcement-id <id>] [--capability <名>] \
   [--round <期号>] [--criteria "<验收判据摘要>"] [--from <短显示名>] [--json]
@@ -757,7 +761,7 @@ bolloon chain timeline 0x<taskKey> --json     # 同一 taskKey 也 REORG_SUSPECT
 
 **已实现 (不再 planned)**: `bolloon network init|join|status|peers` · `bolloon agent register|manifest|discover|inspect` ·
 `bolloon task send|list|status|retry|result|inbox|accept|reject|run` ·
-`bolloon task publish|board|claim` (**公告板 C1/C2**) · `bolloon task announce|trail|post` + `bolloon task group create|join|list|link|leave` (**C7**;
+`bolloon task publish|board|claim` (**公告板 C1/C2**) · `bolloon task announce|trail|post` + `bolloon task group create|join|list|link|leave|invite|kick|privacy|status` (**C7**;
 **0.4.33 发行版缺 `group`/`announce`/`trail`/`post` → 见 §⑤″ 的边界表**) · `bolloon wallet status|policy|sign` ·
 `bolloon payment pending|approve|reject` · `bolloon trade list|show|events|reconcile` ·
 `bolloon chain status|escrow show|timeline|index status|stats|sync|trade create|submit-proof|release|recover` (**P6**)
