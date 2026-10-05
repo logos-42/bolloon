@@ -40,6 +40,7 @@
 | [chain-settlement-design.md](./chain-settlement-design.md) | **链上化设计 v2**(设计): 数据权威划分 + AgentEscrow 主路径 + AgentDirectory 注册承诺 + 连接层八模块 + 五条上链硬规则 | draft |
 - [long-term-collaboration-plan.md](long-term-collaboration-plan.md) — 长期合作方案 —— 用 Bolloon 托管"可核验的研究委托" (交付物标准 / 验收协议 / 结算 / 接单通道缺口)
 - [intent-network-vision.md](intent-network-vision.md) — Intent Network 愿景 —— bolloon 的第四代定位 (分发对象迁移 / bolloon 已有地基 / 五个缺口 / 三处存疑 / 落地顺序草案)
+- [four-terminal-intent-design.md](four-terminal-intent-design.md) — Intent Network 四端设计 —— PC creates / Mobile discovers / Glass acts; World→Intent→Agent→Opportunity→Action→Memory; 数据层 + 落地顺序 (P0–P3)
 - [three-terminal-product-vision.md](three-terminal-product-vision.md) — 多终端 Agent 分发网络 —— bolloon 产品形态 (本体六元组 / 三终端=感知器官 / PC=Create·Mobile=Discover·Glass=Assist / 四层架构 / 商业模式分层 / 首页=World / 现状映射 / 存疑点)
 | [chain-model-freeze.md](./chain-model-freeze.md) | **链上模型冻结 (P1)**: 合约盘点(Foundry/Hardhat/Solana 三项目) + AgentEscrow 主合约缺口 11 字段 + Treasury onlyOwner 边界 + Directory 新增/Ledger 不新增 + 事件与 hash 切径冻结 + chainId/token/确认数 + §3 五条硬规则差距表 + 必须先改清单 | current |
 | [agent-event-network-plan.md](./agent-event-network-plan.md) | v2 plan | **Agent Event Network (计划)**: 1 万智能体协作的共享事件与记忆层 —— 现状基线 (记录形状已是元数据+CID+按需拉块 · 群已是 OrbitDB events store · 测试全走 fake 无真两节点) + 四个真缺口 (ACL `write:'*'` / 跨机复制从未真验 / 无查询面 / 全量复制 vs 轻量) + 核心命题 (×100 规模下本地占用·带宽·查询延迟须 O(1)/O(log N)) + P0–P5 每阶段判据门 | plan |
