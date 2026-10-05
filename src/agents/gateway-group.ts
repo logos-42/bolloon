@@ -36,6 +36,7 @@ import type { AgentLang, OpSymbol } from '../efficode/types.js';
 // (canAppend 只比 identity.id; 放 DID 会永远匹配不上 → 谁都写不了)。
 // 成员变更 = 一条**双侧 Ed25519 验签**的群事件 (成员自签 + 群主签), 细节见 group-access.ts。
 import {
+  aclChangePlan,
   applyMembershipEvents,
   groupAccessOptions,
   membershipEntryOf,
@@ -129,7 +130,15 @@ export interface GroupInfo {
    */
   gated?: boolean;
   ownerDid?: string;
+  /** 2026-10-05: 群主 Ed25519 公钥 (hex)。重建白名单要重新派生成员事件时必须它; 之前只有 ownerDid 不够。 */
+  ownerPublicKeyHex?: string;
   aclWrite?: string[];
+  /**
+   * 2026-10-05: 隐私群标记 (leo: 「隐私群」)。
+   * `true` = 创建者独占/白名单写 (默认, 建群即隐私); `false` = 公开 (acl=open 建的群)。
+   * 只影响本机展示与建群时的默认 ACL 说明, 不改变 OrbitDB 权限语义 (那由白名单决定)。
+   */
+  privacy?: boolean;
 }
 
 /**
@@ -313,7 +322,7 @@ export async function createGroup(
     // ---- 门控分支: 先派生白名单 (验签不过就直接拒), 再建 store ----
     // null = 不传 write 列表 ⇒ OrbitDB 默认 (创建者独占). 不再默认 ['*'].
     let writeList: string[] | null = null;
-    let gateInfo: Pick<GroupInfo, 'gated' | 'ownerDid' | 'aclWrite'> = {};
+    let gateInfo: Pick<GroupInfo, 'gated' | 'ownerDid' | 'ownerPublicKeyHex' | 'aclWrite'> = {};
     let membershipEntries: MembershipEntry[] = [];
     if (opts?.gate) {
       const gate = opts.gate;
@@ -334,7 +343,7 @@ export async function createGroup(
         ...(gate.members ?? []).map((m) => m.orbitdbId),
       ];
       writeList = normalizeWriteList(ids);
-      gateInfo = { gated: true, ownerDid: gate.owner.did, aclWrite: writeList };
+      gateInfo = { gated: true, ownerDid: gate.owner.did, ownerPublicKeyHex: gate.owner.publicKeyHex, aclWrite: writeList };
       membershipEntries = applied.accepted.map(membershipEntryOf);
     } else if (opts?.acl === 'open') {
       // 显式声明开放写入 (产品语义: 谁拿到邀请链接都能发言) —— 打一行 warn 留痕
@@ -357,6 +366,8 @@ export async function createGroup(
       id, name: groupName, address, link,
       createdAt: new Date().toISOString(),
       lastSyncAt: new Date().toISOString(),
+      // 2026-10-05: 隐私群标记 —— 建群默认隐私 (白名单/独占写); acl=open 才是公开
+      privacy: opts?.acl !== 'open',
       ...gateInfo,
     };
     storeCache.set(id, store);
@@ -711,4 +722,184 @@ export async function restoreGroups(): Promise<{ restored: number; failed: numbe
     else failed++;
   }
   return { restored, failed, total: groups.length };
+}
+
+// ─────────────────────────────────────────────────────────── 群运营能力 (2026-10-05, leo: 邀请/踢出/隐私/链接/状态)
+
+/**
+ * 重建群 store (新白名单) —— 这是"改成员"唯一诚实的路径。
+ *
+ * IPFS 型 AC 的白名单烧在内容寻址的 ACL manifest 里, 改它必然换 store 地址
+ * (见 `ACL_INPLACE_UPDATE.ipfsType` / `aclChangePlan`)。所以:
+ *   · 邀请 = 新白名单 + 被邀请者 → 重建;
+ *   · 踢出 = 新白名单 − 被踢者 → 重建。
+ * 重建 = 新地址、新链接、**历史消息不回放** (要保留必须显式回放)。
+ *
+ * 本函数做"换地址重建 + 历史回放 (逐条 add) + 本机链接更新", 返回新 GroupInfo。
+ * 迁移代价 (老链接作废/其他成员需重新 join) 由调用方 (CLI) 明示, 这里不假装无痛。
+ */
+export async function rebuildGroupWithWriteList(
+  groupId: string,
+  mode: { kind: 'add'; ref: MemberRef } | { kind: 'remove'; orbitdbId: string },
+  opts?: { replayHistory?: boolean }
+): Promise<{ ok: boolean; error?: string; group?: GroupInfo; before?: string[]; after?: string[]; costs?: string[] }> {
+  const groups = await loadGroups();
+  const g = groups.find((x) => x.id === groupId);
+  if (!g) return { ok: false, error: '群组不存在 (先 joinGroup/createGroup)' };
+  if (!g.gated) {
+    return {
+      ok: false,
+      error: `「${g.name}」不是门控群 (write:[*]), 没有白名单可改 —— 邀请=分享链接, 踢出=不适用 (人人可写)`,
+    };
+  }
+
+  const owner: MemberRef = {
+    did: g.ownerDid || '',
+    publicKeyHex: g.ownerPublicKeyHex || '',
+    orbitdbId: g.aclWrite?.[0] || '',
+  };
+  if (!owner.did || !owner.publicKeyHex || !owner.orbitdbId) {
+    return { ok: false, error: '缺少群主身份信息 (ownerDid/ownerPublicKeyHex/aclWrite 为空), 无法派生新白名单' };
+  }
+  // 当前白名单 = manifest 快照 (aclWrite, 上次重建/建群时烧进去的) 优先;
+  // 事件派生只在没有快照的老门控群兜底 (两套语义: 事件=成员自签加入, rebuild=群主单方改名单)
+  const derived = await groupWriteList(groupId, owner).catch(() => null);
+  const before = g.aclWrite && g.aclWrite.length > 0 ? g.aclWrite : (derived?.write ?? []);
+  const after = normalizeWriteList(
+    mode.kind === 'add'
+      ? [...before, mode.ref.orbitdbId]
+      : before.filter((id) => id !== mode.orbitdbId)
+  );
+  const changed = before.join(',') !== after.join(',');
+  if (!changed) {
+    return { ok: false, error: mode.kind === 'add' ? '该成员已在白名单里' : '该成员不在白名单里' };
+  }
+  if (mode.kind === 'remove' && !before.includes(mode.orbitdbId)) {
+    return { ok: false, error: `白名单里没有 ${mode.orbitdbId.slice(0, 16)}…, 无需踢出` };
+  }
+
+  const plan = aclChangePlan({ before, after, messageCount: opts?.replayHistory ? undefined : 0 });
+  const db = getDb();
+
+  // 1) 读历史消息 (回放前) —— 只在显式要求时
+  const history: GroupMessage[] = opts?.replayHistory ? await groupMessages(groupId, 100000) : [];
+
+  // 2) 建新 store (新白名单)
+  let store: OrbitDBStore | null = null;
+  try {
+    store = await db.openStore(`bolloon-gw-group-${g.name}-r${Date.now().toString(36)}`, 'events', groupAccessOptions(after));
+  } catch (e: any) {
+    return { ok: false, error: `重建 store 失败: ${String(e?.message || e).slice(0, 160)}` };
+  }
+  if (!store) return { ok: false, error: '重建 store 返回空 (openStore 失败, 未改任何东西)' };
+
+  // 3) 迁移成员事件 (原样重放, 双侧签名保留) —— 否则新 store 派生白名单只剩群主, 成员全丢
+  try {
+    const rawAll = await allRawEntries(groupId);
+    for (const { value } of rawAll) {
+      const v = value as any;
+      if (v && typeof v === 'object' && v.kind === GROUP_MEMBERSHIP_KIND) {
+        try { await store.add(v); } catch (e: any) { /* 单条失败不阻断 */ }
+      }
+    }
+  } catch (e: any) {
+    return { ok: false, error: `迁移成员事件失败: ${String(e?.message || e).slice(0, 120)}` };
+  }
+
+  // 4) 回放历史消息 (逐条 add, 保持 ts)
+  if (opts?.replayHistory) {
+    for (const m of history) {
+      try {
+        await store.add({ ...m });
+      } catch (e: any) {
+        // 逐条静默跳过, 能回放多少算多少; 回放是尽力而为, 不阻断重建
+      }
+    }
+  }
+
+  // 5) 更新本机记录: 换地址/换链接; 老 store 不删 (占用不回收, 见 plan.costs)
+  const address = store.address;
+  const link = `orbitdb://${address}?type=group&name=${encodeURIComponent(g.name)}`;
+  const info: GroupInfo = {
+    ...g,
+    address,
+    link,
+    lastSyncAt: new Date().toISOString(),
+    gated: true,
+    ownerDid: g.ownerDid,
+    aclWrite: after,
+    privacy: g.privacy ?? true,
+  };
+  await saveGroups(groups.map((x) => (x.id === groupId ? info : x)));
+  storeCache.set(groupId, store);
+
+  return { ok: true, group: info, before, after, costs: plan.costs };
+}
+
+/** 邀请: 把 orbitdbId 加进白名单 (重建路径) */
+export async function inviteMember(
+  groupId: string,
+  ref: MemberRef
+): Promise<{ ok: boolean; error?: string; group?: GroupInfo; costs?: string[] }> {
+  const r = await rebuildGroupWithWriteList(groupId, { kind: 'add', ref });
+  return { ok: r.ok, error: r.error, group: r.group, costs: r.costs };
+}
+
+/** 踢出: 把 orbitdbId 移出白名单 (重建路径; 协议上无法记"被踢者自签的 remove 事件", 不假装) */
+export async function kickMember(
+  groupId: string,
+  orbitdbId: string
+): Promise<{ ok: boolean; error?: string; group?: GroupInfo; costs?: string[] }> {
+  const r = await rebuildGroupWithWriteList(groupId, { kind: 'remove', orbitdbId });
+  return { ok: r.ok, error: r.error, group: r.group, costs: r.costs };
+}
+
+/** 设置隐私群标记 (只影响本机展示/默认 ACL 说明, 不改变 OrbitDB 权限语义) */
+export async function setGroupPrivacy(groupId: string, privacy: boolean): Promise<{ ok: boolean; error?: string; group?: GroupInfo }> {
+  const groups = await loadGroups();
+  const g = groups.find((x) => x.id === groupId);
+  if (!g) return { ok: false, error: '群组不存在' };
+  const info: GroupInfo = { ...g, privacy, lastSyncAt: new Date().toISOString() };
+  await saveGroups(groups.map((x) => (x.id === groupId ? info : x)));
+  return { ok: true, group: info };
+}
+
+/** 群状态快照: 成员/消息/白名单/gated/privacy/最后同步 (状态管理用) */
+export async function groupStatus(groupId: string): Promise<{
+  ok: boolean;
+  error?: string;
+  status?: {
+    group: GroupInfo;
+    memberCount: number;
+    messageCount: number;
+    writeList: string[];
+    gated: boolean;
+    privacy: boolean;
+    ownerDid?: string;
+    lastSyncAt?: string;
+  };
+}> {
+  const g = await groupInfo(groupId);
+  if (!g) return { ok: false, error: '群组不存在' };
+  const members = await groupMembers(groupId);
+  const wl = await (async () => {
+    if (!g.gated || !g.ownerDid) return g.aclWrite ?? [];
+    const owner: MemberRef = { did: g.ownerDid, publicKeyHex: g.ownerPublicKeyHex || '', orbitdbId: g.aclWrite?.[0] || '' };
+    if (!owner.orbitdbId || !owner.publicKeyHex) return g.aclWrite ?? [];
+    const d = await groupWriteList(groupId, owner).catch(() => null);
+    return d ? d.write : (g.aclWrite ?? []);
+  })();
+  return {
+    ok: true,
+    status: {
+      group: g,
+      memberCount: members.length,
+      messageCount: g.messageCount ?? 0,
+      writeList: wl,
+      gated: !!g.gated,
+      privacy: g.privacy ?? !!g.gated,
+      ownerDid: g.ownerDid,
+      lastSyncAt: g.lastSyncAt,
+    },
+  };
 }

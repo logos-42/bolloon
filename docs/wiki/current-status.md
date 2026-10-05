@@ -277,7 +277,7 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 | P2 | 把 2 个 opencode skill 接入 bolloon, 验证 use_skill 协议端到端 | ✅ 2026-07-04 复制 + ablation v0.2.8 D3.1 真实加载 |
 | P3 | 把 `scripts/ablation/run-long-loop.ts` 接入 vitest pre-commit | 待做 (跟 v0.2.7 runner 一样) |
 | P1 | C1/C2 公告板遗留: 真跨机公告同步(gateway merge) · 认领结果投递给买方(task send→accept) · 真链上释放交易(shadow chain 命令组) · 公告到期清理与多轮竞价 | 2026-09-23 `task publish/board/claim` 已落地, 这几项在 `verify-task-board.ts` [7] 里显式 skipped |
-| P1 | C7 群聊通道遗留: 两台机器经 OrbitDB 复制看到彼此群消息(需第二个真实节点) · 多方同时接单/交付的并发语义 · 终审结论触发链上 release(群消息**刻意**不替代 `releaseV2`) | 2026-09-23 `task announce/trail/post` + `task claim --group` 已落地, 这几项在 `verify-task-group-bridge.ts` [11] 里显式 skipped; 任务正文经群分发**设计上不做**(群是公开可读 store) |
+| P1 | C7 群聊通道遗留: 两台机器经 OrbitDB 复制看到彼此群消息(需第二个真实节点) · 多方同时接单/交付的并发语义 · 终审结论触发链上 release(群消息**刻意**不替代 `releaseV2`) | 2026-09-23 `task announce/trail/post` + `task claim --group` 已落地; 2026-10-05 `/group invite/kick/link/privacy/status` 落地 (邀请/踢出 = 重建白名单路径, 见 log); 这几项在 `verify-task-group-bridge.ts` [11] 里显式 skipped; 任务正文经群分发**设计上不做**(群是公开可读 store) |
 
 ## 手机端 + 眼镜端双端适配 (2026-08-10 → 2026-08-11)
 

@@ -62,7 +62,7 @@ const CLI_COMMANDS: MentionItem[] = [
   { kind: 'command', label: 'cron', hint: '定时任务', insert: 'cron' },
   { kind: 'command', label: 'dq', hint: '队列 (dequeue)', insert: 'dq' },
   { kind: 'command', label: 'goals', hint: '目标', insert: 'goals' },
-  { kind: 'command', label: 'group', hint: 'OrbitDB 群聊 (new/join/send/log/members)', insert: 'group' },
+  { kind: 'command', label: 'group', hint: 'OrbitDB 群聊 (new/join/send/log/members/invite/kick/link/privacy/status)', insert: 'group' },
   { kind: 'command', label: 'judgments', hint: '判断记录', insert: 'judgments' },
   { kind: 'command', label: 'net', hint: 'Agent 网络 (join/status/ctx)', insert: 'net' },
   { kind: 'command', label: 'p2p', hint: 'P2P 节点 / 连接', insert: 'p2p' },

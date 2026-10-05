@@ -83,7 +83,7 @@ export function parseGroupSub(input: string): GroupSub {
   // 2026-10-01 (用户: 「group 命令无法选中进群, 要可以选中」): 裸序号 ⇒ 直接选中该群
   //   与 `/channel <序号>` 同一个习惯 ✓ (列表里就带序号)
   if (/^\d+$/.test(head)) return { sub: 'use', arg: head };
-  const known = ['list', 'new', 'join', 'leave', 'use', 'send', 'log', 'members', 'help'];
+  const known = ['list', 'new', 'join', 'leave', 'use', 'send', 'log', 'members', 'invite', 'kick', 'link', 'privacy', 'status', 'help'];
   return { sub: known.includes(sub) ? sub : 'help', arg: known.includes(sub) ? arg : rest };
 }
 
@@ -3544,6 +3544,11 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         dim('  /group send <文本>         往当前群发一条');
         dim('  /group log [N]             看当前群最近 N 条 (默认 10)');
         dim('  /group members             列当前群成员');
+        dim('  /group invite <orbitdbId>  邀请进白名单 (门控群; 重建群地址)');
+        dim('  /group kick <orbitdbId>    踢出白名单 (门控群; 重建群地址)');
+        dim('  /group link                分享当前群链接');
+        dim('  /group privacy on|off      隐私群标记 (默认建群即隐私)');
+        dim('  /group status              群状态: 成员/消息/白名单/门控/隐私');
         return;
       }
       if (sub === 'list') {
@@ -3615,6 +3620,78 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         if (!gid) return;
         const ms = await gg.groupMembers(gid);
         dim(ms.length ? ms.join('\n') : '(暂无成员记录)');
+        return;
+      }
+      // ── 2026-10-05 (leo): 群运营能力 —— 邀请/踢出/链接/隐私/状态
+      if (sub === 'invite') {
+        const gid = await ensureCurrentGroup(gg);
+        if (!gid) return;
+        const g = await gg.groupInfo(gid);
+        if (!g) { dim('群不存在'); return; }
+        if (!g.gated) { appendLine(`${C_DIM}「${g.name}」是开放群 (write:[*]) —— 邀请 = 把链接发给对方自行加入:${RESET}\n${C_ACCENT}${g.link}${RESET}`); return; }
+        if (!arg) { dim('用法: /group invite <orbitdbId>   (门控群: 把对方加进白名单, 会重建群地址)'); return; }
+        const ref: { did: string; publicKeyHex: string; orbitdbId: string } = {
+          did: arg.startsWith('did:') ? arg : `did:key:z${arg.slice(0, 40)}`,
+          publicKeyHex: '',
+          orbitdbId: arg.startsWith('did:') ? (await gg.groupMembers(gid).catch(() => [] as string[])).find((m) => m === arg) || arg : arg,
+        };
+        const r = await gg.inviteMember(gid, ref as any);
+        if (!r.ok) { appendLine(`${C_WARN}邀请失败: ${r.error}${RESET}`); return; }
+        appendLine(renderMessageBox({
+          title: `✅ 已邀请进白名单: ${r.group?.name}`,
+          body: `新地址: ${r.group?.link}\n\n⚠ 重建代价 (IPFS 白名单不能就地改):\n${(r.costs || []).slice(0, 3).map((c) => `· ${c}`).join('\n')}\n\n把新链接发给对方, 用 /group join <链接> 加入 (老链接作废)`,
+          color: C_ACCENT, maxLines: 12,
+        }));
+        currentGroupId = r.group?.id || currentGroupId;
+        return;
+      }
+      if (sub === 'kick') {
+        const gid = await ensureCurrentGroup(gg);
+        if (!gid) return;
+        const g = await gg.groupInfo(gid);
+        if (!g) { dim('群不存在'); return; }
+        if (!g.gated) { dim('「' + g.name + '」是开放群 (write:[*]), 没有踢人语义 (人人可写)'); return; }
+        if (!arg) { dim('用法: /group kick <orbitdbId>   (从白名单移除; 重建群地址)'); return; }
+        const r = await gg.kickMember(gid, arg);
+        if (!r.ok) { appendLine(`${C_WARN}踢出失败: ${r.error}${RESET}`); return; }
+        appendLine(renderMessageBox({
+          title: `✅ 已移出白名单: ${r.group?.name}`,
+          body: `新地址: ${r.group?.link}\n\n⚠ 重建代价:\n${(r.costs || []).slice(0, 3).map((c) => `· ${c}`).join('\n')}\n\n被踢者老链接作废; 其他成员要用新链接重新加入`,
+          color: C_ACCENT, maxLines: 12,
+        }));
+        currentGroupId = r.group?.id || currentGroupId;
+        return;
+      }
+      if (sub === 'link') {
+        const gid = await ensureCurrentGroup(gg);
+        if (!gid) return;
+        const g = await gg.groupInfo(gid);
+        if (!g) { dim('群不存在'); return; }
+        appendLine(renderMessageBox({ title: `群链接: ${g.name}`, body: `${g.link}\n\n复制发给同伴, 用 /group join <链接> 加入`, color: C_ACCENT, maxLines: 8 }));
+        return;
+      }
+      if (sub === 'privacy') {
+        const gid = await ensureCurrentGroup(gg);
+        if (!gid) return;
+        const on = arg === 'on' || arg === 'true' || arg === '1';
+        const off = arg === 'off' || arg === 'false' || arg === '0';
+        if (!on && !off) { dim('用法: /group privacy on|off   (隐私群标记, 只影响本机展示/默认 ACL 说明)'); return; }
+        const r = await gg.setGroupPrivacy(gid, on);
+        appendLine(r.ok ? `${C_ACCENT}✓ 隐私群 ${on ? '开启' : '关闭'}: ${r.group?.name}${RESET}${C_DIM} (白名单/ACL 由建群时决定, 本标记只做展示)${RESET}` : `${C_WARN}设置失败: ${r.error}${RESET}`);
+        return;
+      }
+      if (sub === 'status') {
+        const gid = await ensureCurrentGroup(gg);
+        if (!gid) return;
+        const s = await gg.groupStatus(gid);
+        if (!s.ok || !s.status) { appendLine(`${C_WARN}${s.error}${RESET}`); return; }
+        const st = s.status;
+        const wl = st.writeList.slice(0, 12).join('\n    ');
+        appendLine(renderMessageBox({
+          title: `群状态: ${st.group.name}`,
+          body: `隐私: ${st.privacy ? '🔒 是' : '公开'} · 门控: ${st.gated ? '是' : '否'} · 成员: ${st.memberCount} · 消息: ${st.messageCount}\n最后同步: ${st.lastSyncAt || '-'}\n群主: ${st.ownerDid ? String(st.ownerDid).slice(0, 32) + '…' : '-'}\n\n写白名单 (${st.writeList.length}):\n    ${wl || '(无)'}`,
+          color: C_ACCENT, maxLines: 20,
+        }));
         return;
       }
       dim('用法: /group help');

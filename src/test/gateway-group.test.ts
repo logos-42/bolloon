@@ -14,6 +14,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as crypto from 'crypto';
+import { KeyManager } from '@diap/sdk';
 import {
   parseGroupLink,
   detectGroupLink,
@@ -25,6 +27,11 @@ import {
   groupInfo,
   listGroups,
   restoreGroups,
+  inviteMember,
+  kickMember,
+  setGroupPrivacy,
+  groupStatus,
+  groupLink,
   setGroupTestDb,
   resetGroupState,
 } from '../agents/gateway-group.js';
@@ -203,5 +210,105 @@ describe('gateway-group (Agent Gateway P2P 群组)', () => {
     await createGroup('群B');
     const groups = await listGroups();
     expect(groups.length).toBe(2);
+  });
+
+  // ── 2026-10-05 (leo): 群运营能力 —— 邀请/踢出/隐私/状态/链接 ──
+  describe('群运营能力 (invite/kick/privacy/status/link)', () => {
+    /** 造一个真 Ed25519 成员 (did 与 publicKeyHex 同一把钥匙), orbitdbId 造 66 位合法形状 */
+    function mkMember(tag: string): { did: string; publicKeyHex: string; orbitdbId: string } {
+      const kp = KeyManager.generate();
+      return {
+        did: kp.did,
+        publicKeyHex: Buffer.from(kp.publicKey).toString('hex'),
+        orbitdbId: '02' + crypto.createHash('sha256').update('orbitdb:' + tag).digest('hex'),
+      };
+    }
+
+    const owner = mkMember('owner');
+
+    async function createGated(name: string) {
+      return createGroup(name, {
+        gate: { owner, members: [{ did: owner.did, publicKeyHex: owner.publicKeyHex, orbitdbId: owner.orbitdbId }] },
+      });
+    }
+
+    it('invite 把新成员加进白名单 (重建地址)', async () => {
+      const r = await createGated('invite-me');
+      expect(r.ok).toBe(true);
+      const gid = r.group!.id;
+      const beforeAddr = r.group!.address;
+
+      const newbie = mkMember('newbie');
+      const inv = await inviteMember(gid, newbie);
+      expect(inv.ok).toBe(true);
+      expect(inv.group!.address).not.toBe(beforeAddr); // 重建 ⇒ 换地址
+      expect(inv.group!.aclWrite).toContain(newbie.orbitdbId);   // 新白名单含被邀请者
+      expect(inv.group!.aclWrite).toContain(owner.orbitdbId); // 群主仍在
+      expect(inv.costs && inv.costs.length).toBeGreaterThan(0); // 代价明示
+    });
+
+    it('kick 把成员移出白名单 (重建地址)', async () => {
+      const r = await createGated('kick-me');
+      expect(r.ok).toBe(true);
+      const gid = r.group!.id;
+
+      const bad = mkMember('bad');
+      const inv = await inviteMember(gid, bad);
+      expect(inv.ok).toBe(true);
+      expect(inv.group!.aclWrite).toContain(bad.orbitdbId);
+
+      const k = await kickMember(gid, bad.orbitdbId);
+      expect(k.ok).toBe(true);
+      expect(k.group!.aclWrite).not.toContain(bad.orbitdbId);
+      expect(k.group!.aclWrite).toContain(owner.orbitdbId);
+    });
+
+    it('kick 白名单外成员 → 报错 (不假装踢了)', async () => {
+      const r = await createGated('kick-absent');
+      const ghost = mkMember('ghost');
+      const k = await kickMember(r.group!.id, ghost.orbitdbId);
+      expect(k.ok).toBe(false);
+      expect(k.error).toMatch(/不在白名单/);
+    });
+
+    it('非门控群 invite → 明确说不适用 (开放群人人可写)', async () => {
+      const r = await createGroup('open-invite', { acl: 'open' });
+      expect(r.ok).toBe(true);
+      const inv = await inviteMember(r.group!.id, owner);
+      expect(inv.ok).toBe(false);
+      expect(inv.error).toMatch(/不是门控群/);
+    });
+
+    it('privacy 标记开/关', async () => {
+      const r = await createGroup('privacy-me');
+      const gid = r.group!.id;
+      // 建群默认隐私 (创建者独占写)
+      const on = await setGroupPrivacy(gid, true);
+      expect(on.ok).toBe(true);
+      expect(on.group!.privacy).toBe(true);
+      const off = await setGroupPrivacy(gid, false);
+      expect(off.ok).toBe(true);
+      expect(off.group!.privacy).toBe(false);
+    });
+
+    it('status 返回状态快照 (成员/消息/白名单/门控/隐私)', async () => {
+      const r = await createGroup('status-me');
+      const gid = r.group!.id;
+      await groupSend(gid, 'hello status', 'did:key:z6Mktest');
+      const s = await groupStatus(gid);
+      expect(s.ok).toBe(true);
+      expect(s.status!.gated).toBe(false);      // 默认创建者独占 (gated 由 gate 才设 true)
+      expect(s.status!.privacy).toBe(true);     // 但 privacy 默认 true
+      expect(typeof s.status!.messageCount).toBe('number');
+      expect(s.status!.memberCount).toBeGreaterThan(0);
+      expect(Array.isArray(s.status!.writeList)).toBe(true);
+    });
+
+    it('link 重取当前群链接', async () => {
+      const r = await createGroup('link-me');
+      const l = await groupLink(r.group!.id);
+      expect(l).toMatch(/^orbitdb:\/\//);
+      expect(l).toContain('type=group');
+    });
   });
 });
