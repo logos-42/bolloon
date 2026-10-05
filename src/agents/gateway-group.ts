@@ -61,6 +61,20 @@ export function resetGroupState(): void {
   openFailures.clear();
 }
 
+/**
+ * 关闭群聊使用的 OrbitDB/Helia 资源。
+ * 一次性 CLI、验收探针和测试必须在读回后调用它，否则底层 libp2p/Helia 句柄
+ * 会继续保持事件循环活跃，表现为“消息已读完但进程不退出”。
+ * 测试注入的 fake DB 不关闭，避免破坏测试夹具生命周期。
+ */
+export async function closeGroupResources(): Promise<void> {
+  storeCache.clear();
+  onChangeCallbacks.clear();
+  openFailures.clear();
+  if (_dbOverride) return;
+  await getCIDDatabase().close();
+}
+
 // ============ 类型 ============
 
 /**
@@ -405,8 +419,7 @@ export async function listGroups(): Promise<GroupInfo[]> {
  * 不会因为本机退出而改 (本模块没有"踢人/解散"的权限, 也不假装有)。
  * 返回 `removed` = 被摘掉的 groupId (按 id 或群名匹配)。
  *
- * 注意: 底层 OrbitDB store 已在进程内打开的**不会**在这里关 (适配层没暴露 close);
- * 对 `bolloon task group leave` 这种一次性进程无影响, 长驻进程里它活到进程结束。
+ * 注意: leave 只摘本地群列表；需要结束进程资源时调用 `closeGroupResources()`。
  */
 export async function leaveGroup(idOrName: string): Promise<{ ok: boolean; removed?: string; error?: string }> {
   const raw = String(idOrName || '').trim();

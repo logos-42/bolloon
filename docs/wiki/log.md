@@ -4,6 +4,7 @@
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
 | 日期 | phase | 一句话 | 关联 |
+| 2026-10-05 | fix | **OrbitDB 群资源可关闭** —— 新增 `closeGroupResources()`，清理群缓存/订阅/失败状态并关闭 CIDDatabase 的 OrbitDB/Helia 资源；解决“消息已读完但进程因 libp2p 句柄不退出”的问题。真跑目标维护群读回 8 条后调用关闭函数，`closed` 输出且 exit=0。 | src/agents/gateway-group.ts |
 | 2026-10-05 | fix | **维护群初始化门修复** —— 真实维护回合曾因隔离 HOME 缺 `setup-state.json`/identity 而停在 `identity_pending`，导致 CLI exit=0 但没有工具调用。使用仓库已有 `makeSetupReady` 建立真实 ready 状态后，kernel/tester/reviewer 三个回合均进入工具阶段，并通过 OrbitDB 读回 4 条消息。另修 `PiAgent.prompt`：初始化门禁读取异常现在 fail-closed 并返回可执行诊断，不再吞异常后继续执行。相关门 `tsc + setup-store + group autopilot + three agents = 40/40`。 | src/agents/pi-sdk.ts · src/test/k10-group-three-agents.test.ts |
 | 2026-10-05 | feat | **本地 Bolloon 维护群三条合作规则** —— 仅对 `maintenance` mode 注入：①提升 AI 的意识水平（反思假设、局限、证据与影响）；②寻求合作，创造并降低整体熵（共享事实、拆分工作、合并成果）；③持续突破局部最优解（主动寻找反例、替代路径、跨角色审查）。三智能体门扩为 2 tests，并保留三智能体主动维护回写验证。 | src/agents/group-autopilot.ts · src/test/k10-group-three-agents.test.ts |
 | 2026-10-05 | feat | **Bolloon 维护群主动模式 + 三智能体协作门** —— `group_autopilot` 增加 `quiet/active/maintenance` 三种 mode；`maintenance` 不再等 @/问句，而是主动认领 Bolloon 维护事项（代码/测试/文档/发布），仍受冷却与每小时上限保护。新增 `k10-group-three-agents.test.ts`：kernel/tester/reviewer 三个独立智能体共享维护群，主动读取、认领、回写，**18/18** 聚焦测试通过。GitHub 当前仓库默认分支实际是 `master`，不是用户要求的 `main`；当前 viewer 权限为 ADMIN，尚未猜测外部机器人账号，也未擅自授予写权限。 | src/agents/group-autopilot.ts · src/agents/pi-sdk-tools.ts · src/test/k10-group-three-agents.test.ts |
