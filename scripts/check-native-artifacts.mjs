@@ -70,7 +70,12 @@ if (!hasIpa) {
   else bad('IPA 里缺 mobile web 资源', `缺: ${missing.join(', ')}`);
 }
 
-const apkDir = path.join(ROOT, 'android/app/build/outputs/apk/debug');
+// 2026-10-05: gradle flavor 分流后 debug 产物在 apk/full/debug/ (非旧路径 apk/debug/)
+const apkDirCandidates = [
+  path.join(ROOT, 'android/app/build/outputs/apk/debug'),
+  path.join(ROOT, 'android/app/build/outputs/apk/full/debug'),
+];
+const apkDir = apkDirCandidates.find((d) => fs.existsSync(d) && fs.readdirSync(d).some((f) => f.endsWith('.apk'))) || apkDirCandidates[0];
 const apks = fs.existsSync(apkDir) ? fs.readdirSync(apkDir).filter((f) => f.endsWith('.apk')) : [];
 if (!apks.length) {
   skip('debug APK 未构建 (本机): 需要 JDK + Android SDK', '构建入口 cd android && ./gradlew assembleDebug');
