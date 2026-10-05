@@ -670,10 +670,15 @@ export function tuiSelect(
     ].filter(Boolean).join(' · ');
 
     const buf: string[] = [];
+    // ★ 重绘回退 = **实际画出的行数** (drawn), 不是视窗容量 body。
+    //   leo 2026-10-05 报「切换吞掉之前的内容 + 高度回退」的根因: 筛选后候选只剩 2 项,
+    //   帧实际只画 4 行, 但 rendered 用 body(=27) 记成了 28 → finish 发 `ESC[28A` 上移 28 行,
+    //   把上面主屏的 `步骤 1/4`/`已选供应商` 全吞掉。VIEWPORT_MAX 12→40 后 body 变大, 吞得更狠。
     buf.push(`${first ? '' : `${E}[${rendered}A`}${ERASE_DOWN}`);
     // 头行: 先按纯文本截到宽度, 再上色 (顺序反了的话颜色码会被截断丢掉)
     buf.push(`${toneWrap(truncateToWidth(head, cols), 'accent', color)}${ERASE_EOL}\r\n`);
-    if (above) buf.push(`${toneWrap(truncateToWidth(`  ↑ 上面还有 ${top} ${unit}`, cols), 'muted', color)}${ERASE_EOL}\r\n`);
+    let drawn = 1;                                           // 头行
+    if (above) { buf.push(`${toneWrap(truncateToWidth(`  ↑ 上面还有 ${top} ${unit}`, cols), 'muted', color)}${ERASE_EOL}\r\n`); drawn++; }
     for (let i = 0; i < body; i++) {
       const line = lines[start + i];
       // 先算**纯文本**行内容并按宽度截断/补齐, 再决定怎么上色 —— 保证"颜色不被截断抹掉 + 不撑破"
@@ -704,14 +709,19 @@ export function tuiSelect(
         // ★ 光标行: `→ ` 前缀 + **accent 底 / 近黑字** (见 CURSOR_SGR; 反白序列同时是结构判据)
         const padded = padToWidth(truncateToWidth(plain, cols), cols);
         buf.push(`${color ? `${CURSOR_SGR}${padded}${RESET}` : truncateToWidth(plain, cols)}${ERASE_EOL}\r\n`);
+        drawn++;
         continue;
       }
       buf.push(`${toneWrap(truncateToWidth(plain, cols), tone, color)}${ERASE_EOL}\r\n`);
+      drawn++;
     }
-    if (below) buf.push(`${toneWrap(truncateToWidth(`  ↓ 下面还有 ${total - (start + body)} ${unit}`, cols), 'muted', color)}${ERASE_EOL}\r\n`);
+    if (below) { buf.push(`${toneWrap(truncateToWidth(`  ↓ 下面还有 ${total - (start + body)} ${unit}`, cols), 'muted', color)}${ERASE_EOL}\r\n`); drawn++; }
     buf.push(`${toneWrap(truncateToWidth(status, cols), 'muted', color)}${ERASE_EOL}`);
-    // 帧共 1(头) + (above?1:0) + body + (below?1:0) + 1(状态) ≤ 终端高度 行 (硬预算)
-    rendered = 1 + (above ? 1 : 0) + body + (below ? 1 : 0);
+    drawn++;                                             // 状态行
+    // 帧共 drawn 行 (头 + 上下指示 + 实际候选行数 + 状态) ≤ 终端高度 (硬预算)。
+    //   finish 的 `ESC[nA` 用 drawn-1: 光标从状态行回到帧首行, ESC[J 清掉整帧;
+    //   用容量 body 会导致上移过头, 把上面的主屏行也吞掉 (本 bug 的根因)。
+    rendered = Math.max(1, drawn - 1);
     out.write(buf.join(''));
     first = false;
   };

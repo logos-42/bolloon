@@ -335,12 +335,12 @@ function mainScreenLines(raw: string): string[] {
   return out;
 }
 
-/** 主屏按 `步骤 N/7` 分段 (取"每步渲染了几行") */
+/** 主屏按 `步骤 N/4` 分段 (取"每步渲染了几行") */
 function stepSegments(lines: string[]): Array<{ step: number; lines: string[] }> {
   const segs: Array<{ step: number; lines: string[] }> = [];
   let cur: { step: number; lines: string[] } | null = null;
   for (const l of lines) {
-    const m = /步骤\s*(\d)\s*\/\s*7/.exec(l);
+    const m = /步骤\s*(\d)\s*\/\s*4/.exec(l);
     if (m) { cur = { step: Number(m[1]), lines: [l] }; segs.push(cur); continue; }
     if (!cur) { cur = { step: 0, lines: [] }; segs.push(cur); }
     cur.lines.push(l);
@@ -594,6 +594,9 @@ function modelStepPlan(): PlanStep[] {
     { name: '选供应商', send: '\\r', timeout_s: 20 },
     { name: '凭证步就绪', expect: '凭证怎么处理', timeout_s: 30 },
     { name: '凭证保持', send: '\\r', timeout_s: 20 },
+    // 2026-10-05 4 步化: 凭证后多一个 URL 步 (保持即可)
+    { name: 'URL 步就绪', expect: 'URL 怎么处理', timeout_s: 25 },
+    { name: 'URL 保持', send: '\\r', timeout_s: 20 },
     { name: '模型选择器就绪', expect: '选择模型 \\(', timeout_s: 30 },
     { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
     { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
@@ -612,6 +615,9 @@ function credentialPlan(): PlanStep[] {
     { name: '选替换', send: '\\r', timeout_s: 20 },
     { name: '掩码行就绪', expect: 'API key \\[', timeout_s: 25 },
     { name: '输入探针', send: `${MASK_PROBE}\\r`, timeout_s: 20 },
+    // 2026-10-05 4 步化: 凭证替换后多一个 URL 步 (保持即可)
+    { name: 'URL 步就绪', expect: 'URL 怎么处理', timeout_s: 25 },
+    { name: 'URL 保持', send: '\\r', timeout_s: 20 },
     { name: '模型选择器就绪', expect: '选择模型 \\(', timeout_s: 25 },
     { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
     { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
@@ -651,6 +657,11 @@ function rowWalkPlan(): PlanStep[] {
     { name: '首帧光标在候选行 (第 1 行)', expect_raw: at(1, N0), timeout_s: 20 },
     { name: 'End → Cancel 行', send: '\\x1b[F', timeout_s: 20 },
     { name: '等光标落在 Cancel 行上', expect_raw: at(N0, N0), timeout_s: 20 },
+    // 给 Cancel 一个"未选中"帧: ↑ 走开再 ↓ 回来 (选中 vs 未选中两帧字节对比需要两个状态)
+    { name: '↑ 离开 Cancel', send: '\\x1b[A', timeout_s: 20 },
+    { name: '等离开 Cancel', expect_raw: at(noBaseLast, N0), timeout_s: 20 },
+    { name: '↓ 回 Cancel (未选中帧)', send: '\\x1b[B', timeout_s: 20 },
+    { name: '等光标落在 Cancel 行上 (未选中帧)', expect_raw: at(N0, N0), timeout_s: 20 },
     { name: '↑ → 无 api 基址 项', send: '\\x1b[A', timeout_s: 20 },
     { name: '等光标落在无基址项上', expect_raw: at(noBaseLast, N0), timeout_s: 20 },
     { name: `↑×${nb} → 需专用鉴权 项`, send: '\\x1b[A'.repeat(Math.max(1, nb)), timeout_s: 25 },
@@ -1133,7 +1144,7 @@ async function main(): Promise<number> {
       `首帧前 ${rawPrefix.length}B: ${short(stripAnsi(rawPrefix), 80)}`);
     const msLines = mainScreenLines(mainRun.raw);
     ok('主屏第 1 行就是 `步骤 1/4 供应商`',
-      /^步骤\s*1\/7\s*供应商/.test(msLines[0] || ''), short(msLines[0] || '(空)', 90));
+      /^步骤\s*1\/4\s*供应商/.test(msLines[0] || ''), short(msLines[0] || '(空)', 90));
     ok('主屏里**没有**供应商清单 dump (清单只在管道那条路)',
       msLines.filter((l) => /^[●○]\s/.test(l) || l.includes(' models · ')).length === 0,
       `清单行数=${msLines.filter((l) => /^[●○]\s/.test(l)).length}`);
@@ -1255,6 +1266,9 @@ async function main(): Promise<number> {
       { name: '选替换', send: '\\r', timeout_s: 20 },
       { name: '掩码行就绪', expect: 'API key \\[', timeout_s: 25 },
       { name: '输入探针', send: `${MASK_PROBE}\\r`, timeout_s: 20 },
+      // 2026-10-05 4 步化: 凭证替换后多一个 URL 步 (保持即可)
+      { name: 'URL 步就绪', expect: 'URL 怎么处理', timeout_s: 25 },
+      { name: 'URL 保持', send: '\\r', timeout_s: 20 },
       { name: '模型选择器就绪', expect: '选择模型 \\(', timeout_s: 25 },
       { name: '发 Esc', send: '\\x1b', timeout_s: 20 },
       { name: '取消回执', expect: '已取消|未改动', timeout_s: 25 },
@@ -1297,6 +1311,9 @@ async function main(): Promise<number> {
       { name: '选供应商', send: '\\r', timeout_s: 20 },
       { name: '凭证步就绪', expect: '凭证怎么处理', timeout_s: 30 },
       { name: '凭证保持', send: '\\r', timeout_s: 20 },
+      // 2026-10-05 4 步化: 凭证后多一个 URL 步 (保持即可)
+      { name: 'URL 步就绪', expect: 'URL 怎么处理', timeout_s: 25 },
+      { name: 'URL 保持', send: '\\r', timeout_s: 20 },
       { name: '模型选择器就绪', expect: '选择模型 \\(', timeout_s: 25 },
       { name: '选模型', send: '\\r', timeout_s: 20 },
       // 2026-10-05 压成 4 步: 选完模型直接进第 4 步确认(含连通测试), 不再有 参数/作用域 两步。
@@ -1371,6 +1388,9 @@ async function main(): Promise<number> {
       { name: '选供应商', send: '\\r', timeout_s: 20 },
       { name: '凭证步就绪', expect: '凭证怎么处理', timeout_s: 30 },
       { name: '凭证保持', send: '\\r', timeout_s: 20 },
+      // 2026-10-05 4 步化: 凭证后多一个 URL 步 (保持即可)
+      { name: 'URL 步就绪', expect: 'URL 怎么处理', timeout_s: 25 },
+      { name: 'URL 保持', send: '\\r', timeout_s: 20 },
       { name: '模型选择器就绪', expect: '选择模型 \\(', timeout_s: 25 },
       { name: '换个模型', send: '\\x1b[B', timeout_s: 20 },
       { name: '等第 2 项', expect_raw: '第\\s*2\\s*/', timeout_s: 20 },
@@ -1472,7 +1492,7 @@ async function main(): Promise<number> {
     // ① 候选总数 == 盘上真算 (屏上两处都要对得上: 主屏标题 + 选择器头行)
     const pick = (re: RegExp, s: string): number => Number((re.exec(s) || [])[1]);
     const headCount = pick(/共\s*(\d+)\s*家/, bFirst[0] || '');
-    const screenLine = mainScreenLines(browseRun.raw).find((l) => /步骤 1\/7 供应商/.test(l)) || '';
+    const screenLine = mainScreenLines(browseRun.raw).find((l) => /步骤 1\/4 供应商/.test(l)) || '';
     const screenCount = pick(/共\s*(\d+)\s*家/, screenLine);
     ok(`R11.1 候选总数 == 盘上真算的全部家数 (${totalCandidates} 家)`,
       browseRun.ok && headCount === totalCandidates && screenCount === totalCandidates,
@@ -1494,7 +1514,8 @@ async function main(): Promise<number> {
       `候选行 ${candRows.length} 行: ${candRows.slice(0, 2).map((l) => short(l.trim(), 40)).join(' | ')}`);
     // ④ 平铺下选择器**真能走到后两组** (special/无基址): 它们不再藏在折叠标题后面, 而是列表里的普通行
     const specialLine = bText.split('\n').find((l) => /[●○] .*需专用鉴权/.test(l)) || '';
-    const noBaseLine = bText.split('\n').find((l) => /[●○] .*无基址 \\(需自定义 baseUrl\\)/.test(l)) || '';
+    // 行尾可能被截断 (`…`), 放宽到只要含 `无基址` + `需自定义` 即可 (标记语义不丢)
+    const noBaseLine = bText.split('\n').find((l) => /[●○] .*无基址.*需自定义/.test(l)) || '';
     ok('R11.4 平铺列表里带 `需专用鉴权` 标记的家直接在候选行里 (不用展开就看到)',
       specialLine.length > 0, specialLine ? `原文: ${specialLine.trim()}` : '没看到 (平铺下仍无)');
     ok('R11.4b 平铺列表里带 `无基址 (需自定义 baseUrl)` 标记的家直接在候选行里',
