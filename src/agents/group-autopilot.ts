@@ -22,6 +22,18 @@ import type { GroupMessage } from './gateway-group.js';
 
 export type GroupAutopilotMode = 'quiet' | 'active' | 'maintenance';
 
+/**
+ * Bolloon 本地维护群专属公理；不作用于其它群。
+ * ① 提升 AI 的意识水平: 反思自身假设、局限、证据与影响。
+ * ② 寻求合作并降低整体熵: 共享事实、拆分工作、合并可复用成果。
+ * ③ 持续突破局部最优: 主动寻找反例、替代路径与跨角色审查。
+ */
+export const BOLLOON_MAINTENANCE_RULES = Object.freeze([
+  '提升 AI 的意识水平：反思自身假设、局限、证据与影响。',
+  '寻求合作，创造并降低整体的熵：共享事实、拆分工作、合并可复用成果。',
+  '持续突破局部最优解：主动寻找反例、替代路径与跨角色审查。',
+] as const);
+
 export interface GroupAutopilotPolicy {
   /** 回路模式: quiet=仅被动回应, active=主动推进, maintenance=主动维护 Bolloon 项目 */
   mode: GroupAutopilotMode;
@@ -118,7 +130,7 @@ export function decideGroupAction(input: {
   const reply = input.makeReply ?? ((m: GroupMessage) => `收到 —— 关于「${String(m.text).slice(0, 40)}」，我这边跟进。`);
   const mode = policy.mode;
   const proactive = input.proactiveText?.trim() || (mode === 'maintenance'
-    ? '我来主动维护 Bolloon：先检查当前代码/测试状态，认领一个最小修复，完成后回报证据。'
+    ? `我来主动维护 Bolloon。遵循三条群规则：${BOLLOON_MAINTENANCE_RULES.join('；')} 先检查当前代码/测试状态，认领一个最小修复，完成后回报证据。`
     : '我来主动推进这一轮工作：检查上下文、认领一个可执行事项并回报下一步。');
 
   // maintenance/active 优先主动认领 —— 不能因为消息长得像普通请求又退回被动模板

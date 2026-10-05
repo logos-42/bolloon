@@ -1,9 +1,15 @@
 /** 三智能体群聊协作门: 三个独立 autopilot 共享同一群消息, 每个主动维护并回写。 */
 import { describe, it, expect } from 'vitest';
-import { runGroupAutopilotOnce, type AutopilotStateFile } from '../agents/group-autopilot.js';
+import { runGroupAutopilotOnce, BOLLOON_MAINTENANCE_RULES, type AutopilotStateFile } from '../agents/group-autopilot.js';
 import type { GroupMessage } from '../agents/gateway-group.js';
 
 describe('three agents maintenance group', () => {
+  it('只对本地维护群注入三条规则', () => {
+    expect(BOLLOON_MAINTENANCE_RULES).toHaveLength(3);
+    expect(BOLLOON_MAINTENANCE_RULES.join('\n')).toContain('提升 AI 的意识水平');
+    expect(BOLLOON_MAINTENANCE_RULES.join('\n')).toContain('寻求合作');
+    expect(BOLLOON_MAINTENANCE_RULES.join('\n')).toContain('突破局部最优');
+  });
   it('三个独立智能体主动读取、认领并回写同一群', async () => {
     const messages: GroupMessage[] = [{ id: 'm0', from: 'maintainer-user', text: '请开始维护 Bolloon 项目', ts: 1 }];
     const states: Record<string, AutopilotStateFile> = {
