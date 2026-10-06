@@ -140,10 +140,12 @@ export const CLI_KNOWN_COMMAND_HEADS: ReadonlySet<string> = new Set([
   '/trace',
   '/tx',
   '/wake',
-  '/wallet',
-  '/wiki',
-  '/x402',
-]);
+    '/wallet',
+    '/wiki',
+    '/world',
+    '/chat',
+    '/x402',
+  ]);
 const _require = createRequire(import.meta.url);
 const _BOLLOON_VERSION = ((): string => {
   try { return _require('../package.json').version || '0.0.0'; }
@@ -1652,10 +1654,37 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     return;
   }
 
-  // /channel — 切换当前智能体 (agent channel), 参数 name/id/number 自动解析
-  if (trimmed.toLowerCase().startsWith('/channel')) {
-    const q = trimmed.slice('/channel'.length).trim();
-    try {
+  // ===== 2026-10-06: /world /chat — 世界/聊天模式切换 (用户要求 CLI 也有) =====
+    // /world  = 进入世界模式: 扫描机会并以表格呈现 (对应 web 的世界面板)
+    // /chat   = 回到聊天模式: 提示 (CLI 无持久模式状态, 只是明确语义)
+    if (trimmed === '/world' || trimmed.startsWith('/world ')) {
+      try {
+        const { scanOpportunities } = await import('./agents/opportunity-match.js');
+        const { opportunityTable } = await import('./cli/intent-command.js');
+        const minScore = Number(/--min-score\s+([\d.]+)/.exec(trimmed)?.[1] ?? '0.4');
+        const r = await scanOpportunities({ minScore: Math.min(1, Math.max(0, minScore)), limit: 50 });
+        const head = `${BOLD}🌍 世界模式${RESET} — 机会列表 (score ≥ ${minScore})`;
+        if (!r.ok || !r.results.length) {
+          appendLine(renderMessageBox({ title: '🌍 世界模式', body: head + '\n\n  (当前没有匹配的机会 — 先 bolloon intent set 声明你在做什么)', color: C_ACCENT, maxLines: 10 }));
+        } else {
+          const table = opportunityTable(r.results);
+          const hint = '  用 bolloon opportunity accept <id> 确认 · ignore <id> 忽略';
+          appendLine(renderMessageBox({ title: '🌍 世界模式', body: head + '\n\n' + table.join('\n\n') + '\n\n' + hint, color: C_ACCENT, maxLines: 60 }));
+        }
+      } catch (e: any) {
+        appendLine(`${C_WARN}/world 执行失败: ${String(e?.message || e).slice(0, 200)}${RESET}`);
+      }
+      return;
+    }
+    if (trimmed === '/chat' || trimmed.startsWith('/chat ')) {
+      appendLine(`${BOLD}💬 聊天模式${RESET} — 直接输入文字与 Bolloon 对话 (回到主对话)`);
+      return;
+    }
+
+    // /channel — 切换当前智能体 (agent channel), 参数 name/id/number 自动解析
+    if (trimmed.toLowerCase().startsWith('/channel')) {
+      const q = trimmed.slice('/channel'.length).trim();
+      try {
       const { getIdentityStore } = await import('./agents/agent-identity-store.js');
       const store = getIdentityStore();
       await store.load();

@@ -191,14 +191,24 @@ export async function opportunityCommand(flags: CliFlags): Promise<CommandResult
   };
 }
 
-function cardRows(opts: { id: string; score: number; reason: 'match' | 'world' | 'inbox' | 'search'; title: string; summary: string; budget: string | null; matchTags: string[] }): string[] {
-  const pct = Math.round(opts.score * 100);
-  const tag = opts.reason === 'match' ? '● 与你匹配' : (opts.reason === 'inbox' ? '✉ 外部投递' : (opts.reason === 'search' ? '🔎 AI 搜索' : '○ 世界变化'));
-  return [
-    `  ${pct}% ${tag}  ${opts.title}`,
-    `      ${opts.summary}`,
-    `      预算: ${opts.budget ?? '未知'} · id=${opts.id}`,
-  ];
+/** 2026-10-06 (用户: 世界模式用表格呈现): ASCII 表格机会列表 — 列 = 分数/来源/标题/预算/id */
+export function opportunityTable(results: Array<{ id: string; score: number; reason: 'match' | 'world' | 'inbox' | 'search'; title: string; summary: string; budget: string | null }>): string[] {
+  if (!results.length) return ['  (没有机会)'];
+  const reasonShort = (r: string) => (r === 'match' ? '匹配' : r === 'inbox' ? '投递' : r === 'search' ? '搜索' : '世界');
+  const rows: string[][] = results.map((o) => {
+    const pct = Math.round(o.score * 100);
+    const title = o.title.length > 32 ? o.title.slice(0, 31) + '…' : o.title;
+    return [String(pct) + '%', reasonShort(o.reason), title, (o.budget ?? '无').slice(0, 14), o.id];
+  });
+  const w = (idx: number, min: number) => Math.max(min, ...rows.map((r) => r[idx].length));
+  const wS = w(0, 5), wR = w(1, 4), wT = w(2, 32), wB = w(3, 6), wId = w(4, 8);
+  const sep = `  +${'-'.repeat(wS)}+${'-'.repeat(wR)}+${'-'.repeat(wT)}+${'-'.repeat(wB)}+${'-'.repeat(wId)}+`;
+  const head = `  | ${'分数'.padStart(wS - 2)} | ${'来源'.padEnd(wR)} | ${'标题'.padEnd(wT)} | ${'预算'.padEnd(wB)} | ${'ID'.padEnd(wId)} |`;
+  const line = (c: string[]) => `  | ${c[0].padStart(wS)} | ${c[1].padEnd(wR)} | ${c[2].padEnd(wT)} | ${c[3].padEnd(wB)} | ${c[4].padEnd(wId)} |`;
+  const out: string[] = [sep, head, sep];
+  for (const r of rows) out.push(line(r));
+  out.push(sep);
+  return out;
 }
 
 async function opportunityScan(flags: CliFlags): Promise<CommandResult> {
@@ -219,9 +229,9 @@ async function opportunityScan(flags: CliFlags): Promise<CommandResult> {
     };
   }
   const data = { count: r.results.length, minScore, opportunities: r.results };
-  const human: string[] = [title(head), `  找到 ${r.results.length} 个机会 (score ≥ ${minScore}):`, ''];
-  for (const o of r.results) human.push(...cardRows(o));
-  human.push('', hint('用 bolloon opportunity accept <id> 确认, ignore <id> 忽略'));
+    const human: string[] = [title(head), `  找到 ${r.results.length} 个机会 (score ≥ ${minScore}):`, ''];
+    human.push(...opportunityTable(r.results));
+    human.push('', hint('用 bolloon opportunity accept <id> 确认, ignore <id> 忽略'));
   return { envelope: okEnvelope('OK', `${r.results.length} 个机会`, data, r.results.map((x) => x.id), null), human: human.join('\n') };
 }
 
@@ -236,8 +246,8 @@ async function opportunityList(flags: CliFlags): Promise<CommandResult> {
     const hits = await matchOneIntentText(i.text, i.tags, i.budget);
     if (!hits.length) return { envelope: okEnvelope('OK', `意图「${i.text}」暂无匹配`, { count: 0, opportunities: [] }, [], null), human: `${title(head)}\n  「${i.text}」暂无匹配机会` };
     const human = [title(head), `  「${i.text}」的 ${hits.length} 个机会:`, ''];
-    for (const o of hits) human.push(...cardRows(o));
-    return { envelope: okEnvelope('OK', `${hits.length} 个机会`, { count: hits.length, opportunities: hits }, hits.map((x) => x.id), null), human: human.join('\n') };
+        human.push(...opportunityTable(hits));
+        return { envelope: okEnvelope('OK', `${hits.length} 个机会`, { count: hits.length, opportunities: hits }, hits.map((x) => x.id), null), human: human.join('\n') };
   }
   return opportunityScan(flags);
 }
