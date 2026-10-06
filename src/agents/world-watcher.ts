@@ -19,17 +19,45 @@ let watcherTimer: NodeJS.Timeout | null = null;
 let watching = false; // 防重叠: 上一轮没跑完就跳过这一轮
 let watcherCount = 0;
 
-/** 单轮观察: 扫描世界 → 观察日志/校准环自动积累 (分发主体本地版) */
+/** 单轮观察: 扫描世界 → 观察日志/校准环自动积累 (分发主体本地版)。
+ *  2026-10-05 (leo): 有 active intent / 画像时, 自动上网搜机会 (AI 主动搜索, 非被动响应)。 */
 export async function tickWorldWatcher(): Promise<{ ok: boolean; observed: number; count: number; error?: string }> {
   if (watching) return { ok: true, observed: 0, count: watcherCount, error: '上一轮观察未完成, 跳过本轮 (防重叠)' };
   watching = true;
   try {
     const r = await scanOpportunities({ limit: 50 });
     watcherCount += 1;
+    // 2026-10-05: 主动搜索 — 有意图/画像才搜 (无 topic 不烧网络); 失败不影响扫描
+    await autoSearchForIntents();
     return { ok: r.ok, observed: r.results.length, count: watcherCount, error: r.error };
   } finally {
     watching = false;
   }
+}
+
+/** 按 active intent + 画像文本自动搜索机会 (AI 主动上网找, 结果进 world/search/) */
+async function autoSearchForIntents(): Promise<void> {
+  try {
+    const { listIntents } = await import('./intent-store.js');
+    const intents = await listIntents();
+    const active = intents.ok ? intents.intents.filter((i) => i.status === 'active') : [];
+    const topics: string[] = active.map((i) => i.text);
+    if (!topics.length) {
+      const profile = await readProfile();
+      if (profile && (profile.about || profile.tags.length)) {
+        topics.push(profile.about || profile.tags.join(' '));
+      }
+    }
+    if (!topics.length) return; // 无意图无画像 → 不主动搜
+    // 每轮至多搜 2 个主题 (网络调用有成本; 已有结果幂等不重复)
+    for (const t of topics.slice(0, 2)) {
+      const { searchOpportunitiesForTopic } = await import('./opportunity-web-search.js');
+      const r = await searchOpportunitiesForTopic(t, { limit: 4 });
+      if (r.added > 0) {
+        console.info(`[world-watcher] 主动搜索「${t.slice(0, 30)}」新增 ${r.added} 条机会`);
+      }
+    }
+  } catch { /* 主动搜索失败静默, 下一轮再试 */ }
 }
 
 /**

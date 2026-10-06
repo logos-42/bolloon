@@ -17,6 +17,7 @@ import { scanOpportunities, recordFeedback, readObservations } from '../agents/o
 import { readProfile, setProfile } from '../agents/world-profile.js';
 import { worldWatcherStatus } from '../agents/world-watcher.js';
 import { deliverOpportunity, listInboxOpportunities, INBOX_PROTOCOL } from '../agents/opportunity-inbox.js';
+import { searchOpportunitiesForTopic, listSearchOpportunities } from '../agents/opportunity-web-search.js';
 
 function json(res: Response, status: number, body: unknown): void {
   res.status(status).json(body);
@@ -156,5 +157,22 @@ export function registerWorldRoutes(app: Express): void {
       signature: 'ed25519Sign(providerPrivateKey, canonicalize({protocol,title,summary,refs,provider,issuedAt}))',
       verification: '本机解析 provider.did → Ed25519 公钥 → 验签; 通过才入库 (verified) 并进世界流, 否则拒绝',
     });
+  });
+
+  // ── AI 主动搜索 (2026-10-05, leo: 系统要主动上网搜机会, 非只被动响应) ─────────
+  // POST /api/world/search [{topic}] → 按 topic 搜机会落 world/search/ 并进世界流
+  app.post('/api/world/search', async (req, res) => {
+    const b = bodyOf(req);
+    const topic = typeof b.topic === 'string' && b.topic.trim() ? b.topic.trim()
+      : (typeof b.text === 'string' && b.text.trim() ? b.text.trim() : '');
+    if (!topic) return json(res, 400, { ok: false, error: '缺 topic (要搜什么机会)' });
+    const r = await searchOpportunitiesForTopic(topic, { limit: 6 });
+    json(res, r.ok ? 200 : 400, { ok: r.ok, topic, added: r.added, total: r.total, opportunities: r.results, error: r.error });
+  });
+
+  // GET /api/world/search → 已搜到的机会 (最近在前)
+  app.get('/api/world/search', async (_req, res) => {
+    const list = await listSearchOpportunities();
+    json(res, 200, { ok: true, count: list.length, opportunities: list });
   });
 }

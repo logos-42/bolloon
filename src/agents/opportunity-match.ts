@@ -21,8 +21,8 @@ export interface OpportunityCandidate {
   source: string;
   sourceId: string;
   score: number;
-  /** 为什么推给你: 'match' = 意图匹配 · 'world' = 世界变化 · 'inbox' = 外部 agent 投递 (信箱) */
-  reason: 'match' | 'world' | 'inbox';
+  /** 为什么推给你: 'match' = 意图匹配 · 'world' = 世界变化 · 'inbox' = 外部 agent 投递 (信箱) · 'search' = AI 主动上网搜到 */
+  reason: 'match' | 'world' | 'inbox' | 'search';
   title: string;
   summary: string;
   budget: string | null;
@@ -30,6 +30,8 @@ export interface OpportunityCandidate {
   createdAt: number;
   /** 信箱机会的来源可验信息 (provider DID + 验签状态) — 别人主动投来的, 不是本机自产 */
   inbox?: { providerDid: string; providerName?: string; verification: string; refs: string[] };
+  /** AI 主动搜索机会的原文链接 (可点开核实) */
+  search?: { url: string; source: string; query?: string };
 }
 
 function tagsOf(text: string): string[] {
@@ -80,7 +82,7 @@ export interface WorldObservation {
   sourceId: string;
   title: string;
   score: number;
-  reason: 'match' | 'world' | 'inbox';
+  reason: 'match' | 'world' | 'inbox' | 'search';
 }
 
 /** 追加一条观察 (尽力而为, 失败不阻断扫描) */
@@ -190,7 +192,27 @@ async function mergeInboxOnTop(all: OpportunityCandidate[]): Promise<Opportunity
   for (const c of inboxCards.slice(0, 10)) {
     void noteObservation({ ts: Date.now(), kind: 'opportunity-seen', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'inbox' });
   }
-  return [...inboxCards, ...all]; // 信箱在最前 (外部主动投递 = 最该看)
+  // 2026-10-05: AI 主动上网搜到的机会 (真 URL, 可点开核实) — 排信箱后、本地源前
+  const { listSearchOpportunities } = await import('./opportunity-web-search.js');
+  const searchOpps = await listSearchOpportunities();
+  const searchCards: OpportunityCandidate[] = searchOpps.map((o) => ({
+    id: o.id,
+    intentId: null,
+    source: 'search',
+    sourceId: o.id,
+    score: 0.8,
+    reason: 'search',
+    title: o.title,
+    summary: o.summary,
+    budget: null,
+    matchTags: [],
+    createdAt: o.searchedAt,
+    search: { url: o.url, source: o.source, query: o.query },
+  }));
+  for (const c of searchCards.slice(0, 10)) {
+    void noteObservation({ ts: Date.now(), kind: 'opportunity-seen', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'search' });
+  }
+  return [...inboxCards, ...searchCards, ...all]; // 信箱 > 搜索 > 本地
 }
 
 export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: boolean; results: OpportunityCandidate[]; error?: string }> {

@@ -4199,13 +4199,27 @@ function renderWorldOpportunities(opps) {
       · <span style="color:#6aaa6a;">✓ 验签通过</span>
       ${(o.inbox.refs || []).length ? '· ' + o.inbox.refs.map((r) => `<a href="${String(r).replace(/</g, '&lt;')}" target="_blank" rel="noopener" style="color:#7a9ad4;">[引用]</a>`).join(' ') : ''}
     </div>` : '';
-    return `<div class="world-opp-card" style="border:1px solid var(--border,#3a3a36);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--bg-card,#222220);">
+    // 2026-10-05: AI 主动搜索机会 — 显示来源 URL (可点开核实, 真实可信)
+    const searchLine = o.search ? `<div style="font-size:11px;color:#8a8a80;margin-top:6px;border-top:1px dashed var(--border,#3a3a36);padding-top:6px;">
+      🔎 AI 主动搜索 · <a href="${String(o.search.url || '').replace(/</g, '&lt;')}" target="_blank" rel="noopener" style="color:#7a9ad4;">打开原文 ↗</a>
+      · <span style="color:#6aaa6a;">来源 ${o.search.source}</span>
+    </div>` : '';
+    // 2026-10-05 (leo: 查看功能修复) — 详情区默认隐藏, 点「看看」/卡片展开
+    const detailLine = `<div class="world-opp-detail" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border,#3a3a36);font-size:12px;color:#b8b8b0;line-height:1.6;">
+      <div style="font-weight:600;color:#f0f0ea;margin-bottom:4px;">完整内容</div>
+      <div>${String(o.summary || '(无更多内容)').replace(/</g, '&lt;')}</div>
+      ${o.search?.url ? `<div style="margin-top:6px;">🔗 <a href="${String(o.search.url).replace(/</g, '&lt;')}" target="_blank" rel="noopener" style="color:#7a9ad4;">${String(o.search.url).slice(0, 80)}</a></div>` : ''}
+      <div style="margin-top:6px;color:#606058;">匹配 ${pct}% · 来源 ${o.source} · id ${o.id}</div>
+    </div>`;
+    return `<div class="world-opp-card" data-opp-card="${o.id}" style="border:1px solid var(--border,#3a3a36);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--bg-card,#222220);cursor:pointer;transition:border-color 0.2s;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <b style="font-size:14px;">${String(o.title || '').slice(0, 60).replace(/</g, '&lt;')}</b>
         <span style="color:#c4d640;font-weight:700;font-size:14px;">${pct}%</span>
       </div>
       <div style="font-size:12px;color:#909088;margin-top:4px;">${String(o.summary || '').slice(0, 90).replace(/</g, '&lt;')}</div>
       ${inboxLine}
+      ${searchLine}
+      ${detailLine}
       <div style="margin-top:8px;display:flex;gap:8px;">
         <button class="btn-primary btn-sm" data-opp-action="accept" data-opp-id="${o.id}" style="font-size:11px;padding:3px 12px;">看看</button>
         <button class="btn-secondary btn-sm" data-opp-action="ignore" data-opp-id="${o.id}" style="font-size:11px;padding:3px 12px;">忽略</button>
@@ -4213,21 +4227,36 @@ function renderWorldOpportunities(opps) {
     </div>`;
   }).join('');
   worldOpportunities.innerHTML = cards;
+  // 2026-10-05 (leo: 查看功能修复) — 「看看」/整卡点击 = 展开/收起详情; 「忽略」= 灰化 (校准环)
   worldOpportunities.querySelectorAll('[data-opp-action]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', async (ev) => {
+      ev.stopPropagation(); // 不触发卡片点击
       const id = btn.dataset.oppId;
       if (btn.dataset.oppAction === 'ignore') {
         try { await fetch('/api/opportunities/' + id + '/ignore', { method: 'POST' }); } catch (e) {}
-        btn.closest('.world-opp-card').style.opacity = '0.3';
-        btn.closest('.world-opp-card').style.filter = 'grayscale(1)';
+        const card = btn.closest('.world-opp-card');
+        if (card) { card.style.opacity = '0.3'; card.style.filter = 'grayscale(1)'; }
       } else {
+        // 看看 = 展开详情 (真实内容/URL 可见)
         try { await fetch('/api/opportunities/' + id + '/accept', { method: 'POST' }); } catch (e) {}
-        const srcId = id.replace(/^opp_/, 'ann-');
-        worldStatus('已记下: ' + srcId);
-        btn.closest('.world-opp-card').style.borderColor = '#c4d640';
+        toggleOppDetail(btn.closest('.world-opp-card'));
       }
     });
   });
+  // 整卡点击也可展开 (用户: 卡片能点击查看)
+  worldOpportunities.querySelectorAll('[data-opp-card]').forEach((card) => {
+    card.addEventListener('click', () => toggleOppDetail(card));
+  });
+}
+
+/** 展开/收起一条机会卡片的详情区 (leo: 查看功能 — 点开能看到完整内容) */
+function toggleOppDetail(card) {
+  if (!card) return;
+  const detail = card.querySelector('.world-opp-detail');
+  if (!detail) return;
+  const shown = detail.style.display !== 'none';
+  detail.style.display = shown ? 'none' : 'block';
+  card.style.borderColor = shown ? 'var(--border,#3a3a36)' : '#c4d640';
 }
 
 async function loadWorld() {

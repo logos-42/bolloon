@@ -191,9 +191,9 @@ export async function opportunityCommand(flags: CliFlags): Promise<CommandResult
   };
 }
 
-function cardRows(opts: { id: string; score: number; reason: 'match' | 'world' | 'inbox'; title: string; summary: string; budget: string | null; matchTags: string[] }): string[] {
+function cardRows(opts: { id: string; score: number; reason: 'match' | 'world' | 'inbox' | 'search'; title: string; summary: string; budget: string | null; matchTags: string[] }): string[] {
   const pct = Math.round(opts.score * 100);
-  const tag = opts.reason === 'match' ? '● 与你匹配' : (opts.reason === 'inbox' ? '✉ 外部投递' : '○ 世界变化');
+  const tag = opts.reason === 'match' ? '● 与你匹配' : (opts.reason === 'inbox' ? '✉ 外部投递' : (opts.reason === 'search' ? '🔎 AI 搜索' : '○ 世界变化'));
   return [
     `  ${pct}% ${tag}  ${opts.title}`,
     `      ${opts.summary}`,
