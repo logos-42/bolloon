@@ -92,6 +92,8 @@ const inspectLoopResult = (...args: any[]) => _getLS().inspectLoopResult?.(...ar
 const openLoopInspectModal = (...args: any[]) => _getLS().openLoopInspectModal?.(...args);
 
 const sidebarToggle = document.getElementById('sidebar-toggle');
+const sidebarCollapsedBar = document.getElementById('sidebar-collapsed-bar');
+const sidebarExpandBtn = document.getElementById('sidebar-expand-btn');
 const themeToggle = document.getElementById('theme-toggle');
 const channelList = document.getElementById('channel-list');
 const newChannelBtn = document.getElementById('new-channel-btn');
@@ -279,14 +281,17 @@ function toggleSidebar() {
 
   if (isSidebarCollapsed) {
     sidebar.classList.add('collapsed');
+    if (sidebarCollapsedBar) sidebarCollapsedBar.classList.remove('hidden');
   } else {
     sidebar.classList.remove('collapsed');
+    if (sidebarCollapsedBar) sidebarCollapsedBar.classList.add('hidden');
   }
 }
 
 function expandSidebar() {
   isSidebarCollapsed = false;
   sidebar.classList.remove('collapsed');
+  if (sidebarCollapsedBar) sidebarCollapsedBar.classList.add('hidden');
 }
 
 async function loadChannels() {
@@ -294,14 +299,13 @@ async function loadChannels() {
     const res = await fetch('/channels');
     const ct = res.headers.get('content-type') || '';
     // 2026-08-06: IPFS/IPNS 静态模式检测 — 纯静态发布无后端, /api 返回 gateway HTML (非 JSON)
-    if (!ct.includes('application/json')) {
-      const text = await res.text().catch(() => '');
-      if (!text.trim().startsWith('[') && !text.trim().startsWith('{')) {
-        console.warn('[加载频道] 检测到 IPFS 静态模式 (无后端 server), 功能受限');
-        showStaticModeNotice();
-        return;
-      }
-    }
+        if (!ct.includes('application/json')) {
+          const text = await res.text().catch(() => '');
+          if (!text.trim().startsWith('[') && !text.trim().startsWith('{')) {
+            console.warn('[加载频道] 检测到 IPFS 静态模式 (无后端 server), 功能受限');
+            return;
+          }
+        }
     channels = await res.json();
     console.log('[加载频道] 从服务器获取到', channels.length, '个频道');
     channels.forEach((ch, i) => {
@@ -329,15 +333,9 @@ async function loadChannels() {
   }
 }
 
-/** 2026-08-06: IPFS 静态模式提示条 — 页面来自 IPFS/IPNS, 无后端 API, 显示功能说明 */
+/** 2026-08-06: IPFS 静态模式提示条 — 2026-10-06 用户要求不再显示 (本地 server 常态连接) */
 function showStaticModeNotice(): void {
-  if (document.getElementById('ipfs-static-notice')) return;
-  const notice = document.createElement('div');
-  notice.id = 'ipfs-static-notice';
-  notice.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);z-index:9999;background:#1a1a18;border:1px solid #c4d640;color:#d8d8c8;padding:10px 16px;border-radius:8px;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,.5);max-width:560px;text-align:center;';
-  notice.innerHTML = `📡 <b style="color:#c4d640">IPFS 静态模式</b> — 此页面通过 IPNS 从去中心化网络加载.<br>完整功能 (对话/工具/判断力) 需连接本地 Bolloon server: <code style="color:#c4d640">bolloon --web</code>`;
-  document.body.appendChild(notice);
-  setTimeout(() => { notice.remove(); }, 15000);
+  // 用户 2026-10-06: 去掉 IPFS 静态模式提示 — 不再注入
 }
 
 // v3: 全局 SSE 监听 (p2p-global channel) - 接收远端 chat.reply 等事件
@@ -2076,6 +2074,14 @@ function connect(channelId) {
 async function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
+  // 2026-10-06 (用户): 终端直接敲 /world 或 /chat 回车 → 就地切面板, 不发消息
+  if (text === '/world' || text === '/chat') {
+    const panel = text === '/world' ? 'world' : 'chat';
+    if (typeof switchPanel === 'function') switchPanel(panel);
+    input.value = '';
+    if (typeof showSimpleToast === 'function') showSimpleToast(panel === 'world' ? '🌍 已切换到世界模式' : '💬 已切换到聊天模式');
+    return;
+  }
   // 2026-07-06: 第一行就切 abort 模式 — 用户期望按钮按完"立刻"变 abort icon
   //   之前延迟是因为后面 addMessage + scrollTop 后才 setSendMode, 感官上有滞后
   setSendMode('abort');
@@ -2430,8 +2436,10 @@ const SLASH_COMMANDS = [
   { cmd: 'goal', desc: '暂停目标 (park_goal)', args: '目标ID; 原因' },
   { cmd: 'skill', desc: '沉淀技能 (create_skill)', args: '技能名; 描述; 步骤' },
   { cmd: 'add-friend', desc: '添加 P2P 好友', args: '公钥; 备注' },
-  { cmd: 'help', desc: '显示可用命令', args: '' },
-];
+    { cmd: 'world', desc: '切换到世界模式 (机会流)', args: '' },
+    { cmd: 'chat', desc: '切换到聊天模式 (对话)', args: '' },
+    { cmd: 'help', desc: '显示可用命令', args: '' },
+  ];
 let slashDropdownEl = null;
 let slashHighlightIdx = 0;
 let slashAnchor = -1;        // / 的绝对位置
@@ -2452,6 +2460,15 @@ function closeSlashDropdown() {
 }
 
 function applySlashCommand(cmdObj) {
+  // 2026-10-06 (用户): world/chat 是本地 UI 命令 — 选中即切面板, 不发给 server
+  if (cmdObj.cmd === 'world' || cmdObj.cmd === 'chat') {
+    const panel = cmdObj.cmd === 'world' ? 'world' : 'chat';
+    if (typeof switchPanel === 'function') switchPanel(panel);
+    input.value = '';
+    closeSlashDropdown();
+    if (typeof showSimpleToast === 'function') showSimpleToast(panel === 'world' ? '🌍 已切换到世界模式' : '💬 已切换到聊天模式');
+    return;
+  }
   const anchor = slashAnchor;
   const blockEnd = slashBlockEnd >= 0 ? slashBlockEnd : (anchor + 1 + (getCurrentSlashQuery()?.query || '').length);
   if (anchor < 0 || anchor > input.value.length || input.value[anchor] !== '/') {
@@ -3055,6 +3072,10 @@ function refreshWalletBadge() {
 
 if (sidebarToggle) {
   sidebarToggle.addEventListener('click', toggleSidebar);
+}
+
+if (sidebarExpandBtn) {
+  sidebarExpandBtn.addEventListener('click', expandSidebar);
 }
 
 if (newChannelBtn) {
@@ -4112,7 +4133,9 @@ if (judgmentsModal) {
 //   · 声明意图 → 自动触发匹配 (声明即流入, 不要求再点「扫描」)
 const worldView = document.getElementById('world-view');
 const worldBtn = document.getElementById('world-btn');
-const worldRefreshBtn = document.getElementById('world-refresh-btn');
+const worldIntentCol = document.getElementById('world-intent-col');
+const worldColToggle = document.getElementById('world-col-toggle');
+const worldColClose = document.getElementById('world-col-close');
 const worldIntentsList = document.getElementById('world-intents-list');
 const worldOpportunities = document.getElementById('world-opportunities');
 const worldStats = document.getElementById('world-stats');
@@ -4310,7 +4333,16 @@ if (tabWorld) tabWorld.addEventListener('click', () => switchPanel('world'));
 if (tabChat) tabChat.addEventListener('click', () => switchPanel('chat'));
 // header 的 world-btn 保留为「切到世界」快捷入口 (不再跳转页面)
 if (worldBtn) worldBtn.addEventListener('click', () => switchPanel('world'));
-if (worldRefreshBtn) worldRefreshBtn.addEventListener('click', () => { fetchWorldIntents(); refreshWorldOpportunities(); });
+// 2026-10-06 (用户): 意图栏改为右侧可折叠 — 顶栏「▸ 我的意图」展开, 栏内 ✕ 折叠
+function toggleWorldIntentCol(show: boolean): void {
+  if (!worldIntentCol) return;
+  worldIntentCol.style.display = show ? '' : 'none';
+  if (worldColToggle) worldColToggle.textContent = show ? '▾ 我的意图' : '▸ 我的意图';
+}
+if (worldColToggle) worldColToggle.addEventListener('click', () => {
+  toggleWorldIntentCol(worldIntentCol ? worldIntentCol.style.display === 'none' : false);
+});
+if (worldColClose) worldColClose.addEventListener('click', () => toggleWorldIntentCol(false));
 
 // 2026-10-05 (leo): 世界底部输入框 — 想做什么直接说, 自动触发匹配 (不是聊天输入框)
 const worldInput = document.getElementById('world-input');
@@ -4318,7 +4350,25 @@ const worldInputSend = document.getElementById('world-input-send');
 async function tellWorld() {
   const text = (worldInput && worldInput.value || '').trim();
   if (!text) return;
+  // 2026-10-06 (用户): 世界输入框里敲 /chat 或 /world 也能切换面板 (终端命令)
+  if (text === '/chat' || text === '/world') {
+    const panel = text === '/chat' ? 'chat' : 'world';
+    if (typeof switchPanel === 'function') switchPanel(panel);
+    worldInput.value = '';
+    if (typeof showSimpleToast === 'function') showSimpleToast(panel === 'world' ? '🌍 已切换到世界模式' : '💬 已切换到聊天模式');
+    return;
+  }
   worldInput.value = '';
+  // 2026-10-06 (用户: 发消息必须有可见反馈): 发送后立即把文本回显到机会流顶部,
+  //   + 状态提示 — 之前只写进隐藏的意图列, 用户以为没发出去
+  if (worldOpportunities) {
+    const echo = document.createElement('div');
+    echo.className = 'world-opp-card';
+    echo.style.cssText = 'border:1px dashed var(--accent,#c4d640);border-radius:12px;padding:10px 14px;margin-bottom:10px;background:var(--bg-card,#222220);font-size:13px;color:var(--text,#f0f0ea);';
+    echo.innerHTML = `<div style="font-weight:700;margin-bottom:4px;">✍ 你告诉世界</div><div>${String(text).replace(/</g, '&lt;')}</div><div style="color:#909088;font-size:11px;margin-top:6px;">已声明意图 · 正在为你匹配机会…</div>`;
+    worldOpportunities.prepend(echo);
+  }
+  if (typeof showSimpleToast === 'function') showSimpleToast('🌍 已告诉世界：' + text, 'success');
   try {
     const res = await fetch('/api/intents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, priority: 3 }) });
     if (!res.ok) { console.info('[world] 声明失败 HTTP', res.status); return; }

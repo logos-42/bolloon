@@ -126,13 +126,20 @@ body {
   flex-shrink: 0;
   transition: var(--transition);
   transform: translateX(0);
-  position: relative;
+  /* 2026-10-06: 改为 fixed 覆盖 — sidebar 收起时绝对定位脱离流, relative 会被挤成 0 宽,
+      恢复条必须固定在屏幕左侧才能被看到/点到 */
+  position: fixed;
+  left: 0;
+  top: 0;
+  height: 100%;
   z-index: 99;
 }
 
 .sidebar-collapsed.hidden {
   transform: translateX(calc(-1 * var(--sidebar-collapsed)));
-  position: absolute;
+  position: fixed;
+  left: 0;
+  top: 0;
   height: 100%;
 }
 
@@ -1876,18 +1883,19 @@ body {
   flex-shrink: 0;
 }
 .header-tab {
-  padding: 5px 14px;
+  padding: 7px 22px;
   background: transparent;
   border: none;
   border-radius: 6px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: var(--transition);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  white-space: nowrap;
 }
 .header-tab:hover {
   color: var(--text-primary);

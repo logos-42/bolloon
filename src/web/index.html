@@ -125,10 +125,19 @@
           <span class="status-text">已连接</span>
         </div>
       </div>
-    </aside>
+          </aside>
 
-    <main class="main">
-      <header class="header">
+          <!-- 2026-10-06 (用户): 左侧导航收起的恢复条 — 收起后滑出的方式不留下展开按钮就打不开, 补窄条 + 展开按钮 -->
+          <div class="sidebar-collapsed hidden" id="sidebar-collapsed-bar">
+            <button class="expand-btn" id="sidebar-expand-btn" title="展开侧边栏">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+          </div>
+
+          <main class="main">
+            <header class="header">
         <div class="header-left">
           <span class="channel-indicator" id="channel-indicator"></span>
           <h1 id="channel-name">Bolloon Agent</h1>
@@ -421,28 +430,31 @@
       <!-- World View (2026-10-05, leo Intent Network) — 主页内嵌面板 (不再全屏跳转):
            顶部 tab 切换 世界/聊天, 默认世界; 无嵌套无跳转 -->
       <div id="world-view" style="position:relative;background:var(--bg,#1a1a18);display:flex;flex-direction:column;flex:1;min-height:0;">
-        <!-- 面板头 (只剩刷新; 关闭按钮已由顶部 tab 取代) -->
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 18px;border-bottom:1px solid var(--border,#3a3a36);flex-shrink:0;">
-          <div style="font-weight:700;font-size:14px;">🌍 World <span style="color:#606058;font-weight:400;font-size:11px;">世界在给你送东西 · 自动流入</span></div>
-          <button id="world-refresh-btn" class="btn-secondary btn-sm" style="font-size:11px;padding:2px 10px;">⟳ 刷新</button>
-        </div>
-        <!-- Twitter 式两栏 (2026-10-05: 右侧输入栏删除 — 匹配是内置自动算法, 不需要用户填写) -->
-        <div style="display:flex;flex:1;overflow:hidden;">
-          <!-- 左栏: 我的意图 (nav 风格, 只读展示) -->
-          <aside style="width:220px;border-right:1px solid var(--border,#3a3a36);overflow-y:auto;padding:12px;flex-shrink:0;display:none;" id="world-left-col">
-            <div style="font-size:12px;color:#909088;font-weight:600;margin-bottom:8px;">我的意图 (Intent)</div>
-            <div id="world-intents-list" style="margin-bottom:12px;"><div class="form-hint">(还没有意图)</div></div>
-            <div style="font-size:12px;color:#909088;font-weight:600;margin-bottom:8px;">世界变化</div>
-            <div id="world-stats" style="font-size:12px;color:#606058;"></div>
-          </aside>
-          <!-- 中栏: 机会时间线 (Twitter feed 自动流入, 全宽) -->
-          <main style="flex:1;overflow-y:auto;padding:16px 24px;max-width:760px;margin:0 auto;width:100%;">
-            <div style="font-size:12px;color:#909088;margin-bottom:12px;">✦ 世界在给你送东西 (自动匹配, 持续流入)</div>
-            <div id="world-opportunities" style="min-height:120px;">
-              <div class="form-hint">世界正在观察…</div>
-            </div>
-          </main>
-        </div>
+        <!-- 面板头 (刷新按钮已按用户要求去掉; 内容自动流入) -->
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 18px;border-bottom:1px solid var(--border,#3a3a36);flex-shrink:0;">
+                  <div style="font-weight:700;font-size:14px;">🌍 World <span style="color:#606058;font-weight:400;font-size:11px;">世界在给你送东西 · 自动流入</span></div>
+                  <button id="world-col-toggle" class="btn-secondary btn-sm" style="font-size:11px;padding:3px 12px;" title="展开/折叠我的意图栏">▸ 我的意图</button>
+                </div>
+                <!-- Twitter 式两栏: 左 = 机会时间线, 右 = 我的意图 (可折叠, 2026-10-06 用户要求右置 + 折叠) -->
+                <div style="display:flex;flex:1;overflow:hidden;">
+                  <!-- 左栏: 机会时间线 (Twitter feed 自动流入, 全宽) -->
+                  <main style="flex:1;overflow-y:auto;padding:16px 24px;max-width:760px;margin:0 auto;width:100%;">
+                    <div style="font-size:12px;color:#909088;margin-bottom:12px;">✦ 世界在给你送东西 (自动匹配, 持续流入)</div>
+                    <div id="world-opportunities" style="min-height:120px;">
+                      <div class="form-hint">世界正在观察…</div>
+                    </div>
+                  </main>
+                  <!-- 右栏: 我的意图 (nav 风格, 可折叠隐藏) -->
+                  <aside style="width:240px;border-left:1px solid var(--border,#3a3a36);overflow-y:auto;padding:12px;flex-shrink:0;transition:width .2s;" id="world-intent-col">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                      <div style="font-size:12px;color:#909088;font-weight:600;">我的意图 (Intent)</div>
+                      <button id="world-col-close" class="btn-secondary btn-sm" style="font-size:10px;padding:1px 7px;" title="折叠意图栏">✕</button>
+                    </div>
+                    <div id="world-intents-list" style="margin-bottom:12px;"><div class="form-hint">(还没有意图)</div></div>
+                    <div style="font-size:12px;color:#909088;font-weight:600;margin-bottom:8px;">世界变化</div>
+                    <div id="world-stats" style="font-size:12px;color:#606058;"></div>
+                  </aside>
+                </div>
         <!-- 2026-10-05 (leo): 世界底部输入框 — 想做什么直接说, 自动触发匹配 (不是聊天输入框) -->
         <div class="world-input-bar" style="display:flex;gap:8px;align-items:center;padding:10px 18px;border-top:1px solid var(--border,#3a3a36);flex-shrink:0;background:var(--bg-sidebar,#222220);">
           <input type="text" id="world-input" placeholder="告诉世界你在做什么 / 需要什么… (Enter 自动匹配)" autocomplete="off"
