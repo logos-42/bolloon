@@ -157,7 +157,44 @@ export async function searchOpportunitiesForTopic(topic: string, opts: { limit?:
     } catch { /* 单条失败跳过 */ }
     if (added >= limit) break;
   }
+  // 2026-10-05 降级 (leo: 输入后要足够多机会): 引擎被限流/返回空时,
+  // 从已有搜索库按关键词相关度返回匹配旧结果 — 保证输入后总有内容 (不假装, 都是真 URL)。
+  if (added === 0) {
+    try {
+      const existing = await listSearchOpportunities();
+      const topicTags = buildTags(topic);
+      const related = existing
+        .map((o) => {
+          const tags = buildTags(`${o.title} ${o.summary} ${o.query || ''}`);
+          const hit = topicTags.filter((t) => tags.includes(t)).length;
+          return { o, hit };
+        })
+        .filter((x) => x.hit > 0)
+        .sort((a, b) => b.hit - a.hit)
+        .slice(0, limit);
+      for (const { o } of related) {
+        results.push({ ...o, query: `${topic} (相关)` });
+      }
+      if (results.length > 0) {
+        return { ok: true, added: 0, total: results.length, results, error: '引擎限流, 已返回相关旧结果' };
+      }
+    } catch { /* 降级失败不影响 */ }
+  }
   return { ok: true, added, total: results.length, results };
+}
+
+/** 提取关键词标签 (分词: ASCII 词 + CJK 二元片) — 用于相关度匹配 (导出供测试) */
+export function buildTags(text: string): string[] {
+  const src = String(text || '').toLowerCase();
+  const words = src.match(/[a-z][a-z0-9_-]{2,}/g) || [];
+  const cjk = src.match(/[\u4e00-\u9fff]+/g) || [];
+  const cjkBigrams = cjk.flatMap((s) => {
+    if (s.length <= 2) return [s];
+    const out: string[] = [];
+    for (let i = 0; i + 1 < s.length; i += 1) out.push(s.slice(i, i + 2));
+    return out;
+  });
+  return Array.from(new Set([...words, ...cjkBigrams]));
 }
 
 /** 列出已搜索到的机会 (最近在前) */

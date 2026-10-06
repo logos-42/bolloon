@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { searchOpportunitiesForTopic, listSearchOpportunities } from '../agents/opportunity-web-search.js';
+import { searchOpportunitiesForTopic, listSearchOpportunities, buildTags } from '../agents/opportunity-web-search.js';
 
 const OLD_HOME = process.env.HOME;
 const OLD_UP = process.env.USERPROFILE;
@@ -77,5 +77,18 @@ describe('opportunity-web-search (AI 主动搜索)', () => {
     const list = await listSearchOpportunities();
     // list 不去重 (去重在 searchOpportunitiesForTopic 扫描时); 验证扫描逻辑读得到
     expect(list.length).toBe(2);
+  });
+
+  it('buildTags 相关度: 中文关键词匹配 (降级路径的判据)', async () => {
+    const tags = buildTags('新能源电池产业链合作 寻找 partner');
+    expect(tags).toContain('partner');
+    // CJK 按二元片切分: '新能源电池' → '新能','能源','源电','电池'
+    expect(tags).toContain('电池');
+    expect(tags).toContain('新能');
+    expect(tags).toContain('能源');
+    // '电池' 与 '新能源电池' 共享二元片 → 降级相关度能命中
+    const other = buildTags('电池产业链');
+    const overlap = tags.filter((t) => other.includes(t));
+    expect(overlap.length).toBeGreaterThan(0);
   });
 });

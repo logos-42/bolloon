@@ -4323,7 +4323,12 @@ async function tellWorld() {
     const res = await fetch('/api/intents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, priority: 3 }) });
     if (!res.ok) { console.info('[world] 声明失败 HTTP', res.status); return; }
     await fetchWorldIntents();
-    await refreshWorldOpportunities(); // 声明即自动匹配 — 世界立刻开始为你找
+    // 2026-10-05 (leo: 输入后要足够多机会): 声明即触发 AI 主动搜索
+    //   (不等 10 分钟 watcher tick — 用户输入了新意图就要立刻搜给他看)
+    try {
+      await fetch('/api/world/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ topic: text }) });
+    } catch (e) { console.info('[world] 主动搜索失败', e); }
+    await refreshWorldOpportunities(); // 声明 + 搜索完成后, 一次刷新出全部新机会
   } catch (e) { console.info('[world] 声明失败', e); }
 }
 if (worldInputSend) worldInputSend.addEventListener('click', tellWorld);
