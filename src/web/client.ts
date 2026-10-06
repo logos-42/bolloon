@@ -4193,12 +4193,19 @@ function renderWorldOpportunities(opps) {
   }
   const cards = opps.map((o) => {
     const pct = Math.round(o.score * 100);
+    // 2026-10-05: 信箱机会 = 外部 agent 主动投递 — 显示来源 DID (可验) + 引用链接 (真实可信)
+    const inboxLine = o.inbox ? `<div style="font-size:11px;color:#8a8a80;margin-top:6px;border-top:1px dashed var(--border,#3a3a36);padding-top:6px;">
+      ✉ 外部投递 · 来自 <span style="color:#c4d640;">${String(o.inbox.providerName || o.inbox.providerDid || '').slice(0, 40)}</span>
+      · <span style="color:#6aaa6a;">✓ 验签通过</span>
+      ${(o.inbox.refs || []).length ? '· ' + o.inbox.refs.map((r) => `<a href="${String(r).replace(/</g, '&lt;')}" target="_blank" rel="noopener" style="color:#7a9ad4;">[引用]</a>`).join(' ') : ''}
+    </div>` : '';
     return `<div class="world-opp-card" style="border:1px solid var(--border,#3a3a36);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--bg-card,#222220);">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <b style="font-size:14px;">${String(o.title || '').slice(0, 60).replace(/</g, '&lt;')}</b>
         <span style="color:#c4d640;font-weight:700;font-size:14px;">${pct}%</span>
       </div>
       <div style="font-size:12px;color:#909088;margin-top:4px;">${String(o.summary || '').slice(0, 90).replace(/</g, '&lt;')}</div>
+      ${inboxLine}
       <div style="margin-top:8px;display:flex;gap:8px;">
         <button class="btn-primary btn-sm" data-opp-action="accept" data-opp-id="${o.id}" style="font-size:11px;padding:3px 12px;">看看</button>
         <button class="btn-secondary btn-sm" data-opp-action="ignore" data-opp-id="${o.id}" style="font-size:11px;padding:3px 12px;">忽略</button>

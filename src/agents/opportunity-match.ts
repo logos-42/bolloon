@@ -21,13 +21,15 @@ export interface OpportunityCandidate {
   source: string;
   sourceId: string;
   score: number;
-  /** 为什么推给你: 'match' = 意图匹配 · 'world' = 世界变化 (UI 不啰嗦) */
-  reason: 'match' | 'world';
+  /** 为什么推给你: 'match' = 意图匹配 · 'world' = 世界变化 · 'inbox' = 外部 agent 投递 (信箱) */
+  reason: 'match' | 'world' | 'inbox';
   title: string;
   summary: string;
   budget: string | null;
   matchTags: string[];
   createdAt: number;
+  /** 信箱机会的来源可验信息 (provider DID + 验签状态) — 别人主动投来的, 不是本机自产 */
+  inbox?: { providerDid: string; providerName?: string; verification: string; refs: string[] };
 }
 
 function tagsOf(text: string): string[] {
@@ -78,7 +80,7 @@ export interface WorldObservation {
   sourceId: string;
   title: string;
   score: number;
-  reason: 'match' | 'world';
+  reason: 'match' | 'world' | 'inbox';
 }
 
 /** 追加一条观察 (尽力而为, 失败不阻断扫描) */
@@ -164,7 +166,33 @@ function candidateOf(entry: BoardEntry, intentId: string | null, score: number, 
  *   · 无意图: 流入最近 open 公告 (新鲜度优先) —— 打开即有内容
  *   · 有意图: 匹配(`match`)优先浮上来, 其余世界变化按新鲜度垫底 (世界不停)
  *   · 已忽略的同源公告不流入 (随交互越来越准)
+ *   · 机会信箱 (外部 agent 投递, 验签通过) 恒优先 —— 真实可信来源
  */
+async function mergeInboxOnTop(all: OpportunityCandidate[]): Promise<OpportunityCandidate[]> {
+  const { listInboxOpportunities } = await import('./opportunity-inbox.js');
+  const inboxOpps = await listInboxOpportunities();
+  const inboxCards: OpportunityCandidate[] = inboxOpps
+    .filter((o) => o.verification === 'verified') // 只放行验签通过的
+    .map((o) => ({
+      id: o.id,
+      intentId: null,
+      source: 'inbox',
+      sourceId: o.id,
+      score: 0.9,
+      reason: 'inbox',
+      title: o.title,
+      summary: o.summary,
+      budget: null,
+      matchTags: [],
+      createdAt: o.receivedAt,
+      inbox: { providerDid: o.provider.did, providerName: o.provider.name, verification: o.verification, refs: o.refs },
+    }));
+  for (const c of inboxCards.slice(0, 10)) {
+    void noteObservation({ ts: Date.now(), kind: 'opportunity-seen', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'inbox' });
+  }
+  return [...inboxCards, ...all]; // 信箱在最前 (外部主动投递 = 最该看)
+}
+
 export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: boolean; results: OpportunityCandidate[]; error?: string }> {
   const limit = opts.limit ?? 50;
   const minScore = opts.minScore ?? 0.2;
@@ -213,7 +241,7 @@ export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: 
       for (const c of all.filter((x) => x.reason === 'match').slice(0, 10)) {
         void noteObservation({ ts: Date.now(), kind: 'opportunity-seen', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'match' });
       }
-      return { ok: true, results: all.slice(0, limit) };
+      return { ok: true, results: (await mergeInboxOnTop(all)).slice(0, limit) };
     }
     // 默认世界流: 新鲜度优先
     const sorted = [...openEntries].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
@@ -227,7 +255,7 @@ export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: 
     for (const c of out.slice(0, 10)) {
       void noteObservation({ ts: Date.now(), kind: 'world-change', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'world' });
     }
-    return { ok: true, results: out.slice(0, limit) };
+    return { ok: true, results: (await mergeInboxOnTop(out)).slice(0, limit) };
   }
 
   // 有意图: 匹配打分, match 优先; 世界变化不消失
@@ -257,11 +285,7 @@ export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: 
     if (rank(a.reason) !== rank(b.reason)) return rank(a.reason) - rank(b.reason);
     return b.score - a.score;
   });
-  // 世界观察: 高分匹配 = AI 主动看到的机会 (自动记 memory)
-  for (const c of all.filter((x) => x.reason === 'match').slice(0, 10)) {
-    void noteObservation({ ts: Date.now(), kind: 'opportunity-seen', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'match' });
-  }
-  return { ok: true, results: all.slice(0, limit) };
+  return { ok: true, results: (await mergeInboxOnTop(all)).slice(0, limit) };
 }
 
 /** 对单个意图即时匹配 (list --intent 用; 不走反馈过滤) */

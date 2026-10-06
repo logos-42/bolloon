@@ -16,6 +16,7 @@ import { setIntent, listIntents, getIntent, removeIntent } from '../agents/inten
 import { scanOpportunities, recordFeedback, readObservations } from '../agents/opportunity-match.js';
 import { readProfile, setProfile } from '../agents/world-profile.js';
 import { worldWatcherStatus } from '../agents/world-watcher.js';
+import { deliverOpportunity, listInboxOpportunities, INBOX_PROTOCOL } from '../agents/opportunity-inbox.js';
 
 function json(res: Response, status: number, body: unknown): void {
   res.status(status).json(body);
@@ -116,5 +117,44 @@ export function registerWorldRoutes(app: Express): void {
     const status = worldWatcherStatus();
     const observations = await readObservations(20);
     json(res, 200, { ok: true, watcher: status, recentObservations: observations });
+  });
+
+  // ── 机会信箱 (2026-10-05, leo: 别人主动投来的机会 — 真实可信来源) ───────────
+  // 外部 agent 用 DIAP Ed25519 身份签名投递机会声明; 验签通过才入库并进世界流。
+  // 协议: POST { protocol, title, summary, refs[], provider:{did}, issuedAt } + header X-Signature
+  //   signature = ed25519Sign(provider 私钥, canonicalize(上述 payload)) — 与 x402 同源 canonicalize
+  app.get('/api/world/inbox', async (_req, res) => {
+    const list = await listInboxOpportunities();
+    json(res, 200, { ok: true, count: list.length, opportunities: list });
+  });
+
+  app.post('/api/world/inbox', async (req, res) => {
+    const b = bodyOf(req);
+    const sig = typeof req.headers['x-signature'] === 'string' ? req.headers['x-signature'] : '';
+    const payload = {
+      protocol: typeof b.protocol === 'string' ? b.protocol : '',
+      title: typeof b.title === 'string' ? b.title : '',
+      summary: typeof b.summary === 'string' ? b.summary : '',
+      refs: Array.isArray(b.refs) ? b.refs.filter((r: unknown): r is string => typeof r === 'string') : [],
+      provider: {
+        did: typeof b.provider?.did === 'string' ? b.provider.did : '',
+        name: typeof b.provider?.name === 'string' ? b.provider.name : undefined,
+      },
+      issuedAt: typeof b.issuedAt === 'string' ? b.issuedAt : new Date().toISOString(),
+    };
+    const r = await deliverOpportunity(payload, sig);
+    json(res, r.ok ? 200 : 400, { ok: r.ok, opportunity: r.opportunity, error: r.error });
+  });
+
+  // 协议说明 (外部 agent 对接用 — 怎么构造 payload / 怎么签名)
+  app.get('/api/world/inbox/protocol', async (_req, res) => {
+    json(res, 200, {
+      ok: true,
+      protocol: INBOX_PROTOCOL,
+      description: '外部 agent 主动投递机会到信箱: POST /api/world/inbox, header X-Signature = Ed25519(provider 私钥, canonicalize(payload))',
+      payloadFields: ['protocol', 'title', 'summary', 'refs[]', 'provider.did', 'provider.name?', 'issuedAt'],
+      signature: 'ed25519Sign(providerPrivateKey, canonicalize({protocol,title,summary,refs,provider,issuedAt}))',
+      verification: '本机解析 provider.did → Ed25519 公钥 → 验签; 通过才入库 (verified) 并进世界流, 否则拒绝',
+    });
   });
 }
