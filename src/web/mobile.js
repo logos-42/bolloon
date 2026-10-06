@@ -515,16 +515,20 @@
     const cards = $('#world-feed-cards');
     if (!feed || !cards) return;
     try {
-      const res = await fetch('/api/opportunities?min-score=0.2&limit=10');
-      if (!res.ok) return;
-      const data = await res.json();
-      const opps = (data.opportunities || []).slice(0, 6);
+      // 2026-10-05 (leo: 手机端 ↔ 电脑端互联): 走 api 层 → BolloonCore.resolve
+      //   转发电脑端 desktopUrl (不再裸 fetch 相对路径 — 手机上相对路径连手机自己, 永远空)
+      const data = await api.get('/api/opportunities?min-score=0.2&limit=10');
+      const opps = ((data && data.opportunities) || []).slice(0, 6);
       if (!opps.length) { feed.hidden = true; return; }
       feed.hidden = false;
       worldFeedShown = true;
       cards.innerHTML = opps.map((o) => {
         const pct = Math.round(o.score * 100);
-        const tag = o.reason === 'match' ? '与你匹配' : '世界变化';
+        // 2026-10-05: 来源标签 (与电脑端同口径) — ✉ 外部投递 / 🔎 AI 搜索 / ○ 世界变化
+        let tag = '世界变化';
+        if (o.reason === 'inbox') tag = '✉ 外部投递';
+        else if (o.reason === 'search') tag = '🔎 AI 搜索';
+        else if (o.reason === 'match') tag = '与你匹配';
         return `<div class="world-feed-card">
           <div class="world-feed-card-top">
             <span class="world-feed-title">${escapeHtml(String(o.title || '').slice(0, 34))}</span>
@@ -541,7 +545,7 @@
         btn.addEventListener('click', async () => {
           const id = btn.dataset.wfId;
           const action = btn.dataset.wfAction;
-          try { await fetch('/api/opportunities/' + id + '/' + action, { method: 'POST' }); } catch (e) {}
+          try { await api.post('/api/opportunities/' + id + '/' + action, {}); } catch (e) {}
           const card = btn.closest('.world-feed-card');
           if (card) {
             card.style.opacity = '0.3';

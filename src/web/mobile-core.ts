@@ -259,6 +259,11 @@ export const core = {
     if (p === '/api/judgments/cached') return () => core.desktop.judgments();
     // 微信息 (x402 付费信息): 手机不持 EVM 私钥 → 列表走电脑端; 不可达就回 desktop-unreachable (不抛)
     if (p === '/api/x402/info') return () => core.x402.list();
+    // 2026-10-05 (leo: 手机端 ↔ 电脑端互联): World 数据层转发电脑端 (机会流/意图/搜索)
+    if (p === '/api/opportunities') return () => core.world.opportunities();
+    if (p.startsWith('/api/opportunities?')) return () => core.world.opportunities(p.slice('/api/opportunities?'.length));
+    if (p === '/api/intents') return () => core.world.intents();
+    if (p === '/api/world/search' || p.startsWith('/api/world/search?')) return () => core.world.search('');
     // OrbitDB 本地副本 (库级复制)
     if (p === '/api/orbit/status') return () => core.orbit.status();
     if (p === '/api/orbit/replica') return () => core.orbit.replica();
@@ -280,6 +285,14 @@ export const core = {
       const b = body || {};
       return () => core.message.send({ text: b.text, channelId: b.channelId });
     }
+    // 2026-10-05 (leo: 手机端 ↔ 电脑端互联): World 写操作转发电脑端
+    if (p === '/api/intents' && body?.text) return () => core.world.declareIntent(String(body.text));
+    if (p.startsWith('/api/opportunities/') && (p.endsWith('/accept') || p.endsWith('/ignore'))) {
+      const id = p.split('/')[3] || '';
+      const action = p.endsWith('/accept') ? 'accept' : 'ignore';
+      return () => core.world.feedback(id, action);
+    }
+    if (p === '/api/world/search') return () => core.world.search(String((body || {}).topic || ''));
     if (p === '/api/auth/logout') return () => core.identity.logout();
     if (p === '/api/auth/login') { const b = body || {}; return () => core.identity.login(String(b.name || '')); }
     if (p === '/api/wallet/export') { const b = body || {}; return () => core.wallet.export(String(b.id || '')); }
@@ -736,6 +749,87 @@ export const core = {
     async status(): Promise<any> {
       const s = await import('./mobile-social.js');
       return s.getHeartbeatState(s.createLocalStorageStore());
+    },
+  },
+
+  // 2026-10-05 (leo: 手机端 ↔ 电脑端互联打通): World 数据层 — 机会流/意图/信箱/搜索
+  // 全部转发电脑端 (与 x402 同款 desktopUrl 机制); 电脑端不可达如实回 desktop-unreachable,
+  // 绝不返回假数据 (手机端本身不跑 world 引擎, 它是电脑端世界的感知窗口)。
+  world: {
+    async baseUrl(): Promise<string> {
+      try {
+        const g: any = await import('./mobile-gateway.js');
+        return String(g.getDesktopBaseUrl() || '').replace(/\/+$/, '');
+      } catch { return ''; }
+    },
+    /** 机会流 (扫描匹配结果, 电脑端引擎) */
+    async opportunities(query?: string): Promise<any> {
+      const base = await core.world.baseUrl();
+      if (!base) return { ok: false, results: [], note: 'desktop-unreachable' };
+      try {
+        const q = query ? `?${query}` : '';
+        const r = await fetch(`${base}/api/opportunities${q}`);
+        if (!r.ok) return { ok: false, results: [], note: 'desktop-unreachable' };
+        const d: any = await r.json();
+        return d && Array.isArray(d.opportunities) ? d : { ok: false, results: [], note: 'desktop-unreachable' };
+      } catch {
+        return { ok: false, results: [], note: 'desktop-unreachable' };
+      }
+    },
+    /** 意图列表 (电脑端 world/intents/) */
+    async intents(): Promise<any> {
+      const base = await core.world.baseUrl();
+      if (!base) return { ok: false, intents: [], note: 'desktop-unreachable' };
+      try {
+        const r = await fetch(`${base}/api/intents`);
+        if (!r.ok) return { ok: false, intents: [], note: 'desktop-unreachable' };
+        const d: any = await r.json();
+        return d && Array.isArray(d.intents) ? d : { ok: false, intents: [], note: 'desktop-unreachable' };
+      } catch {
+        return { ok: false, intents: [], note: 'desktop-unreachable' };
+      }
+    },
+    /** 声明意图 (发到电脑端, 电脑端引擎匹配) */
+    async declareIntent(text: string): Promise<any> {
+      const base = await core.world.baseUrl();
+      if (!base) return { ok: false, error: 'desktop-unreachable' };
+      try {
+        const r = await fetch(`${base}/api/intents`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, priority: 3 }),
+        });
+        return await r.json();
+      } catch {
+        return { ok: false, error: 'desktop-unreachable' };
+      }
+    },
+    /** 机会反馈 (看看/忽略 → 电脑端校准环) */
+    async feedback(id: string, action: 'accept' | 'ignore'): Promise<any> {
+      const base = await core.world.baseUrl();
+      if (!base) return { ok: false, error: 'desktop-unreachable' };
+      try {
+        const r = await fetch(`${base}/api/opportunities/${id}/${action}`, { method: 'POST' });
+        return await r.json();
+      } catch {
+        return { ok: false, error: 'desktop-unreachable' };
+      }
+    },
+    /** AI 主动搜索 (触发电脑端引擎搜) */
+    async search(topic: string): Promise<any> {
+      const base = await core.world.baseUrl();
+      if (!base) return { ok: false, added: 0, results: [], note: 'desktop-unreachable' };
+      try {
+        const r = await fetch(`${base}/api/world/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic }),
+        });
+        const d: any = await r.json();
+        return d || { ok: false, added: 0, results: [] };
+      } catch {
+        return { ok: false, added: 0, results: [], note: 'desktop-unreachable' };
+      }
     },
   },
 

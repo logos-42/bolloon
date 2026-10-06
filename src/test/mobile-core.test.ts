@@ -227,4 +227,34 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
     const fn2 = core.resolve('/api/deeplink?url=' + encodeURIComponent('nope://x'));
     expect((await fn2!()).ok).toBe(false);
   });
+
+  // 2026-10-05 (leo: 手机端 ↔ 电脑端互联): World 数据层转发电脑端
+  it('World 转发: resolve/resolvePost 分发 (机会流/意图/搜索/反馈)', async () => {
+    const { core } = await import('../web/mobile-core.ts');
+
+    // GET 路由
+    expect(core.resolve('/api/opportunities')).toBeTypeOf('function');
+    expect(core.resolve('/api/opportunities?min-score=0.2&limit=10')).toBeTypeOf('function');
+    expect(core.resolve('/api/intents')).toBeTypeOf('function');
+    expect(core.resolve('/api/world/search')).toBeTypeOf('function');
+
+    // POST 路由: 意图声明 / 机会反馈 / 搜索触发
+    expect(core.resolvePost('/api/intents', { text: '写周报' })).toBeTypeOf('function');
+    expect(core.resolvePost('/api/opportunities/inbox_x/accept', {})).toBeTypeOf('function');
+    expect(core.resolvePost('/api/opportunities/inbox_x/ignore', {})).toBeTypeOf('function');
+    expect(core.resolvePost('/api/world/search', { topic: '聚变' })).toBeTypeOf('function');
+
+    // 无桌面地址 → 诚实降级 desktop-unreachable (不返回假数据)
+    try { localStorage.removeItem('bolloon_desktop_base_url'); } catch { /* node 测试环境无 localStorage, 降级同样生效 */ }
+    const opps = await core.resolve('/api/opportunities')!();
+    expect(opps.note).toBe('desktop-unreachable');
+    const intents = await core.resolve('/api/intents')!();
+    expect(intents.note).toBe('desktop-unreachable');
+    const declare = await core.resolvePost('/api/intents', { text: '写周报' })!();
+    expect(declare.error).toBe('desktop-unreachable');
+    const feedback = await core.resolvePost('/api/opportunities/inbox_x/accept', {})!();
+    expect(feedback.error).toBe('desktop-unreachable');
+    const search = await core.resolvePost('/api/world/search', { topic: '聚变' })!();
+    expect(search.note).toBe('desktop-unreachable');
+  });
 });
