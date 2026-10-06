@@ -4,6 +4,12 @@
   box-sizing: border-box;
 }
 
+/* 2026-10-05 (leo): hidden 属性必须真隐藏 —— 之前 .messages{display:flex} 覆盖了
+   UA 的 [hidden]{display:none}, 导致世界栏下面一直显示聊天记录 (污染)。 */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   --bg: #1a1a18;
   --bg-sidebar: #222220;
@@ -1857,6 +1863,39 @@ body {
 .judgment-tab .tab-channel-name {
   font-weight: normal;
   color: var(--text-muted);
+}
+
+/* 2026-10-05 (leo): 世界/聊天切换放进原导航栏 (header) 中间 — 与钱包/配置同栏 */
+.header-tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: 18px;
+  padding: 3px;
+  background: var(--bg-hover);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.header-tab {
+  padding: 5px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.header-tab:hover {
+  color: var(--text-primary);
+}
+.header-tab.active {
+  background: var(--bg-main);
+  color: var(--accent-hover);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
 .judgment-status-bar {
   display: flex;

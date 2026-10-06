@@ -1887,9 +1887,12 @@ function connect(channelId) {
   }, 10000);
 
   // onerror: 不要手动 close — 浏览器 EventSource 会自动重连
-  // 我们只需在 readyState 永久 CLOSED 时 (罕见) 才介入
+  // 2026-10-05 修复: 断流 (LLM 401/服务器崩溃/网络中断) 时 loop-status-bar 卡 loading、
+  // sendBtn 卡 abort — onerror 必须复位两者, 否则「一直转圈 + 发不了下一条」。
   eventSource.onerror = () => {
     console.warn('[SSE] 错误, 浏览器自动重连中:', targetChannelId, 'readyState=', eventSource.readyState);
+    hideLoopStatusBar();
+    setSendMode('idle');
     if (eventSource.readyState === EventSource.CLOSED) {
       // 浏览器放弃重连, 我们接手
       clearInterval(heartbeatTimer);
@@ -2125,10 +2128,18 @@ async function sendMessage() {
     });
 
     if (!res.ok) {
-      addMessage('发送失败', 'ai');
+      // 2026-10-05 修复: 401/5xx 时 SSE 流没建立, 服务器不会推 done/error 事件,
+      // 必须自己收尾 —— 否则 loop-status-bar 永远转圈 (用户报「一直加载转圈」)。
+      hideLoopStatusBar();
+      const errBody = await res.json().catch(() => ({}));
+      const reason = errBody?.error || errBody?.message || `HTTP ${res.status}`;
+      addMessage(`⚠️ 发送失败: ${reason}`, 'ai');
       setSendMode('idle');
+      if (typeof showSimpleToast === 'function') showSimpleToast('⚠️ ' + String(reason).slice(0, 200));
+      return;
     }
   } catch (err) {
+    hideLoopStatusBar();
     addMessage('连接错误', 'ai');
     console.error('Send error', err);
     setSendMode('idle');
@@ -4101,26 +4112,19 @@ if (judgmentsModal) {
 //   · 声明意图 → 自动触发匹配 (声明即流入, 不要求再点「扫描」)
 const worldView = document.getElementById('world-view');
 const worldBtn = document.getElementById('world-btn');
-const worldViewClose = document.getElementById('world-view-close');
 const worldRefreshBtn = document.getElementById('world-refresh-btn');
-const worldIntentInput = document.getElementById('world-intent-input');
-const worldIntentPriority = document.getElementById('world-intent-priority');
-const worldIntentBudget = document.getElementById('world-intent-budget');
-const worldIntentSet = document.getElementById('world-intent-set');
-const worldError = document.getElementById('world-intent-error');
 const worldIntentsList = document.getElementById('world-intents-list');
 const worldOpportunities = document.getElementById('world-opportunities');
 const worldStats = document.getElementById('world-stats');
 const worldBadge = document.getElementById('world-badge');
-const worldProfileInput = document.getElementById('world-profile-input');
-const worldProfileSet = document.getElementById('world-profile-set');
 
 let worldLoaded = false;
 let worldPollTimer = null;
 const WORLD_POLL_MS = 30000; // 持续流入: 每 30s 自动刷新 (Twitter 时间线节奏)
 
 function worldStatus(msg) {
-  if (worldError) { worldError.textContent = msg || ''; worldError.style.display = msg ? '' : 'none'; }
+  // 2026-10-05: 右侧错误显示位已随输入栏删除; 状态提示只落 console (不打扰世界流)
+  if (msg) console.info('[world]', msg);
 }
 
 async function fetchWorldIntents() {
@@ -4143,7 +4147,7 @@ async function fetchWorldIntents() {
 function renderWorldIntents(intents) {
   if (!worldIntentsList) return;
   if (!intents.length) {
-    worldIntentsList.innerHTML = '<div class="form-hint" style="font-size:11px;">(还没有意图 — 右边声明一个)</div>';
+    worldIntentsList.innerHTML = '<div class="form-hint" style="font-size:11px;">(还没有意图 — 在底部输入框告诉世界你在做什么)</div>';
     return;
   }
   const active = intents.filter((i) => i.status === 'active');
@@ -4239,79 +4243,55 @@ function stopWorldPoll() {
   if (worldPollTimer) { clearInterval(worldPollTimer); worldPollTimer = null; }
 }
 
-function showWorldView() {
-  if (worldView) {
-    worldView.hidden = false;
+// ── 2026-10-05 (leo): 主页 tab 切换 — 默认世界, 不嵌套不跳转 ─────────────
+// 顶部「🌍 世界 | 💬 聊天」: 同一页内互斥显示; 世界视图 = 纯净三栏,
+// 聊天面板 = messages + loop 状态条 + 输入区 (切回聊天才显示, 默认世界)。
+const tabWorld = document.getElementById('tab-world');
+const tabChat = document.getElementById('tab-chat');
+const loopStatusBar = document.getElementById('loop-status-bar');
+
+function switchPanel(panel: 'world' | 'chat') {
+  if (!worldView || !messagesEl) return;
+  const isWorld = panel === 'world';
+  worldView.style.display = isWorld ? 'flex' : 'none';
+  // 2026-10-05 修复: 之前写成 hidden=!isWorld 全反了 —— 世界栏里出现聊天记录、
+  // 切到聊天输入框消失。正确 = 世界时隐藏聊天区 (hidden=isWorld)。
+  if (messagesEl) messagesEl.hidden = isWorld;
+  if (loopStatusBar) loopStatusBar.hidden = isWorld;
+  if (inputArea) inputArea.hidden = isWorld;
+  if (tabWorld) tabWorld.classList.toggle('active', isWorld);
+  if (tabChat) tabChat.classList.toggle('active', !isWorld);
+  if (isWorld) {
     if (!worldLoaded) loadWorld();
     else { fetchWorldIntents(); refreshWorldOpportunities(); }
-    startWorldPoll(); // 打开即持续流入
+    startWorldPoll(); // 世界可见 → 持续流入
+  } else {
+    stopWorldPoll(); // 切到聊天停轮询 (徽章仍由页面级自动刷新驱动)
   }
 }
 
-function hideWorldView() {
-  if (worldView) worldView.hidden = true;
-  stopWorldPoll(); // 离开停轮询 (省资源; 徽章仍由页面级自动刷新驱动)
-}
-
-if (worldBtn) worldBtn.addEventListener('click', showWorldView);
-if (worldViewClose) worldViewClose.addEventListener('click', hideWorldView);
+if (tabWorld) tabWorld.addEventListener('click', () => switchPanel('world'));
+if (tabChat) tabChat.addEventListener('click', () => switchPanel('chat'));
+// header 的 world-btn 保留为「切到世界」快捷入口 (不再跳转页面)
+if (worldBtn) worldBtn.addEventListener('click', () => switchPanel('world'));
 if (worldRefreshBtn) worldRefreshBtn.addEventListener('click', () => { fetchWorldIntents(); refreshWorldOpportunities(); });
 
-// 画像收集 → 存为常驻意图, 世界立刻按画像重新推送 (初始化阶段)
-if (worldProfileSet) worldProfileSet.addEventListener('click', async () => {
-  const text = (worldProfileInput && worldProfileInput.value || '').trim();
-  if (!text) { worldStatus('先写一句你是谁 / 在做什么'); return; }
-  if (worldProfileSet) worldProfileSet.disabled = true;
+// 2026-10-05 (leo): 世界底部输入框 — 想做什么直接说, 自动触发匹配 (不是聊天输入框)
+const worldInput = document.getElementById('world-input');
+const worldInputSend = document.getElementById('world-input-send');
+async function tellWorld() {
+  const text = (worldInput && worldInput.value || '').trim();
+  if (!text) return;
+  worldInput.value = '';
   try {
-    const res = await fetch('/api/world/profile', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: text, about: text, tags: (text.match(/[\u4e00-\u9fff]{2,}|[a-z][a-z0-9_-]{1,}/gi) || []).slice(0, 6) }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      worldStatus('画像保存失败: ' + (err.error || 'HTTP ' + res.status));
-      return;
-    }
-    worldStatus('画像已保存 — 世界开始按它推送');
-    await refreshWorldOpportunities(); // 画像即常驻意图, 立刻重推
-  } catch (e) {
-    worldStatus('画像保存失败: ' + (e && e.message ? e.message : e));
-  } finally {
-    if (worldProfileSet) worldProfileSet.disabled = false;
-  }
-});
-
-// 声明意图 → 自动触发匹配 (声明即流入, 世界立刻开始找)
-if (worldIntentSet) worldIntentSet.addEventListener('click', async () => {
-  const text = (worldIntentInput && worldIntentInput.value || '').trim();
-  if (!text) { worldStatus('先写一句你现在在做什么'); return; }
-  if (worldIntentSet) worldIntentSet.disabled = true;
-  try {
-    const body = { text, priority: Number(worldIntentPriority ? worldIntentPriority.value : 3) };
-    if (worldIntentBudget && worldIntentBudget.value.trim()) body.budget = worldIntentBudget.value.trim();
-    const res = await fetch('/api/intents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      worldStatus('声明失败: ' + (err.error || 'HTTP ' + res.status));
-      return;
-    }
-    if (worldIntentInput) worldIntentInput.value = '';
-    if (worldIntentBudget) worldIntentBudget.value = '';
+    const res = await fetch('/api/intents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, priority: 3 }) });
+    if (!res.ok) { console.info('[world] 声明失败 HTTP', res.status); return; }
     await fetchWorldIntents();
     await refreshWorldOpportunities(); // 声明即自动匹配 — 世界立刻开始为你找
-    if (worldPollTimer) { clearInterval(worldPollTimer); startWorldPoll(); } // 声明后重新计时
-  } catch (e) {
-    worldStatus('声明失败: ' + (e && e.message ? e.message : e));
-  } finally {
-    if (worldIntentSet) worldIntentSet.disabled = false;
-  }
-});
-if (worldIntentInput) {
-  worldIntentInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && worldIntentSet) worldIntentSet.click();
-  });
+  } catch (e) { console.info('[world] 声明失败', e); }
 }
+if (worldInputSend) worldInputSend.addEventListener('click', tellWorld);
+if (worldInput) worldInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tellWorld(); });
 
 // 页面加载后自动拉一次机会数 → 徽章自动亮 (世界在变化, 不用人进来看)
 (async function autoWorldBadge() {
