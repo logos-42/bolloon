@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Bolloon monochrome (主题化图标单色层, Android 13+):
+  - 形状: 顶部圆点 + 竖椭圆环 (与 ic_launcher_foreground 同几何, 432 viewport 对应 xxxhdpi 前景)
+  - 单色由系统 tint, fillColor 用白色 (白色只是约定, 实际会被主题色替换)
+  - 2026-10-07: 用 OpenCV 从 ic_launcher_foreground.png 提取轮廓 (TC89_KCOS 简化) —
+    外环 38 点 / 内孔 32 点 / 圆点 28 点, 逐像素精度
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="432dp"
+    android:height="432dp"
+    android:viewportWidth="432"
+    android:viewportHeight="432">
+  <!-- 顶部圆点 -->
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:pathData="M212,74 L206,76 L202,79 L201,80 L201,81 L199,83 L197,87 L196,92 L196,94 L197,99 L199,103 L205,109 L209,111 L212,112 L219,112 L222,111 L224,110 L227,108 L230,105 L232,102 L233,100 L234,96 L234,90 L233,86 L231,82 L226,77 L222,75 L217,74 Z" />
+  <!-- 椭圆环: 外轮廓 + 内孔 (evenOdd 挖空) -->
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:fillType="evenOdd"
+      android:pathData="M201,128 L178,134 L164,141 L157,146 L144,159 L137,169 L128,188 L122,211 L120,228 L121,232 L121,250 L120,254 L121,265 L125,285 L131,302 L142,321 L155,335 L171,346 L186,352 L206,356 L209,355 L223,356 L241,353 L261,345 L274,336 L288,321 L299,302 L307,276 L310,254 L309,249 L310,229 L307,207 L299,181 L289,163 L274,147 L264,140 L243,131 L229,128 Z M207,170 L223,170 L227,171 L233,174 L237,177 L242,182 L248,191 L253,204 L256,219 L257,231 L257,251 L255,269 L253,278 L250,287 L244,298 L237,306 L233,309 L223,313 L207,313 L201,311 L196,308 L186,298 L180,287 L178,281 L174,261 L173,249 L173,232 L175,213 L178,201 L186,185 L196,175 L201,172 Z" />
+</vector>
