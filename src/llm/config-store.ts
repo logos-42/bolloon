@@ -242,17 +242,38 @@ function getDefaultConfig(): LLMConfig {
   }
 
   let activeProvider: ModelProvider = 'ollama';
-  if (process.env.OPENAI_API_KEY) activeProvider = 'openai';
-  else if (process.env.ANTHROPIC_API_KEY) activeProvider = 'anthropic';
-  else if (process.env.OPENROUTER_API_KEY) activeProvider = 'openrouter';
-  else if (process.env.GEMINI_API_KEY) activeProvider = 'gemini';
-  else if (process.env.MINIMAX_API_KEY) activeProvider = 'minimax';
-  else if (process.env.DEEPSEEK_API_KEY) activeProvider = 'deepseek';
-  else if (process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY) activeProvider = 'kimi';
-  else if (process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY) activeProvider = 'glm';
-  else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) activeProvider = 'qwen';
-  else if (process.env.MIMO_API_KEY) activeProvider = 'mimo';
-  else if (process.env.OLLAMA_BASE_URL) activeProvider = 'ollama';
+    if (process.env.OPENAI_API_KEY) activeProvider = 'openai';
+    else if (process.env.ANTHROPIC_API_KEY) activeProvider = 'anthropic';
+    else if (process.env.OPENROUTER_API_KEY) activeProvider = 'openrouter';
+    else if (process.env.GEMINI_API_KEY) activeProvider = 'gemini';
+    else if (process.env.MINIMAX_API_KEY) activeProvider = 'minimax';
+    else if (process.env.DEEPSEEK_API_KEY) activeProvider = 'deepseek';
+    else if (process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY) activeProvider = 'kimi';
+    else if (process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY) activeProvider = 'glm';
+    else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) activeProvider = 'qwen';
+    else if (process.env.MIMO_API_KEY) activeProvider = 'mimo';
+    else if (process.env.OLLAMA_BASE_URL) activeProvider = 'ollama';
+
+    // ── 2026-10-07: 开箱即用 — 无任何私有 key 时落到内置公共网关 ──────────────
+    //   手机端/网页端下载安装后**不需要配置任何 API key** 就能直接对话:
+    //   Cloudflare Worker 托管 (api.bolloon.cn) 转发到 GLM 上游, 公共通道每天 ≤500 次/人,
+    //   配了自己的 key 的机器不受限 (上面 env 检测先命中)。
+    const hasAnyKey = !!(process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY
+      || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || process.env.MINIMAX_API_KEY
+      || process.env.DEEPSEEK_API_KEY || process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY
+      || process.env.GLM_API_KEY || process.env.ZHIPU_API_KEY || process.env.QWEN_API_KEY
+      || process.env.DASHSCOPE_API_KEY || process.env.MIMO_API_KEY || process.env.OLLAMA_BASE_URL);
+    if (!hasAnyKey) {
+      envConfigs.glm = {
+        ...DEFAULT_PROVIDER_CONFIGS.glm,
+        enabled: true,
+        baseUrl: 'https://api.bolloon.cn/v1',   // CF Worker 公共网关 (免配置)
+        apiKey: 'bolloon-free',                  // 公共通道标识 (每天 ≤500 次/人)
+        model: 'glm-5.3',
+        maxTokens: 16384,
+      };
+      activeProvider = 'glm';
+    }
 
   const providers = { ...DEFAULT_PROVIDER_CONFIGS };
   for (const [provider, config] of Object.entries(envConfigs)) {
