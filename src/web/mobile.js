@@ -76,7 +76,6 @@
     $$('.page, .page-container').forEach((p) => { p.hidden = p.dataset.tab !== tab; });
     $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
     $('#topbar-title').textContent = TITLES[tab] || '会话';
-    const cs = $('#btn-create-session'); if (cs) cs.hidden = tab !== 'main';
     const ta = $('#topbar-actions'); if (ta) ta.hidden = tab === 'me';   // 我 页不显示 加号/刷新
     if (tab === 'friends') { loadContacts(); loadP2PStatus(); }
     // 2026-10-06: 网络 + 任务合一 —— 任务 tab 同时加载网络与任务数据
@@ -565,12 +564,41 @@
       feed.hidden = true; // 拉不到就不显示世界区 (不阻塞首页)
     }
     // 持续流入: 世界区可见时每 45s 自动刷新 (AI 持续观察, 不是人刷新)
-    if (feed && !feed.hidden && worldFeedShown && !worldFeedTimer) {
-      worldFeedTimer = setInterval(() => { loadWorldFeed(); }, 45000);
-    }
-  }
+        if (feed && !feed.hidden && worldFeedShown && !worldFeedTimer) {
+          worldFeedTimer = setInterval(() => { loadWorldFeed(); }, 45000);
+        }
+      }
 
-  // === 卡片封面 (docs/fig 导出 → src/web/covers, 每个 agent 唯一不重复) ===
+      // === 2026-10-07: 手机首页底部输入框 — 告诉世界你在做什么 (对应桌面世界模式) ===
+      async function tellWorld() {
+        const input = $('#world-input');
+        if (!input) return;
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+        try {
+          // 声明意图 (与桌面同 API; 桌面不可达时走 BolloonCore.resolve 转发)
+          const res = await api.post('/api/intents', { text, priority: 3 });
+          if (!res || !res.ok) console.info('[world] 声明意图失败');
+          // 输入即主动搜索 (leo: 声明后立刻搜机会)
+          try { await api.post('/api/world/search', { topic: text }); } catch (e) {}
+          // 刷新机会流
+          await loadWorldFeed();
+          if (window.showToast) showToast('🌍 已告诉世界，正在为你匹配机会…');
+        } catch (e) {
+          console.info('[world] 声明失败', e);
+        }
+      }
+      function bindWorldInput() {
+        const input = $('#world-input');
+        const send = $('#world-input-send');
+        if (input) input.addEventListener('keydown', (e) => { if (e.key === 'Enter') tellWorld(); });
+        if (send) send.addEventListener('click', tellWorld);
+      }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindWorldInput);
+      else bindWorldInput();
+
+      // === 卡片封面 (docs/fig 导出 → src/web/covers, 每个 agent 唯一不重复) ===
   let _coverList = null;
   async function loadCovers() {
     if (_coverList) return _coverList;
@@ -2536,23 +2564,10 @@
     }
   }
 
-  // 创建智能体: 无输入框, 底部滑入加载 sheet, 完成后滑出
-  async function createSession() {
-    showSheet('#create-sheet');
-    try {
-      await api.post('/api/channels/create', {});
-      await new Promise((r) => setTimeout(r, 700));
-      switchTab('main');
-      loadAgentCovers();
-    } catch (e) {
-      alert('创建失败: ' + (e.message || e));
-    } finally {
-      hideSheet('#create-sheet');
-    }
-  }
+  // 创建智能体: 已由首页世界流替代 (2026-10-07: createSession 无调用, 删除)
 
-  // 添加好友: 弹出选择 sheet (扫码 / 手动)
-  function addFriend() { showSheet('#addfriend-sheet'); }
+    // 添加好友: 弹出选择 sheet (扫码 / 手动)
+    function addFriend() { showSheet('#addfriend-sheet'); }
   async function addFriendManual() {
     hideSheet('#addfriend-sheet');
     const addr = prompt('输入好友地址 (multiaddr, 如 /ip4/10.0.2.2/tcp/54188/ws)', '');
@@ -2644,7 +2659,6 @@
     $('#btn-add').addEventListener('click', addFriend);
     const bIdx = $('#btn-index'); if (bIdx) bIdx.addEventListener('click', () => void openIndexPanel());
     const bSearch = $('#btn-search'); if (bSearch) bSearch.addEventListener('click', () => void openSearch());
-    const cs = $('#btn-create-session'); if (cs) cs.addEventListener('click', createSession);
     const csScan = $('#choice-scan'); if (csScan) csScan.addEventListener('click', addFriendScan);
     const csMan = $('#choice-manual'); if (csMan) csMan.addEventListener('click', addFriendManual);
     const csCan = $('#choice-cancel'); if (csCan) csCan.addEventListener('click', () => hideSheet('#addfriend-sheet'));

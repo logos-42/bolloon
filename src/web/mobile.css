@@ -361,12 +361,13 @@ body {
 
 /* ============ 世界机会流 (2026-10-05, leo Intent Network) ============ */
 /* 主动流入: 打开首页即拉, 持续刷新; 不是按钮式被动响应 */
+/* 首页世界机会流 (2026-10-07: 双栏卡片, 对应桌面世界模式) */
 .world-feed {
   padding: 10px 14px 4px;
-  border-bottom: 1px solid var(--border);
   background: var(--bg);
   overflow-y: auto;
-  max-height: 42vh;
+  flex: 1;
+  min-height: 0;
 }
 .world-feed-header {
   display: flex;
@@ -382,20 +383,27 @@ body {
   color: var(--text-muted);
   font-weight: 400;
 }
-.world-feed-cards { display: flex; flex-direction: column; gap: 8px; }
-.world-feed-loading { font-size: 12px; color: var(--text-muted); padding: 8px 0; }
+/* 双栏网格 (2026-10-07: 首页双栏卡片) */
+.world-feed-cards {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  padding-bottom: 12px;
+}
+.world-feed-loading { font-size: 12px; color: var(--text-muted); padding: 8px 0; grid-column: 1 / -1; }
 .world-feed-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-left: 3px solid transparent;
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-radius: 12px;
+  padding: 10px 10px;
+  min-width: 0;
 }
 .world-feed-card-top {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .world-feed-title {
   font-size: 13px;
@@ -404,6 +412,8 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 .world-feed-pct {
   color: var(--accent);
@@ -416,11 +426,15 @@ body {
   font-size: 12px;
   color: var(--text-secondary);
   margin-top: 4px;
-  line-height: 1.5;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .world-feed-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   margin-top: 8px;
 }
 .world-feed-btn {
@@ -437,6 +451,41 @@ body {
   background: transparent;
   color: var(--text-secondary);
   border-color: var(--border);
+}
+
+/* 首页底部输入框 (2026-10-07: 对应桌面世界模式输入框, Bolloon 风格) */
+.world-input-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sidebar, #222220);
+  flex-shrink: 0;
+}
+.world-input-bar input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-card, #222220);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+}
+.world-input-bar input:focus {
+  border-color: var(--accent);
+}
+.world-input-send {
+  padding: 10px 16px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #1a1a18;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
 }
 
 /* ============ 双频滑动卡片 (主页面) ============ */

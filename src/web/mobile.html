@@ -42,16 +42,23 @@
     </div>
   </header>
 
-  <!-- 主页面: 双频滑动卡片 -->
+<!-- 主页面: 世界机会流双栏卡片 (2026-10-07: 首页 = 对应桌面世界模式, opportunity 双栏) -->
     <main class="page-container" id="page-main" data-tab="main" hidden>
-      <!-- 水平滑动卡片轨道 (2026-10-06: 双栏网格) -->
-      <div class="card-carousel" id="card-carousel">
-        <div class="card-track" id="card-track">
-          <!-- 卡片由 JS 动态加载 -->
+      <!-- 世界机会流 — 双栏卡片, 自动流入 (与桌面世界模式同数据源) -->
+      <div class="world-feed" id="world-feed">
+        <div class="world-feed-header">
+          <span>✦ 世界送来</span>
+          <span class="world-feed-sub">自动匹配 · 持续校准</span>
+        </div>
+        <div class="world-feed-cards" id="world-feed-cards">
+          <div class="world-feed-loading">世界正在观察…</div>
         </div>
       </div>
-      <!-- 卡片指示器 -->
-      <div class="card-indicator" id="card-indicator"></div>
+      <!-- 2026-10-07: 首页底部输入框 — 告诉世界你在做什么 (对应桌面世界模式输入框, Bolloon 风格) -->
+      <div class="world-input-bar" id="world-input-bar">
+        <input type="text" id="world-input" placeholder="告诉世界你在做什么 / 需要什么… (Enter 自动匹配)" autocomplete="off" />
+        <button id="world-input-send" class="world-input-send">→ 世界</button>
+      </div>
       <!-- 卡片详情浮层 (垂直展开) -->
       <div class="card-detail" id="card-detail" hidden>
         <div class="detail-header">
@@ -91,16 +98,7 @@
 
     <!-- 子面板: 网络 (原 page-network 内容) -->
         <div class="works-pane" id="works-network">
-          <!-- 2026-10-06 (用户): 世界流推送移入网络/任务合并 tab, 不再占首页 -->
-          <div class="world-feed" id="world-feed" hidden>
-            <div class="world-feed-header">
-              <span>✦ 世界送来</span>
-              <span class="world-feed-sub">自动匹配 · 持续校准</span>
-            </div>
-            <div class="world-feed-cards" id="world-feed-cards">
-              <div class="world-feed-loading">世界正在观察…</div>
-            </div>
-          </div>
+          <!-- 2026-10-07: 世界流已回首页 (双栏机会卡片); 此处不再重复 -->
           <div class="list">
         <div class="list-item" id="item-join-global"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.7 2.6 2.7 14.4 0 17M12 3.5c-2.7 2.6-2.7 14.4 0 17"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/></svg></span><span>一键入网 · 全球智能体网络</span><span class="list-arrow">›</span></div>
         <div class="list-item" id="item-join-net"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M3.5 9.5a13 13 0 0 1 17 0M6.5 13a8.5 8.5 0 0 1 11 0M9.6 16.3a4 4 0 0 1 4.8 0"/><circle cx="12" cy="19.5" r="1.1" fill="currentColor" stroke="none"/></svg></span><span>加入网络</span><span class="list-arrow">›</span></div>
@@ -197,8 +195,7 @@
   <button class="tab" data-tab="me"><span class="tab-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></svg></span><span>我</span></button>
 </nav>
 
-<!-- 首页: 创建新会话栏 (底部中央, tab 上方) -->
-<button class="create-session-btn" id="btn-create-session" hidden>＋ 创建新会话</button>
+<!-- 首页: 创建新会话栏已移除 (2026-10-07: 首页改为世界机会流 + 底部输入框, 不再悬浮遮挡) -->
 
 <!-- 创建智能体: 底部滑入加载 sheet -->
 <!-- 2026-09-16: 首启隐私同意门 — 上架要求: 用户同意前不读取本机数据 / 不连网 / 不申请任何权限 -->
