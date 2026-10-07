@@ -1247,9 +1247,45 @@ export const core = {
       try { localStorage.setItem(PRIVACY_CONSENT_KEY, consentRecord()); return true; } catch { return false; }
     },
     /** 注销: 删除本机全部数据 (身份 DID / 智能体 / 会话消息 / 支付 / 钱包 + localStorage 本机键) */
-    wipe: () => wipeLocalData(),
-  },
-};
+        wipe: () => wipeLocalData(),
+      },
+
+      // ── 2026-10-07: Agent 自治面 (手机端独立运行闭环; 从 BolloonCore.agent 可调) ──
+      agent: {
+        async run(goal: string): Promise<string> {
+          const a = await import('./mobile-agent.js');
+          return a.runPhoneAgent(String(goal || '')).then((r: any) => (r.ok ? r.result : `[失败] ${r.error || ''}`));
+        },
+        async runLocal(goal: string): Promise<string> {
+          const a = await import('./mobile-agent.js');
+          return a.runLocalAgent(String(goal || ''));
+        },
+        async runLoop(goal: string): Promise<string> {
+          const a = await import('./mobile-agent.js');
+          const llm = a.getLlmConfig();
+          if (!llm || !llm.baseUrl) return '[未配置 LLM]';
+          const r = await a.runWebAgentLoop(goal, { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model, maxTokens: llm.maxTokens });
+          return r || '[循环无返回]';
+        },
+        getLlmConfig(): any { return null; },   // 占位 — 真实实现在下方异步
+        async llmConfig(): Promise<any> {
+          const a = await import('./mobile-agent.js');
+          return a.getLlmConfig();
+        },
+        async worklog(): Promise<string[]> {
+          const a = await import('./mobile-agent.js');
+          return a.getLastWorklog();
+        },
+        async identity(): Promise<any> {
+          const a = await import('./mobile-agent.js');
+          return a.ensureIdentity();
+        },
+        async status(): Promise<any> {
+          const a = await import('./mobile-agent.js');
+          return a.phoneStatus();
+        },
+      },
+    };
 
 // 全局暴露给 mobile.js
 if (typeof window !== 'undefined') {
