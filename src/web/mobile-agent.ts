@@ -480,6 +480,61 @@ async function webAgentLlmCall(messages: Array<{ role: string; content: string }
 }
 
 /**
+ * 宽容提取 LLM 回复里的工具调用 JSON。
+ * 匹配模式: {"tool":"...","args":{...}} — 容忍前置文本、代码块围栏、尾部文本。
+ * 用花括号平衡计数提取完整对象 (非贪婪正则会被内层嵌套 {} 截断 — 模拟器验证踩到)。
+ * 找不到合法 tool 字段返回 null (当作普通回答)。
+ */
+function extractToolCall(raw: string): { tool: string; args: Record<string, unknown> } | null {
+  if (!raw) return null;
+  // 1) 直接找第一个 '{"' 开头、括号平衡的完整 JSON 对象
+  const start = raw.indexOf('{"');
+  if (start >= 0) {
+    try {
+      const obj = parseBalancedJson(raw, start) as { tool?: unknown; args?: unknown } | null;
+            if (obj && typeof obj.tool === 'string') {
+              return { tool: obj.tool, args: (obj.args && typeof obj.args === 'object' ? obj.args : {}) as Record<string, unknown> };
+            }
+    } catch { /* 不是 JSON, 继续 */ }
+  }
+  // 2) 代码块围栏内的 JSON (```json ... ```)
+  const fm = /```(?:json)?\s*([\s\S]*?)```/.exec(raw);
+  if (fm) {
+    try {
+      const obj = JSON.parse(fm[1]);
+      if (obj && typeof obj.tool === 'string') {
+        return { tool: obj.tool, args: (obj.args && typeof obj.args === 'object' ? obj.args : {}) as Record<string, unknown> };
+      }
+    } catch { /* 忽略 */ }
+  }
+  return null;
+}
+
+/** 从 start 位置解析一个括号平衡的 JSON 对象 (容忍内部嵌套字符串/大括号) */
+function parseBalancedJson(raw: string, start: number): unknown {
+  if (raw[start] !== '{') throw new Error('not object');
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return JSON.parse(raw.slice(start, i + 1));
+    }
+  }
+  throw new Error('unbalanced');
+}
+
+/**
  * 手机端 agent 循环: goal → LLM 思考 → (工具调用 → 结果回填 → 再思考) → 最终回答。
  * 与桌面 pivot loop 同构但浏览器安全边界内; 任何一步失败即降级。
  */
@@ -491,16 +546,17 @@ export async function runWebAgentLoop(goal: string, llm: { baseUrl: string; apiK
   const MAX_STEPS = 5;
   const steps: string[] = [];
   for (let i = 0; i < MAX_STEPS; i++) {
-    const raw = await webAgentLlmCall(messages, llm);
-    const m = /^\s*\{[\s\S]*?\}\s*$/.exec(raw);
-    const toolJson = m ? JSON.parse(m[0]) : null;
-    if (toolJson && typeof toolJson.tool === 'string' && WEB_AGENT_TOOLS[toolJson.tool]) {
-      const out = await WEB_AGENT_TOOLS[toolJson.tool]();
-      steps.push(`🔧 ${toolJson.tool} → ${out.slice(0, 80)}`);
-      messages.push({ role: 'assistant', content: raw });
-      messages.push({ role: 'user', content: `工具结果: ${out}` });
-      continue;
-    }
+      const raw = await webAgentLlmCall(messages, llm);
+      // 2026-10-07 (模拟器验证发现): LLM 常输出前置文本+JSON ("好的，我先查询...\n{\"tool\":...}")
+      //   旧正则要求整段是 JSON → 工具调用被当普通回答, 闭环断。宽容提取第一个 JSON 对象。
+      const toolJson = extractToolCall(raw);
+      if (toolJson && typeof toolJson.tool === 'string' && WEB_AGENT_TOOLS[toolJson.tool]) {
+        const out = await WEB_AGENT_TOOLS[toolJson.tool]();
+        steps.push(`🔧 ${toolJson.tool} → ${out.slice(0, 80)}`);
+        messages.push({ role: 'assistant', content: raw });
+        messages.push({ role: 'user', content: `工具结果: ${out}` });
+        continue;
+      }
     // 无工具调用 = 最终回答
     _lastWorklog = steps.length ? [...steps, `💬 ${raw.slice(0, 60)}`] : [`💬 ${raw.slice(0, 60)}`];
     if (steps.length) return `[手机自治执行 ${steps.length} 步]\n` + raw;
