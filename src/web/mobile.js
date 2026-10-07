@@ -3762,39 +3762,39 @@
 
   // ── 渲染: 公告板 ──────────────────────────────────────────────────────────
   function renderBoard() {
-    const list = $('#tasks-board');
-    if (!list) return;
-    clear(list);
-    const d = state.board || {};
-    const items = d.items || [];
-    if (!items.length) {
-      list.appendChild(line('sheet-text', lang() === 'en' ? 'Board is empty' : '板上暂时没有公告'));
-    }
-    items.forEach((it, i) => {
-      const r = row(
-        String(it.capability || '') + '  ·  ' + String(it.idShort || '') + '  ·  ' + String((it.statusLabel || {})[lang()] || ''),
-        '',
-      );
-      const sub = line('', '');
-      sub.style.fontSize = '12px';
-      sub.style.color = 'var(--text-secondary)';
-      sub.appendChild(document.createTextNode((lang() === 'en' ? 'budget ' : '预算 ') + safeText(it.budgetLabel || '—') + ' · '));
-      sub.appendChild(document.createTextNode(lang() === 'en' ? 'closes ' : '截止 '));
-      sub.appendChild(relDeltaNode(it.deadlineInMs));
-      r.firstChild.appendChild(sub);
-      if (it.claimable) {
-        const b = mk('button', 'sheet-choice');
-        b.style.flex = '0 0 auto';
-        bilingual(b, '发进群', 'Post to group');
-        b.setAttribute('data-announce', String(i));
-        b.addEventListener('click', () => askAnnounceToGroup(i));
-        r.appendChild(b);
+      const list = $('#tasks-board');
+      if (!list) return;
+      clear(list);
+      const d = state.board || {};
+      const items = d.items || [];
+      if (!items.length) {
+        list.appendChild(line('sheet-text', lang() === 'en' ? 'Board is empty' : '板上暂时没有公告'));
       }
-      list.appendChild(r);
-    });
-    const notes = Array.isArray(d.notes) ? d.notes : [];
-    if (notes.length) list.appendChild(line('sheet-text', notes.join(' · ')));
-  }
+      // 2026-10-07: 双栏瀑布流卡片 (发现页风格)
+      items.forEach((it, i) => {
+        const card = mk('div', 'board-card');
+        const cap = mk('div', 'board-card-cap');
+        cap.textContent = String(it.capability || it.idShort || '任务');
+        card.appendChild(cap);
+        const status = mk('div', 'board-card-status');
+        status.textContent = String((it.statusLabel || {})[lang()] || '');
+        card.appendChild(status);
+        const sub = mk('div', 'board-card-sub');
+        sub.textContent = (lang() === 'en' ? 'budget ' : '预算 ') + safeText(it.budgetLabel || '—')
+          + ' · ' + (lang() === 'en' ? 'closes ' : '截止 ') + relDeltaText(it.deadlineInMs);
+        card.appendChild(sub);
+        if (it.claimable) {
+          const b = mk('button', 'board-card-btn');
+          b.textContent = lang() === 'en' ? 'Post to group' : '发进群';
+          b.setAttribute('data-announce', String(i));
+          b.addEventListener('click', () => askAnnounceToGroup(i));
+          card.appendChild(b);
+        }
+        list.appendChild(card);
+      });
+      const notes = Array.isArray(d.notes) ? d.notes : [];
+      if (notes.length) list.appendChild(line('sheet-text', notes.join(' · ')));
+    }
 
   // ── 渲染: 飞轮进度 (只读; 状态来自 goal-flywheel 的五类用户可见状态) ────────
   function renderFlywheel() {
