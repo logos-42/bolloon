@@ -141,18 +141,14 @@ object AgentRuntimeHolder {
                                 kLoop.signal = CancellationSignal().also { kernelSignal = it }
                                 kLoop.onStep = { onStep(it) }
                                 kLoop.maxSteps = 20
+                // K10 (2026-10-07): 旧 AgentLoop fallback 已删除 — 内核异常如实报错, 不静默降级。
+                //   删除条件满足: KernelAgentLoop 经全链路编译 + Harness 接管验证; 旧路径不再有入口。
                 val result = try {
                     kLoop.run(goal)
                 } catch (e: Throwable) {
-                    // 内核异常 → 降级旧 loop (不丢任务)
-                    onStep("[内核降级] ${e.message}")
-                    val l = AgentLoop(t, backend)
-                    loop = l
-                    l.lifecycle = lifecycle
-                    l.audit = audit
-                    l.agentId = agentId
-                    l.onStep = { onStep(it) }
-                    l.run(goal)
+                    lifecycle.fail(e.message ?: "kernel-error")
+                    onStep("[内核异常] ${e.message}")
+                    "[内核异常] ${e.message}"
                 }
                 onDone(result)
             } catch (e: Exception) {
