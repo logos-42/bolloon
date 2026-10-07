@@ -68,23 +68,26 @@
         <div class="detail-body" id="detail-body"></div>
       </div>
     </main>
-  <!-- 好友 tab: 好友与 P2P (原来散在网络页, 现已归拢; 网络页不再重复这些) -->
-  <section class="page" id="page-friends" data-tab="friends" hidden>
-    <div class="list">
-      <div class="list-item" id="item-add-friend"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.8-3 3-4.6 5.5-4.6S13.7 16 14.5 19"/><path d="M17 8v6M14 11h6"/></svg></span><span>连接好友</span><span class="list-arrow">›</span></div>
-      <div class="list-item" id="item-nearby"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 16 0"/><path d="M7.5 12a4.5 4.5 0 0 1 9 0"/><circle cx="12" cy="12" r="1.4"/><path d="M12 13.6V19"/></svg></span><span>附近设备</span><span class="list-arrow">›</span></div>
-      <div class="list-item" id="item-scan-net"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M4 12h16"/></svg></span><span>扫码入网 / 加好友</span></div>
-    </div>
-    <input type="file" id="qr-scan-input" accept="image/*" capture="environment" style="display:none">
-    <div class="list">
-      <div class="list-item" id="item-p2p"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.3 2.3 3.5 5.3 3.5 8.5s-1.2 6.2-3.5 8.5c-2.3-2.3-3.5-5.3-3.5-8.5S9.7 5.8 12 3.5z"/></svg></span><span>P2P 好友</span></div>
-      <div class="list-item" id="item-p2p-id"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><circle cx="8.5" cy="11" r="2"/><path d="M5.6 15.8a3.2 3.2 0 0 1 5.8 0M13.5 10h5M13.5 13.5h5"/></svg></span><span>我的 P2P ID</span></div>
-    </div>
-    <div class="section-label">P2P 连接</div>
-    <div class="list" id="p2p-status"></div>
-    <div class="section-label">好友列表</div>
-    <div class="list" id="contacts-list"></div>
-  </section>
+  <!-- 好友 tab: 通讯录风格 (2026-10-07: 微信通讯录式布局 — 分组入口 + 字母索引联系人) -->
+    <section class="page" id="page-friends" data-tab="friends" hidden>
+      <!-- 分组快捷入口 (微信式: 新的朋友/群聊/标签/附近/扫码) -->
+      <div class="list">
+        <div class="list-item" id="item-add-friend"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.8-3 3-4.6 5.5-4.6S13.7 16 14.5 19"/><path d="M17 8v6M14 11h6"/></svg></span><span>新的朋友</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-p2p"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.3 2.3 3.5 5.3 3.5 8.5s-1.2 6.2-3.5 8.5c-2.3-2.3-3.5-5.3-3.5-8.5S9.7 5.8 12 3.5z"/></svg></span><span>群聊</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-scan-net"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M4 12h16"/></svg></span><span>扫码入网 / 加好友</span></div>
+        <div class="list-item" id="item-nearby"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 16 0"/><path d="M7.5 12a4.5 4.5 0 0 1 9 0"/><circle cx="12" cy="12" r="1.4"/><path d="M12 13.6V19"/></svg></span><span>附近设备</span><span class="list-arrow">›</span></div>
+        <div class="list-item" id="item-p2p-id"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><circle cx="8.5" cy="11" r="2"/><path d="M5.6 15.8a3.2 3.2 0 0 1 5.8 0M13.5 10h5M13.5 13.5h5"/></svg></span><span>我的 P2P ID</span></div>
+      </div>
+      <input type="file" id="qr-scan-input" accept="image/*" capture="environment" style="display:none">
+      <div class="section-label">P2P 连接</div>
+      <div class="list" id="p2p-status"></div>
+      <div class="section-label">好友列表</div>
+      <!-- 通讯录式联系人列表: 按字母分组 + 右侧索引 (由 loadContacts 渲染) -->
+      <div class="contacts-wrap" id="contacts-wrap">
+        <div class="list" id="contacts-list"></div>
+        <div class="contacts-index" id="contacts-index"></div>
+      </div>
+    </section>
 
   </main>
 

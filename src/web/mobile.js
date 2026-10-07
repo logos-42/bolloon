@@ -120,26 +120,58 @@
   }
 
   async function loadContacts() {
-    try {
-      let peers = [];
-      try { peers = await api.get('/api/peers'); } catch { peers = []; }
-      const list = $('#contacts-list');
-      if (!list) return;
-      list.innerHTML = '';
-      if (!Array.isArray(peers) || peers.length === 0) {
-        list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted)">暂无好友</div>';
-        return;
-      }
-      peers.forEach((p) => {
-        const name = p.name || p.publicKey?.slice(0, 12) || '好友';
-        const el = document.createElement('div');
-        el.className = 'conv-item';
-        el.innerHTML = `<div class="conv-avatar">${escapeHtml(name.charAt(0))}</div>
-          <div class="conv-body"><div class="conv-name">${escapeHtml(name)}</div></div>`;
-        list.appendChild(el);
-      });
-    } catch (e) { /* 忽略 */ }
-  }
+      try {
+        let peers = [];
+        try { peers = await api.get('/api/peers'); } catch { peers = []; }
+        const list = $('#contacts-list');
+        if (!list) return;
+        list.innerHTML = '';
+        if (!Array.isArray(peers) || peers.length === 0) {
+          list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted)">暂无好友</div>';
+          const idx = $('#contacts-index'); if (idx) idx.innerHTML = '';
+          return;
+        }
+        // 通讯录式: 按首字母分组 (2026-10-07, 微信通讯录风格)
+        const groups = {};
+        peers.forEach((p) => {
+          const name = p.name || p.publicKey?.slice(0, 12) || '好友';
+          const letter = (name.charAt(0) || '#').toUpperCase();
+          const g = /[A-Z]/.test(letter) ? letter : '#';
+          if (!groups[g]) groups[g] = [];
+          groups[g].push({ name, peer: p });
+        });
+        const letters = Object.keys(groups).sort((a, b) => (a === '#' ? 1 : b === '#' ? -1 : a.localeCompare(b)));
+        letters.forEach((letter) => {
+          const groupEl = document.createElement('div');
+          groupEl.className = 'contacts-group';
+          groupEl.setAttribute('data-letter', letter);
+          const head = document.createElement('div');
+          head.className = 'contacts-group-head';
+          head.textContent = letter;
+          groupEl.appendChild(head);
+          groups[letter].forEach((c) => {
+            const el = document.createElement('div');
+            el.className = 'conv-item contact-row';
+            el.innerHTML = `<div class="conv-avatar contact-avatar">${escapeHtml(c.name.charAt(0))}</div>
+              <div class="conv-body"><div class="conv-name">${escapeHtml(c.name)}</div>
+              <div class="contact-sub">${c.peer.online ? '在线' : '离线'}${c.peer.publicKey ? ' · ' + escapeHtml(String(c.peer.publicKey).slice(0, 10)) + '…' : ''}</div></div>`;
+            groupEl.appendChild(el);
+          });
+          list.appendChild(groupEl);
+        });
+        // 右侧字母索引条
+        const idx = $('#contacts-index');
+        if (idx) {
+          idx.innerHTML = letters.map((l) => `<div class="contacts-index-letter" data-letter="${l}">${l === '#' ? '#' : l}</div>`).join('');
+          idx.querySelectorAll('.contacts-index-letter').forEach((el) => {
+            el.addEventListener('click', () => {
+              const target = list.querySelector(`.contacts-group[data-letter="${el.dataset.letter}"]`);
+              if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
+          });
+        }
+      } catch (e) { /* 忽略 */ }
+    }
 
   // 智能体控制 = MCP 控制 + Skills 控制 (不是屏幕触控!)
   //  - MCP 工具: 真正的工具调用 (gateway_status / join / register …)
