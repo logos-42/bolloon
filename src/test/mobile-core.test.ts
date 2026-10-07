@@ -40,10 +40,11 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
     expect(core.resolve('/nonexistent')).toBeNull();
   });
 
-  it('身份生成 (Agent 功能层): 首次 status 自动生成 DID', async () => {
+  it('身份生成 (Agent 功能层): 首次 status 自动生成 DIAP did:key', async () => {
     const { core } = await import('../web/mobile-core.ts');
     const s = await core.identity.status();
-    expect(s.did).toMatch(/^did:blln:/);
+    // 2026-10-07: 身份升级为 DIAP Ed25519 did:key (与桌面同构); 老 WebView 才退化为 did:blln
+    expect(s.did).toMatch(/^did:(key:z6Mk|blln:)/);
     expect(s.didShort).toBeDefined();
     // 幂等: 再次 status 同 DID
     const s2 = await core.identity.status();
@@ -84,7 +85,8 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
   it('Agent 功能层: 独立 DID + 本地执行 (离线内置规则)', async () => {
     const agent = await import('../web/mobile-agent.ts');
     const id = await agent.ensureIdentity();
-    expect(id.did).toMatch(/^did:blln:/);
+    // 2026-10-07: DIAP did:key (老 WebView 才 did:blln)
+    expect(id.did).toMatch(/^did:(key:z6Mk|blln:)/);
     const reply = await agent.runLocalAgent('你好');
     expect(reply.length).toBeGreaterThan(0);
   });

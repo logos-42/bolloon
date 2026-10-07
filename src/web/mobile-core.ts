@@ -1284,6 +1284,22 @@ export const core = {
           const a = await import('./mobile-agent.js');
           return a.phoneStatus();
         },
+        async identityStatus(): Promise<any> {
+          const a = await import('./mobile-agent.js');
+          return a.identityStatus();
+        },
+        async updateProfile(partial: any): Promise<any> {
+          const a = await import('./mobile-agent.js');
+          return a.updateIdentityProfile(partial || {});
+        },
+        async sign(payload: string): Promise<any> {
+          const a = await import('./mobile-agent.js');
+          return a.signWithIdentity(String(payload || ''));
+        },
+        async verifySign(payload: string, sig: string, pub: string): Promise<boolean> {
+          const a = await import('./mobile-agent.js');
+          return a.verifyIdentitySignature(String(payload || ''), String(sig || ''), String(pub || ''));
+        },
       },
     };
 

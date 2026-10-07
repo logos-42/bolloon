@@ -11,23 +11,95 @@
  *   - 本层只负责"agent 智能", 不碰存储; session 落库由 mobile-core 协调 data 层做.
  */
 
-// ============ 身份 (WebCrypto) ============
+// ============ 身份 (DIAP KeyManager — @diap/sdk/browser, 与桌面同一套) ============
+// 2026-10-07: 手机端身份改用 @diap/sdk 原生实现 (KeyManager 生成 Ed25519 密钥对 → did:key),
+//   与桌面 agent-identity / x402 签名完全同构: privateKey 32B 种子 + publicKey + did:key:z...
+//   签名走 @noble/ed25519 signAsync (与桌面 ed25519Sign 同结果)。
 
 const IDENTITY_DB = 'bolloon-mobile';
-let _identity: { did: string; name: string; createdAt: number } | null = null;
+
+export interface MobileIdentity {
+  /** did:key:z... (与桌面 DIAP 同格式) */
+  did: string;
+  /** 32 字节 Ed25519 公钥 hex */
+  publicKey: string;
+  /** 32 字节 Ed25519 私钥 hex — 只存本机 IndexedDB, 永不上传 */
+  privateKey: string;
+  /** 昵称 */
+  name: string;
+  /** 创建时间 */
+  createdAt: number;
+  /** 附带身份条件: 邮箱 / 手机号 / 备注 (用户自填, 仅本机) */
+  email?: string;
+  phone?: string;
+  note?: string;
+}
+
+let _identity: MobileIdentity | null = null;
 
 // #2 手机自动入网 (browser-safe gateway, 与桌面同一协议): 检测到链接自动 join
 import { mobileAutoJoinGateway } from './mobile-gateway.js';
 
-async function generateDID(): Promise<string> {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return 'did:blln:' + Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+// @diap/sdk/browser — KeyManager (密钥生成/DID 派生), @noble/ed25519 — signAsync (签名)
+// 两个都是纯 JS 无 Node 依赖, 浏览器可用。动态 import 避免拖慢首屏。
+let _keyMgr: any = null;
+let _ed25519: any = null;
+async function loadDiap(): Promise<{ KeyManager: any; ed25519: any }> {
+  if (_keyMgr && _ed25519) return { KeyManager: _keyMgr, ed25519: _ed25519 };
+  const km = await import('@diap/sdk/browser');
+  const ed = await import('@noble/ed25519');
+  _keyMgr = km.KeyManager;
+  _ed25519 = ed;
+  return { KeyManager: km.KeyManager, ed25519: ed };
+}
+
+function bytesOf(s: string): Uint8Array<ArrayBuffer> {
+  const src = new TextEncoder().encode(s);
+  const out = new Uint8Array(new ArrayBuffer(src.byteLength));
+  out.set(src);
+  return out;
+}
+function bufToHex(buf: Uint8Array): string {
+  return Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+async function sha256Hex(text: string): Promise<string> {
+  const d = await crypto.subtle.digest('SHA-256', bytesOf(text));
+  return Array.from(new Uint8Array(d)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+function b64(buf: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < buf.length; i++) out += String.fromCharCode(buf[i]);
+  return btoa(out);
+}
+function b64ToBytes(b64s: string): Uint8Array {
+  const bin = atob(b64s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** 用身份私钥 (32B hex) 签名任意文本 → base64 签名 + 公钥 + DID (与桌面 ed25519Sign 同语义) */
+export async function signWithIdentity(payload: string): Promise<{ did: string; publicKey: string; signature: string; alg: 'ed25519' }> {
+  const id = await ensureIdentity();
+  if (!id.privateKey) throw new Error('identity_signing_unavailable: 本机身份无私钥');
+  const { ed25519 } = await loadDiap();
+  const priv = Uint8Array.from(id.privateKey.match(/.{2}/g)!.map((h) => parseInt(h, 16)));
+  const sig = await ed25519.signAsync(bytesOf(String(payload ?? '')), priv);
+  return { did: id.did, publicKey: id.publicKey, signature: b64(new Uint8Array(sig)), alg: 'ed25519' };
+}
+
+/** 验证身份签名 (用身份公钥验) — 与桌面 ed25519Verify 同语义 */
+export async function verifyIdentitySignature(payload: string, signatureB64: string, publicKeyHex: string): Promise<boolean> {
+  try {
+    const { ed25519 } = await loadDiap();
+    const pub = Uint8Array.from(publicKeyHex.match(/.{2}/g)!.map((h) => parseInt(h, 16)));
+    return ed25519.verifyAsync(b64ToBytes(signatureB64), bytesOf(String(payload ?? '')), pub);
+  } catch { return false; }
 }
 
 function openIdentityDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDENTITY_DB, 1);
+    const req = indexedDB.open(IDENTITY_DB, 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
@@ -72,7 +144,7 @@ async function _kvPut(key: string, val: any): Promise<void> {
 }
 
 /** 登录: 设置本机身份昵称 (无身份则新建) + 标记已登录 */
-export async function loginIdentity(name: string): Promise<{ did: string; name: string; createdAt: number; loggedIn: boolean }> {
+export async function loginIdentity(name: string): Promise<MobileIdentity & { loggedIn: boolean }> {
   const id = await ensureIdentity();
   const nm = String(name || '').trim() || 'blln-mobile';
   const next = { ...id, name: nm };
@@ -82,21 +154,41 @@ export async function loginIdentity(name: string): Promise<{ did: string; name: 
   return { ...next, loggedIn: true };
 }
 
+/** 更新身份附带条件 (邮箱/手机号/备注) — 只存本机 */
+export async function updateIdentityProfile(partial: { name?: string; email?: string; phone?: string; note?: string }): Promise<MobileIdentity> {
+  const id = await ensureIdentity();
+  const next: MobileIdentity = {
+    ...id,
+    name: typeof partial.name === 'string' && partial.name.trim() ? partial.name.trim() : id.name,
+    email: typeof partial.email === 'string' ? partial.email.trim() : id.email,
+    phone: typeof partial.phone === 'string' ? partial.phone.trim() : id.phone,
+    note: typeof partial.note === 'string' ? partial.note.trim() : id.note,
+  };
+  await _kvPut('identity', next);
+  _identity = next;
+  return next;
+}
+
 /** 注销: 清除登录态 (保留设备 DID, 不影响 P2P/频道) */
 export async function logoutIdentity(): Promise<{ ok: boolean }> {
   await _kvPut('loggedIn', false);
   return { ok: true };
 }
 
-/** 身份状态 (含登录态; 未登录时 name 置空) */
+/** 身份状态 (含登录态 + 附带条件; 未登录时 name 置空) */
 export async function identityStatus(): Promise<any> {
   const id = await ensureIdentity();
   const loggedIn = (await _kvGet('loggedIn')) === true;
-  return { did: id.did, didShort: id.did ? id.did.slice(0, 12) : '', name: loggedIn ? id.name : '', createdAt: id.createdAt, loggedIn };
+  return {
+    did: id.did, didShort: id.did ? id.did.slice(0, 12) : '',
+    name: loggedIn ? id.name : '', createdAt: id.createdAt, loggedIn,
+    publicKey: id.publicKey || '',
+    email: id.email || '', phone: id.phone || '', note: id.note || '',
+  };
 }
 
-/** 获取本机 DID (首次生成并持久化) */
-export async function ensureIdentity(): Promise<{ did: string; name: string; createdAt: number }> {
+/** 获取本机身份 (首次用 DIAP KeyManager 生成 Ed25519 → did:key; 持久化) */
+export async function ensureIdentity(): Promise<MobileIdentity> {
   if (_identity) return _identity;
   try {
     const db = _identityDb || (await openIdentityDb());
@@ -111,7 +203,26 @@ export async function ensureIdentity(): Promise<{ did: string; name: string; cre
       _identity = id;
       return id;
     }
-    const fresh = { did: await generateDID(), name: 'blln-mobile', createdAt: Date.now() };
+    // 2026-10-07: 用 @diap/sdk KeyManager 生成 (与桌面同一套) — DID 即公钥指纹, 可签名
+    let kp: { did: string; publicKey: Uint8Array; privateKey: Uint8Array };
+    try {
+      const { KeyManager } = await loadDiap();
+      kp = KeyManager.generate();
+    } catch (err: any) {
+      // 老 WebView 加载不了 @diap → 退化为哈希 DID (只读, 无签名)
+      const digest = await sha256Hex(String(Date.now()) + Math.random());
+      const legacy = { did: 'did:blln:' + digest.slice(0, 32), publicKey: '', privateKey: '', name: 'blln-mobile', createdAt: Date.now() };
+      await _kvPut('identity', legacy);
+      _identity = legacy;
+      return legacy;
+    }
+    const fresh: MobileIdentity = {
+      did: kp.did,
+      publicKey: bufToHex(kp.publicKey),
+      privateKey: bufToHex(kp.privateKey),
+      name: 'blln-mobile',
+      createdAt: Date.now(),
+    };
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction('kv', 'readwrite');
       tx.objectStore('kv').put(fresh, 'identity');
@@ -121,7 +232,8 @@ export async function ensureIdentity(): Promise<{ did: string; name: string; cre
     _identity = fresh;
     return fresh;
   } catch {
-    const fallback = { did: await generateDID(), name: 'blln-mobile', createdAt: Date.now() };
+    const digest = await sha256Hex(String(Date.now()) + Math.random());
+    const fallback = { did: 'did:blln:' + digest.slice(0, 32), publicKey: '', privateKey: '', name: 'blln-mobile', createdAt: Date.now() };
     _identity = fallback;
     return fallback;
   }
@@ -423,15 +535,23 @@ export async function runLocalAgent(goal: string): Promise<string> {
 // 桌面端 WorkflowPivotLoop 的浏览器移植: LLM 多轮迭代 + 手机端可用工具集。
 // 能力范围: 手机 WebView 能做的 (身份/钱包/入网/P2P/信息查询), 不假装能做 fs/shell。
 // 保护: maxSteps=5 防死循环; 每轮把工具结果拼回对话; LLM 说完成或没有下一步即停。
-const WEB_AGENT_SYSTEM = [
-  '你是手机端 Bolloon 智能体 (自治节点), 用中文简洁回复。',
-  '你有以下工具, 按需调用 (JSON: {"tool":"名字","args":{...}}), 不需要工具就直接回答:',
-  '- get_status: 查本机身份/入网/钱包/P2P 状态 (args: 无)',
-  '- get_wallet: 查钱包余额 (args: 无)',
-  '- get_identity: 查本机 DID (args: 无)',
-  '- get_contacts: 查联系方式授权状态 (args: 无)',
-  '每轮只能用一个工具; 拿到结果后继续思考, 直到任务完成给出最终回答。',
-].join('\n');
+// 2026-10-07: persona 注入 — 性格/价值观/兴趣/说话方式来自 mobile-persona (设置 → 性格)。
+import { loadPersona, buildPersonaPrompt } from './mobile-persona.js';
+
+function buildAgentSystem(): string {
+  const persona = loadPersona();
+  const personaBlock = buildPersonaPrompt(persona);
+  return [
+    '你是手机端 Bolloon 智能体 (自治节点), 用中文简洁回复。',
+    personaBlock,
+    '你有以下工具, 按需调用 (JSON: {"tool":"名字","args":{...}}), 不需要工具就直接回答:',
+    '- get_status: 查本机身份/入网/钱包/P2P 状态 (args: 无)',
+    '- get_wallet: 查钱包余额 (args: 无)',
+    '- get_identity: 查本机 DID (args: 无)',
+    '- get_contacts: 查联系方式授权状态 (args: 无)',
+    '每轮只能用一个工具; 拿到结果后继续思考, 直到任务完成给出最终回答。',
+  ].join('\n');
+}
 
 interface WebAgentToolResult { name: string; ok: boolean; output: string }
 const WEB_AGENT_TOOLS: Record<string, () => Promise<string>> = {
@@ -540,7 +660,7 @@ function parseBalancedJson(raw: string, start: number): unknown {
  */
 export async function runWebAgentLoop(goal: string, llm: { baseUrl: string; apiKey?: string; model?: string; maxTokens?: number }): Promise<string | null> {
   const messages: Array<{ role: string; content: string }> = [
-    { role: 'system', content: WEB_AGENT_SYSTEM },
+    { role: 'system', content: buildAgentSystem() },
     { role: 'user', content: goal },
   ];
   const MAX_STEPS = 5;

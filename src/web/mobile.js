@@ -2049,7 +2049,8 @@
         <div class="conv-item" id="settings-ipfs"><span class="list-icon">${ICONS.chip}</span><span>IPFS 存储</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-helia"><span class="list-icon">${ICONS.globe}</span><span>本机 IPFS 节点</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-selfcard"><span class="list-icon">${ICONS.chip}</span><span id="selfcard-text">显示本机卡片: 开</span></div>
-        <div class="conv-item" id="settings-did"><span class="list-icon">${ICONS.idcard}</span><span>DID</span></div>
+        <div class="conv-item" id="settings-did"><span class="list-icon">${ICONS.idcard}</span><span>DID 与身份</span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="settings-persona"><span class="list-icon">${ICONS.chip}</span><span>智能体性格</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-privacy"><span class="list-icon">${ICONS.chip}</span><span>隐私政策与个人信息</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-wipe"><span class="list-icon">${ICONS.trash}</span><span style="flex:1;min-width:0"><span style="display:block">清除本机数据（注销）</span><span class="conv-preview" style="display:block">删除本机身份、智能体、会话与钱包</span></span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-filing"><span class="list-icon">${ICONS.idcard}</span><span id="filing-text">APP 备案号：备案办理中</span></div>
@@ -2173,7 +2174,121 @@
       loadAgentCovers();
       showToast(hidden ? '已显示本机卡片' : '已隐藏本机卡片');
     });
-    $('#settings-did').addEventListener('click', () => { api.get('/api/auth/status').then((s) => alert('DID: ' + (s.did || '未生成'))); });
+    $('#settings-did').addEventListener('click', () => void openIdentityPage());
+    $('#settings-persona').addEventListener('click', () => void openPersonaPage());
+  }
+
+  // === 身份页 (DID / 公钥 / 签名测试 / 邮箱 / 手机号) ===
+  // 2026-10-07: 完整身份系统 — DIAP did:key (与桌面同构) + 附带条件 (邮箱/手机号/备注)
+  async function openIdentityPage() {
+    if ($('#identity-page')) return;
+    const page = mkOverlayPage('identity-page', 'DID 与身份', '<div style="font-size:12px;color:var(--text-muted)">读取中…</div>');
+    const body = page.querySelector('#identity-page-body');
+    try {
+      const core = window.BolloonCore || (await import('./mobile-core.js')).core;
+      const ag = core && core.agent;
+      const st = await ag.identityStatus();
+      body.innerHTML = `
+        <div class="list">
+          <div class="list-item"><span class="list-icon">${ICONS.idcard}</span><span style="flex:1"><span style="display:block">DID</span><span class="conv-preview" style="display:block;word-break:break-all">${escapeHtml(st.did || '未生成')}</span></span></div>
+          <div class="list-item"><span class="list-icon">${ICONS.chip}</span><span style="flex:1"><span style="display:block">公钥 (Ed25519)</span><span class="conv-preview" style="display:block;word-break:break-all">${st.publicKey ? escapeHtml(st.publicKey.slice(0, 32) + '…') : '（老设备哈希身份，无签名）'}</span></span></div>
+          <div class="list-item"><span class="list-icon">${ICONS.chip}</span><span style="flex:1"><span style="display:block">名字</span><span class="conv-preview" style="display:block">${escapeHtml(st.name || '未登录')}</span></span></div>
+        </div>
+        <div class="section-label">附带身份条件（仅存本机）</div>
+        <div class="list">
+          <div class="list-item"><span class="list-icon">✉️</span><span style="flex:1"><span style="display:block">邮箱</span><span class="conv-preview" id="id-email" style="display:block">${escapeHtml(st.email || '未设置')}</span></span></div>
+          <div class="list-item"><span class="list-icon">📱</span><span style="flex:1"><span style="display:block">手机号</span><span class="conv-preview" id="id-phone" style="display:block">${escapeHtml(st.phone || '未设置')}</span></span></div>
+          <div class="list-item"><span class="list-icon">📝</span><span style="flex:1"><span style="display:block">备注</span><span class="conv-preview" id="id-note" style="display:block">${escapeHtml(st.note || '未设置')}</span></span></div>
+          <button class="sheet-choice" id="id-edit" style="width:100%;margin-top:8px">编辑邮箱 / 手机号 / 备注</button>
+        </div>
+        <div class="section-label">签名能力（DIAP Ed25519）</div>
+        <div class="list">
+          <button class="sheet-choice" id="id-sign-test" style="width:100%">测试签名（本地签 + 验，证明身份可签名）</button>
+        </div>`;
+      const editBtn = page.querySelector('#id-edit');
+      if (editBtn) editBtn.addEventListener('click', () => {
+        const email = prompt('邮箱：', st.email || '');
+        if (email === null) return;
+        const phone = prompt('手机号：', st.phone || '');
+        if (phone === null) return;
+        const note = prompt('备注：', st.note || '');
+        if (note === null) return;
+        void (async () => {
+          const updated = await ag.updateProfile({ email, phone, note });
+          const e = page.querySelector('#id-email'); if (e) e.textContent = updated.email || '未设置';
+          const p = page.querySelector('#id-phone'); if (p) p.textContent = updated.phone || '未设置';
+          const n = page.querySelector('#id-note'); if (n) n.textContent = updated.note || '未设置';
+          showToast('✅ 身份条件已更新');
+        })();
+      });
+      const signBtn = page.querySelector('#id-sign-test');
+      if (signBtn) signBtn.addEventListener('click', () => {
+        void (async () => {
+          signBtn.textContent = '签名中…';
+          try {
+            const s = await ag.sign('bolloon-mobile-sign-test');
+            const ok = await ag.verifySign('bolloon-mobile-sign-test', s.signature, s.publicKey);
+            signBtn.textContent = ok ? `✅ 签名+验签通过 (${s.did.slice(0, 16)}…)` : '❌ 验签失败';
+          } catch (e) {
+            signBtn.textContent = '签名不可用: ' + String((e && e.message) || e).slice(0, 40);
+          }
+        })();
+      });
+    } catch (e) {
+      body.innerHTML = '<div style="padding:20px;color:var(--text-muted)">身份读取失败: ' + escapeHtml(String((e && e.message) || e)) + '</div>';
+    }
+  }
+
+  // === 智能体性格页 (Personal AI) ===
+  // 2026-10-07: mobile-persona 配置文件 — 性格/价值观/兴趣/说话方式, 注入 agent 系统提示
+  async function openPersonaPage() {
+    if ($('#persona-page')) return;
+    const page = mkOverlayPage('persona-page', '智能体性格', '<div style="font-size:12px;color:var(--text-muted)">读取中…</div>');
+    const body = page.querySelector('#persona-page-body');
+    try {
+      const persona = await import('./mobile-persona.js');
+      const p = persona.loadPersona();
+      body.innerHTML = `
+        <div style="padding:14px;font-size:12px;color:var(--text-muted);line-height:1.7">配置手机智能体的「性格文件」—— 会注入到每次对话的系统提示里，决定它怎么说话、看重什么、不做什么。存本机。</div>
+        <div class="section-label">名字</div>
+        <div style="padding:0 14px"><input id="ps-name" value="${escapeHtml(p.name)}" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" /></div>
+        <div class="section-label">性格</div>
+        <div style="padding:0 14px"><input id="ps-personality" value="${escapeHtml(p.personality)}" placeholder="例如：活泼、严谨、毒舌…" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" /></div>
+        <div class="section-label">说话方式</div>
+        <div style="padding:0 14px"><input id="ps-style" value="${escapeHtml(p.style)}" placeholder="例如：简洁中文，先结论后细节" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" /></div>
+        <div class="section-label">价值观（逗号分隔）</div>
+        <div style="padding:0 14px"><input id="ps-values" value="${escapeHtml(p.values.join('、'))}" placeholder="本地优先、隐私优先…" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" /></div>
+        <div class="section-label">兴趣（逗号分隔）</div>
+        <div style="padding:0 14px"><input id="ps-interests" value="${escapeHtml(p.interests.join('、'))}" placeholder="P2P、AI、知识系统…" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" /></div>
+        <div class="section-label">不做的事（逗号分隔）</div>
+        <div style="padding:0 14px"><input id="ps-boundaries" value="${escapeHtml(p.boundaries.join('、'))}" placeholder="不编造数据、不假装能做…" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" /></div>
+        <div style="padding:14px">
+          <button class="sheet-choice" id="ps-save" style="width:100%">保存性格</button>
+          <button class="sheet-choice sheet-cancel" id="ps-reset" style="width:100%;margin-top:8px">恢复默认</button>
+        </div>`;
+      const saveBtn = page.querySelector('#ps-save');
+      if (saveBtn) saveBtn.addEventListener('click', () => {
+        const v = (id) => { const el = page.querySelector(id); return el ? String(el.value || '').trim() : ''; };
+        persona.savePersona({
+          name: v('#ps-name'),
+          personality: v('#ps-personality'),
+          style: v('#ps-style'),
+          values: v('#ps-values').split(/[、,]/).map((s) => s.trim()).filter(Boolean),
+          interests: v('#ps-interests').split(/[、,]/).map((s) => s.trim()).filter(Boolean),
+          boundaries: v('#ps-boundaries').split(/[、,]/).map((s) => s.trim()).filter(Boolean),
+        });
+        showToast('✅ 性格已保存，下次对话生效');
+      });
+      const resetBtn = page.querySelector('#ps-reset');
+      if (resetBtn) resetBtn.addEventListener('click', () => {
+        persona.resetPersona();
+        showToast('已恢复默认性格');
+        page.remove();
+        void openPersonaPage();
+      });
+    } catch (e) {
+      body.innerHTML = '<div style="padding:20px;color:var(--text-muted)">性格读取失败: ' + escapeHtml(String((e && e.message) || e)) + '</div>';
+    }
   }
 
   // === 模型配置 (供应商 / 模型 / 地址) ===
