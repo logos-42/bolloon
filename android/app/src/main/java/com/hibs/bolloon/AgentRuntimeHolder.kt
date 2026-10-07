@@ -73,6 +73,8 @@ object AgentRuntimeHolder {
                     },
                 )
             }
+            // ── 2026-10-07 (K0-K10): KernelHost 编排初始化 (统一入口收敛) ──
+            KernelHost.init(llmConfig.apiKey, llmConfig.baseUrl, llmConfig.model)
             if (audit == null) {
                 audit = AgentAuditLog(context)
             }
