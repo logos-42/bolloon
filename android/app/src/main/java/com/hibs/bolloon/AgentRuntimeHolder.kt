@@ -33,26 +33,50 @@ object AgentRuntimeHolder {
     var audit: AgentAuditLog? = null
 
     /** 2026-08-13 (借鉴 Ghost): 宏录制/重放 */
-    @Volatile
-    var macro: MacroRecorder? = null
-        private set
+        @Volatile
+        var macro: MacroRecorder? = null
+            private set
 
-    /** 无障碍服务是否已连接 */
-    val isAccessibilityReady: Boolean
-        get() = BolloonAccessibilityService.instance != null
+        // ── 2026-10-07: 内核版 (桌面 kernel 移植) ──
+        /** 内核版 ModelRuntime (连接池/熔断/退避/回退) */
+        @Volatile
+        var kernelRuntime: KernelModelRuntime? = null
+            private set
 
-    /** 初始化 (app 启动时调用, 注入 context) */
-    fun init(context: Context) {
-        if (modelRuntime == null) {
-            modelRuntime = ModelRuntime(
-                RemoteLlmBackend(llmConfig),
-                LocalLlm(), // Phase 3: 模型路径后接
-            )
+        /** 内核版 Run 状态机 (最近一次) */
+        @Volatile
+        var kernelRunState: KernelRunStateMachine? = null
+            private set
+
+        /** 内核版取消信号 (cancelAgent 时同步取消内核循环) */
+        @Volatile
+        var kernelSignal: CancellationSignal? = null
+            private set
+
+        /** 无障碍服务是否已连接 */
+        val isAccessibilityReady: Boolean
+            get() = BolloonAccessibilityService.instance != null
+
+        /** 初始化 (app 启动时调用, 注入 context) */
+        fun init(context: Context) {
+            if (modelRuntime == null) {
+                modelRuntime = ModelRuntime(
+                    RemoteLlmBackend(llmConfig),
+                    LocalLlm(), // Phase 3: 模型路径后接
+                )
+            }
+            // 内核版: RemoteLlm 适配 KernelModelConnection, 供 KernelAgentLoop 使用
+            if (kernelRuntime == null) {
+                kernelRuntime = KernelModelRuntime(
+                    connectionFactory = { snap ->
+                        KernelRemoteLlmConnection(snap, llmConfig.apiKey)
+                    },
+                )
+            }
+            if (audit == null) {
+                audit = AgentAuditLog(context)
+            }
         }
-        if (audit == null) {
-            audit = AgentAuditLog(context)
-        }
-    }
 
     /** 配置 LLM (从手机端 UI / 默认) */
     fun configureLlm(config: AgentLlmConfig) {
@@ -91,14 +115,37 @@ object AgentRuntimeHolder {
                 // Phase 4: 生命周期开始 (STARTING → RUNNING)
                 val agentId = lifecycle.start(goal)
                 lifecycle.markRunning()
-                // 每次新建 AgentLoop (history 隔离, 不跨任务串)
-                val l = AgentLoop(t, backend)
-                loop = l
-                l.lifecycle = lifecycle
-                l.audit = audit
-                l.agentId = agentId
-                l.onStep = { onStep(it) }
-                val result = l.run(goal)
+
+                // ── 2026-10-07: 内核版路径 (桌面 kernel 移植: KernelModelRuntime + Run 状态机 + KernelAgentLoop)
+                //   旧 AgentLoop 保留为 fallback (内核异常时降级), 后续按删除原则移除。
+                val kernelRt = kernelRuntime ?: KernelModelRuntime(
+                    connectionFactory = { snap -> KernelRemoteLlmConnection(snap, llmConfig.apiKey) },
+                ).also { kernelRuntime = it }
+                val kernelSnap = KernelModelSnapshot(
+                    provider = "glm",
+                    model = llmConfig.model,
+                    baseUrl = llmConfig.baseUrl,
+                    timeoutMs = 30_000L,
+                )
+                val kRun = KernelRunStateMachine().also { kernelRunState = it }
+                val kLoop = KernelAgentLoop(t, kernelRt, kernelSnap)
+                kLoop.runState = kRun
+                kLoop.signal = CancellationSignal().also { kernelSignal = it }
+                kLoop.onStep = { onStep(it) }
+                kLoop.maxSteps = 20
+                val result = try {
+                    kLoop.run(goal)
+                } catch (e: Throwable) {
+                    // 内核异常 → 降级旧 loop (不丢任务)
+                    onStep("[内核降级] ${e.message}")
+                    val l = AgentLoop(t, backend)
+                    loop = l
+                    l.lifecycle = lifecycle
+                    l.audit = audit
+                    l.agentId = agentId
+                    l.onStep = { onStep(it) }
+                    l.run(goal)
+                }
                 onDone(result)
             } catch (e: Exception) {
                 lifecycle.fail(e.message ?: "unknown")
@@ -107,8 +154,11 @@ object AgentRuntimeHolder {
         }.start()
     }
 
-    /** 请求取消当前 Agent 任务 (两段式: CANCEL_REQUESTED) */
-    fun cancelAgent(reason: String = "用户取消"): Boolean = lifecycle.requestCancel(reason)
+    /** 请求取消当前 Agent 任务 (两段式: CANCEL_REQUESTED; 内核版同步取消) */
+        fun cancelAgent(reason: String = "用户取消"): Boolean {
+            kernelSignal?.cancel()
+            return lifecycle.requestCancel(reason)
+        }
 
     /** Agent 状态 (供 UI) */
     fun agentStatusJson(): String {
