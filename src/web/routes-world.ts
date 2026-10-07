@@ -29,7 +29,10 @@ function bodyOf(req: Request): any {
 
 /** 限制输入形状: 只收明确字段, 不整个吞前端对象 */
 function intentInputFromBody(body: any): any {
-  const b = bodyOf(body as any);
+  // 2026-10-06 修 bug: 之前调 bodyOf(body) —— bodyOf 期望 Request 访问 .body,
+  //   传 body 对象本身时 req.body = body.body = undefined ⇒ 永远返回 {} ⇒ 所有字段都丢。
+  //   body 此刻已是 express.json 解析后的对象, 直接校验即可。
+  const b = body && typeof body === 'object' ? body : {};
   const out: any = {};
   if (typeof b.text === 'string' && b.text.trim()) out.text = b.text.trim();
   if (Array.isArray(b.tags)) out.tags = b.tags.filter((t: unknown) => typeof t === 'string').map(String).slice(0, 24);
@@ -53,11 +56,11 @@ export function registerWorldRoutes(app: Express): void {
   });
 
   app.post('/api/intents', async (req, res) => {
-    const input = intentInputFromBody(req.body);
-    if (!input.text) return json(res, 400, { ok: false, error: 'text 必填 (声明你现在在做什么)' });
-    const r = await setIntent(input);
-    if (!r.ok) return json(res, 400, { ok: false, error: r.error });
-    json(res, r.created ? 201 : 200, { ok: true, created: r.created, intent: r.intent });
+        const input = intentInputFromBody(req.body);
+        if (!input.text) return json(res, 400, { ok: false, error: 'text 必填 (声明你现在在做什么)' });
+      const r = await setIntent(input);
+      if (!r.ok) return json(res, 400, { ok: false, error: r.error });
+      json(res, r.created ? 201 : 200, { ok: true, created: r.created, intent: r.intent });
   });
 
   app.get('/api/intents/:id', async (req, res) => {

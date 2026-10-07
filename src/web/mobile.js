@@ -69,7 +69,7 @@
     });
   } catch (e) {}
 
-  const TITLES = { main: '首页', friends: '好友', network: '网络', tasks: '任务', me: '我' };
+  const TITLES = { main: '首页', friends: '好友', tasks: '任务', me: '我' };
   let currentTab = 'main';
   function switchTab(tab) {
     currentTab = tab;
@@ -79,11 +79,18 @@
     const cs = $('#btn-create-session'); if (cs) cs.hidden = tab !== 'main';
     const ta = $('#topbar-actions'); if (ta) ta.hidden = tab === 'me';   // 我 页不显示 加号/刷新
     if (tab === 'friends') { loadContacts(); loadP2PStatus(); }
-    if (tab === 'network') { loadAgentControl(); loadApprovals(); loadNetMembers(); loadAgentServices(); loadX402Info(); }
+    // 2026-10-06: 网络 + 任务合一 —— 任务 tab 同时加载网络与任务数据
+    if (tab === 'tasks') { loadAgentControl(); loadApprovals(); loadNetMembers(); loadAgentServices(); loadX402Info(); try { refreshAll(); } catch (e) {} }
     if (tab === 'main') { loadAgentCovers(); }
     window.__mobileTouch?.('tab', tab);
   }
   $$('.tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+  // 2026-10-06: 任务 tab 内子切换 (网络 / 任务)
+  $$('.works-subtab').forEach((b) => b.addEventListener('click', () => {
+    $$('.works-subtab').forEach((x) => x.classList.toggle('active', x === b));
+    const nw = $('#works-network'); if (nw) nw.hidden = b.dataset.works !== 'network';
+    const tw = $('#works-tasks'); if (tw) tw.hidden = b.dataset.works !== 'tasks';
+  }));
 
   async function loadConversations() {
     try {
@@ -2553,7 +2560,7 @@
     try {
       const r = await api.post('/api/peers/add', { addr });
       alert(r && r.ok ? (r.connected ? '已连接好友' : '已记录好友地址, 连接中...') : ((r && r.error) || '添加失败'));
-      if (currentTab === 'network') loadContacts();
+      if (currentTab === 'network' || currentTab === 'tasks') loadContacts();
     } catch (e) {
       alert('添加失败: ' + (e.message || e));
     }
@@ -2723,7 +2730,7 @@
               const r2 = await (window.BolloonCore && window.BolloonCore.gateway && window.BolloonCore.gateway.join(text));
               alert(r2 ? (r2.output || '已处理') : '这个二维码不是好友地址 (也不是入网链接)');
             }
-            if (currentTab === 'network') { loadContacts(); loadP2PStatus(); }
+            if (currentTab === 'network' || currentTab === 'tasks') { loadContacts(); loadP2PStatus(); }
             return;
           }
           const r = await (window.BolloonCore && window.BolloonCore.gateway && window.BolloonCore.gateway.join(text));
@@ -3124,7 +3131,7 @@
       if (!msg || msg.type !== 'ui' || !msg.action) return;
       const d = msg.data || {};
       switch (msg.action) {
-        case 'switchTab': if (d.tab && ['main', 'friends', 'network', 'me'].includes(d.tab)) switchTab(d.tab); break;
+        case 'switchTab': if (d.tab && ['main', 'friends', 'tasks', 'me'].includes(d.tab)) switchTab(d.tab); break;
         case 'openSettings': openSettings(); break;
         case 'showToast': alert(d.message || ''); break;
         case 'goBack': closeCardDetail(); closeChat(); break;
@@ -3249,7 +3256,7 @@
     return false;
   }
   function setupGestures() {
-    const TAB_ORDER = ['main', 'friends', 'network', 'me'];
+    const TAB_ORDER = ['main', 'friends', 'tasks', 'me'];
     let sx = 0, sy = 0, st = 0, active = false, startTarget = null;
     document.addEventListener('touchstart', (e) => {
       if (e.touches.length !== 1) { active = false; return; }

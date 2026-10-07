@@ -268,10 +268,9 @@ function collectEnv(): BolloonContext['env'] {
   let llmProvider = 'unknown';
   try {
     const home = process.env.HOME || os.homedir() || '/tmp';
-    // 2026-08-07: bolloon-config.json 优先, 旧 llm-config.json 兜底
-    let cfgPath = path.join(home, '.bolloon', 'bolloon-config.json');
-    if (!require('fs').existsSync(cfgPath)) cfgPath = path.join(home, '.bolloon', 'llm-config.json');
-    const cfg = require(cfgPath);
+        // 2026-10-06 技术债清理: 只读 canonical bolloon-config.json (旧 llm-config.json 已废弃)
+        const cfgPath = path.join(home, '.bolloon', 'bolloon-config.json');
+        const cfg = require(cfgPath);
     if (cfg && typeof cfg === 'object' && 'provider' in cfg) {
       llmProvider = String(cfg.provider);
     }

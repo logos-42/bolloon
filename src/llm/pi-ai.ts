@@ -1617,9 +1617,8 @@ export function initPiAI(config: PiAIConfig = {}): PiAIModel {
   const isLlamacpp = declared === LLAMACPP_PROVIDER_ID;
   const provider: ModelProvider = isLlamacpp ? 'openai' : declared;
   const providerId = config.providerId || (isLlamacpp ? LLAMACPP_PROVIDER_ID : undefined);
-  const model = config.model
-    || (isLlamacpp ? (process.env.LLAMACPP_MODEL || LLAMACPP_DEFAULT_MODEL) : detectModel(provider));
-  let baseUrl = config.baseUrl || (isLlamacpp ? (process.env.LLAMACPP_BASE_URL || LLAMACPP_DEFAULT_BASE_URL) : undefined);
+  let model = config.model || undefined;
+  let baseUrl = config.baseUrl || undefined;
 
   console.log('[PiAIModel] Initializing with provider:', provider, 'model:', model);
 
@@ -1628,24 +1627,38 @@ export function initPiAI(config: PiAIConfig = {}): PiAIModel {
   // 2026-09-28: llama.cpp 的 key 从 env 兜底取一次 (getApiKey 本来也会读 env, 但指纹需要它 ——
   //   否则"换 key"这种真变化不会重建实例, 指纹就失去意义)
   if (!apiKey && isLlamacpp) apiKey = process.env.LLAMACPP_API_KEY || undefined;
-  if (!apiKey) {
+  // ── 2026-10-06 技术债重构: 配置文件对所有 provider 生效 (不只 llamacpp) ──
+  //   用户是 200+ 模型 / 自适应 URL 的重度用户: 在配置里自定义 baseUrl/model 必须被尊重。
+  //   之前只有 llamacpp 走这条, 其他 provider 一律被 getBaseUrl()/mapModel() 的
+  //   内置默认 / env 覆盖掉 ⇒ 配置了自定义网关 URL 却打官方端点 (401 真实事故)。
+  //   优先级: 显式 config > 配置文件 > env > 内置默认 (getBaseUrl/mapModel 天然如此,
+  //   这里只把配置值塞进去, 让"配置文件"这一层对所有 provider 生效)。
+  {
     try {
       const configPath = resolveConfigPath();
       if (configPath) {
         const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-        const providerConfig = configData.providers[declared];
-        if (providerConfig?.apiKey) {
+        const providerConfig = configData.providers?.[declared];
+        if (!apiKey && providerConfig?.apiKey) {
           apiKey = providerConfig.apiKey;
           console.log('[PiAIModel] Loaded apiKey from config for', declared);
         }
-        // 2026-09-28: 本地服务 (llamacpp) 的 baseUrl 常写在配置里 → 只对这一家多读一个字段
-        //   (别人保持"只读 apiKey"的老行为: 让 model/baseUrl 的优先级变动会牵连 llm-config 那条线)
-        if (isLlamacpp && !baseUrl && providerConfig?.baseUrl) baseUrl = providerConfig.baseUrl;
+        // 2026-10-06: baseUrl / model 不再只给 llamacpp —— 所有 provider 都尊重配置文件
+        //   (显式 config 优先; 配置里的值只作为"未显式指定"时的兜底)
+        if (!baseUrl && providerConfig?.baseUrl) baseUrl = providerConfig.baseUrl;
+        if (!model && providerConfig?.model) model = providerConfig.model;
+        if (providerConfig?.baseUrl || providerConfig?.model) {
+          console.log('[PiAIModel] Loaded baseUrl/model from config for', declared,
+            baseUrl ? 'baseUrl=' + baseUrl : '', model ? 'model=' + model : '');
+        }
       }
     } catch (e) {
-      console.log('[PiAIModel] Error reading apiKey from config:', e);
+      console.log('[PiAIModel] Error reading config:', e);
     }
   }
+  // 兜底: 配置文件也没给 → 回落 llamacpp env / detectModel 内置默认 (老行为不变)
+  if (!model) model = isLlamacpp ? (process.env.LLAMACPP_MODEL || LLAMACPP_DEFAULT_MODEL) : detectModel(provider);
+  if (!baseUrl) baseUrl = isLlamacpp ? (process.env.LLAMACPP_BASE_URL || LLAMACPP_DEFAULT_BASE_URL) : undefined;
 
   // ── 2026-09-28: 按指纹幂等 ──────────────────────────────────────────────
   //   同一份配置重复 init (CLI 每轮 / web 每次请求 / 脚本多入口) **不再重建实例、不再清装配缓存**.

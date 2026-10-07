@@ -83,17 +83,18 @@ function classify(err: unknown, stage: ResolveStage): string {
 /** 读本机 LLM 配置摘要 (只看结构与有无, 不打印任何密钥) */
 export async function probeLlmConfig(home: string = os.homedir()): Promise<{ ok: boolean; provider?: string; model?: string; hasKey?: boolean; reason?: string }> {
   try {
-    const raw = JSON.parse(await fsp.readFile(path.join(home, '.bolloon', 'llm-config.json'), 'utf8'));
+    // 2026-10-06 技术债清理: 只读 canonical bolloon-config.json (旧 llm-config.json 已废弃, 迁移逻辑在 config-store)
+    const raw = JSON.parse(await fsp.readFile(path.join(home, '.bolloon', 'bolloon-config.json'), 'utf8'));
     const active = raw.activeProvider || raw.provider;
     const providers = raw.providers || {};
     const p = providers[active] || {};
     const needsKey = p.requiresApiKey !== false;
     const hasKey = !!(p.apiKey || p.api_key || process.env[`${String(active).toUpperCase()}_API_KEY`]);
-    if (!active) return { ok: false, reason: 'llm-config.json 没有 activeProvider' };
+    if (!active) return { ok: false, reason: 'bolloon-config.json 没有 activeProvider' };
     if (needsKey && !hasKey) return { ok: false, provider: active, model: p.model, hasKey: false, reason: `provider ${active} 需要 apiKey 但没配` };
     return { ok: true, provider: active, model: p.model, hasKey };
   } catch (err) {
-    return { ok: false, reason: `llm-config.json 不可读: ${String((err as Error)?.message || err).slice(0, 100)}` };
+    return { ok: false, reason: `bolloon-config.json 不可读: ${String((err as Error)?.message || err).slice(0, 100)}` };
   }
 }
 

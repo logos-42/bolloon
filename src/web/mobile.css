@@ -450,29 +450,28 @@ body {
 }
 
 .card-track {
-  display: flex;
-  flex-direction: column;   /* 上下翻卡 */
-  gap: 16px;
-  padding: 16px;
+  /* 2026-10-06 (用户: 首页卡片变双栏): 从单卡纵向翻页改为两列网格, 一屏看更多智能体 */
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding: 12px;
   overflow-y: auto;
   overflow-x: hidden;
-  scroll-snap-type: y mandatory;
   -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
   height: 100%;
-  align-items: stretch;
-  touch-action: pan-y;   /* 垂直交给原生滚动翻卡, 水平交给 JS 做删除 reveal */
+  align-content: start;
+  touch-action: pan-y;   /* 垂直交给原生滚动, 水平交给 JS 做删除 reveal */
 }
 
 .card-track::-webkit-scrollbar { display: none; }
 
-/* 每张卡片外层: 纵向单元 + 删除位 */
+/* 每张卡片外层: 网格单元 + 删除位 (双栏下固定比例, 不满屏) */
 .card-wrap {
-  flex: 0 0 auto;
-  height: 80%;              /* 不满屏: 露出下一张卡片的位置 */
-  scroll-snap-align: start;
+  height: auto;
+  aspect-ratio: 3 / 4;
   position: relative;
-  border-radius: 16px;
+  border-radius: 14px;
   overflow: hidden;
   min-height: 0;
 }
