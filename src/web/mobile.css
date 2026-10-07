@@ -586,6 +586,125 @@ body {
   font-weight: 600;
 }
 
+/* ============ 任务 tab: 对话框模式 (2026-10-07) ============ */
+.task-chat-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.task-dash {
+  display: flex;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.task-dash-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0;
+  background: var(--bg-card, #222220);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.task-dash-ico { font-size: 16px; }
+.task-chat {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.task-chat-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 40px 20px;
+  line-height: 1.6;
+}
+.task-msg {
+  max-width: 88%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.task-msg-user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #1a1a18;
+  border-bottom-right-radius: 4px;
+}
+.task-msg-ai {
+  align-self: flex-start;
+  background: var(--bg-card, #222220);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-bottom-left-radius: 4px;
+}
+.task-input-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sidebar, #222220);
+  flex-shrink: 0;
+}
+.task-input-bar input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-card, #222220);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+}
+.task-input-bar input:focus { border-color: var(--accent); }
+.task-input-bar button {
+  padding: 10px 16px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #1a1a18;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+/* 网络工具覆盖层 */
+.task-network-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+.task-network-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.task-network-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 /* ============ 双频滑动卡片 (主页面) ============ */
 
 .card-carousel {

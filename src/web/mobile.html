@@ -91,79 +91,71 @@
 
   </main>
 
-  <!-- 任务 tab (2026-10-06: 网络 + 任务合一, 页内子切换) -->
-  <section class="page" id="page-tasks" data-tab="tasks" hidden>
-    <!-- 页内子切换: 网络 / 任务 -->
-    <div class="works-subtabs" style="display:flex;gap:6px;padding:8px 14px;border-bottom:1px solid var(--border,#3a3a36);">
-      <button class="sheet-choice works-subtab active" data-works="network" style="flex:1;padding:7px 0;font-size:13px">网络</button>
-      <button class="sheet-choice works-subtab" data-works="tasks" style="flex:1;padding:7px 0;font-size:13px">任务</button>
-    </div>
+  <!-- 任务 tab (2026-10-07: 对话框模式 — 仪表盘 + 消息流 + 底部派活输入框; 网络收成工具) -->
+    <section class="page task-chat-page" id="page-tasks" data-tab="tasks" hidden>
+      <!-- 仪表盘栏: 工具入口 + 状态 -->
+      <div class="task-dash">
+        <button class="task-dash-btn" id="task-dash-network" title="网络工具"><span class="task-dash-ico">🌐</span><span>网络</span></button>
+        <button class="task-dash-btn" id="task-dash-sign" title="本机签名状态"><span class="task-dash-ico">🔏</span><span id="tasks-signing">签名…</span></button>
+        <button class="task-dash-btn" id="tasks-refresh" title="刷新任务数据"><span class="task-dash-ico">⟳</span><span>刷新</span></button>
+      </div>
 
-    <!-- 子面板: 网络 (原 page-network 内容) -->
-        <div class="works-pane" id="works-network">
-          <!-- 2026-10-07: 世界流已回首页 (双栏机会卡片); 此处不再重复 -->
+      <!-- 对话框消息流 -->
+      <div class="task-chat" id="task-chat">
+        <div class="task-chat-empty" id="task-chat-empty">给 Bolloon 派个活… 例：查一下我的身份 / 汇总钱包状态</div>
+      </div>
+
+      <!-- 底部派活输入框 -->
+      <div class="task-input-bar">
+        <input type="text" id="task-input" placeholder="给 Bolloon 派个活… (Enter 发送)" autocomplete="off" />
+        <button id="task-input-send">→ 派活</button>
+      </div>
+
+      <!-- 网络工具面板 (覆盖层, 默认隐藏; 点仪表盘「网络」打开) -->
+      <div class="task-network-panel" id="task-network-panel" hidden>
+        <div class="task-network-head">
+          <button id="task-network-back">←</button>
+          <span style="flex:1;font-weight:600">网络工具</span>
+        </div>
+        <div class="task-network-body">
           <div class="list">
-        <div class="list-item" id="item-join-global"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.7 2.6 2.7 14.4 0 17M12 3.5c-2.7 2.6-2.7 14.4 0 17"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/></svg></span><span>一键入网 · 全球智能体网络</span><span class="list-arrow">›</span></div>
-        <div class="list-item" id="item-join-net"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M3.5 9.5a13 13 0 0 1 17 0M6.5 13a8.5 8.5 0 0 1 11 0M9.6 16.3a4 4 0 0 1 4.8 0"/><circle cx="12" cy="19.5" r="1.1" fill="currentColor" stroke="none"/></svg></span><span>加入网络</span><span class="list-arrow">›</span></div>
+            <div class="list-item" id="item-join-global"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.7 2.6 2.7 14.4 0 17M12 3.5c-2.7 2.6-2.7 14.4 0 17"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/></svg></span><span>一键入网 · 全球智能体网络</span><span class="list-arrow">›</span></div>
+            <div class="list-item" id="item-join-net"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M3.5 9.5a13 13 0 0 1 17 0M6.5 13a8.5 8.5 0 0 1 11 0M9.6 16.3a4 4 0 0 1 4.8 0"/><circle cx="12" cy="19.5" r="1.1" fill="currentColor" stroke="none"/></svg></span><span>加入网络</span><span class="list-arrow">›</span></div>
+          </div>
+          <div class="section-label">Agent 网络</div>
+          <div class="list" id="net-members"></div>
+          <div class="section-label">Agent 服务 (协议自动发现)</div>
+          <div class="list" id="agent-services"></div>
+          <div class="list"><div class="list-item" id="item-trade"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><path d="M17.5 14.5l2.5 2.5-2.5 2.5"/></svg></span><span style="flex:1">资源交易</span><span class="list-arrow">›</span></div></div>
+          <div class="section-label">微信息 (微支付)</div>
+          <div class="list" id="x402-info-list"></div>
+          <div class="section-label">智能体控制 (MCP / Skills)</div>
+          <div class="list" id="agent-control"></div>
+          <div class="section-label">待人工审批支付</div>
+          <div class="list" id="approval-list"></div>
+          <div class="section-label">A2UI 动态面板 (智能体生成)</div>
+          <div id="a2ui-root"></div>
+          <div class="section-label">本机授权与签名</div>
+          <div class="sheet-text" id="tasks-hint" style="font-size:12px;color:var(--text-secondary);padding:0 14px 6px"></div>
+          <div class="section-label">群 (与 CLI task group 同一份记录)</div>
+          <div class="list" id="tasks-groups"><div class="sheet-text" style="padding:0 14px">加载中…</div></div>
+          <div style="padding:0 14px 8px">
+            <input id="tasks-group-link" placeholder="群邀请链接 (orbitdb://…?type=group&amp;name=…)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
+            <button class="sheet-choice" id="tasks-group-join" style="width:100%;margin-top:8px">入群(需手机确认 + 签名)</button>
+            <input id="tasks-group-name" placeholder="新群名称" style="width:100%;margin-top:8px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
+            <button class="sheet-choice" id="tasks-group-create" style="width:100%;margin-top:8px">建群(需手机确认 + 签名)</button>
+          </div>
+          <div class="section-label">公告板 (与 CLI task board 同一份事实)</div>
+          <div class="board-grid" id="tasks-board"><div class="sheet-text" style="padding:0 14px">加载中…</div></div>
+          <div class="section-label">飞轮进度 (只读, 与桌面同一状态)</div>
+          <div class="list" id="tasks-flywheel"><div class="sheet-text" style="padding:0 14px">加载中…</div></div>
+          <div class="section-label">群过程痕迹 (只读, 脱敏)</div>
+          <div class="list" id="tasks-trail-group-picker"></div>
+          <div class="list" id="tasks-trail"><div class="sheet-text" style="padding:0 14px">选一个群看这一期的痕迹</div></div>
+          <div style="padding:0 14px 8px"><button class="sheet-choice" id="tasks-trail-refresh" style="width:100%">读群痕迹</button></div>
+        </div>
       </div>
-      <div class="section-label">Agent 网络</div>
-      <div class="list" id="net-members"></div>
-      <div class="section-label">Agent 服务 (协议自动发现)</div>
-      <div class="list" id="agent-services"></div>
-      <div class="list">
-        <div class="list-item" id="item-trade"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><path d="M17.5 14.5l2.5 2.5-2.5 2.5"/></svg></span><span style="flex:1">资源交易</span><span class="list-arrow">›</span></div>
-      </div>
-      <div class="section-label">微信息 (微支付)</div>
-      <div class="list" id="x402-info-list"></div>
-      <div class="section-label">智能体控制 (MCP / Skills)</div>
-      <div class="list" id="agent-control"></div>
-      <div class="section-label">待人工审批支付</div>
-      <div class="list" id="approval-list"></div>
-      <div class="section-label">A2UI 动态面板 (智能体生成)</div>
-      <div id="a2ui-root"></div>
-    </div>
-
-    <!-- 子面板: 任务 (原 page-tasks 内容) -->
-    <div class="works-pane" id="works-tasks" hidden>
-      <div class="section-label" data-zh="本机授权与签名" data-en="This device: approval &amp; signing">本机授权与签名</div>
-      <div class="list">
-        <div class="list-item" id="tasks-signing-item"><span class="list-icon"><svg class="ico" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="9.5" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/><path d="M12 14v3"/></svg></span><span id="tasks-signing" style="flex:1">检查中…</span></div>
-      </div>
-      <div class="sheet-text" id="tasks-hint" style="font-size:12px;color:var(--text-secondary);padding:0 14px 6px"></div>
-      <div class="list" style="padding:0 14px 4px">
-        <button class="sheet-choice" id="tasks-refresh" data-zh="刷新任务数据" data-en="Refresh task data" style="width:100%">刷新任务数据</button>
-      </div>
-
-      <div class="section-label" data-zh="群 (与 CLI task group 同一份记录)" data-en="Groups (same records as CLI task group)">群 (与 CLI task group 同一份记录)</div>
-      <div class="list" id="tasks-groups"><div class="sheet-text" style="padding:0 14px">加载中…</div></div>
-      <div style="padding:0 14px 8px">
-        <input id="tasks-group-link" placeholder="群邀请链接 (orbitdb://…?type=group&amp;name=…)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-        <button class="sheet-choice" id="tasks-group-join" data-zh="入群(需手机确认 + 签名)" data-en="Join group (needs on-device confirm + signature)" style="width:100%;margin-top:8px">入群(需手机确认 + 签名)</button>
-        <input id="tasks-group-name" placeholder="新群名称" style="width:100%;margin-top:8px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-        <button class="sheet-choice" id="tasks-group-create" data-zh="建群(需手机确认 + 签名)" data-en="Create group (needs on-device confirm + signature)" style="width:100%;margin-top:8px">建群(需手机确认 + 签名)</button>
-      </div>
-
-      <div class="section-label" data-zh="公告板 (与 CLI task board 同一份事实)" data-en="Task board (same facts as CLI task board)">公告板 (与 CLI task board 同一份事实)</div>
-            <div class="board-grid" id="tasks-board"><div class="sheet-text" style="padding:0 14px">加载中…</div></div>
-      <div style="padding:0 14px 8px">
-        <input id="tasks-pub-capability" placeholder="能力 (例如 research)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-        <input id="tasks-pub-instruction" placeholder="任务正文 (一句能执行的委托)" style="width:100%;margin-top:8px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-        <input id="tasks-pub-budget" placeholder="预算 (例如 0.05)" inputmode="decimal" style="width:100%;margin-top:8px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-        <input id="tasks-pub-deadline" placeholder="截止 (+24h / +2h / +1d, 留空=桌面默认 24h)" style="width:100%;margin-top:8px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-        <button class="sheet-choice" id="tasks-pub-submit" data-zh="发布公告(需手机确认 + 签名)" data-en="Publish announcement (needs on-device confirm + signature)" style="width:100%;margin-top:8px">发布公告(需手机确认 + 签名)</button>
-      </div>
-
-      <div class="section-label" data-zh="群过程痕迹 (只读, 脱敏)" data-en="Group trail (read-only, redacted)">群过程痕迹 (只读, 脱敏)</div>
-      <div class="list" id="tasks-trail-group-picker"></div>
-      <div class="list" id="tasks-trail"><div class="sheet-text" style="padding:0 14px">选一个群看这一期的痕迹</div></div>
-      <div style="padding:0 14px 8px">
-        <button class="sheet-choice" id="tasks-trail-refresh" data-zh="读群痕迹" data-en="Read group trail" style="width:100%">读群痕迹</button>
-      </div>
-
-      <div class="section-label" data-zh="飞轮进度 (只读, 与桌面同一状态)" data-en="Goal flywheel progress (read-only, same state as desktop)">飞轮进度 (只读, 与桌面同一状态)</div>
-      <div class="list" id="tasks-flywheel"><div class="sheet-text" style="padding:0 14px">加载中…</div></div>
-    </div>
-  </section>
+    </section>
 
   <!-- 我 tab -->
   <section class="page" id="page-me" data-tab="me" hidden>

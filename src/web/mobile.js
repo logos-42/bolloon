@@ -84,12 +84,51 @@
     window.__mobileTouch?.('tab', tab);
   }
   $$('.tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
-  // 2026-10-06: 任务 tab 内子切换 (网络 / 任务)
-  $$('.works-subtab').forEach((b) => b.addEventListener('click', () => {
-    $$('.works-subtab').forEach((x) => x.classList.toggle('active', x === b));
-    const nw = $('#works-network'); if (nw) nw.hidden = b.dataset.works !== 'network';
-    const tw = $('#works-tasks'); if (tw) tw.hidden = b.dataset.works !== 'tasks';
-  }));
+  // 2026-10-07: 任务 tab 对话框模式 — 网络收成仪表盘工具 (覆盖层开关)
+  function openTaskNetwork() {
+    const p = $('#task-network-panel'); if (p) p.hidden = false;
+    // 打开时加载网络数据
+    try { loadAgentControl(); loadApprovals(); loadNetMembers(); loadAgentServices(); loadX402Info(); } catch (e) {}
+  }
+  function closeTaskNetwork() {
+    const p = $('#task-network-panel'); if (p) p.hidden = true;
+  }
+  const dashNet = $('#task-dash-network'); if (dashNet) dashNet.addEventListener('click', openTaskNetwork);
+  const netBack = $('#task-network-back'); if (netBack) netBack.addEventListener('click', closeTaskNetwork);
+
+  // 任务对话框: 派活 → runLocalAgent (手机自治循环, 回显到消息流)
+  async function sendTask() {
+    const input = $('#task-input');
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    appendTaskMsg('user', text);
+    const empty = $('#task-chat-empty'); if (empty) empty.hidden = true;
+    try {
+      const a = window.BolloonCore && window.BolloonCore.agent;
+      let reply;
+      if (a && a.runLocal) reply = await a.runLocal(text);
+      else if (a && a.runLoop) reply = await a.runLoop(text);
+      else reply = '手机 Agent 未就绪';
+      appendTaskMsg('ai', String(reply || '(无回复)'));
+    } catch (e) {
+      appendTaskMsg('ai', '[执行失败] ' + (e.message || e));
+    }
+  }
+  function appendTaskMsg(role, text) {
+    const chat = $('#task-chat');
+    if (!chat) return;
+    const el = document.createElement('div');
+    el.className = 'task-msg ' + (role === 'user' ? 'task-msg-user' : 'task-msg-ai');
+    el.textContent = text;
+    chat.appendChild(el);
+    chat.scrollTop = chat.scrollHeight;
+  }
+  const taskInput = $('#task-input');
+  const taskSend = $('#task-input-send');
+  if (taskSend) taskSend.addEventListener('click', sendTask);
+  if (taskInput) taskInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendTask(); });
 
   async function loadConversations() {
     try {
