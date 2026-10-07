@@ -130,11 +130,17 @@ object AgentRuntimeHolder {
                     timeoutMs = 30_000L,
                 )
                 val kRun = KernelRunStateMachine().also { kernelRunState = it }
-                val kLoop = KernelAgentLoop(t, kernelRt, kernelSnap)
-                kLoop.runState = kRun
-                kLoop.signal = CancellationSignal().also { kernelSignal = it }
-                kLoop.onStep = { onStep(it) }
-                kLoop.maxSteps = 20
+                                val kCtx = KernelRunContext().also { it.setGoal(goal) }
+                                // K7: 工具门正式接管 — 所有工具调用经 KernelHarness (权限/预算/幂等/证据)
+                                val kHarness = KernelHost.currentHarness()
+                                    ?: KernelHost.buildHarness(t, KernelBudget(maxSteps = 20)).also { /* 已注册 */ }
+                                val kLoop = KernelAgentLoop(t, kernelRt, kernelSnap)
+                                kLoop.runState = kRun
+                                kLoop.harness = kHarness
+                                kLoop.runCtx = kCtx
+                                kLoop.signal = CancellationSignal().also { kernelSignal = it }
+                                kLoop.onStep = { onStep(it) }
+                                kLoop.maxSteps = 20
                 val result = try {
                     kLoop.run(goal)
                 } catch (e: Throwable) {

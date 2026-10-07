@@ -23,6 +23,11 @@ class KernelAgentLoop(
     private val history = mutableListOf<Pair<String, String>>()
     private var stepCount = 0
 
+    /** K7: 唯一工具门 (注入; 所有工具调用必须经 Harness) */
+    var harness: KernelHarness? = null
+    /** Run 上下文 (Harness 需要; 每步记录) */
+    var runCtx: KernelRunContext? = null
+
     /** 最大步数 (预算闸门) */
     var maxSteps = 20
     /** 上下文溢出阈值 (粗估 tokens) */
@@ -64,10 +69,10 @@ class KernelAgentLoop(
                 }
                 stepCount++
 
-                // 1. observe
+                // 1. observe (经 Harness 唯一工具门)
                 runState?.recordStep("observe", true)
                 onStep?.invoke("Step $stepCount: observe...")
-                val observation = tools.execute("build_llm_context", emptyMap())
+                val observation = invokeTool("build_llm_context", emptyMap())
 
                 // 2. LLM 决策 (经 KernelModelRuntime: 连接池/超时/退避/熔断/回退)
                 val promptHistory = compactHistory()
@@ -130,10 +135,10 @@ class KernelAgentLoop(
                     return "DONE: $summary (steps=$stepCount)"
                 }
 
-                // 9. 执行工具
+                // 9. 执行工具 (经 Harness 唯一工具门 — K7)
                 val args: Map<String, Any> = toolCall.args
                 onStep?.invoke("执行工具: ${toolCall.name}")
-                val result = tools.execute(toolCall.name, args)
+                val result = invokeTool(toolCall.name, args)
                 val success = !result.contains("\"success\":false")
                 runState?.recordStep(toolCall.name, success, result.take(80))
                 log.append("Step $stepCount: ${toolCall.name} → ${result.take(200)}\n")
@@ -185,6 +190,18 @@ class KernelAgentLoop(
         } finally {
             lease.release()
         }
+    }
+
+    /** K7: 工具调用唯一入口 — 经 Harness (discover→permission→policy→budget→idempotency→execute); 无 Harness 时降级直接执行 */
+    private fun invokeTool(tool: String, args: Map<String, Any>): String {
+        val h = harness
+        val ctx = runCtx
+        if (h != null && ctx != null) {
+            val r = h.invoke(tool, args, ctx)
+            return if (r.ok) r.output else "{\"success\":false,\"error\":\"${r.error}\"}"
+        }
+        // 降级 (K10 前过渡): 直接执行
+        return tools.execute(tool, args)
     }
 
     /** LLM 调用 (经 KernelModelRuntime 的单次调用; 失败返回哨兵文本而不是抛) */
