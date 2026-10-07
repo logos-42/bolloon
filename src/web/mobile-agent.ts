@@ -129,22 +129,32 @@ export async function ensureIdentity(): Promise<{ did: string; name: string; cre
 
 // ============ LLM 配置 (桌面同步注入 / 手机默认) ============
 
+// 2026-10-07: 开箱即用 — 手机独立运行时无需任何 API 配置。
+//   内置公共网关 (Cloudflare Worker: api.bolloon.cn) 转发到 GLM 上游;
+//   公共通道每天 ≤500 次/人; 桌面同步注入自己的 key 后自动覆盖。
+const BUILTIN_LLM = Object.freeze({
+  baseUrl: 'https://api.bolloon.cn/v1',
+  apiKey: 'bolloon-free',
+  model: 'glm-5.3',
+  maxTokens: 16384,
+});
+
 let _llmConfig: { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number } | null = null;
 
 /** 最近一次 runLocalAgent 的执行过程摘要 (每步 onStep 文本), 由 message.send 广播给工作记录 UI */
 let _lastWorklog: string[] = [];
 export function getLastWorklog(): string[] { return _lastWorklog; }
 
-/** 注入 LLM 配置 (由 mobile-core 在 data.llm-config.reply 同步后调用) */
+/** 注入 LLM 配置 (由 mobile-core 在 data.llm-config.reply 同步后调用); null = 用内置免费网关 */
 export function setLlmConfig(cfg: { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number } | null): void {
   _llmConfig = cfg;
   // 立即注入 native bridge (agentConfigure), 让 AgentRuntime 马上可用, 不必等下次 runLocalAgent
   applyLlmConfigToBridge().catch(() => {});
 }
 
-/** 当前 LLM 配置 (未同步则为 null → 手机默认) */
+/** 当前 LLM 配置 (未同步则返回内置免费网关 → 手机开箱即用) */
 export function getLlmConfig(): { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number } | null {
-  return _llmConfig;
+  return _llmConfig || BUILTIN_LLM;
 }
 
 /** 把配置注入 Capacitor RokidBridge (agentConfigure), 让 Kotlin AgentRuntime 用同步来的 LLM */
@@ -376,8 +386,16 @@ export async function runLocalAgent(goal: string): Promise<string> {
     }
   }
   // 内置极简回复 (纯离线可用)
-  const t = (goal || '').trim();
-  if (t.includes('你好') || t === 'hi' || t === 'hello') return '你好! 我是炁球 (Bolloon), 已在手机本地独立运行 (Agent 功能层 + 数据同步层分离)。';
+    const t = (goal || '').trim();
+    // 2026-10-07: 手机自治 — 先用 LLM 循环 (经内置公共网关), 失败再降级纯规则
+    try {
+      const llm = getLlmConfig();
+      if (llm && llm.baseUrl) {
+        const reply = await runWebAgentLoop(goal, { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model, maxTokens: llm.maxTokens });
+        if (reply) return reply;
+      }
+    } catch { /* 网络/网关不可达 → 降级内置规则 */ }
+    if (t.includes('你好') || t === 'hi' || t === 'hello') return '你好! 我是炁球 (Bolloon), 已在手机本地独立运行 (Agent 功能层 + 数据同步层分离)。';
   if (t.includes('身份') || t.includes('did')) {
     const id = await ensureIdentity();
     return `我的本地 DID: ${id.did.slice(0, 12)}... (手机端独立生成)`;
@@ -399,6 +417,99 @@ export async function runLocalAgent(goal: string): Promise<string> {
     }
   }
   return `已收到: "${(goal || '').slice(0, 40)}"。这是手机端 Agent 功能层的本地执行 (数据同步与 agent 功能已分离)。`;
+}
+
+// ============ 手机自治 agent 循环 (2026-10-07) ============
+// 桌面端 WorkflowPivotLoop 的浏览器移植: LLM 多轮迭代 + 手机端可用工具集。
+// 能力范围: 手机 WebView 能做的 (身份/钱包/入网/P2P/信息查询), 不假装能做 fs/shell。
+// 保护: maxSteps=5 防死循环; 每轮把工具结果拼回对话; LLM 说完成或没有下一步即停。
+const WEB_AGENT_SYSTEM = [
+  '你是手机端 Bolloon 智能体 (自治节点), 用中文简洁回复。',
+  '你有以下工具, 按需调用 (JSON: {"tool":"名字","args":{...}}), 不需要工具就直接回答:',
+  '- get_status: 查本机身份/入网/钱包/P2P 状态 (args: 无)',
+  '- get_wallet: 查钱包余额 (args: 无)',
+  '- get_identity: 查本机 DID (args: 无)',
+  '- get_contacts: 查联系方式授权状态 (args: 无)',
+  '每轮只能用一个工具; 拿到结果后继续思考, 直到任务完成给出最终回答。',
+].join('\n');
+
+interface WebAgentToolResult { name: string; ok: boolean; output: string }
+const WEB_AGENT_TOOLS: Record<string, () => Promise<string>> = {
+  get_status: async () => {
+    try { const id = await ensureIdentity(); return `DID: ${id.did.slice(0, 16)}... 名字: ${id.name}`; } catch (e: any) { return '身份读取失败: ' + String(e?.message || e).slice(0, 60); }
+  },
+  get_wallet: async () => {
+    try {
+      const id = await ensureIdentity();
+      const w = await import('./mobile-wallet.js');
+      const info = await w.walletForAgent(id.did);
+      if (!info.exists) return '本机没有授权给当前智能体的钱包 (我 → 设置 → 钱包 可创建/授权)。';
+      const w0 = info.wallets[0];
+      let s = `钱包: ${w0.name || w0.id} (${w0.address.slice(0, 12)}...)`;
+      if (w0.unlocked) { try { s += ` 余额: ${await w.walletBalance(w0.id)}`; } catch { s += ' 余额: 查询失败'; } }
+      else s += ' (未解锁)';
+      return s;
+    } catch (e: any) { return '钱包查询失败: ' + String(e?.message || e).slice(0, 60); }
+  },
+  get_identity: async () => {
+    const id = await ensureIdentity();
+    return `DID: ${id.did} 名字: ${id.name}`;
+  },
+  get_contacts: async () => {
+    try { return '联系方式与授权模块可用 (详见「我 → 联系方式与授权」)。'; } catch { return '联系人模块暂不可用'; }
+  },
+};
+
+/** 单轮 LLM 调用 (OpenAI 兼容, 经内置公共网关) */
+async function webAgentLlmCall(messages: Array<{ role: string; content: string }>, llm: { baseUrl: string; apiKey?: string; model?: string; maxTokens?: number }): Promise<string> {
+  const resp = await fetch(llm.baseUrl.replace(/\/$/, '') + '/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (llm.apiKey || '') },
+    body: JSON.stringify({
+      model: llm.model || 'glm-5.3',
+      messages,
+      max_tokens: llm.maxTokens || 2048,
+      temperature: 0.4,
+    }),
+  });
+  if (!resp.ok) throw new Error('LLM HTTP ' + resp.status + ': ' + (await resp.text()).slice(0, 120));
+  const data = await resp.json();
+  const content = data?.choices?.[0]?.message?.content;
+  if (!content) throw new Error('LLM 空回复');
+  return String(content).trim();
+}
+
+/**
+ * 手机端 agent 循环: goal → LLM 思考 → (工具调用 → 结果回填 → 再思考) → 最终回答。
+ * 与桌面 pivot loop 同构但浏览器安全边界内; 任何一步失败即降级。
+ */
+export async function runWebAgentLoop(goal: string, llm: { baseUrl: string; apiKey?: string; model?: string; maxTokens?: number }): Promise<string | null> {
+  const messages: Array<{ role: string; content: string }> = [
+    { role: 'system', content: WEB_AGENT_SYSTEM },
+    { role: 'user', content: goal },
+  ];
+  const MAX_STEPS = 5;
+  const steps: string[] = [];
+  for (let i = 0; i < MAX_STEPS; i++) {
+    const raw = await webAgentLlmCall(messages, llm);
+    const m = /^\s*\{[\s\S]*?\}\s*$/.exec(raw);
+    const toolJson = m ? JSON.parse(m[0]) : null;
+    if (toolJson && typeof toolJson.tool === 'string' && WEB_AGENT_TOOLS[toolJson.tool]) {
+      const out = await WEB_AGENT_TOOLS[toolJson.tool]();
+      steps.push(`🔧 ${toolJson.tool} → ${out.slice(0, 80)}`);
+      messages.push({ role: 'assistant', content: raw });
+      messages.push({ role: 'user', content: `工具结果: ${out}` });
+      continue;
+    }
+    // 无工具调用 = 最终回答
+    _lastWorklog = steps.length ? [...steps, `💬 ${raw.slice(0, 60)}`] : [`💬 ${raw.slice(0, 60)}`];
+    if (steps.length) return `[手机自治执行 ${steps.length} 步]\n` + raw;
+    return raw;
+  }
+  // 循环保护: 没收敛就给最后一条
+  const last = messages[messages.length - 1]?.content || '';
+  _lastWorklog = [...steps, '⚠ 达到步数上限, 已停止'];
+  return `[手机自治执行, 达到 ${MAX_STEPS} 步上限]\n${last.slice(0, 200)}`;
 }
 
 // ============ P2P 传输 (懒注入, 避免循环依赖) ============
@@ -639,4 +750,4 @@ export async function handleIncomingPhoneMessage(type: string, payload: string, 
   } catch { /* 控制消息处理失败静默 */ }
 }
 
-export default { ensureIdentity, loginIdentity, logoutIdentity, identityStatus, runLocalAgent, setAgentTransport, onAgentReply, callRemoteAgent, handleIncomingAgentMessage, notifyAgentReply, onInboundChat, setLlmConfig, getLlmConfig, runPhoneAgent, phoneStatus, cancelPhoneAgent, handleIncomingPhoneMessage };
+export default { ensureIdentity, loginIdentity, logoutIdentity, identityStatus, runLocalAgent, setAgentTransport, onAgentReply, callRemoteAgent, handleIncomingAgentMessage, notifyAgentReply, onInboundChat, setLlmConfig, getLlmConfig, runPhoneAgent, phoneStatus, cancelPhoneAgent, handleIncomingPhoneMessage, runWebAgentLoop };

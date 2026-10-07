@@ -14,10 +14,17 @@ import java.net.URL
  *   - chat(messages) → reply
  *   - 配置: AgentLlmConfig (手机端 UI 配置, 默认走 bolloon 的 provider)
  */
+/**
+ * AgentLlmConfig — 手机原生 Agent 的 LLM 配置。
+ *
+ * 2026-10-07: 开箱即用 — 默认指向内置公共网关 (Cloudflare Worker):
+ *   api.bolloon.cn/v1 转发到 GLM 上游, 公共通道每天 ≤500 次/人;
+ *   用户在「设置 → API 配置」填自己的 key 后覆盖 (手机自治不受限)。
+ */
 data class AgentLlmConfig(
-    val baseUrl: String = "https://api.deepseek.com/v1",
-    val apiKey: String = "",
-    val model: String = "deepseek-chat",
+    val baseUrl: String = "https://api.bolloon.cn/v1",
+    val apiKey: String = "bolloon-free",
+    val model: String = "glm-5.3",
     val maxTokens: Int = 4096,
 )
 
