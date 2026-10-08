@@ -584,3 +584,289 @@ export function buildMobileTools(extra: Record<string, (args: Record<string, unk
     ...extra,
   };
 }
+
+// ═══════════════ 9. 初始化智能体 (AgentInit) ═══════════════
+// 手机端智能体创建/初始化: 身份(DIAP did:key) + persona 性格 + 工具集 + 记忆库 一次性装配
+
+export interface AgentInitSpec {
+  name: string;
+  personality?: string;
+  identity?: { did: string; publicKey: string };
+  capabilities?: string[];
+}
+
+export interface AgentInitResult {
+  ok: boolean;
+  agentId: string;
+  did?: string;
+  personaApplied?: boolean;
+  memoryReady?: boolean;
+  error?: string;
+}
+
+export class AgentInit {
+  constructor(private storage: HarnessStorage, private memory: MemoryStore) {}
+
+  async init(spec: AgentInitSpec): Promise<AgentInitResult> {
+    try {
+      const agentId = `mobile-agent-${Date.now().toString(36)}`;
+      // 1. 身份 (优先外部注入 DIAP, 否则生成 did:key 占位)
+      const did = spec.identity?.did || `did:key:z6Mk-pending-${agentId.slice(-6)}`;
+      // 2. persona 性格注入
+      await this.storage.set(`bolloon_persona_${agentId}`, {
+        name: spec.name || 'blln-agent',
+        personality: spec.personality || '严谨、可靠、有边界感',
+        capabilities: spec.capabilities || ['chat', 'local-agent', 'memory'],
+        did,
+      });
+      // 3. 记忆库就绪 (空)
+      await this.memory.remember(`智能体 ${spec.name} 初始化 (${agentId})`, 'long', ['init']);
+      return { ok: true, agentId, did, personaApplied: true, memoryReady: true };
+    } catch (e: any) {
+      return { ok: false, agentId: '', error: String(e?.message || e) };
+    }
+  }
+
+  /** 读已初始化智能体 */
+  async get(agentId: string): Promise<AgentInitSpec | null> {
+    try { return (await this.storage.get(`bolloon_persona_${agentId}`)) as AgentInitSpec | null; } catch { return null; }
+  }
+}
+
+// ═══════════════ 10. 目标设计 (GoalDesigner) ═══════════════
+// 把模糊意图拆成: 目标 → 里程碑 → 可执行步骤 (与 kernel plan 同构)
+
+export interface GoalStep {
+  id: string;
+  action: string;
+  tool?: string;
+  doneWhen: string;
+}
+
+export interface GoalPlan {
+  goal: string;
+  milestones: { id: string; title: string; steps: GoalStep[] }[];
+}
+
+export class GoalDesigner {
+  constructor(private llm?: (sys: string, user: string) => Promise<string>) {}
+
+  /** 用 LLM 设计计划; 无 LLM 时退化为规则拆解 */
+  async design(raw: string): Promise<GoalPlan> {
+    const goal = String(raw || '').trim();
+    if (!goal) return { goal, milestones: [] };
+    if (this.llm) {
+      try {
+        const out = await this.llm(
+          '你是任务规划器。把用户目标拆成里程碑(milestones)和步骤(steps)。严格输出 JSON: {"goal":"...","milestones":[{"id":"m1","title":"...","steps":[{"id":"s1","action":"...","tool":"...","doneWhen":"..."}]}]}',
+          goal,
+        );
+        const parsed = JSON.parse(this.extractJson(out));
+        if (parsed && parsed.milestones) return parsed;
+      } catch { /* 退回规则 */ }
+    }
+    // 规则拆解: 按动词/标点分句
+    const parts = goal.split(/[，。;；]/).filter((s) => s.trim().length > 0);
+    return {
+      goal,
+      milestones: parts.length > 1
+        ? parts.map((p, i) => ({ id: `m${i + 1}`, title: p.trim(), steps: [{ id: `m${i + 1}s1`, action: p.trim(), doneWhen: `完成「${p.trim().slice(0, 20)}」` }] }))
+        : [{ id: 'm1', title: goal, steps: [{ id: 'm1s1', action: goal, doneWhen: '目标完成' }] }],
+    };
+  }
+
+  private extractJson(raw: string): string {
+    const start = raw.indexOf('{');
+    if (start < 0) throw new Error('no json');
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < raw.length; i++) {
+      const ch = raw[i];
+      if (inStr) { if (esc) { esc = false; continue; } if (ch === '\\') { esc = true; continue; } if (ch === '"') inStr = false; continue; }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) return raw.slice(start, i + 1); }
+    }
+    throw new Error('unbalanced');
+  }
+}
+
+// ═══════════════ 11. 计划执行 (PlanExecutor) ═══════════════
+// 按 GoalPlan 顺序执行里程碑/步骤; 每步经 harness 门; 失败标记不阻塞后续 (记录 recovery)
+
+export class PlanExecutor {
+  constructor(private tools: Record<string, (args: Record<string, unknown>) => Promise<string>>) {}
+
+  async execute(plan: GoalPlan, onStep?: (msg: string) => void): Promise<{
+    ok: boolean; completed: string[]; failed: { step: string; error: string }[]; progress: number;
+  }> {
+    const completed: string[] = [];
+    const failed: { step: string; error: string }[] = [];
+    for (const m of plan.milestones || []) {
+      for (const s of m.steps || []) {
+        onStep?.(`[plan] ${m.title} → ${s.action}`);
+        if (s.tool && this.tools[s.tool]) {
+          try {
+            const r = await this.tools[s.tool]({});
+            if (!r.includes('"success":false')) completed.push(`${m.id}/${s.id}`);
+            else failed.push({ step: `${m.id}/${s.id}`, error: r.slice(0, 120) });
+          } catch (e: any) {
+            failed.push({ step: `${m.id}/${s.id}`, error: String(e?.message || e).slice(0, 120) });
+          }
+        } else {
+          // 无工具的步骤: 视为引导性里程碑 (不需要执行, 只记录)
+          completed.push(`${m.id}/${s.id}`);
+        }
+      }
+    }
+    const total = (plan.milestones || []).reduce((n, m) => n + (m.steps || []).length, 0);
+    return { ok: failed.length === 0, completed, failed, progress: total ? completed.length / total : 1 };
+  }
+}
+
+// ═══════════════ 12. Block 分块执行 (BlockRunner) ═══════════════
+// 长任务分块: 每块 = 一组连续步骤, 块间可暂停/恢复; 块内失败只重试本块
+
+export interface BlockDef {
+  id: string;
+  name: string;
+  steps: { tool: string; args: Record<string, unknown> }[];
+  maxRetries?: number;
+}
+
+export class BlockRunner {
+  constructor(private tools: Record<string, (args: Record<string, unknown>) => Promise<string>>) {}
+
+  /** 执行一块 (失败按 maxRetries 重试, 块内去重) */
+  async runBlock(block: BlockDef, onStep?: (msg: string) => void): Promise<{
+    ok: boolean; blockId: string; results: { step: number; tool: string; ok: boolean }[]; error?: string;
+  }> {
+    const results: { step: number; tool: string; ok: boolean }[] = [];
+    const retries = Math.max(1, block.maxRetries || 1);
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      let allOk = true;
+      results.length = 0;
+      for (let i = 0; i < (block.steps || []).length; i++) {
+        const s = block.steps[i];
+        onStep?.(`[block:${block.id}] (尝试 ${attempt}/${retries}) ${s.tool}`);
+        try {
+          const r = await this.tools[s.tool]?.(s.args || {});
+          const ok = !String(r || '').includes('"success":false');
+          results.push({ step: i, tool: s.tool, ok });
+          if (!ok) allOk = false;
+        } catch (e: any) {
+          results.push({ step: i, tool: s.tool, ok: false });
+          allOk = false;
+        }
+      }
+      if (allOk) return { ok: true, blockId: block.id, results };
+    }
+    const err = results.find((r) => !r.ok);
+    return { ok: false, blockId: block.id, results, error: `块 ${block.id} 重试 ${retries} 次后仍有失败步骤 #${err?.step}` };
+  }
+}
+
+// ═══════════════ 13. 断点恢复 (CheckpointResume) ═══════════════
+// 生命周期 + 计划的双重断点: 每步落 checkpoint (IndexedDB), 重启/中断后可续跑
+
+export interface Checkpoint {
+  runId: string;
+  goal: string;
+  blockIndex: number;
+  stepIndex: number;
+  completedBlocks: string[];
+  updatedAt: number;
+}
+
+const CP_KEY = 'bolloon_harness_checkpoint';
+
+export class CheckpointResume {
+  constructor(private storage: HarnessStorage) {}
+
+  async save(cp: Checkpoint): Promise<void> {
+    try { await this.storage.set(CP_KEY, { ...cp, updatedAt: Date.now() }); } catch { /* */ }
+  }
+
+  async load(): Promise<Checkpoint | null> {
+    try { return (await this.storage.get(CP_KEY)) as Checkpoint | null; } catch { return null; }
+  }
+
+  async clear(): Promise<void> {
+    try { await this.storage.set(CP_KEY, null); } catch { /* */ }
+  }
+
+  /** 从中断点继续执行 blocks (跳过已完成块, 从当前块当前步继续) */
+  async resume(
+    blocks: BlockDef[],
+    runTools: Record<string, (args: Record<string, unknown>) => Promise<string>>,
+    onStep?: (msg: string) => void,
+  ): Promise<{ ok: boolean; resumedFrom: number; completedBlocks: string[] }> {
+    const cp = await this.load();
+    const startBlock = cp ? Math.min(cp.blockIndex, blocks.length - 1) : 0;
+    const completed = cp ? [...cp.completedBlocks] : [];
+    const runner = new BlockRunner(runTools);
+    for (let b = startBlock; b < blocks.length; b++) {
+      if (completed.includes(blocks[b].id)) continue;
+      onStep?.(`[resume] 块 ${b + 1}/${blocks.length}: ${blocks[b].name}`);
+      const r = await runner.runBlock(blocks[b], onStep);
+      if (r.ok) {
+        completed.push(blocks[b].id);
+        await this.save({ runId: cp?.runId || 'resumed', goal: cp?.goal || '', blockIndex: b + 1, stepIndex: 0, completedBlocks: completed, updatedAt: Date.now() });
+      } else {
+        onStep?.(`[resume] 块 ${blocks[b].id} 失败: ${r.error}`);
+        return { ok: false, resumedFrom: b, completedBlocks: completed };
+      }
+    }
+    await this.clear();
+    return { ok: true, resumedFrom: startBlock, completedBlocks: completed };
+  }
+}
+
+// ═══════════════ 14. 发派子智能体 (SubAgentDispatch) ═══════════════
+// P2P 委派: 手机端把子任务发给远端 agent (callRemoteAgent) 或本地子循环
+// 复用 mobile-agent 的 agent.chat.send/reply 协议 (与桌面 delegate 语义一致)
+
+export interface SubAgentTask {
+  taskId: string;
+  goal: string;
+  target?: string;       // peerId; 空 = 本地子智能体 (嵌套 harness)
+  timeoutMs?: number;
+}
+
+export interface SubAgentResult {
+  ok: boolean;
+  taskId: string;
+  reply?: string;
+  delegatedTo?: 'local' | 'remote';
+  error?: string;
+}
+
+export class SubAgentDispatch {
+  constructor(
+    private sendRemote: (peerId: string, text: string, channelId: string, timeoutMs?: number) => Promise<{ ok: boolean; reply?: string; error?: string }>,
+    private runLocal: (goal: string) => Promise<string>,
+  ) {}
+
+  /** 发派一个子任务: 有 target → 远端 P2P 委派; 无 target → 本地子智能体 (嵌套 loop) */
+  async dispatch(task: SubAgentTask): Promise<SubAgentResult> {
+    const taskId = task.taskId || `sub_${Date.now().toString(36)}`;
+    if (task.target) {
+      try {
+        const r = await this.sendRemote(task.target, task.goal, taskId, task.timeoutMs || 30000);
+        return { ok: r.ok, taskId, reply: r.reply, delegatedTo: 'remote', error: r.error };
+      } catch (e: any) {
+        return { ok: false, taskId, delegatedTo: 'remote', error: String(e?.message || e) };
+      }
+    }
+    try {
+      const reply = await this.runLocal(task.goal);
+      return { ok: true, taskId, reply, delegatedTo: 'local' };
+    } catch (e: any) {
+      return { ok: false, taskId, delegatedTo: 'local', error: String(e?.message || e) };
+    }
+  }
+
+  /** 并行发派多个子任务 (本地/远端混合) */
+  async dispatchAll(tasks: SubAgentTask[]): Promise<SubAgentResult[]> {
+    return Promise.all(tasks.map((t) => this.dispatch(t)));
+  }
+}
