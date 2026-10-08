@@ -1293,7 +1293,46 @@ export const core = {
                       if (!content) throw new Error('LLM 空回复');
                       return String(content).trim();
                     },
-                    tools: h.buildMobileTools(),
+                    tools: h.buildMobileTools({
+                      sendGroupMsg: async (text: string) => {
+                        try {
+                          const core2 = (window as any).BolloonCore;
+                          if (core2 && core2.groups && core2.groups.send) { await core2.groups.send(String(text || '')); return true; }
+                          return false;
+                        } catch { return false; }
+                      },
+                      delegate: async (goal2: string, target?: string) => {
+                        try {
+                          const ag2 = await import('./mobile-agent.js');
+                          if (target) { const r = await ag2.callRemoteAgent(target, goal2, `delegate_${Date.now()}`); return { ok: r.ok, reply: r.reply, error: r.error }; }
+                          const reply = await ag2.runLocalAgent(goal2); return { ok: true, reply };
+                        } catch (e: any) { return { ok: false, error: String(e?.message || e) }; }
+                      },
+                      worldAct: async (id: string, action: 'accept' | 'ignore') => {
+                        try {
+                          const base = await import('./mobile-gateway.js');
+                          const url = String((base.getDesktopBaseUrl?.() || '')).replace(/\/+$/, '');
+                          if (!url) return false;
+                          const r = await fetch(`${url}/api/opportunities/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+                          return r.ok;
+                        } catch { return false; }
+                      },
+                    }),
+                    // 2026-10-08: 新能力全开
+                    metaLlm: async (sys: string, user: string) => {
+                      const r = await fetch(llm.baseUrl!.replace(/\/$/, '') + '/chat/completions', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (llm.apiKey || '') },
+                        body: JSON.stringify({ model: llm.model || 'glm-5.3', messages: [{ role: 'system', content: sys }, { role: 'user', content: user }], max_tokens: 1024 }),
+                      });
+                      if (!r.ok) throw new Error('LLM HTTP ' + r.status);
+                      const data: any = await r.json();
+                      return String(data?.choices?.[0]?.message?.content || '').trim();
+                    },
+                    toolTimeoutMs: (opts && opts.toolTimeoutMs) || 20000,
+                    llmTimeoutMs: (opts && opts.llmTimeoutMs) || 45000,
+                    requireEvidence: (opts && opts.requireEvidence !== false),
+                    skillMining: (opts && opts.skillMining !== false),
                     storage,
                     onStep: (msg: string) => { try { (window as any).showToast?.(msg); } catch { /* */ } },
                   }, storage);
