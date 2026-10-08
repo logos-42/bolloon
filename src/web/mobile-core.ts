@@ -1261,12 +1261,48 @@ export const core = {
           return a.runLocalAgent(String(goal || ''));
         },
         async runLoop(goal: string): Promise<string> {
-          const a = await import('./mobile-agent.js');
-          const llm = a.getLlmConfig();
-          if (!llm || !llm.baseUrl) return '[未配置 LLM]';
-          const r = await a.runWebAgentLoop(goal, { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model, maxTokens: llm.maxTokens });
-          return r || '[循环无返回]';
-        },
+                  const a = await import('./mobile-agent.js');
+                  const llm = a.getLlmConfig();
+                  if (!llm || !llm.baseUrl) return '[未配置 LLM]';
+                  const r = await a.runWebAgentLoop(goal, { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model, maxTokens: llm.maxTokens });
+                  return r || '[循环无返回]';
+                },
+                // 2026-10-07: 持续工作 Harness (7 项能力) — 从 kernel 派生的长循环
+                async runHarness(goal: string, opts?: any): Promise<string> {
+                  const h = await import('./mobile-harness.js');
+                  const a = await import('./mobile-agent.js');
+                  const llm = a.getLlmConfig();
+                  if (!llm || !llm.baseUrl) return '[未配置 LLM]';
+                  const storage = h.createIndexedDbStorage();
+                  const loop = new h.HarnessLoop(String(goal || ''), {
+                    maxSteps: (opts && opts.maxSteps) || 50,
+                    maxContextTokens: 2000,
+                    llm: async (messages: { role: string; content: string }[]) => {
+                      const r = await fetch(llm.baseUrl!.replace(/\/$/, '') + '/chat/completions', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (llm.apiKey || '') },
+                        body: JSON.stringify({
+                          model: llm.model || 'glm-5.3',
+                          messages,
+                          max_tokens: (llm.maxTokens || 2048),
+                        }),
+                      });
+                      if (!r.ok) throw new Error('LLM HTTP ' + r.status + ': ' + (await r.text()).slice(0, 120));
+                      const data: any = await r.json();
+                      const content = data?.choices?.[0]?.message?.content;
+                      if (!content) throw new Error('LLM 空回复');
+                      return String(content).trim();
+                    },
+                    tools: h.buildMobileTools(),
+                    storage,
+                    onStep: (msg: string) => { try { (window as any).showToast?.(msg); } catch { /* */ } },
+                  }, storage);
+                  // 钩子: 度量 run 结果到工作记录
+                  (globalThis as any).__harnessMemory = loop.memory;
+                  const result = await loop.run();
+                  delete (globalThis as any).__harnessMemory;
+                  return result;
+                },
         getLlmConfig(): any { return null; },   // 占位 — 真实实现在下方异步
         async llmConfig(): Promise<any> {
           const a = await import('./mobile-agent.js');
