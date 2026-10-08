@@ -11,6 +11,8 @@ coverage/
 *.tgz
 peer-store/
 datastore/
+# OrbitDB 测试/运行时数据目录 (真 keystore + 库文件; mobile-orbitdb 测试会写到仓库根)
+orbitdb/
 bin/
 .ipfs
 release/
