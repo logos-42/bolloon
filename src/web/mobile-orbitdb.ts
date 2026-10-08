@@ -50,7 +50,8 @@ export async function createMobileOrbitDB(node?: MobileHeliaNode | null): Promis
 
     // 动态 import @orbitdb/core (browser bundle; 避免顶层拖慢首屏)
     const orbitMod = await import('@orbitdb/core');
-    const createOrbitDB = orbitMod.default ?? orbitMod.createOrbitDB;
+    // @orbitdb/core 的 browser bundle 类型导出不稳定 → 显式收成 any (运行时仍是同一函数)
+    const createOrbitDB: any = (orbitMod as any).default ?? (orbitMod as any).createOrbitDB;
     if (typeof createOrbitDB !== 'function') return { ok: false, error: '@orbitdb/core 没有 createOrbitDB 导出' };
 
     // 用 MemoryStorage (浏览器无 fs) — KeyStore/日志都在内存
