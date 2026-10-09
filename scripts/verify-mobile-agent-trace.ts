@@ -9,11 +9,11 @@
  * → mobile-core `busBroadcast({type:'agent-worklog'})` → mobile.js `appendWorkLog()`。
  *
  * 本脚本真跑这条链: 真 headless Chrome + 真 mobile-core/mobile.js bundle (非打桩 UI),
- * 只把**原生桥**换成桩 (无 Android 真机时无法跑 Kotlin), 桩的行为按真机形状: 每步先推
- * agent-step, 最后返回 worklog + result。
+ * 只把**原生桥**换成桩 (无 Android 真机时无法跑 Kotlin); 普通手机 Agent 应忽略该桥，
+ * 直接走 WebView 本地执行链。
  *
  * 断言:
- *   ① 设置页那一行 = 「完全访问权限」(今天改的名) 且带状态副标题
+ *   ① 手机设置页不再把无障碍权限作为普通 Agent 的启动配置
  *   ② 任务执行后 .agent-trace 真出现, 含每一步 (含最后 DONE 行), 行数 >= worklog 条数
  *   ③ 回复气泡 = 桩返回的 DONE 文本
  *   ④ 负例: 原生执行抛错时**不产出假轨迹**, 回复如实报错

@@ -471,9 +471,6 @@ export function formatMobileJoinResult(r: MobileJoinResult): string {
 
 /** 手机端本地 agent 执行 (优先 Kotlin, 离线内置规则) */
 export async function runLocalAgent(goal: string): Promise<string> {
-  const win = typeof window !== 'undefined' ? (window as any) : null;
-  const cap = win?.Capacitor;
-
   // 2026-09-15: 「读入网说明 → 入网」在手机端本地自足执行 (先于 Kotlin 桥: 原生工具集里没有入网能力,
   //   交给它只会得到空转回复)。这样浏览器 / WebView / 真机三种环境行为一致。
   const joinDocUrl = detectJoinDocUrl(goal);
@@ -486,17 +483,8 @@ export async function runLocalAgent(goal: string): Promise<string> {
     return formatMobileJoinResult(r);
   }
 
-  const bridge = cap && cap.Plugins && cap.Plugins.RokidBridge;
-  if (bridge && cap.isNativePlatform?.()) {
-    try {
-      await applyLlmConfigToBridge();
-      const r = await bridge.runAgent({ goal });
-      _lastWorklog = (r && Array.isArray(r.worklog)) ? r.worklog.map((x: any) => String(x)) : [];
-      return r?.result || '（无返回）';
-    } catch (e: any) {
-      throw new Error('AgentRuntime: ' + String(e?.message || e).slice(0, 60));
-    }
-  }
+  // 普通手机 Agent 永远走 WebView 本地执行链。
+  // Android 无障碍仅适用于未来的跨 App 控制，不得阻塞手机端基础执行；iOS 与 Android 因此行为一致。
   // 内置极简回复 (纯离线可用)
     const t = (goal || '').trim();
     // 2026-10-07: 手机自治 — 先用 LLM 循环 (经内置公共网关), 失败再降级纯规则
@@ -826,30 +814,32 @@ export async function runPhoneAgent(goal: string): Promise<PhoneControlResult> {
   const id = await ensureIdentity();
   try {
     if (native) {
-      await applyLlmConfigToBridge();
-      const r = await bridge.runAgent({ goal });
-      const result = r?.result || '（无返回）';
-      const isDone = /^DONE:/.test(result) || /^CANCELLED/.test(result) || !/^(MAX_STEPS|STOPPED|\[Agent 异常)/.test(result);
-      return {
-        ok: !/^\[Agent 异常|^STOPPED|^MAX_STEPS/.test(result),
-        goal,
-        result,
-        did: id.did,
-        mode: 'native',
-        agentId: r?.agentId,
-        stepCount: r?.stepCount,
-      };
+      const st = await bridge.agentStatus?.();
+      if (st?.accessibilityReady !== false) {
+        await applyLlmConfigToBridge();
+        const r = await bridge.runAgent({ goal });
+        const result = r?.result || '（无返回）';
+        return {
+          ok: !/^\[Agent 异常|^STOPPED|^MAX_STEPS/.test(result),
+          goal,
+          result,
+          did: id.did,
+          mode: 'native',
+          agentId: r?.agentId,
+          stepCount: r?.stepCount,
+        };
+      }
     }
     // 离线 fallback: 内置规则 (不依赖 LLM/原生执行能力, 手机仍自治可用)
     const reply = await runLocalAgent(goal);
     return {
       ok: true, goal, result: reply, did: id.did, mode: 'fallback',
-      hint: '当前是「手机本地规则」模式：这台手机上还没接原生执行能力，所以只能用内置规则回复。连上电脑端后，任务可以交给电脑端 Agent 真正执行。',
+      hint: '当前使用手机本地 Agent；Android/iOS 均可直接执行手机端任务。',
     };
   } catch (e: any) {
     return {
       ok: false, goal, error: String(e?.message || e).slice(0, 100), did: id.did, mode: native ? 'native' : 'fallback',
-      hint: '任务没跑起来。常见原因：① 电脑端没在运行或不同网段 (设置 → 电脑端同步 里配置/测试) ② 没配 LLM API (设置 → API 配置) ③ 这台手机没接原生执行能力。',
+      hint: '任务没跑起来。请先检查「我 → 设置 → API 配置」中的 baseUrl、apiKey 和 model。',
     };
   }
 }
@@ -870,12 +860,14 @@ export async function phoneStatus(): Promise<{ ok: boolean; did: string; mode: '
       if (st?.baseUrl || st?.model) llm = { baseUrl: st.baseUrl, model: st.model };
     } catch { /* 忽略 */ }
   }
+  const capabilities = ['chat', 'local-agent'];
+  if (!native || accReady) capabilities.push('phone-control');
   return {
     ok: true,
     did: id.did,
     mode: native ? 'native' : 'fallback',
     llm,
-    capabilities: ['chat', 'local-agent', 'phone-control'],
+    capabilities,
   };
 }
 

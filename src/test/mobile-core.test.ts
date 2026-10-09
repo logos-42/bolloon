@@ -91,6 +91,30 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
     expect(reply.length).toBeGreaterThan(0);
   });
 
+  it('Android 未开启无障碍时仍可直接运行手机 Agent, 不调用原生跨 App 执行', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    const calls: string[] = [];
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      Capacitor: {
+        isNativePlatform: () => true,
+        Plugins: {
+          RokidBridge: {
+            agentStatus: async () => ({ accessibilityReady: false }),
+            runAgent: async () => { calls.push('runAgent'); return { result: 'unexpected' }; },
+          },
+        },
+      },
+    };
+    try {
+      const reply = await agent.runLocalAgent('你好');
+      expect(reply).toContain('你好');
+      expect(calls).toEqual([]);
+    } finally {
+      (globalThis as any).window = previousWindow;
+    }
+  });
+
   it('Agent 功能层: 入站 agent.chat.send → 本地执行 → 发 reply (经注入传输)', async () => {
     const agent = await import('../web/mobile-agent.ts');
     await agent.ensureIdentity();

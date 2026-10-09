@@ -14,7 +14,7 @@ async function main() {
 
   // 重要: 不能 rm -rf 整个 dist/web/, 否则会删掉 build:main 编译出来的
   // dist/web/server.js. 只清理 web 静态资源, 保留 server.js.
-  for (const f of ['index.html', 'api-config.html', 'explorer.html', 'style.css', 'client.js', 'chain-explorer.js', 'mobile.html', 'mobile.css', 'mobile.js', 'mobile-core.js', 'components']) {
+  for (const f of ['index.html', 'api-config.html', 'explorer.html', 'style.css', 'client.js', 'chain-explorer.js', 'mobile.html', 'mobile.css', 'mobile.js', 'mobile-core.js', 'mobile-persona.js', 'components']) {
     await fs.rm(path.join(DIST_WEB, f), { recursive: true, force: true });
   }
   await fs.mkdir(DIST_WEB, { recursive: true });
@@ -113,6 +113,21 @@ async function main() {
     platform: 'browser',
     minify: false,
     bundle: true,
+  });
+
+  // 2026-10-09: mobile.js 动态 import('./mobile-persona.js')。
+  //   这是手机端可直接运行 Agent 的配置依赖，必须随 dist/web 一起生成，
+  //   否则 WebView 会静默 404，性格页和 Web Agent 都会失效。
+  console.log('[build-web] 编译 mobile-persona.ts...');
+  await esbuild.build({
+    entryPoints: [path.join(ROOT, 'src/web/mobile-persona.ts')],
+    outfile: path.join(DIST_WEB, 'mobile-persona.js'),
+    format: 'esm',
+    target: 'es2022',
+    platform: 'browser',
+    minify: false,
+    bundle: true,
+    charset: 'utf8',
   });
 
   // 2026-08-12: 编译 A2UI 前端渲染器 (a2ui-client.tsx → a2ui-client.js)

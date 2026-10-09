@@ -33,7 +33,7 @@ Agent 在手机, LLM 远程 (OpenAI 兼容 API)。无 root, 用 AccessibilitySer
 - `RemoteLlm.kt` — 远程 LLM 客户端 (OpenAI 兼容)
 - `AgentRuntimeHolder.kt` + Capacitor bridge (runAgent/agentStatus/agentConfigure) — webview UI 集成
 
-**验证**: APK 打包成功; 需真机开启"Bolloon 无障碍服务"后测试闭环。
+**验证**: APK 打包成功; 无障碍只用于跨 App UI 控制，不是手机端基础 Agent 的启动条件。
 
 ## Phase 2: Shizuku 系统级工具 (✅ 已落地)
 
@@ -126,7 +126,7 @@ mobile-agent.ts runLocalAgent(goal)
 | 安全研究 (arXiv:2608.08939) | Accessibility 树可被恶意 App 提示注入劫持 | 已内建防护: 用户 Goal → Policy → 工具白名单 → Verification (Phase 4) |
 
 **关键 caveat (2026-08-15 确认):**
-1. **无障碍服务需用户手动开启** (`isAccessibilityReady` 是 runAgent 前置, 否则返回 "[错误] 无障碍服务未连接")
+1. **跨 App 控制才需要无障碍** (`isAccessibilityReady` 只约束 AndroidAgentTools 的屏幕读取/点按/滑动；手机端普通 Agent 走 WebView 本地执行，不被该开关阻塞)
 2. **LLM apiKey 不在代码里** — 运行时通过 bridge `agentConfigure` 注入 (JS 可调用); 桌面 `~/.bolloon/llm-config.json` 是桌面侧
 3. **LocalLlm (GGUF) 是骨架** — on-device 推理未接 llama.cpp JNI (Phase 3 后接)
 4. **需 arm64 真机** — x86_64 模拟器 CXR native 库加载失败 (但 Agent 部分不依赖 CXR, 只看无障碍服务)

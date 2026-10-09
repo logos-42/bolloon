@@ -3,7 +3,7 @@
  *
  * 注入到**构建产物** App.app/public/index.html (只动产物, 不污染仓库源码)。
  * 做什么: 过首启同意门 → 切网络页 → 点「一键入网」(手机端本地执行, 会产生 worklog)
- *        → 等 .agent-trace 出现 → 把轨迹行 + 设置页「完全访问权限」那一行渲染成全屏 overlay
+ *        → 等 .agent-trace 出现 → 把轨迹行渲染成全屏 overlay
  *        → 供 `xcrun simctl io booted screenshot` 截图后人工/视觉核对。
  */
 (function () {

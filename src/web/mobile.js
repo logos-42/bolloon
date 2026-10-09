@@ -2045,7 +2045,6 @@
         <div class="conv-item" id="settings-data"><span class="list-icon">${ICONS.chip}</span><span style="flex:1;min-width:0"><span style="display:block">本机数据</span><span class="conv-preview" style="display:block">读取中…</span></span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-desktop"><span class="list-icon">${ICONS.globe}</span><span>电脑端同步</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-chain"><span class="list-icon">${ICONS.chip}</span><span>链上配置 (RPC/网络)</span><span class="list-arrow">›</span></div>
-        <div class="conv-item" id="settings-accessibility"><span class="list-icon">${ICONS.globe}</span><span>完全访问权限<span class="conv-preview" style="display:block" id="access-preview">默认开启</span></span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-ipfs"><span class="list-icon">${ICONS.chip}</span><span>IPFS 存储</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-helia"><span class="list-icon">${ICONS.globe}</span><span>本机 IPFS 节点</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-selfcard"><span class="list-icon">${ICONS.chip}</span><span id="selfcard-text">显示本机卡片: 开</span></div>
@@ -2079,48 +2078,6 @@
       const next = currentTheme === 'auto' ? 'light' : (currentTheme === 'light' ? 'dark' : 'auto');
       applyTheme(next, true);
     });
-    // 完全访问权限 (屏幕点按/滑动, 电脑端 phone.tap / phone.swipe 的前提) — 默认开启
-    const ACCESS_AUTO_KEY = 'bolloon_access_auto_guided';
-    const refreshAccessPreview = async () => {
-      const el = document.querySelector('#access-preview');
-      if (!el) return;
-      const cap = window.Capacitor;
-      const b = cap && cap.Plugins && cap.Plugins.RokidBridge;
-      if (!b) { el.textContent = '仅手机 App'; return; }
-      let st = {};
-      try { st = (await b.touchStatus()) || {}; } catch (e) { st = {}; }
-      el.textContent = st.ready ? '已开启' : '未开启 · 点这里开';
-    };
-    void refreshAccessPreview();
-    // 默认开启: 首次启动自动把用户带到系统开关页 (只引导一次, 不反复打扰)
-    void (async () => {
-      try {
-        const cap = window.Capacitor;
-        const b = cap && cap.Plugins && cap.Plugins.RokidBridge;
-        if (!b) return;
-        let st = {};
-        try { st = (await b.touchStatus()) || {}; } catch (e) { return; }
-        if (st.ready) return;
-        if (localStorage.getItem(ACCESS_AUTO_KEY) === '1') return;
-        localStorage.setItem(ACCESS_AUTO_KEY, '1');
-        await b.openAccessibilitySettings();
-      } catch (e) {}
-    })();
-    $('#settings-accessibility').addEventListener('click', async () => {
-      const cap = window.Capacitor;
-      const bridge = cap && cap.Plugins && cap.Plugins.RokidBridge;
-      if (!bridge) { alert('完全访问权限只在手机 App 里有：电脑端 / 网页版没有这项。'); return; }
-      let st = {};
-      try { st = (await bridge.touchStatus()) || {}; } catch (e) { st = {}; }
-      if (st.ready) { alert('完全访问权限已开启：智能体可以在这台手机上点按、滑动屏幕（电脑端也能远程帮你点）。\n\n想关掉：系统设置 → 辅助功能 → 已开启的服务 → Bolloon Agent，关掉即可。'); return; }
-      try {
-        alert('马上打开系统设置，把「Bolloon Agent」的完全访问权限打开。\n（这一项在有些手机叫「辅助功能」，有些叫「无障碍」，指同一个开关；打开后一直有效，随时可以关掉。）');
-        await bridge.openAccessibilitySettings();
-        void refreshAccessPreview();
-      }
-      catch (e) { alert('没打开成功，请手动去：系统设置 → 辅助功能 → 已开启的服务 → Bolloon Agent，打开即可。'); }
-    });
-
     // 本机数据: 直接读 IndexedDB 快照 (智能体/会话/消息都在本机, 重开 App 不会丢)
     const dataEl = $('#settings-data');
     if (dataEl) {

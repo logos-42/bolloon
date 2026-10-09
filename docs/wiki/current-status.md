@@ -2,7 +2,7 @@
 title: Bolloon 当前状态
 source: session
 created: 2026-07-04
-last_confirmed: 2026-10-02
+last_confirmed: 2026-10-09
 schema_version: 2
 audience: self
 stage: current
@@ -16,6 +16,7 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 ## 已支持 (✅ 生产可用)
 
 | 功能 | 路径 | 验证 |
+| **★ 手机端直接执行修复 (2026-10-09): Android/iOS 不再把无障碍当启动前置** | `src/web/mobile-agent.ts` 普通 `runLocalAgent` 统一走 WebView 本地 Agent · `src/web/mobile.js` 移除设置页无障碍命令 · `scripts/build-web.ts` 编译并打包 `mobile-persona.js` | 手机打开后可直接执行聊天/身份/钱包/入网任务；Android 无障碍仅保留给未来跨 App 控制，不再阻塞普通 Agent，也不再首次跳转系统设置。验证: Android 未开启无障碍聚焦用例通过 · `tsc` 通过 · `build:web` 自洽门通过 · iOS Simulator + iphoneos 真机目标编译通过 · 原生资源 parity 通过 | [log.md](./log.md) · [android-agent-runtime.md](./android-agent-runtime.md) |
 | **★ 手机端 ↔ 电脑端互联打通 (2026-10-05): World 数据层转发桌面** | mobile-core.ts `world` 模块(机会流/意图/声明/反馈/搜索 → desktopUrl) · resolve/resolvePost 白名单加 World 路径 · mobile.js world-feed 走 api 层自动转发 · 复用 x402 同款 `bolloon_desktop_base_url` | **机制**: 手机设置页填电脑地址(http://<电脑IP>:54188), 手机 = 电脑端世界感知窗口; 不可达如实回 desktop-unreachable(不返回假数据)。飞书方案已按要求全删(ECS nginx 恢复+隧道停)。**测试**: World 转发用例 + 诚实降级 → 4 文件 30/30 · tsc 0 错 · parity 一致 | [log.md](./log.md) |
 | **★ AI 主动搜索 + 卡片查看修复 + npm 0.6.5 (2026-10-05)** | `src/agents/opportunity-web-search.ts`(新, DDG/Tavily 主动搜, world/search/ 落盘) · world-watcher tick 自动搜 · API POST/GET /api/world/search · 卡片点击展开详情(完整内容+原文 URL) · 世界流三层: inbox(✉外部投递) > search(🔎AI搜索) > world(本地) | **真跑**: 搜「可控核聚变 合作」→ 6 条真机会(全真 URL) · 世界流 8 条三层 · 浏览器点卡展开 ✓ · npm 0.6.5 发布 + verify-release 硬门 + tag + GitHub release · 6 文件 38/38 · tsc 0 错 | [log.md](./log.md) |
 | **★ 机会信箱 (2026-10-05): 别人主动投来的机会 — 验签入库, 真实可信来源** | `src/agents/opportunity-inbox.ts`(新, `bolloon-opportunity-inbox/1` 协议) · `POST /api/world/inbox`(X-Signature = Ed25519 签名) · `opportunity-match.ts` scan 三出口统一 mergeInboxOnTop(信箱恒置顶) · `GET /api/world/inbox[/protocol]` · client 卡片显示 ✉ 外部投递 + ✓ 验签通过 + [引用] | **真跑**: 本机身份签名投递 → 200 verified → 世界流置顶(score 0.9, DID 可验) · 伪造签名 400「签名无效」未入库 · 测试 4 条(真 Ed25519 密钥对 + 真 did:key) · 3 文件 23/23 · tsc 0 错。**诚实边界**: 群复制通道需第二节点真验(单机未验) | [log.md](./log.md) · [four-terminal-intent-design.md](./four-terminal-intent-design.md) |
