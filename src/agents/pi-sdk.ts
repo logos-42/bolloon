@@ -2032,7 +2032,7 @@ ${await this.renderActivePlansSection()}
         runId: this.actor!.state.activeRun || undefined,
         goalId: this.actor!.state.goalBinding || undefined,
       } as any);
-      console.log(`[PiAgent] reviewFinal (K4-B 恢复调用, 判定不参与流程): ${JSON.stringify(reviewDecision).slice(0, 160)}`);
+      console.log(`[PiAgent] reviewFinal (K4-B 恢复调用, 判定不参与流程): kind=${reviewDecision?.kind} reason=${String(reviewDecision?.reason ?? '').slice(0, 60)}`);
     } catch { /* 审查异常不改变本次结论 (门面内部对"审查失效"自有留痕策略) */ }
 
     if (result.response) {

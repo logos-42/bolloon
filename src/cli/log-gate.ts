@@ -126,14 +126,20 @@ const HUMAN_SIGNAL = new RegExp([
  */
 const BENIGN_COUNT = /0\s*(?:个|条)(?:非致命)?(?:错误|转人工|失败|异常)|no errors?|0 errors?/gi;
 
+/** 剥 ANSI 色码 (行首标签判据的前提 —— 真实输出带 `\u001b[90m` 等前缀, 不剥则 `[tag]` 全失配) */
+function stripAnsi(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
 /** 这一行是不是「加载日志」(默认模式下从控制台丢掉, 写进日志文件) */
 export function isStartupLogLine(line: string): boolean {
   if (!line) return false;
-  return MODULE_TAG_ASCII.test(line)
-    || MODULE_TAG_CJK.test(line)
-    || ISO_TIMESTAMP_LINE.test(line)
-    || INSPECT_DUMP_OPEN.test(line)
-    || UNTAGGED_STARTUP_NARRATION.some((re) => re.test(line));
+  const l = stripAnsi(line);
+  return MODULE_TAG_ASCII.test(l)
+    || MODULE_TAG_CJK.test(l)
+    || ISO_TIMESTAMP_LINE.test(l)
+    || INSPECT_DUMP_OPEN.test(l)
+    || UNTAGGED_STARTUP_NARRATION.some((re) => re.test(l));
   // inspect dump 的续行 (纯数字/逗号) 由 filterText 的 dump 状态机处理, 这里不判
 }
 
@@ -202,7 +208,13 @@ const INTERNAL_CHATTER_LINE = [
   /^\s*⚙️?\s*动态配置[:：]/,
   /^\s*⏹️?\s*pivot loop/,
   /^\s*📋\s*参数/,
+  // 2026-10-12 (leo: 「还有很多杂质在 cli 里面」): 启动进度步 `✓ [3/5] 启动 P2P 网络`
+  //   与身份解析续行 ` name=小龙` —— 二者不带模块标签, 经 `s.step()` / 长 console 行拆分直写,
+  //   旧判据 (只认模块 tag / 📚 复盘等具体形状) 漏网。行首锚定, 不宽泛。
+  /^\s*[✅✓⚠✗]?\s*\[\d+\s*[/／]\s*\d+\]\s*(?:启动|初始化|加载|连接|同步|验证|发布|注册|开启|构建)/,
+  /^\s*name=\S+$/,
 ];
+
 /**
  * 循环过渡噪音: **行首锚定**, 不算任意子串 —— 老黑名单用的是 `content.includes('继续循环')`,
  *   那会把像"好的, 继续总结一下"这种正经状态行一起吞掉 (误吞比漏吞更糟, 见本文件头)。
@@ -388,6 +400,12 @@ export function installStartupLogGate(opts: StartupLogGateOptions = {}): Startup
       if (trimmed === ']') dumpState[stream] = false;
       return 'loading';
     }
+    // 2026-10-12 (leo: 「还有很多杂质在 cli 里面」): **内部诊断行优先判** ——
+    //   `[pi-ai timing]` / `[identity]` / `📚 复盘` / `[session-note]` 经 `process.stdout.write`
+    //   直写时(不走 console 包装), 旧代码只查 `isStartupLogLine`+`carriesHumanSignal`,
+    //   前两者被 ANSI 色码挡掉、后者被 ⚠/✗ 当"人味信号"放行 ⇒ 全部漏上屏。
+    //   现在与 makeConsoleFn 同一口径: 内部行即使带 ⚠/✗ 也只落盘, 不进对话流。
+    if (isInternalChatter(line)) return 'loading';
     if (carriesHumanSignal(line)) return 'signal';
     if (isStartupLogLine(line)) {
       if (INSPECT_DUMP_OPEN.test(line)) dumpState[stream] = true;
