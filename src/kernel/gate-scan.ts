@@ -125,7 +125,7 @@ export function scanProhibition(files: SourceFile[], p: Prohibition): Finding[] 
   const out: Finding[] = [];
   const targets = p.targets ?? [];
   const calls = p.writeCalls ?? [];
-  const callRe = calls.length ? new RegExp(`\\b(${calls.join('|')})\\s*\\(`) : null;
+  const callRe = calls.length ? new RegExp(`(?<![\\w.])(?<!async\\s)(${calls.join('|')})\\s*\\(`) : null;
 
   for (const f of files) {
     if (p.mode === 'import-edge') {

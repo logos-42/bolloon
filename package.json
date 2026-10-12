@@ -59,7 +59,8 @@
     "ios:release": "bash scripts/ios-release.sh"
   },
   "workspaces": [
-    "src/constraint-runtime"
+    "src/constraint-runtime",
+    "src/kernel"
   ],
   "dependencies": {
     "@a2ui/react": "^0.11.0",
