@@ -35,7 +35,7 @@ describe('loop-review (final 前目标对齐)', () => {
     if (r.kind === 'continue-review') {
       expect(r.reason).toContain('完成度自查');
       expect(r.hint).toContain('用户需求: 完成迁移模块');
-      expect(r.hint).toContain('<final gen>');
+      expect(r.hint).toContain('完成契约');
     }
   });
 

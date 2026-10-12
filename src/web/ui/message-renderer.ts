@@ -210,16 +210,13 @@ export function addMessage(
   const div = document.createElement('div');
   div.className = `message message-${type}`;
 
-  // 2026-07-06: 非流式模式 — AI 完整响应含 <think>...</think> + 实际回复 + <final gen>
-  //   统一清洗: 去 think 块 (LLM 思考过程不渲染), 取 <final gen> 之前内容作为实际回复
-  let cleanContent = content;
-  if (type === 'ai') {
-    cleanContent = cleanContent.replace(/<think>[\s\S]*?<\/think>/g, '');
-    const finalGenIdx = cleanContent.indexOf('<final gen>');
-    if (finalGenIdx >= 0) {
-      cleanContent = cleanContent.substring(0, finalGenIdx).trim();
+  // 2026-07-06 / 2026-10-12: 非流式模式 — AI 完整响应含  thinking... response + 实际回复。
+    //   统一清洗: 去 think 块 (LLM 思考过程不渲染); <final gen> 标记已全项目移除,
+    //   剩余内容整体作为实际回复 (chat-segmenter 负责切分段)。
+    let cleanContent = content;
+    if (type === 'ai') {
+      cleanContent = cleanContent.replace(/ thinking[\s\S]*?<\/think>/g, '');
     }
-  }
 
   // 2026-07-01 (v0.2.6 前后端分离): 改用 chat-segmenter 纯函数切 LLM 输出.
   //   之前 8 行正则漏 minimax <invoke> / Qwen function_calls / <tool_call> / {tool:..}.

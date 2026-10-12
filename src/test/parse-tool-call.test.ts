@@ -144,9 +144,8 @@ describe('parseToolCall — minimax LLM output formats', () => {
   });
 });
 
-describe('isFinalResponse — final gen 终止判断', () => {
-  it('普通思考块里说 final 不算终止', () => {
-    // 旧 bug: 思考块里 "先看一下再 <final gen>" 直接 return true → 工具调用跳了
+describe('isFinalResponse — 完结判断 (2026-10-12: 无 <final gen> 标记, 无工具调用即 final)', () => {
+  it('思考块里提到 final 但有工具调用 → 不算 final (优先执行工具)', () => {
     const content = `让我想想...
 先 <final gen> 是终止信号, 但其实只是举例
 <invoke name="shell_exec">
@@ -155,7 +154,7 @@ describe('isFinalResponse — final gen 终止判断', () => {
     expect(isFinalResponse(content, { tools: DEFAULT_TOOLS })).toBe(false);
   });
 
-  it('含可解析 tool_call + <final gen> → 不算 final (优先执行工具)', () => {
+  it('含可解析 tool_call → 不算 final (优先执行工具)', () => {
     const content = `<final gen>
 <invoke name="shell_exec">
 <command>ls</command>
@@ -163,29 +162,29 @@ describe('isFinalResponse — final gen 终止判断', () => {
     expect(isFinalResponse(content, { tools: DEFAULT_TOOLS })).toBe(false);
   });
 
-  it('纯 <final gen> 无 tool call → true', () => {
-    expect(isFinalResponse('回答完成 <final gen>', { tools: DEFAULT_TOOLS })).toBe(true);
+  it('纯文本无工具调用 → true (就是最终答复)', () => {
+    expect(isFinalResponse('回答完成', { tools: DEFAULT_TOOLS })).toBe(true);
   });
 
-  it('无 <final gen> → false', () => {
-    expect(isFinalResponse('随便说点啥', { tools: DEFAULT_TOOLS })).toBe(false);
+  it('普通文本 → true (无工具调用即完结)', () => {
+    expect(isFinalResponse('随便说点啥', { tools: DEFAULT_TOOLS })).toBe(true);
   });
 });
 
-describe('extractFinalAnswer — final gen 后内容提取', () => {
-  it('提取 <final gen> 之后内容', () => {
-    const ans = extractFinalAnswer('思考之后 <final gen>\n这是最终答案');
-    expect(ans).toBe('这是最终答案');
+describe('extractFinalAnswer — (2026-10-12: 不再切 <final gen>, 只清洗 tool call 噪声)', () => {
+  it('完整文本原样保留', () => {
+    const ans = extractFinalAnswer('思考之后\n这是最终答案');
+    expect(ans).toBe('思考之后\n这是最终答案');
   });
 
-  it('<final gen> 在末尾空 → fallback 用之前内容', () => {
-    const ans = extractFinalAnswer('思考过程 <final gen>');
+  it('无噪声 → 原样返回', () => {
+    const ans = extractFinalAnswer('思考过程');
     expect(ans).toBe('思考过程');
   });
 
-  it('无 <final gen> → 整段清洗 tool call 噪声', () => {
-    const ans = extractFinalAnswer('answer: 我直接说 不带 final marker');
-    expect(ans).toBe('answer: 我直接说 不带 final marker');
+  it('带 tool call 噪声 → 整段清洗', () => {
+    const ans = extractFinalAnswer('answer: 我直接说 不带 marker');
+    expect(ans).toBe('answer: 我直接说 不带 marker');
   });
 
   it('移除调用工具: 等中文 tool call 噪声', () => {

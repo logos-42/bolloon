@@ -69,26 +69,12 @@ export function segmentChatReply(reply: string, ctx: SegmenterContext): ChatSegm
     remaining = filterFillerText(remaining);
   }
 
-  // === 6. final 之前的 text 段 (中间对话) push — 必须在 final push 之前 ===
-  //   注意: 这时 remaining 还含 <final gen> 标记 + 标记后内容. 切 final 前先把 <final gen> 之后内容清掉
-  //   实际: 切 final 后再切 text 更清楚
-  const finalIdx = remaining.indexOf('<final gen>');
-  let beforeFinalText = remaining;
-  if (finalIdx >= 0) {
-    beforeFinalText = remaining.substring(0, finalIdx);
-  }
-
-  const textContent = beforeFinalText.trim();
+  // === 6. 剩余内容全部作为 text 段 (2026-10-12: 移除 <final gen> 后不再切 final segment) ===
+  //   旧实现找 `<final gen>` 标记把内容切成 before/after 两段; 标记已全项目移除,
+  //   剩余内容就是给用户的完整答复, 全部进 text。
+  const textContent = remaining.trim();
   if (textContent) {
     segments.push({ type: 'text', content: textContent });
-  }
-
-  // === 7. 切 <final gen>...</final gen> (永远最后 push, 渲染时在最后) ===
-  if (finalIdx >= 0) {
-    const afterFinal = remaining.substring(finalIdx + '<final gen>'.length).trim();
-    if (afterFinal) {
-      segments.push({ type: 'final', content: afterFinal });
-    }
   }
 
   return segments;

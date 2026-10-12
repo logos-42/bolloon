@@ -23,10 +23,10 @@ import {
 const KNOWN = new Set(['shell_exec', 'read_file', 'write_file', 'git_log']);
 
 describe('decideNext — 主决策表', () => {
-  it('空 reply → continue (no-tool-no-final)', () => {
+  it('空 reply → continue (no-tool)', () => {
     expect(decideNext({ reply: '', knownToolNames: KNOWN })).toEqual({
       kind: 'continue',
-      reason: 'no-tool-no-final',
+      reason: 'no-tool',
     });
   });
 
@@ -104,23 +104,20 @@ describe('decideNext — 主决策表', () => {
     expect(r.kind).toBe('continue');
   });
 
-  it('含 <final gen> 且无 tool_call → final', () => {
+  it('无工具调用 → continue (由外层质量/无进展门收尾, 2026-10-12: 无 final gen 标记)', () => {
     const r = decideNext({
-      reply: '任务完成 <final gen> 给你答案',
+      reply: '任务完成，给你答案',
       knownToolNames: KNOWN,
     });
-    expect(r.kind).toBe('final');
-    if (r.kind === 'final') {
-      expect(r.reason).toBe('final-gen-marker');
-    }
+    expect(r.kind).toBe('continue');
   });
 
-  it('思考块里说 "再 <final gen>" 也先看是不是工具 → 这里无工具, 走 final', () => {
+  it('思考块里说 "再 <final gen>" 也无工具 → continue (标记不再触发 final)', () => {
     const r = decideNext({
       reply: '我先想一想, 然后 <final gen>',
       knownToolNames: KNOWN,
     });
-    expect(r.kind).toBe('final');
+    expect(r.kind).toBe('continue');
   });
 
   it('思考块 + invoke 真实工具混合 → execute-tool (think 不阻断)', () => {
@@ -180,22 +177,21 @@ describe('isAiFailureSentinel — 哨兵检测', () => {
   });
 });
 
-describe('extractFinalText — final 答案抽取', () => {
-  it('有 <final gen> 后内容 → 抽出来', () => {
-    expect(extractFinalText('思考 思考 <final gen>\n最终答案')).toBe('最终答案');
+describe('extractFinalText — final 答案抽取 (2026-10-12: 不再按 <final gen> 切)', () => {
+  it('完整文本原样返回', () => {
+    expect(extractFinalText('思考 思考\n最终答案')).toBe('思考 思考\n最终答案');
   });
 
-  it('<final gen> 在末尾空 → fallback 用之前内容', () => {
-    expect(extractFinalText('我是答案 <final gen>')).toBe('我是答案');
+  it('完整文本原样返回 (2026-10-12: 不再按 <final gen> 切)', () => {
+    expect(extractFinalText('我是答案 <final gen>')).toBe('我是答案 <final gen>');
   });
 
   it('无 marker → 整段返回', () => {
     expect(extractFinalText('直接说: 这是答案')).toBe('直接说: 这是答案');
   });
 
-  it('可自定义 marker', () => {
-    // 当前实现: marker 后内容 trim()
-    expect(extractFinalText('思考 [END] 最终', '[END]')).toBe('最终');
+  it('可自定义 marker 参数已移除 → 整段返回', () => {
+    expect(extractFinalText('思考 [END] 最终')).toBe('思考 [END] 最终');
   });
 });
 
@@ -245,16 +241,16 @@ describe('decideNext — 全场景组合', () => {
       reason: 'parse-tool-call',
     },
     {
-      desc: '正常 text 无 tool_call 无 final',
+      desc: '正常 text 无 tool_call (2026-10-12: 无 final 标记 → continue, 外层质量门收尾)',
       ctx: { reply: '继续想想...' , knownToolNames: KNOWN },
       expected: 'continue',
-      reason: 'no-tool-no-final',
+      reason: 'no-tool',
     },
     {
-      desc: '正常 final 终止',
+      desc: '提及 <final gen> 也无工具 → continue (标记不再触发 final)',
       ctx: { reply: '答案就这 <final gen>', knownToolNames: KNOWN },
-      expected: 'final',
-      reason: 'final-gen-marker',
+      expected: 'continue',
+      reason: 'no-tool',
     },
     {
       desc: '工具有效且完整',

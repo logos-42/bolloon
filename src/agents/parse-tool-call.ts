@@ -507,19 +507,18 @@ export function parseToolCall(content: string, ctx: ParseContext): ToolCall | nu
 }
 
 /**
- * isFinalResponse — 临时判断 LLM 是否已完结 (含 <final gen>)
- * 2026-06-19/06-30 修: 先剥离 think, 避免思考块中提及 <final gen> 误杀
- *                       含可解析 tool_call 则优先执行工具, 不算 final
+ * isFinalResponse — 判断 LLM 是否已完结。
+ * 2026-10-12 (leo 拍板: 全项目去掉 <final gen> 截止符): 旧实现只有在回复里找到
+ *   `<final gen>` 标记才返回 true —— 模型中间轮次 echo 该文本就误判提前截止。
+ *   现在: 剥掉 think 块后**没有可执行工具调用** = 这一轮就是最终答复。
+ *   (工具调用优先: 含可解析 tool_call 不算 final, 先执行工具。)
  */
 export function isFinalResponse(content: string, ctx?: ParseContext): boolean {
-  const stripped = content.replace(/<think[\s\S]*?<\/think/g, '');
-  if (!stripped.includes('<final gen>')) return false;
-  // 用默认 ctx (无需 tool 名解析, 只看能否 parse 出来) - 但 isFinalResponse 不需要 tools 列表上下文.
-  // 如果没有传 ctx, 使用 empty set (只解析不 resolve).
+  const stripped = content.replace(/<think[\s\S]*?<\/think>/g, '');
+  // 与 react-loop 的判定链一致: 有可解析的工具调用 → 优先执行工具, 不算 final
   if (ctx && parseToolCall(stripped, ctx)) return false;
   if (!ctx) {
     // 试探性 parse (不 resolve name) — 如果至少能提取 name+args 模式, 就不是 final.
-    // 这里粗略检测: stripped 中含 json "name": 或 <invoke name= 或 <function_calls> 任一
     if (/\{[\s\S]*?"name"\s*:/.test(stripped)) return false;
     if (/<invoke\s+name=/.test(stripped)) return false;
     if (/<function_calls>/.test(stripped)) return false;
@@ -527,22 +526,12 @@ export function isFinalResponse(content: string, ctx?: ParseContext): boolean {
   return true;
 }
 
-/** extractFinalAnswer: 去除 <final gen> 标记 + tool call 噪声. */
+/** extractFinalAnswer: 去除 tool call 噪声. (2026-10-12: <final gen> 标记移除, 不再剥除) */
 export function extractFinalAnswer(content: string): string {
-  const marker = '<final gen>';
-  const markerIndex = content.indexOf(marker);
-  if (markerIndex !== -1) {
-    const after = content.substring(markerIndex + marker.length).trim();
-    if (after) {
-      content = after;
-    } else {
-      content = content.substring(0, markerIndex).trim();
-    }
-  }
   let cleaned = content
     .replace(/调用工具[：:]\s*\w+\s*\([^)]*\)/g, '')
     .replace(/使用工具[：:]\s*\w+\s*\([^)]*\)/g, '')
-    .replace(/tool[_\w]*[：:]\s*\w+\s*\([^)]*\)/gi, '')
+    .replace(/tool[_\\w]*[：:]\s*\w+\s*\([^)]*\)/gi, '')
     .trim();
   return cleaned;
 }

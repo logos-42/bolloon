@@ -8,8 +8,7 @@
  * 决策表 (apply 到 LLM 回复 + 当前 state):
  *   1. reply 是 AI failure sentinel        → continue (push error 进 history, 让 LLM 反思)
  *   2. reply 可 parse 出 tool call         → execute-tool (调 tool, push result 进 history)
- *   3. reply 含 <final gen> 且无 tool_call → final (LLM 显式终止)
- *   4. reply 无 <final gen>, 无 tool_call  → continue (LLM 可能再想想, 让下一轮重新生成)
+ *   3. reply 有 tool_call → execute-tool (工具优先)
  *
  * 这个模块不调 LLM, 只接受 reply/state 返回下一步决策. LLM 调用 + 真正状态变更
  *   仍由 PiAgentSession 协调. 这样 claude code 可以独立 unit-test 决策边界.
@@ -66,13 +65,10 @@ export function decideNext(ctx: StepContext): NextAction {
     };
   }
 
-  // final gen 终止
-  if (isFinalResponse(ctx.reply)) {
-    return { kind: 'final', answer: ctx.reply, reason: 'final-gen-marker' };
-  }
-
-  // 默认 — 普通 text, 让 LLM 继续想
-  return { kind: 'continue', reason: 'no-tool-no-final' };
+  // 2026-10-12 (leo 拍板: 全项目去掉 <final gen> 截止符): 旧实现这里用
+  //   isFinalResponse (找 `<final gen>` 标记) 判结束 — 已移除。
+  //   无工具调用 = 正常 text, 让 LLM 继续想 (由外层质量/无进展门收尾)。
+  return { kind: 'continue', reason: 'no-tool' };
 }
 
 /**
@@ -88,14 +84,9 @@ export function isAiFailureSentinel(reply: string): boolean {
          trimmed.startsWith('[错误:');
 }
 
-/** extractFinalText — 抽 LLM 输出里能呈现给用户的最终文字 (已是 Message 状态). */
-export function extractFinalText(reply: string, marker: string = '<final gen>'): string {
-  const idx = reply.indexOf(marker);
-  if (idx !== -1) {
-    const after = reply.substring(idx + marker.length).trim();
-    return after || reply.substring(0, idx).trim();
-  }
-  return reply;
+/** extractFinalText — 抽 LLM 输出里能呈现给用户的最终文字. (2026-10-12: 不再按 <final gen> 切) */
+export function extractFinalText(reply: string): string {
+  return reply.trim();
 }
 
 /**

@@ -4848,7 +4848,7 @@ fetchState();
       //   (与邮箱串行一致), web 不再自己持 abortController。取到 agent 后立刻开户 (见下面 getAgentForChannel 之后)。
       let abortSignal: AbortSignal | undefined;
     // 2026-07-04: pivot loop safety net — 防止 LLM hang (minimax M3
-    //   偶尔反复 think 不输出 <final gen>, pivot 连 5 次无进展时会 hang 在
+    //   偶尔反复 think 不输出结果, pivot 连 5 次无进展时会 hang 在
     //   quality 评估). setTimeout 让 LLM 客户端收 signal 主动 break.
     // 2026-07-06: 30s 太短 — minimax M3 单次 LLM 约 10s, pivot 默认 moderate profile 30 iter
     //   留 ~300s. 之前 30s 自动 abort 时, 一次"你好"调用就被截断, 用户看到 ❌ 循环异常 + 空内容.

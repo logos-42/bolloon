@@ -912,7 +912,7 @@ export class PiAgentSession implements AgentSession {
    * 2026-07-04: 移除 18 个 bollharness builtin skill (findBolloonBuiltinSkillsPath).
    *   历史遗留: 写 pi-sdk 时为方便演示, 把 bolloon 项目里的 19 个 skill 强制注入到 system prompt.
    *   问题: system prompt 涨到 22K chars, LLM (minimax M3) 在 pivot loop 里反复 think 不输出
-   *          `<final gen>`, session 落盘拿不到最终回答.
+   *          最终回答, session 落盘拿不到最终回答.
    *   现在: 只让用户放 .bolloon/skills/SKILL.md 才生效, 干净且 project-owned.
    *
    * 静默忽略不存在的目录.
@@ -1971,7 +1971,7 @@ ${await this.renderActivePlansSection()}
 重要 (一次命中要求):
 - 每次只调用一个工具
 - 仔细分析工具返回结果
-- 当任务完成时，必须在回答末尾添加 <final gen> 标记表示结束
+- 任务未完成就继续调用工具推进, 直到全部完成
 - 如果需要更多信息，继续调用工具
 
 【工具调用格式 (严格遵守, 否则系统无法解析)】
@@ -1979,8 +1979,7 @@ ${await this.renderActivePlansSection()}
 - 工具调用格式: {"name":"<tool_name>","input":{"arg1":"value1"}}
 - 用 markdown json code block 包裹: \`\`\`json\n{"name":"X","input":{...}}\n\`\`\`
 - 工具调用前可以简短思考 (1-2 句话), 但**不要写长篇 thinking** (会撞 max_tokens)
-- 工具调用后必须等结果, 不要在同一个回复里继续输出
-- <final gen> 只在**真完成所有任务**时输出, 不要在工具调用前/中输出${this.judgmentGateAddition}${this.contextHintAddition}`;
+- 工具调用后必须等结果, 不要在同一个回复里继续输出${this.judgmentGateAddition}${this.contextHintAddition}`;
 
     // 2026-06-15: 把 runCtx.eventSink 传给 loop, 让 step-timeline 在 pivot 循环里也能 emit step_start/done
     //   之前 loop.execute() 不接 streamCallback, 导致 step-timeline 只能看到老 runReActLoop 路径

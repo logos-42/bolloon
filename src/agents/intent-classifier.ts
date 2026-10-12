@@ -69,7 +69,7 @@ export function intentHint(intent: Intent): string {
 2. 用 \`edit_file\` 精确定位改 (old_text 全文匹配) 或 \`write_file\` 整体覆写
 3. 改完跑 \`npx tsc --noEmit\` 和 \`npx vitest run --reporter=dot --bail=1\` 验证
 4. 用 \`git_commit\` 提交到当前分支 (分支名 agent/<task-id>)
-不要调用 \`<final gen>\` 标记除非任务真正完成 (commit + 测试通过).
+不要提前收尾: 任务真正完成 (commit + 测试通过) 之前持续调用工具推进.
 
 ## 信息不足时主动查询
 **重要**: 不要假设! 如果任何步骤信息不足 (路径不明确/命令参数不知道/分支策略不清楚/保护规则不明白), 用工具主动查:

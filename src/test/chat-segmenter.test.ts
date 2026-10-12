@@ -48,20 +48,24 @@ describe('segmentChatReply — 基础切分', () => {
   });
 });
 
-describe('segmentChatReply — final gen marker', () => {
-  it('<final gen> 后内容切为 final segment', () => {
-    const reply = '我先想了想<think>thinking</think>\n最终答案 <final gen>\n这是 final';
-    const r = segmentChatReply(reply, { knownToolNames: KNOWN });
-    const finals = r.filter(s => s.type === 'final');
-    expect(finals).toHaveLength(1);
-    expect(finals[0].content).toBe('这是 final');
-  });
-
-  it('<final gen> 在末尾空 → 不产 final segment', () => {
-    const reply = '思考 <final gen>';
+describe('segmentChatReply — (2026-10-12: 移除标记后不再切 final segment, 全部内容进 text)', () => {
+  it('<final gen> 文本保留在 text 段 (标记不再切分)', () => {
+    const reply = '我先想了想 thinkingthinking response\n最终答案\n这是 final';
     const r = segmentChatReply(reply, { knownToolNames: KNOWN });
     const finals = r.filter(s => s.type === 'final');
     expect(finals).toHaveLength(0);
+    const text = r.filter(s => s.type === 'text').map(s => s.content).join('\n');
+    expect(text).toContain('最终答案');
+    expect(text).toContain('这是 final');
+  });
+
+  it('纯文本回复 → 全部进 text 段', () => {
+    const reply = '思考\n这是最终答案';
+    const r = segmentChatReply(reply, { knownToolNames: KNOWN });
+    const finals = r.filter(s => s.type === 'final');
+    expect(finals).toHaveLength(0);
+    const text = r.filter(s => s.type === 'text').map(s => s.content).join('\n');
+    expect(text).toContain('这是最终答案');
   });
 });
 
@@ -210,18 +214,19 @@ describe('segmentChatReply — 边界', () => {
     expect(r.filter(s => s.type === 'text')).toHaveLength(0);
   });
 
-  it('只有 <final gen>, 没前面内容 → 1 个 final segment', () => {
-    const reply = '<final gen>\n只有 final';
-    const r = segmentChatReply(reply, { knownToolNames: KNOWN });
-    expect(r).toEqual([{ type: 'final', content: '只有 final' }]);
-  });
+  it('只有纯文本, 没 think → 全部进 text 段 (2026-10-12: 无 final segment)', () => {
+      const reply = '只有 final';
+      const r = segmentChatReply(reply, { knownToolNames: KNOWN });
+      expect(r).toEqual([{ type: 'text', content: '只有 final' }]);
+    });
 
-  it('空 text + think + final 混合', () => {
-    const reply = '<think>thinking</think>\n<final gen>\nfinal 答';
-    const r = segmentChatReply(reply, { knownToolNames: KNOWN });
-    expect(r.find(s => s.type === 'think')?.content).toBe('thinking');
-    expect(r.find(s => s.type === 'final')?.content).toBe('final 答');
-  });
+    it('think 块 + 纯文本混合 (2026-10-12: 无 final segment)', () => {
+      const reply = '<think>thinking</think>\nfinal 答';
+      const r = segmentChatReply(reply, { knownToolNames: KNOWN });
+      expect(r.find(s => s.type === 'think')?.content).toBe('thinking');
+      const text = r.filter(s => s.type === 'text').map(s => s.content).join('\n');
+      expect(text).toContain('final 答');
+    });
 
   it('多行 + 嵌入 invoke → trim 后 text 干净', () => {
     const reply = '\n\n\n  <invoke name="shell_exec"><command>ls</command></invoke>  \n\n  ';
@@ -230,14 +235,12 @@ describe('segmentChatReply — 边界', () => {
     expect(allContent).not.toContain('<invoke');
   });
 
-  it('完整 minimax 输出 (think + 2 invoke + text + final) → 顺序: think → tool → text → final', () => {
-    // 关键: 启发式应该 catch "让我先看 git 状态" 进 think
-    // explicit <think> 块也进 think
-    // tool_call 切出 (不进 text)
-    // "好, 在 master 分支" 是中间 text
-    // "任务完成" 是 final 前的填充词, 应被 filterFillerText 过滤
-    // final 段含 "Bolloon 在 master 分支"
-    const reply = `让我先看 git 状态
+  it('完整 minimax 输出 (think + 2 invoke + text) → 顺序: think → tool → text (2026-10-12: 无 final segment)', () => {
+      // 关键: 启发式应该 catch "让我先看 git 状态" 进 think
+      // explicit  thinking 块也进 think
+      // tool_call 切出 (不进 text)
+      // "好, 在 master 分支" 是中间 text
+      const reply = `让我先看 git 状态
 <think>用户想知道当前分支, 我先跑 git status</think>
 <invoke name="shell_exec">
 <command>git status</command>
@@ -247,23 +250,19 @@ describe('segmentChatReply — 边界', () => {
 <invoke name="read_file">
 <parameter name="path">README.md</parameter>
 </invoke>
-任务完成 <final gen>
+任务完成
 Bolloon 在 master 分支`;
-    const r = segmentChatReply(reply, { knownToolNames: new Set(['shell_exec', 'read_file']) });
+      const r = segmentChatReply(reply, { knownToolNames: new Set(['shell_exec', 'read_file']) });
 
-    // 顺序: 启发式 think → explicit think → 2 个 tool_call (连续) → text → final
-    const types = r.map(s => s.type);
-    expect(types).toEqual(['think', 'think', 'tool_call', 'tool_call', 'text', 'final']);
+      // 顺序: 启发式 think → explicit think → 2 个 tool_call (连续) → text (全部剩余内容)
+      const types = r.map(s => s.type);
+      expect(types).toEqual(['think', 'think', 'tool_call', 'tool_call', 'text']);
 
-    // text 段: "好, 在 master 分支\n现在读 README 确认:\n任务完成" (filterFillerText 限制: 整行 = filler 才丢,
-    //   "任务完成 <final gen>" 整行不是 filler, "任务完成" 仍保留)
-    const textSeg = r.find(s => s.type === 'text');
-    expect(textSeg?.content).toContain('好, 在 master 分支');
-
-    // final 含真实结果
-    const finalSeg = r.find(s => s.type === 'final');
-    expect(finalSeg?.content).toBe('Bolloon 在 master 分支');
-  });
+      // text 段含最终回答
+      const textSeg = r.find(s => s.type === 'text');
+      expect(textSeg?.content).toContain('Bolloon 在 master 分支');
+      expect(textSeg?.content).toContain('好, 在 master 分支');
+    });
 
   it('开头"让我..."启发式 catch, 但文本其余部分保留', () => {
     const reply = '我先看看 git 状态\n然后跑下命令';
@@ -280,11 +279,12 @@ Bolloon 在 master 分支`;
   });
 
   it('填充词 "好了" 单句 text → 整段丢 (不上屏)', () => {
-    const reply = '好的任务已完成.\n<final gen>\n最终答';
+    const reply = '好的任务已完成.\n最终答';
     const r = segmentChatReply(reply, { knownToolNames: KNOWN });
     // "好的任务已完成" 不是 filler 词 (不是单行 "好" 或 "好了")
-    // 它进 text 段
+    // 它进 text 段 (2026-10-12: 无 final segment, 全部剩余内容进 text)
     const textSeg = r.find(s => s.type === 'text');
-    expect(textSeg?.content).toBe('好的任务已完成.');
+    expect(textSeg?.content).toContain('好的任务已完成.');
+    expect(textSeg?.content).toContain('最终答');
   });
 });

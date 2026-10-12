@@ -338,7 +338,7 @@ export class PiAgentHarness {
       this.emit({ event: 'review', kind: 'error', failureKind: 'goal_review', reason: `审查器失效: ${(err as Error)?.message}`, runId: state.runId, goalId: state.goalId });
       return {
         kind: 'continue-review',
-        hint: `[目标审查降级] 审查器执行失败 (${String((err as Error)?.message || err).slice(0, 120)}), 按"未确认完成"处理: 请再次核对用户需求是否真的全部满足, 并列出证据。确认完成后再加 <final gen>。`,
+        hint: `[目标审查降级] 审查器执行失败 (${String((err as Error)?.message || err).slice(0, 120)}), 按"未确认完成"处理: 请再次核对用户需求是否真的全部满足, 并列出证据。确认完成后再给出最终回答。`,
       } as ReviewDecision;
     }
   }

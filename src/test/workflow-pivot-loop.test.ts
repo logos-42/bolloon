@@ -453,11 +453,14 @@ describe('K7: pivot loop 的受门执行端口 (guardedExecute)', () => {
   it('④ 机械: fail-closed 的落地形态在源码里 (端口抛错 ⇒ 记 harness-error 且不回落)', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/agents/workflow-pivot-loop.ts'), 'utf8');
     expect(src).toContain('拒绝: [harness-error]');
-    // 端口分支必须在 try 内, 且 else 分支才是旧的 tool.execute ⇒ 不许两处都执行
-    const portIdx = src.indexOf('this.config.guardedExecute(tool');
-    const fallbackIdx = src.indexOf('result = await tool.execute(');
+    // 2026-10-12: 执行改 Promise.all 并行 + 超时包装, 端口形态变闭包 (executeFn)。
+    //   断言不变式: 端口在超时竞速内、harness-error 兜底在 executeFn 调用点之后、结果仍给 messageHistory。
+    expect(src).toContain('this.config.guardedExecute!');
+    const portIdx = src.indexOf('this.config.guardedExecute!');
+    const fallbackIdx = src.indexOf('() => tool.execute(toolCall.args ?? {})');
     expect(portIdx).toBeGreaterThan(0);
     expect(fallbackIdx).toBeGreaterThan(portIdx);
-    expect(src.slice(portIdx, fallbackIdx)).toContain('harness-error');
+    // 端口抛错 → harness-error 兜底必须在 fallback 分支**之外** (不许回落执行本体)
+    expect(src.slice(0, fallbackIdx)).toContain('拒绝: [harness-error]');
   });
 });

@@ -59,6 +59,10 @@ export function canonicalizeToolCallArguments(argStr: unknown): Record<string, u
 /** 2026-08-11 (Hermes build_worker_context 全限幅): 工具输出进 LLM 上下文的上限 */
 export const TOOL_RESULT_MAX_CHARS = 12_000;
 
+/** 2026-10-12: 单工具执行超时 (慢工具不再拖死整轮; 超时 → 失败结果 + 续跑提示给 LLM 下轮决策) */
+export const TOOL_EXEC_TIMEOUT_MS =
+  (typeof process !== 'undefined' && Number(process.env.BOLLOON_TOOL_TIMEOUT_MS)) || 120_000;
+
 /** 截断工具输出 (纯函数, 可单测): 超限 → 保留前 max + 可见省略标记 */
 export function truncateToolOutput(output: string | undefined, max: number = TOOL_RESULT_MAX_CHARS): string {
   const s = output ?? '';
@@ -132,7 +136,6 @@ export type ExitReason =
   | 'no_progress_exhausted'
   | 'token_budget_exceeded'
   | 'min_iterations_not_met'
-  | 'final_gen_marker'
   | 'error';
 
 export type TaskComplexity = 'simple' | 'moderate' | 'complex';
@@ -500,25 +503,15 @@ export class WorkflowPivotLoop {
         const pendingTools = nativeTools.length > 0 ? nativeTools : this.extractPendingToolUses(reply);
 
         if (pendingTools.length === 0) {
-          // 2026-07-06: LLM 显式 <final gen> 标记 — pivot 立即退出, 不再走 quality/iter 流程
-          //   这个 marker 之前和 思考/ 同义被忽略, 害得 "你好" 类问题跑 11 iter 还不见停
-          //   加上之后 iter=1 收到 <final gen> 就 accept
-          if (/<final\s+gen\s*\/?>|<\/final\s+gen>/i.test(reply)) {
-            const cleaned = reply.replace(/<final\s+gen\s*\/?>|<\/final\s+gen>/gi, '').trim();
-            response = cleaned || reply;
-            this.emit({
-              type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
-              content: `✅ 检测到 <final gen> 结束标记, 立即退出 (iter=${this.state.iteration})`,
-              tool: 'system',
-            });
-            return this.createResult(true, response, 'final_gen_marker');
-          }
+          // 2026-10-12 (leo 拍板: 全项目去掉 <final gen> 截止符):
+          //   旧实现这里检测 `<final gen>` 标记 → 立即 break 退出 —— 模型在中间轮次
+          //   echo 出 "> <final gen>" 类文本 (思考引用/复述契约) 就被正则命中, 循环提前截止,
+          //   正是「中间生成了内容, 没办法衔接上就停止了」的根因之一。
+          //   现在循环停止只剩: 质量达标 / 连续无进展 / 用户中止 (leo 确认的三条路)。
 
           // Check if the reply contains tool call intent but couldn't be parsed
-          // 2026-07-06: 排除合法的 思考/<final gen> 这些 tag (它们是 sentinel 不是 tool call)
           const cleanedForIntentCheck = reply
-            .replace(/<final\s+gen\s*\/?>|<\/final\s+gen>/gi, '')
-            .replace(/<\/?think(?:ing)?>/gi, ''); // 移除
+            .replace(/<\/?think(?:ing)?>/gi, ''); // 移除 think 块
           const containsToolCallIntent = cleanedForIntentCheck.includes('调用工具') || cleanedForIntentCheck.includes('tool(') ||
             cleanedForIntentCheck.includes('使用工具') || cleanedForIntentCheck.includes('需要获取') || cleanedForIntentCheck.includes('需要查看') ||
             cleanedForIntentCheck.includes('tool =>') || cleanedForIntentCheck.includes('[TOOL_CALL]') ||
@@ -549,27 +542,27 @@ export class WorkflowPivotLoop {
             tool: 'system'
           });
           
-          // Check if quality threshold met
-          if (quality >= effectiveConfig.qualityThreshold) {
-            response = reply;
-            return this.createResult(true, reply, 'quality_threshold_met');
+          // 2026-10-12 (leo: 「循环跑 1 次就截止, 要能多轮」): 质量未达标时旧代码在
+          //   iter >= minIterations (默认 2) 就**直接收下** (no_pending_tools) —— 长任务
+          //   经常第 2 轮就给出不完整回答被收了, 正是「中间生成内容但衔接不上就停止」。
+          //   现在: 质量未达标一律**注入续跑提示 + 继续循环**, 由 maxConsecutiveNoProgress 兜底
+          //   (真有进展的会持续往下, 空转的到阈值才停) —— 该停才停, 不是早停。
+          if (quality < effectiveConfig.qualityThreshold) {
+            this.pushContinuationHint(
+              `上一轮回答质量评测 ${(quality * 10).toFixed(1)}/${(effectiveConfig.qualityThreshold * 10).toFixed(1)}, 未达完成标准 — 请对照用户需求检查是否还有未完成的子目标, 需要工具就继续调用, 全部完成再给出完整最终回答.`,
+            );
+            this.state.consecutiveNoProgress++;
+            this.emit({
+              type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
+              content: `📊 质量未达标 (${(quality * 10).toFixed(1)}/${(effectiveConfig.qualityThreshold * 10).toFixed(1)})，注入续跑提示，继续循环`,
+              tool: 'system'
+            });
+            continue;
           }
-          
-          // Quality not met but no more tools to call
-          // Accept response if we've done minimum iterations
-          if (this.state.iteration >= effectiveConfig.minIterations) {
-            response = reply;
-            return this.createResult(true, reply, 'no_pending_tools');
-          }
-          
-          // Too early, continue to see if we can improve
-          this.state.consecutiveNoProgress++;
-          this.emit({
-            type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
-            content: `📊 质量未达标 (${(quality * 10).toFixed(1)}/${(effectiveConfig.qualityThreshold * 10).toFixed(1)})，继续循环`,
-            tool: 'system'
-          });
-          continue;
+
+          // Quality met — accept
+          response = reply;
+          return this.createResult(true, reply, 'quality_threshold_met');
         }
         
         // We have pending tool uses - execute them
@@ -577,7 +570,13 @@ export class WorkflowPivotLoop {
         this.state.lastMeaningfulWork = this.state.iteration;
         this.state.consecutiveNoProgress = 0;
         
-        for (const toolCall of pendingTools) {
+        // 2026-10-12 (leo: 「运行工具的时候没有在后台运行, 花了太久, 把时间给 pass 了」):
+        //   旧实现 for...of 串行 await + **无超时** —— 一个慢工具 (网络/重 IO) 拖住整轮,
+        //   后面的工具全被阻塞, 轮次预算被耗在等待上。
+        //   现在: ① 同一轮的多个工具**并行**执行 (老 loop 早已 Promise.all, pivot 是行为退化);
+        //   ② 每个工具加超时包装 (默认 120s, BOLLOON_TOOL_TIMEOUT_MS 可调) —— 超时返回
+        //   失败结果 + 续跑提示, 让 LLM 下轮决定换法/重试, 而不是无限挂起。
+        const execTool = async (toolCall: ToolDefinition) => {
           this.state.toolCallsCount++;
 
           const tool = this.tools.get(toolCall.name);
@@ -603,7 +602,7 @@ export class WorkflowPivotLoop {
               role: 'tool',
               content: JSON.stringify({ success: false, error: `Unknown tool: ${toolCall.name}` })
             });
-            continue;
+            return;
           }
 
           this.emit({
@@ -642,16 +641,24 @@ export class WorkflowPivotLoop {
             //   **fail-closed**: 端口抛错 ⇒ 记拒执行文案且**绝不回落** `tool.execute` ——
             //   门坏掉若静默变成"没门"(旧实现那两条 fail-open 路径), 比没有门更危险。
             let result: ToolResult;
-            if (this.config.guardedExecute) {
-              try {
-                result = await this.config.guardedExecute(tool, toolCall.args ?? {});
-              } catch (guardErr) {
-                const msg = String((guardErr as Error)?.message ?? guardErr);
-                result = { success: false, error: `拒绝: [harness-error] ${msg}` } as ToolResult;
-              }
-            } else {
-              result = await tool.execute(toolCall.args ?? {});
-            }
+            const executeFn = this.config.guardedExecute
+              ? () => this.config.guardedExecute!(tool, toolCall.args ?? {})
+              : () => tool.execute(toolCall.args ?? {});
+            // 2026-10-12: 超时包装 — 慢工具不再拖死整轮 (失败结果给 LLM 下轮决策)
+            const toolTimeoutMs = TOOL_EXEC_TIMEOUT_MS;
+            result = await Promise.race([
+              (async () => {
+                try {
+                  return await executeFn();
+                } catch (guardErr) {
+                  const msg = String((guardErr as Error)?.message ?? guardErr);
+                  return { success: false, error: `拒绝: [harness-error] ${msg}` } as ToolResult;
+                }
+              })(),
+              new Promise<ToolResult>((resolve) => setTimeout(() => {
+                resolve({ success: false, error: `工具超时 (${toolTimeoutMs}ms): ${toolCall.name} 未在时限内返回` } as ToolResult);
+              }, toolTimeoutMs).unref?.()),
+            ]);
 
             // 2026-08-11: 输出过大 → 续跑提示 (Hermes dropped-tools continuation 模式),
             //   上下文后续可能被压缩, 提醒 LLM 需要精确数据时缩小范围重查
@@ -703,7 +710,8 @@ export class WorkflowPivotLoop {
               content: JSON.stringify({ success: false, error: String(execError) })
             });
           }
-        }
+        };
+        await Promise.all(pendingTools.map(execTool));
         
       } catch (error) {
         this.emit({
@@ -758,12 +766,18 @@ export class WorkflowPivotLoop {
   
   /**
    * Adapt configuration based on task profile
+   *
+   * 2026-10-12 (leo: 「工具轮次到了 10 次就截止了」): 旧实现用
+   *   `Math.min(config.maxIterations, profile.suggestedMaxIterations)` 压迭代上限、
+   *   `Math.min(config.maxTokenBudget, profile.tokenBudget)` 压 token 预算 ——
+   *   simple 任务被压到 **10 iter + 800~2400 token**, 而 systemPrompt 本身就 40KB+,
+   *   第一次迭代 totalTokens 就超支 → 循环立刻 break, 长任务根本跑不完。
+   *   上限保留 createDefaultPivotConfig 的 200/1000/2000 (本来就注释「跑到 N 次也不报超时」),
+   *   由质量门 / maxConsecutiveNoProgress / user abort 兜底 —— 循环持久, 该停才停。
    */
   private adaptConfigForTask(profile: TaskProfile): ResolvedPivotConfig {
     return {
       ...this.config,
-      maxIterations: Math.min(this.config.maxIterations, profile.suggestedMaxIterations),
-      maxTokenBudget: Math.min(this.config.maxTokenBudget, profile.tokenBudget),
       complexity: profile.complexity
     };
   }
@@ -1037,7 +1051,7 @@ export class WorkflowPivotLoop {
     const identityLine = lines.find((l) => l.includes('你是') && !l.includes('(续)') ) ?? '';
     return `[continuation] 你的 persona + tools + judgments 已在首轮 messageHistory 中.
 ${identityLine ? identityLine + '\n' : ''}当前 step 别再读 persona 全文, 继续推进任务即可.
-> <final gen> 只在真完成时输出.`;
+> 任务完成前持续调用工具推进; 全部完成后给出完整最终回答.`;
   }
   
   /**
@@ -1125,7 +1139,7 @@ export interface LLMInterface {
  */
 export function createDefaultPivotConfig(complexity?: TaskComplexity): PivotLoopConfig {
   // 2026-07-06: maxIterations 默认大幅上调 — LLM 自己约束结束时机, 持久循环.
-  //   真实停止由 LLM emit <final gen> / 质量达标 / 连续无进展 / user abort 触发.
+  // 2026-10-12: 真实停止由 质量达标 / 连续无进展 / user abort 触发 (leo 拍板去掉 <final gen>).
   //   旧 30/60 iter 在长任务 (eg. 大文档改写) 太短, 现在跑到 N 次也不报超时.
   const profiles: Record<TaskComplexity, PivotLoopConfig> = {
     simple: {

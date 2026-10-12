@@ -83,26 +83,25 @@ const MOCK_LLM_TURN_1 = `让我先看下 git status
 <invoke name="read_file">
 <parameter name="path">README.md</parameter>
 </invoke>
-任务完成 <final gen>
+任务完成
 Bolloon 在 master 分支, README 描述是 P2P AI Agent`;
 
-/** 第 2 轮: 含 tool_call 链式 + 多种 tool 格式 + final */
+/** 第 2 轮: 含 tool_call 链式 + 多种 tool 格式 */
 const MOCK_LLM_TURN_2 = `好的, 我再 git log 看看最近提交.
 <invoke name="shell_exec">
 <command>git log</command>
 <args>--oneline -5</args>
 </invoke>
-<final gen>
 完成, 你可以 git push 上去了`;
 
 describe('Full Loop — LLM 输出 → segmenter → tool → store → resume', () => {
   it('phase 1+2: 切 minimax 输出为 ChatSegment[] (干净无残留)', () => {
     const segments = segmentChatReply(MOCK_LLM_TURN_1, { knownToolNames: registry });
     const types = segments.map(s => s.type);
-    // 期望: think (1) + tool_call (2) + text (若干) + final (1) + text (1)
+    // 期望: think (1) + tool_call (2) + text (若干) (2026-10-12: 无 final segment)
     expect(types).toContain('think');
     expect(types).toContain('tool_call');
-    expect(types).toContain('final');
+    expect(types).toContain('text');
 
     // 终极不变量: text 段不含任何 tool_call 标记
     const allText = segments.filter(s => s.type === 'text' || s.type === 'final')
@@ -153,8 +152,9 @@ describe('Full Loop — LLM 输出 → segmenter → tool → store → resume',
     const segments = segmentChatReply(MOCK_LLM_TURN_1, { knownToolNames: registry });
     const toolCalls = segments.filter(s => s.type === 'tool_call');
     const thinkSeg = segments.find(s => s.type === 'think');
-    const finalSeg = segments.find(s => s.type === 'final');
+    // 2026-10-12: 无 final segment, 最终答复取最后一个 text 段
     const textSegs = segments.filter(s => s.type === 'text');
+    const finalSeg = textSegs[textSegs.length - 1];
 
     // 构造 LLM 单次 message (assistant) 含 think + tool_call
     const llmMessage: PersistedMessage = {
@@ -248,11 +248,12 @@ describe('Full Loop — LLM 输出 → segmenter → tool → store → resume',
     expect(text).not.toContain('<think>');
   });
 
-  it('phase 8: 多轮循环 — 第 2 轮 LLM 输出含 final segment', () => {
+  it('phase 8: 多轮循环 — 第 2 轮 LLM 输出 (2026-10-12: 无 final segment, 答复进 text)', () => {
     const seg2 = segmentChatReply(MOCK_LLM_TURN_2, { knownToolNames: registry });
-    expect(seg2.filter(s => s.type === 'final')).toHaveLength(1);
-    const finalContent = seg2.find(s => s.type === 'final')?.content;
-    expect(finalContent).toContain('git push');
+    const textSegs = seg2.filter(s => s.type === 'text');
+    expect(textSegs.length).toBeGreaterThan(0);
+    const lastText = textSegs[textSegs.length - 1];
+    expect(lastText?.content).toContain('git push');
 
     // tool_call 是 shell_exec
     const tcs = seg2.filter(s => s.type === 'tool_call');
