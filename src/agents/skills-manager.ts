@@ -466,28 +466,7 @@ export class SkillsManager {
     return { ok: tx.ok, name: tx.name, version: tx.version, error: tx.error, skill: tx.skill };
   }
 
-  /** @deprecated 保留旧签名以兼容; 内部已走事务版 */
-  private async importLegacy(ref: string, opts: { home?: string; cwd?: string; force?: boolean; scope?: 'user' | 'project'; source?: SkillSource } = {}): Promise<{ ok: boolean; name?: string; version?: string; error?: string; skill?: SkillRecord }> {
-    const cid = parseSkillRef(ref);
-    if (!cid) return { ok: false, error: `无法识别的技能引用 (要 bolloon://skill/<cid> / ipfs://<cid> / 裸 CID): ${ref.slice(0, 60)}` };
-    const fetched = await fetchSkillBundle(cid);
-    if (!fetched.ok || !fetched.bundle) return { ok: false, error: fetched.error || '取包失败' };
-    const inst = await installSkillBundle(fetched.bundle, { home: opts.home ?? this.home, cwd: opts.cwd ?? this.cwd, force: opts.force, scope: opts.scope });
-    if (!inst.ok) return { ok: false, error: inst.error };
-    const h = opts.home ?? this.home;
-    const name = fetched.bundle.name;
-    this.cache = null;
-    const after = await this.inspect(name, { home: h });
-    if (after) {
-      await this.patchRegistry(name, {
-        status: 'installed', source: opts.source || 'shared', sourceRef: cid, trust: 'unverified',
-        contentHash: after.contentHash, version: after.version,
-      }, h);
-    }
-    return { ok: true, name, version: fetched.bundle.version, skill: (await this.inspect(name, { home: h })) || undefined };
-  }
-
-  /** 从已解析的技能包装入 (本地文件/已取到的包) */
+  
   async install(bundleJson: string, opts: { home?: string; cwd?: string; force?: boolean; source?: SkillSource; sourceRef?: string } = {}): Promise<{ ok: boolean; name?: string; error?: string; skill?: SkillRecord }> {
     // 2026-09-16 (2-G.3): 同样走事务 (install 的默认来源保持 'imported')
     const tx = await this.importTransactional({ bundleJson }, { ...opts, source: opts.source || 'imported' });

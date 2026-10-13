@@ -134,9 +134,6 @@ import { createAgentSession, type AgentSession, type StreamCallback, type Stream
 // **K5 步骤④ (入口投递)**: 把一次入口执行投进会话 Actor 的 mailbox ⇒ 同一会话身份的输入排队执行
 import { deliverThroughActor, getChannelQueue, abortActorsOfChannel } from '../kernel/channel-actor.js';
 import { requireRunExecution } from '../agents/execution-entry.js';   // K8 唯一执行入口的取用助手 (脱挂坑见该文件头)   // K8: 待办执行经内核邮箱串行
-import { llmConfigStore, type ModelProvider, PROVIDER_INFO } from '../llm/config-store.js';
-import { videoConfigStore, type VideoProvider } from '../llm/video-config-store.js';
-import { audioConfigStore, type AudioProvider } from '../llm/audio-config-store.js';
 import { irohTransport } from '../network/iroh-transport.js';
 import { createAgentDelegateApp } from './agent-delegate-server.js';
 import { createIrohDelegateTransport } from './iroh-delegate-transport.js';

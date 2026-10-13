@@ -98,11 +98,6 @@ export async function loadOrCreateDeviceKey(storage: StorageLike, c?: Crypto): P
   return material;
 }
 
-async function importPrivate(storage: StorageLike, c: Crypto): Promise<CryptoKey> {
-  const k = await loadOrCreateDeviceKey(storage, c);
-  return c.subtle.importKey('jwk', k.privateKeyJwk, { name: 'Ed25519' } as any, false, ['sign']);
-}
-
 /** 用设备私钥签一条 Grant (核心: 手机确认 → 桌面才认) */
 export async function signGrantOnDevice(grant: SignableGrant, storage: StorageLike, c?: Crypto): Promise<GrantSignature> {
   return signPayloadOnDevice(canonicalGrantPayload(grant), storage, c);

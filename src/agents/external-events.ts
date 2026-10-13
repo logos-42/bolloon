@@ -19,7 +19,6 @@ import {
 } from './goal-store.js';
 // 2026-09-25 (M0 接线冻结, 规则 ②): Goal 状态变更只有一个漏斗
 import { reduceGoalState } from './goal-state-reducer.js';
-import { readRun, setRunStatus } from './run-store.js';
 
 // 2026-09-19: 新增 'contact' —— 联系方式(手机/邮箱)回复也是外部事件, 复用同一套等待/唤醒/过期/provenance 校验,
 //   不另造一套"等回信"机制 (correlation 由 requestId/continuationId 保证, 只唤醒对应 Goal)。

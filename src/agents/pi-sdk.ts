@@ -37,8 +37,6 @@ import { createHash } from 'node:crypto';
 import { shouldReview, shouldReviewTask, runExperienceReview } from './experience-review.js';
 import { decideLessonSink, skillsFromDirs, logLessonSuggestions, routeLessonToSkill } from './lesson-to-skill.js';
 import { managedServices } from './managed-services.js';
-import { IterationBudget, isRefundableTool } from './iteration-budget.js';
-import { recordToolCall, argsFingerprint } from './tool-telemetry.js';
 import { capToolResult } from './tool-result-gate.js';
 import { renderToolListWithParams } from './tool-subset.js';
 // K10 余项: 收尾自检的**规则**归内核 (`kernel/code-write-gate.ts`) —— 原来是 agents 侧的一个模块
@@ -73,11 +71,9 @@ import { startRun, recordStep, finishRun, readRun, budgetVerdict, recordDegradat
 import { createGoal, attachRun, findActiveGoal } from './goal-store.js';
 import { captureRunModelConfig, type RunModelConfig, type ConfigDriftReport, type EffectiveModelConfig } from '../llm/model-selection.js';
 // 2026-09-26: 工具名出网净化 (pi-ai.ts 唯一边界) + 回程派发还原 (原名 ↔ API 名)
-import { resolveApiToolName, expandKnownToolNames } from '../llm/tool-name.js';
 // 2026-09-28 (前缀 KV 可命中): CURRENT TURN 注入标记 —— "当前轮是否已注入"的唯一判据
 import { CURRENT_TURN_MARKER } from '../llm/pi-ai.js';
 import { PiAgentHarness, type HarnessRunContext, type ToolDecision } from './pi-harness.js';
-import { getBranchPrefix, getCooldownMs, checkWritePath } from './shell-guard.js';
 import {
   DiscoveredAgentsManager,
   SocialHeartbeat,
@@ -155,17 +151,14 @@ import { getInjectionMaxChars } from '../bootstrap/exhaust-scrubber.js';
 import { monitorAfterReply } from '../pi-ecosystem-judgment/monitor-gate.js';
 // Bootstrap 生命周期 hook (SessionStart / Stop / PreToolUse)
 import { onSessionStart, onStop, onPreToolUse } from '../pi-ecosystem-judgment/human-value-pipeline.js';
-import { onPostToolUse, onJudgmentInjected, onMonitorViolation } from '../bootstrap/lifecycle-hooks.js';
 import { budgetReduce, snip, microcompact } from '../context-compaction/index.js';
 // React Harness: 8-gate + 4-guard (防越权 / 防 prompt 注入)
 import { ReactHarness } from '../security/react-harness.js';
 import { HooksEngine } from '../hooks/hooks-engine.js';
 import { DenyPipeline, type DenyContext } from './deny-pipeline.js';
 import { parseToolCall as parseToolCallImpl, parseAllToolCalls, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl, type ToolCall } from './parse-tool-call.js';
-import { buildObservation, buildReflection, formatObservationWithReflection, classifyError } from './error-classifier.js';
 import { sessionStore as defaultSessionStore, type SessionStore, type PersistedMessage } from './session-store.js';
 import { ToolRegistry } from './tool-registry.js';
-import { decideMaxIterations, decideContextOverflow, shouldCompactBeforeIteration } from './react-loop.js';
 import { DEFAULT_MAX_REVIEWS } from './loop-review.js';
 
 // PiSessionManager 已抽到 ./pi-sdk-session-manager.ts (2026-07-06)
@@ -224,7 +217,6 @@ export function writeBackCurrentTurnInto(
   }
 }
 
-import { LoopStallState, observeToolCall, batchHint } from './tool-loop-guard.js';
 
 /**
  * 写操作「读回自证」的实现已拆到 `./write-verify.js` (K10 ⑦):
