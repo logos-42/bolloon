@@ -202,6 +202,7 @@ const INTERNAL_CHATTER_LINE = [
   /^\s*📚\s*复盘[:：]/,
   /^\s*\[PiAgent\]\s*reviewFinal\b/,
   /^\s*\[PiAgent\]\s*推理适配器\s*=/,
+  /^\s*\[PiAgent\]\s*loop\s*自动重试\b/,
   /^\s*[✅✓]\s*(?:检测到)?最终回复/,
   /^\s*🔄\s*循环\s*\d+\s*[/／]\s*\d+/,
   /^\s*🔍\s*任务复杂度[:：]/,
