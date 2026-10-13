@@ -911,11 +911,9 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
   //   与 shell_exec 的区别: 直接接受完整 shell 命令字符串, 更适合模型自主写命令.
   // 2026-10-01 (优化 #2 v1): **工具发现** —— 125 个工具不可能都记住, 给一个"按关键词找工具"的入口。
   // 空关键词只回**分类索引**(名称清单), 有关键词才回"名称+用途摘要" ⇒ 不刷屏。
-  // 2026-10-01 (用户: 「skills 教训学习, bolloon 有吗, 从 hermes 触发的方法是什么, 学一下」):
-  //   **实测缺口**: `skill-loader` 把 1300 个技能**注册**进注册表 ✓, 但 `describeSkill` 只 import 从没调用 ✗
-  //   ⇒ 技能**描述从不进提示** ⇒ 模型不知道它们存在 ⇒ 技能触发链**断在这里** ✗。
-  //   她那边的做法: 启动自动装载 + 按**描述**在提示里露面 + 需要时用 `skill_view` 读全文 ✓。
-  //   bolloon 有 1300 个(她百来号) ⇒ 全量注入会撑爆提示 ✗ ⇒ 改成**两个发现工具**(和 `list_tools` 同一思路 ✓)。
+  // 2026-10-01 (用户: 「skills 教训学习, bolloon 有吗」): 技能发现 = 两个工具而非全量注入 —
+  //   技能库上千个, 全量注入会撑爆提示 (历史: 19 个 skill 曾把 systemPrompt 顶到 22K 导致模型不输出)。
+  //   做法同 `list_tools`: 按关键词找 (`list_skills`) → 读全文 (`read_skill`)。
   ctx.tools.set('list_skills', {
     name: 'list_skills',
     description: '用于**找技能**: 给关键词(中文/英文都行)⇒ 返回已装载技能的名字+说明(≤20 条); 不给关键词 ⇒ 先给总数与前若干条. 找到后用 read_skill 读全文再照做.',

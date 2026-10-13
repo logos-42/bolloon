@@ -682,9 +682,7 @@ export class WorkflowPivotLoop {
             // 2026-10-13 (leo: 「发送消息过程中的打断和衔接整个流程」): 工具执行阶段也要响应 abort —
             //   之前 Promise.race 只有 executeFn + 超时两路, Ctrl+C 打断要等工具跑完/超时 (最长 120s) 才生效。
             //   现在加第三路 abort: signal 触发立即返回"已中断"结果 → while 顶部 signal.aborted 检查 break。
-            let abortResolve: ((v: ToolResult) => void) | null = null;
             const abortWait = new Promise<ToolResult>((resolve) => {
-              abortResolve = resolve;
               const onAbort = () => resolve({ success: false, error: `已中断: ${toolCall.name} 被打断 (Ctrl+C)` } as ToolResult);
               if (signal?.aborted) { onAbort(); return; }
               signal?.addEventListener?.('abort', onAbort, { once: true });
