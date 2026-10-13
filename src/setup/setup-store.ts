@@ -305,13 +305,31 @@ export async function evaluateSetup(opts: EvaluateOptions = {}): Promise<Evaluat
   checks.providerUsable = providerSelected && credentialOk;
   checks.modelPresent = modelOk;
 
-  // 3) 连通性 (24h 有效期)
+  // 3) 连通性 (2026-10-13 重构: 结论有效期 = 「测过 + 配置没变」, 不再只看墙钟 24h)
+  //   - 旧逻辑: 24h 墙钟一到就过期, 即使 provider/key/baseUrl/model 一个没动 → 用户隔天启动必见
+  //     「未就绪」, 被迫重测 (体验债: 配置没变重测无意义, 且评估会把 connectivityOk 覆盖成 false 落盘,
+  //     于是「测过」这个事实被销毁, 更修不回来)。
+  //   - 新语义: connectivityAt 存在(测过) 且 配置指纹一致(配置没变) ⇒ 结论仍有效; 只有配置真变了才重测。
   const connAt = checks.connectivityAt ? Date.parse(checks.connectivityAt) : 0;
-  const connFresh = !!connAt && now - connAt < ttl;
+  const hadConnTest = !!connAt;
+  // 配置指纹: 当前配置 vs 上次通过时的配置 —— 相同则连通性结论仍有效 (provider/key/baseUrl/model 都没变)
+  let configUnchanged = false;
+  try {
+    const { hash: curHash } = await hashConfigFiles(bolloonHome);
+    configUnchanged = !!prev.configHash && prev.configHash === curHash;
+  } catch { configUnchanged = false; }
   let connectivityOk = false;
-  if (checks.connectivityOk && connFresh) connectivityOk = true;
-  else if (checks.connectivityOk && !connFresh) { reasons.push('连通性结果已过期 (>24h) → 需要重新测试'); checks.connectivityOk = false; }
-  if (!connectivityOk) why.basic.push(connAt && !connFresh ? '连通性结果过期 (需重测)' : '还没做过连通性测试');
+  if (hadConnTest && configUnchanged) {
+    // 测过 + 配置没变 ⇒ 结论有效 (即使墙钟过了 24h)
+    connectivityOk = true;
+    checks.connectivityOk = true;   // 救回被旧逻辑覆盖的 false
+  } else if (hadConnTest && !configUnchanged) {
+    // 测过但配置变了 (或 configHash 缺失) ⇒ 需要重测
+    connectivityOk = false;
+    checks.connectivityOk = false;
+    reasons.push('LLM 配置已变化 → 需要重新测试连通性');
+  }
+  if (!connectivityOk) why.basic.push(hadConnTest && !configUnchanged ? '配置变化, 连通性需重测' : '还没做过连通性测试');
 
   // 4) 运行时 (真实: initMinimax + session; 不是"singleton 存在")
   let runtimeOk = checks.runtimeInitialized === true;
@@ -539,6 +557,14 @@ export async function recordSetupStage(stage: SetupStage, patch: Partial<Pick<Se
     lastError: undefined,
     updatedAt: new Date().toISOString(),
   };
+  // 2026-10-13 重构: 补算并落盘配置指纹 —— 与 evaluateSetup (413-414) 同一逻辑。
+  //   之前只有 evaluateSetup 落 configHash; 直写路径 (onboard 连通性成功 / 测试模拟) 缺 hash ⇒
+  //   连通性判定 (「测过且配置没变 → 结论有效」) 在非 evaluateSetup 路径下永远 configUnchanged=false。
+  //   行为不变 (configHash 仍是同一文件的 sha256), 只是所有写 state 的路径都带上指纹。
+  try {
+    const fp = await hashConfigFiles(bolloonHome);
+    state.configHash = fp.hash; state.configVersion = fp.version;
+  } catch { /* hash 计算失败不阻塞记录 */ }
   await writeSetupState(state, bolloonHome);
   return state;
 }

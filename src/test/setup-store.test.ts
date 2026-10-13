@@ -122,14 +122,21 @@ describe('状态机: 单调推进 + 每个阶段可达', () => {
     expect(ev.state.stage).toBe('model_pending');
   });
 
-  it('连通性没测过 / 过期 → connectivity_pending (未测不算 ready; 过期不算 ready)', async () => {
+  it('测过 + 配置没变 → 结论有效 (48h 前测过也不算过期; 配置变了才需重测)', async () => {
     const m = await mod();
     const fresh = await m.evaluateSetup(base());
-    expect(fresh.state.stage).toBe('connectivity_pending');
+    expect(fresh.state.stage).toBe('connectivity_pending');   // 还没测过
+    // 记录「测过」(48h 前) — recordSetupStage 现在同步落 configHash
     await m.recordSetupStage('connectivity_pending', { checks: { connectivityOk: true, connectivityAt: new Date(Date.now() - 48 * 3600_000).toISOString() } });
+    // 配置没变 (hash 一致) ⇒ 48h 前测过仍有效 → 前进到 runtime (不是 connectivity_pending)
     const stale = await m.evaluateSetup(base());
-    expect(stale.state.stage).toBe('connectivity_pending');
-    expect(stale.reasons.join(' ')).toContain('过期');
+    expect(stale.state.stage).not.toBe('connectivity_pending');
+    expect(stale.reasons.join(' ')).not.toContain('连通性');
+    // 配置变了 (真实文件改 provider) ⇒ 指纹变 ⇒ 需重测
+    await writeConfig('other', { apiKey: 'x' });
+    const changed = await m.evaluateSetup(base());
+    expect(changed.state.stage).toBe('connectivity_pending');
+    expect(changed.reasons.join(' ')).toMatch(/重测|变化/);
   });
 
   it('运行时没起来 → runtime_pending', async () => {
