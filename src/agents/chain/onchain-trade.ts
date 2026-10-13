@@ -30,7 +30,6 @@ import {
   EscrowClient,
   computeTaskKeyOffChain,
   computeResultHashOffChain,
-  computeProofHashOffChain,
   type TxOutcome,
   type EscrowStateName,
 } from './escrow-client.js';

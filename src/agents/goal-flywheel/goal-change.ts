@@ -353,7 +353,7 @@ function impactFor(kind: ChangeKind, scope: ChangeScope): ChangeImpact {
 
 const EMPTY_IMPACT = (scope: ChangeScope): ChangeImpact => impactFor('clarification', scope);
 
-function describeKind(kind: ChangeKind, r: GoalChangeRequest, dir: BudgetDelta | null): string {
+function describeKind(kind: ChangeKind, dir: BudgetDelta | null): string {
   switch (kind) {
     case 'abort':
       return `撤销/终止: 在下一个 Run 边界终止该目标 (优先级最高, 压过同批其余变更)`;
@@ -392,7 +392,6 @@ export function classifyChange(
 ): GoalChangeRequest {
   if (TERMINAL_STATUSES.includes(r.status)) return { ...r, appliesToFutureRunsOnly: true };
 
-  const t = lower(r.instruction);
   const criteria = Array.isArray(goal?.successCriteria) ? goal.successCriteria.map(String) : [];
   let intents = detectChangeIntents(r.instruction);
 
@@ -424,7 +423,7 @@ export function classifyChange(
       requiresReplan: false,
       impact: impactFor('abort', scope),
       interpreted:
-        `${describeKind('abort', r, null)}; 原文: ${head(r.instruction)}` +
+        `${describeKind('abort', null)}; 原文: ${head(r.instruction)}` +
         (superseded.length ? `; 同批的 ${superseded.join('/')} 一律作废 (superseded), 需单独重新提交` : ''),
     };
   }
@@ -451,7 +450,7 @@ export function classifyChange(
     status: 'triaged',
     requiresReplan: REPLAN_KINDS.has(kind),
     impact,
-    interpreted: `${KIND_LABELS[kind]}: ${describeKind(kind, r, dir)}; 影响面: ${impactLabel(impact)}; 原文: ${head(r.instruction)}`,
+    interpreted: `${KIND_LABELS[kind]}: ${describeKind(kind, dir)}; 影响面: ${impactLabel(impact)}; 原文: ${head(r.instruction)}`,
   };
 }
 

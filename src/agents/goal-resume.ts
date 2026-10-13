@@ -29,7 +29,6 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import * as crypto from 'crypto';
 
 import { sessionStore, PersistedMessage } from './session-store.js';
 import * as taskState from './task-state.js';
@@ -166,10 +165,6 @@ async function loadAllSnapshots(): Promise<Map<string, GoalSnapshot>> {
     // 文件不存在 = 空 map
   }
   return out;
-}
-
-function newGoalId(): string {
-  return `goal-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
 }
 
 // ============================================================
