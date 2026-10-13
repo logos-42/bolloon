@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { loadSkillsDir, defaultSkillPaths } from '../agents/skill-loader.js';
+import { loadSkillsDir, defaultSkillPaths, loadSkillsFromPaths, describeSkill } from '../agents/skill-loader.js';
 
 function tmpSkillsDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-skills-'));
@@ -63,5 +63,26 @@ describe('defaultSkillPaths — Hermes 式仓库级 skills 目录 (2026-10-12)',
     expect(paths).toContain(path.join('/tmp/repo', 'skills'));
     expect(paths).toContain(path.join('/tmp/repo', '.bolloon', 'skills'));
     expect(paths).toContain(path.join('/tmp/home', '.bolloon', 'skills'));
+  });
+});
+
+describe('技能加载循环读取端 (2026-10-13, leo: 「成整个加载循环」)', () => {
+  it('loadSkillsFromPaths 返回的 Skill 带 execute (read_skill 读全文链路)', async () => {
+    const dir = tmpSkillsDir();
+    writeSkill(dir, 'my-skill/SKILL.md', 'my-skill', '我的测试技能');
+    const skills = await loadSkillsFromPaths([dir]);
+    expect(skills.length).toBe(1);
+    const body = await skills[0].execute({});
+    expect(body).toContain('## Skill: my-skill');
+    expect(body).toContain('我的测试技能');   // 描述进全文
+    expect(body).toContain('body');           // SKILL.md 正文进全文 (模型上下文可见)
+  });
+
+  it('describeSkill 输出 名字: 描述 (技能索引的每行形态)', () => {
+    const dir = tmpSkillsDir();
+    writeSkill(dir, 'my-skill/SKILL.md', 'my-skill', '我的测试技能');
+    // 直接用 describeSkill 形状验证索引行
+    expect(describeSkill({ name: 'my-skill', description: '我的测试技能', execute: async () => '' } as any))
+      .toBe('my-skill: 我的测试技能');
   });
 });

@@ -382,6 +382,8 @@ export class PiAgentSession implements AgentSession {
   /** 2026-06-30: tool registry 模块 — 独立 alias resolve, 测试可消融. */
   private _toolRegistry: ToolRegistry = new ToolRegistry();
   private skillRegistry: SkillRegistry = new SkillRegistry();
+  /** 2026-10-13: 技能扫描 promise (loadSkills 保存, buildSkillsIndex await) — 确保首次对话前技能已就绪 */
+  private _skillsReady: Promise<void> = Promise.resolve();
   /** M2.4: 缓存 tool 列表, registerTools() 之后不变, runReActLoop 多次循环复用 */
   private cachedToolDefinitions: string = '';
   /** M2.4: 缓存 persona section */
@@ -409,6 +411,34 @@ export class PiAgentSession implements AgentSession {
   }
 
   private cachedPersonaSection: string = '';
+
+  /**
+   * 2026-10-13 (leo: 「重新阅读理解，整体开发整个技能的实现方式… 成整个加载循环」):
+   * 技能库索引摘要 —— 注入 systemPrompt, 让模型**知道技能存在**(名字+一句话描述),
+   * 需要时用 `list_skills`(按关键词找) → `read_skill`(读全文, 结果进上下文) 按需加载。
+   *   为什么必须有: 技能描述**从不进提示** ⇒ 模型不知道 `read_skill` 该读什么 ⇒ 技能加载循环
+   *   断在起点 (此前 `describeSkill` 只 import 从不调用, 见 pi-sdk-tools.ts:915 注释)。
+   *   预算控制: 只列前 40 个 + 总数, 完整清单由 `list_skills` 按需取 —— 不撑爆 systemPrompt。
+   * 失败静默(返回 ''): 技能库读不到时循环退化成 "无技能", 不阻塞主流程。
+   */
+  private async buildSkillsIndex(): Promise<string> {
+    // 2026-10-13 (leo: 「成整个加载循环」): 先等技能扫描 promise 落地再读 registry ——
+    //   loadSkills 是构造期 fire-and-forget, 不 await 的话首次对话时 registry 还是空的。
+    try { await this._skillsReady; } catch { /* 扫描失败不影响 (registry 为空时返回 '') */ }
+    try {
+      const all = this.skillRegistry.list();
+      if (!all.length) return '';
+      const budget = 40;
+      const lines = all.slice(0, budget).map((sk: any) => {
+        const name = String(sk?.name ?? '').trim();
+        const desc = String(sk?.description ?? '').trim().replace(/\s+/g, ' ').slice(0, 100);
+        return name ? `- ${name}: ${desc}` : null;
+      }).filter(Boolean);
+      if (!lines.length) return '';
+      const more = all.length > budget ? `\n…还有 ${all.length - budget} 个 (用 list_skills 按关键词找)` : '';
+      return `## 技能库 (${all.length} 个技能 — 需要时用 list_skills 找, read_skill 读全文执行; 内容进上下文, 按需加载不占首屏)\n${lines.join('\n')}${more}`;
+    } catch { return ''; }
+  }
   /** 本轮迭代预算 (每轮重置; 批处理工具会退还 —— 见 iteration-budget.ts) */
   /** 上一个工具调用的参数指纹 (遥测判"是否重复调用") */
 
@@ -923,7 +953,9 @@ export class PiAgentSession implements AgentSession {
    */
   private loadSkills(paths?: string[]): void {
     const resolved = (paths && paths.length > 0) ? paths : defaultSkillPaths(os.homedir(), this.cwd);
-    loadSkillsFromPaths(resolved)
+    // 2026-10-13 (leo: 「成整个加载循环」): 保存 promise 供 buildSkillsIndex await ——
+    //   原来 fire-and-forget, 构造后立即读 registry = 0 ⇒ 技能索引空 ⇒ 模型不知道技能 ⇒ 循环断在起点。
+    this._skillsReady = loadSkillsFromPaths(resolved)
       .then((skills) => {
         for (const s of skills) {
           if (this.skillRegistry.has(s.name)) {
@@ -2016,6 +2048,8 @@ ${PiAgentSession.TOOL_SELECTION_GUIDE}
 ${PROACTIVE_WORK_DISCIPLINE}
 
 ${await this.renderActivePlansSection()}
+
+${await this.buildSkillsIndex()}
 
 工作模式:
 1. 理解用户自然语言请求
