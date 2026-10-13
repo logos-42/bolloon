@@ -15,7 +15,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { getMemoryDir, sanitizeKey } from '../bootstrap/memory-compressor.js';
+import { getMemoryDir } from '../bootstrap/memory-compressor.js';
 
 const home = (): string => process.env.HOME || os.homedir() || '/tmp';
 

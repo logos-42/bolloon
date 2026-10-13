@@ -16,8 +16,6 @@
 import { Interface } from 'ethers';
 import {
   EscrowClient,
-  V2_EVENT_NAMES,
-  ESCROW_STATES,
   type V2EventName,
   type RawLog,
   type EscrowStateName,
@@ -101,7 +99,6 @@ export interface VerifyChainSettlementOptions {
 export const ERC20_TRANSFER_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const ERC20_IFACE = new Interface(['event Transfer(address indexed from, address indexed to, uint256 value)']);
 
-const ZERO32 = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
 function base(partial: Partial<ChainSettlementVerdict> & { status: ChainSettlementStatus; reason: string }): ChainSettlementVerdict {
   return {

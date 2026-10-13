@@ -187,11 +187,6 @@ export function applyExperience(d: ReviewDecision, home = os.homedir(), nowIso =
   }
 }
 
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-
 /**
  * 自审编排 (纯旁路, **绝不抛错**)。
  *
