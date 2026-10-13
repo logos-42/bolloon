@@ -67,6 +67,7 @@ const CLI_COMMANDS: MentionItem[] = [
   { kind: 'command', label: 'judgments', hint: '判断记录', insert: 'judgments' },
   { kind: 'command', label: 'net', hint: 'Agent 网络 (join/status/ctx)', insert: 'net' },
   { kind: 'command', label: 'opportunity', hint: '世界机会 (scan/list/accept/ignore)', insert: 'opportunity' },
+  { kind: 'command', label: 'chat', hint: '聊天模式 (回到主对话)', insert: 'chat' },
   { kind: 'command', label: 'p2p', hint: 'P2P 节点 / 连接', insert: 'p2p' },
   { kind: 'command', label: 'pause', hint: '暂停当前 run', insert: 'pause' },
   { kind: 'command', label: 'payments', hint: '支付 / 任务公告', insert: 'payments' },

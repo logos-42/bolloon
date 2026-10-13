@@ -34,12 +34,25 @@ export interface Step {
   args?: Record<string, unknown>;
   output?: string;
   error?: string;
+  /** 2026-10-12 (leo: 命令执行时间读秒): 工具实际耗时 (ms) */
+  durationMs?: number;
   /** 该 step 对应的事件 type (供调试/扩展) */
   eventType?: 'step_start' | 'step_done' | 'step_error';
 }
 
 const MAX_VISIBLE_NODES = 20;
 const STORAGE_PREFIX = 'bolloon.stepTimeline.expanded.';
+
+/** 2026-10-12 (leo: 命令执行时间读秒): 毫秒 → 人读耗时串 (浏览器端本地实现, 不 import 后端模块) */
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '(耗时未知)';
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = Math.round(s % 60);
+  return `${m}m${rem}s`;
+}
 
 // ---------------------------------------------------------------------------
 // 模块私有状态 (按 timeline 元素实例化)
@@ -195,7 +208,13 @@ function render(timelineEl: HTMLElement): void {
       }
       node.setAttribute('data-status', step.status);
       const label = node.querySelector('.step-timeline-label') as HTMLElement;
-      if (label) label.textContent = step.name;
+      if (label) {
+        // 2026-10-12 (leo: 命令执行时间读秒): 完成/失败节点在工具名后显示耗时
+        const dur = step.durationMs !== undefined && step.status !== 'active'
+          ? ` · ${formatDuration(step.durationMs)}`
+          : '';
+        label.textContent = step.name + dur;
+      }
       const argsEl = node.querySelector('.step-timeline-args') as HTMLElement;
       if (argsEl) {
         const argStr = step.args && Object.keys(step.args).length > 0
@@ -344,7 +363,7 @@ export function mountStepTimeline(messageEl: HTMLElement, channelId: string | nu
 export function pushStepToTimeline(
   timelineEl: HTMLElement,
   eventType: 'step_start' | 'step_done' | 'step_error',
-  data: { tool: string; args?: Record<string, unknown>; success?: boolean; output?: string; error?: string }
+  data: { tool: string; args?: Record<string, unknown>; success?: boolean; output?: string; error?: string; durationMs?: number }
 ): void {
   const state = stateMap.get(timelineEl);
   if (!state) return;
@@ -380,6 +399,7 @@ export function pushStepToTimeline(
       steps[targetIdx].status = data.success === false ? 'error' : 'done';
       if (data.output) steps[targetIdx].output = data.output;
       if (data.error) steps[targetIdx].error = data.error;
+      if (data.durationMs !== undefined) steps[targetIdx].durationMs = data.durationMs;
     } else {
       steps[targetIdx].status = 'error';
       if (data.error) steps[targetIdx].error = data.error;

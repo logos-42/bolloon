@@ -137,30 +137,43 @@ export async function parseSkillFile(filePath: string): Promise<SkillMeta | null
   return normalize(dirName, filePath, raw);
 }
 
-/** 扫描一个目录, 找所有 {name}/SKILL.md (一层嵌套结构) */
+/** 扫描一个目录, 找所有 {name}/SKILL.md — 支持多级嵌套 (2026-10-12, Hermes 式分类技能库) */
 export async function loadSkillsDir(dir: string): Promise<SkillMeta[]> {
   const out: SkillMeta[] = [];
+  await walkSkillsDir(dir, out);
+  return out;
+}
+
+/** 递归扫: 一层 {name}/SKILL.md + 深层子目录 (Hermes skills/<category>/<skill>/SKILL.md 形态) */
+async function walkSkillsDir(dir: string, out: SkillMeta[], depth = 0): Promise<void> {
   let entries: import('fs').Dirent[];
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
   } catch {
-    return out;
+    return;
   }
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
     if (entry.name.startsWith('.')) continue;
-    const skillFile = path.join(dir, entry.name, 'SKILL.md');
-    const meta = await parseSkillFile(skillFile);
-    if (meta) out.push(meta);
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      // ① 这层有 SKILL.md → 即一个技能目录
+      const meta = await parseSkillFile(path.join(full, 'SKILL.md'));
+      if (meta) {
+        out.push(meta);
+        continue;
+      }
+      // ② 没有 → 递归下钻 (分类层), 防深到失控
+      if (depth < 6) await walkSkillsDir(full, out, depth + 1);
+    }
   }
-  return out;
 }
 
-/** 默认 skill 路径优先级 (后者覆盖前者同名 skill) */
+/** 默认 skill 路径优先级 (后者覆盖前者同名 skill); 2026-10-12 加 `<cwd>/skills` (Hermes 式仓库技能库) */
 export function defaultSkillPaths(home: string = os.homedir(), cwd: string = process.cwd()): string[] {
   return [
     path.join(home, '.bolloon', 'skills'),     // 全局用户级
-    path.join(cwd, '.bolloon', 'skills'),       // 项目级
+    path.join(cwd, '.bolloon', 'skills'),       // 项目级 (传统 Bolloon)
+    path.join(cwd, 'skills'),                   // 项目级 (Hermes 式: 仓库根 skills/ 分类技能库)
     path.join(home, '.boll', 'skills'),         // 全局 (兼容 bollharness 旧用户)
   ];
 }

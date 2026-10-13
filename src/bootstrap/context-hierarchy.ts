@@ -103,7 +103,9 @@ async function readRuleFile(filePath: string): Promise<string | null> {
 }
 
 /**
- * 读 project 层: 优先 Bolloon.md, fallback Bolloon.md, 最后尝试 .claude/rules/*.md
+ * 读 project 层: 优先 Bolloon.md, fallback Bolloon.md,
+ * 然后 AGENTS.md / CLAUDE.md (2026-10-12: Hermes/Claude Code 仓库约定文件, leo 要求对照 Hermes 主动加载),
+ * 最后尝试 .claude/rules/*.md
  */
 async function readProjectLayer(projectPath: string, projectRulesDir: string, maxChars: number): Promise<string | null> {
   // 1. Bolloon.md
@@ -114,6 +116,17 @@ async function readProjectLayer(projectPath: string, projectRulesDir: string, ma
   const bolloonMdPath = path.join(path.dirname(projectPath), 'Bolloon.md');
   content = await readRuleFile(bolloonMdPath);
   if (content) return truncate(content, maxChars);
+
+  // 2b. 2026-10-12 (leo: 「开始的时候没有主动扫描加载这个仓库里面的技能, 看一下 hermes 怎么做的」):
+  //    Hermes 启动会把当前仓库的 AGENTS.md / CLAUDE.md 自动装进 project context (仓库约定即技能/规则)。
+  //    Bolloon 只认 Bolloon.md + .claude/rules, 漏了这两个最通用的约定文件 — 补上。
+  for (const f of ['AGENTS.md', 'CLAUDE.md']) {
+    const p = path.join(path.dirname(projectPath), f);
+    content = await readRuleFile(p);
+    if (content) {
+      return truncate(`### ${f}\n${content}`, maxChars);
+    }
+  }
 
   // 3. .claude/rules/*.md (合并所有)
   try {

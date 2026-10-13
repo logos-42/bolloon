@@ -70,6 +70,31 @@ export function truncateToolOutput(output: string | undefined, max: number = TOO
   return s.slice(0, max) + `\n… [truncated, ${s.length - max} chars omitted]`;
 }
 
+/** 2026-10-12 (leo: 「每个命令后面放一个命令执行时间的读秒」): 毫秒 → 人读耗时串 (纯函数, 可单测) */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '(耗时未知)';
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = Math.round(s % 60);
+  return `${m}m${rem}s`;
+}
+
+/**
+ * 2026-10-12 (leo: 「对于 terminal 执行的命令, 你可以提供一个压缩的摘要」):
+ * 工具输出进 UI 前的摘要 (纯函数, 可单测) —— 只压 `terminal`/`shell` 类长输出:
+ * 折叠空白、截断到 ~300 字符、保留头部 (命令结果的开头最有信息量)。
+ * 其它工具原样返回 (read_file 等短输出没必要压)。
+ */
+export function summarizeToolOutput(toolName: string, output: string | undefined): string {
+  const s = output ?? '';
+  if (!/terminal|shell|bash|exec/i.test(toolName)) return s;
+  const collapsed = s.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  if (collapsed.length <= 300) return collapsed;
+  return collapsed.slice(0, 300) + `\n… [摘要, 原输出 ${s.length} 字符]`;
+}
+
 /**
  * 2026-10-02 (K7): **受门执行端口** —— 注入后, pivot loop 不再自己调 `tool.execute`,
  * 而是把执行交给注入方 (pi-sdk 把同一个 harness 判定包进来) ⇒ 与主路径共用一套门。
@@ -532,6 +557,13 @@ export class WorkflowPivotLoop {
           // No pending tool uses - this is a normal completion
           this.state.pendingToolUses = [];
           
+          // 2026-10-12 (leo: 「任务进行到一半就卡住了」): **0 工具轮也要把回复写进历史**。
+          //   旧代码只在工具执行分支 push assistant —— 纯回复轮 (模型给最终回答) 不进 history,
+          //   于是: ① 质量不达标被打回重跑时, 模型下一轮**看不到自己上轮说过什么**;
+          //   ② 循环因无进展退出时, 兜底取 `lastAssistant?.content` 是**最后一次工具轮**的
+          //   空 content ⇒ 屏上 `│  │` 空框。现在: 每轮回复都进历史, 兜底能拿到真正的最终答复。
+          this.messageHistory.push({ role: 'assistant', content: reply });
+
           // Evaluate quality before accepting
           const quality = this.evaluateQuality(reply);
           this.state.qualityScores.push(quality);
@@ -578,6 +610,7 @@ export class WorkflowPivotLoop {
         //   失败结果 + 续跑提示, 让 LLM 下轮决定换法/重试, 而不是无限挂起。
         const execTool = async (toolCall: ToolDefinition) => {
           this.state.toolCallsCount++;
+          const toolT0 = Date.now();   // 2026-10-12: 单工具耗时 (step_done 读秒用)
 
           const tool = this.tools.get(toolCall.name);
           if (!tool) {
@@ -659,6 +692,7 @@ export class WorkflowPivotLoop {
                 resolve({ success: false, error: `工具超时 (${toolTimeoutMs}ms): ${toolCall.name} 未在时限内返回` } as ToolResult);
               }, toolTimeoutMs).unref?.()),
             ]);
+            const toolCostMs = Date.now() - toolT0;   // 2026-10-12: 实际耗时 (含等待)
 
             // 2026-08-11: 输出过大 → 续跑提示 (Hermes dropped-tools continuation 模式),
             //   上下文后续可能被压缩, 提醒 LLM 需要精确数据时缩小范围重查
@@ -671,19 +705,25 @@ export class WorkflowPivotLoop {
             this.emit({
               type: result.success ? 'step_done' : 'step_error',
               content: result.success
-                ? `${toolCall.name} 成功`
-                : `${toolCall.name} 失败: ${result.error}`,
+                ? `${toolCall.name} 成功 · ${formatDuration(toolCostMs)}`
+                : `${toolCall.name} 失败: ${result.error}`,   // 失败文案带原因即可, 耗时由 UI 从 durationMs 读
               tool: toolCall.name,
               success: result.success,
-              output: result.output,
+              output: summarizeToolOutput(toolCall.name, result.output),
               error: result.error,
+              durationMs: toolCostMs,
             });
-            this.emit({
-              type: result.success ? 'status' : 'error',
-              content: result.success
-                ? `✅ ${toolCall.name} 成功`
-                : `❌ ${toolCall.name} 失败: ${result.error}`
-            });
+            // 2026-10-12 (leo: 「✅ read_file 成功 不用发出来」):
+            //   成功不再发 `✅ X 成功` 状态行 —— step_done 已带 工具名+耗时+摘要, 重复的
+            //   成功汇报纯属噪音 (用户原话: 「这种执行工具成功的汇报不用发出来这个 log,
+            //   只需要把工具执行的记录写清楚就行了」)。**失败保留** (`❌` error 事件,
+            //   需人介入的信号不许吞)。
+            if (!result.success) {
+              this.emit({
+                type: 'error',
+                content: `❌ ${toolCall.name} 失败: ${result.error}`
+              });
+            }
             
             this.messageHistory.push({
               role: 'assistant',

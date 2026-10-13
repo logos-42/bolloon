@@ -2014,6 +2014,16 @@ ${await this.renderActivePlansSection()}
     let result: any;
     try {
       result = await loop.execute(input, llmWithHarness, systemPrompt + historyBlock, this.runCtx.eventSink ?? undefined, this.runCtx.abortSignal ?? undefined, onCompact);
+      // 2026-10-12 (leo: 「没有根据上下文加载刻度」): pivot 的 messageHistory 是 process-local,
+      //   `estimateHistoryTokens()` 读 actor 的旧历史 ⇒ 状态栏上下文刻度恒 0.00% 的根因。
+      //   pivot 自己累计的 `state.totalTokens` 才是这一轮**真实**消耗 —— 直接用它上报 ContextManager,
+      //   刻度立刻有数 (旧: 只在上面的 reportUsageToContextManager 里用 actor 历史估, 恒 0)。
+      try {
+        const pivotTokens = Number(result?.state?.totalTokens);
+        if (Number.isFinite(pivotTokens) && pivotTokens > 0) {
+          getContextManager().updateUsage(pivotTokens);
+        }
+      } catch { /* 上报失败不阻塞主流程 */ }
     } finally {
       try { await this.piHarness().sessionEnd(this.harnessCtx()); } catch { /* 收尾留痕失败不改变本次结论 */ }
     }

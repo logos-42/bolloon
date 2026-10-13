@@ -1,6 +1,6 @@
 import { config } from 'dotenv';
 import { describe, it, expect, beforeAll } from 'vitest';
-import { WorkflowPivotLoop, createDefaultPivotConfig, runPivotLoop } from '../agents/workflow-pivot-loop.js';
+import { WorkflowPivotLoop, createDefaultPivotConfig, runPivotLoop, formatDuration, summarizeToolOutput } from '../agents/workflow-pivot-loop.js';
 import type { Tool } from '../agents/pi-sdk.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -462,5 +462,46 @@ describe('K7: pivot loop 的受门执行端口 (guardedExecute)', () => {
     expect(fallbackIdx).toBeGreaterThan(portIdx);
     // 端口抛错 → harness-error 兜底必须在 fallback 分支**之外** (不许回落执行本体)
     expect(src.slice(0, fallbackIdx)).toContain('拒绝: [harness-error]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-10-12 (leo: 「命令执行时间读秒」+「terminal 压缩摘要」): 纯函数单测
+// ---------------------------------------------------------------------------
+describe('formatDuration — 毫秒读秒', () => {
+  it('小于 1s → 毫秒原样', () => {
+    expect(formatDuration(500)).toBe('500ms');
+    expect(formatDuration(999)).toBe('999ms');
+  });
+  it('秒级 → 一位小数 s', () => {
+    expect(formatDuration(1000)).toBe('1.0s');
+    expect(formatDuration(2527)).toBe('2.5s');
+    expect(formatDuration(59_900)).toBe('59.9s');
+  });
+  it('分钟级 → m+s', () => {
+    expect(formatDuration(60_000)).toBe('1m0s');
+    expect(formatDuration(125_000)).toBe('2m5s');
+  });
+  it('非法输入 → 如实标注', () => {
+    expect(formatDuration(-1)).toBe('(耗时未知)');
+    expect(formatDuration(Number.NaN)).toBe('(耗时未知)');
+  });
+});
+
+describe('summarizeToolOutput — terminal 输出压缩摘要', () => {
+  it('terminal 长输出 → 压空白 + 截断 + 标注', () => {
+    const long = ('line of output\n'.repeat(50));
+    const s = summarizeToolOutput('terminal', long);
+    expect(s.length).toBeLessThan(long.length);
+    expect(s).toContain('[摘要');
+    expect(s.startsWith('line of output')).toBe(true);
+  });
+  it('terminal 短输出 → 压空白但保留全文', () => {
+    const s = summarizeToolOutput('terminal', '  a  b\n\n\nc  ');
+    expect(s).toBe('a b\n\nc');
+  });
+  it('非 shell 工具 → 原样返回', () => {
+    const s = summarizeToolOutput('read_file', '  a  b  ');
+    expect(s).toBe('  a  b  ');
   });
 });

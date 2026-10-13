@@ -608,6 +608,8 @@ export interface StepEvent {
   output?: string;
   error?: string;
   args?: Record<string, unknown>;
+  /** 2026-10-12 (leo: 命令执行时间读秒): 工具实际耗时 (ms) */
+  durationMs?: number;
 }
 
 export function handleStepEvent(data: StepEvent, ctx: RendererCtx = { messagesEl: null, messagesContainers: new Map(), currentChannelId: null }): void {
@@ -643,6 +645,7 @@ export function handleStepEvent(data: StepEvent, ctx: RendererCtx = { messagesEl
     success: data.success,
     output: data.output,
     error: data.error,
+    durationMs: data.durationMs,
   });
 }
 

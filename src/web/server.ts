@@ -999,6 +999,7 @@ async function handleV3P2PMessage(parsed: any, conn: P2PConnection, comm: Hypers
               output: event.output,
               error: event.error,
               args: event.args,
+              durationMs: event.durationMs,   // 2026-10-12: 命令执行时间读秒
               fromPublicKey: v3P2PRef?.getPublicKey() || ''
             }
           });
@@ -6775,6 +6776,7 @@ app.post('/active-channel', async (req, res) => {
             output: event.output,
             error: event.error,
             args: event.args,
+            durationMs: event.durationMs,   // 2026-10-12: 命令执行时间读秒
           }, channelId);
         } else if (event.type === 'error') {
           broadcast({ type: 'error', content: event.content }, channelId);
