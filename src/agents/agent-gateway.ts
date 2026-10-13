@@ -18,7 +18,7 @@ import { getAgentRegistry, warmAgentRegistry, type AgentRegistry } from './agent
 import { getEconomicPolicy } from './economic-policy.js';
 import { getPaymentGate } from './payment-gate.js';
 import { getApprovalStore } from './payment-approval.js';
-import { recordServiceOutcome, queryReputation } from './agent-reputation.js';
+import { recordServiceOutcome } from './agent-reputation.js';
 
 // ============ 类型 ============
 

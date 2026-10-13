@@ -33,9 +33,7 @@ import { Interface } from 'ethers';
 import {
   AGENT_ESCROW_V2_ABI,
   V2_EVENT_NAMES,
-  createJsonRpcProvider,
-  type V2EventName,
-} from './escrow-client.js';
+  createJsonRpcProvider,} from './escrow-client.js';
 import {
   DEFAULT_CONFIRMATIONS,
   bolloonHome,

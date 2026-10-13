@@ -10,7 +10,7 @@
  */
 
 import {
-  readGoal, setCriteria, addEvidence, setUnresolved, updateGoal, type GoalRecord,
+  readGoal, setCriteria, addEvidence, updateGoal, type GoalRecord,
 } from './goal-store.js';
 // 2026-09-25 (M0 接线冻结, 规则 ②): Goal 状态变更只有一个漏斗
 import { reduceGoalState } from './goal-state-reducer.js';

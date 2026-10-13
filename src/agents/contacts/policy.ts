@@ -13,7 +13,7 @@ import { evaluateGrant, categoriesOf, type ContactGrant, type GrantBlockKind, ty
 import { scanForbidden } from './types.js';
 import { type ContactsStore } from './store.js';
 import { type ContactLimits, type ContactPreview } from './preview-types.js';
-import { type SendPolicy, type VerifiedContact, scanSensitive, type SensitiveFinding } from './types.js';
+import { type VerifiedContact, scanSensitive, type SensitiveFinding } from './types.js';
 
 export type BlockKind =
   | 'not_found'
