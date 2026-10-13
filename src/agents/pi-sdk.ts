@@ -100,7 +100,7 @@ import {
   type GlobalSharedContext
 } from '../social/global-shared-context.js';
 import { Session, SkillRegistry, saveSession, loadSession, type Skill, type StoredSession } from '@bolloon/constraint-runtime';
-import { loadSkillsFromPaths, defaultSkillPaths, describeSkill } from './skill-loader.js';
+import { loadSkillsFromPaths, defaultSkillPaths } from './skill-loader.js';
 
 /** 2026-08-10: unreported 逃生门判定 — LLM 反复不把工具结果写进回复时, 超过上限强制收尾 (防死循环) */
 export function decideUnreported(unreported: number, retries: number, max: number): 'retry' | 'force-final' | 'none' {

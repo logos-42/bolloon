@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { loadSkillsDir, defaultSkillPaths, loadSkillsFromPaths, describeSkill } from '../agents/skill-loader.js';
+import { loadSkillsDir, defaultSkillPaths, loadSkillsFromPaths } from '../agents/skill-loader.js';
 
 function tmpSkillsDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-skills-'));
@@ -76,13 +76,5 @@ describe('技能加载循环读取端 (2026-10-13, leo: 「成整个加载循环
     expect(body).toContain('## Skill: my-skill');
     expect(body).toContain('我的测试技能');   // 描述进全文
     expect(body).toContain('body');           // SKILL.md 正文进全文 (模型上下文可见)
-  });
-
-  it('describeSkill 输出 名字: 描述 (技能索引的每行形态)', () => {
-    const dir = tmpSkillsDir();
-    writeSkill(dir, 'my-skill/SKILL.md', 'my-skill', '我的测试技能');
-    // 直接用 describeSkill 形状验证索引行
-    expect(describeSkill({ name: 'my-skill', description: '我的测试技能', execute: async () => '' } as any))
-      .toBe('my-skill: 我的测试技能');
   });
 });

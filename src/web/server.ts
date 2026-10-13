@@ -5064,7 +5064,7 @@ fetchState();
       // 2026-06-10: 注入 skills 列表 (本机 ~/.bolloon/skills/ 下所有 skills)
       // 让 LLM 知道有哪些 skill 可用, 在回复中提示用户
       try {
-        const { loadSkillsFromPaths, defaultSkillPaths, describeSkill } = await import('../agents/skill-loader.js');
+        const { loadSkillsFromPaths, defaultSkillPaths } = await import('../agents/skill-loader.js');
         const paths = defaultSkillPaths();
         const skills = await loadSkillsFromPaths(paths);
         if (skills.length > 0) {

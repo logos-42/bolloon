@@ -208,8 +208,3 @@ export async function loadSkillsFromPaths(paths: string[]): Promise<Skill[]> {
   }
   return Array.from(seen.values());
 }
-
-/** 列出已加载的 skills (调试/UI 用) */
-export function describeSkill(s: Skill): string {
-  return `${s.name}: ${s.description}`;
-}
