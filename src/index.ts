@@ -951,7 +951,10 @@ function handleCliSigint(): void {
   if (action === 'abort_turn') {
     cliAbortArmed = true;
     try { cliTurnActor?.abort('user-ctrl+c'); } catch { /* abort 失败不致命 */ }
-    try { inkSetTransient(`${C_WARN}⏹ 已发送中断请求 — 再次 Ctrl+C 完全退出${RESET}`); } catch { /* 提示失败不阻断 */ }
+    // 2026-10-13 (leo: 「interrupt 效果暂存到输出流」): 中断必须**进输出流** (appendLine, 持久可见),
+    //   不能只靠瞬时行 (inkSetTransient 会被工具读秒/thinking 覆盖, 几秒就消失)。
+    //   回合结束时 (4078) 已有一行「已中断回合」; 这里立刻补一行, 用户按下的瞬间就有反馈。
+    try { appendLine(`${C_WARN}⏹ 已发送中断请求 — 正在停止当前任务 (再次 Ctrl+C 完全退出)${RESET}`); } catch { /* 提示失败不阻断 */ }
     return;
   }
   // 完整退出: resolve exitPromise → stopInk → 存档 → 再见 → process.exit
