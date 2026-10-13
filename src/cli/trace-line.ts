@@ -27,8 +27,12 @@ const ACTIONS: Array<[RegExp, string]> = [
   [/^execute_code$/, '跑代码'],
   [/^tsc_check$/, '查类型'],
   [/^list_tools$/, '看有哪些工具'],
-  [/^list_skills$/, '找技能'],
-  [/^read_skill$/, '读技能'],
+  // 2026-10-13 (leo: 「加载技能记忆类似工具调用… 在看到技能之后运行这个技能, 然后在上下文中就可以看到了」):
+  //   技能加载走 📚 前缀 —— Hermes 的 skill_view 就是 `📚 skill <名> 7.5s`, 一眼可辨"这是技能/记忆按需加载",
+  //   不是普通工具调用; 结果(技能全文)进 history ⇒ 模型上下文里能看到, 正是 leo 要的"持续进程"。
+  [/^list_skills$/, '📚 找技能'],
+  [/^read_skill$/, '📚 读技能'],
+  [/^memory_(recall|search|query|load)$/, '📚 取记忆'],
   [/^process$/, '管后台进程/服务'],
   [/^task|^plan|^todo/i, '理计划/待办'],
   [/^send_|^broadcast|^check_inbox|^list_peers/, '发消息/看连接'],

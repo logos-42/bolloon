@@ -13,7 +13,8 @@ describe('trace 执行描述', () => {
     expect(describeToolCall('git_commit')).toBe('提交改动');
     expect(describeToolCall('terminal')).toBe('跑命令');
     expect(describeToolCall('write_file')).toBe('写文件');
-    expect(describeToolCall('list_skills')).toBe('找技能');
+    expect(describeToolCall('list_skills')).toBe('📚 找技能');
+    expect(describeToolCall('read_skill')).toBe('📚 读技能');
     expect(describeToolCall('process')).toBe('管后台进程/服务');
   });
   it('② 认不出/空 => 退回工具名, 绝不空白', () => {
