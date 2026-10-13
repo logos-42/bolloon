@@ -19,13 +19,13 @@
  *   - 同一 requestId 不重复发送 (policy 的 duplicate_request + sent.json)
  */
 
-import { addEvidence, readGoal, setContinuation, setUnresolved } from '../goal-store.js';
+import { addEvidence, readGoal, setUnresolved } from '../goal-store.js';
 // 2026-09-25 (M0 接线冻结, 规则 ②): Goal 状态变更只有一个漏斗
 import { reduceGoalState } from '../goal-state-reducer.js';
 import { addRunEvidence } from '../run-store.js';
-import { bindExternalWait, clearExternalWait, deliverExternalEvent, expireExternalWaits, newContinuationId, defaultWaitExpiry } from '../external-events.js';
+import { bindExternalWait, clearExternalWait, deliverExternalEvent, expireExternalWaits, newContinuationId } from '../external-events.js';
 import { ContactsStore } from './store.js';
-import { GrantStore, evaluateGrant, type ContactGrant, type GrantLevel } from './grants.js';
+import { GrantStore, type ContactGrant, type GrantLevel } from './grants.js';
 import { ContactConsentStore, setConsentExecutor, type ContactConsent } from './consent.js';
 import { decideContactAction, renderPreview, type PolicyDecision } from './policy.js';
 import { OtpStore, getProvider, listProviders } from './providers.js';
