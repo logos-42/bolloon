@@ -910,6 +910,22 @@ let cliTurnStartedAt = 0;
 let cliLastTurnMs = 0;
 let cliTurnReplyBytes = 0;
 let cliTurnToolCount = 0;   // 在跑工具数 (回合内由工具事件更新)
+/** 2026-10-12 (leo: 「terminal 运行中... 后面动态读秒, hermes 是这么做的」): 工具运行中
+ *   每 1s 刷新 transient 行, 显示 已用秒数 + 当前工具名 (Hermes `⚙️ wait ... (N.Ns)` 风格)。 */
+let toolTransientTimer: ReturnType<typeof setInterval> | null = null;
+function startToolTransient(label: string): void {
+  stopToolTransient();
+  const t0 = Date.now();
+  inkSetTransient(`${C_DIM}${label} 运行中... 0s${RESET}`);
+  toolTransientTimer = setInterval(() => {
+    const secs = Math.max(0.1, (Date.now() - t0) / 1000).toFixed(1);
+    inkSetTransient(`${C_DIM}${label} 运行中... ${secs}s${RESET}`);
+  }, 1000);
+  toolTransientTimer.unref?.();
+}
+function stopToolTransient(): void {
+  if (toolTransientTimer) { clearInterval(toolTransientTimer); toolTransientTimer = null; }
+}
 /** 当前会话的 Title/Preview (工具栏右侧显示用; 回合结束后后台生成一次, 生成过就不再跑) */
 let cliSessionPreview = '';
 let cliSessionTitleKey: string | null = null;   // 这条标题属于哪个会话 —— 不是当前会话一律不显示 (防串台)
@@ -3932,9 +3948,11 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
             const label = activeNames.length > 1
               ? `执行 ${activeNames.length} 个工具: ${activeNames.join(', ')}`
               : `🔧 ${traceLabel(toolName)}`;   // trace 执行描述: 写清这一步在做什么
-            inkSetTransient(`${C_DIM}${label} 运行中...${RESET}`);
+            // 2026-10-12: 动态读秒 (Hermes 风格) — transient 行每 1s 刷新 已用秒
+            startToolTransient(label);
           }
         } else if (e.type === 'step_done' || e.type === 'step_error') {
+          stopToolTransient();   // 2026-10-12: 先停动态读秒 (并行多工具时, 下一个 start 会重启)
           const p = tuiToolCalls.shift();
           const doneItem: ToolCallListItem = {
             tool: e.tool ?? (p?.tool ?? '?'),
@@ -3961,8 +3979,10 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
             cliTurnToolCount = remaining.length;   // ⚙ 状态栏用 (模块级)
           if (remaining.length > 0) {
             const label = remaining.length > 1 ? `执行 ${remaining.length} 个工具: ${remaining.map(c => c.tool).join(', ')}` : `🔧 ${traceLabel(remaining[0].tool)}`;   // trace 执行描述
-            inkSetTransient(`${C_DIM}${label} 运行中...${RESET}`);
+            // 2026-10-12: 动态读秒 — 换下一个工具时重启计时 (上一工具已 stop)
+            startToolTransient(label);
           } else {
+            stopToolTransient();
             inkSetTransient(null);
           }
         }
