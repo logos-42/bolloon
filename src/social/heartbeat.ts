@@ -365,6 +365,9 @@ export class SocialHeartbeat {
   private currentPeerDids: Set<string> = new Set();
   private greetingMessage: string;
   private ownIpfsCid?: string;
+  // 2026-10-12: IPFS/IPNS 发布失败只提示一次 (本地没跑节点时每次心跳刷 warn)
+  private _ipfsPublishWarned = false;
+  private _ipnsPublishWarned = false;
 
   // 蚁群组件
   private pheromoneEngine: PheromoneEngine | null = null;
@@ -715,6 +718,10 @@ export class SocialHeartbeat {
       const result = await ipfs.upload(content);
       const cid = typeof result === 'string' ? result : result?.cid;
 
+      // 2026-10-12 (leo: 「IPFS 发布失败刷屏 27 行」): 本地没跑 IPFS 节点时每次心跳都 warn。
+      //   成功一次就重置提示标志 —— 节点恢复后重新可提示。
+      this._ipfsPublishWarned = false;
+
       if (cid && cid !== this.ownIpfsCid) {
         this.ownIpfsCid = cid;
         console.log(`[Heartbeat] Persona 发布到 IPFS: ${cid}`);
@@ -724,12 +731,19 @@ export class SocialHeartbeat {
             await ipfs.publishIpns(this.config.ownIpnsName, cid);
             console.log(`[Heartbeat] Persona 发布到 IPNS: ${this.config.ownIpnsName}`);
           } catch (err) {
-            console.warn(`[Heartbeat] IPNS 发布失败:`, err);
+            if (!this._ipnsPublishWarned) {
+              this._ipnsPublishWarned = true;
+              console.warn('[Heartbeat] IPNS 发布失败:', err);
+            }
           }
         }
       }
     } catch (err) {
-      console.warn('[Heartbeat] IPFS 发布失败:', err);
+      // 只提示第一次 (配置缺失 / 节点未跑是常态, 不该每个心跳刷一条)
+      if (!this._ipfsPublishWarned) {
+        this._ipfsPublishWarned = true;
+        console.warn('[Heartbeat] IPFS 发布失败:', err);
+      }
     }
   }
 

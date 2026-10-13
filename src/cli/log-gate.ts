@@ -189,7 +189,7 @@ const SDK_DIAG_LINE = /^(?:\[[^\]]*\]\s*)?\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*\[(?:\x1
  */
 // 允许标签前有一个**严重度字形** (`⚠ [identity] …` / `✗ [session-note] …` 真机就是这样) —— 只放这几个字形, 不做通配
 const INTERNAL_CHATTER_TAG =
-  /^[ \t]{0,8}[⚠✗✓!·]?[ \t]*\[(?:pi-ai(?:\s+timing)?|identity|session-note|react-harness|DocumentStore|DocumentReceiver|kv-server|loadSkills|v3-manifest|v3-async|supervisor-host|tool-telemetry|runs|abort|broadcast)\b[^\]\n]*\]/i;
+  /^[ \t]{0,8}[⚠✗✓!·]?[ \t]*\[(?:pi-ai(?:\s+timing)?|identity|session-note|react-harness|DocumentStore|DocumentReceiver|kv-server|loadSkills|v3-manifest|v3-async|supervisor-host|tool-telemetry|runs|abort|broadcast|Heartbeat)\b[^\]\n]*\]/i;
 /**
  * 没有 ASCII 标签、但实测属于内部运行日志的行 (2026-10-02 leo 追加: 「✅ 最终回复 (质量 8.5/10) ·
  * 🔄 循环 N/10 这类也去掉」)。
