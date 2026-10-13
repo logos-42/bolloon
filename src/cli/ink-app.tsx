@@ -856,11 +856,11 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
           {transient ? (
             <Text>{transient}</Text>
           ) : thinking ? (
-            // 2026-10-01 (用户: 「颜文字被加载进去了，防一下」+「可能是 ink 渲染的问题」):
-            //   trace 模式(默认)不画颜文字 —— 颜文字帧会被 Ink 重绘**留进滚动区** ✗, 于是能被拖进输入框、
-            //   甚至混进上下文 ✗。trace 下只留一行朴素文字(不逐帧重绘 ⇒ 没有可拖的残影 ✓);
-            //   想看动画: BOLLOON_SHOW_THINKING=short|full ✓。
-            <Text color="yellow">{reasoningMode() === 'trace' ? '思考中...' : `${KAOMOJI[thinkingIdx.current]} 思考中...`}</Text>
+            // 2026-10-13 (leo: 「艺术字表情包的动画加载效果呢?」): 思考动画恢复颜文字帧轮播
+            //   (KAOMOJI 每 600ms 换帧)。2026-10-01 曾因"颜文字帧会被 Ink 重绘留进滚动区、可被拖进输入框"
+            //   改成 trace 模式只留朴素文字 —— 那是用户当时的取舍; 现在用户明确要动画回来, 用户偏好优先。
+            //   残影风险仍在, 但瞬态行只在 footer 一行重绘、不落 <Static>, 实际不会再烙进滚动区。
+            <Text color="yellow">{KAOMOJI[thinkingIdx.current]} 思考中...</Text>
           ) : (
             <Text color={THEME.muted}>{'· 回车发送 · ↑↓ 历史 · PgUp 回看 · Esc 双击退出'}</Text>
           )}

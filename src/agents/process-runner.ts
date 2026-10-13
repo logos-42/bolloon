@@ -50,7 +50,15 @@ export function spawnBackground(raw: string, cwd: string = process.cwd()): Backg
   const shell = process.platform === 'win32' ? 'cmd' : '/bin/sh';
   const shellArgs = process.platform === 'win32' ? ['/c', raw] : ['-c', raw];
   try {
-    const proc = spawn(shell, shellArgs, { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, windowsHide: true });
+    const proc = spawn(shell, shellArgs, {
+      cwd,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      windowsHide: true,
+      // 2026-10-13 (leo: 「有没有错误回收机制」): detached:true = 每条命令独立进程组,
+      //   killSession 才能按组杀 (负 pid) 回收整棵进程树, 不留 shell 的孤儿子进程。
+      //   副作用 (进程随父退出不自动回收) 由既有落盘恢复机制兜底 (persistSessions/restoreSessions)。
+      detached: process.platform !== 'win32',
+    });
     session.proc = proc;
     session.pid = proc.pid;
     persistSessions();
@@ -79,8 +87,11 @@ export function pollSession(id: string): { ok: boolean; found?: boolean; session
   };
 }
 
-/** 等待后台进程结束 (最多 timeoutMs). 返回最终状态. */
-export async function waitSession(id: string, timeoutMs: number = 30000): Promise<{ ok: boolean; session?: any; error?: string }> {
+/** 等待后台进程结束 (最多 timeoutMs). 返回最终状态.
+ *  2026-10-13 (leo: 「有没有错误回收机制, 超时回收机制?」): 超时后**回收** —— 默认 kill 挂起进程
+ *  (wait 语义 = "等它跑完取结果", 超时说明它不会在预算内跑完, 留着占资源没意义);
+ *  不想杀传 killOnTimeout=false (纯等待/轮询场景). */
+export async function waitSession(id: string, timeoutMs: number = 30000, killOnTimeout: boolean = true): Promise<{ ok: boolean; session?: any; error?: string }> {
   const s = sessions.get(id);
   if (!s) return { ok: false, error: `未知 session ${id}` };
   if (s.status !== 'running') {
@@ -90,9 +101,13 @@ export async function waitSession(id: string, timeoutMs: number = 30000): Promis
   while (Date.now() < deadline && s.status === 'running') {
     await new Promise((r) => setTimeout(r, 250));
   }
+  const timedOut = s.status === 'running';
+  if (timedOut && killOnTimeout) {
+    killSession(id);   // 超时回收: 终止挂起进程, 不占资源
+  }
   return {
-    ok: s.status !== 'running',
-    session: { id: s.id, status: s.status, exitCode: s.exitCode, output: s.output.slice(-4000), timedOut: s.status === 'running' },
+    ok: !timedOut,
+    session: { id: s.id, status: s.status, exitCode: s.exitCode, output: s.output.slice(-4000), timedOut },
   };
 }
 
@@ -104,7 +119,11 @@ export function killSession(id: string): { ok: boolean; reason?: string } {
     return { ok: true, reason: `进程已 ${s.status}` };
   }
   try {
-    if (process.platform === 'win32') s.proc.kill('SIGTERM'); else s.proc.kill('SIGTERM');
+    // 2026-10-13 (leo: 「有没有错误回收机制」): kill 只杀 shell 不杀子进程 = 进程树泄漏;
+    //   spawn 时 detached:true 让每条命令独立进程组 ⇒ 这里 kill 整个进程组 (负 pid = 组信号)。
+    //   spawnBackground 已带 detached:true (见该函数)。
+    try { process.kill(-(s.proc.pid!), 'SIGTERM'); } catch { /* 组信号可能 EPERM (非组长) */ }
+    s.proc.kill('SIGTERM');
     s.status = 'killed';
     return { ok: true };
   } catch (e: any) {

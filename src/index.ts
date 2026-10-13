@@ -3962,9 +3962,6 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     cliTurnActor = (a as { actor?: ChannelActor } | null | undefined)?.actor ?? null;
     cliTurnActive = true;
     cliAbortArmed = false;
-    // 2026-10-13 (leo: 「我要的是技能加载, 不是阶段标识」): 回合开始显示「技能/记忆加载」瞬时行
-    //   (Hermes 式启动加载进度; 3.5s 自清, 不 appendLine 不打断)
-    inkSetTransient(`${C_DIM}⟳ 加载技能 / 记忆 / 上下文…${RESET}`);
     const response = await deliverThroughActor(a, () => a.prompt(trimmed, {
       onStream: (e) => {
         // 2026-08-07: 中间思考/状态显示 — 之前只显示工具步骤, LLM 的思考过程

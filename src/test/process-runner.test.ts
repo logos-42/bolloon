@@ -56,4 +56,27 @@ describe('process-runner (后台进程管理, TaskD)', () => {
     const r = pollSession('proc-nonexistent');
     expect(r.found).toBe(false);
   });
+
+  it('waitSession 超时回收: 默认 kill 挂起进程 (2026-10-13 leo: 超时回收机制)', async () => {
+    const s = spawnBackground(SLEEP_CMD, process.cwd());
+    // 短超时 (800ms) + sleep 10s ⇒ 必超时; 默认 killOnTimeout=true ⇒ 进程被回收
+    const r = await waitSession(s.id, 800);
+    expect(r.ok).toBe(false);                    // 超时 = 未在预算内跑完
+    expect(r.session.timedOut).toBe(true);
+    // 回收后进程不再是 running (killed/exited/error)
+    const p = pollSession(s.id);
+    expect(['killed', 'exited', 'error']).toContain(p.session!.status);
+  });
+
+  it('waitSession killOnTimeout=false 时超时只报告不杀 (轮询场景)', async () => {
+    const s = spawnBackground(SLEEP_CMD, process.cwd());
+    const r = await waitSession(s.id, 600, false);
+    expect(r.ok).toBe(false);
+    expect(r.session.timedOut).toBe(true);
+    // 不杀 ⇒ 进程还在跑
+    const p = pollSession(s.id);
+    expect(p.session!.status).toBe('running');
+    // 清理: 手动 kill 掉, 不留测试进程
+    killSession(s.id);
+  });
 });
