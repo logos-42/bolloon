@@ -505,3 +505,56 @@ describe('summarizeToolOutput — terminal 输出压缩摘要', () => {
     expect(s).toBe('  a  b  ');
   });
 });
+
+describe('空回复回归 (2026-10-13, leo: 「我发了一个命令, 返回空」)', () => {
+  it('LLM 返回空 reply → 不直接收尾 (旧: 空串 0.7 分过关 → 空框)', async () => {
+    const loop = new WorkflowPivotLoop({
+      maxIterations: 5,
+      minIterations: 1,
+      qualityThreshold: 0.7,   // 默认阈值: 空串旧评分 0.7 恰好过关
+    });
+    loop.registerTools(mockTools);
+
+    let calls = 0;
+    const llm = {
+      chat: async () => {
+        calls++;
+        // 第一轮返回空 reply (模型只回 tool_calls 没给文本 / 空 content 的真实形态)
+        if (calls === 1) return { reply: '' };
+        // 后续给真回复
+        return { reply: '我看了一下，这是当前目录的文件列表' };
+      },
+    };
+
+    const result = await loop.execute('能看到我的仓库吗？请列出当前目录', llm as any, '测试系统提示');
+
+    // 空回复必须打回续跑 → 至少 2 次迭代, 而不是第 1 轮就 quality_threshold_met 收尾
+    expect(calls).toBeGreaterThan(1);
+    expect(result.iterations).toBeGreaterThan(1);
+    // 最终回复非空 (不再空框)
+    expect(result.response.trim().length).toBeGreaterThan(0);
+    expect(result.exitReason).toBe('quality_threshold_met');
+  });
+
+  it('纯空白 reply → 同样打回 (trim 后为空)', async () => {
+    const loop = new WorkflowPivotLoop({
+      maxIterations: 5,
+      minIterations: 1,
+      qualityThreshold: 0.7,
+    });
+    loop.registerTools(mockTools);
+
+    let calls = 0;
+    const llm = {
+      chat: async () => {
+        calls++;
+        if (calls === 1) return { reply: '   \n  ' };   // 纯空白
+        return { reply: '这是回复内容' };
+      },
+    };
+
+    const result = await loop.execute('测试', llm as any, '测试系统提示');
+    expect(calls).toBeGreaterThan(1);
+    expect(result.response.trim().length).toBeGreaterThan(0);
+  });
+});

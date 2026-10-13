@@ -1032,6 +1032,13 @@ export class WorkflowPivotLoop {
    * Evaluate response quality
    */
   private evaluateQuality(response: string): number {
+    // 2026-10-13 (leo: 「我发了一个命令, 返回空」): **空回复必须判不合格** —— 旧实现起点 0.7,
+    //   空串 '' 也有 0.7 分, 恰好等于默认阈值 ⇒ 空 reply 直接 quality_threshold_met 收尾 ⇒ CLI 空框
+    //   (「你好」正常因为模型给文本; 「能看到我的仓库吗？」模型某轮返回空 content/tool-only 回复 ⇒ 空串过关)。
+    //   现在: 空/纯空白一律 0.3 (低于任何阈值), 打回让模型重给; 非空保持旧评分。
+    const t = String(response || '').trim();
+    if (!t) return 0.3;
+
     let score = 0.7; // 2026-07-06: 起点 0.7 — 短回复不应被当成低质量打回去重跑
 
     // Length bonus
