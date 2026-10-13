@@ -558,3 +558,39 @@ describe('空回复回归 (2026-10-13, leo: 「我发了一个命令, 返回空�
     expect(result.response.trim().length).toBeGreaterThan(0);
   });
 });
+
+describe('工具执行阶段 abort 打断 (2026-10-13, leo: 「发送消息过程中的打断和衔接整个流程」)', () => {
+  it('工具执行中 abort → loop 快速退出 (不等到 120s 超时)', async () => {
+    // 注册一个永不返回的慢工具 (模拟挂起的 terminal/grep)
+    const hangingTool: Tool = {
+      name: 'hanging_tool',
+      description: '永不返回的慢工具 (测试用)',
+      parameters: {},
+      execute: () => new Promise(() => { /* 永不 resolve */ }),
+    };
+    const loop = new WorkflowPivotLoop({
+      maxIterations: 10,
+      minIterations: 1,
+      qualityThreshold: 0.7,
+    });
+    loop.registerTools([hangingTool, ...mockTools]);
+
+    // LLM 永远让模型调用 hanging_tool
+    const llm = {
+      chat: async () => ({ reply: '', toolCalls: [{ name: 'hanging_tool', args: {} }] }),
+    };
+
+    const ac = new AbortController();
+    const execPromise = loop.execute('测试', llm as any, '系统提示', undefined, ac.signal);
+    // 给工具一帧启动时间, 然后 abort
+    await new Promise((r) => setTimeout(r, 150));
+    const t0 = Date.now();
+    ac.abort();   // 用户 Ctrl+C
+
+    const result = await execPromise;
+    const elapsed = Date.now() - t0;
+    // abort 后应快速返回 (远小于 120s 超时), 且退出原因不是 error 空框
+    expect(elapsed).toBeLessThan(10_000);
+    expect(result).toBeTruthy();
+  });
+});
