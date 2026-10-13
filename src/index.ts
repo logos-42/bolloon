@@ -1,4 +1,5 @@
-import { deliverThroughActor } from './kernel/channel-actor.js';
+import { deliverThroughActor, currentRequestSignal } from './kernel/channel-actor.js';
+import type { ChannelActor } from './kernel/channel-actor.js';
 
 import {
 
@@ -85,6 +86,19 @@ export function parseGroupSub(input: string): GroupSub {
   if (/^\d+$/.test(head)) return { sub: 'use', arg: head };
   const known = ['list', 'new', 'join', 'leave', 'use', 'send', 'log', 'members', 'invite', 'kick', 'link', 'privacy', 'status', 'help'];
   return { sub: known.includes(sub) ? sub : 'help', arg: known.includes(sub) ? arg : rest };
+}
+
+/**
+ * 2026-10-13 (leo: 「按一次 Ctrl+C 是中断当前对话; 按两次才是完整退出; 空闲时按一次就退出」):
+ * Ctrl+C 两级语义的**决策纯函数** (状态机), 便于门测:
+ *   · 有回合在跑 **且** 未发过 abort → `abort_turn` (第一次: 中断回合, 回到输入框)
+ *   · 其余全部 → `exit` (第二次 / 空闲 / 回合刚结束未清 armed)
+ * 状态 (`turnActive` / `abortArmed`) 由 CLI 模块级变量维护, 渲染层不自己记。
+ */
+export type CtrlCAction = 'abort_turn' | 'exit';
+export function decideCtrlCAction(opts: { turnActive: boolean; abortArmed: boolean }): CtrlCAction {
+  if (opts.turnActive && !opts.abortArmed) return 'abort_turn';
+  return 'exit';
 }
 
 export const CLI_KNOWN_COMMAND_HEADS: ReadonlySet<string> = new Set([
@@ -910,7 +924,46 @@ let cliTurnStartedAt = 0;
 let cliLastTurnMs = 0;
 let cliTurnReplyBytes = 0;
 let cliTurnToolCount = 0;   // 在跑工具数 (回合内由工具事件更新)
-/** 2026-10-12 (leo: 「terminal 运行中... 后面动态读秒, hermes 是这么做的」): 工具运行中
+/**
+ * 2026-10-13 (leo: 「按一次 Ctrl+C 是中断当前对话; 按两次才是完整退出; 空闲时按一次就退出」):
+ * Ctrl+C 两级语义的模块级状态。
+ *   · `cliTurnActor` — 当前回合对应的 **kernel ChannelActor** (回合开始时从 agent 取)。
+ *     第一次 Ctrl+C = `cliTurnActor.abort('user-ctrl+c')` → 走 kernel 取消通道
+ *     (`state.cancellation.abort()` → signal 经 deliverThroughActor 注入的 ALS 传到
+ *      pivot loop execute 的 signal → 循环 break), 不是 CLI 自建的脱离 kernel 的单例。
+ *   · `cliAbortArmed` — 已发过一次 abort (第一次 Ctrl+C 后置位, 回合结束清空)
+ *   · `cliTurnActive` — 是否有 agent 回合在跑 (独立于 cliTurnStartedAt: 回合抛异常时它也正确清空)
+ * 决策本身抽成纯函数 `decideCtrlCAction` (可门测), 这里只维护状态。
+ */
+let cliTurnActor: ChannelActor | null = null;
+let cliAbortArmed = false;
+let cliTurnActive = false;
+/** 2026-10-13: 里程碑瞬时行 3s 后自清 (工具读秒接管时不抢) */
+
+/**
+ * 2026-10-13: Ctrl+C 总处理器 — 一次=中断回合; 两次/空闲=完整退出。
+ * 由 ink-app 的 useInput (Ctrl+C 按键) 与进程级 SIGINT 兜底共同调用; 决策 = decideCtrlCAction 纯函数。
+ * 中断走 **kernel 取消通道**: `ChannelActor.abort()` (state.cancellation → 回合 signal)。
+ */
+function handleCliSigint(): void {
+  const turnActive = cliTurnActive || cliTurnStartedAt > 0;
+  const action = decideCtrlCAction({ turnActive, abortArmed: cliAbortArmed });
+  if (action === 'abort_turn') {
+    cliAbortArmed = true;
+    try { cliTurnActor?.abort('user-ctrl+c'); } catch { /* abort 失败不致命 */ }
+    try { inkSetTransient(`${C_WARN}⏹ 已发送中断请求 — 再次 Ctrl+C 完全退出${RESET}`); } catch { /* 提示失败不阻断 */ }
+    return;
+  }
+  // 完整退出: resolve exitPromise → stopInk → 存档 → 再见 → process.exit
+  cliAbortArmed = false;
+  cliTurnActor = null;
+  try { (globalThis as any).__inkRequestExit?.(); } catch { /* */ }
+  // 兜底: 清理路径挂住时强制退出 (与原 requestExit 同款)
+  setTimeout(() => process.exit(0), 2000).unref?.();
+}
+
+/**
+ * 2026-10-12 (leo: 「terminal 运行中... 后面动态读秒, hermes 是这么做的」): 工具运行中
  *   每 1s 刷新 transient 行, 显示 已用秒数 + 当前工具名 (Hermes `⚙️ wait ... (N.Ns)` 风格)。 */
 let toolTransientTimer: ReturnType<typeof setInterval> | null = null;
 function startToolTransient(label: string): void {
@@ -974,15 +1027,30 @@ function getCliCtxUsage(): { pct: number; usedTokens: number; maxTokens: number;
 }
 
 /** 上下文进度条: 320k/1M │ [██████░░░░] 32% (bolloon 色系: #c4d640 主色) */
+/** 2026-10-13 (leo: 「没有看到终端的上下文仪表盘有进行改动, 没有进行动画加载」): 上下文条的平滑显示值。
+ *  每 tick (状态栏 1s) 向真实 usedTokens 逼近 25% —— 刻度从 0 涨到真实值时有"渐进填充"的动画感,
+ *  而不是瞬间跳变; 回落 (压缩/重置) 立即跟随, 不拖尾。 */
+let ctxGaugeShown = 0;
+
+/** 动画逼近纯函数 (可门测): 显示值向目标值走 25%, 至少走 1; 回落直跟。 */
+export function ctxGaugeStep(shown: number, target: number): number {
+  if (target <= shown) return target;
+  return Math.min(target, shown + Math.max(1, Math.round((target - shown) * 0.25)));
+}
+
 function buildContextBar(usage: { pct: number; usedTokens: number; maxTokens: number; stage: string }): string {
+  // 平滑逼近真实值 (上行动画, 回落直跟) —— 保持 usage.pct 的 0-100 尺度
+  const target = usage.usedTokens;
+  ctxGaugeShown = ctxGaugeStep(ctxGaugeShown, target);
+  const shownPct = usage.maxTokens > 0 ? (ctxGaugeShown / usage.maxTokens) * 100 : 0;
   const barLen = 10;
-  const filled = Math.min(barLen, Math.max(0, Math.round((usage.pct / 100) * barLen)));
+  const filled = Math.min(barLen, Math.max(0, Math.round((shownPct / 100) * barLen)));
   const barColor = usage.stage === 'warning' || usage.stage === 'compressing' ? C_WARN : C_ACCENT;
   const bar = `${C_DIM}[${RESET}${barColor}${'█'.repeat(filled)}${RESET}${C_DIM}${'░'.repeat(barLen - filled)}${RESET}${C_DIM}]${RESET}`;
   const fmtK = (n: number) => (n >= 1_000_000 ? (n % 1_000_000 === 0 ? `${n / 1_000_000}M` : `${(n / 1_000_000).toFixed(1)}M`) : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
-  const usageTxt = `${C_TEXT}${fmtK(usage.usedTokens)}/${fmtK(usage.maxTokens)}${RESET}`;
+  const usageTxt = `${C_TEXT}${fmtK(ctxGaugeShown)}/${fmtK(usage.maxTokens)}${RESET}`;
   // 百分比: >=10% 整数, >=1% 一位小数, <1% 两位小数 (1M 窗口下小 token 数也可见变化)
-  const pctTxt = usage.pct >= 10 ? `${Math.round(usage.pct)}%` : usage.pct >= 1 ? `${usage.pct.toFixed(1)}%` : `${usage.pct.toFixed(2)}%`;
+  const pctTxt = shownPct >= 10 ? `${Math.round(shownPct)}%` : shownPct >= 1 ? `${shownPct.toFixed(1)}%` : `${shownPct.toFixed(2)}%`;
   let suffix = '';
   if (usage.stage === 'warning') suffix = ` ${C_WARN}⚠ 即将压缩${RESET}`;
   else if (usage.stage === 'compressing') suffix = ` ${C_WARN}🗜️ 压缩中...${RESET}`;
@@ -1564,8 +1632,14 @@ async function startCLI(commReady: Promise<HyperswarmCommunicator | null>): Prom
   let cliExitResolve: () => void = () => {};
   const exitPromise = new Promise<void>(resolve => { cliExitResolve = resolve; });
   (globalThis as any).__inkRequestExit = () => { cliExitResolve(); };
+  // 2026-10-13: Ctrl+C 两级语义入口 — ink-app 的 useInput (Ctrl+C 按键) 与进程级 SIGINT 兜底共同调它。
+  //   进程级兜底: Ink raw mode 下 Ctrl+C 不会产生 SIGINT (按键走 useInput); 但启动早期/非 raw 窗口期会,
+  //   此时同样走 handleCliSigint 的两级语义, 不直接退出。
+  (globalThis as any).__bolloonCliSigint = () => { try { handleCliSigint(); } catch { /* 处理器异常走兜底退出 */ process.exit(1); } };
+  try { process.on('SIGINT', (globalThis as any).__bolloonCliSigint); } catch { /* SIGINT 注册失败不影响主循环 */ }
   await exitPromise;
   delete (globalThis as any).__inkRequestExit;
+  delete (globalThis as any).__bolloonCliSigint;
   stopInk();
   // 2026-09-30 (leo): 退出前**自动存档 session**, 存档结果先上屏, 最后才是「再见👋」
   try {
@@ -3883,7 +3957,15 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     // 工具调用显示由 tui-shell 的 onStream handler 处理
 
     cliTurnStartedAt = Date.now(); cliTurnReplyBytes = 0; cliTurnToolCount = 0;
-      const response = await deliverThroughActor(a, () => a.prompt(trimmed, {
+    // 2026-10-13: Ctrl+C 两级语义 — 回合开始即登记 kernel actor + active; 回合结束清空。
+    //   signal 由 deliverThroughActor 注入 ALS (kernel 取消通道), prompt 内 currentRequestSignal() 取到即接通 pivot loop。
+    cliTurnActor = (a as { actor?: ChannelActor } | null | undefined)?.actor ?? null;
+    cliTurnActive = true;
+    cliAbortArmed = false;
+    // 2026-10-13 (leo: 「我要的是技能加载, 不是阶段标识」): 回合开始显示「技能/记忆加载」瞬时行
+    //   (Hermes 式启动加载进度; 3.5s 自清, 不 appendLine 不打断)
+    inkSetTransient(`${C_DIM}⟳ 加载技能 / 记忆 / 上下文…${RESET}`);
+    const response = await deliverThroughActor(a, () => a.prompt(trimmed, {
       onStream: (e) => {
         // 2026-08-07: 中间思考/状态显示 — 之前只显示工具步骤, LLM 的思考过程
         //   (thinking / status / phase / Reflection) 全被丢弃 → 用户只能看到输入和最终输出
@@ -3986,10 +4068,21 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
             inkSetTransient(null);
           }
         }
-      }
+      },
+      // 2026-10-13: 取 kernel 取消通道注入的 signal (deliverThroughActor → actor.state.cancellation) —
+      //   Ctrl+C abort 经 ChannelActor.abort() 打断本轮 pivot loop
+      signal: currentRequestSignal(),
     }));
-    // 智能体回复框
-    appendLine(renderAgentMessage(response));
+    // 2026-10-13: 回合结束 — 重置 Ctrl+C 状态 (异常路径在下方 catch 里同款清理)
+    cliTurnActive = false;
+    cliTurnActor = null;
+    // 智能体回复框 (Ctrl+C 中断的回合不渲染最终回复, 只给一行确认)
+    if (cliAbortArmed) {
+      appendLine(`${C_DIM}⏹ 已中断回合${RESET}`);
+    } else {
+      appendLine(renderAgentMessage(response));
+    }
+    cliAbortArmed = false;
       try {
         cliLastTurnMs = cliTurnStartedAt ? Date.now() - cliTurnStartedAt : 0;
         cliTurnReplyBytes = String(response ?? '').length;
@@ -4110,7 +4203,14 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     inkSetThinking(false);
   } catch (e: any) {
     inkSetThinking(false);
-    if (!e.message?.includes('ERR_USE_AFTER_CLOSE') && !e.message?.includes('write after end')) {
+    // 2026-10-13: 回合结束 — 异常路径同款清理 Ctrl+C 状态 (正常路径在上面回合收尾处)
+    const wasAborted = cliAbortArmed || /abort/i.test(`${e?.name ?? ''} ${e?.message ?? ''}`);
+    cliTurnActive = false;
+    cliTurnActor = null;
+    cliAbortArmed = false;
+    if (wasAborted) {
+      appendLine(`${C_DIM}⏹ 已中断回合${RESET}`);
+    } else if (!e.message?.includes('ERR_USE_AFTER_CLOSE') && !e.message?.includes('write after end')) {
       appendLine(`${MAGENTA}❌ ${e.message}${RESET}`);
     }
   }

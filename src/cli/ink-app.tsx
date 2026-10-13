@@ -532,6 +532,16 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
       setTimeout(() => process.exit(0), 2000);
     };
     if (key.ctrl && _input === 'c') {
+      // 2026-10-13 (leo: 「按一次 Ctrl+C 是中断当前对话; 按两次才是完整退出; 空闲时按一次就退出」):
+      //   走 index.ts 注册的两级语义处理器 —— 有回合在跑且未 armed → 中断回合 (abort kernel actor);
+      //   第二次 / 空闲 → 完整退出。Ink raw mode 下 Ctrl+C 被 useInput 拦截, 不会产生 SIGINT,
+      //   所以**这里**才是 Ctrl+C 的主入口 (进程级 SIGINT 只是启动早期兜底)。
+      const sigintHandler = (globalThis as any).__bolloonCliSigint;
+      if (typeof sigintHandler === 'function') {
+        sigintHandler();
+        return;
+      }
+      // 兜底: 处理器没注册 (极早期) → 直接退出, 不吞 Ctrl+C
       requestExit();
       return;
     }

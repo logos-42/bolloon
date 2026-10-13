@@ -26,6 +26,18 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  */
 const actorCtx = new AsyncLocalStorage<ChannelActor>();
 
+/**
+ * 2026-10-13: 当前 mailbox 任务被注入的**取消信号**。
+ * `deliverThroughActor` 进入执行时调 `actor.beginCancellation()` 并把 signal 注入本 ALS,
+ * 业务侧 (CLI/Web) 在 run() 里经 `currentRequestSignal()` 取它传给模型/循环调用 ⇒
+ * Ctrl+C / 终止按钮走 `actor.abort()` / `abortActorsOfChannel()` 能真正打断回合。
+ * 零业务依赖: 只用 node:async_hooks, 不 import 任何业务模块。
+ */
+const requestSignalCtx = new AsyncLocalStorage<AbortSignal | null>();
+export function currentRequestSignal(): AbortSignal | undefined {
+  return requestSignalCtx.getStore() ?? undefined;
+}
+
 /** 当前是否正跑在某个 Actor 的 mailbox 任务内 (诊断用) */
 export function currentActorContext(): ChannelActor | undefined {
   return actorCtx.getStore();
@@ -346,6 +358,20 @@ export interface DeliveryOptions {
   serializeByChannel?: boolean;
 }
 
+/**
+ * 2026-10-13: 在 mailbox 任务体内开新的取消位并把 signal 注入 ALS (见 deliverThroughActor)。
+ * 收尾时**只有本任务仍是取消位主人**才清掉 —— 嵌套/并行路径下防 abort 打到下一个任务。
+ */
+function runWithCancellation<T>(actor: ChannelActor, run: () => Promise<T> | T): Promise<T> {
+  const ac = new AbortController();
+  actor.state.cancellation = ac;
+  return requestSignalCtx.run(ac.signal, () =>
+    Promise.resolve(run()).finally(() => {
+      if (actor.state.cancellation === ac) actor.state.cancellation = null;
+    })
+  );
+}
+
 export async function deliverThroughActor<T>(
   // 形参故意放宽成 `unknown`: 调用点的 receiver 类型五花八门 (AgentSession / 结构子集 / any),
   //   写成 `{ actor?: ChannelActor }` 会触发 TS 的弱类型检查 ("no properties in common") 而误报。
@@ -365,10 +391,15 @@ export async function deliverThroughActor<T>(
     if (ch) {
       const q = getChannelQueue(ch);
       if (channelCtx.getStore() === q) return run();
-      return q.submit(() => channelCtx.run(q, () => actor.submit(() => actorCtx.run(actor, () => run()))));
+      return q.submit(() => channelCtx.run(q, () => actor.submit(() => actorCtx.run(actor, () => runWithCancellation(actor, run)))));
     }
   }
-  return actor.submit(run);
+  // 2026-10-13 (leo: 「Ctrl+C 中断的落点必须是 kernel 的取消通道」):
+  //   mailbox 任务体内开一个新的取消位 (state.cancellation) 并把 signal 注入 ALS ——
+  //   业务侧 run() 经 `currentRequestSignal()` 取到它 ⇒ Ctrl+C abort 能打断回合。
+  //   **重入保护里直跑的分支不重新开位**: 嵌套的 inner run 复用同一个外层的 signal,
+  //   不会被内层 abort 清掉 (abort() 把 state.cancellation 置 null, 而 signal 经 ALS 走闭包引用)。
+  return actor.submit(() => actorCtx.run(actor, () => runWithCancellation(actor, run)));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

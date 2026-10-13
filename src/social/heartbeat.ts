@@ -538,7 +538,7 @@ export class SocialHeartbeat {
 
     try {
       const { IpfsClient } = await import('@diap/sdk');
-      const ipfs = new IpfsClient('http://127.0.0.1:5001', null);
+      const ipfs = new IpfsClient('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
 
       console.log(`[Heartbeat] 从 IPNS 加载 persona: ${this.config.ownIpnsName}`);
       const cid = await ipfs.resolveIpns(this.config.ownIpnsName);
@@ -698,7 +698,7 @@ export class SocialHeartbeat {
 
     try {
       const { IpfsClient } = await import('@diap/sdk');
-      const ipfs = new IpfsClient('http://127.0.0.1:5001', null);
+      const ipfs = new IpfsClient('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
 
       const doc = {
         name: persona.name,
@@ -851,7 +851,7 @@ export class SocialHeartbeat {
 
     try {
       const { IpfsClient } = await import('@diap/sdk');
-      const ipfs = new IpfsClient('http://127.0.0.1:5001', null);
+      const ipfs = new IpfsClient('http://127.0.0.1:5001', 'http://127.0.0.1:8080');
 
       const cid = await ipfs.resolveIpns(agent.ipnsName);
       if (cid) {

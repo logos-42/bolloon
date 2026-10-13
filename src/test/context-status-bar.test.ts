@@ -8,6 +8,7 @@
  *   - 压缩状态后缀 (warning/compressing/compressed)
  */
 import { describe, it, expect } from 'vitest';
+import { ctxGaugeStep } from '../index.js';   // 2026-10-13: 仪表盘动画逼近纯函数
 
 /** 与 index.ts buildContextBar 同逻辑的纯函数副本 (避免依赖 CLI 模块初始化) */
 function fmtTokens(n: number): string {
@@ -62,5 +63,34 @@ describe('状态栏上下文格式 (320k/1M │ [██████░░░░]
 
   it('token 格式化: 1M 上限显示 1M (不带小数)', () => {
     expect(buildBar(1_000_000, MAX).tokens).toBe('1M/1M');
+  });
+});
+
+describe('ctxGaugeStep — 上下文仪表盘动画逼近 (2026-10-13)', () => {
+  it('从 0 向目标走 25%, 至少走 1 (渐进填充, 非瞬间跳变)', () => {
+    const MAX = 1_000_000;
+    let shown = 0;
+    const steps: number[] = [];
+    for (let i = 0; i < 5; i++) { shown = ctxGaugeStep(shown, 320_000); steps.push(shown); }
+    // 逐步逼近且单调递增: 0 → 1 → … → 320000, 5 步后已明显接近但未到
+    expect(steps[0]).toBeGreaterThan(0);
+    for (let i = 1; i < steps.length; i++) expect(steps[i]).toBeGreaterThan(steps[i - 1]);
+    expect(steps[steps.length - 1]).toBeLessThan(320_000);
+  });
+
+  it('多步后收敛到目标值 (动画最终到达真实刻度)', () => {
+    let shown = 0;
+    for (let i = 0; i < 100; i++) shown = ctxGaugeStep(shown, 1_321);
+    expect(shown).toBe(1_321);
+  });
+
+  it('回落 (压缩/重置) 立即跟随, 不拖尾', () => {
+    expect(ctxGaugeStep(50_000, 5_000)).toBe(5_000);
+    expect(ctxGaugeStep(1_321, 0)).toBe(0);
+  });
+
+  it('目标为 0 或负值 → 直接归 0 (不闪烁)', () => {
+    expect(ctxGaugeStep(10, 0)).toBe(0);
+    expect(ctxGaugeStep(10, -5)).toBe(-5 === 0 ? 0 : -5);
   });
 });

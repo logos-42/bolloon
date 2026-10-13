@@ -287,6 +287,10 @@ export class PiAgentSession implements AgentSession {
   private identity: IdentityDoc;
   private persona: PersonaDoc | null = null;
   private minimaxAvailable = false;
+  /** 2026-10-13: pivot 路径会话累计真实消耗 (每轮 loop 的 totalTokens 累加, 刻度随会话单调增长) */
+  private pivotCumulativeTokens = 0;
+  /** 2026-10-13: 上下文管理周期压缩在飞标志 (防一轮里重复触发) */
+  private _ctxCycleCompacting = false;
   private workflows: Map<string, Workflow> = new Map();
   private constraintLayer: ConstraintLayer;
   private workflowEngine: WorkflowEngine;
@@ -1129,8 +1133,48 @@ export class PiAgentSession implements AgentSession {
    *   之前只有 runReActLoop 迭代内上报, chitchat/fallback/pivot 路径状态栏恒 0 */
   private reportUsageToContextManager(): void {
     try {
-      getContextManager().updateUsage(this.estimateHistoryTokens());
+      const cm = getContextManager();
+      const estimated = this.estimateHistoryTokens();
+      // 2026-10-13 (leo: 刻度被覆盖回 0): pivot 路径在本轮内已上报真实消耗
+      //   (promptWithPivotLoop 内 updateUsage(pivotCumulative)); 这里若再用 actor 历史估算**覆盖**,
+      //   刻度会被拉回 ~0 (pivot 路径 actor 历史每轮只有 1-2 条)。⇒ 取 max, 只升不降。
+      cm.updateUsage(Math.max(estimated, cm.getUsage().usedTokens));
     } catch { /* 非致命 */ }
+  }
+
+  /**
+   * 2026-10-13: 上下文管理周期 — 阈值触发压缩 (pivot 路径)。
+   *  ContextManager 的 markCompressStart/Complete + snapshot 原先只在 promptStream 的
+   *  maybeAutoCompact 里被调用; CLI 主路径 (prompt → promptWithPivotLoop) 从没触发过 ⇒
+   *  刻度显示到 'compressing' 但永远不会真压缩。这里补上最小周期:
+   *  累计上报 → stage 达压缩阈值 → 同步前 3 层压缩 (compressHistorySync, 零 LLM 成本) → snapshot。
+   * 失败静默, 不阻塞主流程。
+   */
+  private async runContextCycle(usage: { pct: number }): Promise<void> {
+    try {
+      const cm = getContextManager();
+      const history = this.actor!.state.messageHistory as Message[];
+      if (history.length < 10) {
+        console.log(`[PiAgent] 上下文管理周期: 刻度达压缩阈值 (${Math.round(usage.pct * 100)}%), 历史仅 ${history.length} 条, 跳过压缩 (stage=compressing 留作警示)`);
+        return;
+      }
+      const beforeTokens = this.estimateHistoryTokens();
+      cm.markCompressStart(beforeTokens);
+      const compacted = this.compressHistorySync(history);
+      this.replaceHistory(compacted);
+      const afterTokens = this.estimateHistoryTokens();
+      const snap = cm.makeSnapshot({
+        beforeTokens,
+        afterTokens,
+        summary: `pivot 阈值压缩 (同步前3层): ${beforeTokens.toLocaleString()} → ${afterTokens.toLocaleString()} tokens`,
+        agentId: this.actor!.state.agentId,
+        channelId: this.actor!.state.channelId,
+      });
+      cm.markCompressComplete(snap);
+      console.log(`[PiAgent] 上下文管理周期: 压缩完成 ${beforeTokens.toLocaleString()}→${afterTokens.toLocaleString()} tokens, stage=${cm.getUsage().stage}, saved=${cm.getUsage().lastSavedTokens.toLocaleString()}`);
+    } catch (err) {
+      console.warn('[PiAgent] 上下文管理周期: 压缩失败 (不阻塞主流程):', String((err as Error)?.message ?? err).slice(0, 160));
+    }
   }
 
   // ============================================================
@@ -1211,6 +1255,18 @@ export class PiAgentSession implements AgentSession {
       role: 'user',
       content: input
     });
+
+    // 2026-10-13 (leo: 「记忆加载和管理要变成一种执行的规范, 我刚开始就被复利性质地使用过, 所以这个没有实现」):
+    //   记忆加载原来只在 promptStream 调用 (1514), CLI 主路径 prompt() 从不召回 ⇒ 命令行 Agent 根本没有"记忆"
+    //   (用户贴屏: 「没有在工具的调用初始化过程当中看到记忆加载和记忆管理」)。这里与 promptStream 同款召回,
+    //   注入 systemPrompt 的 contextHintAddition —— 每轮执行都过这道闸, 就是"执行的规范"。
+    try {
+      const { recallMemory } = await import('./memory-recall.js');
+      const recalled = await recallMemory({ query: input, agentId: this.actor!.state.agentId || this.peerId || '' });
+      if (recalled) {
+        this.contextHintAddition = [this.contextHintAddition, recalled].filter(Boolean).join('\n\n');
+      }
+    } catch { /* 记忆召回失败静默 (增强层) */ }
 
     // K9 (2026-10-02): 同 `promptWithPivotLoop` —— **回合入口的可用性判据必须问当前适配器**。
     //   这类 `!minimaxAvailable` 闸一共 6 处: 1223(prompt)/1466(promptStream)/1714(pivot, 已修)
@@ -2021,7 +2077,15 @@ ${await this.renderActivePlansSection()}
       try {
         const pivotTokens = Number(result?.state?.totalTokens);
         if (Number.isFinite(pivotTokens) && pivotTokens > 0) {
-          getContextManager().updateUsage(pivotTokens);
+          // 2026-10-13: 会话累计 (多轮对话刻度单调增长; 单轮 totalTokens 只是本轮)
+          this.pivotCumulativeTokens += pivotTokens;
+          const cm = getContextManager();
+          const usage = cm.updateUsage(this.pivotCumulativeTokens);
+          // 上下文管理周期: 上报 → 阈值判断 → 触发压缩 (刻度有数之外, 到阈值真的会动)
+          if (usage.stage === 'compressing' && !this._ctxCycleCompacting) {
+            this._ctxCycleCompacting = true;
+            void this.runContextCycle(usage).finally(() => { this._ctxCycleCompacting = false; });
+          }
         }
       } catch { /* 上报失败不阻塞主流程 */ }
     } finally {
