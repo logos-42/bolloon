@@ -133,3 +133,39 @@ chore(scope): 中文一句话
 ## 7. 当 user 说 "消融实验" 时
 
 直接用 skill 库里的 `消融实验技能` + `写实验报告技能` 的方法论 (C1 baseline / C2 enabled / C3 abnormal + 3 项假阳性检查 + 归因矩阵 + 3 维收益)。
+
+## 8. 架构分层原则 (2026-10-13 leo 定稿, 后续设计必守)
+
+### 原则 1：不要把 Kernel 变成第二个 Agent
+
+Kernel 只做机制：队列、租约、取消、端口、生命周期、资源管理。
+所有业务判断交给：reducer · policy · Agent · domain module。
+
+### 原则 2：不要把 Harness 变成第二个 Kernel
+
+Harness 只做：允许 / 拒绝 / 记录 / fail-closed。
+禁止在 Harness 里加：长期调度 · Goal reducer · 模型选择 · 通信管理 · 复杂业务流程。
+
+### 原则 3：所有新增能力先问 "它属于哪一层"
+
+以支付能力为例：支付判断 → Policy；支付执行 → Tool Capability；支付状态 → Transaction Store；
+支付证据 → Run/Goal Bridge；支付恢复 → Supervisor；支付门禁 → Harness。**不能直接把逻辑塞进 Pi。**
+
+### 原则 4：优先新增端口，不优先新增核心状态
+
+如果需求需要新增：新的全局 Map / 新的 currentXxx / 新的独立队列 / 新的 session singleton →
+先怀疑设计是否破坏了 Kernel 的方向。
+
+### 五个筛选问题 (任何新设计过一遍)
+
+1. 这是机制，还是业务判断？
+2. 它的事实来源是哪一个？
+3. 它是否会产生第二条执行路径？
+4. 它是否需要进入 Run/Goal 证据链？
+5. 它能否作为 Adapter、Port 或 Capability 接入，而不修改 Pi 主体？
+
+一个功能只能通过大改 pi-sdk.ts 内部逻辑才能实现 ⇒ 边界有问题。
+一个功能能变成 Kernel Port + Adapter + Harness Gate + Run Evidence ⇒ 符合架构方向。
+
+一句话概括：Pi 负责「想和说」，Harness 负责「准不准做」，Kernel 负责「怎么运行」，
+Supervisor 负责「什么时候继续」，Goal/Run 负责「到底发生了什么」。
