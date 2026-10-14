@@ -1,5 +1,5 @@
 import { irohTransport, type IrohMessage } from './iroh-transport.js';
-import { AgentAuthManager, KeyManager, type AgentInfo, type IdentityRegistration, type KeyPair } from '@diap/sdk';
+import { AgentAuthManager, type AgentInfo, type IdentityRegistration, type KeyPair } from '@diap/sdk';
 
 export interface IrohDiscoveryResult {
   did: string;

@@ -23,7 +23,7 @@ import { noticeLine as startupNotice, startupPreambleVisible, flushStartupNotice
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { llmConfigStore, PROVIDER_INFO, DEFAULT_PROVIDER_CONFIGS, type ModelProvider } from '../llm/config-store.js';
+import { llmConfigStore, type ModelProvider } from '../llm/config-store.js';
 import {
   selectModel, resetModelSelection, probeSelection,
   effectiveModelConfig, formatEffectiveModel, protocolOf,

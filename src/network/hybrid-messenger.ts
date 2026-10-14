@@ -1,5 +1,5 @@
 import { irohTransport } from './iroh-transport.js';
-import { p2pNetwork, type PersistentPeerInfo } from './p2p.js';
+import { p2pNetwork } from './p2p.js';
 
 export type TransportType = 'hyperswarm' | 'iroh' | 'libp2p';
 export type MessagePriority = 'urgent' | 'normal' | 'bulk';

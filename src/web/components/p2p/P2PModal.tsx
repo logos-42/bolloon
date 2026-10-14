@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { p2pManager } from './p2p-manager.js';
 import type {
   P2PIdentity,

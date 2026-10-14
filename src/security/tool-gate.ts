@@ -11,7 +11,7 @@
 
 import * as fs from 'fs/promises';
 import * as os from 'os';
-import { runBuiltinGuards, auditToolOutput, type GuardHit, type GuardSeverity } from './builtin-guards.js';
+import { auditToolOutput } from './builtin-guards.js';
 
 export type GateId = 'whitelist' | 'schema' | 'channel' | 'rate' | 'inject' | 'output' | 'blacklist';
 

@@ -10,7 +10,7 @@ import { documentReader, DocumentContent } from '../documents/reader.js';
 import { p2pNetwork } from '../network/p2p.js';
 import { shellExec } from './shell-tool.js';
 import { checkWritePath } from './shell-guard.js';
-import { p2pDocumentTools, initDocumentReceiver } from './p2p-document-tools.js';
+import { p2pDocumentTools } from './p2p-document-tools.js';
 import { runSelfImproveLoop } from './pi-sdk-session-factory.js';
 import type { Tool, ToolResult } from './pi-sdk-types.js';
 import type { PersonaDoc } from '../social/heartbeat.js';

@@ -12,7 +12,7 @@
  * 失败静默: 任何 step 异常 → console.warn + 继续下一 step, 不抛错
  */
 
-import { shouldRunBlacklist, isShellTool, type PermissionMode } from './permission-mode.js';
+import { isShellTool, type PermissionMode } from './permission-mode.js';
 import { checkCommand, checkWritePath } from './shell-guard.js';
 
 export interface PreToolResult {

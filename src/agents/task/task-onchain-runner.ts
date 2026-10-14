@@ -31,7 +31,7 @@ import {
 } from '../x402/resource-contract.js';
 import { beginTransaction, readTransaction, updateTransaction } from '../x402/transaction-store.js';
 import { writeDeliveryContent } from '../x402/settlement-state.js';
-import { computeContentHash, sha256Hex } from '../x402/paid-info-protocol.js';
+import { computeContentHash } from '../x402/paid-info-protocol.js';
 import type { EscrowClient } from '../chain/escrow-client.js';
 import {
   runOnchainTradeLoop, resumeOnchainTrade, recoverOnchainTrade, sha256Digest, checkOnchainAmount, onchainTaskKey,

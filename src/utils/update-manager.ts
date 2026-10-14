@@ -24,7 +24,7 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as https from 'https';
 import * as http from 'http';
-import { spawnSync, execFileSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import {
   PKG_NAME, CONSTRAINT_PKG_NAME, NPM_REGISTRY_BASE, resolveUpdateChannel, distTagForChannel,
   detectInstallation, collectVersionInfo, readPackageAt, packageRootFrom, npmGlobalRoot,

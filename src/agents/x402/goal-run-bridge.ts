@@ -13,7 +13,7 @@
  * 仅付款成功或仅拿到内容 **不能**满足 Goal 判据。
  */
 
-import { recordStep, readRun, addRunEvidence } from '../run-store.js';
+import { recordStep, addRunEvidence } from '../run-store.js';
 import { addEvidence as addGoalEvidenceViaStore } from '../goal-store.js';
 import type { TransactionRecord } from './transaction-protocol.js';
 import { aggregateMilestones, milestoneGoalEligibility } from './milestone-settlement.js';

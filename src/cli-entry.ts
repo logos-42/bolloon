@@ -26,7 +26,7 @@ import { installStartupLogGate } from './cli/log-gate.js';
 import { waitForTermSize } from './cli/loading-tui.js';
 import { collectVersionInfo } from './utils/version-info.js';
 // 2026-09-27: 启动前言的默认静默 + 显式查询命令 (与 `src/index.ts` 同一套判断)
-import { startupPreambleVisible, SETUP_STATUS_CMD } from './cli/startup-notice.js';
+import { startupPreambleVisible } from './cli/startup-notice.js';
 import { logStartupLine } from './cli/log-gate.js';
 // 2026-09-21 (P3): 统一 JSON 信封 + 命令组 (network/agent/task/wallet/payment/trade)
 import { runServiceGroup, GROUPS_HELP } from './cli/commands/index.js';

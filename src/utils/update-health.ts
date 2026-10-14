@@ -25,7 +25,7 @@ import {
 } from './update-state.js';
 import { queryRegistryDoc, parseJsonFromStdout } from './update-manager.js';
 import { fetchGithubFacts, toGithubReport, renderGithubReportLine } from './dual-source.js';
-import { devShaFromIdentity, channelKindOf, DEV_CHANNEL_WARNING, DEV_BACK_TO_STABLE_HINT } from './version-info.js';
+import { devShaFromIdentity, channelKindOf, DEV_CHANNEL_WARNING } from './version-info.js';
 import {
   detectRuntimeReport, verifyRuntimesDeep, evaluateCapabilities, RUNTIME_MIN, readIncompleteMarker,
   type RuntimeReport,

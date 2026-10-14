@@ -36,7 +36,7 @@ import {
   findBlockingRun,
   type ExecutionRecord,
 } from './executions-store.js';
-import { cronLog, detectStuckTick } from './monitor.js';
+import { cronLog } from './monitor.js';
 import { resolveDnd, type DndReason } from './dnd.js';
 
 export interface SchedulerOptions {

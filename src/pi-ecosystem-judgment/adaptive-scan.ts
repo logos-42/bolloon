@@ -19,7 +19,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { loadAllJudgments, type HumanJudgment } from './human-value-store.js';
+import { loadAllJudgments, } from './human-value-store.js';
 
 // 用 getter 函数而非模块顶层 const: process.env.HOME 在测试 beforeAll 才设,
 // 模块顶层求值时还是真 home. 运行时求值才能正确响应测试 fixture.

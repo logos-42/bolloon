@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { multiaddr as createMultiaddr } from '@multiformats/multiaddr';
 import { KeyManager } from '@diap/sdk';
-import { p2pNetwork, type PersistentPeerInfo } from './p2p.js';
+import { p2pNetwork } from './p2p.js';
 
 const AGENT_REGISTRY_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'agent-registry.json');
 const KEY_PAIR_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'keypair.json');

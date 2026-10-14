@@ -15,7 +15,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { discoverEngines, buildDelegateArgs } from './discovery.js';
-import { createDelegateHandle, verifyDelegateHandle } from './delegate-handle.js';
+import { createDelegateHandle } from './delegate-handle.js';
 import type { DelegateHandle } from './delegate-handle.js';
 import type { DelegateResult, EngineId } from './types.js';
 

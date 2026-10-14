@@ -20,7 +20,7 @@ import {
   loadAllJudgments,
   type HumanJudgment,
 } from './human-value-store.js';
-import { findRecentSimilarDecisions } from './human-value-store.js';
+import { } from './human-value-store.js';
 
 export interface InjectionGateOptions {
   /** Top N 原则, 默认 3 (防 prompt 膨胀) */

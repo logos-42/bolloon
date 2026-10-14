@@ -39,9 +39,9 @@ import { createSubAgentManager } from './agents/subagent-manager.js';
 import { getGlobalSharedContext } from './social/global-shared-context.js';
 import { BollharnessIntegration, createBollharnessIntegration } from './bollharness-integration/index.js';
 import * as readline from 'readline';
-import { printBanner, termHeight, truncate, renderDashboard, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCall, renderToolCallListItem, renderToolCallBody, renderToolCallsHeader, renderToolCallsFooter, flowConnector, termWidth, ROBOT_HEAD, BOLLOON_BANNER, BOLLOON_BANNER_SMALL, boxTop, boxRow, boxBottom, dispWidth } from './cli/loading-tui.js';
+import { printBanner, termHeight, truncate, renderDialog, renderUserMessage, renderAgentMessage, renderMessageBox, renderToolCallListItem, termWidth, ROBOT_HEAD, BOLLOON_BANNER, BOLLOON_BANNER_SMALL, dispWidth } from './cli/loading-tui.js';
 import type { ToolCallListItem } from './cli/loading-tui.js';
-import { startInk, stopInk, suspendInk, resumeInk, inkAppendLine as appendLine, inkReplaceMatchingLine, inkSetStatus, inkSetThinking, inkSetTransient, bootPanelMaxLines, bootPanelRegionLines } from './cli/ink-app.js';
+import { startInk, stopInk, suspendInk, resumeInk, inkAppendLine as appendLine, inkSetStatus, inkSetThinking, inkSetTransient, bootPanelMaxLines } from './cli/ink-app.js';
 // 2026-09-26: 启动期日志闸门 (默认静默加载日志 + 写文件 + verbose 全量回流 + 信号行不吞)
 import { installStartupLogGate, isStartupVerbose, startupLogPath, VERBOSE_ENV, carriesHumanSignal, isInternalChatter, logStartupLine, type StartupLogGateHandle } from './cli/log-gate.js';
 // 2026-09-27: 回复流卫生 — 内部运行日志 (循环推进/运行登记/收尾计数…) 不进对话回复流, 改落日志文件

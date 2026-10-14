@@ -28,7 +28,7 @@ import { registerMobileTaskRoutes } from './routes-mobile-tasks.js';
 import { registerX402InfoRoutes } from './routes-x402-info.js';
 // 2026-09-22: P5 链上索引 (只读: status/stats/timeline/events 增量) 路由
 import { registerChainIndexRoutes } from './routes-chain-index.js';
-import { loadPeerTier, recordInteraction, recordViolation, checkToolAccess, tierLabel } from '../social/dunbar-tier.js';
+import { loadPeerTier, recordInteraction, tierLabel } from '../social/dunbar-tier.js';
 import { registerHearthRoutes } from './routes-hearth.js';
 import { registerOnchainTradeRoutes } from './routes-onchain-trade.js';
 import { loadOrCreateAgentIdentity } from '../agents/agent-identity.js';
@@ -140,7 +140,7 @@ import { createIrohDelegateTransport } from './iroh-delegate-transport.js';
 import { verifyMessage, isAddress, getAddress } from 'viem';
 // 2026-07-05: peer 目录管理 + manifest 协议
 import * as peerFs from '../network/peer-fs.js';
-import { buildManifestPayload, type AgentManifest, type AgentManifestEntry, type ManifestGroup, type ManifestFunction, type ManifestExportment, type ManifestScience } from '../agents/agent-manifest-protocol.js';
+import { type AgentManifest, type AgentManifestEntry, type ManifestGroup, type ManifestFunction, type ManifestExportment, type ManifestScience } from '../agents/agent-manifest-protocol.js';
 import { loadLocalResources, writeRemoteResources } from '../network/peer-resource-bridge.js';
 
 /**

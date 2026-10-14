@@ -9,7 +9,7 @@
  * 这里只改"该不该继续"的事实, 不直接启动执行 —— 执行权始终在 Supervisor。
  */
 
-import { listGoals, readGoal, type GoalRecord } from './goal-store.js';
+import { listGoals } from './goal-store.js';
 import { ensureGoalSkillsReady, blockGoalOnSkills, approveSkillUpgrade, parseSkillSpecs } from './skill-readiness.js';
 import { SkillsManager } from './skills-manager.js';
 import { recordDegradation } from './run-store.js';

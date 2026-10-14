@@ -3,7 +3,7 @@
  * 在渲染进程和主进程之间建立安全的通信桥梁
  * contextIsolation: true, nodeIntegration: false — 只能通过这里暴露的 API 触达主进程
  */
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer } from 'electron';
 
 type Unsub = () => void;
 

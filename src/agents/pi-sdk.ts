@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Pi-SDK - Agent Session for Document Processing
  * Part of OpenClaw dual-layer architecture
  *
@@ -18,7 +18,7 @@ import { type RunContext, createRunContext } from './run-context.js';
 import { createPrivateActor, type ChannelActor, type ExecutionRequest } from '../kernel/channel-actor.js';
 // K10 ①: 运行生命周期写入经内核端口 (与 kernel/control.ts 的控制面分开 —— 一个回答"谁命令我停",
 //   一个回答"我这一轮发生了什么"; 失败语义也不同: 控制面被拒 → 409, 事实写不进 → 响亮失败)
-import { submitRunLifecycle, assertLifecycleOk, decideResumeReinstall, pickRunIdForResume, type RunLifecyclePorts } from '../kernel/run-lifecycle.js';
+import { submitRunLifecycle, assertLifecycleOk, pickRunIdForResume } from '../kernel/run-lifecycle.js';
 // K10 ④: 通信发送入口经内核端口 (上层不再直接对某条传输说话; 换传输只改这一处注入)
 import { submitTransport, transportPeersSync, type TransportPorts } from '../kernel/transport.js';
 // K10 ①: run 状态迁移经内核**控制面**端口 (它本来就管"谁命令这条 run 改状态": 带 origin 审计 + 拒绝归一化)
@@ -30,17 +30,17 @@ import {
   submitSessionOp, assertSessionOk, composeRunSeed, filterSessionMessages, hydrateSessionMessages,
   type SessionPorts, type PersistedLike,
 } from '../kernel/session-lifecycle.js';
-import { expandHomeArgs } from './tool-path-args.js';
+import { } from './tool-path-args.js';
 import { renderDelegateNotices, pushNotice, renderNoticeBlock } from './background-notices.js';
 import { runWithWriteOrigin } from './skill-ledger.js';
 import { createHash } from 'node:crypto';
-import { shouldReview, shouldReviewTask, runExperienceReview } from './experience-review.js';
+import { shouldReviewTask, runExperienceReview } from './experience-review.js';
 import { decideLessonSink, skillsFromDirs, logLessonSuggestions, routeLessonToSkill } from './lesson-to-skill.js';
 import { managedServices } from './managed-services.js';
-import { capToolResult } from './tool-result-gate.js';
+import { } from './tool-result-gate.js';
 import { renderToolListWithParams } from './tool-subset.js';
 // K10 余项: 收尾自检的**规则**归内核 (`kernel/code-write-gate.ts`) —— 原来是 agents 侧的一个模块
-import { codeWriteTarget, decideTypecheck, formatTypecheckResult } from '../kernel/code-write-gate.js';
+import { codeWriteTarget } from '../kernel/code-write-gate.js';
 // K10 余项: 收尾自检的**编排与政策**也归内核 (该不该跑 · 系统自检也过门 · 被拒不执行且可见 · 失败不影响回合)
 import { runTurnEndSelfCheck } from '../kernel/turn-selfcheck.js';
 // K10 余项: 恢复一次运行的**编排与政策**也归内核 (漂移上报口径 · 只在漂了/核对不了时装 · 恢复态一定被清)
@@ -57,18 +57,18 @@ import { currentPackageRoot } from '../utils/version-info.js';
 // 2026-09-19: 原为 createRequire(import.meta.url) —— electron 构建(CommonJS)下 TS1343。
 //   createRequire 只用来解析裸模块名, 给包内任意文件路径即可, 用包根 package.json 最稳。
 const _piRequire = createRequire(path.join(currentPackageRoot(), 'package.json'));
-import { documentReader, DocumentContent } from '../documents/reader.js';
+import { documentReader } from '../documents/reader.js';
 import { getMinimax } from '../constraints/index.js';
 import { p2pNetwork } from '../network/p2p.js';
 import { ConstraintLayer, WorkflowContext } from './constraint-layer.js';
-import { WorkflowEngine, WorkflowStep, StepResult, Workflow } from './workflow-engine.js';
+import { WorkflowEngine, WorkflowStep, Workflow } from './workflow-engine.js';
 import { DeepThinkingEngine, AgentCoordinator, type ThinkResult, type AgentResult } from '@bolloon/constraint-runtime';
 import { WorkflowPivotLoop, createDefaultPivotConfig, type PivotLoopConfig, type LoopResult, type LLMInterface } from './workflow-pivot-loop.js';
 import { nativeAdapterFromEnv } from '../llm/native-adapter.js';   // K9: 第二个 (非 Pi) 推理适配器
-import { p2pDocumentTools, initDocumentReceiver } from './p2p-document-tools.js';
-import { shellExec } from './shell-tool.js';
-import { startRun, recordStep, finishRun, readRun, budgetVerdict, recordDegradation, recordHarnessEvent, recordRecovery, setRunStatus, prepareResume, markRunRunning, buildResumeInstruction, argsDigestOf, repeatedFailureCount, classifyError as classifyRunError, type RunSurface, type RunStatus, type ResumePlan } from './run-store.js';
-import { createGoal, attachRun, findActiveGoal } from './goal-store.js';
+import { initDocumentReceiver } from './p2p-document-tools.js';
+import { } from './shell-tool.js';
+import { startRun, recordStep, finishRun, readRun, recordDegradation, recordHarnessEvent, recordRecovery, setRunStatus, prepareResume, buildResumeInstruction, argsDigestOf, repeatedFailureCount, classifyError as classifyRunError, type RunSurface, type RunStatus, type ResumePlan } from './run-store.js';
+import { createGoal, attachRun } from './goal-store.js';
 import { captureRunModelConfig, type RunModelConfig, type ConfigDriftReport, type EffectiveModelConfig } from '../llm/model-selection.js';
 // 2026-09-26: 工具名出网净化 (pi-ai.ts 唯一边界) + 回程派发还原 (原名 ↔ API 名)
 // 2026-09-28 (前缀 KV 可命中): CURRENT TURN 注入标记 —— "当前轮是否已注入"的唯一判据
@@ -95,7 +95,7 @@ import {
   type CooperationType,
   type GlobalSharedContext
 } from '../social/global-shared-context.js';
-import { Session, SkillRegistry, saveSession, loadSession, type Skill, type StoredSession } from '@bolloon/constraint-runtime';
+import { Session, SkillRegistry, type Skill } from '@bolloon/constraint-runtime';
 import { loadSkillsFromPaths, defaultSkillPaths } from './skill-loader.js';
 
 /** 2026-08-10: unreported 逃生门判定 — LLM 反复不把工具结果写进回复时, 超过上限强制收尾 (防死循环) */
@@ -156,10 +156,10 @@ import { budgetReduce, snip, microcompact } from '../context-compaction/index.js
 import { ReactHarness } from '../security/react-harness.js';
 import { HooksEngine } from '../hooks/hooks-engine.js';
 import { DenyPipeline, type DenyContext } from './deny-pipeline.js';
-import { parseToolCall as parseToolCallImpl, parseAllToolCalls, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl, type ToolCall } from './parse-tool-call.js';
+import { parseToolCall as parseToolCallImpl, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl } from './parse-tool-call.js';
 import { sessionStore as defaultSessionStore, type SessionStore, type PersistedMessage } from './session-store.js';
 import { ToolRegistry } from './tool-registry.js';
-import { DEFAULT_MAX_REVIEWS } from './loop-review.js';
+import { } from './loop-review.js';
 
 // PiSessionManager 已抽到 ./pi-sdk-session-manager.ts (2026-07-06)
 // Tool / ToolResult / Message / StreamCallback / StreamEvent / HeartbeatConfig / AgentSession / TOOL_DEFINITIONS
@@ -1027,7 +1027,7 @@ export class PiAgentSession implements AgentSession {
       _inboxMessages: this._inboxMessages,
       getChannelWallet: async () => {
         try {
-          const { CHANNELS_PATH } = await import('../web/server-types.js');
+          const { } = await import('../web/server-types.js');
           const { loadChannels } = await import('../web/server-storage.js');
           const channels = await loadChannels();
           const ch = channels.find((c: any) => c.id === this.actor!.state.channelId);

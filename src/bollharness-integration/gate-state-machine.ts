@@ -9,7 +9,7 @@
  * (* = 独立审查者，使用独立的agent上下文)
  */
 
-import { AgentCoordinator, type SubTask, type AgentResult } from '@bolloon/constraint-runtime';
+import { AgentCoordinator, type SubTask } from '@bolloon/constraint-runtime';
 import { executeGateTransitionHooks, initializeGateHooks } from './gate-transition-hooks.js';
 import { generateSituationalValueInjection, generateValueInjection } from '../pi-ecosystem-judgment/value-injection.js';
 import { loadAllJudgments } from '../pi-ecosystem-judgment/human-value-store.js';

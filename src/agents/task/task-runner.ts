@@ -32,7 +32,7 @@ import { planTransactionRecovery } from '../x402/payment-recovery.js';
 import * as wiring from '../goal-flywheel-wiring.js';
 import { executeContractSkill, validateResourceOutput, verifyInstallFidelity, loadResourceContract } from '../x402/resource-contract.js';
 import { adviseResource } from './resource-advisor.js';
-import { resolveTaskBudget, checkPurchaseAllowed, previewPurchaseImpact, assertNoExpansion, type TaskBudgetPlan } from './task-budget.js';
+import { resolveTaskBudget, checkPurchaseAllowed, previewPurchaseImpact, type TaskBudgetPlan } from './task-budget.js';
 import { buildReportCard, renderReportCard, type ReportCard, type TaskStage } from './report-card.js';
 import { startLocalSeller, ensureSellerIdentity } from './local-seller.js';
 

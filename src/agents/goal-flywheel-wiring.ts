@@ -95,7 +95,7 @@ import {
 } from './goal-flywheel/skill-candidate.js';
 import { acceptsAsComplete, issueWorkContract, stableHash, validateChildReport } from './goal-flywheel/work-contract.js';
 import { detectBlocks, planBlockHandling, toUserVisibleState } from './goal-flywheel/work-monitor.js';
-import { applyChange, classifyChange, ingestChange, isRunInFlight, nextStatusFor, shouldSupersedePending } from './goal-flywheel/goal-change.js';
+import { applyChange, classifyChange, ingestChange, nextStatusFor, shouldSupersedePending } from './goal-flywheel/goal-change.js';
 import type { ChangeApplication } from './goal-flywheel/goal-change.js';
 // 2026-09-25 (M0 接线冻结): 唯一责任链的五个接缝 (各阶段独占一个文件; 依赖在这里注入)
 import {
