@@ -276,7 +276,14 @@ export class ModelRuntime {
       },
       call: async (req, opts) => {
         if (released) return { ok: false, error: '租约已归还' };
-        const budget = snapshotReadonly.timeoutMs ?? this.defaultTimeoutMs;
+        // 2026-10-13 (leo: 「多步执行的任务会返回空」根因链的②): 30s 硬超时与上下文长度脱钩 ——
+        //   多步任务工具多轮后 prompt 膨胀到 40KB+, 模型生成要更久, 30s 一到就被杀。
+        //   预算 = max(配置/默认, 上下文长度自适应): 每 1KB 上下文给 4s, 再加 10s 生成余量。
+        //   长上下文不被误杀; 短上下文仍是 30s 底线 (供应商真慢照样暴露, 不掩盖问题)。
+        const baseBudget = snapshotReadonly.timeoutMs ?? this.defaultTimeoutMs;
+        const ctxChars = String(req?.context ?? '').length + String(req?.systemPrompt ?? '').length;
+        const adaptive = Math.ceil(ctxChars / 1024) * 4_000 + 10_000;
+        const budget = Math.max(baseBudget, adaptive);
         const external = opts?.signal;
         if (external?.aborted) { self.stats.aborts += 1; throw new ModelAbortError(); }
         const started = (self.ports.now ?? Date.now)();

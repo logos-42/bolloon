@@ -763,6 +763,25 @@ export class WorkflowPivotLoop {
         await Promise.all(pendingTools.map(execTool));
         
       } catch (error) {
+        // 2026-10-13 (leo: 「多步执行的任务会返回空, 直接回复的不会」): 根因是**模型调用超时杀死循环**。
+        //   多步任务工具多轮后上下文膨胀 (40KB+), kernel 模型调用 30s 硬超时抛 ModelTimeoutError,
+        //   旧代码一律当「循环崩溃」处理 (return createResult(false, response, 'error')) ⇒
+        //   工具全干完、response 还是空 → 屏上 `│  │` 空框。
+        //   修复: 超时 = 供应商慢, 不是循环崩。emit 状态 + continue 重试下一轮;
+        //   真卡死由 maxConsecutiveNoProgress 兜底 (每条路都有终点, 唯独不该有「白干+空框」)。
+        const isTimeout = error instanceof Error && (error.name === 'ModelTimeoutError' || /模型调用超时/.test(error.message));
+        if (isTimeout) {
+          this.state.consecutiveNoProgress++;
+          this.emit({
+            type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
+            content: `⏳ 模型调用超时 (${String((error as Error).message).replace(/^模型调用超时/, '')}), 重试下一轮 (连续 ${this.state.consecutiveNoProgress}/${effectiveConfig.maxConsecutiveNoProgress} 次则停)`,
+            tool: 'system',
+          });
+          // 2026-10-13 (leo: 「可以不用超时截止来确定时间周期, 有时候任务需要时间会比较久」):
+          //   超时只是这一轮没来得及, 任务该做多久做多久 —— **不**注入「快点给个回答」的收敛提示
+          //   (那会让模型在任务没做完时草草收尾)。继续推进, 由质量门/无进展兜底决定什么时候算完。
+          continue;
+        }
         this.emit({
           type: 'error',
           content: `❌ 循环异常: ${error}`
