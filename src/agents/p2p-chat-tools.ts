@@ -24,7 +24,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { EventEmitter } from 'events';
 import { irohTransport as defaultIrohTransport, type IrohTransport } from '../network/iroh-transport.js';
-import { getRelevantValues, getValueProfile, loadAllJudgments } from '../pi-ecosystem-judgment/human-value-store.js';
+import { getValueProfile, loadAllJudgments } from '../pi-ecosystem-judgment/human-value-store.js';
 
 function homeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || os.homedir();

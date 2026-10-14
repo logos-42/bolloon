@@ -78,7 +78,6 @@ import {
   DiscoveredAgentsManager,
   SocialHeartbeat,
   createSocialHeartbeat,
-  getSocialHeartbeat,
   type PersonaDoc,
   type DiscoveredAgent,
   type SessionChannel,
