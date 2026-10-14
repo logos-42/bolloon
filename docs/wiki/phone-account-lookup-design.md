@@ -178,7 +178,7 @@ interface DirectoryLookupResult {
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| P0 | 落点 A: 群盐 + 群内目录 store + `directory lookup` (群内) | 同群两人互查 → 拿 DID → 好友请求闭环 |
+| P0 | 落点 A: 群盐 + 群内目录 store + `directory lookup` (群内) | **✅ 已完成 2026-10-11**: human-directory.ts 盲化哈希目录 (本地 JSON) + HTTP 四端点 + LLM 三工具 + 撤销。**诚实**: 本版目录是「本机 + 未来群复制」, 跨节点真同步未验 (需群 store 接入) |
 | P1 | 好友请求 INBOUND 链路 (pairing 复用) + consent 审批 + known-peers 写入 | 请求→同意→出现好友→自动重连 |
 | P2 | 落点 B: opt-in 托管目录 (哈希双重盲化 + ownerSig) + `directory publish/retract` | 发布→查询→撤销全闭环 + 审计留痕 |
 | P3 | 隐私门: 查询限流 (防扫号) + 审计 UI + 导出脱敏 | 扫号尝试被限流 + 审计可见 |
