@@ -1290,6 +1290,19 @@ export class PiAgentSession implements AgentSession {
         this.contextHintAddition = [this.contextHintAddition, recalled].filter(Boolean).join('\n\n');
       }
     } catch { /* 记忆召回失败静默 (增强层) */ }
+    // 2026-10-14 (P0, decentralized-memory-design §2.7): 结构化记忆 (MemoryEntry) 每轮同步召回 —
+    //   与上面会话摘要召回互补: 摘要是「整段会话的压缩」, 这里是「单条结构化记忆」 (带 kind/importance)。
+    //   借鉴 Hermes 冻结快照: 写入落盘不改 prompt, 召回走每轮注入 (progressive disclosure: 只带摘要+权重)。
+    try {
+      const { getMemoryStore, formatRecallBlock } = await import('./memory-store.js');
+      const store = getMemoryStore(this.actor!.state.agentId || this.peerId || '');
+      await store.load();
+      const hits = await store.recall({ query: input, limit: 3 });
+      const block = formatRecallBlock(hits);
+      if (block) {
+        this.contextHintAddition = [this.contextHintAddition, block].filter(Boolean).join('\n\n');
+      }
+    } catch { /* 结构化记忆召回失败静默 (增强层, 不阻塞对话) */ }
 
     // K9 (2026-10-02): 同 `promptWithPivotLoop` —— **回合入口的可用性判据必须问当前适配器**。
     //   这类 `!minimaxAvailable` 闸一共 6 处: 1223(prompt)/1466(promptStream)/1714(pivot, 已修)

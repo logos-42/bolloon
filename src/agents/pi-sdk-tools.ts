@@ -4270,6 +4270,60 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     }
   });
 
+  // 2026-10-14 (leo: 「需要向量记忆和去中心化记忆」, P0): 结构化记忆工具
+  //  —— MemoryEntry 本地 JSONL 持久化; embedding 向量 (P1) / OrbitDB 复制 (P3) 后续接
+  const memoryAgentId = (): string => ctx.identity?.did || String(ctx.cwd || '');
+  ctx.tools.set('memory_save', {
+    name: 'memory_save',
+    description: '保存一条**结构化长期记忆** (事实/偏好/洞察/事件/关系/技能反馈)。用于: 用户明确说"记住 X"、反复出现的偏好、值得跨会话保留的事实。自动去重 (同内容不重复), 自动打分重要性。',
+    parameters: {
+      content: '记忆内容 (必填, ≥2 字符)',
+      kind: '类型: fact | insight | preference | event | relationship | skill-feedback (默认 fact)',
+      importance: '手动重要性 0-1 (可选, 缺省自动启发式打分)',
+      refs: '关联证据 JSON 数组 (可选, 如 goalId/runId)',
+    },
+    execute: async (args) => {
+      try {
+        const { getMemoryStore } = await import('./memory-store.js');
+        const store = getMemoryStore(memoryAgentId());
+        const entry = await store.save({
+          content: String(args.content || '').trim(),
+          kind: (args.kind as any) || 'fact',
+          importance: args.importance !== undefined ? Number(args.importance) : undefined,
+          refs: Array.isArray(args.refs) ? args.refs.map(String) : undefined,
+          source: 'tool',
+        });
+        return { success: true, output: `✅ 已保存记忆 #${entry.id.slice(0, 8)} (${entry.kind}, 重要性 ${entry.importance.toFixed(2)})` };
+      } catch (e: any) {
+        return { success: false, error: `memory_save 失败: ${String(e.message || e)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('memory_recall', {
+    name: 'memory_recall',
+    description: '按查询关键词**召回长期记忆** (事实/偏好/洞察)。每轮对话已自动做记忆召回, 这里用于显式深挖: 用户说"你还记得我之前说的 X"、或当前任务需要历史上下文时调用。',
+    parameters: {
+      query: '查询内容 (必填, 用关键词)',
+      limit: '返回条数 (默认 3)',
+    },
+    execute: async (args) => {
+      try {
+        const { getMemoryStore, formatRecallBlock } = await import('./memory-store.js');
+        const store = getMemoryStore(memoryAgentId());
+        await store.load();
+        const hits = await store.recall({
+          query: String(args.query || ''),
+          limit: args.limit ? Number(args.limit) : 3,
+        });
+        if (!hits.length) return { success: true, output: '📭 没有找到相关记忆 (可能是新话题或记忆未保存)' };
+        return { success: true, output: formatRecallBlock(hits) };
+      } catch (e: any) {
+        return { success: false, error: `memory_recall 失败: ${String(e.message || e)}` };
+      }
+    }
+  });
+
   // 2026-07-28: 注册 LSP 工具 (代码智能)
   // registerBuiltinTools 不是 async, 用同步 import 兜底
   try {

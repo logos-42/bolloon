@@ -5,8 +5,8 @@ created: 2026-10-14
 last_confirmed: 2026-10-14
 schema_version: 2
 audience: self
-stage: draft
-status: draft
+stage: current
+status: current
 confidence: medium
 entity_type: chapter
 tags: [memory, vector, embedding, orbitdb, decentralized, design]
@@ -35,6 +35,38 @@ tags: [memory, vector, embedding, orbitdb, decentralized, design]
 3. **去中心化记忆只有快照** —— 没有「记忆条目级」的跨设备复制 (只有整快照), 没有记忆的版本链/冲突合并语义
 4. **价值分层缺失** —— 现有记忆平铺, 无重要性/衰减/固化 (crystallize) 机制
 5. **手机端只同步快照** —— 记忆本身不能离线语义检索
+
+## 1.5 Hermes 记忆架构对照 (2026-10-14, 源码实查 ~/.hermes/hermes-agent)
+
+> leo: 「hermes 的记忆是怎么做的」 → 读 Hermes 源码 (`tools/memory_tool.py` / `memory_tool_store.py` /
+> `plugins/memory/`) 后沉淀, 供本方案借鉴与差分。
+
+**Hermes 三套并存的记忆机制 (各自独立触发, 不混成一个「大记忆」):**
+
+| 机制 | 存储 | 注入方式 | 写入 | 触发 |
+|---|---|---|---|---|
+| ① 持久记忆 (MEMORY.md/USER.md) | `~/.hermes/memories/*.md` 纯文本 | **冻结快照**注入 system prompt (volatile tier) | memory 工具 add/patch/remove/batch, 立即落盘但**不改已建 prompt** (保 prefix cache) | 新会话/压缩重建时重新快照 |
+| ② Session 检索 | `~/.hermes/state.db` SQLite + **FTS5 全文索引** | 搜索结果回填上下文 | 会话转录自动入库 | `session_search` 跨会话检索 (关键词全文) |
+| ③ Skills (过程记忆) | `~/.hermes/skills/<cat>/<skill>/SKILL.md` | **只放索引** (名字+一句话), 全文不进 prompt | skill_manage 自改进循环 | 任务匹配 → skill_view 按需加载全文 |
+| ④ 外部向量 provider | RetainDB 云 API / byterover (MemoryProvider 接口) | 语义搜索 + 用户模型 + context overlay | 插件写入 | **可选插拔**, 不插用内置三件套 |
+
+**三条可借鉴的设计 (写进本方案):**
+
+1. **冻结快照 ≠ 实时写**: 写入立即落盘但不改 prompt (prefix cache 不破); 生效靠「下个会话/压缩重建」。
+   ⇒ 本方案 P0 起就遵守: MemoryStore 写入落盘, prompt 注入走「每轮召回快照」, 不实时重建。
+2. **三件套分层独立触发**: 常驻事实 (MEMORY.md) / 会话检索 (FTS5) / 过程技能 (skills) 各管一段, 不并成一个「大记忆」。
+   ⇒ MemoryEntry 的 `kind` 字段承担这个分层: fact/preference 常驻 · event 可检索 · skill-feedback 进技能索引。
+3. **progressive disclosure**: prompt 只放索引, 全文按需加载 —— Bolloon 的 buildSkillsIndex 已是此模式。
+   ⇒ memory_recall 返回条目**摘要 + CID 指针**, 全文按需 `memory_load` 拉取, 不把全部记忆灌进上下文。
+
+**Hermes 没做、Bolloon 草案可超越的 (差分价值):**
+
+| 维度 | Hermes | Bolloon 草案 |
+|---|---|---|
+| 去中心化 | **无** (纯本地 + 可选云 provider) | OrbitDB 条目级 CID 复制 (P3) |
+| 常驻记忆形态 | 裸文本, 无结构化 | MemoryEntry 带 kind/importance/createdAt/refs 证据链 |
+| 遗忘机制 | 字符预算挤压 (满了才淘汰) | importance 显式打分 + decay 降权 + crystallize 固化 |
+| 溯源 | FTS5 只有文本命中 | 每条带 CID + source + refs (可回 Run/Goal 证据链) |
 
 ## 2. 设计 (按架构四原则分层)
 
@@ -156,7 +188,7 @@ MemoryEntry CID store (type='memory'):
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| P0 | MemoryEntry 模型 + memory_save/recall 工具 (本地文件, 无向量) | 存→取闭环 + 工具注册 |
+| P0 | MemoryEntry 模型 + memory_save/recall 工具 (本地文件, 无向量) | **✅ 已完成 2026-10-14** (src/agents/memory-store.ts · 10/10 测试 · 冒烟: 存→取→召回→去重→持久化) |
 | P1 | 真 embedding adapter (先 GLM/云, 后本地) + vector 检索 | 语义召回 (同义词可中) + TF-IDF fallback 保留 |
 | P2 | 价值分层 (importance/decay/crystallize) + 工具面 | 低频降权 + 固化进 Insights |
 | P3 | 条目级 OrbitDB CID 同步 + 手机端 merge 扩展 | 双节点同步 + 冲突收敛 |
