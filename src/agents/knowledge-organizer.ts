@@ -450,7 +450,6 @@ export async function maintainGoals(home: string, llm?: (p: string) => Promise<s
     const queue = (await readJson(path.join(goalsDir, 'queue.json'))) || {};
     // queue.json 结构未知, 兼容 object/array
     const queueItems = Array.isArray(queue) ? queue : Object.values(queue).filter((v: any) => v && typeof v === 'object');
-    const events = await readDir(goalsDir);
     const now = new Date().toISOString().slice(0, 10);
     const currentDir = path.join(home, '.bolloon', 'context-os', '03-Current');
     const currentFiles = (await listMd(currentDir)).filter((f) => f.file !== 'README.md');
@@ -488,7 +487,6 @@ export async function maintainGoals(home: string, llm?: (p: string) => Promise<s
 /** 自动整理心跳 · 知识层: 串行跑全部 9 个整理器, 汇总 sections */
 export async function runKnowledgeOrganize(opts: KnowledgeOrganizeOptions = {}): Promise<KnowledgeOrganizeResult> {
   const home = opts.home || os.homedir();
-  const cwd = opts.cwd || process.cwd();
   const llm = opts.llm;
   const sections: OrganizeSection[] = [];
   sections.push(await archiveContextOs(home));

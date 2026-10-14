@@ -12,7 +12,6 @@
  *   不入持久化 prompt, 不污染主对话.
  */
 import * as fs from 'fs/promises';
-import * as path from 'path';
 import * as peerFs from '../network/peer-fs.js';
 
 // ============== 类型 ==============

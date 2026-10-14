@@ -11,8 +11,6 @@
  *   **事件处理器不直接启动 agent** —— 它只写事实 + 唤醒; 谁来执行由 Supervisor 决定。
  */
 
-import * as os from 'os';
-import * as path from 'path';
 import {
   readGoal, setContinuation, listGoals, addEvidence, type GoalRecord,
   type GoalExternalSource,

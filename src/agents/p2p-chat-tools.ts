@@ -244,7 +244,6 @@ export async function getInbox(peerDID?: string): Promise<ChatMessage[]> {
 async function buildValueHint(text: string): Promise<string> {
   try {
     const allJudgments = await loadAllJudgments();
-    const relevant = await getRelevantValues(text, undefined);
     const profile = await getValueProfile('me');
     const profileHint = [
       `quality_focus=${profile.quality_focus.toFixed(2)}`,

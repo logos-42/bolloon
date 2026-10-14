@@ -219,7 +219,6 @@ export function routeLessonToSkill(lesson: LessonLike, skills: SkillLike[], home
     // 命中了但写不进去(文件读不到/空) ⇒ 退到沉淀技能, 保证"都进去" ✓
   }
   const sink = ensureSinkSkill(home);
-  const body = fs.readFileSync(sink.file, 'utf-8');
   const withCandidates = d.suggestions.length
     ? { ...lesson, body: `${lesson.body} (候选技能: ${d.suggestions.map((s) => `${s.name}(${s.score})`).join(', ')})` }
     : lesson;

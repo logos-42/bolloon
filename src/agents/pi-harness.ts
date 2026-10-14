@@ -102,7 +102,6 @@ export class PiAgentHarness {
   private deps: PiAgentHarnessDeps;
   private failClosed: boolean;
   private modelCalls = 0;
-  private degradedOnce = new Set<string>();
 
   constructor(deps: PiAgentHarnessDeps) {
     this.deps = deps;
