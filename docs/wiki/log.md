@@ -1,5 +1,6 @@
 # Wiki 日志
 
+| 2026-10-14 | refactor | **续: 微小重构清理未使用声明 (编译器 TS6133/TS6192 机械扫描)** —— 3 笔提交: ① `25eebed` 清理 **48 个未使用 import 成员** (29 文件: pi-sdk.ts ×21 · index.ts ×12 · server.ts ×8 · ink-app ×4 等; 全按「名字在文件中仅 import 行出现 1 次」机械判定 + 每批 tsc 验证; 修 3 处脚本误删: server.ts manifest 成员被宽正则吞 + 孤立 `type` token + 反斜杠转义引号); ② `20d628a` 删 **4 个未用 import 行 (os/path ×4) + 4 个死局部变量 (events/cwd/body/relevant) + 1 个死字段 (pi-harness degradedOnce 零引用)**; ③ `873ebef` 删 getSocialHeartbeat/getRelevantValues 未用 import 成员 (删 relevant 的连带暴露)。**保留不删**: 全部函数参数未用 (args/now/opts/transport/goalId 等接口签名, 非死代码) · re-export 列表成员 (MonitorTickView 上次断 export 链的教训) · 多引用解构 (stderr 出现 24 次有他用)。**验证**: 每笔 tsc 0 错 + 聚焦测试绿 (46/46 · 43/43 · 3/3) · 净删 55+ 行。**踩坑记录**: 批量删 import 成员的正则三类坑 —— ① `, name` / `name,` 残留双逗号 ② `type X` 的 X 被删但 `type` 孤立 (Duplicate identifier 'type') ③ bash heredoc 里 `\'` 变反斜杠转义引号; 修复 = Python 逐字节 + `grep -rn` 反斜杠残留 0。 | src/agents/pi-sdk.ts · src/index.ts · src/web/server.ts · src/cli/ink-app.tsx · src/agents/pi-harness.ts 等 36 文件 |
 | 2026-10-14 | docs | **新增 Kernel 设计原则与动机技术文档** —— 独立整理宏内核的动机、职责边界、状态所有权、Pi/Harness/Supervisor/constraint-runtime 分工、验证理念、演进路线与非目标；现有宏内核页继续作为 K0–K10 实现台账。 | docs/wiki/kernel-design-principles.md · docs/wiki/index.md · docs/wiki/current-status.md |
 
 > 每次 session 结束在这里追加一行, 格式 `## [YYYY-MM-DD] <phase> | <一句话>`.
