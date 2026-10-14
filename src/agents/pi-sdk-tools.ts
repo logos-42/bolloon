@@ -4325,6 +4325,11 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
           refs: Array.isArray(args.refs) ? args.refs.map(String) : undefined,
           source: 'tool',
         }, adapter);
+        // P3: 条目级 OrbitDB 同步 (失败静默 — 本地记忆仍权威)
+        try {
+          const { syncMemoryEntryToOrbit } = await import('../orbitdb/memory-sync.js');
+          await syncMemoryEntryToOrbit(entry);
+        } catch { /* 同步失败不阻塞保存 */ }
         return { success: true, output: `✅ 已保存记忆 #${entry.id.slice(0, 8)} (${entry.kind}, 重要性 ${entry.importance.toFixed(2)})` };
       } catch (e: any) {
         return { success: false, error: `memory_save 失败: ${String(e.message || e)}` };
@@ -4344,6 +4349,12 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
         const { getMemoryStore, formatRecallBlock } = await import('./memory-store.js');
         const store = getMemoryStore(memoryAgentId());
         await store.load();
+        // P3: 召回前先拉远端条目合并 (LWW, updatedAt 大者胜; 网络不可用静默)
+        try {
+          const { fetchRemoteEntries } = await import('../orbitdb/memory-sync.js');
+          const remote = await fetchRemoteEntries(memoryAgentId());
+          if (remote.length > 0) await store.mergeRemote(remote);
+        } catch { /* 远端拉取失败 → 只用本地 */ }
         const query = String(args.query || '');
         // P1: 有 embedding adapter 时走向量召回; 无 → 关键词回退 (P0 行为不变)
         let queryVec: number[] | undefined;

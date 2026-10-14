@@ -332,6 +332,33 @@ export class MemoryStore {
     return { total: this.entries.size, crystallized, decayed };
   }
 
+  /**
+   * P3: 合并远端条目 (OrbitDB 拉回的) 到本地, LWW (updatedAt 大者胜)。
+   * 返回被采纳的远端条数; 有采纳则落盘。同步前本地必须先 load()。
+   */
+  async mergeRemote(remote: MemoryEntry[]): Promise<number> {
+    let n = 0;
+    for (const r of remote) {
+      if (!r || !r.id || r.agentId !== this.agentId) continue; // 归属校验: 只合并本 agent
+      const l = this.entries.get(r.id);
+      if (!l) {
+        this.entries.set(r.id, r);
+        n++;
+      } else if (r.updatedAt > l.updatedAt) {
+        this.entries.set(r.id, r);
+        n++;
+      }
+      // 平手 / 本地更新 → 本地胜 (LWW)
+    }
+    if (n > 0) await this.persist();
+    return n;
+  }
+
+  /** P3: 导出一份「可在其他节点重建」的条目快照 (不含运行时计数, 只含持久事实) */
+  exportEntries(): MemoryEntry[] {
+    return [...this.entries.values()].map((e) => ({ ...e, vec: undefined })); // vec 不跨节点 (维度依赖 adapter)
+  }
+
   async remove(id: string): Promise<boolean> {
     const existed = this.entries.delete(id);
     if (existed) await this.persist();
