@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createEmbeddingAdapter, createFakeAdapter, cosineSimilarity } from '../llm/embedding-adapter.js';
-import { MemoryStore, resetMemoryStores } from '../agents/memory-store.js';
+import { MemoryStore, resetMemoryStores, applyDecay } from '../agents/memory-store.js';
 
 const tmpHome = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'mem-vec-'));
 
@@ -98,5 +98,93 @@ describe('MemoryStore P1 向量召回', () => {
     const qv = await a.embed('重要约定');
     const h1 = await s.recall({ query: '重要约定', queryVec: qv });
     expect(h1[0].entry.recallCount).toBe(1);
+  });
+});
+
+describe('MemoryStore P2 价值分层', () => {
+  it('applyDecay: 未到天数不淡化, 超过天数降权标记, 幂等不重复降', () => {
+    const entry: import('../agents/memory-store.js').MemoryEntry = {
+      id: 'x', agentId: 'a', content: '旧记忆', kind: 'fact',
+      importance: 0.6, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      source: 'manual', refs: [], crystallized: false, recallCount: 0,
+    };
+    // 未到 30 天 → 不变
+    const soon = applyDecay(entry, '2026-01-15T00:00:00.000Z');
+    expect(soon).toBe(entry); // 同一引用
+    expect(soon.decayed).toBeUndefined();
+    // 超过 30 天 → 降权标记
+    const late = applyDecay(entry, '2026-02-15T00:00:00.000Z');
+    expect(late.decayed).toBe(true);
+    expect(late.importance).toBeCloseTo(0.3, 5); // 0.6 × 0.5
+    // 幂等: 再跑一次不再降
+    const again = applyDecay(late!, '2026-03-15T00:00:00.000Z');
+    expect(again.importance).toBeCloseTo(0.3, 5);
+  });
+
+  it('applyDecay: 固化条目豁免', () => {
+    const entry: import('../agents/memory-store.js').MemoryEntry = {
+      id: 'x', agentId: 'a', content: '重要约定', kind: 'fact',
+      importance: 0.8, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      source: 'manual', refs: [], crystallized: true, recallCount: 9,
+    };
+    const late = applyDecay(entry, '2026-06-01T00:00:00.000Z');
+    expect(late).toBe(entry); // 固化不淡化
+  });
+
+  it('recall 命中刷新 lastRecalledAt + 撤销 decayed', async () => {
+    const s = new MemoryStore('agent-d', HOME);
+    await s.save({ content: '被召回过的记忆' });
+    await s.load();
+    // 手动标记 decayed (模拟旧条目已淡化)
+    const list = await s.list();
+    (list[0] as any).decayed = true;
+    (list[0] as any).lastRecalledAt = '2026-01-01T00:00:00.000Z';
+    const hits = await s.recall({ query: '被召回过的记忆' });
+    expect(hits.length).toBe(1);
+    expect(hits[0].entry.decayed).toBe(false); // 被召回 → 淡化撤销
+    expect(hits[0].entry.lastRecalledAt).toBeTruthy(); // 刷新时间
+  });
+
+  it('crystallize: 固化 + importance 加成 + 持久化', async () => {
+    const s = new MemoryStore('agent-c', HOME);
+    await s.save({ content: '要固化的记忆', importance: 0.5 });
+    await s.load();
+    const list = await s.list();
+    const id = list[0].id;
+    const e = await s.crystallize(id);
+    expect(e?.crystallized).toBe(true);
+    expect(e?.importance).toBeGreaterThan(0.5);
+    // 新实例读回仍固化
+    const s2 = new MemoryStore('agent-c', HOME);
+    await s2.load();
+    const l2 = await s2.list();
+    expect(l2[0].crystallized).toBe(true);
+  });
+
+  it('autoCrystallize: 召回 ≥5 且 importance ≥0.6 自动固化', async () => {
+    const s = new MemoryStore('agent-ac', HOME);
+    await s.save({ content: '高频命中的事实', importance: 0.65 });
+    await s.load();
+    const list = await s.list();
+    (list[0] as any).recallCount = 5; // 模拟命中 5 次
+    const n = await s.autoCrystallize();
+    expect(n).toBe(1);
+    expect((await s.list())[0].crystallized).toBe(true);
+  });
+
+  it('stats: 总条数 / 固化 / 淡化计数', async () => {
+    const s = new MemoryStore('agent-s', HOME);
+    await s.save({ content: '普通记忆 A' });
+    await s.save({ content: '普通记忆 B' });
+    await s.save({ content: '要固化的 C', importance: 0.7 });
+    await s.load();
+    const list = await s.list();
+    for (const e of list) {
+      if (e.content.includes('C')) await s.crystallize(e.id);
+    }
+    const st = s.stats();
+    expect(st.total).toBe(3);
+    expect(st.crystallized).toBe(1);
+    expect(st.decayed).toBe(0);
   });
 });

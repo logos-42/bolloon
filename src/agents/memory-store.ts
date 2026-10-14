@@ -35,6 +35,10 @@ export interface MemoryEntry {
   refs: string[];            // goalId/runId 证据链
   crystallized: boolean;     // 固化 (多次召回/用户确认 → true)
   recallCount: number;       // 被召回次数 (importance 动态升的依据)
+  /** P2: 上次被召回时间 (decay 计算依据; 未召回过 = createdAt) */
+  lastRecalledAt?: string;
+  /** P2: 已淡化 (decay 后标记, 仍保留不删) */
+  decayed?: boolean;
   /** P1: 向量化表示 (adapter 可用时保存; 无则 undefined → 关键词回退) */
   vec?: number[];
 }
@@ -84,6 +88,53 @@ export function heuristicImportance(content: string, kind: MemoryKind = 'fact', 
   if (kind === 'preference' || kind === 'relationship') score += 0.2;
   if (kind === 'skill-feedback') score += 0.15;
   return Math.min(1, score);
+}
+
+export interface DecayOptions {
+  /** 多少天未召回视为「长期未用」 (默认 30) */
+  days?: number;
+  /** 淡化后的 importance 乘子 (默认 0.5) */
+  factor?: number;
+}
+
+/**
+ * P2: 价值衰减 (decay) — 长期未被召回的条目降权标记, 不删除。
+ * 规则:
+ *   - 固化条目 (crystallized) 豁免 (用户确认过/多次命中, 不淡忘)
+ *   - 从 lastRecalledAt (未召回过 = createdAt) 起算, 超过 days 天 → decayed=true + importance×factor
+ *   - 被召回 → decayed 撤销 (recall 里已处理)
+ * 纯函数: 不改 entry, 返回更新后的副本 (无变化返回原引用)。
+ */
+export function applyDecay(entry: MemoryEntry, nowIso: string, opts: DecayOptions = {}): MemoryEntry {
+  if (entry.crystallized) return entry; // 固化豁免
+  const days = opts.days ?? 30;
+  const factor = opts.factor ?? 0.5;
+  const base = entry.lastRecalledAt || entry.createdAt;
+  const ms = Date.parse(nowIso) - Date.parse(base);
+  if (!Number.isFinite(ms) || ms < 0) return entry;
+  const elapsedDays = ms / 86_400_000;
+  if (elapsedDays < days) return entry;
+  // 幂等: 已淡化过就不再重复降 (decayed 标记本身是终态)
+  if (entry.decayed) return entry;
+  return {
+    ...entry,
+    importance: Math.max(0.05, entry.importance * factor),
+    decayed: true,
+    updatedAt: nowIso,
+  };
+}
+
+/** P2: 全库跑一次 decay, 返回被淡化条数 (未调用过 save/recall 的旧条目也会被标) */
+export function decayAll(entries: Map<string, MemoryEntry>, nowIso: string, opts: DecayOptions = {}): number {
+  let n = 0;
+  for (const [id, e] of entries) {
+    const after = applyDecay(e, nowIso, opts);
+    if (after !== e) {
+      entries.set(id, after);
+      n++;
+    }
+  }
+  return n;
 }
 
 /** 关键词提取 (与 memory-recall.tokenizeQuery 同口径: 中文 2-gram + 英文分词) */
@@ -180,6 +231,8 @@ export class MemoryStore {
       refs: input.refs || existing?.refs || [],
       crystallized: existing?.crystallized || false,
       recallCount: existing?.recallCount || 0,
+      lastRecalledAt: existing?.lastRecalledAt,
+      decayed: existing?.decayed,
       vec,
     };
     this.entries.set(id, entry);
@@ -223,11 +276,14 @@ export class MemoryStore {
 
     hits.sort((a, b) => b.score - a.score);
     const top = hits.slice(0, limit);
-    // 命中 → recallCount++ (动态升权), 每 10 次 importance +0.05
+    // 命中 → recallCount++ + lastRecalledAt 刷新 (动态升权 / decay 重置), 每 10 次 importance +0.05
     if (top.length > 0) {
+      const nowIso = new Date().toISOString();
       let changed = false;
       for (const h of top) {
         h.entry.recallCount++;
+        h.entry.lastRecalledAt = nowIso;
+        if (h.entry.decayed) h.entry.decayed = false; // 被召回 → 淡化撤销
         if (h.entry.recallCount % 10 === 0 && h.entry.importance < 1) {
           h.entry.importance = Math.min(1, h.entry.importance + 0.05);
         }
@@ -236,6 +292,44 @@ export class MemoryStore {
       if (changed) await this.persist().catch(() => { /* 计数写失败不阻塞召回 */ });
     }
     return top;
+  }
+
+  /** P2: 固化 — 多次召回或用户确认后调用; crystallized=true (进 08-Insights 由调用方负责) */
+  async crystallize(id: string): Promise<MemoryEntry | null> {
+    const e = this.entries.get(id);
+    if (!e) return null;
+    const changed = !e.crystallized;
+    e.crystallized = true;
+    e.importance = Math.min(1, e.importance + 0.1); // 固化 → importance 加成
+    e.updatedAt = new Date().toISOString();
+    if (changed) await this.persist();
+    return e;
+  }
+
+  /** P2: 自动固化阈值 — 召回 ≥ 5 次且 importance ≥ 0.6 的条目 (recall 后可调用, 返回新固化条数) */
+  async autoCrystallize(): Promise<number> {
+    let n = 0;
+    for (const e of this.entries.values()) {
+      if (!e.crystallized && e.recallCount >= 5 && e.importance >= 0.6) {
+        e.crystallized = true;
+        e.importance = Math.min(1, e.importance + 0.1);
+        e.updatedAt = new Date().toISOString();
+        n++;
+      }
+    }
+    if (n > 0) await this.persist();
+    return n;
+  }
+
+  /** P2: 统计 (decay 标定 / 审计用) */
+  stats(): { total: number; crystallized: number; decayed: number } {
+    let crystallized = 0;
+    let decayed = 0;
+    for (const e of this.entries.values()) {
+      if (e.crystallized) crystallized++;
+      if (e.decayed) decayed++;
+    }
+    return { total: this.entries.size, crystallized, decayed };
   }
 
   async remove(id: string): Promise<boolean> {

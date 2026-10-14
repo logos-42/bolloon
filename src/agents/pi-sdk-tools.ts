@@ -4367,6 +4367,66 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
     }
   });
 
+  // P2: 价值分层工具 — 固化 / 遗忘 / 统计 (2026-10-11, decentralized-memory-design §2.7)
+  ctx.tools.set('memory_crystallize', {
+    name: 'memory_crystallize',
+    description: '固化一条记忆 (crystallize): 标记为「重要, 不淡忘」+ importance 加成。用于: 用户明确说"这个要记住"、反复确认的重要约定、多次命中的核心事实。返回固化后的条目。',
+    parameters: {
+      entryId: '记忆 ID (从 memory_recall 的返回里拿, 形如 #xxxxxxxx)',
+    },
+    execute: async (args) => {
+      try {
+        const { getMemoryStore } = await import('./memory-store.js');
+        const store = getMemoryStore(memoryAgentId());
+        await store.load();
+        const id = String(args.entryId || '').replace(/^#/, '');
+        const e = await store.crystallize(id);
+        if (!e) return { success: false, error: `未找到记忆 #${id}` };
+        return { success: true, output: `✅ 已固化记忆 #${e.id.slice(0, 8)} (${e.kind}, importance ${e.importance.toFixed(2)}, 不再淡忘)` };
+      } catch (e: any) {
+        return { success: false, error: `memory_crystallize 失败: ${String(e.message || e)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('memory_forget', {
+    name: 'memory_forget',
+    description: '删除一条记忆 (entryId 从 memory_recall 返回拿)。用于: 用户说"忘掉这个/删掉这条记忆"、记忆过时/错误。删除不可恢复。',
+    parameters: {
+      entryId: '记忆 ID (形如 #xxxxxxxx)',
+    },
+    execute: async (args) => {
+      try {
+        const { getMemoryStore } = await import('./memory-store.js');
+        const store = getMemoryStore(memoryAgentId());
+        await store.load();
+        const id = String(args.entryId || '').replace(/^#/, '');
+        const ok = await store.remove(id);
+        if (!ok) return { success: false, error: `未找到记忆 #${id}` };
+        return { success: true, output: `🗑️ 已删除记忆 #${id.slice(0, 8)}` };
+      } catch (e: any) {
+        return { success: false, error: `memory_forget 失败: ${String(e.message || e)}` };
+      }
+    }
+  });
+
+  ctx.tools.set('memory_stats', {
+    name: 'memory_stats',
+    description: '查看记忆库统计: 总条数 / 已固化 / 已淡化 (decay)。用于: 用户问"我存了多少记忆"、诊断记忆衰减是否生效。',
+    parameters: {},
+    execute: async () => {
+      try {
+        const { getMemoryStore } = await import('./memory-store.js');
+        const store = getMemoryStore(memoryAgentId());
+        await store.load();
+        const s = store.stats();
+        return { success: true, output: `📊 记忆统计: 共 ${s.total} 条 · 已固化 ${s.crystallized} · 已淡化 ${s.decayed}` };
+      } catch (e: any) {
+        return { success: false, error: `memory_stats 失败: ${String(e.message || e)}` };
+      }
+    }
+  });
+
   // 2026-07-28: 注册 LSP 工具 (代码智能)
   // registerBuiltinTools 不是 async, 用同步 import 兜底
   try {
