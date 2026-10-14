@@ -45,7 +45,7 @@ import { startInk, stopInk, suspendInk, resumeInk, inkAppendLine as appendLine, 
 // 2026-09-26: 启动期日志闸门 (默认静默加载日志 + 写文件 + verbose 全量回流 + 信号行不吞)
 import { installStartupLogGate, isStartupVerbose, startupLogPath, VERBOSE_ENV, carriesHumanSignal, isInternalChatter, logStartupLine, type StartupLogGateHandle } from './cli/log-gate.js';
 // 2026-09-27: 回复流卫生 — 内部运行日志 (循环推进/运行登记/收尾计数…) 不进对话回复流, 改落日志文件
-import { isInternalRunLog, appendInternalRunLog } from './cli/reply-hygiene.js';
+import { isInternalRunLog, appendInternalRunLog, tipFromInternalRunLog } from './cli/reply-hygiene.js';
 // 2026-09-27: 启动**前言 / 就绪度报告**闸门 (默认不上屏 → 面板一行 + 显式查询命令; 失败折成面板提示)
 import {
   onlyConnectivityRetest,
@@ -4000,6 +4000,12 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           if (isInternalRunLog(e)) {
             appendInternalRunLog(content, e.tool);
             if (isStartupVerbose()) appendLine(`${C_DIM}${content}${RESET}`);
+            // 2026-10-14 (leo: 「这些提示可以放在 tips/提示栏, 动画效果设计好, 不能放在内容栏,
+            //   只提示内容不带前缀」): 重试/超时/失败这类**用户该感知的执行状态**, 除落盘外
+            //   再显示成 footer 瞬时提示 (不带 ⛔ 前缀, 只留内容本体; 几秒后被下一条
+            //   工具读秒/thinking 瞬时行覆盖 —— 正是"提示栏动画"的效果)。
+            const tip = tipFromInternalRunLog(content);
+            if (tip) inkSetTransient(`${C_DIM}${tip}${RESET}`);
           }
           // Reflection / 反思 / 💡 → 圆角思考框 (和回复一样走 renderMessageBox, 白字+亮边框)
           else if (content.includes('Reflection') || content.includes('反思') || content.includes('💡')) {

@@ -42,6 +42,28 @@ export function appendInternalRunLog(content: string, tool?: string): void {
 }
 
 /**
+ * 内部运行日志 → footer 瞬时提示 (2026-10-14, leo: 「这些提示可以放在 tips/提示栏, 动画效果设计好,
+ * 不能放在内容栏, 只提示内容不带前缀」)。
+ *
+ * 例: `⛔ loop 自动重试 3 次后仍失败: xxx` → `loop 自动重试 3 次后仍失败, 终止提示`
+ * 规则: 只挑「用户该感知的执行状态」(重试/超时/失败), 只保留内容本体 ——
+ *   剥掉 ⛔/⏳ 等前缀字形, 不显示 `[llm-lesson]` 这类模块标签 (那是 console 通道的行, 不走这里)。
+ * return: 要显示在 footer 的瞬时文本; null = 不需要提示 (纯进度遥测不上 tips)。
+ */
+export function tipFromInternalRunLog(content: string): string | null {
+  const t = String(content || '').trim();
+  const retryLike = /(?:重试|超时|自动重试|回退|降级)/.test(t);
+  const failLike = /(?:失败|终止)/.test(t);
+  if (!retryLike && !failLike) return null;
+  // 剥 ANSI + 行首前缀字形
+  const plain = t
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/^[⛔⏳🔄↻⚠✗✓!·]+\s*/, '')
+    .trim();
+  return plain || null;
+}
+
+/**
  * 这条 stream 事件是不是**内部运行日志** —— 是则不进对话回复流, 只落日志文件。
  *
  * 只认 emit 侧的显式声明 (`internal: true`), 不按内容猜:

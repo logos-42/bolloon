@@ -1706,7 +1706,11 @@ export class PiAgentSession implements AgentSession {
       if (attempt > MAX_LOOP_RETRIES) {
         console.warn(`[PiAgent] loop 自动重试 ${MAX_LOOP_RETRIES} 次后仍失败, 终止`);
         if (onStream) {
-          onStream({ type: 'status', content: `⛔ loop 自动重试 ${MAX_LOOP_RETRIES} 次后仍失败: ${lastAiFailureReason}`, tool: 'system' });
+          // 2026-10-14 (leo: 「loop 自动重试提示漏进内容栏」): 老代码这条**漏标 internal** ——
+          //   `onStream({type:'status'})` 事件在 CLI 渲染层 (index.ts) 只认发送点的显式 internal 声明,
+          //   没标 → 走 appendLine 上内容栏。与下面 1717 行的「重试中」事件对齐, 补标 internal:true
+          //   ⇒ 同一判据 (appendInternalRunLog: 落盘 + --verbose 上屏), 不进对话流。
+          onStream({ type: 'status', internal: true, content: `⛔ loop 自动重试 ${MAX_LOOP_RETRIES} 次后仍失败: ${lastAiFailureReason}`, tool: 'system' });
         }
         result = lastAiFailureReason || 'AI 服务调用失败, 自动重试后仍不可用';
         break;

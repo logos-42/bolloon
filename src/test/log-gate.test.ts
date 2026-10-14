@@ -13,6 +13,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   isStartupLogLine,
+  isInternalChatter,
   carriesHumanSignal,
   isStartupVerbose,
   isGateDisabled,
@@ -117,6 +118,28 @@ describe('log-gate 行分类', () => {
 
   it('真有人要介入的 N>0 计数仍算信号 (5 个转人工 ≠ 0 个转人工)', () => {
     expect(carriesHumanSignal('[supervisor] 支付对账: 5 个转人工, 需人工处理')).toBe(true);
+  });
+
+  it('LLM 重试/教训遥测是内部行, 不上内容栏 (leo 2026-10-14 贴屏: [llm-lesson]/[llm-recovery]/[PiAgent] loop 自动重试)', () => {
+    // 用户终端实测漏网的三种行 (带 ⚠ 前缀 + 模块标签) —— 必须判「内部」
+    for (const l of [
+      '⚠ [llm-lesson] 新错误教训: network ((ECONNRESET|ETIMEDOUT|ENOTFOUND|socket|network|undici|fetch failed|other side closed|timeout)) → retry-once',
+      '⚠ [llm-recovery] network attempt 1/3, 退避 1500ms 重试',
+      '⚠ [llm-recovery] rate-limit attempt 3/3, 退避 4000ms 重试',
+      '⚠ [PiAgent] loop 自动重试 3 次后仍失败, 终止',
+      '[PiAgent] loop 自动重试 1/3, 等待 500ms',
+      '[PiAgent] 推理适配器 = kernel-model-runtime (只读 acquire 租约)',
+      '[PiAgent] reviewFinal (K4-B 恢复调用, 判定不参与流程): kind=continue-review',
+    ]) {
+      expect(isInternalChatter(l), `应判内部: ${l.slice(0, 60)}`).toBe(true);
+    }
+    // 负控制: 用户正文/产品状态行不许被误吞
+    for (const l of [
+      '好的, 我来帮你检查项目状态',
+      '⛔ 权限被拒绝: 目标路径不在白名单 (需人介入)',
+    ]) {
+      expect(isInternalChatter(l), `应放行: ${l}`).toBe(false);
+    }
   });
 });
 

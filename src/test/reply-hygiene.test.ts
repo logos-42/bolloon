@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { isInternalRunLog, internalRunLogLine, INTERNAL_RUN_LOG_PREFIX } from '../cli/reply-hygiene.js';
+import { isInternalRunLog, internalRunLogLine, INTERNAL_RUN_LOG_PREFIX, tipFromInternalRunLog } from '../cli/reply-hygiene.js';
 
 const PI_SDK = path.resolve(__dirname, '..', 'agents', 'pi-sdk.ts');
 
@@ -25,6 +25,28 @@ describe('isInternalRunLog — 只认发送点的显式声明', () => {
     expect(isInternalRunLog({ type: 'error', internal: true })).toBe(false);
     expect(isInternalRunLog(null)).toBe(false);
     expect(isInternalRunLog(undefined)).toBe(false);
+  });
+});
+
+describe('tipFromInternalRunLog — 内部遥测 → footer 瞬时提示 (leo 2026-10-14: 放 tips 提示栏, 不带前缀)', () => {
+  it('重试/超时/失败类 → 返回干净内容本体 (剥 ⛔/⏳ 前缀, 不带模块标签)', () => {
+    expect(tipFromInternalRunLog('⛔ loop 自动重试 3 次后仍失败: AI 服务不可用'))
+      .toBe('loop 自动重试 3 次后仍失败: AI 服务不可用');
+    expect(tipFromInternalRunLog('⏳ 模型调用超时 (30000ms), 重试下一轮'))
+      .toBe('模型调用超时 (30000ms), 重试下一轮');
+    expect(tipFromInternalRunLog('↻ 自动重试 loop 2/3 (2s 后)')).toBe('自动重试 loop 2/3 (2s 后)');
+  });
+
+  it('纯进度遥测 → null (不上 tips, 不打扰)', () => {
+    expect(tipFromInternalRunLog('🔄 循环 3/1000')).toBeNull();
+    expect(tipFromInternalRunLog('✅ 检测到最终回复 (质量: 8.5/10)')).toBeNull();
+    expect(tipFromInternalRunLog('📊 质量未达标 (6.5/7.0)，注入续跑提示，继续循环')).toBeNull();
+  });
+
+  it('空串/纯符号 → null', () => {
+    expect(tipFromInternalRunLog('')).toBeNull();
+    expect(tipFromInternalRunLog('   ')).toBeNull();
+    expect(tipFromInternalRunLog('⛔')).toBeNull();
   });
 });
 
@@ -51,11 +73,11 @@ describe('发送点声明 — 这批行不许丢声明', () => {
     {
       file: PI_SDK,
       label: 'pi-sdk (外层重试 + 收尾自检的转发端口)',
-      internal: ['↻ 自动重试 loop ${attempt}/${MAX_LOOP_RETRIES}'],
-      // 2026-10-02 (K10 余项): `🔎 ${line}` 这条**用户可见状态行**随编排搬进了内核
-      //   (`kernel/turn-selfcheck.ts` 负责生成并 emit); pi-sdk 侧只剩**转发** ——
-      //   这里的 marker 改成转发口 (必须仍标 `type: 'status'`, 不许被吞成内部)。
-      visible: ['⛔ loop 自动重试 ${MAX_LOOP_RETRIES} 次后仍失败', "type: 'status', content: evt.content"],
+      internal: ['↻ 自动重试 loop ${attempt}/${MAX_LOOP_RETRIES}', '⛔ loop 自动重试 ${MAX_LOOP_RETRIES} 次后仍失败'],
+      // 2026-10-14 (leo: 「loop 自动重试提示漏进内容栏 → 这些提示放 tips/提示栏, 不进内容栏」):
+      //   终止重试事件从 visible 移入 internal —— 用户不要这类遥测占内容栏; 落盘 + --verbose 可查。
+      //   下面这条转发口仍需保留 (自检的 `🔎` 行走它, 不许被吞成内部)。
+      visible: ["type: 'status', content: evt.content"],
     },
     {
       file: path.resolve(__dirname, '..', 'kernel', 'turn-selfcheck.ts'),
