@@ -189,7 +189,7 @@ MemoryEntry CID store (type='memory'):
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | P0 | MemoryEntry 模型 + memory_save/recall 工具 (本地文件, 无向量) | **✅ 已完成 2026-10-14** (src/agents/memory-store.ts · 10/10 测试 · 冒烟: 存→取→召回→去重→持久化) |
-| P1 | 真 embedding adapter (先 GLM/云, 后本地) + vector 检索 | 语义召回 (同义词可中) + TF-IDF fallback 保留 |
+| P1 | embedding adapter 端口 + 向量检索 (供应商可插拔, 默认 none→关键词回退) | **✅ 已完成 2026-10-11** (src/llm/embedding-adapter.ts · MemoryStore.vec/cosine 优先召回 · memory_save/recall 接配置 · 19/19 测试)。**诚实**: 现有 provider (glm 中转 404 / minimax 订阅 key 1004) 实测无可用 embedding 端点 ⇒ adapter 默认 none, 真向量待供应商 key 就绪; 语义召回的「真 embedding 同义词可中」尚未达, 需供应商接入 |
 | P2 | 价值分层 (importance/decay/crystallize) + 工具面 | 低频降权 + 固化进 Insights |
 | P3 | 条目级 OrbitDB CID 同步 + 手机端 merge 扩展 | 双节点同步 + 冲突收敛 |
 | P4 | 记忆门禁 + 隐私线 + 导出脱敏 | 明文零进 Evidence + forget 走 consent |

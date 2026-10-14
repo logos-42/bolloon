@@ -18,6 +18,8 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createHash } from 'node:crypto';
+import type { EmbeddingAdapter } from '../llm/embedding-adapter.js';
+import { cosineSimilarity } from '../llm/embedding-adapter.js';
 
 export type MemoryKind = 'fact' | 'insight' | 'preference' | 'event' | 'relationship' | 'skill-feedback';
 
@@ -33,6 +35,8 @@ export interface MemoryEntry {
   refs: string[];            // goalId/runId 证据链
   crystallized: boolean;     // 固化 (多次召回/用户确认 → true)
   recallCount: number;       // 被召回次数 (importance 动态升的依据)
+  /** P1: 向量化表示 (adapter 可用时保存; 无则 undefined → 关键词回退) */
+  vec?: number[];
 }
 
 export interface MemorySaveInput {
@@ -52,6 +56,10 @@ export interface MemoryRecallOptions {
   query: string;
   limit?: number;            // 默认 3
   minScore?: number;         // 默认 0 (有命中即算)
+  /** P1: 查询向量 (adapter 可用时调用方预计算传入; 无 → 关键词回退) */
+  queryVec?: number[];
+  /** P1: 条目向量优先级阈值 (cosine < 此值的不算命中, 默认 0) */
+  minCosine?: number;
 }
 
 const home = (): string => process.env.HOME || os.homedir() || '/tmp';
@@ -146,12 +154,20 @@ export class MemoryStore {
     await fs.rename(tmp, this.file); // 原子替换, 并发读不碰半截文件
   }
 
-  async save(input: MemorySaveInput): Promise<MemoryEntry> {
+  async save(input: MemorySaveInput, adapter?: EmbeddingAdapter): Promise<MemoryEntry> {
     const content = String(input.content || '').trim();
     if (!validContent(content)) throw new Error('记忆内容太短 (至少 2 个字符)');
     const now = new Date().toISOString();
     const id = createHash('sha256').update(`${this.agentId}|${content}`).digest('hex').slice(0, 32);
     const existing = this.entries.get(id);
+    let vec: number[] | undefined = existing?.vec;
+    if (adapter && adapter.provider !== 'none') {
+      try {
+        vec = await adapter.embed(content); // 内容变 → 重算; 内容同 → 复用旧向量
+      } catch {
+        // 向量化失败不阻塞保存 (记忆仍存, 召回走关键词)
+      }
+    }
     const entry: MemoryEntry = {
       id,
       agentId: this.agentId,
@@ -164,25 +180,47 @@ export class MemoryStore {
       refs: input.refs || existing?.refs || [],
       crystallized: existing?.crystallized || false,
       recallCount: existing?.recallCount || 0,
+      vec,
     };
     this.entries.set(id, entry);
     await this.persist();
     return entry;
   }
 
-  /** 召回: 关键词命中 + importance 加权; 命中后 recallCount++ 并落盘 (动态升权) */
+  /**
+   * 召回:
+   *   - queryVec 提供 且 条目有 vec → cosine 相似度 (语义召回), 按 importance 加权
+   *   - 否则 → 关键词命中 (P0 行为), 完全兼容旧调用
+   * 命中后 recallCount++ 并落盘 (动态升权)
+   */
   async recall(opts: MemoryRecallOptions): Promise<MemoryRecallHit[]> {
-    const tokens = tokenize(opts.query);
-    if (tokens.length === 0 || this.entries.size === 0) return [];
+    if (this.entries.size === 0) return [];
     const limit = opts.limit || 3;
-    const minScore = opts.minScore ?? 0;
     const hits: MemoryRecallHit[] = [];
-    for (const e of this.entries.values()) {
-      const s = scoreText(e.content, tokens);
-      if (s <= minScore) continue;
-      const weighted = Math.min(5, s) * (0.4 + 0.6 * e.importance); // importance 加权
-      hits.push({ entry: e, score: weighted });
+
+    const qv = opts.queryVec;
+    const useVec = !!qv && qv.length > 0;
+    if (useVec) {
+      const minCosine = opts.minCosine ?? 0;
+      for (const e of this.entries.values()) {
+        if (!e.vec || e.vec.length !== qv!.length) continue; // 无向量的旧条目跳过
+        const c = cosineSimilarity(qv!, e.vec);
+        if (c < minCosine) continue;
+        const weighted = c * (0.4 + 0.6 * e.importance); // importance 加权
+        if (weighted > 0) hits.push({ entry: e, score: weighted });
+      }
+    } else {
+      const tokens = tokenize(opts.query);
+      if (tokens.length === 0) return [];
+      const minScore = opts.minScore ?? 0;
+      for (const e of this.entries.values()) {
+        const s = scoreText(e.content, tokens);
+        if (s <= minScore) continue;
+        const weighted = Math.min(5, s) * (0.4 + 0.6 * e.importance); // importance 加权
+        hits.push({ entry: e, score: weighted });
+      }
     }
+
     hits.sort((a, b) => b.score - a.score);
     const top = hits.slice(0, limit);
     // 命中 → recallCount++ (动态升权), 每 10 次 importance +0.05

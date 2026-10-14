@@ -15,6 +15,7 @@ import { runSelfImproveLoop } from './pi-sdk-session-factory.js';
 import type { Tool, ToolResult } from './pi-sdk-types.js';
 import type { PersonaDoc } from '../social/heartbeat.js';
 import { getMinimax } from '../constraints/index.js';
+import { llmConfigStore } from '../llm/config-store.js';
 import { delegateToEngine, buildDelegateCommand } from '../external-engines/delegate.js';
 import { spawnBackground } from './process-runner.js';
 import { DELEGATE_ENV_MARK } from './background-notices.js';
@@ -4273,6 +4274,30 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
   // 2026-10-14 (leo: 「需要向量记忆和去中心化记忆」, P0): 结构化记忆工具
   //  —— MemoryEntry 本地 JSONL 持久化; embedding 向量 (P1) / OrbitDB 复制 (P3) 后续接
   const memoryAgentId = (): string => ctx.identity?.did || String(ctx.cwd || '');
+
+  /**
+   * P1: 记忆 embedding 配置。读 llm-config 的 `embedding` 段:
+   *   { embedding: { provider, model, baseUrl?, apiKey?, groupId? } }
+   * 未配置 / provider 不可用 → { provider: 'none' } (记忆层回退关键词, 行为不变)。
+   * 诚实边界: 本仓现有 provider (glm 中转 / minimax 订阅 key) 实测无可用 embedding,
+   * 故默认 none; 将来任一供应商 key 就绪, 在此配置段填上即可, 记忆层零改动。
+   */
+  const getMemoryEmbeddingConfig = (): import('../llm/embedding-adapter.js').EmbeddingConfig => {
+    try {
+      const cfg = (llmConfigStore as any)?.config;
+      const emb = cfg?.embedding;
+      if (emb && typeof emb === 'object' && emb.provider && emb.provider !== 'none') {
+        return {
+          provider: String(emb.provider),
+          model: emb.model ? String(emb.model) : undefined,
+          baseUrl: emb.baseUrl ? String(emb.baseUrl) : undefined,
+          apiKey: emb.apiKey ? String(emb.apiKey) : undefined,
+          groupId: emb.groupId ? String(emb.groupId) : undefined,
+        };
+      }
+    } catch { /* 配置读取失败 → none */ }
+    return { provider: 'none' };
+  };
   ctx.tools.set('memory_save', {
     name: 'memory_save',
     description: '保存一条**结构化长期记忆** (事实/偏好/洞察/事件/关系/技能反馈)。用于: 用户明确说"记住 X"、反复出现的偏好、值得跨会话保留的事实。自动去重 (同内容不重复), 自动打分重要性。',
@@ -4286,13 +4311,20 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
       try {
         const { getMemoryStore } = await import('./memory-store.js');
         const store = getMemoryStore(memoryAgentId());
+        // P1: 有 embedding adapter 时 save 顺便向量化 (存 vec, 供语义召回)
+        let adapter: import('../llm/embedding-adapter.js').EmbeddingAdapter | undefined;
+        try {
+          const { createEmbeddingAdapter } = await import('../llm/embedding-adapter.js');
+          const a = createEmbeddingAdapter(getMemoryEmbeddingConfig());
+          if (a.provider !== 'none') adapter = a;
+        } catch { /* 无向量能力 → 只存文本 */ }
         const entry = await store.save({
           content: String(args.content || '').trim(),
           kind: (args.kind as any) || 'fact',
           importance: args.importance !== undefined ? Number(args.importance) : undefined,
           refs: Array.isArray(args.refs) ? args.refs.map(String) : undefined,
           source: 'tool',
-        });
+        }, adapter);
         return { success: true, output: `✅ 已保存记忆 #${entry.id.slice(0, 8)} (${entry.kind}, 重要性 ${entry.importance.toFixed(2)})` };
       } catch (e: any) {
         return { success: false, error: `memory_save 失败: ${String(e.message || e)}` };
@@ -4312,9 +4344,20 @@ export function registerWalletTools(ctx: ToolRegistryContext): void {
         const { getMemoryStore, formatRecallBlock } = await import('./memory-store.js');
         const store = getMemoryStore(memoryAgentId());
         await store.load();
+        const query = String(args.query || '');
+        // P1: 有 embedding adapter 时走向量召回; 无 → 关键词回退 (P0 行为不变)
+        let queryVec: number[] | undefined;
+        try {
+          const { createEmbeddingAdapter } = await import('../llm/embedding-adapter.js');
+          const adapter = createEmbeddingAdapter(getMemoryEmbeddingConfig());
+          if (adapter.provider !== 'none' && query.trim()) {
+            queryVec = await adapter.embed(query);
+          }
+        } catch { /* vector 不可用 → 关键词回退 */ }
         const hits = await store.recall({
-          query: String(args.query || ''),
+          query,
           limit: args.limit ? Number(args.limit) : 3,
+          queryVec,
         });
         if (!hits.length) return { success: true, output: '📭 没有找到相关记忆 (可能是新话题或记忆未保存)' };
         return { success: true, output: formatRecallBlock(hits) };
