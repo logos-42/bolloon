@@ -389,8 +389,67 @@ export function registerContactRoutes(
     }
   });
 
-  // ── 隐藏守卫自检 (验收/测试直接用) ──────────────────────────────────────────
-  app.get('/api/contacts/_selfcheck', (_req, res) => {
-    res.json({ ok: true, plaintextGuard: looksLikePlaintextSecret({ contacts: [{ value: '+8613812345678' }] }) });
-  });
-}
+  // ── 手机号目录 (2026-10-11, phone-account-lookup-design 落点 A) ────────────
+    // 隐私: 请求/响应全程只过「盲化哈希」, 明文手机号只在请求体出现一次 (发布/查询),
+    //       永不出现在响应里 (与 contacts 既有红线一致)。
+    const dirHome = (): string | undefined => opts.home || undefined;
+
+    /** 发布手机号 → DID 指针 (opt-in; 用户显式调用) */
+    app.post('/api/contacts/directory/publish', async (req, res) => {
+      try {
+        const { publishEntry, isPlausiblePhone } = await import('../agents/contacts/human-directory.js');
+        const phone = String(req.body?.phone || '');
+        const did = String(req.body?.did || ownerDidFromDisk());
+        if (!isPlausiblePhone(phone)) return res.status(400).json({ ok: false, error: '手机号格式不正确' });
+        const e = await publishEntry(phone, did, {
+          displayName: req.body?.displayName ? String(req.body.displayName) : undefined,
+          homeDir: dirHome(),
+        });
+        res.json({ ok: true, phoneHash: e.phoneHash.slice(0, 8) + '…', did: e.did, publishedAt: e.publishedAt });
+      } catch (err: any) {
+        res.status(500).json({ ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    /** 撤销目录条目 (软删) */
+    app.post('/api/contacts/directory/retract', async (req, res) => {
+      try {
+        const { retractEntry } = await import('../agents/contacts/human-directory.js');
+        const did = String(req.body?.did || ownerDidFromDisk());
+        const ok = await retractEntry(did, dirHome());
+        res.json({ ok, revoked: ok });
+      } catch (err: any) {
+        res.status(500).json({ ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    /** 按手机号查账号 (在本机目录内找; 响应只回 DID/昵称, 绝不回手机号) */
+    app.post('/api/contacts/directory/lookup', async (req, res) => {
+      try {
+        const { lookupPhone, isPlausiblePhone } = await import('../agents/contacts/human-directory.js');
+        const phone = String(req.body?.phone || '');
+        if (!isPlausiblePhone(phone)) return res.status(400).json({ ok: false, error: '手机号格式不正确' });
+        const r = await lookupPhone(phone, dirHome());
+        if (!r.found) return res.json({ ok: true, found: false, note: '未找到 (未注册或未公开)' });
+        res.json({ ok: true, found: true, did: r.did, displayName: r.displayName || null });
+      } catch (err: any) {
+        res.status(500).json({ ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    /** 列出已发布条目 (本机审计; 只回脱敏哈希) */
+    app.get('/api/contacts/directory/list', async (_req, res) => {
+      try {
+        const { readDirectory, summarizeEntries } = await import('../agents/contacts/human-directory.js');
+        const entries = await readDirectory(dirHome());
+        res.json({ ok: true, entries: summarizeEntries(entries) });
+      } catch (err: any) {
+        res.status(500).json({ ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    // ── 隐藏守卫自检 (验收/测试直接用) ──────────────────────────────────────────
+    app.get('/api/contacts/_selfcheck', (_req, res) => {
+      res.json({ ok: true, plaintextGuard: looksLikePlaintextSecret({ contacts: [{ value: '+861****5678' }] }) });
+    });
+  }

@@ -164,5 +164,49 @@ export function registerContactTools(ctx: ToolCtx, chain: ContactChain): string[
   });
 
   registered.push(...CONTACT_TOOL_NAMES);
+
+  // ── 手机号目录 (2026-10-11, phone-account-lookup-design 落点 A) ──────────
+  // 工具面: 发布自己的手机号指针 / 查对方 / 撤销。隐私: 只操作哈希, 明文手机号只在本机。
+  ctx.tools.set('directory.publish', {
+    name: 'directory.publish',
+    description: '把自己的手机号 → DID 指针发布到本机目录 (opt-in, 用户显式要求才做)。之后对方凭手机号可查到你的 DID 加好友。**先问用户确认**再调用 (发布手机号是隐私动作)。',
+    parameters: { phone: '手机号 (11 位, 可带 +86 前缀)', displayName: '公开昵称 (可选, 不是真名)' },
+    execute: async (args: Record<string, unknown>) => {
+      const { publishEntry, isPlausiblePhone } = await import('./human-directory.js');
+      const phone = text(args.phone);
+      if (!isPlausiblePhone(phone)) return { success: false, error: '手机号格式不正确 (8-15 位数字)' };
+      const did = (globalThis as any).__bolloonUserDid || 'did:bolln:local';
+      const e = await publishEntry(phone, did, { displayName: text(args.displayName) || undefined });
+      return { success: true, phoneHash: e.phoneHash.slice(0, 8) + '…', did: e.did, note: '已发布到本机目录 (对方凭手机号可查到你的 DID)' };
+    },
+  });
+
+  ctx.tools.set('directory.lookup', {
+    name: 'directory.lookup',
+    description: '按手机号查对方 DID (在本机目录内找)。用于: 用户说"用手机号找 XX 加好友"、想加某人为好友但只有手机号。响应只回 DID/昵称, 不回手机号。',
+    parameters: { phone: '对方手机号 (11 位)' },
+    execute: async (args: Record<string, unknown>) => {
+      const { lookupPhone, isPlausiblePhone } = await import('./human-directory.js');
+      const phone = text(args.phone);
+      if (!isPlausiblePhone(phone)) return { success: false, error: '手机号格式不正确' };
+      const r = await lookupPhone(phone);
+      if (!r.found) return { success: true, found: false, note: '未找到 (对方未注册目录或已撤销)' };
+      return { success: true, found: true, did: r.did, displayName: r.displayName || null, note: '已找到, 可用此 DID 发起好友请求' };
+    },
+  });
+
+  ctx.tools.set('directory.retract', {
+    name: 'directory.retract',
+    description: '从本机目录撤销自己的手机号 → DID 指针 (软删)。用于: 用户说"不要让别人查到我手机号了"。',
+    parameters: {},
+    execute: async () => {
+      const { retractEntry } = await import('./human-directory.js');
+      const did = (globalThis as any).__bolloonUserDid || 'did:bolln:local';
+      const ok = await retractEntry(did);
+      return { success: ok, note: ok ? '已从目录撤销 (手机号不再可查)' : '目录里没有你的条目' };
+    },
+  });
+
+  registered.push('directory.publish', 'directory.lookup', 'directory.retract');
   return registered;
 }
