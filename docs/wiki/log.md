@@ -1,5 +1,7 @@
 # Wiki 日志
 
+| 2026-10-14 | docs | **新增 Kernel 设计原则与动机技术文档** —— 独立整理宏内核的动机、职责边界、状态所有权、Pi/Harness/Supervisor/constraint-runtime 分工、验证理念、演进路线与非目标；现有宏内核页继续作为 K0–K10 实现台账。 | docs/wiki/kernel-design-principles.md · docs/wiki/index.md · docs/wiki/current-status.md |
+
 > 每次 session 结束在这里追加一行, 格式 `## [YYYY-MM-DD] <phase> | <一句话>`.
 > `phase` ∈ {init / feature / fix / refactor / docs / chore / test}.
 
