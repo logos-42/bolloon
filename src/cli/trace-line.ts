@@ -56,3 +56,51 @@ export function traceLabel(name: string): string {
   const d = describeToolCall(name);
   return d ? `${d} · ${name}` : name;
 }
+
+/**
+ * 工具参数摘要 (2026-10-14, leo: 「调用工具的时候, 把执行的命令缩写也附带上 —— 现在看不到过程」)。
+ * 从 args 里挑「人看到就懂的」关键字段, 截断成一行的命令缩写:
+ *   terminal(command='npx vitest run src/test/x') → `npx vitest run src/test/x`
+ *   read_file(path='src/index.ts')               → `src/index.ts`
+ *   grep_files(pattern='foo', path='src')        → `foo · src`
+ * 认不出该工具的参数形态 → 返回空 (工具行不带摘要, 保持现状)。
+ */
+export function toolArgsSummary(name: string, args?: Record<string, unknown> | string | null): string {
+  const n = String(name ?? '').trim();
+  // string 形态 (如 JSON 串) 不解析摘要 —— 只要对象形态 (step_* 事件是对象)
+  const a = args && typeof args === 'object' ? args : {};
+  if (!n) return '';
+
+  const pick = (keys: string[]): string => {
+    for (const k of keys) {
+      const v = a[k];
+      if (v === undefined || v === null) continue;
+      const s = String(v).trim();
+      if (s && s !== 'undefined') return s;
+    }
+    return '';
+  };
+
+  let summary = '';
+  if (/^terminal$/.test(n)) {
+    summary = pick(['command', 'cmd', 'script']);
+  } else if (/^(read_file|read_document|write_file|read_directory|list_files)$/.test(n)) {
+    summary = pick(['path', 'filePath', 'file', 'dir', 'directory']);
+  } else if (/^(grep_files|search_files)$/.test(n)) {
+    const p = pick(['pattern', 'query']);
+    const d = pick(['path', 'dir']);
+    summary = [p, d].filter(Boolean).join(' · ');
+  } else if (/^(git_log|git_diff|git_status|git_commit|git_push)$/.test(n)) {
+    summary = pick(['args', 'message', 'scope']);
+  } else if (/^(memory_recall|memory_search)$/.test(n)) {
+    summary = pick(['query']);
+  } else if (/^(tsc_check|vitest_run|npm_run)$/.test(n)) {
+    summary = pick(['args', 'script', 'command']);
+  } else if (/^process$/.test(n)) {
+    summary = pick(['name', 'command']);
+  }
+  // 截断到工具行友好长度 (保留头尾关键信息)
+  const s = summary.trim();
+  if (!s) return '';
+  return s.length > 56 ? `${s.slice(0, 48)}…${s.slice(-6)}` : s;
+}

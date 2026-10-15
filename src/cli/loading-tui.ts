@@ -13,6 +13,7 @@
  */
 
 import { truncateSafe } from './status-segments.js';
+import { toolArgsSummary } from './trace-line.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -518,12 +519,17 @@ function colorizeDiff(text: string): string {
   return out.join('\n');
 }
 
-/** 渲染单条工具调用为紧凑列表项 (增量显示, 一行, 无 args) */
+/** 渲染单条工具调用为紧凑列表项 (增量显示, 一行, 参数摘要) */
 export function renderToolCallListItem(item: ToolCallListItem, index: number, total: number): string {
   const dur = item.durationMs != null ? ` ${C_DIM}${item.durationMs}ms${RESET}` : '';
   const label = item.status === 'error' ? `${C_ERROR}${item.tool}${RESET}` : `${C_ACCENT}${item.tool}${RESET}`;
+  // 2026-10-14 (leo: 「调用工具的时候, 把执行的命令缩写也附带上 —— 现在看不到过程」):
+  //   工具行附上参数摘要 (terminal→命令 / read_file→路径 / grep→pattern·dir), 灰色、截断;
+  //   看不清过程的问题 = 之前只有工具名, 不知道它具体跑了什么。
+  const sum = toolArgsSummary(item.tool, item.args);
+  const sumPart = sum ? ` ${C_DIM}${sum}${RESET}` : '';
   // 2026-10-01: 工具行也按**保守宽度**截断 —— 超宽会让终端折行、打乱 Ink 光标 (底栏那块就是这么坏的)
-  return truncateSafe(`  🔧 ${label}${dur}`, Math.max(20, (process.stdout.columns || 100) - 1));
+  return truncateSafe(`  🔧 ${label}${sumPart}${dur}`, Math.max(20, (process.stdout.columns || 100) - 1));
 }
 
 /** 紧凑渲染工具输出 (检测到 diff 则着色, 否则普通截断) — 当前不显示 body */

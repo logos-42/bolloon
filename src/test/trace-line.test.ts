@@ -4,7 +4,8 @@
  *   ③ trace 模式下思维流**不显示**(这才是"换成 trace 描述"的关键) ④ 默认就是 trace(用户要的形态)。
  */
 import { describe, it, expect } from 'vitest';
-import { describeToolCall, traceLabel } from '../cli/trace-line.js';
+import { describeToolCall, traceLabel, toolArgsSummary } from '../cli/trace-line.js';
+import { renderToolCallListItem } from '../cli/loading-tui.js';
 import { renderReasoning, reasoningMode, isReasoningVisible } from '../cli/reasoning-view.js';
 
 describe('trace 执行描述', () => {
@@ -30,5 +31,48 @@ describe('trace 执行描述', () => {
     expect(reasoningMode({ BOLLOON_SHOW_THINKING: 'short' } as any)).toBe('short');
     expect(reasoningMode({ BOLLOON_SHOW_THINKING: 'full' } as any)).toBe('full');
     expect(renderReasoning('x', { mode: 'short' }).text.length).toBeGreaterThan(0);
+  });
+});
+
+describe('toolArgsSummary — 工具行命令缩写 (leo 2026-10-14: 「看不到过程 → 把执行的命令缩写带上」)', () => {
+  it('terminal → 命令本身', () => {
+    expect(toolArgsSummary('terminal', { command: 'npx vitest run src/test/x' })).toBe('npx vitest run src/test/x');
+    expect(toolArgsSummary('terminal', { cmd: 'git status' })).toBe('git status');
+  });
+  it('read_file/write_file/list_files → 路径', () => {
+    expect(toolArgsSummary('read_file', { path: 'src/index.ts' })).toBe('src/index.ts');
+    expect(toolArgsSummary('write_file', { filePath: 'docs/x.md' })).toBe('docs/x.md');
+    expect(toolArgsSummary('list_files', { dir: 'src' })).toBe('src');
+  });
+  it('grep_files → pattern · dir 拼接', () => {
+    expect(toolArgsSummary('grep_files', { pattern: 'todo', path: 'src' })).toBe('todo · src');
+    expect(toolArgsSummary('grep_files', { query: 'xxx' })).toBe('xxx');
+  });
+  it('无参数/不认识 → 空 (工具行保持现状, 不带摘要)', () => {
+    expect(toolArgsSummary('read_file', {})).toBe('');
+    expect(toolArgsSummary('some_tool', { a: 1 })).toBe('');
+    expect(toolArgsSummary('', { a: 1 })).toBe('');
+  });
+  it('长命令截断 (保留头尾)', () => {
+    const long = 'npm run build:main && npx vitest run src/test/workflow-pivot-loop.test.ts && echo done';
+    const s = toolArgsSummary('terminal', { command: long });
+    expect(s.length).toBeLessThan(long.length);
+    expect(s.endsWith(long.slice(-6)));
+  });
+  it('string 形态 args → 空 (不解析 JSON 串)', () => {
+    expect(toolArgsSummary('terminal', '{"command":"x"}')).toBe('');
+  });
+});
+
+describe('renderToolCallListItem — 工具行带命令缩写渲染 (leo 2026-10-14)', () => {
+  it('terminal + command → `🔧 terminal <command> <dur>ms` 形态', () => {
+    const line = renderToolCallListItem(
+      { tool: 'terminal', status: 'ok', args: { command: 'git status' }, durationMs: 42 },
+      1, 3,
+    );
+    expect(line).toContain('🔧');
+    expect(line).toContain('terminal');
+    expect(line).toContain('git status');
+    expect(line).toContain('42ms');
   });
 });

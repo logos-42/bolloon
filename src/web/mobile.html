@@ -224,11 +224,26 @@
 <div class="sheet" id="addfriend-sheet" hidden>
   <div class="sheet-inner sheet-inner-choices">
     <div class="sheet-title">连接好友</div>
+    <button class="sheet-choice" id="choice-phone"><svg class="ico" viewBox="0 0 24 24"><path d="M5 4h4l1.5 4.5L8 10a12 12 0 0 0 6 6l1.5-2.5L20 15v4a1.5 1.5 0 0 1-1.6 1.5A17 17 0 0 1 3.5 5.6 1.5 1.5 0 0 1 5 4z"/></svg> 手机号搜索添加</button>
     <button class="sheet-choice" id="choice-nearby"><svg class="ico" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 16 0"/><path d="M7.5 12a4.5 4.5 0 0 1 9 0"/><circle cx="12" cy="12" r="1.4"/><path d="M12 13.6V19"/></svg> 附近的设备</button>
     <button class="sheet-choice" id="choice-scan"><svg class="ico" viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M4 12h16"/></svg> 扫码添加</button>
     <button class="sheet-choice" id="choice-requests"><svg class="ico" viewBox="0 0 24 24"><path d="M6 4h9l4 4v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M9 12h6M9 16h4"/></svg> 待处理申请</button>
     <button class="sheet-choice sheet-cancel" id="choice-manual">⌨️ 手动输入地址 (兜底)</button>
     <button class="sheet-choice sheet-cancel" id="choice-cancel">取消</button>
+  </div>
+</div>
+
+<!-- 手机号搜索添加好友: 输入手机号 → 目录查账号 → 发好友申请 (2026-10-15) -->
+<div class="sheet" id="phone-search-sheet" hidden>
+  <div class="sheet-inner">
+    <div class="sheet-title">手机号搜索添加</div>
+    <input id="phone-search-input" type="tel" inputmode="numeric" placeholder="输入对方手机号 (如 13812345678)" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:15px;box-sizing:border-box">
+    <div id="phone-search-note" style="font-size:12px;color:var(--text-secondary);margin:8px 2px;line-height:1.6">通过手机号目录查对方账号: 对方需已在电脑端发布目录 (手机号 → DID 指针)。查不到 = 对方未公开, 与不存在同义。</div>
+    <div id="phone-search-result" style="display:none;margin-top:8px"></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="sheet-choice" id="phone-search-do" style="flex:1">搜索</button>
+      <button class="sheet-choice sheet-cancel" id="phone-search-close" style="flex:1">关闭</button>
+    </div>
   </div>
 </div>
 

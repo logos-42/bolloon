@@ -2733,6 +2733,52 @@
     inp.click();
   }
 
+  // === 手机号搜索添加好友 (2026-10-15, 手机原生手机号功能) ===
+  // 目录数据在电脑端 (human-directory.json), 手机端只转发; 电脑端不可达 → 明确报错不假装。
+  function openPhoneSearch() {
+    hideSheet('#addfriend-sheet');
+    showSheet('#phone-search-sheet');
+    const inp = $('#phone-search-input');
+    if (inp) { inp.value = ''; inp.focus(); }
+    const result = $('#phone-search-result');
+    if (result) { result.style.display = 'none'; result.innerHTML = ''; }
+  }
+  async function doPhoneSearch() {
+    const inp = $('#phone-search-input');
+    const result = $('#phone-search-result');
+    if (!inp || !result) return;
+    const phone = (inp.value || '').replace(/[^\d+]/g, '');
+    if (!/^\+?\d{8,15}$/.test(phone)) { result.style.display = 'block'; result.innerHTML = '<div style="color:var(--danger,#e05555);font-size:13px">请输入正确的手机号 (8-15 位数字)</div>'; return; }
+    result.style.display = 'block';
+    result.innerHTML = '<div style="color:var(--text-secondary);font-size:13px">搜索中…</div>';
+    try {
+      const r = await api.post('/api/phone/directory/lookup', { phone });
+      if (r && r.found) {
+        const name = r.displayName || String(r.did || '').slice(0, 12);
+        result.innerHTML = `<div style="font-size:14px;margin-bottom:6px">✅ 找到账号: <b>${escapeHtml(name)}</b></div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">DID: ${escapeHtml(String(r.did || ''))}</div>
+          <button class="sheet-choice" id="phone-add-btn" style="width:100%">发送好友申请</button>`;
+        const btn = $('#phone-add-btn');
+        if (btn) btn.addEventListener('click', async () => {
+          btn.disabled = true; btn.textContent = '发送中…';
+          const a = await api.post('/api/phone/directory/add-friend', { phone });
+          btn.disabled = false;
+          if (a && a.ok !== false) {
+            btn.textContent = '✅ 已发送 (对方同意后建立好友)';
+            if (a.friend && a.friend.requestId) result.innerHTML += `<div style="font-size:12px;color:var(--text-secondary);margin-top:6px">申请号: ${escapeHtml(String(a.friend.requestId).slice(0, 12))}… 可到「待处理申请」查看</div>`;
+          } else {
+            btn.textContent = '重试发送';
+            result.innerHTML += `<div style="color:var(--danger,#e05555);font-size:12px;margin-top:6px">发送失败: ${escapeHtml((a && a.error) || '未知原因')}</div>`;
+          }
+        });
+      } else {
+        result.innerHTML = '<div style="color:var(--text-secondary);font-size:13px">未找到该手机号的账号 (对方未发布目录或已撤销)。</div>';
+      }
+    } catch (e) {
+      result.innerHTML = `<div style="color:var(--danger,#e05555);font-size:13px">查询失败: ${escapeHtml((e && e.message) || e || '未知错误')}</div>`;
+    }
+  }
+
   // === 复制 (助记词/私钥/地址 快捷复制; 全局委托 [data-copy]) ===
   async function copyText(t) {
     const txt = String(t || '');
@@ -2755,7 +2801,9 @@
     setTimeout(() => { b.textContent = old; }, 1200);
   });
 
-  // === 登录页 (设置本机身份昵称) ===
+  // === 登录页 (手机号验证码登录 + 昵称兜底) ===
+  // 2026-10-15: 手机原生手机号登录 — 输手机号 → 发验证码 → 验证通过 → 身份绑定手机号。
+  //   验证码链路转发电脑端 /api/contacts/bind + verify (与桌面同一 OTP 通道)。
   function openLoginPage() {
     const page = document.createElement('div');
     page.className = 'chat-page';
@@ -2766,13 +2814,61 @@
         <div style="flex:1;font-weight:600">登录</div>
       </div>
       <div style="padding:12px;display:flex;flex-direction:column;gap:12px">
-        <div style="font-size:13px;color:var(--text-secondary)">登录 = 在本机创建/启用身份并设置昵称。DID 由本机生成, 不上传服务器。</div>
+        <div style="font-size:13px;color:var(--text-secondary)">手机号登录: 输手机号 → 收验证码 → 登录。身份仍由本机 DID 承载, 手机号只是登录/查找凭证。</div>
+        <input id="login-phone" type="tel" inputmode="numeric" placeholder="手机号 (如 13812345678)" style="${_walletInput}">
+        <div style="display:flex;gap:8px">
+          <input id="login-code" inputmode="numeric" placeholder="验证码" style="${_walletInput};flex:1" disabled>
+          <button id="login-sendcode" style="${_walletBtn};width:110px;flex:none">发送验证码</button>
+        </div>
+        <button id="login-submit" style="${_walletBtn}">手机号登录</button>
+        <div style="border-top:1px solid var(--border);margin-top:4px;padding-top:12px;font-size:12px;color:var(--text-secondary)">或者用昵称登录 (本机身份, 不上传):</div>
         <input id="login-name" placeholder="昵称 (如 觉者)" style="${_walletInput}">
-        <button id="login-submit" style="${_walletBtn}">登录</button>
+        <button id="login-name-submit" style="${_walletBtn}">昵称登录</button>
       </div>`;
     document.body.appendChild(page);
     $('#login-back').addEventListener('click', () => page.remove());
-    $('#login-submit').addEventListener('click', async () => {
+
+    // 手机号登录: 登录成功后把手机号写进身份 profile (手机号即凭证)
+    const phoneInput = $('#login-phone');
+    const codeInput = $('#login-code');
+    const sendBtn = $('#login-sendcode');
+    const submitBtn = $('#login-submit');
+    let _pending = { contactId: '', challengeId: '' };
+    sendBtn.addEventListener('click', async () => {
+      const phone = (phoneInput.value || '').replace(/[^\d+]/g, '');
+      if (!/^\+?\d{8,15}$/.test(phone)) { alert('请输入正确的手机号 (8-15 位数字)'); return; }
+      sendBtn.disabled = true; sendBtn.textContent = '发送中…';
+      try {
+        const r = await api.post('/api/phone/auth/bind', { phone });
+        if (!r || r.ok === false) { alert((r && r.error) || '发送失败'); sendBtn.disabled = false; sendBtn.textContent = '发送验证码'; return; }
+        _pending = { contactId: String(r.contactId || ''), challengeId: String(r.challengeId || '') };
+        codeInput.disabled = false; codeInput.focus();
+        sendBtn.textContent = '已发送 ✓';
+        // 本地落盘通道会回显验证码 (方便无短信设备的调试; 真 SMS 通道不回显)
+        if (r.otpForLocalSink) { showToast ? showToast('验证码: ' + String(r.otpForLocalSink)) : alert('验证码: ' + String(r.otpForLocalSink)); }
+        setTimeout(() => { sendBtn.disabled = false; sendBtn.textContent = '重新发送'; }, 30000);
+      } catch (e) { alert('发送失败: ' + (e.message || e)); sendBtn.disabled = false; sendBtn.textContent = '发送验证码'; }
+    });
+    submitBtn.addEventListener('click', async () => {
+      const code = (codeInput.value || '').trim();
+      if (!_pending.contactId || !code) { alert('先发送验证码并输入验证码'); return; }
+      submitBtn.disabled = true; submitBtn.textContent = '验证中…';
+      try {
+        const v = await api.post('/api/phone/auth/verify', { contactId: _pending.contactId, challengeId: _pending.challengeId, code });
+        if (!v || v.ok === false) { alert((v && v.error) || '验证失败'); submitBtn.disabled = false; submitBtn.textContent = '手机号登录'; return; }
+        // 验证通过 → 昵称默认取手机号, 登录本机身份, 手机号写进 profile
+        const phone = (phoneInput.value || '').replace(/[^\d+]/g, '');
+        await api.post('/api/auth/login', { name: '用户' + phone.slice(-4) });
+        try { await api.post('/api/phone/profile/phone', { phone }); } catch { /* 本地 profile 更新失败不阻塞登录 */ }
+        page.remove();
+        await loadMe();
+        switchTab('me');
+        await autoSyncDesktop();
+      } catch (e) { alert('验证失败: ' + (e.message || e)); submitBtn.disabled = false; submitBtn.textContent = '手机号登录'; }
+    });
+    // 手机号 → 本机身份 profile (只存本机; 电脑端目录发布仍需用户在电脑端做)
+    // 昵称登录兜底
+    $('#login-name-submit').addEventListener('click', async () => {
       const name = (($('#login-name') || {}).value || '').trim();
       try {
         await api.post('/api/auth/login', { name });
@@ -2838,10 +2934,19 @@
     // #2b 连接好友 (点按式) + 附近设备 + 待处理申请
     const addFriendBtn = $('#item-add-friend');
     if (addFriendBtn) addFriendBtn.addEventListener('click', () => showSheet('#addfriend-sheet'));
+    const cPhone = $('#choice-phone');
+    if (cPhone) cPhone.addEventListener('click', () => openPhoneSearch());
     const cNearby = $('#choice-nearby');
     if (cNearby) cNearby.addEventListener('click', () => { hideSheet('#addfriend-sheet'); openNearbySheet('friend'); });
     const cRequests = $('#choice-requests');
     if (cRequests) cRequests.addEventListener('click', () => { hideSheet('#addfriend-sheet'); openRequestsSheet(); });
+    // #2c 手机号搜索添加好友 sheet 的按键绑定
+    const psDo = $('#phone-search-do');
+    if (psDo) psDo.addEventListener('click', () => { void doPhoneSearch(); });
+    const psClose = $('#phone-search-close');
+    if (psClose) psClose.addEventListener('click', () => hideSheet('#phone-search-sheet'));
+    const psInput = $('#phone-search-input');
+    if (psInput) psInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); void doPhoneSearch(); } });
     const nearbyBtn = $('#item-nearby');
     if (nearbyBtn) nearbyBtn.addEventListener('click', () => openNearbySheet('friend'));
     const nearbyRefresh = $('#nearby-refresh');
