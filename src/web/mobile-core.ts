@@ -295,6 +295,12 @@ export const core = {
     if (p === '/api/world/search') return () => core.world.search(String((body || {}).topic || ''));
     if (p === '/api/auth/logout') return () => core.identity.logout();
     if (p === '/api/auth/login') { const b = body || {}; return () => core.identity.login(String(b.name || '')); }
+    // 2026-10-15 手机号原生登录/搜索/加好友: 转发电脑端既有端点 (手机端不持目录数据)
+    if (p === '/api/phone/directory/publish') { const b = body || {}; return () => core.directory.publish(String(b.phone || ''), b.displayName ? String(b.displayName) : undefined); }
+    if (p === '/api/phone/directory/lookup') { const b = body || {}; return () => core.directory.lookup(String(b.phone || '')); }
+    if (p === '/api/phone/directory/add-friend') { const b = body || {}; return () => core.directory.addFriend(String(b.phone || ''), b.name ? String(b.name) : undefined, b.message ? String(b.message) : undefined); }
+    if (p === '/api/phone/auth/bind') { const b = body || {}; return () => core.phoneAuth.bind(String(b.phone || '')); }
+    if (p === '/api/phone/auth/verify') { const b = body || {}; return () => core.phoneAuth.verify(String(b.contactId || ''), String(b.challengeId || ''), String(b.code || '')); }
     if (p === '/api/wallet/export') { const b = body || {}; return () => core.wallet.export(String(b.id || '')); }
     if (p === '/api/phone/agent/run') {
       const b = body || {};
@@ -886,6 +892,95 @@ export const core = {
     async upload(content: string, name?: string): Promise<any> { const i: any = await import('./mobile-ipfs.js'); return i.ipfsUpload(content, name); },
     async fetch(cid: string): Promise<any> { const i: any = await import('./mobile-ipfs.js'); return i.ipfsFetch(cid); },
     async cid(value: any): Promise<any> { const i: any = await import('./mobile-ipfs.js'); return { ok: true, cid: await i.computeCid(value) }; },
+  },
+
+  // 手机号目录 (2026-10-15, 手机原生手机号功能): 手机端不持目录数据 → 转发电脑端既有端点。
+  //   电脑端不可达 → 明确 desktop-unreachable (不假装有目录)。
+  //   隐私: 明文手机号只随请求发给电脑端一次, 响应只回 DID/公钥/昵称 (与桌面红线一致)。
+  directory: {
+    async baseUrl(): Promise<string> {
+      try { const g: any = await import('./mobile-gateway.js'); return String(g.getDesktopBaseUrl() || '').replace(/\/+$/, ''); } catch { return ''; }
+    },
+    async publish(phone: string, displayName?: string): Promise<any> {
+      const base = await core.directory.baseUrl();
+      if (!base) return { ok: false, error: '需要电脑端在线 (设置里填桌面地址) 才能发布手机号目录' };
+      try {
+        const r = await fetch(`${base}/api/contacts/directory/publish`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone, displayName: displayName || undefined }),
+        });
+        const d: any = await r.json().catch(() => null);
+        if (!r.ok) return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        return d || { ok: false, error: '电脑端返回空响应' };
+      } catch (e: any) {
+        return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
+      }
+    },
+    async lookup(phone: string): Promise<any> {
+      const base = await core.directory.baseUrl();
+      if (!base) return { ok: false, found: false, error: '需要电脑端在线 (设置里填桌面地址) 才能查手机号目录' };
+      try {
+        const r = await fetch(`${base}/api/contacts/directory/lookup`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone }),
+        });
+        const d: any = await r.json().catch(() => null);
+        if (!r.ok) return { ok: false, found: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        return d || { ok: false, found: false, error: '电脑端返回空响应' };
+      } catch (e: any) {
+        return { ok: false, found: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
+      }
+    },
+    async addFriend(phone: string, name?: string, message?: string): Promise<any> {
+      const base = await core.directory.baseUrl();
+      if (!base) return { ok: false, error: '需要电脑端在线 (设置里填桌面地址) 才能发起好友申请' };
+      try {
+        const r = await fetch(`${base}/api/contacts/directory/add-friend`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone, name: name || undefined, message: message || undefined }),
+        });
+        const d: any = await r.json().catch(() => null);
+        if (!r.ok) return { ok: false, status: r.status, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        return d || { ok: false, error: '电脑端返回空响应' };
+      } catch (e: any) {
+        return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
+      }
+    },
+  },
+
+  // 手机号登录 (2026-10-15): 手机号 + OTP 验证码登录 — 手机端把 bind/verify 转发电脑端,
+  //   成功后用电脑端返回的身份绑定本机 identity (手机号即登录凭证, 不再只是昵称)。
+  phoneAuth: {
+    async bind(phone: string): Promise<any> {
+      const base = await core.directory.baseUrl();
+      if (!base) return { ok: false, error: '需要电脑端在线 (设置里填桌面地址) 才能发送验证码' };
+      try {
+        const r = await fetch(`${base}/api/contacts/bind`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: 'phone', value: phone, region: 'CN', source: 'user_input' }),
+        });
+        const d: any = await r.json().catch(() => null);
+        if (!r.ok) return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        return d || { ok: false, error: '电脑端返回空响应' };
+      } catch (e: any) {
+        return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
+      }
+    },
+    async verify(contactId: string, challengeId: string, code: string): Promise<any> {
+      const base = await core.directory.baseUrl();
+      if (!base) return { ok: false, error: '需要电脑端在线 (设置里填桌面地址) 才能验证验证码' };
+      try {
+        const r = await fetch(`${base}/api/contacts/verify`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contactId, challengeId, code }),
+        });
+        const d: any = await r.json().catch(() => null);
+        if (!r.ok) return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        return d || { ok: false, error: '电脑端返回空响应' };
+      } catch (e: any) {
+        return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
+      }
+    },
   },
 
   // 资源交易 (E2/E3/E4): 402 → 策略 → 支付 → 结果 → 信誉
