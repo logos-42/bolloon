@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { MemoryStore, getMemoryStore, formatRecallBlock, heuristicImportance, resetMemoryStores } from '../agents/memory-store.js';
+import { MemoryStore, getMemoryStore, formatRecallBlock, formatMemorySystemBlock, heuristicImportance, resetMemoryStores } from '../agents/memory-store.js';
 
 const tmpHome = (): string => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-store-'));
@@ -107,5 +107,48 @@ describe('MemoryStore P0', () => {
     const s2 = new MemoryStore('agent-a', HOME);
     await s2.load();
     expect((await s2.list())).toHaveLength(1);
+  });
+});
+
+describe('formatMemorySystemBlock (稳态记忆块, 2026-10-15)', () => {
+  it('crystallized 优先 + importance 降序, 上限 6 条', async () => {
+    const s = new MemoryStore('agent-a', HOME);
+    await s.save({ content: '普通事实 1', kind: 'fact' });
+    await s.save({ content: '普通事实 2', kind: 'fact' });
+    await s.save({ content: '用户偏好: 全自动', kind: 'preference', importance: 0.9 });
+    // 固化一条
+    const all0 = await s.list();
+    const target = all0.find((e) => e.content.includes('全自动'))!;
+    await s.crystallize(target.id);
+    const all = await s.list();
+    const block = formatMemorySystemBlock(all, 6);
+    expect(block).toContain('<stable-memory>');
+    expect(block).toContain('★');                 // 固化标记
+    expect(block.indexOf('全自动')).toBeLessThan(block.indexOf('普通事实')); // 固化排最前
+  });
+
+  it('decayed 记忆不入选 (淡化中不算稳态)', async () => {
+    const s = new MemoryStore('agent-a', HOME);
+    await s.save({ content: '会淡化的记忆', kind: 'fact', importance: 0.2 });
+    const e = (await s.list())[0];
+    await s.save({ content: '会淡化的记忆', kind: 'fact', importance: 0.2 }); // 同内容去重
+    // 手动标 decayed
+    const store = s as any;
+    const entries = store.entries as Map<string, any>;
+    entries.get(e.id)!.decayed = true;
+    const block = formatMemorySystemBlock(await s.list(), 6);
+    expect(block).toBe('');
+  });
+
+  it('空记忆 → 空块 (不产生空围栏)', () => {
+    expect(formatMemorySystemBlock([], 6)).toBe('');
+  });
+
+  it('maxEntries 截断: 只给前 N 条', async () => {
+    const s = new MemoryStore('agent-a', HOME);
+    for (let i = 0; i < 10; i++) await s.save({ content: `事实 ${i}`, kind: 'fact', importance: 0.5 });
+    const block = formatMemorySystemBlock(await s.list(), 3);
+    const lines = block.split('\n').filter((l) => l.startsWith('- ('));
+    expect(lines.length).toBe(3);
   });
 });

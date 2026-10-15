@@ -395,6 +395,30 @@ export function formatRecallBlock(hits: MemoryRecallHit[]): string {
   return `<memory-context>\n${lines.join('\n')}\n</memory-context>`;
 }
 
+/**
+ * 稳态记忆块 (2026-10-15, 对齐 Hermes `_memory_parts` 的整块注入):
+ * 每次 build system prompt 时把「重要且稳定」的记忆整块给出 — 不依赖当轮 query 召回。
+ * 选材: ① crystallized (固化 = 用户确认过/多次命中) ② 未淡化 (decayed=false)
+ * ③ importance 降序; 上限 maxEntries (默认 6), 单条 120 字符摘要。
+ * 与 recall 互补: recall 是 query 驱动的即时相关, 这块是「始终可见的稳态事实」。
+ */
+export function formatMemorySystemBlock(entries: MemoryEntry[], maxEntries = 6): string {
+  const picked = entries
+    .filter((e) => !e.decayed)                       // 淡化中的不算稳态
+    .sort((a, b) => {
+      // 固化优先, 然后 importance 降序
+      if (a.crystallized !== b.crystallized) return a.crystallized ? -1 : 1;
+      return b.importance - a.importance;
+    })
+    .slice(0, maxEntries);
+  if (!picked.length) return '';
+  const lines = picked.map((e) => {
+    const tag = `${e.kind}${e.crystallized ? '★' : ''}`;
+    return `- (${tag}, ${e.importance.toFixed(2)}) ${e.content.slice(0, 120)}`;
+  });
+  return `<stable-memory>\n${lines.join('\n')}\n</stable-memory>`;
+}
+
 /** 测试辅助: 清空分桶 (隔离 HOME 时用) */
 export function resetMemoryStores(): void {
   stores.clear();

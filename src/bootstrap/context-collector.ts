@@ -19,6 +19,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -387,18 +388,77 @@ export async function collectBolloonContext(opts: CollectOptions): Promise<Bollo
 }
 
 // ============================================================
-// 24h 缓存 (跟类 B 一致)
+// 24h 缓存 (跟类 B 一致) + mtime 指纹自动失效 (2026-10-15)
 // ============================================================
 
-let cached: { at: number; ctx: BolloonContext; cwd: string } | null = null;
+let cached: { at: number; ctx: BolloonContext; cwd: string; fingerprint: string } | null = null;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * 计算缓存失效指纹: 对「会改变上下文内容」的源文件取 mtime+size 摘要。
+ * 覆盖: hierarchy 4 层 (managed/user/project/local + AGENTS.md/CLAUDE.md/.claude/rules)
+ *   + persona 目录 (当前 agent 的身份文档) + 缓存目标的项目根。
+ * 任何文件新增/删除/修改 → 指纹变化 → 缓存重算 (对齐 Hermes 的 invalidate_system_prompt:
+ *   文档在外改了, 下一轮使用就是新的, 不用等 24h 或手动 force)。
+ * 指纹不命中任何文件也返回确定性值 (永不 null), 防止空指纹恒等导致误缓存。
+ */
+export async function contextFingerprint(cwd: string, home?: string): Promise<string> {
+  const h = home ?? process.env.HOME ?? os.homedir() ?? '/tmp';
+  const files = new Set<string>();
+  files.add(path.posix.join(cwd, 'Bolloon.md'));
+  files.add(path.posix.join(cwd, 'AGENTS.md'));
+  files.add(path.posix.join(cwd, 'CLAUDE.md'));
+  // hierarchy: 复用与 collectHierarchyLayers 相同的路径解析
+  try {
+    const { resolveUserPath, resolveProjectPaths } = await import('./context-hierarchy.js');
+    files.add(resolveUserPath(h));
+    const pp = resolveProjectPaths(cwd);
+    files.add(pp.project);
+    files.add(pp.local);
+    files.add(pp.projectRulesDir); // 目录: 看条目数
+  } catch { /* 路径解析失败不影响指纹 */ }
+  // persona 目录: 当前 agent identity 文档 (全部 *.md / persona.json)
+  const activeAgent = process.env.BOLLOON_ACTIVE_AGENT_ID || '';
+  if (activeAgent) {
+    const safe = activeAgent.replace(/[^a-zA-Z0-9._-]/g, '_');
+    files.add(path.posix.join(h, '.bolloon', 'persona', safe));
+  }
+
+  const parts: string[] = [];
+  for (const f of files) {
+    try {
+      const st = await fs.stat(f);
+      if (st.isDirectory()) {
+        // 目录内容指纹: 逐条目 mtime+size (目录自身 mtime 不随内容变)
+        const entries = await fs.readdir(f, { withFileTypes: true });
+        const names = entries.map((e) => e.name).sort();
+        parts.push(`${f}:dir:${names.length}`);
+        for (const e of entries) {
+          try {
+            const es = await fs.stat(path.join(f, e.name));
+            parts.push(`${f}/${e.name}:${es.mtimeMs}:${es.size}`);
+          } catch {
+            parts.push(`${f}/${e.name}:missing`);
+          }
+        }
+      } else {
+        parts.push(`${f}:${st.mtimeMs}:${st.size}`);
+      }
+    } catch {
+      parts.push(`${f}:missing`);
+    }
+  }
+  // 排序保证稳定 (Set 遍历顺序 = 插入序, 跨次一致; 排序是双保险)
+  return createHash('sha256').update(parts.sort().join('|')).digest('hex').slice(0, 16);
+}
+
 export async function getCachedBolloonContext(opts: CollectOptions, force: boolean = false): Promise<BolloonContext> {
-  if (!force && cached && cached.cwd === opts.cwd && Date.now() - cached.at < CACHE_TTL_MS) {
+  const fp = await contextFingerprint(opts.cwd);
+  if (!force && cached && cached.cwd === opts.cwd && cached.fingerprint === fp && Date.now() - cached.at < CACHE_TTL_MS) {
     return cached.ctx;
   }
   const ctx = await collectBolloonContext(opts);
-  cached = { at: Date.now(), ctx, cwd: opts.cwd };
+  cached = { at: Date.now(), ctx, cwd: opts.cwd, fingerprint: fp };
   return ctx;
 }
 

@@ -430,6 +430,26 @@ export class PiAgentSession implements AgentSession {
       return `## 技能库 (${all.length} 个技能 — 需要时用 list_skills 找, read_skill 读全文执行; 内容进上下文, 按需加载不占首屏)\n${lines.join('\n')}${more}`;
     } catch { return ''; }
   }
+  /**
+   * 2026-10-15 (对齐 Hermes volatile 层 memory 整块注入): 稳态记忆块 ——
+   *   每轮 build systemPrompt 时把「重要且稳定」的结构化记忆整块给出 (crystallized 优先
+   *   + importance 降序, 见 memory-store.formatMemorySystemBlock), 不依赖当轮 query 召回。
+   *   与 recallMemory (memory-recall.ts 的 session 摘要召回, query 驱动) 互补:
+   *   召回 = 即时相关的历史背景; 这块 = 始终可见的用户事实/偏好/固化结论。
+   * 失败静默 (返回 ''): 记忆读不到 = 无记忆, 不阻塞主流程。缓存: 按 agentId 单例 store,
+   *   每轮 build 都 load 一次 (JSONL 小文件, load 已是最轻读盘; 避免 stale 记忆进 prompt)。
+   */
+  private async buildStableMemoryBlock(): Promise<string> {
+    try {
+      const agentId = this.actor?.state?.agentId || this.peerId || '';
+      if (!agentId) return '';
+      const { getMemoryStore, formatMemorySystemBlock } = await import('./memory-store.js');
+      const store = getMemoryStore(agentId);
+      await store.load();
+      const all = await store.list(50);
+      return formatMemorySystemBlock(all, 6);
+    } catch { return ''; }
+  }
   /** 本轮迭代预算 (每轮重置; 批处理工具会退还 —— 见 iteration-budget.ts) */
   /** 上一个工具调用的参数指纹 (遥测判"是否重复调用") */
 
@@ -2058,6 +2078,8 @@ ${PROACTIVE_WORK_DISCIPLINE}
 ${await this.renderActivePlansSection()}
 
 ${await this.buildSkillsIndex()}
+
+${await this.buildStableMemoryBlock()}
 
 工作模式:
 1. 理解用户自然语言请求
