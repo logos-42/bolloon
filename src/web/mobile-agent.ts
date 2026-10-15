@@ -570,6 +570,9 @@ const WEB_AGENT_TOOLS: Record<string, () => Promise<string>> = {
 
 /** 单轮 LLM 调用 (OpenAI 兼容, 经内置公共网关) */
 async function webAgentLlmCall(messages: Array<{ role: string; content: string }>, llm: { baseUrl: string; apiKey?: string; model?: string; maxTokens?: number }): Promise<string> {
+  // 2026-10-15: 网关不可达时**快速降级**而不是挂死 — 公共网关限流/断网时 fetch 可能永久挂起,
+  //   手机端 runLocalAgent 会先走 LLM 再降级内置规则, 挂起 = 测试 20s 超时 + 真机"发消息无反应"。
+  //   10s 兜底 (多轮循环每次都有上界, MAX_STEPS=5 ⇒ 最坏 50s, 足够拿到回复又不会无限等)。
   const resp = await fetch(llm.baseUrl.replace(/\/$/, '') + '/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (llm.apiKey || '') },
@@ -579,6 +582,8 @@ async function webAgentLlmCall(messages: Array<{ role: string; content: string }
       max_tokens: llm.maxTokens || 2048,
       temperature: 0.4,
     }),
+    // eslint-disable-next-line no-undef
+    signal: AbortSignal.timeout(10_000),
   });
   if (!resp.ok) throw new Error('LLM HTTP ' + resp.status + ': ' + (await resp.text()).slice(0, 120));
   const data = await resp.json();

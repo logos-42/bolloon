@@ -301,6 +301,7 @@ export const core = {
     if (p === '/api/phone/directory/add-friend') { const b = body || {}; return () => core.directory.addFriend(String(b.phone || ''), b.name ? String(b.name) : undefined, b.message ? String(b.message) : undefined); }
     if (p === '/api/phone/auth/bind') { const b = body || {}; return () => core.phoneAuth.bind(String(b.phone || '')); }
     if (p === '/api/phone/auth/verify') { const b = body || {}; return () => core.phoneAuth.verify(String(b.contactId || ''), String(b.challengeId || ''), String(b.code || '')); }
+    if (p === '/api/phone/profile/phone') { const b = body || {}; return () => core.identity.updateProfile({ phone: String(b.phone || '') }); }
     if (p === '/api/wallet/export') { const b = body || {}; return () => core.wallet.export(String(b.id || '')); }
     if (p === '/api/phone/agent/run') {
       const b = body || {};
@@ -646,6 +647,10 @@ export const core = {
     async status(): Promise<any> { const a = await import('./mobile-agent.js'); return a.identityStatus(); },
     async login(name: string): Promise<any> { const a = await import('./mobile-agent.js'); return a.loginIdentity(name); },
     async logout(): Promise<any> { const a = await import('./mobile-agent.js'); return a.logoutIdentity(); },
+    async updateProfile(partial: any): Promise<any> {
+      const a = await import('./mobile-agent.js');
+      return a.updateIdentityProfile(partial || {});
+    },
   },
 
   peers: {

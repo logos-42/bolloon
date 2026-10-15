@@ -426,24 +426,42 @@ const InkApp: React.FC<InkAppProps> = ({ onPrompt, initialStatus, getStatusUpdat
   // 2026-09-08 (Hermes TUI 学习落地): 实时终端尺寸 — 原来 terminalW/H 在 mount 时冻结,
   //   终端 resize 后分隔线/logo 宽度全错位 (Hermes 用 resizeCoalescer + 实时 layout)。
   //   订阅 stdout resize, 每次渲染用最新列数。
+  // 2026-10-15 (leo 拖动侧边栏): **变窄**时终端把旧帧满宽行自动折行,
+  //   Ink 的 eraseLines(lastOutputHeight) 按**未折行**行数擦 ⇒ 擦不干净 ⇒ 旧 footer/分隔线/
+  //   思考行残影被推进滚动区; 且 `<Static>` 历史区写进 scrollback 后不会重绘, 残影永远留在那里.
+  //   修法 (只对**变窄**): resize 停止 150ms 后整屏重建 —
+  //   ① 发 `ESC[2J ESC[3J ESC[H` (清可视区 + 清 scrollback + 光标归位) 把残影彻底清掉;
+  //   ② suspendInk + resumeInk 重挂全新 InkApp: `<Static>` 首次挂载对 store 全量重放
+  //      (历史一行不少, 按新宽度重新 wrap), footer 按新宽度重画。
+  //   变宽不会折行 (旧行宽 ≤ 旧终端宽 < 新终端宽), Ink 自己重画即可, 不重建。
   const { stdout } = useStdout();
   const [termSize, setTermSize] = useState({ w: terminalW, h: terminalH });
   useEffect(() => {
-    // resizeCoalescer (#9): 拖拽终端时会连发 resize — 聚合到 80ms 空闲后一次性应用, 避免中间态跳帧
-    let raf: ReturnType<typeof setTimeout> | null = null;
-    let pending: { w: number; h: number } | null = null;
-    const apply = () => {
-      if (pending) { const p = pending; pending = null; setTermSize(p); }
-      raf = null;
+    let lastWidth = stdout?.columns || terminalW;
+    let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+    const rebuild = () => {
+      rebuildTimer = null;
+      try {
+        // 残影在 scrollback 里 —— eraseLines 够不到, 必须整屏清掉再让 Ink 全量重放
+        process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
+        suspendInk();
+        // 让 React 先完成 unmount 清理, 再重挂 (避免新旧实例抢 stdout)
+        setTimeout(() => { try { resumeInk(); } catch { /* 重建失败不致命, 下次 resize 再试 */ } }, 0);
+      } catch { /* 清屏/重建失败不阻塞 resize 本身 */ }
     };
     const update = () => {
-      pending = { w: stdout?.columns || terminalW, h: stdout?.rows || terminalH };
-      if (raf) clearTimeout(raf);
-      raf = setTimeout(apply, 80);
+      const w = stdout?.columns || terminalW;
+      setTermSize({ w, h: stdout?.rows || terminalH });
+      if (w < lastWidth) {
+        // 变窄: 折行残影无法增量修复, 停止拖动后整屏重建
+        if (rebuildTimer) clearTimeout(rebuildTimer);
+        rebuildTimer = setTimeout(rebuild, 150);
+      }
+      lastWidth = w;
     };
     update();
     stdout?.on?.('resize', update);
-    return () => { stdout?.removeListener?.('resize', update); if (raf) clearTimeout(raf); };
+    return () => { if (rebuildTimer) clearTimeout(rebuildTimer); stdout?.removeListener?.('resize', update); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stdout]);
   const W = termSize.w;
