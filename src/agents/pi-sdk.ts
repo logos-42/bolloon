@@ -21,8 +21,6 @@ import { createPrivateActor, type ChannelActor, type ExecutionRequest } from '..
 import { submitRunLifecycle, assertLifecycleOk, pickRunIdForResume } from '../kernel/run-lifecycle.js';
 // K10 ④: 通信发送入口经内核端口 (上层不再直接对某条传输说话; 换传输只改这一处注入)
 import { submitTransport, transportPeersSync, type TransportPorts } from '../kernel/transport.js';
-// K10 ①: run 状态迁移经内核**控制面**端口 (它本来就管"谁命令这条 run 改状态": 带 origin 审计 + 拒绝归一化)
-import { submitRunControl, type RunControlPorts } from '../kernel/control.js';
 // K10 ②: 回合的模型经**内核运行时**只读取租约 (传输仍是 Pi 客户端 ⇒ 行为不变; 取不到如实回落)
 import { ModelRuntime, snapshotFromSelection, type ModelConnection, type ModelSnapshot } from '../kernel/model-runtime.js';
 // K10 余项: 会话生命周期的**规则**归内核 (落盘映射 · key 校验 · 读回过滤/水合 · 运行种子合并顺序), I/O 留本类经端口注入
@@ -67,7 +65,7 @@ import { WorkflowPivotLoop, createDefaultPivotConfig, type PivotLoopConfig, type
 import { nativeAdapterFromEnv } from '../llm/native-adapter.js';   // K9: 第二个 (非 Pi) 推理适配器
 import { initDocumentReceiver } from './p2p-document-tools.js';
 import { } from './shell-tool.js';
-import { startRun, recordStep, finishRun, readRun, recordDegradation, recordHarnessEvent, recordRecovery, setRunStatus, prepareResume, buildResumeInstruction, argsDigestOf, repeatedFailureCount, classifyError as classifyRunError, type RunSurface, type RunStatus, type ResumePlan } from './run-store.js';
+import { startRun, recordStep, finishRun, recordDegradation, recordHarnessEvent, prepareResume, buildResumeInstruction, type RunSurface, type ResumePlan } from './run-store.js';
 import { createGoal, attachRun } from './goal-store.js';
 import { captureRunModelConfig, type RunModelConfig, type ConfigDriftReport, type EffectiveModelConfig } from '../llm/model-selection.js';
 // 2026-09-26: 工具名出网净化 (pi-ai.ts 唯一边界) + 回程派发还原 (原名 ↔ API 名)
@@ -82,19 +80,13 @@ import {
   type DiscoveredAgent,
   type SessionChannel,
   type SessionMessage,
-  type SocialSessionProvider
 } from '../social/heartbeat.js';
 import {
-  GlobalSharedContextManager,
-  createGlobalSharedContext,
-  getGlobalSharedContext,
-  type ActionSummary,
   type AgentInfo,
   type CooperationTask,
   type CooperationType,
-  type GlobalSharedContext
 } from '../social/global-shared-context.js';
-import { Session, SkillRegistry, type Skill } from '@bolloon/constraint-runtime';
+import { SkillRegistry, type Skill } from '@bolloon/constraint-runtime';
 import { loadSkillsFromPaths, defaultSkillPaths } from './skill-loader.js';
 
 /** 2026-08-10: unreported 逃生门判定 — LLM 反复不把工具结果写进回复时, 超过上限强制收尾 (防死循环) */
@@ -119,7 +111,7 @@ export {
   type AgentSession,
   TOOL_DEFINITIONS,
 } from './pi-sdk-types.js';
-import type { AgentSessionConfig, IdentityDoc, ImprovementRequest, PiSessionState, PiMemory, Tool, ToolResult, Message, StreamCallback, StreamEvent, HeartbeatConfig, AgentSession } from './pi-sdk-types.js';
+import type { AgentSessionConfig, IdentityDoc, ImprovementRequest, PiSessionState, PiMemory, Tool, Message, StreamCallback, HeartbeatConfig, AgentSession } from './pi-sdk-types.js';
 
 export { PiSessionManager } from './pi-sdk-session-manager.js';
 import { PiSessionManager } from './pi-sdk-session-manager.js';
@@ -139,8 +131,6 @@ export {
   resetAgentSession,
   runSelfImproveLoop,
 } from './pi-sdk-session-factory.js';
-// 给本文件 registerTools() 内部用
-import { runSelfImproveLoop } from './pi-sdk-session-factory.js';
 
 // Judgment 注入门 (P0): 在主对话 LLM 调起前自动拼入 Top 3 判断力
 // 失败静默, 不阻塞主对话
@@ -155,7 +145,6 @@ import { budgetReduce, snip, microcompact } from '../context-compaction/index.js
 import { ReactHarness } from '../security/react-harness.js';
 import { HooksEngine } from '../hooks/hooks-engine.js';
 import { DenyPipeline, type DenyContext } from './deny-pipeline.js';
-import { parseToolCall as parseToolCallImpl, isFinalResponse as isFinalResponseImpl, extractFinalAnswer as extractFinalAnswerImpl } from './parse-tool-call.js';
 import { sessionStore as defaultSessionStore, type SessionStore, type PersistedMessage } from './session-store.js';
 import { ToolRegistry } from './tool-registry.js';
 import { } from './loop-review.js';
@@ -168,7 +157,6 @@ import { } from './loop-review.js';
  * 同一工具 + 同一组参数连续失败上限 (2026-07-01 起) —— 触发两条互不替代的动作:
  *   循环内: 注入 system 提示强制 LLM 收尾; 运行层 (M3): 熔断 → needs_human (交人)。
  */
-const MAX_SAME_TOOL_FAILURES = 3;
 
 /**
  * 2026-09-28 (前缀 KV 可命中): 把 chat() 回带的「当前轮已注入」内容写回调用方自己的 history.
@@ -282,7 +270,6 @@ export class PiAgentSession implements AgentSession {
   private pivotCumulativeTokens = 0;
   /** 2026-10-13: 上下文管理周期压缩在飞标志 (防一轮里重复触发) */
   private _ctxCycleCompacting = false;
-  private workflows: Map<string, Workflow> = new Map();
   private constraintLayer: ConstraintLayer;
   private workflowEngine: WorkflowEngine;
   private sessionManager: PiSessionManager;
@@ -450,10 +437,6 @@ export class PiAgentSession implements AgentSession {
       return formatMemorySystemBlock(all, 6);
     } catch { return ''; }
   }
-  /** 本轮迭代预算 (每轮重置; 批处理工具会退还 —— 见 iteration-budget.ts) */
-  /** 上一个工具调用的参数指纹 (遥测判"是否重复调用") */
-
-  private lastToolSig: string | null = null;
   /** 最近一条用户消息 (按需子集档用来判 intent) */
   private lastUserIntent = '';
   /** 本回合改过的 TS 文件 (回合收尾自动类型检查用) */
@@ -461,8 +444,6 @@ export class PiAgentSession implements AgentSession {
   /** 本回合是否已跑过类型检查 (一轮只跑一次) */
   private typecheckRanThisTurn = false;
 
-  private iterBudget: any = null;
-  private iterBudgetWarned: boolean = false;
   /** 上一次已复盘的**任务签名** (签名变了 ⇒ 立刻复盘, 对应"每次任务都总结" ✓) */
   private lastReviewedTaskSig: string | undefined = undefined;
   /** 上一次回合后自审的时间 (节流; 0 = 从未) */
@@ -471,45 +452,14 @@ export class PiAgentSession implements AgentSession {
   private _sessionStore: SessionStore;
   /** 构造期间 fire-and-forget 任务的 promise — whenReady() 等它 */
   private _readyPromise: Promise<void> | null = null;
-  // 2026-06-16 修: 父要求把 ReAct loop 上限放大到 "几乎无限", 靠自动压缩上下文 + fail-safe 兜底
-  // 默认 10000 — 正常任务永远跑不到, 但作为防 LLM 死循环 / 防 OOM 的最后一道闸
-  // 旧默认 100 写死导致中等复杂度任务 (10-50 个 tool call + 多步反思) 会被误杀
-  private readonly MAX_REACT_ITERATIONS = 10_000;
-  private readonly MAX_REFINE_ATTEMPTS = 3;
-  private readonly QUALITY_THRESHOLD = 0.6;
-  /** P1: 上下文溢出阈值 (单轮估算 token 数, 超过则强制终止防止 prompt-too-long)
-   *  2026-08-06: 从 ContextManager 动态读 (默认 1M, env MAX_CONTEXT_TOKENS 可调).
-   *  保留字段仅作降级兜底 (ContextManager 初始化失败时用 60K 老行为). */
-  private readonly MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD = 60_000;  // fallback 60K tokens
-
-  /** 2026-08-06: 上下文窗口 (tokens) — 统一走 ContextManager 配置 (1M 默认). */
-  private maxContextTokens(): number {
-    try {
-      const { getContextManager } = _piRequire('../bootstrap/context-manager.js');
-      const n = getContextManager().getConfig().maxTokens;
-      return Number.isFinite(n) && n > 0 ? n : this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD;
-    } catch {
-      return this.MAX_OUTPUT_TOKEN_ESCALATION_THRESHOLD;
-    }
-  }
-  /** 2026-06-16 新增: 累计错误总数兜底 (不管是否同工具, 累计 N 次就强制退出)
-   *  防 LLM 轮换工具名绕开 MAX_SAME_TOOL_FAILURES 的死循环攻击 */
-  private readonly MAX_TOTAL_ERRORS = 20;
-  /** 2026-06-19: 记录 loop 内成功执行的工具结果, 失败退出时汇总给用户 */
-  private successfulToolResults: { tool: string; outputPreview: string }[] = [];
   /** 2026-06-19: Agent Mesh 通信 — 本地 + 远端 inbox 缓存, 给 check_inbox 工具读 */
   private _inboxMessages: { id: string; from: string; fromDid?: string; type: string; payload: string; timestamp: number; source: 'p2p' | 'local' }[] = [];
-  /** 2026-06-16 新增: loop 内自动压缩触发阈值 (相对 60K 阈值的比例) */
-  private readonly LOOP_COMPACT_RATIO = 0.8;
-  /** P1: max output token 升级重试 (LLM 截断时重试, 最多 3 次) */
-  private readonly MAX_OUTPUT_TOKEN_ESCALATION_RETRIES = 3;
   private thinkingEngine = new DeepThinkingEngine(3);
   private coordinator = new AgentCoordinator(3);
   private harness: any = null;
   private harnessEnabled = false;
   /** 8-gate + 4-guard 集中调度 (防越权 / 防 prompt 注入) */
   private reactHarness: ReactHarness = new ReactHarness();
-  private usePivotLoop: boolean = true;   // K4-B (2026-10-02): 默认切到 pivot —— 所有入口只跑**一套** loop (老 ReAct loop 待删)
   private pivotLoopConfig?: PivotLoopConfig;
   /** P2: 当前会话的 permission mode (每次 promptStream 入口解析) */
   private currentPermissionMode: import('./permission-mode.js').PermissionMode = 'default';
@@ -530,9 +480,6 @@ export class PiAgentSession implements AgentSession {
 
   /** 2026-07-29: Unified Deny-First Pipeline */
   private _denyPipeline: DenyPipeline = new DenyPipeline();
-
-  /** 2026-07-29: Snip + Context Collapse 启用标志 (默认启用) */
-  private _enableSnipCollapse: boolean = true;
 
   /** 注册一个或多个工具到拒绝列表 */
   denyTool(...names: string[]): void {
@@ -767,7 +714,6 @@ export class PiAgentSession implements AgentSession {
     this.workflowEngine = new WorkflowEngine(this.constraintLayer);
     this.sessionManager = new PiSessionManager(this.identity.did, this.cwd, this.actor!.state.agentId);
     this.agentsManager = new DiscoveredAgentsManager();
-    this.usePivotLoop = config.usePivotLoop ?? true;   // K4-B: 默认 true (K4-B 之前是 false ⇒ CLI 走老 loop, 与 web 分叉)
     this.pivotLoopConfig = config.pivotLoopConfig;
     this.initSession();
     initDocumentReceiver();
@@ -781,11 +727,6 @@ export class PiAgentSession implements AgentSession {
         if (names.length > 0) this.denyTool(...names);
       }
     } catch { /* env 读失败静默 */ }
-
-    // 2026-07-29: 从环境变量控制 Snip/Collapse
-    try {
-      if (process.env.BOLLOON_SNIP_COLLAPSE === '0') this._enableSnipCollapse = false;
-    } catch { /* 静默 */ }
 
     // 2026-07-29: 从 ~/.bolloon/hooks.yaml 加载 hook 配置
     //   失败静默 (无 hook 配置也正常)
@@ -1076,7 +1017,7 @@ export class PiAgentSession implements AgentSession {
     registerWalletTools(toolCtx);
     setupInboxListener(toolCtx);
     // 镜像到 ToolRegistry (alias resolve 用)
-    for (const [name, tool] of this.tools.entries()) {
+    for (const [, tool] of this.tools.entries()) {
       this._toolRegistry.register(tool);
     }
     // M3.3: 副作用工具走幂等性 cache
@@ -1092,10 +1033,6 @@ export class PiAgentSession implements AgentSession {
 
   /** M3.3: 工具结果缓存 — 防止 loop 重试时副作用 (写文件 / 改代码) 执行多次 */
   private _idempotencyCache: IdempotencyCache = new IdempotencyCache();
-
-  private async registerP2PDocumentReceiver(): Promise<void> {
-    await initDocumentReceiver();
-  }
 
   private getToolDefinitions(): string {
     // M2.4 (2026-06-17): 缓存 tool 定义 — registerTools() 在构造时调一次, 此后不变
@@ -2206,8 +2143,6 @@ ${await this.buildStableMemoryBlock()}
   private awaitingExternal = false;
   /** 2026-09-16 (M3): 熔断原因 (同一工具连续失败达上限 → needs_human) */
   private breakerReason = '';
-  /** 2026-09-16 (M3): 运行中核心写失败 (状态迁移等) —— 交给循环顶部硬闸, 不吞 */
-  private persistenceFailure = '';
   /**
    * 2026-09-16 (M2-B): Supervisor 开新 Run 继续同一 Goal 时注入"上一个 Run 已成功的非幂等动作"。
    * 与 resume 的重放守卫同源 (run-store 的 buildContinuationPlan), 保证跨 Run 也不重复副作用。
@@ -2224,16 +2159,6 @@ ${await this.buildStableMemoryBlock()}
     this.actor!.state.goalBinding = String(goalId || '');
   }
 
-  /**
-   * K10 ①: 控制面的**注入面** —— 写原语来自 run-store, 但调用一律经 `submitRunControl`
-   *   (与 `transportPorts()` 同一个模式: 换实现只改这一处, 上层不直接对 store 说话)。
-   */
-  private runControlPorts(): RunControlPorts {
-    return {
-      setRunStatus: setRunStatus as unknown as (runId: string, status: string, meta?: Record<string, unknown>) => Promise<unknown>,
-      recordRecovery: recordRecovery as unknown as (runId: string, info: Record<string, unknown>) => Promise<unknown>,
-    };
-  }
 
   /**
    * 核心状态迁移的兜底: 失败 → 记降级 + 交给循环顶部的持久化硬闸 (不吞错)。
@@ -2241,88 +2166,11 @@ ${await this.buildStableMemoryBlock()}
    *   `{ok:false}` 且原因是"端口拒绝"(状态迁移不合法) ⇒ 只返回 false (那不是持久化故障);
    *   未注入 / 抛错 ⇒ 才算持久化失败, 记降级 (与旧实现同款)。
    */
-  private async safeSetRunStatus(runId: string, to: RunStatus): Promise<boolean> {
-    const out = await submitRunControl(
-      { kind: 'set-run-status', origin: 'pi-session', runId, payload: { status: to } },
-      this.runControlPorts(),
-    );
-    if (out.ok) return true;
-    const detail = String(out.detail || '未知原因');
-    if (!detail.startsWith('端口拒绝')) {
-      this.persistenceFailure = `状态迁移失败 (${to}): ${detail.slice(0, 180)}`;
-      await recordDegradation({ kind: 'core', op: 'pi-sdk.setRunStatus', runId, message: this.persistenceFailure }).catch(() => {});
-    }
-    return false;
-  }
 
   /**
    * 2026-09-16 (M3): 工具失败接线 —— 分类 → recovery 留痕 → 熔断 / 外部等待。
    * 这是"错误恢复闭环"的运行时接线点 (此前 recordRecovery / repeatedFailureCount 只是数据结构)。
    */
-  private async wireToolFailure(tool: string, errorText: string, args: unknown): Promise<void> {
-    if (!this.actor!.state.activeRun) return;
-    const cls = classifyRunError(errorText);
-    const digest = argsDigestOf(args);
-    let repeats = 1;
-    try {
-      const rec = await readRun(this.actor!.state.activeRun);
-      // recordStep 已经把**这次**失败记进去了, 所以"连续失败次数"直接就是当前值 (不再 +1)
-      const seen = rec ? repeatedFailureCount(rec, tool, digest) : 0;
-      repeats = Math.max(seen, 1);
-    } catch { /* 读不到就按首次记 */ }
-
-    const action = cls === 'transient' ? 'backoff'
-      : cls === 'auth' ? 'escalate'
-        : cls === 'external_no_reply' ? 'pause'
-          : 'retry';
-    try {
-      await recordRecovery(this.actor!.state.activeRun, {
-        errorClass: cls,
-        message: `${tool}: ${errorText}`.slice(0, 200),
-        action,
-        attempt: repeats,
-        recovered: false,
-      });
-    } catch (err) {
-      await recordDegradation({ kind: 'core', op: 'pi-sdk.recordRecovery', runId: this.actor!.state.activeRun, message: String((err as Error)?.message || err) }).catch(() => {});
-    }
-
-    // 外部无响应 → awaiting_external (不算失败; 等回话后回到 running)
-    if (cls === 'external_no_reply') {
-      this.awaitingExternal = true;
-      await this.safeSetRunStatus(this.actor!.state.activeRun, 'awaiting_external');
-      // 2026-09-16 (2-C.4): 把"在等什么"写成持久化事实 (来源/关联/过期), 否则真实回包到了也不知道该唤醒谁。
-      try {
-        if (this.actor!.state.goalBinding) {
-          const { bindExternalWait, newContinuationId, defaultWaitExpiry } = await import('./external-events.js');
-          const isDelegate = /delegate/i.test(String(tool || ''));
-          await bindExternalWait(this.actor!.state.goalBinding, {
-            requestId: this.pendingExternalRequestId || `${this.actor!.state.activeRun}:${Date.now().toString(36)}`,
-            continuationId: newContinuationId(this.actor!.state.goalBinding),
-            expectedSource: isDelegate ? 'delegate' : 'p2p',
-            expectedEvent: 'result',
-            createdAt: new Date().toISOString(),
-            expiresAt: defaultWaitExpiry(Date.now(), Number(process.env.BOLLOON_EXTERNAL_WAIT_MS || 30 * 60_000)),
-            note: `${isDelegate ? 'delegate 回包' : 'P2P 协作回复'} 等待中 (tool=${tool})`,
-          });
-        }
-      } catch (e) {
-        await recordDegradation({ kind: 'core', op: 'pi-sdk.bindExternalWait', runId: this.actor!.state.activeRun, message: String((e as Error)?.message || e) }).catch(() => {});
-      }
-      return;
-    }
-    // 鉴权类: 不重试, 直接交人
-    if (cls === 'auth') {
-      this.breakerReason = `鉴权类错误不重试 (${tool}): ${errorText.slice(0, 120)}`;
-      await this.safeSetRunStatus(this.actor!.state.activeRun, 'needs_human');
-      return;
-    }
-    // 重复失败熔断: 同一工具 + 同一组参数连续失败达 3 次
-    if (repeats >= MAX_SAME_TOOL_FAILURES) {
-      this.breakerReason = `同一工具 ${tool} 连续失败 ${repeats} 次 (${cls}) → 熔断, 不再重试`;
-      await this.safeSetRunStatus(this.actor!.state.activeRun, 'needs_human');
-    }
-  }
 
   getRunId(): string {
     return this.actor!.state.activeRun;
@@ -2515,24 +2363,6 @@ ${await this.buildStableMemoryBlock()}
     return { outputs, success: allSuccess };
   }
 
-  private buildContext(): string {
-    // P1 接入: 同步跑前 3 层压缩 (Budget Reduction / Snip / Microcompact)
-    // 异步层 (Context Collapse / Auto-Compact) 在 promptStream 入口处单独跑 (用 LLM)
-    // 失败静默: 任何 stage 抛错 → 走老 slice(-10) 逻辑
-    //
-    // P1.2: 如果 maybeAutoCompact 算过 Context Collapse 投影, 用 this.projectedHistory (读时投影, 非破坏)
-    const source = this.projectedHistory ?? (this.actor!.state.messageHistory as Message[]);
-    const recentMessages = this.compressHistorySync(source).slice(-10);
-    return recentMessages.map(m => {
-      if (m.role === 'user') return `用户: ${m.content}`;
-      if (m.role === 'assistant') return `助手: ${m.content}`;
-      if (m.role === 'tool') {
-        const result = m.toolResult ? JSON.stringify(m.toolResult) : m.content;
-        return `工具结果: ${result}`;
-      }
-      return m.content;
-    }).join('\n');
-  }
 
   /**
    * M3.5 (2026-06-17): 把 history 转成 messages 数组, 给 llm.chat() 用.
@@ -2542,86 +2372,12 @@ ${await this.buildStableMemoryBlock()}
    * 取最近 N 条, 同步压缩前 3 层 (跟 buildContext 同步).
    * 跳过 projectedHistory 路径 — messages 数组必须真实, 不能用投影.
    */
-  private buildMessages(): Array<{ role: string; content: string }> {
-    try {
-      // 2026-08-06: 来源优先用 projectedHistory (Context Collapse 投影, 非破坏) —
-      //   与 buildContext 一致; 之前只让字符串路径用投影, messages 数组路径被跳过,
-      //   导致 LLM 实际看到的还是未压缩的历史.
-      const source = this.projectedHistory ?? (this.actor!.state.messageHistory as Message[]);
-      const WINDOW = 15;
-      const out: Array<{ role: string; content: string; reasoningContent?: string }> = [];
-
-      // 2026-09-28 (前缀 KV 可命中): 带 CURRENT TURN 注入的条目要**原样回带**.
-      // 两个理由: (1) 注入块是"当前轮的前缀", 重渲染 (重加 `[工具结果]` 前缀 / 再 slice 截断)
-      //   会改字节 → 下一轮前缀从这条起分叉; (2) 已注入的 tool 条目在 wire 上已经是 user 形状,
-      //   再套一次前缀就是双前缀, 连内容都变了.
-      const isInjectedEntry = (m: { content?: string }): boolean =>
-        typeof m.content === 'string' && m.content.includes(CURRENT_TURN_MARKER);
-
-      // 早期历史压缩: 超过窗口时, 不直接丢弃 — 提取前段用户意图摘要注入 (同步, 无 LLM).
-      // 结构对齐 Context OS: System Prompt(persona) + 压缩摘要 + 最近消息.
-      if (source.length > WINDOW) {
-        const early = source.slice(0, source.length - WINDOW);
-        const slice = source.slice(-WINDOW);
-        const earlyUsers = early.filter(m => m.role === 'user' && (m.content || '').trim());
-        const earlyTools = early.filter(m => m.role === 'tool').length;
-        const earlyAssist = early.filter(m => m.role === 'assistant' && (m.content || '').trim()).length;
-        const snippet = earlyUsers.slice(-5).map(m => `- ${(m.content || '').slice(0, 120).replace(/\n/g, ' ')}`).join('\n') || '- (早期对话无用户文本)';
-        out.push({
-          role: 'system',
-          content: `[上下文压缩] 早期 ${early.length} 条消息已压缩 (用户 ${earlyUsers.length} 条 / AI ${earlyAssist} 条 / 工具结果 ${earlyTools} 条). 关键用户意图摘要:\n${snippet}\n[压缩结束] 以下是最近消息:`,
-        });
-        for (const m of slice) {
-          const r = m.role;
-          if (isInjectedEntry(m)) { out.push({ role: 'user', content: String(m.content) }); continue; }
-          if (r === 'tool') {
-            out.push({ role: 'user', content: `[工具结果]\n${(m.content || '').slice(0, 2000)}` });
-            continue;
-          }
-          if (r === 'assistant') { out.push({ role: 'assistant', content: (m.content || '').slice(0, 4000), reasoningContent: (m as any).reasoningContent }); continue; }
-          if (r === 'user') { out.push({ role: 'user', content: (m.content || '').slice(0, 2000) }); continue; }
-          if (r === 'system') { out.push({ role: 'system', content: (m.content || '').slice(0, 2000) }); }
-        }
-        return out;
-      }
-
-      // 窗口内: 原逻辑 (tool 转 user role, 避免 tool_calls 配对)
-      const slice = source.slice(-WINDOW);
-      for (const m of slice) {
-        const r = m.role;
-        if (isInjectedEntry(m)) { out.push({ role: 'user', content: String(m.content) }); continue; }
-        if (r === 'tool') {
-          out.push({ role: 'user', content: `[工具结果]\n${m.content || ''}` });
-          continue;
-        }
-        if (r === 'assistant') {
-          out.push({ role: 'assistant', content: m.content || '', reasoningContent: (m as any).reasoningContent });
-          continue;
-        }
-        if (r === 'user') { out.push({ role: 'user', content: m.content || '' }); }
-        if (r === 'system') { out.push({ role: 'system', content: m.content || '' }); }
-      }
-      return out;
-    } catch (err) {
-      console.warn('[PiAgent] buildMessages failed (silent, falling back to text):', err);
-      // 退化: 用 buildContext 字符串包装成单 user message
-      return [{ role: 'user', content: this.buildContext() }];
-    }
-  }
 
   /**
    * 2026-09-28 (前缀 KV 可命中): 把 chat() 回带的当前轮写回自己的 messageHistory.
    * 逻辑在模块级 `writeBackCurrentTurnInto` (纯函数, 门可以直接驱它断言);
    * 这里只负责接到 `actor 的 messageHistory` 上, 并保证任何异常都静默 (写回失败不影响对话).
    */
-  private writeBackCurrentTurn(wire?: Array<{ role: string; content?: string }>): number {
-    try {
-      return writeBackCurrentTurnInto((this.actor!.state.messageHistory as Message[]), wire);
-    } catch (err) {
-      console.warn('[PiAgent] writeBackCurrentTurn failed (silent):', err);
-      return 0;
-    }
-  }
 
   /**
    * 估算 messageHistory 的 token 数 (4 字符 ≈ 1 token, 与 context-compaction 同步).
@@ -2644,140 +2400,6 @@ ${await this.buildStableMemoryBlock()}
    *
    * 失败静默: 全部失败 → 返回空 reply, 让上层 no-tool_use 终止
    */
-  private async callLlmWithRecovery(
-    llm: any,
-    contextOrMessages: string | Array<{ role: string; content: string }>,
-    systemPrompt: string,
-    signal: AbortSignal | undefined,
-    onStream?: (chunk: any) => void,
-    tools?: any[],
-    /** 2026-09-28: 当前轮易变段 (循环进度/改进提示) —— 进 CURRENT TURN 区, 不进 system */
-    currentTurnContext?: string
-  ): Promise<{ reply: string; toolCalls?: any[]; messages?: Array<{ role: string; content?: string }> }> {
-    // Reactive compaction 预检: 估算 token 超 80% 阈值, 跑一次
-    const estimated = this.estimateHistoryTokens();
-    if (estimated > this.maxContextTokens() * 0.8) {
-      console.warn(`[PiAgent] reactive compaction pre-check (${estimated} tokens > 80% threshold)`);
-      onStream?.({ type: 'status', internal: true, content: '⚠️ reactive compaction 预检触发', tool: 'recovery' });
-      try {
-        // 同步压缩: 取快照与替换在**同一拍相邻两行** (中间没有 await) ⇒ 不存在"变换期间被追加"的窗口。
-        //   若哪天这里插入 await, 必须改成 `actor.rebaseHistory(…, snapshotLen)` (见 channel-actor.ts)。
-        const compacted = this.compressHistorySync((this.actor!.state.messageHistory as Message[]));
-        this.replaceHistory(compacted);
-        if (this.estimateHistoryTokens() > this.maxContextTokens() * 0.8) {
-          await this.maybeAutoCompact(onStream, signal);
-        }
-      } catch (err) {
-        console.warn('[PiAgent] reactive compaction pre-check failed:', err);
-      }
-    }
-
-    // 错误分级 (M1.3, 2026-06-17):
-    //   - 401/403/400 (认证/请求错误): 不重试, 直接 fail-fast
-    //   - 429 (rate limit): 重试 2 次, 指数退避
-    //   - 5xx (上游错误): 重试 2 次, 指数退避
-    //   - network (ECONNRESET / fetch failed / abort/timeout): 重试 2 次
-    //   - 4xx prompt-too-long: 走 reactive compaction
-    // 这样以前所有错误都触发整个 runReActLoop 重跑(浪费 token),现在 4xx 直接失败
-    //   让上层把失败原因广播给用户,而不是闷在 loop 里 retry 3 次后给空回复
-    const classifyError = (err: any): 'auth' | 'rate_limit' | 'server' | 'network' | 'prompt_too_long' | 'other' => {
-      const msg = String(err?.message || err || '');
-      // 401/403: 认证失败
-      if (/401|unauthor|invalid api key|api_key|forbidden|403/i.test(msg)) return 'auth';
-      // 400 prompt-too-long
-      if (/token|too long|exceed|length|context|4000|413/i.test(msg)) return 'prompt_too_long';
-      // 429 rate limit
-      if (/429|rate.?limit|too many requests/i.test(msg)) return 'rate_limit';
-      // 5xx
-      if (/5\d\d|internal server|bad gateway|service unavailable|gateway timeout|cloudflare|502|503|504/i.test(msg)) return 'server';
-      // network
-      if (/econnreset|econnrefused|enotfound|etimedout|fetch failed|network|aborted|timeout/i.test(msg)) return 'network';
-      return 'other';
-    };
-
-    const isRetryable = (cls: ReturnType<typeof classifyError>) =>
-      cls === 'rate_limit' || cls === 'server' || cls === 'network' || cls === 'prompt_too_long';
-    const maxAttempts = (cls: ReturnType<typeof classifyError>) => isRetryable(cls) ? 3 : 1;
-    const backoffMs = (attempt: number) => Math.min(1000 * 2 ** attempt, 8000); // 1s, 2s, 4s, 8s cap
-
-    let lastErr: any = null;
-    let lastClass: ReturnType<typeof classifyError> = 'other';
-    for (let attempt = 0; attempt < 4; attempt++) {  // 最多 4 次尝试
-      try {
-        // M3.5 (2026-06-17): 传 messages 数组 (如果 contextOrMessages 是数组) 或字符串
-        //   数组版让 LLM 看到结构化的 user/assistant/tool role, 而不是把 history 拼成单字符串
-        // Bug 5: pass tool IDs for native OpenAI tool calling
-        // 2026-09-28 (前缀 KV 可命中): 显式 purpose/source —— pi-sdk 的 ReAct 循环**就是主对话**
-        //   (完整 IMMUTABLE PREFIX + 工具全集 + CURRENT TURN, 也只有它带 cache_prompt);
-        //   currentTurnContext 是调用方自己的当前轮易变段 (循环进度/改进提示), 走 CURRENT TURN 区.
-        // 2026-09-28: 回带最终 wire messages (含注入后的当前轮) → 上层据此写回 messageHistory.
-        const response = await llm.chat(contextOrMessages, systemPrompt, signal, tools, 'main-agent', 'react-loop', undefined, currentTurnContext);
-
-        // 2026-10-01 (用户: 「思考的记录可以也显示出来吗」): 思考模型的思维链原先只被"存起来回带",
-      //   **不显示** ✗。这里把它往流里送一份 —— 显示与否由 CLI 侧决定(BOLLOON_SHOW_THINKING, 默认显示) ✓。
-      try {
-        const rc = String((response as any)?.reasoningContent || '').trim();
-        if (rc) this.runCtx.eventSink?.({ type: 'reasoning', content: rc } as any);
-      } catch { /* 送不出去不影响主流程 */ }        // 2026-06-30: 透传 toolCalls (OpenAI 协议 native) 给上层, 让 assistant message 能 emit 真 id
-        return { reply: response.reply || '', toolCalls: response.toolCalls, messages: response.messages };
-      } catch (err: any) {
-        // 用户主动 abort: 不重试, 立即抛
-        if (signal?.aborted || err?.name === 'AbortError') throw err;
-        lastErr = err;
-        lastClass = classifyError(err);
-        const errMsg = String(err?.message || err || '').slice(0, 200);
-        const attempts = maxAttempts(lastClass);
-        if (attempt + 1 >= attempts) {
-          console.warn(`[PiAgent] LLM 调用失败, 不再重试 (class=${lastClass}, attempt=${attempt + 1}/${attempts}): ${errMsg}`);
-          break;
-        }
-        console.warn(`[PiAgent] LLM 调用失败 (class=${lastClass}, attempt=${attempt + 1}/${attempts}), ${backoffMs(attempt)}ms 后重试: ${errMsg}`);
-        onStream?.({ type: 'status', content: `⚠️ LLM 调用失败 (${lastClass}), 重试 ${attempt + 2}/${attempts}...`, tool: 'recovery' });
-        if (lastClass === 'prompt_too_long') {
-          try {
-            await this.maybeAutoCompact(onStream, signal);
-          } catch (compactionErr) {
-            console.warn('[PiAgent] reactive compaction on prompt-too-long failed:', compactionErr);
-          }
-          // 重新生成 context (重试 prompt_too_long 时重建 messages — 包含压缩后的 history)
-          if (Array.isArray(contextOrMessages)) {
-            contextOrMessages = this.buildMessages();
-          } else {
-            contextOrMessages = this.buildContext();
-          }
-        } else if (errMsg.includes('insufficient tool messages') || errMsg.includes('must be followed by tool messages')) {
-          // 2026-07-29: 特殊的 400 错误 — tool_calls 配对异常, 降级为纯文本 context
-          console.warn('[PiAgent] insufficient tool messages — 降级为 buildContext 文本');
-          if (Array.isArray(contextOrMessages)) {
-            contextOrMessages = this.buildContext();
-            // 也清除最近一轮的 toolCalls, 防止再触发
-            if ((this.actor!.state.messageHistory as Message[]).length > 1) {
-              const last = (this.actor!.state.messageHistory as Message[])[(this.actor!.state.messageHistory as Message[]).length - 1];
-              if (last.role === 'assistant' && (last as any).toolCalls) {
-                delete (last as any).toolCalls;
-              }
-            }
-          }
-        } else {
-          // 指数退避
-          await new Promise<void>((r) => setTimeout(r, backoffMs(attempt)));
-        }
-      }
-    }
-    // 失败: 返回结构化错误 reply (而不是空字符串), 上层可识别 + UI 可显示
-    const errMsg = String(lastErr?.message || lastErr || '').slice(0, 300);
-    const userMsg = lastClass === 'auth'
-      ? `[AI 服务调用失败] 认证错误: ${errMsg}\n请检查 API key 配置 (env: OPENAI_API_KEY / ANTHROPIC_API_KEY 等)`
-      : lastClass === 'rate_limit'
-      ? `[AI 服务调用失败] 上游限流 (429): ${errMsg}\n请稍后重试`
-      : lastClass === 'server'
-      ? `[AI 服务调用失败] 上游错误: ${errMsg}\n已重试 2 次仍失败, 可稍后重试`
-      : lastClass === 'network'
-      ? `[AI 服务调用失败] 网络错误: ${errMsg}\n请检查网络连接`
-      : `[AI 服务调用失败] ${errMsg}`;
-    console.warn(`[PiAgent] callLlmWithRecovery 全部失败 (class=${lastClass}): ${errMsg}`);
-    return { reply: userMsg };
-  }
 
   /**
    * 同步压缩: 跑前 3 层 (Budget Reduction / Snip / Microcompact).
@@ -2903,89 +2525,8 @@ ${await this.buildStableMemoryBlock()}
       cm.updateUsage(beforeTokens);
     }
   }
-  private isFinalResponse(content: string): boolean {
-    // 2026-06-30: 抽到 ./parse-tool-call.ts 作为纯函数 — 这里只构建 ctx 并调用
-    return isFinalResponseImpl(content, this._parseCtx());
-  }
-
-  private extractFinalAnswer(content: string): string {
-    // 抽取实现已挪到 ./parse-tool-call.ts (纯函数, 易测)
-    return extractFinalAnswerImpl(content);
-  }
-
-  private _parseCtx() {
-    return {
-      tools: new Set(Array.from(this.tools.keys())),
-      resolveAlias: (name: string) => this.resolveToolName(name),
-    };
-  }
-
-  private parseToolCall(content: string): { name: string; args: Record<string, string> } | null {
-  // 2026-06-30: 抽到 ./parse-tool-call.ts 作为纯函数 — 这里只构建 ctx 并调用
-    return parseToolCallImpl(content, this._parseCtx());
-  }
-
-  // [debug-2026-06-19] 临时: 打印 parseToolCall 输入和返回
-  private _dbgParseToolCall(content: string): { name: string; args: Record<string, string> } | null {
-    const r = this.parseToolCall(content);
-    console.log('[DBG parseToolCall] result:', JSON.stringify(r), 'content head:', JSON.stringify(content.substring(0, 200)));
-    return r;
-  }
-
-
-
-  /**
-   * 2026-06-19: 工具名大小写不敏感 + Claude Code 风格别名映射
-
-  /**
-   * 2026-06-19: 工具名大小写不敏感 + Claude Code 风格别名映射
-   *   LLM 实际产出 Read/Edit/Write/Bash/Grep/Glob 等大写名 (Claude Code 工具命名)
-   *   bolloon 注册的是 read_document / edit_file / write_file / shell_exec / list_files
-   *   返回 this.tools 里的标准名, 或 null 表示未识别
-   */
-  /**
-   * 把 LLM 给的工具名 (可能大小写不一, 或者 Claude Code 风格的别名) 解析为
-   * bolloon 注册的标准工具名.
-   *
-   * 2026-06-30: 委托给 ToolRegistry 模块 — alias 表在 tool-registry.ts 统一维护,
-   *   这里只做 thin wrapper 保留 backward compat (private API 但其它地方可能用).
-   */
-  private resolveToolName(name: string): string | null {
-    return this._toolRegistry.resolve(name);
-  }
-
-
-
-  private estimateResponseQuality(response: string): number {
-    let score = 0.5;
-    if (response.length > 50) score += 0.1;
-    if (response.length > 200) score += 0.1;
-    if (response.length < 20) score -= 0.3;
-    if (response.includes('\n')) score += 0.1;
-    if (response.includes('-') || response.includes('•')) score += 0.05;
-    if (response.includes('```')) score += 0.1;
-    const conclusionWords = ['完成', '结果', '总结', '所以', '因此', '答案', '推荐'];
-    if (conclusionWords.some(w => response.includes(w))) score += 0.1;
-    if (response.includes('调用工具') || response.includes('tool(')) score -= 0.2;
-    return Math.max(0, Math.min(1, score));
-  }
-
-  private estimateToolResultQuality(result: ToolResult): number {
-    let score = 0.5;
-    if (!result.success) return 0.2;
-    if (result.output) {
-      score += 0.2;
-      if (result.output.length > 50) score += 0.1;
-      if (result.output.length < 10) score -= 0.1;
-      if (result.output.includes('❌') || result.output.includes('error')) score -= 0.2;
-      if (result.output.includes('✅') || result.output.includes('success')) score += 0.1;
-    }
-    if (result.error) score -= 0.3;
-    return Math.max(0, Math.min(1, score));
-  }
 
   private async handleFallback(input: string): Promise<string> {
-    const lowerInput = input.toLowerCase();
     const parts = input.trim().split(/\s+/);
     const cmd = parts[0].toLowerCase();
     const args = parts.slice(1).join(' ');
@@ -3077,7 +2618,6 @@ ${this.extractOperationsFromRef(operationsRef)}
 
   private extractOperationsFromRef(ref: string): string {
     const lines = ref.split('\n');
-    const inOperationsSection = false;
     const operationLines: string[] = [];
 
     for (let i = 0; i < lines.length; i++) {
@@ -3555,22 +3095,6 @@ ${this.extractOperationsFromRef(operationsRef)}
   // ==================== Harness Integration ====================
 
   private operationLog: Array<{ timestamp: number; action: string; args: any; result: any; status: string }> = [];
-
-  private logToHarness(action: string, args: any, result: any): void {
-    if (!this.harnessEnabled || !this.harness) return;
-
-    this.operationLog.push({
-      timestamp: Date.now(),
-      action,
-      args,
-      result,
-      status: result.success ? 'ok' : 'error'
-    });
-
-    if (this.operationLog.length >= 10) {
-      this.archiveToHarness();
-    }
-  }
 
   archiveToHarness(): void {
     if (!this.harnessEnabled || !this.harness || this.operationLog.length === 0) return;

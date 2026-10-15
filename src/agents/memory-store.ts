@@ -14,7 +14,6 @@
  *   - 条目摘要进上下文, 全文按需拉取 (progressive disclosure)
  */
 import * as fs from 'fs/promises';
-import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createHash } from 'node:crypto';
