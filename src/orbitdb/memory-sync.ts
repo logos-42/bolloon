@@ -74,30 +74,3 @@ export async function fetchRemoteEntries(
     return [];
   }
 }
-
-/**
- * LWW 合并决策: 远端条目 vs 本地条目, 谁胜。
- *   - 本地无 → 远端胜
- *   - 远端 updatedAt > 本地 → 远端胜
- *   - 远端 updatedAt ≤ 本地 → 本地胜 (平手比内容不算, 直接本地胜, LWW)
- */
-export function shouldTakeRemote(remote: MemoryEntry, local: MemoryEntry | undefined): boolean {
-  if (!local) return true;
-  return remote.updatedAt > local.updatedAt;
-}
-
-/** 合并远端条目到本地 Map (就地更新), 返回被采纳的远端条数 (LWW) */
-export function mergeRemoteEntries(
-  local: Map<string, MemoryEntry>,
-  remote: MemoryEntry[],
-): number {
-  let n = 0;
-  for (const r of remote) {
-    const l = local.get(r.id);
-    if (shouldTakeRemote(r, l)) {
-      local.set(r.id, r);
-      n++;
-    }
-  }
-  return n;
-}

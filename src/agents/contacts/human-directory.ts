@@ -13,10 +13,9 @@
  *   - pepper 是本机私密 (~/.bolloon/contacts/directory-pepper.json, 0600), 不进目录条目
  */
 import * as fs from 'fs/promises';
-import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { createHmac, createHash, randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 
 export interface DirectoryEntry {
   phoneHash: string;        // HMAC-SHA256(salt || phone, pepper) → hex
@@ -46,6 +45,14 @@ export function pepperPath(homeDir?: string): string {
   return path.join(homeDir || home(), '.bolloon', 'contacts', 'directory-pepper.json');
 }
 
+/** 原子写: tmp + rename (写坏不残留半截文件; 0600 私密权限) */
+async function atomicWriteJson(file: string, value: unknown): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now().toString(36)}`;
+  await fs.writeFile(tmp, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 });
+  await fs.rename(tmp, file);
+}
+
 /** 读取/生成 pepper (首次生成随机 32 字节; 幂等复用) */
 export async function loadPepper(homeDir?: string): Promise<string> {
   const p = pepperPath(homeDir);
@@ -55,18 +62,18 @@ export async function loadPepper(homeDir?: string): Promise<string> {
     if (j?.pepper) return j.pepper;
   } catch { /* 不存在 → 生成 */ }
   const pepper = randomBytes(32).toString('hex');
-  await fs.mkdir(path.dirname(p), { recursive: true });
-  const tmp = `${p}.tmp-${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify({ pepper }), 'utf8');
-  await fsSync.chmodSync ? (() => { try { fsSync.chmodSync(tmp, 0o600); } catch { /* 平台不支持 */ } })() : undefined;
-  await fs.rename(tmp, p);
-  try { await fs.chmod(p, 0o600); } catch { /* 平台不支持 */ }
+  await atomicWriteJson(p, { pepper });
   return pepper;
+}
+
+/** 手机号归一化: 只留数字与 + (同一规则只此一处, 供校验与哈希共用) */
+export function normalizePhone(value: string): string {
+  return String(value || '').replace(/[^\d+]/g, '');
 }
 
 /** 盲化哈希: HMAC-SHA256(salt || phone, pepper) → hex (同一输入永远同一输出) */
 export function blindHash(phone: string, salt: string, pepper: string): string {
-  const normalized = String(phone || '').replace(/[^\d+]/g, '');
+  const normalized = normalizePhone(phone);
   return createHmac('sha256', pepper).update(`${salt}||${normalized}`).digest('hex');
 }
 
@@ -77,8 +84,7 @@ export function genSalt(): string {
 
 /** 校验手机号形状 (宽松: 8-15 位数字, 可带 + 前缀) */
 export function isPlausiblePhone(value: string): boolean {
-  const v = String(value || '').replace(/[^\d+]/g, '');
-  return /^\+?\d{8,15}$/.test(v);
+  return /^\+?\d{8,15}$/.test(normalizePhone(value));
 }
 
 /** 目录存储: 读/写原子 (与 contacts store 同模式) */
@@ -94,11 +100,7 @@ export async function readDirectory(homeDir?: string): Promise<DirectoryEntry[]>
 }
 
 async function writeDirectory(entries: DirectoryEntry[], homeDir?: string): Promise<void> {
-  const file = directoryPath(homeDir);
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now().toString(36)}`;
-  await fs.writeFile(tmp, JSON.stringify(entries, null, 2), 'utf8');
-  await fs.rename(tmp, file);
+  await atomicWriteJson(directoryPath(homeDir), entries);
 }
 
 /** 发布一条目录条目 (opt-in; 同 phoneHash 已存在 → 更新为最新, 撤销后重发 = 恢复) */

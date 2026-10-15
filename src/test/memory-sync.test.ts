@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { CIDDatabase, CIDRecord } from '../orbitdb/cid-database.js';
-import { syncMemoryEntryToOrbit, fetchRemoteEntries, shouldTakeRemote, mergeRemoteEntries, entryFromRecord } from '../orbitdb/memory-sync.js';
+import { syncMemoryEntryToOrbit, fetchRemoteEntries, entryFromRecord } from '../orbitdb/memory-sync.js';
 import { MemoryStore, resetMemoryStores } from '../agents/memory-store.js';
 
 const tmpHome = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'mem-sync-'));
@@ -84,43 +84,23 @@ describe('memory-sync P3', () => {
     expect(entryFromRecord(bad)).toBeNull();
   });
 
-  it('shouldTakeRemote: 本地无 → 远端; 远端更新 → 远端; 本地更新/平手 → 本地', () => {
-    const remote = makeEntry('x', 'a', '远端', '2026-10-11T00:00:00.000Z');
-    expect(shouldTakeRemote(remote, undefined)).toBe(true);
-    const olderLocal = makeEntry('x', 'a', '本地旧', '2026-10-10T00:00:00.000Z');
-    expect(shouldTakeRemote(remote, olderLocal)).toBe(true);
-    const newerLocal = makeEntry('x', 'a', '本地新', '2026-10-12T00:00:00.000Z');
-    expect(shouldTakeRemote(remote, newerLocal)).toBe(false);
-    const sameLocal = makeEntry('x', 'a', '同时', '2026-10-11T00:00:00.000Z');
-    expect(shouldTakeRemote(remote, sameLocal)).toBe(false); // 平手 → 本地胜
-  });
-
-  it('mergeRemoteEntries: LWW 合并到 Map, 返回采纳数', () => {
-    const local = new Map<string, import('../agents/memory-store.js').MemoryEntry>();
-    local.set('x', makeEntry('x', 'a', '本地新', '2026-10-12T00:00:00.000Z'));
-    local.set('keep', makeEntry('keep', 'a', '保留', '2026-10-10T00:00:00.000Z'));
-    const remote = [
-      makeEntry('x', 'a', '远端旧', '2026-10-11T00:00:00.000Z'), // 本地新 → 不采纳
-      makeEntry('y', 'a', '远端新条目', '2026-10-11T00:00:00.000Z'), // 本地无 → 采纳
-    ];
-    const n = mergeRemoteEntries(local, remote);
-    expect(n).toBe(1);
-    expect(local.get('x')?.content).toBe('本地新');
-    expect(local.get('y')?.content).toBe('远端新条目');
-    expect(local.get('keep')?.content).toBe('保留');
-  });
-
-  it('MemoryStore.mergeRemote: 合并 + 落盘 + 归属校验 (非本 agent 拒绝)', async () => {
+  it('MemoryStore.mergeRemote: 合并 + 落盘 + 归属校验 + LWW (非本 agent 拒绝)', async () => {
     const HOME = tmpHome();
     const s = new MemoryStore('agent-m', HOME);
-    await s.save({ content: '本地记忆' });
+    await s.save({ content: '本地记忆', importance: 0.5 });
+    await s.save({ content: '本地新版本', importance: 0.6 }); // id 第二个, 用于 LWW 平手/本地胜
     await s.load();
+    const localList = await s.list();
+    const localNewId = localList.find((e) => e.content === '本地新版本')!.id; // 按内容找, 不假设 list 顺序
     const remote = [
-      makeEntry('r1', 'agent-m', '远端来的记忆', '2026-10-11T00:00:00.000Z'),
+      makeEntry('r1', 'agent-m', '远端来的记忆', '2026-10-11T00:00:00.000Z'), // 本地无 → 采纳
+      makeEntry(localNewId, 'agent-m', '远端旧版本', '2026-01-01T00:00:00.000Z'), // 远端旧 → 本地胜
       makeEntry('r2', 'agent-other', '别家的记忆', '2026-10-11T00:00:00.000Z'), // 归属不符 → 跳过
     ];
     const n = await s.mergeRemote(remote);
-    expect(n).toBe(1); // 只采纳 r1
+    expect(n).toBe(1); // 只采纳 r1; 远端旧版本被本地压过, 别家的被拒
+    // LWW: 本地新版本未被远端旧版本覆盖
+    expect((await s.list()).find((e) => e.id === localNewId)?.content).toBe('本地新版本');
     // 新实例读回 (落盘验证)
     const s2 = new MemoryStore('agent-m', HOME);
     await s2.load();
