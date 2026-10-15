@@ -48,6 +48,15 @@
       "source_file": "docs/wiki/agent-economic-protocol.md"
     },
     {
+      "id": "agent-event-network-plan.md",
+      "type": "chapter",
+      "label": "Agent Event Network — 1 万智能体协作的共享事件与记忆层 (计划)",
+      "tags": "[plan, orbitdb, group, event-network, scaling, memory, query, acl, replication]",
+      "stage": "draft",
+      "audience": "self",
+      "source_file": "docs/wiki/agent-event-network-plan.md"
+    },
+    {
       "id": "agent-trace-sharing.md",
       "type": "chapter",
       "label": "智能体执行轨迹与 P2P 连接信息 (Trace / P2P Sharing)",
@@ -82,6 +91,15 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/bolloon-md-template.md"
+    },
+    {
+      "id": "bolloon-native-macro-kernel.md",
+      "type": "chapter",
+      "label": "Bolloon Native Macro-Kernel — 进程内 Agent 内核 (方向 · 边界 · K0–K10 台账)",
+      "tags": "[kernel, architecture, macro-kernel, pi, actor, channel-runtime, scheduler, harness, model-runtime, capability, constraint-runtime, plan]",
+      "stage": "draft",
+      "audience": "self",
+      "source_file": "docs/wiki/bolloon-native-macro-kernel.md"
     },
     {
       "id": "chain-model-freeze.md",
@@ -168,10 +186,19 @@
       "id": "current-status.md",
       "type": "chapter",
       "label": "Bolloon 当前状态",
-      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, x402-direct-payment, x402-onchain-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, npm-0.5.0, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor, open-tasks-public-projection, public-open-tasks-2026-09-23, task-open-announcement-live-2026-09-24, skill-doc-cli-parity-2026-09-24, task-announce-board-docs, task-group-channel-docs, x402-order-identity, eip-3009-bol1-nonce, x402-buyer-pay-cli]",
+      "tags": "[status, v0.2.7, v0.2.10-p2p-resources, v0.2.11-safe-name, v0.2.11-loading-tui, v0.2.10-non-streaming-render, v0.2.13-loading-tui-7step, tool-args-validation, step-event-buffer, owner-public-key, version-dynamic, v0.3.5, streaming-timeline-fix, streaming-finalize-connector, social-heartbeat, external-engines, lsp-module, cli-bottom-status, cli-brand-art, opencli-discovery, tool-denylist, snip-collapse, hooks-engine, deny-pipeline, jsonl-storage, sidechain, dunbar-tftt, model-visibility-gate, v0.3.25, native-toolcalls, plan-store, skill-writer, memory-readback, channel-atomic-write, ui-fixes-2026-08-02, remote-chat-step, running-self-heal, remote-chat-mirror, context-os, decision-store, valuepoint-routing, mcp-stdio, publish-did, kubo-autosetup, cli-mention-popup, orbitdb-cid-layer, cli-enter-fix, cli-startup-timeout, context-usage-fix, cli-thinking-box, run-end-skill-merge, did-catalog-multidevice, did-catalog-bridge, did-catalog-orbitdb-replication, trajectory-store, gui-web-fallback, react-loop-progress, concurrent-tools, streaming-closed-box, auth-framework, did-ownership, cli-agent-channel-rebuild, context-os-per-agent, organize-heartbeat, knowledge-organize, skill-organize, organize-result-box, unreported-escape, loop-completeness-check, write-file-default-permit, cli-kubo-autostart, terminal-tool, denylist-only-guard, js-yaml-esm-fix, dep-upgrade-2026-09-08, cli-fast-start, zero-install-warnings, agent-gateway-bootstrap, mobile-gateway, qr-scan-join, net-command, shared-context, ios-appintents-deeplink, circuit-relay-v2, p2p-circuit-inbound, next-tools-2026-09-13, clarify-channel, browser-cdp, computer-use, patch-tool, setup-wizard, skill-share-ipfs, x402-paid-info, paid-info-verify, x402-direct-payment, x402-onchain-verify, cron-tick-lock, cron-dnd-quiet, mobile-tap-network, gateway-join-closed-loop, gateway-join-tool, deepseek-reasoning-content, address-broadcast-tofu, npm-0.4.23, npm-0.4.24, npm-0.5.0, mobile-self-join, delegate-real-execution, ios-sim-join-e2e, pkg-rename-hibs-bolloon, compliance-privacy-gate, adaptive-icon, store-flavor, permissions-doc, durable-run, run-store, run-state-machine, checkpoint, recovery-protocol, phase-0, acceptance-matrix, api-runs, cli-runs, durable-run-m1-hard-constraint, persistence-strict, run-lock, corrupt-fallback, degradations, update-protocol, version-info, install-identity, update-manager, update-state, update-lock, doctor, publish-gate, bare-word-commands, runtime-bootstrap, install-protocol, path-config, package-manager, doctor, open-tasks-public-projection, public-open-tasks-2026-09-23, task-open-announcement-live-2026-09-24, skill-doc-cli-parity-2026-09-24, task-announce-board-docs, task-group-channel-docs, x402-order-identity, eip-3009-bol1-nonce, x402-buyer-pay-cli, v0.5.4-tui-session-wallet, bolloon-native-macro-kernel-2026-10-02, web-render-silent-noop-2026-10-02, mobile-web-bundle-selfcontained-2026-10-02]",
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/current-status.md"
+    },
+    {
+      "id": "decentralized-memory-design.md",
+      "type": "chapter",
+      "label": "去中心化向量记忆设计方案",
+      "tags": "[memory, vector, embedding, orbitdb, decentralized, design]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/decentralized-memory-design.md"
     },
     {
       "id": "diap-address-binding.md",
@@ -226,6 +253,15 @@
       "stage": "current",
       "audience": "self",
       "source_file": "docs/wiki/facilitator-paths.md"
+    },
+    {
+      "id": "four-terminal-intent-design.md",
+      "type": "meta",
+      "label": "四端 Agent 分发网络 —— bolloon 逻辑设计 (v0.1)",
+      "tags": "[intent-network, four-terminal, pc, cli, mobile, glass, design, world, intent-console, opportunity, action, memory]",
+      "stage": "draft",
+      "audience": "self",
+      "source_file": "docs/wiki/four-terminal-intent-design.md"
     },
     {
       "id": "github-and-raw-strategy.md",
@@ -289,6 +325,24 @@
       "stage": "",
       "audience": "",
       "source_file": "docs/wiki/index.md"
+    },
+    {
+      "id": "intent-network-vision.md",
+      "type": "meta",
+      "label": "Intent Network 愿景 — bolloon 的第四代定位 (草案 v0.1)",
+      "tags": "[intent-network, agent-distribution, vision, direction, bolloon, strategy, match, trust, reputation, ephemeral-group]",
+      "stage": "draft",
+      "audience": "self",
+      "source_file": "docs/wiki/intent-network-vision.md"
+    },
+    {
+      "id": "kernel-design-principles.md",
+      "type": "chapter",
+      "label": "Bolloon Kernel 设计原则与动机",
+      "tags": "[kernel, architecture, macro-kernel, pi-adapter, harness, supervisor, channel-actor, model-runtime]",
+      "stage": "current",
+      "audience": "self",
+      "source_file": "docs/wiki/kernel-design-principles.md"
     },
     {
       "id": "kv-prefix-cache.md",
@@ -408,6 +462,15 @@
       "source_file": "docs/wiki/payment-recovery-protocol.md"
     },
     {
+      "id": "phone-account-lookup-design.md",
+      "type": "chapter",
+      "label": "手机号反查人类账号与加好友设计方案",
+      "tags": "[contacts, phone, human-account, directory, lookup, friend, privacy, design, decentralized]",
+      "stage": "draft",
+      "audience": "self",
+      "source_file": "docs/wiki/phone-account-lookup-design.md"
+    },
+    {
       "id": "product-core-focus.md",
       "type": "chapter",
       "label": "产品核心收缩 (Core Focus) — M1 只证明一件事",
@@ -516,6 +579,15 @@
       "source_file": "docs/wiki/task-protocol.md"
     },
     {
+      "id": "three-terminal-product-vision.md",
+      "type": "meta",
+      "label": "多终端 Agent 分发网络 —— bolloon 产品形态 (草案 v0.1)",
+      "tags": "[intent-network, product-vision, three-terminal, pc, mobile, glass, world, opportunity-card, intent-console, business-model, distribution]",
+      "stage": "draft",
+      "audience": "self",
+      "source_file": "docs/wiki/three-terminal-product-vision.md"
+    },
+    {
       "id": "transaction-two-layer-state.md",
       "type": "chapter",
       "label": "交易两层状态协议 (Two-Layer Transaction State)",
@@ -609,17 +681,27 @@
     },
     {
       "from": "current-status.md",
+      "to": "log.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "android-agent-runtime.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "four-terminal-intent-design.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
       "to": "x402-order-identity.md",
       "type": "references"
     },
     {
       "from": "current-status.md",
       "to": "x402-seller-signing.md",
-      "type": "references"
-    },
-    {
-      "from": "current-status.md",
-      "to": "log.md",
       "type": "references"
     },
     {
@@ -744,7 +826,22 @@
     },
     {
       "from": "current-status.md",
-      "to": "android-agent-runtime.md",
+      "to": "decentralized-memory-design.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "phone-account-lookup-design.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "kernel-design-principles.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "bolloon-native-macro-kernel.md",
       "type": "references"
     },
     {
@@ -959,6 +1056,11 @@
     },
     {
       "from": "index.md",
+      "to": "agent-event-network-plan.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "network-ledger-design.md",
       "type": "references"
     },
@@ -1084,12 +1186,37 @@
     },
     {
       "from": "index.md",
+      "to": "bolloon-native-macro-kernel.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "kernel-design-principles.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "decentralized-memory-design.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
+      "to": "phone-account-lookup-design.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "log.md",
       "type": "references"
     },
     {
       "from": "index.md",
       "to": "q1-q5-report-2026-07-07.md",
+      "type": "references"
+    },
+    {
+      "from": "kernel-design-principles.md",
+      "to": "bolloon-native-macro-kernel.md",
       "type": "references"
     },
     {
@@ -1243,6 +1370,16 @@
       "type": "references"
     },
     {
+      "from": "log.md",
+      "to": "bolloon-native-macro-kernel.md",
+      "type": "references"
+    },
+    {
+      "from": "log.md",
+      "to": "agent-event-network-plan.md",
+      "type": "references"
+    },
+    {
       "from": "model-discovery.md",
       "to": "provider-registry.md",
       "type": "references"
@@ -1354,16 +1491,16 @@
     }
   ],
   "stats": {
-    "node_count": 62,
-    "edge_count": 158,
+    "node_count": 70,
+    "edge_count": 171,
     "node_types": {
-      "meta": 13,
+      "meta": 16,
       "protocol": 19,
-      "chapter": 29,
+      "chapter": 34,
       "claim": 1
     },
     "edge_types": {
-      "references": 156,
+      "references": 169,
       "supersedes": 2
     }
   }

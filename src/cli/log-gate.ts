@@ -220,6 +220,14 @@ const INTERNAL_CHATTER_LINE = [
   /^\s*宣布\s*<final\s*gen>/,
   /^\s*\[完成契约\]/,
   /^\s*\(尚未执行工具\)/,
+  // 2026-10-15 (leo: 「[AI 服务调用失败] 这个需要过滤掉」): 模型调用失败的占位回复 —
+  //   pi-ai 的 catch 分支返回 `[AI 服务调用失败] <errMsg>\n\n这是一个**底层 API 错误**...` 作为
+  //   reply, 后段是给 pivot loop 下一轮 LLM 看的指令 (该不该继续), 不是给用户的内容。
+  //   整段不该作为回复框进内容栏 — 落盘 + footer tip 就够 (详情在 startup.log 可 grep 前缀)。
+  /^\s*\[AI 服务调用失败\]/,
+  // 2026-10-15 同批: pi-ai chat/improve 失败告警改单行标签形 (`[pi-ai] chat 失败: ...`),
+  //   兜底旧构建打印的裸 `PiAI chat error: ...` (用户终端实测带 ✗/⚠ 前缀也会漏上屏)。
+  /^\s*[⚠✗!·]?\s*PiAI\s+(?:chat|improve)\s+error[:：]/,
 ];
 
 /**

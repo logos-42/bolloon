@@ -4028,7 +4028,9 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           const preview = String(e.content || '').trim();
           if (shouldShowStagePreview(preview, lastPreviewShown)) {
             lastPreviewShown = preview;
-            appendLine(renderMessageBox({ title: '💬 阶段性进展', body: preview, color: C_DIM, maxLines: 10, width: Math.min(termWidth() - 4, 76) }));
+            // 2026-10-15 (leo: 「💬 阶段性进展这个换成之前默认的 Bolloon 就行」):
+            //   阶段性进展框用 renderMessageBox 默认标题 (Bolloon Agent), 不自定义副标题。
+            appendLine(renderMessageBox({ body: preview, color: C_DIM, maxLines: 10, width: Math.min(termWidth() - 4, 76) }));
           }
         }
         if (e.type === 'thinking' && e.content) {

@@ -50,6 +50,46 @@ export type ChatPurpose =
 /** 唯一的重路径用途 */
 export const MAIN_AGENT_PURPOSE: ChatPurpose = 'main-agent';
 
+// ---------------------------------------------------------------------------
+// 模型调用并发闸 (2026-10-15, leo: 「[AI 服务调用失败] ... 429 并发请求已达上限, 有错误也要修复」)
+// ---------------------------------------------------------------------------
+// 根因: CLI/Web/心跳/会话总结等多路会同时打同一个 provider, 上游按 API key 限并发
+//   (实测 zai/glm: `当前 API Key 的并发请求已达到上限` 429 rate_limit_error)。
+// 修复: 在**全仓唯一模型调用咽喉** generateText 前按 `providerId|baseUrl` 分桶限流 —
+//   同 key 同时最多 LLM_MAX_CONCURRENCY 个在途请求, 其余排队 (轮询, 可响应 abort)。
+const llmConcurrencyBuckets = new Map<string, { active: number; waiting: number }>();
+
+export const LLM_MAX_CONCURRENCY: number = (() => {
+  const n = Number(process.env.BOLLOON_LLM_MAX_CONCURRENCY ?? '');
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, 8) : 2;
+})();
+
+/** 包一个模型调用进并发闸: 同 key 超限则排队, abort 时尽快退出 (轮询 120ms, 最坏等一拍) */
+export async function withLlmConcurrency<T>(
+  key: string,
+  signal: AbortSignal | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  for (;;) {
+    if (signal?.aborted) throw new Error(String(signal.reason || 'AbortError'));
+    const b = llmConcurrencyBuckets.get(key) ?? { active: 0, waiting: 0 };
+    if (b.active < LLM_MAX_CONCURRENCY) {
+      b.active++;
+      llmConcurrencyBuckets.set(key, b);
+      try {
+        return await fn();
+      } finally {
+        b.active--;
+        if (b.active <= 0 && b.waiting <= 0) llmConcurrencyBuckets.delete(key);
+      }
+    }
+    b.waiting++;
+    llmConcurrencyBuckets.set(key, b);
+    await new Promise<void>((r) => setTimeout(r, 120));
+    b.waiting--;
+  }
+}
+
 /** 轻量前缀的 system 上限 (字符). 只对**自动装配部分 + 调用方自带短提示**做兜底截断, 正常调用远低于它 */
 export const LIGHTWEIGHT_SYSTEM_MAX_CHARS = 2000;
 
@@ -745,7 +785,9 @@ export class PiAIModel {
           error = retryErr; // 记录最后一次错误, 循环继续重试 (backoff 递增)
         }
       }
-      console.error('PiAI chat error:', error);
+      // 2026-10-15: 单行标签形 (`[pi-ai]` 是 log-gate INTERNAL_CHATTER_TAG, 只落盘不上屏;
+      //   `分类` 在 for 循环块级作用域内, errMsg 在下面才解析 —— 这里自包含一行, 不引块内变量)
+      console.error(`[pi-ai] chat 失败: ${String((error as any)?.message ?? error).replace(/\n/g, ' ').slice(0, 300)}`);
       // 2026-06-15: 真实 error 信息 + 明确告诉 LLM "这是 API 错, 不要 retry"
       // 旧版: "抱歉，AI服务暂时不可用。" → LLM 看到 isTooShort=false(< 50 但 > 0),
       //       needsMoreWork 不会触发, 但 hasError 模式 (含 "error" / "失败") 会判定要继续修
@@ -809,7 +851,6 @@ export class PiAIModel {
 
     // 工具清单: 代码侧 schema → 进 system prompt (作为额外 system message)
     let finalMessages = messages;
-
     // 注 (2026-09-28): 外部 prepend (_prependProvider) 已上移到 chat() —— 它进 CURRENT TURN 动态区,
     //   不再作为最前面的 system message (那份 reserve 状态每轮都在变, 放 system 会打碎 IMMUTABLE PREFIX).
 
@@ -833,29 +874,36 @@ export class PiAIModel {
       }
     }
 
-    switch (this.provider) {
-      case 'openai':
-      case 'minimax':
-      case 'deepseek':
-      case 'kimi':
-      case 'glm':
-      case 'qwen':
-      case 'mimo':
-      case 'grok':
-        return this.callOpenAI(finalMessages, temperature, maxTokens, signal, openaiTools, onToken, purpose, source);
-      case 'anthropic':
-        return this.callAnthropic(finalMessages, temperature, maxTokens, signal);
-      case 'ollama':
-        return this.callOllama(finalMessages, temperature, signal);
-      case 'openrouter':
-        return this.callOpenRouter(finalMessages, temperature, maxTokens, signal);
-      case 'gemini':
-        return this.callGemini(finalMessages, temperature, maxTokens, signal);
-      case 'local':
-        return this.callLocal(finalMessages, temperature, signal);
-      default:
-        throw new Error(`Unsupported provider: ${this.provider}`);
-    }
+    // 2026-10-15 (leo: 429 并发已达上限, 有错误也要修复): 全仓唯一模型调用咽喉 —
+    //   所有入口 (CLI/Web/MCP/技能/子 Agent/长期任务) 都经 generateText 出网,
+    //   在这里按 `providerId|baseUrl` 分桶限流, 同 key 同时最多 LLM_MAX_CONCURRENCY 个在途,
+    //   排队等待 (轮询 120ms, abort 时尽快退出) — 不再把同一 API key 的并发打爆。
+    const bucketKey = `${this.config.providerId ?? this.provider}|${this.getBaseUrl()}`;
+    return withLlmConcurrency(bucketKey, signal, async () => {
+      switch (this.provider) {
+        case 'openai':
+        case 'minimax':
+        case 'deepseek':
+        case 'kimi':
+        case 'glm':
+        case 'qwen':
+        case 'mimo':
+        case 'grok':
+          return this.callOpenAI(finalMessages, temperature, maxTokens, signal, openaiTools, onToken, purpose, source);
+        case 'anthropic':
+          return this.callAnthropic(finalMessages, temperature, maxTokens, signal);
+        case 'ollama':
+          return this.callOllama(finalMessages, temperature, signal);
+        case 'openrouter':
+          return this.callOpenRouter(finalMessages, temperature, maxTokens, signal);
+        case 'gemini':
+          return this.callGemini(finalMessages, temperature, maxTokens, signal);
+        case 'local':
+          return this.callLocal(finalMessages, temperature, signal);
+        default:
+          throw new Error(`Unsupported provider: ${this.provider}`);
+      }
+    });
   }
 
   private getApiKey(): string {

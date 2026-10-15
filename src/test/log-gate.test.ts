@@ -130,6 +130,15 @@ describe('log-gate 行分类', () => {
       '[PiAgent] loop 自动重试 1/3, 等待 500ms',
       '[PiAgent] 推理适配器 = kernel-model-runtime (只读 acquire 租约)',
       '[PiAgent] reviewFinal (K4-B 恢复调用, 判定不参与流程): kind=continue-review',
+      // 2026-10-15 (leo: 「[AI 服务调用失败] 这个需要过滤掉」): 模型调用失败的占位回复
+      //   —— 含给 LLM 的「不要再循环尝试」指令段, 不是给用户的内容, 整段不上内容栏
+      '[AI 服务调用失败] OpenAI API error: 429 {"error":{"message":"当前 API Key 的并发请求已达到上限","type":"rate_limit_error"}}',
+      '[AI 服务调用失败] 网络超时 (cause: other side closed)',
+      '  [AI 服务调用失败] 401 鉴权失败',
+      // 2026-10-15 同批: pi-ai 失败告警改单行标签形; 旧构建兜底的裸 PiAI chat error (带 ✗ 前缀)
+      '[pi-ai] chat 失败: OpenAI API error: 429 {"error":{"type":"rate_limit_error"}}',
+      '✗ PiAI chat error: OpenAI API error: 429 Too Many Requests',
+      '⚠ PiAI improve error: ECONNRESET',
     ]) {
       expect(isInternalChatter(l), `应判内部: ${l.slice(0, 60)}`).toBe(true);
     }
@@ -137,6 +146,8 @@ describe('log-gate 行分类', () => {
     for (const l of [
       '好的, 我来帮你检查项目状态',
       '⛔ 权限被拒绝: 目标路径不在白名单 (需人介入)',
+      '刚刚的 AI 服务调用失败了, 我们重试一下',
+      'AI 服务调用失败的原因可能是什么?',   // 用户正文没有方括号行首标签 — 必须放行
     ]) {
       expect(isInternalChatter(l), `应放行: ${l}`).toBe(false);
     }
