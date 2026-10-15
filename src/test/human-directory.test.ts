@@ -85,4 +85,21 @@ describe('human-directory P0 (落点 A)', () => {
     await expect(publishEntry('123', 'did:key:x', { homeDir: HOME })).rejects.toThrow();
     await expect(publishEntry('13800000000', 'not-a-did', { homeDir: HOME })).rejects.toThrow();
   });
+
+  it('publicKeyHex: 显式传入 → 发布/查询打通 (手机号→公钥直达加好友)', async () => {
+    await publishEntry('13800000000', 'did:key:z6Mkabc', { publicKeyHex: 'AB12'.repeat(16), homeDir: HOME });
+    const r = await lookupPhone('13800000000', HOME);
+    expect(r.found).toBe(true);
+    expect(r.publicKeyHex).toBe('ab12'.repeat(16)); // 小写归一
+  });
+
+  it('publicKeyHex: 不传 → 缺省从本机 user.json(仅当存在且 64 hex)/否则 undefined', async () => {
+    // 隔离 HOME 没有 user.json → undefined (不抛错)
+    const r = await publishEntry('13800000000', 'did:key:d1', { homeDir: HOME });
+    expect(r.publicKeyHex).toBeUndefined();
+    // 显式传非法值 → 原样存 (格式由调用方负责)
+    await publishEntry('13800000001', 'did:key:d2', { publicKeyHex: 'zz', homeDir: HOME });
+    const r2 = await lookupPhone('13800000001', HOME);
+    expect(r2.publicKeyHex).toBe('zz');
+  });
 });

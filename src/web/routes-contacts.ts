@@ -403,9 +403,10 @@ export function registerContactRoutes(
         if (!isPlausiblePhone(phone)) return res.status(400).json({ ok: false, error: '手机号格式不正确' });
         const e = await publishEntry(phone, did, {
           displayName: req.body?.displayName ? String(req.body.displayName) : undefined,
+          publicKeyHex: req.body?.publicKeyHex ? String(req.body.publicKeyHex) : undefined,
           homeDir: dirHome(),
         });
-        res.json({ ok: true, phoneHash: e.phoneHash.slice(0, 8) + '…', did: e.did, publishedAt: e.publishedAt });
+        res.json({ ok: true, phoneHash: e.phoneHash.slice(0, 8) + '…', did: e.did, publicKeyHex: e.publicKeyHex || null, publishedAt: e.publishedAt });
       } catch (err: any) {
         res.status(500).json({ ok: false, error: String(err?.message || err) });
       }
@@ -431,7 +432,35 @@ export function registerContactRoutes(
         if (!isPlausiblePhone(phone)) return res.status(400).json({ ok: false, error: '手机号格式不正确' });
         const r = await lookupPhone(phone, dirHome());
         if (!r.found) return res.json({ ok: true, found: false, note: '未找到 (未注册或未公开)' });
-        res.json({ ok: true, found: true, did: r.did, displayName: r.displayName || null });
+        res.json({ ok: true, found: true, did: r.did, publicKeyHex: r.publicKeyHex || null, displayName: r.displayName || null });
+      } catch (err: any) {
+        res.status(500).json({ ok: false, error: String(err?.message || err) });
+      }
+    });
+
+    /** 按手机号直接发好友请求 (P1, 2026-10-15): directory lookup → publicKeyHex → 既有 /api/friend-request */
+    app.post('/api/contacts/directory/add-friend', async (req, res) => {
+      try {
+        const { lookupPhone, isPlausiblePhone } = await import('../agents/contacts/human-directory.js');
+        const phone = String(req.body?.phone || '');
+        if (!isPlausiblePhone(phone)) return res.status(400).json({ ok: false, error: '手机号格式不正确' });
+        const r = await lookupPhone(phone, dirHome());
+        if (!r.found) return res.json({ ok: true, found: false, note: '未找到 (未注册或未公开)' });
+        if (!r.publicKeyHex) return res.status(422).json({ ok: false, found: true, error: `对方已注册目录但未公开 P2P 公钥 (${r.did?.slice(0, 20)}…), 无法直接加好友` });
+        // 委托给既有好友请求链路 (本机端口; 与 pi-sdk accept 工具同口径)
+        const port = process.env.PORT || '54188';
+        const fr = await fetch(`http://127.0.0.1:${port}/api/friend-request`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            targetPublicKey: r.publicKeyHex,
+            name: req.body?.name ? String(req.body.name) : r.displayName || undefined,
+            message: req.body?.message ? String(req.body.message) : `来自手机号目录: 想加你为好友`,
+            note: `via-phone-directory`,
+          }),
+        });
+        const data = await fr.json();
+        res.status(fr.status).json({ ok: data.ok !== false, found: true, did: r.did, friend: data });
       } catch (err: any) {
         res.status(500).json({ ok: false, error: String(err?.message || err) });
       }

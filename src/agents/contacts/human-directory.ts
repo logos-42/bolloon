@@ -21,6 +21,7 @@ export interface DirectoryEntry {
   phoneHash: string;        // HMAC-SHA256(salt || phone, pepper) → hex
   salt: string;             // per-user salt (发布时生成, 使哈希不可离线枚举)
   did: string;              // 目标 DID (did:key:...)
+  publicKeyHex?: string;    // P2P 好友用的 64 hex 公钥 (2026-10-15: 目录 lookup 直达加好友, 免 DID 解码)
   displayName?: string;     // 可选昵称 (用户自己填, 不是真名)
   publishedAt: string;
   revokedAt?: string | null; // 撤销指针 (软删)
@@ -30,6 +31,7 @@ export interface DirectoryEntry {
 export interface DirectoryLookupResult {
   found: boolean;
   did?: string;
+  publicKeyHex?: string;
   displayName?: string;
   revoked?: boolean;
 }
@@ -103,20 +105,34 @@ async function writeDirectory(entries: DirectoryEntry[], homeDir?: string): Prom
   await atomicWriteJson(directoryPath(homeDir), entries);
 }
 
+/** 从本机 identity/user.json 读取 64 hex publicKey (目录发布自动带上, 供对方直达加好友) */
+export async function loadOwnPublicKeyHex(homeDir?: string): Promise<string | undefined> {
+  try {
+    const p = path.join(homeDir || home(), '.bolloon', 'identity', 'user.json');
+    const j = JSON.parse(await fs.readFile(p, 'utf8'));
+    const pk = String(j?.publicKeyHex || '');
+    return /^[0-9a-f]{64}$/i.test(pk) ? pk.toLowerCase() : undefined;
+  } catch { return undefined; }
+}
+
 /** 发布一条目录条目 (opt-in; 同 phoneHash 已存在 → 更新为最新, 撤销后重发 = 恢复) */
 export async function publishEntry(
   phone: string,
   did: string,
-  opts: { displayName?: string; homeDir?: string } = {},
+  opts: { displayName?: string; publicKeyHex?: string; homeDir?: string } = {},
 ): Promise<DirectoryEntry> {
   if (!isPlausiblePhone(phone)) throw new Error('手机号格式不正确 (8-15 位数字, 可带 + 前缀)');
   if (!did || !did.startsWith('did:')) throw new Error('DID 格式不正确 (须以 did: 开头)');
   const pepper = await loadPepper(opts.homeDir);
   const salt = genSalt(); // 每次发布新 salt (旧哈希不可回推, 重发布 = 新哈希)
+  const publicKeyHex = opts.publicKeyHex
+    ? opts.publicKeyHex.toLowerCase()
+    : await loadOwnPublicKeyHex(opts.homeDir); // 缺省自动带本机 P2P 公钥 (若有)
   const entry: DirectoryEntry = {
     phoneHash: blindHash(phone, salt, pepper),
     salt,
     did,
+    publicKeyHex,
     displayName: opts.displayName,
     publishedAt: new Date().toISOString(),
     revokedAt: null,
@@ -151,7 +167,7 @@ export async function lookupPhone(
   for (const e of entries) {
     if (blindHash(phone, e.salt, pepper) === e.phoneHash) {
       if (e.revokedAt) return { found: false, revoked: true }; // 撤销 = 与不存在同义
-      return { found: true, did: e.did, displayName: e.displayName };
+      return { found: true, did: e.did, publicKeyHex: e.publicKeyHex, displayName: e.displayName };
     }
   }
   return { found: false };

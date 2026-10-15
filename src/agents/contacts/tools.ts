@@ -191,7 +191,40 @@ export function registerContactTools(ctx: ToolCtx, chain: ContactChain): string[
       if (!isPlausiblePhone(phone)) return { success: false, error: '手机号格式不正确' };
       const r = await lookupPhone(phone);
       if (!r.found) return { success: true, found: false, note: '未找到 (对方未注册目录或已撤销)' };
-      return { success: true, found: true, did: r.did, displayName: r.displayName || null, note: '已找到, 可用此 DID 发起好友请求' };
+      return { success: true, found: true, did: r.did, publicKeyHex: r.publicKeyHex || null, displayName: r.displayName || null, note: '已找到, 可用 directory.add_friend 发起好友请求' };
+    },
+  });
+
+  ctx.tools.set('directory.add_friend', {
+    name: 'directory.add_friend',
+    description: '按手机号发起好友申请: 目录 lookup → P2P friend request。用于用户明确说“用手机号加好友”。这是对外通信动作,调用前应确认目标手机号和用户意图; 对方仍需 consent 接受,不会自动成为好友。',
+    parameters: { phone: '对方手机号 (8-15 位)', name: '好友备注 (可选)', message: '申请附言 (可选)' },
+    execute: async (args: Record<string, unknown>) => {
+      const { lookupPhone, isPlausiblePhone } = await import('./human-directory.js');
+      const phone = text(args.phone);
+      if (!isPlausiblePhone(phone)) return { success: false, error: '手机号格式不正确' };
+      const r = await lookupPhone(phone);
+      if (!r.found) return { success: true, found: false, note: '未找到 (对方未注册目录或已撤销)' };
+      if (!r.publicKeyHex) return { success: false, found: true, did: r.did, error: '对方已公开目录但未发布 P2P 公钥, 暂时无法直接发好友请求' };
+      try {
+        const port = process.env.PORT || '54188';
+        const resp = await fetch(`http://127.0.0.1:${port}/api/friend-request`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            targetPublicKey: r.publicKeyHex,
+            name: text(args.name) || r.displayName || undefined,
+            message: text(args.message) || '来自手机号目录的好友申请',
+            note: 'via-phone-directory',
+          }),
+        });
+        const data = await resp.json();
+        return resp.ok
+          ? { success: true, found: true, did: r.did, requestId: data.requestId, output: `已向 ${r.displayName || r.did} 发起好友申请; 对方同意后才会建立好友关系` }
+          : { success: false, found: true, did: r.did, error: data.error || '好友申请发送失败', code: data.code };
+      } catch (err: any) {
+        return { success: false, error: `好友申请链路不可用: ${String(err?.message || err)}` };
+      }
     },
   });
 
@@ -207,6 +240,6 @@ export function registerContactTools(ctx: ToolCtx, chain: ContactChain): string[
     },
   });
 
-  registered.push('directory.publish', 'directory.lookup', 'directory.retract');
+  registered.push('directory.publish', 'directory.lookup', 'directory.add_friend', 'directory.retract');
   return registered;
 }
