@@ -337,6 +337,8 @@ const s = {
  * 又要求错误/降级**必须看得见**。两条同时成立 => 不放 stderr, 折进面板。
  */
 let startupPanelFirst = false;
+// 2026-10-14 (leo: 循环阶段性总结要显示): 上一条已上屏的 reply-preview 文本 (相邻去重, 避免每轮重复打同一个框)
+let lastPreviewShown = '';
 /** 面板第一帧已经画出来了 (startCLI 取走面板提示之后): 晚到的降级提示直接追加进面板 */
 let startupPanelReady = false;
 /**
@@ -850,6 +852,22 @@ function invalidateAgent(): void {
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
+
+/**
+ * 阶段性预览判定 (2026-10-14, leo: 「循环中间模型说的阶段性总结被丢」)。
+ * reply-preview 每轮都发 (模型每轮完整 reply), 但很多是工具调用音/空文本 ——
+ * 只有「有实质内容 + 非工具音 + 与上一条不同」的才是阶段性总结, 该上屏。
+ * 纯函数 ⇒ 可测。
+ */
+export function shouldShowStagePreview(preview: string, lastShown: string): boolean {
+  const t = String(preview || '').trim();
+  if (t.length < 12) return false;                    // 太短不是总结
+  if (t === lastShown) return false;                  // 相邻去重
+  if (/^```(?:json)?\s*\{/.test(t)) return false;     // JSON 工具调用
+  if (/^\{?"?(name|tool)"?\s*:/.test(t)) return false;
+  if (/<tool_call>|<function_calls>|\[TOOL_CALL\]/.test(t)) return false;
+  return true;
+}
 
 export function isP2PProtocolMessage(content: string): boolean {
   return /"op"\s*:\s*"agent\./.test(content) || /"v"\s*:\s*3/.test(content);
@@ -3999,6 +4017,18 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
           if (r.text) {
             if (r.mode === 'short') appendLine(`${C_DIM}💭 ${r.text}${RESET}`);
             else appendLine(renderMessageBox({ title: '💭 思考 (未验证)', body: r.text, color: C_DIM, maxLines: 16 }));
+          }
+        }
+        // 2026-10-14 (leo: 「循环中间模型说的阶段性总结被丢, 要实现的」): CLI 消费 reply-preview —
+        //   模型在多轮工具之间的阶段性产出 (每轮完整 reply) 之前只在 web 端有 (临时气泡),
+        //   CLI 端 index.ts 从不消费 ⇒ 循环中模型说的"已完成 X, 接下来 Y" 全被丢。
+        //   现在: 非空 + 非工具调用音 + 与上一条不同的阶段性文本 → 圆角框上屏 (阶段性文本框)。
+        //   去重 (相邻同文本不重复打) + 过滤 (工具 JSON/调用音/纯空白不显示)。
+        if (e.type === 'reply-preview') {
+          const preview = String(e.content || '').trim();
+          if (shouldShowStagePreview(preview, lastPreviewShown)) {
+            lastPreviewShown = preview;
+            appendLine(renderMessageBox({ title: '💬 阶段性进展', body: preview, color: C_DIM, maxLines: 10, width: Math.min(termWidth() - 4, 76) }));
           }
         }
         if (e.type === 'thinking' && e.content) {
