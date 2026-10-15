@@ -192,6 +192,7 @@ MemoryEntry CID store (type='memory'):
 | P1 | embedding adapter 端口 + 向量检索 (供应商可插拔, 默认 none→关键词回退) | **✅ 已完成 2026-10-11** (src/llm/embedding-adapter.ts · MemoryStore.vec/cosine 优先召回 · memory_save/recall 接配置 · 19/19 测试)。**诚实**: 现有 provider (glm 中转 404 / minimax 订阅 key 1004) 实测无可用 embedding 端点 ⇒ adapter 默认 none, 真向量待供应商 key 就绪; 语义召回的「真 embedding 同义词可中」尚未达, 需供应商接入 |
 | P2 | 价值分层 (importance/decay/crystallize) + 工具面 | 低频降权 + 固化进 Insights |
 | P3 | 条目级 OrbitDB CID 同步 + 手机端 merge 扩展 | 双节点同步 + 冲突收敛 |
+| P3b | 真双节点复制验证 (wiki 2026-10-11 记「跨机复制未全量验证」) | **✅ 已完成 2026-10-15** (scripts/verify-memory-replication.ts 门: S1 100 条复制 1.4s、S3 反事实不拨号不可见、S2 1000 条长历史 27s, 三场景全绿, 两侧 entriesHash 收敛) |
 | P4 | 记忆门禁 + 隐私线 + 导出脱敏 | 明文零进 Evidence + forget 走 consent |
 
 **每阶段独立可跑**: P0 现在就能做 (无新依赖); P1 需定 embedding 供应商; P3 需真双节点验证 (wiki 已记「跨机复制未全量验证」, 必须补)。

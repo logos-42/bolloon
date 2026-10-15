@@ -294,6 +294,10 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 | P3 | 把 `scripts/ablation/run-long-loop.ts` 接入 vitest pre-commit | 待做 (跟 v0.2.7 runner 一样) |
 | P1 | C1/C2 公告板遗留: 真跨机公告同步(gateway merge) · 认领结果投递给买方(task send→accept) · 真链上释放交易(shadow chain 命令组) · 公告到期清理与多轮竞价 | 2026-09-23 `task publish/board/claim` 已落地, 这几项在 `verify-task-board.ts` [7] 里显式 skipped |
 | P1 | C7 群聊通道遗留: 两台机器经 OrbitDB 复制看到彼此群消息(需第二个真实节点) · 多方同时接单/交付的并发语义 · 终审结论触发链上 release(群消息**刻意**不替代 `releaseV2`) | 2026-09-23 `task announce/trail/post` + `task claim --group` 已落地; 2026-10-05 `/group invite/kick/link/privacy/status` 落地 (邀请/踢出 = 重建白名单路径, 见 log); 这几项在 `verify-task-group-bridge.ts` [11] 里显式 skipped; 任务正文经群分发**设计上不做**(群是公开可读 store) |
+| P2 | 手机号好友 P1 已闭环 (2026-10-15): `directory.add_friend` 直达 | 依赖对方在线; publicKeyHex 缺时显式 422 |
+| P2 | 记忆节点 P3b 已验证 (2026-10-15): 真双节点门三场景全绿 | 见 `scripts/verify-memory-replication.ts` |
+
+> **2026-10-15 完成**: 手机号好友添加 P1 (directory.add_friend 闭环) + 记忆节点 P3b (真双节点复制验证门, 三场景全绿)。详见 log.md。
 
 ## 手机端 + 眼镜端双端适配 (2026-08-10 → 2026-08-11)
 
@@ -304,4 +308,4 @@ compiled_from: [ablation-v0.2.7, ui-bugs-2026-07-12]
 - ⚠️ 真机联调待 Rokid 授权材料与眼镜设备；CXR JNI 只发 arm .so（x86_64 模拟器靠 Play 镜像 Berberis 翻译可加载, 无该功能时 connect() 会报 native 不可用, UI 渲染不受影响）；私有材料只允许放 `android/vendor/`（gitignored），不进 Git。
 - ✅ **重新打包 APK 0.4.20 (2026-09-10)**: `android/app/build/outputs/apk/debug/bolloon-0.4.20.apk` (versionCode 20, 21MB, npm 版本对齐), 标准链 `build:web → cap sync android → assembleDebug` (JDK 21)。模拟器验证: MainActivity 前台 + crash buffer 空 + CDP 实测 WebView 加载 `mobile.html` 且 `window.BolloonCore` 18 键 (含 orbit/gateway/qr = 新内核真进包)。打包前必查与验证脚本见 [android-agent-runtime.md](./android-agent-runtime.md) §重新打包; 打包受阻根因 = `node_modules/jsqr` 缺失 (lock 有, 磁盘无) → `npm install jsqr --legacy-peer-deps` (lock 零 diff) 修好。
 
-| 2026-10-01 | `/channel` 切智能体后身份文档不切换 (用户报) | **已修** —— `onSessionStart` 的 5s 节流原先只按时间, 被节流即返回空 persona; 而切 channel 重建 agent 只要几毫秒 ⇒ 新 agent 拿到空身份文档。改为**按身份键 (agentId + channelId) 节流**, 身份变了必重算。新门修前 3 failed → 修后 3 passed; 既有门 8/8 · 12/12; tsc 0 错 · **第二步 ✅** 内核控制面 `kernel/control.ts` (submitRunControl + 审计 + portRefusal) · **第三步 ✅ 欠账归零 (3→0)**: 三条越权写 (setContinuation · setRunStatus×2 · recordRecovery) 全部改走控制面, `web/server.ts` 零裸调用 · `AUTHORITY_DEBT` 清空 (`FROZEN_AT = 0`) · \n**K6 ✅ 收口 (能力 9/9 · stage: capabilities-done)**: 台账+门 (11 调用点冻结) · 只读骨架 · 并发+退避 · 熔断+能力检查 · **fallback+usage**|
+| 2026-10-01 | `/channel` 切智能体后身份文档不切换 (用户报) | **已修** —— `onSessionStart` 的 5s 节流原先只按时间, 被节流即返回空 persona; 而切 channel 重建 agent 只要几毫秒 ⇒ 新 agent 拿到空身份文档。改为**按身份键 (agentId + channelId) 节流**, 身份变了必重算。新门修前 3 failed → 修后 3 passed; 既有门 8/8 · 12/12; tsc 0 错 · **第二步 ✅** 内核控制面 `kernel/control.ts` (submitRunControl + 审计 + portRefusal) · **第三步 ✅ 欠账归零 (3→0)**: 三条越权写 (setContinuation · setRunStatus×2 · recordRecovery) 全部改走控制面, `web/server.ts` 零裸调用 · `AUTHORITY_DEBT` 清空 (`FROZEN_AT = 0`) · **K6 ✅ 收口 (能力 9/9 · stage: capabilities-done)**: 台账+门 (11 调用点冻结) · 只读骨架 · 并发+退避 · 熔断+能力检查 · **fallback+usage**|
