@@ -339,6 +339,9 @@ const s = {
 let startupPanelFirst = false;
 // 2026-10-14 (leo: 循环阶段性总结要显示): 上一条已上屏的 reply-preview 文本 (相邻去重, 避免每轮重复打同一个框)
 let lastPreviewShown = '';
+// 2026-10-15 (leo: 「回复有重复」): reply-preview 延迟上屏的缓存 —— 只有 step_start (后续还有工具)
+//   才 flush 显示; 最终回复 (无工具) 后保持 null, 避免阶段性框和正式回复框重复。
+let pendingPreview: string | null = null;
 /** 面板第一帧已经画出来了 (startCLI 取走面板提示之后): 晚到的降级提示直接追加进面板 */
 let startupPanelReady = false;
 /**
@@ -3990,6 +3993,8 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     // 双横线分割
     appendLine(`${C_DIM}${'─'.repeat(8)} · ${'─'.repeat(8)}${RESET}`);
     appendLine(renderUserMessage(trimmed));
+    // 2026-10-15: 回合开始清上一轮残留的阶段性预览缓存 (上一轮最终回复后无 step_start, 会残留)
+    pendingPreview = null;
     // 启动思考动画
     inkSetThinking(true);
 
@@ -4022,7 +4027,7 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
         // 2026-10-14 (leo: 「循环中间模型说的阶段性总结被丢, 要实现的」): CLI 消费 reply-preview —
         //   模型在多轮工具之间的阶段性产出 (每轮完整 reply) 之前只在 web 端有 (临时气泡),
         //   CLI 端 index.ts 从不消费 ⇒ 循环中模型说的"已完成 X, 接下来 Y" 全被丢。
-        //   现在: 非空 + 非工具调用音 + 与上一条不同的阶段性文本 → 圆角框上屏 (阶段性文本框)。
+        //   现在: 非空 + 非工具调用音 + 与上一条不同的阶段性文本 → 缓存待 step_start 上屏 (阶段性文本框)。
         //   去重 (相邻同文本不重复打) + 过滤 (工具 JSON/调用音/纯空白不显示)。
         if (e.type === 'reply-preview') {
           const preview = String(e.content || '').trim();
@@ -4030,7 +4035,10 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
             lastPreviewShown = preview;
             // 2026-10-15 (leo: 「💬 阶段性进展这个换成之前默认的 Bolloon 就行」):
             //   阶段性进展框用 renderMessageBox 默认标题 (Bolloon Agent), 不自定义副标题。
-            appendLine(renderMessageBox({ body: preview, color: C_DIM, maxLines: 10, width: Math.min(termWidth() - 4, 76) }));
+            // 2026-10-15 (leo: 「回复有重复」): 最终回复也发 reply-preview ⇒ 若立即上屏,
+            //   最终回复会显示两次 (阶段性框 + 正式回复框)。修: 缓存到 pendingPreview,
+            //   只有 step_start (后面还有工具执行) 时才上屏 —— 最终回复后面没有 step_start ⇒ 丢弃缓存。
+            pendingPreview = renderMessageBox({ body: preview, color: C_DIM, maxLines: 10, width: Math.min(termWidth() - 4, 76) });
           }
         }
         if (e.type === 'thinking' && e.content) {
@@ -4077,6 +4085,13 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
             appendLine(`${C_DIM}${content}${RESET}`);
           }
         } else if (e.type === 'step_start') {
+          // 2026-10-15 (leo: 「回复有重复」): 阶段性预览缓存在此刻上屏 ——
+          //   step_start 到达 = 后面还有工具执行 = 刚才的 reply 是阶段总结, 显示;
+          //   最终回复后没有 step_start ⇒ pendingPreview 保持 null, 正式回复框唯一显示。
+          if (pendingPreview) {
+            appendLine(pendingPreview);
+            pendingPreview = null;
+          }
           tuiToolCounter++;
           const toolName = e.tool || '?';
           tuiToolCalls.push({ tool: toolName, args: e.args, _t: Date.now() });
