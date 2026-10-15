@@ -509,7 +509,22 @@ async function bootstrapP2P(
   comm.on('message', async (msg: P2PMessage, conn: P2PConnection) => {
     const content = new TextDecoder().decode(msg.content);
     const shortId = conn.publicKey.substring(0, 8);
-    s.prompt(`📩 收到 ${shortId}: ${content.substring(0, 50)}...`);
+    // 2026-10-14 (leo: 「📩 收到/📥 [undefined] 刷屏进正文 → 设计到 tips 栏, 不是正文回复」):
+    //   这条 handler 收的是 hyperswarm 老通道的**所有**入站消息, 而 v3 协议遥测
+    //   (agent.meta.list.* / agent.heartbeat / agent.manifest.exchange 等高频握手)
+    //   不是给 dispatchTask 的 RPC —— 旧代码无条件 s.prompt 打正文, dispatchTask 又对
+    //   "有 op 无 type" 的消息打 `📥 [undefined]`, 于是协议握手把内容栏刷爆。
+    //   修复: v3 协议遥测 → 静默 (高频, 用户无需感知, 留 verbose 可查); 连接受瞬时 tips;
+    //   只有真正的 RPC 任务 (summarize/improve) 才走正文。
+    if (isP2PProtocolMessage(content)) {
+      // 握手遥测不 dispatch (老链不响应 v3), 不刷正文; --verbose 才提示
+      if (isStartupVerbose()) {
+        appendLine(`${C_DIM}🔌 协议遥测 ${shortId}: ${content.substring(0, 60)}...${RESET}`);
+      }
+      return;
+    }
+    // 真 RPC 任务 → tips 瞬时提示 (几秒后被工具/思考行覆盖) + 正文处理
+    inkSetTransient(`${C_DIM}📩 收到任务 from ${shortId}${RESET}`);
     const reply = await dispatchTask(content);
     sendRawMsg(conn, reply);
   });
@@ -836,10 +851,15 @@ function invalidateAgent(): void {
 // Dispatch
 // ---------------------------------------------------------------------------
 
+export function isP2PProtocolMessage(content: string): boolean {
+  return /"op"\s*:\s*"agent\./.test(content) || /"v"\s*:\s*3/.test(content);
+}
+
 async function dispatchTask(raw: string): Promise<string> {
   const body = raw.startsWith('DID:') ? raw.split('|', 1)[1] || '' : raw;
   const task = safeParse<RpcTask>(body);
   if (!task) return `ERR|${JSON.stringify({ code: 'bad_format' })}`;
+  if (!task.type) return `ERR|${JSON.stringify({ code: 'unknown', type: task.type })}`;
 
   writeOut(`\n📥 [${task.type}]  from=${task.from?.substring(0, 18)}...  id=${task.id}`);
   try {
