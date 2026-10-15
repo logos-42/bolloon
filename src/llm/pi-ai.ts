@@ -1394,7 +1394,7 @@ export class PiAIModel {
   // 注: callLocal 直接代理 ollama. 工具清单由 generateText 在外层拼到 messages, 这里 messages 已是 finalMessages.
 
   /**
-   * 2026-09-28: 装配系统提示词并拆成「稳定段 / 动态段」, 按 working dir 缓存 (TTL 10 分钟)。
+   * 2026-09-28: 装配系统提示词并拆成「稳定段 / 动态段」, 按 working dir + **文档指纹** 缓存 (TTL 10 分钟)。
    *
    * 返回: `{ stableText, dynamicText, cached }`
    *   - `stableText` 进 system (逐字节稳定 → 服务端前缀 KV 可复用);
@@ -1403,14 +1403,26 @@ export class PiAIModel {
    * 为什么缓存: 旧版每轮都跑 25 次 fs.readFile + 装配; 缓存后同一次会话内只装一次,
    *   且装配结果逐字节相同 (缓存本身也是"前缀稳定"的必要条件 —— 每次重装都可能因动态层
    *   内容变化而抖动)。
+   *
+   * 2026-10-15 (leo: 「文档改了要下一轮生效, 对齐 Hermes invalidate_system_prompt」):
+   *   缓存 key 并入 `contextFingerprint` —— project Bolloon.md / AGENTS.md / CLAUDE.md /
+   *   hierarchy 4 层 / 当前 agent persona 任一文档的 mtime+size 变了, key 就变 ⇒ 缓存 miss
+   *   ⇒ 下一轮重装配。此前只有 working dir 作 key: 文档改了要等 10 分钟 TTL 才生效。
    */
   private async buildSystemPromptParts(context?: string): Promise<{ stableText: string; dynamicText: string; cached: boolean }> {
-    const key = context || process.cwd();
     const now = Date.now();
+    const workingDir = context || process.cwd();
+    let fp = '';
+    try {
+      const { contextFingerprint } = await import('../bootstrap/context-collector.js');
+      fp = await contextFingerprint(workingDir);
+    } catch { /* 指纹不可得 → 退回无指纹 key (文档失效钩子缺席, 但装配不阻塞) */ }
+    // 缓存 key = workingDir + 指纹; 装配时 workingDir 保持原值 (不把指纹拼进 prompt 文本)
+    const key = `${workingDir}\u0000${fp}`;
     if (_systemPromptCache && _systemPromptCache.key === key && now - _systemPromptCache.at < SYSTEM_PROMPT_CACHE_TTL_MS) {
       return { stableText: _systemPromptCache.stableText, dynamicText: _systemPromptCache.dynamicText, cached: true };
     }
-    const parts = await this.assembleSystemPromptPartsText(key);
+    const parts = await this.assembleSystemPromptPartsText(workingDir);
     _systemPromptCache = { key, at: now, ...parts };
     return { ...parts, cached: false };
   }
