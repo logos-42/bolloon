@@ -774,7 +774,7 @@ export class WorkflowPivotLoop {
           this.state.consecutiveNoProgress++;
           this.emit({
             type: 'status', internal: true,   // K4-B: 循环遥测 = 内部运行日志 (口径同老 loop)
-            content: `⏳ 模型调用超时 (${String((error as Error).message).replace(/^模型调用超时/, '')}), 重试下一轮 (连续 ${this.state.consecutiveNoProgress}/${effectiveConfig.maxConsecutiveNoProgress} 次则停)`,
+            content: `⏳ 模型调用超时 (${String((error as Error).message).replace(/^模型调用超时\s*\(/, '').replace(/\)$/, '')}), 重试下一轮 (连续 ${this.state.consecutiveNoProgress}/${effectiveConfig.maxConsecutiveNoProgress} 次则停)`,
             tool: 'system',
           });
           // 2026-10-13 (leo: 「可以不用超时截止来确定时间周期, 有时候任务需要时间会比较久」):
