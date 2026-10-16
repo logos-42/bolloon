@@ -148,13 +148,14 @@ const DEFAULT_META = (ttlDays: number): SectionMeta => ({
 const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
   // ── core/ ──
   { id: 'core.identity',         version: '1.0.0', priority: 50,  appliesTo: ['all'], source: 'static-md', maxChars: 800  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
-  { id: 'core.knowledge',        version: '1.0.0', priority: 60,  appliesTo: ['all'], source: 'static-md', maxChars: 600  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
-  { id: 'core.tools.thin',       version: '1.0.0', priority: 70,  appliesTo: ['all'], source: 'static-md', maxChars: 400  , meta: DEFAULT_META(TTL_SAFETY) },
+  // 2026-10-16: 停用过时的通用知识/Computer Use 提示；实际工具与知识边界由运行时提供。
+  { id: 'core.knowledge',        version: '1.0.0', priority: 60,  appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  { id: 'core.tools.thin',       version: '1.0.0', priority: 70,  appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_SAFETY) },
   { id: 'core.hibs_reminders',   version: '1.0.0', priority: 80,  appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_SAFETY) },
   { id: 'core.refusal',          version: '1.0.0', priority: 100, appliesTo: ['all'], source: 'static-md', maxChars: 800  , meta: DEFAULT_META(TTL_SAFETY) },
-  { id: 'core.tone',             version: '1.0.0', priority: 110, appliesTo: ['all'], source: 'static-md', maxChars: 500  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
-  { id: 'core.wellbeing',        version: '1.0.0', priority: 120, appliesTo: ['all'], source: 'static-md', maxChars: 600  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
-  { id: 'core.evenhandedness',   version: '1.0.0', priority: 130, appliesTo: ['all'], source: 'static-md', maxChars: 300  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  { id: 'core.tone',             version: '1.0.0', priority: 110, appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  { id: 'core.wellbeing',        version: '1.0.0', priority: 120, appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  { id: 'core.evenhandedness',   version: '1.0.0', priority: 130, appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_KNOWLEDGE) },
   { id: 'core.artifacts_storage',version: '1.0.0', priority: 145, appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_KNOWLEDGE) },
   { id: 'core.network_filesystem',version: '1.0.0', priority: 148, appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_KNOWLEDGE) },
 
@@ -175,7 +176,8 @@ const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
   { id: 'channel.session-handoff', version: '1.0.0', priority: 150, appliesTo: ['local', 'p2p-visitor', 'p2p-agent'], source: 'static-md', maxChars: 600 , meta: DEFAULT_META(TTL_CHANNEL) },
 
   // ── core/ ──
-  { id: 'core.memory_system',    version: '1.0.0', priority: 140, appliesTo: ['all'], source: 'static-md', maxChars: 200  , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  // 2026-10-16: 停用 memory_system — 静态"无记忆"描述与真实记忆系统不符, 记忆状态由 buildStableMemoryBlock 动态注入。
+  { id: 'core.memory_system',    version: '1.0.0', priority: 140, appliesTo: ['never'], source: 'static-md', maxChars: 0    , meta: DEFAULT_META(TTL_KNOWLEDGE) },
   // 2026-07-10 双栖 agent 网络新增 (按 plan 阶段 4):
   // priority 90 (在 channel 150 之后) — 保证 channel 装完后再装 core, 避免 channel 预算被 core 吃掉
   // maxChars 700 → 400: 7 个新 layer 总预算 3900 chars, 必须让出空间给 tool.p2p_request (700) + tool.goal_handoff (600)

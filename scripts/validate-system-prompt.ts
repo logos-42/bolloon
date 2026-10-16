@@ -21,14 +21,14 @@ const LAYERS_DIR = path.join(REPO, 'src/llm/system-prompt/layers');
 // P-Action 4 (2026-06-15): 跟 registry.ts STATIC_LAYERS maxChars 同步, 停用 layer 设 0
 const MAX_CHARS: Record<string, number> = {
   'core/identity': 800,
-  'core/knowledge': 600,
-  'core/tools.thin': 400,
+  'core/knowledge': 0,       // 停用 (2026-10-16, was 600 — 通用知识截止提示, 过时)
+  'core/tools.thin': 0,      // 停用 (2026-10-16, was 400 — Claude computer-use 提示, 与 bolloon 工具面不符)
   'core/hibs_reminders': 0,   // 停用 (was 800)
   'core/refusal': 800,
-  'core/tone': 500,
-  'core/wellbeing': 600,
-  'core/evenhandedness': 300,
-  'core/memory_system': 200,
+  'core/tone': 0,            // 停用 (2026-10-16, was 500 — 通用语气提示, 由 persona/纪律段覆盖)
+  'core/wellbeing': 0,       // 停用 (2026-10-16, was 600 — 通用健康护栏, 注入过多)
+  'core/evenhandedness': 0,  // 停用 (2026-10-16, was 300 — 通用立场提示, 与本地 agent 无关)
+  'core/memory_system': 0,   // 停用 (2026-10-16, was 200 — 静态"无记忆"描述, 与真实记忆系统不符)
   'core/artifacts_storage': 0, // 停用 (was 2500)
   'core/network_filesystem': 0, // 停用 (was 900)
   'role/expert': 500,
