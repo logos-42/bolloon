@@ -111,7 +111,7 @@ export const ENTRY_GRAPH: readonly EntryPoint[] = [
   { file: 'agents/pi-sdk.ts', kind: 'adapter-internal', method: 'promptStream', count: 1, path: 'direct', targetPhase: 'K4', note: "runExecution 的流式派发 (K5 步骤⑦ 新增)" },
   { file: 'agents/pi-sdk.ts', kind: 'adapter-internal', method: 'promptWithPivotLoop', count: 2, path: 'direct', targetPhase: 'K4', note: "适配器内部 pivot 分派 (不是外部入口)" },
   { file: 'cli/interface.ts', kind: 'readline-tui', method: 'prompt', count: 3, path: 'queued', targetPhase: 'K3', note: "readline 输入提示, 非 agent 入口" },
-  { file: 'index.ts', kind: 'agent-entry', method: 'prompt', count: 7, path: 'direct', targetPhase: 'K3', note: "CLI 装配点" },
+  { file: 'index.ts', kind: 'agent-entry', method: 'prompt', count: 6, path: 'direct', targetPhase: 'K3', note: "CLI 装配点 (2026-10-16 并行线: prompt 调用点 7→6)" },
   { file: 'index.ts', kind: 'agent-entry', method: 'promptStream', count: 1, path: 'direct', targetPhase: 'K3', note: "CLI 装配点" },
 ];
 
@@ -120,7 +120,7 @@ export const ENTRY_GRAPH: readonly EntryPoint[] = [
  * ⚠️ 24 → **25** (2026-10-02, K5 步骤⑦): `runExecution` 内部新增 `prompt`/`promptStream` 派发各 1 处 (+2),
  *    web/server.ts 用户消息路径改成请求式 (-1)。**这是"形态变化"不是"旁路复活"** —— 见 ENTRY_GRAPH 的两行 adapter-internal。
  */
-export const ENTRY_DIRECT_CALLS_FROZEN_AT = 13;   // 2026-10-02: 20 → 16 → 13 (K8 第四/五步: server.ts 7 处全迁; 只剩 CLI 侧 index.ts 的 8 处)   // 2026-10-02: 25 → 20 (K8: 5 处改走 runExecution; 棘轮只许降)
+export const ENTRY_DIRECT_CALLS_FROZEN_AT = 12;   // 2026-10-16: 13 → 12 (并行线 src/index.ts prompt 调用点 7→6)   // 2026-10-02: 20 → 16 → 13 (K8 第四/五步: server.ts 7 处全迁; 只剩 CLI 侧 index.ts 的 8 处)   // 2026-10-02: 25 → 20 (K8: 5 处改走 runExecution; 棘轮只许降)
 
 /**
  * ④ 旧代码删除台账 (leo 的 8 字段; 每批删除必写一条)。目前为空 —— 但**不是空门**:
@@ -197,6 +197,6 @@ export const DELETION_LEDGER: readonly DeletionRecord[] = [
 ];
 
 /** 第一批删除候选 = 产品码里 **0 入边引用** 且非入口形态 (机械派生, 不手写) */
-export const DELETION_CANDIDATE_COUNT = 95;
-export const DELETION_CANDIDATE_SHA256 = 'f271d369c830b73833e195c62076a0869dc8c8ef7c9b3cffddd6ce5342f2cb3a';
-export const DELETION_CANDIDATE_DIRS: Readonly<Record<string, number>> = {"agents": 5, "bollharness-integration": 1, "bollharness": 61, "cli": 1, "(根)": 1, "judgeness": 3, "llm": 1, "network": 3, "orbitdb": 2, "scripts": 1, "social": 2, "utils": 3, "web": 11};
+export const DELETION_CANDIDATE_COUNT = 100;
+export const DELETION_CANDIDATE_SHA256 = '8f70bd1370cdb1c37aabdb19feb9d46d55fb51b8072b0ecf4f77f51b618a9478';
+export const DELETION_CANDIDATE_DIRS: Readonly<Record<string, number>> = {"agents": 10, "bollharness-integration": 1, "bollharness": 61, "cli": 1, "(根)": 1, "judgeness": 3, "llm": 1, "network": 3, "orbitdb": 2, "scripts": 1, "social": 2, "utils": 3, "web": 11};

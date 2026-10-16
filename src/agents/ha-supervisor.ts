@@ -14,8 +14,8 @@
 import * as os from 'os';
 import * as path from 'path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { startHaGuard, makeHeartbeat, type HaGuardPorts } from '../kernel/ha/ha-guard.js';
-import { writeHeartbeat, collectActiveRunIds, STALE_MS, BEAT_MS } from '../kernel/ha/ha-arbiter.js';
+import { startHaGuard, type HaGuardPorts } from '../kernel/ha/ha-guard.js';
+import { collectActiveRunIds, STALE_MS, BEAT_MS } from '../kernel/ha/ha-arbiter.js';
 import * as fs from 'fs';
 
 export interface HaSupervisorOptions {
@@ -168,5 +168,3 @@ export class HaSupervisor {
 export function createHaSupervisor(opts: HaSupervisorOptions = {}): HaSupervisor {
   return new HaSupervisor(opts);
 }
-
-export { makeHeartbeat, writeHeartbeat, STALE_MS, BEAT_MS };

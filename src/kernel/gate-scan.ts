@@ -286,7 +286,7 @@ export function validateDeletionRecord(rec: Record<string, unknown>): string[] {
 }
 
 /** 第一批删除候选 = 产品码里 **0 入边引用** 且非入口形态 (机械派生, 不手写) */
-const ENTRY_SHAPE_RE = /(index\.ts$|cli-entry\.ts$|electron\.ts$|\.d\.ts$|server\.ts$|main\.ts$|route|command|register|setup|bootstrap|migration|types\.ts$|constants?\.ts$|config)/;
+const ENTRY_SHAPE_RE = /(index\.ts$|cli-entry\.ts$|electron\.ts$|\.d\.ts$|server\.ts$|main\.ts$|daemon\.ts$|route|command|register|setup|bootstrap|migration|types\.ts$|constants?\.ts$|config)/;
 
 /**
  * **豁免规则 (2026-10-02)**: 冻结面自身的文件 (KERNEL_FILES 成员 —— `kernel/roster.ts` / `kernel/plan*.ts`)

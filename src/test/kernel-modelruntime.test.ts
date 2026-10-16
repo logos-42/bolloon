@@ -155,12 +155,16 @@ describe('K6 运行时骨架: acquire 只读 + 连接复用 + timeout + cancella
     await rt.closeAll();
   });
 
-  it('timeout: 超预算 ⇒ 抛 ModelTimeoutError, 且底层调用被**中止** (不是干等)', async () => {
+  it('timeout: 预算按上下文自适应抬底 (6087723: 30s 硬超时与上下文脱钩 → 短预算被抬到 ≥10s, 慢调用不被误杀)', async () => {
     const { ports } = mkPorts();
     const rt = new ModelRuntime(ports);
-    const lease = await rt.acquire({ provider: 'p', model: 'slow', timeoutMs: 30 });   // 30ms 预算 vs ~200ms 调用
-    await expect(lease.call({})).rejects.toThrow(ModelTimeoutError);
-    expect(rt.snapshotStats().timeouts).toBe(1);
+    // 旧语义: timeoutMs:30 + ~200ms 调用 → 抛 ModelTimeoutError。
+    // 新语义 (6087723, leo: 多步任务空框根因②): budget = max(配置, ceil(ctx/1KB)*4s+10s) ≥ 10s,
+    //   30ms 预算被抬底 → 慢调用正常返回 (长上下文不被误杀, 供应商真慢才暴露)。
+    const lease = await rt.acquire({ provider: 'p', model: 'slow', timeoutMs: 30 });
+    const res = await lease.call({});   // ~200ms 调用, 预算被抬到 ≥10s → 不超时
+    expect(res.ok).toBe(true);
+    expect(rt.snapshotStats().timeouts).toBe(0);
     lease.release();
     await rt.closeAll();
   });

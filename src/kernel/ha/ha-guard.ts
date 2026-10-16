@@ -24,10 +24,12 @@ import {
   BEAT_MS, STALE_MS,
   type HaRole, type HeartbeatRecord,
   writeHeartbeat, readPrimaryHeartbeat, decideTakeover,
-  acquirePrimaryLock, collectActiveRunIds, fsSync,
+  acquirePrimaryLock, collectActiveRunIds,
 } from './ha-arbiter.js';
+import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+// BEAT_MS / STALE_MS 由 ha-arbiter 导出 (kernel/index.ts re-export 两模块), 这里不重复 re-export
 
 export interface HaGuardPorts {
   /** 本进程业务侧实现: 把主进程留下的 orphan run 标记为 interrupted, 返回 runIds */
@@ -191,5 +193,3 @@ export function startHaGuard(ports: HaGuardPorts, opts: HaGuardOptions): { stop(
 
   return { stop, state: () => ({ ...state }) };
 }
-
-export { BEAT_MS, STALE_MS };

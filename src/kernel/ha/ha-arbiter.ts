@@ -16,7 +16,6 @@
  *   - 纯函数可单测: parseHeartbeat / isHeartbeatStale / decideTakeover / serializeHeartbeat
  */
 import * as fs from 'fs/promises';
-import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -180,4 +179,3 @@ export async function collectActiveRunIds(runsDir: string, now = Date.now()): Pr
   } catch { return []; }
 }
 
-export { fsSync };
