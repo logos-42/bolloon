@@ -13,6 +13,7 @@ import {
   parseSimpleFrontmatter,
   loadPersonaJudgmentDeclaration,
   formatJudgmentDeclaration,
+  personaFingerprint,
   type PersonaDocs,
 } from '../bootstrap/persona-loader.js';
 
@@ -211,5 +212,46 @@ describe('loadPersonaJudgmentDeclaration', () => {
     expect(text).toContain('先列出假设再下结论');
     expect(text).toContain('默认风险等级: high');
     expect(formatJudgmentDeclaration({ judgmentStyle: '', stakesDefault: '', revisable: true, raw: {} })).toBe('');
+  });
+});
+
+describe('personaFingerprint (2026-10-15 persona 自动失效)', () => {
+  it('稳定: 文件没动 → 指纹不变 (缓存应命中)', async () => {
+    const a = await personaFingerprint('stable_agent', TEST_DIR);
+    const b = await personaFingerprint('stable_agent', TEST_DIR);
+    expect(a).toBe(b);
+    expect(a.length).toBeGreaterThan(0);
+  });
+
+  it('无 persona 目录 → 仍返回确定性非空指纹 (不会恒等误缓存)', async () => {
+    const fp = await personaFingerprint('does_not_exist_xyz', TEST_DIR);
+    expect(typeof fp).toBe('string');
+    expect(fp.length).toBe(16);
+  });
+
+  it('soul.md 修改 → 指纹变化 (pivot 下一轮重建 persona section)', async () => {
+    const agent = 'fp_agent_1';
+    const dir = path.join(TEST_DIR, '.bolloon', 'persona', agent);
+    await fs.mkdir(dir, { recursive: true });
+    const soul = path.join(dir, 'soul.md');
+    await fs.writeFile(soul, 'soul v1', 'utf-8');
+    const a = await personaFingerprint(agent, TEST_DIR);
+    await new Promise((r) => setTimeout(r, 10)); // mtime 精度
+    await fs.writeFile(soul, 'soul v2 changed', 'utf-8');
+    const b = await personaFingerprint(agent, TEST_DIR);
+    expect(b).not.toBe(a);
+  });
+
+  it('persona.json 修改 → 指纹变化 (构造时快照该刷新)', async () => {
+    const agent = 'fp_agent_2';
+    const dir = path.join(TEST_DIR, '.bolloon', 'persona', agent);
+    await fs.mkdir(dir, { recursive: true });
+    const pj = path.join(dir, 'persona.json');
+    await fs.writeFile(pj, JSON.stringify({ name: 'n1' }), 'utf-8');
+    const a = await personaFingerprint(agent, TEST_DIR);
+    await new Promise((r) => setTimeout(r, 10));
+    await fs.writeFile(pj, JSON.stringify({ name: 'n2' }), 'utf-8');
+    const b = await personaFingerprint(agent, TEST_DIR);
+    expect(b).not.toBe(a);
   });
 });

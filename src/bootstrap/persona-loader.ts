@@ -13,6 +13,7 @@
  */
 
 import { sanitizeForLlm } from '../agents/egress-sanitize.js';
+import { createHash } from 'node:crypto';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -48,6 +49,30 @@ type FileKey = typeof FILE_KEYS[number];
  */
 export function sanitizeAgentId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+}
+
+/**
+ * persona 源文件指纹 (2026-10-15, 对齐 Hermes invalidate_system_prompt):
+ * 对 `~/.bolloon/persona/<agentId>/{persona.json + 6 个 md}` 取 mtime+size 摘要。
+ * 任何文档增删改 → 指纹变 → 上层 (pi-sdk cachedPersonaSection) 该轮重建,
+ * 不再等 agent 重建/切 channel。无 persona 目录也返回确定性值 (不会恒等误缓存)。
+ */
+export async function personaFingerprint(agentId: string, home?: string): Promise<string> {
+  const h = home ?? process.env.HOME ?? os.homedir() ?? '/tmp';
+  const safeId = sanitizeAgentId(agentId);
+  const baseDir = path.join(h, '.bolloon', 'persona', safeId);
+  const files = [path.join(baseDir, 'persona.json')];
+  for (const k of FILE_KEYS) files.push(path.join(baseDir, `${k}.md`));
+  const parts: string[] = [];
+  for (const f of files) {
+    try {
+      const st = await fs.stat(f);
+      parts.push(`${f}:${st.mtimeMs}:${st.size}`);
+    } catch {
+      parts.push(`${f}:missing`);
+    }
+  }
+  return createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 16);
 }
 
 /**

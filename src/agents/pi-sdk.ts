@@ -388,7 +388,9 @@ export class PiAgentSession implements AgentSession {
     return bg ? `${bg}\n${plans}` : plans;
   }
 
+  /** M2.4 + 2026-10-15: persona section 缓存 (内容 + 源文件指纹)。指纹变了下一轮重建。 */
   private cachedPersonaSection: string = '';
+  private cachedPersonaFingerprint: string = '';
 
   /**
    * 2026-10-13 (leo: 「重新阅读理解，整体开发整个技能的实现方式… 成整个加载循环」):
@@ -1992,7 +1994,22 @@ export class PiAgentSession implements AgentSession {
       console.warn('[PiAgent] classifyIntent in pivot failed:', err);
     }
 
-    // M2.4: persona 缓存
+    // M2.4: persona 缓存 — 2026-10-15 加指纹失效: persona 文档在外改了, 下一轮就重建
+    //   (对齐 Hermes invalidate_system_prompt 的 persona 侧; 与 systemPrompt 指纹是两条独立链路,
+    //    persona 走 personaFingerprint, Bolloon.md/AGENTS.md 走 contextFingerprint)
+    const agentId = this.actor?.state?.agentId || this.peerId || '';
+    if (agentId) {
+      try {
+        const { personaFingerprint } = await import('../bootstrap/persona-loader.js');
+        const fp = await personaFingerprint(agentId);
+        if (fp !== this.cachedPersonaFingerprint) {
+          await this.sessionManager.reloadPersona();
+          this.persona = this.sessionManager.getPersona();
+          this.cachedPersonaFingerprint = fp;
+          this.cachedPersonaSection = '';
+        }
+      } catch { /* 指纹不可得 → 用旧缓存 (不阻塞) */ }
+    }
     if (!this.cachedPersonaSection && this.persona) {
       this.cachedPersonaSection = `
 角色描述: ${this.persona.description || '无'}

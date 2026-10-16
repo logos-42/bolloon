@@ -245,6 +245,15 @@ export class PiSessionManager implements SocialSessionProvider {
     return this.persona;
   }
 
+  /**
+   * 2026-10-15 (对齐 Hermes invalidate_system_prompt): 重读 persona 源并刷新快照。
+   * persona.json / persona/<agentId>/*.md 在外被改时, 由上层 (pi-sdk) 检测指纹变化后调用,
+   * 让本轮 systemPrompt 就带上新 persona — 不再等 agent 重建/切 channel。
+   */
+  async reloadPersona(): Promise<void> {
+    this.persona = await this.loadPersona();
+  }
+
   getState(): PiSessionState {
     return { ...this.state, lastActive: new Date().toISOString() };
   }
