@@ -2068,15 +2068,28 @@ ${await this.buildStableMemoryBlock()}
     // 2026-07-17 Bug 1 修: 注入 messageHistory (hydrateMessageHistory 从 session JSON 回灌的) 到 system prompt
     //   pivot loop execute() 内部自己维护 messageHistory, 跟 pi-sdk 的 actor 的 messageHistory 隔离,
     //   不注入的话 LLM 看不到历史对话, 每次都是新对话.
+    // 2026-10-16 (leo: prompt 比重降低, 流程由 kernel/意图驱动): 压缩历史注入 —
+    //   20 条 × 2000 = 40K 上限吃满 systemPrompt; 历史只为给 pivot 首轮"上次做到哪"的锚,
+    //   细节靠 contextHint (memory 摘要) 与工具补。8 条 × 300, 首尾保真。
     const historyLines: string[] = [];
-    const historyToInject = (this.actor!.state.messageHistory as Message[]).slice(-20, -1);
+    const histAll = (this.actor!.state.messageHistory as Message[]);
+    const historyToInject = histAll.slice(-8, -1);
     for (const m of historyToInject) {
       const roleLabel = m.role === 'user' ? '用户' : m.role === 'assistant' ? '你' : m.role === 'tool' ? '工具结果' : m.role;
-      const text = (m.content || '').slice(0, 2000);
+      // 工具结果只留首行 (JSON 常上千字符, 全量塞进 system 是浪费)
+      let text = String(m.content || '');
+      if (m.role === 'tool') text = text.split('\n')[0].slice(0, 150);
+      else text = text.slice(0, 300);
       if (text) historyLines.push(`[${roleLabel}]: ${text}`);
     }
+    // 首条消息保留完整一点 (会话起点 / 用户最初意图, 是"根目标"锚)
+    if (histAll.length > 8) {
+      const first = histAll[0];
+      const firstText = String(first?.content || '').slice(0, 400);
+      if (firstText) historyLines.unshift(`[${first?.role === 'user' ? '用户' : '你'}]: ${firstText}`);
+    }
     const historyBlock = historyLines.length > 0
-      ? `\n\n【历史对话 (最近 ${historyLines.length} 条)】\n${historyLines.join('\n')}\n【历史对话结束】`
+      ? `\n\n【历史对话 (最近 ${historyLines.length} 条, 压缩摘要)】\n${historyLines.join('\n')}\n【历史对话结束】`
       : '';
 
     const onCompact = async () => {
