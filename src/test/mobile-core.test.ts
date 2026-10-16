@@ -254,6 +254,175 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
     expect((await fn2!()).ok).toBe(false);
   });
 
+  // 2026-10-15 (leo: 手机号登录/搜索/加好友 — 手机原生手机号功能): 目录 + OTP 全部转发电脑端,
+  //   与 World 转发同一原则: 手机不持目录数据, 电脑端不可达 → 诚实降级不假装。
+  it('手机号目录: resolve 路由分发 (publish/lookup/add-friend)', async () => {
+    const { core } = await import('../web/mobile-core.ts');
+    // 手机号目录/OTP 只注册 POST (转发电脑端), GET 路由不存在 → null
+    expect(core.resolve('/api/phone/directory/publish')).toBeNull();
+    expect(core.resolve('/api/phone/directory/lookup')).toBeNull();
+    expect(core.resolve('/api/phone/directory/add-friend')).toBeNull();
+    expect(core.resolvePost('/api/phone/directory/publish', { phone: '13812345678' })).toBeTypeOf('function');
+    expect(core.resolvePost('/api/phone/directory/lookup', { phone: '13812345678' })).toBeTypeOf('function');
+    expect(core.resolvePost('/api/phone/directory/add-friend', { phone: '13812345678' })).toBeTypeOf('function');
+    expect(core.resolvePost('/api/phone/auth/bind', { phone: '13812345678' })).toBeTypeOf('function');
+    expect(core.resolvePost('/api/phone/auth/verify', { contactId: 'c1', challengeId: 'ch1', code: '123456' })).toBeTypeOf('function');
+    expect(core.resolvePost('/api/phone/profile/phone', { phone: '13812345678' })).toBeTypeOf('function');
+  });
+
+  it('手机号目录: 无桌面地址 → 诚实降级 (不返回假数据)', async () => {
+    const { core } = await import('../web/mobile-core.ts');
+    try { localStorage.removeItem('bolloon_desktop_base_url'); } catch { /* node 测试环境无 localStorage, 降级同样生效 */ }
+    const pub = await core.resolvePost('/api/phone/directory/publish', { phone: '13812345678' })!();
+    expect(pub.ok).toBe(false);
+    expect(String(pub.error || '')).toContain('电脑端在线');
+    const look = await core.resolvePost('/api/phone/directory/lookup', { phone: '13812345678' })!();
+    expect(look.found).toBe(false);
+    expect(String(look.error || '')).toContain('电脑端在线');
+    const add = await core.resolvePost('/api/phone/directory/add-friend', { phone: '13812345678' })!();
+    expect(add.ok).toBe(false);
+    expect(String(add.error || '')).toContain('电脑端在线');
+  });
+
+  it('手机号目录: 有桌面地址 → 转发电脑端目录端点 (mock fetch)', async () => {
+    const { core } = await import('../web/mobile-core.ts');
+    const hits: string[] = [];
+    const realFetch = globalThis.fetch;
+    (globalThis as any).fetch = async (url: any, opts: any = {}) => {
+      hits.push(String(url));
+      const body = opts.body ? JSON.parse(String(opts.body)) : {};
+      if (String(url).endsWith('/api/contacts/directory/publish')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, phoneHash: 'abc…', did: 'did:key:zX', publicKeyHex: '02aa', publishedAt: 1 }) };
+      }
+      if (String(url).endsWith('/api/contacts/directory/lookup')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, found: true, did: 'did:key:zX', publicKeyHex: '02aa', displayName: '测试' }) };
+      }
+      if (String(url).endsWith('/api/contacts/directory/add-friend')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, friend: { requestId: 'req1' } }) };
+      }
+      return { ok: false, status: 404, json: async () => ({ error: 'not mocked: ' + String(url) }) };
+    };
+    const prevLS = (globalThis as any).localStorage;
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => (k === 'bolloon_desktop_base_url' ? 'http://127.0.0.1:54188' : null),
+      setItem: () => {}, removeItem: () => {},
+    };
+    try {
+      const pub = await core.resolvePost('/api/phone/directory/publish', { phone: '13812345678' })!();
+      expect(pub.ok).toBe(true);
+      expect(hits.some((u) => u.includes('/api/contacts/directory/publish'))).toBe(true);
+      const look = await core.resolvePost('/api/phone/directory/lookup', { phone: '13812345678' })!();
+      expect(look.found).toBe(true);
+      expect(look.did).toBe('did:key:zX');
+      expect(hits.some((u) => u.includes('/api/contacts/directory/lookup'))).toBe(true);
+      const add = await core.resolvePost('/api/phone/directory/add-friend', { phone: '13812345678' })!();
+      expect(add.ok).toBe(true);
+      expect(add.friend.requestId).toBe('req1');
+      expect(hits.some((u) => u.includes('/api/contacts/directory/add-friend'))).toBe(true);
+    } finally {
+      (globalThis as any).fetch = realFetch;
+      (globalThis as any).localStorage = prevLS;
+    }
+  });
+
+  it('手机号登录: 无桌面地址 → 诚实降级 (bind/verify)', async () => {
+    const { core } = await import('../web/mobile-core.ts');
+    try { localStorage.removeItem('bolloon_desktop_base_url'); } catch { /* 忽略 */ }
+    const b = await core.phoneAuth.bind('13812345678');
+    expect(b.ok).toBe(false);
+    expect(String(b.error || '')).toContain('电脑端在线');
+    const v = await core.phoneAuth.verify('c1', 'ch1', '123456');
+    expect(v.ok).toBe(false);
+    expect(String(v.error || '')).toContain('电脑端在线');
+  });
+
+  it('手机号登录: 有桌面地址 → 转发电脑端 OTP 通道 (bind/verify)', async () => {
+    const { core } = await import('../web/mobile-core.ts');
+    const realFetch = globalThis.fetch;
+    (globalThis as any).fetch = async (url: any) => {
+      if (String(url).endsWith('/api/contacts/bind')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, contactId: 'c1', challengeId: 'ch1', otpForLocalSink: '123456' }) };
+      }
+      if (String(url).endsWith('/api/contacts/verify')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, verified: true }) };
+      }
+      return { ok: false, status: 404, json: async () => ({ error: 'not mocked: ' + String(url) }) };
+    };
+    const prevLS = (globalThis as any).localStorage;
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => (k === 'bolloon_desktop_base_url' ? 'http://127.0.0.1:54188' : null),
+      setItem: () => {}, removeItem: () => {},
+    };
+    try {
+      const b = await core.phoneAuth.bind('13812345678');
+      expect(b.ok).toBe(true);
+      expect(b.contactId).toBe('c1');
+      const v = await core.phoneAuth.verify('c1', 'ch1', '123456');
+      expect(v.ok).toBe(true);
+      expect(v.verified).toBe(true);
+    } finally {
+      (globalThis as any).fetch = realFetch;
+      (globalThis as any).localStorage = prevLS;
+    }
+  });
+
+  // 2026-10-15 (leo: 手机自治 — 远程 API + 本机工具操作): 手机 agent 循环 (runWebAgentLoop)
+  //   验证 LLM 多轮迭代 + 白名单工具执行闭环, 以及「手机 agent 只能操作自身轻量工具面」的边界。
+  it('手机自治: LLM 返回工具调用 → 执行白名单工具 → 结果回填 → 收敛', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    await agent.ensureIdentity();
+    const realFetch = globalThis.fetch;
+    // mock LLM: 第一轮要求调 get_identity, 第二轮直接回答 (收敛)
+    let calls = 0;
+    (globalThis as any).fetch = async (url: any, opts: any = {}) => {
+      calls++;
+      const body = JSON.parse(String(opts.body || '{}'));
+      const lastUser = [...(body.messages || [])].reverse().find((m: any) => m.role === 'user')?.content || '';
+      const isToolResult = lastUser.startsWith('工具结果:');
+      const content = isToolResult
+        ? '好的,已拿到 DID,这就是你要的身份信息。'
+        : '{"tool":"get_identity","args":{}}';
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content } }] }) };
+    };
+    try {
+      const reply = await agent.runWebAgentLoop('查询我的身份', { baseUrl: 'http://llm.test/v1', apiKey: 'k', model: 'm' });
+      expect(reply).toContain('手机自治执行 1 步');
+      expect(calls).toBeGreaterThanOrEqual(2); // 工具轮 + 收敛轮
+    } finally { (globalThis as any).fetch = realFetch; }
+  });
+
+  it('手机自治: 白名单外工具名 → 不执行, 当普通回答 (手机 agent 不做目录/加好友)', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    await agent.ensureIdentity();
+    const realFetch = globalThis.fetch;
+    // mock LLM 一直要求 directory.lookup (不在手机白名单) → 循环必须当普通回答直接收敛, 不执行
+    (globalThis as any).fetch = async () => ({
+      ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"tool":"directory.lookup","args":{"phone":"138"}}' } }] }),
+    });
+    try {
+      const reply = await agent.runWebAgentLoop('帮我查手机号', { baseUrl: 'http://llm.test/v1', apiKey: 'k', model: 'm' });
+      // 不执行 → 无「🔧」步骤, 回复就是 LLM 原文 (JSON 被当回答)
+      expect(reply).toContain('directory.lookup');
+      expect(reply).not.toContain('手机自治执行');
+    } finally { (globalThis as any).fetch = realFetch; }
+  });
+
+  it('手机自治: 5 步上限收敛 (LLM 永远要求工具 → 给最后一条不挂死)', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    await agent.ensureIdentity();
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    (globalThis as any).fetch = async () => {
+      calls++;
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"tool":"get_status","args":{}}' } }] }) };
+    };
+    try {
+      const reply = await agent.runWebAgentLoop('无限工具循环', { baseUrl: 'http://llm.test/v1', apiKey: 'k', model: 'm' });
+      expect(reply).toContain('达到 5 步上限');
+      expect(calls).toBeGreaterThanOrEqual(5); // 每轮都真实调了 LLM
+    } finally { (globalThis as any).fetch = realFetch; }
+  });
+
   // 2026-10-05 (leo: 手机端 ↔ 电脑端互联): World 数据层转发电脑端
   it('World 转发: resolve/resolvePost 分发 (机会流/意图/搜索/反馈)', async () => {
     const { core } = await import('../web/mobile-core.ts');
