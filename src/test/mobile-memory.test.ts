@@ -114,6 +114,30 @@ describe('mobile-memory (手机原生记忆内核)', () => {
     expect(m.fingerprint()).not.toBe(fp1);
   });
 
+  it('稳定记忆块 stableBlock: 固化优先 + importance 降序 + 上限 + 空安全', async () => {
+    const { MobileMemory } = await import('../web/mobile-memory.js');
+    const m = new MobileMemory('did:key:t');
+    expect(m.stableBlock(6)).toBe(''); // 空库 → 空块
+    m.remember({ content: '低权重事实', kind: 'fact', importance: 0.2 });
+    m.remember({ content: '高权重事实', kind: 'fact', importance: 0.9 });
+    m.remember({ content: '固化条目', kind: 'fact', importance: 0.5 });
+    m.all().find((e) => e.content.includes('固化'))!.crystallized = true;
+    m.remember({ content: '淡化条目', kind: 'event', importance: 0.9, ttlMs: 1 });
+    m.applyTtl(new Date(Date.now() + 5000).toISOString());
+    const block = m.stableBlock(6);
+    expect(block).toContain('<stable-memory>');
+    // 固化位列第一
+    const lines = block.split('\n');
+    expect(lines[1]).toContain('固化条目');
+    // 淡化条目不入选
+    expect(block).not.toContain('淡化条目');
+    // 上限: 只留 maxEntries 条
+    const b2 = m.stableBlock(2);
+    expect(b2.split('\n').filter((l) => l.startsWith('- ')).length).toBe(2);
+    // fingerprint 不因 stableBlock 改变自身稳定性
+    expect(m.fingerprint()).toBe(m.fingerprint());
+  });
+
   it('MobileCache: 命中 / TTL 过期 miss', async () => {
     const { MobileCache } = await import('../web/mobile-memory.js');
     const c = new MobileCache('test');

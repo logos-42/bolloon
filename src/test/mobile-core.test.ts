@@ -27,6 +27,20 @@ beforeEach(async () => {
   ['../web/mobile-core.ts', '../web/mobile-data.ts', '../web/mobile-agent.ts', '../web/mobile-payments.ts'].forEach((m) => {
     try { delete require.cache[require.resolve(m)]; } catch { /* 忽略 */ }
   });
+  // 2026-10-16: 默认阻断真实网络 — getLlmConfig() 未配置时返回内置公共网关 (api.bolloon.cn),
+  //   runLocalAgent 会真调它; 内核 3 次重试 + 自适应超时下限流必然 20s 超时 (on-device 测试真回归)。
+  //   这里 stub fetch 抛「超时类」错误 (classifyMobileError 判 timeout → 不重试) → 立即走降级内置规则;
+  //   需要真调 LLM 的测试各自覆盖 mock。
+  if (!(globalThis as any).__mobileTestFetchStubbed) {
+    (globalThis as any).__mobileTestFetchStubbed = true;
+    const realFetch = globalThis.fetch;
+    (globalThis as any).__mobileRealFetch = realFetch;
+    (globalThis as any).fetch = async () => {
+      const err: any = new Error('network disabled in mobile-core tests (timeout class)');
+      err.name = 'TimeoutError';
+      throw err;
+    };
+  }
 });
 
 describe('mobile-core (手机端内化内核, 分层架构)', () => {

@@ -488,13 +488,15 @@ export async function runLocalAgent(goal: string): Promise<string> {
   // 内置极简回复 (纯离线可用)
     const t = (goal || '').trim();
     // 2026-10-07: 手机自治 — 先用 LLM 循环 (经内置公共网关), 失败再降级纯规则
-    try {
-      const llm = getLlmConfig();
-      if (llm && llm.baseUrl) {
-        const reply = await runWebAgentLoop(goal, { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model, maxTokens: llm.maxTokens });
-        if (reply) return reply;
-      }
-    } catch { /* 网络/网关不可达 → 降级内置规则 */ }
+        //   2026-10-16: silentDegrade=true — LLM 不可达时 → throw → 下面 catch → 内置离线规则,
+        //   (上一层 runWebAgentLoop 若默认返回降级文本, 内置规则层就永远走不到)
+        try {
+          const llm = getLlmConfig();
+          if (llm && llm.baseUrl) {
+            const reply = await runWebAgentLoop(goal, { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model, maxTokens: llm.maxTokens }, { silentDegrade: true });
+            if (reply) return reply;
+          }
+        } catch { /* 网络/网关不可达 → 降级内置规则 */ }
     if (t.includes('你好') || t === 'hi' || t === 'hello') return '你好! 我是炁球 (Bolloon), 已在手机本地独立运行 (Agent 功能层 + 数据同步层分离)。';
   if (t.includes('身份') || t.includes('did')) {
     const id = await ensureIdentity();
@@ -594,7 +596,7 @@ export function isConfirmRequiredTool(tool: string): boolean {
   return CONFIRM_REQUIRED_TOOLS.includes(tool);
 }
 
-function buildAgentSystem(opts: { goal?: string; memoryBlock?: string; userDoc?: string; soulDoc?: string; channel?: MobileInputChannel; progress?: string[]; plan?: string } = {}): string {
+function buildAgentSystem(opts: { goal?: string; memoryBlock?: string; userDoc?: string; soulDoc?: string; channel?: MobileInputChannel; progress?: string[]; plan?: string; memory?: MobileMemory } = {}): string {
   const persona = loadPersona();
   const personaBlock = buildPersonaPrompt(persona);
   // 文档隐式化 (leo: 系统 prompt 注入太多, 文档可以删):
@@ -605,6 +607,11 @@ function buildAgentSystem(opts: { goal?: string; memoryBlock?: string; userDoc?:
     : '';
   const memoryBlock = opts.memoryBlock && opts.memoryBlock.trim()
     ? `【记忆】\n${opts.memoryBlock.trim().slice(0, 600)}`
+    : '';
+  // 稳态记忆块 (对齐桌面 formatMemorySystemBlock, 2026-10-16 补齐): 固化优先 + importance 降序,
+  //   始终注入 system — 不是只靠当轮 query 召回。与 memoryBlock (recall) 互补。
+  const stableBlock = opts.memory && opts.memory.stableBlock
+    ? opts.memory.stableBlock(6)
     : '';
   const progressBlock = opts.progress && opts.progress.length
     ? `【本轮进度】\n已完成: ${opts.progress.slice(-8).map((s, i) => `${i + 1}. ${s.slice(0, 80)}`).join('\n')}`
@@ -620,6 +627,7 @@ function buildAgentSystem(opts: { goal?: string; memoryBlock?: string; userDoc?:
     personaBlock,
     userBlock,
     memoryBlock,
+    stableBlock,
     '你有以下工具, 按需调用 (JSON: {"tool":"名字","args":{...}}), 不需要工具就直接回答:',
     '- get_status: 查本机身份/入网/钱包/连接状态 (args: 无)',
     '- get_wallet: 查钱包余额 (args: 无)',
@@ -810,6 +818,12 @@ export interface MobileRunOptions {
   soulDoc?: string;
   /** 外部取消信号 (生命周期 cancelled) */
   signal?: AbortSignal;
+  /**
+   * 失败语义: true = LLM 不可达时**抛错** (给 runLocalAgent 降级内置规则用);
+   * false (默认) = 返回降级文本 (自治调用方直接用回复)。runLocalAgent 必须传 true,
+   * 否则「LLM 不可达 → 内置规则」那层永远走不到 (旧契约: throw → catch → 内置回复)。
+   */
+  silentDegrade?: boolean;
 }
 
 export interface MobileRunOutcome {
@@ -849,11 +863,13 @@ export async function runWebAgentLoop(
   // 缓存命中: system 装配指纹 = 冻结上下文摘要 + 工具指纹 + 目标前缀
   //   同指纹 (文档/记忆/工具没变) → 复用 system, 不重建 (桌面 kv-prefix-cache 同原理)
   const sysCache = new MobileCache('bolloon_sys');
+  // 稳态记忆块参与指纹: 固化记忆变了 → 指纹变 → system 重建 (memory 文档冻结与失效对齐)
+  const stableFp = memory.stableBlock(6);
   const sysFp = quickHash([
-    userDoc, opts.soulDoc || 'soul-default', memoryBlock, toolFingerprint(), channel, opts.plan || '',
+    userDoc, opts.soulDoc || 'soul-default', memoryBlock, stableFp, toolFingerprint(), channel, opts.plan || '',
   ].join('|'));
   const messages: Array<{ role: string; content: string }> = [
-    { role: 'system', content: sysCache.get<string>(sysFp, 10 * 60_000) || buildAgentSystem({ goal, memoryBlock, userDoc, soulDoc: opts.soulDoc, channel, plan: opts.plan }) },
+    { role: 'system', content: sysCache.get<string>(sysFp, 10 * 60_000) || buildAgentSystem({ goal, memoryBlock, userDoc, soulDoc: opts.soulDoc, channel, plan: opts.plan, memory }) },
     { role: 'user', content: String(goal || '') },
   ];
   sysCache.set(sysFp, messages[0].content); // 冻结 system 进缓存 (TTL 10min)
@@ -884,9 +900,11 @@ export async function runWebAgentLoop(
       record.finishedAt = new Date().toISOString();
       saveRunRecord(did, record);
       _lastWorklog = [...steps, `⚠ ${hint}`];
-      return steps.length
-        ? `[手机自治执行 ${steps.length} 步 · ${hint}]\n已完成的步骤结果如下:\n${steps.join('\n')}\n(${hint}, 请稍后重试)`
-        : `(${hint}, 请稍后重试)`;
+      // 0 步就失败 + silentDegrade → 抛错让调用方降级 (runLocalAgent 的 catch → 本地内置规则);
+      //   否则 (自治调用默认) 返回降级文本: 0 步 → 短提示, 已执行 N 步 → 部分成果摘要, 不让用户丢已完成的步骤。
+      if (!steps.length && opts.silentDegrade) throw e;
+      if (!steps.length) return `(${hint}, 请稍后重试)`;
+      return `[手机自治执行 ${steps.length} 步 · ${hint}]\n已完成的步骤结果如下:\n${steps.join('\n')}\n(${hint}, 请稍后重试)`;
     }
     // 2026-10-07 (模拟器验证发现): LLM 常输出前置文本+JSON ("好的，我先查询...\n{\"tool\":...}")
     //   旧正则要求整段是 JSON → 工具调用被当普通回答, 闭环断。宽容提取第一个 JSON 对象。

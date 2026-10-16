@@ -273,6 +273,28 @@ export class MobileMemory {
     this.writeAll(this.entries);
   }
 
+  /**
+   * 稳态记忆块: 固化优先 + 未淡化 + importance 降序, 始终注入 system。
+   * 与 recall(query) 互补: recall 是即时相关, stableBlock 是用户确认/多次命中的事实。
+   */
+  stableBlock(maxEntries = 6): string {
+    this.ensureLoaded();
+    this.applyTtl();
+    const picked = this.entries
+      .filter((e) => !e.decayed)
+      .sort((a, b) => {
+        if (a.crystallized !== b.crystallized) return a.crystallized ? -1 : 1;
+        return b.importance - a.importance;
+      })
+      .slice(0, maxEntries);
+    if (!picked.length) return '';
+    const lines = picked.map((e) => {
+      const tag = `${e.kind}${e.crystallized ? '★' : ''}`;
+      return `- (${tag}, ${e.importance.toFixed(2)}) ${e.content.slice(0, 120)}`;
+    });
+    return `<stable-memory>\n${lines.join('\n')}\n</stable-memory>`;
+  }
+
   /** 记忆指纹: 摘要 hash (参与上下文缓存 key; 记忆变了 → 指纹变 → 缓存 miss) */
   fingerprint(): string {
     this.ensureLoaded();
