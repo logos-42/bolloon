@@ -69,7 +69,7 @@
     });
   } catch (e) {}
 
-  const TITLES = { main: '首页', friends: '好友', tasks: '任务', me: '我' };
+  const TITLES = { main: '首页', friends: '通讯录', tasks: '任务', me: '我' };
   let currentTab = 'main';
   function switchTab(tab) {
     currentTab = tab;
@@ -166,7 +166,7 @@
         if (!list) return;
         list.innerHTML = '';
         if (!Array.isArray(peers) || peers.length === 0) {
-          list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted)">暂无好友</div>';
+          list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted)">暂无联系人</div>';
           const idx = $('#contacts-index'); if (idx) idx.innerHTML = '';
           return;
         }
@@ -453,15 +453,15 @@
     try {
       const s = await api.get('/api/auth/status');
       $('#me-name').textContent = s.loggedIn ? (s.name || '未登录') : '未登录';
-      $('#me-did').textContent = s.did ? ('DID: ' + (s.didShort || s.did)) : '';
+      $('#me-did').textContent = s.did ? ('身份证明: ' + (s.didShort || s.did)) : '';
       if (avatarEl && !av) avatarEl.textContent = (s.loggedIn && s.name ? s.name : 'U').charAt(0);
       $('#login-label').textContent = s.loggedIn ? '已登录' : '登录';
     } catch (e) { /* 默认 */ }
-    // P2P ID = 通信ID, 与 DID 不同 (libp2p nodeId)
+    // 身份证明 (连接标识)
     try {
       const net = await api.get('/api/network/status');
       const p2p = net && net.nodeId;
-      $('#me-p2p').textContent = p2p ? ('P2P: ' + p2p.slice(0, 14) + '…') : '';
+      $('#me-p2p').textContent = p2p ? ('连接标识: ' + p2p.slice(0, 14) + '…') : '';
     } catch (e) { /* 未连接 */ }
   }
 
@@ -488,10 +488,10 @@
           <div class="avatar" id="identity-avatar" style="width:72px;height:72px"></div>
           <div><div class="profile-name">${escapeHtml(name)}</div><div style="font-size:12px;color:var(--text-muted)">人类认证身份</div></div>
         </div>
-        <div class="identity-row"><div class="k">DID 身份 (全局唯一)</div><div class="v">${escapeHtml(did || '未生成')}</div></div>
-        <div class="identity-row"><div class="k">P2P ID (通信 ID)</div><div class="v">${escapeHtml(p2p || '未连接')}</div></div>
+        <div class="identity-row"><div class="k">身份证明 (全局唯一)</div><div class="v">${escapeHtml(did || '未生成')}</div></div>
+        <div class="identity-row"><div class="k">连接标识</div><div class="v">${escapeHtml(p2p || '未连接')}</div></div>
         <div class="identity-row"><div class="k">创建时间</div><div class="v">${escapeHtml(created || '未知')}</div></div>
-        <div class="identity-row"><div class="k">说明</div><div class="v">DID 是全局唯一的人类认证身份; P2P ID 只是本机 libp2p 通信节点号, 两者不同。</div></div>`;
+        <div class="identity-row"><div class="k">说明</div><div class="v">身份证明是全局唯一的人类认证身份; 连接标识是本机的通信编号, 两者不同。</div></div>`;
       const av = localStorage.getItem('bolloon_avatar');
       const ia = body.querySelector('#identity-avatar');
       if (ia) { if (av) { ia.style.backgroundImage = 'url(' + av + ')'; ia.style.backgroundSize = 'cover'; ia.textContent = ''; } else ia.textContent = (name || 'U').charAt(0); }
@@ -592,9 +592,9 @@
     const cards = $('#world-feed-cards');
     if (!feed || !cards) return;
     try {
-      // 2026-10-05 (leo: 手机端 ↔ 电脑端互联): 走 api 层 → BolloonCore.resolve
-      //   转发电脑端 desktopUrl (不再裸 fetch 相对路径 — 手机上相对路径连手机自己, 永远空)
-      const data = await api.get('/api/opportunities?min-score=0.2&limit=10');
+      // 2026-10-16 (leo: 首页卡片按「附近 + 通讯录」动态传送): 三源聚合 (桌面机会流 + 通讯录卡 + 附近卡)
+      //   不再只拉桌面机会流; 来源不上屏 (leo: 主动推送不贴元解释文案)
+      const data = await api.get('/api/world/cards');
       const opps = ((data && data.opportunities) || []).slice(0, 6);
       if (!opps.length) { feed.hidden = true; return; }
       feed.hidden = false;
@@ -748,8 +748,8 @@
           allAgentCards.push({
             id: p.id || p.publicKey?.slice(0, 12) || `peer-${Date.now()}`,
             agentId: p.id || p.publicKey?.slice(0, 12),
-            name: p.name || '未知好友',
-            desc: 'P2P 好友智能体',
+            name: p.name || '未知联系人',
+            desc: '通讯录智能体',
             avatar: null,
             peer: { name: p.name || '好友', online: p.online || false },
             status: p.online ? 'online' : 'offline',
@@ -1102,7 +1102,7 @@
         <div style="flex:1;font-weight:600">搜索</div>
       </div>
       <div style="padding:12px;display:flex;flex-direction:column;gap:10px;flex:1;min-height:0">
-        <input id="search-input" type="search" autocomplete="off" placeholder="搜智能体 / 好友：名称、DID、节点 ID"
+        <input id="search-input" type="search" autocomplete="off" placeholder="搜智能体 / 通讯录：名称、身份证明、编号"
           style="padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-hover);color:var(--text);font-size:14px">
         <div id="search-hint" style="font-size:12px;color:var(--text-muted)">正在建立索引…</div>
         <div id="search-results" style="flex:1;overflow:auto;-webkit-overflow-scrolling:touch"></div>
@@ -1122,10 +1122,10 @@
         act: () => { page.remove(); openChat(c); },
       })),
       ...peers.map((p) => ({
-        tag: '好友', name: p.name || String(p.publicKey || p.id || '好友').slice(0, 12),
+        tag: '通讯录', name: p.name || String(p.publicKey || p.id || '联系人').slice(0, 12),
         sub: String(p.publicKey || p.id || p.address || '').slice(0, 28),
         hay: [p.name, p.publicKey, p.id, p.address, p.did].filter(Boolean).join(' '),
-        act: () => alert(`好友信息\n名称: ${p.name || '(未命名)'}\n节点ID: ${p.publicKey || p.id || '—'}\n地址: ${p.address || '—'}`),
+        act: () => alert(`联系人信息\n名称: ${p.name || '(未命名)'}\n编号: ${p.publicKey || p.id || '—'}\n地址: ${p.address || '—'}`),
       })),
       ...services.map((s) => ({
         tag: '全局智能体',
@@ -1142,10 +1142,10 @@
     const render = (q) => {
       const k = String(q || '').trim().toLowerCase();
       const hits = rows.filter((r) => !k || r.hay.includes(k) || r.name.toLowerCase().includes(k));
-      if (hint) hint.innerHTML = `本机智能体 ${channels.length} · 好友 ${peers.length} · 全局智能体 ${services.length}` + (k ? ` · 命中 ${hits.length}` : '');
+      if (hint) hint.innerHTML = `本机智能体 ${channels.length} · 通讯录 ${peers.length} · 全局智能体 ${services.length}` + (k ? ` · 命中 ${hits.length}` : '');
       if (!box) return;
       if (!hits.length) {
-        box.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:13px">没有匹配「${escapeHtml(String(q))}」的智能体或好友</div>`;
+        box.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:13px">没有匹配「${escapeHtml(String(q))}」的智能体或联系人</div>`;
         return;
       }
       let html = '';
@@ -2135,11 +2135,12 @@
     $('#settings-persona').addEventListener('click', () => void openPersonaPage());
   }
 
-  // === 身份页 (DID / 公钥 / 签名测试 / 邮箱 / 手机号) ===
+  // === 身份页 (身份证明 / 签名 / 邮箱 / 手机号) ===
   // 2026-10-07: 完整身份系统 — DIAP did:key (与桌面同构) + 附带条件 (邮箱/手机号/备注)
+  // 2026-10-16 (leo: 显示端降低认知负担): 不外露 DID/Ed25519 术语 — 「身份证明」「身份密钥」「签名能力」
   async function openIdentityPage() {
     if ($('#identity-page')) return;
-    const page = mkOverlayPage('identity-page', 'DID 与身份', '<div style="font-size:12px;color:var(--text-muted)">读取中…</div>');
+    const page = mkOverlayPage('identity-page', '身份与证明', '<div style="font-size:12px;color:var(--text-muted)">读取中…</div>');
     const body = page.querySelector('#identity-page-body');
     try {
       const core = window.BolloonCore || (await import('./mobile-core.js')).core;
@@ -2147,8 +2148,8 @@
       const st = await ag.identityStatus();
       body.innerHTML = `
         <div class="list">
-          <div class="list-item"><span class="list-icon">${ICONS.idcard}</span><span style="flex:1"><span style="display:block">DID</span><span class="conv-preview" style="display:block;word-break:break-all">${escapeHtml(st.did || '未生成')}</span></span></div>
-          <div class="list-item"><span class="list-icon">${ICONS.chip}</span><span style="flex:1"><span style="display:block">公钥 (Ed25519)</span><span class="conv-preview" style="display:block;word-break:break-all">${st.publicKey ? escapeHtml(st.publicKey.slice(0, 32) + '…') : '（老设备哈希身份，无签名）'}</span></span></div>
+          <div class="list-item"><span class="list-icon">${ICONS.idcard}</span><span style="flex:1"><span style="display:block">身份证明</span><span class="conv-preview" style="display:block;word-break:break-all">${escapeHtml(st.did || '未生成')}</span></span></div>
+          <div class="list-item"><span class="list-icon">${ICONS.chip}</span><span style="flex:1"><span style="display:block">身份密钥</span><span class="conv-preview" style="display:block;word-break:break-all">${st.publicKey ? escapeHtml(st.publicKey.slice(0, 32) + '…') : '（老设备哈希身份，无签名）'}</span></span></div>
           <div class="list-item"><span class="list-icon">${ICONS.chip}</span><span style="flex:1"><span style="display:block">名字</span><span class="conv-preview" style="display:block">${escapeHtml(st.name || '未登录')}</span></span></div>
         </div>
         <div class="section-label">附带身份条件（仅存本机）</div>
@@ -2158,7 +2159,7 @@
           <div class="list-item"><span class="list-icon">📝</span><span style="flex:1"><span style="display:block">备注</span><span class="conv-preview" id="id-note" style="display:block">${escapeHtml(st.note || '未设置')}</span></span></div>
           <button class="sheet-choice" id="id-edit" style="width:100%;margin-top:8px">编辑邮箱 / 手机号 / 备注</button>
         </div>
-        <div class="section-label">签名能力（DIAP Ed25519）</div>
+        <div class="section-label">签名能力</div>
         <div class="list">
           <button class="sheet-choice" id="id-sign-test" style="width:100%">测试签名（本地签 + 验，证明身份可签名）</button>
         </div>`;
@@ -2756,7 +2757,7 @@
       if (r && r.found) {
         const name = r.displayName || String(r.did || '').slice(0, 12);
         result.innerHTML = `<div style="font-size:14px;margin-bottom:6px">✅ 找到账号: <b>${escapeHtml(name)}</b></div>
-          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">DID: ${escapeHtml(String(r.did || ''))}</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">身份证明: ${escapeHtml(String(r.did || ''))}</div>
           <button class="sheet-choice" id="phone-add-btn" style="width:100%">发送好友申请</button>`;
         const btn = $('#phone-add-btn');
         if (btn) btn.addEventListener('click', async () => {
@@ -2892,7 +2893,7 @@
     bindAvatarInput();
     $('#item-login').addEventListener('click', () => { openLoginPage(); });
     $('#item-logout').addEventListener('click', async () => {
-      if (!confirm('确定注销? 将清除本机登录态 (DID 保留, 不影响频道/P2P)。')) return;
+      if (!confirm('确定注销? 将清除本机登录态 (身份证明保留, 不影响频道/连接)。')) return;
       try { await api.post('/api/auth/logout', {}); await loadMe(); } catch (e) { alert('注销失败: ' + (e.message || e)); }
     });
     $('#btn-add').addEventListener('click', addFriend);
@@ -2909,8 +2910,8 @@
       if (first) openTradeCall(first); else openTradeHistory();
     });
     $('#item-p2p-id').addEventListener('click', async () => {
-      try { const net = await api.get('/api/network/status'); const p2p = net && net.nodeId; alert('P2P ID (通信ID, ≠ DID):\n' + (p2p || '未连接')); }
-      catch (e) { alert('P2P ID: 获取失败'); }
+      try { const net = await api.get('/api/network/status'); const p2p = net && net.nodeId; alert('连接标识 (本机通信编号):\n' + (p2p || '未连接')); }
+      catch (e) { alert('连接标识: 获取失败'); }
     });
     // #1 一键入网 (全球智能体网络): 点一下 → 默认 prompt 交给智能体执行
     const joinGlobalBtn = $('#item-join-global');
@@ -2953,6 +2954,14 @@
     if (nearbyRefresh) nearbyRefresh.addEventListener('click', () => loadNearbyList(_nearbyMode));
     const nearbyClose = $('#nearby-close');
     if (nearbyClose) nearbyClose.addEventListener('click', () => hideSheet('#nearby-sheet'));
+    // 2026-10-16 (leo: 首页卡片动态传送): P2P 收到附近卡 → 即时刷新首页 (不等 45s 轮询)
+    try {
+      window.BolloonCore && window.BolloonCore.events && window.BolloonCore.events.subscribe((m) => {
+        if (m && m.type === 'world-card') loadWorldFeed();
+      });
+    } catch (e) { /* 事件订阅失败不影响其它功能 */ }
+    // 连上对端即要一次卡 (动态传送主动触发; 无 peer 静默)
+    api.get('/api/world/cards/request').then(() => {}).catch(() => {});
     // 微信息 (x402 付费信息): 详情 → 购买并验真 / 只看元数据
     const x402Buy = $('#x402-buy');
     if (x402Buy) x402Buy.addEventListener('click', () => buyX402Info());

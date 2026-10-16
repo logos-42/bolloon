@@ -519,32 +519,125 @@ export async function runLocalAgent(goal: string): Promise<string> {
   return `已收到: "${(goal || '').slice(0, 40)}"。这是手机端 Agent 功能层的本地执行 (数据同步与 agent 功能已分离)。`;
 }
 
-// ============ 手机自治 agent 循环 (2026-10-07) ============
-// 桌面端 WorkflowPivotLoop 的浏览器移植: LLM 多轮迭代 + 手机端可用工具集。
+// ============ 手机自治 agent 循环 — 原生运行内核 (2026-10-16) ============
+// 桌面 Kernel 的浏览器移植, 手机原生功能逐项落地 (leo 点名清单):
+//   · memory 设计迭代 + 人际关系分类 (mobile-memory.ts: fact/preference/event/relationship/skill-feedback,
+//     relation{family|friend|work|acquaintance|stranger, trust}, TTL/decay/快照/指纹)
+//   · 错误恢复 (分类 + 退避重试 + 失败反思注入上下文)
+//   · 自适应 API 超时 (按上下文长度: max(10s, ceil(ctxChars/1024)*4000+10000))
+//   · 记忆快照 / bootstrap (启动恢复快照 + 收尾落快照)
+//   · 文档冻结 + 隐式化 (user 文档 / soul 文档只注摘要, 不整篇塞 — leo: 系统 prompt 注入太多, 删)
+//   · 上下文压缩 / 缓存命中 (指纹装配缓存: 同冻结上下文指纹 → 复用 system 不重建)
+//   · 工具指纹 (工具集 hash → 缓存 key, 工具变了 key 变)
+//   · 生命周期 (idle→running→paused(确认)→done/cancelled/error) + TTL
+//   · 多模态通道标注 (text/image/audio/file) + 能动性 (先动手别先问)
+//   · 中间阶段性环境 (已完成步骤注入) + 计划设计 (阶段提示) + 确认模式 (高风险工具)
+//   · task / process 运行记录 (run 记录落 localStorage, 可查)
 // 能力范围: 手机 WebView 能做的 (身份/钱包/入网/P2P/信息查询), 不假装能做 fs/shell。
-// 保护: maxSteps=5 防死循环; 每轮把工具结果拼回对话; LLM 说完成或没有下一步即停。
 // 2026-10-07: persona 注入 — 性格/价值观/兴趣/说话方式来自 mobile-persona (设置 → 性格)。
 import { loadPersona, buildPersonaPrompt } from './mobile-persona.js';
+import { MobileMemory, MobileCache, quickHash, type MobileMemoryKind, type MobileRelationKind } from './mobile-memory.js';
 
-function buildAgentSystem(): string {
+// ── 生命周期 / task / process 记录 ─────────────────────────────────────────
+export type MobileLifecycle = 'idle' | 'running' | 'paused' | 'done' | 'cancelled' | 'error';
+
+export interface MobileRunRecord {
+  runId: string;
+  goal: string;
+  status: MobileLifecycle;
+  steps: number;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+  channel: string;
+}
+
+const runsKey = (did: string) => `bolloon_mobile_runs_${did}`;
+
+/** 最近运行记录 (task/process 台账, 手机原生) */
+export function listMobileRuns(did: string, limit = 20): MobileRunRecord[] {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(runsKey(did)) : null;
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(0, limit) : [];
+  } catch { return []; }
+}
+
+function saveRunRecord(did: string, rec: MobileRunRecord): void {
+  try {
+    const prev = listMobileRuns(did, 50);
+    const next = [rec, ...prev.filter((r) => r.runId !== rec.runId)].slice(0, 50);
+    if (typeof localStorage !== 'undefined') localStorage.setItem(runsKey(did), JSON.stringify(next));
+  } catch { /* 台账写失败不阻断运行 */ }
+}
+
+// ── 工具指纹 + 上下文指纹 (缓存命中) ───────────────────────────────────────
+const toolNames = () => Object.keys(WEB_AGENT_TOOLS).sort().join(',');
+let _toolFingerprint = '';
+/** 工具指纹: 工具集 hash (工具变了 → 指纹变 → system 装配缓存 miss) */
+export function toolFingerprint(): string {
+  if (!_toolFingerprint) _toolFingerprint = quickHash('tools|' + toolNames());
+  return _toolFingerprint;
+}
+
+// ── 多模态通道标注 ─────────────────────────────────────────────────────────
+export type MobileInputChannel = 'text' | 'image' | 'audio' | 'file';
+const CHANNEL_LABEL: Record<MobileInputChannel, string> = {
+  text: '文字', image: '图片', audio: '语音', file: '文件',
+};
+
+// ── 确认模式 (高风险工具执行前) ───────────────────────────────────────────
+// 默认空名单 (机制就位; 需要拦的工具由调用方注入 confirm 回调裁决)
+const CONFIRM_REQUIRED_TOOLS: string[] = [];
+export function isConfirmRequiredTool(tool: string): boolean {
+  return CONFIRM_REQUIRED_TOOLS.includes(tool);
+}
+
+function buildAgentSystem(opts: { goal?: string; memoryBlock?: string; userDoc?: string; soulDoc?: string; channel?: MobileInputChannel; progress?: string[]; plan?: string } = {}): string {
   const persona = loadPersona();
   const personaBlock = buildPersonaPrompt(persona);
+  // 文档隐式化 (leo: 系统 prompt 注入太多, 文档可以删):
+  //   user 文档 → 身份/偏好摘要; soul 文档 → persona 摘要 (buildPersonaPrompt 本身就是摘要形)
+  //   完整文档不整篇塞进 prompt, 按需由工具读取。
+  const userBlock = opts.userDoc && opts.userDoc.trim()
+    ? `【用户档案】\n${opts.userDoc.trim().slice(0, 400)}`
+    : '';
+  const memoryBlock = opts.memoryBlock && opts.memoryBlock.trim()
+    ? `【记忆】\n${opts.memoryBlock.trim().slice(0, 600)}`
+    : '';
+  const progressBlock = opts.progress && opts.progress.length
+    ? `【本轮进度】\n已完成: ${opts.progress.slice(-8).map((s, i) => `${i + 1}. ${s.slice(0, 80)}`).join('\n')}`
+    : '';
+  const planHint = opts.plan && opts.plan.trim()
+    ? `【计划】\n${opts.plan.trim().slice(0, 300)}`
+    : '任务复杂时先在内心拆步骤, 逐步执行, 每步用一个工具推进。';
+  const channelBlock = opts.channel && opts.channel !== 'text'
+    ? `【输入通道】\n本次输入是${CHANNEL_LABEL[opts.channel]}。你能理解${CHANNEL_LABEL[opts.channel]}内容并据此回答/执行。`
+    : '';
   return [
     '你是手机端 Bolloon 智能体 (自治节点), 用中文简洁回复。',
     personaBlock,
+    userBlock,
+    memoryBlock,
     '你有以下工具, 按需调用 (JSON: {"tool":"名字","args":{...}}), 不需要工具就直接回答:',
-    '- get_status: 查本机身份/入网/钱包/P2P 状态 (args: 无)',
+    '- get_status: 查本机身份/入网/钱包/连接状态 (args: 无)',
     '- get_wallet: 查钱包余额 (args: 无)',
-    '- get_identity: 查本机 DID (args: 无)',
+    '- get_identity: 查本机身份证明 (args: 无)',
     '- get_contacts: 查联系方式授权状态 (args: 无)',
-    '每轮只能用一个工具; 拿到结果后继续思考, 直到任务完成给出最终回答。',
-  ].join('\n');
+    '每轮最多用一个工具; 拿到结果后继续思考, 直到任务完成给出最终回答。',
+    progressBlock,
+    planHint,
+    channelBlock,
+    '能动性: 先动手别先问; 做到底 (交付=能用的结果); 一个工具不够就换方式继续; 被阻塞如实说, 不编造。',
+  ].filter(Boolean).join('\n');
 }
 
 interface WebAgentToolResult { name: string; ok: boolean; output: string }
-const WEB_AGENT_TOOLS: Record<string, () => Promise<string>> = {
+// 2026-10-16: 工具签名带 args (更灵活调用; 现有工具忽略 args)
+const WEB_AGENT_TOOLS: Record<string, (args?: Record<string, unknown>) => Promise<string>> = {
   get_status: async () => {
-    try { const id = await ensureIdentity(); return `DID: ${id.did.slice(0, 16)}... 名字: ${id.name}`; } catch (e: any) { return '身份读取失败: ' + String(e?.message || e).slice(0, 60); }
+    try { const id = await ensureIdentity(); return `身份: ${id.did.slice(0, 16)}... 名字: ${id.name}`; } catch (e: any) { return '身份读取失败: ' + String(e?.message || e).slice(0, 60); }
   },
   get_wallet: async () => {
     try {
@@ -561,35 +654,65 @@ const WEB_AGENT_TOOLS: Record<string, () => Promise<string>> = {
   },
   get_identity: async () => {
     const id = await ensureIdentity();
-    return `DID: ${id.did} 名字: ${id.name}`;
+    return `身份证明: ${id.did} 名字: ${id.name}`;
   },
   get_contacts: async () => {
     try { return '联系方式与授权模块可用 (详见「我 → 联系方式与授权」)。'; } catch { return '联系人模块暂不可用'; }
   },
 };
 
-/** 单轮 LLM 调用 (OpenAI 兼容, 经内置公共网关) */
+// ── 错误恢复 (分类 + 退避重试) ─────────────────────────────────────────────
+export type MobileErrorClass = 'network' | 'timeout' | 'api' | 'unknown';
+export function classifyMobileError(err: any): { cls: MobileErrorClass; retryable: boolean; hint: string } {
+  const msg = String(err?.message || err?.cause?.message || err || '');
+  if (/timeout|timed out|AbortError|aborted/i.test(msg)) return { cls: 'timeout', retryable: true, hint: '请求超时, 稍后重试' };
+  if (/terminated|ECONNRESET|socket hang up|fetch failed|network|ETIMEDOUT|ECONNREFUSED|UND_ERR|Failed to fetch/i.test(msg)) return { cls: 'network', retryable: true, hint: '网络波动, 正在重试' };
+  if (/401|403|quota|rate limit|API key|invalid api|HTTP 40\d|HTTP 429/i.test(msg)) return { cls: 'api', retryable: false, hint: '接口/配额错误, 无法自动恢复' };
+  return { cls: 'unknown', retryable: true, hint: '未知错误, 尝试继续' };
+}
+
+/** 自适应 API 超时: max(10s, ceil(ctxChars/1024)*4000 + 10000) — 长上下文不被误杀 (桌面同规则) */
+export function adaptiveTimeoutMs(ctxChars: number, baseMs = 10_000): number {
+  const byLen = Math.ceil(Math.max(0, ctxChars) / 1024) * 4000 + baseMs;
+  return Math.max(baseMs, byLen);
+}
+
+/** 单轮 LLM 调用 (OpenAI 兼容, 经内置公共网关) — 自适应超时 + 网络错误退避重试 */
 async function webAgentLlmCall(messages: Array<{ role: string; content: string }>, llm: { baseUrl: string; apiKey?: string; model?: string; maxTokens?: number }): Promise<string> {
   // 2026-10-15: 网关不可达时**快速降级**而不是挂死 — 公共网关限流/断网时 fetch 可能永久挂起,
   //   手机端 runLocalAgent 会先走 LLM 再降级内置规则, 挂起 = 测试 20s 超时 + 真机"发消息无反应"。
-  //   10s 兜底 (多轮循环每次都有上界, MAX_STEPS=5 ⇒ 最坏 50s, 足够拿到回复又不会无限等)。
-  const resp = await fetch(llm.baseUrl.replace(/\/$/, '') + '/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (llm.apiKey || '') },
-    body: JSON.stringify({
-      model: llm.model || 'glm-5.3',
-      messages,
-      max_tokens: llm.maxTokens || 2048,
-      temperature: 0.4,
-    }),
-    // eslint-disable-next-line no-undef
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!resp.ok) throw new Error('LLM HTTP ' + resp.status + ': ' + (await resp.text()).slice(0, 120));
-  const data = await resp.json();
-  const content = data?.choices?.[0]?.message?.content;
-  if (!content) throw new Error('LLM 空回复');
-  return String(content).trim();
+  //   自适应超时 (2026-10-16): 短上下文 10s 底线, 长上下文按 4s/1KB 加时, 最坏 150 步有上界又不会误杀长任务。
+  const ctxChars = messages.reduce((n, m) => n + String(m.content || '').length, 0);
+  const timeoutMs = adaptiveTimeoutMs(ctxChars);
+  // 错误恢复: 网络类错误退避重试 (500ms/1500ms, 共 2 次重试); 超时/API 错误不重试 (明确失败)
+  let lastErr: any = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resp = await fetch(llm.baseUrl.replace(/\/$/, '') + '/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (llm.apiKey || '') },
+        body: JSON.stringify({
+          model: llm.model || 'glm-5.3',
+          messages,
+          max_tokens: llm.maxTokens || 2048,
+          temperature: 0.4,
+        }),
+        // eslint-disable-next-line no-undef
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!resp.ok) throw new Error('LLM HTTP ' + resp.status + ': ' + (await resp.text()).slice(0, 120));
+      const data = await resp.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (!content) throw new Error('LLM 空回复');
+      return String(content).trim();
+    } catch (e: any) {
+      const cls = classifyMobileError(e);
+      lastErr = e;
+      if (cls.cls === 'timeout' || cls.cls === 'api' || attempt >= 2) throw e; // 明确失败不重试
+      await new Promise((r) => setTimeout(r, attempt === 0 ? 500 : 1500));   // 网络波动退避
+    }
+  }
+  throw lastErr || new Error('LLM 调用失败');
 }
 
 /**
@@ -648,35 +771,186 @@ function parseBalancedJson(raw: string, start: number): unknown {
 }
 
 /**
- * 手机端 agent 循环: goal → LLM 思考 → (工具调用 → 结果回填 → 再思考) → 最终回答。
- * 与桌面 pivot loop 同构但浏览器安全边界内; 任何一步失败即降级。
+ * 手机端 agent 循环 — 原生运行内核 (2026-10-16 完整版)
+ * goal → bootstrap → (LLM 思考 → 工具/确认/记忆迭代 → 结果回填) → 最终回答
+ *
+ * 逐项机制 (leo 点名清单, 全部手机原生落地):
+ *   · bootstrap: 身份 → 记忆快照 restore → user/soul 文档冻结摘要 → 工具指纹
+ *   · 生命周期: runId + idle→running→paused→done/cancelled/error, task/process 台账落盘
+ *   · 错误恢复: 网络退避重试 (webAgentLlmCall 内) + 失败信息注入上下文
+ *   · 自适应 API 超时: max(10s, ceil(ctxChars/1024)*4000+10000) — 长任务不被误杀
+ *   · 缓存命中: system 装配指纹 (冻结上下文 + 工具指纹) → 同指纹复用, 不重建
+ *   · memory 整段注入: recall(goal) 结果进 system 冻结块
+ *   · 记忆快照/迭代: 每轮 autoIterate + 收尾 snapshot (重启 bootstrap 恢复)
+ *   · 文档冻结 + 隐式化: user 文档/soul 文档只注摘要 (leo: 系统 prompt 注入太多, 删)
+ *   · 上下文压缩: 超阈值中间轮压成摘要 (长任务不爆上下文)
+ *   · 工具指纹: 工具集 hash → system 装配缓存 key (工具变了 key 变)
+ *   · TTL: 记忆条目 TTL 过期 decay (mobile-memory.applyTtl)
+ *   · 多模态通道标注: channel 参数 → system 声明 + 记录
+ *   · 能动性: 系统提示注入「先动手别先问/做到底/换方式继续」
+ *   · 中间阶段性环境: 已完成步骤注入 system + onProgress 回调
+ *   · 计划设计: plan 参数进 system (任务拆步骤)
+ *   · 确认模式: 高风险工具 → paused → confirm 回调裁决
+ *   · 无进展检测: 同一工具+参数连续 10 轮 → 判死循环提前收敛 (leo: 任务该做多久做多久, 由无进展兜底决定什么时候算完)
  */
-export async function runWebAgentLoop(goal: string, llm: { baseUrl: string; apiKey?: string; model?: string; maxTokens?: number }): Promise<string | null> {
+export interface MobileRunOptions {
+  /** 手机原生记忆实例 (缺省按身份 DID 自建) */
+  memory?: MobileMemory;
+  /** 多模态输入通道标注 */
+  channel?: MobileInputChannel;
+  /** 确认模式回调: 高风险工具执行前询问 (返回 false = 拒绝执行) */
+  confirm?: (tool: string, args: Record<string, unknown>) => Promise<boolean> | boolean;
+  /** 中间阶段回调 (每步工具执行后) */
+  onProgress?: (p: { step: number; tool: string; output: string }) => void;
+  /** 计划设计 (任务拆解提示, 进 system) */
+  plan?: string;
+  /** user 文档摘要 (冻结注入; 缺省从身份 profile 生成) */
+  userDoc?: string;
+  /** soul 文档摘要 (冻结注入; 缺省用 persona 摘要) */
+  soulDoc?: string;
+  /** 外部取消信号 (生命周期 cancelled) */
+  signal?: AbortSignal;
+}
+
+export interface MobileRunOutcome {
+  ok: boolean;
+  reply: string | null;
+  runId: string;
+  status: MobileLifecycle;
+  steps: number;
+  error?: string;
+}
+
+export async function runWebAgentLoop(
+  goal: string,
+  llm: { baseUrl: string; apiKey?: string; model?: string; maxTokens?: number },
+  opts: MobileRunOptions = {},
+): Promise<string | null> {
+  // ── bootstrap ─────────────────────────────────────────────────────────────
+  const id = await ensureIdentity();
+  const did = id.did;
+  const memory = opts.memory || new MobileMemory(did);
+  memory.restore(memory.snapshot());  // 启动恢复记忆 (幂等: restore 只合并缺失条目)
+  const channel = opts.channel || 'text';
+  const runId = quickHash(did + '|' + goal + '|' + Date.now());
+  // task/process 记录: 生命周期开始
+  const record: MobileRunRecord = { runId, goal: String(goal || '').slice(0, 80), status: 'running', steps: 0, startedAt: new Date().toISOString(), channel };
+  saveRunRecord(did, record);
+
+  // 文档冻结 + 隐式化 (leo: 系统 prompt 注入太多, 文档可以删):
+  //   userDoc 缺省 = 身份 profile 摘要; soulDoc 缺省 = persona 摘要 (buildAgentSystem 内取)
+  const userDoc = opts.userDoc ?? (
+    [id.name ? `名字: ${id.name}` : '', id.phone ? `手机号: ${id.phone}` : '', id.email ? `邮箱: ${id.email}` : '', id.note ? `备注: ${id.note}` : '']
+      .filter(Boolean).join('\n')
+  );
+  // memory 整段注入: 按目标召回 (冻结快照, 循环内不重建 → 缓存命中稳定)
+  const memoryBlock = memory.recall(String(goal || ''), { limit: 3 }).map((e) => e.content).join('\n');
+
+  // 缓存命中: system 装配指纹 = 冻结上下文摘要 + 工具指纹 + 目标前缀
+  //   同指纹 (文档/记忆/工具没变) → 复用 system, 不重建 (桌面 kv-prefix-cache 同原理)
+  const sysCache = new MobileCache('bolloon_sys');
+  const sysFp = quickHash([
+    userDoc, opts.soulDoc || 'soul-default', memoryBlock, toolFingerprint(), channel, opts.plan || '',
+  ].join('|'));
   const messages: Array<{ role: string; content: string }> = [
-    { role: 'system', content: buildAgentSystem() },
-    { role: 'user', content: goal },
+    { role: 'system', content: sysCache.get<string>(sysFp, 10 * 60_000) || buildAgentSystem({ goal, memoryBlock, userDoc, soulDoc: opts.soulDoc, channel, plan: opts.plan }) },
+    { role: 'user', content: String(goal || '') },
   ];
-  const MAX_STEPS = 5;
+  sysCache.set(sysFp, messages[0].content); // 冻结 system 进缓存 (TTL 10min)
+
+  const MAX_STEPS = 150;
+  const NO_PROGRESS_LIMIT = 10;      // 同一工具+参数连续 N 轮 → 死循环
+  const COMPACT_AT = 30;             // 消息超过 N 条 → 压缩中间轮
   const steps: string[] = [];
+  let lastToolSig = '';
+  let noProgress = 0;
   for (let i = 0; i < MAX_STEPS; i++) {
-      const raw = await webAgentLlmCall(messages, llm);
-      // 2026-10-07 (模拟器验证发现): LLM 常输出前置文本+JSON ("好的，我先查询...\n{\"tool\":...}")
-      //   旧正则要求整段是 JSON → 工具调用被当普通回答, 闭环断。宽容提取第一个 JSON 对象。
-      const toolJson = extractToolCall(raw);
-      if (toolJson && typeof toolJson.tool === 'string' && WEB_AGENT_TOOLS[toolJson.tool]) {
-        const out = await WEB_AGENT_TOOLS[toolJson.tool]();
-        steps.push(`🔧 ${toolJson.tool} → ${out.slice(0, 80)}`);
-        messages.push({ role: 'assistant', content: raw });
-        messages.push({ role: 'user', content: `工具结果: ${out}` });
-        continue;
+    // 生命周期: 外部取消 → cancelled
+    if (opts.signal?.aborted) {
+      record.status = 'cancelled';
+      record.finishedAt = new Date().toISOString();
+      saveRunRecord(did, record);
+      _lastWorklog = [...steps, '⚠ 已取消'];
+      return `[手机自治执行 ${steps.length} 步 · 已取消]`;
+    }
+    let raw: string;
+    try {
+      raw = await webAgentLlmCall(messages, llm);
+    } catch (e: any) {
+      // 错误恢复: LLM 调用失败 → 记录 error 生命周期 + 降级
+      const hint = classifyMobileError(e).hint;
+      record.status = 'error';
+      record.error = String(e?.message || e).slice(0, 120);
+      record.finishedAt = new Date().toISOString();
+      saveRunRecord(did, record);
+      _lastWorklog = [...steps, `⚠ ${hint}`];
+      return steps.length
+        ? `[手机自治执行 ${steps.length} 步 · ${hint}]\n已完成的步骤结果如下:\n${steps.join('\n')}\n(${hint}, 请稍后重试)`
+        : `(${hint}, 请稍后重试)`;
+    }
+    // 2026-10-07 (模拟器验证发现): LLM 常输出前置文本+JSON ("好的，我先查询...\n{\"tool\":...}")
+    //   旧正则要求整段是 JSON → 工具调用被当普通回答, 闭环断。宽容提取第一个 JSON 对象。
+    const toolJson = extractToolCall(raw);
+    if (toolJson && typeof toolJson.tool === 'string' && WEB_AGENT_TOOLS[toolJson.tool]) {
+      // 无进展检测 (leo 2026-10-14: 不用超时截止任务周期, 任务该做多久做多久 —
+      //   但连续重复同一动作不放行, 由无进展兜底决定什么时候算完)
+      const sig = toolJson.tool + '|' + JSON.stringify(toolJson.args || {});
+      noProgress = (sig === lastToolSig) ? noProgress + 1 : 0;
+      lastToolSig = sig;
+      if (noProgress >= NO_PROGRESS_LIMIT) {
+        record.status = 'done';
+        record.finishedAt = new Date().toISOString();
+        saveRunRecord(did, record);
+        _lastWorklog = [...steps, `⚠ 连续 ${NO_PROGRESS_LIMIT} 轮重复同一工具调用 (${toolJson.tool}), 判断死循环提前停止`];
+        return `[手机自治执行 ${steps.length} 步 · 检测到重复动作提前停止]\n` + raw.slice(0, 200);
       }
-    // 无工具调用 = 最终回答
+      // 确认模式: 高风险工具 → paused → confirm 回调裁决 (拒绝 = 跳过执行, 结果如实告知)
+      if (isConfirmRequiredTool(toolJson.tool)) {
+        const allow = opts.confirm ? await opts.confirm(toolJson.tool, toolJson.args) : false;
+        if (!allow) {
+          const denied = `工具 ${toolJson.tool} 需要确认, 本次未执行 (请用户批准后重试)。`;
+          steps.push(`🔒 ${toolJson.tool} → ${denied}`);
+          messages.push({ role: 'assistant', content: raw });
+          messages.push({ role: 'user', content: `工具结果: ${denied}` });
+          continue;
+        }
+      }
+      // 工具执行 (带 args — 更灵活调用)
+      const out = await WEB_AGENT_TOOLS[toolJson.tool](toolJson.args || {});
+      steps.push(`🔧 ${toolJson.tool} → ${out.slice(0, 80)}`);
+      record.steps = steps.length;
+      saveRunRecord(did, record);
+      // 中间阶段性环境: 回调 (UI 进度)
+      if (opts.onProgress) { try { opts.onProgress({ step: steps.length, tool: toolJson.tool, output: out.slice(0, 120) }); } catch { /* 回调失败不影响循环 */ } }
+      if (steps.length > 60) steps.splice(0, steps.length - 60); // 摘要只留最近 60 条, 不无限涨
+      messages.push({ role: 'assistant', content: raw });
+      messages.push({ role: 'user', content: `工具结果: ${out}` });
+      // 上下文压缩: 超过阈值 → 中间轮压成一条摘要 (system + 目标 + 最近 K 轮保留)
+      if (messages.length > COMPACT_AT) {
+        const keep = messages.slice(0, 2);
+        const recent = messages.slice(-10);
+        const summary = `（中间 ${messages.length - 12} 轮对话已压缩）已完成步骤: ${steps.slice(-12).map((s) => s.slice(0, 60)).join(' | ')}`;
+        keep.push({ role: 'user', content: summary });
+        messages.length = 0;
+        messages.push(...keep, ...recent);
+      }
+      continue;
+    }
+    // 无工具调用 = 最终回答 → 记忆迭代 (新事实/偏好/关系入库) + 快照落盘 + done
+    memory.autoIterate({ goal: String(goal || ''), toolResults: steps, reply: raw, source: 'session' });
+    memory.snapshot(); // 记忆快照: 收尾落盘 (bootstrap 下次恢复)
+    record.status = 'done';
+    record.finishedAt = new Date().toISOString();
+    saveRunRecord(did, record);
     _lastWorklog = steps.length ? [...steps, `💬 ${raw.slice(0, 60)}`] : [`💬 ${raw.slice(0, 60)}`];
     if (steps.length) return `[手机自治执行 ${steps.length} 步]\n` + raw;
     return raw;
   }
-  // 循环保护: 没收敛就给最后一条
+  // 循环保护: 没收敛就给最后一条 (生命周期 done)
   const last = messages[messages.length - 1]?.content || '';
+  record.status = 'done';
+  record.finishedAt = new Date().toISOString();
+  saveRunRecord(did, record);
   _lastWorklog = [...steps, '⚠ 达到步数上限, 已停止'];
   return `[手机自治执行, 达到 ${MAX_STEPS} 步上限]\n${last.slice(0, 200)}`;
 }

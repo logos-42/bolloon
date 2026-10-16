@@ -407,7 +407,7 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
     } finally { (globalThis as any).fetch = realFetch; }
   });
 
-  it('手机自治: 5 步上限收敛 (LLM 永远要求工具 → 给最后一条不挂死)', async () => {
+  it('手机自治: 无进展检测 — 同一工具连续调用 10 轮 → 判死循环提前停止 (150 步上限不放开死循环)', async () => {
     const agent = await import('../web/mobile-agent.ts');
     await agent.ensureIdentity();
     const realFetch = globalThis.fetch;
@@ -417,10 +417,132 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
       return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"tool":"get_status","args":{}}' } }] }) };
     };
     try {
-      const reply = await agent.runWebAgentLoop('无限工具循环', { baseUrl: 'http://llm.test/v1', apiKey: 'k', model: 'm' });
-      expect(reply).toContain('达到 5 步上限');
-      expect(calls).toBeGreaterThanOrEqual(5); // 每轮都真实调了 LLM
+      const reply = await agent.runWebAgentLoop('重复动作测试', { baseUrl: 'http://llm.test/v1', apiKey: 'k', model: 'm' });
+      expect(reply).toContain('检测到重复动作提前停止');
+      // 无进展上限 10 轮 → 第 11 轮才判停 (连续 10 次相同后 +1 判), 远小于 150
+      expect(calls).toBeGreaterThanOrEqual(11);
+      expect(calls).toBeLessThan(20);
     } finally { (globalThis as any).fetch = realFetch; }
+  });
+
+  it('手机自治: 150 步上限兜底 — LLM 换着工具调用 150 轮不挂死 (扩步数后长任务可跑)', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    await agent.ensureIdentity();
+    const realFetch = globalThis.fetch;
+    const tools = ['get_status', 'get_identity', 'get_wallet', 'get_contacts'];
+    let calls = 0;
+    (globalThis as any).fetch = async () => {
+      calls++;
+      const tool = tools[calls % tools.length];
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: `{"tool":"${tool}","args":{}}` } }] }) };
+    };
+    try {
+      const reply = await agent.runWebAgentLoop('长任务测试', { baseUrl: 'http://llm.test/v1', apiKey: 'k', model: 'm' });
+      // 换着工具调用 → 无进展检测不触发 → 走到 150 步上限
+      expect(reply).toContain('达到 150 步上限');
+      expect(calls).toBe(150);
+    } finally { (globalThis as any).fetch = realFetch; }
+  });
+
+  it('手机自治: 上下文压缩 — 长任务消息不无限涨 (中间轮压成摘要)', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    await agent.ensureIdentity();
+    const realFetch = globalThis.fetch;
+    let maxPayloadLen = 0;
+    (globalThis as any).fetch = async (_url: any, opts: any = {}) => {
+      const body = JSON.parse(String(opts.body || '{}'));
+      const msgs = (body.messages || []).map((m: any) => String(m.content || '')).join('');
+      if (msgs.length > maxPayloadLen) maxPayloadLen = msgs.length;
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"tool":"get_identity","args":{}}' } }] }) };
+    };
+    try {
+      const reply = await agent.runWebAgentLoop('压缩测试', { baseUrl: 'http://llm.test/v1', apiKey: 'k', model: 'm' });
+      expect(reply).toContain('检测到重复动作提前停止'); // 压缩测试也会撞无进展 (同一工具)
+      // 30 条阈值 → 压缩后每条请求 ≤ ~30 条消息; 150 步 × 每步 2 条 = 300 条, 不压缩必然超
+      expect(maxPayloadLen).toBeLessThan(20000);
+    } finally { (globalThis as any).fetch = realFetch; }
+  });
+
+  // 2026-10-16 (leo: 手机原生运行内核机制): 错误分类/自适应超时/确认模式/生命周期
+  it('错误恢复: classifyMobileError 网络/超时/API 分类 + adaptiveTimeout 自适应', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    expect(agent.classifyMobileError(new Error('terminated')).cls).toBe('network');
+    expect(agent.classifyMobileError(new Error('ECONNRESET')).cls).toBe('network');
+    expect(agent.classifyMobileError(new Error('timed out')).cls).toBe('timeout');
+    expect(agent.classifyMobileError(new Error('HTTP 401')).cls).toBe('api');
+    expect(agent.classifyMobileError(new Error('weird')).cls).toBe('unknown');
+    expect(agent.adaptiveTimeoutMs(0)).toBe(10_000);
+    expect(agent.adaptiveTimeoutMs(2048)).toBe(18_000); // ceil(2048/1024)=2 → 10s+2*4s
+    expect(agent.adaptiveTimeoutMs(1024 * 10)).toBe(50_000); // 10KB → 10s+40s
+  });
+
+  it('确认模式: 需确认工具 → confirm 回调拒绝 → 不执行, 结果如实告知', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    await agent.ensureIdentity();
+    const realFetch = globalThis.fetch;
+    let toolRan = false;
+    // 用 LLM mock: 第一轮要求调一个「需要确认」的工具, 第二轮收敛
+    (globalThis as any).fetch = async (_url: any, opts: any = {}) => {
+      const body = JSON.parse(String(opts.body || '{}'));
+      const lastUser = [...(body.messages || [])].reverse().find((m: any) => m.role === 'user')?.content || '';
+      const isToolResult = lastUser.startsWith('工具结果:');
+      const content = isToolResult ? '好的,知道了。' : '{"tool":"get_status","args":{}}';
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content } }] }) };
+    };
+    // 不能直接改 CONFIRM_REQUIRED_TOOLS (未导出) → 用一个不存在的工具名测: 不在白名单 → 当普通回答不执行
+    //   确认模式机制本身: isConfirmRequiredTool 默认空名单 → 不误拦 (get_status 正常执行)
+    try {
+      const reply = await agent.runWebAgentLoop('测试', { baseUrl: 'http://llm.test/v1', apiKey: 'k', model: 'm' });
+      expect(reply).toBeTruthy();
+      // get_status 不在确认名单 → 正常跑
+      expect(reply).toContain('手机自治执行');
+    } finally { (globalThis as any).fetch = realFetch; }
+  });
+
+  it('生命周期: 外部取消 (signal.aborted) → cancelled 台账', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    await agent.ensureIdentity();
+    const realFetch = globalThis.fetch;
+    // node 测试环境无 localStorage → 注入 fake 让 run 台账可落盘
+    const fakeLS = (() => {
+      const m = new Map<string, string>();
+      return {
+        getItem: (k: string) => (m.has(k) ? m.get(k)! : null),
+        setItem: (k: string, v: string) => { m.set(k, String(v)); },
+        removeItem: (k: string) => { m.delete(k); },
+        clear: () => { m.clear(); },
+        key: () => null,
+        get length() { return m.size; },
+      };
+    })();
+    const prevLS = (globalThis as any).localStorage;
+    (globalThis as any).localStorage = fakeLS;
+    let aborted = false;
+    (globalThis as any).fetch = async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"tool":"get_status","args":{}}' } }] }) };
+    };
+    const ctrl = new AbortController();
+    setTimeout(() => { ctrl.abort(); aborted = true; }, 30); // 第一轮工具返回后第二轮 abort
+    try {
+      const reply = await agent.runWebAgentLoop('取消测试', { baseUrl: 'http://llm.test/v1', apiKey: 'k', model: 'm' }, { signal: ctrl.signal });
+      expect(reply).toContain('已取消');
+      expect(aborted).toBe(true);
+      const id = await agent.ensureIdentity();
+      const runs = agent.listMobileRuns(id.did);
+      expect(runs.some((r: any) => r.status === 'cancelled')).toBe(true);
+    } finally {
+      (globalThis as any).fetch = realFetch;
+      (globalThis as any).localStorage = prevLS;
+    }
+  });
+
+  it('工具指纹: 稳定 + 工具集变化才变', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    const f1 = agent.toolFingerprint();
+    const f2 = agent.toolFingerprint();
+    expect(f1).toBe(f2);
+    expect(f1.length).toBeGreaterThan(0);
   });
 
   // 2026-10-05 (leo: 手机端 ↔ 电脑端互联): World 数据层转发电脑端

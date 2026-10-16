@@ -145,6 +145,19 @@ export async function recordFeedback(action: 'ignore' | 'accept', sourceId: stri
 export interface MatchOptions {
   minScore?: number;
   limit?: number;
+  /** 只返回特定 provider DID 的机会 (手机号通讯录卡片: 手机把联系人 DID 列表传来) */
+  providerDids?: string[];
+}
+
+/** 按 provider DID 过滤 (通讯录卡片): 只留信箱投递人/搜索来源命中指定 DID 的; 本机 board 源无 DID → 过滤掉 */
+function filterByProviderDids(all: OpportunityCandidate[], providerDids: string[]): OpportunityCandidate[] {
+  if (!providerDids || !providerDids.length) return all;
+  const set = new Set(providerDids.map((d) => String(d || '').trim()).filter(Boolean));
+  if (!set.size) return all;
+  return all.filter((c) => {
+    const did = c.inbox?.providerDid || '';
+    return !!did && set.has(did);
+  });
 }
 
 function candidateOf(entry: BoardEntry, intentId: string | null, score: number, reason: 'match' | 'world', matchTags: string[]): OpportunityCandidate {
@@ -263,7 +276,7 @@ export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: 
       for (const c of all.filter((x) => x.reason === 'match').slice(0, 10)) {
         void noteObservation({ ts: Date.now(), kind: 'opportunity-seen', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'match' });
       }
-      return { ok: true, results: (await mergeInboxOnTop(all)).slice(0, limit) };
+      return { ok: true, results: filterByProviderDids(await mergeInboxOnTop(all), opts.providerDids ?? []).slice(0, limit) };
     }
     // 默认世界流: 新鲜度优先
     const sorted = [...openEntries].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
@@ -277,7 +290,7 @@ export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: 
     for (const c of out.slice(0, 10)) {
       void noteObservation({ ts: Date.now(), kind: 'world-change', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'world' });
     }
-    return { ok: true, results: (await mergeInboxOnTop(out)).slice(0, limit) };
+    return { ok: true, results: filterByProviderDids(await mergeInboxOnTop(out), opts.providerDids ?? []).slice(0, limit) };
   }
 
   // 有意图: 匹配打分, match 优先; 世界变化不消失
@@ -307,7 +320,7 @@ export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: 
     if (rank(a.reason) !== rank(b.reason)) return rank(a.reason) - rank(b.reason);
     return b.score - a.score;
   });
-  return { ok: true, results: (await mergeInboxOnTop(all)).slice(0, limit) };
+  return { ok: true, results: filterByProviderDids(await mergeInboxOnTop(all), opts.providerDids ?? []).slice(0, limit) };
 }
 
 /** 对单个意图即时匹配 (list --intent 用; 不走反馈过滤) */

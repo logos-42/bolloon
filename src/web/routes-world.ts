@@ -83,7 +83,15 @@ export function registerWorldRoutes(app: Express): void {
     const minScore = Number(minScoreRaw);
     const limitRaw = typeof req.query.limit === 'string' ? req.query.limit : '50';
     const limit = Math.max(1, Math.min(200, parseInt(limitRaw, 10) || 50));
-    const r = await scanOpportunities({ minScore: Number.isFinite(minScore) ? minScore : 0.4, limit });
+    // 2026-10-16: 通讯录卡片 — dids=<did1>,<did2> 只返回这些 provider 投递的机会 (手机号通讯录联系人)
+    const providerDids = typeof req.query.dids === 'string'
+      ? req.query.dids.split(',').map((d) => d.trim()).filter(Boolean)
+      : [];
+    const r = await scanOpportunities({
+      minScore: Number.isFinite(minScore) ? minScore : 0.4,
+      limit,
+      providerDids: providerDids.length ? providerDids : undefined,
+    });
     if (!r.ok) return json(res, 500, { ok: false, error: r.error });
     json(res, 200, { ok: true, count: r.results.length, minScore, opportunities: r.results });
   });

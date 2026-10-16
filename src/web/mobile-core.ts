@@ -160,6 +160,27 @@ async function routeIncomingMessage(payload: string, fromPeer: string): Promise<
       await agentLayer.handleIncomingPhoneMessage(type, msgBody, fromPeer);
       return;
     }
+    // world.card → 附近卡动态传送 (2026-10-16, leo: 首页卡片根据附近传送)
+    //   对端广播卡片 → 暂存 + 事件 → 首页即时上屏 (不等 45s 轮询)
+    if (type === 'world.card') {
+      try {
+        const card = JSON.parse(msgBody);
+        await core.world.pushNearbyCard(card, fromPeer);
+      } catch { /* 坏卡静默丢弃 */ }
+      return;
+    }
+    // world.card.request → 对端主动来要卡: 回一条自己的机会 (尽力而为, 拿不到就静默)
+    if (type === 'world.card.request') {
+      try {
+        const feed = await core.world.cardFeed();
+        const first = feed?.opportunities?.[0];
+        if (first) {
+          const { sendMobileP2PMessage } = await import('./mobile-p2p.js');
+          await sendMobileP2PMessage(fromPeer, 'world.card', JSON.stringify({ ...first, fromOwn: true }), '');
+        }
+      } catch { /* 回卡失败静默 */ }
+      return;
+    }
   } catch { /* 路由失败静默 */ }
 }
 
@@ -264,6 +285,9 @@ export const core = {
     if (p.startsWith('/api/opportunities?')) return () => core.world.opportunities(p.slice('/api/opportunities?'.length));
     if (p === '/api/intents') return () => core.world.intents();
     if (p === '/api/world/search' || p.startsWith('/api/world/search?')) return () => core.world.search('');
+    // 2026-10-16: 首页卡片动态传送 — 三源聚合 (桌面机会流 + 通讯录卡 + 附近卡)
+    if (p === '/api/world/cards') return () => core.world.cardFeed();
+    if (p === '/api/world/cards/request') return () => core.world.requestNearbyCards();
     // OrbitDB 本地副本 (库级复制)
     if (p === '/api/orbit/status') return () => core.orbit.status();
     if (p === '/api/orbit/replica') return () => core.orbit.replica();
@@ -546,6 +570,8 @@ export const core = {
           // LLM 配置: 请求桌面同步 (未同步时默认手机端, 由 mobile-agent 内置处理)
           dataLayer.requestLlmConfigFromPeer(pid).catch(() => {});
         });
+        // 2026-10-16: 连上对端即广播要卡 (动态传送 — 首页卡片不等轮询, 连上就问一次)
+        core.world.requestNearbyCards().catch(() => {});
 
         return getMobileP2PState();
       } catch (e: any) {
@@ -842,6 +868,90 @@ export const core = {
         return { ok: false, added: 0, results: [], note: 'desktop-unreachable' };
       }
     },
+
+    // ── 首页卡片动态传送 (2026-10-16, leo: 卡片根据「附近 + 手机号通讯录」传送) ──
+    // 设计: 三源聚合, 不贴来源标签 (leo: 主动推送不贴元解释文案)。
+    //   ① 桌面机会流 (默认世界流, 现状)
+    //   ② 通讯录卡: 手机号目录里查过/加过的联系人 DID → 桌面 /api/opportunities?dids= 过滤
+    //   ③ 附近卡: P2P 已连接 peers 广播 world.card 投递 (动态传送, 不等轮询)
+    // 不可达的源如实跳过 (不假装), 但其它源照常出卡 —— 首页永远有内容。
+    async cardFeed(): Promise<any> {
+      const base = await core.world.baseUrl();
+      // ① 桌面机会流
+      let desktop: any[] = [];
+      if (base) {
+        try {
+          const r = await fetch(`${base}/api/opportunities?min-score=0.2&limit=20`);
+          if (r.ok) { const d: any = await r.json(); if (d && Array.isArray(d.opportunities)) desktop = d.opportunities; }
+        } catch { /* 桌面不可达 → 该源跳过 */ }
+      }
+      // ② 通讯录卡: 本机手机号目录查过/加过的联系人 DID
+      let directory: any[] = [];
+      const contactDids = core.directory.contactDids();
+      if (base && contactDids.length) {
+        try {
+          const r = await fetch(`${base}/api/opportunities?dids=${encodeURIComponent(contactDids.join(','))}&min-score=0.2&limit=20`);
+          if (r.ok) { const d: any = await r.json(); if (d && Array.isArray(d.opportunities)) directory = d.opportunities; }
+        } catch { /* 通讯录源不可达 → 跳过 */ }
+      }
+      // ③ 附近卡: P2P 收到的 world.card (动态传送)
+      const nearby = core.world.nearbyCards();
+      // 合并去重 (按 id), 排序: 附近最新 > 通讯录 > 桌面
+      const seen = new Set<string>();
+      const merged = [...nearby, ...directory, ...desktop].filter((c: any) => {
+        if (!c || !c.id) return false;
+        if (seen.has(String(c.id))) return false;
+        seen.add(String(c.id));
+        return true;
+      });
+      return { ok: true, count: merged.length, opportunities: merged.slice(0, 12) };
+    },
+
+    /** 附近卡暂存 (P2P world.card 入站落这里; localStorage 持久化, 重启不丢) */
+    nearbyCards(): any[] {
+      try {
+        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('bolloon_nearby_cards') : null;
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch { return []; }
+    },
+
+    /** 收到附近卡 (world.card 入站 → 存 + 广播事件, 首页即时刷新, 不等 45s 轮询) */
+    async pushNearbyCard(card: any, fromPeer: string): Promise<void> {
+      if (!card || typeof card !== 'object' || !card.id || !card.title) return;
+      const entry = {
+        ...card,
+        id: `near_${String(fromPeer || '').slice(0, 8)}_${String(card.id).slice(0, 16)}`,
+        createdAt: card.createdAt || Date.now(),
+      };
+      const list = core.world.nearbyCards().filter((c: any) => c.id !== entry.id);
+      list.unshift(entry);
+      const keep = list.slice(0, 30);
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('bolloon_nearby_cards', JSON.stringify(keep));
+      } catch { /* 持久化失败不影响本次展示 */ }
+      try { busBroadcast({ type: 'world-card', card: entry, fromPeer }); } catch { /* 无订阅者静默 */ }
+    },
+
+    /** 向已连接 peers 广播请求附近卡 (动态传送: 主动问一次, 对端回 world.card) */
+    async requestNearbyCards(): Promise<{ ok: boolean; peers: number }> {
+      try {
+        const p2p = await import('./mobile-p2p.js');
+        const conns = p2p.getMobileP2PConnections();
+        if (!conns.length) return { ok: false, peers: 0 };
+        let ownDid = '';
+        try { const st = await core.identity.status(); ownDid = st?.did || ''; } catch { /* 身份未就绪不影响广播 */ }
+        let sent = 0;
+        for (const c of conns) {
+          try {
+            const ok = await p2p.sendMobileP2PMessage(c.peer, 'world.card.request', '1', ownDid);
+            if (ok) sent++;
+          } catch { /* 单个失败跳过 */ }
+        }
+        return { ok: sent > 0, peers: sent };
+      } catch { return { ok: false, peers: 0 }; }
+    },
   },
 
   // 手机端独立链上能力 (自己签名/发交易, 不需要电脑端; 需在设置里配 RPC)
@@ -903,6 +1013,28 @@ export const core = {
   //   电脑端不可达 → 明确 desktop-unreachable (不假装有目录)。
   //   隐私: 明文手机号只随请求发给电脑端一次, 响应只回 DID/公钥/昵称 (与桌面红线一致)。
   directory: {
+    /** 通讯录 DID 集合 (手机号目录查过/加过好友的联系人; localStorage 持久化) — 首页卡片传送用 */
+    contactDids(): string[] {
+      try {
+        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('bolloon_contact_dids') : null;
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((d: any) => typeof d === 'string' && d) : [];
+      } catch { return []; }
+    },
+    /** 记录一个联系 DID (查目录命中/加好友成功后调用) */
+    rememberContactDid(did: string): void {
+      const d = String(did || '').trim();
+      if (!d) return;
+      try {
+        const list = core.directory.contactDids();
+        if (!list.includes(d)) {
+          list.push(d);
+          const keep = list.slice(-50);
+          if (typeof localStorage !== 'undefined') localStorage.setItem('bolloon_contact_dids', JSON.stringify(keep));
+        }
+      } catch { /* 记录失败不影响主流程 */ }
+    },
     async baseUrl(): Promise<string> {
       try { const g: any = await import('./mobile-gateway.js'); return String(g.getDesktopBaseUrl() || '').replace(/\/+$/, ''); } catch { return ''; }
     },
@@ -931,6 +1063,7 @@ export const core = {
         });
         const d: any = await r.json().catch(() => null);
         if (!r.ok) return { ok: false, found: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        if (d && d.found && d.did) core.directory.rememberContactDid(String(d.did)); // 通讯录: 查过即记住 (首页卡片传送源)
         return d || { ok: false, found: false, error: '电脑端返回空响应' };
       } catch (e: any) {
         return { ok: false, found: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
@@ -946,6 +1079,7 @@ export const core = {
         });
         const d: any = await r.json().catch(() => null);
         if (!r.ok) return { ok: false, status: r.status, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        if (d && d.found && d.did) core.directory.rememberContactDid(String(d.did)); // 加好友成功 → 通讯录 (首页卡片传送源)
         return d || { ok: false, error: '电脑端返回空响应' };
       } catch (e: any) {
         return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
@@ -1367,6 +1501,28 @@ export const core = {
                   const r = await a.runWebAgentLoop(goal, { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model, maxTokens: llm.maxTokens });
                   return r || '[循环无返回]';
                 },
+        // 2026-10-16 (leo: 手机原生运行内核): 记忆/台账/指纹/多模态 查询面
+        async memory(goal?: string): Promise<any> {
+          const a = await import('./mobile-agent.js');
+          const id = await a.ensureIdentity();
+          const { MobileMemory } = await import('./mobile-memory.js');
+          const m = new MobileMemory(id.did);
+          m.restore(m.snapshot());
+          if (goal) {
+            const hits = m.recall(String(goal), { limit: 5 });
+            return { ok: true, hits: hits.map((e) => ({ content: e.content, kind: e.kind, importance: e.importance, relation: e.relation || null })), fingerprint: m.fingerprint() };
+          }
+          return { ok: true, count: m.all().length, fingerprint: m.fingerprint() };
+        },
+        async runs(): Promise<any> {
+          const a = await import('./mobile-agent.js');
+          const id = await a.ensureIdentity();
+          return { ok: true, runs: a.listMobileRuns(id.did) };
+        },
+        async toolFingerprint(): Promise<string> {
+          const a = await import('./mobile-agent.js');
+          return a.toolFingerprint();
+        },
                 // 2026-10-07: 持续工作 Harness (7 项能力) — 从 kernel 派生的长循环
                 async runHarness(goal: string, opts?: any): Promise<string> {
                   const h = await import('./mobile-harness.js');
