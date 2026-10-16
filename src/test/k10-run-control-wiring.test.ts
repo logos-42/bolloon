@@ -1,11 +1,11 @@
 /**
- * k10-run-control-wiring.test.ts — K10 ①(收尾) : run 状态迁移经**内核控制面**
+ * k10-run-control-wiring.test.ts — K10 ①(收尾) : run 状态迁移经**内核写口**
  *
- * 这一条钉住两件事:
- *   A. **真调方法体**: `PiAgentSession.safeSetRunStatus` (私有, 运行时存在) 三态行为**保真** ——
- *      成功 ⇒ true · **被拒**(状态迁移不合法) ⇒ false 且**不许写降级**(那本来就不是持久化故障) ·
- *      端口未注入 ⇒ false **且写降级**(才算持久化失败, 与旧实现同款)。
- *   B. **反回归**: pi-sdk 不许再直接 `await setRunStatus(`; 必须经 `submitRunControl(kind: 'set-run-status')`。
+ * 2026-10-16 同步 (并行线 3a5e3b4 把 safeSetRunStatus/runControlPorts 当死代码删了, 测试未同步):
+ *   run 状态迁移的**事实写口**已从 control.ts 的 `submitRunControl(kind:'set-run-status')`
+ *   演进为 kernel/run-lifecycle.ts 的 `submitRunLifecycle(op:'finish-run')` —— 语义同:
+ *   未注入即拒 (不静默降级) · 端口 `{ok:false}` 拒绝要归一化 (被拒 ≠ 成功, 也不写降级)。
+ *   本文件据此更新: 三态行为测 finish-run 端口的归一化, 反回归断言改认 submitRunLifecycle。
  *
  * 隔离注意: 降级会写 `~/.bolloon/runs/**` ⇒ 本条把 HOME 指到临时目录 (runsDir() 每次调用时解析)。
  */
@@ -13,56 +13,56 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { submitRunLifecycle, assertLifecycleOk } from '../kernel/run-lifecycle.js';
 
 let tmpHome: string;
-let PiAgentSession: any;
 
 beforeAll(async () => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'k10rc-'));
   process.env.HOME = tmpHome;                    // 降级写进临时 HOME, 不碰真实数据
-  const mod = await import('../agents/pi-sdk.js');
-  PiAgentSession = mod.PiAgentSession;
 });
 
 afterAll(() => {
   try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* */ }
 });
 
-/** 造一个"只提供 runControlPorts"的 this —— 直接驱动真实方法体, 不构造整个 session */
-function fakeThis(ports: any) {
-  return { runControlPorts: () => ports, persistenceFailure: undefined as string | undefined };
-}
-
-describe('K10 ①-A. safeSetRunStatus 三态行为保真 (真方法体)', () => {
-  it('成功 ⇒ true', async () => {
-    const self = fakeThis({ setRunStatus: async () => ({ ok: true }) });
-    const r = await PiAgentSession.prototype.safeSetRunStatus.call(self, 'run-1', 'done');
-    expect(r).toBe(true);
-    expect(self.persistenceFailure, '成功不该记故障').toBeUndefined();
+describe('K10 run 状态迁移: finish-run 端口三态行为保真 (真方法体回调)', () => {
+  it('成功 ⇒ ok:true', async () => {
+    const ports = { finishRun: async () => ({ ok: true }) };
+    const out = await submitRunLifecycle(
+      { op: 'finish-run', origin: 'pi-session', runId: 'r1', payload: { status: 'done' } },
+      ports as any,
+    );
+    expect(assertLifecycleOk(out)).toBeUndefined();
+    expect(out.ok).toBe(true);
   });
 
-  it('被拒 (非法迁移) ⇒ false 且 **不写降级** (口径: 那不是持久化故障)', async () => {
-    const self = fakeThis({ setRunStatus: async () => ({ ok: false, reason: '非法状态迁移 done → running' }) });
-    const r = await PiAgentSession.prototype.safeSetRunStatus.call(self, 'run-1', 'running');
-    expect(r).toBe(false);
-    expect(self.persistenceFailure, '被拒 ≠ 持久化失败 ⇒ 不许写降级').toBeUndefined();
+  it('被拒 (非法迁移) ⇒ ok:false 且拒绝被归一化 (不是静默成功)', async () => {
+    const ports = { finishRun: async () => ({ ok: false, reason: '非法状态迁移 done → running' }) };
+    const out = await submitRunLifecycle(
+      { op: 'finish-run', origin: 'pi-session', runId: 'r1', payload: { status: 'running' } },
+      ports as any,
+    );
+    expect(out.ok).toBe(false);
+    expect(String(out.detail || '')).toContain('端口拒绝'); // 拒绝被归一化, 不是静默成功
   });
 
-  it('端口未注入 ⇒ false **且写降级** (持久化失败要留痕)', async () => {
-    const self = fakeThis({});
-    const r = await PiAgentSession.prototype.safeSetRunStatus.call(self, 'run-1', 'needs_human');
-    expect(r).toBe(false);
-    expect(self.persistenceFailure, '未注入 = 写不进去 ⇒ 必须留痕').toMatch(/状态迁移失败/);
-    expect(self.persistenceFailure).toMatch(/setRunStatus/);
+  it('端口未注入 ⇒ ok:false 且写明未注入 (持久化失败要留痕)', async () => {
+    const out = await submitRunLifecycle(
+      { op: 'finish-run', origin: 'pi-session', runId: 'r1', payload: { status: 'done' } },
+      {} as any, // 未注入 finishRun
+    );
+    expect(out.ok).toBe(false);
+    expect(String(out.detail || '')).toMatch(/port 未注入|未注入/);
   });
 });
 
-describe('K10 ①-B. 反回归: 状态迁移不许绕过控制面', () => {
-  it('pi-sdk 不再直接 await setRunStatus( ; 必须经 submitRunControl 的 set-run-status', () => {
+describe('K10 反回归: run 状态迁移不许绕过内核写口', () => {
+  it('pi-sdk 不再直接 await setRunStatus( ; 必须经 submitRunLifecycle 的 finish-run', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/agents/pi-sdk.ts'), 'utf8');
     expect(src, '不许直接 await setRunStatus(').not.toMatch(/await\s+setRunStatus\(/);
-    expect(src).toMatch(/submitRunControl\(/);
-    expect(src).toMatch(/kind:\s*'set-run-status'/);
-    expect(src).toMatch(/runControlPorts\(\): RunControlPorts/);
+    expect(src).toMatch(/submitRunLifecycle\(/);
+    expect(src).toMatch(/op: 'finish-run'/);
+    expect(src).toMatch(/import \{ submitRunLifecycle/);
   });
 });
