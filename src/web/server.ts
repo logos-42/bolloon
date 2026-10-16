@@ -5058,56 +5058,38 @@ fetchState();
       const judgmentHint = await buildJudgmentHint(channelForJudgment, channelId);
       if (judgmentHint) contextHint += judgmentHint;
 
-      // 2026-06-10: 注入 skills 列表 (本机 ~/.bolloon/skills/ 下所有 skills)
-      // 让 LLM 知道有哪些 skill 可用, 在回复中提示用户
+      // 2026-06-10: 注入 skills 存在性提示 (2026-10-16 按需化: 删逐条列表 —
+      //   pi-sdk buildSkillsIndex 已注入前 40 技能名+描述, 这里只保留存在提示与触发语法)
       try {
         const { loadSkillsFromPaths, defaultSkillPaths } = await import('../agents/skill-loader.js');
         const paths = defaultSkillPaths();
         const skills = await loadSkillsFromPaths(paths);
         if (skills.length > 0) {
-          contextHint += `[系统上下文] 本机已加载的 skills (${skills.length} 个, 你可以提示用户主动调用):\n`;
-          for (const s of skills.slice(0, 20)) {  // 上限 20 避免 prompt 过长
-            const desc = (s.description || '').slice(0, 80);
-            contextHint += `  - /${s.name}${desc ? ' — ' + desc : ''}\n`;
-          }
-          contextHint += '调用语法: 用户说 "/技能名 ..." 或 你回复时建议 "/技能名 ..." 让用户主动触发.\n\n';
+          contextHint += `[系统上下文] 本机已加载 ${skills.length} 个 skills (技能名+描述见上方技能库索引; 需要详情时用 list_skills / read_skill 按需读取). 调用语法: 用户说 "/技能名 ..." 或 你回复时建议 "/技能名 ..." 让用户主动触发.\n\n`;
         }
       } catch (err) {
         // 静默失败 — skills 不是核心, 加载失败不阻塞
       }
 
-      // 2026-06-10: 注入 human values 摘要 (最常用的 judgment / 价值偏好)
-      // 与 judgment 不同: values 是更宏观的"用户偏好", judgment 是针对具体决策的约束
+      // 2026-06-10: human values 存在性提示 (2026-10-16 按需化: 删 8 条摘要列表 —
+      //   buildJudgmentHint 已注入绑定判断力 + 候选, 这里只保留"库里有多少"的指针)
       try {
         const { loadAllJudgments } = await import('../pi-ecosystem-judgment/human-value-store.js');
         const allJudgments = await loadAllJudgments().catch(() => []);
-        // 把所有 judgment 视作软参考 (跟 buildJudgmentHint 的 candidates 同理)
         if (Array.isArray(allJudgments) && allJudgments.length > 0) {
-          contextHint += `[系统上下文] 用户的核心价值倾向 (来自 ${allJudgments.length} 条历史 judgment, 软参考, 体现而非复述):\n`;
-          for (const j of allJudgments.slice(0, 8)) {
-            const decision = (j.decision || '').slice(0, 80);
-            contextHint += `  - ${decision}\n`;
-          }
-          contextHint += '\n';
+          contextHint += `[系统上下文] 判断力库存 ${allJudgments.length} 条历史 judgment (绑定判断力见上方; 需要更多时用读取判断力的工具按需取, 软参考体现而非复述).\n\n`;
         }
       } catch (err) {
         // 静默失败
       }
 
-      // 2026-06-10: 注入 documents 列表 (本机 documents/ 目录的文档元数据)
-      // 让 LLM 知道有文档存在, 用户可主动要求读
+      // 2026-06-10: documents 存在性提示 (2026-10-16 按需化: 删逐条元数据 —
+      //   只留计数, 用户提到某文档时用读文档工具按需读取)
       try {
         const { documentStore } = await import('../documents/store.js');
         const docs = await documentStore.getReceivedDocuments(50).catch(() => []);
         if (Array.isArray(docs) && docs.length > 0) {
-          contextHint += `[系统上下文] 本机 documents (${docs.length} 篇, 用户可让你读):\n`;
-          for (const d of docs.slice(0, 10)) {
-            const name = d.fileName || d.id || '(未命名)';
-            const size = d.fileSize ? ` (${Math.round(d.fileSize / 1024)}KB)` : '';
-            const sender = d.fromNodeId ? ` [来自 ${d.fromNodeIdShort || d.fromNodeId.substring(0,8)}…]` : '';
-            contextHint += `  - ${name}${size}${sender}\n`;
-          }
-          contextHint += '用户提到某文档时, 你可以调用读文档工具读取并总结.\n\n';
+          contextHint += `[系统上下文] 本机 documents ${docs.length} 篇 (用户提到某文档时, 用读文档工具按需读取并总结).\n\n`;
         }
       } catch (err) {
         // 静默失败
@@ -5163,8 +5145,10 @@ fetchState();
             } catch { /* 无 sessions 目录 */ }
           }
           if (summariesToRead.length > 0) {
-            const memBlock = summariesToRead.map(s => s.trim().slice(-1500)).join('\n\n---\n\n');
-            contextHint += `[系统上下文] 动态状态层 · chat-worksite (上次做到哪 — 本 channel 历史记忆, 来自 memory-compressor 摘要, 引用而非复述):\n${memBlock.slice(-2500)}\n\n`;
+            // 2026-10-16 按需化: 历史记忆只注尾部 800 chars 作为"上次做到哪"的锚,
+            //   完整摘要按需用 read 工具取 (记忆是引用而非复述, 全量 2500 常驻浪费)
+            const memBlock = summariesToRead.map(s => s.trim().slice(-800)).join('\n\n---\n\n');
+            contextHint += `[系统上下文] 动态状态层 · chat-worksite (上次做到哪 — 本 channel 历史记忆尾部摘录, 来自 memory-compressor 摘要, 引用而非复述):\n${memBlock.slice(-800)}\n\n`;
           } else {
             // 2026-08-08 (DID 目录读侧): 磁盘无摘要时, 回退读 DID 目录 memory 表 (跨设备同步来的记忆)
             try {
@@ -5174,11 +5158,11 @@ fetchState();
                 const rows = catalogMemoryRows(cat, agentId);
                 if (rows.length > 0) {
                   const memBlock = rows.slice(0, 2)
-                    .map(({ row }) => String((row.data as Record<string, unknown>).summary || '').slice(-1500))
+                    .map(({ row }) => String((row.data as Record<string, unknown>).summary || '').slice(-800))
                     .filter(Boolean)
                     .join('\n\n---\n\n');
                   if (memBlock) {
-                    contextHint += `[系统上下文] 动态状态层 · chat-worksite (DID 目录同步记忆, 引用而非复述):\n${memBlock.slice(-2500)}\n\n`;
+                    contextHint += `[系统上下文] 动态状态层 · chat-worksite (DID 目录同步记忆尾部摘录, 引用而非复述):\n${memBlock.slice(-800)}\n\n`;
                   }
                 }
               }
@@ -5215,22 +5199,24 @@ fetchState();
       }
       const linkedIds = channelForJudgment?.linkedDocumentIds;
       if (Array.isArray(linkedIds) && linkedIds.length > 0) {
+        // 2026-10-16 按需化: 关联文档不再每轮全文注入 (10篇×1.5KB=15KB 常驻 prompt),
+        //   只列文件名指针, 用户提到某文档时用读文档工具按需读取。
+        //   关联文档本身不常在单轮对话中被用到, 全量注入是浪费。
         try {
           const { documentStore } = await import('../documents/store.js');
-          contextHint += `[系统上下文] 此 channel 关联了 ${linkedIds.length} 篇文档 (已自动加载内容, 你应基于它们回答):\n`;
-          let loaded = 0;
+          const names: string[] = [];
           for (const docId of linkedIds.slice(0, 10)) {
             const doc = await documentStore.readDocument(docId).catch(() => null);
             if (!doc) continue;
             const name = doc.metadata?.fileName || docId;
-            const content = (doc.content || '').slice(0, 1500);  // 单篇 1.5KB 上限, 总 prompt 防爆
-            contextHint += `\n--- 文档: ${name} ---\n${content}\n--- 文档结束 ---\n`;
-            loaded++;
+            names.push(name);
+            if (names.length >= 5) break;  // 指针只列前 5, 其余计数
           }
-          if (loaded === 0) {
-            contextHint += `(但加载失败, 文档可能已被删除)\n\n`;
+          if (names.length > 0) {
+            const more = linkedIds.length > names.length ? ` (共 ${linkedIds.length} 篇)` : '';
+            contextHint += `[系统上下文] 此 channel 关联了 ${linkedIds.length} 篇文档 — ${names.join('、')}${more}. 用户提到某篇时, 用读文档工具按需读取全文再回答.\n\n`;
           } else {
-            contextHint += '\n';
+            contextHint += `[系统上下文] 此 channel 关联了 ${linkedIds.length} 篇文档 (内容读取失败, 用读文档工具按需读取).\n\n`;
           }
         } catch (err) {
           console.warn('[v3-persona] 加载关联文档失败 (非致命):', (err as Error).message);
