@@ -9,9 +9,11 @@
 |                                                        |
 |  Web Server (port 54188) ← 用户聊天 / 配置 / 调试     |
 |       ↓                                                |
-|  Pi Agent (LLM 推理, 注入门, 监控门)                 |
+|  Pi Agent (LLM 推理, 想和说)                          |
 |       ↓                                                |
-|  Judgment System (判断力库 + 类 B 自适应)              |
+|  Harness (准不准做: 允许/拒绝/记录/fail-closed)       |
+|       ↓                                                |
+|  Kernel (怎么运行: 队列/租约/取消/端口/生命周期)      |
 |       ↓                                                |
 |  P2P Network (跨机器互联, v3 + P2PDirect 双轨)         |
 |                                                        |
@@ -19,6 +21,13 @@
               ↕ P2P (跨机器, 端到端加密)
        [其它 bolloon 节点]
 ```
+
+**分层原则 (2026-10-13 leo 定稿, 与 AGENTS.md §8 一致)**：
+- **Pi** 负责「想和说」——LLM 推理、生成回复、调用工具
+- **Harness** 负责「准不准做」——允许/拒绝/记录/fail-closed，不做调度与业务流程
+- **Kernel** 负责「怎么运行」——机制 (队列、租约、取消、端口、生命周期、资源管理)，不做业务判断
+- **Supervisor** 负责「什么时候继续」——目标接力 / 恢复
+- **Goal/Run** 负责「到底发生了什么」——意图证据链
 
 **核心循环**：人类聊天 → 注入门检索相关判断力 → LLM 推理 → AI 回复 → 监控门审计 → 行为记录到 usage.jsonl → 类 B 自适应扫描 → 演化日志。
 
@@ -29,6 +38,7 @@
 | `src/agents/pi-sdk.ts` | PiAgent 主类 / ReAct 循环 / 工具注册 / SessionStart/Stop/PreToolUse hook 接入点 |
 | `src/agents/permission-mode.ts` | **本轮新增** — 3 种 permission mode (default/acceptEdits/bypassPermissions) + 解析 |
 | `src/agents/pre-tool-validator.ts` | **本轮新增** — PreToolUse 4 步链式校验 (modeGate/blacklist/shell-guard/schema) |
+| `src/kernel/` | **Native Macro-Kernel** — 机制层 (队列/租约/取消/端口/生命周期/资源管理)，零业务判断；含 gate-scan / roster / channel-actor / plan-* / session-lifecycle 等 (详见 `docs/wiki/bolloon-native-macro-kernel.md`) |
 | `src/pi-ecosystem-judgment/` | **判断力系统核心**：注入门 / 蒸馏 / 演化 / 自适应扫描 / 监控门 |
 | `src/context-compaction/` | **本轮新增** — 5 层上下文压缩流水线 (Budget Reduction / Snip / Microcompact / Context Collapse / Auto-Compact) |
 | `src/bootstrap/context-hierarchy.ts` | **本轮新增** — Bolloon.md 4 级层次 (Managed / User / Project / Local) |
@@ -100,7 +110,8 @@ AI 回复下方挂极简 `📎 参考 N 条原则` 链接（不展开内嵌）�
 ## 已知边界
 
 - **类 B 自适应**每天 0:00 跑 1 次，重启 bolloon 期间不补跑
-- **Context 缓存 24h**——中途改 Bolloon.md / persona / git commit 后, 重启才生效
+- **Context 缓存指纹失效**——persona/Bolloon.md/AGENTS.md/CLAUDE.md 任一文档 mtime+size 变化 ⇒ 指纹变 ⇒ 缓存 miss ⇒ 下一轮重装配 (对齐 Hermes invalidate_system_prompt)；不再等 24h TTL
+- **prompt 注入按需化 (2026-10-16)**——运行时注入分两类：锚点 (身份/绑定判断力/进行中计划/历史尾部 800B) 常驻；列表与全文 (技能清单/documents/关联文档/完整记忆) 只留计数+指针，模型需要时用对应工具按需读取。system prompt 不为列表/全文耗费篇幅，流程判断由 kernel/意图驱动
 - **PreToolUse 4 步链已接** — `onPreToolUse` 串接 modeGate + blacklist + shell-guard + schema;
   shell 工具永远走 shell-guard, bypassPermissions 仍受路径黑名单约束
 - **5 层压缩**: 同步层 (Budget Reduction / Snip / Microcompact) 在 `buildContext` 跑;
