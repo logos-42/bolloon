@@ -1743,6 +1743,27 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
     console.warn('[runs] 对账失败 (非致命):', (err as Error)?.message);
   }
 
+  // 2026-10-16 (leo: 双内核冗余 — 独立 kernel 守护进程): HA 双活 — 主进程以 primary 写心跳,
+  //   spawn 独立 kernel 守护进程 (standby), 主死 → daemon 接管; daemon 死 → 自动重启。
+  //   环境变量门控: BOLLOON_HA=1 启用 (默认关 — 单节点常规运行不启动额外进程)。
+  if (process.env.BOLLOON_HA === '1') {
+    try {
+      const { createHaSupervisor } = await import('../agents/ha-supervisor.js');
+      const haSup = createHaSupervisor({
+        log: (level, message) => {
+          if (level === 'error') console.warn(message);
+          else if (level === 'warn') console.warn(message);
+          else if (process.env.BOLLOON_VERBOSE === '1') console.log(message);
+        },
+      });
+      await haSup.start();
+      (globalThis as any).__bolloonHaSupervisor = haSup;
+      console.log('[ha] 双活守护已启动 (primary 心跳 + standby kernel 守护进程)');
+    } catch (err) {
+      console.warn('[ha] 双活守护启动失败 (非致命):', (err as Error)?.message);
+    }
+  }
+
   // 2026-09-16 (M2-B): ExecutionSupervisor —— 长期执行层。
   //   页面关掉、进程重启后由它把 Goal 继续下去; 跨进程排他靠 Goal lease (不是内存状态)。
   //   Harness 管"这一段能不能安全执行", Supervisor 管"这个目标还要不要继续执行"。

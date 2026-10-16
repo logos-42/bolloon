@@ -31,3 +31,6 @@ export * from './run-resume.js';
 export * from './turn-selfcheck.js';
 export * from './code-write-gate.js';
 export * from './transport.js';
+// 2026-10-16 (leo: 双内核冗余): Kernel 双活 — 心跳仲裁 (纯机制) + 守护循环 (端口注入)
+export * from './ha/ha-arbiter.js';
+export * from './ha/ha-guard.js';
