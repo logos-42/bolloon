@@ -1090,34 +1090,85 @@ export const core = {
   // 手机号登录 (2026-10-15): 手机号 + OTP 验证码登录 — 手机端把 bind/verify 转发电脑端,
   //   成功后用电脑端返回的身份绑定本机 identity (手机号即登录凭证, 不再只是昵称)。
   phoneAuth: {
+    // 2026-10-17 (leo: 无电脑也能独立验证): 电脑在线 → 转发桌面 OTP;
+    //   电脑离线 → 本机生成验证码 + DID 签名声明 (手机号确认 = 首选验证方式)。
+    //   优先级: 手机号确认 > 朋友互认 (P2P) > 短信/邮箱 (同层, 兜底)。
     async bind(phone: string): Promise<any> {
       const base = await core.directory.baseUrl();
-      if (!base) return { ok: false, error: '需要电脑端在线 (设置里填桌面地址) 才能发送验证码' };
-      try {
-        const r = await fetch(`${base}/api/contacts/bind`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ kind: 'phone', value: phone, region: 'CN', source: 'user_input' }),
-        });
-        const d: any = await r.json().catch(() => null);
-        if (!r.ok) return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
-        return d || { ok: false, error: '电脑端返回空响应' };
-      } catch (e: any) {
-        return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
+      const norm = String(phone || '').replace(/[^\d+]/g, '');
+      if (!/^\+?\d{8,15}$/.test(norm)) return { ok: false, error: '手机号格式不正确 (8-15 位数字)' };
+      if (base) {
+        try {
+          const r = await fetch(`${base}/api/contacts/bind`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ kind: 'phone', value: norm, region: 'CN', source: 'user_input' }),
+          });
+          const d: any = await r.json().catch(() => null);
+          if (r.ok && d && d.ok !== false) return d;
+          if (d && d.error && String(d.error).includes('不可达')) { /* 落到本机 */ }
+          else if (!r.ok && r.status >= 500) { /* 桌面挂了也落到本机 */ }
+          else return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        } catch { /* 网络失败 → 本机独立验证 */ }
       }
+      // ── 本机独立验证 (无电脑 / 电脑不可达) ─────────────────────────────
+      //   手机号确认: 本机生成 6 位码 → 用户在同一台手机输入 → 设备 DID 签名声明
+      //   "此手机号由这台设备的身份确认"。证据: 签名留 local storage (可离线验签)。
+      const rnd = (() => { try { const b = new Uint8Array(8); crypto.getRandomValues(b); return Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join(''); } catch { return String(Math.random()).slice(2); } })();
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      const challengeId = `loc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const contactId = `c-ph-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const challenge = { challengeId, contactId, phone: norm, code, salt: rnd, createdAt: Date.now(), expiresAt: Date.now() + 10 * 60_000, used: false };
+      try { localStorage.setItem('bolloon.phone.challenge.v1', JSON.stringify(challenge)); } catch { /* 内存态即可 */ }
+      const me = await (async () => { try { const a = await import('./mobile-agent.js'); return a.identityStatus(); } catch { return null; } })();
+      return {
+        ok: true, contactId, challengeId, otpForLocalSink: code, local: true,
+        channelLabel: '本机独立验证 (无电脑, 手机号确认首选)',
+        did: me && me.did ? me.did : undefined,
+        note: '电脑不可达, 已走本机独立验证: 验证码就是本机确认码; 验证通过后手机号绑定到本机 DID 身份',
+      };
     },
     async verify(contactId: string, challengeId: string, code: string): Promise<any> {
       const base = await core.directory.baseUrl();
-      if (!base) return { ok: false, error: '需要电脑端在线 (设置里填桌面地址) 才能验证验证码' };
+      if (base && !String(challengeId || '').startsWith('loc-')) {
+        try {
+          const r = await fetch(`${base}/api/contacts/verify`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contactId, challengeId, code }),
+          });
+          const d: any = await r.json().catch(() => null);
+          if (r.ok && d && d.ok !== false) return d;
+          if (d && d.error && String(d.error).includes('不可达')) { /* 落到本机 */ }
+          else if (!r.ok && r.status >= 500) { /* 桌面挂了也落到本机 */ }
+          else return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        } catch { /* 落到本机 */ }
+      }
+      // ── 本机独立验证 ────────────────────────────────────────────────────
       try {
-        const r = await fetch(`${base}/api/contacts/verify`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contactId, challengeId, code }),
-        });
-        const d: any = await r.json().catch(() => null);
-        if (!r.ok) return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
-        return d || { ok: false, error: '电脑端返回空响应' };
+        const raw = localStorage.getItem('bolloon.phone.challenge.v1');
+        const ch = raw ? JSON.parse(raw) : null;
+        if (!ch || ch.challengeId !== challengeId) return { ok: false, error: '本机挑战不存在 (先发送验证码)' };
+        if (ch.used) return { ok: false, error: '验证码已使用 (一次性)' };
+        if (ch.expiresAt < Date.now()) return { ok: false, error: '验证码已过期 (10 分钟)' };
+        if (String(code || '').trim() !== ch.code) return { ok: false, error: '验证码不正确' };
+        ch.used = true;
+        try { localStorage.setItem('bolloon.phone.challenge.v1', JSON.stringify(ch)); } catch { /* 内存态 */ }
+        // 手机号确认 → 绑定到本机 DID 身份 + 留存签名声明
+        const a = await import('./mobile-agent.js');
+        const id = await a.updateIdentityProfile({ phone: ch.phone });
+        let sig: any = null;
+        try { sig = await a.signWithIdentity(`bolloon-phone-confirm:${ch.phone}:${ch.contactId}`); } catch { /* 签名失败不阻塞绑定 */ }
+        try {
+          const list = JSON.parse(localStorage.getItem('bolloon.phone.confirmed.v1') || '[]');
+          list.push({ phone: ch.phone, contactId: ch.contactId, confirmedAt: new Date().toISOString(), did: id.did, signature: sig });
+          localStorage.setItem('bolloon.phone.confirmed.v1', JSON.stringify(list.slice(-20)));
+        } catch { /* 记录失败不阻塞 */ }
+        return {
+          ok: true, contact: { contactId: ch.contactId, kind: 'phone', displayValue: '+86****' + String(ch.phone).replace(/[^\d]/g, '').slice(-4), verificationStatus: 'verified', capabilities: ['send', 'await_reply'] },
+          local: true, did: id.did,
+          note: '本机独立验证通过: 手机号已绑定本机 DID 身份 (设备签名确认)',
+        };
       } catch (e: any) {
-        return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
+        return { ok: false, error: '本机验证失败: ' + String(e?.message || e).slice(0, 120) };
       }
     },
   },

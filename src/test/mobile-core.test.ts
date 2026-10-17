@@ -339,15 +339,37 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
     }
   });
 
-  it('手机号登录: 无桌面地址 → 诚实降级 (bind/verify)', async () => {
+  it('手机号登录: 无桌面地址 → 本机独立验证 (leo: 无电脑也能验证, 手机号确认首选)', async () => {
     const { core } = await import('../web/mobile-core.ts');
-    try { localStorage.removeItem('bolloon_desktop_base_url'); } catch { /* 忽略 */ }
-    const b = await core.phoneAuth.bind('13812345678');
-    expect(b.ok).toBe(false);
-    expect(String(b.error || '')).toContain('电脑端在线');
-    const v = await core.phoneAuth.verify('c1', 'ch1', '123456');
-    expect(v.ok).toBe(false);
-    expect(String(v.error || '')).toContain('电脑端在线');
+    const prevLS = (globalThis as any).localStorage;
+    const store = new Map<string, string>();
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, v); },
+      removeItem: (k: string) => { store.delete(k); },
+    };
+    try {
+      // bind: 无桌面地址 → 本机生成验证码 (成功, local=true)
+      const b = await core.phoneAuth.bind('13812345678');
+      expect(b.ok).toBe(true);
+      expect(b.local).toBe(true);
+      expect(b.challengeId).toMatch(/^loc-/);
+      expect(b.otpForLocalSink).toMatch(/^\d{6}$/);
+      // 用回显的验证码验证 → 本机校验通过 + 手机号绑定身份
+      const v = await core.phoneAuth.verify(b.contactId, b.challengeId, b.otpForLocalSink);
+      expect(v.ok).toBe(true);
+      expect(v.local).toBe(true);
+      expect(v.contact.verificationStatus).toBe('verified');
+      // 一次性: 再用同码验证 → 失败
+      const v2 = await core.phoneAuth.verify(b.contactId, b.challengeId, b.otpForLocalSink);
+      expect(v2.ok).toBe(false);
+      // 错误验证码 → 失败
+      const b2 = await core.phoneAuth.bind('13912345678');
+      const v3 = await core.phoneAuth.verify(b2.contactId, b2.challengeId, '000000');
+      expect(v3.ok).toBe(false);
+    } finally {
+      (globalThis as any).localStorage = prevLS;
+    }
   });
 
   it('手机号登录: 有桌面地址 → 转发电脑端 OTP 通道 (bind/verify)', async () => {

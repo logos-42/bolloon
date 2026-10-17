@@ -473,8 +473,8 @@
     {
       "id": "phone-first-login-design.md",
       "type": "chapter",
-      "label": "手机优先登录与身份验证方案 (leo 想法整理 v0)",
-      "tags": "[phone, login, did, identity, verification, biometric, sms, design, mobile-first]",
+      "label": "手机优先登录与身份验证方案 (leo 想法整理 v1 — 两端功能分化)",
+      "tags": "[phone, login, did, identity, verification, biometric, sms, email, qr, design, mobile-first, dual-core]",
       "stage": "draft",
       "audience": "self",
       "source_file": "docs/wiki/phone-first-login-design.md"

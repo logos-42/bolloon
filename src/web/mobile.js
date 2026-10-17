@@ -2840,7 +2840,7 @@
         <div style="flex:1;font-weight:600">登录</div>
       </div>
       <div style="padding:12px;display:flex;flex-direction:column;gap:12px">
-        <div style="font-size:13px;color:var(--text-secondary)">手机号登录: 输手机号 → 收验证码 → 登录。身份仍由本机 DID 承载, 手机号只是登录/查找凭证。</div>
+        <div style="font-size:13px;color:var(--text-secondary)">手机号登录: 输手机号 → 确认码 → 登录。身份由本机 DID 承载, 手机号只是登录/查找凭证。无电脑时也验证: 本机直接生成确认码 (手机号确认首选), 电脑在线时走桌面验证通道。</div>
         <input id="login-phone" type="tel" inputmode="numeric" placeholder="手机号 (如 13812345678)" style="${_walletInput}">
         <div style="display:flex;gap:8px">
           <input id="login-code" inputmode="numeric" placeholder="验证码" style="${_walletInput};flex:1" disabled>
