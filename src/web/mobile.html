@@ -240,13 +240,27 @@
     <div class="sheet-title">手机号与通讯录</div>
     <div class="sheet-text" id="phone-center-note" style="font-size:12px;color:var(--text-secondary)">手机号是"搜索别人的指针": 验证自己的手机号 → 别人可搜到你; 搜索加好友 → 需对方已发布目录。</div>
 
-    <div class="sheet-title" style="margin-top:10px">验证我的手机号 (=)</div>
-    <input id="phone-me-input" type="tel" inputmode="numeric" placeholder="手机号 (如 13812345678)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
-    <div style="display:flex;gap:8px;margin-top:8px">
-      <input id="phone-me-code" inputmode="numeric" placeholder="验证码" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" disabled />
-      <button class="sheet-choice" id="phone-me-send" style="flex:none;width:110px">发验证码</button>
+    <div class="sheet-title" style="margin-top:10px">验证我的联系方式 (身份确认)</div>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <button class="sheet-choice" id="phone-me-tab-phone" style="flex:1">手机号</button>
+      <button class="sheet-choice" id="phone-me-tab-email" style="flex:1">邮箱 (与短信同层)</button>
     </div>
-    <button class="sheet-choice" id="phone-me-verify" style="margin-top:8px;width:100%">验证并绑定</button>
+    <div id="phone-me-phone-block">
+      <input id="phone-me-input" type="tel" inputmode="numeric" placeholder="手机号 (如 13812345678)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <input id="phone-me-code" inputmode="numeric" placeholder="验证码" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" disabled />
+        <button class="sheet-choice" id="phone-me-send" style="flex:none;width:110px">发验证码</button>
+      </div>
+      <button class="sheet-choice" id="phone-me-verify" style="margin-top:8px;width:100%">验证并绑定</button>
+    </div>
+    <div id="phone-me-email-block" style="display:none">
+      <input id="phone-email-input" type="email" placeholder="邮箱 (如 name@example.com)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <input id="phone-email-code" inputmode="numeric" placeholder="邮箱验证码" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" disabled />
+        <button class="sheet-choice" id="phone-email-send" style="flex:none;width:110px">发验证码</button>
+      </div>
+      <button class="sheet-choice" id="phone-email-verify" style="margin-top:8px;width:100%">验证并绑定</button>
+    </div>
 
     <div class="sheet-title" style="margin-top:12px">手机号搜索加好友 (+)</div>
     <input id="phone-find-input" type="tel" inputmode="numeric" placeholder="对方手机号 (如 13812345678)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />

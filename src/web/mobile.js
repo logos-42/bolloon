@@ -3896,10 +3896,23 @@
     async post(path, body) { const f = coreApi?.resolvePost?.(path, body); if (!f) throw new Error(`本地内核无此路径: ${path}`); return f(); },
   };
   let _pending = { contactId: '', challengeId: '' };
+  let _emailPending = { contactId: '', challengeId: '' };
 
   function bindEvents() {
     const close = $('#phone-center-close');
     if (close) close.addEventListener('click', () => { const el = $('#phone-center-sheet'); if (el) el.hidden = true; });
+
+    // 手机号 / 邮箱 tab 切换
+    const tabPhone = $('#phone-me-tab-phone');
+    const tabEmail = $('#phone-me-tab-email');
+    if (tabPhone) tabPhone.addEventListener('click', () => {
+      const pb = $('#phone-me-phone-block'); const eb = $('#phone-me-email-block');
+      if (pb) pb.style.display = 'block'; if (eb) eb.style.display = 'none';
+    });
+    if (tabEmail) tabEmail.addEventListener('click', () => {
+      const pb = $('#phone-me-phone-block'); const eb = $('#phone-me-email-block');
+      if (pb) pb.style.display = 'none'; if (eb) eb.style.display = 'block';
+    });
 
     // 发验证码 (= 手机号): 走本地内核 /api/phone/auth/bind (转发电脑端, 同一 OTP 通道)
     const send = $('#phone-me-send');
@@ -3933,6 +3946,35 @@
       } catch (e) { alert('验证失败: ' + ((e && e.message) || e)); verify.disabled = false; verify.textContent = '验证并绑定'; }
     });
     function phoneTail() { const v = (($('#phone-me-input') || {}).value || '').replace(/[^\d]/g, ''); return v ? '+86****' + v.slice(-4) : '手机号'; }
+
+    // 邮箱验证 (leo: 与短信同层优先级; 走电脑端 smtp-qq 通道)
+    const eSend = $('#phone-email-send');
+    if (eSend) eSend.addEventListener('click', async () => {
+      const email = (($('#phone-email-input') || {}).value || '').trim().toLowerCase();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { alert('请输入正确的邮箱'); return; }
+      eSend.disabled = true; eSend.textContent = '发送中…';
+      try {
+        const d = await lapi.post('/api/phone/email/bind', { email });
+        if (!d || d.ok === false) { alert((d && d.error) || '发送失败'); eSend.disabled = false; eSend.textContent = '发验证码'; return; }
+        _emailPending = { contactId: String(d.contactId || ''), challengeId: String(d.challengeId || '') };
+        const codeInput = $('#phone-email-code'); if (codeInput) codeInput.disabled = false;
+        eSend.textContent = '已发送 ✓';
+        alert('验证码已发送到 ' + email + ' (SMTP 真实外发) — 去邮箱收码后填在下面');
+        setTimeout(() => { eSend.disabled = false; eSend.textContent = '重新发送'; }, 30000);
+      } catch (e) { alert('发送失败: ' + ((e && e.message) || e)); eSend.disabled = false; eSend.textContent = '发验证码'; }
+    });
+    const eVerify = $('#phone-email-verify');
+    if (eVerify) eVerify.addEventListener('click', async () => {
+      const code = (($('#phone-email-code') || {}).value || '').trim();
+      if (!_emailPending.contactId || !code) { alert('先发送验证码并输入验证码'); return; }
+      eVerify.disabled = true; eVerify.textContent = '验证中…';
+      try {
+        const d = await lapi.post('/api/phone/email/verify', { contactId: _emailPending.contactId, challengeId: _emailPending.challengeId, code });
+        if (!d || d.ok === false) { alert((d && d.error) || '验证失败'); eVerify.disabled = false; eVerify.textContent = '验证并绑定'; return; }
+        alert('邮箱验证通过 — 已绑定本机身份');
+        eVerify.textContent = '✓ 已验证';
+      } catch (e) { alert('验证失败: ' + ((e && e.message) || e)); eVerify.disabled = false; eVerify.textContent = '验证并绑定'; }
+    });
 
     // 手机号搜索加好友 (+ 手机号): 目录 lookup → 发申请
     const find = $('#phone-find-do');

@@ -331,6 +331,9 @@ export const core = {
       return () => core.phoneAuth.pairConfirm(String(b.code || ''), String(b.pairingId || ''));
     }
     if (p === '/api/phone/profile/phone') { const b = body || {}; return () => core.identity.updateProfile({ phone: String(b.phone || '') }); }
+    // 2026-10-17 (leo: 邮箱验证与短信同层): 手机端邮箱 bind/verify → 电脑端 smtp 通道
+    if (p === '/api/phone/email/bind') { const b = body || {}; return () => core.emailAuth.bind(String(b.email || '')); }
+    if (p === '/api/phone/email/verify') { const b = body || {}; return () => core.emailAuth.verify(String(b.contactId || ''), String(b.challengeId || ''), String(b.code || '')); }
     if (p === '/api/wallet/export') { const b = body || {}; return () => core.wallet.export(String(b.id || '')); }
     if (p === '/api/phone/agent/run') {
       const b = body || {};
@@ -1194,6 +1197,55 @@ export const core = {
         const d: any = await r.json().catch(() => null);
         if (!r.ok || !d || d.ok === false) return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
         return { ok: true, deviceDid, accepted: d.accepted || [], note: '配对成功: 电脑已确认这台手机的身份 (DID 主验证)' };
+      } catch (e: any) {
+        return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
+      }
+    },
+  },
+
+  // 2026-10-17 (leo: 手机可通过邮箱收发验证码, 与短信同层优先级): 邮箱验证走电脑端 smtp 通道
+  emailAuth: {
+    async bind(email: string): Promise<any> {
+      const base = await core.directory.baseUrl();
+      const norm = String(email || '').trim().toLowerCase();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(norm)) return { ok: false, error: '邮箱格式不正确' };
+      if (!base) return { ok: false, error: '邮箱验证需要电脑端在线 (设置 → 电脑端同步里填桌面地址); 电脑端需已配置 SMTP (smtp-qq)' };
+      try {
+        const r = await fetch(`${base}/api/contacts/bind`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: 'email', value: norm, provider: 'smtp', secretRef: 'smtp-qq', source: 'user_input' }),
+        });
+        const d: any = await r.json().catch(() => null);
+        if (!r.ok || !d || d.ok === false) {
+          const msg = (d && d.error) || `电脑端返回 ${r.status}`;
+          // 通道未配置 → 明说
+          if (String(msg).includes('provider_not_configured') || String(msg).includes('secretRef')) {
+            return { ok: false, error: '电脑端未配置 SMTP 邮箱通道 (电脑端: /contacts 查看; 配置方法见 wiki contacts-protocol)' };
+          }
+          return { ok: false, error: msg };
+        }
+        return { ok: true, contactId: d.contactId, challengeId: d.challengeId, channelLabel: d.channelLabel || 'SMTP 邮件 (真实外发)', email: norm };
+      } catch (e: any) {
+        return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
+      }
+    },
+    async verify(contactId: string, challengeId: string, code: string): Promise<any> {
+      const base = await core.directory.baseUrl();
+      if (!base) return { ok: false, error: '邮箱验证需要电脑端在线' };
+      try {
+        const r = await fetch(`${base}/api/contacts/verify`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contactId, challengeId, code }),
+        });
+        const d: any = await r.json().catch(() => null);
+        if (!r.ok || !d || d.ok === false) return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        // 邮箱验证通过 → 同步绑定到本机身份 (与手机号同语义)
+        try {
+          const a = await import('./mobile-agent.js');
+          const em = String(d.contact?.displayValue || d.displayValue || '').replace(/^\*+/, '');
+          await a.updateIdentityProfile({ email: em || undefined }).catch(() => null);
+        } catch { /* 本地绑定失败不阻塞 */ }
+        return { ok: true, contact: d.contact || { verificationStatus: 'verified' }, note: '邮箱验证通过' };
       } catch (e: any) {
         return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
       }
