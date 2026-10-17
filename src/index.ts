@@ -3359,6 +3359,13 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       }).then((r) => r.json()).catch(() => null);
       if (!ch || !ch.ok) { appendLine(`${MAGENTA}✗ 配对码生成失败: ${(ch && ch.error) || '需要 web 服务在线 (54188)'}${RESET}`); return; }
       appendLine(`${C_ACCENT}手机↔电脑配对${RESET} — 配对码: ${BOLD}${ch.code}${RESET} (5 分钟有效, 一次性)`);
+      // 2026-10-17: 出终端二维码 (手机「扫电脑二维码配对」可扫; 内容 = bolloon://pair?code=XXXX)
+      try {
+        const { default: QRCode } = await import('qrcode');
+        const qrText = await QRCode.toString(`bolloon://pair?code=${ch.code}`, { type: 'terminal', small: true });
+        appendLine(qrText.split('\n').map((l) => `${C_DIM}${l}${RESET}`).join('\n'));
+        appendLine(`${C_DIM}扫码: 手机 设置 → 手机号与通讯录 → 扫电脑上的二维码配对; 或输码: ${ch.code}${RESET}`);
+      } catch { /* 二维码渲染失败不阻塞 — 输码路径仍可用 */ }
       appendLine(`${C_DIM}在手机 设置 → 手机号与通讯录 → 与电脑配对 输入此码, 手机确认后这里会自动完成。${RESET}`);
       // 2. 轮询确认 (每 2s, 最长 5 分钟)
       const deadline = Date.now() + 5 * 60_000;

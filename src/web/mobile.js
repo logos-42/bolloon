@@ -2750,7 +2750,7 @@
     }
   }
   // 扫码统一入口: 真机用「拍照/选图」走 jsQR 管线 (免原生插件, iOS 也可用)
-  let _qrMode = 'join';   // 'join' = 入网 | 'friend' = 加好友
+  let _qrMode = 'join';   // 'join' = 入网 | 'friend' = 加好友 | 'pair' = 手机↔电脑配对
   function addFriendScan() {
     hideSheet('#addfriend-sheet');
     _qrMode = 'friend';
@@ -3016,6 +3016,21 @@
           const id = c2.getImageData(0, 0, c.width, c.height);
           const text = await (window.BolloonCore && window.BolloonCore.qr && window.BolloonCore.qr.decode(id.data, id.width, id.height));
           if (!text) { alert('未识别到二维码 (试试 /net qr 重新出码)'); return; }
+          // 配对模式: 设置面板「扫电脑二维码配对」→ 识别 bolloon://pair?code=XXXXXX 或纯 6 位码 (2026-10-17)
+          if (window.__bolloonPairScan) {
+            window.__bolloonPairScan = false;
+            const t = String(text).trim();
+            const m = /bolloon:\/\/pair\?code=(\d{6})/i.exec(t) || /^(\d{6})$/.exec(t);
+            if (m) {
+              try {
+                const r = await api.post('/api/phone/pairing/confirm', { code: m[1] });
+                alert(r && r.ok ? '✅ 配对成功: 电脑已确认这台手机' : ('配对失败: ' + ((r && r.error) || '未知原因')));
+              } catch (e) { alert('配对失败: ' + ((e && e.message) || e)); }
+            } else {
+              alert('这个二维码不是配对码 (电脑端 /pair 出码)');
+            }
+            return;
+          }
           // 加好友模式: multiaddr → peers/add; 其他内容(入网链接) → gateway.join
           if (_qrMode === 'friend') {
             _qrMode = 'join';
@@ -3967,6 +3982,15 @@
         }
       } catch (e) { if (box) { box.style.display = 'block'; box.innerHTML = `<div style="font-size:13px;color:var(--danger,#e05555)">配对失败: ${esc((e && e.message) || e)}</div>`; } }
       pairBtn.disabled = false; pairBtn.textContent = '配对';
+    });
+    // 扫电脑二维码配对: 触发统一扫码管线, 识别 bolloon://pair?code=XXXXXX 或纯 6 位码
+    //   _qrMode 在主 IIFE 局部, 这里用全局标志桥接 (主 IIFE 扫码处理开头消费)
+    const pairScan = $('#phone-pair-scan');
+    if (pairScan) pairScan.addEventListener('click', () => {
+      const inp = $('#qr-scan-input');
+      if (!inp) { alert('此设备不支持扫码'); return; }
+      try { window.__bolloonPairScan = true; } catch { /* 内存标志 */ }
+      inp.click();
     });
   }
 
