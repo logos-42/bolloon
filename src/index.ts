@@ -107,6 +107,7 @@ export const CLI_KNOWN_COMMAND_HEADS: ReadonlySet<string> = new Set([
   '/answer',
   '/approve',
   '/contacts',
+  '/directory',
   '/copy',
   '/criteria',
   '/cron',
@@ -1788,6 +1789,76 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     return;
   }
 
+  // ===== 2026-10-17: 手机号快捷符号 (leo 需求: 终端直接敲符号+手机号) =====
+  //   +<手机号>  → 按手机号加好友 (同 /directory add-friend)
+  //   =<手机号>  → 验证自己的手机号 (同 /contacts bind phone)
+  //   -          → 列出自己的通讯录 (known-peers 好友名单)
+  {
+    const phoneMatch = /^([+=])(\+?\d{8,15})$/.exec(trimmed);
+    if (phoneMatch) {
+      const phone = phoneMatch[2].replace(/[^\d+]/g, '');
+      if (phoneMatch[1] === '+') {
+        // +手机号 → 加好友: 走 /directory add-friend 同一逻辑
+        try {
+          const { lookupPhone, isPlausiblePhone } = await import('./agents/contacts/human-directory.js');
+          if (!isPlausiblePhone(phone)) { appendLine(`${C_WARN}手机号格式不正确: ${phone}${RESET}`); return; }
+          const r = await lookupPhone(phone, process.env.HOME);
+          if (!r.found) { appendLine(`${C_WARN}未找到该手机号的账号 (对方未发布目录或已撤销, 与不存在同义)${RESET}`); return; }
+          if (!r.publicKeyHex) { appendLine(`${C_WARN}对方已发布目录但未公开 P2P 公钥, 暂时无法直接加好友${RESET}`); return; }
+          appendLine(`${GRAY}正在向 ${r.displayName || r.did?.slice(0, 20)} 发送好友申请…${RESET}`);
+          const port = process.env.PORT || '54188';
+          const res = await fetch(`http://127.0.0.1:${port}/api/friend-request`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targetPublicKey: r.publicKeyHex, name: r.displayName || undefined, message: '来自手机号快捷符号 + 的好友申请', note: 'via-phone-directory' }),
+          });
+          const data = await res.json();
+          if (!res.ok) { appendLine(`${MAGENTA}✗ 加好友失败: ${data.error || res.status}${RESET}`); return; }
+          appendLine(`${GREEN}✓ 好友申请已发送给 ${data.persistedAs || r.displayName || phone.slice(-4)}\u2019s 账号${RESET}`);
+        } catch (err: any) {
+          appendLine(`${MAGENTA}✗ 加好友失败: ${String(err?.message || err).slice(0, 120)}${RESET}`);
+        }
+      } else {
+        // =手机号 → 验证自己的手机号: 复用 /contacts bind phone
+        try {
+          const { ContactChain } = await import('./agents/contacts/chain.js');
+          let ownerDid = (globalThis as any).__bolloonUserDid || 'did:bolln:local';
+          try {
+            const osmod = await import('os');
+            const pmod = await import('path');
+            const uf = pmod.join(process.env.HOME || osmod.homedir(), '.bolloon', 'identity', 'user.json');
+            const j = JSON.parse((await import('fs')).readFileSync(uf, 'utf8'));
+            if (j?.did) ownerDid = String(j.did);
+          } catch { /* 占位 */ }
+          const chain = new ContactChain({ ownerDid, displayName: '本机用户' });
+          const b = await chain.bind({ kind: 'phone', value: phone, region: 'CN' });
+          if (!b.ok) { appendLine(`${MAGENTA}✗ 绑定时失败: ${b.error}${RESET}`); return; }
+          appendLine(`${C_OK}已登记手机号 ${b.contact!.displayValue}${RESET} (待验证)`);
+          if (b.otpForLocalSink) appendLine(`${C_DIM}本地落盘通道验证码 (未真实外发): ${b.otpForLocalSink} — 用 /contacts verify ${b.contact!.contactId} <码> 完成验证${RESET}`);
+          else appendLine(`${C_DIM}验证码已通过通道外发, 收到后用 /contacts verify ${b.contact!.contactId} <码> 完成验证${RESET}`);
+        } catch (err: any) {
+          appendLine(`${MAGENTA}✗ 验证手机号失败: ${String(err?.message || err).slice(0, 120)}${RESET}`);
+        }
+      }
+      return;
+    }
+    if (trimmed === '-') {
+      // 单独减号 → 列出自己的通讯录 (known-peers)
+      try {
+        const { listPeers } = await import('./network/known-peers.js');
+        const peers = await listPeers();
+        appendLine(`${C_ACCENT}我的通讯录 (${peers.length})${RESET}`);
+        if (!peers.length) { appendLine(`  ${C_DIM}(还没有好友 — 用 +<手机号> 或 /directory add-friend <手机号> 加一个)${RESET}`); }
+        for (const p of peers) {
+          const name = p.name || p.publicKey.slice(0, 12);
+          appendLine(`  ${C_DIM}·${RESET} ${name}  ${C_DIM}${p.publicKey.slice(0, 16)}…${RESET}${p.lastConnectedAt ? `${C_DIM} · 已连接${RESET}` : ''}`);
+        }
+      } catch (err: any) {
+        appendLine(`${MAGENTA}✗ 读取通讯录失败: ${String(err?.message || err).slice(0, 120)}${RESET}`);
+      }
+      return;
+    }
+  }
+
   // ===== 2026-10-06: /world /chat — 世界/聊天模式切换 (用户要求 CLI 也有) =====
     // /world  = 进入世界模式: 扫描机会并以表格呈现 (对应 web 的世界面板)
     // /chat   = 回到聊天模式: 提示 (CLI 无持久模式状态, 只是明确语义)
@@ -3188,6 +3259,89 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       if (!r.ok) appendLine(`${C_WARN}命令没成功, 上面是原因${RESET}`);
     } catch (e: any) {
       appendLine(`${C_ERROR}/contacts 失败: ${String(e?.message || e).slice(0, 160)}${RESET}`);
+    }
+    return;
+  }
+
+  // /directory — 手机号 → 人类账号目录 (2026-10-17, phone-first-login-design)
+  //   /directory             列出本机已发布条目 (脱敏)
+  //   /directory publish <手机号> [昵称]   发布自己的手机号 → DID 指针 (opt-in)
+  //   /directory lookup <手机号>           查对方手机号 → DID (未发布 = 查不到)
+  //   /directory add-friend <手机号> [备注] [附言]  按手机号发起好友申请
+  //   /directory retract                   撤销自己的目录条目
+  if (cmd === '/directory' || cmd.startsWith('/directory ')) {
+    try {
+      const { publishEntry, lookupPhone, retractEntry, readDirectory, summarizeEntries, isPlausiblePhone } = await import('./agents/contacts/human-directory.js');
+      const rest = cmd.startsWith('/directory ') ? cmd.slice('/directory '.length).trim() : '';
+      const argv = rest.split(/\s+/).filter(Boolean);
+      const sub = (argv[0] || '').toLowerCase();
+      // 本机 owner DID (与 /contacts 同口径)
+      let ownerDid = (globalThis as any).__bolloonUserDid || 'did:bolln:local';
+      try {
+        const osmod = await import('os');
+        const pmod = await import('path');
+        const uf = pmod.join(process.env.HOME || osmod.homedir(), '.bolloon', 'identity', 'user.json');
+        const j = JSON.parse((await import('fs')).readFileSync(uf, 'utf8'));
+        if (j?.did) ownerDid = String(j.did);
+      } catch { /* 还没有用户身份 → 本地占位 */ }
+
+      if (sub === 'publish') {
+        const phone = (argv[1] || '').replace(/[^\d+]/g, '');
+        if (!isPlausiblePhone(phone)) { appendLine(`${C_WARN}用法: /directory publish <手机号> [昵称] — 手机号 8-15 位数字${RESET}`); return; }
+        const displayName = argv.slice(2).join(' ') || undefined;
+        const e = await publishEntry(phone, ownerDid, { displayName, homeDir: process.env.HOME });
+        appendLine(`${C_OK}已发布到手机号目录${RESET} (opt-in) — 哈希 ${C_DIM}${e.phoneHash.slice(0, 8)}…${RESET} · DID ${C_DIM}${e.did}${RESET}`);
+        appendLine(`${C_DIM}别人输入你的手机号可查到你的 DID (不会看到手机号明文)。撤销: /directory retract${RESET}`);
+        return;
+      }
+      if (sub === 'lookup') {
+        const phone = (argv[1] || '').replace(/[^\d+]/g, '');
+        if (!isPlausiblePhone(phone)) { appendLine(`${C_WARN}用法: /directory lookup <手机号> — 手机号 8-15 位数字${RESET}`); return; }
+        const r = await lookupPhone(phone, process.env.HOME);
+        if (!r.found) { appendLine(`${C_DIM}未找到该手机号的账号 (对方未发布目录或已撤销 — 与不存在同义)${RESET}`); return; }
+        appendLine(`${C_OK}找到账号:${RESET} ${r.displayName || String(r.did).slice(0, 20)}`);
+        appendLine(`  ${C_DIM}DID:${RESET} ${r.did}`);
+        appendLine(`  ${C_DIM}加好友:${RESET} /directory add-friend ${phone}${r.displayName ? ` ${r.displayName}` : ''}`);
+        return;
+      }
+      if (sub === 'add-friend' || sub === 'add_friend' || sub === 'add') {
+        const phone = (argv[1] || '').replace(/[^\d+]/g, '');
+        if (!isPlausiblePhone(phone)) { appendLine(`${C_WARN}用法: /directory add-friend <手机号> [备注] [附言]${RESET}`); return; }
+        const name = argv[2] || undefined;
+        const message = argv.slice(3).join(' ') || undefined;
+        const r = await lookupPhone(phone, process.env.HOME);
+        if (!r.found) { appendLine(`${C_WARN}未找到该手机号的账号 (对方未发布目录) — 无法发起好友申请${RESET}`); return; }
+        if (!r.publicKeyHex) { appendLine(`${C_WARN}对方已发布目录但未公开 P2P 公钥, 暂时无法直接加好友${RESET}`); return; }
+        appendLine(`${GRAY}正在向 ${r.displayName || r.did?.slice(0, 20)} 发送好友申请…${RESET}`);
+        try {
+          const port = process.env.PORT || '54188';
+          const res = await fetch(`http://127.0.0.1:${port}/api/friend-request`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targetPublicKey: r.publicKeyHex, name: name || r.displayName || undefined, message: message || '来自手机号目录的好友申请', note: 'via-phone-directory' }),
+          });
+          const data = await res.json();
+          if (!res.ok) { appendLine(`${MAGENTA}✗ 好友申请失败: ${data.error || res.status}${RESET}`); return; }
+          appendLine(`${GREEN}✓ 好友申请已发送${RESET} — 对方同意后建立好友关系 (申请号 ${C_DIM}${String(data.requestId || '').slice(0, 12)}${RESET})`);
+        } catch (err: any) {
+          appendLine(`${MAGENTA}✗ 好友申请链路不可用: ${String(err?.message || err).slice(0, 120)}${RESET}`);
+        }
+        return;
+      }
+      if (sub === 'retract' || sub === 'rm') {
+        const ok = await retractEntry(ownerDid, process.env.HOME);
+        appendLine(ok ? `${C_OK}已从目录撤销 (手机号不再可查)${RESET}` : `${C_WARN}目录里没有你的条目${RESET}`);
+        return;
+      }
+      // 无子命令 = 列出本机已发布条目
+      const entries = await readDirectory(process.env.HOME);
+      const sum = summarizeEntries(entries);
+      appendLine(`${C_ACCENT}手机号目录 (${sum.length} 条)${RESET} — 只有哈希, 不存明文:`);
+      if (!sum.length) appendLine(`  ${C_DIM}(还没有发布 — /directory publish <你的手机号> [昵称])${RESET}`);
+      for (const s of sum) appendLine(`  ${C_DIM}·${RESET} ${s.hash} → ${s.did.slice(0, 24)}… ${s.revoked ? `${C_WARN}(已撤销)${RESET}` : C_DIM + s.publishedAt.slice(0, 10) + RESET}`);
+      appendLine(`${C_DIM}用法: /directory publish|lookup|add-friend|retract${RESET}`);
+      return;
+    } catch (e: any) {
+      appendLine(`${C_ERROR}/directory 失败: ${String(e?.message || e).slice(0, 160)}${RESET}`);
     }
     return;
   }

@@ -233,6 +233,35 @@
   </div>
 </div>
 
+<!-- 手机号中心 (2026-10-17, leo: 放进设置, 不单独做独立网页)
+     三件事 = 终端快捷符号对应: =验证自己 · +按手机号加好友 · -列通讯录 -->
+<div class="sheet" id="phone-center-sheet" hidden>
+  <div class="sheet-inner">
+    <div class="sheet-title">手机号与通讯录</div>
+    <div class="sheet-text" id="phone-center-note" style="font-size:12px;color:var(--text-secondary)">手机号是"搜索别人的指针": 验证自己的手机号 → 别人可搜到你; 搜索加好友 → 需对方已发布目录。</div>
+
+    <div class="sheet-title" style="margin-top:10px">验证我的手机号 (=)</div>
+    <input id="phone-me-input" type="tel" inputmode="numeric" placeholder="手机号 (如 13812345678)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <input id="phone-me-code" inputmode="numeric" placeholder="验证码" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" disabled />
+      <button class="sheet-choice" id="phone-me-send" style="flex:none;width:110px">发验证码</button>
+    </div>
+    <button class="sheet-choice" id="phone-me-verify" style="margin-top:8px;width:100%">验证并绑定</button>
+
+    <div class="sheet-title" style="margin-top:12px">手机号搜索加好友 (+)</div>
+    <input id="phone-find-input" type="tel" inputmode="numeric" placeholder="对方手机号 (如 13812345678)" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
+    <div id="phone-find-result" style="display:none;margin-top:8px"></div>
+    <button class="sheet-choice" id="phone-find-do" style="margin-top:8px;width:100%">搜索并加好友</button>
+
+    <div class="sheet-title" style="margin-top:12px">我的通讯录 (-)</div>
+    <div id="phone-roster"><div class="sheet-text" style="font-size:12px;color:var(--text-secondary)">加载中…</div></div>
+
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="sheet-choice sheet-cancel" id="phone-center-close" style="flex:1">关闭</button>
+    </div>
+  </div>
+</div>
+
 <!-- 手机号搜索添加好友: 输入手机号 → 目录查账号 → 发好友申请 (2026-10-15) -->
 <div class="sheet" id="phone-search-sheet" hidden>
   <div class="sheet-inner">

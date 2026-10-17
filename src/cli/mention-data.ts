@@ -58,6 +58,7 @@ const CLI_COMMANDS: MentionItem[] = [
   { kind: 'command', label: 'answer', hint: '回答智能体提出的问题', insert: 'answer' },
   { kind: 'command', label: 'approve', hint: '批准一次待审操作', insert: 'approve' },
   { kind: 'command', label: 'contacts', hint: '联系人 (P2P)', insert: 'contacts' },
+  { kind: 'command', label: 'directory', hint: '手机号目录 (publish/lookup/add-friend/retract)', insert: 'directory' },
   { kind: 'command', label: 'criteria', hint: '判据 / 评分标准', insert: 'criteria' },
   { kind: 'command', label: 'cron', hint: '定时任务', insert: 'cron' },
   { kind: 'command', label: 'dq', hint: '队列 (dequeue)', insert: 'dq' },

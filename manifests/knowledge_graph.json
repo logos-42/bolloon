@@ -471,6 +471,15 @@
       "source_file": "docs/wiki/phone-account-lookup-design.md"
     },
     {
+      "id": "phone-first-login-design.md",
+      "type": "chapter",
+      "label": "手机优先登录与身份验证方案 (leo 想法整理 v0)",
+      "tags": "[phone, login, did, identity, verification, biometric, sms, design, mobile-first]",
+      "stage": "draft",
+      "audience": "self",
+      "source_file": "docs/wiki/phone-first-login-design.md"
+    },
+    {
       "id": "product-core-focus.md",
       "type": "chapter",
       "label": "产品核心收缩 (Core Focus) — M1 只证明一件事",
@@ -686,6 +695,21 @@
     },
     {
       "from": "current-status.md",
+      "to": "phone-first-login-design.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "phone-account-lookup-design.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
+      "to": "bolloon-native-macro-kernel.md",
+      "type": "references"
+    },
+    {
+      "from": "current-status.md",
       "to": "android-agent-runtime.md",
       "type": "references"
     },
@@ -831,17 +855,7 @@
     },
     {
       "from": "current-status.md",
-      "to": "phone-account-lookup-design.md",
-      "type": "references"
-    },
-    {
-      "from": "current-status.md",
       "to": "kernel-design-principles.md",
-      "type": "references"
-    },
-    {
-      "from": "current-status.md",
-      "to": "bolloon-native-macro-kernel.md",
       "type": "references"
     },
     {
@@ -1206,6 +1220,11 @@
     },
     {
       "from": "index.md",
+      "to": "phone-first-login-design.md",
+      "type": "references"
+    },
+    {
+      "from": "index.md",
       "to": "log.md",
       "type": "references"
     },
@@ -1455,6 +1474,16 @@
       "type": "references"
     },
     {
+      "from": "phone-first-login-design.md",
+      "to": "phone-account-lookup-design.md",
+      "type": "references"
+    },
+    {
+      "from": "phone-first-login-design.md",
+      "to": "contacts-protocol.md",
+      "type": "references"
+    },
+    {
       "from": "project-overview.md",
       "to": "current-status.md",
       "type": "references"
@@ -1491,16 +1520,16 @@
     }
   ],
   "stats": {
-    "node_count": 70,
-    "edge_count": 171,
+    "node_count": 71,
+    "edge_count": 175,
     "node_types": {
       "meta": 16,
       "protocol": 19,
-      "chapter": 34,
+      "chapter": 35,
       "claim": 1
     },
     "edge_types": {
-      "references": 169,
+      "references": 173,
       "supersedes": 2
     }
   }

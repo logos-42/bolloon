@@ -2049,6 +2049,7 @@
         <div class="conv-item" id="settings-helia"><span class="list-icon">${ICONS.globe}</span><span>本机 IPFS 节点</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-selfcard"><span class="list-icon">${ICONS.chip}</span><span id="selfcard-text">显示本机卡片: 开</span></div>
         <div class="conv-item" id="settings-did"><span class="list-icon">${ICONS.idcard}</span><span>DID 与身份</span><span class="list-arrow">›</span></div>
+        <div class="conv-item" id="settings-phone"><span class="list-icon">${ICONS.idcard}</span><span>手机号与通讯录</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-persona"><span class="list-icon">${ICONS.chip}</span><span>智能体性格</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-privacy"><span class="list-icon">${ICONS.chip}</span><span>隐私政策与个人信息</span><span class="list-arrow">›</span></div>
         <div class="conv-item" id="settings-wipe"><span class="list-icon">${ICONS.trash}</span><span style="flex:1;min-width:0"><span style="display:block">清除本机数据（注销）</span><span class="conv-preview" style="display:block">删除本机身份、智能体、会话与钱包</span></span><span class="list-arrow">›</span></div>
@@ -2132,7 +2133,31 @@
       showToast(hidden ? '已显示本机卡片' : '已隐藏本机卡片');
     });
     $('#settings-did').addEventListener('click', () => void openIdentityPage());
+    const phoneRow = $('#settings-phone');
+    if (phoneRow) phoneRow.addEventListener('click', () => void openPhoneCenter());
     $('#settings-persona').addEventListener('click', () => void openPersonaPage());
+  }
+
+  // === 手机号与通讯录中心 (2026-10-17, leo: 放进设置, 不单独做独立网页) ===
+  // 三件事 = 终端快捷符号对应: =验证自己 · +按手机号加好友 · -列通讯录
+  async function openPhoneCenter() {
+    const el = $('#phone-center-sheet');
+    if (!el) { alert('手机号面板未加载'); return; }
+    el.hidden = false;
+    loadPhoneRoster();
+  }
+
+  function loadPhoneRoster() {
+    const box = $('#phone-roster');
+    if (!box) return;
+    (async () => {
+      try {
+        let peers = [];
+        try { const p = await api.get('/api/peers'); peers = Array.isArray(p) ? p : ((p && p.peers) || []); } catch { peers = []; }
+        if (!peers.length) { box.innerHTML = '<div class="sheet-text" style="font-size:12px;color:var(--text-secondary)">还没有好友 — 用「手机号搜索加好友」加一个</div>'; return; }
+        box.innerHTML = peers.map((x) => `<div class="sheet-text" style="font-size:13px">· ${escapeHtml(x.name || String(x.publicKey || '').slice(0, 12))} <span style="color:var(--text-secondary)">${String(x.publicKey || '').slice(0, 12)}…</span></div>`).join('');
+      } catch (e) { box.innerHTML = '<div class="sheet-text" style="font-size:12px;color:var(--text-secondary)">读取失败</div>'; }
+    })();
   }
 
   // === 身份页 (身份证明 / 签名 / 邮箱 / 手机号) ===
@@ -3837,6 +3862,93 @@
       alert(done ? `已撤销 ${done} 条授权` : ('撤销未完成: ' + err));
       refresh();
     });
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindEvents);
+  else bindEvents();
+})();
+
+// ============ 手机号与通讯录中心 (2026-10-17, leo: 放进设置, 不单独做独立网页) ============
+// 三件事 = 终端快捷符号对应: =验证自己 · +按手机号加好友 · -列通讯录。
+// 链路复用既有端点: bind/verify 转发电脑端 /api/contacts/bind+verify; 搜索加好友走手机号目录。
+(function () {
+  const $ = (sel) => document.querySelector(sel);
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  // 本地内核转发 (与主 IIFE 的 api 同款; 本 IIFE 是独立的, 拿不到外层局部)
+  const coreApi = window.BolloonCore;
+  const lapi = {
+    async get(path) { const f = coreApi?.resolve?.(path); if (!f) throw new Error(`本地内核无此路径: ${path}`); return f(); },
+    async post(path, body) { const f = coreApi?.resolvePost?.(path, body); if (!f) throw new Error(`本地内核无此路径: ${path}`); return f(); },
+  };
+  let _pending = { contactId: '', challengeId: '' };
+
+  function bindEvents() {
+    const close = $('#phone-center-close');
+    if (close) close.addEventListener('click', () => { const el = $('#phone-center-sheet'); if (el) el.hidden = true; });
+
+    // 发验证码 (= 手机号): 走本地内核 /api/phone/auth/bind (转发电脑端, 同一 OTP 通道)
+    const send = $('#phone-me-send');
+    if (send) send.addEventListener('click', async () => {
+      const phone = (($('#phone-me-input') || {}).value || '').replace(/[^\d+]/g, '');
+      if (!/^\+?\d{8,15}$/.test(phone)) { alert('请输入正确的手机号 (8-15 位数字)'); return; }
+      send.disabled = true; send.textContent = '发送中…';
+      try {
+        const d = await lapi.post('/api/phone/auth/bind', { phone });
+        if (!d || d.ok === false) { alert((d && d.error) || '发送失败 (需要电脑端在线, 设置 → 电脑端同步里填桌面地址)'); send.disabled = false; send.textContent = '发验证码'; return; }
+        _pending = { contactId: String(d.contactId || ''), challengeId: String(d.challengeId || '') };
+        const codeInput = $('#phone-me-code'); if (codeInput) codeInput.disabled = false;
+        send.textContent = '已发送 ✓';
+        // 本地落盘通道回显验证码 (方便无短信设备调试; 真 SMS 通道不回显)
+        if (d.otpForLocalSink) alert('验证码: ' + String(d.otpForLocalSink));
+        setTimeout(() => { send.disabled = false; send.textContent = '重新发送'; }, 30000);
+      } catch (e) { alert('发送失败: ' + ((e && e.message) || e)); send.disabled = false; send.textContent = '发验证码'; }
+    });
+
+    // 验证并绑定 (= 手机号第二步)
+    const verify = $('#phone-me-verify');
+    if (verify) verify.addEventListener('click', async () => {
+      const code = (($('#phone-me-code') || {}).value || '').trim();
+      if (!_pending.contactId || !code) { alert('先发送验证码并输入验证码'); return; }
+      verify.disabled = true; verify.textContent = '验证中…';
+      try {
+        const d = await lapi.post('/api/phone/auth/verify', { contactId: _pending.contactId, challengeId: _pending.challengeId, code });
+        if (!d || d.ok === false) { alert((d && d.error) || '验证失败 (需要电脑端在线)'); verify.disabled = false; verify.textContent = '验证并绑定'; return; }
+        alert('验证通过: ' + ((d && d.contact && d.contact.displayValue) || phoneTail()) + ' — 别人可在手机号目录搜到你');
+        verify.textContent = '✓ 已验证';
+      } catch (e) { alert('验证失败: ' + ((e && e.message) || e)); verify.disabled = false; verify.textContent = '验证并绑定'; }
+    });
+    function phoneTail() { const v = (($('#phone-me-input') || {}).value || '').replace(/[^\d]/g, ''); return v ? '+86****' + v.slice(-4) : '手机号'; }
+
+    // 手机号搜索加好友 (+ 手机号): 目录 lookup → 发申请
+    const find = $('#phone-find-do');
+    if (find) find.addEventListener('click', async () => {
+      const phone = (($('#phone-find-input') || {}).value || '').replace(/[^\d+]/g, '');
+      const box = $('#phone-find-result');
+      if (!/^\+?\d{8,15}$/.test(phone)) { if (box) { box.style.display = 'block'; box.innerHTML = '<div style="color:var(--danger,#e05555);font-size:13px">请输入正确的手机号 (8-15 位数字)</div>'; } return; }
+      if (box) { box.style.display = 'block'; box.innerHTML = '<div style="color:var(--text-secondary);font-size:13px">搜索中…</div>'; }
+      try {
+        const r = await lapi.post('/api/phone/directory/lookup', { phone });
+        if (r && r.found) {
+          const name = r.displayName || String(r.did || '').slice(0, 12);
+          box.innerHTML = `<div style="font-size:14px;margin-bottom:6px">✅ 找到账号: <b>${esc(name)}</b></div>
+            <button class="sheet-choice" id="phone-find-add" style="width:100%">发送好友申请</button>`;
+          const btn = $('#phone-find-add');
+          if (btn) btn.addEventListener('click', async () => {
+            btn.disabled = true; btn.textContent = '发送中…';
+            const a = await lapi.post('/api/phone/directory/add-friend', { phone });
+            btn.disabled = false;
+            if (a && a.ok !== false) btn.textContent = '✅ 已发送 (对方同意后建立好友)';
+            else { btn.textContent = '重试发送'; box.innerHTML += `<div style="color:var(--danger,#e05555);font-size:12px;margin-top:6px">发送失败: ${esc((a && a.error) || '未知原因')}</div>`; }
+          });
+        } else {
+          box.innerHTML = '<div style="color:var(--text-secondary);font-size:13px">未找到该手机号的账号 (对方未发布目录或已撤销)。</div>';
+        }
+      } catch (e) {
+        box.innerHTML = `<div style="color:var(--danger,#e05555);font-size:13px">查询失败: ${esc((e && e.message) || e || '未知错误')}</div>`;
+      }
+    });
+    const findInput = $('#phone-find-input');
+    if (findInput) findInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); find.click(); } });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindEvents);
