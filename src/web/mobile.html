@@ -275,6 +275,17 @@
     <button class="sheet-choice" id="phone-pair-scan" style="margin-top:8px;width:100%">扫电脑上的二维码配对</button>
     <div id="phone-pair-result" style="display:none;margin-top:8px"></div>
 
+    <div class="sheet-title" style="margin-top:12px">朋友互认 (第二选择)</div>
+    <div class="sheet-text" style="font-size:12px;color:var(--text-secondary)">让已加好友的朋友确认你的手机号 — 好友 DID 签名后成为身份证据 (优先级高于短信/邮箱)。</div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <input id="phone-vouch-phone" type="tel" inputmode="numeric" placeholder="要确认的手机号" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
+      <input id="phone-vouch-peer" placeholder="好友 P2P 标识 (通讯录)" style="flex:1.4;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
+      <button class="sheet-choice" id="phone-vouch-request" style="flex:none;width:90px">请求确认</button>
+    </div>
+    <div id="phone-vouch-pending" style="margin-top:8px"></div>
+    <div id="phone-vouch-summary" style="margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>
+    <button class="sheet-choice" id="phone-vouch-load" style="margin-top:8px;width:100%">刷新互认状态</button>
+
     <div class="sheet-title" style="margin-top:12px">我的通讯录 (-)</div>
     <div id="phone-roster"><div class="sheet-text" style="font-size:12px;color:var(--text-secondary)">加载中…</div></div>
 

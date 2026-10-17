@@ -2145,6 +2145,8 @@
     if (!el) { alert('手机号面板未加载'); return; }
     el.hidden = false;
     loadPhoneRoster();
+    // 朋友互认状态 (loadVouch 在独立 IIFE 内, 经全局标志触发)
+    try { window.__bolloonVouchRefresh = true; } catch { /* 忽略 */ }
   }
 
   function loadPhoneRoster() {
@@ -4034,6 +4036,57 @@
       try { window.__bolloonPairScan = true; } catch { /* 内存标志 */ }
       inp.click();
     });
+
+    // 朋友互认 (leo: 第二选择验证; P2P 好友 DID 签名确认)
+    const vouchBtn = $('#phone-vouch-request');
+    if (vouchBtn) vouchBtn.addEventListener('click', async () => {
+      const phone = (($('#phone-vouch-phone') || {}).value || '').replace(/[^\d+]/g, '');
+      const peer = (($('#phone-vouch-peer') || {}).value || '').trim();
+      if (!/^\+?\d{8,15}$/.test(phone)) { alert('请输入正确的手机号'); return; }
+      if (!peer) { alert('请输入好友的 P2P 标识 (通讯录里复制)'); return; }
+      vouchBtn.disabled = true; vouchBtn.textContent = '发送中…';
+      try {
+        const r = await lapi.post('/api/phone/vouch/request', { phone, peerId: peer });
+        alert(r && r.ok ? '已向好友发送互认请求, 等 TA 确认' : ('发送失败: ' + ((r && r.error) || '未知原因')));
+      } catch (e) { alert('发送失败: ' + ((e && e.message) || e)); }
+      vouchBtn.disabled = false; vouchBtn.textContent = '请求确认';
+    });
+    const vouchLoad = $('#phone-vouch-load');
+    const loadVouch = async () => {
+      const sum = $('#phone-vouch-summary'); const pend = $('#phone-vouch-pending');
+      try {
+        const list = await lapi.post('/api/phone/vouch/list', {});
+        if (sum) sum.innerHTML = list && list.summary && list.summary.length
+          ? '✅ 已有朋友确认: ' + list.summary.map((x) => `${x.phone.slice(-4)}…(×${x.vouchCount})`).join(' · ')
+          : '还没有朋友确认的互认 — 请求一个好友确认你的手机号';
+        const reqs = await lapi.post('/api/phone/vouch/requests', {});
+        const pending = (reqs && reqs.requests || []).filter((r) => r && r.status === 'pending');
+        if (pend) {
+          pend.innerHTML = pending.length
+            ? `<div style="font-size:12px;color:var(--text-secondary)">待你确认 (${pending.length}):</div>` + pending.map((r, i) =>
+              `<div style="border:1px solid var(--border);border-radius:8px;padding:6px;margin-top:4px;font-size:12px">
+                ${esc(r.requesterName || '好友')} (${String(r.phone || '').slice(-4)}…) 请你确认 TA 的手机号
+                <button class="sheet-choice" data-vouch-approve="${i}" style="margin-top:4px;width:100%">确认 TA 的手机号是我朋友</button>
+              </div>`).join('')
+            : '';
+          pend.querySelectorAll('[data-vouch-approve]').forEach((b) => b.addEventListener('click', async () => {
+            const i = Number(b.getAttribute('data-vouch-approve'));
+            const r = pending[i]; if (!r) return;
+            const a = await lapi.post('/api/phone/vouch/accept', { fromPeer: r.fromPeer, phone: r.phone, requesterDid: r.requesterDid, requesterName: r.requesterName });
+            alert(a && a.ok ? '已确认 (DID 签名已回传)' : ('确认失败: ' + ((a && a.error) || '未知原因')));
+            loadVouch();
+          }));
+        }
+      } catch (e) { if (sum) sum.innerHTML = '读取失败: ' + ((e && e.message) || e); }
+    };
+    if (vouchLoad) vouchLoad.addEventListener('click', loadVouch);
+    // 打开面板时经全局标志触发刷新 (openPhoneCenter 设位) — 一次性消费, 不轮询
+    try {
+      const consume = () => { if (window.__bolloonVouchRefresh) { window.__bolloonVouchRefresh = false; void loadVouch(); } };
+      if (window.__bolloonVouchRefresh) consume();
+      const t = setTimeout(consume, 800);
+      if (typeof t.unref === 'function') t.unref();
+    } catch { /* 触发失败不影响 */ }
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindEvents);

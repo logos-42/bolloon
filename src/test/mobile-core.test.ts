@@ -645,4 +645,78 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
     const search = await core.resolvePost('/api/world/search', { topic: '聚变' })!();
     expect(search.note).toBe('desktop-unreachable');
   });
+
+  // 2026-10-17 (leo: 朋友互认 = 第二选择验证; 朋友 P2P 互相确认)
+  it('朋友互认: vouch 路由分发 + acceptVouch 证据累积 + summary 汇总', async () => {
+    const { core } = await import('../web/mobile-core.ts');
+    const prevLS = (globalThis as any).localStorage;
+    const store = new Map<string, string>();
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, v); },
+      removeItem: (k: string) => { store.delete(k); },
+    };
+    try {
+      // 路由分发
+      expect(core.resolvePost('/api/phone/vouch/request', { phone: '13812345678', peerId: 'peer1' })).toBeTypeOf('function');
+      expect(core.resolvePost('/api/phone/vouch/accept', { fromPeer: 'peer1', phone: '13812345678', requesterDid: 'did:key:zB' })).toBeTypeOf('function');
+      expect(core.resolvePost('/api/phone/vouch/list', {})).toBeTypeOf('function');
+      expect(core.resolvePost('/api/phone/vouch/requests', {})).toBeTypeOf('function');
+
+      // acceptVouch: 缺字段拒绝
+      expect(core.vouch.acceptVouch({ phone: '13812345678' }).ok).toBe(false);
+      // acceptVouch: 合法证据累积
+      const r = core.vouch.acceptVouch({ phone: '13812345678', voucherDid: 'did:key:zFriend1', signature: 'sig-abc', vouchTs: '2026-10-17T00:00:00Z' });
+      expect(r.ok).toBe(true);
+      core.vouch.acceptVouch({ phone: '13812345678', voucherDid: 'did:key:zFriend2', signature: 'sig-def', vouchTs: '2026-10-17T01:00:00Z' });
+      core.vouch.acceptVouch({ phone: '13987654321', voucherDid: 'did:key:zFriend3', signature: 'sig-ghi', vouchTs: '2026-10-17T02:00:00Z' });
+      // summary: 按手机号聚合
+      const sum = core.vouch.summary();
+      const s = sum.find((x: any) => x.phone === '13812345678');
+      expect(s).toBeTruthy();
+      expect(s.vouchCount).toBe(2);
+      const s2 = sum.find((x: any) => x.phone === '13987654321');
+      expect(s2.vouchCount).toBe(1);
+      // list: 证据持久化可读
+      const list = core.vouch.list();
+      expect(list.length).toBe(3);
+      // 路由取数 (async)
+      const viaRoute = await core.resolvePost('/api/phone/vouch/list', {})!();
+      expect(viaRoute.ok).toBe(true);
+      expect(viaRoute.summary.length).toBe(2);
+    } finally {
+      (globalThis as any).localStorage = prevLS;
+    }
+  });
+
+  it('朋友互认: confirmFriendVouch 用本机 DID 签名 + 载荷结构', async () => {
+    const agent = await import('../web/mobile-agent.ts');
+    await agent.ensureIdentity();
+    let sent: { type?: string; payload?: string; peer?: string } | null = null;
+    // 注入 P2P transport (签名后发送; 验证载荷结构与签名可验)
+    const sentBox = { value: sent };
+    // setAgentTransport 需要 did; 用现有身份
+    const id = await agent.identityStatus();
+    agent.setAgentTransport(async (type: string, payload: string, peer?: string) => {
+      sentBox.value = { type, payload, peer };
+      return true;
+    }, id.did);
+    try {
+      const r = await agent.confirmFriendVouch({ fromPeer: 'peer-b', phone: '13812345678', requesterDid: 'did:key:zRequester', requesterName: '朋友B' });
+      expect(r.ok).toBe(true);
+      const msg = sentBox.value!;
+      expect(msg.type).toBe('agent.vouch.confirm');
+      const body = JSON.parse(msg.payload);
+      expect(body.phone).toBe('13812345678');
+      expect(body.voucherDid).toBe(id.did);            // 用本机 DID 签名 = DID 主验证
+      expect(body.requesterDid).toBe('did:key:zRequester');
+      expect(typeof body.signature).toBe('string');
+      expect(body.signature.length).toBeGreaterThan(20);
+      // 签名可离线验签
+      const ok = await agent.verifyIdentitySignature(body.signedPayload, body.signature, id.publicKey);
+      expect(ok).toBe(true);
+    } finally {
+      agent.setAgentTransport(null as any, '');
+    }
+  });
 });

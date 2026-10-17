@@ -334,6 +334,11 @@ export const core = {
     // 2026-10-17 (leo: 邮箱验证与短信同层): 手机端邮箱 bind/verify → 电脑端 smtp 通道
     if (p === '/api/phone/email/bind') { const b = body || {}; return () => core.emailAuth.bind(String(b.email || '')); }
     if (p === '/api/phone/email/verify') { const b = body || {}; return () => core.emailAuth.verify(String(b.contactId || ''), String(b.challengeId || ''), String(b.code || '')); }
+    // 2026-10-17 (leo: 朋友互认 = 第二选择): 请求/确认/汇总
+    if (p === '/api/phone/vouch/request') { const b = body || {}; return () => core.vouch.requestFriend(String(b.phone || ''), String(b.peerId || '')); }
+    if (p === '/api/phone/vouch/accept') { const b = body || {}; return async () => { const a = await import('./mobile-agent.js'); return a.confirmFriendVouch({ fromPeer: String(b.fromPeer || ''), phone: String(b.phone || ''), requesterDid: String(b.requesterDid || ''), requesterName: String(b.requesterName || '') }); }; }
+    if (p === '/api/phone/vouch/list') { return async () => ({ ok: true, vouches: core.vouch.list(), summary: core.vouch.summary() }); }
+    if (p === '/api/phone/vouch/requests') { return async () => { try { const r = JSON.parse(localStorage.getItem('bolloon.vouch.requests.v1') || '[]'); return { ok: true, requests: Array.isArray(r) ? r : [] }; } catch { return { ok: true, requests: [] }; } }; }
     if (p === '/api/wallet/export') { const b = body || {}; return () => core.wallet.export(String(b.id || '')); }
     if (p === '/api/phone/agent/run') {
       const b = body || {};
@@ -1249,6 +1254,70 @@ export const core = {
       } catch (e: any) {
         return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
       }
+    },
+  },
+
+  // 2026-10-17 (leo: 朋友互认 = 第二选择验证方式; 朋友之间 P2P 互相确认):
+  //   A 请求已建立 P2P 关系的好友 B 确认 A 的手机号 → B 用自己 DID 签名
+  //   "bolloon-vouch:<A的DID>:<phone>:<ts>" → 回传 → A 存为互认证据 (验证强度: 朋友确认)。
+  //   协议消息: agent.vouch.request (请求) / agent.vouch.confirm (签名回传)。
+  vouch: {
+    /** 本机已收集的互认证据 (localStorage, 可离线验签) */
+    list(): Array<Record<string, unknown>> {
+      try { const v = JSON.parse(localStorage.getItem('bolloon.vouch.v1') || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+    },
+    _store(entries: Array<Record<string, unknown>>): void {
+      try { localStorage.setItem('bolloon.vouch.v1', JSON.stringify(entries.slice(-50))); } catch { /* 内存态 */ }
+    },
+    /** 发起互认请求: 向好友 P2P 地址发 agent.vouch.request (需电脑/网络在线转发) */
+    async requestFriend(phone: string, friendPeerId: string): Promise<any> {
+      const norm = String(phone || '').replace(/[^\d+]/g, '');
+      if (!/^\+?\d{8,15}$/.test(norm)) return { ok: false, error: '手机号格式不正确' };
+      if (!friendPeerId) return { ok: false, error: '需要好友的 P2P 标识 (从通讯录选)' };
+      try {
+        const a = await import('./mobile-agent.js');
+        const id = await a.identityStatus();
+        // 经手机 P2P 通道发送 (sendMobileP2PMessage)
+        const p = await import('./mobile-p2p.js');
+        const sent = await p.sendMobileP2PMessage(
+          friendPeerId, 'agent.vouch.request',
+          JSON.stringify({
+            op: 'agent.vouch.request', requesterDid: id.did, requesterName: id.name || '', phone: norm, ts: new Date().toISOString(),
+          }),
+          id.did,
+        ).catch(() => null);
+        if (!sent) return { ok: false, error: '好友未在线 / P2P 未连接 (确认已在通讯录并连上)' };
+        return { ok: true, note: '已向好友发送互认请求, 等 TA 确认' };
+      } catch (e: any) {
+        return { ok: false, error: '发送失败: ' + String(e?.message || e).slice(0, 120) };
+      }
+    },
+    /** 收到对方签名确认 → 存证据 */
+    acceptVouch(entry: Record<string, unknown>): { ok: boolean; error?: string } {
+      try {
+        const phone = String(entry?.phone || '');
+        const voucherDid = String(entry?.voucherDid || '');
+        const sig = String(entry?.signature || '');
+        if (!phone || !voucherDid || !sig) return { ok: false, error: '互认载荷缺字段' };
+        const list = this.list();
+        list.push({ phone, voucherDid, signature: sig, vouchTs: String(entry?.vouchTs || new Date().toISOString()), from: 'p2p' });
+        this._store(list);
+        return { ok: true };
+      } catch (e: any) {
+        return { ok: false, error: String(e?.message || e).slice(0, 120) };
+      }
+    },
+    /** 我的互认汇总: 每个手机号被几个朋友确认 */
+    summary(): Array<{ phone: string; vouchCount: number; lastVouchAt?: string }> {
+      const byPhone: Record<string, { count: number; last?: string }> = {};
+      for (const v of this.list()) {
+        const p = String(v?.phone || '');
+        if (!p) continue;
+        byPhone[p] = byPhone[p] || { count: 0 };
+        byPhone[p].count += 1;
+        byPhone[p].last = String(v?.vouchTs || '');
+      }
+      return Object.entries(byPhone).map(([phone, x]) => ({ phone, vouchCount: x.count, lastVouchAt: x.last }));
     },
   },
 

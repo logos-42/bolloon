@@ -1081,8 +1081,51 @@ export async function handleIncomingAgentMessage(type: string, payload: string, 
         await _send('agent.info.reply', JSON.stringify({ did: id.did, name: id.name, capabilities: ['chat', 'local-agent'] }), fromPeer);
       }
       break;
+    case 'agent.vouch.request':
+      // 2026-10-17 (leo: 朋友互认): 好友请求我确认 TA 的手机号。
+      //   记录请求 → UI 提示 → 用户批准后由 vouchConfirm 发送 agent.vouch.confirm (DID 签名)。
+      try {
+        const r = JSON.parse(payload);
+        const requests = JSON.parse(typeof localStorage !== 'undefined' ? (localStorage.getItem('bolloon.vouch.requests.v1') || '[]') : '[]');
+        requests.push({
+          fromPeer, phone: String(r?.phone || ''), requesterDid: String(r?.requesterDid || ''),
+          requesterName: String(r?.requesterName || ''), ts: new Date().toISOString(), status: 'pending',
+        });
+        if (typeof localStorage !== 'undefined') localStorage.setItem('bolloon.vouch.requests.v1', JSON.stringify(requests.slice(-20)));
+        notifyInboundChat(`📩 好友 ${r?.requesterName || '请求'} (${String(r?.phone || '').slice(-4)}…) 请求你确认 TA 的手机号 — 去「设置→手机号与通讯录→朋友互认」批准`, '', fromPeer);
+      } catch { /* 解析失败忽略 */ }
+      break;
+    case 'agent.vouch.confirm':
+      // 好友确认我手机号的签名回传 → 存证据 (mobile-core.vouch.acceptVouch)
+      try {
+        const r = JSON.parse(payload);
+        const v = await import('./mobile-core.js');
+        await v.core.vouch.acceptVouch({
+          phone: String(r?.phone || ''), voucherDid: String(r?.voucherDid || ''), signature: String(r?.signature || ''), vouchTs: String(r?.vouchTs || new Date().toISOString()),
+        });
+      } catch { /* 存失败忽略 */ }
+      break;
     default:
       break;
+  }
+}
+
+/** 朋友互认批准: 用户在手机 UI 确认后, 用本机 DID 签名回传 */
+export async function confirmFriendVouch(opts: { fromPeer: string; phone: string; requesterDid: string; requesterName?: string }): Promise<{ ok: boolean; error?: string }> {
+  if (!_send) return { ok: false, error: 'P2P 未就绪' };
+  const phone = String(opts.phone || '').replace(/[^\d+]/g, '');
+  if (!/^\+?\d{8,15}$/.test(phone)) return { ok: false, error: '手机号格式不正确' };
+  try {
+    const ts = new Date().toISOString();
+    const payload = `bolloon-vouch:${opts.requesterDid}:${phone}:${ts}`;
+    const sig = await signWithIdentity(payload);
+    const ok = await _send('agent.vouch.confirm', JSON.stringify({
+      phone, voucherDid: sig.did, requesterDid: opts.requesterDid, signature: sig.signature,
+      alg: sig.alg, vouchTs: ts, signedPayload: payload,
+    }), opts.fromPeer);
+    return ok ? { ok: true } : { ok: false, error: '好友不在线 / P2P 发送失败' };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e).slice(0, 120) };
   }
 }
 
