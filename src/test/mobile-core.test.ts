@@ -402,6 +402,41 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
     }
   });
 
+  it('手机↔电脑配对: 手机输码 → 转发电脑 confirm (DID 主验证)', async () => {
+    const { core } = await import('../web/mobile-core.ts');
+    const realFetch = globalThis.fetch;
+    const hits: Array<{ url: string; body: any }> = [];
+    (globalThis as any).fetch = async (url: any, opts: any = {}) => {
+      const body = opts.body ? JSON.parse(String(opts.body)) : {};
+      hits.push({ url: String(url), body });
+      if (String(url).endsWith('/api/contacts/pairing/confirm')) {
+        expect(body.code).toBe('123456');
+        expect(typeof body.deviceDid).toBe('string');
+        return { ok: true, status: 200, json: async () => ({ ok: true, deviceDid: body.deviceDid, accepted: [] }) };
+      }
+      return { ok: false, status: 404, json: async () => ({ error: 'not mocked: ' + String(url) }) };
+    };
+    const prevLS = (globalThis as any).localStorage;
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => (k === 'bolloon_desktop_base_url' ? 'http://127.0.0.1:54188' : null),
+      setItem: () => {}, removeItem: () => {},
+    };
+    try {
+      // 经 resolvePost 路由: /api/phone/pairing/confirm → core.phoneAuth.pairConfirm
+      const fn = core.resolvePost('/api/phone/pairing/confirm', { code: '123456' });
+      expect(fn).toBeTypeOf('function');
+      const r = await fn!();
+      expect(r.ok).toBe(true);
+      expect(hits.some((h) => h.url.includes('/api/contacts/pairing/confirm'))).toBe(true);
+      // 错误码直接拒 (不走网络)
+      const bad = await core.phoneAuth.pairConfirm('12');
+      expect(bad.ok).toBe(false);
+      expect(String(bad.error || '')).toContain('6 位');
+    } finally {
+      (globalThis as any).fetch = realFetch;
+      (globalThis as any).localStorage = prevLS;
+    }
+  });
   // 2026-10-15 (leo: 手机自治 — 远程 API + 本机工具操作): 手机 agent 循环 (runWebAgentLoop)
   //   验证 LLM 多轮迭代 + 白名单工具执行闭环, 以及「手机 agent 只能操作自身轻量工具面」的边界。
   it('手机自治: LLM 返回工具调用 → 执行白名单工具 → 结果回填 → 收敛', async () => {

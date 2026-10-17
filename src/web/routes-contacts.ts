@@ -239,11 +239,23 @@ export function registerContactRoutes(
     res.json({ ok: true, pairingId, code: p.code, expiresAt: p.expiresAt, note: '手机扫码/深链确认后调 /confirm; 挑战 5 分钟有效且一次性' });
   });
 
+  /** 配对状态查询 (2026-10-17, CLI /pair 轮询用): 只回是否已确认 + 确认方 DID, 不回码 */
+  app.get('/api/contacts/pairing/:id', async (req, res) => {
+    const p = pairs.get(String(req.params.id || ''));
+    if (!p) return res.status(404).json({ ok: false, error: 'pairing_not_found' });
+    res.json({ ok: true, pairingId: p.pairingId, confirmed: !!p.usedAt, deviceDid: p.deviceDid || null, expiresAt: p.expiresAt, createdAt: p.createdAt });
+  });
+
   app.post('/api/contacts/pairing/confirm', async (req, res) => {
     try {
+      // 2026-10-17: 手机只输码 (无 pairingId) 也能确认 —— 按 code 遍历查找未用未过期的挑战
       const pairingId = String(req.body?.pairingId || '');
-      const p = pairs.get(pairingId);
-      if (!p) return res.status(404).json({ ok: false, error: 'pairing_not_found' });
+      let p: Pairing | undefined = pairs.get(pairingId);
+      if (!p) {
+        const code = String(req.body?.code || '');
+        p = [...pairs.values()].find((x) => x.code === code && !x.usedAt && x.expiresAt >= Date.now());
+        if (!p) return res.status(404).json({ ok: false, error: 'pairing_not_found' });
+      }
       if (p.usedAt) return res.status(409).json({ ok: false, error: 'pairing_already_used' });
       if (p.expiresAt < Date.now()) return res.status(410).json({ ok: false, error: 'pairing_expired' });
       if (String(req.body?.code || '') !== p.code) return res.status(401).json({ ok: false, error: 'pairing_code_mismatch' });
@@ -255,7 +267,9 @@ export function registerContactRoutes(
 
       p.usedAt = Date.now();
       p.deviceDid = req.body?.deviceDid ? String(req.body.deviceDid) : undefined;
-      pairs.set(pairingId, p);
+      // 2026-10-17 修: set 用条目自己的 pairingId —— 手机只输码 (find 分支) 时请求里的
+      //   pairingId 是空串, 用它会污染 Map 的 '' key, 后续 get('') 全部命中幽灵条目。
+      pairs.set(p.pairingId, p);
 
       const accepted: any[] = [];
       const rejected: any[] = [];

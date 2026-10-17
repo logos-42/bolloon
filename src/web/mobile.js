@@ -3949,6 +3949,25 @@
     });
     const findInput = $('#phone-find-input');
     if (findInput) findInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); find.click(); } });
+
+    // 与电脑配对 (电脑 /pair 出码 → 手机输码 → 电脑确认手机 DID)
+    const pairBtn = $('#phone-pair-do');
+    if (pairBtn) pairBtn.addEventListener('click', async () => {
+      const code = (($('#phone-pair-input') || {}).value || '').trim();
+      const box = $('#phone-pair-result');
+      if (!/^\d{6}$/.test(code)) { if (box) { box.style.display = 'block'; box.innerHTML = '<div style="color:var(--danger,#e05555);font-size:13px">配对码是 6 位数字 (电脑终端 /pair 生成)</div>'; } return; }
+      pairBtn.disabled = true; pairBtn.textContent = '配对中…';
+      try {
+        const r = await lapi.post('/api/phone/pairing/confirm', { code });
+        if (box) {
+          box.style.display = 'block';
+          box.innerHTML = r && r.ok
+            ? `<div style="font-size:13px;color:var(--success,#22c55e)">✅ 配对成功: 电脑已确认这台手机 (${esc((r.deviceDid || '').slice(0, 16))}…)</div>`
+            : `<div style="font-size:13px;color:var(--danger,#e05555)">配对失败: ${esc((r && r.error) || '未知原因')}</div>`;
+        }
+      } catch (e) { if (box) { box.style.display = 'block'; box.innerHTML = `<div style="font-size:13px;color:var(--danger,#e05555)">配对失败: ${esc((e && e.message) || e)}</div>`; } }
+      pairBtn.disabled = false; pairBtn.textContent = '配对';
+    });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindEvents);

@@ -325,6 +325,11 @@ export const core = {
     if (p === '/api/phone/directory/add-friend') { const b = body || {}; return () => core.directory.addFriend(String(b.phone || ''), b.name ? String(b.name) : undefined, b.message ? String(b.message) : undefined); }
     if (p === '/api/phone/auth/bind') { const b = body || {}; return () => core.phoneAuth.bind(String(b.phone || '')); }
     if (p === '/api/phone/auth/verify') { const b = body || {}; return () => core.phoneAuth.verify(String(b.contactId || ''), String(b.challengeId || ''), String(b.code || '')); }
+    // 2026-10-17 (leo: 手机↔电脑互验): 手机输电脑配对码 → 转发电脑 /api/contacts/pairing/confirm
+    if (p === '/api/phone/pairing/confirm') {
+      const b = body || {};
+      return () => core.phoneAuth.pairConfirm(String(b.code || ''), String(b.pairingId || ''));
+    }
     if (p === '/api/phone/profile/phone') { const b = body || {}; return () => core.identity.updateProfile({ phone: String(b.phone || '') }); }
     if (p === '/api/wallet/export') { const b = body || {}; return () => core.wallet.export(String(b.id || '')); }
     if (p === '/api/phone/agent/run') {
@@ -1169,6 +1174,28 @@ export const core = {
         };
       } catch (e: any) {
         return { ok: false, error: '本机验证失败: ' + String(e?.message || e).slice(0, 120) };
+      }
+    },
+    // 2026-10-17 (leo: 手机↔电脑互验): 手机输电脑配对码 → 转发电脑 confirm → 电脑登记手机 DID。
+    //   DID 为主验证: 手机用本机身份 DID 向电脑证明"这台手机是我的"。
+    async pairConfirm(code: string, pairingId?: string): Promise<any> {
+      const base = await core.directory.baseUrl();
+      if (!base) return { ok: false, error: '需要电脑端在线 (设置 → 电脑端同步里填桌面地址) 才能配对' };
+      const c = String(code || '').trim();
+      if (!/^\d{6}$/.test(c)) return { ok: false, error: '配对码是 6 位数字' };
+      try {
+        const a = await import('./mobile-agent.js');
+        const id = await a.identityStatus().catch(() => null);
+        const deviceDid = id && id.did ? String(id.did) : undefined;
+        const r = await fetch(`${base}/api/contacts/pairing/confirm`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pairingId: pairingId || undefined, code: c, deviceDid }),
+        });
+        const d: any = await r.json().catch(() => null);
+        if (!r.ok || !d || d.ok === false) return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        return { ok: true, deviceDid, accepted: d.accepted || [], note: '配对成功: 电脑已确认这台手机的身份 (DID 主验证)' };
+      } catch (e: any) {
+        return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
       }
     },
   },

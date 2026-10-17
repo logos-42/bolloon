@@ -108,6 +108,7 @@ export const CLI_KNOWN_COMMAND_HEADS: ReadonlySet<string> = new Set([
   '/approve',
   '/contacts',
   '/directory',
+  '/pair',
   '/copy',
   '/criteria',
   '/cron',
@@ -3342,6 +3343,44 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
       return;
     } catch (e: any) {
       appendLine(`${C_ERROR}/directory 失败: ${String(e?.message || e).slice(0, 160)}${RESET}`);
+    }
+    return;
+  }
+
+  // /pair — 手机↔电脑互验 (2026-10-17, leo: 扫码/验证码双向确认)
+  //   /pair                 生成一次性配对码 → 手机端输码确认 → 电脑登记手机 DID
+  //   方向: 电脑出码(显示在终端) → 手机在 设置→手机号与通讯录→与电脑配对 输码 → 电脑轮询确认
+  if (cmd === '/pair' || cmd.startsWith('/pair ')) {
+    try {
+      const port = process.env.PORT || '54188';
+      // 1. 生成挑战
+      const ch = await fetch(`http://127.0.0.1:${port}/api/contacts/pairing/challenge`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      }).then((r) => r.json()).catch(() => null);
+      if (!ch || !ch.ok) { appendLine(`${MAGENTA}✗ 配对码生成失败: ${(ch && ch.error) || '需要 web 服务在线 (54188)'}${RESET}`); return; }
+      appendLine(`${C_ACCENT}手机↔电脑配对${RESET} — 配对码: ${BOLD}${ch.code}${RESET} (5 分钟有效, 一次性)`);
+      appendLine(`${C_DIM}在手机 设置 → 手机号与通讯录 → 与电脑配对 输入此码, 手机确认后这里会自动完成。${RESET}`);
+      // 2. 轮询确认 (每 2s, 最长 5 分钟)
+      const deadline = Date.now() + 5 * 60_000;
+      const start = Date.now();
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const st = await fetch(`http://127.0.0.1:${port}/api/contacts/pairing/${ch.pairingId}`).then((r) => r.json()).catch(() => null);
+        if (st && st.ok && st.confirmed) {
+          appendLine(`${GREEN}✓ 配对成功${RESET} — 手机 DID ${C_DIM}${st.deviceDid || '(未提供)'}${RESET} 已与电脑互联${st.deviceDid ? ` (${String(st.deviceDid).slice(0, 20)}…)` : ''}`);
+          appendLine(`${C_DIM}现在手机可用设备密钥签名授权, 电脑端接受 (设置 → 联系方式与授权可查看)${RESET}`);
+          return;
+        }
+        if (st && st.ok && st.expiresAt && st.expiresAt < Date.now()) {
+          appendLine(`${C_WARN}配对码已过期, 重新运行 /pair 生成新码${RESET}`); return;
+        }
+        if ((Date.now() - start) % 10000 < 2000 && (Date.now() - start) > 0) {
+          appendLine(`${C_DIM}等待手机确认… (${Math.round((Date.now() - start) / 1000)}s)${RESET}`);
+        }
+      }
+      appendLine(`${C_WARN}配对超时 (5 分钟), 重新运行 /pair${RESET}`);
+    } catch (e: any) {
+      appendLine(`${MAGENTA}✗ /pair 失败: ${String(e?.message || e).slice(0, 160)}${RESET}`);
     }
     return;
   }
