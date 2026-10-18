@@ -3348,11 +3348,25 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   }
 
   // /pair — 手机↔电脑互验 (2026-10-17, leo: 扫码/验证码双向确认)
-  //   /pair                 生成一次性配对码 → 手机端输码确认 → 电脑登记手机 DID
-  //   方向: 电脑出码(显示在终端) → 手机在 设置→手机号与通讯录→与电脑配对 输码 → 电脑轮询确认
+  //   /pair                 生成一次性配对码 → 手机端输码确认 → 电脑登记手机 DID (电脑出码→手机输)
+  //   /pair verify <码>     手机出示验证码 → 输入到电脑里 → 电脑确认手机 (手机出码→电脑输)
   if (cmd === '/pair' || cmd.startsWith('/pair ')) {
     try {
       const port = process.env.PORT || '54188';
+      const arg = cmd.startsWith('/pair ') ? cmd.slice('/pair '.length).trim() : '';
+      // 手机出码 → 电脑输入 (反向方向)
+      if (arg.toLowerCase().startsWith('verify ')) {
+        const code = arg.slice('verify '.length).trim();
+        if (!/^\d{6}$/.test(code)) { appendLine(`${C_WARN}用法: /pair verify <6位验证码> — 手机「出示验证码」后输入${RESET}`); return; }
+        const r = await fetch(`http://127.0.0.1:${port}/api/contacts/pairing/verify-code`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code }),
+        }).then((x) => x.json()).catch(() => null);
+        if (!r || !r.ok) { appendLine(`${MAGENTA}✗ 验证失败: ${(r && r.error) || '码不存在/已过期/已用'}${RESET}`); return; }
+        appendLine(`${GREEN}✓ 手机验证码确认成功${RESET} — 手机 DID ${C_DIM}${r.deviceDid || '(未提供)'}${RESET} 已与电脑配对`);
+        return;
+      }
+      if (arg) { appendLine(`${C_WARN}用法: /pair (电脑出码) · /pair verify <码> (手机出码)${RESET}`); return; }
       // 1. 生成挑战
       const ch = await fetch(`http://127.0.0.1:${port}/api/contacts/pairing/challenge`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',

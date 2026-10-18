@@ -437,6 +437,46 @@ describe('mobile-core (手机端内化内核, 分层架构)', () => {
       (globalThis as any).localStorage = prevLS;
     }
   });
+
+  it('手机↔电脑配对反向: 手机出示验证码 → 转发电脑 phone-code (手机出码方向)', async () => {
+    const { core } = await import('../web/mobile-core.ts');
+    const realFetch = globalThis.fetch;
+    const hits: Array<{ url: string; body: any }> = [];
+    (globalThis as any).fetch = async (url: any, opts: any = {}) => {
+      const body = opts.body ? JSON.parse(String(opts.body)) : {};
+      hits.push({ url: String(url), body });
+      if (String(url).endsWith('/api/contacts/pairing/phone-code')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, pairingId: 'p1', code: '654321' }) };
+      }
+      return { ok: false, status: 404, json: async () => ({ error: 'not mocked: ' + String(url) }) };
+    };
+    const prevLS = (globalThis as any).localStorage;
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => (k === 'bolloon_desktop_base_url' ? 'http://127.0.0.1:54188' : null),
+      setItem: () => {}, removeItem: () => {},
+    };
+    try {
+      // 经 resolvePost 路由: /api/phone/pairing/show-code → core.phoneAuth.showCode
+      const fn = core.resolvePost('/api/phone/pairing/show-code', {});
+      expect(fn).toBeTypeOf('function');
+      const r = await fn!();
+      expect(r.ok).toBe(true);
+      expect(r.code).toBe('654321');
+      expect(String(r.note || '')).toContain('/pair verify 654321');
+      // DID 主验证: 手机把自己的 DID 带给电脑登记
+      const hit = hits.find((h) => h.url.includes('/api/contacts/pairing/phone-code'));
+      expect(hit).toBeTruthy();
+      expect(typeof hit!.body.deviceDid).toBe('string');
+      // 无桌面地址 → 明确失败, 不假装成功
+      (globalThis as any).localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+      const off = await core.phoneAuth.showCode();
+      expect(off.ok).toBe(false);
+      expect(String(off.error || '')).toContain('电脑端在线');
+    } finally {
+      (globalThis as any).fetch = realFetch;
+      (globalThis as any).localStorage = prevLS;
+    }
+  });
   // 2026-10-15 (leo: 手机自治 — 远程 API + 本机工具操作): 手机 agent 循环 (runWebAgentLoop)
   //   验证 LLM 多轮迭代 + 白名单工具执行闭环, 以及「手机 agent 只能操作自身轻量工具面」的边界。
   it('手机自治: LLM 返回工具调用 → 执行白名单工具 → 结果回填 → 收敛', async () => {

@@ -19,7 +19,7 @@ import { type ContactKind } from '../agents/contacts/types.js';
 import type { ContactGrant } from '../agents/contacts/grants.js';
 
 /** 配对挑战 (一次性, 桌面生成 / 手机确认) */
-interface Pairing { pairingId: string; code: string; createdAt: number; expiresAt: number; usedAt?: number; deviceDid?: string }
+interface Pairing { pairingId: string; code: string; createdAt: number; expiresAt: number; usedAt?: number; deviceDid?: string; phoneFirst?: boolean }
 
 const PAIRING_TTL_MS = 5 * 60_000;
 
@@ -244,6 +244,35 @@ export function registerContactRoutes(
     const p = pairs.get(String(req.params.id || ''));
     if (!p) return res.status(404).json({ ok: false, error: 'pairing_not_found' });
     res.json({ ok: true, pairingId: p.pairingId, confirmed: !!p.usedAt, deviceDid: p.deviceDid || null, expiresAt: p.expiresAt, createdAt: p.createdAt });
+  });
+
+  /** 手机出示验证码 → 登记到电脑 (leo: 验证码方向 = 手机出码, 输入到电脑里) */
+  app.post('/api/contacts/pairing/phone-code', async (req, res) => {
+    try {
+      const now = Date.now();
+      const deviceDid = req.body?.deviceDid ? String(req.body.deviceDid) : undefined;
+      if (!deviceDid) return res.status(400).json({ ok: false, error: 'deviceDid 必填 (手机 DID 主验证)' });
+      const pairingId = `pair-${now.toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
+      const p: Pairing = { pairingId, code: String(crypto.randomInt(0, 1_000_000)).padStart(6, '0'), createdAt: now, expiresAt: now + PAIRING_TTL_MS, deviceDid, phoneFirst: true };
+      pairs.set(pairingId, p);
+      res.json({ ok: true, pairingId, code: p.code, expiresAt: p.expiresAt, deviceDid, note: '手机出示此码 → 在电脑终端输入 (bolloon CLI: /pair verify <码>)' });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: String(err?.message || err) });
+    }
+  });
+
+  /** 电脑验证手机出码 (leo: 手机出示验证码 → 输入到电脑里) */
+  app.post('/api/contacts/pairing/verify-code', async (req, res) => {
+    try {
+      const code = String(req.body?.code || '').trim();
+      const p = [...pairs.values()].find((x) => x.code === code && x.phoneFirst === true && !x.usedAt && x.expiresAt >= Date.now());
+      if (!p) return res.status(404).json({ ok: false, error: 'pairing_not_found' });
+      p.usedAt = Date.now();
+      pairs.set(p.pairingId, p);
+      res.json({ ok: true, pairingId: p.pairingId, deviceDid: p.deviceDid || null, note: '手机验证码确认成功: 手机 DID 已与电脑配对' });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: String(err?.message || err) });
+    }
   });
 
   app.post('/api/contacts/pairing/confirm', async (req, res) => {

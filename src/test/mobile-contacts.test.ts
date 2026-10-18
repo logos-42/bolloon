@@ -311,3 +311,61 @@ describe('手机端诚实纪律', () => {
     expect(JSON.stringify(offline.data)).not.toContain('supplier@example.com');
   });
 });
+
+describe('验证码方向配对 (手机出码 → 电脑 /pair verify, 2026-10-17 反方向闭环)', () => {
+  it('phone-code 需要 deviceDid (DID 主验证); 正常出码返回 6 位一次性码', async () => {
+    const desktop = await startDesktop();
+    // 缺 deviceDid → 400 (手机不带 DID 不许登记)
+    const miss = await fetch(`${desktop.base}/api/contacts/pairing/phone-code`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
+    });
+    expect(miss.status).toBe(400);
+    // 带 deviceDid → 出码
+    const ok = await fetch(`${desktop.base}/api/contacts/pairing/phone-code`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceDid: 'did:key:zPhoneX' }),
+    }).then((r) => r.json());
+    expect(ok.ok).toBe(true);
+    expect(ok.code).toMatch(/^\d{6}$/);
+    expect(ok.deviceDid).toBe('did:key:zPhoneX');
+    desktop.close();
+  });
+
+  it('verify-code 确认手机出的码 → 成功并登记 DID; 一次性复用拒; 错码拒', async () => {
+    const desktop = await startDesktop();
+    const issued = await fetch(`${desktop.base}/api/contacts/pairing/phone-code`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceDid: 'did:key:zPhoneY' }),
+    }).then((r) => r.json());
+    // 电脑输码确认 → 成功, 带回手机 DID
+    const v = await fetch(`${desktop.base}/api/contacts/pairing/verify-code`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: issued.code }),
+    }).then((r) => r.json());
+    expect(v.ok).toBe(true);
+    expect(v.deviceDid).toBe('did:key:zPhoneY');
+    // 一次性: 同码再验 → 拒
+    const again = await fetch(`${desktop.base}/api/contacts/pairing/verify-code`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: issued.code }),
+    });
+    expect(again.status).toBe(404);
+    // 错码 → 拒
+    const wrong = await fetch(`${desktop.base}/api/contacts/pairing/verify-code`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: '999999' }),
+    });
+    expect(wrong.status).toBe(404);
+    desktop.close();
+  });
+
+  it('方向隔离: 电脑 /pair 出的码 (phoneFirst 无) 不能被 verify-code 反向消费', async () => {
+    const desktop = await startDesktop();
+    // 电脑 /pair 的 challenge (手机输码方向, 无 phoneFirst 标记)
+    const ch = await fetch(`${desktop.base}/api/contacts/pairing/challenge`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    }).then((r) => r.json());
+    expect(ch.ok).toBe(true);
+    // 该码不能走「手机出码」的 verify-code 通道
+    const v = await fetch(`${desktop.base}/api/contacts/pairing/verify-code`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: ch.code }),
+    });
+    expect(v.status).toBe(404);
+    desktop.close();
+  });
+});

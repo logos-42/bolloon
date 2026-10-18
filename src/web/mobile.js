@@ -4036,6 +4036,29 @@
       try { window.__bolloonPairScan = true; } catch { /* 内存标志 */ }
       inp.click();
     });
+    // 手机出示验证码 → 电脑输入 (leo 反向方向): 手机出码, 电脑 /pair verify <码>
+    const showCodeBtn = $('#phone-pair-showcode');
+    if (showCodeBtn) showCodeBtn.addEventListener('click', async () => {
+      showCodeBtn.disabled = true; showCodeBtn.textContent = '生成中…';
+      try {
+        const r = await lapi.post('/api/phone/pairing/show-code', {});
+        if (!r || !r.ok) { alert((r && r.error) || '生成失败'); showCodeBtn.disabled = false; showCodeBtn.textContent = '出示验证码给电脑'; return; }
+        // 显示大号验证码, 提示在电脑终端输入
+        const big = r.code || '';
+        const box = $('#phone-pair-result');
+        if (box) {
+          box.style.display = 'block';
+          box.innerHTML = `<div style="text-align:center;padding:12px 0">
+            <div style="font-size:12px;color:var(--text-secondary)">在电脑终端输入以下验证码:</div>
+            <div style="font-size:40px;font-weight:800;letter-spacing:8px;color:var(--accent);margin:8px 0">${esc(big)}</div>
+            <div style="font-size:12px;color:var(--text-secondary)">电脑命令: /pair verify ${esc(big)} · 5 分钟有效, 一次性</div>
+          </div>`;
+        } else { alert('验证码: ' + big); }
+        // 收起按钮, 提示去电脑输入
+        showCodeBtn.textContent = '已出示 (去电脑输入)';
+        setTimeout(() => { showCodeBtn.disabled = false; showCodeBtn.textContent = '出示验证码给电脑'; }, 30000);
+      } catch (e) { alert('生成失败: ' + ((e && e.message) || e)); showCodeBtn.disabled = false; showCodeBtn.textContent = '出示验证码给电脑'; }
+    });
 
     // 朋友互认 (leo: 第二选择验证; P2P 好友 DID 签名确认)
     const vouchBtn = $('#phone-vouch-request');

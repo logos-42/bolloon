@@ -267,12 +267,16 @@
     <div id="phone-find-result" style="display:none;margin-top:8px"></div>
     <button class="sheet-choice" id="phone-find-do" style="margin-top:8px;width:100%">搜索并加好友</button>
 
-    <div class="sheet-title" style="margin-top:12px">与电脑配对 (电脑" /pair"出码, 手机输码确认)</div>
+    <div class="sheet-title" style="margin-top:12px">与电脑配对 (双向)</div>
+    <div class="sheet-text" style="font-size:12px;color:var(--text-secondary)">① 电脑 /pair 出码 → 手机输码; ② 手机出示验证码 → 电脑 /pair verify 输入。</div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <input id="phone-pair-input" inputmode="numeric" placeholder="电脑显示的 6 位配对码" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:14px" />
       <button class="sheet-choice" id="phone-pair-do" style="flex:none;width:110px">配对</button>
     </div>
-    <button class="sheet-choice" id="phone-pair-scan" style="margin-top:8px;width:100%">扫电脑上的二维码配对</button>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="sheet-choice" id="phone-pair-scan" style="flex:1">扫电脑二维码</button>
+      <button class="sheet-choice" id="phone-pair-showcode" style="flex:1">出示验证码给电脑</button>
+    </div>
     <div id="phone-pair-result" style="display:none;margin-top:8px"></div>
 
     <div class="sheet-title" style="margin-top:12px">朋友互认 (第二选择)</div>

@@ -330,6 +330,10 @@ export const core = {
       const b = body || {};
       return () => core.phoneAuth.pairConfirm(String(b.code || ''), String(b.pairingId || ''));
     }
+    // 2026-10-17 (leo: 手机出示验证码 → 电脑输入): 手机出码方向
+    if (p === '/api/phone/pairing/show-code') {
+      return () => core.phoneAuth.showCode();
+    }
     if (p === '/api/phone/profile/phone') { const b = body || {}; return () => core.identity.updateProfile({ phone: String(b.phone || '') }); }
     // 2026-10-17 (leo: 邮箱验证与短信同层): 手机端邮箱 bind/verify → 电脑端 smtp 通道
     if (p === '/api/phone/email/bind') { const b = body || {}; return () => core.emailAuth.bind(String(b.email || '')); }
@@ -1202,6 +1206,25 @@ export const core = {
         const d: any = await r.json().catch(() => null);
         if (!r.ok || !d || d.ok === false) return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
         return { ok: true, deviceDid, accepted: d.accepted || [], note: '配对成功: 电脑已确认这台手机的身份 (DID 主验证)' };
+      } catch (e: any) {
+        return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
+      }
+    },
+    // 2026-10-17 (leo: 验证码方向 = 手机出示码 → 电脑输入): 本机生成 6 位码 → 转发电脑登记 (带本机 DID)
+    async showCode(): Promise<any> {
+      const base = await core.directory.baseUrl();
+      if (!base) return { ok: false, error: '需要电脑端在线 (设置 → 电脑端同步里填桌面地址) 才能出示验证码' };
+      try {
+        const a = await import('./mobile-agent.js');
+        const id = await a.identityStatus().catch(() => null);
+        const deviceDid = id && id.did ? String(id.did) : undefined;
+        const r = await fetch(`${base}/api/contacts/pairing/phone-code`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceDid }),
+        });
+        const d: any = await r.json().catch(() => null);
+        if (!r.ok || !d || d.ok === false) return { ok: false, error: (d && (d.error || d.message)) || `电脑端返回 ${r.status}` };
+        return { ok: true, code: d.code, note: `在电脑终端输入: /pair verify ${d.code} (5 分钟有效, 一次性)` };
       } catch (e: any) {
         return { ok: false, error: '电脑端不可达: ' + String(e?.message || e).slice(0, 120) };
       }
