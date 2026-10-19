@@ -4208,6 +4208,20 @@ async function refreshWorldOpportunities() {
   }
 }
 
+/** 世界卡片多模态内容内联渲染 (leo: 内容格式不限 — 文本/音频/图片/视频) */
+function renderCardMediaInline(media, cardId) {
+  if (!Array.isArray(media) || !media.length) return '';
+  return media.map((m, i) => {
+    const url = String(m.url || '').replace(/</g, '&lt;');
+    const name = escapeHtml(String(m.name || '媒体' + (i + 1)));
+    if (m.type === 'image') return `<img src="${url}" alt="${name}" style="max-width:100%;max-height:160px;border-radius:8px;margin-top:6px;display:block;" loading="lazy">`;
+    if (m.type === 'audio') return `<audio controls preload="none" src="${url}" style="width:100%;margin-top:6px;">${name}</audio>`;
+    if (m.type === 'video') return `<video controls preload="none" src="${url}" style="max-width:100%;max-height:180px;border-radius:8px;margin-top:6px;display:block;">${name}</video>`;
+    // text / document → 链接行
+    return `<div style="margin-top:6px;">📄 <a href="${url}" target="_blank" rel="noopener" style="color:#7a9ad4;">${name}</a></div>`;
+  }).join('');
+}
+
 function renderWorldOpportunities(opps) {
   if (!worldOpportunities) return;
   if (!opps.length) {
@@ -4221,6 +4235,12 @@ function renderWorldOpportunities(opps) {
       ✉ 外部投递 · 来自 <span style="color:#c4d640;">${String(o.inbox.providerName || o.inbox.providerDid || '').slice(0, 40)}</span>
       · <span style="color:#6aaa6a;">✓ 验签通过</span>
       ${(o.inbox.refs || []).length ? '· ' + o.inbox.refs.map((r) => `<a href="${String(r).replace(/</g, '&lt;')}" target="_blank" rel="noopener" style="color:#7a9ad4;">[引用]</a>`).join(' ') : ''}
+    </div>` : '';
+    // 2026-10-19 (leo: 对方智能体往世界模式传卡片, 内容格式不限): 世界卡片 — 多模态 media 内联渲染
+    const cardLine = o.card ? `<div style="font-size:11px;color:#8a8a80;margin-top:6px;border-top:1px dashed var(--border,#3a3a36);padding-top:6px;">
+      🎴 世界卡片 · 来自 <span style="color:#c4d640;">${String(o.card.provider?.name || o.card.provider?.did || '').slice(0, 40)}</span>
+      · <span style="color:#6aaa6a;">✓ 验签通过</span>
+      ${renderCardMediaInline(o.card.media || [], o.id)}
     </div>` : '';
     // 2026-10-05: AI 主动搜索机会 — 显示来源 URL (可点开核实, 真实可信)
     const searchLine = o.search ? `<div style="font-size:11px;color:#8a8a80;margin-top:6px;border-top:1px dashed var(--border,#3a3a36);padding-top:6px;">
@@ -4240,6 +4260,7 @@ function renderWorldOpportunities(opps) {
         <span style="color:#c4d640;font-weight:700;font-size:14px;">${pct}%</span>
       </div>
       <div style="font-size:12px;color:#909088;margin-top:4px;">${String(o.summary || '').slice(0, 90).replace(/</g, '&lt;')}</div>
+      ${cardLine}
       ${inboxLine}
       ${searchLine}
       ${detailLine}
@@ -4343,6 +4364,80 @@ if (worldColToggle) worldColToggle.addEventListener('click', () => {
   toggleWorldIntentCol(worldIntentCol ? worldIntentCol.style.display === 'none' : false);
 });
 if (worldColClose) worldColClose.addEventListener('click', () => toggleWorldIntentCol(false));
+
+// ── 2026-10-19 (leo: 桌面 web 也要支持手机号加好友): 手机号与通讯录面板 ──
+const dirPhoneInput = document.getElementById('dir-phone-input');
+const dirSearchBtn = document.getElementById('dir-search-btn');
+const dirVerifyBtn = document.getElementById('dir-verify-btn');
+const dirListBtn = document.getElementById('dir-list-btn');
+const dirResult = document.getElementById('dir-result');
+
+function dirEcho(msg: string, ok = true): void {
+  if (dirResult) {
+    dirResult.innerHTML = (ok ? '' : '⚠ ') + escapeHtml(msg);
+  }
+}
+
+async function dirSearchAdd(): Promise<void> {
+  const phone = (dirPhoneInput && dirPhoneInput.value || '').trim();
+  if (!/^\+?\d{8,15}$/.test(phone)) { dirEcho('手机号格式不正确 (8-15 位数字)', false); return; }
+  dirEcho('搜索中…');
+  try {
+    const res = await fetch('/api/contacts/directory/lookup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || !d.ok) { dirEcho((d.error || d.message || '查找失败'), false); return; }
+    if (!d.found) { dirEcho(`未找到 ${phone.slice(-4)}… (对方未发布目录或已撤销)`); return; }
+    const addRes = await fetch('/api/contacts/directory/add-friend', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone }),
+    });
+    const ad = await addRes.json().catch(() => ({}));
+    if (!addRes.ok || !ad.ok) { dirEcho(`已找到对方 (${d.displayName || d.did?.slice(0, 12)}) 但加好友失败: ${(ad.error || '')}`, false); return; }
+    dirEcho(`✓ 好友申请已发给 ${d.displayName || phone.slice(-4)}… (待对方同意)`);
+  } catch (e) {
+    dirEcho('目录服务不可用: ' + String(e && e.message ? e.message : e), false);
+  }
+}
+
+async function dirVerifySelf(): Promise<void> {
+  const phone = (dirPhoneInput && dirPhoneInput.value || '').trim();
+  if (!/^\+?\d{8,15}$/.test(phone)) { dirEcho('手机号格式不正确 (8-15 位数字)', false); return; }
+  dirEcho('验证中…');
+  try {
+    // 绑定手机号 (local-sink 回显验证码是既有语义; 发布目录走 publish 端点)
+    const bindRes = await fetch('/api/contacts/bind', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'phone', value: phone }),
+    });
+    const bd = await bindRes.json().catch(() => ({}));
+    if (!bindRes.ok) { dirEcho('绑定失败: ' + (bd.error || bd.message || bindRes.status), false); return; }
+    const pubRes = await fetch('/api/contacts/directory/publish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone }),
+    });
+    const pd = await pubRes.json().catch(() => ({}));
+    dirEcho(pubRes.ok && pd.ok ? `✓ ${phone.slice(0, 3)}****${phone.slice(-4)} 已绑定并发布目录 (别人可凭手机号搜到你)` : '已绑定 (目录发布失败: ' + (pd.error || '') + ')', pubRes.ok && pd.ok);
+  } catch (e) {
+    dirEcho('绑定服务不可用: ' + String(e && e.message ? e.message : e), false);
+  }
+}
+
+async function dirList(): Promise<void> {
+  dirEcho('读取通讯录…');
+  try {
+    const res = await fetch('/api/contacts/directory/list');
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { dirEcho('读取失败: ' + (d.error || res.status), false); return; }
+    const entries = (d.entries || []).map((e: any) => `${e.hash || ''} ${e.did ? e.did.slice(0, 18) + '…' : ''} ${e.revoked ? '(已撤销)' : ''}`.trim()).filter(Boolean);
+    dirEcho(entries.length ? entries.join('<br>') : '(目录里还没有条目 — 用「= 验证我的手机号」发布自己)');
+  } catch (e) {
+    dirEcho('目录服务不可用: ' + String(e && e.message ? e.message : e), false);
+  }
+}
+
+if (dirSearchBtn) dirSearchBtn.addEventListener('click', dirSearchAdd);
+if (dirVerifyBtn) dirVerifyBtn.addEventListener('click', dirVerifySelf);
+if (dirListBtn) dirListBtn.addEventListener('click', dirList);
+if (dirPhoneInput) dirPhoneInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') dirSearchAdd(); });
 
 // 2026-10-05 (leo): 世界底部输入框 — 想做什么直接说, 自动触发匹配 (不是聊天输入框)
 const worldInput = document.getElementById('world-input');

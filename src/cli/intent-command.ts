@@ -26,6 +26,8 @@ import {
 } from '../agents/opportunity-match.js';
 import { readProfile, setProfile } from '../agents/world-profile.js';
 import { worldWatcherStatus } from '../agents/world-watcher.js';
+import { listWorldCards, canonicalCardPayload, CARD_PROTOCOL } from '../agents/world-cards.js';
+import { ed25519Sign } from '../agents/x402/paid-info-protocol.js';
 
 function parseDeadline(v: string): number | null | undefined {
   const s = String(v || '').trim();
@@ -192,9 +194,9 @@ export async function opportunityCommand(flags: CliFlags): Promise<CommandResult
 }
 
 /** 2026-10-06 (用户: 世界模式用表格呈现): ASCII 表格机会列表 — 列 = 分数/来源/标题/预算/id */
-export function opportunityTable(results: Array<{ id: string; score: number; reason: 'match' | 'world' | 'inbox' | 'search'; title: string; summary: string; budget: string | null }>): string[] {
+export function opportunityTable(results: Array<{ id: string; score: number; reason: 'match' | 'world' | 'inbox' | 'search' | 'card'; title: string; summary: string; budget: string | null; card?: { media: { type: string; url: string; mime: string; name: string }[]; provider: { did: string; name?: string }; issuedAt: string; verification: string } }>): string[] {
   if (!results.length) return ['  (没有机会)'];
-  const reasonShort = (r: string) => (r === 'match' ? '匹配' : r === 'inbox' ? '投递' : r === 'search' ? '搜索' : '世界');
+  const reasonShort = (r: string) => (r === 'match' ? '匹配' : r === 'inbox' ? '投递' : r === 'search' ? '搜索' : r === 'card' ? '卡片' : '世界');
   const rows: string[][] = results.map((o) => {
     const pct = Math.round(o.score * 100);
     const title = o.title.length > 32 ? o.title.slice(0, 31) + '…' : o.title;
@@ -290,12 +292,16 @@ async function opportunityIgnore(flags: CliFlags): Promise<CommandResult> {
 // · `bolloon world profile set "<你是谁/在做什么>" [--name X] [--about Y] [--tag T ...]`  初始化收集画像
 // · `bolloon world profile show`                                                          看当前画像
 // · `bolloon world watch status`                                                          世界观察器状态 (自动触发可见性)
+// · `bolloon world card list`                                                             列收到的世界卡片 (对方智能体传入, 含多模态 media)
+// · `bolloon world card send --to <DID> --title <T> --summary <S> [--media <JSON>]`      发一张多媒体卡片给对方世界模式
 export const WORLD_USAGE = [
-  'bolloon world — 世界 (自动观察 + 画像推送)',
+  'bolloon world — 世界 (自动观察 + 画像推送 + 世界卡片)',
   '  用法:',
   '    bolloon world profile set "<你是谁/在做什么>" [--name X] [--about Y] [--tag T ...]',
   '    bolloon world profile show',
   '    bolloon world watch status',
+  '    bolloon world card list [--json]',
+  '    bolloon world card send --to <DID> --title <标题> --summary <摘要> [--media <JSON>]',
 ].join('\n');
 
 export async function worldCommand(flags: CliFlags): Promise<CommandResult> {
@@ -306,6 +312,8 @@ export async function worldCommand(flags: CliFlags): Promise<CommandResult> {
   if (sub === 'profile' && verb === 'set') return worldProfileSet(flags);
   if (sub === 'profile' && verb === 'show') return worldProfileShow();
   if (sub === 'watch' && verb === 'status') return worldWatchStatus();
+  if (sub === 'card' && verb === 'list') return worldCardList(flags);
+  if (sub === 'card' && verb === 'send') return worldCardSend(flags);
   return { envelope: okEnvelope('OK', WORLD_USAGE.split('\n')[0], { world: true }, [], null), human: WORLD_USAGE };
 }
 
@@ -361,4 +369,110 @@ async function worldWatchStatus(): Promise<CommandResult> {
       hint('世界观察是自动的 —— 有公告进来, AI 就会看见并记录'),
     ].join('\n'),
   };
+}
+
+/** `bolloon world card list` — 列出收到的世界卡片 (对方智能体验签传入, 含多模态 media) */
+async function worldCardList(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon world card list';
+  const cards = await listWorldCards();
+  const verified = cards.filter((c) => c.verification === 'verified');
+  if (flags.json ?? has(flags, '--json')) {
+    return { envelope: okEnvelope('OK', `${verified.length} 张卡片`, { count: verified.length, cards: verified }, verified.map((c) => c.id), null), human: '' };
+  }
+  if (!verified.length) {
+    return {
+      envelope: okEnvelope('OK', '还没有卡片', { count: 0, cards: [] }, [], null),
+      human: `${title(head)}\n  (还没有收到世界卡片)\n\n  ${hint('对方智能体签名投递一张卡片后, 这里会列出 (含文本/音频/图片/视频)')}`,
+    };
+  }
+  const mediaShort = (c: any) => (c.media ?? []).map((m: any) => `${m.type}:${m.name || m.url?.slice(0, 24) || '?'}`).join(' · ');
+  const lines = verified.map((c) => [
+    `  ${c.title.slice(0, 48)}`,
+    `    来自 ${c.provider.name || c.provider.did.slice(0, 16)}… · ${new Date(c.receivedAt).toISOString().slice(0, 16).replace('T', ' ')}`, 
+    `    ${c.summary.slice(0, 70)}`,
+    c.media?.length ? `    内容: ${mediaShort(c)}` : '',
+    `    id ${c.id}`,
+  ].filter(Boolean).join('\n'));
+  return {
+    envelope: okEnvelope('OK', `${verified.length} 张卡片`, { count: verified.length, cards: verified }, verified.map((c) => c.id), null),
+    human: [title(head), `  收到 ${verified.length} 张卡片 (已验签):`, '', ...lines, '', hint('在 Web 的世界模式里可看到完整多模态内容 (文本/音频/图片/视频)')].join('\n'),
+  };
+}
+
+/** `bolloon world card send` — 给对方世界模式发一张多媒体卡片 (文本/音频/图片/视频) */
+async function worldCardSend(flags: CliFlags): Promise<CommandResult> {
+  const head = 'bolloon world card send';
+  const target = String(opt(flags, '--to') ?? '').trim();
+  const cardTitle = String(opt(flags, '--title') ?? '').trim();
+  const cardSummary = String(opt(flags, '--summary') ?? '').trim();
+  const mediaRaw = String(opt(flags, '--media') ?? '').trim();
+  if (!target) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺 --to (目标 DID)', {}, [], 'needs_human'), human: `${title(head)}\n  用法: ${head} --to <DID> --title <标题> --summary <摘要> [--media <JSON>]` };
+  if (!cardTitle) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺 --title', {}, [], 'needs_human'), human: `${title(head)}\n  用法: ${head} --to <DID> --title <标题> --summary <摘要> [--media <JSON>]` };
+  if (!cardSummary) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺 --summary', {}, [], 'needs_human'), human: `${title(head)}\n  用法: ${head} --to <DID> --title <标题> --summary <摘要> [--media <JSON>]` };
+
+  let media: any[] = [];
+  if (mediaRaw) {
+    try { media = JSON.parse(mediaRaw); if (!Array.isArray(media)) media = []; }
+    catch { return { envelope: failEnvelope('INVALID_ARGUMENT', '--media 必须是 JSON 数组', {}, [], 'needs_human'), human: `${title(head)}\n  --media 示例: [{"type":"image","url":"https://x.com/a.png","mime":"image/png","name":"a.png"}]` }; }
+  }
+
+  // 加载本机身份私钥用于签名
+  let kp: any;
+  try {
+    const { KeyManager } = await import('@diap/sdk');
+    const path = await import('path');
+    const os = await import('os');
+    const identityPath = path.join(os.homedir(), '.bolloon', 'identity.json');
+    kp = await KeyManager.fromFile(identityPath);
+  } catch (e) {
+    return { envelope: failEnvelope('INTERNAL_ERROR', `无法加载本机身份: ${String(e)}`, {}, [], 'needs_human'), human: `${title(head)}\n  ${String(e)}` };
+  }
+  const did = String(kp.did || '');
+  if (!did) return { envelope: failEnvelope('INTERNAL_ERROR', '本机身份缺少 DID', {}, [], 'needs_human'), human: `${title(head)}\n  ~/.bolloon/identity.json 没有 DID, 先运行 bolloon identity init` };
+
+  const payload = {
+    protocol: CARD_PROTOCOL,
+    title: cardTitle,
+    summary: cardSummary,
+    media: media.filter((m: any) => m && m.type && m.url),
+    provider: { did, name: String(kp.name || '') },
+    issuedAt: new Date().toISOString(),
+  };
+  let signatureB64: string;
+  try {
+    const privateKeyHex = String(kp.privateKey || '');
+    const privateKeyBytes = Uint8Array.from(Buffer.from(privateKeyHex, 'hex'));
+    if (privateKeyBytes.length !== 32) throw new Error(`私钥长度应为 32 字节, 实际 ${privateKeyBytes.length}`);
+    signatureB64 = await ed25519Sign(privateKeyBytes, canonicalCardPayload(payload));
+  } catch (e) {
+    return { envelope: failEnvelope('INTERNAL_ERROR', `签名失败: ${String(e)}`, {}, [], 'needs_human'), human: `${title(head)}\n  签名失败: ${String(e)}` };
+  }
+
+  // 尝试 POST 到本机运行中的服务端 /api/world/cards/push
+  const port = process.env.PORT || '54188';
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/world/cards/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Signature': signatureB64 },
+      body: JSON.stringify({ ...payload, id: `card_${Date.now()}`, signature: signatureB64 }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (res.ok && d.ok) {
+      return { envelope: okEnvelope('OK', `卡片已发送给 ${target.substring(0, 16)}…`, { to: target, card: { id: d.card?.id, title: cardTitle, summary: cardSummary, mediaCount: payload.media.length } }, [d.card?.id], null), human: `${title(head)}\n  ✅ 已投递到本机世界卡片信箱 (对方验签通过后进入其世界流)\n   卡片 ID: ${d.card?.id}\n   标题: ${cardTitle}` };
+    }
+    return { envelope: failEnvelope('INTERNAL_ERROR', d.error || `HTTP ${res.status}`, {}, [], 'needs_human'), human: `${title(head)}\n  ⚠️ 服务端拒收: ${d.error || `HTTP ${res.status}`}` };
+  } catch (e) {
+    // 服务端未运行 — 输出已签名卡片, 用户可通过其他方式转发
+    const signedCard = { ...payload, id: `card_${Date.now()}`, signature: signatureB64 };
+    return {
+      envelope: okEnvelope('OK', '已签名 (服务端未运行, 卡片输出到下方)', { signedCard }, [], null),
+      human: [
+        title(head),
+        `  ⚠️ 本机服务端未运行 (${port}), 无法自动投递`,
+        `  已签名卡片如下, 可通过 P2P / HTTP / 其他渠道转发给对方:`,
+        '',
+        JSON.stringify(signedCard, null, 2),
+      ].join('\n'),
+    };
+  }
 }

@@ -453,6 +453,19 @@
                     <div id="world-intents-list" style="margin-bottom:12px;"><div class="form-hint">(还没有意图)</div></div>
                     <div style="font-size:12px;color:#909088;font-weight:600;margin-bottom:8px;">世界变化</div>
                     <div id="world-stats" style="font-size:12px;color:#606058;"></div>
+                    <!-- 2026-10-19 (leo: 桌面 web 也要支持手机号加好友): 手机号与通讯录面板 -->
+                    <div style="font-size:12px;color:#909088;font-weight:600;margin:14px 0 6px;border-top:1px solid var(--border,#3a3a36);padding-top:10px;">📱 手机号与通讯录</div>
+                    <div style="font-size:11px;color:#606058;margin-bottom:8px;line-height:1.5;">手机号是「搜索别人的指针」: 验证自己 → 别人可搜到你; 搜索加好友 → 需对方已发布目录。</div>
+                    <div style="display:flex;gap:6px;margin-bottom:8px;">
+                      <input id="dir-phone-input" type="tel" inputmode="numeric" placeholder="手机号 (如 13812345678)" autocomplete="off"
+                             style="flex:1;min-width:0;padding:6px 10px;border-radius:6px;border:1px solid var(--border,#3a3a36);background:var(--bg-card,#222220);color:var(--text,#f0f0ea);font-size:12px;">
+                      <button id="dir-search-btn" class="btn-secondary btn-sm" style="font-size:11px;padding:4px 10px;">搜索加好友</button>
+                    </div>
+                    <div style="display:flex;gap:6px;margin-bottom:8px;">
+                      <button id="dir-verify-btn" class="btn-secondary btn-sm" style="font-size:11px;padding:4px 10px;flex:1;">= 验证我的手机号</button>
+                      <button id="dir-list-btn" class="btn-secondary btn-sm" style="font-size:11px;padding:4px 10px;flex:1;">- 通讯录</button>
+                    </div>
+                    <div id="dir-result" style="font-size:11px;color:#909088;line-height:1.6;max-height:120px;overflow-y:auto;"></div>
                   </aside>
                 </div>
         <!-- 2026-10-05 (leo): 世界底部输入框 — 想做什么直接说, 自动触发匹配 (不是聊天输入框) -->

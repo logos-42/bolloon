@@ -17,7 +17,9 @@ import { scanOpportunities, recordFeedback, readObservations } from '../agents/o
 import { readProfile, setProfile } from '../agents/world-profile.js';
 import { worldWatcherStatus } from '../agents/world-watcher.js';
 import { deliverOpportunity, listInboxOpportunities, INBOX_PROTOCOL } from '../agents/opportunity-inbox.js';
+import { deliverWorldCard, listWorldCards, CARD_PROTOCOL, canonicalCardPayload, type CardMedia } from '../agents/world-cards.js';
 import { searchOpportunitiesForTopic, listSearchOpportunities } from '../agents/opportunity-web-search.js';
+import { ed25519Sign } from '../agents/x402/paid-info-protocol.js';
 
 function json(res: Response, status: number, body: unknown): void {
   res.status(status).json(body);
@@ -185,5 +187,77 @@ export function registerWorldRoutes(app: Express): void {
   app.get('/api/world/search', async (_req, res) => {
     const list = await listSearchOpportunities();
     json(res, 200, { ok: true, count: list.length, opportunities: list });
+  });
+
+  // ── 世界卡片投递 (2026-10-19: 别人/对方智能体往我世界模式传多媒体卡片) ───────
+  // 外部 agent 用 DIAP Ed25519 身份签名投递世界卡片; 验签通过才入库 (~/.bolloon/world/cards/<id>.json)
+  //   并进入世界流 (scanOpportunities, reason='card', 优先级最高)。
+  // 卡片内容格式不限: media[] 每一项可是 text / audio / image / video (url + mime + name)。
+  // 协议: bolloon-world-card/1
+  //   POST payload = { id?, title, summary, media[], provider:{did}, issuedAt }
+  //   signature = ed25519Sign(privateKey, canonicalCardPayload(payload))
+  app.post('/api/world/cards/push', async (req, res) => {
+    const b = bodyOf(req);
+    const sig = typeof req.headers['x-signature'] === 'string' ? req.headers['x-signature'] : '';
+    const payload: any = {
+      protocol: typeof b.protocol === 'string' ? b.protocol : CARD_PROTOCOL,
+      id: typeof b.id === 'string' && b.id.trim() ? b.id.trim() : undefined,
+      title: typeof b.title === 'string' ? b.title : '',
+      summary: typeof b.summary === 'string' ? b.summary : '',
+      media: Array.isArray(b.media) ? b.media : [],
+      provider: {
+        did: typeof b.provider?.did === 'string' ? b.provider.did : '',
+        name: typeof b.provider?.name === 'string' ? b.provider.name : undefined,
+      },
+      issuedAt: typeof b.issuedAt === 'string' ? b.issuedAt : new Date().toISOString(),
+    };
+    const r = await deliverWorldCard(payload, sig);
+    json(res, r.ok ? 200 : 400, { ok: r.ok, card: r.card, error: r.error });
+  });
+
+  app.get('/api/world/cards', async (_req, res) => {
+    const list = await listWorldCards();
+    json(res, 200, { ok: true, count: list.length, cards: list });
+  });
+
+  // 协议说明 (外部 agent 对接用 — 怎么构造 payload / 怎么签名 / 多媒体格式)
+  app.get('/api/world/cards/protocol', async (_req, res) => {
+    const kp = await (async () => {
+      const { generateKeyPairSync } = await import('node:crypto');
+      return generateKeyPairSync('ed25519');
+    })();
+    const samplePriv = Buffer.from(kp.privateKey.export({ type: 'pkcs8', format: 'der' }).subarray(-32));
+    const samplePub = Buffer.from(kp.publicKey.export({ type: 'spki', format: 'der' }).subarray(-32));
+    const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    const body = Buffer.concat([Buffer.from([0xed, 0x01]), samplePub]);
+    let num = BigInt(0);
+    for (const by of body) num = num * 256n + BigInt(by);
+    let out = '';
+    while (num > 0n) { out = ALPHABET[Number(num % 58n)] + out; num /= 58n; }
+    for (const by of body) { if (by === 0) out = '1' + out; else break; }
+    const sampleDid = `did:key:z${out}`;
+    const samplePayload = {
+      protocol: CARD_PROTOCOL,
+      title: '对方制作的设计稿卡片',
+      summary: '请查收本周 UI 设计稿，含原文与视频预览。',
+      media: [
+        { type: 'text', url: 'https://example.com/design.md', mime: 'text/markdown', name: 'design.md' },
+        { type: 'image', url: 'https://example.com/preview.png', mime: 'image/png', name: 'preview.png' },
+        { type: 'video', url: 'https://example.com/demo.mp4', mime: 'video/mp4', name: 'demo.mp4' },
+      ] as CardMedia[],
+      provider: { did: sampleDid, name: '对方智能体' },
+      issuedAt: new Date().toISOString(),
+    };
+    const sampleSig = await ed25519Sign(samplePriv, canonicalCardPayload(samplePayload));
+    json(res, 200, {
+      ok: true,
+      protocol: CARD_PROTOCOL,
+      description: '外部/对方智能体主动投递世界卡片到本机世界模式: POST /api/world/cards/push, header X-Signature = Ed25519(provider 私钥, canonicalCardPayload(payload))',
+      payloadFields: ['protocol', 'id?', 'title', 'summary', 'media[]', 'provider.did', 'provider.name?', 'issuedAt'],
+      mediaTypes: ['text', 'audio', 'image', 'video'],
+      signature: 'ed25519Sign(providerPrivateKey, canonicalCardPayload({protocol,id,title,summary,media,provider,issuedAt}))',
+      verification: '本机解析 provider.did → Ed25519 公钥 → 验签; 通过才入库 (verified) 并进世界流(优先级最高), 否则拒绝',
+      sample: { payload: samplePayload, signature: sampleSig, did: sampleDid },
+    });
   });
 }

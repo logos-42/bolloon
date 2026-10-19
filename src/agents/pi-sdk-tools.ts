@@ -26,6 +26,9 @@ import { registerComputerUseTools } from './computer-use.js';
 import { registerSkillShareTools } from './skill-share.js';
 // 2026-09-13: 微支付信息服务 (x402 付费信息 + 验真信封)
 import { registerPaidInfoTools } from './x402/paid-info-tools.js';
+// 2026-10-19: 世界卡片投递 (往对方世界模式传多媒体卡片)
+import { deliverWorldCard, CARD_PROTOCOL, canonicalCardPayload } from './world-cards.js';
+import { ed25519Sign } from './x402/paid-info-protocol.js';
 // 2026-10-02: 群聊的四个 AI 工具 —— 原语来自群模块与"唯一发送出口"(带隐私闸)
 import { createGroup, joinGroup, listGroups, groupLink, groupMessages, groupMembers } from './gateway-group.js';
 import { resolveGroupRef, resolveSenderTag, sendTrailMessage } from './task-group.js';
@@ -483,6 +486,71 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
       const requestId = `rpc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       await p2pNetwork.sendMessage(peerId, 'agent-call', JSON.stringify({ requestId, task, from: ctx.identity.did }));
       return { success: true, output: `📞 RPC 任务已发送给 ${peerId.substring(0, 16)}...\n   requestId=${requestId}` };
+    }
+  });
+
+  // send_world_card — 往对方世界模式传多媒体卡片 (文本/音频/图片/视频)
+  ctx.tools.set('send_world_card', {
+    name: 'send_world_card',
+    description: '往对方 bolloon 的世界模式传一张多媒体卡片。卡片内容格式不限：media[] 里每一项可是 text / audio / image / video (url + mime + name)。用本机身份私钥签名，通过 P2P world.card 消息投递；对方验签通过后卡片会进入其世界流 (scanOpportunities, reason="card", 优先级最高)。',
+    parameters: {
+      to: '目标对方 DID (did:key:...) 或 P2P peerId，可用 list_peers / contact.list_authorized 查',
+      title: '卡片标题 (必填)',
+      summary: '卡片摘要 (必填)',
+      media: '媒体数组，每项 { type: "text" | "audio" | "image" | "video", url: string, mime: string, name: string }',
+    },
+    execute: async (args) => {
+      const to = String(args.to || '').trim();
+      const title = String(args.title || '').trim();
+      const summary = String(args.summary || '').trim();
+      const media = Array.isArray(args.media) ? args.media : [];
+      if (!to) return { success: false, error: 'to 必填 (目标 DID 或 peerId)' };
+      if (!title) return { success: false, error: 'title 必填' };
+      if (!summary) return { success: false, error: 'summary 必填' };
+
+      // 加载本机身份私钥用于签名
+      let kp: any;
+      try {
+        const { KeyManager } = await import('@diap/sdk');
+        const identityPath = path.join(os.homedir(), '.bolloon', 'identity.json');
+        kp = await KeyManager.fromFile(identityPath);
+      } catch (e) {
+        return { success: false, error: `无法加载本机身份 (~/.bolloon/identity.json): ${String(e)}` };
+      }
+      const did = String(kp.did || '');
+      if (!did) return { success: false, error: '本机身份缺少 DID' };
+
+      // 构造卡片载荷并签名
+      const payload = {
+        protocol: CARD_PROTOCOL,
+        title,
+        summary,
+        media: media.filter((m: any) => m && m.type && m.url),
+        provider: { did, name: String(kp.name || ctx.identity?.name || '') },
+        issuedAt: new Date().toISOString(),
+      };
+      let signatureB64: string;
+      try {
+        const privateKeyHex = String(kp.privateKey || '');
+        const privateKeyBytes = Uint8Array.from(Buffer.from(privateKeyHex, 'hex'));
+        if (privateKeyBytes.length !== 32) throw new Error(`私钥长度应为 32 字节, 实际 ${privateKeyBytes.length}`);
+        signatureB64 = await ed25519Sign(privateKeyBytes, canonicalCardPayload(payload));
+      } catch (e) {
+        return { success: false, error: `签名失败: ${String(e)}` };
+      }
+
+      // 通过 P2P world.card 消息投递给对方
+      try {
+        const cardMsg = { ...payload, id: `card_${Date.now()}`, signature: signatureB64 };
+        const msgText = `${CARD_PROTOCOL.replace('/', '_')}:${JSON.stringify(cardMsg)}`;
+        await p2pNetwork.sendMessage(to, 'world.card', msgText);
+        return {
+          success: true,
+          output: `✅ 世界卡片已发送给 ${to.substring(0, 16)}...\n   标题: ${title}\n   媒体: ${media.length} 项\n   对方验签通过后卡片将进入其世界流。`,
+        };
+      } catch (e) {
+        return { success: false, error: `P2P 投递失败: ${String(e)}` };
+      }
     }
   });
 
@@ -4503,6 +4571,29 @@ export function setupInboxListener(ctx: ToolRegistryContext): void {
           timestamp: Date.now(),
           source: 'p2p',
         });
+        // 2026-10-19: 收到 world.card 入站卡片 → 验签入库并进入世界流
+        if (type === 'world.card') {
+          void (async () => {
+            try {
+              let cardPayload = payload;
+              const prefix = 'bolloon_world_card:';
+              if (cardPayload.startsWith(prefix)) cardPayload = cardPayload.slice(prefix.length);
+              const msg = JSON.parse(cardPayload);
+              await deliverWorldCard(
+                {
+                  protocol: msg.protocol || CARD_PROTOCOL,
+                  id: msg.id,
+                  title: msg.title,
+                  summary: msg.summary,
+                  media: msg.media,
+                  provider: msg.provider,
+                  issuedAt: msg.issuedAt,
+                },
+                msg.signature || '',
+              );
+            } catch { /* 解析/签名失败静默, 已记入 inbox 缓存 */ }
+          })();
+        }
         if (ctx._inboxMessages.length > 1000) {
           ctx._inboxMessages.splice(0, ctx._inboxMessages.length - 1000);
         }

@@ -74,7 +74,7 @@ const CLI_COMMANDS: MentionItem[] = [
   { kind: 'command', label: 'pause', hint: '暂停当前 run', insert: 'pause' },
   { kind: 'command', label: 'payments', hint: '支付 / 任务公告', insert: 'payments' },
   { kind: 'command', label: 'q', hint: '查队列', insert: 'q' },
-  { kind: 'command', label: 'world', hint: '世界 (profile set/show, watch status)', insert: 'world' },
+  { kind: 'command', label: 'world', hint: '世界 (profile set/show, watch status, card list)', insert: 'world' },
   { kind: 'command', label: 'questions', hint: '待回答的问题', insert: 'questions' },
   { kind: 'command', label: 'reject', hint: '拒绝一次待审操作', insert: 'reject' },
   { kind: 'command', label: 'runs', hint: '运行记录', insert: 'runs' },

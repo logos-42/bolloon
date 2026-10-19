@@ -21,12 +21,24 @@ import { canonicalize, ed25519Verify } from './x402/paid-info-protocol.js';
 export const INBOX_PROTOCOL = 'bolloon-opportunity-inbox/1';
 
 /** 信箱里的机会声明 (投递方签名的载荷) */
+/** 多模态卡片内容 (2026-10-19, leo: 卡片内容格式不限 — 文本文档/音频/图片/视频) */
+export interface CardMedia {
+  kind: 'text' | 'document' | 'audio' | 'image' | 'video';
+  /** 文件/标题名 (可选) */
+  name?: string;
+  /** 资源地址 (document/audio/image/video 用; 可为 URL 或内容寻址 CID) */
+  url?: string;
+  /** kind=text 时正文; 也用作 summary 之外的补充内容 */
+  text?: string;
+}
+
 export interface InboxOpportunity {
   protocol: string;
   id: string;
   title: string;
   summary: string;
   refs: string[];
+  media?: CardMedia[];
   provider: { did: string; name?: string };
   issuedAt: string;
   /** 验签结果: verified | signature-invalid | unverified */
@@ -39,6 +51,7 @@ export interface InboxPayload {
   title: string;
   summary: string;
   refs: string[];
+  media?: CardMedia[];
   provider: { did: string; name?: string };
   issuedAt: string;
 }
@@ -62,6 +75,7 @@ export function canonicalPayload(p: InboxPayload): string {
     title: p.title,
     summary: p.summary,
     refs: p.refs,
+    media: p.media,
     provider: p.provider,
     issuedAt: p.issuedAt,
   });
@@ -122,7 +136,10 @@ export async function deliverOpportunity(payload: InboxPayload, signatureB64: st
   }
   verification = 'verified';
 
-  // 2. 入库 (一机会一文件)
+  // 2. media 形状校验 (可选; 带上就必须是合法卡片媒体数组)
+  const media = normalizeMedia(payload.media);
+
+  // 3. 入库 (一机会一文件)
   const id = `inbox_${safeId(crypto.createHash('sha256').update(canonicalPayload(payload)).digest('hex').slice(0, 16))}`;
   const opp: InboxOpportunity = {
     protocol: payload.protocol,
@@ -130,6 +147,7 @@ export async function deliverOpportunity(payload: InboxPayload, signatureB64: st
     title,
     summary: String(payload.summary || '').trim(),
     refs: Array.isArray(payload.refs) ? payload.refs.map(String).filter(Boolean) : [],
+    media: media.length ? media : undefined,
     provider: { did, name: payload.provider?.name },
     issuedAt: payload.issuedAt,
     verification,
@@ -142,6 +160,26 @@ export async function deliverOpportunity(payload: InboxPayload, signatureB64: st
     return { ok: false, error: `入库失败: ${err instanceof Error ? err.message : err}` };
   }
   return { ok: true, opportunity: opp };
+}
+
+/** 归一化媒体数组: 只保留合法项 (kind 必填且属于五类; text 用 text, 其余可带 url/name) */
+export function normalizeMedia(media: unknown): CardMedia[] {
+  if (!Array.isArray(media)) return [];
+  const kinds = new Set(['text', 'document', 'audio', 'image', 'video']);
+  const out: CardMedia[] = [];
+  for (const m of media) {
+    if (!m || typeof m !== 'object') continue;
+    const kind = String((m as any).kind || '').trim();
+    if (!kinds.has(kind)) continue;
+    const item: CardMedia = { kind: kind as CardMedia['kind'] };
+    if (typeof (m as any).name === 'string' && String((m as any).name).trim()) item.name = String((m as any).name).trim();
+    if (typeof (m as any).url === 'string' && String((m as any).url).trim()) item.url = String((m as any).url).trim();
+    if (typeof (m as any).text === 'string' && String((m as any).text).trim()) item.text = String((m as any).text).trim();
+    if (kind === 'text' && !item.text) continue;        // text 卡必须带正文
+    if (kind !== 'text' && !item.url) continue;          // 其它卡必须带资源地址
+    out.push(item);
+  }
+  return out.slice(0, 12); // 一卡至多 12 个媒体 (防塞爆)
 }
 
 /** 列出信箱机会 (verified 优先, 最近在前) */

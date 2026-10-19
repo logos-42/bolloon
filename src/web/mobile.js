@@ -601,17 +601,29 @@
       worldFeedShown = true;
       cards.innerHTML = opps.map((o) => {
         const pct = Math.round(o.score * 100);
-        // 2026-10-05: 来源标签 (与电脑端同口径) — ✉ 外部投递 / 🔎 AI 搜索 / ○ 世界变化
+        // 2026-10-05: 来源标签 (与电脑端同口径) — ✉ 外部投递 / 🔎 AI 搜索 / ○ 世界变化 / 🎴 世界卡片
         let tag = '世界变化';
         if (o.reason === 'inbox') tag = '✉ 外部投递';
         else if (o.reason === 'search') tag = '🔎 AI 搜索';
         else if (o.reason === 'match') tag = '与你匹配';
+        else if (o.reason === 'card') tag = '🎴 卡片';
+        // 2026-10-19 (leo: 内容格式不限 — 文本文档/音频/图片/视频): 世界卡片 media 内联渲染
+        const mediaHtml = (o.card && Array.isArray(o.card.media) ? o.card.media : [])
+          .map((m) => {
+            const url = String(m.url || '').replace(/</g, '&lt;');
+            const name = escapeHtml(String(m.name || '媒体'));
+            if (m.type === 'image') return `<img src="${url}" alt="${name}" style="max-width:100%;max-height:140px;border-radius:8px;margin-top:6px;display:block;">`;
+            if (m.type === 'audio') return `<audio controls preload="none" src="${url}" style="width:100%;margin-top:6px;">${name}</audio>`;
+            if (m.type === 'video') return `<video controls preload="none" src="${url}" style="max-width:100%;max-height:160px;border-radius:8px;margin-top:6px;display:block;">${name}</video>`;
+            return `<div style="margin-top:6px;font-size:12px;">📄 <a href="${url}" target="_blank" rel="noopener" style="color:#7a9ad4;">${name}</a></div>`;
+          }).join('');
         return `<div class="world-feed-card">
           <div class="world-feed-card-top">
             <span class="world-feed-title">${escapeHtml(String(o.title || '').slice(0, 34))}</span>
             <span class="world-feed-pct">${pct}%<small> ${tag}</small></span>
           </div>
           <div class="world-feed-summary">${escapeHtml(String(o.summary || '').slice(0, 60))}</div>
+          ${mediaHtml}
           <div class="world-feed-actions">
             <button class="world-feed-btn" data-wf-action="accept" data-wf-id="${o.id}">看看</button>
             <button class="world-feed-btn ghost" data-wf-action="ignore" data-wf-id="${o.id}">忽略</button>

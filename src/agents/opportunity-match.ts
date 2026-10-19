@@ -14,6 +14,7 @@ import { listIntents, worldDir, type IntentRecord } from './intent-store.js';
 import { listBoard, type BoardEntry } from './task-board.js';
 import { readProfile } from './world-profile.js';
 import type { TaskBudget } from './task-contract.js';
+import type { CardMedia } from './world-cards.js';
 
 export interface OpportunityCandidate {
   id: string;
@@ -21,17 +22,19 @@ export interface OpportunityCandidate {
   source: string;
   sourceId: string;
   score: number;
-  /** 为什么推给你: 'match' = 意图匹配 · 'world' = 世界变化 · 'inbox' = 外部 agent 投递 (信箱) · 'search' = AI 主动上网搜到 */
-  reason: 'match' | 'world' | 'inbox' | 'search';
+  /** 为什么推给你: 'match' = 意图匹配 · 'world' = 世界变化 · 'inbox' = 外部 agent 投递 (信箱) · 'search' = AI 主动上网搜到 · 'card' = 别人传入的世界卡片(多媒体) */
+  reason: 'match' | 'world' | 'inbox' | 'search' | 'card';
   title: string;
   summary: string;
   budget: string | null;
   matchTags: string[];
   createdAt: number;
   /** 信箱机会的来源可验信息 (provider DID + 验签状态) — 别人主动投来的, 不是本机自产 */
-  inbox?: { providerDid: string; providerName?: string; verification: string; refs: string[] };
+  inbox?: { providerDid: string; providerName?: string; verification: string; refs: string[]; media?: CardMedia[] };
   /** AI 主动搜索机会的原文链接 (可点开核实) */
   search?: { url: string; source: string; query?: string };
+  /** 世界卡片的多媒体内容 (文本/音频/图片/视频) + 来源 */
+  card?: { media: { type: string; url: string; mime: string; name: string }[]; provider: { did: string; name?: string }; issuedAt: string; verification: string };
 }
 
 function tagsOf(text: string): string[] {
@@ -82,7 +85,7 @@ export interface WorldObservation {
   sourceId: string;
   title: string;
   score: number;
-  reason: 'match' | 'world' | 'inbox' | 'search';
+  reason: 'match' | 'world' | 'inbox' | 'search' | 'card';
 }
 
 /** 追加一条观察 (尽力而为, 失败不阻断扫描) */
@@ -225,7 +228,34 @@ async function mergeInboxOnTop(all: OpportunityCandidate[]): Promise<Opportunity
   for (const c of searchCards.slice(0, 10)) {
     void noteObservation({ ts: Date.now(), kind: 'opportunity-seen', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'search' });
   }
-  return [...inboxCards, ...searchCards, ...all]; // 信箱 > 搜索 > 本地
+  // 世界卡片: 别人主动传入的世界卡片(多媒体: 文本/音频/图片/视频) — 优先级最高, 卡片是别人专门传给我的
+  const { listWorldCards } = await import('./world-cards.js');
+  const worldCards = await listWorldCards();
+  const cardCards: OpportunityCandidate[] = worldCards
+    .filter((c) => c.verification === 'verified')
+    .map((c) => ({
+      id: c.id,
+      intentId: null,
+      source: 'card',
+      sourceId: c.id,
+      score: 0.95,
+      reason: 'card',
+      title: c.title,
+      summary: c.summary,
+      budget: null,
+      matchTags: [],
+      createdAt: c.receivedAt,
+      card: {
+        media: c.media,
+        provider: c.provider,
+        issuedAt: c.issuedAt,
+        verification: c.verification,
+      },
+    }));
+  for (const c of cardCards.slice(0, 10)) {
+    void noteObservation({ ts: Date.now(), kind: 'opportunity-seen', sourceId: c.sourceId, title: c.title, score: c.score, reason: 'card' });
+  }
+  return [...cardCards, ...inboxCards, ...searchCards, ...all]; // 卡片 > 信箱 > 搜索 > 本地
 }
 
 export async function scanOpportunities(opts: MatchOptions = {}): Promise<{ ok: boolean; results: OpportunityCandidate[]; error?: string }> {
