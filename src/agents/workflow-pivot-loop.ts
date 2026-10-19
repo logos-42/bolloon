@@ -786,25 +786,37 @@ export class WorkflowPivotLoop {
           type: 'error',
           content: `❌ 循环异常: ${error}`
         });
-        return this.createResult(false, response, 'error');
+        // 2026-10-19 (leo: 「还有一些空回复的问题」): 异常出口也走非空兜底 ——
+        //   旧代码在这里原样返回 response (首轮就抛异常时是 '') ⇒ CLI 渲染 `│  │` 空框。
+        //   空回复已由 evaluateQuality 打 0.3 分打回 (见 2026-10-13); 退出路径一律不许给空。
+        return this.createResult(false, this.finalResponseOrFallback(response), 'error');
       }
     }
-    
+
     // Loop exited - determine reason
     const exitReason = this.determineExitReason(effectiveConfig);
-    
-    if (!response && this.messageHistory.length > 0) {
-      const lastAssistant = this.messageHistory
-        .filter(m => m.role === 'assistant')
-        .pop();
-      response = lastAssistant?.content || '任务处理超时';
-    }
-    
+
+    response = this.finalResponseOrFallback(response);
+
     return this.createResult(
       exitReason !== 'error',
       response,
       exitReason
     );
+  }
+
+  /**
+   * 收尾兜底: **循环退出时绝不把空回复当结果返回** (2026-10-19, leo: 「还有一些空回复的问题」)。
+   * 取最后一条**非空** assistant 文本 (每一轮回复都进过 messageHistory, 见 2026-10-12);
+   * 一条都没有 ⇒ 一句可核实的人话 (它**不是**执行结果, 是"没拿到回复"这个事实)。
+   */
+  private finalResponseOrFallback(response: string): string {
+    if (String(response || '').trim()) return response;
+    for (let i = this.messageHistory.length - 1; i >= 0; i--) {
+      const m = this.messageHistory[i];
+      if (m.role === 'assistant' && String(m.content || '').trim()) return m.content;
+    }
+    return '任务处理超时';
   }
   
   /**

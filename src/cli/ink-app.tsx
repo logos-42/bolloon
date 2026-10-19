@@ -23,6 +23,7 @@ import { DOUBLE_ESC_MS, STATUS_TICK_MS, THINK_FRAME_MS } from './timing.js';
 import { resolveNormalKey, applyScroll } from './keymap.js';
 import { useWidgets } from './widget-host.js';
 import { useStore, transcriptStore, uiStore, appendMsg, replaceLastMsg, replaceMarkerMsg, setUiStatus, setUiThinking, setUiTransient } from './stores.js';
+import { isInternalChatter, isStartupVerbose, logStartupLine } from './log-gate.js';
 import {
   loadAgents,
   loadCommands,
@@ -1025,6 +1026,9 @@ export function inkSetTransient(v: string | null): void {
  * 做法: 在 **Ink 启动那一刻**接管 `console.log/info/warn/error` ✓ —— Ink 在跑 ⇒ 一律走它的消息流 ✓;
  *   **绝不动 `process.stdout.write`** ✗(Ink 自己要用 ✓)。卸载时恢复原函数 ✓(退出后照样能打印 ✓)。
  *   递归保护 + 长度上限 ✓(任何异常都退回原函数 ✓, 不许因为拦截而丢日志 ✓)。
+ * 2026-10-19 补一条: **内部诊断行不进消息流** (只落 startup.log) —— Ink <Static> 按终端宽折行,
+ *   折行续行会丢掉模块标签, 闸门按行判就不再认识它 (真机样本: `cache_prompt=-` 单独上屏 ✗)。
+ *   判据用 log-gate 的 `isInternalChatter` (与 console 直写共用同一把尺 ✓); verbose 时原样上屏 ✓。
  */
 let _consoleOriginals: { log: any; info: any; warn: any; error: any } | null = null;
 let _interceptBusy = false;
@@ -1053,7 +1057,19 @@ export function installConsoleIntercept(): void {
     _interceptBusy = true;
     try {
       // 归类前缀让来源一眼可辨 ✓(不猜内容, 只标级别 ✓)
-      appendMsg(level === 'log' || level === 'info' ? line : `${level === 'warn' ? '⚠ ' : '✗ '}${line}`);
+      const visible = level === 'log' || level === 'info' ? line : `${level === 'warn' ? '⚠ ' : '✗ '}${line}`;
+      // 2026-10-19 (leo: 「修复里面的 cache_prompt=-, 加防护过滤」): **内部诊断行不进 Ink 消息流**。
+      // 真机链路 (startup.log 实证): `[pi-ai] ▶ … toolsHash=0ac2a0b9a78e cache_prompt=-` 有 136 字符,
+      //   超过终端宽 (实测 130 列) ⇒ Ink <Static> 按终端宽折行 ⇒ 续行 `cache_prompt=-` **丢掉模块标签**
+      //   ⇒ 日志闸门的逐行判据 (isInternalChatter) 不再认识它 ⇒ 被当成用户内容上屏 ✗。
+      //   修在**发送点** (与 reply-hygiene 同口径: 发送点声明, 不按内容猜): 内部行只落 startup.log
+      //   (走已有的 logStartupLine, 与闸门同一条落盘路径), 不进内容栏; `--verbose` /
+      //   BOLLOON_VERBOSE=1 时仍原样进消息流 —— 诊断能力一点不丢 ✓。
+      if (isInternalChatter(line) && !isStartupVerbose()) {
+        logStartupLine(visible);
+        return;
+      }
+      appendMsg(visible);
     } catch {
       try { _consoleOriginals!.log(...(args as any[])); } catch { /* 真打不出去就算了 */ }
     } finally { _interceptBusy = false; }

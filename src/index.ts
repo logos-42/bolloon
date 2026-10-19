@@ -4367,6 +4367,11 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
     if (cliAbortArmed) {
       appendLine(`${C_DIM}⏹ 已中断回合${RESET}`);
     } else {
+      // 2026-10-19 (leo: 「还有一些空回复的问题」): 空回复如实留痕 —— 屏上只一行说明
+      //   (renderAgentMessage 对空正文不出空框), 输入原文与"这轮没拿到文本"这个事实进 startup.log。
+      if (!String(response ?? '').trim()) {
+        try { appendInternalRunLog(`回合结束但模型无文本回复 (input=${trimmed.slice(0, 80)})`, 'cli'); } catch { /* 留痕失败不影响显示 */ }
+      }
       appendLine(renderAgentMessage(response));
     }
     cliAbortArmed = false;

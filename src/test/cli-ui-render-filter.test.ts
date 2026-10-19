@@ -12,6 +12,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { isInternalChatter } from '../cli/log-gate.js';
 
@@ -63,6 +64,90 @@ describe('CLI 渲染过滤-B. 反例: 用户内容 / 需人介入 / 产品行 �
   ];
   it.each(keep)('放行: %s', (line) => {
     expect(isInternalChatter(line)).toBe(false);
+  });
+});
+
+describe('CLI 渲染过滤-D. Ink 折行续行碎片防护 (2026-10-19, leo: 「修复里面的 cache_prompt=-, 加防护过滤」)', () => {
+  it('内部诊断行不进 Ink 消息流 (只落 startup.log) —— 折行续行 `cache_prompt=-` 因此永不上屏', async () => {
+    // 实证链路 (真机 startup.log): `[pi-ai] ▶ … toolsHash=0ac2a0b9a78e cache_prompt=-` 有 136 字符,
+    //   超过终端宽 (130 列) ⇒ Ink <Static> 按终端宽折行 ⇒ 续行 `cache_prompt=-` **丢掉模块标签**
+    //   ⇒ 闸门的逐行判据 (isInternalChatter) 不再认识它 ⇒ 被当成用户内容上屏 ✗。
+    //   修在发送点: console 拦截器认识内部行 ⇒ 不进消息流 (连折行的机会都没有)。
+    const { installConsoleIntercept, uninstallConsoleIntercept } = await import('../cli/ink-app.js');
+    const { transcriptStore } = await import('../cli/stores.js');
+
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bolloon-intercept-'));
+    const savedHome = process.env.BOLLOON_HOME;
+    const savedVerbose = process.env.BOLLOON_VERBOSE;
+    delete process.env.BOLLOON_VERBOSE;
+    process.env.BOLLOON_HOME = home;   // logStartupLine 无闸门时落这里 (不碰真 ~/.bolloon)
+    installConsoleIntercept();
+    try {
+      transcriptStore.set([]);
+      console.log('[pi-ai] ▶ purpose=main-agent source=pivot-loop model=glm-5.3-flash messages=3 promptChars=43668 tools=202 toolsHash=0ac2a0b9a78e cache_prompt=-');
+      const msgs = transcriptStore.get();
+      expect(msgs.some((m) => m.includes('[pi-ai] ▶'))).toBe(false);          // 整行不进消息流
+      expect(msgs.some((m) => m.includes('cache_prompt'))).toBe(false);      // 折行续行更不可能
+      // 但"搬走不是删掉": 同一行原文落 startup.log (grep 得回来)
+      const logFile = path.join(home, 'logs', 'startup.log');
+      expect(fs.existsSync(logFile)).toBe(true);
+      expect(fs.readFileSync(logFile, 'utf8')).toContain('[pi-ai] ▶ purpose=main-agent');
+    } finally {
+      uninstallConsoleIntercept();
+      process.env.BOLLOON_HOME = savedHome;
+      if (savedVerbose !== undefined) process.env.BOLLOON_VERBOSE = savedVerbose;
+    }
+  });
+
+  it('非内部行照旧进消息流 (误吞比漏吞更糟)', async () => {
+    const { installConsoleIntercept, uninstallConsoleIntercept } = await import('../cli/ink-app.js');
+    const { transcriptStore } = await import('../cli/stores.js');
+    installConsoleIntercept();
+    try {
+      transcriptStore.set([]);
+      console.log('主题: bolloon-agent-harness');       // 无模块标签的用户可见叙述
+      console.warn('本地 IPNS 发布失败');                // warn 级可行动提示
+      const msgs = transcriptStore.get();
+      expect(msgs.some((m) => m === '主题: bolloon-agent-harness')).toBe(true);
+      expect(msgs.some((m) => m.includes('⚠ 本地 IPNS 发布失败'))).toBe(true);
+    } finally {
+      uninstallConsoleIntercept();
+    }
+  });
+
+  it('verbose 模式下内部行原样进消息流 (诊断能力一点不丢)', async () => {
+    const { installConsoleIntercept, uninstallConsoleIntercept } = await import('../cli/ink-app.js');
+    const { transcriptStore } = await import('../cli/stores.js');
+    const savedVerbose = process.env.BOLLOON_VERBOSE;
+    process.env.BOLLOON_VERBOSE = '1';
+    installConsoleIntercept();
+    try {
+      transcriptStore.set([]);
+      console.log('[pi-ai timing] total=1143ms attempt=1');
+      expect(transcriptStore.get().some((m) => m.includes('[pi-ai timing]'))).toBe(true);
+    } finally {
+      uninstallConsoleIntercept();
+      if (savedVerbose !== undefined) process.env.BOLLOON_VERBOSE = savedVerbose;
+      else delete process.env.BOLLOON_VERBOSE;
+    }
+  });
+});
+
+describe('CLI 渲染过滤-E. 空回复不出空框 (2026-10-19, leo: 「还有一些空回复的问题」)', () => {
+  it('空正文/纯空白/纯 ANSI → 一行如实说明, 不是 `│  │` 空框', async () => {
+    const { renderAgentMessage } = await import('../cli/loading-tui.js');
+    for (const empty of ['', '   \n  ', '\x1b[2m\x1b[0m']) {
+      const plain = renderAgentMessage(empty).replace(/\x1b\[[0-9;]*m/g, '');
+      expect(plain).toContain('本轮无文本回复');
+      expect(plain).not.toContain('│');                 // 没有对话框边框 = 没有空框
+    }
+  });
+
+  it('正常正文照旧出完整回复框 (不压缩, 标题 Bolloon Agent)', async () => {
+    const { renderAgentMessage } = await import('../cli/loading-tui.js');
+    const out = renderAgentMessage('这是正常回复');
+    expect(out).toContain('Bolloon Agent');
+    expect(out).toContain('这是正常回复');
   });
 });
 

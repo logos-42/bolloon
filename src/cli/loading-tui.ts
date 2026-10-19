@@ -455,6 +455,14 @@ export function renderUserMessage(body: string): string {
 
 /** 智能体回复框 (不压缩, 用户需要看到完整回复) */
 export function renderAgentMessage(body: string): string {
+  // 2026-10-19 (leo: 「还有一些空回复的问题」): 空正文**不许出空框** (`│  │` 那种)。
+  //   与反思框同一口径 (2026-10-01: 只有标记词而无正文 ⇒ 不渲染): 先剥 ANSI 再 trim,
+  //   空 = 模型这轮没给文本 (只回思考/工具音/被超时打断) ⇒ 给一行如实说明, 不当成正常回复渲染。
+  //   这里是**唯一收口点** —— CLI 最终回复框 (index.ts) 与其它调用方都走它。
+  const plain = String(body ?? '').replace(/\x1b\[[0-9;]*m/g, '').trim();
+  if (!plain) {
+    return `${C_DIM}◉ 本轮无文本回复 (模型返回了空内容, 已记入 logs/startup.log)${RESET}`;
+  }
   return renderMessageBox({ title: '◉ Bolloon Agent', body: mdInline(body), color: C_ACCENT, maxLines: 0 });
 }
 

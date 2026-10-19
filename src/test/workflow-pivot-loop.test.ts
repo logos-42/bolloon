@@ -557,6 +557,52 @@ describe('空回复回归 (2026-10-13, leo: 「我发了一个命令, 返回空�
     expect(calls).toBeGreaterThan(1);
     expect(result.response.trim().length).toBeGreaterThan(0);
   });
+
+  it('循环异常 (非超时) 退出也不给空回复 (2026-10-19, leo: 「还有一些空回复的问题」)', async () => {
+    // 旧行为: 异常出口原样返回 response —— 首轮就抛异常时是 '' ⇒ CLI 渲染 `│  │` 空框。
+    // 现在: 异常出口与正常出口共用 finalResponseOrFallback —— 一条可核实的人话, 不是空。
+    const loop = new WorkflowPivotLoop({
+      maxIterations: 5,
+      minIterations: 1,
+      qualityThreshold: 0.7,
+    });
+    loop.registerTools(mockTools);
+
+    const llm = {
+      chat: async () => { throw new Error('模型返回了无法解析的结构'); },
+    };
+
+    const result = await loop.execute('测试', llm as any, '测试系统提示');
+    expect(result.exitReason).toBe('error');
+    expect(result.success).toBe(false);
+    expect(result.response.trim().length).toBeGreaterThan(0);
+    expect(result.response).toBe('任务处理超时');   // 没有任何 assistant 文本时的兜底
+  });
+
+  it('先有过真实文本、后异常退出 → 兜底取最后一条非空 assistant (不留空)', async () => {
+    // qualityThreshold 0.9: 非空短回复 (0.7 分) 也被打回续跑 ⇒ 第二轮才抛异常,
+    //   保证走到 error 出口, 且 messageHistory 里已有第一轮的真实文本。
+    const loop = new WorkflowPivotLoop({
+      maxIterations: 5,
+      minIterations: 1,
+      qualityThreshold: 0.9,
+    });
+    loop.registerTools(mockTools);
+
+    let calls = 0;
+    const llm = {
+      chat: async () => {
+        calls++;
+        if (calls === 1) return { reply: '我已经列完目录, 正在核对测试结果。' };
+        throw new Error('第二轮模型掉线');
+      },
+    };
+
+    const result = await loop.execute('测试', llm as any, '测试系统提示');
+    expect(calls).toBe(2);
+    expect(result.exitReason).toBe('error');
+    expect(result.response).toBe('我已经列完目录, 正在核对测试结果。');
+  });
 });
 
 describe('工具执行阶段 abort 打断 (2026-10-13, leo: 「发送消息过程中的打断和衔接整个流程」)', () => {

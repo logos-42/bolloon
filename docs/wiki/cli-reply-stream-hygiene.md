@@ -2,7 +2,7 @@
 title: CLI 会话内回复流卫生: 内部运行日志不进回复流 (发送点声明 internal + 搬去日志文件)
 source: session (leo 2026-09-27 两次反馈 + 真跑捕获 + 变异验证)
 created: 2026-09-27
-last_confirmed: 2026-09-27
+last_confirmed: 2026-10-19
 schema_version: 2
 audience: self
 stage: current
@@ -157,3 +157,37 @@ npx tsx scripts/verify-reply-hygiene.ts                 # 全跑: 5 个真会话
 npx vitest run src/test/reply-hygiene.test.ts           # 15 条, 秒级
 grep '\[运行\] ' "${BOLLOON_HOME:-$HOME/.bolloon}/logs/startup.log" | tail    # 看被搬走的行
 ```
+
+## 10. 2026-10-19 续: Ink 折行续行碎片 (`cache_prompt=-`) + 空回复框
+
+**用户原话**: 「修复里面的 `cache_prompt=-`, 加防护过滤, 还有一些空回复的问题」。
+真机样本 (用户贴屏 + `~/.bolloon/logs/startup.log` 取证): 内容栏反复出现**光秃秃一行**
+`cache_prompt=-`, 夹在工具行之间; startup.log 里它**成对**出现 —— 上一行是
+`[pi-ai] ▶ purpose=main-agent … toolsHash=0ac2a0b9a78e` (128 字符, 正好断在这), 下一行 `cache_prompt=-`。
+
+**根因链 (实证, 不猜)**: `src/llm/pi-ai.ts` 的 `console.log('[pi-ai] ▶ … cache_prompt=…')`
+有 136 字符, 超终端宽 (实测 130 列) → `installConsoleIntercept` (§3 那套 console 拦截) 把它
+`appendMsg` 进 Ink `<Static>` → **Ink 按终端宽折行** (同宽假 stdout 复现: 第一行 128 字符,
+第二行正是 `cache_prompt=-`) → 折行**续行丢掉模块标签** → `log-gate` 的逐行判据
+`isInternalChatter` (行首认 `[pi-ai]`) 不再认识它 → 判成 `plain` **上屏**。
+同一份 startup.log 里终端更宽的会话留着**未折行的完整行** ⇒ 与折行宽一一对应, 排除其它嫌疑。
+
+**修法 (发送点声明, 与 §2 同一口径, 不按内容猜)**: `src/cli/ink-app.tsx` 的
+`installConsoleIntercept` 在 `appendMsg` **之前**先过 `isInternalChatter` —— 内部诊断行
+**只落 startup.log** (走已有的 `logStartupLine`, 与闸门同一条落盘路径), 不进 Ink 消息流
+⇒ 折行续行碎片连产生的机会都没有; `--verbose`/`BOLLOON_VERBOSE=1` 时仍原样进消息流 (诊断不丢)。
+**刻意不在闸门里补**"续行继承上一条判定"的有状态规则: 误吞比漏吞更糟 (B 组反例的口径)。
+
+**空回复框 (同批反馈)**: `renderAgentMessage('')` 会渲染 `│  │` 空框。修在唯一收口点
+`src/cli/loading-tui.ts`: 空正文 (剥 ANSI + trim 后) → 一行如实说明 `◉ 本轮无文本回复 (模型返回了空内容, 已记入 logs/startup.log)`, 不出框
+(与 2026-10-01 反思框"只有标记词而无正文 ⇒ 不渲染"同口径); `src/index.ts` 回合收尾处再落一条
+`[运行]` 留痕 (input 原文 + "这轮没拿到文本")。循环侧第二层: `workflow-pivot-loop.ts` 的
+**异常出口**原来原样返回 `response` (首轮就抛异常时是 `''`) ⇒ 抽出 `finalResponseOrFallback`,
+异常出口与正常出口共用 —— 取最后一条**非空** assistant, 一条都没有才给"任务处理超时"
+(它不是执行结果, 是"没拿到回复"这个事实)。
+
+**验证**: 聚焦 8 文件 **176 绿** (cli-ui-render-filter+console-intercept 42 · workflow-pivot-loop 32 ·
+log-gate 22 · reply-hygiene+trace-line+reasoning-view+kv-prefix 80) · `tsc --noEmit` 0 错。
+新增回归 (cli-ui-render-filter D/E 组 + workflow-pivot-loop 空回复回归 +2): 内部行不进消息流且
+**原文落盘** · 非内部行照旧进 (误吞反例) · verbose 召回 · 三种空正文不出框 · 循环异常出口非空两种形态
+(无历史 ⇒ 兜底句 / 有历史 ⇒ 最后一条非空)。
