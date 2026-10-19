@@ -25,7 +25,7 @@
  *   POST   /api/judgments/auto-delegate
  */
 
-import type { Express, Request, Response } from 'express';
+import type { Express } from 'express';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';

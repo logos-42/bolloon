@@ -8,8 +8,7 @@ import type {
   ParsedInput,
   ConnectedPeer,
   PersistentConnection,
-  CIDResolveResult,
-  PersistentConnectionStatus
+  CIDResolveResult
 } from './types.js';
 import { ConnectionStatus } from './types.js';
 import { p2pStore } from './p2p-store-memory.js';

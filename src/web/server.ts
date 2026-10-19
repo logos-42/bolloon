@@ -1,4 +1,3 @@
-import type { ExecutionRequest } from '../kernel/channel-actor.js';   // K8: 通道交请求用的真类型
 import express from 'express';
 import { createServer } from 'http';
 import { join, dirname } from 'path';

@@ -3,7 +3,7 @@
  * 支持文件和本地信息的 P2P 传递
  */
 
-import type { P2PToolRequest, FileInfo, CIDResolveResult } from './types.js';
+import type { P2PToolRequest, FileInfo } from './types.js';
 
 // 工具类型枚举
 export enum P2PToolType {
