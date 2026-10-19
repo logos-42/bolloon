@@ -15,8 +15,6 @@ import { Static, render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import { stripUiNoise, collapsePaste, stripBracketedPaste, looksLikePasteChunk, logPasteChunk, shouldSuppressMention, singleLine, logPopupEvent, PASTE_MENTION_SHIELD_MS } from './input-paste.js';
 import TextInput from 'ink-text-input';
 import { dispWidth, LOADING_FRAMES as KAOMOJI } from './loading-tui.js';
-import { } from './reasoning-view.js';
-import type { ToolCallListItem } from './loading-tui.js';
 import { THEME, fg } from './theme.js';
 import { COMPOSER_PLACEHOLDER, POPUP_TITLE_TAB, POPUP_TITLE_AGENT, POPUP_TITLE_FILE, POPUP_TITLE_COMMAND } from './content.js';
 import { DOUBLE_ESC_MS, STATUS_TICK_MS, THINK_FRAME_MS } from './timing.js';

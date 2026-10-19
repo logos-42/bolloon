@@ -14,7 +14,7 @@
  *   - frontmatter author 拒绝 'llm-judge' 之外的不合法值 → 标 'missing-frontmatter'
  */
 
-import type { PromptLayer, SectionMeta, AppliesTo } from './registry.js';
+import type { PromptLayer } from './registry.js';
 
 export type LayerHealth = 'ok' | 'stale' | 'overdue-review' | 'missing-frontmatter' | 'dynamic';
 

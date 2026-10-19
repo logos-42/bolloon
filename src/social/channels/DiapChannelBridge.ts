@@ -10,12 +10,11 @@
 import type { SocialSessionProvider } from '../heartbeat.js';
 import type {
   SocialChannel,
-  ChannelPresence,
   ChannelAnnouncement,
   DiscoveredAgent,
   ServiceRegistration
 } from './types.js';
-import type { IdentityRegistration, KeyPair } from '@diap/sdk';
+import type { KeyPair } from '@diap/sdk';
 
 export interface DiapBridgeConfig {
   discoveryInterval: number;

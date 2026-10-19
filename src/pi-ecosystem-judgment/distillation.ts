@@ -66,12 +66,6 @@ export interface TrajectoryEntry {
   approved: boolean;
 }
 
-interface ConversationTurn {
-  role: 'human' | 'agent';
-  content: string;
-  timestamp: string;
-}
-
 /**
  * Initialize the distillation system
  */

@@ -641,7 +641,6 @@ function buildAgentSystem(opts: { goal?: string; memoryBlock?: string; userDoc?:
   ].filter(Boolean).join('\n');
 }
 
-interface WebAgentToolResult { name: string; ok: boolean; output: string }
 // 2026-10-16: 工具签名带 args (更灵活调用; 现有工具忽略 args)
 const WEB_AGENT_TOOLS: Record<string, (args?: Record<string, unknown>) => Promise<string>> = {
   get_status: async () => {
