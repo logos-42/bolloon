@@ -448,11 +448,12 @@ async function worldCardSend(flags: CliFlags): Promise<CommandResult> {
 
   // 尝试 POST 到本机运行中的服务端 /api/world/cards/push
   const port = process.env.PORT || '54188';
+  const outgoingCard = { ...payload, id: `card_${Date.now()}`, signature: signatureB64 };
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/world/cards/push`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Signature': signatureB64 },
-      body: JSON.stringify({ ...payload, id: `card_${Date.now()}`, signature: signatureB64 }),
+      body: JSON.stringify(outgoingCard),
     });
     const d = await res.json().catch(() => ({}));
     if (res.ok && d.ok) {
@@ -466,7 +467,7 @@ async function worldCardSend(flags: CliFlags): Promise<CommandResult> {
     return { envelope: failEnvelope('INTERNAL_ERROR', d.error || `HTTP ${res.status}`, {}, [], 'needs_human'), human: `${title(head)}\n  ⚠️ 服务端拒收: ${d.error || `HTTP ${res.status}`}` };
   } catch (e) {
     // 服务端未运行 — 输出已签名卡片, 用户可通过其他方式转发
-    const signedCard = { ...payload, id: `card_${Date.now()}`, signature: signatureB64 };
+    const signedCard = outgoingCard;
     return {
       envelope: okEnvelope('OK', '已签名 (服务端未运行, 卡片输出到下方)', { signedCard }, [], null),
       human: [

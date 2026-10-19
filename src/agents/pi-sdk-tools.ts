@@ -27,7 +27,7 @@ import { registerSkillShareTools } from './skill-share.js';
 // 2026-09-13: 微支付信息服务 (x402 付费信息 + 验真信封)
 import { registerPaidInfoTools } from './x402/paid-info-tools.js';
 // 2026-10-19: 世界卡片投递 (往对方世界模式传多媒体卡片)
-import { deliverWorldCard, CARD_PROTOCOL, signCardPayload, filterCardMedia } from './world-cards.js';
+import { deliverWorldCard, CARD_PROTOCOL, signCardPayload, filterCardMedia, buildSignedWorldCard } from './world-cards.js';
 // 2026-10-02: 群聊的四个 AI 工具 —— 原语来自群模块与"唯一发送出口"(带隐私闸)
 import { createGroup, joinGroup, listGroups, groupLink, groupMessages, groupMembers } from './gateway-group.js';
 import { resolveGroupRef, resolveSenderTag, sendTrailMessage } from './task-group.js';
@@ -540,8 +540,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
 
       // 通过 P2P world.card 消息投递: public = 广播给所有已连接节点 (公域) · private = 定向发给指定好友
       try {
-        const cardMsg = { ...payload, id: `card_${Date.now()}`, signature: signatureB64 };
-        const msgText = `${CARD_PROTOCOL.replace('/', '_')}:${JSON.stringify(cardMsg)}`;
+        const msgText = buildSignedWorldCard(payload, signatureB64, `card_${Date.now()}`);
         if (scope === 'public') {
           const p2pNet = (ctx as any).p2pNetwork;
           let broadcastCount = 0;

@@ -101,6 +101,12 @@ export async function signCardPayload(payload: CardPayload, privateKeyHex: strin
   return ed25519Sign(privateKeyBytes, canonicalCardPayload(payload));
 }
 
+/** 组装可投递的已签名卡片消息 (P2P 帧文本): CARD_PROTOCOL 前缀 + 签名载荷 JSON — 发送侧唯一组装点 */
+export function buildSignedWorldCard(payload: CardPayload, signatureB64: string, id: string): string {
+  const cardMsg = { ...payload, id, signature: signatureB64 };
+  return `${CARD_PROTOCOL.replace('/', '_')}:${JSON.stringify(cardMsg)}`;
+}
+
 /** 投递世界卡片到信箱 (验签通过才入库) */
 export async function deliverWorldCard(
   payload: CardPayload,
