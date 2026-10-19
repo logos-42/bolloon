@@ -26,8 +26,7 @@ import {
 } from '../agents/opportunity-match.js';
 import { readProfile, setProfile } from '../agents/world-profile.js';
 import { worldWatcherStatus } from '../agents/world-watcher.js';
-import { listWorldCards, canonicalCardPayload, CARD_PROTOCOL } from '../agents/world-cards.js';
-import { ed25519Sign } from '../agents/x402/paid-info-protocol.js';
+import { listWorldCards, canonicalCardPayload, CARD_PROTOCOL, signCardPayload, filterCardMedia } from '../agents/world-cards.js';
 
 function parseDeadline(v: string): number | null | undefined {
   const s = String(v || '').trim();
@@ -435,17 +434,14 @@ async function worldCardSend(flags: CliFlags): Promise<CommandResult> {
     protocol: CARD_PROTOCOL,
     title: cardTitle,
     summary: cardSummary,
-    media: media.filter((m: any) => m && m.type && m.url),
+    media: filterCardMedia(media),
     scope,
     provider: { did, name: String(kp.name || '') },
     issuedAt: new Date().toISOString(),
   };
   let signatureB64: string;
   try {
-    const privateKeyHex = String(kp.privateKey || '');
-    const privateKeyBytes = Uint8Array.from(Buffer.from(privateKeyHex, 'hex'));
-    if (privateKeyBytes.length !== 32) throw new Error(`私钥长度应为 32 字节, 实际 ${privateKeyBytes.length}`);
-    signatureB64 = await ed25519Sign(privateKeyBytes, canonicalCardPayload(payload));
+    signatureB64 = await signCardPayload(payload, String(kp.privateKey || ''));
   } catch (e) {
     return { envelope: failEnvelope('INTERNAL_ERROR', `签名失败: ${String(e)}`, {}, [], 'needs_human'), human: `${title(head)}\n  签名失败: ${String(e)}` };
   }

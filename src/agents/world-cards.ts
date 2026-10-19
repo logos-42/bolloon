@@ -18,7 +18,7 @@ import * as path from 'path';
 import * as crypto from 'node:crypto';
 import { worldDir } from './intent-store.js';
 import { resolveDidPublicKey } from './opportunity-inbox.js';
-import { canonicalize, ed25519Verify } from './x402/paid-info-protocol.js';
+import { canonicalize, ed25519Verify, ed25519Sign } from './x402/paid-info-protocol.js';
 
 export const CARD_PROTOCOL = 'bolloon-world-card/1';
 
@@ -87,6 +87,20 @@ export function canonicalCardPayload(p: CardPayload): string {
   });
 }
 
+/** 过滤出合法媒体项 (每项必须有 type + url; 与入库侧同一判据, 发/收两侧共用) */
+export function filterCardMedia(media: unknown): CardMedia[] {
+  return Array.isArray(media)
+    ? media.filter((m): m is CardMedia => Boolean(m && m.type && m.url))
+    : [];
+}
+
+/** 用私钥 hex 签名卡片载荷 (32 字节 Ed25519; 与验签侧 canonicalCardPayload 同构) */
+export async function signCardPayload(payload: CardPayload, privateKeyHex: string): Promise<string> {
+  const privateKeyBytes = Uint8Array.from(Buffer.from(String(privateKeyHex || ''), 'hex'));
+  if (privateKeyBytes.length !== 32) throw new Error(`私钥长度应为 32 字节, 实际 ${privateKeyBytes.length}`);
+  return ed25519Sign(privateKeyBytes, canonicalCardPayload(payload));
+}
+
 /** 投递世界卡片到信箱 (验签通过才入库) */
 export async function deliverWorldCard(
   payload: CardPayload,
@@ -122,9 +136,7 @@ export async function deliverWorldCard(
     id,
     title,
     summary: String(payload.summary || '').trim(),
-    media: Array.isArray(payload.media)
-      ? payload.media.filter((m): m is CardMedia => Boolean(m && m.type && m.url))
-      : [],
+    media: filterCardMedia(payload.media),
     scope,
     provider: { did, name: payload.provider?.name },
     issuedAt: payload.issuedAt,

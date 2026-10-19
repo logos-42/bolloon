@@ -27,8 +27,7 @@ import { registerSkillShareTools } from './skill-share.js';
 // 2026-09-13: 微支付信息服务 (x402 付费信息 + 验真信封)
 import { registerPaidInfoTools } from './x402/paid-info-tools.js';
 // 2026-10-19: 世界卡片投递 (往对方世界模式传多媒体卡片)
-import { deliverWorldCard, CARD_PROTOCOL, canonicalCardPayload } from './world-cards.js';
-import { ed25519Sign } from './x402/paid-info-protocol.js';
+import { deliverWorldCard, CARD_PROTOCOL, signCardPayload, filterCardMedia } from './world-cards.js';
 // 2026-10-02: 群聊的四个 AI 工具 —— 原语来自群模块与"唯一发送出口"(带隐私闸)
 import { createGroup, joinGroup, listGroups, groupLink, groupMessages, groupMembers } from './gateway-group.js';
 import { resolveGroupRef, resolveSenderTag, sendTrailMessage } from './task-group.js';
@@ -527,17 +526,14 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         protocol: CARD_PROTOCOL,
         title,
         summary,
-        media: media.filter((m: any) => m && m.type && m.url),
+        media: filterCardMedia(media),
         scope,
         provider: { did, name: String(kp.name || ctx.identity?.name || '') },
         issuedAt: new Date().toISOString(),
       };
       let signatureB64: string;
       try {
-        const privateKeyHex = String(kp.privateKey || '');
-        const privateKeyBytes = Uint8Array.from(Buffer.from(privateKeyHex, 'hex'));
-        if (privateKeyBytes.length !== 32) throw new Error(`私钥长度应为 32 字节, 实际 ${privateKeyBytes.length}`);
-        signatureB64 = await ed25519Sign(privateKeyBytes, canonicalCardPayload(payload));
+        signatureB64 = await signCardPayload(payload, String(kp.privateKey || ''));
       } catch (e) {
         return { success: false, error: `签名失败: ${String(e)}` };
       }
