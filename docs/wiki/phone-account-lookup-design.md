@@ -2,7 +2,7 @@
 title: 手机号反查人类账号与加好友设计方案
 source: compiled from leo 需求 (2026-10-14: 能否用手机号注册绑定, 或根据手机号查询人类账号加好友) + contacts-protocol / known-peers / did-agent-resolver 实查
 created: 2026-10-14
-last_confirmed: 2026-10-14
+last_confirmed: 2026-10-19
 schema_version: 2
 audience: self
 stage: draft
@@ -205,3 +205,21 @@ interface DirectoryLookupResult {
 - 好友/联系人关系进记忆 (`kind: 'relationship'`, 记忆方案 P0 的 MemoryEntry), 但**手机号明文不进记忆** (只进哈希指针)
 - 好友的 DID 是记忆归属锚, 不是记忆内容
 - 两个方案共用: OrbitDB store 模式 · consent/门禁链 · 脱敏导出模式
+## 8. AI 主动性三档 (2026-10-19 落地, leo: 「需要给到 AI 主动性来做」)
+
+工具四件套 `directory.lookup / add_friend / publish / retract` 2026-10-11 落地时 description 写死
+「用于用户明确说」= **纯被动**。本轮放开主动性, 但按仓库既有对外边界分层 (contact policy 首次联系需批 ·
+tool-gate 高风险标注 · Harness fail-closed 同款口径), 不动隐私门:
+
+| 档 | 工具 | 规则 |
+|---|---|---|
+| **主动做** (只读, 无外发) | `directory.lookup` | 用户对话里出现手机号 / 说想加某人 / 只有对方手机号时, 不等明确要求就查, 汇报 DID/昵称/可否加好友 |
+| **主动提议, 确认后才做** | `directory.add_friend` · `directory.publish` · `directory.retract` | 查到候选 ⇒ 把候选和后果摆给用户, 用户点头才调; add_friend 调用前确认目标手机号与申请附言 |
+| **永不自主** | 未经确认的 `directory.publish` | 发布自己的手机号指针是隐私动作 — 先问用户确认, 没有例外 |
+
+**落点 = 行为指令所在处**: ① `src/agents/contacts/tools.ts` 四个 description (AI 的系统提示里就是这四段);
+② 系统提示层 `src/llm/system-prompt/layers/core/external-engagement.md` 新增「对人类联系 proactive」节
+(与习惯提炼/自主循环同层, cross-channel 通用)。CLI 侧 (`+<手机号>` / `/directory add-friend`) 不变。
+
+**判据**: `src/test/contact-proactivity.test.ts` — 真实 `registerContactTools` 注册后断 description
+(主动性放宽的三条 + 隐私门不许放松的反向断言 + 提示词层节存在), 不 grep 源码文本。

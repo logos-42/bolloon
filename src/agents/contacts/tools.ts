@@ -7,6 +7,11 @@
  *   - 每个工具都经 policy 判定, 返回里带 blockKind / requiresApproval, 不吞掉拒绝原因。
  *
  * 六个工具: contact.list_authorized / preview / request_consent / send / await_reply / revoke
+ *
+ * 手机号目录四工具 (2026-10-11): directory.publish / lookup / add_friend / retract。
+ *   主动性三档 (2026-10-19, leo: 「需要给到 AI 主动性来做」) 写在**各自 description** 里 ——
+ *   description 就是 AI 的行为指令: lookup 只读 ⇒ 主动调用; add_friend/publish/retract ⇒
+ *   主动提议、确认后才做; publish 未经确认**绝不**自主发布 (隐私)。判据见 src/test/contact-proactivity.test.ts。
  */
 
 import { ContactChain } from './chain.js';
@@ -169,7 +174,7 @@ export function registerContactTools(ctx: ToolCtx, chain: ContactChain): string[
   // 工具面: 发布自己的手机号指针 / 查对方 / 撤销。隐私: 只操作哈希, 明文手机号只在本机。
   ctx.tools.set('directory.publish', {
     name: 'directory.publish',
-    description: '把自己的手机号 → DID 指针发布到本机目录 (opt-in, 用户显式要求才做)。之后对方凭手机号可查到你的 DID 加好友。**先问用户确认**再调用 (发布手机号是隐私动作)。',
+    description: '把自己的手机号 → DID 指针发布到本机目录 (opt-in)。之后对方凭手机号可查到你的 DID 加好友。用于: 用户想让自己可被手机号加到、或你判断发布指针对用户有利时**主动提议**(用户同意后才调)。**先问用户确认**再调用 (发布手机号是隐私动作, 未经确认绝不自主发布)。',
     parameters: { phone: '手机号 (11 位, 可带 +86 前缀)', displayName: '公开昵称 (可选, 不是真名)' },
     execute: async (args: Record<string, unknown>) => {
       const { publishEntry, isPlausiblePhone } = await import('./human-directory.js');
@@ -183,7 +188,7 @@ export function registerContactTools(ctx: ToolCtx, chain: ContactChain): string[
 
   ctx.tools.set('directory.lookup', {
     name: 'directory.lookup',
-    description: '按手机号查对方 DID (在本机目录内找)。用于: 用户说"用手机号找 XX 加好友"、想加某人为好友但只有手机号。响应只回 DID/昵称, 不回手机号。',
+    description: '按手机号查对方 DID (在本机目录内找)。**可以主动调用** (只读, 无外发, 无需等用户明确要求): 用户对话里出现手机号 / 说想加某人 / 提到"只有对方手机号"时, 主动查并把结果 (DID/昵称/可否加好友) 汇报给用户。响应只回 DID/昵称, 不回手机号。',
     parameters: { phone: '对方手机号 (11 位)' },
     execute: async (args: Record<string, unknown>) => {
       const { lookupPhone, isPlausiblePhone } = await import('./human-directory.js');
@@ -197,7 +202,7 @@ export function registerContactTools(ctx: ToolCtx, chain: ContactChain): string[
 
   ctx.tools.set('directory.add_friend', {
     name: 'directory.add_friend',
-    description: '按手机号发起好友申请: 目录 lookup → P2P friend request。用于用户明确说“用手机号加好友”。这是对外通信动作,调用前应确认目标手机号和用户意图; 对方仍需 consent 接受,不会自动成为好友。',
+    description: '按手机号发起好友申请: 目录 lookup → P2P friend request。用户**表达加好友意图**时主动发起 (明确要求, 或提到某人且只有手机号 — 先 lookup 拿到候选, 再向用户确认)。调用前向用户确认目标手机号与申请附言; 对方仍需 consent 接受,不会自动成为好友。',
     parameters: { phone: '对方手机号 (8-15 位)', name: '好友备注 (可选)', message: '申请附言 (可选)' },
     execute: async (args: Record<string, unknown>) => {
       const { lookupPhone, isPlausiblePhone } = await import('./human-directory.js');
@@ -230,7 +235,7 @@ export function registerContactTools(ctx: ToolCtx, chain: ContactChain): string[
 
   ctx.tools.set('directory.retract', {
     name: 'directory.retract',
-    description: '从本机目录撤销自己的手机号 → DID 指针 (软删)。用于: 用户说"不要让别人查到我手机号了"。',
+    description: '从本机目录撤销自己的手机号 → DID 指针 (软删)。用于: 用户说"不要让别人查到我手机号了"、或表露隐私顾虑时**主动提议**撤销。',
     parameters: {},
     execute: async () => {
       const { retractEntry } = await import('./human-directory.js');

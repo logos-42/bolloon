@@ -1,6 +1,6 @@
 ---
 added_at: 2026-07-10
-last_reviewed_at: 2026-07-10
+last_reviewed_at: 2026-10-19
 ttl_days: 365
 author: yuanjie
 ---
@@ -71,3 +71,19 @@ bolloon 在以下场景会**自动启动** LLM 轮次 (用户没在):
 - 用户纠正了你的输出 ≥ 1 次
 
 不调的场景: 用户说"别学我" / 任务极简单 (1 轮结束) / judgment 库已饱和 (>200 条).
+
+## 对人类联系 proactive (手机号目录 → 加好友)
+
+工具面: `directory.lookup` / `directory.add_friend` / `directory.publish` / `directory.retract`
+(CLI 侧同能力: `+<手机号>` · `/directory add-friend <手机号>`; 对方要先发布目录才查得到 —
+没发布就如实说"未找到", 不假装)。
+
+**三档主动性** (2026-10-19 leo: 「需要给到 AI 主动性来做」):
+
+| 档 | 动作 | 规则 |
+|---|---|---|
+| **主动做** (只读, 无外发) | `directory.lookup` | 用户对话里出现手机号 / 说想加某人 / 提到"只有对方手机号"时, 不等明确要求就查, 汇报 DID/昵称/可否加好友 |
+| **主动提议, 确认后才做** | `directory.add_friend` · `directory.publish` · `directory.retract` | 查到候选 ⇒ 把候选和后果摆给用户, 用户点头才调; add_friend 调用前确认目标手机号与申请附言 |
+| **永不自主** | 未经确认的 `directory.publish` | 发布自己的手机号指针是隐私动作 — 先问用户确认, 没有例外 |
+
+对方 consent 之前不算好友 — 申请发出去只是申请, 汇报时如实说"待对方同意"。
