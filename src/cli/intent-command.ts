@@ -13,20 +13,19 @@
  * 这是四端里最便宜的一环: CLI 可脚本化 / 可进 cron, 先把 Intent→Opportunity 闭环做对。
  * 数据层与未来 Web/Mobile 共享 (intent-store.ts / opportunity-match.ts)。
  */
-import * as crypto from 'crypto';
 import {
   type CliFlags, type CommandResult,
   okEnvelope, failEnvelope, line, title, hint, plain, has, opt,
 } from './protocol-envelope.js';
 import {
-  setIntent, listIntents, removeIntent, getIntent, type IntentRecord,
+  setIntent, listIntents, removeIntent, getIntent,
 } from '../agents/intent-store.js';
 import {
   scanOpportunities, matchOneIntentText, recordFeedback, readObservations,
 } from '../agents/opportunity-match.js';
 import { readProfile, setProfile } from '../agents/world-profile.js';
 import { worldWatcherStatus } from '../agents/world-watcher.js';
-import { listWorldCards, canonicalCardPayload, CARD_PROTOCOL, signCardPayload, filterCardMedia } from '../agents/world-cards.js';
+import { listWorldCards, CARD_PROTOCOL, signCardPayload, filterCardMedia } from '../agents/world-cards.js';
 
 function parseDeadline(v: string): number | null | undefined {
   const s = String(v || '').trim();
@@ -304,7 +303,6 @@ export const WORLD_USAGE = [
 ].join('\n');
 
 export async function worldCommand(flags: CliFlags): Promise<CommandResult> {
-  const head = 'bolloon world';
   // 2026-10-05 修正: parseArgs 已剥命令名 → positionals[0]=sub (profile/watch), [1]=verb
   const sub = String(flags.positionals[0] ?? '').trim();
   const verb = String(flags.positionals[1] ?? '').trim();
