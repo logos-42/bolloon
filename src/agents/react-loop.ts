@@ -14,7 +14,7 @@
  *   仍由 PiAgentSession 协调. 这样 claude code 可以独立 unit-test 决策边界.
  */
 
-import { parseToolCall, isFinalResponse } from './parse-tool-call.js';
+import { parseToolCall } from './parse-tool-call.js';
 
 /** 单步决策输出 */
 export type NextAction =
