@@ -12,7 +12,7 @@ import { shellExec } from './shell-tool.js';
 import { checkWritePath } from './shell-guard.js';
 import { p2pDocumentTools } from './p2p-document-tools.js';
 import { runSelfImproveLoop } from './pi-sdk-session-factory.js';
-import type { Tool, ToolResult } from './pi-sdk-types.js';
+import type { Tool } from './pi-sdk-types.js';
 import type { PersonaDoc } from '../social/heartbeat.js';
 import { getMinimax } from '../constraints/index.js';
 import { llmConfigStore } from '../llm/config-store.js';
@@ -1137,7 +1137,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     name: 'group_list',
     description: '列出本机已加入的群（群名 / groupId / 加入时间 / 邀请链接）—— **用于**不知道有哪些群时先摸清楚。先用它拿 groupId, 再用 group_read / group_say。',
     parameters: {},
-    execute: async (args: Record<string, unknown>) => {
+    execute: async () => {
       const groups = await listGroups();
       if (!groups.length) return { success: true, output: '（本机还没有加入任何群）' };
       const lines: string[] = [];
@@ -1677,7 +1677,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         const { promisify } = await import('util');
         const pExecFile = promisify(execFile);
         const argv = ['-rn', '--include=' + (args.filePattern || '*'), pattern, searchPath];
-        const { stdout, stderr } = await pExecFile('grep', argv, { cwd: ctx.cwd, maxBuffer: 32 * 1024 * 1024 });
+        const { stdout } = await pExecFile('grep', argv, { cwd: ctx.cwd, maxBuffer: 32 * 1024 * 1024 });
         const lines = stdout.split('\n').filter(Boolean).slice(0, 50);
         return { success: true, output: `🔍 grep "${pattern}" in ${searchPath} (${args.filePattern || '*'}, 最多 50 行):\n${lines.join('\n')}${lines.length === 50 ? '\n... (truncated)' : ''}` };
       } catch (e: any) {
