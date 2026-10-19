@@ -8,6 +8,8 @@
  *     · **工具白名单**: v1 连工具都不用 —— 只把"本回合摘要 + 现有库目录"喂给模型, 要它回一段 JSON;
  *     · **fail-open**: 节流/配置读不出来时**放行**(宁可偶尔多审一次, 不要因配置坏掉就永久不审);
  *     · **绝不编造**: 没有值得记的就回 none, 那就什么都不写(写空是正常结果, 不是失败)。
+ *     · **空回复换轻量提示词重问一次** (2026-10-19): 复盘直连 chat 不走 pivot loop 的空回复打回;
+ *       仍空 ⇒ 如实记"模型返回空内容", **不冒充 none** (见 `buildReviewRetryPrompt`)。
  * 库的形态(反囤积): `~/.bolloon/experience/<类>.md`, **类级**文件 + 条目标题去重 ——
  *   「同一教训学两次 = 改那一条, 不是加一条」。
  */
@@ -118,6 +120,30 @@ export function buildReviewPrompt(turnSummary: string, existingIndex: string): s
   ].join('\n');
 }
 
+/**
+ * 空回复重问提示词 (2026-10-19, leo: 「经验 ❌ 从未成功 … 复盘 160+ 次一条没落库」)。
+ *
+ * 为什么换提示词而不是原样再问: 复盘走 pi-sdk 的 `getMinimax().chat()` **直连**, 不经过 pivot loop
+ *   —— 没有 2026-10-13/10-19 刚修的**空回复打回**机制。实测 glm-5.3-flash 对 `buildReviewPrompt`
+ *   这种"长规矩 + 只回一个 JSON"的提示词持续返回空 content ⇒ 解析不出 ⇒ 什么都不写。
+ *   修法: 空回复时换一个**更短更聚焦**的轻量提示词重问一次 —— 同样只要一个 JSON, 但把任务收窄成
+ *   "一句话: 这回合有没有值得记的", 并把"必须给内容"说在前面。
+ */
+export function buildReviewRetryPrompt(turnSummary: string): string {
+  return [
+    '请回答下面这一个问题 (必须给出 JSON, 不要空着):',
+    '这一回合里有没有值得沉淀的可复用经验 (规律 / 踩过的坑 / 用户对做法的纠正)?',
+    '',
+    '回合摘要:',
+    '"""',
+    String(turnSummary || '').slice(0, 3000),
+    '"""',
+    '',
+    '只回一个 JSON (不要别的文字):',
+    '{"action":"none"} 或 {"action":"write","class":"类名(小写-连字符)","title":"一句话标题","body":"规矩与理由"}',
+  ].join('\n');
+}
+
 /** 容错解析模型回的那段 JSON (纯函数)。任何异常/不完整 ⇒ none (绝不半写) */
 export function parseReviewDecision(text: string): ReviewDecision {
   const raw = String(text || '');
@@ -219,13 +245,30 @@ export async function runExperienceReview(opts: {
     //   review 的 chat 调用**原来没有超时** ⇒ 一旦 provider 慢/挂, 这条就永远不返回 ✓。
     //   现在给**硬超时**(默认 25s, 可配 ✓), 超时如实记一条并放行 ✓ —— 复盘是锦上添花, 绝不许拖住主流程 ✓。
     const chatTimeoutMs = Number(process.env.BOLLOON_REVIEW_TIMEOUT_MS) || 25_000;
-    const raw = await Promise.race([
-      opts.chat(prompt),
+    const raceChat = (p: Promise<string>): Promise<string> => Promise.race([
+      p,
       new Promise<string>((resolve) => setTimeout(() => resolve('__TIMEOUT__'), chatTimeoutMs)),
     ]);
+    let raw = await raceChat(opts.chat(prompt));
     if (raw === '__TIMEOUT__') {
       log(`审查超时(${chatTimeoutMs}ms) —— 本轮不复盘, 已放行(绝不拖住主流程)`);
       return { reviewed: false, applied: false, reason: 'chat-timeout' };
+    }
+    // 2026-10-19 (leo: 「经验 ❌ 从未成功 … 复盘 160+ 次一条没落库」): 复盘直连 chat、不走 pivot loop
+    //   的空回复打回机制; 空 content 时 parseReviewDecision 解析不出 ⇒ 旧行为是回 action:'none'
+    //   ⇒ **假装"无需记录"** ✗。现在: 空回复换 `buildReviewRetryPrompt` 轻量重问一次;
+    //   仍空 ⇒ 如实记"模型返回空内容" ( reviewed=true, 但不写库, 也不冒充 none ✓)。
+    if (!String(raw).trim()) {
+      log('模型返回空内容 —— 换轻量提示词重问一次');
+      raw = await raceChat(opts.chat(buildReviewRetryPrompt(summary)));
+      if (raw === '__TIMEOUT__') {
+        log(`重问也超时(${chatTimeoutMs}ms) —— 本轮不复盘, 已放行(绝不拖住主流程)`);
+        return { reviewed: false, applied: false, reason: 'chat-timeout-retry' };
+      }
+      if (!String(raw).trim()) {
+        log('模型返回空内容(重问后仍空) —— 如实记录, 不假装"无需记录"');
+        return { reviewed: true, applied: false, reason: '模型返回空内容' };
+      }
     }
     const d = parseReviewDecision(raw);
     if (d.action !== 'write') return { reviewed: true, applied: false, reason: d.reason || 'none' };

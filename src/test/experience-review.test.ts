@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   shouldReview, parseReviewDecision, applyExperience, buildReviewPrompt,
-  runExperienceReview, experienceDir, DEFAULT_MIN_INTERVAL_MS,
+  runExperienceReview, experienceDir, DEFAULT_MIN_INTERVAL_MS, buildReviewRetryPrompt,
 } from '../agents/experience-review.js';
 
 let TMP = '';
@@ -98,6 +98,58 @@ describe('编排: 绝不抛错 + 按规矩不写', () => {
     const r = await runExperienceReview({ turnSummary: 'z'.repeat(100), chat: async () => { called = true; return '{}'; }, home: TMP, nowMs: 1000, lastAtMs: 999 });
     expect(r.reviewed).toBe(false);
     expect(called).toBe(false);
+  });
+});
+
+describe('空回复重问 + 如实记录 (2026-10-19, leo: 「经验 ❌ 从未成功 … 复盘 160+ 次一条没落库」)', () => {
+  it('① 首轮空 ⇒ 自动换轻量提示词重问一次; 重问有内容 ⇒ 正常落库', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-empty-'));
+    const prompts: string[] = [];
+    let n = 0;
+    const r = await runExperienceReview({
+      turnSummary: 'x'.repeat(120),
+      chat: async (p) => {
+        prompts.push(p);
+        return ++n === 1
+          ? ''   // 首轮空 (glm-5.3-flash 对"只回一个 JSON"的长提示词持续空 content)
+          : '{"action":"write","class":"cli","title":"空回复要换提示词重问","body":"复盘直连 chat 不走 pivot loop, 空回复必须换轻量提示词重问, 仍空才如实记录。"}';
+      },
+      home, force: true, nowMs: 30, log: () => {},
+    });
+    expect(r.applied).toBe(true);
+    expect(prompts.length, '确实重问了 (只一次, 不无限重试)').toBe(2);
+    expect(prompts[1], '换的是提示词, 不是原样再问').not.toBe(prompts[0]);
+    expect(prompts[1]).toContain('JSON');                       // 重问仍是"只回一个 JSON"的轻量任务
+    expect(prompts[1].length).toBeLessThan(prompts[0].length);  // 轻量: 比首轮提示词短
+  });
+  it('② 重问后仍空 ⇒ 如实记"模型返回空内容", 不假装"无需记录"', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-empty2-'));
+    const logs: string[] = [];
+    let calls = 0;
+    const r = await runExperienceReview({
+      turnSummary: 'y'.repeat(120),
+      chat: async () => { calls++; return '   '; },   // 两次都空白
+      home, force: true, nowMs: 40, log: (m) => logs.push(m),
+    });
+    expect(calls, '只重问一次').toBe(2);
+    expect(r.reviewed).toBe(true);
+    expect(r.applied).toBe(false);
+    expect(r.reason, '如实原因, 不是 "没找到 JSON(模型原文头部: )"').toBe('模型返回空内容');
+    expect(logs.join('\n')).toContain('模型返回空内容');
+    expect(fs.existsSync(experienceDir(home)), '没写任何库文件').toBe(false);
+  });
+  it('③ 重问提示词是纯函数: 更短 + 仍只要一个 JSON + 带上了回合摘要', () => {
+    const retry = buildReviewRetryPrompt('回合摘要内容');
+    const full = buildReviewPrompt('回合摘要内容', '(沉淀库还是空的)');
+    expect(retry.length).toBeLessThan(full.length);
+    expect(retry).toContain('JSON');
+    expect(retry).toContain('回合摘要内容');
+    expect(buildReviewRetryPrompt('').length, '空摘要也不抛').toBeGreaterThan(0);
+  });
+  it('④ 源级反回归: 复盘 chat 包装必须取 `reply` (只取 content/text ⇒ 117/117 全空)', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/agents/pi-sdk.ts'), 'utf-8');
+    expect(src).toContain('getMinimax().chat(prompt)');
+    expect(src, 'ChatResult 的真字段是 reply —— 缺它就是对空取值').toMatch(/r\?\.reply \?\? r\?\.content/);
   });
 });
 

@@ -1432,7 +1432,14 @@ export class PiAgentSession implements AgentSession {
             force: true,
             chat: async (prompt: string) => {
               const r: any = await getMinimax().chat(prompt);
-              return typeof r === 'string' ? r : String(r?.content ?? r?.text ?? '');
+              if (typeof r === 'string') return r;
+              // 2026-10-19 (leo: 「经验 ❌ 从未成功 … 复盘跑了 160+ 次, 一条经验都没落过库」):
+              //   `getMinimax().chat()` 返回的是 **ChatResult**, 真字段是 `reply` —— 原来只取
+              //   `content ?? text` ⇒ 对 ChatResult 永远解出 '' ⇒ 复盘 117/117
+              //   "没找到 JSON(模型原文头部: )" **原文头部全是空的** ✗ (与模型空回复是两条独立病因:
+              //   这条是取值取错, 那条才轮到 glm-5.3-flash 空 content)。取法与
+              //   `src/cli/session-summary.ts` 对齐: reply 优先, content/text 兜底。
+              return String(r?.reply ?? r?.content ?? r?.text ?? '');
             },
             log: reviewLog,
             // 2026-10-01: 写了经验之后再找"能沉淀进哪个已有技能"的候选 —— **只记候选, 不自动改技能** ✓
@@ -1473,6 +1480,43 @@ export class PiAgentSession implements AgentSession {
           });
         }
       } catch { /* 挂点自身失败也不影响主流程 */ }
+
+      // 2026-10-19 (leo: 「继续深挖并且补缺口」): D-hook 自动捕获判断力 ——
+      //   原先只有 web/server 消息路径 (server.ts:5524) 和手动端点 (routes-judgments.ts:198)
+      //   才调 detectAndDistillFromChannel, **CLI 主路径从来没有** ⇒ 判断力库 17 天零写入
+      //   (usage 在涨说明注入腿在跑, 捕获腿是静的) ✗。现在: 回合收尾 fire-and-forget 跑同一条
+      //   D 路径 (confidence≥0.75 + 24h 滑窗去重都在 detectAndDistillFromChannel 里;
+      //   5min/channel 节流走 throttleDHook —— 与 web 路径共用同一张节流表, 双路径不重复触发)。
+      //   结果如实落 ~/.bolloon/logs/judgment-dhook.log, 不进回复流, 绝不阻塞本回合。
+      try {
+        const dhChannel = this.actor?.state?.channelId;
+        if (dhChannel) {
+          const dhLog = (m: string) => {
+            try {
+              const p = path.join(os.homedir(), '.bolloon', 'logs', 'judgment-dhook.log');
+              void fs.mkdir(path.dirname(p), { recursive: true })
+                .then(() => fs.appendFile(p, `[${new Date().toISOString()}] ${m}\n`))
+                .catch(() => { /* 落日志失败不影响主流程 */ });
+            } catch { /* 落日志失败不影响主流程 */ }
+          };
+          void import('../pi-ecosystem-judgment/detect-hook.js')
+            .then(async (m) => {
+              if (!m.throttleDHook(dhChannel)) return;
+              const dhTurns = [
+                { role: 'human' as const, content: String(this.currentUserInput || '').slice(0, 4000) },
+                { role: 'agent' as const, content: String(loopResult?.reply || '').slice(0, 4000) },
+              ].filter((t) => t.content.trim().length > 0);
+              if (dhTurns.length < 2) return;
+              const r = await m.detectAndDistillFromChannel(dhTurns, { channelId: dhChannel });
+              dhLog(r.triggered
+                ? `已捕获 ✓ ${r.judgment?.id || ''} evolved(merged=${r.evolved?.merged ?? 0}, superseded=${r.evolved?.superseded ?? 0})`
+                : `未捕获: ${r.reason}`);
+            })
+            .catch((e) => {
+              dhLog(`失败(不影响主回合): ${String((e as Error)?.message || e).slice(0, 160)}`);
+            });
+        }
+      } catch { /* D-hook 挂点自身失败也不影响主流程 */ }
       this.finishTrajectory(trajRec, loopResult.reply, loopResult.aiFailed ? 'error' : 'ok');
       return loopResult.reply;
     } finally {

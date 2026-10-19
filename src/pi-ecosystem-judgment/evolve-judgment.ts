@@ -19,6 +19,7 @@ import {
   listJudgmentsByStatus,
 } from './human-value-store.js';
 import { evolveWithLLM } from './distill-prompt.js';
+import { logEvolution } from './adaptive-scan.js';
 
 export interface EvolveOptions {
   maxLLMCompare?: number;
@@ -38,6 +39,20 @@ export interface EvolveOutcome {
 const debounceMap: Map<string, number> = new Map();
 const DEBOUNCE_MS = 60_000;
 
+/**
+ * 节流 key 归一化 (2026-10-19 修, leo: 「继续深挖并且补缺口」):
+ * detect-hook 存的 judgment 是 `context.domain = 'channel:<id>'`, **没有** `context.channelId` 字段
+ * ⇒ 旧代码只读 `context.channelId` ⇒ D 路径每次都拿到 undefined ⇒ **debounce 永不生效**,
+ * 每次 D 存储都全量 jaccard 扫库 + 可能调 LLM。现在两种形状都认。
+ */
+export function channelKeyOf(j: Pick<HumanJudgment, 'context'>): string | undefined {
+  const ctx = (j?.context ?? {}) as unknown as Record<string, unknown>;
+  const direct = typeof ctx.channelId === 'string' && ctx.channelId ? ctx.channelId : undefined;
+  if (direct) return direct;
+  const domain = typeof ctx.domain === 'string' ? ctx.domain : '';
+  return domain.startsWith('channel:') ? domain.slice('channel:'.length) : undefined;
+}
+
 export async function evolveNewJudgment(
   newJudgment: HumanJudgment,
   options: EvolveOptions = {}
@@ -46,7 +61,7 @@ export async function evolveNewJudgment(
   const highTh = options.jaccardHighThreshold ?? 0.85;
   const lowTh = options.jaccardLowThreshold ?? 0.3;
 
-  const channelId = (newJudgment.context as unknown as Record<string, unknown>)?.channelId as string | undefined;
+  const channelId = channelKeyOf(newJudgment);
   if (!options.skipDebounce && channelId) {
     const last = debounceMap.get(channelId) || 0;
     if (Date.now() - last < DEBOUNCE_MS) {
@@ -165,6 +180,37 @@ export async function evolveNewJudgment(
       }))
     );
   }
+
+  // 2026-10-19 (leo: 「继续深挖并且补缺口」): merge/supersede/contradict 动作**写 evolution.jsonl 留痕** ——
+  //   evolution.jsonl 是设计中的 audit/回滚源, 但旧实现只有 adaptive-scan 的启动扫描记录, 演化动作
+  //   只 return 给调用方 (detect-hook 收到后仅 console.log) ⇒ "演化到底跑没跑"只能翻 judgments.json 翻 status。
+  //   形状沿用 bootstrap/adaptive-apply 的**合成 suggestion** 惯例 (kind 占位 + `evolve:` key 前缀可检索),
+  //   不改 EvolutionEntry 类型; logEvolution 自带注入扫描与 try/catch, 留痕失败绝不影响演化本身。
+  try {
+    if (merged.length > 0 || contradicted.length > 0 || llmBatch.length > 0) {
+      await logEvolution({
+        ts: new Date().toISOString(),
+        action: 'accept',   // 系统自动执行的演化, 用 accept 与 bootstrap 扫描记录同语义
+        suggestion: {
+          key: `evolve:${newJudgment.id}`,
+          kind: 'unused',   // 占位 (SuggestionKind 枚举无 evolve 族; 靠 key 前缀区分)
+          judgmentId: newJudgment.id,
+          decision: newJudgment.decision.slice(0, 80),
+          reason: [
+            `evolve: merged=${merged.length}`,
+            `contradicted=${contradicted.length}`,
+            `unrelated=${unrelatedCount}`,
+            `llmCompared=${llmBatch.length}`,
+            merged.length ? `supersededIds=${merged.map((m) => m.id).join(',')}` : '',
+          ].filter(Boolean).join(' '),
+          action: 'review',
+          hint: '判断力演化留痕 (自动): 新条目入库后与库内 active 条比对, merge/contradict 的旧条已置 superseded; 详情见本条 judgment 的 supersededBy 反查。',
+          metrics: { usage7d: 0, usage30d: 0, daysSinceLastUse: 0, totalUsage: 0 },
+          scannedAt: new Date().toISOString(),
+        },
+      });
+    }
+  } catch { /* 留痕失败不影响演化 */ }
 
   return {
     newJudgment,

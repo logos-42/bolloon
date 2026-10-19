@@ -77,7 +77,16 @@ export async function bootstrapBolloon(opts: {
         scannedAt: scanResult.scannedAt,
       },
     });
-    console.log(`[bootstrap] 类 B 启动扫描完成: ${scanResult.suggestions.length} 条建议`);
+    // 2026-10-19 (leo: 「继续深挖并且补缺口」): 建议分布进摘要 —— adaptive-scan 只出建议不自动改库
+    //   是**有意设计** (类 B 边界: 避免越权; accept 走 UI adaptive-apply, 自动路径还有
+    //   BOLLOON_AUTO_EVOLVE_DATA 策略门), 但建议只躺在 UI tab 里, CLI 用户永远看不见。
+    //   启动行带上 kind:action 分布, 经 [bootstrap] 内部通道落 startup.log (--verbose 可见)。
+    const dhSummary = (() => {
+      const byKind = new Map<string, number>();
+      for (const s of scanResult.suggestions) byKind.set(`${s.kind}:${s.action}`, (byKind.get(`${s.kind}:${s.action}`) || 0) + 1);
+      return [...byKind.entries()].slice(0, 5).map(([k, n]) => `${k}×${n}`).join(' ');
+    })();
+    console.log(`[bootstrap] 类 B 启动扫描完成: ${scanResult.suggestions.length} 条建议${dhSummary ? ` (${dhSummary})` : ''} —— 处理入口: Web 判断力面板 📊自适应 / POST /api/judgments/adaptive-apply`);
   } catch (err) {
     errors.push(`scan: ${(err as Error).message}`);
     console.warn('[bootstrap] 启动扫描失败 (非致命):', err);
