@@ -20,7 +20,6 @@ import { irohTransport as defaultIrohTransport, type IrohTransport } from '../ne
 import { resolveGate2, resolveGate3 } from './visibility.js';
 import type {
   HearthKind,
-  HearthFrame,
   JudgenessPubkeyContext,
 } from './types.js';
 

@@ -3,7 +3,7 @@
  * 检测进程卡死、无响应等情况
  */
 
-import type { WatchdogConfig, WatchdogState, RestartStrategy, RestartLevel } from './types.js';
+import type { WatchdogConfig, WatchdogState, RestartLevel } from './types.js';
 
 export interface WatchdogCallbacks {
   onRestart?: (level: RestartLevel, reason: string) => void;

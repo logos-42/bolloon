@@ -5,8 +5,6 @@
  */
 import { contextBridge, ipcRenderer } from 'electron';
 
-type Unsub = () => void;
-
 contextBridge.exposeInMainWorld('electronAPI', {
   // === 原有 (保留) ===
   getVersion: () => ipcRenderer.invoke('get-version'),

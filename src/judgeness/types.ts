@@ -17,8 +17,6 @@
  *   open (agent 可 publish) | locked (默认, agent 不可) | human-only (仅人类写入)
  */
 
-import type { HumanJudgment } from '../pi-ecosystem-judgment/human-value-store.js';
-
 // ---------------------------------------------------------------------------
 // 5 维评分类 (0..1, 缺省视为 undefined → v0)
 // ---------------------------------------------------------------------------
