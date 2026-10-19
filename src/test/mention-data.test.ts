@@ -79,6 +79,13 @@ describe('mention-data', () => {
     await fs.writeFile(path.join(tree, 'README.md'), 'x');
     await fs.writeFile(path.join(tree, 'node_modules', 'pkg', 'index.js'), 'x');
     await fs.writeFile(path.join(tree, '.git', 'config'), 'x');
+    // 2026-10-19: 项目根 skills/ 两级布局 (Hermes 式) — loadSkills 此前漏掉这个根 ⇒ @ 候选看不到
+    await fs.mkdir(path.join(tree, 'skills', 'cli-tools', 'lint-helper'), { recursive: true });
+    await fs.writeFile(
+      path.join(tree, 'skills', 'cli-tools', 'lint-helper', 'SKILL.md'),
+      '---\nname: lint-helper\ndescription: 仓库内两级技能\n---\n\n# 用法\n',
+      'utf-8',
+    );
     process.chdir(tree);
   });
 
@@ -137,6 +144,15 @@ describe('mention-data', () => {
     expect(sr!.kind).toBe('skill');
     expect(sr!.hint).toContain('代码审查');
     expect(skills.find(s => s.label === 'no-desc')).toBeDefined();
+  });
+
+  it('loadSkills 含 <cwd>/skills 两级布局 (2026-10-19 补第 4 根, 与 skill-loader 对齐)', async () => {
+    const skills = await loadSkills();
+    // 两级布局: skills/<分类>/<技能名>/SKILL.md ⇒ 列出真技能 (label=技能名), 不列分类目录名
+    const nested = skills.find(s => s.label === 'lint-helper');
+    expect(nested, '项目根 skills/ 里的两级技能必须进 @ 候选').toBeDefined();
+    expect(nested!.hint).toContain('仓库内两级技能');
+    expect(skills.find(s => s.label === 'cli-tools'), '分类目录名不许当技能列出').toBeUndefined();
   });
 
   it('loadPlugins 读 .mcp.json mcpServers', async () => {

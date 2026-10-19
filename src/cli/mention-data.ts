@@ -167,12 +167,13 @@ export async function loadAgents(): Promise<MentionItem[]> {
 
 // ─── 技能 (/ 弹窗的一部分) ───────────────────────────────────────────────────
 
-/** 3 个 skill 目录 (与 skill-loader.defaultSkillPaths 一致) */
+/** 4 个 skill 目录 (与 skill-loader.defaultSkillPaths 一致; 2026-10-19 补 <cwd>/skills —— 此前 @ 候选漏掉项目根 skills/) */
 export async function loadSkills(): Promise<MentionItem[]> {
   const out: MentionItem[] = [];
   const dirs = [
     path.join(HOME(), '.bolloon', 'skills'),
     path.join(process.cwd(), '.bolloon', 'skills'),
+    path.join(process.cwd(), 'skills'),
     path.join(HOME(), '.boll', 'skills'),
   ];
   for (const d of dirs) {
@@ -182,14 +183,30 @@ export async function loadSkills(): Promise<MentionItem[]> {
     } catch { continue; }
     for (const e of entries) {
       if (!e.isDirectory() || e.name.startsWith('.')) continue;
-      // 读 frontmatter description 作为提示 (轻量, 不引 skill-loader 依赖)
-      let desc = '';
+      const direct = path.join(d, e.name);
+      // 2026-10-19: <cwd>/skills 是 Hermes 式布局 (skills/<分类>/<技能名>/SKILL.md, 两级) ——
+      // 直接子目录没有 SKILL.md ⇒ 下探一层找真技能目录 (与 skill-loader 递归 ≤6 层对齐, @ 候选只下一层够用)
+      let candidates = [direct];
       try {
-        const raw = (await fs.readFile(path.join(d, e.name, 'SKILL.md'), 'utf-8')).slice(0, 800);
-        const m = raw.match(/^---\r?\n[\s\S]*?^description:\s*(.+)$/m);
-        if (m) desc = m[1].trim().replace(/^["']|["']$/g, '').slice(0, 50);
-      } catch { /* 无 SKILL.md → 仅目录名 */ }
-      out.push({ kind: 'skill', label: e.name, hint: desc || '技能', insert: e.name });
+        await fs.access(path.join(direct, 'SKILL.md'));
+      } catch {
+        try {
+          const inner = await fs.readdir(direct, { withFileTypes: true });
+          candidates = inner
+            .filter((x) => x.isDirectory() && !x.name.startsWith('.'))
+            .map((x) => path.join(direct, x.name));
+        } catch { /* 读不动就保持 direct (无 SKILL.md ⇒ 仅目录名) */ }
+      }
+      for (const skillDir of candidates) {
+        // 读 frontmatter description 作为提示 (轻量, 不引 skill-loader 依赖)
+        let desc = '';
+        try {
+          const raw = (await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8')).slice(0, 800);
+          const m = raw.match(/^---\r?\n[\s\S]*?^description:\s*(.+)$/m);
+          if (m) desc = m[1].trim().replace(/^["']|["']$/g, '').slice(0, 50);
+        } catch { /* 无 SKILL.md → 仅目录名 */ }
+        out.push({ kind: 'skill', label: path.basename(skillDir), hint: desc || '技能', insert: path.basename(skillDir) });
+      }
     }
   }
   const seen = new Set<string>();
