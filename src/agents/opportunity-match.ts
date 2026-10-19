@@ -33,8 +33,8 @@ export interface OpportunityCandidate {
   inbox?: { providerDid: string; providerName?: string; verification: string; refs: string[]; media?: CardMedia[] };
   /** AI 主动搜索机会的原文链接 (可点开核实) */
   search?: { url: string; source: string; query?: string };
-  /** 世界卡片的多媒体内容 (文本/音频/图片/视频) + 来源 */
-  card?: { media: { type: string; url: string; mime: string; name: string }[]; provider: { did: string; name?: string }; issuedAt: string; verification: string };
+  /** 世界卡片的多媒体内容 (文本/音频/图片/视频) + 来源 + 作用域 (public=公域广播) */
+  card?: { media: { type: string; url: string; mime: string; name: string }[]; provider: { did: string; name?: string }; issuedAt: string; verification: string; scope?: 'public' | 'private' };
 }
 
 function tagsOf(text: string): string[] {
@@ -250,6 +250,7 @@ async function mergeInboxOnTop(all: OpportunityCandidate[]): Promise<Opportunity
         provider: c.provider,
         issuedAt: c.issuedAt,
         verification: c.verification,
+        scope: c.scope,
       },
     }));
   for (const c of cardCards.slice(0, 10)) {

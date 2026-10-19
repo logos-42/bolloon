@@ -22,6 +22,9 @@ import { canonicalize, ed25519Verify } from './x402/paid-info-protocol.js';
 
 export const CARD_PROTOCOL = 'bolloon-world-card/1';
 
+/** 卡片作用域: public = 公域 (广播给所有已连接节点, 任何节点可收) · private = 好友定向 (只发指定 DID) */
+export type CardScope = 'public' | 'private';
+
 export type CardMediaType = 'text' | 'audio' | 'image' | 'video';
 
 export interface CardMedia {
@@ -37,6 +40,8 @@ export interface WorldCard {
   title: string;
   summary: string;
   media: CardMedia[];
+  /** 公域 (public) 或好友定向 (private, 缺省) */
+  scope: CardScope;
   provider: { did: string; name?: string };
   issuedAt: string;
   /** 验签结果: verified | signature-invalid | unverified */
@@ -50,6 +55,8 @@ export interface CardPayload {
   title: string;
   summary: string;
   media?: CardMedia[];
+  /** public = 公域广播 (任何节点可收) · private/缺省 = 好友定向 */
+  scope?: CardScope;
   provider: { did: string; name?: string };
   issuedAt: string;
 }
@@ -74,6 +81,7 @@ export function canonicalCardPayload(p: CardPayload): string {
     title: p.title,
     summary: p.summary,
     media: p.media ?? [],
+    scope: p.scope,
     provider: p.provider,
     issuedAt: p.issuedAt,
   });
@@ -91,6 +99,7 @@ export async function deliverWorldCard(
   if (!title) return { ok: false, error: '缺 title' };
   const did = String(payload.provider?.did || '').trim();
   if (!did) return { ok: false, error: '缺 provider.did' };
+  const scope: CardScope = payload.scope === 'public' ? 'public' : 'private';
 
   // 1. 验签 (能解析公钥才可能 verified)
   const pub = await resolveDidPublicKey(did);
@@ -116,6 +125,7 @@ export async function deliverWorldCard(
     media: Array.isArray(payload.media)
       ? payload.media.filter((m): m is CardMedia => Boolean(m && m.type && m.url))
       : [],
+    scope,
     provider: { did, name: payload.provider?.name },
     issuedAt: payload.issuedAt,
     verification,

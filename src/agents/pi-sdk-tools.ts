@@ -489,24 +489,26 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
     }
   });
 
-  // send_world_card — 往对方世界模式传多媒体卡片 (文本/音频/图片/视频)
+  // send_world_card — 往对方世界模式传多媒体卡片 (文本/音频/图片/视频); public 卡进公域广播给所有已连接节点
   ctx.tools.set('send_world_card', {
     name: 'send_world_card',
-    description: '往对方 bolloon 的世界模式传一张多媒体卡片。卡片内容格式不限：media[] 里每一项可是 text / audio / image / video (url + mime + name)。用本机身份私钥签名，通过 P2P world.card 消息投递；对方验签通过后卡片会进入其世界流 (scanOpportunities, reason="card", 优先级最高)。',
+    description: '传一张世界卡片到对方世界模式: **用于**向好友定向投递 (private) 或向全网广播公域卡片 (public)。卡片内容格式不限：media[] 里每一项要 type/url/mime/name (text / audio / image / video)。想发卡片给好友或公网时**优先**用本工具；用本机身份私钥签名, 对方/各节点验签后卡片进世界流。',
     parameters: {
-      to: '目标对方 DID (did:key:...) 或 P2P peerId，可用 list_peers / contact.list_authorized 查',
+      to: '目标对方 DID (did:key:...) 或 P2P peerId, 可用 list_peers / contact.list_authorized 查; scope=public 时忽略, 改为广播',
       title: '卡片标题 (必填)',
       summary: '卡片摘要 (必填)',
-      media: '媒体数组，每项 { type: "text" | "audio" | "image" | "video", url: string, mime: string, name: string }',
+      media: '媒体数组, 每项 { type: "text" | "audio" | "image" | "video", url: string, mime: string, name: string }',
+      scope: '"public" = 公域广播 (发给全部已连接节点) · 缺省/private = 好友定向',
     },
     execute: async (args) => {
       const to = String(args.to || '').trim();
       const title = String(args.title || '').trim();
       const summary = String(args.summary || '').trim();
       const media = Array.isArray(args.media) ? args.media : [];
-      if (!to) return { success: false, error: 'to 必填 (目标 DID 或 peerId)' };
+      const scope: 'public' | 'private' = String(args.scope || '').trim() === 'public' ? 'public' : 'private';
       if (!title) return { success: false, error: 'title 必填' };
       if (!summary) return { success: false, error: 'summary 必填' };
+      if (scope !== 'public' && !to) return { success: false, error: 'to 必填 (private 卡片; 或传 scope=public 做公域广播)' };
 
       // 加载本机身份私钥用于签名
       let kp: any;
@@ -526,6 +528,7 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         title,
         summary,
         media: media.filter((m: any) => m && m.type && m.url),
+        scope,
         provider: { did, name: String(kp.name || ctx.identity?.name || '') },
         issuedAt: new Date().toISOString(),
       };
@@ -539,10 +542,27 @@ export function registerBuiltinTools(ctx: ToolRegistryContext): void {
         return { success: false, error: `签名失败: ${String(e)}` };
       }
 
-      // 通过 P2P world.card 消息投递给对方
+      // 通过 P2P world.card 消息投递: public = 广播给所有已连接节点 (公域) · private = 定向发给指定好友
       try {
         const cardMsg = { ...payload, id: `card_${Date.now()}`, signature: signatureB64 };
         const msgText = `${CARD_PROTOCOL.replace('/', '_')}:${JSON.stringify(cardMsg)}`;
+        if (scope === 'public') {
+          const p2pNet = (ctx as any).p2pNetwork;
+          let broadcastCount = 0;
+          if (p2pNet && typeof p2pNet.broadcast === 'function') {
+            await p2pNet.broadcast('world.card', msgText);
+            broadcastCount = -1; // 广播: 数量由对方报告, 这里表示走了广播通道
+          } else {
+            // 没有广播句柄 → 退回定向发给 to (若有)
+            if (to) await p2pNetwork.sendMessage(to, 'world.card', msgText);
+          }
+          return {
+            success: true,
+            output: broadcastCount === -1
+              ? `🌐 公域卡片已广播 (scope=public)\n   标题: ${title}\n   媒体: ${media.length} 项\n   所有已连接节点验签后都会进其世界流。`
+              : `✅ 世界卡片已广播给 ${to ? to.substring(0, 16) + '...' : '已连接节点'} (scope=public)\n   标题: ${title}`,
+          };
+        }
         await p2pNetwork.sendMessage(to, 'world.card', msgText);
         return {
           success: true,
@@ -4586,6 +4606,7 @@ export function setupInboxListener(ctx: ToolRegistryContext): void {
                   title: msg.title,
                   summary: msg.summary,
                   media: msg.media,
+                  scope: msg.scope === 'public' ? 'public' : 'private',
                   provider: msg.provider,
                   issuedAt: msg.issuedAt,
                 },

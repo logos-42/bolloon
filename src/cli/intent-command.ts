@@ -293,15 +293,15 @@ async function opportunityIgnore(flags: CliFlags): Promise<CommandResult> {
 // · `bolloon world profile show`                                                          看当前画像
 // · `bolloon world watch status`                                                          世界观察器状态 (自动触发可见性)
 // · `bolloon world card list`                                                             列收到的世界卡片 (对方智能体传入, 含多模态 media)
-// · `bolloon world card send --to <DID> --title <T> --summary <S> [--media <JSON>]`      发一张多媒体卡片给对方世界模式
+// · `bolloon world card send --to <DID> --title <T> --summary <S> [--media <JSON>] [--scope public]`  发卡片; --scope public = 公域广播
 export const WORLD_USAGE = [
-  'bolloon world — 世界 (自动观察 + 画像推送 + 世界卡片)',
+  'bolloon world — 世界 (自动观察 + 画像推送 + 世界卡片 · 公域)',
   '  用法:',
   '    bolloon world profile set "<你是谁/在做什么>" [--name X] [--about Y] [--tag T ...]',
   '    bolloon world profile show',
   '    bolloon world watch status',
   '    bolloon world card list [--json]',
-  '    bolloon world card send --to <DID> --title <标题> --summary <摘要> [--media <JSON>]',
+  '    bolloon world card send --to <DID> --title <标题> --summary <摘要> [--media <JSON>] [--scope public]',
 ].join('\n');
 
 export async function worldCommand(flags: CliFlags): Promise<CommandResult> {
@@ -387,7 +387,7 @@ async function worldCardList(flags: CliFlags): Promise<CommandResult> {
   }
   const mediaShort = (c: any) => (c.media ?? []).map((m: any) => `${m.type}:${m.name || m.url?.slice(0, 24) || '?'}`).join(' · ');
   const lines = verified.map((c) => [
-    `  ${c.title.slice(0, 48)}`,
+    `  ${c.scope === 'public' ? '🌐' : '🔒'} ${c.title.slice(0, 46)}`,
     `    来自 ${c.provider.name || c.provider.did.slice(0, 16)}… · ${new Date(c.receivedAt).toISOString().slice(0, 16).replace('T', ' ')}`, 
     `    ${c.summary.slice(0, 70)}`,
     c.media?.length ? `    内容: ${mediaShort(c)}` : '',
@@ -399,16 +399,17 @@ async function worldCardList(flags: CliFlags): Promise<CommandResult> {
   };
 }
 
-/** `bolloon world card send` — 给对方世界模式发一张多媒体卡片 (文本/音频/图片/视频) */
+/** `bolloon world card send` — 给对方世界模式发一张多媒体卡片 (文本/音频/图片/视频); --scope public = 公域广播 */
 async function worldCardSend(flags: CliFlags): Promise<CommandResult> {
   const head = 'bolloon world card send';
   const target = String(opt(flags, '--to') ?? '').trim();
   const cardTitle = String(opt(flags, '--title') ?? '').trim();
   const cardSummary = String(opt(flags, '--summary') ?? '').trim();
   const mediaRaw = String(opt(flags, '--media') ?? '').trim();
-  if (!target) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺 --to (目标 DID)', {}, [], 'needs_human'), human: `${title(head)}\n  用法: ${head} --to <DID> --title <标题> --summary <摘要> [--media <JSON>]` };
-  if (!cardTitle) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺 --title', {}, [], 'needs_human'), human: `${title(head)}\n  用法: ${head} --to <DID> --title <标题> --summary <摘要> [--media <JSON>]` };
-  if (!cardSummary) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺 --summary', {}, [], 'needs_human'), human: `${title(head)}\n  用法: ${head} --to <DID> --title <标题> --summary <摘要> [--media <JSON>]` };
+  const scope: 'public' | 'private' = String(opt(flags, '--scope') ?? 'private').trim() === 'public' ? 'public' : 'private';
+  if (!cardTitle) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺 --title', {}, [], 'needs_human'), human: `${title(head)}\n  用法: ${head} --to <DID> --title <标题> --summary <摘要> [--media <JSON>] [--scope public]` };
+  if (!cardSummary) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺 --summary', {}, [], 'needs_human'), human: `${title(head)}\n  用法: ${head} --to <DID> --title <标题> --summary <摘要> [--media <JSON>] [--scope public]` };
+  if (scope !== 'public' && !target) return { envelope: failEnvelope('INVALID_ARGUMENT', '缺 --to (目标 DID; 或 --scope public 做公域广播)', {}, [], 'needs_human'), human: `${title(head)}\n  用法: ${head} --to <DID> --title <标题> --summary <摘要> [--media <JSON>] [--scope public]` };
 
   let media: any[] = [];
   if (mediaRaw) {
@@ -435,6 +436,7 @@ async function worldCardSend(flags: CliFlags): Promise<CommandResult> {
     title: cardTitle,
     summary: cardSummary,
     media: media.filter((m: any) => m && m.type && m.url),
+    scope,
     provider: { did, name: String(kp.name || '') },
     issuedAt: new Date().toISOString(),
   };
@@ -458,7 +460,12 @@ async function worldCardSend(flags: CliFlags): Promise<CommandResult> {
     });
     const d = await res.json().catch(() => ({}));
     if (res.ok && d.ok) {
-      return { envelope: okEnvelope('OK', `卡片已发送给 ${target.substring(0, 16)}…`, { to: target, card: { id: d.card?.id, title: cardTitle, summary: cardSummary, mediaCount: payload.media.length } }, [d.card?.id], null), human: `${title(head)}\n  ✅ 已投递到本机世界卡片信箱 (对方验签通过后进入其世界流)\n   卡片 ID: ${d.card?.id}\n   标题: ${cardTitle}` };
+      return {
+        envelope: okEnvelope('OK', `卡片已${scope === 'public' ? '广播到公域' : `发送给 ${target.substring(0, 16)}…`}`, {
+          to: target || null, scope, card: { id: d.card?.id, title: cardTitle, summary: cardSummary, mediaCount: payload.media.length },
+        }, [d.card?.id], null),
+        human: `${title(head)}\n  ✅ ${scope === 'public' ? '已广播到公域 (所有已连接节点验签后都会收到)' : `已投递到你与 ${target.substring(0, 16)}… `}\n   卡片 ID: ${d.card?.id}\n   标题: ${cardTitle}\n   作用域: ${scope === 'public' ? '🌐 公域' : '🔒 好友定向'}`,
+      };
     }
     return { envelope: failEnvelope('INTERNAL_ERROR', d.error || `HTTP ${res.status}`, {}, [], 'needs_human'), human: `${title(head)}\n  ⚠️ 服务端拒收: ${d.error || `HTTP ${res.status}`}` };
   } catch (e) {

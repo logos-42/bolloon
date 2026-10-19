@@ -205,6 +205,7 @@ export function registerWorldRoutes(app: Express): void {
       title: typeof b.title === 'string' ? b.title : '',
       summary: typeof b.summary === 'string' ? b.summary : '',
       media: Array.isArray(b.media) ? b.media : [],
+      scope: (typeof b.scope === 'string' && (b.scope === 'public' || b.scope === 'private')) ? b.scope : 'private',
       provider: {
         did: typeof b.provider?.did === 'string' ? b.provider.did : '',
         name: typeof b.provider?.name === 'string' ? b.provider.name : undefined,
@@ -245,6 +246,7 @@ export function registerWorldRoutes(app: Express): void {
         { type: 'image', url: 'https://example.com/preview.png', mime: 'image/png', name: 'preview.png' },
         { type: 'video', url: 'https://example.com/demo.mp4', mime: 'video/mp4', name: 'demo.mp4' },
       ] as CardMedia[],
+      scope: 'public' as const,
       provider: { did: sampleDid, name: '对方智能体' },
       issuedAt: new Date().toISOString(),
     };
@@ -253,9 +255,10 @@ export function registerWorldRoutes(app: Express): void {
       ok: true,
       protocol: CARD_PROTOCOL,
       description: '外部/对方智能体主动投递世界卡片到本机世界模式: POST /api/world/cards/push, header X-Signature = Ed25519(provider 私钥, canonicalCardPayload(payload))',
-      payloadFields: ['protocol', 'id?', 'title', 'summary', 'media[]', 'provider.did', 'provider.name?', 'issuedAt'],
+      payloadFields: ['protocol', 'id?', 'title', 'summary', 'media[]', 'scope?', 'provider.did', 'provider.name?', 'issuedAt'],
       mediaTypes: ['text', 'audio', 'image', 'video'],
-      signature: 'ed25519Sign(providerPrivateKey, canonicalCardPayload({protocol,id,title,summary,media,provider,issuedAt}))',
+      scopes: ['public (公域广播, 任何节点可收)', 'private (缺省, 好友定向)'],
+      signature: 'ed25519Sign(providerPrivateKey, canonicalCardPayload({protocol,id,title,summary,media,scope,provider,issuedAt}))',
       verification: '本机解析 provider.did → Ed25519 公钥 → 验签; 通过才入库 (verified) 并进世界流(优先级最高), 否则拒绝',
       sample: { payload: samplePayload, signature: sampleSig, did: sampleDid },
     });

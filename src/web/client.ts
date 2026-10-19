@@ -4236,10 +4236,10 @@ function renderWorldOpportunities(opps) {
       · <span style="color:#6aaa6a;">✓ 验签通过</span>
       ${(o.inbox.refs || []).length ? '· ' + o.inbox.refs.map((r) => `<a href="${String(r).replace(/</g, '&lt;')}" target="_blank" rel="noopener" style="color:#7a9ad4;">[引用]</a>`).join(' ') : ''}
     </div>` : '';
-    // 2026-10-19 (leo: 对方智能体往世界模式传卡片, 内容格式不限): 世界卡片 — 多模态 media 内联渲染
+    // 2026-10-19 (leo: 对方智能体往世界模式传卡片, 内容格式不限): 世界卡片 — 多模态 media 内联渲染 + 作用域标签
     const cardLine = o.card ? `<div style="font-size:11px;color:#8a8a80;margin-top:6px;border-top:1px dashed var(--border,#3a3a36);padding-top:6px;">
-      🎴 世界卡片 · 来自 <span style="color:#c4d640;">${String(o.card.provider?.name || o.card.provider?.did || '').slice(0, 40)}</span>
-      · <span style="color:#6aaa6a;">✓ 验签通过</span>
+      ${o.card.scope === 'public' ? '🌐' : '🎴'} 世界卡片 · 来自 <span style="color:#c4d640;">${String(o.card.provider?.name || o.card.provider?.did || '').slice(0, 40)}</span>
+      · <span style="color:#6aaa6a;">✓ 验签通过</span>${o.card.scope === 'public' ? ' · <span style="color:#c4d640;">公域</span>' : ''}
       ${renderCardMediaInline(o.card.media || [], o.id)}
     </div>` : '';
     // 2026-10-05: AI 主动搜索机会 — 显示来源 URL (可点开核实, 真实可信)

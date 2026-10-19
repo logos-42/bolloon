@@ -149,4 +149,44 @@ describe('world-cards (世界卡片信箱)', () => {
     const reasons = s.results.map((x) => x.reason);
     expect(reasons[0]).toBe('card');
   });
+
+  it('scope=public 公域卡片: 验签入库 + scope 保留', async () => {
+    const payload = makeCardPayload({ scope: 'public' });
+    const sig = await ed25519Sign(TEST_PRIV, canonicalCardPayload(payload));
+    const r = await deliverWorldCard(payload, sig);
+    expect(r.ok).toBe(true);
+    expect(r.card!.verification).toBe('verified');
+    expect(r.card!.scope).toBe('public');
+    const list = await listWorldCards();
+    expect(list.length).toBe(1);
+    expect(list[0].scope).toBe('public');
+  });
+
+  it('scope 缺省 = private (好友定向)', async () => {
+    const payload = makeCardPayload(); // 不传 scope
+    const sig = await ed25519Sign(TEST_PRIV, canonicalCardPayload(payload));
+    const r = await deliverWorldCard(payload, sig);
+    expect(r.ok).toBe(true);
+    expect(r.card!.scope).toBe('private');
+  });
+
+  it('公域卡片进世界流且透传 scope (前端据此标 🌐 公域)', async () => {
+    const payload = makeCardPayload({ scope: 'public', title: '公域公告: 开源合作招募' });
+    const sig = await ed25519Sign(TEST_PRIV, canonicalCardPayload(payload));
+    await deliverWorldCard(payload, sig);
+    const s = await scanOpportunities();
+    const cardOpp = s.results.find((x) => x.reason === 'card');
+    expect(cardOpp).toBeTruthy();
+    expect(cardOpp!.card?.scope).toBe('public');
+    expect(cardOpp!.title).toBe('公域公告: 开源合作招募');
+  });
+
+  it('scope 签名覆盖: 改 scope 后验签失败 (防伪造公域标记)', async () => {
+    const payload = makeCardPayload({ scope: 'private' });
+    const sig = await ed25519Sign(TEST_PRIV, canonicalCardPayload(payload));
+    const tampered = { ...payload, scope: 'public' as const };
+    const r = await deliverWorldCard(tampered, sig); // 签名是按 private 载荷签的, 改成 public 不匹配
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('签名无效');
+  });
 });

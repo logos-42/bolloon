@@ -606,7 +606,7 @@
         if (o.reason === 'inbox') tag = '✉ 外部投递';
         else if (o.reason === 'search') tag = '🔎 AI 搜索';
         else if (o.reason === 'match') tag = '与你匹配';
-        else if (o.reason === 'card') tag = '🎴 卡片';
+        else if (o.reason === 'card') tag = o.card && o.card.scope === 'public' ? '🌐 公域' : '🎴 卡片';
         // 2026-10-19 (leo: 内容格式不限 — 文本文档/音频/图片/视频): 世界卡片 media 内联渲染
         const mediaHtml = (o.card && Array.isArray(o.card.media) ? o.card.media : [])
           .map((m) => {
