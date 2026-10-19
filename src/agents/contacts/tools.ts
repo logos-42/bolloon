@@ -9,9 +9,13 @@
  * 六个工具: contact.list_authorized / preview / request_consent / send / await_reply / revoke
  *
  * 手机号目录四工具 (2026-10-11): directory.publish / lookup / add_friend / retract。
- *   主动性三档 (2026-10-19, leo: 「需要给到 AI 主动性来做」) 写在**各自 description** 里 ——
- *   description 就是 AI 的行为指令: lookup 只读 ⇒ 主动调用; add_friend/publish/retract ⇒
- *   主动提议、确认后才做; publish 未经确认**绝不**自主发布 (隐私)。判据见 src/test/contact-proactivity.test.ts。
+ *   主动性档位 (2026-10-19, leo: 「默认主动, web 和手机也是, 联系人的 agent 你也要主动维护关系」)
+ *   写在**各自 description** 里 —— description 就是 AI 的行为指令:
+ *     · lookup 只读            ⇒ 主动调用 (不等明确要求);
+ *     · add_friend 外发        ⇒ **默认主动发起** (用户表达意图即执行, 目标有歧义才先问);
+ *     · publish/retract 改自身状态 ⇒ 主动提议、确认后才做; publish 未经确认**绝不**自主发布 (隐私唯一例外)。
+ *   桌面/web 的总体 posture 在提示词层 core.social-proactivity; 手机端同文在 mobile-harness。
+ *   判据 (含"装配后真的进 prompt"的防截断断言) 见 src/test/contact-proactivity.test.ts。
  */
 
 import { ContactChain } from './chain.js';
@@ -202,7 +206,7 @@ export function registerContactTools(ctx: ToolCtx, chain: ContactChain): string[
 
   ctx.tools.set('directory.add_friend', {
     name: 'directory.add_friend',
-    description: '按手机号发起好友申请: 目录 lookup → P2P friend request。用户**表达加好友意图**时主动发起 (明确要求, 或提到某人且只有手机号 — 先 lookup 拿到候选, 再向用户确认)。调用前向用户确认目标手机号与申请附言; 对方仍需 consent 接受,不会自动成为好友。',
+    description: '按手机号发起好友申请: 目录 lookup → P2P friend request。**默认主动发起** — 用户表达加好友意图 (明确要求, 或提到某人且只有手机号) 即执行, 不必逐次等确认; 仅目标有歧义 (多个候选) 才先问。对方仍需 consent 接受,不会自动成为好友; 汇报时说"待对方同意"。',
     parameters: { phone: '对方手机号 (8-15 位)', name: '好友备注 (可选)', message: '申请附言 (可选)' },
     execute: async (args: Record<string, unknown>) => {
       const { lookupPhone, isPlausiblePhone } = await import('./human-directory.js');

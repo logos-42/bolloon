@@ -205,21 +205,33 @@ interface DirectoryLookupResult {
 - 好友/联系人关系进记忆 (`kind: 'relationship'`, 记忆方案 P0 的 MemoryEntry), 但**手机号明文不进记忆** (只进哈希指针)
 - 好友的 DID 是记忆归属锚, 不是记忆内容
 - 两个方案共用: OrbitDB store 模式 · consent/门禁链 · 脱敏导出模式
-## 8. AI 主动性三档 (2026-10-19 落地, leo: 「需要给到 AI 主动性来做」)
+## 8. AI 社交主动性: 默认主动 + 全端 parity + 关系维护 (2026-10-19 定稿, leo: 「默认主动, web 和手机也是, 联系人的 agent 你也要主动维护关系」)
 
 工具四件套 `directory.lookup / add_friend / publish / retract` 2026-10-11 落地时 description 写死
-「用于用户明确说」= **纯被动**。本轮放开主动性, 但按仓库既有对外边界分层 (contact policy 首次联系需批 ·
-tool-gate 高风险标注 · Harness fail-closed 同款口径), 不动隐私门:
+「用于用户明确说」= **纯被动**; 第一轮曾改三档 (主动做/提议/永不自主), leo 拍板**再放开为默认主动**:
+用户表达意图即执行, 不逐次等确认; 唯一例外 = `directory.publish` 暴露用户自己的联系方式, 永不自主:
 
-| 档 | 工具 | 规则 |
-|---|---|---|
-| **主动做** (只读, 无外发) | `directory.lookup` | 用户对话里出现手机号 / 说想加某人 / 只有对方手机号时, 不等明确要求就查, 汇报 DID/昵称/可否加好友 |
-| **主动提议, 确认后才做** | `directory.add_friend` · `directory.publish` · `directory.retract` | 查到候选 ⇒ 把候选和后果摆给用户, 用户点头才调; add_friend 调用前确认目标手机号与申请附言 |
-| **永不自主** | 未经确认的 `directory.publish` | 发布自己的手机号指针是隐私动作 — 先问用户确认, 没有例外 |
+| 工具 | 规则 |
+|---|---|
+| `directory.lookup` (只读) | **可以主动调用** — 对话出现手机号/说想加某人/只有对方手机号时直接查并汇报 DID/昵称/可否加好友 |
+| `directory.add_friend` · `directory.retract` | **默认主动发起** — 用户表达加好友意图 (点名/给号/说「加上他」) 即执行, 不必逐次等确认; 仅目标歧义 (多个候选) 先问; 对方 consent 前不算好友 |
+| `directory.publish` | **先问用户确认再调用** — 暴露用户自己的手机号指针是隐私动作, 未经确认绝不自主发布, 没有例外; AI 可主动提议 |
 
-**落点 = 行为指令所在处**: ① `src/agents/contacts/tools.ts` 四个 description (AI 的系统提示里就是这四段);
-② 系统提示层 `src/llm/system-prompt/layers/core/external-engagement.md` 新增「对人类联系 proactive」节
-(与习惯提炼/自主循环同层, cross-channel 通用)。CLI 侧 (`+<手机号>` / `/directory add-friend`) 不变。
+**联系人 agent 关系维护** (同轮新增): AI 对联系人按 `list_peers` 看 `lastConnectedAt` → 久未对话/恢复连接时
+**主动** send_message 打招呼/同步近况 (不等用户催); `check_inbox` 看有没有等回复的对话;
+`memory_save` kind: `relationship` 沉淀关系线索; 对端掉线不告警但关系线索不断。
+不新增循环/不新增全局状态 — 纯 prompt 驱动复用既有社交基建 (`src/social/` + `known-peers.ts`)。
 
-**判据**: `src/test/contact-proactivity.test.ts` — 真实 `registerContactTools` 注册后断 description
-(主动性放宽的三条 + 隐私门不许放松的反向断言 + 提示词层节存在), 不 grep 源码文本。
+**落点 = 行为指令所在处** (三处, 各端共享同一姿态):
+① `src/agents/contacts/tools.ts` 四个 description (AI 的系统提示里就是这四段);
+② 系统提示层 `src/llm/system-prompt/layers/core/social-proactivity.md` (新增, maxChars 800, priority 95) —
+**不**放 `external-engagement.md` (该层 maxChars=400, 追加内容会被装配截断成假绿); 桌面 CLI/web 走同一装配;
+③ 手机端 `src/web/mobile-harness.ts` ContextManager.build 的 systemParts 加三条同款姿态行
+(手机 LLM 调用独立于桌面, 必须单独注入)。CLI 侧 (`+<手机号>` / `/directory add-friend`) 不变。
+
+**判据**: `src/test/contact-proactivity.test.ts` 8 条 — 真实 `registerContactTools` 断 description
+(默认主动/歧义先问/consent + publish 隐私门反向断言); **真实 `assembleSystemPrompt({channel:'local'})`**
+断输出含主动性姿态与关系维护且该层不在 truncated 列表、无截断尾标 (防假绿); 源码钉住 mobile-harness
+三行姿态 + registry/validate 脚本都认识新层。
+**坑 (记档)**: registry 的 `LAYERS_DIR` 走 `packageDirCandidates` 优先 `dist/` 旧拷贝 — 新增/改动 layer .md
+后必须 `npm run build:web` 同步 dist, 否则测试报「文件丢失」。

@@ -1,21 +1,24 @@
 /**
- * contact-proactivity.test.ts — 联系工具主动性三档 (2026-10-19, leo: 「需要给到 AI 主动性来做」)
+ * contact-proactivity.test.ts — 联系工具主动性 (2026-10-19, leo: 「默认主动, web 和手机也是, 联系人的 agent 你也要主动维护关系」)
  *
- * 背景: 手机号目录四工具原先是**纯被动** —— description 写死"用于用户明确说"。本轮放开主动性,
- *   但按仓库既有边界分层 (contact policy / Harness fail-closed 同款口径):
- *     ① lookup 只读无外发            ⇒ **主动做**, 不等明确要求;
- *     ② add_friend / retract 外发/改状态 ⇒ **主动提议, 用户确认后才做**;
- *     ③ publish 暴露用户自己的手机号指针  ⇒ **永不自主**, 先问用户确认 (隐私门不许放松)。
+ *  posture (默认主动): 用户表达意图就执行, 不等反复催; 只读动作想做就做;
+ *   唯一例外 = 暴露用户自己的联系方式 (publish) 必须经用户确认 (隐私)。
+ *  联系人的 agent 关系也要主动维护 (打招呼/同步/沉淀关系事实), 不是躺列。
  *
- * 判据走**真实注册** (registerContactTools + fake ctx) 后断 description ——
- * description 就是 AI 的行为指令, 比 grep 源码文本更接近事实。
- * 提示词层 (system-prompt .../core/external-engagement.md 的同名节) 一并钉住, 防回归。
+ * 判据分两面, 缺一不可:
+ *   A. **行为指令在不在** — 真实 registerContactTools 注册后断 description (description 就是系统提示);
+ *   B. **装配后真的进 prompt** — 走真实 assembleSystemPrompt (带 maxChars/TOTAL_BUDGET 截断) 断新层
+ *      (2026-10-19 实测教训: 上轮把内容追加进 core.external-engagement, 该层 maxChars=400,
+ *      追加节只进了文件没进 prompt = 假绿; 所以本轮独立成层 core.social-proactivity, 并在这里
+ *      断**装配结果**而不是断文件);
+ *   C. **手机端同文** — 手机自带 system (mobile-harness), 与桌面层同文, 钉住关键子串一致性。
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { registerContactTools } from '../agents/contacts/tools.js';
 import { ContactChain } from '../agents/contacts/chain.js';
+import { assembleSystemPrompt } from '../llm/system-prompt/registry.js';
 
 function registeredTools(): Map<string, any> {
   const tools = new Map<string, any>();
@@ -23,47 +26,67 @@ function registeredTools(): Map<string, any> {
   return tools;
 }
 
-describe('联系工具主动性 (2026-10-19)', () => {
-  it('四个目录工具都注册 (含三档各自的行为指令)', () => {
+describe('A. 工具行为指令 (默认主动)', () => {
+  it('四个目录工具都注册', () => {
     const tools = registeredTools();
     for (const name of ['directory.lookup', 'directory.add_friend', 'directory.publish', 'directory.retract']) {
       expect(tools.has(name), `${name} 未注册`).toBe(true);
     }
   });
 
-  it('① lookup: 只读 ⇒ 授权主动调用 (不等明确要求)', () => {
+  it('lookup: 只读 ⇒ 主动调用 (不等明确要求)', () => {
     const d = registeredTools().get('directory.lookup').description as string;
     expect(d).toMatch(/可以主动调用/);
     expect(d).toMatch(/只读/);
-    expect(d, '旧被动措辞必须去掉').not.toMatch(/用于.*用户说/);
   });
 
-  it('② add_friend: 表达意图即主动发起, 但发送前确认目标+附言 (对外通信动作不放飞)', () => {
+  it('add_friend: 默认主动发起 (表达意图即执行, 仅歧义才先问; consent 前不算好友)', () => {
     const d = registeredTools().get('directory.add_friend').description as string;
-    expect(d).toMatch(/主动发起/);
-    expect(d).toMatch(/确认目标手机号与申请附言/);
-    expect(d).toMatch(/consent/);                       // 对方同意前不算好友
+    expect(d).toMatch(/默认主动发起/);
+    expect(d).toMatch(/歧义/);
+    expect(d).toMatch(/consent/);
   });
 
-  it('② retract: 用户表露隐私顾虑时主动提议撤销', () => {
+  it('retract: 用户表露隐私顾虑时主动提议撤销', () => {
     const d = registeredTools().get('directory.retract').description as string;
     expect(d).toMatch(/主动提议/);
   });
 
-  it('③ publish: 隐私门不许放松 — 可以主动提议, 但未经确认绝不自主发布', () => {
+  it('publish: 隐私唯一例外 — 可主动提议, 但未经确认绝不自主发布', () => {
     const d = registeredTools().get('directory.publish').description as string;
-    expect(d).toMatch(/主动提议/);                       // 主动性: 该提议时要提议
-    expect(d).toMatch(/先问用户确认/);                   // 隐私: 确认门一字不让
+    expect(d).toMatch(/主动提议/);
+    expect(d).toMatch(/先问用户确认/);
     expect(d).toMatch(/绝不自主发布/);
   });
+});
 
-  it('提示词层钉住三档规则 (external-engagement.md 社交主动性节, 防回归)', () => {
-    const p = path.join(process.cwd(), 'src/llm/system-prompt/layers/core/external-engagement.md');
-    const md = fs.readFileSync(p, 'utf8');
-    expect(md).toMatch(/对人类联系 proactive/);
-    expect(md).toMatch(/主动做.*只读/);
-    expect(md).toMatch(/主动提议, 确认后才做/);
-    expect(md).toMatch(/永不自主/);
-    expect(md).toMatch(/2026-10-19/);                    // 日期戳: 后续改动可溯源
+describe('B. 装配后真的进 prompt (防 maxChars 截断假绿)', () => {
+  it('core.social-proactivity 注册且 appliesTo all (CLI/web 同一装配)', async () => {
+    const reg = fs.readFileSync(path.join(process.cwd(), 'src/llm/system-prompt/registry.ts'), 'utf8');
+    expect(reg).toMatch(/'core\.social-proactivity'[^)]*appliesTo: \['all'\][^)]*maxChars: 800/);
+    // 校验脚本的 maxChars 表与 registry 手同步 (两边都要有, 不许单边)
+    const val = fs.readFileSync(path.join(process.cwd(), 'scripts/validate-system-prompt.ts'), 'utf8');
+    expect(val).toMatch(/'core\/social-proactivity': 800/);
+  });
+
+  it('真实 assembleSystemPrompt(local) 的输出含主动性 posture + 关系维护, 且没被截断', async () => {
+    const { text, truncated } = await assembleSystemPrompt({ channel: 'local' });
+    expect(text).toMatch(/默认主动/);
+    expect(text).toMatch(/维护联系人的 agent 关系/);
+    expect(text).toMatch(/send_message/);
+    expect(text).toMatch(/kind: relationship|relationship/);
+    expect(truncated, '新层不许进 truncated 名单 (预算被吃光)').not.toContain('core.social-proactivity');
+    // 截断标记: 新层正文必须完整 (结尾的关系维护句在)
+    expect(text).toMatch(/上线接续/);
+    expect(text).not.toMatch(/\[… 已截断\]\s*$/);
+  });
+});
+
+describe('C. 手机端同文 (mobile-harness 自带 system)', () => {
+  it('mobile ContextManager.build 的 system 含同一 posture 三句', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/web/mobile-harness.ts'), 'utf8');
+    expect(src).toMatch(/默认主动: 用户表达意图就执行/);
+    expect(src).toMatch(/维护联系人的 agent 关系 \(主动, 不等用户催\)/);
+    expect(src).toMatch(/唯一例外: 暴露用户自己的联系方式/);
   });
 });

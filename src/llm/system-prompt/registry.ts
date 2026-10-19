@@ -182,6 +182,13 @@ const STATIC_LAYERS: Omit<PromptLayer, 'content'>[] = [
   // priority 90 (在 channel 150 之后) — 保证 channel 装完后再装 core, 避免 channel 预算被 core 吃掉
   // maxChars 700 → 400: 7 个新 layer 总预算 3900 chars, 必须让出空间给 tool.p2p_request (700) + tool.goal_handoff (600)
   { id: 'core.external-engagement', version: '1.0.0', priority: 90, appliesTo: ['all'], source: 'static-md', maxChars: 400 , meta: DEFAULT_META(TTL_KNOWLEDGE) },
+  // 2026-10-19 (leo: 「默认主动, web 和手机也是, 联系人的 agent 你也要主动维护关系」):
+  //   社交主动性**独立成层**, 不并进 external-engagement — 该层 maxChars 400, 追加内容会被
+  //   [..已截断] 吃掉 (2026-10-19 实测: 追加节只进了文件没进 prompt = 假绿), 且本层是
+  //   **行为指令**不是背景知识。appliesTo ['all'] ⇒ CLI/web 同一装配 (手机端 mobile-harness
+  //   自带 system, 同文另有一份, 见 src/web/mobile-harness.ts ContextManager.build)。
+  //   预算: 本层正文 ≤ maxChars 800, 装配后仍在 TOTAL_BUDGET 8000 内 (≈7700, 余量留给 tool.*)。
+  { id: 'core.social-proactivity', version: '1.0.0', priority: 95, appliesTo: ['all'], source: 'static-md', maxChars: 800 , meta: DEFAULT_META(TTL_KNOWLEDGE) },
 
   // ── tool/ (按工具调用嵌对应 layer) ──
   { id: 'tool.bash',             version: '1.0.0', priority: 250, appliesTo: ['tool:bash'],                source: 'static-md', maxChars: 600 , meta: DEFAULT_META(TTL_TOOL) },
