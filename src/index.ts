@@ -2247,11 +2247,25 @@ async function processInputInner(input: string, comm: HyperswarmCommunicator | n
   }
 
   if (cmd === '/retry') {
-    // 重发最后一条用户输入 (完整复用正常消息路径: 思考动画/工具上屏/回复框全走)
-    const last = (globalThis as any).__bolloonLastUserInput;
-    if (!last || typeof last !== 'string' || !last.trim()) { appendLine(`${C_WARN}还没有可重发的用户输入${RESET}`); return; }
-    appendLine(`${C_DIM}↻ 重发: ${last.slice(0, 120)}${last.length > 120 ? '…' : ''}${RESET}`);
-    return processInputInner(last, comm);
+    // 重发最后一条用户输入 (完整复用正常消息路径: 思考动画/工具上屏/回复框全走)。
+    // 2026-10-20 缺口修复: 优先读**落盘输入历史** (跨重启可用), 进程内最后一条作兜底。
+    let last = (globalThis as any).__bolloonLastUserInput as string | undefined;
+    try {
+      const { loadInputHistory, historyScope } = await import('./cli/input-history.js');
+      const hist = await loadInputHistory(historyScope());
+      if (hist.length) {
+        // 落盘的旧→新, 取最后一条; 但跳过命令本身 (用户上一条敲的是 /retry 则继续往前找)
+        for (let i = hist.length - 1; i >= 0; i--) {
+          const h = String(hist[i] ?? '').trim();
+          if (!h || h.startsWith('/')) continue;
+          last = h;
+          break;
+        }
+      }
+    } catch { /* 读历史失败用内存兜底 */ }
+    if (!last || !String(last).trim()) { appendLine(`${C_WARN}还没有可重发的用户输入${RESET}`); return; }
+    appendLine(`${C_DIM}↻ 重发: ${String(last).slice(0, 120)}${String(last).length > 120 ? '…' : ''}${RESET}`);
+    return processInputInner(String(last), comm);
   }
 
   if (cmd === '/undo' || cmd.startsWith('/undo ')) {
