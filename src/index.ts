@@ -6885,7 +6885,23 @@ async function main() {
       } catch { /* 探测异常 = 视为不在线, 继续自起 */ }
       try {
         const { createWebServer } = await import('./web/server.js');
-        const { port: actualPort } = await createWebServer(embeddedPort, { embedded: true });
+        // 2026-10-20 (leo: 「上述内容并不能出现在终端」): boot 期间把 console.log/info/debug
+        //   临时改道 startup.log —— server 的启动自述 (BOLLOON_PORT 契约行 / [24h] 心跳 /
+        //   老通道就绪 / 监听完成…) 对 CLI 面板是纯噪音, 且实测存在绕过 log-gate 的旁路时
+        //   会直达终端。boot 完 (listen 就绪) 恢复, 运行期日志照走闸门。warn/error 不动 (信号照走 stderr)。
+        const bootLine = (...a: unknown[]) => logStartupLine(a.map((x) => typeof x === 'string' ? x : String(x)).join(' '));
+        const prevLog = console.log, prevInfo = console.info, prevDebug = console.debug;
+        console.log = bootLine as typeof console.log;
+        console.info = bootLine as typeof console.info;
+        console.debug = bootLine as typeof console.debug;
+        let actualPort: number;
+        try {
+          ({ port: actualPort } = await createWebServer(embeddedPort, { embedded: true }));
+        } finally {
+          console.log = prevLog;
+          console.info = prevInfo;
+          console.debug = prevDebug;
+        }
         // 工具端读 process.env.PORT —— 必须跟实际绑定端口对齐 (端口被占时 server 自动 +1)
         process.env.PORT = String(actualPort);
         bootNotice('info', `CLI 内嵌服务就绪: http://127.0.0.1:${actualPort} (headless, 不开浏览器)`);

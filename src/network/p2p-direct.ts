@@ -60,6 +60,10 @@ export class P2PDirect extends EventEmitter {
     this.name = opts.name || 'p2p-direct';
     this.role = opts.role || (process.env.IROH_ROLE || process.env.BOLLOON_ROLE || 'default');
     this.ephemeral = !!opts.ephemeral;
+    // 2026-10-20: 默认 10 太低 —— sendToWithWait 的并发等待者 (好友 ack / manifest 交换等
+    //   启动期突发) 每个临时挂一个 connection listener, 自移除但第 11 个 add 时 Node 就告警
+    //   (MaxListenersExceededWarning 上过面板)。非泄漏, 是瞬时并发; 提高上限消警。
+    this.setMaxListeners(50);
   }
 
   async start(): Promise<void> {
