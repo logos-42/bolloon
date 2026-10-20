@@ -6995,7 +6995,6 @@ app.post('/active-channel', async (req, res) => {
   // 用法: PATCH /api/p2p-peers/:name { name?, notes?, publicKey? }
   app.patch('/api/p2p-peers/:name', async (req, res) => {
     try {
-      const { addOrUpdatePeer, removePeer } = await import('../network/known-peers.js');
       const { readFile, writeFile } = await import('fs/promises');
       const { existsSync } = await import('fs');
       const filePath = `${process.env.HOME || '/tmp'}/.bolloon/known_peers.json`;

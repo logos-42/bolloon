@@ -21,7 +21,7 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { acquireTickLock } from '../cron/tick-lock.js';
-import type { GoalRunner, RunnerKind, RunnerResolver, RunnerResolution } from './execution-supervisor.js';
+import type { RunnerKind, RunnerResolver, RunnerResolution } from './execution-supervisor.js';
 
 // runner 解析接口定义在 execution-supervisor.ts (避免循环依赖), 这里只做再导出
 export type { GoalRunner, RunnerKind, RunnerResolver, RunnerResolution } from './execution-supervisor.js';
