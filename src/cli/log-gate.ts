@@ -99,6 +99,9 @@ const UNTAGGED_STARTUP_NARRATION: readonly RegExp[] = [
   /^(?:复用|新建) P2P 身份: /,
   /^P2P 身份已生成: /,
   /^DID: did:/,
+  // 2026-10-20 (leo 贴终端原文): 内嵌 CLI 模式下 server 的这两句无标签行直达面板
+  /^P2P DID 已发布到 IPFS$/,
+  /^🔌 连接: [0-9a-f]{6,}/,
   // 2026-10-01 (用户连续三次: 「iroh: … / 主题: … 还没去掉」): 这几句**不带模块标签也不带时间戳** ✗
   //   ⇒ 原来不在任何判据里 ⇒ 闸门、console 拦截、writeOut 三道全都拦不住 ✓。
   //   仍然按行首锚定、只覆盖**实测观察到**的形状 ✓(不做宽泛匹配 ✓); 带缩进也要认 ✓。
@@ -189,7 +192,7 @@ const SDK_DIAG_LINE = /^(?:\[[^\]]*\]\s*)?\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*\[(?:\x1
  */
 // 允许标签前有一个**严重度字形** (`⚠ [identity] …` / `✗ [session-note] …` 真机就是这样) —— 只放这几个字形, 不做通配
 const INTERNAL_CHATTER_TAG =
-  /^[ \t]{0,8}[⚠✗✓!·]?[ \t]*\[(?:pi-ai(?:\s+timing)?|identity|session-note|react-harness|DocumentStore|DocumentReceiver|kv-server|loadSkills|v3-manifest|v3-async|supervisor-host|tool-telemetry|runs|abort|broadcast|Heartbeat|llm-lesson|llm-recovery)\b[^\]\n]*\]/i;
+  /^[ \t]{0,8}[⚠✗✓!·]?[ \t]*\[(?:pi-ai(?:\s+timing)?|identity|session-note|react-harness|DocumentStore|DocumentReceiver|kv-server|loadSkills|v3-manifest|v3-async|supervisor-host|tool-telemetry|runs|abort|broadcast|Heartbeat|llm-lesson|llm-recovery|McpAdapter|P2PDirect|24h)\b[^\]\n]*\]/i;
 /**
  * 没有 ASCII 标签、但实测属于内部运行日志的行 (2026-10-02 leo 追加: 「✅ 最终回复 (质量 8.5/10) ·
  * 🔄 循环 N/10 这类也去掉」)。
