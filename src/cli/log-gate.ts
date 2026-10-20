@@ -490,21 +490,27 @@ export function installStartupLogGate(opts: StartupLogGateOptions = {}): Startup
   function makeConsoleFn(): (...args: unknown[]) => void {
     return (...args: unknown[]) => {
       const text = formatConsoleArgs(args);
-      const toFile: string[] = [];
-      for (const line of text.split('\n')) {
-        toFile.push(line);
-        // 2026-10-02: **内部诊断行优先判** —— 只落盘, 一律不进对话流 (即便带 ⚠/✗ 字样也不会被当成"需人介入")
-        if (isInternalChatter(line)) {
-          stats.internalSuppressed++;
-        } else if (carriesHumanSignal(line)) {
-          // 需人介入的信息必须可见: 交互 CLI 的 stdout 归 Ink, 所以走 stderr
+      const lines = text.split('\n');
+      // 2026-10-20 (leo: 「上述内容并不能出现在终端」): **一次调用 = 一条日志, 按首行整条裁决**。
+      //   旧实现逐行独立判: 首行带 [模块] 标签被吞, 但多行内容 (MCP 原始帧 / inspect 转储 / SDK
+      //   多行输出) 的**续行**没有标签 ⇒ 被当普通行放行上屏, 用户终端漏进整坨转义 JSON。
+      //   现在首行裁决整条去处 (交互 CLI 的 stdout 归 Ink, console.* 一律不上屏, 与旧行为一致);
+      //   唯一例外: 续行里带「错误/降级/需人介入」信号的行仍单独改道 stderr (③ 错误不许吞)。
+      writeLines(lines);
+      const first = lines[0] ?? '';
+      if (carriesHumanSignal(first) && !isInternalChatter(first)) {
+        stats.signalKept++;
+        origStderr(text + '\n');
+        return;
+      }
+      if (isInternalChatter(first)) stats.internalSuppressed++;
+      else stats.suppressed++;
+      for (let i = 1; i < lines.length; i++) {
+        if (!isInternalChatter(lines[i]) && carriesHumanSignal(lines[i])) {
           stats.signalKept++;
-          origStderr(line + '\n');
-        } else {
-          stats.suppressed++;
+          origStderr(lines[i] + '\n');
         }
       }
-      writeLines(toFile);
     };
   }
 

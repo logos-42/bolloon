@@ -548,9 +548,10 @@ export async function startServer(serverName: string): Promise<boolean> {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    child.stdout?.on('data', (data) => {
-      console.log(`[McpAdapter][${serverName}] stdout:`, data.toString());
-    });
+    // 2026-10-20 (leo: 「上述内容并不能出现在终端」): 删掉 stdout 原始帧 dump ——
+    //   attachStdoutReader (下面) 才是按 id 配对 JSON-RPC 的真读帧器, 这里再挂一个 console.log
+    //   等于把 tools/list 全文打上屏; 且长帧被 chunk 边界劈开后续行没有模块标签,
+    //   log-gate 判 plain 放行 → 用户终端漏进整坨转义 JSON。stderr tap 保留 (真错误诊断)。
 
     child.stderr?.on('data', (data) => {
       console.error(`[McpAdapter][${serverName}] stderr:`, data.toString());

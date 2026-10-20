@@ -2082,7 +2082,8 @@ export async function createWebServer(port: number = 3000, options: CreateWebSer
       try { fsSync.chmodSync(p2pIdentityPath, 0o600); } catch { /* ignore */ }
     }
     console.log(reused ? `复用 P2P 身份: ${kp.did.substring(0, 24)}...` : `新建 P2P 身份: ${kp.did.substring(0, 24)}...`);
-    console.log('kp.publicKey:', kp?.publicKey);
+    // 2026-10-20 (leo: 「上述内容并不能出现在终端」): 删掉 kp.publicKey 裸 dump ——
+    //   内嵌 CLI 模式下 server 的 console.log 直达面板; 调试转储没有面板价值, 公钥字节串谁也不看。
 
     const did = kp.did || 'did:unknown:123456';
     console.log(`DID: ${did}`);
