@@ -24,7 +24,7 @@ import {
   BEAT_MS, STALE_MS,
   type HaRole, type HeartbeatRecord,
   writeHeartbeat, readPrimaryHeartbeat, decideTakeover,
-  acquirePrimaryLock, collectActiveRunIds,
+  acquirePrimaryLock,
 } from './ha-arbiter.js';
 import * as fsSync from 'fs';
 import * as os from 'os';

@@ -18,7 +18,6 @@ import {
   getValueProfile,
   getPriorityRules,
   type ValueTag,
-  type ValueProfile,
   type PriorityRule,
   type HumanJudgment
 } from './human-value-store.js';

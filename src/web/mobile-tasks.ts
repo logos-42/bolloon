@@ -27,7 +27,7 @@ import {
   type MobileBoardView, type MobileTrailView, type MobileGroupItem,
 } from '../agents/mobile-task-views.js';
 import { findInternalFieldLeaks, type MobileFlywheelView } from '../agents/mobile-flywheel-view.js';
-import { signPayloadOnDevice, sha256HexOf, ed25519Available, type StorageLike } from './mobile-contacts.js';
+import { sha256HexOf, ed25519Available, type StorageLike } from './mobile-contacts.js';
 
 type FetchLike = (input: string, init?: any) => Promise<any>;
 

@@ -28,13 +28,13 @@ import { getLocalIdentityFile, initLocalIdentity } from './setup-wizard.js';
 import { AUDIT_FORBIDDEN_KEYS } from '../agents/task-contract.js';
 import { KeyManager } from '@diap/sdk';
 import {
-  ADDRESS_BINDING_PROTOCOL, ADDRESS_BINDING_SCHEMA_VERSION, BINDINGS_DIRNAME, BINDING_INDEX_FILENAME,
+  ADDRESS_BINDING_PROTOCOL, BINDING_INDEX_FILENAME,
   DEFAULT_BINDING_CHAIN_ID, BINDING_ADDRESS_RE,
   bindingsDir, bindingIndexPath, newBindingNonce,
   createAddressBinding, verifyAddressBinding, payerIdentityOf,
   writeBindingRecord, readBindingRecord, readBindingIndex, rebuildBindingIndex,
   loadPayerIdentityIndex, buildPublicBindingProjection,
-  shortAgentName, didShort, addressHash,
+  didShort,
   type AddressBindingRecord,
 } from '../agents/identity/address-binding.js';
 

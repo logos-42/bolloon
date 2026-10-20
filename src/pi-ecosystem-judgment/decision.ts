@@ -21,9 +21,7 @@
 import { EventEmitter } from 'events';
 import {
   Judgment,
-  ValueFunction,
   getValueFunction,
-  getCombinedJudgments,
   calculateConfidence,
 } from './index.js';
 import {

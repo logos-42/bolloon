@@ -25,9 +25,9 @@ import { parseSkillBundle as parseBundleLoose, parseSkillRef as parseSkillRefLoo
 import { sanitizeSkillName as sanitizeNameLoose, getUserSkillsDir as userSkillsDirLoose, getProjectSkillsDir as projectSkillsDirLoose } from './skill-writer.js';
 import { parseSkillFile as parseSkillFileLoose } from './skill-loader.js';
 import { parseSkillFile, SkillMeta, defaultSkillPaths } from './skill-loader.js';
-import { getUserSkillsDir, getProjectSkillsDir } from './skill-writer.js';
+import { getUserSkillsDir } from './skill-writer.js';
 import {
-  collectSkillBundle, parseSkillBundle, parseSkillRef, fetchSkillBundle, installSkillBundle,
+  collectSkillBundle, parseSkillBundle, installSkillBundle,
   type SkillBundle,
 } from './skill-share.js';
 

@@ -22,7 +22,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { saveWindow as saveSessionWindow, loadWindow as loadSessionWindow } from './session-window.js';
+import { saveWindow as saveSessionWindow } from './session-window.js';
 
 // ============== 重试 ==============
 

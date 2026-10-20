@@ -21,7 +21,6 @@
 import {
   createBollharnessIntegration,
   type BollharnessIntegration,
-  type IntegrationResult,
 } from '../bollharness-integration/integration.js';
 import {
   runToolGates,

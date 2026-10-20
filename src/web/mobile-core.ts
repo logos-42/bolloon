@@ -39,7 +39,7 @@ import { scanPublicText } from '../agents/task-public-text.js';
 
 // 2026-09-26: 手机端 web 资源层**双源 OTA 更新** (npm + GitHub; 与桌面 `bolloon update` 同语义)
 import {
-  checkMobileUpdate, prepareMobileUpdate, applyMobileUpdate, rollbackMobileUpdate,
+  checkMobileUpdate, applyMobileUpdate, rollbackMobileUpdate,
   autoPrepareMobileUpdate, readMobileUpdateState, resolveLocalWebIdentity,
   renderMobileUpdateReport, createAutoWebStore, storedMobileChannel,
   setMobileUpdateChannel, reloadMobileWeb, nativeWired,

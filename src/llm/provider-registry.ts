@@ -50,7 +50,7 @@
  * `custom-provider-store` (每次读写后) 推入; 本文件**不**在这里读盘、不发请求。
  */
 
-import { DEFAULT_PROVIDER_CONFIGS, PROVIDER_INFO, type ModelProvider } from './config-store.js';
+import { DEFAULT_PROVIDER_CONFIGS, PROVIDER_INFO } from './config-store.js';
 import {
   protocolOf, supportsReasoning, envKeyNamesOf, normalizeBaseUrl,
   type ModelProtocol,

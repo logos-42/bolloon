@@ -127,8 +127,7 @@ import {
   type P2PConnection,
 } from '@diap/sdk';
 import type { AgentVerificationManager } from '@diap/sdk';
-import { documentReader } from '../documents/reader.js';
-import { initMinimax, getMinimax } from '../constraints/index.js';
+import { initMinimax } from '../constraints/index.js';
 import { createAgentSession, type AgentSession, type StreamCallback, type StreamEvent } from '../agents/pi-sdk.js';
 // **K5 步骤④ (入口投递)**: 把一次入口执行投进会话 Actor 的 mailbox ⇒ 同一会话身份的输入排队执行
 import { deliverThroughActor, getChannelQueue, abortActorsOfChannel } from '../kernel/channel-actor.js';
@@ -224,7 +223,6 @@ import {
 
 // 包装成闭包内可用的形式, 保持 createWebServer 内代码不用改
 const loadChannels = _loadChannels;
-const saveChannels = _saveChannels;
 const loadSession = _loadSession;
 const saveSession = _saveSession;
 const loadTheme = _loadTheme;
@@ -366,7 +364,6 @@ let watchdogRef: any = null;
 // v3: 等待中的 history RPC (B 端 chat-history endpoint 用) — rpcId → { resolve, reject }
 const v3PendingHistoryGets: Map<string, { resolve: (data: any) => void; reject: (err: Error) => void }> = new Map();
 let channelSessions: Map<string, AgentSession> = new Map(); // key: channelId
-let sessionMessages: Map<string, any[]> = new Map(); // key: channelId + sessionId
 
 // ============ 2026-08-02: 远端对话本地镜像 (替代 localStorage 缓存) ============
 // 问题: localStorage 5MB 上限 + 同步阻塞 + 每浏览器独立; 且对方离线时 chat-history RPC 拉不到.

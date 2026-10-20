@@ -75,7 +75,6 @@ export interface SessionMessage {
 }
 
 const SHARED_SESSION_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'sessions');
-const PERSONA_PATH = path.join(process.env.HOME || '/tmp', '.bolloon', 'persona.json');
 const DISCOVERED_AGENTS_PATH = path.join(SHARED_SESSION_PATH, 'discovered-agents.json');
 
 export interface SocialSessionProvider {

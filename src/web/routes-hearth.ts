@@ -43,7 +43,6 @@ import {
   loadVisibility,
   saveVisibility,
   loadAllowlist,
-  saveAllowlist,
   addAllowlistPeer,
   removeAllowlistPeer,
   newDescriptionId,
@@ -55,7 +54,6 @@ import {
   resolveGate3,
 } from '../judgeness/visibility.js';
 import {
-  negotiateAudience,
   descriptionToJsonLd,
   descriptionToHumanHtml,
   dualRender,

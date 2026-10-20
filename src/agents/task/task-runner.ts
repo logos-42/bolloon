@@ -19,7 +19,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import {
-  createGoal, attachRun, markCriterion, completeGoalIfEligible, readGoal, setCriteria,
+  createGoal, attachRun, markCriterion, readGoal, setCriteria,
 } from '../goal-store.js';
 import { startRun, recordStep, finishRun, readRun } from '../run-store.js';
 import { captureRunModelConfig } from '../../llm/model-selection.js';

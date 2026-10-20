@@ -141,15 +141,6 @@ function getValueStoreDir(): string {
 function getJudgmentsFile(): string {
   return path.join(getValueStoreDir(), 'judgments.json');
 }
-function getProfileFile(): string {
-  return path.join(getValueStoreDir(), 'profile.json');
-}
-function getPatternsFile(): string {
-  return path.join(getValueStoreDir(), 'patterns.json');
-}
-function getCounterfactualFile(): string {
-  return path.join(getValueStoreDir(), 'counterfactual-audit.jsonl');
-}
 
 // In-memory cache
 let judgmentCache: HumanJudgment[] = [];

@@ -73,10 +73,8 @@ export interface DiscoveryMessage {
 }
 
 const ADDRESS_BROADCAST_INTERVAL = 5 * 60 * 1000;
-const RELAY_RETRY_INTERVAL = 30000;
 const MAX_RELAY_HOPS = 3;
 const MESSAGE_TIMESTAMP_TOLERANCE = 24 * 60 * 60 * 1000;
-const SIGNED_MESSAGE_TYPES = ['task', 'response', 'discovery', 'address_broadcast'] as const;
 
 /**
  * 2026-09-15: did:key:z6Mk… 与 Ed25519 公钥字节是否一致。

@@ -14,8 +14,7 @@
 
 import * as readline from 'readline';
 import {
-  evaluateSetup, providerUsable, readConfigFacts, refreshSetupState, resolveBolloonHome,
-  type ErrorClass as SetupErrorClass,
+  evaluateSetup, readConfigFacts, resolveBolloonHome,
 } from '../setup/setup-store.js';
 import { runOnboard, type OnboardIO, type OnboardMode } from '../setup/onboard.js';
 // 2026-09-27: 启动期"续跑前言"闸门 (默认不上屏 → 面板一行 + 显式查询命令; verbose 逐字回流)
@@ -26,14 +25,13 @@ import * as os from 'os';
 import { llmConfigStore, type ModelProvider } from '../llm/config-store.js';
 import {
   selectModel, resetModelSelection, probeSelection,
-  effectiveModelConfig, formatEffectiveModel, protocolOf,
+  effectiveModelConfig, formatEffectiveModel,
   normalizeBaseUrl, validateBaseUrlShape, currentSessionKey,
-  type EffectiveModelConfig, type SelectionFailureClass,
+  type SelectionFailureClass,
 } from '../llm/model-selection.js';
 import {
-  buildProviderSummaries, formatProviderLine, formatProviderMenuRow, providerGroupSummary,
+  buildProviderSummaries, formatProviderMenuRow, providerGroupSummary,
   orderProvidersForMenu,
-  type ProviderSummary,
 } from '../llm/model-catalog.js';
 import { runModelSelector, type SelectorChoice, type ModelSelectorResult } from './model-selector.js';
 // 着色判据只有一处 (`theme.ts`) —— 主屏与全屏选择器共用

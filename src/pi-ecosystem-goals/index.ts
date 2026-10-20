@@ -432,18 +432,6 @@ export async function loadGoals(): Promise<void> {
 }
 
 /**
- * Load churn events
- */
-async function loadChurn(): Promise<void> {
-  try {
-    const data = await fs.readFile(CHURN_FILE, 'utf-8');
-    churnEvents = JSON.parse(data);
-  } catch {
-    churnEvents = [];
-  }
-}
-
-/**
  * Clear all goals
  */
 export async function clearGoals(): Promise<void> {

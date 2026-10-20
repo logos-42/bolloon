@@ -19,7 +19,6 @@ import { ContactChain } from '../agents/contacts/chain.js';
 import { verifyTaskAction } from '../agents/mobile-task-actions-verify.js';
 import type { DeviceKey } from '../agents/contacts/grants.js';
 import type { SignedTaskAction, TaskActionRequest } from '../agents/mobile-task-actions.js';
-import { buildMobileFlywheelView } from '../agents/mobile-flywheel-view.js';
 import { shortId } from '../agents/mobile-task-views.js';
 
 export interface MobileTaskRouteOpts {

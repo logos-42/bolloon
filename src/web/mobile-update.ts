@@ -33,11 +33,11 @@ import {
   resolveUpdateChannel, distTagForChannel, channelKindOf, devIdentity, baseVersionOf,
   isDevIdentity, devShaFromIdentity, compareVersions, isKnownVersion, describeSourceIdentity,
   envValue,
-  type CheckStatus, type ChannelKind, type UpdateChannel,
+  type ChannelKind, type UpdateChannel,
 } from '../utils/version-identity.js';
 import {
   classifyGithubError, classifyRegistryError, crossCheckStable, compareDevSnapshots,
-  newestGithubVersion, toGithubReport, renderGithubReportLine,
+  toGithubReport, renderGithubReportLine,
   type GithubReport, type GithubResult, type GithubFacts, type CrossCheck, type DevCheck,
 } from '../utils/dual-source-facts.js';
 

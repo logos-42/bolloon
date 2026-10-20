@@ -31,10 +31,10 @@
  */
 
 import {
-  buildProviderSummaries, listModelsFor, formatProviderLine, formatModelLine, formatModelMenuRow,
+  buildProviderSummaries, listModelsFor, formatModelMenuRow,
   providerGroupSummary, orderProvidersForMenu,
   providerRowTone, formatProviderMenuRow,
-  unknownFootnote, searchModelEntries, capabilityZh, resolvedApiKeyOf,
+  unknownFootnote, searchModelEntries, resolvedApiKeyOf,
   type ModelEntry, type ProviderSummary,
 } from '../llm/model-catalog.js';
 import {

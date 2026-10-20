@@ -15,7 +15,6 @@
  * 不依赖 Web UI、不依赖用户交互、纯后台自动完成。
  */
 // 不使用 logger 模块，用 console.log 保持与 bolloon 项目风格一致
-const PREFIX = '[auto-discover]';
 
 // 发现 peers 的缓存 key → 本机 publicKey 映射（用于去重）
 const TOPIC = 'bolloon-agent-harness';

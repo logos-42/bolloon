@@ -18,8 +18,8 @@
 
 import express from 'express';
 import {
-  buildAgentDelegateRequest, buildAgentResponse, buildManifestPayload, buildManifestRequest,
-  parseFrame, setLocalManifest, addLocalAgent, getLocalManifest, getRemoteManifests,
+  buildAgentDelegateRequest, buildAgentResponse, buildManifestPayload,
+  parseFrame, setLocalManifest, getLocalManifest, getRemoteManifests,
   cacheRemoteManifest, pickAgent, type AgentManifestEntry, type AgentManifest,
 } from '../agents/agent-manifest-protocol.js';
 

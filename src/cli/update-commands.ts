@@ -15,20 +15,20 @@
 
 import { resolveBolloonHome } from '../setup/setup-store.js';
 import {
-  collectVersionInfo, renderVersionText, renderVersionJson, describeSourceIdentity,
+  collectVersionInfo, renderVersionText, renderVersionJson,
   DEV_CHANNEL_WARNING, DEV_BACK_TO_STABLE_HINT,
-  resolveUpdateChannel, channelKindOf, isDevIdentity,
+  channelKindOf, isDevIdentity,
   type VersionInfo, type UpdateChannel,
 } from '../utils/version-info.js';
 import {
   checkForUpdate, buildUpdatePlan, renderUpdatePlan, applyUpdate, readUpdateStatus, readHistory,
-  renderHistory, updateSummaryFor, compareVersions, checkExitCode, REFUSED_STATUSES, type CheckResult,
+  renderHistory, updateSummaryFor, compareVersions, REFUSED_STATUSES, type CheckResult,
 } from '../utils/update-manager.js';
 import { renderGithubReportLine } from '../utils/dual-source.js';
 import { runDoctor, renderDoctor } from '../utils/update-health.js';
 import {
   detectRuntimeReport, bootstrapRuntimes, renderRuntimeReport, renderBootstrapPlan, RUNTIME_MIN,
-  readRuntimeConfigWithFallback, type RuntimeReport,
+  readRuntimeConfigWithFallback,
 } from '../utils/runtime-bootstrap.js';
 
 const RESET = '\x1b[0m';

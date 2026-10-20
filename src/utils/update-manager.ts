@@ -27,7 +27,7 @@ import * as http from 'http';
 import { spawnSync } from 'child_process';
 import {
   PKG_NAME, CONSTRAINT_PKG_NAME, NPM_REGISTRY_BASE, resolveUpdateChannel, distTagForChannel,
-  detectInstallation, collectVersionInfo, readPackageAt, packageRootFrom, npmGlobalRoot,
+  detectInstallation, readPackageAt,
   channelKindOf, isDevIdentity, devShaFromIdentity, devIdentity, baseVersionOf,
   DEV_CHANNEL_WARNING, DEV_BACK_TO_STABLE_HINT,
   type InstallMethod, type UpdateSource, type UpdateChannel, type ChannelKind, type InstallationInfo, type VersionUpdateSummary,
